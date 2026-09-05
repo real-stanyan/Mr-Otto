@@ -67,7 +67,8 @@ import type {
   ChatMessageEvent, SessionEvent, ToolCallRequest, ToolResultEvent,
 } from "../../../session/events.js";
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
-import type { CsModelState, CsRepoState } from "../../../shared/remote/cloudSession.js";
+import type { CsModelRoute, CsModelState, CsRepoState } from "../../../shared/remote/cloudSession.js";
+import { modelStatusText } from "../lib/cloudModelStatus.js";
 
 // cs 还没到位时兜底（正常路径下 WorkspacePage 只在 cloudSession 非空时才
 // 挂载这个组件，但 hooks 不能条件调用，events 得先算出一个稳定引用——
@@ -324,6 +325,7 @@ export function CloudSessionPage({
             ready={ready}
             repo={cs.repo}
             model={cs.model}
+            route={cs.modelRoute}
           />
         </div>
       </div>
@@ -577,37 +579,18 @@ function repoStatusText(repo: CsRepoState | null): { short: string; full: string
   };
 }
 
-/** 模型那一格的状态文案（issue #844）。**没配模型是个会挡住干活的事实**
-    （@Agent 起不了 turn），所以它排在仓库前面，而且用错误色——不是一句
-    温和的提示 */
-function modelStatusText(model: CsModelState | null): { short: string; full: string; bad: boolean } {
-  if (!model) {
-    return {
-      short: "未配模型",
-      full: "这个工作区还没配模型：@Agent 起不了 turn。所有者点右边那颗按钮配一把自己的 API key。",
-      bad: true,
-    };
-  }
-  if (!model.hasKey) {
-    return {
-      short: `${model.modelId} · 缺 key`,
-      full: `${model.baseUrl}\n配了型号但没有 key —— turn 还是起不来`,
-      bad: true,
-    };
-  }
-  return { short: model.modelId, full: `${model.baseUrl}\n${model.modelId}`, bad: false };
-}
-
 function CloudRepoConfigEntry({
   isOwner,
   ready,
   repo,
   model,
+  route,
 }: {
   isOwner: boolean;
   ready: boolean;
   repo: CsRepoState | null;
   model: CsModelState | null;
+  route: CsModelRoute | null;
 }) {
   const [open, setOpen] = useState(false);
   // 保存成功后短暂显示在钮上的确认(同 ProviderKeyDialog 的"已保存"手法:
@@ -615,7 +598,7 @@ function CloudRepoConfigEntry({
   // 弹窗内部,是为了让它在弹窗关闭之后还能继续显示 2 秒
   const [saved, setSaved] = useState(false);
   const repoStatus = repoStatusText(repo);
-  const modelStatus = modelStatusText(model);
+  const modelStatus = modelStatusText(model, route);
 
   const onSaved = (): void => {
     setOpen(false);
@@ -625,8 +608,9 @@ function CloudRepoConfigEntry({
 
   return (
     <div className="flex min-w-0 shrink-0 items-center gap-2">
-      {/* 模型排在仓库前面（issue #844）：没配模型是**会挡住干活**的那一格，
-          没配仓库只是"在空目录里干活"。两格都给所有成员看，不只是 owner */}
+      {/* 模型排在仓库前面（issue #844）：走不通的路（blocked / 缺 key）
+          才是**会挡住干活**的那一格，没配仓库只是"在空目录里干活"。
+          两格都给所有成员看，不只是 owner */}
       <span
         className={cn("max-w-[150px] truncate text-[11px]", modelStatus.bad ? "text-err" : "text-muted-foreground")}
         title={modelStatus.full}
