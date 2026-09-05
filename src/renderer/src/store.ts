@@ -994,9 +994,11 @@ interface ChatState {
       workspaceId 从 cloudSession 现取——调用方（CloudSessionPage）只在已 join
       时才会挂载这个入口，理应总有值；没有就说明状态错乱，回 false 不瞎猜。
       pat 不落这个 store 的任何字段，只透传给 IPC 这一次调用（同 ProviderKeyDialog
-      "渲染层不留 key 的任何副本"的纪律）。回是否成功——同 cloudSay/cloudApprove
-      的既有约定，失败信息落 workspaceGroupsError，调用方按需读；服务端保存
-      成功是静默的，IPC 回 ok 就算成功，没有二次确认帧 */
+      "渲染层不留 key 的任何副本"的纪律）。**回 boolean、失败落 workspaceGroupsError**
+      ——这一格错误确实是共享的（设置区那一整块，同名单十一件套的待遇）；
+      别照 cloudSay/cloudApprove 读，那两个第四批之后透传 `CloudAck` 且一个字
+      都不碰那一格（C2-I4）。服务端保存成功是静默的，IPC 回 ok 就算成功，
+      没有二次确认帧 */
   cloudConfig(patch: {
     repoUrl?: string;
     pat?: string;
@@ -1004,8 +1006,9 @@ interface ChatState {
   }): Promise<boolean>;
   /** 归档（收尾）当前云会话（issue #822）。**只发出去**——真正的"归档成功"
       是那条广播回来的 session_archived 事件（服务端不另发回执：所有人都
-      看得见的那一条本身就是回执）。回 boolean 只说"帧发没发出去"，
-      同 cloudSay/cloudApprove 的既有约定。
+      看得见的那一条本身就是回执）。回 boolean 只说"帧发没发出去"，失败落
+      workspaceGroupsError（同名单十一件套；**不是**照 cloudSay/cloudApprove
+      ——那两个第四批之后透传 `CloudAck` 且不碰那一格，C2-I4）。
       云端没有"恢复归档"那一半（daemon 启动只捞 archived=false 的会话重开
       房间），所以调用方要先问一句 */
   cloudArchive(): Promise<boolean>;
@@ -2441,7 +2444,7 @@ export const useChat = create<ChatState>((set, get) => ({
       return false;
     }
     // 服务端保存成功是静默的（没有二次确认帧）——IPC 回 ok 就是这里能拿到的
-    // 唯一信号，同 cloudSay/cloudApprove"回 boolean 给调用方"的约定
+    // 唯一信号，回 boolean 给调用方决定要不要关弹窗（同名单十一件套）
     set({ workspaceGroupsError: null });
     return true;
   },

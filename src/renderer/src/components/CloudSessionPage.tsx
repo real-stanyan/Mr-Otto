@@ -117,10 +117,12 @@ function cloudDeniedMessage(code: string | undefined, serverVersion?: number): s
     gone 时 wsTransport 会自动重连，不代表这次云会话失败（main/cloudSessionClient.ts
     文件头注释）。ready 没有横幅：一切正常不值得占一行——**除非这份历史缺了
     东西**（issue #957 C-I7）。那一行画在这里而不是 actionError 那格，正是因为
-    这里不会被下一次成功的 cloudSay 擦掉（那格成功时会 `workspaceGroupsError: null`）：
+    这里不会被别的操作擦掉——`actionError`（`workspaceGroupsError`）是一格共享
+    状态，名单刷新/建房/配置保存里随便哪一件成功都会把它清成 null（第四批
+    C2-I4 之后发送/审批/停止已经不进那一格，但清它的人仍然有一堆）：
     「我看到的就是全部」和「我看到的少了一条」需要的动作完全不同，不能只差一行
-    会自己消失的灰字。缺口补齐（重连后 backlog 拉全了）时主进程不再下发它，
-    这一行自己就没了 */
+    会被一件不相干的成功抹掉的灰字。缺口补齐（重连后 backlog 拉全了）时主进程
+    不再下发它，这一行自己就没了 */
 function statusBanner(cs: CloudSessionState): { tone: "muted" | "warn" | "err"; text: string } | null {
   switch (cs.state) {
     case "connecting":
@@ -136,6 +138,24 @@ function statusBanner(cs: CloudSessionState): { tone: "muted" | "warn" | "err"; 
       // 没有任何东西坏了，是这一份历史不全
       return cs.gapNote === null ? null : { tone: "warn", text: cs.gapNote };
   }
+}
+
+/** composer 上方那行「不确定有没有发出去」的一整份状态（第四批 C2-I4）。
+    `sessionId` = 它属于哪条云会话（复审 H1：这个组件换会话时不卸载，而
+    `workspaceCloudSay` 打的是主进程当前那条连接，不带 sessionId）；
+    `mentions` 缺席 = 老语义（服务端按名字解析 + 回落名单第一只），重发要走
+    与原来那次**同一条路**；`note` = 这一行此刻说的那句话（复审 L3）。 */
+type UnsentLine = {
+  sessionId: string;
+  text: string;
+  mentions: string[] | undefined;
+  note: string;
+};
+
+/** 那一行的初始措辞。正文只回显前 40 字——这一行是「哪一句话」的提示，
+    不是那句话本身（它还完整地存在 `UnsentLine.text` 里，重发发的是全文） */
+function unknownNote(text: string): string {
+  return `没有收到回执，不确定有没有发出去：${text.slice(0, 40)}${text.length > 40 ? "…" : ""}`;
 }
 
 export function CloudSessionPage({
@@ -178,6 +198,10 @@ export function CloudSessionPage({
   const draftSeed = useChat((s) => s.cloudDraftSeed);
 
   const [draft, setDraft] = useState("");
+  // **一格在飞标记管两条路**（发送 + 重新发送，复审 L2）：两条各记一格的话，
+  // 一次 Enter 和一次「重新发送」可以同时在飞，两次结果都写 unsent，后回来的
+  // 那次盖掉前一次——而被盖掉的那句正文（unknown 时草稿已经清了）从此在任何
+  // 地方都不存在了。共用一格 = 同一时刻只有一次发送在飞，由构造保证
   const [sending, setSending] = useState(false);
   // 这一次发送自己的结果（第四批 C2-I4）——组件本地，不进共享的 actionError：
   // sendError = 确定失败的原因（红），sendNotice = 发出去了但有话要说（中性灰）
@@ -186,9 +210,17 @@ export function CloudSessionPage({
   // 「没收到回执」的那一句（第四批 C2-I4）。**不塞回输入框**：输入框里躺着原文
   // 是「再发一次」这个指令的最强信号，而这句话很可能已经落地了，重发就是发两遍。
   // 摆成一行带「重新发送」/「放弃」的提示，由人决定——桌面这一层没有任何办法
-  // 知道它到底有没有生效，把这个不确定性如实交给用户比替他猜一个更安全
-  const [unsent, setUnsent] = useState<{ text: string; mentions: string[] | undefined } | null>(null);
-  const [resending, setResending] = useState(false);
+  // 知道它到底有没有生效，把这个不确定性如实交给用户比替他猜一个更安全。
+  // **带 sessionId**（复审 H1）：这个组件在换云会话时**不卸载**（openCloudSession
+  // 直接整格替换 cloudSession，中间没有 null，而 CloudSessionMain 挂它时没给
+  // key），所以本地 state 会跟着人从 A 飘到 B；而 `workspaceCloudSay` 打的是
+  // 主进程**当前**那条连接、不带 sessionId——那颗「重新发送」在 B 上点下去
+  // 就是把 A 的话发进 B。同一件事 store 给 cloudDraftSeed 做过一次挂靠
+  // （见那一格的注释），落地之后这一格也得做。
+  // `note` 是这一行此刻说的那句话（复审 L3）：初值是「没有收到回执…」，
+  // 重发**确定失败**时换成「重新发送失败：<原因>」——否则屏幕上一条红字
+  // 「限速…」旁边挂着一行灰字「没有收到回执」，读起来像两件事
+  const [unsent, setUnsent] = useState<UnsentLine | null>(null);
   // 光标位置（#932 切片 1b）：「正在打 @ 吗」是 draft × caret 的函数，光标
   // 不跟着走的话，把光标挪回一个旧的 @ 后面时弹层不会出来。textarea 自己的
   // selectionStart 是 DOM 状态，读不进渲染——所以四个入口（改字/选区/键起/
@@ -256,6 +288,22 @@ export function CloudSessionPage({
     setHi(0);
   }, [optionKey]);
 
+  const csSessionId = cs?.sessionId ?? null;
+  // 换云会话时把这三格本地状态清干净（复审 H1）。**这个组件在换会话时不卸载**
+  // ——侧栏点另一条云会话走 openCloudSession，它直接把 cloudSession 整格替换，
+  // 中间没有 null，而 CloudSessionMain 挂它时没给 key。不清的话 A 的那行提示
+  // 和红字会摆在 B 的页面上，说着一件跟 B 无关的事。
+  // 这道闸与 `unsent.sessionId` 的比对**两道都要**：这一条清得干净（错误/提示
+  // 也一起走），那一条挡的是 effect 跑起来之前那一帧、以及异步回来时会话已经
+  // 换了的那种情形（判据在数据里，不依赖 effect 的时序）。
+  // 排在下面取种子那个 effect **之前**：同一次 commit 里两个都会跑（换会话时
+  // csSessionId 与 draftSeed 一起变），顺序反了就是刚种下的那份被当场清掉
+  useEffect(() => {
+    setUnsent(null);
+    setSendError(null);
+    setSendNotice(null);
+  }, [csSessionId]);
+
   // 开局卡那句话没发出去时的原文（issue #957 C-I6）的去处。两种失败去处不同
   // （第四批 C2-I4）：
   //   · `unsent`（确定没发出去）→ 摆回输入框。这一步之后它就是一份普通草稿，
@@ -265,7 +313,6 @@ export function CloudSessionPage({
   //     等这一格空了再摆回来）。
   //   · `unknown`（没收到回执）→ 进上面那行提示，**不进输入框**，所以也不受
   //     「草稿得是空的」这条限制约束：它根本不动输入框，等待没有任何意义。
-  const csSessionId = cs?.sessionId ?? null;
   useEffect(() => {
     if (csSessionId === null || draftSeed === null || draftSeed.sessionId !== csSessionId) return;
     if (!draftSeed.unknown && draft !== "") return;
@@ -274,7 +321,7 @@ export function CloudSessionPage({
     if (seed.unknown) {
       // mentions 缺席：开局卡那句走的是老语义（不 @ 也由名单第一只接），
       // 重发要走同一条路，不能凭空补一个权威空数组（ADR-0220 决策 2）
-      setUnsent({ text: seed.text, mentions: undefined });
+      setUnsent({ sessionId: csSessionId, text: seed.text, mentions: undefined, note: unknownNote(seed.text) });
       return;
     }
     setDraft(seed.text);
@@ -296,16 +343,21 @@ export function CloudSessionPage({
 
   /** 一次发送：mentions 缺席就不传第二参（老语义，服务端按名字解析 + 回落
       名单第一只），给了就以它为准 —— 重发走的是同一条路 */
-  const sendOnce = async (payload: { text: string; mentions: string[] | undefined }): Promise<CloudAck> =>
+  const sendOnce = async (payload: UnsentLine): Promise<CloudAck> =>
     payload.mentions === undefined ? await cloudSay(payload.text) : await cloudSay(payload.text, payload.mentions);
 
   /** 一次发送的结果落地（第四批 C2-I4），三态各有各的去处：
       · `ok` → 那行「不确定」的提示可以撤了（这一次是确定成功的）
-      · `ok:false` + `unknown` → 摆成那一行，等人决定重发还是放弃
+      · `ok:false` + `unknown` → 摆成那一行，等人决定重发还是放弃；**从重发
+        回来的这一支保持 payload 原来那条 note**——同一件事，换措辞或另起一行
+        都是在说「又出了件新事」
       · 其余（确定失败）→ 画原因，正文留在原处（草稿 / 那一行）不动
       **`unknown` 一个字都不写进 sendError**：它不是失败，是「不知道」，
-      画成红字会把人推向「重发一次」，而重发很可能就是发两遍 */
-  const applySendResult = (r: CloudAck, payload: { text: string; mentions: string[] | undefined }): void => {
+      画成红字会把人推向「重发一次」，而重发很可能就是发两遍。
+      `from` 只影响「确定失败」那一支（复审 L3）：composer 那次没有对应的行，
+      原因画进 sendError；重发那次有——写进那一行自己的 note，否则屏幕上一条
+      红字「限速…」旁边挂着一行灰字「没有收到回执」，读起来像两件事 */
+  const applySendResult = (r: CloudAck, payload: UnsentLine, from: "submit" | "resend"): void => {
     if (r.ok) {
       setUnsent(null);
       return;
@@ -314,16 +366,22 @@ export function CloudSessionPage({
       setUnsent(payload);
       return;
     }
+    if (from === "resend") {
+      setUnsent({ ...payload, note: `重新发送失败：${r.message}` });
+      return;
+    }
     setSendError(r.message);
   };
 
   const resend = async (): Promise<void> => {
-    if (unsent === null || resending || !ready) return;
-    setResending(true);
+    // 会话对不上就不发（复审 H1）：异步期间人可能已经切走，而这颗钮打的是
+    // 主进程**当前**那条连接——判据在数据里，不靠上面那个 effect 的时序
+    if (unsent === null || sending || !ready || unsent.sessionId !== csSessionId) return;
+    setSending(true);
     setSendError(null);
     setSendNotice(null);
-    applySendResult(await sendOnce(unsent), unsent);
-    setResending(false);
+    applySendResult(await sendOnce(unsent), unsent, "resend");
+    setSending(false);
   };
 
   const submit = async (): Promise<void> => {
@@ -355,7 +413,14 @@ export function CloudSessionPage({
     // "我确认谁都没点"（ADR-0220 决策 2），而这里的空是"我算不出来"——差着
     // 一整个 turn。缺席让服务端拿它自己那份名单解析正文、再回落名单第一只，
     // 于是一句 "@管理员 帮我看下" 照旧有人接，而不是安静地变成一句闲聊
-    const payload = { text, mentions: sendCandidates.length === 0 ? undefined : sendMentions };
+    const payload: UnsentLine = {
+      // csSessionId 在这里必然非空（上面 `if (!cs) return null` 之后才走得到），
+      // 断言只是为了不给这一格造一个 null 的可能性
+      sessionId: csSessionId ?? "",
+      text,
+      mentions: sendCandidates.length === 0 ? undefined : sendMentions,
+      note: unknownNote(text),
+    };
     const r = await sendOnce(payload);
     // `unknown` 也清输入框（第四批 C2-I4）：那句话很可能已经落地，把原文留在
     // 输入框里等于催用户再按一次回车。原文没丢——它去了下面那行「不确定」的
@@ -366,7 +431,7 @@ export function CloudSessionPage({
       setCaret(0);
       setDismissedAt(null);
     }
-    applySendResult(r, payload);
+    applySendResult(r, payload, "submit");
     setSending(false);
   };
 
@@ -570,17 +635,16 @@ export function CloudSessionPage({
       {sendNotice && <p className="text-xs text-muted-foreground">{sendNotice}</p>}
       {/* 「不知道有没有发出去」那一行：中性灰不是红色——它不是一次失败，
           是一个桌面这一层无法消除的不确定性。两颗钮把决定权交回给人：
-          「重新发送」= 我认了可能发两遍，「放弃」= 我认了可能没发出去 */}
-      {unsent && (
+          「重新发送」= 我认了可能发两遍，「放弃」= 我认了可能没发出去。
+          **只画属于这条会话的那一份**（复审 H1）：换会话时这个组件不卸载，
+          比对 sessionId 才不会把 A 的话摆在 B 的页面上 */}
+      {unsent && unsent.sessionId === csSessionId && (
         <div className="flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground">
-          <span className="min-w-0 break-words">
-            没有收到回执，不确定有没有发出去：{unsent.text.slice(0, 40)}
-            {unsent.text.length > 40 ? "…" : ""}
-          </span>
-          <Button variant="ghost" size="xs" disabled={!ready || resending} onClick={() => void resend()}>
+          <span className="min-w-0 break-words">{unsent.note}</span>
+          <Button variant="ghost" size="xs" disabled={!ready || sending} onClick={() => void resend()}>
             重新发送
           </Button>
-          <Button variant="ghost" size="xs" disabled={resending} onClick={() => setUnsent(null)}>
+          <Button variant="ghost" size="xs" disabled={sending} onClick={() => setUnsent(null)}>
             放弃
           </Button>
         </div>
