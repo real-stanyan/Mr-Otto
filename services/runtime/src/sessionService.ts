@@ -79,6 +79,7 @@ import { openTurns } from "../../../src/shared/turnLedger.js";
 import { createTurnCoordinator, type TurnJob, type EnqueueDecision } from "./turnCoordinator.js";
 import { createApprovalRouter } from "./approvalRouter.js";
 import { fetchGrantedTools, buildPxTools, type PxCallDeps } from "./pxTools.js";
+import { filterGrantedByAllow, type AgentToolAllow } from "../../../src/shared/agentToolAllow.js";
 
 /** 一个工作区 agent 的完整规格（#928）。daemon 从 workspace_agents 表查出来
     （Task 10/11），装配时递给 sessionService。 */
@@ -90,6 +91,8 @@ export interface AgentSpec {
   instructions: string;
   /** 允许的逻辑型号；[0] 是默认。空 = 用工作区那份（ADR-0202） */
   models: string[];
+  /** 连接器白名单（spec §3，切片 2）：[] = 整池放行。接在 fetchGrantedTools 之后过一道 */
+  tools: AgentToolAllow[];
 }
 
 /** 这句话点了哪几只。三级，缺一不可：
@@ -388,7 +391,9 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         // 意外（hostUids() 本身抛错等）——本 turn 就没有云代理工具，不阻塞发言
         console.warn("px grants 拉取失败，本 turn 不带云代理工具", err);
       }
-      cachedPxTools = buildPxTools(opts.px, job.fromUid, granted);
+      // 切片 2：白名单接在拉取之后、建刀之前。过滤只看 serverId（agentToolAllow.ts 头注）。
+      // [] = 整池放行，所以 1b 之前建的 agent 行为不变
+      cachedPxTools = buildPxTools(opts.px, job.fromUid, filterGrantedByAllow(granted, spec.tools));
 
       // 开场白早在 say() 那一刻就落盘了（#932 坑 ②），这里只是对它起 turn——
       // runTurn 会再 append 一条同样的 user_message，那句话就落两遍：模型读

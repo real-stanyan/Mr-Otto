@@ -24,6 +24,7 @@ import {
 import { createMembershipCache } from "./membershipCache.js";
 import { createFrameRateLimiter } from "./rateLimit.js";
 import { createCloudSession, type CloudSession, type AgentSpec } from "./sessionService.js";
+import { normalizeAgentTools } from "../../../src/shared/agentToolAllow.js";
 import type { PxCallDeps } from "./pxTools.js";
 import { createHostedProbe, createHostedRuntimeAdapter, withUsage } from "./hostedRoute.js";
 import { createDockerWorld, WORKDIR } from "../../../src/world/dockerWorld.js";
@@ -69,6 +70,7 @@ const DEFAULT_WORKSPACE_AGENT: AgentSpec = {
   description: "这个工作区的默认智能体",
   instructions: "",
   models: [],
+  tools: [],
 };
 
 /** 本地文件版 OrphansStore（sandbox.ts 的 opts.orphans 注入面）——落在
@@ -265,14 +267,15 @@ async function main(): Promise<void> {
   async function queryAgents(workspaceId: string): Promise<AgentSpec[]> {
     const { data, error } = await supabase
       .from("workspace_agents")
-      .select("agent_id,name,description,instructions,models")
+      .select("agent_id,name,description,instructions,models,tools")
       .eq("workspace_id", workspaceId)
       .order("created_at", { ascending: true });
     if (error) throw new Error(error.message);
     return (data ?? []).map(
-      (r: { agent_id: string; name: string; description: string; instructions: string; models: string[] }) => ({
+      (r: { agent_id: string; name: string; description: string; instructions: string; models: string[]; tools: unknown }) => ({
         agentId: r.agent_id, name: r.name, description: r.description, instructions: r.instructions,
         models: r.models ?? [],
+        tools: normalizeAgentTools(r.tools),
       })
     );
   }

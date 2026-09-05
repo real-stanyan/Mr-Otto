@@ -109,7 +109,7 @@ async function scenarioMainFlow(): Promise<void> {
     // sessionService.test.ts 的职责）——单只占位 agent，adapterFor 原样
     // 回落 fakeAdapter，与这个场景改动前的单 adapter 行为等价（#928 task-9）
     const smokeAgent: AgentSpec = {
-      agentId: "smoke", name: "smoke", description: "", instructions: "", models: [],
+      agentId: "smoke", name: "smoke", description: "", instructions: "", models: [], tools: [],
     };
 
     const fakeWorld: ExecutionWorld = {
