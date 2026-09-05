@@ -12,7 +12,7 @@
 import type { ModelAdapter } from "../../../src/model/adapter.js";
 import { createOpenAICompatibleAdapter, type ResolvedEndpoint } from "../../../src/model/openaiCompatible.js";
 import type { TokenUsage } from "../../../src/session/events.js";
-import { ON_BEHALF_HEADER, SESSION_HEADER, WORKSPACE_HEADER, parseBillingMe, type BillingMe } from "../../../src/shared/billing.js";
+import { AGENT_HEADER, ON_BEHALF_HEADER, SESSION_HEADER, WORKSPACE_HEADER, parseBillingMe, type BillingMe } from "../../../src/shared/billing.js";
 
 export interface HostedRouteDeps { edgeBase: string; runtimeSecret: string; fetchImpl?: typeof fetch; now?: () => number }
 export interface HostedProbe { me(uid: string): Promise<BillingMe | null> }
@@ -62,6 +62,8 @@ export function decideRuntimeRoute(o: {
   sessionId: string;
   edgeBase: string;
   runtimeSecret: string;
+  /** 这一 turn 是哪只工作区 agent（#946）。带上就落 usage_event.agent_id；桌面直连没有这一格 */
+  agentId?: string;
 }): RuntimeRoute {
   const me = o.me;
   if (me && me.status === "active" && me.plan && me.models.length > 0) {
@@ -78,6 +80,9 @@ export function decideRuntimeRoute(o: {
           [ON_BEHALF_HEADER]: o.ownerUid,
           [WORKSPACE_HEADER]: o.workspaceId,
           [SESSION_HEADER]: o.sessionId,
+          // exactOptionalPropertyTypes 不许把 undefined 塞进 headers；只有非空
+          // agentId 才落这一格（同 sessionService.ts:228 的既有纪律）
+          ...(o.agentId ? { [AGENT_HEADER]: o.agentId } : {}),
         },
       },
     };
@@ -104,6 +109,8 @@ export interface HostedRuntimeAdapterDeps {
   ownerUid: string;
   workspaceId: string;
   sessionId: string;
+  /** 这一台 adapter 服务哪只工作区 agent（#946）；桌面直连没有这一格 */
+  agentId?: string;
 }
 
 /** daemon.ts 的 adapterFor 装配点：把 decideRuntimeRoute 包成一个 ModelAdapter
@@ -130,6 +137,8 @@ export function createHostedRuntimeAdapter(deps: HostedRuntimeAdapterDeps): Mode
       sessionId: deps.sessionId,
       edgeBase: deps.edgeBase,
       runtimeSecret: deps.runtimeSecret,
+      // exactOptionalPropertyTypes：只有非空 agentId 才透传
+      ...(deps.agentId ? { agentId: deps.agentId } : {}),
     });
     lastModel = route.kind === "blocked" ? "(无可用模型)" : route.model;
     return route;

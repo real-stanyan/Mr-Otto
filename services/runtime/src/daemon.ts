@@ -230,7 +230,8 @@ async function main(): Promise<void> {
       **每只 agent 一个 adapter**（#928 task-11）：多出来的 `agent` 参数只决定 cfg() 里
       选哪个型号——它白名单的第一个就是默认，空白名单落回工作区那份（ADR-0202 的既有
       路径原样不变），**不做 env 兜底**，理由同上：兜底就是"忘了配的工作区默默烧维护者
-      的钱"。扣费对象不受影响，仍然是 ownerUid（本函数的入参，ADR-0217），不随 agent 变 */
+      的钱"。扣费对象不受影响，仍然是 ownerUid（本函数的入参，ADR-0217），不随 agent 变。
+      `agentId` 只进请求头落账（#946，供 edge 记 usage_event.agent_id），不影响扣谁 */
   function adapterFor(workspaceId: string, sessionId: string, ownerUid: string, agent: AgentSpec): ModelAdapter {
     return createHostedRuntimeAdapter({
       edgeBase: config.edgeBase,
@@ -246,6 +247,7 @@ async function main(): Promise<void> {
       ownerUid,
       workspaceId,
       sessionId,
+      agentId: agent.agentId,
     });
   }
 

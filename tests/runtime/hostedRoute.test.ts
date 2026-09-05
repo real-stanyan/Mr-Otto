@@ -6,7 +6,7 @@ import {
   withUsage,
   type HostedProbe,
 } from "../../services/runtime/src/hostedRoute.js";
-import { ON_BEHALF_HEADER, SESSION_HEADER, WORKSPACE_HEADER, type BillingMe } from "../../src/shared/billing.js";
+import { AGENT_HEADER, ON_BEHALF_HEADER, SESSION_HEADER, WORKSPACE_HEADER, type BillingMe } from "../../src/shared/billing.js";
 import type { TokenUsage } from "../../src/session/events.js";
 
 const me: BillingMe = { plan: "pro", status: "active", plans: [], windows: null, addon: { remainingMicro: 0, expiresAt: null }, periodEnd: null, models: ["deepseek-v4-flash", "glm-5.3"] };
@@ -35,6 +35,12 @@ describe("decideRuntimeRoute", () => {
     const r = decideRuntimeRoute({ me: null, requestedModel: null, workspace: null, ...base });
     expect(r.kind === "blocked" && r.reason).toMatch(/订阅/);
     expect(r.kind === "blocked" && r.reason).toMatch(/key/);
+  });
+  it("给了 agentId → hosted 端点多带 x-otto-agent；不给不带（桌面直连的形状）", () => {
+    const withAgent = decideRuntimeRoute({ me, requestedModel: null, workspace: null, ...base, agentId: "a_ops" });
+    expect(withAgent.kind === "hosted" && withAgent.endpoint.headers).toMatchObject({ [AGENT_HEADER]: "a_ops" });
+    const without = decideRuntimeRoute({ me, requestedModel: null, workspace: null, ...base });
+    expect(without.kind === "hosted" && AGENT_HEADER in (without.endpoint.headers ?? {})).toBe(false);
   });
 });
 
