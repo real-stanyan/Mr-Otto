@@ -26,7 +26,7 @@ import { createFrameRateLimiter } from "./rateLimit.js";
 import { createCloudSession, type CloudSession, type AgentSpec } from "./sessionService.js";
 import { normalizeAgentTools } from "../../../src/shared/agentToolAllow.js";
 import type { PxCallDeps } from "./pxTools.js";
-import { createHostedProbe, createHostedRuntimeAdapter, withUsage } from "./hostedRoute.js";
+import { createHostedProbe, createHostedRuntimeAdapter, probeModelRoute, withUsage } from "./hostedRoute.js";
 import { createDockerWorld, WORKDIR } from "../../../src/world/dockerWorld.js";
 import type { ModelAdapter } from "../../../src/model/adapter.js";
 import { EventStore } from "../../../src/session/store.js";
@@ -676,6 +676,25 @@ async function main(): Promise<void> {
       const m = workspaceConfigStore.load(workspaceId)?.model;
       if (!m) return null;
       return { baseUrl: m.baseUrl, modelId: m.modelId, hasKey: m.apiKey !== "" };
+    },
+    // issue #945：与 turn 同一份 decideRuntimeRoute。探不到（edge 抖、ownerOf 查不到）
+    // 回 null 而不是 blocked——「拿不到」≠「起不了」
+    modelRoute: async (workspaceId) => {
+      try {
+        return await probeModelRoute({
+          probe: hostedProbe,
+          cfg: () => workspaceConfigStore.load(workspaceId)?.model ?? null,
+          ownerUid: await ownerOf(workspaceId),
+          workspaceId,
+          edgeBase: config.edgeBase,
+          runtimeSecret: config.runtimeSecret,
+        });
+      } catch (err) {
+        console.warn(
+          `[otto-runtime] modelRoute 探测失败（workspaceId=${workspaceId}）：${err instanceof Error ? err.message : String(err)}`
+        );
+        return null;
+      }
     },
     send: globalSend,
     dropCid,

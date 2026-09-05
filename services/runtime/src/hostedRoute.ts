@@ -12,6 +12,7 @@
 import type { ModelAdapter } from "../../../src/model/adapter.js";
 import { createOpenAICompatibleAdapter, type ResolvedEndpoint } from "../../../src/model/openaiCompatible.js";
 import type { TokenUsage } from "../../../src/session/events.js";
+import type { CsModelRoute } from "../../../src/shared/remote/cloudSession.js";
 import { AGENT_HEADER, ON_BEHALF_HEADER, SESSION_HEADER, WORKSPACE_HEADER, parseBillingMe, type BillingMe } from "../../../src/shared/billing.js";
 
 export interface HostedRouteDeps { edgeBase: string; runtimeSecret: string; fetchImpl?: typeof fetch; now?: () => number }
@@ -96,6 +97,33 @@ export function decideRuntimeRoute(o: {
       "这个 turn 没有可用的模型：工作区所有者没有活跃订阅，工作区也没配自己的 API key。" +
       "两条路：所有者订阅 Mr Otto（桌面端设置 → 账号 → 订阅），或在工作区的「仓库/模型」里填一把 key。",
   };
+}
+
+/** welcome/config_result 那一格 `modelRoute`（issue #945）：与 turn 真正走的那条路
+    同一份 decideRuntimeRoute，sessionId 留空——这里只要 kind 与型号，不发请求。
+    两处各写一份判定迟早分家，而分家的症状恰恰是这个 issue：界面说「未配模型」，
+    turn 却跑得好好的。 */
+export async function probeModelRoute(o: {
+  probe: HostedProbe;
+  cfg: () => { baseUrl: string; apiKey: string; modelId: string } | null;
+  ownerUid: string;
+  workspaceId: string;
+  edgeBase: string;
+  runtimeSecret: string;
+}): Promise<CsModelRoute> {
+  const ws = o.cfg();
+  const route = decideRuntimeRoute({
+    me: await o.probe.me(o.ownerUid),
+    requestedModel: ws?.modelId ?? null,
+    workspace: ws,
+    ownerUid: o.ownerUid,
+    workspaceId: o.workspaceId,
+    sessionId: "",
+    edgeBase: o.edgeBase,
+    runtimeSecret: o.runtimeSecret,
+  });
+  if (route.kind === "hosted") return { kind: "hosted", model: route.model };
+  return { kind: route.kind };
 }
 
 export interface HostedRuntimeAdapterDeps {

@@ -24,6 +24,7 @@ import {
   validateRepoUrl,
   type CsDeniedCode,
   type CsDown,
+  type CsModelRoute,
   type CsModelState,
   type CsRepoState,
 } from "../../../src/shared/remote/cloudSession.js";
@@ -136,6 +137,9 @@ export interface FrameHandlerDeps {
   /** 这个工作区此刻的模型配置（issue #844）。同 repoState 的纪律：
       **实现必须保证不下发 key 本身**（只回 hasKey 布尔） */
   modelState: (workspaceId: string) => CsModelState | null;
+  /** 这个工作区此刻的 turn 会走哪条路（issue #945）。async：要问一次 edge 的订阅
+      快照（hostedProbe 有 60s 缓存）。回 null = 探不到，客户端按「不知道」画 */
+  modelRoute: (workspaceId: string) => Promise<CsModelRoute | null>;
   /** 三档令牌桶（issue #819）。**必需，不是可选**：过渡期烧的是维护者的
       模型 key，一个"忘了接线"的默认值等于把闸门悄悄拆了——这种东西不该
       靠记性，该靠编译错误。桶按 uid 分而不是按 cid：按 cid 分等于"多开
@@ -339,6 +343,7 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
           ownerUid,
           repo: deps.repoState(workspaceId),
           model: deps.modelState(workspaceId),
+          modelRoute: await deps.modelRoute(workspaceId),
         });
         return;
       }
@@ -401,6 +406,10 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
             deny(cid, "not_authorized");
             return;
           }
+          // fail 是同步闭包（下面四处早退各调一次），所以这一格先 await 出来。
+          // 失败 = 一个字都没存，路由自然还是配置变更前的那一份——正确的答案，
+          // 不是权宜之计（成功那条路在 saveConfig 之后重新探一次，见下）
+          const modelRouteBefore = await deps.modelRoute(workspaceId);
           const fail = (message: string): void => {
             deps.send(cid, {
               t: "config_result",
@@ -408,6 +417,7 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
               message,
               repo: deps.repoState(workspaceId),
               model: deps.modelState(workspaceId),
+              modelRoute: modelRouteBefore,
             });
           };
 
@@ -458,11 +468,14 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
             fail(`保存失败：${err instanceof Error ? err.message : String(err)}`);
             return;
           }
+          // 存完重新探一次（issue #945）：owner 刚填进去的那把 key 可能正好把
+          // 这个工作区从 blocked 挪到 workspace，回执带旧值等于让界面继续撒谎
           deps.send(cid, {
             t: "config_result",
             ok: true,
             repo: deps.repoState(workspaceId),
             model: deps.modelState(workspaceId),
+            modelRoute: await deps.modelRoute(workspaceId),
           });
           return;
         }

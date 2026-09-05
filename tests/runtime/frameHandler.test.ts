@@ -48,6 +48,8 @@ function makeDeps(config: {
   saveConfig?: FrameHandlerDeps["saveConfig"];
   repoState?: FrameHandlerDeps["repoState"];
   modelState?: FrameHandlerDeps["modelState"];
+  /** issue #945：默认「探不到」（null）——绝大多数用例不关心这一格 */
+  modelRoute?: FrameHandlerDeps["modelRoute"];
   dropCid?: FrameHandlerDeps["dropCid"];
   /** issue #819：默认全放行（绝大多数用例不关心限流）。要验闸门的用例
       传一个只对某几档说 false 的假货 */
@@ -69,6 +71,7 @@ function makeDeps(config: {
     saveConfig: config.saveConfig ?? (async () => {}),
     repoState: config.repoState ?? (() => null),
     modelState: config.modelState ?? (() => null),
+    modelRoute: config.modelRoute ?? (async () => null),
     rateLimit: config.rateLimit ?? { allow: () => true },
     send: (cid, msg) => sent.push({ cid, msg }),
     dropCid: config.dropCid ?? ((cid) => dropCidCalls.push(cid)),
@@ -136,6 +139,7 @@ describe("createFrameHandler", () => {
         ownerUid: "owner-uid",
         repo: null, // 没配仓库（issue #834：welcome 现在带这一格）
         model: null, // 没配模型（issue #844：同一条读路径上的第二格）
+        modelRoute: null, // 探不到（issue #945：假 deps 默认不探）
       },
     });
   });
@@ -178,8 +182,30 @@ describe("createFrameHandler", () => {
     // issue #834：存成功要回执，不再静默
     expect(sent.at(-1)).toEqual({
       cid: "cOwner",
-      msg: { t: "config_result", ok: true, repo: null, model: null },
+      msg: { t: "config_result", ok: true, repo: null, model: null, modelRoute: null },
     });
+  });
+
+  it("③e welcome 带 modelRoute——runtime 用 decideRuntimeRoute 算好下发，客户端不重算（#945）", async () => {
+    const { deps, sent } = makeDeps({ modelRoute: async () => ({ kind: "hosted", model: "glm-5" }) });
+    const handler = createFrameHandler(deps);
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    expect(sent[0]!.msg).toMatchObject({ t: "welcome", modelRoute: { kind: "hosted", model: "glm-5" } });
+  });
+
+  it("③f config_result 也带 modelRoute——改完模型那一刻路由可能就变了（#945）", async () => {
+    const { deps, sent } = makeDeps({
+      ownerOf: async () => "owner-uid",
+      modelRoute: async () => ({ kind: "workspace" }),
+    });
+    const handler = createFrameHandler(deps);
+    await handler.onSessionFrame("w1", "s1", "cOwner", hello(CS_PROTOCOL_VERSION, "jwt:owner-uid"));
+    sent.length = 0;
+    await handler.onSessionFrame(
+      "w1", "s1", "cOwner",
+      encodeCs({ t: "config", model: { baseUrl: "https://api.example.com/v1", modelId: "m", apiKey: "sk" } })
+    );
+    expect(sent.at(-1)!.msg).toMatchObject({ t: "config_result", ok: true, modelRoute: { kind: "workspace" } });
   });
 
   // ── issue #834：服务端自己校验 + 回执 ────────────────────────────────

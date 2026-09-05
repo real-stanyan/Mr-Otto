@@ -8,6 +8,7 @@ import { b64encode } from "../../../src/shared/remote/b64.js";
 
 describe("cs 帧协议", () => {
   it("协议版本", () => {
+    // 5 = issue #945 那次进位（welcome/config_result 多了 modelRoute 一格）。
     // 4 = issue #844 那次进位（welcome/config_result 多了 model 一格，
     //     config 帧多了 model 字段、repoUrl 变成可选）。
     // 3 = issue #819 那次（denied 多了 rate_limited 码）。
@@ -17,7 +18,7 @@ describe("cs 帧协议", () => {
     // 之后静默少一格状态。**加一个枚举值同理**：老客户端的
     // isValidCsDeniedCode 认不出 rate_limited，整帧被 decodeCsDown 判成
     // null 静默丢掉，create() 于是白等满超时才回一句"云端无响应"
-    expect(CS_PROTOCOL_VERSION).toBe(4);
+    expect(CS_PROTOCOL_VERSION).toBe(5);
   });
   it("房名生成", () => {
     expect(csCtlChannel()).toBe("cs-ctl");
@@ -212,8 +213,37 @@ describe("config 帧的两组字段（issue #844）", () => {
     const w = decodeCsDown(encodeCs({
       t: "welcome", v: CS_PROTOCOL_VERSION, sessionId: "s", lastSeq: 0,
       initiatorUid: null, ownerUid: "o", repo: null,
-      model: { baseUrl: "https://a.com/v1", modelId: "m", hasKey: true },
+      model: { baseUrl: "https://a.com/v1", modelId: "m", hasKey: true }, modelRoute: null,
     }));
     expect(w && w.t === "welcome" && w.model).toEqual({ baseUrl: "https://a.com/v1", modelId: "m", hasKey: true });
+  });
+
+  it("v5：welcome/config_result 的 modelRoute 一格能解回来，缺席或形状不对降级成 null", () => {
+    expect(CS_PROTOCOL_VERSION).toBe(5);
+    const base = {
+      t: "welcome" as const, v: CS_PROTOCOL_VERSION, sessionId: "s", lastSeq: 0,
+      initiatorUid: null, ownerUid: "o", repo: null, model: null,
+    };
+    const hosted = decodeCsDown(encodeCs({ ...base, modelRoute: { kind: "hosted", model: "deepseek-v4-flash" } }));
+    expect(hosted && hosted.t === "welcome" && hosted.modelRoute).toEqual({ kind: "hosted", model: "deepseek-v4-flash" });
+    const blocked = decodeCsDown(encodeCs({ ...base, modelRoute: { kind: "blocked" } }));
+    expect(blocked && blocked.t === "welcome" && blocked.modelRoute).toEqual({ kind: "blocked" });
+
+    // 缺席 → null 而不是整帧判无效：解码这一侧永远向后兼容（硬规则），
+    // 「这一格没带」和「探不到」是同一件事——都不许下结论
+    const absent = decodeCsDown(b64encode(new TextEncoder().encode(JSON.stringify(base))));
+    expect(absent && absent.t === "welcome" && absent.modelRoute).toBeNull();
+
+    // hosted 却没带 model = 形状不对，同样降级成 null（整帧照收）
+    const bad = decodeCsDown(
+      b64encode(new TextEncoder().encode(JSON.stringify({ ...base, modelRoute: { kind: "hosted" } })))
+    );
+    expect(bad && bad.t === "welcome" && bad.modelRoute).toBeNull();
+
+    // config_result 是同一格的第二个载体（config 存完要刷新这条路由）
+    const cr = decodeCsDown(
+      encodeCs({ t: "config_result", ok: true, repo: null, model: null, modelRoute: { kind: "workspace" } })
+    );
+    expect(cr && cr.t === "config_result" && cr.modelRoute).toEqual({ kind: "workspace" });
   });
 });

@@ -18,7 +18,7 @@ import type { ProviderId } from "./providerCatalog.js";
 import type { ModelLane } from "./modelLane.js";
 import type { UsageSnapshot } from "./usageStats.js";
 import type { IslandUsageRow } from "./islandUsage.js";
-import type { CsModelState, CsRepoState } from "./remote/cloudSession.js";
+import type { CsModelRoute, CsModelState, CsRepoState } from "./remote/cloudSession.js";
 import type { TerminalInfo } from "./terminal.js";
 import type { BrowserTabInfo, BrowserBounds, BrowserPickedElement } from "./browser.js";
 import type { SimButton, SimFrame, SimState } from "./simulator.js";
@@ -467,6 +467,10 @@ export interface CloudSessionStatus {
   /** 这个工作区当前的模型配置（issue #844）。null = 还没配——能建能聊，
       但 @Agent 起不了 turn。**不含 key 本身**，只有 hasKey 布尔 */
   model: CsModelState | null;
+  /** 这个工作区此刻的 turn 会走哪条路（issue #945）。runtime 用 turn 同一份
+      decideRuntimeRoute 算好、welcome/config_result 带下来的，渲染层照画不重算。
+      null = 探不到——「拿不到」≠「起不了」，别拿它当 blocked 画 */
+  modelRoute: CsModelRoute | null;
   /** runtime 说的一句话，**给这条连接的人看**（issue #819）：限速、审批
       失效、事件过大被跳过……这些原来只进主进程日志，用户那边是彻底静默的
       （最难查的失败形态）。一次性——只有真发生时那一次推送带它，其余推送

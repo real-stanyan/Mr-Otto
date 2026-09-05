@@ -39,7 +39,7 @@ import type {
   McpPromptInfo,
 } from "../../shared/shellBridge.js";
 import type { CatalogEntry } from "../../shared/mcpCatalog.js";
-import type { CsModelState, CsRepoState } from "../../shared/remote/cloudSession.js";
+import type { CsModelRoute, CsModelState, CsRepoState } from "../../shared/remote/cloudSession.js";
 import {
   initialMcpPromptValues,
   isCurrentMcpPromptSubmission,
@@ -185,6 +185,9 @@ export interface CloudSessionState {
   /** 这个工作区当前的模型配置（issue #844）。null = 还没配，@Agent 起不了
       turn。**没有 key 本身**，只有 hasKey */
   model: CsModelState | null;
+  /** 这个工作区此刻的 turn 会走哪条路（issue #945）。**不是 `model` 的投影**：
+      所有者订阅着的时候 `model` 为 null 也照样跑得动。null = 探不到 */
+  modelRoute: CsModelRoute | null;
   events: SessionEvent[];
 }
 
@@ -2240,6 +2243,7 @@ export const useChat = create<ChatState>((set, get) => ({
         initiatorUid: null, ownerUid: "", selfUid: get().account.id,
         repo: null, // welcome 一到就补真值
         model: null, // 同上（issue #844）
+        modelRoute: null, // 同上（issue #945）
         events: [],
       },
       workspaceGroupsError: null,
@@ -2583,6 +2587,7 @@ export const useChat = create<ChatState>((set, get) => ({
             selfUid: status.selfUid,
             repo: status.repo,
             model: status.model,
+            modelRoute: status.modelRoute,
             // exactOptionalPropertyTypes：deniedCode 是 string|undefined，
             // 目标字段是可选的 string——只在真有值时才落这个键，不能把
             // undefined 原样赋进去（那等于显式声明"这个键存在但是 undefined"，

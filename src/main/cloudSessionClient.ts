@@ -76,6 +76,7 @@ import {
   validateModelConfig,
   validateRepoUrl,
   type CsDeniedCode,
+  type CsModelRoute,
   type CsModelState,
   type CsRepoState,
   type CsUp,
@@ -244,6 +245,9 @@ interface ActiveSession {
   /** welcome 给的模型配置（issue #844）。null = 这个工作区还没配模型——
       能建能聊，但 @Agent 起不了 turn。key 本身从不下行 */
   model: CsModelState | null;
+  /** welcome 给的路由判定（issue #945），config 回执后刷新。null = runtime 探不到
+      （edge 抖了 / 还没 welcome）——「拿不到」≠「起不了」，这一层原样透传不加工 */
+  modelRoute: CsModelRoute | null;
   /** 还没等到回执的那次 config（issue #834）。协议原来没有回执，
       "已保存"只证明本地 encode 没抛异常——叠上 #829（transport.send 三条
       静默丢帧分支）就是"点了保存、看到已保存、其实什么都没发出去"。
@@ -273,6 +277,7 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
       selfUid: deps.selfUid() ?? "",
       repo: session.repo,
       model: session.model,
+      modelRoute: session.modelRoute,
       ...(notice === undefined ? {} : { notice }),
     });
   }
@@ -390,6 +395,9 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
         session.ownerUid = msg.ownerUid;
         session.repo = msg.repo; // issue #834：任何人一 join 就看得见仓库状态
         session.model = msg.model; // issue #844：同理，模型配没配也是一 join 就看得见
+        // issue #945：runtime 用 turn 同一份 decideRuntimeRoute 算好的路由。
+        // 桌面是显示器不是执行者——这一格照收不重算
+        session.modelRoute = msg.modelRoute;
         // 仍是 connecting，但占位的 initiatorUid/ownerUid 已经补上真值——
         // 渲染层立刻能显示"谁发起的/谁是 owner"，不用等 backlog 跑完
         pushStatus(session);
@@ -405,6 +413,7 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
         // "那你现在配的还是这个"
         session.repo = msg.repo;
         session.model = msg.model;
+        session.modelRoute = msg.modelRoute; // issue #945：改完 key/型号路由可能就变了
         pushStatus(session);
         settleConfig(
           session,
@@ -605,6 +614,7 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
       lastEventTs: null,
       repo: null,
       model: null,
+      modelRoute: null,
       pendingConfig: null,
     };
     active = session;
