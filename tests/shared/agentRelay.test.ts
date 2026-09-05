@@ -47,8 +47,10 @@ describe("agentRelay 纯逻辑（#950，spec §8）", () => {
     expect(decideRelay({ chain: chain.slice(0, 2), fromAgentId: "ops", toAgentId: "ads", openingDepth: 2, maxDepth: 10 })).toMatchObject({ kind: "relay", loop: null });
   });
 
-  it("文案：开场白说明谁 @ 了你、第几棒；护栏说打转；到顶说停在这儿并带最后的话", () => {
+  it("文案：开场白第三人称说明谁 @ 了谁、第几棒（群里每只 agent 都读得到，「你」是歧义的）；护栏说打转；到顶说停在这儿并带最后的话", () => {
     expect(relayOpeningText("运营", "广告", 2)).toContain("「运营」");
+    expect(relayOpeningText("运营", "广告", 2)).toContain("「广告」"); // 接收方也点名说清楚,不能只留一个"你"
+    expect(relayOpeningText("运营", "广告", 2)).toContain("广告："); // 聊天惯例的前缀,重新对上被叫到的那位
     expect(relayOpeningText("运营", "广告", 2)).toContain("第 2 棒");
     expect(relayNudgeText("运营", "广告", { period: 2, repeats: 2 })).toContain("打转");
     const cap = relayCapText("运营", "广告", 7, 6, "还差报表");

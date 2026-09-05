@@ -61,9 +61,13 @@ export function decideRelay(args: {
   return { kind: "relay", depth, loop: detectToolLoop(history, RELAY_GUARD) };
 }
 
-/** 接力开场白（模型可见）：短、不重复 A 的原话——B 的上下文里本来就有 A 的 assistant_message */
+/** 接力开场白（模型可见）：短、不重复 A 的原话——B 的上下文里本来就有 A 的 assistant_message。
+    **第三人称**（复审 Minor ⑧）：这条 user_message 在 agentView 里对每只 agent 都是 keep
+    （spec §4.6 / ADR-0219），群里所有 agent 都读得到同一条——"你" 在这种场合是歧义的，读的人
+    第一反应会以为在叫自己。写成「「A」@ 了「B」」把接收方点名说清楚，再用「B：」这个聊天惯例
+    的前缀重新对上被叫到的那位，"接着处理…" 里的"你"才有了唯一的先行词 */
 export function relayOpeningText(fromName: string, toName: string, depth: number): string {
-  return `[系统] 「${fromName}」在上一条发言里 @ 了你（${toName}，接力第 ${depth} 棒）。接着处理它交给你的事；做完了在回复里说结论，需要谁再 @ 谁。`;
+  return `[系统] 「${fromName}」在上一条发言里 @ 了「${toName}」（接力第 ${depth} 棒）。${toName}：接着处理交给你的事；做完了在回复里说结论，需要谁再 @ 谁。`;
 }
 
 export function relayNudgeText(fromName: string, toName: string, loop: ToolLoopDetection): string {
