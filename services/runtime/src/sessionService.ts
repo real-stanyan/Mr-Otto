@@ -43,6 +43,17 @@
 // logChat 因此只剩两个调用方："没点名"，和终审补的"名单里查无此 agent"那条
 // 系统提示（静默丢掉未知 id = 一句 @ 长得跟闲聊一模一样，发言人白等）。
 //
+// **say() 收下即返回，不等 turn 跑完**（issue #937，ADR-0220 决定 1 的补注）：
+// 原来 say() 在拿到 start_turn 后 `await drain()`，要等整条队列排空才 resolve。
+// 而 frameHandler 把同一个 cid 的帧串成一条链（#915），于是发起人自己的下一帧
+// 排在这个 await 后面——包括他要点的那个 approve，而这条 turn 正等着那个审批：
+// 死锁到 expiresTs，客户端看到的是「审批未生效：请求已失效」；turn 期间他发的
+// 下一句话同样进不了日志（正是坑 ② 想保的东西）。改成后台 startDrain()，say()
+// 在开场白落盘 + 入队后就 resolve——「收下了 = 记下了」坑 ② 之后就已经成立，
+// 落盘发生在 enqueue 之前。代价是"turn 跑完了"没有了等待点，补一个 settled()：
+// **它是给测试与冒烟脚本用的，不是协议的一部分**，生产路径上没有任何调用方
+// 消费 say() 的完成（frameHandler 那行丢掉返回值）。
+//
 // engine 有没有被改：1a 改了两处、1b 加了一个入口，都是**追加**，不改既有语义
 // （详见 task-9-report.md 与 #932 的 task-2）——
 //   1. src/loop/approvalGate.ts 的 ApprovalOutcome 加了可选 decidedBy 字段；
@@ -133,10 +144,19 @@ export interface CloudSessionOpts {
 }
 
 export interface CloudSession {
-  /** 一条已验籍成员发言。落盘 + 按协调器决定是否起 turn；起了则 turn 结束后 resolve。
+  /** 一条已验籍成员发言。落盘 + 按协调器决定是否起 turn，**开场白落盘并入队
+      就 resolve，不等 turn 跑完**（issue #937）——「收下了 = 记下了」在
+      #932 坑 ② 之后就已经成立，而等排空会把发起人自己的下一帧（尤其是
+      approve）堵在 frameHandler 的 cid 串行链后面，死锁到审批过期。
       mentions：客户端算好的「这句话点了谁」（新版桌面给；手机端/旧桌面缺席时
       服务端自己用同一份 parseMentions 从 text 里认，见 resolveTargets） */
   say(fromUid: string, label: string, text: string, mention: boolean, mentions?: string[]): Promise<void>;
+  /** 排空跑完了吗——**给测试与冒烟脚本等待用的，不是协议的一部分**
+      （issue #937）：say() 不再等 turn，可断言「turn 跑完之后」的地方需要一个
+      等待点。没有排空在跑时立刻 resolve。一条排空跑完前可能又排上新的 job
+      （turnCoordinator 的 running 只在队列真空了才落），所以是 while 不是
+      一次 await */
+  settled(): Promise<void>;
   approve(callId: string, byUid: string, byLabel: string, decision: "approved" | "denied"): boolean;
   backlog(afterSeq: number): SessionEvent[];
   isRunning(): boolean;
@@ -414,6 +434,30 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     }
   }
 
+  /** 此刻在后台跑的那条排空（没有就是 null）。**只有 settled() 读它**——生产
+      路径上没有任何人等排空结束（issue #937：等就是死锁），它存在的唯一理由是
+      给测试与冒烟脚本一个「turn 跑完了」的等待点 */
+  let inflight: Promise<void> | null = null;
+
+  /** 后台起一条排空。**故意不做「已经有一条就跳过」的去重**：start_turn 只在
+      协调器 idle 时才回（turnCoordinator 的 running 在 nextJob 取空那一刻就落，
+      而 inflight 要等到 .finally 那个微任务才清），两者之间有一个窗口——在那个
+      窗口里跳过，排上的 job 就再也没人取，这条会话永久停在「排队中」。
+      重叠是无害的：旧那条此刻已经走出 while 循环，不会再 nextJob()。
+      外层 catch 不是摆设：这是 fire-and-forget，没有 catch 的话 drain 万一
+      在循环之外抛错就是一条 unhandledRejection（node 默认整个进程退出） */
+  function startDrain(): void {
+    const p = drain()
+      .catch((err) => {
+        console.error(`[otto-runtime] 排空循环意外抛错（session=${sessionId}）`, err);
+      })
+      .finally(() => {
+        // 只清自己那条：清的时候可能已经有新的一条接上了（见上面那个窗口）
+        if (inflight === p) inflight = null;
+      });
+    inflight = p;
+  }
+
   const session: CloudSession = {
     async say(fromUid, label, text, mention, mentions) {
       const roster = await opts.agents();
@@ -469,7 +513,12 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // 得它）——1a 那套"补一条 chat_message 免得凭空丢"的特例连同它的三种
       // decisions 组合判断一起没了：落盘不再取决于跑不跑
       if (!decisions.includes("start_turn")) return;
-      await drain();
+      // **不等排空**（issue #937）：frameHandler 按 cid 把同一条连接的帧串成一条
+      // 链（#915），等在这里意味着发起人自己的下一帧排在这个 await 后面——包括
+      // 他要点的那个 approve，而这条 turn 正等着那个审批。死锁到 expiresTs，
+      // 客户端看到的是「审批未生效：请求已失效」。turn 期间他发的下一句话同样
+      // 进不了日志（正是 #932 坑 ② 想保的东西）。等待点改由 settled() 提供
+      startDrain();
     },
 
     approve(callId, byUid, byLabel, decision) {
@@ -482,6 +531,12 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
 
     isRunning() {
       return coordinator.isRunning();
+    },
+
+    async settled() {
+      // while 不是 if：一条排空在 await 里的时候可能又有人发言排上新 job，
+      // 那一条跑完后 inflight 会指向新的一条
+      while (inflight) await inflight;
     },
 
     lastSeq() {
@@ -559,9 +614,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
           enqueued.map((t) => `${t.agentId}@${t.seq}(${t.state})`).join(" ")
       );
     }
-    // void：装配是同步的，补跑在后台自己跑完（drain 第一个 await opts.agents()
-    // 就让出了事件循环，daemon 那句 `let session!` 的赋值早于任何回调回来）
-    if (decisions.includes("start_turn")) void drain();
+    // 后台跑：装配是同步的，补跑在后台自己跑完（drain 第一个 await opts.agents()
+    // 就让出了事件循环，daemon 那句 `let session!` 的赋值早于任何回调回来）。
+    // 走 startDrain 与 say() 同一条路，settled() 才等得到它（issue #937）
+    if (decisions.includes("start_turn")) startDrain();
   }
 
   return session;
