@@ -116,4 +116,15 @@ describe("buildPxTools", () => {
 
     await expect(tools[0]!.run({}, fakeWorld)).rejects.toThrow("no_grant");
   });
+
+  it("第四参 requiresApproval:true —— 接力棒上的这一刀要点火的人批一次（#957 B-C3）；缺省仍是 false", () => {
+    const granted: GrantedPxServer[] = [
+      { hostUid: "hostA1234", serverId: "sq", toolDefs: [{ name: "t1", description: "d", inputSchema: {} }, { name: "t2", description: "d", inputSchema: {} }] },
+    ];
+    const gated = buildPxTools(baseDeps(fetch), "fromU", granted, { requiresApproval: true });
+    expect(gated).toHaveLength(2);
+    expect(gated.every((t) => t.requiresApproval === true)).toBe(true);
+    // 缺省（人自己 @ 起的那一轮）不变：白名单内没有逐次审批（ADR-0151）
+    expect(buildPxTools(baseDeps(fetch), "fromU", granted).every((t) => t.requiresApproval === false)).toBe(true);
+  });
 });

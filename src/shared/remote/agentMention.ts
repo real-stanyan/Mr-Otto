@@ -54,3 +54,26 @@ export function parseMentions(text: string, names: readonly MentionCandidate[]):
   }
   return out;
 }
+
+/** @ 后紧跟到空白/行尾的原始 token，**不按名单解析**（#957 F4）：接力 depth 记账
+    要看"正文里写了哪个 @token"，不该先等一次 roster resolve 才知道点没点名——
+    调用方自己再拿 token 去过 parseMentions/名单二次核验。
+    边界判据抄 isBoundary 的口径（"@ 前面必须是行首或非构词字符"，同一份注释里
+    说过的邮箱地址那条坑：a@b.c 的 'a' 是 \p{L}，不算边界，因此不产生 token）。
+    与 parseMentions 不同的是**切词**：这里贪婪吃到下一个空白为止，天然会把
+    "@运营@广告" 整段吞成一个 token（parseMentions 靠"最长匹配恰好吃完名字"
+    才能把第二个 @ 认成新的起点，这里没有名字可比对，无从判断在哪断开）——
+    起点判据一致，不代表切词结果一致。 */
+export function mentionTokens(text: string): string[] {
+  const out: string[] = [];
+  let lastTokenEnd = 0;
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] !== "@" || !isBoundary(text, i, lastTokenEnd)) continue;
+    let j = i + 1;
+    while (j < text.length && !/\s/.test(text[j]!)) j++;
+    if (j > i + 1) out.push(text.slice(i + 1, j));
+    lastTokenEnd = j;
+    i = j - 1;
+  }
+  return out;
+}

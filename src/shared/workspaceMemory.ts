@@ -39,6 +39,16 @@ export function withWriterPrefix(writer: string, content: string): string {
   return content.startsWith(prefix) ? content : `${prefix}${content}`;
 }
 
+/** 共享档条目单行化（B-I3，#957）：一条共享条目只带一次写入者前缀——换行是伪造第二行
+    `[名字] ...` 签名的唯一手段（applyEntryOps 只拦 `\n§\n`/独立一行 `§` 这两种分隔符，
+    不拦普通换行）。折行必须在 withWriterPrefix 之前跑：折完再拼前缀，前缀天然只出现
+    一次；调用方在own 档（每只 agent 自己的私档，没有「谁写的」这个问题）不折。
+    `[\r\n]+\s*` 一次性吃掉换行本身与它带出来的整段前导空白，折成单个空格——避免
+    "a\n\n  b" 这种多重换行 + 缩进折出 "a   b" 式的多个空格 */
+export function collapseSharedEntry(content: string): string {
+  return content.replace(/[\r\n]+\s*/g, " ").trim();
+}
+
 /** 读改写互斥的锁键（配 memoryStore.withMemoryFileLock）：同一个 daemon 进程里，同一工作区的
     两条云会话可能同时写共享档——按 (workspaceId, agentId) 分格，不同工作区互不串 */
 export function workspaceMemoryLockKey(workspaceId: string, agentId: string): string {

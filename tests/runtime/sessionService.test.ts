@@ -1,4 +1,4 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { join } from "node:path";
 import { createCloudSession, type CloudSession } from "../../services/runtime/src/sessionService.js";
 import { createInMemoryWorkspaceMemory } from "../../services/runtime/src/workspaceMemory.js";
@@ -55,6 +55,8 @@ describe("createCloudSession", () => {
       hostUids: async () => [],
       onEvent: (e) => events.push(e),
       onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true,
+      contextWindowOf: () => undefined,
       relayMaxDepth: async () => 6,
     });
 
@@ -117,6 +119,8 @@ describe("createCloudSession", () => {
       hostUids: async () => [],
       onEvent: (e) => events.push(e),
       onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true,
+      contextWindowOf: () => undefined,
       relayMaxDepth: async () => 6,
     });
 
@@ -170,6 +174,8 @@ describe("createCloudSession", () => {
       hostUids: async () => [],
       onEvent,
       onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true,
+      contextWindowOf: () => undefined,
       relayMaxDepth: async () => 6,
     });
 
@@ -190,7 +196,7 @@ describe("createCloudSession", () => {
     const events: SessionEvent[] = [];
     let session!: CloudSession;
     let round = 0;
-    const approveResults: boolean[] = [];
+    const approveResults: ReturnType<CloudSession["approve"]>[] = [];
 
     const adapter: ModelAdapter = {
       model: "fake-model",
@@ -231,13 +237,15 @@ describe("createCloudSession", () => {
       hostUids: async () => [],
       onEvent,
       onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true,
+      contextWindowOf: () => undefined,
       relayMaxDepth: async () => 6,
     });
 
     await session.say("u1", "alice", "帮我跑个命令", true);
     await session.settled(); // #937：say() 不再等 turn 跑完，断言前显式等排空
 
-    expect(approveResults).toEqual([true, false]);
+    expect(approveResults).toEqual(["ok", "no_pending"]);
     const decision = events.find((e) => e.type === "approval_decision");
     expect(decision).toMatchObject({ decision: "approved", decidedBy: { uid: "owner", label: "Owner-first" } });
     store.close();
@@ -277,6 +285,8 @@ describe("createCloudSession", () => {
       hostUids: async () => [],
       onEvent: (e) => events.push(e),
       onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true,
+      contextWindowOf: () => undefined,
       relayMaxDepth: async () => 6,
     });
 
@@ -350,6 +360,8 @@ describe("createCloudSession", () => {
       agents: async () => roster,
       adapterFor: (a) => adapterFor(a.agentId),
       px, hostUids: async () => [], onEvent: () => {}, onUsage: () => {},
+      isMember: async () => true,
+      contextWindowOf: () => undefined,
       memory: createInMemoryWorkspaceMemory(), relayMaxDepth: async () => 6,
       agentWriter: createInMemoryAgentWriter(),
     });
@@ -389,6 +401,8 @@ describe("createCloudSession", () => {
       agents: async () => [admin, ...writer.specs("w1")],
       adapterFor: () => adapter,
       px, hostUids: async () => [], onEvent, onUsage: () => {},
+      isMember: async () => true,
+      contextWindowOf: () => undefined,
       memory: createInMemoryWorkspaceMemory(), relayMaxDepth: async () => 6,
       agentWriter: writer,
     });
@@ -430,6 +444,8 @@ describe("CloudSession.archive（issue #822）", () => {
       hostUids: async () => [],
       onEvent: (e) => events.push(e),
       onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true,
+      contextWindowOf: () => undefined,
       relayMaxDepth: async () => 6,
     });
 
@@ -499,6 +515,8 @@ describe("多智能体云会话（#928 切片 1a）", () => {
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: `${a.name}答` }; } }),
       onEvent: (e) => events.push(e), onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true,
+      contextWindowOf: () => undefined,
       relayMaxDepth: async () => 6,
     });
 
@@ -520,6 +538,8 @@ describe("多智能体云会话（#928 切片 1a）", () => {
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: `${a.name}答` }; } }),
       onEvent: () => {}, onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true,
+      contextWindowOf: () => undefined,
       relayMaxDepth: async () => 6,
     });
 
@@ -544,6 +564,8 @@ describe("多智能体云会话（#928 切片 1a）", () => {
         },
       }),
       onEvent: () => {}, onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true,
+      contextWindowOf: () => undefined,
       relayMaxDepth: async () => 6,
     });
 
@@ -570,6 +592,8 @@ describe("多智能体云会话（#928 切片 1a）", () => {
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: "答" }; } }),
       onEvent: () => {}, onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true,
+      contextWindowOf: () => undefined,
       relayMaxDepth: async () => 6,
     });
     // 手机端只发得出布尔那一版
@@ -587,6 +611,8 @@ describe("多智能体云会话（#928 切片 1a）", () => {
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: "答" }; } }),
       onEvent: () => {}, onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true,
+      contextWindowOf: () => undefined,
       relayMaxDepth: async () => 6,
     });
     await session.say("u1", "alice", "在吗", true);
@@ -623,6 +649,8 @@ describe("多智能体云会话（#928 切片 1a）", () => {
       },
       onEvent,
       onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true,
+      contextWindowOf: () => undefined,
       relayMaxDepth: async () => 6,
     });
 
@@ -655,6 +683,8 @@ describe("多智能体云会话（#928 切片 1a）", () => {
         },
       }),
       onEvent: (e) => events.push(e), onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true,
+      contextWindowOf: () => undefined,
       relayMaxDepth: async () => 6,
     });
 
@@ -725,6 +755,8 @@ describe("多智能体云会话（#928 切片 1a）", () => {
         },
       }),
       onEvent: (e) => events.push(e), onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true,
+      contextWindowOf: () => undefined,
       relayMaxDepth: async () => 6,
     });
 
@@ -781,6 +813,8 @@ describe("多智能体云会话（#928 切片 1a）", () => {
       agents: async () => [SOLO_AGENT],
       adapterFor: () => ({ model: "m-solo", async chat() { return { content: "答" }; } }),
       onEvent: (e) => events.push(e), onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true,
+      contextWindowOf: () => undefined,
       relayMaxDepth: async () => 6,
     });
 
@@ -807,6 +841,8 @@ describe("多智能体云会话（#928 切片 1a）", () => {
       agents: async () => ROSTER,
       adapterFor: () => ({ model: "m-solo", async chat() { return { content: "答" }; } }),
       onEvent: (e) => events.push(e), onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true,
+      contextWindowOf: () => undefined,
       relayMaxDepth: async () => 6,
     });
 
@@ -829,6 +865,8 @@ describe("多智能体云会话 · 切片 1b（#932 四个坑）", () => {
       store, world: fakeWorld, px, hostUids: async () => [],
       agents: opts.agents, adapterFor: opts.adapterFor,
       onEvent: (e) => opts.events?.push(e), onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true,
+      contextWindowOf: () => undefined,
       relayMaxDepth: async () => 6,
     });
   }
@@ -940,6 +978,141 @@ describe("多智能体云会话 · 切片 1b（#932 四个坑）", () => {
     store.close();
   });
 
+  it("补跑上限（#957 A-9 / #933）：补跑前先落 interrupted 记号，它对 openTurns 中性、真实 turn 照跑", async () => {
+    const store = newStore();
+    const opening = store.append({
+      sessionId: "s1", ts: 1, type: "user_message", content: "[alice]: @运营 看", fromUid: "u1", mentions: ["ops"],
+    });
+    const seedBefore = store.load("s1"); // 装配前那份快照——用来验证 marker 对它的中性性
+    const seen: string[] = [];
+    let resolveDone!: () => void;
+    const done = new Promise<void>((r) => { resolveDone = r; });
+    open(store, {
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); resolveDone(); return { content: "答" }; } }),
+    });
+    await done;
+    const { openTurns } = await import("../../src/shared/turnLedger.js");
+    for (let i = 0; i < 50 && openTurns(store.load("s1")).length > 0; i++) await new Promise((r) => setTimeout(r, 20));
+    const events = store.load("s1");
+    // 日志里先有 interrupted 记号，再有真实 turn（assistant_message）
+    const markerIdx = events.findIndex((e) => e.type === "turn_ended" && (e as { outcome?: string }).outcome === "interrupted");
+    const assistantIdx = events.findIndex((e) => e.type === "assistant_message");
+    expect(markerIdx).toBeGreaterThan(-1);
+    expect(assistantIdx).toBeGreaterThan(-1);
+    expect(markerIdx).toBeLessThan(assistantIdx);
+    expect(events[markerIdx]).toMatchObject({
+      type: "turn_ended", outcome: "interrupted", agentId: "ops",
+      readUpToSeq: opening.seq - 1, error: "重启补跑第 1 次",
+    });
+    expect(seen).toEqual(["ops"]); // 记号没有拦下真实的补跑
+    // openTurns(seed 当时) 的判定不受 interrupted 影响：把记号手动拼进装配前
+    // 那份快照，判定跟没拼一样（turnLedger 的收口规则对 readUpToSeq < u.seq
+    // 天生中性——见 src/shared/turnLedger.ts 头注）
+    const withMarker = [...seedBefore, events[markerIdx]!];
+    expect(openTurns(withMarker)).toEqual(openTurns(seedBefore));
+    expect(openTurns(events)).toEqual([]); // 真实 turn 收了口
+    store.close();
+  });
+
+  it("补跑上限（#957 A-9 / #933）：已经补跑 3 次仍未收口 —— 不再排，落一条真正的收口", async () => {
+    const store = newStore();
+    const opening = store.append({
+      sessionId: "s1", ts: 1, type: "user_message", content: "[alice]: @运营 看", fromUid: "u1", mentions: ["ops"],
+    });
+    // 模拟前三次重启都没跑完：每次补跑前落的 interrupted 记号都在日志里
+    for (let n = 1; n <= 3; n++) {
+      store.append({
+        sessionId: "s1", ts: 1 + n, type: "turn_ended", outcome: "interrupted", agentId: "ops",
+        readUpToSeq: opening.seq - 1, error: `重启补跑第 ${n} 次`,
+      });
+    }
+    const seen: string[] = [];
+    const session = open(store, {
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: "答" }; } }),
+    });
+    await session.settled();
+    expect(seen).toEqual([]); // 第 4 次不再排
+    const events = store.load("s1");
+    const closeOut = events.at(-1);
+    expect(closeOut).toMatchObject({ type: "turn_ended", outcome: "error", agentId: "ops" });
+    expect((closeOut as { error?: string }).error).toContain("停止补跑");
+    const { openTurns } = await import("../../src/shared/turnLedger.js");
+    expect(openTurns(events)).toEqual([]); // 这条真正的收口把 openTurns 收干净了
+    store.close();
+  });
+
+  it("补跑上限（#957 A-9 / #933 复审 Critical）：同一只 agent 两条未收口开场白只落一条记号，且对两条都中性", async () => {
+    const store = newStore();
+    const u1 = store.append({ sessionId: "s1", ts: 1, type: "user_message", content: "[alice]: @运营 看", fromUid: "u1", mentions: ["ops"] });
+    const u2 = store.append({ sessionId: "s1", ts: 2, type: "user_message", content: "[bob]: @运营 再看", fromUid: "u2", mentions: ["ops"] });
+    const { openTurns } = await import("../../src/shared/turnLedger.js");
+    let markerSnapshot: ReturnType<typeof openTurns> | null = null;
+    createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [],
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({ model: a.models[0]!, async chat() { return { content: "答" }; } }),
+      // 记号落盘那一刻——真实 turn 的事件（workspace_memory_loaded/request_envelope/
+      // assistant_message）此时都还没落——立刻拍一张 openTurns 快照
+      onEvent: (e) => {
+        if (markerSnapshot === null && e.type === "turn_ended" && (e as { outcome?: string }).outcome === "interrupted") {
+          markerSnapshot = openTurns(store.load("s1"));
+        }
+      },
+      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true,
+      relayMaxDepth: async () => 6,
+      contextWindowOf: () => undefined,
+    });
+    // settled() 要靠已装配的 session 拿到，上面那次 createCloudSession 调用没接
+    // 返回值——用日志轮询代替（同"重启补跑"那条老测试的等待手法）
+    for (let i = 0; i < 50 && openTurns(store.load("s1")).length > 0; i++) await new Promise((r) => setTimeout(r, 20));
+    // 只落了一条 interrupted 记号——不是 U1、U2 各一条
+    const markers = store.load("s1").filter((e) => e.type === "turn_ended" && (e as { outcome?: string }).outcome === "interrupted");
+    expect(markers).toHaveLength(1);
+    expect(markers[0]).toMatchObject({ agentId: "ops", readUpToSeq: u1.seq - 1, error: "重启补跑第 1 次" });
+    // 记号落盘那一刻，U1、U2 都还列在 openTurns 上——没有被这条记号静默收掉
+    expect(markerSnapshot).toEqual([
+      { seq: u1.seq, fromUid: "u1", agentId: "ops", state: "queued" },
+      { seq: u2.seq, fromUid: "u2", agentId: "ops", state: "queued" },
+    ]);
+    store.close();
+  });
+
+  it("补跑上限（#957 A-9 / #933 复审 Critical）：一条到顶收摊（readUpToSeq 取它自己的 seq），另一条计数没到顶继续跑", async () => {
+    const store = newStore();
+    const u1 = store.append({ sessionId: "s1", ts: 1, type: "user_message", content: "[alice]: @运营 看", fromUid: "u1", mentions: ["ops"] });
+    // 第一次重启：只有 U1 开着
+    store.append({ sessionId: "s1", ts: 2, type: "turn_ended", outcome: "interrupted", agentId: "ops", readUpToSeq: u1.seq - 1, error: "重启补跑第 1 次" });
+    const u2 = store.append({ sessionId: "s1", ts: 3, type: "user_message", content: "[bob]: @运营 再看", fromUid: "u2", mentions: ["ops"] });
+    // 第二、三次重启：U1、U2 都开着，共用一条记号（readUpToSeq 取 U1.seq-1）
+    store.append({ sessionId: "s1", ts: 4, type: "turn_ended", outcome: "interrupted", agentId: "ops", readUpToSeq: u1.seq - 1, error: "重启补跑第 2 次" });
+    store.append({ sessionId: "s1", ts: 5, type: "turn_ended", outcome: "interrupted", agentId: "ops", readUpToSeq: u1.seq - 1, error: "重启补跑第 3 次" });
+    // 此刻 U1 之后有 3 条记号（到顶），U2 之后只有 2 条（还有余量）
+    const seen: string[] = [];
+    const session = open(store, {
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: "答" }; } }),
+    });
+    await session.settled();
+    expect(seen).toEqual(["ops"]); // U2 那条真的跑了一轮，不是被 U1 的到顶拖累一起停摆
+    const events = store.load("s1");
+    const endEvents = events.filter((e) => e.type === "turn_ended" && e.agentId === "ops");
+    const exhaustedEnd = endEvents.find((e) => (e as { error?: string }).error?.includes("停止补跑"));
+    // U1 到顶那条收口：readUpToSeq 取它自己的 seq，不是补跑开始前的日志尾
+    // （日志尾此刻已经是 4，若沿用旧代码的 lastSeqSeen 会把这个值算错）
+    expect(exhaustedEnd).toMatchObject({ outcome: "error", agentId: "ops", readUpToSeq: u1.seq });
+    const completedEnd = endEvents.find((e) => (e as { outcome?: string }).outcome === "completed");
+    expect(completedEnd).toBeDefined();
+    expect((completedEnd as { readUpToSeq?: number }).readUpToSeq).toBeGreaterThanOrEqual(u2.seq);
+    expect((completedEnd as { error?: string }).error ?? "").not.toContain("停止补跑");
+    const { openTurns } = await import("../../src/shared/turnLedger.js");
+    expect(openTurns(events)).toEqual([]); // U1（到顶收口）、U2（真的跑完）都收干净了
+    store.close();
+  });
+
   it("turn 跑到一半被再 @：这一轮收口后它再跑一轮，中间那段 openTurns 仍然列着它（#932 终审 Blocking ①）", async () => {
     const store = newStore();
     const { openTurns } = await import("../../src/shared/turnLedger.js");
@@ -972,6 +1145,8 @@ describe("多智能体云会话 · 切片 1b（#932 四个坑）", () => {
         if (e.type === "turn_ended" && midTurnLedger.length === 0) midTurnLedger.push(openTurns(store.load("s1")));
       },
       onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true,
+      contextWindowOf: () => undefined,
       relayMaxDepth: async () => 6,
     });
 
@@ -1106,6 +1281,8 @@ describe("say() 收下即返回（issue #937）", () => {
         if (e.type === "approval_request") announceRequest(e as ApprovalRequestEvent);
       },
       onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true,
+      contextWindowOf: () => undefined,
       relayMaxDepth: async () => 6,
     });
 
@@ -1131,7 +1308,7 @@ describe("say() 收下即返回（issue #937）", () => {
     expect(session.isRunning()).toBe(true);
 
     // 现在才轮到那一帧：批准 → turn 接着跑完
-    expect(session.approve(req.callId, "owner", "Owner", "approved")).toBe(true);
+    expect(session.approve(req.callId, "owner", "Owner", "approved")).toBe("ok");
     await session.settled();
 
     expect(events.find((e) => e.type === "approval_decision")).toMatchObject({ decision: "approved" });
@@ -1168,6 +1345,8 @@ describe("连接器白名单（#941 切片 2）", () => {
       adapterFor: () => adapter, px: pxWithGrants,
       hostUids: async () => ["h1"],
       onEvent: () => {}, onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true,
+      contextWindowOf: () => undefined,
       relayMaxDepth: async () => 6,
     });
   }
@@ -1196,6 +1375,8 @@ describe("工作区记忆（#949 切片 4）", () => {
     return createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [], memory, agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true,
+      contextWindowOf: () => undefined,
       relayMaxDepth: async () => 6,
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, chat: (m) => chat(a.agentId, m as unknown[]) }),
@@ -1235,6 +1416,8 @@ describe("工作区记忆（#949 切片 4）", () => {
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [], memory, agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true,
+      contextWindowOf: () => undefined,
       relayMaxDepth: async () => 6,
       agents: async () => AGENTS,
       adapterFor: (a) => ({
@@ -1285,6 +1468,8 @@ describe("工作区记忆（#949 切片 4）", () => {
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [], memory: broken, agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true,
+      contextWindowOf: () => undefined,
       relayMaxDepth: async () => 6,
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { return { content: "好" }; } }),
@@ -1305,6 +1490,8 @@ describe("agent 互相 @ 接力（#950 切片 5）", () => {
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true,
+      contextWindowOf: () => undefined,
       relayMaxDepth: async () => maxDepth,
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { rounds[a.agentId] = (rounds[a.agentId] ?? 0) + 1; seen.push(a.agentId); return { content: reply(a.agentId, rounds[a.agentId]!) }; } }),
@@ -1389,6 +1576,8 @@ describe("agent 互相 @ 接力（#950 切片 5）", () => {
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true,
+      contextWindowOf: () => undefined,
       relayMaxDepth: async () => { throw new Error("db down"); },
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { return { content: a.agentId === "ops" ? "@广告 你来" : "收到" }; } }),
@@ -1408,6 +1597,8 @@ describe("agent 互相 @ 接力（#950 切片 5）", () => {
     session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true,
+      contextWindowOf: () => undefined,
       relayMaxDepth: async () => 6,
       agents: async () => AGENTS,
       adapterFor: (a) => ({
@@ -1451,6 +1642,8 @@ describe("agent 互相 @ 接力（#950 切片 5）", () => {
     session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true,
+      contextWindowOf: () => undefined,
       relayMaxDepth: async () => 6,
       agents: async () => AGENTS,
       adapterFor: (a) => ({
@@ -1487,6 +1680,8 @@ describe("agent 互相 @ 接力（#950 切片 5）", () => {
       // relayMaxDepth 是真的 Supabase 往返：这一 await 期间人随时可能按下归档。
       // 顶上那句 `if (archived) return` 只挡得住"进函数之前就已经归档"，挡不住
       // 这条 await 期间才落地的归档——所以这里在 resolve 之前先把归档做了
+      isMember: async () => true,
+      contextWindowOf: () => undefined,
       relayMaxDepth: async () => {
         session.archive("alice");
         return 6;
@@ -1523,6 +1718,8 @@ describe("agent 互相 @ 接力（#950 切片 5）", () => {
     session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true,
+      contextWindowOf: () => undefined,
       relayMaxDepth: async () => 6,
       agents: async () => ROSTER3,
       adapterFor: (a) => ({
@@ -1553,6 +1750,783 @@ describe("agent 互相 @ 接力（#950 切片 5）", () => {
     // 会话已经收尾，不是它的失败）
     expect(events.some((e) => e.type === "assistant_message" && (e as { agentId?: string }).agentId === "fin")).toBe(false);
     expect(events.some((e) => e.type === "turn_ended" && (e as { agentId?: string }).agentId === "fin")).toBe(false);
+    store.close();
+  });
+});
+
+// #957 自查第一批（Task 4a）：合成收口收到日志尾、接力现取名单、未知 @ 出声、
+// depth 从日志推导、mentions 去重、接力棒上的连接器要点火者批、被踢的人不再起
+// turn、名单降级不挂连接器。
+describe("多智能体自查第一批（#957 Task 4a）", () => {
+  const PX_GRANTS = {
+    servers: [{ serverId: "shopify", toolDefs: [{ name: "list_orders", description: "查订单", inputSchema: {} }] }],
+  };
+  const pxWithGrants: PxCallDeps = {
+    ...px,
+    fetchImpl: (async () => ({ ok: true, status: 200, json: async () => PX_GRANTS })) as unknown as typeof fetch,
+  };
+
+  it("F1：合成的 turn_ended.readUpToSeq 是落盘那一刻的日志尾——被删的那只还欠着一条更晚的接力开场白，用 job.opening.seq 收不了它的口", async () => {
+    const store = newStore();
+    const { openTurns } = await import("../../src/shared/turnLedger.js");
+    const events: SessionEvent[] = [];
+    // 广告的 job 在 say() 那一刻就排上了（开场白 = 人那句 U1）；运营跑完回复里
+    // 又 @ 了广告，那条接力开场白 U2 因为去重命中折叠进同一个 job。等 drain 排到
+    // 广告时它已经被删——合成收口若只收 U1 的口，U2 就永远停在「排队中」
+    let roster = AGENTS;
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(),
+      agentWriter: createInMemoryAgentWriter(), isMember: async () => true, relayMaxDepth: async () => 6, contextWindowOf: () => undefined,
+      agents: async () => roster,
+      adapterFor: (a) => ({ model: a.models[0]!, async chat() { return { content: a.agentId === "ops" ? "报表好了，@广告 按这个投" : "收到" }; } }),
+      onEvent: (e) => {
+        events.push(e);
+        // 接力棒一落盘就把广告从名单里删掉：hop 与开场白照落（运营那一轮取的是
+        // 当时的名单），等 drain 排到广告时它已经不在了
+        if (e.type === "agent_relay") roster = AGENTS.filter((a) => a.agentId !== "ads");
+      },
+      onUsage: () => {},
+    });
+
+    await session.say("u1", "alice", "@运营 @广告 一起看下", true, ["ops", "ads"]);
+    await session.settled();
+
+    const log = store.load("s1");
+    const idx = log.findIndex((e) => e.type === "turn_ended" && e.agentId === "ads" && (e as { outcome: string }).outcome === "error");
+    expect(idx).toBeGreaterThan(0);
+    const gone = log[idx]!;
+    expect((gone as { readUpToSeq?: number }).readUpToSeq).toBe(log[idx - 1]!.seq);
+    // 收口口径对上了：两条点了广告的 user_message（人那条 + 接力那条）都不再挂着
+    expect(openTurns(log)).toEqual([]);
+    store.close();
+  });
+
+  it("F3：admin 在同一轮里建出「广告」并 @ 它——接力现取名单，落 agent_relay{to: 新 id} + 开场白", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    const writer = createInMemoryAgentWriter();
+    const admin = { ...DEFAULT_AGENT, agentId: "admin", name: "管理员" };
+    let session!: CloudSession;
+    let round = 0;
+    const adapter: ModelAdapter = {
+      model: "fake-model",
+      async chat(): Promise<ModelReply> {
+        round++;
+        if (round === 1) {
+          return { content: "", toolCalls: [{ id: "cA", name: "create_agent", args: { name: "广告", description: "管投放", instructions: "你管投放", models: ["glm-4.5"] } }] };
+        }
+        if (round === 2) return { content: "建好了，@广告 你来接手" };
+        return { content: "收到" };
+      },
+    };
+    session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator", store, world: fakeWorld,
+      agents: async () => [admin, ...writer.specs("w1")],
+      adapterFor: () => adapter,
+      px, hostUids: async () => [],
+      onEvent: (e) => {
+        events.push(e);
+        if (e.type === "approval_request") session.approve((e as ApprovalRequestEvent).callId, "owner", "Owner", "approved");
+      },
+      onUsage: () => {},
+      memory: createInMemoryWorkspaceMemory(), agentWriter: writer,
+      isMember: async () => true, relayMaxDepth: async () => 6,
+      contextWindowOf: () => undefined,
+    });
+
+    await session.say("u1", "alice", "@管理员 建一只管广告投放的", true, ["admin"]);
+    await session.settled();
+
+    const row = writer.rows()[0]!;
+    // 名单在 relayAfterTurn 里现取：runJob 起跑那一刻的快照里还没有这只
+    expect(events.find((e) => e.type === "agent_relay")).toMatchObject({ fromAgentId: "admin", toAgentId: row.agentId, depth: 1 });
+    expect(events.find((e) => e.type === "user_message" && (e as UserMessageEvent).relay)).toMatchObject({ mentions: [row.agentId] });
+    store.close();
+  });
+
+  it("A-6：agent @ 了名单上没有的名字 —— 落一条系统发言说「没有这个人」，不静默丢", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(),
+      agentWriter: createInMemoryAgentWriter(), isMember: async () => true, relayMaxDepth: async () => 6, contextWindowOf: () => undefined,
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({ model: a.models[0]!, async chat() { return { content: "@财务 你来核一下账" }; } }),
+      onEvent: (e) => events.push(e), onUsage: () => {},
+    });
+
+    await session.say("u1", "alice", "@运营 出报表", true, ["ops"]);
+    await session.settled();
+
+    const sys = events.find((e) => e.type === "chat_message" && (e as { content: string }).content.includes("没有这个人"));
+    expect(sys).toMatchObject({ fromUid: "system", label: "系统" });
+    expect((sys as { content: string }).content).toContain("财务");
+    expect(events.some((e) => e.type === "agent_relay")).toBe(false);
+    store.close();
+  });
+
+  it("A-6 反面：自 @ 不算「没有这个人」—— 那个 @ 认出人了（就是它自己），说没这人是假话", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(),
+      agentWriter: createInMemoryAgentWriter(), isMember: async () => true, relayMaxDepth: async () => 6, contextWindowOf: () => undefined,
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({ model: a.models[0]!, async chat() { return { content: "@运营 我自己记一下" }; } }),
+      onEvent: (e) => events.push(e), onUsage: () => {},
+    });
+    await session.say("u1", "alice", "@运营 x", true, ["ops"]);
+    await session.settled();
+    expect(events.some((e) => e.type === "chat_message" && (e as { content: string }).content.includes("没有这个人"))).toBe(false);
+    store.close();
+  });
+
+  it("A-4：接力 depth 从日志推导 —— 折叠进同一个 job 的接力开场白照样把 depth 顶上去", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(),
+      agentWriter: createInMemoryAgentWriter(), isMember: async () => true, relayMaxDepth: async () => 6, contextWindowOf: () => undefined,
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({ model: a.models[0]!, async chat() { return { content: a.agentId === "ops" ? "@广告 你来" : "@运营 你再看看" }; } }),
+      onEvent: (e) => events.push(e), onUsage: () => {},
+    });
+
+    // 人一句同时 @ 了两只：广告的 job 开场白是人那条（depth 0），运营回复里那条
+    // 接力开场白（depth 1）因为去重折叠进同一个 job。广告起跑时该看见的 depth
+    // 是 1（日志里还欠着它的两条 user_message 取 max），不是 0
+    await session.say("u1", "alice", "@运营 @广告 一起看下", true, ["ops", "ads"]);
+    await session.settled();
+
+    const hops = events.filter((e) => e.type === "agent_relay") as AgentRelayEvent[];
+    const back = hops.find((h) => h.fromAgentId === "ads" && h.toAgentId === "ops");
+    expect(back).toBeDefined();
+    expect(back!.depth).toBe(2);
+    store.close();
+  });
+
+  it("F7：mentions 里同一只重复出现 —— 开场白 mentions 去重，只跑一轮", async () => {
+    const store = newStore();
+    const seen: string[] = [];
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(),
+      agentWriter: createInMemoryAgentWriter(), isMember: async () => true, relayMaxDepth: async () => 6, contextWindowOf: () => undefined,
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: "答" }; } }),
+      onEvent: () => {}, onUsage: () => {},
+    });
+    await session.say("u1", "alice", "@运营 @运营 看下", true, ["ops", "ops"]);
+    await session.settled();
+    const ums = store.load("s1").filter((e) => e.type === "user_message");
+    expect(ums).toHaveLength(1);
+    expect(ums[0]).toMatchObject({ mentions: ["ops"] });
+    expect(seen).toEqual(["ops"]);
+    store.close();
+  });
+
+  it("B-C3：接力开的 turn 里，借来的连接器要点火者批一次；人自己 @ 起的那一轮同一把刀不弹审批", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    let session!: CloudSession;
+    let adsRounds = 0;
+    session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px: pxWithGrants, hostUids: async () => ["h1"],
+      memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true, relayMaxDepth: async () => 6,
+      contextWindowOf: () => undefined,
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({
+        model: a.models[0]!,
+        async chat(): Promise<ModelReply> {
+          if (a.agentId === "ops") return { content: "@广告 你来下单" };
+          adsRounds++;
+          if (adsRounds % 2 === 1) return { content: "", toolCalls: [{ id: `c${adsRounds}`, name: "px_h1_shopify_list_orders", args: {} }] };
+          return { content: "看完了" };
+        },
+      }),
+      onEvent: (e) => {
+        events.push(e);
+        if (e.type === "approval_request") session.approve((e as ApprovalRequestEvent).callId, "owner", "Owner", "approved");
+      },
+      onUsage: () => {},
+    });
+
+    // ① 人自己 @ 广告：白名单内没有逐次审批（ADR-0151），这一把刀不弹卡
+    await session.say("u1", "alice", "@广告 看下订单", true, ["ads"]);
+    await session.settled();
+    expect(events.some((e) => e.type === "tool_result")).toBe(true);
+    expect(events.some((e) => e.type === "approval_request")).toBe(false);
+
+    // ② 运营接力点起广告：这一棒上的同一把刀要点火的人批
+    await session.say("u1", "alice", "@运营 出报表", true, ["ops"]);
+    await session.settled();
+    const reqs = events.filter((e) => e.type === "approval_request") as ApprovalRequestEvent[];
+    expect(reqs).toHaveLength(1);
+    expect(reqs[0]).toMatchObject({ toolName: "px_h1_shopify_list_orders", initiatorUid: "u1", agentId: "ads" });
+    store.close();
+  });
+
+  it("B-I1：发起人已被踢出工作区 —— 不起 turn，落一条说得出原因的收口", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(),
+      agentWriter: createInMemoryAgentWriter(),
+      isMember: async (uid) => uid !== "kicked",
+      contextWindowOf: () => undefined,
+      relayMaxDepth: async () => 6,
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({ model: a.models[0]!, async chat() { return { content: "答" }; } }),
+      onEvent: (e) => events.push(e), onUsage: () => {},
+    });
+
+    await session.say("kicked", "mallory", "@运营 帮我导出全部订单", true, ["ops"]);
+    await session.settled();
+
+    const log = store.load("s1");
+    const idx = log.findIndex((e) => e.type === "turn_ended");
+    expect(idx).toBeGreaterThan(0);
+    expect(log[idx]).toMatchObject({ outcome: "error", agentId: "ops" });
+    expect((log[idx] as { error?: string }).error).toContain("不在这个工作区");
+    expect((log[idx] as { readUpToSeq?: number }).readUpToSeq).toBe(log[idx - 1]!.seq);
+    expect(events.some((e) => e.type === "assistant_message")).toBe(false);
+    store.close();
+  });
+
+  it("B-I1 重启补跑那一半：日志里那条未收口开场白的发起人已不在籍 —— 直接落同样的收口，不排队", async () => {
+    const store = newStore();
+    const { openTurns } = await import("../../src/shared/turnLedger.js");
+    store.append({ sessionId: "s1", ts: 1, type: "user_message", content: "[mallory]: @运营 导出订单", fromUid: "kicked", mentions: ["ops"] });
+    const seen: string[] = [];
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(),
+      agentWriter: createInMemoryAgentWriter(),
+      isMember: async (uid) => uid !== "kicked",
+      contextWindowOf: () => undefined,
+      relayMaxDepth: async () => 6,
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: "答" }; } }),
+      onEvent: () => {}, onUsage: () => {},
+    });
+    await session.settled();
+    const log = store.load("s1");
+    expect(seen).toEqual([]);
+    const end = log.find((e) => e.type === "turn_ended");
+    expect(end).toMatchObject({ outcome: "error", agentId: "ops" });
+    expect((end as { error?: string }).error).toContain("不在这个工作区");
+    expect(openTurns(log)).toEqual([]);
+    store.close();
+  });
+
+  // #957 D7：model_usage 要能说出「这笔账是哪只 agent 花的」。daemon 的 recordUsage
+  // 是一个捕获了 session 的闭包，唯一能问到「此刻跑的是谁」的口就是这个方法
+  it("D7：turn 跑着时 currentAgentId 是那只 agent，turn 外一律 null", async () => {
+    const store = newStore();
+    let during: string | null | undefined;
+    let session!: CloudSession;
+    session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [],
+      memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true, contextWindowOf: () => undefined, relayMaxDepth: async () => 6,
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({
+        model: a.models[0]!,
+        async chat() { during = session.currentAgentId(); return { content: "答" }; },
+      }),
+      onEvent: () => {}, onUsage: () => {},
+    });
+    expect(session.currentAgentId()).toBeNull(); // 还没人发言
+    await session.say("u1", "alice", "@运营 看下销量", true, ["ops"]);
+    await session.settled();
+    expect(during).toBe("ops");
+    expect(session.currentAgentId()).toBeNull(); // 排空之后归零，下一笔账不会串到上一只身上
+    store.close();
+  });
+
+  // #957 Task 4c 复审：被踢的那条收口原来取日志尾（lastSeqSeen），而日志尾在
+  // 这一刻已经越过了同一只 agent **更晚**那条仍然有效的开场白 —— 它于是被顺手
+  // 收了口，再也没人答它，且没有任何症状。判据换成「这条开场白自己的 seq」，
+  // 与旁边到顶收口那条同一口径
+  it("B-I1 复审：被踢的 U1 与在籍的 U2 点同一只 agent —— U2 照跑（且不误收口）", async () => {
+    const store = newStore();
+    const { openTurns } = await import("../../src/shared/turnLedger.js");
+    const u1 = store.append({ sessionId: "s1", ts: 1, type: "user_message", content: "[mallory]: @运营 导出订单", fromUid: "kicked", mentions: ["ops"] });
+    const u2 = store.append({ sessionId: "s1", ts: 2, type: "user_message", content: "[alice]: @运营 看下销量", fromUid: "u2", mentions: ["ops"] });
+    const seen: string[] = [];
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [],
+      memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async (uid) => uid !== "kicked",
+      contextWindowOf: () => undefined, relayMaxDepth: async () => 6,
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: "答" }; } }),
+      onEvent: () => {}, onUsage: () => {},
+    });
+    await session.settled();
+    const log = store.load("s1");
+    // U2 真的跑了一轮（修之前它被 U1 的收口顺手关掉，一次模型调用都不会发生）
+    expect(seen).toEqual(["ops"]);
+    // 终审 Important 1 之后：同一只 agent 还有可跑的开场白（U2）时，被踢的 U1
+    // **不再单独落一条收口**——U2 那一轮起跑前的 interrupted 记号（readUpToSeq =
+    // U2.seq − 1 >= U1.seq）与它自己的 turn_ended 都已经把 U1 收了口。少写一条
+    // 事件换来的是反过来那个顺序（U1 在籍、U2 被踢）不会把 U1 顺手关掉
+    expect(log.some((e) => e.type === "turn_ended" && (e as { error?: string }).error?.includes("不在这个工作区"))).toBe(false);
+    const interrupted = log.find((e) => e.type === "turn_ended" && (e as { outcome?: string }).outcome === "interrupted");
+    expect((interrupted as { readUpToSeq?: number }).readUpToSeq).toBeGreaterThanOrEqual(u1.seq);
+    const completed = log.find((e) => e.type === "turn_ended" && (e as { outcome?: string }).outcome === "completed");
+    expect(completed).toBeDefined();
+    expect((completed as { readUpToSeq?: number }).readUpToSeq).toBeGreaterThanOrEqual(u2.seq);
+    expect(openTurns(log)).toEqual([]);
+    store.close();
+  });
+
+  // #957 终审 Critical 1：在籍查询**抛错**与**确认不在籍**在补跑路径上必须分开。
+  // daemon 启动时 N 条会话错峰补跑，正是 Supabase 最不稳的那一刻——把一次抖动
+  // 读成"被踢了"的代价是 append-only 的：每条排队消息落一条永久收口，用户看到
+  // 的是"你被移出了工作区"。查不到 = 什么都不写，开场白留着等下一次重启
+  it("终审 Critical 1：补跑时在籍查不出来（unknown）—— 一条 turn_ended 都不落，开场白仍欠着", async () => {
+    const store = newStore();
+    const { openTurns } = await import("../../src/shared/turnLedger.js");
+    const u1 = store.append({ sessionId: "s1", ts: 1, type: "user_message", content: "[alice]: @运营 导出订单", fromUid: "flaky", mentions: ["ops"] });
+    const seen: string[] = [];
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(),
+      agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => "unknown",
+      contextWindowOf: () => undefined,
+      relayMaxDepth: async () => 6,
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: "答" }; } }),
+      onEvent: () => {}, onUsage: () => {},
+    });
+    await session.settled();
+    const log = store.load("s1");
+    expect(seen).toEqual([]);                                        // 没在籍证明就不跑
+    expect(log.filter((e) => e.type === "turn_ended")).toEqual([]);   // 也不写任何收口
+    expect(openTurns(log)).toEqual([{ seq: u1.seq, fromUid: "flaky", agentId: "ops", state: "queued" }]);
+    store.close();
+  });
+
+  // 同一条裁决的另一半：runJob 那条路径上发送者在线、看得见错误、能重发，所以
+  // 保持 fail-closed（不跑），但文案要与"已不在这个工作区"分开——后者说的是一件
+  // 确定的事，而这里只是"这一刻问不出来"
+  it("终审 Critical 1：起跑前在籍查不出来（unknown）—— 不跑，但收口文案说的是「暂时确认不了」", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(),
+      agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => "unknown",
+      contextWindowOf: () => undefined,
+      relayMaxDepth: async () => 6,
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({ model: a.models[0]!, async chat() { return { content: "答" }; } }),
+      onEvent: (e) => events.push(e), onUsage: () => {},
+    });
+    await session.say("u1", "alice", "@运营 帮我导出订单", true, ["ops"]);
+    await session.settled();
+    const log = store.load("s1");
+    const end = log.find((e) => e.type === "turn_ended");
+    expect(end).toMatchObject({ outcome: "error", agentId: "ops" });
+    expect((end as { error?: string }).error).toContain("暂时确认不了");
+    expect((end as { error?: string }).error).not.toContain("已不在这个工作区");
+    expect(events.some((e) => e.type === "assistant_message")).toBe(false);
+    store.close();
+  });
+
+  // #957 终审 Important 1：顺序反过来（在籍的 U1 在前、被踢的 U2 在后、同一只
+  // agent）时，U2 那条收口的 readUpToSeq = U2.seq >= U1.seq，把还要跑的 U1 也
+  // 一起关了。这一次 U1 照样跑（它已经在 runnable 里），但再崩一次就再也没人
+  // 捞得到它。修法：同一只 agent 还有可跑的开场白时，不单独落被踢那条收口——
+  // 它的 turn 收口时 readUpToSeq = 日志尾，自然把被踢那条也收了
+  it("终审 Important 1：在籍的 U1 在前、被踢的 U2 在后（同一只 agent）—— 不落单独的被踢收口", async () => {
+    const store = newStore();
+    const { openTurns } = await import("../../src/shared/turnLedger.js");
+    store.append({ sessionId: "s1", ts: 1, type: "user_message", content: "[alice]: @运营 看下销量", fromUid: "u2", mentions: ["ops"] });
+    store.append({ sessionId: "s1", ts: 2, type: "user_message", content: "[mallory]: @运营 导出订单", fromUid: "kicked", mentions: ["ops"] });
+    const seen: string[] = [];
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [],
+      memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async (uid) => uid !== "kicked",
+      contextWindowOf: () => undefined, relayMaxDepth: async () => 6,
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: "答" }; } }),
+      onEvent: () => {}, onUsage: () => {},
+    });
+    await session.settled();
+    const log = store.load("s1");
+    expect(seen).toEqual(["ops"]);
+    expect(log.some((e) => e.type === "turn_ended" && (e as { error?: string }).error?.includes("不在这个工作区"))).toBe(false);
+    expect(openTurns(log)).toEqual([]);
+    store.close();
+  });
+
+  it("B-I7：名单查询降级到占位 agent 时不挂任何借来的连接器，也不去拉授权（复审 Minor 2）", async () => {
+    const store = newStore();
+    const seenTools: string[] = [];
+    let hostUidsCalls = 0;
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px: pxWithGrants, hostUids: async () => { hostUidsCalls += 1; return ["h1"]; },
+      memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true, relayMaxDepth: async () => 6,
+      contextWindowOf: () => undefined,
+      agents: async () => [{ ...DEFAULT_AGENT, agentId: "admin", name: "管理员", degraded: true as const }],
+      adapterFor: () => ({
+        model: "fake-model",
+        async chat(_m, toolDefs) {
+          for (const t of toolDefs ?? []) seenTools.push(t.name);
+          return { content: "答" };
+        },
+      }),
+      onEvent: () => {}, onUsage: () => {},
+    });
+    await session.say("u1", "alice", "@管理员 看下", true, ["admin"]);
+    await session.settled();
+    expect(seenTools.length).toBeGreaterThan(0);
+    expect(seenTools.some((n) => n.startsWith("px_"))).toBe(false);
+    // 复审 Minor 2：结果注定被丢掉，那两次网络往返（一次 Supabase 查成员 +
+    // 每个成员一次 edge 查授权）不该每 turn 白打一遍
+    expect(hostUidsCalls).toBe(0);
+    store.close();
+  });
+
+  it("复审 Important 1：接力棒折叠进人那条 job 时，px 刀照样要点火的人批 —— 判据是 openingDepth 不是 job.opening.relay", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    let session!: CloudSession;
+    let adsRounds = 0;
+    // 人一句同时 @ 了两只：广告的 job 开场白是**人**那条（relay 字段 undefined），
+    // 运营跑完接力过来的那条开场白因为去重折叠进同一个 job。这一轮实际上正是在
+    // 替接力棒干活，只看 job.opening.relay 会整条绕过审批那道闸
+    session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px: pxWithGrants, hostUids: async () => ["h1"],
+      memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true, relayMaxDepth: async () => 6,
+      contextWindowOf: () => undefined,
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({
+        model: a.models[0]!,
+        async chat(): Promise<ModelReply> {
+          if (a.agentId === "ops") return { content: "@广告 你来下单" };
+          adsRounds++;
+          if (adsRounds === 1) return { content: "", toolCalls: [{ id: "cA", name: "px_h1_shopify_list_orders", args: {} }] };
+          return { content: "看完了" };
+        },
+      }),
+      onEvent: (e) => {
+        events.push(e);
+        if (e.type === "approval_request") session.approve((e as ApprovalRequestEvent).callId, "owner", "Owner", "approved");
+      },
+      onUsage: () => {},
+    });
+
+    await session.say("u1", "alice", "@运营 @广告 一起看下", true, ["ops", "ads"]);
+    await session.settled();
+
+    // 折叠的证据：广告只跑了一个 job（开场白是人那条），却落了接力 hop
+    expect(events.filter((e) => e.type === "agent_relay")).toHaveLength(1);
+    const reqs = events.filter((e) => e.type === "approval_request") as ApprovalRequestEvent[];
+    expect(reqs).toHaveLength(1);
+    expect(reqs[0]).toMatchObject({ toolName: "px_h1_shopify_list_orders", initiatorUid: "u1", agentId: "ads" });
+    store.close();
+  });
+
+  it("复审 Minor 1：一句里既 @ 了名单上的也 @ 了名单外的 —— 认得的照接力，认不得的单独出声", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(),
+      agentWriter: createInMemoryAgentWriter(), isMember: async () => true, relayMaxDepth: async () => 6, contextWindowOf: () => undefined,
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({ model: a.models[0]!, async chat() { return { content: a.agentId === "ops" ? "@广告 @财务 你们看下" : "收到" }; } }),
+      onEvent: (e) => events.push(e), onUsage: () => {},
+    });
+    await session.say("u1", "alice", "@运营 出报表", true, ["ops"]);
+    await session.settled();
+
+    const sys = events.find((e) => e.type === "chat_message" && (e as { content: string }).content.includes("没有这个人"));
+    expect(sys).toMatchObject({ fromUid: "system" });
+    // 只列没解析出来的那一个，认得的那个不该也被报成「没这个人」
+    expect((sys as { content: string }).content).toContain("财务");
+    expect((sys as { content: string }).content).not.toContain("广告」");
+    // 认得的那一棒照样接上
+    expect(events.find((e) => e.type === "agent_relay")).toMatchObject({ fromAgentId: "ops", toAgentId: "ads" });
+    store.close();
+  });
+
+  it("复审 Minor 1 边界：贪婪切词吃进标点的 token 不算「没有这个人」（@运营，帮忙看下）", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(),
+      agentWriter: createInMemoryAgentWriter(), isMember: async () => true, relayMaxDepth: async () => 6, contextWindowOf: () => undefined,
+      agents: async () => AGENTS,
+      // mentionTokens 吃到下一个空白为止 → token 是「广告，这个你来」，不等于任何
+      // 名字；但 parseMentions 靠前缀匹配认得它，报「没这个人」就是假话
+      adapterFor: (a) => ({ model: a.models[0]!, async chat() { return { content: a.agentId === "ops" ? "@广告，这个你来" : "收到" }; } }),
+      onEvent: (e) => events.push(e), onUsage: () => {},
+    });
+    await session.say("u1", "alice", "@运营 出报表", true, ["ops"]);
+    await session.settled();
+    expect(events.some((e) => e.type === "chat_message" && (e as { content: string }).content.includes("没有这个人"))).toBe(false);
+    expect(events.some((e) => e.type === "agent_relay")).toBe(true);
+    store.close();
+  });
+
+  it("复审 Minor 4：接力取名单失败 —— 这一棒不接，但不冒成一次「turn 失败」", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    const errs: string[] = [];
+    const warns: string[] = [];
+    const error = vi.spyOn(console, "error").mockImplementation((...a: unknown[]) => { errs.push(a.map(String).join(" ")); });
+    const warn = vi.spyOn(console, "warn").mockImplementation((...a: unknown[]) => { warns.push(a.map(String).join(" ")); });
+    let calls = 0;
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(),
+      agentWriter: createInMemoryAgentWriter(), isMember: async () => true, relayMaxDepth: async () => 6, contextWindowOf: () => undefined,
+      // ① say() 的解析、② runJob 起跑前那次都成功，③ relayAfterTurn 那次挂掉
+      agents: async () => {
+        calls += 1;
+        if (calls >= 3) throw new Error("supabase 挂了");
+        return AGENTS;
+      },
+      adapterFor: (a) => ({ model: a.models[0]!, async chat() { return { content: "@广告 你来" }; } }),
+      onEvent: (e) => events.push(e), onUsage: () => {},
+    });
+    await session.say("u1", "alice", "@运营 出报表", true, ["ops"]);
+    await session.settled();
+
+    const ends = events.filter((e) => e.type === "turn_ended");
+    expect(ends).toHaveLength(1);
+    expect(ends[0]).toMatchObject({ outcome: "completed", agentId: "ops" });
+    expect(events.some((e) => e.type === "agent_relay")).toBe(false);
+    // 这一条才是修复的本体：turn 自己收口成功了，drain 的 catch 不该再打一行
+    // 「turn 失败」——那句话把一次接力没接上说成一次回复失败，方向指错
+    expect(errs.some((m) => m.includes("turn 失败"))).toBe(false);
+    expect(warns.some((m) => m.includes("接力取名单失败"))).toBe(true);
+    error.mockRestore();
+    warn.mockRestore();
+    store.close();
+  });
+
+  it("复审 Minor 5：归档之后，折叠进人那条 job 的接力棒也不该再跑", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    let session!: CloudSession;
+    // 三只：人一句同时点了三只，于是三个 job 一起进队。运营接力 @ 财务 —— 财务
+    // 的 job 已经在队里，那条接力开场白折叠进去（开场白仍是人那条）。广告那一轮
+    // 归档，轮到财务时会话已经收尾
+    const ROSTER3 = [
+      ...AGENTS,
+      { agentId: "fin", name: "财务", description: "管账", instructions: "你管账", models: ["m-fin"], tools: [] as AgentToolAllow[] },
+    ];
+    session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(),
+      agentWriter: createInMemoryAgentWriter(), isMember: async () => true, relayMaxDepth: async () => 6, contextWindowOf: () => undefined,
+      agents: async () => ROSTER3,
+      adapterFor: (a) => ({
+        model: a.models[0]!,
+        async chat() {
+          if (a.agentId === "ops") return { content: "@财务 你来核账" };
+          if (a.agentId === "ads") { session.archive("alice"); return { content: "收到" }; }
+          return { content: "财务也收到了" };
+        },
+      }),
+      onEvent: (e) => events.push(e), onUsage: () => {},
+    });
+
+    await session.say("u1", "alice", "@运营 @广告 @财务 都来", true, ["ops", "ads", "fin"]);
+    await session.settled();
+
+    expect(session.isArchived()).toBe(true);
+    // 折叠确实发生了：接力 hop 落了，但财务只有一个 job
+    expect(events.find((e) => e.type === "agent_relay")).toMatchObject({ toAgentId: "fin" });
+    expect(events.some((e) => e.type === "assistant_message" && (e as { agentId?: string }).agentId === "fin")).toBe(false);
+    expect(events.some((e) => e.type === "turn_ended" && (e as { agentId?: string }).agentId === "fin")).toBe(false);
+    store.close();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 云会话自动压缩（#957 A-1）。桌面在 src/main/agent.ts:852 给 engine 递了
+// autoCompact，runtime 的 engineFor 从头到尾没有——云会话因此**永远不压缩**，
+// 上下文单调增长到每一轮都 400，而每一轮都按全尺寸计在 owner 头上，且没有任何
+// 自愈路径。三条断言各盯一块：压缩真的发生了（且压完之后这只 agent 还知道自己
+// 是谁、记忆还在）、护栏硬停真的接上了（云会话没有人按停止键）、硬停之后这条
+// 会话还活着。
+// ─────────────────────────────────────────────────────────────────────────────
+describe("云会话自动压缩（#957 A-1）", () => {
+  /** 8000 个 ASCII 字符 ≈ 2000 token（estimateTokens 对非 CJK 是 /4），一条就把
+      占用推过 2000 × 0.75 = 1500 的阈值 —— 于是**下一个 turn 的第一圈**就该压。
+      这个形状是故意选的：云会话最常见的就是单圈 turn（问一句答一句），而
+      "第一圈压不压得动"正是这一条 finding 的要害（见下面 UNROUTED 的说明） */
+  const FILLER = "x".repeat(8000);
+  const world: ExecutionWorld = {
+    fs: { read: async (path) => `<content of ${path}>`, write: async () => {} },
+    exec: async () => ({ stdout: "hi", stderr: "", exitCode: 0 }),
+    http: { postJson: async () => ({}) },
+  };
+  const SUMMARY = "摘要：运营看过销量，接下来要盯退款";
+  /** 云端真正在用的那把 adapter（`createHostedRuntimeAdapter`）在 `prepare()`
+      跑完之前 `model` 是 `"(未配置)"` —— 路由是 prepare()/chat() 那一刻才决出来的，
+      而 daemon 的 `adapterFor` **每个 turn 现造一把**，所以每个 turn 的第一圈
+      都从这个占位起步。假 adapter 复刻这个形状，这条用例才分得清两种顺序：
+      engine 先判压缩再 prepare() 的话，第一圈拿 "(未配置)" 去查窗口 → 查不到 →
+      `shouldAutoCompact` 恒 false → 单圈 turn 从来不压缩（#957 A-1 复审 Important） */
+  const UNROUTED = "(未配置)";
+
+  it("上一个 turn 撑大了上下文 → 下一个 turn 的第一圈就压：摘要进上下文，brief 与 SHARED 记忆幸存，别的 agent 看不见这条摘要", async () => {
+    const store = newStore();
+    // deriveMessages 只从 session_created.workspace 产出 system 消息 —— 没有它，
+    // brief 与记忆块（都焊在 system 尾部）压根没有落脚处
+    store.append({ sessionId: "s1", ts: Date.now(), type: "session_created", workspace: "/work" });
+    const events: SessionEvent[] = [];
+    const memory = createInMemoryWorkspaceMemory({ "w1/": "共享档：周三投放" });
+    const opsMessages: { role: string; content: unknown }[][] = [];
+    const adsMessages: { role: string; content: unknown }[][] = [];
+    let opsRound = 0;
+
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world, px, hostUids: async () => [], memory,
+      agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true,
+      relayMaxDepth: async () => 6,
+      agents: async () => AGENTS,
+      // 很小的窗（2000）——测试要的是"越过阈值"这个判据，不是真烧一个 128K 上下文。
+      // **只认路由决出来的那个 id**：daemon 那侧就是 findModel + contextWindowKnown，
+      // 认不出的 id（含 prepare() 之前的 "(未配置)"）一律 undefined
+      // **只给运营那只小窗**：广告那只也读得到运营说的那一大段（`spoken` 裁决），
+      // 给它同样的小窗它会自己压一次，第 ③ 组断言就变成"它压出了自己的摘要"而不是
+      // "它捡到了运营的检查点"——那正是这一组要分辨的两件事
+      contextWindowOf: (m) => (m === "m-ops" ? 2_000 : undefined),
+      // **每次现造一把**（同 daemon：hosted adapter 是每 turn 新建的），所以每个
+      // turn 的第一圈 model 都从 UNROUTED 起步
+      adapterFor: (a) => {
+        let routed = UNROUTED;
+        return {
+          get model(): string { return routed; },
+          async prepare(): Promise<void> { routed = a.models[0]!; },
+          async chat(messages) {
+            const msgs = messages as { role: string; content: unknown }[];
+            // 压缩用的摘要请求走的是同一把 adapter（engine.compactInner）：
+            // 判据是最后那条 user 消息里的那句话
+            if (String(msgs.at(-1)?.content ?? "").includes("压缩成一份摘要")) return { content: SUMMARY };
+            if (a.agentId === "ads") { adsMessages.push(msgs); return { content: "广告答" }; }
+            opsMessages.push(msgs);
+            opsRound++;
+            // 第一个 turn 一圈就说完（不带工具），但那一大段把占用顶过阈值
+            return { content: opsRound === 1 ? FILLER : "看完了" };
+          },
+        };
+      },
+      onEvent: (e) => events.push(e), onUsage: () => {},
+    });
+
+    await session.say("u1", "alice", "@运营 看下销量", true, ["ops"]);
+    await session.settled();
+    // 第一个 turn 不该压（开跑那一刻占用还小），它只负责把上下文撑大
+    expect(events.filter((e) => e.type === "context_compacted")).toHaveLength(0);
+
+    await session.say("u1", "alice", "@运营 再看一次", true, ["ops"]);
+    await session.settled();
+
+    // ① 压缩真的发生了，而且记在运营那只头上
+    const compacted = events.filter((e) => e.type === "context_compacted");
+    expect(compacted).toHaveLength(1);
+    expect(compacted[0]).toMatchObject({ agentId: "ops", trigger: "auto", summary: SUMMARY });
+    // 压缩落在第二个 turn 的第一次真实 chat() **之前**
+    expect(compacted[0]!.seq).toBeLessThan(events.filter((e) => e.type === "assistant_message").at(-1)!.seq);
+
+    // ② 压缩之后那一轮：摘要进来了，brief 与 SHARED 记忆没被压掉
+    expect(opsRound).toBe(2);
+    const afterCompact = JSON.stringify(opsMessages.at(-1));
+    expect(afterCompact).toContain("[上下文已压缩");
+    expect(afterCompact).toContain(SUMMARY);
+    expect(afterCompact).toContain("你管店铺运营"); // agent_briefed 的 instructions（#957 A-3 幸存）
+    expect(afterCompact).toContain("SHARED");
+    expect(afterCompact).toContain("共享档：周三投放");
+    expect(afterCompact).not.toContain(FILLER); // 被摘要替换掉了，不是叠上去
+
+    // ③ agentView 隔离：随后起 turn 的广告看不见运营的这条摘要
+    await session.say("u1", "alice", "@广告 你也看看", true, ["ads"]);
+    await session.settled();
+    expect(adsMessages).toHaveLength(1);
+    const adsSeen = JSON.stringify(adsMessages[0]);
+    expect(adsSeen).not.toContain(SUMMARY);
+    // 反面：它读到的是**未压缩的**那段真实历史（运营说的那一大段），不是"什么都没有"
+    expect(adsSeen).toContain(FILLER);
+    store.close();
+  });
+
+  it("护栏硬停接上了（loopGuardMaxNudges）：一直原地打转的模型在有限轮之后以 turn_ended{error} 收口，且这条会话还活着", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    let calls = 0;
+
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world, px, hostUids: async () => [],
+      memory: createInMemoryWorkspaceMemory(),
+      agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true,
+      relayMaxDepth: async () => 6,
+      agents: async () => AGENTS,
+      // 这一条测的是护栏不是压缩：窗口未知 = shouldAutoCompact 一律 false
+      contextWindowOf: () => undefined,
+      adapterFor: (a) => ({
+        model: a.models[0]!,
+        async chat(): Promise<ModelReply> {
+          calls++;
+          // 100 起是"换个人、别再打转"那一段（见下面第 ② 组断言）
+          if (calls > 100) return { content: `${a.name}答` };
+          // 每圈同一把刀同样的参数：周期 1、三遍命中一次护栏，喊完清空历史
+          return { content: "", toolCalls: [{ id: `c${calls}`, name: "read_file", args: { path: "/a.txt" } }] };
+        },
+      }),
+      onEvent: (e) => events.push(e), onUsage: () => {},
+    });
+
+    await session.say("u1", "alice", "@运营 查一下", true, ["ops"]);
+    await session.settled();
+
+    // ① 硬停本身
+    const nudges = events.filter((e) => e.type === "user_message" && (e as { origin?: string }).origin === "loop_guard");
+    expect(nudges).toHaveLength(5); // engineFor 配的上限
+    const ended = events.filter((e) => e.type === "turn_ended" && (e as { agentId?: string }).agentId === "ops");
+    expect(ended).toHaveLength(1);
+    expect(ended[0]).toMatchObject({ outcome: "error" });
+    expect(String((ended[0] as { error?: string }).error)).toContain("护栏");
+    // 有限：周期 1 × 3 遍 = 每 3 圈一次护栏，5 次就是 15 圈。没有硬停时它永不结束
+    expect(calls).toBe(15);
+
+    // ② 硬停是**这一条 turn** 的收口，不是这条会话的墓碑：drain 的 per-job catch
+    // 接住那个异常之后，后面排上的照跑。要是让它把协调器卡死，症状就是"从此这个
+    // 群里谁说话都没人答"——比原来那条打转的 turn 更糟
+    calls = 100; // 下一轮回一句话就收口，不再打转
+    await session.say("u1", "alice", "@广告 换你", true, ["ads"]);
+    await session.settled();
+    expect(events.some((e) => e.type === "assistant_message" && (e as { agentId?: string }).agentId === "ads")).toBe(true);
     store.close();
   });
 });

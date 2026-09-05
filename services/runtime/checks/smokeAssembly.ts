@@ -162,7 +162,11 @@ async function scenarioMainFlow(): Promise<void> {
             onUsage: () => {},
             memory: createInMemoryWorkspaceMemory(),
             agentWriter: createInMemoryAgentWriter(),
+            isMember: async () => true,
             relayMaxDepth: async () => 6,
+            // 冒烟用的是一个假型号，目录里查不到窗口 —— 一律「不知道」，
+            // 自动压缩因此不触发（shouldAutoCompact 见 undefined 直接 false）
+            contextWindowOf: () => undefined,
           });
           activeSessions.set(sessionId, { session, workspaceId: ws });
           return { sessionId };
@@ -313,7 +317,7 @@ async function scenarioAssemblyResilience(): Promise<void> {
       /* 不会被调用 */
     },
     approve() {
-      return false;
+      return "no_pending";
     },
     backlog() {
       return [];
@@ -325,6 +329,9 @@ async function scenarioAssemblyResilience(): Promise<void> {
       return -1;
     },
     initiatorUid() {
+      return null;
+    },
+    currentAgentId() {
       return null;
     },
     createdByUid() {

@@ -430,6 +430,9 @@ export function deriveMessages(
   const today = dayOfLastEvent(events);
   // 围栏 system 消息单独记着：context_compacted 清场时它要被抬回来
   let systemMessage: SystemChatMessage | null = null;
+  // agent 身份快照（#957 A-3）：同 workspaceMemoryPrompt——最新一条胜出，
+  // 主循环结束后拼一次到 system 尾部（见下方）
+  let agentBrief: string | null = null;
   // 工作区记忆快照（#949）：最新一条胜出，主循环结束后统一拼一次（见下方）
   let workspaceMemoryPrompt: string | null = null;
   const boundary = compression ? fidelityBoundary(events, compression.keepRecentTurns, barren) : 0;
@@ -663,18 +666,28 @@ export function deriveMessages(
         break;
 
       case "agent_briefed": {
-        // 注入为 user 消息，手法同 subagent_briefed / skill_invoked
-        //（中途插 system 各家方言兼容性参差，ADR-0047 决定 1）。
         // **措辞刻意与 subagent 那条不同**：群聊里这只 agent 说的话是说给群里的
-        // 人听的，不是交回给谁的返回值。照抄那条会给模型灌一句关于自己身份的假话
+        // 人听的，不是交回给谁的返回值。照抄那条会给模型灌一句关于自己身份的假话。
+        //
+        // 焊进围栏 system 尾部、最新一条胜出（#957 A-3，把 #949 给
+        // workspace_memory_loaded 的那份教训套到同族的这条上）。原来是「事件位置
+        // 一条 user 消息」，两个后果都是静默的：
+        //   ① 改了提示词会再落一条 brief（briefIfNeeded 只看 instructions 变没变），
+        //      两条 user 消息叠着 = 模型读到关于「我是谁」的新旧两套口径而不报错；
+        //   ② context_compacted 的 `messages.length = 0` 把它扫掉，而它既不在
+        //      system 里、也不在 modelContextScan 的幸存名单里——压一次之后这只
+        //      agent 就再也不知道自己是谁了。焊进 system 两个后果一起免疫。
+        // 排在 workspaceMemoryPrompt **之前**：先知道自己是谁，再读记着的事。
         const others = event.roster.length
           ? `群里还有：${event.roster.map((r) => `${r.name}（${r.description}）`).join("、")}。` +
             `要谁搭手就在你的回复里 @ 他的名字。`
           : "";
-        messages.push({
-          role: "user",
-          content: `[你是这个工作区里的「${event.name}」。${others}]\n${event.instructions}`,
-        });
+        const text = `[你是这个工作区里的「${event.name}」。${others}]\n${event.instructions}`;
+        // 没有围栏 system 时（旧日志 / 没带 workspace 的裸装配）退回事件位置那条
+        // user 消息 —— 理由同 project_instructions：那种日志本来就没有清场保护
+        // 可言，但「我是谁」是这只 agent 能不能开口的前提，宁可退化不能没有
+        if (systemMessage) agentBrief = `\n${text}`;
+        else messages.push({ role: "user", content: text });
         break;
       }
 
@@ -797,6 +810,10 @@ export function deriveMessages(
   }
   flushDeferred(); // 日志停在组中间（app 退出/正在跑）：插话不丢
 
+  // agent 身份块拼在 system 末尾（#957 A-3），**排在工作区记忆之前**：
+  // 先知道自己是谁，再读记着的事。systemMessage 为 null 时上面那个 case 已经
+  // 退回 user 消息了，这里不会有值
+  if (systemMessage && agentBrief) systemMessage.content += agentBrief;
   // 工作区记忆块拼在 system 末尾（#949）。systemMessage 为 null（旧日志 / 没带 workspace）时静默不补造，同 memory_loaded
   if (systemMessage && workspaceMemoryPrompt) systemMessage.content += workspaceMemoryPrompt;
 

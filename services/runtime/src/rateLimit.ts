@@ -35,8 +35,9 @@ export const CREATE_BUCKET: BucketSpec = { capacity: 5, refillPerMin: 2 };
 const THROTTLE_LOG_WINDOW_MS = 60_000;
 
 export interface RateLimiter {
-  /** 扣一个令牌。true = 放行；false = 这一刻没额度了 */
-  take(key: string): boolean;
+  /** 扣 n 个令牌（缺省 1）。true = 放行（已扣）；false = 这一刻没额度了
+      （不扣，桶不动——半扣半留会让"扣了多少"这件事本身变得不可推导） */
+  take(key: string, n?: number): boolean;
 }
 
 interface Bucket {
@@ -54,7 +55,7 @@ export function createRateLimiter(spec: BucketSpec, now: () => number = Date.now
   const idleMs = spec.capacity / perMs;
 
   return {
-    take(key) {
+    take(key, n = 1) {
       const t = now();
       const b = buckets.get(key) ?? { tokens: spec.capacity, at: t };
       b.tokens = Math.min(spec.capacity, b.tokens + (t - b.at) * perMs);
@@ -68,11 +69,11 @@ export function createRateLimiter(spec: BucketSpec, now: () => number = Date.now
         }
       }
 
-      if (b.tokens < 1) {
+      if (b.tokens < n) {
         buckets.set(key, b);
         return false;
       }
-      b.tokens -= 1;
+      b.tokens -= n;
       buckets.set(key, b);
       return true;
     },
@@ -83,8 +84,11 @@ export type ThrottleKind = "say" | "turn" | "create";
 
 export interface FrameRateLimiter {
   /** true = 放行。false = 超速，调用方负责回一条**看得见**的拒绝
-      （静默丢弃会让人以为消息发出去了） */
-  allow(kind: ThrottleKind, uid: string): boolean;
+      （静默丢弃会让人以为消息发出去了）。n（缺省 1，#957 B-I5）：一条
+      @ 了 N 个 agent 的 say 帧本该起 N 次真花钱的模型调用，只按一个
+      token 扣的话，@ 越多人反而越便宜——限的应该是"这一刻会花多少次
+      钱"，不是"发了几条帧" */
+  allow(kind: ThrottleKind, uid: string, n?: number): boolean;
 }
 
 /** 三档合一，外加"被限流的一个时段只记一笔"的日志收口。 */
@@ -102,8 +106,8 @@ export function createFrameRateLimiter(opts: {
   const loggedAt = new Map<string, number>();
 
   return {
-    allow(kind, uid) {
-      if (limiters[kind].take(uid)) return true;
+    allow(kind, uid, n) {
+      if (limiters[kind].take(uid, n)) return true;
       const k = `${kind}:${uid}`;
       const t = now();
       const last = loggedAt.get(k);

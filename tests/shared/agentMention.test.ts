@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseMentions } from "../../src/shared/remote/agentMention.js";
+import { mentionTokens, parseMentions } from "../../src/shared/remote/agentMention.js";
 
 const roster = [
   { agentId: "admin", name: "管理员" },
@@ -67,5 +67,28 @@ describe("parseMentions（#928 切片 1a）", () => {
       { agentId: "phantom", name: "" },
     ];
     expect(parseMentions("看这个 @", rosterWithEmpty)).toEqual([]);
+  });
+});
+
+describe("mentionTokens（#957 F4——原始 token，不按名单解析）", () => {
+  it("@ 后到空白/行尾的原始 token；邮箱地址里的 @ 不算（边界判据同 parseMentions）", () => {
+    expect(mentionTokens("@运营 看下 @xx销量 邮箱 a@b.c")).toEqual(["运营", "xx销量"]);
+  });
+
+  it("没有 @ 就是空数组", () => {
+    expect(mentionTokens("大家好")).toEqual([]);
+  });
+
+  it("裸 @（后面立刻是空白或行尾）不产生 token", () => {
+    expect(mentionTokens("看这个 @")).toEqual([]);
+    expect(mentionTokens("看这个 @ 呢")).toEqual([]);
+  });
+
+  it("行首 @ 算边界", () => {
+    expect(mentionTokens("@运营 在吗")).toEqual(["运营"]);
+  });
+
+  it("中文标点后的 @ 也算边界（同 parseMentions）", () => {
+    expect(mentionTokens("你好，@运营 看下")).toEqual(["运营"]);
   });
 });

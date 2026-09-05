@@ -155,6 +155,22 @@ describe("contextUsed（校准版：账单锚点 + 未计费尾巴）", () => {
     expect(contextUsed(events)).toBe(1300);
   });
 
+  it("agent_briefed 只计最新一条（#957 A-3）：两条快照是同一段 system 尾部被整体替换，不是两段都还在", () => {
+    const events: SessionEvent[] = [
+      {
+        ...env(),
+        type: "assistant_message",
+        content: "答",
+        model: "m",
+        usage: { promptTokens: 1000, completionTokens: 200 },
+      },
+      { ...env(), type: "agent_briefed", agentId: "ops", name: "运营", instructions: "a".repeat(400), roster: [] },
+      { ...env(), type: "agent_briefed", agentId: "ops", name: "运营", instructions: "b".repeat(400), roster: [] },
+    ];
+    // 逐条累加会算成 1400 —— 那是把一段已经被替换掉的自我介绍也算进上下文
+    expect(contextUsed(events)).toBe(1300);
+  });
+
   it("workspace_memory_loaded 故意不计——本文件只服务本机圆环，云会话页不读它（#949 review finding 3）", () => {
     const events: SessionEvent[] = [
       {

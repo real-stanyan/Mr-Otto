@@ -95,6 +95,52 @@
 // 甩回去）。复审 fix round 1 补了两条：归档后不再接力、扫描窗口按每只 job
 // 起跑前的日志尾（scanFrom）而不是它的开场白 seq 划界——详见 relayAfterTurn
 // 自己的注释。
+//
+// 自查第一批（#957 Task 4a）在这个文件里改了七处，每一处都是"投影必须可从日志
+// 推导"这条硬规则的一次落地：
+//   ① **合成收口收到日志尾**（F1）：runJob 两处合成的 turn_ended（agent 被删 /
+//      engine 之前抛错）与补跑段那条，readUpToSeq 一律取 lastSeqSeen 而不是
+//      job.opening.seq。协调器会把同一只 agent 的后续点名**折叠进同一个 job**
+//      （enqueue 去重），只收 opening 那条的口，折叠进来的那几条就永远等不到
+//      任何 turn_ended——openTurns 把它们算作「排队中」直到天荒地老。
+//   ② **接力现取名单**（F3）：relayAfterTurn 不再吃 runJob 起跑那一刻的 roster，
+//      自己 `await opts.agents()`。管理员可以在同一轮里 create_agent 建出一只
+//      新 agent 再 @ 它，旧快照里没有它，那句 @ 会静默落空。
+//   ③ **未知 @ 出声**（A-6）：这一轮 @ 了、但没落到名单上的那几个 token 各报一次。
+//      静默丢掉的话，一句「@财务 你来」和一句闲聊在日志里长得一模一样。判据逐
+//      token 算、与"有没有别人被点到"无关（复审 Minor 1：混着的一句里那个未知的
+//      仍会被吞）；「解析得出」= 名单里有名字是这个 token 的前缀（同 parseMentions
+//      自己的匹配规则，等号判会被「@运营，帮忙」这种贪婪切词骗过）。
+//   ④ **depth 在起跑那一刻算**（A-4）：openingDepthFor 是「点了我、还没被我的
+//      turn_ended 收口的那些 user_message 取 max」，而这一轮的 turn_ended 一落盘
+//      就把它们全收了——放进 relayAfterTurn 里现算答案恒等于 opening 自己那一格。
+//      与 scanFrom 同一个时刻捕获。否决了内存 pendingDepth（重启即丢，#933）。
+//      这个数**在 runJob 最顶上算一次、三处共用**（复审 Important 1 / Minor 5）：
+//      接力 depth、接力棒上的连接器要不要审批、归档之后这一棒还跑不跑——三处
+//      问的都是同一个问题「这一轮是不是在替接力棒干活」，各写各的判据必然分家。
+//   ⑤ **mentions 去重**（F7）：say() 里 `[...new Set(...)]`，落盘与入队两侧口径
+//      一致——openTurns 按 mentions 逐个展开，重复一次就多一行永远收不了口的
+//      「排队中」。
+//   ⑥ **接力棒上的连接器要点火者批**（B-C3）：`openingDepth > 0` 时 buildPxTools
+//      的 requiresApproval 掀成 true。审批人不变（仍是 job.fromUid），只是"上一只
+//      agent 替他叫起的这一轮"上多问一句。**判据不是 `job.opening.relay`**——
+//      折叠进这个 job 的接力棒整条绕过那道闸（复审 Important 1），而那正是最普通
+//      的形状：人一句同时 @ 了 ops 与 ads，ops 跑完再接力 @ ads。
+//   ⑦ **在籍复查 + 降级名单不挂刀**（B-I1 / B-I7）：CloudSessionOpts.isMember 是
+//      **必需**字段（同 memory / agentWriter 的纪律，忘接线该编译不过）；runJob
+//      起跑前与补跑段各查一次，不在籍就落一条说得出原因的收口、不起 turn。
+//      AgentSpec.degraded = "这份名单是查询失败时的占位"，见到它就一把 px 刀
+//      都不挂——它的 `tools: []` 在白名单那张表里恰恰读作"整池放行"。
+//
+// 自查第一批还补上了 engineFor 缺的两格（#957 A-1 / E-F5）——桌面早就有、
+// runtime 从来没有的那两个 LoopEngine 选项：
+//   ⑧ **autoCompact**：不接线 = 云会话**永不压缩**，上下文单调增长到每一轮都
+//      因超窗 400，而每一轮都按全尺寸计在 owner 头上，没有任何自愈路径。窗口
+//      取 `contextWindowOf(此刻 adapter 的 model)`——现读不定死（同坑 ①）：
+//      currentAdapters 这张表就是为了让那个闭包读得到"这一刻是哪个型号"。
+//      CloudSessionOpts.contextWindowOf 是**必需**字段（同 memory / isMember）。
+//   ⑨ **loopGuardMaxNudges: 5**：ADR-0212 的"注一条话不停 turn"在本机成立是因为
+//      人就坐在那儿；群聊云会话没有那个人。5 次护栏还在打转就抛错收口。
 
 import { LoopEngine } from "../../../src/loop/engine.js";
 import type { EventStore } from "../../../src/session/store.js";
@@ -106,15 +152,16 @@ import { readFileTool } from "../../../src/tools/readFile.js";
 import { writeFileTool } from "../../../src/tools/writeFile.js";
 import { bashTool } from "../../../src/tools/bash.js";
 import { agentView } from "../../../src/session/agentView.js";
-import { parseMentions } from "../../../src/shared/remote/agentMention.js";
+import { parseMentions, mentionTokens } from "../../../src/shared/remote/agentMention.js";
 import { openTurns } from "../../../src/shared/turnLedger.js";
 import { createTurnCoordinator, type TurnJob, type EnqueueDecision } from "./turnCoordinator.js";
-import { createApprovalRouter } from "./approvalRouter.js";
+import { createApprovalRouter, type ApproveOutcome } from "./approvalRouter.js";
 import { fetchGrantedTools, buildPxTools, type PxCallDeps } from "./pxTools.js";
 import { filterGrantedByAllow, type AgentToolAllow } from "../../../src/shared/agentToolAllow.js";
 import { createWorkspaceMemoryTool } from "./workspaceMemoryTool.js";
 import type { WorkspaceMemoryStore } from "./workspaceMemory.js";
 import { SHARED_MEMORY_AGENT_ID } from "../../../src/shared/workspaceMemory.js";
+import { DEFAULT_AUTO_COMPACT } from "../../../src/shared/autoCompact.js";
 import { createCreateAgentTool } from "./createAgentTool.js";
 import type { WorkspaceAgentWriter } from "./agentRegistry.js";
 import {
@@ -125,9 +172,9 @@ import {
   DEFAULT_RELAY_MAX_DEPTH,
   decideRelay,
   mentionedAgents,
+  openingDepthFor,
   relayCapText,
   relayChain,
-  relayDepthOf,
   relayNudgeText,
   relayOpeningText,
 } from "../../../src/shared/agentRelay.js";
@@ -144,6 +191,13 @@ export interface AgentSpec {
   models: string[];
   /** 连接器白名单（spec §3，切片 2）：[] = 整池放行。接在 fetchGrantedTools 之后过一道 */
   tools: AgentToolAllow[];
+  /** 这份 spec 是**查询失败时的占位**，不是真名单（#957 B-I7）。daemon 的
+      `DEFAULT_WORKSPACE_AGENT` 带这个记号：它的 `tools: []` 在白名单那张表里
+      是"整池放行"（agentToolAllow.ts 的口径），而它出现的唯一理由是
+      workspace_agents 查询挂了——把一次 Supabase 抖动翻译成"这只占位 agent
+      可以用发起人全部的好友代理授权"是最不该有的默认。runJob 见到它就一把
+      px 刀都不挂。**只增不改**：真名单里没有这个字段，行为逐字节不变 */
+  degraded?: true;
 }
 
 /** 这句话点了哪几只。三级，缺一不可：
@@ -203,6 +257,25 @@ export interface CloudSessionOpts {
   /** 管理员替用户建 agent 的写入口（#954，切片 6）。**必需**：忘接线该编译不过，
       而不是安静地跑一个建不了 agent 的管理员（同 memory 的纪律） */
   agentWriter: WorkspaceAgentWriter;
+  /** 这个 uid 此刻还在这个工作区吗（#957 B-I1）。**必需**（同 memory / agentWriter
+      的纪律）：忘接线该编译不过，而不是安静地跑一条谁都能起的 turn。
+      frameHandler 在收帧那一刻已经验过一次籍，但 turn 可以在队列里等很久、
+      也可以被 relayAfterTurn 在几分钟后替他重新点起——起跑那一刻再查一次，
+      这条会话才不会替一个已经被踢出去的人继续烧 owner 的钱、继续用他的代理
+      授权。daemon 接的是 membershipCache（60s 记忆化）。
+      **三态不是两态**（#957 终审 Critical 1）：`"unknown"` = 这一刻查不出来
+      （Supabase 抖了），与 `false`（确认不在籍）分开——两者该做的动作相反。
+      runJob 那条路仍然 fail-closed（不跑），只是错误文案分开；补跑那条路见到
+      `"unknown"` 什么都不写、把开场白留到下一次重启。daemon 接的是
+      `membershipCache.isMemberOrUnknown` */
+  isMember: (uid: string) => Promise<boolean | "unknown">;
+  /** 这个型号的上下文窗口有多大（#957 A-1）。**必需**（同 memory / agentWriter /
+      isMember 的纪律）：忘接线该编译不过，而不是安静地跑一条永远不压缩的云会话。
+      `undefined` = 这个 id 的窗口是猜的（目录外的自定义 id / 没探测到的本机型号），
+      `shouldAutoCompact` 见到 undefined 一律不触发——宁可不压，也别按一个假数字
+      烧一次全量摘要。daemon 接 modelCatalog 的 findModel + contextWindowKnown；
+      测试与冒烟一律 `() => undefined`（那些装配没有真实型号可查） */
+  contextWindowOf: (model: string) => number | undefined;
 }
 
 export interface CloudSession {
@@ -219,11 +292,17 @@ export interface CloudSession {
       （turnCoordinator 的 running 只在队列真空了才落），所以是 while 不是
       一次 await */
   settled(): Promise<void>;
-  approve(callId: string, byUid: string, byLabel: string, decision: "approved" | "denied"): boolean;
+  approve(callId: string, byUid: string, byLabel: string, decision: "approved" | "denied"): ApproveOutcome;
   backlog(afterSeq: number): SessionEvent[];
   isRunning(): boolean;
   lastSeq(): number;
   initiatorUid(): string | null;
+  /** 此刻正在跑 turn 的是哪只 agent，turn 外为 null（#957 D7）。daemon 的
+      `recordUsage` 拿它给 `model_usage` 补 `agentId`——那个回调是一个捕获了
+      session 的闭包，且只在 `engine.chat()` 里才会被调（那时必有 turn 在跑），
+      这是它唯一能问到「这笔账是谁花的」的口。与 `initiatorUid()` 平级：
+      一个说「谁动的手」，一个说「哪只水獭动的手」 */
+  currentAgentId(): string | null;
   /** 建这条会话的人。frameHandler 用它判归档权限（issue #822） */
   createdByUid(): string;
   /** 日志里已经有 session_archived 了吗（issue #822）。**日志是事实，
@@ -238,6 +317,12 @@ export interface CloudSession {
       的分工，纯逻辑不碰 IO。 */
   archive(byLabel: string): boolean;
 }
+
+/** 重启补跑上限（#957 A-9 / #933）：一条能确定性弄死 daemon 的 turn 不该在
+    每次重启时无限重跑——那既是给 owner 无限计费的洞，也会把每次重启都拖成
+    一次「重放上次的死法」。每次补跑前先落一条 interrupted 记号（下方
+    catchUp），到这个数就不再排、改落一条真正的收口 */
+export const MAX_CATCHUP_ATTEMPTS = 3;
 
 export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   const { store, sessionId } = opts;
@@ -260,6 +345,12 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   // 不是换人格：engine 持有每会话状态（loopFingerprints 退化循环护栏、压缩
   // 标记），换人格不换这些就串味，运营那只的护栏指纹会算进广告那只
   const engines = new Map<string, LoopEngine>();
+  // agentId → 这台 engine **此刻**挂的 adapter（#957 A-1）。autoCompact 的
+  // contextWindow 是一个闭包，engine 每圈现调一次——它读的必须是这一刻的型号，
+  // 不是建 engine 那一刻的。engineFor 两条分支（新建 / 命中缓存）都往这里写，
+  // 缺一条就是「改了型号，窗口还按旧型号算」：窗口一大一小差两个数量级，
+  // 压缩要么永远不触发要么每轮都触发，而两种都不报错
+  const currentAdapters = new Map<string, ModelAdapter>();
   // agentId → 此刻的名字，runJob 每次刷新；memory 工具拼共享档前缀时现取
   // （#949）：改名之后下一 turn 的前缀就是新名字，不用重开会话
   const specNames = new Map<string, string>();
@@ -328,6 +419,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       到尾只看得见它自己的痕迹 + 全场的发言。engine 内部三处 model-facing
       的读一个都不用改（ADR-0047 的教训：挨个补过滤漏一处就安静地灌错上下文） */
   function engineFor(spec: AgentSpec): LoopEngine {
+    // 一次调用只造一把 adapter，两条分支共用（原来两条各调一次 opts.adapterFor）：
+    // 记进 currentAdapters 之后，autoCompact 的窗口 getter 才现读得到此刻的型号
+    const adapter = opts.adapterFor(spec);
+    currentAdapters.set(spec.agentId, adapter);
     const hit = engines.get(spec.agentId);
     if (hit) {
       // 每 turn 现取一次 adapter（#932 坑 ①，ADR-0202 同款）：型号来自这只
@@ -335,7 +430,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // 一 turn 生效」对改提示词成立、对改型号不成立**且静默**（账单会说话，
       // 界面不会）。不比对"变没变"——比对的判据一漏就是安静地继续用旧型号，
       // 而 setAdapter 是纯赋值，白设一次不花钱
-      hit.setAdapter(opts.adapterFor(spec));
+      hit.setAdapter(adapter);
       return hit;
     }
     // 云侧 memory 工具按 agent 各一把（前缀写谁的名字取决于是哪只在写）。名字现取：改名后下一 turn 的前缀就是新名字
@@ -347,7 +442,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     });
     const engine = new LoopEngine({
       store: agentView(store, spec.agentId),
-      adapter: opts.adapterFor(spec),
+      adapter,
       agentId: spec.agentId,
       // 每 turn 惰性重算：cachedPxTools 在 runJob 里于起跑前现拉，engine 的
       // rebuildTools()（runTurn 开头）读到的就是这一 turn 的授权快照
@@ -363,6 +458,25 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       approver: router,
       onEvent: notify,
       middlewares: [],
+      // 自动压缩（#957 A-1，ADR-0062）。桌面在 src/main/agent.ts 里一直有这一格，
+      // runtime 从头到尾没有——于是云会话的上下文**单调增长**，直到每一轮都因超窗
+      // 400，而每一轮都按全尺寸计在 owner 头上，且没有任何自愈路径（用户唯一能做的
+      // 是新开一条会话）。窗口**现读**这台 engine 此刻的 adapter 的型号：改型号
+      // 下一 turn 生效（同 #932 坑 ①），锁死建 engine 那一刻的型号就是同一个教训
+      // 在这一格上再犯一次。settings 取全局默认——云会话没有"设置页"这个概念，
+      // 每工作区可配阈值不是今天的需求（要的话在这加一个现读的 opts）
+      autoCompact: {
+        // 没有 `?? adapter` 兜底：engineFor 在**每条**路径上都先 set 再用，这台
+        // engine 存在就意味着那一格写过了。兜一个"建 engine 那一刻的 adapter"
+        // 只会把「Map 忘了写」这个 bug 变成静默的旧型号窗口——正是这一格要防的东西
+        contextWindow: () => opts.contextWindowOf(currentAdapters.get(spec.agentId)!.model),
+        settings: () => DEFAULT_AUTO_COMPACT,
+      },
+      // 护栏硬停（#957 E-F5）。本机会话故意不配：ADR-0006 的"无步数天花板"前提是
+      // 人就坐在那儿，停止键随时能按。群聊云会话没有那个人——真机上跑过 300 次
+      // 模型调用、99 次护栏、零进展、没有任何终点。5 = 喊满五次还在原地打转就认输，
+      // 走 engine 既有的 turn_ended{outcome:"error"} 收口，不新造 outcome
+      loopGuardMaxNudges: 5,
     });
     engines.set(spec.agentId, engine);
     return engine;
@@ -482,12 +596,57 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       「打转」。`scanFrom` 与 `engine.ts` 的 `readUpToSeq` 是同一个量——「这只 agent
       这一轮开跑前日志已经到哪儿」，只算一次 assistant_message 的归属边界不会有
       两个 job 抢同一段日志的问题 */
-  async function relayAfterTurn(job: TurnJob, spec: AgentSpec, roster: AgentSpec[], scanFrom: number): Promise<void> {
+  async function relayAfterTurn(job: TurnJob, spec: AgentSpec, scanFrom: number, openingDepth: number): Promise<void> {
     if (archived) return;
     const since = store.load(sessionId, { afterSeq: scanFrom });
     const mine = since.filter((e): e is AssistantMessageEvent => e.type === "assistant_message" && e.agentId === spec.agentId);
     const said = mine.map((e) => e.content).join("\n");
-    const targets = mentionedAgents(said, roster.map((a) => ({ agentId: a.agentId, name: a.name })), spec.agentId);
+    // **名单现取**（#957 F3）：不能用 runJob 起跑那一刻的那份快照——管理员可以在
+    // **这一轮里**用 create_agent 建出一只新 agent 再在同一条回复里 @ 它，而那只
+    // 在起跑快照里压根不存在。拿旧快照解析 = 那句 @ 静默落空，人看到的是"建好了
+    // 也叫了，就是没人接"
+    // 名单拉取失败**不算这一轮失败**（#957 复审 Minor 4）：turn 自己的 turn_ended
+    // 早已落盘、收口不欠账，抛出去只会让 drain 的 catch 打一行「turn 失败（agent=…）」
+    // ——那句话把一次接力没接上说成了一次回复失败，方向指错。这一棒不接，说一声
+    let roster: AgentSpec[];
+    try {
+      roster = await opts.agents();
+    } catch (err) {
+      console.warn(
+        `[otto-runtime] 接力取名单失败，这一棒没接上（session=${sessionId} agentId=${spec.agentId}）`,
+        err
+      );
+      return;
+    }
+    const candidates = roster.map((a) => ({ agentId: a.agentId, name: a.name }));
+    const targets = mentionedAgents(said, candidates, spec.agentId);
+    // 这一轮里 @ 了、但**没落到名单上**的那几个（#957 A-6，复审 Minor 1）：静默丢掉
+    // 的话，一句「@财务 你来核一下账」和一句普通闲聊在日志里长得一模一样——群里的人
+    // （和下一轮的模型）都不知道这一棒断在哪儿。
+    // 判据**逐 token 算、与 targets 空不空无关**：初版拿 `targets.length === 0` 当前提，
+    // 于是「@运营 @财务 你们看下」这种混着的一句里，@财务 又被静默吞掉了——而混着
+    // 恰恰是最常见的形状。
+    // 「解析得出」的判据是**有没有名单里的名字是这个 token 的前缀**，不是 `=== 名字`：
+    // mentionTokens 贪婪吃到下一个空白，「@运营，帮忙看下」切出来的 token 是
+    // 「运营，帮忙看下」，等号判会把一个 parseMentions 明明认得的 @ 报成「没这个人」。
+    // 前缀正是 parseMentions 自己的匹配规则（`text.startsWith(name, i + 1)`）。
+    // **自 @ 自然不在名单外**（spec 自己就在 roster 里），不用另开一条判断
+    const unresolved = mentionTokens(said).filter(
+      (t) => !roster.some((a) => a.name.length > 0 && t.startsWith(a.name))
+    );
+    // **降级名单不说这句话**（#957 终审 Minor 3）：`degraded` 的那份是
+    // workspace_agents 查询失败时的占位（daemon 的 DEFAULT_WORKSPACE_AGENT
+    // 一只），拿它做"名单里没有这个人"的判据，等于把每一个真实存在的 @ 都在
+    // 群里报成"查无此人（可能改过名或还没建）"——一句读起来像事实、实际只是
+    // 一次 Supabase 抖动的话，而且它会留在日志里给下一轮的模型读
+    if (unresolved.length > 0 && !roster.some((a) => a.degraded)) {
+      logChat(
+        "system",
+        "系统",
+        `「${spec.name}」@ 了「${unresolved.join("、")}」，名单里没有这个人（可能改过名或还没建），这一棒没人接`,
+        false
+      );
+    }
     if (targets.length === 0) return;
 
     let maxDepth: number;
@@ -503,7 +662,6 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // 这里还是会照样落 agent_relay + 开场白 + enqueue，在一间刚关掉的房间里继续接力
     // （最终审 Important ①a）
     if (archived) return;
-    const openingDepth = relayDepthOf(job.opening);
     const chain = relayChain(store.load(sessionId));
     const nameOf = (id: string): string => roster.find((a) => a.agentId === id)?.name ?? id;
     // 「最后说」取的是**最后一条**消息本身（不是拼起来的全部原话取头 200 字——
@@ -540,22 +698,38 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       自己——排空时捞出来的 job 可能来自另一条并发的 say() 调用，不能用外层
       闭包里那条调用自己的参数 */
   async function runJob(job: TurnJob): Promise<void> {
+    // **这一轮欠着的最大接力 depth，一进 runJob 就算一次**（#957 复审 Important 1）。
+    // 判据是「日志里点了我、又还没被我的 turn_ended.readUpToSeq 收口的那些
+    // user_message 取 max」（openingDepthFor），不是 `job.opening.relay` 这一个
+    // 事件——协调器会把后来的点名**折叠进同一个 job**（enqueue 去重），于是
+    // 「人先 @ 了 ops 和 ads、ops 跑完又接力 @ ads」这个最普通的形状里，ads 那个
+    // job 拿着的 opening 是**人**那条，`job.opening.relay` 是 undefined，而它这一轮
+    // 实际上正是在替接力棒干活。A-4 修的是 depth，这一条修的是同一处折叠在另外
+    // **两个**判据上的漏洞：接力棒上的连接器要不要点火者批（B-C3）、归档之后这一棒
+    // 还跑不跑。三处共用同一个数，就不会有第四处再各写一遍。
+    // 起跑前算一次就够：drain 是串行的，这之后到 runLoggedTurn 之间不可能有别的
+    // agent 的 turn 收口、也就长不出新的接力开场白；这期间人插的话 depth 恒为 0
+    const openingDepth = openingDepthFor(store.load(sessionId), job.agentId, job.opening);
     // 归档落地时，这只 agent 的 job 可能已经躺在队列里了——它是**接力**排上的
     // （relayAfterTurn 在一轮 @ 了两只时，两个 job 在归档发生之前就已经一起入队；
     // 见 tests/runtime/sessionService.test.ts「归档落在两个 relay job 之间」）。
     // drain() 的 while 循环本身不看 archived（ADR-0201 的既有分工：归档只翻标志
     // + 落一条 session_archived，不动 drain），只在这里拦一道才不会让一间已经
     // 关掉的房间继续起 turn、继续烧 owner 的钱（复审 Important ①b）。
-    // **只拦接力起的 job**（`job.opening.relay` 有值）：人自己刚说的那句话——
+    // **只拦接力起的 job**（`openingDepth > 0`，见函数开头那段）：人自己刚说的那句话——
     // 无论归档发生在它排队期间还是之前——都照跑，他配得上一个回复，即使几秒后
     // 有人把这条会话关了（决策 5 的既有取舍：归档不该让一个刚发言的人被晾着）。
+    // 判据从 `job.opening.relay` 换成 openingDepth（#957 复审 Minor 5）：折叠进
+    // 这个 job 的接力棒原本会绕过这道闸，在一间刚关掉的房间里跑满一整个 turn。
+    // 代价是折叠形状里那条**人**的话也跟着被跳过——它和接力棒共用一个 job，
+    // 拆不开；宁可少答一句，也不该在归档之后替一条接力链继续烧钱。
     // **不落 turn_ended**：这条会话已经收尾（session_archived 已经落盘），不是
     // 这只 agent 的失败，落一条错误事件只会在一份已经关闭的日志里制造一个假警报。
     // 代价：openTurns 的投影会把这条开场白**永远**算作"排队中"（它再也等不到
     // 一条 turn_ended 收口）——可以接受，因为归档的会话不会再有人盯着那盏灯；
     // 重启补跑那条路（本文件末尾 `if (!archived && stale.length > 0)`）已经把
     // "已归档的不补"钉死了，这里补的是同一进程内、归档落地那一刻已经在队里的漏网之鱼
-    if (archived && job.opening.relay) {
+    if (archived && openingDepth > 0) {
       console.log(`[otto-runtime] 会话已归档，跳过排队中的接力棒（session=${sessionId} agentId=${job.agentId} opening=${job.opening.seq}）`);
       return;
     }
@@ -571,6 +745,34 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // 失败记两遍（而且两条的 error 文案还不一样）
     let engineStarted = false;
     try {
+      // **起跑那一刻再验一次籍**（#957 B-I1）。frameHandler 收帧时验过一次，但
+      // 那一刻与这一刻之间隔着一整条队列——更要命的是接力：一条 relay 开场白的
+      // fromUid 仍是最初点火的那个人（spec §4.2），他可能在这条链跑到第 4 棒时
+      // 已经被踢出工作区，而这一棒还在用他的代理授权、烧 owner 的钱。
+      // **合成收口的 readUpToSeq 取 lastSeqSeen（落盘那一刻的日志尾）不是
+      // job.opening.seq**：这只 agent 可能还欠着更晚的、折叠进同一个 job 的开场白
+      // （去重命中），只收开场白那条的口会把后面那些永远留在「排队中」（#957 F1）
+      // **三态**（#957 终审 Critical 1）：`"unknown"` = 这一刻查不出来。这条路
+      // 上仍然 fail-closed（不跑）——发送者在线、看得见错误、能重发；但文案要
+      // 与"已不在这个工作区"分开：后者说的是一件确定的事（人会去找管理员），
+      // 前者只是"这一刻问不出来"（人重发一次就好）。说成同一句话，一次
+      // Supabase 抖动就会被读成"我被踢了"
+      const membership = await opts.isMember(job.fromUid);
+      if (membership !== true) {
+        notify(store.append({
+          sessionId,
+          ts: Date.now(),
+          type: "turn_ended",
+          outcome: "error",
+          error:
+            membership === "unknown"
+              ? "暂时确认不了你还在不在这个工作区，这条没跑，请重发"
+              : "发起人已不在这个工作区，这条 turn 不跑",
+          agentId: job.agentId,
+          readUpToSeq: lastSeqSeen,
+        }));
+        return;
+      }
       // agents() 每 turn 现取一次（同 hostUids）：建/改 agent 下一 turn 生效，
       // 不用重开会话——job 可能在队列里等了一会儿，起跑前重新读一次名单
       const roster = await opts.agents();
@@ -590,9 +792,13 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
           // 别为一条错误信息再去猜
           error: `智能体 ${job.agentId} 已不在这个工作区，这句话没人接`,
           agentId: job.agentId,
-          // 这一条收的是**它自己那条开场白**的口，不多不少：合成的收口没有
-          // 「跑到哪儿」，就按 job 拿着的那条算（后来的点名各有各的 job）
-          readUpToSeq: job.opening.seq,
+          // **落盘那一刻的日志尾**，不是 job.opening.seq（#957 F1）。原来那版
+          // 的理由是"合成的收口没有跑到哪儿，就按 job 拿着的那条算"——它漏了
+          // 协调器的去重：同一只 agent 被再点一次时不会新排一个 job，那条更晚的
+          // 开场白（人再 @ 一次、或别的 agent 接力过来的那条）**折叠进了同一个
+          // job**。只收 opening 的口，那几条就再也等不到任何 turn_ended，
+          // openTurns 把它们永远算作「排队中」，重启还会一遍遍重排
+          readUpToSeq: lastSeqSeen,
         }));
         return;
       }
@@ -602,18 +808,39 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       await loadMemoryIfChanged(spec);
       const engine = engineFor(spec);
 
-      let granted: Awaited<ReturnType<typeof fetchGrantedTools>> = [];
-      try {
-        granted = await fetchGrantedTools(opts.px, job.fromUid, await opts.hostUids());
-      } catch (err) {
-        // fetchGrantedTools 内部已经把单 host 失败挡住了；这里兜的是更外层的
-        // 意外（hostUids() 本身抛错等）——本 turn 就没有云代理工具，不阻塞发言
-        console.warn("px grants 拉取失败，本 turn 不带云代理工具", err);
+      // **降级名单一把刀都不挂，也不去拉**（#957 B-I7 + 复审 Minor 2）：
+      // spec.degraded = 这份名单是 workspace_agents 查询失败时的占位，它的
+      // `tools: []` 在白名单那张表里读作"整池放行"——把一次 Supabase 抖动翻译成
+      // "这只占位 agent 可以用发起人全部的好友代理授权"是最不该有的默认。
+      // 短路放在 hostUids()/fetchGrantedTools **之前**：结果注定被丢掉，那两次
+      // 网络往返（一次 Supabase + 每个成员一次 edge）每 turn 白打一遍
+      if (spec.degraded) {
+        console.warn(
+          `[otto-runtime] agent 名单处于降级占位（workspace_agents 查询失败），本 turn 不挂任何好友代理工具、也不拉授权` +
+            `（workspaceId=${opts.workspaceId} session=${sessionId} agentId=${spec.agentId}）`
+        );
+        cachedPxTools = [];
+      } else {
+        let granted: Awaited<ReturnType<typeof fetchGrantedTools>> = [];
+        try {
+          granted = await fetchGrantedTools(opts.px, job.fromUid, await opts.hostUids());
+        } catch (err) {
+          // fetchGrantedTools 内部已经把单 host 失败挡住了；这里兜的是更外层的
+          // 意外（hostUids() 本身抛错等）——本 turn 就没有云代理工具，不阻塞发言
+          console.warn("px grants 拉取失败，本 turn 不带云代理工具", err);
+        }
+        // 切片 2：白名单接在拉取之后、建刀之前。过滤只看 serverId（agentToolAllow.ts 头注）。
+        // [] = 整池放行，所以 1b 之前建的 agent 行为不变。
+        // **接力棒上的刀要点火的人批一次**（#957 B-C3）：判据是 `openingDepth > 0`
+        // 不是 `job.opening.relay !== undefined`（复审 Important 1）——后者只看
+        // job 手里那一个事件，折叠进来的接力棒会整条绕过这道闸。两者按构造等价：
+        // 人点名的开场白 relayDepthOf 恒为 0，接力开场白恒 ≥ 1。
+        // 审批人不变（上面的 router.setInitiator(job.fromUid)），只是这一棒多问一句：
+        // 这一轮不是他叫起来的，是上一只 agent 替他叫的，而刀用的仍是他的代理授权
+        cachedPxTools = buildPxTools(opts.px, job.fromUid, filterGrantedByAllow(granted, spec.tools), {
+          requiresApproval: openingDepth > 0,
+        });
       }
-      // 切片 2：白名单接在拉取之后、建刀之前。过滤只看 serverId（agentToolAllow.ts 头注）。
-      // [] = 整池放行，所以 1b 之前建的 agent 行为不变
-      cachedPxTools = buildPxTools(opts.px, job.fromUid, filterGrantedByAllow(granted, spec.tools));
-
       // 起跑**之前**捕获这只 agent 这一轮的扫描起点（复审 Critical ①，与
       // engine.ts 的 readUpToSeq 同一个量：这一轮开跑前日志已经到哪儿）。
       // 不能事后现算 `job.opening.seq`——同一只 agent 排队排两个 job 时，
@@ -628,7 +855,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       engineStarted = true;
       const outcome = await engine.runLoggedTurn(job.opening);
       // 切片 5（#950）：这只说完了才看它 @ 了谁。aborted 不接力（人按了停止，不该再点起别人）
-      if (outcome === "completed") await relayAfterTurn(job, spec, roster, scanFrom);
+      if (outcome === "completed") await relayAfterTurn(job, spec, scanFrom, openingDepth);
     } catch (err) {
       if (!engineStarted) {
         notify(store.append({
@@ -638,7 +865,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
           outcome: "error",
           error: err instanceof Error ? err.message : String(err),
           agentId: job.agentId,
-          readUpToSeq: job.opening.seq,
+          // 同上：日志尾不是 opening.seq（#957 F1）
+          readUpToSeq: lastSeqSeen,
         }));
       }
       throw err; // 照旧向上抛：落盘是补记事实不是吞错（drain 的 catch 打日志）
@@ -695,7 +923,12 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   const session: CloudSession = {
     async say(fromUid, label, text, mention, mentions) {
       const roster = await opts.agents();
-      const targets = resolveTargets(text, mention, mentions, roster);
+      // **去重**（#957 F7）：客户端把同一只 agent 报了两遍（chip 行重复、正文里
+      // @ 了两次都可能）时，开场白的 mentions 会带两份，而 openTurns 是按
+      // `for (const agentId of u.mentions)` 展开的——同一只在界面上就成了两行
+      // 「排队中」，其中一行永远收不了口（协调器只会排一个 job）。入队那侧
+      // 本来就去重（enqueue 命中 logged_only），落盘这侧也得去
+      const targets = [...new Set(resolveTargets(text, mention, mentions, roster))];
       // 客户端点了名、而这几个 id 名单里没有（它拿的是旧快照 / 名单刚变过 /
       // 那只刚被删掉）。resolveTargets 是**静默**过滤掉它们的，于是一句
       // "@管理员 帮我看下" 在发言人那侧和一句普通闲聊长得一模一样——他会
@@ -781,6 +1014,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       return currentInitiator;
     },
 
+    currentAgentId() {
+      return currentAgentId;
+    },
+
     createdByUid() {
       return opts.createdByUid;
     },
@@ -819,39 +1056,184 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   // 压根进不了 openTurns。已归档的不补：那条会话已经收摊了
   const stale = openTurns(seed);
   if (!archived && stale.length > 0) {
-    const decisions: EnqueueDecision[] = [];
-    const skipped: number[] = [];
-    for (const t of stale) {
-      const opening = seed.find((e) => e.seq === t.seq);
-      if (t.fromUid === null || !opening || opening.type !== "user_message") {
-        // 跳过的那条**仍然停在「排队中」**，只是这个进程不打算管它了——不说
-        // 一声的话，界面上一条永远转圈的行在服务器日志里没有任何对应物
-        skipped.push(t.seq);
-        continue;
+    // **补跑段整个变成 async**（#957 B-I1）：每条都要 `await opts.isMember`，
+    // 而装配本身仍然同步返回 session（daemon 那句 `let session!` 的赋值早于任何
+    // 回调回来）。等待点照旧走 inflight —— settled() 的 while 循环先等这条
+    // catchUp，再等它末尾 startDrain() 起的那条排空
+    const catchUp = async (): Promise<void> => {
+      const runnable: { agentId: string; fromUid: string; opening: UserMessageEvent; attempts: number }[] = [];
+      const kicked: { agentId: string; seq: number }[] = [];
+      const skipped: number[] = [];
+      // 在籍**查不出来**的那几条（#957 终审 Critical 1）：与 skipped 同一个归宿
+      // （开场白留着、一条收口都不写），单独一个数组只是为了那行 warn 说的是真话
+      const unknownMembership: number[] = [];
+      const exhausted: { agentId: string; seq: number }[] = [];
+      // stale 已经按 seq 升序（openTurns 顺着日志一路 push）：同一只 agent 的
+      // 多条开场白在这里天然也按 seq 升序出现，下面两处分组都借了这个顺序
+      for (const t of stale) {
+        const opening = seed.find((e) => e.seq === t.seq);
+        if (t.fromUid === null || !opening || opening.type !== "user_message") {
+          // 跳过的那条**仍然停在「排队中」**，只是这个进程不打算管它了——不说
+          // 一声的话，界面上一条永远转圈的行在服务器日志里没有任何对应物
+          skipped.push(t.seq);
+          continue;
+        }
+        // 上一个进程收下这句话的时候他还在籍，现在未必（#957 B-I1）。补跑是一条
+        // **没有任何人发起**的模型调用，替一个已经被踢出去的人重跑它是最不该有的
+        // **只在确认不在籍时才收口**（#957 终审 Critical 1）。daemon 启动时 N 条
+        // 会话错峰补跑，正是 Supabase 最不稳的那一刻；把一次抖动读成"被踢了"的
+        // 代价是 append-only 的——每条排队消息落一条永久收口，用户看到的是"你被
+        // 移出了工作区"，而事实上他好好地在群里。查不到 = 什么都不写，开场白留
+        // 到下一次重启再问一遍（它仍然停在「排队中」，那是诚实的状态）
+        const membership = await opts.isMember(t.fromUid);
+        if (membership === "unknown") {
+          unknownMembership.push(t.seq);
+          continue;
+        }
+        if (membership === false) {
+          kicked.push({ agentId: t.agentId, seq: t.seq });
+          continue;
+        }
+        // 补跑上限（#957 A-9 / #933，复审 Critical 修正）：计数是该 opening 之后、
+        // 这只 agent 的 interrupted 记号条数。**同一只 agent 的多条开场白共用
+        // 同一条计数线**——晚开的那条 seq 更大，它右边的记号天然更少，于是最多
+        // 晚一次到顶（不是各开一条独立的计数器）：到 3 次说明这条 turn 大概率
+        // 是确定性弄死 daemon 的那种，再排一次只是让 owner 再被计一次费、让下
+        // 一次重启继续死在同一个地方
+        const attempts = seed.filter(
+          (e) => e.type === "turn_ended" && e.agentId === t.agentId && e.outcome === "interrupted" && e.seq > t.seq
+        ).length;
+        if (attempts >= MAX_CATCHUP_ATTEMPTS) {
+          exhausted.push({ agentId: t.agentId, seq: t.seq });
+          continue;
+        }
+        runnable.push({ agentId: t.agentId, fromUid: t.fromUid, opening, attempts });
       }
-      decisions.push(coordinator.enqueue({ agentId: t.agentId, fromUid: t.fromUid, opening }));
-    }
-    if (skipped.length > 0) {
-      console.warn(
-        `[otto-runtime] 重启补跑跳过 ${skipped.length} 条（缺 fromUid 或开场白不是 user_message，它们会一直停在「排队中」）：` +
-          `session=${sessionId} seq=${skipped.join(",")}`
+      // **收口先落、再入队**：排在任何 job 起跑之前落盘，落的时候日志还是
+      // 「补跑开始前」那个静止的样子，不是某条 turn 跑了一半的中间态。
+      // 到顶与被踢那两个循环的 readUpToSeq 都取**那条开场白自己的 seq**（不是
+      // 日志尾，#957 Task 4c 复审）：日志尾此刻已经越过了同一只 agent 更晚、
+      // 仍然有效的开场白，用它会把那条也顺手收了口。runJob 那两处合成收口是
+      // 另一回事——那里没有「更晚的开场白」这个问题，仍取 lastSeqSeen（#957 F1）。
+      // 被踢那个循环还要等 runnableByAgent 建好（#957 终审 Important 1），所以
+      // 它排在下面第三位、不在这儿——见那段自己的注释
+      // 到上限的那几条：落一条**真正的**收口（outcome:"error"，不是 interrupted
+      // 记号），readUpToSeq 取**这条开场白自己的 seq**（复审 Critical 修正，不是
+      // lastSeqSeen）——它收口自己、也顺带收掉同一只 agent 更早的那些开场白
+      // （它们的 attempts 计数只会更高，必然也到了上限，见上面 attempts 那段的
+      // 单调性），但不动同一只 agent 更晚的开场白：它们的计数线还没到顶，留给
+      // 下面 runnable 那一段继续跑。不落这条的话，这条 turn 会在下一次重启时
+      // 又被 openTurns 捞回来，重新数一遍到 3、无限循环地"停止补跑"
+      for (const x of exhausted) {
+        notify(store.append({
+          sessionId,
+          ts: Date.now(),
+          type: "turn_ended",
+          outcome: "error",
+          error: "重跑 3 次仍未收口，停止补跑",
+          agentId: x.agentId,
+          readUpToSeq: x.seq,
+        }));
+      }
+      // interrupted 记号**每只 agent 一条，不是每条开场白一条**（复审 Critical
+      // 修正）：一只 agent 此刻可能有好几条还没收口的开场白（U1、U2 都点了它），
+      // 若各开一条 readUpToSeq = 那条自己的 seq-1，落给 U2 的那条 seq 会
+      // ≥ U1.seq，把 U1 也顺手收了口——U1 从此再也不会被补跑捞回来，静默消失。
+      // 改成整只 agent 共用一条：readUpToSeq 取这只 agent 全部 runnable 开场白
+      // 里**最小**的 seq 再减一，严格小于每一条的 seq，对全体天生中性
+      const runnableByAgent = new Map<string, { minSeq: number; fromUid: string; attempts: number }>();
+      for (const r of runnable) {
+        const cur = runnableByAgent.get(r.agentId);
+        // runnable 里同一只 agent 第一次出现的就是最小 seq（上面那条顺序说明）
+        if (!cur) runnableByAgent.set(r.agentId, { minSeq: r.opening.seq, fromUid: r.fromUid, attempts: r.attempts });
+      }
+      // 被踢那条收口**排在 runnableByAgent 构造之后**（#957 终审 Important 1）：
+      // 顺序「在籍的 U1 在前、被踢的 U2 在后、同一只 agent」时，U2 这条收口的
+      // readUpToSeq = U2.seq >= U1.seq，把还要跑的 U1 也一起关了——这一次 U1
+      // 照样跑（它已经在 runnable 里），但再崩一次 openTurns 就再也捞不到它，
+      // 没人答它，永远。同一只 agent 还有可跑的开场白时干脆不落这条：它那轮的
+      // turn_ended 收口时 readUpToSeq = 日志尾 >= U2.seq，自然把被踢那条也收了
+      // （协调器的去重本来也会把两条折叠进同一个 job）
+      for (const k of kicked) {
+        if (runnableByAgent.has(k.agentId)) continue;
+        notify(store.append({
+          sessionId,
+          ts: Date.now(),
+          type: "turn_ended",
+          outcome: "error",
+          error: "发起人已不在这个工作区，这条 turn 不跑",
+          agentId: k.agentId,
+          // readUpToSeq 取**这条开场白自己的 seq**（#957 Task 4c 复审），同旁边
+          // 到顶收口那条的口径：日志尾此刻已经越过了同一只 agent 更晚、仍然
+          // 有效的开场白，用它会把那条也顺手收了口——没人答它，且没有任何症状
+          readUpToSeq: k.seq,
+        }));
+      }
+      for (const [agentId, g] of runnableByAgent) {
+        notify(store.append({
+          sessionId,
+          ts: Date.now(),
+          type: "turn_ended",
+          outcome: "interrupted",
+          // N 取这只 agent 最早那条开场白的计数（+1）：它是这一组里 attempts
+          // 最大的一条（更早 = 右边被数进去的记号更多），到顶的判断因此不会
+          // 因为后来又有一条新开场白而被稀释
+          error: `重启补跑第 ${g.attempts + 1} 次`,
+          agentId,
+          readUpToSeq: g.minSeq - 1,
+        }));
+      }
+      const decisions: EnqueueDecision[] = runnable.map((r) =>
+        coordinator.enqueue({ agentId: r.agentId, fromUid: r.fromUid, opening: r.opening })
       );
-    }
-    // 补跑是一条**没有任何人发起**的模型调用（可能真花钱），所以它得说一声：
-    // 不打这行日志的话，"daemon 一重启就自己跑了一轮"在运维那边完全不可见。
-    // 数的是**真排上的那几条**不是 stale 全体：跳过的那些上面那条 warn 已经
-    // 单列过，两处都算一遍就成了"说跑了 3 个、实际跑了 1 个"
-    const enqueued = stale.filter((t) => !skipped.includes(t.seq));
-    if (enqueued.length > 0) {
-      console.log(
-        `[otto-runtime] 重启补跑 ${enqueued.length} 个未收口的 turn（session=${sessionId}）：` +
-          enqueued.map((t) => `${t.agentId}@${t.seq}(${t.state})`).join(" ")
-      );
-    }
-    // 后台跑：装配是同步的，补跑在后台自己跑完（drain 第一个 await opts.agents()
-    // 就让出了事件循环，daemon 那句 `let session!` 的赋值早于任何回调回来）。
-    // 走 startDrain 与 say() 同一条路，settled() 才等得到它（issue #937）
-    if (decisions.includes("start_turn")) startDrain();
+      if (skipped.length > 0) {
+        console.warn(
+          `[otto-runtime] 重启补跑跳过 ${skipped.length} 条（缺 fromUid 或开场白不是 user_message，它们会一直停在「排队中」）：` +
+            `session=${sessionId} seq=${skipped.join(",")}`
+        );
+      }
+      if (kicked.length > 0) {
+        console.log(
+          `[otto-runtime] 重启补跑不排 ${kicked.length} 条（发起人已不在这个工作区，同一只 agent 没有别的可跑开场白时各落一条 turn_ended 收口）：` +
+            `session=${sessionId} seq=${kicked.map((k) => k.seq).join(",")}`
+        );
+      }
+      if (unknownMembership.length > 0) {
+        console.warn(
+          `[otto-runtime] 重启补跑暂缓 ${unknownMembership.length} 条（在籍查询这一刻查不出来，不写收口、留到下次重启再问）：` +
+            `session=${sessionId} seq=${unknownMembership.join(",")}`
+        );
+      }
+      if (exhausted.length > 0) {
+        console.warn(
+          `[otto-runtime] 重启补跑 ${exhausted.length} 条到达上限（第 ${MAX_CATCHUP_ATTEMPTS} 次仍未收口，停止补跑）：` +
+            `session=${sessionId} seq=${exhausted.map((x) => x.seq).join(",")}`
+        );
+      }
+      // 补跑是一条**没有任何人发起**的模型调用（可能真花钱），所以它得说一声：
+      // 不打这行日志的话，"daemon 一重启就自己跑了一轮"在运维那边完全不可见。
+      // 数的是**真排上的那几条**不是 stale 全体：跳过 / 不在籍 / 到上限的上面
+      // 各有一行，都算一遍就成了"说跑了 3 个、实际跑了 1 个"
+      if (runnable.length > 0) {
+        console.log(
+          `[otto-runtime] 重启补跑 ${runnable.length} 个未收口的 turn（session=${sessionId}）：` +
+            runnable.map((r) => `${r.agentId}@${r.opening.seq}（第 ${r.attempts + 1} 次）`).join(" ")
+        );
+      }
+      // 走 startDrain 与 say() 同一条路，settled() 才等得到它（issue #937）
+      if (decisions.includes("start_turn")) startDrain();
+    };
+    // 与 startDrain 同一个形状：catch 兜住 fire-and-forget 的 unhandledRejection，
+    // finally 只清自己那条（此刻 inflight 多半已经是 catchUp 末尾起的那条排空，
+    // `inflight === p` 为假就不该清——清了 settled() 会提前 resolve）
+    const p = catchUp()
+      .catch((err) => {
+        console.error(`[otto-runtime] 重启补跑意外抛错（session=${sessionId}）`, err);
+      })
+      .finally(() => {
+        if (inflight === p) inflight = null;
+      });
+    inflight = p;
   }
 
   return session;

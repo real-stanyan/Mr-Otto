@@ -16,28 +16,66 @@ import type { CsModelRoute } from "../../../src/shared/remote/cloudSession.js";
 import { AGENT_HEADER, ON_BEHALF_HEADER, SESSION_HEADER, WORKSPACE_HEADER, parseBillingMe, type BillingMe } from "../../../src/shared/billing.js";
 
 export interface HostedRouteDeps { edgeBase: string; runtimeSecret: string; fetchImpl?: typeof fetch; now?: () => number }
-export interface HostedProbe { me(uid: string): Promise<BillingMe | null> }
+/** `"unreachable"` = **没问到**（网络挂了 / edge 非 2xx / 信封解不出），不是
+    「问到了，他没订阅」（#957 D3）。路由那一层两者结论相同（都走不了 hosted），
+    但换轨落账要把它们分开说：一次 edge 抖动被写成「你的订阅额度用完了」，用户
+    会去点续费按钮解决一个不存在的问题。`null` 保留给「明确没有订阅信息」的
+    调用方（测试与将来别的实现），createHostedProbe 自己不再产出它 */
+export interface HostedProbe { me(uid: string): Promise<BillingMe | null | "unreachable"> }
 
 /** /billing/v1/me 的 60s/uid 缓存客户端。带平台身份（x-runtime-secret + on-behalf-of）
     打 edge；失败（网络/非 2xx/解不出）也缓存 60s——一个坏掉的 edge 不该被每个 turn 打一次。 */
 export function createHostedProbe(deps: HostedRouteDeps): HostedProbe {
   const doFetch = deps.fetchImpl ?? fetch;
   const now = deps.now ?? (() => Date.now());
-  const cache = new Map<string, { v: BillingMe | null; exp: number }>();
+  const cache = new Map<string, { v: BillingMe | null | "unreachable"; exp: number }>();
   return {
     async me(uid) {
       const hit = cache.get(uid);
       if (hit && hit.exp > now()) return hit.v;
-      let v: BillingMe | null = null;
+      // 三种失败合成同一个 "unreachable"：它们的共同点是「这一刻问不出订阅状态」，
+      // 而不是「问出来了，答案是没有」。解得出的信封原样回（`status: "none"` 是
+      // 一个**确定的**答案，不是失败）
+      let v: BillingMe | null | "unreachable" = "unreachable";
       try {
         const res = await doFetch(`${deps.edgeBase}/billing/v1/me`, { headers: { "x-runtime-secret": deps.runtimeSecret, [ON_BEHALF_HEADER]: uid } });
-        v = res.ok ? parseBillingMe(await res.json()) : null;
+        v = res.ok ? (parseBillingMe(await res.json()) ?? "unreachable") : "unreachable";
       } catch {
-        v = null;
+        v = "unreachable";
       }
       cache.set(uid, { v, exp: now() + 60_000 });
       return v;
     },
+  };
+}
+
+/** 「这条会话上一次走的是哪条路 / 额度什么时候恢复」的记忆（#957 D3/D4 复审）。
+    **住在会话上，不住在 adapter 上**：daemon 的 `adapterFor` 每次 `engineFor`
+    都新造一台 adapter（每只 agent 一台、且 engine 命中缓存也 `setAdapter`），
+    记在闭包里等于每个 turn 都从 null 开始——第一次 decide() 永远不回调，
+    `probe_failed` / `no_subscription` / `subscription_active` 一次都发不出来
+    （单测三连 `prepare()` 打在同一台实例上，所以是绿的；真机上走不到）。
+    粒度是**每条会话一份、不是每只 agent 一份**：走哪条路是工作区级的事实，
+    两只 agent 先后翻过去应该在群里留下**一行**换轨，不是两行。 */
+export interface RouteMemo {
+  get(): "hosted" | "workspace" | null;
+  set(kind: "hosted" | "workspace"): void;
+  /** 网关说过额度用完、恢复时刻（epoch ms）；null = 没有已知的耗尽窗口。
+      不记的话，窗口重置之前的**每一个** turn 都要先烧一次注定 429 的网关
+      请求（外加 adapter 的退避），才发现该走自带 key 那条路 */
+  exhaustedUntil(): number | null;
+  noteExhausted(until: number): void;
+}
+
+/** 一份普通的内存 memo。daemon 每开一条会话房造一个；测试里也用它 */
+export function createRouteMemo(): RouteMemo {
+  let kind: "hosted" | "workspace" | null = null;
+  let until: number | null = null;
+  return {
+    get: () => kind,
+    set: (k) => { kind = k; },
+    exhaustedUntil: () => until,
+    noteExhausted: (u) => { until = u; },
   };
 }
 
@@ -54,7 +92,13 @@ export type RuntimeRoute =
     2. 否则工作区自带 key（ADR-0202）。
     3. 都没有 → blocked，两条出路都说清楚。 */
 export function decideRuntimeRoute(o: {
-  me: BillingMe | null;
+  /** `"unreachable"` 在这一层与 `null` 同义（都走不了 hosted）；分歧只在
+      调用方给 route_changed 写什么 reason（#957 D3） */
+  me: BillingMe | null | "unreachable";
+  /** **只喂 hosted 分支**（#957 D1/D2）：它是「这只 agent 在我们的网关上想点哪一款」。
+      自带 key 那条路一律用 `workspace.modelId` —— 白名单是群里任何成员都能改的
+      一串字符，而那把 key 是所有者的钱，把它原样发给所有者自己的 provider 是
+      另一回事 */
   requestedModel: string | null;
   workspace: { baseUrl: string; apiKey: string; modelId: string } | null;
   /** 扣谁的账 = 工作区所有者（ADR-0217）。`me` 也必须是**这个 uid** 的订阅快照 */
@@ -65,9 +109,13 @@ export function decideRuntimeRoute(o: {
   runtimeSecret: string;
   /** 这一 turn 是哪只工作区 agent（#946）。带上就落 usage_event.agent_id；桌面直连没有这一格 */
   agentId?: string;
+  /** 网关刚说过额度用完了（#957 D4）。true = 跳过 hosted 分支——不跳的话
+      改道时 resolveEndpoint 会把同一个已经 429 的端点原样交回去，
+      「改道」就成了「再撞一次墙」。缺席 = 现状 */
+  exhausted?: boolean;
 }): RuntimeRoute {
-  const me = o.me;
-  if (me && me.status === "active" && me.plan && me.models.length > 0) {
+  const me = o.me === "unreachable" ? null : o.me;
+  if (!o.exhausted && me && me.status === "active" && me.plan && me.models.length > 0) {
     const model = o.requestedModel && me.models.includes(o.requestedModel) ? o.requestedModel : me.models[0]!;
     return {
       kind: "hosted",
@@ -139,6 +187,29 @@ export interface HostedRuntimeAdapterDeps {
   sessionId: string;
   /** 这一台 adapter 服务哪只工作区 agent（#946）；桌面直连没有这一格 */
   agentId?: string;
+  /** 这只 agent 的型号白名单第一个（#957 D1）。**每次现读**（同 `cfg` 的纪律：
+      白名单在设置页里随时可改，会话房是长命的）。只影响 hosted 分支——
+      自带 key 那条路由所有者定型号（D2，见 decideRuntimeRoute 的 requestedModel）。
+      缺席/回 undefined = 退到工作区配的 modelId，再退到网关第一款。
+      **不能塞进 `cfg()` 的 modelId 里冒充工作区配置**：工作区没配 key 时
+      `cfg()` 整个是 null，白名单会跟着一起蒸发（这正是 D1 那个 bug） */
+  preferredModel?: () => string | undefined;
+  /** 这台 adapter 决出的路走到另一条上去了（#957 D3）。调用方据此落一条
+      `route_changed`——「钱从谁账上出」变了，这个事实日志里推不出来
+      （`assistant_message.route` 只说这个 turn 最终走了哪条路，不说为什么、
+      也不说上一条 turn 走的是哪条）。第一次决策不回调：没有「上一条路」可比 */
+  onRouteChanged?: (
+    from: "hosted" | "workspace",
+    to: "hosted" | "workspace",
+    reason: "probe_failed" | "no_subscription" | "quota_exhausted" | "subscription_active"
+  ) => void;
+  /** 换轨记忆与额度耗尽窗口，**每条会话一份**（见 RouteMemo）。
+      **必需**，不给默认值：写成可选就等于「忘接线那天它安静地退化成
+      每台 adapter 各记各的」——而那正是 D3 复审抓到的 no-op
+      （同 `FrameHandlerDeps.log` / `rateLimit` 的纪律） */
+  routeMemo: RouteMemo;
+  /** 判「额度窗口过了没有」用的时钟；测试注入。缺省 Date.now */
+  now?: () => number;
 }
 
 /** daemon.ts 的 adapterFor 装配点：把 decideRuntimeRoute 包成一个 ModelAdapter
@@ -152,13 +223,40 @@ export interface HostedRuntimeAdapterDeps {
 export function createHostedRuntimeAdapter(deps: HostedRuntimeAdapterDeps): ModelAdapter {
   let lastModel = "(未配置)";
   let prepared: RuntimeRoute | null = null;
+  const now = deps.now ?? (() => Date.now());
 
-  async function decide(): Promise<RuntimeRoute> {
+  /** 网关在这条会话上说过额度用完、且窗口还没到（#957 D4 复审 Minor 4）。
+      不记住的话，窗口重置之前每一个 turn 都要先烧一次注定 429 的网关请求 */
+  function quotaKnownExhausted(): boolean {
+    const until = deps.routeMemo.exhaustedUntil();
+    return until !== null && now() < until;
+  }
+
+  /** 换轨落账的唯一出口。memo 里那一格是**会话级**的，所以「变了没有」这个
+      判断跨 adapter、跨 agent、跨 turn 都成立 */
+  function noteRoute(kind: "hosted" | "workspace", reason: "probe_failed" | "no_subscription" | "quota_exhausted" | "subscription_active"): void {
+    const prev = deps.routeMemo.get();
+    // prev === null = 这条会话的第一次决策：没有「上一条路」可比，不算换轨
+    if (prev !== null && prev !== kind) deps.onRouteChanged?.(prev, kind, reason);
+    deps.routeMemo.set(kind);
+  }
+
+  /** `silent: true` = 只算、不留痕：既不 stamp `lastModel`，也不落换轨。
+      改道那条路要用它——那一刻请求体**已经拼好发出去过了**
+      （openaiCompatible 的「请求体在重试间不变」），此时改 `lastModel` 会让
+      `withUsage` / `assistant_message.model` 记下一个线上从没出现过的型号，
+      而 `request_envelope` 里是另一个（#957 D4 复审 Important 2）。
+      换不换得成由调用方判完再自己调 `noteRoute` */
+  async function decide(o?: { exhausted?: boolean; silent?: boolean }): Promise<RuntimeRoute> {
     const uid = deps.ownerUid;
     const ws = deps.cfg();
+    const me = uid ? await deps.probe.me(uid) : null;
+    const exhausted = o?.exhausted === true || quotaKnownExhausted();
     const route = decideRuntimeRoute({
-      me: uid ? await deps.probe.me(uid) : null,
-      requestedModel: ws?.modelId ?? null,
+      me,
+      // 白名单第一个 → 工作区配的 → 网关第一款（后两级在 decideRuntimeRoute 里）。
+      // 现读一次，不缓存（D1）
+      requestedModel: deps.preferredModel?.() ?? ws?.modelId ?? null,
       workspace: ws ? { baseUrl: ws.baseUrl, apiKey: ws.apiKey, modelId: ws.modelId } : null,
       ownerUid: uid,
       workspaceId: deps.workspaceId,
@@ -167,8 +265,25 @@ export function createHostedRuntimeAdapter(deps: HostedRuntimeAdapterDeps): Mode
       runtimeSecret: deps.runtimeSecret,
       // exactOptionalPropertyTypes：只有非空 agentId 才透传
       ...(deps.agentId ? { agentId: deps.agentId } : {}),
+      ...(exhausted ? { exhausted: true } : {}),
     });
+    if (o?.silent) return route;
     lastModel = route.kind === "blocked" ? "(无可用模型)" : route.model;
+    if (route.kind !== "blocked") {
+      // reason 的判定顺序 = 「这一刻最能解释换轨的那个事实」：额度用完是我们
+      // 刚刚亲眼看到的（最强），其次是探不到（我们这边的问题），再其次才是
+      // 「问到了、他确实没订阅」。换回 hosted 只有一个可能的解释
+      noteRoute(
+        route.kind,
+        route.kind === "hosted"
+          ? "subscription_active"
+          : exhausted
+            ? "quota_exhausted"
+            : me === "unreachable"
+              ? "probe_failed"
+              : "no_subscription"
+      );
+    }
     return route;
   }
 
@@ -185,12 +300,48 @@ export function createHostedRuntimeAdapter(deps: HostedRuntimeAdapterDeps): Mode
       if (route.kind === "blocked") {
         throw new Error(route.reason);
       }
+      // 托管路的 resolveEndpoint **不是常量**（#957 D4）：额度用完那一刻
+      // openaiCompatible 会 onReroute 一声、再 resolve 一次端点，指望调用方
+      // 这次给出另一条路（桌面 main/agent.ts 的 onReroute 就是这么用的）。
+      // 原来这里回的是同一个 `route.endpoint`，于是「改道」= 再撞一次同一堵墙，
+      // 第二次 429 之后整个 turn 报错——工作区明明配着一把能用的 key。
+      //
+      // **只在两边型号名相同时才改道**（D4 复审 Important 3）。请求体在重试之间
+      // 不变（openaiCompatible 的 body 拼一次），所以改道换的只有端点、换不了
+      // 型号名——而这里的型号名来自 hosted 分支，也就是**成员可改的白名单**。
+      // 把它发给所有者自己的 provider，正是 D2 明令禁止的那件事（成员填的字符
+      // 花所有者的钱）；桌面那条路不会撞上，因为它只在两侧都支持同一个 model id
+      // 时才走托管（`src/main/modelRoute.ts` 的 supportsModel）。名字不同就不改道，
+      // 让真正的 429 冒上去——「额度用完了」是一句真话，且带 resetAt。
+      // 根治的路是给 `ResolvedEndpoint` 加一个可选 `model` 并让 body 跟着重拼，
+      // 那是 adapter 层的形状改动，不在这一批里。
+      let exhaustedNow = false;
       const adapter =
         route.kind === "hosted"
           ? createOpenAICompatibleAdapter({
               baseUrl: route.endpoint.baseUrl,
               apiKey: "",
-              resolveEndpoint: async () => route.endpoint,
+              onReroute: (info) => {
+                exhaustedNow = true;
+                // 记住窗口，省掉之后每个 turn 那一次注定 429 的网关请求
+                // （D4 复审 Minor 4）。没给 resetAt 就不记——猜一个时长的话，
+                // 猜长了会在额度已经恢复之后继续绕开托管路（悄悄花所有者的 key）
+                if (info.resetAt !== undefined) deps.routeMemo.noteExhausted(info.resetAt);
+              },
+              resolveEndpoint: async () => {
+                if (!exhaustedNow) return route.endpoint;
+                // silent：这一刻请求体已经发出去过了，改 lastModel 就是让日志
+                // 记下一个线上从没出现过的型号（Important 2）
+                const next = await decide({ exhausted: true, silent: true });
+                // 没有第二条路（没配 key），或者两边型号名不同（见上）→ 原样把
+                // 托管端点交回去：第二次 429 之后 openaiCompatible 抛的就是**原错**，
+                // 用户看到的是「额度用完了」而不是一句我们自己编的、没有 resetAt
+                // 的话。代价是多打一次网关（两次），换来的是不必在这一层复述错误
+                if (next.kind !== "workspace" || next.model !== route.model) return route.endpoint;
+                // 真的换成了 —— 这时才落账（decide 是 silent 的）
+                noteRoute("workspace", "quota_exhausted");
+                return { baseUrl: next.baseUrl, apiKey: next.apiKey, route: "direct" as const };
+              },
               model: route.model,
             })
           : createOpenAICompatibleAdapter({

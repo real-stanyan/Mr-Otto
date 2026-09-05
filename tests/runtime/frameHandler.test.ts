@@ -12,17 +12,19 @@ import {
 import { CS_PROTOCOL_VERSION, encodeCs, csChannel, type CsDown } from "../../src/shared/remote/cloudSession.js";
 import type { CloudSession } from "../../services/runtime/src/sessionService.js";
 import type { ChatMessageEvent, SessionEvent } from "../../src/session/events.js";
+import { TURN_BUCKET } from "../../services/runtime/src/rateLimit.js";
 
 function fakeSession(overrides: Partial<CloudSession> = {}): CloudSession {
   return {
     say: async () => {},
     // #937：say() 不再等 turn 跑完，等待点搬进了 settled()。这一层不消费它
     settled: async () => {},
-    approve: () => true,
+    approve: () => "ok",
     backlog: () => [],
     isRunning: () => false,
     lastSeq: () => -1,
     initiatorUid: () => null,
+    currentAgentId: () => null,
     createdByUid: () => "creator-uid",
     archive: () => true,
     isArchived: () => false,
@@ -469,15 +471,15 @@ describe("createFrameHandler", () => {
     expect(sent).toEqual([{ cid: "c1", msg: { t: "denied", code: "not_authorized" } }]);
   });
 
-  it("approve：CloudSession.approve 回 false 时回 error 帧；回 true 时静默", async () => {
+  it("approve：CloudSession.approve 回 ok 时静默", async () => {
     const approveCalls: unknown[] = [];
-    const sessionFalse = fakeSession({
+    const sessionOk = fakeSession({
       approve: (...args) => {
         approveCalls.push(args);
-        return false;
+        return "ok";
       },
     });
-    const { deps, sent } = makeDeps({ getSession: () => sessionFalse });
+    const { deps, sent, logs } = makeDeps({ getSession: () => sessionOk });
     const handler = createFrameHandler(deps);
 
     await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
@@ -490,8 +492,40 @@ describe("createFrameHandler", () => {
     );
 
     expect(approveCalls).toEqual([["call-1", "u1", "Label(u1)", "approved"]]);
+    expect(sent).toHaveLength(0);
+    expect(logs).toHaveLength(0);
+  });
+
+  it("approve：no_pending 回「已经处理过或已过期」+ log 带 callId；not_allowed 回「只有发起人或 owner」+ log（#957 A-11/#927）", async () => {
+    const outcomes: ("ok" | "no_pending" | "not_allowed")[] = ["no_pending", "not_allowed"];
+    let i = 0;
+    const session = fakeSession({ approve: () => outcomes[i++]! });
+    const { deps, sent, logs } = makeDeps({ getSession: () => session });
+    const handler = createFrameHandler(deps);
+
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    sent.length = 0;
+
+    await handler.onSessionFrame(
+      "w1", "s1", "c1",
+      encodeCs({ t: "approve", callId: "call-1", decision: "approved" })
+    );
     expect(sent).toHaveLength(1);
-    expect(sent[0]!.msg.t).toBe("error");
+    expect(sent[0]!.msg).toEqual({ t: "error", msg: expect.stringContaining("这条审批已经处理过或已过期") });
+    expect(logs).toHaveLength(1);
+    expect(logs[0]).toContain("call-1");
+    expect(logs[0]).toContain("u1");
+
+    sent.length = 0;
+    await handler.onSessionFrame(
+      "w1", "s1", "c1",
+      encodeCs({ t: "approve", callId: "call-2", decision: "approved" })
+    );
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.msg).toEqual({ t: "error", msg: expect.stringContaining("只有发起人或 owner 能批这条") });
+    expect(logs).toHaveLength(2);
+    expect(logs[1]).toContain("call-2");
+    expect(logs[1]).toContain("u1");
   });
 
   it("backlog：回 sessions.get(...).backlog(afterSeq) 的全量结果，done:true", async () => {
@@ -697,6 +731,71 @@ describe("限流接线（issue #819）", () => {
     expect(buckets).toEqual(["turn"]);
     expect(sayCalls).toHaveLength(0);
     expect(sent.map((s) => s.msg.t)).toEqual(["error"]);
+  });
+
+  it("mentions 长度 3 的帧扣 3 个 turn 令牌（限速按点名数扣，#957 B-I5）", async () => {
+    const sayCalls: unknown[] = [];
+    const session = fakeSession({
+      say: async (...args: Parameters<CloudSession["say"]>) => { sayCalls.push(args); },
+    });
+    const allowCalls: unknown[] = [];
+    const { deps, sent } = makeDeps({
+      getSession: () => session,
+      rateLimit: { allow: (...args) => { allowCalls.push(args); return true; } },
+    });
+    const handler = createFrameHandler(deps);
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    sent.length = 0;
+    allowCalls.length = 0;
+
+    await handler.onSessionFrame(
+      "w1", "s1", "c1",
+      encodeCs({ t: "say", text: "@三个人", mention: true, mentions: ["a", "b", "c"] })
+    );
+
+    expect(allowCalls).toEqual([["turn", "u1", 3]]);
+    expect(sayCalls).toHaveLength(1);
+  });
+
+  // #957 终审 Minor 1：turn 桶容量 10。@ 了 11 只的帧扣 11 个令牌，而桶再满
+  // 也只有 10 个 —— 补充速率再快也补不到 11，于是这条帧**永远**发不出去，
+  // 用户看到的是一句"稍等一会儿再试"，等多久都没用
+  it("mentions 超过 turn 桶容量时夹到容量上限，帧发得出去（#957 终审 Minor 1）", async () => {
+    const sayCalls: unknown[] = [];
+    const session = fakeSession({
+      say: async (...args: Parameters<CloudSession["say"]>) => { sayCalls.push(args); },
+    });
+    const allowCalls: unknown[] = [];
+    const { deps, sent } = makeDeps({
+      getSession: () => session,
+      rateLimit: { allow: (...args) => { allowCalls.push(args); return true; } },
+    });
+    const handler = createFrameHandler(deps);
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    sent.length = 0;
+    allowCalls.length = 0;
+
+    const many = Array.from({ length: 11 }, (_, i) => `a${i}`);
+    await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "say", text: "@全体", mention: true, mentions: many }));
+
+    expect(allowCalls).toEqual([["turn", "u1", TURN_BUCKET.capacity]]);
+    expect(sayCalls).toHaveLength(1);
+  });
+
+  it("超容量的那条真被限速时，文案说清「一句话最多 @ N 只」（#957 终审 Minor 1）", async () => {
+    const { deps, sent } = makeDeps({ rateLimit: { allow: () => false } });
+    const handler = createFrameHandler(deps);
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    sent.length = 0;
+
+    const many = Array.from({ length: 11 }, (_, i) => `a${i}`);
+    await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "say", text: "@全体", mention: true, mentions: many }));
+
+    expect(sent).toHaveLength(1);
+    const msg = (sent[0]!.msg as { t: string; msg: string });
+    expect(msg.t).toBe("error");
+    expect(msg.msg).toContain(String(TURN_BUCKET.capacity));
+    expect(msg.msg).toContain("最多");
   });
 
   it("create 超速 → denied rate_limited（控制房只认 created/denied，回 error 等于让它白等超时）", async () => {

@@ -28,7 +28,7 @@ import { createSupabaseWorkspaceMemory } from "./workspaceMemory.js";
 import { createSupabaseAgentWriter } from "./agentRegistry.js";
 import { normalizeAgentTools } from "../../../src/shared/agentToolAllow.js";
 import type { PxCallDeps } from "./pxTools.js";
-import { createHostedProbe, createHostedRuntimeAdapter, probeModelRoute, withUsage } from "./hostedRoute.js";
+import { createHostedProbe, createHostedRuntimeAdapter, createRouteMemo, probeModelRoute, withUsage, type HostedRuntimeAdapterDeps, type RouteMemo } from "./hostedRoute.js";
 import { createDockerWorld, WORKDIR } from "../../../src/world/dockerWorld.js";
 import type { ModelAdapter } from "../../../src/model/adapter.js";
 import { EventStore } from "../../../src/session/store.js";
@@ -43,6 +43,7 @@ import {
 import { createWsTransport } from "../../../src/shared/remote/wsTransport.js";
 import { ADMIN_AGENT_ID } from "../../../src/shared/workspaceAgents.js";
 import { DEFAULT_RELAY_MAX_DEPTH, normalizeRelayMaxDepth } from "../../../src/shared/agentRelay.js";
+import { findModel } from "../../../src/shared/modelCatalog.js";
 import type { RemoteTransport } from "../../../src/shared/remote/transport.js";
 
 /** 镜像 sandbox.ts 的同名私有常量（未导出，故在此复制一份——两处改动需同步）。
@@ -74,6 +75,12 @@ const DEFAULT_WORKSPACE_AGENT: AgentSpec = {
   instructions: "",
   models: [],
   tools: [],
+  // 这是**占位**不是真名单（#957 B-I7）：上面那个 `tools: []` 在白名单那张表里
+  // 读作"整池放行"（agentToolAllow.ts 的口径），而这份 spec 出现的唯一理由是
+  // workspace_agents 查询失败——把一次 Supabase 抖动翻译成"这只占位 agent 可以
+  // 用发起人全部的好友代理授权"是最不该有的默认。sessionService 见到这个记号
+  // 就一把 px 刀都不挂（并 warn），其余行为不变
+  degraded: true,
 };
 
 /** 本地文件版 OrphansStore（sandbox.ts 的 opts.orphans 注入面）——落在
@@ -236,19 +243,40 @@ async function main(): Promise<void> {
       选哪个型号——它白名单的第一个就是默认，空白名单落回工作区那份（ADR-0202 的既有
       路径原样不变），**不做 env 兜底**，理由同上：兜底就是"忘了配的工作区默默烧维护者
       的钱"。扣费对象不受影响，仍然是 ownerUid（本函数的入参，ADR-0217），不随 agent 变。
-      `agentId` 只进请求头落账（#946，供 edge 记 usage_event.agent_id），不影响扣谁 */
-  function adapterFor(workspaceId: string, sessionId: string, ownerUid: string, agent: AgentSpec): ModelAdapter {
+      `agentId` 只进请求头落账（#946，供 edge 记 usage_event.agent_id），不影响扣谁。
+      **白名单与自带 key 是两条线**（#957 D1/D2）：原来这里把 `agent.models[0]` 塞进
+      `cfg()` 回的对象里冒充「工作区配的型号」，两个后果——① 工作区没配 key 时
+      `cfg()` 整个是 null，白名单跟着静默蒸发，托管路永远拿网关第一款（D1）；
+      ② 自带 key 那条路上，群里任何成员在设置页填的一串字符会被原样发给**所有者
+      自己的** provider（D2）。改成 `cfg()` 回纯工作区配置、白名单走
+      `preferredModel`（只喂 hosted 分支） */
+  function adapterFor(
+    workspaceId: string,
+    sessionId: string,
+    ownerUid: string,
+    agent: AgentSpec,
+    // 必需（不是 `deps["onRouteChanged"]` 那个可选类型）：这里只有一个调用方，
+    // 写成可选就是「忘了接线那天它安静地什么都不记」（同 FrameHandlerDeps.log 的纪律）
+    onRouteChanged: NonNullable<HostedRuntimeAdapterDeps["onRouteChanged"]>,
+    // 换轨记忆**由会话房持有**（#957 D3 复审 Critical）：本函数每次
+    // engineFor 都新造一台 adapter（每只 agent 一台），记在 adapter 闭包里
+    // 等于每个 turn 从零开始，第一次决策永远不回调 = 换轨落账整个是 no-op。
+    // 一条会话一份而不是一只 agent 一份：走哪条路是工作区级的事实，两只
+    // agent 先后翻过去该在群里留下**一行**换轨，不是两行
+    routeMemo: RouteMemo
+  ): ModelAdapter {
     return createHostedRuntimeAdapter({
       edgeBase: config.edgeBase,
       runtimeSecret: config.runtimeSecret,
       probe: hostedProbe,
-      // agent 的型号白名单第一个就是它的默认；空白名单 = 用工作区那份（ADR-0202）。
-      // **不做 env 兜底**，理由同 ADR-0202：兜底 = 忘了配的工作区默默烧维护者的钱
-      cfg: () => {
-        const ws = workspaceConfigStore.load(workspaceId)?.model ?? null;
-        const pick = agent.models[0];
-        return pick && ws ? { ...ws, modelId: pick } : ws;
-      },
+      // 纯工作区配置（ADR-0202 的原路）。**不做 env 兜底**，理由同 ADR-0202：
+      // 兜底 = 忘了配的工作区默默烧维护者的钱
+      cfg: () => workspaceConfigStore.load(workspaceId)?.model ?? null,
+      // agent 的型号白名单第一个就是它在网关上的默认；空白名单 = 退到工作区
+      // 配的那款，再退到网关第一款（都在 decideRuntimeRoute 里）
+      preferredModel: () => agent.models[0],
+      onRouteChanged,
+      routeMemo,
       ownerUid,
       workspaceId,
       sessionId,
@@ -446,6 +474,9 @@ async function main(): Promise<void> {
   ): CloudSession {
     const store = storeFor(workspaceId);
     const roster = new Set<string>();
+    // 这条会话的换轨记忆 + 额度耗尽窗口（#957 D3/D4 复审）。所有 agent 的
+    // adapter 共用这一份——见 adapterFor 的 routeMemo 参数
+    const routeMemo = createRouteMemo();
 
     const transport = createWsTransport({
       baseUrl: config.relayBase,
@@ -490,6 +521,11 @@ async function main(): Promise<void> {
     const recordUsage = (usage: TokenUsage, model: string): void => {
       const uid = session.initiatorUid();
       if (!uid) return; // usage 只在 chat() resolve 时产生，chat() 只在 turn 里被调
+      // 这笔账是哪只 agent 花的（#957 D7）。同一个理由 usage_event.agent_id
+      // 已经有了（ADR-0221），本地日志这一份原来没有——于是「这个工作区里
+      // 哪只水獭最烧钱」在日志里推不出来。exactOptionalPropertyTypes：只有
+      // 非空才落这一格（同 decideRuntimeRoute 里 agentId 的既有纪律）
+      const agentId = session.currentAgentId();
       store.append({
         sessionId,
         ts: Date.now(),
@@ -500,6 +536,7 @@ async function main(): Promise<void> {
         model,
         promptTokens: usage.promptTokens,
         completionTokens: usage.completionTokens,
+        ...(agentId ? { agentId } : {}),
       });
       // fire-and-forget：失败只 console.warn/console.error——权威记录已经
       // 在上面落盘了。async IIFE + try/catch 而不是 .then/.catch 链——
@@ -565,9 +602,40 @@ async function main(): Promise<void> {
         }),
       // 按 agent 造 adapter（#928 task-11）：型号来自它自己的白名单，记账
       // 口径不变——扣的仍是 ownerUid（ADR-0217），不是发起人
-      adapterFor: (a) => withUsage(adapterFor(workspaceId, sessionId, ownerUid, a), recordUsage),
+      adapterFor: (a) =>
+        withUsage(
+          adapterFor(workspaceId, sessionId, ownerUid, a, (from, to, reason) => {
+            // 换轨落账（#957 D3）：钱从谁账上出变了，这个事实日志里推不出来。
+            // 落盘之外还要 broadcast——「本轮改用工作区自己的 key 了」这句话
+            // 该在这个 turn 还没结束时就出现在群里，不是等下次刷新才翻出来
+            // （同桌面 main/agent.ts 的 onReroute 纪律）。
+            // 形状同上面的 `model_usage`：`ignorable`（模型不可见的注记）、
+            // 绕开 sessionService 的 notify 直接 append，所以 `lastSeqSeen`
+            // 这一刻会短暂落后一格——两条都不参与任何按 seq 的收口判断
+            // （#957 复审 Minor 5：已知、留着）
+            broadcast(store.append({ sessionId, ts: Date.now(), type: "route_changed", ignorable: true, from, to, reason }));
+          }, routeMemo),
+          recordUsage
+        ),
       px,
       hostUids: async () => [...(await queryMemberUids(workspaceId))],
+      // 起跑那一刻再验一次籍（#957 B-I1）。与 frameHandler 的那道闸共用同一个
+      // membershipCache（60s 记忆化 + fail-closed）：收帧时验过一次不够——turn
+      // 可以在队列里等很久，接力那条链更是可以在几分钟后替最初点火的那个人
+      // 重新起 turn，而他可能早已被踢出这个工作区
+      // **isMemberOrUnknown 不是 isMember**（#957 终审 Critical 1）：这只手同时
+      // 供 runJob（fail-closed，只是文案分开）与重启补跑（查不到就什么都不写）。
+      // 接 fail-closed 那个出口的话，daemon 启动那一刻的一次 Supabase 抖动会把
+      // 每条排队消息永久收口成"发起人已不在这个工作区"
+      isMember: (uid) => membership.isMemberOrUnknown(workspaceId, uid),
+      // 自动压缩要知道窗口有多大（#957 A-1）。**目录说不认识的型号一律回
+      // undefined**，不猜一个数——`contextWindowKnown` 那一位存在的全部理由就是
+      // 这个：拿兜底常量去算 0.75 阈值，压缩时机毫无意义（可能每轮都压，也可能
+      // 永远压不到），而两种都不报错。桌面 src/main/agent.ts 用的是同一条判据
+      contextWindowOf: (model) => {
+        const c = findModel(model);
+        return c?.contextWindowKnown ? c.contextWindow : undefined;
+      },
       onEvent: broadcast,
       onUsage: () => {}, // usage 记账走上面的 recordUsage 钩子，这个口留白（同 T9 report 的记录）
       memory: workspaceMemory,
@@ -863,8 +931,19 @@ async function main(): Promise<void> {
   if (cloudErr) {
     console.warn(`[otto-runtime] 启动时拉取存量云会话失败，本轮不恢复任何房间：${cloudErr.message}`);
   } else {
-    for (const row of (cloudSessions ?? []) as { id: string; workspace_id: string; publisher_uid: string }[]) {
+    const rows = (cloudSessions ?? []) as { id: string; workspace_id: string; publisher_uid: string }[];
+    // 启动错峰（#957 A-9 / #933）：openSessionRoom 装配出的 CloudSession 一开工
+    // 就可能触发重启补跑，而补跑起 turn = 起 sandbox 容器。N 条会话各自补跑时
+    // 若同一 tick 全部起步，就是 N 个容器同时抢这台 VPS 的 CPU/内存/磁盘 I/O
+    // ——错峰不改变总工作量，只把它摊开。**目标时刻线性**（复审 Minor 修正）：
+    // 每条会话相对同一个起点 `start` 晚 `i * 1500ms`，不是每次循环都新等一段
+    // 1500ms 的倍数——那样会把每一轮的 `ownerOf`/`openSessionRoom` 耗时也累进
+    // 下一条的等待里，导致越往后的会话累积延迟按 i² 增长而不是线性
+    const start = Date.now();
+    for (const [i, row] of rows.entries()) {
       try {
+        const wait = start + i * 1500 - Date.now();
+        if (wait > 0) await new Promise((r) => setTimeout(r, wait));
         const owner = await ownerOf(row.workspace_id);
         const session = openSessionRoom(row.workspace_id, row.id, owner, row.publisher_uid);
         // **日志是事实，archived 那一列只是缓存**（issue #822）：归档时写库
