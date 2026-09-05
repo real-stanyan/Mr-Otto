@@ -485,11 +485,29 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   const stale = openTurns(seed);
   if (!archived && stale.length > 0) {
     const decisions: EnqueueDecision[] = [];
+    const skipped: number[] = [];
     for (const t of stale) {
       const opening = seed.find((e) => e.seq === t.seq);
-      if (t.fromUid === null || !opening || opening.type !== "user_message") continue;
+      if (t.fromUid === null || !opening || opening.type !== "user_message") {
+        // 跳过的那条**仍然停在「排队中」**，只是这个进程不打算管它了——不说
+        // 一声的话，界面上一条永远转圈的行在服务器日志里没有任何对应物
+        skipped.push(t.seq);
+        continue;
+      }
       decisions.push(coordinator.enqueue({ agentId: t.agentId, fromUid: t.fromUid, opening }));
     }
+    if (skipped.length > 0) {
+      console.warn(
+        `[otto-runtime] 重启补跑跳过 ${skipped.length} 条（缺 fromUid 或开场白不是 user_message，它们会一直停在「排队中」）：` +
+          `session=${sessionId} seq=${skipped.join(",")}`
+      );
+    }
+    // 补跑是一条**没有任何人发起**的模型调用（可能真花钱），所以它得说一声：
+    // 不打这行日志的话，"daemon 一重启就自己跑了一轮"在运维那边完全不可见
+    console.log(
+      `[otto-runtime] 重启补跑 ${stale.length} 个未收口的 turn（session=${sessionId}）：` +
+        stale.map((t) => `${t.agentId}@${t.seq}(${t.state})`).join(" ")
+    );
     // void：装配是同步的，补跑在后台自己跑完（drain 第一个 await opts.agents()
     // 就让出了事件循环，daemon 那句 `let session!` 的赋值早于任何回调回来）
     if (decisions.includes("start_turn")) void drain();

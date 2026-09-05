@@ -67,7 +67,7 @@ describe("LoopEngine.runLoggedTurn（#932 坑 ②）", () => {
     expect(calls).toBe(1);
   });
 
-  it("尾上多出来一条点名我的，照旧再采样一圈（issue #871 的语义不变）", async () => {
+  it("尾上多出来一条点名我的，也**不**再采样一圈 —— 每条带 mentions 的发言在 say() 落盘那一刻就已经有一个 turn 归它（#932 复审）", async () => {
     const store = newStore();
     let calls = 0;
     const adapter: ModelAdapter = {
@@ -83,7 +83,10 @@ describe("LoopEngine.runLoggedTurn（#932 坑 ②）", () => {
     const engine = new LoopEngine({ store, adapter, tools: [], world, sessionId: "s1", agentId: "ops" });
     const opening = store.append({ sessionId: "s1", ts: 1, type: "user_message", content: "[alice]: @运营 在吗", fromUid: "u1", mentions: ["ops"] }) as UserMessageEvent;
     await engine.runLoggedTurn(opening);
-    expect(calls).toBe(2);
+    // 不变量：sessionService.say() 收下这句话时就给它排了 job（或并进了那只
+    // agent 还排在队里的 job），daemon 中途死掉由重启补跑接住。这里再采样一
+    // 圈 = 同一句话的第二个答案，不是捡回一条没人管的话
+    expect(calls).toBe(1);
   });
 
   it("没配 agentId 的 engine（本机会话）：mentions 不参与判断，尾上任何 user_message 都算没答的", async () => {

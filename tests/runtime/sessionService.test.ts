@@ -636,16 +636,12 @@ describe("多智能体云会话（#928 切片 1a）", () => {
         (e) => e.type === "user_message" && (e as { content: string }).content === "[carol]: @广告 也麻烦 @运营"
       )
     ).toBe(true);
-    // 三次发言 = 三条 user_message。
-    // assistant_message 是 **4** 条不是 3 条，这是 1b「落盘早于开跑」的一个
-    // 已知代价，写在这里免得下次有人把它当 bug 追：ops 第一轮说完话时，
-    // carol 那条（点了 ops）已经在日志尾上了，engine 的 unseenUserTail
-    // （ADR-0205）于是在同一个 turn 里又采样了一圈答它；随后 drain 排到
-    // carol 给 ops 排的那个 job，又正经跑了一轮。两轮读的都是整份日志，
-    // 答案不会错，多花的是一次模型调用。1a 里这条路走不到——那时 carol
-    // 的话要等它的 job 起跑才落盘，第一轮的日志尾上什么都没有
+    // 三次发言 = 三条 user_message，跑到的 turn 三轮（ops 第一轮、ads、
+    // 以及 message3 给 ops 排的那一轮）——一句话一个答案：带 mentions 的
+    // user_message 一律不算 `unseenUserTail` 里"我没答的"，因为它落盘那一刻
+    // 就已经有一个 turn 归它了（见 engine.ts 那段注释）
     expect(events.filter((e) => e.type === "user_message")).toHaveLength(3);
-    expect(events.filter((e) => e.type === "assistant_message")).toHaveLength(4);
+    expect(events.filter((e) => e.type === "assistant_message")).toHaveLength(3);
   });
 
   it("没提示词也没同伴的占位 agent(#928 终审,修复轮 3/5):brief 说不出任何内容,不该落 agent_briefed", async () => {

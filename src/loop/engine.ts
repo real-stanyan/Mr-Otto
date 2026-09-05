@@ -277,11 +277,18 @@ export class LoopEngine {
     const me = this.opts.agentId;
     return fresh.some((e) => {
       if (e.type !== "user_message") return false;
-      // 群聊里点了名的话只有被点的那只欠它一个回答（#932）：运营正在说话时
-      // 有人 "@广告 看投放"，运营不该为此再采样一圈——那句不是说给它的。
-      // 没配 agentId（本机会话）或这条没点名（群里随口一句）：照旧算没答的
+      // 群聊里**点了名的话一条都不算"我没答的"**——包括点名我自己的那些
+      // （#932 复审）。不变量在 sessionService.say()：每一条带 mentions 的
+      // user_message 落盘的同时就已经有一个 turn 归它——要么是它自己排的那个
+      // job，要么是去重命中、并到了那只 agent 还排在队里的 job 上（那一轮开跑
+      // 时读的是整份日志，这句话在里面）；daemon 中途死掉那种由装配时的重启
+      // 补跑（openTurns）接住。所以正在跑的这一轮再为它采样一圈，产出的是**同
+      // 一句话的第二个答案**，不是"捡回一条没人管的话"。
+      // 早退那一行保持逐字不变：没配 agentId（本机会话）或这条没点名（群里随
+      // 口一句、后台任务回注、退化循环护栏那条注入）照旧算没答的——ADR-0205 /
+      // ADR-0212 靠的就是它，一个字都不能动
       if (!me || !e.mentions || e.mentions.length === 0) return true;
-      return e.mentions.includes(me);
+      return false;
     });
   }
 
