@@ -168,6 +168,27 @@ export function agentNameOf(ws: WorkspaceSnapshot, agentId: string): string {
   return ws.agents.find((a) => a.agentId === agentId)?.name ?? agentId;
 }
 
+/** 贡献/撤回连接器那两个 for-await 循环跑完之后的失败聚合文案（#957 C-C1）。
+    两句分开、不合并成一句：贡献失败只是「这台没加进去，其余照旧生效」，撤回
+    失败却意味着**授权仍然有效**——那台连接器仍然共享给全体成员、凭证仍在
+    edge 的托管箱里，这两件事的严重程度不对称，措辞得把这份不对称说出来
+    （house rule：两个要用户做不同事的状态不能长一个样）。都空回 null——
+    调用方靠这个判断要不要保留错误态、还是直接关弹窗。server id 原样渲染，
+    不查名字（连接器目录没有展示名这一层，同 connectorRows 的口径）。 */
+export function connectorBatchErrorText(
+  failedContribute: readonly string[],
+  failedWithdraw: readonly string[]
+): string | null {
+  const lines: string[] = [];
+  if (failedContribute.length > 0) {
+    lines.push(`贡献失败：${failedContribute.join("、")}（已成功的已生效）`);
+  }
+  if (failedWithdraw.length > 0) {
+    lines.push(`撤回失败：${failedWithdraw.join("、")}——这台仍然共享给全体成员`);
+  }
+  return lines.length > 0 ? lines.join("\n") : null;
+}
+
 // ─── 云会话列表（Task 13，ADR-0199） ────────────────────────────────────
 
 /** ShellBridge.workspaceCloudList 一行的形状。不从 main/supabaseWorkspacesApi.ts

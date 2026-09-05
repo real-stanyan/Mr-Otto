@@ -30,7 +30,7 @@ import {
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs.js";
 import { useChat } from "../store.js";
 import {
-  cloudSessionRows, connectorRows, memberRows, sessionRows,
+  cloudSessionRows, connectorBatchErrorText, connectorRows, memberRows, sessionRows,
   type ConnectorCloudState, type CloudSessionListRow,
 } from "../lib/workspaceView.js";
 import { WorkspaceAgentsTab } from "./WorkspaceAgentsTab.js";
@@ -308,6 +308,7 @@ function ContributeConnectorDialog({
   const mcpServers = useChat((s) => s.mcpServers);
   const contribute = useChat((s) => s.contributeWorkspaceConnector);
   const withdraw = useChat((s) => s.withdrawWorkspaceConnector);
+  const refreshWorkspaceGroups = useChat((s) => s.refreshWorkspaceGroups);
   // 只有本机已接通的 http-transport server 能贡献进云端箱——同 escrowSync
   // 「进箱只收 live 的 https http-transport server」那条闸（ADR-0197）。
   // 进箱三条准入之一是 https（pxEscrow.buildEscrowDoc）——这里不滤，贡献
@@ -319,21 +320,55 @@ function ContributeConnectorDialog({
   const [sel, setSel] = useState<ProxySelection>(() => selectionFromAllow(mine));
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
+  // 本地错误态，不订阅全局 workspaceGroupsError——理由同 AgentEditorDialog：
+  // 那一格是整页共用的，弹窗刚打开可能还留着上一次跟这次批量操作毫不相干的
+  // 旧错误。每一步的失败原因都落在那一格里，这里用 getState() 现取快照
+  // （#957 C-C1：两个循环一个返回值都不看，是这条 finding 的根）
+  const [error, setError] = useState<string | null>(null);
 
-  // 每次开框重新从当前已贡献的那份回填——不带着上一次开框时的临时勾选状态
+  // 每次开框重新从当前已贡献的那份回填——不带着上一次开框时的临时勾选状态，
+  // 也不带上一次的失败提示
   const onDialogOpenChange = (o: boolean): void => {
-    if (o) setSel(selectionFromAllow(mine));
+    if (o) {
+      setSel(selectionFromAllow(mine));
+      setError(null);
+    }
     onOpenChange(o);
   };
 
   const doConfirm = async (): Promise<void> => {
     setBusy(true);
+    setError(null);
     const next = buildAllow(sel);
     const nextIds = new Set(next.map((a) => a.serverId));
     const prevIds = new Set(mine.map((c) => c.serverId));
-    for (const a of next) await contribute(ws.id, a.serverId, a.tools);
-    for (const id of prevIds) if (!nextIds.has(id)) await withdraw(ws.id, id);
+    // 每一步都收返回值，失败的那台记进各自的清单——不再让下一步成功把
+    // 上一步失败的痕迹抹掉（原 bug 的核心：两个循环一个返回值都不看）。
+    // opts.refresh:false 关掉每步自带的 refreshWorkspaceGroups()，循环
+    // 结束后统一刷一次：N 步不再是 2N 次往返，而且部分失败时也要刷出
+    // 已经生效的那部分真实状态，不能靠本地草稿去猜
+    const failedContribute: string[] = [];
+    for (const a of next) {
+      const ok = await contribute(ws.id, a.serverId, a.tools, { refresh: false });
+      if (!ok) failedContribute.push(a.serverId);
+    }
+    const failedWithdraw: string[] = [];
+    for (const id of prevIds) {
+      if (!nextIds.has(id)) {
+        const ok = await withdraw(ws.id, id, { refresh: false });
+        if (!ok) failedWithdraw.push(id);
+      }
+    }
+    await refreshWorkspaceGroups();
     setBusy(false);
+    const batchError = connectorBatchErrorText(failedContribute, failedWithdraw);
+    if (batchError !== null) {
+      // 撤回失败尤其不能被无条件关掉的弹窗盖过去：那台连接器这一刻仍然
+      // 共享给全体成员、凭证仍在 edge 的托管箱里——「我撤回了」与「我以为
+      // 我撤回了」不能长一个样（house rule）
+      setError(batchError);
+      return;
+    }
     onOpenChange(false);
   };
 
@@ -407,6 +442,8 @@ function ContributeConnectorDialog({
             })}
           </div>
         )}
+
+        {error && <p className="text-xs text-err whitespace-pre-wrap break-words">{error}</p>}
 
         <DialogFooter className="gap-2">
           <Button variant="ghost" size="sm" disabled={busy} onClick={() => onOpenChange(false)}>取消</Button>

@@ -848,9 +848,17 @@ interface ChatState {
   /** owner 踢人（对方的连接器授权跟着失效，见 workspaceManager 注释） */
   kickWorkspaceGroupMember(id: string, uid: string): Promise<boolean>;
   leaveWorkspaceGroup(id: string): Promise<boolean>;
-  /** tools: [] = 整服务放行（同 proxyShare.ts 的约定） */
-  contributeWorkspaceConnector(id: string, serverId: string, tools: readonly string[]): Promise<boolean>;
-  withdrawWorkspaceConnector(id: string, serverId: string): Promise<boolean>;
+  /** tools: [] = 整服务放行（同 proxyShare.ts 的约定）。opts.refresh 缺省 true——
+      多步批量调用方（ContributeConnectorDialog 的 doConfirm，#957 C-C1）传
+      { refresh: false } 逐步跳过这里的自动 refreshWorkspaceGroups()，循环
+      结束后自己只调一次，N 步不再是 2N 次往返 */
+  contributeWorkspaceConnector(
+    id: string,
+    serverId: string,
+    tools: readonly string[],
+    opts?: { refresh?: boolean }
+  ): Promise<boolean>;
+  withdrawWorkspaceConnector(id: string, serverId: string, opts?: { refresh?: boolean }): Promise<boolean>;
   /** 智能体名册住在 WorkspaceSnapshot.agents（issue #932）——这三个 action
       跟其余十一件套一个套路：经 ShellBridge 打一次 IPC，成功后
       refreshWorkspaceGroups() 重拉整份快照落地新名册，失败落
@@ -2117,25 +2125,25 @@ export const useChat = create<ChatState>((set, get) => ({
     return true;
   },
 
-  async contributeWorkspaceConnector(id, serverId, tools) {
+  async contributeWorkspaceConnector(id, serverId, tools, opts) {
     const r = await window.otter.workspaceContributeConnector(id, serverId, [...tools]);
     if (!r.ok) {
       set({ workspaceGroupsError: r.message });
       return false;
     }
     set({ workspaceGroupsError: null });
-    await get().refreshWorkspaceGroups();
+    if (opts?.refresh !== false) await get().refreshWorkspaceGroups();
     return true;
   },
 
-  async withdrawWorkspaceConnector(id, serverId) {
+  async withdrawWorkspaceConnector(id, serverId, opts) {
     const r = await window.otter.workspaceWithdrawConnector(id, serverId);
     if (!r.ok) {
       set({ workspaceGroupsError: r.message });
       return false;
     }
     set({ workspaceGroupsError: null });
-    await get().refreshWorkspaceGroups();
+    if (opts?.refresh !== false) await get().refreshWorkspaceGroups();
     return true;
   },
 
