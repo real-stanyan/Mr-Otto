@@ -455,7 +455,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // 在这一格上再犯一次。settings 取全局默认——云会话没有"设置页"这个概念，
       // 每工作区可配阈值不是今天的需求（要的话在这加一个现读的 opts）
       autoCompact: {
-        contextWindow: () => opts.contextWindowOf((currentAdapters.get(spec.agentId) ?? adapter).model),
+        // 没有 `?? adapter` 兜底：engineFor 在**每条**路径上都先 set 再用，这台
+        // engine 存在就意味着那一格写过了。兜一个"建 engine 那一刻的 adapter"
+        // 只会把「Map 忘了写」这个 bug 变成静默的旧型号窗口——正是这一格要防的东西
+        contextWindow: () => opts.contextWindowOf(currentAdapters.get(spec.agentId)!.model),
         settings: () => DEFAULT_AUTO_COMPACT,
       },
       // 护栏硬停（#957 E-F5）。本机会话故意不配：ADR-0006 的"无步数天花板"前提是

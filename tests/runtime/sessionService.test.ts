@@ -2219,25 +2219,34 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 云会话自动压缩（#957 A-1）。桌面在 src/main/agent.ts 里给 engine 递了
+// 云会话自动压缩（#957 A-1）。桌面在 src/main/agent.ts:852 给 engine 递了
 // autoCompact，runtime 的 engineFor 从头到尾没有——云会话因此**永远不压缩**，
 // 上下文单调增长到每一轮都 400，而每一轮都按全尺寸计在 owner 头上，且没有任何
-// 自愈路径。两条断言各盯一半：压缩真的发生了（且压完之后这只 agent 还知道自己
-// 是谁、记忆还在），以及护栏硬停真的接上了（云会话没有人按停止键）。
+// 自愈路径。三条断言各盯一块：压缩真的发生了（且压完之后这只 agent 还知道自己
+// 是谁、记忆还在）、护栏硬停真的接上了（云会话没有人按停止键）、硬停之后这条
+// 会话还活着。
 // ─────────────────────────────────────────────────────────────────────────────
 describe("云会话自动压缩（#957 A-1）", () => {
-  /** 每轮 2000 字的回复 + 一次 read_file（文件同样 2000 字）：ASCII 按 /4 估
-      token，两轮就把占用推过 2000 × 0.75 = 1500 的阈值。第三轮开跑前 engine
-      先看一眼占用 —— 那一刻触发自动压缩 */
-  const FILLER = "x".repeat(2000);
-  const bigWorld: ExecutionWorld = {
-    fs: { read: async () => FILLER, write: async () => {} },
+  /** 8000 个 ASCII 字符 ≈ 2000 token（estimateTokens 对非 CJK 是 /4），一条就把
+      占用推过 2000 × 0.75 = 1500 的阈值 —— 于是**下一个 turn 的第一圈**就该压。
+      这个形状是故意选的：云会话最常见的就是单圈 turn（问一句答一句），而
+      "第一圈压不压得动"正是这一条 finding 的要害（见下面 UNROUTED 的说明） */
+  const FILLER = "x".repeat(8000);
+  const world: ExecutionWorld = {
+    fs: { read: async (path) => `<content of ${path}>`, write: async () => {} },
     exec: async () => ({ stdout: "hi", stderr: "", exitCode: 0 }),
     http: { postJson: async () => ({}) },
   };
-  const SUMMARY = "摘要：运营看过 a.txt，接下来要盯退款";
+  const SUMMARY = "摘要：运营看过销量，接下来要盯退款";
+  /** 云端真正在用的那把 adapter（`createHostedRuntimeAdapter`）在 `prepare()`
+      跑完之前 `model` 是 `"(未配置)"` —— 路由是 prepare()/chat() 那一刻才决出来的，
+      而 daemon 的 `adapterFor` **每个 turn 现造一把**，所以每个 turn 的第一圈
+      都从这个占位起步。假 adapter 复刻这个形状，这条用例才分得清两种顺序：
+      engine 先判压缩再 prepare() 的话，第一圈拿 "(未配置)" 去查窗口 → 查不到 →
+      `shouldAutoCompact` 恒 false → 单圈 turn 从来不压缩（#957 A-1 复审 Important） */
+  const UNROUTED = "(未配置)";
 
-  it("占用越过阈值就自动压缩：摘要进上下文，brief 与 SHARED 记忆幸存，别的 agent 看不见这条摘要", async () => {
+  it("上一个 turn 撑大了上下文 → 下一个 turn 的第一圈就压：摘要进上下文，brief 与 SHARED 记忆幸存，别的 agent 看不见这条摘要", async () => {
     const store = newStore();
     // deriveMessages 只从 session_created.workspace 产出 system 消息 —— 没有它，
     // brief 与记忆块（都焊在 system 尾部）压根没有落脚处
@@ -2250,66 +2259,85 @@ describe("云会话自动压缩（#957 A-1）", () => {
 
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
-      store, world: bigWorld, px, hostUids: async () => [], memory,
+      store, world, px, hostUids: async () => [], memory,
       agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true,
       relayMaxDepth: async () => 6,
       agents: async () => AGENTS,
-      // 很小的窗（2000）——测试要的是"越过阈值"这个判据，不是真烧一个 128K 上下文
-      contextWindowOf: () => 2_000,
-      adapterFor: (a) => ({
-        model: a.models[0]!,
-        async chat(messages) {
-          const msgs = messages as { role: string; content: unknown }[];
-          // 压缩用的摘要请求走的是同一把 adapter（engine.compactInner）：
-          // 判据是最后那条 user 消息里的那句话
-          const last = String(msgs.at(-1)?.content ?? "");
-          if (last.includes("压缩成一份摘要")) return { content: SUMMARY };
-          if (a.agentId === "ads") { adsMessages.push(msgs); return { content: "广告答" }; }
-          opsMessages.push(msgs);
-          opsRound++;
-          if (opsRound <= 2) {
-            return { content: FILLER, toolCalls: [{ id: `c${opsRound}`, name: "read_file", args: { path: "/a.txt" } }] };
-          }
-          return { content: "看完了" };
-        },
-      }),
+      // 很小的窗（2000）——测试要的是"越过阈值"这个判据，不是真烧一个 128K 上下文。
+      // **只认路由决出来的那个 id**：daemon 那侧就是 findModel + contextWindowKnown，
+      // 认不出的 id（含 prepare() 之前的 "(未配置)"）一律 undefined
+      // **只给运营那只小窗**：广告那只也读得到运营说的那一大段（`spoken` 裁决），
+      // 给它同样的小窗它会自己压一次，第 ③ 组断言就变成"它压出了自己的摘要"而不是
+      // "它捡到了运营的检查点"——那正是这一组要分辨的两件事
+      contextWindowOf: (m) => (m === "m-ops" ? 2_000 : undefined),
+      // **每次现造一把**（同 daemon：hosted adapter 是每 turn 新建的），所以每个
+      // turn 的第一圈 model 都从 UNROUTED 起步
+      adapterFor: (a) => {
+        let routed = UNROUTED;
+        return {
+          get model(): string { return routed; },
+          async prepare(): Promise<void> { routed = a.models[0]!; },
+          async chat(messages) {
+            const msgs = messages as { role: string; content: unknown }[];
+            // 压缩用的摘要请求走的是同一把 adapter（engine.compactInner）：
+            // 判据是最后那条 user 消息里的那句话
+            if (String(msgs.at(-1)?.content ?? "").includes("压缩成一份摘要")) return { content: SUMMARY };
+            if (a.agentId === "ads") { adsMessages.push(msgs); return { content: "广告答" }; }
+            opsMessages.push(msgs);
+            opsRound++;
+            // 第一个 turn 一圈就说完（不带工具），但那一大段把占用顶过阈值
+            return { content: opsRound === 1 ? FILLER : "看完了" };
+          },
+        };
+      },
       onEvent: (e) => events.push(e), onUsage: () => {},
     });
 
     await session.say("u1", "alice", "@运营 看下销量", true, ["ops"]);
+    await session.settled();
+    // 第一个 turn 不该压（开跑那一刻占用还小），它只负责把上下文撑大
+    expect(events.filter((e) => e.type === "context_compacted")).toHaveLength(0);
+
+    await session.say("u1", "alice", "@运营 再看一次", true, ["ops"]);
     await session.settled();
 
     // ① 压缩真的发生了，而且记在运营那只头上
     const compacted = events.filter((e) => e.type === "context_compacted");
     expect(compacted).toHaveLength(1);
     expect(compacted[0]).toMatchObject({ agentId: "ops", trigger: "auto", summary: SUMMARY });
+    // 压缩落在第二个 turn 的第一次真实 chat() **之前**
+    expect(compacted[0]!.seq).toBeLessThan(events.filter((e) => e.type === "assistant_message").at(-1)!.seq);
 
     // ② 压缩之后那一轮：摘要进来了，brief 与 SHARED 记忆没被压掉
-    expect(opsRound).toBe(3);
+    expect(opsRound).toBe(2);
     const afterCompact = JSON.stringify(opsMessages.at(-1));
     expect(afterCompact).toContain("[上下文已压缩");
     expect(afterCompact).toContain(SUMMARY);
     expect(afterCompact).toContain("你管店铺运营"); // agent_briefed 的 instructions（#957 A-3 幸存）
     expect(afterCompact).toContain("SHARED");
     expect(afterCompact).toContain("共享档：周三投放");
+    expect(afterCompact).not.toContain(FILLER); // 被摘要替换掉了，不是叠上去
 
     // ③ agentView 隔离：随后起 turn 的广告看不见运营的这条摘要
     await session.say("u1", "alice", "@广告 你也看看", true, ["ads"]);
     await session.settled();
     expect(adsMessages).toHaveLength(1);
-    expect(JSON.stringify(adsMessages[0])).not.toContain(SUMMARY);
+    const adsSeen = JSON.stringify(adsMessages[0]);
+    expect(adsSeen).not.toContain(SUMMARY);
+    // 反面：它读到的是**未压缩的**那段真实历史（运营说的那一大段），不是"什么都没有"
+    expect(adsSeen).toContain(FILLER);
     store.close();
   });
 
-  it("护栏硬停接上了（loopGuardMaxNudges）：一直原地打转的模型在有限轮之后以 turn_ended{error} 收口，错误里说得出「护栏」", async () => {
+  it("护栏硬停接上了（loopGuardMaxNudges）：一直原地打转的模型在有限轮之后以 turn_ended{error} 收口，且这条会话还活着", async () => {
     const store = newStore();
     const events: SessionEvent[] = [];
     let calls = 0;
 
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
-      store, world: bigWorld, px, hostUids: async () => [],
+      store, world, px, hostUids: async () => [],
       memory: createInMemoryWorkspaceMemory(),
       agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true,
@@ -2321,6 +2349,8 @@ describe("云会话自动压缩（#957 A-1）", () => {
         model: a.models[0]!,
         async chat(): Promise<ModelReply> {
           calls++;
+          // 100 起是"换个人、别再打转"那一段（见下面第 ② 组断言）
+          if (calls > 100) return { content: `${a.name}答` };
           // 每圈同一把刀同样的参数：周期 1、三遍命中一次护栏，喊完清空历史
           return { content: "", toolCalls: [{ id: `c${calls}`, name: "read_file", args: { path: "/a.txt" } }] };
         },
@@ -2331,6 +2361,7 @@ describe("云会话自动压缩（#957 A-1）", () => {
     await session.say("u1", "alice", "@运营 查一下", true, ["ops"]);
     await session.settled();
 
+    // ① 硬停本身
     const nudges = events.filter((e) => e.type === "user_message" && (e as { origin?: string }).origin === "loop_guard");
     expect(nudges).toHaveLength(5); // engineFor 配的上限
     const ended = events.filter((e) => e.type === "turn_ended" && (e as { agentId?: string }).agentId === "ops");
@@ -2339,6 +2370,14 @@ describe("云会话自动压缩（#957 A-1）", () => {
     expect(String((ended[0] as { error?: string }).error)).toContain("护栏");
     // 有限：周期 1 × 3 遍 = 每 3 圈一次护栏，5 次就是 15 圈。没有硬停时它永不结束
     expect(calls).toBe(15);
+
+    // ② 硬停是**这一条 turn** 的收口，不是这条会话的墓碑：drain 的 per-job catch
+    // 接住那个异常之后，后面排上的照跑。要是让它把协调器卡死，症状就是"从此这个
+    // 群里谁说话都没人答"——比原来那条打转的 turn 更糟
+    calls = 100; // 下一轮回一句话就收口，不再打转
+    await session.say("u1", "alice", "@广告 换你", true, ["ads"]);
+    await session.settled();
+    expect(events.some((e) => e.type === "assistant_message" && (e as { agentId?: string }).agentId === "ads")).toBe(true);
     store.close();
   });
 });

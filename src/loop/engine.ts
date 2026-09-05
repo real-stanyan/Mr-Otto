@@ -776,6 +776,27 @@ export class LoopEngine {
       // 传同一个集合进去，不在同一数组上重算两遍
       let barren = barrenEventIndexes(log);
 
+      // 给 adapter 一次现算路由的机会（issue #696 fix round 1）：云 runtime 的
+      // model 是读 chat() 才会算出来的值，不先 prepare() 一次，这里读到的
+      // this.adapter.model 就是上一 turn 的旧值——信封与 assistant_message 对不上。
+      // **必须排在自动压缩那一格之前**（#957 A-1 复审）：阈值要拿**路由决出的
+      // 那个型号**的窗口来判，而 hosted adapter 在 prepare() 之前 model 还是
+      // "(未配置)" —— 目录查不到 = 窗口 undefined = shouldAutoCompact 恒 false，
+      // 于是每个 turn 的第一圈永远不压缩，单圈 turn（云会话最常见的形状）就是
+      // 从来不压缩。桌面 adapter 没有 prepare()，本机会话逐字节不变。
+      // 代价写在明处：压缩自己的摘要请求走 this.adapter.chat()，会把 prepared
+      // 这一格用掉（hostedRoute 的 `prepared ?? decide()` + 用完即清），于是同
+      // 一圈里紧随其后的那次真实 chat() 会再 decide() 一次。多一次 decide 只是
+      // 多读一次带缓存的 probe.me()，而它换来的是「压缩按真实型号的窗口判」。
+      // 只在 adapter 真实现了 prepare() 时才 await：`await undefined` 本身也会
+      // 让出一个微任务，没实现 prepare() 的 adapter（桌面端、大多数测试假货）
+      // 不该白吃这一次让权——engine.test.ts 的中断竞态测试靠的正是：调用
+      // runTurn() 后同步调用 abortTurn() 时，chat() 的 Promise executor 已经跑过、
+      // 监听器已经挂上；多一次无谓的微任务边界会把 abort 冲到 chat() 调用之前
+      if (this.adapter.prepare) {
+        await this.adapter.prepare();
+      }
+
       // 自动压缩（ADR-0062）：每次模型调用前看一眼占用。放在 loop 里而不是 turn 开头——
       // 工具密集的 turn 中途也会胀。同 turn 再压过增长闸（见 compactFloor 注释）
       if (this.opts.autoCompact) {
@@ -819,18 +840,6 @@ export class LoopEngine {
         .filter((t) => this.toolVisible(t))
         .filter((t) => t.available?.() ?? true)
         .map((t) => t.def);
-
-      // 给 adapter 一次现算路由的机会（issue #696 fix round 1）：云 runtime 的
-      // model 是读 chat() 才会算出来的值，不先 prepare() 一次，这里读到的
-      // this.adapter.model 就是上一 turn 的旧值——信封与 assistant_message 对不上。
-      // 只在 adapter 真实现了 prepare() 时才 await：`await undefined` 本身也会
-      // 让出一个微任务，没实现 prepare() 的 adapter（桌面端、大多数测试假货）
-      // 不该白吃这一次让权——engine.test.ts 的中断竞态测试靠的正是：调用
-      // runTurn() 后同步调用 abortTurn() 时，chat() 的 Promise executor 已经跑过、
-      // 监听器已经挂上；多一次无谓的微任务边界会把 abort 冲到 chat() 调用之前
-      if (this.adapter.prepare) {
-        await this.adapter.prepare();
-      }
 
       // 请求信封（issue #383）：先落盘再喂模型——信封里是这次请求中日志推不出的
       // 那半（渲染后的 system、工具声明表、model/wireModel/thinking）。与上一条
