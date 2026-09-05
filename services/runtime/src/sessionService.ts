@@ -1,5 +1,5 @@
 // sessionService —— 云会话运行时的装配处（ADR-0199，issue #799 系列 workspace phase 2；
-// 多智能体切片 1a，issue #928）。
+// 多智能体切片 1a = issue #928，切片 1b = issue #932）。
 // 把已有的 agent 核心（EventStore/LoopEngine/adapter/工具）接成一条群聊云会话：
 // **每只 agent 一台 LoopEngine**（#928 task-9，不再是一台 engine 服务全场），
 // turnCoordinator 管起跑互斥（串行队列），approvalRouter 管群里谁能批，
@@ -12,9 +12,10 @@
 //   - 上下文隔离靠构造：装配那一刻递 agentView(store, agentId) 而不是裸 store，
 //     engine 内部三处 model-facing 的读（snapshot 首圈/增量圈、compactInner）
 //     一个都不改（ADR-0047 的教训：挨个补过滤漏一处就安静地灌错上下文）。
-//   - @ 解析三级（resolveTargets）：客户端算好的 mentions（① 精确）→ 服务端用
-//     parseMentions 从正文里认（② 兜底，手机端/旧桌面用）→ 都没有时唤醒名单
-//     第一只（③ 老语义）。
+//   - @ 解析三级（resolveTargets）：客户端算好的 mentions（① 精确，**含空数组**
+//     ——`[]` 是"我确认谁都没点"，不是"我算不出来"）→ 客户端**缺席**这个字段时
+//     服务端用 parseMentions 从正文里认（② 兜底，手机端/旧桌面用）→ 都没有时
+//     唤醒名单第一只（③ 老语义）。
 //   - 谁是谁靠 agent_briefed（briefIfNeeded）：instructions 变了才重新落一条，
 //     不是每 turn 都落；提示词和同伴都没有时干脆不落（没内容可说，#928
 //     修复轮 3/5）。判断用裸 store 查——这是记账判断，该读事实的原始来源，
@@ -22,17 +23,39 @@
 //     "拿自己的 view 查自己的 brief"其实查得到，见 briefIfNeeded 里的
 //     完整说明）。
 //
-// engine 有没有被改：改了两处，都是**追加可选字段**，不改既有语义（详见
-// task-9-report.md）——
+// 切片 1b（#932）改了四处，都在这个文件里（frameHandler 的限速桶除外）：
+//   ① engineFor 命中缓存也 setAdapter —— 1a 只在这只 agent 第一次开口时定死
+//      adapter，「改 agent 下一 turn 生效」于是对改提示词成立、对改型号不成立
+//      且静默（ADR-0202 同款教训，在 agent 粒度上又踩了一遍）。
+//   ② **发言先落盘，turn 从日志起跑**：say() 收下一条点了名的发言就当场
+//      append 一条 user_message{fromUid, mentions}，runJob 用 engine 的
+//      runLoggedTurn 对它起 turn，engine 不再自己 append 开场白。1a 是"起 turn
+//      那一刻才落"，于是排队中的话在日志里一个字节都没有——群里其他人看不见
+//      它，daemon 一重启它就等于没发生过。排队仍然纯内存（重启即丢），但开场白
+//      在日志里，装配末尾按 openTurns（src/shared/turnLedger.ts）把它们重新排上。
+//      「排队中 / 正在回复」因此是日志的投影，不是内存队列的状态。
+//   ③ 排队期间这只 agent 被删：落一条它自己的 turn_ended{outcome:"error"}——
+//      不留痕的话 openTurns 会把它永远算作"排队中"，重启还会一遍遍重排。
+//   ④ 客户端给了 mentions（含 `[]`）就以它为准，服务端不再重解析正文。
+// 排空循环（drain）随之改成**每个 job 各自 catch**：一只抛错不再让排在后面的
+// 那只被整队丢弃，1a 那套"丢弃时替它补一条 chat_message"的补偿连同它的
+// decisions 组合判断一起删了——话早就在日志里，落盘不再取决于跑不跑。
+// logChat 因此只剩两个调用方："没点名"，和终审补的"名单里查无此 agent"那条
+// 系统提示（静默丢掉未知 id = 一句 @ 长得跟闲聊一模一样，发言人白等）。
+//
+// engine 有没有被改：1a 改了两处、1b 加了一个入口，都是**追加**，不改既有语义
+// （详见 task-9-report.md 与 #932 的 task-2）——
 //   1. src/loop/approvalGate.ts 的 ApprovalOutcome 加了可选 decidedBy 字段；
-//   2. src/loop/engine.ts 内置的 onDecision 把它原样透传进 approval_decision。
+//   2. src/loop/engine.ts 内置的 onDecision 把它原样透传进 approval_decision；
+//   3. LoopEngine.runLoggedTurn(opening)：对一条已经在日志里的 user_message 起
+//      turn，与 runTurn 共用 runFrom（只差"开场那条谁来落"）。
 // 「每轮从 store 重新投影」这条 engine 已经有（loop() 每圈调 this.snapshot()，
 // 增量读 store.load(sessionId,{afterSeq})），中途插话（无人被点名时直接
 // store.append 一条 chat_message）不用碰 engine 半个字就能被下一轮模型看到。
 
 import { LoopEngine } from "../../../src/loop/engine.js";
 import type { EventStore } from "../../../src/session/store.js";
-import type { SessionEvent } from "../../../src/session/events.js";
+import type { SessionEvent, UserMessageEvent } from "../../../src/session/events.js";
 import type { ModelAdapter } from "../../../src/model/adapter.js";
 import type { ExecutionWorld } from "../../../src/world/executionWorld.js";
 import type { Tool } from "../../../src/tools/tool.js";
@@ -41,7 +64,8 @@ import { writeFileTool } from "../../../src/tools/writeFile.js";
 import { bashTool } from "../../../src/tools/bash.js";
 import { agentView } from "../../../src/session/agentView.js";
 import { parseMentions } from "../../../src/shared/remote/agentMention.js";
-import { createTurnCoordinator, type TurnJob } from "./turnCoordinator.js";
+import { openTurns } from "../../../src/shared/turnLedger.js";
+import { createTurnCoordinator, type TurnJob, type EnqueueDecision } from "./turnCoordinator.js";
 import { createApprovalRouter } from "./approvalRouter.js";
 import { fetchGrantedTools, buildPxTools, type PxCallDeps } from "./pxTools.js";
 
@@ -71,7 +95,12 @@ function resolveTargets(
   roster: AgentSpec[]
 ): string[] {
   const known = new Set(roster.map((a) => a.agentId));
-  if (mentions?.length) return mentions.filter((id) => known.has(id));
+  // 客户端给了 mentions（**含空数组**）= 它已经决定了这句话点了谁：新版桌面
+  // 的 chip 输入让用户看得见自己 @ 到了谁，服务端再解析一遍只会让界面说
+  // 「我没 @ 任何人」而服务端认为 @ 了（#932 坑 ④）。以它为准，不回落——
+  // 判据是 `!== undefined` 不是 `?.length`：`[]` 是一句"我确认谁都没点"，
+  // 与"这台客户端算不出 mentions"（缺席）是两回事，前者回落就是无视用户
+  if (mentions !== undefined) return mentions.filter((id) => known.has(id));
   const parsed = parseMentions(
     text,
     roster.map((a) => ({ agentId: a.agentId, name: a.name }))
@@ -191,7 +220,15 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       的读一个都不用改（ADR-0047 的教训：挨个补过滤漏一处就安静地灌错上下文） */
   function engineFor(spec: AgentSpec): LoopEngine {
     const hit = engines.get(spec.agentId);
-    if (hit) return hit;
+    if (hit) {
+      // 每 turn 现取一次 adapter（#932 坑 ①，ADR-0202 同款）：型号来自这只
+      // agent **此刻**的白名单。1a 只在第一次开口时定死，于是「改 agent 下
+      // 一 turn 生效」对改提示词成立、对改型号不成立**且静默**（账单会说话，
+      // 界面不会）。不比对"变没变"——比对的判据一漏就是安静地继续用旧型号，
+      // 而 setAdapter 是纯赋值，白设一次不花钱
+      hit.setAdapter(opts.adapterFor(spec));
+      return hit;
+    }
     const engine = new LoopEngine({
       store: agentView(store, spec.agentId),
       adapter: opts.adapterFor(spec),
@@ -262,8 +299,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     );
   }
 
-  /** 落一条纯观察性发言——没人被点名，或者点到的名字排上了队但轮不到这条
-      调用来跑。不碰 engine：中途注入靠 engine 每轮从 store 重新投影天然生效 */
+  /** 落一条纯观察性发言——没人被点名，或者名单里查无此 agent 的那条系统提示。
+      不碰 engine：中途注入靠 engine 每轮从 store 重新投影天然生效 */
   function logChat(fromUid: string, label: string, text: string, mention: boolean): void {
     notify(
       store.append({
@@ -278,22 +315,47 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     );
   }
 
-  /** 跑一个 job（一只 agent 的一次 turn）。agentId/fromUid/label/text 全部
-      取自 job 自己——排空时捞出来的 job 可能来自另一条并发的 say() 调用，
-      不能用外层闭包里那条调用自己的参数 */
+  /** 跑一个 job（一只 agent 的一次 turn）。agentId/fromUid/开场白全部取自 job
+      自己——排空时捞出来的 job 可能来自另一条并发的 say() 调用，不能用外层
+      闭包里那条调用自己的参数 */
   async function runJob(job: TurnJob): Promise<void> {
     router.setInitiator(job.fromUid);
     currentInitiator = job.fromUid;
     currentAgentId = job.agentId;
+    // engine 起跑之前抛错，收口就没人写了（#932 终审 Blocking ②）：agents()
+    // 查询挂了、briefIfNeeded 落盘失败、adapterFor 抛错——drain 的 catch 只
+    // 打一行日志，而开场白已经落盘、它的 mentions 里有这只 agent，于是
+    // openTurns 永远把它算作「排队中」，界面上一行转到天荒地老、每次 daemon
+    // 重启还会把它重新排上跑一遍。这个记号是**跨过 engine 的那一刻**置位的：
+    // engine 自己抛的时候它已经落过 turn_ended{error}，再补一条就是同一次
+    // 失败记两遍（而且两条的 error 文案还不一样）
+    let engineStarted = false;
     try {
       // agents() 每 turn 现取一次（同 hostUids）：建/改 agent 下一 turn 生效，
       // 不用重开会话——job 可能在队列里等了一会儿，起跑前重新读一次名单
       const roster = await opts.agents();
       const spec = roster.find((a) => a.agentId === job.agentId);
-      // 防御：resolveTargets 筛过的 agentId 理论上不会在起跑前就从名单消失，
-      // 但 TS strict 要求这里显式 narrow。真出现时按"这只 agent 没了"处理，
-      // 不跑这个 job——它的落盘（如果有）不在这里丢，不需要额外补偿
-      if (!spec) return;
+      if (!spec) {
+        // 排队期间这只 agent 被删了（#932 坑 ③）。1a 是静默 return，那在 1b
+        // 里变成了**永久的**"排队中"：开场白已经落盘、它的 mentions 里有这只
+        // agent，而 openTurns 的收口判据是"这只 agent 之后有没有 turn_ended"
+        // ——一条都没有就永远算作排队中，重启补跑还会一遍遍重新排上它。
+        // 落一条它自己的 turn_ended{error}：推导收口，人也看得见这一轮为什么没跑
+        notify(store.append({
+          sessionId,
+          ts: Date.now(),
+          type: "turn_ended",
+          outcome: "error",
+          // 用 agentId 不用名字：名字已经查不到了（就是因为它被删了），
+          // 别为一条错误信息再去猜
+          error: `智能体 ${job.agentId} 已不在这个工作区，这句话没人接`,
+          agentId: job.agentId,
+          // 这一条收的是**它自己那条开场白**的口，不多不少：合成的收口没有
+          // 「跑到哪儿」，就按 job 拿着的那条算（后来的点名各有各的 job）
+          readUpToSeq: job.opening.seq,
+        }));
+        return;
+      }
 
       briefIfNeeded(spec, roster);
       const engine = engineFor(spec);
@@ -308,79 +370,106 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       }
       cachedPxTools = buildPxTools(opts.px, job.fromUid, granted);
 
-      await engine.runTurn(`[${job.label}]: ${job.text}`);
+      // 开场白早在 say() 那一刻就落盘了（#932 坑 ②），这里只是对它起 turn——
+      // runTurn 会再 append 一条同样的 user_message，那句话就落两遍：模型读
+      // 两遍、时间线画两遍
+      engineStarted = true;
+      await engine.runLoggedTurn(job.opening);
+    } catch (err) {
+      if (!engineStarted) {
+        notify(store.append({
+          sessionId,
+          ts: Date.now(),
+          type: "turn_ended",
+          outcome: "error",
+          error: err instanceof Error ? err.message : String(err),
+          agentId: job.agentId,
+          readUpToSeq: job.opening.seq,
+        }));
+      }
+      throw err; // 照旧向上抛：落盘是补记事实不是吞错（drain 的 catch 打日志）
     } finally {
       currentInitiator = null;
       currentAgentId = null;
     }
   }
 
-  return {
+  /** 排空协调器直到 null。**每个 job 各自 catch**：一只抛错（模型 key 没配、
+      runTurn 暴死）不该让排在它后面的那只被整队丢弃——1a 那版是"抛错就放弃
+      剩下的、每个补一条 chat_message"，而现在开场白早已在日志里、每只的收口
+      由它自己的 turn_ended 负责（engine 抛之前已经落了 turn_ended{error}），
+      跳过这一只接着跑下一只才是对的。runJob 自己抛的那种同样只影响这一只。
+      nextJob() 是唯一能让协调器归 idle 的入口（队列空了才归），所以这个循环
+      必须一路走到 null——少排一次就把 running 永久钉在 true，这条云会话再也
+      起不了 turn（#928 修复轮 1/5 真实复现过的死锁） */
+  async function drain(): Promise<void> {
+    let job = coordinator.nextJob();
+    while (job !== null) {
+      try {
+        await runJob(job);
+      } catch (err) {
+        console.error(`[otto-runtime] turn 失败（agent=${job.agentId} opening=${job.opening.seq}）`, err);
+      }
+      job = coordinator.nextJob();
+    }
+  }
+
+  const session: CloudSession = {
     async say(fromUid, label, text, mention, mentions) {
       const roster = await opts.agents();
       const targets = resolveTargets(text, mention, mentions, roster);
+      // 客户端点了名、而这几个 id 名单里没有（它拿的是旧快照 / 名单刚变过 /
+      // 那只刚被删掉）。resolveTargets 是**静默**过滤掉它们的，于是一句
+      // "@管理员 帮我看下" 在发言人那侧和一句普通闲聊长得一模一样——他会
+      // 一直等一个不会来的回复（#932 终审 Important ③）。落一条系统发言把
+      // 这件事说出口。只管客户端给的那一份：②③两级是服务端自己解析出来的，
+      // 解析结果天然只含名单里的 id，不存在"未知"
+      const unknown = mentions === undefined ? [] : mentions.filter((id) => !roster.some((a) => a.agentId === id));
+      const sayUnknown = (): void => {
+        if (unknown.length === 0) return;
+        // fromUid:"system" —— 渲染层照普通群发言画（这句话说给房里所有人听）；
+        // 用 id 不用名字，跟"agent 被删"那条错误同一个理由：名字已经查不到了
+        logChat(
+          "system",
+          "系统",
+          `没找到智能体 ${unknown.join("、")}，这部分点名没人接（名单可能刚变过，刷新一下再 @）`,
+          false
+        );
+      };
 
       if (targets.length === 0) {
         // 没人被点名：只落 chat_message，不起 turn
         logChat(fromUid, label, text, mention);
+        sayUnknown();
         return;
       }
+
+      // 先落盘再排队（#932 坑 ②）：收下了 = 记下了。1a 是"起 turn 那一刻由
+      // engine 落 user_message"，于是排队中的话在日志里一个字节都没有——群里
+      // 其他人看不见它，daemon 一重启它就真的没发生过。排队仍然纯内存、重启
+      // 仍然会丢，但开场白已经在日志里，重启时 openTurns 能把它找回来补跑
+      const opening = store.append({
+        sessionId,
+        ts: Date.now(),
+        type: "user_message",
+        content: `[${label}]: ${text}`,
+        fromUid,
+        mentions: targets,
+      }) as UserMessageEvent; // append 回的是 union；这一条我们刚亲手写的就是 user_message
+      notify(opening);
+      sayUnknown(); // 排在开场白之后：先有那句话，再说"其中这几个没人接"
 
       // 解出来的每一只按顺序入队。回 "start_turn" 时任务也已经在队里了
-      // （turnCoordinator 的约定）：真正取出来跑靠下面的排空循环，不是拿着
-      // 手上这个 job 直接去跑
-      const decisions = targets.map((agentId) => coordinator.enqueue({ agentId, fromUid, label, text }));
+      // （turnCoordinator 的约定）：真正取出来跑靠 drain()，不是拿着手上这个
+      // job 直接去跑
+      const decisions = targets.map((agentId) => coordinator.enqueue({ agentId, fromUid, opening }));
 
-      if (!decisions.includes("start_turn")) {
-        // 全是 logged_only = 这一批一个 job 都没入队（去重命中：turnCoordinator
-        // 的去重分支回 logged_only 时 job 压根没有 push 进队列，#928 终审
-        // Critical，修复轮 2/5）——没有任何 runJob 会替它落 user_message，
-        // finally 的补偿排空也捞不到它（它不在队里）：不补就真的一个字节都
-        // 不留，直接踩「append-only 事件日志是唯一事实来源」这条硬规则。
-        //
-        // 只要有一个 queued，那个 job 就真的入队了，一定会被别人的排空循环
-        // 跑到并落 user_message（与 start_turn 路径对称，见 runJob）——这时
-        // 再补 chat_message 就是重复投影：deriveMessages 把 chat_message 投影
-        // 成与 user_message 相同的 `[label]: content` 形状，模型会把同一句
-        // 指令读两遍，1b 的时间线上也显示两遍（修复轮 1/5 治的就是这个）。
-        //
-        // 三种组合都要分清：["logged_only"] → 补；["logged_only","queued"] →
-        // 不补（那个 queued 的 job 会落 user_message）；含 "start_turn" 走不到
-        // 这个分支
-        if (decisions.every((d) => d === "logged_only")) logChat(fromUid, label, text, mention);
-        return;
-      }
-
-      // 这条调用是"拿到 start_turn 的那一方"，责任是把队列排空到 null 为止——
-      // 这是协调器的真实不变量，不是"这一批 job 跑完就够了"。nextJob() 是
-      // 唯一能让协调器归 idle 的入口（队列空了才归），少排一次就把 running
-      // 永久钉在 true：此后每条 enqueue() 都只能拿到 queued，这条云会话再也
-      // 起不了 turn，直到 daemon 重启（#928 task-8 修复轮 1/5，两个成员并发
-      // @ 一次即复现，真实复现过的死锁，不是假设）。
-      // 起跑失败（hostUids() 抛错、runTurn 抛错）也必须走到这个排空——下面
-      // try 里的 while 一旦因某个 job 抛错提前退出，finally 里的循环仍然把
-      // 剩下的队列排到 null，让 running 归位
-      try {
-        let job = coordinator.nextJob();
-        while (job !== null) {
-          await runJob(job);
-          job = coordinator.nextJob();
-        }
-      } finally {
-        // 兜底排空（修复轮 1/5，#928）：正常收尾时这里一次就返回 null（队列
-        // 已经空了）。只有上面的 while 因某个 job 抛错提前退出时,这里才会
-        // 真的吐出东西——这些 job **不会再被任何人跑到**了（不是"排上了
-        // 还会被跑"，是这条调用本来就是唯一的排空者，它自己都放弃了）。
-        // 不跑不代表可以凭空丢掉它们说过的话：每丢弃一个就替它补一条
-        // chat_message（TurnJob 自带 fromUid/label/text，够用）——异常路径
-        // 因此比什么都不落更诚实："这句话说了，但它那一轮没跑成"，而不是
-        // 假装它从没发生过
-        let leftover = coordinator.nextJob();
-        while (leftover !== null) {
-          logChat(leftover.fromUid, leftover.label, leftover.text, true);
-          leftover = coordinator.nextJob();
-        }
-      }
+      // 全是 logged_only（每只都已经在队里，去重命中）：这句话已经落盘，排着
+      // 的那一轮开跑时读的是整份日志，看得见它（engine 的 unseenUserTail 也认
+      // 得它）——1a 那套"补一条 chat_message 免得凭空丢"的特例连同它的三种
+      // decisions 组合判断一起没了：落盘不再取决于跑不跑
+      if (!decisions.includes("start_turn")) return;
+      await drain();
     },
 
     approve(callId, byUid, byLabel, decision) {
@@ -433,4 +522,47 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       return true;
     },
   };
+
+  // 重启补跑（#932 坑 ②）：上一个 daemon 收下了话（user_message 已落盘）、还
+  // 没跑到就死了——按同一份推导把它们重新排上。openTurns 里 running 的也重排：
+  // 它的 turn 在上一个进程里没收口，这里再跑一遍（日志会多一段尝试，但比永远
+  // 停在「排队中」诚实）。fromUid 缺席只可能是旧日志——旧日志没有 mentions，
+  // 压根进不了 openTurns。已归档的不补：那条会话已经收摊了
+  const stale = openTurns(seed);
+  if (!archived && stale.length > 0) {
+    const decisions: EnqueueDecision[] = [];
+    const skipped: number[] = [];
+    for (const t of stale) {
+      const opening = seed.find((e) => e.seq === t.seq);
+      if (t.fromUid === null || !opening || opening.type !== "user_message") {
+        // 跳过的那条**仍然停在「排队中」**，只是这个进程不打算管它了——不说
+        // 一声的话，界面上一条永远转圈的行在服务器日志里没有任何对应物
+        skipped.push(t.seq);
+        continue;
+      }
+      decisions.push(coordinator.enqueue({ agentId: t.agentId, fromUid: t.fromUid, opening }));
+    }
+    if (skipped.length > 0) {
+      console.warn(
+        `[otto-runtime] 重启补跑跳过 ${skipped.length} 条（缺 fromUid 或开场白不是 user_message，它们会一直停在「排队中」）：` +
+          `session=${sessionId} seq=${skipped.join(",")}`
+      );
+    }
+    // 补跑是一条**没有任何人发起**的模型调用（可能真花钱），所以它得说一声：
+    // 不打这行日志的话，"daemon 一重启就自己跑了一轮"在运维那边完全不可见。
+    // 数的是**真排上的那几条**不是 stale 全体：跳过的那些上面那条 warn 已经
+    // 单列过，两处都算一遍就成了"说跑了 3 个、实际跑了 1 个"
+    const enqueued = stale.filter((t) => !skipped.includes(t.seq));
+    if (enqueued.length > 0) {
+      console.log(
+        `[otto-runtime] 重启补跑 ${enqueued.length} 个未收口的 turn（session=${sessionId}）：` +
+          enqueued.map((t) => `${t.agentId}@${t.seq}(${t.state})`).join(" ")
+      );
+    }
+    // void：装配是同步的，补跑在后台自己跑完（drain 第一个 await opts.agents()
+    // 就让出了事件循环，daemon 那句 `let session!` 的赋值早于任何回调回来）
+    if (decisions.includes("start_turn")) void drain();
+  }
+
+  return session;
 }

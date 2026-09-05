@@ -18,6 +18,7 @@
 
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 import { displaySessionTitle } from "../../../shared/sessionTitle.js";
+import { ADMIN_AGENT_ID } from "../../../shared/workspaceAgents.js";
 
 export type ConnectorCloudState = "ready" | "unknown" | "off";
 
@@ -106,6 +107,52 @@ export function sessionRows(ws: WorkspaceSnapshot): SessionRowView[] {
     publisherLabel: labelOf(ws, s.publisherUid),
     updatedTs: s.updatedTs,
   }));
+}
+
+// ─── 智能体 tab（Task 7，issue #932 切片 1b） ───────────────────────────
+
+export interface AgentRowView {
+  agentId: string;
+  name: string;
+  description: string;
+  modelsSummary: string;
+  isAdmin: boolean;
+  canEdit: boolean;
+  canDelete: boolean;
+  creatorLabel: string;
+}
+
+/** []（留空用工作区默认）→ 一句人话；否则把型号 id 点连起来（spec §9） */
+function modelsSummaryOf(models: readonly string[]): string {
+  return models.length === 0 ? "用工作区默认型号" : models.join(" · ");
+}
+
+/** 权限矩阵（spec §9）：canEdit = 建的人或 owner；canDelete = canEdit 且不是
+    种子管理员——admin 是每个工作区开箱自带的那份，界面上不给删除钮，同
+    memberRows 里 owner 不能对自己动踢人按钮的纪律（"出口另有一条，不是这颗按钮"）*/
+export function agentRows(ws: WorkspaceSnapshot, selfUid: string): AgentRowView[] {
+  const selfIsOwner = ws.ownerUid === selfUid;
+  return ws.agents.map((a) => {
+    const isAdmin = a.agentId === ADMIN_AGENT_ID;
+    const canEdit = a.createdBy === selfUid || selfIsOwner;
+    return {
+      agentId: a.agentId,
+      name: a.name,
+      description: a.description,
+      modelsSummary: modelsSummaryOf(a.models),
+      isAdmin,
+      canEdit,
+      canDelete: canEdit && !isAdmin,
+      creatorLabel: labelOf(ws, a.createdBy),
+    };
+  });
+}
+
+/** agentId → 名字；查不到回 agentId 本身——被删了的 agent 在旧消息的
+    @提及上还得有个把手（同 labelOf「查不到回 uid 前 8 位」的纪律，这里
+    信息量更小所以整段 id 都留着） */
+export function agentNameOf(ws: WorkspaceSnapshot, agentId: string): string {
+  return ws.agents.find((a) => a.agentId === agentId)?.name ?? agentId;
 }
 
 // ─── 云会话列表（Task 13，ADR-0199） ────────────────────────────────────

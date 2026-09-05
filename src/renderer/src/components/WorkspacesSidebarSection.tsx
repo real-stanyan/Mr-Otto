@@ -135,7 +135,7 @@ function WorkspaceGroup({
           调授权、撤回已发布的会话 —— 本地工程没有这回事 */}
       <SidebarGroupAction
         className="right-8 text-muted-foreground"
-        title={`${ws.name} 的设置：成员、连接器、已发布`}
+        title={`${ws.name} 的设置：智能体、成员、连接器、已发布`}
         onClick={() => onManage(ws.id)}
       >
         <Settings2 />

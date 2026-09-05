@@ -1048,6 +1048,20 @@ export interface ShellBridge {
   workspaceContributeConnector(id: string, serverId: string, tools: string[]): Promise<FriendsResult<null>>;
   /** 收回上面那笔贡献 */
   workspaceWithdrawConnector(id: string, serverId: string): Promise<FriendsResult<null>>;
+  /** 建一只 agent（任何成员皆可）。agentId 由主进程生成，回给渲染层用于后续
+      改/删 */
+  workspaceAgentCreate(
+    id: string,
+    draft: { name: string; description: string; instructions: string; models: string[] },
+  ): Promise<FriendsResult<{ agentId: string }>>;
+  /** 改一只 agent（建的人或 owner，RLS 拦其余人） */
+  workspaceAgentUpdate(
+    id: string,
+    agentId: string,
+    patch: { name?: string; description?: string; instructions?: string; models?: string[] },
+  ): Promise<FriendsResult<null>>;
+  /** 删一只 agent（建的人或 owner；'admin' 谁都删不掉，主进程层先拒） */
+  workspaceAgentDelete(id: string, agentId: string): Promise<FriendsResult<null>>;
   /** 把 sessionId 这个会话发布进工作区（Task 9 publishSessionToWorkspace）。
       ok:true 带 workspace_sessions 的行 id + Storage 包 id */
   workspacePublishSession(id: string, sessionId: string, title: string): Promise<FriendsResult<{ rowId: string; pkgId: string }>>;
@@ -1067,8 +1081,10 @@ export interface ShellBridge {
   workspaceCloudJoin(workspaceId: string, sessionId: string): Promise<FriendsResult<null>>;
   /** 断当前云会话连接 */
   workspaceCloudLeave(): Promise<FriendsResult<null>>;
-  /** 往当前云会话发一句话（群聊）。mention = @ 了本机操作者对应的那个成员 */
-  workspaceCloudSay(text: string, mention: boolean): Promise<FriendsResult<null>>;
+  /** 往当前云会话发一句话（群聊）。mention = @ 了本机操作者对应的那个成员；
+      mentions 缺席 = 老语义（mention 那个 boolean 说了算），给了（含 []）=
+      以它为准，覆盖 mention（#932 切片 1b，runtime 那侧同一条判据） */
+  workspaceCloudSay(text: string, mention: boolean, mentions?: string[]): Promise<FriendsResult<null>>;
   /** 批/拒当前云会话里的一个审批请求（callId 来自 approval_request 事件） */
   workspaceCloudApprove(callId: string, decision: "approved" | "denied"): Promise<FriendsResult<null>>;
   /** 归档当前云会话 */
@@ -1476,6 +1492,9 @@ export const CHANNELS = {
   workspaceLeave: "otter:workspaceLeave",
   workspaceContributeConnector: "otter:workspaceContributeConnector",
   workspaceWithdrawConnector: "otter:workspaceWithdrawConnector",
+  workspaceAgentCreate: "otter:workspaceAgentCreate",
+  workspaceAgentUpdate: "otter:workspaceAgentUpdate",
+  workspaceAgentDelete: "otter:workspaceAgentDelete",
   workspacePublishSession: "otter:workspacePublishSession",
   workspaceUnpublishSession: "otter:workspaceUnpublishSession",
   workspaceImportSession: "otter:workspaceImportSession",

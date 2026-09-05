@@ -49,17 +49,22 @@ import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog.js";
 import { Input } from "@/components/ui/input.js";
+import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover.js";
 import { useChat, type CloudSessionState } from "../store.js";
 import { EventRow, TimelineProjectionContext } from "./Timeline.js";
 import { buildToolIndex, type ToolIndex } from "../lib/toolIndex.js";
 import { groupSubagentSpawns } from "../lib/subagentTimeline.js";
 import { formatProxyTime } from "../lib/proxyShare.js";
-import { labelOf } from "../lib/workspaceView.js";
+import { agentNameOf, labelOf } from "../lib/workspaceView.js";
+import { applyAgentMention, filterAgentCandidates, mentionQueryAt } from "../lib/agentMentionInput.js";
 import { EMBEDDED_CREDENTIAL_MESSAGE, repoUrlHasEmbeddedCredential } from "../lib/cloudRepoUrl.js";
+import { assistantLabel, userRowIdentity } from "../lib/cloudTimeline.js";
+import { openTurns } from "../../../shared/turnLedger.js";
 import { toolSummary } from "../../../shared/toolSummary.js";
+import { parseMentions } from "../../../shared/remote/agentMention.js";
 import type {
-  ApprovalDecisionEvent, ApprovalRequestEvent, AssistantMessageEvent, ChatMessageEvent,
-  SessionEvent, ToolCallRequest, ToolResultEvent, UserMessageEvent,
+  AgentBriefedEvent, ApprovalDecisionEvent, ApprovalRequestEvent, AssistantMessageEvent,
+  ChatMessageEvent, SessionEvent, ToolCallRequest, ToolResultEvent,
 } from "../../../session/events.js";
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 import type { CsModelState, CsRepoState } from "../../../shared/remote/cloudSession.js";
@@ -68,17 +73,6 @@ import type { CsModelState, CsRepoState } from "../../../shared/remote/cloudSess
 // 挂载这个组件，但 hooks 不能条件调用，events 得先算出一个稳定引用——
 // 同 FriendChatView 的 EMPTY 先例，模块级常量避免每次渲染新建 []）
 const EMPTY_EVENTS: SessionEvent[] = [];
-
-/** sessionService.ts 的 say() 点火一个 turn 时拼的前缀:`\`[${label}]: ${text}\``。
-    协议没有给 user_message 配独立的 fromUid/label 字段（这个事件本来就是
-    "普通会话的一条用户消息"，云会话群聊只是把发言人编进了正文），只能在
-    渲染层尽力而为地把它解析回来：非贪婪匹配第一个 "]: " 之前的内容当
-    label，其余原样当正文。解析不出（旧日志 / 前缀被破坏）就把 label 记
-    null、正文原样显示全文，不装作解析成功了 */
-function parseUserMessageLabel(content: string): { label: string | null; text: string } {
-  const m = /^\[(.*?)\]: ([\s\S]*)$/.exec(content);
-  return m ? { label: m[1]!, text: m[2]! } : { label: null, text: content };
-}
 
 /** join() 之后持续状态的 deniedCode → 人话（渲染层自己的翻译）。
     main/cloudSessionClient.ts 的 deniedMessage() 只服务 create() 那一次性
@@ -149,8 +143,16 @@ export function CloudSessionPage({
   const actionError = useChat((s) => s.workspaceGroupsError);
 
   const [draft, setDraft] = useState("");
-  const [mentionOn, setMentionOn] = useState(false);
   const [sending, setSending] = useState(false);
+  // 光标位置（#932 切片 1b）：「正在打 @ 吗」是 draft × caret 的函数，光标
+  // 不跟着走的话，把光标挪回一个旧的 @ 后面时弹层不会出来。textarea 自己的
+  // selectionStart 是 DOM 状态，读不进渲染——所以四个入口（改字/选区/键起/
+  // 点击）都往这一格里抄一次
+  const [caret, setCaret] = useState(0);
+  // Escape 关掉的是**这一个** @（记它的下标）：记成布尔的话，同一句话里
+  // 再打一个 @ 会因为上一次的关闭而不弹
+  const [dismissedAt, setDismissedAt] = useState<number | null>(null);
+  const [hi, setHi] = useState(0); // 弹层高亮下标
   const boxRef = useRef<HTMLTextAreaElement>(null);
 
   // hooks 不能条件调用：cs 可能是 null 的这一拍(WorkspacePage 换页与
@@ -178,6 +180,34 @@ export function CloudSessionPage({
     );
   }, [events]);
 
+  // ── @ 选人（#932 切片 1b）────────────────────────────────────────────
+  // 名单第一只 = 这个工作区的管理员（服务端按 created_at 升序给，见 Task 3）
+  const candidates = useMemo(
+    () => ws.agents.map((a) => ({ agentId: a.agentId, name: a.name, description: a.description })),
+    [ws.agents]
+  );
+  // 「此刻是不是停在一个没打完的 @ 后面」——只决定弹不弹层，**不**决定这句
+  // 话点了谁（那是下面 parseMentions 的事，两个问题，见 agentMentionInput 头注）
+  const rawPicking = mentionQueryAt(draft, caret);
+  const picking = rawPicking !== null && rawPicking.at === dismissedAt ? null : rawPicking;
+  // 光标离开这个 @（打完空格 / 退掉那个 @ / 挪到别处）就把关闭记号擦掉。
+  // 不擦的话「打 @ → Escape → 退格删掉 → 在同一个位置再打一个 @」会因为
+  // 下标撞上而永远不弹——一个只能靠换行躲开的死角
+  const pickingAt = rawPicking?.at ?? null;
+  useEffect(() => {
+    if (pickingAt === null) setDismissedAt(null);
+  }, [pickingAt]);
+  const options = picking ? filterAgentCandidates(candidates, picking.query) : [];
+  // 发送时点了谁：与 chip 行**同一次**调用算出来的同一份 —— 界面上写着发给
+  // 谁，服务端就跑谁。两边各算各的就会分家（坑 ④）
+  const mentions = useMemo(() => parseMentions(draft, candidates), [draft, candidates]);
+  // 候选变了高亮归零：不归零的话，从三个候选里选中第三个、再多打一个字缩到
+  // 一个候选时，hi 还停在 2，Enter 什么都选不中
+  const optionKey = options.map((o) => o.agentId).join(",");
+  useEffect(() => {
+    setHi(0);
+  }, [optionKey]);
+
   // 输入框跟着内容长高(到 5 行封顶),同 FriendChatView 的既有约定
   useEffect(() => {
     const box = boxRef.current;
@@ -190,11 +220,6 @@ export function CloudSessionPage({
 
   const ready = cs.state === "ready";
   const banner = statusBanner(cs);
-  // user_message.content 只有 "[label]: text" 这一个可解析的身份信号（协议
-  // 没给这个事件独立的 fromUid），只能拿它跟"我自己的展示名"比对来判断
-  // "这句是不是我说的"——同一个 uid 在 ws.members 里查到的 label，跟
-  // sessionService.say() 落盘时传的 label 理应是同一份 profiles 数据
-  const myLabel = labelOf(ws, selfUid);
 
   const submit = async (): Promise<void> => {
     const text = draft.trim();
@@ -203,12 +228,53 @@ export function CloudSessionPage({
     // 复审 Medium：草稿在发送成功之后才清——失败时原样留在输入框里，
     // 不用另外找地方把文字塞回去；workspaceGroupsError 在 footer 上方
     // 露出来说明失败原因
-    const ok = await cloudSay(text, mentionOn);
+    // 名单一条都没有（还没拉到 / 拉失败）时**不发数组**：服务端把 `[]` 读作
+    // "我确认谁都没点"（ADR-0220 决策 2），而这里的空是"我算不出来"——差着
+    // 一整个 turn。缺席让服务端拿它自己那份名单解析正文、再回落名单第一只，
+    // 于是一句 "@管理员 帮我看下" 照旧有人接，而不是安静地变成一句闲聊
+    const ok = candidates.length === 0 ? await cloudSay(text) : await cloudSay(text, mentions);
     if (ok) {
+      // mentions 是 draft 的函数，清了正文点名自然跟着清（chip 行也跟着没）
       setDraft("");
-      setMentionOn(false);
+      setCaret(0);
+      setDismissedAt(null);
     }
     setSending(false);
+  };
+
+  /** 选中弹层里第 i 只：写回正文并把光标放回 "@名字 " 之后 */
+  const pick = (i: number): void => {
+    if (picking === null) return;
+    const chosen = options[i];
+    if (chosen === undefined) return;
+    const next = applyAgentMention(draft, picking.at, caret, chosen.name);
+    setDraft(next.text);
+    setCaret(next.caret);
+    setDismissedAt(null);
+    // 光标要等这一帧 commit 完再设：React 在 commit 期间会做一次**选区保全**
+    // ——把改动前那个选区偏移恢复到当前有焦点的元素上，于是同一个 tick 里设的
+    // 光标会被它盖掉。rAF 排在 commit 之后，设进去才留得住
+    const c = next.caret;
+    requestAnimationFrame(() => boxRef.current?.setSelectionRange(c, c));
+  };
+
+  /** 「插入 @」：在光标处打一个 @，弹层随之出现（钮不再是开关，见 footer 处注） */
+  const insertAt = (): void => {
+    const box = boxRef.current;
+    const pos = box?.selectionStart ?? draft.length;
+    // 前一个字符是构词字符时先补一个空格：parseMentions 要求 @ 前是行首或
+    // 非构词字符（否则 rick@运营 这种邮箱形状会被当成点名），不补的话这颗钮
+    // 插出来的 @ 既不弹层也解析不出人
+    const insert = /[\p{L}\p{N}_]/u.test(draft[pos - 1] ?? "") ? " @" : "@";
+    const c = pos + insert.length;
+    setDraft(draft.slice(0, pos) + insert + draft.slice(pos));
+    setCaret(c);
+    setDismissedAt(null);
+    requestAnimationFrame(() => {
+      const b = boxRef.current;
+      b?.focus();
+      b?.setSelectionRange(c, c);
+    });
   };
 
   return (
@@ -278,23 +344,37 @@ export function CloudSessionPage({
                 return <ChatMessageRow key={e.seq} event={e} mine={e.fromUid === selfUid} />;
               }
               if (e.type === "user_message") {
-                const parsed = parseUserMessageLabel(e.content);
+                const identity = userRowIdentity(e, ws, selfUid);
                 return (
                   <UserMessageRow
                     key={e.seq}
                     ts={e.ts}
-                    label={parsed.label}
-                    text={parsed.text}
-                    mine={parsed.label === myLabel}
+                    label={identity.label}
+                    text={identity.text}
+                    mine={identity.mine}
+                    targets={identity.targets}
                   />
                 );
               }
               if (e.type === "assistant_message") {
-                return <AssistantMessageRow key={e.seq} event={e} index={timelineProjection.index} />;
+                return <AssistantMessageRow key={e.seq} event={e} ws={ws} index={timelineProjection.index} />;
+              }
+              if (e.type === "agent_briefed") {
+                return <AgentBriefedRow key={e.seq} event={e} />;
+              }
+              if (e.type === "turn_ended") {
+                // isLast 恒 false：EventRow 的"重试"钮只看这个 prop（Timeline.tsx:649），
+                // 而那颗钮点了走本地 resendMessage——云端没有重发这条路，钮出来就是撒谎
+                return <EventRow key={e.seq} event={e} isLast={false} />;
               }
               return <EventRow key={e.seq} event={e} isLast={i === events.length - 1} />;
             })
           )}
+          {/* 排队中/正在回复画在时间线**末尾**而不是贴在各自那条 @ 消息下面：
+              排队的东西说的是"接下来会发生什么"，那是时间线尾巴的事，不是
+              历史里某一行的注脚（跟 turn_ended 的错误行不同——那是已经发生
+              的事实，钉在它发生的位置）*/}
+          <PendingTurnLines events={events} ws={ws} />
         </TimelineProjectionContext.Provider>
       </div>
 
@@ -315,39 +395,149 @@ export function CloudSessionPage({
 
       {actionError && <p className="text-xs text-err">{actionError}</p>}
 
-      <footer className="flex items-end gap-2 border-t border-border/60 pt-3">
-        <textarea
-          ref={boxRef}
-          rows={1}
-          disabled={!ready}
-          className="min-h-[34px] flex-1 min-w-0 resize-none rounded-2xl border border-border bg-transparent px-3 py-[7px] text-[13px] leading-relaxed transition-colors duration-150 placeholder:text-muted-foreground/70 focus:border-ring focus:outline-none disabled:opacity-50"
-          placeholder={ready ? "给云会话发消息" : "还没连上，暂时发不了消息"}
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => {
-            // Enter 发送、Shift+Enter 换行;输入法组词途中的 Enter 是"选词",不是"发送"
-            // (同 FriendChatView 的既有约定)
-            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-              e.preventDefault();
-              void submit();
-            }
-          }}
-        />
-        <Button
-          type="button"
-          variant={mentionOn ? "default" : "outline"}
-          size="sm"
-          disabled={!ready}
-          aria-pressed={mentionOn}
-          onClick={() => setMentionOn((v) => !v)}
-          title="@Agent：把这句话标成对 Agent 说的"
-        >
-          <AtSign className="size-[13px]" aria-hidden />
-          Agent
-        </Button>
-        <Button size="sm" disabled={!draft.trim() || sending || !ready} onClick={() => void submit()}>
-          发送
-        </Button>
+      <footer className="flex flex-col gap-1.5 border-t border-border/60 pt-3">
+        {/* 「发给谁」预览。**只读**：去掉一枚 = 从正文里把那个 @ 删掉——正文
+            才是事实，给 pill 配一颗 × 就等于开了第二个事实来源，两边迟早不一致 */}
+        {mentions.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground">
+            <span>发给</span>
+            {mentions.map((id) => (
+              <span key={id} className="rounded-full border border-border px-2 py-[1px]">
+                {agentNameOf(ws, id)}
+              </span>
+            ))}
+          </div>
+        )}
+
+        <div className="flex items-end gap-2">
+          {/* 弹层走 Radix 的 Popover 而不是自己 absolute 定位：这一页整个装在
+              CloudSessionMain 的 overflow-y-auto 里，`absolute bottom-full` 画出来的
+              列表一旦高过 footer 到滚动容器上沿的距离，超出的部分会被裁掉且滚不到
+              （新会话只有一行「还没有消息。」时 footer 离顶不到 90px，三只就削掉一行）。
+              Radix 把内容 portal 到 body、位置不够时自己翻到下面——这正是那个裁切的修法。
+              键盘**仍然全部**由下面的 textarea onKeyDown 管（方向键/Enter 不能交给 Radix，
+              它会拿去做菜单导航）；焦点也一步都不许挪，靠两个 AutoFocus 的 preventDefault */}
+          <Popover open={picking !== null && options.length > 0}>
+            <PopoverAnchor asChild>
+              <textarea
+                ref={boxRef}
+                rows={1}
+                disabled={!ready}
+                className="min-h-[34px] flex-1 min-w-0 resize-none rounded-2xl border border-border bg-transparent px-3 py-[7px] text-[13px] leading-relaxed transition-colors duration-150 placeholder:text-muted-foreground/70 focus:border-ring focus:outline-none disabled:opacity-50"
+                placeholder={ready ? "输入 @ 点名智能体；不 @ 就只是群里说一句" : "还没连上，暂时发不了消息"}
+                value={draft}
+                onChange={(e) => {
+                  setDraft(e.target.value);
+                  setCaret(e.target.selectionStart);
+                }}
+                onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
+                onKeyUp={(e) => setCaret(e.currentTarget.selectionStart)}
+                onClick={(e) => setCaret(e.currentTarget.selectionStart)}
+                // **故意没有 onBlur**：写进 dismissedAt 的是"这个 @ 不要了"这个
+                // 判断，而切窗口不是那个意思——alt-tab 出去再回来，光标一个字没动，
+                // 于是 picking 永远是 null，接着打字列表再也不出来。
+                // 该关的两条路都有人管了：指针点到外面走 onInteractOutside（Radix 的
+                // DismissableLayer 连 focus-outside 一起管），键盘则出不去（Tab /
+                // Shift+Tab 在下面被拦去选人了）。切窗口留着它开着没关系——回来时
+                // 那份候选依然是这句话此刻要的
+                onKeyDown={(e) => {
+                  // 输入法组词途中的按键是"选词"不是命令（Enter 尤其——同
+                  // FriendChatView 的既有约定），整段跳过
+                  if (e.nativeEvent.isComposing) return;
+                  if (picking !== null && options.length > 0) {
+                    if (e.key === "ArrowDown") {
+                      e.preventDefault();
+                      setHi((h) => (h + 1) % options.length);
+                      return;
+                    }
+                    if (e.key === "ArrowUp") {
+                      e.preventDefault();
+                      setHi((h) => (h - 1 + options.length) % options.length);
+                      return;
+                    }
+                    // Enter 在弹层开着时**选人不发送**：正在挑人的那一下按回车，
+                    // 意思一定是"就他"，不是"发出去"
+                    if (e.key === "Enter" || e.key === "Tab") {
+                      e.preventDefault();
+                      pick(hi);
+                      return;
+                    }
+                    if (e.key === "Escape") {
+                      e.preventDefault();
+                      setDismissedAt(picking.at);
+                      return;
+                    }
+                  }
+                  // Enter 发送、Shift+Enter 换行
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    void submit();
+                  }
+                }}
+              />
+            </PopoverAnchor>
+            <PopoverContent
+              side="top"
+              align="start"
+              role="listbox"
+              // 焦点一步都不许挪：这个列表是 textarea 的附属显示，人还在打字。
+              // Radix 默认开时把焦点吸进内容、关时还回触发器，两下都会打断输入
+              onOpenAutoFocus={(e) => e.preventDefault()}
+              onCloseAutoFocus={(e) => e.preventDefault()}
+              // 键盘那条路由 textarea 的 onKeyDown 管，这里只兜「焦点不在框里
+              // 时按了 Escape」；两边都设成同一个值，重复触发也无所谓
+              onEscapeKeyDown={() => setDismissedAt(rawPicking?.at ?? null)}
+              onInteractOutside={(e) => {
+                // 点回 textarea 不算「点到外面」——它是这个弹层的锚，同一个部件。
+                // 算成外面的话，点进 @ 查询词中间会把弹层关掉且**再也不开**
+                // （dismissedAt 撞上同一个下标），而人此刻明明还在挑
+                if (e.detail.originalEvent.target === boxRef.current) return;
+                setDismissedAt(rawPicking?.at ?? null);
+              }}
+              // 进出场在 app.css 的 [data-slot="popover-content"] 那段（手写 keyframes——
+              // 上游那串 animate-in/zoom-in-95 在本仓库是死类名，见 ui/dialog.tsx 顶部）
+              className="w-auto min-w-[200px] max-w-[320px] p-1"
+            >
+              {options.map((o, i) => (
+                <div
+                  key={o.agentId}
+                  role="option"
+                  aria-selected={i === hi}
+                  // mousedown + preventDefault：用 click 的话 textarea 会先失焦，
+                  // 写回之后那次 setSelectionRange 就落在一个没焦点的框上
+                  onMouseDown={(e) => {
+                    e.preventDefault();
+                    pick(i);
+                  }}
+                  onMouseEnter={() => setHi(i)}
+                  className={cn(
+                    "flex cursor-default items-baseline gap-2 rounded-sm px-2 py-[5px] text-[12.5px]",
+                    i === hi && "bg-foreground/[0.06]"
+                  )}
+                >
+                  <span className="shrink-0">{o.name}</span>
+                  <span className="truncate text-muted-foreground">{o.description}</span>
+                </div>
+              ))}
+            </PopoverContent>
+          </Popover>
+          {/* 这颗钮不再是"对 Agent 说"的开关（有了名单，得说清对哪一只）——
+              它现在只做一件事：在光标处插一个 @，把弹层叫出来 */}
+          <Button
+            type="button"
+            variant="outline"
+            size="icon-sm"
+            disabled={!ready}
+            onClick={insertAt}
+            title="@ 智能体"
+            aria-label="@ 智能体"
+          >
+            <AtSign className="size-[13px]" aria-hidden />
+          </Button>
+          <Button size="sm" disabled={!draft.trim() || sending || !ready} onClick={() => void submit()}>
+            发送
+          </Button>
+        </div>
       </footer>
     </div>
   );
@@ -723,21 +913,25 @@ function ChatMessageRow({ event, mine }: { event: ChatMessageEvent; mine: boolea
   );
 }
 
-/** 点火了一个 turn 的那句话（复审 Rejected #1 补齐）：user_message 本体，
-    可视觉语言照抄 ChatMessageRow——群聊里这就是"有人说了一句话"，只是
-    这一句额外触发了 Agent 干活。label 解析不出时（旧日志/前缀被破坏）就
-    不画标签行，只显示时间，正文原样兜底显示全文（含没剥掉的前缀，宁可
-    多显示一点也不假装解析成功了） */
+/** 点火了一个 turn 的那句话（复审 Rejected #1 补齐；targets 是 Task 10 补的
+    "说给谁"）：user_message 本体，可视觉语言照抄 ChatMessageRow——群聊里
+    这就是"有人说了一句话"，只是这一句额外触发了 Agent 干活。label 解析
+    不出时（旧日志/前缀被破坏）就不画标签行，只显示时间，正文原样兜底显示
+    全文（含没剥掉的前缀，宁可多显示一点也不假装解析成功了）。targets
+    非空时标签行末尾追加 "· → 谁"——这是这句话点了谁的唯一可见痕迹，
+    不点名的普通发言（targets 为空）不多这一截 */
 function UserMessageRow({
   ts,
   label,
   text,
   mine,
+  targets,
 }: {
   ts: number;
   label: string | null;
   text: string;
   mine: boolean;
+  targets: string[];
 }) {
   return (
     <div
@@ -749,6 +943,7 @@ function UserMessageRow({
       <span className="px-1 text-[10.5px] text-muted-foreground">
         {!mine && label ? `${label} · ` : ""}
         {formatProxyTime(ts)}
+        {targets.length > 0 ? ` · → ${targets.join("、")}` : ""}
       </span>
       <Bubble align={mine ? "end" : "start"} variant={mine ? "tinted" : "muted"}>
         <BubbleContent className="whitespace-pre-wrap break-words">{text}</BubbleContent>
@@ -757,19 +952,29 @@ function UserMessageRow({
   );
 }
 
-/** Agent 的回复（复审 Rejected #1 补齐）：恒左对齐（Agent 不可能是"我"）。
-    content 在纯工具调用的 turn 里可能是空串（events.ts 的字段注释）——
-    这时不画空气泡，改成无条件把 toolCalls 摊成一行行 ToolActivityLine，
-    这样即使模型这一轮一个字没说，用户也能看见"它干了什么"，不是全程无声。
-    有正文又有工具调用时两者都画（events.ts 原话："文本和工具调用请求可以
-    同时出现"）*/
-function AssistantMessageRow({ event, index }: { event: AssistantMessageEvent; index: ToolIndex }) {
+/** Agent 的回复（复审 Rejected #1 补齐；署名换成 assistantLabel 是 Task 10）：
+    恒左对齐（Agent 不可能是"我"）。content 在纯工具调用的 turn 里可能是
+    空串（events.ts 的字段注释）——这时不画空气泡，改成无条件把 toolCalls
+    摊成一行行 ToolActivityLine，这样即使模型这一轮一个字没说，用户也能
+    看见"它干了什么"，不是全程无声。有正文又有工具调用时两者都画
+    （events.ts 原话："文本和工具调用请求可以同时出现"）。ws 是查
+    agentId → 名字的名单，多智能体上线前落的旧消息没有 agentId，
+    assistantLabel 据此回退到 "Agent" */
+function AssistantMessageRow({
+  event,
+  ws,
+  index,
+}: {
+  event: AssistantMessageEvent;
+  ws: WorkspaceSnapshot;
+  index: ToolIndex;
+}) {
   const hasText = event.content.trim() !== "";
   const toolCalls = event.toolCalls ?? [];
   return (
     <div className="flex max-w-[85%] flex-col items-start gap-1 self-start">
       <span className="px-1 text-[10.5px] text-muted-foreground">
-        Agent · {formatProxyTime(event.ts)}
+        {assistantLabel(event, ws)} · {formatProxyTime(event.ts)}
       </span>
       {hasText && (
         <Bubble align="start" variant="muted">
@@ -780,6 +985,45 @@ function AssistantMessageRow({ event, index }: { event: AssistantMessageEvent; i
         <ToolActivityLine key={call.id} call={call} result={index.results.get(call.id)} />
       ))}
     </div>
+  );
+}
+
+/** agent 就位（Task 10）：改提示词生效了在界面上唯一的痕迹——`briefIfNeeded`
+    (services/runtime/src/sessionService.ts) 每次改动派发新的 instructions
+    才会落这条事件，光看聊天记录本身看不出"我刚改的提示词有没有吃上"，
+    这一行就是那个回执。视觉上刻意比 ChatMessageRow/UserMessageRow 更淡更
+    小——它是审计性质的旁白，不是群里任何人说的话 */
+function AgentBriefedRow({ event }: { event: AgentBriefedEvent }) {
+  return (
+    <p className="px-1 text-[10.5px] italic text-muted-foreground/70">
+      「{event.name}」就位{event.instructions.trim() ? "（提示词已更新）" : ""}
+    </p>
+  );
+}
+
+/** 「谁还没回」（Task 10，src/shared/turnLedger.ts 的 openTurns 是事实来源）：
+    画在时间线**末尾**而不是贴在各自那条 @ 消息下面——排队的东西说的是
+    "接下来会发生什么"，那是时间线尾巴的事；这是日志的投影不是 UI 本地态，
+    daemon 重启回来后重新算一遍照样对得上。running 前面一个跳动的点，
+    queued 前面一个不跳动的点——同一屏里"正在做"和"还没轮到"要一眼分开 */
+function PendingTurnLines({ events, ws }: { events: readonly SessionEvent[]; ws: WorkspaceSnapshot }) {
+  const pending = useMemo(() => openTurns(events), [events]);
+  if (pending.length === 0) return null;
+  return (
+    <>
+      {pending.map((t) => (
+        <div key={`${t.seq}:${t.agentId}`} className="flex items-center gap-1.5 px-1 text-[11px] text-muted-foreground">
+          <span
+            className={cn(
+              "size-[6px] rounded-full",
+              t.state === "running" ? "bg-brand animate-pulse motion-reduce:animate-none" : "bg-muted-foreground/40"
+            )}
+            aria-hidden
+          />
+          {agentNameOf(ws, t.agentId)} {t.state === "running" ? "正在回复…" : "排队中…"}
+        </div>
+      ))}
+    </>
   );
 }
 

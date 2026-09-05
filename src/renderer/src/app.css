@@ -871,6 +871,37 @@
   .dialog-content[data-state="closed"] { animation-name: dialog-overlay-out; }
 }
 
+/* ── 浮层(shadcn popover)的进出场 ────────────────────────────────────
+   理由同上面弹窗那段:animate-in 一族在本仓库是死类名。按 data-slot 挂而不是
+   挂 class,所以全仓库每一个 shadcn Popover 一起吃到(ThinkingPicker、
+   model-selector、云会话的 @ 选人),不用逐处补。
+   与弹窗不同的两点:
+   ① 有锚点,transform-origin 用 radix 算好的那个变量 —— ui/popover.tsx 里已经带了
+      `origin-(--radix-popover-content-transform-origin)`,所以这里不用再写一行;
+      它是从触发器那一角长出来,不从中心(同下面 .menu-pop 的取舍)。
+   ② 更快(160/120 vs 200/140):浮层是一天开几十次的东西,弹窗一天开几次 */
+@keyframes popover-content-in {
+  from { opacity: 0; transform: scale(0.96); }
+  to { opacity: 1; transform: scale(1); }
+}
+@keyframes popover-content-out {
+  from { opacity: 1; transform: scale(1); }
+  to { opacity: 0; transform: scale(0.98); }
+}
+[data-slot="popover-content"][data-state="open"] { animation: popover-content-in 160ms var(--ease-strong); }
+[data-slot="popover-content"][data-state="closed"] { animation: popover-content-out 120ms var(--ease-strong); }
+@media (prefers-reduced-motion: reduce) {
+  /* 换动画名而不是把时长压到 1ms:留住淡入淡出、只去掉缩放。
+     压时长等于硬切,而"减少动效"要的是别缩放别位移,不是别有过渡。
+     判据抄紧邻的 .dialog-content 与 .menu-pop 两段,三处一个写法 */
+  [data-slot="popover-content"][data-state="open"],
+  [data-slot="popover-content"][data-state="closed"] {
+    animation-name: dialog-overlay-in;
+    animation-duration: 120ms;
+  }
+  [data-slot="popover-content"][data-state="closed"] { animation-name: dialog-overlay-out; }
+}
+
 /* 可按元素的按下反馈。100ms 是"手指还没抬起来就已经看到反应"的量级;
    松手回弹用同一条曲线,不做过冲——这不是被甩出去的东西,是被按下去的 */
 .press-scale {

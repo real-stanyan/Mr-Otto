@@ -846,6 +846,20 @@ interface ChatState {
   /** tools: [] = 整服务放行（同 proxyShare.ts 的约定） */
   contributeWorkspaceConnector(id: string, serverId: string, tools: readonly string[]): Promise<boolean>;
   withdrawWorkspaceConnector(id: string, serverId: string): Promise<boolean>;
+  /** 智能体名册住在 WorkspaceSnapshot.agents（issue #932）——这三个 action
+      跟其余十一件套一个套路：经 ShellBridge 打一次 IPC，成功后
+      refreshWorkspaceGroups() 重拉整份快照落地新名册，失败落
+      workspaceGroupsError，回布尔给调用方决定要不要清表单 */
+  createWorkspaceAgent(
+    id: string,
+    draft: { name: string; description: string; instructions: string; models: readonly string[] },
+  ): Promise<boolean>;
+  updateWorkspaceAgent(
+    id: string,
+    agentId: string,
+    patch: { name?: string; description?: string; instructions?: string; models?: readonly string[] },
+  ): Promise<boolean>;
+  deleteWorkspaceAgent(id: string, agentId: string): Promise<boolean>;
   /** 把当前/指定会话发布进工作区。回是否成功——rowId/pkgId 用不上时调用方不必接 */
   publishWorkspaceSession(id: string, sessionId: string, title: string): Promise<boolean>;
   /** 只有发布者能撤（服务端也会拦，见 index.ts workspaceUnpublishSession handler） */
@@ -879,11 +893,14 @@ interface ChatState {
   /** 离开当前云会话（返回键用）。同步——不等 workspaceCloudLeave 那趟 IPC
       往返，UI 反馈要即时；真正的连接收尾在主进程后台完成，用户不需要等 */
   closeCloudSession(): void;
-  /** 往当前云会话发一句话。mention = 「@Agent」toggle 开着。回是否成功——
-      CloudSessionPage 的 submit() 靠它决定要不要清空草稿（同
-      createWorkspaceGroup 等十一件套"回 boolean 给调用方决定要不要清输入框"
-      的既有约定，复审 Medium：失败时不清，草稿原样留着） */
-  cloudSay(text: string, mention: boolean): Promise<boolean>;
+  /** 往当前云会话发一句话。mentions 缺席 = 老语义（开局卡那句：不 @ 也由
+      名单第一只接）；给了（含 []）= 以它为准，覆盖旧的 mention toggle
+      语义——布尔与数组在这一处同源翻译（`mention = mentions === undefined
+      ? true : mentions.length > 0`），不许调用方或别处再手写一份（#932
+      切片 1b）。回是否成功——CloudSessionPage 的 submit() 靠它决定要不要
+      清空草稿（同 createWorkspaceGroup 等十一件套"回 boolean 给调用方决定
+      要不要清输入框"的既有约定，复审 Medium：失败时不清，草稿原样留着） */
+  cloudSay(text: string, mentions?: string[]): Promise<boolean>;
   /** 批/拒当前云会话里的一个审批请求。回是否成功（同上，失败信息落
       workspaceGroupsError，调用方按需读） */
   cloudApprove(callId: string, decision: "approved" | "denied"): Promise<boolean>;
@@ -2107,6 +2124,43 @@ export const useChat = create<ChatState>((set, get) => ({
     return true;
   },
 
+  async createWorkspaceAgent(id, draft) {
+    const r = await window.otter.workspaceAgentCreate(id, { ...draft, models: [...draft.models] });
+    if (!r.ok) {
+      set({ workspaceGroupsError: r.message });
+      return false;
+    }
+    set({ workspaceGroupsError: null });
+    await get().refreshWorkspaceGroups();
+    return true;
+  },
+
+  async updateWorkspaceAgent(id, agentId, patch) {
+    const { models, ...rest } = patch;
+    const r = await window.otter.workspaceAgentUpdate(id, agentId, {
+      ...rest,
+      ...(models === undefined ? {} : { models: [...models] }),
+    });
+    if (!r.ok) {
+      set({ workspaceGroupsError: r.message });
+      return false;
+    }
+    set({ workspaceGroupsError: null });
+    await get().refreshWorkspaceGroups();
+    return true;
+  },
+
+  async deleteWorkspaceAgent(id, agentId) {
+    const r = await window.otter.workspaceAgentDelete(id, agentId);
+    if (!r.ok) {
+      set({ workspaceGroupsError: r.message });
+      return false;
+    }
+    set({ workspaceGroupsError: null });
+    await get().refreshWorkspaceGroups();
+    return true;
+  },
+
   async publishWorkspaceSession(id, sessionId, title) {
     const r = await window.otter.workspacePublishSession(id, sessionId, title);
     if (!r.ok) {
@@ -2223,8 +2277,10 @@ export const useChat = create<ChatState>((set, get) => ({
     return text;
   },
 
-  async cloudSay(text, mention) {
-    const r = await window.otter.workspaceCloudSay(text, mention);
+  async cloudSay(text, mentions) {
+    // 布尔与数组同源：mentions 缺席 = 老语义（开局卡那句话不 @ 也由名单第一只接）
+    const mention = mentions === undefined ? true : mentions.length > 0;
+    const r = await window.otter.workspaceCloudSay(text, mention, mentions);
     if (!r.ok) {
       set({ workspaceGroupsError: r.message });
       return false;

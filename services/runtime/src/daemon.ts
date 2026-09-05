@@ -38,6 +38,7 @@ import {
   type CsDown,
 } from "../../../src/shared/remote/cloudSession.js";
 import { createWsTransport } from "../../../src/shared/remote/wsTransport.js";
+import { ADMIN_AGENT_ID } from "../../../src/shared/workspaceAgents.js";
 import type { RemoteTransport } from "../../../src/shared/remote/transport.js";
 
 /** 镜像 sandbox.ts 的同名私有常量（未导出，故在此复制一份——两处改动需同步）。
@@ -54,16 +55,16 @@ const WORKSPACE_LABEL = "mrotto.workspace";
     同一个 agentId（"admin"），这不是巧合：migration 跑完之后，查询成功时
     第一条返回结果本来就是这一行，回落值因此与"真实结果"同构，不是另造一个
     会漂移的占位身份。
-    真正会用到它的两个时刻：① workspace_agents 表此刻**还没有在真库上跑过**
-    0021 migration（那是打到生产 Supabase 的副作用，刻意留给维护者手动执行，
-    见 task-10-report.md）——查询会遇到"表不存在"这类 PostgREST 错误；
-    ② migration 之后 Supabase 偶发抖动导致这一次查询失败。
+    真正会用到它的时刻：Supabase 偶发抖动 / 网络抖动导致这一次查询失败。
+    （它最初是为"0021 migration 还没在真库上跑过、查询会遇到表不存在"写的，
+    那条动机已经是历史：migration 在 PR #931 合并时由维护者在生产库执行并
+    验过，见 #932 正文「数据库状态」。回落本身留着——查询失败这条路一直在。）
     两种情况都不该让"这一条消息"整个失败、更不该让 roster 变成空数组——
     resolveTargets 在空 roster 时永远回 []，那样存量工作区会安静地再也起不了
     turn（比抛错更难查，因为界面上什么都不会说），见 queryAgents 消费点的
     注释。 */
 const DEFAULT_WORKSPACE_AGENT: AgentSpec = {
-  agentId: "admin",
+  agentId: ADMIN_AGENT_ID,
   name: "管理员",
   description: "这个工作区的默认智能体",
   instructions: "",
@@ -520,9 +521,8 @@ async function main(): Promise<void> {
       store,
       world,
       // 这个工作区此刻的 agent 名单，真查询（#928 task-11）。**不回落到空
-      // 名单**：workspace_agents 表此刻还没有在真库上跑过 0021 migration
-      // （刻意留给维护者手动执行，见 task-10-report.md），查询会遇到
-      // "表不存在"这类 PostgREST 错误——sessionService 的 say() 第一行就是
+      // 名单**：查询失败（Supabase 抖动、网络）时——sessionService 的 say()
+      // 第一行就是
       // await opts.agents()，不接住的话每一条消息都会失败，而且从发言人
       // 这一侧看是彻底的沉默（frameHandler 的 say 分支没有 try/catch，
       // 异常只冒到本文件 onMessage 的 .catch(console.error)，连一条 error
@@ -533,8 +533,8 @@ async function main(): Promise<void> {
       // migration 的 seed_workspace_admin_agent 触发器给每个工作区种的正是
       // 同一个 agentId "admin"，migration 跑完之后查询成功的第一条结果本来
       // 就是这一行，回落与"真实结果"同构（见该常量注释）。console.error
-      // （不是 warn）：这不是预期内的抖动，是"多智能体这半条链路还没打通"，
-      // 运维应该看得见——一旦 migration 落地，这行日志理应消失
+      // （不是 warn）：0021 已经在真库上跑过了（PR #931 合并时执行并验过），
+      // 所以这行日志本不该出现——出现了就是查询真的挂了，运维该看得见
       agents: () =>
         queryAgents(workspaceId).catch((err: unknown) => {
           console.error(

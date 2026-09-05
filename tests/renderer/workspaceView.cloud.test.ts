@@ -17,6 +17,7 @@ const WS: WorkspaceSnapshot = {
   ],
   connectors: [],
   sessions: [],
+  agents: [],
 };
 
 const ROWS: CloudSessionListRow[] = [

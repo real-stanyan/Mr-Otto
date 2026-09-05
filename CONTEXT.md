@@ -110,6 +110,8 @@ Domain glossary. All agents' understanding of domain terms is grounded here; cod
 | Quota DO | 每用户一个的 Durable Object，落盘窗口用量与加购余额的**投影**；钱的唯一事实是 Supabase `usage_event` 表，DO 冷启动从事实重建，重建失败 throw 不落空态 | ADR-0203 决定 5/11；`services/edge/src/quota.ts` |
 | on-behalf-of | 云 runtime 代表**发起 turn 的那个人**（不是 workspace owner）调网关的头 `x-otto-on-behalf-of`，配 `x-runtime-secret` 一起用；真人自己的请求带这个头一律 400 | ADR-0203 决定 9 |
 | reroute | 网关 429 `quota_exhausted` 时桌面 adapter 单列的一类失败——不退避、立刻重解析端点一次再打一遍，与限流退避不同类 | ADR-0203 决定 14 |
+| 工作区 agent | `workspace_agents` 表的一行：这个工作区里 @ 得着的一只水獭，有自己的名字、一句话职责、提示词和型号白名单。每个工作区开箱自带一只种子「管理员」（migration 的触发器种的），它删不掉——不点名时接话的就是名单第一只。与「会话」正交：一条云会话里站着这个工作区**此刻**的全部 agent，建/改下一 turn 生效 | ADR-0219 / ADR-0220；`supabase/migrations/0021_workspace_agents.sql`、`src/renderer/src/components/WorkspaceAgentsTab.tsx` |
+| `openTurns`（排队中 / 正在回复） | 云会话里「谁欠谁一个回答」的**日志投影**，不是内存队列的状态：点了名的 `user_message` → 它之后那只 agent 有没有动静 → 有没有它的 `turn_ended`，三种事件形状配对出 `queued` / `running`，收了口的不出现。runtime 的重启补跑与渲染层的状态行共用这一份纯函数 | ADR-0220（#932 坑 ②）；`src/shared/turnLedger.ts` |
 
 - **Files 面板**：右侧槽位第 6 个互斥视图，工作区文件树 + 过滤/内容搜索 + 只读预览。树和搜索都全显（含 `node_modules`、隐藏文件），一条规矩管两处。纯人用旁路：内容不进事件日志、不进模型上下文，`@` 动作只塞路径不塞内容（ADR-0092，同 ADR-0031 的边界）。
 - **`@路径` 高亮**：输入框里 `@` 开头的路径跟 `$skill` / `/命令` 一样画成 chip。判定方式不同——那两种比名单，路径没有名单可比，靠形状（`@` 前是行首或空白、后跟非空白、句末标点不吃进去），见 `aui/ottoDirectives.ts` 的 `ottoPathFormatter`。

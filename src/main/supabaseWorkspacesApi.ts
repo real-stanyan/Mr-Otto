@@ -97,8 +97,17 @@ export async function fetchWorkspace(
     id: string; workspace_id: string; publisher_uid: string; pkg_id: string; title: string;
     updated_at: string;
   }[];
+  const agents = (unwrap(
+    await client.from("workspace_agents")
+      .select("agent_id,name,description,instructions,models,created_by,updated_at")
+      .eq("workspace_id", id)
+      .order("created_at", { ascending: true }),
+  ) ?? []) as {
+    agent_id: string; name: string; description: string; instructions: string; models: unknown;
+    created_by: string; updated_at: string;
+  }[];
   const labels = await fetchProfileLabels(client, members.map((m) => m.uid));
-  return assembleSnapshot(ws, members, connectors, sessions, (uid) => labels.get(uid) ?? null);
+  return assembleSnapshot(ws, members, connectors, sessions, agents, (uid) => labels.get(uid) ?? null);
 }
 
 /** owner 拉人(RLS 只放行自己 own 的群) */
@@ -192,6 +201,70 @@ export async function insertSessionRow(
     抛错而不是悄悄回成功，让调用方（workspaceUnpublishSession handler）如实报告 */
 export async function deleteSessionRow(client: SupabaseClient, id: string): Promise<void> {
   const rows = unwrap(await client.from("workspace_sessions").delete().eq("id", id).select("id"));
+  if (!Array.isArray(rows) || rows.length === 0) {
+    throw new Error("行不存在或无权删除");
+  }
+}
+
+/** 任何成员建一只新 agent（0021 的 wsa_insert_member：created_by 必须是自己）。
+    name 的人话校验（1–32 字符/不含 @/不含换行）在 src/shared/workspaceAgents.ts
+    先做一遍，这里只管落库——重名靠 unique index 的 23505 回来，调用方翻译 */
+export async function insertAgentRow(
+  client: SupabaseClient,
+  row: {
+    workspaceId: string; agentId: string; name: string; description: string;
+    instructions: string; models: string[]; createdBy: string;
+  },
+): Promise<void> {
+  unwrap(
+    await client.from("workspace_agents").insert({
+      workspace_id: row.workspaceId,
+      agent_id: row.agentId,
+      name: row.name,
+      description: row.description,
+      instructions: row.instructions,
+      models: row.models,
+      created_by: row.createdBy,
+    }),
+  );
+}
+
+/** 建的人或 owner 改一只 agent（0021 的 wsa_update_owner_or_creator）。RLS 静默
+    过滤成 0 行时 PostgREST 不报错——同 deleteSessionRow，`.select("agent_id")`
+    是唯一的行数证据 */
+export async function updateAgentRow(
+  client: SupabaseClient,
+  workspaceId: string,
+  agentId: string,
+  patch: { name?: string; description?: string; instructions?: string; models?: string[] },
+): Promise<void> {
+  const rows = unwrap(
+    await client.from("workspace_agents")
+      .update({ ...patch, updated_at: new Date().toISOString() })
+      .eq("workspace_id", workspaceId)
+      .eq("agent_id", agentId)
+      .select("agent_id"),
+  );
+  if (!Array.isArray(rows) || rows.length === 0) {
+    throw new Error("行不存在或无权修改");
+  }
+}
+
+/** 建的人或 owner 删一只 agent（0021 的 wsa_delete_owner_or_creator——'admin'
+    那只谁都删不掉，RLS 自己拒，这里不重复判断）。同 updateAgentRow，`.select`
+    是唯一的行数证据 */
+export async function deleteAgentRow(
+  client: SupabaseClient,
+  workspaceId: string,
+  agentId: string,
+): Promise<void> {
+  const rows = unwrap(
+    await client.from("workspace_agents")
+      .delete()
+      .eq("workspace_id", workspaceId)
+      .eq("agent_id", agentId)
+      .select("agent_id"),
+  );
   if (!Array.isArray(rows) || rows.length === 0) {
     throw new Error("行不存在或无权删除");
   }

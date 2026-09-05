@@ -182,6 +182,7 @@ import { createWorkspaceManager } from "./workspaceManager.js";
 import {
   createWorkspace, listWorkspaces, fetchWorkspace, addMember, removeMember, leave,
   deleteWorkspace, upsertConnectorRow, deleteConnectorRow, insertSessionRow, listCloudSessions,
+  insertAgentRow, updateAgentRow, deleteAgentRow,
 } from "./supabaseWorkspacesApi.js";
 import {
   publishSessionToWorkspace, unpublishSession, importWorkspaceSession,
@@ -1506,6 +1507,7 @@ void app.whenReady().then(() => {
   const workspaceManager = createWorkspaceManager({
     createWorkspace, listWorkspaces, fetchWorkspace, addMember, removeMember, leave,
     deleteWorkspace, upsertConnectorRow, deleteConnectorRow,
+    insertAgentRow, updateAgentRow, deleteAgentRow,
     client: () => supabase.raw,
     selfUid: () => friends.currentUid(),
     loadStore: () => readProxyStore(proxyStorePath),
@@ -3206,6 +3208,22 @@ void app.whenReady().then(() => {
     workspaceManager.contributeConnector(id, serverId, tools));
   ipcMain.handle(CHANNELS.workspaceWithdrawConnector, (_e, id: string, serverId: string) =>
     workspaceManager.withdrawConnector(id, serverId));
+  ipcMain.handle(
+    CHANNELS.workspaceAgentCreate,
+    (_e, id: string, draft: { name: string; description: string; instructions: string; models: string[] }) =>
+      workspaceManager.createAgent(id, draft),
+  );
+  ipcMain.handle(
+    CHANNELS.workspaceAgentUpdate,
+    (
+      _e,
+      id: string,
+      agentId: string,
+      patch: { name?: string; description?: string; instructions?: string; models?: string[] },
+    ) => workspaceManager.updateAgent(id, agentId, patch),
+  );
+  ipcMain.handle(CHANNELS.workspaceAgentDelete, (_e, id: string, agentId: string) =>
+    workspaceManager.deleteAgent(id, agentId));
 
   // 发布/撤回/导入会话（Task 9 workspaceSessionShare.ts）：编排在那一层，
   // 这里只接依赖——同下面 shareSessionToFriend/importSharedSession 那两个
@@ -3290,8 +3308,8 @@ void app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.workspaceCloudJoin, (_e, workspaceId: string, sessionId: string) =>
     cloudClient.join(workspaceId, sessionId));
   ipcMain.handle(CHANNELS.workspaceCloudLeave, () => cloudClient.leave());
-  ipcMain.handle(CHANNELS.workspaceCloudSay, (_e, text: string, mention: boolean) =>
-    cloudClient.say(text, mention));
+  ipcMain.handle(CHANNELS.workspaceCloudSay, (_e, text: string, mention: boolean, mentions: string[] | null) =>
+    cloudClient.say(text, mention, mentions ?? undefined));
   ipcMain.handle(CHANNELS.workspaceCloudApprove, (_e, callId: string, decision: "approved" | "denied") =>
     cloudClient.approve(callId, decision));
   ipcMain.handle(CHANNELS.workspaceCloudArchive, () => cloudClient.archive());

@@ -19,6 +19,7 @@ describe("assembleSnapshot", () => {
         id: "sess-1", workspace_id: "ws-1", publisher_uid: "owner-uid-12345678",
         pkg_id: "pkg-1", title: "会话标题", updated_at: "2026-08-30T12:00:00.000Z",
       }],
+      [],
       (uid) => (uid === "owner-uid-12345678" ? "Stan" : null),
     );
 
@@ -33,6 +34,7 @@ describe("assembleSnapshot", () => {
         id: "sess-1", workspaceId: "ws-1", publisherUid: "owner-uid-12345678",
         pkgId: "pkg-1", title: "会话标题", updatedTs: Date.parse("2026-08-30T12:00:00.000Z"),
       }],
+      agents: [],
     });
   });
 
@@ -40,7 +42,7 @@ describe("assembleSnapshot", () => {
     const snapshot = assembleSnapshot(
       WS,
       [{ uid: "no-profile-uid-999", role: "member" }],
-      [], [],
+      [], [], [],
       () => null,
     );
     expect(snapshot.members).toEqual([
@@ -56,7 +58,7 @@ describe("assembleSnapshot", () => {
         { workspace_id: "ws-1", host_uid: "h2", server_id: "s2", label: "B", tools: ["ok", 123] },
         { workspace_id: "ws-1", host_uid: "h3", server_id: "s3", label: "C", tools: null },
       ],
-      [],
+      [], [],
       () => null,
     );
     expect(snapshot.connectors.map((c) => c.tools)).toEqual([[], [], []]);
@@ -69,8 +71,24 @@ describe("assembleSnapshot", () => {
         id: "sess-1", workspace_id: "ws-1", publisher_uid: "p1",
         pkg_id: "pkg-1", title: "t", updated_at: "not-a-date",
       }],
+      [],
       () => null,
     );
     expect(snapshot.sessions[0]!.updatedTs).toBe(0);
+  });
+
+  it("agents：models 形状不对回 []，updated_at → ms，created_by 原样", () => {
+    const snapshot = assembleSnapshot(
+      WS, [], [], [],
+      [
+        { agent_id: "admin", name: "管理员", description: "", instructions: "", models: ["deepseek-v4"], created_by: "owner-uid-12345678", updated_at: "2026-09-01T00:00:00.000Z" },
+        { agent_id: "a1", name: "运营", description: "管店铺", instructions: "你管运营", models: "nope", created_by: "u2", updated_at: "bad" },
+      ],
+      () => null,
+    );
+    expect(snapshot.agents).toEqual([
+      { agentId: "admin", name: "管理员", description: "", instructions: "", models: ["deepseek-v4"], createdBy: "owner-uid-12345678", updatedTs: Date.parse("2026-09-01T00:00:00.000Z") },
+      { agentId: "a1", name: "运营", description: "管店铺", instructions: "你管运营", models: [], createdBy: "u2", updatedTs: 0 },
+    ]);
   });
 });

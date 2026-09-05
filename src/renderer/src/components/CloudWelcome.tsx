@@ -54,7 +54,7 @@ export function CloudWelcome({ workspaceId }: { workspaceId: string }) {
           className="border-none shadow-none resize-none bg-transparent dark:bg-transparent text-foreground text-sm leading-[1.45] min-h-[52px] max-h-[200px] px-3 py-2 focus-visible:ring-0 placeholder:text-foreground/35"
           autoFocus
           rows={2}
-          placeholder="要它做什么？回车发送"
+          placeholder="要它做什么？不 @ 谁的话由管理员接。回车发送"
           value={text}
           disabled={busy}
           onChange={(e) => setText(e.target.value)}

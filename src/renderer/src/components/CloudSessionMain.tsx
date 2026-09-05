@@ -20,8 +20,15 @@ export function CloudSessionMain() {
   const pending = useChat((s) => s.cloudPendingFirstMessage);
   const take = useChat((s) => s.takeCloudPendingFirstMessage);
   const cloudSay = useChat((s) => s.cloudSay);
+  const refreshGroups = useChat((s) => s.refreshWorkspaceGroups);
 
   const state = cs?.state ?? null;
+
+  // 进云会话时刷一次快照：agent 名单是别的成员也能改的，而 workspaceGroups
+  // 没有推送通道（只在本地改动后重拉）——不刷的话别人新建的那只 @ 不到
+  useEffect(() => {
+    if (cs?.sessionId) void refreshGroups();
+  }, [cs?.sessionId, refreshGroups]);
   // 开局卡上写的那句话，等到连接 ready 才发得出去（主进程的 say() 要求
   // status === "ready"，见 cloudSessionClient 的 requireReady）。
   // **先取后发**：这个 effect 会因为状态变化重跑，take() 把它从 store 里摘掉
@@ -29,7 +36,8 @@ export function CloudSessionMain() {
   useEffect(() => {
     if (pending === null || state !== "ready") return;
     const text = take();
-    if (text !== null) void cloudSay(text, true);
+    // 开局卡那句不 @ 也由名单第一只接（老语义：mentions 缺席）
+    if (text !== null) void cloudSay(text);
   }, [pending, state, take, cloudSay]);
 
   if (cs === null) return null;

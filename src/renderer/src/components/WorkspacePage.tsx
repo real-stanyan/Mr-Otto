@@ -1,4 +1,4 @@
-// WorkspacePage —— 工作区详情页：三 tab（会话 / 连接器 / 成员）（Task 12，ADR-0198 切片 3）。
+// WorkspacePage —— 工作区详情页：四 tab（会话 / 智能体 / 连接器 / 成员）（Task 12，ADR-0198 切片 3）。
 //
 // 页而不是弹窗（照 McpConnectorPage 的换页惯例，ADR-0185）：三张表加起来随时
 // 超过一屏，弹窗只会滚动条套滚动条；而且这里挂了好几个二次确认，弹窗里嵌
@@ -17,6 +17,8 @@
 // 工作区组头那颗 ＋（同本地工程组），开会话在主区（同本地会话）。这一页只剩
 // 「管理」：成员、连接器、已发布会话，外加**已归档**的云会话（同本地那批归档的
 // 会话不在侧栏里一样，它们得有个去处，而这里就是这个工作区的那个去处）。
+//
+// 智能体 tab（#932 切片 1b）：@ 得着的那几只在这儿建改删。
 
 import { useEffect, useState } from "react";
 import { ArrowLeft, ChevronDown, ChevronRight, LogOut, Trash2, UserPlus } from "lucide-react";
@@ -31,6 +33,7 @@ import {
   cloudSessionRows, connectorRows, memberRows, sessionRows,
   type ConnectorCloudState, type CloudSessionListRow,
 } from "../lib/workspaceView.js";
+import { WorkspaceAgentsTab } from "./WorkspaceAgentsTab.js";
 import {
   buildAllow, isServerOn, isToolOn, selectionFromAllow, toggleServer, toggleTool,
   formatProxyTime, type ProxySelection,
@@ -105,11 +108,17 @@ export function WorkspacePage({
       <Tabs defaultValue="sessions">
         <TabsList>
           <TabsTrigger value="sessions">会话</TabsTrigger>
+          {/* 智能体排在会话之后、连接器之前——智能体是用得最多的一页，
+              连接器/成员是配一次的东西 */}
+          <TabsTrigger value="agents">智能体</TabsTrigger>
           <TabsTrigger value="connectors">连接器</TabsTrigger>
           <TabsTrigger value="members">成员</TabsTrigger>
         </TabsList>
         <TabsContent value="sessions" className="pt-3">
           <SessionsTab ws={ws} selfUid={selfUid} />
+        </TabsContent>
+        <TabsContent value="agents" className="pt-3">
+          <WorkspaceAgentsTab ws={ws} selfUid={selfUid} />
         </TabsContent>
         <TabsContent value="connectors" className="pt-3">
           <ConnectorsTab ws={ws} selfUid={selfUid} />

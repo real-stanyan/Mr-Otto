@@ -3,11 +3,14 @@
 // 换掉而不是并列:onChat 那台状态机的生产调用方只有 sessionService.say() 一处,
 // 而多智能体版把它整段重写了。两台状态机共用同一个 state 会互相踩。
 
+import type { UserMessageEvent } from "../../../src/session/events.js";
+
 export interface TurnJob {
   agentId: string;
   fromUid: string;
-  label: string;
-  text: string;
+  /** 开场那条 user_message（say() 已经落盘、带 seq）。runJob 直接拿它起 turn，
+      不再自己拼 `[label]: text`——那句话只存在于日志里一处（#932 坑 ②） */
+  opening: UserMessageEvent;
 }
 
 export type EnqueueDecision = "start_turn" | "queued" | "logged_only";

@@ -229,6 +229,12 @@ const bridge: ShellBridge = {
     ipcRenderer.invoke(CHANNELS.workspaceContributeConnector, id, serverId, tools),
   workspaceWithdrawConnector: (id, serverId) =>
     ipcRenderer.invoke(CHANNELS.workspaceWithdrawConnector, id, serverId),
+  workspaceAgentCreate: (id, draft) =>
+    ipcRenderer.invoke(CHANNELS.workspaceAgentCreate, id, draft),
+  workspaceAgentUpdate: (id, agentId, patch) =>
+    ipcRenderer.invoke(CHANNELS.workspaceAgentUpdate, id, agentId, patch),
+  workspaceAgentDelete: (id, agentId) =>
+    ipcRenderer.invoke(CHANNELS.workspaceAgentDelete, id, agentId),
   workspacePublishSession: (id, sessionId, title) =>
     ipcRenderer.invoke(CHANNELS.workspacePublishSession, id, sessionId, title),
   workspaceUnpublishSession: (id, rowId) =>
@@ -240,7 +246,11 @@ const bridge: ShellBridge = {
   workspaceCloudJoin: (workspaceId, sessionId) =>
     ipcRenderer.invoke(CHANNELS.workspaceCloudJoin, workspaceId, sessionId),
   workspaceCloudLeave: () => ipcRenderer.invoke(CHANNELS.workspaceCloudLeave),
-  workspaceCloudSay: (text, mention) => ipcRenderer.invoke(CHANNELS.workspaceCloudSay, text, mention),
+  // mentions ?? null：IPC 结构化克隆会把对象里的 undefined 丢掉，位置参数的
+  // undefined 倒是能过，但显式传 null 让"缺席 vs []"这条区分在线上不会被
+  // 揣测——主进程 handler 再 `?? undefined` 转回来（#932 切片 1b）。
+  workspaceCloudSay: (text, mention, mentions) =>
+    ipcRenderer.invoke(CHANNELS.workspaceCloudSay, text, mention, mentions ?? null),
   workspaceCloudApprove: (callId, decision) =>
     ipcRenderer.invoke(CHANNELS.workspaceCloudApprove, callId, decision),
   workspaceCloudArchive: () => ipcRenderer.invoke(CHANNELS.workspaceCloudArchive),

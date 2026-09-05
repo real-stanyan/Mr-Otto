@@ -596,6 +596,33 @@ describe("限流接线（issue #819）", () => {
     expect(sent.map((s) => s.msg.t)).toEqual(["error"]);
   });
 
+  it("mentions 非空但 mention=false 也走 turn 桶（#932 坑 ④）—— chip 输入那条帧会真起 turn", async () => {
+    const sayCalls: unknown[] = [];
+    const session = fakeSession({
+      say: async (...args: Parameters<CloudSession["say"]>) => { sayCalls.push(args); },
+    });
+    // 记下每一帧记的是哪个桶：只断言"被拦住了"分不清它是被 turn 档拦的还是
+    // say 档 —— 而这条 issue 修的正是"记错桶"
+    const buckets: string[] = [];
+    const { deps, sent } = makeDeps({
+      getSession: () => session,
+      rateLimit: { allow: (kind) => { buckets.push(kind); return kind !== "turn"; } },
+    });
+    const handler = createFrameHandler(deps);
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    sent.length = 0;
+    buckets.length = 0;
+
+    await handler.onSessionFrame(
+      "w1", "s1", "c1",
+      encodeCs({ t: "say", text: "看下销量", mention: false, mentions: ["ops"] })
+    );
+
+    expect(buckets).toEqual(["turn"]);
+    expect(sayCalls).toHaveLength(0);
+    expect(sent.map((s) => s.msg.t)).toEqual(["error"]);
+  });
+
   it("create 超速 → denied rate_limited（控制房只认 created/denied，回 error 等于让它白等超时）", async () => {
     const created: unknown[] = [];
     const { deps, sent } = makeDeps({

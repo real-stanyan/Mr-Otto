@@ -3,7 +3,13 @@
 
 import type { NewSessionEvent } from "../session/store.js";
 import type { EventLog } from "../session/eventLog.js";
-import type { MemoryLoadedEvent, SessionEvent, UserAttachmentRef, UserTextFile } from "../session/events.js";
+import type {
+  MemoryLoadedEvent,
+  SessionEvent,
+  UserAttachmentRef,
+  UserMessageEvent,
+  UserTextFile,
+} from "../session/events.js";
 import { deriveMessages, DEFAULT_COMPRESSION, COMPACT_COMPRESSION } from "../session/deriveMessages.js";
 import { barrenEventIndexes } from "../session/barrenTurns.js";
 import { boundedContextEvents } from "../session/modelContextScan.js";
@@ -268,7 +274,22 @@ export class LoopEngine {
   private unseenUserTail(projected: SessionEvent[]): boolean {
     const lastSeq = projected.at(-1)?.seq ?? -1;
     const fresh = this.opts.store.load(this.opts.sessionId, { afterSeq: lastSeq });
-    return fresh.some((e) => e.type === "user_message");
+    const me = this.opts.agentId;
+    return fresh.some((e) => {
+      if (e.type !== "user_message") return false;
+      // 群聊里**点了名的话一条都不算"我没答的"**——包括点名我自己的那些
+      // （#932 复审）。不变量在 sessionService.say()：每一条带 mentions 的
+      // user_message 落盘的同时就已经有一个 turn 归它——要么是它自己排的那个
+      // job，要么是去重命中、并到了那只 agent 还排在队里的 job 上（那一轮开跑
+      // 时读的是整份日志，这句话在里面）；daemon 中途死掉那种由装配时的重启
+      // 补跑（openTurns）接住。所以正在跑的这一轮再为它采样一圈，产出的是**同
+      // 一句话的第二个答案**，不是"捡回一条没人管的话"。
+      // 早退那一行保持逐字不变：没配 agentId（本机会话）或这条没点名（群里随
+      // 口一句、后台任务回注、退化循环护栏那条注入）照旧算没答的——ADR-0205 /
+      // ADR-0212 靠的就是它，一个字都不能动
+      if (!me || !e.mentions || e.mentions.length === 0) return true;
+      return false;
+    });
   }
 
   /** 当前日志快照：第一次全量，之后增量补尾段。首圈持有的是 load() 现造的
@@ -629,11 +650,43 @@ export class LoopEngine {
       ...(textFiles && textFiles.length > 0 ? { textFiles } : {}),
       ...(background ? { origin: "background" as const, backgroundTaskIds: background.taskIds } : {}),
     });
+    return this.runFrom(opening);
+  }
+
+  /** 对一条**已经在日志里**的 user_message 起 turn（#932 坑 ②）。云会话的
+      发言在 say() 那一刻就落盘（带 fromUid/mentions），turn 可能排队等一会儿
+      才轮到——轮到时开场白早就在日志里了，再 append 一条就是同一句话落两遍
+      （模型读两遍、时间线画两遍）。runTurn 与它共用 runFrom：turn 的身份、
+      收口、finally 清场一个字不差，只有“开场那条谁来落”不同。
+      opening 必须带 seq（store.append 的返回值），不是 NewSessionEvent */
+  async runLoggedTurn(opening: UserMessageEvent): Promise<"completed" | "aborted"> {
+    return this.runFrom(opening);
+  }
+
+  private async runFrom(opening: SessionEvent): Promise<"completed" | "aborted"> {
     // turn 的身份 = 开启它的 user_message 的 seq（issue #344 steer 的乐观锁）
     this.currentTurnId = opening.seq;
     this.turnAbort = new AbortController();
     this.compactFloor = null;
+    // 这一轮开跑时日志已经到哪儿（#932 终审）。runTurn 走这条时 opening 是刚
+    // append 的那条，尾巴是空的 → 就是 opening.seq 自己；runLoggedTurn 走这条时
+    // job 在队里等过一会儿，等待期间落的每条都在这个数以内——它们都进得了这一轮
+    // 的第一次快照。turnLedger 靠它判「这条点名是不是这轮看见过的」：**没看见过
+    // 的不许被这条 turn_ended 收口**（否则 mid-turn 到的那条会永远没人答）。
+    // 只在配了 agentId（云会话多智能体）的 engine 上写：本机会话的日志形状
+    // 一个字节都不变（engineAgentId.test.ts 的「没配就一个字段都不加」钉着）
+    // 先声明再在 try 里读：这一次 store.load 也可能抛（SQLite 锁 / fork 链深度），
+    // 抛在 try 外面就是「currentTurnId 置位了、turn_ended 永远不落」——正是下面
+    // 那段注释禁止的形状；而 runJob 那侧的 engineStarted 此时已经是 true，
+    // 它的补偿也不会来（#932 终审复审）。读不到就退回 opening.seq：只会少收口
+    // 不会误收口（重启补跑多跑一轮，不丢消息）
+    let readUpToSeq: number | null = null;
+    const endEnv = () => (readUpToSeq === null ? this.env() : { ...this.env(), readUpToSeq });
     try {
+      if (this.opts.agentId) {
+        readUpToSeq = opening.seq;
+        readUpToSeq = this.opts.store.load(this.opts.sessionId, { afterSeq: opening.seq }).at(-1)?.seq ?? opening.seq;
+      }
       // 工具表这一 turn 的快照。turn 内不再变——见 LoopEngineOptions.tools 注释。
       // 必须在 try 里：provider 是调用方给的任意函数（agent.ts 的 buildTools 里有
       // createMcpTools/applyExposurePolicy），抛错要走下面的 catch 落 turn_ended:
@@ -642,17 +695,17 @@ export class LoopEngine {
       // 目标都靠 turn_ended/finally 收场）
       this.rebuildTools();
       await this.loop(this.turnAbort.signal);
-      this.append({ ...this.env(), type: "turn_ended", outcome: "completed" });
+      this.append({ ...endEnv(), type: "turn_ended", outcome: "completed" });
       return "completed";
     } catch (err) {
       if (isAbort(err)) {
-        this.append({ ...this.env(), type: "turn_ended", outcome: "aborted" });
+        this.append({ ...endEnv(), type: "turn_ended", outcome: "aborted" });
         return "aborted";
       }
       // errorClass = 抛错处（adapter）贴的分类（issue #389）；error 存原文不动
       const errorClass = errorClassOf(err);
       this.append({
-        ...this.env(),
+        ...endEnv(),
         type: "turn_ended",
         outcome: "error",
         error: err instanceof Error ? err.message : String(err),
