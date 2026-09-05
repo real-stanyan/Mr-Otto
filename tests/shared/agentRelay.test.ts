@@ -1,9 +1,9 @@
 import { describe, it, expect } from "vitest";
 import {
-  DEFAULT_RELAY_MAX_DEPTH, decideRelay, hopFingerprint, mentionedAgents, normalizeRelayMaxDepth,
-  relayCapText, relayChain, relayDepthOf, relayNudgeText, relayOpeningText,
+  DEFAULT_RELAY_MAX_DEPTH, RELAY_GUARD, decideRelay, hopFingerprint, mentionedAgents, normalizeRelayMaxDepth,
+  openingDepthFor, relayCapText, relayChain, relayDepthOf, relayNudgeText, relayOpeningText,
 } from "../../src/shared/agentRelay.js";
-import type { AgentRelayEvent, SessionEvent, UserMessageEvent } from "../../src/session/events.js";
+import type { AgentRelayEvent, SessionEvent, TurnEndedEvent, UserMessageEvent } from "../../src/session/events.js";
 
 let seq = 0;
 const um = (extra: Partial<UserMessageEvent>): UserMessageEvent => ({ seq: seq++, ts: 1, sessionId: "s", type: "user_message", content: "x", ...extra });
@@ -67,5 +67,46 @@ describe("agentRelay 纯逻辑（#950，spec §8）", () => {
     expect(normalizeRelayMaxDepth("3")).toBe(6);
     expect(normalizeRelayMaxDepth(2.5)).toBe(6);
     expect(hopFingerprint("a", "b")).toBe("a>b");
+  });
+
+  it("decideRelay：内部对 maxDepth 归一——NaN 与 99 都按默认 6 判 cap（#957 F4）", () => {
+    expect(decideRelay({ chain: [], fromAgentId: "ops", toAgentId: "ads", openingDepth: 6, maxDepth: NaN })).toEqual({ kind: "cap", depth: 7, max: 6 });
+    expect(decideRelay({ chain: [], fromAgentId: "ops", toAgentId: "ads", openingDepth: 6, maxDepth: 99 })).toEqual({ kind: "cap", depth: 7, max: 6 });
+  });
+
+  it("RELAY_GUARD.maxPeriod 改 8——3 只全互 @ 周期 6 的接力网两轮后命中护栏（#957 F2）", () => {
+    seq = 0;
+    expect(RELAY_GUARD).toEqual({ maxPeriod: 8, minRepeats: 2 });
+    const seqPattern: Array<[string, string]> = [["a", "b"], ["a", "c"], ["b", "a"], ["b", "c"], ["c", "a"], ["c", "b"]];
+    const chain: AgentRelayEvent[] = [];
+    let last: ReturnType<typeof decideRelay> | null = null;
+    for (let round = 0; round < 2; round++) {
+      for (const [f, t] of seqPattern) {
+        last = decideRelay({ chain, fromAgentId: f!, toAgentId: t!, openingDepth: round, maxDepth: 99 });
+        chain.push(relay(f!, t!, round + 1));
+      }
+    }
+    expect(last?.kind).toBe("relay");
+    expect((last as { kind: "relay"; loop: unknown }).loop).not.toBeNull();
+  });
+
+  it("openingDepthFor：mentions 含 agentId 且未被本 agent 的 turn_ended 收口（同 openTurns 口径）的 max relay depth（#957 A-4）", () => {
+    seq = 0;
+    const u1 = um({ mentions: ["ads"] }); // depth 0
+    const u2 = um({ mentions: ["ads"], relay: { fromAgentId: "ops", depth: 2 } });
+    const events: SessionEvent[] = [u1, u2];
+    expect(openingDepthFor(events, "ads", u2)).toBe(2);
+
+    const closesBoth: TurnEndedEvent = { seq: seq++, ts: 1, sessionId: "s", type: "turn_ended", outcome: "completed", agentId: "ads", readUpToSeq: u2.seq };
+    const eventsClosed: SessionEvent[] = [u1, u2, closesBoth];
+    // 两条都收口了 → 只剩 opening 自身（用 opening=u1，depth 0）
+    expect(openingDepthFor(eventsClosed, "ads", u1)).toBe(0);
+
+    seq = 0;
+    const v1 = um({ mentions: ["ads"] });
+    const v2 = um({ mentions: ["ads"], relay: { fromAgentId: "ops", depth: 2 } });
+    const partialClose: TurnEndedEvent = { seq: seq++, ts: 1, sessionId: "s", type: "turn_ended", outcome: "completed", agentId: "ads", readUpToSeq: v1.seq };
+    // readUpToSeq < v2.seq → v2 仍算 open，depth 2 仍计入
+    expect(openingDepthFor([v1, v2, partialClose], "ads", v1)).toBe(2);
   });
 });

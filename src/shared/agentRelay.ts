@@ -5,7 +5,10 @@
 // 两层刹车（决策 3）：① 周期护栏——判据抄 toolLoopGuard.detectToolLoop（周期重复不是连续相同，
 // ADR-0212：A→B→A→B 相邻两棒从来不相等），命中注一条话**不停**；② 棒数上限——depth 到顶硬停、
 // 群里向人汇报。要第二层的理由：ADR-0212 只注话不停的前提是「用户就在屏幕前」，云会话不成立。
-// 护栏参数取 maxPeriod 3 / minRepeats 2：上限默认才 6 棒，照 toolLoopGuard 的 24/3 护栏永远赶不上上限。
+// 护栏参数取 maxPeriod 8 / minRepeats 2（#957 F2，修订原先的 3/2）：3 只 agent 全互 @ 时每轮
+// 6 跳（每只发言者对另外两只各 @ 一次）才闭合一个周期，maxPeriod 3 是永久盲区——护栏一次都不喊
+// （审计脚本复现过，见 .superpowers/audit/tests/_audit_relayGuard.test.ts 的 EG 用例）；8 覆盖
+// 周期 6，两轮（12 跳）即可命中 minRepeats 2。
 
 import type { AgentRelayEvent, SessionEvent, UserMessageEvent } from "../session/events.js";
 import { detectToolLoop, type ToolLoopDetection } from "./toolLoopGuard.js";
@@ -13,7 +16,7 @@ import { parseMentions, type MentionCandidate } from "./remote/agentMention.js";
 
 export const DEFAULT_RELAY_MAX_DEPTH = 6;
 export const RELAY_MAX_DEPTH_RANGE = { min: 1, max: 20 } as const;
-export const RELAY_GUARD = { maxPeriod: 3, minRepeats: 2 } as const;
+export const RELAY_GUARD = { maxPeriod: 8, minRepeats: 2 } as const;
 
 export function relayDepthOf(opening: UserMessageEvent): number {
   return opening.relay?.depth ?? 0;
@@ -55,10 +58,37 @@ export function decideRelay(args: {
   openingDepth: number;
   maxDepth: number;
 }): RelayDecision {
+  // maxDepth 来自 workspaces.relay_max_depth，形状不对（NaN/超范围）不该让这个纯函数自己拒 turn——
+  // 归一化在这里做一次，调用方（runtime）不用各自记得先过 normalizeRelayMaxDepth（#957 F4）
+  const max = normalizeRelayMaxDepth(args.maxDepth);
   const depth = args.openingDepth + 1;
-  if (depth > args.maxDepth) return { kind: "cap", depth, max: args.maxDepth };
+  if (depth > max) return { kind: "cap", depth, max };
   const history = [...args.chain.map((h) => hopFingerprint(h.fromAgentId, h.toAgentId)), hopFingerprint(args.fromAgentId, args.toAgentId)];
   return { kind: "relay", depth, loop: detectToolLoop(history, RELAY_GUARD) };
+}
+
+/** 起 turn 时的接力 depth（#957 A-4）：日志里「mentions 含 agentId、且还没被本
+    agent 的 turn_ended.readUpToSeq 收口」的全部 user_message，取 relayDepthOf
+    的最大值——与 openTurns（src/shared/turnLedger.ts）同一收口口径：
+    readUpToSeq === undefined（旧日志/本机会话，按老规则任意收口都算）或
+    readUpToSeq >= U.seq（这轮开跑时看见过 U）才算收口。**否决内存
+    pendingDepth**——那份状态重启即丢（#933），这里改成纯粹从日志重放推导。
+    至少包含 opening 自己：opening 有可能还没进 events（调用点是"落盘那一刻"），
+    也可能已经在里面（此时结果与只看 events 一致，取 max 不会重复计） */
+export function openingDepthFor(events: readonly SessionEvent[], agentId: string, opening: UserMessageEvent): number {
+  let max = relayDepthOf(opening);
+  for (let i = 0; i < events.length; i++) {
+    const u = events[i]!;
+    if (u.type !== "user_message" || !u.mentions || !u.mentions.includes(agentId)) continue;
+    let closed = false;
+    for (let j = i + 1; j < events.length; j++) {
+      const e = events[j]!;
+      if (e.type !== "turn_ended" || e.agentId !== agentId) continue;
+      if (e.readUpToSeq === undefined || e.readUpToSeq >= u.seq) { closed = true; break; }
+    }
+    if (!closed) max = Math.max(max, relayDepthOf(u));
+  }
+  return max;
 }
 
 /** 接力开场白（模型可见）：短、不重复 A 的原话——B 的上下文里本来就有 A 的 assistant_message。
