@@ -95,6 +95,13 @@
 - [ ] 测试：`systemNoteText` 三态；本机投影里 `origin:"loop_guard"` 的 user_message 不再是 user 气泡（按该投影既有测试的形状断言）。
 - [ ] 提交 `fix(desktop): 护栏与后台注话画成系统旁白，不再是匿名人类气泡；turn_ended 说是谁的（#936，#957 C-I5/M16）`
 
+### Task 7b: `route_changed` 在时间线上按 reason 与两端画（第一批 Task 6 复审 Minor 7）
+
+**Files:** `src/renderer/src/components/Timeline.tsx`（`route_changed` 那一格）、`src/renderer/src/lib/cloudTimeline.ts`（`routeChangedText(e): string` 纯函数）；tests `tests/renderer/cloudTimelineLabels.test.ts`
+
+- [ ] 测试：`{from:"hosted",to:"workspace",reason:"probe_failed"}` → 「改道：托管 → 工作区自带 key（订阅探测失败）」；`quota_exhausted` → 「（本周额度用完）」+ resetAt 有值时带「，X 恢复」；`subscription_active` → 「改回托管（订阅恢复）」；旧日志 `to:"direct"` 文案不变。
+- [ ] Timeline.tsx 与 CloudSessionPage 都用这一份；提交 `fix(desktop): route_changed 说清为什么改道、改到哪（#957 第一批 Task 6 复审）`
+
 ### Task 8: 开局卡保草稿 + 历史缺口持久提示（C-I6 / C-I7）
 
 **Files:** `src/renderer/src/components/CloudSessionMain.tsx`、`src/renderer/src/store.ts`（`restoreCloudPendingFirstMessage`）、`src/shared/shellBridge.ts`（`gapNote`）、`src/main/cloudSessionClient.ts`、`src/renderer/src/components/CloudSessionPage.tsx`（`statusBanner`）；tests `tests/main/cloudSessionClient.test.ts`（既有夹具：welcome lastSeq=7、backlog 只到 5 → status 带 gapNote；完整 → 无）
