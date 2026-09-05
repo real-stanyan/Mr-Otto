@@ -25,7 +25,7 @@ describe("workspace_memory_loaded 的投影（#949）", () => {
     expect(c).toContain("换一只 agent 还成立吗");
     expect(c).toContain("SHARED");
     expect(c).toContain("[运营] 销量含退款");
-    expect(c).not.toContain("OWN (只有");   // own 为空不渲块
+    expect(c).not.toContain("OWN （只有");   // own 为空不渲块（块头括号是全角，见 deriveMessages :212 的注释）
     expect(c).toContain("memory 工具");
 
     const empty = base();

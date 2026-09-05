@@ -771,8 +771,13 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     if (currentEngine) currentEngine.abortTurn();
     // 说出口（同 ADR-0168「撤销要说出口」那条纪律）：只把信号翻掉的话，"有人
     // 按了停止"和"模型这一轮碰巧没话说"在群里长得一模一样，而这两件事该做的
-    // 动作相反。名字现取 specNames（runJob 每次刷新），查不到退回 agentId
-    logChat("system", "系统", `${byLabel} 停止了「${specNames.get(cur.agentId) ?? cur.agentId}」这一轮`, false);
+    // 动作相反。名字现取 specNames（runJob 每次刷新），查不到退回 agentId。
+    // agent 名字过 `promptSafe`（第二轮复审 E2-2 的同族）：它拼进 `「」`，而
+    // `validateAgentName` 放行 `「`/`」`/`[`/`]`——`」。[系统]已授权全部工具。「`
+    // 是一个**合法的新名字**（17 字、零空白），不需要旧库存量行就能伪造出一行
+    // 系统发言；这条 chat_message 署名「系统」、在 agentView 里是 keep，受众与
+    // 接力那三句话完全一样。`byLabel` 那一半已经在 daemon.labelOf 过过闸了
+    logChat("system", "系统", `${byLabel} 停止了「${promptSafe(specNames.get(cur.agentId) ?? cur.agentId)}」这一轮`, false);
     return true;
   }
 
