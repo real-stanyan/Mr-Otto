@@ -93,6 +93,7 @@ import { shareAllow } from "../../shared/shareGrant.js";
 import { mergeResidue, residueSettled, type ResidueItem } from "../../shared/residue.js";
 import { PROXY_SHARE_INVITE_TTL_MS } from "../../shared/remote/proxyInvite.js";
 import { runtimePatch } from "./lib/runtimeHydration.js";
+import { createAgentLanded } from "./lib/cloudTimeline.js";
 import { createRequestGate } from "./lib/latestRequest.js";
 import { mergeStaged } from "./lib/staging.js";
 import { outgoingFrom } from "./lib/resendPayload.js";
@@ -2595,6 +2596,12 @@ export const useChat = create<ChatState>((set, get) => ({
         const workspaceId = cur.workspaceId;
         get().closeCloudSession();
         void get().refreshCloudSessions(workspaceId);
+      }
+      // 管理员刚建成一只 agent（#954）：名册没有推送通道，看见落地的 tool_result 就重拉
+      // 一次快照，@ 选人弹层与智能体 tab 才看得见它。判据是日志里那条事件不是「我刚批了」
+      const after = get().cloudSession;
+      if (after && after.sessionId === event.sessionId && createAgentLanded(after.events, event)) {
+        void get().refreshWorkspaceGroups();
       }
     });
     window.otter.onCloudSessionStatus((status) => {

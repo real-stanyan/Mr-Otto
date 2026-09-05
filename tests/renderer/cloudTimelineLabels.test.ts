@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  assistantLabel, hiddenFromCloudTimeline, relayLineText, userRowIdentity,
+  assistantLabel, createAgentLanded, hiddenFromCloudTimeline, relayLineText, userRowIdentity,
 } from "../../src/renderer/src/lib/cloudTimeline.js";
 import type { WorkspaceSnapshot } from "../../src/shared/workspaces.js";
 
@@ -58,5 +58,25 @@ describe("hiddenFromCloudTimeline", () => {
     const e = { ...base, type: "user_message" as const, content: "在吗" };
     expect(hiddenFromCloudTimeline(e)).toBe(false);
     expect(hiddenFromCloudTimeline({ ...base, type: "assistant_message", content: "", model: "m" })).toBe(false);
+  });
+});
+
+describe("createAgentLanded（#954：建成后桌面刷新名册的判据）", () => {
+  const call = { ...base, seq: 1, type: "assistant_message" as const, content: "", model: "m", toolCalls: [{ id: "cA", name: "create_agent", args: { name: "广告" } }] };
+  const bashCall = { ...base, seq: 2, type: "assistant_message" as const, content: "", model: "m", toolCalls: [{ id: "cB", name: "bash", args: { cmd: "ls" } }] };
+  it("create_agent 的 tool_result ok → true", () => {
+    const ok = { ...base, seq: 3, type: "tool_result" as const, toolCallId: "cA", status: "ok" as const, output: "已创建" };
+    expect(createAgentLanded([call, bashCall, ok], ok)).toBe(true);
+  });
+  it("同一把刀 error/denied、别的刀 ok、非 tool_result 事件 → false", () => {
+    const denied = { ...base, seq: 3, type: "tool_result" as const, toolCallId: "cA", status: "denied" as const, output: "" };
+    const bashOk = { ...base, seq: 4, type: "tool_result" as const, toolCallId: "cB", status: "ok" as const, output: "" };
+    expect(createAgentLanded([call, bashCall, denied], denied)).toBe(false);
+    expect(createAgentLanded([call, bashCall, bashOk], bashOk)).toBe(false);
+    expect(createAgentLanded([call], call)).toBe(false);
+  });
+  it("找不到配对的 tool_call（日志被裁过）→ false，不刷新", () => {
+    const orphan = { ...base, seq: 9, type: "tool_result" as const, toolCallId: "cZ", status: "ok" as const, output: "" };
+    expect(createAgentLanded([orphan], orphan)).toBe(false);
   });
 });

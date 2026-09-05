@@ -4,6 +4,7 @@
 import type { ToolCallRequest } from "../session/events.js";
 import { ASK_USER_TOOL_NAME, parseAskUserArgs } from "../tools/askUser.js";
 import { parseTodoArgs, TODO_TOOL_NAME } from "../session/deriveTodos.js";
+import { CREATE_AGENT_TOOL_NAME } from "./createAgentDraft.js";
 
 /** orb 的几档状态。原本是 App.tsx 里的局部 type(645 行),
     toolPhase 搬过来就跟着搬——agentPhase 还留在 App.tsx,从这里 import 回去 */
@@ -62,6 +63,8 @@ export function toolSummary(call: ToolCallRequest): { verb: string; target: stri
         stat: items.length > 0 ? `${done}/${items.length}` : "",
       };
     }
+    case CREATE_AGENT_TOOL_NAME:
+      return { verb: "创建智能体", target: str("name"), stat: "" };
     default:
       return { verb: call.name, target: "", stat: "" };
   }
