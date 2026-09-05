@@ -7,11 +7,16 @@
 
 import type { AgentToolAllow } from "./agentToolAllow.js";
 import { validateAgentName } from "./workspaceAgents.js";
+import { scanThreat } from "./threatPatterns.js";
 
 export const CREATE_AGENT_TOOL_NAME = "create_agent";
 export const AGENT_DESCRIPTION_MAX = 200;
 export const AGENT_INSTRUCTIONS_MAX = 4000;
 export const AGENT_MODELS_MAX = 8;
+/** 连接器台数上限（M5，终审顺手）——models 封 8，tools 原来没封 */
+export const AGENT_TOOLS_MAX = 16;
+/** 每台连接器的工具名数上限（M5，终审顺手） */
+export const AGENT_TOOL_NAMES_MAX = 32;
 
 export interface CreateAgentDraft {
   name: string;
@@ -44,6 +49,14 @@ function dedupeStrings(list: readonly string[]): string[] {
   return out;
 }
 
+/** 上卡的短字段一律禁换行（终审 Critical，#954）：卡是逐行呈现的，字段里一个 \n 就能
+    在真正的提示词上方伪造出一张完整的良性卡。套在 models 条目 / serverId / 连接器
+    工具名 / description 上；instructions 是卡上最后一段，多行是设计，不套这层。 */
+const noNewline = (s: string, what: string): string => {
+  if (/[\r\n]/.test(s)) throw new Error(`${what} 不能换行——审批卡逐行呈现，换行等于伪造卡上的其它字段`);
+  return s;
+};
+
 export function parseCreateAgentArgs(raw: unknown): CreateAgentDraft {
   const a = asRecord(raw);
   const rawName = a["name"];
@@ -52,14 +65,14 @@ export function parseCreateAgentArgs(raw: unknown): CreateAgentDraft {
   if (nameErr !== null) throw new Error(`name 不合法：${nameErr}`);
   const name = rawName.trim();
 
-  const description = optionalText(a, "description", AGENT_DESCRIPTION_MAX);
+  const description = noNewline(optionalText(a, "description", AGENT_DESCRIPTION_MAX), "description");
   const instructions = optionalText(a, "instructions", AGENT_INSTRUCTIONS_MAX);
 
   let models: string[] = [];
   if (a["models"] !== undefined) {
     const m = a["models"];
     if (!Array.isArray(m) || !m.every((x) => typeof x === "string")) throw new Error("models 必须是字符串数组（型号 id）");
-    models = dedupeStrings(m as string[]);
+    models = dedupeStrings(m as string[]).map((s) => noNewline(s, "models"));
     if (models.length > AGENT_MODELS_MAX) throw new Error(`models 最多 ${AGENT_MODELS_MAX} 个`);
   }
 
@@ -67,6 +80,7 @@ export function parseCreateAgentArgs(raw: unknown): CreateAgentDraft {
   if (a["tools"] !== undefined) {
     const t = a["tools"];
     if (!Array.isArray(t)) throw new Error("tools 必须是数组：[{serverId, tools: []}]，[] = 全部连接器都能用");
+    if (t.length > AGENT_TOOLS_MAX) throw new Error(`tools 最多 ${AGENT_TOOLS_MAX} 台连接器`);
     tools = t.map((item) => {
       const o = asRecord(item);
       if (typeof o["serverId"] !== "string" || o["serverId"].trim() === "") throw new Error("tools 每一项要有 serverId（连接器 id）");
@@ -74,7 +88,9 @@ export function parseCreateAgentArgs(raw: unknown): CreateAgentDraft {
       if (!Array.isArray(names) || !names.every((x) => typeof x === "string")) {
         throw new Error("tools 每一项的 tools 要是字符串数组（[] = 这台整台放行）");
       }
-      return { serverId: o["serverId"].trim(), tools: dedupeStrings(names as string[]) };
+      const toolNames = dedupeStrings(names as string[]).map((s) => noNewline(s, "tools"));
+      if (toolNames.length > AGENT_TOOL_NAMES_MAX) throw new Error(`tools 每一项最多 ${AGENT_TOOL_NAMES_MAX} 个工具名`);
+      return { serverId: noNewline(o["serverId"].trim(), "serverId"), tools: toolNames };
     });
   }
 
@@ -93,4 +109,15 @@ export function createAgentApprovalSummary(d: CreateAgentDraft): string {
     `连接器：${connectors}`,
     `提示词（${d.instructions.length} 字）：${d.instructions ? `\n${d.instructions}` : "（没写）"}`,
   ].join("\n");
+}
+
+/** M3：威胁扫描抽成共用的一份，工具的 run() 与 sessionService 的 summarizeArgs
+    钩子都调它——避免两份实现各说各话。命中回 `<field> 含可疑指令（<hit>）`，否则 null。
+    只扫 description / instructions（提示词会成为一只 agent 的永久 system 提示）。 */
+export function scanCreateAgentThreat(d: CreateAgentDraft): string | null {
+  for (const [field, text] of [["description", d.description], ["instructions", d.instructions]] as const) {
+    const hit = scanThreat(text);
+    if (hit) return `${field} 含可疑指令（${hit}）`;
+  }
+  return null;
 }

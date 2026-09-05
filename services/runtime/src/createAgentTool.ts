@@ -12,10 +12,10 @@
 import type { Tool } from "../../../src/tools/tool.js";
 import type { ExecutionWorld } from "../../../src/world/executionWorld.js";
 import {
-  AGENT_DESCRIPTION_MAX, AGENT_INSTRUCTIONS_MAX, AGENT_MODELS_MAX, CREATE_AGENT_TOOL_NAME, parseCreateAgentArgs,
+  AGENT_DESCRIPTION_MAX, AGENT_INSTRUCTIONS_MAX, AGENT_MODELS_MAX, CREATE_AGENT_TOOL_NAME,
+  parseCreateAgentArgs, scanCreateAgentThreat,
 } from "../../../src/shared/createAgentDraft.js";
 import { AGENT_NAME_MAX } from "../../../src/shared/workspaceAgents.js";
-import { scanThreat } from "../../../src/shared/threatPatterns.js";
 import { DuplicateAgentNameError, type WorkspaceAgentWriter } from "./agentRegistry.js";
 
 export function createCreateAgentTool(deps: {
@@ -55,10 +55,8 @@ export function createCreateAgentTool(deps: {
     requiresApproval: true,
     async run(args: unknown, _world: ExecutionWorld) {
       const draft = parseCreateAgentArgs(args);
-      for (const [field, text] of [["description", draft.description], ["instructions", draft.instructions]] as const) {
-        const hit = scanThreat(text);
-        if (hit) throw new Error(`${field} 含可疑指令（${hit}），拒绝创建`);
-      }
+      const threatHit = scanCreateAgentThreat(draft);
+      if (threatHit) throw new Error(`${threatHit}，拒绝创建`);
       const createdBy = deps.createdBy();
       if (createdBy === null) throw new Error("查不到这次是谁发起的，无法记录创建者；请让发起人再 @ 我一次");
       try {

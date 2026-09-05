@@ -18,6 +18,8 @@
 
 `requiresApproval: true`。审批卡文案不走 `approvalRouter` 默认的 `JSON.stringify(args).slice(0, 200)`——一条 4000 字的提示词截成 200 字，等于让人批一段没看见的提示词（ADR-0118 第二条：卡片含糊 = 闸形同虚设）。于是 `ApprovalRouterOpts` 多一个可选 `summarizeArgs` 钩子，`create_agent` 走 `createAgentApprovalSummary`（名字 / 职责 / 型号 / 连接器 / 提示词全文），别的工具一字不变。参数不合法时卡上直接说「批准也会失败」，人先看见比批完再报错省一次审批。代价：一张卡可以有 4000 字，桌面那张卡的 `<p>` 是 `whitespace-pre-wrap` 会被撑长——接受，上限就是为此定的。
 
+**上卡的短字段一律禁换行**（名字 / 职责 / 型号 / 连接器 id 与工具名）：卡是逐行呈现的，字段里一个 `\n` 就能在真正的提示词上方伪造出一张完整的良性卡——与 ADR-0118 那次 URL 里的换行是同一种病；提示词是卡上最后一段、多行是设计，所以不禁。终审实证后补。
+
 ### 3. `created_by` = 点火的那个人
 
 spec §4.2 不给 agent 发伪 uid。工具在 `run` 那一刻现取 `currentInitiator`（接力链里也是点火的人），查不到就拒绝而不是伪造。后果按 §9 矩阵：那个人与 owner 能改/删这只 agent——与他在桌面上亲手建的完全一样。

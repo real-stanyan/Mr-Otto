@@ -117,7 +117,9 @@ import type { WorkspaceMemoryStore } from "./workspaceMemory.js";
 import { SHARED_MEMORY_AGENT_ID } from "../../../src/shared/workspaceMemory.js";
 import { createCreateAgentTool } from "./createAgentTool.js";
 import type { WorkspaceAgentWriter } from "./agentRegistry.js";
-import { CREATE_AGENT_TOOL_NAME, createAgentApprovalSummary, parseCreateAgentArgs } from "../../../src/shared/createAgentDraft.js";
+import {
+  CREATE_AGENT_TOOL_NAME, createAgentApprovalSummary, parseCreateAgentArgs, scanCreateAgentThreat,
+} from "../../../src/shared/createAgentDraft.js";
 import { ADMIN_AGENT_ID } from "../../../src/shared/workspaceAgents.js";
 import {
   DEFAULT_RELAY_MAX_DEPTH,
@@ -274,11 +276,16 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     ownerUid: opts.ownerUid,
     // 审批卡逐字段（ADR-0118 第二条）：只有 create_agent 走定制文案，别的工具照旧
     // JSON 截 200。参数不合法时卡上直接说「批准也会失败」——run() 在审批之后才跑，
-    // 让人先看见比批完再报错省一次审批
+    // 让人先看见比批完再报错省一次审批。M3（终审顺手）：威胁扫描也挪进这段 try 里
+    // 提前说——scanCreateAgentThreat 是与 createAgentTool.run 共用的同一份实现，
+    // run() 里的那道扫描仍然保留（那是真闸，卡只是提前说，不能只信卡）。
     summarizeArgs: (toolName, args) => {
       if (toolName !== CREATE_AGENT_TOOL_NAME) return null;
       try {
-        return createAgentApprovalSummary(parseCreateAgentArgs(args));
+        const draft = parseCreateAgentArgs(args);
+        const threatHit = scanCreateAgentThreat(draft);
+        if (threatHit) return `参数不合法（${threatHit}），批准也会失败`;
+        return createAgentApprovalSummary(draft);
       } catch (err) {
         return `参数不合法（${err instanceof Error ? err.message : String(err)}），批准也会失败`;
       }
