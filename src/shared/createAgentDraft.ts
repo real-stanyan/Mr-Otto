@@ -71,9 +71,11 @@ function parseAgentFields(a: Record<string, unknown>): AgentDraftPatch {
   if (a["name"] !== undefined) {
     const rawName = a["name"];
     if (typeof rawName !== "string") throw new Error("name 必填，且必须是字符串（群里 @ 它用的名字）");
-    // B-C2/B-I2（#957）：短字段先折空白再落库前归一化（NFKC + trim），校验跑在归一化
+    // 顺序同其它短字段：noNewline 先挡真换行——collapseWhitespace 会把 \n 折成空格，
+    // 先折叠再校验会让真换行被悄悄吞掉、错报成「不能有空白」而不是「不能换行」
+    // （B-C2/B-I2）：短字段先折空白再落库前归一化（NFKC + trim），校验跑在归一化
     // 之后的值上——不然"Ａｄｓ"这种全角名字会绕开校验、落库后与半角"Ads"肉眼分不清
-    const name = normalizeAgentName(collapseWhitespace(rawName));
+    const name = normalizeAgentName(collapseWhitespace(noNewline(rawName, "name")));
     const nameErr = validateAgentName(name);
     if (nameErr !== null) throw new Error(`name 不合法：${nameErr}`);
     out.name = name;
@@ -141,7 +143,10 @@ export function validateAgentPatch(raw: unknown): AgentDraftPatch {
 
 /** 审批卡的字段清单，唯一的事实来源——`createAgentApprovalSummary`（旧客户端/旧日志
     仍要读的整块字符串）与 `createAgentApprovalFields`（B-C2，逐字段渲染用）都从这里
-    派生，不各写一份，两处才不会因为各自改动而分家。 */
+    派生，不各写一份，两处才不会因为各自改动而分家。
+    **值是渲染就绪的**：不带 label 前缀，也不带任何前导换行——逐字段卡的 label 与
+    value 分开渲染（label 一栏、value 一栏），value 里混进格式字符是 `createAgentApprovalSummary`
+    自己的排版细节，不该泄给这一层的消费方。 */
 function buildApprovalFields(d: CreateAgentDraft): { label: string; value: string }[] {
   const connectors = d.tools.length === 0
     ? "全部（不限）"
@@ -151,14 +156,23 @@ function buildApprovalFields(d: CreateAgentDraft): { label: string; value: strin
     { label: "职责", value: d.description || "（没写）" },
     { label: "型号", value: d.models.length === 0 ? "工作区默认" : d.models.join(", ") },
     { label: "连接器", value: connectors },
-    { label: `提示词（${d.instructions.length} 字）`, value: d.instructions ? `\n${d.instructions}` : "（没写）" },
+    { label: `提示词（${d.instructions.length} 字）`, value: d.instructions || "（没写）" },
   ];
 }
 
 /** 审批卡文案（ADR-0118 第二条）：逐字段、提示词**全文**——截断的卡等于让人批一段没看见的提示词。
-    旧客户端/旧日志读这一个整块字符串（argsSummary），新客户端读 `createAgentApprovalFields`。 */
+    旧客户端/旧日志读这一个整块字符串（argsSummary），新客户端读 `createAgentApprovalFields`。
+    只有提示词这一行有「冒号后换行」的排版（多行内容紧贴在 label 下一行更好读）——
+    那是这个整块字符串自己的排版决定，`buildApprovalFields` 的 value 不携带它。 */
 export function createAgentApprovalSummary(d: CreateAgentDraft): string {
-  return buildApprovalFields(d).map((f) => `${f.label}：${f.value}`).join("\n");
+  const fields = buildApprovalFields(d);
+  const lastIndex = fields.length - 1;
+  return fields
+    .map((f, i) => {
+      const sep = i === lastIndex && d.instructions ? "：\n" : "：";
+      return `${f.label}${sep}${f.value}`;
+    })
+    .join("\n");
 }
 
 /** B-C2：审批卡逐字段渲染用（`ApprovalRequestEvent.argsFields`）——五项，名字/职责/

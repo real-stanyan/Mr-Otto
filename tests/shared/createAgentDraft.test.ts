@@ -151,19 +151,30 @@ describe("createAgentApprovalFields（B-C2：审批卡逐字段，值与 createA
     expect(fields[4]!.label).toMatch(/^提示词/);
   });
 
-  it("值与 createAgentApprovalSummary 的对应行同源——summary 就是把 fields 拼起来，两者不会分家", () => {
+  it("值与 createAgentApprovalSummary 的对应行同源——summary 就是把 fields 拼起来（提示词那行冒号后额外一个换行，是 summary 自己的排版），两者不会分家", () => {
     const d = {
       name: "广告", description: "管投放", instructions: "你负责投放。", models: ["glm-4.5"],
       tools: [{ serverId: "shopify", tools: ["orders"] }],
     };
     const fields = createAgentApprovalFields(d);
-    const rebuilt = fields.map((f) => `${f.label}：${f.value}`).join("\n");
+    const rebuilt = fields
+      .map((f, i) => `${f.label}${i === fields.length - 1 ? "：\n" : "："}${f.value}`)
+      .join("\n");
     expect(rebuilt).toBe(createAgentApprovalSummary(d));
   });
 
   it("空提示词时最后一项 value 是「（没写）」", () => {
     const fields = createAgentApprovalFields({ name: "x", description: "", instructions: "", models: [], tools: [] });
     expect(fields[4]!.value).toBe("（没写）");
+  });
+
+  it("没有一个字段的 value 带前导换行——逐字段卡的 value 是渲染就绪的，冒号后换行是 summary 自己的排版细节，不该泄给这一层", () => {
+    const long = "你负责投放。".repeat(300);
+    const fields = createAgentApprovalFields({
+      name: "广告", description: "管投放", instructions: long, models: ["glm-4.5"],
+      tools: [{ serverId: "shopify", tools: ["orders"] }],
+    });
+    for (const f of fields) expect(f.value.startsWith("\n")).toBe(false);
   });
 });
 
@@ -205,5 +216,9 @@ describe("name 走 normalizeAgentName（NFKC + trim，#957 B-I2）", () => {
 
   it("零宽字符名字被拒（B-I2）", () => {
     expect(() => parseCreateAgentArgs({ name: "管理员​" })).toThrow("不可见字符");
+  });
+
+  it("真换行先被 noNewline 挡住，报「不能换行」而不是被 collapseWhitespace 悄悄折成空格后报「不能有空白」（顺序回归）", () => {
+    expect(() => parseCreateAgentArgs({ name: "运\n营" })).toThrow("不能换行");
   });
 });

@@ -50,6 +50,9 @@ describe("agentNameConflict（B-I2：前缀劫持防护）", () => {
   it("不冲突时回 null", () => {
     expect(agentNameConflict("广告", ["管理员", "运营"])).toBeNull();
   });
+  it("空名字提前放行，不对已有名单里的每一个都报假冲突（\"\".startsWith 恒真的坑）", () => {
+    expect(agentNameConflict("", ["管理员", "运营"])).toBeNull();
+  });
 });
 
 describe("collapseWhitespace（B-C2：短字段折空白，绕开 pre-wrap 空格伪造整行）", () => {
