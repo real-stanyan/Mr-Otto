@@ -845,9 +845,13 @@ export interface ChatMessageEvent extends SessionEventBase {
 /** 云会话群聊三事件之二：群里有人的操作触发了一次审批请求。
     log-only——**模型不消费**（同 approval_decision，那是给 UI/审计看的时间线）。
     落盘理由：群聊场景下审批请求本身要广播给其他在线成员（谁在等谁批），
-    这件事日志推不出来，必须成为事实来源。argsSummary 只存预览文本，
-    不存完整 args——完整参数在触发它的 assistant_message.toolCalls 里，
-    这里重复存一份只会带来"两处不一致时听谁的"的新问题。 */
+    这件事日志推不出来，必须成为事实来源。
+    **存的是"卡上呈现的那一份"，不是完整 args**：完整参数在触发它的
+    assistant_message.toolCalls 里，把整份 args 再存一遍只会带来"两处不一致时
+    听谁的"的新问题。呈现那一份有两种形态、并存不是二选一——`argsSummary`
+    是整块字符串（旧客户端/旧日志唯一读得到的那份），`argsFields` 是同一份内容
+    的逐字段版（#957 B-C2）。注意 argsSummary **不等于"短预览"**：create_agent
+    自 #954 起把提示词全文放进来（截断的卡等于让人批一段没看见的提示词）。 */
 export interface ApprovalRequestEvent extends SessionEventBase {
   type: "approval_request";
   callId: string;

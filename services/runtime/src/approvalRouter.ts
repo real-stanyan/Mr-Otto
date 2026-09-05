@@ -37,7 +37,11 @@ export interface ApprovalRouterOpts {
       这个工具没有逐字段呈现，卡上照旧画 `argsSummary`。
       为什么两个钩子并存而不是让 summarizeArgs 回结构：`argsSummary` 是旧客户端
       与旧日志唯一读得到的那一份，必须无条件继续生成——逐字段是**加**上去的一层，
-      不是替换。可选：不传 = 现状一字不变 */
+      不是替换。可选：不传 = 现状一字不变。
+      同一次 decide 里 `summarizeArgs` 与 `summarizeFields` 各解析一遍参数（create_agent
+      那条是两次 `parseCreateAgentArgs`）——刻意不缓存：审批一条一次、参数就那么大，
+      共享一次解析结果要么加一层按 callId 的旁路状态（decidedBy 那条教训），要么把两个
+      钩子合成一个而牺牲「argsSummary 无条件生成」这条兼容承诺。 */
   summarizeFields?: (toolName: string, args: unknown) => { label: string; value: string }[] | null;
 }
 
@@ -132,8 +136,10 @@ export function createApprovalRouter(opts: ApprovalRouterOpts): ApprovalRouter {
           argsSummary: opts.summarizeArgs?.(tool.def.name, call.args) ?? JSON.stringify(call.args).slice(0, 200),
           // 展开而不是恒定写 undefined：exactOptionalPropertyTypes 下
           // `{argsFields: undefined}` 与「没有这个键」是两件事，而落盘那一头
-          // 正是按「在不在」决定摊不摊进事件的
-          ...(fields ? { argsFields: fields } : {}),
+          // 正是按「在不在」决定摊不摊进事件的。
+          // **空数组也算缺席**：桌面有 argsFields 就只画逐字段，一个空数组会画出
+          // 一张什么都没有的卡，比退回 argsSummary 更糟（复审 Minor 3）
+          ...(fields && fields.length > 0 ? { argsFields: fields } : {}),
           initiatorUid,
           expiresTs,
         });

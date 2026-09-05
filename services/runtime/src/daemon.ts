@@ -27,6 +27,7 @@ import { createCloudSession, type CloudSession, type AgentSpec } from "./session
 import { createSupabaseWorkspaceMemory } from "./workspaceMemory.js";
 import { createSupabaseAgentWriter } from "./agentRegistry.js";
 import { normalizeAgentTools } from "../../../src/shared/agentToolAllow.js";
+import { safeSpeakerLabel } from "../../../src/shared/promptSafe.js";
 import type { PxCallDeps } from "./pxTools.js";
 import { createHostedProbe, createHostedRuntimeAdapter, createRouteMemo, probeModelRoute, withUsage, type HostedRuntimeAdapterDeps, type RouteMemo } from "./hostedRoute.js";
 import { createDockerWorld, WORKDIR } from "../../../src/world/dockerWorld.js";
@@ -320,7 +321,10 @@ async function main(): Promise<void> {
   async function labelOf(uid: string): Promise<string> {
     const { data } = await supabase.from("profiles").select("name").eq("id", uid).maybeSingle();
     const name = (data as { name: string | null } | null)?.name;
-    return name && name.trim() ? name : uid.slice(0, 8);
+    // profiles.name 是成员自己填的，**没有任何写入校验**——过 safeSpeakerLabel
+    // 才敢拼进 `[label]: ` 前缀（#957 复审 Important 2）。空名字退回 uid 前 8 位
+    // 这条老行为收进它里面了，不再在这里判一次
+    return safeSpeakerLabel(name ?? "", uid);
   }
 
   async function ownerOf(workspaceId: string): Promise<string> {

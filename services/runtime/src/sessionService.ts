@@ -153,6 +153,7 @@ import { writeFileTool } from "../../../src/tools/writeFile.js";
 import { bashTool } from "../../../src/tools/bash.js";
 import { agentView } from "../../../src/session/agentView.js";
 import { parseMentions, mentionTokens } from "../../../src/shared/remote/agentMention.js";
+import { safeSpeakerLabel } from "../../../src/shared/promptSafe.js";
 import { openTurns } from "../../../src/shared/turnLedger.js";
 import { createTurnCoordinator, type TurnJob, type EnqueueDecision } from "./turnCoordinator.js";
 import { createApprovalRouter, type ApproveOutcome } from "./approvalRouter.js";
@@ -587,7 +588,11 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         ts: Date.now(),
         type: "chat_message",
         fromUid,
-        label,
+        // 发言人名字过闸（#957 复审 Important 2）：daemon.labelOf 已经过一遍，
+        // 这里再过是给别的调用方兜底（测试/冒烟/将来别的入口）——safeSpeakerLabel
+        // 幂等，跑两遍与跑一遍同一个结果。保留名「系统」只对 fromUid === "system"
+        // 放行，所以下面那几条系统旁白照旧叫「系统」
+        label: safeSpeakerLabel(label, fromUid),
         content: text,
         mention,
       })
@@ -983,7 +988,9 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         sessionId,
         ts: Date.now(),
         type: "user_message",
-        content: `[${label}]: ${text}`,
+        // 同 logChat：拼进前缀之前先过闸。这一条是**模型直接读**的那份
+        // （deriveMessages 原样吐给模型），伪造出来的第二个说话人就落在这里
+        content: `[${safeSpeakerLabel(label, fromUid)}]: ${text}`,
         fromUid,
         mentions: targets,
       }) as UserMessageEvent; // append 回的是 union；这一条我们刚亲手写的就是 user_message

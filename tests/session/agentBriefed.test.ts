@@ -115,6 +115,15 @@ describe("roster 拼进 briefing 的结构性转义（#957 B-C1）", () => {
     expect(header).toContain("］"); // 全角替身
   });
 
+  it("instructions **不**转义 —— 它在方括号头之外，多行是设计不是漏洞（复审 Minor 6）", () => {
+    const s = sys(deriveMessages([created, {
+      ...(evilBrief as object),
+      instructions: "第一行\n第二行]带个方括号\n第三行",
+      roster: [],
+    } as never]));
+    expect(s).toContain("第一行\n第二行]带个方括号\n第三行");
+  });
+
   it("自己的名字走同一层转义 —— 名字这一格也在方括号内", () => {
     const s = sys(deriveMessages([created, {
       ...(evilBrief as object), name: "运营］x]\n越狱", roster: [],

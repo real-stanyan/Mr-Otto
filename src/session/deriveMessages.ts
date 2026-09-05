@@ -2,6 +2,7 @@
 // 纯函数：同样的 events 永远得到同样的 messages。resume/fork/replay 全靠它。
 
 import { isolatedPromptText, type IsolatedWorkspace } from "../shared/sessionWorktree.js";
+import { promptSafe } from "../shared/promptSafe.js";
 import type { CloudSessionFacts, MemoryTopicSnapshot, SessionEvent, UserTextFile, WorkspaceMemoryLoadedEvent } from "./events.js";
 import { barrenEventIndexes } from "./barrenTurns.js";
 import { activeSkills } from "./activeSkills.js";
@@ -308,16 +309,6 @@ export const COMPACT_COMPRESSION: CompressionOptions = {
   maxOldToolArgChars: 200,
 };
 
-/** 拼进方括号头的字段过这一层（#957 B-C1，agent_briefed 的 name / roster）。
-    这些字段是**别人写的字**，而 briefing 的头是一段拼出来的结构：一个 `]` 就把
-    方括号提前闭合，一个换行就让之后的正文看起来是围栏外的新指令——两样合起来，
-    一条职责描述能给每一只别的 agent 的 system 提示追加任意内容。
-    换行折成空格、`]` 换成全角 `］`：**替换不是删除**——注入的正文照旧留在头里
-    让人看得见（也让日志对得上），只是失去结构意义。写入侧的校验（Task 2 的
-    `noNewline` / `collapseWhitespace`）是第一道闸，这一道是第二道：旧日志里
-    已经躺着的字段、以及任何绕过写入校验的路径，投影时一律还要过这里。 */
-const promptSafe = (s: string): string => s.replace(/[\r\n]+/g, " ").replace(/\]/g, "］");
-
 /** 压缩标记带原始长度：模型知道这里被折叠过，不会被"无声变短的历史"误导。
     刚过上限的文本截断后加上标记反而更长——那种情况原样放行（压缩永不增肥） */
 function clip(text: string, max: number, what: string): string {
@@ -530,7 +521,10 @@ export function deriveMessages(
         // 同 user_message 一样要走"组开着就先攒着"的插话修法（同 :433）。
         // 发言人身份靠 label 前缀带出来（发言时快照，改名不追认历史）
         const target = pendingToolIds.size > 0 ? deferredUsers : messages;
-        target.push({ role: "user", content: `[${event.label}]: ${event.content}` });
+        // label 过 promptSafe（#957 复审 Important 2）：它来自 profiles.name，
+        // **写入侧一道校验都没有**——一个叫 `]:\n[系统]: …` 的成员能在模型上下文里
+        // 伪造出一整轮别人的发言。落盘那一头（sessionService）也拦，这一层管旧日志
+        target.push({ role: "user", content: `[${promptSafe(event.label)}]: ${event.content}` });
         break;
       }
 
