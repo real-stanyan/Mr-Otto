@@ -164,7 +164,11 @@ function AgentEditorDialog({
     const models = parseModelList(modelsRaw);
     const ok =
       state.mode === "create"
-        ? await createAgent(ws.id, { name: name.trim(), description: description.trim(), instructions, models })
+        ? await createAgent(ws.id, {
+            name: name.trim(), description: description.trim(), instructions, models,
+            // TODO(Task 4，#941 切片 2）：先占位放行全部，Task 4 换成真正的白名单表单值
+            tools: [],
+          })
         : await updateAgent(ws.id, state.agent.agentId, {
             // edit 只发变了的字段——同 CloudRepoConfigDialog 那份三态：省略 = 不动
             ...(name.trim() !== state.agent.name ? { name: name.trim() } : {}),

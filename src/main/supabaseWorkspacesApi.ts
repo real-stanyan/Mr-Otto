@@ -4,6 +4,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { assembleSnapshot, type WorkspaceSnapshot } from "../shared/workspaces.js";
+import type { AgentToolAllow } from "../shared/agentToolAllow.js";
 
 /** supabase-js 的 {data,error} 归一:error 转 throw(带 pg code,上层认 23505 等) */
 function unwrap<T>(res: { data: T; error: { message: string; code?: string } | null }): T {
@@ -213,7 +214,7 @@ export async function insertAgentRow(
   client: SupabaseClient,
   row: {
     workspaceId: string; agentId: string; name: string; description: string;
-    instructions: string; models: string[]; createdBy: string;
+    instructions: string; models: string[]; tools: AgentToolAllow[]; createdBy: string;
   },
 ): Promise<void> {
   unwrap(
@@ -224,6 +225,7 @@ export async function insertAgentRow(
       description: row.description,
       instructions: row.instructions,
       models: row.models,
+      tools: row.tools,
       created_by: row.createdBy,
     }),
   );
@@ -236,7 +238,7 @@ export async function updateAgentRow(
   client: SupabaseClient,
   workspaceId: string,
   agentId: string,
-  patch: { name?: string; description?: string; instructions?: string; models?: string[] },
+  patch: { name?: string; description?: string; instructions?: string; models?: string[]; tools?: AgentToolAllow[] },
 ): Promise<void> {
   const rows = unwrap(
     await client.from("workspace_agents")

@@ -25,6 +25,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type * as WorkspacesApi from "./supabaseWorkspacesApi.js";
 import type { WorkspaceSnapshot } from "../shared/workspaces.js";
 import { ADMIN_AGENT_ID } from "../shared/workspaceAgents.js";
+import type { AgentToolAllow } from "../shared/agentToolAllow.js";
 import type { ProxyStoreData } from "./proxyStore.js";
 import { removeWorkspaceGrant, setWorkspaceGrant, workspaceGrantFor } from "./proxyStore.js";
 import type { FriendsResult } from "./proxyManager.js";
@@ -72,13 +73,13 @@ export interface WorkspaceManager {
       翻成人话 */
   createAgent(
     id: string,
-    draft: { name: string; description: string; instructions: string; models: string[] },
+    draft: { name: string; description: string; instructions: string; models: string[]; tools: AgentToolAllow[] },
   ): Promise<FriendsResult<{ agentId: string }>>;
   /** 改一只 agent（建的人或 owner，RLS 落地判断）。重名同样会撞 23505 */
   updateAgent(
     id: string,
     agentId: string,
-    patch: { name?: string; description?: string; instructions?: string; models?: string[] },
+    patch: { name?: string; description?: string; instructions?: string; models?: string[]; tools?: AgentToolAllow[] },
   ): Promise<FriendsResult<null>>;
   /** 删一只 agent（建的人或 owner，RLS 落地判断）。'admin' 那只谁都删不掉——
       RLS 也会拦，但这里在打网络之前就先拒，回一句人话 */

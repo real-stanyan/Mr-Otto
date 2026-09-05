@@ -25,6 +25,7 @@ import type { SimButton, SimFrame, SimState } from "./simulator.js";
 import type { McpPromptInfo, McpServerConfig, McpServerStatus, McpServersSnapshot } from "./mcp.js";
 import type { AdrSummary, IssueDetailResult, IssuesResult } from "./protocol.js";
 import type { GitBranchesResult, GitCheckoutResult, GitCommitResult, GitLogResult } from "./gitGraph.js";
+import type { AgentToolAllow } from "./agentToolAllow.js";
 import type {
   FileEntry, FileHit, FilePreview, FilesResult, FilesSearchOpts,
 } from "./files.js";
@@ -1052,13 +1053,13 @@ export interface ShellBridge {
       改/删 */
   workspaceAgentCreate(
     id: string,
-    draft: { name: string; description: string; instructions: string; models: string[] },
+    draft: { name: string; description: string; instructions: string; models: string[]; tools: AgentToolAllow[] },
   ): Promise<FriendsResult<{ agentId: string }>>;
   /** 改一只 agent（建的人或 owner，RLS 拦其余人） */
   workspaceAgentUpdate(
     id: string,
     agentId: string,
-    patch: { name?: string; description?: string; instructions?: string; models?: string[] },
+    patch: { name?: string; description?: string; instructions?: string; models?: string[]; tools?: AgentToolAllow[] },
   ): Promise<FriendsResult<null>>;
   /** 删一只 agent（建的人或 owner；'admin' 谁都删不掉，主进程层先拒） */
   workspaceAgentDelete(id: string, agentId: string): Promise<FriendsResult<null>>;

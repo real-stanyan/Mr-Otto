@@ -104,6 +104,7 @@ import type {
 // 撞名是历史遗留（Task 11 report 已确认 IPC channel 不冲突）——本文件里凡是这个协作工作区
 // 的状态字段/action 一律加 workspaceGroup 前缀，不用裸的 "workspace"/"workspaces"
 import type { WorkspaceSnapshot } from "../../shared/workspaces.js";
+import type { AgentToolAllow } from "../../shared/agentToolAllow.js";
 import type {
   NotificationTarget, ProviderBalance, ProxyBorrowView, ProxyHostView, WorkspaceSettingsInfo,
 } from "../../shared/shellBridge.js";
@@ -852,12 +853,12 @@ interface ChatState {
       workspaceGroupsError，回布尔给调用方决定要不要清表单 */
   createWorkspaceAgent(
     id: string,
-    draft: { name: string; description: string; instructions: string; models: readonly string[] },
+    draft: { name: string; description: string; instructions: string; models: readonly string[]; tools: readonly AgentToolAllow[] },
   ): Promise<boolean>;
   updateWorkspaceAgent(
     id: string,
     agentId: string,
-    patch: { name?: string; description?: string; instructions?: string; models?: readonly string[] },
+    patch: { name?: string; description?: string; instructions?: string; models?: readonly string[]; tools?: readonly AgentToolAllow[] },
   ): Promise<boolean>;
   deleteWorkspaceAgent(id: string, agentId: string): Promise<boolean>;
   /** 把当前/指定会话发布进工作区。回是否成功——rowId/pkgId 用不上时调用方不必接 */
@@ -2125,7 +2126,9 @@ export const useChat = create<ChatState>((set, get) => ({
   },
 
   async createWorkspaceAgent(id, draft) {
-    const r = await window.otter.workspaceAgentCreate(id, { ...draft, models: [...draft.models] });
+    const r = await window.otter.workspaceAgentCreate(id, {
+      ...draft, models: [...draft.models], tools: draft.tools.map((t) => ({ serverId: t.serverId, tools: [...t.tools] })),
+    });
     if (!r.ok) {
       set({ workspaceGroupsError: r.message });
       return false;
@@ -2136,10 +2139,11 @@ export const useChat = create<ChatState>((set, get) => ({
   },
 
   async updateWorkspaceAgent(id, agentId, patch) {
-    const { models, ...rest } = patch;
+    const { models, tools, ...rest } = patch;
     const r = await window.otter.workspaceAgentUpdate(id, agentId, {
       ...rest,
       ...(models === undefined ? {} : { models: [...models] }),
+      ...(tools === undefined ? {} : { tools: tools.map((t) => ({ serverId: t.serverId, tools: [...t.tools] })) }),
     });
     if (!r.ok) {
       set({ workspaceGroupsError: r.message });

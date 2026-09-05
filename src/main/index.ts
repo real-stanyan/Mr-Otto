@@ -128,6 +128,7 @@ import { probeOllamaModels, rememberOllamaModels } from "./ollamaModels.js";
 import { clearBalanceCache, fetchProviderBalances } from "./providerBalance.js";
 import { usageSnapshot } from "../shared/usageStats.js";
 import { islandUsage, type IslandUsageRow } from "../shared/islandUsage.js";
+import type { AgentToolAllow } from "../shared/agentToolAllow.js";
 import { createWorkspaceLens, withDefaultFold } from "./workspaceLens.js";
 import { loadIslandSettings, normaliseIslandSettings, saveIslandSettings } from "./islandSettingsStore.js";
 import { packageProject } from "./projectPackager.js";
@@ -3216,8 +3217,11 @@ void app.whenReady().then(() => {
     workspaceManager.withdrawConnector(id, serverId));
   ipcMain.handle(
     CHANNELS.workspaceAgentCreate,
-    (_e, id: string, draft: { name: string; description: string; instructions: string; models: string[] }) =>
-      workspaceManager.createAgent(id, draft),
+    (
+      _e,
+      id: string,
+      draft: { name: string; description: string; instructions: string; models: string[]; tools: AgentToolAllow[] },
+    ) => workspaceManager.createAgent(id, draft),
   );
   ipcMain.handle(
     CHANNELS.workspaceAgentUpdate,
@@ -3225,7 +3229,7 @@ void app.whenReady().then(() => {
       _e,
       id: string,
       agentId: string,
-      patch: { name?: string; description?: string; instructions?: string; models?: string[] },
+      patch: { name?: string; description?: string; instructions?: string; models?: string[]; tools?: AgentToolAllow[] },
     ) => workspaceManager.updateAgent(id, agentId, patch),
   );
   ipcMain.handle(CHANNELS.workspaceAgentDelete, (_e, id: string, agentId: string) =>
