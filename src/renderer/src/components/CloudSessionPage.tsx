@@ -380,7 +380,15 @@ export function CloudSessionPage({
     setSending(true);
     setSendError(null);
     setSendNotice(null);
-    applySendResult(await sendOnce(unsent), unsent, "resend");
+    const r = await sendOnce(unsent);
+    // await 期间人可能已经切到同工作区的另一条会话（**这个组件换会话不卸载**），
+    // 那一格清空 effect 已经跑过了，这里再写就是把 A 的结果画在 B 的 composer 上。
+    // 判据在数据里（同 `unsent.sessionId` 那条纪律），不靠 effect 的时序
+    if (useChat.getState().cloudSession?.sessionId !== unsent.sessionId) {
+      setSending(false);
+      return;
+    }
+    applySendResult(r, unsent, "resend");
     setSending(false);
   };
 
@@ -437,6 +445,15 @@ export function CloudSessionPage({
       note: unknownNote(text),
     };
     const r = await sendOnce(payload);
+    // 会话对不上就什么都不写（终审 Finding 4）：await 期间人可能已经切到同工作区的
+    // 另一条会话，**这个组件不卸载**，[csSessionId] 那个清空 effect 早就跑完了 ——
+    // 这之后每一次 setState 都会落在 B 的 composer 上（A 的失败原因、A 的 notice，
+    // 连 setDraft("") 都会清掉 B 的草稿）。`unsent` 那一格靠自带的 sessionId 躲过了，
+    // 错误/提示两格没有，这里补齐同一条纪律：判据落在数据里，不靠 effect 的时序
+    if (useChat.getState().cloudSession?.sessionId !== payload.sessionId) {
+      setSending(false);
+      return;
+    }
     // `unknown` 也清输入框（第四批 C2-I4）：那句话很可能已经落地，把原文留在
     // 输入框里等于催用户再按一次回车。原文没丢——它去了下面那行「不确定」的
     // 提示，那里有一颗要人主动点的「重新发送」

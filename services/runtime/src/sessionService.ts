@@ -1205,7 +1205,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // **名单降级 + 这句话点了名 = 一个字节都不落**（#957 E2-4）：degraded 那份
       // 是 workspace_agents 查询失败时的占位（只有 DEFAULT_WORKSPACE_AGENT 一只），
       // 拿它去 resolveTargets，"@运营" 自然解不出来 —— 于是下面那句 sayUnknown
-      // 会对着用户说「没找到智能体 运营」，而真名单里它好端端地在。把一次
+      // 会对着用户说「有 1 个点名在名单里找不到」，而真名单里它好端端地在。把一次
       // Supabase 抖动翻译成「这只 agent 不存在」是句假话，用户照它去改名字只会
       // 更错；说「读不出来，稍后再试」他才知道该等而不是该改。判据与
       // relayAfterTurn 那道闸同款（roster.some(degraded)），点没点名按 resolveTargets
@@ -1238,17 +1238,23 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       const unknown = mentions === undefined ? [] : mentions.filter((id) => !roster.some((a) => a.agentId === id));
       const sayUnknown = (): void => {
         if (unknown.length === 0) return;
-        // 降级名单说不出这句话（#957 E2-4）：真名单读不出来时「没找到智能体 X」
+        // 降级名单说不出这句话（#957 E2-4）：真名单读不出来时「有 N 个点名找不到」
         // 是假话。降级 + 点了名那条路上面已经拒了，能走到这里的只剩没点名的
         // 闲聊（unknown 必空），这道守卫是为了判据与上面、与 relayAfterTurn
         // 逐字同款 —— 三处里漏一处就是这条 issue 换个入口复发
         if (roster.some((a) => a.degraded)) return;
-        // fromUid:"system" —— 渲染层照普通群发言画（这句话说给房里所有人听）；
-        // 用 id 不用名字，跟"agent 被删"那条错误同一个理由：名字已经查不到了
+        // fromUid:"system" —— 渲染层照普通群发言画（这句话说给房里所有人听）。
+        // **只回显数量、不回显 id 原文**（终审 Finding 1，与 relayAfterTurn:863
+        // 逐字同一条纪律）：`unknown` 的每一个元素都直接来自客户端帧的 mentions
+        // 数组，而 decodeCsUp 只校验"是字符串数组"——没有长度上限、没有字符集。
+        // 把它原样拼进一条署名「系统」的 chat_message（agentView 里是 keep），
+        // 等于让发帧的人以系统的名义对群里每一只 agent 说一句话，比 E2-3 那条
+        // 更直接：那条的正文还要绕一道模型，这条是客户端直接写的。数量是这句
+        // 话唯一真正需要携带的信息
         logChat(
           "system",
           "系统",
-          `没找到智能体 ${unknown.join("、")}，这部分点名没人接（名单可能刚变过，刷新一下再 @）`,
+          `有 ${unknown.length} 个点名在名单里找不到，这部分没人接（名单可能刚变过，刷新一下再 @）`,
           false
         );
       };
