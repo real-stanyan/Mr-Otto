@@ -115,6 +115,10 @@ import { filterGrantedByAllow, type AgentToolAllow } from "../../../src/shared/a
 import { createWorkspaceMemoryTool } from "./workspaceMemoryTool.js";
 import type { WorkspaceMemoryStore } from "./workspaceMemory.js";
 import { SHARED_MEMORY_AGENT_ID } from "../../../src/shared/workspaceMemory.js";
+import { createCreateAgentTool } from "./createAgentTool.js";
+import type { WorkspaceAgentWriter } from "./agentRegistry.js";
+import { CREATE_AGENT_TOOL_NAME, createAgentApprovalSummary, parseCreateAgentArgs } from "../../../src/shared/createAgentDraft.js";
+import { ADMIN_AGENT_ID } from "../../../src/shared/workspaceAgents.js";
 import {
   DEFAULT_RELAY_MAX_DEPTH,
   decideRelay,
@@ -194,6 +198,9 @@ export interface CloudSessionOpts {
   /** 接力棒数上限（#950，spec §8）：每次要接力时现查一次（owner 改了下一棒生效）。查询失败由
       daemon 兜成默认值——这里拿到的永远是一个数 */
   relayMaxDepth: () => Promise<number>;
+  /** 管理员替用户建 agent 的写入口（#954，切片 6）。**必需**：忘接线该编译不过，
+      而不是安静地跑一个建不了 agent 的管理员（同 memory 的纪律） */
+  agentWriter: WorkspaceAgentWriter;
 }
 
 export interface CloudSession {
@@ -265,6 +272,17 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
 
   const router = createApprovalRouter({
     ownerUid: opts.ownerUid,
+    // 审批卡逐字段（ADR-0118 第二条）：只有 create_agent 走定制文案，别的工具照旧
+    // JSON 截 200。参数不合法时卡上直接说「批准也会失败」——run() 在审批之后才跑，
+    // 让人先看见比批完再报错省一次审批
+    summarizeArgs: (toolName, args) => {
+      if (toolName !== CREATE_AGENT_TOOL_NAME) return null;
+      try {
+        return createAgentApprovalSummary(parseCreateAgentArgs(args));
+      } catch (err) {
+        return `参数不合法（${err instanceof Error ? err.message : String(err)}），批准也会失败`;
+      }
+    },
     onRequest: (req) => {
       const e = store.append({
         sessionId,
@@ -290,6 +308,14 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   // approval_decision 的落盘统一走 onDecision 回调——一处写，不会双写。
   // ApprovalRouter 已经结构性满足 Approver（extends），engine 的 approver
   // 选项直接传 router 本体即可，不用再包一层
+
+  // 管理员那只的 create_agent（#954）。created_by = 此刻点火的人（currentInitiator，
+  // 接力链里也是点火的人，spec §4.2）——由工具在 run 那一刻现取，不在建刀时定死
+  const createAgentTool = createCreateAgentTool({
+    workspaceId: opts.workspaceId,
+    createdBy: () => currentInitiator,
+    writer: opts.agentWriter,
+  });
 
   /** 按 agentId 惰性建 engine、缓存复用（#928）。隔离靠构造：这台 engine 从头
       到尾只看得见它自己的痕迹 + 全场的发言。engine 内部三处 model-facing
@@ -318,7 +344,13 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       agentId: spec.agentId,
       // 每 turn 惰性重算：cachedPxTools 在 runJob 里于起跑前现拉，engine 的
       // rebuildTools()（runTurn 开头）读到的就是这一 turn 的授权快照
-      tools: () => [readFileTool, writeFileTool, bashTool, memoryTool, ...cachedPxTools],
+      // 只有管理员那只有 create_agent（spec §10 切片 6）。判据是 agentId 不是名字——
+      // 名字随时能改，'admin' 是 0021 触发器种下的稳定键
+      tools: () => [
+        readFileTool, writeFileTool, bashTool, memoryTool,
+        ...(spec.agentId === ADMIN_AGENT_ID ? [createAgentTool] : []),
+        ...cachedPxTools,
+      ],
       world: opts.world,
       sessionId,
       approver: router,

@@ -17,6 +17,11 @@ export interface ApprovalRouterOpts {
     initiatorUid: string;
     expiresTs: number;
   }) => void; // daemon 拿去落盘+广播
+  /** 审批卡上「参数摘要」那一段的文案（#954）：回字符串就用它，回 null 退回默认
+      `JSON.stringify(args).slice(0, 200)`。默认那 200 字对 bash/write_file 够用，对
+      create_agent 不够——一条 4000 字的提示词被截成 200 字，等于让人批一段没看见的
+      提示词（ADR-0118 第二条：卡片含糊 = 闸形同虚设）。可选：不传 = 现状一字不变 */
+  summarizeArgs?: (toolName: string, args: unknown) => string | null;
 }
 
 export interface ApprovalRouter extends Approver {
@@ -106,7 +111,7 @@ export function createApprovalRouter(opts: ApprovalRouterOpts): ApprovalRouter {
         opts.onRequest({
           callId,
           toolName: tool.def.name,
-          argsSummary: JSON.stringify(call.args).slice(0, 200),
+          argsSummary: opts.summarizeArgs?.(tool.def.name, call.args) ?? JSON.stringify(call.args).slice(0, 200),
           initiatorUid,
           expiresTs,
         });
