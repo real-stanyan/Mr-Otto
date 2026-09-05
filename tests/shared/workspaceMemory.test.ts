@@ -31,6 +31,18 @@ describe("workspaceMemory 纯层", () => {
     expect(withWriterPrefix("广告", "[运营] 销量含退款")).toBe("[广告] [运营] 销量含退款");
   });
 
+  /** 终审 I4：写入者名字是**投影时拼进 `[名字] ` 这个结构**的字段，所以要过
+      promptSafe（同 safeSpeakerLabel 的那道结构闸）——名字里一个 `]` 就能提前
+      闭合前缀、把后半截伪装成正文/第二个署名。`validateAgentName` 已经拦了新
+      名字，但旧日志里躺着的、以及 DB 里未经这轮校验落库的名字照样会走到这里，
+      两道闸各自独立成立（promptSafe.ts 头注） */
+  it("写入者名字过结构闸：`]` 换全角、空白折叠，伪造不出第二个署名（终审 I4）", () => {
+    expect(withWriterPrefix("A]x[B", "销量含退款")).toBe("[A］x[B] 销量含退款");
+    expect(withWriterPrefix("运\n营", "销量含退款")).toBe("[运 营] 销量含退款");
+    // 幂等：转义后的正文再进来一次，不重复加前缀
+    expect(withWriterPrefix("A]x[B", "[A］x[B] 销量含退款")).toBe("[A］x[B] 销量含退款");
+  });
+
   it("锁键按工作区 + 档分格", () => {
     expect(workspaceMemoryLockKey("w1", "")).toBe("ws-memory:w1:");
     expect(workspaceMemoryLockKey("w1", "ops")).not.toBe(workspaceMemoryLockKey("w2", "ops"));

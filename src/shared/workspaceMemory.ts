@@ -4,6 +4,8 @@
 // 收窄它会把桌面四档一起打红（spec §6.1）。条目切分/上限/原子批量复用 memoryStore.ts。
 // 三端共用（桌面设置页算占用、runtime 工具写入、将来手机端），纪律同 memoryStore.ts。
 
+import { promptSafe } from "./promptSafe.js";
+
 export type WorkspaceMemoryTier = "shared" | "own";
 
 /** 共享档在 workspace_memories 表里的 agent_id：空串（一档一行，主键 (workspace_id, agent_id)） */
@@ -33,9 +35,14 @@ export function workspaceTierRuleText(opts: { upper?: boolean } = {}): string {
 }
 
 /** 共享档写入者前缀（spec §6.2）：两只 agent 写进矛盾事实时，人要能看出去问谁。
-    由写入路径拼，不靠模型自觉。已带同一前缀的不再加（模型照着旧条目的样子重写时常会自带） */
+    由写入路径拼，不靠模型自觉。已带同一前缀的不再加（模型照着旧条目的样子重写时常会自带）。
+    名字过 `promptSafe`（终审 I4）：这里拼出来的是 `[名字] 正文` 这个**结构**，
+    一个 `]` 就把前缀提前闭合——`A]x[B` 拼出的 `[A]x[B] …` 读起来是「A 说的，
+    正文以 x[B] 开头」，署名被伪造。`validateAgentName` 已经拦了新名字，但旧日志/
+    未经这轮校验落库的名字照样走到这里，两道闸各自独立成立（promptSafe.ts 头注）。
+    转义后的名字与前缀是同一份，所以 startsWith 的幂等判断照旧成立 */
 export function withWriterPrefix(writer: string, content: string): string {
-  const prefix = `[${writer}] `;
+  const prefix = `[${promptSafe(writer)}] `;
   return content.startsWith(prefix) ? content : `${prefix}${content}`;
 }
 

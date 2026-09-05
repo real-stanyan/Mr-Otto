@@ -36,6 +36,7 @@ import { EventStore } from "../../../src/session/store.js";
 import type { SessionEvent, TokenUsage } from "../../../src/session/events.js";
 import { verifyJwt as verifyJwtEdge } from "../../edge/src/jwt.js";
 import {
+  BACKLOG_SKIP_MARKER,
   csCtlChannel,
   csChannel,
   type CsCloneKind,
@@ -378,7 +379,9 @@ async function main(): Promise<void> {
         const placeholder = safeEncodeCs(
           {
             t: "error",
-            msg: `一条实时事件过大已跳过（type=${msg.event.type}, seq=${msg.event.seq}）：单条超过下发上限，重新进入会话可看到同样的占位`,
+            // 标记取共用常量（终审 I2）：客户端认的就是它，两端各写一份
+            // 字面量的话，改一个字这道判断就静默失效
+            msg: `一条实时事件过大${BACKLOG_SKIP_MARKER}（type=${msg.event.type}, seq=${msg.event.seq}）：单条超过下发上限，重新进入会话可看到同样的占位`,
           },
           (err) => console.error("[otto-runtime] 跳过占位帧本身也编码失败：", err)
         );

@@ -3,7 +3,7 @@ import {
   createCloudSessionClient, cloudSessionFleetRow,
   type CloudSessionClient, type CloudSessionClientDeps, type CloudSessionSummary,
 } from "../../src/main/cloudSessionClient.js";
-import { decodeCsUp, encodeCs, type CsDown, type CsUp, CS_PROTOCOL_VERSION } from "../../src/shared/remote/cloudSession.js";
+import { BACKLOG_SKIP_MARKER, decodeCsUp, encodeCs, type CsDown, type CsUp, CS_PROTOCOL_VERSION } from "../../src/shared/remote/cloudSession.js";
 import type { RemoteTransport } from "../../src/shared/remote/transport.js";
 import type { ApprovalDecisionEvent, ApprovalRequestEvent, ChatMessageEvent, SessionEvent } from "../../src/session/events.js";
 import type { ApprovalRequest, CloudSessionStatus } from "../../src/shared/shellBridge.js";
@@ -1112,12 +1112,36 @@ describe("createCloudSessionClient — 历史缺口 gapNote（issue #957 C-I7）
   it("中间那条被跳过（error 帧含「已跳过」，lastSeq 与末条对得上）→ 照样出 gapNote，数得出缺 1 条", async () => {
     // maxSeen === lastSeq，光比末条比不出来——判据里那条 error 帧就是为这种缺口留的
     const { h, t } = await joined(5);
-    t.emitDown({ t: "error", msg: "一条历史事件过大已跳过(type=tool_result, seq=3):单条超过下发上限" });
+    t.emitDown({ t: "error", msg: `一条历史事件过大${BACKLOG_SKIP_MARKER}(type=tool_result, seq=3):单条超过下发上限` });
     t.emitDown({ t: "backlog", events: [0, 1, 2, 4, 5].map((n) => chatMsg(n)), done: true });
 
     expect(h.statuses.at(-1)!.gapNote).toBe(
       "这条会话有 1 条历史事件没能下发（服务端跳过了过大的事件）——你看到的不是全部"
     );
+  });
+
+  /** I3（终审）：daemon 的直播扇出对单条超限的事件也回一条同款占位帧
+      （daemon.ts globalSend 的 `msg.t === "event"` 分支），但那时 backlog
+      早就结账了——backlogSkipped 要等下一轮 backlog done 才被读到，而云会话
+      可能几小时不重连一次。这个洞在界面上此前一个字都没有：那条 notice 灰字
+      被下一次成功操作就擦掉了。missingCount 对超出 lastSeq 的 seq 数不出来
+      （它只数 [0, lastSeq]），所以文案退回不带计数的那一句——「少了东西」这件事
+      本身才是要说的 */
+  it("ready 之后一条实时事件被跳过 → 当场挂 gapNote，并且后续每次推送都还带着（终审 I3）", async () => {
+    const { h, t } = await joined(5);
+    t.emitDown({ t: "backlog", events: [0, 1, 2, 3, 4, 5].map((n) => chatMsg(n)), done: true });
+    expect(h.statuses.at(-1)!.gapNote).toBeUndefined();
+
+    t.emitDown({
+      t: "error",
+      msg: `一条实时事件过大${BACKLOG_SKIP_MARKER}（type=tool_result, seq=9）：单条超过下发上限，重新进入会话可看到同样的占位`,
+    });
+    const note = "这条会话有历史事件没能下发（服务端跳过了过大的事件）——你看到的不是全部";
+    expect(h.statuses.at(-1)!.gapNote).toBe(note);
+
+    // 持久：随便一件会触发 pushStatus 的事之后，它还在
+    t.emitDown({ t: "error", msg: "审批未生效：已经有人批过了" });
+    expect(h.statuses.at(-1)!.gapNote).toBe(note);
   });
 
   it("重连后 backlog 补齐了 → gapNote 跟着消失（它是这一份历史的属性，不是一枚永久勋章）", async () => {

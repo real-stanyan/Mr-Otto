@@ -68,6 +68,7 @@
 import type { RemoteTransport } from "../shared/remote/transport.js";
 import type { SessionSummary } from "../session/store.js";
 import {
+  BACKLOG_SKIP_MARKER,
   CS_PROTOCOL_VERSION,
   csCtlChannel,
   csChannel,
@@ -282,10 +283,16 @@ function gapNoteText(missing: number | null): string {
     : "这条会话有历史事件没能下发（服务端跳过了过大的事件）——你看到的不是全部";
 }
 
-/** 这一份历史缺了几条：[0, lastSeq] 里没转发给渲染层的那些（EventStore 的
-    seq 从 0 开始）。null = 数不出来（还没 welcome / 空会话）。
+/** 这一份历史缺了几条：[0, lastSeq] 里没转发给渲染层的那些。null = 数不出来
+    （还没 welcome / 空会话）。
     **不是** `lastSeq - maxSeen`：那只数得出末尾的缺口，中间被跳掉的一条
-    （maxSeen 仍然等于 lastSeq）会被算成 0。 */
+    （maxSeen 仍然等于 lastSeq）会被算成 0。
+    **假设 seq 从 0 起**（EventStore 的第一条就是 0，见 session/eventLog.ts）——
+    从别处 fork 出来、seq 不从 0 开始的日志会被它整段算成缺口。云会话不 fork
+    （runtime 每条会话各自一个 EventStore），所以这条假设此刻成立；哪天真有了
+    fork，判据要换成「welcome 也带上首条 seq」而不是在这里猜。
+    数不出来时调用方退回不带计数的那句文案（gapNoteText 的 0/null 分支）——
+    「少了东西」这件事本身才是要说的，条数只是锦上添花。 */
 function missingCount(session: ActiveSession): number | null {
   const last = session.lastSeq;
   if (last === null || last < 0) return null;
@@ -532,7 +539,17 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
         // （渲染层的 workspaceGroupsError）。判据取服务端那句话里的「已跳过」
         // 而不是整句相等：文案改一个字这道判断就静默失效，而这条修的正是
         // 「失败无声」（同 daemon 看门狗不认日志文案那条纪律）
-        if (msg.msg.includes("已跳过")) session.backlogSkipped = true;
+        if (msg.msg.includes(BACKLOG_SKIP_MARKER)) {
+          session.backlogSkipped = true;
+          // ready 之后到的那条是**直播**扇出的占位（daemon.globalSend 对单条
+          // 超过 MAX_FRAME_BYTES 的事件回的那一条）：这一轮 backlog 早就结账
+          // 了，backlogSkipped 要等下一轮 backlog done 才被读到——而云会话可能
+          // 几小时不重连一次。当场落 gapNote，否则这个洞在界面上只剩一行会被
+          // 下一次成功操作擦掉的 notice 灰字（终审 I3）。
+          // missingCount 数的是 [0, lastSeq]，而被跳掉的这条 seq 在 lastSeq
+          // 之外——数出来是 0，文案自然退回不带计数的那一句
+          if (session.status === "ready") session.gapNote = gapNoteText(missingCount(session));
+        }
         pushStatus(session, msg.msg);
         return;
       case "created":

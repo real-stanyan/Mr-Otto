@@ -24,6 +24,17 @@ import { MAX_FRAME_BYTES } from "./wire.js";
 export const CS_PROTOCOL_VERSION = 5;
 export const CS_MAX_TEXT_BYTES = 64 * 1024;
 
+/** 「有一条事件太大，没发给你」这一类 error 帧的识别标记（终审 I2）。
+    服务端两条路各产出一条这样的帧——backlog 分片时的
+    `frameHandler.chunkBacklogFrames`（skip 分支）与直播扇出时的
+    `daemon.globalSend`（编码失败的占位）——客户端
+    （`main/cloudSessionClient.ts`）靠 `msg.includes(...)` 认出它、据此挂历史
+    缺口横幅。**判据不是整句相等**：文案要带上 type/seq 才对排查有用，所以只能
+    子串匹配；而子串两端各写一份字面量的话，改一个字这道判断就静默失效——
+    而它修的正是「失败无声」（同 daemon 看门狗不认日志文案那条纪律）。
+    放在协议文件里而不是任一端：它就是一条线上约定，形状同 wire.ts 的纪律。 */
+export const BACKLOG_SKIP_MARKER = "已跳过";
+
 /** clone 判定的结局种类。与 runtime 侧 `CloneOutcome["kind"]` 是同一组值，
     但**这份是线上契约**：daemon 往 CsRepoState 里塞 outcome.kind 时由 tsc
     对齐两边（真分叉了 daemon 编译不过），不需要两处人肉同步。 */

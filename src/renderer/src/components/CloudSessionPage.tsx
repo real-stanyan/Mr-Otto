@@ -110,7 +110,7 @@ function cloudDeniedMessage(code: string | undefined): string {
     「我看到的就是全部」和「我看到的少了一条」需要的动作完全不同，不能只差一行
     会自己消失的灰字。缺口补齐（重连后 backlog 拉全了）时主进程不再下发它，
     这一行自己就没了 */
-function statusBanner(cs: CloudSessionState): { tone: "muted" | "err"; text: string } | null {
+function statusBanner(cs: CloudSessionState): { tone: "muted" | "warn" | "err"; text: string } | null {
   switch (cs.state) {
     case "connecting":
       return { tone: "muted", text: "连接中…" };
@@ -119,7 +119,11 @@ function statusBanner(cs: CloudSessionState): { tone: "muted" | "err"; text: str
     case "denied":
       return { tone: "err", text: cloudDeniedMessage(cs.deniedCode) };
     case "ready":
-      return cs.gapNote === null ? null : { tone: "muted", text: cs.gapNote };
+      // warn 不是 muted（终审 minor）：muted 那一档在这张页面上说的是「稍等，
+      // 还在连」——数据完整性警告穿它的衣服，就成了一句会被当作过场的灰字，
+      // 而它恰恰是唯一告诉你「别照着这段历史下判断」的话。也不用 err：
+      // 没有任何东西坏了，是这一份历史不全
+      return cs.gapNote === null ? null : { tone: "warn", text: cs.gapNote };
   }
 }
 
@@ -375,7 +379,12 @@ export function CloudSessionPage({
       </div>
 
       {banner && (
-        <p className={cn("text-xs", banner.tone === "err" ? "text-err" : "text-muted-foreground")}>
+        <p
+          className={cn(
+            "text-xs",
+            banner.tone === "err" ? "text-err" : banner.tone === "warn" ? "text-warn" : "text-muted-foreground"
+          )}
+        >
           {banner.text}
         </p>
       )}
@@ -1209,14 +1218,21 @@ function ApprovalRow({
   useEffect(() => clearAckTimer, []);
 
   // 迟到的拒绝：submitting 期间 workspaceGroupsError 变成了一个跟点击时不
-  // 一样的非空值，说明服务端事后回绝了这次 approve/deny——按第一条机制接住
-  // （不清全局那一格：它是共享状态，谁的失败谁负责，我们只把文案抄进卡内）
+  // 一样的非空值，说明**有一次**操作被服务端事后回绝了——按第一条机制接住
+  // （不清全局那一格：它是共享状态，谁的失败谁负责）。
+  // **不抄那句文案进卡内**（终审 I1）：`error` 帧不带 callId，这条全局错误
+  // 归不了属——两张卡同时 submitting 时，一条 `no_pending` 会让两张都写上
+  // 「这条审批已经处理过或已过期」，而其中一张可能刚刚批准成功；任何一件
+  // 无关的失败（配置保存挂了、限速）同样会被抄成审批的拒绝理由。归属确定的
+  // 只有 `ok === false` 那条路（那次调用自己的返回值），精确文案只在那里显示。
+  // 这里只放开按钮 + 一句中性的话：把「可能有事发生，再看一眼」说出来，
+  // 而不是替服务端断言发生了什么
   useEffect(() => {
     if (submitting === null) return;
     if (groupsError !== null && groupsError !== groupsErrorAtClick.current) {
       clearAckTimer();
       setSubmitting(null);
-      setLocalError(groupsError);
+      setLocalError("刚才有一次操作被拒（可能是这一条），可以再试");
     }
   }, [groupsError, submitting]);
 
