@@ -33,7 +33,6 @@ type OtherAgentVerdict =
 const OTHER_AGENT_VERDICTS: Record<SessionEvent["type"], OtherAgentVerdict> = {
   // ── 全场共有或与执行者无关 ──
   session_created: "keep",
-  user_message: "keep",
   chat_message: "keep",
   memory_loaded: "keep",
   memory_user_edit: "keep",
@@ -52,6 +51,13 @@ const OTHER_AGENT_VERDICTS: Record<SessionEvent["type"], OtherAgentVerdict> = {
   assistant_message: "spoken",
 
   // ── 别人干活的过程 ──
+  // **只影响带 agentId 的那些**（#957 A-5）：人在群里说的话、接力开场白都没有
+  // agentId，走 projectForAgent 开头那条早退路径，一律放行——这张表根本轮不到。
+  // 带 agentId 的 user_message 只有一种来路：engine 注给某一只 agent 看的私话
+  // （退化循环护栏 ADR-0212 的「你在原地打转」、后台任务结果回注 ADR-0205）。
+  // 那是它自己干活过程里的事，进别人的上下文就成了一句没头没脑的指责/通知，
+  // 而且在投影里和人说的话逐字节一样，读的那只分不出来
+  user_message: "drop",
   tool_execution_started: "drop",
   tool_result: "drop",
   tool_hook: "drop",
@@ -87,6 +93,11 @@ const OTHER_AGENT_VERDICTS: Record<SessionEvent["type"], OtherAgentVerdict> = {
   share_grant_note: "drop",
   workspace_restored: "drop",
 };
+
+/** 往回跳过别人的私话最多跳几条(见 agentView.lastOfType)。跳不完就退回全量:
+    一条 turn 里护栏最多喊几次是有数的,连着几十条别人的私话意味着日志本身不正常,
+    那种情况下"多读一点"比"猜一个边界"安全 */
+const FOREIGN_SCAN_LIMIT = 64;
 
 export function projectForAgent(events: SessionEvent[], agentId: string): SessionEvent[] {
   const out: SessionEvent[] = [];
@@ -129,13 +140,32 @@ export function agentView(store: EventLog, agentId: string): EventLog {
     // **压缩检查点必须按 agent 分格**:摘要是按 view 生成的(ADR-0003),运营那只
     // 压缩之后,广告那只若捡到运营的检查点,就会把运营视角的摘要当成自己的历史 ——
     // 上下文串台,而且安静。boundedContextEvents 正是靠 lastOfType 找检查点的。
-    // user_message 不带 agentId(那是人说的话),照旧原样转发 —— 它回的是定位用的
-    // seq,过滤反而会让后续按 seq 取的范围错位
+    // 别人的 → null:让 boundedContextEvents 退回全量,保守正确。
+    //
+    // user_message 是**唯一的例外**(#957 A-5 的后果):从前它一定不带 agentId
+    // (人说的话),现在护栏/后台注给某一只 agent 的私话也带。而
+    // boundedContextEvents 拿它做的是**定位**——"上一个 user turn 从哪开始"。
+    // 别人的私话不是我的 turn 边界,照上面那条回 null 的话,重建会当成"检查点
+    // 之前根本没有 user turn",把我真正的那一段整段丢掉:上下文静默变短,
+    // 不崩不报错。所以这一类往前走,跳过别人的那些。走不完(病态日志)回 null,
+    // 退回全量 —— 同一个保守出口
     lastOfType: (sessionId, type, opts) => {
-      const hit = store.lastOfType(sessionId, type, opts);
-      if (!hit) return null;
-      const owner = "agentId" in hit ? hit.agentId : undefined;
-      return owner === undefined || owner === agentId ? hit : null;
+      const mine = (e: SessionEvent) => {
+        const owner = "agentId" in e ? e.agentId : undefined;
+        return owner === undefined || owner === agentId;
+      };
+      if (type !== "user_message") {
+        const hit = store.lastOfType(sessionId, type, opts);
+        return hit && mine(hit) ? hit : null;
+      }
+      let before = opts?.beforeSeq;
+      for (let i = 0; i < FOREIGN_SCAN_LIMIT; i++) {
+        const hit = store.lastOfType(sessionId, type, before === undefined ? undefined : { beforeSeq: before });
+        if (!hit) return null;
+        if (mine(hit)) return hit;
+        before = hit.seq;
+      }
+      return null;
     },
     ofType: (sessionId, type, opts) => projectForAgent(store.ofType(sessionId, type, opts), agentId),
   };

@@ -108,6 +108,13 @@ export interface LoopEngineOptions {
   /** 这台 engine 代表哪只工作区 agent(#928)。给了就随 env() 缝进每条落盘事件。
       不给 = 单 agent 会话,一个字段都不加 —— 本机会话的日志与改动前逐字节相同 */
   agentId?: string;
+  /** 退化循环护栏喊到第几次就硬停这一 turn（#957 E-F5）。缺席 = 永不停，
+      即 ADR-0212 落地时的行为（注一条话，turn 照跑，无步数天花板 ADR-0006）。
+      **本机会话不该配**：那条无天花板规则的前提是「人就坐在那儿，停止键随时
+      能按」。云会话的群聊 turn 没有那个人 —— 真机上跑过 300 次模型调用、
+      99 次护栏、零进展、没有任何终点。命中时抛错，走 runFrom 既有的
+      turn_ended{outcome:"error"}，不新造 outcome 也不新造事件类型 */
+  loopGuardMaxNudges?: number;
 }
 
 export class LoopEngine {
@@ -155,6 +162,9 @@ export class LoopEngine {
       循环是「这一趟活里出不来」，跨 turn 比对没有意义（用户已经又说了话）。
       喊过一次就清空：护栏不是每圈都念叨的复读机 */
   private loopFingerprints: string[] = [];
+  /** 本 turn 护栏喊过几次（#957 E-F5）。作用域同 loopFingerprints —— 一趟活，
+      turn 的 finally 清零。跨 turn 累加没有意义：用户（或上一棒）已经又说了话 */
+  private loopNudges = 0;
 
   constructor(private readonly opts: LoopEngineOptions) {
     this.adapter = opts.adapter;
@@ -304,7 +314,22 @@ export class LoopEngine {
       this.turnLog = boundedContextEvents(store, sessionId) ?? store.load(sessionId);
     } else {
       const lastSeq = this.turnLog.at(-1)?.seq ?? -1;
-      const fresh = store.load(sessionId, { afterSeq: lastSeq });
+      // 增量圈**跳过点了我的名的那些**（#957 A-10 / #934）：turn 跑到一半到的
+      // 「@运营」在落盘那一刻就已经有一个 turn 归它（sessionService.say() 的
+      // 不变量，ADR-0220），这一轮再把它读进上下文，模型就会在**这**一轮里
+      // 顺手答一遍，下一轮那个 job 起跑时再答一遍 —— 同一句话两个答案。
+      // 判据是「点了我」不是「有 mentions」：点别人的那条是群里的动静，我看得见。
+      // 首圈（上面那支）不过这道滤 —— 开场白本来就点着我，它正是这一轮要答的。
+      // 被滤掉的事件**不进 turnLog，于是 lastSeq 不前进到它们**：下一圈会把它
+      // 再读出来再滤一次（多一次 JSON.parse，行为正确）；它后面若已有别的事件，
+      // lastSeq 就越过去了，那条从此不再出现 —— 两种情形下它都出不了这一轮的
+      // 上下文，而这正是唯一要保证的事。`readUpToSeq`（起跑那一刻的日志尾，
+      // turnLedger 的收口判据）取自 runFrom 开头的一次 store.load，与这里无关，
+      // 语义不受影响
+      const me = this.opts.agentId;
+      const fresh = store
+        .load(sessionId, { afterSeq: lastSeq })
+        .filter((e) => !(me && e.type === "user_message" && e.mentions?.includes(me)));
       if (fresh.length > 0) this.turnLog = [...this.turnLog, ...fresh];
     }
     return this.turnLog;
@@ -608,7 +633,11 @@ export class LoopEngine {
 
   private appendBackgroundNow(text: string, taskIds: string[]): void {
     this.append({
-      ...this.envBase(),
+      // env() 不是 envBase()（#957 A-5）：后台结果是**注给这一只 agent 看的**
+      // 私话，不是人在群里说的。缺了 agentId，agentView 的早退路径会把它原样
+      // 放行给同一个会话里的每一只 agent —— 它们读到一条自己从没派过的任务的
+      // 完成通知，且长得和人说的话一模一样。本机会话没配 agentId，一个字段都不多
+      ...this.env(),
       type: "user_message",
       content: text,
       origin: "background",
@@ -717,6 +746,7 @@ export class LoopEngine {
       this.currentTurnId = null; // steer 的目标随 turn 一起消失
       this.turnLog = null; // 快照只活一个 turn：长会话不常驻在内存里
       this.loopFingerprints = []; // 同上：循环判据的作用域是这一趟活
+      this.loopNudges = 0; // 同上：喊过几次也只在这一趟活里算数
     }
   }
 
@@ -922,7 +952,12 @@ export class LoopEngine {
       // （deriveMessages 读都不读 origin），UI 靠 origin 换皮认出不是人打的
       if (loop) {
         this.append({
-          ...this.envBase(),
+          // env() 不是 envBase()（#957 A-5）：护栏那句话是说给**打转的这一只**
+          // 听的。缺了 agentId，agentView 早退放行，群里每一只 agent 都会读到
+          // 「你在原地打转」——没打转的那只收到的是一句没头没脑的指责，而且
+          // 它和人说的话在投影里一模一样，分不出来。本机会话（没配 agentId）
+          // 的事件形状逐字节不变
+          ...this.env(),
           type: "user_message",
           content: loopNudgeText(loop),
           origin: "loop_guard",
@@ -931,6 +966,20 @@ export class LoopEngine {
         // 再凑够一个完整周期 × 遍数会再喊一次——语气不变，次数是升级
         this.loopFingerprints = [];
         this.opts.onToolLoop?.(loop);
+        // 硬停（#957 E-F5）：喊到第 N 次还在转就抛，走 runFrom 既有的
+        // catch → turn_ended{outcome:"error"} 收口。注意顺序 —— **话先落盘再抛**：
+        // 停止是结论，那句话是事实，事实不该因为结论而消失（日志里读得到
+        // 「喊过 N 次」才解释得了这条 error）。
+        // 缺席 = 现状：ADR-0006 的无步数天花板对本机会话原样成立（人就坐在
+        // 那儿，停止键随时能按）。云会话没有那个人 —— 真机上一条群聊 turn 跑了
+        // 300 次模型调用、喊了 99 次护栏，从头到尾没有任何东西会让它结束
+        const cap = this.opts.loopGuardMaxNudges;
+        this.loopNudges++;
+        if (cap !== undefined && this.loopNudges >= cap) {
+          throw new Error(
+            `退化循环：护栏连续提醒 ${this.loopNudges} 次仍在原地打转，本轮停止`
+          );
+        }
       }
     }
   }

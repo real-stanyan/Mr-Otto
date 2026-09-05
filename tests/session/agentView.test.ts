@@ -45,6 +45,27 @@ describe("projectForAgent（#928 切片 1a）", () => {
     expect(projectForAgent(shared, "ads")).toEqual(shared);
   });
 
+  it("别人的 user_message（护栏 / 后台注给它的私话）不进我的视图（#957 A-5）", () => {
+    // 这两条是 engine 注给某一只 agent 看的，不是人在群里说的话。
+    // 早退路径放行的话，运营那只「你在原地打转」会出现在广告那只的上下文里，
+    // 而且长得和人说的话一模一样——它会当成群主在骂它
+    const log: SessionEvent[] = [
+      ev({ seq: 0, type: "user_message", content: "你在原地打转", origin: "loop_guard", agentId: "ops" } as never),
+      ev({ seq: 1, type: "user_message", content: "[后台任务 bg-1 完成]", origin: "background", agentId: "ops" } as never),
+    ];
+    expect(projectForAgent(log, "ads")).toEqual([]);
+    // 自己的照留
+    expect(projectForAgent(log, "ops")).toEqual(log);
+  });
+
+  it("没有 agentId 的 user_message 照旧放行 —— 人说的话、接力开场白走早退路径（#957 A-5）", () => {
+    const log: SessionEvent[] = [
+      ev({ seq: 0, type: "user_message", content: "[alice]: 看下销量", mentions: ["ops"] } as never),
+      ev({ seq: 1, type: "user_message", content: "运营请你接一下", relay: { fromAgentId: "ops", depth: 1 }, mentions: ["ads"] } as never),
+    ];
+    expect(projectForAgent(log, "ads")).toEqual(log);
+  });
+
   it("别人的 turn 期事件整条丢弃", () => {
     const log: SessionEvent[] = [
       ev({ seq: 0, type: "tool_execution_started", toolCallId: "c1", agentId: "ops" } as never),
@@ -109,6 +130,27 @@ describe("agentView（#928 切片 1a：EventLog wrapper）", () => {
     // ads 查最后一个 context_compacted,它属于 ops,所以回 null
     const hit = adsView.lastOfType("s1", "context_compacted");
     expect(hit).toBe(null);
+  });
+
+  it("lastOfType user_message 跳过别人的私话往前走，别把我的 turn 边界丢了（#957 A-5）", () => {
+    // user_message 现在也可能带 agentId（护栏 / 后台注给某一只的私话）。
+    // boundedContextEvents 拿 lastOfType 找「上一个 user turn 从哪开始」——
+    // 撞上别人的私话就回 null 的话，重建会当成「检查点之前没有 user turn」，
+    // 把我真正的那一段整段丢掉：上下文静默变短
+    const events: SessionEvent[] = [
+      ev({ seq: 0, type: "user_message", content: "人问的问题", sessionId: "s1" }),
+      ev({ seq: 1, type: "user_message", content: "你在原地打转", origin: "loop_guard", agentId: "ops" } as never),
+    ];
+    const base: EventLog = {
+      append: () => { throw new Error("不该写"); },
+      load: () => events,
+      forkOrigin: () => null,
+      lastOfType: (_s, type, opts) =>
+        [...events].reverse().find((e) => e.type === type && (opts?.beforeSeq === undefined || e.seq < opts.beforeSeq)) ?? null,
+      ofType: (_s, type) => events.filter((e) => e.type === type),
+    };
+    const hit = agentView(base, "ads").lastOfType("s1", "user_message");
+    expect(hit).toMatchObject({ seq: 0, content: "人问的问题" });
   });
 
   it("lastOfType user_message 原样回来（不带 agentId，不该被过滤成 null）", () => {
