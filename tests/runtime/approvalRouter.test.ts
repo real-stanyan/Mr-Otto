@@ -64,4 +64,18 @@ describe("审批路由", () => {
     const result2 = await p;
     expect(result2).toMatchObject({ decision: "approved" });
   });
+  it("summarizeArgs 钩子：回字符串就上卡，回 null 退回默认 JSON 截 200（#954）", () => {
+    const reqs: { toolName: string; argsSummary: string }[] = [];
+    const r = createApprovalRouter({
+      ownerUid: "owner",
+      onRequest: (q) => reqs.push(q),
+      summarizeArgs: (name, args) => (name === "create_agent" ? `名字：${(args as { name: string }).name}` : null),
+    });
+    r.setInitiator("u1");
+    const createTool = { def: { name: "create_agent", description: "", parameters: {} }, requiresApproval: true, run: async () => "" };
+    void r.decide({ id: "c1", name: "create_agent", args: { name: "广告", instructions: "x".repeat(500) } }, createTool);
+    void r.decide({ id: "c2", name: "bash", args: { cmd: "echo hi" } }, { ...createTool, def: { ...createTool.def, name: "bash" } });
+    expect(reqs[0]).toMatchObject({ toolName: "create_agent", argsSummary: "名字：广告" });
+    expect(reqs[1]).toMatchObject({ toolName: "bash", argsSummary: JSON.stringify({ cmd: "echo hi" }) });
+  });
 });

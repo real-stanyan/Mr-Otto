@@ -9,6 +9,8 @@ import type { ExecutionWorld } from "../../src/world/executionWorld.js";
 import type { PxCallDeps } from "../../services/runtime/src/pxTools.js";
 import type { AgentToolAllow } from "../../src/shared/agentToolAllow.js";
 import { tempDir } from "../helpers/tempDir.js";
+import { createInMemoryAgentWriter } from "../../services/runtime/src/agentRegistry.js";
+import type { ToolDefinition } from "../../src/model/adapter.js";
 
 const fakeWorld: ExecutionWorld = {
   fs: {
@@ -52,7 +54,7 @@ describe("createCloudSession", () => {
       px,
       hostUids: async () => [],
       onEvent: (e) => events.push(e),
-      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
+      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
       relayMaxDepth: async () => 6,
     });
 
@@ -114,7 +116,7 @@ describe("createCloudSession", () => {
       px,
       hostUids: async () => [],
       onEvent: (e) => events.push(e),
-      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
+      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
       relayMaxDepth: async () => 6,
     });
 
@@ -167,7 +169,7 @@ describe("createCloudSession", () => {
       px,
       hostUids: async () => [],
       onEvent,
-      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
+      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
       relayMaxDepth: async () => 6,
     });
 
@@ -228,7 +230,7 @@ describe("createCloudSession", () => {
       px,
       hostUids: async () => [],
       onEvent,
-      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
+      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
       relayMaxDepth: async () => 6,
     });
 
@@ -274,7 +276,7 @@ describe("createCloudSession", () => {
       px,
       hostUids: async () => [],
       onEvent: (e) => events.push(e),
-      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
+      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
       relayMaxDepth: async () => 6,
     });
 
@@ -328,6 +330,87 @@ describe("createCloudSession", () => {
 
     store.close();
   });
+
+  it("⑦ 只有管理员的工具表里有 create_agent；别的 agent 没有（#954，spec §10 切片 6）", async () => {
+    const store = newStore();
+    const seenTools: Record<string, string[]> = {};
+    const roster = [
+      { ...DEFAULT_AGENT, agentId: "admin", name: "管理员" },
+      { ...DEFAULT_AGENT, agentId: "a_ops", name: "运营" },
+    ];
+    const adapterFor = (agentId: string): ModelAdapter => ({
+      model: "fake-model",
+      async chat(_messages, tools?: ToolDefinition[]): Promise<ModelReply> {
+        seenTools[agentId] = (tools ?? []).map((t) => t.name);
+        return { content: "好" };
+      },
+    });
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator", store, world: fakeWorld,
+      agents: async () => roster,
+      adapterFor: (a) => adapterFor(a.agentId),
+      px, hostUids: async () => [], onEvent: () => {}, onUsage: () => {},
+      memory: createInMemoryWorkspaceMemory(), relayMaxDepth: async () => 6,
+      agentWriter: createInMemoryAgentWriter(),
+    });
+    await session.say("u1", "alice", "@管理员 在吗", true, ["admin"]);
+    await session.settled();
+    await session.say("u1", "alice", "@运营 在吗", true, ["a_ops"]);
+    await session.settled();
+    expect(seenTools["admin"]).toContain("create_agent");
+    expect(seenTools["a_ops"]).not.toContain("create_agent");
+    store.close();
+  });
+
+  it("⑧ 管理员建 agent 全链：create_agent → 审批卡逐字段（提示词全文） → owner 批准 → 落行 created_by=点火的人 → 下一句 @ 新 agent 能起它的 turn", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    const writer = createInMemoryAgentWriter();
+    const admin = { ...DEFAULT_AGENT, agentId: "admin", name: "管理员" };
+    let session!: CloudSession;
+    let round = 0;
+    const instructions = "你负责投放。".repeat(60); // 360 字，超过默认摘要的 200 字截断
+    const adapter: ModelAdapter = {
+      model: "fake-model",
+      async chat(): Promise<ModelReply> {
+        round++;
+        if (round === 1) {
+          return { content: "", toolCalls: [{ id: "cA", name: "create_agent", args: { name: "广告", description: "管投放", instructions, models: ["glm-4.5"] } }] };
+        }
+        return { content: "建好了" };
+      },
+    };
+    const onEvent = (e: SessionEvent): void => {
+      events.push(e);
+      if (e.type === "approval_request") session.approve((e as ApprovalRequestEvent).callId, "owner", "Owner", "approved");
+    };
+    session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator", store, world: fakeWorld,
+      agents: async () => [admin, ...writer.specs("w1")],
+      adapterFor: () => adapter,
+      px, hostUids: async () => [], onEvent, onUsage: () => {},
+      memory: createInMemoryWorkspaceMemory(), relayMaxDepth: async () => 6,
+      agentWriter: writer,
+    });
+
+    await session.say("u1", "alice", "@管理员 建一只管广告投放的", true, ["admin"]);
+    await session.settled();
+
+    const req = events.find((e) => e.type === "approval_request") as ApprovalRequestEvent;
+    expect(req).toMatchObject({ toolName: "create_agent", agentId: "admin", initiatorUid: "u1" });
+    expect(req.argsSummary).toContain("名字：广告");
+    expect(req.argsSummary).toContain("职责：管投放");
+    expect(req.argsSummary).toContain("型号：glm-4.5");
+    expect(req.argsSummary).toContain(`提示词（${instructions.length} 字）：\n${instructions}`);
+    const row = writer.rows()[0]!;
+    expect(row).toMatchObject({ workspaceId: "w1", createdBy: "u1", name: "广告", instructions });
+    expect(events.find((e) => e.type === "tool_result")).toMatchObject({ status: "ok" });
+
+    await session.say("u1", "alice", "@广告 你好", true, [row.agentId]);
+    await session.settled();
+    expect(events.some((e) => e.type === "turn_ended" && (e as { agentId?: string; outcome: string }).agentId === row.agentId && (e as { outcome: string }).outcome === "completed")).toBe(true);
+    store.close();
+  });
 });
 
 // issue #822：归档的日志那一半（Supabase 那行的 archived 列与房间收摊在
@@ -346,7 +429,7 @@ describe("CloudSession.archive（issue #822）", () => {
       px,
       hostUids: async () => [],
       onEvent: (e) => events.push(e),
-      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
+      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
       relayMaxDepth: async () => 6,
     });
 
@@ -415,7 +498,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
       store, world: fakeWorld, px, hostUids: async () => [],
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: `${a.name}答` }; } }),
-      onEvent: (e) => events.push(e), onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
+      onEvent: (e) => events.push(e), onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
       relayMaxDepth: async () => 6,
     });
 
@@ -436,7 +519,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
       store, world: fakeWorld, px, hostUids: async () => [],
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: `${a.name}答` }; } }),
-      onEvent: () => {}, onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
+      onEvent: () => {}, onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
       relayMaxDepth: async () => 6,
     });
 
@@ -460,7 +543,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
           return { content: `${a.name}答` };
         },
       }),
-      onEvent: () => {}, onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
+      onEvent: () => {}, onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
       relayMaxDepth: async () => 6,
     });
 
@@ -486,7 +569,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
       store, world: fakeWorld, px, hostUids: async () => [],
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: "答" }; } }),
-      onEvent: () => {}, onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
+      onEvent: () => {}, onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
       relayMaxDepth: async () => 6,
     });
     // 手机端只发得出布尔那一版
@@ -503,7 +586,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
       store, world: fakeWorld, px, hostUids: async () => [],
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: "答" }; } }),
-      onEvent: () => {}, onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
+      onEvent: () => {}, onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
       relayMaxDepth: async () => 6,
     });
     await session.say("u1", "alice", "在吗", true);
@@ -539,7 +622,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
         };
       },
       onEvent,
-      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
+      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
       relayMaxDepth: async () => 6,
     });
 
@@ -571,7 +654,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
           return { content: `${a.name}答` };
         },
       }),
-      onEvent: (e) => events.push(e), onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
+      onEvent: (e) => events.push(e), onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
       relayMaxDepth: async () => 6,
     });
 
@@ -641,7 +724,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
           return { content: `${a.name}答` };
         },
       }),
-      onEvent: (e) => events.push(e), onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
+      onEvent: (e) => events.push(e), onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
       relayMaxDepth: async () => 6,
     });
 
@@ -697,7 +780,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
       store, world: fakeWorld, px, hostUids: async () => [],
       agents: async () => [SOLO_AGENT],
       adapterFor: () => ({ model: "m-solo", async chat() { return { content: "答" }; } }),
-      onEvent: (e) => events.push(e), onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
+      onEvent: (e) => events.push(e), onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
       relayMaxDepth: async () => 6,
     });
 
@@ -723,7 +806,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
       store, world: fakeWorld, px, hostUids: async () => [],
       agents: async () => ROSTER,
       adapterFor: () => ({ model: "m-solo", async chat() { return { content: "答" }; } }),
-      onEvent: (e) => events.push(e), onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
+      onEvent: (e) => events.push(e), onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
       relayMaxDepth: async () => 6,
     });
 
@@ -745,7 +828,7 @@ describe("多智能体云会话 · 切片 1b（#932 四个坑）", () => {
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [],
       agents: opts.agents, adapterFor: opts.adapterFor,
-      onEvent: (e) => opts.events?.push(e), onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
+      onEvent: (e) => opts.events?.push(e), onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
       relayMaxDepth: async () => 6,
     });
   }
@@ -888,7 +971,7 @@ describe("多智能体云会话 · 切片 1b（#932 四个坑）", () => {
       onEvent: (e) => {
         if (e.type === "turn_ended" && midTurnLedger.length === 0) midTurnLedger.push(openTurns(store.load("s1")));
       },
-      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
+      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
       relayMaxDepth: async () => 6,
     });
 
@@ -1022,7 +1105,7 @@ describe("say() 收下即返回（issue #937）", () => {
         events.push(e);
         if (e.type === "approval_request") announceRequest(e as ApprovalRequestEvent);
       },
-      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
+      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
       relayMaxDepth: async () => 6,
     });
 
@@ -1084,7 +1167,7 @@ describe("连接器白名单（#941 切片 2）", () => {
       agents: async () => [{ ...DEFAULT_AGENT, tools }],
       adapterFor: () => adapter, px: pxWithGrants,
       hostUids: async () => ["h1"],
-      onEvent: () => {}, onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
+      onEvent: () => {}, onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
       relayMaxDepth: async () => 6,
     });
   }
@@ -1112,7 +1195,7 @@ describe("工作区记忆（#949 切片 4）", () => {
   function memSession(store: EventStore, memory: ReturnType<typeof createInMemoryWorkspaceMemory>, chat: (agentId: string, messages: unknown[]) => Promise<ModelReply>, events: SessionEvent[]) {
     return createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
-      store, world: fakeWorld, px, hostUids: async () => [], memory,
+      store, world: fakeWorld, px, hostUids: async () => [], memory, agentWriter: createInMemoryAgentWriter(),
       relayMaxDepth: async () => 6,
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, chat: (m) => chat(a.agentId, m as unknown[]) }),
@@ -1151,7 +1234,7 @@ describe("工作区记忆（#949 切片 4）", () => {
     const tools: Record<string, string[]> = {};
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
-      store, world: fakeWorld, px, hostUids: async () => [], memory,
+      store, world: fakeWorld, px, hostUids: async () => [], memory, agentWriter: createInMemoryAgentWriter(),
       relayMaxDepth: async () => 6,
       agents: async () => AGENTS,
       adapterFor: (a) => ({
@@ -1201,7 +1284,7 @@ describe("工作区记忆（#949 切片 4）", () => {
     const broken = { read: async () => { throw new Error("db down"); }, write: async () => {} };
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
-      store, world: fakeWorld, px, hostUids: async () => [], memory: broken,
+      store, world: fakeWorld, px, hostUids: async () => [], memory: broken, agentWriter: createInMemoryAgentWriter(),
       relayMaxDepth: async () => 6,
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { return { content: "好" }; } }),
@@ -1221,7 +1304,7 @@ describe("agent 互相 @ 接力（#950 切片 5）", () => {
     const seen: string[] = [];
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
-      store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(),
+      store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
       relayMaxDepth: async () => maxDepth,
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { rounds[a.agentId] = (rounds[a.agentId] ?? 0) + 1; seen.push(a.agentId); return { content: reply(a.agentId, rounds[a.agentId]!) }; } }),
@@ -1305,7 +1388,7 @@ describe("agent 互相 @ 接力（#950 切片 5）", () => {
     const events: SessionEvent[] = [];
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
-      store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(),
+      store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
       relayMaxDepth: async () => { throw new Error("db down"); },
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { return { content: a.agentId === "ops" ? "@广告 你来" : "收到" }; } }),
@@ -1324,7 +1407,7 @@ describe("agent 互相 @ 接力（#950 切片 5）", () => {
     let opsCalls = 0;
     session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
-      store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(),
+      store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
       relayMaxDepth: async () => 6,
       agents: async () => AGENTS,
       adapterFor: (a) => ({
@@ -1367,7 +1450,7 @@ describe("agent 互相 @ 接力（#950 切片 5）", () => {
     let session!: CloudSession;
     session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
-      store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(),
+      store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
       relayMaxDepth: async () => 6,
       agents: async () => AGENTS,
       adapterFor: (a) => ({
@@ -1400,7 +1483,7 @@ describe("agent 互相 @ 接力（#950 切片 5）", () => {
     let session!: CloudSession;
     session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
-      store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(),
+      store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
       // relayMaxDepth 是真的 Supabase 往返：这一 await 期间人随时可能按下归档。
       // 顶上那句 `if (archived) return` 只挡得住"进函数之前就已经归档"，挡不住
       // 这条 await 期间才落地的归档——所以这里在 resolve 之前先把归档做了
@@ -1439,7 +1522,7 @@ describe("agent 互相 @ 接力（#950 切片 5）", () => {
     let session!: CloudSession;
     session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
-      store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(),
+      store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
       relayMaxDepth: async () => 6,
       agents: async () => ROSTER3,
       adapterFor: (a) => ({

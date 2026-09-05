@@ -25,6 +25,7 @@ import { createMembershipCache } from "./membershipCache.js";
 import { createFrameRateLimiter } from "./rateLimit.js";
 import { createCloudSession, type CloudSession, type AgentSpec } from "./sessionService.js";
 import { createSupabaseWorkspaceMemory } from "./workspaceMemory.js";
+import { createSupabaseAgentWriter } from "./agentRegistry.js";
 import { normalizeAgentTools } from "../../../src/shared/agentToolAllow.js";
 import type { PxCallDeps } from "./pxTools.js";
 import { createHostedProbe, createHostedRuntimeAdapter, probeModelRoute, withUsage } from "./hostedRoute.js";
@@ -215,6 +216,7 @@ async function main(): Promise<void> {
 
   const px: PxCallDeps = { edgeBase: config.edgeBase, runtimeSecret: config.runtimeSecret };
   const workspaceMemory = createSupabaseWorkspaceMemory(supabase);
+  const agentWriter = createSupabaseAgentWriter(supabase);
 
   // 发起人有订阅 → 走网关代表发起人（Task 13，spec 第 5 节，扣发起人不扣 owner）；
   // /me 60s/uid 缓存——一个坏掉的 edge 不该被每个 turn 打一次
@@ -569,6 +571,7 @@ async function main(): Promise<void> {
       onEvent: broadcast,
       onUsage: () => {}, // usage 记账走上面的 recordUsage 钩子，这个口留白（同 T9 report 的记录）
       memory: workspaceMemory,
+      agentWriter,
       relayMaxDepth: () =>
         queryRelayMaxDepth(workspaceId).catch((err: unknown) => {
           console.warn(`[otto-runtime] relay_max_depth 查询失败，用默认（workspaceId=${workspaceId}）：${err instanceof Error ? err.message : String(err)}`);

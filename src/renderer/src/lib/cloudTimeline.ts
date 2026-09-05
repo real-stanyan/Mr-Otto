@@ -8,6 +8,7 @@
 import { agentNameOf, labelOf } from "./workspaceView.js";
 import type { AgentRelayEvent, AssistantMessageEvent, SessionEvent, UserMessageEvent } from "../../../session/events.js";
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
+import { CREATE_AGENT_TOOL_NAME } from "../../../shared/createAgentDraft.js";
 
 /** sessionService.ts 的 say() 点火一个 turn 时拼的前缀:`\`[${label}]: ${text}\``。
     协议没有给 user_message 配独立的 fromUid/label 字段（这个事件本来就是
@@ -55,4 +56,15 @@ export function relayLineText(e: AgentRelayEvent, ws: WorkspaceSnapshot): string
     （agent_relay 那一行）就够，画出来是同一件事说两遍 */
 export function hiddenFromCloudTimeline(e: SessionEvent): boolean {
   return e.type === "user_message" && e.relay !== undefined;
+}
+
+/** 管理员刚建成一只 agent（#954）：create_agent 的 tool_result{status:"ok"}。桌面的名册住在
+    WorkspaceSnapshot.agents，没有推送通道（store.ts refreshWorkspaceGroups 的注释），看见这条
+    就重拉一次——不新增事件类型（那是十一处清单的代价），判据从日志里既有的两条事件反查：
+    tool_result 只带 toolCallId，工具名在配对的 assistant_message.toolCalls 里 */
+export function createAgentLanded(events: readonly SessionEvent[], e: SessionEvent): boolean {
+  if (e.type !== "tool_result" || e.status !== "ok") return false;
+  return events.some(
+    (p) => p.type === "assistant_message" && (p.toolCalls ?? []).some((c) => c.id === e.toolCallId && c.name === CREATE_AGENT_TOOL_NAME)
+  );
 }

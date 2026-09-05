@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { timelineLabel, toolFilePath, toolIcon } from "../../src/shared/toolSummary.js";
+import { timelineLabel, toolFilePath, toolIcon, toolSummary } from "../../src/shared/toolSummary.js";
 
 describe("timelineLabel —— 折叠头那一行", () => {
   // 换掉的是「终端 ×26 · 读取 ×2」那份按动作归并的清单:折叠头不该抄一遍
@@ -68,5 +68,13 @@ describe("toolIcon —— 工具行打头的小图标（lucide 名字，组件�
   });
   it("认不出的（MCP 工具）给通用扳手", () => {
     expect(toolIcon("mcp__github__create_issue")).toBe("Wrench");
+  });
+});
+
+describe("toolSummary —— create_agent（#954）", () => {
+  it("动词「创建智能体」+ 目标是名字；名字缺席目标为空", () => {
+    expect(toolSummary({ id: "c1", name: "create_agent", args: { name: "广告", instructions: "x" } }))
+      .toEqual({ verb: "创建智能体", target: "广告", stat: "" });
+    expect(toolSummary({ id: "c2", name: "create_agent", args: {} })).toEqual({ verb: "创建智能体", target: "", stat: "" });
   });
 });
