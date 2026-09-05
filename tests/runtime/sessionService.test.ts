@@ -1316,4 +1316,81 @@ describe("agent 互相 @ 接力（#950 切片 5）", () => {
     expect(events.some((e) => e.type === "agent_relay")).toBe(true);
     store.close();
   });
+
+  it("同一只 agent 排队排两个 job 时不重复接力、也不误报打转（复审 Critical ①）：ops 第一次被叫到时先让「@运营 二」排进队列，再回复 @广告——扫描窗口只圈这一轮自己产出的话", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    let session!: CloudSession;
+    let opsCalls = 0;
+    session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(),
+      relayMaxDepth: async () => 6,
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({
+        model: a.models[0]!,
+        async chat() {
+          if (a.agentId === "ops") {
+            opsCalls++;
+            if (opsCalls === 1) {
+              // 第一次被叫到（job1，开场白是「出报表」）时，先让第二句点名
+              // 排进队列（job2，开场白是「二」）——这句话在 job1 自己的
+              // engine.runLoggedTurn 还没返回时就落盘、入队（同「去重与排队
+              // 混在同一条调用里」那个既有夹具的形状）
+              await session.say("u1", "alice", "@运营 二", true, ["ops"]);
+              return { content: "报表好了，@广告 按这个投" };
+            }
+          }
+          // job2 自己的回复（以及广告的回复）都不再提任何人
+          return { content: "收到" };
+        },
+      }),
+      onEvent: (e) => events.push(e), onUsage: () => {},
+    });
+
+    await session.say("u1", "alice", "@运营 出报表", true, ["ops"]);
+    await session.settled();
+
+    // 只应该有一条 agent_relay：job1 自己的回复里的 @广告。job2 起跑前捕获的
+    // scanFrom 晚于 job1 那条 assistant_message，它的扫描窗口看不到那条已经被
+    // job1 自己的 relayAfterTurn 处理过的话——不会因为重新扫到它而再落一条
+    expect(events.filter((e) => e.type === "agent_relay")).toHaveLength(1);
+    // 两条 ops->ads 的 hop 摞在一起才可能诓出周期护栏；只有一条时不该有任何
+    // 「打转」提醒
+    expect(events.some((e) => e.type === "chat_message" && (e as { content: string }).content.includes("打转"))).toBe(false);
+    store.close();
+  });
+
+  it("归档之后不再接力（复审 Important ②）：ops 在自己的 chat() 里先把会话归档，回复里的 @广告 不该再点起新的一棒", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    let session!: CloudSession;
+    session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(),
+      relayMaxDepth: async () => 6,
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({
+        model: a.models[0]!,
+        async chat() {
+          if (a.agentId === "ops") {
+            // 归档只翻标志 + 落事件，不碰 drain——这条 turn 本身照常跑完、
+            // 照常落它自己的 assistant_message，接力才是唯一该被拦住的路
+            session.archive("alice");
+            return { content: "报表好了，@广告 按这个投" };
+          }
+          return { content: "收到" };
+        },
+      }),
+      onEvent: (e) => events.push(e), onUsage: () => {},
+    });
+
+    await session.say("u1", "alice", "@运营 出报表", true, ["ops"]);
+    await session.settled();
+
+    expect(session.isArchived()).toBe(true);
+    expect(events.some((e) => e.type === "assistant_message")).toBe(true);
+    expect(events.some((e) => e.type === "agent_relay")).toBe(false);
+    store.close();
+  });
 });
