@@ -11,11 +11,11 @@ import {
   applyEntryOps, charCount, formatEntries, parseEntries, withMemoryFileLock, type EntryOp,
 } from "../../../src/shared/memoryStore.js";
 import {
-  SHARED_MEMORY_AGENT_ID, WORKSPACE_MEMORY_LABEL, WORKSPACE_MEMORY_LIMITS, isWorkspaceMemoryTier,
+  SHARED_MEMORY_AGENT_ID, WORKSPACE_MEMORY_LABEL, WORKSPACE_MEMORY_LIMITS, collapseSharedEntry, isWorkspaceMemoryTier,
   withWriterPrefix, workspaceMemoryLockKey, workspaceTierRuleText, type WorkspaceMemoryTier,
 } from "../../../src/shared/workspaceMemory.js";
 import { scanThreat } from "../../../src/shared/threatPatterns.js";
-import type { WorkspaceMemoryStore } from "./workspaceMemory.js";
+import { MemoryConflictError, type WorkspaceMemoryStore } from "./workspaceMemory.js";
 
 export const WORKSPACE_MEMORY_TOOL_NAME = "memory";
 const MAX_CONSECUTIVE_FAILURES = 3;
@@ -70,7 +70,9 @@ export function createWorkspaceMemoryTool(deps: {
       const hit = scanThreat(op.content);
       if (hit) throw new Error(`内容含可疑指令（${hit}），拒绝写入记忆`);
     }
-    // 共享档每条带写入者前缀（spec §6.2）：由写入路径拼，不靠模型自觉。
+    // 共享档每条带写入者前缀（spec §6.2）：由写入路径拼，不靠模型自觉。折行（B-I3，#957）
+    // 必须排在打前缀之前——原文一旦带上换行，`\n[某某] ...` 就是一条伪造的第二行签名，
+    // collapseSharedEntry 把整段折成单行之后前缀天然只出现一次。
     // 空内容不打前缀——否则 {action:"replace", content:""} 会在这一步先变成非空的 "[写入者] "，
     // applyEntryOps 的空内容闸就再也拦不住它，一次空 replace 就能把真实条目覆盖成裸的写入者名字
     // （#949 review：confirmed by running it）。落一个空字符串，让 applyEntryOps 自己报「content 为空」。
@@ -78,13 +80,15 @@ export function createWorkspaceMemoryTool(deps: {
       ? ops.map((op) =>
           op.action === "remove" || !op.content.trim()
             ? op
-            : { ...op, content: withWriterPrefix(deps.agentName(), op.content.trim()) }
+            : { ...op, content: withWriterPrefix(deps.agentName(), collapseSharedEntry(op.content.trim())) }
         )
       : ops;
     const rowAgentId = tier === "shared" ? SHARED_MEMORY_AGENT_ID : deps.agentId;
     const lockKey = workspaceMemoryLockKey(deps.workspaceId, rowAgentId);
-    // read→apply→write 整段持锁（issue #185 同款）：同一 daemon 里另一条云会话此刻可能也在写共享档
-    const { used, n } = await withMemoryFileLock(lockKey, async () => {
+
+    // 一次 read→apply→write 尝试：expected 就是这次持锁期间读到的原文（缺行 = null），
+    // 与 memory.write 的写入前置条件（B-I4）直接对应
+    async function attempt(): Promise<{ used: number; n: number }> {
       const raw = (await deps.memory.read(deps.workspaceId, [rowAgentId])).get(rowAgentId) ?? null;
       const entries = parseEntries(raw);
       const needsLocate = stamped.some((o) => o.action !== "add");
@@ -93,8 +97,26 @@ export function createWorkspaceMemoryTool(deps: {
       }
       const r = applyEntryOps(entries, stamped, { label: WORKSPACE_MEMORY_LABEL[tier], limit: WORKSPACE_MEMORY_LIMITS[tier] });
       if (!r.ok) throw new Error(r.error);
-      await deps.memory.write(deps.workspaceId, rowAgentId, formatEntries(r.entries));
-      return { used: charCount(formatEntries(r.entries)), n: r.changed.added.length + r.changed.updated.length + r.changed.removed.length };
+      const nextRaw = formatEntries(r.entries);
+      await deps.memory.write(deps.workspaceId, rowAgentId, nextRaw, raw);
+      return { used: charCount(nextRaw), n: r.changed.added.length + r.changed.updated.length + r.changed.removed.length };
+    }
+
+    // read→apply→write 整段持锁（issue #185 同款）：同一 daemon 里另一条云会话此刻可能也在写
+    // 共享档——锁挡得住这一层，挡不住桌面手改或另一台 daemon（B-I4），所以锁内还要过一遍
+    // memory.write 的前置条件；撞了就在锁内重试整段一次，两次都撞才真的报给模型
+    const { used, n } = await withMemoryFileLock(lockKey, async () => {
+      try {
+        return await attempt();
+      } catch (err) {
+        if (!(err instanceof MemoryConflictError)) throw err;
+        try {
+          return await attempt();
+        } catch (err2) {
+          if (err2 instanceof MemoryConflictError) throw new Error("记忆刚被别人改了，重试一次仍冲突");
+          throw err2;
+        }
+      }
     });
     return `已更新 ${WORKSPACE_MEMORY_LABEL[tier]}（${n} 处，${used}/${WORKSPACE_MEMORY_LIMITS[tier]} 字符）。`;
   }
