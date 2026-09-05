@@ -359,6 +359,24 @@ export interface CloudSession {
     catchUp），到这个数就不再排、改落一条真正的收口 */
 export const MAX_CATCHUP_ATTEMPTS = 3;
 
+/** 「被踢的那位在群里叫什么」：日志里没有 profiles 表，开场白正文那个
+    `[label]: ` 前缀是唯一现成的名字来源（say() 落盘时拼的，已经过了一遍
+    safeSpeakerLabel）。取不到就退回 uid 前 8 位——与 safeSpeakerLabel 撞上
+    保留名时的退路同一个口径，不猜、也不编一个名字出来 */
+export function speakerLabelOf(content: string | undefined, fromUid: string): string {
+  const m = content ? /^\[([^\]]*)\]: /.exec(content) : null;
+  const label = m?.[1] ?? "";
+  return label.length > 0 ? label : fromUid.slice(0, 8);
+}
+
+/** 被踢的发起人那句话已经在 append-only 的日志里了，删不掉——只能在它后面补
+    一句**模型可见**的系统发言，告诉正在读上下文的 agent「上面那句点名不作数」。
+    不说这一声的话：收口落了（turn 不跑），但那条开场白照旧躺在每一只 agent 的
+    上下文里，读起来就是一条没人执行的正常指令——下一轮谁顺手把它做了都不奇怪 */
+export function kickedNoteText(label: string): string {
+  return `${label} 已不在这个工作区，上面那句点名不作数`;
+}
+
 export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   const { store, sessionId } = opts;
   const coordinator = createTurnCoordinator();
@@ -894,6 +912,13 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // Supabase 抖动就会被读成"我被踢了"
       const membership = await opts.isMember(job.fromUid);
       if (membership !== true) {
+        // 确认不在籍那一支也要在群里说一声（复审 E2-5 的另一半）：收口只让这条
+        // turn 不跑，那句点名正文照旧躺在每只 agent 的上下文里。补跑那条路上的
+        // 同一句话见 catchUp。**只给 `false` 说**——"这一刻问不出来"是发送者
+        // 重发一次就好的事，替他在群里宣布"他不在这个工作区"是在说一件没被证实的事
+        if (membership === false) {
+          logChat("system", "系统", kickedNoteText(speakerLabelOf(job.opening.content, job.fromUid)), false);
+        }
         notify(store.append({
           sessionId,
           ts: Date.now(),
@@ -1263,21 +1288,48 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // 回调回来）。等待点照旧走 inflight —— settled() 的 while 循环先等这条
     // catchUp，再等它末尾 startDrain() 起的那条排空
     const catchUp = async (): Promise<void> => {
+      // 分类的产物是**每只 agent 一条按 seq 升序的队列**（复审 A2-C1 / E2-5）。
+      // 原来那版把 kicked / exhausted 各攒一个平铺数组，再各自决定落不落收口——
+      // 每个决定单独看都对，凑在一起就丢数据：`unknown` 那条决定「留到下次重启
+      // 再问」，而排在它后面、同一只 agent 的 kicked 那条落的收口
+      // （readUpToSeq = 自己的 seq ≥ unknown 那条的 seq）把它一起静默关掉了。
+      // 收口能不能落，从来不是这条开场白自己的性质，而是**它前面还有没有必须
+      // 留着的条目**——所以判据只能在队列上表达：从队头起连续的 kicked /
+      // exhausted 才落收口，撞上第一条 runnable / unknown / skipped 就停手
+      type CatchUpKind = "runnable" | "kicked" | "exhausted" | "unknown" | "skipped";
+      interface CatchUpItem {
+        seq: number;
+        kind: CatchUpKind;
+        fromUid: string | null;
+        opening?: UserMessageEvent;
+        attempts?: number;
+      }
+      const byAgent = new Map<string, CatchUpItem[]>();
+      const enqueueItem = (agentId: string, item: CatchUpItem): void => {
+        const q = byAgent.get(agentId);
+        if (q) q.push(item);
+        else byAgent.set(agentId, [item]);
+      };
+      // 平铺的那几个数组还留着：runnable 是入队用的（顺序 = 起跑顺序），
+      // 其余三个只喂下面那几行 warn ——它们数的是「这一批各有几条」，与队列
+      // 里「落没落收口」是两回事，混着数就会出现「说不排 2 条、实际落了 1 条」
       const runnable: { agentId: string; fromUid: string; opening: UserMessageEvent; attempts: number }[] = [];
-      const kicked: { agentId: string; seq: number }[] = [];
+      const kicked: { agentId: string; seq: number; fromUid: string; opening: UserMessageEvent }[] = [];
       const skipped: number[] = [];
       // 在籍**查不出来**的那几条（#957 终审 Critical 1）：与 skipped 同一个归宿
       // （开场白留着、一条收口都不写），单独一个数组只是为了那行 warn 说的是真话
       const unknownMembership: number[] = [];
       const exhausted: { agentId: string; seq: number }[] = [];
       // stale 已经按 seq 升序（openTurns 顺着日志一路 push）：同一只 agent 的
-      // 多条开场白在这里天然也按 seq 升序出现，下面两处分组都借了这个顺序
+      // 多条开场白在这里天然也按 seq 升序出现，下面的队列直接借了这个顺序
       for (const t of stale) {
         const opening = seed.find((e) => e.seq === t.seq);
         if (t.fromUid === null || !opening || opening.type !== "user_message") {
           // 跳过的那条**仍然停在「排队中」**，只是这个进程不打算管它了——不说
-          // 一声的话，界面上一条永远转圈的行在服务器日志里没有任何对应物
+          // 一声的话，界面上一条永远转圈的行在服务器日志里没有任何对应物。
+          // 它照样进队列：它是「必须留着」的一条，排在它后面的收口不能越过它
           skipped.push(t.seq);
+          enqueueItem(t.agentId, { seq: t.seq, kind: "skipped", fromUid: t.fromUid });
           continue;
         }
         // 上一个进程收下这句话的时候他还在籍，现在未必（#957 B-I1）。补跑是一条
@@ -1290,10 +1342,12 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         const membership = await opts.isMember(t.fromUid);
         if (membership === "unknown") {
           unknownMembership.push(t.seq);
+          enqueueItem(t.agentId, { seq: t.seq, kind: "unknown", fromUid: t.fromUid, opening });
           continue;
         }
         if (membership === false) {
-          kicked.push({ agentId: t.agentId, seq: t.seq });
+          kicked.push({ agentId: t.agentId, seq: t.seq, fromUid: t.fromUid, opening });
+          enqueueItem(t.agentId, { seq: t.seq, kind: "kicked", fromUid: t.fromUid, opening });
           continue;
         }
         // 补跑上限（#957 A-9 / #933，复审 Critical 修正）：计数是该 opening 之后、
@@ -1307,84 +1361,94 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         ).length;
         if (attempts >= MAX_CATCHUP_ATTEMPTS) {
           exhausted.push({ agentId: t.agentId, seq: t.seq });
+          enqueueItem(t.agentId, { seq: t.seq, kind: "exhausted", fromUid: t.fromUid, opening, attempts });
           continue;
         }
         runnable.push({ agentId: t.agentId, fromUid: t.fromUid, opening, attempts });
+        enqueueItem(t.agentId, { seq: t.seq, kind: "runnable", fromUid: t.fromUid, opening, attempts });
       }
       // **收口先落、再入队**：排在任何 job 起跑之前落盘，落的时候日志还是
       // 「补跑开始前」那个静止的样子，不是某条 turn 跑了一半的中间态。
-      // 到顶与被踢那两个循环的 readUpToSeq 都取**那条开场白自己的 seq**（不是
-      // 日志尾，#957 Task 4c 复审）：日志尾此刻已经越过了同一只 agent 更晚、
-      // 仍然有效的开场白，用它会把那条也顺手收了口。runJob 那两处合成收口是
-      // 另一回事——那里没有「更晚的开场白」这个问题，仍取 lastSeqSeen（#957 F1）。
-      // 被踢那个循环还要等 runnableByAgent 建好（#957 终审 Important 1），所以
-      // 它排在下面第三位、不在这儿——见那段自己的注释
-      // 到上限的那几条：落一条**真正的**收口（outcome:"error"，不是 interrupted
-      // 记号），readUpToSeq 取**这条开场白自己的 seq**（复审 Critical 修正，不是
-      // lastSeqSeen）——它收口自己、也顺带收掉同一只 agent 更早的那些开场白
-      // （它们的 attempts 计数只会更高，必然也到了上限，见上面 attempts 那段的
-      // 单调性），但不动同一只 agent 更晚的开场白：它们的计数线还没到顶，留给
-      // 下面 runnable 那一段继续跑。不落这条的话，这条 turn 会在下一次重启时
-      // 又被 openTurns 捞回来，重新数一遍到 3、无限循环地"停止补跑"
-      for (const x of exhausted) {
-        notify(store.append({
-          sessionId,
-          ts: Date.now(),
-          type: "turn_ended",
-          outcome: "error",
-          error: "重跑 3 次仍未收口，停止补跑",
-          agentId: x.agentId,
-          readUpToSeq: x.seq,
-        }));
+      // 每条收口的 readUpToSeq 都取**那条开场白自己的 seq**（不是日志尾，
+      // #957 Task 4c 复审）：日志尾此刻已经越过了同一只 agent 更晚、仍然有效的
+      // 开场白，用它会把那条也顺手收了口。runJob 那两处合成收口是另一回事——
+      // 那里没有「更晚的开场白」这个问题，仍取 lastSeqSeen（#957 F1）
+      const headSeqOf = new Map<string, number>();
+      for (const [agentId, queue] of byAgent) {
+        let head = 0;
+        while (head < queue.length) {
+          const item = queue[head]!;
+          if (item.kind === "kicked") {
+            notify(store.append({
+              sessionId,
+              ts: Date.now(),
+              type: "turn_ended",
+              outcome: "error",
+              error: "发起人已不在这个工作区，这条 turn 不跑",
+              agentId,
+              readUpToSeq: item.seq,
+            }));
+          } else if (item.kind === "exhausted") {
+            // 到上限的那条落一条**真正的**收口（outcome:"error"，不是 interrupted
+            // 记号）：不落的话它会在下一次重启时又被 openTurns 捞回来，重新数一遍
+            // 到 3、无限循环地"停止补跑"
+            notify(store.append({
+              sessionId,
+              ts: Date.now(),
+              type: "turn_ended",
+              outcome: "error",
+              error: "重跑 3 次仍未收口，停止补跑",
+              agentId,
+              readUpToSeq: item.seq,
+            }));
+          } else {
+            // 撞上第一条必须留着的（runnable / unknown / skipped）就停手：再往后
+            // 落任何一条收口，它的 readUpToSeq 都 ≥ 这一条的 seq，等于把它静默关掉
+            break;
+          }
+          head += 1;
+        }
+        if (head < queue.length) headSeqOf.set(agentId, queue[head]!.seq);
+      }
+      // 每一条 kicked 都说一声（**收口落没落都要说**）：收口只让 turn 不跑，
+      // 那条点名正文仍然躺在每只 agent 的上下文里，读起来是一条没人执行的正常
+      // 指令——下一轮谁顺手把它做了都不奇怪。走 logChat = 模型可见的群发言，
+      // append-only 删不掉原话，只能在后面补一句「不作数」
+      for (const k of kicked) {
+        logChat("system", "系统", kickedNoteText(speakerLabelOf(k.opening.content, k.fromUid)), false);
       }
       // interrupted 记号**每只 agent 一条，不是每条开场白一条**（复审 Critical
       // 修正）：一只 agent 此刻可能有好几条还没收口的开场白（U1、U2 都点了它），
       // 若各开一条 readUpToSeq = 那条自己的 seq-1，落给 U2 的那条 seq 会
       // ≥ U1.seq，把 U1 也顺手收了口——U1 从此再也不会被补跑捞回来，静默消失。
-      // 改成整只 agent 共用一条：readUpToSeq 取这只 agent 全部 runnable 开场白
-      // 里**最小**的 seq 再减一，严格小于每一条的 seq，对全体天生中性
-      const runnableByAgent = new Map<string, { minSeq: number; fromUid: string; attempts: number }>();
+      // 改成整只 agent 共用一条，readUpToSeq 取**此刻队头**（第一条没落收口的
+      // 那条）的 seq 减一：它严格小于队列里每一条还欠着的开场白，对全体中性。
+      // 取队头而不是「最小的 runnable」是这一版的修正——队头可能是一条 unknown
+      // （排在 runnable 前面），用 runnable 的最小 seq 减一会 ≥ 那条 unknown 的
+      // seq，把刚决定「留到下次重启再问」的它一起关掉
+      const runnableByAgent = new Map<string, { attempts: number }>();
       for (const r of runnable) {
-        const cur = runnableByAgent.get(r.agentId);
-        // runnable 里同一只 agent 第一次出现的就是最小 seq（上面那条顺序说明）
-        if (!cur) runnableByAgent.set(r.agentId, { minSeq: r.opening.seq, fromUid: r.fromUid, attempts: r.attempts });
-      }
-      // 被踢那条收口**排在 runnableByAgent 构造之后**（#957 终审 Important 1）：
-      // 顺序「在籍的 U1 在前、被踢的 U2 在后、同一只 agent」时，U2 这条收口的
-      // readUpToSeq = U2.seq >= U1.seq，把还要跑的 U1 也一起关了——这一次 U1
-      // 照样跑（它已经在 runnable 里），但再崩一次 openTurns 就再也捞不到它，
-      // 没人答它，永远。同一只 agent 还有可跑的开场白时干脆不落这条：它那轮的
-      // turn_ended 收口时 readUpToSeq = 日志尾 >= U2.seq，自然把被踢那条也收了
-      // （协调器的去重本来也会把两条折叠进同一个 job）
-      for (const k of kicked) {
-        if (runnableByAgent.has(k.agentId)) continue;
-        notify(store.append({
-          sessionId,
-          ts: Date.now(),
-          type: "turn_ended",
-          outcome: "error",
-          error: "发起人已不在这个工作区，这条 turn 不跑",
-          agentId: k.agentId,
-          // readUpToSeq 取**这条开场白自己的 seq**（#957 Task 4c 复审），同旁边
-          // 到顶收口那条的口径：日志尾此刻已经越过了同一只 agent 更晚、仍然
-          // 有效的开场白，用它会把那条也顺手收了口——没人答它，且没有任何症状
-          readUpToSeq: k.seq,
-        }));
+        // runnable 里同一只 agent 第一次出现的就是最小 seq（上面那条顺序说明），
+        // 它的 attempts 也是这一组里最大的一条（更早 = 右边被数进去的记号更多），
+        // 到顶的判断因此不会因为后来又有一条新开场白而被稀释
+        if (!runnableByAgent.has(r.agentId)) runnableByAgent.set(r.agentId, { attempts: r.attempts });
       }
       for (const [agentId, g] of runnableByAgent) {
+        const headSeq = headSeqOf.get(agentId);
+        // 有 runnable 就一定有队头（runnable 自己就是「不落收口」的一种），
+        // 这个 continue 只是让类型收窄，不该被走到
+        if (headSeq === undefined) continue;
         notify(store.append({
           sessionId,
           ts: Date.now(),
           type: "turn_ended",
           outcome: "interrupted",
-          // N 取这只 agent 最早那条开场白的计数（+1）：它是这一组里 attempts
-          // 最大的一条（更早 = 右边被数进去的记号更多），到顶的判断因此不会
-          // 因为后来又有一条新开场白而被稀释
           error: `重启补跑第 ${g.attempts + 1} 次`,
           agentId,
-          readUpToSeq: g.minSeq - 1,
+          readUpToSeq: headSeq - 1,
         }));
       }
+
       const decisions: EnqueueDecision[] = runnable.map((r) =>
         coordinator.enqueue({ agentId: r.agentId, fromUid: r.fromUid, opening: r.opening })
       );
@@ -1396,13 +1460,13 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       }
       if (kicked.length > 0) {
         console.log(
-          `[otto-runtime] 重启补跑不排 ${kicked.length} 条（发起人已不在这个工作区，同一只 agent 没有别的可跑开场白时各落一条 turn_ended 收口）：` +
+          `[otto-runtime] 重启补跑不排 ${kicked.length} 条（发起人已不在这个工作区，队头连续的落收口、排在有效开场白后面的留到下次）：` +
             `session=${sessionId} seq=${kicked.map((k) => k.seq).join(",")}`
         );
       }
       if (unknownMembership.length > 0) {
         console.warn(
-          `[otto-runtime] 重启补跑暂缓 ${unknownMembership.length} 条（在籍查询这一刻查不出来，不写收口、留到下次重启再问）：` +
+          `[otto-runtime] 重启补跑暂缓 ${unknownMembership.length} 条（在籍查询这一刻查不出来，不写收口、留到下次重启再问；同一只 agent 排在它后面的收口也一起留着）：` +
             `session=${sessionId} seq=${unknownMembership.join(",")}`
         );
       }
