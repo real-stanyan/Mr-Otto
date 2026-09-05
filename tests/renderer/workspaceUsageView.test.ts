@@ -6,6 +6,7 @@ import type { WorkspaceUsage } from "../../src/shared/billing.js";
 const ws: WorkspaceSnapshot = {
   id: "w", name: "W", ownerUid: "owner", connectors: [], sessions: [], members: [],
   agents: [{ agentId: "admin", name: "管理员", description: "", instructions: "", models: [], tools: [], createdBy: "owner", updatedTs: 0 }],
+  relayMaxDepth: 6,
 };
 const usage: WorkspaceUsage = {
   workspaceId: "w", ownerUid: "owner",

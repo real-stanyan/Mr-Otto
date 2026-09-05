@@ -25,7 +25,7 @@ import {
 import {
   isServerOn, isToolOn, selectionFromAllow, toggleServer, toggleTool, type ProxySelection,
 } from "../lib/proxyShare.js";
-import { validateAgentName, parseModelList } from "../../../shared/workspaceAgents.js";
+import { validateAgentName, parseModelList, validateRelayMaxDepth } from "../../../shared/workspaceAgents.js";
 import { sameAgentTools } from "../../../shared/agentToolAllow.js";
 import type { WorkspaceSnapshot, WorkspaceAgentRow } from "../../../shared/workspaces.js";
 
@@ -47,6 +47,7 @@ export function WorkspaceAgentsTab({ ws, selfUid }: { ws: WorkspaceSnapshot; sel
 
   return (
     <div className="flex flex-col gap-2">
+      <RelayMaxDepthRow ws={ws} isOwner={ws.ownerUid === selfUid} />
       <div className="flex justify-end">
         <Button size="sm" onClick={() => setEditorState({ mode: "create" })}>新建智能体…</Button>
       </div>
@@ -79,6 +80,66 @@ export function WorkspaceAgentsTab({ ws, selfUid }: { ws: WorkspaceSnapshot; sel
         state={editorState}
         onOpenChange={(open) => { if (!open) setEditorState(null); }}
       />
+    </div>
+  );
+}
+
+/** 名单上方那一行「接力上限」（#950 Task 9）：agent 互相 @ 的棒数上限，
+    落在 workspaces.relay_max_depth，owner 才能改——非 owner 只读一句人话。
+    存/取都走 validateRelayMaxDepth（同 normalizeRelayMaxDepth 口径），不新造校验规则 */
+function RelayMaxDepthRow({ ws, isOwner }: { ws: WorkspaceSnapshot; isOwner: boolean }) {
+  const setRelayMaxDepth = useChat((s) => s.setWorkspaceRelayMaxDepth);
+  const [raw, setRaw] = useState(String(ws.relayMaxDepth));
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  // ws.relayMaxDepth 变了（别人改的，或本页保存成功后 refreshWorkspaceGroups
+  // 拉回的新值）——输入框跟着重置，不留着刚保存前的旧草稿
+  useEffect(() => {
+    setRaw(String(ws.relayMaxDepth));
+    setError(null);
+  }, [ws.relayMaxDepth]);
+
+  if (!isOwner) {
+    return (
+      <p className="px-2 text-xs text-muted-foreground">
+        接力上限 {ws.relayMaxDepth} 棒（所有者可改）
+      </p>
+    );
+  }
+
+  const validated = validateRelayMaxDepth(raw);
+
+  const submit = async (): Promise<void> => {
+    if (!validated.ok || busy) return;
+    setBusy(true);
+    setError(null);
+    const ok = await setRelayMaxDepth(ws.id, validated.value);
+    setBusy(false);
+    if (!ok) setError(useChat.getState().workspaceGroupsError);
+  };
+
+  return (
+    <div className="flex flex-col gap-1">
+      <div className={cn(ROW, "border border-border")}>
+        <span className="shrink-0 text-muted-foreground">接力上限</span>
+        <Input
+          type="number"
+          value={raw}
+          onChange={(e) => setRaw(e.target.value)}
+          className="h-7 w-16 shrink-0"
+          disabled={busy}
+        />
+        <span className="shrink-0 text-muted-foreground">棒</span>
+        <Button
+          size="xs" variant="secondary" className="ml-auto shrink-0"
+          disabled={busy || !validated.ok} onClick={() => void submit()}
+        >
+          {busy ? "保存中…" : "保存"}
+        </Button>
+      </div>
+      {!validated.ok && <p className="px-2 text-xs text-err">{validated.error}</p>}
+      {validated.ok && error && <p className="px-2 text-xs text-err">{error}</p>}
     </div>
   );
 }

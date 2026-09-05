@@ -123,6 +123,9 @@ export const PRIVACY_VERDICTS: Record<SessionEvent["type"], PrivacyVerdict> = {
   subagent_briefed: "keep",
   // 分享会话的隐私闸。agent 的身份是这段对话的一部分。
   agent_briefed: "keep",
+  // 接力棒（#950）：谁 @ 了谁、第几棒——这是这段对话里发生的事，不是发送方
+  // 那台机器的私事
+  agent_relay: "keep",
   background_task_started: "keep",
   background_task_completed: "keep",
   residue_baseline: "keep",

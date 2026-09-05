@@ -25,6 +25,7 @@ const WS: WorkspaceSnapshot = {
     { id: "sess-1", workspaceId: "ws-1", publisherUid: "owner-uid", pkgId: "pkg-1", title: "会话标题", updatedTs: 1000 },
   ],
   agents: [],
+  relayMaxDepth: 6,
 };
 
 describe("connectorRows", () => {

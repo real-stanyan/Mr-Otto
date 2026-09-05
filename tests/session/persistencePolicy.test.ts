@@ -41,6 +41,7 @@ const DURABLE = [
   "subagent_spawned",
   "subagent_briefed",
   "agent_briefed",
+  "agent_relay",
   "memory_loaded",
   "workspace_memory_loaded",
   "memory_user_edit",

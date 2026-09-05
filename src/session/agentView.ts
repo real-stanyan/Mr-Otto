@@ -76,6 +76,9 @@ const OTHER_AGENT_VERDICTS: Record<SessionEvent["type"], OtherAgentVerdict> = {
   // （那来自我自己 briefing 里的 roster），不需要读它的提示词
   agent_briefed: "drop",
   workspace_memory_loaded: "drop", // 别人的记忆快照是它的上下文，不是我的（#949）
+  // 接力棒（#950）：没有 agentId 字段，早退路径本来就放行（两只 agent 都要看得见
+  // 这一棒），这里仍要表态——Record 是穷尽表，"反正放行了"不构成不写的理由
+  agent_relay: "keep",
   background_task_started: "drop",
   background_task_completed: "drop",
   image_described: "drop",

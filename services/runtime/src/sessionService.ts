@@ -78,10 +78,27 @@
 //      别人改了共享档我下一 turn 看不见。读失败 warn 跳过、不阻塞 turn：
 //      记忆副作用永不阻塞回复（同本机 memory 工具的纪律），代价是这一 turn
 //      用的是上一条快照（或没有快照）——记忆不是这条会话的正确性前提。
+//
+// 切片 5（#950）：agent 互相 @ 接力。runJob 里 `engine.runLoggedTurn` 收口
+// 后（只有 "completed" 才算——aborted 是人按了停止，不该替它再点起别人）调
+// relayAfterTurn：扫这只 agent 这一轮说的话，@ 到谁就替它落一条 agent_relay
+// （群事实）+ 一条带 relay 字段的 user_message 开场白，再原样 enqueue——我们
+// 此刻就在 drain 的 while 循环里，enqueue 只会回 "queued"，不需要也不能自己
+// 调 startDrain()。棒数上限每次现查一次（CloudSessionOpts.relayMaxDepth，
+// daemon 那边接 workspaces.relay_max_depth，查询失败已经在 daemon 里回落成
+// 默认值——这里拿到的永远是一个数，但仍兜一层 try/catch，防的是 daemon 之外
+// 的调用方（测试、未来的第二个 daemon 实现）没做那层回落）。到顶硬停 /
+// 周期打转两条纯判据都在 src/shared/agentRelay.ts（decideRelay），这里只管
+// 落盘：到顶发一条系统话（群里所有人可见，也进每只 agent 的上下文）不再往
+// 下接力；打转发一条系统话但**不停**（ADR-0212 的教训：云会话没有人盯着
+// 屏幕替它按停止，硬停靠的是上面那层棒数上限，这一层只是提醒模型别再原样
+// 甩回去）。复审 fix round 1 补了两条：归档后不再接力、扫描窗口按每只 job
+// 起跑前的日志尾（scanFrom）而不是它的开场白 seq 划界——详见 relayAfterTurn
+// 自己的注释。
 
 import { LoopEngine } from "../../../src/loop/engine.js";
 import type { EventStore } from "../../../src/session/store.js";
-import type { SessionEvent, UserMessageEvent } from "../../../src/session/events.js";
+import type { SessionEvent, UserMessageEvent, AssistantMessageEvent, AgentRelayEvent } from "../../../src/session/events.js";
 import type { ModelAdapter } from "../../../src/model/adapter.js";
 import type { ExecutionWorld } from "../../../src/world/executionWorld.js";
 import type { Tool } from "../../../src/tools/tool.js";
@@ -98,6 +115,16 @@ import { filterGrantedByAllow, type AgentToolAllow } from "../../../src/shared/a
 import { createWorkspaceMemoryTool } from "./workspaceMemoryTool.js";
 import type { WorkspaceMemoryStore } from "./workspaceMemory.js";
 import { SHARED_MEMORY_AGENT_ID } from "../../../src/shared/workspaceMemory.js";
+import {
+  DEFAULT_RELAY_MAX_DEPTH,
+  decideRelay,
+  mentionedAgents,
+  relayCapText,
+  relayChain,
+  relayDepthOf,
+  relayNudgeText,
+  relayOpeningText,
+} from "../../../src/shared/agentRelay.js";
 
 /** 一个工作区 agent 的完整规格（#928）。daemon 从 workspace_agents 表查出来
     （Task 10/11），装配时递给 sessionService。 */
@@ -164,6 +191,9 @@ export interface CloudSessionOpts {
   onUsage: (u: { uid: string; model: string; promptTokens: number; completionTokens: number }) => void;
   /** 工作区记忆的读写口（#949）。**必需**：忘接线该编译不过，而不是安静地跑一个没记忆的 agent */
   memory: WorkspaceMemoryStore;
+  /** 接力棒数上限（#950，spec §8）：每次要接力时现查一次（owner 改了下一棒生效）。查询失败由
+      daemon 兜成默认值——这里拿到的永远是一个数 */
+  relayMaxDepth: () => Promise<number>;
 }
 
 export interface CloudSession {
@@ -391,10 +421,105 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     );
   }
 
+  /** turn 收口后扫这只 agent 这轮说的话，@ 到谁就替它点名（#950，spec §8）。
+      落三样：agent_relay（群事实，时间线画线、护栏与上限的判据来源）→ 带 relay 的 user_message
+      开场白（engine 起 turn 的载体，fromUid 仍是点火的人：审批发起人与代理授权按人算，不给 agent
+      发伪 uid）→ 入队。我们此刻就在 drain 循环里，enqueue 只会回 queued，当前循环的下一次
+      nextJob() 就取到它。到顶 / 打转的那句话走 logChat 的 system 发言：群里所有人可见，
+      也进每只 agent 的上下文（chat_message 是 keep）。
+
+      **归档就不再接力**（复审 Important ②）：归档只翻 `archived` 标志 + 落一条
+      `session_archived`，drain 本身不看它——接力是 turn 收口后**唯一**会自己长出
+      新 turn 的路径（中途插话靠 engine 下一轮重新投影，不会额外起 turn），所以刹车
+      得在这儿：人在归档之后，这条链不该还在后台悄悄往下传、烧一间已经关掉的房间的钱。
+
+      `scanFrom` 由调用方（runJob）在起跑**之前**捕获、不是这里现算 `job.opening.seq`
+      （复审 Critical ①）：同一只 agent 排队排两个 job 时（第二句话在第一句话还没跑完
+      时就点了它——`tests/runtime/sessionService.test.ts` 的「去重与排队混在同一条调用
+      里」那个夹具已经在踩这个形状），第二个 job 的开场白 seq 早于第一个 job 产出的
+      assistant_message；如果这里扫 `afterSeq: job.opening.seq`，第二个 job 的扫描窗口
+      会把第一个 job 那条早就被它自己的 relayAfterTurn 处理过的话重新扫进来，同一次
+      @ 被落两条 agent_relay，多出来的这一跳还会让 decideRelay 的周期护栏误判成
+      「打转」。`scanFrom` 与 `engine.ts` 的 `readUpToSeq` 是同一个量——「这只 agent
+      这一轮开跑前日志已经到哪儿」，只算一次 assistant_message 的归属边界不会有
+      两个 job 抢同一段日志的问题 */
+  async function relayAfterTurn(job: TurnJob, spec: AgentSpec, roster: AgentSpec[], scanFrom: number): Promise<void> {
+    if (archived) return;
+    const since = store.load(sessionId, { afterSeq: scanFrom });
+    const mine = since.filter((e): e is AssistantMessageEvent => e.type === "assistant_message" && e.agentId === spec.agentId);
+    const said = mine.map((e) => e.content).join("\n");
+    const targets = mentionedAgents(said, roster.map((a) => ({ agentId: a.agentId, name: a.name })), spec.agentId);
+    if (targets.length === 0) return;
+
+    let maxDepth: number;
+    try {
+      maxDepth = await opts.relayMaxDepth();
+    } catch (err) {
+      console.warn(`[otto-runtime] relay_max_depth 查询失败，用默认 ${DEFAULT_RELAY_MAX_DEPTH}（session=${sessionId}）`, err);
+      maxDepth = DEFAULT_RELAY_MAX_DEPTH;
+    }
+    // 顶上那句 `if (archived) return` 挡的是"进 relayAfterTurn 之前就已经归档"；
+    // 挡不住的是"进来之后才归档"——opts.relayMaxDepth() 是一次真的 Supabase 往返，
+    // 这一 await 期间人随时可能按下归档。不重查一次的话，archived 已经是 true，
+    // 这里还是会照样落 agent_relay + 开场白 + enqueue，在一间刚关掉的房间里继续接力
+    // （最终审 Important ①a）
+    if (archived) return;
+    const openingDepth = relayDepthOf(job.opening);
+    const chain = relayChain(store.load(sessionId));
+    const nameOf = (id: string): string => roster.find((a) => a.agentId === id)?.name ?? id;
+    // 「最后说」取的是**最后一条**消息本身（不是拼起来的全部原话取头 200 字——
+    // 那条读起来像"最先说"，跟 relayCapText 的文案对不上）；截前 200 字而不是
+    // 后 200 字：这句话是给人看的引用摘要，保留自然的阅读顺序（从头读起）比保留
+    // 结尾更容易看懂这句话在说什么，长消息本来就是摘要不是全文
+    const lastWords = (mine.at(-1)?.content ?? "").trim().slice(0, 200);
+
+    for (const to of targets) {
+      const d = decideRelay({ chain, fromAgentId: spec.agentId, toAgentId: to, openingDepth, maxDepth });
+      if (d.kind === "cap") {
+        logChat("system", "系统", relayCapText(nameOf(spec.agentId), nameOf(to), d.depth, d.max, lastWords), false);
+        continue;
+      }
+      if (d.loop) logChat("system", "系统", relayNudgeText(nameOf(spec.agentId), nameOf(to), d.loop), false);
+      const hop = store.append({ sessionId, ts: Date.now(), type: "agent_relay", fromAgentId: spec.agentId, toAgentId: to, depth: d.depth, ignorable: true }) as AgentRelayEvent;
+      notify(hop);
+      chain.push(hop); // 同一轮 @ 了两只：第二只的判据要看得见第一跳
+      const opening = store.append({
+        sessionId,
+        ts: Date.now(),
+        type: "user_message",
+        content: relayOpeningText(nameOf(spec.agentId), nameOf(to), d.depth),
+        fromUid: job.fromUid,
+        mentions: [to],
+        relay: { fromAgentId: spec.agentId, depth: d.depth },
+      }) as UserMessageEvent;
+      notify(opening);
+      coordinator.enqueue({ agentId: to, fromUid: job.fromUid, opening });
+    }
+  }
+
   /** 跑一个 job（一只 agent 的一次 turn）。agentId/fromUid/开场白全部取自 job
       自己——排空时捞出来的 job 可能来自另一条并发的 say() 调用，不能用外层
       闭包里那条调用自己的参数 */
   async function runJob(job: TurnJob): Promise<void> {
+    // 归档落地时，这只 agent 的 job 可能已经躺在队列里了——它是**接力**排上的
+    // （relayAfterTurn 在一轮 @ 了两只时，两个 job 在归档发生之前就已经一起入队；
+    // 见 tests/runtime/sessionService.test.ts「归档落在两个 relay job 之间」）。
+    // drain() 的 while 循环本身不看 archived（ADR-0201 的既有分工：归档只翻标志
+    // + 落一条 session_archived，不动 drain），只在这里拦一道才不会让一间已经
+    // 关掉的房间继续起 turn、继续烧 owner 的钱（复审 Important ①b）。
+    // **只拦接力起的 job**（`job.opening.relay` 有值）：人自己刚说的那句话——
+    // 无论归档发生在它排队期间还是之前——都照跑，他配得上一个回复，即使几秒后
+    // 有人把这条会话关了（决策 5 的既有取舍：归档不该让一个刚发言的人被晾着）。
+    // **不落 turn_ended**：这条会话已经收尾（session_archived 已经落盘），不是
+    // 这只 agent 的失败，落一条错误事件只会在一份已经关闭的日志里制造一个假警报。
+    // 代价：openTurns 的投影会把这条开场白**永远**算作"排队中"（它再也等不到
+    // 一条 turn_ended 收口）——可以接受，因为归档的会话不会再有人盯着那盏灯；
+    // 重启补跑那条路（本文件末尾 `if (!archived && stale.length > 0)`）已经把
+    // "已归档的不补"钉死了，这里补的是同一进程内、归档落地那一刻已经在队里的漏网之鱼
+    if (archived && job.opening.relay) {
+      console.log(`[otto-runtime] 会话已归档，跳过排队中的接力棒（session=${sessionId} agentId=${job.agentId} opening=${job.opening.seq}）`);
+      return;
+    }
     router.setInitiator(job.fromUid);
     currentInitiator = job.fromUid;
     currentAgentId = job.agentId;
@@ -450,11 +575,21 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // [] = 整池放行，所以 1b 之前建的 agent 行为不变
       cachedPxTools = buildPxTools(opts.px, job.fromUid, filterGrantedByAllow(granted, spec.tools));
 
+      // 起跑**之前**捕获这只 agent 这一轮的扫描起点（复审 Critical ①，与
+      // engine.ts 的 readUpToSeq 同一个量：这一轮开跑前日志已经到哪儿）。
+      // 不能事后现算 `job.opening.seq`——同一只 agent 排队排两个 job 时，
+      // 第二个 job 起跑前日志里已经有第一个 job 产出的 assistant_message，
+      // 用 job.opening.seq 当扫描起点会把那条早被扫过的话重新扫进来，
+      // 同一次 @ 落两条 agent_relay（还会把 decideRelay 的周期护栏诓成
+      // 「打转」）——用起跑前的日志尾，只圈进这一轮**自己**产出的话
+      const scanFrom = store.load(sessionId, { afterSeq: job.opening.seq }).at(-1)?.seq ?? job.opening.seq;
       // 开场白早在 say() 那一刻就落盘了（#932 坑 ②），这里只是对它起 turn——
       // runTurn 会再 append 一条同样的 user_message，那句话就落两遍：模型读
       // 两遍、时间线画两遍
       engineStarted = true;
-      await engine.runLoggedTurn(job.opening);
+      const outcome = await engine.runLoggedTurn(job.opening);
+      // 切片 5（#950）：这只说完了才看它 @ 了谁。aborted 不接力（人按了停止，不该再点起别人）
+      if (outcome === "completed") await relayAfterTurn(job, spec, roster, scanFrom);
     } catch (err) {
       if (!engineStarted) {
         notify(store.append({

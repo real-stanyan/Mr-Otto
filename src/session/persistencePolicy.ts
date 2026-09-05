@@ -68,6 +68,7 @@ export function shouldPersist(kind: EmittedKind): boolean {
     case "subagent_spawned":
     case "subagent_briefed":
     case "agent_briefed": // 派活快照：群里还有谁、这只 agent 管啥，模型可见 = 必须落
+    case "agent_relay": // 接力棒（#950）：棒数判据（decideRelay 的周期护栏/上限）要从日志重放，只活在内存里护栏形同虚设
     case "memory_loaded":
     case "workspace_memory_loaded": // 工作区记忆快照（#949）：模型可见 = 必须落
     case "memory_user_edit":
