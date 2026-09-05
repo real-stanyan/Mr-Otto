@@ -202,6 +202,10 @@ export interface CloudSessionClient {
   say(text: string, mention: boolean, mentions?: string[]): Promise<FriendsResult<null>>;
   approve(callId: string, decision: "approved" | "denied"): Promise<FriendsResult<null>>;
   archive(): Promise<FriendsResult<null>>;
+  /** 停掉当前正在跑的这一轮 turn（#957 第三批）。谁能停由服务端判（发起人
+      或 owner，与 approve 同一判据）——resolve 的是 `stop_result` 那条回执，
+      不是「帧交给 socket 了」 */
+  stop(): Promise<FriendsResult<null>>;
   config(
     workspaceId: string,
     patch: { repoUrl?: string; pat?: string; model?: { baseUrl: string; modelId: string; apiKey?: string } },
@@ -271,7 +275,27 @@ interface ActiveSession {
       静默丢帧分支）就是"点了保存、看到已保存、其实什么都没发出去"。
       同一时刻只允许一次：并发两次配置本来也没有意义，而"回执按 cid 到达、
       不带请求 id"决定了两次并发无法区分谁是谁的 */
-  pendingConfig: { settle: (r: FriendsResult<null>) => void; timer: ReturnType<typeof setTimeout> } | null;
+  pendingConfig: CsPending | null;
+  /** 还没等到 `say_result` 的那一句（#957 第三批，#964）。协议 6 之前
+      `say()` 在帧交给 socket 那一刻就 resolve `{ok:true}`，服务端的限速/
+      不在籍/抛错要过一会儿才以一条 `error` 帧到达——渲染层早就把草稿清了，
+      那句话在界面上"发出去了"，实际一个字都没进日志。
+      **不排队**：已经挂着一句时第二次 say 直接回失败。回执不带请求 id，
+      两次并发在客户端这一侧无法区分谁是谁的（同 pendingConfig 的理由） */
+  pendingSay: CsPending | null;
+  /** 还没等到 `approve_result` 的那几次审批，按 callId 分（#957 第三批）。
+      与 say 不同，审批**可以并发**——一个 turn 里同时挂着两张卡是常态，
+      而 `approve_result` 带 callId，对得上号 */
+  pendingApprove: Map<string, CsPending>;
+  /** 还没等到 `stop_result` 的那一次停（#957 第三批） */
+  pendingStop: CsPending | null;
+}
+
+/** 一次「等服务端回执」的挂起态：resolve 用的 settle + 超时定时器。
+    config/say/approve/stop 四条路同一个形状 */
+interface CsPending {
+  settle: (r: FriendsResult<null>) => void;
+  timer: ReturnType<typeof setTimeout>;
 }
 
 /** 「历史缺了一块」这句人话（issue #957 C-I7）。数得出缺几条就说几条——
@@ -304,6 +328,17 @@ function missingCount(session: ActiveSession): number | null {
 /** 等 config 回执的上限。超时不是"失败"而是"不知道"——文案要照实说
     （见 config() 里那句），因为服务端完全可能已经存好了，只是回执没回来。 */
 const CONFIG_ACK_TIMEOUT_MS = 15_000;
+
+/** 等 say/approve/stop 回执的上限（#957 第三批）。与 config 同一个量纲、
+    同一条理由：超时不是"失败"而是"不知道"——服务端完全可能已经处理了，
+    只是回执没回来。所以文案不说"发送失败"（那会诱导用户再发一遍，
+    而重发一句话不像重存一份配置那样等价），而是把人指回唯一的事实来源。 */
+const ACK_TIMEOUT_MS = 15_000;
+const ACK_TIMEOUT_MESSAGE = "没有收到回执，不确定有没有生效——看时间线";
+/** 第二句话在上一句的回执到达之前被按下（#957 第三批）。不排队是刻意的：
+    排起来就得回答"排到第几了、要不要撤"这一串问题，而这条路上真正常见的
+    是手滑连点两下 */
+const SAY_BUSY_MESSAGE = "上一句还没有回执，稍等";
 
 export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSessionClient {
   let active: ActiveSession | null = null;
@@ -342,6 +377,47 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     pending.settle(result);
   }
 
+  /** say/stop 各自那一个挂起态的收口（#957 第三批）。形状同 settleConfig——
+      调用点也同样是三类：回执到达、超时、连接进终态 */
+  function settleSay(session: ActiveSession, result: FriendsResult<null>): void {
+    const pending = session.pendingSay;
+    if (!pending) return;
+    session.pendingSay = null;
+    clearTimeout(pending.timer);
+    pending.settle(result);
+  }
+
+  function settleStop(session: ActiveSession, result: FriendsResult<null>): void {
+    const pending = session.pendingStop;
+    if (!pending) return;
+    session.pendingStop = null;
+    clearTimeout(pending.timer);
+    pending.settle(result);
+  }
+
+  /** 按 callId 收口一次审批（#957 第三批）。callId 缺席 = 收口全部——
+      连接进终态时没有哪一张卡还有机会等到回执 */
+  function settleApprove(session: ActiveSession, callId: string | null, result: FriendsResult<null>): void {
+    const ids = callId === null ? [...session.pendingApprove.keys()] : [callId];
+    for (const id of ids) {
+      const pending = session.pendingApprove.get(id);
+      if (!pending) continue;
+      session.pendingApprove.delete(id);
+      clearTimeout(pending.timer);
+      pending.settle(result);
+    }
+  }
+
+  /** 连接进终态时把 say/approve/stop 三类挂起态一并结掉（#957 第三批）。
+      与 settleConfig 严格并列——三条终态路径（markGone / markDenied /
+      teardown）每一条都要连它一起调，漏哪条就是那条路径上的
+      "发送中…/审批中…"永远转下去（#834 在 config 上踩过一模一样的坑） */
+  function settleWaiters(session: ActiveSession, result: FriendsResult<null>): void {
+    settleSay(session, result);
+    settleStop(session, result);
+    settleApprove(session, null, result);
+  }
+
   function markGone(session: ActiveSession): void {
     // denied 是终态：runtime 掉线不该把"你没有权限"覆盖成"离线了"，反过来
     // 也不该把已经 gone 的会话重复推送（onGone/onClose 可能各触发一次）
@@ -349,6 +425,7 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     session.status = "gone";
     // 挂着的那次 config 就地结掉（issue #834）——否则"保存中…"永远转下去
     settleConfig(session, { ok: false, message: "云会话断开了，这次保存不确定有没有生效——重连后请重试。" });
+    settleWaiters(session, { ok: false, message: "云会话断开了，这一下不确定有没有生效——看时间线。" });
     // 这条连接够不到任何人了：清 pendingApprovals/island（onSessionInactive），
     // 顺带清 seenSeqs/liveBuffer——host 回来时 welcome→backlog(-1) 会把同一批
     // 事件原样再拉一遍，这次不去重、重新跑一遍 deliverEvent，approval_request
@@ -367,6 +444,7 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     session.status = "denied";
     session.deniedCode = code;
     settleConfig(session, { ok: false, message: "这条云会话被拒绝了，保存没有生效。" });
+    settleWaiters(session, { ok: false, message: "这条云会话被拒绝了，这一下没有生效。" });
     pushStatus(session);
     // denied 没有重试的意义（版本不对/不是成员/会话没了，都不会因为再连一次
     // 而自愈），主动断开，别留一条注定失败的连接空转
@@ -385,6 +463,7 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     // 各自也有一条：三条终态路径一条都不能漏，漏哪条就是那条路径上的
     // "保存中…"永远转下去
     settleConfig(active, { ok: false, message: "云会话已经关闭，这次保存不确定有没有生效。" });
+    settleWaiters(active, { ok: false, message: "云会话已经关闭，这一下不确定有没有生效——看时间线。" });
     try {
       active.transport.close();
     } catch {
@@ -474,6 +553,24 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
         );
         return;
       }
+      // ── say/approve/stop 的回执（#957 第三批，#964）────────────────────
+      // 在这之前这三条路都是"帧交给 socket 就算成功"，服务端的拒绝要过一会儿
+      // 才以一条 error 帧到达——而那时草稿早清了、审批卡早收起了。回执不复用
+      // error（同 config_result 的理由）：那条帧还承载 backlog 跳过之类不相干
+      // 的消息，await 它会被无关 error 提前唤醒
+      case "say_result":
+        settleSay(session, msg.ok ? { ok: true, value: null } : { ok: false, message: msg.message ?? "这句话没能送出去" });
+        return;
+      case "approve_result":
+        settleApprove(
+          session,
+          msg.callId,
+          msg.ok ? { ok: true, value: null } : { ok: false, message: msg.message ?? "这次审批没有生效" },
+        );
+        return;
+      case "stop_result":
+        settleStop(session, msg.ok ? { ok: true, value: null } : { ok: false, message: msg.message ?? "没能停下这一轮" });
+        return;
       case "denied":
         markDenied(session, msg.code);
         return;
@@ -702,6 +799,9 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
       model: null,
       modelRoute: null,
       pendingConfig: null,
+      pendingSay: null,
+      pendingApprove: new Map(),
+      pendingStop: null,
     };
     active = session;
     pushStatus(session);
@@ -752,18 +852,70 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     return { ok: true, value: null };
   }
 
+  /** #957 第三批（#964）：等 `say_result` 才算这句话说出去了。
+      在这之前 resolve `{ok:true}` 只证明帧交给了本机 socket——服务端的限速 /
+      不在籍 / 抛错要过一会儿才以一条 error 帧到达，而渲染层"发送成功就清草稿"
+      早就把话从输入框里抹掉了：界面上它发出去了，日志里一个字都没有。 */
   async function say(text: string, mention: boolean, mentions?: string[]): Promise<FriendsResult<null>> {
     const r = requireReady();
     if (!r.ok) return r;
+    const session = r.session;
+    // 不排队（同 pendingConfig）：回执不带请求 id，两句话并发在客户端这一侧
+    // 分不出谁是谁的
+    if (session.pendingSay) return { ok: false, message: SAY_BUSY_MESSAGE };
     // mentions 缺席不进帧（老语义，runtime 按 undefined 走 mention 那个
     // boolean）；给了（含 []）才带上，runtime 视其为权威（#932 切片 1b）
-    return sendFrame(r.session, mentions === undefined ? { t: "say", text, mention } : { t: "say", text, mention, mentions });
+    const sent = sendFrame(
+      session,
+      mentions === undefined ? { t: "say", text, mention } : { t: "say", text, mention, mentions },
+    );
+    // 压根没发出去就别挂 15 秒（#829 的四条丢帧路径 + encode 抛错）
+    if (!sent.ok) return sent;
+    return new Promise<FriendsResult<null>>((resolve) => {
+      const timer = setTimeout(() => {
+        settleSay(session, { ok: false, message: ACK_TIMEOUT_MESSAGE });
+      }, ACK_TIMEOUT_MS);
+      session.pendingSay = { settle: resolve, timer };
+    });
   }
 
+  /** 同 say——等 `approve_result`（#957 第三批）。审批是"用户点完就不再看"
+      的那一类：乐观收卡之后服务端说"这条请求已失效"，人是看不见的。
+      与 say 不同这里**允许并发**：一个 turn 里同时挂两张卡是常态，回执带
+      callId 对得上号；同一个 callId 重复按下才拒绝（那是手滑连点）。 */
   async function approve(callId: string, decision: "approved" | "denied"): Promise<FriendsResult<null>> {
     const r = requireReady();
     if (!r.ok) return r;
-    return sendFrame(r.session, { t: "approve", callId, decision });
+    const session = r.session;
+    if (session.pendingApprove.has(callId)) return { ok: false, message: "这一条的回执还没到，稍等" };
+    const sent = sendFrame(session, { t: "approve", callId, decision });
+    if (!sent.ok) return sent;
+    return new Promise<FriendsResult<null>>((resolve) => {
+      const timer = setTimeout(() => {
+        settleApprove(session, callId, { ok: false, message: ACK_TIMEOUT_MESSAGE });
+      }, ACK_TIMEOUT_MS);
+      session.pendingApprove.set(callId, { settle: resolve, timer });
+    });
+  }
+
+  /** 停掉当前正在跑的这一轮 turn（#957 第三批）。权限判在服务端（发起人或
+      owner，与 approve 同一判据）——客户端不自己判一遍：那份判据要跟着
+      initiatorUid/ownerUid 走，两处各写一份迟早分家，而这里回的又不是
+      安全边界。ok:false 的两种常见理由（没有在跑的 turn / 无权）由回执
+      带文案上来。 */
+  async function stop(): Promise<FriendsResult<null>> {
+    const r = requireReady();
+    if (!r.ok) return r;
+    const session = r.session;
+    if (session.pendingStop) return { ok: false, message: "上一次停止还没有回执，稍等" };
+    const sent = sendFrame(session, { t: "stop" });
+    if (!sent.ok) return sent;
+    return new Promise<FriendsResult<null>>((resolve) => {
+      const timer = setTimeout(() => {
+        settleStop(session, { ok: false, message: ACK_TIMEOUT_MESSAGE });
+      }, ACK_TIMEOUT_MS);
+      session.pendingStop = { settle: resolve, timer };
+    });
   }
 
   async function archive(): Promise<FriendsResult<null>> {
@@ -855,5 +1007,5 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     };
   }
 
-  return { currentSessionId, activeSummary, create, join, leave, say, approve, archive, config };
+  return { currentSessionId, activeSummary, create, join, leave, say, approve, archive, stop, config };
 }

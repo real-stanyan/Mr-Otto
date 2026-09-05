@@ -1115,6 +1115,10 @@ export interface ShellBridge {
   workspaceCloudApprove(callId: string, decision: "approved" | "denied"): Promise<FriendsResult<null>>;
   /** 归档当前云会话 */
   workspaceCloudArchive(): Promise<FriendsResult<null>>;
+  /** 停掉当前云会话正在跑的这一轮 turn（#957 第三批）。谁能停由 runtime 判
+      （发起人或 owner，与审批同一判据）；resolve 的是服务端的 `stop_result`
+      回执——ok:false 的两种常见理由是「此刻没有正在跑的 turn」和无权 */
+  workspaceCloudStop(): Promise<FriendsResult<null>>;
   /** 配置当前云会话绑定的仓库（repoUrl + 可选 PAT，PAT 不落 Supabase） */
   /** 两组字段各自可选（issue #844）：只给 repo 就只改仓库，只给 model 就只改
       模型。`pat` / `model.apiKey` 三态——省略 = 保持不变，`""` = 清除，
@@ -1535,6 +1539,7 @@ export const CHANNELS = {
   workspaceCloudSay: "otter:workspaceCloudSay",
   workspaceCloudApprove: "otter:workspaceCloudApprove",
   workspaceCloudArchive: "otter:workspaceCloudArchive",
+  workspaceCloudStop: "otter:workspaceCloudStop",
   workspaceCloudConfig: "otter:workspaceCloudConfig",
   setBadgeCount: "otter:setBadgeCount",
   friendsChanged: "otter:friendsChanged",

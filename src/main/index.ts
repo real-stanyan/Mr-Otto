@@ -3342,6 +3342,7 @@ void app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.workspaceCloudApprove, (_e, callId: string, decision: "approved" | "denied") =>
     cloudClient.approve(callId, decision));
   ipcMain.handle(CHANNELS.workspaceCloudArchive, () => cloudClient.archive());
+  ipcMain.handle(CHANNELS.workspaceCloudStop, () => cloudClient.stop());
   ipcMain.handle(
     CHANNELS.workspaceCloudConfig,
     (

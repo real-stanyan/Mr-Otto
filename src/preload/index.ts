@@ -260,6 +260,7 @@ const bridge: ShellBridge = {
   workspaceCloudApprove: (callId, decision) =>
     ipcRenderer.invoke(CHANNELS.workspaceCloudApprove, callId, decision),
   workspaceCloudArchive: () => ipcRenderer.invoke(CHANNELS.workspaceCloudArchive),
+  workspaceCloudStop: () => ipcRenderer.invoke(CHANNELS.workspaceCloudStop),
   workspaceCloudConfig: (workspaceId, patch) =>
     ipcRenderer.invoke(CHANNELS.workspaceCloudConfig, workspaceId, patch),
   setBadgeCount: (count) => ipcRenderer.invoke(CHANNELS.setBadgeCount, count),
