@@ -20,6 +20,7 @@
 // 每个函数签名照抄真实源(supabaseWorkspacesApi.ts),不必构造一整个假
 // client 也不必 mock 模块。
 
+import { randomBytes } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type * as WorkspacesApi from "./supabaseWorkspacesApi.js";
 import type { WorkspaceSnapshot } from "../shared/workspaces.js";
@@ -28,6 +29,11 @@ import { removeWorkspaceGrant, setWorkspaceGrant, workspaceGrantFor } from "./pr
 import type { FriendsResult } from "./proxyManager.js";
 
 const NOT_SIGNED_IN = "还没登录";
+/** 唯一索引撞了（同工作区同名智能体）——PostgREST 的 23505，翻成人话 */
+const DUPLICATE_AGENT_NAME = "已有同名的智能体";
+/** RLS 也会拦 'admin' 的删除，但那条回来的是一句 PostgREST 的英文——这里
+    先拦一道，不打网络 */
+const ADMIN_CANNOT_DELETE = "管理员不能删除";
 
 export interface WorkspaceManagerDeps {
   createWorkspace: typeof WorkspacesApi.createWorkspace;
@@ -39,6 +45,9 @@ export interface WorkspaceManagerDeps {
   deleteWorkspace: typeof WorkspacesApi.deleteWorkspace;
   upsertConnectorRow: typeof WorkspacesApi.upsertConnectorRow;
   deleteConnectorRow: typeof WorkspacesApi.deleteConnectorRow;
+  insertAgentRow: typeof WorkspacesApi.insertAgentRow;
+  updateAgentRow: typeof WorkspacesApi.updateAgentRow;
+  deleteAgentRow: typeof WorkspacesApi.deleteAgentRow;
   client: () => SupabaseClient | null;
   selfUid: () => string | null;
   loadStore: () => ProxyStoreData;
@@ -57,6 +66,22 @@ export interface WorkspaceManager {
   leave(id: string): Promise<FriendsResult<null>>;
   contributeConnector(id: string, serverId: string, tools: string[]): Promise<FriendsResult<null>>;
   withdrawConnector(id: string, serverId: string): Promise<FriendsResult<null>>;
+  /** 建一只 agent（任何成员皆可，RLS 落地判断）。agentId 主进程生成
+      （"a_" + 12 hex），不是名字的 slug——改名不换键。23505（同工作区同名）
+      翻成人话 */
+  createAgent(
+    id: string,
+    draft: { name: string; description: string; instructions: string; models: string[] },
+  ): Promise<FriendsResult<{ agentId: string }>>;
+  /** 改一只 agent（建的人或 owner，RLS 落地判断）。重名同样会撞 23505 */
+  updateAgent(
+    id: string,
+    agentId: string,
+    patch: { name?: string; description?: string; instructions?: string; models?: string[] },
+  ): Promise<FriendsResult<null>>;
+  /** 删一只 agent（建的人或 owner，RLS 落地判断）。'admin' 那只谁都删不掉——
+      RLS 也会拦，但这里在打网络之前就先拒，回一句人话 */
+  deleteAgent(id: string, agentId: string): Promise<FriendsResult<null>>;
   /** 我在籍工作区里别人贡献的 host（proxyManager 借用源）。内存缓存,list()
       后更新——proxyManager 借用路径要同步读,不能每次都等一轮网络往返 */
   hostUids(): readonly string[];
@@ -182,6 +207,42 @@ export function createWorkspaceManager(deps: WorkspaceManagerDeps): WorkspaceMan
         }
         deps.resyncEscrow();
         await deps.deleteConnectorRow(client, id, uid, serverId);
+        return null;
+      });
+    },
+
+    async createAgent(id, draft) {
+      return withSession(async (client, uid) => {
+        const agentId = "a_" + randomBytes(6).toString("hex");
+        try {
+          await deps.insertAgentRow(client, { workspaceId: id, agentId, createdBy: uid, ...draft });
+        } catch (e) {
+          if ((e as { code?: string }).code === "23505") throw new Error(DUPLICATE_AGENT_NAME);
+          throw e;
+        }
+        return { agentId };
+      });
+    },
+
+    async updateAgent(id, agentId, patch) {
+      return withSession(async (client) => {
+        try {
+          await deps.updateAgentRow(client, id, agentId, patch);
+        } catch (e) {
+          if ((e as { code?: string }).code === "23505") throw new Error(DUPLICATE_AGENT_NAME);
+          throw e;
+        }
+        return null;
+      });
+    },
+
+    async deleteAgent(id, agentId) {
+      return withSession(async (client) => {
+        // admin 在本层就拒,不打网络——RLS 也会拦,但那条回来的是一句
+        // PostgREST 的英文。放在 withSession 的业务体里,是为了让未登录时
+        // 依旧先报"还没登录"(withSession 的早退在这之前)。
+        if (agentId === "admin") throw new Error(ADMIN_CANNOT_DELETE);
+        await deps.deleteAgentRow(client, id, agentId);
         return null;
       });
     },

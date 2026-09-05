@@ -50,6 +50,15 @@ function harness(over: Partial<WorkspaceManagerDeps> = {}) {
     deleteConnectorRow: async () => {
       calls.push("deleteConnectorRow");
     },
+    insertAgentRow: async () => {
+      calls.push("insertAgentRow");
+    },
+    updateAgentRow: async () => {
+      calls.push("updateAgentRow");
+    },
+    deleteAgentRow: async () => {
+      calls.push("deleteAgentRow");
+    },
     client: () => (signedIn ? fakeClient : null),
     selfUid: () => (signedIn ? "self-uid" : null),
     loadStore: () => store,
@@ -286,5 +295,32 @@ describe("workspaceManager（Task 8，ADR-0198 切片 2）", () => {
 
     expect(res).toEqual({ ok: false, message: "还没登录" });
     expect(h.calls).toEqual([]);
+  });
+});
+
+describe("workspace agents（#932）", () => {
+  it("createAgent：生成 a_ 前缀的 agentId，透传 draft，回 agentId", async () => {
+    const { manager, calls } = harness();
+    const r = await manager.createAgent("ws-1", { name: "运营", description: "管店铺", instructions: "你管运营", models: ["deepseek-v4"] });
+    expect(r.ok).toBe(true);
+    if (r.ok) expect(r.value.agentId).toMatch(/^a_[0-9a-f]{12}$/);
+    expect(calls).toContain("insertAgentRow");
+  });
+  it("createAgent：23505 翻成「已有同名的智能体」", async () => {
+    const { manager } = harness({
+      insertAgentRow: async () => { throw Object.assign(new Error("duplicate key"), { code: "23505" }); },
+    });
+    const r = await manager.createAgent("ws-1", { name: "运营", description: "", instructions: "", models: [] });
+    expect(r).toEqual({ ok: false, message: "已有同名的智能体" });
+  });
+  it("deleteAgent：admin 在本层就拒，不打网络", async () => {
+    const { manager, calls } = harness();
+    expect(await manager.deleteAgent("ws-1", "admin")).toEqual({ ok: false, message: "管理员不能删除" });
+    expect(calls).not.toContain("deleteAgentRow");
+  });
+  it("updateAgent：透传 patch", async () => {
+    const { manager, calls } = harness();
+    expect(await manager.updateAgent("ws-1", "a_1", { models: ["glm-5"] })).toEqual({ ok: true, value: null });
+    expect(calls).toContain("updateAgentRow");
   });
 });

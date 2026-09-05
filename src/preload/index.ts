@@ -229,6 +229,12 @@ const bridge: ShellBridge = {
     ipcRenderer.invoke(CHANNELS.workspaceContributeConnector, id, serverId, tools),
   workspaceWithdrawConnector: (id, serverId) =>
     ipcRenderer.invoke(CHANNELS.workspaceWithdrawConnector, id, serverId),
+  workspaceAgentCreate: (id, draft) =>
+    ipcRenderer.invoke(CHANNELS.workspaceAgentCreate, id, draft),
+  workspaceAgentUpdate: (id, agentId, patch) =>
+    ipcRenderer.invoke(CHANNELS.workspaceAgentUpdate, id, agentId, patch),
+  workspaceAgentDelete: (id, agentId) =>
+    ipcRenderer.invoke(CHANNELS.workspaceAgentDelete, id, agentId),
   workspacePublishSession: (id, sessionId, title) =>
     ipcRenderer.invoke(CHANNELS.workspacePublishSession, id, sessionId, title),
   workspaceUnpublishSession: (id, rowId) =>

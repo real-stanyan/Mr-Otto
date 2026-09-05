@@ -846,6 +846,20 @@ interface ChatState {
   /** tools: [] = 整服务放行（同 proxyShare.ts 的约定） */
   contributeWorkspaceConnector(id: string, serverId: string, tools: readonly string[]): Promise<boolean>;
   withdrawWorkspaceConnector(id: string, serverId: string): Promise<boolean>;
+  /** 智能体名册住在 WorkspaceSnapshot.agents（issue #932）——这三个 action
+      跟其余十一件套一个套路：经 ShellBridge 打一次 IPC，成功后
+      refreshWorkspaceGroups() 重拉整份快照落地新名册，失败落
+      workspaceGroupsError，回布尔给调用方决定要不要清表单 */
+  createWorkspaceAgent(
+    id: string,
+    draft: { name: string; description: string; instructions: string; models: readonly string[] },
+  ): Promise<boolean>;
+  updateWorkspaceAgent(
+    id: string,
+    agentId: string,
+    patch: { name?: string; description?: string; instructions?: string; models?: readonly string[] },
+  ): Promise<boolean>;
+  deleteWorkspaceAgent(id: string, agentId: string): Promise<boolean>;
   /** 把当前/指定会话发布进工作区。回是否成功——rowId/pkgId 用不上时调用方不必接 */
   publishWorkspaceSession(id: string, sessionId: string, title: string): Promise<boolean>;
   /** 只有发布者能撤（服务端也会拦，见 index.ts workspaceUnpublishSession handler） */
@@ -2098,6 +2112,43 @@ export const useChat = create<ChatState>((set, get) => ({
 
   async withdrawWorkspaceConnector(id, serverId) {
     const r = await window.otter.workspaceWithdrawConnector(id, serverId);
+    if (!r.ok) {
+      set({ workspaceGroupsError: r.message });
+      return false;
+    }
+    set({ workspaceGroupsError: null });
+    await get().refreshWorkspaceGroups();
+    return true;
+  },
+
+  async createWorkspaceAgent(id, draft) {
+    const r = await window.otter.workspaceAgentCreate(id, { ...draft, models: [...draft.models] });
+    if (!r.ok) {
+      set({ workspaceGroupsError: r.message });
+      return false;
+    }
+    set({ workspaceGroupsError: null });
+    await get().refreshWorkspaceGroups();
+    return true;
+  },
+
+  async updateWorkspaceAgent(id, agentId, patch) {
+    const { models, ...rest } = patch;
+    const r = await window.otter.workspaceAgentUpdate(id, agentId, {
+      ...rest,
+      ...(models === undefined ? {} : { models: [...models] }),
+    });
+    if (!r.ok) {
+      set({ workspaceGroupsError: r.message });
+      return false;
+    }
+    set({ workspaceGroupsError: null });
+    await get().refreshWorkspaceGroups();
+    return true;
+  },
+
+  async deleteWorkspaceAgent(id, agentId) {
+    const r = await window.otter.workspaceAgentDelete(id, agentId);
     if (!r.ok) {
       set({ workspaceGroupsError: r.message });
       return false;
