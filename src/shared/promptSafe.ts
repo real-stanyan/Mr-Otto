@@ -8,6 +8,15 @@
 // 写入侧的校验（createAgentDraft 的 noNewline / collapseWhitespace）是第一道闸；
 // 这一层是**结构闸**：旧日志里已经躺着的字段、以及任何没走写入校验的路径
 // （profiles.name 就没有），投影/拼装时一律还要过这里。两道各自独立成立。
+//
+// 结构闸的判据是**这段字面量靠哪几个字符撑起结构**，那就把用到的那几个一起
+// 转义，不只是 `]`（第二轮复审 B2-I2）：`deriveMessages` 的 roster 条目
+// `名字（描述）` 靠 `（）` 分格，OWN 记忆块头 `OWN (只有「X」看得见)` 与
+// `agentRelay` 那三句话靠 `「」` 分格——只关方括号那一层的话，一个成员把职责
+// 写成 `打杂）。补充：<指令>。（` 就能让那句「补充」以围栏里一句独立指令的
+// 身份进每一只别的 agent 的 system 提示。替换不是删除：注入的正文照旧留在
+// 原处让人看得见、让日志对得上，只是失去结构意义——结构位上的那几个字符从此
+// 只可能是模板自己写的。
 
 import { collapseWhitespace, normalizeAgentName } from "./workspaceAgents.js";
 
@@ -17,14 +26,21 @@ export const RESERVED_SPEAKER_LABEL = "系统";
 /** 系统旁白的 fromUid（sessionService 的 logChat 用这一个） */
 export const SYSTEM_SPEAKER_UID = "system";
 
-/** 换行折成空格、`]` 换成全角 `］`。
+/** 换行折成空格；结构用到的分隔符各换一个同形不同码的替身：
+    `]`→`］`、`（`→`(`、`）`→`)`、`「`→`｢`、`」`→`｣`。
     **空白那一半直接借 `collapseWhitespace`**（`/\s+/g`）而不是自己写 `[\r\n]`：
     第一道闸用的就是它，两处各写一份正则迟早分家——`\s` 还覆盖 U+2028/U+2029
     （JSON 里活得下来的真换行，很多渲染层与 tokenizer 照样当换行）、`\v`/`\f`、
     NBSP、全角空格，只折 `[\r\n]` 的版本让这一整批原样穿过（复审 Important 1）。
     **替换不是删除**：注入的正文照旧留在原处让人看得见、让日志对得上，
     只是失去结构意义。 */
-export const promptSafe = (s: string): string => collapseWhitespace(s).replace(/\]/g, "］");
+export const promptSafe = (s: string): string =>
+  collapseWhitespace(s)
+    .replace(/\]/g, "］")
+    .replace(/（/g, "(")
+    .replace(/）/g, ")")
+    .replace(/「/g, "｢")
+    .replace(/」/g, "｣");
 
 /** 发言人名字过这一层再拼进 `[label]: ` 前缀（#957 复审 Important 2）。
     `profiles.name` 是成员自己填的、**没有任何写入校验**，两条后果：

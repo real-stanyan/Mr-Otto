@@ -172,7 +172,7 @@ import { writeFileTool } from "../../../src/tools/writeFile.js";
 import { bashTool } from "../../../src/tools/bash.js";
 import { agentView } from "../../../src/session/agentView.js";
 import { parseMentions, mentionTokens } from "../../../src/shared/remote/agentMention.js";
-import { safeSpeakerLabel } from "../../../src/shared/promptSafe.js";
+import { promptSafe, safeSpeakerLabel } from "../../../src/shared/promptSafe.js";
 import { openTurns } from "../../../src/shared/turnLedger.js";
 import { createTurnCoordinator, type TurnJob, type EnqueueDecision } from "./turnCoordinator.js";
 import { createApprovalRouter, type ApproveOutcome } from "./approvalRouter.js";
@@ -397,13 +397,18 @@ export interface CloudSession {
 export const MAX_CATCHUP_ATTEMPTS = 3;
 
 /** 「被踢的那位在群里叫什么」：日志里没有 profiles 表，开场白正文那个
-    `[label]: ` 前缀是唯一现成的名字来源（say() 落盘时拼的，已经过了一遍
-    safeSpeakerLabel）。取不到就退回 uid 前 8 位——与 safeSpeakerLabel 撞上
-    保留名时的退路同一个口径，不猜、也不编一个名字出来 */
+    `[label]: ` 前缀是唯一现成的名字来源。取不到就退回 uid 前 8 位——与
+    safeSpeakerLabel 撞上保留名时的退路同一个口径，不猜、也不编一个名字出来。
+
+    **取出来还要再过一遍 `safeSpeakerLabel`**（Task 1 复审）：新落盘的开场白确实
+    已经过过一次，但这是一个**发言人身份**，而日志是 append-only 的——批次 2 之前
+    落盘的那些开场白里，前缀是原样拼的，一个带换行的旧 label 从这里出去就成了
+    `<换行伪造行> 已不在这个工作区…` 这条模型可见的系统发言的一部分。幂等，
+    所以对新行是空操作（`promptSafe.ts` 头注：三层各跑一遍正是它的设计前提） */
 export function speakerLabelOf(content: string | undefined, fromUid: string): string {
   const m = content ? /^\[([^\]]*)\]: /.exec(content) : null;
   const label = m?.[1] ?? "";
-  return label.length > 0 ? label : fromUid.slice(0, 8);
+  return label.length > 0 ? safeSpeakerLabel(label, fromUid) : fromUid.slice(0, 8);
 }
 
 /** 被踢的发起人那句话已经在 append-only 的日志里了，删不掉——只能在它后面补
@@ -840,11 +845,17 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // 一只），拿它做"名单里没有这个人"的判据，等于把每一个真实存在的 @ 都在
     // 群里报成"查无此人（可能改过名或还没建）"——一句读起来像事实、实际只是
     // 一次 Supabase 抖动的话，而且它会留在日志里给下一轮的模型读
+    // **只回显数量、不回显 token 原文**（第二轮复审 E2-3）：这几个 token 是**模型
+    // 自己写的**，而这条 chat_message 署的名是「系统」、在 agentView 里是 keep ——
+    // 也就是说，一只 agent 只要把话塞进一个 `@token` 里（`mentionTokens` 贪婪吃到
+    // 下一个空白，中文本来就不需要空白），就能以系统的名义对全场其余 agent 下一段
+    // 指令，连伪造都不用。截断 + 过闸那条路也能堵住结构，但堵不住「系统说了一句
+    // 模型想让它说的话」这件事本身——数量是这句话唯一真正需要携带的信息
     if (unresolved.length > 0 && !roster.some((a) => a.degraded)) {
       logChat(
         "system",
         "系统",
-        `「${spec.name}」@ 了「${unresolved.join("、")}」，名单里没有这个人（可能改过名或还没建），这一棒没人接`,
+        `「${promptSafe(spec.name)}」@ 了 ${unresolved.length} 个名单里没有的名字（可能改过名或还没建），这一棒没人接`,
         false
       );
     }

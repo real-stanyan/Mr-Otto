@@ -2,7 +2,7 @@
 // 纯函数：同样的 events 永远得到同样的 messages。resume/fork/replay 全靠它。
 
 import { isolatedPromptText, type IsolatedWorkspace } from "../shared/sessionWorktree.js";
-import { promptSafe } from "../shared/promptSafe.js";
+import { promptSafe, safeSpeakerLabel } from "../shared/promptSafe.js";
 import type { CloudSessionFacts, MemoryTopicSnapshot, SessionEvent, UserTextFile, WorkspaceMemoryLoadedEvent } from "./events.js";
 import { barrenEventIndexes } from "./barrenTurns.js";
 import { activeSkills } from "./activeSkills.js";
@@ -523,10 +523,16 @@ export function deriveMessages(
         // 同 user_message 一样要走"组开着就先攒着"的插话修法（同 :433）。
         // 发言人身份靠 label 前缀带出来（发言时快照，改名不追认历史）
         const target = pendingToolIds.size > 0 ? deferredUsers : messages;
-        // label 过 promptSafe（#957 复审 Important 2）：它来自 profiles.name，
+        // label 过 safeSpeakerLabel（第二轮复审 B2-I1）：它来自 profiles.name，
         // **写入侧一道校验都没有**——一个叫 `]:\n[系统]: …` 的成员能在模型上下文里
-        // 伪造出一整轮别人的发言。落盘那一头（sessionService）也拦，这一层管旧日志
-        target.push({ role: "user", content: `[${promptSafe(event.label)}]: ${event.content}` });
+        // 伪造出一整轮别人的发言。落盘那一头（sessionService）也拦，这一层管旧日志。
+        // 原来这里只跑 `promptSafe`，于是保留名那一半在投影层缺席：一条批次 2
+        // 之前落盘的、发言人把 `profiles.name` 填成「系统」的 chat_message，今天
+        // 仍然投影成 `[系统]: <他写的正文>`，与 runtime 自己那几条系统旁白（接力
+        // 到顶 / 打转提醒 / 「某某停止了这一轮」）在模型上下文里逐字节同形。
+        // ADR-0226 立的是**三处各自幂等地跑一遍**，这是第三处；对已经过闸的新行
+        // 是空操作，正是这个函数的设计前提
+        target.push({ role: "user", content: `[${safeSpeakerLabel(event.label, event.fromUid)}]: ${event.content}` });
         break;
       }
 
