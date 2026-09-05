@@ -147,6 +147,7 @@ export function CloudSessionPage({
   // 发送/审批失败落这一格（复审 Medium：这条错误此前只在 WorkspacePage
   // 原来那条 return 路径里渲染，云会话走的是提前 return，根本到不了）
   const actionError = useChat((s) => s.workspaceGroupsError);
+  const takeDraftSeed = useChat((s) => s.takeCloudDraftSeed);
 
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
@@ -213,6 +214,20 @@ export function CloudSessionPage({
   useEffect(() => {
     setHi(0);
   }, [optionKey]);
+
+  // 开局卡那句话没发出去时的原文（issue #957 C-I6）：摆回输入框。这一步之后
+  // 它就是一份普通草稿——后面每一次失败都归下面 submit() 那条既有纪律管
+  // （「草稿在发送成功之后才清」），不需要另一套保管机制。
+  // **只在草稿是空的时候取**：用户已经在打字了就别覆盖他（也别把那份原文
+  // 悄悄丢掉——不取走它就还留在 store 里，等这一格空了再摆回来）
+  const csSessionId = cs?.sessionId ?? null;
+  useEffect(() => {
+    if (csSessionId === null || draft !== "") return;
+    const seed = takeDraftSeed(csSessionId);
+    if (seed === null) return;
+    setDraft(seed);
+    setCaret(seed.length); // 光标落在末尾：接着改比从头挪过去顺手
+  }, [csSessionId, draft, takeDraftSeed]);
 
   // 输入框跟着内容长高(到 5 行封顶),同 FriendChatView 的既有约定
   useEffect(() => {

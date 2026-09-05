@@ -308,6 +308,16 @@ export const COMPACT_COMPRESSION: CompressionOptions = {
   maxOldToolArgChars: 200,
 };
 
+/** 拼进方括号头的字段过这一层（#957 B-C1，agent_briefed 的 name / roster）。
+    这些字段是**别人写的字**，而 briefing 的头是一段拼出来的结构：一个 `]` 就把
+    方括号提前闭合，一个换行就让之后的正文看起来是围栏外的新指令——两样合起来，
+    一条职责描述能给每一只别的 agent 的 system 提示追加任意内容。
+    换行折成空格、`]` 换成全角 `］`：**替换不是删除**——注入的正文照旧留在头里
+    让人看得见（也让日志对得上），只是失去结构意义。写入侧的校验（Task 2 的
+    `noNewline` / `collapseWhitespace`）是第一道闸，这一道是第二道：旧日志里
+    已经躺着的字段、以及任何绕过写入校验的路径，投影时一律还要过这里。 */
+const promptSafe = (s: string): string => s.replace(/[\r\n]+/g, " ").replace(/\]/g, "］");
+
 /** 压缩标记带原始长度：模型知道这里被折叠过，不会被"无声变短的历史"误导。
     刚过上限的文本截断后加上标记反而更长——那种情况原样放行（压缩永不增肥） */
 function clip(text: string, max: number, what: string): string {
@@ -678,11 +688,16 @@ export function deriveMessages(
         //      system 里、也不在 modelContextScan 的幸存名单里——压一次之后这只
         //      agent 就再也不知道自己是谁了。焊进 system 两个后果一起免疫。
         // 排在 workspaceMemoryPrompt **之前**：先知道自己是谁，再读记着的事。
+        //
+        // 名字/职责一律过 promptSafe（#957 B-C1）：这一段是**拼**出来的，
+        // 拼进去的是别人写的字。一个 `）]\n` 就把方括号提前闭合，之后的正文
+        // 以「围栏外的指令」身份进每一只别的 agent 的 system 提示。Task 2 那道
+        // 写入校验是第一道闸，这一道是结构闸——旧日志里已经躺着的字段绕不过它。
         const others = event.roster.length
-          ? `群里还有：${event.roster.map((r) => `${r.name}（${r.description}）`).join("、")}。` +
+          ? `群里还有：${event.roster.map((r) => `${promptSafe(r.name)}（${promptSafe(r.description)}）`).join("、")}。` +
             `要谁搭手就在你的回复里 @ 他的名字。`
           : "";
-        const text = `[你是这个工作区里的「${event.name}」。${others}]\n${event.instructions}`;
+        const text = `[你是这个工作区里的「${promptSafe(event.name)}」。${others}]\n${event.instructions}`;
         // 没有围栏 system 时（旧日志 / 没带 workspace 的裸装配）退回事件位置那条
         // user 消息 —— 理由同 project_instructions：那种日志本来就没有清场保护
         // 可言，但「我是谁」是这只 agent 能不能开口的前提，宁可退化不能没有

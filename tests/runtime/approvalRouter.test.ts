@@ -87,4 +87,30 @@ describe("审批路由", () => {
     expect(reqs[0]).toMatchObject({ toolName: "create_agent", argsSummary: "名字：广告" });
     expect(reqs[1]).toMatchObject({ toolName: "bash", argsSummary: JSON.stringify({ cmd: "echo hi" }) });
   });
+
+  it("summarizeFields 钩子：回非 null 才带 argsFields，回 null / 没接线一律不带（#957 B-C2）", () => {
+    const reqs: { toolName: string; argsFields?: { label: string; value: string }[] }[] = [];
+    const r = createApprovalRouter({
+      ownerUid: "owner",
+      onRequest: (q) => reqs.push(q),
+      summarizeFields: (name, args) =>
+        name === "create_agent" ? [{ label: "名字", value: (args as { name: string }).name }] : null,
+    });
+    r.setInitiator("u1");
+    const t = (name: string) => ({ def: { name, description: "", parameters: {} }, requiresApproval: true, run: async () => "" });
+    void r.decide({ id: "c1", name: "create_agent", args: { name: "广告" } }, t("create_agent"));
+    void r.decide({ id: "c2", name: "bash", args: { cmd: "echo hi" } }, t("bash"));
+    expect(reqs[0]!.argsFields).toEqual([{ label: "名字", value: "广告" }]);
+    // 「不带」而不是「带一个 undefined」：exactOptionalPropertyTypes 下这两件事不一样，
+    // 落盘那一头把 undefined 摊进事件就多出一个键
+    expect("argsFields" in reqs[1]!).toBe(false);
+  });
+
+  it("没接 summarizeFields 时一条都不带 —— 缺席 = 现状一字不变", () => {
+    const reqs: Record<string, unknown>[] = [];
+    const r = createApprovalRouter({ ownerUid: "owner", onRequest: (q) => reqs.push(q as never) });
+    r.setInitiator("u1");
+    void r.decide({ id: "c1", name: "bash", args: { cmd: "x" } }, { def: { name: "bash", description: "", parameters: {} }, requiresApproval: true, run: async () => "" });
+    expect("argsFields" in reqs[0]!).toBe(false);
+  });
 });

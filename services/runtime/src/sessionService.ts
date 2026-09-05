@@ -165,7 +165,7 @@ import { DEFAULT_AUTO_COMPACT } from "../../../src/shared/autoCompact.js";
 import { createCreateAgentTool } from "./createAgentTool.js";
 import type { WorkspaceAgentWriter } from "./agentRegistry.js";
 import {
-  CREATE_AGENT_TOOL_NAME, createAgentApprovalSummary, parseCreateAgentArgs, scanCreateAgentThreat,
+  CREATE_AGENT_TOOL_NAME, createAgentApprovalFields, createAgentApprovalSummary, parseCreateAgentArgs, scanCreateAgentThreat,
 } from "../../../src/shared/createAgentDraft.js";
 import { ADMIN_AGENT_ID } from "../../../src/shared/workspaceAgents.js";
 import {
@@ -381,6 +381,24 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         return `参数不合法（${err instanceof Error ? err.message : String(err)}），批准也会失败`;
       }
     },
+    // 逐字段版（#957 B-C2）：`argsSummary` 是一整块字符串，卡上逐行呈现——一个字段
+    // 里的换行就能在真正的提示词上方伪造出一整张良性卡。写入侧禁换行（Task 2）是
+    // 第一道闸，逐字段的 DOM 才是结构闸：label 与 value 各自一个节点，value 里有
+    // 什么都只是那一格里的字。参数不合法就回 null——`argsSummary` 那一头已经把
+    // 「批准也会失败」说清楚了，这里再造一张半真的字段卡只会让人以为参数是好的。
+    summarizeFields: (toolName, args) => {
+      if (toolName !== CREATE_AGENT_TOOL_NAME) return null;
+      try {
+        const draft = parseCreateAgentArgs(args);
+        // 威胁命中也回 null（不只是解析失败）：桌面有 argsFields 就**只**画逐字段、
+        // 不再画 argsSummary，而「批准也会失败」这句只在 argsSummary 那一头——
+        // 回一张漂亮的字段卡等于把那句警告吞掉，人会以为参数是好的
+        if (scanCreateAgentThreat(draft)) return null;
+        return createAgentApprovalFields(draft);
+      } catch {
+        return null;
+      }
+    },
     onRequest: (req) => {
       const e = store.append({
         sessionId,
@@ -389,6 +407,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         callId: req.callId,
         toolName: req.toolName,
         argsSummary: req.argsSummary,
+        // 同 agentId 那条：展开而不是恒定写 undefined（exactOptionalPropertyTypes）
+        ...(req.argsFields ? { argsFields: req.argsFields } : {}),
         initiatorUid: req.initiatorUid,
         expiresTs: req.expiresTs,
         // 这一刻在跑的是哪只 agent（#928）——群里两只 agent 各自弹出的审批卡，

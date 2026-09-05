@@ -853,6 +853,13 @@ export interface ApprovalRequestEvent extends SessionEventBase {
   callId: string;
   toolName: string;
   argsSummary: string;
+  /** 审批卡逐字段（#957 B-C2）。`argsSummary` 是一整块字符串，卡上逐行呈现——
+      字段值里的一个换行就能在真正的提示词上方伪造出一整张良性卡。写入侧禁换行是
+      第一道闸，**逐字段的 DOM 是结构闸**：label 与 value 各自一个节点，value 里
+      有什么都只是那一格里的字，伪造不出第二格。
+      可选：旧日志没有这一格（硬规则：旧日志永远可重放），带不动这一格的客户端
+      退回画 `argsSummary`——所以 `argsSummary` 照旧无条件生成，不是二选一。 */
+  argsFields?: { label: string; value: string }[];
   initiatorUid: string;
   expiresTs: number;
   /** 这条是哪只工作区 agent 干的（#928） */

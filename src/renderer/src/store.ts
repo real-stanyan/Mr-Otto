@@ -542,6 +542,16 @@ interface ChatState {
       而 join() 只保证连上了中继——runtime 的 welcome 还在路上。所以这句话先停在
       这里，由主区那块的 effect 在 ready 那一刻补发。null = 没有待发的 */
   cloudPendingFirstMessage: string | null;
+  /** 开局卡那句话**没发出去**、要摆回输入框的那一份（issue #957 C-I6）。
+      null = 没有。按 sessionId 挂靠：异步期间用户可能已经切到别的云会话，
+      那句话在**那边**的输入框里冒出来比丢了更糟。
+      为什么不是「放回 cloudPendingFirstMessage 自动重试」：那一格没有任何
+      界面读它——开局卡早已卸载，用户看不见自己刚写的话去哪了；而且
+      `cloudSay` 的 `ok:false` 只覆盖发送侧（帧压根没发出去），限速/被踢那类
+      **业务拒绝**是随后一条 error 帧回来的，那时 say() 早就回过 true 了。
+      摆回 composer 之后，后面每一次失败都归 composer 那条既有纪律管
+      （「草稿在发送成功之后才清」） */
+  cloudDraftSeed: { sessionId: string; text: string } | null;
   /** 工作区 id → 该工作区的云会话清单（SessionsTab「云会话」小节用）。
       无推送通道（同 workspaceGroups 的十一个 action），每次改动后调用方自己
       refreshCloudSessions 重拉 */
@@ -927,14 +937,15 @@ interface ChatState {
   /** 待发那句已经交出去了。**先清后发**：主区那块的 effect 会因为状态变化重跑，
       清晚一步就会发两遍 */
   takeCloudPendingFirstMessage(): string | null;
-  /** 那一句没发出去，放回去（issue #957 C-I6）。`take()` 先摘是对的（不然
-      会发两遍），但 `cloudSay` 回 false 时（限速、被踢、连接不通那一帧压根
-      没发出去）那段文字在任何地方都不再存在——开局卡早已卸载、store 里也
-      摘掉了，用户只看到一行错误，然后得把刚写的话重打一遍。同一件事在
-      composer 那条入口上的纪律正相反（"草稿在发送成功之后才清"）。
-      **只在 cloudSession 仍是当初那一条时才放回**：异步期间用户可能已经切到
-      别的云会话，那句话在那边冒出来比丢了更糟 */
-  restoreCloudPendingFirstMessage(text: string, sessionId: string): void;
+  /** 那一句没发出去，把原文摆回输入框（issue #957 C-I6）。`take()` 先摘是对的
+      （不然会发两遍），但没有这一步的话，`cloudSay` 回 false 时那段文字在任何
+      地方都不再存在——开局卡早已卸载，用户只看到一行错误，然后得把刚写的话
+      重打一遍。同一件事在 composer 那条入口上的纪律正相反（「草稿在发送成功
+      之后才清」），摆回去就是让它归那条纪律管 */
+  seedCloudDraft(sessionId: string, text: string): void;
+  /** 取走并清空那一份（CloudSessionPage 挂载/换会话时调）。**sessionId 不匹配
+      就回 null 且不清**：这一格是按会话挂靠的，另一条会话没资格拿走它 */
+  takeCloudDraftSeed(sessionId: string): string | null;
   /** 离开当前云会话（返回键用）。同步——不等 workspaceCloudLeave 那趟 IPC
       往返，UI 反馈要即时；真正的连接收尾在主进程后台完成，用户不需要等 */
   closeCloudSession(): void;
@@ -1270,6 +1281,7 @@ export const useChat = create<ChatState>((set, get) => ({
   workspaceGroupsError: null,
   cloudDraftWorkspaceId: null,
   cloudPendingFirstMessage: null,
+  cloudDraftSeed: null,
   cloudSession: null,
   cloudSessionList: {},
   realtimeHealth: "connecting",
@@ -2350,12 +2362,18 @@ export const useChat = create<ChatState>((set, get) => ({
     return text;
   },
 
-  restoreCloudPendingFirstMessage(text, sessionId) {
-    // 判据是 sessionId 而不是"cloudSession 不为 null"：后者会把这句话放进
-    // 另一条会话的待发格，下次它自己冒出来——那正是 createCloudSessionFromDraft
-    // 失败时要清掉它的同一个理由
-    if (get().cloudSession?.sessionId !== sessionId) return;
-    set({ cloudPendingFirstMessage: text });
+  seedCloudDraft(sessionId, text) {
+    set({ cloudDraftSeed: { sessionId, text } });
+  },
+
+  takeCloudDraftSeed(sessionId) {
+    const seed = get().cloudDraftSeed;
+    // 按 sessionId 挂靠：不是这一条就当作没有——别把上一条会话没发出去的话
+    // 塞进另一条会话的输入框（同 createCloudSessionFromDraft 失败时清掉待发
+    // 那句的同一个理由）
+    if (seed === null || seed.sessionId !== sessionId) return null;
+    set({ cloudDraftSeed: null });
+    return seed.text;
   },
 
   async cloudSay(text, mentions) {

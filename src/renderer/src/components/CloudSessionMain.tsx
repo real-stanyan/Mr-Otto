@@ -9,7 +9,7 @@
 // 在快照还没到时说一句人话。CloudSessionPage 本身一个字没搬——它已经是"整块
 // 内容一起滚"的堆叠流，换个更宽的容器照样成立。
 
-import { useEffect, useRef } from "react";
+import { useEffect } from "react";
 import { useChat } from "../store.js";
 import { CloudSessionPage } from "./CloudSessionPage.js";
 
@@ -19,18 +19,12 @@ export function CloudSessionMain() {
   const selfUid = useChat((s) => s.account.id);
   const pending = useChat((s) => s.cloudPendingFirstMessage);
   const take = useChat((s) => s.takeCloudPendingFirstMessage);
-  const restore = useChat((s) => s.restoreCloudPendingFirstMessage);
+  const seedDraft = useChat((s) => s.seedCloudDraft);
   const cloudSay = useChat((s) => s.cloudSay);
   const refreshGroups = useChat((s) => s.refreshWorkspaceGroups);
 
   const state = cs?.state ?? null;
   const sessionId = cs?.sessionId ?? null;
-  /** 这一次 ready 期间已经试过、失败了的那句话（issue #957 C-I6）。放回 store
-      会让下面那个 effect 因为 `pending` 变化重跑——不挡一下就是一个只要
-      cloudSay 一直失败（限速）就永不停歇的重试环。挡的粒度是"这一次 ready"：
-      state 一离开 ready（断线/重连）就清空，于是"重连之后自动重试一次"这个
-      本来的好处留着，原地空转没了 */
-  const failedRef = useRef<string | null>(null);
 
   // 进云会话时刷一次快照：agent 名单是别的成员也能改的，而 workspaceGroups
   // 没有推送通道（只在本地改动后重拉）——不刷的话别人新建的那只 @ 不到
@@ -42,29 +36,24 @@ export function CloudSessionMain() {
   // **先取后发**：这个 effect 会因为状态变化重跑，take() 把它从 store 里摘掉
   // 之后再 await，才不会发两遍
   //
-  // **发失败不吞掉原文**（issue #957 C-I6）：cloudSay 回 false 时（限速、被踢、
-  // 连接不通那一帧压根没发出去）把它放回 store。开局卡这时早已卸载，不放回去
-  // 那段文字在任何地方都不再存在——用户只看到一行错误，然后得重打一遍；而
-  // composer 那条入口的纪律正相反（"草稿在发送成功之后才清"）。放回去还顺带
-  // 接上了重试：下一次 state 翻回 ready（重连之后）这个 effect 会再试一次
+  // **发失败不吞掉原文**（issue #957 C-I6）：cloudSay 回 false 时把原文摆回
+  // 输入框（seedCloudDraft → CloudSessionPage 挂载时取走填进 draft）。开局卡
+  // 这时早已卸载，不摆回去那段文字在任何地方都不再存在——用户只看到一行
+  // 错误，然后得重打一遍；而 composer 那条入口的纪律正相反（「草稿在发送成功
+  // 之后才清」），摆回去就是让它从此归那条纪律管。
+  // **say 没有回执**——限速/被踢那类拒绝走 error 帧（随后到达，那时 say() 早
+  // 已回过 true），不在这条 ok:false 路上；见 issue（控制者会开）。所以这里
+  // 接住的只是"帧压根没发出去"那一半，剩下那一半得靠人再打一次
   useEffect(() => {
-    if (state !== "ready") {
-      failedRef.current = null; // 离开 ready = 上一次失败的账翻篇，重连后允许再试
-      return;
-    }
-    if (pending === null || sessionId === null) return;
-    if (failedRef.current === pending) return; // 这一次 ready 里已经试过它了
+    if (pending === null || state !== "ready" || sessionId === null) return;
     const text = take();
     if (text === null) return;
     void (async () => {
       // 开局卡那句不 @ 也由名单第一只接（老语义：mentions 缺席）
       const ok = await cloudSay(text);
-      if (!ok) {
-        failedRef.current = text;
-        restore(text, sessionId);
-      }
+      if (!ok) seedDraft(sessionId, text);
     })();
-  }, [pending, state, sessionId, take, cloudSay, restore]);
+  }, [pending, state, sessionId, take, cloudSay, seedDraft]);
 
   if (cs === null) return null;
   if (ws === null) {
