@@ -458,6 +458,12 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       console.warn(`[otto-runtime] relay_max_depth 查询失败，用默认 ${DEFAULT_RELAY_MAX_DEPTH}（session=${sessionId}）`, err);
       maxDepth = DEFAULT_RELAY_MAX_DEPTH;
     }
+    // 顶上那句 `if (archived) return` 挡的是"进 relayAfterTurn 之前就已经归档"；
+    // 挡不住的是"进来之后才归档"——opts.relayMaxDepth() 是一次真的 Supabase 往返，
+    // 这一 await 期间人随时可能按下归档。不重查一次的话，archived 已经是 true，
+    // 这里还是会照样落 agent_relay + 开场白 + enqueue，在一间刚关掉的房间里继续接力
+    // （最终审 Important ①a）
+    if (archived) return;
     const openingDepth = relayDepthOf(job.opening);
     const chain = relayChain(store.load(sessionId));
     const nameOf = (id: string): string => roster.find((a) => a.agentId === id)?.name ?? id;
@@ -495,6 +501,25 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       自己——排空时捞出来的 job 可能来自另一条并发的 say() 调用，不能用外层
       闭包里那条调用自己的参数 */
   async function runJob(job: TurnJob): Promise<void> {
+    // 归档落地时，这只 agent 的 job 可能已经躺在队列里了——它是**接力**排上的
+    // （relayAfterTurn 在一轮 @ 了两只时，两个 job 在归档发生之前就已经一起入队；
+    // 见 tests/runtime/sessionService.test.ts「归档落在两个 relay job 之间」）。
+    // drain() 的 while 循环本身不看 archived（ADR-0201 的既有分工：归档只翻标志
+    // + 落一条 session_archived，不动 drain），只在这里拦一道才不会让一间已经
+    // 关掉的房间继续起 turn、继续烧 owner 的钱（复审 Important ①b）。
+    // **只拦接力起的 job**（`job.opening.relay` 有值）：人自己刚说的那句话——
+    // 无论归档发生在它排队期间还是之前——都照跑，他配得上一个回复，即使几秒后
+    // 有人把这条会话关了（决策 5 的既有取舍：归档不该让一个刚发言的人被晾着）。
+    // **不落 turn_ended**：这条会话已经收尾（session_archived 已经落盘），不是
+    // 这只 agent 的失败，落一条错误事件只会在一份已经关闭的日志里制造一个假警报。
+    // 代价：openTurns 的投影会把这条开场白**永远**算作"排队中"（它再也等不到
+    // 一条 turn_ended 收口）——可以接受，因为归档的会话不会再有人盯着那盏灯；
+    // 重启补跑那条路（本文件末尾 `if (!archived && stale.length > 0)`）已经把
+    // "已归档的不补"钉死了，这里补的是同一进程内、归档落地那一刻已经在队里的漏网之鱼
+    if (archived && job.opening.relay) {
+      console.log(`[otto-runtime] 会话已归档，跳过排队中的接力棒（session=${sessionId} agentId=${job.agentId} opening=${job.opening.seq}）`);
+      return;
+    }
     router.setInitiator(job.fromUid);
     currentInitiator = job.fromUid;
     currentAgentId = job.agentId;

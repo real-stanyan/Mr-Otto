@@ -1393,4 +1393,83 @@ describe("agent 互相 @ 接力（#950 切片 5）", () => {
     expect(events.some((e) => e.type === "agent_relay")).toBe(false);
     store.close();
   });
+
+  it("归档落在 relayMaxDepth 的网络往返期间（终审 Important ①a）：await 之后要重新查一次 archived，不能凭 await 之前的快照继续落接力", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    let session!: CloudSession;
+    session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(),
+      // relayMaxDepth 是真的 Supabase 往返：这一 await 期间人随时可能按下归档。
+      // 顶上那句 `if (archived) return` 只挡得住"进函数之前就已经归档"，挡不住
+      // 这条 await 期间才落地的归档——所以这里在 resolve 之前先把归档做了
+      relayMaxDepth: async () => {
+        session.archive("alice");
+        return 6;
+      },
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({ model: a.models[0]!, async chat() { return { content: a.agentId === "ops" ? "@广告 你来" : "收到" }; } }),
+      onEvent: (e) => events.push(e), onUsage: () => {},
+    });
+
+    await session.say("u1", "alice", "@运营 出报表", true, ["ops"]);
+    await session.settled();
+
+    expect(session.isArchived()).toBe(true);
+    // 运营自己那条 turn 照常跑完（归档不碰当前 turn，只碰接力）
+    expect(events.some((e) => e.type === "assistant_message" && (e as { agentId?: string }).agentId === "ops")).toBe(true);
+    // 但 await 落地时已经归档：不该再落 agent_relay，也不该再排广告那一棒
+    expect(events.some((e) => e.type === "agent_relay")).toBe(false);
+    expect(events.some((e) => e.type === "assistant_message" && (e as { agentId?: string }).agentId === "ads")).toBe(false);
+    store.close();
+  });
+
+  it("归档落在两个 relay job 之间（终审 Important ①b）：一轮 @ 了两只，先跑的那只在自己的 chat() 里归档，已经排进队列的第二只不该再跑满一整个 turn", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    // 三只：运营一句话同时 @ 广告与财务——relayAfterTurn 在一次调用里把两个
+    // job 都 enqueue 完才返回，所以财务那个 job 在广告开始跑（更别说归档）之前
+    // 就已经躺在队列里了。这是"已经排进队列的接力棒"这个形状唯一能不靠微任务
+    // 时序、纯靠协调器的 FIFO 语义就摆出来的办法
+    const ROSTER3 = [
+      ...AGENTS,
+      { agentId: "fin", name: "财务", description: "管账", instructions: "你管账", models: ["m-fin"], tools: [] as AgentToolAllow[] },
+    ];
+    let session!: CloudSession;
+    session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(),
+      relayMaxDepth: async () => 6,
+      agents: async () => ROSTER3,
+      adapterFor: (a) => ({
+        model: a.models[0]!,
+        async chat() {
+          if (a.agentId === "ops") return { content: "@广告 @财务 你们都来" };
+          if (a.agentId === "ads") {
+            // 广告这只自己的 turn 正常跑——归档只该拦住"排队中还没跑"的接力棒，
+            // 不该打断正在跑的这一轮（同「归档之后不再接力」那条既有用例的取舍）
+            session.archive("alice");
+            return { content: "收到" };
+          }
+          // 财务这只不该跑到这里：它的 job 在广告归档之前就已经排进队列了
+          return { content: "财务也收到了" };
+        },
+      }),
+      onEvent: (e) => events.push(e), onUsage: () => {},
+    });
+
+    await session.say("u1", "alice", "@运营 出报表", true, ["ops"]);
+    await session.settled();
+
+    expect(session.isArchived()).toBe(true);
+    // 广告那只在自己 chat() 里归档，但它自己这一轮已经在跑，照常跑完落盘
+    expect(events.some((e) => e.type === "assistant_message" && (e as { agentId?: string }).agentId === "ads")).toBe(true);
+    // 财务的 job 在归档落地之前就已经排进队列——drain() 取到它时归档已经是
+    // true，不该再起一整个 turn（不落它的 assistant_message，也不落 turn_ended：
+    // 会话已经收尾，不是它的失败）
+    expect(events.some((e) => e.type === "assistant_message" && (e as { agentId?: string }).agentId === "fin")).toBe(false);
+    expect(events.some((e) => e.type === "turn_ended" && (e as { agentId?: string }).agentId === "fin")).toBe(false);
+    store.close();
+  });
 });
