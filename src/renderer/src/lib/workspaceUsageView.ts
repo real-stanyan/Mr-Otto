@@ -33,8 +33,8 @@ export function usageRows(ws: WorkspaceSnapshot, usage: WorkspaceUsage): UsageRo
     name: r.agentId === "" ? "未归因" : agentNameOf(ws, r.agentId),
     credit: fmtCredit(r.costMicro),
     calls: r.calls,
-    // 注意：只算 promptTokens + completionTokens，不含 cachedTokens——缓存命中的
-    // token 几乎不计费，混进这一列会让「本周用了多少」比实际观感虚高（brief 测试用例锁定了这一点）
+    // cachedTokens 是 promptTokens 的子集（同 llmGateway.ts costMicro 的 fresh = prompt - cached），
+    // 不是并列的第三类——加进来会把命中缓存的那部分 token 数了两遍
     tokens: fmtTokens(r.promptTokens + r.completionTokens),
   }));
 }
