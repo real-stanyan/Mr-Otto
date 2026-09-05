@@ -28,6 +28,9 @@ import {
   parseUsageEventRows, planSnapshotOf, plansQuery, routesQuery, subscriptionQuery, usageEventInsert, usageEventsQuery,
   type SubscriptionRow,
 } from "./billingQueries.js";
+import {
+  aggregateByAgent, memberQuery, parseAttributionRows, parseOwnerRows, usageWindowFor, workspaceOwnerQuery, workspaceUsageQuery,
+} from "./usageAttribution.js";
 import type { BillingPort, CheckoutTarget } from "./edge.js";
 import {
   CTRL_CID,
@@ -630,6 +633,20 @@ function billingPort(env: Env): BillingPort {
       const [routes, plans] = await Promise.all([routesOf(env), db.get(plansQuery()).then(parsePlanRows)]);
       const models = [...new Set(routes.map((x) => x.logicalModel))];
       return meFromParts(v.sub, v.windows, v.addon, models, plans);
+    },
+
+    // 归因从 usage_event 现算（不碰 Quota DO —— 那是限流用的投影，没有 agent 维度）。
+    // 顺序是先查 owner 再查在籍：工作区不存在与「存在但你不在里面」是两件事，
+    // 合成一个 404 的话，被踢出去的人看到的是「这个工作区没了」
+    async workspaceUsage(uid, workspaceId) {
+      const owner = parseOwnerRows(await db.get(workspaceOwnerQuery(workspaceId)));
+      if (!owner) return { ok: false, code: "not_found", message: "没有这个工作区" };
+      const member = await db.get(memberQuery(workspaceId, uid));
+      if (!Array.isArray(member) || member.length === 0) return { ok: false, code: "not_member", message: "你不在这个工作区里" };
+      const sub = parseSubscriptionRows(await db.get(subscriptionQuery(owner)));
+      const window = usageWindowFor(Date.now(), sub ? Date.parse(sub.current_period_start) : null);
+      const rows = parseAttributionRows(await pageAll(db.get, workspaceUsageQuery(owner, workspaceId, window.weekStartAt)));
+      return { ok: true, value: { workspaceId, ownerUid: owner, ...window, rows: aggregateByAgent(rows) } };
     },
 
     async checkout(uid, target: CheckoutTarget, origin) {
