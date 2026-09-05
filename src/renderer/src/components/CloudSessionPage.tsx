@@ -54,9 +54,11 @@ import { EventRow, TimelineProjectionContext } from "./Timeline.js";
 import { buildToolIndex, type ToolIndex } from "../lib/toolIndex.js";
 import { groupSubagentSpawns } from "../lib/subagentTimeline.js";
 import { formatProxyTime } from "../lib/proxyShare.js";
-import { labelOf } from "../lib/workspaceView.js";
+import { agentNameOf, labelOf } from "../lib/workspaceView.js";
+import { applyAgentMention, filterAgentCandidates, mentionQueryAt } from "../lib/agentMentionInput.js";
 import { EMBEDDED_CREDENTIAL_MESSAGE, repoUrlHasEmbeddedCredential } from "../lib/cloudRepoUrl.js";
 import { toolSummary } from "../../../shared/toolSummary.js";
+import { parseMentions } from "../../../shared/remote/agentMention.js";
 import type {
   ApprovalDecisionEvent, ApprovalRequestEvent, AssistantMessageEvent, ChatMessageEvent,
   SessionEvent, ToolCallRequest, ToolResultEvent, UserMessageEvent,
@@ -149,8 +151,16 @@ export function CloudSessionPage({
   const actionError = useChat((s) => s.workspaceGroupsError);
 
   const [draft, setDraft] = useState("");
-  const [mentionOn, setMentionOn] = useState(false);
   const [sending, setSending] = useState(false);
+  // 光标位置（#932 切片 1b）：「正在打 @ 吗」是 draft × caret 的函数，光标
+  // 不跟着走的话，把光标挪回一个旧的 @ 后面时弹层不会出来。textarea 自己的
+  // selectionStart 是 DOM 状态，读不进渲染——所以四个入口（改字/选区/键起/
+  // 点击）都往这一格里抄一次
+  const [caret, setCaret] = useState(0);
+  // Escape 关掉的是**这一个** @（记它的下标）：记成布尔的话，同一句话里
+  // 再打一个 @ 会因为上一次的关闭而不弹
+  const [dismissedAt, setDismissedAt] = useState<number | null>(null);
+  const [hi, setHi] = useState(0); // 弹层高亮下标
   const boxRef = useRef<HTMLTextAreaElement>(null);
 
   // hooks 不能条件调用：cs 可能是 null 的这一拍(WorkspacePage 换页与
@@ -178,6 +188,34 @@ export function CloudSessionPage({
     );
   }, [events]);
 
+  // ── @ 选人（#932 切片 1b）────────────────────────────────────────────
+  // 名单第一只 = 这个工作区的管理员（服务端按 created_at 升序给，见 Task 3）
+  const candidates = useMemo(
+    () => ws.agents.map((a) => ({ agentId: a.agentId, name: a.name, description: a.description })),
+    [ws.agents]
+  );
+  // 「此刻是不是停在一个没打完的 @ 后面」——只决定弹不弹层，**不**决定这句
+  // 话点了谁（那是下面 parseMentions 的事，两个问题，见 agentMentionInput 头注）
+  const rawPicking = mentionQueryAt(draft, caret);
+  const picking = rawPicking !== null && rawPicking.at === dismissedAt ? null : rawPicking;
+  // 光标离开这个 @（打完空格 / 退掉那个 @ / 挪到别处）就把关闭记号擦掉。
+  // 不擦的话「打 @ → Escape → 退格删掉 → 在同一个位置再打一个 @」会因为
+  // 下标撞上而永远不弹——一个只能靠换行躲开的死角
+  const pickingAt = rawPicking?.at ?? null;
+  useEffect(() => {
+    if (pickingAt === null) setDismissedAt(null);
+  }, [pickingAt]);
+  const options = picking ? filterAgentCandidates(candidates, picking.query) : [];
+  // 发送时点了谁：与 chip 行**同一次**调用算出来的同一份 —— 界面上写着发给
+  // 谁，服务端就跑谁。两边各算各的就会分家（坑 ④）
+  const mentions = useMemo(() => parseMentions(draft, candidates), [draft, candidates]);
+  // 候选变了高亮归零：不归零的话，从三个候选里选中第三个、再多打一个字缩到
+  // 一个候选时，hi 还停在 2，Enter 什么都选不中
+  const optionKey = options.map((o) => o.agentId).join(",");
+  useEffect(() => {
+    setHi(0);
+  }, [optionKey]);
+
   // 输入框跟着内容长高(到 5 行封顶),同 FriendChatView 的既有约定
   useEffect(() => {
     const box = boxRef.current;
@@ -203,13 +241,48 @@ export function CloudSessionPage({
     // 复审 Medium：草稿在发送成功之后才清——失败时原样留在输入框里，
     // 不用另外找地方把文字塞回去；workspaceGroupsError 在 footer 上方
     // 露出来说明失败原因
-    // Task 9 会整个换掉；这里只求 tsc 绿
-    const ok = await cloudSay(text, mentionOn ? undefined : []);
+    const ok = await cloudSay(text, mentions);
     if (ok) {
+      // mentions 是 draft 的函数，清了正文点名自然跟着清（chip 行也跟着没）
       setDraft("");
-      setMentionOn(false);
+      setCaret(0);
+      setDismissedAt(null);
     }
     setSending(false);
+  };
+
+  /** 选中弹层里第 i 只：写回正文并把光标放回 "@名字 " 之后 */
+  const pick = (i: number): void => {
+    if (picking === null) return;
+    const chosen = options[i];
+    if (chosen === undefined) return;
+    const next = applyAgentMention(draft, picking.at, caret, chosen.name);
+    setDraft(next.text);
+    setCaret(next.caret);
+    setDismissedAt(null);
+    // setDraft 那一拍会把 textarea 的 value 整个换掉，浏览器随即把光标顶到
+    // 末尾——得等这一帧画完再设回去，同一个 tick 里设会被覆盖
+    const c = next.caret;
+    requestAnimationFrame(() => boxRef.current?.setSelectionRange(c, c));
+  };
+
+  /** 「插入 @」：在光标处打一个 @，弹层随之出现（钮不再是开关，见 footer 处注） */
+  const insertAt = (): void => {
+    const box = boxRef.current;
+    const pos = box?.selectionStart ?? draft.length;
+    // 前一个字符是构词字符时先补一个空格：parseMentions 要求 @ 前是行首或
+    // 非构词字符（否则 rick@运营 这种邮箱形状会被当成点名），不补的话这颗钮
+    // 插出来的 @ 既不弹层也解析不出人
+    const insert = /[\p{L}\p{N}_]/u.test(draft[pos - 1] ?? "") ? " @" : "@";
+    const c = pos + insert.length;
+    setDraft(draft.slice(0, pos) + insert + draft.slice(pos));
+    setCaret(c);
+    setDismissedAt(null);
+    requestAnimationFrame(() => {
+      const b = boxRef.current;
+      b?.focus();
+      b?.setSelectionRange(c, c);
+    });
   };
 
   return (
@@ -316,39 +389,124 @@ export function CloudSessionPage({
 
       {actionError && <p className="text-xs text-err">{actionError}</p>}
 
-      <footer className="flex items-end gap-2 border-t border-border/60 pt-3">
-        <textarea
-          ref={boxRef}
-          rows={1}
-          disabled={!ready}
-          className="min-h-[34px] flex-1 min-w-0 resize-none rounded-2xl border border-border bg-transparent px-3 py-[7px] text-[13px] leading-relaxed transition-colors duration-150 placeholder:text-muted-foreground/70 focus:border-ring focus:outline-none disabled:opacity-50"
-          placeholder={ready ? "给云会话发消息" : "还没连上，暂时发不了消息"}
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          onKeyDown={(e) => {
-            // Enter 发送、Shift+Enter 换行;输入法组词途中的 Enter 是"选词",不是"发送"
-            // (同 FriendChatView 的既有约定)
-            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
-              e.preventDefault();
-              void submit();
-            }
-          }}
-        />
-        <Button
-          type="button"
-          variant={mentionOn ? "default" : "outline"}
-          size="sm"
-          disabled={!ready}
-          aria-pressed={mentionOn}
-          onClick={() => setMentionOn((v) => !v)}
-          title="@Agent：把这句话标成对 Agent 说的"
-        >
-          <AtSign className="size-[13px]" aria-hidden />
-          Agent
-        </Button>
-        <Button size="sm" disabled={!draft.trim() || sending || !ready} onClick={() => void submit()}>
-          发送
-        </Button>
+      {/* relative 是给上面那个弹层的定位锚（bottom-full = 贴着 footer 上沿往上开） */}
+      <footer className="relative flex flex-col gap-1.5 border-t border-border/60 pt-3">
+        {picking !== null && options.length > 0 && (
+          <div
+            role="listbox"
+            className={cn(
+              "absolute bottom-full left-0 mb-1 z-10 min-w-[200px] max-w-[320px] py-1",
+              "rounded-md border border-border bg-popover shadow-sm origin-bottom-left",
+              // 只有入场动效：这个列表随打字每敲一下都在变，退场动画会让它拖着
+              // 影子跟不上光标（同 StagedChips 那条配方）
+              "transition-[opacity,transform] duration-150 ease-[var(--ease-strong)]",
+              "starting:opacity-0 starting:translate-y-[2px]"
+            )}
+          >
+            {options.map((o, i) => (
+              <div
+                key={o.agentId}
+                role="option"
+                aria-selected={i === hi}
+                // mousedown + preventDefault：click 的话 textarea 会先失焦，
+                // 写回之后那次 setSelectionRange 就落在一个没焦点的框上
+                onMouseDown={(e) => {
+                  e.preventDefault();
+                  pick(i);
+                }}
+                onMouseEnter={() => setHi(i)}
+                className={cn(
+                  "flex cursor-default items-baseline gap-2 px-2 py-[5px] text-[12.5px]",
+                  i === hi && "bg-foreground/[0.06]"
+                )}
+              >
+                <span className="shrink-0">{o.name}</span>
+                <span className="truncate text-muted-foreground">{o.description}</span>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {/* 「发给谁」预览。**只读**：去掉一枚 = 从正文里把那个 @ 删掉——正文
+            才是事实，给 pill 配一颗 × 就等于开了第二个事实来源，两边迟早不一致 */}
+        {mentions.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground">
+            <span>发给</span>
+            {mentions.map((id) => (
+              <span key={id} className="rounded-full border border-border px-2 py-[1px]">
+                {agentNameOf(ws, id)}
+              </span>
+            ))}
+          </div>
+        )}
+
+        <div className="flex items-end gap-2">
+          <textarea
+            ref={boxRef}
+            rows={1}
+            disabled={!ready}
+            className="min-h-[34px] flex-1 min-w-0 resize-none rounded-2xl border border-border bg-transparent px-3 py-[7px] text-[13px] leading-relaxed transition-colors duration-150 placeholder:text-muted-foreground/70 focus:border-ring focus:outline-none disabled:opacity-50"
+            placeholder={ready ? "输入 @ 点名智能体；不 @ 就只是群里说一句" : "还没连上，暂时发不了消息"}
+            value={draft}
+            onChange={(e) => {
+              setDraft(e.target.value);
+              setCaret(e.target.selectionStart);
+            }}
+            onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
+            onKeyUp={(e) => setCaret(e.currentTarget.selectionStart)}
+            onClick={(e) => setCaret(e.currentTarget.selectionStart)}
+            onKeyDown={(e) => {
+              // 输入法组词途中的按键是"选词"不是命令（Enter 尤其——同
+              // FriendChatView 的既有约定），整段跳过
+              if (e.nativeEvent.isComposing) return;
+              if (picking !== null && options.length > 0) {
+                if (e.key === "ArrowDown") {
+                  e.preventDefault();
+                  setHi((h) => (h + 1) % options.length);
+                  return;
+                }
+                if (e.key === "ArrowUp") {
+                  e.preventDefault();
+                  setHi((h) => (h - 1 + options.length) % options.length);
+                  return;
+                }
+                // Enter 在弹层开着时**选人不发送**：正在挑人的那一下按回车，
+                // 意思一定是"就他"，不是"发出去"
+                if (e.key === "Enter" || e.key === "Tab") {
+                  e.preventDefault();
+                  pick(hi);
+                  return;
+                }
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  setDismissedAt(picking.at);
+                  return;
+                }
+              }
+              // Enter 发送、Shift+Enter 换行
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                void submit();
+              }
+            }}
+          />
+          {/* 这颗钮不再是"对 Agent 说"的开关（有了名单，得说清对哪一只）——
+              它现在只做一件事：在光标处插一个 @，把弹层叫出来 */}
+          <Button
+            type="button"
+            variant="outline"
+            size="icon-sm"
+            disabled={!ready}
+            onClick={insertAt}
+            title="@ 智能体"
+            aria-label="@ 智能体"
+          >
+            <AtSign className="size-[13px]" aria-hidden />
+          </Button>
+          <Button size="sm" disabled={!draft.trim() || sending || !ready} onClick={() => void submit()}>
+            发送
+          </Button>
+        </div>
       </footer>
     </div>
   );
