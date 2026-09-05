@@ -195,7 +195,9 @@ export interface CloudSessionClient {
   join(workspaceId: string, sessionId: string): Promise<FriendsResult<null>>;
   /** 断当前云会话连接（不管在什么状态：connecting/ready/denied/gone 都能断） */
   leave(): Promise<FriendsResult<null>>;
-  say(text: string, mention: boolean): Promise<FriendsResult<null>>;
+  /** mentions 缺席 = 老语义（mention 那个 boolean 说了算）；给了（含 []）=
+      以它为准，帧里带 mentions 字段（#932 切片 1b） */
+  say(text: string, mention: boolean, mentions?: string[]): Promise<FriendsResult<null>>;
   approve(callId: string, decision: "approved" | "denied"): Promise<FriendsResult<null>>;
   archive(): Promise<FriendsResult<null>>;
   config(
@@ -654,10 +656,12 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     return { ok: true, value: null };
   }
 
-  async function say(text: string, mention: boolean): Promise<FriendsResult<null>> {
+  async function say(text: string, mention: boolean, mentions?: string[]): Promise<FriendsResult<null>> {
     const r = requireReady();
     if (!r.ok) return r;
-    return sendFrame(r.session, { t: "say", text, mention });
+    // mentions 缺席不进帧（老语义，runtime 按 undefined 走 mention 那个
+    // boolean）；给了（含 []）才带上，runtime 视其为权威（#932 切片 1b）
+    return sendFrame(r.session, mentions === undefined ? { t: "say", text, mention } : { t: "say", text, mention, mentions });
   }
 
   async function approve(callId: string, decision: "approved" | "denied"): Promise<FriendsResult<null>> {

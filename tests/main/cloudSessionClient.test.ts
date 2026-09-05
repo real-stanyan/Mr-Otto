@@ -515,6 +515,18 @@ describe("createCloudSessionClient — say/approve/archive/config 就绪闸", ()
     expect(t.sent[t.sent.length - 1]!.to).toBe(HOST_CID);
   });
 
+  it("ready 之后：say 带 mentions 时帧里带 mentions；不带时帧里没有这个字段（#932）", async () => {
+    const { h, t } = await ready();
+    await h.client.say("@运营 看", true, ["ops"]);
+    const withMentions = t.decoded()[t.decoded().length - 1];
+    expect(withMentions).toEqual({ t: "say", text: "@运营 看", mention: true, mentions: ["ops"] });
+
+    await h.client.say("x", false);
+    const withoutMentions = t.decoded()[t.decoded().length - 1] as Record<string, unknown>;
+    expect(withoutMentions).toEqual({ t: "say", text: "x", mention: false });
+    expect("mentions" in withoutMentions).toBe(false);
+  });
+
   it("ready 之后：approve 发出去的帧带 callId + decision", async () => {
     const { h, t } = await ready();
     await h.client.approve("call-9", "denied");

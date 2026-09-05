@@ -29,7 +29,8 @@ export function CloudSessionMain() {
   useEffect(() => {
     if (pending === null || state !== "ready") return;
     const text = take();
-    if (text !== null) void cloudSay(text, true);
+    // 开局卡那句不 @ 也由名单第一只接（老语义：mentions 缺席）
+    if (text !== null) void cloudSay(text);
   }, [pending, state, take, cloudSay]);
 
   if (cs === null) return null;

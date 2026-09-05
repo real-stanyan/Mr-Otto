@@ -1081,8 +1081,10 @@ export interface ShellBridge {
   workspaceCloudJoin(workspaceId: string, sessionId: string): Promise<FriendsResult<null>>;
   /** 断当前云会话连接 */
   workspaceCloudLeave(): Promise<FriendsResult<null>>;
-  /** 往当前云会话发一句话（群聊）。mention = @ 了本机操作者对应的那个成员 */
-  workspaceCloudSay(text: string, mention: boolean): Promise<FriendsResult<null>>;
+  /** 往当前云会话发一句话（群聊）。mention = @ 了本机操作者对应的那个成员；
+      mentions 缺席 = 老语义（mention 那个 boolean 说了算），给了（含 []）=
+      以它为准，覆盖 mention（#932 切片 1b，runtime 那侧同一条判据） */
+  workspaceCloudSay(text: string, mention: boolean, mentions?: string[]): Promise<FriendsResult<null>>;
   /** 批/拒当前云会话里的一个审批请求（callId 来自 approval_request 事件） */
   workspaceCloudApprove(callId: string, decision: "approved" | "denied"): Promise<FriendsResult<null>>;
   /** 归档当前云会话 */

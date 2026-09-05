@@ -203,7 +203,8 @@ export function CloudSessionPage({
     // 复审 Medium：草稿在发送成功之后才清——失败时原样留在输入框里，
     // 不用另外找地方把文字塞回去；workspaceGroupsError 在 footer 上方
     // 露出来说明失败原因
-    const ok = await cloudSay(text, mentionOn);
+    // Task 9 会整个换掉；这里只求 tsc 绿
+    const ok = await cloudSay(text, mentionOn ? undefined : []);
     if (ok) {
       setDraft("");
       setMentionOn(false);

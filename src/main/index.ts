@@ -3308,8 +3308,8 @@ void app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.workspaceCloudJoin, (_e, workspaceId: string, sessionId: string) =>
     cloudClient.join(workspaceId, sessionId));
   ipcMain.handle(CHANNELS.workspaceCloudLeave, () => cloudClient.leave());
-  ipcMain.handle(CHANNELS.workspaceCloudSay, (_e, text: string, mention: boolean) =>
-    cloudClient.say(text, mention));
+  ipcMain.handle(CHANNELS.workspaceCloudSay, (_e, text: string, mention: boolean, mentions: string[] | null) =>
+    cloudClient.say(text, mention, mentions ?? undefined));
   ipcMain.handle(CHANNELS.workspaceCloudApprove, (_e, callId: string, decision: "approved" | "denied") =>
     cloudClient.approve(callId, decision));
   ipcMain.handle(CHANNELS.workspaceCloudArchive, () => cloudClient.archive());
