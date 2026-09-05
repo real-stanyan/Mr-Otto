@@ -1,0 +1,104 @@
+import { describe, it, expect } from "vitest";
+import { join } from "node:path";
+import { LoopEngine } from "../../src/loop/engine.js";
+import { EventStore } from "../../src/session/store.js";
+import type { ModelAdapter } from "../../src/model/adapter.js";
+import type { ExecutionWorld } from "../../src/world/executionWorld.js";
+import type { UserMessageEvent } from "../../src/session/events.js";
+import { tempDir } from "../helpers/tempDir.js";
+
+const world: ExecutionWorld = {
+  fs: { read: async () => "", write: async () => {} },
+  exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+  http: { postJson: async () => ({}) },
+};
+
+function newStore() {
+  return new EventStore(join(tempDir("mrotto-engine-logged-"), "s.db"));
+}
+
+describe("LoopEngine.runLoggedTurn（#932 坑 ②）", () => {
+  it("不再 append user_message：开场那条已经在日志里，turn 只补 assistant_message + turn_ended", async () => {
+    const store = newStore();
+    const adapter: ModelAdapter = { model: "fake", async chat() { return { content: "好" }; } };
+    const engine = new LoopEngine({ store, adapter, tools: [], world, sessionId: "s1", agentId: "ops" });
+    const opening = store.append({
+      sessionId: "s1", ts: 1, type: "user_message", content: "[alice]: @运营 在吗", fromUid: "u1", mentions: ["ops"],
+    }) as UserMessageEvent;
+
+    await engine.runLoggedTurn(opening);
+
+    const types = store.load("s1").map((e) => e.type);
+    expect(types.filter((t) => t === "user_message")).toHaveLength(1);
+    expect(types.at(-1)).toBe("turn_ended");
+    expect(store.load("s1").at(-1)).toMatchObject({ type: "turn_ended", outcome: "completed", agentId: "ops" });
+  });
+
+  it("模型看到的开场白就是那条已落盘的消息", async () => {
+    const store = newStore();
+    let seen = "";
+    const adapter: ModelAdapter = {
+      model: "fake",
+      async chat(messages) { seen = JSON.stringify(messages); return { content: "好" }; },
+    };
+    const engine = new LoopEngine({ store, adapter, tools: [], world, sessionId: "s1" });
+    const opening = store.append({ sessionId: "s1", ts: 1, type: "user_message", content: "[alice]: 看销量" }) as UserMessageEvent;
+    await engine.runLoggedTurn(opening);
+    expect(seen).toContain("[alice]: 看销量");
+  });
+
+  it("尾上多出来一条点名别人的 user_message，不算「我没答的」——不再采样一圈", async () => {
+    const store = newStore();
+    let calls = 0;
+    const adapter: ModelAdapter = {
+      model: "fake",
+      async chat() {
+        calls += 1;
+        // 第一次采样期间，别人往日志尾巴上追加了一条给 ads 的话
+        if (calls === 1) {
+          store.append({ sessionId: "s1", ts: 2, type: "user_message", content: "[bob]: @广告 看投放", fromUid: "u2", mentions: ["ads"] });
+        }
+        return { content: "好" };
+      },
+    };
+    const engine = new LoopEngine({ store, adapter, tools: [], world, sessionId: "s1", agentId: "ops" });
+    const opening = store.append({ sessionId: "s1", ts: 1, type: "user_message", content: "[alice]: @运营 在吗", fromUid: "u1", mentions: ["ops"] }) as UserMessageEvent;
+    await engine.runLoggedTurn(opening);
+    expect(calls).toBe(1);
+  });
+
+  it("尾上多出来一条点名我的，照旧再采样一圈（issue #871 的语义不变）", async () => {
+    const store = newStore();
+    let calls = 0;
+    const adapter: ModelAdapter = {
+      model: "fake",
+      async chat() {
+        calls += 1;
+        if (calls === 1) {
+          store.append({ sessionId: "s1", ts: 2, type: "user_message", content: "[bob]: @运营 再看下退款", fromUid: "u2", mentions: ["ops"] });
+        }
+        return { content: "好" };
+      },
+    };
+    const engine = new LoopEngine({ store, adapter, tools: [], world, sessionId: "s1", agentId: "ops" });
+    const opening = store.append({ sessionId: "s1", ts: 1, type: "user_message", content: "[alice]: @运营 在吗", fromUid: "u1", mentions: ["ops"] }) as UserMessageEvent;
+    await engine.runLoggedTurn(opening);
+    expect(calls).toBe(2);
+  });
+
+  it("没配 agentId 的 engine（本机会话）：mentions 不参与判断，尾上任何 user_message 都算没答的", async () => {
+    const store = newStore();
+    let calls = 0;
+    const adapter: ModelAdapter = {
+      model: "fake",
+      async chat() {
+        calls += 1;
+        if (calls === 1) store.append({ sessionId: "s1", ts: 2, type: "user_message", content: "补一句", mentions: ["ads"] });
+        return { content: "好" };
+      },
+    };
+    const engine = new LoopEngine({ store, adapter, tools: [], world, sessionId: "s1" });
+    await engine.runTurn("在吗");
+    expect(calls).toBe(2);
+  });
+});

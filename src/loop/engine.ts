@@ -3,7 +3,13 @@
 
 import type { NewSessionEvent } from "../session/store.js";
 import type { EventLog } from "../session/eventLog.js";
-import type { MemoryLoadedEvent, SessionEvent, UserAttachmentRef, UserTextFile } from "../session/events.js";
+import type {
+  MemoryLoadedEvent,
+  SessionEvent,
+  UserAttachmentRef,
+  UserMessageEvent,
+  UserTextFile,
+} from "../session/events.js";
 import { deriveMessages, DEFAULT_COMPRESSION, COMPACT_COMPRESSION } from "../session/deriveMessages.js";
 import { barrenEventIndexes } from "../session/barrenTurns.js";
 import { boundedContextEvents } from "../session/modelContextScan.js";
@@ -268,7 +274,15 @@ export class LoopEngine {
   private unseenUserTail(projected: SessionEvent[]): boolean {
     const lastSeq = projected.at(-1)?.seq ?? -1;
     const fresh = this.opts.store.load(this.opts.sessionId, { afterSeq: lastSeq });
-    return fresh.some((e) => e.type === "user_message");
+    const me = this.opts.agentId;
+    return fresh.some((e) => {
+      if (e.type !== "user_message") return false;
+      // 群聊里点了名的话只有被点的那只欠它一个回答（#932）：运营正在说话时
+      // 有人 "@广告 看投放"，运营不该为此再采样一圈——那句不是说给它的。
+      // 没配 agentId（本机会话）或这条没点名（群里随口一句）：照旧算没答的
+      if (!me || !e.mentions || e.mentions.length === 0) return true;
+      return e.mentions.includes(me);
+    });
   }
 
   /** 当前日志快照：第一次全量，之后增量补尾段。首圈持有的是 load() 现造的
@@ -629,6 +643,20 @@ export class LoopEngine {
       ...(textFiles && textFiles.length > 0 ? { textFiles } : {}),
       ...(background ? { origin: "background" as const, backgroundTaskIds: background.taskIds } : {}),
     });
+    return this.runFrom(opening);
+  }
+
+  /** 对一条**已经在日志里**的 user_message 起 turn（#932 坑 ②）。云会话的
+      发言在 say() 那一刻就落盘（带 fromUid/mentions），turn 可能排队等一会儿
+      才轮到——轮到时开场白早就在日志里了，再 append 一条就是同一句话落两遍
+      （模型读两遍、时间线画两遍）。runTurn 与它共用 runFrom：turn 的身份、
+      收口、finally 清场一个字不差，只有“开场那条谁来落”不同。
+      opening 必须带 seq（store.append 的返回值），不是 NewSessionEvent */
+  async runLoggedTurn(opening: UserMessageEvent): Promise<"completed" | "aborted"> {
+    return this.runFrom(opening);
+  }
+
+  private async runFrom(opening: SessionEvent): Promise<"completed" | "aborted"> {
     // turn 的身份 = 开启它的 user_message 的 seq（issue #344 steer 的乐观锁）
     this.currentTurnId = opening.seq;
     this.turnAbort = new AbortController();
