@@ -632,6 +632,7 @@ export const EventRow = memo(function EventRow({ event, isLast = false }: { even
     case "memory_loaded":
     case "memory_user_edit":
     case "memory_nudge":
+    case "workspace_memory_loaded": // 工作区记忆快照（#949），同上不是对话内容
       return null;
 
     // lifecycle 事件（ADR-0004）：聊天区是对话投影，系统脉搏不在这渲染（回放里看）。

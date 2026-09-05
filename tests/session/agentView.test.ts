@@ -53,6 +53,15 @@ describe("projectForAgent（#928 切片 1a）", () => {
     ];
     expect(projectForAgent(log, "ads")).toEqual([]);
   });
+
+  it("别人的 workspace_memory_loaded 不进我的视图，自己的照留（#949）", () => {
+    const events = [
+      { seq: 0, ts: 1, sessionId: "s", type: "workspace_memory_loaded", agentId: "ops", agentName: "运营", shared: "S", own: "ops 的" },
+      { seq: 1, ts: 2, sessionId: "s", type: "workspace_memory_loaded", agentId: "ads", agentName: "广告", shared: "S", own: "ads 的" },
+    ] as unknown as SessionEvent[];
+    const mine = projectForAgent(events, "ops");
+    expect(mine.map((e) => e.seq)).toEqual([0]);
+  });
 });
 
 describe("agentView（#928 切片 1a：EventLog wrapper）", () => {

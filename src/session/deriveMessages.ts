@@ -2,12 +2,13 @@
 // 纯函数：同样的 events 永远得到同样的 messages。resume/fork/replay 全靠它。
 
 import { isolatedPromptText, type IsolatedWorkspace } from "../shared/sessionWorktree.js";
-import type { CloudSessionFacts, MemoryTopicSnapshot, SessionEvent, UserTextFile } from "./events.js";
+import type { CloudSessionFacts, MemoryTopicSnapshot, SessionEvent, UserTextFile, WorkspaceMemoryLoadedEvent } from "./events.js";
 import { barrenEventIndexes } from "./barrenTurns.js";
 import { activeSkills } from "./activeSkills.js";
 import { absorbedIndexes } from "./microCompact.js";
 import { charCount, MEMORY_LIMITS, parseEntries, formatEntries, tierRuleText, topicRuleText, topicIndexOf } from "../shared/memoryStore.js";
 import { renderTopicIndex } from "../shared/memoryTopics.js";
+import { WORKSPACE_MEMORY_LIMITS, workspaceTierRuleText } from "../shared/workspaceMemory.js";
 import { sanitizeForPrompt } from "../shared/threatPatterns.js";
 
 /** 用户正文 + 文本文件全文拼成模型可见文本。日志里二者分开存
@@ -199,6 +200,23 @@ export function renderMemoryPrompt(
     `本会话中途写入的下个会话才可见；用户可在设置页查看和手动编辑这几份笔记；` +
     `session_search 查的是历史会话正文，和记忆是分开的两条路。` +
     renderMemoryBlocks(memory, user, project, topics)
+  );
+}
+
+/** workspace_memory_loaded 专属的指引 + 块（#949）。与 renderMemoryPrompt 分开写而不是加参数：
+    云端没有 user/project/topic 三档、没有 session_search、没有「下个会话才可见」（共享档本会话
+    中途就会被别的 agent 改，下一 turn 的快照就带上了）——共用一段文案得处处加分支 */
+export function renderWorkspaceMemoryPrompt(e: WorkspaceMemoryLoadedEvent): string {
+  const s = memoryBlock("SHARED (这个工作区所有智能体共用)", e.shared, WORKSPACE_MEMORY_LIMITS.shared);
+  const o = memoryBlock(`OWN (只有「${e.agentName}」看得见)`, e.own, WORKSPACE_MEMORY_LIMITS.own);
+  const blocks = s || o ? `\n${s}${o}${MEMORY_RULE}` : "";
+  return (
+    `\n你有这个工作区里的长期记忆（本消息末尾的记忆块），用 memory 工具维护：记业务口径、数据定义、客户约定、稳定的分工，优先记能减少同事再次纠正你的事；` +
+    `不记任务进度、一周内会过期的东西。记忆分两档：${workspaceTierRuleText({ upper: true })}` +
+    `写陈述句不写祈使句。` +
+    `\n记忆的工作机制（被问到时照实说，别脑补）：每次轮到你发言前整份快照注入（就是下面的记忆块），没有按相关性检索；` +
+    `你或别的智能体写入的内容，下一次轮到你时可见；成员可在工作区设置页「记忆」查看和手动编辑。` +
+    blocks
   );
 }
 
@@ -412,6 +430,8 @@ export function deriveMessages(
   const today = dayOfLastEvent(events);
   // 围栏 system 消息单独记着：context_compacted 清场时它要被抬回来
   let systemMessage: SystemChatMessage | null = null;
+  // 工作区记忆快照（#949）：最新一条胜出，主循环结束后统一拼一次（见下方）
+  let workspaceMemoryPrompt: string | null = null;
   const boundary = compression ? fidelityBoundary(events, compression.keepRecentTurns, barren) : 0;
   // 孤儿 tool_result 过滤（issue #186）：nudge 派活的收口 tool_result
   // （toolCallId = memory-nudge-N）没有对应的 assistant_message.toolCalls，
@@ -670,6 +690,13 @@ export function deriveMessages(
         if (systemMessage) systemMessage.content += renderMemoryPrompt(event.memory, event.user, event.project, event.projectRoot, event.topics);
         break;
 
+      case "workspace_memory_loaded":
+        // 最新一条胜出（#949）：一条云会话里一只 agent 会落多条快照（共享档被别人改过就再落一条）。
+        // 不在这里直接 += ——那样两条快照就是两个 SHARED 块叠在 system 里，模型读到新旧两套口径。
+        // 记下来，主循环结束后拼一次；拼在尾部 = volatile tail，同 memory_loaded 的前缀缓存理由
+        workspaceMemoryPrompt = renderWorkspaceMemoryPrompt(event);
+        break;
+
       case "context_compacted":
         // 摘要替换此前的一切投影：清空重来。两点讲究：
         // ① 围栏 system 消息必须幸存——工作目录认知不能被压掉；
@@ -765,6 +792,9 @@ export function deriveMessages(
     }
   }
   flushDeferred(); // 日志停在组中间（app 退出/正在跑）：插话不丢
+
+  // 工作区记忆块拼在 system 末尾（#949）。systemMessage 为 null（旧日志 / 没带 workspace）时静默不补造，同 memory_loaded
+  if (systemMessage && workspaceMemoryPrompt) systemMessage.content += workspaceMemoryPrompt;
 
   // summaryAt 可能 === events.length（被吸收区是日志尾巴）——循环里插不到，这里补
   if (micro && micro.summaryAt >= events.length) {

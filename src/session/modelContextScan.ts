@@ -49,6 +49,8 @@ export function boundedContextEvents(store: EventLog, sessionId: string): Sessio
   const head: SessionEvent[] = [
     ...store.ofType(sessionId, "session_created", { beforeSeq: cp.seq }),
     ...store.ofType(sessionId, "memory_loaded", { beforeSeq: cp.seq }),
+    // 工作区记忆快照（#949）：全部捞、投影只认最后一条——agentView 的 ofType 已按 agentId 过滤
+    ...store.ofType(sessionId, "workspace_memory_loaded", { beforeSeq: cp.seq }),
     ...store.ofType(sessionId, "skill_invoked", { beforeSeq: cp.seq }),
     // 停用与启用必须成对地捞：只捞启用的话，checkpoint 之前的停用落在扫描窗口
     // 外面，台账算不出它，被停用的 skill 会在 compact 之后诈尸
