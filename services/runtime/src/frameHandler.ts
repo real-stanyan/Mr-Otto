@@ -359,7 +359,10 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
           // 的 SQLite）。超速**不静默丢**——回一条看得见的 error 帧，
           // 客户端把它显示给发送者本人（会话房里不能回 denied：客户端把
           // denied 当终态，会直接断掉这条连接，而限速是"待会儿再来"）
-          const kind = msg.mention ? "turn" : "say";
+          // 判据要连 mentions 一起看（#932 坑 ④）：新版桌面用 chip 输入，
+          // 点了名的那条帧 mentions 非空而 mention 可能是 false —— 只看
+          // mention 的话，一条真会起 turn（真花钱）的发言被记进了 say 桶
+          const kind = msg.mention || (msg.mentions?.length ?? 0) > 0 ? "turn" : "say";
           if (!deps.rateLimit.allow(kind, entry.uid)) {
             deps.send(cid, { t: "error", msg: throttleMessage(kind) });
             return;

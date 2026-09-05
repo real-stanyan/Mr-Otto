@@ -476,49 +476,6 @@ describe("多智能体云会话（#928 切片 1a）", () => {
     expect(seen).toEqual(["ops"]); // 名单第一只 = 默认那只
   });
 
-  it("排空循环中途抛错(#928 修复轮 1/5):剩下的 job 不再尝试跑,但每个都留下一条 chat_message,协调器不卡死", async () => {
-    const store = newStore();
-    const events: SessionEvent[] = [];
-    const seen: string[] = [];
-    const session = createCloudSession({
-      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
-      store, world: fakeWorld, px, hostUids: async () => [],
-      agents: async () => AGENTS,
-      adapterFor: (a) => ({
-        model: a.models[0]!,
-        async chat() {
-          // ops 那只的 adapter 直接炸掉,模拟"起跑失败"(hostUids() 抛错、
-          // runTurn 抛错都是这条路径,这里用最直接的 chat() 抛错触发)
-          if (a.agentId === "ops") throw new Error("boom：ops 的 adapter 炸了");
-          seen.push(a.agentId);
-          return { content: `${a.name}答` };
-        },
-      }),
-      onEvent: (e) => events.push(e), onUsage: () => {},
-    });
-
-    // ops 排第一个(拿到 start_turn,真的起跑并抛错),ads 排第二个(queued,
-    // 会在 finally 的丢弃排空里被捞到——但不会被真的跑,因为 ops 已经把这条
-    // 调用的排空循环炸断了)
-    await expect(
-      session.say("u1", "alice", "@运营 @广告 一起看", true, ["ops", "ads"])
-    ).rejects.toThrow("boom");
-
-    // ads 那个 job 被丢弃排空——从没真的起过 turn,它的 adapter.chat() 没被调用过
-    expect(seen).toEqual([]);
-    // 但它的话没有凭空消失:留下一条 chat_message(两只 agent 的 job 共享
-    // 同一条原始消息,所以丢弃排空只会补这一条,不是两条)
-    const chatMessages = events.filter((e) => e.type === "chat_message");
-    expect(chatMessages).toHaveLength(1);
-    expect(chatMessages[0]).toMatchObject({ fromUid: "u1", label: "alice", content: "@运营 @广告 一起看" });
-    // 协调器没有卡死——不是"看起来没丢数据"但已经再起不来了
-    expect(session.isRunning()).toBe(false);
-
-    // 而且真的还能再起下一轮
-    await session.say("u2", "bob", "@广告 还在吗", true, ["ads"]);
-    expect(seen).toEqual(["ads"]);
-  });
-
   it("多 agent 场景:approval_request.agentId 是当前跑着的那一只(#928 修复轮 1/5)", async () => {
     const store = newStore();
     const events: SessionEvent[] = [];
@@ -595,47 +552,56 @@ describe("多智能体云会话（#928 切片 1a）", () => {
     // 任何 runJob 替它落 user_message,finally 的补偿排空也捞不到它
     await session.say("u3", "carol", "@广告 做 C", true, ["ads"]);
 
-    // carol"做 C"这句话必须在日志里找得到——落成 chat_message 还是
-    // user_message 都行,只要不是"一个字节都没留下"
+    // 1b（#932 坑 ②）：去重命中不再需要"补一条 chat_message"这种特例——
+    // say() 一律先落 user_message，落盘早于排队，去重只决定"跑不跑一轮"，
+    // 决定不了"这句话留不留痕"。三次点名 = 三条 user_message，零条
+    // chat_message（1a 那条补偿是为了"不在队里的 job 说过的话"，那个前提
+    // 没有了）
     expect(
       events.some(
-        (e) =>
-          (e.type === "chat_message" || e.type === "user_message") &&
-          (e as { content: string }).content === "@广告 做 C"
+        (e) => e.type === "user_message" && (e as { content: string }).content === "[carol]: @广告 做 C"
       )
     ).toBe(true);
+    expect(events.filter((e) => e.type === "user_message")).toHaveLength(3);
+    expect(events.filter((e) => e.type === "chat_message")).toHaveLength(0);
 
     // 收尾:放 ops 过关,不留一条永远 pending 的 promise
     resolveOpsChat({ content: "运营答完了" });
     await opsSay;
+
+    // 去重的那一只不重复起 turn：ops 一轮 + ads 一轮 = 两条 assistant_message
+    // （carol 那句被 ads 的排队去重吃掉，它开跑时读的是整份日志，三句都在里面）
+    expect(events.filter((e) => e.type === "assistant_message")).toHaveLength(2);
   });
 
   it("去重与排队混在同一条调用里(#928 终审 Critical,修复轮 2/5):[\"logged_only\",\"queued\"] 不该补 chat_message —— 那个 queued 的 job 会自己落 user_message", async () => {
     const store = newStore();
     const events: SessionEvent[] = [];
     let resolveOpsChat!: (reply: ModelReply) => void;
+    let opsCalls = 0;
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [],
       agents: async () => AGENTS,
-      adapterFor: (a) => {
-        // 只有"ops"第一次被叫到时才攥住不放——它自己的 job 后面还会因为
-        // message3 里也点了它而再跑一轮(那一轮不该也挂住,否则整条排空
-        // 循环真的会卡死,测试本身就跑不完,不是这次要测的东西)
-        let opsCalls = 0;
-        return {
-          model: a.models[0]!,
-          async chat() {
-            if (a.agentId === "ops") {
-              opsCalls++;
-              if (opsCalls === 1) {
-                return new Promise<ModelReply>((resolve) => { resolveOpsChat = resolve; });
-              }
+      // 计数器**在 adapterFor 外面**（1b/#932 坑 ①）：engineFor 现在每 turn
+      // 现取一次 adapter，工厂里的 let 会跟着每轮重置——ops 的第二轮又会拿到
+      // opsCalls=0 那条挂住的分支，测试自己卡死。这不是被测行为变了，是这个
+      // 假货原来偷偷依赖了"adapter 一只 agent 只造一次"
+      adapterFor: (a) => ({
+        model: a.models[0]!,
+        async chat() {
+          // 只有"ops"第一次被叫到时才攥住不放——它自己的 job 后面还会因为
+          // message3 里也点了它而再跑一轮(那一轮不该也挂住,否则整条排空
+          // 循环真的会卡死,测试本身就跑不完,不是这次要测的东西)
+          if (a.agentId === "ops") {
+            opsCalls++;
+            if (opsCalls === 1) {
+              return new Promise<ModelReply>((resolve) => { resolveOpsChat = resolve; });
             }
-            return { content: `${a.name}答` };
-          },
-        };
-      },
+          }
+          return { content: `${a.name}答` };
+        },
+      }),
       onEvent: (e) => events.push(e), onUsage: () => {},
     });
 
@@ -645,7 +611,6 @@ describe("多智能体云会话（#928 切片 1a）", () => {
     // 先让"ads"真的排进队列里(queued,还没被捞走)
     await session.say("u2", "bob", "@广告 做 B", true, ["ads"]);
 
-    const chatCountBefore = events.filter((e) => e.type === "chat_message").length;
 
     // 这条调用同时点了"ads"(已经在队里,命中去重 → logged_only)和
     // "ops"(它自己的 job 已被 drainer 捞走、不在队里 → 不去重,真的入队,
@@ -654,26 +619,33 @@ describe("多智能体云会话（#928 切片 1a）", () => {
     // drainer 排空到它时,自己落一条带这句话原文的 user_message
     await session.say("u3", "carol", "@广告 也麻烦 @运营", true, ["ads", "ops"]);
 
-    expect(events.filter((e) => e.type === "chat_message").length).toBe(chatCountBefore);
-    expect(
-      events.some(
-        (e) => e.type === "chat_message" && (e as { content: string }).content === "@广告 也麻烦 @运营"
-      )
-    ).toBe(false);
+    // 1b（#932 坑 ②）：这句话的痕迹不再取决于 decisions 的组合——say() 收下
+    // 就落一条 user_message，chat_message 只剩"没点名"一个来源，这里一条都
+    // 不该有
+    expect(events.filter((e) => e.type === "chat_message")).toHaveLength(0);
 
     // 放 ops 第一轮过关,让排空循环继续跑完(ops、ads、message3 的 ops job
     // 依次落盘)
     resolveOpsChat({ content: "运营答完了" });
     await opsSay;
 
-    // 验证注释里说的"那个 queued 的 ops job 会自己落 user_message"是真的
-    // 发生了,不是只凭注释断言——message3 的原文最终确实以 user_message
-    // 的身份出现在日志里
+    // message3 的原文确实以 user_message 的身份在日志里（1b 里它落在 say()
+    // 那一刻，而不是等 drainer 排到 ops 那个 job 才落）
     expect(
       events.some(
         (e) => e.type === "user_message" && (e as { content: string }).content === "[carol]: @广告 也麻烦 @运营"
       )
     ).toBe(true);
+    // 三次发言 = 三条 user_message。
+    // assistant_message 是 **4** 条不是 3 条，这是 1b「落盘早于开跑」的一个
+    // 已知代价，写在这里免得下次有人把它当 bug 追：ops 第一轮说完话时，
+    // carol 那条（点了 ops）已经在日志尾上了，engine 的 unseenUserTail
+    // （ADR-0205）于是在同一个 turn 里又采样了一圈答它；随后 drain 排到
+    // carol 给 ops 排的那个 job，又正经跑了一轮。两轮读的都是整份日志，
+    // 答案不会错，多花的是一次模型调用。1a 里这条路走不到——那时 carol
+    // 的话要等它的 job 起跑才落盘，第一轮的日志尾上什么都没有
+    expect(events.filter((e) => e.type === "user_message")).toHaveLength(3);
+    expect(events.filter((e) => e.type === "assistant_message")).toHaveLength(4);
   });
 
   it("没提示词也没同伴的占位 agent(#928 终审,修复轮 3/5):brief 说不出任何内容,不该落 agent_briefed", async () => {
@@ -719,5 +691,139 @@ describe("多智能体云会话（#928 切片 1a）", () => {
 
     const briefed = events.find((e) => e.type === "agent_briefed");
     expect(briefed).toMatchObject({ agentId: "solo", instructions: "" });
+  });
+});
+
+describe("多智能体云会话 · 切片 1b（#932 四个坑）", () => {
+  function open(store: EventStore, opts: {
+    agents: () => Promise<typeof AGENTS>;
+    adapterFor: (a: (typeof AGENTS)[number]) => ModelAdapter;
+    events?: SessionEvent[];
+  }): CloudSession {
+    return createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [],
+      agents: opts.agents, adapterFor: opts.adapterFor,
+      onEvent: (e) => opts.events?.push(e), onUsage: () => {},
+    });
+  }
+
+  it("坑 ②：点了名的发言在 say() 那一刻就落 user_message（带 fromUid/mentions），turn 不再另落一条", async () => {
+    const store = newStore();
+    const session = open(store, {
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({ model: a.models[0]!, async chat() { return { content: "答" }; } }),
+    });
+    await session.say("u1", "alice", "@运营 看下销量", true, ["ops"]);
+    const ums = store.load("s1").filter((e) => e.type === "user_message");
+    expect(ums).toHaveLength(1);
+    expect(ums[0]).toMatchObject({ content: "[alice]: @运营 看下销量", fromUid: "u1", mentions: ["ops"] });
+    // 开场白 seq 在 assistant_message 之前
+    const am = store.load("s1").find((e) => e.type === "assistant_message")!;
+    expect(ums[0]!.seq).toBeLessThan(am.seq);
+    store.close();
+  });
+
+  it("坑 ①：改了型号，下一 turn 立刻用新 adapter（不等 daemon 重启）", async () => {
+    const store = newStore();
+    let model = "m-v1";
+    const used: string[] = [];
+    const session = open(store, {
+      agents: async () => [{ ...AGENTS[0]!, models: [model] }],
+      adapterFor: (a) => ({ model: a.models[0]!, async chat() { used.push(a.models[0]!); return { content: "答" }; } }),
+    });
+    await session.say("u1", "alice", "@运营 一", true, ["ops"]);
+    model = "m-v2";
+    await session.say("u1", "alice", "@运营 二", true, ["ops"]);
+    expect(used).toEqual(["m-v1", "m-v2"]);
+    store.close();
+  });
+
+  it("坑 ③：排队期间 agent 被删 —— 留一条 turn_ended{error, agentId}，openTurns 收口", async () => {
+    const store = newStore();
+    let roster = AGENTS;
+    const session = open(store, {
+      agents: async () => roster,
+      adapterFor: (a) => ({
+        model: a.models[0]!,
+        async chat() {
+          // 运营跑着的时候，广告被删了
+          roster = AGENTS.filter((x) => x.agentId !== "ads");
+          return { content: "答" };
+        },
+      }),
+    });
+    await session.say("u1", "alice", "@运营 @广告 一起", true, ["ops", "ads"]);
+    const events = store.load("s1");
+    const gone = events.find((e) => e.type === "turn_ended" && e.agentId === "ads");
+    expect(gone).toMatchObject({ outcome: "error" });
+    expect((gone as { error?: string }).error).toContain("ads");
+    const { openTurns } = await import("../../src/shared/turnLedger.js");
+    expect(openTurns(events)).toEqual([]);
+    store.close();
+  });
+
+  it("坑 ④：客户端给了 mentions 就以它为准 —— mentions:[] + 正文含 @ 也只落 chat_message", async () => {
+    const store = newStore();
+    const seen: string[] = [];
+    const session = open(store, {
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: "答" }; } }),
+    });
+    await session.say("u1", "alice", "@运营 这句只是复述，别跑", false, []);
+    expect(seen).toEqual([]);
+    expect(store.load("s1").map((e) => e.type)).toEqual(["chat_message"]);
+    store.close();
+  });
+
+  it("坑 ④ 反面：mentions 缺席（手机端）仍走老语义 —— 正文解析、再回落名单第一只", async () => {
+    const store = newStore();
+    const seen: string[] = [];
+    const session = open(store, {
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: "答" }; } }),
+    });
+    await session.say("u1", "alice", "@广告 看投放", true);
+    await session.say("u1", "alice", "在吗", true);
+    expect(seen).toEqual(["ads", "ops"]);
+    store.close();
+  });
+
+  it("重启补跑：日志里有排队中的点名发言，重新装配时自动跑完", async () => {
+    const store = newStore();
+    // 模拟"上一个 daemon 收下了话、还没跑就死了"：只有那条 user_message
+    store.append({ sessionId: "s1", ts: 1, type: "user_message", content: "[alice]: @运营 看", fromUid: "u1", mentions: ["ops"] });
+    const seen: string[] = [];
+    let resolveDone!: () => void;
+    const done = new Promise<void>((r) => { resolveDone = r; });
+    open(store, {
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); resolveDone(); return { content: "答" }; } }),
+    });
+    await done;
+    // 等 turn 完整收口：轮询 openTurns 直到空（最多 1s），不用固定 sleep
+    const { openTurns } = await import("../../src/shared/turnLedger.js");
+    for (let i = 0; i < 50 && openTurns(store.load("s1")).length > 0; i++) await new Promise((r) => setTimeout(r, 20));
+    expect(seen).toEqual(["ops"]);
+    expect(openTurns(store.load("s1"))).toEqual([]);
+    store.close();
+  });
+
+  it("排空循环里一个 job 抛错，后面的 job 照跑 —— 每只各自收口，不再整队丢弃", async () => {
+    const store = newStore();
+    const seen: string[] = [];
+    const session = open(store, {
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({
+        model: a.models[0]!,
+        async chat() { seen.push(a.agentId); if (a.agentId === "ops") throw new Error("boom"); return { content: "答" }; },
+      }),
+    });
+    await session.say("u1", "alice", "@运营 @广告 一起", true, ["ops", "ads"]);
+    expect(seen).toEqual(["ops", "ads"]);
+    expect(session.isRunning()).toBe(false);
+    const ends = store.load("s1").filter((e) => e.type === "turn_ended");
+    expect(ends.map((e) => [e.agentId, (e as { outcome: string }).outcome])).toEqual([["ops", "error"], ["ads", "completed"]]);
+    store.close();
   });
 });

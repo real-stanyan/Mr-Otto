@@ -1,7 +1,18 @@
 import { describe, it, expect } from "vitest";
 import { createTurnCoordinator, type TurnJob } from "../../services/runtime/src/turnCoordinator.js";
+import type { UserMessageEvent } from "../../src/session/events.js";
 
-const job = (agentId: string): TurnJob => ({ agentId, fromUid: "u1", label: "alice", text: "干活" });
+/** 开场那条已落盘的 user_message（#932 坑 ②：job 驮的是事件本身，不是拼句子的零件） */
+const um = (seq: number): UserMessageEvent => ({
+  sessionId: "s",
+  ts: 0,
+  seq,
+  type: "user_message",
+  content: "x",
+});
+
+let nextSeq = 0;
+const job = (agentId: string): TurnJob => ({ agentId, fromUid: "u1", opening: um(nextSeq++) });
 
 /** 调用方的标准消费形状 —— 测试里复用它,免得每条各写一遍 */
 function drain(c: ReturnType<typeof createTurnCoordinator>): string[] {

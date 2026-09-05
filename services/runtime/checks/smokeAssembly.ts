@@ -232,7 +232,7 @@ async function scenarioMainFlow(): Promise<void> {
       .filter(isEventFrame)
       .map((m) => m.event);
     check(
-      "say(mention) 触发一个 turn：event 帧序列以 user_message 开头（engine.runTurn 落的第一条）",
+      "say(mention) 触发一个 turn：event 帧序列以 user_message 开头（say() 收下就落的那一条，#932 坑 ②）",
       eventFrames[0]?.type === "user_message",
       `types=${eventFrames.map((e) => e.type).join(",")}`
     );
