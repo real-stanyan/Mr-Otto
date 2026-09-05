@@ -67,6 +67,20 @@ describe("boundedContextEvents（issue #351）", () => {
     store.close();
   });
 
+  it("agent 身份快照（#957 A-3）：checkpoint 之前落的 agent_briefed 幸存于有界重建", () => {
+    const store = new EventStore(":memory:");
+    put(store, { type: "session_created", title: "t", workspace: "/w", cloud: { workspaceId: "w1" } });
+    put(store, { type: "agent_briefed", agentId: "ops", name: "运营", instructions: "你管店铺运营", roster: [] });
+    for (let i = 1; i <= 8; i++) turn(store, i);
+    put(store, { type: "context_compacted", summary: "前八轮的摘要", model: "m" });
+    for (let i = 9; i <= 11; i++) turn(store, i);
+    // 有界集里必须还有这条——不然投影出来的 system 里没有身份，而全量里有
+    const bounded = boundedContextEvents(store, S)!;
+    expect(bounded.some((e) => e.type === "agent_briefed")).toBe(true);
+    assertEquivalent(store);
+    store.close();
+  });
+
   it("auto-compact 中途触发：当前请求原文兜底重注（issue #193 路径）也一致", () => {
     const store = new EventStore(":memory:");
     put(store, { type: "session_created", title: "t", workspace: "/w" });

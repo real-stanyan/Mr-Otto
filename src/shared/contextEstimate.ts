@@ -100,6 +100,11 @@ function pendingAfter(
   const micro = absorbedIndexes(events, barren);
   const latestMicro = latestMicroCompacted(events);
   const microIdx = latestMicro ? events.indexOf(latestMicro) : -1;
+  // agent 身份快照最新一条胜出（#957 A-3），同投影：后一条整体替换前一条
+  const latestBrief = events.reduce<SessionEvent | null>(
+    (acc, e) => (e.type === "agent_briefed" ? e : acc),
+    null
+  );
 
   // 真实会话里吸收区几乎总落在锚点**之前**：锚点是最近一次带账单的 assistant_message，
   // 它的 promptTokens 那一次请求本来就已经包含了被吸收的原文（微压缩发生在那之后）。
@@ -152,13 +157,17 @@ function pendingAfter(
         pending += estimateTokens(e.instructions);
         break;
       case "agent_briefed":
-        // 同 subagent_briefed：工作区多智能体（#928）里这只 agent 的指令快照
-        // 被投影成一条 user 消息（deriveMessages.ts 的 "agent_briefed" 分支）。
-        // 这条 case 曾经缺席——落进这个 switch 的 default 分支，圆环少算了
-        // 这整段自我介绍而不报错。这个文件本身就是 AGENTS.md「新事件类型检查
-        // 清单」漏掉的一处（ADR-0219 补的）——具体排第几看 AGENTS.md 现文，
-        // 这里不写死序号，序号会漂但这条注释不该跟着失效
-        pending += estimateTokens(e.instructions);
+        // 工作区多智能体（#928）里这只 agent 的指令快照。这条 case 曾经缺席——
+        // 落进这个 switch 的 default 分支，圆环少算了这整段自我介绍而不报错。
+        // 这个文件本身就是 AGENTS.md「新事件类型检查清单」漏掉的一处（ADR-0219
+        // 补的）——具体排第几看 AGENTS.md 现文，这里不写死序号，序号会漂但这条
+        // 注释不该跟着失效。
+        // **最新一条胜出**（#957 A-3）：投影已经从「事件位置一条 user 消息」改成
+        // 「焊在 system 尾部、后一条整体替换前一条」，照旧逐条累加就是把一段被
+        // 替换掉的文字也算进上下文。残留一处不修：最后一条 brief 在锚点之后、
+        // 而更早那条在锚点之前时，早那条的 token 还在账单里，这里不去减它
+        //（同 micro_compacted 那段的取舍：多算一份自我介绍，下一次真实账单自愈）
+        if (e === latestBrief) pending += estimateTokens(e.instructions);
         break;
       case "image_described":
         pending += estimateTokens(e.content); // 同上:代读文本注入为 user 消息
