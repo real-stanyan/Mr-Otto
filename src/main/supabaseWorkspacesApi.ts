@@ -3,7 +3,7 @@
 // assembleSnapshot 里单测，这里薄到无逻辑不单测（错误原样上抛给调用方收敛）。
 
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { assembleSnapshot, type WorkspaceSnapshot } from "../shared/workspaces.js";
+import { assembleSnapshot, type WorkspaceMemoryRow, type WorkspaceSnapshot } from "../shared/workspaces.js";
 import type { AgentToolAllow } from "../shared/agentToolAllow.js";
 
 /** supabase-js 的 {data,error} 归一:error 转 throw(带 pg code,上层认 23505 等) */
@@ -270,6 +270,22 @@ export async function deleteAgentRow(
   if (!Array.isArray(rows) || rows.length === 0) {
     throw new Error("行不存在或无权删除");
   }
+}
+
+/** 工作区记忆（#949）：一档一行，agent_id '' = 共享档。成员可读（0023 RLS） */
+export async function listMemoryRows(client: SupabaseClient, workspaceId: string): Promise<WorkspaceMemoryRow[]> {
+  const rows = (unwrap(
+    await client.from("workspace_memories").select("agent_id,content,updated_at").eq("workspace_id", workspaceId),
+  ) ?? []) as { agent_id: string; content: string; updated_at: string }[];
+  return rows.map((r) => ({ agentId: r.agent_id, content: r.content ?? "", updatedTs: Date.parse(r.updated_at) || 0 }));
+}
+
+/** 成员写一档（0023 RLS 在籍即可）。upsert：第一次存也走这条 */
+export async function upsertMemoryRow(client: SupabaseClient, workspaceId: string, agentId: string, content: string): Promise<void> {
+  unwrap(
+    await client.from("workspace_memories")
+      .upsert({ workspace_id: workspaceId, agent_id: agentId, content, updated_at: new Date().toISOString() }, { onConflict: "workspace_id,agent_id" }),
+  );
 }
 
 /** 云会话列表页用的行（Task 12，ADR-0199）。kind='cloud' 的那些

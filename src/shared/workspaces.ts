@@ -48,6 +48,15 @@ export interface WorkspaceAgentRow {
   updatedTs: number;
 }
 
+/** 工作区记忆（#949）：一档一行，agent_id 空串 = 共享档，非空 = 那只 agent 的私有档。
+    与 WorkspaceSnapshot 平级——记忆行不进快照本体，snapshot 只描述"这个工作区有哪些
+    agent"，记忆的读取走独立的 IPC（listMemories），两者在渲染层用 memoryDocs 拼到一起 */
+export interface WorkspaceMemoryRow {
+  agentId: string;
+  content: string;
+  updatedTs: number;
+}
+
 export interface WorkspaceSnapshot {
   id: string;
   name: string;

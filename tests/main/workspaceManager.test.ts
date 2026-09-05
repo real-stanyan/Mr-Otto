@@ -59,6 +59,13 @@ function harness(over: Partial<WorkspaceManagerDeps> = {}) {
     deleteAgentRow: async () => {
       calls.push("deleteAgentRow");
     },
+    listMemoryRows: async () => {
+      calls.push("listMemoryRows");
+      return [];
+    },
+    upsertMemoryRow: async (_c, _ws, _agentId, content) => {
+      calls.push("upsertMemoryRow:" + content);
+    },
     client: () => (signedIn ? fakeClient : null),
     selfUid: () => (signedIn ? "self-uid" : null),
     loadStore: () => store,
@@ -335,5 +342,21 @@ describe("workspace agents（#932）", () => {
     const { manager, calls } = harness();
     expect(await manager.updateAgent("ws-1", "a_1", { models: ["glm-5"] })).toEqual({ ok: true, value: null });
     expect(calls).toContain("updateAgentRow");
+  });
+});
+
+describe("workspace memory（#949）", () => {
+  it("saveMemory：写前归一化（去空条目、保序去重）后才落库", async () => {
+    const { manager, calls } = harness();
+    const res = await manager.saveMemory("ws-1", "ops", "a\n§\n\n§\na");
+    expect(res).toEqual({ ok: true, value: null });
+    expect(calls).toContain("upsertMemoryRow:a");
+  });
+  it("未登录：saveMemory/listMemories 都回 还没登录，不打网络", async () => {
+    const h = harness();
+    h.signOut();
+    expect(await h.manager.listMemories("ws-1")).toEqual({ ok: false, message: "还没登录" });
+    expect(await h.manager.saveMemory("ws-1", "ops", "x")).toEqual({ ok: false, message: "还没登录" });
+    expect(h.calls).toEqual([]);
   });
 });

@@ -42,7 +42,7 @@ import type {
   WorkspacesSnapshot,
 } from "./friends.js";
 import type { MyProfile, ProfilePatch, ProfileResult } from "./profile.js";
-import type { WorkspaceSnapshot } from "./workspaces.js";
+import type { WorkspaceMemoryRow, WorkspaceSnapshot } from "./workspaces.js";
 import type {
   AskUserAnswer,
   AskUserOption,
@@ -1069,6 +1069,10 @@ export interface ShellBridge {
   workspaceAgentDelete(id: string, agentId: string): Promise<FriendsResult<null>>;
   /** 设置页「用量」tab（#946）：每只 agent 本周烧了多少。经 hostedQuota 打 edge，失败翻成 FriendsResult */
   workspaceUsage(id: string): Promise<FriendsResult<WorkspaceUsage>>;
+  /** 设置页「记忆」tab（#949）：工作区的记忆行（共享档 agentId 为空串 + 每只 agent 的私有档） */
+  workspaceMemoryList(id: string): Promise<FriendsResult<WorkspaceMemoryRow[]>>;
+  /** 成员手改一档；主进程归一化后落库 */
+  workspaceMemorySave(id: string, agentId: string, text: string): Promise<FriendsResult<null>>;
   /** 把 sessionId 这个会话发布进工作区（Task 9 publishSessionToWorkspace）。
       ok:true 带 workspace_sessions 的行 id + Storage 包 id */
   workspacePublishSession(id: string, sessionId: string, title: string): Promise<FriendsResult<{ rowId: string; pkgId: string }>>;
@@ -1503,6 +1507,8 @@ export const CHANNELS = {
   workspaceAgentUpdate: "otter:workspaceAgentUpdate",
   workspaceAgentDelete: "otter:workspaceAgentDelete",
   workspaceUsage: "otter:workspaceUsage",
+  workspaceMemoryList: "otter:workspaceMemoryList",
+  workspaceMemorySave: "otter:workspaceMemorySave",
   workspacePublishSession: "otter:workspacePublishSession",
   workspaceUnpublishSession: "otter:workspaceUnpublishSession",
   workspaceImportSession: "otter:workspaceImportSession",

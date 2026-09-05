@@ -184,7 +184,7 @@ import { createWorkspaceManager } from "./workspaceManager.js";
 import {
   createWorkspace, listWorkspaces, fetchWorkspace, addMember, removeMember, leave,
   deleteWorkspace, upsertConnectorRow, deleteConnectorRow, insertSessionRow, listCloudSessions,
-  insertAgentRow, updateAgentRow, deleteAgentRow,
+  insertAgentRow, updateAgentRow, deleteAgentRow, listMemoryRows, upsertMemoryRow,
 } from "./supabaseWorkspacesApi.js";
 import {
   publishSessionToWorkspace, unpublishSession, importWorkspaceSession,
@@ -1509,7 +1509,7 @@ void app.whenReady().then(() => {
   const workspaceManager = createWorkspaceManager({
     createWorkspace, listWorkspaces, fetchWorkspace, addMember, removeMember, leave,
     deleteWorkspace, upsertConnectorRow, deleteConnectorRow,
-    insertAgentRow, updateAgentRow, deleteAgentRow,
+    insertAgentRow, updateAgentRow, deleteAgentRow, listMemoryRows, upsertMemoryRow,
     client: () => supabase.raw,
     // 登录判据取账号管理器，不取好友子系统的缓存（issue #943）：onChange 先
     // send(accountChanged) 再 friends.start()，而 friends.uid 要等 start() 里
@@ -3244,6 +3244,10 @@ void app.whenReady().then(() => {
   );
   ipcMain.handle(CHANNELS.workspaceAgentDelete, (_e, id: string, agentId: string) =>
     workspaceManager.deleteAgent(id, agentId));
+  // 设置页「记忆」tab（#949）：共享档 + 每只 agent 的私有档
+  ipcMain.handle(CHANNELS.workspaceMemoryList, (_e, id: string) => workspaceManager.listMemories(id));
+  ipcMain.handle(CHANNELS.workspaceMemorySave, (_e, id: string, agentId: string, text: string) =>
+    workspaceManager.saveMemory(id, agentId, text));
 
   // 发布/撤回/导入会话（Task 9 workspaceSessionShare.ts）：编排在那一层，
   // 这里只接依赖——同下面 shareSessionToFriend/importSharedSession 那两个

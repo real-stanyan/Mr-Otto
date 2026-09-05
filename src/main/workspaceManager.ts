@@ -23,7 +23,8 @@
 import { randomBytes } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type * as WorkspacesApi from "./supabaseWorkspacesApi.js";
-import type { WorkspaceSnapshot } from "../shared/workspaces.js";
+import type { WorkspaceMemoryRow, WorkspaceSnapshot } from "../shared/workspaces.js";
+import { formatEntries, parseEntries } from "../shared/memoryStore.js";
 import { ADMIN_AGENT_ID } from "../shared/workspaceAgents.js";
 import type { AgentToolAllow } from "../shared/agentToolAllow.js";
 import type { ProxyStoreData } from "./proxyStore.js";
@@ -50,6 +51,8 @@ export interface WorkspaceManagerDeps {
   insertAgentRow: typeof WorkspacesApi.insertAgentRow;
   updateAgentRow: typeof WorkspacesApi.updateAgentRow;
   deleteAgentRow: typeof WorkspacesApi.deleteAgentRow;
+  listMemoryRows: typeof WorkspacesApi.listMemoryRows;
+  upsertMemoryRow: typeof WorkspacesApi.upsertMemoryRow;
   client: () => SupabaseClient | null;
   selfUid: () => string | null;
   loadStore: () => ProxyStoreData;
@@ -84,6 +87,11 @@ export interface WorkspaceManager {
   /** 删一只 agent（建的人或 owner，RLS 落地判断）。'admin' 那只谁都删不掉——
       RLS 也会拦，但这里在打网络之前就先拒，回一句人话 */
   deleteAgent(id: string, agentId: string): Promise<FriendsResult<null>>;
+  /** 设置页「记忆」tab（#949）：这个工作区的记忆行（共享档 + 每只 agent 的私有档） */
+  listMemories(id: string): Promise<FriendsResult<WorkspaceMemoryRow[]>>;
+  /** 成员手改一档；写前归一化（去空条目、保序去重）。不校验上限——人手改自己的
+      笔记不该被上限拦住，同 applyUserEdit */
+  saveMemory(id: string, agentId: string, text: string): Promise<FriendsResult<null>>;
   /** 我在籍工作区里别人贡献的 host（proxyManager 借用源）。内存缓存,list()
       后更新——proxyManager 借用路径要同步读,不能每次都等一轮网络往返 */
   hostUids(): readonly string[];
@@ -245,6 +253,18 @@ export function createWorkspaceManager(deps: WorkspaceManagerDeps): WorkspaceMan
         // 依旧先报"还没登录"(withSession 的早退在这之前)。
         if (agentId === ADMIN_AGENT_ID) throw new Error(ADMIN_CANNOT_DELETE);
         await deps.deleteAgentRow(client, id, agentId);
+        return null;
+      });
+    },
+
+    async listMemories(id) {
+      return withSession(async (client) => deps.listMemoryRows(client, id));
+    },
+    async saveMemory(id, agentId, text) {
+      return withSession(async (client) => {
+        // 归一化（去空条目、保序去重）后落库，磁盘/云端永远是归一化后的样子——同 applyUserEdit。
+        // 不校验上限：人手改自己的笔记不该被上限拦住
+        await deps.upsertMemoryRow(client, id, agentId, formatEntries(parseEntries(text)));
         return null;
       });
     },
