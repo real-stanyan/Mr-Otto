@@ -71,8 +71,11 @@ export function approvalCardTitle(e: ApprovalRequestEvent, ws: WorkspaceSnapshot
 
 /** 「谁批的」（#957 M8）：decidedBy 是云 runtime 专门认定的字段，本地单人会话
     没有意义（缺席=本地会话/旧日志，同字段自身的注释），此时不装作有答案，
-    交给调用方决定要不要画这一行 */
-export function decisionLineText(e: ApprovalDecisionEvent, _ws?: WorkspaceSnapshot): string | null {
+    交给调用方决定要不要画这一行。**不收 ws**：decidedBy.label 已经是落盘时
+    算好的展示名（同 agentId 那批字段"带 id 不带名"的反面——这里存的就是名字），
+    这里不用像 agentNameOf/labelOf 那样另查一次成员表（复审 Minor：没有第二个
+    消费方需要重新解析这个名字，收一个用不上的参数只是摆样子） */
+export function decisionLineText(e: ApprovalDecisionEvent): string | null {
   if (!e.decidedBy) return null;
   return `由 ${e.decidedBy.label} ${e.decision === "approved" ? "批准" : "拒绝"}`;
 }

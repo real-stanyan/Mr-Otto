@@ -415,9 +415,9 @@ export function CloudSessionPage({
               if (e.type === "turn_ended") {
                 // isLast 恒 false：EventRow 的"重试"钮只看这个 prop（Timeline.tsx:649），
                 // 而那颗钮点了走本地 resendMessage——云端没有重发这条路，钮出来就是撒谎
-                return <EventRow key={e.seq} event={e} isLast={false} ws={ws} />;
+                return <EventRow key={e.seq} event={e} isLast={false} />;
               }
-              return <EventRow key={e.seq} event={e} isLast={i === events.length - 1} ws={ws} />;
+              return <EventRow key={e.seq} event={e} isLast={i === events.length - 1} />;
             })
           )}
           {/* 排队中/正在回复画在时间线**末尾**而不是贴在各自那条 @ 消息下面：
@@ -1150,17 +1150,61 @@ function ApprovalRow({
 }) {
   const [submitting, setSubmitting] = useState<"approved" | "denied" | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
+  // cloudApprove 回 true 只确认"帧交给了 socket"，不是送达确认（同 wire.ts
+  // send() 回 boolean 的既有纪律）——approve 没有像 approval_decision 那样
+  // 的确认回执，服务端的 no_pending/not_allowed 拒绝走 error 帧 → 一次性
+  // notice → workspaceGroupsError，比这次 await 晚到（#927 的镜像，#964 是
+  // say 帧的孪生问题）。这两个 ref 是接住"迟到的拒绝"用的：groupsErrorAtClick
+  // 记下点击那一刻的旧值（用于判断"变了"而不是"本来就有"），ackTimer 是兜底——
+  // 见下面 15s 那个 effect，**不要**当成用不上的清理代码删掉
+  const groupsErrorAtClick = useRef<string | null>(null);
+  const ackTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const groupsError = useChat((s) => s.workspaceGroupsError);
+
+  const clearAckTimer = (): void => {
+    if (ackTimer.current !== null) {
+      clearTimeout(ackTimer.current);
+      ackTimer.current = null;
+    }
+  };
+
+  // 卸载兜底：这张卡因 approval_decision 落地而从 pendingApprovals 消失时，
+  // 组件直接卸载——不清定时器的话它照样会在 15s 后触发 setState，React 报
+  // "在已卸载组件上更新状态" 的警告
+  useEffect(() => clearAckTimer, []);
+
+  // 迟到的拒绝：submitting 期间 workspaceGroupsError 变成了一个跟点击时不
+  // 一样的非空值，说明服务端事后回绝了这次 approve/deny——按第一条机制接住
+  // （不清全局那一格：它是共享状态，谁的失败谁负责，我们只把文案抄进卡内）
+  useEffect(() => {
+    if (submitting === null) return;
+    if (groupsError !== null && groupsError !== groupsErrorAtClick.current) {
+      clearAckTimer();
+      setSubmitting(null);
+      setLocalError(groupsError);
+    }
+  }, [groupsError, submitting]);
 
   const decide = async (decision: "approved" | "denied", run: () => Promise<boolean>): Promise<void> => {
     setSubmitting(decision);
     setLocalError(null);
+    groupsErrorAtClick.current = useChat.getState().workspaceGroupsError;
+    clearAckTimer();
+    // 安全网（第二条机制）：15s 内既没等到卡消失（approval_decision 落地）
+    // 也没等到 notice（上面那个 effect），就别再把按钮焊死——用户还能再点
+    ackTimer.current = setTimeout(() => {
+      ackTimer.current = null;
+      setSubmitting(null);
+      setLocalError("没有收到回执，可以再试");
+    }, 15_000);
     const ok = await run();
     if (!ok) {
+      clearAckTimer();
       setSubmitting(null);
       setLocalError(useChat.getState().workspaceGroupsError);
     }
-    // ok === true：故意不清 submitting——按钮保持 disabled 直到这张卡因为
-    // approval_decision 落地而从 pendingApprovals 里消失
+    // ok === true：故意不清 submitting/定时器——按钮保持 disabled 直到这张卡
+    // 因为 approval_decision 落地而消失，或者上面两条机制之一先接住迟到的拒绝
   };
 
   const fields = event.argsFields;

@@ -33,7 +33,6 @@ import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker.js";
 import { Button } from "@/components/ui/button.js";
 import { modelHandoff, modelSideLabel, type ModelSide } from "../lib/modelHandoff.js";
 import { modelChipLabel } from "../lib/modelChip.js";
-import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 import {
   formatElapsed,
   groupSubagentSpawns,
@@ -414,18 +413,7 @@ const SkillInvokedRow = memo(function SkillInvokedRow({ event }: { event: SkillI
 
 // memo 同上:现在只渲染审计事件(见下方 switch 里的注释),但入参(event/isLast)
 // 同样只随事件变——不 memo 的话流式期间还是陪着白跑一遍(#115)
-export const EventRow = memo(function EventRow({
-  event,
-  isLast = false,
-  ws,
-}: {
-  event: SessionEvent;
-  isLast?: boolean;
-  /** 云会话专用（#957 M8）："谁批的"要查成员表把 uid 变成名字，本地会话没有
-      工作区快照可传——省掉 = decisionLineText 拿不到 ws 也无所谓（decidedBy
-      本身就带 label，ws 目前只是留给以后需要重新解析时用的口子） */
-  ws?: WorkspaceSnapshot;
-}) {
+export const EventRow = memo(function EventRow({ event, isLast = false }: { event: SessionEvent; isLast?: boolean }) {
   switch (event.type) {
     // user_message / assistant_message 两个分支从此到不了:EventRow 现在只剩一个
     // 调用点(OttoThread 的 SystemMessage override),而那里只会拿到审计事件——
@@ -440,7 +428,7 @@ export const EventRow = memo(function EventRow({
       // 且 ToolRow 的「已拒绝」只是结果态,审批卡/理由值得在时间线留档。
       // decidedBy 有值时是另一回事(#957 M8)：群聊场景"谁批的"是审计问题，
       // 本地免审模式的噪音顾虑不成立(decidedBy 缺席=本地会话，行为不变)
-      const decisionLine = decisionLineText(event, ws);
+      const decisionLine = decisionLineText(event);
       if (event.decision === "approved") {
         return decisionLine ? <div className={AUDIT}>{decisionLine}</div> : null;
       }
