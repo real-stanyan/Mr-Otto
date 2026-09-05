@@ -27,7 +27,12 @@ describe("LoopEngine 的 agentId（#928 切片 1a）", () => {
     const store = new EventStore(join(tempDir("mrotto-engine-agent-"), "s.db"));
     const engine = new LoopEngine({ store, adapter, tools: [], world, sessionId: "s1" });
     await engine.runTurn("在吗");
-    for (const e of store.load("s1")) expect("agentId" in e).toBe(false);
+    for (const e of store.load("s1")) {
+      expect("agentId" in e).toBe(false);
+      // readUpToSeq 同理（#932 终审）：它只服务云会话的排队推导，本机会话的
+      // 日志形状一个字节都不该变
+      expect("readUpToSeq" in e).toBe(false);
+    }
   });
 
   it("user_message 不带 agentId,即使 engine 配了——人说的话,不是 agent 动作", async () => {

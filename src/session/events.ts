@@ -342,6 +342,10 @@ export interface TurnEndedEvent extends SessionEventBase {
   errorClass?: ModelErrorClass;
   /** 这条是哪只工作区 agent 干的（#928） */
   agentId?: string;
+  /** 这轮开跑时日志已经到的 seq——它之前的事件都在这轮第一次快照的视野里。
+      云会话的排队推导（turnLedger）用它判「这条点名是不是这轮看见过的」；
+      缺席 = 旧日志/本机会话，按老规则（任意收口都算）。 */
+  readUpToSeq?: number;
 }
 
 /** 额外 8：skill 注入（$ 指令）。用户为某条消息启用一个 skill，其 SKILL.md

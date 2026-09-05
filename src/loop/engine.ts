@@ -668,6 +668,17 @@ export class LoopEngine {
     this.currentTurnId = opening.seq;
     this.turnAbort = new AbortController();
     this.compactFloor = null;
+    // 这一轮开跑时日志已经到哪儿（#932 终审）。runTurn 走这条时 opening 是刚
+    // append 的那条，尾巴是空的 → 就是 opening.seq 自己；runLoggedTurn 走这条时
+    // job 在队里等过一会儿，等待期间落的每条都在这个数以内——它们都进得了这一轮
+    // 的第一次快照。turnLedger 靠它判「这条点名是不是这轮看见过的」：**没看见过
+    // 的不许被这条 turn_ended 收口**（否则 mid-turn 到的那条会永远没人答）。
+    // 只在配了 agentId（云会话多智能体）的 engine 上写：本机会话的日志形状
+    // 一个字节都不变（engineAgentId.test.ts 的「没配就一个字段都不加」钉着）
+    const readUpToSeq = this.opts.agentId
+      ? (this.opts.store.load(this.opts.sessionId, { afterSeq: opening.seq }).at(-1)?.seq ?? opening.seq)
+      : null;
+    const endEnv = () => (readUpToSeq === null ? this.env() : { ...this.env(), readUpToSeq });
     try {
       // 工具表这一 turn 的快照。turn 内不再变——见 LoopEngineOptions.tools 注释。
       // 必须在 try 里：provider 是调用方给的任意函数（agent.ts 的 buildTools 里有
@@ -677,17 +688,17 @@ export class LoopEngine {
       // 目标都靠 turn_ended/finally 收场）
       this.rebuildTools();
       await this.loop(this.turnAbort.signal);
-      this.append({ ...this.env(), type: "turn_ended", outcome: "completed" });
+      this.append({ ...endEnv(), type: "turn_ended", outcome: "completed" });
       return "completed";
     } catch (err) {
       if (isAbort(err)) {
-        this.append({ ...this.env(), type: "turn_ended", outcome: "aborted" });
+        this.append({ ...endEnv(), type: "turn_ended", outcome: "aborted" });
         return "aborted";
       }
       // errorClass = 抛错处（adapter）贴的分类（issue #389）；error 存原文不动
       const errorClass = errorClassOf(err);
       this.append({
-        ...this.env(),
+        ...endEnv(),
         type: "turn_ended",
         outcome: "error",
         error: err instanceof Error ? err.message : String(err),

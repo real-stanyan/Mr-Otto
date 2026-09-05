@@ -89,6 +89,35 @@ describe("LoopEngine.runLoggedTurn（#932 坑 ②）", () => {
     expect(calls).toBe(1);
   });
 
+  it("turn_ended.readUpToSeq = 开跑那一刻的日志末条 seq（#932 终审 Blocking ①）", async () => {
+    const store = newStore();
+    const adapter: ModelAdapter = { model: "fake", async chat() { return { content: "好" }; } };
+    const engine = new LoopEngine({ store, adapter, tools: [], world, sessionId: "s1", agentId: "ops" });
+    const opening = store.append({
+      sessionId: "s1", ts: 1, type: "user_message", content: "[alice]: @运营 在吗", fromUid: "u1", mentions: ["ops"],
+    }) as UserMessageEvent;
+    // job 在队里等的那一会儿，别人又说了一句（这条**在**这一轮的第一次快照里）
+    const queuedTail = store.append({
+      sessionId: "s1", ts: 2, type: "chat_message", fromUid: "u2", label: "bob", content: "顺便看下退款", mention: false,
+    });
+
+    await engine.runLoggedTurn(opening);
+
+    const end = store.load("s1").at(-1)!;
+    expect(end).toMatchObject({ type: "turn_ended", agentId: "ops", readUpToSeq: queuedTail.seq });
+    expect(queuedTail.seq).toBeGreaterThan(opening.seq);
+  });
+
+  it("开场白就是日志末条（runTurn 那条路）：readUpToSeq = opening.seq 自己", async () => {
+    const store = newStore();
+    const adapter: ModelAdapter = { model: "fake", async chat() { return { content: "好" }; } };
+    const engine = new LoopEngine({ store, adapter, tools: [], world, sessionId: "s1", agentId: "ops" });
+    await engine.runTurn("在吗");
+    const events = store.load("s1");
+    const opening = events.find((e) => e.type === "user_message")!;
+    expect(events.at(-1)).toMatchObject({ type: "turn_ended", readUpToSeq: opening.seq });
+  });
+
   it("没配 agentId 的 engine（本机会话）：mentions 不参与判断，尾上任何 user_message 都算没答的", async () => {
     const store = newStore();
     let calls = 0;
