@@ -57,6 +57,12 @@ export interface WorkspaceMemoryRow {
   updatedTs: number;
 }
 
+/** 桌面手编档 vs agent 写档的同一 daemon 内丢更新（#949 review finding 2）：
+    saveMemoryRow 的乐观前置条件（按 content 相等）没通过时抛这条错——文案已经是人话，
+    渲染层原样显示即可。导出常量而不是内联字符串，好让调用方需要时能做恰好相等的比较
+    （比如决定要不要弹「刷新」按钮），不必抄一遍这句话 */
+export const MEMORY_CONFLICT = "这一档刚被别人改过，刷新后再改";
+
 export interface WorkspaceSnapshot {
   id: string;
   name: string;

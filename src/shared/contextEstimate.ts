@@ -173,6 +173,13 @@ function pendingAfter(
         // 压根不会插那条摘要消息——这里也不能加，不然圆环凭空多出一段没人看见的文本
         if (micro && e === latestMicro) pending += estimateTokens(e.summary);
         break;
+      case "workspace_memory_loaded":
+        // 云会话专属；本文件只服务本机圆环（消费方 App.tsx / OttoThread.tsx），
+        // 云会话页不读它，故意不计。哪天云会话页要画圆环，这里要按最新一条快照计
+        // renderWorkspaceMemoryPrompt 的 token（注意 latest-wins 不能累加——同
+        // AGENTS.md「新事件类型检查清单」里 workspace_memory_loaded 的投影规则：
+        // 两条快照落盘代表的是同一段 system 尾部被整体替换，不是两段都还在）
+        break;
       default:
         break;
     }

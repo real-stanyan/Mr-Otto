@@ -61,14 +61,25 @@ export function createWorkspaceMemoryTool(deps: {
 
   async function execute(args: unknown): Promise<string> {
     const { tier, ops } = parseOps(args);
+    // 扫描跑在原文（未加写入者前缀）上：agent 名字不是外部输入，它经花名册/briefing
+    // 那条路才到得了每个 prompt（spec §4），且只有工作区成员能改自己 agent 的名字——
+    // 前缀里混不进模型没见过、扫描器该拦的可疑指令，晚一步（stamped 之后）扫不会多拦
+    // 任何东西，纯属多余
     for (const op of ops) {
       if (op.action === "remove") continue;
       const hit = scanThreat(op.content);
       if (hit) throw new Error(`内容含可疑指令（${hit}），拒绝写入记忆`);
     }
-    // 共享档每条带写入者前缀（spec §6.2）：由写入路径拼，不靠模型自觉
+    // 共享档每条带写入者前缀（spec §6.2）：由写入路径拼，不靠模型自觉。
+    // 空内容不打前缀——否则 {action:"replace", content:""} 会在这一步先变成非空的 "[写入者] "，
+    // applyEntryOps 的空内容闸就再也拦不住它，一次空 replace 就能把真实条目覆盖成裸的写入者名字
+    // （#949 review：confirmed by running it）。落一个空字符串，让 applyEntryOps 自己报「content 为空」。
     const stamped: EntryOp[] = tier === "shared"
-      ? ops.map((op) => (op.action === "remove" ? op : { ...op, content: withWriterPrefix(deps.agentName(), op.content.trim()) }))
+      ? ops.map((op) =>
+          op.action === "remove" || !op.content.trim()
+            ? op
+            : { ...op, content: withWriterPrefix(deps.agentName(), op.content.trim()) }
+        )
       : ops;
     const rowAgentId = tier === "shared" ? SHARED_MEMORY_AGENT_ID : deps.agentId;
     const lockKey = workspaceMemoryLockKey(deps.workspaceId, rowAgentId);

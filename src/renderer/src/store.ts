@@ -870,7 +870,7 @@ interface ChatState {
   /** 设置页「记忆」tab（#949）：同 loadWorkspaceUsage，不进 store 状态 */
   loadWorkspaceMemories(id: string): Promise<FriendsResult<WorkspaceMemoryRow[]>>;
   /** 成员手改一档；主进程归一化后落库 */
-  saveWorkspaceMemory(id: string, agentId: string, text: string): Promise<FriendsResult<null>>;
+  saveWorkspaceMemory(id: string, agentId: string, text: string, baseline: string): Promise<FriendsResult<null>>;
   /** 把当前/指定会话发布进工作区。回是否成功——rowId/pkgId 用不上时调用方不必接 */
   publishWorkspaceSession(id: string, sessionId: string, title: string): Promise<boolean>;
   /** 只有发布者能撤（服务端也会拦，见 index.ts workspaceUnpublishSession handler） */
@@ -2183,8 +2183,8 @@ export const useChat = create<ChatState>((set, get) => ({
     return window.otter.workspaceMemoryList(id);
   },
 
-  async saveWorkspaceMemory(id, agentId, text) {
-    return window.otter.workspaceMemorySave(id, agentId, text);
+  async saveWorkspaceMemory(id, agentId, text, baseline) {
+    return window.otter.workspaceMemorySave(id, agentId, text, baseline);
   },
 
   async publishWorkspaceSession(id, sessionId, title) {

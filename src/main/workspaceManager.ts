@@ -52,7 +52,7 @@ export interface WorkspaceManagerDeps {
   updateAgentRow: typeof WorkspacesApi.updateAgentRow;
   deleteAgentRow: typeof WorkspacesApi.deleteAgentRow;
   listMemoryRows: typeof WorkspacesApi.listMemoryRows;
-  upsertMemoryRow: typeof WorkspacesApi.upsertMemoryRow;
+  saveMemoryRow: typeof WorkspacesApi.saveMemoryRow;
   client: () => SupabaseClient | null;
   selfUid: () => string | null;
   loadStore: () => ProxyStoreData;
@@ -91,7 +91,7 @@ export interface WorkspaceManager {
   listMemories(id: string): Promise<FriendsResult<WorkspaceMemoryRow[]>>;
   /** 成员手改一档；写前归一化（去空条目、保序去重）。不校验上限——人手改自己的
       笔记不该被上限拦住，同 applyUserEdit */
-  saveMemory(id: string, agentId: string, text: string): Promise<FriendsResult<null>>;
+  saveMemory(id: string, agentId: string, text: string, baseline: string): Promise<FriendsResult<null>>;
   /** 我在籍工作区里别人贡献的 host（proxyManager 借用源）。内存缓存,list()
       后更新——proxyManager 借用路径要同步读,不能每次都等一轮网络往返 */
   hostUids(): readonly string[];
@@ -260,11 +260,15 @@ export function createWorkspaceManager(deps: WorkspaceManagerDeps): WorkspaceMan
     async listMemories(id) {
       return withSession(async (client) => deps.listMemoryRows(client, id));
     },
-    async saveMemory(id, agentId, text) {
+    async saveMemory(id, agentId, text, baseline) {
       return withSession(async (client) => {
         // 归一化（去空条目、保序去重）后落库，磁盘/云端永远是归一化后的样子——同 applyUserEdit。
-        // 不校验上限：人手改自己的笔记不该被上限拦住
-        await deps.upsertMemoryRow(client, id, agentId, formatEntries(parseEntries(text)));
+        // 不校验上限：人手改自己的笔记不该被上限拦住。
+        // baseline 是编辑器打开时读到的原文（未归一化）：桌面手编 vs agent 写档共用同一个 daemon，
+        // 谁后写谁赢的 blind upsert 会无声吃掉先写的一方（#949 review finding 2）——
+        // saveMemoryRow 只在这一行此刻的 content 仍等于 baseline 时才允许覆盖，
+        // 不等则抛 MEMORY_CONFLICT，原样冒泡给 withSession 收成 FriendsResult 错误。
+        await deps.saveMemoryRow(client, id, agentId, formatEntries(parseEntries(text)), baseline);
         return null;
       });
     },
