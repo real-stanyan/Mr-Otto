@@ -331,13 +331,6 @@ export interface CloudSession {
       daemon（它才有 supabase 句柄和 transport）——同这个文件里其余部分
       的分工，纯逻辑不碰 IO。 */
   archive(byLabel: string): boolean;
-  /** 此刻**欠着的**那一轮（#957 A-2）：正在跑的 agent + 点火的人，没有就是 null。
-      判据是「runJob 手上有没有 job」，**不是**「engine 拿到手了没有」——起跑前
-      那一段是几次真网络往返（验籍 / 取名单 / 取记忆 / 拉代理授权），那期间界面上
-      那行已经在转了，答"没有在跑"是撒谎。打不打得动是另一回事，由 `stop()` 内部
-      分两条路处理（见那边的说明）。回一个对象而不是布尔：`initiatorUid` 是
-      「谁能停」那条判据的另一半（同 approve），调用方不必再问第二个口 */
-  running(): { agentId: string; initiatorUid: string } | null;
   /** 停这一轮（#957 A-2）。ADR-0006 的「无步数天花板」前提是「用户就在屏幕前
       按停止」——云会话里那颗按钮此前根本不存在：`abortTurn()` 在整个
       `services/runtime/` 里零调用，一条跑飞的 turn 谁都停不下来，而烧的是
@@ -665,7 +658,13 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     );
   }
 
-  /** 此刻能停的那一轮（#957 A-2）。判据是 `currentJob` 而不是 `currentEngine`：
+  /** 此刻能停的那一轮（#957 A-2）：正在跑的 agent + 点火的人，没有就是 null。
+      **私有，不上 `CloudSession` 接口**（#957 终审 M2）——它曾经是接口的一格，
+      而生产代码零调用：`stop()` 与 `archive()` 都在这个闭包里自己用它，
+      frameHandler 拿到的是 `stop()` 的三态回执，不需要先问一遍"有没有在跑"。
+      多一格接口就多一份假件要写（smokeAssembly / frameHandler 的测试桩），
+      而它对外的全部信息都能从 `stop()` 的 `"idle"` 读出来。
+      判据是 `currentJob` 而不是 `currentEngine`：
       「有没有欠着的一轮」与「打得动它了没有」是两件事，前者从 runJob 一进门
       就成立，后者要到 `runLoggedTurn` 前一行。用后者判 idle 会让起跑前那一段
       （几次真网络往返）里的停止请求拿到一句"此刻没有正在跑的 turn"——而人正
@@ -724,7 +723,11 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       这一轮开跑前日志已经到哪儿」，只算一次 assistant_message 的归属边界不会有
       两个 job 抢同一段日志的问题 */
   async function relayAfterTurn(job: TurnJob, spec: AgentSpec, scanFrom: number, openingDepth: number): Promise<void> {
-    if (archived) return;
+    // **停止与归档在这一段是同一个刹车**（#957 终审 Important I1）：turn 收口
+    // 之后 `currentEngine` 已经交还（runJob 里那行），所以这个窗口里按下的停止
+    // 只留下 `stopRequested` 这一个记号；不在这儿查的话，一次"停止"照样长出
+    // 下一棒 —— 而接力是 turn 收口后**唯一**会自己长出新 turn 的路径
+    if (archived || stopRequested) return;
     const since = store.load(sessionId, { afterSeq: scanFrom });
     const mine = since.filter((e): e is AssistantMessageEvent => e.type === "assistant_message" && e.agentId === spec.agentId);
     const said = mine.map((e) => e.content).join("\n");
@@ -787,8 +790,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // 挡不住的是"进来之后才归档"——opts.relayMaxDepth() 是一次真的 Supabase 往返，
     // 这一 await 期间人随时可能按下归档。不重查一次的话，archived 已经是 true，
     // 这里还是会照样落 agent_relay + 开场白 + enqueue，在一间刚关掉的房间里继续接力
-    // （最终审 Important ①a）
-    if (archived) return;
+    // （最终审 Important ①a）。`stopRequested` 同理、而且窗口更宽：上面还有一次
+    // `opts.agents()` 的往返，人在那两次网络调用里的任何一刻按停止都落在这儿
+    // （#957 终审 Important I1）
+    if (archived || stopRequested) return;
     const chain = relayChain(store.load(sessionId));
     const nameOf = (id: string): string => roster.find((a) => a.agentId === id)?.name ?? id;
     // 「最后说」取的是**最后一条**消息本身（不是拼起来的全部原话取头 200 字——
@@ -1011,6 +1016,16 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // 两遍、时间线画两遍
       engineStarted = true;
       const outcome = await engine.runLoggedTurn(job.opening);
+      // **一返回就交还停止键**（#957 终审 Important I1）：`runLoggedTurn` 返回
+      // 时 engine 那一轮已经收口（`engine.turnAbort` 早已 null），而 `finally`
+      // 还在下面一整段 relayAfterTurn 之后 —— 中间是两次真 Supabase 往返
+      // （`agents()` / `relayMaxDepth()`）。这个窗口里 `currentEngine` 还挂着
+      // 的话，stop 会走"翻信号"那条路：翻的是一个已经结束的 turn 的信号，一次
+      // 无操作，而回执说 ok、群里写了"停止了"，接力紧接着照点火 —— 人按下停止
+      // 之后屏幕上冒出下一只 agent 开始回复。清成 null 让这个窗口里的停止改走
+      // `stopRequested` 那条路，由 relayAfterTurn 自己查（见它里面那两处）。
+      // 清早了不会误伤：这一行之后没有任何人再需要 abortTurn()
+      currentEngine = null;
       // 切片 5（#950）：这只说完了才看它 @ 了谁。aborted 不接力（人按了停止，不该再点起别人）
       if (outcome === "completed") await relayAfterTurn(job, spec, scanFrom, openingDepth);
     } catch (err) {
@@ -1191,10 +1206,6 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
 
     isArchived() {
       return archived;
-    },
-
-    running() {
-      return runningNow();
     },
 
     stop(byUid, byLabel) {

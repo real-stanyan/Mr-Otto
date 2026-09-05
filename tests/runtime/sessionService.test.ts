@@ -2696,7 +2696,8 @@ describe("停止一轮 turn（#957 A-2）", () => {
     const said = session.say("u1", "alice", "@运营 出报表", true, ["ops"]);
     await entered; // 这一刻 turn 真的在 chat() 里飞着
 
-    expect(session.running()).toEqual({ agentId: "ops", initiatorUid: "u1" });
+    // "有一轮在跑"现在只从 stop() 的三态读得出来（running() 已从接口撤掉，
+    // #957 终审 M2）：这一句回 "ok" 而不是 "idle" 就是那条断言
     expect(session.stop("u1", "alice")).toBe("ok");
     await said;
     await session.settled();
@@ -2773,7 +2774,6 @@ describe("停止一轮 turn（#957 A-2）", () => {
     const events: SessionEvent[] = [];
     const { session, entered } = stopSession(store, events, { ops: "x" });
 
-    expect(session.running()).toBeNull();
     expect(session.stop("u1", "alice")).toBe("idle");
     expect(events).toEqual([]);
 
@@ -2859,8 +2859,8 @@ describe("停止一轮 turn（#957 A-2）", () => {
     const said = session.say("u1", "alice", "@运营 出报表", true, ["ops"]);
     await inHosts; // 卡在 hostUids() 里：engine 已建，runLoggedTurn 还没起跑
 
-    // 界面上那行此刻已经在转 —— 答"没有在跑的 turn"是撒谎
-    expect(session.running()).toEqual({ agentId: "ops", initiatorUid: "u1" });
+    // 界面上那行此刻已经在转 —— 答"没有在跑的 turn"是撒谎。判据是 stop() 回
+    // "ok" 不是 "idle"（running() 已从接口撤掉，#957 终审 M2）
     expect(session.stop("u1", "alice")).toBe("ok");
     release();
     await said;
@@ -2925,6 +2925,73 @@ describe("停止一轮 turn（#957 A-2）", () => {
     const { session } = stopSession(store, events, {});
     expect(session.archive("alice")).toBe(true);
     expect(events.map((e) => e.type)).toEqual(["chat_message", "session_archived"]);
+    store.close();
+  });
+
+  // 终审 Important I1：`runLoggedTurn` 返回之后、`finally` 之前还有一整段
+  // relayAfterTurn —— 里面是**两次真 Supabase 往返**（`agents()` 取名单、
+  // `relayMaxDepth()` 取上限）。那个窗口里 `engine.turnAbort` 已经收口、
+  // `currentEngine` 却还挂着，于是 stop 走"翻信号"那条路：翻的是一个已经
+  // 结束的 turn 的信号（无操作），回执照样说 ok、群里照样写"停止了"，而
+  // 接力紧接着照点火 —— 人按了停止，屏幕上却冒出下一只 agent 开始回复。
+  it("收口之后、接力取名单那个窗口里按停止：不接力、不起第二个 turn，回执仍是 ok（终审 I1）", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    const seen: string[] = [];
+    // 一条 say 一共调三次 agents()：say() 解 @（sessionService.ts:1090）→ runJob
+    // 起跑前现取名单（:908）→ relayAfterTurn 现取名单（:740）。停在**第三次**，
+    // 把真机上那次 Supabase 往返的窗口撑开
+    let inRelayResolve!: () => void;
+    const inRelay = new Promise<void>((r) => { inRelayResolve = r; });
+    let releaseRoster!: () => void;
+    const rosterGate = new Promise<void>((r) => { releaseRoster = r; });
+    let calls = 0;
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [],
+      memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true,
+      contextWindowOf: () => undefined,
+      relayMaxDepth: async () => 6,
+      agents: async () => {
+        calls += 1;
+        if (calls === 3) { inRelayResolve(); await rosterGate; }
+        return AGENTS;
+      },
+      adapterFor: (a) => ({
+        model: a.models[0]!,
+        async chat() { seen.push(a.agentId); return { content: "报表好了，@广告 按这个投" }; },
+      }),
+      onEvent: (e) => events.push(e), onUsage: () => {},
+    });
+
+    const said = session.say("u1", "alice", "@运营 出报表", true, ["ops"]);
+    await inRelay; // 运营这一轮已经 completed 收口，正卡在接力取名单那一步
+
+    expect(session.stop("u1", "alice")).toBe("ok");
+    releaseRoster();
+    await said;
+    await session.settled();
+
+    // 这一棒不接：没有 agent_relay、没有接力开场白、广告那只从来没起跑
+    expect(events.some((e) => e.type === "agent_relay")).toBe(false);
+    expect(events.some((e) => e.type === "user_message" && (e as UserMessageEvent).relay !== undefined)).toBe(false);
+    expect(seen).toEqual(["ops"]);
+    // 说出口那句照落（abortCurrent 的既有纪律）
+    expect(events.some(
+      (e) => e.type === "chat_message" && (e as { content: string }).content.includes("停止了")
+    )).toBe(true);
+    // 运营自己那一轮是**跑完了**的（停的是接力那一棒，不是回溯改写它的收口）
+    expect(events.filter((e) => e.type === "turn_ended")).toMatchObject([{ outcome: "completed", agentId: "ops" }]);
+
+    // 作用域仍然是一个 job：下一句话照常起 turn、照常接力（stopRequested 没有
+    // 泄漏给下一个 job —— 泄漏的话这条会话从此再也接不了力，且不报任何错）
+    events.length = 0;
+    seen.length = 0;
+    await session.say("u1", "alice", "@运营 再来一次", true, ["ops"]);
+    await session.settled();
+    expect(seen).toEqual(["ops", "ads"]);
+    expect(events.some((e) => e.type === "agent_relay")).toBe(true);
     store.close();
   });
 });

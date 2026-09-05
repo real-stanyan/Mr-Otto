@@ -350,9 +350,6 @@ async function scenarioAssemblyResilience(): Promise<void> {
     isArchived() {
       return false;
     },
-    running() {
-      return null;
-    },
     stop() {
       return "idle";
     },

@@ -755,10 +755,16 @@ async function main(): Promise<void> {
         const close = closeRoom.get(sessionId);
         closeRoom.delete(sessionId);
         if (close) {
+          // 封顶那颗定时器要**收掉**（#957 终审 M5）：`Promise.race` 只是不再理
+          // 输的那一边，它并不取消它——排空先到时这颗 10 秒的计时器还挂在事件
+          // 循环上，让进程平白多活最长 10 秒（`unref` 不行：一次真的超时收房
+          // 要靠它把 close 叫醒）。归档在真机上是连着来的，攒一把这种定时器就是
+          // 一段谁都解释不了的"退不出去"
+          let capTimer: ReturnType<typeof setTimeout> | undefined;
           const settledOrCapped = Promise.race([
             active.session.settled(),
-            new Promise<void>((r) => setTimeout(r, ARCHIVE_SETTLE_MAX_WAIT_MS)),
-          ]);
+            new Promise<void>((r) => { capTimer = setTimeout(r, ARCHIVE_SETTLE_MAX_WAIT_MS); }),
+          ]).finally(() => { if (capTimer !== undefined) clearTimeout(capTimer); });
           // 排空之后仍然延那一拍：等的两件事不一样 —— 前者等"这条 turn 不再
           // 产出事件"，后者等"已经交给 socket 的那些字节写出去"
           void settledOrCapped.then(

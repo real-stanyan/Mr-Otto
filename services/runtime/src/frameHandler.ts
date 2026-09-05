@@ -428,7 +428,13 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
           } catch (err) {
             const message = err instanceof Error ? err.message : String(err);
             deps.log(`say 失败 session=${sessionId} uid=${entry.uid}：${message}`);
-            deps.send(cid, { t: "say_result", ok: false, message: `发送失败：${message}` });
+            // **原文只进日志**（#957 终审 M4）：这条 catch 罩着的是内部异常
+            // （Supabase 抖了、agents() 抛了、store.append 挂了），它的措辞是
+            // 说给维护者听的——照搬给用户就是一句他既看不懂、也没有任何下一步
+            // 动作的英文栈信息，还可能带上表名/uid 这类不该出门的东西。给他一句
+            // 认得出的人话 + 一条能做的事（同 humanizeMcpError / humanizeBillingError
+            // 的纪律：只翻认得出的，认不出的不硬翻，原文留在日志里）
+            deps.send(cid, { t: "say_result", ok: false, message: "发送失败，请重试" });
             return;
           }
           // ok = **收下了**（开场白落盘 + 入队），不是"跑完了"：say() 在 #937

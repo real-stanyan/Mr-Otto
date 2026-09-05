@@ -29,7 +29,6 @@ function fakeSession(overrides: Partial<CloudSession> = {}): CloudSession {
     archive: () => true,
     isArchived: () => false,
     // #957 A-2：默认"空闲"——绝大多数用例不关心停止键
-    running: () => null,
     stop: () => "idle",
     ...overrides,
   };
@@ -1282,7 +1281,7 @@ describe("say 回执（#964）", () => {
     expect(sent.map((s) => s.msg)).toEqual([{ t: "say_result", ok: true }]);
   });
 
-  it("say() 抛错 → say_result{ok:false, message} + 一条日志（原来只冒到 daemon 的 .catch，发言人那侧彻底沉默）", async () => {
+  it("say() 抛错 → say_result{ok:false, 固定人话} + 原文只进日志（原来只冒到 daemon 的 .catch，发言人那侧彻底沉默）", async () => {
     const session = fakeSession({
       say: async () => {
         throw new Error("workspace_agents 查询失败");
@@ -1297,7 +1296,11 @@ describe("say 回执（#964）", () => {
 
     expect(sent).toHaveLength(1);
     expect(sent[0]!.msg).toMatchObject({ t: "say_result", ok: false });
-    expect((sent[0]!.msg as { message: string }).message).toContain("workspace_agents 查询失败");
+    // **原文不出门**（#957 终审 M4）：这条 catch 罩着的是内部异常，措辞是说给
+    // 维护者听的（表名、uid、栈信息），照搬给用户既看不懂也没有下一步动作。
+    // 客户端拿固定的一句人话，原文只在 deps.log 里
+    expect((sent[0]!.msg as { message: string }).message).toBe("发送失败，请重试");
+    expect((sent[0]!.msg as { message: string }).message).not.toContain("workspace_agents");
     expect(logs.join("\n")).toContain("workspace_agents 查询失败");
   });
 });
