@@ -104,6 +104,55 @@ describe("护栏注的那句话归谁（#957 A-5）", () => {
   });
 });
 
+describe("后台结果回注归谁（#957 A-5）", () => {
+  // 与护栏那条同一个道理：后台任务完成通知是**注给派活的那一只**看的，
+  // 不是人在群里说的。缺了 agentId，agentView 早退放行，别的 agent 会读到
+  // 一条自己从没派过的任务的完成通知
+  function bgFixture(agentId?: string) {
+    const store = new EventStore(":memory:");
+    const holder: { engine?: LoopEngine } = {};
+    let n = 0;
+    const adapter: ModelAdapter = {
+      model: "fake",
+      async chat(): Promise<ModelReply> {
+        if (n >= 1) return { content: "收到" };
+        n++;
+        return { content: "", toolCalls: [{ id: "c1", name: "poke", args: {} }] };
+      },
+    };
+    // 工具执行期间 = turn 在跑且不在采样 —— appendBackground 走当场落盘那条路
+    const poke: Tool = {
+      def: { name: "poke", description: "戳一下", parameters: { type: "object", properties: {} } },
+      requiresApproval: false,
+      async run() {
+        expect(holder.engine!.appendBackground("[后台任务 bg-1 完成] 编译过了", ["bg-1"])).toBe(true);
+        return "戳过了";
+      },
+    };
+    holder.engine = new LoopEngine({
+      store, adapter, tools: [poke], world, sessionId: "s1",
+      ...(agentId ? { agentId } : {}),
+    });
+    return { store, engine: holder.engine };
+  }
+
+  it("配了 agentId：后台回注那条 user_message 带上它", async () => {
+    const { store, engine } = bgFixture("ops");
+    await engine.runTurn("开工");
+    const bg = store.load("s1").filter((e) => e.type === "user_message" && e.origin === "background");
+    expect(bg).toHaveLength(1);
+    expect(bg[0]).toMatchObject({ agentId: "ops", backgroundTaskIds: ["bg-1"] });
+  });
+
+  it("没配就一个字段都不多（本机会话逐字节不变）", async () => {
+    const { store, engine } = bgFixture();
+    await engine.runTurn("开工");
+    const bg = store.load("s1").filter((e) => e.type === "user_message" && e.origin === "background");
+    expect(bg).toHaveLength(1);
+    expect("agentId" in bg[0]!).toBe(false);
+  });
+});
+
 describe("增量圈延后点了我的话（#957 A-10 / #934）", () => {
   it("turn 跑到一半到的「@我」不进这一轮的快照，「@别人」的照进", async () => {
     const store = new EventStore(":memory:");

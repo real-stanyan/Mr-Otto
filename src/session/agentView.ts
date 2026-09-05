@@ -94,9 +94,14 @@ const OTHER_AGENT_VERDICTS: Record<SessionEvent["type"], OtherAgentVerdict> = {
   workspace_restored: "drop",
 };
 
-/** 往回跳过别人的私话最多跳几条(见 agentView.lastOfType)。跳不完就退回全量:
-    一条 turn 里护栏最多喊几次是有数的,连着几十条别人的私话意味着日志本身不正常,
-    那种情况下"多读一点"比"猜一个边界"安全 */
+/** 往回跳过别人的私话最多跳几条(见 agentView.lastOfType)。一条 turn 里护栏最多
+    喊几次是有数的,连着 64 条别人的私话意味着日志本身不正常。
+    **跳不完回 null,而这一类的 null 不是全量兜底**:modelContextScan.ts:70-73 拿
+    user_message 的 null 当成"检查点之前根本没有 user turn",`foundLive = true`
+    直接 break,于是 `if (!foundLive) return null` 那条全量逃生舱根本走不到 ——
+    boundedContextEvents 回的是 head + tail,段丢失,正是本次改动要消灭的那种
+    "安静变短"。真正的全量兜底只有 context_compacted 的 null 走得到。
+    把这里做成真兜底要动 modelContextScan(不在本任务范围,ceiling 另开 issue) */
 const FOREIGN_SCAN_LIMIT = 64;
 
 export function projectForAgent(events: SessionEvent[], agentId: string): SessionEvent[] {
@@ -140,15 +145,21 @@ export function agentView(store: EventLog, agentId: string): EventLog {
     // **压缩检查点必须按 agent 分格**:摘要是按 view 生成的(ADR-0003),运营那只
     // 压缩之后,广告那只若捡到运营的检查点,就会把运营视角的摘要当成自己的历史 ——
     // 上下文串台,而且安静。boundedContextEvents 正是靠 lastOfType 找检查点的。
-    // 别人的 → null:让 boundedContextEvents 退回全量,保守正确。
+    // 别人的 → null:context_compacted 的 null 会让 boundedContextEvents 直接
+    // `return null` 退回全量,保守正确。
     //
     // user_message 是**唯一的例外**(#957 A-5 的后果):从前它一定不带 agentId
     // (人说的话),现在护栏/后台注给某一只 agent 的私话也带。而
     // boundedContextEvents 拿它做的是**定位**——"上一个 user turn 从哪开始"。
     // 别人的私话不是我的 turn 边界,照上面那条回 null 的话,重建会当成"检查点
     // 之前根本没有 user turn",把我真正的那一段整段丢掉:上下文静默变短,
-    // 不崩不报错。所以这一类往前走,跳过别人的那些。走不完(病态日志)回 null,
-    // 退回全量 —— 同一个保守出口
+    // 不崩不报错。所以这一类往前走,跳过别人的那些。
+    //
+    // **注意这一类的 null 不是全量兜底**(与上一段不同):modelContextScan.ts:70-73
+    // 对 user_message 的 null 是 `foundLive = true; break;`,`if (!foundLive)
+    // return null` 那条逃生舱走不到,回的是 head + tail —— 段照样丢。所以跳不完
+    // (病态日志:连着 64 条别人的私话)时症状与不修一样,只是把发生概率压到近乎零。
+    // 真正的全量兜底要动 modelContextScan,不在本任务范围
     lastOfType: (sessionId, type, opts) => {
       const mine = (e: SessionEvent) => {
         const owner = "agentId" in e ? e.agentId : undefined;

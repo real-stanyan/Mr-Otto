@@ -68,6 +68,19 @@ describe("护栏硬停 loopGuardMaxNudges（#957 E-F5）", () => {
     expect(calls()).toBe(6);
   });
 
+  it("0 按「不封顶」算，不是「一次都不许喊」—— 配错的 0 不该变成最严的上限", async () => {
+    const store = new EventStore(":memory:");
+    const { adapter, calls } = stuckAdapter(6);
+    const engine = new LoopEngine({
+      store, adapter, tools: [bashTool], world, sessionId: "s1",
+      loopGuardMaxNudges: 0,
+    });
+
+    await expect(engine.runTurn("查一下")).resolves.toBe("completed");
+    expect(nudges(store.load("s1"))).toHaveLength(2);
+    expect(calls()).toBe(6);
+  });
+
   it("不配就是现状：护栏照喊不停 turn，模型自己说完了才 completed", async () => {
     const store = new EventStore(":memory:");
     const { adapter, calls } = stuckAdapter(6);

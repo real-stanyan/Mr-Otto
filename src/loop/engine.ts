@@ -110,6 +110,10 @@ export interface LoopEngineOptions {
   agentId?: string;
   /** 退化循环护栏喊到第几次就硬停这一 turn（#957 E-F5）。缺席 = 永不停，
       即 ADR-0212 落地时的行为（注一条话，turn 照跑，无步数天花板 ADR-0006）。
+      **`0` 与负数一律按「不封顶」处理，和缺席同义**：`>= 0` 的写法会让第一次
+      护栏就抛（`1 >= 0`），而那读起来像「一次都不许喊」——一个配错的 0 会把
+      「没有上限」翻译成「最严的上限」，方向正好相反。要「一次都不许」就别装
+      护栏，不是把上限调到 0。
       **本机会话不该配**：那条无天花板规则的前提是「人就坐在那儿，停止键随时
       能按」。云会话的群聊 turn 没有那个人 —— 真机上跑过 300 次模型调用、
       99 次护栏、零进展、没有任何终点。命中时抛错，走 runFrom 既有的
@@ -973,9 +977,10 @@ export class LoopEngine {
         // 缺席 = 现状：ADR-0006 的无步数天花板对本机会话原样成立（人就坐在
         // 那儿，停止键随时能按）。云会话没有那个人 —— 真机上一条群聊 turn 跑了
         // 300 次模型调用、喊了 99 次护栏，从头到尾没有任何东西会让它结束
-        const cap = this.opts.loopGuardMaxNudges;
+        // cap > 0 而不是 cap !== undefined：0/负数按「不封顶」算（见选项注释）
+        const cap = this.opts.loopGuardMaxNudges ?? 0;
         this.loopNudges++;
-        if (cap !== undefined && this.loopNudges >= cap) {
+        if (cap > 0 && this.loopNudges >= cap) {
           throw new Error(
             `退化循环：护栏连续提醒 ${this.loopNudges} 次仍在原地打转，本轮停止`
           );
