@@ -6,9 +6,10 @@
 // 单独写测试（tests/renderer/cloudTimelineLabels.test.ts）。
 
 import { agentNameOf, labelOf } from "./workspaceView.js";
-import type { AgentRelayEvent, AssistantMessageEvent, SessionEvent, UserMessageEvent } from "../../../session/events.js";
+import type { AgentRelayEvent, AssistantMessageEvent, RouteChangedEvent, SessionEvent, UserMessageEvent } from "../../../session/events.js";
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 import { CREATE_AGENT_TOOL_NAME } from "../../../shared/createAgentDraft.js";
+import { countdown } from "./billingView.js";
 
 /** sessionService.ts 的 say() 点火一个 turn 时拼的前缀:`\`[${label}]: ${text}\``。
     协议没有给 user_message 配独立的 fromUid/label 字段（这个事件本来就是
@@ -67,4 +68,40 @@ export function createAgentLanded(events: readonly SessionEvent[], e: SessionEve
   return events.some(
     (p) => p.type === "assistant_message" && (p.toolCalls ?? []).some((c) => c.id === e.toolCallId && c.name === CREATE_AGENT_TOOL_NAME)
   );
+}
+
+const ROUTE_LABEL: Record<RouteChangedEvent["from"], string> = {
+  hosted: "托管",
+  workspace: "工作区自带 key",
+  direct: "自带 key",
+};
+
+const ROUTE_REASON_TEXT: Record<RouteChangedEvent["reason"], string> = {
+  quota_exhausted: "本周额度用完",
+  probe_failed: "订阅探测失败",
+  no_subscription: "所有者没有活跃订阅",
+  subscription_active: "订阅恢复",
+};
+
+/** `route_changed` 的时间线文案（第一批 Task 6 复审 Minor 7，#957 Task 7b）：`to==="direct"`
+    是桌面唯一的、在这套 reason 语义之前就有的换轨（额度用完退回本机 key），旧日志里全是
+    这句话——**逐字节保留**，不套下面的通用模板（brief 的硬约束，同 schema 向后兼容的
+    Hard rule：旧日志必须永远可重放）。
+    `subscription_active` 只在换回 hosted 时出现（`decideRuntimeRoute` 只在 `route.kind
+    === "hosted"` 时判这个 reason），措辞走「改回」不走「改道：X → Y」——「改道」暗示
+    从谁那儿抢了额度，而这一格说的是恢复原状。
+    其余（`probe_failed` / `no_subscription` / `quota_exhausted` 落在非 direct 的
+    工作区↔托管之间）用通用模板：改道：<from> → <to>（<原因>）。`resetAt` 有值时在原因后面
+    追加「，X 恢复」——用 Timeline.tsx 原本就在用的 `countdown`（同一扇窗两处不能各写一份，
+    ADR-0209 那条纪律） */
+export function routeChangedText(e: RouteChangedEvent, now: number = Date.now()): string {
+  if (e.to === "direct") {
+    const base = "订阅额度已用完，本次起用的是你自己的 key";
+    return e.resetAt !== undefined ? `${base}（${countdown(e.resetAt, now)}）` : base;
+  }
+  if (e.reason === "subscription_active") {
+    return `改回${ROUTE_LABEL[e.to]}（订阅恢复）`;
+  }
+  const resetSuffix = e.resetAt !== undefined ? `，${countdown(e.resetAt, now)}` : "";
+  return `改道：${ROUTE_LABEL[e.from]} → ${ROUTE_LABEL[e.to]}（${ROUTE_REASON_TEXT[e.reason]}${resetSuffix}）`;
 }

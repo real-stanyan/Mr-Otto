@@ -18,7 +18,7 @@ import { toolPhase, toolSummary } from "../../../shared/toolSummary.js";
 import { compactedCardMeta, microCompactedHeadline } from "../lib/autoCompactCopy.js";
 import { buildToolIndex, type ToolIndex } from "../lib/toolIndex.js";
 import { useNow } from "../lib/useNow.js";
-import { countdown } from "../lib/billingView.js";
+import { routeChangedText } from "../lib/cloudTimeline.js";
 import { AUDIT, ROW, THINKING_BODY, THINKING_DETAILS, THINKING_SUMMARY, TOOL_PRE, TOOL_SEC } from "../timelineStyles.js";
 import { TurnErrorState } from "./TurnErrorState.js";
 import { TurnStoppedState } from "./TurnStoppedState.js";
@@ -549,17 +549,7 @@ export const EventRow = memo(function EventRow({ event, isLast = false }: { even
           <MarkerIcon>
             <KeyRound />
           </MarkerIcon>
-          <MarkerContent>
-            {event.to === "direct"
-              ? "订阅额度已用完，本次起用的是你自己的 key"
-              : // to === "hosted" 目前在 main/agent.ts 的 onReroute 里到不了：
-                // 强制 exhausted:true 之后 routeModel 只会给 direct 或 blocked 之一，
-                // blocked 那支根本不落这条事件——这里留着是给类型兜底，不是当前会触发的路径
-                `改道：${event.from} → ${event.to}`}
-            {event.resetAt !== undefined && (
-              <span className="ms-1 text-foreground/70">（{countdown(event.resetAt, Date.now())}）</span>
-            )}
-          </MarkerContent>
+          <MarkerContent>{routeChangedText(event)}</MarkerContent>
         </Marker>
       );
 

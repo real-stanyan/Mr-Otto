@@ -1,8 +1,9 @@
 import { describe, it, expect } from "vitest";
 import {
-  assistantLabel, createAgentLanded, hiddenFromCloudTimeline, relayLineText, userRowIdentity,
+  assistantLabel, createAgentLanded, hiddenFromCloudTimeline, relayLineText, routeChangedText, userRowIdentity,
 } from "../../src/renderer/src/lib/cloudTimeline.js";
 import type { WorkspaceSnapshot } from "../../src/shared/workspaces.js";
+import { countdown } from "../../src/renderer/src/lib/billingView.js";
 
 const ws: WorkspaceSnapshot = {
   id: "w", name: "W", ownerUid: "o", connectors: [], sessions: [],
@@ -78,5 +79,43 @@ describe("createAgentLanded（#954：建成后桌面刷新名册的判据）", (
   it("找不到配对的 tool_call（日志被裁过）→ false，不刷新", () => {
     const orphan = { ...base, seq: 9, type: "tool_result" as const, toolCallId: "cZ", status: "ok" as const, output: "" };
     expect(createAgentLanded([orphan], orphan)).toBe(false);
+  });
+});
+
+describe("routeChangedText（第一批 Task 6 复审 Minor 7，#957 Task 7b）", () => {
+  const routeBase = { ...base, type: "route_changed" as const, ignorable: true as const };
+  const now = 1_000_000;
+
+  it("hosted→workspace probe_failed：改道：托管 → 工作区自带 key（订阅探测失败）", () => {
+    const e = { ...routeBase, from: "hosted" as const, to: "workspace" as const, reason: "probe_failed" as const };
+    expect(routeChangedText(e, now)).toBe("改道：托管 → 工作区自带 key（订阅探测失败）");
+  });
+
+  it("quota_exhausted：（本周额度用完）+ resetAt 有值时带「，X 恢复」", () => {
+    const noReset = { ...routeBase, from: "hosted" as const, to: "workspace" as const, reason: "quota_exhausted" as const };
+    expect(routeChangedText(noReset, now)).toBe("改道：托管 → 工作区自带 key（本周额度用完）");
+
+    const resetAt = now + 3 * 60 * 60 * 1000;
+    const withReset = { ...noReset, resetAt };
+    expect(routeChangedText(withReset, now)).toBe(`改道：托管 → 工作区自带 key（本周额度用完，${countdown(resetAt, now)}）`);
+  });
+
+  it("no_subscription：（所有者没有活跃订阅）", () => {
+    const e = { ...routeBase, from: "hosted" as const, to: "workspace" as const, reason: "no_subscription" as const };
+    expect(routeChangedText(e, now)).toBe("改道：托管 → 工作区自带 key（所有者没有活跃订阅）");
+  });
+
+  it("workspace→hosted subscription_active：改回托管（订阅恢复），不套「改道：X → Y」模板", () => {
+    const e = { ...routeBase, from: "workspace" as const, to: "hosted" as const, reason: "subscription_active" as const };
+    expect(routeChangedText(e, now)).toBe("改回托管（订阅恢复）");
+  });
+
+  it("旧日志 to:\"direct\" 文案逐字节不变（桌面唯一的换轨起因，早于 reason 现在这套语义）", () => {
+    const noReset = { ...routeBase, from: "hosted" as const, to: "direct" as const, reason: "quota_exhausted" as const };
+    expect(routeChangedText(noReset, now)).toBe("订阅额度已用完，本次起用的是你自己的 key");
+
+    const resetAt = now + 90 * 60 * 1000;
+    const withReset = { ...noReset, resetAt };
+    expect(routeChangedText(withReset, now)).toBe(`订阅额度已用完，本次起用的是你自己的 key（${countdown(resetAt, now)}）`);
   });
 });
