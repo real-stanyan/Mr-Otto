@@ -88,7 +88,11 @@ export type BillingErrorCode =
   | "already_subscribed"
   /** webhook 正文超过 1 MB 被 edge 在读 body 之前拒掉（413）。面向 Stripe 不面向客户端，
       列进来只是让 `parseBillingError` 认得 edge 发出的**每一个** code（#867） */
-  | "payload_too_large";
+  | "payload_too_large"
+  /** GET /billing/v1/workspace-usage：查的人已经不在这个工作区里了（403，#946 切片 3） */
+  | "not_member"
+  /** 同上端点：workspace id 查无此工作区（404） */
+  | "not_found";
 
 export interface BillingError {
   code: BillingErrorCode;
@@ -99,7 +103,7 @@ export interface BillingError {
 
 const CODES: ReadonlySet<string> = new Set([
   "bad_token", "no_subscription", "quota_exhausted", "unknown_model", "upstream", "too_many_inflight", "bad_request",
-  "forbidden", "already_subscribed", "payload_too_large",
+  "forbidden", "already_subscribed", "payload_too_large", "not_member", "not_found",
 ]);
 
 const isObj = (v: unknown): v is Record<string, unknown> =>

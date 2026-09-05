@@ -31,7 +31,7 @@ import type {
 } from "./files.js";
 import type { EditorApp } from "./editors.js";
 import type { GitStatusResult } from "./gitStatus.js";
-import type { BillingMe, PlanId } from "./billing.js";
+import type { BillingMe, PlanId, WorkspaceUsage } from "./billing.js";
 
 /** 副本合回项目本体的结果（issue #643）。失败分四档，每档对应一句人话 */
 export type IsolatedMergeResult =
@@ -1063,6 +1063,8 @@ export interface ShellBridge {
   ): Promise<FriendsResult<null>>;
   /** 删一只 agent（建的人或 owner；'admin' 谁都删不掉，主进程层先拒） */
   workspaceAgentDelete(id: string, agentId: string): Promise<FriendsResult<null>>;
+  /** 设置页「用量」tab（#946）：每只 agent 本周烧了多少。经 hostedQuota 打 edge，失败翻成 FriendsResult */
+  workspaceUsage(id: string): Promise<FriendsResult<WorkspaceUsage>>;
   /** 把 sessionId 这个会话发布进工作区（Task 9 publishSessionToWorkspace）。
       ok:true 带 workspace_sessions 的行 id + Storage 包 id */
   workspacePublishSession(id: string, sessionId: string, title: string): Promise<FriendsResult<{ rowId: string; pkgId: string }>>;
@@ -1496,6 +1498,7 @@ export const CHANNELS = {
   workspaceAgentCreate: "otter:workspaceAgentCreate",
   workspaceAgentUpdate: "otter:workspaceAgentUpdate",
   workspaceAgentDelete: "otter:workspaceAgentDelete",
+  workspaceUsage: "otter:workspaceUsage",
   workspacePublishSession: "otter:workspacePublishSession",
   workspaceUnpublishSession: "otter:workspaceUnpublishSession",
   workspaceImportSession: "otter:workspaceImportSession",

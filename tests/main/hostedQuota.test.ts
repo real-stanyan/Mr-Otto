@@ -111,6 +111,20 @@ describe("hostedQuota", () => {
     expect(olderResult).toEqual(me2); // 过期响应落地时读到的已经是 newer 的快照，不是自己拿到的 me
     expect(q.snapshot().me).toEqual(me2); // 快照最终定格在更新的那份，没被旧响应覆盖回去
   });
+
+  it("workspaceUsage：GET /billing/v1/workspace-usage?workspace=<id> 带 JWT；形状不对抛", async () => {
+    const usage = { workspaceId: "w1", ownerUid: "o", weekStartAt: 1, weekEndAt: 2, rows: [] };
+    const { q, fetchImpl } = make([() => Response.json(usage), () => Response.json({ nope: true })]);
+    expect(await q.workspaceUsage("w1")).toEqual(usage);
+    const req = (fetchImpl as unknown as { mock: { calls: unknown[][] } }).mock.calls[0]!;
+    expect(req[0]).toBe("https://edge/billing/v1/workspace-usage?workspace=w1");
+    expect((req[1] as RequestInit).headers).toMatchObject({ authorization: "Bearer jwt" });
+    await expect(q.workspaceUsage("w1")).rejects.toThrow(/形状/);
+  });
+  it("workspaceUsage：edge 的错误信封翻成人话抛出", async () => {
+    const { q } = make([() => Response.json({ error: { message: "你不在这个工作区里", type: "otto_edge", code: "not_member" } }, { status: 403 })]);
+    await expect(q.workspaceUsage("w1")).rejects.toThrow("你不在这个工作区里");
+  });
 });
 
 describe("parseCheckoutTarget", () => {

@@ -55,7 +55,7 @@ import type { AdrSummary, IssueDetailResult, IssuesResult } from "../../shared/p
 import type { GitBranchesResult, GitCommitResult, GitLogResult } from "../../shared/gitGraph.js";
 import { statusSignature, type GitStatusResult } from "../../shared/gitStatus.js";
 import type { IsolatedMergeResult, BillingSnapshotView } from "../../shared/shellBridge.js";
-import type { PlanId } from "../../shared/billing.js";
+import type { PlanId, WorkspaceUsage } from "../../shared/billing.js";
 import { bridgeErrorMessage } from "./lib/bridgeError.js";
 import { humanizeBillingError } from "./lib/billingError.js";
 
@@ -97,7 +97,7 @@ import { createRequestGate } from "./lib/latestRequest.js";
 import { mergeStaged } from "./lib/staging.js";
 import { outgoingFrom } from "./lib/resendPayload.js";
 import type {
-  DirectMessage, FriendProfile, FriendsSnapshot, RealtimeHealth, WorkspacesSnapshot,
+  DirectMessage, FriendProfile, FriendsResult, FriendsSnapshot, RealtimeHealth, WorkspacesSnapshot,
 } from "../../shared/friends.js";
 // WorkspaceSnapshot（单数，ADR-0198 多人协作工作区）与上面的 WorkspacesSnapshot（复数，
 // friends.js 里"我+好友各自在哪个仓库哪个分支"的在场快照，issue #167）是两个不相干的概念，
@@ -861,6 +861,9 @@ interface ChatState {
     patch: { name?: string; description?: string; instructions?: string; models?: readonly string[]; tools?: readonly AgentToolAllow[] },
   ): Promise<boolean>;
   deleteWorkspaceAgent(id: string, agentId: string): Promise<boolean>;
+  /** 设置页「用量」tab（#946）：不进 store 状态——这张表只在打开 tab 时看一眼，
+      组件本地 state 就够（同 CloudRepoConfigDialog 现取的纪律） */
+  loadWorkspaceUsage(id: string): Promise<FriendsResult<WorkspaceUsage>>;
   /** 把当前/指定会话发布进工作区。回是否成功——rowId/pkgId 用不上时调用方不必接 */
   publishWorkspaceSession(id: string, sessionId: string, title: string): Promise<boolean>;
   /** 只有发布者能撤（服务端也会拦，见 index.ts workspaceUnpublishSession handler） */
@@ -2163,6 +2166,10 @@ export const useChat = create<ChatState>((set, get) => ({
     set({ workspaceGroupsError: null });
     await get().refreshWorkspaceGroups();
     return true;
+  },
+
+  async loadWorkspaceUsage(id) {
+    return window.otter.workspaceUsage(id);
   },
 
   async publishWorkspaceSession(id, sessionId, title) {
