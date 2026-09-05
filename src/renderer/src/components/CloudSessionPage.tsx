@@ -58,11 +58,13 @@ import { formatProxyTime } from "../lib/proxyShare.js";
 import { agentNameOf, labelOf } from "../lib/workspaceView.js";
 import { applyAgentMention, filterAgentCandidates, mentionQueryAt } from "../lib/agentMentionInput.js";
 import { EMBEDDED_CREDENTIAL_MESSAGE, repoUrlHasEmbeddedCredential } from "../lib/cloudRepoUrl.js";
+import { assistantLabel, userRowIdentity } from "../lib/cloudTimeline.js";
+import { openTurns } from "../../../shared/turnLedger.js";
 import { toolSummary } from "../../../shared/toolSummary.js";
 import { parseMentions } from "../../../shared/remote/agentMention.js";
 import type {
-  ApprovalDecisionEvent, ApprovalRequestEvent, AssistantMessageEvent, ChatMessageEvent,
-  SessionEvent, ToolCallRequest, ToolResultEvent, UserMessageEvent,
+  AgentBriefedEvent, ApprovalDecisionEvent, ApprovalRequestEvent, AssistantMessageEvent,
+  ChatMessageEvent, SessionEvent, ToolCallRequest, ToolResultEvent,
 } from "../../../session/events.js";
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 import type { CsModelState, CsRepoState } from "../../../shared/remote/cloudSession.js";
@@ -71,17 +73,6 @@ import type { CsModelState, CsRepoState } from "../../../shared/remote/cloudSess
 // 挂载这个组件，但 hooks 不能条件调用，events 得先算出一个稳定引用——
 // 同 FriendChatView 的 EMPTY 先例，模块级常量避免每次渲染新建 []）
 const EMPTY_EVENTS: SessionEvent[] = [];
-
-/** sessionService.ts 的 say() 点火一个 turn 时拼的前缀:`\`[${label}]: ${text}\``。
-    协议没有给 user_message 配独立的 fromUid/label 字段（这个事件本来就是
-    "普通会话的一条用户消息"，云会话群聊只是把发言人编进了正文），只能在
-    渲染层尽力而为地把它解析回来：非贪婪匹配第一个 "]: " 之前的内容当
-    label，其余原样当正文。解析不出（旧日志 / 前缀被破坏）就把 label 记
-    null、正文原样显示全文，不装作解析成功了 */
-function parseUserMessageLabel(content: string): { label: string | null; text: string } {
-  const m = /^\[(.*?)\]: ([\s\S]*)$/.exec(content);
-  return m ? { label: m[1]!, text: m[2]! } : { label: null, text: content };
-}
 
 /** join() 之后持续状态的 deniedCode → 人话（渲染层自己的翻译）。
     main/cloudSessionClient.ts 的 deniedMessage() 只服务 create() 那一次性
@@ -229,11 +220,6 @@ export function CloudSessionPage({
 
   const ready = cs.state === "ready";
   const banner = statusBanner(cs);
-  // user_message.content 只有 "[label]: text" 这一个可解析的身份信号（协议
-  // 没给这个事件独立的 fromUid），只能拿它跟"我自己的展示名"比对来判断
-  // "这句是不是我说的"——同一个 uid 在 ws.members 里查到的 label，跟
-  // sessionService.say() 落盘时传的 label 理应是同一份 profiles 数据
-  const myLabel = labelOf(ws, selfUid);
 
   const submit = async (): Promise<void> => {
     const text = draft.trim();
@@ -354,23 +340,37 @@ export function CloudSessionPage({
                 return <ChatMessageRow key={e.seq} event={e} mine={e.fromUid === selfUid} />;
               }
               if (e.type === "user_message") {
-                const parsed = parseUserMessageLabel(e.content);
+                const identity = userRowIdentity(e, ws, selfUid);
                 return (
                   <UserMessageRow
                     key={e.seq}
                     ts={e.ts}
-                    label={parsed.label}
-                    text={parsed.text}
-                    mine={parsed.label === myLabel}
+                    label={identity.label}
+                    text={identity.text}
+                    mine={identity.mine}
+                    targets={identity.targets}
                   />
                 );
               }
               if (e.type === "assistant_message") {
-                return <AssistantMessageRow key={e.seq} event={e} index={timelineProjection.index} />;
+                return <AssistantMessageRow key={e.seq} event={e} ws={ws} index={timelineProjection.index} />;
+              }
+              if (e.type === "agent_briefed") {
+                return <AgentBriefedRow key={e.seq} event={e} />;
+              }
+              if (e.type === "turn_ended") {
+                // isLast 恒 false：EventRow 的"重试"钮只看这个 prop（Timeline.tsx:649），
+                // 而那颗钮点了走本地 resendMessage——云端没有重发这条路，钮出来就是撒谎
+                return <EventRow key={e.seq} event={e} isLast={false} />;
               }
               return <EventRow key={e.seq} event={e} isLast={i === events.length - 1} />;
             })
           )}
+          {/* 排队中/正在回复画在时间线**末尾**而不是贴在各自那条 @ 消息下面：
+              排队的东西说的是"接下来会发生什么"，那是时间线尾巴的事，不是
+              历史里某一行的注脚（跟 turn_ended 的错误行不同——那是已经发生
+              的事实，钉在它发生的位置）*/}
+          <PendingTurnLines events={events} ws={ws} />
         </TimelineProjectionContext.Provider>
       </div>
 
@@ -909,21 +909,25 @@ function ChatMessageRow({ event, mine }: { event: ChatMessageEvent; mine: boolea
   );
 }
 
-/** 点火了一个 turn 的那句话（复审 Rejected #1 补齐）：user_message 本体，
-    可视觉语言照抄 ChatMessageRow——群聊里这就是"有人说了一句话"，只是
-    这一句额外触发了 Agent 干活。label 解析不出时（旧日志/前缀被破坏）就
-    不画标签行，只显示时间，正文原样兜底显示全文（含没剥掉的前缀，宁可
-    多显示一点也不假装解析成功了） */
+/** 点火了一个 turn 的那句话（复审 Rejected #1 补齐；targets 是 Task 10 补的
+    "说给谁"）：user_message 本体，可视觉语言照抄 ChatMessageRow——群聊里
+    这就是"有人说了一句话"，只是这一句额外触发了 Agent 干活。label 解析
+    不出时（旧日志/前缀被破坏）就不画标签行，只显示时间，正文原样兜底显示
+    全文（含没剥掉的前缀，宁可多显示一点也不假装解析成功了）。targets
+    非空时标签行末尾追加 "· → 谁"——这是这句话点了谁的唯一可见痕迹，
+    不点名的普通发言（targets 为空）不多这一截 */
 function UserMessageRow({
   ts,
   label,
   text,
   mine,
+  targets,
 }: {
   ts: number;
   label: string | null;
   text: string;
   mine: boolean;
+  targets: string[];
 }) {
   return (
     <div
@@ -935,6 +939,7 @@ function UserMessageRow({
       <span className="px-1 text-[10.5px] text-muted-foreground">
         {!mine && label ? `${label} · ` : ""}
         {formatProxyTime(ts)}
+        {targets.length > 0 ? ` · → ${targets.join("、")}` : ""}
       </span>
       <Bubble align={mine ? "end" : "start"} variant={mine ? "tinted" : "muted"}>
         <BubbleContent className="whitespace-pre-wrap break-words">{text}</BubbleContent>
@@ -943,19 +948,29 @@ function UserMessageRow({
   );
 }
 
-/** Agent 的回复（复审 Rejected #1 补齐）：恒左对齐（Agent 不可能是"我"）。
-    content 在纯工具调用的 turn 里可能是空串（events.ts 的字段注释）——
-    这时不画空气泡，改成无条件把 toolCalls 摊成一行行 ToolActivityLine，
-    这样即使模型这一轮一个字没说，用户也能看见"它干了什么"，不是全程无声。
-    有正文又有工具调用时两者都画（events.ts 原话："文本和工具调用请求可以
-    同时出现"）*/
-function AssistantMessageRow({ event, index }: { event: AssistantMessageEvent; index: ToolIndex }) {
+/** Agent 的回复（复审 Rejected #1 补齐；署名换成 assistantLabel 是 Task 10）：
+    恒左对齐（Agent 不可能是"我"）。content 在纯工具调用的 turn 里可能是
+    空串（events.ts 的字段注释）——这时不画空气泡，改成无条件把 toolCalls
+    摊成一行行 ToolActivityLine，这样即使模型这一轮一个字没说，用户也能
+    看见"它干了什么"，不是全程无声。有正文又有工具调用时两者都画
+    （events.ts 原话："文本和工具调用请求可以同时出现"）。ws 是查
+    agentId → 名字的名单，多智能体上线前落的旧消息没有 agentId，
+    assistantLabel 据此回退到 "Agent" */
+function AssistantMessageRow({
+  event,
+  ws,
+  index,
+}: {
+  event: AssistantMessageEvent;
+  ws: WorkspaceSnapshot;
+  index: ToolIndex;
+}) {
   const hasText = event.content.trim() !== "";
   const toolCalls = event.toolCalls ?? [];
   return (
     <div className="flex max-w-[85%] flex-col items-start gap-1 self-start">
       <span className="px-1 text-[10.5px] text-muted-foreground">
-        Agent · {formatProxyTime(event.ts)}
+        {assistantLabel(event, ws)} · {formatProxyTime(event.ts)}
       </span>
       {hasText && (
         <Bubble align="start" variant="muted">
@@ -966,6 +981,45 @@ function AssistantMessageRow({ event, index }: { event: AssistantMessageEvent; i
         <ToolActivityLine key={call.id} call={call} result={index.results.get(call.id)} />
       ))}
     </div>
+  );
+}
+
+/** agent 就位（Task 10）：改提示词生效了在界面上唯一的痕迹——`briefIfNeeded`
+    (services/runtime/src/sessionService.ts) 每次改动派发新的 instructions
+    才会落这条事件，光看聊天记录本身看不出"我刚改的提示词有没有吃上"，
+    这一行就是那个回执。视觉上刻意比 ChatMessageRow/UserMessageRow 更淡更
+    小——它是审计性质的旁白，不是群里任何人说的话 */
+function AgentBriefedRow({ event }: { event: AgentBriefedEvent }) {
+  return (
+    <p className="px-1 text-[10.5px] italic text-muted-foreground/70">
+      「{event.name}」就位{event.instructions.trim() ? "（提示词已更新）" : ""}
+    </p>
+  );
+}
+
+/** 「谁还没回」（Task 10，src/shared/turnLedger.ts 的 openTurns 是事实来源）：
+    画在时间线**末尾**而不是贴在各自那条 @ 消息下面——排队的东西说的是
+    "接下来会发生什么"，那是时间线尾巴的事；这是日志的投影不是 UI 本地态，
+    daemon 重启回来后重新算一遍照样对得上。running 前面一个跳动的点，
+    queued 前面一个不跳动的点——同一屏里"正在做"和"还没轮到"要一眼分开 */
+function PendingTurnLines({ events, ws }: { events: readonly SessionEvent[]; ws: WorkspaceSnapshot }) {
+  const pending = useMemo(() => openTurns(events), [events]);
+  if (pending.length === 0) return null;
+  return (
+    <>
+      {pending.map((t) => (
+        <div key={`${t.seq}:${t.agentId}`} className="flex items-center gap-1.5 px-1 text-[11px] text-muted-foreground">
+          <span
+            className={cn(
+              "size-[6px] rounded-full",
+              t.state === "running" ? "bg-brand animate-pulse motion-reduce:animate-none" : "bg-muted-foreground/40"
+            )}
+            aria-hidden
+          />
+          {agentNameOf(ws, t.agentId)} {t.state === "running" ? "正在回复…" : "排队中…"}
+        </div>
+      ))}
+    </>
   );
 }
 
