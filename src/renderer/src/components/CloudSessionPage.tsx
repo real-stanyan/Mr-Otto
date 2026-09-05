@@ -56,12 +56,12 @@ import { buildToolIndex, type ToolIndex } from "../lib/toolIndex.js";
 import { groupSubagentSpawns } from "../lib/subagentTimeline.js";
 import { formatProxyTime } from "../lib/proxyShare.js";
 import { agentNameOf, labelOf } from "../lib/workspaceView.js";
-import { applyAgentMention, filterAgentCandidates, mentionQueryAt } from "../lib/agentMentionInput.js";
+import { applyAgentMention, filterAgentCandidates, mentionQueryAt, pickerEmptyState } from "../lib/agentMentionInput.js";
 import { EMBEDDED_CREDENTIAL_MESSAGE, repoUrlHasEmbeddedCredential } from "../lib/cloudRepoUrl.js";
 import { approvalCardTitle, assistantLabel, hiddenFromCloudTimeline, relayLineText, userRowIdentity } from "../lib/cloudTimeline.js";
 import { openTurns } from "../../../shared/turnLedger.js";
 import { toolSummary } from "../../../shared/toolSummary.js";
-import { parseMentions } from "../../../shared/remote/agentMention.js";
+import { mentionTokens, parseMentions } from "../../../shared/remote/agentMention.js";
 import type {
   AgentBriefedEvent, AgentRelayEvent, ApprovalDecisionEvent, ApprovalRequestEvent, AssistantMessageEvent,
   ChatMessageEvent, SessionEvent, ToolCallRequest, ToolResultEvent,
@@ -136,6 +136,9 @@ export function CloudSessionPage({
   const cloudSay = useChat((s) => s.cloudSay);
   const cloudApprove = useChat((s) => s.cloudApprove);
   const cloudArchive = useChat((s) => s.cloudArchive);
+  // 名单陈旧时的刷新（#935 / #957 C-I4）：选人弹层的空态按钮、发送前对认不出
+  // 的 @ 先刷一次都要它
+  const refreshWorkspaceGroups = useChat((s) => s.refreshWorkspaceGroups);
   // 建这条会话的人（issue #822）：清单那一行本来就带 publisherUid，不用为
   // 这个再往协议里加字段。清单还没拉到时查不到 → 按钮不显示（服务端才是
   // 判据，这里少显示一颗按钮的代价远小于显示一颗按了被拒的）
@@ -205,6 +208,9 @@ export function CloudSessionPage({
     if (pickingAt === null) setDismissedAt(null);
   }, [pickingAt]);
   const options = picking ? filterAgentCandidates(candidates, picking.query) : [];
+  // 名单刚变过（改名/新增）时 options 会是空的——不画空态的话弹层压根不开，
+  // 用户以为自己没打对字，实际是这份本地快照过期了（#935 / #957 C-I4）
+  const emptyState = pickerEmptyState(picking, options);
   // 发送时点了谁：与 chip 行**同一次**调用算出来的同一份 —— 界面上写着发给
   // 谁，服务端就跑谁。两边各算各的就会分家（坑 ④）
   const mentions = useMemo(() => parseMentions(draft, candidates), [draft, candidates]);
@@ -249,11 +255,26 @@ export function CloudSessionPage({
     // 复审 Medium：草稿在发送成功之后才清——失败时原样留在输入框里，
     // 不用另外找地方把文字塞回去；workspaceGroupsError 在 footer 上方
     // 露出来说明失败原因
+    let sendCandidates = candidates;
+    let sendMentions = mentions;
+    // 正文里写了 @token，但一个候选都解析不出来（#935 / #957 C-I4）：最常见
+    // 的诱因是名单刚变过（改名/新增）而这份本地快照没跟上——发一个
+    // authoritative 的 `[]` 会被服务端读成"我确认谁都没点"（ADR-0220 决策 2），
+    // 于是消息安静地变成一句没人接的闲聊，用户还以为自己 @ 到了人。发送前
+    // 先刷一次名单，用刷新后的最新快照重算一次再决定发不发数组——不从这个
+    // 组件已经渲染出的 `ws`/`candidates` 闭包读（那份还是刷新前的旧值），
+    // 直接问 store 要这一刻的真实状态
+    if (mentionTokens(text).length > 0 && mentions.length === 0) {
+      await refreshWorkspaceGroups();
+      const freshWs = useChat.getState().workspaceGroups.find((g) => g.id === ws.id);
+      sendCandidates = (freshWs?.agents ?? []).map((a) => ({ agentId: a.agentId, name: a.name, description: a.description }));
+      sendMentions = parseMentions(text, sendCandidates);
+    }
     // 名单一条都没有（还没拉到 / 拉失败）时**不发数组**：服务端把 `[]` 读作
     // "我确认谁都没点"（ADR-0220 决策 2），而这里的空是"我算不出来"——差着
     // 一整个 turn。缺席让服务端拿它自己那份名单解析正文、再回落名单第一只，
     // 于是一句 "@管理员 帮我看下" 照旧有人接，而不是安静地变成一句闲聊
-    const ok = candidates.length === 0 ? await cloudSay(text) : await cloudSay(text, mentions);
+    const ok = sendCandidates.length === 0 ? await cloudSay(text) : await cloudSay(text, sendMentions);
     if (ok) {
       // mentions 是 draft 的函数，清了正文点名自然跟着清（chip 行也跟着没）
       setDraft("");
@@ -448,7 +469,7 @@ export function CloudSessionPage({
               Radix 把内容 portal 到 body、位置不够时自己翻到下面——这正是那个裁切的修法。
               键盘**仍然全部**由下面的 textarea onKeyDown 管（方向键/Enter 不能交给 Radix，
               它会拿去做菜单导航）；焦点也一步都不许挪，靠两个 AutoFocus 的 preventDefault */}
-          <Popover open={picking !== null && options.length > 0}>
+          <Popover open={picking !== null && (options.length > 0 || emptyState !== null)}>
             <PopoverAnchor asChild>
               <textarea
                 ref={boxRef}
@@ -498,6 +519,12 @@ export function CloudSessionPage({
                       setDismissedAt(picking.at);
                       return;
                     }
+                  } else if (picking !== null && emptyState !== null && e.key === "Escape") {
+                    // 空态那张卡没有候选可挑，方向键/Enter/Tab 都没有意义——
+                    // 只接 Escape 关掉它，同有候选时的既有约定
+                    e.preventDefault();
+                    setDismissedAt(picking.at);
+                    return;
                   }
                   // Enter 发送、Shift+Enter 换行
                   if (e.key === "Enter" && !e.shiftKey) {
@@ -529,27 +556,45 @@ export function CloudSessionPage({
               // 上游那串 animate-in/zoom-in-95 在本仓库是死类名，见 ui/dialog.tsx 顶部）
               className="w-auto min-w-[200px] max-w-[320px] p-1"
             >
-              {options.map((o, i) => (
-                <div
-                  key={o.agentId}
-                  role="option"
-                  aria-selected={i === hi}
-                  // mousedown + preventDefault：用 click 的话 textarea 会先失焦，
-                  // 写回之后那次 setSelectionRange 就落在一个没焦点的框上
-                  onMouseDown={(e) => {
-                    e.preventDefault();
-                    pick(i);
-                  }}
-                  onMouseEnter={() => setHi(i)}
-                  className={cn(
-                    "flex cursor-default items-baseline gap-2 rounded-sm px-2 py-[5px] text-[12.5px]",
-                    i === hi && "bg-foreground/[0.06]"
-                  )}
-                >
-                  <span className="shrink-0">{o.name}</span>
-                  <span className="truncate text-muted-foreground">{o.description}</span>
+              {options.length === 0 && emptyState ? (
+                // 空态（#935 / #957 C-I4）：只读的一行说明 + 一颗刷新钮，不是
+                // 一个可选的选项——名单可能真的刚变过（别人改了名/新建了 agent），
+                // 也可能用户就是打错了字，这里不替他判断，只给出"再核实一次"的路
+                <div className="flex flex-col gap-1.5 px-2 py-1.5 text-[12.5px] text-muted-foreground">
+                  <span>没有叫「{emptyState.query}」的智能体（名单可能刚变过）</span>
+                  <button
+                    type="button"
+                    // 同选项行的道理：mousedown + preventDefault 保住 textarea 的焦点
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => void refreshWorkspaceGroups()}
+                    className="press-scale self-start text-foreground underline decoration-dotted underline-offset-2 hover:no-underline"
+                  >
+                    刷新名单
+                  </button>
                 </div>
-              ))}
+              ) : (
+                options.map((o, i) => (
+                  <div
+                    key={o.agentId}
+                    role="option"
+                    aria-selected={i === hi}
+                    // mousedown + preventDefault：用 click 的话 textarea 会先失焦，
+                    // 写回之后那次 setSelectionRange 就落在一个没焦点的框上
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      pick(i);
+                    }}
+                    onMouseEnter={() => setHi(i)}
+                    className={cn(
+                      "flex cursor-default items-baseline gap-2 rounded-sm px-2 py-[5px] text-[12.5px]",
+                      i === hi && "bg-foreground/[0.06]"
+                    )}
+                  >
+                    <span className="shrink-0">{o.name}</span>
+                    <span className="truncate text-muted-foreground">{o.description}</span>
+                  </div>
+                ))
+              )}
             </PopoverContent>
           </Popover>
           {/* 这颗钮不再是"对 Agent 说"的开关（有了名单，得说清对哪一只）——
