@@ -10,7 +10,7 @@
 
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 import type { AgentToolAllow } from "../../../shared/agentToolAllow.js";
-import { buildAllow, type ProxySelection } from "./proxyShare.js";
+import { buildAllow, isServerOn, type ProxySelection } from "./proxyShare.js";
 import { labelOf } from "./workspaceView.js";
 
 export type ToolsMode = "all" | "some";
@@ -49,4 +49,15 @@ export function toolsDraftError(mode: ToolsMode, sel: ProxySelection): string | 
 
 export function toolsFromDraft(mode: ToolsMode, sel: ProxySelection): AgentToolAllow[] {
   return mode === "all" ? [] : buildAllow(sel).map((a) => ({ serverId: a.serverId, tools: [...a.tools] }));
+}
+
+/** 勾选表里还留着、候选行里已经没有的 serverId——那台连接器已经被撤回，
+    但这只 agent 存量的白名单还点着它的名。`buildAllow` 只看 `sel` 不看
+    `choices`，回填时（selectionFromAllow）这种条目原样进了 sel，界面却
+    因为 connectorChoices(ws) 里没有它而一行都不画——用户会看见「一个都
+    没勾」却存不掉/存下去后隐藏条目原样带走。列出来渲染成一行，不能悄悄
+    丢：那等于替用户把一份没碰过的授权收窄了 */
+export function staleSelections(sel: ProxySelection, choices: readonly ConnectorChoice[]): string[] {
+  const known = new Set(choices.map((c) => c.serverId));
+  return Object.keys(sel).filter((id) => isServerOn(sel, id) && !known.has(id));
 }

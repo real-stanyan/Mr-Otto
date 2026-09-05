@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { connectorChoices, modeFromTools, toolsDraftError, toolsFromDraft } from "../../src/renderer/src/lib/agentToolsForm.js";
+import { connectorChoices, modeFromTools, staleSelections, toolsDraftError, toolsFromDraft } from "../../src/renderer/src/lib/agentToolsForm.js";
 import type { WorkspaceSnapshot } from "../../src/shared/workspaces.js";
 
 const ws: WorkspaceSnapshot = {
@@ -39,5 +39,14 @@ describe("模式与草稿", () => {
     expect(toolsFromDraft("all", { ads: "all" })).toEqual([]);
     expect(toolsFromDraft("some", { ads: "all", shopify: ["list_orders"] }))
       .toEqual([{ serverId: "ads", tools: [] }, { serverId: "shopify", tools: ["list_orders"] }]);
+  });
+});
+
+describe("staleSelections", () => {
+  it("勾选表里有、候选行里没有的 serverId 是撤回残留", () => {
+    expect(staleSelections({ shopify: "all", gone: ["x"] }, connectorChoices(ws))).toEqual(["gone"]);
+  });
+  it("没有残留就是空数组", () => {
+    expect(staleSelections({}, connectorChoices(ws))).toEqual([]);
   });
 });

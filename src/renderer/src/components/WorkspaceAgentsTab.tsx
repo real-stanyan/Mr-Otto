@@ -20,7 +20,7 @@ import {
 import { useChat } from "../store.js";
 import { agentRows, type AgentRowView } from "../lib/workspaceView.js";
 import {
-  connectorChoices, modeFromTools, toolsDraftError, toolsFromDraft, type ToolsMode,
+  connectorChoices, modeFromTools, staleSelections, toolsDraftError, toolsFromDraft, type ToolsMode,
 } from "../lib/agentToolsForm.js";
 import {
   isServerOn, isToolOn, selectionFromAllow, toggleServer, toggleTool, type ProxySelection,
@@ -173,6 +173,7 @@ function AgentEditorDialog({
 
   const nameError = validateAgentName(name);
   const toolsError = toolsDraftError(toolsMode, toolsSel);
+  const staleIds = staleSelections(toolsSel, choices);
   const canSave = nameError === null && toolsError === null && !busy;
 
   const submit = async (): Promise<void> => {
@@ -292,7 +293,7 @@ function AgentEditorDialog({
               </Button>
             </div>
             {toolsMode === "some" && (
-              choices.length === 0 ? (
+              choices.length === 0 && staleIds.length === 0 ? (
                 <p className="text-[10.5px] text-muted-foreground">这个工作区还没有人贡献连接器。</p>
               ) : (
                 <div className="max-h-[220px] overflow-y-auto rounded-md border border-border py-1">
@@ -301,21 +302,27 @@ function AgentEditorDialog({
                     return (
                       <div key={srv.serverId}>
                         <div className={ROW}>
-                          <button
-                            type="button"
-                            className="bg-transparent p-0 text-muted-foreground hover:text-foreground disabled:opacity-40"
-                            aria-label={isOpen ? "收起工具" : "展开工具"}
-                            disabled={srv.toolNames === null}
+                          {/* title 挂在包住按钮的 span 上，不挂在 disabled 的 button 本身——
+                              Chromium 对 disabled 表单控件屏蔽指针事件，title 挂在 button 上
+                              的话灰掉的那颗永远不会弹出提示 */}
+                          <span
                             title={srv.toolNames === null ? "贡献者整台放行，本机没有工具清单——只能整台勾" : undefined}
-                            onClick={() => setExpanded((prev) => {
-                              const next = new Set(prev);
-                              if (next.has(srv.serverId)) next.delete(srv.serverId);
-                              else next.add(srv.serverId);
-                              return next;
-                            })}
                           >
-                            {isOpen ? <ChevronDown className="size-[13px]" /> : <ChevronRight className="size-[13px]" />}
-                          </button>
+                            <button
+                              type="button"
+                              className="bg-transparent p-0 text-muted-foreground hover:text-foreground disabled:opacity-40"
+                              aria-label={isOpen ? "收起工具" : "展开工具"}
+                              disabled={srv.toolNames === null}
+                              onClick={() => setExpanded((prev) => {
+                                const next = new Set(prev);
+                                if (next.has(srv.serverId)) next.delete(srv.serverId);
+                                else next.add(srv.serverId);
+                                return next;
+                              })}
+                            >
+                              {isOpen ? <ChevronDown className="size-[13px]" /> : <ChevronRight className="size-[13px]" />}
+                            </button>
+                          </span>
                           <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 select-none">
                             <input
                               type="checkbox"
@@ -351,6 +358,27 @@ function AgentEditorDialog({
                       </div>
                     );
                   })}
+                  {/* 存量白名单里点着名、但这台连接器已经从工作区撤回的条目——不能悄悄
+                      丢掉：静默丢弃 = 替用户把一份他没碰过的授权收窄了；藏起来更糟，
+                      那就成了一枚勾选表上看不见却仍然生效的「撒谎的勾」（同 #722）。
+                      只给一个取消勾选的出口，重新勾不需要——撤回之后这行本来就不该再有 */}
+                  {staleIds.map((id) => (
+                    <div key={id} className={ROW}>
+                      <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 select-none">
+                        <input
+                          type="checkbox"
+                          checked
+                          onChange={() => setToolsSel((p) => toggleServer(p, id, false))}
+                          className="size-[13px] shrink-0 accent-[var(--brand)]"
+                          aria-label={id}
+                        />
+                        <span className="truncate">{id}</span>
+                      </label>
+                      <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
+                        已撤回 · 这台连接器已不在工作区里
+                      </span>
+                    </div>
+                  ))}
                 </div>
               )
             )}
