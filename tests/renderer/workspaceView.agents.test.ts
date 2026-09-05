@@ -7,7 +7,7 @@ const ws: WorkspaceSnapshot = {
   members: [{ uid: "owner", role: "owner", label: "Stan" }, { uid: "m1", role: "member", label: "Mei" }],
   agents: [
     { agentId: "admin", name: "管理员", description: "", instructions: "", models: [], tools: [], createdBy: "owner", updatedTs: 0 },
-    { agentId: "a_1", name: "运营", description: "管店铺", instructions: "", models: ["deepseek-v4", "glm-5"], tools: [], createdBy: "m1", updatedTs: 0 },
+    { agentId: "a_1", name: "运营", description: "管店铺", instructions: "", models: ["deepseek-v4", "glm-5"], tools: [{ serverId: "shopify", tools: [] }, { serverId: "ads", tools: ["report"] }], createdBy: "m1", updatedTs: 0 },
   ],
 };
 
@@ -24,6 +24,10 @@ describe("agentRows（spec §9 权限矩阵）", () => {
     const rows = agentRows(ws, "owner");
     expect(rows.map((r) => r.modelsSummary)).toEqual(["用工作区默认型号", "deepseek-v4 · glm-5"]);
     expect(rows[1]!.creatorLabel).toBe("Mei");
+  });
+  it("连接器摘要：[] = 全部连接器；否则列服务与工具数", () => {
+    const rows = agentRows(ws, "owner");
+    expect(rows.map((r) => r.toolsSummary)).toEqual(["全部连接器", "shopify（全部工具）、ads（1 个工具）"]);
   });
 });
 

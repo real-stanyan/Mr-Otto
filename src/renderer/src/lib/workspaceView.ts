@@ -19,6 +19,8 @@
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 import { displaySessionTitle } from "../../../shared/sessionTitle.js";
 import { ADMIN_AGENT_ID } from "../../../shared/workspaceAgents.js";
+import type { AgentToolAllow } from "../../../shared/agentToolAllow.js";
+import { describeAllow } from "./proxyShare.js";
 
 export type ConnectorCloudState = "ready" | "unknown" | "off";
 
@@ -116,6 +118,7 @@ export interface AgentRowView {
   name: string;
   description: string;
   modelsSummary: string;
+  toolsSummary: string;
   isAdmin: boolean;
   canEdit: boolean;
   canDelete: boolean;
@@ -125,6 +128,11 @@ export interface AgentRowView {
 /** []（留空用工作区默认）→ 一句人话；否则把型号 id 点连起来（spec §9） */
 function modelsSummaryOf(models: readonly string[]): string {
   return models.length === 0 ? "用工作区默认型号" : models.join(" · ");
+}
+
+/** []（整池放行）→ 一句人话；否则复用 proxyShare 的描述（服务名 + 全部/几个工具） */
+function toolsSummaryOf(tools: readonly AgentToolAllow[]): string {
+  return tools.length === 0 ? "全部连接器" : describeAllow(tools);
 }
 
 /** 权限矩阵（spec §9）：canEdit = 建的人或 owner；canDelete = canEdit 且不是
@@ -140,6 +148,7 @@ export function agentRows(ws: WorkspaceSnapshot, selfUid: string): AgentRowView[
       name: a.name,
       description: a.description,
       modelsSummary: modelsSummaryOf(a.models),
+      toolsSummary: toolsSummaryOf(a.tools),
       isAdmin,
       canEdit,
       canDelete: canEdit && !isAdmin,
