@@ -446,6 +446,15 @@ export interface ProxyStatusSnapshot {
   hosts: ProxyHostView[];
 }
 
+/** 云会话里"这一下点击到底生效了没有"的三态回执（复审 C2-I4）。
+    `FriendsResult<null>` 只有成 / 败两态，而这条路上真实存在第三种结局：
+    帧发出去了、15 秒没等到服务端回执，或者中途 `:gone` 断了——**这不是
+    「没发出去」**，服务端很可能已经跑起来了。两态类型逼着渲染层把它当失败
+    处理，于是把正文塞回输入框、用户再发一遍，同一句话执行两次。
+    `unknown: true` 就是给这第三态一个名字：文案改说「不确定有没有发出去」，
+    重发交给人点。缺席 = 确定失败（限速、无权、连接压根没建起来）。 */
+export type CloudAck = { ok: true } | { ok: false; message: string; unknown?: true };
+
 /** 云会话（Task 12，ADR-0199）的连接状态推送。connecting = 已发起 join，
     还没收到 welcome/denied；ready = welcome 之后的 backlog 已经补完全量；
     denied = hello 被拒（deniedCode 是协议给的原始码，UI 按码给人话，不在这里
@@ -457,6 +466,10 @@ export interface CloudSessionStatus {
   sessionId: string;
   state: "connecting" | "ready" | "denied" | "gone";
   deniedCode?: string;
+  /** denied 帧带回来的**服务端**协议号（复审 C2-I6）。只有 version_mismatch
+      带得到；缺席 = 老服务端不带，UI 退回通用文案。有了它才分得清"我旧了"
+      （去更新 app）还是"云端旧了"（去部署 runtime） */
+  deniedServerVersion?: number;
   initiatorUid: string | null;
   ownerUid: string;
   selfUid: string;
@@ -1110,15 +1123,17 @@ export interface ShellBridge {
   /** 往当前云会话发一句话（群聊）。mention = @ 了本机操作者对应的那个成员；
       mentions 缺席 = 老语义（mention 那个 boolean 说了算），给了（含 []）=
       以它为准，覆盖 mention（#932 切片 1b，runtime 那侧同一条判据） */
-  workspaceCloudSay(text: string, mention: boolean, mentions?: string[]): Promise<FriendsResult<null>>;
+  workspaceCloudSay(text: string, mention: boolean, mentions?: string[]): Promise<CloudAck>;
   /** 批/拒当前云会话里的一个审批请求（callId 来自 approval_request 事件） */
-  workspaceCloudApprove(callId: string, decision: "approved" | "denied"): Promise<FriendsResult<null>>;
+  workspaceCloudApprove(callId: string, decision: "approved" | "denied"): Promise<CloudAck>;
   /** 归档当前云会话 */
   workspaceCloudArchive(): Promise<FriendsResult<null>>;
   /** 停掉当前云会话正在跑的这一轮 turn（#957 第三批）。谁能停由 runtime 判
       （发起人或 owner，与审批同一判据）；resolve 的是服务端的 `stop_result`
-      回执——ok:false 的两种常见理由是「此刻没有正在跑的 turn」和无权 */
-  workspaceCloudStop(): Promise<FriendsResult<null>>;
+      回执——ok:false 的两种常见理由是「此刻没有正在跑的 turn」和无权。
+      `seq` = 按钮所在那一行开场白自己的 seq（复审 C2-I3）：停止按钮按**行**
+      画，不带 seq 的话按第二行那颗停掉的是第一行。缺席 = 旧语义（停当前） */
+  workspaceCloudStop(seq?: number): Promise<CloudAck>;
   /** 配置当前云会话绑定的仓库（repoUrl + 可选 PAT，PAT 不落 Supabase） */
   /** 两组字段各自可选（issue #844）：只给 repo 就只改仓库，只给 model 就只改
       模型。`pat` / `model.apiKey` 三态——省略 = 保持不变，`""` = 清除，

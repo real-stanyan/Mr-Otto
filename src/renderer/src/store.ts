@@ -182,6 +182,9 @@ export interface CloudSessionState {
   sessionId: string;
   state: "connecting" | "ready" | "denied" | "gone";
   deniedCode?: string;
+  /** denied 帧带回来的**服务端**协议号（复审 C2-I6）。只有 version_mismatch
+      带得到；缺席 = 老服务端不带，文案退回通用那句。同 deniedCode 逐字段照抄 */
+  deniedServerVersion?: number;
   initiatorUid: string | null;
   ownerUid: string;
   selfUid: string;
@@ -2703,6 +2706,9 @@ export const useChat = create<ChatState>((set, get) => ({
             // undefined 原样赋进去（那等于显式声明"这个键存在但是 undefined"，
             // 与"这个键不存在"是两码事，见 tsconfig 的 exactOptionalPropertyTypes）
             ...(status.deniedCode !== undefined ? { deniedCode: status.deniedCode } : {}),
+            ...(status.deniedServerVersion !== undefined
+              ? { deniedServerVersion: status.deniedServerVersion }
+              : {}),
           },
         };
       });

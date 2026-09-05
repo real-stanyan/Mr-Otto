@@ -71,6 +71,7 @@ import type {
   ChatMessageEvent, SessionEvent, ToolCallRequest, ToolResultEvent,
 } from "../../../session/events.js";
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
+import { CS_PROTOCOL_VERSION } from "../../../shared/remote/cloudSession.js";
 import type { CsModelRoute, CsModelState, CsRepoState } from "../../../shared/remote/cloudSession.js";
 import { modelStatusText } from "../lib/cloudModelStatus.js";
 
@@ -85,13 +86,19 @@ const EMPTY_EVENTS: SessionEvent[] = [];
     持续状态（join 之后经 onCloudSessionStatus 推来的 deniedCode）由这一份
     负责。五个码逐一给人话，version_mismatch 特别提示升级；认不出的码原样
     带出来兜底，不装死 */
-function cloudDeniedMessage(code: string | undefined): string {
+function cloudDeniedMessage(code: string | undefined, serverVersion?: number): string {
   switch (code) {
     case "bad_jwt":
       return "登录状态已过期，请重新登录后再试";
     case "not_member":
       return "你不是这个工作区的成员";
     case "version_mismatch":
+      // 方向说得出来才有用（复审 C2-I6，与 main/cloudSessionClient.ts 的
+      // deniedMessage 同一判据）：「更新 Mr Otto」对「云端还没部署」的那半是
+      // 错的指引——照做也连不上，且再没有别的线索
+      if (serverVersion !== undefined && serverVersion < CS_PROTOCOL_VERSION) {
+        return `云端协议版本（${serverVersion}）低于本客户端（${CS_PROTOCOL_VERSION}），云端还没升级，联系维护者`;
+      }
       return "客户端版本与云端不匹配，请更新 Mr Otto 后再试";
     case "no_session":
       return "云会话不存在或已归档";
@@ -118,7 +125,7 @@ function statusBanner(cs: CloudSessionState): { tone: "muted" | "warn" | "err"; 
     case "gone":
       return { tone: "muted", text: "云端连接已断开，正在自动重连…" };
     case "denied":
-      return { tone: "err", text: cloudDeniedMessage(cs.deniedCode) };
+      return { tone: "err", text: cloudDeniedMessage(cs.deniedCode, cs.deniedServerVersion) };
     case "ready":
       // warn 不是 muted（终审 minor）：muted 那一档在这张页面上说的是「稍等，
       // 还在连」——数据完整性警告穿它的衣服，就成了一句会被当作过场的灰字，

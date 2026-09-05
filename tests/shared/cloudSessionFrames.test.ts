@@ -81,3 +81,27 @@ describe("cs 协议 6（#957 第三批：stop 帧与 say/approve/stop 回执）"
     expect(decodeCsDown(b64({ t: "approve_result", callId: 1, ok: true }))).toBeNull();
   });
 });
+
+describe("denied 帧的服务端协议号（复审 C2-I6，add-only、版本仍是 6）", () => {
+  it("denied 带 v 往返；缺席 = 老服务端，照常解", () => {
+    expect(decodeCsDown(encodeCs({ t: "denied", code: "version_mismatch", v: 6 }))).toEqual({
+      t: "denied",
+      code: "version_mismatch",
+      v: 6,
+    });
+    expect(decodeCsDown(encodeCs({ t: "denied", code: "version_mismatch" }))).toEqual({
+      t: "denied",
+      code: "version_mismatch",
+    });
+    // 别的码不带 v，但真带了也解得出来——解码器不管「该不该带」，只管形状
+    expect(decodeCsDown(encodeCs({ t: "denied", code: "bad_jwt" }))).toEqual({ t: "denied", code: "bad_jwt" });
+  });
+
+  it("v 不是非负整数就整帧拒掉，不降级成不带 v 的 denied", () => {
+    // 一个撒谎的版本号会把方向指反（「云端旧了」vs「你旧了」），比没有版本号更糟
+    expect(decodeCsDown(b64({ t: "denied", code: "version_mismatch", v: "6" }))).toBeNull();
+    expect(decodeCsDown(b64({ t: "denied", code: "version_mismatch", v: -1 }))).toBeNull();
+    expect(decodeCsDown(b64({ t: "denied", code: "version_mismatch", v: 6.5 }))).toBeNull();
+    expect(decodeCsDown(b64({ t: "denied", code: "version_mismatch", v: null }))).toBeNull();
+  });
+});

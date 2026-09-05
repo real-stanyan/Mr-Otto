@@ -115,9 +115,13 @@ describe("createFrameHandler", () => {
     });
     const handler = createFrameHandler(deps);
 
-    // version_mismatch
+    // version_mismatch：**只有这个码带 v**（复审 C2-I6）——桌面靠它分辨
+    // 「我旧了」还是「云端旧了」，两者该做的动作相反
     await handler.onSessionFrame("w-member", "s-exist", "c1", hello(999, "jwt:u1"));
-    expect(sent.at(-1)).toEqual({ cid: "c1", msg: { t: "denied", code: "version_mismatch" } });
+    expect(sent.at(-1)).toEqual({
+      cid: "c1",
+      msg: { t: "denied", code: "version_mismatch", v: CS_PROTOCOL_VERSION },
+    });
 
     // bad_jwt
     await handler.onSessionFrame("w-member", "s-exist", "c2", hello(CS_PROTOCOL_VERSION, "garbage"));

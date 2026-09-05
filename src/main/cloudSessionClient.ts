@@ -83,7 +83,7 @@ import {
   type CsUp,
 } from "../shared/remote/cloudSession.js";
 import type { ApprovalDecisionEvent, SessionEvent } from "../session/events.js";
-import type { ApprovalRequest, CloudSessionStatus } from "../shared/shellBridge.js";
+import type { ApprovalRequest, CloudAck, CloudSessionStatus } from "../shared/shellBridge.js";
 import type { FriendsResult } from "./proxyManager.js";
 
 /** 控制房 create 的等待上限：runtime 一直没接上/没回应时，别把调用方永远悬在
@@ -95,13 +95,20 @@ const NOT_SIGNED_IN = { ok: false as const, message: "还没登录" };
 /** denied 码 → 人话。只用在 create() 的直接 RPC 回复上；join() 之后持续状态的
     deniedCode 原样透传给渲染层（T13 UI 自己按 code 给人话，同 T4「云端状态
     三态化」纪律：这里不重复造一份会跟渲染层文案走岔的翻译） */
-function deniedMessage(code: CsDeniedCode): string {
+export function deniedMessage(code: CsDeniedCode, serverVersion?: number): string {
   switch (code) {
     case "bad_jwt":
       return "登录状态已过期，请重新登录后再试";
     case "not_member":
       return "你不是这个工作区的成员";
     case "version_mismatch":
+      // 方向说得出来才有用（复审 C2-I6）：严格相等判出的不匹配有两个方向，
+      // 而「更新 Mr Otto」这句话对「云端还没部署」的那半是错的指引——用户
+      // 更新到最新版之后照样连不上，且再也没有别的线索。服务端带了 v 且比
+      // 本端低 = 云端旧了；缺席（老服务端）或比本端高 = 退回通用那句
+      if (serverVersion !== undefined && serverVersion < CS_PROTOCOL_VERSION) {
+        return `云端协议版本（${serverVersion}）低于本客户端（${CS_PROTOCOL_VERSION}），云端还没升级，联系维护者`;
+      }
       return "客户端版本与云端不匹配，请更新 Mr Otto 后再试";
     case "no_session":
       return "云会话不存在或已归档";
@@ -199,13 +206,13 @@ export interface CloudSessionClient {
   leave(): Promise<FriendsResult<null>>;
   /** mentions 缺席 = 老语义（mention 那个 boolean 说了算）；给了（含 []）=
       以它为准，帧里带 mentions 字段（#932 切片 1b） */
-  say(text: string, mention: boolean, mentions?: string[]): Promise<FriendsResult<null>>;
-  approve(callId: string, decision: "approved" | "denied"): Promise<FriendsResult<null>>;
+  say(text: string, mention: boolean, mentions?: string[]): Promise<CloudAck>;
+  approve(callId: string, decision: "approved" | "denied"): Promise<CloudAck>;
   archive(): Promise<FriendsResult<null>>;
   /** 停掉当前正在跑的这一轮 turn（#957 第三批）。谁能停由服务端判（发起人
       或 owner，与 approve 同一判据）——resolve 的是 `stop_result` 那条回执，
       不是「帧交给 socket 了」 */
-  stop(): Promise<FriendsResult<null>>;
+  stop(seq?: number): Promise<CloudAck>;
   config(
     workspaceId: string,
     patch: { repoUrl?: string; pat?: string; model?: { baseUrl: string; modelId: string; apiKey?: string } },
@@ -221,6 +228,9 @@ interface ActiveSession {
   hostCid: string | null;
   status: "connecting" | "ready" | "denied" | "gone";
   deniedCode?: CsDeniedCode;
+  /** denied 帧带回来的服务端协议号（复审 C2-I6）。只有 version_mismatch 带得到；
+      缺席 = 老服务端不带。渲染层靠它才分得清是本端旧还是云端旧 */
+  deniedServerVersion?: number;
   /** welcome 给的事实，去 hello 之前都是占位（null/""）——渲染层这两个字段
       在 "connecting" 早期状态下不必当真，welcome 一到就会补一次真值 */
   initiatorUid: string | null;
@@ -275,7 +285,7 @@ interface ActiveSession {
       静默丢帧分支）就是"点了保存、看到已保存、其实什么都没发出去"。
       同一时刻只允许一次：并发两次配置本来也没有意义，而"回执按 cid 到达、
       不带请求 id"决定了两次并发无法区分谁是谁的 */
-  pendingConfig: CsPending | null;
+  pendingConfig: CsConfigPending | null;
   /** 还没等到 `say_result` 的那一句（#957 第三批，#964）。协议 6 之前
       `say()` 在帧交给 socket 那一刻就 resolve `{ok:true}`，服务端的限速/
       不在籍/抛错要过一会儿才以一条 `error` 帧到达——渲染层早就把草稿清了，
@@ -294,6 +304,15 @@ interface ActiveSession {
 /** 一次「等服务端回执」的挂起态：resolve 用的 settle + 超时定时器。
     config/say/approve/stop 四条路同一个形状 */
 interface CsPending {
+  settle: (r: CloudAck) => void;
+  timer: ReturnType<typeof setTimeout>;
+}
+
+/** config 那一条的挂起态。形状与 CsPending 一模一样，只有回执类型不同——
+    `workspaceCloudConfig` 仍走 `FriendsResult<null>`（复审 C2-I4 说的是
+    say/approve/stop 那三条「点完就不再看」的路，改配置这条本来就停在页面上
+    等回执）。共用一个类型就得把 config 的返回值也一起换掉，超出这次的范围 */
+interface CsConfigPending {
   settle: (r: FriendsResult<null>) => void;
   timer: ReturnType<typeof setTimeout>;
 }
@@ -335,6 +354,11 @@ const CONFIG_ACK_TIMEOUT_MS = 15_000;
     而重发一句话不像重存一份配置那样等价），而是把人指回唯一的事实来源。 */
 const ACK_TIMEOUT_MS = 15_000;
 const ACK_TIMEOUT_MESSAGE = "没有收到回执，不确定有没有生效——看时间线";
+/** 超时/断线这两条路结出来的失败带 `unknown: true`（复审 C2-I4）：帧已经
+    交给 socket 了，服务端很可能已经跑起来——两态的 `ok:false` 逼着渲染层
+    按「没发出去」处理，于是把正文塞回输入框、用户再发一遍，同一句话执行
+    两次。带上这个记号，文案与重发的决定权才交得回给人 */
+const ACK_UNKNOWN = { unknown: true as const };
 /** 第二句话在上一句的回执到达之前被按下（#957 第三批）。不排队是刻意的：
     排起来就得回答"排到第几了、要不要撤"这一串问题，而这条路上真正常见的
     是手滑连点两下 */
@@ -352,6 +376,7 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
       sessionId: session.sessionId,
       state: session.status,
       ...(session.deniedCode ? { deniedCode: session.deniedCode } : {}),
+      ...(session.deniedServerVersion === undefined ? {} : { deniedServerVersion: session.deniedServerVersion }),
       initiatorUid: session.initiatorUid,
       ownerUid: session.ownerUid,
       selfUid: deps.selfUid() ?? "",
@@ -379,7 +404,7 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
 
   /** say/stop 各自那一个挂起态的收口（#957 第三批）。形状同 settleConfig——
       调用点也同样是三类：回执到达、超时、连接进终态 */
-  function settleSay(session: ActiveSession, result: FriendsResult<null>): void {
+  function settleSay(session: ActiveSession, result: CloudAck): void {
     const pending = session.pendingSay;
     if (!pending) return;
     session.pendingSay = null;
@@ -387,7 +412,7 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     pending.settle(result);
   }
 
-  function settleStop(session: ActiveSession, result: FriendsResult<null>): void {
+  function settleStop(session: ActiveSession, result: CloudAck): void {
     const pending = session.pendingStop;
     if (!pending) return;
     session.pendingStop = null;
@@ -397,7 +422,7 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
 
   /** 按 callId 收口一次审批（#957 第三批）。callId 缺席 = 收口全部——
       连接进终态时没有哪一张卡还有机会等到回执 */
-  function settleApprove(session: ActiveSession, callId: string | null, result: FriendsResult<null>): void {
+  function settleApprove(session: ActiveSession, callId: string | null, result: CloudAck): void {
     const ids = callId === null ? [...session.pendingApprove.keys()] : [callId];
     for (const id of ids) {
       const pending = session.pendingApprove.get(id);
@@ -412,7 +437,7 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
       与 settleConfig 严格并列——三条终态路径（markGone / markDenied /
       teardown）每一条都要连它一起调，漏哪条就是那条路径上的
       "发送中…/审批中…"永远转下去（#834 在 config 上踩过一模一样的坑） */
-  function settleWaiters(session: ActiveSession, result: FriendsResult<null>): void {
+  function settleWaiters(session: ActiveSession, result: CloudAck): void {
     settleSay(session, result);
     settleStop(session, result);
     settleApprove(session, null, result);
@@ -425,7 +450,7 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     session.status = "gone";
     // 挂着的那次 config 就地结掉（issue #834）——否则"保存中…"永远转下去
     settleConfig(session, { ok: false, message: "云会话断开了，这次保存不确定有没有生效——重连后请重试。" });
-    settleWaiters(session, { ok: false, message: "云会话断开了，这一下不确定有没有生效——看时间线。" });
+    settleWaiters(session, { ok: false, message: "云会话断开了，这一下不确定有没有生效——看时间线。", ...ACK_UNKNOWN });
     // 这条连接够不到任何人了：清 pendingApprovals/island（onSessionInactive），
     // 顺带清 seenSeqs/liveBuffer——host 回来时 welcome→backlog(-1) 会把同一批
     // 事件原样再拉一遍，这次不去重、重新跑一遍 deliverEvent，approval_request
@@ -440,9 +465,13 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     pushStatus(session);
   }
 
-  function markDenied(session: ActiveSession, code: CsDeniedCode): void {
+  function markDenied(session: ActiveSession, code: CsDeniedCode, serverVersion?: number): void {
     session.status = "denied";
     session.deniedCode = code;
+    // exactOptionalPropertyTypes：缺席要真的删掉这个键，赋 undefined 编译不过；
+    // 而删掉正是想要的语义——上一次 denied 留下的版本号不能糊到这一次身上
+    if (serverVersion === undefined) delete session.deniedServerVersion;
+    else session.deniedServerVersion = serverVersion;
     settleConfig(session, { ok: false, message: "这条云会话被拒绝了，保存没有生效。" });
     settleWaiters(session, { ok: false, message: "这条云会话被拒绝了，这一下没有生效。" });
     pushStatus(session);
@@ -463,7 +492,7 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     // 各自也有一条：三条终态路径一条都不能漏，漏哪条就是那条路径上的
     // "保存中…"永远转下去
     settleConfig(active, { ok: false, message: "云会话已经关闭，这次保存不确定有没有生效。" });
-    settleWaiters(active, { ok: false, message: "云会话已经关闭，这一下不确定有没有生效——看时间线。" });
+    settleWaiters(active, { ok: false, message: "云会话已经关闭，这一下不确定有没有生效——看时间线。", ...ACK_UNKNOWN });
     try {
       active.transport.close();
     } catch {
@@ -559,20 +588,20 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
       // error（同 config_result 的理由）：那条帧还承载 backlog 跳过之类不相干
       // 的消息，await 它会被无关 error 提前唤醒
       case "say_result":
-        settleSay(session, msg.ok ? { ok: true, value: null } : { ok: false, message: msg.message ?? "这句话没能送出去" });
+        settleSay(session, msg.ok ? { ok: true } : { ok: false, message: msg.message ?? "这句话没能送出去" });
         return;
       case "approve_result":
         settleApprove(
           session,
           msg.callId,
-          msg.ok ? { ok: true, value: null } : { ok: false, message: msg.message ?? "这次审批没有生效" },
+          msg.ok ? { ok: true } : { ok: false, message: msg.message ?? "这次审批没有生效" },
         );
         return;
       case "stop_result":
-        settleStop(session, msg.ok ? { ok: true, value: null } : { ok: false, message: msg.message ?? "没能停下这一轮" });
+        settleStop(session, msg.ok ? { ok: true } : { ok: false, message: msg.message ?? "没能停下这一轮" });
         return;
       case "denied":
-        markDenied(session, msg.code);
+        markDenied(session, msg.code, msg.v);
         return;
       case "event":
         // 还没 ready：backlog 没落定之前不能让直播事件抢跑，先攒着（复审
@@ -759,7 +788,7 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
         if (msg.t === "created") {
           finish({ ok: true, value: { sessionId: msg.sessionId } });
         } else if (msg.t === "denied") {
-          finish({ ok: false, message: deniedMessage(msg.code) });
+          finish({ ok: false, message: deniedMessage(msg.code, msg.v) });
         }
         // welcome/event/backlog/error 不该出现在控制房，忽略
       });
@@ -856,7 +885,7 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
       在这之前 resolve `{ok:true}` 只证明帧交给了本机 socket——服务端的限速 /
       不在籍 / 抛错要过一会儿才以一条 error 帧到达，而渲染层"发送成功就清草稿"
       早就把话从输入框里抹掉了：界面上它发出去了，日志里一个字都没有。 */
-  async function say(text: string, mention: boolean, mentions?: string[]): Promise<FriendsResult<null>> {
+  async function say(text: string, mention: boolean, mentions?: string[]): Promise<CloudAck> {
     const r = requireReady();
     if (!r.ok) return r;
     const session = r.session;
@@ -871,9 +900,9 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     );
     // 压根没发出去就别挂 15 秒（#829 的四条丢帧路径 + encode 抛错）
     if (!sent.ok) return sent;
-    return new Promise<FriendsResult<null>>((resolve) => {
+    return new Promise<CloudAck>((resolve) => {
       const timer = setTimeout(() => {
-        settleSay(session, { ok: false, message: ACK_TIMEOUT_MESSAGE });
+        settleSay(session, { ok: false, message: ACK_TIMEOUT_MESSAGE, ...ACK_UNKNOWN });
       }, ACK_TIMEOUT_MS);
       session.pendingSay = { settle: resolve, timer };
     });
@@ -883,16 +912,16 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
       的那一类：乐观收卡之后服务端说"这条请求已失效"，人是看不见的。
       与 say 不同这里**允许并发**：一个 turn 里同时挂两张卡是常态，回执带
       callId 对得上号；同一个 callId 重复按下才拒绝（那是手滑连点）。 */
-  async function approve(callId: string, decision: "approved" | "denied"): Promise<FriendsResult<null>> {
+  async function approve(callId: string, decision: "approved" | "denied"): Promise<CloudAck> {
     const r = requireReady();
     if (!r.ok) return r;
     const session = r.session;
     if (session.pendingApprove.has(callId)) return { ok: false, message: "这一条的回执还没到，稍等" };
     const sent = sendFrame(session, { t: "approve", callId, decision });
     if (!sent.ok) return sent;
-    return new Promise<FriendsResult<null>>((resolve) => {
+    return new Promise<CloudAck>((resolve) => {
       const timer = setTimeout(() => {
-        settleApprove(session, callId, { ok: false, message: ACK_TIMEOUT_MESSAGE });
+        settleApprove(session, callId, { ok: false, message: ACK_TIMEOUT_MESSAGE, ...ACK_UNKNOWN });
       }, ACK_TIMEOUT_MS);
       session.pendingApprove.set(callId, { settle: resolve, timer });
     });
@@ -903,16 +932,19 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
       initiatorUid/ownerUid 走，两处各写一份迟早分家，而这里回的又不是
       安全边界。ok:false 的两种常见理由（没有在跑的 turn / 无权）由回执
       带文案上来。 */
-  async function stop(): Promise<FriendsResult<null>> {
+  async function stop(seq?: number): Promise<CloudAck> {
     const r = requireReady();
     if (!r.ok) return r;
     const session = r.session;
     if (session.pendingStop) return { ok: false, message: "上一次停止还没有回执，稍等" };
-    const sent = sendFrame(session, { t: "stop" });
+    // seq 缺席不进帧（旧语义：停当前那一轮）；给了才带上，服务端拿它与这一轮
+    // 的采样边界比（复审 C2-I3）。停止按钮按**行**画，不带 seq 的话按第二行
+    // 那颗停掉的是第一行——两件事在界面上长得一模一样，而结果相反
+    const sent = sendFrame(session, seq === undefined ? { t: "stop" } : { t: "stop", seq });
     if (!sent.ok) return sent;
-    return new Promise<FriendsResult<null>>((resolve) => {
+    return new Promise<CloudAck>((resolve) => {
       const timer = setTimeout(() => {
-        settleStop(session, { ok: false, message: ACK_TIMEOUT_MESSAGE });
+        settleStop(session, { ok: false, message: ACK_TIMEOUT_MESSAGE, ...ACK_UNKNOWN });
       }, ACK_TIMEOUT_MS);
       session.pendingStop = { settle: resolve, timer };
     });

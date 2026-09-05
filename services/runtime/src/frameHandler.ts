@@ -204,7 +204,15 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
     // 只能靠读代码倒推。cid + code 就够定位，uid 不记——它是身份，而这条日志
     // 会进 journal
     deps.log(`拒绝 cid=${cid}：${code}`);
-    deps.send(cid, { t: "denied", code });
+    // version_mismatch 单独带上**服务端**的协议号（复审 C2-I6）：判据是严格
+    // 相等，只回一个码的话桌面分不清是自己旧了还是云端旧了，而这两件事该做的
+    // 动作相反。别的码不带——它们与版本无关，带上只会让人以为那也是版本问题
+    deps.send(
+      cid,
+      code === "version_mismatch"
+        ? { t: "denied", code, v: CS_PROTOCOL_VERSION }
+        : { t: "denied", code }
+    );
   }
 
   /** 每个 cid 一条串行链（issue #915）。
