@@ -18,7 +18,7 @@ import { toolPhase, toolSummary } from "../../../shared/toolSummary.js";
 import { compactedCardMeta, microCompactedHeadline } from "../lib/autoCompactCopy.js";
 import { buildToolIndex, type ToolIndex } from "../lib/toolIndex.js";
 import { useNow } from "../lib/useNow.js";
-import { routeChangedText } from "../lib/cloudTimeline.js";
+import { decisionLineText, routeChangedText } from "../lib/cloudTimeline.js";
 import { AUDIT, ROW, THINKING_BODY, THINKING_DETAILS, THINKING_SUMMARY, TOOL_PRE, TOOL_SEC } from "../timelineStyles.js";
 import { TurnErrorState } from "./TurnErrorState.js";
 import { TurnStoppedState } from "./TurnStoppedState.js";
@@ -33,6 +33,7 @@ import { Marker, MarkerContent, MarkerIcon } from "@/components/ui/marker.js";
 import { Button } from "@/components/ui/button.js";
 import { modelHandoff, modelSideLabel, type ModelSide } from "../lib/modelHandoff.js";
 import { modelChipLabel } from "../lib/modelChip.js";
+import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 import {
   formatElapsed,
   groupSubagentSpawns,
@@ -413,7 +414,18 @@ const SkillInvokedRow = memo(function SkillInvokedRow({ event }: { event: SkillI
 
 // memo 同上:现在只渲染审计事件(见下方 switch 里的注释),但入参(event/isLast)
 // 同样只随事件变——不 memo 的话流式期间还是陪着白跑一遍(#115)
-export const EventRow = memo(function EventRow({ event, isLast = false }: { event: SessionEvent; isLast?: boolean }) {
+export const EventRow = memo(function EventRow({
+  event,
+  isLast = false,
+  ws,
+}: {
+  event: SessionEvent;
+  isLast?: boolean;
+  /** 云会话专用（#957 M8）："谁批的"要查成员表把 uid 变成名字，本地会话没有
+      工作区快照可传——省掉 = decisionLineText 拿不到 ws 也无所谓（decidedBy
+      本身就带 label，ws 目前只是留给以后需要重新解析时用的口子） */
+  ws?: WorkspaceSnapshot;
+}) {
   switch (event.type) {
     // user_message / assistant_message 两个分支从此到不了:EventRow 现在只剩一个
     // 调用点(OttoThread 的 SystemMessage override),而那里只会拿到审计事件——
@@ -422,16 +434,23 @@ export const EventRow = memo(function EventRow({ event, isLast = false }: { even
     case "tool_result":
       return null; // 已被 ToolRow 吸收（按 toolCallId 配对进请求行）
 
-    case "approval_decision":
+    case "approval_decision": {
       // 批准(含 bypass 自动批准)只是"正常放行",不是对话事实,时间线不显示——
       // 免审模式下一长串「已批准」纯属噪音。拒绝才上时间线:它中断了流程,
-      // 且 ToolRow 的「已拒绝」只是结果态,审批卡/理由值得在时间线留档
-      if (event.decision === "approved") return null;
+      // 且 ToolRow 的「已拒绝」只是结果态,审批卡/理由值得在时间线留档。
+      // decidedBy 有值时是另一回事(#957 M8)：群聊场景"谁批的"是审计问题，
+      // 本地免审模式的噪音顾虑不成立(decidedBy 缺席=本地会话，行为不变)
+      const decisionLine = decisionLineText(event, ws);
+      if (event.decision === "approved") {
+        return decisionLine ? <div className={AUDIT}>{decisionLine}</div> : null;
+      }
       return (
         <div className={AUDIT}>
           审批：已拒绝{event.reason ? `（${event.reason}）` : ""}
+          {decisionLine ? `　${decisionLine}` : ""}
         </div>
       );
+    }
 
     case "session_created":
       return <div className={AUDIT}>会话已创建</div>;

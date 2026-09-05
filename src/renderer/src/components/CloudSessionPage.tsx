@@ -58,7 +58,7 @@ import { formatProxyTime } from "../lib/proxyShare.js";
 import { agentNameOf, labelOf } from "../lib/workspaceView.js";
 import { applyAgentMention, filterAgentCandidates, mentionQueryAt } from "../lib/agentMentionInput.js";
 import { EMBEDDED_CREDENTIAL_MESSAGE, repoUrlHasEmbeddedCredential } from "../lib/cloudRepoUrl.js";
-import { assistantLabel, hiddenFromCloudTimeline, relayLineText, userRowIdentity } from "../lib/cloudTimeline.js";
+import { approvalCardTitle, assistantLabel, hiddenFromCloudTimeline, relayLineText, userRowIdentity } from "../lib/cloudTimeline.js";
 import { openTurns } from "../../../shared/turnLedger.js";
 import { toolSummary } from "../../../shared/toolSummary.js";
 import { parseMentions } from "../../../shared/remote/agentMention.js";
@@ -394,9 +394,9 @@ export function CloudSessionPage({
               if (e.type === "turn_ended") {
                 // isLast 恒 false：EventRow 的"重试"钮只看这个 prop（Timeline.tsx:649），
                 // 而那颗钮点了走本地 resendMessage——云端没有重发这条路，钮出来就是撒谎
-                return <EventRow key={e.seq} event={e} isLast={false} />;
+                return <EventRow key={e.seq} event={e} isLast={false} ws={ws} />;
               }
-              return <EventRow key={e.seq} event={e} isLast={i === events.length - 1} />;
+              return <EventRow key={e.seq} event={e} isLast={i === events.length - 1} ws={ws} />;
             })
           )}
           {/* 排队中/正在回复画在时间线**末尾**而不是贴在各自那条 @ 消息下面：
@@ -413,10 +413,12 @@ export function CloudSessionPage({
             <ApprovalRow
               key={req.callId}
               event={req}
+              ws={ws}
               waitingLabel={labelOf(ws, req.initiatorUid)}
               canDecide={selfUid === req.initiatorUid || selfUid === cs.ownerUid}
-              onApprove={() => void cloudApprove(req.callId, "approved")}
-              onDeny={() => void cloudApprove(req.callId, "denied")}
+              ready={ready}
+              onApprove={() => cloudApprove(req.callId, "approved")}
+              onDeny={() => cloudApprove(req.callId, "denied")}
             />
           ))}
         </div>
@@ -1077,36 +1079,86 @@ function ToolActivityLine({ call, result }: { call: ToolCallRequest; result: Too
     的 owner(据此复审别人的操作);其余成员只读一句"等待谁审批",不能替别人
     按下批准/拒绝(main/cloudSessionClient.ts deliverEvent 的资格判断在推送
     那一层就已经把卡只发给够格的人,这里的 canDecide 是同一条判据在渲染层
-    的镜像——群聊场景大家共读同一份 events,不是每个人各收各的) */
+    的镜像——群聊场景大家共读同一份 events,不是每个人各收各的)。
+    点下去的反馈(#957 C-I2/#927 桌面侧)：`submitting` 按这张卡自己记(卡本身
+    按 callId 有 key，state 天然不会串到别的卡上)。false 才把按钮放回来、
+    在**卡内**画原因——不进 workspaceGroupsError 共享格，那一格已经被同一次
+    失败占了、卡外还会再画一遍反而像两件事。true 就保持 disabled 到这张卡
+    从 pendingApprovals 消失(父组件按 callId 卸载这一整行，本地 state 随之
+    清空，不需要额外清理)。 */
 function ApprovalRow({
   event,
+  ws,
   waitingLabel,
   canDecide,
+  ready,
   onApprove,
   onDeny,
 }: {
   event: ApprovalRequestEvent;
+  ws: WorkspaceSnapshot;
   waitingLabel: string;
   canDecide: boolean;
-  onApprove: () => void;
-  onDeny: () => void;
+  ready: boolean;
+  onApprove: () => Promise<boolean>;
+  onDeny: () => Promise<boolean>;
 }) {
+  const [submitting, setSubmitting] = useState<"approved" | "denied" | null>(null);
+  const [localError, setLocalError] = useState<string | null>(null);
+
+  const decide = async (decision: "approved" | "denied", run: () => Promise<boolean>): Promise<void> => {
+    setSubmitting(decision);
+    setLocalError(null);
+    const ok = await run();
+    if (!ok) {
+      setSubmitting(null);
+      setLocalError(useChat.getState().workspaceGroupsError);
+    }
+    // ok === true：故意不清 submitting——按钮保持 disabled 直到这张卡因为
+    // approval_decision 落地而从 pendingApprovals 里消失
+  };
+
+  const fields = event.argsFields;
+  const disabled = !ready || submitting !== null;
+
   return (
     <div className="flex flex-col gap-2 rounded-md border border-border px-3 py-2">
       <div className="min-w-0">
-        <span className="text-xs font-medium">{event.toolName}</span>
-        <p className="mt-0.5 text-[12px] whitespace-pre-wrap break-words text-muted-foreground">
-          {event.argsSummary}
-        </p>
+        <span className="text-xs font-medium">{approvalCardTitle(event, ws)}</span>
+        {fields && fields.length > 0 ? (
+          <div className="mt-1 flex flex-col gap-1.5">
+            {fields.map((f, i) => (
+              <div key={i}>
+                <p className="text-[10.5px] text-muted-foreground">{f.label}</p>
+                <p
+                  className={cn(
+                    "whitespace-pre-wrap break-words text-[12px]",
+                    i === fields.length - 1 && "border border-border rounded-md p-2 max-h-48 overflow-y-auto"
+                  )}
+                >
+                  {f.value}
+                </p>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <p className="mt-0.5 text-[12px] whitespace-pre-wrap break-words text-muted-foreground">
+            {event.argsSummary}
+          </p>
+        )}
       </div>
       {canDecide ? (
-        <div className="flex justify-end gap-2">
-          <Button variant="ghost" size="xs" className="text-err" onClick={onDeny}>
-            拒绝
-          </Button>
-          <Button size="xs" onClick={onApprove}>
-            批准
-          </Button>
+        <div className="flex flex-col items-end gap-1">
+          <div className="flex justify-end gap-2">
+            <Button variant="ghost" size="xs" className="text-err" disabled={disabled} onClick={() => void decide("denied", onDeny)}>
+              拒绝
+            </Button>
+            <Button size="xs" disabled={disabled} onClick={() => void decide("approved", onApprove)}>
+              批准
+            </Button>
+          </div>
+          {submitting && <p className="text-[11px] text-muted-foreground">已提交，等待生效…</p>}
+          {localError && <p className="text-[11px] text-err">{localError}</p>}
         </div>
       ) : (
         <p className="text-[11px] text-muted-foreground">等待 {waitingLabel} 审批</p>

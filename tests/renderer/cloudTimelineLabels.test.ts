@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
-  assistantLabel, createAgentLanded, hiddenFromCloudTimeline, relayLineText, routeChangedText, userRowIdentity,
+  approvalCardTitle, assistantLabel, createAgentLanded, decisionLineText, hiddenFromCloudTimeline, relayLineText,
+  routeChangedText, userRowIdentity,
 } from "../../src/renderer/src/lib/cloudTimeline.js";
 import type { WorkspaceSnapshot } from "../../src/shared/workspaces.js";
 import { countdown } from "../../src/renderer/src/lib/billingView.js";
@@ -79,6 +80,34 @@ describe("createAgentLanded（#954：建成后桌面刷新名册的判据）", (
   it("找不到配对的 tool_call（日志被裁过）→ false，不刷新", () => {
     const orphan = { ...base, seq: 9, type: "tool_result" as const, toolCallId: "cZ", status: "ok" as const, output: "" };
     expect(createAgentLanded([orphan], orphan)).toBe(false);
+  });
+});
+
+describe("approvalCardTitle（#957 C-I3：审批卡说是哪只 agent 在要权限）", () => {
+  it("有 agentId：「运营」请求 <toolName>", () => {
+    const e = { ...base, type: "approval_request" as const, callId: "c1", toolName: "bash", argsSummary: "", initiatorUid: "u1", expiresTs: 0, agentId: "a_1" };
+    expect(approvalCardTitle(e, ws)).toBe("「运营」请求 bash");
+  });
+  it("查不到名字的 agentId 回 agentId 本身（同 agentNameOf 的兜底纪律）", () => {
+    const e = { ...base, type: "approval_request" as const, callId: "c1", toolName: "bash", argsSummary: "", initiatorUid: "u1", expiresTs: 0, agentId: "a_x" };
+    expect(approvalCardTitle(e, ws)).toBe("「a_x」请求 bash");
+  });
+  it("没有 agentId（旧日志/单 agent 会话）：裸工具名，现状不变", () => {
+    const e = { ...base, type: "approval_request" as const, callId: "c1", toolName: "bash", argsSummary: "", initiatorUid: "u1", expiresTs: 0 };
+    expect(approvalCardTitle(e, ws)).toBe("bash");
+  });
+});
+
+describe("decisionLineText（#957 M8：谁批的）", () => {
+  it("有 decidedBy：approved → 由 X 批准，denied → 由 X 拒绝", () => {
+    const approved = { ...base, type: "approval_decision" as const, toolCallId: "c1", decision: "approved" as const, decidedBy: { uid: "u1", label: "Stan" } };
+    expect(decisionLineText(approved)).toBe("由 Stan 批准");
+    const denied = { ...approved, decision: "denied" as const };
+    expect(decisionLineText(denied)).toBe("由 Stan 拒绝");
+  });
+  it("没有 decidedBy（本地会话/旧日志）：null，不装作有答案", () => {
+    const e = { ...base, type: "approval_decision" as const, toolCallId: "c1", decision: "approved" as const };
+    expect(decisionLineText(e)).toBeNull();
   });
 });
 

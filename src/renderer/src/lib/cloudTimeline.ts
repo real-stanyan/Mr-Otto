@@ -6,7 +6,9 @@
 // 单独写测试（tests/renderer/cloudTimelineLabels.test.ts）。
 
 import { agentNameOf, labelOf } from "./workspaceView.js";
-import type { AgentRelayEvent, AssistantMessageEvent, RouteChangedEvent, SessionEvent, UserMessageEvent } from "../../../session/events.js";
+import type {
+  AgentRelayEvent, ApprovalDecisionEvent, ApprovalRequestEvent, AssistantMessageEvent, RouteChangedEvent, SessionEvent, UserMessageEvent,
+} from "../../../session/events.js";
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 import { CREATE_AGENT_TOOL_NAME } from "../../../shared/createAgentDraft.js";
 import { countdown } from "./billingView.js";
@@ -57,6 +59,22 @@ export function relayLineText(e: AgentRelayEvent, ws: WorkspaceSnapshot): string
     （agent_relay 那一行）就够，画出来是同一件事说两遍 */
 export function hiddenFromCloudTimeline(e: SessionEvent): boolean {
   return e.type === "user_message" && e.relay !== undefined;
+}
+
+/** 审批卡第一行（#957 C-I3）：多智能体是这一批六片的全部意义，两张卡工具名
+    相同、argsSummary 前 200 字也可能相同时，"批准哪一张"必须先说清"是哪只
+    agent 要的这份权限"。agentId 缺席（旧日志）→ 沿用现状的裸工具名，不装作
+    答得出这个问题（同 assistantLabel 的兜底纪律） */
+export function approvalCardTitle(e: ApprovalRequestEvent, ws: WorkspaceSnapshot): string {
+  return e.agentId ? `「${agentNameOf(ws, e.agentId)}」请求 ${e.toolName}` : e.toolName;
+}
+
+/** 「谁批的」（#957 M8）：decidedBy 是云 runtime 专门认定的字段，本地单人会话
+    没有意义（缺席=本地会话/旧日志，同字段自身的注释），此时不装作有答案，
+    交给调用方决定要不要画这一行 */
+export function decisionLineText(e: ApprovalDecisionEvent, _ws?: WorkspaceSnapshot): string | null {
+  if (!e.decidedBy) return null;
+  return `由 ${e.decidedBy.label} ${e.decision === "approved" ? "批准" : "拒绝"}`;
 }
 
 /** 管理员刚建成一只 agent（#954）：create_agent 的 tool_result{status:"ok"}。桌面的名册住在
