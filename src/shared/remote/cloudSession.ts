@@ -93,9 +93,12 @@ export interface CsModelState {
 
 /** 这个工作区此刻的 turn 会走哪条路（issue #945）。与 runtime 的
     `decideRuntimeRoute` 同源：hosted 带**实际会用的**型号（工作区配的网关不供时
-    退到网关第一款，界面上该显示退到的那个）。null = runtime 探不到（edge 抖了）——
-    「拿不到」≠「起不了」，客户端别下结论。按 agent 各自的型号白名单会有差异，
-    这一格答的是工作区默认那份 */
+    退到网关第一款，界面上该显示退到的那个）。
+    null = **runtime 探测本身抛错**（配置读取失败等）——「拿不到」≠「起不了」，
+    客户端别下结论。**edge 挂掉不长这样**：runtime 的订阅探针把失败缓存成「没有
+    订阅」，所以一次 edge 故障在这一格上表现为 `blocked`（或有自带 key 时的
+    `workspace`），与同一分钟真跑一个 turn 得到的结论一致。
+    按 agent 各自的型号白名单会有差异，这一格答的是工作区默认那份 */
 export type CsModelRoute =
   | { kind: "hosted"; model: string }
   | { kind: "workspace" }

@@ -193,19 +193,67 @@ describe("createFrameHandler", () => {
     expect(sent[0]!.msg).toMatchObject({ t: "welcome", modelRoute: { kind: "hosted", model: "glm-5" } });
   });
 
-  it("③f config_result 也带 modelRoute——改完模型那一刻路由可能就变了（#945）", async () => {
-    const { deps, sent } = makeDeps({
-      ownerOf: async () => "owner-uid",
-      modelRoute: async () => ({ kind: "workspace" }),
-    });
+  // 每次调用换一个答案的假探针（#945 复审 F1）：常量桩对「什么时候探的」
+  // 这个判断完全不敏感——存之前探还是存之后探，回执长得一模一样，而这条
+  // 决策的全部内容正是「存完那把 key 之后才算数」。同时数调用次数：改完
+  // 签名（探一次、ownerUid 由调用点递进来）之后，一条 config 帧恰好探一次
+  const routeSpy = (...answers: (Awaited<ReturnType<FrameHandlerDeps["modelRoute"]>>)[]) => {
+    const calls: { workspaceId: string; ownerUid: string }[] = [];
+    const modelRoute: FrameHandlerDeps["modelRoute"] = async (workspaceId, ownerUid) => {
+      calls.push({ workspaceId, ownerUid });
+      return answers[Math.min(calls.length - 1, answers.length - 1)] ?? null;
+    };
+    return { modelRoute, calls };
+  };
+
+  it("③f config_result 成功回执带的是 saveConfig **之后**探到的那份（#945）", async () => {
+    // 第一次答 blocked（存之前的世界），第二次答 workspace（owner 刚填进 key）
+    const spy = routeSpy({ kind: "blocked" }, { kind: "workspace" });
+    const { deps, sent } = makeDeps({ ownerOf: async () => "owner-uid", modelRoute: spy.modelRoute });
     const handler = createFrameHandler(deps);
     await handler.onSessionFrame("w1", "s1", "cOwner", hello(CS_PROTOCOL_VERSION, "jwt:owner-uid"));
+    // welcome 探过一次；从这里开始只数 config 那一帧
+    const beforeConfig = spy.calls.length;
     sent.length = 0;
+
     await handler.onSessionFrame(
       "w1", "s1", "cOwner",
       encodeCs({ t: "config", model: { baseUrl: "https://api.example.com/v1", modelId: "m", apiKey: "sk" } })
     );
+
+    // 第二次调用的答案 = 存完之后那份。拿存之前那份（blocked）就是让界面继续撒谎
     expect(sent.at(-1)!.msg).toMatchObject({ t: "config_result", ok: true, modelRoute: { kind: "workspace" } });
+    // 恰好一次：不预探（那是替一条罕见路径给每条帧收费），也不探两次
+    expect(spy.calls.length - beforeConfig).toBe(1);
+  });
+
+  it("③g config_result 失败回执的 modelRoute 也是**当场**探的，不是复用别处的（#945）", async () => {
+    const spy = routeSpy({ kind: "blocked" }, { kind: "workspace" });
+    const { deps, sent } = makeDeps({ ownerOf: async () => "owner-uid", modelRoute: spy.modelRoute });
+    const handler = createFrameHandler(deps);
+    await handler.onSessionFrame("w1", "s1", "cOwner", hello(CS_PROTOCOL_VERSION, "jwt:owner-uid"));
+    const beforeConfig = spy.calls.length;
+    sent.length = 0;
+
+    // 过不了服务端校验（http 内网地址）→ 一个字都没存
+    await handler.onSessionFrame(
+      "w1", "s1", "cOwner",
+      encodeCs({ t: "config", model: { baseUrl: "http://127.0.0.1:11434/v1", modelId: "m" } })
+    );
+
+    const msg = sent.at(-1)!.msg;
+    expect(msg).toMatchObject({ t: "config_result", ok: false });
+    // 失败路径也带这一格，且它来自失败那一刻的一次真探测（第二次调用的答案）
+    expect(msg).toMatchObject({ modelRoute: { kind: "workspace" } });
+    expect(spy.calls.length - beforeConfig).toBe(1);
+  });
+
+  it("③h modelRoute 拿到的是这一层已经查过的 ownerUid，不让实现自己再查一次（#945 复审 F2）", async () => {
+    const spy = routeSpy({ kind: "blocked" });
+    const { deps } = makeDeps({ ownerOf: async () => "owner-uid", modelRoute: spy.modelRoute });
+    const handler = createFrameHandler(deps);
+    await handler.onSessionFrame("w-x", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    expect(spy.calls).toEqual([{ workspaceId: "w-x", ownerUid: "owner-uid" }]);
   });
 
   // ── issue #834：服务端自己校验 + 回执 ────────────────────────────────

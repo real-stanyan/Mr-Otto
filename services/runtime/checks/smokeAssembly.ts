@@ -173,7 +173,7 @@ async function scenarioMainFlow(): Promise<void> {
       repoState: () => null,
       modelState: () => null,
       // issue #945：冒烟不打 edge，这一格一律「探不到」
-      modelRoute: async () => null,
+      modelRoute: async (_ws: string, _owner: string) => null,
       rateLimit: { allow: () => true },
       send,
       dropCid: (cid) => {
@@ -360,7 +360,7 @@ async function scenarioAssemblyResilience(): Promise<void> {
     repoState: () => null,
     modelState: () => null,
     // issue #945：同上
-    modelRoute: async () => null,
+    modelRoute: async (_ws: string, _owner: string) => null,
     rateLimit: { allow: () => true },
     send: (cid, msg) => resilientSent.push({ cid, msg }),
     dropCid: () => {},

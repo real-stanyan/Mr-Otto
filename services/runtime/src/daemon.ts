@@ -677,14 +677,18 @@ async function main(): Promise<void> {
       if (!m) return null;
       return { baseUrl: m.baseUrl, modelId: m.modelId, hasKey: m.apiKey !== "" };
     },
-    // issue #945：与 turn 同一份 decideRuntimeRoute。探不到（edge 抖、ownerOf 查不到）
-    // 回 null 而不是 blocked——「拿不到」≠「起不了」
-    modelRoute: async (workspaceId) => {
+    // issue #945：与 turn 同一份 decideRuntimeRoute。`ownerUid` 由 frameHandler 递进来
+    // ——那一层每条 welcome/config 都已经查过一次 ownerOf（未缓存的 Supabase 往返），
+    // 这里再查一遍就是同一帧上打两到三次。
+    // 回 null 只发生在**探测这一步自己抛了**（配置读取失败等）：edge 挂掉走不到这条
+    // catch——createHostedProbe 把失败缓存成「没有订阅」，于是那一分钟这一格答
+    // blocked/workspace，与同一分钟真跑一个 turn 得到的结论一致（本来就该一致）
+    modelRoute: async (workspaceId, ownerUid) => {
       try {
         return await probeModelRoute({
           probe: hostedProbe,
           cfg: () => workspaceConfigStore.load(workspaceId)?.model ?? null,
-          ownerUid: await ownerOf(workspaceId),
+          ownerUid,
           workspaceId,
           edgeBase: config.edgeBase,
           runtimeSecret: config.runtimeSecret,
