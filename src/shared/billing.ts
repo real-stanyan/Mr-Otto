@@ -69,6 +69,9 @@ export function parseSseCostComment(line: string): number | null {
 export const ON_BEHALF_HEADER = "x-otto-on-behalf-of";
 export const WORKSPACE_HEADER = "x-otto-workspace";
 export const SESSION_HEADER = "x-otto-session";
+/** runtime 替工作区 agent 调网关时带的 agent_id（#946，spec §7）。桌面直连不带。
+    值落 usage_event.agent_id；名字随时会改，所以带的是 id */
+export const AGENT_HEADER = "x-otto-agent";
 
 export type BillingErrorCode =
   | "bad_token"
@@ -189,4 +192,44 @@ export function remainingFromHeaders(h: Headers): { h5?: number; week?: number; 
   if (addon !== undefined) out.addon = addon;
   if (plan) out.plan = plan;
   return out;
+}
+
+/** 设置页「用量」tab 的一行：某只 agent 本周烧了多少（#946）。agentId 空串 = 未归因
+    （桌面直连 / 0022 之前的旧行） */
+export interface WorkspaceUsageRow {
+  agentId: string;
+  costMicro: number;
+  calls: number;
+  promptTokens: number;
+  cachedTokens: number;
+  completionTokens: number;
+}
+
+/** GET /billing/v1/workspace-usage 的响应。周窗是 **owner** 的（ADR-0217：工作区烧的是
+    owner 的额度），起点与 Quota DO 同一份 weekStartFor——同一扇窗两个界面不能给出两个数 */
+export interface WorkspaceUsage {
+  workspaceId: string;
+  ownerUid: string;
+  weekStartAt: number;
+  weekEndAt: number;
+  rows: WorkspaceUsageRow[];
+}
+
+export function parseWorkspaceUsage(payload: unknown): WorkspaceUsage | null {
+  if (!isObj(payload)) return null;
+  const { workspaceId, ownerUid, weekStartAt, weekEndAt } = payload;
+  if (typeof workspaceId !== "string" || typeof ownerUid !== "string") return null;
+  if (typeof weekStartAt !== "number" || typeof weekEndAt !== "number") return null;
+  if (!Array.isArray(payload.rows)) return null;
+  const rows: WorkspaceUsageRow[] = [];
+  for (const r of payload.rows) {
+    if (!isObj(r) || typeof r.agentId !== "string") return null;
+    const nums = [r.costMicro, r.calls, r.promptTokens, r.cachedTokens, r.completionTokens];
+    if (!nums.every((n) => typeof n === "number" && Number.isFinite(n))) return null;
+    rows.push({
+      agentId: r.agentId, costMicro: r.costMicro as number, calls: r.calls as number,
+      promptTokens: r.promptTokens as number, cachedTokens: r.cachedTokens as number, completionTokens: r.completionTokens as number,
+    });
+  }
+  return { workspaceId, ownerUid, weekStartAt, weekEndAt, rows };
 }

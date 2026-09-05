@@ -50,6 +50,8 @@ export interface Caller {
       `x-otto-route-sticky` 送回来——edge 自己不存 session → route 的映射
       （无状态网关，状态不该长在这里） */
   stickyRouteId?: string;
+  /** 工作区 agent 的 agent_id（#946）。空串 = 桌面直连 / 没带头 */
+  agentId: string;
 }
 
 export interface UsageCounts {

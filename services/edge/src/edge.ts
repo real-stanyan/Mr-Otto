@@ -19,7 +19,7 @@ import { parseEscrowDoc } from "./px.js";
 import { isCsChannel } from "../../../src/shared/remote/cloudSession.js";
 import { MAX_GRANT_QUANTITY } from "./billing.js";
 import type { Caller } from "./llmGateway.js";
-import { ON_BEHALF_HEADER, SESSION_HEADER, WORKSPACE_HEADER, type BillingMe, type PlanId } from "../../../src/shared/billing.js";
+import { AGENT_HEADER, ON_BEHALF_HEADER, SESSION_HEADER, WORKSPACE_HEADER, type BillingMe, type PlanId } from "../../../src/shared/billing.js";
 
 export interface EdgeConfig {
   /** Supabase 的 HS256 JWT secret(验客户端令牌) */
@@ -323,6 +323,7 @@ export function createEdge(deps: EdgeDeps): (req: Request) => Promise<Response> 
       uid, source,
       workspaceId: (req.headers.get(WORKSPACE_HEADER) ?? "").slice(0, 128),
       sessionId: (req.headers.get(SESSION_HEADER) ?? "").slice(0, 128),
+      agentId: (req.headers.get(AGENT_HEADER) ?? "").slice(0, 128),
     };
   }
 

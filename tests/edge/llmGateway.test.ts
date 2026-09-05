@@ -12,7 +12,7 @@ const flash: RouteRow = {
 };
 /** 同款逻辑模型在另一个平台的备选路（failover 的「下一条」） */
 const alt: RouteRow = { ...flash, id: "deepseek-v4-flash@siliconflow", platform: "siliconflow", baseUrl: "https://up2/v1" };
-const caller: Caller = { uid: "u1", source: "desktop", workspaceId: "", sessionId: "" };
+const caller: Caller = { uid: "u1", source: "desktop", workspaceId: "", sessionId: "", agentId: "" };
 
 function quotaStub(outcome: HoldOutcome = { ok: true, chargedTo: "window" }) {
   const calls: { hold: string[]; settle: SettleMeta[]; release: string[] } = { hold: [], settle: [], release: [] };

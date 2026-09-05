@@ -2,7 +2,7 @@ import { createHmac } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { createEdge, type BillingPort, type EdgeConfig } from "../../services/edge/src/edge.js";
 import type { Caller } from "../../services/edge/src/llmGateway.js";
-import { ON_BEHALF_HEADER, SESSION_HEADER, WORKSPACE_HEADER, type BillingMe } from "../../src/shared/billing.js";
+import { AGENT_HEADER, ON_BEHALF_HEADER, SESSION_HEADER, WORKSPACE_HEADER, type BillingMe } from "../../src/shared/billing.js";
 
 const SECRET = "jwt-secret";
 const RUNTIME = "runtime-secret";
@@ -47,7 +47,17 @@ describe("/llm/v1/chat/completions 身份", () => {
     const h = harness();
     const res = await h.handle(post("/llm/v1/chat/completions", { authorization: `Bearer ${token("u9")}`, [WORKSPACE_HEADER]: "w1", [SESSION_HEADER]: "s1" }));
     expect(res.status).toBe(200);
-    expect(h.llmCalls).toEqual([{ uid: "u9", source: "desktop", workspaceId: "w1", sessionId: "s1" }]);
+    expect(h.llmCalls).toEqual([{ uid: "u9", source: "desktop", workspaceId: "w1", sessionId: "s1", agentId: "" }]);
+  });
+
+  it("x-otto-agent 透进 caller.agentId，同样截到 128", async () => {
+    const h = harness();
+    const res = await h.handle(post("/llm/v1/chat/completions", {
+      "x-runtime-secret": RUNTIME, [ON_BEHALF_HEADER]: U7, [WORKSPACE_HEADER]: "w1", [AGENT_HEADER]: "a_".padEnd(200, "x"),
+    }));
+    expect(res.status).toBe(200);
+    expect(h.llmCalls[0]!.agentId).toHaveLength(128);
+    expect(h.llmCalls[0]!.source).toBe("runtime");
   });
 
   it("workspace/session 头超长会被截断到 128 字符才递给 llm（Task 7 落库用）", async () => {
