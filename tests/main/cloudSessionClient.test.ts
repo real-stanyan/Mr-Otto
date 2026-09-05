@@ -1053,3 +1053,88 @@ describe("createCloudSessionClient — 模型配置（issue #844）", () => {
     expect(t.decoded().length).toBe(before);
   });
 });
+
+/** 历史缺口（issue #957 C-I7）：welcome.lastSeq 是协议递到手上的完整性凭据。
+    服务端**真的会跳事件**（frameHandler.chunkBacklogFrames 对单条超限的事件
+    产出一条 error 帧后继续），而在这条修复之前 lastSeq 一个字都没用过：
+    「我看到的就是全部」和「我看到的少了一条」在界面上只差一行会被下一次成功
+    操作擦掉的灰字。gapNote 是**持久事实**——每次 pushStatus 都带，不是 notice
+    那样的一次性。 */
+describe("createCloudSessionClient — 历史缺口 gapNote（issue #957 C-I7）", () => {
+  async function joined(lastSeq: number): Promise<{ h: ReturnType<typeof harness>; t: FakeTransport }> {
+    const h = harness();
+    await h.client.join("w1", "cloud-s1");
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({
+      t: "welcome", v: CS_PROTOCOL_VERSION, sessionId: "cloud-s1",
+      lastSeq, initiatorUid: "u1", ownerUid: "u2", repo: null, model: null, modelRoute: null,
+    });
+    return { h, t };
+  }
+
+  it("welcome 说到 7、backlog 只到 5 → status 带 gapNote，数得出缺了 2 条", async () => {
+    const { h, t } = await joined(7);
+    t.emitDown({ t: "backlog", events: [0, 1, 2, 3, 4, 5].map((n) => chatMsg(n)), done: true });
+
+    const last = h.statuses.at(-1)!;
+    expect(last.state).toBe("ready");
+    expect(last.gapNote).toBe("这条会话有 2 条历史事件没能下发（服务端跳过了过大的事件）——你看到的不是全部");
+  });
+
+  it("gapNote 是持久的：之后每一次状态推送都还带着它（notice 是一次性的，它不是）", async () => {
+    const { h, t } = await joined(7);
+    t.emitDown({ t: "backlog", events: [0, 1, 2, 3, 4, 5].map((n) => chatMsg(n)), done: true });
+    // 随便一件会触发 pushStatus 的事：runtime 又说了一句一次性的话
+    t.emitDown({ t: "error", msg: "审批未生效：已经有人批过了" });
+
+    const last = h.statuses.at(-1)!;
+    expect(last.notice).toBe("审批未生效：已经有人批过了");
+    expect(last.gapNote).toContain("2 条历史事件没能下发");
+  });
+
+  it("backlog 完整 → 没有 gapNote（不许无条件挂一行「你可能少看了什么」）", async () => {
+    const { h, t } = await joined(5);
+    t.emitDown({ t: "backlog", events: [0, 1, 2, 3, 4, 5].map((n) => chatMsg(n)), done: true });
+
+    const last = h.statuses.at(-1)!;
+    expect(last.state).toBe("ready");
+    expect(last.gapNote).toBeUndefined();
+  });
+
+  it("空会话（lastSeq=-1，backlog 空）→ 没有 gapNote", async () => {
+    const { h, t } = await joined(-1);
+    t.emitDown({ t: "backlog", events: [], done: true });
+    expect(h.statuses.at(-1)!.gapNote).toBeUndefined();
+  });
+
+  it("中间那条被跳过（error 帧含「已跳过」，lastSeq 与末条对得上）→ 照样出 gapNote，数得出缺 1 条", async () => {
+    // maxSeen === lastSeq，光比末条比不出来——判据里那条 error 帧就是为这种缺口留的
+    const { h, t } = await joined(5);
+    t.emitDown({ t: "error", msg: "一条历史事件过大已跳过(type=tool_result, seq=3):单条超过下发上限" });
+    t.emitDown({ t: "backlog", events: [0, 1, 2, 4, 5].map((n) => chatMsg(n)), done: true });
+
+    expect(h.statuses.at(-1)!.gapNote).toBe(
+      "这条会话有 1 条历史事件没能下发（服务端跳过了过大的事件）——你看到的不是全部"
+    );
+  });
+
+  it("重连后 backlog 补齐了 → gapNote 跟着消失（它是这一份历史的属性，不是一枚永久勋章）", async () => {
+    const { h, t } = await joined(7);
+    t.emitDown({ t: "backlog", events: [0, 1, 2, 3, 4, 5].map((n) => chatMsg(n)), done: true });
+    expect(h.statuses.at(-1)!.gapNote).toBeDefined();
+
+    // host 走了又回来：seenSeqs 清空，welcome→backlog 全量重来一遍
+    t.emitGone();
+    t.emitPeer("host-cid-2");
+    await tick();
+    t.emitDown({
+      t: "welcome", v: CS_PROTOCOL_VERSION, sessionId: "cloud-s1",
+      lastSeq: 7, initiatorUid: "u1", ownerUid: "u2", repo: null, model: null, modelRoute: null,
+    }, "host-cid-2");
+    t.emitDown({ t: "backlog", events: [0, 1, 2, 3, 4, 5, 6, 7].map((n) => chatMsg(n)), done: true }, "host-cid-2");
+
+    expect(h.statuses.at(-1)!.gapNote).toBeUndefined();
+  });
+});

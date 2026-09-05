@@ -189,6 +189,11 @@ export interface CloudSessionState {
   /** 这个工作区此刻的 turn 会走哪条路（issue #945）。**不是 `model` 的投影**：
       所有者订阅着的时候 `model` 为 null 也照样跑得动。null = 探不到 */
   modelRoute: CsModelRoute | null;
+  /** 这一份历史缺了东西（issue #957 C-I7）。null = 完整。**持久**——主进程
+      每一次状态推送都带（缺席 = 没缺口），所以这一格照抄推送即可，不能像
+      deniedCode 那样"来了才覆盖、没来就留着"：缺口补齐时推送里就没有它了，
+      留着旧值等于一直说一句已经不成立的话 */
+  gapNote: string | null;
   events: SessionEvent[];
 }
 
@@ -913,6 +918,14 @@ interface ChatState {
   /** 待发那句已经交出去了。**先清后发**：主区那块的 effect 会因为状态变化重跑，
       清晚一步就会发两遍 */
   takeCloudPendingFirstMessage(): string | null;
+  /** 那一句没发出去，放回去（issue #957 C-I6）。`take()` 先摘是对的（不然
+      会发两遍），但 `cloudSay` 回 false 时（限速、被踢、连接不通那一帧压根
+      没发出去）那段文字在任何地方都不再存在——开局卡早已卸载、store 里也
+      摘掉了，用户只看到一行错误，然后得把刚写的话重打一遍。同一件事在
+      composer 那条入口上的纪律正相反（"草稿在发送成功之后才清"）。
+      **只在 cloudSession 仍是当初那一条时才放回**：异步期间用户可能已经切到
+      别的云会话，那句话在那边冒出来比丢了更糟 */
+  restoreCloudPendingFirstMessage(text: string, sessionId: string): void;
   /** 离开当前云会话（返回键用）。同步——不等 workspaceCloudLeave 那趟 IPC
       往返，UI 反馈要即时；真正的连接收尾在主进程后台完成，用户不需要等 */
   closeCloudSession(): void;
@@ -2279,6 +2292,7 @@ export const useChat = create<ChatState>((set, get) => ({
         repo: null, // welcome 一到就补真值
         model: null, // 同上（issue #844）
         modelRoute: null, // 同上（issue #945）
+        gapNote: null, // 同上（issue #957 C-I7）：backlog 落定才知道缺没缺
         events: [],
       },
       workspaceGroupsError: null,
@@ -2325,6 +2339,14 @@ export const useChat = create<ChatState>((set, get) => ({
     const text = get().cloudPendingFirstMessage;
     if (text !== null) set({ cloudPendingFirstMessage: null });
     return text;
+  },
+
+  restoreCloudPendingFirstMessage(text, sessionId) {
+    // 判据是 sessionId 而不是"cloudSession 不为 null"：后者会把这句话放进
+    // 另一条会话的待发格，下次它自己冒出来——那正是 createCloudSessionFromDraft
+    // 失败时要清掉它的同一个理由
+    if (get().cloudSession?.sessionId !== sessionId) return;
+    set({ cloudPendingFirstMessage: text });
   },
 
   async cloudSay(text, mentions) {
@@ -2629,6 +2651,10 @@ export const useChat = create<ChatState>((set, get) => ({
             repo: status.repo,
             model: status.model,
             modelRoute: status.modelRoute,
+            // issue #957 C-I7：照抄推送（缺席 → null）。**不能**学下面
+            // deniedCode 那样"没带就留着旧的"：缺口补齐时主进程正是靠不带
+            // 这一格来说"补齐了"
+            gapNote: status.gapNote ?? null,
             // exactOptionalPropertyTypes：deniedCode 是 string|undefined，
             // 目标字段是可选的 string——只在真有值时才落这个键，不能把
             // undefined 原样赋进去（那等于显式声明"这个键存在但是 undefined"，

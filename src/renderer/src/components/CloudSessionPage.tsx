@@ -101,7 +101,12 @@ function cloudDeniedMessage(code: string | undefined): string {
 /** 状态条文案（口径同 T4「云端状态三态化」：拿不到状态说"未知"不说"不可用"）。
     connecting/gone 都不是"连不上"的断言，只是"这一刻还没有可展示的事实"——
     gone 时 wsTransport 会自动重连，不代表这次云会话失败（main/cloudSessionClient.ts
-    文件头注释）。ready 没有横幅：一切正常不值得占一行 */
+    文件头注释）。ready 没有横幅：一切正常不值得占一行——**除非这份历史缺了
+    东西**（issue #957 C-I7）。那一行画在这里而不是 actionError 那格，正是因为
+    这里不会被下一次成功的 cloudSay 擦掉（那格成功时会 `workspaceGroupsError: null`）：
+    「我看到的就是全部」和「我看到的少了一条」需要的动作完全不同，不能只差一行
+    会自己消失的灰字。缺口补齐（重连后 backlog 拉全了）时主进程不再下发它，
+    这一行自己就没了 */
 function statusBanner(cs: CloudSessionState): { tone: "muted" | "err"; text: string } | null {
   switch (cs.state) {
     case "connecting":
@@ -111,7 +116,7 @@ function statusBanner(cs: CloudSessionState): { tone: "muted" | "err"; text: str
     case "denied":
       return { tone: "err", text: cloudDeniedMessage(cs.deniedCode) };
     case "ready":
-      return null;
+      return cs.gapNote === null ? null : { tone: "muted", text: cs.gapNote };
   }
 }
 

@@ -228,6 +228,23 @@ interface ActiveSession {
       暂存在这里不经过 deliverEvent；backlog 落定时与它合并排序后统一转发，
       保证转发给渲染层的顺序是 seq 升序（复审 High） */
   liveBuffer: SessionEvent[];
+  /** welcome 说的「日志末条 seq」（issue #957 C-I7）。协议一直把这个完整性
+      凭据递到手上，而在这条修复之前一个字都没用过。null = 还没 welcome。
+      **不是**「我读到哪条了」——backlog 永远拉全量（afterSeq:-1） */
+  lastSeq: number | null;
+  /** 这一份历史缺了东西（issue #957 C-I7）。null = 完整。**持久事实**，不是
+      notice 那样的一次性：`pushStatus` 每一次都带上它。「我看到的就是全部」
+      和「我看到的少了一条」需要的动作完全不同（后者该去问别人、别照着这段
+      历史下判断），而在这条修复之前两者只差一行会被下一次成功操作擦掉的灰字
+      （cloudSay 成功就 `workspaceGroupsError: null`）。
+      每一轮 backlog 落定时**重算**：补齐了就跟着消失——它是这一份历史的属性，
+      不是一枚一旦挂上就摘不掉的勋章 */
+  gapNote: string | null;
+  /** 这一轮 backlog 期间收到过一条「已跳过」的 error 帧（frameHandler 的
+      chunkBacklogFrames 对单条超限的事件产出的那条）。被跳掉的如果不是末尾
+      那几条，`maxSeen < lastSeq` 是看不出来的——这个旗子就是为那种缺口留的。
+      done:true 结账后清零：它属于那一轮，不属于这条连接 */
+  backlogSkipped: boolean;
   /** 已知最新一条事件的 ts；null = 还没见过任何真实事件。**不能**用
       Date.now() 占位再 Math.max——那样 join() 那一刻的"此刻"会变成一个不该
       存在的下限，历史事件（ts 早于打开这个会话的那一刻，比如重新打开一个
@@ -256,6 +273,27 @@ interface ActiveSession {
   pendingConfig: { settle: (r: FriendsResult<null>) => void; timer: ReturnType<typeof setTimeout> } | null;
 }
 
+/** 「历史缺了一块」这句人话（issue #957 C-I7）。数得出缺几条就说几条——
+    「N 条」是用户判断「要不要去问别人」的唯一量纲；数不出来（还没 welcome、
+    lastSeq 为负）时不许编一个数字，退回不带数量的那句。 */
+function gapNoteText(missing: number | null): string {
+  return missing !== null && missing > 0
+    ? `这条会话有 ${missing} 条历史事件没能下发（服务端跳过了过大的事件）——你看到的不是全部`
+    : "这条会话有历史事件没能下发（服务端跳过了过大的事件）——你看到的不是全部";
+}
+
+/** 这一份历史缺了几条：[0, lastSeq] 里没转发给渲染层的那些（EventStore 的
+    seq 从 0 开始）。null = 数不出来（还没 welcome / 空会话）。
+    **不是** `lastSeq - maxSeen`：那只数得出末尾的缺口，中间被跳掉的一条
+    （maxSeen 仍然等于 lastSeq）会被算成 0。 */
+function missingCount(session: ActiveSession): number | null {
+  const last = session.lastSeq;
+  if (last === null || last < 0) return null;
+  let n = 0;
+  for (let seq = 0; seq <= last; seq++) if (!session.seenSeqs.has(seq)) n += 1;
+  return n;
+}
+
 /** 等 config 回执的上限。超时不是"失败"而是"不知道"——文案要照实说
     （见 config() 里那句），因为服务端完全可能已经存好了，只是回执没回来。 */
 const CONFIG_ACK_TIMEOUT_MS = 15_000;
@@ -279,6 +317,9 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
       model: session.model,
       modelRoute: session.modelRoute,
       ...(notice === undefined ? {} : { notice }),
+      // 持久（issue #957 C-I7）：与上面那条一次性的 notice 相反，只要这一份
+      // 历史还缺着，**每一次**推送都带上它——渲染层因此不需要自己记着
+      ...(session.gapNote === null ? {} : { gapNote: session.gapNote }),
     });
   }
 
@@ -307,6 +348,10 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     // 若仍命中 self 可批会重新把 pendingApprovals 填回去（文件头「:gone」段）
     session.seenSeqs = new Set();
     session.liveBuffer = [];
+    // 这一轮 backlog 的账在这里作废（issue #957 C-I7）：host 回来会重来一遍
+    // 完整的 welcome→backlog，那一轮自己重新记。gapNote **不清**——屏幕上
+    // 摆着的仍然是那一份缺了东西的历史，下一轮 done:true 补齐了自然会消失
+    session.backlogSkipped = false;
     deps.onSessionInactive(session.sessionId);
     pushStatus(session);
   }
@@ -391,6 +436,7 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
 
     switch (msg.t) {
       case "welcome": {
+        session.lastSeq = msg.lastSeq; // issue #957 C-I7：backlog 落定时拿它对账
         session.initiatorUid = msg.initiatorUid;
         session.ownerUid = msg.ownerUid;
         session.repo = msg.repo; // issue #834：任何人一 join 就看得见仓库状态
@@ -450,8 +496,21 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
           const merged = [...msg.events, ...session.liveBuffer].sort((a, b) => a.seq - b.seq);
           session.liveBuffer = [];
           for (const e of merged) deliverEvent(session, e);
+          // 对账（issue #957 C-I7）：welcome 说日志到 lastSeq，这一轮真正转发
+          // 出去的最大 seq 却更小 = 末尾缺了几条；中间被跳掉的靠那条「已跳过」
+          // 的 error 帧发现（maxSeen 那条判据看不出来）。两条判据缺一不可。
+          // **每一轮都重算**：补齐了就写回 null，让它跟着消失
+          let maxSeen = -1;
+          for (const seq of session.seenSeqs) if (seq > maxSeen) maxSeen = seq;
+          const gapped = session.backlogSkipped || (session.lastSeq !== null && maxSeen < session.lastSeq);
+          const before = session.gapNote;
+          session.gapNote = gapped ? gapNoteText(missingCount(session)) : null;
+          session.backlogSkipped = false; // 这一轮的账结了
           if (session.status !== "ready") {
             session.status = "ready";
+            pushStatus(session);
+          } else if (session.gapNote !== before) {
+            // 状态没变但缺口的事实变了（重连补齐/新缺口）——这一格也得推
             pushStatus(session);
           }
         } else {
@@ -467,6 +526,13 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
         // 还要给人看（issue #819）：这条帧是**定向发给这条连接**的，说的
         // 就是"你刚才那一下没生效"。只进日志的话，被限速的人看到的是
         // 消息凭空消失——和"网断了"长得一模一样，而两者该做的事相反
+        //
+        // 「已跳过」那一类还要再记一笔（issue #957 C-I7）：它说的是「你的历史
+        // 缺了一条」，而 notice 是一次性的——下一次成功操作就把它擦掉了
+        // （渲染层的 workspaceGroupsError）。判据取服务端那句话里的「已跳过」
+        // 而不是整句相等：文案改一个字这道判断就静默失效，而这条修的正是
+        // 「失败无声」（同 daemon 看门狗不认日志文案那条纪律）
+        if (msg.msg.includes("已跳过")) session.backlogSkipped = true;
         pushStatus(session, msg.msg);
         return;
       case "created":
@@ -609,6 +675,9 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
       ownerUid: "",
       seenSeqs: new Set(),
       liveBuffer: [],
+      lastSeq: null,
+      gapNote: null,
+      backlogSkipped: false,
       // null = 还没有任何事件事实（不能用 Date.now() 占位，见 ActiveSession
       // 的字段注释——那样会给历史事件的 ts 强加一个不该有的下限）
       lastEventTs: null,
