@@ -1,4 +1,4 @@
-// WorkspacePage —— 工作区详情页：四 tab（会话 / 智能体 / 连接器 / 成员）（Task 12，ADR-0198 切片 3）。
+// WorkspacePage —— 工作区详情页：五 tab（会话 / 智能体 / 连接器 / 成员 / 用量）（Task 12，ADR-0198 切片 3）。
 //
 // 页而不是弹窗（照 McpConnectorPage 的换页惯例，ADR-0185）：三张表加起来随时
 // 超过一屏，弹窗只会滚动条套滚动条；而且这里挂了好几个二次确认，弹窗里嵌
@@ -34,6 +34,7 @@ import {
   type ConnectorCloudState, type CloudSessionListRow,
 } from "../lib/workspaceView.js";
 import { WorkspaceAgentsTab } from "./WorkspaceAgentsTab.js";
+import { WorkspaceUsageTab } from "./WorkspaceUsageTab.js";
 import {
   buildAllow, isServerOn, isToolOn, selectionFromAllow, toggleServer, toggleTool,
   formatProxyTime, type ProxySelection,
@@ -113,6 +114,7 @@ export function WorkspacePage({
           <TabsTrigger value="agents">智能体</TabsTrigger>
           <TabsTrigger value="connectors">连接器</TabsTrigger>
           <TabsTrigger value="members">成员</TabsTrigger>
+          <TabsTrigger value="usage">用量</TabsTrigger>
         </TabsList>
         <TabsContent value="sessions" className="pt-3">
           <SessionsTab ws={ws} selfUid={selfUid} />
@@ -125,6 +127,9 @@ export function WorkspacePage({
         </TabsContent>
         <TabsContent value="members" className="pt-3">
           <MembersTab ws={ws} selfUid={selfUid} />
+        </TabsContent>
+        <TabsContent value="usage" className="pt-3">
+          <WorkspaceUsageTab ws={ws} />
         </TabsContent>
       </Tabs>
     </div>
