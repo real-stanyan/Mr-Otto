@@ -106,19 +106,26 @@
 //   ② **接力现取名单**（F3）：relayAfterTurn 不再吃 runJob 起跑那一刻的 roster，
 //      自己 `await opts.agents()`。管理员可以在同一轮里 create_agent 建出一只
 //      新 agent 再 @ 它，旧快照里没有它，那句 @ 会静默落空。
-//   ③ **未知 @ 出声**（A-6）：这一轮 @ 了人但一个都没落到名单上时落一条 system
-//      发言。静默丢掉的话，一句「@财务 你来」和一句闲聊在日志里长得一模一样。
-//      自 @ 不算（parseMentions 认出人了，只是被自 @ 过滤掉）。
+//   ③ **未知 @ 出声**（A-6）：这一轮 @ 了、但没落到名单上的那几个 token 各报一次。
+//      静默丢掉的话，一句「@财务 你来」和一句闲聊在日志里长得一模一样。判据逐
+//      token 算、与"有没有别人被点到"无关（复审 Minor 1：混着的一句里那个未知的
+//      仍会被吞）；「解析得出」= 名单里有名字是这个 token 的前缀（同 parseMentions
+//      自己的匹配规则，等号判会被「@运营，帮忙」这种贪婪切词骗过）。
 //   ④ **depth 在起跑那一刻算**（A-4）：openingDepthFor 是「点了我、还没被我的
 //      turn_ended 收口的那些 user_message 取 max」，而这一轮的 turn_ended 一落盘
 //      就把它们全收了——放进 relayAfterTurn 里现算答案恒等于 opening 自己那一格。
 //      与 scanFrom 同一个时刻捕获。否决了内存 pendingDepth（重启即丢，#933）。
+//      这个数**在 runJob 最顶上算一次、三处共用**（复审 Important 1 / Minor 5）：
+//      接力 depth、接力棒上的连接器要不要审批、归档之后这一棒还跑不跑——三处
+//      问的都是同一个问题「这一轮是不是在替接力棒干活」，各写各的判据必然分家。
 //   ⑤ **mentions 去重**（F7）：say() 里 `[...new Set(...)]`，落盘与入队两侧口径
 //      一致——openTurns 按 mentions 逐个展开，重复一次就多一行永远收不了口的
 //      「排队中」。
-//   ⑥ **接力棒上的连接器要点火者批**（B-C3）：job.opening.relay 有值时
-//      buildPxTools 的 requiresApproval 掀成 true。审批人不变（仍是 job.fromUid），
-//      只是"上一只 agent 替他叫起的这一轮"上多问一句。
+//   ⑥ **接力棒上的连接器要点火者批**（B-C3）：`openingDepth > 0` 时 buildPxTools
+//      的 requiresApproval 掀成 true。审批人不变（仍是 job.fromUid），只是"上一只
+//      agent 替他叫起的这一轮"上多问一句。**判据不是 `job.opening.relay`**——
+//      折叠进这个 job 的接力棒整条绕过那道闸（复审 Important 1），而那正是最普通
+//      的形状：人一句同时 @ 了 ops 与 ads，ops 跑完再接力 @ ads。
 //   ⑦ **在籍复查 + 降级名单不挂刀**（B-I1 / B-I7）：CloudSessionOpts.isMember 是
 //      **必需**字段（同 memory / agentWriter 的纪律，忘接线该编译不过）；runJob
 //      起跑前与补跑段各查一次，不在籍就落一条说得出原因的收口、不起 turn。
@@ -534,27 +541,44 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // **这一轮里**用 create_agent 建出一只新 agent 再在同一条回复里 @ 它，而那只
     // 在起跑快照里压根不存在。拿旧快照解析 = 那句 @ 静默落空，人看到的是"建好了
     // 也叫了，就是没人接"
-    const roster = await opts.agents();
-    const candidates = roster.map((a) => ({ agentId: a.agentId, name: a.name }));
-    const targets = mentionedAgents(said, candidates, spec.agentId);
-    if (targets.length === 0) {
-      // 这一轮里 @ 了人、但一个都没落到名单上（#957 A-6）：静默丢掉的话，一句
-      // 「@财务 你来核一下账」和一句普通闲聊在日志里长得一模一样——群里的人
-      // （和下一轮的模型）都不知道这一棒断在哪儿。说出口，用**原始 token**
-      // （mentionTokens，不过名单）：名单上没有的名字本来就解析不出 agentId。
-      // **自 @ 不算**：parseMentions 认出了人（就是它自己，被 mentionedAgents
-      // 过滤掉），这时说「名单里没有这个人」是句假话
-      const tokens = mentionTokens(said);
-      if (tokens.length > 0 && parseMentions(said, candidates).length === 0) {
-        logChat(
-          "system",
-          "系统",
-          `「${spec.name}」@ 了「${tokens.join("、")}」，名单里没有这个人（可能改过名或还没建），这一棒没人接`,
-          false
-        );
-      }
+    // 名单拉取失败**不算这一轮失败**（#957 复审 Minor 4）：turn 自己的 turn_ended
+    // 早已落盘、收口不欠账，抛出去只会让 drain 的 catch 打一行「turn 失败（agent=…）」
+    // ——那句话把一次接力没接上说成了一次回复失败，方向指错。这一棒不接，说一声
+    let roster: AgentSpec[];
+    try {
+      roster = await opts.agents();
+    } catch (err) {
+      console.warn(
+        `[otto-runtime] 接力取名单失败，这一棒没接上（session=${sessionId} agentId=${spec.agentId}）`,
+        err
+      );
       return;
     }
+    const candidates = roster.map((a) => ({ agentId: a.agentId, name: a.name }));
+    const targets = mentionedAgents(said, candidates, spec.agentId);
+    // 这一轮里 @ 了、但**没落到名单上**的那几个（#957 A-6，复审 Minor 1）：静默丢掉
+    // 的话，一句「@财务 你来核一下账」和一句普通闲聊在日志里长得一模一样——群里的人
+    // （和下一轮的模型）都不知道这一棒断在哪儿。
+    // 判据**逐 token 算、与 targets 空不空无关**：初版拿 `targets.length === 0` 当前提，
+    // 于是「@运营 @财务 你们看下」这种混着的一句里，@财务 又被静默吞掉了——而混着
+    // 恰恰是最常见的形状。
+    // 「解析得出」的判据是**有没有名单里的名字是这个 token 的前缀**，不是 `=== 名字`：
+    // mentionTokens 贪婪吃到下一个空白，「@运营，帮忙看下」切出来的 token 是
+    // 「运营，帮忙看下」，等号判会把一个 parseMentions 明明认得的 @ 报成「没这个人」。
+    // 前缀正是 parseMentions 自己的匹配规则（`text.startsWith(name, i + 1)`）。
+    // **自 @ 自然不在名单外**（spec 自己就在 roster 里），不用另开一条判断
+    const unresolved = mentionTokens(said).filter(
+      (t) => !roster.some((a) => a.name.length > 0 && t.startsWith(a.name))
+    );
+    if (unresolved.length > 0) {
+      logChat(
+        "system",
+        "系统",
+        `「${spec.name}」@ 了「${unresolved.join("、")}」，名单里没有这个人（可能改过名或还没建），这一棒没人接`,
+        false
+      );
+    }
+    if (targets.length === 0) return;
 
     let maxDepth: number;
     try {
@@ -605,22 +629,38 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       自己——排空时捞出来的 job 可能来自另一条并发的 say() 调用，不能用外层
       闭包里那条调用自己的参数 */
   async function runJob(job: TurnJob): Promise<void> {
+    // **这一轮欠着的最大接力 depth，一进 runJob 就算一次**（#957 复审 Important 1）。
+    // 判据是「日志里点了我、又还没被我的 turn_ended.readUpToSeq 收口的那些
+    // user_message 取 max」（openingDepthFor），不是 `job.opening.relay` 这一个
+    // 事件——协调器会把后来的点名**折叠进同一个 job**（enqueue 去重），于是
+    // 「人先 @ 了 ops 和 ads、ops 跑完又接力 @ ads」这个最普通的形状里，ads 那个
+    // job 拿着的 opening 是**人**那条，`job.opening.relay` 是 undefined，而它这一轮
+    // 实际上正是在替接力棒干活。A-4 修的是 depth，这一条修的是同一处折叠在另外
+    // **两个**判据上的漏洞：接力棒上的连接器要不要点火者批（B-C3）、归档之后这一棒
+    // 还跑不跑。三处共用同一个数，就不会有第四处再各写一遍。
+    // 起跑前算一次就够：drain 是串行的，这之后到 runLoggedTurn 之间不可能有别的
+    // agent 的 turn 收口、也就长不出新的接力开场白；这期间人插的话 depth 恒为 0
+    const openingDepth = openingDepthFor(store.load(sessionId), job.agentId, job.opening);
     // 归档落地时，这只 agent 的 job 可能已经躺在队列里了——它是**接力**排上的
     // （relayAfterTurn 在一轮 @ 了两只时，两个 job 在归档发生之前就已经一起入队；
     // 见 tests/runtime/sessionService.test.ts「归档落在两个 relay job 之间」）。
     // drain() 的 while 循环本身不看 archived（ADR-0201 的既有分工：归档只翻标志
     // + 落一条 session_archived，不动 drain），只在这里拦一道才不会让一间已经
     // 关掉的房间继续起 turn、继续烧 owner 的钱（复审 Important ①b）。
-    // **只拦接力起的 job**（`job.opening.relay` 有值）：人自己刚说的那句话——
+    // **只拦接力起的 job**（`openingDepth > 0`，见函数开头那段）：人自己刚说的那句话——
     // 无论归档发生在它排队期间还是之前——都照跑，他配得上一个回复，即使几秒后
     // 有人把这条会话关了（决策 5 的既有取舍：归档不该让一个刚发言的人被晾着）。
+    // 判据从 `job.opening.relay` 换成 openingDepth（#957 复审 Minor 5）：折叠进
+    // 这个 job 的接力棒原本会绕过这道闸，在一间刚关掉的房间里跑满一整个 turn。
+    // 代价是折叠形状里那条**人**的话也跟着被跳过——它和接力棒共用一个 job，
+    // 拆不开；宁可少答一句，也不该在归档之后替一条接力链继续烧钱。
     // **不落 turn_ended**：这条会话已经收尾（session_archived 已经落盘），不是
     // 这只 agent 的失败，落一条错误事件只会在一份已经关闭的日志里制造一个假警报。
     // 代价：openTurns 的投影会把这条开场白**永远**算作"排队中"（它再也等不到
     // 一条 turn_ended 收口）——可以接受，因为归档的会话不会再有人盯着那盏灯；
     // 重启补跑那条路（本文件末尾 `if (!archived && stale.length > 0)`）已经把
     // "已归档的不补"钉死了，这里补的是同一进程内、归档落地那一刻已经在队里的漏网之鱼
-    if (archived && job.opening.relay) {
+    if (archived && openingDepth > 0) {
       console.log(`[otto-runtime] 会话已归档，跳过排队中的接力棒（session=${sessionId} agentId=${job.agentId} opening=${job.opening.seq}）`);
       return;
     }
@@ -690,35 +730,39 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       await loadMemoryIfChanged(spec);
       const engine = engineFor(spec);
 
-      let granted: Awaited<ReturnType<typeof fetchGrantedTools>> = [];
-      try {
-        granted = await fetchGrantedTools(opts.px, job.fromUid, await opts.hostUids());
-      } catch (err) {
-        // fetchGrantedTools 内部已经把单 host 失败挡住了；这里兜的是更外层的
-        // 意外（hostUids() 本身抛错等）——本 turn 就没有云代理工具，不阻塞发言
-        console.warn("px grants 拉取失败，本 turn 不带云代理工具", err);
-      }
-      // 切片 2：白名单接在拉取之后、建刀之前。过滤只看 serverId（agentToolAllow.ts 头注）。
-      // [] = 整池放行，所以 1b 之前建的 agent 行为不变。
-      // **降级名单一把刀都不挂**（#957 B-I7）：spec.degraded = 这份名单是
-      // workspace_agents 查询失败时的占位，它的 `tools: []` 在白名单那张表里读作
-      // "整池放行"——把一次 Supabase 抖动翻译成"这只占位 agent 可以用发起人全部的
-      // 好友代理授权"是最不该有的默认。
-      // **接力棒上的刀要点火的人批一次**（#957 B-C3）：`job.opening.relay` 有值 =
-      // 这一轮不是他叫起来的，是上一只 agent 替他叫的，而刀用的仍是他的代理授权。
-      // 审批人不变（上面的 router.setInitiator(job.fromUid)），只是这一棒多问一句
+      // **降级名单一把刀都不挂，也不去拉**（#957 B-I7 + 复审 Minor 2）：
+      // spec.degraded = 这份名单是 workspace_agents 查询失败时的占位，它的
+      // `tools: []` 在白名单那张表里读作"整池放行"——把一次 Supabase 抖动翻译成
+      // "这只占位 agent 可以用发起人全部的好友代理授权"是最不该有的默认。
+      // 短路放在 hostUids()/fetchGrantedTools **之前**：结果注定被丢掉，那两次
+      // 网络往返（一次 Supabase + 每个成员一次 edge）每 turn 白打一遍
       if (spec.degraded) {
         console.warn(
-          `[otto-runtime] agent 名单处于降级占位（workspace_agents 查询失败），本 turn 不挂任何好友代理工具` +
+          `[otto-runtime] agent 名单处于降级占位（workspace_agents 查询失败），本 turn 不挂任何好友代理工具、也不拉授权` +
             `（workspaceId=${opts.workspaceId} session=${sessionId} agentId=${spec.agentId}）`
         );
+        cachedPxTools = [];
+      } else {
+        let granted: Awaited<ReturnType<typeof fetchGrantedTools>> = [];
+        try {
+          granted = await fetchGrantedTools(opts.px, job.fromUid, await opts.hostUids());
+        } catch (err) {
+          // fetchGrantedTools 内部已经把单 host 失败挡住了；这里兜的是更外层的
+          // 意外（hostUids() 本身抛错等）——本 turn 就没有云代理工具，不阻塞发言
+          console.warn("px grants 拉取失败，本 turn 不带云代理工具", err);
+        }
+        // 切片 2：白名单接在拉取之后、建刀之前。过滤只看 serverId（agentToolAllow.ts 头注）。
+        // [] = 整池放行，所以 1b 之前建的 agent 行为不变。
+        // **接力棒上的刀要点火的人批一次**（#957 B-C3）：判据是 `openingDepth > 0`
+        // 不是 `job.opening.relay !== undefined`（复审 Important 1）——后者只看
+        // job 手里那一个事件，折叠进来的接力棒会整条绕过这道闸。两者按构造等价：
+        // 人点名的开场白 relayDepthOf 恒为 0，接力开场白恒 ≥ 1。
+        // 审批人不变（上面的 router.setInitiator(job.fromUid)），只是这一棒多问一句：
+        // 这一轮不是他叫起来的，是上一只 agent 替他叫的，而刀用的仍是他的代理授权
+        cachedPxTools = buildPxTools(opts.px, job.fromUid, filterGrantedByAllow(granted, spec.tools), {
+          requiresApproval: openingDepth > 0,
+        });
       }
-      cachedPxTools = spec.degraded
-        ? []
-        : buildPxTools(opts.px, job.fromUid, filterGrantedByAllow(granted, spec.tools), {
-            requiresApproval: job.opening.relay !== undefined,
-          });
-
       // 起跑**之前**捕获这只 agent 这一轮的扫描起点（复审 Critical ①，与
       // engine.ts 的 readUpToSeq 同一个量：这一轮开跑前日志已经到哪儿）。
       // 不能事后现算 `job.opening.seq`——同一只 agent 排队排两个 job 时，
@@ -727,13 +771,6 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // 同一次 @ 落两条 agent_relay（还会把 decideRelay 的周期护栏诓成
       // 「打转」）——用起跑前的日志尾，只圈进这一轮**自己**产出的话
       const scanFrom = store.load(sessionId, { afterSeq: job.opening.seq }).at(-1)?.seq ?? job.opening.seq;
-      // 接力 depth 也只能在**起跑之前**算（#957 A-4）：判据是「日志里点了我、
-      // 又还没被我的 turn_ended 收口的那些 user_message 取 max」，而这一轮的
-      // turn_ended 一落盘就把它们全收了——放到 relayAfterTurn 里现算，答案恒等于
-      // job.opening 自己那一格，折叠进同一个 job 的接力开场白（去重命中）就白带了
-      // 它的 depth，链子每次都从 1 重新数。与 scanFrom 同一个道理、同一个时刻。
-      // **不用内存 pendingDepth**：那份状态重启即丢（#933），这里是日志的纯投影
-      const openingDepth = openingDepthFor(store.load(sessionId), job.agentId, job.opening);
       // 开场白早在 say() 那一刻就落盘了（#932 坑 ②），这里只是对它起 turn——
       // runTurn 会再 append 一条同样的 user_message，那句话就落两遍：模型读
       // 两遍、时间线画两遍
