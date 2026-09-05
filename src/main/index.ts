@@ -1509,7 +1509,13 @@ void app.whenReady().then(() => {
     deleteWorkspace, upsertConnectorRow, deleteConnectorRow,
     insertAgentRow, updateAgentRow, deleteAgentRow,
     client: () => supabase.raw,
-    selfUid: () => friends.currentUid(),
+    // 登录判据取账号管理器，不取好友子系统的缓存（issue #943）：onChange 先
+    // send(accountChanged) 再 friends.start()，而 friends.uid 要等 start() 里
+    // auth.getUser() 一次网络往返之后才赋——渲染层收到 signedIn 立刻拉工作区
+    // 列表，IPC 跑赢网络就回「还没登录」，之后没有任何触发点再拉一次。
+    // accountManager 在调 onChange 之前就已经把 account 赋好了（account.ts
+    // restore()），拿它兜底，friends 那份仍优先（同一个人，两处一致）
+    selfUid: () => friends.currentUid() ?? (accountManager?.getAccount().id || null),
     loadStore: () => readProxyStore(proxyStorePath),
     saveStore: (d) => writeProxyStore(proxyStorePath, d),
     // escrowResync 此刻还是空位（要等 proxy/escrowSync 装完才填），但这里
