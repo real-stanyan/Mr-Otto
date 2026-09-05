@@ -9,7 +9,7 @@ const ws: WorkspaceSnapshot = {
 };
 const usage: WorkspaceUsage = {
   workspaceId: "w", ownerUid: "owner",
-  weekStartAt: Date.UTC(2026, 8, 1, 0, 0), weekEndAt: Date.UTC(2026, 8, 8, 0, 0),
+  weekStartAt: Date.UTC(2026, 8, 1, 12), weekEndAt: Date.UTC(2026, 8, 8, 12),
   rows: [
     { agentId: "admin", costMicro: 123_456, calls: 3, promptTokens: 1200, cachedTokens: 200, completionTokens: 300 },
     { agentId: "a_gone", costMicro: 20_000, calls: 1, promptTokens: 10, cachedTokens: 0, completionTokens: 5 },

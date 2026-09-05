@@ -13,8 +13,10 @@
 //   B 侧看得见目录行本身就说明闸后可用，本机无从探对方的箱（ADR-0197 口径）。
 // · canKick：自己是 owner 且这一行不是自己 —— owner 也不能对自己动这个按钮
 //   （出口是删群，不是踢自己）。
-// · toolsSummary：线上 tools: [] 表示「整服务放行」（同 proxyShare.ts 的约定），
-//   UI 上得说成「全部工具」而不是「0 个工具」。
+// · toolsSummary：两处同名字段，量纲不同——ConnectorRowView.toolsSummary 说的是这台
+//   连接器自己的工具清单（线上 tools: [] 表示「整服务放行」，同 proxyShare.ts 的约定，
+//   UI 上得说成「全部工具」而不是「0 个工具」）；AgentRowView.toolsSummary 说的是这只
+//   agent 的连接器白名单（[] = 整池放行，说成「全部连接器」），两者不可互换阅读。
 
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 import { displaySessionTitle } from "../../../shared/sessionTitle.js";
@@ -118,6 +120,8 @@ export interface AgentRowView {
   name: string;
   description: string;
   modelsSummary: string;
+  /** 这只 agent 的连接器白名单摘要（"全部连接器" / N 个连接器）——与
+      ConnectorRowView.toolsSummary 同名但不同量纲，那个说的是单台连接器自己的工具清单 */
   toolsSummary: string;
   isAdmin: boolean;
   canEdit: boolean;

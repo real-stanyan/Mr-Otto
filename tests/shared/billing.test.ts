@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  BILLING_HEADERS, SSE_COST_COMMENT, creditOf, fmtCredit, parseBillingError, parseBillingMe,
-  parseSseCostComment, remainingFromHeaders,
+  AGENT_HEADER, BILLING_HEADERS, SSE_COST_COMMENT, creditOf, fmtCredit, parseBillingError,
+  parseBillingMe, parseSseCostComment, parseWorkspaceUsage, remainingFromHeaders,
 } from "../../src/shared/billing.js";
 
 describe("billing 约定", () => {
@@ -71,8 +71,6 @@ describe("parseSseCostComment（#857 流式那半：头里放不下，贴成一�
     expect(SSE_COST_COMMENT.startsWith(":")).toBe(true);
   });
 });
-
-import { AGENT_HEADER, parseWorkspaceUsage } from "../../src/shared/billing.js";
 
 describe("workspace usage（#946）", () => {
   it("头名固定", () => {

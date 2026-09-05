@@ -20,7 +20,9 @@ const isObj = (v: unknown): v is Record<string, unknown> =>
   v !== null && typeof v === "object" && !Array.isArray(v);
 
 /** jsonb → 白名单。形状不对（不是数组 / 条目缺 serverId / tools 不是字符串数组）
-    整份回 []——同 workspaces.ts 的 normalizeStringArray：宁可当没配，不猜 */
+    整份回 []——顶层 [] 是**整池放行**，这是本函数刻意的 fail-open：接受它是因为
+    白名单是「配错了」的护栏不是越权闸（真闸在 edge 的 pxGate），而这一列
+    `not null default '[]'`、唯一写入方是带类型的 IPC，坏数据本就进不来。*/
 export function normalizeAgentTools(value: unknown): AgentToolAllow[] {
   if (!Array.isArray(value)) return [];
   const out: AgentToolAllow[] = [];

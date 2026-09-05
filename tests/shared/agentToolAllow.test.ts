@@ -13,7 +13,7 @@ describe("normalizeAgentTools（jsonb → 白名单）", () => {
       .toEqual([{ serverId: "shopify", tools: ["a"] }, { serverId: "ads", tools: [] }]);
     expect(normalizeAgentTools([{ serverId: "shopify", tools: ["a", 1] }])).toEqual([]);
   });
-  it("不是数组 / 条目缺 serverId / tools 不是数组 → []（形状不对 = 当没配，同 connectors.tools）", () => {
+  it("不是数组 / 条目缺 serverId / tools 不是数组 → []（= 整池放行，fail-open；理由见文件头）", () => {
     expect(normalizeAgentTools(null)).toEqual([]);
     expect(normalizeAgentTools("nope")).toEqual([]);
     expect(normalizeAgentTools([{ tools: [] }])).toEqual([]);

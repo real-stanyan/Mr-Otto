@@ -8,5 +8,8 @@ alter table public.usage_event add column if not exists agent_id text not null d
 comment on column public.usage_event.agent_id is
   '工作区 agent 的 agent_id（workspace_agents.agent_id）；空串 = 桌面直连或 0022 之前的旧行';
 -- 设置页周用量表的查询形状：owner + 工作区 + 周窗，按 agent 聚合
+--
+-- usage_event 此刻只有个位数行，create index 的 SHARE 锁是毫秒级；
+-- 表长到百万行级再建这种索引要改 concurrently，且不能在事务/SQL editor 里跑（psql 直连）。
 create index if not exists usage_event_owner_workspace_created
   on public.usage_event (user_id, workspace_id, created_at desc);

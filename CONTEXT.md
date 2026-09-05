@@ -108,7 +108,7 @@ Domain glossary. All agents' understanding of domain terms is grounded here; cod
 | credit | 显示层单位，1 credit = 1 美分 = 10_000 micro-USD；服务端记账全用 micro-USD 整数，credit 只是换算给用户看的数字 | ADR-0174 决定 1；`src/shared/billing.ts` |
 | hold（预扣） | 流式请求先按请求体字节 + `max_tokens` 高估一笔预扣额度，再转发上游，最后按实际用量 settle 退差额；中断三出口（flush/cancel/abort）统一走 release，不占坑到 TTL 自然过期 | ADR-0174 决定 9；ADR-0203 决定 3/13 |
 | Quota DO | 每用户一个的 Durable Object，落盘窗口用量与加购余额的**投影**；钱的唯一事实是 Supabase `usage_event` 表，DO 冷启动从事实重建，重建失败 throw 不落空态 | ADR-0203 决定 5/11；`services/edge/src/quota.ts` |
-| on-behalf-of | 云 runtime 代表**发起 turn 的那个人**（不是 workspace owner）调网关的头 `x-otto-on-behalf-of`，配 `x-runtime-secret` 一起用；真人自己的请求带这个头一律 400 | ADR-0203 决定 9 |
+| on-behalf-of | 云 runtime 代表**工作区所有者**（不是发起 turn 的人——ADR-0217 推翻了 ADR-0203 决定 9）调网关的头 `x-otto-on-behalf-of`，配 `x-runtime-secret` 一起用；真人自己的请求带这个头一律 400；切片 3 起同一请求还带 `x-otto-agent` 记归因 | ADR-0203 决定 9 → ADR-0217；ADR-0221 |
 | reroute | 网关 429 `quota_exhausted` 时桌面 adapter 单列的一类失败——不退避、立刻重解析端点一次再打一遍，与限流退避不同类 | ADR-0203 决定 14 |
 | 工作区 agent | `workspace_agents` 表的一行：这个工作区里 @ 得着的一只水獭，有自己的名字、一句话职责、提示词和型号白名单。每个工作区开箱自带一只种子「管理员」（migration 的触发器种的），它删不掉——不点名时接话的就是名单第一只。与「会话」正交：一条云会话里站着这个工作区**此刻**的全部 agent，建/改下一 turn 生效 | ADR-0219 / ADR-0220；`supabase/migrations/0021_workspace_agents.sql`、`src/renderer/src/components/WorkspaceAgentsTab.tsx` |
 | 连接器白名单（agent） | `workspace_agents.tools`：这只 agent 拿得到工作区里贡献的哪几台连接器、每台哪几个工具。两层「空 = 全给」（顶层 `[]` = 整池放行，条目 `tools: []` = 整台放行），与 `workspace_connectors` / 好友代理同口径；匹配只看 `serverId` 不看 `hostUid`。是「配错了」的护栏不是越权闸——真正的三道闸在 edge 的 pxGate | ADR-0221（ADR-0151/0164 的同一口径）；`src/shared/agentToolAllow.ts` |

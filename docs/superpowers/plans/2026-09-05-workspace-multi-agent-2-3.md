@@ -27,10 +27,11 @@
 
 ## 部署清单（控制者在合并后做，不是实现者的事）
 
-1. migration `0022_usage_event_agent_id.sql` 在生产 Supabase 跑一次——**DDL 是外向副作用，要维护者点头**。
+1. migration `0022_usage_event_agent_id.sql` 在生产 Supabase 跑一次——**DDL 是外向副作用，要维护者点头**。`usage_event` 此刻只有个位数行，`create index` 的 SHARE 锁是毫秒级；表长到百万行级再建这种索引要改 `concurrently`，且不能在事务/SQL editor 里跑（psql 直连）。
 2. `services/edge` 重新部署（README 五步）——#791：edge 不跟发版走。
 3. `RUNTIME_SSH=stan@65.109.113.168 npm run runtime:deploy`。
 4. 顺序：先 1 再 2 再 3（runtime 先带 `x-otto-agent` 而 edge 没升级是无害的：edge 忽略未知头；edge 先升级而列没加会让 `usage_event` 插入 400、settle 落库失败只记日志——所以 migration 必须最先）。
+5. 桌面端发版（cs 协议 4→5 精确相等握手，旧桌面连新 runtime 会 `version_mismatch`；顺序：runtime 部署完再发桌面，或同一天内先后）。
 
 ---
 
