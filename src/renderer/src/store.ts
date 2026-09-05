@@ -168,6 +168,11 @@ export interface McpPromptFormState {
   error: string | null;
 }
 
+/** 工作区 agent 增/改/删三件套的回值（#938①）。"ok_stale" = IPC 本身成功，
+    但紧跟着那次 refreshWorkspaceGroups() 失败——数据已落库，只是这一屏没
+    刷出来，调用方不能当"没成"处理（那会让用户重试一遍撞 23505 同名冲突） */
+export type WorkspaceAgentMutationResult = "ok" | "ok_stale" | "failed";
+
 /** 当前 join 着的云会话（Task 13，ADR-0199）。state/deniedCode/initiatorUid/
     ownerUid/selfUid 逐字段照抄 ShellBridge 的 CloudSessionStatus——onCloudSessionStatus
     推来的就是这五个字段，这里只多一个 events（推送另开 onCloudSessionEvent 通道，
@@ -867,17 +872,21 @@ interface ChatState {
   /** 智能体名册住在 WorkspaceSnapshot.agents（issue #932）——这三个 action
       跟其余十一件套一个套路：经 ShellBridge 打一次 IPC，成功后
       refreshWorkspaceGroups() 重拉整份快照落地新名册，失败落
-      workspaceGroupsError，回布尔给调用方决定要不要清表单 */
+      workspaceGroupsError。**回三态不回布尔**（#938①）：IPC 本身失败是
+      "failed"（原因在 workspaceGroupsError）；IPC 成功但紧跟着那次
+      refreshWorkspaceGroups() 挂了是 "ok_stale"——数据已经落库，只是这一屏
+      没刷出来，跟"没成"该做的事正好相反（别重试 / 该重试），同
+      NewWorkspaceDialog 的 staleAfterCreate 那一态 */
   createWorkspaceAgent(
     id: string,
     draft: { name: string; description: string; instructions: string; models: readonly string[]; tools: readonly AgentToolAllow[] },
-  ): Promise<boolean>;
+  ): Promise<WorkspaceAgentMutationResult>;
   updateWorkspaceAgent(
     id: string,
     agentId: string,
     patch: { name?: string; description?: string; instructions?: string; models?: readonly string[]; tools?: readonly AgentToolAllow[] },
-  ): Promise<boolean>;
-  deleteWorkspaceAgent(id: string, agentId: string): Promise<boolean>;
+  ): Promise<WorkspaceAgentMutationResult>;
+  deleteWorkspaceAgent(id: string, agentId: string): Promise<WorkspaceAgentMutationResult>;
   /** 设置页「用量」tab（#946）：不进 store 状态——这张表只在打开 tab 时看一眼，
       组件本地 state 就够（同 CloudRepoConfigDialog 现取的纪律） */
   loadWorkspaceUsage(id: string): Promise<FriendsResult<WorkspaceUsage>>;
@@ -2166,11 +2175,11 @@ export const useChat = create<ChatState>((set, get) => ({
     });
     if (!r.ok) {
       set({ workspaceGroupsError: r.message });
-      return false;
+      return "failed";
     }
     set({ workspaceGroupsError: null });
     await get().refreshWorkspaceGroups();
-    return true;
+    return get().workspaceGroupsError ? "ok_stale" : "ok";
   },
 
   async updateWorkspaceAgent(id, agentId, patch) {
@@ -2182,22 +2191,22 @@ export const useChat = create<ChatState>((set, get) => ({
     });
     if (!r.ok) {
       set({ workspaceGroupsError: r.message });
-      return false;
+      return "failed";
     }
     set({ workspaceGroupsError: null });
     await get().refreshWorkspaceGroups();
-    return true;
+    return get().workspaceGroupsError ? "ok_stale" : "ok";
   },
 
   async deleteWorkspaceAgent(id, agentId) {
     const r = await window.otter.workspaceAgentDelete(id, agentId);
     if (!r.ok) {
       set({ workspaceGroupsError: r.message });
-      return false;
+      return "failed";
     }
     set({ workspaceGroupsError: null });
     await get().refreshWorkspaceGroups();
-    return true;
+    return get().workspaceGroupsError ? "ok_stale" : "ok";
   },
 
   async loadWorkspaceUsage(id) {

@@ -104,9 +104,13 @@ function MemoryDocBlock({
         onChange={(e) => setText(e.target.value)}
         disabled={busy}
       />
+      {/* 超限只染红不拦保存的话，人这条路和工具那条路（applyEntryOps 带 limit，
+          会拒）长得一模一样——同一个数字对 agent 是硬闸、对人是提示（M11）。
+          禁用钮 + 说清楚差几个字，别让用户猜「保存」为什么按不动 */}
+      {overLimit && <p className="text-xs text-err">超出上限 {used - doc.limit} 字，删掉一些再保存</p>}
       {error && <p className="text-xs text-err">{error}</p>}
       <div className="flex justify-end">
-        <Button size="sm" onClick={() => void onSave()} disabled={busy}>
+        <Button size="sm" onClick={() => void onSave()} disabled={busy || overLimit}>
           保存
         </Button>
       </div>

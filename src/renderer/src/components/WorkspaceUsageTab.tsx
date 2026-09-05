@@ -7,7 +7,7 @@ import { useEffect, useState } from "react";
 import { cn } from "@/lib/utils.js";
 import { Button } from "@/components/ui/button.js";
 import { useChat } from "../store.js";
-import { usageRows, usageTotalText, usageWindowText } from "../lib/workspaceUsageView.js";
+import { usageEmptyText, usageRows, usageTotalText, usageWindowText } from "../lib/workspaceUsageView.js";
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 import type { WorkspaceUsage } from "../../../shared/billing.js";
 
@@ -16,6 +16,9 @@ const ROW = "flex items-center gap-2 px-2 py-[6px] rounded-md text-xs";
 
 export function WorkspaceUsageTab({ ws }: { ws: WorkspaceSnapshot }) {
   const load = useChat((s) => s.loadWorkspaceUsage);
+  // 只有此刻正 join 着**这个**工作区的云会话才知道 route 走的是哪条——不是
+  // 这个工作区的云会话（或压根没开着云会话）时退回 null，空态文案照旧文案说
+  const route = useChat((s) => (s.cloudSession?.workspaceId === ws.id ? s.cloudSession.modelRoute : null));
   const [state, setState] = useState<{ kind: "loading" } | { kind: "error"; message: string } | { kind: "ok"; usage: WorkspaceUsage }>({ kind: "loading" });
 
   const refresh = async (): Promise<void> => {
@@ -44,7 +47,7 @@ export function WorkspaceUsageTab({ ws }: { ws: WorkspaceSnapshot }) {
         <Button size="sm" variant="ghost" onClick={() => void refresh()}>刷新</Button>
       </div>
       {rows.length === 0 ? (
-        <p className="px-2 text-xs text-muted-foreground">这一周还没有托管路由的花费。</p>
+        <p className="px-2 text-xs text-muted-foreground">{usageEmptyText(route)}</p>
       ) : (
         <div className="flex flex-col gap-1">
           {rows.map((r) => (

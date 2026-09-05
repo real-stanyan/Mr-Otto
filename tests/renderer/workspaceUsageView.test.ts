@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { usageRows, usageTotalText, usageWindowText } from "../../src/renderer/src/lib/workspaceUsageView.js";
+import { usageEmptyText, usageRows, usageTotalText, usageWindowText } from "../../src/renderer/src/lib/workspaceUsageView.js";
 import type { WorkspaceSnapshot } from "../../src/shared/workspaces.js";
 import type { WorkspaceUsage } from "../../src/shared/billing.js";
 
@@ -29,5 +29,18 @@ describe("usageRows", () => {
   it("窗口文案与合计", () => {
     expect(usageWindowText(usage)).toMatch(/9月1日.*9月8日/);
     expect(usageTotalText(usage)).toBe("15.3 credit");
+  });
+});
+
+describe("usageEmptyText（M10）", () => {
+  it("workspace 路（自带 key）：不经网关，别读成没花钱", () => {
+    expect(usageEmptyText({ kind: "workspace" })).toBe(
+      "这个工作区走自带 key，用量不经网关，这里不会有数"
+    );
+  });
+  it("hosted / blocked / null：沿用旧的空态文案", () => {
+    expect(usageEmptyText({ kind: "hosted", model: "deepseek-v4" })).toBe("这一周还没有托管路由的花费。");
+    expect(usageEmptyText({ kind: "blocked" })).toBe("这一周还没有托管路由的花费。");
+    expect(usageEmptyText(null)).toBe("这一周还没有托管路由的花费。");
   });
 });
