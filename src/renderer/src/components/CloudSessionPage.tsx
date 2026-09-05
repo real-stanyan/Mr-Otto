@@ -56,7 +56,7 @@ import { buildToolIndex, type ToolIndex } from "../lib/toolIndex.js";
 import { groupSubagentSpawns } from "../lib/subagentTimeline.js";
 import { formatProxyTime } from "../lib/proxyShare.js";
 import { agentNameOf, labelOf } from "../lib/workspaceView.js";
-import { applyAgentMention, filterAgentCandidates, mentionQueryAt, pickerEmptyState } from "../lib/agentMentionInput.js";
+import { applyAgentMention, filterAgentCandidates, mentionQueryAt, pickerEmptyState, resolveSendMentions } from "../lib/agentMentionInput.js";
 import { EMBEDDED_CREDENTIAL_MESSAGE, repoUrlHasEmbeddedCredential } from "../lib/cloudRepoUrl.js";
 import {
   approvalCardTitle, assistantLabel, canStopTurn, hiddenFromCloudTimeline, relayLineText, stopButtonRows, systemNoteText,
@@ -67,7 +67,7 @@ import { TurnErrorState } from "./TurnErrorState.js";
 import { openTurns } from "../../../shared/turnLedger.js";
 import { safeSpeakerLabel, SYSTEM_SPEAKER_UID } from "../../../shared/promptSafe.js";
 import { toolSummary } from "../../../shared/toolSummary.js";
-import { mentionTokens, parseMentions } from "../../../shared/remote/agentMention.js";
+import { mentionTokens, parseMentions, type MentionCandidate } from "../../../shared/remote/agentMention.js";
 import type {
   AgentBriefedEvent, AgentRelayEvent, ApprovalDecisionEvent, ApprovalRequestEvent, AssistantMessageEvent,
   ChatMessageEvent, SessionEvent, ToolCallRequest, ToolResultEvent,
@@ -394,31 +394,46 @@ export function CloudSessionPage({
     setSendNotice(null);
     // 复审 Medium：草稿在发送成功之后才清——**确定失败**时原样留在输入框里，
     // 不用另外找地方把文字塞回去；失败原因画在下面 sendError 那一行
-    let sendCandidates = candidates;
-    let sendMentions = mentions;
-    // 正文里写了 @token，但一个候选都解析不出来（#935 / #957 C-I4）：最常见
-    // 的诱因是名单刚变过（改名/新增）而这份本地快照没跟上——发一个
-    // authoritative 的 `[]` 会被服务端读成"我确认谁都没点"（ADR-0220 决策 2），
-    // 于是消息安静地变成一句没人接的闲聊，用户还以为自己 @ 到了人。发送前
-    // 先刷一次名单，用刷新后的最新快照重算一次再决定发不发数组——不从这个
-    // 组件已经渲染出的 `ws`/`candidates` 闭包读（那份还是刷新前的旧值），
-    // 直接问 store 要这一刻的真实状态
+
+    // 正文里写了 @token，但一个候选都解析不出来（#935 / #957 C-I4；第四批 C2-I5
+    // 换掉了判据）：最常见的诱因是名单刚变过（改名/新增）而这份本地快照没跟上——
+    // 发一个 authoritative 的 `[]` 会被服务端读成「我确认谁都没点」（ADR-0220
+    // 决策 2），于是消息安静地变成一句没人接的闲聊，用户还以为自己 @ 到了人。
+    // 发送前先刷一次名单，然后把**两件不同的事**分开交给 resolveSendMentions：
+    // 「名单读没读出来」决定要不要把解析权交给云端，「新名单里有没有这个人」
+    // 决定该不该发。旧判据「刷新后名单长度是不是 0」两件事都答错——
+    // refreshWorkspaceGroups() 失败时只 set workspaceGroupsError、**旧名单原样
+    // 留着**（store.ts），于是最常见的那种失败在它眼里跟成功长得一模一样
+    let refreshFailed = false;
+    let freshCandidates: MentionCandidate[] | null = null;
     if (mentionTokens(text).length > 0 && mentions.length === 0) {
       await refreshWorkspaceGroups();
-      const freshWs = useChat.getState().workspaceGroups.find((g) => g.id === ws.id);
-      sendCandidates = (freshWs?.agents ?? []).map((a) => ({ agentId: a.agentId, name: a.name, description: a.description }));
-      sendMentions = parseMentions(text, sendCandidates);
+      // 不从这个组件已经渲染出的 `ws`/`candidates` 闭包读（那份还是刷新前的
+      // 旧值），直接问 store 要这一刻的真实状态
+      const fresh = useChat.getState();
+      refreshFailed = fresh.workspaceGroupsError !== null;
+      const freshWs = fresh.workspaceGroups.find((g) => g.id === ws.id);
+      // 刷新「成功」但这个工作区不在返回的清单里 = 名单同样没拿到（被踢出去 /
+      // 工作区没了），按 null 走「交给云端按名字解析」那条：拿它当「名单里没有
+      // 这个人」去拦，就是对着一句完全正常的话说「没有叫 X 的智能体」
+      freshCandidates = freshWs ? freshWs.agents.map((a) => ({ agentId: a.agentId, name: a.name })) : null;
     }
-    // 名单一条都没有（还没拉到 / 拉失败）时**不发数组**：服务端把 `[]` 读作
-    // "我确认谁都没点"（ADR-0220 决策 2），而这里的空是"我算不出来"——差着
-    // 一整个 turn。缺席让服务端拿它自己那份名单解析正文、再回落名单第一只，
-    // 于是一句 "@管理员 帮我看下" 照旧有人接，而不是安静地变成一句闲聊
+    const plan = resolveSendMentions({ text, parsed: mentions, refreshFailed, freshCandidates });
+    if (plan.kind === "block") {
+      // 这一句压根不发：草稿原样留在输入框里等人改名字（同「确定失败」那条路）
+      setSendError(plan.error);
+      setSending(false);
+      return;
+    }
     const payload: UnsentLine = {
       // csSessionId 在这里必然非空（上面 `if (!cs) return null` 之后才走得到），
       // 断言只是为了不给这一格造一个 null 的可能性
       sessionId: csSessionId ?? "",
       text,
-      mentions: sendCandidates.length === 0 ? undefined : sendMentions,
+      // `undefined` = 缺席，让服务端拿它自己那份名单解析正文、再回落名单第一只，
+      // 于是一句 "@管理员 帮我看下" 照旧有人接；`[]` 是权威的「谁都没点」，
+      // resolveSendMentions 保证正文写了 @ 时永远不会给出它
+      mentions: plan.mentions,
       note: unknownNote(text),
     };
     const r = await sendOnce(payload);
@@ -430,6 +445,10 @@ export function CloudSessionPage({
       setDraft("");
       setCaret(0);
       setDismissedAt(null);
+      // 这句提示说的是「这条**已经交出去**的话点到谁不由本机说了算」，所以只在
+      // 真发出去（或不确定）时才说 —— 确定失败时它旁边会挂一行红字，一句灰字
+      // 说「云端会解析」加一句红字说「没发出去」，读起来是两件互相矛盾的事
+      if (plan.notice !== null) setSendNotice(plan.notice);
     }
     applySendResult(r, payload, "submit");
     setSending(false);
