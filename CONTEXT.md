@@ -111,6 +111,8 @@ Domain glossary. All agents' understanding of domain terms is grounded here; cod
 | on-behalf-of | 云 runtime 代表**发起 turn 的那个人**（不是 workspace owner）调网关的头 `x-otto-on-behalf-of`，配 `x-runtime-secret` 一起用；真人自己的请求带这个头一律 400 | ADR-0203 决定 9 |
 | reroute | 网关 429 `quota_exhausted` 时桌面 adapter 单列的一类失败——不退避、立刻重解析端点一次再打一遍，与限流退避不同类 | ADR-0203 决定 14 |
 | 工作区 agent | `workspace_agents` 表的一行：这个工作区里 @ 得着的一只水獭，有自己的名字、一句话职责、提示词和型号白名单。每个工作区开箱自带一只种子「管理员」（migration 的触发器种的），它删不掉——不点名时接话的就是名单第一只。与「会话」正交：一条云会话里站着这个工作区**此刻**的全部 agent，建/改下一 turn 生效 | ADR-0219 / ADR-0220；`supabase/migrations/0021_workspace_agents.sql`、`src/renderer/src/components/WorkspaceAgentsTab.tsx` |
+| 连接器白名单（agent） | `workspace_agents.tools`：这只 agent 拿得到工作区里贡献的哪几台连接器、每台哪几个工具。两层「空 = 全给」（顶层 `[]` = 整池放行，条目 `tools: []` = 整台放行），与 `workspace_connectors` / 好友代理同口径；匹配只看 `serverId` 不看 `hostUid`。是「配错了」的护栏不是越权闸——真正的三道闸在 edge 的 pxGate | ADR-0221（ADR-0151/0164 的同一口径）；`src/shared/agentToolAllow.ts` |
+| 用量归因 | `usage_event.agent_id`：托管路由的每一笔花费记在哪只工作区 agent 名下（随 `x-otto-agent` 头上报，带 id 不带名——改名不断账；空串 = 桌面直连或 0022 之前的旧行，聚合时单列成「未归因」）。设置页「用量」tab 按 **owner 的**周窗现聚合（工作区烧的是 owner 的额度），不碰 Quota DO | ADR-0221；`services/edge/src/usageAttribution.ts`、`supabase/migrations/0022_usage_event_agent_id.sql` |
 | `openTurns`（排队中 / 正在回复） | 云会话里「谁欠谁一个回答」的**日志投影**，不是内存队列的状态：点了名的 `user_message` → 它之后那只 agent 有没有动静 → 有没有它的 `turn_ended`，三种事件形状配对出 `queued` / `running`，收了口的不出现。runtime 的重启补跑与渲染层的状态行共用这一份纯函数 | ADR-0220（#932 坑 ②）；`src/shared/turnLedger.ts` |
 
 - **Files 面板**：右侧槽位第 6 个互斥视图，工作区文件树 + 过滤/内容搜索 + 只读预览。树和搜索都全显（含 `node_modules`、隐藏文件），一条规矩管两处。纯人用旁路：内容不进事件日志、不进模型上下文，`@` 动作只塞路径不塞内容（ADR-0092，同 ADR-0031 的边界）。
