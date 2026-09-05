@@ -775,6 +775,10 @@ export function deriveMessages(
       case "approval_request":
       // 按人头计的 token 用量（issue #799）：计费审计凭据，不是对话内容
       case "model_usage":
+      // 接力棒本身不投影（#950，spec §8）：模型可见的那一面是配对的、带 relay
+      // 字段的 user_message（照普通用户消息投影），这条事件只是给 UI/接力判据
+      // 看的路标——谁传给了谁、第几棒，喂回模型等于让它读一句关于自己身份的元话
+      case "agent_relay":
         break;
 
       // 钩子干预事件本身不直接投影（issue #350）：pre/block 与 post/reject 的

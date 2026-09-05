@@ -52,6 +52,8 @@ function isInvisible(e: SessionEvent): boolean {
     case "checkpoint_created":         // 检查点锚点(issue #395):回退入口在轨迹视图,聊天区不占行
     case "workspace_restored":         // 文件恢复留证,同上——都落在 turn 边界上,更不该打断分组
       return true;
+    case "agent_relay":                // 接力棒(#950),同上不是对话内容(见 Timeline 的同名分支)
+      return true;
     default:
       return false;
   }

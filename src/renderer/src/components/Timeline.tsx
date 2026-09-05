@@ -635,6 +635,11 @@ export const EventRow = memo(function EventRow({ event, isLast = false }: { even
     case "workspace_memory_loaded": // 工作区记忆快照（#949），同上不是对话内容
       return null;
 
+    // 接力棒（#950）：谁传给了谁、第几棒——路标不是对话内容，云页自己画（那边
+    // 要在气泡上贴"@某某接力"这类装饰，不是时间线上单独一行）
+    case "agent_relay":
+      return null;
+
     // lifecycle 事件（ADR-0004）：聊天区是对话投影，系统脉搏不在这渲染（回放里看）。
     // 唯一例外：turn 暴死——错误从此是日志事实，重开 app 还在
     case "tool_execution_started":

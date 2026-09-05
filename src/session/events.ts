@@ -62,6 +62,10 @@ export interface UserMessageEvent extends SessionEventBase {
       （src/shared/turnLedger.ts 据此配对 turn_ended），也是 engine 判「这条
       尾上的用户消息是不是说给我的」的依据（unseenUserTail）。模型投影不读它 */
   mentions?: string[];
+  /** 云会话接力（#950）：这条开场白不是人说的，是 fromAgentId 在上一轮 @ 了 mentions 里那只，
+      runtime 替它落的（fromUid 仍是点火那个人——审批与代理授权按人算）。depth 与前一条
+      agent_relay 相同。缺席 = 人说的 / 旧日志。**只影响 UI 与接力判据**，模型投影照普通 user 消息读 */
+  relay?: { fromAgentId: string; depth: number };
 }
 
 /** 文本文件附件:全文进日志(快照),不进附件库(附件库只收图片) */
@@ -457,6 +461,20 @@ export interface AgentBriefedEvent extends SessionEventBase {
   instructions: string;
   /** 群里此刻还有谁（名字 + 一句话职责）。@ 得着谁，这份名单说了算 */
   roster: { name: string; description: string }[];
+}
+
+/** 工作区云会话多 agent：一只 agent 在自己的回复里 @ 了另一只，接力棒从谁传到谁、
+    是第几棒（#950，spec §8）。群事件——没有 agentId 字段，两只 agent 都要看得见
+    这一棒（agentView 的早退路径本来就放行没有 agentId 的事件）。
+    必须落盘而不是只活在内存里：时间线要投影"谁接了谁的棒"，棒数判据
+    （decideRelay 的周期护栏/上限）也得从日志重放出来，不能靠进程内状态——
+    重启一次接力链的历史就丢了，护栏形同虚设 */
+export interface AgentRelayEvent extends SessionEventBase {
+  type: "agent_relay";
+  fromAgentId: string;
+  toAgentId: string;
+  /** 这一棒是链上的第几棒：人话点火 = 0，第一次接力 = 1 */
+  depth: number;
 }
 
 /** 额外 14：长期记忆快照（ADR-0060）。session 开头把记忆文件的内容落盘——模型整个
@@ -863,6 +881,7 @@ export type SessionEvent =
   | SubagentSpawnedEvent
   | SubagentBriefedEvent
   | AgentBriefedEvent
+  | AgentRelayEvent
   | MemoryLoadedEvent
   | WorkspaceMemoryLoadedEvent
   | MemoryUserEditEvent
@@ -921,6 +940,7 @@ const KNOWN_EVENT_TYPES_MAP: Record<SessionEvent["type"], true> = {
   subagent_spawned: true,
   subagent_briefed: true,
   agent_briefed: true,
+  agent_relay: true,
   memory_loaded: true,
   workspace_memory_loaded: true,
   memory_user_edit: true,
