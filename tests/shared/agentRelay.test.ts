@@ -7,7 +7,7 @@ import type { AgentRelayEvent, SessionEvent, UserMessageEvent } from "../../src/
 
 let seq = 0;
 const um = (extra: Partial<UserMessageEvent>): UserMessageEvent => ({ seq: seq++, ts: 1, sessionId: "s", type: "user_message", content: "x", ...extra });
-const relay = (from: string, to: string, depth: number): AgentRelayEvent => ({ seq: seq++, ts: 1, sessionId: "s", type: "agent_relay", fromAgentId: from, toAgentId: to, depth });
+const relay = (from: string, to: string, depth: number): AgentRelayEvent => ({ seq: seq++, ts: 1, sessionId: "s", type: "agent_relay", fromAgentId: from, toAgentId: to, depth, ignorable: true });
 const ROSTER = [{ agentId: "ops", name: "运营" }, { agentId: "ads", name: "广告" }];
 
 describe("agentRelay 纯逻辑（#950，spec §8）", () => {

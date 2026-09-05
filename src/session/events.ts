@@ -475,6 +475,9 @@ export interface AgentRelayEvent extends SessionEventBase {
   toAgentId: string;
   /** 这一棒是链上的第几棒：人话点火 = 0，第一次接力 = 1 */
   depth: number;
+  /** ignorable：模型不可见的注记（模型可见面是配对的那条带 relay 的 user_message），
+      旧版本跳过它只少一条时间线上的接力线，不会复活残缺会话——同 model_usage 的表态 */
+  ignorable: true;
 }
 
 /** 额外 14：长期记忆快照（ADR-0060）。session 开头把记忆文件的内容落盘——模型整个
