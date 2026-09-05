@@ -7,7 +7,14 @@ import type { SessionEvent } from "../../session/events.js";
 import { b64decode, b64encode } from "./b64.js";
 import { MAX_FRAME_BYTES } from "./wire.js";
 
-/** 5（issue #945）：welcome/config_result 多了 `modelRoute` 一格——runtime 用
+/** 6（#957 第三批）：`CsUp` 加 `stop`（谁能停与 approve 同一判据）；`CsDown` 加
+    `say_result`/`approve_result`/`stop_result` 三条回执——桌面此前对 say/approve
+    发出去之后没有任何确认信号，草稿清空/审批卡收起全靠乐观 UI，限速或权限被拒
+    时界面已经把话当成发出去了。回执形状照 `config_result` 的先例：不复用
+    `error`，那条帧还承载 backlog 跳过等不相干消息，await 它会被无关 error
+    提前唤醒。旧 runtime × 新桌面 / 新 runtime × 旧桌面都走既有
+    version_mismatch，不做双版本兼容。
+    5（issue #945）：welcome/config_result 多了 `modelRoute` 一格——runtime 用
     decideRuntimeRoute 算好「这个工作区此刻的 turn 会走哪条路」下发，客户端不再
     拿 `model === null` 推断「起不了 turn」（订阅用户走托管路照跑，那句是假的）。
     4（issue #844）：welcome/config_result 多了 `model` 一格，config 帧多了
@@ -21,7 +28,7 @@ import { MAX_FRAME_BYTES } from "./wire.js";
     少一格状态。**加一个枚举值同理**：老客户端的 isValidCsDeniedCode 认不出
     `rate_limited`，decodeCsDown 回 null，那一帧被静默忽略，于是 create()
     要白等满超时才回一句"云端无响应"——把"你被限速了"说成"对面没回话"。 */
-export const CS_PROTOCOL_VERSION = 5;
+export const CS_PROTOCOL_VERSION = 6;
 export const CS_MAX_TEXT_BYTES = 64 * 1024;
 
 /** 「有一条事件太大，没发给你」这一类 error 帧的识别标记（终审 I2）。
@@ -203,7 +210,10 @@ export type CsUp =
       pat?: string;
       model?: { baseUrl: string; modelId: string; apiKey?: string };
     }
-  | { t: "archive" };
+  | { t: "archive" }
+  /** 停掉当前正在跑的这一轮 turn（#957 第三批）。谁能停与 approve 同一判据——
+      发起人或 owner；已排队未跑的 job 照旧，停的是"这一轮"不是清队列。 */
+  | { t: "stop" };
 
 /** runtime → 成员 */
 export type CsDown =
@@ -245,6 +255,16 @@ export type CsDown =
           从 blocked 挪到 workspace，回执不带它的话界面要等下一次 join 才更新 */
       modelRoute: CsModelRoute | null;
     }
+  /** say 的回执（#957 第三批）。同 config_result 的纪律——不复用 error。
+      ok=false 时 message 说明为什么（限速 / 不在籍 / 抛错），文案不变，只是
+      换了个帧承载。 */
+  | { t: "say_result"; ok: boolean; message?: string }
+  /** approve 的回执（#957 第三批）。callId 让桌面把它跟自己发出去的那次
+      approve 对上号——`pendingApprove` 是按 callId 分 Map 的。 */
+  | { t: "approve_result"; callId: string; ok: boolean; message?: string }
+  /** stop 的回执（#957 第三批）。ok=false 常见两种：没有在跑的 turn、或
+      发起人/owner 之外的人点了停。 */
+  | { t: "stop_result"; ok: boolean; message?: string }
   | { t: "error"; msg: string };
 
 export function encodeCs(msg: CsUp | CsDown): string {
@@ -434,6 +454,10 @@ export function decodeCsUp(b64: string): CsUp | null {
       return { t: "archive" };
     }
 
+    if (t === "stop") {
+      return { t: "stop" };
+    }
+
     return null;
   } catch {
     return null;
@@ -485,6 +509,37 @@ export function decodeCsDown(b64: string): CsDown | null {
           model: normalizeModelState(obj.model),
           modelRoute: normalizeModelRoute(obj.modelRoute),
         };
+        if (typeof obj.message === "string") result.message = obj.message;
+        return result;
+      }
+      return null;
+    }
+
+    if (t === "say_result") {
+      if (typeof obj.ok === "boolean" && (obj.message === undefined || typeof obj.message === "string")) {
+        const result: CsDown = { t: "say_result", ok: obj.ok };
+        if (typeof obj.message === "string") result.message = obj.message;
+        return result;
+      }
+      return null;
+    }
+
+    if (t === "approve_result") {
+      if (
+        typeof obj.callId === "string" &&
+        typeof obj.ok === "boolean" &&
+        (obj.message === undefined || typeof obj.message === "string")
+      ) {
+        const result: CsDown = { t: "approve_result", callId: obj.callId, ok: obj.ok };
+        if (typeof obj.message === "string") result.message = obj.message;
+        return result;
+      }
+      return null;
+    }
+
+    if (t === "stop_result") {
+      if (typeof obj.ok === "boolean" && (obj.message === undefined || typeof obj.message === "string")) {
+        const result: CsDown = { t: "stop_result", ok: obj.ok };
         if (typeof obj.message === "string") result.message = obj.message;
         return result;
       }

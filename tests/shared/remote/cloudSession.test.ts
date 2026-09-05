@@ -8,6 +8,8 @@ import { b64encode } from "../../../src/shared/remote/b64.js";
 
 describe("cs 帧协议", () => {
   it("协议版本", () => {
+    // 6 = #957 第三批那次进位（CsUp 加 stop，CsDown 加
+    //     say_result/approve_result/stop_result 三条回执）。
     // 5 = issue #945 那次进位（welcome/config_result 多了 modelRoute 一格）。
     // 4 = issue #844 那次进位（welcome/config_result 多了 model 一格，
     //     config 帧多了 model 字段、repoUrl 变成可选）。
@@ -18,7 +20,7 @@ describe("cs 帧协议", () => {
     // 之后静默少一格状态。**加一个枚举值同理**：老客户端的
     // isValidCsDeniedCode 认不出 rate_limited，整帧被 decodeCsDown 判成
     // null 静默丢掉，create() 于是白等满超时才回一句"云端无响应"
-    expect(CS_PROTOCOL_VERSION).toBe(5);
+    expect(CS_PROTOCOL_VERSION).toBe(6);
   });
   it("房名生成", () => {
     expect(csCtlChannel()).toBe("cs-ctl");
@@ -219,7 +221,7 @@ describe("config 帧的两组字段（issue #844）", () => {
   });
 
   it("v5：welcome/config_result 的 modelRoute 一格能解回来，缺席或形状不对降级成 null", () => {
-    expect(CS_PROTOCOL_VERSION).toBe(5);
+    expect(CS_PROTOCOL_VERSION).toBe(6);
     const base = {
       t: "welcome" as const, v: CS_PROTOCOL_VERSION, sessionId: "s", lastSeq: 0,
       initiatorUid: null, ownerUid: "o", repo: null, model: null,
