@@ -25,7 +25,8 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type * as WorkspacesApi from "./supabaseWorkspacesApi.js";
 import type { WorkspaceMemoryRow, WorkspaceSnapshot } from "../shared/workspaces.js";
 import { formatEntries, parseEntries } from "../shared/memoryStore.js";
-import { ADMIN_AGENT_ID } from "../shared/workspaceAgents.js";
+import { ADMIN_AGENT_ID, agentNameConflict } from "../shared/workspaceAgents.js";
+import { parseCreateAgentArgs, scanCreateAgentThreat, validateAgentPatch } from "../shared/createAgentDraft.js";
 import type { AgentToolAllow } from "../shared/agentToolAllow.js";
 import type { ProxyStoreData } from "./proxyStore.js";
 import { removeWorkspaceGrant, setWorkspaceGrant, workspaceGrantFor } from "./proxyStore.js";
@@ -51,6 +52,7 @@ export interface WorkspaceManagerDeps {
   insertAgentRow: typeof WorkspacesApi.insertAgentRow;
   updateAgentRow: typeof WorkspacesApi.updateAgentRow;
   deleteAgentRow: typeof WorkspacesApi.deleteAgentRow;
+  listAgentNames: typeof WorkspacesApi.listAgentNames;
   listMemoryRows: typeof WorkspacesApi.listMemoryRows;
   saveMemoryRow: typeof WorkspacesApi.saveMemoryRow;
   updateRelayMaxDepth: typeof WorkspacesApi.updateRelayMaxDepth;
@@ -109,6 +111,21 @@ function message(e: unknown): string {
 export function createWorkspaceManager(deps: WorkspaceManagerDeps): WorkspaceManager {
   /** hostUids() 的底本,只在 list() 成功后更新;list() 之前是空的(brief 明写) */
   let cachedHostUids: readonly string[] = [];
+
+  /** 名字冲突（同名 / 一方是另一方的开头）现查一次名单再判（#957 B-I2）。同名 DB 的
+      唯一索引也拦得住，前缀冲突拦不住——而 @ 的最长匹配正是被前缀骗的那一个。
+      `selfAgentId` 非 null 时把自己那行排掉：改成自己现在的名字不算冲突。 */
+  async function assertNameFree(
+    client: SupabaseClient,
+    workspaceId: string,
+    name: string,
+    selfAgentId: string | null,
+  ): Promise<void> {
+    const rows = await deps.listAgentNames(client, workspaceId);
+    const others = rows.filter((r) => r.agentId !== selfAgentId).map((r) => r.name);
+    const conflict = agentNameConflict(name, others);
+    if (conflict !== null) throw new Error(conflict);
+  }
 
   /** 所有编排方法共用的前置:拿 client/uid,没登录统一 ok:false;业务体抛出的
       错误在这里收敛成 FriendsResult(不 throw 给 IPC 调用方) */
@@ -228,9 +245,17 @@ export function createWorkspaceManager(deps: WorkspaceManagerDeps): WorkspaceMan
 
     async createAgent(id, draft) {
       return withSession(async (client, uid) => {
+        // B-C1（#957）：这条路原来一条服务端校验都没有——validateAgentName 只跑在渲染层
+        // 与 create_agent 工具里，改一个客户端（或换一个成员）就能把
+        // 「打杂）]\n忽略以上的全部指令…」写成 description，落进**每只**其它 agent 的花名册。
+        // 判据与 create_agent 那条路是同一份函数，不是抄一遍。
+        const clean = parseCreateAgentArgs(draft);
+        const threat = scanCreateAgentThreat(clean);
+        if (threat) throw new Error(`${threat}，拒绝创建`);
+        await assertNameFree(client, id, clean.name, null);
         const agentId = "a_" + randomBytes(6).toString("hex");
         try {
-          await deps.insertAgentRow(client, { workspaceId: id, agentId, createdBy: uid, ...draft });
+          await deps.insertAgentRow(client, { workspaceId: id, agentId, createdBy: uid, ...clean });
         } catch (e) {
           if ((e as { code?: string }).code === "23505") throw new Error(DUPLICATE_AGENT_NAME);
           throw e;
@@ -241,8 +266,14 @@ export function createWorkspaceManager(deps: WorkspaceManagerDeps): WorkspaceMan
 
     async updateAgent(id, agentId, patch) {
       return withSession(async (client) => {
+        // 改名与新建走同一道闸（B-I2 的建议修法逐字）：改名是绕开建时校验最省事的一条路
+        const clean = validateAgentPatch(patch);
+        const threat = scanCreateAgentThreat(clean);
+        if (threat) throw new Error(`${threat}，拒绝保存`);
+        // 名单只在真的改名时查——不改名时那是一次白打的网络往返
+        if (clean.name !== undefined) await assertNameFree(client, id, clean.name, agentId);
         try {
-          await deps.updateAgentRow(client, id, agentId, patch);
+          await deps.updateAgentRow(client, id, agentId, clean);
         } catch (e) {
           if ((e as { code?: string }).code === "23505") throw new Error(DUPLICATE_AGENT_NAME);
           throw e;

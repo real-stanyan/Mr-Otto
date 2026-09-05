@@ -57,35 +57,50 @@ const noNewline = (s: string, what: string): string => {
   return s;
 };
 
-export function parseCreateAgentArgs(raw: unknown): CreateAgentDraft {
-  const a = asRecord(raw);
-  const rawName = a["name"];
-  if (typeof rawName !== "string") throw new Error("name 必填，且必须是字符串（群里 @ 它用的名字）");
-  // B-C2/B-I2（#957）：短字段先折空白再落库前归一化（NFKC + trim），校验跑在归一化
-  // 之后的值上——不然"Ａｄｓ"这种全角名字会绕开校验、落库后与半角"Ads"肉眼分不清
-  const name = normalizeAgentName(collapseWhitespace(rawName));
-  const nameErr = validateAgentName(name);
-  if (nameErr !== null) throw new Error(`name 不合法：${nameErr}`);
+/** 一份 patch：只带在场的字段。改一只 agent 时"没传的字段"与"传了空值"必须分得开——
+    给没传的字段补上默认值（"" / []）等于把它清空，而 updateAgentRow 是把 patch 直接
+    摊进 UPDATE 的。 */
+export type AgentDraftPatch = Partial<CreateAgentDraft>;
+
+/** 逐字段校验 + 归一化的唯一一份实现：`parseCreateAgentArgs`（模型给的整份草稿）与
+    `validateAgentPatch`（桌面改一只 agent 的 patch）都从这里派生。字段只在**键在场**时
+    才出现在结果里，缺席的字段不补默认值（谁需要默认值谁自己补，见 parseCreateAgentArgs）。 */
+function parseAgentFields(a: Record<string, unknown>): AgentDraftPatch {
+  const out: AgentDraftPatch = {};
+
+  if (a["name"] !== undefined) {
+    const rawName = a["name"];
+    if (typeof rawName !== "string") throw new Error("name 必填，且必须是字符串（群里 @ 它用的名字）");
+    // B-C2/B-I2（#957）：短字段先折空白再落库前归一化（NFKC + trim），校验跑在归一化
+    // 之后的值上——不然"Ａｄｓ"这种全角名字会绕开校验、落库后与半角"Ads"肉眼分不清
+    const name = normalizeAgentName(collapseWhitespace(rawName));
+    const nameErr = validateAgentName(name);
+    if (nameErr !== null) throw new Error(`name 不合法：${nameErr}`);
+    out.name = name;
+  }
 
   // 顺序固定：noNewline 先挡真换行（不能被折叠悄悄吞掉再放行），collapseWhitespace
   // 再挡"一串空格 + pre-wrap 自动换行"这条等价的伪造通道（B-C2 终审实测）
-  const description = collapseWhitespace(noNewline(optionalText(a, "description", AGENT_DESCRIPTION_MAX), "description"));
-  const instructions = optionalText(a, "instructions", AGENT_INSTRUCTIONS_MAX);
+  if (a["description"] !== undefined) {
+    out.description = collapseWhitespace(noNewline(optionalText(a, "description", AGENT_DESCRIPTION_MAX), "description"));
+  }
+  if (a["instructions"] !== undefined) {
+    out.instructions = optionalText(a, "instructions", AGENT_INSTRUCTIONS_MAX);
+  }
 
-  let models: string[] = [];
   if (a["models"] !== undefined) {
     const m = a["models"];
     if (!Array.isArray(m) || !m.every((x) => typeof x === "string")) throw new Error("models 必须是字符串数组（型号 id）");
-    models = dedupeStrings(m as string[]).map((s) => collapseWhitespace(noNewline(s, "models")));
+    const models = dedupeStrings(m as string[]).map((s) => collapseWhitespace(noNewline(s, "models")));
     if (models.length > AGENT_MODELS_MAX) throw new Error(`models 最多 ${AGENT_MODELS_MAX} 个`);
+    out.models = models;
   }
 
-  let tools: AgentToolAllow[] = [];
   if (a["tools"] !== undefined) {
     const t = a["tools"];
     if (!Array.isArray(t)) throw new Error("tools 必须是数组：[{serverId, tools: []}]，[] = 全部连接器都能用");
     if (t.length > AGENT_TOOLS_MAX) throw new Error(`tools 最多 ${AGENT_TOOLS_MAX} 台连接器`);
-    tools = t.map((item) => {
+    out.tools = t.map((item) => {
       const o = asRecord(item);
       if (typeof o["serverId"] !== "string" || o["serverId"].trim() === "") throw new Error("tools 每一项要有 serverId（连接器 id）");
       const names = o["tools"];
@@ -98,7 +113,30 @@ export function parseCreateAgentArgs(raw: unknown): CreateAgentDraft {
     });
   }
 
-  return { name, description, instructions, models, tools };
+  return out;
+}
+
+export function parseCreateAgentArgs(raw: unknown): CreateAgentDraft {
+  const a = asRecord(raw);
+  if (a["name"] === undefined) throw new Error("name 必填，且必须是字符串（群里 @ 它用的名字）");
+  const p = parseAgentFields(a);
+  return {
+    name: p.name!,
+    description: p.description ?? "",
+    instructions: p.instructions ?? "",
+    models: p.models ?? [],
+    tools: p.tools ?? [],
+  };
+}
+
+/** B-C1（#957）：改一只 agent 的那条路与建的那条路过同一份校验。桌面主进程
+    `workspaceManager.updateAgent` 在 UPDATE 之前调它——原来这条路上**服务端一条校验
+    都没有**（validateAgentName 只跑在渲染层），改一个客户端就能把任意文本写进别人的
+    briefing。与 `parseCreateAgentArgs` 共用 `parseAgentFields`，两条路不可能分家。
+    名字冲突（同名/前缀）不在这里判：那要现查一次名单，是 IO，留给调用方
+    （`agentNameConflict`）。 */
+export function validateAgentPatch(raw: unknown): AgentDraftPatch {
+  return parseAgentFields(asRecord(raw));
 }
 
 /** 审批卡的字段清单，唯一的事实来源——`createAgentApprovalSummary`（旧客户端/旧日志
@@ -132,9 +170,13 @@ export function createAgentApprovalFields(d: CreateAgentDraft): { label: string;
 
 /** M3：威胁扫描抽成共用的一份，工具的 run() 与 sessionService 的 summarizeArgs
     钩子都调它——避免两份实现各说各话。命中回 `<field> 含可疑指令（<hit>）`，否则 null。
-    只扫 description / instructions（提示词会成为一只 agent 的永久 system 提示）。 */
-export function scanCreateAgentThreat(d: CreateAgentDraft): string | null {
+    只扫 description / instructions（提示词会成为一只 agent 的永久 system 提示）。
+    收 `AgentDraftPatch` 而不是整份草稿：改一只 agent 时只传了 description 的那种 patch
+    也要过这道扫描（B-C1，#957），缺席的字段跳过。 */
+export function scanCreateAgentThreat(d: AgentDraftPatch): string | null {
   for (const [field, text] of [["description", d.description], ["instructions", d.instructions]] as const) {
+    // patch 里缺席的字段没什么可扫的（validateAgentPatch 的结果只带在场的字段）
+    if (typeof text !== "string") continue;
     const hit = scanThreat(text);
     if (hit) return `${field} 含可疑指令（${hit}）`;
   }

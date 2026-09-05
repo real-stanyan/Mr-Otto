@@ -231,6 +231,21 @@ export async function insertAgentRow(
   );
 }
 
+/** 落库前查一次这个工作区已有的 agent 名字（#957 B-I2）：同名靠 DB 唯一索引拦得住，
+    **前缀冲突拦不住**——「管理员」与「管理员帮手」在 DB 眼里是两个合法的名字，而
+    `parseMentions` 的最长匹配会把 `@管理员帮手` 认成后者，用户以为自己 @ 的是前者。
+    带上 agent_id 而不只是 name：改名时要把正在改的那只从名单里排掉，否则「改成自己
+    现在的名字」会被自己拦下来。 */
+export async function listAgentNames(
+  client: SupabaseClient,
+  workspaceId: string,
+): Promise<{ agentId: string; name: string }[]> {
+  const rows = (unwrap(
+    await client.from("workspace_agents").select("agent_id,name").eq("workspace_id", workspaceId),
+  ) ?? []) as { agent_id: string; name: string | null }[];
+  return rows.map((r) => ({ agentId: r.agent_id, name: r.name ?? "" }));
+}
+
 /** 建的人或 owner 改一只 agent（0021 的 wsa_update_owner_or_creator）。RLS 静默
     过滤成 0 行时 PostgREST 不报错——同 deleteSessionRow，`.select("agent_id")`
     是唯一的行数证据 */

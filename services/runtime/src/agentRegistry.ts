@@ -7,14 +7,35 @@ import { randomBytes } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { CreateAgentDraft } from "../../../src/shared/createAgentDraft.js";
 import type { AgentToolAllow } from "../../../src/shared/agentToolAllow.js";
+import { agentNameConflict } from "../../../src/shared/workspaceAgents.js";
 
-/** 撞了 workspace_agents_name 唯一索引（一个工作区里 name 不重）。单独一个类型：
-    工具那层要把它翻成「换个名字」的人话，别的错误照抛 */
-export class DuplicateAgentNameError extends Error {
+/** 名字类的错误一家：工具那层统一翻成「换个名字再试」的人话，别的错误照抛。
+    分成一家而不是一个类型，是因为两条判据的来源不同——同名由 DB 的唯一索引说了算
+    （23505 回来才知道），前缀冲突由落库前那次查名单说了算（DB 拦不住） */
+export class AgentNameError extends Error {}
+
+/** 撞了 workspace_agents_name 唯一索引（一个工作区里 name 不重） */
+export class DuplicateAgentNameError extends AgentNameError {
   constructor(name: string) {
     super(`已有同名的智能体「${name}」`);
     this.name = "DuplicateAgentNameError";
   }
+}
+
+/** B-I2（#957）：新名字与已有名字一方是另一方的开头。`parseMentions` 用最长匹配，
+    「广告」在时建出「广告投放」，`@广告投放` 就再也 @ 不到前者——DB 层没有这条约束，
+    两个写入方（桌面 workspaceManager 与这里）各自在落库前查一次名单 */
+export class AgentNamePrefixConflictError extends AgentNameError {
+  constructor(message: string) {
+    super(message);
+    this.name = "AgentNamePrefixConflictError";
+  }
+}
+
+/** 落库前的名字闸：命中就抛，两个实现共用（判据函数与桌面表单是同一份） */
+function assertNameFree(name: string, existing: readonly string[]): void {
+  const conflict = agentNameConflict(name, existing);
+  if (conflict !== null) throw new AgentNamePrefixConflictError(conflict);
 }
 
 export interface WorkspaceAgentWriter {
@@ -40,7 +61,11 @@ export function createInMemoryAgentWriter(): WorkspaceAgentWriter & {
   const rows: StoredAgentRow[] = [];
   return {
     async create(workspaceId, draft, createdBy) {
-      if (rows.some((r) => r.workspaceId === workspaceId && r.name === draft.name)) throw new DuplicateAgentNameError(draft.name);
+      const here = rows.filter((r) => r.workspaceId === workspaceId);
+      // 同名先判：这条的人话文案（「已有同名的智能体「X」」）与 DB 唯一索引那条一致，
+      // 前缀冲突是另一句话（说的是"会 @ 错人"，不是"重名了"）
+      if (here.some((r) => r.name === draft.name)) throw new DuplicateAgentNameError(draft.name);
+      assertNameFree(draft.name, here.map((r) => r.name));
       const agentId = newAgentId();
       rows.push({ ...draft, workspaceId, agentId, createdBy });
       return { agentId };
@@ -57,6 +82,11 @@ export function createInMemoryAgentWriter(): WorkspaceAgentWriter & {
 export function createSupabaseAgentWriter(client: SupabaseClient): WorkspaceAgentWriter {
   return {
     async create(workspaceId, draft, createdBy) {
+      // 落库前先查一次名单：同名有唯一索引兜底（23505），前缀冲突 DB 不管
+      const { data: existing, error: readErr } = await client
+        .from("workspace_agents").select("agent_id,name").eq("workspace_id", workspaceId);
+      if (readErr) throw new Error(`workspace_agents 读取失败：${readErr.message}`);
+      assertNameFree(draft.name, ((existing ?? []) as { name: string | null }[]).map((r) => r.name ?? ""));
       const agentId = newAgentId();
       const { error } = await client.from("workspace_agents").insert({
         workspace_id: workspaceId,

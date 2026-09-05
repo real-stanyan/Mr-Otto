@@ -184,7 +184,8 @@ import { createWorkspaceManager } from "./workspaceManager.js";
 import {
   createWorkspace, listWorkspaces, fetchWorkspace, addMember, removeMember, leave,
   deleteWorkspace, upsertConnectorRow, deleteConnectorRow, insertSessionRow, listCloudSessions,
-  insertAgentRow, updateAgentRow, deleteAgentRow, listMemoryRows, saveMemoryRow, updateRelayMaxDepth,
+  insertAgentRow, updateAgentRow, deleteAgentRow, listAgentNames, listMemoryRows, saveMemoryRow,
+  updateRelayMaxDepth,
 } from "./supabaseWorkspacesApi.js";
 import {
   publishSessionToWorkspace, unpublishSession, importWorkspaceSession,
@@ -1509,7 +1510,8 @@ void app.whenReady().then(() => {
   const workspaceManager = createWorkspaceManager({
     createWorkspace, listWorkspaces, fetchWorkspace, addMember, removeMember, leave,
     deleteWorkspace, upsertConnectorRow, deleteConnectorRow,
-    insertAgentRow, updateAgentRow, deleteAgentRow, listMemoryRows, saveMemoryRow, updateRelayMaxDepth,
+    insertAgentRow, updateAgentRow, deleteAgentRow, listAgentNames, listMemoryRows, saveMemoryRow,
+    updateRelayMaxDepth,
     client: () => supabase.raw,
     // 登录判据取账号管理器，不取好友子系统的缓存（issue #943）：onChange 先
     // send(accountChanged) 再 friends.start()，而 friends.uid 要等 start() 里
