@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   approvalCardTitle, assistantLabel, createAgentLanded, decisionLineText, hiddenFromCloudTimeline, relayLineText,
-  routeChangedText, userRowIdentity,
+  routeChangedText, systemNoteText, turnEndedLineText, userRowIdentity,
 } from "../../src/renderer/src/lib/cloudTimeline.js";
 import type { WorkspaceSnapshot } from "../../src/shared/workspaces.js";
 import { countdown } from "../../src/renderer/src/lib/billingView.js";
@@ -108,6 +108,42 @@ describe("decisionLineText（#957 M8：谁批的）", () => {
   it("没有 decidedBy（本地会话/旧日志）：null，不装作有答案", () => {
     const e = { ...base, type: "approval_decision" as const, toolCallId: "c1", decision: "approved" as const };
     expect(decisionLineText(e)).toBeNull();
+  });
+});
+
+describe("systemNoteText（#957 C-I5 / #936：护栏与后台注话不再是匿名人类气泡）", () => {
+  it("origin:loop_guard 有 agentId：护栏：「运营」在原地打转，已提醒", () => {
+    const e = { ...base, type: "user_message" as const, content: "你在重复同一组命令…", origin: "loop_guard" as const, agentId: "a_1" };
+    expect(systemNoteText(e, ws)).toBe("护栏：「运营」在原地打转，已提醒");
+  });
+  it("origin:loop_guard 没有 agentId：护栏：「某只智能体」在原地打转，已提醒", () => {
+    const e = { ...base, type: "user_message" as const, content: "你在重复同一组命令…", origin: "loop_guard" as const };
+    expect(systemNoteText(e, ws)).toBe("护栏：「某只智能体」在原地打转，已提醒");
+  });
+  it("origin:background：后台任务结果已回注", () => {
+    const e = { ...base, type: "user_message" as const, content: "[后台任务 bg-1 完成] ok", origin: "background" as const, backgroundTaskIds: ["bg-1"] };
+    expect(systemNoteText(e, ws)).toBe("后台任务结果已回注");
+  });
+  it("没有 origin（人打的话）：null，调用方落回气泡渲染", () => {
+    const e = { ...base, type: "user_message" as const, content: "在吗" };
+    expect(systemNoteText(e, ws)).toBeNull();
+  });
+});
+
+describe("turnEndedLineText（#957 M16：turn_ended{error} 说是哪只 agent）", () => {
+  it("outcome:error 有 agentId：「运营」这一轮出错", () => {
+    const e = { ...base, type: "turn_ended" as const, outcome: "error" as const, error: "网络超时", agentId: "a_1" };
+    expect(turnEndedLineText(e, ws)).toBe("「运营」这一轮出错");
+  });
+  it("outcome:error 没有 agentId（旧日志/本机会话）：null，调用方落回现状", () => {
+    const e = { ...base, type: "turn_ended" as const, outcome: "error" as const, error: "网络超时" };
+    expect(turnEndedLineText(e, ws)).toBeNull();
+  });
+  it("outcome 不是 error（aborted/completed）：null，即便带 agentId", () => {
+    const aborted = { ...base, type: "turn_ended" as const, outcome: "aborted" as const, agentId: "a_1" };
+    expect(turnEndedLineText(aborted, ws)).toBeNull();
+    const completed = { ...base, type: "turn_ended" as const, outcome: "completed" as const, agentId: "a_1" };
+    expect(turnEndedLineText(completed, ws)).toBeNull();
   });
 });
 

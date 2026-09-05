@@ -32,6 +32,21 @@ describe("toThreadMessages — 骨架", () => {
     ]);
   });
 
+  it("origin:loop_guard 的 user_message 不再是 user 气泡，投成 system 审计消息（#957 C-I5，#936）", () => {
+    const e = ev({ type: "user_message", content: "你在重复同一组命令…", origin: "loop_guard" }, 1);
+    const events = [e];
+    expect(toThreadMessages(events)).toEqual([
+      { role: "system", id: "1", createdAt: new Date(1001), content: [{ type: "text", text: "" }], metadata: { custom: { otto: e } } },
+    ]);
+  });
+
+  it("origin:background 的 user_message 同理，也不再是 user 气泡", () => {
+    const e = ev({ type: "user_message", content: "[后台任务 bg-1 完成] ok", origin: "background", backgroundTaskIds: ["bg-1"] }, 1);
+    expect(toThreadMessages([e])).toEqual([
+      { role: "system", id: "1", createdAt: new Date(1001), content: [{ type: "text", text: "" }], metadata: { custom: { otto: e } } },
+    ]);
+  });
+
   it("紧贴在前的 skill_invoked 把 `$名字` 拼回用户正文 —— 气泡才画得出 chip", () => {
     const inv = ev({ type: "skill_invoked", name: "review", content: "# SKILL" }, 1);
     const u = ev({ type: "user_message", content: "看下这个 PR" }, 2);

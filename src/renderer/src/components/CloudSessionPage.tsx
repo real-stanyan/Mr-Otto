@@ -58,7 +58,10 @@ import { formatProxyTime } from "../lib/proxyShare.js";
 import { agentNameOf, labelOf } from "../lib/workspaceView.js";
 import { applyAgentMention, filterAgentCandidates, mentionQueryAt, pickerEmptyState } from "../lib/agentMentionInput.js";
 import { EMBEDDED_CREDENTIAL_MESSAGE, repoUrlHasEmbeddedCredential } from "../lib/cloudRepoUrl.js";
-import { approvalCardTitle, assistantLabel, hiddenFromCloudTimeline, relayLineText, userRowIdentity } from "../lib/cloudTimeline.js";
+import {
+  approvalCardTitle, assistantLabel, hiddenFromCloudTimeline, relayLineText, systemNoteText, turnEndedLineText, userRowIdentity,
+} from "../lib/cloudTimeline.js";
+import { TurnErrorState } from "./TurnErrorState.js";
 import { openTurns } from "../../../shared/turnLedger.js";
 import { toolSummary } from "../../../shared/toolSummary.js";
 import { mentionTokens, parseMentions } from "../../../shared/remote/agentMention.js";
@@ -391,6 +394,14 @@ export function CloudSessionPage({
                 return <ChatMessageRow key={e.seq} event={e} mine={e.fromUid === selfUid} />;
               }
               if (e.type === "user_message") {
+                // 护栏 / 后台任务回注（#957 C-I5，#936）：engine 自己注的话，
+                // 不是群里哪个人说的——I5 描述的"一条没有署名的群聊气泡"就是
+                // 落在这条分支之前的老代码。systemNoteText 只对 origin 在场
+                // 的事件给出非 null，人打的话仍然走下面的气泡渲染
+                const note = systemNoteText(e, ws);
+                if (note !== null) {
+                  return <SystemNoteRow key={e.seq} text={note} />;
+                }
                 const identity = userRowIdentity(e, ws, selfUid);
                 return (
                   <UserMessageRow
@@ -415,6 +426,23 @@ export function CloudSessionPage({
               if (e.type === "turn_ended") {
                 // isLast 恒 false：EventRow 的"重试"钮只看这个 prop（Timeline.tsx:649），
                 // 而那颗钮点了走本地 resendMessage——云端没有重发这条路，钮出来就是撒谎
+                //
+                // turnEndedLineText 非 null（#957 M16）：多智能体并发时"谁挂了"看不出来，
+                // 只换 title 那一行（「运营」这一轮出错），detail 仍是 e.error——不是重新
+                // 拼一整句，ErrorState 本来就是 title/detail 分两行画（含 humanizeError 的
+                // 人话/原文折叠）。查不到 agentId（旧日志/本机会话）落回现状的 EventRow
+                const agentTitle = turnEndedLineText(e, ws);
+                if (agentTitle !== null) {
+                  return (
+                    <TurnErrorState
+                      key={e.seq}
+                      title={agentTitle}
+                      detail={e.error ?? "没有错误信息"}
+                      interactive={false}
+                      className="max-w-none"
+                    />
+                  );
+                }
                 return <EventRow key={e.seq} event={e} isLast={false} />;
               }
               return <EventRow key={e.seq} event={e} isLast={i === events.length - 1} />;
@@ -1051,6 +1079,13 @@ function AssistantMessageRow({
     才会落这条事件，光看聊天记录本身看不出"我刚改的提示词有没有吃上"，
     这一行就是那个回执。视觉上刻意比 ChatMessageRow/UserMessageRow 更淡更
     小——它是审计性质的旁白，不是群里任何人说的话 */
+/** 护栏 / 后台任务回注的旁白（#957 C-I5，#936）：样式照 AgentBriefedRow/
+    AgentRelayRow——同属审计性质的旁白，不是群里任何人说的话。正文由
+    cloudTimeline.systemNoteText 算好（含 agent 名解析），这里只管画 */
+function SystemNoteRow({ text }: { text: string }) {
+  return <p className="px-1 text-[10.5px] italic text-muted-foreground/70">{text}</p>;
+}
+
 function AgentBriefedRow({ event }: { event: AgentBriefedEvent }) {
   return (
     <p className="px-1 text-[10.5px] italic text-muted-foreground/70">

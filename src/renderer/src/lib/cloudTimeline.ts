@@ -6,8 +6,10 @@
 // 单独写测试（tests/renderer/cloudTimelineLabels.test.ts）。
 
 import { agentNameOf, labelOf } from "./workspaceView.js";
+import { isSystemNote, systemNoteBody } from "./systemNote.js";
 import type {
-  AgentRelayEvent, ApprovalDecisionEvent, ApprovalRequestEvent, AssistantMessageEvent, RouteChangedEvent, SessionEvent, UserMessageEvent,
+  AgentRelayEvent, ApprovalDecisionEvent, ApprovalRequestEvent, AssistantMessageEvent, RouteChangedEvent, SessionEvent, TurnEndedEvent,
+  UserMessageEvent,
 } from "../../../session/events.js";
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 import { CREATE_AGENT_TOOL_NAME } from "../../../shared/createAgentDraft.js";
@@ -89,6 +91,33 @@ export function createAgentLanded(events: readonly SessionEvent[], e: SessionEve
   return events.some(
     (p) => p.type === "assistant_message" && (p.toolCalls ?? []).some((c) => c.id === e.toolCallId && c.name === CREATE_AGENT_TOOL_NAME)
   );
+}
+
+/** 护栏 / 后台任务回注在云时间线上的文案（#957 C-I5 / #936）：`origin` 不在场
+    （人打的话）→ null，调用方按 null 落回既有的 UserMessageRow 气泡渲染；
+    在场时画成 `AgentBriefedRow` 同款审计旁白（调用方负责套样式），不再是
+    I5 描述的"一条没有署名的群聊气泡"。agent 名查 `agentNameOf`——批次 1
+    已经把 engine 落这两类事件时改成 `env()`（带 agentId）而不是 `envBase()`
+    （见 engine.ts loop_guard/background 两处落盘的注释），查不到/缺席
+    才落"某只智能体"这句兜底话（同 assistantLabel 等函数的纪律：不装作
+    答得出这个问题）。正文本身（背 "护栏：" / "后台任务结果已回注" 这两句
+    固定文案）与本机时间线共用一份（lib/systemNote.ts 的 systemNoteBody）
+    ——名字从哪查是两端唯一的差异，文案不让两处各写一遍 */
+export function systemNoteText(e: UserMessageEvent, ws: WorkspaceSnapshot): string | null {
+  if (!isSystemNote(e)) return null;
+  return systemNoteBody(e, e.agentId ? agentNameOf(ws, e.agentId) : null);
+}
+
+/** `turn_ended{error}` 行说是哪只 agent（#957 M16）：`outcome !== "error"`
+    （aborted/completed/interrupted）或没有 `agentId`（旧日志/本机单 agent
+    会话）→ null，调用方落回现状（裸的"turn 失败"标题，同 approvalCardTitle
+    等函数"查不到就不装作答得出"的纪律）。**只回前缀**，不把 `error` 拼
+    进来——`ErrorState`（TurnErrorState 用的那个 element）本来就是 title/
+    detail 两行分开画，`error` 依旧走 detail（连带保留 humanizeError 的
+    人话/原文折叠），这里只换 title 那一行，不是重新拼一整句 */
+export function turnEndedLineText(e: TurnEndedEvent, ws: WorkspaceSnapshot): string | null {
+  if (e.outcome !== "error" || !e.agentId) return null;
+  return `「${agentNameOf(ws, e.agentId)}」这一轮出错`;
 }
 
 const ROUTE_LABEL: Record<RouteChangedEvent["from"], string> = {

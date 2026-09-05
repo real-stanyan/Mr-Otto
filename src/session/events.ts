@@ -52,6 +52,20 @@ export interface UserMessageEvent extends SessionEventBase {
       刻意不靠正文前缀 `[后台任务 bg-N 完成]` 反解:那是给模型读的文案不是身份,
       ADR-0103 已经把那条路否掉过一次。写入权同 origin:IPC 入口不透传 */
   backgroundTaskIds?: string[];
+  /** 工作区多智能体（#957 A-5）：这条私话（`origin` 在场）是 engine 注给
+      **哪一只** agent 看的——engine.ts 落 loop_guard/background 这两类事件时
+      用 `env()` 不是 `envBase()`，带上落盘那一刻 `LoopEngineOptions.agentId`
+      （展开而不是恒定写 `undefined`，同 `env()` 自己的注释：`exactOptionalPropertyTypes`
+      不许塞 `undefined` 进 `agentId?: string`）。缺席 = 人说的话 / 接力开场白 /
+      本机单 agent 会话（`env()` 在没配 `agentId` 的引擎上完全不写这个字段，
+      同其余 agentId 字段"缺席=旧日志/单 agent 会话"的纪律）。
+      `agentView.ts` 的 `OTHER_AGENT_VERDICTS` 按它判"这条私话要不要进别人的
+      上下文"；`cloudTimeline.ts` 的 `systemNoteText` 按它查显示名（#957 C-I5）。
+      这个字段的类型声明比它实际开始落盘晚一批（#957 A-5 提交只改了
+      engine.ts，靠 TS 对展开对象的宽松检查悄悄透传了这个字段——`agentView.ts`
+      读它时用 `"agentId" in e` 这个 union 判据侧路，这里补上声明让它成为
+      一等字段，不用再侧路） */
+  agentId?: string;
   /** 云会话群聊（#928 / #932）：这句话是哪个成员说的。**只在 runtime 落的
       user_message 上出现**——本机会话没有"别人"，缺席 = 本机操作者/旧日志。
       有了它，渲染层判"这句是不是我说的"不用再拿 `[label]: ` 前缀跟自己的
