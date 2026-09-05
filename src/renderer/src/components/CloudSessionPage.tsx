@@ -71,6 +71,7 @@ import type {
   ChatMessageEvent, SessionEvent, ToolCallRequest, ToolResultEvent,
 } from "../../../session/events.js";
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
+import type { CloudAck } from "../../../shared/shellBridge.js";
 import { CS_PROTOCOL_VERSION } from "../../../shared/remote/cloudSession.js";
 import type { CsModelRoute, CsModelState, CsRepoState } from "../../../shared/remote/cloudSession.js";
 import { modelStatusText } from "../lib/cloudModelStatus.js";
@@ -162,13 +163,30 @@ export function CloudSessionPage({
       ? s.cloudSessionList[s.cloudSession.workspaceId]?.find((r) => r.id === s.cloudSession?.sessionId)?.publisherUid
       : undefined
   );
-  // 发送/审批失败落这一格（复审 Medium：这条错误此前只在 WorkspacePage
-  // 原来那条 return 路径里渲染，云会话走的是提前 return，根本到不了）
+  // 名单刷新/建房/配置保存那类**共享**失败落这一格（复审 Medium：这条错误此前
+  // 只在 WorkspacePage 原来那条 return 路径里渲染，云会话走的是提前 return，
+  // 根本到不了）。发送/审批/停止已经**不走这一格**了（第四批 C2-I4）：那三件事
+  // 的结果只跟点它的那一处有关，归属必须是确定的，见下面 sendError 与 ApprovalRow
   const actionError = useChat((s) => s.workspaceGroupsError);
   const takeDraftSeed = useChat((s) => s.takeCloudDraftSeed);
+  // 种子那一格本身要订阅（不只是 take 那个 action）：它是在这个组件**已经挂载
+  // 之后**由 CloudSessionMain 种下的（开局卡那句话要等 ready 才发），只依赖
+  // draft/sessionId 的话下面那个 effect 永远等不到它，那份原文就只在用户碰巧
+  // 清空输入框时才冒出来
+  const draftSeed = useChat((s) => s.cloudDraftSeed);
 
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
+  // 这一次发送自己的结果（第四批 C2-I4）——组件本地，不进共享的 actionError：
+  // sendError = 确定失败的原因（红），sendNotice = 发出去了但有话要说（中性灰）
+  const [sendError, setSendError] = useState<string | null>(null);
+  const [sendNotice, setSendNotice] = useState<string | null>(null);
+  // 「没收到回执」的那一句（第四批 C2-I4）。**不塞回输入框**：输入框里躺着原文
+  // 是「再发一次」这个指令的最强信号，而这句话很可能已经落地了，重发就是发两遍。
+  // 摆成一行带「重新发送」/「放弃」的提示，由人决定——桌面这一层没有任何办法
+  // 知道它到底有没有生效，把这个不确定性如实交给用户比替他猜一个更安全
+  const [unsent, setUnsent] = useState<{ text: string; mentions: string[] | undefined } | null>(null);
+  const [resending, setResending] = useState(false);
   // 光标位置（#932 切片 1b）：「正在打 @ 吗」是 draft × caret 的函数，光标
   // 不跟着走的话，把光标挪回一个旧的 @ 后面时弹层不会出来。textarea 自己的
   // selectionStart 是 DOM 状态，读不进渲染——所以四个入口（改字/选区/键起/
@@ -236,19 +254,30 @@ export function CloudSessionPage({
     setHi(0);
   }, [optionKey]);
 
-  // 开局卡那句话没发出去时的原文（issue #957 C-I6）：摆回输入框。这一步之后
-  // 它就是一份普通草稿——后面每一次失败都归下面 submit() 那条既有纪律管
-  // （「草稿在发送成功之后才清」），不需要另一套保管机制。
-  // **只在草稿是空的时候取**：用户已经在打字了就别覆盖他（也别把那份原文
-  // 悄悄丢掉——不取走它就还留在 store 里，等这一格空了再摆回来）
+  // 开局卡那句话没发出去时的原文（issue #957 C-I6）的去处。两种失败去处不同
+  // （第四批 C2-I4）：
+  //   · `unsent`（确定没发出去）→ 摆回输入框。这一步之后它就是一份普通草稿，
+  //     后面每一次失败都归下面 submit() 那条既有纪律管（「草稿在发送成功之后
+  //     才清」），不需要另一套保管机制。**只在草稿是空的时候取**：用户已经在
+  //     打字了就别覆盖他（也别把那份原文悄悄丢掉——不取走它就还留在 store 里，
+  //     等这一格空了再摆回来）。
+  //   · `unknown`（没收到回执）→ 进上面那行提示，**不进输入框**，所以也不受
+  //     「草稿得是空的」这条限制约束：它根本不动输入框，等待没有任何意义。
   const csSessionId = cs?.sessionId ?? null;
   useEffect(() => {
-    if (csSessionId === null || draft !== "") return;
+    if (csSessionId === null || draftSeed === null || draftSeed.sessionId !== csSessionId) return;
+    if (!draftSeed.unknown && draft !== "") return;
     const seed = takeDraftSeed(csSessionId);
     if (seed === null) return;
-    setDraft(seed);
-    setCaret(seed.length); // 光标落在末尾：接着改比从头挪过去顺手
-  }, [csSessionId, draft, takeDraftSeed]);
+    if (seed.unknown) {
+      // mentions 缺席：开局卡那句走的是老语义（不 @ 也由名单第一只接），
+      // 重发要走同一条路，不能凭空补一个权威空数组（ADR-0220 决策 2）
+      setUnsent({ text: seed.text, mentions: undefined });
+      return;
+    }
+    setDraft(seed.text);
+    setCaret(seed.text.length); // 光标落在末尾：接着改比从头挪过去顺手
+  }, [csSessionId, draft, draftSeed, takeDraftSeed]);
 
   // 输入框跟着内容长高(到 5 行封顶),同 FriendChatView 的既有约定
   useEffect(() => {
@@ -263,13 +292,48 @@ export function CloudSessionPage({
   const ready = cs.state === "ready";
   const banner = statusBanner(cs);
 
+  /** 一次发送：mentions 缺席就不传第二参（老语义，服务端按名字解析 + 回落
+      名单第一只），给了就以它为准 —— 重发走的是同一条路 */
+  const sendOnce = async (payload: { text: string; mentions: string[] | undefined }): Promise<CloudAck> =>
+    payload.mentions === undefined ? await cloudSay(payload.text) : await cloudSay(payload.text, payload.mentions);
+
+  /** 一次发送的结果落地（第四批 C2-I4），三态各有各的去处：
+      · `ok` → 那行「不确定」的提示可以撤了（这一次是确定成功的）
+      · `ok:false` + `unknown` → 摆成那一行，等人决定重发还是放弃
+      · 其余（确定失败）→ 画原因，正文留在原处（草稿 / 那一行）不动
+      **`unknown` 一个字都不写进 sendError**：它不是失败，是「不知道」，
+      画成红字会把人推向「重发一次」，而重发很可能就是发两遍 */
+  const applySendResult = (r: CloudAck, payload: { text: string; mentions: string[] | undefined }): void => {
+    if (r.ok) {
+      setUnsent(null);
+      return;
+    }
+    if (r.unknown) {
+      setUnsent(payload);
+      return;
+    }
+    setSendError(r.message);
+  };
+
+  const resend = async (): Promise<void> => {
+    if (unsent === null || resending || !ready) return;
+    setResending(true);
+    setSendError(null);
+    setSendNotice(null);
+    applySendResult(await sendOnce(unsent), unsent);
+    setResending(false);
+  };
+
   const submit = async (): Promise<void> => {
     const text = draft.trim();
     if (!text || sending || !ready) return;
     setSending(true);
-    // 复审 Medium：草稿在发送成功之后才清——失败时原样留在输入框里，
-    // 不用另外找地方把文字塞回去；workspaceGroupsError 在 footer 上方
-    // 露出来说明失败原因
+    // 三条本地提示都归这一次发送管：新的一次开始时先清干净，免得上一次的
+    // 红字挂在新结果旁边（成功时它们保持 null，等于「下一次成功发送时清」）
+    setSendError(null);
+    setSendNotice(null);
+    // 复审 Medium：草稿在发送成功之后才清——**确定失败**时原样留在输入框里，
+    // 不用另外找地方把文字塞回去；失败原因画在下面 sendError 那一行
     let sendCandidates = candidates;
     let sendMentions = mentions;
     // 正文里写了 @token，但一个候选都解析不出来（#935 / #957 C-I4）：最常见
@@ -289,13 +353,18 @@ export function CloudSessionPage({
     // "我确认谁都没点"（ADR-0220 决策 2），而这里的空是"我算不出来"——差着
     // 一整个 turn。缺席让服务端拿它自己那份名单解析正文、再回落名单第一只，
     // 于是一句 "@管理员 帮我看下" 照旧有人接，而不是安静地变成一句闲聊
-    const ok = sendCandidates.length === 0 ? await cloudSay(text) : await cloudSay(text, sendMentions);
-    if (ok) {
+    const payload = { text, mentions: sendCandidates.length === 0 ? undefined : sendMentions };
+    const r = await sendOnce(payload);
+    // `unknown` 也清输入框（第四批 C2-I4）：那句话很可能已经落地，把原文留在
+    // 输入框里等于催用户再按一次回车。原文没丢——它去了下面那行「不确定」的
+    // 提示，那里有一颗要人主动点的「重新发送」
+    if (r.ok || r.unknown) {
       // mentions 是 draft 的函数，清了正文点名自然跟着清（chip 行也跟着没）
       setDraft("");
       setCaret(0);
       setDismissedAt(null);
     }
+    applySendResult(r, payload);
     setSending(false);
   };
 
@@ -491,6 +560,27 @@ export function CloudSessionPage({
       )}
 
       {actionError && <p className="text-xs text-err">{actionError}</p>}
+      {/* 这一次发送自己的结果（第四批 C2-I4）：与上面那条共享的错误带并排画，
+          但归属是分开的——共享那格里躺着的可能是名单刷新失败，跟这句话无关 */}
+      {sendError && <p className="text-xs text-err">{sendError}</p>}
+      {sendNotice && <p className="text-xs text-muted-foreground">{sendNotice}</p>}
+      {/* 「不知道有没有发出去」那一行：中性灰不是红色——它不是一次失败，
+          是一个桌面这一层无法消除的不确定性。两颗钮把决定权交回给人：
+          「重新发送」= 我认了可能发两遍，「放弃」= 我认了可能没发出去 */}
+      {unsent && (
+        <div className="flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground">
+          <span className="min-w-0 break-words">
+            没有收到回执，不确定有没有发出去：{unsent.text.slice(0, 40)}
+            {unsent.text.length > 40 ? "…" : ""}
+          </span>
+          <Button variant="ghost" size="xs" disabled={!ready || resending} onClick={() => void resend()}>
+            重新发送
+          </Button>
+          <Button variant="ghost" size="xs" disabled={resending} onClick={() => setUnsent(null)}>
+            放弃
+          </Button>
+        </div>
+      )}
 
       <footer className="flex flex-col gap-1.5 border-t border-border/60 pt-3">
         {/* 「发给谁」预览。**只读**：去掉一枚 = 从正文里把那个 @ 删掉——正文
@@ -1155,7 +1245,7 @@ function PendingTurnLines({
           <span className="flex-1">
             {agentNameOf(ws, t.agentId)} {t.state === "running" ? "正在回复…" : "排队中…"}
           </span>
-          {canStopTurn(t, selfUid, cs) && <StopTurnButton />}
+          {canStopTurn(t, selfUid, cs) && <StopTurnButton seq={t.seq} />}
         </div>
       ))}
     </>
@@ -1168,9 +1258,12 @@ function PendingTurnLines({
     时把服务端的精确文案画在这一行末尾（同 ApprovalRow 的 localError 纪律，
     但这里没有"迟到的拒绝"兜底——stop 没有第二条确认路径，15s 超时兜底已经
     在 cloudSessionClient 的 pendingStop 里做过一次，store.cloudStop 直接
-    转发那个结果——`{ok, message}`，**不经 workspaceGroupsError 那格共享状态**，
-    见 store 里那条注释与 #957 终审 M3） */
-function StopTurnButton() {
+    转发那个 `CloudAck`，**不经 workspaceGroupsError 那格共享状态**，
+    见 store 里那条注释与 #957 终审 M3）。
+    `seq` = 这一行那句开场白的 seq（第四批 C2-I3）：并发时「此刻在跑的」未必
+    是用户点的这一行，服务端拿它与采样边界比对，对不上就回 `not_current` 而
+    不是停错一轮。**哪一行画这颗钮**是 Task 7 的事，这里只把 seq 送出去 */
+function StopTurnButton({ seq }: { seq: number }) {
   const cloudStop = useChat((s) => s.cloudStop);
   const [stopping, setStopping] = useState(false);
   const [localError, setLocalError] = useState<string | null>(null);
@@ -1178,12 +1271,12 @@ function StopTurnButton() {
   const onClick = async (): Promise<void> => {
     setStopping(true);
     setLocalError(null);
-    const r = await cloudStop();
+    const r = await cloudStop(seq);
     setStopping(false);
     // 文案取这次调用自己的返回值，不去共享的 workspaceGroupsError 里捞
     // （#957 终审 M3）：那一格里躺着的可能是别人的失败，而这条错误只画在
     // 这一行末尾，归属必须是确定的（同 ApprovalRow 对"迟到拒绝"的立场）
-    if (!r.ok) setLocalError(r.message ?? "没停下来，再看一眼时间线");
+    if (!r.ok) setLocalError(r.message);
   };
 
   return (
@@ -1225,11 +1318,20 @@ function ToolActivityLine({ call, result }: { call: ToolCallRequest; result: Too
     那一层就已经把卡只发给够格的人,这里的 canDecide 是同一条判据在渲染层
     的镜像——群聊场景大家共读同一份 events,不是每个人各收各的)。
     点下去的反馈(#957 C-I2/#927 桌面侧)：`submitting` 按这张卡自己记(卡本身
-    按 callId 有 key，state 天然不会串到别的卡上)。false 才把按钮放回来、
-    在**卡内**画原因——不进 workspaceGroupsError 共享格，那一格已经被同一次
-    失败占了、卡外还会再画一遍反而像两件事。true 就保持 disabled 到这张卡
+    按 callId 有 key，state 天然不会串到别的卡上)。`ok:false` 才把按钮放回来、
+    在**卡内**画原因——不进 workspaceGroupsError 共享格，那一格里躺着的可能是
+    别人的失败，卡外再画一遍反而像两件事。`ok:true` 就保持 disabled 到这张卡
     从 pendingApprovals 消失(父组件按 callId 卸载这一整行，本地 state 随之
-    清空，不需要额外清理)。 */
+    清空，不需要额外清理)。
+    **两条启发式兜底已删**（第四批 C2-I2）：一条是"submitting 期间
+    workspaceGroupsError 变了就当作这一条被拒了"，另一条是 15s 没动静就把按钮
+    放回来。两条都写在协议还没有 `approve_result` 的年代——那时 `ok:true` 只
+    确认"帧交给了 socket"，拒绝走不带 callId 的 error 帧，所以只能猜。协议 6
+    起 `approve_result{callId}` 是权威回执，而 ACK 超时/连接没了已经在
+    cloudSessionClient 里收敛成 `ok:false` + `unknown`——留着这两条兜底，它们
+    在真回执之后**只可能说假话**：一件无关的失败（配置保存挂了、限速）会被
+    抄成这张卡的拒绝理由，15s 那条则会在一次慢但成功的审批之后把按钮放回来，
+    让人再批一次 */
 function ApprovalRow({
   event,
   ws,
@@ -1244,76 +1346,33 @@ function ApprovalRow({
   waitingLabel: string;
   canDecide: boolean;
   ready: boolean;
-  onApprove: () => Promise<boolean>;
-  onDeny: () => Promise<boolean>;
+  onApprove: () => Promise<CloudAck>;
+  onDeny: () => Promise<CloudAck>;
 }) {
   const [submitting, setSubmitting] = useState<"approved" | "denied" | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
-  // **旧协议（≤5）里 approve 没有回执**：cloudApprove 回 true 只确认"帧交给了
-  // socket"，不是送达确认（同 wire.ts send() 回 boolean 的既有纪律），服务端的
-  // no_pending/not_allowed 拒绝走 error 帧 → 一次性 notice → workspaceGroupsError，
-  // 比这次 await 晚到（#927 的镜像，#964 是 say 帧的孪生问题）。协议 6 起的
-  // `approve_result{callId}` 是根治（ADR-0227 决策 2/6：帧自带 callId，桌面按
-  // callId 精确对号，拒绝从这次 await 自己的返回值回来），下面这两层**作为双保险
-  // 保留**——回执帧本身也可能在传输中丢（ADR-0227 已知代价："第二批兜底原样保留"）。
-  // 这两个 ref 是接住"迟到的拒绝"用的：groupsErrorAtClick
-  // 记下点击那一刻的旧值（用于判断"变了"而不是"本来就有"），ackTimer 是兜底——
-  // 见下面 15s 那个 effect，**不要**当成用不上的清理代码删掉
-  const groupsErrorAtClick = useRef<string | null>(null);
-  const ackTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const groupsError = useChat((s) => s.workspaceGroupsError);
+  // 「已批准，等待生效…」这类中性的话与 localError 分开存（第四批 C2-I2）：
+  // 同一格两种色的话，样式就得靠一个额外的 tone 字段决定，而两条本来就不会
+  // 同时出现——`ok:true` 只有 note，`ok:false` 只有 error
+  const [localNote, setLocalNote] = useState<string | null>(null);
 
-  const clearAckTimer = (): void => {
-    if (ackTimer.current !== null) {
-      clearTimeout(ackTimer.current);
-      ackTimer.current = null;
-    }
-  };
-
-  // 卸载兜底：这张卡因 approval_decision 落地而从 pendingApprovals 消失时，
-  // 组件直接卸载——不清定时器的话它照样会在 15s 后触发 setState，React 报
-  // "在已卸载组件上更新状态" 的警告
-  useEffect(() => clearAckTimer, []);
-
-  // 迟到的拒绝：submitting 期间 workspaceGroupsError 变成了一个跟点击时不
-  // 一样的非空值，说明**有一次**操作被服务端事后回绝了——按第一条机制接住
-  // （不清全局那一格：它是共享状态，谁的失败谁负责）。
-  // **不抄那句文案进卡内**（终审 I1）：`error` 帧不带 callId，这条全局错误
-  // 归不了属——两张卡同时 submitting 时，一条 `no_pending` 会让两张都写上
-  // 「这条审批已经处理过或已过期」，而其中一张可能刚刚批准成功；任何一件
-  // 无关的失败（配置保存挂了、限速）同样会被抄成审批的拒绝理由。归属确定的
-  // 只有 `ok === false` 那条路（那次调用自己的返回值），精确文案只在那里显示。
-  // 这里只放开按钮 + 一句中性的话：把「可能有事发生，再看一眼」说出来，
-  // 而不是替服务端断言发生了什么
-  useEffect(() => {
-    if (submitting === null) return;
-    if (groupsError !== null && groupsError !== groupsErrorAtClick.current) {
-      clearAckTimer();
-      setSubmitting(null);
-      setLocalError("刚才有一次操作被拒（可能是这一条），可以再试");
-    }
-  }, [groupsError, submitting]);
-
-  const decide = async (decision: "approved" | "denied", run: () => Promise<boolean>): Promise<void> => {
+  const decide = async (decision: "approved" | "denied", run: () => Promise<CloudAck>): Promise<void> => {
     setSubmitting(decision);
     setLocalError(null);
-    groupsErrorAtClick.current = useChat.getState().workspaceGroupsError;
-    clearAckTimer();
-    // 安全网（第二条机制）：15s 内既没等到卡消失（approval_decision 落地）
-    // 也没等到 notice（上面那个 effect），就别再把按钮焊死——用户还能再点
-    ackTimer.current = setTimeout(() => {
-      ackTimer.current = null;
-      setSubmitting(null);
-      setLocalError("没有收到回执，可以再试");
-    }, 15_000);
-    const ok = await run();
-    if (!ok) {
-      clearAckTimer();
-      setSubmitting(null);
-      setLocalError(useChat.getState().workspaceGroupsError);
+    setLocalNote(null);
+    const r = await run();
+    if (r.ok) {
+      // 保持 disabled：这张卡会因为 approval_decision 落地而消失。这句话是
+      // 说给「回执到了但事件还在路上」那一两秒听的——按钮焊死而屏幕上一个字
+      // 都没有，看起来就像点了没反应
+      setLocalNote(decision === "approved" ? "已批准，等待生效…" : "已拒绝，等待生效…");
+      return;
     }
-    // ok === true：故意不清 submitting/定时器——按钮保持 disabled 直到这张卡
-    // 因为 approval_decision 落地而消失，或者上面两条机制之一先接住迟到的拒绝
+    // `unknown`（没收到回执）也把按钮放回来：这一层确实不知道有没有生效，
+    // 而"再点一次"在审批上是幂等的（服务端按 callId 去重，重复的那次回
+    // no_pending），代价远小于把按钮永久焊死
+    setSubmitting(null);
+    setLocalError(r.message);
   };
 
   const fields = event.argsFields;
@@ -1355,7 +1414,11 @@ function ApprovalRow({
               批准
             </Button>
           </div>
-          {submitting && <p className="text-[11px] text-muted-foreground">已提交，等待生效…</p>}
+          {localNote ? (
+            <p className="text-[11px] text-muted-foreground">{localNote}</p>
+          ) : submitting ? (
+            <p className="text-[11px] text-muted-foreground">已提交，等待生效…</p>
+          ) : null}
           {localError && <p className="text-[11px] text-err">{localError}</p>}
         </div>
       ) : (

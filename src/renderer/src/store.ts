@@ -107,7 +107,7 @@ import type {
 import type { WorkspaceMemoryRow, WorkspaceSnapshot } from "../../shared/workspaces.js";
 import type { AgentToolAllow } from "../../shared/agentToolAllow.js";
 import type {
-  NotificationTarget, ProviderBalance, ProxyBorrowView, ProxyHostView, WorkspaceSettingsInfo,
+  CloudAck, NotificationTarget, ProviderBalance, ProxyBorrowView, ProxyHostView, WorkspaceSettingsInfo,
 } from "../../shared/shellBridge.js";
 import type { CloudSessionListRow } from "./lib/workspaceView.js";
 import { DEFAULT_USAGE_DAYS, type UsageSnapshot } from "../../shared/usageStats.js";
@@ -528,8 +528,13 @@ interface ChatState {
   workspaceGroups: WorkspaceSnapshot[];
   /** 工作区面板/页面的内联错误。不复用 friendError——那个字段的注释把范围钉在
       "好友区/DM 面板"，工作区协作组是另一件事，混一起会让读者误以为两处互相影响。
-      云会话（下面两个字段）的失败也落在这——CloudSessionPage 是 WorkspacePage
-      内切换渲染出来的（同一块"工作区面板/页面"），不新开一条并行的错误槽位 */
+      云会话建/进房、名单刷新、配置保存那类**共享**失败也落在这——CloudSessionPage
+      是 WorkspacePage 内切换渲染出来的（同一块"工作区面板/页面"），不新开一条并行
+      的错误槽位。
+      **发送/审批/停止不落这一格**（第四批 C2-I4）：那三件事的结果只跟点它的
+      那一处有关（哪条消息、哪张卡、哪一行），画在旁边才归得了属；挤进这条共享带
+      的后果是「两张卡同时提交时谁都说不清是哪一条被拒了」，而成功时顺手清空它
+      又会替一件不相干的失败盖章（`gapNote` 那条持久提示原来就是被它擦掉的） */
   workspaceGroupsError: string | null;
   /** 云会话（Task 13，ADR-0199）：当前 join 着的那一条，没有 = null。全局单条——
       同 main/cloudSessionClient.ts 的"同时只保留一条连接"，join 新的自动顶掉旧的。
@@ -549,12 +554,14 @@ interface ChatState {
       null = 没有。按 sessionId 挂靠：异步期间用户可能已经切到别的云会话，
       那句话在**那边**的输入框里冒出来比丢了更糟。
       为什么不是「放回 cloudPendingFirstMessage 自动重试」：那一格没有任何
-      界面读它——开局卡早已卸载，用户看不见自己刚写的话去哪了；而且
-      `cloudSay` 的 `ok:false` 只覆盖发送侧（帧压根没发出去），限速/被踢那类
-      **业务拒绝**是随后一条 error 帧回来的，那时 say() 早就回过 true 了。
+      界面读它——开局卡早已卸载，用户看不见自己刚写的话去哪了。
       摆回 composer 之后，后面每一次失败都归 composer 那条既有纪律管
-      （「草稿在发送成功之后才清」） */
-  cloudDraftSeed: { sessionId: string; text: string } | null;
+      （「草稿在发送成功之后才清」）。
+      `unknown` = 这次失败是「没收到回执」而不是「确定没发出去」（第四批
+      C2-I4）：那时**不能**摆回输入框——输入框里躺着原文是「再发一次」这个
+      指令的最强信号，而这句话很可能已经落地了，重发就是发两遍。这一格因此
+      带着模式一起交给 CloudSessionPage，由它决定进 draft 还是进「不确定」那一行 */
+  cloudDraftSeed: { sessionId: string; text: string; unknown: boolean } | null;
   /** 工作区 id → 该工作区的云会话清单（SessionsTab「云会话」小节用）。
       无推送通道（同 workspaceGroups 的十一个 action），每次改动后调用方自己
       refreshCloudSessions 重拉 */
@@ -940,15 +947,20 @@ interface ChatState {
   /** 待发那句已经交出去了。**先清后发**：主区那块的 effect 会因为状态变化重跑，
       清晚一步就会发两遍 */
   takeCloudPendingFirstMessage(): string | null;
-  /** 那一句没发出去，把原文摆回输入框（issue #957 C-I6）。`take()` 先摘是对的
-      （不然会发两遍），但没有这一步的话，`cloudSay` 回 false 时那段文字在任何
-      地方都不再存在——开局卡早已卸载，用户只看到一行错误，然后得把刚写的话
-      重打一遍。同一件事在 composer 那条入口上的纪律正相反（「草稿在发送成功
-      之后才清」），摆回去就是让它归那条纪律管 */
-  seedCloudDraft(sessionId: string, text: string): void;
+  /** 那一句没发出去，把原文交回给 CloudSessionPage（issue #957 C-I6）。`take()`
+      先摘是对的（不然会发两遍），但没有这一步的话，`cloudSay` 失败时那段文字在
+      任何地方都不再存在——开局卡早已卸载，用户只看到一行错误，然后得把刚写的话
+      重打一遍。
+      `mode` 分两种失败（第四批 C2-I4）：`"unsent"` = 确定没发出去，摆回输入框，
+      从此归 composer 那条既有纪律管（「草稿在发送成功之后才清」）；`"unknown"`
+      = 没收到回执，**不许**摆回输入框——那是「再发一次」的最强信号，而这句话
+      很可能已经落地 */
+  seedCloudDraft(sessionId: string, text: string, mode: "unsent" | "unknown"): void;
   /** 取走并清空那一份（CloudSessionPage 挂载/换会话时调）。**sessionId 不匹配
-      就回 null 且不清**：这一格是按会话挂靠的，另一条会话没资格拿走它 */
-  takeCloudDraftSeed(sessionId: string): string | null;
+      就回 null 且不清**：这一格是按会话挂靠的，另一条会话没资格拿走它。
+      回 `{text, unknown}` 而不是裸字符串：调用方要按模式决定它进输入框还是进
+      「不确定有没有发出去」那一行 */
+  takeCloudDraftSeed(sessionId: string): { text: string; unknown: boolean } | null;
   /** 离开当前云会话（返回键用）。同步——不等 workspaceCloudLeave 那趟 IPC
       往返，UI 反馈要即时；真正的连接收尾在主进程后台完成，用户不需要等 */
   closeCloudSession(): void;
@@ -956,22 +968,28 @@ interface ChatState {
       名单第一只接）；给了（含 []）= 以它为准，覆盖旧的 mention toggle
       语义——布尔与数组在这一处同源翻译（`mention = mentions === undefined
       ? true : mentions.length > 0`），不许调用方或别处再手写一份（#932
-      切片 1b）。回是否成功——CloudSessionPage 的 submit() 靠它决定要不要
-      清空草稿（同 createWorkspaceGroup 等十一件套"回 boolean 给调用方决定
-      要不要清输入框"的既有约定，复审 Medium：失败时不清，草稿原样留着） */
-  cloudSay(text: string, mentions?: string[]): Promise<boolean>;
-  /** 批/拒当前云会话里的一个审批请求。回是否成功（同上，失败信息落
-      workspaceGroupsError，调用方按需读） */
-  cloudApprove(callId: string, decision: "approved" | "denied"): Promise<boolean>;
+      切片 1b）。
+      **原样透传 `CloudAck`，一个字都不动共享的 `workspaceGroupsError`**
+      （第四批 C2-I4）：这条错误只跟这一次发送有关，画在 composer 上方才读得懂；
+      落进那格共享错误带就归不了属（页脚那条还会赖着不走，它归下一次别的操作
+      清）。三态由调用方分开处理——`ok:true` 清草稿、`ok:false` 且 `unknown`
+      「不确定发没发出去」、其余确定失败草稿原样留着 */
+  cloudSay(text: string, mentions?: string[]): Promise<CloudAck>;
+  /** 批/拒当前云会话里的一个审批请求。原样透传 `CloudAck`（同上，不碰
+      `workspaceGroupsError`）——审批卡按它的三态决定按钮放不放回来 */
+  cloudApprove(callId: string, decision: "approved" | "denied"): Promise<CloudAck>;
   /** 停掉当前云会话正在跑的这一轮 turn（#957 第三批）。只对发起人或 owner
       显示按钮（canStopTurn），但这里不重复判权限——服务端的 stop_result
       是唯一事实。
-      **回 `{ok, message}` 而不是 boolean，且不碰 `workspaceGroupsError`**
+      **回 `CloudAck` 而不是 boolean，且不碰 `workspaceGroupsError`**
       （#957 终审 M3）：这一格是页脚共享的那条错误带，而停止失败的原因
       （"此刻没有正在跑的 turn" / "只有发起人或 owner 能停"）画在按钮旁边
       才读得懂——两处一起显示，同一件事在屏幕上说了两遍，页脚那条还会赖着
-      不走（它归下一次别的操作清）。文案随返回值走，归属天然是确定的 */
-  cloudStop(): Promise<{ ok: boolean; message?: string }>;
+      不走（它归下一次别的操作清）。文案随返回值走，归属天然是确定的。
+      `seq` = 要停的是哪一行（第四批 C2-I3）：并发时「此刻在跑的」未必是用户
+      点的那一行，服务端拿它与采样边界比对后可以回 `not_current`。缺席 = 旧
+      语义（停当前那一轮） */
+  cloudStop(seq?: number): Promise<CloudAck>;
   /** owner 配置当前云会话绑定的仓库（repoUrl + 可选 PAT，issue #821 slice 2）。
       workspaceId 从 cloudSession 现取——调用方（CloudSessionPage）只在已 join
       时才会挂载这个入口，理应总有值；没有就说明状态错乱，回 false 不瞎猜。
@@ -2374,8 +2392,8 @@ export const useChat = create<ChatState>((set, get) => ({
     return text;
   },
 
-  seedCloudDraft(sessionId, text) {
-    set({ cloudDraftSeed: { sessionId, text } });
+  seedCloudDraft(sessionId, text, mode) {
+    set({ cloudDraftSeed: { sessionId, text, unknown: mode === "unknown" } });
   },
 
   takeCloudDraftSeed(sessionId) {
@@ -2385,38 +2403,27 @@ export const useChat = create<ChatState>((set, get) => ({
     // 那句的同一个理由）
     if (seed === null || seed.sessionId !== sessionId) return null;
     set({ cloudDraftSeed: null });
-    return seed.text;
+    return { text: seed.text, unknown: seed.unknown };
   },
 
+  // 下面三个只 `return r`：`CloudAck` 原样透传给调用方，**共享的
+  // `workspaceGroupsError` 一个字都不动**（第四批 C2-I4）。原来失败写进那一格、
+  // 成功清空那一格，两件事都错：写进去的错误归不了属（页脚上那条可能是别人的
+  // 失败，而两张审批卡同时提交时谁都说不清是哪一条被拒了），清空则会把一件
+  // 不相干的失败替它盖章抹掉（用户发出的第一句话就擦干净了「你的历史缺了
+  // 一块」）。这三次调用的结果都只跟点它的那一处有关，画在那一处旁边
   async cloudSay(text, mentions) {
     // 布尔与数组同源：mentions 缺席 = 老语义（开局卡那句话不 @ 也由名单第一只接）
     const mention = mentions === undefined ? true : mentions.length > 0;
-    const r = await window.otter.workspaceCloudSay(text, mention, mentions);
-    if (!r.ok) {
-      set({ workspaceGroupsError: r.message });
-      return false;
-    }
-    // 成功也要清一次：不清的话上一次失败留下的 workspaceGroupsError
-    // 会一直挂在 footer 附近，这次明明发成功了却还在说上次的错
-    set({ workspaceGroupsError: null });
-    return true;
+    return await window.otter.workspaceCloudSay(text, mention, mentions);
   },
 
   async cloudApprove(callId, decision) {
-    const r = await window.otter.workspaceCloudApprove(callId, decision);
-    if (!r.ok) {
-      set({ workspaceGroupsError: r.message });
-      return false;
-    }
-    set({ workspaceGroupsError: null });
-    return true;
+    return await window.otter.workspaceCloudApprove(callId, decision);
   },
 
-  async cloudStop() {
-    const r = await window.otter.workspaceCloudStop();
-    // 共享的那格一个字都不动（成功也不清）：这次调用的成败与页脚上此刻挂着的
-    // 那条错误无关，清掉等于替一件不相干的失败盖了章（#957 终审 M3）
-    return r.ok ? { ok: true } : { ok: false, message: r.message };
+  async cloudStop(seq) {
+    return await window.otter.workspaceCloudStop(seq);
   },
 
   async cloudConfig(patch) {
