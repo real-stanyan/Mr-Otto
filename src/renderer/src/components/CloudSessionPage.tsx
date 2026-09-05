@@ -1161,7 +1161,8 @@ function PendingTurnLines({
     时把服务端的精确文案画在这一行末尾（同 ApprovalRow 的 localError 纪律，
     但这里没有"迟到的拒绝"兜底——stop 没有第二条确认路径，15s 超时兜底已经
     在 cloudSessionClient 的 pendingStop 里做过一次，store.cloudStop 直接
-    转发那个结果） */
+    转发那个结果——`{ok, message}`，**不经 workspaceGroupsError 那格共享状态**，
+    见 store 里那条注释与 #957 终审 M3） */
 function StopTurnButton() {
   const cloudStop = useChat((s) => s.cloudStop);
   const [stopping, setStopping] = useState(false);
@@ -1170,9 +1171,12 @@ function StopTurnButton() {
   const onClick = async (): Promise<void> => {
     setStopping(true);
     setLocalError(null);
-    const ok = await cloudStop();
+    const r = await cloudStop();
     setStopping(false);
-    if (!ok) setLocalError(useChat.getState().workspaceGroupsError);
+    // 文案取这次调用自己的返回值，不去共享的 workspaceGroupsError 里捞
+    // （#957 终审 M3）：那一格里躺着的可能是别人的失败，而这条错误只画在
+    // 这一行末尾，归属必须是确定的（同 ApprovalRow 对"迟到拒绝"的立场）
+    if (!r.ok) setLocalError(r.message ?? "没停下来，再看一眼时间线");
   };
 
   return (
@@ -1238,11 +1242,14 @@ function ApprovalRow({
 }) {
   const [submitting, setSubmitting] = useState<"approved" | "denied" | null>(null);
   const [localError, setLocalError] = useState<string | null>(null);
-  // cloudApprove 回 true 只确认"帧交给了 socket"，不是送达确认（同 wire.ts
-  // send() 回 boolean 的既有纪律）——approve 没有像 approval_decision 那样
-  // 的确认回执，服务端的 no_pending/not_allowed 拒绝走 error 帧 → 一次性
-  // notice → workspaceGroupsError，比这次 await 晚到（#927 的镜像，#964 是
-  // say 帧的孪生问题）。这两个 ref 是接住"迟到的拒绝"用的：groupsErrorAtClick
+  // **旧协议（≤5）里 approve 没有回执**：cloudApprove 回 true 只确认"帧交给了
+  // socket"，不是送达确认（同 wire.ts send() 回 boolean 的既有纪律），服务端的
+  // no_pending/not_allowed 拒绝走 error 帧 → 一次性 notice → workspaceGroupsError，
+  // 比这次 await 晚到（#927 的镜像，#964 是 say 帧的孪生问题）。协议 6 起的
+  // `approve_result{callId}` 是根治（ADR-0227 决策 2/6：帧自带 callId，桌面按
+  // callId 精确对号，拒绝从这次 await 自己的返回值回来），下面这两层**作为双保险
+  // 保留**——回执帧本身也可能在传输中丢（ADR-0227 已知代价："第二批兜底原样保留"）。
+  // 这两个 ref 是接住"迟到的拒绝"用的：groupsErrorAtClick
   // 记下点击那一刻的旧值（用于判断"变了"而不是"本来就有"），ackTimer 是兜底——
   // 见下面 15s 那个 effect，**不要**当成用不上的清理代码删掉
   const groupsErrorAtClick = useRef<string | null>(null);

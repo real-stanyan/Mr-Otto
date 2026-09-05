@@ -4104,9 +4104,15 @@ void app.whenReady().then(() => {
   });
 
   // 抽成命名函数，同 handleSendMessage 的理由：ipc handler 和 handleIslandCommand
-  // ("approve"/"deny" 命令)都调它。声明成 async 是为了给 handleIslandCommand 一个
-  // 统一的 Promise 接口好挂 .catch()——函数体本身仍是同步的，返回的 Promise 不会
-  // 真的 reject，除非 agent.grant / approver.resolve 意外抛出
+  // ("approve"/"deny" 命令)都调它。
+  // **本地那条路是同步的，云那条不是**（#957 终审 M6，ADR-0227）：
+  // `cloudClient.approve()` 要等服务端的 `approve_result` 回执，最长 15 秒
+  // （`ACK_TIMEOUT_MS`）才 resolve——原来这行注释写的"函数体本身仍是同步的"
+  // 在云会话上已经不成立了。**没有任何调用方拿它的结果做事**：渲染层的
+  // `store.decide()` 在 await 之前就把卡乐观收掉了、await 之后什么都不做，
+  // SideChatWindow 那两处与岛那条都是 `void ... .catch()`——所以这段最长
+  // 15 秒的等待不卡任何人；async 的理由不变——给 handleIslandCommand 一个
+  // 统一的 Promise 接口好挂 .catch()
   async function handleDecideApproval(
     sessionId: string,
     toolCallId: string,

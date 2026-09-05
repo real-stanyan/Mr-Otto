@@ -210,4 +210,15 @@ describe("canStopTurn", () => {
     const queued: OpenTurn = { ...running, state: "queued" };
     expect(canStopTurn(queued, "initiator1", cs)).toBe(false);
   });
+
+  // 老日志里的 user_message 没有 fromUid（openTurns 把它填成 null）——那一轮
+  // 「谁点的火」这条信息压根不存在。`selfUid === null` 永远不成立，所以按钮
+  // 只留给 owner：这正是想要的形状（无从证明是我点的，就别给我停别人的权），
+  // 而不是把 null 当通配符放行任何人（#957 终审 T4）
+  it("fromUid 缺席（老日志）：owner 仍能停，别人一律不能", () => {
+    const noUid: OpenTurn = { ...running, fromUid: null };
+    expect(canStopTurn(noUid, "owner1", cs)).toBe(true);
+    expect(canStopTurn(noUid, "initiator1", cs)).toBe(false);
+    expect(canStopTurn(noUid, "stranger1", cs)).toBe(false);
+  });
 });
