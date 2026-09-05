@@ -78,8 +78,8 @@ export async function fetchWorkspace(
   id: string,
 ): Promise<WorkspaceSnapshot> {
   const ws = unwrap(
-    await client.from("workspaces").select("id,name,owner_uid").eq("id", id).single(),
-  ) as { id: string; name: string; owner_uid: string };
+    await client.from("workspaces").select("id,name,owner_uid,relay_max_depth").eq("id", id).single(),
+  ) as { id: string; name: string; owner_uid: string; relay_max_depth: unknown };
   const members = (unwrap(
     await client.from("workspace_members").select("uid,role").eq("workspace_id", id),
   ) ?? []) as { uid: string; role: string }[];
@@ -269,6 +269,25 @@ export async function deleteAgentRow(
   );
   if (!Array.isArray(rows) || rows.length === 0) {
     throw new Error("行不存在或无权删除");
+  }
+}
+
+/** owner 改接力上限（#950 Task 9，0024 ws_update_owner）。同 updateAgentRow，
+    `.select` 是唯一的行数证据——0 行既可能是「工作区不存在」也可能是「不是 owner」，
+    两者在这一层分不清，也不必分清，回一句「无权修改」都对得上 */
+export async function updateRelayMaxDepth(
+  client: SupabaseClient,
+  workspaceId: string,
+  maxDepth: number,
+): Promise<void> {
+  const rows = unwrap(
+    await client.from("workspaces")
+      .update({ relay_max_depth: maxDepth })
+      .eq("id", workspaceId)
+      .select("id"),
+  );
+  if (!Array.isArray(rows) || rows.length === 0) {
+    throw new Error("无权修改");
   }
 }
 

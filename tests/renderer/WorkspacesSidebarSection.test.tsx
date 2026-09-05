@@ -34,6 +34,7 @@ const WS: WorkspaceSnapshot = {
   connectors: [],
   sessions: [],
   agents: [],
+  relayMaxDepth: 6,
 };
 
 function seed(over: Partial<Parameters<typeof useChat.setState>[0]> = {}): {

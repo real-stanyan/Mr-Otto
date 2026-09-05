@@ -184,7 +184,7 @@ import { createWorkspaceManager } from "./workspaceManager.js";
 import {
   createWorkspace, listWorkspaces, fetchWorkspace, addMember, removeMember, leave,
   deleteWorkspace, upsertConnectorRow, deleteConnectorRow, insertSessionRow, listCloudSessions,
-  insertAgentRow, updateAgentRow, deleteAgentRow, listMemoryRows, saveMemoryRow,
+  insertAgentRow, updateAgentRow, deleteAgentRow, listMemoryRows, saveMemoryRow, updateRelayMaxDepth,
 } from "./supabaseWorkspacesApi.js";
 import {
   publishSessionToWorkspace, unpublishSession, importWorkspaceSession,
@@ -1509,7 +1509,7 @@ void app.whenReady().then(() => {
   const workspaceManager = createWorkspaceManager({
     createWorkspace, listWorkspaces, fetchWorkspace, addMember, removeMember, leave,
     deleteWorkspace, upsertConnectorRow, deleteConnectorRow,
-    insertAgentRow, updateAgentRow, deleteAgentRow, listMemoryRows, saveMemoryRow,
+    insertAgentRow, updateAgentRow, deleteAgentRow, listMemoryRows, saveMemoryRow, updateRelayMaxDepth,
     client: () => supabase.raw,
     // 登录判据取账号管理器，不取好友子系统的缓存（issue #943）：onChange 先
     // send(accountChanged) 再 friends.start()，而 friends.uid 要等 start() 里
@@ -3248,6 +3248,9 @@ void app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.workspaceMemoryList, (_e, id: string) => workspaceManager.listMemories(id));
   ipcMain.handle(CHANNELS.workspaceMemorySave, (_e, id: string, agentId: string, text: string, baseline: string) =>
     workspaceManager.saveMemory(id, agentId, text, baseline));
+  // 智能体 tab 顶部的「接力上限」（#950 Task 9）：owner 才能改，非 owner 撞 RLS
+  ipcMain.handle(CHANNELS.workspaceSetRelayMaxDepth, (_e, id: string, maxDepth: number) =>
+    workspaceManager.setRelayMaxDepth(id, maxDepth));
 
   // 发布/撤回/导入会话（Task 9 workspaceSessionShare.ts）：编排在那一层，
   // 这里只接依赖——同下面 shareSessionToFriend/importSharedSession 那两个

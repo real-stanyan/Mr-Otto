@@ -41,6 +41,7 @@ import {
 } from "../../../src/shared/remote/cloudSession.js";
 import { createWsTransport } from "../../../src/shared/remote/wsTransport.js";
 import { ADMIN_AGENT_ID } from "../../../src/shared/workspaceAgents.js";
+import { normalizeRelayMaxDepth } from "../../../src/shared/agentRelay.js";
 import type { RemoteTransport } from "../../../src/shared/remote/transport.js";
 
 /** 镜像 sandbox.ts 的同名私有常量（未导出，故在此复制一份——两处改动需同步）。
@@ -296,6 +297,16 @@ async function main(): Promise<void> {
     const { data, error } = await supabase.from("workspaces").select("owner_uid").eq("id", workspaceId).single();
     if (error || !data) throw new Error(`workspace 不存在或查询失败（${workspaceId}）：${error?.message ?? "no data"}`);
     return (data as { owner_uid: string }).owner_uid;
+  }
+
+  /** agent 互相 @ 的接力棒数上限（#950 Task 9，0024 迁移）。owner 在智能体 tab 改，
+      这里现查不缓存——同 queryAgents 的纪律，改了下一轮接力生效。查询失败原样抛，
+      **不在这里回落**——回落到默认几棒是调用方（Task 10 createCloudSession）的决定，
+      这个函数只负责如实报告「查到了什么」 */
+  async function queryRelayMaxDepth(workspaceId: string): Promise<number> {
+    const { data, error } = await supabase.from("workspaces").select("relay_max_depth").eq("id", workspaceId).single();
+    if (error) throw new Error(error.message);
+    return normalizeRelayMaxDepth((data as { relay_max_depth: unknown } | null)?.relay_max_depth);
   }
 
   // ── cid → transport 的全局路由表（daemon 唯一持有）───────────────────

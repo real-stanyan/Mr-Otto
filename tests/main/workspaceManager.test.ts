@@ -66,6 +66,9 @@ function harness(over: Partial<WorkspaceManagerDeps> = {}) {
     saveMemoryRow: async (_c, _ws, _agentId, content, baseline) => {
       calls.push(`saveMemoryRow:${content}:${baseline}`);
     },
+    updateRelayMaxDepth: async (_c, _ws, maxDepth) => {
+      calls.push(`updateRelayMaxDepth:${maxDepth}`);
+    },
     client: () => (signedIn ? fakeClient : null),
     selfUid: () => (signedIn ? "self-uid" : null),
     loadStore: () => store,
@@ -242,6 +245,7 @@ describe("workspaceManager（Task 8，ADR-0198 切片 2）", () => {
       ],
       sessions: [],
       agents: [],
+      relayMaxDepth: 6,
     });
 
     const res = await h.manager.list();
@@ -366,5 +370,27 @@ describe("workspace memory（#949）", () => {
       },
     });
     expect(await manager.saveMemory("ws-1", "ops", "a", "旧内容")).toEqual({ ok: false, message: MEMORY_CONFLICT });
+  });
+});
+
+describe("workspace relay max depth（#950 Task 9）", () => {
+  it("setRelayMaxDepth：透传给 updateRelayMaxDepth", async () => {
+    const { manager, calls } = harness();
+    expect(await manager.setRelayMaxDepth("ws-1", 10)).toEqual({ ok: true, value: null });
+    expect(calls).toContain("updateRelayMaxDepth:10");
+  });
+  it("未登录：回 还没登录，不打网络", async () => {
+    const h = harness();
+    h.signOut();
+    expect(await h.manager.setRelayMaxDepth("ws-1", 10)).toEqual({ ok: false, message: "还没登录" });
+    expect(h.calls).toEqual([]);
+  });
+  it("updateRelayMaxDepth 抛「无权修改」：原样冒泡成 FriendsResult 错误", async () => {
+    const { manager } = harness({
+      updateRelayMaxDepth: async () => {
+        throw new Error("无权修改");
+      },
+    });
+    expect(await manager.setRelayMaxDepth("ws-1", 10)).toEqual({ ok: false, message: "无权修改" });
   });
 });

@@ -53,6 +53,7 @@ export interface WorkspaceManagerDeps {
   deleteAgentRow: typeof WorkspacesApi.deleteAgentRow;
   listMemoryRows: typeof WorkspacesApi.listMemoryRows;
   saveMemoryRow: typeof WorkspacesApi.saveMemoryRow;
+  updateRelayMaxDepth: typeof WorkspacesApi.updateRelayMaxDepth;
   client: () => SupabaseClient | null;
   selfUid: () => string | null;
   loadStore: () => ProxyStoreData;
@@ -92,6 +93,10 @@ export interface WorkspaceManager {
   /** 成员手改一档；写前归一化（去空条目、保序去重）。不校验上限——人手改自己的
       笔记不该被上限拦住，同 applyUserEdit */
   saveMemory(id: string, agentId: string, text: string, baseline: string): Promise<FriendsResult<null>>;
+  /** owner 在智能体 tab 改「接力上限」（#950 Task 9）。表单已经过
+      validateRelayMaxDepth，这里不重复校验——RLS（0024 ws_update_owner）落地
+      判断，非 owner 会撞「无权修改」 */
+  setRelayMaxDepth(id: string, maxDepth: number): Promise<FriendsResult<null>>;
   /** 我在籍工作区里别人贡献的 host（proxyManager 借用源）。内存缓存,list()
       后更新——proxyManager 借用路径要同步读,不能每次都等一轮网络往返 */
   hostUids(): readonly string[];
@@ -269,6 +274,13 @@ export function createWorkspaceManager(deps: WorkspaceManagerDeps): WorkspaceMan
         // saveMemoryRow 只在这一行此刻的 content 仍等于 baseline 时才允许覆盖，
         // 不等则抛 MEMORY_CONFLICT，原样冒泡给 withSession 收成 FriendsResult 错误。
         await deps.saveMemoryRow(client, id, agentId, formatEntries(parseEntries(text)), baseline);
+        return null;
+      });
+    },
+
+    async setRelayMaxDepth(id, maxDepth) {
+      return withSession(async (client) => {
+        await deps.updateRelayMaxDepth(client, id, maxDepth);
         return null;
       });
     },

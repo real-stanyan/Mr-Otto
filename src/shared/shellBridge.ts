@@ -1075,6 +1075,9 @@ export interface ShellBridge {
       桌面手编与 agent 写档的丢更新用它做乐观前置条件（#949 review finding 2），
       不等则拒并回 MEMORY_CONFLICT 文案 */
   workspaceMemorySave(id: string, agentId: string, text: string, baseline: string): Promise<FriendsResult<null>>;
+  /** owner 在智能体 tab 改「接力上限」（#950 Task 9）。非 owner 会撞 RLS，
+      主进程翻成「无权修改」 */
+  workspaceSetRelayMaxDepth(id: string, maxDepth: number): Promise<FriendsResult<null>>;
   /** 把 sessionId 这个会话发布进工作区（Task 9 publishSessionToWorkspace）。
       ok:true 带 workspace_sessions 的行 id + Storage 包 id */
   workspacePublishSession(id: string, sessionId: string, title: string): Promise<FriendsResult<{ rowId: string; pkgId: string }>>;
@@ -1511,6 +1514,7 @@ export const CHANNELS = {
   workspaceUsage: "otter:workspaceUsage",
   workspaceMemoryList: "otter:workspaceMemoryList",
   workspaceMemorySave: "otter:workspaceMemorySave",
+  workspaceSetRelayMaxDepth: "otter:workspaceSetRelayMaxDepth",
   workspacePublishSession: "otter:workspacePublishSession",
   workspaceUnpublishSession: "otter:workspaceUnpublishSession",
   workspaceImportSession: "otter:workspaceImportSession",

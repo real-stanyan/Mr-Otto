@@ -871,6 +871,9 @@ interface ChatState {
   loadWorkspaceMemories(id: string): Promise<FriendsResult<WorkspaceMemoryRow[]>>;
   /** 成员手改一档；主进程归一化后落库 */
   saveWorkspaceMemory(id: string, agentId: string, text: string, baseline: string): Promise<FriendsResult<null>>;
+  /** owner 在智能体 tab 改「接力上限」（#950 Task 9）：同十四件套的套路，成功后
+      refreshWorkspaceGroups() 重拉整份快照，失败落 workspaceGroupsError */
+  setWorkspaceRelayMaxDepth(id: string, maxDepth: number): Promise<boolean>;
   /** 把当前/指定会话发布进工作区。回是否成功——rowId/pkgId 用不上时调用方不必接 */
   publishWorkspaceSession(id: string, sessionId: string, title: string): Promise<boolean>;
   /** 只有发布者能撤（服务端也会拦，见 index.ts workspaceUnpublishSession handler） */
@@ -2185,6 +2188,17 @@ export const useChat = create<ChatState>((set, get) => ({
 
   async saveWorkspaceMemory(id, agentId, text, baseline) {
     return window.otter.workspaceMemorySave(id, agentId, text, baseline);
+  },
+
+  async setWorkspaceRelayMaxDepth(id, maxDepth) {
+    const r = await window.otter.workspaceSetRelayMaxDepth(id, maxDepth);
+    if (!r.ok) {
+      set({ workspaceGroupsError: r.message });
+      return false;
+    }
+    set({ workspaceGroupsError: null });
+    await get().refreshWorkspaceGroups();
+    return true;
   },
 
   async publishWorkspaceSession(id, sessionId, title) {

@@ -12,6 +12,7 @@
 // 本文件手机端也会 import 同一份源码，纯类型 + 纯函数，零 IO。
 
 import { normalizeAgentTools, type AgentToolAllow } from "./agentToolAllow.js";
+import { normalizeRelayMaxDepth } from "./agentRelay.js";
 
 export interface WorkspaceMemberRow {
   uid: string;
@@ -71,6 +72,10 @@ export interface WorkspaceSnapshot {
   connectors: WorkspaceConnectorRow[];
   sessions: WorkspaceSessionRow[];
   agents: WorkspaceAgentRow[];
+  /** agent 互相 @ 的接力棒数上限（#950 spec §8）。owner 在智能体 tab 改，
+      runtime 起 turn 前现查（daemon.ts 的 queryRelayMaxDepth）。形状不对回默认 6——
+      同 normalizeRelayMaxDepth 口径 */
+  relayMaxDepth: number;
 }
 
 /** jsonb 的字符串数组列（connectors.tools / agents.models）落地成 string[]：
@@ -94,7 +99,7 @@ function resolveLabel(uid: string, labelOf: (uid: string) => string | null): str
 
 /** 行数据 → snapshot（label 由 profiles 表查来，缺席回 uid 前 8 位） */
 export function assembleSnapshot(
-  ws: { id: string; name: string; owner_uid: string },
+  ws: { id: string; name: string; owner_uid: string; relay_max_depth: unknown },
   members: readonly { uid: string; role: string }[],
   connectors: readonly {
     workspace_id: string; host_uid: string; server_id: string; label: string; tools: unknown;
@@ -143,5 +148,6 @@ export function assembleSnapshot(
       createdBy: a.created_by,
       updatedTs: toEpochMs(a.updated_at),
     })),
+    relayMaxDepth: normalizeRelayMaxDepth(ws.relay_max_depth),
   };
 }
