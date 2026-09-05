@@ -3,6 +3,7 @@
 
 import Database from "better-sqlite3";
 import type { SessionEvent } from "./events.js";
+import type { EventLog } from "./eventLog.js";
 import { shouldPersist } from "./persistencePolicy.js";
 import { BILLED_EVENT_TYPES } from "./deriveUsage.js";
 import type { BilledRow } from "../shared/usageStats.js";
@@ -114,7 +115,7 @@ export interface FtsHit {
   score: number;
 }
 
-export class EventStore {
+export class EventStore implements EventLog {
   private db: Database.Database;
   /** 预编译语句缓存（按 SQL 文本键控）。better-sqlite3 的 prepare() 没有内建缓存，
       每次调用都是一遍 sqlite3_prepare_v2——append 是全库最热的函数，不该每条事件

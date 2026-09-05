@@ -364,7 +364,7 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
             deps.send(cid, { t: "error", msg: throttleMessage(kind) });
             return;
           }
-          await session.say(entry.uid, entry.label, msg.text, msg.mention);
+          await session.say(entry.uid, entry.label, msg.text, msg.mention, msg.mentions);
           return;
         }
 

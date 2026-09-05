@@ -27,14 +27,14 @@
 // ——前缀缓存命中依赖这一点（ADR-0073），一致性测试钉住。
 
 import type { SessionEvent } from "./events.js";
-import type { EventStore } from "./store.js";
+import type { EventLog } from "./eventLog.js";
 import { barrenEventIndexes } from "./barrenTurns.js";
 
 /** 空跑 turn 连续回溯的上限：正常日志一两步就找到活 turn，连着五个空跑
     （全是 429/中断）还没找到就别赌了——退回全量，多花的只是一次读 */
 const MAX_BACKTRACK = 5;
 
-export function boundedContextEvents(store: EventStore, sessionId: string): SessionEvent[] | null {
+export function boundedContextEvents(store: EventLog, sessionId: string): SessionEvent[] | null {
   // fork 链（issue #352）：typed 原子步（lastOfType/ofType）是单会话查询，
   // 看不到父会话前缀里的 checkpoint / skill / memory——分支一律退回全量
   // （load 沿链取数，正确性不受影响；分支的有界重建留给真实需求出现时）

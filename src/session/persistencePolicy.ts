@@ -67,6 +67,7 @@ export function shouldPersist(kind: EmittedKind): boolean {
     case "suggestions_generated":
     case "subagent_spawned":
     case "subagent_briefed":
+    case "agent_briefed": // 派活快照：群里还有谁、这只 agent 管啥，模型可见 = 必须落
     case "memory_loaded":
     case "memory_user_edit":
     case "memory_nudge":

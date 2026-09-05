@@ -151,6 +151,15 @@ function pendingAfter(
         // 第一条 user 消息。不计的话，子会话的圆环从头到尾少算一整篇说明书
         pending += estimateTokens(e.instructions);
         break;
+      case "agent_briefed":
+        // 同 subagent_briefed：工作区多智能体（#928）里这只 agent 的指令快照
+        // 被投影成一条 user 消息（deriveMessages.ts 的 "agent_briefed" 分支）。
+        // 这条 case 曾经缺席——落进这个 switch 的 default 分支，圆环少算了
+        // 这整段自我介绍而不报错。这个文件本身就是 AGENTS.md「新事件类型检查
+        // 清单」漏掉的一处（ADR-0219 补的）——具体排第几看 AGENTS.md 现文，
+        // 这里不写死序号，序号会漂但这条注释不该跟着失效
+        pending += estimateTokens(e.instructions);
+        break;
       case "image_described":
         pending += estimateTokens(e.content); // 同上:代读文本注入为 user 消息
         break;

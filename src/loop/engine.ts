@@ -1,7 +1,8 @@
 // LoopEngine — 把环闭上：输入 → 落盘 → 投影 → 模型 → 落盘 → 工具 → 落盘 → 再投影……
 // 不变量执行处：每一步先 append 再继续，模型看到的永远是日志的投影。
 
-import type { EventStore, NewSessionEvent } from "../session/store.js";
+import type { NewSessionEvent } from "../session/store.js";
+import type { EventLog } from "../session/eventLog.js";
 import type { MemoryLoadedEvent, SessionEvent, UserAttachmentRef, UserTextFile } from "../session/events.js";
 import { deriveMessages, DEFAULT_COMPRESSION, COMPACT_COMPRESSION } from "../session/deriveMessages.js";
 import { barrenEventIndexes } from "../session/barrenTurns.js";
@@ -44,7 +45,7 @@ export const REAUTO_MIN_GROWTH_TOKENS = 20_000;
 export const LONG_TURN_ROUNDS = 30;
 
 export interface LoopEngineOptions {
-  store: EventStore;
+  store: EventLog;
   adapter: ModelAdapter;
   /** 工具表。传函数 = 每个 turn 开始时重算一次（MCP server 中途连上/掉线
       要能被这个会话看见）；传数组 = 也是每 turn 惰性重读**同一个数组引用**
@@ -98,6 +99,9 @@ export interface LoopEngineOptions {
   /** 单调守卫（issue #383）：Pre 钩子之后、执行留痕之前的 deny-only 闸。
       看到的是最终生效参数（过完审批改参与钩子改参）。不给 = 无守卫 */
   guards?: ToolGuard[];
+  /** 这台 engine 代表哪只工作区 agent(#928)。给了就随 env() 缝进每条落盘事件。
+      不给 = 单 agent 会话,一个字段都不加 —— 本机会话的日志与改动前逐字节相同 */
+  agentId?: string;
 }
 
 export class LoopEngine {
@@ -245,8 +249,17 @@ export class LoopEngine {
     return full;
   }
 
-  private env() {
+  private envBase() {
     return { sessionId: this.opts.sessionId, ts: Date.now() };
+  }
+
+  private env() {
+    const base = this.envBase();
+    // 展开而不是恒定写 agentId: undefined —— 后者过不了 exactOptionalPropertyTypes
+    //(tsconfig.json:26):把 undefined 塞进 agentId?: string 的值域是 TS2379,直接编译不过。
+    //(JSON.stringify 那边其实无所谓:对象属性值为 undefined 时整个 key 会被丢掉,
+    // 不会写成 null —— 实测 {"sessionId":"s1","ts":1}。挡住这种写法的是类型不是序列化)
+    return this.opts.agentId ? { ...base, agentId: this.opts.agentId } : base;
   }
 
   /** 这次投影之后有没有落过新的用户消息（issue #871）。projected = 这圈喂给
@@ -545,7 +558,7 @@ export class LoopEngine {
       throw new Error("turn 对不上号（它可能刚结束、新 turn 又开了）——请确认现场后重发");
     }
     if (!text.trim()) throw new Error("插话内容为空");
-    this.append({ ...this.env(), type: "user_message", content: text });
+    this.append({ ...this.envBase(), type: "user_message", content: text });
   }
 
   /** 后台任务结果尾部追加（issue #871，Claude Code task-notification 对照）：
@@ -574,7 +587,7 @@ export class LoopEngine {
 
   private appendBackgroundNow(text: string, taskIds: string[]): void {
     this.append({
-      ...this.env(),
+      ...this.envBase(),
       type: "user_message",
       content: text,
       origin: "background",
@@ -608,7 +621,7 @@ export class LoopEngine {
     background?: { taskIds: string[] }
   ): Promise<"completed" | "aborted"> {
     const opening = this.append({
-      ...this.env(),
+      ...this.envBase(),
       type: "user_message",
       content: userInput,
       // 空数组不落字段:无附件的事件形状与从前逐字节一致(投影回归测试的前提)
@@ -856,7 +869,7 @@ export class LoopEngine {
       // （deriveMessages 读都不读 origin），UI 靠 origin 换皮认出不是人打的
       if (loop) {
         this.append({
-          ...this.env(),
+          ...this.envBase(),
           type: "user_message",
           content: loopNudgeText(loop),
           origin: "loop_guard",

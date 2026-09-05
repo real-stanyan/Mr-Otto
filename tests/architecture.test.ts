@@ -216,4 +216,55 @@ describe("Hard rules(AGENTS.md)是门禁的一部分", () => {
         "它写完会通知 memorySync,绕过它 = 云端少一份"
     ).toEqual([]);
   });
+
+  it("云会话给 LoopEngine 的 store 必须是 agentView 的产物（#928）", () => {
+    const src = readFileSync("services/runtime/src/sessionService.ts", "utf8");
+    // 判据取「new LoopEngine 那一段里 store: 后面跟的是什么」——不是全文搜 agentView
+    // （那样把它写在注释里也能骗过去），并遍历**所有**出现处，用括号计数取完整参数对象。
+    // #928 的独有价值就是 catch 新增调用点；只看第一个会误绿——第二个递了裸 store 也照绿。
+    const constructors = Array.from(src.matchAll(/new LoopEngine\(/g));
+    expect(
+      constructors.length,
+      "LoopEngine 出现 0 次？构造点被挪走了。没有这条断言，会静默变成永远绿"
+    ).toBeGreaterThan(0);
+
+    for (const match of constructors) {
+      // 括号计数：从 `new LoopEngine(` 的 `(` 开始，数完整的参数对象
+      let depth = 1;
+      let pos = match.index! + match[0].length;
+      while (pos < src.length && depth > 0) {
+        if (src[pos] === "(") depth++;
+        else if (src[pos] === ")") depth--;
+        pos++;
+      }
+      const block = src.slice(match.index!, pos);
+
+      // 提取 store: 后面的值
+      const storeMatch = block.match(/store:\s*([^,\n}]+)/);
+      const storeValue = storeMatch?.[1]?.trim() ?? "";
+
+      // 如果是裸标识符（中间变量），找赋值看有没有 agentView
+      const validateStoreValue = (value: string): boolean => {
+        if (value.includes("agentView(")) return true;
+        if (/^[a-zA-Z_$]\w*$/.test(value)) {
+          // 找中间变量的赋值
+          const varPattern = new RegExp(`(?:const|let|var)\\s+${value}\\s*=\\s*([^;\\n]+)`, "m");
+          const varMatch = src.match(varPattern);
+          return varMatch?.[1]?.includes("agentView(") ?? false;
+        }
+        return false;
+      };
+
+      expect(
+        validateStoreValue(storeValue),
+        `new LoopEngine 在第 ${src.slice(0, match.index!).split("\n").length} 行。\n` +
+          `store 字段拿到的是 '${storeValue}'。\n\n` +
+          `为什么必须是 agentView 的产物：\n` +
+          `上下文隔离靠构造——engine 从头到尾只该看见自己 agentId 的痕迹 + 全场发言。` +
+          `漏了就是一只 agent 读到别人的工具输出且界面无异报（ADR-0199、#928）。\n\n` +
+          `修法：改成 agentView(store, spec.agentId) 或类似的过滤产物。` +
+          `如果是中间变量（const view = agentView(...); store: view），断言也会正确处理。`
+      ).toBe(true);
+    }
+  });
 });

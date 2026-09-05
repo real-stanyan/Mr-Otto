@@ -267,6 +267,27 @@ describe("createFrameHandler", () => {
     expect(sayCalls).toEqual([{ uid: "u1", label: "Label(u1)", text: "干活", mention: true }]);
   });
 
+  it("say 帧的 mentions 原样递给 session.say（#928）", async () => {
+    const said: unknown[] = [];
+    const session = fakeSession({
+      say: async (...args: Parameters<CloudSession["say"]>) => {
+        said.push(args);
+      },
+    });
+    const { deps } = makeDeps({ getSession: () => session, labelOf: async () => "alice" });
+    const handler = createFrameHandler(deps);
+
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    await handler.onSessionFrame(
+      "w1",
+      "s1",
+      "c1",
+      encodeCs({ t: "say", text: "@运营 看下销量", mention: true, mentions: ["ops"] })
+    );
+
+    expect(said[0]).toEqual(["u1", "alice", "@运营 看下销量", true, ["ops"]]);
+  });
+
   it("⑤ onGone 清 cid 表：清完后同 cid 再 say 回 denied not_authorized", async () => {
     const { deps, sent } = makeDeps();
     const handler = createFrameHandler(deps);

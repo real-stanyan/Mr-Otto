@@ -642,6 +642,22 @@ export function deriveMessages(
         });
         break;
 
+      case "agent_briefed": {
+        // 注入为 user 消息，手法同 subagent_briefed / skill_invoked
+        //（中途插 system 各家方言兼容性参差，ADR-0047 决定 1）。
+        // **措辞刻意与 subagent 那条不同**：群聊里这只 agent 说的话是说给群里的
+        // 人听的，不是交回给谁的返回值。照抄那条会给模型灌一句关于自己身份的假话
+        const others = event.roster.length
+          ? `群里还有：${event.roster.map((r) => `${r.name}（${r.description}）`).join("、")}。` +
+            `要谁搭手就在你的回复里 @ 他的名字。`
+          : "";
+        messages.push({
+          role: "user",
+          content: `[你是这个工作区里的「${event.name}」。${others}]\n${event.instructions}`,
+        });
+        break;
+      }
+
       case "memory_loaded":
         // 拼进 system 尾部而不是单独一条：① compact 清场时随 system 幸存；
         // ② 放尾部 = volatile tail，前缀缓存只从这里往下失效。

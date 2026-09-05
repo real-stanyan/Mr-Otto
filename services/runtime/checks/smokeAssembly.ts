@@ -20,7 +20,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 import { createFrameHandler, type FrameHandlerDeps } from "../src/frameHandler.js";
-import { createCloudSession, type CloudSession } from "../src/sessionService.js";
+import { createCloudSession, type CloudSession, type AgentSpec } from "../src/sessionService.js";
 import { EventStore } from "../../../src/session/store.js";
 import type { SessionEvent } from "../../../src/session/events.js";
 import type { ModelAdapter } from "../../../src/model/adapter.js";
@@ -105,6 +105,13 @@ async function scenarioMainFlow(): Promise<void> {
       },
     };
 
+    // 冒烟脚本只验装配转不转，不验多 agent 路由（那是 tests/runtime/
+    // sessionService.test.ts 的职责）——单只占位 agent，adapterFor 原样
+    // 回落 fakeAdapter，与这个场景改动前的单 adapter 行为等价（#928 task-9）
+    const smokeAgent: AgentSpec = {
+      agentId: "smoke", name: "smoke", description: "", instructions: "", models: [],
+    };
+
     const fakeWorld: ExecutionWorld = {
       fs: {
         async read() {
@@ -143,7 +150,8 @@ async function scenarioMainFlow(): Promise<void> {
             createdByUid: byUid,
             store,
             world: fakeWorld,
-            adapter: fakeAdapter,
+            agents: async () => [smokeAgent],
+            adapterFor: () => fakeAdapter,
             px: { edgeBase: "http://127.0.0.1:0", runtimeSecret: "smoke-runtime-secret" },
             hostUids: async () => [], // 没有好友代理候选：fetchGrantedTools 空跑，零网络调用
             onEvent: (e) => {

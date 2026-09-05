@@ -19,6 +19,10 @@ const fakeWorld: ExecutionWorld = {
 
 const px: PxCallDeps = { edgeBase: "https://edge.example", runtimeSecret: "sek" };
 
+// 单 agent 场景（#928 之前就有的测试）用的占位 roster——只有一只、指令是空串，
+// 专供沿用旧行为的测试用。真正的多智能体 roster 见下面 describe("多智能体云会话…")
+const DEFAULT_AGENT = { agentId: "default", name: "default", description: "", instructions: "", models: ["fake-model"] };
+
 function newStore(): EventStore {
   const dir = tempDir("mrotto-runtime-session-");
   return new EventStore(join(dir, "session.db"));
@@ -41,7 +45,8 @@ describe("createCloudSession", () => {
       createdByUid: "creator",
       store,
       world: fakeWorld,
-      adapter,
+      agents: async () => [DEFAULT_AGENT],
+      adapterFor: () => adapter,
       px,
       hostUids: async () => [],
       onEvent: (e) => events.push(e),
@@ -50,6 +55,9 @@ describe("createCloudSession", () => {
 
     await session.say("u1", "alice", "你好", true);
 
+    // DEFAULT_AGENT 没有 instructions、又是 roster 里唯一一只——briefIfNeeded
+    // 的守卫（#928 修复轮 3/5）判定这条 brief 说不出任何内容，不落
+    // agent_briefed，事件序列因此与多智能体切片之前逐字节相同
     expect(events.map((e) => e.type)).toEqual(["user_message", "request_envelope", "assistant_message", "turn_ended"]);
     expect(events[0]).toMatchObject({ type: "user_message", content: "[alice]: 你好" });
     // 落盘与 onEvent 是同一份事实
@@ -87,7 +95,8 @@ describe("createCloudSession", () => {
       createdByUid: "creator",
       store,
       world: fakeWorld,
-      adapter,
+      agents: async () => [DEFAULT_AGENT],
+      adapterFor: () => adapter,
       px,
       hostUids: async () => [],
       onEvent: (e) => events.push(e),
@@ -137,7 +146,8 @@ describe("createCloudSession", () => {
       createdByUid: "creator",
       store,
       world: fakeWorld,
-      adapter,
+      agents: async () => [DEFAULT_AGENT],
+      adapterFor: () => adapter,
       px,
       hostUids: async () => [],
       onEvent,
@@ -195,7 +205,8 @@ describe("createCloudSession", () => {
       createdByUid: "creator",
       store,
       world: fakeWorld,
-      adapter,
+      agents: async () => [DEFAULT_AGENT],
+      adapterFor: () => adapter,
       px,
       hostUids: async () => [],
       onEvent,
@@ -207,6 +218,90 @@ describe("createCloudSession", () => {
     expect(approveResults).toEqual([true, false]);
     const decision = events.find((e) => e.type === "approval_decision");
     expect(decision).toMatchObject({ decision: "approved", decidedBy: { uid: "owner", label: "Owner-first" } });
+    store.close();
+  });
+
+  it("⑤ 并发 @：第一条跑着时第二条也 @ 进来，跑完之后协调器必须能再起下一轮（#928 task-8 修复轮 1/5，真实复现过的死锁）", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    let chatCalls = 0;
+    let resolveFirstChat!: (reply: ModelReply) => void;
+
+    const adapter: ModelAdapter = {
+      model: "fake-model",
+      async chat(): Promise<ModelReply> {
+        chatCalls++;
+        if (chatCalls === 1) {
+          // 第一轮攥在手里不 resolve —— 模拟"turn 真的还在跑"，好让第二条
+          // @ 是货真价实地并发进来，不是靠回调时序凑出来的假并发
+          return new Promise<ModelReply>((resolve) => {
+            resolveFirstChat = resolve;
+          });
+        }
+        return { content: `第 ${chatCalls} 轮回复` };
+      },
+    };
+
+    const session = createCloudSession({
+      workspaceId: "w1",
+      sessionId: "s1",
+      ownerUid: "owner",
+      createdByUid: "creator",
+      store,
+      world: fakeWorld,
+      agents: async () => [DEFAULT_AGENT],
+      adapterFor: () => adapter,
+      px,
+      hostUids: async () => [],
+      onEvent: (e) => events.push(e),
+      onUsage: () => {},
+    });
+
+    // 第一条 @：起 turn，但卡在 adapter.chat() 里不会立刻 resolve
+    const firstSay = session.say("u1", "alice", "开始任务", true);
+
+    // 放一拍，让第一条真正跑进 engine.runTurn() → adapter.chat() 卡住的那一刻
+    // （fetchGrantedTools 在 hostUids=[] 时不发真请求，只是个 microtask，
+    // setTimeout(0) 足够把它排空）
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(session.isRunning()).toBe(true);
+
+    // 第二条 @ 并发进来：协调器此刻应该回 queued，不该起第二个 turn
+    await session.say("u2", "bob", "我也有事", true);
+
+    // 断言①（修复轮 1/5，#928）：第二条此刻**不**落 chat_message——它排上了
+    // 队，会被第一条的排空循环真正跑到，届时由 runTurn 落 user_message；这里
+    // 提前落一条 chat_message 会让同一句话产生两条几乎同形状的事件
+    // （`[label]: content`），模型读到的就是同一条指令被念了两遍。这是本次
+    // 修复权衡接受的代价：排队中的消息要等当前 turn 跑完才在群里出现，原来
+    // 是立刻可见
+    expect(
+      events.some((e) => e.type === "chat_message" && (e as { content: string }).content === "我也有事")
+    ).toBe(false);
+
+    // 放第一条过关，等它（连同 finally 里的排空——这次会真的把 bob 那条也
+    // 排空到并跑掉）跑完
+    resolveFirstChat({ content: "第一轮完成" });
+    await firstSay;
+
+    // 断言①-b：bob 那条确实被跑到了——它自己的 user_message 出现在日志里，
+    // 没有因为"排上了没跑"丢数据，只是推迟到了它真正起 turn 的那一刻
+    expect(
+      events.some((e) => e.type === "user_message" && (e as { content: string }).content === "[bob]: 我也有事")
+    ).toBe(true);
+
+    // 断言②：第一条跑完之后，协调器必须归 idle —— 这是这次复现的死锁本体：
+    // finally 里只排一次 nextJob() 的话，会把并发挤进来的第二条 job 捞出来
+    // 却因为它不是 null 而让 running 永久卡在 true
+    expect(session.isRunning()).toBe(false);
+
+    // 断言③：之后第三条 @ 还能真的起下一个 turn —— adapter.chat() 会被
+    // 再调用一次。只断言①②不够：协调器可能"看起来没丢数据"但已经再也
+    // 起不了 turn 了，只有这一条才逼出"回不回得去 idle"这件事
+    const callsBefore = chatCalls;
+    await session.say("u3", "carol", "第三条", true);
+    expect(chatCalls).toBeGreaterThan(callsBefore);
+
     store.close();
   });
 });
@@ -222,7 +317,8 @@ describe("CloudSession.archive（issue #822）", () => {
       createdByUid: "creator",
       store,
       world: fakeWorld,
-      adapter: { model: "fake-model", async chat() { return { content: "" }; } },
+      agents: async () => [DEFAULT_AGENT],
+      adapterFor: () => ({ model: "fake-model", async chat() { return { content: "" }; } }),
       px,
       hostUids: async () => [],
       onEvent: (e) => events.push(e),
@@ -276,5 +372,352 @@ describe("CloudSession.archive（issue #822）", () => {
     expect(revived.archive("bob")).toBe(false);
     expect(second).toEqual([]);
     store.close();
+  });
+});
+
+const AGENTS = [
+  { agentId: "ops", name: "运营", description: "管店铺运营", instructions: "你管店铺运营", models: ["m-ops"] },
+  { agentId: "ads", name: "广告", description: "管投放", instructions: "你管投放", models: ["m-ads"] },
+];
+
+describe("多智能体云会话（#928 切片 1a）", () => {
+  it("@运营 只让运营那只跑,落盘事件带 agentId=ops", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    const seen: string[] = [];
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [],
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: `${a.name}答` }; } }),
+      onEvent: (e) => events.push(e), onUsage: () => {},
+    });
+
+    await session.say("u1", "alice", "@运营 看下销量", true, ["ops"]);
+
+    expect(seen).toEqual(["ops"]);
+    const am = events.filter((e) => e.type === "assistant_message");
+    expect(am).toHaveLength(1);
+    expect(am[0]).toMatchObject({ agentId: "ops", content: "运营答" });
+  });
+
+  it("@ 两只 —— 串行跑完,顺序按 mentions 给的顺序", async () => {
+    const store = newStore();
+    const seen: string[] = [];
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [],
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: `${a.name}答` }; } }),
+      onEvent: () => {}, onUsage: () => {},
+    });
+
+    await session.say("u1", "alice", "@运营 @广告 一起看", true, ["ops", "ads"]);
+
+    expect(seen).toEqual(["ops", "ads"]);
+  });
+
+  it("广告那只看不见运营的工具痕迹,只看得见它说的话", async () => {
+    const store = newStore();
+    const prompts: Record<string, string> = {};
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [],
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({
+        model: a.models[0]!,
+        async chat(messages) {
+          prompts[a.agentId] = JSON.stringify(messages);
+          return { content: `${a.name}答` };
+        },
+      }),
+      onEvent: () => {}, onUsage: () => {},
+    });
+
+    // 先手工塞一条运营的工具痕迹,再让广告跑
+    store.append({ sessionId: "s1", ts: 1, type: "assistant_message", content: "查了",
+                   model: "m-ops", agentId: "ops",
+                   toolCalls: [{ id: "c1", name: "bash", args: "{}" }] });
+    store.append({ sessionId: "s1", ts: 2, type: "tool_result", toolCallId: "c1",
+                   status: "ok", output: "机密的 12 行查询结果", agentId: "ops" });
+
+    await session.say("u1", "alice", "@广告 看投放", true, ["ads"]);
+
+    expect(prompts.ads).toContain("查了");                    // 说的话进来了
+    expect(prompts.ads).not.toContain("机密的 12 行查询结果");  // 工具输出没进来
+  });
+
+  it("mentions 缺席但正文里有 @ —— 服务端用同一份纯逻辑自己认出来", async () => {
+    const store = newStore();
+    const seen: string[] = [];
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [],
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: "答" }; } }),
+      onEvent: () => {}, onUsage: () => {},
+    });
+    // 手机端只发得出布尔那一版
+    await session.say("u1", "alice", "@广告 看投放", true);
+    expect(seen).toEqual(["ads"]); // 不是名单第一只的 ops
+  });
+
+  it("mentions 缺席、正文也没 @ —— 老语义:唤醒名单第一只", async () => {
+    const store = newStore();
+    const seen: string[] = [];
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [],
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: "答" }; } }),
+      onEvent: () => {}, onUsage: () => {},
+    });
+    await session.say("u1", "alice", "在吗", true);
+    expect(seen).toEqual(["ops"]); // 名单第一只 = 默认那只
+  });
+
+  it("排空循环中途抛错(#928 修复轮 1/5):剩下的 job 不再尝试跑,但每个都留下一条 chat_message,协调器不卡死", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    const seen: string[] = [];
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [],
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({
+        model: a.models[0]!,
+        async chat() {
+          // ops 那只的 adapter 直接炸掉,模拟"起跑失败"(hostUids() 抛错、
+          // runTurn 抛错都是这条路径,这里用最直接的 chat() 抛错触发)
+          if (a.agentId === "ops") throw new Error("boom：ops 的 adapter 炸了");
+          seen.push(a.agentId);
+          return { content: `${a.name}答` };
+        },
+      }),
+      onEvent: (e) => events.push(e), onUsage: () => {},
+    });
+
+    // ops 排第一个(拿到 start_turn,真的起跑并抛错),ads 排第二个(queued,
+    // 会在 finally 的丢弃排空里被捞到——但不会被真的跑,因为 ops 已经把这条
+    // 调用的排空循环炸断了)
+    await expect(
+      session.say("u1", "alice", "@运营 @广告 一起看", true, ["ops", "ads"])
+    ).rejects.toThrow("boom");
+
+    // ads 那个 job 被丢弃排空——从没真的起过 turn,它的 adapter.chat() 没被调用过
+    expect(seen).toEqual([]);
+    // 但它的话没有凭空消失:留下一条 chat_message(两只 agent 的 job 共享
+    // 同一条原始消息,所以丢弃排空只会补这一条,不是两条)
+    const chatMessages = events.filter((e) => e.type === "chat_message");
+    expect(chatMessages).toHaveLength(1);
+    expect(chatMessages[0]).toMatchObject({ fromUid: "u1", label: "alice", content: "@运营 @广告 一起看" });
+    // 协调器没有卡死——不是"看起来没丢数据"但已经再起不来了
+    expect(session.isRunning()).toBe(false);
+
+    // 而且真的还能再起下一轮
+    await session.say("u2", "bob", "@广告 还在吗", true, ["ads"]);
+    expect(seen).toEqual(["ads"]);
+  });
+
+  it("多 agent 场景:approval_request.agentId 是当前跑着的那一只(#928 修复轮 1/5)", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    let session!: CloudSession;
+
+    const onEvent = (e: SessionEvent): void => {
+      events.push(e);
+      if (e.type === "approval_request") {
+        session.approve((e as ApprovalRequestEvent).callId, "owner", "Owner", "approved");
+      }
+    };
+
+    session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [],
+      agents: async () => AGENTS,
+      adapterFor: (a) => {
+        let round = 0;
+        return {
+          model: a.models[0]!,
+          async chat() {
+            round++;
+            if (round === 1) return { content: "", toolCalls: [{ id: "cA", name: "bash", args: { cmd: "echo hi" } }] };
+            return { content: `${a.name}跑完了` };
+          },
+        };
+      },
+      onEvent,
+      onUsage: () => {},
+    });
+
+    await session.say("u1", "alice", "@广告 帮我跑个命令", true, ["ads"]);
+
+    // agentId 之前一直没有写入方(#928 之前的单 agent 时代没这个概念)——
+    // 这条断言钉住它:两只 agent 各自弹出的审批卡,日志里要能分清是谁要的
+    const req = events.find((e) => e.type === "approval_request");
+    expect(req).toMatchObject({ agentId: "ads" });
+  });
+
+  it("同一只 agent 排队去重(#928 终审 Critical,修复轮 2/5):它的 job 还排在队里时被连续点名两次,第二次的话不能凭空消失", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    let resolveOpsChat!: (reply: ModelReply) => void;
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [],
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({
+        model: a.models[0]!,
+        async chat() {
+          if (a.agentId === "ops") {
+            // ops 那一轮攥在手里不 resolve —— 让它一直占着 drainer 的位置,
+            // 后面两条 @广告 才真的会先后排进同一份队列,而不是被立刻跑掉
+            return new Promise<ModelReply>((resolve) => { resolveOpsChat = resolve; });
+          }
+          return { content: `${a.name}答` };
+        },
+      }),
+      onEvent: (e) => events.push(e), onUsage: () => {},
+    });
+
+    // 起 ops 的 turn,卡住——这条调用是 drainer,一直没跑完
+    const opsSay = session.say("u1", "alice", "@运营 做 A", true, ["ops"]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(session.isRunning()).toBe(true);
+
+    // 第一次 @广告:enqueue 成功入队("queued"),job 真的排进了队列里,
+    // 只是还没被 drainer 的 nextJob() 捞走(drainer 正卡在 ops 那轮)
+    await session.say("u2", "bob", "@广告 做 B", true, ["ads"]);
+
+    // 第二次 @广告(同一只 agent,前一个 job 还原封不动地躺在队列里没被捞
+    // 走):turnCoordinator 的去重分支命中,回 logged_only 且这个 job **压根
+    // 没有入队**。这条消息如果不特殊处理就是真的丢——它不在队列里,不会有
+    // 任何 runJob 替它落 user_message,finally 的补偿排空也捞不到它
+    await session.say("u3", "carol", "@广告 做 C", true, ["ads"]);
+
+    // carol"做 C"这句话必须在日志里找得到——落成 chat_message 还是
+    // user_message 都行,只要不是"一个字节都没留下"
+    expect(
+      events.some(
+        (e) =>
+          (e.type === "chat_message" || e.type === "user_message") &&
+          (e as { content: string }).content === "@广告 做 C"
+      )
+    ).toBe(true);
+
+    // 收尾:放 ops 过关,不留一条永远 pending 的 promise
+    resolveOpsChat({ content: "运营答完了" });
+    await opsSay;
+  });
+
+  it("去重与排队混在同一条调用里(#928 终审 Critical,修复轮 2/5):[\"logged_only\",\"queued\"] 不该补 chat_message —— 那个 queued 的 job 会自己落 user_message", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    let resolveOpsChat!: (reply: ModelReply) => void;
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [],
+      agents: async () => AGENTS,
+      adapterFor: (a) => {
+        // 只有"ops"第一次被叫到时才攥住不放——它自己的 job 后面还会因为
+        // message3 里也点了它而再跑一轮(那一轮不该也挂住,否则整条排空
+        // 循环真的会卡死,测试本身就跑不完,不是这次要测的东西)
+        let opsCalls = 0;
+        return {
+          model: a.models[0]!,
+          async chat() {
+            if (a.agentId === "ops") {
+              opsCalls++;
+              if (opsCalls === 1) {
+                return new Promise<ModelReply>((resolve) => { resolveOpsChat = resolve; });
+              }
+            }
+            return { content: `${a.name}答` };
+          },
+        };
+      },
+      onEvent: (e) => events.push(e), onUsage: () => {},
+    });
+
+    const opsSay = session.say("u1", "alice", "@运营 做 A", true, ["ops"]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    // 先让"ads"真的排进队列里(queued,还没被捞走)
+    await session.say("u2", "bob", "@广告 做 B", true, ["ads"]);
+
+    const chatCountBefore = events.filter((e) => e.type === "chat_message").length;
+
+    // 这条调用同时点了"ads"(已经在队里,命中去重 → logged_only)和
+    // "ops"(它自己的 job 已被 drainer 捞走、不在队里 → 不去重,真的入队,
+    // 回 queued)。decisions === ["logged_only","queued"]——含至少一个
+    // queued,所以**不该**补 chat_message:那个 queued 的"ops"job 会在
+    // drainer 排空到它时,自己落一条带这句话原文的 user_message
+    await session.say("u3", "carol", "@广告 也麻烦 @运营", true, ["ads", "ops"]);
+
+    expect(events.filter((e) => e.type === "chat_message").length).toBe(chatCountBefore);
+    expect(
+      events.some(
+        (e) => e.type === "chat_message" && (e as { content: string }).content === "@广告 也麻烦 @运营"
+      )
+    ).toBe(false);
+
+    // 放 ops 第一轮过关,让排空循环继续跑完(ops、ads、message3 的 ops job
+    // 依次落盘)
+    resolveOpsChat({ content: "运营答完了" });
+    await opsSay;
+
+    // 验证注释里说的"那个 queued 的 ops job 会自己落 user_message"是真的
+    // 发生了,不是只凭注释断言——message3 的原文最终确实以 user_message
+    // 的身份出现在日志里
+    expect(
+      events.some(
+        (e) => e.type === "user_message" && (e as { content: string }).content === "[carol]: @广告 也麻烦 @运营"
+      )
+    ).toBe(true);
+  });
+
+  it("没提示词也没同伴的占位 agent(#928 终审,修复轮 3/5):brief 说不出任何内容,不该落 agent_briefed", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    // 只有一只、instructions 是空串——过滤掉自己之后 roster 也是空的,
+    // 与 daemon.ts 的 DEFAULT_WORKSPACE_AGENT / smokeAssembly.ts 的 smokeAgent
+    // 同一种形状(runtime:smoke 用的正是这种占位)
+    const SOLO_AGENT = { agentId: "solo", name: "solo", description: "", instructions: "", models: ["m-solo"] };
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [],
+      agents: async () => [SOLO_AGENT],
+      adapterFor: () => ({ model: "m-solo", async chat() { return { content: "答" }; } }),
+      onEvent: (e) => events.push(e), onUsage: () => {},
+    });
+
+    await session.say("u1", "alice", "你好", true);
+
+    expect(events.some((e) => e.type === "agent_briefed")).toBe(false);
+    // 事件序列直接以 user_message 开头——同 npm run runtime:smoke 那条断言
+    expect(events[0]?.type).toBe("user_message");
+  });
+
+  it("没提示词但有同伴(#928 终审,修复轮 3/5):守卫不是'没提示词就不 brief'——roster 非空时仍要落", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    // "solo" 自己没有 instructions,但群里还有"friend"——这条 brief 说得出
+    // "群里还有:friend(帮衬的)",不该被守卫拦下
+    const ROSTER = [
+      { agentId: "solo", name: "solo", description: "", instructions: "", models: ["m-solo"] },
+      { agentId: "friend", name: "friend", description: "帮衬的", instructions: "你帮衬", models: ["m-friend"] },
+    ];
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [],
+      agents: async () => ROSTER,
+      adapterFor: () => ({ model: "m-solo", async chat() { return { content: "答" }; } }),
+      onEvent: (e) => events.push(e), onUsage: () => {},
+    });
+
+    await session.say("u1", "alice", "@solo 你好", true, ["solo"]);
+
+    const briefed = events.find((e) => e.type === "agent_briefed");
+    expect(briefed).toMatchObject({ agentId: "solo", instructions: "" });
   });
 });

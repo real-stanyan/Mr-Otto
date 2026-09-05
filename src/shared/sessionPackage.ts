@@ -121,6 +121,8 @@ export const PRIVACY_VERDICTS: Record<SessionEvent["type"], PrivacyVerdict> = {
   suggestions_generated: "keep",
   subagent_spawned: "keep",
   subagent_briefed: "keep",
+  // 分享会话的隐私闸。agent 的身份是这段对话的一部分。
+  agent_briefed: "keep",
   background_task_started: "keep",
   background_task_completed: "keep",
   residue_baseline: "keep",

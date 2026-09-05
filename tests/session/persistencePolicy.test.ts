@@ -40,6 +40,7 @@ const DURABLE = [
   "suggestions_generated",
   "subagent_spawned",
   "subagent_briefed",
+  "agent_briefed",
   "memory_loaded",
   "memory_user_edit",
   "memory_nudge",
