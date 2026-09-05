@@ -5,7 +5,7 @@ import type { WorkspaceSnapshot } from "../../src/shared/workspaces.js";
 const ws: WorkspaceSnapshot = {
   id: "w", name: "W", ownerUid: "o", connectors: [], sessions: [],
   members: [{ uid: "u1", role: "owner", label: "Stan" }, { uid: "u2", role: "member", label: "Stan" }],
-  agents: [{ agentId: "a_1", name: "运营", description: "", instructions: "", models: [], createdBy: "u1", updatedTs: 0 }],
+  agents: [{ agentId: "a_1", name: "运营", description: "", instructions: "", models: [], tools: [], createdBy: "u1", updatedTs: 0 }],
 };
 const base = { sessionId: "s", ts: 0, seq: 0 } as const;
 

@@ -6,8 +6,8 @@ const ws: WorkspaceSnapshot = {
   id: "w", name: "W", ownerUid: "owner", connectors: [], sessions: [],
   members: [{ uid: "owner", role: "owner", label: "Stan" }, { uid: "m1", role: "member", label: "Mei" }],
   agents: [
-    { agentId: "admin", name: "管理员", description: "", instructions: "", models: [], createdBy: "owner", updatedTs: 0 },
-    { agentId: "a_1", name: "运营", description: "管店铺", instructions: "", models: ["deepseek-v4", "glm-5"], createdBy: "m1", updatedTs: 0 },
+    { agentId: "admin", name: "管理员", description: "", instructions: "", models: [], tools: [], createdBy: "owner", updatedTs: 0 },
+    { agentId: "a_1", name: "运营", description: "管店铺", instructions: "", models: ["deepseek-v4", "glm-5"], tools: [], createdBy: "m1", updatedTs: 0 },
   ],
 };
 

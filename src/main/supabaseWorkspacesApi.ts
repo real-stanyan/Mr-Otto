@@ -99,12 +99,12 @@ export async function fetchWorkspace(
   }[];
   const agents = (unwrap(
     await client.from("workspace_agents")
-      .select("agent_id,name,description,instructions,models,created_by,updated_at")
+      .select("agent_id,name,description,instructions,models,tools,created_by,updated_at")
       .eq("workspace_id", id)
       .order("created_at", { ascending: true }),
   ) ?? []) as {
     agent_id: string; name: string; description: string; instructions: string; models: unknown;
-    created_by: string; updated_at: string;
+    tools: unknown; created_by: string; updated_at: string;
   }[];
   const labels = await fetchProfileLabels(client, members.map((m) => m.uid));
   return assembleSnapshot(ws, members, connectors, sessions, agents, (uid) => labels.get(uid) ?? null);

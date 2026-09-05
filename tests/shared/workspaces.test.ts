@@ -77,18 +77,18 @@ describe("assembleSnapshot", () => {
     expect(snapshot.sessions[0]!.updatedTs).toBe(0);
   });
 
-  it("agents：models 形状不对回 []，updated_at → ms，created_by 原样", () => {
+  it("agents：models/tools 形状不对回 []，updated_at → ms，created_by 原样", () => {
     const snapshot = assembleSnapshot(
       WS, [], [], [],
       [
-        { agent_id: "admin", name: "管理员", description: "", instructions: "", models: ["deepseek-v4"], created_by: "owner-uid-12345678", updated_at: "2026-09-01T00:00:00.000Z" },
-        { agent_id: "a1", name: "运营", description: "管店铺", instructions: "你管运营", models: "nope", created_by: "u2", updated_at: "bad" },
+        { agent_id: "admin", name: "管理员", description: "", instructions: "", models: ["deepseek-v4"], tools: [{ serverId: "shopify", tools: [] }], created_by: "owner-uid-12345678", updated_at: "2026-09-01T00:00:00.000Z" },
+        { agent_id: "a1", name: "运营", description: "管店铺", instructions: "你管运营", models: "nope", tools: "garbage", created_by: "u2", updated_at: "bad" },
       ],
       () => null,
     );
     expect(snapshot.agents).toEqual([
-      { agentId: "admin", name: "管理员", description: "", instructions: "", models: ["deepseek-v4"], createdBy: "owner-uid-12345678", updatedTs: Date.parse("2026-09-01T00:00:00.000Z") },
-      { agentId: "a1", name: "运营", description: "管店铺", instructions: "你管运营", models: [], createdBy: "u2", updatedTs: 0 },
+      { agentId: "admin", name: "管理员", description: "", instructions: "", models: ["deepseek-v4"], tools: [{ serverId: "shopify", tools: [] }], createdBy: "owner-uid-12345678", updatedTs: Date.parse("2026-09-01T00:00:00.000Z") },
+      { agentId: "a1", name: "运营", description: "管店铺", instructions: "你管运营", models: [], tools: [], createdBy: "u2", updatedTs: 0 },
     ]);
   });
 });

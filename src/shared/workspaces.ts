@@ -11,6 +11,8 @@
 //
 // 本文件手机端也会 import 同一份源码，纯类型 + 纯函数，零 IO。
 
+import { normalizeAgentTools, type AgentToolAllow } from "./agentToolAllow.js";
+
 export interface WorkspaceMemberRow {
   uid: string;
   role: "owner" | "member";
@@ -40,6 +42,8 @@ export interface WorkspaceAgentRow {
   description: string;
   instructions: string;
   models: string[];
+  /** 连接器白名单（spec §3）：[] = 整池放行。形状见 agentToolAllow.ts */
+  tools: AgentToolAllow[];
   createdBy: string;
   updatedTs: number;
 }
@@ -86,7 +90,7 @@ export function assembleSnapshot(
   }[],
   agents: readonly {
     agent_id: string; name: string; description: string; instructions: string; models: unknown;
-    created_by: string; updated_at: string;
+    tools: unknown; created_by: string; updated_at: string;
   }[],
   labelOf: (uid: string) => string | null,
 ): WorkspaceSnapshot {
@@ -120,6 +124,7 @@ export function assembleSnapshot(
       description: a.description,
       instructions: a.instructions,
       models: normalizeStringArray(a.models),
+      tools: normalizeAgentTools(a.tools),
       createdBy: a.created_by,
       updatedTs: toEpochMs(a.updated_at),
     })),
