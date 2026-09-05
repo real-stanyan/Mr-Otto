@@ -160,6 +160,7 @@ async function scenarioMainFlow(): Promise<void> {
             },
             onUsage: () => {},
             memory: createInMemoryWorkspaceMemory(),
+            relayMaxDepth: async () => 6,
           });
           activeSessions.set(sessionId, { session, workspaceId: ws });
           return { sessionId };

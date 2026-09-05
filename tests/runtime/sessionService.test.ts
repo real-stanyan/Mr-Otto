@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { createCloudSession, type CloudSession } from "../../services/runtime/src/sessionService.js";
 import { createInMemoryWorkspaceMemory } from "../../services/runtime/src/workspaceMemory.js";
 import { EventStore } from "../../src/session/store.js";
-import type { SessionEvent, ApprovalRequestEvent } from "../../src/session/events.js";
+import type { SessionEvent, ApprovalRequestEvent, AgentRelayEvent, UserMessageEvent } from "../../src/session/events.js";
 import type { ModelAdapter, ModelReply } from "../../src/model/adapter.js";
 import type { ExecutionWorld } from "../../src/world/executionWorld.js";
 import type { PxCallDeps } from "../../services/runtime/src/pxTools.js";
@@ -53,6 +53,7 @@ describe("createCloudSession", () => {
       hostUids: async () => [],
       onEvent: (e) => events.push(e),
       onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
+      relayMaxDepth: async () => 6,
     });
 
     await session.say("u1", "alice", "你好", true);
@@ -114,6 +115,7 @@ describe("createCloudSession", () => {
       hostUids: async () => [],
       onEvent: (e) => events.push(e),
       onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
+      relayMaxDepth: async () => 6,
     });
 
     await session.say("u1", "alice", "开始任务", true);
@@ -166,6 +168,7 @@ describe("createCloudSession", () => {
       hostUids: async () => [],
       onEvent,
       onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
+      relayMaxDepth: async () => 6,
     });
 
     await session.say("u1", "alice", "帮我跑个命令", true);
@@ -226,6 +229,7 @@ describe("createCloudSession", () => {
       hostUids: async () => [],
       onEvent,
       onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
+      relayMaxDepth: async () => 6,
     });
 
     await session.say("u1", "alice", "帮我跑个命令", true);
@@ -271,6 +275,7 @@ describe("createCloudSession", () => {
       hostUids: async () => [],
       onEvent: (e) => events.push(e),
       onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
+      relayMaxDepth: async () => 6,
     });
 
     // 第一条 @：起 turn，但卡在 adapter.chat() 里不会立刻 resolve
@@ -342,6 +347,7 @@ describe("CloudSession.archive（issue #822）", () => {
       hostUids: async () => [],
       onEvent: (e) => events.push(e),
       onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
+      relayMaxDepth: async () => 6,
     });
 
   it("落一条人话 + 一条 session_archived，两条都推给房里的人", () => {
@@ -410,6 +416,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: `${a.name}答` }; } }),
       onEvent: (e) => events.push(e), onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
+      relayMaxDepth: async () => 6,
     });
 
     await session.say("u1", "alice", "@运营 看下销量", true, ["ops"]);
@@ -430,6 +437,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: `${a.name}答` }; } }),
       onEvent: () => {}, onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
+      relayMaxDepth: async () => 6,
     });
 
     await session.say("u1", "alice", "@运营 @广告 一起看", true, ["ops", "ads"]);
@@ -453,6 +461,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
         },
       }),
       onEvent: () => {}, onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
+      relayMaxDepth: async () => 6,
     });
 
     // 先手工塞一条运营的工具痕迹,再让广告跑
@@ -478,6 +487,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: "答" }; } }),
       onEvent: () => {}, onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
+      relayMaxDepth: async () => 6,
     });
     // 手机端只发得出布尔那一版
     await session.say("u1", "alice", "@广告 看投放", true);
@@ -494,6 +504,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: "答" }; } }),
       onEvent: () => {}, onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
+      relayMaxDepth: async () => 6,
     });
     await session.say("u1", "alice", "在吗", true);
     await session.settled(); // #937：say() 不再等 turn 跑完，断言前显式等排空
@@ -529,6 +540,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
       },
       onEvent,
       onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
+      relayMaxDepth: async () => 6,
     });
 
     await session.say("u1", "alice", "@广告 帮我跑个命令", true, ["ads"]);
@@ -560,6 +572,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
         },
       }),
       onEvent: (e) => events.push(e), onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
+      relayMaxDepth: async () => 6,
     });
 
     // 起 ops 的 turn,卡住——这条调用是 drainer,一直没跑完
@@ -629,6 +642,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
         },
       }),
       onEvent: (e) => events.push(e), onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
+      relayMaxDepth: async () => 6,
     });
 
     const opsSay = session.say("u1", "alice", "@运营 做 A", true, ["ops"]);
@@ -684,6 +698,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
       agents: async () => [SOLO_AGENT],
       adapterFor: () => ({ model: "m-solo", async chat() { return { content: "答" }; } }),
       onEvent: (e) => events.push(e), onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
+      relayMaxDepth: async () => 6,
     });
 
     await session.say("u1", "alice", "你好", true);
@@ -709,6 +724,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
       agents: async () => ROSTER,
       adapterFor: () => ({ model: "m-solo", async chat() { return { content: "答" }; } }),
       onEvent: (e) => events.push(e), onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
+      relayMaxDepth: async () => 6,
     });
 
     await session.say("u1", "alice", "@solo 你好", true, ["solo"]);
@@ -730,6 +746,7 @@ describe("多智能体云会话 · 切片 1b（#932 四个坑）", () => {
       store, world: fakeWorld, px, hostUids: async () => [],
       agents: opts.agents, adapterFor: opts.adapterFor,
       onEvent: (e) => opts.events?.push(e), onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
+      relayMaxDepth: async () => 6,
     });
   }
 
@@ -872,6 +889,7 @@ describe("多智能体云会话 · 切片 1b（#932 四个坑）", () => {
         if (e.type === "turn_ended" && midTurnLedger.length === 0) midTurnLedger.push(openTurns(store.load("s1")));
       },
       onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
+      relayMaxDepth: async () => 6,
     });
 
     const first = session.say("u1", "alice", "@运营 看下销量", true, ["ops"]);
@@ -1005,6 +1023,7 @@ describe("say() 收下即返回（issue #937）", () => {
         if (e.type === "approval_request") announceRequest(e as ApprovalRequestEvent);
       },
       onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
+      relayMaxDepth: async () => 6,
     });
 
     let sayResolved = false;
@@ -1066,6 +1085,7 @@ describe("连接器白名单（#941 切片 2）", () => {
       adapterFor: () => adapter, px: pxWithGrants,
       hostUids: async () => ["h1"],
       onEvent: () => {}, onUsage: () => {}, memory: createInMemoryWorkspaceMemory(),
+      relayMaxDepth: async () => 6,
     });
   }
 
@@ -1093,6 +1113,7 @@ describe("工作区记忆（#949 切片 4）", () => {
     return createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [], memory,
+      relayMaxDepth: async () => 6,
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, chat: (m) => chat(a.agentId, m as unknown[]) }),
       onEvent: (e) => events.push(e), onUsage: () => {},
@@ -1131,6 +1152,7 @@ describe("工作区记忆（#949 切片 4）", () => {
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [], memory,
+      relayMaxDepth: async () => 6,
       agents: async () => AGENTS,
       adapterFor: (a) => ({
         model: a.models[0]!,
@@ -1180,6 +1202,7 @@ describe("工作区记忆（#949 切片 4）", () => {
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [], memory: broken,
+      relayMaxDepth: async () => 6,
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { return { content: "好" }; } }),
       onEvent: (e) => events.push(e), onUsage: () => {},
@@ -1188,6 +1211,109 @@ describe("工作区记忆（#949 切片 4）", () => {
     await session.settled();
     expect(events.some((e) => e.type === "assistant_message")).toBe(true);
     expect(events.some((e) => e.type === "workspace_memory_loaded")).toBe(false);
+    store.close();
+  });
+});
+
+describe("agent 互相 @ 接力（#950 切片 5）", () => {
+  function relaySession(store: EventStore, events: SessionEvent[], reply: (agentId: string, round: number) => string, maxDepth = 6) {
+    const rounds: Record<string, number> = {};
+    const seen: string[] = [];
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(),
+      relayMaxDepth: async () => maxDepth,
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({ model: a.models[0]!, async chat() { rounds[a.agentId] = (rounds[a.agentId] ?? 0) + 1; seen.push(a.agentId); return { content: reply(a.agentId, rounds[a.agentId]!) }; } }),
+      onEvent: (e) => events.push(e), onUsage: () => {},
+    });
+    return { session, seen };
+  }
+
+  it("运营回复里 @广告 → 落 agent_relay{ops→ads,1} + 带 relay 的开场白，广告接着跑，fromUid 仍是点火的人", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    const { session, seen } = relaySession(store, events, (id) => (id === "ops" ? "报表好了，@广告 按这个投" : "收到"));
+    await session.say("u1", "alice", "@运营 出报表", true, ["ops"]);
+    await session.settled();
+    expect(seen).toEqual(["ops", "ads"]);
+    const relay = events.find((e) => e.type === "agent_relay");
+    expect(relay).toMatchObject({ fromAgentId: "ops", toAgentId: "ads", depth: 1 });
+    const opening = events.find((e) => e.type === "user_message" && (e as UserMessageEvent).relay);
+    expect(opening).toMatchObject({ fromUid: "u1", mentions: ["ads"], relay: { fromAgentId: "ops", depth: 1 } });
+    expect(relay!.seq).toBeLessThan(opening!.seq);
+    // 广告那轮的 turn_ended 收了这条开场白的口
+    const adsEnd = events.find((e) => e.type === "turn_ended" && (e as { agentId?: string }).agentId === "ads");
+    expect(adsEnd).toBeDefined();
+    store.close();
+  });
+
+  it("自 @ 忽略；没 @ 别人不接力", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    const { session, seen } = relaySession(store, events, () => "@运营 我自己记一下");
+    await session.say("u1", "alice", "@运营 x", true, ["ops"]);
+    await session.settled();
+    expect(seen).toEqual(["ops"]);
+    expect(events.some((e) => e.type === "agent_relay")).toBe(false);
+    store.close();
+  });
+
+  it("棒数到顶硬停：上限 2 时只跑 3 轮（人→ops→ads→ops），第 3 棒被拦，群里出一条「接力到上限」", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    const { session, seen } = relaySession(store, events, (id) => (id === "ops" ? "@广告 你来" : "@运营 你来"), 2);
+    await session.say("u1", "alice", "@运营 开始", true, ["ops"]);
+    await session.settled();
+    expect(seen).toEqual(["ops", "ads", "ops"]);
+    expect(events.filter((e) => e.type === "agent_relay").map((e) => (e as { depth: number }).depth)).toEqual([1, 2]);
+    const cap = events.find((e) => e.type === "chat_message" && (e as { content: string }).content.includes("接力到上限"));
+    expect(cap).toMatchObject({ fromUid: "system" });
+    store.close();
+  });
+
+  it("周期护栏：A↔B 来回到第 4 棒时注一条「打转」，但不停（上限 10 时链子跑到第 10 棒才停）", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    const { session } = relaySession(store, events, (id) => (id === "ops" ? "@广告 你来" : "@运营 你来"), 10);
+    await session.say("u1", "alice", "@运营 开始", true, ["ops"]);
+    await session.settled();
+    const nudges = events.filter((e) => e.type === "chat_message" && (e as { content: string }).content.includes("打转"));
+    expect(nudges.length).toBeGreaterThan(0);
+    const firstNudge = nudges[0]!;
+    const relays = events.filter((e) => e.type === "agent_relay") as AgentRelayEvent[];
+    const hop4 = relays.find((r) => r.depth === 4)!;
+    expect(firstNudge.seq).toBeLessThan(hop4.seq);
+    expect(relays.at(-1)!.depth).toBe(10);
+    store.close();
+  });
+
+  it("人再点一次名 depth 归零：到顶之后人 @运营，新链从第 1 棒开始", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    const { session } = relaySession(store, events, (id) => (id === "ops" ? "@广告 你来" : "收到"), 1);
+    await session.say("u1", "alice", "@运营 一", true, ["ops"]);
+    await session.settled();
+    await session.say("u1", "alice", "@运营 二", true, ["ops"]);
+    await session.settled();
+    expect(events.filter((e) => e.type === "agent_relay").map((e) => (e as { depth: number }).depth)).toEqual([1, 1]);
+    store.close();
+  });
+
+  it("relayMaxDepth 查询抛错时用默认 6，接力照常", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(),
+      relayMaxDepth: async () => { throw new Error("db down"); },
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({ model: a.models[0]!, async chat() { return { content: a.agentId === "ops" ? "@广告 你来" : "收到" }; } }),
+      onEvent: (e) => events.push(e), onUsage: () => {},
+    });
+    await session.say("u1", "alice", "@运营 一", true, ["ops"]);
+    await session.settled();
+    expect(events.some((e) => e.type === "agent_relay")).toBe(true);
     store.close();
   });
 });

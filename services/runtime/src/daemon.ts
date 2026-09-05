@@ -41,7 +41,7 @@ import {
 } from "../../../src/shared/remote/cloudSession.js";
 import { createWsTransport } from "../../../src/shared/remote/wsTransport.js";
 import { ADMIN_AGENT_ID } from "../../../src/shared/workspaceAgents.js";
-import { normalizeRelayMaxDepth } from "../../../src/shared/agentRelay.js";
+import { DEFAULT_RELAY_MAX_DEPTH, normalizeRelayMaxDepth } from "../../../src/shared/agentRelay.js";
 import type { RemoteTransport } from "../../../src/shared/remote/transport.js";
 
 /** 镜像 sandbox.ts 的同名私有常量（未导出，故在此复制一份——两处改动需同步）。
@@ -569,6 +569,11 @@ async function main(): Promise<void> {
       onEvent: broadcast,
       onUsage: () => {}, // usage 记账走上面的 recordUsage 钩子，这个口留白（同 T9 report 的记录）
       memory: workspaceMemory,
+      relayMaxDepth: () =>
+        queryRelayMaxDepth(workspaceId).catch((err: unknown) => {
+          console.warn(`[otto-runtime] relay_max_depth 查询失败，用默认（workspaceId=${workspaceId}）：${err instanceof Error ? err.message : String(err)}`);
+          return DEFAULT_RELAY_MAX_DEPTH;
+        }),
     });
 
     activeSessions.set(sessionId, { session, workspaceId });
