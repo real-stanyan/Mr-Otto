@@ -1206,7 +1206,7 @@ import { applyAgentMention, filterAgentCandidates, mentionQueryAt } from "../../
 describe("mentionQueryAt", () => {
   it("刚打了 @ / 打了一半 / 中文标点后 —— 都算正在打", () => {
     expect(mentionQueryAt("@", 1)).toEqual({ at: 0, query: "" });
-    expect(mentionQueryAt("看下 @运", 4)).toEqual({ at: 3, query: "运" });
+    expect(mentionQueryAt("看下 @运", 5)).toEqual({ at: 3, query: "运" });
     expect(mentionQueryAt("你好，@广", 5)).toEqual({ at: 3, query: "广" });
   });
   it("邮箱 / @ 后面已经有空格 / 光标不在末尾那段 —— 不算", () => {
