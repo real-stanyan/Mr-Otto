@@ -251,7 +251,8 @@ interface ActiveSession {
       notice 那样的一次性：`pushStatus` 每一次都带上它。「我看到的就是全部」
       和「我看到的少了一条」需要的动作完全不同（后者该去问别人、别照着这段
       历史下判断），而在这条修复之前两者只差一行会被下一次成功操作擦掉的灰字
-      （cloudSay 成功就 `workspaceGroupsError: null`）。
+      （当时 cloudSay 成功就 `workspaceGroupsError: null`；那三条如今原样透传
+      `CloudAck`、不再碰那格共享状态，见第四批 C2-I4）。
       每一轮 backlog 落定时**重算**：补齐了就跟着消失——它是这一份历史的属性，
       不是一枚一旦挂上就摘不掉的勋章 */
   gapNote: string | null;

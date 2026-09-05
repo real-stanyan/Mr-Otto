@@ -494,9 +494,12 @@ export interface CloudSessionStatus {
       继续下发，见 services/runtime/src/frameHandler.ts 的 chunkBacklogFrames）。
       **与 notice 相反，这一格是持久的**——只要这份历史还缺着，每一次推送都
       带上它，缺口补齐（重连后 backlog 拉全了）才消失。理由：`notice` 落进
-      渲染层那格一次性的错误文案里，而 `cloudSay`/`cloudApprove` 成功时都会把
+      渲染层那格一次性的错误文案里，当初 `cloudSay`/`cloudApprove` 成功时会把
       它清空——用户发出的第一句话就把「你的历史缺了一块」擦干净了，而
-      「我看到的就是全部」和「我看到的少了一条」需要的动作完全不同。
+      「我看到的就是全部」和「我看到的少了一条」需要的动作完全不同。那三条
+      如今已改成原样透传 `CloudAck`、一个字都不碰 `workspaceGroupsError`
+      （第四批 C2-I4），擦除那条路没了，但这一格该持久的理由不变——它是这份
+      历史的属性，不该由任何一次成功的操作来决定还在不在。
       缺席 = 这份历史是完整的 */
   gapNote?: string;
 }

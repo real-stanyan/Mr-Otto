@@ -59,11 +59,13 @@ import { agentNameOf, labelOf } from "../lib/workspaceView.js";
 import { applyAgentMention, filterAgentCandidates, mentionQueryAt, pickerEmptyState } from "../lib/agentMentionInput.js";
 import { EMBEDDED_CREDENTIAL_MESSAGE, repoUrlHasEmbeddedCredential } from "../lib/cloudRepoUrl.js";
 import {
-  approvalCardTitle, assistantLabel, canStopTurn, hiddenFromCloudTimeline, relayLineText, systemNoteText, turnEndedLineText,
-  userRowIdentity,
+  approvalCardTitle, assistantLabel, canStopTurn, hiddenFromCloudTimeline, relayLineText, stopButtonRows, systemNoteText,
+  turnEndedLineText, userRowIdentity,
 } from "../lib/cloudTimeline.js";
+import { systemNoteDetail } from "../lib/systemNote.js";
 import { TurnErrorState } from "./TurnErrorState.js";
 import { openTurns } from "../../../shared/turnLedger.js";
+import { safeSpeakerLabel, SYSTEM_SPEAKER_UID } from "../../../shared/promptSafe.js";
 import { toolSummary } from "../../../shared/toolSummary.js";
 import { mentionTokens, parseMentions } from "../../../shared/remote/agentMention.js";
 import type {
@@ -486,7 +488,9 @@ export function CloudSessionPage({
                 // 的事件给出非 null，人打的话仍然走下面的气泡渲染
                 const note = systemNoteText(e, ws);
                 if (note !== null) {
-                  return <SystemNoteRow key={e.seq} text={note} />;
+                  // detail 非 null（后台任务那一档）时这一行变成可展开的
+                  // <details>，全文折在里面（第四批 C2-I1）
+                  return <SystemNoteRow key={e.seq} text={note} detail={systemNoteDetail(e)} />;
                 }
                 const identity = userRowIdentity(e, ws, selfUid);
                 return (
@@ -1087,6 +1091,15 @@ function CloudRepoConfigDialog({
     这里人数不定,靠文字标签)。event.mention 为真时补一个 "@Agent" 角标——
     它是发送那一刻"这句话是对 Agent 说的"这个事实的展示,不分是谁发的 */
 function ChatMessageRow({ event, mine }: { event: ChatMessageEvent; mine: boolean }) {
+  // runtime 自己说的话（接力护栏、棒数上限、被踢那句：sessionService 落
+  // chat_message 时用的 fromUid: "system"）不画成气泡（第四批 B2-I1 的 UI 半）：
+  // 气泡的全部含义是「群里有个人说了这句」，而这几句没有人说。判据取 fromUid
+  // 这个**稳定键**不取 label——`safeSpeakerLabel` 已经把保留名「系统」锁给了
+  // system 这个 uid，但那是发言人**名字**那一层的闸；这里问的是另一个问题
+  // （画成什么），两道各自独立
+  if (event.fromUid === SYSTEM_SPEAKER_UID) {
+    return <SystemNoteRow text={event.content} />;
+  }
   return (
     <div
       className={cn(
@@ -1095,7 +1108,12 @@ function ChatMessageRow({ event, mine }: { event: ChatMessageEvent; mine: boolea
       )}
     >
       <span className="px-1 text-[10.5px] text-muted-foreground">
-        {mine ? "" : `${event.label} · `}
+        {/* 名字过一次 safeSpeakerLabel（第四批 B2-I1）：label 是服务端递下来的
+            展示名，而 profiles.name 从没走过写入校验——一个把自己改名叫「系统」
+            的成员照原样画出来就与 runtime 自己的旁白分不开了。这一层与
+            daemon.labelOf / deriveMessages 投影那两处跑的是同一个幂等函数，
+            少跑一处就等于那条路上的闸没关（ADR-0226） */}
+        {mine ? "" : `${safeSpeakerLabel(event.label, event.fromUid)} · `}
         {formatProxyTime(event.ts)}
         {event.mention ? " · @Agent" : ""}
       </span>
@@ -1188,9 +1206,23 @@ function AssistantMessageRow({
     小——它是审计性质的旁白，不是群里任何人说的话 */
 /** 护栏 / 后台任务回注的旁白（#957 C-I5，#936）：样式照 AgentBriefedRow/
     AgentRelayRow——同属审计性质的旁白，不是群里任何人说的话。正文由
-    cloudTimeline.systemNoteText 算好（含 agent 名解析），这里只管画 */
-function SystemNoteRow({ text }: { text: string }) {
-  return <p className="px-1 text-[10.5px] italic text-muted-foreground/70">{text}</p>;
+    cloudTimeline.systemNoteText 算好（含 agent 名解析），这里只管画。
+    `detail` 非 null 时多一层 `<details>`（第四批 C2-I1：后台任务的 stdout/
+    stderr 全文）：**默认收着、无动效**——摘要那一行的字号与颜色一个字不改，
+    展开与否是用户的事，旁白不该因为带了详情就在时间线上变重。`<pre>` 那格
+    显式 `not-italic`：外面这层是斜体，而命令输出斜体读起来是另一种东西。
+    群里 `fromUid === "system"` 的发言（接力护栏 / 棒数上限 / 被踢那句）也走
+    这张——它们同样是 runtime 自己说的话，画成气泡就是冒充群里有个叫「系统」
+    的人（第四批 B2-I1 的 UI 半） */
+function SystemNoteRow({ text, detail }: { text: string; detail?: string | null }) {
+  const cls = "px-1 text-[10.5px] italic text-muted-foreground/70";
+  if (detail === undefined || detail === null) return <p className={cls}>{text}</p>;
+  return (
+    <details className={cls}>
+      <summary>{text}</summary>
+      <pre className="mt-1 whitespace-pre-wrap break-words not-italic text-[11px]">{detail}</pre>
+    </details>
+  );
 }
 
 function AgentBriefedRow({ event }: { event: AgentBriefedEvent }) {
@@ -1230,6 +1262,11 @@ function PendingTurnLines({
   cs: CloudSessionState;
 }) {
   const pending = useMemo(() => openTurns(events), [events]);
+  // 哪几行画得出「停止」（第四批 C2-I3）：同一只 agent 排了两句话时两行都读成
+  // running（turnLedger 认不出「那条动静属于哪一轮」），而在跑的只有最早那一条
+  // ——晚的那行上那颗钮点下去停的是别人的轮次。stopButtonRows 把这条判据算成
+  // 一份 key 集合，这里只查表；权限那一问仍旧归 canStopTurn，两者是且的关系
+  const stoppable = useMemo(() => stopButtonRows(pending), [pending]);
   if (pending.length === 0) return null;
   return (
     <>
@@ -1245,7 +1282,7 @@ function PendingTurnLines({
           <span className="flex-1">
             {agentNameOf(ws, t.agentId)} {t.state === "running" ? "正在回复…" : "排队中…"}
           </span>
-          {canStopTurn(t, selfUid, cs) && <StopTurnButton seq={t.seq} />}
+          {stoppable.has(`${t.seq}:${t.agentId}`) && canStopTurn(t, selfUid, cs) && <StopTurnButton seq={t.seq} />}
         </div>
       ))}
     </>
