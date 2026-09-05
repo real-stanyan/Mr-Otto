@@ -155,12 +155,18 @@ function locate(entries: string[], oldText: string): { idx: number } | { error: 
   return { idx: hits[0]! };
 }
 
-/** 原子批量：任一条失败整批不落；上限只在最终结果上校验 */
-export function applyOps(target: MemoryTarget, entries: string[], ops: MemoryOp[]): ApplyResult {
+/** 与档位无关的一条操作（工作区记忆 #949 也用它：那边的档位不是 MemoryTarget） */
+export type EntryOp =
+  | { action: "add"; content: string }
+  | { action: "replace"; old_text: string; content: string }
+  | { action: "remove"; old_text: string };
+
+/** 原子批量的本体：任一条失败整批不落；上限只在最终结果上校验。
+    label/limit 由调用方给——本机四档查 LABEL/MEMORY_LIMITS，工作区两档查它自己那份 */
+export function applyEntryOps(entries: string[], ops: EntryOp[], bounds: { label: string; limit: number }): ApplyResult {
   const next = [...entries];
   const changed = { added: [] as string[], updated: [] as string[], removed: [] as string[] };
   for (const op of ops) {
-    if (op.target !== target) return { ok: false, error: `这一批只能操作 ${LABEL[target]}，混进了 ${LABEL[op.target]} 的操作` };
     if (op.action === "add") {
       const c = op.content.trim();
       if (!c) return { ok: false, error: "content 为空" };
@@ -186,23 +192,34 @@ export function applyOps(target: MemoryTarget, entries: string[], ops: MemoryOp[
   // 开工时的占用（磁盘上那份），用来判断这批操作是不是**有进展**
   const before = charCount(formatEntries(entries));
   const used = charCount(formatEntries(next));
-  const limit = MEMORY_LIMITS[target];
   // 超限判据：超限**且没变小**才拒（ADR-0116）。原来只看 `used > limit`，于是存量
   // 超限的文件是个死局：旧上限 2200 下写满的 MEMORY（1806 字符）在新上限 1100 下，
   // 模型删掉一条降到 1203 仍然整批被拒、一个字都不写；memory 工具连续失败 3 次就
   // 返回终态「本轮放弃」，模型就此停手。设计里预期的「第一次写入时被自然逼着整理」
   // 因此不成立——实际发生的是静默锁死，受害的恰好是所有在旧上限下写满过的用户。
   // 仍然不自动淘汰、不截断：只是不再惩罚「有进展但没到位」。
-  if (used > limit && used >= before) {
+  if (used > bounds.limit && used >= before) {
     return {
       ok: false,
       error:
-        `${LABEL[target]} 超限：这批操作后 ${used}/${limit} 字符（操作前 ${before}）。` +
+        `${bounds.label} 超限：这批操作后 ${used}/${bounds.limit} 字符（操作前 ${before}）。` +
         `不会自动淘汰——用 remove/replace 合并或删掉过时条目，把总量往下压；` +
-        `只要这批操作让总量比操作前更小就会被接受，可以分几批减到 ${limit} 以内。`,
+        `只要这批操作让总量比操作前更小就会被接受，可以分几批减到 ${bounds.limit} 以内。`,
     };
   }
   return { ok: true, entries: next, changed };
+}
+
+/** 本机四档的入口：先查这一批是不是同一档，再交给 applyEntryOps */
+export function applyOps(target: MemoryTarget, entries: string[], ops: MemoryOp[]): ApplyResult {
+  for (const op of ops) {
+    if (op.target !== target) return { ok: false, error: `这一批只能操作 ${LABEL[target]}，混进了 ${LABEL[op.target]} 的操作` };
+  }
+  const plain: EntryOp[] = ops.map((op) => {
+    const { target: _t, ...rest } = op;
+    return rest as EntryOp;
+  });
+  return applyEntryOps(entries, plain, { label: LABEL[target], limit: MEMORY_LIMITS[target] });
 }
 
 /** 校验"如果某档写成这段文本会不会超限"，不写盘，纯前置检查——不做截断/淘汰，

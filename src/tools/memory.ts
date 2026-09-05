@@ -4,6 +4,8 @@
 // 模型"再找点东西改"，hermes 观测到 1 次正确批量后跟 5 次重复）。
 // 没有 read action：记忆只注入不读（memory_loaded 事件，见 deriveMessages）。
 // 只碰 world.config——硬规则：工具不 import fs。
+// `toOpList` / `inferAction` 导出给云侧的 `services/runtime/src/workspaceMemoryTool.ts` 复用（#949）——
+// 宽容解析的边界只该有一份。
 
 import type { Tool } from "./tool.js";
 import type { ExecutionWorld } from "../world/executionWorld.js";
@@ -30,7 +32,7 @@ const SHAPE_EXAMPLE =
     的调用会撞同一句错误，模型看不出该改哪儿就原样重发，三次后触发终态，整轮记忆丢光。
     宽容只在这个解析边界发生，schema 照旧只声明严格形状（继续引导模型给标准的那种）。
     认不出的形状返回 null（≠ 空数组：空数组是「给了但一条没有」，那是另一句话） */
-function toOpList(v: unknown): Record<string, unknown>[] | null {
+export function toOpList(v: unknown): Record<string, unknown>[] | null {
   if (Array.isArray(v)) return v as Record<string, unknown>[];
   // 单个对象当一条
   if (v !== null && typeof v === "object") return [v as Record<string, unknown>];
@@ -47,7 +49,7 @@ function toOpList(v: unknown): Record<string, unknown>[] | null {
 
 /** action 缺席时从字段反推：这三条不是猜，是三个 action 各自的定义——
     old_text 是「定位既有条目」，content 是「新内容」，谁在谁不在就唯一确定了动作 */
-function inferAction(o: Record<string, unknown>, content: string, oldText: string): unknown {
+export function inferAction(o: Record<string, unknown>, content: string, oldText: string): unknown {
   if (o["action"] !== undefined) return o["action"];
   if (oldText && content) return "replace";
   if (oldText) return "remove";
