@@ -337,7 +337,11 @@ export interface TurnEndedEvent extends SessionEventBase {
   outcome: "completed" | "error" | "aborted" | "interrupted";
   /** 仅 outcome = "error"：异常信息。
       刻意没有 steps 字段：模型调用次数 = 数两条 turn 边界间的 assistant_message，
-      推得出的不落盘（同一原则砍掉了 turn_started） */
+      推得出的不落盘（同一原则砍掉了 turn_started）。
+      例外（#957 A-9 / #933）：重启补跑在每次真正入队前会落一条
+      outcome:"interrupted" 的记号，`error` 上写"重启补跑第 N 次"——这不是
+      异常信息，是给下一次重启读的补跑计数凭据（本进程自己不读它，日志推导
+      才读），放这个字段是为了不新增事件类型，别被上面那句"仅 error"骗到 */
   error?: string;
   /** 仅 outcome = "error"：错误分类（issue #389，抛错处贴的 errorClass）。
       error 存原文（落盘前不许换成人话——猜错了永远查不回去），这里存**抛错

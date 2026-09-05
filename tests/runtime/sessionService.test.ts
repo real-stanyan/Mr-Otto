@@ -959,6 +959,71 @@ describe("多智能体云会话 · 切片 1b（#932 四个坑）", () => {
     store.close();
   });
 
+  it("补跑上限（#957 A-9 / #933）：补跑前先落 interrupted 记号，它对 openTurns 中性、真实 turn 照跑", async () => {
+    const store = newStore();
+    const opening = store.append({
+      sessionId: "s1", ts: 1, type: "user_message", content: "[alice]: @运营 看", fromUid: "u1", mentions: ["ops"],
+    });
+    const seedBefore = store.load("s1"); // 装配前那份快照——用来验证 marker 对它的中性性
+    const seen: string[] = [];
+    let resolveDone!: () => void;
+    const done = new Promise<void>((r) => { resolveDone = r; });
+    open(store, {
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); resolveDone(); return { content: "答" }; } }),
+    });
+    await done;
+    const { openTurns } = await import("../../src/shared/turnLedger.js");
+    for (let i = 0; i < 50 && openTurns(store.load("s1")).length > 0; i++) await new Promise((r) => setTimeout(r, 20));
+    const events = store.load("s1");
+    // 日志里先有 interrupted 记号，再有真实 turn（assistant_message）
+    const markerIdx = events.findIndex((e) => e.type === "turn_ended" && (e as { outcome?: string }).outcome === "interrupted");
+    const assistantIdx = events.findIndex((e) => e.type === "assistant_message");
+    expect(markerIdx).toBeGreaterThan(-1);
+    expect(assistantIdx).toBeGreaterThan(-1);
+    expect(markerIdx).toBeLessThan(assistantIdx);
+    expect(events[markerIdx]).toMatchObject({
+      type: "turn_ended", outcome: "interrupted", agentId: "ops",
+      readUpToSeq: opening.seq - 1, error: "重启补跑第 1 次",
+    });
+    expect(seen).toEqual(["ops"]); // 记号没有拦下真实的补跑
+    // openTurns(seed 当时) 的判定不受 interrupted 影响：把记号手动拼进装配前
+    // 那份快照，判定跟没拼一样（turnLedger 的收口规则对 readUpToSeq < u.seq
+    // 天生中性——见 src/shared/turnLedger.ts 头注）
+    const withMarker = [...seedBefore, events[markerIdx]!];
+    expect(openTurns(withMarker)).toEqual(openTurns(seedBefore));
+    expect(openTurns(events)).toEqual([]); // 真实 turn 收了口
+    store.close();
+  });
+
+  it("补跑上限（#957 A-9 / #933）：已经补跑 3 次仍未收口 —— 不再排，落一条真正的收口", async () => {
+    const store = newStore();
+    const opening = store.append({
+      sessionId: "s1", ts: 1, type: "user_message", content: "[alice]: @运营 看", fromUid: "u1", mentions: ["ops"],
+    });
+    // 模拟前三次重启都没跑完：每次补跑前落的 interrupted 记号都在日志里
+    for (let n = 1; n <= 3; n++) {
+      store.append({
+        sessionId: "s1", ts: 1 + n, type: "turn_ended", outcome: "interrupted", agentId: "ops",
+        readUpToSeq: opening.seq - 1, error: `重启补跑第 ${n} 次`,
+      });
+    }
+    const seen: string[] = [];
+    const session = open(store, {
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: "答" }; } }),
+    });
+    await session.settled();
+    expect(seen).toEqual([]); // 第 4 次不再排
+    const events = store.load("s1");
+    const closeOut = events.at(-1);
+    expect(closeOut).toMatchObject({ type: "turn_ended", outcome: "error", agentId: "ops" });
+    expect((closeOut as { error?: string }).error).toContain("停止补跑");
+    const { openTurns } = await import("../../src/shared/turnLedger.js");
+    expect(openTurns(events)).toEqual([]); // 这条真正的收口把 openTurns 收干净了
+    store.close();
+  });
+
   it("turn 跑到一半被再 @：这一轮收口后它再跑一轮，中间那段 openTurns 仍然列着它（#932 终审 Blocking ①）", async () => {
     const store = newStore();
     const { openTurns } = await import("../../src/shared/turnLedger.js");

@@ -289,6 +289,12 @@ export interface CloudSession {
   archive(byLabel: string): boolean;
 }
 
+/** 重启补跑上限（#957 A-9 / #933）：一条能确定性弄死 daemon 的 turn 不该在
+    每次重启时无限重跑——那既是给 owner 无限计费的洞，也会把每次重启都拖成
+    一次「重放上次的死法」。每次补跑前先落一条 interrupted 记号（下方
+    catchUp），到这个数就不再排、改落一条真正的收口 */
+export const MAX_CATCHUP_ATTEMPTS = 3;
+
 export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   const { store, sessionId } = opts;
   const coordinator = createTurnCoordinator();
@@ -979,9 +985,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // 回调回来）。等待点照旧走 inflight —— settled() 的 while 循环先等这条
     // catchUp，再等它末尾 startDrain() 起的那条排空
     const catchUp = async (): Promise<void> => {
-      const runnable: { agentId: string; fromUid: string; opening: UserMessageEvent }[] = [];
+      const runnable: { agentId: string; fromUid: string; opening: UserMessageEvent; attempt: number }[] = [];
       const kicked: { agentId: string; seq: number }[] = [];
       const skipped: number[] = [];
+      const exhausted: { agentId: string; seq: number; attempts: number }[] = [];
       for (const t of stale) {
         const opening = seed.find((e) => e.seq === t.seq);
         if (t.fromUid === null || !opening || opening.type !== "user_message") {
@@ -996,7 +1003,19 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
           kicked.push({ agentId: t.agentId, seq: t.seq });
           continue;
         }
-        runnable.push({ agentId: t.agentId, fromUid: t.fromUid, opening });
+        // 补跑上限（#957 A-9 / #933）：计数是该 opening 之后、这只 agent 的
+        // interrupted 记号条数——每次补跑都在真正入队前落一条，所以这个数就是
+        // "上一次进程死之前，这条 turn 已经被重跑过几回"。到 3 次说明这条 turn
+        // 大概率是确定性弄死 daemon 的那种：再排一次只是让 owner 再被计一次费、
+        // 让下一次重启继续死在同一个地方
+        const attempts = seed.filter(
+          (e) => e.type === "turn_ended" && e.agentId === t.agentId && e.outcome === "interrupted" && e.seq > t.seq
+        ).length;
+        if (attempts >= MAX_CATCHUP_ATTEMPTS) {
+          exhausted.push({ agentId: t.agentId, seq: t.seq, attempts });
+          continue;
+        }
+        runnable.push({ agentId: t.agentId, fromUid: t.fromUid, opening, attempt: attempts + 1 });
       }
       // **收口先落、再入队**：这几条 turn_ended 的 readUpToSeq 取的是落盘那一刻的
       // 日志尾（同 runJob 的两处合成收口，#957 F1），排在任何 job 起跑之前落盘，
@@ -1012,9 +1031,37 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
           readUpToSeq: lastSeqSeen,
         }));
       }
-      const decisions: EnqueueDecision[] = runnable.map((r) =>
-        coordinator.enqueue({ agentId: r.agentId, fromUid: r.fromUid, opening: r.opening })
-      );
+      // 到上限的那几条：落一条**真正的**收口（outcome:"error"，不是 interrupted
+      // 记号）——它要能把 openTurns 收口（readUpToSeq 取日志尾，同 kicked），
+      // 否则这条 turn 会在下一次重启时又被 openTurns 捞回来，重新数一遍到 3、
+      // 无限循环地"停止补跑"
+      for (const x of exhausted) {
+        notify(store.append({
+          sessionId,
+          ts: Date.now(),
+          type: "turn_ended",
+          outcome: "error",
+          error: "重跑 3 次仍未收口，停止补跑",
+          agentId: x.agentId,
+          readUpToSeq: lastSeqSeen,
+        }));
+      }
+      // interrupted 记号先落、再入队（#957 A-9）：readUpToSeq 取 opening.seq - 1
+      // ——严格小于开场白的 seq，turnLedger 的收口规则对它天生中性（既不收口也
+      // 不算"有动静"），所以这条记号不会把 openTurns 的判定带偏，纯粹是给下一
+      // 次重启读的计数凭据。每条 runnable 各落各的，紧挨在它自己的 enqueue 前面
+      const decisions: EnqueueDecision[] = runnable.map((r) => {
+        notify(store.append({
+          sessionId,
+          ts: Date.now(),
+          type: "turn_ended",
+          outcome: "interrupted",
+          error: `重启补跑第 ${r.attempt} 次`,
+          agentId: r.agentId,
+          readUpToSeq: r.opening.seq - 1,
+        }));
+        return coordinator.enqueue({ agentId: r.agentId, fromUid: r.fromUid, opening: r.opening });
+      });
       if (skipped.length > 0) {
         console.warn(
           `[otto-runtime] 重启补跑跳过 ${skipped.length} 条（缺 fromUid 或开场白不是 user_message，它们会一直停在「排队中」）：` +
@@ -1027,14 +1074,20 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
             `session=${sessionId} seq=${kicked.map((k) => k.seq).join(",")}`
         );
       }
+      if (exhausted.length > 0) {
+        console.warn(
+          `[otto-runtime] 重启补跑 ${exhausted.length} 条到达上限（第 ${MAX_CATCHUP_ATTEMPTS} 次仍未收口，停止补跑）：` +
+            `session=${sessionId} seq=${exhausted.map((x) => x.seq).join(",")}`
+        );
+      }
       // 补跑是一条**没有任何人发起**的模型调用（可能真花钱），所以它得说一声：
       // 不打这行日志的话，"daemon 一重启就自己跑了一轮"在运维那边完全不可见。
-      // 数的是**真排上的那几条**不是 stale 全体：跳过 / 不在籍的上面各有一行，
-      // 三处都算一遍就成了"说跑了 3 个、实际跑了 1 个"
+      // 数的是**真排上的那几条**不是 stale 全体：跳过 / 不在籍 / 到上限的上面
+      // 各有一行，都算一遍就成了"说跑了 3 个、实际跑了 1 个"
       if (runnable.length > 0) {
         console.log(
           `[otto-runtime] 重启补跑 ${runnable.length} 个未收口的 turn（session=${sessionId}）：` +
-            runnable.map((r) => `${r.agentId}@${r.opening.seq}`).join(" ")
+            runnable.map((r) => `${r.agentId}@${r.opening.seq}（第 ${r.attempt} 次）`).join(" ")
         );
       }
       // 走 startDrain 与 say() 同一条路，settled() 才等得到它（issue #937）

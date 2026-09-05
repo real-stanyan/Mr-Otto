@@ -874,8 +874,15 @@ async function main(): Promise<void> {
   if (cloudErr) {
     console.warn(`[otto-runtime] 启动时拉取存量云会话失败，本轮不恢复任何房间：${cloudErr.message}`);
   } else {
-    for (const row of (cloudSessions ?? []) as { id: string; workspace_id: string; publisher_uid: string }[]) {
+    const rows = (cloudSessions ?? []) as { id: string; workspace_id: string; publisher_uid: string }[];
+    for (const [i, row] of rows.entries()) {
       try {
+        // 启动错峰（#957 A-9 / #933）：openSessionRoom 装配出的 CloudSession
+        // 一开工就可能触发重启补跑，而补跑起 turn = 起 sandbox 容器。N 条会话
+        // 各自补跑时若同一 tick 全部起步，就是 N 个容器同时抢这台 VPS 的
+        // CPU/内存/磁盘 I/O——错峰不改变总工作量，只把它摊开，第 i 条话之后
+        // 再开房间
+        if (i > 0) await new Promise((r) => setTimeout(r, i * 1500));
         const owner = await ownerOf(row.workspace_id);
         const session = openSessionRoom(row.workspace_id, row.id, owner, row.publisher_uid);
         // **日志是事实，archived 那一列只是缓存**（issue #822）：归档时写库
