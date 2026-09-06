@@ -2107,8 +2107,90 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
     expect(line.content).toContain("在等");
     expect(line.content).toContain("px_h1_shopify_list_orders");
     expect(line.content).toContain("「广告」"); // 正在等的是哪只
+    // **纯接力形状下审批人名字仍是人的真名**（复审 Medium 1）：这一棒的开场白是
+    // `relayOpeningText` 生成的 `[系统] …`，`speakerLabelOf` 的前缀正则匹配不上，
+    // 只走那条老路的话这里会写成 uid 前 8 位（`u1`）——而这句话唯一的用途就是让
+    // alice 知道群卡在等她。名字来自 speakerLabels（她那条 user_message 落盘时记的）
+    expect(line.content).toContain("「alice」");
+    expect(line.content).not.toContain("「u1」");
     expect(line.content).toContain("2 分钟内不批按拒绝处理");
     expect(waitLines()).toHaveLength(1);
+    store.close();
+  });
+
+  it("#959：一个接力 job 里弹两张卡 —— 群里只出一次声（第 2..N 句是噪音，还进每只 agent 的上下文）", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    let session!: CloudSession;
+    let adsRounds = 0;
+    session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px: pxWithGrants, hostUids: async () => ["h1"],
+      memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true, relayMaxDepth: async () => 6,
+      contextWindowOf: () => undefined,
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({
+        model: a.models[0]!,
+        async chat(): Promise<ModelReply> {
+          if (a.agentId === "ops") return { content: "@广告 你来下单" };
+          adsRounds++;
+          // 同一轮里连着两把要批的刀，然后才收尾
+          if (adsRounds <= 2) return { content: "", toolCalls: [{ id: `c${adsRounds}`, name: "px_h1_shopify_list_orders", args: { page: adsRounds } }] };
+          return { content: "看完了" };
+        },
+      }),
+      onEvent: (e) => {
+        events.push(e);
+        if (e.type === "approval_request") session.approve((e as ApprovalRequestEvent).callId, "owner", "Owner", "approved");
+      },
+      onUsage: () => {},
+    });
+
+    await session.say("u1", "alice", "@运营 出报表", true, ["ops"]);
+    await session.settled();
+
+    expect(events.filter((e) => e.type === "approval_request")).toHaveLength(2);
+    const lines = events.filter((e) => e.type === "chat_message" && e.fromUid === "system" && e.content.includes("在等"));
+    expect(lines).toHaveLength(1);
+    store.close();
+  });
+
+  it("#959：人自己 @ 起的那一轮真弹了卡（bash）也不出声 —— 判据是 relay 不是「有没有审批」", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    let session!: CloudSession;
+    let rounds = 0;
+    session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [],
+      memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true, relayMaxDepth: async () => 6,
+      contextWindowOf: () => undefined,
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({
+        model: a.models[0]!,
+        async chat(): Promise<ModelReply> {
+          rounds++;
+          // bash 在云会话里是**无条件**要批的（engine 那侧没有 bypass 那一格），
+          // 与 ADR-0225 那道连接器闸无关——所以这一轮确实有 approval_request
+          if (rounds === 1) return { content: "", toolCalls: [{ id: "cB", name: "bash", args: { cmd: "echo hi" } }] };
+          return { content: "跑完了" };
+        },
+      }),
+      onEvent: (e) => {
+        events.push(e);
+        if (e.type === "approval_request") session.approve((e as ApprovalRequestEvent).callId, "owner", "Owner", "approved");
+      },
+      onUsage: () => {},
+    });
+
+    await session.say("u1", "alice", "@广告 跑个命令", true, ["ads"]);
+    await session.settled();
+
+    // 卡确实弹了 —— 否则这条用例证的是「没有审批」而不是「非接力轮不出声」
+    expect(events.some((e) => e.type === "approval_request")).toBe(true);
+    expect(events.filter((e) => e.type === "chat_message" && e.fromUid === "system" && e.content.includes("在等"))).toHaveLength(0);
     store.close();
   });
 

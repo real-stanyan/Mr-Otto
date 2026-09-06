@@ -409,9 +409,20 @@ export const MAX_CATCHUP_ATTEMPTS = 3;
     `<换行伪造行> 已不在这个工作区…` 这条模型可见的系统发言的一部分。幂等，
     所以对新行是空操作（`promptSafe.ts` 头注：三层各跑一遍正是它的设计前提） */
 export function speakerLabelOf(content: string | undefined, fromUid: string): string {
+  const label = labelFromPrefix(content);
+  return label !== null ? safeSpeakerLabel(label, fromUid) : fromUid.slice(0, 8);
+}
+
+/** 开场白正文那个 `[label]: ` 前缀里的名字；没有前缀回 `null`。
+    **单独抽出来只为了「这条日志到底带没带名字」有个说得出口的答案**（#959 复审
+    Medium 1）：`speakerLabelOf` 把「没带」翻译成 uid 前 8 位——那是取名字时正确
+    的退路，但拿来喂名字表就是把一个假名字记成事实。接力开场白正是没带的那一种
+    （`relayOpeningText` 的形状是 `[系统] …`，`]` 后面没有冒号），所以这个区分
+    不是理论上的。正则**只此一份**：两处各写一遍，改前缀那天会有一处安静地不认 */
+function labelFromPrefix(content: string | undefined): string | null {
   const m = content ? /^\[([^\]]*)\]: /.exec(content) : null;
   const label = m?.[1] ?? "";
-  return label.length > 0 ? safeSpeakerLabel(label, fromUid) : fromUid.slice(0, 8);
+  return label.length > 0 ? label : null;
 }
 
 /** 被踢的发起人那句话已经在 append-only 的日志里了，删不掉——只能在它后面补
@@ -437,6 +448,36 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       跑久了的会话，每起一个 turn 都要把整份日志重读一遍再 O(n²) 扫一遍）。
       判据与安全性论证写在 agentRelay.ts 的 RelayBounds 头注上 */
   const bounds = relayBoundsOf(seed);
+  /** uid → 他在这条会话里叫什么（#959 复审 Medium 1）。装配时从 `seed` 整份折叠
+      一次、之后在 `notify` 里逐条推进——与上面 `bounds` **同一个形状**，理由也
+      同一条：日志是这条会话唯一的事实，而 runtime 手上没有 profiles 表。
+      为什么非要这张表：接力棒上出声那句话要说出「在等谁批」，而审批人是**点火
+      的那个人**；那一棒的开场白是 `relayOpeningText` 生成的 `[系统] …`，
+      `speakerLabelOf` 的前缀正则匹配不上，落到 uid 前 8 位——而「人 @ A、A 接力
+      @ B」恰恰是最常见的形状，也就是说最常见的那次这句话说的是 `u1` 不是「Rick」，
+      而这句话唯一的用途就是让那个具体的人知道群卡在等他。
+      命中率实质是 100%：点火的人一定在这条会话里说过话（`say()` 起 turn 之前就
+      把他那条 `user_message{fromUid}` 落盘了），重启后也在 `seed` 里。
+      **取出来仍然过 `safeSpeakerLabel`**（在写入这张表那一刻跑）：日志 append-only，
+      批次 2 之前落盘的前缀没过闸——理由与 `speakerLabelOf` 头注那条一字不差，
+      而 `safeSpeakerLabel` 幂等，跑两遍与跑一遍同一个结果 */
+  const speakerLabels = new Map<string, string>();
+  function learnSpeakerLabel(e: SessionEvent): void {
+    // 两类事件各带半个名字来源：chat_message 有独立的 `label` 栏位（人说的那句
+    // 闲聊、以及系统旁白）；user_message 只有正文前缀（`say()` 拼的那个）。
+    // 后者要求前缀**真的在**——`labelFromPrefix` 回 null 的那些（接力开场白、
+    // 护栏注入的旁白）一律不进表，否则一条 `[系统] …` 的接力开场白会把点火那个人
+    // 的名字记成「系统」，比没有名字更糟
+    if (e.type === "chat_message") {
+      if (e.fromUid && e.label) speakerLabels.set(e.fromUid, safeSpeakerLabel(e.label, e.fromUid));
+      return;
+    }
+    if (e.type === "user_message" && e.fromUid) {
+      const label = labelFromPrefix(e.content);
+      if (label !== null) speakerLabels.set(e.fromUid, safeSpeakerLabel(label, e.fromUid));
+    }
+  }
+  for (const e of seed) learnSpeakerLabel(e);
   let currentInitiator: string | null = null;
   /** 这一刻正在跑 turn 的是哪只 agent（#928）。approval_request 落盘时读它——
       群里两只 agent 各自弹出的审批卡，日志里要能分清是谁要的 */
@@ -447,11 +488,16 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       （验籍 / `agents()` / brief / 取记忆 / `hostUids()` + `fetchGrantedTools`
       每个成员一次 edge 往返）是几次真网络调用，人在那个窗口里按停止，回一句
       "此刻没有正在跑的 turn"是撒谎——他明明看着那一行在转。
-      `openingContent` 顺路带着（#959）：审批出声那句话要说出"在等谁批"，而
-      日志里没有 profiles 表——开场白正文那个 `[label]: ` 前缀是唯一现成的名字
-      来源（speakerLabelOf）。放在这里而不是让 onRequest 现去 load 日志：
-      onRequest 是 decide 的同步回调，为一句旁白读一遍日志是白付的 IO */
+      `openingContent` 顺路带着（#959）：审批出声那句话要说出"在等谁批"。今天
+      主力名字来源是 `speakerLabels` 那张表，这条正文是它查不到时的退路
+      （`speakerLabelOf` 读正文里的 `[label]: ` 前缀）。放在这里而不是让
+      onRequest 现去 load 日志：onRequest 是 decide 的同步回调，为一句旁白读一遍
+      日志是白付的 IO */
   let currentJob: { agentId: string; fromUid: string; openingContent: string } | null = null;
+  /** 这个 job 已经为审批出过一次声了吗（#959 复审 Medium 2）。每进一次 runJob
+      复位（紧挨 `router.setRelayTurn`，同一个时机同一个作用域）——判据是"这一轮"
+      不是"这张卡"，所以它跟着 job 走而不是跟着 callId 走 */
+  let relayWaitAnnounced = false;
   /** 此刻**打得动**的那台 engine（#957 A-2 复审 Important）——`abortTurn()` 唯一
       够得着的口。位置很讲究：`runLoggedTurn` 的**前一行**置位，中间不许有
       `await`。初版置在 `engineFor(spec)` 之后，而那之后还隔着
@@ -509,6 +555,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // 更小 = 多读几条，永远不会算大**。这段推理不依赖任何一条会被别人违反的
     // 不变量——将来谁再加一条绕过 notify 的 append，这里也不会因此出错
     advanceRelayBounds(bounds, e);
+    // 名字表跟着走（#959 复审 Medium 1）。同 advanceRelayBounds 那条推理：漏掉
+    // 一条只是少认识一个人（退回 speakerLabelOf 的老路），不会记错——所以
+    // daemon.ts 那几条绕过 notify 的 append 在这里也不构成正确性问题
+    learnSpeakerLabel(e);
     opts.onEvent(e);
   }
 
@@ -569,26 +619,39 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // **接力棒上的审批要在群里出声**（#959）。冻结本身没打算拦：drain 是串行的，
       // 一张挂起的卡把这条会话之后的每个 turn 都压住，而接力棒上的审批人是**点火
       // 的那个人**——这一轮不是他叫起来的，他多半早就不看这条会话了。修法两半：
-      // 短超时把冻多久封顶（approvalRouter 的 RELAY_APPROVAL_TIMEOUT_MS），这一半
-      // 是让冻结**有声**——谁在等、等谁批、批的是哪把刀、不批会怎样。
+      // 短超时把冻多久封顶（approvalRouter 的 relayTimeoutMs），这一半是让冻结
+      // **有声**——谁在等、等谁批、批的是哪把刀、不批会怎样。
       // 走 logChat（chat_message{fromUid:"system"}）不新增事件类型：agentView 里是
       // keep，群里所有人**和所有 agent**都读得到，正在等的那只自己也看得见。
-      // 名字两头都取"此刻算得出的事实"：agent 名字现取 specNames（runJob 每次刷新，
-      // 同 ADR-0202 的纪律），审批人名字取开场白前缀（speakerLabelOf，取不到退回
-      // uid 前 8 位——不猜、也不编一个名字出来）。
+      //
+      // **作用域是接力棒上的任何审批**，不只是 ADR-0225 决策 5 那道连接器闸
+      // （复审 Medium 2）：`setRelayTurn` 按整条 turn 打开，而云会话里 `bash` /
+      // `write_file` / `create_agent` 都是无条件要批的（engine 那侧没有 bypass
+      // 那一格）。这是故意的——冻结与是哪把刀无关。
+      // **但一个 job 只出一次声**（`relayWaitAnnounced`）：一只接力进来的 agent
+      // 跑十步 bash 就是十行「在等…批准 bash」，而这条 chat_message 在 agentView
+      // 里是 keep——它进每一只 agent 的模型上下文，十行等于把上下文喂成噪音。
+      // 「冻结要有声」这个目的第一句就完全达成了；第 2..N 张卡本身照旧广播
+      // （approval_request 是独立事件），信息一条没丢，丢的只是重复的旁白。
+      //
+      // 名字两头都取"此刻算得出的事实"：agent 名字现取 specNames（runJob 每次
+      // 刷新，同 ADR-0202 的纪律）；审批人名字先查 speakerLabels（这条会话里他
+      // 自报过的名字），查不到才退回开场白前缀那条老路——纯接力形状下开场白是
+      // `[系统] …`，前缀正则匹配不上，只走老路的话这句话说的是 uid 前 8 位。
+      // 分钟数取 `req.timeoutMs`（router 这一刻真正用的那一档，复审 Low 3）而不是
+      // 常量：拿常量自己算的话，哪天有人传了 relayTimeoutMs，两处会给出不同的数。
       // `currentJob` 兜一道 null：onRequest 是 decide 的同步回调，理论上只在 turn
-      // 里触发，但少了这句就得靠"不可能为 null"这个假设活着。
-      // 分钟数用 RELAY_APPROVAL_TIMEOUT_MS 常量：这里建 router 时没传 relayTimeoutMs，
-      // 所以它**就是**router 这一刻用的那一档；哪天真要覆盖，两处得一起改
-      if (req.relay && currentJob) {
+      // 里触发，但少了这句就得靠"不可能为 null"这个假设活着
+      if (req.relay && currentJob && !relayWaitAnnounced) {
+        relayWaitAnnounced = true;
         logChat(
           "system",
           "系统",
           relayApprovalWaitText(
             specNames.get(currentJob.agentId) ?? currentJob.agentId,
-            speakerLabelOf(currentJob.openingContent, currentJob.fromUid),
+            speakerLabels.get(currentJob.fromUid) ?? speakerLabelOf(currentJob.openingContent, currentJob.fromUid),
             req.toolName,
-            RELAY_APPROVAL_TIMEOUT_MS
+            req.timeoutMs
           ),
           false
         );
@@ -1020,6 +1083,9 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // 判据与下面 requiresApproval 那一处**逐字同一个** `openingDepth > 0`：两处
     // 分家的话，会出现"弹了卡却按 600s 等、还不出声"这种最难查的组合
     router.setRelayTurn(openingDepth > 0);
+    // 出声一轮只出一次（#959 复审 Medium 2）：与上一行同一个时机复位，两处分家
+    // 就会出现"接力口径开了、旁白却还记着上一轮已经说过"这种只在第二轮才现形的漏说
+    relayWaitAnnounced = false;
     currentInitiator = job.fromUid;
     currentAgentId = job.agentId;
     // 停止键的 idle 判据（#957 A-2 复审）：从**这一刻**起这条会话就欠着一轮，
@@ -1136,8 +1202,13 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         // **这道闸的代价由 #959 收口**：审批人多半不在场，而 drain 串行——这张卡
         // 挂着的每一秒群里其它回复都在排队。所以接力棒上的卡走短超时（2 分钟，
         // approvalRouter 的 RELAY_APPROVAL_TIMEOUT_MS，同一个 `openingDepth > 0`
-        // 判据经 router.setRelayTurn 递过去），且挂起那一刻在群里出一句声
-        // （relayApprovalWaitText，落在上面的 onRequest 里）
+        // 判据经 router.setRelayTurn 递过去），且这一轮的第一张卡在群里出一句声
+        // （relayApprovalWaitText，落在上面的 onRequest 里）。
+        // **那两样的作用域比这一行宽**：`setRelayTurn` 按整条 turn 打开，管的是
+        // 接力棒上的**任何**审批——云会话里 `bash` / `write_file` / `create_agent`
+        // 无条件要批（engine 那侧没有 bypass），在接力棒上一样只等 2 分钟。故意
+        // 如此：#959 冻的是整个群聊，与是哪把刀无关。已知代价：`create_agent` 的
+        // 卡故意放未截断的提示词全文让人读完再批（ADR-0226），2 分钟是紧的
         cachedPxTools = buildPxTools(opts.px, job.fromUid, filterGrantedByAllow(granted, spec.tools), {
           requiresApproval: openingDepth > 0,
         });

@@ -121,12 +121,15 @@ describe("审批路由", () => {
 describe("接力棒上的审批超时（#959）", () => {
   it("setRelayTurn(true)：120s 就 deny，reason 说清是接力，onRequest 带 relay:true 且 expiresTs 按短的那个算", async () => {
     vi.useFakeTimers();
-    const reqs: { relay: boolean; expiresTs: number }[] = [];
+    const reqs: { relay: boolean; expiresTs: number; timeoutMs: number }[] = [];
     const r = createApprovalRouter({ ownerUid: "o", now: () => 0, onRequest: (q) => reqs.push(q as never) });
     r.setInitiator("a");
     r.setRelayTurn(true);
     const p = r.decide(call, tool);
     expect(reqs[0]!.relay).toBe(true);
+    // 消费方（sessionService 那句旁白）按这个数算分钟，不自己拿常量——传了
+    // relayTimeoutMs 的那天，两处才不会给出不同的数（复审 Low 3）
+    expect(reqs[0]!.timeoutMs).toBe(RELAY_APPROVAL_TIMEOUT_MS);
     // 卡上那行倒计时与日志里的 expiresTs 读的都是这个数——它要是还写着 600s，
     // 界面会显示"还有 10 分钟"然后在第 2 分钟自己拒掉
     expect(reqs[0]!.expiresTs).toBe(RELAY_APPROVAL_TIMEOUT_MS);
@@ -140,13 +143,14 @@ describe("接力棒上的审批超时（#959）", () => {
 
   it("setRelayTurn(false)：600s 照旧，2 分钟到了还挂着，reason 仍是「审批超时」", async () => {
     vi.useFakeTimers();
-    const reqs: { relay: boolean; expiresTs: number }[] = [];
+    const reqs: { relay: boolean; expiresTs: number; timeoutMs: number }[] = [];
     const r = createApprovalRouter({ ownerUid: "o", now: () => 0, onRequest: (q) => reqs.push(q as never) });
     r.setInitiator("a");
     r.setRelayTurn(false);
     const p = r.decide(call, tool);
     expect(reqs[0]!.relay).toBe(false);
     expect(reqs[0]!.expiresTs).toBe(600_000);
+    expect(reqs[0]!.timeoutMs).toBe(600_000);
     let settled = false;
     void p.then(() => { settled = true; });
     await vi.advanceTimersByTimeAsync(RELAY_APPROVAL_TIMEOUT_MS + 1);
@@ -170,10 +174,13 @@ describe("接力棒上的审批超时（#959）", () => {
 
   it("relayTimeoutMs 可覆盖，分钟数跟着改", async () => {
     vi.useFakeTimers();
-    const r = createApprovalRouter({ ownerUid: "o", relayTimeoutMs: 60_000, onRequest: () => {} });
+    const reqs: { timeoutMs: number }[] = [];
+    const r = createApprovalRouter({ ownerUid: "o", relayTimeoutMs: 60_000, onRequest: (q) => reqs.push(q as never) });
     r.setInitiator("a");
     r.setRelayTurn(true);
     const p = r.decide(call, tool);
+    // 覆盖之后 req 上那个数跟着改——旁白那句「几分钟内不批」读的正是它
+    expect(reqs[0]!.timeoutMs).toBe(60_000);
     await vi.advanceTimersByTimeAsync(60_001);
     await expect(p).resolves.toMatchObject({ reason: "审批超时（接力棒上的调用，1 分钟内没人批）" });
     vi.useRealTimers();

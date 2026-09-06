@@ -24,7 +24,13 @@ export interface ApprovalRouterOpts {
       （spec §4.2），而这一棒是上一只 agent 替他叫起来的，他多半早就不看了。
       而 drain 是串行的：一张没人批的卡把这条会话之后的每一个 turn 都压住，
       默认口径下整个群聊冻十分钟。短超时是把冻结时长封顶，出声那一半在
-      sessionService（relayApprovalWaitText） */
+      sessionService（relayApprovalWaitText）。
+      **作用域是接力棒上的任何审批，不只是连接器**（复审 Medium 2）：这一档由
+      `setRelayTurn` 按整条 turn 打开，云会话里 `bash` / `write_file` /
+      `create_agent` 都是无条件要批的（engine 那一侧没有 bypass 那一格），所以
+      它们在接力棒上一样只等 2 分钟。这是**故意的**——冻结与是哪把刀无关，
+      #959 冻的正是整个群聊。已知代价：`create_agent` 的卡故意放未截断的提示词
+      全文让人读完再批（ADR-0226），2 分钟读完一份完整提示词是紧的 */
   relayTimeoutMs?: number;
   now?: () => number;
   onRequest: (req: {
@@ -36,12 +42,18 @@ export interface ApprovalRouterOpts {
     argsFields?: { label: string; value: string }[];
     initiatorUid: string;
     /** 这张卡什么时候自己 deny——**按这一轮实际用的那档超时算**（#959）：
-        卡上的倒计时与日志里的 expiresTs 都读它，写着 600s 却在第 2 分钟拒掉
-        是最难查的那种撒谎 */
+        日志里的 `expiresTs` 读它（今天还没有界面读这个数，复审 Nit 5），
+        写着 600s 却在第 2 分钟拒掉是最难查的那种撒谎 */
     expiresTs: number;
     /** 这一轮是不是接力棒起的（#959）。落盘那一头不用它，sessionService 拿它
         决定要不要在群里补一句「谁在等谁批」——冻结拦不住，至少要有声 */
     relay: boolean;
+    /** 这张卡实际用的那一档超时（#959 复审 Low 3）。群里那句旁白要说「几分钟内
+        不批」，分钟数必须与 router 这一刻真正用的数一致——调用方拿常量自己算的
+        话，哪天有人传了 `relayTimeoutMs`，两处就会给出不同的数而不报任何错。
+        **不要用 `expiresTs - Date.now()` 反推**：那是把 router 已经定死的时钟
+        再读一遍，多一个会漂的量 */
+    timeoutMs: number;
   }) => void; // daemon 拿去落盘+广播
   /** 审批卡上「参数摘要」那一段的文案（#954）：回字符串就用它，回 null 退回默认
       `JSON.stringify(args).slice(0, 200)`。默认那 200 字对 bash/write_file 够用，对
@@ -91,7 +103,10 @@ interface Pending {
 const DEFAULT_TIMEOUT_MS = 600_000;
 /** 接力棒上的审批超时（#959）。2 分钟不是"够人反应"的时长——接力棒上的审批人
     多半不在场，这个数封的是**别人被冻住多久**：drain 串行，这张卡挂着的每一秒
-    群里其它回复都在排队。批不到就按拒绝处理，那一棒失败，链条继续往下走 */
+    群里其它回复都在排队。批不到就按拒绝处理，那一棒失败，链条继续往下走。
+    **管的是接力棒上的任何审批**（复审 Medium 2）：不只是 ADR-0225 决策 5 那道
+    连接器闸，云会话里 `bash` / `write_file` / `create_agent` 也无条件要批，
+    在接力棒上一律只等这 2 分钟——冻结与是哪把刀无关 */
 export const RELAY_APPROVAL_TIMEOUT_MS = 120_000;
 
 export function createApprovalRouter(opts: ApprovalRouterOpts): ApprovalRouter {
@@ -183,6 +198,7 @@ export function createApprovalRouter(opts: ApprovalRouterOpts): ApprovalRouter {
           initiatorUid,
           expiresTs,
           relay,
+          timeoutMs: ms,
         });
       });
     },
