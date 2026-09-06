@@ -1005,14 +1005,12 @@ interface ChatState {
     workspaceId: string,
     patch: { repoUrl?: string; pat?: string },
   ): Promise<FriendsResult<CloudWorkspaceState>>;
-  /** 归档（收尾）当前云会话（issue #822）。**只发出去**——真正的"归档成功"
-      是那条广播回来的 session_archived 事件（服务端不另发回执：所有人都
-      看得见的那一条本身就是回执）。回 boolean 只说"帧发没发出去"，失败落
-      workspaceGroupsError（同名单十一件套；**不是**照 cloudSay/cloudApprove
-      ——那两个第四批之后透传 `CloudAck` 且不碰那一格，C2-I4）。
-      云端没有"恢复归档"那一半（daemon 启动只捞 archived=false 的会话重开
-      房间），所以调用方要先问一句 */
-  cloudArchive(): Promise<boolean>;
+  /** 归档（收尾）一条云会话（issue #822；#993 起走控制房 RPC，不再要求"正开着它"）。
+      等服务端的 `archive_result` 才算数。失败落 workspaceGroupsError（同名单十一件套）。
+      云端没有"恢复归档"那一半（daemon 启动只捞 archived=false 的会话重开房间），
+      所以调用方要先问一句。成功后自己重拉一次那个工作区的云会话清单——归档的
+      不进侧栏，不重拉的话那一行会一直挂在那儿 */
+  cloudArchive(workspaceId: string, sessionId: string): Promise<boolean>;
 
   setFriendsPanelOpen(open: boolean): void;
   setOpenWorkspaceId(id: string | null): void;
@@ -2449,13 +2447,17 @@ export const useChat = create<ChatState>((set, get) => ({
     return window.otter.workspaceCloudConfig(workspaceId, patch);
   },
 
-  async cloudArchive() {
-    const r = await window.otter.workspaceCloudArchive();
+  async cloudArchive(workspaceId, sessionId) {
+    const r = await window.otter.workspaceCloudArchive(workspaceId, sessionId);
     if (!r.ok) {
       set({ workspaceGroupsError: r.message });
       return false;
     }
     set({ workspaceGroupsError: null });
+    // 归档的会话不进侧栏（同本地）——清单没有推送通道，得自己重拉
+    await get().refreshCloudSessions(workspaceId);
+    // 归档的正是此刻开着的那条：主区留着一条已收尾的会话没有意义，退回去
+    if (get().cloudSession?.sessionId === sessionId) await get().closeCloudSession();
     return true;
   },
 

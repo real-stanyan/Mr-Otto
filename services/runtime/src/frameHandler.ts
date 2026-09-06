@@ -371,9 +371,9 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
 
       if (msg.t === "hello") return; // 已验籍，重复 hello 当幂等刷新，不重复应答
 
-      // 控制房认三种帧（协议 8，#991）：create / workspace / config——三条都是
-      // 「关于某个工作区」的动作，不挂在任何一条会话上。在籍是共同前提
-      if (msg.t !== "create" && msg.t !== "workspace" && msg.t !== "config") {
+      // 控制房认四种帧（协议 8 起：create / workspace / config；协议 9 加 archive）——
+      // 都是「关于某个工作区」的动作，不挂在任何一条会话上。在籍是共同前提
+      if (msg.t !== "create" && msg.t !== "workspace" && msg.t !== "config" && msg.t !== "archive") {
         deny(cid, "not_authorized");
         return;
       }
@@ -397,6 +397,34 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
 
       if (msg.t === "config") {
         await applyConfig(msg.workspaceId, cid, entry.uid, msg);
+        return;
+      }
+
+      if (msg.t === "archive") {
+        // 谁能收尾（issue #822 的判据原样）：**owner 或建这条会话的人**。云端没有
+        // "恢复归档"那一半（daemon 启动只捞 archived=false 的房间重开），所以这是
+        // 个不可逆动作，不能让任意成员替所有人按下去。判据在服务端，客户端那颗
+        // 菜单项的显隐只是 UX——渲染层不是安全边界
+        const session = deps.sessions.get(msg.workspaceId, msg.sessionId);
+        if (!session) {
+          deps.send(cid, { t: "archive_result", workspaceId: msg.workspaceId, sessionId: msg.sessionId, ok: false, message: "这条会话不存在或已经归档了。" });
+          return;
+        }
+        const ownerUid = await deps.sessions.ownerOf(msg.workspaceId);
+        if (entry.uid !== ownerUid && entry.uid !== session.createdByUid()) {
+          deny(cid, "not_authorized");
+          return;
+        }
+        const done = await deps.sessions.archive(msg.workspaceId, msg.sessionId, entry.label);
+        // 控制房没有会话房那条 `session_archived` 广播可当回执（房里的人照旧
+        // 收得到那条事件，那是**他们**的回执）——按钮这一侧得单独有一条
+        deps.send(cid, {
+          t: "archive_result",
+          workspaceId: msg.workspaceId,
+          sessionId: msg.sessionId,
+          ok: done,
+          ...(done ? {} : { message: "归档没有生效：这条会话可能已经归档了。" }),
+        });
         return;
       }
 
@@ -618,29 +646,10 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
           return;
         }
 
-        case "archive": {
-          if (!(await requireStillMember(workspaceId, cid, entry.uid))) return;
-          // 谁能收尾（issue #822）：**owner 或建这条会话的人**。云端没有
-          // "恢复归档"那一半（daemon 启动只捞 archived=false 的房间重开），
-          // 所以这是个不可逆动作，不能让任意成员替所有人按下去。判据在
-          // 服务端，客户端那颗按钮的显隐只是 UX——渲染层不是安全边界
-          const ownerUid = await deps.sessions.ownerOf(workspaceId);
-          if (entry.uid !== ownerUid && entry.uid !== session.createdByUid()) {
-            deny(cid, "not_authorized");
-            return;
-          }
-          const done = await deps.sessions.archive(workspaceId, sessionId, entry.label);
-          // 成功不回执：session_archived 事件本身会广播给房里每个人，那就是
-          // 回执（而且是所有人都看得见的那一份）。只有"没生效"才需要单独说
-          if (!done) {
-            deps.send(cid, { t: "error", msg: "归档没有生效：这条会话可能已经归档了。" });
-          }
-          return;
-        }
-
         case "create": // 控制房专用帧，出现在会话房里视为越权
         case "workspace": // 同上（协议 8，#991）
         case "config": // 同上：仓库是工作区的属性，配它不该以开着一条会话为前提
+        case "archive": // 同上（协议 9，#993）：归档不该以「你正开着这条会话」为前提
         default:
           deny(cid, "not_authorized");
           return;

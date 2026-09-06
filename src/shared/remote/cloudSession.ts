@@ -7,7 +7,12 @@ import type { SessionEvent } from "../../session/events.js";
 import { b64decode, b64encode } from "./b64.js";
 import { MAX_FRAME_BYTES } from "./wire.js";
 
-/** 8（#991，ADR-0234）：仓库配置从会话房搬进**控制房**——仓库是工作区的属性，
+/** 9（#993，ADR-0235）：归档也搬进**控制房**——同上一条的判据：归档一条会话
+    不该以「你此刻正开着它」为前提（界面上那颗钮因此只能待在会话头部，而它属于
+    侧栏那条会话行的 ⋮ 菜单，同本地会话）。`archive` 帧带 `workspaceId` + `sessionId`、
+    只在控制房接，新增 `archive_result` 回执（控制房没有会话房那条 `session_archived`
+    广播可当回执）。会话房的 `archive` 删了——出现在会话房视为越权，同 create/config。
+    8（#991，ADR-0234）：仓库配置从会话房搬进**控制房**——仓库是工作区的属性，
     配它不该以「开着一条这个工作区的云会话」为前提（文案类工作区压根没有仓库，
     头部常驻一格「未配仓库」是噪音）。`CsUp` 的 `config` 帧改带 `workspaceId`、
     只在控制房接；新增 `workspace{workspaceId}` 读帧，回 `workspace_state{repo,
@@ -38,7 +43,7 @@ import { MAX_FRAME_BYTES } from "./wire.js";
     少一格状态。**加一个枚举值同理**：老客户端的 isValidCsDeniedCode 认不出
     `rate_limited`，decodeCsDown 回 null，那一帧被静默忽略，于是 create()
     要白等满超时才回一句"云端无响应"——把"你被限速了"说成"对面没回话"。 */
-export const CS_PROTOCOL_VERSION = 8;
+export const CS_PROTOCOL_VERSION = 9;
 export const CS_MAX_TEXT_BYTES = 64 * 1024;
 
 /** 「有一条事件太大，没发给你」这一类 error 帧的识别标记（终审 I2）。
@@ -182,7 +187,10 @@ export type CsUp =
   /** 读这个工作区的仓库状态 + 路由（控制房帧，协议 8）：回 `workspace_state`。
       任何在籍成员都能读——这两格本来就在 welcome 上给所有人看 */
   | { t: "workspace"; workspaceId: string }
-  | { t: "archive" }
+  /** 收尾一条云会话——**控制房帧**（协议 9，#993）：带 workspaceId + sessionId，
+      不依赖「正开着这条会话」。谁能归档由服务端判（owner 或建这条会话的人，
+      issue #822 的判据原样）*/
+  | { t: "archive"; workspaceId: string; sessionId: string }
   /** 停掉当前正在跑的这一轮 turn（#957 第三批）。谁能停与 approve 同一判据——
       发起人或 owner；已排队未跑的 job 照旧，停的是"这一轮"不是清队列。
       `seq`（add-only，协议号不变）= 客户端按的那一行开场白自己的 seq（复审
@@ -234,6 +242,9 @@ export type CsDown =
           让回执与 welcome 同形，界面一处画法 */
       modelRoute: CsModelRoute | null;
     }
+  /** archive 的回执（协议 9，#993）。会话房那条路靠 `session_archived` 广播当回执
+      （所有人都看得见的那一份），控制房没有房间可广播，得单独回一条 */
+  | { t: "archive_result"; workspaceId: string; sessionId: string; ok: boolean; message?: string }
   /** `workspace` 读帧的答复（协议 8，#991）：与 welcome / config_result 上那两格同形 */
   | { t: "workspace_state"; workspaceId: string; repo: CsRepoState | null; modelRoute: CsModelRoute | null }
   /** say 的回执（#957 第三批）。同 config_result 的纪律——不复用 error。
@@ -417,7 +428,11 @@ export function decodeCsUp(b64: string): CsUp | null {
     }
 
     if (t === "archive") {
-      return { t: "archive" };
+      // 协议 9 起 workspaceId + sessionId 必填——不知道归档谁的话，这条帧没有意义
+      if (typeof obj.workspaceId === "string" && typeof obj.sessionId === "string") {
+        return { t: "archive", workspaceId: obj.workspaceId, sessionId: obj.sessionId };
+      }
+      return null;
     }
 
     if (t === "stop") {
@@ -466,6 +481,20 @@ export function decodeCsDown(b64: string): CsDown | null {
           repo: normalizeRepoState(obj.repo),
           modelRoute: normalizeModelRoute(obj.modelRoute),
         };
+      }
+      return null;
+    }
+
+    if (t === "archive_result") {
+      if (
+        typeof obj.workspaceId === "string" &&
+        typeof obj.sessionId === "string" &&
+        typeof obj.ok === "boolean" &&
+        (obj.message === undefined || typeof obj.message === "string")
+      ) {
+        const result: CsDown = { t: "archive_result", workspaceId: obj.workspaceId, sessionId: obj.sessionId, ok: obj.ok };
+        if (typeof obj.message === "string") result.message = obj.message;
+        return result;
       }
       return null;
     }

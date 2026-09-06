@@ -53,10 +53,12 @@ describe("cloudSessionRows", () => {
     expect(nonArchived).toEqual(["cs-2", "cs-4", "cs-1"]);
   });
 
-  it("字段原样透传（id/title/archived/updatedTs）", () => {
+  it("字段原样透传（id/title/archived/updatedTs），creatorUid 带 uid 不带名字", () => {
     const rows = cloudSessionRows([ROWS[0]!], WS);
     expect(rows).toEqual([
-      { id: "cs-1", title: "会话一", creatorLabel: "Stan", archived: false, updatedTs: 1000 },
+      // creatorUid（#993）：侧栏 ⋮ 里「归档」的显隐判据之一——服务端认的是
+      // "owner 或建这条会话的人"，渲染层照抄同一条。名字会变，权限判断按 uid
+      { id: "cs-1", title: "会话一", creatorLabel: "Stan", creatorUid: "owner-uid", archived: false, updatedTs: 1000 },
     ]);
   });
 

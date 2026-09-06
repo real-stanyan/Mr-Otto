@@ -510,11 +510,10 @@ describe("createCloudSessionClient — say/approve/archive/config 就绪闸", ()
     return { h, t };
   }
 
-  it("没有 join 过：say/approve/archive/config 一律失败", async () => {
+  it("没有 join 过：say/approve 一律失败（archive/config 走控制房，不看会话状态）", async () => {
     const h = harness();
     expect(await h.client.say("hi", false)).toEqual({ ok: false, message: "没有已连接的云会话" });
     expect(await h.client.approve("c1", "approved")).toEqual({ ok: false, message: "没有已连接的云会话" });
-    expect(await h.client.archive()).toEqual({ ok: false, message: "没有已连接的云会话" });
   });
 
   it("还在 connecting（welcome 之前）：一律未就绪失败", async () => {
@@ -557,13 +556,6 @@ describe("createCloudSessionClient — say/approve/archive/config 就绪闸", ()
     expect(last).toEqual({ t: "approve", callId: "call-9", decision: "denied" });
     t.emitDown({ t: "approve_result", callId: "call-9", ok: true });
     expect(await pending).toEqual({ ok: true });
-  });
-
-  it("ready 之后：archive 发出去一个 archive 帧", async () => {
-    const { h, t } = await ready();
-    await h.client.archive();
-    const last = t.decoded()[t.decoded().length - 1];
-    expect(last).toEqual({ t: "archive" });
   });
 
   it("welcome 带的 repo 进 status 推送——任何人一 join 就看得见仓库状态", async () => {
@@ -1352,6 +1344,49 @@ describe("createCloudSessionClient — CloudAck 三态 / stop(seq) / denied 方�
 
 // 协议 8（#991，ADR-0234）：仓库配置走控制房 RPC，与 create 共用同一副骨架
 describe("createCloudSessionClient — workspaceState / workspaceConfig（控制房）", () => {
+  it("archive：控制房 RPC，不依赖开着会话；archive_result ok → 成功", async () => {
+    const h = harness();
+    const promise = h.client.archive("w1", "s1");
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    expect(t.decoded()).toEqual([
+      { t: "hello", v: CS_PROTOCOL_VERSION, jwt: "token-abc" },
+      { t: "archive", workspaceId: "w1", sessionId: "s1" },
+    ]);
+    t.emitDown({ t: "archive_result", workspaceId: "w1", sessionId: "s1", ok: true });
+    expect(await promise).toEqual({ ok: true, value: null });
+    expect(t.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("archive：archive_result ok:false → 带着服务端的理由失败", async () => {
+    const h = harness();
+    const promise = h.client.archive("w1", "s1");
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({ t: "archive_result", workspaceId: "w1", sessionId: "s1", ok: false, message: "这条会话可能已经归档了。" });
+    expect(await promise).toEqual({ ok: false, message: "这条会话可能已经归档了。" });
+  });
+
+  it("archive：别的会话的回执不认（一条连接只问一个，但认一下比赌顺序便宜）", async () => {
+    const h = harness();
+    const promise = h.client.archive("w1", "s1");
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({ t: "archive_result", workspaceId: "w1", sessionId: "别的会话", ok: true });
+    let settled = false;
+    void promise.then(() => { settled = true; });
+    await tick();
+    expect(settled).toBe(false);
+    t.emitDown({ t: "archive_result", workspaceId: "w1", sessionId: "s1", ok: true });
+    expect(await promise).toEqual({ ok: true, value: null });
+  });
+
   it("workspaceState：hello + workspace 发给第一个 host，workspace_state 回来就 resolve 并关连接", async () => {
     const h = harness();
     const promise = h.client.workspaceState("w1");

@@ -8,6 +8,8 @@ import { b64encode } from "../../../src/shared/remote/b64.js";
 
 describe("cs 帧协议", () => {
   it("协议版本", () => {
+    // 9 = #993（ADR-0235）：归档也搬进控制房——archive 帧带 workspaceId + sessionId，
+    //     新增 archive_result 回执（控制房没有 session_archived 广播可当回执）。
     // 8 = #991（ADR-0234）：仓库配置搬进控制房——config 帧带 workspaceId、新增
     //     workspace/workspace_state 读帧、config_result 带 workspaceId。
     // 7 = #981（ADR-0233）：云会话不再支持自带 key——config 帧去掉 model、
@@ -24,7 +26,7 @@ describe("cs 帧协议", () => {
     // 之后静默少一格状态。**加一个枚举值同理**：老客户端的
     // isValidCsDeniedCode 认不出 rate_limited，整帧被 decodeCsDown 判成
     // null 静默丢掉，create() 于是白等满超时才回一句"云端无响应"
-    expect(CS_PROTOCOL_VERSION).toBe(8);
+    expect(CS_PROTOCOL_VERSION).toBe(9);
   });
   it("房名生成", () => {
     expect(csCtlChannel()).toBe("cs-ctl");
