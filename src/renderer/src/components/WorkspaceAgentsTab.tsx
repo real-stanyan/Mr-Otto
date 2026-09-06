@@ -19,6 +19,7 @@ import {
 } from "@/components/ui/dialog.js";
 import { useChat } from "../store.js";
 import { agentRows, type AgentRowView } from "../lib/workspaceView.js";
+import { agentAvatarSrc } from "../lib/agentAvatar.js";
 import {
   connectorChoices, modeFromTools, staleSelections, toolsDraftError, toolsFromDraft, type ToolsMode,
 } from "../lib/agentToolsForm.js";
@@ -76,6 +77,7 @@ export function WorkspaceAgentsTab({ ws, selfUid }: { ws: WorkspaceSnapshot; sel
             <AgentRow
               key={row.agentId}
               row={row}
+              avatarSrc={agentAvatarSrc(ws, row.agentId)}
               onEdit={() => setEditorState({ mode: "edit", agent: ws.agents.find((a) => a.agentId === row.agentId)! })}
               onDelete={() => {
                 if (
@@ -177,14 +179,18 @@ function RelayMaxDepthRow({ ws, isOwner }: { ws: WorkspaceSnapshot; isOwner: boo
 }
 
 function AgentRow({
-  row, onEdit, onDelete,
+  row, avatarSrc, onEdit, onDelete,
 }: {
   row: AgentRowView;
+  /** 群聊里这只 agent 画的那张脸（#971）——名单页也画同一张，人在群里认脸、
+      来这页改配置时对得上号 */
+  avatarSrc: string;
   onEdit: () => void;
   onDelete: () => void;
 }) {
   return (
     <div className={cn(ROW, "border border-border")}>
+      <img src={avatarSrc} alt="" aria-hidden className="size-8 shrink-0 rounded-full" />
       <span className="min-w-0 flex-1 truncate">
         <b className="font-medium">{row.name}</b>
         {/* 「管理员不能删除」挂在这枚徽标上，不挂在「编辑」钮上（终审 Minor）：

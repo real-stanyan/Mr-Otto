@@ -4,8 +4,8 @@
 // 组装逻辑收在 assembleSnapshot 一处，方便单测钉住三条易错的转换规则：
 // · tools 是 jsonb，值可能来自任意历史脏数据 —— 不是数组，或数组里混了非字符串项，
 //   一律当没有权限清单，回 []（宁可少放行，不可放过一个不认识的形状）。
-// · label 来自 profiles 表的批查（labelOf 由调用方注入），查不到（没建档/已注销）
-//   就回 uid 前 8 位 —— 界面上总得显示点什么，不能空着。
+// · label/avatarUrl 来自 profiles 表的批查（profileOf 由调用方注入），查不到（没建档/已注销）
+//   label 回 uid 前 8 位 —— 界面上总得显示点什么，不能空着；avatarUrl 回空串。
 // · updated_at 是 PostgREST 吐出来的 ISO 字符串，UI 层按 epoch ms 排序/格式化更顺手；
 //   解析不出来（脏数据）回 0，不让 NaN 混进排序比较。
 //
@@ -18,6 +18,9 @@ export interface WorkspaceMemberRow {
   uid: string;
   role: "owner" | "member";
   label: string;
+  /** profiles.avatar_url（data URL 或第三方 URL）；没设过 / 查不到 = 空串。群聊气泡旁
+      那枚头像的数据源（#971）——空串时画首字母，渲染层不必再判 null */
+  avatarUrl: string;
 }
 
 export interface WorkspaceConnectorRow {
@@ -92,12 +95,19 @@ function toEpochMs(iso: string): number {
   return Number.isNaN(ts) ? 0 : ts;
 }
 
-/** label 查不到（labelOf 回 null）就回 uid 前 8 位 —— 界面总得显示点什么 */
-function resolveLabel(uid: string, labelOf: (uid: string) => string | null): string {
-  return labelOf(uid) ?? uid.slice(0, 8);
+/** profiles 表里一个人的两样展示数据。name 空串 = 没起名（profiles.name 是 not null
+    default ''），与「查不到这一行」同样退回 uid 前 8 位 */
+export interface MemberProfile {
+  name: string;
+  avatarUrl: string;
 }
 
-/** 行数据 → snapshot（label 由 profiles 表查来，缺席回 uid 前 8 位） */
+/** label 查不到（profileOf 回 null 或 name 为空）就回 uid 前 8 位 —— 界面总得显示点什么 */
+function resolveLabel(uid: string, profile: MemberProfile | null): string {
+  return profile?.name || uid.slice(0, 8);
+}
+
+/** 行数据 → snapshot（label/avatarUrl 由 profiles 表查来，缺席回 uid 前 8 位 / 空串） */
 export function assembleSnapshot(
   ws: { id: string; name: string; owner_uid: string; relay_max_depth: unknown },
   members: readonly { uid: string; role: string }[],
@@ -112,17 +122,21 @@ export function assembleSnapshot(
     agent_id: string; name: string; description: string; instructions: string; models: unknown;
     tools: unknown; created_by: string; updated_at: string;
   }[],
-  labelOf: (uid: string) => string | null,
+  profileOf: (uid: string) => MemberProfile | null,
 ): WorkspaceSnapshot {
   return {
     id: ws.id,
     name: ws.name,
     ownerUid: ws.owner_uid,
-    members: members.map((m) => ({
-      uid: m.uid,
-      role: m.role === "owner" ? "owner" : "member",
-      label: resolveLabel(m.uid, labelOf),
-    })),
+    members: members.map((m) => {
+      const profile = profileOf(m.uid);
+      return {
+        uid: m.uid,
+        role: m.role === "owner" ? "owner" : "member",
+        label: resolveLabel(m.uid, profile),
+        avatarUrl: profile?.avatarUrl ?? "",
+      };
+    }),
     connectors: connectors.map((c) => ({
       workspaceId: c.workspace_id,
       hostUid: c.host_uid,

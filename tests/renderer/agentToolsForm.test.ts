@@ -4,7 +4,7 @@ import type { WorkspaceSnapshot } from "../../src/shared/workspaces.js";
 
 const ws: WorkspaceSnapshot = {
   id: "w", name: "W", ownerUid: "owner", sessions: [], agents: [], relayMaxDepth: 6,
-  members: [{ uid: "owner", role: "owner", label: "Stan" }, { uid: "m1", role: "member", label: "Mei" }],
+  members: [{ uid: "owner", role: "owner", label: "Stan", avatarUrl: "" }, { uid: "m1", role: "member", label: "Mei", avatarUrl: "" }],
   connectors: [
     { workspaceId: "w", hostUid: "owner", serverId: "shopify", label: "Shopify", tools: ["list_orders", "cancel_order"] },
     { workspaceId: "w", hostUid: "m1", serverId: "shopify", label: "Shopify", tools: [] },

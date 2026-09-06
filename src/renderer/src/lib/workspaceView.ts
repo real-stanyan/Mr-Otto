@@ -42,6 +42,13 @@ export function labelOf(ws: WorkspaceSnapshot, uid: string): string {
   return ws.members.find((m) => m.uid === uid)?.label ?? uid.slice(0, 8);
 }
 
+/** uid → 头像 URL（#971）：成员表查得到就用它的 avatarUrl（没设过是空串），
+    查不到（已退群/旧日志）回空串——空串让 Avatar 组件退回首字母，同 labelOf
+    「查不到也得显示点什么」的纪律 */
+export function memberAvatarOf(ws: WorkspaceSnapshot, uid: string): string {
+  return ws.members.find((m) => m.uid === uid)?.avatarUrl ?? "";
+}
+
 function toolsSummary(tools: readonly string[]): string {
   return tools.length === 0 ? "全部工具" : `${tools.length} 个工具`;
 }

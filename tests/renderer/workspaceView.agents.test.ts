@@ -4,7 +4,7 @@ import type { WorkspaceSnapshot } from "../../src/shared/workspaces.js";
 
 const ws: WorkspaceSnapshot = {
   id: "w", name: "W", ownerUid: "owner", connectors: [], sessions: [],
-  members: [{ uid: "owner", role: "owner", label: "Stan" }, { uid: "m1", role: "member", label: "Mei" }],
+  members: [{ uid: "owner", role: "owner", label: "Stan", avatarUrl: "" }, { uid: "m1", role: "member", label: "Mei", avatarUrl: "" }],
   agents: [
     { agentId: "admin", name: "管理员", description: "", instructions: "", models: [], tools: [], createdBy: "owner", updatedTs: 0 },
     { agentId: "a_1", name: "运营", description: "管店铺", instructions: "", models: ["deepseek-v4", "glm-5"], tools: [{ serverId: "shopify", tools: [] }, { serverId: "ads", tools: ["report"] }], createdBy: "m1", updatedTs: 0 },

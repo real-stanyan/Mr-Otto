@@ -12,8 +12,8 @@ const WS: WorkspaceSnapshot = {
   name: "测试工作区",
   ownerUid: "owner-uid",
   members: [
-    { uid: "owner-uid", role: "owner", label: "Stan" },
-    { uid: "member-uid", role: "member", label: "小明" },
+    { uid: "owner-uid", role: "owner", label: "Stan", avatarUrl: "" },
+    { uid: "member-uid", role: "member", label: "小明", avatarUrl: "" },
   ],
   connectors: [],
   sessions: [],

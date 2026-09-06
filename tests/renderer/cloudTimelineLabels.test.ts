@@ -1,15 +1,17 @@
 import { describe, it, expect } from "vitest";
 import {
-  approvalCardTitle, assistantLabel, canStopTurn, createAgentLanded, decisionLineText, hiddenFromCloudTimeline,
-  relayLineText, routeChangedText, stopButtonRows, systemNoteText, turnEndedLineText, userRowIdentity,
+  agentStepsSummary, approvalCardTitle, assistantLabel, canStopTurn, createAgentLanded, decisionLineText, foldAgentSteps,
+  hiddenFromCloudTimeline, isAgentStep, relayLineText, routeChangedText, stopButtonRows, systemNoteText, turnEndedLineText,
+  userRowIdentity,
 } from "../../src/renderer/src/lib/cloudTimeline.js";
 import type { WorkspaceSnapshot } from "../../src/shared/workspaces.js";
 import { countdown } from "../../src/renderer/src/lib/billingView.js";
 import type { OpenTurn } from "../../src/shared/turnLedger.js";
+import type { AssistantMessageEvent, TurnEndedEvent } from "../../src/session/events.js";
 
 const ws: WorkspaceSnapshot = {
   id: "w", name: "W", ownerUid: "o", connectors: [], sessions: [],
-  members: [{ uid: "u1", role: "owner", label: "Stan" }, { uid: "u2", role: "member", label: "Stan" }],
+  members: [{ uid: "u1", role: "owner", label: "Stan", avatarUrl: "" }, { uid: "u2", role: "member", label: "Stan", avatarUrl: "" }],
   agents: [
     { agentId: "a_1", name: "运营", description: "", instructions: "", models: [], tools: [], createdBy: "u1", updatedTs: 0 },
     { agentId: "a_2", name: "广告", description: "", instructions: "", models: [], tools: [], createdBy: "u1", updatedTs: 0 },
@@ -21,12 +23,12 @@ const base = { sessionId: "s", ts: 0, seq: 0 } as const;
 describe("userRowIdentity", () => {
   it("有 fromUid：同名两个人也分得开", () => {
     const e = { ...base, type: "user_message" as const, content: "[Stan]: @运营 看", fromUid: "u2", mentions: ["a_1"] };
-    expect(userRowIdentity(e, ws, "u1")).toEqual({ label: "Stan", text: "@运营 看", mine: false, targets: ["运营"] });
+    expect(userRowIdentity(e, ws, "u1")).toEqual({ label: "Stan", text: "@运营 看", mine: false, targets: ["运营"], uid: "u2" });
     expect(userRowIdentity(e, ws, "u2").mine).toBe(true);
   });
   it("旧日志没 fromUid：退回前缀比对", () => {
     const e = { ...base, type: "user_message" as const, content: "[Stan]: 在吗" };
-    expect(userRowIdentity(e, ws, "u1")).toEqual({ label: "Stan", text: "在吗", mine: true, targets: [] });
+    expect(userRowIdentity(e, ws, "u1")).toEqual({ label: "Stan", text: "在吗", mine: true, targets: [], uid: null });
   });
 });
 
@@ -249,5 +251,77 @@ describe("stopButtonRows（第四批 C2-I3：停止按钮只画在每只 agent �
   it("queued 不进：停的是「这一轮」，还没起跑的没有可停的东西", () => {
     expect(stopButtonRows([t(1, "a_1", "queued"), t(2, "a_1", "running")])).toEqual(new Set(["2:a_1"]));
     expect(stopButtonRows([t(1, "a_1", "queued")])).toEqual(new Set());
+  });
+});
+
+describe("foldAgentSteps（#971：中间步骤折起来、只画最终答案）", () => {
+  // exactOptionalPropertyTypes：agentId 缺席要真的不写这个键，不能写成 undefined
+  const am = (seq: number, agentId: string | undefined, content: string, tools = 0): AssistantMessageEvent => ({
+    ...base, seq, type: "assistant_message", content, model: "m",
+    ...(agentId !== undefined ? { agentId } : {}),
+    ...(tools > 0 ? { toolCalls: Array.from({ length: tools }, (_, i) => ({ id: `c${seq}_${i}`, name: "bash", args: {} })) } : {}),
+  });
+  const ended = (seq: number, agentId: string | undefined): TurnEndedEvent => ({
+    ...base, seq, type: "turn_ended", outcome: "completed",
+    ...(agentId !== undefined ? { agentId } : {}),
+  });
+
+  it("isAgentStep：要了工具 / 一个字没说 = 步骤；有正文且没要工具 = 答案", () => {
+    expect(isAgentStep(am(1, "a_1", "看看", 1))).toBe(true);
+    expect(isAgentStep(am(1, "a_1", "  "))).toBe(true);
+    expect(isAgentStep(am(1, "a_1", "答案"))).toBe(false);
+  });
+
+  it("步骤折进答案前面那个 fold；答案本身不折", () => {
+    const events = [am(1, "a_1", "先看看", 2), am(2, "a_1", "", 1), am(3, "a_1", "最终答案"), ended(4, "a_1")];
+    const r = foldAgentSteps(events);
+    expect([...r.hidden]).toEqual([1, 2]);
+    expect(r.byCloser.get(3)?.steps.map((s) => s.seq)).toEqual([1, 2]);
+    expect(r.byCloser.get(3)?.closedBy).toBe(3);
+    expect(r.byCloser.has(4)).toBe(false); // 答案已经收口，turn_ended 前没有第二段
+    expect(r.open).toEqual([]);
+  });
+
+  it("没有答案直接 turn_ended（出错/中断）：fold 挂在 turn_ended 上", () => {
+    const events = [am(1, "a_1", "", 1), { ...ended(2, "a_1"), outcome: "error" as const, error: "boom" }];
+    const r = foldAgentSteps(events);
+    expect(r.byCloser.get(2)?.steps.map((s) => s.seq)).toEqual([1]);
+  });
+
+  it("两只 agent 交错：各折各的，不串", () => {
+    const events = [am(1, "a_1", "", 1), am(2, "a_2", "", 1), am(3, "a_2", "广告答"), am(4, "a_1", "运营答")];
+    const r = foldAgentSteps(events);
+    expect(r.byCloser.get(3)?.agentId).toBe("a_2");
+    expect(r.byCloser.get(3)?.steps.map((s) => s.seq)).toEqual([2]);
+    expect(r.byCloser.get(4)?.agentId).toBe("a_1");
+    expect(r.byCloser.get(4)?.steps.map((s) => s.seq)).toEqual([1]);
+  });
+
+  it("还在跑的段进 open（closedBy null），按出现顺序", () => {
+    const events = [am(1, "a_1", "", 1), am(2, "a_2", "", 1)];
+    const r = foldAgentSteps(events);
+    expect(r.open.map((f) => f.agentId)).toEqual(["a_1", "a_2"]);
+    expect(r.open[0]?.closedBy).toBeNull();
+    expect(r.byCloser.size).toBe(0);
+  });
+
+  it("agentId 缺席（旧日志/单 agent）：步骤与 turn_ended 按 undefined 配对", () => {
+    const events = [am(1, undefined, "", 1), am(2, undefined, "答")];
+    const r = foldAgentSteps(events);
+    expect(r.byCloser.get(2)?.steps.map((s) => s.seq)).toEqual([1]);
+  });
+
+  it("纯答案（没要过工具）：什么都不折，不产生 fold", () => {
+    const r = foldAgentSteps([am(1, "a_1", "直接答"), ended(2, "a_1")]);
+    expect(r.hidden.size).toBe(0);
+    expect(r.byCloser.size).toBe(0);
+    expect(r.open).toEqual([]);
+  });
+
+  it("agentStepsSummary：名字 + 步数 + 工具数；正在跑的写「正在处理」；没工具不带那一截", () => {
+    const closed = { agentId: "a_1", steps: [am(1, "a_1", "", 2), am(2, "a_1", "x", 1)], closedBy: 3 };
+    expect(agentStepsSummary(closed, ws)).toBe("「运营」处理过程 · 2 步 · 3 次工具调用");
+    expect(agentStepsSummary({ ...closed, closedBy: null }, ws)).toBe("「运营」正在处理 · 2 步 · 3 次工具调用");
+    expect(agentStepsSummary({ agentId: undefined, steps: [am(1, undefined, "")], closedBy: 2 }, ws)).toBe("处理过程 · 1 步");
   });
 });

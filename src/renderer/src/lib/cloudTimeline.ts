@@ -31,16 +31,93 @@ export function parseUserMessageLabel(content: string): { label: string | null; 
     fromUid 在就按 uid 判"是不是我"——同名两个人也分得开（1a 的前缀比对做
     不到这点）；fromUid 缺席（旧日志）才退回 1a 的"解析出的 label 跟自己
     的展示名比对"。targets 是这句话点了谁（用于标签行末尾的 "→ 谁"），
-    查不到名字的 agentId 由 agentNameOf 自己兜底（回 agentId 本身） */
+    查不到名字的 agentId 由 agentNameOf 自己兜底（回 agentId 本身）。
+    uid 是画头像用的把手（#971）：fromUid 在场原样透出，缺席（旧日志）回 null——
+    渲染层据此决定查成员表还是退回首字母，不在这里替它查（这里不认识头像） */
 export function userRowIdentity(
   e: UserMessageEvent,
   ws: WorkspaceSnapshot,
   selfUid: string
-): { label: string | null; text: string; mine: boolean; targets: string[] } {
+): { label: string | null; text: string; mine: boolean; targets: string[]; uid: string | null } {
   const parsed = parseUserMessageLabel(e.content);
   const mine = e.fromUid ? e.fromUid === selfUid : parsed.label === labelOf(ws, selfUid);
   const targets = (e.mentions ?? []).map((id) => agentNameOf(ws, id));
-  return { label: parsed.label, text: parsed.text, mine, targets };
+  return { label: parsed.label, text: parsed.text, mine, targets, uid: e.fromUid ?? null };
+}
+
+// ─── agent 中间步骤折叠（#971，ADR-0229） ────────────────────────────────
+
+/** 一段被折起来的中间步骤：同一只 agent 在一轮里、最终答案之前的那几条
+    assistant_message（带 toolCalls 的，或一个字没说的）。closedBy 是把它
+    收口的那条事件的 seq（最终答案 / turn_ended），null = 这一轮还在跑 */
+export interface AgentStepsFold {
+  agentId: string | undefined;
+  steps: AssistantMessageEvent[];
+  closedBy: number | null;
+}
+
+/** 一条 assistant_message 是「步骤」还是「答案」：要了工具 = 步骤（这一条的
+    全部意义是接下来要干活）；一个字没说也算步骤（画出来是一个空气泡）；
+    有正文且没要工具 = 答案 */
+export function isAgentStep(e: AssistantMessageEvent): boolean {
+  return (e.toolCalls?.length ?? 0) > 0 || e.content.trim() === "";
+}
+
+/** 云会话时间线把 agent 的中间步骤折起来、只画最终答案（#971）：
+    维护者原话「智能体发言时不需要在 UI 里显示思考过程，只需要显示最终答案，
+    不然整个页面看起来太长太乱」。
+    按 agentId 各自开一段 run：碰到步骤就攒进当前 run，碰到答案或这只 agent
+    的 turn_ended 就收口（fold 挂在收口那条事件的 seq 上，渲染层画在它前面）；
+    事件流走完还没收口的 run 照样返回（closedBy: null），渲染层画在时间线末尾
+    ——「正在处理」这件事人得看得见，只是不摊开。
+    **不删事件、不改投影**：日志一个字节不动，这只是渲染层的分组，展开就全在。
+    agentId 缺席（旧日志/单 agent）归到 undefined 那一组，turn_ended 同样按
+    agentId 配对——两边都缺席时自然配上 */
+export function foldAgentSteps(events: readonly SessionEvent[]): {
+  /** 被折进某个 fold 的 assistant_message seq——渲染层跳过这些行 */
+  hidden: Set<number>;
+  /** 已收口的 fold，按收口事件的 seq 索引 */
+  byCloser: Map<number, AgentStepsFold>;
+  /** 还在跑的 run（按出现顺序） */
+  open: AgentStepsFold[];
+} {
+  const hidden = new Set<number>();
+  const byCloser = new Map<number, AgentStepsFold>();
+  const runs = new Map<string | undefined, AgentStepsFold>();
+  const close = (agentId: string | undefined, seq: number): void => {
+    const run = runs.get(agentId);
+    if (!run) return;
+    run.closedBy = seq;
+    byCloser.set(seq, run);
+    runs.delete(agentId);
+  };
+  for (const e of events) {
+    if (e.type === "assistant_message") {
+      if (isAgentStep(e)) {
+        hidden.add(e.seq);
+        const run = runs.get(e.agentId);
+        if (run) run.steps.push(e);
+        else runs.set(e.agentId, { agentId: e.agentId, steps: [e], closedBy: null });
+      } else {
+        close(e.agentId, e.seq);
+      }
+    } else if (e.type === "turn_ended") {
+      close(e.agentId, e.seq);
+    }
+  }
+  // Map 保插入顺序 = 各 run 第一条步骤的出现顺序
+  return { hidden, byCloser, open: [...runs.values()] };
+}
+
+/** 折叠行那一句摘要：「运营」处理过程 · 3 步 · 5 次工具调用。步数是被折的
+    assistant_message 条数，工具数是它们 toolCalls 的总和——两个数说的不是
+    一件事（一步可以要好几把工具）。没有 agentId 时不带名字 */
+export function agentStepsSummary(fold: AgentStepsFold, ws: WorkspaceSnapshot): string {
+  const who = fold.agentId ? `「${agentNameOf(ws, fold.agentId)}」` : "";
+  const tools = fold.steps.reduce((n, s) => n + (s.toolCalls?.length ?? 0), 0);
+  const state = fold.closedBy === null ? "正在处理" : "处理过程";
+  const toolPart = tools > 0 ? ` · ${tools} 次工具调用` : "";
+  return `${who}${state} · ${fold.steps.length} 步${toolPart}`;
 }
 
 /** assistant_message 的署名：agentId 查名单（agentNameOf 查不到回 agentId 本身，
