@@ -768,7 +768,9 @@ describe("限流接线（issue #819 / 第二轮复审 B2-C1）", () => {
   it("mentions 非空但 mention=false 也走 turn 桶（#932 坑 ④）—— chip 输入那条帧会真起 turn", async () => {
     const sayCalls: unknown[] = [];
     // 记下每一帧记的是哪个桶：只断言"被拦住了"分不清它是被 turn 档拦的还是
-    // say 档 —— 而这条 issue 修的正是"记错桶"
+    // say 档 —— 而这条 issue 修的正是"记错桶"。#968 之后 say 桶先在粗闸
+    // 那一次不可省的照过一遍（每个 say 帧都要照），所以这里是 ["say","turn"]
+    // 而不是单独一个 "turn"
     const buckets: string[] = [];
     const { deps, sent } = makeDeps({
       getSession: () => budgetedSession((a) => sayCalls.push(a)),
@@ -784,7 +786,7 @@ describe("限流接线（issue #819 / 第二轮复审 B2-C1）", () => {
       encodeCs({ t: "say", text: "看下销量", mention: false, mentions: ["ops"] })
     );
 
-    expect(buckets).toEqual(["turn"]);
+    expect(buckets).toEqual(["say", "turn"]);
     expect(sayCalls).toHaveLength(0);
     expect(sent.map((s) => s.msg.t)).toEqual(["say_result"]);
     expect(sent[0]!.msg).toMatchObject({ ok: false });
@@ -807,7 +809,9 @@ describe("限流接线（issue #819 / 第二轮复审 B2-C1）", () => {
       encodeCs({ t: "say", text: "@三个人", mention: true, mentions: ["a", "b", "c"] })
     );
 
-    expect(allowCalls).toEqual([["turn", "u1", 3]]);
+    // #968：say 桶的粗闸在 requireStillMember 之前先付一次（每个 say 帧
+    // 都付，不管点没点名），turn 桶仍然按真实 targets 数在 budget 里另付
+    expect(allowCalls).toEqual([["say", "u1"], ["turn", "u1", 3]]);
     expect(sayCalls).toHaveLength(1);
   });
 
@@ -830,10 +834,11 @@ describe("限流接线（issue #819 / 第二轮复审 B2-C1）", () => {
       encodeCs({ t: "say", text: "@运营 @广告 看下", mention: false })
     );
 
-    expect(allowCalls).toEqual([["turn", "u1", 2]]);
+    // #968：粗闸的 say 令牌先付一次，turn 令牌再按正文里数出的 2 个另付
+    expect(allowCalls).toEqual([["say", "u1"], ["turn", "u1", 2]]);
   });
 
-  it("闲聊按 1 个 say 令牌扣（Math.max(1, 0) —— 0 个令牌等于这一档不设闸）", async () => {
+  it("闲聊只扣一次 say 令牌（#968）—— 没点名时 budget 的 n===0 直接放行，钱已经在粗闸付过了", async () => {
     const allowCalls: unknown[] = [];
     const { deps } = makeDeps({
       getSession: () => budgetedSession(() => {}),
@@ -845,13 +850,14 @@ describe("限流接线（issue #819 / 第二轮复审 B2-C1）", () => {
 
     await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "say", text: "你好", mention: false }));
 
-    expect(allowCalls).toEqual([["say", "u1", 1]]);
+    // 只有 requireStillMember 之前那一次粗闸调用——budget(0) 不再额外问价
+    expect(allowCalls).toEqual([["say", "u1"]]);
   });
 
   // 第二轮复审 B2-C1 的后半：上一版把超容量的帧**夹到桶容量**（按 10 计一次）
   // 再放行 —— 第十一只往后每一只都免费，而它们各起一条真花钱的 turn。
   // 拒绝，并且把上限说出口：这不是"等一会儿"能解决的事
-  it("超过 turn 桶容量 → 拒绝而不是夹价，allow 一次都不问、话一个字节都没落", async () => {
+  it("超过 turn 桶容量 → 拒绝而不是夹价，turn 桶一次都不问、话一个字节都没落", async () => {
     const sayCalls: unknown[] = [];
     const allowCalls: unknown[] = [];
     const { deps, sent, logs } = makeDeps({
@@ -870,7 +876,9 @@ describe("限流接线（issue #819 / 第二轮复审 B2-C1）", () => {
       encodeCs({ t: "say", text: many.map((m) => `@${m}`).join(" "), mention: true })
     );
 
-    expect(allowCalls).toEqual([]); // 超容量在问价之前就拒了，一个令牌都没记
+    // #968：粗闸的 say 令牌仍然照付一次（先于 requireStillMember、先于知道
+    // 点了几个名），超容量的判断在 budget 内部、turn 桶一次都没问
+    expect(allowCalls).toEqual([["say", "u1"]]);
     expect(sayCalls).toHaveLength(0);
     expect(logs).toEqual([]);
     expect(sent).toHaveLength(1);
@@ -896,11 +904,41 @@ describe("限流接线（issue #819 / 第二轮复审 B2-C1）", () => {
     expect(sent).toEqual([{ cid: "c1", msg: { t: "denied", code: "rate_limited" } }]);
   });
 
-  it("在籍复查在限流**之前** —— 被踢的人拿到的是「你不在这了」，不是「慢一点」", async () => {
+  // #968：say 的粗闸挪到 requireStillMember 之前——一个被限速的成员不该
+  // 白打一次 Supabase 的 workspace_agents 查询（isMember 那 60s TTL 缓存
+  // 是有代价的一次网络往返，粗闸只是内存里的令牌桶，比它更便宜也该更早）。
+  // 这与「被踢的人拿到的是『你不在这了』不是『慢一点』」那条旧纪律不冲突：
+  // 那条纪律管的是"两种拒绝理由都命中时该说哪一句"，而这里限速在先，
+  // 会员资格从头到尾没被问起——不是"两句话选一句"，是"压根没问第二句"
+  it("say 先过限速粗闸再查名单（#968）—— allow 全假时不落盘、不再多打一次 isMember", async () => {
+    const sayCalls: unknown[] = [];
+    let isMemberCallsAfterHello = 0;
+    let helloSettled = false;
+    const { deps, sent } = makeDeps({
+      isMember: async () => {
+        if (helloSettled) isMemberCallsAfterHello += 1;
+        return true;
+      },
+      getSession: () => budgetedSession((a) => sayCalls.push(a)),
+      rateLimit: { allow: () => false }, // say 桶也拒——粗闸这一步就该拦住
+    });
+    const handler = createFrameHandler(deps);
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    helloSettled = true; // hello 本身那次 isMember 不算数，只数它之后的
+    sent.length = 0;
+
+    await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "say", text: "x", mention: false }));
+
+    expect(sayCalls).toHaveLength(0);
+    expect(isMemberCallsAfterHello).toBe(0); // requireStillMember 根本没被走到
+    expect(sent).toEqual([{ cid: "c1", msg: { t: "say_result", ok: false, message: throttleMessage("say") } }]);
+  });
+
+  it("say 粗闸放行、但会员资格没了 → 仍然回「你不在这了」，不是限速话术", async () => {
     let member = true;
     const { deps, sent } = makeDeps({
       isMember: async () => member,
-      rateLimit: { allow: () => false }, // 三档全空，但它不该是第一个说话的
+      rateLimit: { allow: () => true }, // 粗闸放行，走到 requireStillMember
     });
     const handler = createFrameHandler(deps);
     await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
