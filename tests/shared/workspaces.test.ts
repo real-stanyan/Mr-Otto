@@ -1,5 +1,5 @@
 // assembleSnapshot 纯逻辑单测：三条断言钉住行数据 → snapshot 的转换规则
-// （tools 形状不对回 []、label 缺席回 uid 截断、updated_at ISO → ms）+
+// （tools 形状不对回 []、label 缺席回 uid 截断 + avatarUrl 缺席回空串、updated_at ISO → ms）+
 // relay_max_depth 形状不对回默认（#950 Task 9，同 normalizeRelayMaxDepth 口径）。
 
 import { describe, expect, it } from "vitest";
@@ -21,12 +21,12 @@ describe("assembleSnapshot", () => {
         pkg_id: "pkg-1", title: "会话标题", updated_at: "2026-08-30T12:00:00.000Z",
       }],
       [],
-      (uid) => (uid === "owner-uid-12345678" ? "Stan" : null),
+      (uid) => (uid === "owner-uid-12345678" ? { name: "Stan", avatarUrl: "data:image/webp;base64,AAA" } : null),
     );
 
     expect(snapshot).toEqual({
       id: "ws-1", name: "测试工作区", ownerUid: "owner-uid-12345678",
-      members: [{ uid: "owner-uid-12345678", role: "owner", label: "Stan" }],
+      members: [{ uid: "owner-uid-12345678", role: "owner", label: "Stan", avatarUrl: "data:image/webp;base64,AAA" }],
       connectors: [{
         workspaceId: "ws-1", hostUid: "owner-uid-12345678", serverId: "srv-1",
         label: "Shopify", tools: ["orders.read"],
@@ -40,7 +40,7 @@ describe("assembleSnapshot", () => {
     });
   });
 
-  it("label 缺席（profiles 查不到）回 uid 前 8 位", () => {
+  it("label 缺席（profiles 查不到）回 uid 前 8 位，avatarUrl 回空串", () => {
     const snapshot = assembleSnapshot(
       WS,
       [{ uid: "no-profile-uid-999", role: "member" }],
@@ -48,7 +48,19 @@ describe("assembleSnapshot", () => {
       () => null,
     );
     expect(snapshot.members).toEqual([
-      { uid: "no-profile-uid-999", role: "member", label: "no-profi" },
+      { uid: "no-profile-uid-999", role: "member", label: "no-profi", avatarUrl: "" },
+    ]);
+  });
+
+  it("profiles 行在但 name 是空串（没起过名）：label 同样退回 uid 前 8 位，头像照用", () => {
+    const snapshot = assembleSnapshot(
+      WS,
+      [{ uid: "unnamed-uid-12345", role: "member" }],
+      [], [], [],
+      () => ({ name: "", avatarUrl: "https://x/a.png" }),
+    );
+    expect(snapshot.members).toEqual([
+      { uid: "unnamed-uid-12345", role: "member", label: "unnamed-", avatarUrl: "https://x/a.png" },
     ]);
   });
 

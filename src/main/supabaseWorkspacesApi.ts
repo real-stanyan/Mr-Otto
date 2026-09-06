@@ -3,7 +3,10 @@
 // assembleSnapshot 里单测，这里薄到无逻辑不单测（错误原样上抛给调用方收敛）。
 
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { assembleSnapshot, MEMORY_CONFLICT, type WorkspaceMemoryRow, type WorkspaceSnapshot } from "../shared/workspaces.js";
+import {
+  assembleSnapshot, MEMORY_CONFLICT,
+  type MemberProfile, type WorkspaceMemoryRow, type WorkspaceSnapshot,
+} from "../shared/workspaces.js";
 import type { AgentToolAllow } from "../shared/agentToolAllow.js";
 
 /** supabase-js 的 {data,error} 归一:error 转 throw(带 pg code,上层认 23505 等) */
@@ -22,21 +25,23 @@ export interface WorkspaceListRow {
   created_at: string;
 }
 
-/** uid → 展示名。查不到（没建档/已注销）的 uid 不进 Map，调用方按 assembleSnapshot
-    的 labelOf 约定回退到 uid 前 8 位 */
-export async function fetchProfileLabels(
+/** uid → 展示名 + 头像。查不到（没建档/已注销）的 uid 不进 Map，调用方按 assembleSnapshot
+    的 profileOf 约定回退到 uid 前 8 位 / 空串。avatar_url 跟 name 一起查（#971）：群聊气泡旁
+    要画头像，而它就是 profiles 那一列的 data URL——好友列表也是这么查的，体积上限见
+    shared/profile.ts 的 AVATAR_MAX_CHARS */
+export async function fetchProfiles(
   client: SupabaseClient,
   uids: readonly string[],
-): Promise<Map<string, string>> {
+): Promise<Map<string, MemberProfile>> {
   const ids = [...new Set(uids)];
   if (ids.length === 0) return new Map();
-  const res = await client.from("profiles").select("id,name").in("id", ids);
-  const rows = (unwrap(res) ?? []) as { id: string; name: string | null }[];
-  const labels = new Map<string, string>();
+  const res = await client.from("profiles").select("id,name,avatar_url").in("id", ids);
+  const rows = (unwrap(res) ?? []) as { id: string; name: string | null; avatar_url: string | null }[];
+  const profiles = new Map<string, MemberProfile>();
   for (const row of rows) {
-    if (row.name) labels.set(row.id, row.name);
+    profiles.set(row.id, { name: row.name ?? "", avatarUrl: row.avatar_url ?? "" });
   }
-  return labels;
+  return profiles;
 }
 
 /** 建群：先插 workspaces 行，再插 owner 自己的 member 行（owner 在 workspaces.owner_uid
@@ -107,8 +112,8 @@ export async function fetchWorkspace(
     agent_id: string; name: string; description: string; instructions: string; models: unknown;
     tools: unknown; created_by: string; updated_at: string;
   }[];
-  const labels = await fetchProfileLabels(client, members.map((m) => m.uid));
-  return assembleSnapshot(ws, members, connectors, sessions, agents, (uid) => labels.get(uid) ?? null);
+  const profiles = await fetchProfiles(client, members.map((m) => m.uid));
+  return assembleSnapshot(ws, members, connectors, sessions, agents, (uid) => profiles.get(uid) ?? null);
 }
 
 /** owner 拉人(RLS 只放行自己 own 的群) */
