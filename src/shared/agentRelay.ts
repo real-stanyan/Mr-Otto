@@ -188,6 +188,31 @@ export function relayCapText(fromName: string, toName: string, depth: number, ma
   );
 }
 
+/** 「几分钟内不批」里那个数字。deny 的 reason（approvalRouter）与群里那句旁白
+    （relayApprovalWaitText）读的是同一个函数——两处各写一遍 `Math.round(ms/60000)`
+    的话，改超时那天两句话会给出不同的分钟数，而人只会看见其中一句。
+    下取到 1：说「0 分钟内不批」等于告诉人它已经超时了 */
+export function approvalTimeoutMinutes(timeoutMs: number): number {
+  return Math.max(1, Math.round(timeoutMs / 60000));
+}
+
+/** 接力棒上的审批挂起时，群里那句出声（#959）。
+    冻结本身拦不住：drain 是串行的，一张挂起的审批卡把这条会话的后续 turn 全部
+    压住——而接力棒上的审批人是**点火的那个人**，他多半早就不看这条会话了。
+    修法的另一半是短超时（approvalRouter 的 RELAY_APPROVAL_TIMEOUT_MS），这一半
+    是让冻结**有声**：谁在等、等谁批、批的是哪把刀、不批会怎样。
+    三个字段全过 `promptSafe`——`「」` 是这句话的结构，名字/工具名都是别人写的
+    （agent 名字走写入校验，MCP 工具名一路来自外部 server，一次校验都没走过）。
+    走 `chat_message{fromUid:"system"}`（agentView 里是 keep）而不是新事件类型：
+    群里所有人和所有 agent 都读得到，正在等的那两只自己也看得见 */
+export function relayApprovalWaitText(agentName: string, approverName: string, toolName: string, timeoutMs: number): string {
+  const agent = promptSafe(agentName), approver = promptSafe(approverName), tool = promptSafe(toolName);
+  return (
+    `「${agent}」在等「${approver}」批准 ${tool}` +
+    `（接力棒上的调用，${approvalTimeoutMinutes(timeoutMs)} 分钟内不批按拒绝处理；等待期间群里其它回复排队）`
+  );
+}
+
 /** workspaces.relay_max_depth 落地成数字：整数且在范围内才认，其余回默认（形状不对 = 用默认，不是拒 turn） */
 export function normalizeRelayMaxDepth(v: unknown): number {
   return typeof v === "number" && Number.isInteger(v) && v >= RELAY_MAX_DEPTH_RANGE.min && v <= RELAY_MAX_DEPTH_RANGE.max ? v : DEFAULT_RELAY_MAX_DEPTH;

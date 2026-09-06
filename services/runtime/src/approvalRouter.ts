@@ -5,6 +5,7 @@
 import type { Approver, ApprovalOutcome } from "../../../src/loop/approvalGate.js";
 import type { ToolCallRequest } from "../../../src/session/events.js";
 import type { Tool } from "../../../src/tools/tool.js";
+import { approvalTimeoutMinutes } from "../../../src/shared/agentRelay.js";
 
 /** cs approve 帧的三态回执（#957 A-11/#927）：`resolve` 原来把「无此 pending」
     和「无权批」两种拒绝都糊成同一个 false，frameHandler 因此只能回一句
@@ -17,6 +18,14 @@ export type ApproveOutcome = "ok" | "no_pending" | "not_allowed";
 export interface ApprovalRouterOpts {
   ownerUid: string;
   timeoutMs?: number; // 默认 600_000
+  /** 接力棒上那一轮的超时（#959），默认 RELAY_APPROVAL_TIMEOUT_MS = 120_000。
+      为什么另开一档而不是把 600s 一起调小：600s 是照着「人自己点的这一轮，他
+      就在屏幕前」定的，那个前提对接力棒不成立——审批人是**点火的那个人**
+      （spec §4.2），而这一棒是上一只 agent 替他叫起来的，他多半早就不看了。
+      而 drain 是串行的：一张没人批的卡把这条会话之后的每一个 turn 都压住，
+      默认口径下整个群聊冻十分钟。短超时是把冻结时长封顶，出声那一半在
+      sessionService（relayApprovalWaitText） */
+  relayTimeoutMs?: number;
   now?: () => number;
   onRequest: (req: {
     callId: string;
@@ -26,7 +35,13 @@ export interface ApprovalRouterOpts {
         缺席 ≠ 空数组：落盘那一头按「在不在」决定摊不摊进事件 */
     argsFields?: { label: string; value: string }[];
     initiatorUid: string;
+    /** 这张卡什么时候自己 deny——**按这一轮实际用的那档超时算**（#959）：
+        卡上的倒计时与日志里的 expiresTs 都读它，写着 600s 却在第 2 分钟拒掉
+        是最难查的那种撒谎 */
     expiresTs: number;
+    /** 这一轮是不是接力棒起的（#959）。落盘那一头不用它，sessionService 拿它
+        决定要不要在群里补一句「谁在等谁批」——冻结拦不住，至少要有声 */
+    relay: boolean;
   }) => void; // daemon 拿去落盘+广播
   /** 审批卡上「参数摘要」那一段的文案（#954）：回字符串就用它，回 null 退回默认
       `JSON.stringify(args).slice(0, 200)`。默认那 200 字对 bash/write_file 够用，对
@@ -47,6 +62,10 @@ export interface ApprovalRouterOpts {
 
 export interface ApprovalRouter extends Approver {
   setInitiator(uid: string): void; // 每条 turn 起跑前设
+  /** 这一轮是不是接力棒起的（#959）。与 setInitiator 挨着设，同一个时机。
+      **decide 那一刻取值定死**（不是定时器触发时现读）：下一轮的设置不该回头
+      改一张已经挂起的卡的超时口径 */
+  setRelayTurn(relay: boolean): void;
   /** cs approve 帧进来。回 false = 无此 pending 或无权（daemon 只回 error 帧，不落盘）。
       decidedBy：这次决定是谁按下的按钮，随 outcome 一起喂给 decide() 的 resolve——
       **显式参数，不是旁路存取**（复审 Important，issue #799 系列）：早先版本让调用方
@@ -70,12 +89,18 @@ interface Pending {
 }
 
 const DEFAULT_TIMEOUT_MS = 600_000;
+/** 接力棒上的审批超时（#959）。2 分钟不是"够人反应"的时长——接力棒上的审批人
+    多半不在场，这个数封的是**别人被冻住多久**：drain 串行，这张卡挂着的每一秒
+    群里其它回复都在排队。批不到就按拒绝处理，那一棒失败，链条继续往下走 */
+export const RELAY_APPROVAL_TIMEOUT_MS = 120_000;
 
 export function createApprovalRouter(opts: ApprovalRouterOpts): ApprovalRouter {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  const relayTimeoutMs = opts.relayTimeoutMs ?? RELAY_APPROVAL_TIMEOUT_MS;
   const now = opts.now ?? (() => Date.now());
   const pending = new Map<string, Pending>();
   let initiatorUid = "";
+  let relayTurn = false;
 
   function canDecide(uid: string): boolean {
     // 答的是「此 uid 此刻能不能当审批人」（用 live initiator），不是「能不能批某个具体 pending」
@@ -88,11 +113,19 @@ export function createApprovalRouter(opts: ApprovalRouterOpts): ApprovalRouter {
       initiatorUid = uid;
     },
 
+    setRelayTurn(relay: boolean): void {
+      relayTurn = relay;
+    },
+
     canDecide,
 
     async decide(call: ToolCallRequest, tool: Tool, signal?: AbortSignal): Promise<ApprovalOutcome> {
       const callId = call.id;
-      const expiresTs = now() + timeoutMs;
+      // 这一刻取值定死（#959）：定时器触发在几分钟之后，那时 relayTurn 早就
+      // 是下一轮的了——回头现读等于让别人的一轮决定这张卡的口径
+      const relay = relayTurn;
+      const ms = relay ? relayTimeoutMs : timeoutMs;
+      const expiresTs = now() + ms;
 
       return new Promise<ApprovalOutcome>((resolvePromise) => {
         const cleanup = () => {
@@ -111,8 +144,15 @@ export function createApprovalRouter(opts: ApprovalRouterOpts): ApprovalRouter {
         };
 
         const timer = setTimeout(() => {
-          settle({ decision: "denied", reason: "审批超时" });
-        }, timeoutMs);
+          // 两句话分开说（#959）：接力棒那一档拒得早，reason 不说清是"接力棒
+          // 上的调用 + 只等了 2 分钟"的话，读日志的人只会以为自己的 10 分钟
+          // 白等了。分钟数与群里那句旁白共用 approvalTimeoutMinutes——两处
+          // 各写一遍 Math.round，改超时那天两句话会给出不同的数
+          settle({
+            decision: "denied",
+            reason: relay ? `审批超时（接力棒上的调用，${approvalTimeoutMinutes(ms)} 分钟内没人批）` : "审批超时",
+          });
+        }, ms);
 
         const entry: Pending = { initiatorUid, settle, timer };
         pending.set(callId, entry);
@@ -142,6 +182,7 @@ export function createApprovalRouter(opts: ApprovalRouterOpts): ApprovalRouter {
           ...(fields && fields.length > 0 ? { argsFields: fields } : {}),
           initiatorUid,
           expiresTs,
+          relay,
         });
       });
     },

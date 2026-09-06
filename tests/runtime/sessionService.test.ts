@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { createCloudSession, kickedNoteText, SayRejectedError, speakerLabelOf, type CloudSession } from "../../services/runtime/src/sessionService.js";
 import { createInMemoryWorkspaceMemory } from "../../services/runtime/src/workspaceMemory.js";
 import { EventStore } from "../../src/session/store.js";
-import type { SessionEvent, ApprovalRequestEvent, AgentRelayEvent, UserMessageEvent } from "../../src/session/events.js";
+import type { SessionEvent, ApprovalRequestEvent, AgentRelayEvent, ChatMessageEvent, UserMessageEvent } from "../../src/session/events.js";
 import type { ModelAdapter, ModelReply } from "../../src/model/adapter.js";
 import type { ExecutionWorld } from "../../src/world/executionWorld.js";
 import type { PxCallDeps } from "../../services/runtime/src/pxTools.js";
@@ -2055,6 +2055,60 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
     const reqs = events.filter((e) => e.type === "approval_request") as ApprovalRequestEvent[];
     expect(reqs).toHaveLength(1);
     expect(reqs[0]).toMatchObject({ toolName: "px_h1_shopify_list_orders", initiatorUid: "u1", agentId: "ads" });
+    store.close();
+  });
+
+  it("#959：接力棒上的审批要在群里出声——人自己 @ 起的那一轮没有这条", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    let session!: CloudSession;
+    let adsRounds = 0;
+    session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px: pxWithGrants, hostUids: async () => ["h1"],
+      memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true, relayMaxDepth: async () => 6,
+      contextWindowOf: () => undefined,
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({
+        model: a.models[0]!,
+        async chat(): Promise<ModelReply> {
+          if (a.agentId === "ops") return { content: "@广告 你来下单" };
+          adsRounds++;
+          if (adsRounds % 2 === 1) return { content: "", toolCalls: [{ id: `c${adsRounds}`, name: "px_h1_shopify_list_orders", args: {} }] };
+          return { content: "看完了" };
+        },
+      }),
+      onEvent: (e) => {
+        events.push(e);
+        if (e.type === "approval_request") session.approve((e as ApprovalRequestEvent).callId, "owner", "Owner", "approved");
+      },
+      onUsage: () => {},
+    });
+
+    const waitLines = (): ChatMessageEvent[] =>
+      events.filter((e) => e.type === "chat_message" && e.fromUid === "system" && e.content.includes("在等")) as ChatMessageEvent[];
+
+    // ① 人自己 @ 广告：这一把刀根本不弹卡（ADR-0151），自然也不该有那句旁白
+    await session.say("u1", "alice", "@广告 看下订单", true, ["ads"]);
+    await session.settled();
+    expect(events.some((e) => e.type === "approval_request")).toBe(false);
+    expect(waitLines()).toHaveLength(0);
+
+    // ② 运营接力点起广告：这一棒的刀要点火的人批，群里得听见一声——不然
+    // drain 串行，整个群聊静默冻住，谁也不知道在等什么
+    await session.say("u1", "alice", "@运营 出报表", true, ["ops"]);
+    await session.settled();
+    const idx = events.findIndex((e) => e.type === "approval_request");
+    expect(idx).toBeGreaterThanOrEqual(0);
+    // 紧跟在审批请求后面：中间隔着别的事件就说明它不是这张卡的旁白
+    const line = events[idx + 1] as ChatMessageEvent;
+    expect(line).toMatchObject({ type: "chat_message", fromUid: "system", label: "系统", mention: false });
+    expect(line.content).toContain("在等");
+    expect(line.content).toContain("px_h1_shopify_list_orders");
+    expect(line.content).toContain("「广告」"); // 正在等的是哪只
+    expect(line.content).toContain("2 分钟内不批按拒绝处理");
+    expect(waitLines()).toHaveLength(1);
     store.close();
   });
 

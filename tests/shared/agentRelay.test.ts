@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   DEFAULT_RELAY_MAX_DEPTH, RELAY_GUARD, decideRelay, hopFingerprint, mentionedAgents, normalizeRelayMaxDepth,
-  openingDepthFor, relayCapText, relayChain, relayDepthOf, relayNudgeText, relayOpeningText,
+  openingDepthFor, relayApprovalWaitText, relayCapText, relayChain, relayDepthOf, relayNudgeText, relayOpeningText,
   advanceRelayBounds, emptyRelayBounds, relayBoundsOf,
 } from "../../src/shared/agentRelay.js";
 import type { AgentRelayEvent, SessionEvent, TurnEndedEvent, UserMessageEvent } from "../../src/session/events.js";
@@ -269,5 +269,34 @@ describe("openingDepthFor / relayChain 的尾段下界（#958）", () => {
       um({ content: "没点名" }),                                                   // 2 没 mentions
     ];
     expect(relayBoundsOf(events).lastHumanOpening).toBe(0);
+  });
+});
+
+// #959：接力棒上的审批在群里出声的那句话。名字/工具名与接力三句话同一条纪律——
+// 拼进 `「」` 之前先过 promptSafe，否则一个叫 `广告」…「` 的 agent 就能把这句
+// 系统旁白撑开成任意结构
+describe("relayApprovalWaitText（#959）", () => {
+  it("逐字文案：三方名字 + 分钟数 + 「等待期间群里其它回复排队」", () => {
+    expect(relayApprovalWaitText("运营", "Rick", "shopify.get_orders", 120_000)).toBe(
+      "「运营」在等「Rick」批准 shopify.get_orders（接力棒上的调用，2 分钟内不批按拒绝处理；等待期间群里其它回复排队）"
+    );
+  });
+
+  it("分钟数从 timeoutMs 算，不足一分钟也说「1 分钟」（说 0 分钟等于告诉人已经超时了）", () => {
+    expect(relayApprovalWaitText("a", "b", "c", 30_000)).toContain("1 分钟内不批");
+    expect(relayApprovalWaitText("a", "b", "c", 600_000)).toContain("10 分钟内不批");
+  });
+
+  it("三个字段都过 promptSafe：`]` → `］`，换行折成空格", () => {
+    const s = relayApprovalWaitText("广告]坏", "Rick]坏", "tool]坏", 120_000);
+    expect(s).toContain("广告］坏");
+    expect(s).toContain("Rick］坏");
+    expect(s).toContain("tool］坏");
+    expect(s).not.toContain("]");
+    expect(relayApprovalWaitText("广\n告", "b", "c", 120_000)).toContain("「广 告」");
+  });
+
+  it("名字里的 `「」` 也换替身——否则一个名字就能提前闭合引号栏位", () => {
+    expect(relayApprovalWaitText("广「告」", "b", "c", 120_000)).toContain("「广｢告｣」");
   });
 });

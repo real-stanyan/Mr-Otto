@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { createApprovalRouter } from "../../services/runtime/src/approvalRouter.js";
+import { createApprovalRouter, RELAY_APPROVAL_TIMEOUT_MS } from "../../services/runtime/src/approvalRouter.js";
 const call = { id: "c1", name: "bash", args: { cmd: "rm -rf x" } } as never;
 const tool = { def: { name: "bash", description: "", parameters: {} }, requiresApproval: true, run: async () => "" } as never;
 
@@ -112,5 +112,82 @@ describe("审批路由", () => {
     r.setInitiator("u1");
     void r.decide({ id: "c1", name: "bash", args: { cmd: "x" } }, { def: { name: "bash", description: "", parameters: {} }, requiresApproval: true, run: async () => "" });
     expect("argsFields" in reqs[0]!).toBe(false);
+  });
+});
+
+// #959：接力棒上的审批。默认 600s 是照着「人自己点的，他就在屏幕前」定的；
+// 接力棒是上一只 agent 替他叫起来的，点火的人往往早就不看了，而 drain 是串行的
+// ——一张没人批的卡把整个群聊冻十分钟。
+describe("接力棒上的审批超时（#959）", () => {
+  it("setRelayTurn(true)：120s 就 deny，reason 说清是接力，onRequest 带 relay:true 且 expiresTs 按短的那个算", async () => {
+    vi.useFakeTimers();
+    const reqs: { relay: boolean; expiresTs: number }[] = [];
+    const r = createApprovalRouter({ ownerUid: "o", now: () => 0, onRequest: (q) => reqs.push(q as never) });
+    r.setInitiator("a");
+    r.setRelayTurn(true);
+    const p = r.decide(call, tool);
+    expect(reqs[0]!.relay).toBe(true);
+    // 卡上那行倒计时与日志里的 expiresTs 读的都是这个数——它要是还写着 600s，
+    // 界面会显示"还有 10 分钟"然后在第 2 分钟自己拒掉
+    expect(reqs[0]!.expiresTs).toBe(RELAY_APPROVAL_TIMEOUT_MS);
+    await vi.advanceTimersByTimeAsync(RELAY_APPROVAL_TIMEOUT_MS + 1);
+    await expect(p).resolves.toMatchObject({
+      decision: "denied",
+      reason: "审批超时（接力棒上的调用，2 分钟内没人批）",
+    });
+    vi.useRealTimers();
+  });
+
+  it("setRelayTurn(false)：600s 照旧，2 分钟到了还挂着，reason 仍是「审批超时」", async () => {
+    vi.useFakeTimers();
+    const reqs: { relay: boolean; expiresTs: number }[] = [];
+    const r = createApprovalRouter({ ownerUid: "o", now: () => 0, onRequest: (q) => reqs.push(q as never) });
+    r.setInitiator("a");
+    r.setRelayTurn(false);
+    const p = r.decide(call, tool);
+    expect(reqs[0]!.relay).toBe(false);
+    expect(reqs[0]!.expiresTs).toBe(600_000);
+    let settled = false;
+    void p.then(() => { settled = true; });
+    await vi.advanceTimersByTimeAsync(RELAY_APPROVAL_TIMEOUT_MS + 1);
+    expect(settled).toBe(false);
+    await vi.advanceTimersByTimeAsync(600_000);
+    await expect(p).resolves.toMatchObject({ decision: "denied", reason: "审批超时" });
+    vi.useRealTimers();
+  });
+
+  it("没调过 setRelayTurn = 现状一字不变（600s / 「审批超时」/ relay:false）", async () => {
+    vi.useFakeTimers();
+    const reqs: { relay: boolean }[] = [];
+    const r = createApprovalRouter({ ownerUid: "o", now: () => 0, onRequest: (q) => reqs.push(q as never) });
+    r.setInitiator("a");
+    const p = r.decide(call, tool);
+    expect(reqs[0]!.relay).toBe(false);
+    await vi.advanceTimersByTimeAsync(600_001);
+    await expect(p).resolves.toMatchObject({ decision: "denied", reason: "审批超时" });
+    vi.useRealTimers();
+  });
+
+  it("relayTimeoutMs 可覆盖，分钟数跟着改", async () => {
+    vi.useFakeTimers();
+    const r = createApprovalRouter({ ownerUid: "o", relayTimeoutMs: 60_000, onRequest: () => {} });
+    r.setInitiator("a");
+    r.setRelayTurn(true);
+    const p = r.decide(call, tool);
+    await vi.advanceTimersByTimeAsync(60_001);
+    await expect(p).resolves.toMatchObject({ reason: "审批超时（接力棒上的调用，1 分钟内没人批）" });
+    vi.useRealTimers();
+  });
+
+  it("超时口径在 decide 那一刻定死：起跑后再 setRelayTurn(false) 不会把已经挂起的那张卡改回 600s", async () => {
+    vi.useFakeTimers();
+    const r = createApprovalRouter({ ownerUid: "o", onRequest: () => {} });
+    r.setInitiator("a");
+    r.setRelayTurn(true);
+    const p = r.decide(call, tool);
+    r.setRelayTurn(false); // 下一轮的设置，不该回头改这一张
+    await vi.advanceTimersByTimeAsync(RELAY_APPROVAL_TIMEOUT_MS + 1);
+    await expect(p).resolves.toMatchObject({ reason: "审批超时（接力棒上的调用，2 分钟内没人批）" });
+    vi.useRealTimers();
   });
 });

@@ -175,7 +175,7 @@ import { parseMentions, mentionTokens } from "../../../src/shared/remote/agentMe
 import { promptSafe, safeSpeakerLabel } from "../../../src/shared/promptSafe.js";
 import { openTurns } from "../../../src/shared/turnLedger.js";
 import { createTurnCoordinator, type TurnJob, type EnqueueDecision } from "./turnCoordinator.js";
-import { createApprovalRouter, type ApproveOutcome } from "./approvalRouter.js";
+import { createApprovalRouter, RELAY_APPROVAL_TIMEOUT_MS, type ApproveOutcome } from "./approvalRouter.js";
 import { fetchGrantedTools, buildPxTools, type PxCallDeps } from "./pxTools.js";
 import { filterGrantedByAllow, type AgentToolAllow } from "../../../src/shared/agentToolAllow.js";
 import { createWorkspaceMemoryTool } from "./workspaceMemoryTool.js";
@@ -193,6 +193,7 @@ import {
   decideRelay,
   mentionedAgents,
   openingDepthFor,
+  relayApprovalWaitText,
   relayCapText,
   relayChain,
   relayNudgeText,
@@ -445,8 +446,12 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       不是"engine 拿到手了没有"。停止键的 idle 判据用它：起跑前那一段
       （验籍 / `agents()` / brief / 取记忆 / `hostUids()` + `fetchGrantedTools`
       每个成员一次 edge 往返）是几次真网络调用，人在那个窗口里按停止，回一句
-      "此刻没有正在跑的 turn"是撒谎——他明明看着那一行在转 */
-  let currentJob: { agentId: string; fromUid: string } | null = null;
+      "此刻没有正在跑的 turn"是撒谎——他明明看着那一行在转。
+      `openingContent` 顺路带着（#959）：审批出声那句话要说出"在等谁批"，而
+      日志里没有 profiles 表——开场白正文那个 `[label]: ` 前缀是唯一现成的名字
+      来源（speakerLabelOf）。放在这里而不是让 onRequest 现去 load 日志：
+      onRequest 是 decide 的同步回调，为一句旁白读一遍日志是白付的 IO */
+  let currentJob: { agentId: string; fromUid: string; openingContent: string } | null = null;
   /** 此刻**打得动**的那台 engine（#957 A-2 复审 Important）——`abortTurn()` 唯一
       够得着的口。位置很讲究：`runLoggedTurn` 的**前一行**置位，中间不许有
       `await`。初版置在 `engineFor(spec)` 之后，而那之后还隔着
@@ -556,6 +561,33 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         ...(currentAgentId ? { agentId: currentAgentId } : {}),
       });
       notify(e);
+      // **接力棒上的审批要在群里出声**（#959）。冻结本身没打算拦：drain 是串行的，
+      // 一张挂起的卡把这条会话之后的每个 turn 都压住，而接力棒上的审批人是**点火
+      // 的那个人**——这一轮不是他叫起来的，他多半早就不看这条会话了。修法两半：
+      // 短超时把冻多久封顶（approvalRouter 的 RELAY_APPROVAL_TIMEOUT_MS），这一半
+      // 是让冻结**有声**——谁在等、等谁批、批的是哪把刀、不批会怎样。
+      // 走 logChat（chat_message{fromUid:"system"}）不新增事件类型：agentView 里是
+      // keep，群里所有人**和所有 agent**都读得到，正在等的那只自己也看得见。
+      // 名字两头都取"此刻算得出的事实"：agent 名字现取 specNames（runJob 每次刷新，
+      // 同 ADR-0202 的纪律），审批人名字取开场白前缀（speakerLabelOf，取不到退回
+      // uid 前 8 位——不猜、也不编一个名字出来）。
+      // `currentJob` 兜一道 null：onRequest 是 decide 的同步回调，理论上只在 turn
+      // 里触发，但少了这句就得靠"不可能为 null"这个假设活着。
+      // 分钟数用 RELAY_APPROVAL_TIMEOUT_MS 常量：这里建 router 时没传 relayTimeoutMs，
+      // 所以它**就是**router 这一刻用的那一档；哪天真要覆盖，两处得一起改
+      if (req.relay && currentJob) {
+        logChat(
+          "system",
+          "系统",
+          relayApprovalWaitText(
+            specNames.get(currentJob.agentId) ?? currentJob.agentId,
+            speakerLabelOf(currentJob.openingContent, currentJob.fromUid),
+            req.toolName,
+            RELAY_APPROVAL_TIMEOUT_MS
+          ),
+          false
+        );
+      }
     },
   });
 
@@ -975,11 +1007,15 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       return;
     }
     router.setInitiator(job.fromUid);
+    // 这一轮是不是接力棒起的（#959）——审批超时口径与"要不要在群里出声"都读它。
+    // 判据与下面 requiresApproval 那一处**逐字同一个** `openingDepth > 0`：两处
+    // 分家的话，会出现"弹了卡却按 600s 等、还不出声"这种最难查的组合
+    router.setRelayTurn(openingDepth > 0);
     currentInitiator = job.fromUid;
     currentAgentId = job.agentId;
     // 停止键的 idle 判据（#957 A-2 复审）：从**这一刻**起这条会话就欠着一轮，
     // 哪怕 engine 还要几次网络往返之后才拿得到。界面上那行此刻已经在转了
-    currentJob = { agentId: job.agentId, fromUid: job.fromUid };
+    currentJob = { agentId: job.agentId, fromUid: job.fromUid, openingContent: job.opening.content };
     // engine 起跑之前抛错，收口就没人写了（#932 终审 Blocking ②）：agents()
     // 查询挂了、briefIfNeeded 落盘失败、adapterFor 抛错——drain 的 catch 只
     // 打一行日志，而开场白已经落盘、它的 mentions 里有这只 agent，于是
@@ -1087,7 +1123,12 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         // job 手里那一个事件，折叠进来的接力棒会整条绕过这道闸。两者按构造等价：
         // 人点名的开场白 relayDepthOf 恒为 0，接力开场白恒 ≥ 1。
         // 审批人不变（上面的 router.setInitiator(job.fromUid)），只是这一棒多问一句：
-        // 这一轮不是他叫起来的，是上一只 agent 替他叫的，而刀用的仍是他的代理授权
+        // 这一轮不是他叫起来的，是上一只 agent 替他叫的，而刀用的仍是他的代理授权。
+        // **这道闸的代价由 #959 收口**：审批人多半不在场，而 drain 串行——这张卡
+        // 挂着的每一秒群里其它回复都在排队。所以接力棒上的卡走短超时（2 分钟，
+        // approvalRouter 的 RELAY_APPROVAL_TIMEOUT_MS，同一个 `openingDepth > 0`
+        // 判据经 router.setRelayTurn 递过去），且挂起那一刻在群里出一句声
+        // （relayApprovalWaitText，落在上面的 onRequest 里）
         cachedPxTools = buildPxTools(opts.px, job.fromUid, filterGrantedByAllow(granted, spec.tools), {
           requiresApproval: openingDepth > 0,
         });
