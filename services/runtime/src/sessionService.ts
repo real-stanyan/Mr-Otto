@@ -187,7 +187,8 @@ import type { WorkspaceAgentWriter } from "./agentRegistry.js";
 import {
   CREATE_AGENT_TOOL_NAME, createAgentApprovalFields, createAgentApprovalSummary, parseCreateAgentArgs, scanCreateAgentThreat,
 } from "../../../src/shared/createAgentDraft.js";
-import { ADMIN_AGENT_ID } from "../../../src/shared/workspaceAgents.js";
+import { ADMIN_AGENT_ID, type SandboxApproval } from "../../../src/shared/workspaceAgents.js";
+import type { Approver } from "../../../src/loop/approvalGate.js";
 import {
   DEFAULT_RELAY_MAX_DEPTH,
   decideRelay,
@@ -195,6 +196,7 @@ import {
   openingDepthFor,
   relayApprovalWaitText,
   relayCapText,
+  relayTotalCapText,
   relayChain,
   relayNudgeText,
   relayOpeningText,
@@ -299,6 +301,12 @@ export interface CloudSessionOpts {
       烧一次全量摘要。daemon 接 modelCatalog 的 findModel + contextWindowKnown；
       测试与冒烟一律 `() => undefined`（那些装配没有真实型号可查） */
   contextWindowOf: (model: string) => number | undefined;
+  /** 沙箱内 bash / write_file 要不要人批（#977，ADR-0231）。**必需**（同 memory /
+      isMember 的纪律）：忘接线该编译不过，而不是安静地跑成两种口径里的一种。
+      每个 job **第一次撞审批门时**现查一次、这一轮内缓存（owner 改了下一轮生效，
+      同 relayMaxDepth「每条会接力的 turn 现查」的纪律；没撞门的 turn 一次都不查）。
+      daemon 接 `workspaces.sandbox_approval`，查询失败回落 "ask"——往严的一边倒 */
+  sandboxApproval: () => Promise<SandboxApproval>;
 }
 
 /** `say()` 的业务拒绝：限速、一句话 @ 太多、名单降级时点了名（#957 B2-C1 / E2-4）。
@@ -494,6 +502,9 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       onRequest 现去 load 日志：onRequest 是 decide 的同步回调，为一句旁白读一遍
       日志是白付的 IO */
   let currentJob: { agentId: string; fromUid: string; openingContent: string } | null = null;
+  /** 这一轮的沙箱审批策略（#977）：第一次撞门时查、之后同一轮复用。runJob 进门
+      复位——作用域是一个 job，owner 中途翻开关下一轮才生效（同 relayMaxDepth） */
+  let jobSandboxPolicy: Promise<SandboxApproval> | null = null;
   /** 这个 job 已经为审批出过一次声了吗（#959 复审 Medium 2）。每进一次 runJob
       复位（紧挨 `router.setRelayTurn`，同一个时机同一个作用域）——判据是"这一轮"
       不是"这张卡"，所以它跟着 job 走而不是跟着 callId 走 */
@@ -659,6 +670,32 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     },
   });
 
+  /** 审批门前的**工作区策略**（#977，ADR-0231）：沙箱内那两把刀（bash / write_file）
+      在 `sandbox_approval = "auto"` 时直接放行，其余（好友代理连接器、create_agent）
+      原样递给 router 让人批。为什么在这里包一层而不是改 approvalGate：门只认
+      `requiresApproval` 这一个布尔，"谁来批、批不批"从来是 approver 的事——桌面那套
+      approvalMode 也是包在 approver 外面的（src/main/agent.ts）。
+      判据按**工具身份**不按名字：engine 递进来的 `tool` 就是我们装进 tools() 的那个
+      对象，`tool === bashTool` 比 `tool.def.name === "bash"` 稳——好友代理工具的名字
+      带前缀、撞不上，但判据不该押在别人的命名上。
+      放行也落 approval_decision（engine 的 onDecision 照旧写），reason 说清是策略
+      放的，重放日志时一串没人批过的危险操作才解释得通（同 ADR-0041 那条理由）。
+      策略拿不到（daemon 那侧已回落 "ask"，这里再兜一层）= 问人 */
+  const policyApprover: Approver = {
+    async decide(call, tool, signal) {
+      if (tool === bashTool || tool === writeFileTool) {
+        jobSandboxPolicy ??= opts.sandboxApproval().catch((err: unknown) => {
+          console.warn(`[otto-runtime] sandbox_approval 查询失败，本轮按 ask（session=${sessionId}）`, err);
+          return "ask" as const;
+        });
+        if ((await jobSandboxPolicy) === "auto") {
+          return { decision: "approved", reason: "工作区设置：沙箱内工具免审" };
+        }
+      }
+      return router.decide(call, tool, signal);
+    },
+  };
+
   // decidedBy 不经旁路状态——approve() 把它当参数直接递给 router.resolve()，
   // resolve() 随 settle() 把它缝进 outcome，approvalGate → engine 内置的
   // onDecision 原样落盘。router.resolve 本身只回内存 promise（不落盘），
@@ -714,7 +751,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       ],
       world: opts.world,
       sessionId,
-      approver: router,
+      // 策略层包在 router 外面（#977）：沙箱工具按工作区开关放行，其余进 router 问人
+      approver: policyApprover,
       onEvent: notify,
       middlewares: [],
       // 自动压缩（#957 A-1，ADR-0062）。桌面在 src/main/agent.ts 里一直有这一格，
@@ -803,7 +841,20 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       .ofType(sessionId, "agent_briefed")
       .filter((e) => e.type === "agent_briefed" && e.agentId === spec.agentId)
       .at(-1);
-    if (already && already.type === "agent_briefed" && already.instructions === spec.instructions) return;
+    // **三样都比，不只比 instructions**（#977 第 2 条）：brief 里写的是「我叫什么、
+    // 群里还有谁管什么」+ 提示词，原来只比对提示词，于是别人新建/改名/改职责的
+    // agent 对这只永远不可见——它的 roster 焊在 system 里、最新一条胜出，可它
+    // 一直没有"最新一条"。ADR-0224 只把 create_agent 那一种记成已知代价，其实
+    // 任何名册变化都一样。名册指纹按名字排序：workspace_agents 的查询按
+    // created_at 排，顺序稳定，但判据不该押在别人的排序上
+    const rosterKey = (r: readonly { name: string; description: string }[]): string =>
+      JSON.stringify([...r].map((x) => [x.name, x.description]).sort());
+    if (
+      already && already.type === "agent_briefed" &&
+      already.instructions === spec.instructions &&
+      already.name === spec.name &&
+      rosterKey(already.roster) === rosterKey(otherRoster)
+    ) return;
     notify(
       store.append({
         sessionId,
@@ -1010,6 +1061,13 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         logChat("system", "系统", relayCapText(nameOf(spec.agentId), nameOf(to), d.depth, d.max, lastWords), false);
         continue;
       }
+      // 总量闸（#977 第 3 条）：这次点火之后的 agent_relay 已经够多了。同一轮里
+      // 后面的 target 也都会撞上（chain 不再长），每只各说一句——群里要看得见
+      // 是哪几棒没接上，与 cap 那条同款
+      if (d.kind === "cap_total") {
+        logChat("system", "系统", relayTotalCapText(nameOf(spec.agentId), nameOf(to), d.hops, d.max), false);
+        continue;
+      }
       if (d.loop) logChat("system", "系统", relayNudgeText(nameOf(spec.agentId), nameOf(to), d.loop), false);
       const hop = store.append({ sessionId, ts: Date.now(), type: "agent_relay", fromAgentId: spec.agentId, toAgentId: to, depth: d.depth, ignorable: true }) as AgentRelayEvent;
       notify(hop);
@@ -1086,6 +1144,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // 出声一轮只出一次（#959 复审 Medium 2）：与上一行同一个时机复位，两处分家
     // 就会出现"接力口径开了、旁白却还记着上一轮已经说过"这种只在第二轮才现形的漏说
     relayWaitAnnounced = false;
+    jobSandboxPolicy = null; // 每轮现查（#977）：owner 翻了开关下一轮生效
     currentInitiator = job.fromUid;
     currentAgentId = job.agentId;
     // 停止键的 idle 判据（#957 A-2 复审）：从**这一刻**起这条会话就欠着一轮，

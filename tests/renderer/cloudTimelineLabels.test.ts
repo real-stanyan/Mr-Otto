@@ -17,6 +17,7 @@ const ws: WorkspaceSnapshot = {
     { agentId: "a_2", name: "广告", description: "", instructions: "", models: [], tools: [], createdBy: "u1", updatedTs: 0 },
   ],
   relayMaxDepth: 6,
+  sandboxApproval: "ask",
 };
 const base = { sessionId: "s", ts: 0, seq: 0 } as const;
 

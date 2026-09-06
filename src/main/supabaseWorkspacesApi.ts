@@ -7,6 +7,7 @@ import {
   assembleSnapshot, MEMORY_CONFLICT,
   type MemberProfile, type WorkspaceMemoryRow, type WorkspaceSnapshot,
 } from "../shared/workspaces.js";
+import type { SandboxApproval } from "../shared/workspaceAgents.js";
 import type { AgentToolAllow } from "../shared/agentToolAllow.js";
 
 /** supabase-js 的 {data,error} 归一:error 转 throw(带 pg code,上层认 23505 等) */
@@ -85,6 +86,12 @@ export async function fetchWorkspace(
   const ws = unwrap(
     await client.from("workspaces").select("id,name,owner_uid,relay_max_depth").eq("id", id).single(),
   ) as { id: string; name: string; owner_uid: string; relay_max_depth: unknown };
+  // sandbox_approval **单独一条、容错**（#977，ADR-0223 部署顺序那条教训）：拼进上面
+  // 那条 select 的话，0026 落地前 PostgREST 对不存在的列回 42703，整份快照打不开——
+  // 不是「审批策略缺一角」，是这个工作区什么都看不见（0024 那次正是这样）。这条挂了
+  // 只影响它自己，回 undefined = normalizeSandboxApproval 的默认 "ask"。代价是每个
+  // 工作区多一次单行主键查询
+  const sandboxApproval = await fetchSandboxApproval(client, id);
   const members = (unwrap(
     await client.from("workspace_members").select("uid,role").eq("workspace_id", id),
   ) ?? []) as { uid: string; role: string }[];
@@ -113,7 +120,14 @@ export async function fetchWorkspace(
     tools: unknown; created_by: string; updated_at: string;
   }[];
   const profiles = await fetchProfiles(client, members.map((m) => m.uid));
-  return assembleSnapshot(ws, members, connectors, sessions, agents, (uid) => profiles.get(uid) ?? null);
+  return assembleSnapshot({ ...ws, sandbox_approval: sandboxApproval }, members, connectors, sessions, agents, (uid) => profiles.get(uid) ?? null);
+}
+
+/** `workspaces.sandbox_approval` 那一格；列不存在 / 查询抖了回 undefined（调用方按默认 "ask"） */
+async function fetchSandboxApproval(client: SupabaseClient, id: string): Promise<unknown> {
+  const res = await client.from("workspaces").select("sandbox_approval").eq("id", id).maybeSingle();
+  if (res.error) return undefined;
+  return (res.data as { sandbox_approval?: unknown } | null)?.sandbox_approval;
 }
 
 /** owner 拉人(RLS 只放行自己 own 的群) */
@@ -303,6 +317,23 @@ export async function updateRelayMaxDepth(
   const rows = unwrap(
     await client.from("workspaces")
       .update({ relay_max_depth: maxDepth })
+      .eq("id", workspaceId)
+      .select("id"),
+  );
+  if (!Array.isArray(rows) || rows.length === 0) {
+    throw new Error("无权修改");
+  }
+}
+
+/** owner 改「沙箱内工具要不要人批」（#977，0026）。行数证据同 updateRelayMaxDepth */
+export async function updateSandboxApproval(
+  client: SupabaseClient,
+  workspaceId: string,
+  value: SandboxApproval,
+): Promise<void> {
+  const rows = unwrap(
+    await client.from("workspaces")
+      .update({ sandbox_approval: value })
       .eq("id", workspaceId)
       .select("id"),
   );

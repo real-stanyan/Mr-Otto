@@ -19,6 +19,7 @@ const WS: WorkspaceSnapshot = {
   sessions: [],
   agents: [],
   relayMaxDepth: 6,
+  sandboxApproval: "ask",
 };
 
 const ROWS: CloudSessionListRow[] = [

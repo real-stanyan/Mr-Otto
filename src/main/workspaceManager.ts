@@ -27,7 +27,7 @@ import type { WorkspaceMemoryRow, WorkspaceSnapshot } from "../shared/workspaces
 import { humanizeWorkspaceError } from "../shared/workspaceError.js";
 import { normalizeRelayMaxDepth } from "../shared/agentRelay.js";
 import { formatEntries, parseEntries } from "../shared/memoryStore.js";
-import { ADMIN_AGENT_ID, agentNameConflict, normalizeAgentName } from "../shared/workspaceAgents.js";
+import { ADMIN_AGENT_ID, agentNameConflict, normalizeAgentName, normalizeSandboxApproval, type SandboxApproval } from "../shared/workspaceAgents.js";
 import { parseCreateAgentArgs, scanCreateAgentThreat, validateAgentPatch } from "../shared/createAgentDraft.js";
 import type { AgentToolAllow } from "../shared/agentToolAllow.js";
 import type { ProxyStoreData } from "./proxyStore.js";
@@ -58,6 +58,7 @@ export interface WorkspaceManagerDeps {
   listMemoryRows: typeof WorkspacesApi.listMemoryRows;
   saveMemoryRow: typeof WorkspacesApi.saveMemoryRow;
   updateRelayMaxDepth: typeof WorkspacesApi.updateRelayMaxDepth;
+  updateSandboxApproval: typeof WorkspacesApi.updateSandboxApproval;
   client: () => SupabaseClient | null;
   selfUid: () => string | null;
   loadStore: () => ProxyStoreData;
@@ -102,6 +103,9 @@ export interface WorkspaceManager {
       validateRelayMaxDepth，这里不重复校验——RLS（0024 ws_update_owner）落地
       判断，非 owner 会撞「无权修改」 */
   setRelayMaxDepth(id: string, maxDepth: number): Promise<FriendsResult<null>>;
+  /** owner 在智能体 tab 改「沙箱内工具要不要人批」（#977）。同 setRelayMaxDepth：
+      RLS（0024 ws_update_owner）落地判断，非 owner 撞「无权修改」 */
+  setSandboxApproval(id: string, value: SandboxApproval): Promise<FriendsResult<null>>;
   /** 我在籍工作区里别人贡献的 host（proxyManager 借用源）。内存缓存,list()
       后更新——proxyManager 借用路径要同步读,不能每次都等一轮网络往返 */
   hostUids(): readonly string[];
@@ -125,6 +129,7 @@ function unreadableSnapshot(row: { id: string; name: string; owner_uid: string }
     sessions: [],
     agents: [],
     relayMaxDepth: normalizeRelayMaxDepth(undefined),
+    sandboxApproval: normalizeSandboxApproval(undefined),
     loadError: humanizeWorkspaceError(reason),
   };
 }
@@ -356,6 +361,13 @@ export function createWorkspaceManager(deps: WorkspaceManagerDeps): WorkspaceMan
     async setRelayMaxDepth(id, maxDepth) {
       return withSession(async (client) => {
         await deps.updateRelayMaxDepth(client, id, maxDepth);
+        return null;
+      });
+    },
+
+    async setSandboxApproval(id, value) {
+      return withSession(async (client) => {
+        await deps.updateSandboxApproval(client, id, value);
         return null;
       });
     },

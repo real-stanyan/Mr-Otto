@@ -76,6 +76,9 @@ function harness(over: Partial<WorkspaceManagerDeps> = {}) {
     updateRelayMaxDepth: async (_c, _ws, maxDepth) => {
       calls.push(`updateRelayMaxDepth:${maxDepth}`);
     },
+    updateSandboxApproval: async (_c, _ws, value) => {
+      calls.push(`updateSandboxApproval:${value}`);
+    },
     client: () => (signedIn ? fakeClient : null),
     selfUid: () => (signedIn ? "self-uid" : null),
     loadStore: () => store,
@@ -254,6 +257,7 @@ describe("workspaceManager（Task 8，ADR-0198 切片 2）", () => {
       sessions: [],
       agents: [],
       relayMaxDepth: 6,
+      sandboxApproval: "ask",
     });
 
     const res = await h.manager.list();
@@ -278,6 +282,7 @@ describe("workspaceManager（Task 8，ADR-0198 切片 2）", () => {
       sessions: [],
       agents: [],
       relayMaxDepth: 6,
+      sandboxApproval: "ask",
     });
 
     const res = await h.manager.list();
@@ -306,6 +311,7 @@ describe("workspaceManager（Task 8，ADR-0198 切片 2）", () => {
       sessions: [],
       agents: [],
       relayMaxDepth: 6,
+      sandboxApproval: "ask",
     });
     expect((await h.manager.list()).ok).toBe(true);
     expect(h.manager.hostUids()).toEqual(["friend-a"]);
@@ -564,6 +570,13 @@ describe("workspace memory（#949）", () => {
 });
 
 describe("workspace relay max depth（#950 Task 9）", () => {
+  it("setSandboxApproval：透传给 updateSandboxApproval（#977）", async () => {
+    const h = harness();
+    const r = await h.manager.setSandboxApproval("ws-1", "auto");
+    expect(r.ok).toBe(true);
+    expect(h.calls).toContain("updateSandboxApproval:auto");
+  });
+
   it("setRelayMaxDepth：透传给 updateRelayMaxDepth", async () => {
     const { manager, calls } = harness();
     expect(await manager.setRelayMaxDepth("ws-1", 10)).toEqual({ ok: true, value: null });

@@ -18,6 +18,16 @@ import { parseMentions, type MentionCandidate } from "./remote/agentMention.js";
 export const DEFAULT_RELAY_MAX_DEPTH = 6;
 export const RELAY_MAX_DEPTH_RANGE = { min: 1, max: 20 } as const;
 export const RELAY_GUARD = { maxPeriod: 8, minRepeats: 2 } as const;
+/** 一次人话点火之后，整条接力**总共**最多几棒（#977 第 3 条，ADR-0225 D8 的账）。
+    `relay_max_depth` 封的是一条**分支**的长度：一轮 @ 了 N 只就分叉出 N 条各自
+    独立计数的链，最坏 N^maxDepth 条 turn——默认 6 棒、每轮 @ 两只就是 64 条，而
+    自带 key 的路没有额度兜底。这个数封的是**总量**：判据是 `relayChain` 的长度
+    （最后一条人话点火之后的全部 agent_relay），它本来就为护栏算出来了，多一条
+    比较而已。取 24 = 默认 depth 6 × 4——够一条 3 只 agent 全互 @ 的接力网跑完
+    两轮护栏周期（12 跳）再喊一次，又把 64 那种展开压到三分之一。不按 depth
+    派生：owner 把 depth 调到 20 时总量不该跟着长到 80。人再说一句就重置（同
+    depth 的语义：人话点火 = 新的授权） */
+export const RELAY_MAX_HOPS_PER_IGNITION = 24;
 
 export function relayDepthOf(opening: UserMessageEvent): number {
   return opening.relay?.depth ?? 0;
@@ -64,7 +74,11 @@ export function mentionedAgents(text: string, roster: readonly MentionCandidate[
 
 export type RelayDecision =
   | { kind: "relay"; depth: number; loop: ToolLoopDetection | null }
-  | { kind: "cap"; depth: number; max: number };
+  | { kind: "cap"; depth: number; max: number }
+  /** 这次点火之后总棒数到顶（#977）：与 `cap` 分开一种，文案要说清停的是
+      「这一轮总共太多」不是「这条分支太长」——两句话对人的意义不同（前者
+      是"@ 得太散"，后者是"链太长"） */
+  | { kind: "cap_total"; hops: number; max: number };
 
 export function decideRelay(args: {
   chain: readonly AgentRelayEvent[];
@@ -78,6 +92,10 @@ export function decideRelay(args: {
   const max = normalizeRelayMaxDepth(args.maxDepth);
   const depth = args.openingDepth + 1;
   if (depth > max) return { kind: "cap", depth, max };
+  // 总量闸排在分支闸之后：两者都命中时说「分支太长」更贴近这一棒的直接原因
+  if (args.chain.length >= RELAY_MAX_HOPS_PER_IGNITION) {
+    return { kind: "cap_total", hops: args.chain.length, max: RELAY_MAX_HOPS_PER_IGNITION };
+  }
   const history = [...args.chain.map((h) => hopFingerprint(h.fromAgentId, h.toAgentId)), hopFingerprint(args.fromAgentId, args.toAgentId)];
   return { kind: "relay", depth, loop: detectToolLoop(history, RELAY_GUARD) };
 }
@@ -206,6 +224,16 @@ export function relayCapText(fromName: string, toName: string, depth: number, ma
   return (
     `[系统] 接力到上限了（第 ${depth} 棒，上限 ${max}）：${from} 想 @ ${to}，我停在这儿，交回给人。` +
     `还没做完的请人来定——回复里 @ 谁就从头开始新一条接力。${tail}`
+  );
+}
+
+/** 一次点火总棒数到顶那句（#977）。与 relayCapText 同一形状（名字过闸、交回给人、
+    说清怎么重新开始），差别只在原因：不是链太长，是这一轮 @ 得太散 */
+export function relayTotalCapText(fromName: string, toName: string, hops: number, max: number): string {
+  const from = promptSafe(fromName), to = promptSafe(toName);
+  return (
+    `[系统] 这一轮接力总共已经 ${hops} 棒（上限 ${max}）：${from} 想 @ ${to}，我停在这儿，交回给人。` +
+    `分支太多而不是链太长——还没做完的请人来定，回复里 @ 谁就从头开始新一条接力。`
   );
 }
 
