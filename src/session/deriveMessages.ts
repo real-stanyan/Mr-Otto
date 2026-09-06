@@ -2,7 +2,7 @@
 // 纯函数：同样的 events 永远得到同样的 messages。resume/fork/replay 全靠它。
 
 import { isolatedPromptText, type IsolatedWorkspace } from "../shared/sessionWorktree.js";
-import { promptSafe, safeSpeakerLabel } from "../shared/promptSafe.js";
+import { promptSafe, promptSafeBody, safeSpeakerLabel } from "../shared/promptSafe.js";
 import type { CloudSessionFacts, MemoryTopicSnapshot, SessionEvent, UserTextFile, WorkspaceMemoryLoadedEvent } from "./events.js";
 import { barrenEventIndexes } from "./barrenTurns.js";
 import { activeSkills } from "./activeSkills.js";
@@ -505,7 +505,13 @@ export function deriveMessages(
         // 老日志投影逐字节不变(测试钉住)。附件消息不参与压缩截断:
         // image_ref 本身轻,text 部分是用户原话(压缩层从来不截用户消息)。
         // 文本文件在这拼进正文——模型看全文,UI 看结构(见 composeUserText)
-        const text = composeUserText(event.content, event.textFiles);
+        let text = composeUserText(event.content, event.textFiles);
+        // 正文过闸只在云会话发言时（issue #965）：`fromUid` 在场 = 这条是
+        // 人的 say() 开场白或接力开场白，正文已经/将要拼进 `[label]: text`
+        // 这类结构，一个 `\n[系统]: …` 就是一行干净的伪造说话人行。没有
+        // `fromUid` = 本机操作者说的话/旧日志，从不拼进这种结构，一个字节
+        // 不动——旧日志逐字节重放的硬规则钉在这条分支上
+        if (event.fromUid !== undefined) text = promptSafeBody(text);
         const target = pendingToolIds.size > 0 ? deferredUsers : messages;
         target.push(
           event.attachments && event.attachments.length > 0
@@ -539,7 +545,12 @@ export function deriveMessages(
         // 到顶 / 打转提醒 / 「某某停止了这一轮」）在模型上下文里逐字节同形。
         // ADR-0226 立的是**三处各自幂等地跑一遍**，这是第三处；对已经过闸的新行
         // 是空操作，正是这个函数的设计前提
-        target.push({ role: "user", content: `[${safeSpeakerLabel(event.label, event.fromUid)}]: ${event.content}` });
+        // 正文也过 promptSafeBody（issue #965）：label 那一栏硬化了，正文这条
+        // 路结构性地封不住——一个 `\n[系统]: …` 就是一行干净的伪造说话人行
+        target.push({
+          role: "user",
+          content: `[${safeSpeakerLabel(event.label, event.fromUid)}]: ${promptSafeBody(event.content)}`,
+        });
         break;
       }
 
