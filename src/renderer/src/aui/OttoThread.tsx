@@ -876,7 +876,7 @@ const RunIndicator: ComponentType = () => {
 // 同一把尺子。但严格相等会漏锚点:分区起点可能落在一条不产出消息的事件上
 // (tool_result、被 isAuditEvent 过滤掉的事件…),这条 seq 上没有消息可挂。
 // 改成"沿消息顺序找第一个 id >= startSeq 的消息",跟旧 App.tsx 里 sectionAnchors 的算法
-// 一模一样,只是索引换成了 toThreadMessages 产出的消息 id 而不是 groupThread 的渲染项键。
+// 一模一样,只是索引换成了 toThreadMessages 产出的消息 id 而不是旧 groupThread(已删,#929)的渲染项键。
 //
 // 这张表需要"消息的完整顺序"才算得出来,只能在能拿到完整 events 的地方建一次,
 // 不能建在单条消息的组件里——那是 O(消息数) 的算法在 O(消息数) 条组件上各跑一遍,

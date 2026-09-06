@@ -420,11 +420,10 @@ export const EventRow = memo(function EventRow({ event, isLast = false }: { even
   // 类型永远/从不/看字段渲染"的三态分类不是一回事：user_message 本身还有
   // 一整条完全独立的生路（role:"user" 气泡，走 assistant-ui 的主渲染管线，
   // 到不了这个函数）。放进 switch 会被
-  // tests/renderer/timelineLists.test.ts 的三份名单对表当成第四个"条件
-  // 分支"要求 isAuditEvent/threadGroups.isInvisible 也认领同一个 case——
-  // 但那两处的判断跟这里说的不是同一件事（isAuditEvent 决定"要不要投成
-  // 审计消息"，isInvisible 决定"要不要打断工具分组"，user_message 走的是
-  // 第三条完全独立的判据），硬凑同一个 case 只是伪造对称。本机没有工作区
+  // tests/renderer/timelineLists.test.ts 的两份名单对表当成第三个"条件
+  // 分支"要求 isAuditEvent 也认领同一个 case——但那处的判断跟这里说的不是
+  // 同一件事（isAuditEvent 决定"要不要投成审计消息"，user_message 走的是
+  // 另一条完全独立的判据），硬凑同一个 case 只是伪造对称。本机没有工作区
   // 名册，agent 名解析不了，agentName 恒传 null——云时间线那份带真名字的
   // 版本在 lib/cloudTimeline.ts 的 systemNoteText，两处共用同一份文案
   // （systemNoteBody），只有"名字从哪查"不同
@@ -648,13 +647,13 @@ export const EventRow = memo(function EventRow({ event, isLast = false }: { even
     case "suggestions_generated":
       return null;
 
-    // 主题分类/手动归类同理:侧栏分组用的标签,不进正文(同 threadGroups.isInvisible
+    // 主题分类/手动归类同理:侧栏分组用的标签,不进正文(同 isAuditEvent
     // 的同名分支,显式列出防 default 漂移,#846)
     case "session_topic_assigned":
     case "session_topic_set":
       return null;
 
-    // 记忆事件（ADR-0060）：与 threadGroups.isInvisible 一一对应——快照/留证/触发点
+    // 记忆事件（ADR-0060）：与 isAuditEvent 一一对应——快照/留证/触发点
     // 都不是对话内容(memory_nudge 派出的活由 subagent_spawned 卡呈现)
     case "memory_loaded":
     case "memory_user_edit":

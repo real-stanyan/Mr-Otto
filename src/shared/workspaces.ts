@@ -85,6 +85,11 @@ export interface WorkspaceSnapshot {
       runtime 起 turn 前现查（daemon.ts 的 queryRelayMaxDepth）。形状不对回默认 6——
       同 normalizeRelayMaxDepth 口径 */
   relayMaxDepth: number;
+  /** 这个工作区的快照没拉下来（#843 ②）：列表页只拿到 workspaces 那一行，
+      members/connectors/sessions/agents 都是空的**占位**，不是「真的没有」。
+      在场 = 这一格暂时读不到，值是说给人听的原因（已过 humanizeWorkspaceError）。
+      侧栏画出来但不给动作；消费方读到它别把空名册当事实 */
+  loadError?: string;
 }
 
 /** jsonb 的字符串数组列（connectors.tools / agents.models）落地成 string[]：

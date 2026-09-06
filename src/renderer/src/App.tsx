@@ -3673,8 +3673,9 @@ export function App() {
   // 所以「跨区域选择」的判定边界没变
   const threadHostRef = useRef<HTMLDivElement>(null);
   const replaying = replayCursor !== null;
-  // main 侧这里还有 items(groupThread)/toolIndex(buildToolIndex)/turnPhase(agentPhase)——
-  // 三者都是旧 ThreadViewport 渲染路径专用的投影,在这条路径下已经没有消费者:
+  // main 侧这里原有 items(groupThread)/toolIndex(buildToolIndex)/turnPhase(agentPhase)——
+  // 三者都是旧 ThreadViewport 渲染路径专用的投影,在这条路径下已经没有消费者
+  // (lib/threadGroups.ts 已按 #929 删掉):
   // 消息渲染整个交给 toThreadMessages(见 aui/OttoThread.tsx),turnPhase 的等价物
   // 也已经搬进 OttoThread.tsx 的 RunIndicator(同一份 agentPhase 逻辑,原样搬回)。
   // sectionAnchors 是分区功能真正要留的部分,重做版本见下面 OttoThread 的

@@ -54,7 +54,7 @@ function toToolCallPart(call: ToolCallRequest, index: ToolIndex): Part {
     tool_result / tool_execution_started 已被 tool-call part 吸收,
     approval_decision(approved) 是正常放行不是对话事实(免审模式下全是噪音)。
     「照抄」这件事本身有测试守着(tests/renderer/timelineLists.test.ts):
-    三份名单(这里 / EventRow / threadGroups.isInvisible)读同一份源码互相对表——
+    两份名单(这里 / EventRow)读同一份源码互相对表——
     skill_released 曾经只加进 EventRow、漏了这里,于是那个 case 成了死代码,
     时间线上永远不出现停用行。靠人肉记住"还有两处要改"已经失败过两次 */
 function isAuditEvent(e: SessionEvent): boolean {
@@ -104,7 +104,7 @@ function isAuditEvent(e: SessionEvent): boolean {
       return e.outcome !== "completed";
     case "section_classified":
       // main 合并进来的事件类型(会话分区分类)。目录挂在分区轨(SectionRail)上,
-      // 不进正文——同 lib/threadGroups.ts 的 isInvisible 里同一分支。原先落到
+      // 不进正文——同 Timeline.tsx 的 EventRow 里同一分支。原先落到
       // default 也是同一个结果(false),但那是"碰巧对";这里显式列出来,
       // 免得以后 default 分支的语义变了,这条却没人注意到
       return false;
@@ -115,12 +115,12 @@ function isAuditEvent(e: SessionEvent): boolean {
     case "session_topic_assigned":
     case "session_topic_set":
       // 主题分类/手动归类同理:侧栏分组用的标签,不是对话事实——同
-      // threadGroups.isInvisible 的同名分支,显式列出防 default 漂移(#846)
+      // EventRow 的同名分支,显式列出防 default 漂移(#846)
       return false;
     case "checkpoint_created":
     case "workspace_restored":
       // 检查点/文件恢复(issue #395):审计事实,但回退入口在轨迹视图——
-      // 聊天区不渲染(同 threadGroups.isInvisible 的同名分支,显式列出防 default 漂移)
+      // 聊天区不渲染(同 EventRow 的同名分支,显式列出防 default 漂移)
       return false;
     default:
       return false;
