@@ -1,9 +1,11 @@
 import { describe, it, expect } from "vitest";
 import {
   DEFAULT_RELAY_MAX_DEPTH, RELAY_GUARD, decideRelay, hopFingerprint, mentionedAgents, normalizeRelayMaxDepth,
-  openingDepthFor, relayCapText, relayChain, relayDepthOf, relayNudgeText, relayOpeningText,
+  openingDepthFor, relayApprovalWaitText, relayCapText, relayChain, relayDepthOf, relayNudgeText, relayOpeningText,
+  advanceRelayBounds, emptyRelayBounds, relayBoundsOf,
 } from "../../src/shared/agentRelay.js";
 import type { AgentRelayEvent, SessionEvent, TurnEndedEvent, UserMessageEvent } from "../../src/session/events.js";
+import { generateLog, GEN_AGENTS } from "../helpers/relayLog.js";
 
 let seq = 0;
 const um = (extra: Partial<UserMessageEvent>): UserMessageEvent => ({ seq: seq++, ts: 1, sessionId: "s", type: "user_message", content: "x", ...extra });
@@ -151,5 +153,152 @@ describe("接力三句话的名字与引文过结构闸（第二轮复审 E2-2�
 
   it("relayCapText：lastWords 全空白时不画引文那一段（过闸后仍然是空）", () => {
     expect(relayCapText("运营", "广告", 7, 6, "   \n  ")).not.toContain("最后说");
+  });
+});
+
+// ── #958：单遍重写 + 尾段读等价 ───────────────────────────────────────────
+//
+// 同 turnLedger.test.ts 那份 oracle 的纪律：**这是改动前的 openingDepthFor 逐字
+// 复制，别整理它**。它慢正是它该有的样子。
+function openingDepthForOracle(events: readonly SessionEvent[], agentId: string, opening: UserMessageEvent): number {
+  let max = relayDepthOf(opening);
+  for (let i = 0; i < events.length; i++) {
+    const u = events[i]!;
+    if (u.type !== "user_message" || !u.mentions || !u.mentions.includes(agentId)) continue;
+    let closed = false;
+    for (let j = i + 1; j < events.length; j++) {
+      const e = events[j]!;
+      if (e.type !== "turn_ended" || e.agentId !== agentId) continue;
+      if (e.readUpToSeq === undefined || e.readUpToSeq >= u.seq) { closed = true; break; }
+    }
+    if (!closed) max = Math.max(max, relayDepthOf(u));
+  }
+  return max;
+}
+
+/** 模拟 store.load(sessionId, { afterSeq })：只回 seq 严格大于 afterSeq 的那一段 */
+const tailAfter = (events: readonly SessionEvent[], afterSeq: number): SessionEvent[] => events.filter((e) => e.seq > afterSeq);
+
+describe("openingDepthFor / relayChain 的尾段下界（#958）", () => {
+  const OPENINGS = (agentId: string): UserMessageEvent[] => [
+    { seq: 10_000, ts: 1, sessionId: "s1", type: "user_message", content: "人开的", fromUid: "u1", mentions: [agentId] },
+    { seq: 10_000, ts: 1, sessionId: "s1", type: "user_message", content: "接力开的", fromUid: "u1", mentions: [agentId], relay: { fromAgentId: "ops", depth: 3 } },
+  ];
+
+  it("openingDepthFor：单遍与旧实现同结果（200 份伪随机日志 × 3 只 agent × 2 种开场白）", () => {
+    for (let seed = 1; seed <= 200; seed++) {
+      const events = generateLog(seed);
+      for (const agentId of GEN_AGENTS) {
+        for (const opening of OPENINGS(agentId)) {
+          expect(openingDepthFor(events, agentId, opening), `seed=${seed} agent=${agentId}`)
+            .toBe(openingDepthForOracle(events, agentId, opening));
+        }
+      }
+    }
+  });
+
+  it("openingDepthFor：从 closeBound 之后读尾段与读全量同结果", () => {
+    // 下界是保守的：算小了只是多读几条，算大了才丢东西。这条断言盯的正是
+    // 「算大了」——真丢了的话，一条本该算进 depth 的开场白被读没了，接力棒的
+    // depth 会安静地退回 0，上限那道闸再也拦不住一条打转的链
+    for (let seed = 1; seed <= 200; seed++) {
+      const all = generateLog(seed);
+      const bounds = relayBoundsOf(all);
+      for (const agentId of GEN_AGENTS) {
+        const tail = tailAfter(all, bounds.closeBound.get(agentId) ?? -1);
+        for (const opening of OPENINGS(agentId)) {
+          expect(openingDepthFor(tail, agentId, opening), `seed=${seed} agent=${agentId}`)
+            .toBe(openingDepthFor(all, agentId, opening));
+        }
+      }
+    }
+  });
+
+  it("relayChain：从 lastHumanOpening − 1 之后读尾段与读全量同结果（连事件对象都深等于）", () => {
+    for (let seed = 1; seed <= 200; seed++) {
+      const all = generateLog(seed);
+      const bounds = relayBoundsOf(all);
+      const tail = tailAfter(all, Math.max(-1, bounds.lastHumanOpening - 1));
+      expect(relayChain(tail), `seed=${seed}`).toEqual(relayChain(all));
+    }
+  });
+
+  it("【今天恒真的未来护栏】relayBoundsOf 折叠 ≡ 逐条 advanceRelayBounds", () => {
+    // **诚实标注**（复审 Nit ⑤）：relayBoundsOf 此刻的实现字面就是
+    // `for (const e of events) advanceRelayBounds(b, e)`，所以这条现在不可能红，
+    // 它此刻什么也没在检查。留着的唯一理由是「哪天有人为了快，把整份折叠重写成
+    // 独立的第二份实现」——sessionService 装配时走前者、之后每条事件走后者，
+    // 两份分家的那天读的尾段就不一样，而它不报错、只会偶尔少读几条
+    for (let seed = 1; seed <= 200; seed++) {
+      const all = generateLog(seed);
+      const fold = emptyRelayBounds();
+      for (const e of all) advanceRelayBounds(fold, e);
+      expect(fold, `seed=${seed}`).toEqual(relayBoundsOf(all));
+    }
+  });
+
+  it("空日志：closeBound 空表、lastHumanOpening = −1（−1 → afterSeq −1 = 全量，与改动前等价）", () => {
+    expect(relayBoundsOf([])).toEqual({ closeBound: new Map(), lastHumanOpening: -1 });
+  });
+
+  it("closeBound 取 max(readUpToSeq ?? seq)：没有 readUpToSeq 的旧日志按它自己的 seq 算", () => {
+    seq = 0;
+    const events: SessionEvent[] = [
+      um({ mentions: ["ops"] }),                                                        // 0
+      { seq: seq++, ts: 1, sessionId: "s", type: "turn_ended", outcome: "completed", agentId: "ops", readUpToSeq: 0 } as TurnEndedEvent, // 1
+      um({ mentions: ["ops"] }),                                                        // 2
+      { seq: seq++, ts: 1, sessionId: "s", type: "turn_ended", outcome: "completed", agentId: "ops" } as TurnEndedEvent,                 // 3
+      { seq: seq++, ts: 1, sessionId: "s", type: "turn_ended", outcome: "completed", agentId: "ads", readUpToSeq: 1 } as TurnEndedEvent, // 4
+    ];
+    const b = relayBoundsOf(events);
+    expect(b.closeBound.get("ops")).toBe(3);
+    expect(b.closeBound.get("ads")).toBe(1);
+    expect(b.lastHumanOpening).toBe(2);
+  });
+
+  it("没有 agentId 的 turn_ended（本机会话/旧日志）不进 closeBound——它谁的口也收不了", () => {
+    const events: SessionEvent[] = [
+      { seq: 0, ts: 1, sessionId: "s", type: "turn_ended", outcome: "completed" } as TurnEndedEvent,
+    ];
+    expect(relayBoundsOf(events).closeBound.size).toBe(0);
+  });
+
+  it("接力开场白不算人话点火——lastHumanOpening 只认没有 relay 的那条", () => {
+    seq = 0;
+    const events: SessionEvent[] = [
+      um({ mentions: ["ops"] }),                                                  // 0 人
+      um({ mentions: ["ads"], relay: { fromAgentId: "ops", depth: 1 } }),         // 1 接力
+      um({ content: "没点名" }),                                                   // 2 没 mentions
+    ];
+    expect(relayBoundsOf(events).lastHumanOpening).toBe(0);
+  });
+});
+
+// #959：接力棒上的审批在群里出声的那句话。名字/工具名与接力三句话同一条纪律——
+// 拼进 `「」` 之前先过 promptSafe，否则一个叫 `广告」…「` 的 agent 就能把这句
+// 系统旁白撑开成任意结构
+describe("relayApprovalWaitText（#959）", () => {
+  it("逐字文案：三方名字 + 分钟数 + 「等待期间群里其它回复排队」", () => {
+    expect(relayApprovalWaitText("运营", "Rick", "shopify.get_orders", 120_000)).toBe(
+      "「运营」在等「Rick」批准 shopify.get_orders（接力棒上的调用，2 分钟内不批按拒绝处理；等待期间群里其它回复排队）"
+    );
+  });
+
+  it("分钟数从 timeoutMs 算，不足一分钟也说「1 分钟」（说 0 分钟等于告诉人已经超时了）", () => {
+    expect(relayApprovalWaitText("a", "b", "c", 30_000)).toContain("1 分钟内不批");
+    expect(relayApprovalWaitText("a", "b", "c", 600_000)).toContain("10 分钟内不批");
+  });
+
+  it("三个字段都过 promptSafe：`]` → `］`，换行折成空格", () => {
+    const s = relayApprovalWaitText("广告]坏", "Rick]坏", "tool]坏", 120_000);
+    expect(s).toContain("广告］坏");
+    expect(s).toContain("Rick］坏");
+    expect(s).toContain("tool］坏");
+    expect(s).not.toContain("]");
+    expect(relayApprovalWaitText("广\n告", "b", "c", 120_000)).toContain("「广 告」");
+  });
+
+  it("名字里的 `「」` 也换替身——否则一个名字就能提前闭合引号栏位", () => {
+    expect(relayApprovalWaitText("广「告」", "b", "c", 120_000)).toContain("「广｢告｣」");
   });
 });

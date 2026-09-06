@@ -40,28 +40,69 @@ export interface OpenTurn {
 }
 
 /** 按 seq 升序、同一条里按 mentions 顺序。收了口的（U 之后有该 agent 的
-    turn_ended）不出现——"答完了"不需要一行来表示 */
+    turn_ended）不出现——"答完了"不需要一行来表示。
+
+    **单遍**（#958）：原来是「每条点名再往后扫一整遍」，日志一长就是 O(n²)，
+    而 runtime 每起一个 turn 都要算一次。改成一次线性扫描 + 每只 agent 一份
+    「还开着的点名」清单，语义逐字节不变（tests/shared/turnLedger.test.ts 把
+    改动前那份实现原样抄进去当 oracle，200 份伪随机日志对拍）。
+    两处顺序上的讲究，错了不会崩、只会安静地给出另一个答案：
+    ① 一条事件**先当「这只 agent 的动静」处理、再当「新的点名」处理**——旧实现
+       的内层循环从 i+1 起步，也就是说 U 自己那条不影响 U 自己那几格，但影响更早
+       的那些。user_message 也可能带 agentId（护栏/后台注给某一只的私话），这种
+       同时具备两种身份的事件是唯一能暴露顺序错的形状；
+    ② 输出顺序仍然是 push 的顺序（外层 index 升序、同一条里按 mentions 顺序），
+       最后只把收了口的滤掉——不排序，所以对乱序日志也与旧实现同结果。 */
 export function openTurns(events: readonly SessionEvent[]): OpenTurn[] {
-  const out: OpenTurn[] = [];
-  for (let i = 0; i < events.length; i++) {
-    const u = events[i]!;
-    if (u.type !== "user_message" || !u.mentions || u.mentions.length === 0) continue;
-    for (const agentId of u.mentions) {
-      let state: OpenTurn["state"] | "done" = "queued";
-      for (let j = i + 1; j < events.length; j++) {
-        const e = events[j]!;
-        const owner = "agentId" in e ? e.agentId : undefined;
-        if (owner !== agentId) continue;
-        if (e.type === "turn_ended") {
-          // 这轮开跑时还没看见 U（readUpToSeq < u.seq）就不许收它的口——它有
-          // 自己的 job 排在后面。缺席 = 老日志，按老规则一律收口
-          if (e.readUpToSeq === undefined || e.readUpToSeq >= u.seq) { state = "done"; break; }
-          continue;
+  interface Pending { entry: OpenTurn; uSeq: number; done: boolean }
+  const all: Pending[] = [];
+  // agentId → 这只 agent 还开着的点名，分两摞：「还没见过动静的」与「已经在跑的」。
+  // 见到一条动静 = 整摞 queued 挪进 running，每一格一生只搬一次（摊还 O(1)）；
+  // 合成一摞的话，每条事件都要把这只 agent 所有开着的格子重刷一遍
+  const queued = new Map<string, Pending[]>();
+  const running = new Map<string, Pending[]>();
+
+  for (const e of events) {
+    const owner = "agentId" in e ? e.agentId : undefined;
+    if (owner !== undefined) {
+      if (e.type === "turn_ended") {
+        // 这轮开跑时还没看见 U（readUpToSeq < u.seq）就不许收它的口——它有
+        // 自己的 job 排在后面。缺席 = 老日志，按老规则一律收口
+        const close = (list: Pending[]): Pending[] => {
+          const kept: Pending[] = [];
+          for (const p of list) {
+            if (e.readUpToSeq === undefined || e.readUpToSeq >= p.uSeq) p.done = true;
+            else kept.push(p);
+          }
+          return kept;
+        };
+        const q = queued.get(owner);
+        if (q) queued.set(owner, close(q));
+        const r = running.get(owner);
+        if (r) running.set(owner, close(r));
+      } else {
+        const q = queued.get(owner);
+        if (q && q.length > 0) {
+          for (const p of q) p.entry.state = "running";
+          const r = running.get(owner);
+          if (r) r.push(...q); else running.set(owner, [...q]);
+          queued.set(owner, []);
         }
-        state = "running";
       }
-      if (state !== "done") out.push({ seq: u.seq, fromUid: u.fromUid ?? null, agentId, state });
+    }
+    if (e.type !== "user_message" || !e.mentions || e.mentions.length === 0) continue;
+    for (const agentId of e.mentions) {
+      const p: Pending = {
+        entry: { seq: e.seq, fromUid: e.fromUid ?? null, agentId, state: "queued" },
+        uSeq: e.seq,
+        done: false,
+      };
+      all.push(p);
+      const q = queued.get(agentId);
+      if (q) q.push(p); else queued.set(agentId, [p]);
     }
   }
+  const out: OpenTurn[] = [];
+  for (const p of all) if (!p.done) out.push(p.entry);
   return out;
 }

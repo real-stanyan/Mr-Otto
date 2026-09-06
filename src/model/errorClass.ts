@@ -12,6 +12,8 @@
 //   （半条消息续不上）。所以 visionBridge 看 class（它关心"是不是限流"），
 //   adapter 重试环看 retryable（它关心"重发安不安全"）。
 
+import type { BillingError } from "../shared/billing.js";
+
 export type ModelErrorClass = "rate-limit" | "retryable" | "fatal" | "reroute";
 
 /** 网关说额度用完了（429 quota_exhausted）。种类单列：它既不该退避（等上游没用，等的是窗口）
@@ -26,6 +28,21 @@ export function rerouteInfoOf(err: unknown): RerouteInfo | undefined {
   if (!(err instanceof Error)) return undefined;
   const r = (err as { reroute?: unknown }).reroute;
   return r !== null && typeof r === "object" ? (r as RerouteInfo) : undefined;
+}
+
+/** 网关信封原样贴在错误上（#960）。分类（errorClass）答的是「这是哪一种错」，
+    这一格答的是「网关具体说了什么」——`too_many_inflight` 与普通 429 的 class
+    同为 rate-limit，但一个该排队等槽位、另一个该退避，光看 class 分不出来。
+    调用方（runtime 的 hostedRoute）据此决定排不排队；从 message 里正则倒推
+    正是 errorClass.ts 头注列的那笔旧账 */
+export function markBilling<T extends Error>(err: T, billing: BillingError): T {
+  (err as T & { billing?: BillingError }).billing = billing;
+  return err;
+}
+export function billingErrorOf(err: unknown): BillingError | undefined {
+  if (!(err instanceof Error)) return undefined;
+  const b = (err as { billing?: unknown }).billing;
+  return b !== null && typeof b === "object" ? (b as BillingError) : undefined;
 }
 
 /** 标记贴属性不建子类（markRetryable 同款理由）：错误要跨 try 边界原样上抛，

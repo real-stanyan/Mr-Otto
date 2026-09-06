@@ -23,13 +23,27 @@ export function relayDepthOf(opening: UserMessageEvent): number {
   return opening.relay?.depth ?? 0;
 }
 
+/** 「这是一次**人话点火**吗」——点了名、又不是接力替它落的那条开场白。
+
+    **只此一份**（#958 复审 Important ②）：`relayChain` 拿它定链首，
+    `advanceRelayBounds` 拿它算 `lastHumanOpening` 这条尾段下界，而后者存在的
+    全部理由就是「从这里读起，`relayChain` 解得回同一个链首」——两处抄两份字面量
+    的话，这个等式没有任何东西按住它。方向性还很要命：`relayChain` 那份一旦被
+    **收窄**（比如将来加一条 `&& e.fromUid !== "system"`），`lastHumanOpening` 就
+    **算大**，尾段起点越过真正的链首 → 若干条 `agent_relay` 读不到 → `decideRelay`
+    的 depth 偏小 → **棒数上限那道闸安静地不再命中**。同 `wire.ts` / `pxEscrow`
+    那条「共用一份」的纪律。 */
+export function isHumanOpening(e: SessionEvent): e is UserMessageEvent {
+  return e.type === "user_message" && !!e.mentions && e.mentions.length > 0 && !e.relay;
+}
+
 /** 最近一条**人**点名（带 mentions 且没有 relay）的 user_message 之后的全部 agent_relay。
     一条都没有（旧日志 / 没人点过名）= 全部 agent_relay */
 export function relayChain(events: readonly SessionEvent[]): AgentRelayEvent[] {
   let start = -1;
   for (let i = events.length - 1; i >= 0; i--) {
     const e = events[i]!;
-    if (e.type === "user_message" && e.mentions && e.mentions.length > 0 && !e.relay) { start = i; break; }
+    if (isHumanOpening(e)) { start = i; break; }
   }
   const out: AgentRelayEvent[] = [];
   for (let i = start + 1; i < events.length; i++) {
@@ -75,21 +89,87 @@ export function decideRelay(args: {
     readUpToSeq >= U.seq（这轮开跑时看见过 U）才算收口。**否决内存
     pendingDepth**——那份状态重启即丢（#933），这里改成纯粹从日志重放推导。
     至少包含 opening 自己：opening 有可能还没进 events（调用点是"落盘那一刻"），
-    也可能已经在里面（此时结果与只看 events 一致，取 max 不会重复计） */
+    也可能已经在里面（此时结果与只看 events 一致，取 max 不会重复计）。
+
+    **单遍**（#958）：同 openTurns 那一处的重写与理由——两层循环折成「一次线性
+    扫描 + 一摞还开着的点名」。这里不必分 queued/running（只关心收没收口）。
+    turn_ended 与 user_message 是互斥的两种事件，所以不存在 openTurns 那条
+    「同一条事件两种身份」的顺序讲究。 */
 export function openingDepthFor(events: readonly SessionEvent[], agentId: string, opening: UserMessageEvent): number {
   let max = relayDepthOf(opening);
-  for (let i = 0; i < events.length; i++) {
-    const u = events[i]!;
-    if (u.type !== "user_message" || !u.mentions || !u.mentions.includes(agentId)) continue;
-    let closed = false;
-    for (let j = i + 1; j < events.length; j++) {
-      const e = events[j]!;
-      if (e.type !== "turn_ended" || e.agentId !== agentId) continue;
-      if (e.readUpToSeq === undefined || e.readUpToSeq >= u.seq) { closed = true; break; }
+  let open: UserMessageEvent[] = [];
+  for (const e of events) {
+    if (e.type === "turn_ended") {
+      if (e.agentId !== agentId) continue;
+      const kept: UserMessageEvent[] = [];
+      for (const u of open) if (!(e.readUpToSeq === undefined || e.readUpToSeq >= u.seq)) kept.push(u);
+      open = kept;
+      continue;
     }
-    if (!closed) max = Math.max(max, relayDepthOf(u));
+    if (e.type === "user_message" && e.mentions && e.mentions.includes(agentId)) open.push(e);
   }
+  for (const u of open) max = Math.max(max, relayDepthOf(u));
   return max;
+}
+
+/** 「这一轮的判据从日志的哪一条读起」的两条**保守下界**（#958）。
+    两条都是整份日志的纯函数，也都能从单条事件增量推进——sessionService 装配时
+    用 relayBoundsOf 播种一次，之后每条事件经 notify 过一遍 advanceRelayBounds，
+    于是每个 turn 只读尾段而不是整份日志（原来 runJob 与 relayAfterTurn 各做一次
+    全量 load，成本跟着日志长）。
+
+    **下界算小了只是多读几条，算大了才会丢东西**——两条推导都只会算小：
+    ① closeBound[agentId] = 该 agent 全部 turn_ended 的 max(readUpToSeq ?? seq)。
+       seq ≤ closeBound 的点名**一定已经收口**：取达到这个最大值的那条 T，
+       readUpToSeq 在场时 T.seq > readUpToSeq ≥ U.seq（readUpToSeq 是 T 那轮开跑
+       时的日志尾，T 自己是之后才落的），T 排在 U 后面且 readUpToSeq ≥ U.seq；
+       readUpToSeq 缺席时 closeBound = T.seq，U.seq < T.seq 而缺席按老规则一律收口。
+       收了口的点名对 openingDepthFor 没有贡献，所以
+       openingDepthFor(load({afterSeq: closeBound}), …) ≡ openingDepthFor(load(), …)。
+       没有 agentId 的 turn_ended（本机会话/旧日志）不进表——openingDepthFor 里
+       它谁的口也收不了，进表就是把下界算大。
+       **这条推导明写着一个前提：readUpToSeq ≤ T.seq**（复审 Nit ⑥）。它对
+       runtime 自己写出来的日志成立——engine 是在 append turn_ended **之前**读的
+       日志尾（src/loop/engine.ts 的 readUpToSeq），而 seq 是整库一条严格递增的链。
+       手写/损坏的日志破得掉它（一条 seq=0、readUpToSeq=5 的 turn_ended 会把下界
+       算大到 5，之后 seq 1..5 的点名读不到、depth 丢），代价是 depth 偏小而不是
+       报错。**故意不加 Math.min 去夹**：夹一下确实能兜住，但也就同时把「日志里
+       出现了一条不可能的 turn_ended」这件事抹平成正常输入——这一层不是校验层，
+       真出现那种日志该在别处炸，不该在这里被悄悄修好。
+    ② lastHumanOpening = 最后一条人话点火（isHumanOpening，与 relayChain 定链首
+       **同一个**判据，理由见那个函数的头注）的 user_message 的 seq。relayChain 的
+       start 就是它，所以从 lastHumanOpening − 1 之后读，那条点火位与它之后的全部
+       agent_relay 一条不少；−1（谁也没点过名）时 afterSeq 取 −1 = 全量，与改动前
+       逐字节等价。 */
+export interface RelayBounds {
+  /** agentId → max(readUpToSeq ?? seq)；不在表里 = 这只 agent 还没收过口 */
+  closeBound: Map<string, number>;
+  /** 最后一条人话点火的 seq；−1 = 没有 */
+  lastHumanOpening: number;
+}
+
+export function emptyRelayBounds(): RelayBounds {
+  return { closeBound: new Map(), lastHumanOpening: -1 };
+}
+
+/** 单条事件推进（sessionService 的 notify 每条都过这里，与 relayBoundsOf 同一套
+    判据——两处各写一遍的话，重启前后读的尾段就会不一样，而它不报错只是偶尔少读） */
+export function advanceRelayBounds(b: RelayBounds, e: SessionEvent): void {
+  if (e.type === "turn_ended") {
+    if (e.agentId === undefined) return;
+    const v = e.readUpToSeq ?? e.seq;
+    const cur = b.closeBound.get(e.agentId);
+    if (cur === undefined || v > cur) b.closeBound.set(e.agentId, v);
+    return;
+  }
+  if (isHumanOpening(e) && e.seq > b.lastHumanOpening) b.lastHumanOpening = e.seq;
+}
+
+/** 整份日志折叠（装配时播种一次） */
+export function relayBoundsOf(events: readonly SessionEvent[]): RelayBounds {
+  const b = emptyRelayBounds();
+  for (const e of events) advanceRelayBounds(b, e);
+  return b;
 }
 
 // 名字与引文一律在**这三个纯函数里**过一次结构闸，不放在调用点（第二轮复审 E2-2）：
@@ -126,6 +206,31 @@ export function relayCapText(fromName: string, toName: string, depth: number, ma
   return (
     `[系统] 接力到上限了（第 ${depth} 棒，上限 ${max}）：${from} 想 @ ${to}，我停在这儿，交回给人。` +
     `还没做完的请人来定——回复里 @ 谁就从头开始新一条接力。${tail}`
+  );
+}
+
+/** 「几分钟内不批」里那个数字。deny 的 reason（approvalRouter）与群里那句旁白
+    （relayApprovalWaitText）读的是同一个函数——两处各写一遍 `Math.round(ms/60000)`
+    的话，改超时那天两句话会给出不同的分钟数，而人只会看见其中一句。
+    下取到 1：说「0 分钟内不批」等于告诉人它已经超时了 */
+export function approvalTimeoutMinutes(timeoutMs: number): number {
+  return Math.max(1, Math.round(timeoutMs / 60000));
+}
+
+/** 接力棒上的审批挂起时，群里那句出声（#959）。
+    冻结本身拦不住：drain 是串行的，一张挂起的审批卡把这条会话的后续 turn 全部
+    压住——而接力棒上的审批人是**点火的那个人**，他多半早就不看这条会话了。
+    修法的另一半是短超时（approvalRouter 的 RELAY_APPROVAL_TIMEOUT_MS），这一半
+    是让冻结**有声**：谁在等、等谁批、批的是哪把刀、不批会怎样。
+    三个字段全过 `promptSafe`——`「」` 是这句话的结构，名字/工具名都是别人写的
+    （agent 名字走写入校验，MCP 工具名一路来自外部 server，一次校验都没走过）。
+    走 `chat_message{fromUid:"system"}`（agentView 里是 keep）而不是新事件类型：
+    群里所有人和所有 agent 都读得到，正在等的那两只自己也看得见 */
+export function relayApprovalWaitText(agentName: string, approverName: string, toolName: string, timeoutMs: number): string {
+  const agent = promptSafe(agentName), approver = promptSafe(approverName), tool = promptSafe(toolName);
+  return (
+    `「${agent}」在等「${approver}」批准 ${tool}` +
+    `（接力棒上的调用，${approvalTimeoutMinutes(timeoutMs)} 分钟内不批按拒绝处理；等待期间群里其它回复排队）`
   );
 }
 

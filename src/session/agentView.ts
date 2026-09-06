@@ -96,12 +96,9 @@ const OTHER_AGENT_VERDICTS: Record<SessionEvent["type"], OtherAgentVerdict> = {
 
 /** 往回跳过别人的私话最多跳几条(见 agentView.lastOfType)。一条 turn 里护栏最多
     喊几次是有数的,连着 64 条别人的私话意味着日志本身不正常。
-    **跳不完回 null,而这一类的 null 不是全量兜底**:modelContextScan.ts:70-73 拿
-    user_message 的 null 当成"检查点之前根本没有 user turn",`foundLive = true`
-    直接 break,于是 `if (!foundLive) return null` 那条全量逃生舱根本走不到 ——
-    boundedContextEvents 回的是 head + tail,段丢失,正是本次改动要消灭的那种
-    "安静变短"。真正的全量兜底只有 context_compacted 的 null 走得到。
-    把这里做成真兜底要动 modelContextScan(不在本任务范围,ceiling 另开 issue) */
+    跳不完回 null——modelContextScan.ts 的 boundedContextEvents 现在把这个 null
+    与"checkpoint 之前根本没有 user_message"一视同仁,一律退回全量重建(#961):
+    两种成因在 agentView 这一层分不清,保守起见都当"问不出来"处理 */
 const FOREIGN_SCAN_LIMIT = 64;
 
 export function projectForAgent(events: SessionEvent[], agentId: string): SessionEvent[] {
@@ -151,15 +148,12 @@ export function agentView(store: EventLog, agentId: string): EventLog {
     // user_message 是**唯一的例外**(#957 A-5 的后果):从前它一定不带 agentId
     // (人说的话),现在护栏/后台注给某一只 agent 的私话也带。而
     // boundedContextEvents 拿它做的是**定位**——"上一个 user turn 从哪开始"。
-    // 别人的私话不是我的 turn 边界,照上面那条回 null 的话,重建会当成"检查点
-    // 之前根本没有 user turn",把我真正的那一段整段丢掉:上下文静默变短,
-    // 不崩不报错。所以这一类往前走,跳过别人的那些。
+    // 别人的私话不是我的 turn 边界,所以这一类往前走,跳过别人的那些
+    // (最多跳 FOREIGN_SCAN_LIMIT 条,跳不完回 null)。
     //
-    // **注意这一类的 null 不是全量兜底**(与上一段不同):modelContextScan.ts:70-73
-    // 对 user_message 的 null 是 `foundLive = true; break;`,`if (!foundLive)
-    // return null` 那条逃生舱走不到,回的是 head + tail —— 段照样丢。所以跳不完
-    // (病态日志:连着 64 条别人的私话)时症状与不修一样,只是把发生概率压到近乎零。
-    // 真正的全量兜底要动 modelContextScan,不在本任务范围
+    // 回 null = modelContextScan 退回全量(#961):它把这个 null 与"checkpoint
+    // 之前根本没有 user_message"一视同仁,不再区分"问不出来"还是"确实没有"——
+    // 两者在这一层本来就分不清,分不清就不该赌,退回全量语义精确
     lastOfType: (sessionId, type, opts) => {
       const mine = (e: SessionEvent) => {
         const owner = "agentId" in e ? e.agentId : undefined;

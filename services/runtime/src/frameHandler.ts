@@ -393,24 +393,37 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
           // 看来完全一样。三条出口（不在籍 / say() 的业务拒绝：限速、一句话
           // @ 太多、名单降级 / say() 的内部异常）各回一条
           // say_result{ok:false}，成功回 say_result{ok:true}
+          //
+          // **粗闸在 requireStillMember 之前**（#968）：isMember 再便宜也是
+          // 一次 Supabase 往返（60s TTL 缓存扛不住每一帧都打一次），而
+          // say 桶只是内存里的令牌桶——一个被限速的成员不该为了换回一句
+          // "慢一点"去白付这次网络查询。拒绝走的措辞与载体和下面 budget
+          // 里的 say 分支完全一致，只是提前到查名单之前
+          if (!deps.rateLimit.allow("say", entry.uid)) {
+            deps.send(cid, { t: "say_result", ok: false, message: throttleMessage("say") });
+            return;
+          }
           if (!(await requireStillMember(workspaceId, cid, entry.uid, () =>
             deps.send(cid, { t: "say_result", ok: false, message: NOT_MEMBER_MESSAGE })
           ))) return;
-          // **价钱在判据的同一侧算**（#957 B2-C1）：这一层看得见的只有客户端
-          // 自报的 mention/mentions，而这句话真正会起几条 turn 要等 say() 里
-          // resolveTargets 之后才知道 —— 一台省掉 mentions 字段的客户端发一句
-          // @ 了 40 个名字的话，这边按 1 扣、那边起 40 条真花钱的模型调用。
-          // 所以问价改成一个回调递进 say()，桶与数量都由真实 targets 决定；
-          // 一帧仍然只记一个桶（#819）：点了名的走 turn 桶（每只都可能起一次
-          // 真花钱的模型调用），没点名的走 say 桶（撑大的是 VPS 的 SQLite）。
-          // **超容量是拒绝不是夹价**：夹到桶容量等于第十一只往后每一只都免费，
-          // 上一版正是这么写的；拒绝时把上限说出口，人才知道这不是"等一会儿"
-          // 能解决的事。拒绝一律走 say_result{ok:false}，不回 denied ——
-          // 客户端把 denied 当终态会直接断掉这条连接，而限速是"待会儿再来"
+          // **两只桶管两件不同的事**（#968 修正 #819 的"一帧只记一个桶"，
+          // 那条纪律的目的——被限的一个时段只记一笔——原样成立，见下方
+          // onThrottled 按 (kind, uid) 去重）：say 桶是上面已经付过的
+          // "有没有资格开口"粗闸，只看这一帧、不看点了几个名；turn 桶才是
+          // 真正的价钱，由这句话实际会起几条模型调用决定——那要等 say()
+          // 里 resolveTargets 解出真实 targets 才知道，一台省掉 mentions
+          // 字段的客户端发一句 @ 了 40 个名字的话，若只按声称的数量扣，
+          // 这边按 1 扣、那边却起 40 条真花钱的调用。所以问价仍然是一个
+          // 回调递进 say()，turn 桶的数量由真实 targets 决定。
+          // **超容量是拒绝不是夹价**：夹到桶容量等于第十一只往后每一只都
+          // 免费，上一版正是这么写的；拒绝时把上限说出口，人才知道这不是
+          // "等一会儿"能解决的事。拒绝一律走 say_result{ok:false}，不回
+          // denied —— 客户端把 denied 当终态会直接断掉这条连接，而限速
+          // 是"待会儿再来"
           const budget = (n: number): string | null => {
             if (n > TURN_BUCKET.capacity) return `一句话最多 @ ${TURN_BUCKET.capacity} 只（这条 @ 了 ${n} 只）`;
-            const kind = n > 0 ? "turn" : "say";
-            return deps.rateLimit.allow(kind, entry.uid, Math.max(1, n)) ? null : throttleMessage(kind);
+            if (n === 0) return null; // 没点名——这句话的钱已经在粗闸那次 say 令牌里付过了
+            return deps.rateLimit.allow("turn", entry.uid, n) ? null : throttleMessage("turn");
           };
           // say() 在开场白落盘 + 入队后就 resolve，**不等 turn 跑完**（#937）：
           // serialize 把同一个 cid 的帧串成一条链，等在这里的话发起人自己的

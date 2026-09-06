@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { createCloudSession, kickedNoteText, SayRejectedError, speakerLabelOf, type CloudSession } from "../../services/runtime/src/sessionService.js";
 import { createInMemoryWorkspaceMemory } from "../../services/runtime/src/workspaceMemory.js";
 import { EventStore } from "../../src/session/store.js";
-import type { SessionEvent, ApprovalRequestEvent, AgentRelayEvent, UserMessageEvent } from "../../src/session/events.js";
+import type { SessionEvent, ApprovalRequestEvent, AgentRelayEvent, ChatMessageEvent, UserMessageEvent } from "../../src/session/events.js";
 import type { ModelAdapter, ModelReply } from "../../src/model/adapter.js";
 import type { ExecutionWorld } from "../../src/world/executionWorld.js";
 import type { PxCallDeps } from "../../services/runtime/src/pxTools.js";
@@ -2058,6 +2058,142 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
     store.close();
   });
 
+  it("#959：接力棒上的审批要在群里出声——人自己 @ 起的那一轮没有这条", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    let session!: CloudSession;
+    let adsRounds = 0;
+    session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px: pxWithGrants, hostUids: async () => ["h1"],
+      memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true, relayMaxDepth: async () => 6,
+      contextWindowOf: () => undefined,
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({
+        model: a.models[0]!,
+        async chat(): Promise<ModelReply> {
+          if (a.agentId === "ops") return { content: "@广告 你来下单" };
+          adsRounds++;
+          if (adsRounds % 2 === 1) return { content: "", toolCalls: [{ id: `c${adsRounds}`, name: "px_h1_shopify_list_orders", args: {} }] };
+          return { content: "看完了" };
+        },
+      }),
+      onEvent: (e) => {
+        events.push(e);
+        if (e.type === "approval_request") session.approve((e as ApprovalRequestEvent).callId, "owner", "Owner", "approved");
+      },
+      onUsage: () => {},
+    });
+
+    const waitLines = (): ChatMessageEvent[] =>
+      events.filter((e) => e.type === "chat_message" && e.fromUid === "system" && e.content.includes("在等")) as ChatMessageEvent[];
+
+    // ① 人自己 @ 广告：这一把刀根本不弹卡（ADR-0151），自然也不该有那句旁白
+    await session.say("u1", "alice", "@广告 看下订单", true, ["ads"]);
+    await session.settled();
+    expect(events.some((e) => e.type === "approval_request")).toBe(false);
+    expect(waitLines()).toHaveLength(0);
+
+    // ② 运营接力点起广告：这一棒的刀要点火的人批，群里得听见一声——不然
+    // drain 串行，整个群聊静默冻住，谁也不知道在等什么
+    await session.say("u1", "alice", "@运营 出报表", true, ["ops"]);
+    await session.settled();
+    const idx = events.findIndex((e) => e.type === "approval_request");
+    expect(idx).toBeGreaterThanOrEqual(0);
+    // 紧跟在审批请求后面：中间隔着别的事件就说明它不是这张卡的旁白
+    const line = events[idx + 1] as ChatMessageEvent;
+    expect(line).toMatchObject({ type: "chat_message", fromUid: "system", label: "系统", mention: false });
+    expect(line.content).toContain("在等");
+    expect(line.content).toContain("px_h1_shopify_list_orders");
+    expect(line.content).toContain("「广告」"); // 正在等的是哪只
+    // **纯接力形状下审批人名字仍是人的真名**（复审 Medium 1）：这一棒的开场白是
+    // `relayOpeningText` 生成的 `[系统] …`，`speakerLabelOf` 的前缀正则匹配不上，
+    // 只走那条老路的话这里会写成 uid 前 8 位（`u1`）——而这句话唯一的用途就是让
+    // alice 知道群卡在等她。名字来自 speakerLabels（她那条 user_message 落盘时记的）
+    expect(line.content).toContain("「alice」");
+    expect(line.content).not.toContain("「u1」");
+    expect(line.content).toContain("2 分钟内不批按拒绝处理");
+    expect(waitLines()).toHaveLength(1);
+    store.close();
+  });
+
+  it("#959：一个接力 job 里弹两张卡 —— 群里只出一次声（第 2..N 句是噪音，还进每只 agent 的上下文）", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    let session!: CloudSession;
+    let adsRounds = 0;
+    session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px: pxWithGrants, hostUids: async () => ["h1"],
+      memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true, relayMaxDepth: async () => 6,
+      contextWindowOf: () => undefined,
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({
+        model: a.models[0]!,
+        async chat(): Promise<ModelReply> {
+          if (a.agentId === "ops") return { content: "@广告 你来下单" };
+          adsRounds++;
+          // 同一轮里连着两把要批的刀，然后才收尾
+          if (adsRounds <= 2) return { content: "", toolCalls: [{ id: `c${adsRounds}`, name: "px_h1_shopify_list_orders", args: { page: adsRounds } }] };
+          return { content: "看完了" };
+        },
+      }),
+      onEvent: (e) => {
+        events.push(e);
+        if (e.type === "approval_request") session.approve((e as ApprovalRequestEvent).callId, "owner", "Owner", "approved");
+      },
+      onUsage: () => {},
+    });
+
+    await session.say("u1", "alice", "@运营 出报表", true, ["ops"]);
+    await session.settled();
+
+    expect(events.filter((e) => e.type === "approval_request")).toHaveLength(2);
+    const lines = events.filter((e) => e.type === "chat_message" && e.fromUid === "system" && e.content.includes("在等"));
+    expect(lines).toHaveLength(1);
+    store.close();
+  });
+
+  it("#959：人自己 @ 起的那一轮真弹了卡（bash）也不出声 —— 判据是 relay 不是「有没有审批」", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    let session!: CloudSession;
+    let rounds = 0;
+    session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [],
+      memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true, relayMaxDepth: async () => 6,
+      contextWindowOf: () => undefined,
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({
+        model: a.models[0]!,
+        async chat(): Promise<ModelReply> {
+          rounds++;
+          // bash 在云会话里是**无条件**要批的（engine 那侧没有 bypass 那一格），
+          // 与 ADR-0225 那道连接器闸无关——所以这一轮确实有 approval_request
+          if (rounds === 1) return { content: "", toolCalls: [{ id: "cB", name: "bash", args: { cmd: "echo hi" } }] };
+          return { content: "跑完了" };
+        },
+      }),
+      onEvent: (e) => {
+        events.push(e);
+        if (e.type === "approval_request") session.approve((e as ApprovalRequestEvent).callId, "owner", "Owner", "approved");
+      },
+      onUsage: () => {},
+    });
+
+    await session.say("u1", "alice", "@广告 跑个命令", true, ["ads"]);
+    await session.settled();
+
+    // 卡确实弹了 —— 否则这条用例证的是「没有审批」而不是「非接力轮不出声」
+    expect(events.some((e) => e.type === "approval_request")).toBe(true);
+    expect(events.filter((e) => e.type === "chat_message" && e.fromUid === "system" && e.content.includes("在等"))).toHaveLength(0);
+    store.close();
+  });
+
   it("B-I1：发起人已被踢出工作区 —— 不起 turn，落一条说得出原因的收口", async () => {
     const store = newStore();
     const events: SessionEvent[] = [];
@@ -3627,5 +3763,81 @@ describe("runJob 的在籍三态（Task 1 复审：fail-closed 分支的执行�
     expect(log.some((e) => e.type === "chat_message" && (e as { fromUid: string }).fromUid === "system")).toBe(false);
     const ended = log.find((e) => e.type === "turn_ended") as { error?: string };
     expect(ended.error).toContain("请重发");
+  });
+});
+
+describe("稳态每 turn 只读日志尾段（#958）", () => {
+  /** 把 store 包一层，记下每次**全量** load 的调用点。
+
+      两处判据都被复审纠正过：
+      ① **`afterSeq: -1` 就是全量游标**（`loadRaw` 是 `seq > ?`，seq 从 0 起），
+         漏掉它的话这条断言在它自己跑的场景里就已经不成立——一只 agent 的第一轮
+         `closeBound` 还是空的，实际执行的正是 `{ afterSeq: -1 }`（复审 Important ①）；
+      ② 判据取**直接调用点**：engine 那一侧的全量读（重建 turnLog、
+         modelContextScan 退回全量）是它自己的上下文投影，不在这个任务范围里，
+         而它走的是 `agentView` 包过的那份 store —— 栈上第一帧因此是 agentView.ts。
+      栈的第 0 行是 "Error"、第 1 行是下面这个箭头函数、第 2 行才是真正的调用点。 */
+  function callerFileOf(stack: string): string {
+    const frame = stack.split("\n")[2] ?? "";
+    // 取帧里最后一个 `xxx.ts` 文件名；解不出来回原文（**不回 "?"**：静默降级成一个
+    // 固定串会让下面那条正面断言在栈格式变化的那天安静变绿，复审 Nit ⑦）
+    const m = /([A-Za-z0-9_.-]+\.tsx?):\d+:\d+/.exec(frame);
+    return m?.[1] ?? `无法解析的栈帧: ${frame.trim()}`;
+  }
+
+  function countingStore(store: EventStore, fullLoads: string[]): EventStore {
+    return new Proxy(store, {
+      get(target, prop) {
+        if (prop === "load") {
+          return (sessionId: string, opts?: { afterSeq?: number; untilSeq?: number }) => {
+            if (opts?.afterSeq === undefined || opts.afterSeq < 0) fullLoads.push(callerFileOf(new Error().stack ?? ""));
+            return target.load(sessionId, opts);
+          };
+        }
+        const v = Reflect.get(target, prop, target);
+        return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(target) : v;
+      },
+    }) as EventStore;
+  }
+
+  it("两只 agent 都收过一次口之后，再跑一条 say → turn → 接力，全量 load 只剩 engine 自己那些", async () => {
+    const store = newStore();
+    const fullLoads: string[] = [];
+    const events: SessionEvent[] = [];
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store: countingStore(store, fullLoads),
+      world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true,
+      contextWindowOf: () => undefined,
+      relayMaxDepth: async () => 6,
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({ model: a.models[0]!, async chat() { return { content: a.agentId === "ops" ? "报表好了，@广告 按这个投" : "收到" }; } }),
+      onEvent: (e) => events.push(e), onUsage: () => {},
+    });
+    try {
+      // **热身这一轮不算数**，它跑的是「每只 agent 在本进程里的第一轮」：
+      // 装配那次播种 load 是全量的（三件事一次读完），两只 agent 的 closeBound 也
+      // 都还是空的 → `?? -1` 落到全量游标，人话点火位又恰好是 seq 0 →
+      // `Math.max(-1, 0 - 1) === -1` 也是全量。这一轮之后两只都落过 turn_ended、
+      // lastHumanOpening 也离开了 0，从此才是这次优化真正的收益面：稳态
+      await session.say("u1", "alice", "@运营 出报表", true, ["ops"]);
+      await session.settled();
+      // 热身确实走到了接力（否则第二轮的前提——ads 也收过口——不成立）
+      expect(events.filter((e) => e.type === "agent_relay")).toHaveLength(1);
+      expect(events.filter((e) => e.type === "turn_ended")).toHaveLength(2);
+
+      fullLoads.length = 0;
+      await session.say("u1", "alice", "@运营 再出一份", true, ["ops"]);
+      await session.settled();
+      expect(events.filter((e) => e.type === "agent_relay")).toHaveLength(2);
+
+      // **正面断言**，不是「过滤掉 sessionService.ts 之后为空」（复审 Nit ⑦）：
+      // 负面写法在栈格式变化那天会安静变绿。这里要求剩下的每一帧都确实解析成功、
+      // 且都来自 agentView.ts —— engine 的上下文投影，范围外（ADR-0003 / #961）
+      expect([...new Set(fullLoads)].sort()).toEqual(["agentView.ts"]);
+    } finally {
+      store.close();
+    }
   });
 });

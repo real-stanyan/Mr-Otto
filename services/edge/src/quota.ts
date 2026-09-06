@@ -29,12 +29,16 @@
 // 名存实亡的窗（open5hAt 是过去的时间戳，对外的 resetAt 已经算错）。就地开一扇新窗把这笔
 // 成本记进去——两条机制合起来，钱才真的永远有地方落。
 
+import { MAX_INFLIGHT } from "../../../src/shared/billing.js";
+
 export const WINDOW_5H_MS = 5 * 3_600_000;
 export const WEEK_MS = 7 * 86_400_000;
 /** 一个 hold 最多挂多久：流式响应最长也就几分钟，10 分钟没 settle = 那次调用没回来（只释放并发槽位，不影响它日后被 settle） */
 export const HOLD_TTL_MS = 10 * 60_000;
-/** 单用户并发上限（ADR-0174 第 5 条「加购无视限速」的兜底） */
-export const MAX_INFLIGHT = 4;
+/** 单用户并发上限（ADR-0174 第 5 条「加购无视限速」的兜底）。定义搬去
+    `src/shared/billing.ts`（#960）——runtime 那边要把这个数字念给用户听，
+    抄第二份就会有「闸门改了、话没改」的那天。这里 re-export 保住既有 import 方 */
+export { MAX_INFLIGHT };
 
 export interface PlanSnapshot {
   planId: string;

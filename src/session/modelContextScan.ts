@@ -20,8 +20,11 @@
 //     当前请求原文，issue #193）——从该 user_message 到 checkpoint 连续取，
 //     空跑判定（barren）在段内自洽
 //
-// 逃生舱（保守正确 > 优化）：没有 checkpoint / 往回找不到活的 user turn
-// （连试 MAX_BACKTRACK 个都是空跑）→ 返回 null，调用方退回全量重建。
+// 逃生舱（保守正确 > 优化）：没有 checkpoint / 往回找不到 user_message
+// （agentView 包装下问不出来，或裸日志 checkpoint 之前确实没有）/ 往回找不到
+// 活的 user turn（连试 MAX_BACKTRACK 个都是空跑）→ 返回 null，调用方退回
+// 全量重建。往回找不到 user_message 的两种成因在这一层分不清（问不出来 vs
+// 确实没有），一律按 null 处理——多花一次全量读，换来的是不会静默丢段（#961）。
 //
 // 等价性契约：deriveMessages(有界集) 必须与 deriveMessages(全量) 逐字节一致
 // ——前缀缓存命中依赖这一点（ADR-0073），一致性测试钉住。
@@ -68,10 +71,11 @@ export function boundedContextEvents(store: EventLog, sessionId: string): Sessio
   let foundLive = false;
   for (let i = 0; i < MAX_BACKTRACK; i++) {
     const u = store.lastOfType(sessionId, "user_message", { beforeSeq: cursor });
-    if (!u) {
-      foundLive = true; // checkpoint 之前根本没有 user turn（理论上只在裸测试日志出现）
-      break;
-    }
+    // null 不等于「checkpoint 之前没有 user turn」——agentView 包装下，跳不完
+    // 别人的私话（连着 FOREIGN_SCAN_LIMIT 条）也回 null，那只是「问不出来」。
+    // 两种情形无法在这一层分辨，保守起见一律退回全量（#961）：调用方本来就
+    // 按 null 走全量，多花的只是一次读
+    if (!u) return null;
     const piece = store.load(sessionId, { afterSeq: u.seq - 1, untilSeq: cursor - 1 });
     segment = [...piece, ...segment];
     cursor = u.seq;

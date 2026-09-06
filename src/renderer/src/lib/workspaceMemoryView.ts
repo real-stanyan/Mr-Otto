@@ -14,33 +14,42 @@ export interface MemoryDocView {
   used: number;
   limit: number;
   stale: boolean;
+  /** 这一行的 CAS 令牌（#962，见 WorkspaceMemoryRow.version）：保存时原样递回主进程。
+      名单里有、行里没有的档（这只 agent 还从没写过记忆）是空串 —— 保存那一下走 insert */
+  version: string;
 }
 
-function doc(agentId: string, title: string, tier: WorkspaceMemoryTier, content: string, stale: boolean): MemoryDocView {
-  return { agentId, title, tier, content, used: charCount(formatEntries(parseEntries(content))), limit: WORKSPACE_MEMORY_LIMITS[tier], stale };
+function doc(agentId: string, title: string, tier: WorkspaceMemoryTier, content: string, version: string, stale: boolean): MemoryDocView {
+  return { agentId, title, tier, content, used: charCount(formatEntries(parseEntries(content))), limit: WORKSPACE_MEMORY_LIMITS[tier], stale, version };
 }
 
 export function memoryDocs(ws: WorkspaceSnapshot, rows: readonly WorkspaceMemoryRow[]): MemoryDocView[] {
-  const byId = new Map(rows.map((r) => [r.agentId, r.content]));
-  const out: MemoryDocView[] = [doc(SHARED_MEMORY_AGENT_ID, "共享档", "shared", byId.get(SHARED_MEMORY_AGENT_ID) ?? "", false)];
-  for (const a of ws.agents) out.push(doc(a.agentId, a.name, "own", byId.get(a.agentId) ?? "", false));
+  const byId = new Map(rows.map((r) => [r.agentId, r]));
+  const shared = byId.get(SHARED_MEMORY_AGENT_ID);
+  const out: MemoryDocView[] = [doc(SHARED_MEMORY_AGENT_ID, "共享档", "shared", shared?.content ?? "", shared?.version ?? "", false)];
+  for (const a of ws.agents) {
+    const row = byId.get(a.agentId);
+    out.push(doc(a.agentId, a.name, "own", row?.content ?? "", row?.version ?? "", false));
+  }
   const known = new Set([SHARED_MEMORY_AGENT_ID, ...ws.agents.map((a) => a.agentId)]);
-  for (const r of rows) if (!known.has(r.agentId)) out.push(doc(r.agentId, `已删除的智能体 ${r.agentId}`, "own", r.content, true));
+  for (const r of rows) if (!known.has(r.agentId)) out.push(doc(r.agentId, `已删除的智能体 ${r.agentId}`, "own", r.content, r.version, true));
   return out;
 }
 
 /** 单块保存成功后的本地更新（fix round 1，#949）：只换 agentId 那一行，原位替换、其余
     不动——WorkspaceMemoryTab 原来靠整份重拉刷新列表，会让所有 MemoryDocBlock 一起
     卸载重装，连累别的档还没保存的草稿一起消失。updatedTs 由调用方给（Date.now()），
-    这个函数本身保持纯，方便单测 */
+    这个函数本身保持纯，方便单测。version 是主进程刚写完回来的新 CAS 令牌（#962）——
+    有它才能连着保存第二次；不带它就得整份重拉，而整份重拉正是这个函数要避免的事 */
 export function replaceRow(
   rows: readonly WorkspaceMemoryRow[],
   agentId: string,
   content: string,
   updatedTs: number,
+  version: string,
 ): WorkspaceMemoryRow[] {
   const idx = rows.findIndex((r) => r.agentId === agentId);
-  const row: WorkspaceMemoryRow = { agentId, content, updatedTs };
+  const row: WorkspaceMemoryRow = { agentId, content, updatedTs, version };
   if (idx < 0) return [...rows, row];
   const next = [...rows];
   next[idx] = row;

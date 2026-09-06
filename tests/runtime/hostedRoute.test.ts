@@ -6,9 +6,12 @@ import {
   decideRuntimeRoute,
   probeModelRoute,
   withUsage,
+  INFLIGHT_MAX_ATTEMPTS,
+  INFLIGHT_RETRY_MS,
   type HostedProbe,
 } from "../../services/runtime/src/hostedRoute.js";
-import { AGENT_HEADER, ON_BEHALF_HEADER, SESSION_HEADER, WORKSPACE_HEADER, type BillingMe } from "../../src/shared/billing.js";
+import { AGENT_HEADER, MAX_INFLIGHT, ON_BEHALF_HEADER, SESSION_HEADER, WORKSPACE_HEADER, type BillingMe } from "../../src/shared/billing.js";
+import { billingErrorOf, errorClassOf } from "../../src/model/errorClass.js";
 import type { TokenUsage } from "../../src/session/events.js";
 
 const me: BillingMe = { plan: "pro", status: "active", plans: [], windows: null, addon: { remainingMicro: 0, expiresAt: null }, periodEnd: null, models: ["deepseek-v4-flash", "glm-5.3"] };
@@ -583,5 +586,75 @@ describe("probeModelRoute（#945）", () => {
   it("探不到（\"unreachable\"）在这一格与没订阅同结论：有 key → workspace，没 key → blocked", async () => {
     expect(await probeModelRoute({ probe: probeOf("unreachable"), cfg: () => ws, ...probeBase })).toEqual({ kind: "workspace" });
     expect(await probeModelRoute({ probe: probeOf("unreachable"), cfg: () => null, ...probeBase })).toEqual({ kind: "blocked" });
+  });
+});
+
+// ── #960：云端并发已满时排队重试，放弃时说人话 ──────────────────────────
+// edge 的 Quota DO 按 uid 卡并发（MAX_INFLIGHT = 4），而 ADR-0217 让一个工作区
+// 里所有云会话都记在**所有者**头上：成员的会话 + 所有者自己的桌面共用这四个槽位，
+// 撞上是常态而不是异常。原来 adapter 退避三次（≈2.5s）就报废整轮，且把 edge 的
+// JSON 信封原样甩给用户。
+describe("createHostedRuntimeAdapter · 云端并发已满时排队（#960）", () => {
+  afterEach(() => vi.unstubAllGlobals());
+  const inflightBase = { edgeBase: "https://edge", runtimeSecret: "rs", ownerUid: "u1", workspaceId: "w1", sessionId: "s1" };
+  const soloInflight = () => ({ ...inflightBase, routeMemo: createRouteMemo() });
+  const inflight = () =>
+    Response.json({ error: { type: "otto_edge", code: "too_many_inflight", message: "同时进行的请求太多，稍后再试" } }, { status: 429 });
+  const okRes = { ok: true, json: async () => ({ choices: [{ message: { content: "ok" } }] }) };
+
+  it("网关连回 3 次「并发已满」→ 第 4 次轮上就成功，这一轮不报废", async () => {
+    vi.useFakeTimers();
+    try {
+      let n = 0;
+      const fetchMock = vi.fn(async () => {
+        n += 1;
+        return n <= 3 ? inflight() : okRes;
+      });
+      vi.stubGlobal("fetch", fetchMock);
+      const adapter = createHostedRuntimeAdapter({ ...soloInflight(), probe: { me: async () => me }, cfg: () => null });
+      const pending = adapter.chat([{ role: "user", content: "hi" }]);
+      for (let i = 0; i < 4; i++) await vi.advanceTimersByTimeAsync(INFLIGHT_RETRY_MS);
+      expect((await pending).content).toBe("ok");
+      expect(fetchMock).toHaveBeenCalledTimes(4);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("排到上限仍轮不上 → 抛人话（并发上限 + 等了多久 + 下一步做什么），class 仍是 rate-limit", async () => {
+    vi.useFakeTimers();
+    try {
+      const fetchMock = vi.fn(async () => inflight());
+      vi.stubGlobal("fetch", fetchMock);
+      const adapter = createHostedRuntimeAdapter({ ...soloInflight(), probe: { me: async () => me }, cfg: () => null });
+      const assertion = expect(adapter.chat([{ role: "user", content: "hi" }])).rejects.toSatisfy((e: unknown) =>
+        e instanceof Error &&
+        e.message.includes(`最多 ${MAX_INFLIGHT} 条模型调用`) &&
+        e.message.includes("90 秒") &&
+        !e.message.includes("otto_edge") &&
+        errorClassOf(e) === "rate-limit" &&
+        billingErrorOf(e)?.code === "too_many_inflight");
+      for (let i = 0; i <= INFLIGHT_MAX_ATTEMPTS + 3; i++) await vi.advanceTimersByTimeAsync(INFLIGHT_RETRY_MS);
+      await assertion;
+      // 18 次排队（attempt 1..18 都在 INFLIGHT_MAX_ATTEMPTS 之内，18 × 5 s = 「约 90 秒」那句话的来源）+ 默认预算 3 次：
+      // 排队不吃 maxAttempts（复审 fix round 1），所以队排满之后这条 429 照旧是一条
+      // 普通的可重试限流，该有的三次退避一次不少
+      expect(fetchMock).toHaveBeenCalledTimes(INFLIGHT_MAX_ATTEMPTS + 3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // 自带 key 那条路上没有 edge 的并发闸（打的是所有者自己的 provider），
+  // 排队钩子挂上去只会把上游真正的 429 拖成 90 秒
+  it("自带 key 那条路不排队：连同款信封一起回，也只走默认的 3 次退避就抛", async () => {
+    // 用**同一个** otto_edge 信封（不是随便一串 429 正文）：非信封的 429 连
+    // billingErrorOf 都是 undefined，钩子挂上也回 null——那样的用例即使把
+    // retryDelayFor 错挂到这一支上照样绿（复审 fix round 1）
+    const fetchMock = vi.fn(async () => inflight());
+    vi.stubGlobal("fetch", fetchMock);
+    const adapter = createHostedRuntimeAdapter({ ...soloInflight(), probe: { me: async () => null }, cfg: () => ws });
+    await expect(adapter.chat([{ role: "user", content: "hi" }])).rejects.toThrow("model API 429");
+    expect(fetchMock).toHaveBeenCalledTimes(3); // 默认 maxAttempts，一次队都没排
   });
 });

@@ -69,8 +69,9 @@ function harness(over: Partial<WorkspaceManagerDeps> = {}) {
       calls.push("listMemoryRows");
       return [];
     },
-    saveMemoryRow: async (_c, _ws, _agentId, content, baseline) => {
-      calls.push(`saveMemoryRow:${content}:${baseline}`);
+    saveMemoryRow: async (_c, _ws, _agentId, content, version) => {
+      calls.push(`saveMemoryRow:${content}:${version}`);
+      return "v-new";
     },
     updateRelayMaxDepth: async (_c, _ws, maxDepth) => {
       calls.push(`updateRelayMaxDepth:${maxDepth}`);
@@ -462,11 +463,11 @@ describe("建/改 agent 的服务端校验（#957 B-C1/B-I2）", () => {
 });
 
 describe("workspace memory（#949）", () => {
-  it("saveMemory：写前归一化（去空条目、保序去重）后才落库，baseline 原样透传给 saveMemoryRow", async () => {
+  it("saveMemory：写前归一化（去空条目、保序去重）后才落库，version 原样透传给 saveMemoryRow，新 version 回给调用方（#962）", async () => {
     const { manager, calls } = harness();
-    const res = await manager.saveMemory("ws-1", "ops", "a\n§\n\n§\na", "旧内容");
-    expect(res).toEqual({ ok: true, value: null });
-    expect(calls).toContain("saveMemoryRow:a:旧内容");
+    const res = await manager.saveMemory("ws-1", "ops", "a\n§\n\n§\na", "v-old");
+    expect(res).toEqual({ ok: true, value: "v-new" });
+    expect(calls).toContain("saveMemoryRow:a:v-old");
   });
   it("未登录：saveMemory/listMemories 都回 还没登录，不打网络", async () => {
     const h = harness();
@@ -477,11 +478,11 @@ describe("workspace memory（#949）", () => {
   });
   it("saveMemoryRow 抛 MEMORY_CONFLICT：原样冒泡成 FriendsResult 错误（#949 review finding 2）", async () => {
     const { manager } = harness({
-      saveMemoryRow: async () => {
+      saveMemoryRow: async (): Promise<string> => {
         throw new Error(MEMORY_CONFLICT);
       },
     });
-    expect(await manager.saveMemory("ws-1", "ops", "a", "旧内容")).toEqual({ ok: false, message: MEMORY_CONFLICT });
+    expect(await manager.saveMemory("ws-1", "ops", "a", "v-old")).toEqual({ ok: false, message: MEMORY_CONFLICT });
   });
 });
 

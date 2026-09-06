@@ -2,7 +2,7 @@
 // 纯函数：同样的 events 永远得到同样的 messages。resume/fork/replay 全靠它。
 
 import { isolatedPromptText, type IsolatedWorkspace } from "../shared/sessionWorktree.js";
-import { promptSafe, safeSpeakerLabel } from "../shared/promptSafe.js";
+import { promptSafe, promptSafeBody, safeSpeakerLabel } from "../shared/promptSafe.js";
 import type { CloudSessionFacts, MemoryTopicSnapshot, SessionEvent, UserTextFile, WorkspaceMemoryLoadedEvent } from "./events.js";
 import { barrenEventIndexes } from "./barrenTurns.js";
 import { activeSkills } from "./activeSkills.js";
@@ -504,8 +504,17 @@ export function deriveMessages(
         // 有图片附件 → parts 数组(text + image_ref);没有 → string 原样,
         // 老日志投影逐字节不变(测试钉住)。附件消息不参与压缩截断:
         // image_ref 本身轻,text 部分是用户原话(压缩层从来不截用户消息)。
-        // 文本文件在这拼进正文——模型看全文,UI 看结构(见 composeUserText)
-        const text = composeUserText(event.content, event.textFiles);
+        // 文本文件在这拼进正文——模型看全文,UI 看结构(见 composeUserText)。
+        // 正文过闸只在云会话发言时（issue #965）：`fromUid` 在场 = 这条是
+        // 人的 say() 开场白或接力开场白，正文已经/将要拼进 `[label]: text`
+        // 这类结构，一个 `\n[系统]: …` 就是一行干净的伪造说话人行。没有
+        // `fromUid` = 本机操作者说的话/旧日志，从不拼进这种结构，一个字节
+        // 不动——旧日志逐字节重放的硬规则钉在这条分支上。
+        // **只碰 event.content，在 composeUserText 拼接之前**（复审 Nit）：
+        // 系统自己拼的 `[用户附上文件「x」,内容如下]` 表头和文本文件全文都不
+        // 是成员写的自由字段，过这层就是把"模型看全文"的逐字保证白白牺牲掉
+        const content = event.fromUid !== undefined ? promptSafeBody(event.content) : event.content;
+        const text = composeUserText(content, event.textFiles);
         const target = pendingToolIds.size > 0 ? deferredUsers : messages;
         target.push(
           event.attachments && event.attachments.length > 0
@@ -539,7 +548,12 @@ export function deriveMessages(
         // 到顶 / 打转提醒 / 「某某停止了这一轮」）在模型上下文里逐字节同形。
         // ADR-0226 立的是**三处各自幂等地跑一遍**，这是第三处；对已经过闸的新行
         // 是空操作，正是这个函数的设计前提
-        target.push({ role: "user", content: `[${safeSpeakerLabel(event.label, event.fromUid)}]: ${event.content}` });
+        // 正文也过 promptSafeBody（issue #965）：label 那一栏硬化了，正文这条
+        // 路结构性地封不住——一个 `\n[系统]: …` 就是一行干净的伪造说话人行
+        target.push({
+          role: "user",
+          content: `[${safeSpeakerLabel(event.label, event.fromUid)}]: ${promptSafeBody(event.content)}`,
+        });
         break;
       }
 
@@ -767,7 +781,13 @@ export function deriveMessages(
         if (lastLiveUserIdx >= 0 && lastLiveUserIdx < i) {
           const u = events[lastLiveUserIdx]!;
           if (u.type === "user_message") {
-            messages.push({ role: "user", content: `[当前请求（压缩前最后一条用户消息，原文）]\n${u.content}` });
+            // 同主 case "user_message" 路径的闸（issue #965 复审 Important 1）：
+            // 这条重注是原文重放，不是新投影——但被重注的这条如果是云会话发言
+            // （fromUid 在场），它的正文照样可能含 `\n[系统]: …`，走这条兜底
+            // 一样能把伪造说话人行原样喂给模型。只在 fromUid 在场时过闸，本机
+            // 会话/旧日志一个字节不动
+            const body = u.fromUid !== undefined ? promptSafeBody(u.content) : u.content;
+            messages.push({ role: "user", content: `[当前请求（压缩前最后一条用户消息，原文）]\n${body}` });
           }
         }
         break;

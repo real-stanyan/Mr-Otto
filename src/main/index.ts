@@ -3248,8 +3248,8 @@ void app.whenReady().then(() => {
     workspaceManager.deleteAgent(id, agentId));
   // 设置页「记忆」tab（#949）：共享档 + 每只 agent 的私有档
   ipcMain.handle(CHANNELS.workspaceMemoryList, (_e, id: string) => workspaceManager.listMemories(id));
-  ipcMain.handle(CHANNELS.workspaceMemorySave, (_e, id: string, agentId: string, text: string, baseline: string) =>
-    workspaceManager.saveMemory(id, agentId, text, baseline));
+  ipcMain.handle(CHANNELS.workspaceMemorySave, (_e, id: string, agentId: string, text: string, version: string) =>
+    workspaceManager.saveMemory(id, agentId, text, version));
   // 智能体 tab 顶部的「接力上限」（#950 Task 9）：owner 才能改，非 owner 撞 RLS
   ipcMain.handle(CHANNELS.workspaceSetRelayMaxDepth, (_e, id: string, maxDepth: number) =>
     workspaceManager.setRelayMaxDepth(id, maxDepth));

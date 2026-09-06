@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { createOpenAICompatibleAdapter, type ResolvedEndpoint } from "../../src/model/openaiCompatible.js";
-import { errorClassOf, rerouteInfoOf } from "../../src/model/errorClass.js";
+import { billingErrorOf, errorClassOf, rerouteInfoOf } from "../../src/model/errorClass.js";
 import { BILLING_HEADERS, SSE_COST_COMMENT } from "../../src/shared/billing.js";
 
 const quotaBody = JSON.stringify({ error: { type: "otto_edge", code: "quota_exhausted", message: "5 小时额度已用完", window: "5h", resetAt: 123 } });
@@ -118,6 +118,89 @@ describe("本次花费（#857）", () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(sse(`\n${SSE_COST_COMMENT}9876\n\n`));
     const a = adapter([{ baseUrl: "https://up/v1", apiKey: "sk", route: "direct" }]);
     expect((await a.chat([{ role: "user", content: "hi" }], [], () => {})).creditCostMicro).toBeUndefined();
+    fetchMock.mockRestore();
+  });
+});
+
+// ── #960：并发已满（too_many_inflight）─────────────────────────────────
+// edge 的 Quota DO 按 uid 卡并发（MAX_INFLIGHT），而 ADR-0217 让一个工作区里
+// 所有云会话都记在所有者头上——四个槽位是整个工作区共用的，撞上是常态。
+const inflightBody = JSON.stringify({ error: { type: "otto_edge", code: "too_many_inflight", message: "同时进行的请求太多，稍后再试" } });
+
+describe("并发已满（#960）", () => {
+  it("429 too_many_inflight → 错误带 billing 标记；message **原样保留信封**（渲染层 humanizeError 靠它抠人话）", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response(inflightBody, { status: 429 }));
+    const a = adapter([{ baseUrl: "https://edge/llm/v1", apiKey: "jwt", route: "hosted" }]);
+    await expect(a.chat([{ role: "user", content: "hi" }])).rejects.toSatisfy((e: unknown) =>
+      billingErrorOf(e)?.code === "too_many_inflight" &&
+      errorClassOf(e) === "rate-limit" &&
+      // 换成「人话」的那版让 modelError.ts 的 messageOf(body) 解不出 JSON、退回按状态码
+      // 的「额度/资源包已用完」——比信封原文更误导（复审 fix round 1）
+      (e as Error).message === `model API 429: ${inflightBody}`);
+    fetchMock.mockRestore();
+  });
+
+  it("排队不吃真·瞬时故障的重试预算：排三次队之后，503 仍然拿满 maxAttempts 次机会", async () => {
+    vi.useFakeTimers();
+    try {
+      let n = 0;
+      const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+        n += 1;
+        return n <= 3 ? new Response(inflightBody, { status: 429 }) : new Response("overloaded", { status: 503 });
+      });
+      const a = createOpenAICompatibleAdapter({
+        baseUrl: "https://edge/llm/v1", apiKey: "jwt", model: "deepseek-v4-flash",
+        timing: { maxAttempts: 3, backoffMs: [0] },
+        retryDelayFor: (err) => (billingErrorOf(err)?.code === "too_many_inflight" ? 5_000 : null),
+      });
+      const assertion = expect(a.chat([{ role: "user", content: "hi" }])).rejects.toThrow("model API 503");
+      for (let i = 0; i < 4; i++) await vi.advanceTimersByTimeAsync(5_000);
+      await assertion;
+      // 3 次排队 + 3 次 503（maxAttempts 原封不动地留给真故障）
+      expect(fetchMock).toHaveBeenCalledTimes(6);
+      fetchMock.mockRestore();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("retryDelayFor 回数字 → 睡够那么久再试，且**绕过 maxAttempts**（等的是别人的槽位，不是上游故障）", async () => {
+    vi.useFakeTimers();
+    try {
+      let n = 0;
+      const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () => {
+        n += 1;
+        return n <= 5 ? new Response(inflightBody, { status: 429 }) : new Response(okBody, { status: 200 });
+      });
+      const seen: number[] = [];
+      const a = createOpenAICompatibleAdapter({
+        baseUrl: "https://edge/llm/v1", apiKey: "jwt", model: "deepseek-v4-flash",
+        timing: { maxAttempts: 3, backoffMs: [0] },
+        retryDelayFor: (err, attempt) => {
+          seen.push(attempt);
+          return billingErrorOf(err)?.code === "too_many_inflight" ? 5_000 : null;
+        },
+      });
+      const pending = a.chat([{ role: "user", content: "hi" }]);
+      for (let i = 0; i < 6; i++) await vi.advanceTimersByTimeAsync(5_000);
+      expect((await pending).content).toBe("hi");
+      expect(fetchMock).toHaveBeenCalledTimes(6); // maxAttempts 才 3
+      expect(seen).toEqual([1, 2, 3, 4, 5]);
+      fetchMock.mockRestore();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("retryDelayFor 回 null → 走默认策略（退避 + maxAttempts 封顶），与没这个钩子时一字不差", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response("overloaded", { status: 503 }));
+    const a = createOpenAICompatibleAdapter({
+      baseUrl: "https://up/v1", apiKey: "sk", model: "deepseek-v4-flash",
+      timing: { maxAttempts: 3, backoffMs: [0] },
+      retryDelayFor: () => null,
+    });
+    await expect(a.chat([{ role: "user", content: "hi" }])).rejects.toThrow("model API 503");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
     fetchMock.mockRestore();
   });
 });

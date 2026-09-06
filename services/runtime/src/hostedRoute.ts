@@ -13,7 +13,18 @@ import type { ModelAdapter } from "../../../src/model/adapter.js";
 import { createOpenAICompatibleAdapter, type ResolvedEndpoint } from "../../../src/model/openaiCompatible.js";
 import type { TokenUsage } from "../../../src/session/events.js";
 import type { CsModelRoute } from "../../../src/shared/remote/cloudSession.js";
-import { AGENT_HEADER, ON_BEHALF_HEADER, SESSION_HEADER, WORKSPACE_HEADER, parseBillingMe, type BillingMe } from "../../../src/shared/billing.js";
+import { AGENT_HEADER, MAX_INFLIGHT, ON_BEHALF_HEADER, SESSION_HEADER, WORKSPACE_HEADER, parseBillingMe, type BillingMe } from "../../../src/shared/billing.js";
+import { billingErrorOf, markBilling, markErrorClass } from "../../../src/model/errorClass.js";
+
+/** 云端并发已满时的排队节奏（#960）。edge 的 Quota DO 按 uid 卡 MAX_INFLIGHT 条
+    并发，而 ADR-0217 让一个工作区里所有云会话都记在**所有者**头上：成员的会话 +
+    所有者自己的桌面共用那几个槽位，一个 hold 活到流结束（HOLD_TTL 10 分钟），
+    所以撞上是常态不是异常。原来 adapter 退避三次（≈2.5s）就报废整轮。
+    等满 ≈90s：比一条流式 turn 的典型长度长（等得到别人让出槽位），比 HOLD_TTL 短
+    （不至于替一条已经死掉的 hold 空等）。刻意不做指数退避——排的是队，不是在
+    安抚一个过载的上游，固定节奏让「第几个轮到我」这件事是可预期的 */
+export const INFLIGHT_RETRY_MS = 5_000;
+export const INFLIGHT_MAX_ATTEMPTS = 18;
 
 export interface HostedRouteDeps { edgeBase: string; runtimeSecret: string; fetchImpl?: typeof fetch; now?: () => number }
 /** `"unreachable"` = **没问到**（网络挂了 / edge 非 2xx / 信封解不出），不是
@@ -342,6 +353,13 @@ export function createHostedRuntimeAdapter(deps: HostedRuntimeAdapterDeps): Mode
                 noteRoute("workspace", "quota_exhausted");
                 return { baseUrl: next.baseUrl, apiKey: next.apiKey, route: "direct" as const };
               },
+              // 并发已满就排队（#960）。**只挂在托管这条路上**：自带 key 那条打的是
+              // 所有者自己的 provider，那儿没有我们的并发闸，把上游真正的 429 拖成
+              // 90 秒只会让人多等 87 秒再看见同一个错
+              retryDelayFor: (err, attempt) =>
+                billingErrorOf(err)?.code === "too_many_inflight" && attempt <= INFLIGHT_MAX_ATTEMPTS
+                  ? INFLIGHT_RETRY_MS
+                  : null,
               model: route.model,
             })
           : createOpenAICompatibleAdapter({
@@ -349,7 +367,33 @@ export function createHostedRuntimeAdapter(deps: HostedRuntimeAdapterDeps): Mode
               apiKey: route.apiKey,
               model: route.model,
             });
-      return adapter.chat(messages, tools, onDelta, signal);
+      try {
+        return await adapter.chat(messages, tools, onDelta, signal);
+      } catch (err) {
+        // 等满了还是没轮上 → 换成人话再抛（#960）。原来冒上去的是
+        // `model API 429: {"error":{"type":"otto_edge",...}}`，用户在群里看到的
+        // 就是那一坨信封：它既没说这是**工作区**共用的闸门（所以不是「我的额度」
+        // 出了问题），也没说等一等就好。秒数从两个常量算出来，别写死——改了节奏
+        // 而话没改，就成了另一句言之凿凿的假话
+        // 只有托管这条路会撞我们的并发闸（复审 fix round 1 的用例逼出来的）：
+        // 自带 key 那支打的是所有者自己的 provider，那儿冒出来的 429 无论长什么样
+        // 都不该被说成「工作区的云端模型并发已满」
+        if (route.kind !== "hosted") throw err;
+        const billing = billingErrorOf(err);
+        if (billing?.code !== "too_many_inflight") throw err;
+        const waited = Math.round((INFLIGHT_MAX_ATTEMPTS * INFLIGHT_RETRY_MS) / 1000);
+        // class 与 billing 标记都要跟着搬到新错误上：换成人话是**措辞**的事，
+        // 「这是哪一种错」的判断不该因为换了一句话而蒸发
+        throw markBilling(
+          markErrorClass(
+            new Error(
+              `工作区的云端模型并发已满：同一时刻最多 ${MAX_INFLIGHT} 条模型调用（整个工作区所有云会话共用），等了约 ${waited} 秒还没轮上。稍后再 @ 一次。`
+            ),
+            "rate-limit"
+          ),
+          billing
+        );
+      }
     },
   };
 }
