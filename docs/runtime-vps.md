@@ -155,13 +155,14 @@ RUNTIME_SSH=user@host npm run runtime:deploy
     连进 `cs-ctl`，第 17 条应该 503；此时换**另一个**账号连同一个房间应该**照常连得上**
     （改之前它会一起被拒——这正是这条修的东西）。
 
-14. **模型 key 跟着工作区走**（ADR-0202，#844）：新建一个工作区、建一条云会话，
-    **先别配模型**就 @Agent —— 应该在群里看到一条「这个工作区还没配模型」的话（不是一个
-    401 堆栈，也不是静默卡住）。然后 owner 点右上角配一把自己的 key（https 的 base URL +
-    型号 id + key），再 @Agent，这次应该真的跑起来。VPS 上验两件事：
-    `cat <DATA_DIR>/workspace-config.json` 里那把 key 在、文件权限是 `0600`；
-    `systemctl show otto-runtime -p Environment` 里**没有**任何 `MODEL_*`。
-    非 owner 的成员：页头看得见「模型：<型号>」这一格，但**没有**那颗配置按钮。
+14. **云会话统一走所有者订阅额度，没有自带 key**（ADR-0233，#981；推翻 ADR-0202 的第 14 条）：
+    新建一个工作区（建得出来 = 所有者有活跃订阅）、建一条云会话，页头模型那一格应显示
+    「<型号> · 托管」，**没有**任何配 key 的入口——「配置仓库…」那张卡只有仓库地址 + PAT。
+    @Agent 应直接跑起来。VPS 上验两件事：`cat <DATA_DIR>/workspace-config.json` 里**没有**
+    任何 `model` 字段（daemon 启动时会把存量的剥掉，`journalctl` 里有一行「剥掉 N 个工作区
+    的存量自带模型 key」）；`systemctl show otto-runtime -p Environment` 里**没有**任何 `MODEL_*`。
+    所有者退订之后再 @Agent：群里应看到一条「工作区所有者没有活跃订阅」的话（不是 401 堆栈，
+    也不是静默卡住），页头那一格变红「没有可用的模型」。
 
 ## 3. 回滚
 
