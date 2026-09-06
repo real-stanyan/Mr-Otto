@@ -501,6 +501,13 @@ export interface CloudSessionStatus {
   gapNote?: string;
 }
 
+/** `workspace_state` / `config_result` 带回来的那两格（协议 8，#991）：与
+    CloudSessionStatus 上的 repo / modelRoute 同形，一处画法 */
+export interface CloudWorkspaceState {
+  repo: CsRepoState | null;
+  modelRoute: CsModelRoute | null;
+}
+
 /** 桥上的托管额度快照（Task 11）。结构与主进程 `hostedQuota.ts` 的 `HostedSnapshot`
     一致，但故意在这里结构性重定义一份——`src/shared` 不许 import `src/main`
     （tests/architecture.test.ts），main 那份类型赋值给这份即可，不需要共用符号 */
@@ -1138,13 +1145,17 @@ export interface ShellBridge {
       画，不带 seq 的话按第二行那颗停掉的是第一行。缺席 = 旧语义（停当前） */
   workspaceCloudStop(seq?: number): Promise<CloudAck>;
   /** 配置当前云会话绑定的仓库（repoUrl + 可选 PAT，PAT 不落 Supabase） */
-  /** 两组字段各自可选（issue #844）：只给 repo 就只改仓库，只给 model 就只改
-      模型。`pat` / `model.apiKey` 三态——省略 = 保持不变，`""` = 清除，
-      非空 = 换新（密码框预填不了，"留空 = 清掉"会让顺手改个型号毁掉一把 key） */
+  /** 读一个工作区的仓库状态 + 路由（控制房 RPC，协议 8，#991）：任何在籍成员都能读，
+      不依赖开着云会话——工作区设置页的「仓库」tab 用 */
+  workspaceCloudState(workspaceId: string): Promise<FriendsResult<CloudWorkspaceState>>;
+  /** 改一个工作区的仓库配置（控制房 RPC，协议 8；owner 才过，服务端判）。`pat`
+      三态——省略 = 保持不变，`""` = 清除，非空 = 换新（密码框预填不了，"留空 =
+      清掉"会让顺手改个地址毁掉一把 token）。回服务端此刻的真实状态，失败也回
+      ——它正好告诉 owner「那你现在配的还是这个」 */
   workspaceCloudConfig(
     workspaceId: string,
     patch: { repoUrl?: string; pat?: string },
-  ): Promise<FriendsResult<null>>;
+  ): Promise<FriendsResult<CloudWorkspaceState>>;
 
   /** macOS dock 角标(0 = 清掉)。未读数只有渲染层知道,所以由它来报 */
   setBadgeCount(count: number): Promise<void>;
@@ -1560,6 +1571,7 @@ export const CHANNELS = {
   workspaceCloudArchive: "otter:workspaceCloudArchive",
   workspaceCloudStop: "otter:workspaceCloudStop",
   workspaceCloudConfig: "otter:workspaceCloudConfig",
+  workspaceCloudState: "otter:workspaceCloudState",
   setBadgeCount: "otter:setBadgeCount",
   friendsChanged: "otter:friendsChanged",
   presenceChanged: "otter:presenceChanged",

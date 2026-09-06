@@ -1,4 +1,4 @@
-// WorkspacePage —— 工作区详情页：六 tab（会话 / 智能体 / 连接器 / 成员 / 用量 / 记忆）（Task 12，ADR-0198 切片 3）。
+// WorkspacePage —— 工作区详情页：七 tab（会话 / 智能体 / 仓库 / 连接器 / 成员 / 用量 / 记忆）（Task 12，ADR-0198 切片 3）。
 //
 // 页而不是弹窗（照 McpConnectorPage 的换页惯例，ADR-0185）：三张表加起来随时
 // 超过一屏，弹窗只会滚动条套滚动条；而且这里挂了好几个二次确认，弹窗里嵌
@@ -35,6 +35,7 @@ import {
 } from "../lib/workspaceView.js";
 import { WorkspaceAgentsTab } from "./WorkspaceAgentsTab.js";
 import { WorkspaceUsageTab } from "./WorkspaceUsageTab.js";
+import { WorkspaceRepoTab } from "./WorkspaceRepoTab.js";
 import { WorkspaceMemoryTab } from "./WorkspaceMemoryTab.js";
 import {
   buildAllow, isServerOn, isToolOn, selectionFromAllow, toggleServer, toggleTool,
@@ -113,6 +114,9 @@ export function WorkspacePage({
           {/* 智能体排在会话之后、连接器之前——智能体是用得最多的一页，
               连接器/成员是配一次的东西 */}
           <TabsTrigger value="agents">智能体</TabsTrigger>
+          {/* 仓库是工作区的属性（#991，ADR-0234）：从云会话头部搬到这里。排在
+              智能体后面——不是每个工作区都需要它 */}
+          <TabsTrigger value="repo">仓库</TabsTrigger>
           <TabsTrigger value="connectors">连接器</TabsTrigger>
           <TabsTrigger value="members">成员</TabsTrigger>
           <TabsTrigger value="usage">用量</TabsTrigger>
@@ -123,6 +127,9 @@ export function WorkspacePage({
         </TabsContent>
         <TabsContent value="agents" className="pt-3">
           <WorkspaceAgentsTab ws={ws} selfUid={selfUid} />
+        </TabsContent>
+        <TabsContent value="repo" className="pt-3">
+          <WorkspaceRepoTab ws={ws} selfUid={selfUid} />
         </TabsContent>
         <TabsContent value="connectors" className="pt-3">
           <ConnectorsTab ws={ws} selfUid={selfUid} />

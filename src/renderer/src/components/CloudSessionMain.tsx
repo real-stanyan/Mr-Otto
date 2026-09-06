@@ -13,7 +13,7 @@ import { useEffect } from "react";
 import { useChat } from "../store.js";
 import { CloudSessionPage } from "./CloudSessionPage.js";
 
-export function CloudSessionMain() {
+export function CloudSessionMain({ onManage }: { onManage: (workspaceId: string) => void }) {
   const cs = useChat((s) => s.cloudSession);
   const ws = useChat((s) => s.workspaceGroups.find((g) => g.id === s.cloudSession?.workspaceId) ?? null);
   const selfUid = useChat((s) => s.account.id);
@@ -75,7 +75,7 @@ export function CloudSessionMain() {
       {/* 与本地会话同一条居中量尺（会话正文不该铺满一整块宽屏）。
           不传 onBack —— 出口是侧栏，同本地会话 */}
       <div className="mx-auto w-[min(760px,92%)] flex-1 min-h-0 flex flex-col pt-4">
-        <CloudSessionPage ws={ws} selfUid={selfUid} />
+        <CloudSessionPage ws={ws} selfUid={selfUid} onSettings={() => onManage(ws.id)} />
       </div>
     </div>
   );

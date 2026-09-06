@@ -1727,8 +1727,10 @@ function AppSidebar() {
   const setFriendsOpen = useChat((s) => s.setFriendsPanelOpen);
   // 工作区(ADR-0198 切片 3,issue #811)。列表已经搬进侧栏项目区(issue #917,
   // ADR-0217),抽屉只剩「详情页」这一层的载体——null = 没开着任何一个。
-  // 纯本地 state 就够,不用像 friendsOpen 那样搬进 store(没有系统通知会掀开它)
-  const [openWorkspaceId, setOpenWorkspaceId] = useState<string | null>(null);
+  // 原来是本地 state；#991 之后云会话头部那颗「设置」（在 App 的主区那棵子树上）
+  // 也要开它,搬进 store 是两处都够得着的最近一层
+  const openWorkspaceId = useChat((s) => s.openWorkspaceId);
+  const setOpenWorkspaceId = useChat((s) => s.setOpenWorkspaceId);
   // 「＋ 新工作区」那扇窗的开关。按钮在 SidebarHeader、窗挂在 Sidebar 末尾,
   // 两头都够得着的最近一层就是这里
   const [newWorkspaceOpen, setNewWorkspaceOpen] = useState(false);
@@ -3797,7 +3799,7 @@ export function App() {
     // 云会话占主区（issue #919）。排在 welcome 之前：进云会话时本地 phase 还停在
     // 上一条会话或 welcome 上，按那个判会画错屏。反过来，newSession/resume 都会
     // 先 closeCloudSession，所以本地那条路照样抢得回这块地皮
-    <CloudSessionMain />
+    <CloudSessionMain onManage={useChat.getState().setOpenWorkspaceId} />
   ) : phase === "welcome" ? (
     <Welcome />
   ) : (

@@ -40,15 +40,11 @@
 // 新造。
 
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Archive, ArrowLeft, AtSign } from "lucide-react";
+import { Archive, ArrowLeft, AtSign, Settings2 } from "lucide-react";
 import { cn } from "@/lib/utils.js";
 import { Button } from "@/components/ui/button.js";
 import { Bubble, BubbleContent } from "@/components/ui/bubble.js";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar.js";
-import {
-  Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
-} from "@/components/ui/dialog.js";
-import { Input } from "@/components/ui/input.js";
 import { Textarea } from "@/components/ui/textarea.js";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip.js";
 import { COMPOSER_METRICS, ComposerActions, ComposerBar, ComposerSend, ComposerToolbar } from "@/components/elements/composer.js";
@@ -62,7 +58,6 @@ import { formatProxyTime } from "../lib/proxyShare.js";
 import { agentNameOf, labelOf, memberAvatarOf } from "../lib/workspaceView.js";
 import { agentAvatarSrc } from "../lib/agentAvatar.js";
 import { applyAgentMention, filterAgentCandidates, mentionQueryAt, pickerEmptyState, resolveSendMentions } from "../lib/agentMentionInput.js";
-import { EMBEDDED_CREDENTIAL_MESSAGE, repoUrlHasEmbeddedCredential } from "../lib/cloudRepoUrl.js";
 import {
   agentStepsSummary, approvalCardTitle, assistantLabel, canStopTurn, cloudEmptyState, foldAgentSteps, hiddenFromCloudTimeline, relayLineText,
   stopButtonRows, systemNoteText, turnEndedLineText, userRowIdentity, type AgentStepsFold,
@@ -81,7 +76,6 @@ import type {
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 import type { CloudAck } from "../../../shared/shellBridge.js";
 import { CS_PROTOCOL_VERSION } from "../../../shared/remote/cloudSession.js";
-import type { CsModelRoute, CsRepoState } from "../../../shared/remote/cloudSession.js";
 import { modelStatusText } from "../lib/cloudModelStatus.js";
 
 // cs 还没到位时兜底（正常路径下 WorkspacePage 只在 cloudSession 非空时才
@@ -168,6 +162,7 @@ export function CloudSessionPage({
   ws,
   selfUid,
   onBack,
+  onSettings,
 }: {
   ws: WorkspaceSnapshot;
   selfUid: string;
@@ -175,6 +170,9 @@ export function CloudSessionPage({
       离开云会话的方式和离开本地会话一样，点侧栏里别的一行）。抽屉时代它是
       唯一的出口，所以那时是必填 */
   onBack?: () => void;
+  /** 头部那颗「设置」（#991）：打开这个工作区的设置抽屉（仓库 / 智能体 / 成员 /
+      连接器）。省掉 = 不画（抽屉时代这一页自己就在设置里） */
+  onSettings?: () => void;
 }) {
   const cs = useChat((s) => s.cloudSession);
   const cloudSay = useChat((s) => s.cloudSay);
@@ -357,6 +355,7 @@ export function CloudSessionPage({
 
   const ready = cs.state === "ready";
   const banner = statusBanner(cs);
+  const modelStatus = modelStatusText(cs.modelRoute);
   const canSend = ready && !sending && draft.trim().length > 0;
   const timelineEmpty = cloudEmptyState(cs.state, events.length);
 
@@ -578,12 +577,27 @@ export function CloudSessionPage({
               归档
             </button>
           )}
-          <CloudRepoConfigEntry
-            isOwner={selfUid === cs.ownerUid}
-            ready={ready}
-            repo={cs.repo}
-            route={cs.modelRoute}
-          />
+          {/* 模型那一格只读路由（ADR-0233）：blocked 才是**会挡住干活**的那一格，
+              给所有成员看。仓库不在头部（#991）：不是每个工作区都有仓库，常驻一格
+              「未配仓库」对文案类工作区是噪音——它去了「设置」里的仓库 tab */}
+          <span
+            className={cn("max-w-[150px] truncate text-[11px]", modelStatus.bad ? "text-err" : "text-muted-foreground")}
+            title={modelStatus.full}
+          >
+            {modelStatus.short}
+          </span>
+          {onSettings && (
+            <Button
+              variant="outline"
+              size="xs"
+              className="shrink-0"
+              onClick={onSettings}
+              title={`${ws.name} 的设置：仓库、智能体、成员、连接器`}
+            >
+              <Settings2 className="size-[13px]" aria-hidden />
+              设置
+            </Button>
+          )}
         </div>
       </div>
 
@@ -953,251 +967,6 @@ export function CloudSessionPage({
         </ComposerBar>
       </footer>
     </div>
-  );
-}
-
-/** 云仓库配置入口（issue #821 slice 2）：只有 owner 能配（服务端也拦——
-    services/runtime/src/frameHandler.ts 的 "config" 分支非 owner 回
-    `denied not_authorized`），而 `denied` 帧一旦收到会把**整条云会话连接**
-    标成 denied（main/cloudSessionClient.ts 的 markDenied，同一个状态位
-    是"云会话被拒绝加入"和"这次操作被拒"共用的），不是"这次操作失败"那么
-    轻——非 owner 点了会直接把自己踢出这条云会话。所以这里不做"点了才
-    报错的按钮"，非 owner 从一开始就只看见只读说明，压根摸不到能触发
-    config 帧的控件。ready 是弱一档的门（cs.state !=="ready" 时 config()
-    在本地 requireReady() 就短路回错，不会真的发帧出去），沿用 composer
-    disabled={!ready} 的同一条约定，用 title 说明而不是另起一行文案 */
-/** 仓库那一格的状态文字（issue #834）。**给所有人看，不只是 owner**：
-    "这个工作区的水獭到底在哪个仓库上干活、拉下来没有"是每个成员都该
-    看得见的事实，而在这之前它只存在于 owner 那一次保存的瞬间和恰好
-    开着会话的人的聊天流里。`repo === null` 与"还没 welcome"合并成同一句
-    ——这一格在 connecting 期间不必当真，同 initiatorUid/ownerUid 的约定。 */
-function repoStatusText(repo: CsRepoState | null): { short: string; full: string } {
-  if (!repo) return { short: "未配仓库", full: "这个工作区还没有配仓库，水獭的工作目录是空的。" };
-  let host = repo.url;
-  try {
-    const u = new URL(repo.url);
-    host = `${u.host}${u.pathname}`.replace(/\.git$/, "");
-  } catch {
-    /* 服务端校验过才存得进来，这里只是显示层的尽力而为 */
-  }
-  if (!repo.clone) {
-    return { short: `${host} · 待克隆`, full: `${repo.url}\n还没克隆——下一次工具调用时才会去拉。` };
-  }
-  const bad = repo.clone.kind === "failed" || repo.clone.kind === "refused";
-  return {
-    short: `${host} · ${bad ? "未拉下来" : "已克隆"}`,
-    full: `${repo.url}\n${repo.clone.text}`,
-  };
-}
-
-function CloudRepoConfigEntry({
-  isOwner,
-  ready,
-  repo,
-  route,
-}: {
-  isOwner: boolean;
-  ready: boolean;
-  repo: CsRepoState | null;
-  route: CsModelRoute | null;
-}) {
-  const [open, setOpen] = useState(false);
-  // 保存成功后短暂显示在钮上的确认(同 ProviderKeyDialog 的"已保存"手法:
-  // 弹窗这时已经关了,提示得留在用户看得见的地方)。放在这个外层组件而不是
-  // 弹窗内部,是为了让它在弹窗关闭之后还能继续显示 2 秒
-  const [saved, setSaved] = useState(false);
-  const repoStatus = repoStatusText(repo);
-  const modelStatus = modelStatusText(route);
-
-  const onSaved = (): void => {
-    setOpen(false);
-    setSaved(true);
-    window.setTimeout(() => setSaved(false), 2000);
-  };
-
-  return (
-    <div className="flex min-w-0 shrink-0 items-center gap-2">
-      {/* 模型排在仓库前面（issue #844）：blocked 才是**会挡住干活**的那一格，
-          没配仓库只是"在空目录里干活"。两格都给所有成员看，不只是 owner。
-          ADR-0233 之后模型那一格只读路由（所有者订阅），没有可配的东西 */}
-      <span
-        className={cn("max-w-[150px] truncate text-[11px]", modelStatus.bad ? "text-err" : "text-muted-foreground")}
-        title={modelStatus.full}
-      >
-        {modelStatus.short}
-      </span>
-      <span className="max-w-[190px] truncate text-[11px] text-muted-foreground" title={repoStatus.full}>
-        {repoStatus.short}
-      </span>
-      {isOwner ? (
-        <>
-          <Button
-            variant="outline"
-            size="xs"
-            className="shrink-0"
-            disabled={!ready}
-            title={ready ? undefined : "连接就绪后才能配置"}
-            onClick={() => setOpen(true)}
-          >
-            {saved ? "已保存" : repo ? "改仓库…" : "配置仓库…"}
-          </Button>
-          <CloudRepoConfigDialog
-            open={open}
-            onOpenChange={setOpen}
-            onSaved={onSaved}
-            repo={repo}
-          />
-        </>
-      ) : null}
-    </div>
-  );
-}
-
-/** 配置表单本体：repo URL(必填)+ PAT(可选)。PAT 纪律照抄 ProviderKeyDialog
-    的不变量原话——"输入框存完即清,渲染层不留 key 的任何副本;状态只有布尔"
-    (ProviderKeyDialog.tsx:8)。保存成功就关窗口(同 ProviderKeyDialog/
-    ContributeConnectorDialog 的既有约定),PAT 草稿在关窗口前先清空,不
-    回显、不缓存,store 的 cloudConfig 也不落它到任何字段(只是这一次 IPC
-    调用的参数)——关窗口这一步本身也会让 React 卸载这两个输入框,但"存完
-    即清"不能指望卸载去兜底,得在那一刻显式清。失败(含本地校验拦下来的)
-    不关窗口,原样留着让人改了重试,同 cloudSay/cloudApprove 的既有约定。
-    地址栏每次打开都从**服务端此刻的真实配置**预填（issue #834 加了读路径，
-    welcome 就带着它——原来那句"空白比显示一个可能过期的旧草稿更诚实"是在
-    协议没有读路径时的将就，现在预填的是服务端刚说的事实，不是本地草稿）。
-    token 栏仍然永远是空的：那是 ProviderKeyDialog 的不变量，服务端也只回
-    一个 hasPat 布尔，token 本身不下行。 */
-function CloudRepoConfigDialog({
-  open,
-  onOpenChange,
-  onSaved,
-  repo,
-}: {
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  onSaved: () => void;
-  repo: CsRepoState | null;
-}) {
-  const cloudConfig = useChat((s) => s.cloudConfig);
-
-  const [repoUrl, setRepoUrl] = useState("");
-  const [pat, setPat] = useState("");
-  /** 显式清除已存的 token（issue #834）。没有这一格的话，"留空 = 清掉
-      token"是个静默陷阱：地址栏预填了、密码框天生是空的，owner 顺手改个
-      地址就把私有仓库的凭据清了，下次 clone 静默失败。语义因此变成三态：
-      省略 = 不动，`""` = 清除（只有这个开关能产生），非空 = 换新的 */
-  const [clearPat, setClearPat] = useState(false);
-  const [busy, setBusy] = useState(false);
-  // 本地校验(URL 里嵌了凭据)和 cloudConfig 失败共用这一格——都是"这次
-  // 提交没成"，人话没必要分两条通道。**不**用 useChat((s) => s.workspaceGroupsError)
-  // 订阅式地读:那一格是整页共用的,弹窗刚打开那一刻可能还留着上一次跟这个
-  // 表单毫不相干的旧错误(比如刚才发消息失败),订阅式读会让这个错误原样
-  // 出现在一个用户还没点过保存的新表单里——改成失败那一刻用 getState()
-  // 现取一次快照存进本地状态,不随全局字段之后的变化联动
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    if (open) {
-      setRepoUrl(repo?.url ?? "");
-      setPat("");
-      setClearPat(false);
-      setError(null);
-    }
-  }, [open, repo]);
-
-  const url = repoUrl.trim();
-  const hasRepoPatch = url !== "" || clearPat;
-
-  const submit = async (): Promise<void> => {
-    if (busy || !hasRepoPatch) return;
-    if (url !== "" && repoUrlHasEmbeddedCredential(url)) {
-      setError(EMBEDDED_CREDENTIAL_MESSAGE);
-      return;
-    }
-    setError(null);
-    setBusy(true);
-    const patch: { repoUrl?: string; pat?: string } = {};
-    if (url !== "") patch.repoUrl = url;
-    // 三态，见 clearPat 的注释：清除 > 新值 > 不动
-    const typed = pat.trim();
-    if (clearPat) patch.pat = "";
-    else if (typed !== "") patch.pat = typed;
-    const ok = await cloudConfig(patch);
-    setBusy(false);
-    if (ok) {
-      setPat(""); // 存完即清——即使紧接着 onSaved() 就要把整个弹窗关掉
-      onSaved();
-    } else {
-      setError(useChat.getState().workspaceGroupsError);
-    }
-  };
-
-  return (
-    <Dialog open={open} onOpenChange={(o) => { if (!busy) onOpenChange(o); }}>
-      <DialogContent className="sm:max-w-[440px]">
-        <DialogHeader>
-          <DialogTitle>仓库配置</DialogTitle>
-          <DialogDescription>
-            水獭在这个仓库的工作副本里干活。模型不用配：云会话统一走所有者的订阅额度（ADR-0233）。
-          </DialogDescription>
-        </DialogHeader>
-
-        <div className="flex flex-col gap-[10px]">
-          <p className="text-[11px] font-medium text-foreground">仓库</p>
-          <Input
-            autoComplete="off"
-            spellCheck={false}
-            className="font-mono text-[13px]"
-            placeholder="https://github.com/x/y.git"
-            value={repoUrl}
-            onChange={(e) => { setRepoUrl(e.target.value); setError(null); }}
-          />
-          <Input
-            type="password"
-            autoComplete="off"
-            spellCheck={false}
-            disabled={clearPat}
-            className="font-mono text-[13px]"
-            placeholder={
-              repo?.hasPat
-                ? "已存了一个 token（留空 = 不改动）"
-                : "Personal Access Token（可选，私有仓库需要）"
-            }
-            value={pat}
-            onChange={(e) => setPat(e.target.value)}
-          />
-          <p className="text-[11px] text-muted-foreground">
-            私有仓库的 token 请填在这一栏——不要拼进上面的仓库地址。
-            保存不会立刻触发 clone，要等下一次工具调用。
-          </p>
-          {repo?.hasPat && (
-            <button
-              type="button"
-              className="w-fit text-[11px] text-muted-foreground underline-offset-2 hover:underline"
-              onClick={() => {
-                setClearPat((v) => !v);
-                setPat("");
-              }}
-            >
-              {clearPat ? "取消清除（保留已存的 token）" : "清除已存的 token"}
-            </button>
-          )}
-          {repo?.clone && (
-            <p className="text-[11px] text-muted-foreground">最近一次：{repo.clone.text}</p>
-          )}
-        </div>
-
-        {error && <p className="text-xs text-err">{error}</p>}
-
-        <DialogFooter className="gap-2">
-          <Button variant="ghost" size="sm" disabled={busy} onClick={() => onOpenChange(false)}>
-            取消
-          </Button>
-          <Button size="sm" disabled={busy || !hasRepoPatch} onClick={() => void submit()}>
-            {busy ? "保存中…" : "保存"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
   );
 }
 

@@ -265,6 +265,7 @@ const bridge: ShellBridge = {
   workspaceCloudStop: (seq) => ipcRenderer.invoke(CHANNELS.workspaceCloudStop, seq ?? null),
   workspaceCloudConfig: (workspaceId, patch) =>
     ipcRenderer.invoke(CHANNELS.workspaceCloudConfig, workspaceId, patch),
+  workspaceCloudState: (workspaceId) => ipcRenderer.invoke(CHANNELS.workspaceCloudState, workspaceId),
   setBadgeCount: (count) => ipcRenderer.invoke(CHANNELS.setBadgeCount, count),
   onFriendsChanged: subscribe(CHANNELS.friendsChanged),
   onProxyChanged: subscribe(CHANNELS.proxyChanged),

@@ -515,7 +515,6 @@ describe("createCloudSessionClient — say/approve/archive/config 就绪闸", ()
     expect(await h.client.say("hi", false)).toEqual({ ok: false, message: "没有已连接的云会话" });
     expect(await h.client.approve("c1", "approved")).toEqual({ ok: false, message: "没有已连接的云会话" });
     expect(await h.client.archive()).toEqual({ ok: false, message: "没有已连接的云会话" });
-    expect(await h.client.config("w1", { repoUrl: "https://x" })).toEqual({ ok: false, message: "没有已连接的云会话" });
   });
 
   it("还在 connecting（welcome 之前）：一律未就绪失败", async () => {
@@ -567,63 +566,6 @@ describe("createCloudSessionClient — say/approve/archive/config 就绪闸", ()
     expect(last).toEqual({ t: "archive" });
   });
 
-  it("config：workspaceId 与当前会话不一致时拒绝", async () => {
-    const { h } = await ready();
-    const r = await h.client.config("other-workspace", { repoUrl: "https://example.com/repo.git" });
-    expect(r).toEqual({ ok: false, message: "未加入该工作区的云会话" });
-  });
-
-  it("config：workspaceId 匹配时正常发送，pat 省略时帧里不带 pat", async () => {
-    const { h, t } = await ready();
-    const pending = h.client.config("w1", { repoUrl: "https://example.com/repo.git" });
-    const last = t.decoded()[t.decoded().length - 1];
-    expect(last).toEqual({ t: "config", repoUrl: "https://example.com/repo.git" });
-    expect(last && "pat" in last).toBe(false);
-    // issue #834：现在要等服务端回执才算数
-    t.emitDown({ t: "config_result", ok: true, repo: { url: "https://example.com/repo.git", hasPat: false, clone: null },  modelRoute: null });
-    expect(await pending).toEqual({ ok: true, value: null });
-  });
-
-  // ── issue #834：config 的回执 / 读路径 ────────────────────────────────
-  // 在这之前 config() 回 ok 只证明"本地 encode 没抛异常"——连帧有没有交给
-  // 网络层都不保证（#829：wsTransport.send 有三条静默丢帧分支，其中一条
-  // 正是"正在自动重连"这个完全正常的窗口）。owner 看到"已保存"，下次工具
-  // 调用照旧用老配置去 clone，没有任何信号。
-
-  it("config：服务端回 ok:false → 带着服务端的理由失败，不是「已保存」", async () => {
-    const { h, t } = await ready();
-    const pending = h.client.config("w1", { repoUrl: "https://example.com/repo.git" });
-    t.emitDown({ t: "config_result", ok: false, message: "云沙箱只支持 https://", repo: null,  modelRoute: null });
-    expect(await pending).toEqual({ ok: false, message: "云沙箱只支持 https://" });
-  });
-
-  it("config：回执到达之前不 resolve——「已保存」必须等服务端说话", async () => {
-    const { h } = await ready();
-    let settled = false;
-    void h.client.config("w1", { repoUrl: "https://example.com/repo.git" }).then(() => {
-      settled = true;
-    });
-    await new Promise((r) => setTimeout(r, 0));
-    expect(settled).toBe(false);
-  });
-
-  it("config：本地就能判死的地址不发帧，直接回失败（省一次明知会被拒的往返）", async () => {
-    const { h, t } = await ready();
-    const before = t.decoded().length;
-    const r = await h.client.config("w1", { repoUrl: "git@github.com:acme/widgets.git" });
-    expect(r.ok).toBe(false);
-    expect(t.decoded().length).toBe(before); // 一帧都没发
-  });
-
-  it("config：等回执期间连接断了 → 就地结掉，不让「保存中…」永远转下去", async () => {
-    const { h, t } = await ready();
-    const pending = h.client.config("w1", { repoUrl: "https://example.com/repo.git" });
-    t.emitGone();
-    const r = await pending;
-    expect(r.ok).toBe(false);
-    expect(r.ok === false && r.message).toContain("不确定");
-  });
-
   it("welcome 带的 repo 进 status 推送——任何人一 join 就看得见仓库状态", async () => {
     const h = harness();
     await h.client.join("w1", "cloud-s1");
@@ -651,13 +593,6 @@ describe("createCloudSessionClient — say/approve/archive/config 就绪闸", ()
   // ── issue #829：transport.send 的丢帧要说出口 ─────────────────────────
   // 回执（#834）只覆盖 config 一条路：say/approve/archive 依然是"发出去就
   // 算成功"。而 send 有四条不抛异常的丢帧路径，其中一条正是自动重连的窗口。
-
-  it("config：帧压根没发出去 → 立刻回失败，不是挂着等 15 秒回执超时", async () => {
-    const { h, t } = await ready();
-    t.dropFrames();
-    const r = await h.client.config("w1", { repoUrl: "https://example.com/repo.git" });
-    expect(r).toEqual({ ok: false, message: "连接不通，这一帧没发出去——稍后重试。" });
-  });
 
   it("say：帧没发出去就不能回 ok —— 聊天丢一条人看得出，但别在这撒谎", async () => {
     const { h, t } = await ready();
@@ -965,66 +900,6 @@ describe("cloudSessionFleetRow — 复审 P0：云会话上岛", () => {
     const fleet = flattenFleet(islandStates, [], null, lens);
 
     expect(fleet.agents.find((a) => a.sessionId === "cloud-s1")).toBeUndefined();
-  });
-});
-
-/** issue #834 自查补的一条：三条终态路径（gone / denied / teardown）都要
-    把挂着的 config 结掉。漏哪条就是那条路径上的「保存中…」永远转下去——
-    await 一个再也不会被 resolve 的 promise 是这类 UI 最典型的死法。 */
-describe("createCloudSessionClient — config 的终态收口（issue #834）", () => {
-  async function readyForConfig(): Promise<{ h: ReturnType<typeof harness>; t: FakeTransport }> {
-    const h = harness();
-    await h.client.join("w1", "cloud-s1");
-    const t = h.transports[0]!;
-    t.emitPeer();
-    await tick();
-    t.emitDown({
-      t: "welcome", v: CS_PROTOCOL_VERSION, sessionId: "cloud-s1",
-      lastSeq: -1, initiatorUid: null, ownerUid: "u2", repo: null,  modelRoute: null,
-    });
-    t.emitDown({ t: "backlog", events: [], done: true });
-    return { h, t };
-  }
-
-  it("leave() 顶掉时挂着的 config 就地结掉", async () => {
-    const { h } = await readyForConfig();
-    const pending = h.client.config("w1", { repoUrl: "https://example.com/repo.git" });
-    await h.client.leave();
-    const r = await pending;
-    expect(r.ok).toBe(false);
-  });
-
-  it("被 denied 时挂着的 config 就地结掉", async () => {
-    const { h, t } = await readyForConfig();
-    const pending = h.client.config("w1", { repoUrl: "https://example.com/repo.git" });
-    t.emitDown({ t: "denied", code: "not_authorized" });
-    const r = await pending;
-    expect(r.ok).toBe(false);
-  });
-});
-
-// ADR-0233：config 只剩仓库那一组；一格都没给本地就回失败
-describe("createCloudSessionClient — config 只剩仓库（ADR-0233）", () => {
-  const readyWith = async () => {
-    const h = harness();
-    await h.client.join("w1", "cloud-s1");
-    const t = h.transports[0]!;
-    t.emitPeer();
-    await tick();
-    t.emitDown({
-      t: "welcome", v: CS_PROTOCOL_VERSION, sessionId: "cloud-s1", lastSeq: -1,
-      initiatorUid: null, ownerUid: "u1", repo: null, modelRoute: null,
-    });
-    t.emitDown({ t: "backlog", events: [], done: true }); // 推进到 ready，config 才发得出去
-    return { h, t };
-  };
-
-  it("一格都没给 → 本地就回失败，不占用那次回执等待", async () => {
-    const { h, t } = await readyWith();
-    const before = t.decoded().length;
-    const r = await h.client.config("w1", {});
-    expect(r).toEqual({ ok: false, message: "没有要保存的内容。" });
-    expect(t.decoded().length).toBe(before);
   });
 });
 
@@ -1472,5 +1347,75 @@ describe("createCloudSessionClient — CloudAck 三态 / stop(seq) / denied 方�
     const r = await promise;
     expect(r.ok).toBe(false);
     expect(r.ok === false && r.message).toContain("云端还没升级");
+  });
+});
+
+// 协议 8（#991，ADR-0234）：仓库配置走控制房 RPC，与 create 共用同一副骨架
+describe("createCloudSessionClient — workspaceState / workspaceConfig（控制房）", () => {
+  it("workspaceState：hello + workspace 发给第一个 host，workspace_state 回来就 resolve 并关连接", async () => {
+    const h = harness();
+    const promise = h.client.workspaceState("w1");
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    expect(t.decoded()).toEqual([
+      { t: "hello", v: CS_PROTOCOL_VERSION, jwt: "token-abc" },
+      { t: "workspace", workspaceId: "w1" },
+    ]);
+    t.emitDown({ t: "workspace_state", workspaceId: "w1", repo: { url: "https://example.com/repo.git", hasPat: true, clone: null }, modelRoute: { kind: "hosted", model: "m" } });
+    expect(await promise).toEqual({ ok: true, value: { repo: { url: "https://example.com/repo.git", hasPat: true, clone: null }, modelRoute: { kind: "hosted", model: "m" } } });
+    expect(t.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("workspaceConfig：帧带 workspaceId，pat 省略时帧里不带 pat；config_result ok → 回服务端那份状态", async () => {
+    const h = harness();
+    const promise = h.client.workspaceConfig("w1", { repoUrl: "https://example.com/repo.git" });
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    const last = t.decoded().at(-1);
+    expect(last).toEqual({ t: "config", workspaceId: "w1", repoUrl: "https://example.com/repo.git" });
+    expect(last && "pat" in last).toBe(false);
+    t.emitDown({ t: "config_result", workspaceId: "w1", ok: true, repo: { url: "https://example.com/repo.git", hasPat: false, clone: null }, modelRoute: null });
+    expect(await promise).toEqual({ ok: true, value: { repo: { url: "https://example.com/repo.git", hasPat: false, clone: null }, modelRoute: null } });
+  });
+
+  it("workspaceConfig：服务端回 ok:false → 带着服务端的理由失败，不是「已保存」", async () => {
+    const h = harness();
+    const promise = h.client.workspaceConfig("w1", { repoUrl: "https://example.com/repo.git" });
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({ t: "config_result", workspaceId: "w1", ok: false, message: "云沙箱只支持 https://", repo: null, modelRoute: null });
+    expect(await promise).toEqual({ ok: false, message: "云沙箱只支持 https://" });
+  });
+
+  it("workspaceConfig：本地就能判死的地址不开连接，直接回失败", async () => {
+    const h = harness();
+    const r = await h.client.workspaceConfig("w1", { repoUrl: "git@github.com:a/b.git" });
+    expect(r.ok).toBe(false);
+    expect(h.transports).toHaveLength(0);
+  });
+
+  it("workspaceConfig：一格都没给 → 本地就回「没有要保存的内容」", async () => {
+    const h = harness();
+    expect(await h.client.workspaceConfig("w1", {})).toEqual({ ok: false, message: "没有要保存的内容。" });
+    expect(h.transports).toHaveLength(0);
+  });
+
+  it("控制房 denied → 失败并关连接（非 owner 改仓库走的就是这条）", async () => {
+    const h = harness();
+    const promise = h.client.workspaceConfig("w1", { repoUrl: "https://example.com/repo.git" });
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({ t: "denied", code: "not_authorized" });
+    const r = await promise;
+    expect(r.ok).toBe(false);
+    expect(t.close).toHaveBeenCalledTimes(1);
   });
 });
