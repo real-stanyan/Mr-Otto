@@ -31,7 +31,7 @@ import { createSupabaseAgentWriter, type WorkspaceAgentWriter } from "./agentReg
 import { normalizeAgentTools } from "../../../src/shared/agentToolAllow.js";
 import { safeSpeakerLabel } from "../../../src/shared/promptSafe.js";
 import type { PxCallDeps } from "./pxTools.js";
-import { createHostedProbe, createHostedRuntimeAdapter, createRouteMemo, probeModelRoute, withUsage, type HostedRuntimeAdapterDeps, type RouteMemo } from "./hostedRoute.js";
+import { createHostedProbe, createHostedRuntimeAdapter, createRouteMemo, probeModelRoute, withUsage, type RouteMemo } from "./hostedRoute.js";
 import { createDockerWorld, WORKDIR } from "../../../src/world/dockerWorld.js";
 import type { ModelAdapter } from "../../../src/model/adapter.js";
 import { EventStore } from "../../../src/session/store.js";
@@ -131,20 +131,29 @@ interface WorkspaceConfigRecord {
       ——`setCloneState` 的调用点塞的是 sandbox 的 `CloneOutcome["kind"]`，
       两组值真分叉的话这个文件编译不过，不用两处人肉同步 */
   clone?: { kind: CsCloneKind; text: string; at: number };
-  /** 这个工作区的模型配置（issue #844，推翻 ADR-0199 决策⑥）。**runtime 自己
-      不再持有任何模型 key**：没有这一格的工作区起不了 turn，会得到一条看得见
-      的话。落点与 pat 同一份 0600 文件——同样是别人的凭据，同样不进 Supabase */
-  model?: { baseUrl: string; modelId: string; apiKey: string };
+  /** ADR-0233 之前这里还有一格 `model`（工作区自带 key，#844）。云会话统一走所有者
+      订阅额度之后它没有消费方了——`loadAll` 读到存量记录里的这一格会当场剥掉并
+      回写（那是别人的凭据，没用了就不该继续躺在这台 VPS 上） */
 }
 
 function createWorkspaceConfigStore(path: string) {
   function loadAll(): Record<string, WorkspaceConfigRecord> {
     if (!existsSync(path)) return {};
+    let all: Record<string, WorkspaceConfigRecord & { model?: unknown }>;
     try {
-      return JSON.parse(readFileSync(path, "utf8")) as Record<string, WorkspaceConfigRecord>;
+      all = JSON.parse(readFileSync(path, "utf8")) as typeof all;
     } catch {
       return {};
     }
+    // 存量记录里的自带 key 一次性剥掉（ADR-0233）：读到就删、回写。不等下一次
+    // save——一个工作区可能再也不会被 config 一次，那把 key 就永远留在这儿
+    const stale = Object.entries(all).filter(([, r]) => r.model !== undefined);
+    if (stale.length > 0) {
+      for (const [, r] of stale) delete r.model;
+      writeAll(all);
+      console.log(`[otto-runtime] 剥掉 ${stale.length} 个工作区的存量自带模型 key（ADR-0233：云会话统一走订阅额度）`);
+    }
+    return all;
   }
   function writeAll(all: Record<string, WorkspaceConfigRecord>): void {
     // pat 是敏感凭据，这份文件是**所有工作区共用**的一份，泄漏面比单机
@@ -158,37 +167,15 @@ function createWorkspaceConfigStore(path: string) {
         非空串 = 换成新的。改配置的界面预填了仓库地址却不可能预填 token
         （密码框永远是空的），"留空 = 清掉 token"会让"顺手改个地址"
         静默毁掉一个私有仓库的配置——所以省略必须是"别动"。 */
-    async save(
-      workspaceId: string,
-      cfg: {
-        repoUrl?: string;
-        pat?: string;
-        model?: { baseUrl: string; modelId: string; apiKey?: string };
-      }
-    ): Promise<void> {
+    async save(workspaceId: string, cfg: { repoUrl?: string; pat?: string }): Promise<void> {
       const all = loadAll();
       const prev = all[workspaceId];
-      // 两组字段各自可选（issue #844）：这一帧没提到的那一组原样保留。
-      // 改模型不该顺手把仓库配置抹了，反过来同理
       const repoUrl = cfg.repoUrl ?? prev?.repoUrl ?? "";
       const next: WorkspaceConfigRecord = { repoUrl };
       const pat = cfg.pat === undefined ? prev?.pat : cfg.pat === "" ? undefined : cfg.pat;
       if (pat !== undefined) next.pat = pat;
       // 换了仓库就别把上一个仓库的 clone 结果留着冒充现状
       if (prev?.clone && prev.repoUrl === repoUrl) next.clone = prev.clone;
-
-      if (cfg.model === undefined) {
-        if (prev?.model) next.model = prev.model;
-      } else {
-        // apiKey 三态同 pat：省略 = 保持不变（改型号不该把 key 抹了），
-        // "" = 显式清除（清除 = 整格作废，一个没有 key 的 baseUrl 起不了 turn），
-        // 非空 = 换成新的
-        const apiKey =
-          cfg.model.apiKey === undefined ? prev?.model?.apiKey : cfg.model.apiKey === "" ? undefined : cfg.model.apiKey;
-        if (apiKey !== undefined) {
-          next.model = { baseUrl: cfg.model.baseUrl, modelId: cfg.model.modelId, apiKey };
-        }
-      }
       all[workspaceId] = next;
       writeAll(all);
     },
@@ -200,7 +187,6 @@ function createWorkspaceConfigStore(path: string) {
       // 省略这个键（同 cloudSessionClient.config 的既有先例）
       const next: WorkspaceConfigRecord = { repoUrl: prev.repoUrl };
       if (prev.pat !== undefined) next.pat = prev.pat;
-      if (prev.model !== undefined) next.model = prev.model;
       if (clone !== undefined) next.clone = clone;
       all[workspaceId] = next;
       writeAll(all);
@@ -239,53 +225,26 @@ async function main(): Promise<void> {
   // /me 60s/uid 缓存——一个坏掉的 edge 不该被每个 turn 打一次
   const hostedProbe = createHostedProbe({ edgeBase: config.edgeBase, runtimeSecret: config.runtimeSecret });
 
-  /** 每次 chat()/prepare() 现读一次工作区配置（issue #844）而不是在开房间那一刻
-      定死：owner 随时可能改 key/换型号，而会话房是长命的——定死意味着改完要重启
-      daemon 才生效。构造 adapter 只是拼一份 deps，现读的代价可以忽略。
-      决策逻辑（路由三步，Task 13）搬进 hostedRoute.ts 的 createHostedRuntimeAdapter
-      ——daemon.ts 自己不含值得单测的逻辑（见文件头注释），这里只是装配：
-      ① **工作区所有者**有活跃订阅且网关供着型号 → hosted（平台身份代所有者走网关，
-      runtime 仍不持有模型 key；扣所有者不扣发起人的理由见 hostedRoute.ts 文件头，
-      ADR-0217）；② 否则工作区自带 key（ADR-0202）；③ 都没有 →
-      **抛一条给人看的错**，不回落到任何 key——回落就是"忘了配的工作区默默烧别人的钱"，
-      正是这一版要消灭的东西。这条错会被 engine 当成 turn 失败落进日志，群里所有人都看得见。
-      **每只 agent 一个 adapter**（#928 task-11）：多出来的 `agent` 参数只决定 cfg() 里
-      选哪个型号——它白名单的第一个就是默认，空白名单落回工作区那份（ADR-0202 的既有
-      路径原样不变），**不做 env 兜底**，理由同上：兜底就是"忘了配的工作区默默烧维护者
-      的钱"。扣费对象不受影响，仍然是 ownerUid（本函数的入参，ADR-0217），不随 agent 变。
-      `agentId` 只进请求头落账（#946，供 edge 记 usage_event.agent_id），不影响扣谁。
-      **白名单与自带 key 是两条线**（#957 D1/D2）：原来这里把 `agent.models[0]` 塞进
-      `cfg()` 回的对象里冒充「工作区配的型号」，两个后果——① 工作区没配 key 时
-      `cfg()` 整个是 null，白名单跟着静默蒸发，托管路永远拿网关第一款（D1）；
-      ② 自带 key 那条路上，群里任何成员在设置页填的一串字符会被原样发给**所有者
-      自己的** provider（D2）。改成 `cfg()` 回纯工作区配置、白名单走
-      `preferredModel`（只喂 hosted 分支） */
+  /** 每只 agent 一台 adapter（#928 task-11），路由只有一条：**工作区所有者**有活跃
+      订阅 → 走网关代表所有者（runtime 仍不持有模型 key，ADR-0217）；没有 → 抛一条
+      给人看的错走 turn 失败路径落日志，群里所有人都看得见。**没有自带 key 那一级**
+      （ADR-0233 推翻 ADR-0202）：那条路存在一天，「额度用完悄悄改烧所有者自己的 key」
+      这个静默失败模式就存在一天。`agent` 只决定型号白名单（按顺序取网关供着的第一个，
+      ADR-0232）；扣费对象不随 agent 变，`agentId` 只进请求头落账（#946） */
   function adapterFor(
     workspaceId: string,
     sessionId: string,
     ownerUid: string,
     agent: AgentSpec,
-    // 必需（不是 `deps["onRouteChanged"]` 那个可选类型）：这里只有一个调用方，
-    // 写成可选就是「忘了接线那天它安静地什么都不记」（同 FrameHandlerDeps.log 的纪律）
-    onRouteChanged: NonNullable<HostedRuntimeAdapterDeps["onRouteChanged"]>,
-    // 换轨记忆**由会话房持有**（#957 D3 复审 Critical）：本函数每次
-    // engineFor 都新造一台 adapter（每只 agent 一台），记在 adapter 闭包里
-    // 等于每个 turn 从零开始，第一次决策永远不回调 = 换轨落账整个是 no-op。
-    // 一条会话一份而不是一只 agent 一份：走哪条路是工作区级的事实，两只
-    // agent 先后翻过去该在群里留下**一行**换轨，不是两行
+    // 额度耗尽窗口**由会话房持有**（#957 D4）：本函数每次 engineFor 都新造一台
+    // adapter，记在闭包里等于每个 turn 都要先烧一次注定 429 的网关请求
     routeMemo: RouteMemo
   ): ModelAdapter {
     return createHostedRuntimeAdapter({
       edgeBase: config.edgeBase,
       runtimeSecret: config.runtimeSecret,
       probe: hostedProbe,
-      // 纯工作区配置（ADR-0202 的原路）。**不做 env 兜底**，理由同 ADR-0202：
-      // 兜底 = 忘了配的工作区默默烧维护者的钱
-      cfg: () => workspaceConfigStore.load(workspaceId)?.model ?? null,
-      // agent 的型号白名单**按顺序**取网关供着的第一个（#979 第 4 条）；空白名单 =
-      // 退到工作区配的那款，再退到网关第一款（都在 hostedRoute.ts 里）
       preferredModels: () => agent.models,
-      onRouteChanged,
       routeMemo,
       ownerUid,
       workspaceId,
@@ -643,21 +602,9 @@ async function main(): Promise<void> {
         }),
       // 按 agent 造 adapter（#928 task-11）：型号来自它自己的白名单，记账
       // 口径不变——扣的仍是 ownerUid（ADR-0217），不是发起人
-      adapterFor: (a) =>
-        withUsage(
-          adapterFor(workspaceId, sessionId, ownerUid, a, (from, to, reason) => {
-            // 换轨落账（#957 D3）：钱从谁账上出变了，这个事实日志里推不出来。
-            // 落盘之外还要 broadcast——「本轮改用工作区自己的 key 了」这句话
-            // 该在这个 turn 还没结束时就出现在群里，不是等下次刷新才翻出来
-            // （同桌面 main/agent.ts 的 onReroute 纪律）。
-            // 形状同上面的 `model_usage`：`ignorable`（模型不可见的注记）、
-            // 绕开 sessionService 的 notify 直接 append，所以 `lastSeqSeen`
-            // 这一刻会短暂落后一格——两条都不参与任何按 seq 的收口判断
-            // （#957 复审 Minor 5：已知、留着）
-            broadcast(store.append({ sessionId, ts: Date.now(), type: "route_changed", ignorable: true, from, to, reason }));
-          }, routeMemo),
-          recordUsage
-        ),
+      // `route_changed` 不再落（ADR-0233）：只剩一条路，没有换轨可记；事件类型
+      // 留在 schema 里给旧日志重放
+      adapterFor: (a) => withUsage(adapterFor(workspaceId, sessionId, ownerUid, a, routeMemo), recordUsage),
       px,
       // 与在籍判断共用同一份 60s 缓存（#979 第 5 条）：原来这里每 turn 另打一次
       // **同一条 SQL**。查询抛错原样抛——sessionService 那侧接住、本 turn 不挂代理工具
@@ -819,9 +766,6 @@ async function main(): Promise<void> {
     // 重新走一遍幂等检查/clone。
     saveConfig: async (workspaceId, cfg) => {
       await workspaceConfigStore.save(workspaceId, cfg);
-      // 只在真的动了仓库那一格时才作废 clone 缓存（issue #844）：改模型
-      // key 不该顺手触发一次重新 clone——那会在 owner 只是换个型号时把
-      // 水獭正在改的工作副本卷进一次 clone 判定
       if (cfg.repoUrl !== undefined || cfg.pat !== undefined) sandbox.invalidateClone(workspaceId);
     },
     // 三档令牌桶（issue #819）。日志"一个时段只记一笔"由 createFrameRateLimiter
@@ -837,23 +781,16 @@ async function main(): Promise<void> {
       if (!record || record.repoUrl === "") return null;
       return { url: record.repoUrl, hasPat: record.pat !== undefined, clone: record.clone ?? null };
     },
-    // 同理：模型 key 本身从不下行，只回 hasKey（issue #844）
-    modelState: (workspaceId) => {
-      const m = workspaceConfigStore.load(workspaceId)?.model;
-      if (!m) return null;
-      return { baseUrl: m.baseUrl, modelId: m.modelId, hasKey: m.apiKey !== "" };
-    },
     // issue #945：与 turn 同一份 decideRuntimeRoute。`ownerUid` 由 frameHandler 递进来
     // ——那一层每条 welcome/config 都已经查过一次 ownerOf（未缓存的 Supabase 往返），
     // 这里再查一遍就是同一帧上打两到三次。
     // 回 null 只发生在**探测这一步自己抛了**（配置读取失败等）：edge 挂掉走不到这条
     // catch——createHostedProbe 把失败缓存成「没有订阅」，于是那一分钟这一格答
-    // blocked/workspace，与同一分钟真跑一个 turn 得到的结论一致（本来就该一致）
+    // blocked，与同一分钟真跑一个 turn 得到的结论一致（本来就该一致）
     modelRoute: async (workspaceId, ownerUid) => {
       try {
         return await probeModelRoute({
           probe: hostedProbe,
-          cfg: () => workspaceConfigStore.load(workspaceId)?.model ?? null,
           ownerUid,
           workspaceId,
           edgeBase: config.edgeBase,

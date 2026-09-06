@@ -77,7 +77,7 @@ import type {
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 import type { CloudAck } from "../../../shared/shellBridge.js";
 import { CS_PROTOCOL_VERSION } from "../../../shared/remote/cloudSession.js";
-import type { CsModelRoute, CsModelState, CsRepoState } from "../../../shared/remote/cloudSession.js";
+import type { CsModelRoute, CsRepoState } from "../../../shared/remote/cloudSession.js";
 import { modelStatusText } from "../lib/cloudModelStatus.js";
 
 // cs 还没到位时兜底（正常路径下 WorkspacePage 只在 cloudSession 非空时才
@@ -557,7 +557,6 @@ export function CloudSessionPage({
             isOwner={selfUid === cs.ownerUid}
             ready={ready}
             repo={cs.repo}
-            model={cs.model}
             route={cs.modelRoute}
           />
         </div>
@@ -928,13 +927,11 @@ function CloudRepoConfigEntry({
   isOwner,
   ready,
   repo,
-  model,
   route,
 }: {
   isOwner: boolean;
   ready: boolean;
   repo: CsRepoState | null;
-  model: CsModelState | null;
   route: CsModelRoute | null;
 }) {
   const [open, setOpen] = useState(false);
@@ -943,7 +940,7 @@ function CloudRepoConfigEntry({
   // 弹窗内部,是为了让它在弹窗关闭之后还能继续显示 2 秒
   const [saved, setSaved] = useState(false);
   const repoStatus = repoStatusText(repo);
-  const modelStatus = modelStatusText(model, route);
+  const modelStatus = modelStatusText(route);
 
   const onSaved = (): void => {
     setOpen(false);
@@ -953,9 +950,9 @@ function CloudRepoConfigEntry({
 
   return (
     <div className="flex min-w-0 shrink-0 items-center gap-2">
-      {/* 模型排在仓库前面（issue #844）：走不通的路（blocked / 缺 key）
-          才是**会挡住干活**的那一格，没配仓库只是"在空目录里干活"。
-          两格都给所有成员看，不只是 owner */}
+      {/* 模型排在仓库前面（issue #844）：blocked 才是**会挡住干活**的那一格，
+          没配仓库只是"在空目录里干活"。两格都给所有成员看，不只是 owner。
+          ADR-0233 之后模型那一格只读路由（所有者订阅），没有可配的东西 */}
       <span
         className={cn("max-w-[150px] truncate text-[11px]", modelStatus.bad ? "text-err" : "text-muted-foreground")}
         title={modelStatus.full}
@@ -975,14 +972,13 @@ function CloudRepoConfigEntry({
             title={ready ? undefined : "连接就绪后才能配置"}
             onClick={() => setOpen(true)}
           >
-            {saved ? "已保存" : model || repo ? "改配置…" : "配置模型 / 仓库…"}
+            {saved ? "已保存" : repo ? "改仓库…" : "配置仓库…"}
           </Button>
           <CloudRepoConfigDialog
             open={open}
             onOpenChange={setOpen}
             onSaved={onSaved}
             repo={repo}
-            model={model}
           />
         </>
       ) : null}
@@ -1008,13 +1004,11 @@ function CloudRepoConfigDialog({
   onOpenChange,
   onSaved,
   repo,
-  model,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSaved: () => void;
   repo: CsRepoState | null;
-  model: CsModelState | null;
 }) {
   const cloudConfig = useChat((s) => s.cloudConfig);
 
@@ -1025,12 +1019,6 @@ function CloudRepoConfigDialog({
       地址就把私有仓库的凭据清了，下次 clone 静默失败。语义因此变成三态：
       省略 = 不动，`""` = 清除（只有这个开关能产生），非空 = 换新的 */
   const [clearPat, setClearPat] = useState(false);
-  // 模型三件套（issue #844）。apiKey 的三态与 pat 完全同款，理由也同款——
-  // 改个型号不该把 key 抹了
-  const [modelBaseUrl, setModelBaseUrl] = useState("");
-  const [modelId, setModelId] = useState("");
-  const [apiKey, setApiKey] = useState("");
-  const [clearKey, setClearKey] = useState(false);
   const [busy, setBusy] = useState(false);
   // 本地校验(URL 里嵌了凭据)和 cloudConfig 失败共用这一格——都是"这次
   // 提交没成"，人话没必要分两条通道。**不**用 useChat((s) => s.workspaceGroupsError)
@@ -1045,61 +1033,31 @@ function CloudRepoConfigDialog({
       setRepoUrl(repo?.url ?? "");
       setPat("");
       setClearPat(false);
-      setModelBaseUrl(model?.baseUrl ?? "");
-      setModelId(model?.modelId ?? "");
-      setApiKey("");
-      setClearKey(false);
       setError(null);
     }
-  }, [open, repo, model]);
+  }, [open, repo]);
 
   const url = repoUrl.trim();
-  const mBase = modelBaseUrl.trim();
-  const mId = modelId.trim();
-  // 两组各自成立才提交那一组（issue #844）：只填了模型就只发模型那一格，
-  // 服务端那边没提到的一组原样保留
   const hasRepoPatch = url !== "" || clearPat;
-  const hasModelPatch = (mBase !== "" && mId !== "") || clearKey;
 
   const submit = async (): Promise<void> => {
-    if (busy || (!hasRepoPatch && !hasModelPatch)) return;
+    if (busy || !hasRepoPatch) return;
     if (url !== "" && repoUrlHasEmbeddedCredential(url)) {
       setError(EMBEDDED_CREDENTIAL_MESSAGE);
       return;
     }
-    if (clearKey && (mBase === "" || mId === "")) {
-      // 清 key 要连着地址/型号一起发（服务端那格是整体三件套），但地址和
-      // 型号是预填好的，空了说明人手动清掉了——照实说，别默默存半个
-      setError("要清除 key 的话，模型地址和型号得留着（清 key 不等于删掉整格配置）。");
-      return;
-    }
     setError(null);
     setBusy(true);
-    const patch: {
-      repoUrl?: string;
-      pat?: string;
-      model?: { baseUrl: string; modelId: string; apiKey?: string };
-    } = {};
-    if (hasRepoPatch) {
-      if (url !== "") patch.repoUrl = url;
-      // 三态，见 clearPat 的注释：清除 > 新值 > 不动
-      const typed = pat.trim();
-      if (clearPat) patch.pat = "";
-      else if (typed !== "") patch.pat = typed;
-    }
-    if (hasModelPatch) {
-      const typedKey = apiKey.trim();
-      patch.model = clearKey
-        ? { baseUrl: mBase, modelId: mId, apiKey: "" }
-        : typedKey !== ""
-          ? { baseUrl: mBase, modelId: mId, apiKey: typedKey }
-          : { baseUrl: mBase, modelId: mId };
-    }
+    const patch: { repoUrl?: string; pat?: string } = {};
+    if (url !== "") patch.repoUrl = url;
+    // 三态，见 clearPat 的注释：清除 > 新值 > 不动
+    const typed = pat.trim();
+    if (clearPat) patch.pat = "";
+    else if (typed !== "") patch.pat = typed;
     const ok = await cloudConfig(patch);
     setBusy(false);
     if (ok) {
       setPat(""); // 存完即清——即使紧接着 onSaved() 就要把整个弹窗关掉
-      setApiKey("");
       onSaved();
     } else {
       setError(useChat.getState().workspaceGroupsError);
@@ -1110,55 +1068,14 @@ function CloudRepoConfigDialog({
     <Dialog open={open} onOpenChange={(o) => { if (!busy) onOpenChange(o); }}>
       <DialogContent className="sm:max-w-[440px]">
         <DialogHeader>
-          <DialogTitle>云会话配置</DialogTitle>
+          <DialogTitle>仓库配置</DialogTitle>
           <DialogDescription>
-            模型和仓库是两件独立的事，可以只改一样。云端**不提供公共 key**——
-            这里填谁的 key，烧的就是谁的额度（issue #844）。
+            水獭在这个仓库的工作副本里干活。模型不用配：云会话统一走所有者的订阅额度（ADR-0233）。
           </DialogDescription>
         </DialogHeader>
 
         <div className="flex flex-col gap-[10px]">
-          <p className="text-[11px] font-medium text-foreground">模型</p>
-          <Input
-            autoComplete="off"
-            spellCheck={false}
-            className="font-mono text-[13px]"
-            placeholder="https://api.deepseek.com/v1"
-            value={modelBaseUrl}
-            onChange={(e) => { setModelBaseUrl(e.target.value); setError(null); }}
-          />
-          <Input
-            autoComplete="off"
-            spellCheck={false}
-            className="font-mono text-[13px]"
-            placeholder="型号 id，例如 deepseek-v4-flash"
-            value={modelId}
-            onChange={(e) => { setModelId(e.target.value); setError(null); }}
-          />
-          <Input
-            type="password"
-            autoComplete="off"
-            spellCheck={false}
-            disabled={clearKey}
-            className="font-mono text-[13px]"
-            placeholder={model?.hasKey ? "已存了一把 key（留空 = 不改动）" : "API key"}
-            value={apiKey}
-            onChange={(e) => setApiKey(e.target.value)}
-          />
-          {model?.hasKey && (
-            <button
-              type="button"
-              className="w-fit text-[11px] text-muted-foreground underline-offset-2 hover:underline"
-              onClick={() => {
-                setClearKey((v) => !v);
-                setApiKey("");
-              }}
-            >
-              {clearKey ? "取消清除（保留已存的 key）" : "清除已存的 key"}
-            </button>
-          )}
-
-          <p className="mt-2 text-[11px] font-medium text-foreground">仓库（可选）</p>
+          <p className="text-[11px] font-medium text-foreground">仓库</p>
           <Input
             autoComplete="off"
             spellCheck={false}
@@ -1208,7 +1125,7 @@ function CloudRepoConfigDialog({
           <Button variant="ghost" size="sm" disabled={busy} onClick={() => onOpenChange(false)}>
             取消
           </Button>
-          <Button size="sm" disabled={busy || (!hasRepoPatch && !hasModelPatch)} onClick={() => void submit()}>
+          <Button size="sm" disabled={busy || !hasRepoPatch} onClick={() => void submit()}>
             {busy ? "保存中…" : "保存"}
           </Button>
         </DialogFooter>

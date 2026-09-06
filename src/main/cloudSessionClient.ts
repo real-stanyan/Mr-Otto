@@ -74,11 +74,9 @@ import {
   csChannel,
   encodeCs,
   decodeCsDown,
-  validateModelConfig,
   validateRepoUrl,
   type CsDeniedCode,
   type CsModelRoute,
-  type CsModelState,
   type CsRepoState,
   type CsUp,
 } from "../shared/remote/cloudSession.js";
@@ -215,7 +213,7 @@ export interface CloudSessionClient {
   stop(seq?: number): Promise<CloudAck>;
   config(
     workspaceId: string,
-    patch: { repoUrl?: string; pat?: string; model?: { baseUrl: string; modelId: string; apiKey?: string } },
+    patch: { repoUrl?: string; pat?: string },
   ): Promise<FriendsResult<null>>;
 }
 
@@ -275,9 +273,6 @@ interface ActiveSession {
   /** welcome 给的仓库配置 + 最近一次 clone 结局（issue #834）；config 存成功
       后由回执刷新。null = 没配，或者还没 welcome */
   repo: CsRepoState | null;
-  /** welcome 给的模型配置（issue #844）。null = 这个工作区还没配模型——
-      能建能聊，但 @Agent 起不了 turn。key 本身从不下行 */
-  model: CsModelState | null;
   /** welcome 给的路由判定（issue #945），config 回执后刷新。null = runtime 探不到
       （edge 抖了 / 还没 welcome）——「拿不到」≠「起不了」，这一层原样透传不加工 */
   modelRoute: CsModelRoute | null;
@@ -382,7 +377,6 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
       ownerUid: session.ownerUid,
       selfUid: deps.selfUid() ?? "",
       repo: session.repo,
-      model: session.model,
       modelRoute: session.modelRoute,
       ...(notice === undefined ? {} : { notice }),
       // 持久（issue #957 C-I7）：与上面那条一次性的 notice 相反，只要这一份
@@ -556,7 +550,6 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
         session.initiatorUid = msg.initiatorUid;
         session.ownerUid = msg.ownerUid;
         session.repo = msg.repo; // issue #834：任何人一 join 就看得见仓库状态
-        session.model = msg.model; // issue #844：同理，模型配没配也是一 join 就看得见
         // issue #945：runtime 用 turn 同一份 decideRuntimeRoute 算好的路由。
         // 桌面是显示器不是执行者——这一格照收不重算
         session.modelRoute = msg.modelRoute;
@@ -574,8 +567,7 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
         // 服务端此刻的真实状态，成功失败都刷——失败时它正好告诉 owner
         // "那你现在配的还是这个"
         session.repo = msg.repo;
-        session.model = msg.model;
-        session.modelRoute = msg.modelRoute; // issue #945：改完 key/型号路由可能就变了
+        session.modelRoute = msg.modelRoute; // issue #945：回执与 welcome 同形
         pushStatus(session);
         settleConfig(
           session,
@@ -826,7 +818,6 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
       // 的字段注释——那样会给历史事件的 ts 强加一个不该有的下限）
       lastEventTs: null,
       repo: null,
-      model: null,
       modelRoute: null,
       pendingConfig: null,
       pendingSay: null,
@@ -995,15 +986,7 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     // exactOptionalPropertyTypes：可选字段不接受显式 undefined，得真的省略
     // 这个键才行——不能靠 JSON.stringify 事后替我们咽掉它
     if (patch.pat !== undefined) frame.pat = patch.pat;
-    if (patch.model !== undefined) {
-      const valid = validateModelConfig(patch.model.baseUrl, patch.model.modelId);
-      if (!valid.ok) return { ok: false, message: valid.message };
-      frame.model =
-        patch.model.apiKey !== undefined
-          ? { baseUrl: valid.baseUrl, modelId: valid.modelId, apiKey: patch.model.apiKey }
-          : { baseUrl: valid.baseUrl, modelId: valid.modelId };
-    }
-    if (frame.repoUrl === undefined && frame.pat === undefined && frame.model === undefined) {
+    if (frame.repoUrl === undefined && frame.pat === undefined) {
       return { ok: false, message: "没有要保存的内容。" };
     }
     if (session.pendingConfig) return { ok: false, message: "上一次保存还没有回执，稍等一下再试。" };

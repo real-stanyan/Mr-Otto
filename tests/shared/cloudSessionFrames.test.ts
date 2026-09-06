@@ -22,8 +22,8 @@ describe("cs_say 的 mentions（#928 切片 1a）", () => {
 });
 
 describe("cs 协议 6（#957 第三批：stop 帧与 say/approve/stop 回执）", () => {
-  it("CS_PROTOCOL_VERSION === 6", () => {
-    expect(CS_PROTOCOL_VERSION).toBe(6);
+  it("CS_PROTOCOL_VERSION === 7（6 = #957 第三批进位；7 = ADR-0233 去掉自带 key 那半边）", () => {
+    expect(CS_PROTOCOL_VERSION).toBe(7);
   });
 
   it("stop 上行往返", () => {

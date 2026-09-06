@@ -21,12 +21,10 @@ import {
   csChannel,
   decodeCsUp,
   encodeCs,
-  validateModelConfig,
   validateRepoUrl,
   type CsDeniedCode,
   type CsDown,
   type CsModelRoute,
-  type CsModelState,
   type CsRepoState,
 } from "../../../src/shared/remote/cloudSession.js";
 import type { SessionEvent } from "../../../src/session/events.js";
@@ -126,25 +124,19 @@ export interface FrameHandlerDeps {
         只有它同时握着 supabase 句柄和 transport。false = 已经归档过了 */
     archive(workspaceId: string, sessionId: string, byLabel: string): Promise<boolean>;
   };
-  saveConfig: (
-    workspaceId: string,
-    cfg: { repoUrl?: string; pat?: string; model?: { baseUrl: string; modelId: string; apiKey?: string } }
-  ) => Promise<void>;
+  saveConfig: (workspaceId: string, cfg: { repoUrl?: string; pat?: string }) => Promise<void>;
   /** 这个工作区此刻的仓库配置 + 最近一次 clone 结局（issue #834）。
       welcome 和 config 的回执都带上它——协议原来只有写路径，owner 存完
       看不到任何反馈，别的成员更是永远不知道仓库配没配、拉没拉下来。
       **实现必须保证不下发 token 本身**（只回 hasPat 布尔） */
   repoState: (workspaceId: string) => CsRepoState | null;
-  /** 这个工作区此刻的模型配置（issue #844）。同 repoState 的纪律：
-      **实现必须保证不下发 key 本身**（只回 hasKey 布尔） */
-  modelState: (workspaceId: string) => CsModelState | null;
   /** 这个工作区此刻的 turn 会走哪条路（issue #945）。async：要问一次订阅快照
       （hostedProbe 有 60s 缓存）。`ownerUid` 由调用点递进来而不是让实现自己再查
       一次——这一层每条 welcome/config 都已经 await 过 `sessions.ownerOf`，那是一次
       未缓存的 Supabase 往返，实现里再查一遍就是同一帧上打两到三次。
       回 null = **探测这一步自己抛了**（配置读取失败之类），客户端按「不知道」画；
       注意 edge 挂掉不走这条路——`createHostedProbe` 把失败缓存成「没有订阅」，
-      于是那一分钟里这一格答 `blocked`/`workspace`，与同一分钟的 turn 得到的结论一致 */
+      于是那一分钟里这一格答 `blocked`，与同一分钟的 turn 得到的结论一致 */
   modelRoute: (workspaceId: string, ownerUid: string) => Promise<CsModelRoute | null>;
   /** 三档令牌桶（issue #819）。**必需，不是可选**：过渡期烧的是维护者的
       模型 key，一个"忘了接线"的默认值等于把闸门悄悄拆了——这种东西不该
@@ -372,7 +364,6 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
           initiatorUid: session.initiatorUid(),
           ownerUid,
           repo: deps.repoState(workspaceId),
-          model: deps.modelState(workspaceId),
           modelRoute: await deps.modelRoute(workspaceId, ownerUid),
         });
         return;
@@ -555,7 +546,6 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
               ok: false,
               message,
               repo: deps.repoState(workspaceId),
-              model: deps.modelState(workspaceId),
               modelRoute: await deps.modelRoute(workspaceId, ownerUid),
             });
           };
@@ -565,11 +555,7 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
           // 改造过的客户端能直接发 `ext::sh -c ...` 这类 git 传输、或者一条
           // 指向内网的模型地址上来，两者都会以 runtime 的身份被执行。
           // 判据是结构化白名单，不是"认出凭据"的黑名单
-          const patch: {
-            repoUrl?: string;
-            pat?: string;
-            model?: { baseUrl: string; modelId: string; apiKey?: string };
-          } = {};
+          const patch: { repoUrl?: string; pat?: string } = {};
 
           if (msg.repoUrl !== undefined) {
             const valid = validateRepoUrl(msg.repoUrl);
@@ -581,19 +567,7 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
           }
           if (msg.pat !== undefined) patch.pat = msg.pat;
 
-          if (msg.model !== undefined) {
-            const valid = validateModelConfig(msg.model.baseUrl, msg.model.modelId);
-            if (!valid.ok) {
-              await fail(valid.message);
-              return;
-            }
-            patch.model =
-              msg.model.apiKey !== undefined
-                ? { baseUrl: valid.baseUrl, modelId: valid.modelId, apiKey: msg.model.apiKey }
-                : { baseUrl: valid.baseUrl, modelId: valid.modelId };
-          }
-
-          if (patch.repoUrl === undefined && patch.pat === undefined && patch.model === undefined) {
+          if (patch.repoUrl === undefined && patch.pat === undefined) {
             // 一格都没给：不是错误，但也不该假装存过了
             await fail("这一次没有要保存的内容。");
             return;
@@ -607,13 +581,12 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
             await fail(`保存失败：${err instanceof Error ? err.message : String(err)}`);
             return;
           }
-          // 存完重新探一次（issue #945）：owner 刚填进去的那把 key 可能正好把
-          // 这个工作区从 blocked 挪到 workspace，回执带旧值等于让界面继续撒谎
+          // 存完再探一次路由（issue #945）：仓库配置不影响路由，带上只是与 welcome
+          // 同形，界面一处画法
           deps.send(cid, {
             t: "config_result",
             ok: true,
             repo: deps.repoState(workspaceId),
-            model: deps.modelState(workspaceId),
             modelRoute: await deps.modelRoute(workspaceId, ownerUid),
           });
           return;

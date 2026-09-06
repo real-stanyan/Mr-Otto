@@ -7,7 +7,11 @@ import type { SessionEvent } from "../../session/events.js";
 import { b64decode, b64encode } from "./b64.js";
 import { MAX_FRAME_BYTES } from "./wire.js";
 
-/** 6（#957 第三批）：`CsUp` 加 `stop`（谁能停与 approve 同一判据）；`CsDown` 加
+/** 7（#981，ADR-0233）：云会话不再支持工作区自带 key——`config` 帧去掉 `model`，
+    welcome/config_result 去掉 `model` 一格，`CsModelRoute` 去掉 `workspace`。
+    减字段也进位：握手是精确相等，而「新桌面还画着一格永远为 null 的模型配置」
+    正是这次要消灭的假话。
+    6（#957 第三批）：`CsUp` 加 `stop`（谁能停与 approve 同一判据）；`CsDown` 加
     `say_result`/`approve_result`/`stop_result` 三条回执——桌面此前对 say/approve
     发出去之后没有任何确认信号，草稿清空/审批卡收起全靠乐观 UI，限速或权限被拒
     时界面已经把话当成发出去了。回执形状照 `config_result` 的先例：不复用
@@ -28,7 +32,7 @@ import { MAX_FRAME_BYTES } from "./wire.js";
     少一格状态。**加一个枚举值同理**：老客户端的 isValidCsDeniedCode 认不出
     `rate_limited`，decodeCsDown 回 null，那一帧被静默忽略，于是 create()
     要白等满超时才回一句"云端无响应"——把"你被限速了"说成"对面没回话"。 */
-export const CS_PROTOCOL_VERSION = 6;
+export const CS_PROTOCOL_VERSION = 7;
 export const CS_MAX_TEXT_BYTES = 64 * 1024;
 
 /** 「有一条事件太大，没发给你」这一类 error 帧的识别标记（终审 I2）。
@@ -99,58 +103,16 @@ export function validateRepoUrl(raw: string): { ok: true; url: string } | { ok: 
   return { ok: true, url };
 }
 
-/** 一个工作区此刻的模型配置（issue #844）。**key 本身永不下行**——同
-    `CsRepoState.hasPat` 的纪律。runtime 自己不再持有任何模型 key：
-    `config.ts` 的必需项里没有 MODEL_*，也不做 env 兜底，因为兜底等于
-    「忘了配的工作区默默烧维护者的钱」，而那正是这一版要消灭的东西。 */
-export interface CsModelState {
-  baseUrl: string;
-  modelId: string;
-  hasKey: boolean;
-}
-
-/** 这个工作区此刻的 turn 会走哪条路（issue #945）。与 runtime 的
-    `decideRuntimeRoute` 同源：hosted 带**实际会用的**型号（工作区配的网关不供时
-    退到网关第一款，界面上该显示退到的那个）。
-    null = **runtime 探测本身抛错**（配置读取失败等）——「拿不到」≠「起不了」，
-    客户端别下结论。**edge 挂掉不长这样**：runtime 的订阅探针把失败缓存成「没有
-    订阅」，所以一次 edge 故障在这一格上表现为 `blocked`（或有自带 key 时的
-    `workspace`），与同一分钟真跑一个 turn 得到的结论一致。
-    按 agent 各自的型号白名单会有差异，这一格答的是工作区默认那份 */
+/** 这个工作区此刻的 turn 会走哪条路（issue #945；ADR-0233 收成两态）。与 runtime 的
+    `decideRuntimeRoute` 同源：hosted 带**实际会用的**型号（网关第一款，按 agent 各自的
+    白名单会有差异，这一格答的是工作区默认那份）。blocked = 所有者没有活跃订阅 / 额度
+    用完——云会话统一走所有者的订阅额度，没有第二条路。
+    null = **runtime 探测本身抛错**——「拿不到」≠「起不了」，客户端别下结论。
+    **edge 挂掉不长这样**：runtime 的订阅探针把失败缓存成「没有订阅」，所以一次 edge
+    故障在这一格上表现为 `blocked`，与同一分钟真跑一个 turn 得到的结论一致 */
 export type CsModelRoute =
   | { kind: "hosted"; model: string }
-  | { kind: "workspace" }
   | { kind: "blocked" };
-
-/** 模型配置的结构化校验（issue #844）——两端共用一份，纪律同
-    `validateRepoUrl`：渲染层那份只是提交前的早期提示，服务端必须自己再验
-    一次（一个改造过的客户端能直接发 `http://127.0.0.1` 这类内网地址上来，
-    而 runtime 是拿着平台身份在跑的）。
-    只问 URL 解析器自己答得上来的问题：解析得开吗、是不是 https、
-    有没有 host。modelId 只查非空与长度——型号 id 的字母表由各家厂商定，
-    白名单会把还没出生的型号挡在外面。 */
-export function validateModelConfig(
-  rawBaseUrl: string,
-  rawModelId: string
-): { ok: true; baseUrl: string; modelId: string } | { ok: false; message: string } {
-  const baseUrl = rawBaseUrl.trim();
-  const modelId = rawModelId.trim();
-  if (baseUrl === "") return { ok: false, message: "模型 API 地址不能为空。" };
-  if (baseUrl.length > 2048) return { ok: false, message: "模型 API 地址太长了。" };
-  let parsed: URL;
-  try {
-    parsed = new URL(baseUrl);
-  } catch {
-    return { ok: false, message: "这不是一条完整的模型 API 地址（要像 https://api.example.com/v1）。" };
-  }
-  if (parsed.protocol !== "https:") {
-    return { ok: false, message: `模型 API 地址必须是 https://（收到的是 ${parsed.protocol}）。` };
-  }
-  if (parsed.host === "") return { ok: false, message: "模型 API 地址里没有主机名。" };
-  if (modelId === "") return { ok: false, message: "型号 id 不能为空。" };
-  if (modelId.length > 256) return { ok: false, message: "型号 id 太长了。" };
-  return { ok: true, baseUrl, modelId };
-}
 
 export function csCtlChannel(): string {
   return "cs-ctl";
@@ -200,15 +162,14 @@ export type CsUp =
   | { t: "say"; text: string; mention: boolean; mentions?: string[] }
   | { t: "backlog"; afterSeq: number }
   | { t: "approve"; callId: string; decision: "approved" | "denied" }
-  /** 工作区配置。**两组字段各自可选**（issue #844）：给了 repoUrl 就改仓库，
-      给了 model 就改模型，两个都不给是无操作。`pat` / `model.apiKey` 同款
-      三态——省略 = 保持不变，`""` = 显式清除，非空 = 换成新的。密码框永远
-      预填不了，"留空 = 清掉"会让"顺手改个型号"静默毁掉一把 key */
+  /** 工作区的仓库配置（ADR-0233 之后只剩这一组：模型统一走所有者订阅，没有
+      自带 key 那半边）。两格各自可选，都不给是无操作。`pat` 三态——省略 = 保持
+      不变，`""` = 显式清除，非空 = 换成新的。密码框永远预填不了，"留空 = 清掉"
+      会让"顺手改个地址"静默毁掉一个私有仓库的 token */
   | {
       t: "config";
       repoUrl?: string;
       pat?: string;
-      model?: { baseUrl: string; modelId: string; apiKey?: string };
     }
   | { t: "archive" }
   /** 停掉当前正在跑的这一轮 turn（#957 第三批）。谁能停与 approve 同一判据——
@@ -233,12 +194,7 @@ export type CsDown =
           搭在 welcome 上而不是另开一个查询往返：任何人一 join 就看得见，
           不用等"恰好有人在配"或"恰好开着会话时 clone 跑了一次" */
       repo: CsRepoState | null;
-      /** 这个工作区此刻的模型配置（issue #844）。null = 还没配——这条云会话
-          能建、能聊，但 @Agent 起不了 turn，owner 得先配一把自己的 key */
-      model: CsModelState | null;
-      /** 这个工作区此刻的 turn 会走哪条路（issue #945）。**不是 `model` 的投影**：
-          所有者订阅着的时候，`model` 为 null（没配自带 key）也照样跑得动——
-          界面拿 `model === null` 推断「未配模型」就会对订阅用户撒谎 */
+      /** 这个工作区此刻的 turn 会走哪条路（issue #945）：hosted / blocked / 探不到 */
       modelRoute: CsModelRoute | null;
     }
   | { t: "created"; workspaceId: string; sessionId: string; channel: string }
@@ -261,9 +217,8 @@ export type CsDown =
       ok: boolean;
       message?: string;
       repo: CsRepoState | null;
-      model: CsModelState | null;
-      /** 存完之后的路由判定（issue #945）：改一把 key / 换个型号都可能把这条路
-          从 blocked 挪到 workspace，回执不带它的话界面要等下一次 join 才更新 */
+      /** 存完之后再探一次的路由判定（issue #945）——仓库配置不影响路由，带上只是
+          让回执与 welcome 同形，界面一处画法 */
       modelRoute: CsModelRoute | null;
     }
   /** say 的回执（#957 第三批）。同 config_result 的纪律——不复用 error。
@@ -332,16 +287,6 @@ function isCsRepoState(v: unknown): v is CsRepoState {
   return isCsCloneKind(c.kind) && typeof c.text === "string" && typeof c.at === "number";
 }
 
-function normalizeModelState(v: unknown): CsModelState | null {
-  if (v === null || v === undefined) return null;
-  if (typeof v !== "object") return null;
-  const o = v as Record<string, unknown>;
-  if (typeof o.baseUrl !== "string" || typeof o.modelId !== "string" || typeof o.hasKey !== "boolean") {
-    return null;
-  }
-  return { baseUrl: o.baseUrl, modelId: o.modelId, hasKey: o.hasKey };
-}
-
 /** 线上防呆（issue #945）：缺席、`null`、形状不对一律降级成 null，**不拒整帧**。
     解码永远向后兼容——一个还没升级的 runtime 发来的 welcome 少这一格是正常的，
     把它判成无效帧等于让客户端白等满超时。hosted 必须带非空 model：没有型号的
@@ -350,7 +295,6 @@ function normalizeModelRoute(v: unknown): CsModelRoute | null {
   if (typeof v !== "object" || v === null || Array.isArray(v)) return null;
   const o = v as Record<string, unknown>;
   if (o.kind === "hosted") return typeof o.model === "string" && o.model !== "" ? { kind: "hosted", model: o.model } : null;
-  if (o.kind === "workspace") return { kind: "workspace" };
   if (o.kind === "blocked") return { kind: "blocked" };
   return null;
 }
@@ -437,27 +381,16 @@ export function decodeCsUp(b64: string): CsUp | null {
     }
 
     if (t === "config") {
-      // 两组字段各自可选（issue #844）：给了 repoUrl 就是在改仓库，给了
-      // model 就是在改模型。类型不对（不是 string / 形状不对）一律判整帧
-      // 无效——半个配置比没有配置更危险
-      const { repoUrl, pat, model } = obj;
+      // 两格各自可选：类型不对（不是 string）一律判整帧无效——半个配置比没有
+      // 配置更危险。`model` 那半边随 ADR-0233 删了：老客户端多发的 model 字段
+      // 这里直接忽略（握手是精确相等，本来也连不上）
+      const { repoUrl, pat } = obj;
       if (repoUrl !== undefined && typeof repoUrl !== "string") return null;
       if (pat !== undefined && typeof pat !== "string") return null;
 
       const result: CsUp = { t: "config" };
       if (typeof repoUrl === "string") result.repoUrl = repoUrl;
       if (typeof pat === "string") result.pat = pat;
-
-      if (model !== undefined) {
-        if (typeof model !== "object" || model === null) return null;
-        const m = model as Record<string, unknown>;
-        if (typeof m.baseUrl !== "string" || typeof m.modelId !== "string") return null;
-        if (m.apiKey !== undefined && typeof m.apiKey !== "string") return null;
-        result.model =
-          typeof m.apiKey === "string"
-            ? { baseUrl: m.baseUrl, modelId: m.modelId, apiKey: m.apiKey }
-            : { baseUrl: m.baseUrl, modelId: m.modelId };
-      }
       return result;
     }
 
@@ -509,7 +442,6 @@ export function decodeCsDown(b64: string): CsDown | null {
           initiatorUid: obj.initiatorUid as string | null,
           ownerUid: obj.ownerUid,
           repo: normalizeRepoState(obj.repo),
-          model: normalizeModelState(obj.model),
           modelRoute: normalizeModelRoute(obj.modelRoute),
         };
       }
@@ -522,7 +454,6 @@ export function decodeCsDown(b64: string): CsDown | null {
           t: "config_result",
           ok: obj.ok,
           repo: normalizeRepoState(obj.repo),
-          model: normalizeModelState(obj.model),
           modelRoute: normalizeModelRoute(obj.modelRoute),
         };
         if (typeof obj.message === "string") result.message = obj.message;
