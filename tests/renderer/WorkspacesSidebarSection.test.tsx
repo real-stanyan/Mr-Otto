@@ -28,8 +28,8 @@ const WS: WorkspaceSnapshot = {
   name: "奶茶店",
   ownerUid: "u-me",
   members: [
-    { uid: "u-me", role: "owner", label: "我" },
-    { uid: "u2", role: "member", label: "小红" },
+    { uid: "u-me", role: "owner", label: "我", avatarUrl: "" },
+    { uid: "u2", role: "member", label: "小红", avatarUrl: "" },
   ],
   connectors: [],
   sessions: [],
