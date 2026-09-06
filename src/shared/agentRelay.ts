@@ -75,21 +75,80 @@ export function decideRelay(args: {
     readUpToSeq >= U.seq（这轮开跑时看见过 U）才算收口。**否决内存
     pendingDepth**——那份状态重启即丢（#933），这里改成纯粹从日志重放推导。
     至少包含 opening 自己：opening 有可能还没进 events（调用点是"落盘那一刻"），
-    也可能已经在里面（此时结果与只看 events 一致，取 max 不会重复计） */
+    也可能已经在里面（此时结果与只看 events 一致，取 max 不会重复计）。
+
+    **单遍**（#958）：同 openTurns 那一处的重写与理由——两层循环折成「一次线性
+    扫描 + 一摞还开着的点名」。这里不必分 queued/running（只关心收没收口）。
+    turn_ended 与 user_message 是互斥的两种事件，所以不存在 openTurns 那条
+    「同一条事件两种身份」的顺序讲究。 */
 export function openingDepthFor(events: readonly SessionEvent[], agentId: string, opening: UserMessageEvent): number {
   let max = relayDepthOf(opening);
-  for (let i = 0; i < events.length; i++) {
-    const u = events[i]!;
-    if (u.type !== "user_message" || !u.mentions || !u.mentions.includes(agentId)) continue;
-    let closed = false;
-    for (let j = i + 1; j < events.length; j++) {
-      const e = events[j]!;
-      if (e.type !== "turn_ended" || e.agentId !== agentId) continue;
-      if (e.readUpToSeq === undefined || e.readUpToSeq >= u.seq) { closed = true; break; }
+  let open: UserMessageEvent[] = [];
+  for (const e of events) {
+    if (e.type === "turn_ended") {
+      if (e.agentId !== agentId) continue;
+      const kept: UserMessageEvent[] = [];
+      for (const u of open) if (!(e.readUpToSeq === undefined || e.readUpToSeq >= u.seq)) kept.push(u);
+      open = kept;
+      continue;
     }
-    if (!closed) max = Math.max(max, relayDepthOf(u));
+    if (e.type === "user_message" && e.mentions && e.mentions.includes(agentId)) open.push(e);
   }
+  for (const u of open) max = Math.max(max, relayDepthOf(u));
   return max;
+}
+
+/** 「这一轮的判据从日志的哪一条读起」的两条**保守下界**（#958）。
+    两条都是整份日志的纯函数，也都能从单条事件增量推进——sessionService 装配时
+    用 relayBoundsOf 播种一次，之后每条事件经 notify 过一遍 advanceRelayBounds，
+    于是每个 turn 只读尾段而不是整份日志（原来 runJob 与 relayAfterTurn 各做一次
+    全量 load，成本跟着日志长）。
+
+    **下界算小了只是多读几条，算大了才会丢东西**——两条推导都只会算小：
+    ① closeBound[agentId] = 该 agent 全部 turn_ended 的 max(readUpToSeq ?? seq)。
+       seq ≤ closeBound 的点名**一定已经收口**：取达到这个最大值的那条 T，
+       readUpToSeq 在场时 T.seq > readUpToSeq ≥ U.seq（readUpToSeq 是 T 那轮开跑
+       时的日志尾，T 自己是之后才落的），T 排在 U 后面且 readUpToSeq ≥ U.seq；
+       readUpToSeq 缺席时 closeBound = T.seq，U.seq < T.seq 而缺席按老规则一律收口。
+       收了口的点名对 openingDepthFor 没有贡献，所以
+       openingDepthFor(load({afterSeq: closeBound}), …) ≡ openingDepthFor(load(), …)。
+       没有 agentId 的 turn_ended（本机会话/旧日志）不进表——openingDepthFor 里
+       它谁的口也收不了，进表就是把下界算大。
+    ② lastHumanOpening = 最后一条「mentions 非空且没有 relay」的 user_message 的
+       seq。relayChain 的 start 就是它，所以从 lastHumanOpening − 1 之后读，那条
+       点火位与它之后的全部 agent_relay 一条不少；−1（谁也没点过名）时
+       afterSeq 取 −1 = 全量，与改动前逐字节等价。 */
+export interface RelayBounds {
+  /** agentId → max(readUpToSeq ?? seq)；不在表里 = 这只 agent 还没收过口 */
+  closeBound: Map<string, number>;
+  /** 最后一条人话点火的 seq；−1 = 没有 */
+  lastHumanOpening: number;
+}
+
+export function emptyRelayBounds(): RelayBounds {
+  return { closeBound: new Map(), lastHumanOpening: -1 };
+}
+
+/** 单条事件推进（sessionService 的 notify 每条都过这里，与 relayBoundsOf 同一套
+    判据——两处各写一遍的话，重启前后读的尾段就会不一样，而它不报错只是偶尔少读） */
+export function advanceRelayBounds(b: RelayBounds, e: SessionEvent): void {
+  if (e.type === "turn_ended") {
+    if (e.agentId === undefined) return;
+    const v = e.readUpToSeq ?? e.seq;
+    const cur = b.closeBound.get(e.agentId);
+    if (cur === undefined || v > cur) b.closeBound.set(e.agentId, v);
+    return;
+  }
+  if (e.type === "user_message" && e.mentions && e.mentions.length > 0 && !e.relay) {
+    if (e.seq > b.lastHumanOpening) b.lastHumanOpening = e.seq;
+  }
+}
+
+/** 整份日志折叠（装配时播种一次） */
+export function relayBoundsOf(events: readonly SessionEvent[]): RelayBounds {
+  const b = emptyRelayBounds();
+  for (const e of events) advanceRelayBounds(b, e);
+  return b;
 }
 
 // 名字与引文一律在**这三个纯函数里**过一次结构闸，不放在调用点（第二轮复审 E2-2）：

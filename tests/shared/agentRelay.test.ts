@@ -2,8 +2,10 @@ import { describe, it, expect } from "vitest";
 import {
   DEFAULT_RELAY_MAX_DEPTH, RELAY_GUARD, decideRelay, hopFingerprint, mentionedAgents, normalizeRelayMaxDepth,
   openingDepthFor, relayCapText, relayChain, relayDepthOf, relayNudgeText, relayOpeningText,
+  advanceRelayBounds, emptyRelayBounds, relayBoundsOf,
 } from "../../src/shared/agentRelay.js";
 import type { AgentRelayEvent, SessionEvent, TurnEndedEvent, UserMessageEvent } from "../../src/session/events.js";
+import { generateLog, GEN_AGENTS } from "../helpers/relayLog.js";
 
 let seq = 0;
 const um = (extra: Partial<UserMessageEvent>): UserMessageEvent => ({ seq: seq++, ts: 1, sessionId: "s", type: "user_message", content: "x", ...extra });
@@ -151,5 +153,121 @@ describe("接力三句话的名字与引文过结构闸（第二轮复审 E2-2�
 
   it("relayCapText：lastWords 全空白时不画引文那一段（过闸后仍然是空）", () => {
     expect(relayCapText("运营", "广告", 7, 6, "   \n  ")).not.toContain("最后说");
+  });
+});
+
+// ── #958：单遍重写 + 尾段读等价 ───────────────────────────────────────────
+//
+// 同 turnLedger.test.ts 那份 oracle 的纪律：**这是改动前的 openingDepthFor 逐字
+// 复制，别整理它**。它慢正是它该有的样子。
+function openingDepthForOracle(events: readonly SessionEvent[], agentId: string, opening: UserMessageEvent): number {
+  let max = relayDepthOf(opening);
+  for (let i = 0; i < events.length; i++) {
+    const u = events[i]!;
+    if (u.type !== "user_message" || !u.mentions || !u.mentions.includes(agentId)) continue;
+    let closed = false;
+    for (let j = i + 1; j < events.length; j++) {
+      const e = events[j]!;
+      if (e.type !== "turn_ended" || e.agentId !== agentId) continue;
+      if (e.readUpToSeq === undefined || e.readUpToSeq >= u.seq) { closed = true; break; }
+    }
+    if (!closed) max = Math.max(max, relayDepthOf(u));
+  }
+  return max;
+}
+
+/** 模拟 store.load(sessionId, { afterSeq })：只回 seq 严格大于 afterSeq 的那一段 */
+const tailAfter = (events: readonly SessionEvent[], afterSeq: number): SessionEvent[] => events.filter((e) => e.seq > afterSeq);
+
+describe("openingDepthFor / relayChain 的尾段下界（#958）", () => {
+  const OPENINGS = (agentId: string): UserMessageEvent[] => [
+    { seq: 10_000, ts: 1, sessionId: "s1", type: "user_message", content: "人开的", fromUid: "u1", mentions: [agentId] },
+    { seq: 10_000, ts: 1, sessionId: "s1", type: "user_message", content: "接力开的", fromUid: "u1", mentions: [agentId], relay: { fromAgentId: "ops", depth: 3 } },
+  ];
+
+  it("openingDepthFor：单遍与旧实现同结果（200 份伪随机日志 × 3 只 agent × 2 种开场白）", () => {
+    for (let seed = 1; seed <= 200; seed++) {
+      const events = generateLog(seed);
+      for (const agentId of GEN_AGENTS) {
+        for (const opening of OPENINGS(agentId)) {
+          expect(openingDepthFor(events, agentId, opening), `seed=${seed} agent=${agentId}`)
+            .toBe(openingDepthForOracle(events, agentId, opening));
+        }
+      }
+    }
+  });
+
+  it("openingDepthFor：从 closeBound 之后读尾段与读全量同结果", () => {
+    // 下界是保守的：算小了只是多读几条，算大了才丢东西。这条断言盯的正是
+    // 「算大了」——真丢了的话，一条本该算进 depth 的开场白被读没了，接力棒的
+    // depth 会安静地退回 0，上限那道闸再也拦不住一条打转的链
+    for (let seed = 1; seed <= 200; seed++) {
+      const all = generateLog(seed);
+      const bounds = relayBoundsOf(all);
+      for (const agentId of GEN_AGENTS) {
+        const tail = tailAfter(all, bounds.closeBound.get(agentId) ?? -1);
+        for (const opening of OPENINGS(agentId)) {
+          expect(openingDepthFor(tail, agentId, opening), `seed=${seed} agent=${agentId}`)
+            .toBe(openingDepthFor(all, agentId, opening));
+        }
+      }
+    }
+  });
+
+  it("relayChain：从 lastHumanOpening − 1 之后读尾段与读全量同结果（连事件对象都深等于）", () => {
+    for (let seed = 1; seed <= 200; seed++) {
+      const all = generateLog(seed);
+      const bounds = relayBoundsOf(all);
+      const tail = tailAfter(all, Math.max(-1, bounds.lastHumanOpening - 1));
+      expect(relayChain(tail), `seed=${seed}`).toEqual(relayChain(all));
+    }
+  });
+
+  it("relayBoundsOf 与逐条 advanceRelayBounds 折叠是同一个结果", () => {
+    // sessionService 两条路：装配时整份折叠一次（relayBoundsOf），之后每条事件
+    // 经 notify 增量推进（advanceRelayBounds）。两套判据分家的那天，重启前后
+    // 读的尾段就不一样——而它不会报错，只会偶尔少读几条
+    for (let seed = 1; seed <= 200; seed++) {
+      const all = generateLog(seed);
+      const fold = emptyRelayBounds();
+      for (const e of all) advanceRelayBounds(fold, e);
+      expect(fold, `seed=${seed}`).toEqual(relayBoundsOf(all));
+    }
+  });
+
+  it("空日志：closeBound 空表、lastHumanOpening = −1（−1 → afterSeq −1 = 全量，与改动前等价）", () => {
+    expect(relayBoundsOf([])).toEqual({ closeBound: new Map(), lastHumanOpening: -1 });
+  });
+
+  it("closeBound 取 max(readUpToSeq ?? seq)：没有 readUpToSeq 的旧日志按它自己的 seq 算", () => {
+    seq = 0;
+    const events: SessionEvent[] = [
+      um({ mentions: ["ops"] }),                                                        // 0
+      { seq: seq++, ts: 1, sessionId: "s", type: "turn_ended", outcome: "completed", agentId: "ops", readUpToSeq: 0 } as TurnEndedEvent, // 1
+      um({ mentions: ["ops"] }),                                                        // 2
+      { seq: seq++, ts: 1, sessionId: "s", type: "turn_ended", outcome: "completed", agentId: "ops" } as TurnEndedEvent,                 // 3
+      { seq: seq++, ts: 1, sessionId: "s", type: "turn_ended", outcome: "completed", agentId: "ads", readUpToSeq: 1 } as TurnEndedEvent, // 4
+    ];
+    const b = relayBoundsOf(events);
+    expect(b.closeBound.get("ops")).toBe(3);
+    expect(b.closeBound.get("ads")).toBe(1);
+    expect(b.lastHumanOpening).toBe(2);
+  });
+
+  it("没有 agentId 的 turn_ended（本机会话/旧日志）不进 closeBound——它谁的口也收不了", () => {
+    const events: SessionEvent[] = [
+      { seq: 0, ts: 1, sessionId: "s", type: "turn_ended", outcome: "completed" } as TurnEndedEvent,
+    ];
+    expect(relayBoundsOf(events).closeBound.size).toBe(0);
+  });
+
+  it("接力开场白不算人话点火——lastHumanOpening 只认没有 relay 的那条", () => {
+    seq = 0;
+    const events: SessionEvent[] = [
+      um({ mentions: ["ops"] }),                                                  // 0 人
+      um({ mentions: ["ads"], relay: { fromAgentId: "ops", depth: 1 } }),         // 1 接力
+      um({ content: "没点名" }),                                                   // 2 没 mentions
+    ];
+    expect(relayBoundsOf(events).lastHumanOpening).toBe(0);
   });
 });

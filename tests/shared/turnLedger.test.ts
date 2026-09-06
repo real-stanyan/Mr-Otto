@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { openTurns } from "../../src/shared/turnLedger.js";
+import { openTurns, type OpenTurn } from "../../src/shared/turnLedger.js";
 import type { SessionEvent } from "../../src/session/events.js";
+import { generateLog } from "../helpers/relayLog.js";
 
 const base = { sessionId: "s1", ts: 0 };
 let seq = 0;
@@ -103,5 +104,60 @@ describe("openTurns（#932 坑 ②：排队中/正在回复是日志的投影）
       ev({ type: "turn_ended", outcome: "completed", agentId: "ops", readUpToSeq: 1 }),
     ];
     expect(openTurns(events)).toEqual([]);
+  });
+});
+
+// ── #958：单遍重写与旧实现对拍 ────────────────────────────────────────────
+//
+// **这份 oracle 是改动前的 openTurns 逐字复制，别顺手"整理"它**。单遍重写的
+// 验收标准是「对任意输入逐字节同结果」，而这一层没有第二个独立事实来源——把
+// 改动前那份代码留在测试里对拍，是唯一不靠人眼读代码的判据。它慢（O(n²)）正是
+// 它该有的样子：慢的那份是被替换掉的那份。
+function openTurnsOracle(events: readonly SessionEvent[]): OpenTurn[] {
+  const out: OpenTurn[] = [];
+  for (let i = 0; i < events.length; i++) {
+    const u = events[i]!;
+    if (u.type !== "user_message" || !u.mentions || u.mentions.length === 0) continue;
+    for (const agentId of u.mentions) {
+      let state: OpenTurn["state"] | "done" = "queued";
+      for (let j = i + 1; j < events.length; j++) {
+        const e = events[j]!;
+        const owner = "agentId" in e ? e.agentId : undefined;
+        if (owner !== agentId) continue;
+        if (e.type === "turn_ended") {
+          if (e.readUpToSeq === undefined || e.readUpToSeq >= u.seq) { state = "done"; break; }
+          continue;
+        }
+        state = "running";
+      }
+      if (state !== "done") out.push({ seq: u.seq, fromUid: u.fromUid ?? null, agentId, state });
+    }
+  }
+  return out;
+}
+
+describe("openTurns 单遍重写（#958）", () => {
+  it("200 份伪随机日志逐份与旧实现深等于（顺序也一样）", () => {
+    for (let seed = 1; seed <= 200; seed++) {
+      const events = generateLog(seed);
+      expect(openTurns(events), `seed=${seed}`).toEqual(openTurnsOracle(events));
+    }
+  });
+
+  it("同一条事件既是新点名、又是某只 agent 的动静时，先当动静再当点名", () => {
+    // 护栏私话（origin=loop_guard）是一条**带 agentId 的 user_message**。旧实现的
+    // 内层循环从 i+1 起步 → 它不影响自己那几格，但影响更早的那些。单遍要是把
+    // 「建新格子」排在「刷旧格子」前面，这条私话就会把它自己刚建的格子刷成
+    // running——只有这种同时具备两种身份的事件能暴露它
+    seq = 0;
+    const events = [
+      ev({ type: "user_message", content: "[a]: @运营 一", fromUid: "u1", mentions: ["ops"] }),
+      ev({ type: "user_message", content: "[系统] 打转", origin: "loop_guard", agentId: "ops", mentions: ["ops"], fromUid: "u1" }),
+    ];
+    expect(openTurns(events)).toEqual(openTurnsOracle(events));
+    expect(openTurns(events)).toEqual([
+      { seq: 0, fromUid: "u1", agentId: "ops", state: "running" },
+      { seq: 1, fromUid: "u1", agentId: "ops", state: "queued" },
+    ]);
   });
 });

@@ -197,6 +197,8 @@ import {
   relayChain,
   relayNudgeText,
   relayOpeningText,
+  advanceRelayBounds,
+  relayBoundsOf,
 } from "../../../src/shared/agentRelay.js";
 
 /** 一个工作区 agent 的完整规格（#928）。daemon 从 workspace_agents 表查出来
@@ -428,6 +430,12 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   // 投影，读两遍只是把同一段 IO 做两次
   const seed = store.load(sessionId);
   let lastSeqSeen = seed.at(-1)?.seq ?? -1;
+  /** 「这一轮的判据从日志的哪一条读起」的两条保守下界（#958）。装配时整份折叠
+      一次，之后每条事件经 notify 增量推进——于是 runJob 与 relayAfterTurn 每个
+      turn 只读尾段，不再各做一次全量 load（成本原来是跟着日志长的：真机上一条
+      跑久了的会话，每起一个 turn 都要把整份日志重读一遍再 O(n²) 扫一遍）。
+      判据与安全性论证写在 agentRelay.ts 的 RelayBounds 头注上 */
+  const bounds = relayBoundsOf(seed);
   let currentInitiator: string | null = null;
   /** 这一刻正在跑 turn 的是哪只 agent（#928）。approval_request 落盘时读它——
       群里两只 agent 各自弹出的审批卡，日志里要能分清是谁要的 */
@@ -487,6 +495,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       都从这过一遍，lastSeq() 才对得上 */
   function notify(e: SessionEvent): void {
     lastSeqSeen = e.seq;
+    // 尾段下界跟着走（#958）：这里是唯一的落盘口，所以「装配时整份折叠」与
+    // 「之后逐条推进」加起来 ≡「对整份日志折叠一次」——两条路各写一套判据的话，
+    // 重启前后读的尾段就会不一样，而它不报错、只会偶尔少读几条
+    advanceRelayBounds(bounds, e);
     opts.onEvent(e);
   }
 
@@ -881,7 +893,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // `opts.agents()` 的往返，人在那两次网络调用里的任何一刻按停止都落在这儿
     // （#957 终审 Important I1）
     if (archived || stopRequested) return;
-    const chain = relayChain(store.load(sessionId));
+    // 只读「最后一条人话点火」那条之后的尾段（#958）：relayChain 的 start 就是
+    // 它，从它前一条读起，点火位与其后的全部 agent_relay 一条不少。
+    // 下界算小了只是多读几条（−1 = 全量，与改动前逐字节等价），算大了才丢东西
+    const chain = relayChain(store.load(sessionId, { afterSeq: Math.max(-1, bounds.lastHumanOpening - 1) }));
     const nameOf = (id: string): string => roster.find((a) => a.agentId === id)?.name ?? id;
     // 「最后说」取的是**最后一条**消息本身（不是拼起来的全部原话取头 200 字——
     // 那条读起来像"最先说"，跟 relayCapText 的文案对不上）；截前 200 字而不是
@@ -928,7 +943,14 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // 还跑不跑。三处共用同一个数，就不会有第四处再各写一遍。
     // 起跑前算一次就够：drain 是串行的，这之后到 runLoggedTurn 之间不可能有别的
     // agent 的 turn 收口、也就长不出新的接力开场白；这期间人插的话 depth 恒为 0
-    const openingDepth = openingDepthFor(store.load(sessionId), job.agentId, job.opening);
+    // 只读「这只 agent 上一次收口」之后的尾段（#958）：seq ≤ closeBound 的点名
+    // 一定已经收口，收了口的对 depth 没有贡献（推导见 agentRelay.ts 的
+    // RelayBounds 头注）。同样是保守下界——不在表里 = 还没收过口 = 读全量
+    const openingDepth = openingDepthFor(
+      store.load(sessionId, { afterSeq: bounds.closeBound.get(job.agentId) ?? -1 }),
+      job.agentId,
+      job.opening
+    );
     // 归档落地时，这只 agent 的 job 可能已经躺在队列里了——它是**接力**排上的
     // （relayAfterTurn 在一轮 @ 了两只时，两个 job 在归档发生之前就已经一起入队；
     // 见 tests/runtime/sessionService.test.ts「归档落在两个 relay job 之间」）。

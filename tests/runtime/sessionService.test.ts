@@ -3629,3 +3629,54 @@ describe("runJob 的在籍三态（Task 1 复审：fail-closed 分支的执行�
     expect(ended.error).toContain("请重发");
   });
 });
+
+describe("每 turn 只读日志尾段（#958）", () => {
+  /** 把 store 包一层，记下每次**全量** load（没给 afterSeq）的直接调用点。
+      判据取「直接调用点」而不是「有没有发生全量 load」：engine 那一侧的全量读
+      （engine.ts 重建 turnLog、modelContextScan 退回全量）是它自己的上下文投影，
+      不在这个任务的范围里，而它走的是 agentView 包过的那份 store——栈上第一帧
+      因此是 agentView.ts，与 sessionService.ts 自己那两处分得开。
+      栈的第 0 行是 "Error"、第 1 行是下面这个箭头函数、第 2 行才是真正的调用点 */
+  function countingStore(store: EventStore, fullLoads: string[]): EventStore {
+    return new Proxy(store, {
+      get(target, prop) {
+        if (prop === "load") {
+          return (sessionId: string, opts?: { afterSeq?: number; untilSeq?: number }) => {
+            if (opts?.afterSeq === undefined) fullLoads.push((new Error().stack ?? "").split("\n")[2]?.trim() ?? "?");
+            return target.load(sessionId, opts);
+          };
+        }
+        const v = Reflect.get(target, prop, target);
+        return typeof v === "function" ? (v as (...a: unknown[]) => unknown).bind(target) : v;
+      },
+    }) as EventStore;
+  }
+
+  it("装配之后跑完一条 say → turn → 接力，sessionService 自己一次全量 load 都不做", async () => {
+    const store = newStore();
+    const fullLoads: string[] = [];
+    const events: SessionEvent[] = [];
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store: countingStore(store, fullLoads),
+      world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true,
+      contextWindowOf: () => undefined,
+      relayMaxDepth: async () => 6,
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({ model: a.models[0]!, async chat() { return { content: a.agentId === "ops" ? "报表好了，@广告 按这个投" : "收到" }; } }),
+      onEvent: (e) => events.push(e), onUsage: () => {},
+    });
+    // 装配那一次播种 load 是允许的（lastSeqSeen / archived / bounds 三件事一次读完）
+    fullLoads.length = 0;
+
+    await session.say("u1", "alice", "@运营 出报表", true, ["ops"]);
+    await session.settled();
+    // 场景确实跑到了接力那一步——否则这条断言是在一条没走到的路上宣布胜利
+    expect(events.some((e) => e.type === "agent_relay")).toBe(true);
+
+    const mine = fullLoads.filter((l) => l.includes("sessionService.ts"));
+    expect(mine, `剩下的全量 load 调用点：\n${fullLoads.join("\n")}`).toEqual([]);
+    store.close();
+  });
+});
