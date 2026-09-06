@@ -21,7 +21,7 @@ export const RELAY_GUARD = { maxPeriod: 8, minRepeats: 2 } as const;
 /** 一次人话点火之后，整条接力**总共**最多几棒（#977 第 3 条，ADR-0225 D8 的账）。
     `relay_max_depth` 封的是一条**分支**的长度：一轮 @ 了 N 只就分叉出 N 条各自
     独立计数的链，最坏 N^maxDepth 条 turn——默认 6 棒、每轮 @ 两只就是 64 条，而
-    自带 key 的路没有额度兜底。这个数封的是**总量**：判据是 `relayChain` 的长度
+    订阅额度是唯一的兜底（ADR-0233 之后没有自带 key 路）。这个数封的是**总量**：判据是 `relayChain` 的长度
     （最后一条人话点火之后的全部 agent_relay），它本来就为护栏算出来了，多一条
     比较而已。取 24 = 默认 depth 6 × 4——够一条 3 只 agent 全互 @ 的接力网跑完
     两轮护栏周期（12 跳）再喊一次，又把 64 那种展开压到三分之一。不按 depth
