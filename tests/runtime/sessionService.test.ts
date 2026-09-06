@@ -907,6 +907,57 @@ describe("多智能体云会话（#928 切片 1a）", () => {
   });
 });
 
+describe("brief 的判据是三样不是一样（#977 第 2 条）", () => {
+  it("名册变了（新建 / 改名 / 改职责）就重 brief——提示词没变也落新的 agent_briefed；什么都没变不落", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    let roster = [
+      { agentId: "ops", name: "运营", description: "管店铺运营", instructions: "你管店铺运营", models: ["m"], tools: [] },
+      { agentId: "ads", name: "广告", description: "管投放", instructions: "你管投放", models: ["m"], tools: [] },
+    ];
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [],
+      agents: async () => roster,
+      adapterFor: () => ({ model: "m", async chat() { return { content: "好" }; } }),
+      onEvent: (e) => events.push(e), onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true,
+      contextWindowOf: () => undefined,
+      relayMaxDepth: async () => 6,
+    });
+    const briefs = () => events.filter((e) => e.type === "agent_briefed" && e.agentId === "ops");
+
+    await session.say("u1", "alice", "@运营 一", true, ["ops"]);
+    await session.settled();
+    expect(briefs()).toHaveLength(1);
+
+    // 什么都没变：不落第二条
+    await session.say("u1", "alice", "@运营 二", true, ["ops"]);
+    await session.settled();
+    expect(briefs()).toHaveLength(1);
+
+    // 群里多了一只（管理员 create_agent、或桌面新建）：ops 的 roster 变了，要重 brief
+    roster = [...roster, { agentId: "fin", name: "财务", description: "管账", instructions: "你管账", models: ["m"], tools: [] }];
+    await session.say("u1", "alice", "@运营 三", true, ["ops"]);
+    await session.settled();
+    expect(briefs()).toHaveLength(2);
+    expect(briefs().at(-1)).toMatchObject({ roster: expect.arrayContaining([{ name: "财务", description: "管账" }]) });
+
+    // 同伴改了职责：同样重 brief
+    roster = roster.map((a) => (a.agentId === "ads" ? { ...a, description: "管投放与素材" } : a));
+    await session.say("u1", "alice", "@运营 四", true, ["ops"]);
+    await session.settled();
+    expect(briefs()).toHaveLength(3);
+
+    // 自己改名：brief 里「你是…」那句变了
+    roster = roster.map((a) => (a.agentId === "ops" ? { ...a, name: "运营总监" } : a));
+    await session.say("u1", "alice", "@运营总监 五", true, ["ops"]);
+    await session.settled();
+    expect(briefs()).toHaveLength(4);
+    expect(briefs().at(-1)).toMatchObject({ name: "运营总监" });
+  });
+});
+
 describe("多智能体云会话 · 切片 1b（#932 四个坑）", () => {
   function open(store: EventStore, opts: {
     agents: () => Promise<typeof AGENTS>;

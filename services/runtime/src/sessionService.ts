@@ -195,6 +195,7 @@ import {
   openingDepthFor,
   relayApprovalWaitText,
   relayCapText,
+  relayTotalCapText,
   relayChain,
   relayNudgeText,
   relayOpeningText,
@@ -803,7 +804,20 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       .ofType(sessionId, "agent_briefed")
       .filter((e) => e.type === "agent_briefed" && e.agentId === spec.agentId)
       .at(-1);
-    if (already && already.type === "agent_briefed" && already.instructions === spec.instructions) return;
+    // **三样都比，不只比 instructions**（#977 第 2 条）：brief 里写的是「我叫什么、
+    // 群里还有谁管什么」+ 提示词，原来只比对提示词，于是别人新建/改名/改职责的
+    // agent 对这只永远不可见——它的 roster 焊在 system 里、最新一条胜出，可它
+    // 一直没有"最新一条"。ADR-0224 只把 create_agent 那一种记成已知代价，其实
+    // 任何名册变化都一样。名册指纹按名字排序：workspace_agents 的查询按
+    // created_at 排，顺序稳定，但判据不该押在别人的排序上
+    const rosterKey = (r: readonly { name: string; description: string }[]): string =>
+      JSON.stringify([...r].map((x) => [x.name, x.description]).sort());
+    if (
+      already && already.type === "agent_briefed" &&
+      already.instructions === spec.instructions &&
+      already.name === spec.name &&
+      rosterKey(already.roster) === rosterKey(otherRoster)
+    ) return;
     notify(
       store.append({
         sessionId,
@@ -1008,6 +1022,13 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       const d = decideRelay({ chain, fromAgentId: spec.agentId, toAgentId: to, openingDepth, maxDepth });
       if (d.kind === "cap") {
         logChat("system", "系统", relayCapText(nameOf(spec.agentId), nameOf(to), d.depth, d.max, lastWords), false);
+        continue;
+      }
+      // 总量闸（#977 第 3 条）：这次点火之后的 agent_relay 已经够多了。同一轮里
+      // 后面的 target 也都会撞上（chain 不再长），每只各说一句——群里要看得见
+      // 是哪几棒没接上，与 cap 那条同款
+      if (d.kind === "cap_total") {
+        logChat("system", "系统", relayTotalCapText(nameOf(spec.agentId), nameOf(to), d.hops, d.max), false);
         continue;
       }
       if (d.loop) logChat("system", "系统", relayNudgeText(nameOf(spec.agentId), nameOf(to), d.loop), false);

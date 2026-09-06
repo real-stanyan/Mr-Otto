@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   DEFAULT_RELAY_MAX_DEPTH, RELAY_GUARD, decideRelay, hopFingerprint, mentionedAgents, normalizeRelayMaxDepth,
   openingDepthFor, relayApprovalWaitText, relayCapText, relayChain, relayDepthOf, relayNudgeText, relayOpeningText,
-  advanceRelayBounds, emptyRelayBounds, relayBoundsOf,
+  advanceRelayBounds, emptyRelayBounds, relayBoundsOf, RELAY_MAX_HOPS_PER_IGNITION, relayTotalCapText,
 } from "../../src/shared/agentRelay.js";
 import type { AgentRelayEvent, SessionEvent, TurnEndedEvent, UserMessageEvent } from "../../src/session/events.js";
 import { generateLog, GEN_AGENTS } from "../helpers/relayLog.js";
@@ -38,6 +38,28 @@ describe("agentRelay 纯逻辑（#950，spec §8）", () => {
   it("decideRelay：depth = 开场白 depth + 1；超上限回 cap", () => {
     expect(decideRelay({ chain: [], fromAgentId: "ops", toAgentId: "ads", openingDepth: 0, maxDepth: 6 })).toEqual({ kind: "relay", depth: 1, loop: null });
     expect(decideRelay({ chain: [], fromAgentId: "ops", toAgentId: "ads", openingDepth: 6, maxDepth: 6 })).toEqual({ kind: "cap", depth: 7, max: 6 });
+  });
+
+  it("decideRelay：一次点火总棒数到 RELAY_MAX_HOPS_PER_IGNITION 回 cap_total；分支闸先于总量闸（#977 第 3 条）", () => {
+    seq = 0;
+    // 三只 agent 互 @，每棒 depth 都很浅（人反复插话之外的形状：一轮 @ 两只不断分叉）
+    const many = Array.from({ length: RELAY_MAX_HOPS_PER_IGNITION }, (_, i) =>
+      relay(["ops", "ads", "fin"][i % 3]!, ["ads", "fin", "ops"][i % 3]!, 1)
+    );
+    expect(decideRelay({ chain: many, fromAgentId: "ops", toAgentId: "ads", openingDepth: 1, maxDepth: 6 }))
+      .toEqual({ kind: "cap_total", hops: RELAY_MAX_HOPS_PER_IGNITION, max: RELAY_MAX_HOPS_PER_IGNITION });
+    // 差一棒还放行（护栏可能命中，但那是 loop 不是 cap）
+    expect(decideRelay({ chain: many.slice(0, -1), fromAgentId: "ops", toAgentId: "ads", openingDepth: 1, maxDepth: 6 }))
+      .toMatchObject({ kind: "relay", depth: 2 });
+    // 两个闸都命中时说分支太长（这一棒的直接原因）
+    expect(decideRelay({ chain: many, fromAgentId: "ops", toAgentId: "ads", openingDepth: 6, maxDepth: 6 }))
+      .toEqual({ kind: "cap", depth: 7, max: 6 });
+    // 文案：名字过闸、说清是总量不是链长、说清怎么重新开始
+    const t = relayTotalCapText("运\n营", "广告」", 24, 24);
+    expect(t).not.toContain("\n");
+    expect(t).toContain("总共已经 24 棒（上限 24）");
+    expect(t).toContain("分支太多而不是链太长");
+    expect(t).toContain("@ 谁就从头开始新一条接力");
   });
 
   it("decideRelay：周期重复（A→B→A→B）在第 4 棒命中护栏，不停", () => {
