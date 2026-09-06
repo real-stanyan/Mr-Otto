@@ -41,11 +41,26 @@ describe("云会话的 system 段（issue #833）", () => {
     expect(content).toContain("git fetch --unshallow");
   });
 
+  it("cloud 不宣传 otto-* 围栏、换成「说人话」；本地照旧宣传（#989）", () => {
+    const withCloud = systemPromptText("/work", "d", undefined, undefined, { workspaceId: "w" });
+    const plain = systemPromptText("/work", "d");
+    expect(withCloud).not.toContain("otto-spec");
+    expect(withCloud).not.toContain("otto-compare");
+    expect(withCloud).toContain("各行各业");
+    expect(withCloud).toContain("别用 JSON、表格");
+    expect(plain).toContain("otto-spec");
+    expect(plain).not.toContain("各行各业");
+  });
+
   it("cloud 与 workspaceKind/isolated 互不干扰（各自独立注入）", () => {
     const withCloud = systemPromptText("/work", "d", undefined, undefined, { workspaceId: "w" });
     const plain = systemPromptText("/work", "d");
-    expect(withCloud.length).toBeGreaterThan(plain.length);
-    // 云那一段是**追加**，不是替换——原有的围栏/审批那几句一条都不少
+    // 不比长度（#989 之后云段换掉了末尾那段围栏宣传，总长可能反而更短）：
+    // 按内容判——云那几句在、本地那几句也在
+    expect(withCloud).toContain("云沙箱容器");
+    expect(plain).not.toContain("云沙箱容器");
+    // 云那一段是**追加**，不是替换——原有的沙箱/审批那几句一条都不少
+    //（#989 之后唯一换掉的是末尾那段围栏宣传，上面那条测试钉它）
     expect(withCloud).toContain("read_file / write_file 圈在这个文件夹内");
   });
 });
