@@ -1,11 +1,10 @@
 // CloudSessionPage —— 云会话页：桌面当显示器，接 VPS 上常驻的 runtime（Task 13，ADR-0199）。
 //
-// 页而不是弹窗：WorkspacePage 打开它时整页替换 Tabs（同 ADR-0185 的教训），
-// 这里是聊天式的长内容，弹窗只会滚动条套滚动条。挂载它的 Drawer（App.tsx
-// 的工作区抽屉）本身就是"整块内容一起滚"的窄侧栏，不是独立的全高面板
-// （FriendChatView 那种 sticky 头/footer + 内部滚动区在这个容器里用不上，
-// 这里跟 WorkspacePage 一样走简单的堆叠流：composer 就在事件流下面，
-// 跟着页面一起滚，不额外开一层嵌套滚动容器）。
+// 页而不是弹窗：聊天式的长内容，弹窗只会滚动条套滚动条。布局同本地会话
+// （#987）：头部 + 横幅 + 时间线住在一个自己滚的区里，输入框钉在它下面不动——
+// 人翻到哪儿都摸得到它。抽屉时代这一页是"整块内容一起滚"的堆叠流（那时挂在
+// 窄侧栏里，内部滚动区用不上），搬进主区之后那条理由不成立了。滚动区**贴底才
+// 跟底**：新事件到了、人原本就在底部才跟过去，人往上翻旧消息时不抢。
 //
 // 事件流复用 EventRow + TimelineProjectionContext（同 OttoThread 的用法，
 // 见 aui/OttoThread.tsx:938 附近）：chat_message 是云会话独有的事件类型，
@@ -40,7 +39,7 @@
 // 效果的按钮。这里另起一张更薄的卡，可视觉语言（圆角边框、pill 按钮）不
 // 新造。
 
-import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Archive, ArrowLeft, AtSign } from "lucide-react";
 import { cn } from "@/lib/utils.js";
 import { Button } from "@/components/ui/button.js";
@@ -338,13 +337,21 @@ export function CloudSessionPage({
     setCaret(seed.text.length); // 光标落在末尾：接着改比从头挪过去顺手
   }, [csSessionId, draft, draftSeed, takeDraftSeed]);
 
-  // 输入框跟着内容长高(到 5 行封顶),同 FriendChatView 的既有约定
-  useEffect(() => {
-    const box = boxRef.current;
-    if (!box) return;
-    box.style.height = "auto";
-    box.style.height = `${Math.min(box.scrollHeight, 120)}px`;
-  }, [draft]);
+  // 输入框长高不在这里管：#985 之后它是 ui/Textarea（field-sizing: content 自动
+  // 长高，max-h-[40vh] 封顶），同本地的 ComposerTextarea。原来那段按 scrollHeight
+  // 写死 style.height 的 effect 会压掉这两条，已删。
+
+  // 滚动区贴底才跟底（#987）：新事件到了、人原本就在底部（或还没滚过）才跟过去；
+  // 人往上翻旧消息时不抢。「原本在底部」按上一次滚动时记下的位置判——事件一进来
+  // scrollHeight 就变了，事后判永远是"不在底部"
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const stickToBottomRef = useRef(true);
+  const eventCount = cs?.events.length ?? 0;
+  useLayoutEffect(() => {
+    const el = scrollRef.current;
+    if (!el || !stickToBottomRef.current) return;
+    el.scrollTop = el.scrollHeight;
+  }, [eventCount, cs?.state]);
 
   if (!cs) return null;
 
@@ -519,7 +526,18 @@ export function CloudSessionPage({
   };
 
   return (
-    <div className="flex flex-col gap-3">
+    <div className="flex flex-1 min-h-0 flex-col">
+      {/* 滚动区：头部 + 横幅 + 时间线 + 错误行。scrollbar-stable 同外层原来那份；
+          pb-3 给最后一条消息和输入框之间留口气；onScroll 记「此刻在不在底部」
+          给上面那条跟底 effect 用（阈值 48px：滚动条抖一下不算离开） */}
+      <div
+        ref={scrollRef}
+        onScroll={(e) => {
+          const el = e.currentTarget;
+          stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+        }}
+        className="flex flex-1 min-h-0 flex-col gap-3 overflow-y-auto scrollbar-stable pb-3"
+      >
       <div className="flex items-center justify-between gap-2">
         {onBack ? (
           <button
@@ -728,7 +746,11 @@ export function CloudSessionPage({
         </div>
       )}
 
-      <footer className="pt-1">
+      </div>
+
+      <footer className="relative shrink-0 pt-[10px] pb-3">
+        {/* 滚动缘渐隐，同 App.tsx 的 footer：正文淡进底色，不画 1px 分隔线 */}
+        <div aria-hidden className="pointer-events-none absolute inset-x-0 -top-10 h-10 bg-gradient-to-b from-transparent to-background" />
         {/* 外壳与本地会话的输入框**同一套**（#985；App.tsx 的 ChatComposer）：
             elements/composer 的 ComposerBar 把「这一条要发的东西」当成一摞来排——
             点名行 / 输入 / 工具条——类名逐字照抄那边。少掉的是工具条左边那条偏好栏
@@ -756,9 +778,9 @@ export function CloudSessionPage({
             </div>
           )}
           {/* 弹层走 Radix 的 Popover 而不是自己 absolute 定位：这一页整个装在
-              CloudSessionMain 的 overflow-y-auto 里，`absolute bottom-full` 画出来的
-              列表一旦高过 footer 到滚动容器上沿的距离，超出的部分会被裁掉且滚不到
-              （新会话只有一行「还没有消息。」时 footer 离顶不到 90px，三只就削掉一行）。
+              滚动容器旁边（#987 之前是 CloudSessionMain 的 overflow-y-auto 里面），
+              `absolute bottom-full` 画出来的列表一旦高过可用空间就会被裁掉且滚不到
+              （当年新会话只有一行「还没有消息。」时 footer 离顶不到 90px，三只就削掉一行）。
               Radix 把内容 portal 到 body、位置不够时自己翻到下面——这正是那个裁切的修法。
               键盘**仍然全部**由下面的 textarea onKeyDown 管（方向键/Enter 不能交给 Radix，
               它会拿去做菜单导航）；焦点也一步都不许挪，靠两个 AutoFocus 的 preventDefault */}

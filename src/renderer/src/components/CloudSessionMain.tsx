@@ -6,8 +6,8 @@
 // 都会先 closeCloudSession），不再有一颗返回键。
 //
 // 这一层只做三件事：把工作区快照喂给 CloudSessionPage、补发开局卡上那句话、
-// 在快照还没到时说一句人话。CloudSessionPage 本身一个字没搬——它已经是"整块
-// 内容一起滚"的堆叠流，换个更宽的容器照样成立。
+// 在快照还没到时说一句人话。滚动归 CloudSessionPage 自己管（#987：时间线滚、
+// 输入框钉底），这里只负责把高度交下去。
 
 import { useEffect } from "react";
 import { useChat } from "../store.js";
@@ -68,10 +68,13 @@ export function CloudSessionMain() {
   }
 
   return (
-    <div className="flex-1 min-w-0 h-full overflow-y-auto scrollbar-stable">
+    // 这一层**不滚**（#987）：滚动区在 CloudSessionPage 里面、只包时间线，输入框钉在
+    // 它下面——同本地会话（OttoThread 的 viewport 滚，App.tsx 的 footer 不动）。
+    // 这里只把高度交下去（h-full + flex 列 + min-h-0，缺一个内层就撑不出滚动条）
+    <div className="flex-1 min-w-0 h-full min-h-0 flex flex-col">
       {/* 与本地会话同一条居中量尺（会话正文不该铺满一整块宽屏）。
           不传 onBack —— 出口是侧栏，同本地会话 */}
-      <div className="mx-auto w-[min(760px,92%)] py-4">
+      <div className="mx-auto w-[min(760px,92%)] flex-1 min-h-0 flex flex-col pt-4">
         <CloudSessionPage ws={ws} selfUid={selfUid} />
       </div>
     </div>
