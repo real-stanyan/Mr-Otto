@@ -40,11 +40,12 @@
 // 效果的按钮。这里另起一张更薄的卡，可视觉语言（圆角边框、pill 按钮）不
 // 新造。
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Archive, ArrowLeft, AtSign } from "lucide-react";
 import { cn } from "@/lib/utils.js";
 import { Button } from "@/components/ui/button.js";
 import { Bubble, BubbleContent } from "@/components/ui/bubble.js";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar.js";
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog.js";
@@ -55,12 +56,13 @@ import { EventRow, TimelineProjectionContext } from "./Timeline.js";
 import { buildToolIndex, type ToolIndex } from "../lib/toolIndex.js";
 import { groupSubagentSpawns } from "../lib/subagentTimeline.js";
 import { formatProxyTime } from "../lib/proxyShare.js";
-import { agentNameOf, labelOf } from "../lib/workspaceView.js";
+import { agentNameOf, labelOf, memberAvatarOf } from "../lib/workspaceView.js";
+import { agentAvatarSrc } from "../lib/agentAvatar.js";
 import { applyAgentMention, filterAgentCandidates, mentionQueryAt, pickerEmptyState, resolveSendMentions } from "../lib/agentMentionInput.js";
 import { EMBEDDED_CREDENTIAL_MESSAGE, repoUrlHasEmbeddedCredential } from "../lib/cloudRepoUrl.js";
 import {
-  approvalCardTitle, assistantLabel, canStopTurn, hiddenFromCloudTimeline, relayLineText, stopButtonRows, systemNoteText,
-  turnEndedLineText, userRowIdentity,
+  agentStepsSummary, approvalCardTitle, assistantLabel, canStopTurn, foldAgentSteps, hiddenFromCloudTimeline, relayLineText,
+  stopButtonRows, systemNoteText, turnEndedLineText, userRowIdentity, type AgentStepsFold,
 } from "../lib/cloudTimeline.js";
 import { systemNoteDetail } from "../lib/systemNote.js";
 import { TurnErrorState } from "./TurnErrorState.js";
@@ -241,6 +243,9 @@ export function CloudSessionPage({
     () => ({ index: buildToolIndex(events), groups: groupSubagentSpawns(events), events }),
     [events]
   );
+  // agent 的中间步骤折起来、只画最终答案（#971，ADR-0229）：被折的行跳过，
+  // fold 画在收口那条事件（答案 / turn_ended）前面，还没收口的画在时间线末尾
+  const folds = useMemo(() => foldAgentSteps(events), [events]);
 
   // 未决审批:approval_request 事件里,还没有一条 toolCallId 匹配的
   // approval_decision 的那些(ApprovalRequestEvent.callId 与
@@ -579,8 +584,27 @@ export function CloudSessionPage({
               // "[系统] 「运营」@ 了你"，人看下面那条 agent_relay 接力线就够，
               // 画出来是同一件事说两遍（#950）
               if (hiddenFromCloudTimeline(e)) return null;
+              if (folds.hidden.has(e.seq)) return null;
+              // 收口这条事件的那段步骤先画（折叠的一行），再画事件本身。
+              // 用 fragment 而不是给每个分支各包一层：fold 与下面哪个分支配对
+              // 是 foldAgentSteps 的事，这里不重判
+              const fold = folds.byCloser.get(e.seq);
+              const withFold = (row: ReactNode): ReactNode =>
+                fold ? (
+                  <Fragment key={e.seq}>
+                    <AgentStepsFoldRow fold={fold} ws={ws} index={timelineProjection.index} />
+                    {row}
+                  </Fragment>
+                ) : row;
               if (e.type === "chat_message") {
-                return <ChatMessageRow key={e.seq} event={e} mine={e.fromUid === selfUid} />;
+                return (
+                  <ChatMessageRow
+                    key={e.seq}
+                    event={e}
+                    mine={e.fromUid === selfUid}
+                    avatarUrl={memberAvatarOf(ws, e.fromUid)}
+                  />
+                );
               }
               if (e.type === "user_message") {
                 // 护栏 / 后台任务回注（#957 C-I5，#936）：engine 自己注的话，
@@ -602,11 +626,14 @@ export function CloudSessionPage({
                     text={identity.text}
                     mine={identity.mine}
                     targets={identity.targets}
+                    avatarUrl={identity.uid ? memberAvatarOf(ws, identity.uid) : ""}
                   />
                 );
               }
               if (e.type === "assistant_message") {
-                return <AssistantMessageRow key={e.seq} event={e} ws={ws} index={timelineProjection.index} />;
+                return withFold(
+                  <AssistantMessageRow key={e.seq} event={e} ws={ws} index={timelineProjection.index} />
+                );
               }
               if (e.type === "agent_briefed") {
                 return <AgentBriefedRow key={e.seq} event={e} />;
@@ -624,7 +651,7 @@ export function CloudSessionPage({
                 // 人话/原文折叠）。查不到 agentId（旧日志/本机会话）落回现状的 EventRow
                 const agentTitle = turnEndedLineText(e, ws);
                 if (agentTitle !== null) {
-                  return (
+                  return withFold(
                     <TurnErrorState
                       key={e.seq}
                       title={agentTitle}
@@ -634,7 +661,7 @@ export function CloudSessionPage({
                     />
                   );
                 }
-                return <EventRow key={e.seq} event={e} isLast={false} />;
+                return withFold(<EventRow key={e.seq} event={e} isLast={false} />);
               }
               return <EventRow key={e.seq} event={e} isLast={i === events.length - 1} />;
             })
@@ -643,6 +670,11 @@ export function CloudSessionPage({
               排队的东西说的是"接下来会发生什么"，那是时间线尾巴的事，不是
               历史里某一行的注脚（跟 turn_ended 的错误行不同——那是已经发生
               的事实，钉在它发生的位置）*/}
+          {/* 还没收口的步骤段画在末尾、排队/正在回复那几行之前：它们说的都是
+              「此刻正在发生什么」，是时间线尾巴的事 */}
+          {folds.open.map((fold) => (
+            <AgentStepsFoldRow key={`open:${fold.steps[0]!.seq}`} fold={fold} ws={ws} index={timelineProjection.index} />
+          ))}
           <PendingTurnLines events={events} ws={ws} selfUid={selfUid} cs={cs} />
         </TimelineProjectionContext.Provider>
       </div>
@@ -1190,7 +1222,7 @@ function CloudRepoConfigDialog({
     (同典型群聊 UI 的既有约定,如 FriendChatView 两人 DM 靠头像位置区分,
     这里人数不定,靠文字标签)。event.mention 为真时补一个 "@Agent" 角标——
     它是发送那一刻"这句话是对 Agent 说的"这个事实的展示,不分是谁发的 */
-function ChatMessageRow({ event, mine }: { event: ChatMessageEvent; mine: boolean }) {
+function ChatMessageRow({ event, mine, avatarUrl }: { event: ChatMessageEvent; mine: boolean; avatarUrl: string }) {
   // runtime 自己说的话（接力护栏、棒数上限、被踢那句：sessionService 落
   // chat_message 时用的 fromUid: "system"）不画成气泡（第四批 B2-I1 的 UI 半）：
   // 气泡的全部含义是「群里有个人说了这句」，而这几句没有人说。判据取 fromUid
@@ -1200,27 +1232,76 @@ function ChatMessageRow({ event, mine }: { event: ChatMessageEvent; mine: boolea
   if (event.fromUid === SYSTEM_SPEAKER_UID) {
     return <SystemNoteRow text={event.content} />;
   }
+  // 名字过一次 safeSpeakerLabel（第四批 B2-I1）：label 是服务端递下来的
+  // 展示名，而 profiles.name 从没走过写入校验——一个把自己改名叫「系统」
+  // 的成员照原样画出来就与 runtime 自己的旁白分不开了。这一层与
+  // daemon.labelOf / deriveMessages 投影那两处跑的是同一个幂等函数，
+  // 少跑一处就等于那条路上的闸没关（ADR-0226）
+  const name = safeSpeakerLabel(event.label, event.fromUid);
   return (
-    <div
-      className={cn(
-        "flex max-w-[85%] flex-col gap-0.5",
-        mine ? "self-end items-end" : "self-start items-start"
-      )}
-    >
+    <SpeakerRow mine={mine} avatar={<PersonAvatar name={name} src={avatarUrl} />}>
       <span className="px-1 text-[10.5px] text-muted-foreground">
-        {/* 名字过一次 safeSpeakerLabel（第四批 B2-I1）：label 是服务端递下来的
-            展示名，而 profiles.name 从没走过写入校验——一个把自己改名叫「系统」
-            的成员照原样画出来就与 runtime 自己的旁白分不开了。这一层与
-            daemon.labelOf / deriveMessages 投影那两处跑的是同一个幂等函数，
-            少跑一处就等于那条路上的闸没关（ADR-0226） */}
-        {mine ? "" : `${safeSpeakerLabel(event.label, event.fromUid)} · `}
+        {mine ? "" : `${name} · `}
         {formatProxyTime(event.ts)}
         {event.mention ? " · @Agent" : ""}
       </span>
       <Bubble align={mine ? "end" : "start"} variant={mine ? "tinted" : "muted"}>
         <BubbleContent className="whitespace-pre-wrap break-words">{event.content}</BubbleContent>
       </Bubble>
+    </SpeakerRow>
+  );
+}
+
+/** 一行「有人说了一句话」的骨架（#971）：头像 + 右边（自己发的在左边）那一摞
+    标签行 + 气泡。三种气泡（成员闲聊 / 点火的那句 / agent 的回复）共用——
+    头像的位置、尺寸、与气泡的间距只能有一份，各写各的迟早三种对不齐。
+    头像与**标签行**顶对齐而不是与气泡：多行气泡里头像贴着第一行读起来才像
+    「这个人说的」，贴底（MessageAvatar 的 self-end 默认）在长消息上会掉到
+    看不见的地方。自己发的头像也画（维护者原话「不同人类成员发消息时也要显示
+    每个人各自的头像」）——靠右的位置已经说明是我，但群里多人时一眼扫过去，
+    每一行都有脸比「有的有有的没有」整齐 */
+function SpeakerRow({
+  mine,
+  avatar,
+  children,
+}: {
+  mine: boolean;
+  avatar: ReactNode;
+  children: ReactNode;
+}) {
+  return (
+    <div className={cn("flex max-w-[85%] gap-2", mine ? "flex-row-reverse self-end" : "self-start")}>
+      <div className="shrink-0 pt-[3px]">{avatar}</div>
+      <div className={cn("flex min-w-0 flex-col gap-0.5", mine ? "items-end" : "items-start")}>{children}</div>
     </div>
+  );
+}
+
+/** 成员头像：profiles.avatar_url 有就画图，没有退回首字母（同 FriendChatView /
+    identity.ts 的 initial 纪律——取首个码点不取 charAt，emoji 名字按 UTF-16
+    切会得到半个代理对） */
+function PersonAvatar({ name, src }: { name: string; src: string }) {
+  const initial = ([...name.trim()][0] ?? "?").toUpperCase();
+  return (
+    <Avatar size="sm">
+      {src !== "" && <AvatarImage src={src} alt={name} />}
+      <AvatarFallback>{initial}</AvatarFallback>
+    </Avatar>
+  );
+}
+
+/** agent 头像：内置像素图（agentAvatar.ts）。agentId 缺席（旧日志/单 agent
+    会话）时没有脸可查，退回首字母。**不开** image-rendering: pixelated：128px
+    的像素画缩到 24px 时一格像素只剩一个多屏幕像素，最近邻会整行整列地丢掉
+    （眼睛可能直接没了），平滑缩放反而认得出是谁 */
+function AgentAvatar({ ws, agentId, name }: { ws: WorkspaceSnapshot; agentId: string | undefined; name: string }) {
+  return (
+    <Avatar size="sm">
+      {agentId !== undefined && (
+        <AvatarImage src={agentAvatarSrc(ws, agentId)} alt={name} />
+      )}
+      <AvatarFallback>{([...name.trim()][0] ?? "?").toUpperCase()}</AvatarFallback>
+    </Avatar>
   );
 }
 
@@ -1237,20 +1318,17 @@ function UserMessageRow({
   text,
   mine,
   targets,
+  avatarUrl,
 }: {
   ts: number;
   label: string | null;
   text: string;
   mine: boolean;
   targets: string[];
+  avatarUrl: string;
 }) {
   return (
-    <div
-      className={cn(
-        "flex max-w-[85%] flex-col gap-0.5",
-        mine ? "self-end items-end" : "self-start items-start"
-      )}
-    >
+    <SpeakerRow mine={mine} avatar={<PersonAvatar name={label ?? "?"} src={avatarUrl} />}>
       <span className="px-1 text-[10.5px] text-muted-foreground">
         {!mine && label ? `${label} · ` : ""}
         {formatProxyTime(ts)}
@@ -1259,7 +1337,7 @@ function UserMessageRow({
       <Bubble align={mine ? "end" : "start"} variant={mine ? "tinted" : "muted"}>
         <BubbleContent className="whitespace-pre-wrap break-words">{text}</BubbleContent>
       </Bubble>
-    </div>
+    </SpeakerRow>
   );
 }
 
@@ -1282,10 +1360,11 @@ function AssistantMessageRow({
 }) {
   const hasText = event.content.trim() !== "";
   const toolCalls = event.toolCalls ?? [];
+  const name = assistantLabel(event, ws);
   return (
-    <div className="flex max-w-[85%] flex-col items-start gap-1 self-start">
+    <SpeakerRow mine={false} avatar={<AgentAvatar ws={ws} agentId={event.agentId} name={name} />}>
       <span className="px-1 text-[10.5px] text-muted-foreground">
-        {assistantLabel(event, ws)} · {formatProxyTime(event.ts)}
+        {name} · {formatProxyTime(event.ts)}
       </span>
       {hasText && (
         <Bubble align="start" variant="muted">
@@ -1295,7 +1374,33 @@ function AssistantMessageRow({
       {toolCalls.map((call) => (
         <ToolActivityLine key={call.id} call={call} result={index.results.get(call.id)} />
       ))}
-    </div>
+    </SpeakerRow>
+  );
+}
+
+/** 一段折起来的中间步骤（#971，ADR-0229）：默认收着的 <details>，摘要一行写
+    「「运营」处理过程 · 3 步 · 5 次工具调用」，展开是每一步的正文（有的话）
+    + 工具行——**一个字都不丢**，只是不摊在时间线上。样式照 SystemNoteRow：
+    这是审计性质的旁白，不是群里谁说的话；无动效——旁白不该因为能展开就在
+    时间线上变重。正在跑的那段（closedBy null）摘要写「正在处理」，位置在
+    时间线末尾（同 PendingTurnLines 的理由：说的是此刻） */
+function AgentStepsFoldRow({ fold, ws, index }: { fold: AgentStepsFold; ws: WorkspaceSnapshot; index: ToolIndex }) {
+  return (
+    <details className="px-1 text-[10.5px] italic text-muted-foreground/70">
+      <summary className="cursor-default select-none">{agentStepsSummary(fold, ws)}</summary>
+      <div className="mt-1 flex flex-col gap-1 not-italic">
+        {fold.steps.map((step) => (
+          <div key={step.seq} className="flex flex-col gap-0.5">
+            {step.content.trim() !== "" && (
+              <p className="whitespace-pre-wrap break-words px-1 text-[11px] text-muted-foreground">{step.content}</p>
+            )}
+            {(step.toolCalls ?? []).map((call) => (
+              <ToolActivityLine key={call.id} call={call} result={index.results.get(call.id)} />
+            ))}
+          </div>
+        ))}
+      </div>
+    </details>
   );
 }
 
