@@ -636,10 +636,10 @@ describe("createHostedRuntimeAdapter · 云端并发已满时排队（#960）", 
         billingErrorOf(e)?.code === "too_many_inflight");
       for (let i = 0; i <= INFLIGHT_MAX_ATTEMPTS + 3; i++) await vi.advanceTimersByTimeAsync(INFLIGHT_RETRY_MS);
       await assertion;
-      // 17 次排队（attempt 1..17 都在 INFLIGHT_MAX_ATTEMPTS 之内）+ 默认预算 3 次：
+      // 18 次排队（attempt 1..18 都在 INFLIGHT_MAX_ATTEMPTS 之内，18 × 5 s = 「约 90 秒」那句话的来源）+ 默认预算 3 次：
       // 排队不吃 maxAttempts（复审 fix round 1），所以队排满之后这条 429 照旧是一条
       // 普通的可重试限流，该有的三次退避一次不少
-      expect(fetchMock).toHaveBeenCalledTimes(INFLIGHT_MAX_ATTEMPTS - 1 + 3);
+      expect(fetchMock).toHaveBeenCalledTimes(INFLIGHT_MAX_ATTEMPTS + 3);
     } finally {
       vi.useRealTimers();
     }

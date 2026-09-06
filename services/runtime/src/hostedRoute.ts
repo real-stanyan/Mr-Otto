@@ -357,7 +357,7 @@ export function createHostedRuntimeAdapter(deps: HostedRuntimeAdapterDeps): Mode
               // 所有者自己的 provider，那儿没有我们的并发闸，把上游真正的 429 拖成
               // 90 秒只会让人多等 87 秒再看见同一个错
               retryDelayFor: (err, attempt) =>
-                billingErrorOf(err)?.code === "too_many_inflight" && attempt < INFLIGHT_MAX_ATTEMPTS
+                billingErrorOf(err)?.code === "too_many_inflight" && attempt <= INFLIGHT_MAX_ATTEMPTS
                   ? INFLIGHT_RETRY_MS
                   : null,
               model: route.model,

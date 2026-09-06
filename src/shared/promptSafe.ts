@@ -76,7 +76,10 @@ export const promptSafe = (s: string): string =>
     伪造说话人行——标签那一栏硬化了，正文这条路结构性地封不住，只能让"换行之后
     行首的 `[`"失去结构意义。只碰换行之后的（第一行前面已经是真实前缀），只碰 `[`
     （`］` 那一半留给 promptSafe 的调用方），幂等。 */
-export const promptSafeBody = (s: string): string => s.replace(/\n([ \t　]*)\[/g, "\n$1［");
+// 行首"空白"的判据是 `[^\S\n]`（一切非换行的 \s：空格/制表/NBSP/全角空格/U+2002…）
+// 加 `\p{Cf}`（U+200B/U+FEFF 这类零宽格式符）——只写 `[ \t　]` 的话，`\n\u00A0[系统]:` 就
+// 原样穿过（终审 Important）。`\n` 自己排除在外：连着的空行由外层的 `\n` 匹配接管
+export const promptSafeBody = (s: string): string => s.replace(/\n((?:[^\S\n]|\p{Cf})*)\[/gu, "\n$1［");
 
 /** 发言人名字过这一层再拼进 `[label]: ` 前缀（#957 复审 Important 2）。
     `profiles.name` 是成员自己填的、**没有任何写入校验**，两条后果：
