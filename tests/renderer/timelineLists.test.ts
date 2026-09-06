@@ -1,17 +1,20 @@
-// 三份名单互相对表 —— 「时间线上哪些事件占一行」这件事写在三个地方：
+// 两份名单互相对表 —— 「时间线上哪些事件占一行」这件事写在两个地方：
 //
 //   1. `aui/toThreadMessages.ts` 的 `isAuditEvent`：哪些事件变成 system 消息
 //   2. `components/Timeline.tsx` 的 `EventRow`：那条 system 消息长什么样
-//   3. `lib/threadGroups.ts` 的 `isInvisible`：哪些事件不打断工具分组
+//
+// （原来还有第三份：`lib/threadGroups.ts` 的 `isInvisible`——旧 ThreadViewport
+// 渲染路径的工具分组投影。`groupThread` 在 `src/` 里零调用、注释自己说「已经没有
+// 消费者」，#929 把它删了，这条对表从三份收成两份。）
 //
 // 1 是 2 的守门人（`isAuditEvent` 不放行，`EventRow` 的分支永远执行不到），
-// 而三份名单靠注释里的「照抄上面那份」维系一致。这条约定已经**破过两次**：
+// 而两份名单靠注释里的「照抄上面那份」维系一致。这条约定已经**破过两次**：
 // `skill_released` 只加进了 `EventRow`，于是那个 case 是死代码，用户点了「停用」
 // 时间线上什么也不出现——一条被 UI 静默吞掉的日志事件。
 //
 // 纯 grep 级源码对表（同 tests/architecture.test.ts 的路子）：不渲染 React
-// （本仓渲染层测试都是纯逻辑，没有 jsdom），只读三份源码里的 `case` 标签。
-// 简单到一眼能看懂，挡的正是「新增一种事件类型，只改了三处里的一处」这种漏网。
+// （本仓渲染层测试都是纯逻辑，没有 jsdom），只读两份源码里的 `case` 标签。
+// 简单到一眼能看懂，挡的正是「新增一种事件类型，只改了两处里的一处」这种漏网。
 
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
@@ -19,9 +22,9 @@ import { describe, expect, it } from "vitest";
 
 const SRC = join(__dirname, "..", "..", "src", "renderer", "src");
 
-/** 两条 predicate 互补的分支：三份名单都得**同时**把它当条件分支处理
-    （audit = 拒绝 / 失败，invisible = 批准 / 正常收工），谁少一条都是 drift。
-    多出第四条 = 有人加了新的条件分支，得回来想清楚三处的条件是不是还互补 */
+/** 两条 predicate 互补的分支：两份名单都得**同时**把它当条件分支处理
+    （audit = 拒绝 / 失败，row = 批准 / 正常收工画 null），谁少一条都是 drift。
+    多出第三条 = 有人加了新的条件分支，得回来想清楚两处的条件是不是还互补 */
 const CONDITIONAL = ["approval_decision", "turn_ended"];
 
 /** 从源码里切出某个函数体（从签名那行到第一个顶格闭合处）。
@@ -75,7 +78,7 @@ function branches(text: string): Branch[] {
 
 type Verdict = "yes" | "no" | "conditional";
 
-/** 两个 predicate 函数（isAuditEvent / isInvisible）：光秃秃的 `return true/false`
+/** predicate 函数（isAuditEvent）：光秃秃的 `return true/false`
     才算死心眼的一种，其余（比较式、三元）都是看事件字段现算 = 条件分支 */
 const binary =
   (yesLit: string, noLit: string) =>
@@ -112,14 +115,11 @@ const row = classify(
   region("components/Timeline.tsx", "export const EventRow = memo(function EventRow"),
   rowVerdict
 );
-// isInvisible：`return true` = 不占行、不打断工具分组
-const invisible = classify(region("lib/threadGroups.ts", "function isInvisible"), predicate);
 
-describe("时间线三份名单一致（isAuditEvent / EventRow / threadGroups.isInvisible）", () => {
+describe("时间线两份名单一致（isAuditEvent / EventRow）", () => {
   it("每份名单都真的解析出了分支——正则失灵的话下面几条会假绿", () => {
     expect(audit.yes.length).toBeGreaterThan(5);
     expect(row.yes.length).toBeGreaterThan(5);
-    expect(invisible.yes.length).toBeGreaterThan(3);
   });
 
   // 这一条就是 isAuditEvent 那句注释（「照抄 EventRow 不返回 null 的那些分支」）
@@ -132,23 +132,14 @@ describe("时间线三份名单一致（isAuditEvent / EventRow / threadGroups.i
     ).toEqual(row.yes);
   });
 
-  it("EventRow 明确 return null 的，threadGroups 也当它不可见", () => {
-    const leaked = row.no.filter((t) => !invisible.yes.includes(t));
-    expect(
-      leaked,
-      "这些事件 EventRow 不渲染，threadGroups 却让它打断工具分组 —— 时间线上会出现凭空的断口"
-    ).toEqual([]);
+  it("EventRow 明确 return null 的，isAuditEvent 也不放行——否则是一行空白的 system 消息", () => {
+    const leaked = row.no.filter((t) => audit.yes.includes(t));
+    expect(leaked, "这些事件 EventRow 不渲染，isAuditEvent 却把它投成了 system 消息").toEqual([]);
   });
 
-  it("threadGroups 判定不可见的，不会出现在另外两份名单里", () => {
-    expect(sorted(invisible.yes.filter((t) => audit.yes.includes(t)))).toEqual([]);
-    expect(sorted(invisible.yes.filter((t) => row.yes.includes(t)))).toEqual([]);
-  });
-
-  it("条件分支恰好那两条（approval_decision / turn_ended），三处同时是条件分支", () => {
+  it("条件分支恰好那两条（approval_decision / turn_ended），两处同时是条件分支", () => {
     expect(audit.conditional).toEqual(sorted(CONDITIONAL));
     expect(row.conditional).toEqual(sorted(CONDITIONAL));
-    expect(invisible.conditional).toEqual(sorted(CONDITIONAL));
   });
 
   it("skill 的启用/停用两行都在（ADR-0122：谁把说明书塞进上下文的，用户得看得见）", () => {

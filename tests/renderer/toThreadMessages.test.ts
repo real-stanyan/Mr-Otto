@@ -303,7 +303,7 @@ describe("toThreadMessages — 边界", () => {
       ev({ type: "tool_execution_started", toolCallId: "c1" }, 1),
       ev({ type: "approval_decision", toolCallId: "c1", decision: "approved" }, 2),
       // main 合并进来的事件类型:目录挂在分区轨上,不进正文(isAuditEvent 里的显式
-      // case,理由同 lib/threadGroups.ts 的 isInvisible)
+      // case,理由同 Timeline.tsx 的 EventRow 同名分支)
       ev({ type: "section_classified", title: "第一节", model: "m" }, 3),
     ];
     expect(toThreadMessages(events)).toEqual([]);
