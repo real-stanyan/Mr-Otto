@@ -111,6 +111,13 @@ export function applyMention(value: string, name: string): string {
   return value.replace(/@[\w]*$/, `@${name} `);
 }
 
+/** 输入框正文的度量（内边距 / 字号 / 行高 / 折行），**所有**会话输入框共用一份：
+    本地会话（App.tsx 的 ComposerTextarea 与它的高亮镜像层——两层字的度量必须逐字
+    相同，否则 chip 对不上位）、云会话（CloudSessionPage 的 footer，#985）。
+    改这一行等于改所有输入框，这正是它住在这里的理由 */
+export const COMPOSER_METRICS =
+  "px-3 py-2 text-sm leading-[1.45] whitespace-pre-wrap break-words";
+
 export function Composer({ className, ...props }: ComponentProps<"div">) {
   return (
     <div

@@ -23,6 +23,7 @@ import ottoLogo from "./assets/otto.png";
 import { CodeDiff } from "@/components/elements/code-diff.js";
 import { ReviewableDiff } from "@/components/elements/reviewable-diff.js";
 import {
+  COMPOSER_METRICS,
   ComposerActions,
   ComposerAttachButton,
   ComposerBar,
@@ -3011,7 +3012,6 @@ function Welcome() {
     把这套 ARIA 属性算给 textarea(见它的文档注释),这里读同一份 */
 /** textarea 和它底下的高亮镜像层必须**逐字同排**:字号/行高/内边距/换行规则
     一个字节都不能差,否则 chip 会偏离光标下的字。共用这一份 */
-const COMPOSER_METRICS = "px-3 py-2 text-sm leading-[1.45] whitespace-pre-wrap break-words";
 
 /** 输入框里的 directive chip(assistant-ui 的 DirectiveText 只管发出去的消息,
     composer 内没有官方方案)。做法是经典的 highlight-backdrop:textarea 的字
