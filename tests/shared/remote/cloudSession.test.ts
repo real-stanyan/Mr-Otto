@@ -8,6 +8,8 @@ import { b64encode } from "../../../src/shared/remote/b64.js";
 
 describe("cs 帧协议", () => {
   it("协议版本", () => {
+    // 8 = #991（ADR-0234）：仓库配置搬进控制房——config 帧带 workspaceId、新增
+    //     workspace/workspace_state 读帧、config_result 带 workspaceId。
     // 7 = #981（ADR-0233）：云会话不再支持自带 key——config 帧去掉 model、
     //     welcome/config_result 去掉 model 一格、CsModelRoute 去掉 workspace。
     // 6 = #957 第三批那次进位（CsUp 加 stop，CsDown 加
@@ -22,7 +24,7 @@ describe("cs 帧协议", () => {
     // 之后静默少一格状态。**加一个枚举值同理**：老客户端的
     // isValidCsDeniedCode 认不出 rate_limited，整帧被 decodeCsDown 判成
     // null 静默丢掉，create() 于是白等满超时才回一句"云端无响应"
-    expect(CS_PROTOCOL_VERSION).toBe(7);
+    expect(CS_PROTOCOL_VERSION).toBe(8);
   });
   it("房名生成", () => {
     expect(csCtlChannel()).toBe("cs-ctl");
@@ -166,21 +168,20 @@ describe("rate_limited 码（issue #819）", () => {
 // 线上形状：config 帧两格各自可选，坏形状整帧判无效（ADR-0233 之后只剩仓库这一组）
 describe("config 帧的字段（issue #844 → ADR-0233）", () => {
   it("老客户端多发的 model 字段被忽略，不判无效也不透传（ADR-0233）", () => {
-    const withModel = b64encode(new TextEncoder().encode(JSON.stringify({ t: "config", repoUrl: "https://a.com/x.git", model: { baseUrl: "https://a.com/v1", modelId: "m" } })));
-    expect(decodeCsUp(withModel)).toEqual({ t: "config", repoUrl: "https://a.com/x.git" });
+    const withModel = b64encode(new TextEncoder().encode(JSON.stringify({ t: "config", workspaceId: "w", repoUrl: "https://a.com/x.git", model: { baseUrl: "https://a.com/v1", modelId: "m" } })));
+    expect(decodeCsUp(withModel)).toEqual({ t: "config", workspaceId: "w", repoUrl: "https://a.com/x.git" });
   });
 
   it("只带 repoUrl 的照旧", () => {
-    const frame: CsUp = { t: "config", repoUrl: "https://github.com/x/y.git" };
+    const frame: CsUp = { t: "config", workspaceId: "w", repoUrl: "https://github.com/x/y.git" };
     expect(decodeCsUp(encodeCs(frame))).toEqual(frame);
   });
 
   it("空 config 帧是合法的（服务端会回「没有要保存的内容」）", () => {
-    expect(decodeCsUp(encodeCs({ t: "config" }))).toEqual({ t: "config" });
+    expect(decodeCsUp(encodeCs({ t: "config", workspaceId: "w" }))).toEqual({ t: "config", workspaceId: "w" });
   });
 
   it("v5：welcome/config_result 的 modelRoute 一格能解回来，缺席或形状不对降级成 null", () => {
-    expect(CS_PROTOCOL_VERSION).toBe(7);
     const base = {
       t: "welcome" as const, v: CS_PROTOCOL_VERSION, sessionId: "s", lastSeq: 0,
       initiatorUid: null, ownerUid: "o", repo: null,
@@ -203,13 +204,45 @@ describe("config 帧的字段（issue #844 → ADR-0233）", () => {
 
     // config_result 是同一格的第二个载体（回执与 welcome 同形）
     const cr = decodeCsDown(
-      encodeCs({ t: "config_result", ok: true, repo: null, modelRoute: { kind: "blocked" } })
+      encodeCs({ t: "config_result", workspaceId: "w", ok: true, repo: null, modelRoute: { kind: "blocked" } })
     );
     expect(cr && cr.t === "config_result" && cr.modelRoute).toEqual({ kind: "blocked" });
     // ADR-0233：`workspace` 这一档没了，老 runtime 发来的降级成 null（整帧照收）
     const ws = decodeCsDown(
-      b64encode(new TextEncoder().encode(JSON.stringify({ t: "config_result", ok: true, repo: null, modelRoute: { kind: "workspace" } })))
+      b64encode(new TextEncoder().encode(JSON.stringify({ t: "config_result", workspaceId: "w", ok: true, repo: null, modelRoute: { kind: "workspace" } })))
     );
     expect(ws && ws.t === "config_result" && ws.modelRoute).toBeNull();
+  });
+});
+
+// 协议 8（#991，ADR-0234）：仓库配置搬进控制房——config 帧必须说清是哪个工作区，
+// 新增 workspace / workspace_state 一对读帧
+describe("协议 8：控制房的 workspace / config 帧", () => {
+  it("config 帧没有 workspaceId → 整帧无效（不知道在配谁的仓库）", () => {
+    const raw = b64encode(new TextEncoder().encode(JSON.stringify({ t: "config", repoUrl: "https://a.com/x.git" })));
+    expect(decodeCsUp(raw)).toBeNull();
+  });
+  it("workspace 读帧往返", () => {
+    expect(decodeCsUp(encodeCs({ t: "workspace", workspaceId: "w" }))).toEqual({ t: "workspace", workspaceId: "w" });
+    const bad = b64encode(new TextEncoder().encode(JSON.stringify({ t: "workspace" })));
+    expect(decodeCsUp(bad)).toBeNull();
+  });
+  it("workspace_state 答复往返，repo/modelRoute 与 welcome 同一套归一化", () => {
+    const down = decodeCsDown(encodeCs({
+      t: "workspace_state", workspaceId: "w",
+      repo: { url: "https://a.com/x.git", hasPat: true, clone: null },
+      modelRoute: { kind: "hosted", model: "m" },
+    }));
+    expect(down).toEqual({
+      t: "workspace_state", workspaceId: "w",
+      repo: { url: "https://a.com/x.git", hasPat: true, clone: null },
+      modelRoute: { kind: "hosted", model: "m" },
+    });
+    const bad = b64encode(new TextEncoder().encode(JSON.stringify({ t: "workspace_state", repo: null, modelRoute: null })));
+    expect(decodeCsDown(bad)).toBeNull();
+  });
+  it("config_result 没有 workspaceId → 整帧无效", () => {
+    const raw = b64encode(new TextEncoder().encode(JSON.stringify({ t: "config_result", ok: true, repo: null, modelRoute: null })));
+    expect(decodeCsDown(raw)).toBeNull();
   });
 });

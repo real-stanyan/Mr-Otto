@@ -7,7 +7,13 @@ import type { SessionEvent } from "../../session/events.js";
 import { b64decode, b64encode } from "./b64.js";
 import { MAX_FRAME_BYTES } from "./wire.js";
 
-/** 7（#981，ADR-0233）：云会话不再支持工作区自带 key——`config` 帧去掉 `model`，
+/** 8（#991，ADR-0234）：仓库配置从会话房搬进**控制房**——仓库是工作区的属性，
+    配它不该以「开着一条这个工作区的云会话」为前提（文案类工作区压根没有仓库，
+    头部常驻一格「未配仓库」是噪音）。`CsUp` 的 `config` 帧改带 `workspaceId`、
+    只在控制房接；新增 `workspace{workspaceId}` 读帧，回 `workspace_state{repo,
+    modelRoute}`（与 welcome 上那两格同形）；`config_result` 带回 `workspaceId`。
+    会话房的 `config` 删了——出现在会话房视为越权，同 create。
+    7（#981，ADR-0233）：云会话不再支持工作区自带 key——`config` 帧去掉 `model`，
     welcome/config_result 去掉 `model` 一格，`CsModelRoute` 去掉 `workspace`。
     减字段也进位：握手是精确相等，而「新桌面还画着一格永远为 null 的模型配置」
     正是这次要消灭的假话。
@@ -32,7 +38,7 @@ import { MAX_FRAME_BYTES } from "./wire.js";
     少一格状态。**加一个枚举值同理**：老客户端的 isValidCsDeniedCode 认不出
     `rate_limited`，decodeCsDown 回 null，那一帧被静默忽略，于是 create()
     要白等满超时才回一句"云端无响应"——把"你被限速了"说成"对面没回话"。 */
-export const CS_PROTOCOL_VERSION = 7;
+export const CS_PROTOCOL_VERSION = 8;
 export const CS_MAX_TEXT_BYTES = 64 * 1024;
 
 /** 「有一条事件太大，没发给你」这一类 error 帧的识别标记（终审 I2）。
@@ -162,15 +168,20 @@ export type CsUp =
   | { t: "say"; text: string; mention: boolean; mentions?: string[] }
   | { t: "backlog"; afterSeq: number }
   | { t: "approve"; callId: string; decision: "approved" | "denied" }
-  /** 工作区的仓库配置（ADR-0233 之后只剩这一组：模型统一走所有者订阅，没有
-      自带 key 那半边）。两格各自可选，都不给是无操作。`pat` 三态——省略 = 保持
-      不变，`""` = 显式清除，非空 = 换成新的。密码框永远预填不了，"留空 = 清掉"
-      会让"顺手改个地址"静默毁掉一个私有仓库的 token */
+  /** 工作区的仓库配置——**控制房帧**（协议 8，#991）：带 `workspaceId`，不依赖
+      任何一条会话。ADR-0233 之后只剩仓库这一组（模型统一走所有者订阅）。两格
+      各自可选，都不给是无操作。`pat` 三态——省略 = 保持不变，`""` = 显式清除，
+      非空 = 换成新的。密码框永远预填不了，"留空 = 清掉"会让"顺手改个地址"
+      静默毁掉一个私有仓库的 token */
   | {
       t: "config";
+      workspaceId: string;
       repoUrl?: string;
       pat?: string;
     }
+  /** 读这个工作区的仓库状态 + 路由（控制房帧，协议 8）：回 `workspace_state`。
+      任何在籍成员都能读——这两格本来就在 welcome 上给所有人看 */
+  | { t: "workspace"; workspaceId: string }
   | { t: "archive" }
   /** 停掉当前正在跑的这一轮 turn（#957 第三批）。谁能停与 approve 同一判据——
       发起人或 owner；已排队未跑的 job 照旧，停的是"这一轮"不是清队列。
@@ -214,6 +225,8 @@ export type CsDown =
       成功失败都带——失败时它正好告诉 owner「那你现在配的还是这个」 */
   | {
       t: "config_result";
+      /** 协议 8：回执说的是哪个工作区（控制房一条连接可以连着问几个） */
+      workspaceId: string;
       ok: boolean;
       message?: string;
       repo: CsRepoState | null;
@@ -221,6 +234,8 @@ export type CsDown =
           让回执与 welcome 同形，界面一处画法 */
       modelRoute: CsModelRoute | null;
     }
+  /** `workspace` 读帧的答复（协议 8，#991）：与 welcome / config_result 上那两格同形 */
+  | { t: "workspace_state"; workspaceId: string; repo: CsRepoState | null; modelRoute: CsModelRoute | null }
   /** say 的回执（#957 第三批）。同 config_result 的纪律——不复用 error。
       ok=false 时 message 说明为什么（限速 / 不在籍 / 抛错），文案不变，只是
       换了个帧承载。 */
@@ -383,15 +398,22 @@ export function decodeCsUp(b64: string): CsUp | null {
     if (t === "config") {
       // 两格各自可选：类型不对（不是 string）一律判整帧无效——半个配置比没有
       // 配置更危险。`model` 那半边随 ADR-0233 删了：老客户端多发的 model 字段
-      // 这里直接忽略（握手是精确相等，本来也连不上）
-      const { repoUrl, pat } = obj;
+      // 这里直接忽略（握手是精确相等，本来也连不上）。协议 8 起 workspaceId
+      // 必填——缺了就不知道在配谁的仓库
+      const { workspaceId, repoUrl, pat } = obj;
+      if (typeof workspaceId !== "string") return null;
       if (repoUrl !== undefined && typeof repoUrl !== "string") return null;
       if (pat !== undefined && typeof pat !== "string") return null;
 
-      const result: CsUp = { t: "config" };
+      const result: CsUp = { t: "config", workspaceId };
       if (typeof repoUrl === "string") result.repoUrl = repoUrl;
       if (typeof pat === "string") result.pat = pat;
       return result;
+    }
+
+    if (t === "workspace") {
+      if (typeof obj.workspaceId === "string") return { t: "workspace", workspaceId: obj.workspaceId };
+      return null;
     }
 
     if (t === "archive") {
@@ -448,10 +470,27 @@ export function decodeCsDown(b64: string): CsDown | null {
       return null;
     }
 
+    if (t === "workspace_state") {
+      if (typeof obj.workspaceId === "string") {
+        return {
+          t: "workspace_state",
+          workspaceId: obj.workspaceId,
+          repo: normalizeRepoState(obj.repo),
+          modelRoute: normalizeModelRoute(obj.modelRoute),
+        };
+      }
+      return null;
+    }
+
     if (t === "config_result") {
-      if (typeof obj.ok === "boolean" && (obj.message === undefined || typeof obj.message === "string")) {
+      if (
+        typeof obj.workspaceId === "string" &&
+        typeof obj.ok === "boolean" &&
+        (obj.message === undefined || typeof obj.message === "string")
+      ) {
         const result: CsDown = {
           t: "config_result",
+          workspaceId: obj.workspaceId,
           ok: obj.ok,
           repo: normalizeRepoState(obj.repo),
           modelRoute: normalizeModelRoute(obj.modelRoute),

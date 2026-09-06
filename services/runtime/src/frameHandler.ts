@@ -22,6 +22,7 @@ import {
   decodeCsUp,
   encodeCs,
   validateRepoUrl,
+  type CsUp,
   type CsDeniedCode,
   type CsDown,
   type CsModelRoute,
@@ -275,6 +276,75 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
   /** 被踢时那三种回执共用的一句话：说"你已经不在这个工作区了"，不说"失败了" */
   const NOT_MEMBER_MESSAGE = "你已经不在这个工作区了。";
 
+
+  /** 仓库配置的写路径（协议 8 起只在控制房，#991）。owner 判据在这里、不在
+      调用点：控制房里 `config` 是唯一的写帧，会话房没有它。
+      fail 是 async 的（四处早退各 await 一次），**故意不预先探一次**：预探等于
+      每条 config 帧都为一条罕见路径付一次探测，而失败这条路本来就该现探——
+      失败 = 一个字都没存，此刻的路由就是回执该说的那份。于是每条 config 帧
+      恰好探一次：失败时在失败处，成功时在 saveConfig 之后 */
+  async function applyConfig(
+    workspaceId: string,
+    cid: string,
+    uid: string,
+    msg: Extract<CsUp, { t: "config" }>
+  ): Promise<void> {
+    const ownerUid = await deps.sessions.ownerOf(workspaceId);
+    if (uid !== ownerUid) {
+      deny(cid, "not_authorized");
+      return;
+    }
+    const fail = async (message: string): Promise<void> => {
+      deps.send(cid, {
+        t: "config_result",
+        workspaceId,
+        ok: false,
+        message,
+        repo: deps.repoState(workspaceId),
+        modelRoute: await deps.modelRoute(workspaceId, ownerUid),
+      });
+    };
+
+    // 服务端自己校验一次（issue #834 / #844）：渲染层那份的定位是
+    // "提交前的早期 UX 提示"（见 lib/cloudRepoUrl.ts 文件头），一个
+    // 改造过的客户端能直接发 `ext::sh -c ...` 这类 git 传输上来，
+    // 会以 runtime 的身份被执行。判据是结构化白名单，不是"认出凭据"的黑名单
+    const patch: { repoUrl?: string; pat?: string } = {};
+    if (msg.repoUrl !== undefined) {
+      const valid = validateRepoUrl(msg.repoUrl);
+      if (!valid.ok) {
+        await fail(valid.message);
+        return;
+      }
+      patch.repoUrl = valid.url;
+    }
+    if (msg.pat !== undefined) patch.pat = msg.pat;
+
+    if (patch.repoUrl === undefined && patch.pat === undefined) {
+      // 一格都没给：不是错误，但也不该假装存过了
+      await fail("这一次没有要保存的内容。");
+      return;
+    }
+
+    try {
+      await deps.saveConfig(workspaceId, patch);
+    } catch (err) {
+      // 落盘失败以前只会冒到 daemon 的 .catch 里记一行日志，owner 那边
+      // 的按钮照样显示"已保存"——回执这条路存在的意义就是别再这样
+      await fail(`保存失败：${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+    // 存完再探一次路由（issue #945）：仓库配置不影响路由，带上只是与 welcome
+    // 同形，界面一处画法
+    deps.send(cid, {
+      t: "config_result",
+      workspaceId,
+      ok: true,
+      repo: deps.repoState(workspaceId),
+      modelRoute: await deps.modelRoute(workspaceId, ownerUid),
+    });
+  }
+
   const inner: FrameHandler = {
     async onCtlFrame(cid, raw) {
       const msg = decodeCsUp(raw);
@@ -301,13 +371,32 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
 
       if (msg.t === "hello") return; // 已验籍，重复 hello 当幂等刷新，不重复应答
 
-      if (msg.t !== "create") {
+      // 控制房认三种帧（协议 8，#991）：create / workspace / config——三条都是
+      // 「关于某个工作区」的动作，不挂在任何一条会话上。在籍是共同前提
+      if (msg.t !== "create" && msg.t !== "workspace" && msg.t !== "config") {
         deny(cid, "not_authorized");
         return;
       }
 
       if (!(await deps.isMember(msg.workspaceId, entry.uid))) {
         deny(cid, "not_member");
+        return;
+      }
+
+      if (msg.t === "workspace") {
+        // 读路径给所有在籍成员：这两格本来就在 welcome 上给所有人看
+        const ownerUid = await deps.sessions.ownerOf(msg.workspaceId);
+        deps.send(cid, {
+          t: "workspace_state",
+          workspaceId: msg.workspaceId,
+          repo: deps.repoState(msg.workspaceId),
+          modelRoute: await deps.modelRoute(msg.workspaceId, ownerUid),
+        });
+        return;
+      }
+
+      if (msg.t === "config") {
+        await applyConfig(msg.workspaceId, cid, entry.uid, msg);
         return;
       }
 
@@ -529,69 +618,6 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
           return;
         }
 
-        case "config": {
-          if (!(await requireStillMember(workspaceId, cid, entry.uid))) return;
-          const ownerUid = await deps.sessions.ownerOf(workspaceId);
-          if (entry.uid !== ownerUid) {
-            deny(cid, "not_authorized");
-            return;
-          }
-          // fail 是 async 的（四处早退各 await 一次），**故意不预先探一次**：
-          // 预探等于每条 config 帧都为一条罕见路径付一次探测，而失败这条路
-          // 本来就该现探——失败 = 一个字都没存，此刻的路由就是回执该说的那份。
-          // 于是每条 config 帧恰好探一次：失败时在失败处，成功时在 saveConfig 之后
-          const fail = async (message: string): Promise<void> => {
-            deps.send(cid, {
-              t: "config_result",
-              ok: false,
-              message,
-              repo: deps.repoState(workspaceId),
-              modelRoute: await deps.modelRoute(workspaceId, ownerUid),
-            });
-          };
-
-          // 服务端自己校验一次（issue #834 / #844）：渲染层那份的定位是
-          // "提交前的早期 UX 提示"（见 lib/cloudRepoUrl.ts 文件头），一个
-          // 改造过的客户端能直接发 `ext::sh -c ...` 这类 git 传输、或者一条
-          // 指向内网的模型地址上来，两者都会以 runtime 的身份被执行。
-          // 判据是结构化白名单，不是"认出凭据"的黑名单
-          const patch: { repoUrl?: string; pat?: string } = {};
-
-          if (msg.repoUrl !== undefined) {
-            const valid = validateRepoUrl(msg.repoUrl);
-            if (!valid.ok) {
-              await fail(valid.message);
-              return;
-            }
-            patch.repoUrl = valid.url;
-          }
-          if (msg.pat !== undefined) patch.pat = msg.pat;
-
-          if (patch.repoUrl === undefined && patch.pat === undefined) {
-            // 一格都没给：不是错误，但也不该假装存过了
-            await fail("这一次没有要保存的内容。");
-            return;
-          }
-
-          try {
-            await deps.saveConfig(workspaceId, patch);
-          } catch (err) {
-            // 落盘失败以前只会冒到 daemon 的 .catch 里记一行日志，owner 那边
-            // 的按钮照样显示"已保存"——回执这条路存在的意义就是别再这样
-            await fail(`保存失败：${err instanceof Error ? err.message : String(err)}`);
-            return;
-          }
-          // 存完再探一次路由（issue #945）：仓库配置不影响路由，带上只是与 welcome
-          // 同形，界面一处画法
-          deps.send(cid, {
-            t: "config_result",
-            ok: true,
-            repo: deps.repoState(workspaceId),
-            modelRoute: await deps.modelRoute(workspaceId, ownerUid),
-          });
-          return;
-        }
-
         case "archive": {
           if (!(await requireStillMember(workspaceId, cid, entry.uid))) return;
           // 谁能收尾（issue #822）：**owner 或建这条会话的人**。云端没有
@@ -613,6 +639,8 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
         }
 
         case "create": // 控制房专用帧，出现在会话房里视为越权
+        case "workspace": // 同上（协议 8，#991）
+        case "config": // 同上：仓库是工作区的属性，配它不该以开着一条会话为前提
         default:
           deny(cid, "not_authorized");
           return;

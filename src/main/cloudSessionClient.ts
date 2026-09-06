@@ -77,16 +77,17 @@ import {
   validateRepoUrl,
   type CsDeniedCode,
   type CsModelRoute,
+  type CsDown,
   type CsRepoState,
   type CsUp,
 } from "../shared/remote/cloudSession.js";
 import type { ApprovalDecisionEvent, SessionEvent } from "../session/events.js";
-import type { ApprovalRequest, CloudAck, CloudSessionStatus } from "../shared/shellBridge.js";
+import type { ApprovalRequest, CloudAck, CloudSessionStatus, CloudWorkspaceState } from "../shared/shellBridge.js";
 import type { FriendsResult } from "./proxyManager.js";
 
 /** 控制房 create 的等待上限：runtime 一直没接上/没回应时，别把调用方永远悬在
     半空——一个「稍后重试」的失败远好过一个永不 resolve 的 Promise。 */
-const CS_CREATE_TIMEOUT_MS = 15_000;
+const CS_CREATE_TIMEOUT_MS = 15_000; // 控制房三条 RPC 共用（create / workspace / config）
 
 const NOT_SIGNED_IN = { ok: false as const, message: "还没登录" };
 
@@ -211,11 +212,20 @@ export interface CloudSessionClient {
       或 owner，与 approve 同一判据）——resolve 的是 `stop_result` 那条回执，
       不是「帧交给 socket 了」 */
   stop(seq?: number): Promise<CloudAck>;
-  config(
+  /** 读一个工作区的仓库状态 + 路由（控制房 RPC，协议 8，#991）。不依赖任何
+      一条会话——工作区设置页从侧栏 ⚙ 进来时手上未必开着这个工作区的云会话 */
+  workspaceState(workspaceId: string): Promise<FriendsResult<WorkspaceCloudState>>;
+  /** 改一个工作区的仓库配置（控制房 RPC，协议 8）。resolve 的是服务端的
+      `config_result`——「已保存」必须等服务端说话（#834 的纪律原样成立） */
+  workspaceConfig(
     workspaceId: string,
     patch: { repoUrl?: string; pat?: string },
-  ): Promise<FriendsResult<null>>;
+  ): Promise<FriendsResult<WorkspaceCloudState>>;
 }
+
+/** `workspace_state` / `config_result` 带回来的那两格（协议 8）——与 shellBridge
+    那份同一个类型，渲染层拿到的就是这份 */
+export type WorkspaceCloudState = CloudWorkspaceState;
 
 interface ActiveSession {
   workspaceId: string;
@@ -276,18 +286,12 @@ interface ActiveSession {
   /** welcome 给的路由判定（issue #945），config 回执后刷新。null = runtime 探不到
       （edge 抖了 / 还没 welcome）——「拿不到」≠「起不了」，这一层原样透传不加工 */
   modelRoute: CsModelRoute | null;
-  /** 还没等到回执的那次 config（issue #834）。协议原来没有回执，
-      "已保存"只证明本地 encode 没抛异常——叠上 #829（transport.send 三条
-      静默丢帧分支）就是"点了保存、看到已保存、其实什么都没发出去"。
-      同一时刻只允许一次：并发两次配置本来也没有意义，而"回执按 cid 到达、
-      不带请求 id"决定了两次并发无法区分谁是谁的 */
-  pendingConfig: CsConfigPending | null;
   /** 还没等到 `say_result` 的那一句（#957 第三批，#964）。协议 6 之前
       `say()` 在帧交给 socket 那一刻就 resolve `{ok:true}`，服务端的限速/
       不在籍/抛错要过一会儿才以一条 `error` 帧到达——渲染层早就把草稿清了，
       那句话在界面上"发出去了"，实际一个字都没进日志。
       **不排队**：已经挂着一句时第二次 say 直接回失败。回执不带请求 id，
-      两次并发在客户端这一侧无法区分谁是谁的（同 pendingConfig 的理由） */
+      两次并发在客户端这一侧无法区分谁是谁的（回执不带请求 id） */
   pendingSay: CsPending | null;
   /** 还没等到 `approve_result` 的那几次审批，按 callId 分（#957 第三批）。
       与 say 不同，审批**可以并发**——一个 turn 里同时挂着两张卡是常态，
@@ -308,11 +312,6 @@ interface CsPending {
     `workspaceCloudConfig` 仍走 `FriendsResult<null>`（复审 C2-I4 说的是
     say/approve/stop 那三条「点完就不再看」的路，改配置这条本来就停在页面上
     等回执）。共用一个类型就得把 config 的返回值也一起换掉，超出这次的范围 */
-interface CsConfigPending {
-  settle: (r: FriendsResult<null>) => void;
-  timer: ReturnType<typeof setTimeout>;
-}
-
 /** 「历史缺了一块」这句人话（issue #957 C-I7）。数得出缺几条就说几条——
     「N 条」是用户判断「要不要去问别人」的唯一量纲；数不出来（还没 welcome、
     lastSeq 为负）时不许编一个数字，退回不带数量的那句。 */
@@ -340,11 +339,7 @@ function missingCount(session: ActiveSession): number | null {
   return n;
 }
 
-/** 等 config 回执的上限。超时不是"失败"而是"不知道"——文案要照实说
-    （见 config() 里那句），因为服务端完全可能已经存好了，只是回执没回来。 */
-const CONFIG_ACK_TIMEOUT_MS = 15_000;
-
-/** 等 say/approve/stop 回执的上限（#957 第三批）。与 config 同一个量纲、
+/** 等 say/approve/stop 回执的上限（#957 第三批）。与控制房 RPC 同一个量纲、
     同一条理由：超时不是"失败"而是"不知道"——服务端完全可能已经处理了，
     只是回执没回来。所以文案不说"发送失败"（那会诱导用户再发一遍，
     而重发一句话不像重存一份配置那样等价），而是把人指回唯一的事实来源。 */
@@ -385,19 +380,7 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     });
   }
 
-  /** 把还挂着的那次 config 结掉（issue #834）。三个调用点：回执到达、
-      超时、连接进终态（gone/denied）。少了最后一条，一次断线会让
-      "保存中…"的按钮永远转下去——await 一个再也不会被 resolve 的 promise
-      是这类 UI 最典型的死法 */
-  function settleConfig(session: ActiveSession, result: FriendsResult<null>): void {
-    const pending = session.pendingConfig;
-    if (!pending) return;
-    session.pendingConfig = null;
-    clearTimeout(pending.timer);
-    pending.settle(result);
-  }
-
-  /** say/stop 各自那一个挂起态的收口（#957 第三批）。形状同 settleConfig——
+  /** say/stop 各自那一个挂起态的收口（#957 第三批）。形状同原来的 settleConfig——
       调用点也同样是三类：回执到达、超时、连接进终态 */
   function settleSay(session: ActiveSession, result: CloudAck): void {
     const pending = session.pendingSay;
@@ -429,7 +412,7 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
   }
 
   /** 连接进终态时把 say/approve/stop 三类挂起态一并结掉（#957 第三批）。
-      与 settleConfig 严格并列——三条终态路径（markGone / markDenied /
+      三条终态路径（markGone / markDenied /
       teardown）每一条都要连它一起调，漏哪条就是那条路径上的
       "发送中…/审批中…"永远转下去（#834 在 config 上踩过一模一样的坑） */
   function settleWaiters(session: ActiveSession, result: CloudAck): void {
@@ -443,8 +426,6 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     // 也不该把已经 gone 的会话重复推送（onGone/onClose 可能各触发一次）
     if (session.status === "gone" || session.status === "denied") return;
     session.status = "gone";
-    // 挂着的那次 config 就地结掉（issue #834）——否则"保存中…"永远转下去
-    settleConfig(session, { ok: false, message: "云会话断开了，这次保存不确定有没有生效——重连后请重试。" });
     settleWaiters(session, { ok: false, message: "云会话断开了，这一下不确定有没有生效——看时间线。", ...ACK_UNKNOWN });
     // 这条连接够不到任何人了：清 pendingApprovals/island（onSessionInactive），
     // 顺带清 seenSeqs/liveBuffer——host 回来时 welcome→backlog(-1) 会把同一批
@@ -467,7 +448,6 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     // 而删掉正是想要的语义——上一次 denied 留下的版本号不能糊到这一次身上
     if (serverVersion === undefined) delete session.deniedServerVersion;
     else session.deniedServerVersion = serverVersion;
-    settleConfig(session, { ok: false, message: "这条云会话被拒绝了，保存没有生效。" });
     settleWaiters(session, { ok: false, message: "这条云会话被拒绝了，这一下没有生效。" });
     pushStatus(session);
     // denied 没有重试的意义（版本不对/不是成员/会话没了，都不会因为再连一次
@@ -482,11 +462,9 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
   function teardown(): void {
     if (!active) return;
     const sessionId = active.sessionId;
-    // 挂着的那次 config 就地结掉（issue #834）——leave()/被下一次 join() 顶掉
-    // 都会走到这里，而这条连接之后再也不会有回执回来。markGone/markDenied
-    // 各自也有一条：三条终态路径一条都不能漏，漏哪条就是那条路径上的
-    // "保存中…"永远转下去
-    settleConfig(active, { ok: false, message: "云会话已经关闭，这次保存不确定有没有生效。" });
+    // 挂着的 say/stop 就地结掉：leave()/被下一次 join() 顶掉都会走到这里，
+    // 而这条连接之后再也不会有回执回来。markGone/markDenied 各自也有一条：
+    // 三条终态路径一条都不能漏，漏哪条就是那条路径上的等待永远转下去
     settleWaiters(active, { ok: false, message: "云会话已经关闭，这一下不确定有没有生效——看时间线。", ...ACK_UNKNOWN });
     try {
       active.transport.close();
@@ -563,18 +541,10 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
         }
         return;
       }
-      case "config_result": {
-        // 服务端此刻的真实状态，成功失败都刷——失败时它正好告诉 owner
-        // "那你现在配的还是这个"
-        session.repo = msg.repo;
-        session.modelRoute = msg.modelRoute; // issue #945：回执与 welcome 同形
-        pushStatus(session);
-        settleConfig(
-          session,
-          msg.ok ? { ok: true, value: null } : { ok: false, message: msg.message ?? "保存被拒绝" }
-        );
+      case "config_result":
+      case "workspace_state":
+        // 协议 8 起这两条只在控制房出现（#991），会话房里当噪音忽略
         return;
-      }
       // ── say/approve/stop 的回执（#957 第三批，#964）────────────────────
       // 在这之前这三条路都是"帧交给 socket 就算成功"，服务端的拒绝要过一会儿
       // 才以一条 error 帧到达——而那时草稿早清了、审批卡早收起了。回执不复用
@@ -727,7 +697,15 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     return { ok: true, value: null };
   }
 
-  async function create(workspaceId: string): Promise<FriendsResult<{ sessionId: string }>> {
+  /** 控制房 RPC 的公共骨架（协议 8 起三条共用：create / workspace / config）：
+      开一条控制房连接 → 第一个 host 通告到就发 hello + 请求帧 → 等一条对得上的
+      答复或 denied → 关连接。每次一条新连接：控制房是无状态的问答，不值得
+      为它维护一条常驻连接（daemon 那侧按 cid 验籍，连接一断籍就没了）。
+      `match` 认答复：认得出就回它转换出的结果，认不出（别的帧）就继续等。 */
+  async function ctlRequest<T>(
+    frame: CsUp,
+    match: (msg: CsDown) => FriendsResult<T> | null,
+  ): Promise<FriendsResult<T>> {
     const token = await deps.accessToken();
     if (!token) return NOT_SIGNED_IN;
 
@@ -736,7 +714,7 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
       let hostCid: string | null = null;
       let settled = false;
 
-      const finish = (result: FriendsResult<{ sessionId: string }>): void => {
+      const finish = (result: FriendsResult<T>): void => {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
@@ -762,13 +740,13 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
         hostCid = cid;
         try {
           // 控制房没有「welcome」概念——hello 成功是静默的，下一步直接发
-          // create，回执是 created 帧（frameHandler.ts 的注释原话）
+          // 请求帧，回执是对应的答复帧（frameHandler.ts 的注释原话）
           const helloSent = transport.send(encodeCs({ t: "hello", v: CS_PROTOCOL_VERSION, jwt: token }), cid);
-          const createSent = helloSent && transport.send(encodeCs({ t: "create", workspaceId }), cid);
+          const reqSent = helloSent && transport.send(encodeCs(frame), cid);
           // 没发出去就当场收工（issue #829）：原来这里会白等满
           // CS_CREATE_TIMEOUT_MS 才回一句"云端无响应"——把"我们没发出去"
           // 说成"对面没回话"，方向反了，人会去查 VPS
-          if (!createSent) finish({ ok: false, message: "连接不通，请求没发出去——稍后重试" });
+          if (!reqSent) finish({ ok: false, message: "连接不通，请求没发出去——稍后重试" });
         } catch (e) {
           finish({ ok: false, message: e instanceof Error ? e.message : String(e) });
         }
@@ -778,11 +756,12 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
         if (hostCid && from !== hostCid) return;
         const msg = decodeCsDown(payload);
         if (!msg) return;
-        if (msg.t === "created") {
-          finish({ ok: true, value: { sessionId: msg.sessionId } });
-        } else if (msg.t === "denied") {
+        if (msg.t === "denied") {
           finish({ ok: false, message: deniedMessage(msg.code, msg.v) });
+          return;
         }
+        const matched = match(msg);
+        if (matched) finish(matched);
         // welcome/event/backlog/error 不该出现在控制房，忽略
       });
 
@@ -792,6 +771,52 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
       transport.onClose(() => {
         finish({ ok: false, message: "云端连接中断，请稍后重试" });
       });
+    });
+  }
+
+  function create(workspaceId: string): Promise<FriendsResult<{ sessionId: string }>> {
+    return ctlRequest({ t: "create", workspaceId }, (msg) =>
+      msg.t === "created" ? { ok: true, value: { sessionId: msg.sessionId } } : null
+    );
+  }
+
+  function workspaceState(workspaceId: string): Promise<FriendsResult<WorkspaceCloudState>> {
+    return ctlRequest({ t: "workspace", workspaceId }, (msg) =>
+      // 答复带 workspaceId：一条连接只问一个，但认一下比赌顺序便宜
+      msg.t === "workspace_state" && msg.workspaceId === workspaceId
+        ? { ok: true, value: { repo: msg.repo, modelRoute: msg.modelRoute } }
+        : null
+    );
+  }
+
+  /** `pat` 三态跟着服务端那份走（daemon 的 workspaceConfigStore.save）：省略 =
+      保持不变，`""` = 显式清除，非空 = 换成新的。本地先过一遍同一份地址校验，
+      省掉一次明知会被拒的往返（服务端仍然会自己校验一次——渲染层/主进程都不是
+      安全边界，见 validateRepoUrl 注释）。resolve 的是服务端的 `config_result`
+      ——「已保存」必须等服务端说话（#834）；超时那句照实说"不知道"，服务端完全
+      可能已经存好了，只是回执没回来，重试一次是安全的（同一份配置存两遍等价） */
+  async function workspaceConfig(
+    workspaceId: string,
+    patch: { repoUrl?: string; pat?: string },
+  ): Promise<FriendsResult<WorkspaceCloudState>> {
+    const frame: CsUp = { t: "config", workspaceId };
+    if (patch.repoUrl !== undefined) {
+      const valid = validateRepoUrl(patch.repoUrl);
+      if (!valid.ok) return { ok: false, message: valid.message };
+      frame.repoUrl = valid.url;
+    }
+    // exactOptionalPropertyTypes：可选字段不接受显式 undefined，得真的省略
+    // 这个键才行——不能靠 JSON.stringify 事后替我们咽掉它
+    if (patch.pat !== undefined) frame.pat = patch.pat;
+    if (frame.repoUrl === undefined && frame.pat === undefined) {
+      return { ok: false, message: "没有要保存的内容。" };
+    }
+    return ctlRequest(frame, (msg) => {
+      if (msg.t !== "config_result" || msg.workspaceId !== workspaceId) return null;
+      // 失败也带着服务端此刻的真实状态回去——它正好告诉 owner「那你现在配的还是这个」
+      return msg.ok
+        ? { ok: true, value: { repo: msg.repo, modelRoute: msg.modelRoute } }
+        : { ok: false, message: msg.message ?? "保存被拒绝" };
     });
   }
 
@@ -819,7 +844,6 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
       lastEventTs: null,
       repo: null,
       modelRoute: null,
-      pendingConfig: null,
       pendingSay: null,
       pendingApprove: new Map(),
       pendingStop: null,
@@ -948,65 +972,6 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     return sendFrame(r.session, { t: "archive" });
   }
 
-  /** issue #834：等服务端的 `config_result` 才算保存成功。
-      在此之前这个函数回 ok 只证明"本地 encode 没抛异常"——连帧有没有交给
-      网络层都不保证（#829：wsTransport.send 有三条静默丢帧分支，其中一条
-      正是"正在自动重连"这个完全正常的窗口）。配置这个调用方是最受伤的：
-      聊天丢一条人看得出，配置丢了看不出，下次工具调用照旧用老配置克隆。
-
-      `pat` / `model.apiKey` 的三态跟着服务端那份走（daemon 的
-      workspaceConfigStore.save）：省略 = 保持不变，`""` = 显式清除，
-      非空 = 换成新的。
-
-      **两组字段各自可选**（issue #844）：只给 repo 就是只改仓库，只给
-      model 就是只改模型——它们是两件独立的事，改一个不该被迫连另一个
-      一起发（发过去就意味着"我确认这一格也是这个值"）。 */
-  async function config(
-    workspaceId: string,
-    patch: {
-      repoUrl?: string;
-      pat?: string;
-      model?: { baseUrl: string; modelId: string; apiKey?: string };
-    }
-  ): Promise<FriendsResult<null>> {
-    const r = requireReady();
-    if (!r.ok) return r;
-    const session = r.session;
-    if (session.workspaceId !== workspaceId) {
-      return { ok: false, message: "未加入该工作区的云会话" };
-    }
-    // 本地先过一遍同一份校验，省掉一次明知会被拒的往返（服务端仍然会
-    // 自己校验一次——渲染层/主进程都不是安全边界，见 validateRepoUrl 注释）
-    const frame: CsUp = { t: "config" };
-    if (patch.repoUrl !== undefined) {
-      const valid = validateRepoUrl(patch.repoUrl);
-      if (!valid.ok) return { ok: false, message: valid.message };
-      frame.repoUrl = valid.url;
-    }
-    // exactOptionalPropertyTypes：可选字段不接受显式 undefined，得真的省略
-    // 这个键才行——不能靠 JSON.stringify 事后替我们咽掉它
-    if (patch.pat !== undefined) frame.pat = patch.pat;
-    if (frame.repoUrl === undefined && frame.pat === undefined) {
-      return { ok: false, message: "没有要保存的内容。" };
-    }
-    if (session.pendingConfig) return { ok: false, message: "上一次保存还没有回执，稍等一下再试。" };
-
-    const sent = sendFrame(session, frame);
-    if (!sent.ok) return sent;
-
-    return new Promise<FriendsResult<null>>((resolve) => {
-      const timer = setTimeout(() => {
-        settleConfig(session, {
-          ok: false,
-          // 照实说"不知道"而不是"失败了"：服务端完全可能已经存好了，
-          // 只是回执没回来。让人重试一次是安全的（同一份配置存两遍等价）
-          message: "没等到服务端的回执，这次保存不确定有没有生效——请重试一次。",
-        });
-      }, CONFIG_ACK_TIMEOUT_MS);
-      session.pendingConfig = { settle: resolve, timer };
-    });
-  }
-
   function currentSessionId(): string | null {
     return active ? active.sessionId : null;
   }
@@ -1023,5 +988,5 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     };
   }
 
-  return { currentSessionId, activeSummary, create, join, leave, say, approve, archive, stop, config };
+  return { currentSessionId, activeSummary, create, join, leave, say, approve, archive, stop, workspaceState, workspaceConfig };
 }

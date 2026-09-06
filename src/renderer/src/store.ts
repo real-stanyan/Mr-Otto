@@ -37,6 +37,7 @@ import type {
   McpServerConfig,
   McpServersSnapshot,
   McpPromptInfo,
+  CloudWorkspaceState,
 } from "../../shared/shellBridge.js";
 import type { CatalogEntry } from "../../shared/mcpCatalog.js";
 import type { CsModelRoute, CsRepoState } from "../../shared/remote/cloudSession.js";
@@ -566,6 +567,10 @@ interface ChatState {
   realtimeHealth: RealtimeHealth;
   /** 好友抽屉开着没有。提到 store 是因为系统通知点击要能把它掀开(App 本地 state 够不着) */
   friendsPanelOpen: boolean;
+  /** 工作区设置抽屉开着哪一个（null = 没开）。原来是 AppSidebar 的本地 state，
+      #991 之后云会话头部那颗「设置」也要开它——两个消费方不在同一棵子树上，
+      最近的公共层就是这里 */
+  openWorkspaceId: string | null;
   /** 窗口是否全屏(macOS 全屏隐红绿灯,左上角 logo 显隐看它) */
   fullscreen: boolean;
   /** 冷启动进度：boot() 里那组 Promise.all 有几个已经回来 / 一共几个。
@@ -989,16 +994,17 @@ interface ChatState {
       点的那一行，服务端拿它与采样边界比对后可以回 `not_current`。缺席 = 旧
       语义（停当前那一轮） */
   cloudStop(seq?: number): Promise<CloudAck>;
-  /** owner 配置当前云会话绑定的仓库（repoUrl + 可选 PAT，issue #821 slice 2）。
-      workspaceId 从 cloudSession 现取——调用方（CloudSessionPage）只在已 join
-      时才会挂载这个入口，理应总有值；没有就说明状态错乱，回 false 不瞎猜。
-      pat 不落这个 store 的任何字段，只透传给 IPC 这一次调用（同 ProviderKeyDialog
-      "渲染层不留 key 的任何副本"的纪律）。**回 boolean、失败落 workspaceGroupsError**
-      ——这一格错误确实是共享的（设置区那一整块，同名单十一件套的待遇）；
-      别照 cloudSay/cloudApprove 读，那两个第四批之后透传 `CloudAck` 且一个字
-      都不碰那一格（C2-I4）。服务端保存成功是静默的，IPC 回 ok 就算成功，
-      没有二次确认帧 */
-  cloudConfig(patch: { repoUrl?: string; pat?: string }): Promise<boolean>;
+  /** 读一个工作区的仓库状态 + 路由（控制房 RPC，协议 8，#991）。透传 FriendsResult，
+      错误由「仓库」tab 自己画——不落 workspaceGroupsError 那一格（那格是整页共用的，
+      设置页刚打开那一刻可能还留着一条跟仓库毫不相干的旧错误） */
+  workspaceRepoState(workspaceId: string): Promise<FriendsResult<CloudWorkspaceState>>;
+  /** 改一个工作区的仓库配置（控制房 RPC，协议 8）。PAT 纪律同 ProviderKeyDialog：
+      渲染层不留 key 的任何副本，这里只是这一次 IPC 调用的参数。回服务端此刻的
+      真实状态（失败也回） */
+  workspaceRepoConfig(
+    workspaceId: string,
+    patch: { repoUrl?: string; pat?: string },
+  ): Promise<FriendsResult<CloudWorkspaceState>>;
   /** 归档（收尾）当前云会话（issue #822）。**只发出去**——真正的"归档成功"
       是那条广播回来的 session_archived 事件（服务端不另发回执：所有人都
       看得见的那一条本身就是回执）。回 boolean 只说"帧发没发出去"，失败落
@@ -1009,6 +1015,7 @@ interface ChatState {
   cloudArchive(): Promise<boolean>;
 
   setFriendsPanelOpen(open: boolean): void;
+  setOpenWorkspaceId(id: string | null): void;
   /** 拉一次本人资料。登录后由 onAccountChanged 触发,首登引导也在这里决定要不要弹 */
   refreshMyProfile(): Promise<void>;
   /** 改本人资料。回 null = 成功,回字符串 = 给用户看的失败原因 */
@@ -1314,6 +1321,7 @@ export const useChat = create<ChatState>((set, get) => ({
   cloudSessionList: {},
   realtimeHealth: "connecting",
   friendsPanelOpen: false,
+  openWorkspaceId: null,
   fullscreen: false,
   bootDone: 0,
   bootTotal: 0,
@@ -2434,24 +2442,11 @@ export const useChat = create<ChatState>((set, get) => ({
     return await window.otter.workspaceCloudStop(seq);
   },
 
-  async cloudConfig(patch) {
-    // 没有已连接的云会话就不该走到这——CloudSessionPage 只在已 join 时才
-    // 挂载配置入口，这里仍然判一次是防状态错乱（比如异步期间被 closeCloudSession
-    // 顶掉），不是主路径
-    const workspaceId = get().cloudSession?.workspaceId;
-    if (!workspaceId) {
-      set({ workspaceGroupsError: "没有已连接的云会话" });
-      return false;
-    }
-    const r = await window.otter.workspaceCloudConfig(workspaceId, patch);
-    if (!r.ok) {
-      set({ workspaceGroupsError: r.message });
-      return false;
-    }
-    // 服务端保存成功是静默的（没有二次确认帧）——IPC 回 ok 就是这里能拿到的
-    // 唯一信号，回 boolean 给调用方决定要不要关弹窗（同名单十一件套）
-    set({ workspaceGroupsError: null });
-    return true;
+  workspaceRepoState(workspaceId) {
+    return window.otter.workspaceCloudState(workspaceId);
+  },
+  workspaceRepoConfig(workspaceId, patch) {
+    return window.otter.workspaceCloudConfig(workspaceId, patch);
   },
 
   async cloudArchive() {
@@ -2531,6 +2526,7 @@ export const useChat = create<ChatState>((set, get) => ({
   },
 
   setFriendsPanelOpen: (open) => set({ friendsPanelOpen: open }),
+  setOpenWorkspaceId: (id) => set({ openWorkspaceId: id }),
 
   setProfileSetupOpen: (open) =>
     set((s) => {
