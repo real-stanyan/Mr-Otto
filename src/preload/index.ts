@@ -261,7 +261,8 @@ const bridge: ShellBridge = {
     ipcRenderer.invoke(CHANNELS.workspaceCloudSay, text, mention, mentions ?? null),
   workspaceCloudApprove: (callId, decision) =>
     ipcRenderer.invoke(CHANNELS.workspaceCloudApprove, callId, decision),
-  workspaceCloudArchive: () => ipcRenderer.invoke(CHANNELS.workspaceCloudArchive),
+  workspaceCloudArchive: (workspaceId, sessionId) =>
+    ipcRenderer.invoke(CHANNELS.workspaceCloudArchive, workspaceId, sessionId),
   workspaceCloudStop: (seq) => ipcRenderer.invoke(CHANNELS.workspaceCloudStop, seq ?? null),
   workspaceCloudConfig: (workspaceId, patch) =>
     ipcRenderer.invoke(CHANNELS.workspaceCloudConfig, workspaceId, patch),

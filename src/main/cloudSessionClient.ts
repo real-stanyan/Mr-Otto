@@ -87,7 +87,7 @@ import type { FriendsResult } from "./proxyManager.js";
 
 /** 控制房 create 的等待上限：runtime 一直没接上/没回应时，别把调用方永远悬在
     半空——一个「稍后重试」的失败远好过一个永不 resolve 的 Promise。 */
-const CS_CREATE_TIMEOUT_MS = 15_000; // 控制房三条 RPC 共用（create / workspace / config）
+const CS_CREATE_TIMEOUT_MS = 15_000; // 控制房四条 RPC 共用（create / workspace / config / archive）
 
 const NOT_SIGNED_IN = { ok: false as const, message: "还没登录" };
 
@@ -207,7 +207,9 @@ export interface CloudSessionClient {
       以它为准，帧里带 mentions 字段（#932 切片 1b） */
   say(text: string, mention: boolean, mentions?: string[]): Promise<CloudAck>;
   approve(callId: string, decision: "approved" | "denied"): Promise<CloudAck>;
-  archive(): Promise<FriendsResult<null>>;
+  /** 收尾一条云会话（控制房 RPC，协议 9，#993）：不依赖「正开着它」——归档
+      入口在侧栏那条会话行的 ⋮ 里，同本地会话。resolve 的是 `archive_result` */
+  archive(workspaceId: string, sessionId: string): Promise<FriendsResult<null>>;
   /** 停掉当前正在跑的这一轮 turn（#957 第三批）。谁能停由服务端判（发起人
       或 owner，与 approve 同一判据）——resolve 的是 `stop_result` 那条回执，
       不是「帧交给 socket 了」 */
@@ -543,7 +545,8 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
       }
       case "config_result":
       case "workspace_state":
-        // 协议 8 起这两条只在控制房出现（#991），会话房里当噪音忽略
+      case "archive_result":
+        // 协议 8/9 起这三条只在控制房出现（#991 / #993），会话房里当噪音忽略
         return;
       // ── say/approve/stop 的回执（#957 第三批，#964）────────────────────
       // 在这之前这三条路都是"帧交给 socket 就算成功"，服务端的拒绝要过一会儿
@@ -697,7 +700,7 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     return { ok: true, value: null };
   }
 
-  /** 控制房 RPC 的公共骨架（协议 8 起三条共用：create / workspace / config）：
+  /** 控制房 RPC 的公共骨架（协议 8 起：create / workspace / config；协议 9 加 archive）：
       开一条控制房连接 → 第一个 host 通告到就发 hello + 请求帧 → 等一条对得上的
       答复或 denied → 关连接。每次一条新连接：控制房是无状态的问答，不值得
       为它维护一条常驻连接（daemon 那侧按 cid 验籍，连接一断籍就没了）。
@@ -966,10 +969,11 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     });
   }
 
-  async function archive(): Promise<FriendsResult<null>> {
-    const r = requireReady();
-    if (!r.ok) return r;
-    return sendFrame(r.session, { t: "archive" });
+  function archive(workspaceId: string, sessionId: string): Promise<FriendsResult<null>> {
+    return ctlRequest({ t: "archive", workspaceId, sessionId }, (msg) => {
+      if (msg.t !== "archive_result" || msg.sessionId !== sessionId) return null;
+      return msg.ok ? { ok: true, value: null } : { ok: false, message: msg.message ?? "归档没有生效" };
+    });
   }
 
   function currentSessionId(): string | null {

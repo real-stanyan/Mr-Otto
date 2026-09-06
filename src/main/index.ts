@@ -3345,7 +3345,8 @@ void app.whenReady().then(() => {
     cloudClient.say(text, mention, mentions ?? undefined));
   ipcMain.handle(CHANNELS.workspaceCloudApprove, (_e, callId: string, decision: "approved" | "denied") =>
     cloudClient.approve(callId, decision));
-  ipcMain.handle(CHANNELS.workspaceCloudArchive, () => cloudClient.archive());
+  ipcMain.handle(CHANNELS.workspaceCloudArchive, (_e, workspaceId: string, sessionId: string) =>
+    cloudClient.archive(workspaceId, sessionId));
   ipcMain.handle(CHANNELS.workspaceCloudStop, (_e, seq: number | null) =>
     cloudClient.stop(seq ?? undefined)
   );

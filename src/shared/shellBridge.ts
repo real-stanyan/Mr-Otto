@@ -1136,8 +1136,9 @@ export interface ShellBridge {
   workspaceCloudSay(text: string, mention: boolean, mentions?: string[]): Promise<CloudAck>;
   /** 批/拒当前云会话里的一个审批请求（callId 来自 approval_request 事件） */
   workspaceCloudApprove(callId: string, decision: "approved" | "denied"): Promise<CloudAck>;
-  /** 归档当前云会话 */
-  workspaceCloudArchive(): Promise<FriendsResult<null>>;
+  /** 收尾一条云会话（控制房 RPC，协议 9，#993）：不依赖「正开着它」。谁能归档
+      由服务端判（owner 或建这条会话的人，#822 的判据） */
+  workspaceCloudArchive(workspaceId: string, sessionId: string): Promise<FriendsResult<null>>;
   /** 停掉当前云会话正在跑的这一轮 turn（#957 第三批）。谁能停由 runtime 判
       （发起人或 owner，与审批同一判据）；resolve 的是服务端的 `stop_result`
       回执——ok:false 的两种常见理由是「此刻没有正在跑的 turn」和无权。

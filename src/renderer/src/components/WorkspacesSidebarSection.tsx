@@ -26,13 +26,16 @@
 // 工作区分，而这一层才知道有哪几个工作区。
 
 import { useEffect } from "react";
-import { ChevronRight, Plus, Settings2 } from "lucide-react";
+import { ChevronRight, Ellipsis, Plus, Settings2 } from "lucide-react";
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu.js";
 import { useChat } from "../store.js";
 import { cloudSessionRows } from "../lib/workspaceView.js";
 import type { CloudSessionListRow } from "../lib/workspaceView.js";
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 import {
-  SidebarGroup, SidebarGroupAction, SidebarGroupContent, SidebarGroupLabel,
+  SidebarGroup, SidebarGroupAction, SidebarGroupContent, SidebarGroupLabel, SidebarMenuAction,
   SidebarMenu, SidebarMenuButton, SidebarMenuItem,
 } from "@/components/ui/sidebar.js";
 
@@ -108,6 +111,8 @@ function WorkspaceGroup({
   const openCloud = useChat((s) => s.openCloudSession);
   const startDraft = useChat((s) => s.startCloudDraft);
   const openSessionId = useChat((s) => s.cloudSession?.sessionId ?? null);
+  const archiveCloud = useChat((s) => s.cloudArchive);
+  const selfUid = useChat((s) => s.account.id);
   const draftWorkspaceId = useChat((s) => s.cloudDraftWorkspaceId);
 
   // 归档的不进侧栏（同本地：归档的会话在「已归档会话」那一屏）
@@ -185,6 +190,38 @@ function WorkspaceGroup({
                   >
                     <span className="min-w-0 flex-1 truncate text-xs">{row.title}</span>
                   </SidebarMenuButton>
+                  {/* ⋮ 菜单（#993 第 5 条）：归档从会话头部搬到这里，同本地会话那行的
+                      ⋮。**没有「删除」**——0016 迁移把 wss_delete_publisher 钉死在
+                      kind='package'，云会话故意删不掉（删了 VPS 上那份权威事件日志
+                      就成了够不着的孤儿，且不产生任何归档事件）；给一颗点了必然
+                      失败的钮是撒谎。显隐判据抄服务端那条（#822：owner 或建这条
+                      会话的人）——渲染层不是安全边界，服务端仍然自己判一次 */}
+                  {(selfUid === ws.ownerUid || selfUid === row.creatorUid) && (
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <SidebarMenuAction
+                          showOnHover
+                          title="会话操作"
+                          onClick={(e) => e.stopPropagation() /* 别触发外层的"进这条会话" */}
+                        >
+                          <Ellipsis />
+                        </SidebarMenuAction>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent side="right" align="start" onClick={(e) => e.stopPropagation()}>
+                        <DropdownMenuItem
+                          onClick={() => {
+                            // 云端没有"恢复归档"那一半（daemon 启动只捞 archived=false
+                            // 的会话重开房间），所以先问一句——同侧栏「删除会话」、
+                            // 踢人那几处的原生 confirm，不新造一套视觉语言
+                            if (!window.confirm(`归档「${row.title}」？群里所有人都会看到它收尾，之后不能再发言，也不能恢复。`)) return;
+                            void archiveCloud(ws.id, row.id);
+                          }}
+                        >
+                          归档
+                        </DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  )}
                 </SidebarMenuItem>
               ))}
             </SidebarMenu>

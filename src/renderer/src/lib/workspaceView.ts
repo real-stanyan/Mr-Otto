@@ -213,6 +213,10 @@ export interface CloudSessionRowView {
   id: string;
   title: string;
   creatorLabel: string;
+  /** 建这条会话的 uid（#993）：侧栏 ⋮ 里那条「归档」的显隐判据之一——服务端
+      认的是"owner 或建这条会话的人"（#822），渲染层照抄同一条。带 uid 不带
+      名字：名字会变，而这是个权限判断 */
+  creatorUid: string;
   archived: boolean;
   updatedTs: number;
 }
@@ -230,6 +234,7 @@ export function cloudSessionRows(
       id: r.id,
       title: displaySessionTitle(r.title),
       creatorLabel: labelOf(ws, r.publisherUid),
+      creatorUid: r.publisherUid,
       archived: r.archived,
       updatedTs: r.updatedTs,
     }))

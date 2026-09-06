@@ -134,11 +134,28 @@ export function relayLineText(e: AgentRelayEvent, ws: WorkspaceSnapshot): string
   return `${agentNameOf(ws, e.fromAgentId)} → ${agentNameOf(ws, e.toAgentId)} · 接力第 ${e.depth} 棒`;
 }
 
-/** 这条事件要不要在云会话时间线上画出来（#950）：只对带 relay 的 user_message
-    为真——那条开场白是给模型看的（"[系统] 「运营」@ 了你"），人看接力线
-    （agent_relay 那一行）就够，画出来是同一件事说两遍 */
+/** 这条事件在云会话时间线上要不要**藏起来**（#950；#993 扩了四类）。
+    群聊时间线的读者是工作区里各行各业的人，不是在读一份审计日志——本地会话
+    那套 AUDIT 小灰字（会话已创建 / 请求信封已更新 / 由谁批准）在这里是纯噪音：
+    它们说的是机器的内务，不是群里发生的事。
+
+    五类：
+    ① 带 relay 的 `user_message`——那条开场白是给模型看的（"[系统] 「运营」@ 了你"），
+       人看接力线（agent_relay 那一行）就够，画出来是同一件事说两遍；
+    ② `session_created`——点开一条会话本来就意味着它存在了，这行字零信息；
+    ③ `agent_briefed`（「「管理员」就位」）——brief 是每次提示词/花名册变了就补一条的
+       内务事件（ADR-0231 之后 name + roster 指纹也算），群里会看到一串「就位」而
+       没有任何人做了任何事；
+    ④ `request_envelope`——「请求信封已更新：型号 · 工具 3 把」是给维护者调参用的；
+    ⑤ **批准**了的 `approval_decision`——放行不是对话事实。**拒绝仍然画**：它中断了
+       流程，群里得看得见"这件事没做成、以及为什么"，那不是噪音。
+
+    留在时间线上的因此只剩：人说的话、agent 说的话、agent 干的活（折叠段）、
+    接力线、出错、归档。 */
 export function hiddenFromCloudTimeline(e: SessionEvent): boolean {
-  return e.type === "user_message" && e.relay !== undefined;
+  if (e.type === "user_message") return e.relay !== undefined;
+  if (e.type === "approval_decision") return e.decision === "approved";
+  return e.type === "session_created" || e.type === "agent_briefed" || e.type === "request_envelope";
 }
 
 /** 审批卡第一行（#957 C-I3）：多智能体是这一批六片的全部意义，两张卡工具名

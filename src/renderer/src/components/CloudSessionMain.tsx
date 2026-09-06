@@ -72,9 +72,13 @@ export function CloudSessionMain({ onManage }: { onManage: (workspaceId: string)
     // 它下面——同本地会话（OttoThread 的 viewport 滚，App.tsx 的 footer 不动）。
     // 这里只把高度交下去（h-full + flex 列 + min-h-0，缺一个内层就撑不出滚动条）
     <div className="flex-1 min-w-0 h-full min-h-0 flex flex-col">
-      {/* 与本地会话同一条居中量尺（会话正文不该铺满一整块宽屏）。
-          不传 onBack —— 出口是侧栏，同本地会话 */}
-      <div className="mx-auto w-[min(760px,92%)] flex-1 min-h-0 flex flex-col pt-4">
+      {/* 占满整块主区（#993 第 2 条）：本地会话的 aui viewport 是
+          `max-w-(--thread-max-width) px-4`，而那个变量本仓从没定义过 = 无上限，
+          所以本地看到的就是「占满 + 左右 16px」。云会话原来那条
+          `w-[min(760px,92%)]` 居中量尺在宽屏上左右各留一大条空白，与本地不一样。
+          内边距归 CloudSessionPage 自己管（头部/时间线/footer 各自 px-4，头部那条
+          border-b 才画得满）。不传 onBack —— 出口是侧栏，同本地会话 */}
+      <div className="flex-1 min-h-0 flex flex-col">
         <CloudSessionPage ws={ws} selfUid={selfUid} onSettings={() => onManage(ws.id)} />
       </div>
     </div>

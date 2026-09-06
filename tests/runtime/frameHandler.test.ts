@@ -937,11 +937,11 @@ describe("限流接线（issue #819 / 第二轮复审 B2-C1）", () => {
   });
 });
 
-// issue #822：`archive` 分支原来是**显式 no-op**（CloudSession 没有 archive
-// 方法，deps 也没暴露）。链路上 cs_archive 帧 / ShellBridge / preload / IPC
-// 全通，只有服务端什么都不做——好在渲染层也一直没人调，没做出一个"点了
-// 没反应"的按钮。
-describe("归档（issue #822）", () => {
+// issue #822 的判据（owner 或建这条会话的人）原样；协议 9（#993）把 archive
+// 搬进**控制房**——归档一条会话不该以「你此刻正开着它」为前提，界面上那颗钮
+// 因此才能待在侧栏那条会话行的 ⋮ 里。控制房没有会话房那条 session_archived
+// 广播可当回执，所以成功也回一条 archive_result。
+describe("归档（issue #822 / 协议 9 #993）", () => {
   const sessionOf = (createdBy: string): CloudSession =>
     fakeSession({ createdByUid: () => createdBy });
 
@@ -953,12 +953,14 @@ describe("归档（issue #822）", () => {
       archiveSession: async (...args) => { calls.push(args); return true; },
     });
     const handler = createFrameHandler(deps);
-    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    await handler.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
     sent.length = 0;
-    await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "archive" }));
+    await handler.onCtlFrame("c1", encodeCs({ t: "archive", workspaceId: "w1", sessionId: "s1" }));
 
     expect(calls).toEqual([["w1", "s1", "Label(u1)"]]);
-    expect(sent).toEqual([]); // 成功不回执：session_archived 广播给所有人，那就是回执
+    // 控制房没有房间可广播（房里的人照旧收得到 session_archived，那是**他们**的
+    // 回执）——按钮这一侧得单独有一条
+    expect(sent).toEqual([{ cid: "c1", msg: { t: "archive_result", workspaceId: "w1", sessionId: "s1", ok: true } }]);
   });
 
   it("建这条会话的人也可以归档（不是只有 owner）", async () => {
@@ -969,8 +971,8 @@ describe("归档（issue #822）", () => {
       archiveSession: async (...args) => { calls.push(args); return true; },
     });
     const handler = createFrameHandler(deps);
-    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
-    await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "archive" }));
+    await handler.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    await handler.onCtlFrame("c1", encodeCs({ t: "archive", workspaceId: "w1", sessionId: "s1" }));
     expect(calls).toHaveLength(1);
   });
 
@@ -982,28 +984,29 @@ describe("归档（issue #822）", () => {
       archiveSession: async (...args) => { calls.push(args); return true; },
     });
     const handler = createFrameHandler(deps);
-    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    await handler.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
     sent.length = 0;
-    await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "archive" }));
+    await handler.onCtlFrame("c1", encodeCs({ t: "archive", workspaceId: "w1", sessionId: "s1" }));
 
     expect(calls).toEqual([]);
     expect(sent).toEqual([{ cid: "c1", msg: { t: "denied", code: "not_authorized" } }]);
   });
 
-  it("已经归档过了 → 回一条看得见的 error，不假装成功", async () => {
+  it("已经归档过了 → archive_result ok:false 带人话，不假装成功", async () => {
     const { deps, sent } = makeDeps({
       getSession: () => sessionOf("u1"),
       ownerOf: async () => "u1",
       archiveSession: async () => false,
     });
     const handler = createFrameHandler(deps);
-    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    await handler.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
     sent.length = 0;
-    await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "archive" }));
-    expect(sent.map((s) => s.msg.t)).toEqual(["error"]);
+    await handler.onCtlFrame("c1", encodeCs({ t: "archive", workspaceId: "w1", sessionId: "s1" }));
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.msg).toMatchObject({ t: "archive_result", ok: false });
   });
 
-  it("被踢出工作区的人归档不了 —— 在籍复查在权限判断之前", async () => {
+  it("被踢出工作区的人归档不了 —— 在籍判断在权限判断之前（控制房的 isMember 那道闸）", async () => {
     let member = true;
     const calls: unknown[] = [];
     const { deps, sent } = makeDeps({
@@ -1013,12 +1016,41 @@ describe("归档（issue #822）", () => {
       archiveSession: async (...args) => { calls.push(args); return true; },
     });
     const handler = createFrameHandler(deps);
-    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    await handler.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
     member = false;
     sent.length = 0;
-    await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "archive" }));
+    await handler.onCtlFrame("c1", encodeCs({ t: "archive", workspaceId: "w1", sessionId: "s1" }));
+    expect(calls).toEqual([]);
+    expect(sent).toEqual([{ cid: "c1", msg: { t: "denied", code: "not_member" } }]);
+  });
+});
+
+
+// 协议 9（#993）：会话房里出现 archive 视为越权（同 create / config / workspace）
+describe("会话房拒 archive（协议 9）", () => {
+  it("会话房里发 archive → denied not_authorized，一个字都没归档", async () => {
+    const calls: unknown[] = [];
+    const { deps, sent } = makeDeps({
+      getSession: () => fakeSession({ createdByUid: () => "u1" }),
+      ownerOf: async () => "u1",
+      archiveSession: async (...args) => { calls.push(args); return true; },
+    });
+    const handler = createFrameHandler(deps);
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    sent.length = 0;
+    await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "archive", workspaceId: "w1", sessionId: "s1" }));
     expect(calls).toEqual([]);
     expect(sent).toEqual([{ cid: "c1", msg: { t: "denied", code: "not_authorized" } }]);
+  });
+
+  it("会话不存在（已归档过 / 房间没开）→ archive_result ok:false，不是 denied", async () => {
+    const { deps, sent } = makeDeps({ getSession: () => null, ownerOf: async () => "u1" });
+    const handler = createFrameHandler(deps);
+    await handler.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    sent.length = 0;
+    await handler.onCtlFrame("c1", encodeCs({ t: "archive", workspaceId: "w1", sessionId: "gone" }));
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.msg).toMatchObject({ t: "archive_result", ok: false });
   });
 });
 

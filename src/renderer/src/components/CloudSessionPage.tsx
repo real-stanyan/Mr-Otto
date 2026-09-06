@@ -40,7 +40,7 @@
 // 新造。
 
 import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Archive, ArrowLeft, AtSign, Settings2 } from "lucide-react";
+import { ArrowLeft, AtSign, Settings2 } from "lucide-react";
 import { cn } from "@/lib/utils.js";
 import { Button } from "@/components/ui/button.js";
 import { Bubble, BubbleContent } from "@/components/ui/bubble.js";
@@ -526,18 +526,10 @@ export function CloudSessionPage({
 
   return (
     <div className="flex flex-1 min-h-0 flex-col">
-      {/* 滚动区：头部 + 横幅 + 时间线 + 错误行。scrollbar-stable 同外层原来那份；
-          pb-3 给最后一条消息和输入框之间留口气；onScroll 记「此刻在不在底部」
-          给上面那条跟底 effect 用（阈值 48px：滚动条抖一下不算离开） */}
-      <div
-        ref={scrollRef}
-        onScroll={(e) => {
-          const el = e.currentTarget;
-          stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
-        }}
-        className="flex flex-1 min-h-0 flex-col gap-3 overflow-y-auto scrollbar-stable pb-3"
-      >
-      <div className="flex items-center justify-between gap-2">
+      {/* 头部钉在顶上（#993）：与 footer 对称——#987 那次只钉了输入框，头部还
+          跟着内容滚，翻旧消息时「这是哪个工作区、路由走哪条、设置在哪」全看不见。
+          本地会话的 header 也是这么钉的（settingsShell 的 HEADER：h-11 + border-b） */}
+      <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border/60 px-4 py-2">
         {onBack ? (
           <button
             type="button"
@@ -557,26 +549,9 @@ export function CloudSessionPage({
           <span className="px-1.5 py-1 text-[12.5px] text-muted-foreground">{ws.name}</span>
         )}
         <div className="flex items-center gap-1.5">
-          {/* 收尾（issue #822）。云端没有"恢复归档"那一半（daemon 启动只捞
-              archived=false 的会话重开房间），所以先问一句——同侧栏「删除
-              会话」、踢人那几处的原生 confirm，不新造一套视觉语言 */}
-          {ready && (selfUid === cs.ownerUid || selfUid === creatorUid) && (
-            <button
-              type="button"
-              onClick={() => {
-                if (!window.confirm("归档这条云会话？群里所有人都会看到它收尾，之后不能再发言，也不能恢复。")) return;
-                void cloudArchive();
-              }}
-              className={cn(
-                "press-scale inline-flex w-fit items-center gap-1.5 rounded-[7px] px-1.5 py-1",
-                "text-[12.5px] text-muted-foreground transition-colors duration-150",
-                "hover:bg-foreground/[0.06] hover:text-foreground"
-              )}
-            >
-              <Archive className="size-[13px]" aria-hidden />
-              归档
-            </button>
-          )}
+          {/* 归档不在这儿（#993 第 5 条）：它属于侧栏那条会话行的 ⋮ 菜单，同本地
+              会话——头部是"这条会话是什么"，不是"对它做什么"。协议 9 把 archive
+              搬进控制房正是为了让那颗菜单项不必先开着这条会话 */}
           {/* 模型那一格只读路由（ADR-0233）：blocked 才是**会挡住干活**的那一格，
               给所有成员看。仓库不在头部（#991）：不是每个工作区都有仓库，常驻一格
               「未配仓库」对文案类工作区是噪音——它去了「设置」里的仓库 tab */}
@@ -601,6 +576,19 @@ export function CloudSessionPage({
         </div>
       </div>
 
+      {/* 滚动区：横幅 + 时间线 + 错误行。scrollbar-stable 同外层原来那份；
+          px-4 与本地会话一条量尺（aui viewport 的 `max-w-(--thread-max-width) px-4`，
+          那个变量本仓没定义 = 无上限，所以本地就是「占满 + px-4」，#993 第 2 条）；
+          pb-3 给最后一条消息和输入框之间留口气；onScroll 记「此刻在不在底部」
+          给上面那条跟底 effect 用（阈值 48px：滚动条抖一下不算离开） */}
+      <div
+        ref={scrollRef}
+        onScroll={(e) => {
+          const el = e.currentTarget;
+          stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
+        }}
+        className="flex flex-1 min-h-0 flex-col gap-3 overflow-y-auto scrollbar-stable px-4 pt-3 pb-3"
+      >
       {banner && (
         <p
           className={cn(
@@ -640,12 +628,7 @@ export function CloudSessionPage({
                 ) : row;
               if (e.type === "chat_message") {
                 return (
-                  <ChatMessageRow
-                    key={e.seq}
-                    event={e}
-                    mine={e.fromUid === selfUid}
-                    avatarUrl={memberAvatarOf(ws, e.fromUid)}
-                  />
+                  <ChatMessageRow key={e.seq} event={e} avatarUrl={memberAvatarOf(ws, e.fromUid)} />
                 );
               }
               if (e.type === "user_message") {
@@ -666,8 +649,6 @@ export function CloudSessionPage({
                     ts={e.ts}
                     label={identity.label}
                     text={identity.text}
-                    mine={identity.mine}
-                    targets={identity.targets}
                     avatarUrl={identity.uid ? memberAvatarOf(ws, identity.uid) : ""}
                   />
                 );
@@ -762,7 +743,7 @@ export function CloudSessionPage({
 
       </div>
 
-      <footer className="relative shrink-0 pt-[10px] pb-3">
+      <footer className="relative shrink-0 px-4 pt-[10px] pb-3">
         {/* 滚动缘渐隐，同 App.tsx 的 footer：正文淡进底色，不画 1px 分隔线 */}
         <div aria-hidden className="pointer-events-none absolute inset-x-0 -top-10 h-10 bg-gradient-to-b from-transparent to-background" />
         {/* 外壳与本地会话的输入框**同一套**（#985；App.tsx 的 ChatComposer）：
@@ -975,7 +956,7 @@ export function CloudSessionPage({
     (同典型群聊 UI 的既有约定,如 FriendChatView 两人 DM 靠头像位置区分,
     这里人数不定,靠文字标签)。event.mention 为真时补一个 "@Agent" 角标——
     它是发送那一刻"这句话是对 Agent 说的"这个事实的展示,不分是谁发的 */
-function ChatMessageRow({ event, mine, avatarUrl }: { event: ChatMessageEvent; mine: boolean; avatarUrl: string }) {
+function ChatMessageRow({ event, avatarUrl }: { event: ChatMessageEvent; avatarUrl: string }) {
   // runtime 自己说的话（接力护栏、棒数上限、被踢那句：sessionService 落
   // chat_message 时用的 fromUid: "system"）不画成气泡（第四批 B2-I1 的 UI 半）：
   // 气泡的全部含义是「群里有个人说了这句」，而这几句没有人说。判据取 fromUid
@@ -992,13 +973,11 @@ function ChatMessageRow({ event, mine, avatarUrl }: { event: ChatMessageEvent; m
   // 少跑一处就等于那条路上的闸没关（ADR-0226）
   const name = safeSpeakerLabel(event.label, event.fromUid);
   return (
-    <SpeakerRow mine={mine} avatar={<PersonAvatar name={name} src={avatarUrl} />}>
+    <SpeakerRow avatar={<PersonAvatar name={name} src={avatarUrl} />}>
       <span className="px-1 text-[10.5px] text-muted-foreground">
-        {mine ? "" : `${name} · `}
-        {formatProxyTime(event.ts)}
-        {event.mention ? " · @Agent" : ""}
+        {name} · {formatProxyTime(event.ts)}
       </span>
-      <Bubble align={mine ? "end" : "start"} variant={mine ? "tinted" : "muted"}>
+      <Bubble align="start" variant="muted">
         <BubbleContent className="whitespace-pre-wrap break-words">{event.content}</BubbleContent>
       </Bubble>
     </SpeakerRow>
@@ -1013,19 +992,11 @@ function ChatMessageRow({ event, mine, avatarUrl }: { event: ChatMessageEvent; m
     看不见的地方。自己发的头像也画（维护者原话「不同人类成员发消息时也要显示
     每个人各自的头像」）——靠右的位置已经说明是我，但群里多人时一眼扫过去，
     每一行都有脸比「有的有有的没有」整齐 */
-function SpeakerRow({
-  mine,
-  avatar,
-  children,
-}: {
-  mine: boolean;
-  avatar: ReactNode;
-  children: ReactNode;
-}) {
+function SpeakerRow({ avatar, children }: { avatar: ReactNode; children: ReactNode }) {
   return (
-    <div className={cn("flex max-w-[85%] gap-2", mine ? "flex-row-reverse self-end" : "self-start")}>
+    <div className="flex max-w-[85%] gap-2 self-start">
       <div className="shrink-0 pt-[3px]">{avatar}</div>
-      <div className={cn("flex min-w-0 flex-col gap-0.5", mine ? "items-end" : "items-start")}>{children}</div>
+      <div className="flex min-w-0 flex-col items-start gap-0.5">{children}</div>
     </div>
   );
 }
@@ -1069,25 +1040,20 @@ function UserMessageRow({
   ts,
   label,
   text,
-  mine,
-  targets,
   avatarUrl,
 }: {
   ts: number;
   label: string | null;
   text: string;
-  mine: boolean;
-  targets: string[];
   avatarUrl: string;
 }) {
   return (
-    <SpeakerRow mine={mine} avatar={<PersonAvatar name={label ?? "?"} src={avatarUrl} />}>
+    <SpeakerRow avatar={<PersonAvatar name={label ?? "?"} src={avatarUrl} />}>
       <span className="px-1 text-[10.5px] text-muted-foreground">
-        {!mine && label ? `${label} · ` : ""}
+        {label ? `${label} · ` : ""}
         {formatProxyTime(ts)}
-        {targets.length > 0 ? ` · → ${targets.join("、")}` : ""}
       </span>
-      <Bubble align={mine ? "end" : "start"} variant={mine ? "tinted" : "muted"}>
+      <Bubble align="start" variant="muted">
         <BubbleContent className="whitespace-pre-wrap break-words">{text}</BubbleContent>
       </Bubble>
     </SpeakerRow>
@@ -1115,7 +1081,7 @@ function AssistantMessageRow({
   const toolCalls = event.toolCalls ?? [];
   const name = assistantLabel(event, ws);
   return (
-    <SpeakerRow mine={false} avatar={<AgentAvatar ws={ws} agentId={event.agentId} name={name} />}>
+    <SpeakerRow avatar={<AgentAvatar ws={ws} agentId={event.agentId} name={name} />}>
       <span className="px-1 text-[10.5px] text-muted-foreground">
         {name} · {formatProxyTime(event.ts)}
       </span>
