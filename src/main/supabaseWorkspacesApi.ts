@@ -328,8 +328,9 @@ export async function listMemoryRows(client: SupabaseClient, workspaceId: string
     在代理/网关那一层是有上限的），而原注释否决 updated_at 的理由——`Date.parse` 把微秒砍到
     毫秒、精度丢了会撞出假阳性的"没变过"——只对**解析过的**时间戳成立：原串原样递回去，
     两边都是 Postgres 自己解析成同一个时刻，一个位都不丢。
-    已知代价：两个写者在**同一微秒**写同一行、且第二个拿的是第一个写之前的版本时，CAS 会
-    误放行——timestamptz 的分辨率就是微秒，概率可忽略，写在这里备案。
+    已知代价：两个写者在**同一毫秒**写同一行、且第二个拿的是第一个写之前的版本时，CAS 会
+    误放行——`updated_at` 两端都写 `new Date().toISOString()`（毫秒，取的是各自客户端的钟），
+    不是 DB 的 `now()`；窗口 1 ms，概率可忽略，写在这里备案。
     version === "" 走 insert（读的时候这一档根本没有行）：insert 撞 23505 说明有人在我们
     探测之后抢先建了这一行——按冲突处理，不静默吞掉对方刚写的内容 */
 export async function saveMemoryRow(

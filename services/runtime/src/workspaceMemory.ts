@@ -77,7 +77,8 @@ export function createInMemoryWorkspaceMemory(seed: Record<string, string> = {})
     版本 = `updated_at` 的**原串**（#962，推翻本函数原来按 content 比对的那版）：按 content 时
     PostgREST 把整份正文编进 URL 查询串；而「timestamptz 精度丢了会撞出假阳性」只对
     `Date.parse` 过的时间戳成立，原串原样递回去两边都由 Postgres 解析成同一个时刻。
-    已知代价：两个写者在同一微秒写同一行且第二个拿的是旧版本时 CAS 会误放行，概率可忽略 */
+    已知代价：两个写者在同一毫秒写同一行且第二个拿的是旧版本时 CAS 会误放行（两端写的都是
+    客户端 `toISOString()` 的毫秒值，不是 DB 的 `now()`），概率可忽略 */
 export function createSupabaseWorkspaceMemory(client: SupabaseClient): WorkspaceMemoryStore {
   return {
     async read(workspaceId, agentIds) {
