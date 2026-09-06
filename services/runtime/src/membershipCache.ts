@@ -21,6 +21,11 @@ export interface MembershipCache {
       永久收口"的调用方（重启补跑）用 */
   isMemberOrUnknown(workspaceId: string, uid: string): Promise<Membership>;
   invalidate(workspaceId: string): void;
+  /** 这个工作区此刻的成员集合（同一份 60s 缓存；#979 第 5 条）。给 hostUids()
+      用——它与在籍判断是**同一条 SQL**，原来每 turn 另打一次。查询抛错**原样抛**，
+      不回空集：「拿不到」≠「没有成员」（同 ADR-0197 grants 缓存的规矩），调用方
+      （sessionService 的授权拉取）见到异常就本 turn 不挂代理工具 */
+  members(workspaceId: string): Promise<ReadonlySet<string>>;
 }
 
 interface Entry {
@@ -40,21 +45,23 @@ export function createMembershipCache(
 
   /** 两个出口共用的那一段：命中缓存 / 现查 / 查不到。抛错回 "unknown"，
       由调用方决定把它读成 false 还是别的——两个 API 只在这一格上分叉 */
-  async function lookup(workspaceId: string, uid: string): Promise<Membership> {
+  /** 命中缓存 / 现查并写入；抛错原样抛（不写缓存）。三个出口共用 */
+  async function load(workspaceId: string): Promise<Set<string>> {
     const entry = cache.get(workspaceId);
-    if (entry && now() - entry.at < ttlMs) {
-      return entry.members.has(uid);
-    }
+    if (entry && now() - entry.at < ttlMs) return entry.members;
+    const members = await query(workspaceId);
+    cache.set(workspaceId, { at: now(), members });
+    return members;
+  }
 
+  async function lookup(workspaceId: string, uid: string): Promise<Membership> {
     let members: Set<string>;
     try {
-      members = await query(workspaceId);
+      members = await load(workspaceId);
     } catch {
       // fail-closed：错误路径不写缓存
       return "unknown";
     }
-
-    cache.set(workspaceId, { at: now(), members });
     return members.has(uid);
   }
 
@@ -70,6 +77,10 @@ export function createMembershipCache(
 
     invalidate(workspaceId: string): void {
       cache.delete(workspaceId);
+    },
+
+    members(workspaceId: string): Promise<ReadonlySet<string>> {
+      return load(workspaceId);
     },
   };
 }

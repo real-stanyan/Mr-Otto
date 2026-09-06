@@ -20,7 +20,7 @@ const ws = { baseUrl: "https://own/v1", apiKey: "sk", modelId: "glm-5.3" };
 
 describe("decideRuntimeRoute", () => {
   it("所有者有订阅 → hosted，带平台身份 + on-behalf-of + workspace/session 头；型号尊重工作区配的（网关供的话）", () => {
-    const r = decideRuntimeRoute({ me, requestedModel: "glm-5.3", workspace: ws, ...base });
+    const r = decideRuntimeRoute({ me, requestedModels: ["glm-5.3"], workspace: ws, ...base });
     expect(r.kind).toBe("hosted");
     if (r.kind !== "hosted") return;
     expect(r.model).toBe("glm-5.3");
@@ -29,15 +29,15 @@ describe("decideRuntimeRoute", () => {
     expect(r.endpoint.route).toBe("hosted");
   });
   it("工作区配的型号网关不供 → 用网关第一款", () => {
-    const r = decideRuntimeRoute({ me, requestedModel: "gpt-9", workspace: ws, ...base });
+    const r = decideRuntimeRoute({ me, requestedModels: ["gpt-9"], workspace: ws, ...base });
     expect(r.kind === "hosted" && r.model).toBe("deepseek-v4-flash");
   });
   it("所有者没订阅 + 工作区有 key → workspace 原路（ADR-0202）", () => {
-    expect(decideRuntimeRoute({ me: null, requestedModel: "glm-5.3", workspace: ws, ...base })).toEqual({ kind: "workspace", baseUrl: "https://own/v1", apiKey: "sk", model: "glm-5.3" });
-    expect(decideRuntimeRoute({ me: { ...me, status: "past_due" }, requestedModel: null, workspace: ws, ...base }).kind).toBe("workspace");
+    expect(decideRuntimeRoute({ me: null, requestedModels: ["glm-5.3"], workspace: ws, ...base })).toEqual({ kind: "workspace", baseUrl: "https://own/v1", apiKey: "sk", model: "glm-5.3" });
+    expect(decideRuntimeRoute({ me: { ...me, status: "past_due" }, requestedModels: [], workspace: ws, ...base }).kind).toBe("workspace");
   });
   it("都没 → blocked，两条出路都说", () => {
-    const r = decideRuntimeRoute({ me: null, requestedModel: null, workspace: null, ...base });
+    const r = decideRuntimeRoute({ me: null, requestedModels: [], workspace: null, ...base });
     expect(r.kind === "blocked" && r.reason).toMatch(/订阅/);
     expect(r.kind === "blocked" && r.reason).toMatch(/key/);
   });
@@ -46,7 +46,7 @@ describe("decideRuntimeRoute", () => {
   // 于是静默蒸发，托管路永远拿网关第一款。requestedModel 与 workspace 是两条独立
   // 的入参，这一条钉住「workspace 为 null 也照样尊重 requestedModel」
   it("D1：workspace 为 null（工作区没自带 key）时 hosted 路仍尊重 requestedModel", () => {
-    const r = decideRuntimeRoute({ me, requestedModel: "glm-5.3", workspace: null, ...base });
+    const r = decideRuntimeRoute({ me, requestedModels: ["glm-5.3"], workspace: null, ...base });
     expect(r.kind === "hosted" && r.model).toBe("glm-5.3");
   });
 
@@ -54,11 +54,11 @@ describe("decideRuntimeRoute", () => {
   // 网关**上能点哪几款」，把群里任何成员填的一串字符原样发给 owner 自己的 provider
   // 是另一回事——那把 key 是 owner 的钱
   it("D2：自带 key 路一律用 ws.modelId，不看 requestedModel", () => {
-    expect(decideRuntimeRoute({ me: null, requestedModel: "gpt-9", workspace: ws, ...base })).toEqual({
+    expect(decideRuntimeRoute({ me: null, requestedModels: ["gpt-9"], workspace: ws, ...base })).toEqual({
       kind: "workspace", baseUrl: "https://own/v1", apiKey: "sk", model: "glm-5.3",
     });
     // 探不到也一样（"unreachable" 在这一层与 null 同义，只是 reason 不同）
-    expect(decideRuntimeRoute({ me: "unreachable", requestedModel: "gpt-9", workspace: ws, ...base })).toMatchObject({
+    expect(decideRuntimeRoute({ me: "unreachable", requestedModels: ["gpt-9"], workspace: ws, ...base })).toMatchObject({
       kind: "workspace", model: "glm-5.3",
     });
   });
@@ -66,25 +66,25 @@ describe("decideRuntimeRoute", () => {
   // #957 D3：探不到 ≠ 没订阅。这一层两者结论相同（都不走 hosted），分歧在
   // createHostedRuntimeAdapter 给 route_changed 写什么 reason
   it("D3：me = \"unreachable\" 当 null 用——有 key 走 workspace，没 key 走 blocked", () => {
-    expect(decideRuntimeRoute({ me: "unreachable", requestedModel: null, workspace: ws, ...base }).kind).toBe("workspace");
-    expect(decideRuntimeRoute({ me: "unreachable", requestedModel: null, workspace: null, ...base }).kind).toBe("blocked");
+    expect(decideRuntimeRoute({ me: "unreachable", requestedModels: [], workspace: ws, ...base }).kind).toBe("workspace");
+    expect(decideRuntimeRoute({ me: "unreachable", requestedModels: [], workspace: null, ...base }).kind).toBe("blocked");
   });
 
   // #957 D4：额度耗尽之后再决一次，hosted 那支必须被跳过——不跳的话
   // resolveEndpoint 会把同一个已经 429 的端点再交回去，改道等于没改
   it("D4：exhausted:true 跳过 hosted 分支（有 key → workspace，没 key → blocked）", () => {
-    expect(decideRuntimeRoute({ me, requestedModel: "glm-5.3", workspace: ws, exhausted: true, ...base })).toMatchObject({
+    expect(decideRuntimeRoute({ me, requestedModels: ["glm-5.3"], workspace: ws, exhausted: true, ...base })).toMatchObject({
       kind: "workspace", model: "glm-5.3",
     });
-    expect(decideRuntimeRoute({ me, requestedModel: "glm-5.3", workspace: null, exhausted: true, ...base }).kind).toBe("blocked");
+    expect(decideRuntimeRoute({ me, requestedModels: ["glm-5.3"], workspace: null, exhausted: true, ...base }).kind).toBe("blocked");
     // 缺席 = 现状（不跳）
-    expect(decideRuntimeRoute({ me, requestedModel: "glm-5.3", workspace: ws, ...base }).kind).toBe("hosted");
+    expect(decideRuntimeRoute({ me, requestedModels: ["glm-5.3"], workspace: ws, ...base }).kind).toBe("hosted");
   });
 
   it("给了 agentId → hosted 端点多带 x-otto-agent；不给不带（桌面直连的形状）", () => {
-    const withAgent = decideRuntimeRoute({ me, requestedModel: null, workspace: null, ...base, agentId: "a_ops" });
+    const withAgent = decideRuntimeRoute({ me, requestedModels: [], workspace: null, ...base, agentId: "a_ops" });
     expect(withAgent.kind === "hosted" && withAgent.endpoint.headers).toMatchObject({ [AGENT_HEADER]: "a_ops" });
-    const without = decideRuntimeRoute({ me, requestedModel: null, workspace: null, ...base });
+    const without = decideRuntimeRoute({ me, requestedModels: [], workspace: null, ...base });
     expect(without.kind === "hosted" && AGENT_HEADER in (without.endpoint.headers ?? {})).toBe(false);
   });
 });
@@ -270,7 +270,7 @@ describe("createHostedRuntimeAdapter · 型号路由与换轨（#957 D1/D3/D4）
       ...solo(),
       probe: { me: async () => me },
       cfg: () => null,
-      preferredModel: () => "glm-5.3",
+      preferredModels: () => ["glm-5.3"],
     });
     await adapter.prepare?.();
     expect(adapter.model).toBe("glm-5.3");
@@ -281,7 +281,7 @@ describe("createHostedRuntimeAdapter · 型号路由与换轨（#957 D1/D3/D4）
       ...solo(),
       probe: { me: async () => me },
       cfg: () => null,
-      preferredModel: () => "gpt-9",
+      preferredModels: () => ["gpt-9"],
     });
     await adapter.prepare?.();
     expect(adapter.model).toBe("deepseek-v4-flash");
@@ -292,7 +292,7 @@ describe("createHostedRuntimeAdapter · 型号路由与换轨（#957 D1/D3/D4）
       ...solo(),
       probe: { me: async () => null },
       cfg: () => ({ ...ws, modelId: "owner-choice" }),
-      preferredModel: () => "gpt-9",
+      preferredModels: () => ["gpt-9"],
     });
     await adapter.prepare?.();
     expect(adapter.model).toBe("owner-choice");
@@ -404,7 +404,7 @@ describe("createHostedRuntimeAdapter · 型号路由与换轨（#957 D1/D3/D4）
       ...solo(),
       probe: { me: async () => me },
       cfg: () => ({ ...ws, modelId: "owner-choice" }), // 所有者自己的型号名
-      preferredModel: () => "glm-5.3", // 成员在白名单里填的那个
+      preferredModels: () => ["glm-5.3"], // 成员在白名单里填的那个
       onRouteChanged: (from, to, reason) => changes.push([from, to, reason]),
     });
     const urls: string[] = [];
@@ -428,7 +428,7 @@ describe("createHostedRuntimeAdapter · 型号路由与换轨（#957 D1/D3/D4）
       ...solo(),
       probe: { me: async () => me },
       cfg: () => ws, // ws.modelId === "glm-5.3" === 白名单那一款
-      preferredModel: () => "glm-5.3",
+      preferredModels: () => ["glm-5.3"],
     });
     const urls: string[] = [];
     vi.stubGlobal("fetch", vi.fn(async (url: string) => {
@@ -656,5 +656,43 @@ describe("createHostedRuntimeAdapter · 云端并发已满时排队（#960）", 
     const adapter = createHostedRuntimeAdapter({ ...soloInflight(), probe: { me: async () => null }, cfg: () => ws });
     await expect(adapter.chat([{ role: "user", content: "hi" }])).rejects.toThrow("model API 429");
     expect(fetchMock).toHaveBeenCalledTimes(3); // 默认 maxAttempts，一次队都没排
+  });
+});
+
+// #979 第 4 条（ADR-0232）：白名单原来只有 [0] 有消费方——表单写「逗号分隔」，其余
+// 元素没人读。现在它是一条优先级链：agent 白名单按顺序 → 工作区配的那款 → 网关第一款
+describe("型号白名单是优先级链（#979 第 4 条，ADR-0232）", () => {
+  const solo = () => ({ ownerUid: "u1", workspaceId: "w1", sessionId: "s1", edgeBase: "https://edge", runtimeSecret: "rs", routeMemo: createRouteMemo() });
+
+  it("decideRuntimeRoute：按顺序取网关供着的第一个；一个都不供才退网关第一款", () => {
+    expect(decideRuntimeRoute({ me, requestedModels: ["gpt-9", "glm-5.3"], workspace: null, ...base })).toMatchObject({ kind: "hosted", model: "glm-5.3" });
+    expect(decideRuntimeRoute({ me, requestedModels: ["gpt-9", "gpt-8"], workspace: null, ...base })).toMatchObject({ kind: "hosted", model: "deepseek-v4-flash" });
+    expect(decideRuntimeRoute({ me, requestedModels: [], workspace: null, ...base })).toMatchObject({ kind: "hosted", model: "deepseek-v4-flash" });
+  });
+
+  it("adapter：白名单第二个供 → 用第二个，不碰工作区配的那款", async () => {
+    const adapter = createHostedRuntimeAdapter({
+      ...solo(),
+      probe: { me: async () => me },
+      cfg: () => ({ ...ws, modelId: "glm-5.3" }),
+      preferredModels: () => ["gpt-9", "deepseek-v4-flash"],
+    });
+    await adapter.prepare?.();
+    expect(adapter.model).toBe("deepseek-v4-flash");
+  });
+
+  it("adapter：白名单整条都不供 → 工作区配的那款排在网关第一款之前", async () => {
+    const adapter = createHostedRuntimeAdapter({
+      ...solo(),
+      probe: { me: async () => me },
+      cfg: () => ({ ...ws, modelId: "glm-5.3" }),
+      preferredModels: () => ["gpt-9"],
+    });
+    await adapter.prepare?.();
+    expect(adapter.model).toBe("glm-5.3");
+  });
+
+  it("D2 仍然成立：自带 key 路不看白名单，哪怕白名单有好几个", () => {
+    expect(decideRuntimeRoute({ me: null, requestedModels: ["gpt-9", "gpt-8"], workspace: ws, ...base })).toMatchObject({ kind: "workspace", model: "glm-5.3" });
   });
 });

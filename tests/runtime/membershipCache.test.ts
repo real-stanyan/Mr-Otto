@@ -39,4 +39,20 @@ describe("在籍缓存", () => {
     c.invalidate("w");
     expect(await c.isMember("w", "u1")).toBe(false);
   });
+
+  // #979 第 5 条：hostUids() 与在籍判断是同一条 SQL，共用这一份缓存
+  it("members()：与 isMember 共用同一份 60s 缓存，不另打查询", async () => {
+    let calls = 0;
+    const c = createMembershipCache(async () => { calls++; return new Set(["u1", "u2"]); });
+    await c.isMember("w", "u1");
+    expect([...(await c.members("w"))].sort()).toEqual(["u1", "u2"]);
+    expect(calls).toBe(1);
+  });
+  it("members()：查询抛错原样抛、不写缓存——「拿不到」≠「没有成员」", async () => {
+    let fail = true;
+    const c = createMembershipCache(async () => { if (fail) throw new Error("db down"); return new Set(["u1"]); });
+    await expect(c.members("w")).rejects.toThrow("db down");
+    fail = false;
+    expect((await c.members("w")).has("u1")).toBe(true);
+  });
 });

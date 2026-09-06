@@ -416,11 +416,11 @@ function AgentEditorDialog({
               value={modelsRaw}
               onChange={(e) => setModelsRaw(e.target.value)}
               onKeyDown={onInputKeyDown}
-              placeholder="逗号分隔，第一个是默认；留空用工作区的型号"
+              placeholder="逗号分隔，按顺序取托管网关供着的第一个；留空用工作区的型号"
               disabled={busy}
             />
             <p className="text-[10.5px] text-muted-foreground">
-              型号 id 得是工作区所配那家提供商认得的——这里不校验。
+              只对订阅托管那条路生效：排在前面的网关不供就往后找，都不供用网关默认款。工作区自带 key 时一律用工作区配的型号。这里不校验 id。
             </p>
           </div>
 

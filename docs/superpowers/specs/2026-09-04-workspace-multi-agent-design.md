@@ -107,6 +107,7 @@ create unique index if not exists workspace_agents_name
   是安静地断。
 - **`models` 是数组不是单值**：用户配的是「这只能用哪些」，具体哪一次用哪个留给
   会话级选择；`[0]` 是默认。空数组 = 用工作区默认型号（ADR-0202 的 `adapterFor`）。
+  > 2026-09-06 修订（ADR-0232）：「会话级选择」没做，数组改读成**优先级链**——按顺序取托管网关供着的第一个，都不供退工作区配的那款、再退网关第一款；只对 hosted 路生效。
 - **`tools` 的 `[] = 整池放行` 口径故意与 `workspace_connectors` 一致**——不一致的话
   同一个字面量在相邻两张表里意思相反。
 - RLS 照 `workspace_sessions` 抄：成员可 select；成员可 insert（`created_by = auth.uid()`

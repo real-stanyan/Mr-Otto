@@ -106,11 +106,14 @@ export function decideRuntimeRoute(o: {
   /** `"unreachable"` 在这一层与 `null` 同义（都走不了 hosted）；分歧只在
       调用方给 route_changed 写什么 reason（#957 D3） */
   me: BillingMe | null | "unreachable";
-  /** **只喂 hosted 分支**（#957 D1/D2）：它是「这只 agent 在我们的网关上想点哪一款」。
+  /** **只喂 hosted 分支**（#957 D1/D2）：它是「这只 agent 在我们的网关上想点哪几款」。
       自带 key 那条路一律用 `workspace.modelId` —— 白名单是群里任何成员都能改的
       一串字符，而那把 key 是所有者的钱，把它原样发给所有者自己的 provider 是
-      另一回事 */
-  requestedModel: string | null;
+      另一回事。
+      **按顺序取网关供着的第一个**（#979 第 4 条，ADR-0232）：原来只有 `[0]` 有消费方，
+      表单却写着「逗号分隔」——数组的其余元素没人读。现在它是一条优先级链：agent 白名单
+      按顺序 → 工作区配的那款 → 网关第一款。空数组 = 直接网关第一款 */
+  requestedModels: readonly string[];
   workspace: { baseUrl: string; apiKey: string; modelId: string } | null;
   /** 扣谁的账 = 工作区所有者（ADR-0217）。`me` 也必须是**这个 uid** 的订阅快照 */
   ownerUid: string;
@@ -127,7 +130,7 @@ export function decideRuntimeRoute(o: {
 }): RuntimeRoute {
   const me = o.me === "unreachable" ? null : o.me;
   if (!o.exhausted && me && me.status === "active" && me.plan && me.models.length > 0) {
-    const model = o.requestedModel && me.models.includes(o.requestedModel) ? o.requestedModel : me.models[0]!;
+    const model = o.requestedModels.find((m) => me.models.includes(m)) ?? me.models[0]!;
     return {
       kind: "hosted",
       model,
@@ -173,7 +176,7 @@ export async function probeModelRoute(o: {
   const ws = o.cfg();
   const route = decideRuntimeRoute({
     me: await o.probe.me(o.ownerUid),
-    requestedModel: ws?.modelId ?? null,
+    requestedModels: ws?.modelId ? [ws.modelId] : [],
     workspace: ws,
     ownerUid: o.ownerUid,
     workspaceId: o.workspaceId,
@@ -198,13 +201,13 @@ export interface HostedRuntimeAdapterDeps {
   sessionId: string;
   /** 这一台 adapter 服务哪只工作区 agent（#946）；桌面直连没有这一格 */
   agentId?: string;
-  /** 这只 agent 的型号白名单第一个（#957 D1）。**每次现读**（同 `cfg` 的纪律：
-      白名单在设置页里随时可改，会话房是长命的）。只影响 hosted 分支——
-      自带 key 那条路由所有者定型号（D2，见 decideRuntimeRoute 的 requestedModel）。
-      缺席/回 undefined = 退到工作区配的 modelId，再退到网关第一款。
+  /** 这只 agent 的型号白名单，**按顺序**（#957 D1 / #979 第 4 条）。**每次现读**
+      （同 `cfg` 的纪律：白名单在设置页里随时可改，会话房是长命的）。只影响 hosted
+      分支——自带 key 那条路由所有者定型号（D2，见 decideRuntimeRoute 的 requestedModels）。
+      缺席/回 [] = 退到工作区配的 modelId，再退到网关第一款。
       **不能塞进 `cfg()` 的 modelId 里冒充工作区配置**：工作区没配 key 时
       `cfg()` 整个是 null，白名单会跟着一起蒸发（这正是 D1 那个 bug） */
-  preferredModel?: () => string | undefined;
+  preferredModels?: () => readonly string[];
   /** 这台 adapter 决出的路走到另一条上去了（#957 D3）。调用方据此落一条
       `route_changed`——「钱从谁账上出」变了，这个事实日志里推不出来
       （`assistant_message.route` 只说这个 turn 最终走了哪条路，不说为什么、
@@ -265,9 +268,9 @@ export function createHostedRuntimeAdapter(deps: HostedRuntimeAdapterDeps): Mode
     const exhausted = o?.exhausted === true || quotaKnownExhausted();
     const route = decideRuntimeRoute({
       me,
-      // 白名单第一个 → 工作区配的 → 网关第一款（后两级在 decideRuntimeRoute 里）。
+      // 白名单按顺序 → 工作区配的 → 网关第一款（最后一级在 decideRuntimeRoute 里）。
       // 现读一次，不缓存（D1）
-      requestedModel: deps.preferredModel?.() ?? ws?.modelId ?? null,
+      requestedModels: [...(deps.preferredModels?.() ?? []), ...(ws?.modelId ? [ws.modelId] : [])],
       workspace: ws ? { baseUrl: ws.baseUrl, apiKey: ws.apiKey, modelId: ws.modelId } : null,
       ownerUid: uid,
       workspaceId: deps.workspaceId,

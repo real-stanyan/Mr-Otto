@@ -22,10 +22,12 @@ import {
   type Sandbox,
 } from "./sandbox.js";
 import { createMembershipCache } from "./membershipCache.js";
+import { createTtlCache } from "./ttlCache.js";
+import { createWorkspaceLocks } from "./workspaceLock.js";
 import { createFrameRateLimiter } from "./rateLimit.js";
 import { createCloudSession, type CloudSession, type AgentSpec } from "./sessionService.js";
 import { createSupabaseWorkspaceMemory } from "./workspaceMemory.js";
-import { createSupabaseAgentWriter } from "./agentRegistry.js";
+import { createSupabaseAgentWriter, type WorkspaceAgentWriter } from "./agentRegistry.js";
 import { normalizeAgentTools } from "../../../src/shared/agentToolAllow.js";
 import { safeSpeakerLabel } from "../../../src/shared/promptSafe.js";
 import type { PxCallDeps } from "./pxTools.js";
@@ -232,7 +234,6 @@ async function main(): Promise<void> {
 
   const px: PxCallDeps = { edgeBase: config.edgeBase, runtimeSecret: config.runtimeSecret };
   const workspaceMemory = createSupabaseWorkspaceMemory(supabase);
-  const agentWriter = createSupabaseAgentWriter(supabase);
 
   // 发起人有订阅 → 走网关代表发起人（Task 13，spec 第 5 节，扣发起人不扣 owner）；
   // /me 60s/uid 缓存——一个坏掉的 edge 不该被每个 turn 打一次
@@ -281,9 +282,9 @@ async function main(): Promise<void> {
       // 纯工作区配置（ADR-0202 的原路）。**不做 env 兜底**，理由同 ADR-0202：
       // 兜底 = 忘了配的工作区默默烧维护者的钱
       cfg: () => workspaceConfigStore.load(workspaceId)?.model ?? null,
-      // agent 的型号白名单第一个就是它在网关上的默认；空白名单 = 退到工作区
-      // 配的那款，再退到网关第一款（都在 decideRuntimeRoute 里）
-      preferredModel: () => agent.models[0],
+      // agent 的型号白名单**按顺序**取网关供着的第一个（#979 第 4 条）；空白名单 =
+      // 退到工作区配的那款，再退到网关第一款（都在 hostedRoute.ts 里）
+      preferredModels: () => agent.models,
       onRouteChanged,
       routeMemo,
       ownerUid,
@@ -293,17 +294,16 @@ async function main(): Promise<void> {
     });
   }
 
-  /** workspace_members 的 uid 集合——membershipCache 的 query 与
-      hostUids()（每 turn 现取一次成员名单）共用同一条查询，前者带 60s 缓存，
-      后者故意不缓存（sessionService 的设计就是要"这一刻的成员"） */
+  /** workspace_members 的 uid 集合——membershipCache 的 query；hostUids() 也从
+      同一份 60s 缓存读（#979 第 5 条，原来这里每 turn 另打一次同一条 SQL） */
   async function queryMemberUids(workspaceId: string): Promise<Set<string>> {
     const { data, error } = await supabase.from("workspace_members").select("uid").eq("workspace_id", workspaceId);
     if (error) throw new Error(error.message);
     return new Set((data ?? []).map((r: { uid: string }) => r.uid));
   }
 
-  /** 这个工作区此刻的 agent 名单。**不缓存** —— 同 queryMemberUids,
-      sessionService 的设计就是要「这一刻的名单」,建/改 agent 下一 turn 生效。
+  /** 这个工作区此刻的 agent 名单。**这个函数不缓存**（缓存住在 agentsCache 那一层，
+      #979 第 5 条）——建/改 agent 下一句人话生效、接力链内 ≤60s。
       **故意 fail-fast**（error 直接 throw，不在这里回落）：查询失败到底是
       "表还没迁移"还是"这一次 Supabase 抖了"，这个函数分不清楚，也不该由
       它猜——回落到哪个名单是装配点的决定（见 openSessionRoom 里 agents:
@@ -325,6 +325,25 @@ async function main(): Promise<void> {
   }
 
   const membership = createMembershipCache(queryMemberUids);
+
+  /** agent 名单的 60s 快照（#979 第 5 条，ADR-0232）。queryAgents 本身仍是「如实
+      报告查到了什么」；缓存住在装配点。三条读路径的口径：
+        · say()（人刚开口）→ refresh：此刻的名单，人在设置页刚改的那份也算数；
+        · runJob / relayAfterTurn → get：接力链内复用快照（每一棒不再各打一次）；
+        · create_agent 落库 → invalidate（下面 agentWriter 那层包装）。
+      代价：桌面直连 Supabase 的建/改/删（不经 daemon）在接力链内最多 60s 后可见——
+      人自己 @ 的那一轮仍然是现读的 */
+  const agentsCache = createTtlCache(queryAgents, { ttlMs: 60_000 });
+  const rawAgentWriter = createSupabaseAgentWriter(supabase);
+  const agentWriter: WorkspaceAgentWriter = {
+    async create(workspaceId, draft, createdBy) {
+      const r = await rawAgentWriter.create(workspaceId, draft, createdBy);
+      agentsCache.invalidate(workspaceId);
+      return r;
+    },
+  };
+  /** 每个工作区一把容器锁（#979 第 2 条，ADR-0232）：一容器一卷，多条会话共用 */
+  const workspaceLocks = createWorkspaceLocks();
 
   async function labelOf(uid: string): Promise<string> {
     const { data } = await supabase.from("profiles").select("name").eq("id", uid).maybeSingle();
@@ -614,8 +633,8 @@ async function main(): Promise<void> {
       // 就是这一行，回落与"真实结果"同构（见该常量注释）。console.error
       // （不是 warn）：0021 已经在真库上跑过了（PR #931 合并时执行并验过），
       // 所以这行日志本不该出现——出现了就是查询真的挂了，运维该看得见
-      agents: () =>
-        queryAgents(workspaceId).catch((err: unknown) => {
+      agents: (o) =>
+        (o?.fresh ? agentsCache.refresh(workspaceId) : agentsCache.get(workspaceId)).catch((err: unknown) => {
           console.error(
             `[otto-runtime] workspace_agents 查询失败，回落到单 agent 占位（workspaceId=${workspaceId}）：` +
               `${err instanceof Error ? err.message : String(err)}`
@@ -640,7 +659,10 @@ async function main(): Promise<void> {
           recordUsage
         ),
       px,
-      hostUids: async () => [...(await queryMemberUids(workspaceId))],
+      // 与在籍判断共用同一份 60s 缓存（#979 第 5 条）：原来这里每 turn 另打一次
+      // **同一条 SQL**。查询抛错原样抛——sessionService 那侧接住、本 turn 不挂代理工具
+      hostUids: async () => [...(await membership.members(workspaceId))],
+      workspaceLock: workspaceLocks.for(workspaceId),
       // 起跑那一刻再验一次籍（#957 B-I1）。与 frameHandler 的那道闸共用同一个
       // membershipCache（60s 记忆化 + fail-closed）：收帧时验过一次不够——turn
       // 可以在队列里等很久，接力那条链更是可以在几分钟后替最初点火的那个人

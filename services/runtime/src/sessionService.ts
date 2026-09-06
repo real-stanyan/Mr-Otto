@@ -176,7 +176,8 @@ import { promptSafe, safeSpeakerLabel } from "../../../src/shared/promptSafe.js"
 import { openTurns } from "../../../src/shared/turnLedger.js";
 import { createTurnCoordinator, type TurnJob, type EnqueueDecision } from "./turnCoordinator.js";
 import { createApprovalRouter, RELAY_APPROVAL_TIMEOUT_MS, type ApproveOutcome } from "./approvalRouter.js";
-import { fetchGrantedTools, buildPxTools, type PxCallDeps } from "./pxTools.js";
+import { fetchGrantedTools, buildPxTools, type PxCallDeps, type GrantedPxServer } from "./pxTools.js";
+import { CONTAINER_BUSY_TEXT, type WorkspaceLock } from "./workspaceLock.js";
 import { filterGrantedByAllow, type AgentToolAllow } from "../../../src/shared/agentToolAllow.js";
 import { createWorkspaceMemoryTool } from "./workspaceMemoryTool.js";
 import type { WorkspaceMemoryStore, WorkspaceMemoryValue } from "./workspaceMemory.js";
@@ -260,8 +261,12 @@ export interface CloudSessionOpts {
   store: EventStore; // daemon 按工作区开
   world: ExecutionWorld; // DockerWorld
   /** 这个工作区此刻有哪几只 agent。**每 turn 现取一次**,同 hostUids ——
-      建/改 agent 下一 turn 生效,不用重开会话 */
-  agents: () => Promise<AgentSpec[]>;
+      建/改 agent 下一 turn 生效,不用重开会话。
+      `fresh`（#979 第 5 条，ADR-0232）：say() 递 `{fresh:true}`——人刚开口，要的是
+      此刻的名单；runJob / relayAfterTurn 不递——daemon 那侧可以回一份 ≤60s 的快照
+      （接力链内每一棒不再各打一次；create_agent 落库会让快照失效）。测试与冒烟
+      的假件忽略这个参数即可 */
+  agents: (o?: { fresh?: boolean }) => Promise<AgentSpec[]>;
   /** 按 agent 造 adapter(型号来自它的白名单)。daemon 给 */
   adapterFor: (agent: AgentSpec) => ModelAdapter;
   px: PxCallDeps;
@@ -307,6 +312,14 @@ export interface CloudSessionOpts {
       同 relayMaxDepth「每条会接力的 turn 现查」的纪律；没撞门的 turn 一次都不查）。
       daemon 接 `workspaces.sandbox_approval`，查询失败回落 "ask"——往严的一边倒 */
   sandboxApproval: () => Promise<SandboxApproval>;
+  /** 这个工作区的容器锁（#979 第 2 条，ADR-0232）。**必需**（同 memory / isMember
+      的纪律）：忘接线该编译不过，而不是安静地跑成两条会话同时改同一个 `/work`。
+      daemon 按 workspaceId 一把（createWorkspaceLocks）；测试各给一把新的，要验互斥
+      的两条会话共用同一把。sessionService **第一次碰容器才拿**、这一轮收口才放，
+      只聊天的 turn 一次都不排队 */
+  workspaceLock: WorkspaceLock;
+  /** 时钟（只给测试拧 TTL 用）。缺席 = Date.now */
+  now?: () => number;
 }
 
 /** `say()` 的业务拒绝：限速、一句话 @ 太多、名单降级时点了名（#957 B2-C1 / E2-4）。
@@ -538,6 +551,69 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   // 归档那一半，所以只看有没有 session_archived
   let archived = seed.some((e) => e.type === "session_archived");
   let cachedPxTools: Tool[] = [];
+  const now = opts.now ?? (() => Date.now());
+
+  // ── 容器互斥（#979 第 2 条，ADR-0232）────────────────────────────────
+  // 同工作区多条会话共用一容器一卷，锁由 daemon 按工作区注入。**第一次碰容器才拿**
+  // （read_file / write_file / bash 三条路都经这道门），这一轮收口（runJob 的
+  // finally）才放；只聊天的 turn 不排队。等锁可被停止键打断：jobLockAbort 是这一轮
+  // 的信号，abortCurrent 顺手翻它——否则「停止」要等别的会话做完才生效。
+  // 排队时在群里说一声（一轮一次）：不说的话「另一条会话占着容器」与「模型卡住了」
+  // 在界面上长得一模一样
+  let jobLockAbort: AbortController | null = null;
+  let heldRelease: (() => void) | null = null;
+  let lockPending: Promise<void> | null = null;
+  function gateContainer(): Promise<void> {
+    if (heldRelease) return Promise.resolve();
+    if (lockPending) return lockPending;
+    const lock = opts.workspaceLock;
+    if (lock.holder() !== null) logChat("system", "系统", CONTAINER_BUSY_TEXT, false);
+    lockPending = lock
+      .acquire(sessionId, jobLockAbort?.signal)
+      .then((release) => {
+        heldRelease = release;
+      })
+      .finally(() => {
+        lockPending = null;
+      });
+    return lockPending;
+  }
+  /** 挂在 engine 上的 world：每条容器操作先过 gateContainer。`...opts.world` 把
+      http 与可选能力原样带过去（DockerWorld 只实现 fs/exec/http） */
+  const world: ExecutionWorld = {
+    ...opts.world,
+    fs: {
+      read: async (path) => {
+        await gateContainer();
+        return opts.world.fs.read(path);
+      },
+      write: async (path, content) => {
+        await gateContainer();
+        return opts.world.fs.write(path, content);
+      },
+    },
+    exec: async (cmd, o) => {
+      await gateContainer();
+      return opts.world.exec(cmd, o);
+    },
+  };
+
+  // ── 授权拉取的 60s 快照（#979 第 5 条）────────────────────────────────
+  // fetchGrantedTools 是**每个成员一次 edge**，原来每 turn 都打一遍。按
+  // (发起人, 成员名单) 记一份、60s 内复用；只缓存成功结果（抛错原样抛、不占位）。
+  // 代价：好友新授出的连接器最多 60s 后才挂上；撤销不受影响——每次调用 edge 的
+  // pxGate 都重判，缓存里那把刀只是「摆出来给模型看」，用不了
+  const GRANTS_TTL_MS = 60_000;
+  let grantsSnapshot: { key: string; at: number; value: GrantedPxServer[] } | null = null;
+  async function grantedFor(fromUid: string): Promise<GrantedPxServer[]> {
+    const hosts = [...(await opts.hostUids())].sort();
+    const key = `${fromUid}\n${hosts.join("\n")}`;
+    const t = now();
+    if (grantsSnapshot && grantsSnapshot.key === key && t - grantsSnapshot.at < GRANTS_TTL_MS) return grantsSnapshot.value;
+    const value = await fetchGrantedTools(opts.px, fromUid, hosts);
+    grantsSnapshot = { key, at: t, value };
+    return value;
+  }
   // 每只 agent 一台 engine，按 agentId 缓存复用（#928）——复用整台 engine 而
   // 不是换人格：engine 持有每会话状态（loopFingerprints 退化循环护栏、压缩
   // 标记），换人格不换这些就串味，运营那只的护栏指纹会算进广告那只
@@ -749,7 +825,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         ...(spec.agentId === ADMIN_AGENT_ID ? [createAgentTool] : []),
         ...cachedPxTools,
       ],
-      world: opts.world,
+      world, // 过容器锁的那份（#979 第 2 条），不是裸的 opts.world
       sessionId,
       // 策略层包在 router 外面（#977）：沙箱工具按工作区开关放行，其余进 router 问人
       approver: policyApprover,
@@ -932,6 +1008,9 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // 不在"，后者不该取决于前者有没有生效
     stopRequested = true;
     if (currentEngine) currentEngine.abortTurn();
+    // 正在等别的会话放容器锁的话，等待本身也要断（#979 第 2 条）——engine 的信号
+    // 打不到一次还没起 exec 的等待
+    jobLockAbort?.abort();
     // 说出口（同 ADR-0168「撤销要说出口」那条纪律）：只把信号翻掉的话，"有人
     // 按了停止"和"模型这一轮碰巧没话说"在群里长得一模一样，而这两件事该做的
     // 动作相反。名字现取 specNames（runJob 每次刷新），查不到退回 agentId。
@@ -1145,6 +1224,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // 就会出现"接力口径开了、旁白却还记着上一轮已经说过"这种只在第二轮才现形的漏说
     relayWaitAnnounced = false;
     jobSandboxPolicy = null; // 每轮现查（#977）：owner 翻了开关下一轮生效
+    jobLockAbort = new AbortController(); // 这一轮等容器锁的中断信号（#979 第 2 条）
     currentInitiator = job.fromUid;
     currentAgentId = job.agentId;
     // 停止键的 idle 判据（#957 A-2 复审）：从**这一刻**起这条会话就欠着一轮，
@@ -1244,7 +1324,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       } else {
         let granted: Awaited<ReturnType<typeof fetchGrantedTools>> = [];
         try {
-          granted = await fetchGrantedTools(opts.px, job.fromUid, await opts.hostUids());
+          granted = await grantedFor(job.fromUid);
         } catch (err) {
           // fetchGrantedTools 内部已经把单 host 失败挡住了；这里兜的是更外层的
           // 意外（hostUids() 本身抛错等）——本 turn 就没有云代理工具，不阻塞发言
@@ -1354,6 +1434,11 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // 作用域是**一个 job**，不是一条会话（复审）：一句话点了两只 agent 时，
       // 停掉第一只不该顺手把第二只也判死——那是"清队列"，而 stop 停的是这一轮
       stopRequested = false;
+      // 这一轮收口就放容器锁（#979 第 2 条）；没碰过容器的 turn 这里是 null。
+      // 放在 finally：engine 抛错、合成收口、跳过接力棒……哪条路出去都得放
+      heldRelease?.();
+      heldRelease = null;
+      jobLockAbort = null;
     }
   }
 
@@ -1403,7 +1488,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
 
   const session: CloudSession = {
     async say(fromUid, label, text, mention, mentions, budget) {
-      const roster = await opts.agents();
+      // 人刚开口 → 要此刻的名单（#979 第 5 条）：他在设置页刚建/改的那只要能立刻 @ 到
+      const roster = await opts.agents({ fresh: true });
       // **名单降级 + 这句话点了名 = 一个字节都不落**（#957 E2-4）：degraded 那份
       // 是 workspace_agents 查询失败时的占位（只有 DEFAULT_WORKSPACE_AGENT 一只），
       // 拿它去 resolveTargets，"@运营" 自然解不出来 —— 于是下面那句 sayUnknown

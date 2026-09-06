@@ -27,6 +27,7 @@ import { EventStore } from "../../../src/session/store.js";
 import type { SessionEvent } from "../../../src/session/events.js";
 import type { ModelAdapter } from "../../../src/model/adapter.js";
 import type { ExecutionWorld } from "../../../src/world/executionWorld.js";
+import { createWorkspaceLock } from "../src/workspaceLock.js";
 import { CS_PROTOCOL_VERSION, csChannel, encodeCs, type CsDown } from "../../../src/shared/remote/cloudSession.js";
 
 // ── 断言收集（同 services/edge/checks/relay.mjs 的 check() 手法）───────────
@@ -168,6 +169,7 @@ async function scenarioMainFlow(): Promise<void> {
             // 自动压缩因此不触发（shouldAutoCompact 见 undefined 直接 false）
             contextWindowOf: () => undefined,
             sandboxApproval: async () => "ask",
+            workspaceLock: createWorkspaceLock(),
           });
           activeSessions.set(sessionId, { session, workspaceId: ws });
           return { sessionId };
