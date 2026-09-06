@@ -5,7 +5,7 @@
 import type { DeltaKind, ModelAdapter, ModelReply, ToolDefinition } from "./adapter.js";
 import type { TokenUsage } from "../session/events.js";
 import type { ChatMessage, UserContentPart } from "../session/deriveMessages.js";
-import { classifyStatus, errorClassOf, markErrorClass, markReroute, type RerouteInfo } from "./errorClass.js";
+import { classifyStatus, errorClassOf, markBilling, markErrorClass, markReroute, type RerouteInfo } from "./errorClass.js";
 import { parseBillingError, parseSseCostComment } from "../shared/billing.js";
 import type { ThinkingMode, ThinkingWire } from "../shared/thinking.js";
 
@@ -56,6 +56,12 @@ export interface OpenAICompatibleOptions {
   /** 网关说额度用完那一刻（改道之前）。调用方据此把快照标成 exhausted，
       让紧接着的 resolveEndpoint 给出另一条路 */
   onReroute?: (info: RerouteInfo) => void;
+  /** 这次失败要不要**按调用方的规矩**再等一等（#960）。回毫秒数 = 睡这么久再发一次，
+      且**绕过 maxAttempts**——真实用例是 edge 的并发闸（`too_many_inflight`）：那不是
+      上游故障，是在排队等别人的槽位，退避三次报废整轮解决不了任何问题。回 null/缺席
+      = 走默认策略（既有行为一字不变，所以别的调用方不受影响）。signal 照旧优先：
+      排队窗口里按停止立刻醒 */
+  retryDelayFor?: (err: unknown, attempt: number) => number | null;
 }
 
 /** 传输层健壮性参数（issue #283）。原则：**首 token 前**的失败可重试（限流/网络闪断/
@@ -381,10 +387,18 @@ export function createOpenAICompatibleAdapter(opts: OpenAICompatibleOptions): Mo
           opts.onReroute?.(info);
           throw markRetryable(markReroute(markErrorClass(new Error(`model API 429: ${billing.message}`), "reroute"), info));
         }
+        // 认得出的网关信封：贴上原文（下游据此分辨「哪一种 429」），并且**并发已满
+        // 那条不甩 JSON 给人看**——那句 message 本来就是给人读的，而 errBody 是
+        // 一坨带 type/code 的信封（#960）。别的 code 暂不改文案：那是另一笔决定
         const err = markErrorClass(
-          new Error(`model API ${res.status}: ${errBody.slice(0, 500)}`),
+          new Error(
+            billing?.code === "too_many_inflight"
+              ? `model API ${res.status}: ${billing.message}`
+              : `model API ${res.status}: ${errBody.slice(0, 500)}`
+          ),
           classifyStatus(res.status)
         );
+        if (billing) markBilling(err, billing);
         throw errorClassOf(err) === "fatal" ? err : markRetryable(err);
       }
       opts.onResponse?.({ route: endpoint.route ?? "direct", headers: res.headers });
@@ -524,6 +538,14 @@ export function createOpenAICompatibleAdapter(opts: OpenAICompatibleOptions): Mo
             if (rerouted || signal?.aborted) throw err;
             rerouted = true;
             continue; // 不睡退避——等的是窗口不是上游
+          }
+          // 调用方的排队钩子先于默认策略（#960）：它说等多久就等多久，不受
+          // maxAttempts 管——那个上限是给「上游坏了」定的，排队等槽位不是坏
+          const custom = opts.retryDelayFor?.(err, attempt);
+          if (custom !== null && custom !== undefined) {
+            if (signal?.aborted) throw err;
+            await sleep(custom, signal);
+            continue;
           }
           if (!isRetryable(err) || attempt >= timing.maxAttempts || signal?.aborted) throw err;
           await sleep(

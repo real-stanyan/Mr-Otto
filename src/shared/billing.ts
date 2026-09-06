@@ -73,6 +73,13 @@ export const SESSION_HEADER = "x-otto-session";
     值落 usage_event.agent_id；名字随时会改，所以带的是 id */
 export const AGENT_HEADER = "x-otto-agent";
 
+/** 单用户并发上限（ADR-0174 第 5 条「加购无视限速」的兜底）。**住在 shared 不住在
+    edge**（#960）：闸门开在 edge 的 Quota DO 里，但撞上它的人在 runtime 和桌面，
+    而给人看的那句话要把这个数字念出来（「同一时刻最多 N 条」）。抄一份到 runtime
+    的下场是闸门改了、话没改——一个说 4、一个说 6，两句都言之凿凿。
+    edge 的 `services/edge/src/quota.ts` 从这里 import 再 re-export（既有 import 方不变） */
+export const MAX_INFLIGHT = 4;
+
 export type BillingErrorCode =
   | "bad_token"
   | "no_subscription"
