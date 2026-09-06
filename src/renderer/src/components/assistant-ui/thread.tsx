@@ -139,7 +139,9 @@ const isHistoryLoadingView = (s: AssistantState) =>
   !s.thread.isDisabled &&
   !s.threads.isLoading;
 
-const ThreadHistorySkeleton: FC = () => (
+// Exported so the cloud session page (CloudSessionPage.tsx, #983) can show the
+// same "history still loading" shape instead of inventing a second one.
+export const ThreadHistorySkeleton: FC = () => (
   <div
     data-slot="aui_thread-history-skeleton"
     role="status"

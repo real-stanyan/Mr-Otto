@@ -271,3 +271,28 @@ export function stopButtonRows(turns: readonly OpenTurn[]): Set<string> {
   }
   return new Set([...earliest].map(([agentId, seq]) => `${seq}:${agentId}`));
 }
+
+/** 时间线为空时主区画什么（#983）。三档：
+    - `skeleton`：历史**还没拉到**——connecting（welcome/backlog 在路上），或
+      gone 且一条事件都没有（还没拉到过就断了，wsTransport 正在自动重连）。
+      这时写「还没有消息。」是句假话：不是没有，是还没看到。
+    - `empty`：ready 且零事件——ready 的定义就是 backlog 已补完全量
+      （shellBridge 的 CloudSessionStatus 注释），这才是真的「还没有消息」。
+    - `none`：denied（横幅那一行已经说了为什么，再画一行空态是把「进不来」
+      说成「里面是空的」），或者已有事件（gone 时旧历史还在，照画不动）。
+    判据只看 state + 事件数，不看「我刚点了什么」——同 statusBanner 的纪律 */
+export function cloudEmptyState(
+  state: "connecting" | "ready" | "denied" | "gone",
+  eventCount: number
+): "skeleton" | "empty" | "none" {
+  if (eventCount > 0) return "none";
+  switch (state) {
+    case "connecting":
+    case "gone":
+      return "skeleton";
+    case "ready":
+      return "empty";
+    case "denied":
+      return "none";
+  }
+}
