@@ -1,5 +1,6 @@
 -- 0026_workspace_sandbox_approval.sql —— 沙箱内工具（bash / write_file）要不要人批，工作区可配（#977，ADR-0231）。幂等。
 -- 与 0024 同一约定：Supabase SQL editor / Management API 手动执行一次。
+-- 已于 2026-09-06 经维护者确认后在生产执行（Management API；执行后核过：列在、默认 'ask'，存量 2 个工作区都是 ask）。
 --
 -- 为什么要这一列：云会话的审批门只看 tool.requiresApproval，runtime 没有桌面那套
 -- approvalMode——每一次 bash / write_file 都要人批，而 drain 串行 + 10 分钟超时 = 一只
