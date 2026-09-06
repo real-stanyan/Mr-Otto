@@ -37,7 +37,7 @@ export function createCreateAgentTool(deps: {
           name: { type: "string", description: `群里 @ 它用的名字，1–${AGENT_NAME_MAX} 字，不含 @` },
           description: { type: "string", description: `一句话职责，≤ ${AGENT_DESCRIPTION_MAX} 字；会进别人的花名册` },
           instructions: { type: "string", description: `它的 system 提示词，≤ ${AGENT_INSTRUCTIONS_MAX} 字` },
-          models: { type: "array", items: { type: "string" }, description: `允许的型号 id，第一个是默认；不传 = 用工作区默认；最多 ${AGENT_MODELS_MAX} 个` },
+          models: { type: "array", items: { type: "string" }, description: `允许的型号 id，按优先顺序：网关供着的第一个生效；不传 = 用工作区默认；最多 ${AGENT_MODELS_MAX} 个` },
           tools: {
             type: "array",
             description: "连接器白名单：[{serverId, tools:[工具名…]}]；条目 tools 为 [] = 那台整台放行；不传 = 全部连接器都能用",
