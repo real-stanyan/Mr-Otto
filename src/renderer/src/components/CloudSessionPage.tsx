@@ -50,6 +50,10 @@ import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog.js";
 import { Input } from "@/components/ui/input.js";
+import { Textarea } from "@/components/ui/textarea.js";
+import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip.js";
+import { COMPOSER_METRICS, ComposerActions, ComposerBar, ComposerSend, ComposerToolbar } from "@/components/elements/composer.js";
+import { ghostButton } from "@/lib/surfaces.js";
 import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover.js";
 import { useChat, type CloudSessionState } from "../store.js";
 import { EventRow, TimelineProjectionContext } from "./Timeline.js";
@@ -346,6 +350,7 @@ export function CloudSessionPage({
 
   const ready = cs.state === "ready";
   const banner = statusBanner(cs);
+  const canSend = ready && !sending && draft.trim().length > 0;
   const timelineEmpty = cloudEmptyState(cs.state, events.length);
 
   /** 一次发送：mentions 缺席就不传第二参（老语义，服务端按名字解析 + 回落
@@ -723,21 +728,33 @@ export function CloudSessionPage({
         </div>
       )}
 
-      <footer className="flex flex-col gap-1.5 border-t border-border/60 pt-3">
-        {/* 「发给谁」预览。**只读**：去掉一枚 = 从正文里把那个 @ 删掉——正文
-            才是事实，给 pill 配一颗 × 就等于开了第二个事实来源，两边迟早不一致 */}
-        {mentions.length > 0 && (
-          <div className="flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground">
-            <span>发给</span>
-            {mentions.map((id) => (
-              <span key={id} className="rounded-full border border-border px-2 py-[1px]">
-                {agentNameOf(ws, id)}
-              </span>
-            ))}
-          </div>
-        )}
-
-        <div className="flex items-end gap-2">
+      <footer className="pt-1">
+        {/* 外壳与本地会话的输入框**同一套**（#985；App.tsx 的 ChatComposer）：
+            elements/composer 的 ComposerBar 把「这一条要发的东西」当成一摞来排——
+            点名行 / 输入 / 工具条——类名逐字照抄那边。少掉的是工具条左边那条偏好栏
+            （审批模式 / 型号 / thinking / 用量环）：那几样在云会话里是**工作区**的属性
+            不是这条会话的（ADR-0202 / 0233，同 CloudWelcome 头注），摆上来就是几个
+            点了不生效的控件。cursor-text + 点空白处聚焦：本地那边由 ComposerPrimitive.Root
+            代劳，这里没有它，自己接一下 */}
+        <ComposerBar
+          className="focus-within:border-border dark:border-muted-foreground/15 dark:focus-within:border-muted-foreground/30 relative cursor-text shadow-sm transition-[border-color,background-color]"
+          onClick={(e) => {
+            if (e.target === e.currentTarget) boxRef.current?.focus();
+          }}
+        >
+          {/* 「发给谁」预览。**只读**：去掉一枚 = 从正文里把那个 @ 删掉——正文
+              才是事实，给 pill 配一颗 × 就等于开了第二个事实来源，两边迟早不一致。
+              位置同本地的附件暂存区（StagedChips）：输入框上方那一行 */}
+          {mentions.length > 0 && (
+            <div className="flex flex-wrap items-center gap-1 px-1 text-[11px] text-muted-foreground">
+              <span>发给</span>
+              {mentions.map((id) => (
+                <span key={id} className="rounded-full border border-border px-2 py-[1px]">
+                  {agentNameOf(ws, id)}
+                </span>
+              ))}
+            </div>
+          )}
           {/* 弹层走 Radix 的 Popover 而不是自己 absolute 定位：这一页整个装在
               CloudSessionMain 的 overflow-y-auto 里，`absolute bottom-full` 画出来的
               列表一旦高过 footer 到滚动容器上沿的距离，超出的部分会被裁掉且滚不到
@@ -747,11 +764,16 @@ export function CloudSessionPage({
               它会拿去做菜单导航）；焦点也一步都不许挪，靠两个 AutoFocus 的 preventDefault */}
           <Popover open={picking !== null && (options.length > 0 || emptyState !== null)}>
             <PopoverAnchor asChild>
-              <textarea
+              {/* 与本地的 ComposerTextarea 逐字同款：无边框、自动长高（Textarea 自带
+                  field-sizing: content）、max-h 封顶出滚动条、度量走 COMPOSER_METRICS */}
+              <Textarea
                 ref={boxRef}
                 rows={1}
                 disabled={!ready}
-                className="min-h-[34px] flex-1 min-w-0 resize-none rounded-2xl border border-border bg-transparent px-3 py-[7px] text-[13px] leading-relaxed transition-colors duration-150 placeholder:text-muted-foreground/70 focus:border-ring focus:outline-none disabled:opacity-50"
+                className={cn(
+                  "relative border-none shadow-none min-h-0 bg-transparent dark:bg-transparent text-foreground resize-none max-h-[40vh] focus-visible:ring-0 placeholder:text-foreground/35 caret-foreground",
+                  COMPOSER_METRICS
+                )}
                 placeholder={ready ? "输入 @ 点名智能体；不 @ 就只是群里说一句" : "还没连上，暂时发不了消息"}
                 value={draft}
                 onChange={(e) => {
@@ -873,23 +895,40 @@ export function CloudSessionPage({
               )}
             </PopoverContent>
           </Popover>
-          {/* 这颗钮不再是"对 Agent 说"的开关（有了名单，得说清对哪一只）——
-              它现在只做一件事：在光标处插一个 @，把弹层叫出来 */}
-          <Button
-            type="button"
-            variant="outline"
-            size="icon-sm"
-            disabled={!ready}
-            onClick={insertAt}
-            title="@ 智能体"
-            aria-label="@ 智能体"
-          >
-            <AtSign className="size-[13px]" aria-hidden />
-          </Button>
-          <Button size="sm" disabled={!draft.trim() || sending || !ready} onClick={() => void submit()}>
-            发送
-          </Button>
-        </div>
+          {/* 工具条：本地那边左边是偏好栏、右边是发送/停止圆钮。这里左边只剩一颗 @
+              （形状抄 ComposerAttachButton 的 ghost 圆钮，本地那颗「＋ 附件」的位置）；
+              发送键**不变停止键**——云会话的停止按 agent 挂在时间线那一行上
+              （stopButtonRows），一条会话可能同时跑着好几只，底下一颗钮说不清停谁 */}
+          <ComposerToolbar className="relative items-end gap-2">
+            {/* 这颗钮不再是"对 Agent 说"的开关（有了名单，得说清对哪一只）——
+                它现在只做一件事：在光标处插一个 @，把弹层叫出来 */}
+            <button
+              type="button"
+              disabled={!ready}
+              onClick={insertAt}
+              title="@ 智能体"
+              aria-label="@ 智能体"
+              className={cn(ghostButton, "size-8 disabled:pointer-events-none disabled:opacity-30")}
+            >
+              <AtSign className="size-4" aria-hidden />
+            </button>
+            <ComposerActions>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <ComposerSend
+                    streaming={false}
+                    idle={!canSend}
+                    disabled={!canSend}
+                    aria-label="发送消息"
+                    onClick={() => void submit()}
+                    className="shrink-0 disabled:pointer-events-none"
+                  />
+                </TooltipTrigger>
+                <TooltipContent>发送(Enter)</TooltipContent>
+              </Tooltip>
+            </ComposerActions>
+          </ComposerToolbar>
+        </ComposerBar>
       </footer>
     </div>
   );
