@@ -375,6 +375,10 @@ export function createHostedRuntimeAdapter(deps: HostedRuntimeAdapterDeps): Mode
         // 就是那一坨信封：它既没说这是**工作区**共用的闸门（所以不是「我的额度」
         // 出了问题），也没说等一等就好。秒数从两个常量算出来，别写死——改了节奏
         // 而话没改，就成了另一句言之凿凿的假话
+        // 只有托管这条路会撞我们的并发闸（复审 fix round 1 的用例逼出来的）：
+        // 自带 key 那支打的是所有者自己的 provider，那儿冒出来的 429 无论长什么样
+        // 都不该被说成「工作区的云端模型并发已满」
+        if (route.kind !== "hosted") throw err;
         const billing = billingErrorOf(err);
         if (billing?.code !== "too_many_inflight") throw err;
         const waited = Math.round((INFLIGHT_MAX_ATTEMPTS * INFLIGHT_RETRY_MS) / 1000);

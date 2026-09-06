@@ -57,10 +57,12 @@ export interface OpenAICompatibleOptions {
       让紧接着的 resolveEndpoint 给出另一条路 */
   onReroute?: (info: RerouteInfo) => void;
   /** 这次失败要不要**按调用方的规矩**再等一等（#960）。回毫秒数 = 睡这么久再发一次，
-      且**绕过 maxAttempts**——真实用例是 edge 的并发闸（`too_many_inflight`）：那不是
-      上游故障，是在排队等别人的槽位，退避三次报废整轮解决不了任何问题。回 null/缺席
-      = 走默认策略（既有行为一字不变，所以别的调用方不受影响）。signal 照旧优先：
-      排队窗口里按停止立刻醒 */
+      且这一次**不算进 maxAttempts 的预算**——真实用例是 edge 的并发闸
+      （`too_many_inflight`）：那不是上游故障，是在排队等别人的槽位，退避三次报废整轮
+      解决不了任何问题；同理排完队之后那次真·瞬时故障仍然拿满 maxAttempts 次机会。
+      **只绕过 maxAttempts，不绕过 retryable**：钩子排在「重发安不安全」那道闸之后，
+      所以致命错与首 token 之后的失败根本轮不到它。回 null/缺席 = 走默认策略（既有
+      行为一字不变，别的调用方不受影响）。signal 照旧优先：排队窗口里按停止立刻醒 */
   retryDelayFor?: (err: unknown, attempt: number) => number | null;
 }
 
@@ -387,17 +389,16 @@ export function createOpenAICompatibleAdapter(opts: OpenAICompatibleOptions): Mo
           opts.onReroute?.(info);
           throw markRetryable(markReroute(markErrorClass(new Error(`model API 429: ${billing.message}`), "reroute"), info));
         }
-        // 认得出的网关信封：贴上原文（下游据此分辨「哪一种 429」），并且**并发已满
-        // 那条不甩 JSON 给人看**——那句 message 本来就是给人读的，而 errBody 是
-        // 一坨带 type/code 的信封（#960）。别的 code 暂不改文案：那是另一笔决定
         const err = markErrorClass(
-          new Error(
-            billing?.code === "too_many_inflight"
-              ? `model API ${res.status}: ${billing.message}`
-              : `model API ${res.status}: ${errBody.slice(0, 500)}`
-          ),
+          new Error(`model API ${res.status}: ${errBody.slice(0, 500)}`),
           classifyStatus(res.status)
         );
+        // 认得出的网关信封原样贴在错误上（#960）：下游据此分辨「哪一种 429」。
+        // **message 不动**（复审 fix round 1）——渲染层的 humanizeError 靠从
+        // `model API 429: {…}` 里把信封的 message 抠出来说人话，把 JSON 换成那句
+        // 人话反而让它匹配不到、退回按状态码的「额度/资源包已用完」，正是这条
+        // issue 要消灭的误导。runtime 那条路判的是 billingErrorOf 不是 message，
+        // 所以它的人话一个字不受影响
         if (billing) markBilling(err, billing);
         throw errorClassOf(err) === "fatal" ? err : markRetryable(err);
       }
@@ -528,6 +529,7 @@ export function createOpenAICompatibleAdapter(opts: OpenAICompatibleOptions): Mo
       // 重试循环（issue #283）：只重试贴了 retryable 标记的失败（首 token 前的
       // 限流/瞬时故障/网络闪断/静默）。用户 abort 优先于一切——退避窗口里也能醒
       let rerouted = false;
+      let queued = 0; // 其中有几次是排队等槽位（不算进 maxAttempts 的预算，见下）
       for (let attempt = 1; ; attempt++) {
         signal?.throwIfAborted();
         try {
@@ -539,17 +541,23 @@ export function createOpenAICompatibleAdapter(opts: OpenAICompatibleOptions): Mo
             rerouted = true;
             continue; // 不睡退避——等的是窗口不是上游
           }
-          // 调用方的排队钩子先于默认策略（#960）：它说等多久就等多久，不受
-          // maxAttempts 管——那个上限是给「上游坏了」定的，排队等槽位不是坏
+          // 「重发安不安全」这道闸在钩子**之前**（复审 fix round 1）：致命错、
+          // 以及首 token 之后的失败都不带 retryable 标记，一个回数字的钩子若排在
+          // 它前面就能把已经直播出去的半条消息重播一遍
+          if (!isRetryable(err) || signal?.aborted) throw err;
+          // 排队钩子先于默认退避（#960）：它说等多久就等多久，且**这次不算进
+          // maxAttempts 的预算**——那个上限是给「上游坏了」定的，排队等槽位不是坏。
+          // 共用一个计数器的话，排过队之后紧接着来的一次真·瞬时故障就一次重试机会
+          // 都没有了（复审 fix round 1）
           const custom = opts.retryDelayFor?.(err, attempt);
           if (custom !== null && custom !== undefined) {
-            if (signal?.aborted) throw err;
+            queued += 1;
             await sleep(custom, signal);
             continue;
           }
-          if (!isRetryable(err) || attempt >= timing.maxAttempts || signal?.aborted) throw err;
+          if (attempt - queued >= timing.maxAttempts) throw err;
           await sleep(
-            timing.backoffMs[Math.min(attempt - 1, timing.backoffMs.length - 1)] ?? 0,
+            timing.backoffMs[Math.min(attempt - queued - 1, timing.backoffMs.length - 1)] ?? 0,
             signal
           );
         }

@@ -634,9 +634,12 @@ describe("createHostedRuntimeAdapter · 云端并发已满时排队（#960）", 
         !e.message.includes("otto_edge") &&
         errorClassOf(e) === "rate-limit" &&
         billingErrorOf(e)?.code === "too_many_inflight");
-      for (let i = 0; i <= INFLIGHT_MAX_ATTEMPTS; i++) await vi.advanceTimersByTimeAsync(INFLIGHT_RETRY_MS);
+      for (let i = 0; i <= INFLIGHT_MAX_ATTEMPTS + 3; i++) await vi.advanceTimersByTimeAsync(INFLIGHT_RETRY_MS);
       await assertion;
-      expect(fetchMock).toHaveBeenCalledTimes(INFLIGHT_MAX_ATTEMPTS);
+      // 17 次排队（attempt 1..17 都在 INFLIGHT_MAX_ATTEMPTS 之内）+ 默认预算 3 次：
+      // 排队不吃 maxAttempts（复审 fix round 1），所以队排满之后这条 429 照旧是一条
+      // 普通的可重试限流，该有的三次退避一次不少
+      expect(fetchMock).toHaveBeenCalledTimes(INFLIGHT_MAX_ATTEMPTS - 1 + 3);
     } finally {
       vi.useRealTimers();
     }
@@ -644,11 +647,14 @@ describe("createHostedRuntimeAdapter · 云端并发已满时排队（#960）", 
 
   // 自带 key 那条路上没有 edge 的并发闸（打的是所有者自己的 provider），
   // 排队钩子挂上去只会把上游真正的 429 拖成 90 秒
-  it("自带 key 那条路不排队：429 照旧走默认退避，几次就抛", async () => {
-    const fetchMock = vi.fn(async () => new Response("slow down", { status: 429 }));
+  it("自带 key 那条路不排队：连同款信封一起回，也只走默认的 3 次退避就抛", async () => {
+    // 用**同一个** otto_edge 信封（不是随便一串 429 正文）：非信封的 429 连
+    // billingErrorOf 都是 undefined，钩子挂上也回 null——那样的用例即使把
+    // retryDelayFor 错挂到这一支上照样绿（复审 fix round 1）
+    const fetchMock = vi.fn(async () => inflight());
     vi.stubGlobal("fetch", fetchMock);
     const adapter = createHostedRuntimeAdapter({ ...soloInflight(), probe: { me: async () => null }, cfg: () => ws });
     await expect(adapter.chat([{ role: "user", content: "hi" }])).rejects.toThrow("model API 429");
-    expect(fetchMock.mock.calls.length).toBeLessThan(INFLIGHT_MAX_ATTEMPTS);
+    expect(fetchMock).toHaveBeenCalledTimes(3); // 默认 maxAttempts，一次队都没排
   });
 });
