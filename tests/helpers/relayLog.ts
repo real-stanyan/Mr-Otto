@@ -3,8 +3,13 @@
 //
 // 手写用例覆盖不了这次改动要的那种东西：openTurns / openingDepthFor 的语义是
 // 「点名 × 之后的事件」这张二维表，单遍重写把两层循环折成一层，出错的形状往往
-// 是某个事件的**处理顺序**（一条 user_message 既是新的点名、又可能带 agentId，
-// 是某只 agent 的动静）。这类顺序错在手写用例里几乎撞不到，随机对拍能。
+// 是某个事件的**处理顺序**（一条 user_message 既是新的点名、又带 agentId，于是
+// 同时是某只 agent 的动静）。这类顺序错在手写用例里几乎撞不到，随机对拍能——
+// **前提是随机语料里真的有这种双身份事件**。第一版的头注声称覆盖了它、生成器
+// 却造不出来（唯一带 agentId 的 user_message 是护栏私话，而它没有 mentions；
+// 200 个 seed 实测 0 条，复审 Minor ④），所以护栏私话分支现在有一半概率也带上
+// mentions。`tests/shared/turnLedger.test.ts` 里有一条断言按住这件事：语料里
+// 双身份事件的条数必须 > 0，头注不能再悄悄变成假话。
 
 import type { SessionEvent } from "../../src/session/events.js";
 
@@ -57,9 +62,16 @@ export function generateLog(seed: number): SessionEvent[] {
         ...(hasRead ? { readUpToSeq: Math.floor(rnd() * (seq + 1)) } : {}),
       }));
     } else if (roll < 0.93) {
-      // engine 注给某一只 agent 的私话（loop_guard）：user_message 也可能带 agentId，
-      // 于是同一条事件既要当「这只 agent 的动静」处理、又不是点名
-      out.push(mk(seq, { type: "user_message", content: `[系统] 打转 ${seq}`, origin: "loop_guard", agentId: pick(GEN_AGENTS) }));
+      // engine 注给某一只 agent 的私话（loop_guard）：user_message 也可能带 agentId。
+      // 一半概率再挂上 mentions —— 这就是**双身份事件**：同一条既要当「这只 agent
+      // 的动静」处理（刷更早那些格子）、又要当一条新的点名（建新格子），而两件事
+      // 的先后顺序正是单遍重写唯一会错的地方。产品上今天走不到这个形状（护栏私话
+      // 不点名），但这一层的判据是「事件长什么样」不是「谁写的」，语料就该覆盖到
+      const alsoMentions = rnd() < 0.5;
+      out.push(mk(seq, {
+        type: "user_message", content: `[系统] 打转 ${seq}`, origin: "loop_guard", agentId: pick(GEN_AGENTS),
+        ...(alsoMentions ? { mentions: [pick(GEN_AGENTS)], fromUid: "u1" } : {}),
+      }));
     } else {
       out.push(mk(seq, { type: "chat_message", fromUid: "system", content: `旁白 ${seq}` }));
     }

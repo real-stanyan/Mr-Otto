@@ -500,9 +500,14 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       都从这过一遍，lastSeq() 才对得上 */
   function notify(e: SessionEvent): void {
     lastSeqSeen = e.seq;
-    // 尾段下界跟着走（#958）：这里是唯一的落盘口，所以「装配时整份折叠」与
-    // 「之后逐条推进」加起来 ≡「对整份日志折叠一次」——两条路各写一套判据的话，
-    // 重启前后读的尾段就会不一样，而它不报错、只会偶尔少读几条
+    // 尾段下界跟着走（#958）。**别把它读成「这里是唯一的落盘口，所以折叠结果
+    // 精确等于对整份日志折叠一次」**（复审 Minor ③）：那句话不真——daemon.ts 往
+    // 同一个 store 直接 append 了四类事件（notifyWorkspace 的 chat_message /
+    // model_usage / route_changed / session_created），全都绕开 notify，它自己
+    // 的注释就写着这件事。真正保住正确性的是另一条、也更结实的理由：
+    // advanceRelayBounds 只做**单调取 max**，所以**漏掉任何一条事件只会让下界
+    // 更小 = 多读几条，永远不会算大**。这段推理不依赖任何一条会被别人违反的
+    // 不变量——将来谁再加一条绕过 notify 的 append，这里也不会因此出错
     advanceRelayBounds(bounds, e);
     opts.onEvent(e);
   }
@@ -977,7 +982,11 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // agent 的 turn 收口、也就长不出新的接力开场白；这期间人插的话 depth 恒为 0
     // 只读「这只 agent 上一次收口」之后的尾段（#958）：seq ≤ closeBound 的点名
     // 一定已经收口，收了口的对 depth 没有贡献（推导见 agentRelay.ts 的
-    // RelayBounds 头注）。同样是保守下界——不在表里 = 还没收过口 = 读全量
+    // RelayBounds 头注）。同样是保守下界——不在表里 = 还没收过口 = 读全量。
+    // 说清楚收益面是哪一段（复审 Important ①）：**一只 agent 在本进程里的第一轮
+    // 仍然全量读一次**（bounds 里还没有它的格子，afterSeq 落到 −1 = 全量游标），
+    // 之后每一轮才是尾段读。省下的是「长会话里第 2、3、…、N 轮」那 N−1 次全量
+    // 重读，而群聊里 turn 正是接力着一轮轮长出来的
     const openingDepth = openingDepthFor(
       store.load(sessionId, { afterSeq: bounds.closeBound.get(job.agentId) ?? -1 }),
       job.agentId,

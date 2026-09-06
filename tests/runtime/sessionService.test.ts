@@ -3684,19 +3684,31 @@ describe("runJob 的在籍三态（Task 1 复审：fail-closed 分支的执行�
   });
 });
 
-describe("每 turn 只读日志尾段（#958）", () => {
-  /** 把 store 包一层，记下每次**全量** load（没给 afterSeq）的直接调用点。
-      判据取「直接调用点」而不是「有没有发生全量 load」：engine 那一侧的全量读
-      （engine.ts 重建 turnLog、modelContextScan 退回全量）是它自己的上下文投影，
-      不在这个任务的范围里，而它走的是 agentView 包过的那份 store——栈上第一帧
-      因此是 agentView.ts，与 sessionService.ts 自己那两处分得开。
-      栈的第 0 行是 "Error"、第 1 行是下面这个箭头函数、第 2 行才是真正的调用点 */
+describe("稳态每 turn 只读日志尾段（#958）", () => {
+  /** 把 store 包一层，记下每次**全量** load 的调用点。
+
+      两处判据都被复审纠正过：
+      ① **`afterSeq: -1` 就是全量游标**（`loadRaw` 是 `seq > ?`，seq 从 0 起），
+         漏掉它的话这条断言在它自己跑的场景里就已经不成立——一只 agent 的第一轮
+         `closeBound` 还是空的，实际执行的正是 `{ afterSeq: -1 }`（复审 Important ①）；
+      ② 判据取**直接调用点**：engine 那一侧的全量读（重建 turnLog、
+         modelContextScan 退回全量）是它自己的上下文投影，不在这个任务范围里，
+         而它走的是 `agentView` 包过的那份 store —— 栈上第一帧因此是 agentView.ts。
+      栈的第 0 行是 "Error"、第 1 行是下面这个箭头函数、第 2 行才是真正的调用点。 */
+  function callerFileOf(stack: string): string {
+    const frame = stack.split("\n")[2] ?? "";
+    // 取帧里最后一个 `xxx.ts` 文件名；解不出来回原文（**不回 "?"**：静默降级成一个
+    // 固定串会让下面那条正面断言在栈格式变化的那天安静变绿，复审 Nit ⑦）
+    const m = /([A-Za-z0-9_.-]+\.tsx?):\d+:\d+/.exec(frame);
+    return m?.[1] ?? `无法解析的栈帧: ${frame.trim()}`;
+  }
+
   function countingStore(store: EventStore, fullLoads: string[]): EventStore {
     return new Proxy(store, {
       get(target, prop) {
         if (prop === "load") {
           return (sessionId: string, opts?: { afterSeq?: number; untilSeq?: number }) => {
-            if (opts?.afterSeq === undefined) fullLoads.push((new Error().stack ?? "").split("\n")[2]?.trim() ?? "?");
+            if (opts?.afterSeq === undefined || opts.afterSeq < 0) fullLoads.push(callerFileOf(new Error().stack ?? ""));
             return target.load(sessionId, opts);
           };
         }
@@ -3706,7 +3718,7 @@ describe("每 turn 只读日志尾段（#958）", () => {
     }) as EventStore;
   }
 
-  it("装配之后跑完一条 say → turn → 接力，sessionService 自己一次全量 load 都不做", async () => {
+  it("两只 agent 都收过一次口之后，再跑一条 say → turn → 接力，全量 load 只剩 engine 自己那些", async () => {
     const store = newStore();
     const fullLoads: string[] = [];
     const events: SessionEvent[] = [];
@@ -3721,16 +3733,29 @@ describe("每 turn 只读日志尾段（#958）", () => {
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { return { content: a.agentId === "ops" ? "报表好了，@广告 按这个投" : "收到" }; } }),
       onEvent: (e) => events.push(e), onUsage: () => {},
     });
-    // 装配那一次播种 load 是允许的（lastSeqSeen / archived / bounds 三件事一次读完）
-    fullLoads.length = 0;
+    try {
+      // **热身这一轮不算数**，它跑的是「每只 agent 在本进程里的第一轮」：
+      // 装配那次播种 load 是全量的（三件事一次读完），两只 agent 的 closeBound 也
+      // 都还是空的 → `?? -1` 落到全量游标，人话点火位又恰好是 seq 0 →
+      // `Math.max(-1, 0 - 1) === -1` 也是全量。这一轮之后两只都落过 turn_ended、
+      // lastHumanOpening 也离开了 0，从此才是这次优化真正的收益面：稳态
+      await session.say("u1", "alice", "@运营 出报表", true, ["ops"]);
+      await session.settled();
+      // 热身确实走到了接力（否则第二轮的前提——ads 也收过口——不成立）
+      expect(events.filter((e) => e.type === "agent_relay")).toHaveLength(1);
+      expect(events.filter((e) => e.type === "turn_ended")).toHaveLength(2);
 
-    await session.say("u1", "alice", "@运营 出报表", true, ["ops"]);
-    await session.settled();
-    // 场景确实跑到了接力那一步——否则这条断言是在一条没走到的路上宣布胜利
-    expect(events.some((e) => e.type === "agent_relay")).toBe(true);
+      fullLoads.length = 0;
+      await session.say("u1", "alice", "@运营 再出一份", true, ["ops"]);
+      await session.settled();
+      expect(events.filter((e) => e.type === "agent_relay")).toHaveLength(2);
 
-    const mine = fullLoads.filter((l) => l.includes("sessionService.ts"));
-    expect(mine, `剩下的全量 load 调用点：\n${fullLoads.join("\n")}`).toEqual([]);
-    store.close();
+      // **正面断言**，不是「过滤掉 sessionService.ts 之后为空」（复审 Nit ⑦）：
+      // 负面写法在栈格式变化那天会安静变绿。这里要求剩下的每一帧都确实解析成功、
+      // 且都来自 agentView.ts —— engine 的上下文投影，范围外（ADR-0003 / #961）
+      expect([...new Set(fullLoads)].sort()).toEqual(["agentView.ts"]);
+    } finally {
+      store.close();
+    }
   });
 });

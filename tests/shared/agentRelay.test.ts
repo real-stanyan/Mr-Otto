@@ -223,10 +223,12 @@ describe("openingDepthFor / relayChain 的尾段下界（#958）", () => {
     }
   });
 
-  it("relayBoundsOf 与逐条 advanceRelayBounds 折叠是同一个结果", () => {
-    // sessionService 两条路：装配时整份折叠一次（relayBoundsOf），之后每条事件
-    // 经 notify 增量推进（advanceRelayBounds）。两套判据分家的那天，重启前后
-    // 读的尾段就不一样——而它不会报错，只会偶尔少读几条
+  it("【今天恒真的未来护栏】relayBoundsOf 折叠 ≡ 逐条 advanceRelayBounds", () => {
+    // **诚实标注**（复审 Nit ⑤）：relayBoundsOf 此刻的实现字面就是
+    // `for (const e of events) advanceRelayBounds(b, e)`，所以这条现在不可能红，
+    // 它此刻什么也没在检查。留着的唯一理由是「哪天有人为了快，把整份折叠重写成
+    // 独立的第二份实现」——sessionService 装配时走前者、之后每条事件走后者，
+    // 两份分家的那天读的尾段就不一样，而它不报错、只会偶尔少读几条
     for (let seed = 1; seed <= 200; seed++) {
       const all = generateLog(seed);
       const fold = emptyRelayBounds();

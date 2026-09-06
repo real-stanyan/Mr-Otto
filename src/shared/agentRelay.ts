@@ -23,13 +23,27 @@ export function relayDepthOf(opening: UserMessageEvent): number {
   return opening.relay?.depth ?? 0;
 }
 
+/** 「这是一次**人话点火**吗」——点了名、又不是接力替它落的那条开场白。
+
+    **只此一份**（#958 复审 Important ②）：`relayChain` 拿它定链首，
+    `advanceRelayBounds` 拿它算 `lastHumanOpening` 这条尾段下界，而后者存在的
+    全部理由就是「从这里读起，`relayChain` 解得回同一个链首」——两处抄两份字面量
+    的话，这个等式没有任何东西按住它。方向性还很要命：`relayChain` 那份一旦被
+    **收窄**（比如将来加一条 `&& e.fromUid !== "system"`），`lastHumanOpening` 就
+    **算大**，尾段起点越过真正的链首 → 若干条 `agent_relay` 读不到 → `decideRelay`
+    的 depth 偏小 → **棒数上限那道闸安静地不再命中**。同 `wire.ts` / `pxEscrow`
+    那条「共用一份」的纪律。 */
+export function isHumanOpening(e: SessionEvent): e is UserMessageEvent {
+  return e.type === "user_message" && !!e.mentions && e.mentions.length > 0 && !e.relay;
+}
+
 /** 最近一条**人**点名（带 mentions 且没有 relay）的 user_message 之后的全部 agent_relay。
     一条都没有（旧日志 / 没人点过名）= 全部 agent_relay */
 export function relayChain(events: readonly SessionEvent[]): AgentRelayEvent[] {
   let start = -1;
   for (let i = events.length - 1; i >= 0; i--) {
     const e = events[i]!;
-    if (e.type === "user_message" && e.mentions && e.mentions.length > 0 && !e.relay) { start = i; break; }
+    if (isHumanOpening(e)) { start = i; break; }
   }
   const out: AgentRelayEvent[] = [];
   for (let i = start + 1; i < events.length; i++) {
@@ -114,10 +128,19 @@ export function openingDepthFor(events: readonly SessionEvent[], agentId: string
        openingDepthFor(load({afterSeq: closeBound}), …) ≡ openingDepthFor(load(), …)。
        没有 agentId 的 turn_ended（本机会话/旧日志）不进表——openingDepthFor 里
        它谁的口也收不了，进表就是把下界算大。
-    ② lastHumanOpening = 最后一条「mentions 非空且没有 relay」的 user_message 的
-       seq。relayChain 的 start 就是它，所以从 lastHumanOpening − 1 之后读，那条
-       点火位与它之后的全部 agent_relay 一条不少；−1（谁也没点过名）时
-       afterSeq 取 −1 = 全量，与改动前逐字节等价。 */
+       **这条推导明写着一个前提：readUpToSeq ≤ T.seq**（复审 Nit ⑥）。它对
+       runtime 自己写出来的日志成立——engine 是在 append turn_ended **之前**读的
+       日志尾（src/loop/engine.ts 的 readUpToSeq），而 seq 是整库一条严格递增的链。
+       手写/损坏的日志破得掉它（一条 seq=0、readUpToSeq=5 的 turn_ended 会把下界
+       算大到 5，之后 seq 1..5 的点名读不到、depth 丢），代价是 depth 偏小而不是
+       报错。**故意不加 Math.min 去夹**：夹一下确实能兜住，但也就同时把「日志里
+       出现了一条不可能的 turn_ended」这件事抹平成正常输入——这一层不是校验层，
+       真出现那种日志该在别处炸，不该在这里被悄悄修好。
+    ② lastHumanOpening = 最后一条人话点火（isHumanOpening，与 relayChain 定链首
+       **同一个**判据，理由见那个函数的头注）的 user_message 的 seq。relayChain 的
+       start 就是它，所以从 lastHumanOpening − 1 之后读，那条点火位与它之后的全部
+       agent_relay 一条不少；−1（谁也没点过名）时 afterSeq 取 −1 = 全量，与改动前
+       逐字节等价。 */
 export interface RelayBounds {
   /** agentId → max(readUpToSeq ?? seq)；不在表里 = 这只 agent 还没收过口 */
   closeBound: Map<string, number>;
@@ -139,9 +162,7 @@ export function advanceRelayBounds(b: RelayBounds, e: SessionEvent): void {
     if (cur === undefined || v > cur) b.closeBound.set(e.agentId, v);
     return;
   }
-  if (e.type === "user_message" && e.mentions && e.mentions.length > 0 && !e.relay) {
-    if (e.seq > b.lastHumanOpening) b.lastHumanOpening = e.seq;
-  }
+  if (isHumanOpening(e) && e.seq > b.lastHumanOpening) b.lastHumanOpening = e.seq;
 }
 
 /** 整份日志折叠（装配时播种一次） */

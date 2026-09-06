@@ -137,6 +137,19 @@ function openTurnsOracle(events: readonly SessionEvent[]): OpenTurn[] {
 }
 
 describe("openTurns 单遍重写（#958）", () => {
+  it("语料里真的有「双身份事件」（带 agentId 又带 mentions 的 user_message）", () => {
+    // 这条按住的是**生成器头注那句话的真假**（复审 Minor ④）：第一版声称随机对拍
+    // 覆盖了这个形状，实测 200 个 seed 一条都没有——覆盖度悄悄归零而所有用例照绿。
+    // 没有它，下面那条 200 seed 的对拍看起来在验顺序，其实只有再下面那条手写用例在验
+    let dual = 0;
+    for (let seed = 1; seed <= 200; seed++) {
+      for (const e of generateLog(seed)) {
+        if (e.type === "user_message" && "agentId" in e && e.agentId !== undefined && e.mentions && e.mentions.length > 0) dual++;
+      }
+    }
+    expect(dual).toBeGreaterThan(0);
+  });
+
   it("200 份伪随机日志逐份与旧实现深等于（顺序也一样）", () => {
     for (let seed = 1; seed <= 200; seed++) {
       const events = generateLog(seed);
