@@ -48,14 +48,12 @@ export function usageTotalText(usage: WorkspaceUsage): string {
   return fmtCredit(usage.rows.reduce((sum, r) => sum + r.costMicro, 0));
 }
 
-/** 空态文案（M10）：`route.kind === "workspace"` 时 runtime 直连提供商，根本
-    不经过 edge 网关——`usage_event` 一行都不会有，这类工作区的这张表**永远
-    是空的**，跟"这一周还没有托管路由的花费"（意思是"目前没花，以后可能有"）
-    是两回事，得分开说，别让人以为账单出了问题。route 为 null（探不到 /
-    没打开云会话）时退回旧文案——不确定走的是哪条路，不能替它下结论 */
+/** 空态文案（M10）。ADR-0233 之前 `route.kind === "workspace"`（自带 key、不经网关）
+    要单独说一句「这里永远不会有数」；那条路删了之后只剩托管路，空就是"目前没花"。
+    参数留着：blocked 时说清楚为什么没数，与"没花"分开 */
 export function usageEmptyText(route: CsModelRoute | null): string {
-  if (route?.kind === "workspace") {
-    return "这个工作区走自带 key，用量不经网关，这里不会有数";
+  if (route?.kind === "blocked") {
+    return "所有者没有活跃订阅（或额度用完），这个工作区此刻起不了 turn，所以没有花费。";
   }
   return "这一周还没有托管路由的花费。";
 }

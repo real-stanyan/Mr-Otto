@@ -18,7 +18,7 @@ import type { ProviderId } from "./providerCatalog.js";
 import type { ModelLane } from "./modelLane.js";
 import type { UsageSnapshot } from "./usageStats.js";
 import type { IslandUsageRow } from "./islandUsage.js";
-import type { CsModelRoute, CsModelState, CsRepoState } from "./remote/cloudSession.js";
+import type { CsModelRoute, CsRepoState } from "./remote/cloudSession.js";
 import type { TerminalInfo } from "./terminal.js";
 import type { BrowserTabInfo, BrowserBounds, BrowserPickedElement } from "./browser.js";
 import type { SimButton, SimFrame, SimState } from "./simulator.js";
@@ -477,10 +477,7 @@ export interface CloudSessionStatus {
       welcome 带来，config 存成功后再刷一次。null = 没配 / 还没 welcome。
       **不含 token 本身**，只有 hasPat 布尔 */
   repo: CsRepoState | null;
-  /** 这个工作区当前的模型配置（issue #844）。null = 还没配——能建能聊，
-      但 @Agent 起不了 turn。**不含 key 本身**，只有 hasKey 布尔 */
-  model: CsModelState | null;
-  /** 这个工作区此刻的 turn 会走哪条路（issue #945）。runtime 用 turn 同一份
+  /** 这个工作区此刻的 turn 会走哪条路（issue #945；ADR-0233 之后只有 hosted / blocked）。runtime 用 turn 同一份
       decideRuntimeRoute 算好、welcome/config_result 带下来的，渲染层照画不重算。
       null = 探不到——「拿不到」≠「起不了」，别拿它当 blocked 画 */
   modelRoute: CsModelRoute | null;
@@ -1146,7 +1143,7 @@ export interface ShellBridge {
       非空 = 换新（密码框预填不了，"留空 = 清掉"会让顺手改个型号毁掉一把 key） */
   workspaceCloudConfig(
     workspaceId: string,
-    patch: { repoUrl?: string; pat?: string; model?: { baseUrl: string; modelId: string; apiKey?: string } },
+    patch: { repoUrl?: string; pat?: string },
   ): Promise<FriendsResult<null>>;
 
   /** macOS dock 角标(0 = 清掉)。未读数只有渲染层知道,所以由它来报 */

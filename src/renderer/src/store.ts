@@ -39,7 +39,7 @@ import type {
   McpPromptInfo,
 } from "../../shared/shellBridge.js";
 import type { CatalogEntry } from "../../shared/mcpCatalog.js";
-import type { CsModelRoute, CsModelState, CsRepoState } from "../../shared/remote/cloudSession.js";
+import type { CsModelRoute, CsRepoState } from "../../shared/remote/cloudSession.js";
 import {
   initialMcpPromptValues,
   isCurrentMcpPromptSubmission,
@@ -191,11 +191,7 @@ export interface CloudSessionState {
   /** 这个工作区当前配的仓库 + 最近一次 clone 结局（issue #834）。
       null = 没配 / 还没 welcome。**没有 token 本身**，只有 hasPat */
   repo: CsRepoState | null;
-  /** 这个工作区当前的模型配置（issue #844）。null = 还没配，@Agent 起不了
-      turn。**没有 key 本身**，只有 hasKey */
-  model: CsModelState | null;
-  /** 这个工作区此刻的 turn 会走哪条路（issue #945）。**不是 `model` 的投影**：
-      所有者订阅着的时候 `model` 为 null 也照样跑得动。null = 探不到 */
+  /** 这个工作区此刻的 turn 会走哪条路（issue #945；ADR-0233 之后只有 hosted / blocked）。null = 探不到 */
   modelRoute: CsModelRoute | null;
   /** 这一份历史缺了东西（issue #957 C-I7）。null = 完整。**持久**——主进程
       每一次状态推送都带（缺席 = 没缺口），所以这一格照抄推送即可，不能像
@@ -1002,11 +998,7 @@ interface ChatState {
       别照 cloudSay/cloudApprove 读，那两个第四批之后透传 `CloudAck` 且一个字
       都不碰那一格（C2-I4）。服务端保存成功是静默的，IPC 回 ok 就算成功，
       没有二次确认帧 */
-  cloudConfig(patch: {
-    repoUrl?: string;
-    pat?: string;
-    model?: { baseUrl: string; modelId: string; apiKey?: string };
-  }): Promise<boolean>;
+  cloudConfig(patch: { repoUrl?: string; pat?: string }): Promise<boolean>;
   /** 归档（收尾）当前云会话（issue #822）。**只发出去**——真正的"归档成功"
       是那条广播回来的 session_archived 事件（服务端不另发回执：所有人都
       看得见的那一条本身就是回执）。回 boolean 只说"帧发没发出去"，失败落
@@ -2358,7 +2350,6 @@ export const useChat = create<ChatState>((set, get) => ({
         workspaceId, sessionId: sid, state: "connecting",
         initiatorUid: null, ownerUid: "", selfUid: get().account.id,
         repo: null, // welcome 一到就补真值
-        model: null, // 同上（issue #844）
         modelRoute: null, // 同上（issue #945）
         gapNote: null, // 同上（issue #957 C-I7）：backlog 落定才知道缺没缺
         events: [],
@@ -2719,7 +2710,6 @@ export const useChat = create<ChatState>((set, get) => ({
             ownerUid: status.ownerUid,
             selfUid: status.selfUid,
             repo: status.repo,
-            model: status.model,
             modelRoute: status.modelRoute,
             // issue #957 C-I7：照抄推送（缺席 → null）。**不能**学下面
             // deniedCode 那样"没带就留着旧的"：缺口补齐时主进程正是靠不带
