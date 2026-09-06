@@ -261,6 +261,83 @@ describe("workspaceManager（Task 8，ADR-0198 切片 2）", () => {
     expect(h.manager.hostUids().slice().sort()).toEqual(["friend-a", "friend-b"]);
   });
 
+  it("list：一个群的快照挂了不拖垮整份列表——那格降级成带 loadError 的占位快照（#843 ②）", async () => {
+    const h = harness();
+    h.rows.push(
+      { id: "ws-ok", name: "好的", owner_uid: "self-uid", created_at: "2026-01-01T00:00:00Z" },
+      { id: "ws-bad", name: "坏的", owner_uid: "other-uid", created_at: "2026-01-01T00:00:00Z" },
+    );
+    // fetchWorkspace 的假货：找不到就 throw——ws-bad 故意不给快照，模拟那次
+    // 「生产库缺 migration 0016 的列」让 fetchWorkspace 整个 reject
+    h.snapshots.push({
+      id: "ws-ok",
+      name: "好的",
+      ownerUid: "self-uid",
+      members: [],
+      connectors: [{ workspaceId: "ws-ok", hostUid: "friend-a", serverId: "s1", label: "L1", tools: [] }],
+      sessions: [],
+      agents: [],
+      relayMaxDepth: 6,
+    });
+
+    const res = await h.manager.list();
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    expect(res.value.map((s) => s.id)).toEqual(["ws-ok", "ws-bad"]);
+    expect(res.value[0]!.loadError).toBeUndefined();
+    const bad = res.value[1]!;
+    expect(bad.name).toBe("坏的");
+    expect(bad.ownerUid).toBe("other-uid");
+    expect(bad.members).toEqual([]);
+    expect(bad.loadError).toContain("not found: ws-bad");
+    // 好的那格的 host 照常进缓存
+    expect(h.manager.hostUids()).toEqual(["friend-a"]);
+  });
+
+  it("list：部分失败时上一次的 host 缓存不丢——「拿不到」≠「被清空」（#843 ②）", async () => {
+    const h = harness();
+    h.rows.push({ id: "ws-1", name: "w1", owner_uid: "self-uid", created_at: "2026-01-01T00:00:00Z" });
+    h.snapshots.push({
+      id: "ws-1",
+      name: "w1",
+      ownerUid: "self-uid",
+      members: [],
+      connectors: [{ workspaceId: "ws-1", hostUid: "friend-a", serverId: "s1", label: "L1", tools: [] }],
+      sessions: [],
+      agents: [],
+      relayMaxDepth: 6,
+    });
+    expect((await h.manager.list()).ok).toBe(true);
+    expect(h.manager.hostUids()).toEqual(["friend-a"]);
+
+    // 第二次 ws-1 拉不下来：缓存里 friend-a 还在（借用路径还在读它）
+    h.snapshots.length = 0;
+    const res = await h.manager.list();
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.value[0]!.loadError).toBeDefined();
+    expect(h.manager.hostUids()).toEqual(["friend-a"]);
+  });
+
+  it("错误说人话：PostgREST 的缺列 / RLS 原文过 humanizeWorkspaceError（#843 ③）", async () => {
+    const h = harness({
+      deleteWorkspace: async () => {
+        throw Object.assign(new Error('new row violates row-level security policy for table "workspaces"'), { code: "42501" });
+      },
+      listWorkspaces: async () => {
+        throw Object.assign(new Error("column workspace_sessions.kind does not exist"), { code: "42703" });
+      },
+    });
+    const del = await h.manager.remove("ws-1");
+    expect(del.ok).toBe(false);
+    if (!del.ok) expect(del.message).toMatch(/没有权限/);
+    const list = await h.manager.list();
+    expect(list.ok).toBe(false);
+    if (!list.ok) {
+      expect(list.message).toMatch(/比服务端数据库新/);
+      expect(list.message).toContain("workspace_sessions.kind"); // 原文保留，维护者要看缺哪一列
+    }
+  });
+
   it("contributeConnector：目录写失败——箱是真相，授权已经生效不回滚（审查 round 1）", async () => {
     const h = harness({
       upsertConnectorRow: async () => {

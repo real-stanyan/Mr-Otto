@@ -58,7 +58,9 @@ export function WorkspacesSidebarSection({
   // 每个工作区各拉一次云会话清单（没有推送通道，同 workspaceGroups 的待遇）。
   // 依赖是 id 拼成的串而不是 groups 本身：快照每次重拉都是新数组，用它当依赖
   // 会让这个 effect 跟着每一次刷新重跑一轮网络请求
-  const ids = groups.map((g) => g.id).join(",");
+  // 读不到的那几格（loadError，#843 ②）不去拉云会话清单：快照都拉不下来，
+  // 这一趟多半也挂，白记一条错
+  const ids = groups.filter((g) => g.loadError === undefined).map((g) => g.id).join(",");
   useEffect(() => {
     for (const id of ids === "" ? [] : ids.split(",")) void refreshCloud(id);
   }, [ids, refreshCloud]);
@@ -110,6 +112,22 @@ function WorkspaceGroup({
 
   // 归档的不进侧栏（同本地：归档的会话在「已归档会话」那一屏）
   const rows = cloudSessionRows(list, ws).filter((r) => !r.archived);
+
+  // 这一格暂时读不到（#843 ②）：画组头 + 一句原因，**不给动作**——⚙ 打开的
+  // 设置页会拿空名册当事实（「成员：0 人」），＋ 开出来的会话没有 agent 可 @。
+  // 它和「建群失败」长得不一样（有名字、有原因），和「真的空」也不一样（红字）
+  if (ws.loadError !== undefined) {
+    return (
+      <SidebarGroup className="py-1">
+        <SidebarGroupLabel className="gap-1" title={ws.loadError}>
+          <span className="min-w-0 truncate">{ws.name}</span>
+        </SidebarGroupLabel>
+        <SidebarGroupContent>
+          <p className="px-2 pt-[2px] text-[11px] text-err break-words">暂时读不到这个工作区：{ws.loadError}</p>
+        </SidebarGroupContent>
+      </SidebarGroup>
+    );
+  }
 
   return (
     <SidebarGroup className="py-1">

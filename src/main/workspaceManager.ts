@@ -24,6 +24,8 @@ import { randomBytes } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type * as WorkspacesApi from "./supabaseWorkspacesApi.js";
 import type { WorkspaceMemoryRow, WorkspaceSnapshot } from "../shared/workspaces.js";
+import { humanizeWorkspaceError } from "../shared/workspaceError.js";
+import { normalizeRelayMaxDepth } from "../shared/agentRelay.js";
 import { formatEntries, parseEntries } from "../shared/memoryStore.js";
 import { ADMIN_AGENT_ID, agentNameConflict, normalizeAgentName } from "../shared/workspaceAgents.js";
 import { parseCreateAgentArgs, scanCreateAgentThreat, validateAgentPatch } from "../shared/createAgentDraft.js";
@@ -105,8 +107,26 @@ export interface WorkspaceManager {
   hostUids(): readonly string[];
 }
 
+/** 错误说给人听（#843 ③）：PostgREST 的原话过一层 humanizeWorkspaceError——
+    认得出的（缺列 = 客户端比库新、23505、RLS）翻成人话，认不出的原样留 */
 function message(e: unknown): string {
-  return e instanceof Error ? e.message : String(e);
+  return humanizeWorkspaceError(e);
+}
+
+/** 拉不下来的那个工作区的占位快照（#843 ②）：列表行有的字段照抄，明细全空，
+    `loadError` 在场说明「这一格暂时读不到」而不是「真的没有成员/会话」 */
+function unreadableSnapshot(row: { id: string; name: string; owner_uid: string }, reason: unknown): WorkspaceSnapshot {
+  return {
+    id: row.id,
+    name: row.name,
+    ownerUid: row.owner_uid,
+    members: [],
+    connectors: [],
+    sessions: [],
+    agents: [],
+    relayMaxDepth: normalizeRelayMaxDepth(undefined),
+    loadError: humanizeWorkspaceError(reason),
+  };
 }
 
 export function createWorkspaceManager(deps: WorkspaceManagerDeps): WorkspaceManager {
@@ -153,11 +173,20 @@ export function createWorkspaceManager(deps: WorkspaceManagerDeps): WorkspaceMan
 
   function updateHostUids(snapshots: readonly WorkspaceSnapshot[], selfUid: string): void {
     const uids = new Set<string>();
+    let partial = false;
     for (const snap of snapshots) {
+      if (snap.loadError !== undefined) {
+        partial = true;
+        continue; // 占位快照的 connectors 是空的，不是「这个群没有 host」
+      }
       for (const c of snap.connectors) {
         if (c.hostUid !== selfUid) uids.add(c.hostUid);
       }
     }
+    // 有一格读不到时把上一次的 host 并进来（#843 ②）：这份缓存喂的是
+    // proxyManager 的借用路径，「拿不到」≠「被清空」（同 ADR-0197 grants 缓存的
+    // 规矩）——原来整份 list() 失败时缓存原样不动，现在部分失败也不能比那更差
+    if (partial) for (const u of cachedHostUids) uids.add(u);
     cachedHostUids = [...uids];
   }
 
@@ -166,8 +195,15 @@ export function createWorkspaceManager(deps: WorkspaceManagerDeps): WorkspaceMan
       return withSession(async (client, uid) => {
         const rows = await deps.listWorkspaces(client);
         // N 个小工作区各拉一次 fetchWorkspace——v1 规模小(每人在籍工作区数
-        // 位数级),够用;真变大了再批量,见 Task 8 brief
-        const snapshots = await Promise.all(rows.map((r) => deps.fetchWorkspace(client, r.id)));
+        // 位数级),够用;真变大了再批量,见 Task 8 brief。
+        // allSettled 不是 all（#843 ②）：一个群的快照挂了（那次是生产库缺
+        // migration 0016 的列）原来会让整份列表 reject，界面上「还没有工作区」
+        // ——列表是投影，投影缺一格不该等于投影不存在。挂掉的那格降级成占位
+        // 快照，原因写在 loadError 里由侧栏画出来
+        const settled = await Promise.allSettled(rows.map((r) => deps.fetchWorkspace(client, r.id)));
+        const snapshots = settled.map((s, i) =>
+          s.status === "fulfilled" ? s.value : unreadableSnapshot(rows[i]!, s.reason),
+        );
         updateHostUids(snapshots, uid);
         return snapshots;
       });
