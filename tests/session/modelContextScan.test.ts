@@ -5,6 +5,7 @@ import { deriveMessages, DEFAULT_COMPRESSION } from "../../src/session/deriveMes
 import { barrenEventIndexes } from "../../src/session/barrenTurns.js";
 import { contextUsed } from "../../src/shared/contextEstimate.js";
 import { activeSkills } from "../../src/session/activeSkills.js";
+import { agentView } from "../../src/session/agentView.js";
 import type { NewSessionEvent } from "../../src/session/store.js";
 
 // 模型上下文有界重建（issue #351）：反向扫描 + 有界 cutoff。
@@ -158,6 +159,32 @@ describe("boundedContextEvents（issue #351）", () => {
   it("没有 checkpoint：返回 null（调用方退回全量）", () => {
     const store = new EventStore(":memory:");
     put(store, { type: "session_created", title: "t", workspace: "/w" });
+    turn(store, 1);
+    expect(boundedContextEvents(store, S)).toBeNull();
+    store.close();
+  });
+
+  it("跳不完别人的私话（连着 65 条）：lastOfType 回 null 要走全量逃生舱，不能丢段（#961）", () => {
+    // ops 视角：checkpoint 之前的 user_message 全是 ads 的护栏私话，连着 65 条
+    // 超过 FOREIGN_SCAN_LIMIT=64——agentView.lastOfType 跳不完回 null。
+    // 这个 null 不是「checkpoint 之前没有 user turn」，只是「问不出来」，
+    // 必须退回全量，不能把 head+tail 当答案（那正是 #961 的静默丢段）
+    const store = new EventStore(":memory:");
+    put(store, { type: "session_created", title: "t", workspace: "/w" });
+    for (let i = 0; i < 65; i++) {
+      put(store, { type: "user_message", content: `护栏私话 ${i}`, origin: "loop_guard", agentId: "ads" });
+    }
+    put(store, { type: "context_compacted", summary: "摘要", model: "m", agentId: "ops" });
+    turn(store, 1);
+    const opsView = agentView(store, "ops");
+    expect(boundedContextEvents(opsView, S)).toBeNull();
+    store.close();
+  });
+
+  it("checkpoint 之前根本没有 user_message（裸日志）：也回 null 而不是 head+tail（#961）", () => {
+    const store = new EventStore(":memory:");
+    put(store, { type: "session_created", title: "t", workspace: "/w" });
+    put(store, { type: "context_compacted", summary: "摘要", model: "m" });
     turn(store, 1);
     expect(boundedContextEvents(store, S)).toBeNull();
     store.close();
