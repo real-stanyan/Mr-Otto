@@ -1105,6 +1105,8 @@ export interface ShellBridge {
   /** owner 在智能体 tab 改「接力上限」（#950 Task 9）。非 owner 会撞 RLS，
       主进程翻成「无权修改」 */
   workspaceSetRelayMaxDepth(id: string, maxDepth: number): Promise<FriendsResult<null>>;
+  /** owner 改「沙箱内 bash / write_file 要不要人批」（#977，ADR-0231）。非 owner 撞 RLS */
+  workspaceSetSandboxApproval(id: string, value: "ask" | "auto"): Promise<FriendsResult<null>>;
   /** 把 sessionId 这个会话发布进工作区（Task 9 publishSessionToWorkspace）。
       ok:true 带 workspace_sessions 的行 id + Storage 包 id */
   workspacePublishSession(id: string, sessionId: string, title: string): Promise<FriendsResult<{ rowId: string; pkgId: string }>>;
@@ -1548,6 +1550,7 @@ export const CHANNELS = {
   workspaceMemoryList: "otter:workspaceMemoryList",
   workspaceMemorySave: "otter:workspaceMemorySave",
   workspaceSetRelayMaxDepth: "otter:workspaceSetRelayMaxDepth",
+  workspaceSetSandboxApproval: "otter:workspaceSetSandboxApproval",
   workspacePublishSession: "otter:workspacePublishSession",
   workspaceUnpublishSession: "otter:workspaceUnpublishSession",
   workspaceImportSession: "otter:workspaceImportSession",

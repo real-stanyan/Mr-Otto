@@ -26,6 +26,7 @@ const WS: WorkspaceSnapshot = {
   ],
   agents: [],
   relayMaxDepth: 6,
+  sandboxApproval: "ask",
 };
 
 describe("connectorRows", () => {

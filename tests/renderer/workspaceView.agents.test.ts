@@ -10,6 +10,7 @@ const ws: WorkspaceSnapshot = {
     { agentId: "a_1", name: "运营", description: "管店铺", instructions: "", models: ["deepseek-v4", "glm-5"], tools: [{ serverId: "shopify", tools: [] }, { serverId: "ads", tools: ["report"] }], createdBy: "m1", updatedTs: 0 },
   ],
   relayMaxDepth: 6,
+  sandboxApproval: "ask",
 };
 
 describe("agentRows（spec §9 权限矩阵）", () => {

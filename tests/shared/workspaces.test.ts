@@ -5,7 +5,7 @@
 import { describe, expect, it } from "vitest";
 import { assembleSnapshot } from "../../src/shared/workspaces.js";
 
-const WS = { id: "ws-1", name: "测试工作区", owner_uid: "owner-uid-12345678", relay_max_depth: 6 };
+const WS = { id: "ws-1", name: "测试工作区", owner_uid: "owner-uid-12345678", relay_max_depth: 6, sandbox_approval: "ask" };
 
 describe("assembleSnapshot", () => {
   it("组装成员/连接器/会话三张表 + label 查得到时原样用", () => {
@@ -37,6 +37,7 @@ describe("assembleSnapshot", () => {
       }],
       agents: [],
       relayMaxDepth: 6,
+      sandboxApproval: "ask",
     });
   });
 
@@ -104,6 +105,14 @@ describe("assembleSnapshot", () => {
       { agentId: "admin", name: "管理员", description: "", instructions: "", models: ["deepseek-v4"], tools: [{ serverId: "shopify", tools: [] }], createdBy: "owner-uid-12345678", updatedTs: Date.parse("2026-09-01T00:00:00.000Z") },
       { agentId: "a1", name: "运营", description: "管店铺", instructions: "你管运营", models: [], tools: [], createdBy: "u2", updatedTs: 0 },
     ]);
+  });
+
+  it("sandbox_approval：只认 'auto'，其余（缺列 undefined / null / 别的串）一律回 'ask'——往严的一边倒（#977）", () => {
+    expect(assembleSnapshot({ ...WS, sandbox_approval: "auto" }, [], [], [], [], () => null).sandboxApproval).toBe("auto");
+    expect(assembleSnapshot({ ...WS, sandbox_approval: "ask" }, [], [], [], [], () => null).sandboxApproval).toBe("ask");
+    expect(assembleSnapshot({ ...WS, sandbox_approval: undefined }, [], [], [], [], () => null).sandboxApproval).toBe("ask");
+    expect(assembleSnapshot({ ...WS, sandbox_approval: null }, [], [], [], [], () => null).sandboxApproval).toBe("ask");
+    expect(assembleSnapshot({ ...WS, sandbox_approval: "AUTO" }, [], [], [], [], () => null).sandboxApproval).toBe("ask");
   });
 
   it("relay_max_depth：范围内的整数原样用，形状不对（字符串/null/越界）回默认 6", () => {

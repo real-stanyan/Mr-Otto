@@ -43,7 +43,7 @@ import {
   type CsDown,
 } from "../../../src/shared/remote/cloudSession.js";
 import { createWsTransport } from "../../../src/shared/remote/wsTransport.js";
-import { ADMIN_AGENT_ID } from "../../../src/shared/workspaceAgents.js";
+import { ADMIN_AGENT_ID, DEFAULT_SANDBOX_APPROVAL, normalizeSandboxApproval, type SandboxApproval } from "../../../src/shared/workspaceAgents.js";
 import { DEFAULT_RELAY_MAX_DEPTH, normalizeRelayMaxDepth } from "../../../src/shared/agentRelay.js";
 import { findModel } from "../../../src/shared/modelCatalog.js";
 import type { RemoteTransport } from "../../../src/shared/remote/transport.js";
@@ -345,6 +345,14 @@ async function main(): Promise<void> {
       这里现查不缓存——同 queryAgents 的纪律，改了下一轮接力生效。查询失败原样抛，
       **不在这里回落**——回落到默认几棒是调用方（Task 10 createCloudSession）的决定，
       这个函数只负责如实报告「查到了什么」 */
+  /** 沙箱内工具要不要人批（#977，0026 迁移）。同 queryRelayMaxDepth：现查不缓存、
+      查询失败原样抛，回落是调用方的决定 */
+  async function querySandboxApproval(workspaceId: string): Promise<SandboxApproval> {
+    const { data, error } = await supabase.from("workspaces").select("sandbox_approval").eq("id", workspaceId).single();
+    if (error) throw new Error(error.message);
+    return normalizeSandboxApproval((data as { sandbox_approval: unknown } | null)?.sandbox_approval);
+  }
+
   async function queryRelayMaxDepth(workspaceId: string): Promise<number> {
     const { data, error } = await supabase.from("workspaces").select("relay_max_depth").eq("id", workspaceId).single();
     if (error) throw new Error(error.message);
@@ -658,6 +666,13 @@ async function main(): Promise<void> {
         queryRelayMaxDepth(workspaceId).catch((err: unknown) => {
           console.warn(`[otto-runtime] relay_max_depth 查询失败，用默认（workspaceId=${workspaceId}）：${err instanceof Error ? err.message : String(err)}`);
           return DEFAULT_RELAY_MAX_DEPTH;
+        }),
+      // 查不到就问人（#977）：0026 没跑、Supabase 抖了，都往严的一边倒——一次抖动
+      // 把「要批」翻成「免批」是最不该有的默认
+      sandboxApproval: () =>
+        querySandboxApproval(workspaceId).catch((err: unknown) => {
+          console.warn(`[otto-runtime] sandbox_approval 查询失败，按 ask（workspaceId=${workspaceId}）：${err instanceof Error ? err.message : String(err)}`);
+          return DEFAULT_SANDBOX_APPROVAL;
         }),
     });
 

@@ -80,6 +80,18 @@ export function parseModelList(raw: string): string[] {
 /** owner 在智能体 tab 改的「接力上限」输入框校验（#950 Task 9）。范围与
     normalizeRelayMaxDepth 同一份常量（RELAY_MAX_DEPTH_RANGE）——表单能提前
     说人话的判据，与落库时兜底的判据必须是同一条，否则两处会各说各话 */
+/** 沙箱内工具（bash / write_file）要不要人批（#977，ADR-0231）。工作区一格，
+    落在 `workspaces.sandbox_approval`，owner 改。`"ask"` = 每次都问（今天的行为）；
+    `"auto"` = runtime 在审批门前直接放行——容器是隔离面，凭据不进容器（ADR-0200），
+    这道闸挡的是空气而付的是「群冻 10 分钟」。**只管沙箱那两把刀**：好友代理连接器
+    （用的是点火者的授权）与 create_agent（改的是工作区名册）照旧要批。
+    形状不对回 `"ask"`——一列没建（migration 还没跑）或值坏了，都往严的一边倒 */
+export type SandboxApproval = "ask" | "auto";
+export const DEFAULT_SANDBOX_APPROVAL: SandboxApproval = "ask";
+export function normalizeSandboxApproval(v: unknown): SandboxApproval {
+  return v === "auto" ? "auto" : DEFAULT_SANDBOX_APPROVAL;
+}
+
 export function validateRelayMaxDepth(raw: string): { ok: true; value: number } | { ok: false; error: string } {
   const errorMsg = `接力上限得是 ${RELAY_MAX_DEPTH_RANGE.min} 到 ${RELAY_MAX_DEPTH_RANGE.max} 之间的整数`;
   const trimmed = raw.trim();

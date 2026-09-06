@@ -918,6 +918,8 @@ interface ChatState {
   /** owner 在智能体 tab 改「接力上限」（#950 Task 9）：同十四件套的套路，成功后
       refreshWorkspaceGroups() 重拉整份快照，失败落 workspaceGroupsError */
   setWorkspaceRelayMaxDepth(id: string, maxDepth: number): Promise<boolean>;
+  /** owner 改「沙箱内工具要不要人批」（#977）：同 setWorkspaceRelayMaxDepth 的套路 */
+  setWorkspaceSandboxApproval(id: string, value: "ask" | "auto"): Promise<boolean>;
   /** 把当前/指定会话发布进工作区。回是否成功——rowId/pkgId 用不上时调用方不必接 */
   publishWorkspaceSession(id: string, sessionId: string, title: string): Promise<boolean>;
   /** 只有发布者能撤（服务端也会拦，见 index.ts workspaceUnpublishSession handler） */
@@ -2269,6 +2271,17 @@ export const useChat = create<ChatState>((set, get) => ({
 
   async setWorkspaceRelayMaxDepth(id, maxDepth) {
     const r = await window.otter.workspaceSetRelayMaxDepth(id, maxDepth);
+    if (!r.ok) {
+      set({ workspaceGroupsError: r.message });
+      return false;
+    }
+    set({ workspaceGroupsError: null });
+    await get().refreshWorkspaceGroups();
+    return true;
+  },
+
+  async setWorkspaceSandboxApproval(id, value) {
+    const r = await window.otter.workspaceSetSandboxApproval(id, value);
     if (!r.ok) {
       set({ workspaceGroupsError: r.message });
       return false;
