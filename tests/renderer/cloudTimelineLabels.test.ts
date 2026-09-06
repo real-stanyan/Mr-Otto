@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  agentStepsSummary, approvalCardTitle, assistantLabel, canStopTurn, createAgentLanded, decisionLineText, foldAgentSteps,
+  agentStepsSummary, approvalCardTitle, assistantLabel, canStopTurn, cloudEmptyState, createAgentLanded, decisionLineText, foldAgentSteps,
   hiddenFromCloudTimeline, isAgentStep, relayLineText, routeChangedText, stopButtonRows, systemNoteText, turnEndedLineText,
   userRowIdentity,
 } from "../../src/renderer/src/lib/cloudTimeline.js";
@@ -324,5 +324,25 @@ describe("foldAgentSteps（#971：中间步骤折起来、只画最终答案）"
     expect(agentStepsSummary(closed, ws)).toBe("「运营」处理过程 · 2 步 · 3 次工具调用");
     expect(agentStepsSummary({ ...closed, closedBy: null }, ws)).toBe("「运营」正在处理 · 2 步 · 3 次工具调用");
     expect(agentStepsSummary({ agentId: undefined, steps: [am(1, undefined, "")], closedBy: 2 }, ws)).toBe("处理过程 · 1 步");
+  });
+});
+
+describe("cloudEmptyState（#983）", () => {
+  it("connecting 且零事件：骨架——历史还没拉，「还没有消息」是假话", () => {
+    expect(cloudEmptyState("connecting", 0)).toBe("skeleton");
+  });
+  it("gone 且零事件：骨架——还没拉到过历史就断了，正在重连", () => {
+    expect(cloudEmptyState("gone", 0)).toBe("skeleton");
+  });
+  it("ready 且零事件：backlog 已补完全量，这才是真的「还没有消息」", () => {
+    expect(cloudEmptyState("ready", 0)).toBe("empty");
+  });
+  it("denied：什么都不画，横幅已经说了为什么", () => {
+    expect(cloudEmptyState("denied", 0)).toBe("none");
+  });
+  it("已有事件：任何状态都不画空态（gone 时旧历史还在）", () => {
+    expect(cloudEmptyState("connecting", 3)).toBe("none");
+    expect(cloudEmptyState("gone", 3)).toBe("none");
+    expect(cloudEmptyState("ready", 3)).toBe("none");
   });
 });

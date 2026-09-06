@@ -61,11 +61,12 @@ import { agentAvatarSrc } from "../lib/agentAvatar.js";
 import { applyAgentMention, filterAgentCandidates, mentionQueryAt, pickerEmptyState, resolveSendMentions } from "../lib/agentMentionInput.js";
 import { EMBEDDED_CREDENTIAL_MESSAGE, repoUrlHasEmbeddedCredential } from "../lib/cloudRepoUrl.js";
 import {
-  agentStepsSummary, approvalCardTitle, assistantLabel, canStopTurn, foldAgentSteps, hiddenFromCloudTimeline, relayLineText,
+  agentStepsSummary, approvalCardTitle, assistantLabel, canStopTurn, cloudEmptyState, foldAgentSteps, hiddenFromCloudTimeline, relayLineText,
   stopButtonRows, systemNoteText, turnEndedLineText, userRowIdentity, type AgentStepsFold,
 } from "../lib/cloudTimeline.js";
 import { systemNoteDetail } from "../lib/systemNote.js";
 import { TurnErrorState } from "./TurnErrorState.js";
+import { ThreadHistorySkeleton } from "./assistant-ui/thread.js";
 import { openTurns } from "../../../shared/turnLedger.js";
 import { safeSpeakerLabel, SYSTEM_SPEAKER_UID } from "../../../shared/promptSafe.js";
 import { toolSummary } from "../../../shared/toolSummary.js";
@@ -345,6 +346,7 @@ export function CloudSessionPage({
 
   const ready = cs.state === "ready";
   const banner = statusBanner(cs);
+  const timelineEmpty = cloudEmptyState(cs.state, events.length);
 
   /** 一次发送：mentions 缺席就不传第二参（老语义，服务端按名字解析 + 回落
       名单第一只），给了就以它为准 —— 重发走的是同一条路 */
@@ -575,7 +577,11 @@ export function CloudSessionPage({
 
       <div className="flex flex-col gap-2">
         <TimelineProjectionContext.Provider value={timelineProjection}>
-          {events.length === 0 ? (
+          {timelineEmpty === "skeleton" ? (
+            // 历史还在路上（#983）：画骨架不画「还没有消息。」——后者在这一刻
+            // 是假话。形状复用主聊天切会话时那份，不另造一套
+            <ThreadHistorySkeleton />
+          ) : timelineEmpty === "empty" ? (
             <p className="text-xs text-muted-foreground">还没有消息。</p>
           ) : (
             events.map((e, i) => {
