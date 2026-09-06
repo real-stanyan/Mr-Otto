@@ -310,47 +310,61 @@ export async function updateRelayMaxDepth(
 export async function listMemoryRows(client: SupabaseClient, workspaceId: string): Promise<WorkspaceMemoryRow[]> {
   const rows = (unwrap(
     await client.from("workspace_memories").select("agent_id,content,updated_at").eq("workspace_id", workspaceId),
-  ) ?? []) as { agent_id: string; content: string; updated_at: string }[];
-  return rows.map((r) => ({ agentId: r.agent_id, content: r.content ?? "", updatedTs: Date.parse(r.updated_at) || 0 }));
+  ) ?? []) as { agent_id: string; content: string; updated_at: string | null }[];
+  return rows.map((r) => ({
+    agentId: r.agent_id,
+    content: r.content ?? "",
+    updatedTs: Date.parse(r.updated_at ?? "") || 0,
+    // version 是**原串**不是解析后的毫秒（#962）——见 WorkspaceMemoryRow.version 的注释
+    version: r.updated_at ?? "",
+  }));
 }
 
 /** 成员写一档（0023 RLS 在籍即可）。桌面手编 vs agent 写档是同一 daemon 内的丢更新
     （#949 review finding 2：blind upsert 会让后写的一方无声吃掉先写的一方）——用乐观
-    前置条件挡：只在这一行此刻的 content 等于编辑器打开时读到的 baseline 才允许覆盖。
-    为什么按 content 不按 updated_at：timestamptz 存微秒，`Date.parse` 会把它砍到毫秒，
-    拿一个已经丢了精度的时间戳做相等判据，两次连续写入很容易撞出假阳性的"没变过"。
-    baseline === "" 走 insert 兜底（这一档可能从未存在过一行）：insert 撞 23505 说明
-    有人在我们探测之后抢先建了这一行——按冲突处理，不静默吞掉对方刚写的内容 */
+    前置条件挡：只在这一行此刻的版本仍等于编辑器打开时读到的 version 才允许覆盖，回新版本。
+    **判据是 `updated_at` 的原串不是 content**（#962，推翻本函数原来那条注释）：按 content
+    比对时 PostgREST 会把整份正文编进 URL 查询串（共享档上限 2200 个汉字 ≈ 20 KB，URL 长度
+    在代理/网关那一层是有上限的），而原注释否决 updated_at 的理由——`Date.parse` 把微秒砍到
+    毫秒、精度丢了会撞出假阳性的"没变过"——只对**解析过的**时间戳成立：原串原样递回去，
+    两边都是 Postgres 自己解析成同一个时刻，一个位都不丢。
+    已知代价：两个写者在**同一微秒**写同一行、且第二个拿的是第一个写之前的版本时，CAS 会
+    误放行——timestamptz 的分辨率就是微秒，概率可忽略，写在这里备案。
+    version === "" 走 insert（读的时候这一档根本没有行）：insert 撞 23505 说明有人在我们
+    探测之后抢先建了这一行——按冲突处理，不静默吞掉对方刚写的内容 */
 export async function saveMemoryRow(
   client: SupabaseClient,
   workspaceId: string,
   agentId: string,
   content: string,
-  baseline: string,
-): Promise<void> {
+  version: string,
+): Promise<string> {
   const now = new Date().toISOString();
-  const updated = unwrap(
-    await client.from("workspace_memories")
-      .update({ content, updated_at: now })
-      .eq("workspace_id", workspaceId)
-      .eq("agent_id", agentId)
-      .eq("content", baseline)
-      .select("agent_id"),
-  ) as { agent_id: string }[] | null;
-  if (Array.isArray(updated) && updated.length > 0) return;
-  if (baseline === "") {
-    try {
-      unwrap(
-        await client.from("workspace_memories")
-          .insert({ workspace_id: workspaceId, agent_id: agentId, content, updated_at: now }),
-      );
-      return;
-    } catch (err) {
-      if ((err as { code?: string }).code !== "23505") throw err;
-      // 落到下面的冲突分支：撞主键 = 这一档在我们探测之后被别人先建了行
-    }
+  if (version !== "") {
+    const updated = unwrap(
+      await client.from("workspace_memories")
+        .update({ content, updated_at: now })
+        .eq("workspace_id", workspaceId)
+        .eq("agent_id", agentId)
+        .eq("updated_at", version)
+        .select("updated_at"),
+    ) as { updated_at: string }[] | null;
+    if (Array.isArray(updated) && updated.length > 0) return updated[0]!.updated_at ?? now;
+    throw new Error(MEMORY_CONFLICT);
   }
-  throw new Error(MEMORY_CONFLICT);
+  try {
+    const inserted = unwrap(
+      await client.from("workspace_memories")
+        .insert({ workspace_id: workspaceId, agent_id: agentId, content, updated_at: now })
+        .select("updated_at"),
+    ) as { updated_at: string }[] | null;
+    // 回不出行时退回 now：我们刚写进去的就是它，Postgres 解析 `…Z` 与 PostgREST 回的
+    // `…+00:00` 得到同一个时刻，当 CAS 令牌照样对得上
+    return (Array.isArray(inserted) && inserted.length > 0 ? inserted[0]!.updated_at : null) ?? now;
+  } catch (err) {
+    if ((err as { code?: string }).code !== "23505") throw err;
+    throw new Error(MEMORY_CONFLICT);
+  }
 }
 
 /** 云会话列表页用的行（Task 12，ADR-0199）。kind='cloud' 的那些

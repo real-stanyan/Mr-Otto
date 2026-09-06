@@ -179,7 +179,7 @@ import { createApprovalRouter, RELAY_APPROVAL_TIMEOUT_MS, type ApproveOutcome } 
 import { fetchGrantedTools, buildPxTools, type PxCallDeps } from "./pxTools.js";
 import { filterGrantedByAllow, type AgentToolAllow } from "../../../src/shared/agentToolAllow.js";
 import { createWorkspaceMemoryTool } from "./workspaceMemoryTool.js";
-import type { WorkspaceMemoryStore } from "./workspaceMemory.js";
+import type { WorkspaceMemoryStore, WorkspaceMemoryValue } from "./workspaceMemory.js";
 import { SHARED_MEMORY_AGENT_ID } from "../../../src/shared/workspaceMemory.js";
 import { DEFAULT_AUTO_COMPACT } from "../../../src/shared/autoCompact.js";
 import { createCreateAgentTool } from "./createAgentTool.js";
@@ -746,15 +746,15 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       读失败 warn 跳过、不阻塞 turn（记忆副作用永不阻塞回复，同本机 memory 工具的纪律）——代价是
       这一 turn 用的是上一条快照（或没有快照），记忆不是这条会话的正确性前提 */
   async function loadMemoryIfChanged(spec: AgentSpec): Promise<void> {
-    let rows: Map<string, string>;
+    let rows: Map<string, WorkspaceMemoryValue>;
     try {
       rows = await opts.memory.read(opts.workspaceId, [SHARED_MEMORY_AGENT_ID, spec.agentId]);
     } catch (err) {
       console.warn(`[otto-runtime] 工作区记忆读取失败，本 turn 不落快照（workspaceId=${opts.workspaceId} agent=${spec.agentId}）`, err);
       return;
     }
-    const shared = rows.get(SHARED_MEMORY_AGENT_ID) ?? "";
-    const own = rows.get(spec.agentId) ?? "";
+    const shared = rows.get(SHARED_MEMORY_AGENT_ID)?.content ?? "";
+    const own = rows.get(spec.agentId)?.content ?? "";
     // 裸 store 查（同 briefIfNeeded 的理由：记账判断读事实的原始来源）
     const last = store
       .ofType(sessionId, "workspace_memory_loaded")

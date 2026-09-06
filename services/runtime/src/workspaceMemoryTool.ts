@@ -86,10 +86,12 @@ export function createWorkspaceMemoryTool(deps: {
     const rowAgentId = tier === "shared" ? SHARED_MEMORY_AGENT_ID : deps.agentId;
     const lockKey = workspaceMemoryLockKey(deps.workspaceId, rowAgentId);
 
-    // 一次 read→apply→write 尝试：expected 就是这次持锁期间读到的原文（缺行 = null），
-    // 与 memory.write 的写入前置条件（B-I4）直接对应
+    // 一次 read→apply→write 尝试：expectedVersion 就是这次持锁期间读到的那一行的版本
+    // （缺行 = null），与 memory.write 的写入前置条件（B-I4）直接对应
     async function attempt(): Promise<{ used: number; n: number }> {
-      const raw = (await deps.memory.read(deps.workspaceId, [rowAgentId])).get(rowAgentId) ?? null;
+      const row = (await deps.memory.read(deps.workspaceId, [rowAgentId])).get(rowAgentId);
+      const raw = row?.content ?? null;
+      const version = row?.version ?? null;
       const entries = parseEntries(raw);
       const needsLocate = stamped.some((o) => o.action !== "add");
       if (needsLocate && raw !== null && formatEntries(entries) !== raw) {
@@ -98,7 +100,7 @@ export function createWorkspaceMemoryTool(deps: {
       const r = applyEntryOps(entries, stamped, { label: WORKSPACE_MEMORY_LABEL[tier], limit: WORKSPACE_MEMORY_LIMITS[tier] });
       if (!r.ok) throw new Error(r.error);
       const nextRaw = formatEntries(r.entries);
-      await deps.memory.write(deps.workspaceId, rowAgentId, nextRaw, raw);
+      await deps.memory.write(deps.workspaceId, rowAgentId, nextRaw, version);
       return { used: charCount(nextRaw), n: r.changed.added.length + r.changed.updated.length + r.changed.removed.length };
     }
 

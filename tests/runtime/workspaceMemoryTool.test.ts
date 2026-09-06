@@ -86,10 +86,10 @@ function flakyOnWrite(failTimes: number, seed?: Record<string, string>) {
   let writeCalls = 0;
   const memory: WorkspaceMemoryStore & { dump(): Record<string, string> } = {
     read: (workspaceId, agentIds) => base.read(workspaceId, agentIds),
-    async write(workspaceId, agentId, content, expected) {
+    async write(workspaceId, agentId, content, expectedVersion) {
       writeCalls++;
       if (writeCalls <= failTimes) throw new MemoryConflictError(workspaceId, agentId);
-      return base.write(workspaceId, agentId, content, expected);
+      return base.write(workspaceId, agentId, content, expectedVersion);
     },
     dump: () => base.dump(),
   };
@@ -120,15 +120,16 @@ describe("写入前置条件重试（B-I4，#957）", () => {
     let writeCalls = 0;
     const memory: WorkspaceMemoryStore & { dump(): Record<string, string> } = {
       read: (workspaceId, agentIds) => base.read(workspaceId, agentIds),
-      async write(workspaceId, agentId, content, expected) {
+      async write(workspaceId, agentId, content, expectedVersion) {
         writeCalls++;
         if (writeCalls === 1) {
           // 模拟第一次 write 前，另一个写手已经把这一行改成了"并发内容"——第一次尝试
-          // 仍然拿着旧 expected（"旧内容"），必然撞前置条件
-          await base.write(workspaceId, agentId, "并发内容", "旧内容");
+          // 仍然拿着旧 version，必然撞前置条件
+          const cur = (await base.read(workspaceId, [agentId])).get(agentId)!;
+          await base.write(workspaceId, agentId, "并发内容", cur.version);
           throw new MemoryConflictError(workspaceId, agentId);
         }
-        return base.write(workspaceId, agentId, content, expected);
+        return base.write(workspaceId, agentId, content, expectedVersion);
       },
       dump: () => base.dump(),
     };

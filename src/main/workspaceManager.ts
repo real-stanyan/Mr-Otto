@@ -93,8 +93,9 @@ export interface WorkspaceManager {
   /** 设置页「记忆」tab（#949）：这个工作区的记忆行（共享档 + 每只 agent 的私有档） */
   listMemories(id: string): Promise<FriendsResult<WorkspaceMemoryRow[]>>;
   /** 成员手改一档；写前归一化（去空条目、保序去重）。不校验上限——人手改自己的
-      笔记不该被上限拦住，同 applyUserEdit */
-  saveMemory(id: string, agentId: string, text: string, baseline: string): Promise<FriendsResult<null>>;
+      笔记不该被上限拦住，同 applyUserEdit。`version` 是编辑器打开时读到的那一行的
+      CAS 令牌，回的是这次写完之后的新令牌——渲染层拿它原地更新那一行，不必整份重拉（#962） */
+  saveMemory(id: string, agentId: string, text: string, version: string): Promise<FriendsResult<string>>;
   /** owner 在智能体 tab 改「接力上限」（#950 Task 9）。表单已经过
       validateRelayMaxDepth，这里不重复校验——RLS（0024 ws_update_owner）落地
       判断，非 owner 会撞「无权修改」 */
@@ -304,16 +305,15 @@ export function createWorkspaceManager(deps: WorkspaceManagerDeps): WorkspaceMan
     async listMemories(id) {
       return withSession(async (client) => deps.listMemoryRows(client, id));
     },
-    async saveMemory(id, agentId, text, baseline) {
+    async saveMemory(id, agentId, text, version) {
       return withSession(async (client) => {
         // 归一化（去空条目、保序去重）后落库，磁盘/云端永远是归一化后的样子——同 applyUserEdit。
         // 不校验上限：人手改自己的笔记不该被上限拦住。
-        // baseline 是编辑器打开时读到的原文（未归一化）：桌面手编 vs agent 写档共用同一个 daemon，
-        // 谁后写谁赢的 blind upsert 会无声吃掉先写的一方（#949 review finding 2）——
-        // saveMemoryRow 只在这一行此刻的 content 仍等于 baseline 时才允许覆盖，
-        // 不等则抛 MEMORY_CONFLICT，原样冒泡给 withSession 收成 FriendsResult 错误。
-        await deps.saveMemoryRow(client, id, agentId, formatEntries(parseEntries(text)), baseline);
-        return null;
+        // version 是编辑器打开时读到的那一行的 CAS 令牌（updated_at 原串，#962）：桌面手编 vs
+        // agent 写档共用同一个 daemon，谁后写谁赢的 blind upsert 会无声吃掉先写的一方
+        // （#949 review finding 2）——saveMemoryRow 只在这一行此刻的版本仍等于 version 时才
+        // 允许覆盖，不等则抛 MEMORY_CONFLICT，原样冒泡给 withSession 收成 FriendsResult 错误。
+        return deps.saveMemoryRow(client, id, agentId, formatEntries(parseEntries(text)), version);
       });
     },
 

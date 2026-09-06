@@ -1097,10 +1097,11 @@ export interface ShellBridge {
   workspaceUsage(id: string): Promise<FriendsResult<WorkspaceUsage>>;
   /** 设置页「记忆」tab（#949）：工作区的记忆行（共享档 agentId 为空串 + 每只 agent 的私有档） */
   workspaceMemoryList(id: string): Promise<FriendsResult<WorkspaceMemoryRow[]>>;
-  /** 成员手改一档；主进程归一化后落库。baseline 是编辑器打开时读到的原文——同一 daemon 内
-      桌面手编与 agent 写档的丢更新用它做乐观前置条件（#949 review finding 2），
-      不等则拒并回 MEMORY_CONFLICT 文案 */
-  workspaceMemorySave(id: string, agentId: string, text: string, baseline: string): Promise<FriendsResult<null>>;
+  /** 成员手改一档；主进程归一化后落库。version 是编辑器打开时读到的那一行的 CAS 令牌
+      （`updated_at` 原串，#962）——同一 daemon 内桌面手编与 agent 写档的丢更新用它做乐观
+      前置条件（#949 review finding 2），不等则拒并回 MEMORY_CONFLICT 文案。
+      成功回的是这次写完之后的新令牌，渲染层拿它原地更新那一行、不必整份重拉 */
+  workspaceMemorySave(id: string, agentId: string, text: string, version: string): Promise<FriendsResult<string>>;
   /** owner 在智能体 tab 改「接力上限」（#950 Task 9）。非 owner 会撞 RLS，
       主进程翻成「无权修改」 */
   workspaceSetRelayMaxDepth(id: string, maxDepth: number): Promise<FriendsResult<null>>;

@@ -912,8 +912,9 @@ interface ChatState {
   loadWorkspaceUsage(id: string): Promise<FriendsResult<WorkspaceUsage>>;
   /** 设置页「记忆」tab（#949）：同 loadWorkspaceUsage，不进 store 状态 */
   loadWorkspaceMemories(id: string): Promise<FriendsResult<WorkspaceMemoryRow[]>>;
-  /** 成员手改一档；主进程归一化后落库 */
-  saveWorkspaceMemory(id: string, agentId: string, text: string, baseline: string): Promise<FriendsResult<null>>;
+  /** 成员手改一档；主进程归一化后落库。version 见 shellBridge.workspaceMemorySave（#962）：
+      递进去的是编辑器打开时那一行的 CAS 令牌，回来的是写完之后的新令牌 */
+  saveWorkspaceMemory(id: string, agentId: string, text: string, version: string): Promise<FriendsResult<string>>;
   /** owner 在智能体 tab 改「接力上限」（#950 Task 9）：同十四件套的套路，成功后
       refreshWorkspaceGroups() 重拉整份快照，失败落 workspaceGroupsError */
   setWorkspaceRelayMaxDepth(id: string, maxDepth: number): Promise<boolean>;
@@ -2262,8 +2263,8 @@ export const useChat = create<ChatState>((set, get) => ({
     return window.otter.workspaceMemoryList(id);
   },
 
-  async saveWorkspaceMemory(id, agentId, text, baseline) {
-    return window.otter.workspaceMemorySave(id, agentId, text, baseline);
+  async saveWorkspaceMemory(id, agentId, text, version) {
+    return window.otter.workspaceMemorySave(id, agentId, text, version);
   },
 
   async setWorkspaceRelayMaxDepth(id, maxDepth) {

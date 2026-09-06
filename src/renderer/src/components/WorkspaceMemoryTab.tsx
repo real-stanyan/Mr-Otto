@@ -39,8 +39,9 @@ function MemoryDocBlock({
 }: {
   ws: WorkspaceSnapshot;
   doc: MemoryDocView;
-  /** 只更新本地那一行，不触发整份重拉——见文件头注 */
-  onSaved: (agentId: string, content: string) => void;
+  /** 只更新本地那一行，不触发整份重拉——见文件头注。version 是主进程刚回来的新 CAS
+      令牌（#962），不带它这一块就只能保存一次、第二次必撞冲突 */
+  onSaved: (agentId: string, content: string, version: string) => void;
   /** 草稿 !== 磁盘内容 时上报，父组件靠它决定「刷新」要不要弹确认框 */
   onDirtyChange: (agentId: string, dirty: boolean) => void;
 }) {
@@ -69,11 +70,12 @@ function MemoryDocBlock({
   const onSave = async (): Promise<void> => {
     setBusy(true);
     setError(null);
-    // baseline = 这一块打开时读到的磁盘原文（doc.content，不是此刻的草稿 text）——
-    // 桌面手编 vs agent 写档共用同一个 daemon，saveMemoryRow 用它做乐观前置条件
-    // （#949 review finding 2）：这一档若在我们编辑期间被别人（agent 或另一个标签页）
-    // 改过，保存会拒绝并回 MEMORY_CONFLICT，而不是悄悄用我们的草稿覆盖对方的改动。
-    const r = await save(ws.id, doc.agentId, text, doc.content);
+    // version = 这一块打开时读到的那一行的 CAS 令牌（doc.version，#962；原来递的是
+    // doc.content 整份原文，PostgREST 会把它编进 URL 查询串）——桌面手编 vs agent 写档
+    // 共用同一个 daemon，saveMemoryRow 用它做乐观前置条件（#949 review finding 2）：
+    // 这一档若在我们编辑期间被别人（agent 或另一个标签页）改过，保存会拒绝并回
+    // MEMORY_CONFLICT，而不是悄悄用我们的草稿覆盖对方的改动。
+    const r = await save(ws.id, doc.agentId, text, doc.version);
     setBusy(false);
     if (!r.ok) {
       // 冲突文案已经是人话（"这一档刚被别人改过，刷新后再改"），原样显示即可，
@@ -84,7 +86,7 @@ function MemoryDocBlock({
     // 主进程落库前做的正是这一步归一化——本地直接算出同一个结果
     const normalized = formatEntries(parseEntries(text));
     setText(normalized);
-    onSaved(doc.agentId, normalized);
+    onSaved(doc.agentId, normalized, r.value);
   };
 
   return (
@@ -146,8 +148,8 @@ export function WorkspaceMemoryTab({ ws }: { ws: WorkspaceSnapshot }) {
   };
 
   // 单块保存成功：只替换那一行，不重拉整份列表——其它块的草稿原封不动
-  const handleSaved = (agentId: string, content: string): void => {
-    setState((s) => (s.kind === "ok" ? { kind: "ok", rows: replaceRow(s.rows, agentId, content, Date.now()) } : s));
+  const handleSaved = (agentId: string, content: string, version: string): void => {
+    setState((s) => (s.kind === "ok" ? { kind: "ok", rows: replaceRow(s.rows, agentId, content, Date.now(), version) } : s));
   };
 
   const handleDirtyChange = (agentId: string, dirty: boolean): void => {

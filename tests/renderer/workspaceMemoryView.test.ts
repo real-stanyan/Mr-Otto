@@ -13,9 +13,9 @@ const ws = {
 describe("memoryDocs（#949）", () => {
   it("共享档第一、名单顺序其次、已删 agent 的残留行最后标 stale；没行的 agent 也出一份空档", () => {
     const docs = memoryDocs(ws, [
-      { agentId: "ops", content: "a\n§\nb", updatedTs: 1 },
-      { agentId: "gone", content: "x", updatedTs: 1 },
-      { agentId: "", content: "[运营] 口径", updatedTs: 1 },
+      { agentId: "ops", content: "a\n§\nb", updatedTs: 1, version: "v-ops" },
+      { agentId: "gone", content: "x", updatedTs: 1, version: "v-gone" },
+      { agentId: "", content: "[运营] 口径", updatedTs: 1, version: "v-shared" },
     ]);
     expect(docs.map((d) => [d.agentId, d.title, d.tier, d.stale])).toEqual([
       ["", "共享档", "shared", false],
@@ -27,29 +27,41 @@ describe("memoryDocs（#949）", () => {
     expect(docs[2]).toMatchObject({ limit: 1100, used: 5, content: "a\n§\nb" });
     expect(docs[1]).toMatchObject({ content: "", used: 0 });
   });
+
+  it("每份档带上这一行的 version（保存时当 CAS 令牌递回去，#962）；没行的档 version 是空串", () => {
+    const docs = memoryDocs(ws, [
+      { agentId: "", content: "共享", updatedTs: 1, version: "v-shared" },
+      { agentId: "ops", content: "私有", updatedTs: 1, version: "v-ops" },
+    ]);
+    expect(docs.map((d) => [d.agentId, d.version])).toEqual([
+      ["", "v-shared"],
+      ["admin", ""],
+      ["ops", "v-ops"],
+    ]);
+  });
 });
 
 describe("replaceRow（fix round 1，#949）", () => {
-  it("原位替换已存在的 agentId 那一行，其余原样不动", () => {
+  it("原位替换已存在的 agentId 那一行（连 version 一起换），其余原样不动", () => {
     const rows = [
-      { agentId: "", content: "shared", updatedTs: 1 },
-      { agentId: "ops", content: "old", updatedTs: 2 },
-      { agentId: "admin", content: "x", updatedTs: 3 },
+      { agentId: "", content: "shared", updatedTs: 1, version: "v0" },
+      { agentId: "ops", content: "old", updatedTs: 2, version: "v1" },
+      { agentId: "admin", content: "x", updatedTs: 3, version: "v2" },
     ];
-    const next = replaceRow(rows, "ops", "new", 99);
+    const next = replaceRow(rows, "ops", "new", 99, "v9");
     expect(next).toEqual([
-      { agentId: "", content: "shared", updatedTs: 1 },
-      { agentId: "ops", content: "new", updatedTs: 99 },
-      { agentId: "admin", content: "x", updatedTs: 3 },
+      { agentId: "", content: "shared", updatedTs: 1, version: "v0" },
+      { agentId: "ops", content: "new", updatedTs: 99, version: "v9" },
+      { agentId: "admin", content: "x", updatedTs: 3, version: "v2" },
     ]);
   });
 
   it("agentId 不存在时追加一行，不动原有的行", () => {
-    const rows = [{ agentId: "admin", content: "x", updatedTs: 1 }];
-    const next = replaceRow(rows, "ops", "y", 5);
+    const rows = [{ agentId: "admin", content: "x", updatedTs: 1, version: "v2" }];
+    const next = replaceRow(rows, "ops", "y", 5, "v9");
     expect(next).toEqual([
-      { agentId: "admin", content: "x", updatedTs: 1 },
-      { agentId: "ops", content: "y", updatedTs: 5 },
+      { agentId: "admin", content: "x", updatedTs: 1, version: "v2" },
+      { agentId: "ops", content: "y", updatedTs: 5, version: "v9" },
     ]);
   });
 });
