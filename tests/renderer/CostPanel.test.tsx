@@ -81,3 +81,21 @@ describe("CostPanel 渲染", () => {
     expect(container).toBeEmptyDOMElement();
   });
 });
+
+describe("订阅制第三方：「订阅」不是破折号（#1025）", () => {
+  it("Kimi Code 那一族画「订阅」——它没有按次单价，不是查不到价", () => {
+    render(<CostPanel events={[msg({ route: "direct", model: "k3" })]} />);
+    expect(screen.getByText("订阅")).toBeInTheDocument();
+    expect(screen.queryByText("—")).not.toBeInTheDocument();
+  });
+
+  it("真查不到价的仍然画破折号——两种「不显示 $ 的理由」必须分得开", () => {
+    render(<CostPanel events={[msg({ route: "direct", model: "llama-3.3-70b-versatile" })]} />);
+    expect(screen.getByText("—")).toBeInTheDocument();
+    expect(screen.queryByText("订阅")).not.toBeInTheDocument();
+  });
+
+  it("合计照旧退回 token —— 把包月那几笔当 0 加进去，等于对一个每月付着钱的人说这会话花了 $0", () => {
+    expect(sessionTotal([row({ route: "direct", model: "k3" })], 2200)).toBe("2.2K");
+  });
+});
