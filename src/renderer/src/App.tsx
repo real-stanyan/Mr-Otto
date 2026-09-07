@@ -220,6 +220,8 @@ import type { Unstable_DirectiveSegment } from "@assistant-ui/react";
 import { OttoRuntimeProvider } from "./aui/OttoRuntimeProvider.js";
 import { OttoThread } from "./aui/OttoThread.js";
 import { SendErrorBanner } from "./components/SendErrorBanner.js";
+import { PlanBadge } from "./components/PlanBadge.js";
+import { planBadge } from "./lib/billingView.js";
 import { SelectionQuote } from "./components/SelectionQuote.js";
 
 /* ─── Tailwind 迁移(ADR-0010)的共享 className 组合 ───
@@ -1713,6 +1715,17 @@ function AppSidebar() {
   // 侧栏那一行显示的是"好友看到的我",所以以 profiles 为准而不是 auth.users(ADR-0028)
   const myProfile = useChat((s) => s.myProfile);
   const identity = displayIdentity(account, myProfile);
+  /** 名字右边那枚档位徽章。null = 还没查到（不画），不是 Free —— 判据与账号页
+      共用 planBadge()。billing 平时由主进程 push（onBillingChanged）+ 登录态
+      变化时 loadBilling(true)，但**冷启动那一次推送可能早于渲染层订阅**，
+      于是这里补一次 refresh:false 的种子（不打网络，只读主进程已有的快照，
+      同 NewWorkspaceDialog 开窗时补拉的路子） */
+  const planTier = useChat((s) => planBadge(s.billing?.me ?? null));
+  const billingLoaded = useChat((s) => s.billing !== null);
+  const loadBilling = useChat((s) => s.loadBilling);
+  useEffect(() => {
+    if (!billingLoaded && account.signedIn) void loadBilling(false);
+  }, [billingLoaded, account.signedIn, loadBilling]);
   /** 右侧槽位现在开着哪块(null = 空着)。会话行的"我在聊天视图"就是这个判据——
       原来那串手抄的 !aOpen && !bOpen 漏了 filesPanelOpen,开着文件面板时侧栏
       仍然把那条会话画成"正在看" */
@@ -2368,7 +2381,12 @@ function AppSidebar() {
             {account.signedIn ? (
               <>
                 <AccountAvatar name={identity.name} avatarUrl={identity.avatarUrl} sizeCls="size-5" textCls="text-[11px]" />
-                <span className="flex-1 min-w-0 truncate">{identity.name}</span>
+                <span className="min-w-0 truncate">{identity.name}</span>
+                {/* 档位徽章紧贴名字右边（不是靠右对齐到行尾）：名字长到要截断时，
+                    徽章跟着被推走比留在原地更难读——它说的是这个人的事。
+                    名字那格因此从 flex-1 收成 min-w-0，多出来的宽度让给下面的 spacer */}
+                {planTier && <PlanBadge id={planTier} />}
+                <span className="flex-1" />
               </>
             ) : (
               <>
