@@ -14,6 +14,7 @@ export function MessageQueue({
   running,
   queued,
   onCancel,
+  onRunNow,
   runningLabel,
   queuedLabel,
   hint,
@@ -21,11 +22,14 @@ export function MessageQueue({
   ...props
 }: Omit<
   ComponentProps<"div">,
-  "children" | "running" | "queued" | "onCancel"
+  "children" | "running" | "queued" | "onCancel" | "onRunNow"
 > & {
   running: string;
   queued: readonly QueuedMessage[];
   onCancel?: (id: string) => void;
+  /** 本仓改动:每条排队项的「顶替」——中止正在跑的那条、立即改跑这条
+      (对照上游 QueueItemPrimitive.Steer 的 "Run now" 位置,在 × 左边) */
+  onRunNow?: (id: string) => void;
   /** 本仓改动:三处文案可换。原件写死 running / N queued /
       "sends when this finishes",本仓是中文界面 */
   runningLabel?: ReactNode;
@@ -84,6 +88,17 @@ export function MessageQueue({
               {message.text}
             </span>
             <ArrowUpIcon className="text-foreground/25 size-3 shrink-0" />
+            {onRunNow && (
+              <button
+                type="button"
+                // 本仓改动:顶替 = 中止当前任务、把这条提到队首立即改跑
+                aria-label={`立即中止当前任务，改跑「${message.text}」`}
+                onClick={() => onRunNow(message.id)}
+                className={cn(ghostButton, "h-6 shrink-0 px-2 text-xs")}
+              >
+                顶替
+              </button>
+            )}
             <button
               type="button"
               // 本仓改动:中文界面
