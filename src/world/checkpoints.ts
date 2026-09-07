@@ -54,7 +54,8 @@ interface GitResult {
 
 function runGit(args: string[], timeoutMs = GIT_TIMEOUT_MS): Promise<GitResult> {
   return new Promise((resolve, reject) => {
-    const child = spawn("git", args, { timeout: timeoutMs, killSignal: "SIGKILL" });
+    // windowsHide：win32 的 GUI 进程起 console 程序会弹黑框（#1027，见 shared/childProcess.ts）
+    const child = spawn("git", args, { timeout: timeoutMs, killSignal: "SIGKILL", windowsHide: true });
     let stdout = "";
     let stderr = "";
     child.stdout.setEncoding("utf8");

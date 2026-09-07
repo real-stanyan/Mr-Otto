@@ -43,7 +43,8 @@ const nodeDeps: ProtocolDeps = {
   },
   execGh(args, cwd) {
     return new Promise((resolve, reject) => {
-      execFile("gh", args, { cwd, maxBuffer: 10 * 1024 * 1024, timeout: GH_TIMEOUT_MS }, (err, stdout, stderr) => {
+      // windowsHide：win32 的 GUI 进程起 console 程序会弹黑框（#1027，见 shared/childProcess.ts）
+      execFile("gh", args, { cwd, maxBuffer: 10 * 1024 * 1024, timeout: GH_TIMEOUT_MS, windowsHide: true }, (err, stdout, stderr) => {
         if (err) reject(Object.assign(err, { stderr: String(stderr) }));
         else resolve({ stdout: String(stdout) });
       });

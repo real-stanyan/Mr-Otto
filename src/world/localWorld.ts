@@ -18,6 +18,7 @@ import { createLocalResidue } from "./residueLocal.js";
 import { stripSecretEnv } from "../shared/secretEnv.js";
 import { loginShellPath } from "./loginShellEnv.js";
 import { HeadTailBuffer } from "../shared/headTail.js";
+import { consoleSafeSpawnOpts } from "../shared/childProcess.js";
 
 /** exec 输出的内存上限（字符，每条流各一份，头尾各半）——三层截断的第一层
     （issue #343）。与 IPC 限流（shared/execStream.ts）、模型可见预算（tools/bash.ts）
@@ -119,7 +120,9 @@ export function createLocalWorld(
         }
         const child = spawn(cmd, {
           shell: true,
-          detached: true,            // 独立进程组，组长 pgid = child.pid
+          // 平台取值收口在 shared/childProcess.ts（#1027）：win32 不能 detached
+          // （与 windowsHide 互斥，MSDN/ADR-0163），其他平台独立进程组（pgid = child.pid）
+          ...consoleSafeSpawnOpts(),
           // timeout / killSignal / signal 三个原生选项全部移除——它们只打直接子进程，
           // 改为下面自管：到点/中断 killGroup 全组连坐
           // 凭据不跟着子进程出去：bash 工具和终端是同一个向量,一句 echo 就够
@@ -199,7 +202,7 @@ export function createLocalWorld(
     // 是它存在的意义）、超时放宽到 30 分钟（无限 = 泄漏出走的进程；
     // 30 分钟够全量构建/测试，真要更久的活该上 CI）。同款 HeadTail 有界缓冲、
     // 同款"被信号杀 = exitCode 124 + stderr 标注"语义。
-    // detached:true 同 exec（issue #759）：不然命令里 `&` 起的孙进程在超时时
+    // detached:true 同 exec（issue #759；win32 例外见 shared/childProcess.ts，#1027）：不然命令里 `&` 起的孙进程在超时时
     // 只会看着 shell 死掉、自己被 reparent 到 launchd 逃逸——这正是 exec 要堵的洞，
     // execDetached 没理由留着。app 退出时孤儿风险与 exec 相同，接受它换全组硬杀。
     // 直播在 issue #772 补上（后台任务面板要画终端），边界同 exec：
@@ -208,7 +211,8 @@ export function createLocalWorld(
       return new Promise<ExecResult>((done) => {
         const child = spawn(cmd, {
           shell: true,
-          detached: true,          // 独立进程组，组长 pgid = child.pid
+          // 同 exec：平台取值收口在 shared/childProcess.ts（#1027），win32 不 detached
+          ...consoleSafeSpawnOpts(),
           env: childEnv(),
           ...(root ? { cwd: root } : {}),
         });
