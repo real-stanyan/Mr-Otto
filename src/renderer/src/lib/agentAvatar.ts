@@ -24,8 +24,18 @@ import { agentAvatarSlot } from "./agentAvatarSlot.js";
 
 export const AGENT_AVATARS: readonly string[] = [a01, a02, a03, a04, a05, a06, a07, a08, a09, a10, a11, a12, a13];
 
-/** 这只 agent 在这个工作区里画哪张脸。名单取 ws.agents 的顺序（服务端 created_at 升序） */
+/** 这只 agent 在这个工作区里画哪张脸。
+    **自己挑过的优先**（`avatarSlot`，#1007）；没挑过（null）才按 agentId 哈希从
+    名单里派生，名单取 ws.agents 的顺序（服务端 created_at 升序）。
+
+    挑中的坑位**不参与派生那套顺延避让**：有人手动挑到别人派生到的那张时两只会
+    撞脸——那是用户自己挑的，不该反过来把别人的脸换掉。
+
+    坑位越界（旧客户端读到新版才有的那张）**退回派生**，不取模：取模会安静地
+    映射到另一张脸，看起来像「他挑了这张」，而事实是「这一版没有那张图」。 */
 export function agentAvatarSrc(ws: WorkspaceSnapshot, agentId: string): string {
+  const picked = ws.agents.find((a) => a.agentId === agentId)?.avatarSlot ?? null;
+  if (picked !== null && picked >= 0 && picked < AGENT_AVATARS.length) return AGENT_AVATARS[picked]!;
   const roster = ws.agents.map((a) => a.agentId);
   return AGENT_AVATARS[agentAvatarSlot(agentId, roster)]!;
 }

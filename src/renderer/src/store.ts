@@ -900,12 +900,18 @@ interface ChatState {
       NewWorkspaceDialog 的 staleAfterCreate 那一态 */
   createWorkspaceAgent(
     id: string,
-    draft: { name: string; description: string; instructions: string; models: readonly string[]; tools: readonly AgentToolAllow[] },
+    draft: {
+      name: string; description: string; instructions: string; models: readonly string[];
+      tools: readonly AgentToolAllow[]; avatarSlot?: number | null;
+    },
   ): Promise<WorkspaceAgentMutationResult>;
   updateWorkspaceAgent(
     id: string,
     agentId: string,
-    patch: { name?: string; description?: string; instructions?: string; models?: readonly string[]; tools?: readonly AgentToolAllow[] },
+    patch: {
+      name?: string; description?: string; instructions?: string; models?: readonly string[];
+      tools?: readonly AgentToolAllow[]; avatarSlot?: number | null;
+    },
   ): Promise<WorkspaceAgentMutationResult>;
   deleteWorkspaceAgent(id: string, agentId: string): Promise<WorkspaceAgentMutationResult>;
   /** 设置页「用量」tab（#946）：不进 store 状态——这张表只在打开 tab 时看一眼，

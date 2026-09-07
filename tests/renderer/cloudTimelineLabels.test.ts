@@ -13,8 +13,8 @@ const ws: WorkspaceSnapshot = {
   id: "w", name: "W", ownerUid: "o", connectors: [], sessions: [],
   members: [{ uid: "u1", role: "owner", label: "Stan", avatarUrl: "" }, { uid: "u2", role: "member", label: "Stan", avatarUrl: "" }],
   agents: [
-    { agentId: "a_1", name: "运营", description: "", instructions: "", models: [], tools: [], createdBy: "u1", updatedTs: 0 },
-    { agentId: "a_2", name: "广告", description: "", instructions: "", models: [], tools: [], createdBy: "u1", updatedTs: 0 },
+    { agentId: "a_1", name: "运营", description: "", instructions: "", models: [], tools: [], createdBy: "u1", updatedTs: 0 , avatarSlot: null},
+    { agentId: "a_2", name: "广告", description: "", instructions: "", models: [], tools: [], createdBy: "u1", updatedTs: 0 , avatarSlot: null},
   ],
   relayMaxDepth: 6,
   sandboxApproval: "ask",

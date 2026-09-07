@@ -112,12 +112,12 @@ export async function fetchWorkspace(
   }[];
   const agents = (unwrap(
     await client.from("workspace_agents")
-      .select("agent_id,name,description,instructions,models,tools,created_by,updated_at")
+      .select("agent_id,name,description,instructions,models,tools,created_by,updated_at,avatar_slot")
       .eq("workspace_id", id)
       .order("created_at", { ascending: true }),
   ) ?? []) as {
     agent_id: string; name: string; description: string; instructions: string; models: unknown;
-    tools: unknown; created_by: string; updated_at: string;
+    tools: unknown; created_by: string; updated_at: string; avatar_slot?: unknown;
   }[];
   const profiles = await fetchProfiles(client, members.map((m) => m.uid));
   return assembleSnapshot({ ...ws, sandbox_approval: sandboxApproval }, members, connectors, sessions, agents, (uid) => profiles.get(uid) ?? null);
@@ -234,6 +234,7 @@ export async function insertAgentRow(
   row: {
     workspaceId: string; agentId: string; name: string; description: string;
     instructions: string; models: string[]; tools: AgentToolAllow[]; createdBy: string;
+    avatarSlot?: number | null;
   },
 ): Promise<void> {
   unwrap(
@@ -246,6 +247,8 @@ export async function insertAgentRow(
       models: row.models,
       tools: row.tools,
       created_by: row.createdBy,
+      // undefined = 这条路没挑头像（create_agent 工具那条就是），落 null 走派生
+      avatar_slot: row.avatarSlot ?? null,
     }),
   );
 }
@@ -272,11 +275,21 @@ export async function updateAgentRow(
   client: SupabaseClient,
   workspaceId: string,
   agentId: string,
-  patch: { name?: string; description?: string; instructions?: string; models?: string[]; tools?: AgentToolAllow[] },
+  patch: {
+    name?: string; description?: string; instructions?: string; models?: string[];
+    tools?: AgentToolAllow[]; avatarSlot?: number | null;
+  },
 ): Promise<void> {
+  // avatarSlot 是驼峰、列名是下划线，跟其余字段不同名——省略 = 不动这一格，
+  // 显式给 null = 清回「按 agent_id 派生」（两者不是一回事，同 config 帧那份三态）
+  const { avatarSlot, ...rest } = patch;
   const rows = unwrap(
     await client.from("workspace_agents")
-      .update({ ...patch, updated_at: new Date().toISOString() })
+      .update({
+        ...rest,
+        ...(avatarSlot === undefined ? {} : { avatar_slot: avatarSlot }),
+        updated_at: new Date().toISOString(),
+      })
       .eq("workspace_id", workspaceId)
       .eq("agent_id", agentId)
       .select("agent_id"),
