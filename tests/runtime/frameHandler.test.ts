@@ -61,6 +61,8 @@ function makeDeps(config: {
   /** issue #819：默认全放行（绝大多数用例不关心限流）。要验闸门的用例
       传一个只对某几档说 false 的假货 */
   rateLimit?: FrameHandlerDeps["rateLimit"];
+  /** #1056：默认回一个空目录——绝大多数用例不关心工作文件夹 */
+  readWork?: FrameHandlerDeps["readWork"];
 } = {}): { deps: FrameHandlerDeps; sent: Sent[]; dropCidCalls: string[]; logs: string[] } {
   const sent: Sent[] = [];
   const dropCidCalls: string[] = [];
@@ -81,6 +83,7 @@ function makeDeps(config: {
     saveConfig: config.saveConfig ?? (async () => {}),
     repoState: config.repoState ?? (() => null),
     modelRoute: config.modelRoute ?? (async () => null),
+    readWork: config.readWork ?? (async () => ({ kind: "dir", entries: [], truncated: false })),
     rateLimit: config.rateLimit ?? { allow: () => true },
     send: (cid, msg) => sent.push({ cid, msg }),
     dropCid: config.dropCid ?? ((cid) => dropCidCalls.push(cid)),
@@ -1600,5 +1603,113 @@ describe("say 回执（#964）", () => {
     expect((sent[0]!.msg as { message: string }).message).toBe("发送失败，请重试");
     expect((sent[0]!.msg as { message: string }).message).not.toContain("workspace_agents");
     expect(logs.join("\n")).toContain("workspace_agents 查询失败");
+  });
+});
+
+describe("files 读帧（协议 11，#1056）", () => {
+  it("任何在籍成员都读得到；不在籍 → denied not_member", async () => {
+    const calls: [string, string][] = [];
+    const { deps, sent } = makeDeps({
+      isMember: async (w) => w === "w-ok",
+      readWork: async (w, path) => {
+        calls.push([w, path]);
+        return { kind: "dir", entries: [{ name: "菜单.md", kind: "file", size: 12, mtimeMs: 1 }], truncated: false };
+      },
+    });
+    const handler = createFrameHandler(deps);
+    await handler.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+
+    await handler.onCtlFrame("c1", encodeCs({ t: "files", workspaceId: "w-bad", path: "" }));
+    expect(sent.at(-1)).toEqual({ cid: "c1", msg: { t: "denied", code: "not_member" } });
+    expect(calls).toEqual([]);
+
+    await handler.onCtlFrame("c1", encodeCs({ t: "files", workspaceId: "w-ok", path: "src" }));
+    expect(calls).toEqual([["w-ok", "src"]]);
+    expect(sent.at(-1)).toEqual({
+      cid: "c1",
+      msg: {
+        t: "files_result",
+        workspaceId: "w-ok",
+        path: "src",
+        ok: true,
+        node: { kind: "dir", entries: [{ name: "菜单.md", kind: "file", size: 12, mtimeMs: 1 }], truncated: false },
+      },
+    });
+  });
+
+  it("服务端自己再归一化一次——客户端那次只是省往返，不是安全边界", async () => {
+    const calls: string[] = [];
+    const { deps, sent } = makeDeps({
+      readWork: async (_w, path) => {
+        calls.push(path);
+        return { kind: "missing" };
+      },
+    });
+    const handler = createFrameHandler(deps);
+    await handler.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+
+    // `..` 手工发过来（渲染层永远不会发，主进程也拦过一次）——这一层照样拦
+    await handler.onCtlFrame("c1", encodeCs({ t: "files", workspaceId: "w1", path: "../../etc" }));
+    expect(calls).toEqual([]);
+    expect(sent.at(-1)!.msg).toEqual({ t: "files_result", workspaceId: "w1", path: "../../etc", ok: false, message: "这条路径不合法。" });
+
+    // 合法但写法脏的照过，且**回执带的是归一化之后那条**（客户端拿它当当前位置）
+    await handler.onCtlFrame("c1", encodeCs({ t: "files", workspaceId: "w1", path: "a//b/./" }));
+    expect(calls).toEqual(["a/b"]);
+    expect(sent.at(-1)!.msg).toMatchObject({ t: "files_result", path: "a/b", ok: true });
+  });
+
+  it("读挂了 → 说「读不到」，绝不回一个空目录", async () => {
+    // 「这一刻读不到」说成「里面是空的」会让人以为水獭什么都没做出来（同 ADR-0243）
+    const { deps, sent, logs } = makeDeps({
+      readWork: async () => {
+        throw new Error("docker exec 失败：容器不见了");
+      },
+    });
+    const handler = createFrameHandler(deps);
+    await handler.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    sent.length = 0;
+
+    await handler.onCtlFrame("c1", encodeCs({ t: "files", workspaceId: "w1", path: "" }));
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.msg).toEqual({ t: "files_result", workspaceId: "w1", path: "", ok: false, message: "这一刻读不到工作文件夹。稍后再试。" });
+    // 原文只进日志（同 say 那条的纪律）
+    expect((sent[0]!.msg as { message: string }).message).not.toContain("docker");
+    expect(logs.join("\n")).toContain("docker exec 失败");
+  });
+
+  it("超速 → denied rate_limited，且不下到容器", async () => {
+    // 这是唯一一条会 docker exec 进容器的读帧，没有闸就是「点得够快就能一直起 exec」
+    const calls: string[] = [];
+    const { deps, sent } = makeDeps({
+      rateLimit: { allow: (kind) => kind !== "files" },
+      readWork: async (_w, path) => {
+        calls.push(path);
+        return { kind: "absent" };
+      },
+    });
+    const handler = createFrameHandler(deps);
+    await handler.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+
+    await handler.onCtlFrame("c1", encodeCs({ t: "files", workspaceId: "w1", path: "" }));
+    expect(sent.at(-1)).toEqual({ cid: "c1", msg: { t: "denied", code: "rate_limited" } });
+    expect(calls).toEqual([]);
+  });
+
+  it("会话房里发 files → denied not_authorized（控制房专用帧，同 create/workspace）", async () => {
+    const calls: string[] = [];
+    const { deps, sent } = makeDeps({
+      readWork: async (_w, path) => {
+        calls.push(path);
+        return { kind: "absent" };
+      },
+    });
+    const handler = createFrameHandler(deps);
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    sent.length = 0;
+
+    await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "files", workspaceId: "w1", path: "" }));
+    expect(sent.at(-1)!.msg).toEqual({ t: "denied", code: "not_authorized" });
+    expect(calls).toEqual([]);
   });
 });
