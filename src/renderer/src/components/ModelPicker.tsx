@@ -16,7 +16,7 @@
 // 让 assistant-ui 再持有一份等于开了第二条写入路径。
 
 import { useMemo, useState } from "react";
-import { SettingsIcon } from "lucide-react";
+import { SettingsIcon, Sparkles } from "lucide-react";
 
 import {
   ModelSelectorContent,
@@ -31,16 +31,19 @@ import {
   type ModelOption,
 } from "@/components/assistant-ui/model-selector.js";
 import { CommandGroup, CommandItem } from "@/components/ui/command.js";
-import { describeModel, modelsByProvider, ollamaChoiceFrom } from "../../../shared/modelCatalog.js";
+import { describeModel } from "../../../shared/modelCatalog.js";
 import { laneValue, parseLaneValue, type ModelLane } from "../../../shared/modelLane.js";
 import type { ModelChoice } from "../../../shared/modelCatalog.js";
-import { findProvider, type ProviderId } from "../../../shared/providerCatalog.js";
+import { findProvider } from "../../../shared/providerCatalog.js";
 import {
   thinkingLabel,
   thinkingSwitchable,
   type ThinkingSpec,
 } from "../../../shared/thinking.js";
 import { cn } from "@/lib/utils.js";
+import { AUTO_MODEL } from "../../../shared/autoModel.js";
+import { hostedModels } from "../lib/billingView.js";
+import { modelMenuGroups, type ModelMenuItem } from "../lib/modelMenu.js";
 import { useChat } from "../store.js";
 import { ProviderMark } from "./ProviderMark.js";
 
@@ -53,17 +56,46 @@ function effortsOf(spec: ThinkingSpec): ModelOption["efforts"] {
   return spec.modes.map((m) => ({ id: m, name: thinkingLabel(m) }));
 }
 
-function optionOf(m: ModelChoice, provider: ProviderId, providerName: string): ModelOption {
+function optionOf(it: ModelMenuItem): ModelOption {
+  const m = it.choice;
+  const providerName = it.provider ? (findProvider(it.provider)?.name ?? it.provider) : "";
   return {
-    id: m.model,
-    name: m.label,
-    icon: <ProviderMark provider={provider} size={14} className="rounded-[3px]" />,
+    id: it.id,
+    // 目录外的型号原样显示 id：比空白多一点信息，至少看得出是哪一款
+    name: it.auto ? "Auto" : (m?.label ?? it.id),
+    ...(it.auto
+      ? { icon: AUTO_MARK }
+      : it.provider
+        ? { icon: <ProviderMark provider={it.provider} size={14} className="rounded-[3px]" /> }
+        : {}),
     // 搜索命中厂商名和裸型号 id：用户既可能打 "kimi"，也可能打 "moonshot"
-    keywords: [providerName, m.model],
-    ...(effortsOf(m.thinking) !== undefined ? { efforts: effortsOf(m.thinking)! } : {}),
+    keywords: [providerName, it.id].filter((k) => k !== ""),
+    ...(m && effortsOf(m.thinking) !== undefined ? { efforts: effortsOf(m.thinking)! } : {}),
   };
 }
 
+
+/** 一组选项 + 画它要用的两样东西。订阅那一组和厂商那几组同一个形状，
+    渲染那一段因此只有一条路径——两种组各画一遍的话，「视觉」那枚记号
+    迟早只在其中一边跟上 */
+interface PickerGroup {
+  key: string;
+  heading: string;
+  options: ModelOption[];
+  /** 与 options 同序：这一项支不支持看图。Auto 那一行恒 false */
+  vision: boolean[];
+}
+
+/** Auto 那一枚记号。用的不是厂商字形——Auto 不是一家厂——而是同尺寸同圆角的
+    中性方块，只求这一列对得齐（同 WorkspaceAgentsTab 的那一枚，#1015） */
+const AUTO_MARK = (
+  <span
+    aria-hidden
+    className="inline-flex size-[14px] shrink-0 items-center justify-center rounded-[3px] bg-muted text-muted-foreground ring-1 ring-black/10 ring-inset dark:ring-white/[0.14]"
+  >
+    <Sparkles className="size-[9px]" />
+  </span>
+);
 
 /** token 数的紧凑写法 */
 function fmtTokens(n: number): string {
@@ -74,6 +106,8 @@ function fmtTokens(n: number): string {
 export function ModelPicker({
   value,
   lane = "auto",
+  auto = false,
+  allowAuto = false,
   onChange,
   disabled = false,
   className,
@@ -84,6 +118,14 @@ export function ModelPicker({
   value: string;
   /** 当前走哪条路。选单里赠额那一份和自己 key 那一份是同一个型号的两个条目 */
   lane?: ModelLane;
+  /** 这一格此刻选的是 Auto（#1042）。`value` 仍然是**上一轮真跑的那一款** ——
+      两者不是二选一：上下文窗口、挡位表、缓存量照旧问那一款要，只是触发器上
+      显示的是 Auto */
+  auto?: boolean;
+  /** 这个入口允不允许选 Auto。默认不允许：代读员 / 小模型 / 子智能体那几处换的
+      不是「这一 turn 用哪款」，Auto 那套「先判难度」对它们没有意义 */
+  allowAuto?: boolean;
+  /** `model` 可能是 `AUTO_MODEL`（选中了 Auto）——调用方自己认这个口令 */
   onChange: (model: string, lane: ModelLane) => void;
   disabled?: boolean;
   /** 触发器的样式叠加层（状态条版 BAR_SELECT / 新会话卡版 NSC_SELECT） */
@@ -106,53 +148,55 @@ export function ModelPicker({
   const [open, setOpen] = useState(false);
 
   const choice = describeModel(value);
-  const groups = useMemo(() => {
-    const ready = (id: ProviderId) => {
-      const info = findProvider(id);
-      if (!info) return false;
-      if (info.keyless) return true; // 本机 Ollama:能连上就能用
-      return (keyStatus[info.apiKeyEnv] ?? "") !== "";
-    };
-    // Ollama 的型号不在目录里（本机装了什么只有本机知道），现问现拼进来。
-    // 只留会调工具的：这个 agent 的每一步都是工具调用，选一个不会调工具的型号
-    // 等于选了一个只会聊天的搭档 —— 与其让它在会话里静默地什么也不做，
-    // 不如现在就不出现在选单里（设置页会列出它并说明为什么被藏起来）。
-    // 一个都没有就整组不出现：空的二级菜单比没有这一项更让人困惑
-    const usable = ollamaModels.filter((m) => m.tools);
-    const ollama =
-      usable.length > 0
-        ? [{ provider: "ollama" as ProviderId, models: usable.map(ollamaChoiceFrom) }]
-        : [];
-    return [...modelsByProvider(), ...ollama]
-      // 能力过滤在 ready/选中兜底之前：滤空的组整组不出现，
-      // 但当前选中的那家照旧保留（value 得在菜单里找得到自己）
-      .map((g) => ({ ...g, models: filter ? g.models.filter(filter) : g.models }))
-      .filter((g) => g.models.length > 0 || g.provider === choice?.provider)
-      .map((g) => ({ ...g, info: findProvider(g.provider)! }))
-      // 没配 key 的厂商压根不进这个菜单：这里是"挑一个现在就能跑的型号"，
-      // 十来行点进去只会撞上"需要 key"的死路。配 key 是另一件事，走底下那个入口。
-      // 例外是当前选中的那家——key 被清掉之后菜单里也得能找到它，
-      // 否则触发器显示着一个在菜单里不存在的型号
-      .filter((g) => ready(g.provider) || g.provider === choice?.provider)
-      .map((g) => ({
-        ...g,
-        options: g.models.map((m) => optionOf(m, g.provider, g.info.name)),
-      }));
-  }, [keyStatus, ollamaModels, choice?.provider, filter]);
+  // 网关此刻供着哪几款（从便宜到贵，ADR-0237 那条排序键）。没订阅 / 还没查到 = 空，
+  // 于是下面整块退回改动前的样子（判据与取舍在 billingView.hostedModels）
+  const hosted = useChat((s) => hostedModels(s.billing));
+
+  // 列哪几款是纯逻辑，住在 lib/modelMenu.ts —— 判据留在这个 useMemo 里就没有保鲜期，
+  // 它渲染不出错、只是少几行（这正是 #1042 那次答错的样子）
+  const menu = useMemo(
+    () =>
+      modelMenuGroups({
+        hosted,
+        allowAuto,
+        keyStatus,
+        ollamaModels,
+        currentModel: value,
+        filter,
+      }),
+    [keyStatus, ollamaModels, hosted, allowAuto, value, filter]
+  );
+  const groups = useMemo<PickerGroup[]>(
+    () =>
+      menu.map((g) => ({
+        key: g.key,
+        heading: g.heading,
+        options: g.items.map((it) => optionOf(it)),
+        vision: g.items.map((it) => it.vision),
+      })),
+    [menu]
+  );
 
   // Root 要一份**平铺**的清单：选中项、以及它的挡位表都从这里查。
   // OTTER_MODEL 填了目录外的型号时补一条，否则触发器会显示 placeholder ——
   // "选择模型"这四个字会让人以为还没选，而其实正在用着它
   const models = useMemo(() => {
     const flat = groups.flatMap((g) => g.options);
-    if (choice || flat.some((o) => o.id === value)) return flat;
-    return [...flat, { id: value, name: value }];
-  }, [groups, choice, value]);
+    // Auto 开着但清单里没有它（订阅刚失效 / 还没查到）：补一条，否则触发器会退回
+    // placeholder —— 那读起来像「这一格还没选」，而其实 Auto 正开着
+    const withAuto =
+      auto && !flat.some((o) => o.id === AUTO_MODEL)
+        ? [...flat, { id: AUTO_MODEL, name: "Auto", icon: AUTO_MARK }]
+        : flat;
+    if (choice || withAuto.some((o) => o.id === value)) return withAuto;
+    return [...withAuto, { id: value, name: value }];
+  }, [groups, choice, value, auto]);
 
   return (
     <ModelSelectorRoot
       models={models}
-      value={laneValue(value, lane)}
+      // Auto 是这一格的一个取值，不是并排的第二个控件：选中它，触发器上写 Auto
+      value={auto ? AUTO_MODEL : laneValue(value, lane)}
       onValueChange={(v) => {
         const picked = parseLaneValue(v);
         onChange(picked.model, picked.lane);
@@ -185,14 +229,27 @@ export function ModelPicker({
           <ModelSelectorEmpty>没有匹配的模型</ModelSelectorEmpty>
 
           {groups.map((g) => (
-            <ModelSelectorGroup key={g.provider} heading={g.info.name}>
+            <ModelSelectorGroup key={g.key} heading={g.heading}>
               {g.options.map((o, i) => (
                 <ModelSelectorItem key={o.id} model={o} className="items-center">
                   {/* 厂商标记要自己摆:给了 children 就等于整块自绘,
                       上游那套 icon + name 的默认排版不会再出现(它在 children ?? 后面) */}
                   {o.icon}
-                  <span className="min-w-0 flex-1 truncate">{o.name}</span>
-                  {g.models[i]?.supportsVision && (
+                  {o.id === AUTO_MODEL ? (
+                    /* Auto 这一行两层：它做的事和下面那几款不是同一类（那几款是
+                       「用这一款」，它是「每轮替我挑一款」），只写一个词的话，
+                       点它的人只能靠猜。别处没有能说这句话的地方——触发器一行字宽，
+                       浮层底下那条脚注是给「换型号作废缓存」用的 */
+                    <span className="flex min-w-0 flex-1 flex-col">
+                      <span className="truncate">{o.name}</span>
+                      <span className="truncate text-[10.5px] leading-[1.35] text-muted-foreground">
+                        每轮起跑前判一手难度，再挑贵的还是便宜的
+                      </span>
+                    </span>
+                  ) : (
+                    <span className="min-w-0 flex-1 truncate">{o.name}</span>
+                  )}
+                  {g.vision[i] && (
                     <span className="shrink-0 text-[10.5px] text-muted-foreground">视觉</span>
                   )}
                 </ModelSelectorItem>

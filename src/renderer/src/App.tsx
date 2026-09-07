@@ -112,6 +112,7 @@ import { McpPromptCard } from "./components/McpPromptCard.js";
 // ErrorBanner 槽已经内置了同一颗按钮(见 aui/OttoThread.tsx),App.tsx 不用重复渲染
 import { SectionRail } from "./components/SectionRail.js";
 import { FolderIcon } from "./components/FileTypeIcon.js";
+import { AUTO_MODEL } from "../../shared/autoModel.js";
 import { DEFAULT_MODEL, describeModel } from "../../shared/modelCatalog.js";
 import type { ModelLane } from "../../shared/modelLane.js";
 import { clampThinking, thinkingLabel, type ThinkingMode } from "../../shared/thinking.js";
@@ -553,6 +554,7 @@ function SettingRow({ label, children }: { label: string; children: ReactNode })
 function ComposerPrefsBar() {
   const model = useChat((s) => s.model);
   const lane = useChat((s) => s.lane);
+  const autoModel = useChat((s) => s.autoModel);
   const events = useChat((s) => s.events);
   const toolDefs = useChat((s) => s.toolDefs);
   const approvalMode = useChat((s) => s.approvalMode);
@@ -590,6 +592,8 @@ function ComposerPrefsBar() {
       <ModelPicker
         value={model}
         lane={lane}
+        auto={autoModel}
+        allowAuto
         onChange={(m, l) => void switchModel(m, l)}
         className={BAR_SELECT}
         // 只有这一处传缓存量：换的是这条活会话的型号，作废的就是它的缓存（issue #434）
@@ -2846,6 +2850,7 @@ function Welcome() {
   const send = useChat((s) => s.send);
   const error = useChat((s) => s.error);
   const lastModel = useChat((s) => s.model);
+  const lastAuto = useChat((s) => s.autoModel);
   const fullscreen = useChat((s) => s.fullscreen);
   // 侧栏工程分组的 ＋ 带过来的文件夹初值。Welcome 常驻不卸载，所以用 effect 跟着变，
   // 不用 key 重挂——重挂会连草稿一起清掉
@@ -2874,6 +2879,10 @@ function Welcome() {
   );
   // 新会话卡还没有日志可投影,lane 只能是本地草稿;落地时跟着 startSession 过去
   const [lane, setLane] = useState<ModelLane>("auto");
+  // Auto 也跟上个会话走（同 model 那一行）。**不塞进 `model`**：`useModelChoice(model)`
+  // 要拿它问上下文窗口和挡位表，`__auto__` 在那两处都答不出来，而 Auto 开着时这条
+  // 会话仍然有一个确定的起手型号
+  const [auto, setAuto] = useState(lastAuto);
   const [mode, setMode] = useState<"ask" | "auto">("ask");
   const [busy, setBusy] = useState(false);
   const choice = useModelChoice(model);
@@ -2890,7 +2899,7 @@ function Welcome() {
     setBusy(true);
     try {
       // 显式传全部偏好：下拉框显示什么就落地什么（宁多一条 model_changed，不让 UI 说谎）
-      await startSession({ workspace: effectiveWorkspace, model, lane, approvalMode: mode, thinking });
+      await startSession({ workspace: effectiveWorkspace, model: auto ? AUTO_MODEL : model, lane, approvalMode: mode, thinking });
       const t = text.trim();
       // 建会话成功才发首条消息（失败时 phase 停在 welcome，草稿原样保留）。
       // 只贴了图不打字也算一条消息——附件本身就是内容(同会话中的 submit 口径)。
@@ -2987,8 +2996,15 @@ function Welcome() {
           <ModelPicker
             value={model}
             lane={lane}
+            auto={auto}
+            allowAuto
             onChange={(m, l) => {
-              setModel(m);
+              // Auto 是这一格的一个取值：选中它只改 auto，`model` 留着当起手款
+              if (m === AUTO_MODEL) setAuto(true);
+              else {
+                setAuto(false);
+                setModel(m);
+              }
               setLane(l);
             }}
             // 同上:不封硬顶,写得下就写全(新会话卡这一行本来就宽)
