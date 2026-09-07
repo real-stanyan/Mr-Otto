@@ -32,8 +32,7 @@ import {
 import {
   isServerOn, isToolOn, selectionFromAllow, toggleServer, toggleTool, type ProxySelection,
 } from "../lib/proxyShare.js";
-import { validateAgentName, type SandboxApproval } from "../../../shared/workspaceAgents.js";
-import { Switch } from "./ui/switch.js";
+import { validateAgentName } from "../../../shared/workspaceAgents.js";
 import { sameAgentTools } from "../../../shared/agentToolAllow.js";
 import type { WorkspaceSnapshot, WorkspaceAgentRow } from "../../../shared/workspaces.js";
 
@@ -72,7 +71,6 @@ export function WorkspaceAgentsTab({ ws, selfUid }: { ws: WorkspaceSnapshot; sel
 
   return (
     <div className="flex flex-col gap-2">
-      <SandboxApprovalRow ws={ws} isOwner={ws.ownerUid === selfUid} />
       <div className="flex justify-end">
         <Button size="sm" onClick={() => setEditorState({ mode: "create" })}>新建智能体…</Button>
       </div>
@@ -120,44 +118,6 @@ export function WorkspaceAgentsTab({ ws, selfUid }: { ws: WorkspaceSnapshot; sel
         state={editorState}
         onOpenChange={(open) => { if (!open) setEditorState(null); }}
       />
-    </div>
-  );
-}
-
-/** 「沙箱内工具要不要人批」那一行（#977，ADR-0231）：落在 workspaces.sandbox_approval，
-    owner 才能改。开关不是数字框——两态、当场生效，没有「保存」这一步；
-    存的是 "ask"|"auto" 两个字面量，与 runtime 那头同一份类型 */
-function SandboxApprovalRow({ ws, isOwner }: { ws: WorkspaceSnapshot; isOwner: boolean }) {
-  const setSandboxApproval = useChat((s) => s.setWorkspaceSandboxApproval);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const auto = ws.sandboxApproval === "auto";
-  const hint = auto
-    ? "智能体在自己的容器里跑命令、写文件不再弹审批卡；连接器与新建智能体照旧要批。"
-    : "每一次跑命令、写文件都弹审批卡；卡挂着的时候整个群的回复都在排队。";
-
-  const toggle = async (next: boolean): Promise<void> => {
-    if (busy) return;
-    setBusy(true);
-    setError(null);
-    const value: SandboxApproval = next ? "auto" : "ask";
-    const ok = await setSandboxApproval(ws.id, value);
-    setBusy(false);
-    if (!ok) setError(useChat.getState().workspaceGroupsError);
-  };
-
-  return (
-    <div className="flex flex-col gap-1">
-      <div className={cn(ROW, "border border-border")}>
-        <span className="shrink-0 text-muted-foreground">沙箱内免审</span>
-        <span className="min-w-0 flex-1 text-[11px] text-muted-foreground">{hint}</span>
-        {isOwner ? (
-          <Switch checked={auto} onCheckedChange={(v) => void toggle(v)} disabled={busy} aria-label="沙箱内 bash 与写文件免审" />
-        ) : (
-          <span className="shrink-0 text-xs text-muted-foreground">{auto ? "开" : "关"}（所有者可改）</span>
-        )}
-      </div>
-      {error && <p className="px-2 text-xs text-err">{error}</p>}
     </div>
   );
 }

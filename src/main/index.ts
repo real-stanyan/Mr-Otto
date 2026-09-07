@@ -3268,7 +3268,7 @@ void app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.workspaceMemoryList, (_e, id: string) => workspaceManager.listMemories(id));
   ipcMain.handle(CHANNELS.workspaceMemorySave, (_e, id: string, agentId: string, text: string, version: string) =>
     workspaceManager.saveMemory(id, agentId, text, version));
-  // 智能体 tab 顶部的「沙箱内工具要不要人批」（#977）：owner 才能改
+  // 云会话输入框那一行的「沙箱内工具要不要人批」（#977，控件位置见 ADR-0243）：owner 才能改
   ipcMain.handle(CHANNELS.workspaceSetSandboxApproval, (_e, id: string, value: SandboxApproval) =>
     workspaceManager.setSandboxApproval(id, value));
 

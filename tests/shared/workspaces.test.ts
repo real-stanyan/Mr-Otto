@@ -1,11 +1,12 @@
 // assembleSnapshot 纯逻辑单测：钉住行数据 → snapshot 的转换规则
 // （tools 形状不对回 []、label 缺席回 uid 截断 + avatarUrl 缺席回空串、updated_at ISO → ms、
-// avatar_slot 归一、sandbox_approval 形状不对回 ask）。
+// avatar_slot 归一、sandbox_approval 原样透传）。
 
 import { describe, expect, it } from "vitest";
 import { assembleSnapshot } from "../../src/shared/workspaces.js";
+import { normalizeSandboxApproval } from "../../src/shared/workspaceAgents.js";
 
-const WS = { id: "ws-1", name: "测试工作区", owner_uid: "owner-uid-12345678", sandbox_approval: "ask" };
+const WS = { id: "ws-1", name: "测试工作区", owner_uid: "owner-uid-12345678", sandbox_approval: "ask" as const };
 
 describe("assembleSnapshot", () => {
   it("组装成员/连接器/会话三张表 + label 查得到时原样用", () => {
@@ -123,11 +124,22 @@ describe("assembleSnapshot", () => {
     expect(slotOf("3")).toBeNull();
   });
 
-  it("sandbox_approval：只认 'auto'，其余（缺列 undefined / null / 别的串）一律回 'ask'——往严的一边倒（#977）", () => {
+  // 形状归一（脏值 → ask）从这里搬去了 fetchSandboxApproval，判据也跟着分了家（#1029）：
+  // **null 是「读不到」不是「关着」**，assembleSnapshot 原样透传，界面才画得出第三态。
+  // 脏值那一半的断言搬进了下面的 normalizeSandboxApproval 用例，没有被删掉
+  it("sandbox_approval 原样透传，null 代表读不到（#1029）", () => {
     expect(assembleSnapshot({ ...WS, sandbox_approval: "auto" }, [], [], [], [], () => null).sandboxApproval).toBe("auto");
     expect(assembleSnapshot({ ...WS, sandbox_approval: "ask" }, [], [], [], [], () => null).sandboxApproval).toBe("ask");
-    expect(assembleSnapshot({ ...WS, sandbox_approval: undefined }, [], [], [], [], () => null).sandboxApproval).toBe("ask");
-    expect(assembleSnapshot({ ...WS, sandbox_approval: null }, [], [], [], [], () => null).sandboxApproval).toBe("ask");
-    expect(assembleSnapshot({ ...WS, sandbox_approval: "AUTO" }, [], [], [], [], () => null).sandboxApproval).toBe("ask");
+    expect(assembleSnapshot({ ...WS, sandbox_approval: null }, [], [], [], [], () => null).sandboxApproval).toBeNull();
+  });
+});
+
+describe("normalizeSandboxApproval", () => {
+  it("只认 'auto'，其余（缺列 undefined / null / 别的串）一律回 'ask'——往严的一边倒（#977）", () => {
+    expect(normalizeSandboxApproval("auto")).toBe("auto");
+    expect(normalizeSandboxApproval("ask")).toBe("ask");
+    expect(normalizeSandboxApproval(undefined)).toBe("ask");
+    expect(normalizeSandboxApproval(null)).toBe("ask");
+    expect(normalizeSandboxApproval("AUTO")).toBe("ask");
   });
 });
