@@ -139,6 +139,7 @@ async function scenarioMainFlow(): Promise<void> {
       verifyJwt: async (jwt) => verifyToken(jwt),
       isMember: async () => true,
       labelOf: async (uid) => `smoke-${uid.slice(0, 8)}`,
+      readWork: async () => ({ kind: "dir", entries: [], truncated: false }),
       sessions: {
         get(ws, sessionId) {
           const active = activeSessions.get(sessionId);
@@ -375,6 +376,7 @@ async function scenarioAssemblyResilience(): Promise<void> {
     verifyJwt: async (jwt) => verifyToken(jwt),
     isMember: async () => true,
     labelOf: async (uid) => uid,
+    readWork: async () => ({ kind: "absent" }),
     sessions: {
       get: () => stubSession,
       async create() {

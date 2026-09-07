@@ -27,7 +27,9 @@ import {
   type CsDown,
   type CsModelRoute,
   type CsRepoState,
+  type CsWorkNode,
 } from "../../../src/shared/remote/cloudSession.js";
+import { normalizeWorkPath } from "../../../src/shared/remote/workPath.js";
 import type { SessionEvent } from "../../../src/session/events.js";
 import { throttleMessage, TURN_BUCKET, type FrameRateLimiter } from "./rateLimit.js";
 import { SayRejectedError, type CloudSession } from "./sessionService.js";
@@ -150,6 +152,11 @@ export interface FrameHandlerDeps {
       注意 edge 挂掉不走这条路——`createHostedProbe` 把失败缓存成「没有订阅」，
       于是那一分钟里这一格答 `blocked`，与同一分钟的 turn 得到的结论一致 */
   modelRoute: (workspaceId: string, ownerUid: string) => Promise<CsModelRoute | null>;
+  /** 读一格工作文件夹（#1056）。**必需不是可选**（同 rateLimit / log 的理由）：
+      写成可选的话，忘接线那天这一页安静地永远回「读不到」，而这一层没有任何
+      别的信号能说出「其实是没接上」。`path` 这一层再归一化一次——客户端那次
+      是省往返，不是安全边界。抛错 = 容器里读失败，回执照实说 */
+  readWork: (workspaceId: string, path: string) => Promise<CsWorkNode>;
   /** 三档令牌桶（issue #819）。**必需，不是可选**：过渡期烧的是维护者的
       模型 key，一个"忘了接线"的默认值等于把闸门悄悄拆了——这种东西不该
       靠记性，该靠编译错误。桶按 uid 分而不是按 cid：按 cid 分等于"多开
@@ -382,12 +389,12 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
 
       if (msg.t === "hello") return; // 已验籍，重复 hello 当幂等刷新，不重复应答
 
-      // 控制房认五种帧（协议 8 起：create / workspace / config；协议 9 加 archive，
-      // 协议 10 加 delete）——
+      // 控制房认六种帧（协议 8 起：create / workspace / config；协议 9 加 archive，
+      // 协议 10 加 delete，协议 11 加 files）——
       // 都是「关于某个工作区」的动作，不挂在任何一条会话上。在籍是共同前提
       if (
         msg.t !== "create" && msg.t !== "workspace" && msg.t !== "config" &&
-        msg.t !== "archive" && msg.t !== "delete"
+        msg.t !== "archive" && msg.t !== "delete" && msg.t !== "files"
       ) {
         deny(cid, "not_authorized");
         return;
@@ -407,6 +414,36 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
           repo: deps.repoState(msg.workspaceId),
           modelRoute: await deps.modelRoute(msg.workspaceId, ownerUid),
         });
+        return;
+      }
+
+      if (msg.t === "files") {
+        // 读路径同 `workspace`：**所有在籍成员**。卷是整个工作区共用的一份
+        // （一容器一卷，ADR-0232），不是谁的私产；何况水獭做出来的东西正是
+        // 群里其他人要看的那个东西
+        if (!deps.rateLimit.allow("files", entry.uid)) {
+          deny(cid, "rate_limited");
+          return;
+        }
+        // 客户端那次归一化是省一次往返，这一次才是判据（渲染层与主进程都不是
+        // 安全边界，同 validateRepoUrl 的注释）
+        const path = normalizeWorkPath(msg.path);
+        if (path === null) {
+          deps.send(cid, { t: "files_result", workspaceId: msg.workspaceId, path: msg.path, ok: false, message: "这条路径不合法。" });
+          return;
+        }
+        try {
+          const node = await deps.readWork(msg.workspaceId, path);
+          deps.send(cid, { t: "files_result", workspaceId: msg.workspaceId, path, ok: true, node });
+        } catch (err) {
+          // 「这一刻读不到」不许说成「里面是空的」（同 ADR-0243 那条三态纪律）：
+          // 后者会让人以为水獭什么都没做出来
+          deps.log(`files 读工作文件夹失败（workspace=${msg.workspaceId} path=${path}）：${String(err)}`);
+          deps.send(cid, {
+            t: "files_result", workspaceId: msg.workspaceId, path, ok: false,
+            message: "这一刻读不到工作文件夹。稍后再试。",
+          });
+        }
         return;
       }
 
@@ -715,6 +752,7 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
 
         case "create": // 控制房专用帧，出现在会话房里视为越权
         case "workspace": // 同上（协议 8，#991）
+        case "files": // 同上（协议 11，#1056）：工作文件夹是工作区的，不是这条会话的
         case "config": // 同上：仓库是工作区的属性，配它不该以开着一条会话为前提
         case "archive": // 同上（协议 9，#993）：归档不该以「你正开着这条会话」为前提
         case "delete": // 同上（协议 10，#1044）：删的多半是归档掉的那些，根本没有房间

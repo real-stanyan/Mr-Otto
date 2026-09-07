@@ -80,7 +80,9 @@ import {
   type CsDown,
   type CsRepoState,
   type CsUp,
+  type CsWorkNode,
 } from "../shared/remote/cloudSession.js";
+import { normalizeWorkPath } from "../shared/remote/workPath.js";
 import type { ApprovalDecisionEvent, SessionEvent } from "../session/events.js";
 import type { ApprovalRequest, CloudAck, CloudSessionStatus, CloudWorkspaceState } from "../shared/shellBridge.js";
 import type { FriendsResult } from "./proxyManager.js";
@@ -227,6 +229,9 @@ export interface CloudSessionClient {
     workspaceId: string,
     patch: { repoUrl?: string; pat?: string },
   ): Promise<FriendsResult<WorkspaceCloudState>>;
+  /** 读一格工作文件夹（控制房 RPC，协议 11，#1056）。`path` 相对工作文件夹，
+      `""` = 它本身。任何在籍成员都能读——卷是整个工作区共用的一份 */
+  workspaceFiles(workspaceId: string, path: string): Promise<FriendsResult<CsWorkNode>>;
 }
 
 /** `workspace_state` / `config_result` 带回来的那两格（协议 8）——与 shellBridge
@@ -787,6 +792,21 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     );
   }
 
+  function workspaceFiles(workspaceId: string, path: string): Promise<FriendsResult<CsWorkNode>> {
+    // 本地先归一化一次省一次明知会被拒的往返；服务端仍然自己归一化一次
+    // （主进程不是安全边界，同 workspaceConfig 里那份地址校验的理由）
+    const normalized = normalizeWorkPath(path);
+    if (normalized === null) return Promise.resolve({ ok: false, message: "这条路径不合法。" });
+    return ctlRequest({ t: "files", workspaceId, path: normalized }, (msg) => {
+      if (msg.t !== "files_result" || msg.workspaceId !== workspaceId) return null;
+      if (!msg.ok) return { ok: false, message: msg.message ?? "读工作文件夹失败" };
+      // ok 却没有 node = 服务端与客户端对不上号（解码降级过），当失败处理而
+      // 不是兜底成空目录——「读不到」不许说成「里面是空的」
+      if (!msg.node) return { ok: false, message: "读到的结果看不懂，可能是云端版本对不上。" };
+      return { ok: true, value: msg.node };
+    });
+  }
+
   function workspaceState(workspaceId: string): Promise<FriendsResult<WorkspaceCloudState>> {
     return ctlRequest({ t: "workspace", workspaceId }, (msg) =>
       // 答复带 workspaceId：一条连接只问一个，但认一下比赌顺序便宜
@@ -1003,5 +1023,5 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     };
   }
 
-  return { currentSessionId, activeSummary, create, join, leave, say, approve, archive, remove, stop, workspaceState, workspaceConfig };
+  return { currentSessionId, activeSummary, create, join, leave, say, approve, archive, remove, stop, workspaceState, workspaceConfig, workspaceFiles };
 }

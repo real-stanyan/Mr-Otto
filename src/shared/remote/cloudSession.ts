@@ -7,7 +7,16 @@ import type { SessionEvent } from "../../session/events.js";
 import { b64decode, b64encode } from "./b64.js";
 import { MAX_FRAME_BYTES } from "./wire.js";
 
-/** 10（#1044）：加一对 `delete` / `delete_result`（控制房帧，形状与 `archive`
+/** 11（#1056）：加一对 `files` / `files_result`（控制房读帧）——**工作文件夹看得见了**。
+    这一页原来叫「仓库」，整页正文的头一句在解释「你可能用不到这一页」；而真正的主语
+    是「水獭在哪儿干活」：每个工作区都有一个共用工作目录（一容器一卷，ADR-0232），
+    Git 仓库只是往那个目录里装东西的一种方式，而且是此前唯一做出来的一种。列得出
+    内容之后，不配仓库的那半边人（文案、运营）打开这一页才有东西可看。
+    读帧给**所有在籍成员**，判据同 `workspace`：卷是共用的，不是谁的私产。
+    路径归一化 `src/shared/remote/workPath.ts` 三端共用；服务端在容器里还有第二道
+    （realpath 之后必须仍在 /work 下）。文件内容有 `CS_WORK_FILE_MAX_BYTES` 上限，
+    超了照发前半段并把 `truncated` 说出口——**不是**静默截断。
+    10（#1044）：加一对 `delete` / `delete_result`（控制房帧，形状与 `archive`
     逐字相同）——**彻底删除一条云会话**。原来这颗钮不存在，理由是 0016 迁移把
     `wss_delete_publisher` 钉死在 `kind='package'`，云会话的创建者删不掉自己那行
     workspace_sessions（ADR-0235）。那条前提只对**客户端直连 Supabase** 成立：
@@ -50,8 +59,14 @@ import { MAX_FRAME_BYTES } from "./wire.js";
     少一格状态。**加一个枚举值同理**：老客户端的 isValidCsDeniedCode 认不出
     `rate_limited`，decodeCsDown 回 null，那一帧被静默忽略，于是 create()
     要白等满超时才回一句"云端无响应"——把"你被限速了"说成"对面没回话"。 */
-export const CS_PROTOCOL_VERSION = 10;
+export const CS_PROTOCOL_VERSION = 11;
 export const CS_MAX_TEXT_BYTES = 64 * 1024;
+
+/** 一次回多少字节的文件内容（#1056）。中继单帧上限是 256 KiB（wire.ts 的
+    `MAX_FRAME_BYTES`），这里取它的四分之一——JSON 转义、字段名、base64 都还要占
+    地方，而「一个文件看不看得完」不该是靠贴着上限赌出来的。超了发前半段 +
+    `truncated: true`，界面照实说「只显示前 64 KB」 */
+export const CS_WORK_FILE_MAX_BYTES = 64 * 1024;
 
 /** 「有一条事件太大，没发给你」这一类 error 帧的识别标记（终审 I2）。
     服务端两条路各产出一条这样的帧——backlog 分片时的
@@ -132,6 +147,30 @@ export type CsModelRoute =
   | { kind: "hosted"; model: string }
   | { kind: "blocked" };
 
+/** 工作文件夹里的一项（#1056）。`kind` 用 `find -printf %y` 那个字母的语义：
+    目录 / 普通文件 / 其余一切（软链、设备、socket…）。`other` 不细分——这一页
+    是给人看「水獭做了什么」的，把 fifo 和 socket 分开陈列没有任何人受益 */
+export interface CsWorkEntry {
+  name: string;
+  kind: "dir" | "file" | "other";
+  /** 字节数；目录这一格没有意义，一律 0 */
+  size: number;
+  mtimeMs: number;
+}
+
+/** `files` 读帧看到的东西（#1056）。
+    **`absent` 与空目录是两回事**：前者 = 这个工作区的容器还没建起来（第一次真让
+    水獭干活时才建），后者 = 建起来了、里面还没有东西。两句话该说的不一样，合成
+    一句就会对一个刚建群的人说「你的文件夹是空的」——而那个文件夹此刻并不存在。
+    `binary` 单列一档，因为「读不出人话」不是失败：那是一张图、一个 zip，界面上
+    该画的是名字和大小，不是一屏乱码。 */
+export type CsWorkNode =
+  | { kind: "absent" }
+  | { kind: "missing" }
+  | { kind: "dir"; entries: CsWorkEntry[]; truncated: boolean }
+  | { kind: "file"; text: string; truncated: boolean; size: number }
+  | { kind: "binary"; size: number };
+
 export function csCtlChannel(): string {
   return "cs-ctl";
 }
@@ -194,6 +233,11 @@ export type CsUp =
   /** 读这个工作区的仓库状态 + 路由（控制房帧，协议 8）：回 `workspace_state`。
       任何在籍成员都能读——这两格本来就在 welcome 上给所有人看 */
   | { t: "workspace"; workspaceId: string }
+  /** 读工作文件夹的一格（控制房帧，协议 11，#1056）：回 `files_result`。
+      `path` 是**相对工作文件夹**的路径（`""` = 它本身），发出去之前先过
+      `normalizeWorkPath`；服务端不信任它，自己再归一化一次并在容器里
+      realpath 兜底。任何在籍成员都能读——卷是整个工作区共用的 */
+  | { t: "files"; workspaceId: string; path: string }
   /** 收尾一条云会话——**控制房帧**（协议 9，#993）：带 workspaceId + sessionId，
       不依赖「正开着这条会话」。谁能归档由服务端判（owner 或建这条会话的人，
       issue #822 的判据原样）*/
@@ -265,6 +309,10 @@ export type CsDown =
   | { t: "delete_result"; workspaceId: string; sessionId: string; ok: boolean; message?: string }
   /** `workspace` 读帧的答复（协议 8，#991）：与 welcome / config_result 上那两格同形 */
   | { t: "workspace_state"; workspaceId: string; repo: CsRepoState | null; modelRoute: CsModelRoute | null }
+  /** `files` 读帧的答复（协议 11，#1056）。`path` 回带是为了对上号（一条连接
+      只问一次，但认一下比赌顺序便宜，同 workspace_state）。`ok=false` 的 message
+      分得清「路径不合法」「容器里读失败」两种——两种该做的动作不一样 */
+  | { t: "files_result"; workspaceId: string; path: string; ok: boolean; node?: CsWorkNode; message?: string }
   /** say 的回执（#957 第三批）。同 config_result 的纪律——不复用 error。
       ok=false 时 message 说明为什么（限速 / 不在籍 / 抛错），文案不变，只是
       换了个帧承载。 */
@@ -350,6 +398,37 @@ function normalizeRepoState(v: unknown): CsRepoState | null {
   if (!isCsRepoState(v)) return null;
   const o = v as unknown as { url: string; hasPat: boolean; clone?: CsRepoState["clone"] };
   return { url: o.url, hasPat: o.hasPat, clone: o.clone ?? null };
+}
+
+/** 线上防呆（#1056）：认不出的形状一律回 null，调用方按「读到了但看不懂」处理。
+    与 normalizeModelRoute 同纪律——**不拒整帧**，因为 `ok=false` 那一路的
+    message 仍然是有用的信息 */
+function normalizeWorkNode(v: unknown): CsWorkNode | null {
+  if (typeof v !== "object" || v === null || Array.isArray(v)) return null;
+  const o = v as Record<string, unknown>;
+  if (o.kind === "absent") return { kind: "absent" };
+  if (o.kind === "missing") return { kind: "missing" };
+  if (o.kind === "dir") {
+    if (!Array.isArray(o.entries)) return null;
+    const entries: CsWorkEntry[] = [];
+    for (const raw of o.entries) {
+      if (typeof raw !== "object" || raw === null) return null;
+      const e = raw as Record<string, unknown>;
+      if (typeof e.name !== "string" || typeof e.size !== "number" || typeof e.mtimeMs !== "number") return null;
+      if (e.kind !== "dir" && e.kind !== "file" && e.kind !== "other") return null;
+      entries.push({ name: e.name, kind: e.kind, size: e.size, mtimeMs: e.mtimeMs });
+    }
+    return { kind: "dir", entries, truncated: o.truncated === true };
+  }
+  if (o.kind === "file") {
+    if (typeof o.text !== "string" || typeof o.size !== "number") return null;
+    return { kind: "file", text: o.text, truncated: o.truncated === true, size: o.size };
+  }
+  if (o.kind === "binary") {
+    if (typeof o.size !== "number") return null;
+    return { kind: "binary", size: o.size };
+  }
+  return null;
 }
 
 function isSessionEvent(v: unknown): v is SessionEvent {
@@ -445,6 +524,15 @@ export function decodeCsUp(b64: string): CsUp | null {
       return null;
     }
 
+    if (t === "files") {
+      // path 必填（`""` 是合法值，代表工作文件夹本身）——缺席意味着发送方在
+      // 猜默认值，而这一层不该替它猜
+      if (typeof obj.workspaceId === "string" && typeof obj.path === "string") {
+        return { t: "files", workspaceId: obj.workspaceId, path: obj.path };
+      }
+      return null;
+    }
+
     if (t === "archive") {
       // 协议 9 起 workspaceId + sessionId 必填——不知道归档谁的话，这条帧没有意义
       if (typeof obj.workspaceId === "string" && typeof obj.sessionId === "string") {
@@ -533,6 +621,22 @@ export function decodeCsDown(b64: string): CsDown | null {
         (obj.message === undefined || typeof obj.message === "string")
       ) {
         const result: CsDown = { t: "delete_result", workspaceId: obj.workspaceId, sessionId: obj.sessionId, ok: obj.ok };
+        if (typeof obj.message === "string") result.message = obj.message;
+        return result;
+      }
+      return null;
+    }
+
+    if (t === "files_result") {
+      if (
+        typeof obj.workspaceId === "string" &&
+        typeof obj.path === "string" &&
+        typeof obj.ok === "boolean" &&
+        (obj.message === undefined || typeof obj.message === "string")
+      ) {
+        const result: CsDown = { t: "files_result", workspaceId: obj.workspaceId, path: obj.path, ok: obj.ok };
+        const node = normalizeWorkNode(obj.node);
+        if (node) result.node = node;
         if (typeof obj.message === "string") result.message = obj.message;
         return result;
       }
