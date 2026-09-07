@@ -32,10 +32,12 @@ values
   ('deepseek-v4-flash@deepseek', 'deepseek-v4-flash', 'deepseek', 'https://api.deepseek.com/v1', 'deepseek-v4-flash', 138889, 2778, 277778, 8192, 'none', 10),
   -- DeepSeek V4 Pro：¥3.00 / ¥0.025 / ¥6.00（cache 价是异常值，ADR-0174「会被推翻的前提」——核实后改这一行）
   ('deepseek-v4-pro@deepseek', 'deepseek-v4-pro', 'deepseek', 'https://api.deepseek.com/v1', 'deepseek-v4-pro', 416667, 3472, 833333, 8192, 'none', 10),
-  -- GLM-5.3：按 GLM-5.1 ¥6.00 / ¥1.30 / ¥24.00 抄，待核
-  --   2026-09-07 核过了：智谱现价是 ¥8 / ¥2 / ¥28，这一行少算输入 25%、输出 14%、缓存 35%。
-  --   **数字故意没改**——改它会改变现有用户的扣费口径，那是产品决定不是顺手修（#1001）
-  ('glm-5.3@zhipu', 'glm-5.3', 'zhipu', 'https://open.bigmodel.cn/api/paas/v4', 'glm-5.3', 833333, 180556, 3333333, 8192, 'none', 10),
+  -- GLM-5.3：¥8.00 / ¥2.00 / ¥28.00（2026-09-07 智谱定价页现价，已核）。
+  --   改前这一行是照 **GLM-5.1** 的 ¥6 / ¥1.3 / ¥24 抄的，少算输入 25%、缓存 35%、输出 14%——
+  --   窗口按 micro-USD 计，价目就是 token 换算成窗口百分比的汇率，填低了等于我们贴差额（#1003）。
+  --   直接改现有行、不靠 effective_* 排期：那两列在 routesQuery 里没有过滤（billingQueries.ts:106），
+  --   填一行「将来生效」的价会当场被用上
+  ('glm-5.3@zhipu', 'glm-5.3', 'zhipu', 'https://open.bigmodel.cn/api/paas/v4', 'glm-5.3', 1111111, 277778, 3888889, 8192, 'none', 10),
   -- GLM-5.3-Flash：¥0.80 / ¥0.23 / ¥2.80（2026-09-07 智谱定价页原价；页面上另挂着「5折限时两周」的
   --   ¥0.40 / ¥0.115 / ¥1.40，**按原价登记**——促销到期那天按促销价记账就成了低于真实成本扣额度）
   ('glm-5.3-flash@zhipu', 'glm-5.3-flash', 'zhipu', 'https://open.bigmodel.cn/api/paas/v4', 'glm-5.3-flash', 111111, 31944, 388889, 8192, 'none', 10),
