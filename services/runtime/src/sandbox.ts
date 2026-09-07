@@ -8,6 +8,8 @@
 
 import { Writable } from "node:stream";
 import type { ContainerLike } from "../../../src/world/dockerWorld.js";
+import type { CsWorkNode } from "../../../src/shared/remote/cloudSession.js";
+import { buildWorkReadScript, parseWorkReadOutput } from "./workFiles.js";
 
 /** dockerode 顶层句柄的最小注入面 */
 export interface DockerLike {
@@ -49,6 +51,15 @@ export interface Sandbox {
       同一工作区可能有多个 session，跨 session 没有互斥，直接摘掉正在
       pending 的缓存会让两个 attempt 同时动同一个容器/卷/凭据文件。 */
   invalidateClone(workspaceId: string): void;
+  /** 读一格工作文件夹（#1056）。`path` 已过 `normalizeWorkPath`。
+      **刻意不走 `ensure()`**：那条路会建容器、会跑 clone 流程、会重置 idle 计时。
+      翻一眼文件是个**读**动作，不该有这些副作用——尤其不该让「打开设置页」
+      触发一次可能长达十分钟的 clone。所以这里只认**已经存在**的那台容器：
+      不存在 = `absent`（那意味着卷也还没有，这个工作区真的一次活都没干过），
+      停着就起一下（exec 要求容器在跑；起完照样 markActive，好让 sweepIdle
+      认得它、30 分钟后收掉——不打点的话它反而永远没人扫）。
+      抛错 = 容器里那次 exec 失败，调用方翻译成回执 */
+  readWork(workspaceId: string, path: string): Promise<CsWorkNode>;
 }
 
 /** owner 经 cs_config 发来的工作区云配置（issue #821 slice 1）——落点见
@@ -1085,5 +1096,22 @@ export function createSandbox(
     forget(workspaceId); // 见 forget 的注释（issue #835②）
   }
 
-  return { ensure, markActive, sweepIdle, reconcile, destroy, invalidateClone };
+  async function readWork(workspaceId: string, path: string): Promise<CsWorkNode> {
+    const found = await findByName(containerName(workspaceId));
+    if (!found) return { kind: "absent" };
+
+    const container = docker.getContainer(found.Id);
+    if (found.State !== "running") await container.start();
+    markActive(workspaceId);
+
+    const r = await execInContainer(container, buildWorkReadScript(path));
+    if (r.exitCode !== 0) {
+      throw new Error(`读工作文件夹失败（exit ${r.exitCode}）：${r.stderr.trim() || "没有错误输出"}`);
+    }
+    const parsed = parseWorkReadOutput(r.stdout);
+    if (!parsed.ok) throw new Error(parsed.message);
+    return parsed.node;
+  }
+
+  return { ensure, markActive, sweepIdle, reconcile, destroy, invalidateClone, readWork };
 }

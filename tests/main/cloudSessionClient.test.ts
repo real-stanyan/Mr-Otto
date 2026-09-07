@@ -1451,6 +1451,59 @@ describe("createCloudSessionClient — workspaceState / workspaceConfig（控制
     expect(t.close).toHaveBeenCalledTimes(1);
   });
 
+  it("workspaceFiles：帧带归一化之后的 path；files_result 回来就 resolve 并关连接", async () => {
+    const h = harness();
+    const promise = h.client.workspaceFiles("w1", "src//lib/./");
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    expect(t.decoded()).toEqual([
+      { t: "hello", v: CS_PROTOCOL_VERSION, jwt: "token-abc" },
+      { t: "files", workspaceId: "w1", path: "src/lib" },
+    ]);
+    const node = { kind: "dir" as const, entries: [{ name: "a.md", kind: "file" as const, size: 3, mtimeMs: 1 }], truncated: false };
+    t.emitDown({ t: "files_result", workspaceId: "w1", path: "src/lib", ok: true, node });
+    expect(await promise).toEqual({ ok: true, value: node });
+    expect(t.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("workspaceFiles：路径本地就判死的不开连接（`..` 一律拒）", async () => {
+    const h = harness();
+    const r = await h.client.workspaceFiles("w1", "../etc");
+    expect(r).toEqual({ ok: false, message: "这条路径不合法。" });
+    expect(h.transports).toHaveLength(0);
+  });
+
+  it("workspaceFiles：ok=true 却没有 node → 当失败，**不兜底成空目录**", async () => {
+    // 「读不到」不许说成「里面是空的」——这一路只可能是两端版本对不上（解码降级）
+    const h = harness();
+    const promise = h.client.workspaceFiles("w1", "");
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({ t: "files_result", workspaceId: "w1", path: "", ok: true });
+    const r = await promise;
+    expect(r.ok).toBe(false);
+  });
+
+  it("workspaceFiles：别的工作区的回执不认（一条连接只问一个，但认一下比赌顺序便宜）", async () => {
+    const h = harness();
+    const promise = h.client.workspaceFiles("w1", "");
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    let settled = false;
+    void promise.then(() => { settled = true; });
+    t.emitDown({ t: "files_result", workspaceId: "w-other", path: "", ok: true, node: { kind: "absent" } });
+    await tick();
+    expect(settled).toBe(false);
+    t.emitDown({ t: "files_result", workspaceId: "w1", path: "", ok: true, node: { kind: "absent" } });
+    expect(await promise).toEqual({ ok: true, value: { kind: "absent" } });
+  });
+
   it("workspaceConfig：帧带 workspaceId，pat 省略时帧里不带 pat；config_result ok → 回服务端那份状态", async () => {
     const h = harness();
     const promise = h.client.workspaceConfig("w1", { repoUrl: "https://example.com/repo.git" });
