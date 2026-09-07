@@ -175,6 +175,7 @@ DO**：这样"行插进去了、通知那步炸了"才有救——Stripe 的重�
 ```bash
 npx wrangler secret put DEEPSEEK_API_KEY      # 上游模型 key
 npx wrangler secret put ZHIPU_API_KEY
+npx wrangler secret put QWEN_API_KEY        # 千问 = 阿里云百炼 DashScope 国际站
 npx wrangler secret put STRIPE_SECRET_KEY     # sk_live_… / sk_test_…
 npx wrangler secret put STRIPE_WEBHOOK_SECRET # whsec_…
 ```

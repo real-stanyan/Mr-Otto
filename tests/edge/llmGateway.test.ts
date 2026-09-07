@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   costMicro, createLlmGateway, estimateMicro, estimateUsage, parseUsage, pickRoute, tapSseUsage,
+  UPSTREAM_KEY_ENV, upstreamKeyOf,
   type Caller, type HoldOutcome, type QuotaPort, type RouteRow, type SettleMeta,
 } from "../../services/edge/src/llmGateway.js";
 import { BILLING_HEADERS, SSE_COST_COMMENT, parseSseCostComment } from "../../src/shared/billing.js";
@@ -548,5 +549,35 @@ describe("流式的「本次花费」尾注（#857 的另一半）", () => {
     );
     await new Response(tapped).text();
     expect(bytes).toBe(0);
+  });
+});
+
+// ── 平台 → 上游 key（#1001） ─────────────────────────────────────────
+//
+// 这张表原来是 worker.ts 里一条写死的三元链，而 worker.ts 不进 vitest ——
+// 于是「网关认不认这家上游」这个判断零执行覆盖。搬进 llmGateway.ts 就是为了
+// 让下面这几条跑得到。
+
+describe("upstreamKeyOf", () => {
+  it("三家平台都在表里，且键与 model_route.platform 逐字相同", () => {
+    // 值写死一份而不是从被测代码反推：这几个名字同时出现在 wrangler secret、
+    // README 部署步骤和 Env 类型里，改名要四处一起改，断言在这儿把它钉住
+    expect(UPSTREAM_KEY_ENV).toEqual({
+      deepseek: "DEEPSEEK_API_KEY",
+      zhipu: "ZHIPU_API_KEY",
+      qwen: "QWEN_API_KEY",
+    });
+  });
+
+  it("配了就取得到", () => {
+    expect(upstreamKeyOf({ QWEN_API_KEY: "sk-x" }, "qwen")).toBe("sk-x");
+  });
+
+  it("没在表里的平台回 undefined —— 网关据此跳过这条路由，不是拿空 key 去打上游", () => {
+    expect(upstreamKeyOf({ MOONSHOT_API_KEY: "sk-x" }, "moonshot")).toBeUndefined();
+  });
+
+  it("空字符串当没配 —— wrangler 上一个删了值的 secret 与「从没配过」该是同一种行为", () => {
+    expect(upstreamKeyOf({ QWEN_API_KEY: "" }, "qwen")).toBeUndefined();
   });
 });

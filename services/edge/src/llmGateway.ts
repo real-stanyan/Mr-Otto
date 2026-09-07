@@ -79,6 +79,33 @@ export interface QuotaPort {
   remaining(uid: string): Promise<{ h5: number; week: number; addon: number; plan: string | null }>;
 }
 
+/** 平台 → 它那把上游 key 在 Worker env 里的名字。
+    **加一家上游只改这张表**（+ `wrangler secret put <名字>` + `model_route` 插行）。
+    原来这是 worker.ts 里一条写死的三元链，而 `worker.ts` 不进 vitest（同
+    `usageAttribution` 那条教训：唯一的判断零执行覆盖）——挪到这里，下面那条
+    穷举断言才跑得到。键与 `model_route.platform` 逐字相同：不相同的那天，
+    路由查得出来、`upstreamKey` 回 undefined，`serveChat` 直接 `continue` 跳过它，
+    用户看到的是「没有可用的上游」而库里明明有那一款（#1001） */
+export const UPSTREAM_KEY_ENV: Readonly<Record<string, string>> = {
+  deepseek: "DEEPSEEK_API_KEY",
+  zhipu: "ZHIPU_API_KEY",
+  /** 千问 = 阿里云百炼 DashScope 国际站（dashscope-intl），OpenAI 兼容端点 */
+  qwen: "QWEN_API_KEY",
+};
+
+/** `LlmGatewayDeps.upstreamKey` 的标准实现：按上表从 env 取。
+    env 收成索引签名而不是 worker 的 `Env`，是为了不让这一层依赖 worker.ts
+    （那边 import 了 Durable Object，进不了 vitest） */
+export function upstreamKeyOf(
+  env: Readonly<Record<string, unknown>>,
+  platform: string
+): string | undefined {
+  const name = UPSTREAM_KEY_ENV[platform];
+  if (name === undefined) return undefined;
+  const v = env[name];
+  return typeof v === "string" && v !== "" ? v : undefined;
+}
+
 export interface LlmGatewayDeps {
   routes: () => Promise<RouteRow[]>;
   quota: QuotaPort;
