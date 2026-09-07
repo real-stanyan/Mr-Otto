@@ -929,10 +929,11 @@ interface ChatState {
       递进去的是编辑器打开时那一行的 CAS 令牌，回来的是写完之后的新令牌 */
   saveWorkspaceMemory(id: string, agentId: string, text: string, version: string): Promise<FriendsResult<string>>;
   /** owner 改「沙箱内工具要不要人批」（#977；控件搬进云会话输入框后改了形状，#1029）。
-      **不碰 workspaceGroupsError**、也不整份重拉：这颗开关此刻坐在输入框那一行上，
-      翻一次就把页脚那格共享错误擦掉（ADR-0228 C2-I4 已经为 say/approve/stop 拆过这条线），
-      而 refreshWorkspaceGroups 是每个工作区一次 fetchWorkspace、设置页里点一次付得起、
-      输入框上付不起。成功就地 patch 那一格——写进去的值就是刚写成功的那个 */
+      **失败时不碰 workspaceGroupsError**：这颗开关此刻坐在输入框那一行上，一次写失败
+      不该把页脚那格共享错误擦掉、也不该借它说话（ADR-0228 C2-I4 已经为 say/approve/stop
+      拆过这条线，原因归属必须是确定的）——原因原样回给调用方，它画在开关旁边。
+      成功则先就地 patch 那一格（当场对上）再补一次权威重拉（挡「旧快照后到把它盖回去」，
+      理由在实现里） */
   setWorkspaceSandboxApproval(id: string, value: "ask" | "auto"): Promise<FriendsResult<null>>;
   /** 把当前/指定会话发布进工作区。回是否成功——rowId/pkgId 用不上时调用方不必接 */
   publishWorkspaceSession(id: string, sessionId: string, title: string): Promise<boolean>;
@@ -2292,11 +2293,17 @@ export const useChat = create<ChatState>((set, get) => ({
 
   async setWorkspaceSandboxApproval(id, value) {
     const r = await window.otter.workspaceSetSandboxApproval(id, value);
-    if (r.ok) {
-      set((s) => ({
-        workspaceGroups: s.workspaceGroups.map((g) => (g.id === id ? { ...g, sandboxApproval: value } : g)),
-      }));
-    }
+    if (!r.ok) return r;
+    // 先就地 patch：这一格的新值就是刚写成功的那个，界面当场对上
+    set((s) => ({
+      workspaceGroups: s.workspaceGroups.map((g) => (g.id === id ? { ...g, sandboxApproval: value } : g)),
+    }));
+    // 再补一次权威重拉，**不因为它失败而把这次写报成失败**（写已经成功了）。
+    // 只 patch 不重拉挡不住一种情形：写之前就在飞的那次 workspaceList 后到，
+    // 拿一份不含这次改动的旧快照把整格盖回去——屏幕上那颗开关自己弹回旧位置，
+    // 而库里是新值。这颗开关说的是「会不会有人替你看每一条命令」，
+    // 让它显示一个旧值不能只靠「下次刷新会自己好」。
+    await get().refreshWorkspaceGroups();
     return r;
   },
 

@@ -304,7 +304,8 @@ export function CloudSessionPage({
   }, [optionKey]);
 
   const csSessionId = cs?.sessionId ?? null;
-  // 换云会话时把这三格本地状态清干净（复审 H1）。**这个组件在换会话时不卸载**
+  // 换云会话时把这四格本地状态清干净（复审 H1；第四格是 #1029 那颗开关的错误行）。
+  // **这个组件在换会话时不卸载**
   // ——侧栏点另一条云会话走 openCloudSession，它直接把 cloudSession 整格替换，
   // 中间没有 null，而 CloudSessionMain 挂它时没给 key。不清的话 A 的那行提示
   // 和红字会摆在 B 的页面上，说着一件跟 B 无关的事。
@@ -317,6 +318,10 @@ export function CloudSessionPage({
     setUnsent(null);
     setSendError(null);
     setSendNotice(null);
+    // 「沙箱内免审没改上」是一句关于**某个工作区**的话；换到另一个工作区的会话上
+    // 还挂着它就是在说一件跟这里无关的事（`sandboxBusy` 不清：写在飞时 ws.id 已经
+    // 在闭包里定死了，回来那一下把它置回 false 就是对的）
+    setSandboxError(null);
   }, [csSessionId]);
 
   // 开局卡那句话没发出去时的原文（issue #957 C-I6）的去处。两种失败去处不同
