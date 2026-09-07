@@ -7,8 +7,8 @@ import {
 } from "../../services/edge/src/billingQueries.js";
 
 const plans = [
-  { id: "lite", week_limit_micro: 3_325_000, window5h_limit_micro: 665_000, addon_unit_micro: 0, stripe_price_id: "price_lite", price_usd_cents: 1900, capabilities: { image: false, video: false } },
-  { id: "addon", week_limit_micro: 0, window5h_limit_micro: 0, addon_unit_micro: 7_000_000, stripe_price_id: "price_addon", price_usd_cents: 1000, capabilities: { image: false, video: false } },
+  { id: "lite", week_limit_micro: 3_325_000, window5h_limit_micro: 665_000, addon_unit_micro: 0, stripe_price_id: "price_lite", price_usd_cents: 1900, capabilities: { image: false, video: false, workspace: false } },
+  { id: "addon", week_limit_micro: 0, window5h_limit_micro: 0, addon_unit_micro: 7_000_000, stripe_price_id: "price_addon", price_usd_cents: 1000, capabilities: { image: false, video: false, workspace: false } },
 ];
 const sub = {
   user_id: "u1", plan_id: "lite", status: "active", stripe_customer_id: "cus_1", stripe_subscription_id: "sub_1",
@@ -193,7 +193,7 @@ describe("meFromParts", () => {
       // 缺席 = 不画，不该让 /me 的其余部分跟着变形
       modelPlatforms: {},
       // plans 只带三个订阅档（addon 是加购行，不是档位），价格与 capabilities 跟着下发（#856 / #864）
-      plans: [{ id: "lite", priceUsdCents: 1900, capabilities: { image: false, video: false } }],
+      plans: [{ id: "lite", priceUsdCents: 1900, capabilities: { image: false, video: false, workspace: false } }],
     });
   });
 

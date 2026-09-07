@@ -24,9 +24,10 @@ export interface PlanRow {
   id: string; week_limit_micro: number; window5h_limit_micro: number; addon_unit_micro: number; stripe_price_id: string;
   /** 月费（美元分）。/billing/v1/me 要把它下发给客户端——价目卡渲染这个数，改价不发版 */
   price_usd_cents: number;
-  /** 多模态能力门禁（{"image":false,"video":false}）。读不到一律按关——
-      给没买的能力开门是漏钱，关门只是少一颗按钮 */
-  capabilities: { image: boolean; video: boolean };
+  /** 档位能力（`{"image":false,"video":false,"workspace":true}`）。读不到一律按关——
+      给没买的能力开门是漏钱，关门只是少一颗按钮。`workspace` 是「这一档能不能建
+      工作区」（#1024，ADR-0242）：pro/max 为 true，lite 为 false */
+  capabilities: { image: boolean; video: boolean; workspace: boolean };
 }
 export interface SubscriptionRow {
   user_id: string; plan_id: string; status: "active" | "past_due" | "canceled";
@@ -83,7 +84,11 @@ export function parsePlanRows(v: unknown): PlanRow[] {
     out.push({
       id, week_limit_micro: w, window5h_limit_micro: h, addon_unit_micro: a,
       stripe_price_id: str(r.stripe_price_id) ?? "", price_usd_cents: num(r.price_usd_cents) ?? 0,
-      capabilities: { image: caps.image === true, video: caps.video === true },
+      capabilities: {
+        image: caps.image === true,
+        video: caps.video === true,
+        workspace: caps.workspace === true,
+      },
     });
   }
   return out;

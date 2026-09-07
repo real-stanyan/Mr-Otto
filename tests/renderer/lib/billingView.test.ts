@@ -6,9 +6,9 @@ import {
 import type { BillingMe, PlanInfo } from "../../../src/shared/billing.js";
 
 const plans: PlanInfo[] = [
-  { id: "lite", priceUsdCents: 1900, capabilities: { image: false, video: false } },
-  { id: "pro", priceUsdCents: 5900, capabilities: { image: false, video: false } },
-  { id: "max", priceUsdCents: 8900, capabilities: { image: true, video: false } },
+  { id: "lite", priceUsdCents: 1900, capabilities: { image: false, video: false, workspace: false } },
+  { id: "pro", priceUsdCents: 5900, capabilities: { image: false, video: false, workspace: false } },
+  { id: "max", priceUsdCents: 8900, capabilities: { image: true, video: false, workspace: false } },
 ];
 
 describe("planCards（#856：价格渲染服务端的数）", () => {
@@ -23,7 +23,7 @@ describe("planCards（#856：价格渲染服务端的数）", () => {
   });
 
   it("改价不发版：服务端给什么价就画什么价", () => {
-    const cards = planCards([{ id: "pro", priceUsdCents: 4900, capabilities: { image: false, video: false } }]);
+    const cards = planCards([{ id: "pro", priceUsdCents: 4900, capabilities: { image: false, video: false, workspace: false } }]);
     expect(cards[0]!.priceUsd).toBe(49);
   });
 
