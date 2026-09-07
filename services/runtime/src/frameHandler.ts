@@ -450,9 +450,17 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
         // 住在同一个菜单里，「能按这颗不能按那颗」要另外有一套解释；何况云端的
         // 归档本来就没有回头路（daemon 只捞 archived=false 的会话重开房间），
         // 两件事都是单向门。判据在服务端，菜单项的显隐只是 UX。
+        // 两次查询**一起等、一起收错**：分开写的话，同一个故障（Supabase 挂了）
+        // 会因为先挂在哪一条上而产生两种行为——creatorOf 抛有回执，ownerOf 抛
+        // 一路冒到 serialize 里被吞掉，客户端只能白等满 15 秒 ACK 超时。顺带省
+        // 一次往返
         let creator: string | null;
+        let ownerUid: string;
         try {
-          creator = await deps.sessions.creatorOf(msg.workspaceId, msg.sessionId);
+          [creator, ownerUid] = await Promise.all([
+            deps.sessions.creatorOf(msg.workspaceId, msg.sessionId),
+            deps.sessions.ownerOf(msg.workspaceId),
+          ]);
         } catch (err) {
           // 「这一刻读不到」不许说成「不存在」（同 ADR-0243）：后者会让人以为
           // 已经删干净了，转头去别处找它
@@ -470,7 +478,6 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
           });
           return;
         }
-        const ownerUid = await deps.sessions.ownerOf(msg.workspaceId);
         if (entry.uid !== ownerUid && entry.uid !== creator) {
           deny(cid, "not_authorized");
           return;

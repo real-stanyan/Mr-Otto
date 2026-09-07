@@ -1147,6 +1147,23 @@ describe("删除（协议 10，#1044）", () => {
 
   // ADR-0243 那条纪律的又一处：查询挂了 ≠ 这条会话不存在。说成后者的话，人会
   // 以为已经删掉了，转头去别处找它——而它还好好地在那儿
+  it("查 owner 这一步挂了也一样有回执（两次查询一起收错，不让人白等 ACK 超时）", async () => {
+    const calls: unknown[] = [];
+    const { deps, sent } = makeDeps({
+      creatorOf: async () => "u1",
+      ownerOf: async () => { throw new Error("supabase 挂了"); },
+      removeSession: async (...args) => { calls.push(args); return true; },
+    });
+    const handler = createFrameHandler(deps);
+    await handler.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    sent.length = 0;
+    await handler.onCtlFrame("c1", encodeCs({ t: "delete", workspaceId: "w1", sessionId: "s1" }));
+
+    expect(calls).toEqual([]);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.msg).toMatchObject({ t: "delete_result", ok: false });
+  });
+
   it("查会话这一步挂了 → 说「读不到」，绝不说「不存在」，也不删", async () => {
     const calls: unknown[] = [];
     const { deps, sent, logs } = makeDeps({
