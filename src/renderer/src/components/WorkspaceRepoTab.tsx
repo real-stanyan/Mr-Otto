@@ -76,8 +76,16 @@ export function WorkspaceRepoTab({ ws, selfUid }: { ws: WorkspaceSnapshot; selfU
           <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
             <dt className="text-muted-foreground">仓库</dt>
             <dd className="min-w-0 break-all" title={repoStatus.full}>{repoStatus.short}</dd>
-            <dt className="text-muted-foreground">模型</dt>
-            <dd className={modelStatus.bad ? "text-err" : ""} title={modelStatus.full}>{modelStatus.short}</dd>
+            {/* 模型那一行同头部那一格（#1052，ADR-0246）：**只在起不了 turn 的时候出现**。
+                正常态这一页上半那段正文已经说了「模型不用配：统一走所有者的订阅额度」，
+                再列一行「某某款 · 托管」既重复又不保真——那是工作区默认款，真跑一轮
+                按 agent 白名单/Auto 现取 */}
+            {modelStatus && (
+              <>
+                <dt className="text-muted-foreground">模型</dt>
+                <dd className="text-err" title={modelStatus.full}>{modelStatus.short}</dd>
+              </>
+            )}
             {repo?.clone && (
               <>
                 <dt className="text-muted-foreground">最近一次</dt>
