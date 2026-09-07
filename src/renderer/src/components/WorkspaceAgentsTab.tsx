@@ -367,7 +367,16 @@ function AgentEditorDialog({
 
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!busy) onOpenChange(o); }}>
-      <DialogContent className="sm:max-w-[480px]">
+      {/* max-h + 表单区 overflow：DialogContent 是 `fixed top-1/2 -translate-y-1/2`
+          的 grid，**默认既没有 max-h 也没有 overflow**——内容一旦高过视口就朝上下
+          两头溢出，两头都够不着（#997）。滚动放在中间那层而不是 DialogContent 上：
+          放外层的话标题、保存/取消跟着滚走，改完长提示词还得先滚回底部才点得到保存；
+          而关闭那颗 X 是 `absolute`，包含块就是滚动容器的内边距盒，也会跟着滚出视野。
+          三个格子照旧 auto 高：中间那层是滚动容器，它的自动最小尺寸是 0，所以内容短
+          时弹窗照旧是紧凑的，只有真高过视口才轮到它缩。全仓在这条上裸奔的消费方还有
+          十几处，`MemorySettings.tsx` 是唯一一处自己记得加的 —— 那是 dialog.tsx
+          该收进去的一条兜底，代价与要先扫清的两件事记在 #998 */}
+      <DialogContent className="sm:max-w-[480px] max-h-[calc(100dvh-4rem)]">
         <DialogHeader>
           <DialogTitle>{state?.mode === "edit" ? `编辑「${state.agent.name}」` : `新建智能体`}</DialogTitle>
           <DialogDescription>
@@ -375,7 +384,7 @@ function AgentEditorDialog({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="flex flex-col gap-3">
+        <div className="flex min-h-0 flex-col gap-3 overflow-y-auto">
           <div className="flex flex-col gap-1">
             <span className={SECTION_LABEL}>名字</span>
             <Input
@@ -401,11 +410,14 @@ function AgentEditorDialog({
 
           <div className="flex flex-col gap-1">
             <span className={SECTION_LABEL}>提示词</span>
+            {/* max-h 是这里的正事：ui/textarea.tsx 带 field-sizing-content
+                （内容多高框多高），只给 min-h 就等于没有上限——几百字的提示词
+                会把框铺成八百多像素高。封顶之后长提示词在框内自己滚（#997） */}
             <Textarea
               value={instructions}
               onChange={(e) => setInstructions(e.target.value)}
               onKeyDown={onInstructionsKeyDown}
-              className="min-h-[120px] font-normal text-[13px]"
+              className="max-h-[220px] min-h-[120px] overflow-y-auto font-normal text-[13px]"
               disabled={busy}
             />
           </div>
