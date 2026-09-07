@@ -20,3 +20,24 @@ export function normaliseVisionModel(input: unknown): string {
   const m = findModel(input);
   return m && m.supportsVision ? input : DEFAULT_VISION_MODEL;
 }
+
+/**
+ * 订阅用户的代读员必须取自订阅供的那几款（#1051）。
+ *
+ * 出厂默认 `glm-4.6v-flash` 是免费档、**网关不供**，所以订阅用户不换一款的话，
+ * 每一条带图消息都会在代读那一步 blocked，而代读失败会让整个 turn 失败。
+ *
+ * `hosted` 是从便宜到贵有序的（edge 的 `routesQuery`，ADR-0237），所以 `find`
+ * 拿到的是**最便宜的那款带眼睛的** —— 代读是纯成本项，越便宜越对。
+ * 没订阅、或订阅里一款带眼睛的都没供 → 原样返回，让 `routeModel` 去把
+ * 「缺什么」说成人话，而不是在这里悄悄换一款。
+ */
+export function visionModelFor(
+  configured: string,
+  hosted: readonly string[],
+  subscribed: boolean
+): string {
+  if (!subscribed) return configured;
+  if (hosted.includes(configured) && findModel(configured)?.supportsVision === true) return configured;
+  return hosted.find((id) => findModel(id)?.supportsVision === true) ?? configured;
+}

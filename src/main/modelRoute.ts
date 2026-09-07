@@ -9,6 +9,14 @@
 // 就走托管（哪怕自己也配了 key——付费订阅下绕过用户买的东西去烧他自己的 key
 // 才是意外，顺序与曾经的"自带 key 优先"相反）；否则有 key(或免 key 的本机
 // Ollama)就直连；都没有就 blocked，措辞按缺的是哪一样分三种说法。
+//
+// **有活跃订阅时 `direct` 整条路不存在**（#1051，维护者定的产品口径；ADR-0233 已经
+// 对云会话这么定了，这里是同一条纪律落到本机）：订阅用户不许自带 key，所以订阅这一
+// 侧只剩 hosted / blocked 两态。这不是界面题——只把选单里那几组藏起来的话，代读员、
+// 子智能体、存量会话里选着的老型号照旧会走到用户自己的 key 上，而那正是 ADR-0233
+// 点名不许的静默失败模式（"额度用完悄悄改烧你自己的账号"）。
+// 判据挂在 `hosted.subscribed` 上，所以**没装配托管的那些装配**（探针 / 测试 / 裸装配，
+// `hosted` 缺席）行为一字不变。
 
 import type { ModelChoice } from "../shared/modelCatalog.js";
 import type { ModelLane } from "../shared/modelLane.js";
@@ -58,6 +66,11 @@ const fmtReset = (ms: number): string =>
 
 export function routeModel(input: RouteInput): ModelRoute {
   const { choice, ownKey, ownBaseUrl, lane, hosted } = input;
+  // 订阅用户没有"自带 key"这条出路（#1051）。缺席的 hosted = 没装配托管，不是"没订阅"
+  const subscribed = hosted?.subscribed === true;
+  // 订阅用户看到的每一条 blocked 都不许再让他"去填自己的 key"——那条路已经关了，
+  // 一句无法执行的建议比不给建议更糟（#1040 那一族）
+  const ownKeyHint = subscribed ? "" : `，或在设置里填自己的 ${choice.apiKeyEnv}`;
 
   // 0. 多模态门禁（#864，plan.capabilities）：hosted 这条路上，这款模型要的能力
   //    超出当前档的，不走托管——直连自己的 key 不受影响（自己的 key 什么都能调）。
@@ -65,13 +78,15 @@ export function routeModel(input: RouteInput): ModelRoute {
   //    这条路对这个输入整个不通
   const caps = hosted?.capabilities ?? { image: false, video: false };
   const wantsVision = choice.supportsVision === true;
-  if (hosted?.subscribed && wantsVision && !caps.image && ownKey === "") {
+  // 订阅用户这一条**不再看 ownKey**：他没有"退回自己的 key"那条路，所以能力不够就是
+  // 走不通，而不是"走不通除非你自己有 key"
+  if (subscribed && wantsVision && !caps.image) {
     return {
       kind: "blocked",
-      reason: `${choice.label} 要读图，当前订阅档没开多模态（升档或在设置里填自己的 ${choice.apiKeyEnv}）。`,
+      reason: `${choice.label} 要读图，当前订阅档没开多模态（升档${ownKeyHint}）。`,
     };
   }
-  const hostedOk = hosted?.subscribed && wantsVision ? caps.image : true;
+  const hostedOk = subscribed && wantsVision ? caps.image : true;
 
   // 1. 有活跃订阅、额度没耗尽、网关供这款、拿得到 JWT → 走网关
   //    （付费订阅下托管优先，ADR-0176 决定二）
@@ -79,30 +94,45 @@ export function routeModel(input: RouteInput): ModelRoute {
     return { kind: "hosted", baseUrl: input.hostedBaseUrl, apiKey: input.hostedToken };
   }
 
-  // 2. 自带 key → 直连（耗尽处置的第二条出路，或压根没走托管）
-  if (ownKey) {
-    return { kind: "direct", baseUrl: ownBaseUrl ?? choice.baseUrl, apiKey: ownKey };
+  // 2. 自带 key → 直连（耗尽处置的第二条出路，或压根没走托管）。
+  //    **订阅用户走不到这里**：这两条 return 是这条规矩唯一真正生效的地方，
+  //    界面上藏掉那几组只是让人不去选，藏不住已经选好的和别处现取的
+  if (!subscribed) {
+    if (ownKey) {
+      return { kind: "direct", baseUrl: ownBaseUrl ?? choice.baseUrl, apiKey: ownKey };
+    }
+
+    // 3. 免 key 的厂商（本机 Ollama）：能连上 11434 就是授权，没有第二道门。
+    // apiKey 仍给一个占位串："ollama" 是官方文档里 OpenAI 兼容客户端的惯用值，
+    // 服务端不校验，但空 Bearer 头在某些反代前面会被当成缺鉴权直接 401。
+    // **Ollama 也在订阅用户的射程内**：它不要 key、也不花钱，但留着它就等于留着
+    // 一条"选单里没有、路由却通"的路，而这条规矩的全部意义是两边说同一句话
+    if (choice.keyless) {
+      return { kind: "direct", baseUrl: ownBaseUrl ?? choice.baseUrl, apiKey: "ollama" };
+    }
   }
 
-  // 3. 免 key 的厂商（本机 Ollama）：能连上 11434 就是授权，没有第二道门。
-  // apiKey 仍给一个占位串："ollama" 是官方文档里 OpenAI 兼容客户端的惯用值，
-  // 服务端不校验，但空 Bearer 头在某些反代前面会被当成缺鉴权直接 401
-  if (choice.keyless) {
-    return { kind: "direct", baseUrl: ownBaseUrl ?? choice.baseUrl, apiKey: "ollama" };
-  }
-
-  // 4. blocked：措辞分三种，得说清缺的是哪一样
-  if (hosted?.subscribed && hosted.exhausted) {
+  // 4. blocked：措辞分几种，得说清缺的是哪一样
+  if (subscribed && hosted.exhausted) {
     const when = hosted.resetAt ? `${fmtReset(hosted.resetAt)} 恢复` : "窗口重置后恢复";
     return {
       kind: "blocked",
-      reason: `订阅额度已用完，${when}。等不及可以加购，或在设置里填自己的 ${choice.apiKeyEnv}。`,
+      reason: `订阅额度已用完，${when}。等不及可以在账号页加购${ownKeyHint}。`,
     };
   }
-  if (hosted?.subscribed && !hosted.supportsModel) {
+  if (subscribed && !hosted.supportsModel) {
     return {
       kind: "blocked",
-      reason: `网关暂不供 ${choice.label}，换一款网关供的模型，或在设置里填自己的 ${choice.apiKeyEnv}。`,
+      reason: `订阅额度不供 ${choice.label}，在输入框那枚选单里换一款订阅供的模型。`,
+    };
+  }
+  // 订阅着、这款也供、额度也没用完，却仍然走到这里 = 拿不到登录凭据或网关地址。
+  // **这一条以前是悄悄退回自带 key 的**，现在必须说出口：说成"你没订阅"会让一个
+  // 正在付钱的人去点续费解决一个不存在的问题（同 ADR-0233 对三种 blocked 分开措辞）
+  if (subscribed) {
+    return {
+      kind: "blocked",
+      reason: "连不上订阅网关（多半是网络或登录状态），稍后再试。",
     };
   }
   const grantGone = lane === "grant" ? "官方赠额已停止提供，" : "";

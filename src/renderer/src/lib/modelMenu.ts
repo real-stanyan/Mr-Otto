@@ -38,6 +38,11 @@ export interface ModelMenuInput {
   /** 网关此刻供着哪几款，**从便宜到贵**（`billingView.hostedModels`）。
       空 = 没订阅 / 还没查到，整块退回改动前的样子（只列配了 key 的厂商） */
   hosted: readonly string[];
+  /** 这个人是不是订阅用户（`billingView.isSubscribed`）。是 = **厂商那几组一个都不列**
+      （#1051：订阅用户不许自带 key）。这不是「藏起来」——`routeModel` 那一侧同一时刻
+      也不再给 direct，两边说同一句话；只藏界面的话，选着老型号的存量会话照旧会走到
+      用户自己的 key 上 */
+  subscribed: boolean;
   /** 这个入口允不允许选 Auto */
   allowAuto: boolean;
   /** 厂商 apiKeyEnv → 配没配（store 的 keyStatus） */
@@ -55,7 +60,7 @@ export interface ModelMenuInput {
 export const AUTO_MIN_MODELS = 2;
 
 export function modelMenuGroups(input: ModelMenuInput): ModelMenuGroup[] {
-  const { hosted, allowAuto, keyStatus, ollamaModels, currentModel, filter } = input;
+  const { hosted, allowAuto, subscribed, keyStatus, ollamaModels, currentModel, filter } = input;
   const keep = (m: ModelChoice) => (filter ? filter(m) : true);
   const ready = (id: ProviderId): boolean => {
     const info = findProvider(id);
@@ -83,7 +88,18 @@ export function modelMenuGroups(input: ModelMenuInput): ModelMenuGroup[] {
     if (filter === undefined) subItems.push({ id, choice: null, provider: null, vision: false });
   }
 
-  // ② 厂商那几组：自带 key 才跑得动的那些。
+  // ② 厂商那几组：自带 key 才跑得动的那些。**订阅用户这一段整个不出**（#1051）——
+  // 连本机 Ollama 也不出：它不要 key、也不花钱，但留着它就等于留下一条「选单里有、
+  // 路由却不通」的路（`routeModel` 那边订阅这一侧只剩 hosted / blocked）。
+  //
+  // 于是两组**从不并存**：订阅了只有上面那组，没订阅只有下面这些（没订阅时
+  // `hostedModels` 回空，上面那组自然也不出）。#1042 当初为并存写的那道「订阅供的
+  // 从厂商组里摘掉」的去重因此没了消费方，一并删掉——留着一段跑不到的代码，
+  // 下一个人会以为它还在保护什么。
+  if (subscribed) {
+    return subItems.length > 0 ? [{ key: HOSTED_GROUP_KEY, heading: "订阅", items: subItems }] : [];
+  }
+
   // Ollama 的型号不在目录里（本机装了什么只有本机知道），现问现拼进来。
   // 只留会调工具的：这个 agent 的每一步都是工具调用，选一个不会调工具的型号
   // 等于选了一个只会聊天的搭档 —— 与其让它在会话里静默地什么也不做，
@@ -94,10 +110,9 @@ export function modelMenuGroups(input: ModelMenuInput): ModelMenuGroup[] {
     usable.length > 0
       ? [{ provider: "ollama" as ProviderId, models: usable.map(ollamaChoiceFrom) }]
       : [];
-  const hostedSet = new Set(hosted);
   const rest: ModelMenuGroup[] = [];
   for (const g of [...modelsByProvider(), ...ollama]) {
-    const all = g.models.filter(keep).filter((m) => !hostedSet.has(m.model));
+    const all = g.models.filter(keep);
     // 没配 key 的厂商压根不进这个菜单：这里是「挑一个现在就能跑的型号」，
     // 十来行点进去只会撞上「需要 key」的死路。配 key 是另一件事，走底下那个入口。
     // 例外挂在**当前选中的那一款**上，不挂在它那一家上——key 被清掉之后菜单里
@@ -120,10 +135,7 @@ export function modelMenuGroups(input: ModelMenuInput): ModelMenuGroup[] {
     });
   }
 
-  return [
-    ...(subItems.length > 0 ? [{ key: HOSTED_GROUP_KEY, heading: "订阅", items: subItems }] : []),
-    ...rest,
-  ];
+  return rest;
 }
 
 export const HOSTED_GROUP_KEY = "__hosted__";

@@ -204,9 +204,23 @@ export function planBadge(me: BillingMe | null): PlanBadgeId | null {
  * 所以这一串是从便宜到贵（ADR-0237）——选单照这个顺序画，Auto 的两档也取自它。
  */
 export function hostedModels(billing: BillingSnapshotView | null): readonly string[] {
+  if (!isSubscribed(billing)) return NO_HOSTED_MODELS;
+  return billing!.me!.models;
+}
+
+/**
+ * 这个人此刻是不是订阅用户（#1051）。
+ *
+ * 判据与真正花钱那层（`main/hostedQuota.ts` 的 `routeInput().subscribed`）**逐字
+ * 同一条**：`status === "active"` 且有档。两处分家的那天，界面会把「你不能用自己的
+ * key」和「你的调用正在走自己的 key」同时说出口。
+ *
+ * `null`（还没查到）一律算**不是**：少收起两个设置栏目没人损失什么，反过来则是
+ * 冷启动那一瞬间把一个免费用户的模型配置页藏掉（同 `hostedModels` 那条取舍）。
+ */
+export function isSubscribed(billing: BillingSnapshotView | null): boolean {
   const me = billing?.me;
-  if (!me || me.status !== "active" || me.plan === null) return NO_HOSTED_MODELS;
-  return me.models;
+  return me !== null && me !== undefined && me.status === "active" && me.plan !== null;
 }
 
 /** 「一款都没有」那个答案必须是**同一个数组实例**：这个函数是 `useChat(selector)` 的

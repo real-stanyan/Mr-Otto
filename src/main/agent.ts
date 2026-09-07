@@ -101,6 +101,15 @@ import { createAskUserTool } from "../tools/askUser.js";
 import type { AskUserOutcome, AskUserQuestion } from "../shared/askUser.js";
 import { routeModel } from "./modelRoute.js";
 import type { HostedQuota } from "./hostedQuota.js";
+
+/** 主进程这一侧「能不能走托管」要的三样。**具名而不是内联**（#1051）：子 agent
+    与子会话重建两处也要原样接住它，形状抄三份的话，哪天多一个字段就会有人漏接，
+    而漏接的表现是那条装配安静地退回自带 key —— 正是这条规矩要关掉的那件事 */
+export interface HostedCapability {
+  quota: HostedQuota;
+  edgeBaseUrl: () => string;
+  accessToken: () => Promise<string | null>;
+}
 import type { ModelLane } from "../shared/modelLane.js";
 import { pickAutoModel as pickAutoModelShared } from "../shared/autoModel.js";
 import type { Approver } from "../loop/approvalGate.js";
@@ -210,7 +219,7 @@ export function createAgent(opts: {
   /** 图片附件库(app 级资源,index.ts 注入)——adapter 请求时解 image_ref 用 */
   attachments: AttachmentStore;
   /** 托管额度（订阅制，ADR-0176）。index.ts 注入；子会话/测试不给 = 路由永远不出 hosted */
-  hosted?: { quota: HostedQuota; edgeBaseUrl: () => string; accessToken: () => Promise<string | null> };
+  hosted?: HostedCapability;
   /** 浏览器能力工厂(index.ts 注入,按 sessionId 绑到 browserHub)。
       不给 = 这个装配没有浏览器,browser_read 会明确报错(测试和裸装配照旧) */
   makeBrowser?: (sessionId: string) => BrowserCapability;

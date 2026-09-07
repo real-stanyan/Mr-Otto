@@ -56,6 +56,8 @@ import { nativeImageEncoder } from "./imageCodec.js";
 import { createUploadPool } from "../shared/remote/uploads.js";
 import { createVisionBridge } from "./visionBridge.js";
 import { loadVisionModel, saveVisionModel } from "./visionModelStore.js";
+import { visionModelFor } from "../shared/visionModel.js";
+import { helperModelFor } from "../shared/helperModel.js";
 import { classifyLogView } from "./sectionClassifier.js";
 import { annotateTurn } from "./turnAnnotator.js";
 import { autoTitleSource } from "./sessionTitler.js";
@@ -180,7 +182,7 @@ import { buildEscrowDoc } from "../shared/remote/pxEscrow.js";
 import { createEscrowSync, type EscrowSync } from "./pxEscrowSync.js";
 import { createAuditBackflow } from "./pxAuditSync.js";
 import { createPxCloudClient } from "./pxCloudClient.js";
-import { createHostedQuota, parseCheckoutTarget } from "./hostedQuota.js";
+import { createHostedQuota, parseCheckoutTarget, type HostedQuota } from "./hostedQuota.js";
 import type { WorkspaceUsage } from "../shared/billing.js";
 import { createWorkspaceManager } from "./workspaceManager.js";
 import {
@@ -1087,12 +1089,16 @@ void app.whenReady().then(() => {
     const source = wantTopic ? topicSource(store.firstUserMessage(sessionId)) : null;
     const topicChoice =
       source === null ? null : { source, index: topicIndexOf(memoryFiles.readTopics()) };
+    // 订阅用户的小模型也取自订阅供的那几款（#1051，同代读员那条）
+    const annotateModel = helperModelFor(helperModel(), hostedList(), isSubscribed());
+    const annotateRoute = await helperHostedRoute(annotateModel);
     const result = await annotateTurn(
       classifyLogView(store, sessionId),
       lastUser < 0 ? [] : store.load(sessionId, { afterSeq: lastUser - 1 }),
-      helperModel(),
+      annotateModel,
       titleSource,
-      topicChoice
+      topicChoice,
+      annotateRoute ? { baseUrl: annotateRoute.baseUrl, apiKey: annotateRoute.token } : undefined
     );
     if (!result) return;
     // 出了 turn 锁，delete-session 不再被挡住：这一跑期间会话可能已被 purge。
@@ -1194,6 +1200,9 @@ void app.whenReady().then(() => {
       // 不接 persistAllowRule——子 agent 没有审批 UI，产不出规则
       execPolicy: () => loadExecPolicy(execPolicyPath),
       autoCompactSettings: () => loadAutoCompact(autoCompactPath),
+      // 子 agent 与父走同一条路由（#1051）：不给它，订阅用户派一次活要么必然
+      // blocked（没配 key），要么悄悄记在他自己账上（配了 key）——两种都是静默失败
+      hosted: hostedDeps,
       // 子 agent 也要进注册表：道理同 createSessionAgent 里那份——它的 sessionId
       // 从建好那一刻起就是活的，resumeSession 必须查得到它
       register: (child) => {
@@ -1228,8 +1237,13 @@ void app.whenReady().then(() => {
     // 那一刻开始走表。提到闭包外面 = 主进程开机 30 秒后每次微压缩都当场超时
     // 现读一次、记在局部：这一跑要几十秒，期间用户可能在设置页换了型号——
     // 落盘那条 micro_compacted 记的必须是真正跑这一次的那款
-    const model = helperModel();
-    const cheap = createCheapAdapter(model, MICRO_TIMEOUT_MS);
+    const model = helperModelFor(helperModel(), hostedList(), isSubscribed());
+    const route = await helperHostedRoute(model);
+    const cheap = createCheapAdapter(
+      model,
+      MICRO_TIMEOUT_MS,
+      route ? { baseUrl: route.baseUrl, apiKey: route.token } : undefined
+    );
     if (!cheap) return;
     const log = store.load(sessionId);
     const result = await microCompactOnce(log, cheap.adapter, {
@@ -1505,6 +1519,28 @@ void app.whenReady().then(() => {
     quota: hostedQuota,
     edgeBaseUrl: () => edgeBaseUrl(),
     accessToken: () => accountManager?.getAccessToken() ?? Promise.resolve(null),
+  };
+
+  // ── 「不是这条会话主模型」的那几次调用（#1051）─────────────────────────────
+  // 代读员（vision-bridge）与后台小模型（分区分类 / 跟进建议 / 微压缩）原来各走各的
+  // 老路：前者调 routeModel 但**不喂 hosted**，后者干脆直接读 env 里的 key。订阅用户
+  // 不许自带 key 之后这两条都不成立了 —— 没配 key 的订阅用户代读必然失败（连带整个
+  // turn 失败）、三个外挂从来没跑起来过；配了 key 的则两边都悄悄记在他自己账上。
+  //
+  // 两个函数都是「没订阅就回 null / 原样返回」= 行为一字不变。
+  const hostedList = (): readonly string[] => hostedQuota.snapshot().me?.models ?? [];
+  // 空串是故意的：`subscribed` 那一格与问哪一款型号无关（`routeInput` 只有
+  // `supportsModel` 看 model），借这条既有的路读它比另开一个投影更少一份事实
+  const isSubscribed = (): boolean => hostedQuota.routeInput("").subscribed;
+  /** 这一次辅助调用能不能走网关。拿不到 JWT 也回 null —— 不发空 Bearer */
+  const helperHostedRoute = async (
+    model: string
+  ): Promise<{ input: ReturnType<HostedQuota["routeInput"]>; baseUrl: string; token: string } | null> => {
+    const input = hostedQuota.routeInput(model);
+    if (!input.subscribed) return null;
+    const token = await hostedDeps.accessToken();
+    if (!token) return null;
+    return { input, baseUrl: `${edgeBaseUrl()}/llm/v1`, token };
   };
   // ─── 工作区（Task 8/10，ADR-0198 切片 2/3）─────────────────────────────
   // 造得比 proxy 早：proxy 的 workspaceHosts 依赖它的 hostUids()。这里只做
@@ -2139,6 +2175,8 @@ void app.whenReady().then(() => {
         alwaysAllow: () => loadAlwaysAllow(permissionsPath),
         execPolicy: () => loadExecPolicy(execPolicyPath), // 同上：forbidden 不被派活绕过
         autoCompactSettings: () => loadAutoCompact(autoCompactPath),
+        // 同上（#1051）：恢复出来的子会话也走订阅额度，不退回自带 key
+        hosted: hostedDeps,
         // 挂上 MCP 能力，用不用得着由 config.allowTools 那份白名单说了算
         // （ADR-0054）。活着的那一侧（subagentRunner）从父的 world 实例里继承，
         // 这一侧父可能早就不在内存里了，只能显式给
@@ -2320,6 +2358,8 @@ void app.whenReady().then(() => {
         alwaysAllow: () => loadAlwaysAllow(permissionsPath),
         execPolicy: () => loadExecPolicy(execPolicyPath), // 同上：forbidden 不被派活绕过
         autoCompactSettings: () => loadAutoCompact(autoCompactPath),
+        // 同上（#1051）
+        hosted: hostedDeps,
         // 子会话默认也挂 skill 工具（subagentRunner 按 def.skills === "none" 决定
         // 挂不挂）；listSkills 与主会话共用同一份现扫闭包
         skills: { listSkills: () => scanSkills(skillRoots) },
@@ -3834,8 +3874,15 @@ void app.whenReady().then(() => {
       if (refs.length > 0 && !(describeModel(agent.model)?.supportsVision ?? false)) {
         // 代读员型号现读设置（改了对下一条带图消息生效）；事件里记的必须是
         // 真正代读的那一款，不是常量
-        const bridgeModel = visionModel();
-        const describeImages = createVisionBridge((id) => attachmentStore.read(id), undefined, bridgeModel);
+        // 订阅用户的代读员必须取自订阅供的那几款（#1051）：出厂默认 glm-4.6v-flash
+        // 网关不供，不换一款的话每条带图消息都会在代读那一步 blocked、连带整个 turn 失败
+        const bridgeModel = visionModelFor(visionModel(), hostedList(), isSubscribed());
+        const describeImages = createVisionBridge(
+          (id) => attachmentStore.read(id),
+          undefined,
+          bridgeModel,
+          (await helperHostedRoute(bridgeModel)) ?? undefined
+        );
         described = { content: await describeImages(refs, modelText), model: bridgeModel };
       }
       if (invoked) {
