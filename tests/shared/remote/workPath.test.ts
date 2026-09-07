@@ -2,8 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   joinWorkPath,
   normalizeWorkPath,
-  parentWorkPath,
-  workPathCrumbs,
   WORK_PATH_MAX_SEGMENTS,
 } from "../../../src/shared/remote/workPath.js";
 
@@ -49,20 +47,9 @@ describe("normalizeWorkPath（#1056）", () => {
   });
 });
 
-describe("面包屑与拼接", () => {
-  it("workPathCrumbs 逐段累加（根那一格由调用方加）", () => {
-    expect(workPathCrumbs("")).toEqual([]);
-    expect(workPathCrumbs("src/lib")).toEqual([
-      { name: "src", path: "src" },
-      { name: "lib", path: "src/lib" },
-    ]);
-  });
-
-  it("join / parent 在根上也说得通", () => {
+describe("拼接", () => {
+  it("join 在根上也说得通", () => {
     expect(joinWorkPath("", "a")).toBe("a");
     expect(joinWorkPath("a", "b")).toBe("a/b");
-    expect(parentWorkPath("")).toBe("");
-    expect(parentWorkPath("a")).toBe("");
-    expect(parentWorkPath("a/b/c")).toBe("a/b");
   });
 });

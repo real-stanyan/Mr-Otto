@@ -22,8 +22,8 @@ describe("cs_say 的 mentions（#928 切片 1a）", () => {
 });
 
 describe("cs 协议 6（#957 第三批：stop 帧与 say/approve/stop 回执）", () => {
-  it("CS_PROTOCOL_VERSION === 11（8 = ADR-0234 仓库配置进控制房；9 = ADR-0235 归档也进控制房；10 = #1044 删除；11 = #1056 工作文件夹读帧）", () => {
-    expect(CS_PROTOCOL_VERSION).toBe(11);
+  it("CS_PROTOCOL_VERSION === 12（…；10 = #1044 删除；11 = #1056 工作文件夹读帧；12 = #1066 搜索）", () => {
+    expect(CS_PROTOCOL_VERSION).toBe(12);
   });
 
   it("stop 上行往返", () => {
@@ -141,6 +141,36 @@ describe("cs 协议 11（#1056：files / files_result）", () => {
       encodeCs({ t: "files_result", workspaceId: "w1", path: "", ok: true, node: { kind: "dir", entries: [{ name: "a" }] } } as never)
     );
     expect(decoded).toEqual({ t: "files_result", workspaceId: "w1", path: "", ok: true });
+  });
+});
+
+describe("cs 协议 12（#1066：files_search / files_search_result）", () => {
+  it("files_search roundtrip；content 必填布尔（两种模式跑的是两条命令）", () => {
+    const frame = { t: "files_search" as const, workspaceId: "w1", query: "菜单", content: false };
+    expect(decodeCsUp(encodeCs(frame))).toEqual(frame);
+    expect(decodeCsUp(encodeCs({ t: "files_search", workspaceId: "w1", query: "x" } as never))).toBeNull();
+    expect(decodeCsUp(encodeCs({ t: "files_search", workspaceId: "w1", content: true } as never))).toBeNull();
+  });
+
+  it("files_search_result roundtrip：名字模式两个 null，内容模式两个都有", () => {
+    const base = { t: "files_search_result" as const, workspaceId: "w1", query: "x", ok: true };
+    const hits = [
+      { rel: "a.md", line: null, text: null },
+      { rel: "sub/b.ts", line: 12, text: "const x = 1" },
+    ];
+    expect(decodeCsDown(encodeCs({ ...base, hits }))).toEqual({ ...base, hits });
+  });
+
+  it("ok=false 那一路不带 hits——「搜不成」与「没有匹配」不是一回事", () => {
+    const failed = { t: "files_search_result" as const, workspaceId: "w1", query: "x", ok: false, message: "云端沙箱里没有 ripgrep，搜不了。" };
+    expect(decodeCsDown(encodeCs(failed))).toEqual(failed);
+  });
+
+  it("一条命中形状不对 → 整份判无效，不静默丢那一条", () => {
+    const decoded = decodeCsDown(
+      encodeCs({ t: "files_search_result", workspaceId: "w1", query: "x", ok: true, hits: [{ rel: "a" }, { line: 1 }] } as never)
+    );
+    expect(decoded).toEqual({ t: "files_search_result", workspaceId: "w1", query: "x", ok: true });
   });
 });
 

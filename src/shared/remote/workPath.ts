@@ -32,26 +32,7 @@ export function normalizeWorkPath(input: string): string | null {
   return segments.join("/");
 }
 
-/** 面包屑：`"a/b/c"` → `[{name:"a",path:"a"}, {name:"b",path:"a/b"}, …]`。
-    根那一格由调用方自己加（它的名字是产品文案，不是路径的一部分） */
-export function workPathCrumbs(path: string): { name: string; path: string }[] {
-  const segments = path.split("/").filter((s) => s !== "");
-  const out: { name: string; path: string }[] = [];
-  let acc = "";
-  for (const s of segments) {
-    acc = acc === "" ? s : `${acc}/${s}`;
-    out.push({ name: s, path: acc });
-  }
-  return out;
-}
-
 /** 进入子项：拼一条新路径（不做校验，两端拿到之后各自过一次 normalizeWorkPath） */
 export function joinWorkPath(base: string, name: string): string {
   return base === "" ? name : `${base}/${name}`;
-}
-
-/** 上一级；已经在根就还是根 */
-export function parentWorkPath(path: string): string {
-  const i = path.lastIndexOf("/");
-  return i < 0 ? "" : path.slice(0, i);
 }
