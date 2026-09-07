@@ -3,6 +3,12 @@
 // 首登引导弹窗和账号设置页共用这一个组件:两处改的是同一行数据,规则(名字多长、
 // 什么图能用、保存失败怎么显示)只该有一份。差别只在外壳 —— 弹窗给它配"完成/以后再说",
 // 设置页给它配"保存"。所以按钮不在这里,由 children 之外的 actions 插槽传进来。
+//
+// 名字有两种样子（#1022）：弹窗那条路永远是输入框（那一屏的正事就是填它）；
+// 账号页平时是**一行字**，点它才变输入框 —— 改名一辈子一次，而那个框天天占着
+// 账号页最上面最重的一块。规矩和头像一致：点它改它，平时不摆出「待办」的样子。
+// 编辑态由**外面**拿着（`nameEditing`）：撤销/保存之后要退回一行字，而只有外面
+// 知道「改回去了没有」。缺省 undefined = 永远输入框 = 弹窗那条路一字不变。
 
 import { useEffect, useRef, useState } from "react";
 import { Camera, Loader2 } from "lucide-react";
@@ -39,6 +45,10 @@ export function ProfileEditor({
   busy = false,
   autoFocus = false,
   actions,
+  nameEditing,
+  onNameClick,
+  subline,
+  trailing,
 }: {
   draft: ProfileDraft;
   onChange: (next: ProfileDraft) => void;
@@ -51,11 +61,21 @@ export function ProfileEditor({
       进门就抢焦点会让接下来的任何按键都掉进名字框里 */
   autoFocus?: boolean;
   actions?: React.ReactNode;
+  /** 名字此刻是不是输入框。undefined = 永远是（弹窗那条路）；
+      false = 一行字，点它才进编辑态（账号页） */
+  nameEditing?: boolean;
+  onNameClick?: () => void;
+  /** 名字底下那行（账号页放邮箱）。弹窗不传 */
+  subline?: React.ReactNode;
+  /** 整行最右边（账号页放退出登录）。弹窗不传 */
+  trailing?: React.ReactNode;
 }) {
   const fileRef = useRef<HTMLInputElement>(null);
   const [reading, setReading] = useState(false);
   const [readError, setReadError] = useState<string | null>(null);
   const nameRef = useRef<HTMLInputElement>(null);
+  const inline = nameEditing !== undefined;
+  const showInput = nameEditing !== false;
 
   // 弹窗一开就把光标放进名字框:引导的第一件事就是改名,让用户少点一下。
   // radix 的 Dialog 会在挂载后抢一次焦点,得等它抢完(下一帧)再要回来
@@ -64,6 +84,13 @@ export function ProfileEditor({
     const id = requestAnimationFrame(() => nameRef.current?.focus());
     return () => cancelAnimationFrame(id);
   }, [autoFocus]);
+
+  // 点名字进编辑态之后把光标放进去：少点一下，而且能立刻打字
+  useEffect(() => {
+    if (nameEditing !== true) return;
+    const id = requestAnimationFrame(() => nameRef.current?.select());
+    return () => cancelAnimationFrame(id);
+  }, [nameEditing]);
 
   const pick = async (file: File | undefined) => {
     if (!file) return;
@@ -80,8 +107,30 @@ export function ProfileEditor({
 
   const shown = readError ?? error ?? null;
 
+  const nameControl = showInput ? (
+    <Input
+      id="profile-name"
+      ref={nameRef}
+      className={inline ? "h-8 w-[280px] max-w-full text-[14px] font-[550]" : "h-8 text-[13px]"}
+      value={draft.name}
+      maxLength={NAME_MAX}
+      placeholder="好友看到的名字"
+      disabled={busy}
+      onChange={(e) => onChange({ ...draft, name: e.target.value })}
+    />
+  ) : (
+    <button
+      type="button"
+      className="-ml-[7px] max-w-full truncate rounded-[8px] px-[7px] py-[3px] text-[15px] font-[600] transition-colors hover:bg-accent focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
+      title="点一下改名"
+      onClick={onNameClick}
+    >
+      {draft.name}
+    </button>
+  );
+
   return (
-    <div className="flex flex-col gap-4">
+    <div className="flex flex-col gap-3">
       <div className="flex items-center gap-4">
         {/* 头像即按钮:点脸换脸,不用先找一个"上传"按钮。
             press 时缩一档 —— 按下去就有回应,是"这东西能按"的最短证据 */}
@@ -91,7 +140,7 @@ export function ProfileEditor({
           disabled={reading || busy}
           onClick={() => fileRef.current?.click()}
           aria-label="换头像"
-          title="换头像"
+          title="换头像，自动裁成方的"
         >
           <AvatarWell draft={draft} initial={initial} />
           {/* 悬停/读图时压一层暗罩 + 相机。平时不挂图标:头像是给人看的,
@@ -104,33 +153,44 @@ export function ProfileEditor({
             {reading ? <Loader2 className="size-4 animate-spin" /> : <Camera className="size-4" />}
           </span>
         </button>
-        <div className="min-w-0 flex-1">
-          <label className="mb-1 block text-[11px] text-muted-foreground" htmlFor="profile-name">
-            名字
-          </label>
-          <Input
-            id="profile-name"
-            ref={nameRef}
-            className="h-8 text-[13px]"
-            value={draft.name}
-            maxLength={NAME_MAX}
-            placeholder="好友看到的名字"
-            disabled={busy}
-            onChange={(e) => onChange({ ...draft, name: e.target.value })}
-          />
-          <p className="mt-1 flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
-            <span>点头像换图,自动裁成方的</span>
-            {draft.avatarUrl && (
-              <button
-                type="button"
-                className="shrink-0 underline-offset-2 hover:underline"
-                onClick={() => onChange({ ...draft, avatarUrl: "" })}
-              >
-                不要头像
-              </button>
-            )}
-          </p>
+        <div className="flex min-w-0 flex-1 flex-col gap-[5px]">
+          {!inline && (
+            <label className="block text-[11px] text-muted-foreground" htmlFor="profile-name">
+              名字
+            </label>
+          )}
+          <div className="flex min-h-8 items-center gap-2">
+            {nameControl}
+            {inline && actions}
+          </div>
+          {subline}
+          {!inline && (
+            <p className="flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+              <span>点头像换图,自动裁成方的</span>
+              {draft.avatarUrl && (
+                <button
+                  type="button"
+                  className="shrink-0 underline-offset-2 hover:underline"
+                  onClick={() => onChange({ ...draft, avatarUrl: "" })}
+                >
+                  不要头像
+                </button>
+              )}
+            </p>
+          )}
+          {/* 账号页那条路不常驻提示（悬停头像已有相机图标 + title）：
+              「不要头像」只在真有头像时才出现，多数人的静息态因此少一行字 */}
+          {inline && draft.avatarUrl && (
+            <button
+              type="button"
+              className="self-start text-[11px] text-muted-foreground underline-offset-2 hover:underline"
+              onClick={() => onChange({ ...draft, avatarUrl: "" })}
+            >
+              不要头像
+            </button>
+          )}
         </div>
+        {trailing}
       </div>
 
       {/* accept 只是给系统文件框的过滤提示,真正的把关在 fileToAvatarDataUrl
@@ -148,7 +208,7 @@ export function ProfileEditor({
       />
 
       {shown && <p className="text-xs text-destructive">{shown}</p>}
-      {actions}
+      {!inline && actions}
     </div>
   );
 }
