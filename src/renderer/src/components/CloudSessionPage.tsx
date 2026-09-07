@@ -579,7 +579,12 @@ export function CloudSessionPage({
       {/* 滚动区：横幅 + 时间线 + 错误行。scrollbar-stable 同外层原来那份；
           px-4 与本地会话一条量尺（aui viewport 的 `max-w-(--thread-max-width) px-4`，
           那个变量本仓没定义 = 无上限，所以本地就是「占满 + px-4」，#993 第 2 条）；
-          pb-3 给最后一条消息和输入框之间留口气；onScroll 记「此刻在不在底部」
+          pb-14 不是「留口气」是**算出来的**：footer 顶上那道滚动缘渐隐是
+          `-top-10 h-10`，即压在滚动区最后 40px 上，而原来的 pb-3 只有 12px——
+          末尾 28px 的正文因此永远蒙着一层暗底（#995 第 1 条）。本地会话那边
+          留的是 mb-14（56px，thread.tsx 的 message-group）且运行指示条
+          `sticky bottom-0 z-10` 骑在渐隐之上，所以从来不糊；这里照同一把尺，
+          40px 渐隐之外还剩 16px 是真正看得见的间距。onScroll 记「此刻在不在底部」
           给上面那条跟底 effect 用（阈值 48px：滚动条抖一下不算离开） */}
       <div
         ref={scrollRef}
@@ -587,7 +592,7 @@ export function CloudSessionPage({
           const el = e.currentTarget;
           stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
         }}
-        className="flex flex-1 min-h-0 flex-col gap-3 overflow-y-auto scrollbar-stable px-4 pt-3 pb-3"
+        className="flex flex-1 min-h-0 flex-col gap-3 overflow-y-auto scrollbar-stable px-4 pt-3 pb-14"
       >
       {banner && (
         <p
@@ -628,7 +633,12 @@ export function CloudSessionPage({
                 ) : row;
               if (e.type === "chat_message") {
                 return (
-                  <ChatMessageRow key={e.seq} event={e} avatarUrl={memberAvatarOf(ws, e.fromUid)} />
+                  <ChatMessageRow
+                    key={e.seq}
+                    event={e}
+                    mine={e.fromUid === selfUid}
+                    avatarUrl={memberAvatarOf(ws, e.fromUid)}
+                  />
                 );
               }
               if (e.type === "user_message") {
@@ -649,6 +659,7 @@ export function CloudSessionPage({
                     ts={e.ts}
                     label={identity.label}
                     text={identity.text}
+                    mine={identity.mine}
                     avatarUrl={identity.uid ? memberAvatarOf(ws, identity.uid) : ""}
                   />
                 );
@@ -956,7 +967,15 @@ export function CloudSessionPage({
     (同典型群聊 UI 的既有约定,如 FriendChatView 两人 DM 靠头像位置区分,
     这里人数不定,靠文字标签)。event.mention 为真时补一个 "@Agent" 角标——
     它是发送那一刻"这句话是对 Agent 说的"这个事实的展示,不分是谁发的 */
-function ChatMessageRow({ event, avatarUrl }: { event: ChatMessageEvent; avatarUrl: string }) {
+function ChatMessageRow({
+  event,
+  mine,
+  avatarUrl,
+}: {
+  event: ChatMessageEvent;
+  mine: boolean;
+  avatarUrl: string;
+}) {
   // runtime 自己说的话（接力护栏、棒数上限、被踢那句：sessionService 落
   // chat_message 时用的 fromUid: "system"）不画成气泡（第四批 B2-I1 的 UI 半）：
   // 气泡的全部含义是「群里有个人说了这句」，而这几句没有人说。判据取 fromUid
@@ -973,11 +992,11 @@ function ChatMessageRow({ event, avatarUrl }: { event: ChatMessageEvent; avatarU
   // 少跑一处就等于那条路上的闸没关（ADR-0226）
   const name = safeSpeakerLabel(event.label, event.fromUid);
   return (
-    <SpeakerRow avatar={<PersonAvatar name={name} src={avatarUrl} />}>
+    <SpeakerRow mine={mine} avatar={<PersonAvatar name={name} src={avatarUrl} />}>
       <span className="px-1 text-[10.5px] text-muted-foreground">
         {name} · {formatProxyTime(event.ts)}
       </span>
-      <Bubble align="start" variant="muted">
+      <Bubble align={mine ? "end" : "start"} variant={mine ? "tinted" : "muted"}>
         <BubbleContent className="whitespace-pre-wrap break-words">{event.content}</BubbleContent>
       </Bubble>
     </SpeakerRow>
@@ -991,12 +1010,28 @@ function ChatMessageRow({ event, avatarUrl }: { event: ChatMessageEvent; avatarU
     「这个人说的」，贴底（MessageAvatar 的 self-end 默认）在长消息上会掉到
     看不见的地方。自己发的头像也画（维护者原话「不同人类成员发消息时也要显示
     每个人各自的头像」）——靠右的位置已经说明是我，但群里多人时一眼扫过去，
-    每一行都有脸比「有的有有的没有」整齐 */
-function SpeakerRow({ avatar, children }: { avatar: ReactNode; children: ReactNode }) {
+    每一行都有脸比「有的有有的没有」整齐。
+
+    `mine` 这个参数 #993 第 4 条整个删过一次又在 #995 第 2 条加了回来，两次
+    要的不是同一件事：#993 说的是**标签行**（人和 agent 一样只写「名字 ·
+    时间」，不写「→ 发给谁」），当时连着排布一起拿掉是做过头了；#995 说的是
+    **排布**（自己发的靠右，其他群成员跟 agent 一样靠左）。所以现在两条同时
+    成立：标签行一视同仁，靠边只区分「是不是我」。改这里之前先分清动的是哪一层 */
+function SpeakerRow({
+  mine,
+  avatar,
+  children,
+}: {
+  mine: boolean;
+  avatar: ReactNode;
+  children: ReactNode;
+}) {
   return (
-    <div className="flex max-w-[85%] gap-2 self-start">
+    <div className={cn("flex max-w-[85%] gap-2", mine ? "flex-row-reverse self-end" : "self-start")}>
       <div className="shrink-0 pt-[3px]">{avatar}</div>
-      <div className="flex min-w-0 flex-col items-start gap-0.5">{children}</div>
+      <div className={cn("flex min-w-0 flex-col gap-0.5", mine ? "items-end" : "items-start")}>
+        {children}
+      </div>
     </div>
   );
 }
@@ -1040,20 +1075,22 @@ function UserMessageRow({
   ts,
   label,
   text,
+  mine,
   avatarUrl,
 }: {
   ts: number;
   label: string | null;
   text: string;
+  mine: boolean;
   avatarUrl: string;
 }) {
   return (
-    <SpeakerRow avatar={<PersonAvatar name={label ?? "?"} src={avatarUrl} />}>
+    <SpeakerRow mine={mine} avatar={<PersonAvatar name={label ?? "?"} src={avatarUrl} />}>
       <span className="px-1 text-[10.5px] text-muted-foreground">
         {label ? `${label} · ` : ""}
         {formatProxyTime(ts)}
       </span>
-      <Bubble align="start" variant="muted">
+      <Bubble align={mine ? "end" : "start"} variant={mine ? "tinted" : "muted"}>
         <BubbleContent className="whitespace-pre-wrap break-words">{text}</BubbleContent>
       </Bubble>
     </SpeakerRow>
@@ -1081,7 +1118,7 @@ function AssistantMessageRow({
   const toolCalls = event.toolCalls ?? [];
   const name = assistantLabel(event, ws);
   return (
-    <SpeakerRow avatar={<AgentAvatar ws={ws} agentId={event.agentId} name={name} />}>
+    <SpeakerRow mine={false} avatar={<AgentAvatar ws={ws} agentId={event.agentId} name={name} />}>
       <span className="px-1 text-[10.5px] text-muted-foreground">
         {name} · {formatProxyTime(event.ts)}
       </span>
