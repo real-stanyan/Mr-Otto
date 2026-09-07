@@ -220,8 +220,14 @@ export function BillingSettings() {
     // 先画骨架：名字照给、价格留空、按钮禁用——不拿一个猜的数贴订阅按钮（ADR-0203
     // 偏差 (a)：以前价格抄死在前端，改价那天卡片和 Stripe 结账页对不上）
     const cards = planCardsOrNull(me) ?? [];
-    const capsOf = (id: string) =>
-      me?.plans.find((p) => p.id === id)?.capabilities.image ? ["图像"] : [];
+    // 能力行：只画服务端说有的那几格（plan.capabilities 是事实，客户端不抄一份档位表）。
+    // 「视频」产品上暂时不做，字段还在但不画（ADR-0239 决定 3）
+    const capsOf = (id: string) => {
+      const caps = me?.plans.find((p) => p.id === id)?.capabilities;
+      return [caps?.image ? "图像" : null, caps?.workspace ? "工作区" : null].filter(
+        (x): x is string => x !== null,
+      );
+    };
     return (
       <section className="flex flex-col gap-[6px]">
         <h2 className="px-1 text-[11px] tracking-[0.06em] text-muted-foreground uppercase">订阅</h2>
