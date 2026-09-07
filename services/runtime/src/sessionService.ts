@@ -1122,39 +1122,21 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     }
     const candidates = roster.map((a) => ({ agentId: a.agentId, name: a.name }));
     const targets = mentionedAgents(said, candidates, spec.agentId);
-    // 这一轮里 @ 了、但**没落到名单上**的那几个（#957 A-6，复审 Minor 1）：静默丢掉
-    // 的话，一句「@财务 你来核一下账」和一句普通闲聊在日志里长得一模一样——群里的人
-    // （和下一轮的模型）都不知道这一棒断在哪儿。
-    // 判据**逐 token 算、与 targets 空不空无关**：初版拿 `targets.length === 0` 当前提，
-    // 于是「@运营 @财务 你们看下」这种混着的一句里，@财务 又被静默吞掉了——而混着
-    // 恰恰是最常见的形状。
-    // 「解析得出」的判据是**有没有名单里的名字是这个 token 的前缀**，不是 `=== 名字`：
-    // mentionTokens 贪婪吃到下一个空白，「@运营，帮忙看下」切出来的 token 是
-    // 「运营，帮忙看下」，等号判会把一个 parseMentions 明明认得的 @ 报成「没这个人」。
-    // 前缀正是 parseMentions 自己的匹配规则（`text.startsWith(name, i + 1)`）。
-    // **自 @ 自然不在名单外**（spec 自己就在 roster 里），不用另开一条判断
-    const unresolved = mentionTokens(said).filter(
-      (t) => !roster.some((a) => a.name.length > 0 && t.startsWith(a.name))
-    );
-    // **降级名单不说这句话**（#957 终审 Minor 3）：`degraded` 的那份是
-    // workspace_agents 查询失败时的占位（daemon 的 DEFAULT_WORKSPACE_AGENT
-    // 一只），拿它做"名单里没有这个人"的判据，等于把每一个真实存在的 @ 都在
-    // 群里报成"查无此人（可能改过名或还没建）"——一句读起来像事实、实际只是
-    // 一次 Supabase 抖动的话，而且它会留在日志里给下一轮的模型读
-    // **只回显数量、不回显 token 原文**（第二轮复审 E2-3）：这几个 token 是**模型
-    // 自己写的**，而这条 chat_message 署的名是「系统」、在 agentView 里是 keep ——
-    // 也就是说，一只 agent 只要把话塞进一个 `@token` 里（`mentionTokens` 贪婪吃到
-    // 下一个空白，中文本来就不需要空白），就能以系统的名义对全场其余 agent 下一段
-    // 指令，连伪造都不用。截断 + 过闸那条路也能堵住结构，但堵不住「系统说了一句
-    // 模型想让它说的话」这件事本身——数量是这句话唯一真正需要携带的信息
-    if (unresolved.length > 0 && !roster.some((a) => a.degraded)) {
-      logChat(
-        "system",
-        "系统",
-        `「${promptSafe(spec.name)}」@ 了 ${unresolved.length} 个名单里没有的名字（可能改过名或还没建），这一棒没人接`,
-        false
-      );
-    }
+    // 这一轮里 @ 了、但**没落到名单上**的那几个（#957 A-6）曾经在群里落一条
+    // 「「运营」@ 了 N 个名单里没有的名字（可能改过名或还没建），这一棒没人接」。
+    // #1055 把它撤了，判据是**这句话说给谁听、他能拿它做什么**：
+    // 写下那个 @ 的是**模型**，不是人。群里没有任何人做错了事，也没有任何人在等
+    // 一个不会来的回复——一只 agent @ 了一个不存在的名字，结果就是这一棒不接，
+    // 与它压根没 @ 任何人的那一轮在外部完全同形。留着它只是给时间线加一行没人
+    // 能据此行动的内务话，而它还是**模型可见**的（`agentView` 里 chat_message 是
+    // keep），下一轮的模型读到的也是同一句废话。
+    // **`say()` 那条同名的孪生兄弟留着**（"有 N 个点名在名单里找不到…"）：那一条
+    // 的写者是**人**，他刚 @ 完就会开始等一个永远不来的回复，那句话是他唯一的信号。
+    // 两条判据的差别只有一个词——谁写的那个 @。
+    // 顺带没了的还有它那一整套防护（只回显数量不回显 token 原文、降级名单不说话）：
+    // 那是围着「一只 agent 能以系统的名义对全场说话」这个面搭的，面没了，栏杆也
+    // 就不用留。回滚的路：git 里这一段连同 tests/runtime/sessionService.test.ts
+    // 的 A-6 那几条一起。
     if (targets.length === 0) return;
 
     // 所有者那扇 5h 窗还剩多少（#1017）。**查不到回 null 不回 0**：0 会被
@@ -1588,8 +1570,9 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // 拿它去 resolveTargets，"@运营" 自然解不出来 —— 于是下面那句 sayUnknown
       // 会对着用户说「有 1 个点名在名单里找不到」，而真名单里它好端端地在。把一次
       // Supabase 抖动翻译成「这只 agent 不存在」是句假话，用户照它去改名字只会
-      // 更错；说「读不出来，稍后再试」他才知道该等而不是该改。判据与
-      // relayAfterTurn 那道闸同款（roster.some(degraded)），点没点名按 resolveTargets
+      // 更错；说「读不出来，稍后再试」他才知道该等而不是该改。（relayAfterTurn
+      // 里那道同款的 `roster.some(degraded)` 闸随 #1055 撤走了——它守着的那条
+      // 系统发言本身没了。）点没点名按 resolveTargets
       // 的三级一起看：客户端自报的 mention/mentions 之外，正文里的 @ 也算
       // （手机端/旧桌面只发布尔那一版，那一级的解析本来就在服务端）
       const mentionedSomeone = mention || (mentions?.length ?? 0) > 0 || mentionTokens(text).length > 0;
@@ -1621,12 +1604,14 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         if (unknown.length === 0) return;
         // 降级名单说不出这句话（#957 E2-4）：真名单读不出来时「有 N 个点名找不到」
         // 是假话。降级 + 点了名那条路上面已经拒了，能走到这里的只剩没点名的
-        // 闲聊（unknown 必空），这道守卫是为了判据与上面、与 relayAfterTurn
-        // 逐字同款 —— 三处里漏一处就是这条 issue 换个入口复发
+        // 闲聊（unknown 必空），这道守卫是为了判据与上面那道逐字同款 —— 两处里
+        // 漏一处就是这条 issue 换个入口复发（第三处在 relayAfterTurn，随 #1055
+        // 连同它守的那条系统发言一起撤了）
         if (roster.some((a) => a.degraded)) return;
         // fromUid:"system" —— 渲染层照普通群发言画（这句话说给房里所有人听）。
-        // **只回显数量、不回显 id 原文**（终审 Finding 1，与 relayAfterTurn:863
-        // 逐字同一条纪律）：`unknown` 的每一个元素都直接来自客户端帧的 mentions
+        // **只回显数量、不回显 id 原文**（终审 Finding 1；relayAfterTurn 里那条
+        // 逐字同纪律的孪生兄弟随 #1055 撤了，这一条留着是因为写下那个 @ 的是
+        // **人**，他正在等一个不会来的回复）：`unknown` 的每一个元素都直接来自客户端帧的 mentions
         // 数组，而 decodeCsUp 只校验"是字符串数组"——没有长度上限、没有字符集。
         // 把它原样拼进一条署名「系统」的 chat_message（agentView 里是 keep），
         // 等于让发帧的人以系统的名义对群里每一只 agent 说一句话，比 E2-3 那条
