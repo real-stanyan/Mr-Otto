@@ -152,3 +152,34 @@ export function addonLine(addon: BillingMe["addon"], now: number): string | null
   const exp = addon.expiresAt && addon.expiresAt > now ? `，${new Date(addon.expiresAt).toLocaleDateString("zh-CN")} 到期` : "";
   return `加购余额 ${fmtCredit(addon.remainingMicro)}${exp}`;
 }
+
+/** 侧栏那枚档位徽章上写什么。`free` 不是服务端 plan 表里的一行，是「没有订阅」
+    这个状态本身的名字（同 ADR-0239 决定 3 给账号页那张 Free 卡的定性）。 */
+export type PlanBadgeId = "free" | PlanId;
+
+export const PLAN_BADGE_LABEL: Record<PlanBadgeId, string> = {
+  free: "Free",
+  lite: "Lite",
+  pro: "Pro",
+  max: "Max",
+};
+
+/** 这个账号此刻在哪一档。**`null` = 还没查到，一格都不许画** —— 把它退成
+    「Free」就是对着一个正在付 Max 的人说他没订阅，同 ADR-0217 的 `workspaceAccess`
+    为什么要有 `unknown` 这一态：冷启动那一瞬间「不知道」和「没有」长得一样，
+    而这两件事该说的话相反。billing 是 push 上来的，那一瞬间必然存在。
+
+    有订阅 / 没订阅的判据与账号页**共用这一份**（BillingSettings 的分支也读它）：
+    `canceled` 算没订阅是 #865 定的 —— 退订过的人该看到价目卡，网关那侧
+    canceled→checkout 本来就放行（ADR-0203 决定 18）。
+
+    `past_due` **仍然报它原来的档**：扣款失败不改变「你订的是 Pro」这个事实，
+    而「出事了」那句话由账号页那条 warn 横幅说（ADR-0239 决定 2）—— 侧栏这枚
+    24px 高的徽章不是讲事故的地方。哪天要在这里也报警，它就得多一态。 */
+export function planBadge(me: BillingMe): PlanBadgeId;
+export function planBadge(me: BillingMe | null): PlanBadgeId | null;
+export function planBadge(me: BillingMe | null): PlanBadgeId | null {
+  if (!me) return null;
+  if (me.plan === null || me.status === "none" || me.status === "canceled") return "free";
+  return me.plan;
+}
