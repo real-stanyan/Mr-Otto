@@ -1,4 +1,4 @@
-// 「沙箱内免审」那颗开关的三态与文案（#1029，ADR-0240）。
+// 「沙箱内免审」那颗开关的三态与文案（#1029，ADR-0243）。
 // 这里钉的不是像素是**话有没有说错**：谁能翻、显示的是不是真的、以及标签
 // 不许退化成本地那颗的名字。
 
@@ -37,7 +37,7 @@ describe("sandboxApprovalControl", () => {
     expect(c.title).toContain("读不到");
   });
 
-  it("读不到时 owner 仍然按得下刹车、按不动放行——只往严的一边（同 ADR-0240 决策 6 那条纪律）", () => {
+  it("读不到时 owner 仍然按得下刹车、按不动放行——只往严的一边（同 ADR-0243 决策 6 那条纪律）", () => {
     const mine = sandboxApprovalControl({ ...WS, sandboxApproval: null }, "owner");
     const theirs = sandboxApprovalControl({ ...WS, sandboxApproval: null }, "member");
     expect(mine.kind === "unknown" && mine.canForceAsk).toBe(true);

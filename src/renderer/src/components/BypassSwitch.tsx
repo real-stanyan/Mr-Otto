@@ -82,7 +82,7 @@ export function BypassToggle({
   );
 }
 
-/** 云会话输入框那一行的那一枚（#1029，ADR-0240）。**和上面那枚共用药丸外形、
+/** 云会话输入框那一行的那一枚（#1029，ADR-0243）。**和上面那枚共用药丸外形、
     刻意不是同一个组件**：位置一样，管的东西不一样（作用域/覆盖面/谁能改/持久化
     四点差别写在 lib/sandboxApprovalControl.ts 的头注里）。合成一个组件的那天，
     合的人要先决定这四点各按谁的来——而正确答案是「都不按」。
@@ -106,7 +106,7 @@ export function SandboxApprovalToggle({
       <div title={control.title} className={cn(pill(false, false), className)}>
         <span>{SANDBOX_APPROVAL_LABEL}</span>
         <span className="text-[11px]">读不到</span>
-        {/* 读不到也照样按得下刹车（只有这一个方向，ADR-0240 决策 6 同一条纪律）：
+        {/* 读不到也照样按得下刹车（只有这一个方向，ADR-0243 决策 6 同一条纪律）：
             不知道现状就打开免审等于蒙着眼睛放行，而「改成逐条批」在任何现状下
             都是安全的那一边 */}
         {control.canForceAsk && (

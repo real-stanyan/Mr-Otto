@@ -85,7 +85,7 @@ export interface WorkspaceSnapshot {
   connectors: WorkspaceConnectorRow[];
   sessions: WorkspaceSessionRow[];
   agents: WorkspaceAgentRow[];
-  /** 沙箱内 bash / write_file 要不要人批（#977，ADR-0231；控件位置见 ADR-0240）。
+  /** 沙箱内 bash / write_file 要不要人批（#977，ADR-0231；控件位置见 ADR-0243）。
       owner 在云会话输入框那一行翻，runtime 撞审批门时现查。
       **`null` = 这一格此刻读不到**，不是「关着」（#1029）——那一列走单独一条容错查询，
       查挂了照 `normalizeSandboxApproval` 兜底就会把一次网络抖动画成「要逐条批」，

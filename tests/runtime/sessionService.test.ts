@@ -991,7 +991,7 @@ describe("沙箱内工具的工作区审批策略（#977 第 1 条，ADR-0231）
     for (const d of decisions) expect(d).toMatchObject({ decision: "approved", reason: "工作区设置：沙箱内工具免审" });
     expect(events.filter((e) => e.type === "tool_result").every((e) => (e as { status: string }).status === "ok")).toBe(true);
     expect(events.some((e) => e.type === "turn_ended" && (e as { outcome: string }).outcome === "completed")).toBe(true);
-    // auto **不缓存**（#1029，ADR-0240）：两次撞门查两次库，这样 owner 半路
+    // auto **不缓存**（#1029，ADR-0243）：两次撞门查两次库，这样 owner 半路
     // 关掉免审时刹车立刻生效。原来这里断言的是 1（一轮只查一次），
     // 改数字的产品改动就在同一个 PR 里——policyApprover 解析成 auto 后丢缓存
     expect(policyCalls).toBe(2);

@@ -319,7 +319,7 @@ async function main(): Promise<void> {
     return (data as { owner_uid: string }).owner_uid;
   }
 
-  /** 沙箱内工具要不要人批（#977，0026 迁移）。owner 在云会话输入框那一行改（ADR-0240），这里现查不缓存
+  /** 沙箱内工具要不要人批（#977，0026 迁移）。owner 在云会话输入框那一行改（ADR-0243），这里现查不缓存
       ——同 queryAgents 的纪律，改了下一轮生效。查询失败原样抛，**不在这里回落**：
       回落成 ask 还是 auto 是调用方的决定，这个函数只如实报告「查到了什么」 */
   async function querySandboxApproval(workspaceId: string): Promise<SandboxApproval> {
@@ -662,7 +662,7 @@ async function main(): Promise<void> {
       },
       // 查不到就问人（#977）：0026 没跑、Supabase 抖了，都往严的一边倒——一次抖动
       // 把「要批」翻成「免批」是最不该有的默认。
-      // **失败原样往上抛，不在这里吞成 "ask"**（#1029，ADR-0240）：吞掉之后
+      // **失败原样往上抛，不在这里吞成 "ask"**（#1029，ADR-0243）：吞掉之后
       // 「问不出来」与「库里确认是 ask」在 sessionService 那一层形状完全相同，
       // 而它对这两者的处理刚好相反——确认的 ask 钉住这一轮、问不出来只管这一次。
       // 吞在这里的话，那边区分两者的整段代码在真机接线下一次都跑不到（单测直接

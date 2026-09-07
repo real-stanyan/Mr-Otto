@@ -1,4 +1,4 @@
-// 「沙箱内免审」那颗开关在云会话输入框那一行长什么样（#1029，ADR-0240）。
+// 「沙箱内免审」那颗开关在云会话输入框那一行长什么样（#1029，ADR-0243）。
 //
 // 判断留在纯函数里、组件只画：这颗开关一次说错话的代价是**人以为每条命令都会
 // 弹卡给他看，而实际一条都不弹**，所以「此刻能不能翻」「显示的是不是真的」这两问
@@ -38,7 +38,7 @@ export type SandboxApprovalControl =
 const SCOPE = "整个工作区都跟着变：这个工作区里所有会话、所有成员。";
 const COVERS = "只管智能体在自己容器里跑命令、写文件；连接器与新建智能体照旧要批。";
 // 「关掉立刻生效」是 sessionService 那头的承诺：解析成 auto 的那一轮每次撞门现查一次，
-// 所以踩刹车不用等下一轮。反方向要等——解析成 ask 之后这一轮就按 ask 走到底（ADR-0240）
+// 所以踩刹车不用等下一轮。反方向要等——解析成 ask 之后这一轮就按 ask 走到底（ADR-0243）
 const TIMING = "关掉立刻生效；打开要下一轮才一定生效。";
 
 export function sandboxApprovalControl(ws: WorkspaceSnapshot, selfUid: string): SandboxApprovalControl {
@@ -65,7 +65,7 @@ export function sandboxApprovalControl(ws: WorkspaceSnapshot, selfUid: string): 
     所以它不能退化成一条要悬停才看得见的 title）。三种情形只有两种要出这一行：
     · 免审开着 —— 说清此刻不会有人替你看每一条命令。
     · **读不到** —— 这一格恰恰可能正开着免审。不出声就是把一个「可能正危险」的
-      状态藏进一枚灰药丸的 title 里，等于 ADR-0240 决策 4 明确否掉的那条路。
+      状态藏进一枚灰药丸的 title 里，等于 ADR-0243 决策 4 明确否掉的那条路。
     关着 = 今天的行为，不占这一行。 */
 export function sandboxApprovalBanner(c: SandboxApprovalControl): string | null {
   if (c.kind === "unknown") {

@@ -435,7 +435,7 @@ export interface CloudSession {
     catchUp），到这个数就不再排、改落一条真正的收口 */
 export const MAX_CATCHUP_ATTEMPTS = 3;
 
-/** 沙箱免审策略这一刻问不出来时，群里那一句（#1029，ADR-0240）。
+/** 沙箱免审策略这一刻问不出来时，群里那一句（#1029，ADR-0243）。
     往严的一边倒（这一次照旧问人）是对的，但**不出声就与「这开关坏了」不可区分**：
     输入框上方那行常驻警示此刻正写着「不会再问你」，而一张卡刚刚弹了出来。
     说的是「这一次」不是「这一轮」——判断本身不钉住，下次撞门还会重查。 */
@@ -540,7 +540,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   /** 这一轮的沙箱审批策略（#977）：第一次撞门时查。runJob 进门复位。
       `null`（promise 的结果，不是这一格本身）= **这一次问不出来**，与确认的 "ask" 分开：
       只有确认的 "ask" 才钉住这一轮，判据与三种结局的理由写在 policyApprover 里
-      （#1029，ADR-0240） */
+      （#1029，ADR-0243） */
   let jobSandboxPolicy: Promise<SandboxApproval | null> | null = null;
   /** 这个 job 已经为「策略读不到」在群里出过一次声了吗（#1029）。同 relayWaitAnnounced：
       判据是「这一轮」不是「这一次撞门」——一轮里每把刀各喊一句就成了刷屏 */
@@ -787,7 +787,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   const policyApprover: Approver = {
     async decide(call, tool, signal) {
       if (tool === bashTool || tool === writeFileTool) {
-        // 三种结局各有各的缓存策略（#1029，ADR-0240）——**这一轮之内只能收紧**：
+        // 三种结局各有各的缓存策略（#1029，ADR-0243）——**这一轮之内只能收紧**：
         //   · 确认的 `ask` → **钉住这一轮**。与 ADR-0231「下一轮生效」逐字相同：
         //     一轮里已经被问过一次的人，不会因为别人半路翻了开关而突然不再被问。
         //   · `auto` → **不钉**，下一次撞门重查。开关此刻坐在输入框那一行上，
@@ -1294,7 +1294,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // 出声一轮只出一次（#959 复审 Medium 2）：与上一行同一个时机复位，两处分家
     // 就会出现"接力口径开了、旁白却还记着上一轮已经说过"这种只在第二轮才现形的漏说
     relayWaitAnnounced = false;
-    // 每轮现查（#977）。**这一轮之内只能收紧**（#1029，ADR-0240）：查出来是
+    // 每轮现查（#977）。**这一轮之内只能收紧**（#1029，ADR-0243）：查出来是
     // 确认的 ask 才钉住这一轮，auto 与「问不出来」都不钉，判据在 policyApprover
     jobSandboxPolicy = null;
     sandboxProbeFailAnnounced = false;
