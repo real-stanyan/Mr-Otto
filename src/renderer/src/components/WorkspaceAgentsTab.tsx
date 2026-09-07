@@ -21,17 +21,33 @@ import { useChat } from "../store.js";
 import { agentRows, type AgentRowView } from "../lib/workspaceView.js";
 import { agentAvatarSrc } from "../lib/agentAvatar.js";
 import {
+  AUTO_MODEL, agentModelOptions, chainWarning, modelsFromSelection, selectedModelValue,
+} from "../lib/agentModelChoice.js";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select.js";
+import {
   connectorChoices, modeFromTools, staleSelections, toolsDraftError, toolsFromDraft, type ToolsMode,
 } from "../lib/agentToolsForm.js";
 import {
   isServerOn, isToolOn, selectionFromAllow, toggleServer, toggleTool, type ProxySelection,
 } from "../lib/proxyShare.js";
-import { validateAgentName, parseModelList, validateRelayMaxDepth, type SandboxApproval } from "../../../shared/workspaceAgents.js";
+import { validateAgentName, validateRelayMaxDepth, type SandboxApproval } from "../../../shared/workspaceAgents.js";
 import { Switch } from "./ui/switch.js";
 import { sameAgentTools } from "../../../shared/agentToolAllow.js";
 import type { WorkspaceSnapshot, WorkspaceAgentRow } from "../../../shared/workspaces.js";
 
 const SECTION_LABEL = "text-[11px] tracking-[0.06em] text-muted-foreground uppercase";
+/** 每次 render 都新建一个 [] 会让下面几个 useMemo/依赖数组白白变身份 */
+const EMPTY_MODELS: readonly string[] = [];
+
+/** 提示词收起时那一行摘要：首行 + 字数。合上之后还得看得出里面有没有东西、
+    大概是什么——只写「已折叠」的话这颗按钮就是个盲盒 */
+function promptSummary(text: string): string {
+  const trimmed = text.trim();
+  if (trimmed === "") return "还没写提示词";
+  const first = trimmed.split("\n", 1)[0]!;
+  return `${first}（共 ${[...trimmed].length} 字）`;
+}
+
 const ROW = "flex items-center gap-2 px-2 py-[6px] rounded-md text-xs";
 
 /** 型号数组是不是真的变了——不能拿 join(" ") 比，["a b", "c"] 和 ["a", "b c"]
@@ -277,7 +293,13 @@ function AgentEditorDialog({
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [instructions, setInstructions] = useState("");
-  const [modelsRaw, setModelsRaw] = useState("");
+  // 下拉选中的那一项（AUTO_MODEL 或某个 logical_model）。存回去的仍然是
+  // workspace_agents.models 那条有序链，映射规则在 agentModelChoice.ts
+  const [model, setModel] = useState<string>(AUTO_MODEL);
+  // 提示词默认收起（#1005）：它是这张表单里唯一会长到几百字的一块，展开着
+  // 就把型号、连接器挤到折叠线以下——而那两样正是人开这张表单最常来改的。
+  // **只管显示不管内容**：收起时 instructions 照旧在 state 里，保存照发
+  const [promptOpen, setPromptOpen] = useState(false);
   const [toolsMode, setToolsMode] = useState<ToolsMode>("all");
   const [toolsSel, setToolsSel] = useState<ProxySelection>({});
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -299,21 +321,37 @@ function AgentEditorDialog({
       setName(state.agent.name);
       setDescription(state.agent.description);
       setInstructions(state.agent.instructions);
-      setModelsRaw(state.agent.models.join(", "));
+      setModel(selectedModelValue(state.agent.models));
       setToolsMode(modeFromTools(state.agent.tools));
       setToolsSel(selectionFromAllow(state.agent.tools));
     } else {
       setName("");
       setDescription("");
       setInstructions("");
-      setModelsRaw("");
+      setModel(AUTO_MODEL);
       setToolsMode("all");
       setToolsSel({});
     }
     setExpanded(new Set());
+    setPromptOpen(false);
     setError(null);
     setStale(false);
   }, [state]);
+
+  // 网关此刻供着的型号。billing 还没拉到时是空数组——「读不到」与「一款都没有」
+  // 在界面上要说不同的话，判断留给下面那两句文案
+  const availableModels = useChat((s) => s.billing?.me?.models) ?? EMPTY_MODELS;
+  const loadBilling = useChat((s) => s.loadBilling);
+  const billingLoaded = useChat((s) => s.billing !== null);
+  // 型号清单挂在 billing 快照上，而这一页可能是冷启动后第一个被打开的界面——
+  // 没人拉过的话下拉里就只有 Auto。**只在没有快照时补一次**，不带 refresh：
+  // 这是为了填空不是为了刷新，而 billingSnapshot(true) 会真打一次网络
+  useEffect(() => {
+    if (state !== null && !billingLoaded) void loadBilling();
+  }, [state, billingLoaded, loadBilling]);
+  const currentModels = state?.mode === "edit" ? state.agent.models : EMPTY_MODELS;
+  const modelOptions = agentModelOptions(availableModels, currentModels);
+  const chainNote = chainWarning(currentModels);
 
   const nameError = validateAgentName(name);
   const toolsError = toolsDraftError(toolsMode, toolsSel);
@@ -325,7 +363,7 @@ function AgentEditorDialog({
     setBusy(true);
     setError(null);
     setStale(false);
-    const models = parseModelList(modelsRaw);
+    const models = modelsFromSelection(model);
     const tools = toolsFromDraft(toolsMode, toolsSel);
     const result =
       state.mode === "create"
@@ -421,32 +459,72 @@ function AgentEditorDialog({
             />
           </div>
 
+          {/* 提示词默认收起（#1005）。收起时**只是不画那个框**，instructions
+              仍在 state 里、保存照发——「收起」不能变成「清空」。
+              摘要行给的是首行 + 字数：合上之后还得看得出里面有没有东西、
+              大概是什么，否则这颗按钮就成了盲盒 */}
           <div className="flex flex-col gap-1">
-            <span className={SECTION_LABEL}>提示词</span>
-            {/* max-h 是这里的正事：ui/textarea.tsx 带 field-sizing-content
-                （内容多高框多高），只给 min-h 就等于没有上限——几百字的提示词
-                会把框铺成八百多像素高。封顶之后长提示词在框内自己滚（#997） */}
-            <Textarea
-              value={instructions}
-              onChange={(e) => setInstructions(e.target.value)}
-              onKeyDown={onInstructionsKeyDown}
-              className="max-h-[220px] min-h-[120px] overflow-y-auto font-normal text-[13px]"
-              disabled={busy}
-            />
+            <div className="flex items-center gap-2">
+              <span className={SECTION_LABEL}>提示词</span>
+              <Button
+                type="button" variant="ghost" size="xs" className="h-5 px-1 text-[11px]"
+                aria-expanded={promptOpen}
+                onClick={() => setPromptOpen((v) => !v)}
+              >
+                {promptOpen ? <ChevronDown className="size-[13px]" /> : <ChevronRight className="size-[13px]" />}
+                {promptOpen ? "收起" : "展开"}
+              </Button>
+              {!promptOpen && (
+                <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
+                  {promptSummary(instructions)}
+                </span>
+              )}
+            </div>
+            {promptOpen && (
+              /* max-h 是这里的正事：ui/textarea.tsx 带 field-sizing-content
+                 （内容多高框多高），只给 min-h 就等于没有上限——几百字的提示词
+                 会把框铺成八百多像素高。封顶之后长提示词在框内自己滚（#997） */
+              <Textarea
+                value={instructions}
+                onChange={(e) => setInstructions(e.target.value)}
+                onKeyDown={onInstructionsKeyDown}
+                className="max-h-[220px] min-h-[120px] overflow-y-auto font-normal text-[13px]"
+                disabled={busy}
+                autoFocus
+              />
+            )}
           </div>
 
+          {/* 型号下拉（#1005）：清单来自 `billing.me.models`——那不是「我的订阅
+              供哪几款」，而是网关从**全局** model_route 表去重出来的 logical_model
+              （worker.ts:632），对每个用户都一样，所以这一格不需要动 cs 帧协议。
+              拉不到时只剩 Auto 与存量选项，下面那句话说的是「读不到」不是「没有」 */}
           <div className="flex flex-col gap-1">
             <span className={SECTION_LABEL}>型号</span>
-            <Input
-              value={modelsRaw}
-              onChange={(e) => setModelsRaw(e.target.value)}
-              onKeyDown={onInputKeyDown}
-              placeholder="逗号分隔，按顺序取网关供着的第一个；留空用网关默认款"
-              disabled={busy}
-            />
+            <Select value={model} onValueChange={setModel} disabled={busy}>
+              <SelectTrigger className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {modelOptions.map((o) => (
+                  <SelectItem key={o.value} value={o.value}>
+                    {o.label}
+                    {o.stale && <span className="ml-1 text-[10px] text-muted-foreground">已下架</span>}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
             <p className="text-[10.5px] text-muted-foreground">
-              排在前面的网关不供就往后找，都不供用网关默认款（云会话统一走所有者的订阅额度）。这里不校验 id。
+              {model === AUTO_MODEL
+                ? "Auto：不指定型号，用网关路由表里的首选款。（还不会按任务难度自选——那一层没做。）"
+                : "云会话统一走工作区所有者的订阅额度；这一款网关哪天不供了，会自动退回首选款。"}
             </p>
+            {availableModels.length === 0 && (
+              <p className="text-[10.5px] text-muted-foreground">
+                还没读到网关供着的型号清单（不是「一款都没有」）。到账号页看一眼订阅信息就会拉一次。
+              </p>
+            )}
+            {chainNote !== null && <p className="text-[10.5px] text-warn">{chainNote}</p>}
           </div>
 
           <div className="flex flex-col gap-1">
