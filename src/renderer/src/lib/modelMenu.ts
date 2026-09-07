@@ -22,15 +22,16 @@ export interface ModelMenuItem {
   choice: ModelChoice | null;
   /** 画在左边那枚厂商字形；null = 这一格没有（Auto，或目录外的型号） */
   provider: ProviderId | null;
-  /** 右边那枚「视觉」记号 */
-  vision: boolean;
-  /** 这一项是 Auto（渲染层据此换成中性方块 + 那行说明） */
+  /** 这一项是 Auto（渲染层据此换成中性方块） */
   auto?: true;
 }
 
 export interface ModelMenuGroup {
   key: string;
-  heading: string;
+  /** 组头写什么；**`null` = 这一组不画组头**（#1058）。订阅那一组是唯一一组
+      （#1051 之后两组不并存，ADR-0248 决策六），给唯一一组挂个标题就是噪音；
+      厂商那几组照旧要写，那边是真的有好几组要分开 */
+  heading: string | null;
   items: ModelMenuItem[];
 }
 
@@ -72,20 +73,20 @@ export function modelMenuGroups(input: ModelMenuInput): ModelMenuGroup[] {
   // ① 订阅那一组
   const subItems: ModelMenuItem[] = [];
   if (allowAuto && hosted.length >= AUTO_MIN_MODELS) {
-    subItems.push({ id: AUTO_MODEL, choice: null, provider: null, vision: false, auto: true });
+    subItems.push({ id: AUTO_MODEL, choice: null, provider: null, auto: true });
   }
   for (const id of hosted) {
     const m = describeModel(id);
     if (m) {
       if (!keep(m)) continue;
-      subItems.push({ id, choice: m, provider: m.provider, vision: m.supportsVision === true });
+      subItems.push({ id, choice: m, provider: m.provider });
       continue;
     }
     // 目录里没有的型号（网关上了新款而本仓目录还没跟上）：**没有 filter 时留着**
     // 并原样显示 id —— 藏起来就是「看不见却仍然供着」。给了 filter（比如只列看得见
     // 图的）就只能丢：那道筛子问的是一个我们此刻答不出的问题，答不出而放行，
     // 就是 #722 那个撒谎的勾
-    if (filter === undefined) subItems.push({ id, choice: null, provider: null, vision: false });
+    if (filter === undefined) subItems.push({ id, choice: null, provider: null });
   }
 
   // ② 厂商那几组：自带 key 才跑得动的那些。**订阅用户这一段整个不出**（#1051）——
@@ -97,7 +98,7 @@ export function modelMenuGroups(input: ModelMenuInput): ModelMenuGroup[] {
   // 从厂商组里摘掉」的去重因此没了消费方，一并删掉——留着一段跑不到的代码，
   // 下一个人会以为它还在保护什么。
   if (subscribed) {
-    return subItems.length > 0 ? [{ key: HOSTED_GROUP_KEY, heading: "订阅", items: subItems }] : [];
+    return subItems.length > 0 ? [{ key: HOSTED_GROUP_KEY, heading: null, items: subItems }] : [];
   }
 
   // Ollama 的型号不在目录里（本机装了什么只有本机知道），现问现拼进来。
@@ -126,12 +127,7 @@ export function modelMenuGroups(input: ModelMenuInput): ModelMenuGroup[] {
     rest.push({
       key: g.provider,
       heading: info.name,
-      items: models.map((m) => ({
-        id: m.model,
-        choice: m,
-        provider: g.provider,
-        vision: m.supportsVision === true,
-      })),
+      items: models.map((m) => ({ id: m.model, choice: m, provider: g.provider })),
     });
   }
 
