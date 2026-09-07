@@ -15,8 +15,8 @@ export function modelStatusText(route: CsModelRoute | null): { short: string; fu
     return {
       short: `${route.model} · 托管`,
       full:
-        `走所有者的订阅额度（托管路由），工作区默认型号 ${route.model}。` +
-        "\n按 agent 各自的型号白名单可能不同（按顺序取网关供着的第一个）。",
+        `走所有者的订阅额度（托管路由），工作区默认模型 ${route.model}。` +
+        "\n按 agent 各自的模型白名单可能不同（按顺序取网关供着的第一个）。",
       bad: false,
     };
   }

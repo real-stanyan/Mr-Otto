@@ -122,9 +122,9 @@ describe("scanCreateAgentThreat（M3，工具与 summarizeArgs 共用同一份�
 });
 
 describe("createAgentApprovalSummary（ADR-0118 第二条：卡片逐字段）", () => {
-  it("五行：名字 / 职责 / 型号 / 连接器 / 提示词全文，缺省各有说法", () => {
+  it("五行：名字 / 职责 / 模型 / 连接器 / 提示词全文，缺省各有说法", () => {
     expect(createAgentApprovalSummary({ name: "广告", description: "", instructions: "", models: [], tools: [] })).toBe(
-      ["名字：广告", "职责：（没写）", "型号：工作区默认", "连接器：全部（不限）", "提示词（0 字）：（没写）"].join("\n")
+      ["名字：广告", "职责：（没写）", "模型：工作区默认", "连接器：全部（不限）", "提示词（0 字）：（没写）"].join("\n")
     );
   });
 
@@ -135,7 +135,7 @@ describe("createAgentApprovalSummary（ADR-0118 第二条：卡片逐字段）",
       tools: [{ serverId: "shopify", tools: ["orders", "products"] }, { serverId: "ads", tools: [] }],
     });
     expect(out).toContain("职责：管投放");
-    expect(out).toContain("型号：glm-4.5, deepseek-chat");
+    expect(out).toContain("模型：glm-4.5, deepseek-chat");
     expect(out).toContain("连接器：shopify（orders、products）；ads（整台）");
     expect(out).toContain(`提示词（${long.length} 字）：\n${long}`);
   });
@@ -146,7 +146,7 @@ describe("createAgentApprovalFields（B-C2：审批卡逐字段，值与 createA
     const d = { name: "广告", description: "", instructions: "", models: [], tools: [] };
     const fields = createAgentApprovalFields(d);
     expect(fields).toHaveLength(5);
-    expect(fields.map((f) => f.label)).toEqual(["名字", "职责", "型号", "连接器", "提示词（0 字）"]);
+    expect(fields.map((f) => f.label)).toEqual(["名字", "职责", "模型", "连接器", "提示词（0 字）"]);
     expect(fields[0]).toEqual({ label: "名字", value: "广告" });
     expect(fields[4]!.label).toMatch(/^提示词/);
   });

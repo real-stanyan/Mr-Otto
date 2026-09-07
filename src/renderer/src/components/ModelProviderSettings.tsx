@@ -145,7 +145,7 @@ function ProviderRow({
                   <span className="text-[11.5px] text-muted-foreground">
                     {ollamaError
                       ? `没连上 Ollama —— ${ollamaError}`
-                      : "连上了，但一个型号都没装 —— 先 ollama pull 一个"}
+                      : "连上了，但一个模型都没装 —— 先 ollama pull 一个"}
                   </span>
                 )}
                 <Button
@@ -244,7 +244,7 @@ export function ModelProviderSettings() {
         <SearchIcon className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
         <Input
           className="h-9 rounded-[10px] pl-9 text-[13px]"
-          placeholder="搜索厂商或型号"
+          placeholder="搜索厂商或模型"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />

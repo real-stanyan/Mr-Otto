@@ -165,7 +165,7 @@ const MODEL_SPECS: ModelSpec[] = [
 
 function expand(spec: ModelSpec): ModelChoice {
   const p = findProvider(spec.provider);
-  if (!p) throw new Error(`型号 ${spec.model} 指向了不存在的厂商: ${spec.provider}`);
+  if (!p) throw new Error(`模型 ${spec.model} 指向了不存在的厂商: ${spec.provider}`);
   return {
     provider: spec.provider,
     model: spec.model,

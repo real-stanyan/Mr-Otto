@@ -9,7 +9,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
-import { ChevronDown, ChevronRight } from "lucide-react";
+import { ChevronDown, ChevronRight, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils.js";
 import { Button } from "@/components/ui/button.js";
 import { Input } from "@/components/ui/input.js";
@@ -103,7 +103,7 @@ export function WorkspaceAgentsTab({ ws, selfUid }: { ws: WorkspaceSnapshot; sel
               onDelete={() => {
                 if (
                   confirm(
-                    `删除智能体「${row.name}」？它的提示词和型号配置会一起消失，正在排队的消息会被标成没人接。`
+                    `删除智能体「${row.name}」？它的提示词和模型配置会一起消失，正在排队的消息会被标成没人接。`
                   )
                 ) {
                   void (async () => {
@@ -596,7 +596,7 @@ function AgentEditorDialog({
               （worker.ts:632），对每个用户都一样，所以这一格不需要动 cs 帧协议。
               拉不到时只剩 Auto 与存量选项，下面那句话说的是「读不到」不是「没有」 */}
           <div className="flex flex-col gap-1">
-            <span className={SECTION_LABEL}>型号</span>
+            <span className={SECTION_LABEL}>模型</span>
             <Select value={model} onValueChange={setModel} disabled={busy}>
               <SelectTrigger className="w-full">
                 <SelectValue />
@@ -604,9 +604,19 @@ function AgentEditorDialog({
               <SelectContent>
                 {modelOptions.map((o) => (
                   <SelectItem key={o.value} value={o.value}>
-                    {/* 认不出平台就留一个同尺寸的空位，不是不画：一列有图标一列没有，
-                        文字会参差不齐，而「这一家我不认识」不值得让整列错位 */}
-                    {o.provider ? (
+                    {/* Auto 也给一枚记号（#1015）：它和下面那几款是同一列里的同类
+                        选项，只有它光着会读成「这一行还没配好」。用的不是厂商字形
+                        ——Auto 不是一家厂——而是同尺寸同圆角的中性方块，只求这一列
+                        对得齐。认不出平台的那几款仍然留空位（同上一条理由：一列
+                        有图标一列没有，文字会参差不齐） */}
+                    {o.value === AUTO_MODEL ? (
+                      <span
+                        aria-hidden
+                        className="inline-flex size-4 shrink-0 items-center justify-center rounded-[4px] bg-muted text-muted-foreground ring-1 ring-black/10 ring-inset dark:ring-white/[0.14]"
+                      >
+                        <Sparkles className="size-[10px]" />
+                      </span>
+                    ) : o.provider ? (
                       <ProviderMark provider={o.provider} size={16} className="rounded-[4px]" />
                     ) : (
                       <span aria-hidden className="inline-block size-4 shrink-0" />
@@ -619,7 +629,7 @@ function AgentEditorDialog({
             </Select>
             <p className="text-[10.5px] text-muted-foreground">
               {model === AUTO_MODEL
-                ? "Auto：每次起跑前先用最便宜那款读一遍你的请求，判简单还是复杂，再据此挑型号。判不出来时按最便宜那款走。"
+                ? "Auto：每次起跑前先用最便宜那款读一遍你的请求，判简单还是复杂，再据此挑模型。判不出来时按最便宜那款走。"
                 : "云会话统一走工作区所有者的订阅额度；这一款网关哪天不供了，会自动退回首选款。"}
             </p>
             {availableModels.length === 0 && (

@@ -41,7 +41,7 @@ export function createVisionBridge(
     userText: string
   ): Promise<string> {
     const choice = findModel(model);
-    if (!choice) throw new Error(`vision-bridge 型号不在目录: ${model}`);
+    if (!choice) throw new Error(`vision-bridge 模型不在目录: ${model}`);
     // 没配代读员的 key 时别硬发:空 Bearer 打上去,上游回的是一句自己的鉴权
     // 文案(智谱是"令牌已过期或验证不正确")——用户看到的是"发不出去",却完全
     // 看不出坏的是代读员那把 key,而不是他正在用的那款模型的 key。

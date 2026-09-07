@@ -60,7 +60,7 @@ export function VisionModelSetting() {
       {/* 版式对齐 BuiltinSubagentRow，但不可点：它没有编辑页可进 */}
       <div
         className="w-full flex items-center gap-[10px] px-[14px] py-3 border border-border rounded-[10px]"
-        title={`型号本身有眼睛的话不走这条路。默认 ${defaultLabel}——免费但高峰期常限流；这条路失败会让整轮对话失败`}
+        title={`模型本身有眼睛的话不走这条路。默认 ${defaultLabel}——免费但高峰期常限流；这条路失败会让整轮对话失败`}
       >
         <span className="font-mono text-[13px] font-semibold text-brand shrink-0">vision-bridge</span>
         <Badge variant="secondary" className="shrink-0">内置</Badge>
