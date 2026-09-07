@@ -92,7 +92,7 @@ function parseAgentFields(a: Record<string, unknown>): AgentDraftPatch {
 
   if (a["models"] !== undefined) {
     const m = a["models"];
-    if (!Array.isArray(m) || !m.every((x) => typeof x === "string")) throw new Error("models 必须是字符串数组（型号 id）");
+    if (!Array.isArray(m) || !m.every((x) => typeof x === "string")) throw new Error("models 必须是字符串数组（模型 id）");
     const models = dedupeStrings(m as string[]).map((s) => collapseWhitespace(noNewline(s, "models")));
     if (models.length > AGENT_MODELS_MAX) throw new Error(`models 最多 ${AGENT_MODELS_MAX} 个`);
     out.models = models;
@@ -154,7 +154,7 @@ function buildApprovalFields(d: CreateAgentDraft): { label: string; value: strin
   return [
     { label: "名字", value: d.name },
     { label: "职责", value: d.description || "（没写）" },
-    { label: "型号", value: d.models.length === 0 ? "工作区默认" : d.models.join(", ") },
+    { label: "模型", value: d.models.length === 0 ? "工作区默认" : d.models.join(", ") },
     { label: "连接器", value: connectors },
     { label: `提示词（${d.instructions.length} 字）`, value: d.instructions || "（没写）" },
   ];

@@ -59,7 +59,7 @@ export function HelperModelSetting() {
           <span className="flex min-w-0 flex-col">
             <span className="truncate text-[13.5px] font-[550]">章节标题 · 跟进建议 · 微压缩</span>
             <span className="truncate text-[11.5px] text-muted-foreground">
-              每轮对话结束后在后台各跑一次，跟你正在用的型号无关
+              每轮对话结束后在后台各跑一次，跟你正在用的模型无关
             </span>
           </span>
           <ModelPicker

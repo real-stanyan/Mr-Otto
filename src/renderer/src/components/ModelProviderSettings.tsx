@@ -100,7 +100,7 @@ function ProviderRow({
             {info.keyless ? (
               <p className="text-[12.5px] leading-[1.6] text-muted-foreground">
                 装好 Ollama 并让它跑着（<code>ollama serve</code>），
-                <code>ollama pull</code> 过的型号会自动出现在下面和型号下拉框里，不用配任何东西。
+                <code>ollama pull</code> 过的模型会自动出现在下面和模型下拉框里，不用配任何东西。
                 端点跟着 Ollama 自己的 <code>OLLAMA_HOST</code> 走（默认{" "}
                 <code>127.0.0.1:11434</code>）
                 {ollamaBaseUrl && <>，当前连的是 <code>{ollamaBaseUrl}</code></>}。
@@ -145,7 +145,7 @@ function ProviderRow({
                   <span className="text-[11.5px] text-muted-foreground">
                     {ollamaError
                       ? `没连上 Ollama —— ${ollamaError}`
-                      : "连上了，但一个型号都没装 —— 先 ollama pull 一个"}
+                      : "连上了，但一个模型都没装 —— 先 ollama pull 一个"}
                   </span>
                 )}
                 <Button
@@ -244,7 +244,7 @@ export function ModelProviderSettings() {
         <SearchIcon className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
         <Input
           className="h-9 rounded-[10px] pl-9 text-[13px]"
-          placeholder="搜索厂商或型号"
+          placeholder="搜索厂商或模型"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
@@ -263,7 +263,7 @@ export function ModelProviderSettings() {
       <HelperModelSetting />
 
       {matched.length === 0 && (
-        <p className="px-1 text-[13px] text-muted-foreground">没有匹配「{query}」的厂商或型号。</p>
+        <p className="px-1 text-[13px] text-muted-foreground">没有匹配「{query}」的厂商或模型。</p>
       )}
 
       <p className="px-1 text-[12px] leading-[1.6] text-muted-foreground">

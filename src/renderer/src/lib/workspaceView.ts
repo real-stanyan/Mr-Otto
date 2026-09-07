@@ -138,7 +138,7 @@ export interface AgentRowView {
 
 /** []（留空用工作区默认）→ 一句人话；否则把型号 id 点连起来（spec §9） */
 function modelsSummaryOf(models: readonly string[]): string {
-  return models.length === 0 ? "用工作区默认型号" : models.join(" · ");
+  return models.length === 0 ? "用工作区默认模型" : models.join(" · ");
 }
 
 /** []（整池放行）→ 一句人话；否则复用 proxyShare 的描述（服务名 + 全部/几个工具） */

@@ -102,7 +102,7 @@ export function routeModel(input: RouteInput): ModelRoute {
   if (hosted?.subscribed && !hosted.supportsModel) {
     return {
       kind: "blocked",
-      reason: `网关暂不供 ${choice.label}，换一款网关供的型号，或在设置里填自己的 ${choice.apiKeyEnv}。`,
+      reason: `网关暂不供 ${choice.label}，换一款网关供的模型，或在设置里填自己的 ${choice.apiKeyEnv}。`,
     };
   }
   const grantGone = lane === "grant" ? "官方赠额已停止提供，" : "";

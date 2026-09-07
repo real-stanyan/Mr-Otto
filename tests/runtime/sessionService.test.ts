@@ -433,7 +433,7 @@ describe("createCloudSession", () => {
     expect(req).toMatchObject({ toolName: "create_agent", agentId: "admin", initiatorUid: "u1" });
     expect(req.argsSummary).toContain("名字：广告");
     expect(req.argsSummary).toContain("职责：管投放");
-    expect(req.argsSummary).toContain("型号：glm-4.5");
+    expect(req.argsSummary).toContain("模型：glm-4.5");
     expect(req.argsSummary).toContain(`提示词（${instructions.length} 字）：\n${instructions}`);
     // 逐字段版也落进同一条事件（#957 B-C2）：argsSummary 是一整块字符串，卡上逐行
     // 呈现——字段值里一个换行就能在真正的提示词上方伪造出一整张良性卡；逐字段的

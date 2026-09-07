@@ -90,7 +90,7 @@ export function ModelPicker({
   className?: string;
   /** value 是空的时候显示什么。子智能体那边不定型号 = 跟主会话走,
       而主会话可能还没开起来（设置页不需要一个活着的会话）—— 那时"跟随主会话"
-      比"选择型号"更贴事实：这个控件不选也有确定的结果 */
+      比"选择模型"更贴事实：这个控件不选也有确定的结果 */
   placeholder?: string;
   /** 只列一部分型号（看图设置那格只列 supportsVision 的款）。滤空的组整组不出现 */
   filter?: (m: ModelChoice) => boolean;
@@ -174,7 +174,7 @@ export function ModelPicker({
         {/* 认不出的型号 id 原样显示(比"Select model"多一点信息:至少看得出是哪个)。
             value 是空的时候必须换一句话——空字符串渲染出来是个只剩箭头的空盒子,
             看着像控件坏了。会话还没开起来时主会话型号就是空的,设置页照样能打开 */}
-        <ModelSelectorValue placeholder={value || placeholder || "选择型号"} showEffort={false} />
+        <ModelSelectorValue placeholder={value || placeholder || "选择模型"} showEffort={false} />
       </ModelSelectorTrigger>
 
       {/* searchable={false} 不只是"不画搜索框":Content 据此决定 cmdk 是否过滤,
@@ -182,7 +182,7 @@ export function ModelPicker({
           border-0:浮层靠 bg-popover + 阴影浮起来,不靠一圈描边 */}
       <ModelSelectorContent align="end" searchable={false} className="w-[268px] border-0">
         <ModelSelectorList className="max-h-[320px]">
-          <ModelSelectorEmpty>没有匹配的型号</ModelSelectorEmpty>
+          <ModelSelectorEmpty>没有匹配的模型</ModelSelectorEmpty>
 
           {groups.map((g) => (
             <ModelSelectorGroup key={g.provider} heading={g.info.name}>
@@ -223,7 +223,7 @@ export function ModelPicker({
             门槛 1000：几百 token 的缓存不值得占一行，说了才是噪音 */}
         {cachedTokens >= 1000 && (
           <div className="border-t border-border/60 px-3 py-2 text-[11px] leading-[1.5] text-muted-foreground">
-            换型号会作废
+            换模型会作废
             <span className="tabular-nums text-foreground/80"> {fmtTokens(cachedTokens)} </span>
             已缓存 token，下一轮全价重算。
           </div>
