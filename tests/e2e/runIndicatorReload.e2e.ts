@@ -28,10 +28,9 @@ test("#548 turn 跑着时重载：运行指示条还在（补状态那一问接�
     await startSession(otto, ws, "跑一轮,中途重载看看指示条还在不在");
 
     await expect(win.getByRole("status").first()).toBeVisible({ timeout: 20_000 });
-    // **必须等到正文开始流才重载**：running 推送分两拍（turn 锁一上先推一次不带
-    // turnId 的，engine 落下开场 user_message 后再推一次带上，见 TurnStatusUpdate）。
-    // 卡在两拍之间重载的话，第二拍会顺手把状态补回去 —— 用例就变成了"碰巧绿"，
-    // 测不到真实场景（人是在 turn 跑到一半时重载的，那时两拍早就过去了）
+    // **等到正文开始流才重载**：稳态再动手，卡「推送刚到一半」那种窗口重载的话，
+    // 随后的推送会顺手把状态补回去 —— 用例就变成了"碰巧绿"，测不到真实场景
+    // （人是在 turn 跑到一半时重载的，那时推送早过去了）
     await expect(win.getByText(/慢慢想/).first()).toBeVisible({ timeout: 20_000 });
 
     await win.evaluate(() => { (window as unknown as { __beforeReload?: boolean }).__beforeReload = true; });

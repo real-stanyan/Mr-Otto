@@ -493,12 +493,14 @@ export function deriveMessages(
     feedbackByCall.set(e.toolCallId, list);
   }
 
-  // 插话顺序修复（issue #344）：steer 落盘时工具组可能正开着——日志序是
-  // assistant(toolCalls) → user_message(插话) → tool_result…，照事件位置直投就是
-  // OpenAI 方言非法序列（tool 消息必须紧跟它的 assistant），自愈层还会误判
+  // 中途落消息的顺序修复（issue #344 为 steer 引入；steer 拆除后继续为后台回注
+  // appendBackground 等中途落的 user_message 服务，#1048）：这类消息落盘时工具组
+  // 可能正开着——日志序是
+  // assistant(toolCalls) → user_message(中途落的) → tool_result…，照事件位置直投
+  // 就是 OpenAI 方言非法序列（tool 消息必须紧跟它的 assistant），自愈层还会误判
   // "组没答完"补出重复占位。修法：组开着（pendingToolIds 非空）时落的用户
-  // 消息先攒着，组的结果齐了再进上下文——模型晚一拍看到插话，配对约束不破。
-  // 组永远没答完（中断后新 turn / turn_ended）就地冲账，插话不丢
+  // 消息先攒着，组的结果齐了再进上下文——模型晚一拍看到它，配对约束不破。
+  // 组永远没答完（中断后新 turn / turn_ended）就地冲账，消息不丢
   let pendingToolIds = new Set<string>();
   let deferredUsers: UserChatMessage[] = [];
   const flushDeferred = () => {
@@ -549,7 +551,7 @@ export function deriveMessages(
 
       case "chat_message": {
         // 云会话群聊发言（issue #799）：其他成员的话对模型来说就是对话的一部分，
-        // 同 user_message 一样要走"组开着就先攒着"的插话修法（同 :433）。
+        // 同 user_message 一样要走"组开着就先攒着"的延后修法（同 :433）。
         // 发言人身份靠 label 前缀带出来（发言时快照，改名不追认历史）
         const target = pendingToolIds.size > 0 ? deferredUsers : messages;
         // label 过 safeSpeakerLabel（第二轮复审 B2-I1）：它来自 profiles.name，
@@ -571,7 +573,7 @@ export function deriveMessages(
       }
 
       case "assistant_message":
-        // 上一组若没答完就到此为止（中断后的下一轮）：先把攒着的插话放出来，
+        // 上一组若没答完就到此为止（中断后的下一轮）：先把攒着的用户消息放出来，
         // 别让它们隔着新组越攒越远
         flushDeferred();
         pendingToolIds = new Set((event.toolCalls ?? []).map((tc) => tc.id));
@@ -622,7 +624,7 @@ export function deriveMessages(
           });
         }
         pendingToolIds.delete(event.toolCallId);
-        if (pendingToolIds.size === 0) flushDeferred(); // 组齐了，攒着的插话跟上
+        if (pendingToolIds.size === 0) flushDeferred(); // 组齐了，攒着的用户消息跟上
         break;
 
       case "session_created":
@@ -646,7 +648,7 @@ export function deriveMessages(
         // 注入为 user 消息，与 compact 摘要同理：中途插 system 各家方言兼容性参差。
         // 位置就是事件位置——skill 在哪条消息前启用，模型就从哪开始看到它。
         // args 段只在有参数时出现：旧日志（无 args 字段）投影逐字节不变。
-        // 组开着时走延后队列（同插话，:389）：模型自取 skill 时这条正好落在
+        // 组开着时走延后队列（同 user_message，:389）：模型自取 skill 时这条正好落在
         // tool_call 与 tool_result 之间，直接 push 会插进这一对中间——API 要求
         // tool 结果紧跟发起它的 assistant 消息，夹一条 user 进去就是非法请求
         const target = pendingToolIds.size > 0 ? deferredUsers : messages;
@@ -767,8 +769,8 @@ export function deriveMessages(
         // ② 摘要注入为 user 消息——中途插 system 各家方言兼容性参差，user 谁都认。
         // 二次 compact 自然复合：第二份摘要清掉的历史里含第一份摘要。
         messages.length = 0;
-        // 清场连攒着的插话一起清：compact 只发生在组与组之间（engine 在
-        // compacting 期间拒 steer），真走到这说明它们已在被替换的历史里
+        // 清场连攒着的用户消息一起清：compact 只发生在组与组之间（engine 在
+        // compacting 期间拒绝后台回注），真走到这说明它们已在被替换的历史里
         deferredUsers = [];
         pendingToolIds = new Set();
         if (systemMessage) messages.push(systemMessage);
@@ -859,13 +861,13 @@ export function deriveMessages(
 
       case "turn_ended":
         // lifecycle 事件本身不投影（同上），但 turn 收口 = 工具组不可能再答完：
-        // 攒着的插话就地放出（缺失的 tool 回应由自愈层补占位，顺序仍合法）
+        // 攒着的用户消息就地放出（缺失的 tool 回应由自愈层补占位，顺序仍合法）
         flushDeferred();
         pendingToolIds = new Set();
         break;
     }
   }
-  flushDeferred(); // 日志停在组中间（app 退出/正在跑）：插话不丢
+  flushDeferred(); // 日志停在组中间（app 退出/正在跑）：攒着的用户消息不丢
 
   // agent 身份块拼在 system 末尾（#957 A-3），**排在工作区记忆之前**：
   // 先知道自己是谁，再读记着的事。systemMessage 为 null 时上面那个 case 已经

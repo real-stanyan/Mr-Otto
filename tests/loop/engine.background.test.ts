@@ -82,7 +82,7 @@ describe("LoopEngine.appendBackground", () => {
     expect(bg.type === "user_message" && bg.origin).toBe("background");
     expect(bg.type === "user_message" && bg.backgroundTaskIds).toEqual(["bg-1"]);
 
-    // 第二次采样看到它，且在工具结果之后（配对约束不破，与 steer 同款）
+    // 第二次采样看到它，且在工具结果之后（配对约束不破——投影层的延后重排）
     const second = seenMessages[1]!;
     expect(second.map((m) => m.role)).toEqual(["user", "assistant", "tool", "user"]);
     expect(second.at(-1)).toEqual({ role: "user", content: "[后台任务 bg-1 完成] npm test" });

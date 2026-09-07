@@ -20,7 +20,6 @@ import type { ApprovalRequest, AskUserRequest, SessionRuntime, TurnStatus } from
     它不该认识 store 的其余部分（单测也就不用造一整个 store） */
 export interface RuntimeSlice {
   statusBySession: Record<string, TurnStatus>;
-  turnIdBySession: Record<string, number>;
   compactingBySession: Record<string, boolean>;
   approvals: Record<string, ApprovalRequest>;
   asks: Record<string, AskUserRequest>;
@@ -35,14 +34,11 @@ export function runtimePatch(
 ): Partial<RuntimeSlice> {
   const patch: Partial<RuntimeSlice> = {};
 
-  // 状态 / turnId / 压缩标记是同一个 turn 的三个侧面，一起判定：只要 store 里
-  // 已经有这条会话的 status，说明推送这一路是通的，三样都不补
+  // 状态与压缩标记是同一个 turn 的两个侧面，一起判定：只要 store 里
+  // 已经有这条会话的 status，说明推送这一路是通的，两样都不补
   if (prev.statusBySession[sessionId] === undefined) {
     patch.statusBySession = { ...prev.statusBySession, [sessionId]: rt.status };
     if (rt.status === "running") {
-      if (rt.turnId !== undefined) {
-        patch.turnIdBySession = { ...prev.turnIdBySession, [sessionId]: rt.turnId };
-      }
       // 压缩标记只在 running 时有意义：它是 running 灯的一个子档。
       // idle 还带着 compacting 是自相矛盾的快照，宁可不补——补错的代价是
       // 指示条一直说"压缩中…"，而没人会再来纠正它

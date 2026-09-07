@@ -388,15 +388,18 @@ function CtxDetails({ events, toolDefs, ctxWindow }: {
     位置在会话框正上方:进度是"接下来要发生什么"的语境,贴着输入框读最顺 */
 /** 排队面板 —— assistant-ui 的 message-queue。
     turn 跑着时敲的回车排进队里(store.enqueue),这里把队伍摊开:头一行是**正在跑
-    的那条**(取日志里最后一条 user_message),底下按序是排着的。
+    的那条**(取日志里最后一条 user_message),底下按序是排着的。每条排队项带
+    「顶替」:中止当前 turn、把这条提到队首立即改跑(store.runQueuedNow)。
 
     只在"跑着 + 队里有货"时出现:队列空着时这张卡只会重复说一遍聊天流里已经
     在说的事(那条消息就在上面),白占一层楼。
     位置在输入框正上方、任务清单之下:它讲的是"接下来要发生什么",和清单同一个语境 */
 function QueuePanel() {
   const running = useChat((s) => (s.statusBySession[s.sessionId] ?? "idle") === "running");
+  const sessionId = useChat((s) => s.sessionId);
   const queued = useChat((s) => s.queuedBySession[s.sessionId]);
   const unqueue = useChat((s) => s.unqueue);
+  const runQueuedNow = useChat((s) => s.runQueuedNow);
   const events = useChat((s) => s.events);
   const nowRunning = useMemo(() => lastUserMessage(events), [events]);
 
@@ -407,9 +410,10 @@ function QueuePanel() {
       running={nowRunning?.content ?? "这一 turn"}
       queued={queued}
       onCancel={unqueue}
+      onRunNow={(id) => void runQueuedNow(sessionId, id)}
       runningLabel="进行中"
       queuedLabel={(n) => `${n} 条排队`}
-      hint="这条跑完自动发出"
+      hint="这条跑完自动发出 · 点顶替立即改跑"
       // element 默认 max-w-sm(它设想自己是一张独立卡);这里它贴着输入框,
       // 宽度该由输入框那一栏定
       className="max-w-none"
@@ -3101,12 +3105,11 @@ function ComposerTextarea({
   segments: readonly Unstable_DirectiveSegment[];
   /** ChatComposer 拿它做一件事:composerInject 注入文本后把焦点放回输入框 */
   inputRef: React.Ref<HTMLTextAreaElement>;
-  /** turn 在跑。**不再据此 disabled** —— 跑着的时候敲下的回车是"插话"
-      (注入正在跑的 turn，issue #344)，⌥回车才是排队(lib/messageQueue.ts)。
+  /** turn 在跑。**不再据此 disabled** —— 跑着的时候敲下的回车是"排队"
+      (lib/messageQueue.ts)，这条跑完自动发出；想立即改跑用队列项上的「顶替」。
       这里只用来换一句提示语 */
   running: boolean;
-  /** queue = 用户按住 ⌥ 敲的回车：跑着时明确要排队，不插话 */
-  onSubmit: (opts: { queue: boolean }) => void;
+  onSubmit: () => void;
   onPasteFiles: (files: File[]) => void;
 }) {
   const aria = unstable_useTriggerPopoverAriaProps();
@@ -3147,7 +3150,7 @@ function ComposerTextarea({
         autoFocus
         rows={1}
         placeholder={
-          running ? "回车插话（注入当前任务），⌥回车排队" : "输入消息，回车发送，Shift+回车换行"
+          running ? "回车排队，这条跑完自动发出" : "输入消息，回车发送，Shift+回车换行"
         }
         onPaste={(e) => {
           // 剪贴板里有文件(截图 Cmd+Ctrl+Shift+4、Finder 复制的文件)就当附件收,
@@ -3166,7 +3169,7 @@ function ComposerTextarea({
           // preventDefault 必须有：不拦的话换行会先插进 textarea 再被清空,闪一帧
           if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
             e.preventDefault();
-            onSubmit({ queue: e.altKey });
+            onSubmit();
           }
         }}
       />
@@ -3197,7 +3200,6 @@ function ChatComposer() {
   const staged = useChat((s) => s.staged);
   const send = useChat((s) => s.send);
   const enqueue = useChat((s) => s.enqueue);
-  const steer = useChat((s) => s.steer);
   const stop = useChat((s) => s.stop);
   const attachPasted = useChat((s) => s.attachPasted);
   const composer = useAui().thread.composer();
@@ -3360,22 +3362,21 @@ function ChatComposer() {
   // 「有东西可发」:只贴了图不打字也算(附件本身就是内容,同 submit 的判据)
   const canSend = input.trim() !== "" || staged.length > 0;
 
-  /** 发出去、插话，还是排进队里。turn 跑着时敲的回车默认是"插话"
-      （注入正在跑的 turn，issue #344），⌥回车明确排队；带 $skill 的
-      也退回排队——skill 注入（skill_invoked 快照）是 turn 开场的事，
-      往跑到一半的 turn 里塞说明书没有清晰语义。分岔只在这一处 ——
-      上面那些解析($skill / 空正文校验)几条路共用 */
-  const dispatch = (text: string, skill?: string, skillArgs?: string, queue = false) => {
+  /** 发出去，还是排进队里。turn 跑着时敲的回车一律是"排队"（#1048：
+      取代了 #344 的插话——注入跑到一半的 turn 里的话既可能晚于它的
+      最后一次采样、又让"这条消息说没说到"要靠乐观锁才能回答；排队的
+      语义一句就说得清）。想立即改跑点队列项上的「顶替」（store.runQueuedNow
+      = 提到队首 + 中止当前 turn，收口后由 drainQueue 发出）。
+      分岔只在这一处 —— 上面那些解析($skill / 空正文校验)几条路共用 */
+  const dispatch = (text: string, skill?: string, skillArgs?: string) => {
     if (status === "running") {
-      if (queue || skill) enqueue(text, skill, skillArgs);
-      else void steer(text);
+      enqueue(text, skill, skillArgs);
       return;
     }
     void send(text, skill, skillArgs);
   };
 
-  const submit = (opts?: { queue?: boolean }) => {
-    const queue = opts?.queue ?? false;
+  const submit = () => {
     // trim() 会把首尾换行全剥掉——用户 Shift+回车 打的格式（开头空行、结尾空行）
     // 就丢了。只剥首尾的空行，保留中间的所有换行。
     const text = input.replace(/^\n+|\n+$/g, "");
@@ -3401,7 +3402,7 @@ function ChatComposer() {
         return;
       }
       setInput("");
-      dispatch(directive.task, directive.name, directive.args, queue);
+      dispatch(directive.task, directive.name, directive.args);
       return;
     }
     // 行首打了 `$` 却一个已安装的名字都没命中 = 名字打错了。当场说，别悄悄发给
@@ -3468,7 +3469,7 @@ function ChatComposer() {
       dispatchSlash(text);
       return;
     }
-    dispatch(text, undefined, undefined, queue);
+    dispatch(text, undefined, undefined);
   };
 
   return (

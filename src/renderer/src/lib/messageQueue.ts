@@ -42,3 +42,12 @@ export function takeNext(
 export function unshiftTask(list: readonly QueuedTask[], task: QueuedTask): QueuedTask[] {
   return [task, ...list];
 }
+
+/** 提到队首(顶替),其余相对顺序不变。认不出的 id 或已在队首原样返回:
+    "立即跑这条"只改变先后顺序,不该凭空增删任何一条 */
+export function promoteTask(list: readonly QueuedTask[], id: string): QueuedTask[] {
+  const idx = list.findIndex((t) => t.id === id);
+  if (idx <= 0) return [...list];
+  const task = list[idx] as QueuedTask;
+  return [task, ...list.slice(0, idx), ...list.slice(idx + 1)];
+}
