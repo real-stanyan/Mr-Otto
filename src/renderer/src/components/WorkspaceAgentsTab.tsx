@@ -367,16 +367,29 @@ function AgentEditorDialog({
 
   return (
     <Dialog open={open} onOpenChange={(o) => { if (!busy) onOpenChange(o); }}>
-      {/* max-h + 表单区 overflow：DialogContent 是 `fixed top-1/2 -translate-y-1/2`
-          的 grid，**默认既没有 max-h 也没有 overflow**——内容一旦高过视口就朝上下
-          两头溢出，两头都够不着（#997）。滚动放在中间那层而不是 DialogContent 上：
-          放外层的话标题、保存/取消跟着滚走，改完长提示词还得先滚回底部才点得到保存；
-          而关闭那颗 X 是 `absolute`，包含块就是滚动容器的内边距盒，也会跟着滚出视野。
-          三个格子照旧 auto 高：中间那层是滚动容器，它的自动最小尺寸是 0，所以内容短
-          时弹窗照旧是紧凑的，只有真高过视口才轮到它缩。全仓在这条上裸奔的消费方还有
-          十几处，`MemorySettings.tsx` 是唯一一处自己记得加的 —— 那是 dialog.tsx
-          该收进去的一条兜底，代价与要先扫清的两件事记在 #998 */}
-      <DialogContent className="sm:max-w-[480px] max-h-[calc(100dvh-4rem)]">
+      {/* 封顶 + 表单区自己滚：DialogContent **默认既没有 max-h 也没有 overflow**，
+          内容一旦高过视口就朝上下两头溢出，两头都够不着（#997）。
+
+          `flex` 是这里的关键，不是随手换的写法：DialogContent 原本是 `grid`，而
+          **auto 行在 max-height 夹住的 grid 里不会缩**——容器先按 max-content 定
+          轨道（此时可用空间是不定的），再把自己的高度夹到 max-height，轨道已经定死，
+          于是内容照样溢出到卡片外，中间那层一格都不滚。实测（Chromium，容器
+          max-height 500px、内容 1200px）：grid 的 body 轨道仍是 1200px 且
+          `bodyScrolls: false`，换成 flex 后 body 缩到 434px 且真的滚起来。
+          flex 的收缩是布局算法自带的（负剩余空间按 flex-shrink 分摊，标题与页脚
+          撞上各自的 min-content 就冻住，剩下的全落在 `min-h-0` 的表单区上）。
+          `grid-rows-[auto_1fr_auto]` 也能修，但那要求消费方结构恰好三段；flex
+          不假设格子数。内容短时两者行为一致（不溢出就不收缩，弹窗照旧紧凑）。
+
+          滚动放在中间那层而不是 DialogContent 上：放外层的话标题、保存/取消跟着
+          滚走，改完长提示词还得先滚回底部才点得到保存；而关闭那颗 X 是 `absolute`，
+          包含块就是滚动容器的内边距盒，也会跟着滚出视野。
+
+          全仓在这条上裸奔的消费方还有十几处，`MemorySettings.tsx` 是唯一一处自己
+          记得处理的——它把 `overflow-y-auto` 挂在 DialogContent **自己**身上，那条
+          路绕开了上面的轨道问题（容器自己滚，实测有效），代价正是标题与 X 跟着滚走。
+          两种写法各自的取舍与该不该收进 dialog.tsx 记在 #998 */}
+      <DialogContent className="flex flex-col sm:max-w-[480px] max-h-[calc(100dvh-4rem)]">
         <DialogHeader>
           <DialogTitle>{state?.mode === "edit" ? `编辑「${state.agent.name}」` : `新建智能体`}</DialogTitle>
           <DialogDescription>
