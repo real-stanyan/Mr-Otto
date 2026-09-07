@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   dropTask,
+  promoteTask,
   pushTask,
   takeNext,
   unshiftTask,
@@ -44,6 +45,18 @@ describe("消息队列 —— 先来先发", () => {
 
   it("发失败的那条回队首,不是队尾:它本来就该是下一条", () => {
     expect(unshiftTask([t("b")], t("a")).map((x) => x.id)).toEqual(["a", "b"]);
+  });
+
+  it("顶替提到队首,其余相对顺序不变", () => {
+    expect(promoteTask([t("a"), t("b"), t("c")], "c").map((x) => x.id)).toEqual(["c", "a", "b"]);
+  });
+
+  it("顶替认不出的 id 原样返回 —— 不凭空增删任何一条", () => {
+    expect(promoteTask([t("a"), t("b")], "zzz").map((x) => x.id)).toEqual(["a", "b"]);
+  });
+
+  it("顶替已在队首的那条 = no-op", () => {
+    expect(promoteTask([t("a"), t("b")], "a").map((x) => x.id)).toEqual(["a", "b"]);
   });
 
   it("skill 一路带着 —— $ 指令排队后仍要注入同一个 skill", () => {
