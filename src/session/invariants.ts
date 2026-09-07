@@ -1,13 +1,14 @@
 // 运行时不变量校验（issue #389，dsh runtime invariant registry 对照）。
 // 事件流的结构合法性此前全靠投影层静默自愈（healDanglingToolCalls / 孤儿
-// tool_result 过滤 / steer 延迟重排）——自愈让系统能跑，但把 bug 藏进了
+// tool_result 过滤 / 中途落用户消息的延迟重排）——自愈让系统能跑，但把 bug 藏进了
 // 「反正投影会修」的暗处。这层校验把「流本来该长什么样」写成可执行断言：
 // 违例 = 写入方（engine / 修复逻辑）有 bug 的线索，不是日志不可用的判决。
 //
 // 刻意不断言的（都有合法反例）：
 // - ts 顺序：修复事件盖的是修复时刻的 Date.now()，晚于所属 turn 是常态
 // - session_created 唯一 / 在头部：fork 链视图合法地含两条（store.load 拼接）
-// - 一个 turn 只有一条 user_message：steer（issue #344）就是中途多补几条
+// - 一个 turn 只有一条 user_message：后台回注（appendBackground，issue #871）
+//   就是中途多补几条
 // - turn 尾部收口：日志尾部开着的 turn = 正在跑或刚崩，等修复合成收口
 // - turn_ended 后必须紧跟 user_message：ADR-0005 悬空修复把合成 tool_result
 //   追加在已收口的 turn 之后（快照式扫描），合法尾巴

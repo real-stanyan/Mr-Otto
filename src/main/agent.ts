@@ -705,7 +705,7 @@ export function createAgent(opts: {
       // skill 渐进披露：组装根给了 skill 库才挂（裸装配/测试不挂）。
       // 台账与落盘都在这层闭包里——工具层只认接口，不碰 store 也不碰 fs。
       // acquire 落的事件位置就是"此刻"：模型调用发生在 tool_call 与 tool_result
-      // 之间，投影层的插话延后队列负责把它排到 tool 消息之后（deriveMessages）
+      // 之间，投影层的延后队列负责把它排到 tool 消息之后（deriveMessages）
       ...(opts.skills
         ? [
             createSkillTool({

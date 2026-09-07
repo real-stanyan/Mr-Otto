@@ -2,8 +2,10 @@ import { describe, it, expect } from "vitest";
 import { deriveMessages } from "../../src/session/deriveMessages.js";
 import type { SessionEvent } from "../../src/session/events.js";
 
-// 插话顺序修复（issue #344）：steer 的 user_message 落盘时工具组可能正开着，
-// 照事件位置直投会打破 OpenAI 方言"tool 消息紧跟它的 assistant"的配对约束。
+// 中途落消息的顺序修复（issue #344 为 steer 引入；steer 已随 #1048 拆除，这组
+// 测试钉的行为对后台回注 appendBackground 等中途落的 user_message 仍然成立）：
+// 这类消息落盘时工具组可能正开着，照事件位置直投会打破 OpenAI 方言
+// "tool 消息紧跟它的 assistant"的配对约束。
 // 这组测试钉住：组开着时落的用户消息被推迟到组的结果之后，且永不丢失。
 
 let seq = 0;
@@ -11,7 +13,7 @@ function env() {
   return { seq: seq++, sessionId: "s1", ts: 1700000000000 };
 }
 
-describe("deriveMessages — 插话顺序修复（issue #344）", () => {
+describe("deriveMessages — 中途落消息的顺序修复（issue #344）", () => {
   it("工具组进行中落的 user_message 推迟到组的结果之后", () => {
     const events: SessionEvent[] = [
       { ...env(), type: "user_message", content: "跑个任务" },
@@ -22,7 +24,7 @@ describe("deriveMessages — 插话顺序修复（issue #344）", () => {
         model: "m",
         toolCalls: [{ id: "c1", name: "bash", args: { cmd: "ls" } }],
       },
-      { ...env(), type: "user_message", content: "顺便看看 /tmp" }, // steer：组开着
+      { ...env(), type: "user_message", content: "顺便看看 /tmp" }, // 中途落的：组开着
       { ...env(), type: "tool_result", toolCallId: "c1", status: "ok", output: "a.txt" },
       { ...env(), type: "assistant_message", content: "看到了，接着看 /tmp", model: "m" },
     ];
@@ -40,7 +42,7 @@ describe("deriveMessages — 插话顺序修复（issue #344）", () => {
     ]);
   });
 
-  it("多调用组：插话夹在两个结果之间也推到整组之后", () => {
+  it("多调用组：中途落的用户消息夹在两个结果之间也推到整组之后", () => {
     const events: SessionEvent[] = [
       { ...env(), type: "user_message", content: "并发读两个文件" },
       {
@@ -64,7 +66,7 @@ describe("deriveMessages — 插话顺序修复（issue #344）", () => {
     expect(deriveMessages(events)[4]).toEqual({ role: "user", content: "插一句" });
   });
 
-  it("插话后 turn 直接中断：模型没见过它，barren 规则正确跳过（ADR-0042）", () => {
+  it("中途落的用户消息后 turn 直接中断：模型没见过它，barren 规则正确跳过（ADR-0042）", () => {
     const events: SessionEvent[] = [
       { ...env(), type: "user_message", content: "跑任务" },
       {
@@ -75,21 +77,22 @@ describe("deriveMessages — 插话顺序修复（issue #344）", () => {
         toolCalls: [{ id: "c1", name: "bash", args: { cmd: "sleep 99" } }],
       },
       { ...env(), type: "tool_execution_started", toolCallId: "c1" },
-      { ...env(), type: "user_message", content: "算了停下" }, // steer 后没有任何产出就 aborted
+      { ...env(), type: "user_message", content: "算了停下" }, // 落盘后没有任何产出就 aborted
       { ...env(), type: "turn_ended", outcome: "aborted" },
       { ...env(), type: "user_message", content: "新的一轮" },
       { ...env(), type: "assistant_message", content: "好", model: "m" },
     ];
 
     const messages = deriveMessages(events);
-    // steer 与 turn_ended 之间零产出 = 模型压根没读到它，投影不喂（UI/回放照旧显示）；
+    // 中途落的 user_message 与 turn_ended 之间零产出 = 模型压根没读到它，
+    // 投影不喂（UI/回放照旧显示）；
     // c1 的缺失结果由自愈层补占位，新一轮不受污染
     expect(messages.map((m) => m.role)).toEqual(["user", "assistant", "tool", "user", "assistant"]);
     expect(messages.some((m) => m.role === "user" && m.content === "算了停下")).toBe(false);
     expect(messages[3]).toEqual({ role: "user", content: "新的一轮" });
   });
 
-  it("日志停在组中间（app 退出/正在跑）：尾部冲账，插话不丢", () => {
+  it("日志停在组中间（app 退出/正在跑）：尾部冲账，消息不丢", () => {
     const events: SessionEvent[] = [
       { ...env(), type: "user_message", content: "跑" },
       {
@@ -99,15 +102,15 @@ describe("deriveMessages — 插话顺序修复（issue #344）", () => {
         model: "m",
         toolCalls: [{ id: "c1", name: "bash", args: { cmd: "ls" } }],
       },
-      { ...env(), type: "user_message", content: "插话" },
+      { ...env(), type: "user_message", content: "中途补一句" },
     ];
 
     const messages = deriveMessages(events);
     expect(messages.map((m) => m.role)).toEqual(["user", "assistant", "tool", "user"]);
-    expect(messages.at(-1)).toEqual({ role: "user", content: "插话" });
+    expect(messages.at(-1)).toEqual({ role: "user", content: "中途补一句" });
   });
 
-  it("回归：没有插话的日志投影一个字节不变", () => {
+  it("回归：没有中途落消息的日志投影一个字节不变", () => {
     const events: SessionEvent[] = [
       { ...env(), type: "user_message", content: "读文件" },
       {

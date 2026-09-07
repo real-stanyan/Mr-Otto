@@ -326,7 +326,7 @@ BEGIN SELECT RAISE(ABORT, 'events log is append-only'); END;`);
 
       seq 播种是关键一招：子会话首事件的 seq = endSeq + 1（不是 0），此后
       append 的 MAX(seq)+1 自然续上。链式视图因此**全局严格递增**——micro 的
-      coversUpTo、engine 增量快照的 afterSeq、steer 的 turnId 全是 seq 语义，
+      coversUpTo、engine 增量快照的 afterSeq、turnDiff 的 turnId 全是 seq 语义，
       一个都不用翻译。
 
       边界语义：endSeq 必须指向一条 turn_ended（到某 turn 含收口为止）——源会话
