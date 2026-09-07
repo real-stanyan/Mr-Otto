@@ -9,14 +9,18 @@ import { findModel } from "../shared/modelCatalog.js";
 
 export function createCheapAdapter(
   modelId: string,
-  timeoutMs: number
+  timeoutMs: number,
+  /** 订阅用户走这一路（#1051）：这三个外挂原来是**直接读 env 里的 key** 的，
+      整条 `routeModel` 都绕过去了 —— 于是没配 key 的订阅用户三个外挂从来没跑起来过，
+      配了 key 的则悄悄记在他自己账上。缺席 = 老行为，一字不变 */
+  route?: { baseUrl: string; apiKey: string } | undefined
 ): { adapter: ModelAdapter; signal: AbortSignal } | null {
   const choice = findModel(modelId);
   if (!choice) return null;
-  const apiKey = process.env[choice.apiKeyEnv] ?? "";
+  const apiKey = route ? route.apiKey : (process.env[choice.apiKeyEnv] ?? "");
   if (apiKey === "") return null;
   const adapter = createOpenAICompatibleAdapter({
-    baseUrl: process.env[choice.baseUrlEnv] ?? choice.baseUrl,
+    baseUrl: route ? route.baseUrl : (process.env[choice.baseUrlEnv] ?? choice.baseUrl),
     apiKey,
     model: choice.model,
     vision: false,

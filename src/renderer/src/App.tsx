@@ -89,7 +89,7 @@ import { SessionOrb } from "./components/SessionOrb.js";
 import { spawnedFromOf } from "./lib/subagentTimeline.js";
 import { fallbackSessionLabel, sessionDisplayName } from "./lib/sessionLabel.js";
 import { cn, isMac } from "@/lib/utils.js";
-import { ERR_TXT, HEADER, HEADER_GHOST, HEADER_H, HINT, MAIN_COL, SETTINGS_BODY, SETTINGS_SECTIONS, SettingsTitle } from "./settingsShell.js";
+import { ERR_TXT, HEADER, HEADER_GHOST, HEADER_H, HINT, MAIN_COL, SETTINGS_BODY, SettingsTitle, settingsSections } from "./settingsShell.js";
 import { orbState } from "./lib/sessionOrb.js";
 import { MessageQueue } from "@/components/elements/message-queue.js";
 import { pickGreeting } from "./lib/greeting.js";
@@ -113,6 +113,7 @@ import { McpPromptCard } from "./components/McpPromptCard.js";
 import { SectionRail } from "./components/SectionRail.js";
 import { FolderIcon } from "./components/FileTypeIcon.js";
 import { AUTO_MODEL } from "../../shared/autoModel.js";
+import { isSubscribed } from "./lib/billingView.js";
 import { DEFAULT_MODEL, describeModel } from "../../shared/modelCatalog.js";
 import type { ModelLane } from "../../shared/modelLane.js";
 import { clampThinking, thinkingLabel, type ThinkingMode } from "../../shared/thinking.js";
@@ -1729,6 +1730,8 @@ function AppSidebar() {
       于是这里补一次 refresh:false 的种子（不打网络，只读主进程已有的快照，
       同 NewWorkspaceDialog 开窗时补拉的路子） */
   const planTier = useChat((s) => planBadge(s.billing?.me ?? null));
+  // 订阅用户看不到「模型配置」与「子智能体」两个栏目（#1051）
+  const subscribed = useChat((s) => isSubscribed(s.billing));
   const billingLoaded = useChat((s) => s.billing !== null);
   const loadBilling = useChat((s) => s.loadBilling);
   useEffect(() => {
@@ -2154,7 +2157,7 @@ function AppSidebar() {
                 返回会话
               </Button>
             </SidebarMenuItem>
-            {SETTINGS_SECTIONS.map((sec) => (
+            {settingsSections(subscribed).map((sec) => (
               <SidebarMenuItem key={sec.id}>
                 <SidebarMenuButton
                   isActive={settingsSection === sec.id}
@@ -2442,7 +2445,8 @@ function AppSidebar() {
                 // 平时看到的是一颗没有名字的按钮。aria-label 才是它的名字
                 aria-label="设置"
                 className="relative shrink-0 flex items-center justify-center px-2 py-[6px] text-[13px] text-muted-foreground bg-transparent hover:text-foreground"
-                onClick={() => void openSettings(updatePending ? "about" : "keys")}
+                // 订阅用户没有「模型配置」这一页（#1051），齿轮改落在账号页
+                onClick={() => void openSettings(updatePending ? "about" : subscribed ? "account" : "keys")}
               >
                 <GearIcon />
                 {updatePending && (
@@ -3604,6 +3608,8 @@ export function App() {
   const phase = useChat((s) => s.phase);
   // 进门闸的两个入参。都是低频字段（登录/登出才动），订在树根不会带来额外重渲染
   const account = useChat((s) => s.account);
+  // 订阅用户的 ⋮ 里没有「子智能体」（#1051）——那一页对他已经收起来了
+  const subscribed = useChat((s) => isSubscribed(s.billing));
   const authRecord = useChat((s) => s.authRecord);
   /** 闸门抬不抬还多一条：从闸门发起的重置，要在门外把新密码设完（issue #744） */
   const holdGateForPasswordReset = useChat((s) => s.holdGateForPasswordReset);
@@ -3926,13 +3932,18 @@ export function App() {
             <DropdownMenuItem onClick={() => setPublishOpen(true)}>
               <UploadCloud /> 发布到工作区…
             </DropdownMenuItem>
-            <DropdownMenuSeparator />
             {/* 子智能体设置页开页时自动落到当前会话的 workspace 那一层
                 (SubagentSettings 的 initialSubagentScope),所以从这进去编的就是
-                <工程>/.mr-otto/agents 里的定义,不是用户级那份 */}
-            <DropdownMenuItem onClick={() => void openSettings("agents")}>
-              <Bot /> 子智能体
-            </DropdownMenuItem>
+                <工程>/.mr-otto/agents 里的定义,不是用户级那份。
+                订阅用户这一项不出（#1051）——那一页对他已经收起来了 */}
+            {!subscribed && (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={() => void openSettings("agents")}>
+                  <Bot /> 子智能体
+                </DropdownMenuItem>
+              </>
+            )}
           </DropdownMenuContent>
         </DropdownMenu>
       </header>

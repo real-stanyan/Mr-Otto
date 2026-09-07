@@ -10,7 +10,7 @@
 // createChildAgent 的参数表里**没有 subagentRunner 这一项**：递归不再靠
 // "记得别传"，靠类型系统。
 
-import { createAgent, type AgentPush, type SkillLibrary } from "./agent.js";
+import { createAgent, type AgentPush, type HostedCapability, type SkillLibrary } from "./agent.js";
 import type { ExecRule } from "../shared/execPolicy.js";
 import { denyingApprover } from "./uiApprover.js";
 import type { EventStore } from "../session/store.js";
@@ -100,6 +100,9 @@ export function createChildAgent(opts: {
       新造的 LocalWorld，没有父 world 可继承。不给的话，一个恢复出来的子会话
       跑 bash 起的进程组既不进 turn 收口的检出、也不被退出时的 sweepAll 收尸 */
   liveGroups?: LiveGroupRegistry;
+  /** 托管额度（#1051，同 subagentRunner 那一条）。不给它，一个恢复出来的子会话
+      在订阅用户手上就是唯一一条还在烧自己 key 的路 */
+  hosted?: HostedCapability;
 }): ReturnType<typeof createAgent> {
   // 刻意不传 history：重建出来的子会话没有 world.history，session_search 工具
   // 不会挂上去。活着的子会话（subagentRunner.ts）复用 `parent.world`——同一个
@@ -118,6 +121,7 @@ export function createChildAgent(opts: {
     ...(opts.skills ? { skills: opts.skills } : {}),
     ...(opts.liveGroups ? { liveGroups: opts.liveGroups } : {}),
     ...(opts.autoCompactSettings ? { autoCompactSettings: opts.autoCompactSettings } : {}),
+    ...(opts.hosted ? { hosted: opts.hosted } : {}),
     // deny 换掉整条审批链（mode/授权都不参与）；否则走常规链——永久授过权的
     // 工具在子 agent 里照样免问（授权授的是工具，不是会话），同创建那一侧
     ...(opts.config.deny

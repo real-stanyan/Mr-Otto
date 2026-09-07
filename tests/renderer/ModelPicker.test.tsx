@@ -46,6 +46,11 @@ function seedSubscribedNoKeys(): void {
   });
 }
 
+/** 选单里那几个组头。**不能用 getByText**：「DeepSeek」既是组头也是每一行厂商
+    字形的 alt 文本，撞名。cmdk 给组头挂的是 `[cmdk-group-heading]` */
+const groupHeadings = (): string[] =>
+  [...document.querySelectorAll("[cmdk-group-heading]")].map((el) => el.textContent ?? "");
+
 afterEach(() => {
   cleanup();
   useChat.setState({ keyStatus: {}, ollamaModels: [], billing: null });
@@ -57,20 +62,49 @@ describe("ModelPicker：订阅那一组", () => {
     render(<ModelPicker value="glm-5.3" onChange={() => {}} />);
     await userEvent.click(screen.getByRole("combobox"));
 
-    expect(screen.getByText("订阅")).toBeInTheDocument();
-    // 一行的文字是「厂商字形的 alt + 目录里那个标签 + 有没有『视觉』记号」拼起来的，
-    // 所以这一条同时钉住四件事：顺序照抄网关那份（从便宜到贵，跨三家交替出现，
-    // 按厂商归并就会毁掉它）、标签取的是目录那一份不是裸 id、每一行都画了厂商字形、
-    // 「视觉」记号跟对了行
+    // 订阅那一组不画组头（#1058）
+    expect(groupHeadings()).toEqual([]);
+    // 一行的文字是「厂商字形的 alt + 目录里那个标签」拼起来的，所以这一条同时钉住
+    // 三件事：顺序照抄网关那份（从便宜到贵，跨三家交替出现，按厂商归并就会毁掉它）、
+    // 标签取的是目录那一份不是裸 id、每一行都画了厂商字形。
+    // **末尾不再有「视觉」记号**（#1058）—— 它在 `GLM-5.3 Flash（视觉）` 那一行是
+    // 同一件事说两遍，而这一列的整齐比多一个信号值钱
     expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual([
       "DeepSeekDeepSeek V4 Flash",
-      "ZhipuGLM-5.3 Flash（视觉）视觉",
+      "ZhipuGLM-5.3 Flash（视觉）",
       "QwenQwen3.8 Flash",
       "DeepSeekDeepSeek V4 Pro",
       "ZhipuGLM-5.3",
-      "QwenQwen3.8 Max视觉",
-      "添加更多模型…",
+      "QwenQwen3.8 Max",
     ]);
+    // 「添加更多模型…」也没了（#1051）：它通往「模型配置」，而那一页对订阅用户
+    // 已经收起来了 —— 留着就是一条点了跳去一个不存在的页面的路
+    expect(screen.queryByText("添加更多模型…")).not.toBeInTheDocument();
+  });
+
+  it("订阅用户一个厂商组都没有 —— 配着 key 的、和免 key 的本机 Ollama 都没有（#1051）", async () => {
+    seedSubscribedNoKeys();
+    useChat.setState({
+      keyStatus: { DEEPSEEK_API_KEY: "sk-x", GLM_API_KEY: "sk-y" },
+      ollamaModels: [
+        { id: "ollama/a", tag: "a", contextLength: 8192, tools: true, vision: false, thinking: false },
+      ],
+    });
+    render(<ModelPicker value="glm-5.3" onChange={() => {}} />);
+    await userEvent.click(screen.getByRole("combobox"));
+    // 一个组头都没有：订阅那组不画（#1058），厂商那几组一个都不在（#1051）
+    expect(groupHeadings()).toEqual([]);
+    expect(screen.getAllByRole("option").length).toBe(6);
+  });
+
+  it("没订阅的人一个字都没变：厂商组照旧、「添加更多模型…」照旧", async () => {
+    useChat.setState({
+      keyStatus: { DEEPSEEK_API_KEY: "sk-x" }, ollamaModels: [], billing: null,
+    });
+    render(<ModelPicker value="deepseek-v4-flash" onChange={() => {}} />);
+    await userEvent.click(screen.getByRole("combobox"));
+    expect(groupHeadings()).toContain("DeepSeek");
+    expect(screen.getByText("添加更多模型…")).toBeInTheDocument();
   });
 
   it("没订阅（billing 为 null）时整组不出现，只剩「添加更多模型…」那条路", async () => {
@@ -84,13 +118,16 @@ describe("ModelPicker：订阅那一组", () => {
 });
 
 describe("ModelPicker：Auto", () => {
-  it("allowAuto 时长出 Auto，且带着那行说明 —— 只写一个词的话点它的人只能靠猜", async () => {
+  it("allowAuto 时长出 Auto，且与下面几款**同一个排版**（#1058 撤掉了 ADR-0244 那第二行）", async () => {
     seedSubscribedNoKeys();
     render(<ModelPicker value="glm-5.3" allowAuto onChange={() => {}} />);
     await userEvent.click(screen.getByRole("combobox"));
 
-    expect(screen.getByText("Auto")).toBeInTheDocument();
-    expect(screen.getByText("每轮起跑前判一手难度，再挑贵的还是便宜的")).toBeInTheDocument();
+    const auto = screen.getAllByRole("option")[0]!;
+    // 整行只有「Auto」四个字，没有第二行正文 —— 一行两层会把这一列的基线打断
+    expect(auto.textContent).toBe("Auto");
+    // 那句话没丢，降级成 title
+    expect(auto.getAttribute("title")).toContain("判一手难度");
   });
 
   it("不给 allowAuto 就不长（代读员 / 小模型 / 子智能体那几处）", async () => {
@@ -105,9 +142,7 @@ describe("ModelPicker：Auto", () => {
     render(<ModelPicker value="glm-5.3" allowAuto onChange={() => {}} />);
     await userEvent.click(screen.getByRole("combobox"));
     const options = screen.getAllByRole("option").map((o) => o.textContent);
-    expect(options[0]).toBe("Auto每轮起跑前判一手难度，再挑贵的还是便宜的");
-    // 「订阅」那个组头也在它上面 —— 真机上这两样是一起被滚出视野的，见 #1049
-    expect(screen.getByText("订阅")).toBeInTheDocument();
+    expect(options[0]).toBe("Auto");
   });
 
   it("点 Auto 回的是那个口令，不是某一款型号 id", async () => {

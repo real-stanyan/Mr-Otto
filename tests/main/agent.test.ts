@@ -1018,9 +1018,14 @@ describe("MCP 自助配置的三把刀", () => {
   });
 });
 
-describe("hosted 改道（ADR-0176）：onReroute 落 route_changed 且 push 给渲染层", () => {
-  it("额度耗尽那一刻：store.append 落盘 + opts.push.event 同步推 live（同 branch_checked_out 纪律）", async () => {
-    vi.stubEnv("DEEPSEEK_API_KEY", "sk-own"); // 耗尽后还有自己的 key，改道才是 direct 不是 blocked
+describe("hosted 额度耗尽那一刻（ADR-0176 的 onReroute；#1051 之后不再改道）", () => {
+  it("订阅用户耗尽了**一条 route_changed 都不落** —— 哪怕他机器上还留着一把旧 key", async () => {
+    // 这条原来断言的是「改道成 direct 并推给渲染层」。#1051 把订阅这一侧的 direct
+    // 整个关了，于是 onReroute 里那句 `if (next.kind === "blocked") return` 每次都
+    // 成立——**不落事件恰恰是对的**：落一条「本次起用的是你自己的 key」就是在
+    // 宣布一件没发生的事，而它宣布的正是 ADR-0233 点名不许发生的那件事。
+    // 这个 turn 会以 blocked 报错收场，措辞由 routeModel 给（额度用完 → 去加购）。
+    vi.stubEnv("DEEPSEEK_API_KEY", "sk-own"); // 留着旧 key：正是要证明它**不**被拿来兜底
     const store = new EventStore(":memory:");
     const pushed: SessionEvent[] = [];
     const fakeQuota: HostedQuota = {
@@ -1054,16 +1059,47 @@ describe("hosted 改道（ADR-0176）：onReroute 落 route_changed 且 push 给
     await opts.resolveEndpoint?.();
     opts.onReroute?.({ window: "5h", resetAt: 123 });
 
-    // push.event 收到了同一条（这是本轮修的东西：以前只落盘,UI 要等下次刷新才看得到）
-    const pushedRoute = pushed.find((e) => e.type === "route_changed");
-    expect(pushedRoute).toMatchObject({ type: "route_changed", from: "hosted", to: "direct", reason: "quota_exhausted", resetAt: 123 });
+    // 既不推、也不落：没有真的改道，就没有可宣布的事实
+    expect(pushed.find((e) => e.type === "route_changed")).toBeUndefined();
+    expect(store.load(agent.sessionId).some((e) => e.type === "route_changed")).toBe(false);
 
-    // 落盘的那条与推给渲染层的是同一份事实（branch_checked_out 那条中途
-    // ignorable 事件的写法：store.append 的返回值直接喂给 push.event）。
-    // 不用 toBe：EventStore 走 SQLite 往返，load() 拿回来的是反序列化后的新对象
-    const logged = store.load(agent.sessionId).at(-1);
-    expect(logged).toEqual(pushedRoute);
+    store.close();
+  });
 
+  it("没订阅的人照旧改道并落 route_changed —— 这条路只对订阅用户关掉", async () => {
+    vi.stubEnv("DEEPSEEK_API_KEY", "sk-own");
+    const store = new EventStore(":memory:");
+    const pushed: SessionEvent[] = [];
+    const fakeQuota: HostedQuota = {
+      snapshot: () => ({ me: null, fetchedAt: 0, exhausted: null }),
+      routeInput: () => ({ subscribed: false, exhausted: false, supportsModel: false }),
+      refresh: async () => null,
+      noteHeaders: () => {},
+      noteExhausted: () => {},
+      checkout: async () => "https://edge/checkout",
+      portal: async () => "https://edge/portal",
+      workspaceUsage: async () => {
+        throw new Error("not used in this test");
+      },
+      onChange: () => () => {},
+    };
+    createAgent({
+      store,
+      workspace: "/proj/x",
+      push: { ...push, event: (e) => pushed.push(e) },
+      attachments,
+      hosted: { quota: fakeQuota, edgeBaseUrl: () => "https://edge", accessToken: async () => "jwt" },
+    });
+    const opts2 = capturedAdapterOpts.current as {
+      resolveEndpoint?: () => Promise<unknown>;
+      onReroute?: (info: { window?: "5h" | "week"; resetAt?: number }) => void;
+    };
+    await opts2.resolveEndpoint?.();
+    opts2.onReroute?.({ window: "5h", resetAt: 123 });
+    // 没订阅时第一次 resolve 就是 direct，所以 from/to 都是 direct —— 事件仍然要落
+    expect(pushed.find((e) => e.type === "route_changed")).toMatchObject({
+      type: "route_changed", to: "direct", reason: "quota_exhausted", resetAt: 123,
+    });
     store.close();
   });
 });

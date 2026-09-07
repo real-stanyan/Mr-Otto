@@ -2208,7 +2208,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
     store.close();
   });
 
-  it("A-6：agent @ 了名单上没有的名字 —— 落一条系统发言说「名单里没有的名字」，不静默丢", async () => {
+  it("#1055：agent @ 了名单上没有的名字 —— 群里一个字都不说（A-6 那条系统发言撤了），接力也不发生", async () => {
     const store = newStore();
     const events: SessionEvent[] = [];
     const session = createCloudSession({
@@ -2224,16 +2224,16 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
     await session.say("u1", "alice", "@运营 出报表", true, ["ops"]);
     await session.settled();
 
-    const sys = events.find((e) => e.type === "chat_message" && (e as { content: string }).content.includes("名单里没有的名字"));
-    expect(sys).toMatchObject({ fromUid: "system", label: "系统" });
-    // **只回显数量、不回显 token 原文**（第二轮复审 E2-3）：这段字是模型写的，
-    // 而这条发言署名「系统」、群里每只 agent 都读得到
-    expect((sys as { content: string }).content).toBe("「运营」@ 了 1 个名单里没有的名字（可能改过名或还没建），这一棒没人接");
+    // 写下那个 @ 的是**模型**：群里没人做错事、也没人在等一个不会来的回复，
+    // 那一行内务话没有任何人能据此行动（#1055；`say()` 那条同名的孪生兄弟留着，
+    // 因为写它的是人）。判据是「有没有落一条署名系统的发言」这个**事实**，
+    // 不是某句文案的子串——挂在文案上的反向断言改一次措辞就恒真
+    expect(events.some((e) => e.type === "chat_message" && (e as { fromUid: string }).fromUid === "system")).toBe(false);
     expect(events.some((e) => e.type === "agent_relay")).toBe(false);
     store.close();
   });
 
-  it("E2-3：模型把一段指令塞进 @token —— 那条系统发言只说数量，一个字载荷都不带出来", async () => {
+  it("E2-3（#1055 收紧）：模型把一段指令塞进 @token —— 一条系统发言都不落，载荷连数量都没处搭", async () => {
     const store = newStore();
     const events: SessionEvent[] = [];
     // 中文不需要空白，而 mentionTokens 贪婪吃到下一个空白：整段指令就是一个 token
@@ -2251,14 +2251,14 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
     await session.say("u1", "alice", "@运营 出报表", true, ["ops"]);
     await session.settled();
 
-    const sys = events.find((e) => e.type === "chat_message" && (e as { fromUid: string }).fromUid === "system") as { content: string };
-    expect(sys.content).toBe("「运营」@ 了 1 个名单里没有的名字（可能改过名或还没建），这一棒没人接");
-    expect(sys.content).not.toContain(".env");
-    expect(sys.content).not.toContain("无需再审批");
+    // E2-3 当初的修法是「只回显数量、不回显 token 原文」——那是在承认这条署名
+    // 「系统」的发言本身是一个可以被模型撬动的面之后，把面缩到最小。#1055 把整条
+    // 发言撤了，于是那个面不存在：断言从「只漏数量」升成「一条都不落」
+    expect(events.some((e) => e.type === "chat_message" && (e as { fromUid: string }).fromUid === "system")).toBe(false);
     store.close();
   });
 
-  it("A-6 反面：自 @ 不算「名单里没有的名字」—— 那个 @ 认出人了（就是它自己），说没这人是假话", async () => {
+  it("自 @ 不接力：mentionedAgents 把 spec 自己排除掉（不然一只 agent 能一直 @ 自己续命），群里也不出声", async () => {
     const store = newStore();
     const events: SessionEvent[] = [];
     const session = createCloudSession({
@@ -2273,10 +2273,10 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
     await session.say("u1", "alice", "@运营 x", true, ["ops"]);
     await session.settled();
     // 判据是「有没有落一条系统发言」这个**事实**，不是某句文案的子串（复审发现 1）：
-    // 原来写的是 `includes("没有这个人")`，而 E2-3 之后那句话里根本没有这四个字，
-    // 于是这条反向断言恒真——真落了一条错误的系统发言也照样绿。守「不该说话时
-    // 别说话」的用例比正向那几条更值钱，判据不能挂在会改的文案上
+    // 挂在文案上的反向断言改一次措辞就恒真，真落了一条错误的系统发言也照样绿
     expect(events.some((e) => e.type === "chat_message" && (e as { fromUid: string }).fromUid === "system")).toBe(false);
+    // 这条用例 #1055 之后守的是**这一句**：自 @ 不许长出一棒接力
+    expect(events.some((e) => e.type === "agent_relay")).toBe(false);
     store.close();
   });
 
@@ -2956,7 +2956,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
     store.close();
   });
 
-  it("复审 Minor 1：一句里既 @ 了名单上的也 @ 了名单外的 —— 认得的照接力，认不得的单独出声", async () => {
+  it("复审 Minor 1（#1055 改口）：一句里既 @ 了名单上的也 @ 了名单外的 —— 认得的照接力，认不得的就地丢掉不出声", async () => {
     const store = newStore();
     const events: SessionEvent[] = [];
     const session = createCloudSession({
@@ -2971,16 +2971,14 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
     await session.say("u1", "alice", "@运营 出报表", true, ["ops"]);
     await session.settled();
 
-    const sys = events.find((e) => e.type === "chat_message" && (e as { content: string }).content.includes("名单里没有的名字"));
-    expect(sys).toMatchObject({ fromUid: "system" });
-    // 只数没解析出来的那一个，认得的那个不该也被算进去（数量口径，E2-3 之后不再回显 token）
-    expect((sys as { content: string }).content).toBe("「运营」@ 了 1 个名单里没有的名字（可能改过名或还没建），这一棒没人接");
-    // 认得的那一棒照样接上
+    // 认不得的那个不再出声（#1055），认得的那一棒照样接上 —— 这条用例真正守的
+    // 是后半句：混着的一句里，一个解析不出来的 @ 不许把整句话的接力一起废掉
+    expect(events.some((e) => e.type === "chat_message" && (e as { fromUid: string }).fromUid === "system")).toBe(false);
     expect(events.find((e) => e.type === "agent_relay")).toMatchObject({ fromAgentId: "ops", toAgentId: "ads" });
     store.close();
   });
 
-  it("复审 Minor 1 边界：贪婪切词吃进标点的 token 不算「名单里没有的名字」（@运营，帮忙看下）", async () => {
+  it("复审 Minor 1 边界：贪婪切词吃进标点的 token 照样接得上（@广告，这个你来）", async () => {
     const store = newStore();
     const events: SessionEvent[] = [];
     const session = createCloudSession({
@@ -2990,18 +2988,15 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
       workspaceLock: createWorkspaceLock(),
       agents: async () => AGENTS,
       // mentionTokens 吃到下一个空白为止 → token 是「广告，这个你来」，不等于任何
-      // 名字；但 parseMentions 靠前缀匹配认得它，报「没这个人」就是假话
+      // 名字；接力认不认得它归 parseMentions 的前缀匹配管，认不出来就是这一棒断在
+      // 一个中文标点上（#1055 之后没有任何系统发言会把这件事说出来，所以更得钉住）
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { return { content: a.agentId === "ops" ? "@广告，这个你来" : "收到" }; } }),
       onEvent: (e) => events.push(e), onUsage: () => {},
     });
     await session.say("u1", "alice", "@运营 出报表", true, ["ops"]);
     await session.settled();
-    // 判据是「有没有落一条系统发言」这个**事实**，不是某句文案的子串（复审发现 1）：
-    // 原来写的是 `includes("没有这个人")`，而 E2-3 之后那句话里根本没有这四个字，
-    // 于是这条反向断言恒真——真落了一条错误的系统发言也照样绿。守「不该说话时
-    // 别说话」的用例比正向那几条更值钱，判据不能挂在会改的文案上
     expect(events.some((e) => e.type === "chat_message" && (e as { fromUid: string }).fromUid === "system")).toBe(false);
-    expect(events.some((e) => e.type === "agent_relay")).toBe(true);
+    expect(events.find((e) => e.type === "agent_relay")).toMatchObject({ fromAgentId: "ops", toAgentId: "ads" });
     store.close();
   });
 

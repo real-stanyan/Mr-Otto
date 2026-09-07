@@ -44,6 +44,26 @@ export const SETTINGS_SECTIONS: { id: SettingsSection; label: string; icon: Luci
   { id: "about", label: "关于与更新", icon: BadgeInfo },
 ];
 
+/** 订阅用户看不到的两个栏目（#1051，维护者定的产品口径）：
+    「模型配置」是配自带 key 的地方，而订阅用户不许自带 key；「子智能体」跟着一起收 —— 
+    它整页的可配项（型号 / 挡位 / 工具）都建立在「你自己挑一款模型」之上。
+
+    **收起来 ≠ 关掉功能**：内置子智能体照常派活、照常走订阅额度（`hosted` 现在也传给
+    子 agent 了，见 `subagentRunner.ts`），收起来的只是那一页配置。 */
+const SUBSCRIBER_HIDDEN: ReadonlySet<SettingsSection> = new Set(["keys", "agents"]);
+
+/** 这个人现在看得到哪几个栏目。判据一条：`billingView.isSubscribed`。
+    **导航、齿轮的落点、`openSettings` 的守卫共用这一份** —— 三处各写一遍的话，
+    哪天多收一个栏目就会有人漏改，而漏改的表现是「导航里没有、按钮却跳得进去」 */
+export function settingsSections(subscribed: boolean): typeof SETTINGS_SECTIONS {
+  return subscribed ? SETTINGS_SECTIONS.filter((s) => !SUBSCRIBER_HIDDEN.has(s.id)) : SETTINGS_SECTIONS;
+}
+
+/** 这个栏目此刻打不打得开（`openSettings` 的守卫、渲染分支的兜底共用） */
+export function settingsSectionVisible(id: SettingsSection, subscribed: boolean): boolean {
+  return !subscribed || !SUBSCRIBER_HIDDEN.has(id);
+}
+
 /** 设置页 header 的标题:和侧栏导航同一个图标 + 同一个文案,一处定义(SETTINGS_SECTIONS)。
     面包屑页(新建/编辑子智能体)把它当第一级用 */
 export function SettingsTitle({ id, className }: { id: SettingsSection; className?: string }) {

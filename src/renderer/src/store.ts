@@ -117,6 +117,8 @@ import { DEFAULT_USAGE_DAYS, type UsageSnapshot } from "../../shared/usageStats.
 import type { ModelShareWindow } from "../../shared/modelShare.js";
 import { laneOf, type ModelLane } from "../../shared/modelLane.js";
 import { autoModelOf } from "../../shared/autoModel.js";
+import { isSubscribed } from "./lib/billingView.js";
+import { settingsSectionVisible } from "./settingsShell.js";
 import type { MyProfile, ProfilePatch } from "../../shared/profile.js";
 import {
   failOptimistic, mergeDm, nextTempId, optimisticMessage, prependOlder, settleOptimistic,
@@ -1384,7 +1386,13 @@ export const useChat = create<ChatState>((set, get) => ({
     }
   },
 
-  async openSettings(section = "account") {
+  async openSettings(requested = "account") {
+    // 订阅用户看不到「模型配置」与「子智能体」（#1051）。守卫放在**入口**而不是只在
+    // 导航里过滤：主进程的深链（托盘/菜单/deepLink 的 section）、以及界面上其余几个
+    // 直接点名的入口都从这条路进来，只滤导航等于「列表里没有、按钮却跳得进去」
+    const section = settingsSectionVisible(requested, isSubscribed(get().billing))
+      ? requested
+      : "account";
     // 每个栏目各自的数据刷新副作用（原 openSettings/openSkills 各自的做法，合并后照旧）：
     // keys 栏目拉一次 keyStatus；skills 栏目重扫一次磁盘（用户随时增删 SKILL.md，镜像别太陈旧）；
     // account 栏目没有——boot() 已订阅 onAccountChanged，镜像本来就是热的

@@ -26,11 +26,10 @@
 // "云会话在 UI 里就是一个 session"这句话就不成立了。
 // user_message.content 是 `"[label]: text"` 这个人工拼的前缀（协议没有
 // 独立 fromUid/label 字段），parseUserMessageLabel 做尽力而为的解析，解析
-// 不出就原样显示全文当正文。assistant_message.content 在纯工具调用的
-// turn 里可能是空串（events.ts 的字段注释）——AssistantMessageRow 据此
-// 只在有正文时才画气泡，同时无条件把 toolCalls 摊成一行行工具活动
-// （ToolActivityLine，复用 timelineProjection.index 查执行状态），这样
-// 一次纯工具 turn 依旧看得见"发生过什么"，不会全程无声。
+// 不出就原样显示全文当正文。assistant_message **只有最终答案画得出来**
+// （#1055）：要了工具的、或一个字没说的那几条是「中间步骤」，
+// `hiddenFromCloudTimeline` 第 ⑥ 条把它们整段挡在时间线外，人要知道的
+// 「它此刻在忙」由末尾那几行输入指示器说（PendingTurnLines）。
 //
 // 审批卡不搬 App.tsx 那套 ApprovalCardBody——那一套是围着本地 decide()
 // 的五种意志（批/拒/中止/授权档位/改过的参数）与 diff 分块取舍搭的，云端
@@ -39,7 +38,7 @@
 // 效果的按钮。这里另起一张更薄的卡，可视觉语言（圆角边框、pill 按钮）不
 // 新造。
 
-import { Fragment, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, AtSign, Settings2 } from "lucide-react";
 import { cn } from "@/lib/utils.js";
 import { Button } from "@/components/ui/button.js";
@@ -48,30 +47,30 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar.js";
 import { Textarea } from "@/components/ui/textarea.js";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip.js";
 import { COMPOSER_METRICS, ComposerActions, ComposerBar, ComposerSend, ComposerToolbar } from "@/components/elements/composer.js";
+import { TypingIndicator } from "@/components/elements/typing-indicator.js";
 import { ghostButton } from "@/lib/surfaces.js";
 import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover.js";
 import { useChat, type CloudSessionState } from "../store.js";
 import { EventRow, TimelineProjectionContext } from "./Timeline.js";
-import { buildToolIndex, type ToolIndex } from "../lib/toolIndex.js";
+import { buildToolIndex } from "../lib/toolIndex.js";
 import { groupSubagentSpawns } from "../lib/subagentTimeline.js";
 import { formatProxyTime } from "../lib/proxyShare.js";
 import { agentNameOf, labelOf, memberAvatarOf } from "../lib/workspaceView.js";
 import { agentAvatarSrc } from "../lib/agentAvatar.js";
 import { applyAgentMention, filterAgentCandidates, mentionQueryAt, pickerEmptyState, resolveSendMentions } from "../lib/agentMentionInput.js";
 import {
-  agentStepsSummary, approvalCardTitle, assistantLabel, canStopTurn, cloudEmptyState, foldAgentSteps, hiddenFromCloudTimeline, relayLineText,
-  stopButtonRows, systemNoteText, turnEndedLineText, userRowIdentity, type AgentStepsFold,
+  approvalCardTitle, assistantLabel, canStopTurn, cloudEmptyState, hiddenFromCloudTimeline, relayLineText,
+  stopButtonRows, systemNoteText, turnEndedLineText, userRowIdentity,
 } from "../lib/cloudTimeline.js";
 import { systemNoteDetail } from "../lib/systemNote.js";
 import { TurnErrorState } from "./TurnErrorState.js";
 import { ThreadHistorySkeleton } from "./assistant-ui/thread.js";
 import { openTurns } from "../../../shared/turnLedger.js";
 import { safeSpeakerLabel, SYSTEM_SPEAKER_UID } from "../../../shared/promptSafe.js";
-import { toolSummary } from "../../../shared/toolSummary.js";
 import { mentionTokens, parseMentions, type MentionCandidate } from "../../../shared/remote/agentMention.js";
 import type {
   AgentBriefedEvent, AgentRelayEvent, ApprovalDecisionEvent, ApprovalRequestEvent, AssistantMessageEvent,
-  ChatMessageEvent, SessionEvent, ToolCallRequest, ToolResultEvent,
+  ChatMessageEvent, SessionEvent,
 } from "../../../session/events.js";
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 import type { CloudAck } from "../../../shared/shellBridge.js";
@@ -256,10 +255,6 @@ export function CloudSessionPage({
     () => ({ index: buildToolIndex(events), groups: groupSubagentSpawns(events), events }),
     [events]
   );
-  // agent 的中间步骤折起来、只画最终答案（#971，ADR-0229）：被折的行跳过，
-  // fold 画在收口那条事件（答案 / turn_ended）前面，还没收口的画在时间线末尾
-  const folds = useMemo(() => foldAgentSteps(events), [events]);
-
   // 未决审批:approval_request 事件里,还没有一条 toolCallId 匹配的
   // approval_decision 的那些(ApprovalRequestEvent.callId 与
   // ApprovalDecisionEvent.toolCallId 是同一个 id,同本地 ToolCallRequest.id
@@ -656,19 +651,8 @@ export function CloudSessionPage({
               // 接力开场白（user_message 带 relay）不画：那是给模型看的
               // "[系统] 「运营」@ 了你"，人看下面那条 agent_relay 接力线就够，
               // 画出来是同一件事说两遍（#950）
+              // 一道判据管所有「这一行画不画」（#1055 把中间步骤那道合了进来）
               if (hiddenFromCloudTimeline(e)) return null;
-              if (folds.hidden.has(e.seq)) return null;
-              // 收口这条事件的那段步骤先画（折叠的一行），再画事件本身。
-              // 用 fragment 而不是给每个分支各包一层：fold 与下面哪个分支配对
-              // 是 foldAgentSteps 的事，这里不重判
-              const fold = folds.byCloser.get(e.seq);
-              const withFold = (row: ReactNode): ReactNode =>
-                fold ? (
-                  <Fragment key={e.seq}>
-                    <AgentStepsFoldRow fold={fold} ws={ws} index={timelineProjection.index} />
-                    {row}
-                  </Fragment>
-                ) : row;
               if (e.type === "chat_message") {
                 return (
                   <ChatMessageRow
@@ -703,9 +687,7 @@ export function CloudSessionPage({
                 );
               }
               if (e.type === "assistant_message") {
-                return withFold(
-                  <AssistantMessageRow key={e.seq} event={e} ws={ws} index={timelineProjection.index} />
-                );
+                return <AssistantMessageRow key={e.seq} event={e} ws={ws} />;
               }
               if (e.type === "agent_briefed") {
                 return <AgentBriefedRow key={e.seq} event={e} />;
@@ -723,7 +705,7 @@ export function CloudSessionPage({
                 // 人话/原文折叠）。查不到 agentId（旧日志/本机会话）落回现状的 EventRow
                 const agentTitle = turnEndedLineText(e, ws);
                 if (agentTitle !== null) {
-                  return withFold(
+                  return (
                     <TurnErrorState
                       key={e.seq}
                       title={agentTitle}
@@ -733,7 +715,7 @@ export function CloudSessionPage({
                     />
                   );
                 }
-                return withFold(<EventRow key={e.seq} event={e} isLast={false} />);
+                return <EventRow key={e.seq} event={e} isLast={false} />;
               }
               return <EventRow key={e.seq} event={e} isLast={i === events.length - 1} />;
             })
@@ -742,11 +724,6 @@ export function CloudSessionPage({
               排队的东西说的是"接下来会发生什么"，那是时间线尾巴的事，不是
               历史里某一行的注脚（跟 turn_ended 的错误行不同——那是已经发生
               的事实，钉在它发生的位置）*/}
-          {/* 还没收口的步骤段画在末尾、排队/正在回复那几行之前：它们说的都是
-              「此刻正在发生什么」，是时间线尾巴的事 */}
-          {folds.open.map((fold) => (
-            <AgentStepsFoldRow key={`open:${fold.steps[0]!.seq}`} fold={fold} ws={ws} index={timelineProjection.index} />
-          ))}
           <PendingTurnLines events={events} ws={ws} selfUid={selfUid} cs={cs} />
         </TimelineProjectionContext.Provider>
       </div>
@@ -1157,66 +1134,24 @@ function UserMessageRow({
   );
 }
 
-/** Agent 的回复（复审 Rejected #1 补齐；署名换成 assistantLabel 是 Task 10）：
-    恒左对齐（Agent 不可能是"我"）。content 在纯工具调用的 turn 里可能是
-    空串（events.ts 的字段注释）——这时不画空气泡，改成无条件把 toolCalls
-    摊成一行行 ToolActivityLine，这样即使模型这一轮一个字没说，用户也能
-    看见"它干了什么"，不是全程无声。有正文又有工具调用时两者都画
-    （events.ts 原话："文本和工具调用请求可以同时出现"）。ws 是查
-    agentId → 名字的名单，多智能体上线前落的旧消息没有 agentId，
-    assistantLabel 据此回退到 "Agent" */
-function AssistantMessageRow({
-  event,
-  ws,
-  index,
-}: {
-  event: AssistantMessageEvent;
-  ws: WorkspaceSnapshot;
-  index: ToolIndex;
-}) {
-  const hasText = event.content.trim() !== "";
-  const toolCalls = event.toolCalls ?? [];
+/** Agent 的**最终答案**（复审 Rejected #1 补齐；署名换成 assistantLabel 是
+    Task 10）：恒左对齐（Agent 不可能是"我"）。走到这里的必然「有正文且没要
+    工具」——中间步骤在 `hiddenFromCloudTimeline` 第 ⑥ 条就被挡下了（#1055），
+    所以这里既不判 `content` 空不空、也不画 toolCalls：那两条分支是**由构造
+    保证**到不了的（同 ADR-0214「让『只有一个』由构造保证」的纪律），留着就是
+    两条永远跑不到的死支。ws 是查 agentId → 名字的名单，多智能体上线前落的
+    旧消息没有 agentId，assistantLabel 据此回退到 "Agent" */
+function AssistantMessageRow({ event, ws }: { event: AssistantMessageEvent; ws: WorkspaceSnapshot }) {
   const name = assistantLabel(event, ws);
   return (
     <SpeakerRow mine={false} avatar={<AgentAvatar ws={ws} agentId={event.agentId} name={name} />}>
       <span className="px-1 text-[10.5px] text-muted-foreground">
         {name} · {formatProxyTime(event.ts)}
       </span>
-      {hasText && (
-        <Bubble align="start" variant="muted">
-          <BubbleContent className="whitespace-pre-wrap break-words">{event.content}</BubbleContent>
-        </Bubble>
-      )}
-      {toolCalls.map((call) => (
-        <ToolActivityLine key={call.id} call={call} result={index.results.get(call.id)} />
-      ))}
+      <Bubble align="start" variant="muted">
+        <BubbleContent className="whitespace-pre-wrap break-words">{event.content}</BubbleContent>
+      </Bubble>
     </SpeakerRow>
-  );
-}
-
-/** 一段折起来的中间步骤（#971，ADR-0229）：默认收着的 <details>，摘要一行写
-    「「运营」处理过程 · 3 步 · 5 次工具调用」，展开是每一步的正文（有的话）
-    + 工具行——**一个字都不丢**，只是不摊在时间线上。样式照 SystemNoteRow：
-    这是审计性质的旁白，不是群里谁说的话；无动效——旁白不该因为能展开就在
-    时间线上变重。正在跑的那段（closedBy null）摘要写「正在处理」，位置在
-    时间线末尾（同 PendingTurnLines 的理由：说的是此刻） */
-function AgentStepsFoldRow({ fold, ws, index }: { fold: AgentStepsFold; ws: WorkspaceSnapshot; index: ToolIndex }) {
-  return (
-    <details className="px-1 text-[10.5px] italic text-muted-foreground/70">
-      <summary className="cursor-default select-none">{agentStepsSummary(fold, ws)}</summary>
-      <div className="mt-1 flex flex-col gap-1 not-italic">
-        {fold.steps.map((step) => (
-          <div key={step.seq} className="flex flex-col gap-0.5">
-            {step.content.trim() !== "" && (
-              <p className="whitespace-pre-wrap break-words px-1 text-[11px] text-muted-foreground">{step.content}</p>
-            )}
-            {(step.toolCalls ?? []).map((call) => (
-              <ToolActivityLine key={call.id} call={call} result={index.results.get(call.id)} />
-            ))}
-          </div>
-        ))}
-      </div>
-    </details>
   );
 }
 
@@ -1269,9 +1204,22 @@ function AgentRelayRow({ event, ws }: { event: AgentRelayEvent; ws: WorkspaceSna
 /** 「谁还没回」（Task 10，src/shared/turnLedger.ts 的 openTurns 是事实来源）：
     画在时间线**末尾**而不是贴在各自那条 @ 消息下面——排队的东西说的是
     "接下来会发生什么"，那是时间线尾巴的事；这是日志的投影不是 UI 本地态，
-    daemon 重启回来后重新算一遍照样对得上。running 前面一个跳动的点，
-    queued 前面一个不跳动的点——同一屏里"正在做"和"还没轮到"要一眼分开 */
-function PendingTurnLines({
+    daemon 重启回来后重新算一遍照样对得上。
+
+    两个状态**画成两种东西**，不是同一行换个颜色（#1055）：
+    - `running` = 那只 agent 此刻正在攒话 → 一枚**输入指示器**（三点跳动的气泡），
+      长在它待会儿那条回复要落的位置上：同一个 `SpeakerRow`、同一张 `muted` 气泡，
+      答案到了就地把点换成字。中间步骤自 #1055 起整段不画
+      （`hiddenFromCloudTimeline` 第 ⑥ 条），所以这枚指示器是「它在忙」在界面上
+      **唯一**的痕迹——不是装饰。
+    - `queued` = 还没轮到它 → 照旧一行小灰字。**故意不给打字气泡**：那句话说的是
+      「它正在打字」，而一个排着队的 turn 一个 token 都还没跑，画上去就是 #722
+      那个撒谎的勾的一般形式。两者的分别因此是结构性的（有没有气泡），不是
+      「跳的点 vs 不跳的点」——后者在一屏里要盯着看才分得出。
+
+    `queued` 那支不画「停止」不是漏了：`stopButtonRows` 本来就只收 running，
+    改动前那行上的判断永远是 false */
+export function PendingTurnLines({
   events,
   ws,
   selfUid,
@@ -1291,21 +1239,35 @@ function PendingTurnLines({
   if (pending.length === 0) return null;
   return (
     <>
-      {pending.map((t) => (
-        <div key={`${t.seq}:${t.agentId}`} className="flex items-center gap-1.5 px-1 text-[11px] text-muted-foreground">
-          <span
-            className={cn(
-              "size-[6px] rounded-full",
-              t.state === "running" ? "bg-brand animate-pulse motion-reduce:animate-none" : "bg-muted-foreground/40"
-            )}
-            aria-hidden
-          />
-          <span className="flex-1">
-            {agentNameOf(ws, t.agentId)} {t.state === "running" ? "正在回复…" : "排队中…"}
-          </span>
-          {stoppable.has(`${t.seq}:${t.agentId}`) && canStopTurn(t, selfUid, cs) && <StopTurnButton seq={t.seq} />}
-        </div>
-      ))}
+      {pending.map((t) => {
+        const key = `${t.seq}:${t.agentId}`;
+        const name = agentNameOf(ws, t.agentId);
+        if (t.state === "queued") {
+          return (
+            <div key={key} className="flex items-center gap-1.5 px-1 text-[11px] text-muted-foreground">
+              <span className="size-[6px] rounded-full bg-muted-foreground/40" aria-hidden />
+              <span className="flex-1">{name} 排队中…</span>
+            </div>
+          );
+        }
+        return (
+          <SpeakerRow key={key} mine={false} avatar={<AgentAvatar ws={ws} agentId={t.agentId} name={name} />}>
+            <span className="flex items-center gap-1 px-1 text-[10.5px] text-muted-foreground">
+              {name}
+              {stoppable.has(key) && canStopTurn(t, selfUid, cs) && <StopTurnButton seq={t.seq} />}
+            </span>
+            {/* 气泡与 AssistantMessageRow 那张逐字同款（muted / align start）：
+                答案落下来时人看到的是同一张气泡里点变成了字，不是一个东西消失、
+                另一个东西出现。`py-2.5` 比正文那档矮一点——一行字的气泡约 39px，
+                这枚是 26px，读起来是「还没成形的一句话」 */}
+            <Bubble align="start" variant="muted">
+              <BubbleContent className="flex items-center py-2.5">
+                <TypingIndicator variant="bare" label={`${name} 正在输入`} />
+              </BubbleContent>
+            </Bubble>
+          </SpeakerRow>
+        );
+      })}
     </>
   );
 }
@@ -1344,28 +1306,6 @@ function StopTurnButton({ seq }: { seq: number }) {
       </Button>
       {localError && <span className="text-err">{localError}</span>}
     </>
-  );
-}
-
-/** 一次工具调用的一行可见提示（复审 Rejected #1 补齐）：不用 ToolRow——那
-    是折叠展开的重组件，围着本地会话的详情面板设计；这里只要"看得见发生过
-    什么"，`toolSummary` 已经把 verb/target 提炼好了，状态从
-    `timelineProjection.index`（同一份，OttoThread 顶层算法同款）里查，
-    没查到 = 还在执行中（tool_execution_started 落了、tool_result 还没落） */
-function ToolActivityLine({ call, result }: { call: ToolCallRequest; result: ToolResultEvent | undefined }) {
-  const { verb, target } = toolSummary(call);
-  const statusText = !result
-    ? "执行中…"
-    : result.status === "ok"
-      ? "完成"
-      : result.status === "denied"
-        ? "被拒绝"
-        : "出错";
-  return (
-    <span className="px-1 text-[11px] text-muted-foreground">
-      {verb}
-      {target ? ` ${target}` : ""} · {statusText}
-    </span>
   );
 }
 
