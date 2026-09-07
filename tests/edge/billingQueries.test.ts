@@ -29,6 +29,13 @@ describe("查询串", () => {
     expect(routesQuery()).toContain("quantization=eq.none");
     expect(routesQuery()).toContain("order=priority.asc");
   });
+  it("routesQuery 的排序是**全序**：priority 同分时按输出价、再同分按 id（#1009）", () => {
+    // 这条断言钉的是两件事同时成立的前提：`me.models[0]` = 没指定型号时用哪款
+    // （六行 priority 全是 10，只按 priority 排 = 未定义顺序 = 碰运气），
+    // 以及 Auto 那一档拿「第一个/最后一个」当「最便宜/最贵」（autoModel.ts）。
+    // 少一个键，那两处就同时从「承诺」退回「今天碰巧是这样」
+    expect(routesQuery()).toContain("order=priority.asc,price_out_micro_per_m.asc,id.asc");
+  });
   it("grantsQuery：拉这个人全部 grant（含过期）+ 幂等键，created_at,id 稳定全序（#863 / #862 / #858）", () => {
     const q = grantsQuery("u1");
     expect(q).toContain("credit_grant?user_id=eq.u1");

@@ -552,7 +552,7 @@ function AgentEditorDialog({
             </Select>
             <p className="text-[10.5px] text-muted-foreground">
               {model === AUTO_MODEL
-                ? "Auto：不指定型号，用网关路由表里的首选款。（还不会按任务难度自选——那一层没做。）"
+                ? "Auto：每次起跑前先用最便宜那款读一遍你的请求，判简单还是复杂，再据此挑型号。判不出来时按最便宜那款走。"
                 : "云会话统一走工作区所有者的订阅额度；这一款网关哪天不供了，会自动退回首选款。"}
             </p>
             {availableModels.length === 0 && (

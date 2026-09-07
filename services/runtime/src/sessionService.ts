@@ -269,6 +269,11 @@ export interface CloudSessionOpts {
   agents: (o?: { fresh?: boolean }) => Promise<AgentSpec[]>;
   /** 按 agent 造 adapter(型号来自它的白名单)。daemon 给 */
   adapterFor: (agent: AgentSpec) => ModelAdapter;
+  /** 「Auto」那一档（#1009）：这只 agent 没配型号白名单时，用最便宜那款先判一手
+      这段开场白的难度，回这一 turn 该用的型号 id；判不出来回 null = 按原样走
+      （路由照旧取网关首选款）。daemon 给——它才有 hostedProbe 与 edge 凭据。
+      **可选**：缺席 = 今天的行为一字不变（测试假件与旧装配不必关心这一格） */
+  pickAutoModel?: (agent: AgentSpec, text: string) => Promise<string | null>;
   px: PxCallDeps;
   /** 建这条会话的人（workspace_sessions.publisher_uid）。归档权限用它——
       owner 或建的人才能收尾（issue #822）。daemon 给：create 时是 byUid，
@@ -1307,7 +1312,25 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       briefIfNeeded(spec, roster);
       specNames.set(spec.agentId, spec.name);
       await loadMemoryIfChanged(spec);
-      const engine = engineFor(spec);
+
+      // 「Auto」那一档（#1009）：白名单为空 = 界面上选了 Auto = 这一轮先让最便宜
+      // 那款读一遍开场白，判 simple/hard，再据此挑型号。配了型号的 agent 一字不变
+      // 走 ADR-0232 那条优先级链——这道分支的判据就是「空不空」，没有第二个开关。
+      //
+      // 覆盖的方式是**换一份 spec 交给 engineFor**，不是给 adapterFor 加参数：
+      // `preferredModels: () => agent.models` 已经是每轮现读的那一格（#932 坑 ①），
+      // 塞一份 models 只有一款的 spec 进去，路由那一层什么都不用知道。agentId 不变，
+      // 所以 engines / currentAdapters / specNames 的缓存键一个都不受影响。
+      //
+      // 判不出来（网络挂了、答案认不出、清单只有一款）回 null → 用原 spec，
+      // 也就是今天的行为。**不猜、不往贵的偏**：Auto 失灵时该有的表现是「跟以前
+      // 一样」，不是「悄悄开始烧钱」（同 ADR-0233「额度用完不改道」那条纪律）。
+      let runSpec = spec;
+      if (spec.models.length === 0 && opts.pickAutoModel) {
+        const picked = await opts.pickAutoModel(spec, job.opening.content);
+        if (picked !== null) runSpec = { ...spec, models: [picked] };
+      }
+      const engine = engineFor(runSpec);
 
       // **降级名单一把刀都不挂，也不去拉**（#957 B-I7 + 复审 Minor 2）：
       // spec.degraded = 这份名单是 workspace_agents 查询失败时的占位，它的
