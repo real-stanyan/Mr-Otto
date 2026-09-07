@@ -22,8 +22,8 @@ describe("cs_say 的 mentions（#928 切片 1a）", () => {
 });
 
 describe("cs 协议 6（#957 第三批：stop 帧与 say/approve/stop 回执）", () => {
-  it("CS_PROTOCOL_VERSION === 10（8 = ADR-0234 仓库配置进控制房；9 = ADR-0235 归档也进控制房；10 = #1044 删除）", () => {
-    expect(CS_PROTOCOL_VERSION).toBe(10);
+  it("CS_PROTOCOL_VERSION === 11（8 = ADR-0234 仓库配置进控制房；9 = ADR-0235 归档也进控制房；10 = #1044 删除；11 = #1056 工作文件夹读帧）", () => {
+    expect(CS_PROTOCOL_VERSION).toBe(11);
   });
 
   it("stop 上行往返", () => {
@@ -97,6 +97,50 @@ describe("cs 协议 10（#1044：delete / delete_result）", () => {
     const failed = { ...ok, ok: false, message: "这一刻读不到这条会话的信息，什么都没删。稍后再试。" };
     expect(decodeCsDown(encodeCs(failed))).toEqual(failed);
     expect(decodeCsDown(encodeCs({ t: "delete_result", workspaceId: "w1", ok: true } as never))).toBeNull();
+  });
+});
+
+describe("cs 协议 11（#1056：files / files_result）", () => {
+  it("files 帧 roundtrip；path 必填，`\"\"` 是合法值（= 工作文件夹本身）", () => {
+    const root = { t: "files" as const, workspaceId: "w1", path: "" };
+    expect(decodeCsUp(encodeCs(root))).toEqual(root);
+    const deep = { t: "files" as const, workspaceId: "w1", path: "src/lib" };
+    expect(decodeCsUp(encodeCs(deep))).toEqual(deep);
+    // 缺席 ≠ 根：缺了这一格意味着发送方在猜默认值，这一层不替它猜
+    expect(decodeCsUp(encodeCs({ t: "files", workspaceId: "w1" } as never))).toBeNull();
+    expect(decodeCsUp(encodeCs({ t: "files", path: "" } as never))).toBeNull();
+  });
+
+  it("files_result：四种 node 各自 roundtrip", () => {
+    const base = { t: "files_result" as const, workspaceId: "w1", path: "", ok: true };
+    for (const node of [
+      { kind: "absent" as const },
+      { kind: "missing" as const },
+      { kind: "dir" as const, entries: [{ name: "a.md", kind: "file" as const, size: 12, mtimeMs: 1 }], truncated: false },
+      { kind: "file" as const, text: "hi", truncated: false, size: 2 },
+      { kind: "binary" as const, size: 99 },
+    ]) {
+      expect(decodeCsDown(encodeCs({ ...base, node }))).toEqual({ ...base, node });
+    }
+  });
+
+  it("ok=false 那一路不带 node，message 说明为什么", () => {
+    const failed = { t: "files_result" as const, workspaceId: "w1", path: "x", ok: false, message: "这条路径不合法。" };
+    expect(decodeCsDown(encodeCs(failed))).toEqual(failed);
+  });
+
+  it("node 形状不对 → 整帧不拒，只是没有 node（message 那一路仍然有用）", () => {
+    // 与 normalizeModelRoute 同纪律：认不出的降级成缺席，不把整帧判成无效
+    const decoded = decodeCsDown(encodeCs({ t: "files_result", workspaceId: "w1", path: "", ok: true, node: { kind: "什么" } } as never));
+    expect(decoded).toEqual({ t: "files_result", workspaceId: "w1", path: "", ok: true });
+  });
+
+  it("目录项缺字段 → 整份清单判无效，**不静默丢那一项**", () => {
+    // 少一项的清单和完整的长得一模一样，而它是假的
+    const decoded = decodeCsDown(
+      encodeCs({ t: "files_result", workspaceId: "w1", path: "", ok: true, node: { kind: "dir", entries: [{ name: "a" }] } } as never)
+    );
+    expect(decoded).toEqual({ t: "files_result", workspaceId: "w1", path: "", ok: true });
   });
 });
 

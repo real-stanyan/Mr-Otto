@@ -18,6 +18,7 @@ describe("cs 帧协议", () => {
     //     workspace/workspace_state 读帧、config_result 带 workspaceId。
     // 7 = #981（ADR-0233）：云会话不再支持自带 key——config 帧去掉 model、
     //     welcome/config_result 去掉 model 一格、CsModelRoute 去掉 workspace。
+    // 11 = #1056 那次进位（加一对 files / files_result 读帧——工作文件夹看得见了）。
     // 6 = #957 第三批那次进位（CsUp 加 stop，CsDown 加
     //     say_result/approve_result/stop_result 三条回执）。
     // 5 = issue #945 那次进位（welcome/config_result 多了 modelRoute 一格）。
@@ -30,7 +31,7 @@ describe("cs 帧协议", () => {
     // 之后静默少一格状态。**加一个枚举值同理**：老客户端的
     // isValidCsDeniedCode 认不出 rate_limited，整帧被 decodeCsDown 判成
     // null 静默丢掉，create() 于是白等满超时才回一句"云端无响应"
-    expect(CS_PROTOCOL_VERSION).toBe(10);
+    expect(CS_PROTOCOL_VERSION).toBe(11);
   });
   it("房名生成", () => {
     expect(csCtlChannel()).toBe("cs-ctl");
