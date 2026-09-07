@@ -32,6 +32,7 @@ import { normalizeAgentTools } from "../../../src/shared/agentToolAllow.js";
 import { safeSpeakerLabel } from "../../../src/shared/promptSafe.js";
 import type { PxCallDeps } from "./pxTools.js";
 import { createHostedProbe, createHostedRuntimeAdapter, createRouteMemo, probeModelRoute, withUsage, type RouteMemo } from "./hostedRoute.js";
+import { pickAutoModel } from "./autoModel.js";
 import { createDockerWorld, WORKDIR } from "../../../src/world/dockerWorld.js";
 import type { ModelAdapter } from "../../../src/model/adapter.js";
 import { EventStore } from "../../../src/session/store.js";
@@ -605,6 +606,29 @@ async function main(): Promise<void> {
       // `route_changed` 不再落（ADR-0233）：只剩一条路，没有换轨可记；事件类型
       // 留在 schema 里给旧日志重放
       adapterFor: (a) => withUsage(adapterFor(workspaceId, sessionId, ownerUid, a, routeMemo), recordUsage),
+      // 「Auto」那一档（#1009）：白名单为空的 agent，起跑前用**最便宜那款**读一遍
+      // 开场白判难度，再据此挑型号。装配在 daemon 而不是 sessionService——凭据
+      // （edgeBase / runtimeSecret）与订阅探针都在这一层。
+      // 清单取 `me.models`，它由 edge 按 `priority,输出价,id` 全序给出（billingQueries
+      // 那条 routesQuery），所以「第一个 = 最便宜、最后一个 = 最贵」是查询保证的，
+      // 不是这里的假设。所有者没订阅 / 探不到 / 清单不足两款 → null = 按原样走
+      pickAutoModel: async (agent, text) => {
+        const me = await hostedProbe.me(ownerUid);
+        if (me === null || me === "unreachable" || me.status !== "active") return null;
+        return pickAutoModel(
+          {
+            edgeBase: config.edgeBase,
+            runtimeSecret: config.runtimeSecret,
+            ownerUid,
+            workspaceId,
+            sessionId,
+            agentId: agent.agentId,
+            log: (m) => console.warn(`[otto-runtime] ${m}（session=${sessionId} agentId=${agent.agentId}）`),
+          },
+          text,
+          me.models
+        );
+      },
       px,
       // 与在籍判断共用同一份 60s 缓存（#979 第 5 条）：原来这里每 turn 另打一次
       // **同一条 SQL**。查询抛错原样抛——sessionService 那侧接住、本 turn 不挂代理工具

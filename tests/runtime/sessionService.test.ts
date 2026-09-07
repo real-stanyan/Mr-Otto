@@ -4291,4 +4291,89 @@ describe("每 turn 起模型前的网络往返收敛（#979 第 5 条，ADR-0232
     expect(calls.length).toBeGreaterThanOrEqual(2);
     expect(calls.slice(1).every((f) => f === false)).toBe(true);
   });
+
+  // ── 「Auto」那一档（#1009） ──────────────────────────────────────────
+  //
+  // 触发条件只有一个：这只 agent 的型号白名单是空的。判据钉在这里，因为它同时是
+  // 「配了型号的 agent 一字不变」这条承诺的可执行版——分支写反的话，所有 agent
+  // 都会开始每 turn 多打一次分类器，而症状只有账单看得见。
+
+  it("Auto（models 为空）：起跑前判一手，判出来的型号进 adapterFor 的那份 spec", async () => {
+    const store = newStore();
+    const adapter: ModelAdapter = { model: "fake-model", async chat(): Promise<ModelReply> { return { content: "ok" }; } };
+    const seen: string[][] = [];
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld,
+      agents: async () => [{ agentId: "auto", name: "auto", description: "", instructions: "", models: [], tools: [] }],
+      adapterFor: (a) => { seen.push([...a.models]); return adapter; },
+      pickAutoModel: async () => "picked-model",
+      px, hostUids: async () => [], onEvent: () => {},
+      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true, contextWindowOf: () => undefined,
+      sandboxApproval: async () => "ask", workspaceLock: createWorkspaceLock(), relayMaxDepth: async () => 6,
+    });
+    await session.say("u1", "alice", "@auto 写个爬虫", true);
+    await session.settled();
+    expect(seen).toContainEqual(["picked-model"]);
+  });
+
+  it("Auto 判不出来（null）：用原样的空白名单 —— 回落到今天的行为，不猜也不往贵的偏", async () => {
+    const store = newStore();
+    const adapter: ModelAdapter = { model: "fake-model", async chat(): Promise<ModelReply> { return { content: "ok" }; } };
+    const seen: string[][] = [];
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld,
+      agents: async () => [{ agentId: "auto", name: "auto", description: "", instructions: "", models: [], tools: [] }],
+      adapterFor: (a) => { seen.push([...a.models]); return adapter; },
+      pickAutoModel: async () => null,
+      px, hostUids: async () => [], onEvent: () => {},
+      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true, contextWindowOf: () => undefined,
+      sandboxApproval: async () => "ask", workspaceLock: createWorkspaceLock(), relayMaxDepth: async () => 6,
+    });
+    await session.say("u1", "alice", "@auto 你好", true);
+    await session.settled();
+    expect(seen.every((m) => m.length === 0)).toBe(true);
+  });
+
+  it("配了型号的 agent **一次都不问** —— 分支写反的话所有人每 turn 多打一次分类器，而症状只有账单看得见", async () => {
+    const store = newStore();
+    const adapter: ModelAdapter = { model: "fake-model", async chat(): Promise<ModelReply> { return { content: "ok" }; } };
+    let asked = 0;
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld,
+      agents: async () => [DEFAULT_AGENT],
+      adapterFor: () => adapter,
+      pickAutoModel: async () => { asked += 1; return "picked-model"; },
+      px, hostUids: async () => [], onEvent: () => {},
+      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true, contextWindowOf: () => undefined,
+      sandboxApproval: async () => "ask", workspaceLock: createWorkspaceLock(), relayMaxDepth: async () => 6,
+    });
+    await session.say("u1", "alice", "@default 你好", true);
+    await session.settled();
+    expect(asked).toBe(0);
+  });
+
+  it("没接 pickAutoModel 的装配（缺席）：Auto agent 照旧跑，行为一字不变", async () => {
+    const store = newStore();
+    const adapter: ModelAdapter = { model: "fake-model", async chat(): Promise<ModelReply> { return { content: "ok" }; } };
+    const seen: string[][] = [];
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld,
+      agents: async () => [{ agentId: "auto", name: "auto", description: "", instructions: "", models: [], tools: [] }],
+      adapterFor: (a) => { seen.push([...a.models]); return adapter; },
+      px, hostUids: async () => [], onEvent: () => {},
+      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true, contextWindowOf: () => undefined,
+      sandboxApproval: async () => "ask", workspaceLock: createWorkspaceLock(), relayMaxDepth: async () => 6,
+    });
+    await session.say("u1", "alice", "@auto 你好", true);
+    await session.settled();
+    expect(seen.every((m) => m.length === 0)).toBe(true);
+  });
 });

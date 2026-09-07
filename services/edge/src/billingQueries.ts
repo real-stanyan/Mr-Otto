@@ -108,7 +108,14 @@ export function planIdForPrice(plans: PlanRow[], priceId: string): string | null
     `priority` 取。后果是价格表里若真填了未来生效的行，它现在就会被用上——所以在
     做那一片之前，价目改动要直接改现有行，不要靠 effective_* 排期。 */
 export function routesQuery(): string {
-  return "model_route?enabled=eq.true&quantization=eq.none&select=id,logical_model,platform,base_url,wire_model,price_in_micro_per_m,price_cache_micro_per_m,price_out_micro_per_m,default_max_tokens&order=priority.asc";
+  // 次级排序键 `price_out_micro_per_m.asc` 不是装饰（#1009）：六行的 priority 全是 10，
+  // 只按 priority 排的话同分行之间是**未定义顺序**（今天碰巧按物理顺序回，那不是承诺），
+  // 于是 `me.models[0]`——也就是「没指定型号时用哪款」——是碰运气，而最贵和最便宜之间
+  // 输出价差 21 倍。加上这个键之后清单**从便宜到贵有序**，两件事同时成立：
+  // 默认款 = 最便宜那款（是个承诺），且 Auto 那一档能拿「第一个 / 最后一个」当
+  // 「最便宜 / 最贵」用（autoModel.ts 的 modelForDifficulty，价是能力的代理）。
+  // 第三个键 `id.asc` 兜住「两款价一样」——否则那一对之间又回到未定义顺序。
+  return "model_route?enabled=eq.true&quantization=eq.none&select=id,logical_model,platform,base_url,wire_model,price_in_micro_per_m,price_cache_micro_per_m,price_out_micro_per_m,default_max_tokens&order=priority.asc,price_out_micro_per_m.asc,id.asc";
 }
 export function parseRouteRows(v: unknown): RouteRow[] {
   if (!Array.isArray(v)) return [];
