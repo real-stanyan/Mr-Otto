@@ -1387,6 +1387,54 @@ describe("createCloudSessionClient — workspaceState / workspaceConfig（控制
     expect(await promise).toEqual({ ok: true, value: null });
   });
 
+  // 协议 10（#1044）：删除与归档共用同一副控制房骨架，同样不依赖开着会话——
+  // 归档掉的那批根本没有房间可开，而它们才是最常删的
+  it("delete：控制房 RPC，delete_result ok → 成功", async () => {
+    const h = harness();
+    const promise = h.client.remove("w1", "s1");
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    expect(t.decoded()).toEqual([
+      { t: "hello", v: CS_PROTOCOL_VERSION, jwt: "token-abc" },
+      { t: "delete", workspaceId: "w1", sessionId: "s1" },
+    ]);
+    t.emitDown({ t: "delete_result", workspaceId: "w1", sessionId: "s1", ok: true });
+    expect(await promise).toEqual({ ok: true, value: null });
+    expect(t.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("delete：delete_result ok:false → 带着服务端那三种理由中的一条失败", async () => {
+    const h = harness();
+    const promise = h.client.remove("w1", "s1");
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({
+      t: "delete_result", workspaceId: "w1", sessionId: "s1", ok: false,
+      message: "这一刻读不到这条会话的信息，什么都没删。稍后再试。",
+    });
+    expect(await promise).toEqual({ ok: false, message: "这一刻读不到这条会话的信息，什么都没删。稍后再试。" });
+  });
+
+  it("delete：别的会话的回执不认（同 archive）", async () => {
+    const h = harness();
+    const promise = h.client.remove("w1", "s1");
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({ t: "delete_result", workspaceId: "w1", sessionId: "别的会话", ok: true });
+    let settled = false;
+    void promise.then(() => { settled = true; });
+    await tick();
+    expect(settled).toBe(false);
+    t.emitDown({ t: "delete_result", workspaceId: "w1", sessionId: "s1", ok: true });
+    expect(await promise).toEqual({ ok: true, value: null });
+  });
+
   it("workspaceState：hello + workspace 发给第一个 host，workspace_state 回来就 resolve 并关连接", async () => {
     const h = harness();
     const promise = h.client.workspaceState("w1");

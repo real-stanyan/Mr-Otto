@@ -8,6 +8,10 @@ import { b64encode } from "../../../src/shared/remote/b64.js";
 
 describe("cs 帧协议", () => {
   it("协议版本", () => {
+    // 10 = #1044：加一对 delete / delete_result（控制房帧，形状同 archive）——
+    //     彻底删除一条云会话。原来这颗钮不存在，理由是 0016 的 RLS 把
+    //     wss_delete_publisher 钉死在 kind='package'；而那条前提只对客户端
+    //     直连 Supabase 成立，runtime 拿的是 service key。
     // 9 = #993（ADR-0235）：归档也搬进控制房——archive 帧带 workspaceId + sessionId，
     //     新增 archive_result 回执（控制房没有 session_archived 广播可当回执）。
     // 8 = #991（ADR-0234）：仓库配置搬进控制房——config 帧带 workspaceId、新增
@@ -26,7 +30,7 @@ describe("cs 帧协议", () => {
     // 之后静默少一格状态。**加一个枚举值同理**：老客户端的
     // isValidCsDeniedCode 认不出 rate_limited，整帧被 decodeCsDown 判成
     // null 静默丢掉，create() 于是白等满超时才回一句"云端无响应"
-    expect(CS_PROTOCOL_VERSION).toBe(9);
+    expect(CS_PROTOCOL_VERSION).toBe(10);
   });
   it("房名生成", () => {
     expect(csCtlChannel()).toBe("cs-ctl");

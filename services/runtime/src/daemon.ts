@@ -687,6 +687,44 @@ async function main(): Promise<void> {
     return session;
   }
 
+  /** 房间收摊：摘席位 → 等这一轮排空（封顶 10 s）→ 延一拍关房。归档与删除共用。
+      返回的 promise 在**排空**那一刻 resolve（不是关房那一刻）——删除等的正是
+      「engine 不再往这条会话里 append」，关房是另一件事（把已经交给 socket 的
+      字节写出去）。
+
+      关房间要等广播真的写出去：ws.close() 之后排队的帧还发不发得出去是实现
+      细节，不该赌。延一拍收摊——这条会话此刻已经不在 activeSessions 里了，
+      期间再来的帧一律 no_session，不会有人趁机往一条已归档的会话里说话。
+      **先等排空**（#957 A-8）：原来是固定 2 s，而归档不停正在跑的 turn（现在
+      停了，但 abortTurn 只是翻信号，engine 落 turn_ended{aborted} 是异步的；
+      工具跑到一半的那种更要等子进程收口）。2 s 到点就 `cidTransport.delete`，
+      之后这条 turn 产出的每一条事件都被 globalSend 静默丢掉——人拿不到回复，
+      模型调用的钱照付。封顶 10 s：一条卡死的 turn 不该让房间永远关不掉
+      （`settled()` 等的是 inflight，而 drain 里的一次网络往返可以很久）。
+      `.then(close, close)`——settled() 抛了也照样收房，收不掉才是真的漏。
+      封顶那颗定时器要**收掉**（#957 终审 M5）：`Promise.race` 只是不再理输的
+      那一边，它并不取消它——排空先到时这颗 10 秒的计时器还挂在事件循环上，让
+      进程平白多活最长 10 秒（`unref` 不行：一次真的超时收房要靠它把 close 叫醒）。 */
+  function retireRoom(sessionId: string, session: CloudSession): Promise<void> {
+    activeSessions.delete(sessionId);
+    sessionBroadcast.delete(sessionId);
+    const close = closeRoom.get(sessionId);
+    closeRoom.delete(sessionId);
+    let capTimer: ReturnType<typeof setTimeout> | undefined;
+    const settledOrCapped = Promise.race([
+      session.settled(),
+      new Promise<void>((r) => { capTimer = setTimeout(r, ARCHIVE_SETTLE_MAX_WAIT_MS); }),
+    ]).finally(() => { if (capTimer !== undefined) clearTimeout(capTimer); });
+    if (close) {
+      void settledOrCapped.then(
+        () => setTimeout(close, 2_000),
+        () => setTimeout(close, 2_000)
+      );
+    }
+    // 排空那一步抛了也照走：删除不该因为一条卡死的 turn 而卡住
+    return settledOrCapped.catch(() => undefined);
+  }
+
   const frameHandlerDeps: FrameHandlerDeps = {
     log: (m) => console.log(`[otto-runtime] 帧：${m}`),
     verifyJwt: async (token) => {
@@ -749,39 +787,68 @@ async function main(): Promise<void> {
           console.error(`[otto-runtime] 归档写库失败（sessionId=${sessionId}）：${error.message}`);
         }
 
-        activeSessions.delete(sessionId);
-        sessionBroadcast.delete(sessionId);
-        // 关房间要等广播真的写出去：ws.close() 之后排队的帧还发不发得出去
-        // 是实现细节，不该赌。延一拍收摊——这条会话此刻已经不在
-        // activeSessions 里了，期间再来的帧一律 no_session，不会有人趁机
-        // 往一条已归档的会话里说话。
-        // **先等排空**（#957 A-8）：原来是固定 2 s，而归档不停正在跑的 turn
-        // （现在停了，但 abortTurn 只是翻信号，engine 落 turn_ended{aborted}
-        // 是异步的；工具跑到一半的那种更要等子进程收口）。2 s 到点就
-        // `cidTransport.delete`，之后这条 turn 产出的每一条事件都被 globalSend
-        // 静默丢掉 —— 人拿不到回复，模型调用的钱照付。
-        // 封顶 10 s：一条卡死的 turn 不该让房间永远关不掉（`settled()` 等的是
-        // inflight，而 drain 里的一次网络往返可以很久）。`.then(close, close)`
-        // —— settled() 抛了也照样收房，收不掉才是真的漏
-        const close = closeRoom.get(sessionId);
-        closeRoom.delete(sessionId);
-        if (close) {
-          // 封顶那颗定时器要**收掉**（#957 终审 M5）：`Promise.race` 只是不再理
-          // 输的那一边，它并不取消它——排空先到时这颗 10 秒的计时器还挂在事件
-          // 循环上，让进程平白多活最长 10 秒（`unref` 不行：一次真的超时收房
-          // 要靠它把 close 叫醒）。归档在真机上是连着来的，攒一把这种定时器就是
-          // 一段谁都解释不了的"退不出去"
-          let capTimer: ReturnType<typeof setTimeout> | undefined;
-          const settledOrCapped = Promise.race([
-            active.session.settled(),
-            new Promise<void>((r) => { capTimer = setTimeout(r, ARCHIVE_SETTLE_MAX_WAIT_MS); }),
-          ]).finally(() => { if (capTimer !== undefined) clearTimeout(capTimer); });
-          // 排空之后仍然延那一拍：等的两件事不一样 —— 前者等"这条 turn 不再
-          // 产出事件"，后者等"已经交给 socket 的那些字节写出去"
-          void settledOrCapped.then(
-            () => setTimeout(close, 2_000),
-            () => setTimeout(close, 2_000)
-          );
+        // 收摊那一段归档与删除共用（#1044），但**归档不 await 它**——今天的
+        // 行为一字不变
+        void retireRoom(sessionId, active.session);
+        return true;
+      },
+      /** 这条会话是谁建的（#1044）。`get()` 只认活着的房间，而归档掉的会话恰恰
+          是最常被删的那批，所以从台账那行现查 `publisher_uid`（create() 写进去的
+          就是发起人的 uid）。**查询失败往上抛**：兜底成 null 就是把「这一刻读
+          不到」说成「不存在」，而调用方据此回一句"可能已经被删掉了"——同
+          ADR-0243 那条纪律（读不到 ≠ 没有）。 */
+      async creatorOf(workspaceId, sessionId) {
+        const { data, error } = await supabase
+          .from("workspace_sessions")
+          .select("publisher_uid")
+          .eq("id", sessionId)
+          .eq("workspace_id", workspaceId)
+          .eq("kind", "cloud")
+          .maybeSingle();
+        if (error) throw new Error(`workspace_sessions 查询失败：${error.message}`);
+        if (data === null) return null;
+        return (data as { publisher_uid: string }).publisher_uid;
+      },
+      /** 彻底删除一条云会话（#1044）：**先按归档那条路收尾**（落 session_archived
+          并广播 → 停这一轮 → 等排空 → 收房间），再删台账那行，最后 purge 整段日志。
+
+          三处顺序都不是随手排的：
+          ① 先归档：房里的人得知道发生了什么。删除本身没有任何广播可当回执——
+             房间收掉、日志也没了，`session_archived` 是他们唯一收得到的那条。
+          ② **等排空之后才 purge**：purge 不是锁，抹完了照样 insert 得进去。
+             engine 还在收口的时候抹表，这一轮剩下的事件会写进一张刚清空的表，
+             于是删完之后凭空长出半条会话。
+          ③ **先删台账那行、再 purge 日志**：反过来的话，删库失败就留下一条
+             「台账里有、日志空了」的会话——daemon 下次重启照样把它捞出来开房间，
+             而没有 session_created 的日志投不出任何 system 消息（见 create()
+             那段注释）。反向的残留只是 VPS 上一段没人引用的字节，无声无害。 */
+      async remove(workspaceId, sessionId, byLabel) {
+        const active = activeSessions.get(sessionId);
+        if (active && active.workspaceId === workspaceId) {
+          // 已经归档过的回 false，照走——那一步只是「让还在看的人知道」
+          active.session.archive(byLabel);
+          await retireRoom(sessionId, active.session);
+        }
+        const { error } = await supabase
+          .from("workspace_sessions")
+          .delete()
+          .eq("id", sessionId)
+          .eq("workspace_id", workspaceId)
+          .eq("kind", "cloud"); // 一表两用：别顺手删掉一期的发布包（kind='package'）
+        if (error) {
+          console.error(`[otto-runtime] 删除写库失败（sessionId=${sessionId}）：${error.message}`);
+          return false;
+        }
+        // purge 连它派出去的子会话一起抹（否则子会话成孤儿：够不着、删不掉），
+        // 同本机那条路。**抛了也算删成功**：purge 有一条 fork 保护会抛
+        // （issue #352），而台账那行此刻已经没了——对每一个人来说这条会话都已经
+        // 消失，只是 VPS 上多留一段没人引用的字节。这里回 false 的话，界面会说
+        // "没删成"，而人再点一次只会撞上"这条会话不存在"
+        try {
+          const purged = storeFor(workspaceId).purge(sessionId);
+          console.log(`[otto-runtime] 删除云会话 ${sessionId}（连带 ${Math.max(0, purged.length - 1)} 条子会话）`);
+        } catch (err) {
+          console.error(`[otto-runtime] 台账那行已删，但日志没抹掉（sessionId=${sessionId}）：${String(err)}`);
         }
         return true;
       },

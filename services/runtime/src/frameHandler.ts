@@ -124,6 +124,17 @@ export interface FrameHandlerDeps {
         Supabase 那行的 archived 列 + 收掉房间。三件事在 daemon 里，因为
         只有它同时握着 supabase 句柄和 transport。false = 已经归档过了 */
     archive(workspaceId: string, sessionId: string, byLabel: string): Promise<boolean>;
+    /** 这条会话是谁建的（#1044）。`get()` 只认**活着的**房间，而归档的会话恰恰是
+        最常被删的那批——所以这一格从 Supabase 那行现查。
+        `null` = 确认这个工作区里没有这条会话；**查询本身挂了要 throw**，
+        不许兜底成 null：那等于把「这一刻读不到」说成「不存在」，同 ADR-0243
+        那条纪律（读不到 ≠ 没有）。 */
+    creatorOf(workspaceId: string, sessionId: string): Promise<string | null>;
+    /** 彻底删除一条云会话（#1044）：先按归档那条路收尾（落 `session_archived`
+        并广播 → 停这一轮 → 等排空 → 收房间），再删 Supabase 那行，最后
+        `EventStore.purge` 抹掉整段日志。false = 删库那一步失败（日志还在，
+        这条会话还能重开）。归档过的会话直接走后两步。 */
+    remove(workspaceId: string, sessionId: string, byLabel: string): Promise<boolean>;
   };
   saveConfig: (workspaceId: string, cfg: { repoUrl?: string; pat?: string }) => Promise<void>;
   /** 这个工作区此刻的仓库配置 + 最近一次 clone 结局（issue #834）。
@@ -371,9 +382,13 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
 
       if (msg.t === "hello") return; // 已验籍，重复 hello 当幂等刷新，不重复应答
 
-      // 控制房认四种帧（协议 8 起：create / workspace / config；协议 9 加 archive）——
+      // 控制房认五种帧（协议 8 起：create / workspace / config；协议 9 加 archive，
+      // 协议 10 加 delete）——
       // 都是「关于某个工作区」的动作，不挂在任何一条会话上。在籍是共同前提
-      if (msg.t !== "create" && msg.t !== "workspace" && msg.t !== "config" && msg.t !== "archive") {
+      if (
+        msg.t !== "create" && msg.t !== "workspace" && msg.t !== "config" &&
+        msg.t !== "archive" && msg.t !== "delete"
+      ) {
         deny(cid, "not_authorized");
         return;
       }
@@ -424,6 +439,58 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
           sessionId: msg.sessionId,
           ok: done,
           ...(done ? {} : { message: "归档没有生效：这条会话可能已经归档了。" }),
+        });
+        return;
+      }
+
+      if (msg.t === "delete") {
+        // 谁能删 = 谁能归档（#822 的判据原样：owner 或建这条会话的人）。删除更狠
+        // ——归档是「收尾，但还看得见」，删除把整段事件日志抹掉，而那段日志是
+        // **一群人**（外加几只 agent）共同写的。判据仍然合并成一条：两颗钮并排
+        // 住在同一个菜单里，「能按这颗不能按那颗」要另外有一套解释；何况云端的
+        // 归档本来就没有回头路（daemon 只捞 archived=false 的会话重开房间），
+        // 两件事都是单向门。判据在服务端，菜单项的显隐只是 UX。
+        // 两次查询**一起等、一起收错**：分开写的话，同一个故障（Supabase 挂了）
+        // 会因为先挂在哪一条上而产生两种行为——creatorOf 抛有回执，ownerOf 抛
+        // 一路冒到 serialize 里被吞掉，客户端只能白等满 15 秒 ACK 超时。顺带省
+        // 一次往返
+        let creator: string | null;
+        let ownerUid: string;
+        try {
+          [creator, ownerUid] = await Promise.all([
+            deps.sessions.creatorOf(msg.workspaceId, msg.sessionId),
+            deps.sessions.ownerOf(msg.workspaceId),
+          ]);
+        } catch (err) {
+          // 「这一刻读不到」不许说成「不存在」（同 ADR-0243）：后者会让人以为
+          // 已经删干净了，转头去别处找它
+          deps.log(`delete 查会话失败（session=${msg.sessionId}）：${String(err)}`);
+          deps.send(cid, {
+            t: "delete_result", workspaceId: msg.workspaceId, sessionId: msg.sessionId,
+            ok: false, message: "这一刻读不到这条会话的信息，什么都没删。稍后再试。",
+          });
+          return;
+        }
+        if (creator === null) {
+          deps.send(cid, {
+            t: "delete_result", workspaceId: msg.workspaceId, sessionId: msg.sessionId,
+            ok: false, message: "这条会话不在这个工作区里，可能已经被删掉了。",
+          });
+          return;
+        }
+        if (entry.uid !== ownerUid && entry.uid !== creator) {
+          deny(cid, "not_authorized");
+          return;
+        }
+        const done = await deps.sessions.remove(msg.workspaceId, msg.sessionId, entry.label);
+        deps.send(cid, {
+          t: "delete_result",
+          workspaceId: msg.workspaceId,
+          sessionId: msg.sessionId,
+          ok: done,
+          // 台账那行还在 = 这条会话还在（daemon 重启照样把它捞出来），所以这句
+          // 说的是「没删成」而不是「删了一半」
+          ...(done ? {} : { message: "删除没有生效：台账那一行没删掉，这条会话还在。" }),
         });
         return;
       }
@@ -650,6 +717,7 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
         case "workspace": // 同上（协议 8，#991）
         case "config": // 同上：仓库是工作区的属性，配它不该以开着一条会话为前提
         case "archive": // 同上（协议 9，#993）：归档不该以「你正开着这条会话」为前提
+        case "delete": // 同上（协议 10，#1044）：删的多半是归档掉的那些，根本没有房间
         default:
           deny(cid, "not_authorized");
           return;

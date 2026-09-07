@@ -7,7 +7,14 @@ import type { SessionEvent } from "../../session/events.js";
 import { b64decode, b64encode } from "./b64.js";
 import { MAX_FRAME_BYTES } from "./wire.js";
 
-/** 9（#993，ADR-0235）：归档也搬进**控制房**——同上一条的判据：归档一条会话
+/** 10（#1044）：加一对 `delete` / `delete_result`（控制房帧，形状与 `archive`
+    逐字相同）——**彻底删除一条云会话**。原来这颗钮不存在，理由是 0016 迁移把
+    `wss_delete_publisher` 钉死在 `kind='package'`，云会话的创建者删不掉自己那行
+    workspace_sessions（ADR-0235）。那条前提只对**客户端直连 Supabase** 成立：
+    runtime 拿的是 service key，`EventStore.purge()` 也早就有（本机「彻底删除」
+    用的就是它）。所以删不掉不是做不到，是没做。删除是不可逆的，且抹掉的是
+    **一群人**的记录，谁能按由服务端判（与 archive 同一条：owner 或建的人）。
+    9（#993，ADR-0235）：归档也搬进**控制房**——同上一条的判据：归档一条会话
     不该以「你此刻正开着它」为前提（界面上那颗钮因此只能待在会话头部，而它属于
     侧栏那条会话行的 ⋮ 菜单，同本地会话）。`archive` 帧带 `workspaceId` + `sessionId`、
     只在控制房接，新增 `archive_result` 回执（控制房没有会话房那条 `session_archived`
@@ -43,7 +50,7 @@ import { MAX_FRAME_BYTES } from "./wire.js";
     少一格状态。**加一个枚举值同理**：老客户端的 isValidCsDeniedCode 认不出
     `rate_limited`，decodeCsDown 回 null，那一帧被静默忽略，于是 create()
     要白等满超时才回一句"云端无响应"——把"你被限速了"说成"对面没回话"。 */
-export const CS_PROTOCOL_VERSION = 9;
+export const CS_PROTOCOL_VERSION = 10;
 export const CS_MAX_TEXT_BYTES = 64 * 1024;
 
 /** 「有一条事件太大，没发给你」这一类 error 帧的识别标记（终审 I2）。
@@ -191,6 +198,12 @@ export type CsUp =
       不依赖「正开着这条会话」。谁能归档由服务端判（owner 或建这条会话的人，
       issue #822 的判据原样）*/
   | { t: "archive"; workspaceId: string; sessionId: string }
+  /** 彻底删除一条云会话——**控制房帧**（协议 10，#1044）：形状与 `archive` 相同，
+      判据也相同（owner 或建这条会话的人，服务端自己判一次）。归档的会话同样能删，
+      而且那才是最常删的一批——所以这条帧不要求会话此刻还开着房间。
+      与归档的差别写在 `delete_result` 上：归档是「收尾，还看得见」，删除是
+      「整段事件日志从 VPS 上抹掉，谁都再看不到」 */
+  | { t: "delete"; workspaceId: string; sessionId: string }
   /** 停掉当前正在跑的这一轮 turn（#957 第三批）。谁能停与 approve 同一判据——
       发起人或 owner；已排队未跑的 job 照旧，停的是"这一轮"不是清队列。
       `seq`（add-only，协议号不变）= 客户端按的那一行开场白自己的 seq（复审
@@ -245,6 +258,11 @@ export type CsDown =
   /** archive 的回执（协议 9，#993）。会话房那条路靠 `session_archived` 广播当回执
       （所有人都看得见的那一份），控制房没有房间可广播，得单独回一条 */
   | { t: "archive_result"; workspaceId: string; sessionId: string; ok: boolean; message?: string }
+  /** delete 的回执（协议 10，#1044）。删除没有任何广播可当回执——房间收掉了，
+      日志也没了，房里的人拿到的是 `session_archived`（删除先走一遍归档那条路，
+      让还在看的人知道发生了什么）。`ok=false` 的 message 分得清三种：这条会话
+      不存在 / 这一刻读不到（查询挂了，**不是**「不存在」）/ 删库那一步失败 */
+  | { t: "delete_result"; workspaceId: string; sessionId: string; ok: boolean; message?: string }
   /** `workspace` 读帧的答复（协议 8，#991）：与 welcome / config_result 上那两格同形 */
   | { t: "workspace_state"; workspaceId: string; repo: CsRepoState | null; modelRoute: CsModelRoute | null }
   /** say 的回执（#957 第三批）。同 config_result 的纪律——不复用 error。
@@ -435,6 +453,14 @@ export function decodeCsUp(b64: string): CsUp | null {
       return null;
     }
 
+    if (t === "delete") {
+      // 同 archive：不知道删谁的话这条帧没有意义，两格都必填
+      if (typeof obj.workspaceId === "string" && typeof obj.sessionId === "string") {
+        return { t: "delete", workspaceId: obj.workspaceId, sessionId: obj.sessionId };
+      }
+      return null;
+    }
+
     if (t === "stop") {
       // 缺席即不带（旧客户端）；带了就校验形状——非负整数以外一律判**整帧
       // 无效**，而不是"当没带过"：后者会把一条本该被拒的停止悄悄升级成
@@ -493,6 +519,20 @@ export function decodeCsDown(b64: string): CsDown | null {
         (obj.message === undefined || typeof obj.message === "string")
       ) {
         const result: CsDown = { t: "archive_result", workspaceId: obj.workspaceId, sessionId: obj.sessionId, ok: obj.ok };
+        if (typeof obj.message === "string") result.message = obj.message;
+        return result;
+      }
+      return null;
+    }
+
+    if (t === "delete_result") {
+      if (
+        typeof obj.workspaceId === "string" &&
+        typeof obj.sessionId === "string" &&
+        typeof obj.ok === "boolean" &&
+        (obj.message === undefined || typeof obj.message === "string")
+      ) {
+        const result: CsDown = { t: "delete_result", workspaceId: obj.workspaceId, sessionId: obj.sessionId, ok: obj.ok };
         if (typeof obj.message === "string") result.message = obj.message;
         return result;
       }

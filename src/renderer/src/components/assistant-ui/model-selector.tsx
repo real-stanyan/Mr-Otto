@@ -11,6 +11,7 @@ import {
   useContext,
   type ComponentPropsWithoutRef,
   type ReactNode,
+  type Ref,
 } from "react";
 import { cva, type VariantProps } from "class-variance-authority";
 import { CheckIcon, ChevronDownIcon } from "lucide-react";
@@ -490,7 +491,14 @@ function ModelSelectorSearch({
 
 export type ModelSelectorListProps = ComponentPropsWithoutRef<
   typeof CommandList
->;
+> & {
+  /** 本仓改动（registry 升级时人工合的依据，#1049）：上游这份类型是
+      `ComponentPropsWithoutRef`，于是调用方拿不到滚动容器。ModelPicker 需要它——
+      cmdk 在挂载时（Radix 还没量完位）就把选中项 scrollIntoView 了一次，把它顶到
+      列表最上方，浮层打开的第一眼看不到上面的 Auto；纠正这一下必须够得着这个元素。
+      React 19 里 ref 就是一个普通 prop，底下那句 `{...props}` 原样传下去 */
+  ref?: Ref<HTMLDivElement>;
+};
 
 function ModelSelectorList({
   className,
