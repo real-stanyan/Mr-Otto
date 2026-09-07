@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { applyAgentMention, filterAgentCandidates, mentionQueryAt, pickerEmptyState, resolveSendMentions } from "../../src/renderer/src/lib/agentMentionInput.js";
+import { applyAgentMention, mentionQueryAt, pickerEmptyState, resolveSendMentions } from "../../src/renderer/src/lib/agentMentionInput.js";
 
 describe("mentionQueryAt", () => {
   it("刚打了 @ / 打了一半 / 中文标点后 —— 都算正在打", () => {
@@ -53,15 +53,6 @@ describe("pickerEmptyState", () => {
   });
 });
 
-describe("filterAgentCandidates", () => {
-  const roster = [{ name: "管理员", description: "" }, { name: "运营", description: "管店铺" }, { name: "Ads", description: "投放" }];
-  it("空 = 全部；按名字或职责；大小写不敏感", () => {
-    expect(filterAgentCandidates(roster, "")).toHaveLength(3);
-    expect(filterAgentCandidates(roster, "店").map((r) => r.name)).toEqual(["运营"]);
-    expect(filterAgentCandidates(roster, "ads").map((r) => r.name)).toEqual(["Ads"]);
-  });
-});
-
 // 第四批 C2-I5：五条规则各一例。旧判据（「刷新后名单长度是不是 0」）在下面
 // 第三、第四条上都会走错——前者刷新失败时旧名单还在（长度非 0）于是照发权威
 // 的 `[]`，后者名单是新的但没这个人、同样发 `[]` 且一个字都不说。
@@ -91,7 +82,7 @@ describe("resolveSendMentions", () => {
   it("名单是新的、里面确实没这个人 —— 拦下来说清是哪个名字", () => {
     expect(resolveSendMentions({ text: "@小红 看下", parsed: [], refreshFailed: false, freshCandidates: roster })).toEqual({
       kind: "block",
-      error: "没有叫「小红」的智能体，检查一下名字",
+      error: "没有叫「小红」的成员或智能体，检查一下名字",
     });
   });
   it("刷新后解析得出来 —— 发新名单算出的那份", () => {
@@ -104,6 +95,45 @@ describe("resolveSendMentions", () => {
   it("token 超长时截 20 字：不把一整段正文糊进提示里", () => {
     const long = "x".repeat(30);
     const r = resolveSendMentions({ text: `@${long} 看下`, parsed: [], refreshFailed: false, freshCandidates: roster });
-    expect(r).toEqual({ kind: "block", error: `没有叫「${"x".repeat(20)}」的智能体，检查一下名字` });
+    expect(r).toEqual({ kind: "block", error: `没有叫「${"x".repeat(20)}」的成员或智能体，检查一下名字` });
+  });
+
+  // #1059：名单里有人类成员之后，"一只 agent 都没点到" 不再等于 "打错字"
+  describe("@ 人类成员（#1059）", () => {
+    const members = [{ agentId: "u-zhang", name: "张三" }, { agentId: "u-mx", name: "Mingxuan Zhang" }];
+    it("只 @ 了人 —— 发权威的 `[]`（服务端只落 chat_message、不起 turn），不拦不提示", () => {
+      expect(
+        resolveSendMentions({ text: "@张三 帮我看下", parsed: [], refreshFailed: false, freshCandidates: roster, memberCandidates: members })
+      ).toEqual({ kind: "send", mentions: [], notice: null });
+    });
+    it("名字里带空格的成员照样认得出 —— 判据是 parseMentions 的最长匹配，不是按空白切出来的 token", () => {
+      // mentionTokens("@Mingxuan Zhang 看下") 切出来只有 "Mingxuan"，拿它比字符串会判成打错字
+      expect(
+        resolveSendMentions({ text: "@Mingxuan Zhang 看下", parsed: [], refreshFailed: false, freshCandidates: roster, memberCandidates: members })
+      ).toEqual({ kind: "send", mentions: [], notice: null });
+    });
+    it("成员与 agent 撞名 —— 归 agent 接，与本地名单健康时 parsed 先命中给出的答案一致", () => {
+      const shadowed = [{ agentId: "u-x", name: "运营" }];
+      expect(
+        resolveSendMentions({ text: "@运营 看下", parsed: [], refreshFailed: false, freshCandidates: roster, memberCandidates: shadowed })
+      ).toEqual({ kind: "send", mentions: ["a1"], notice: null });
+    });
+    it("两族都没有这个名字 —— 照旧拦下来", () => {
+      expect(
+        resolveSendMentions({ text: "@小红 看下", parsed: [], refreshFailed: false, freshCandidates: roster, memberCandidates: members })
+      ).toEqual({ kind: "block", error: "没有叫「小红」的成员或智能体，检查一下名字" });
+    });
+    it("memberCandidates 缺席 = 行为与改动前逐字相同（旧调用方不会因为这个参数变松）", () => {
+      expect(resolveSendMentions({ text: "@张三 看下", parsed: [], refreshFailed: false, freshCandidates: roster })).toEqual({
+        kind: "block",
+        error: "没有叫「张三」的成员或智能体，检查一下名字",
+      });
+    });
+    it("名单读不出来时仍然交给云端，不因为本地有个同名成员就抢答", () => {
+      // 排在 refreshFailed 之后：那一刻本地无从判断云端名单里有没有一只同名 agent
+      expect(
+        resolveSendMentions({ text: "@张三 看下", parsed: [], refreshFailed: true, freshCandidates: roster, memberCandidates: members })
+      ).toEqual({ kind: "send", mentions: undefined, notice: "名单读不出来，这句话的 @ 由云端按名字解析" });
+    });
   });
 });

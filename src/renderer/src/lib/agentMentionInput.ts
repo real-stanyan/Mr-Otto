@@ -39,7 +39,7 @@ export function applyAgentMention(text: string, at: number, caret: number, name:
 
 // #935 / #957 C-I4：选人弹层的空态判据——纯函数,不碰任何 store/IPC。
 // 非 null 只有一种情形:用户确实停在一个 @ 后面(picking 非空)、已经打了至少
-// 一个字(query 非空——刚打完 @ 还没打字时不该报"没有叫「」的智能体"，那是
+// 一个字(query 非空——刚打完 @ 还没打字时不该报"没有叫「」的成员或智能体"，那是
 // 在羞辱用户还没做的事)、且这份名单里一个都不匹配。名单变陈旧(改名/新增)
 // 是最常见的诱因,所以这里只回答"有没有这个空态"，具体怎么办(弹一行提示+
 // 一颗刷新钮)交给调用方。
@@ -51,12 +51,6 @@ export function pickerEmptyState(
   if (picking.query.trim() === "") return null;
   if (options.length > 0) return null;
   return { query: picking.query };
-}
-
-export function filterAgentCandidates<T extends { name: string; description: string }>(roster: readonly T[], query: string): T[] {
-  const q = query.trim().toLowerCase();
-  if (q === "") return [...roster];
-  return roster.filter((a) => a.name.toLowerCase().includes(q) || a.description.toLowerCase().includes(q));
 }
 
 // ── 发送时那句 @ 到底算点了谁（第四批 C2-I5）────────────────────────────
@@ -81,12 +75,24 @@ export type SendMentionPlan =
     `freshCandidates === null` = 这一刻的名单压根没拿到（刷新失败，或刷新成功
     但这个工作区已经不在返回的清单里），与「拿到了、里面没有这个名字」是两回事。
     `mentions: undefined` = 缺席，让服务端拿它自己那份名单解析正文（老语义）；
-    `[]` 是权威的「谁都没点」，这个函数**永远不会**在正文写了 @token 时返回它 */
+    `[]` 是权威的「没点任何 agent」。**#1059 之前这个函数在正文写了 @token 时
+    永远不返回 `[]`**，现在有且只有一种情形返回它：那几个 @ 全都点在人类成员上
+    （见下面 memberCandidates 那段）—— 那时「没点任何 agent」是事实而不是失败，
+    服务端照 targets.length === 0 只落一条 chat_message */
 export function resolveSendMentions(args: {
   text: string;
   parsed: string[];
   refreshFailed: boolean;
   freshCandidates: MentionCandidate[] | null;
+  /** 人类成员按 `{agentId: uid, name: 显示名}` 递进来（#1059）。**只用来判"这个
+      @ 认不认得"，不进 `mentions`** —— 服务端 resolveTargets 按 agent id 过滤，
+      uid 放进去也会被静默丢掉。缺席（旧调用方/单 agent 会话）= 名单里没有人类，
+      行为与改动前逐字相同。
+      为什么复用 parseMentions 而不是拿 `mentionTokens` 的结果去比字符串：token 是
+      **贪婪吃到空白为止**的（"@张三，帮我看下" 切出来是 "张三，帮我看下"），而
+      parseMentions 走的是 startsWith 最长匹配 —— 两套切词判据分家，就会出现
+      "弹层里点了这个人、发送时说不认识他" 这种撕裂 */
+  memberCandidates?: readonly MentionCandidate[];
 }): SendMentionPlan {
   const tokens = mentionTokens(args.text);
   // 压根没写 @ ：`parsed`（必然是 []）原样发，那是真的「谁都没点」
@@ -101,8 +107,19 @@ export function resolveSendMentions(args: {
   }
   const fresh = parseMentions(args.text, args.freshCandidates);
   if (fresh.length > 0) return { kind: "send", mentions: fresh, notice: null };
+  // 一只 agent 都没点到、但点到了一个**人类成员**（#1059）：这不是打错字，是这个
+  // 群里最普通的一句话。`[]` 是权威的「我确认没点任何 agent」，服务端照
+  // targets.length === 0 那条分支只落一条 chat_message、不起 turn —— 正是 @ 一个
+  // 人今天该发生的事（通知另说，见 ADR-0252）。
+  // **排在 fresh 之后**：agent 与成员撞名时（成员的显示名来自 profiles.name，
+  // 从来没过 agentNameConflict 那套前缀检查）这一句归 agent 接，与本地名单健康时
+  // `parsed` 先命中给出的答案逐字相同 —— 反过来排会让"名单读得出来"与"读不出来"
+  // 两条路对同一句话给出不同的接话人
+  if (parseMentions(args.text, args.memberCandidates ?? []).length > 0) {
+    return { kind: "send", mentions: [], notice: null };
+  }
   // 名单是新的、里面确实没有这个人 —— 这是唯一能确定「用户打错了」的情形，
   // 也是唯一该拦的情形。截 20 字：token 贪婪吃到空白为止，"@运营@广告" 会整段
   // 吞成一个 token，不截的话一整段正文会糊在这句提示里
-  return { kind: "block", error: `没有叫「${tokens[0]!.slice(0, 20)}」的智能体，检查一下名字` };
+  return { kind: "block", error: `没有叫「${tokens[0]!.slice(0, 20)}」的成员或智能体，检查一下名字` };
 }
