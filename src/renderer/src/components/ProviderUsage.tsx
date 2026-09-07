@@ -162,7 +162,7 @@ export function ProviderUsage({ provider }: { provider: ProviderId }) {
         {/* 涨跌不走 element 自带的 delta:那一格把"涨"画成绿色、"跌"画成红色,
             那是给营收看的配色。这里涨的是花销,绿色会把"这周多烧了四成"表扬一遍 */}
         {trend && <span className="tabular-nums">{trend}</span>}
-        {mine && mine.costUsd === null && <span>有型号查不到价，这一栏只报 token</span>}
+        {mine && mine.costUsd === null && <span>有模型查不到价，这一栏只报 token</span>}
         {balance && !balance.ok && <span>余额查不到 —— {balance.error}</span>}
       </div>
     </div>

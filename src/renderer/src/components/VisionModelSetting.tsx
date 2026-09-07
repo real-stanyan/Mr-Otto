@@ -65,7 +65,7 @@ export function VisionModelSetting() {
         <span className="font-mono text-[13px] font-semibold text-brand shrink-0">vision-bridge</span>
         <Badge variant="secondary" className="shrink-0">内置</Badge>
         <span className="text-muted-foreground text-[12.5px] flex-1 min-w-0 truncate">
-          图片代读员，不是 agent：你在用的型号没眼睛而消息带图时，先由它把图读成文字。选单只列原生看图的款。
+          图片代读员，不是 agent：你在用的模型没眼睛而消息带图时，先由它把图读成文字。选单只列原生看图的款。
         </span>
         <ModelPicker
           value={model ?? ""}

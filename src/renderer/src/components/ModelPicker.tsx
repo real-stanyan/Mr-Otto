@@ -182,7 +182,7 @@ export function ModelPicker({
           border-0:浮层靠 bg-popover + 阴影浮起来,不靠一圈描边 */}
       <ModelSelectorContent align="end" searchable={false} className="w-[268px] border-0">
         <ModelSelectorList className="max-h-[320px]">
-          <ModelSelectorEmpty>没有匹配的型号</ModelSelectorEmpty>
+          <ModelSelectorEmpty>没有匹配的模型</ModelSelectorEmpty>
 
           {groups.map((g) => (
             <ModelSelectorGroup key={g.provider} heading={g.info.name}>
@@ -223,7 +223,7 @@ export function ModelPicker({
             门槛 1000：几百 token 的缓存不值得占一行，说了才是噪音 */}
         {cachedTokens >= 1000 && (
           <div className="border-t border-border/60 px-3 py-2 text-[11px] leading-[1.5] text-muted-foreground">
-            换型号会作废
+            换模型会作废
             <span className="tabular-nums text-foreground/80"> {fmtTokens(cachedTokens)} </span>
             已缓存 token，下一轮全价重算。
           </div>

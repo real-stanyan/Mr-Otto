@@ -393,7 +393,7 @@ export function SubagentFields({
               </button>
             )}
           </div>
-          <p className={HINT}>不碰 = 跟主会话当前用的型号走</p>
+          <p className={HINT}>不碰 = 跟主会话当前用的模型走</p>
         </div>
 
         <div className={cn(FIELD, "flex-1")}>
@@ -414,11 +414,11 @@ export function SubagentFields({
                 className="press-scale text-muted-foreground hover:text-foreground text-[11px] shrink-0"
                 onClick={draft.unpinThinking}
               >
-                跟随型号默认档
+                跟随模型默认档
               </button>
             )}
           </div>
-          <p className={HINT}>不碰 = 跟这个型号的默认档走</p>
+          <p className={HINT}>不碰 = 跟这个模型的默认档走</p>
         </div>
       </div>
 

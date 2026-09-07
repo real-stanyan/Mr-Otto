@@ -449,8 +449,12 @@ function AgentEditorDialog({
       <DialogContent className="flex flex-col sm:max-w-[480px] max-h-[calc(100dvh-4rem)]">
         <DialogHeader>
           <DialogTitle>{state?.mode === "edit" ? `编辑「${state.agent.name}」` : `新建智能体`}</DialogTitle>
-          <DialogDescription>
-            工作区里 @ 得到的那几只——名字、职责一句话、提示词、型号白名单都在这儿建改。
+          {/* 只给读屏，不画出来（#1015）：那句话是一段自我介绍，而人打开这张
+              表单时已经知道自己要干什么——标题就写着在编辑哪一只。**不是删掉**：
+              Radix 的 Dialog 要么有 Description、要么要显式 aria-describedby，
+              两样都没有会在控制台留一条警告，而读屏用户本来就该听到这一句 */}
+          <DialogDescription className="sr-only">
+            在这里建改工作区里 @ 得到的智能体：名字、职责、提示词、模型、连接器。
           </DialogDescription>
         </DialogHeader>
 
@@ -634,7 +638,7 @@ function AgentEditorDialog({
             </p>
             {availableModels.length === 0 && (
               <p className="text-[10.5px] text-muted-foreground">
-                还没读到网关供着的型号清单（不是「一款都没有」）。到账号页看一眼订阅信息就会拉一次。
+                还没读到网关供着的模型清单（不是「一款都没有」）。到账号页看一眼订阅信息就会拉一次。
               </p>
             )}
             {chainNote !== null && <p className="text-[10.5px] text-warn">{chainNote}</p>}

@@ -100,7 +100,7 @@ function ProviderRow({
             {info.keyless ? (
               <p className="text-[12.5px] leading-[1.6] text-muted-foreground">
                 装好 Ollama 并让它跑着（<code>ollama serve</code>），
-                <code>ollama pull</code> 过的型号会自动出现在下面和型号下拉框里，不用配任何东西。
+                <code>ollama pull</code> 过的模型会自动出现在下面和模型下拉框里，不用配任何东西。
                 端点跟着 Ollama 自己的 <code>OLLAMA_HOST</code> 走（默认{" "}
                 <code>127.0.0.1:11434</code>）
                 {ollamaBaseUrl && <>，当前连的是 <code>{ollamaBaseUrl}</code></>}。
@@ -263,7 +263,7 @@ export function ModelProviderSettings() {
       <HelperModelSetting />
 
       {matched.length === 0 && (
-        <p className="px-1 text-[13px] text-muted-foreground">没有匹配「{query}」的厂商或型号。</p>
+        <p className="px-1 text-[13px] text-muted-foreground">没有匹配「{query}」的厂商或模型。</p>
       )}
 
       <p className="px-1 text-[12px] leading-[1.6] text-muted-foreground">

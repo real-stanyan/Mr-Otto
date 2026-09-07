@@ -131,7 +131,7 @@ export function AutoCompactSettings() {
       </header>
       <section className={SETTINGS_BODY}>
         <p className={HINT}>
-          上下文用量接近型号窗口上限时，自动摘要折叠此前对话，腾出空间接着聊——
+          上下文用量接近模型窗口上限时，自动摘要折叠此前对话，腾出空间接着聊——
           和手动 <span className="font-mono text-foreground/80">/compact</span> 是同一套逻辑，只是自己找时机触发。
         </p>
         <div className="flex flex-col gap-4 rounded-[10px] border border-border px-[14px] py-3">
@@ -166,7 +166,7 @@ export function AutoCompactSettings() {
             />
             <p className={HINT}>默认：窗口 ≥512K 时 50%，否则 75%</p>
             <p className={HINT}>
-              当前型号（{modelLabel}）：{describeThreshold(settings, contextWindow)}
+              当前模型（{modelLabel}）：{describeThreshold(settings, contextWindow)}
             </p>
           </div>
 
