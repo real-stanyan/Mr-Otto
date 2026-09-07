@@ -110,7 +110,7 @@ export function resolveSendMentions(args: {
   // 一只 agent 都没点到、但点到了一个**人类成员**（#1059）：这不是打错字，是这个
   // 群里最普通的一句话。`[]` 是权威的「我确认没点任何 agent」，服务端照
   // targets.length === 0 那条分支只落一条 chat_message、不起 turn —— 正是 @ 一个
-  // 人今天该发生的事（通知另说，见 ADR-0249）。
+  // 人今天该发生的事（通知另说，见 ADR-0252）。
   // **排在 fresh 之后**：agent 与成员撞名时（成员的显示名来自 profiles.name，
   // 从来没过 agentNameConflict 那套前缀检查）这一句归 agent 接，与本地名单健康时
   // `parsed` 先命中给出的答案逐字相同 —— 反过来排会让"名单读得出来"与"读不出来"

@@ -19,7 +19,7 @@
 // agent 那几个 id 填进 mentions（只 @ 人时就是 `[]` —— 那是一句权威的「我确认
 // 没点任何 agent」，服务端照 targets.length === 0 那条分支只落一条 chat_message）。
 // 所以这一版**服务端零改动**。真正给被 @ 的成员发通知（未读角标 / 推送）是另一件
-// 事，今天工作区一条往成员那边推的通道都没有，另开 issue（见 ADR-0249）。
+// 事，今天工作区一条往成员那边推的通道都没有，另开 issue（见 ADR-0252）。
 
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 
