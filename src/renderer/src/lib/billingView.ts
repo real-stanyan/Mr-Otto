@@ -205,6 +205,12 @@ export function planBadge(me: BillingMe | null): PlanBadgeId | null {
  */
 export function hostedModels(billing: BillingSnapshotView | null): readonly string[] {
   const me = billing?.me;
-  if (!me || me.status !== "active" || me.plan === null) return [];
+  if (!me || me.status !== "active" || me.plan === null) return NO_HOSTED_MODELS;
   return me.models;
 }
+
+/** 「一款都没有」那个答案必须是**同一个数组实例**：这个函数是 `useChat(selector)` 的
+    选择器，而 zustand 按 `Object.is` 比较——每次现造一个 `[]` 就是每次都「变了」，
+    组件无限重渲染（`Maximum update depth exceeded`，写这条注释的那一版真的这样了，
+    被 tests/renderer/ModelPicker.test.tsx 当场抓住）。冻起来是为了别有人往里 push */
+const NO_HOSTED_MODELS: readonly string[] = Object.freeze([]);
