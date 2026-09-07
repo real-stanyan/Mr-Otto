@@ -12,11 +12,14 @@
 // 选 Auto = 空链。空链今天的含义是「不指定，用网关路由表的首选款」——**不是**按
 // 任务难度自选，那是另一件还没做的事，所以文案只许写此刻的真实行为。
 
-/** 下拉里 Auto 那一项的值。不用空串：Radix 的 SelectItem 明确禁止空串 value
-    （它拿空串表示「没选」），塞进去会在运行时抛错 */
 import type { ProviderId } from "../../../shared/providerCatalog.js";
 
-export const AUTO_MODEL = "__auto__";
+/** 下拉里 Auto 那一项的值。**定义在 `shared/autoModel.ts`，这里只是转出去**（#1042）：
+    桌面输入框那枚选择器也长出了 Auto，同一个口令还要走 IPC 到主进程——三处各写一个
+    字面量的话，改一处忘一处不报错，只会让「选了 Auto」在其中一条路上变成
+    「选了一款叫 __auto__ 的型号」 */
+export { AUTO_MODEL } from "../../../shared/autoModel.js";
+import { AUTO_MODEL } from "../../../shared/autoModel.js";
 
 /** 当前这条链在下拉里选中哪一项 */
 export function selectedModelValue(models: readonly string[]): string {

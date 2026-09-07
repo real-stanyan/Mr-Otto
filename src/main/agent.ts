@@ -102,6 +102,7 @@ import type { AskUserOutcome, AskUserQuestion } from "../shared/askUser.js";
 import { routeModel } from "./modelRoute.js";
 import type { HostedQuota } from "./hostedQuota.js";
 import type { ModelLane } from "../shared/modelLane.js";
+import { pickAutoModel as pickAutoModelShared } from "../shared/autoModel.js";
 import type { Approver } from "../loop/approvalGate.js";
 import type { ExecutionWorld } from "../world/executionWorld.js";
 
@@ -510,6 +511,10 @@ export function createAgent(opts: {
   // lane 和型号同一个取法(都从最后一条 model_changed 投影)。旧日志没这个字段 = auto,
   // 也就是老规矩:自带 key 优先(ADR-0020/0045)
   let lane: ModelLane = (lastSwitch?.type === "model_changed" ? lastSwitch.lane : undefined) ?? "auto";
+  // 「这一格是 Auto」和型号、lane 读同一条事件（#1042）：最后一条 model_changed 说了算。
+  // 于是 resume 回来时 Auto 也自动回来，不用第二种持久化——同上面那两行的招
+  let autoModel: boolean =
+    lastSwitch?.type === "model_changed" ? lastSwitch.auto === true : false;
 
   // thinking 也是运行时偏好，但它的**取值范围**由型号决定：GLM 是开/关，
   // GPT-5 是低/中/高（关不掉），Grok 4 干脆没有开关。所以初值不能写死 true，
@@ -864,8 +869,11 @@ export function createAgent(opts: {
   /** 切换 = 先落事实（model_changed），再换投影（adapter 实例）。顺序是硬规则。
       lane 一起落:同一个型号换条路走(自己的 key ↔ 官方赠额)也是一次切换,
       而且它决定这个 turn 的钱从谁账上出 —— 那是"发生过什么"的一部分 */
-  function switchModel(modelId: string, nextLane: ModelLane = "auto"): void {
-    if (modelId === current.model && nextLane === lane) return;
+  function switchModel(modelId: string, nextLane: ModelLane = "auto", nextAuto = false): void {
+    // 三个维度任何一个变了都要落一条事件。**`nextAuto` 必须进这个比较**：
+    // 「型号没变、只是从此由 Auto 说了算」是一次真的切换（用户在选择器里点的就是它），
+    // 漏掉它这一下就静默地什么都不发生，界面上却已经显示 Auto 了
+    if (modelId === current.model && nextLane === lane && nextAuto === autoModel) return;
     const next = resolveWithCapabilities(modelId);
     const full = store.append({
       sessionId,
@@ -873,10 +881,13 @@ export function createAgent(opts: {
       type: "model_changed",
       provider: next.provider,
       model: next.model,
-      // auto 不写进日志:它是缺省,写了等于给每条旧事件补一个没有信息量的字段
+      // lane 的 auto 不写进日志:它是缺省,写了等于给每条旧事件补一个没有信息量的字段
       ...(nextLane === "grant" ? { lane: nextLane } : {}),
+      // 型号那一格的 Auto 则反过来——关着才是缺省，开着必须写下来
+      ...(nextAuto ? { auto: true as const } : {}),
     });
     lane = nextLane;
+    autoModel = nextAuto;
     opts.push.event(full); // engine 外落的盘，推送自己负责
     // 换型号 = 换挡位表。手上这一档多半不在新型号的表里（"开"→ GPT-5 只有低/中/高），
     // 按强度就近落地；顺序在 setAdapter 之前——adapter 要拿到钳好的那一档
@@ -965,6 +976,39 @@ export function createAgent(opts: {
     },
     get model() {
       return current.model;
+    },
+    /** 这一格此刻是不是 Auto（#1042）。渲染层自己也能从日志投影出来
+        （`autoModelOf`），这里给的是 IPC 那条同步路径要用的那份 */
+    get autoModel() {
+      return autoModel;
+    },
+    /**
+     * Auto 开着就判一手，挑出这一 turn 用哪款并**落一条 model_changed**。
+     * 关着、没装配托管、没订阅、网关供的款不到两个、判不出来——一律什么都不做，
+     * 行为与改动前逐字相同（见 shared/autoModel.ts 文件头那条纪律）。
+     *
+     * 挑中的那条事件照旧带 `auto: true`，所以 Auto 不会因为自己挑了一款而关掉。
+     */
+    async pickAutoModel(text: string): Promise<void> {
+      if (!autoModel) return;
+      const h = opts.hosted;
+      if (!h) return;
+      const snap = h.quota.snapshot();
+      const models = snap.me?.models ?? [];
+      if (models.length < 2) return;
+      const token = await h.accessToken();
+      if (!token) return;
+      const picked = await pickAutoModelShared(
+        {
+          llmBase: `${h.edgeBaseUrl()}/llm/v1`,
+          headers: { authorization: `Bearer ${token}` },
+          log: (m) => console.warn(`[auto-model] ${m}`),
+        },
+        text,
+        models
+      );
+      if (picked === null) return;
+      switchModel(picked, lane, true);
     },
     get approvalMode() {
       return approvalMode;

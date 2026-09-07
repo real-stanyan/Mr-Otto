@@ -109,6 +109,104 @@ describe("createAgent 会话生命周期", () => {
     store.close();
   });
 
+  it("Auto 是切换的第三个维度：型号没变、只是从此由 Auto 说了算，也要落一条事件（#1042）", () => {
+    // 漏掉这个维度的话，用户在选择器里点 Auto 那一下**静默地什么都不发生**，
+    // 而界面上已经显示 Auto 了 —— 下一轮照旧用老型号跑，没人说得出为什么
+    const store = new EventStore(":memory:");
+    const agent = createAgent({ store, workspace: "/proj/x", push, attachments });
+
+    const before = store.load(agent.sessionId).length;
+    agent.switchModel(agent.model, "auto", true);
+    const log = store.load(agent.sessionId);
+    expect(log).toHaveLength(before + 1);
+    expect(log.at(-1)).toMatchObject({ type: "model_changed", auto: true });
+    expect(agent.autoModel).toBe(true);
+
+    // 再点一次同样的 Auto = 无操作
+    agent.switchModel(agent.model, "auto", true);
+    expect(store.load(agent.sessionId)).toHaveLength(log.length);
+
+    // 手动挑一款 = 关掉 Auto，那一条**不带** auto 字段
+    agent.switchModel("glm-4.7-flash");
+    expect(agent.autoModel).toBe(false);
+    expect(store.load(agent.sessionId).at(-1)).not.toHaveProperty("auto");
+    store.close();
+  });
+
+  it("Auto 跟着日志回来：resume 时最后一条 model_changed 说了算（同型号、同 lane 那两条的取法）", () => {
+    const store = new EventStore(":memory:");
+    store.append({ sessionId: "s-auto", ts: 1, type: "session_created", workspace: "/proj/x" });
+    store.append({ sessionId: "s-auto", ts: 2, type: "model_changed", provider: "glm", model: "glm-5.3", auto: true });
+    const agent = createAgent({ store, workspace: "/proj/x", push, resumeSessionId: "s-auto", attachments });
+    expect(agent.autoModel).toBe(true);
+    expect(agent.model).toBe("glm-5.3");
+    store.close();
+  });
+
+  it("Auto 判出一款就落一条 model_changed，且**照旧带 auto** —— 挑了一款不等于关掉 Auto", async () => {
+    const store = new EventStore(":memory:");
+    const calls: { url: string; body: { model: string } }[] = [];
+    vi.stubGlobal("fetch", async (url: string, init: RequestInit) => {
+      calls.push({ url, body: JSON.parse(init.body as string) });
+      return new Response(JSON.stringify({ choices: [{ message: { content: "hard" } }] }), { status: 200 });
+    });
+    const agent = createAgent({
+      store, workspace: "/proj/x", push, attachments,
+      hosted: {
+        quota: {
+          snapshot: () => ({ me: { models: ["glm-4.7-flash", "glm-5.3"] }, fetchedAt: 1, exhausted: null }),
+        } as never,
+        edgeBaseUrl: () => "https://edge.example",
+        accessToken: async () => "jwt-x",
+      },
+    });
+    agent.switchModel(agent.model, "auto", true);
+    const before = store.load(agent.sessionId).length;
+
+    await agent.pickAutoModel("写一个解析器");
+
+    // 判一手用的是最便宜那款（清单从便宜到贵），hard 落在最贵那款上
+    expect(calls[0]!.body.model).toBe("glm-4.7-flash");
+    expect(agent.model).toBe("glm-5.3");
+    const log = store.load(agent.sessionId);
+    expect(log).toHaveLength(before + 1);
+    expect(log.at(-1)).toMatchObject({ type: "model_changed", model: "glm-5.3", auto: true });
+    expect(agent.autoModel).toBe(true);
+    vi.unstubAllGlobals();
+    store.close();
+  });
+
+  it("Auto 关着时一次网关都不打（这一格默认关着，绝大多数会话不该多一次往返）", async () => {
+    const store = new EventStore(":memory:");
+    let calls = 0;
+    vi.stubGlobal("fetch", async () => {
+      calls += 1;
+      return new Response("{}", { status: 200 });
+    });
+    const agent = createAgent({
+      store, workspace: "/proj/x", push, attachments,
+      hosted: {
+        quota: { snapshot: () => ({ me: { models: ["a", "b"] }, fetchedAt: 1, exhausted: null }) } as never,
+        edgeBaseUrl: () => "https://edge.example",
+        accessToken: async () => "jwt-x",
+      },
+    });
+    await agent.pickAutoModel("写一个解析器");
+    expect(calls).toBe(0);
+    vi.unstubAllGlobals();
+    store.close();
+  });
+
+  it("没装配托管（子会话 / 测试）时 pickAutoModel 什么都不做，行为与改动前逐字相同", async () => {
+    const store = new EventStore(":memory:");
+    const agent = createAgent({ store, workspace: "/proj/x", push, attachments });
+    agent.switchModel(agent.model, "auto", true);
+    const before = store.load(agent.sessionId).length;
+    await agent.pickAutoModel("随便说点什么");
+    expect(store.load(agent.sessionId)).toHaveLength(before);
+    store.close();
+  });
+
   it("恢复时模型选择从日志回来：最后一条 model_changed 说了算", () => {
     const store = new EventStore(":memory:");
     store.append({ sessionId: "s-m", ts: 1, type: "session_created", workspace: "/proj/x" });
