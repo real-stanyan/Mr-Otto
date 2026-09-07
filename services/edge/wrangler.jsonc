@@ -52,6 +52,7 @@
   // 一个都不写进这个文件：
   //   npx wrangler secret put DEEPSEEK_API_KEY      # 上游模型 key
   //   npx wrangler secret put ZHIPU_API_KEY
+  //   npx wrangler secret put QWEN_API_KEY        # 千问 = DashScope 国际站
   //   npx wrangler secret put STRIPE_SECRET_KEY     # sk_live_… / sk_test_…
   //   npx wrangler secret put STRIPE_WEBHOOK_SECRET # whsec_…（Stripe Dashboard 的端点密钥）
 }

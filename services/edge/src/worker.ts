@@ -15,7 +15,7 @@ import {
   workspaceIdsOf,
   type EscrowDoc, type PxAudit,
 } from "./px.js";
-import { createLlmGateway, type QuotaPort, type RouteRow } from "./llmGateway.js";
+import { createLlmGateway, upstreamKeyOf, type QuotaPort, type RouteRow } from "./llmGateway.js";
 import {
   addonExpiresAt, addonMicro, addonSinceOf, hold as quotaHold, rebuild, rebuildWindowSince, release as quotaRelease,
   remaining as quotaRemaining, roll, settle as quotaSettle, view as quotaView,
@@ -62,10 +62,17 @@ export interface Env {
       因此整个不存在，不是"配了空字符串所以永远比不中" */
   RUNTIME_SECRET: string;
   /** 托管网关的上游 key（spec 2026-09-02 第 2 节）。
-      `wrangler secret put DEEPSEEK_API_KEY` / `ZHIPU_API_KEY`。
-      没配的平台在网关里回 502「服务端没配 key」——不是静默降级 */
+      `wrangler secret put DEEPSEEK_API_KEY` / `ZHIPU_API_KEY` / `QWEN_API_KEY`。
+      没配的平台在网关里回 502「服务端没配 key」——不是静默降级。
+      **加一家上游是两处不是一处**：这里加一格 env，下面 `upstreamKey` 那条分支
+      也要认它。只往 `model_route` 插行、这两处不动的话，路由查得出来但
+      `llmGateway` 拿不到 key 就 `continue` 跳过，用户看到的是
+      「没有可用的上游」——库里明明有那一款（#1001） */
   DEEPSEEK_API_KEY?: string;
   ZHIPU_API_KEY?: string;
+  /** 千问 = 阿里云百炼 DashScope **国际站**（`dashscope-intl`），OpenAI 兼容端点。
+      平台名 `qwen` 与 `model_route.platform` 逐字对应 */
+  QWEN_API_KEY?: string;
   /** Stripe。`wrangler secret put STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` */
   STRIPE_SECRET_KEY?: string;
   STRIPE_WEBHOOK_SECRET?: string;
@@ -715,7 +722,7 @@ const handler = {
       llm: createLlmGateway({
         routes: () => routesOf(env),
         quota: quotaPort(env),
-        upstreamKey: (platform) => (platform === "deepseek" ? env.DEEPSEEK_API_KEY : platform === "zhipu" ? env.ZHIPU_API_KEY : undefined),
+        upstreamKey: (platform) => upstreamKeyOf(env as unknown as Record<string, unknown>, platform),
         // 流式响应的 settle 发生在响应已经发出之后。没有 waitUntil，Worker 会在
         // 返回响应那一刻把这个 isolate 收掉 —— 结算就永远不会落地（额度白送）
         waitUntil: (p) => ctx.waitUntil(p),

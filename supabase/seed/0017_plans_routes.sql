@@ -33,7 +33,20 @@ values
   -- DeepSeek V4 Pro：¥3.00 / ¥0.025 / ¥6.00（cache 价是异常值，ADR-0174「会被推翻的前提」——核实后改这一行）
   ('deepseek-v4-pro@deepseek', 'deepseek-v4-pro', 'deepseek', 'https://api.deepseek.com/v1', 'deepseek-v4-pro', 416667, 3472, 833333, 8192, 'none', 10),
   -- GLM-5.3：按 GLM-5.1 ¥6.00 / ¥1.30 / ¥24.00 抄，待核
-  ('glm-5.3@zhipu', 'glm-5.3', 'zhipu', 'https://open.bigmodel.cn/api/paas/v4', 'glm-5.3', 833333, 180556, 3333333, 8192, 'none', 10)
+  --   2026-09-07 核过了：智谱现价是 ¥8 / ¥2 / ¥28，这一行少算输入 25%、输出 14%、缓存 35%。
+  --   **数字故意没改**——改它会改变现有用户的扣费口径，那是产品决定不是顺手修（#1001）
+  ('glm-5.3@zhipu', 'glm-5.3', 'zhipu', 'https://open.bigmodel.cn/api/paas/v4', 'glm-5.3', 833333, 180556, 3333333, 8192, 'none', 10),
+  -- GLM-5.3-Flash：¥0.80 / ¥0.23 / ¥2.80（2026-09-07 智谱定价页原价；页面上另挂着「5折限时两周」的
+  --   ¥0.40 / ¥0.115 / ¥1.40，**按原价登记**——促销到期那天按促销价记账就成了低于真实成本扣额度）
+  ('glm-5.3-flash@zhipu', 'glm-5.3-flash', 'zhipu', 'https://open.bigmodel.cn/api/paas/v4', 'glm-5.3-flash', 111111, 31944, 388889, 8192, 'none', 10),
+  -- 千问 = 阿里云百炼 DashScope **国际站**：官方直接报 USD，不像智谱/DeepSeek 那样按 7.2 折算。
+  --   缓存命中价 = 输入价的 10%（官方原文 "cache hits at 10%"）。
+  --   只收**全程一个价**的两款：model_route 一款只有一组价，表达不了按上下文长度分档，
+  --   而 qwen3.7-flash 是 $0.03/$0.10/$0.20 三档——登记成最便宜那档 = 长上下文时少扣自己的钱。
+  -- Qwen3.8-Max：$2 / $0.20 / $6
+  ('qwen3.8-max@qwen', 'qwen3.8-max', 'qwen', 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', 'qwen3.8-max', 2000000, 200000, 6000000, 8192, 'none', 10),
+  -- Qwen3.8-Flash：$0.15 / $0.015 / $0.47
+  ('qwen3.8-flash@qwen', 'qwen3.8-flash', 'qwen', 'https://dashscope-intl.aliyuncs.com/compatible-mode/v1', 'qwen3.8-flash', 150000, 15000, 470000, 8192, 'none', 10)
 on conflict (id) do update set
   platform = excluded.platform,
   base_url = excluded.base_url,
