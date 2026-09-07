@@ -7,7 +7,7 @@
 // 一扇后门。见 index.ts 的 createSessionAgent（子会话分支）。
 // AGENTS.md 的 MVP 边界"明确不做多 agent 编排"靠这两处一起成立。
 
-import { createAgent, type AgentPush, type SkillLibrary } from "./agent.js";
+import { createAgent, type AgentPush, type HostedCapability, type SkillLibrary } from "./agent.js";
 import type { ExecRule } from "../shared/execPolicy.js";
 import { SESSION_SEARCH_TOOL_NAME } from "../tools/sessionSearch.js";
 import { activeSkills } from "../session/activeSkills.js";
@@ -47,6 +47,11 @@ export interface SubagentRunnerDeps {
   /** 自动压缩设置的现读器（同 alwaysAllow 的活引用规矩）。子 agent 也该守同一份
       设置——不给 = 走 createAgent 的全局默认 */
   autoCompactSettings?: () => AutoCompactSettings;
+  /** 托管额度（#1051）。**不给它，子 agent 就是订阅用户唯一一条还在烧自己 key 的路**
+      —— 而订阅那一侧已经没有自带 key 了（ADR-0233 的纪律落到本机），于是没配 key
+      的订阅用户派一次活必然 blocked、配了 key 的则悄悄记在他自己账上。两种都是
+      静默失败。缺席照旧 = 没装配托管（测试/裸装配），行为一字不变 */
+  hosted?: HostedCapability;
   /** 把刚建好的子 agent 登记进组装根的 agent 注册表（index.ts 的 `agents`）。
       不是可选的锦上添花：不登记的话，resumeSession 的 `agents.has(sessionId)`
       短路失效，用户点一下时间线上那张还在跑的卡就会在同一个活 sessionId 上
@@ -135,6 +140,8 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): SubagentRunner {
         allowTools: def.tools,
         spawnedBy: { sessionId: parent.sessionId, toolCallId: parentToolCallId, agent: def.name },
         ...(deps.autoCompactSettings ? { autoCompactSettings: deps.autoCompactSettings } : {}),
+        // 子 agent 与父走同一条路由（#1051）：订阅额度是**账号**的，不是某条会话的
+        ...(deps.hosted ? { hosted: deps.hosted } : {}),
         // deny 换掉整条审批链（mode/授权都不参与）；ask/auto/inherit 走常规链，
         // 用户永久授过权的工具在子 agent 里照样免问——授权授的是工具，不是会话
         ...(def.approval === "deny"

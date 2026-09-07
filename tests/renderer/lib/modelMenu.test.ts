@@ -22,6 +22,7 @@ const HOSTED = [
 const base = {
   hosted: [] as readonly string[],
   allowAuto: false,
+  subscribed: false,
   keyStatus: {} as Record<string, string>,
   ollamaModels: [],
   currentModel: "deepseek-v4-flash",
@@ -33,14 +34,14 @@ const ids = (gs: ReturnType<typeof modelMenuGroups>, key: string) =>
 
 describe("modelMenuGroups：订阅那一组", () => {
   it("一把 key 都没配的订阅用户，菜单里有网关供的每一款（这是 #1042 修的那件事）", () => {
-    const gs = modelMenuGroups({ ...base, hosted: HOSTED });
+    const gs = modelMenuGroups({ ...base, hosted: HOSTED, subscribed: true });
     expect(ids(gs, "__hosted__")).toEqual(HOSTED);
   });
 
   it("顺序原样照抄网关那一份（从便宜到贵），不按厂商重排", () => {
     // 这一串跨三家厂交替出现；按厂商归并会把「便宜的在前」这条信息毁掉，
     // 而它正是 Auto 那两档的依据（ADR-0237）
-    const gs = modelMenuGroups({ ...base, hosted: HOSTED });
+    const gs = modelMenuGroups({ ...base, hosted: HOSTED, subscribed: true });
     expect(ids(gs, "__hosted__")).toEqual(HOSTED);
   });
 
@@ -50,29 +51,28 @@ describe("modelMenuGroups：订阅那一组", () => {
     expect(gs.map((g) => g.key)).toEqual(["deepseek"]);
   });
 
-  it("订阅供的那几款从厂商组里**摘掉**，不并排出现两次", () => {
-    // 同一个型号在两处点下去跑的是同一条路（托管优先于自带 key，ADR-0176 决定二），
-    // 列两遍只会让人以为有得选
+  it("订阅用户**一个厂商组都没有** —— 连配着 key 的那几家也没有（#1051）", () => {
+    // 订阅用户不许自带 key。只藏一半（藏没配 key 的、留配了 key 的）等于让
+    // 「有没有自带 key」重新决定看得见什么，而那正是这条规矩要取消的东西
     const gs = modelMenuGroups({
       ...base,
       hosted: HOSTED,
+      subscribed: true,
       keyStatus: { DEEPSEEK_API_KEY: "sk-x", GLM_API_KEY: "sk-y" },
     });
-    expect(ids(gs, "deepseek")).not.toContain("deepseek-v4-flash");
-    expect(ids(gs, "glm")).not.toContain("glm-5.3");
-    // 网关不供的那几款照旧留在厂商组里（那些要烧自己的 key）
-    expect(ids(gs, "glm")).toContain("glm-4.7-flash");
+    expect(gs.map((g) => g.key)).toEqual(["__hosted__"]);
   });
 
-  it("订阅那一组排在最前", () => {
-    const gs = modelMenuGroups({
-      ...base, hosted: HOSTED, keyStatus: { DEEPSEEK_API_KEY: "sk-x" },
-    });
-    expect(gs[0]!.key).toBe("__hosted__");
+  it("Ollama 也不出：它不要 key 也不花钱，但留着就是一条「选单里有、路由却不通」的路", () => {
+    const ollama = [
+      { id: "ollama/a", tag: "a", contextLength: 8192, tools: true, vision: false, thinking: false },
+    ];
+    const gs = modelMenuGroups({ ...base, hosted: HOSTED, subscribed: true, ollamaModels: ollama });
+    expect(gs.map((g) => g.key)).toEqual(["__hosted__"]);
   });
 
   it("目录里没有的型号（网关上了新款）原样按 id 列出来，不静默丢", () => {
-    const gs = modelMenuGroups({ ...base, hosted: ["glm-5.3", "brand-new-model"] });
+    const gs = modelMenuGroups({ ...base, hosted: ["glm-5.3", "brand-new-model"], subscribed: true });
     expect(ids(gs, "__hosted__")).toEqual(["glm-5.3", "brand-new-model"]);
   });
 
@@ -80,6 +80,7 @@ describe("modelMenuGroups：订阅那一组", () => {
     const gs = modelMenuGroups({
       ...base,
       hosted: ["glm-5.3-flash", "brand-new-model"],
+      subscribed: true,
       filter: (m) => m.supportsVision === true,
     });
     expect(ids(gs, "__hosted__")).toEqual(["glm-5.3-flash"]);
@@ -88,24 +89,24 @@ describe("modelMenuGroups：订阅那一组", () => {
 
 describe("modelMenuGroups：Auto", () => {
   it("allowAuto + 有两款以上可挑 → Auto 是订阅组的第一项", () => {
-    const gs = modelMenuGroups({ ...base, hosted: HOSTED, allowAuto: true });
+    const gs = modelMenuGroups({ ...base, hosted: HOSTED, subscribed: true, allowAuto: true });
     expect(ids(gs, "__hosted__")![0]).toBe(AUTO_MODEL);
     expect(gs.find((g) => g.key === "__hosted__")!.items[0]!.auto).toBe(true);
   });
 
   it("不到两款时不画 —— pickAutoModel 那时一律回 null，画出来就是点了没反应的钮", () => {
-    expect(ids(modelMenuGroups({ ...base, hosted: ["glm-5.3"], allowAuto: true }), "__hosted__"))
+    expect(ids(modelMenuGroups({ ...base, hosted: ["glm-5.3"], subscribed: true, allowAuto: true }), "__hosted__"))
       .toEqual(["glm-5.3"]);
-    expect(modelMenuGroups({ ...base, hosted: [], allowAuto: true, currentModel: "" })).toEqual([]);
+    expect(modelMenuGroups({ ...base, hosted: [], subscribed: true, allowAuto: true, currentModel: "" })).toEqual([]);
   });
 
   it("allowAuto 缺省 = 不画：代读员 / 小模型 / 子智能体那几处换的不是「这一 turn 用哪款」", () => {
-    const gs = modelMenuGroups({ ...base, hosted: HOSTED });
+    const gs = modelMenuGroups({ ...base, hosted: HOSTED, subscribed: true });
     expect(ids(gs, "__hosted__")).not.toContain(AUTO_MODEL);
   });
 
   it("Auto 那一项不带厂商字形、也不算看得见图", () => {
-    const auto = modelMenuGroups({ ...base, hosted: HOSTED, allowAuto: true })
+    const auto = modelMenuGroups({ ...base, hosted: HOSTED, subscribed: true, allowAuto: true })
       .find((g) => g.key === "__hosted__")!.items[0]!;
     expect(auto.provider).toBeNull();
     expect(auto.vision).toBe(false);

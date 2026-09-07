@@ -315,12 +315,20 @@ export function BillingSettings() {
           />
         )}
 
+        {/* 订阅用户没有「配了自己的 key 会自动切过去」这条出路了（#1051）：那条路
+            整个关了，`routeModel` 在订阅这一侧只剩 hosted / blocked。留着这句话
+            就是给一个正卡住的人指一条走不通的路（同 #1040 那一族），所以换成真正
+            能点的那颗——加购，和下面那格是同一个动作 */}
         {billing?.exhausted && (
           <Strip
             tone="deny"
             title="额度已用完"
-            note={`${countdown(billing.exhausted.resetAt, now)}；配了自己的 key 会自动切过去。`}
-            action={{ label: "去配 key", onClick: () => void openSettings("keys") }}
+            note={`${countdown(billing.exhausted.resetAt, now)}；等不及可以加购。`}
+            action={{
+              label: pending === "addon" ? "打开中…" : "加购 $10",
+              disabled: pending !== null,
+              onClick: () => run("addon", () => checkout({ addon: true, quantity: 1 })),
+            }}
           />
         )}
 

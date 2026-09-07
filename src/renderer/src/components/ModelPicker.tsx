@@ -42,7 +42,7 @@ import {
 } from "../../../shared/thinking.js";
 import { cn } from "@/lib/utils.js";
 import { AUTO_MODEL } from "../../../shared/autoModel.js";
-import { hostedModels } from "../lib/billingView.js";
+import { hostedModels, isSubscribed } from "../lib/billingView.js";
 import { modelMenuGroups, type ModelMenuItem } from "../lib/modelMenu.js";
 import { useChat } from "../store.js";
 import { ProviderMark } from "./ProviderMark.js";
@@ -179,6 +179,9 @@ export function ModelPicker({
   // 网关此刻供着哪几款（从便宜到贵，ADR-0237 那条排序键）。没订阅 / 还没查到 = 空，
   // 于是下面整块退回改动前的样子（判据与取舍在 billingView.hostedModels）
   const hosted = useChat((s) => hostedModels(s.billing));
+  // 订阅用户不许自带 key（#1051）：厂商那几组一个都不列，底下那条「添加更多模型…」
+  // 也跟着撤——它通往的正是被收起来的那一页
+  const subscribed = useChat((s) => isSubscribed(s.billing));
 
   // 列哪几款是纯逻辑，住在 lib/modelMenu.ts —— 判据留在这个 useMemo 里就没有保鲜期，
   // 它渲染不出错、只是少几行（这正是 #1042 那次答错的样子）
@@ -187,12 +190,13 @@ export function ModelPicker({
       modelMenuGroups({
         hosted,
         allowAuto,
+        subscribed,
         keyStatus,
         ollamaModels,
         currentModel: value,
         filter,
       }),
-    [keyStatus, ollamaModels, hosted, allowAuto, value, filter]
+    [keyStatus, ollamaModels, hosted, allowAuto, subscribed, value, filter]
   );
   const groups = useMemo<PickerGroup[]>(
     () =>
@@ -216,8 +220,12 @@ export function ModelPicker({
       auto && !flat.some((o) => o.id === AUTO_MODEL)
         ? [...flat, { id: AUTO_MODEL, name: "Auto", icon: AUTO_MARK }]
         : flat;
-    if (choice || withAuto.some((o) => o.id === value)) return withAuto;
-    return [...withAuto, { id: value, name: value }];
+    if (withAuto.some((o) => o.id === value)) return withAuto;
+    // 选着的那一款不在菜单里（订阅用户手上留着一款网关不供的老型号，#1051）：
+    // 补一条**只给触发器看**的条目，名字取目录里那份而不是裸 id —— 触发器空着
+    // 读起来像「这一格还没选」，而它其实正生效着（只是 routeModel 会 blocked 并
+    // 让他在这枚选单里换一款）
+    return [...withAuto, { id: value, name: choice?.label ?? value }];
   }, [groups, choice, value, auto]);
 
   return (
@@ -284,21 +292,27 @@ export function ModelPicker({
               ))}
             </ModelSelectorGroup>
           ))}
-          <ModelSelectorSeparator />
-          {/* 目录里其余厂商都在这扇门后面：菜单只留能跑的，要加新的一家从这里进 */}
-          <CommandGroup>
-            <CommandItem
-              value="__add_models__"
-              className="gap-2"
-              onSelect={() => {
-                setOpen(false);
-                void openSettings("keys");
-              }}
-            >
-              <SettingsIcon className="size-[15px]" />
-              添加更多模型…
-            </CommandItem>
-          </CommandGroup>
+          {/* 目录里其余厂商都在这扇门后面：菜单只留能跑的，要加新的一家从这里进。
+              **订阅用户没有这一行**（#1051）：它通往「模型配置」，而那一页对订阅
+              用户已经收起来了——留着就是一条点了跳去一个不存在的页面的路 */}
+          {!subscribed && (
+            <>
+              <ModelSelectorSeparator />
+              <CommandGroup>
+                <CommandItem
+                  value="__add_models__"
+                  className="gap-2"
+                  onSelect={() => {
+                    setOpen(false);
+                    void openSettings("keys");
+                  }}
+                >
+                  <SettingsIcon className="size-[15px]" />
+                  添加更多模型…
+                </CommandItem>
+              </CommandGroup>
+            </>
+          )}
         </ModelSelectorList>
         {/* 换型号的代价，就写在做这个决定的地方（issue #434）。
             缓存是按型号存的：换过去那一刻新型号没见过这段前缀，整个上下文
