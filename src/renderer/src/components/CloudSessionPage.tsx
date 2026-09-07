@@ -589,15 +589,16 @@ export function CloudSessionPage({
           {/* 归档不在这儿（#993 第 5 条）：它属于侧栏那条会话行的 ⋮ 菜单，同本地
               会话——头部是"这条会话是什么"，不是"对它做什么"。协议 9 把 archive
               搬进控制房正是为了让那颗菜单项不必先开着这条会话 */}
-          {/* 模型那一格只读路由（ADR-0233）：blocked 才是**会挡住干活**的那一格，
-              给所有成员看。仓库不在头部（#991）：不是每个工作区都有仓库，常驻一格
-              「未配仓库」对文案类工作区是噪音——它去了「设置」里的仓库 tab */}
-          <span
-            className={cn("max-w-[150px] truncate text-[11px]", modelStatus.bad ? "text-err" : "text-muted-foreground")}
-            title={modelStatus.full}
-          >
-            {modelStatus.short}
-          </span>
+          {/* 模型那一格**只在起不了 turn 的时候出现**（#1052，ADR-0246）：正常那两态
+              （hosted / 探不到）不画——「一切正常」不需要常驻标签，何况 hosted 报的
+              只是工作区默认款，真跑一轮按 agent 白名单/Auto 现取，两者可以不一样。
+              仓库同理不在头部（#991）：不是每个工作区都有仓库，常驻一格「未配仓库」
+              对文案类工作区是噪音——它去了「设置」里的仓库 tab */}
+          {modelStatus && (
+            <span className="max-w-[150px] truncate text-[11px] text-err" title={modelStatus.full}>
+              {modelStatus.short}
+            </span>
+          )}
           {onSettings && (
             <Button
               variant="outline"

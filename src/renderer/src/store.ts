@@ -9,6 +9,7 @@ import soundPop from "./assets/sounds/Pop.wav";
 import type { SessionEvent, UserMessageEvent } from "../../session/events.js";
 import {
   dropTask,
+  promoteTask,
   pushTask,
   takeNext,
   unshiftTask,
@@ -252,12 +253,8 @@ interface ChatState {
   sidebarTab: "tasks" | "projects";
   /** turn 状态按会话记：A 跑着时你可能正看 B。缺省 = idle */
   statusBySession: Record<string, TurnStatus>;
-  /** 正在跑的 turn 的身份（issue #344 插话乐观锁），来自 turnStatus 推送的
-      第二拍（带 turnId 的 running）。缺失 = 还不知道/没在跑——插话按钮灰着，
-      排队照旧。idle 一到就清 */
-  turnIdBySession: Record<string, number>;
   /** turn 级聚合 diff（issue #345）：主进程每次写盘后整份替换推送。
-      保留到下一轮的第一次推送（turnId 换代自动覆盖）——turn 刚收尾时
+      保留到下一轮的第一次推送（新一轮自动覆盖）——turn 刚收尾时
       "刚才那轮改了什么"正是要读的东西，不随 idle 清 */
   turnDiffBySession: Record<string, TurnDiffUpdate>;
   /** OTA 更新器镜像（ADR-0075）。null = 快照还没回来；ready/manual 时侧栏
@@ -791,6 +788,10 @@ interface ChatState {
   enqueue(text: string, skill?: string, skillArgs?: string): void;
   /** 队列条目上的 × */
   unqueue(id: string): void;
+  /** 队列条目上的「顶替」：把它提到队首，然后中断正在跑的 turn ——
+      顶替 = promote + abort，turn 以 aborted 收口后 onTurnStatus 的 idle
+      分支会 drainQueue，被提到队首的这条第一个发出去 */
+  runQueuedNow(sessionId: string, id: string): Promise<void>;
   /** 一 turn 收工后把队首那条发出去（内部：onTurnStatus 的 idle 分支调）。
       sessionId 显式传，不读 get().sessionId：排给 A 的活不能因为你此刻正看着 B
       就发进 B。发失败的那条回队首（见 lib/messageQueue.unshiftTask） */
@@ -809,9 +810,6 @@ interface ChatState {
   resend(event: UserMessageEvent): Promise<void>;
   /** 中断当前会话正在跑的 turn（停止键 / Esc）。结果以 turn_ended(aborted) 事件流回 */
   stop(): Promise<void>;
-  /** 插话（issue #344）：turn 跑着时把话注进去，不中断、已完成的步骤不作废。
-      乐观锁失败（turn 恰好收尾/换代）reject——错误横幅提示重发，消息未发出 */
-  steer(text: string): Promise<void>;
   /** /compact 指令的落点：调主进程压缩上下文（真实模型调用，耗 token） */
   compact(): Promise<void>;
   /** /rename 指令的落点：手动改当前会话标题（落 session_renamed 事件） */
@@ -1257,7 +1255,6 @@ export const useChat = create<ChatState>((set, get) => ({
   workspaceSettings: null,
   sidebarTab: "tasks",
   statusBySession: {},
-  turnIdBySession: {},
   turnDiffBySession: {},
   compactingBySession: {},
   queuedBySession: {},
@@ -2956,17 +2953,9 @@ export const useChat = create<ChatState>((set, get) => ({
     window.otter.onAskUserRequest((req) =>
       set((s) => ({ asks: { ...s.asks, [req.sessionId]: req } }))
     );
-    window.otter.onTurnStatus(({ sessionId, status, turnId }) => {
+    window.otter.onTurnStatus(({ sessionId, status }) => {
       set((s) => ({
         statusBySession: { ...s.statusBySession, [sessionId]: status },
-        // 插话乐观锁的另一端（issue #344）：带 turnId 的第二拍 running 记下，
-        // idle 清掉；第一拍（不带）保持原样——别把上一 turn 的残值当现任
-        turnIdBySession:
-          status === "idle"
-            ? without(s.turnIdBySession, sessionId)
-            : turnId !== undefined
-              ? { ...s.turnIdBySession, [sessionId]: turnId }
-              : s.turnIdBySession,
         // turn 收尾兜底：清直播缓冲（防幽灵字）+ 收审批卡。
         // 中断会把挂起的审批在主进程侧 resolve 成 denied——没人点按钮，
         // 卡得跟着 turn 一起谢幕，不然留一张点了也没人听的死卡
@@ -3353,24 +3342,23 @@ export const useChat = create<ChatState>((set, get) => ({
     }
   },
 
-  async steer(text) {
-    const sessionId = get().sessionId; // 同 send：发消息瞬间锁定目标会话
-    const turnId = get().turnIdBySession[sessionId];
-    if (turnId === undefined) {
-      // 第二拍还没到/turn 已收尾——没有可锁的目标。话不丢：回填输入框 + 提示
-      set({ error: "还不知道正在跑的 turn 身份，稍等片刻重发（或等本轮结束）" });
-      get().injectComposer(text, false);
-      return;
-    }
-    set({ error: null });
+  async runQueuedNow(sessionId, id) {
+    // 顶替 = promote + abort 当前 turn，两步都是现成机制的组合，
+    // 不需要主进程新增任何接口：
+    // ① promoteTask 把这条提到队首；② stopTurn 让当前 turn 以 aborted 收口；
+    // ③ 收口那一刻 onTurnStatus 的 idle 分支会 drainQueue，队首正是这条。
+    // 竞态是良性的：turn 恰好自己收口时 stopTurn 是 no-op，这条仍在队首，
+    // 下一轮 drain 第一个发 —— 两种时序落到同一个结果
+    set((s) => ({
+      queuedBySession: {
+        ...s.queuedBySession,
+        [sessionId]: promoteTask(s.queuedBySession[sessionId] ?? [], id),
+      },
+    }));
     try {
-      // 落盘成功后 user_message 事件自然流回时间线——插话内容的展示不走别的路
-      await window.otter.steerTurn(sessionId, text, turnId);
+      await window.otter.stopTurn(sessionId);
     } catch (e) {
-      // 乐观锁失败（turn 恰好结束/换代）走这：消息没发出去。submit 已清空
-      // 输入框，把话原样回填——用户确认现场后一个回车就能重发
       set({ error: e instanceof Error ? e.message : String(e) });
-      get().injectComposer(text, false);
     }
   },
 
