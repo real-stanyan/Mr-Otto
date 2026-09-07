@@ -51,6 +51,18 @@ describe("modelMenuGroups：订阅那一组", () => {
     expect(gs.map((g) => g.key)).toEqual(["deepseek"]);
   });
 
+  it("订阅那一组**不画组头**（#1058）：它是唯一一组，给唯一一组挂标题就是噪音", () => {
+    const gs = modelMenuGroups({ ...base, hosted: HOSTED, subscribed: true });
+    expect(gs.map((g) => g.heading)).toEqual([null]);
+  });
+
+  it("但厂商那几组照旧写组头 —— 那边是真的有好几组要分开", () => {
+    const gs = modelMenuGroups({
+      ...base, keyStatus: { DEEPSEEK_API_KEY: "sk-x", GLM_API_KEY: "sk-y" },
+    });
+    expect(gs.map((g) => g.heading)).toEqual(["DeepSeek", "智谱 GLM"]);
+  });
+
   it("订阅用户**一个厂商组都没有** —— 连配着 key 的那几家也没有（#1051）", () => {
     // 订阅用户不许自带 key。只藏一半（藏没配 key 的、留配了 key 的）等于让
     // 「有没有自带 key」重新决定看得见什么，而那正是这条规矩要取消的东西
@@ -105,11 +117,11 @@ describe("modelMenuGroups：Auto", () => {
     expect(ids(gs, "__hosted__")).not.toContain(AUTO_MODEL);
   });
 
-  it("Auto 那一项不带厂商字形、也不算看得见图", () => {
+  it("Auto 那一项不带厂商字形（渲染层据此换成中性方块）", () => {
     const auto = modelMenuGroups({ ...base, hosted: HOSTED, subscribed: true, allowAuto: true })
       .find((g) => g.key === "__hosted__")!.items[0]!;
     expect(auto.provider).toBeNull();
-    expect(auto.vision).toBe(false);
+    expect(auto.auto).toBe(true);
   });
 });
 
