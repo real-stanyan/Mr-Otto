@@ -20,13 +20,15 @@
 //
 //   ① `RELAY_MAX_HOPS_PER_IGNITION`（24）**无条件**，绝对天花板，与档位/型号/价目全部无关
 //      ——这是三者里唯一不会因为 owner 换档就改变群聊行为的量，ADR-0231 那条决定原样成立。
-//   ② 预算闸：这次点火已经花掉的钱 >= 所有者 5h 窗口**剩余**的一半 → 停。它只可能比 ① 更早
+//   ② 预算闸：这次点火已经花掉的钱 >= 所有者订阅窗口**剩余**的一半 → 停。它只可能比 ① 更早
 //      命中，永远不会让链跑得比 ① 更长。分母取**剩余**不取 limit（`limitMicro - usedMicro`，
 //      同一次探针就带着这一格）：取 limit 的话，窗口用掉 95% 时拿到的预算与全空时逐字节
 //      相同，刹车对「快没额度了」完全无感，而窗口触底之后 `hold()` 会退到用户真金白银买的
 //      加购桶（quota.ts），于是这条没被刹住的链接着吃加购额度——正是 ADR-0237 点名不许的
 //      「安静地走更贵那条路」。取剩余还顺带收敛了「人说 10 句就授权 10 份预算」：份额随窗口
-//      变小而变小。
+//      变小而变小。**哪扇窗由调用方决定**（daemon 递的是 5h 与周窗里更吃紧的那扇，同
+//      billingView 的 `bindingWindow`，ADR-0209）：这一层只知道「还剩这么多」，不知道
+//      也不该知道它是从几扇窗里挑出来的——多一扇窗时这个纯函数一个字都不用改。
 //   ③ 周期护栏（`detectToolLoop`）：`repeats >= RELAY_GUARD.minRepeats` 注一条话**不停**
 //      （ADR-0212），`repeats >= RELAY_SPIN_STOP_REPEATS` 硬停。加硬停的理由与 engine 的
 //      `loopGuardMaxNudges`（ADR-0225）逐字相同：ADR-0212 的「只注话不停」成立**是因为人
@@ -66,7 +68,7 @@ export const RELAY_GUARD = { maxPeriod: 8, minRepeats: 2 } as const;
     之内，护栏因此真的比天花板早。取 4 的话 p=6 恰好是 24（与天花板同时命中 = 白加），
     p≥7 更是永远轮不到——一道永远不响的闸比没有更糟，它会让人以为打转有人管。 */
 export const RELAY_SPIN_STOP_REPEATS = 3;
-/** 一次点火最多花掉所有者 5h 窗口**剩余**的多大一份。
+/** 一次点火最多花掉所有者订阅窗口**剩余**的多大一份。
 
     取「剩余的一半」而不是「上限的 10%」，三个理由：① 分母跟着窗口缩，所以人说十句
     就授权十份预算这件事自己收敛；② 半数是一个不需要按档位调的数——「这一件委托吃掉
@@ -168,9 +170,10 @@ export function relayChain(events: readonly SessionEvent[]): AgentRelayEvent[] {
   return relayStateSince(events).chain;
 }
 
-/** 这次点火的钱闸开在哪儿：所有者 5h 窗口**剩余**的一半。
-    `remainingMicro` 由调用方从 `windows.h5` 算出（`limitMicro - usedMicro`，都在同一次
-    探针里）。负数（窗口已经透支）夹到 0——预算 0 = 下一棒立刻停，而那正是对的 */
+/** 这次点火的钱闸开在哪儿：所有者订阅窗口**剩余**的一半。
+    `remainingMicro` 由调用方算好递进来（daemon 取 5h 与周窗里更吃紧的那扇，各自
+    `limitMicro - usedMicro`，都在同一次探针里）。负数（hold 让 used 短暂越过 limit）
+    夹到 0——预算 0 = 下一棒立刻停，而那正是对的 */
 export function relayBudgetMicroOf(remainingMicro: number): number {
   return Math.max(0, remainingMicro) * RELAY_BUDGET_FRACTION_OF_REMAINING;
 }
@@ -189,7 +192,7 @@ export type RelayDecision =
   /** 分支太长。**只在降级路上出得来**（问不出所有者剩多少额度）——正常路上这道闸
       让位给了预算，因为「第几棒」跟钱和进展都不成比例（见文件头注） */
   | { kind: "cap_depth"; depth: number; max: number }
-  /** 这次点火已经吃掉所有者 5h 窗口剩余的一半（#1017）。与 `cap_hops` 分开一种：
+  /** 这次点火已经吃掉所有者订阅窗口剩余的一半（#1017）。与 `cap_hops` 分开一种：
       「太贵了」与「棒数太多」对人的意义完全不同，前者说得出该看哪里 */
   | { kind: "cap_budget"; spentMicro: number; budgetMicro: number; remainingMicro: number }
   /** 这次点火之后总棒数到顶（#977）：与另外两种分开，文案要说清停的是
@@ -203,7 +206,8 @@ export function decideRelay(args: {
   chain: readonly AgentRelayEvent[];
   /** 这次点火已经花掉多少（`relayStateSince` 算的下界） */
   spend: RelaySpend;
-  /** 所有者 5h 窗口还剩多少 micro-USD；**`null` = 这一刻问不出来** → 走降级：
+  /** 所有者订阅窗口还剩多少 micro-USD（调用方已在两扇窗里取过更吃紧的那扇）；
+      **`null` = 这一刻问不出来** → 走降级：
       预算闸用不了，补回 `DEFAULT_RELAY_MAX_DEPTH` 那道分支闸，于是降级路径与
       #1017 改动之前逐字相同。缺这一句的话，读不到钱的那条路反而比今天松 */
   remainingMicro: number | null;
