@@ -1,3 +1,8 @@
+// shadcn/ui 的 sidebar（new-york）。相对上游的改动记在这儿（同 ui/dialog.tsx 的规矩）：
+//   ① import 加 .js 后缀（nodenext）+ 窄屏判据抽进 lib/sidebarNarrow
+//   ② `SidebarMenuAction` 改成**真居中**（#1044）：上游按三个固定行高钉死 top，
+//      本仓的行几乎都是 h-auto，理由写在那个组件里
+//
 "use client"
 
 import * as React from "react"
@@ -603,12 +608,16 @@ function SidebarMenuAction({
       data-slot="sidebar-menu-action"
       data-sidebar="menu-action"
       className={cn(
-        "absolute top-1.5 right-1 flex aspect-square w-5 items-center justify-center rounded-md p-0 text-sidebar-foreground ring-sidebar-ring outline-hidden transition-transform peer-hover/menu-button:text-sidebar-accent-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 [&>svg]:size-4 [&>svg]:shrink-0",
+        // **垂直居中，不是钉死的 top**（#1044）：上游那套 `top-1.5` 加三条
+        // `peer-data-[size=*]` 是按 `h-8` / `h-7` / `h-12` 三个**固定行高**算好的
+        // 居中值，而本仓的行几乎都是 `h-auto` + 自己的 py（云会话行 26px、好友行
+        // 26px、史前会话行两行高）——固定值在那些行上就是偏的（云会话那颗 ⋯ 低 3px，
+        // 维护者在真机上一眼看出来了）。改成真居中之后，固定高度的行结果一字不变
+        // （h-8 上 top-1.5 本来就等于居中），auto 高度的行才对，所以三条 size 变体
+        // 一并删掉——留着只会在下一个 h-auto 行上重新把它顶偏。
+        "absolute top-1/2 right-1 -translate-y-1/2 flex aspect-square w-5 items-center justify-center rounded-md p-0 text-sidebar-foreground ring-sidebar-ring outline-hidden transition-transform peer-hover/menu-button:text-sidebar-accent-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-2 [&>svg]:size-4 [&>svg]:shrink-0",
         // Increases the hit area of the button on mobile.
         "after:absolute after:-inset-2 after:hidden",
-        "peer-data-[size=sm]/menu-button:top-1",
-        "peer-data-[size=default]/menu-button:top-1.5",
-        "peer-data-[size=lg]/menu-button:top-2.5",
         "group-data-[collapsible=icon]:hidden",
         showOnHover &&
           "group-focus-within/menu-item:opacity-100 group-hover/menu-item:opacity-100 peer-data-[active=true]/menu-button:text-sidebar-accent-foreground data-[state=open]:opacity-100 opacity-0",

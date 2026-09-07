@@ -87,7 +87,7 @@ import type { FriendsResult } from "./proxyManager.js";
 
 /** 控制房 create 的等待上限：runtime 一直没接上/没回应时，别把调用方永远悬在
     半空——一个「稍后重试」的失败远好过一个永不 resolve 的 Promise。 */
-const CS_CREATE_TIMEOUT_MS = 15_000; // 控制房四条 RPC 共用（create / workspace / config / archive）
+const CS_CREATE_TIMEOUT_MS = 15_000; // 控制房五条 RPC 共用（create / workspace / config / archive / delete）
 
 const NOT_SIGNED_IN = { ok: false as const, message: "还没登录" };
 
@@ -210,6 +210,10 @@ export interface CloudSessionClient {
   /** 收尾一条云会话（控制房 RPC，协议 9，#993）：不依赖「正开着它」——归档
       入口在侧栏那条会话行的 ⋮ 里，同本地会话。resolve 的是 `archive_result` */
   archive(workspaceId: string, sessionId: string): Promise<FriendsResult<null>>;
+  /** 彻底删除一条云会话（控制房 RPC，协议 10，#1044）：整段事件日志从 VPS 上
+      抹掉，不可逆。归档的会话同样能删（不依赖房间还开着）。谁能删由服务端判，
+      判据与归档同一条 */
+  remove(workspaceId: string, sessionId: string): Promise<FriendsResult<null>>;
   /** 停掉当前正在跑的这一轮 turn（#957 第三批）。谁能停由服务端判（发起人
       或 owner，与 approve 同一判据）——resolve 的是 `stop_result` 那条回执，
       不是「帧交给 socket 了」 */
@@ -976,6 +980,13 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     });
   }
 
+  function remove(workspaceId: string, sessionId: string): Promise<FriendsResult<null>> {
+    return ctlRequest({ t: "delete", workspaceId, sessionId }, (msg) => {
+      if (msg.t !== "delete_result" || msg.sessionId !== sessionId) return null;
+      return msg.ok ? { ok: true, value: null } : { ok: false, message: msg.message ?? "删除没有生效" };
+    });
+  }
+
   function currentSessionId(): string | null {
     return active ? active.sessionId : null;
   }
@@ -992,5 +1003,5 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     };
   }
 
-  return { currentSessionId, activeSummary, create, join, leave, say, approve, archive, stop, workspaceState, workspaceConfig };
+  return { currentSessionId, activeSummary, create, join, leave, say, approve, archive, remove, stop, workspaceState, workspaceConfig };
 }

@@ -1152,6 +1152,9 @@ export interface ShellBridge {
   /** 收尾一条云会话（控制房 RPC，协议 9，#993）：不依赖「正开着它」。谁能归档
       由服务端判（owner 或建这条会话的人，#822 的判据） */
   workspaceCloudArchive(workspaceId: string, sessionId: string): Promise<FriendsResult<null>>;
+  /** 彻底删除一条云会话（控制房 RPC，协议 10，#1044）：VPS 上那段事件日志一起
+      抹掉，不可逆。归档掉的也删得动。判据与归档同一条，由 runtime 判 */
+  workspaceCloudDelete(workspaceId: string, sessionId: string): Promise<FriendsResult<null>>;
   /** 停掉当前云会话正在跑的这一轮 turn（#957 第三批）。谁能停由 runtime 判
       （发起人或 owner，与审批同一判据）；resolve 的是服务端的 `stop_result`
       回执——ok:false 的两种常见理由是「此刻没有正在跑的 turn」和无权。
@@ -1583,6 +1586,7 @@ export const CHANNELS = {
   workspaceCloudSay: "otter:workspaceCloudSay",
   workspaceCloudApprove: "otter:workspaceCloudApprove",
   workspaceCloudArchive: "otter:workspaceCloudArchive",
+  workspaceCloudDelete: "otter:workspaceCloudDelete",
   workspaceCloudStop: "otter:workspaceCloudStop",
   workspaceCloudConfig: "otter:workspaceCloudConfig",
   workspaceCloudState: "otter:workspaceCloudState",

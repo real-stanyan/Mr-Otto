@@ -22,8 +22,8 @@ describe("cs_say 的 mentions（#928 切片 1a）", () => {
 });
 
 describe("cs 协议 6（#957 第三批：stop 帧与 say/approve/stop 回执）", () => {
-  it("CS_PROTOCOL_VERSION === 9（8 = ADR-0234 仓库配置进控制房；9 = ADR-0235 归档也进控制房）", () => {
-    expect(CS_PROTOCOL_VERSION).toBe(9);
+  it("CS_PROTOCOL_VERSION === 10（8 = ADR-0234 仓库配置进控制房；9 = ADR-0235 归档也进控制房；10 = #1044 删除）", () => {
+    expect(CS_PROTOCOL_VERSION).toBe(10);
   });
 
   it("stop 上行往返", () => {
@@ -79,6 +79,24 @@ describe("cs 协议 6（#957 第三批：stop 帧与 say/approve/stop 回执）"
   it("decodeCsDown 对形状不对的 approve_result.callId 回 null", () => {
     expect(decodeCsDown(b64({ t: "approve_result", ok: true }))).toBeNull();
     expect(decodeCsDown(b64({ t: "approve_result", callId: 1, ok: true }))).toBeNull();
+  });
+});
+
+describe("cs 协议 10（#1044：delete / delete_result）", () => {
+  it("delete 帧 roundtrip；两格必填，缺一格整帧判无效", () => {
+    const frame = { t: "delete" as const, workspaceId: "w1", sessionId: "s1" };
+    expect(decodeCsUp(encodeCs(frame))).toEqual(frame);
+    // 不知道删谁的话这条帧没有意义——退回 null 而不是"当成删当前那条"
+    expect(decodeCsUp(encodeCs({ t: "delete", workspaceId: "w1" } as never))).toBeNull();
+    expect(decodeCsUp(encodeCs({ t: "delete", sessionId: "s1" } as never))).toBeNull();
+  });
+
+  it("delete_result roundtrip：message 可缺席（成功那一路不带）", () => {
+    const ok = { t: "delete_result" as const, workspaceId: "w1", sessionId: "s1", ok: true };
+    expect(decodeCsDown(encodeCs(ok))).toEqual(ok);
+    const failed = { ...ok, ok: false, message: "这一刻读不到这条会话的信息，什么都没删。稍后再试。" };
+    expect(decodeCsDown(encodeCs(failed))).toEqual(failed);
+    expect(decodeCsDown(encodeCs({ t: "delete_result", workspaceId: "w1", ok: true } as never))).toBeNull();
   });
 });
 

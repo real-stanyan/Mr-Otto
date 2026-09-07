@@ -28,7 +28,7 @@
 import { useEffect } from "react";
 import { ChevronRight, Ellipsis, Plus, Settings2 } from "lucide-react";
 import {
-  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu.js";
 import { useChat } from "../store.js";
 import { cloudSessionRows } from "../lib/workspaceView.js";
@@ -112,6 +112,7 @@ function WorkspaceGroup({
   const startDraft = useChat((s) => s.startCloudDraft);
   const openSessionId = useChat((s) => s.cloudSession?.sessionId ?? null);
   const archiveCloud = useChat((s) => s.cloudArchive);
+  const deleteCloud = useChat((s) => s.cloudDelete);
   const selfUid = useChat((s) => s.account.id);
   const draftWorkspaceId = useChat((s) => s.cloudDraftWorkspaceId);
 
@@ -191,11 +192,12 @@ function WorkspaceGroup({
                     <span className="min-w-0 flex-1 truncate text-xs">{row.title}</span>
                   </SidebarMenuButton>
                   {/* ⋮ 菜单（#993 第 5 条）：归档从会话头部搬到这里，同本地会话那行的
-                      ⋮。**没有「删除」**——0016 迁移把 wss_delete_publisher 钉死在
-                      kind='package'，云会话故意删不掉（删了 VPS 上那份权威事件日志
-                      就成了够不着的孤儿，且不产生任何归档事件）；给一颗点了必然
-                      失败的钮是撒谎。显隐判据抄服务端那条（#822：owner 或建这条
-                      会话的人）——渲染层不是安全边界，服务端仍然自己判一次 */}
+                      ⋮。**「删除」是 #1044 补上的**：原来没有，理由是 0016 迁移把
+                      wss_delete_publisher 钉死在 kind='package'，成员删不掉自己那行
+                      workspace_sessions——但那条前提只对**客户端直连 Supabase** 成立，
+                      runtime 拿的是 service key，走 delete 帧删得动（协议 10）。
+                      显隐判据抄服务端那条（#822：owner 或建这条会话的人）——渲染层
+                      不是安全边界，服务端仍然自己判一次 */}
                   {(selfUid === ws.ownerUid || selfUid === row.creatorUid) && (
                     <DropdownMenu>
                       <DropdownMenuTrigger asChild>
@@ -218,6 +220,19 @@ function WorkspaceGroup({
                           }}
                         >
                           归档
+                        </DropdownMenuItem>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem
+                          variant="destructive"
+                          onClick={() => {
+                            // 两句话说清它与归档的差别：归档是"收尾但还看得见"，
+                            // 删除是**整段对话从云端消失**，而那段对话是一群人一起
+                            // 写的——本机那颗删除只影响自己，这颗不是
+                            if (!window.confirm(`彻底删除「${row.title}」？\n整段对话会从云端抹掉，群里所有人都再也看不到，不可恢复。`)) return;
+                            void deleteCloud(ws.id, row.id);
+                          }}
+                        >
+                          删除
                         </DropdownMenuItem>
                       </DropdownMenuContent>
                     </DropdownMenu>

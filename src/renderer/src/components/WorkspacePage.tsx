@@ -208,11 +208,18 @@ function SessionsTab({ ws, selfUid }: { ws: WorkspaceSnapshot; selfUid: string }
     这里只是归档的去处，同本地会话的「已归档会话」那一屏。云端没有"恢复归档"
     （daemon 启动只捞 archived=false 的会话重开房间），所以这些行只读，点进去
     也只是看：openCloudSession 对归档会话仍然连得上房间读历史。一条归档的都没有
-    时整节不出——这一页是管理面，不该为一件没发生过的事留一行空态。 */
+    时整节不出——这一页是管理面，不该为一件没发生过的事留一行空态。
+
+    行尾那颗 🗑 是 #1044 补的：删除的入口不能只有侧栏那个 ⋮，**归档掉的才是最
+    想清掉的那批**，而它们根本不在侧栏里。判据与侧栏那颗逐字相同（owner 或建的
+    人），服务端仍然自己判一次。行因此从一颗 button 拆成 div + 两颗 button——
+    button 套 button 是非法 HTML。 */
 function CloudSessionsSection({ ws }: { ws: WorkspaceSnapshot }) {
   const list = useChat((s) => s.cloudSessionList[ws.id]) ?? EMPTY_CLOUD_SESSIONS;
   const refresh = useChat((s) => s.refreshCloudSessions);
   const openCloud = useChat((s) => s.openCloudSession);
+  const deleteCloud = useChat((s) => s.cloudDelete);
+  const selfUid = useChat((s) => s.account.id);
 
   useEffect(() => {
     void refresh(ws.id);
@@ -225,17 +232,31 @@ function CloudSessionsSection({ ws }: { ws: WorkspaceSnapshot }) {
     <div className="flex flex-col gap-1">
       <span className={SECTION_LABEL}>已归档的云会话</span>
       {rows.map((row) => (
-        <button
-          key={row.id}
-          type="button"
-          className={cn(ROW, "border border-border bg-transparent text-left")}
-          onClick={() => void openCloud(ws.id, row.id)}
-        >
-          <span className="min-w-0 flex-1 truncate">
-            <b className="font-medium">{row.title}</b>
-            <span className="text-muted-foreground"> · {row.creatorLabel} · {formatProxyTime(row.updatedTs)}</span>
-          </span>
-        </button>
+        <div key={row.id} className={cn(ROW, "border border-border")}>
+          <button
+            type="button"
+            className="flex min-w-0 flex-1 bg-transparent text-left"
+            onClick={() => void openCloud(ws.id, row.id)}
+          >
+            <span className="min-w-0 flex-1 truncate">
+              <b className="font-medium">{row.title}</b>
+              <span className="text-muted-foreground"> · {row.creatorLabel} · {formatProxyTime(row.updatedTs)}</span>
+            </span>
+          </button>
+          {(selfUid === ws.ownerUid || selfUid === row.creatorUid) && (
+            <button
+              type="button"
+              className="shrink-0 bg-transparent text-muted-foreground hover:text-err"
+              title="彻底删除这条会话（整段对话从云端抹掉，不可恢复）"
+              onClick={() => {
+                if (!window.confirm(`彻底删除「${row.title}」？\n整段对话会从云端抹掉，群里所有人都再也看不到，不可恢复。`)) return;
+                void deleteCloud(ws.id, row.id);
+              }}
+            >
+              <Trash2 className="size-[13px]" />
+            </button>
+          )}
+        </div>
       ))}
     </div>
   );

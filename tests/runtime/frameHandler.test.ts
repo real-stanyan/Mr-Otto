@@ -51,6 +51,8 @@ function makeDeps(config: {
   createSession?: (workspaceId: string, byUid: string) => Promise<{ sessionId: string }>;
   ownerOf?: (workspaceId: string) => Promise<string>;
   archiveSession?: FrameHandlerDeps["sessions"]["archive"];
+  creatorOf?: FrameHandlerDeps["sessions"]["creatorOf"];
+  removeSession?: FrameHandlerDeps["sessions"]["remove"];
   saveConfig?: FrameHandlerDeps["saveConfig"];
   repoState?: FrameHandlerDeps["repoState"];
   /** issue #945：默认「探不到」（null）——绝大多数用例不关心这一格 */
@@ -72,6 +74,9 @@ function makeDeps(config: {
       create: config.createSession ?? (async () => ({ sessionId: "new-session" })),
       ownerOf: config.ownerOf ?? (async () => "owner-uid"),
       archive: config.archiveSession ?? (async () => true),
+      // #1044：默认「这条会话是 owner 建的」——绝大多数用例不关心谁建的
+      creatorOf: config.creatorOf ?? (async () => "owner-uid"),
+      remove: config.removeSession ?? (async () => true),
     },
     saveConfig: config.saveConfig ?? (async () => {}),
     repoState: config.repoState ?? (() => null),
@@ -1051,6 +1056,181 @@ describe("会话房拒 archive（协议 9）", () => {
     await handler.onCtlFrame("c1", encodeCs({ t: "archive", workspaceId: "w1", sessionId: "gone" }));
     expect(sent).toHaveLength(1);
     expect(sent[0]!.msg).toMatchObject({ t: "archive_result", ok: false });
+  });
+});
+
+// 协议 10（#1044）：彻底删除一条云会话。判据与归档逐字相同（owner 或建的人），
+// 但它答得出**归档掉的会话**——`get()` 只认活着的房间，而归档的那批恰恰是最常
+// 被删的。三种失败分开说：不存在 / 这一刻读不到 / 删库没成，尤其是第二种不许
+// 说成第一种（ADR-0243 那条纪律：读不到 ≠ 没有）。
+describe("删除（协议 10，#1044）", () => {
+  it("owner 可以删 → 调到 sessions.remove，回 delete_result ok:true", async () => {
+    const calls: unknown[] = [];
+    const { deps, sent } = makeDeps({
+      creatorOf: async () => "someone-else",
+      ownerOf: async () => "u1",
+      removeSession: async (...args) => { calls.push(args); return true; },
+    });
+    const handler = createFrameHandler(deps);
+    await handler.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    sent.length = 0;
+    await handler.onCtlFrame("c1", encodeCs({ t: "delete", workspaceId: "w1", sessionId: "s1" }));
+
+    expect(calls).toEqual([["w1", "s1", "Label(u1)"]]);
+    expect(sent).toEqual([{ cid: "c1", msg: { t: "delete_result", workspaceId: "w1", sessionId: "s1", ok: true } }]);
+  });
+
+  it("建这条会话的人也可以删（不是只有 owner）", async () => {
+    const calls: unknown[] = [];
+    const { deps } = makeDeps({
+      creatorOf: async () => "u1",
+      ownerOf: async () => "someone-else",
+      removeSession: async (...args) => { calls.push(args); return true; },
+    });
+    const handler = createFrameHandler(deps);
+    await handler.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    await handler.onCtlFrame("c1", encodeCs({ t: "delete", workspaceId: "w1", sessionId: "s1" }));
+    expect(calls).toHaveLength(1);
+  });
+
+  it("既不是 owner 也不是建的人 → not_authorized，一个字都没删", async () => {
+    const calls: unknown[] = [];
+    const { deps, sent } = makeDeps({
+      creatorOf: async () => "someone-else",
+      ownerOf: async () => "another-one",
+      removeSession: async (...args) => { calls.push(args); return true; },
+    });
+    const handler = createFrameHandler(deps);
+    await handler.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    sent.length = 0;
+    await handler.onCtlFrame("c1", encodeCs({ t: "delete", workspaceId: "w1", sessionId: "s1" }));
+
+    expect(calls).toEqual([]);
+    expect(sent).toEqual([{ cid: "c1", msg: { t: "denied", code: "not_authorized" } }]);
+  });
+
+  // 这条是这次修改的**要点**：归档掉的会话没有房间，`sessions.get()` 一律回 null，
+  // 但它照样删得动——判据取的是台账那行的 publisher_uid，不是活着的房间
+  it("归档掉的会话（房间早收了）照样删得动", async () => {
+    const calls: unknown[] = [];
+    const { deps, sent } = makeDeps({
+      getSession: () => null,
+      creatorOf: async () => "u1",
+      ownerOf: async () => "u1",
+      removeSession: async (...args) => { calls.push(args); return true; },
+    });
+    const handler = createFrameHandler(deps);
+    await handler.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    sent.length = 0;
+    await handler.onCtlFrame("c1", encodeCs({ t: "delete", workspaceId: "w1", sessionId: "s-archived" }));
+
+    expect(calls).toEqual([["w1", "s-archived", "Label(u1)"]]);
+    expect(sent[0]!.msg).toMatchObject({ t: "delete_result", ok: true });
+  });
+
+  it("这个工作区里没有这条会话 → delete_result ok:false，不是 denied，也不调 remove", async () => {
+    const calls: unknown[] = [];
+    const { deps, sent } = makeDeps({
+      creatorOf: async () => null,
+      ownerOf: async () => "u1",
+      removeSession: async (...args) => { calls.push(args); return true; },
+    });
+    const handler = createFrameHandler(deps);
+    await handler.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    sent.length = 0;
+    await handler.onCtlFrame("c1", encodeCs({ t: "delete", workspaceId: "w1", sessionId: "gone" }));
+
+    expect(calls).toEqual([]);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.msg).toMatchObject({ t: "delete_result", ok: false });
+  });
+
+  // ADR-0243 那条纪律的又一处：查询挂了 ≠ 这条会话不存在。说成后者的话，人会
+  // 以为已经删掉了，转头去别处找它——而它还好好地在那儿
+  it("查 owner 这一步挂了也一样有回执（两次查询一起收错，不让人白等 ACK 超时）", async () => {
+    const calls: unknown[] = [];
+    const { deps, sent } = makeDeps({
+      creatorOf: async () => "u1",
+      ownerOf: async () => { throw new Error("supabase 挂了"); },
+      removeSession: async (...args) => { calls.push(args); return true; },
+    });
+    const handler = createFrameHandler(deps);
+    await handler.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    sent.length = 0;
+    await handler.onCtlFrame("c1", encodeCs({ t: "delete", workspaceId: "w1", sessionId: "s1" }));
+
+    expect(calls).toEqual([]);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.msg).toMatchObject({ t: "delete_result", ok: false });
+  });
+
+  it("查会话这一步挂了 → 说「读不到」，绝不说「不存在」，也不删", async () => {
+    const calls: unknown[] = [];
+    const { deps, sent, logs } = makeDeps({
+      creatorOf: async () => { throw new Error("supabase 挂了"); },
+      ownerOf: async () => "u1",
+      removeSession: async (...args) => { calls.push(args); return true; },
+    });
+    const handler = createFrameHandler(deps);
+    await handler.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    sent.length = 0;
+    await handler.onCtlFrame("c1", encodeCs({ t: "delete", workspaceId: "w1", sessionId: "s1" }));
+
+    expect(calls).toEqual([]);
+    expect(sent).toHaveLength(1);
+    const msg = sent[0]!.msg as { t: string; ok: boolean; message: string };
+    expect(msg.t).toBe("delete_result");
+    expect(msg.ok).toBe(false);
+    expect(msg.message).toContain("读不到");
+    expect(msg.message).not.toContain("不存在");
+    expect(logs.join("\n")).toContain("delete 查会话失败");
+  });
+
+  it("删库那一步没成 → delete_result ok:false 带人话，不假装删掉了", async () => {
+    const { deps, sent } = makeDeps({
+      creatorOf: async () => "u1",
+      ownerOf: async () => "u1",
+      removeSession: async () => false,
+    });
+    const handler = createFrameHandler(deps);
+    await handler.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    sent.length = 0;
+    await handler.onCtlFrame("c1", encodeCs({ t: "delete", workspaceId: "w1", sessionId: "s1" }));
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.msg).toMatchObject({ t: "delete_result", ok: false });
+  });
+
+  it("被踢出工作区的人删不了 —— 在籍判断在权限判断之前", async () => {
+    let member = true;
+    const calls: unknown[] = [];
+    const { deps, sent } = makeDeps({
+      isMember: async () => member,
+      creatorOf: async () => "u1",
+      ownerOf: async () => "u1",
+      removeSession: async (...args) => { calls.push(args); return true; },
+    });
+    const handler = createFrameHandler(deps);
+    await handler.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    member = false;
+    sent.length = 0;
+    await handler.onCtlFrame("c1", encodeCs({ t: "delete", workspaceId: "w1", sessionId: "s1" }));
+    expect(calls).toEqual([]);
+    expect(sent).toEqual([{ cid: "c1", msg: { t: "denied", code: "not_member" } }]);
+  });
+
+  it("会话房里发 delete → denied not_authorized，一个字都没删（同 create/config/archive）", async () => {
+    const calls: unknown[] = [];
+    const { deps, sent } = makeDeps({
+      creatorOf: async () => "u1",
+      ownerOf: async () => "u1",
+      removeSession: async (...args) => { calls.push(args); return true; },
+    });
+    const handler = createFrameHandler(deps);
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    sent.length = 0;
+    await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "delete", workspaceId: "w1", sessionId: "s1" }));
+    expect(calls).toEqual([]);
+    expect(sent).toEqual([{ cid: "c1", msg: { t: "denied", code: "not_authorized" } }]);
   });
 });
 
