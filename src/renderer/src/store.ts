@@ -1025,6 +1025,9 @@ interface ChatState {
       所以调用方要先问一句。成功后自己重拉一次那个工作区的云会话清单——归档的
       不进侧栏，不重拉的话那一行会一直挂在那儿 */
   cloudArchive(workspaceId: string, sessionId: string): Promise<boolean>;
+  /** 彻底删除一条云会话（#1044）：VPS 上那段事件日志一起抹掉，不可逆。
+      归档掉的也删得动（入口在工作区设置页底部那一节） */
+  cloudDelete(workspaceId: string, sessionId: string): Promise<boolean>;
 
   setFriendsPanelOpen(open: boolean): void;
   setOpenWorkspaceId(id: string | null): void;
@@ -2479,6 +2482,22 @@ export const useChat = create<ChatState>((set, get) => ({
     // 归档的会话不进侧栏（同本地）——清单没有推送通道，得自己重拉
     await get().refreshCloudSessions(workspaceId);
     // 归档的正是此刻开着的那条：主区留着一条已收尾的会话没有意义，退回去
+    if (get().cloudSession?.sessionId === sessionId) await get().closeCloudSession();
+    return true;
+  },
+
+  async cloudDelete(workspaceId, sessionId) {
+    const r = await window.otter.workspaceCloudDelete(workspaceId, sessionId);
+    if (!r.ok) {
+      // 与 cloudArchive 同一格错误位（侧栏工作区那一节的头上）——这两颗钮并排
+      // 住在同一个菜单里，失败也该出现在同一个地方
+      set({ workspaceGroupsError: r.message });
+      return false;
+    }
+    set({ workspaceGroupsError: null });
+    // 清单没有推送通道，得自己重拉（同 cloudArchive）
+    await get().refreshCloudSessions(workspaceId);
+    // 删的正是此刻开着的那条：主区留着一条已经不存在的会话没有意义，退回去
     if (get().cloudSession?.sessionId === sessionId) await get().closeCloudSession();
     return true;
   },

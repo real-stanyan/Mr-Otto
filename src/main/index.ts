@@ -3358,6 +3358,8 @@ void app.whenReady().then(() => {
     cloudClient.approve(callId, decision));
   ipcMain.handle(CHANNELS.workspaceCloudArchive, (_e, workspaceId: string, sessionId: string) =>
     cloudClient.archive(workspaceId, sessionId));
+  ipcMain.handle(CHANNELS.workspaceCloudDelete, (_e, workspaceId: string, sessionId: string) =>
+    cloudClient.remove(workspaceId, sessionId));
   ipcMain.handle(CHANNELS.workspaceCloudStop, (_e, seq: number | null) =>
     cloudClient.stop(seq ?? undefined)
   );

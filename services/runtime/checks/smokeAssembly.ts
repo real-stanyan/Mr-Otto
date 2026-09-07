@@ -177,6 +177,19 @@ async function scenarioMainFlow(): Promise<void> {
         async archive() {
           return false;
         },
+        // #1044：冒烟只要形状对得上——真删除的三步（收房 / 删台账 / purge 日志）
+        // 在 daemon 里，这一层不复刻
+        async creatorOf(ws, sessionId) {
+          const active = activeSessions.get(sessionId);
+          return active && active.workspaceId === ws ? active.session.createdByUid() : null;
+        },
+        async remove(ws, sessionId) {
+          const active = activeSessions.get(sessionId);
+          if (!active || active.workspaceId !== ws) return false;
+          activeSessions.delete(sessionId);
+          store.purge(sessionId);
+          return true;
+        },
         async ownerOf() {
           return operatorUid;
         },
@@ -368,6 +381,12 @@ async function scenarioAssemblyResilience(): Promise<void> {
         throw new Error("smoke：韧性场景不使用 create");
       },
       async archive() {
+        return false;
+      },
+      async creatorOf() {
+        return null;
+      },
+      async remove() {
         return false;
       },
       async ownerOf() {
