@@ -3410,6 +3410,9 @@ void app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.workspaceCloudFiles, (_e, workspaceId: string, path: string) =>
     cloudClient.workspaceFiles(workspaceId, path)
   );
+  ipcMain.handle(CHANNELS.workspaceCloudFilesSearch, (_e, workspaceId: string, query: string, content: boolean) =>
+    cloudClient.workspaceFilesSearch(workspaceId, query, content)
+  );
   ipcMain.handle(
     CHANNELS.workspaceCloudConfig,
     (_e, workspaceId: string, patch: { repoUrl?: string; pat?: string }) =>

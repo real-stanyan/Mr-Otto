@@ -80,6 +80,7 @@ import {
   type CsDown,
   type CsRepoState,
   type CsUp,
+  type CsWorkHit,
   type CsWorkNode,
 } from "../shared/remote/cloudSession.js";
 import { normalizeWorkPath } from "../shared/remote/workPath.js";
@@ -232,6 +233,9 @@ export interface CloudSessionClient {
   /** 读一格工作文件夹（控制房 RPC，协议 11，#1056）。`path` 相对工作文件夹，
       `""` = 它本身。任何在籍成员都能读——卷是整个工作区共用的一份 */
   workspaceFiles(workspaceId: string, path: string): Promise<FriendsResult<CsWorkNode>>;
+  /** 搜工作文件夹（控制房 RPC，协议 12，#1066）。`content` = 搜正文还是只按
+      文件名过滤，判据与本机 Files 面板的 `?` 前缀同一条 */
+  workspaceFilesSearch(workspaceId: string, query: string, content: boolean): Promise<FriendsResult<CsWorkHit[]>>;
 }
 
 /** `workspace_state` / `config_result` 带回来的那两格（协议 8）——与 shellBridge
@@ -807,6 +811,21 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     });
   }
 
+  function workspaceFilesSearch(
+    workspaceId: string,
+    query: string,
+    content: boolean,
+  ): Promise<FriendsResult<CsWorkHit[]>> {
+    return ctlRequest({ t: "files_search", workspaceId, query, content }, (msg) => {
+      if (msg.t !== "files_search_result" || msg.workspaceId !== workspaceId) return null;
+      if (!msg.ok) return { ok: false, message: msg.message ?? "搜索失败" };
+      // ok 却没有 hits = 两端对不上号（解码降级过）。**不兜底成空数组**：
+      // 「搜过了没有」与「没搜成」在界面上长得一样，而两者该做的动作相反
+      if (!msg.hits) return { ok: false, message: "搜到的结果看不懂，可能是云端版本对不上。" };
+      return { ok: true, value: msg.hits };
+    });
+  }
+
   function workspaceState(workspaceId: string): Promise<FriendsResult<WorkspaceCloudState>> {
     return ctlRequest({ t: "workspace", workspaceId }, (msg) =>
       // 答复带 workspaceId：一条连接只问一个，但认一下比赌顺序便宜
@@ -1023,5 +1042,5 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     };
   }
 
-  return { currentSessionId, activeSummary, create, join, leave, say, approve, archive, remove, stop, workspaceState, workspaceConfig, workspaceFiles };
+  return { currentSessionId, activeSummary, create, join, leave, say, approve, archive, remove, stop, workspaceState, workspaceConfig, workspaceFiles, workspaceFilesSearch };
 }
