@@ -57,7 +57,8 @@ import { groupSubagentSpawns } from "../lib/subagentTimeline.js";
 import { formatProxyTime } from "../lib/proxyShare.js";
 import { agentNameOf, labelOf, memberAvatarOf } from "../lib/workspaceView.js";
 import { agentAvatarSrc } from "../lib/agentAvatar.js";
-import { applyAgentMention, filterAgentCandidates, mentionQueryAt, pickerEmptyState, resolveSendMentions } from "../lib/agentMentionInput.js";
+import { applyAgentMention, mentionQueryAt, pickerEmptyState, resolveSendMentions } from "../lib/agentMentionInput.js";
+import { filterMentionRows, mentionRows, MENTION_KIND_LABEL, type MentionRow } from "../lib/workspaceMentionItems.js";
 import {
   agentStepsSummary, approvalCardTitle, assistantLabel, canStopTurn, cloudEmptyState, foldAgentSteps, hiddenFromCloudTimeline, relayLineText,
   stopButtonRows, systemNoteText, turnEndedLineText, userRowIdentity, type AgentStepsFold,
@@ -275,12 +276,21 @@ export function CloudSessionPage({
     );
   }, [events]);
 
-  // ── @ 选人（#932 切片 1b）────────────────────────────────────────────
+  // ── @ 选人（#932 切片 1b；名单加人 + 换版式见 #1059 / ADR-0249）──────────
   // 名单第一只 = 这个工作区的管理员（服务端按 created_at 升序给，见 Task 3）
+  //
+  // **两份名单，各管一件事，故意不合并**：
+  //   · `candidates`（只有 agent）→ parseMentions / chip 行 / 发送时的 `mentions`。
+  //     服务端 resolveTargets 按 agent id 过滤，人类 uid 放进去只会被静默丢掉。
+  //   · `rows`（agent + 人类成员）→ 弹层画哪几行。云会话是**群聊**，房里两族都在，
+  //     人类成员的头像与署名时间线上一直画着（#971），唯独 @ 的时候他们不存在。
+  // 第三份 `memberCandidates` 是给 resolveSendMentions 判「这个 @ 认不认得」用的
+  // ——不加它，@ 一个人类成员会被当成打错字整句拦下来
   const candidates = useMemo(
     () => ws.agents.map((a) => ({ agentId: a.agentId, name: a.name, description: a.description })),
     [ws.agents]
   );
+  const rows = useMemo(() => mentionRows(ws), [ws]);
   // 「此刻是不是停在一个没打完的 @ 后面」——只决定弹不弹层，**不**决定这句
   // 话点了谁（那是下面 parseMentions 的事，两个问题，见 agentMentionInput 头注）
   const rawPicking = mentionQueryAt(draft, caret);
@@ -292,7 +302,7 @@ export function CloudSessionPage({
   useEffect(() => {
     if (pickingAt === null) setDismissedAt(null);
   }, [pickingAt]);
-  const options = picking ? filterAgentCandidates(candidates, picking.query) : [];
+  const options = picking ? filterMentionRows(rows, picking.query) : [];
   // 名单刚变过（改名/新增）时 options 会是空的——不画空态的话弹层压根不开，
   // 用户以为自己没打对字，实际是这份本地快照过期了（#935 / #957 C-I4）
   const emptyState = pickerEmptyState(picking, options);
@@ -301,7 +311,9 @@ export function CloudSessionPage({
   const mentions = useMemo(() => parseMentions(draft, candidates), [draft, candidates]);
   // 候选变了高亮归零：不归零的话，从三个候选里选中第三个、再多打一个字缩到
   // 一个候选时，hi 还停在 2，Enter 什么都选不中
-  const optionKey = options.map((o) => o.agentId).join(",");
+  // key 而不是 agentId：人类那一族的 agentId 恒为 null，按它拼出来的串在
+  // 「三个人 → 两个人」这种变化上完全不动，hi 于是停在一个已经不存在的下标上
+  const optionKey = options.map((o) => o.key).join(",");
   useEffect(() => {
     setHi(0);
   }, [optionKey]);
@@ -469,6 +481,10 @@ export function CloudSessionPage({
     // 留着**（store.ts），于是最常见的那种失败在它眼里跟成功长得一模一样
     let refreshFailed = false;
     let freshCandidates: MentionCandidate[] | null = null;
+    // 人类成员（#1059）：**同一次刷新里取**，不从上面那个 `ws` 闭包读 —— 与
+    // freshCandidates 同一条纪律。名字来自 profiles.name（label），uid 只是拿来
+    // 占 MentionCandidate 的 agentId 那一格，永远不会进 `mentions`
+    let freshMembers: MentionCandidate[] = [];
     if (mentionTokens(text).length > 0 && mentions.length === 0) {
       await refreshWorkspaceGroups();
       // 不从这个组件已经渲染出的 `ws`/`candidates` 闭包读（那份还是刷新前的
@@ -480,8 +496,11 @@ export function CloudSessionPage({
       // 工作区没了），按 null 走「交给云端按名字解析」那条：拿它当「名单里没有
       // 这个人」去拦，就是对着一句完全正常的话说「没有叫 X 的智能体」
       freshCandidates = freshWs ? freshWs.agents.map((a) => ({ agentId: a.agentId, name: a.name })) : null;
+      freshMembers = freshWs ? freshWs.members.map((m) => ({ agentId: m.uid, name: m.label })) : [];
     }
-    const plan = resolveSendMentions({ text, parsed: mentions, refreshFailed, freshCandidates });
+    const plan = resolveSendMentions({
+      text, parsed: mentions, refreshFailed, freshCandidates, memberCandidates: freshMembers,
+    });
     if (plan.kind === "block") {
       // 这一句压根不发：草稿原样留在输入框里等人改名字（同「确定失败」那条路）
       setSendError(plan.error);
@@ -494,8 +513,8 @@ export function CloudSessionPage({
       sessionId: csSessionId ?? "",
       text,
       // `undefined` = 缺席，让服务端拿它自己那份名单解析正文、再回落名单第一只，
-      // 于是一句 "@管理员 帮我看下" 照旧有人接；`[]` 是权威的「谁都没点」，
-      // resolveSendMentions 保证正文写了 @ 时永远不会给出它
+      // 于是一句 "@管理员 帮我看下" 照旧有人接；`[]` 是权威的「没点任何 agent」，
+      // resolveSendMentions 只在**这几个 @ 全点在人类成员上**时才给出它（#1059）
       mentions: plan.mentions,
       note: unknownNote(text),
     };
@@ -851,7 +870,7 @@ export function CloudSessionPage({
                   "relative border-none shadow-none min-h-0 bg-transparent dark:bg-transparent text-foreground resize-none max-h-[40vh] focus-visible:ring-0 placeholder:text-foreground/35 caret-foreground",
                   COMPOSER_METRICS
                 )}
-                placeholder={ready ? "输入 @ 点名智能体；不 @ 就只是群里说一句" : "还没连上，暂时发不了消息"}
+                placeholder={ready ? "输入 @ 点名智能体或成员；不 @ 就只是群里说一句" : "还没连上，暂时发不了消息"}
                 value={draft}
                 onChange={(e) => {
                   setDraft(e.target.value);
@@ -936,7 +955,7 @@ export function CloudSessionPage({
                 // 一个可选的选项——名单可能真的刚变过（别人改了名/新建了 agent），
                 // 也可能用户就是打错了字，这里不替他判断，只给出"再核实一次"的路
                 <div className="flex flex-col gap-1.5 px-2 py-1.5 text-[12.5px] text-muted-foreground">
-                  <span>没有叫「{emptyState.query}」的智能体（名单可能刚变过）</span>
+                  <span>没有叫「{emptyState.query}」的成员或智能体（名单可能刚变过）</span>
                   <button
                     type="button"
                     // 同选项行的道理：mousedown + preventDefault 保住 textarea 的焦点
@@ -950,7 +969,7 @@ export function CloudSessionPage({
               ) : (
                 options.map((o, i) => (
                   <div
-                    key={o.agentId}
+                    key={o.key}
                     role="option"
                     aria-selected={i === hi}
                     // mousedown + preventDefault：用 click 的话 textarea 会先失焦，
@@ -960,13 +979,29 @@ export function CloudSessionPage({
                       pick(i);
                     }}
                     onMouseEnter={() => setHi(i)}
+                    // **高亮不给 transition**：这一行是方向键连着按出来的，一次
+                    // 挑人可能扫过五六行，补间会让高亮拖在手指后面 —— 键盘发起的
+                    // 动作不做动效（同 App.tsx 的 ⌘K 那套）。上游 assistant-ui 那份
+                    // 带 transition-colors，是因为它主要靠鼠标悬停
                     className={cn(
-                      "flex cursor-default items-baseline gap-2 rounded-sm px-2 py-[5px] text-[12.5px]",
+                      "flex cursor-default items-center gap-2 rounded-sm px-2 py-[5px] text-[12.5px]",
                       i === hi && "bg-foreground/[0.06]"
                     )}
                   >
-                    <span className="shrink-0">{o.name}</span>
-                    <span className="truncate text-muted-foreground">{o.description}</span>
+                    <MentionAvatar ws={ws} row={o} />
+                    {/* 名字**可截断**（原来是 shrink-0）：右边那格标注是常驻的，
+                        再加上一个不肯让位的名字，长名字会把这张 320px 的卡顶破。
+                        截了还能悬停看全（title）—— 顶破的话整张列表跟着歪 */}
+                    <span className="min-w-0 truncate font-medium" title={o.name}>{o.name}</span>
+                    {o.detail !== "" && (
+                      <span className="min-w-0 flex-1 truncate text-muted-foreground">{o.detail}</span>
+                    )}
+                    {/* 贴右边缘（ms-auto）：一列扫下来对齐，而不是跟着名字长短漂。
+                        这一格回答的是「这一行是人还是 agent」——两族并排在同一张
+                        列表里，不标出来就只能靠头像的画风猜 */}
+                    <span className="ms-auto shrink-0 text-[11px] text-muted-foreground/70">
+                      {MENTION_KIND_LABEL[o.kind]}
+                    </span>
                   </div>
                 ))
               )}
@@ -986,8 +1021,8 @@ export function CloudSessionPage({
                 type="button"
                 disabled={!ready}
                 onClick={insertAt}
-                title="@ 智能体"
-                aria-label="@ 智能体"
+                title="@ 智能体或成员"
+                aria-label="@ 智能体或成员"
                 className={cn(ghostButton, "size-8 disabled:pointer-events-none disabled:opacity-30")}
               >
                 <AtSign className="size-4" aria-hidden />
@@ -1100,13 +1135,18 @@ function SpeakerRow({
     identity.ts 的 initial 纪律——取首个码点不取 charAt，emoji 名字按 UTF-16
     切会得到半个代理对） */
 function PersonAvatar({ name, src }: { name: string; src: string }) {
-  const initial = ([...name.trim()][0] ?? "?").toUpperCase();
   return (
     <Avatar size="sm">
       {src !== "" && <AvatarImage src={src} alt={name} />}
-      <AvatarFallback>{initial}</AvatarFallback>
+      <AvatarFallback>{initialOf(name)}</AvatarFallback>
     </Avatar>
   );
+}
+
+/** 首字母兜底：取首个**码点**不取 charAt —— emoji 名字按 UTF-16 切会得到半个
+    代理对（同 identity.ts / FriendChatView 的既有纪律）。三处头像共用一份 */
+function initialOf(name: string): string {
+  return ([...name.trim()][0] ?? "?").toUpperCase();
 }
 
 /** agent 头像：内置像素图（agentAvatar.ts）。agentId 缺席（旧日志/单 agent
@@ -1119,7 +1159,23 @@ function AgentAvatar({ ws, agentId, name }: { ws: WorkspaceSnapshot; agentId: st
       {agentId !== undefined && (
         <AvatarImage src={agentAvatarSrc(ws, agentId)} alt={name} />
       )}
-      <AvatarFallback>{([...name.trim()][0] ?? "?").toUpperCase()}</AvatarFallback>
+      <AvatarFallback>{initialOf(name)}</AvatarFallback>
+    </Avatar>
+  );
+}
+
+/** @ 选人弹层里那一枚（#1059）：两族共用一格，agent 画内置像素头像、人类画
+    profiles.avatar_url —— 头像是这张列表上「这一行是谁」的第一眼，两族画法不同
+    才认得出来（右边那格标注是第二道，给撞脸/没头像的情形兜底）。
+    20px 而不是上面两处的 24px（`size="sm"`）：这一行的字号是 12.5px，脸跟气泡
+    旁边一样大会把行撑到 34px，一屏就少两行。所以不复用 PersonAvatar/AgentAvatar，
+    尺寸是这一格与那两处唯一的差别，但它决定整张列表能一眼扫几行 */
+function MentionAvatar({ ws, row }: { ws: WorkspaceSnapshot; row: MentionRow }) {
+  const src = row.kind === "agent" && row.agentId !== null ? agentAvatarSrc(ws, row.agentId) : row.avatarUrl;
+  return (
+    <Avatar className="size-5 shrink-0">
+      {src !== "" && <AvatarImage src={src} alt={row.name} />}
+      <AvatarFallback className="text-[10px]">{initialOf(row.name)}</AvatarFallback>
     </Avatar>
   );
 }
