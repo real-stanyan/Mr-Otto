@@ -1,10 +1,19 @@
-// 账号页的订阅区（ADR-0176/issue #696 Task 11；issue #909 从「模型配置」页搬来）：
-// 托管额度是一种可选的付费方式,不是必需项 —— 没订阅时这里只是三张价目卡 + 一句
-// "自带 key 免费档能力全开"。
+// 账号页的订阅区（ADR-0176/issue #696 Task 11；issue #909 从「模型配置」页搬来；
+// 版式由 #1022 定稿）：托管额度是一种可选的付费方式,不是必需项 —— 没订阅时这里是
+// 一张 Free 卡 + 三张价目卡。
 //
 // 为什么住在账号页而不是模型配置页:订阅是**账号**的属性,不是某个厂商 key 的属性。
 // 摆在 keys 页会让人以为它是某一家 key 的开关,而它恰恰是"不用自己配 key"的那条路;
 // 额度也是全账号的,和账号页其余东西(名字/邮箱/会话热力图)同类。
+//
+// **两扇窗报百分比不报 credit**（#1022）：大字是「还剩百分之几」，条按**剩余**填充。
+// 三条判据都不是审美：
+//   · 报剩余 —— 用户问这个数就是想知道「我还能干多久」，`0.1 / 311.5` 要人做减法；
+//   · 条按剩余填 —— 原来那条填了 0.03%，在屏幕上和「组件坏了」长得一模一样，
+//     反过来画之后闲着的时候它是满的；
+//   · 充足时**保持中性灰**不上品牌蓝 —— 一根横贯整卡的蓝条会把「一切正常」画得比
+//     「快没了」还响。颜色留给 quotaTone 那两档（阈值与上下文浮层共用，ADR-0209）。
+// 精确的 credit 进 `title`：百分比是给人扫一眼的，对账的人还得看得到数。
 //
 // 版式跟 ModelProviderSettings 同一套语言:圆角 14px 卡片、发丝线分组、
 // 13.5px 行标题/11.5px 灰字副文案——这一节看起来该像它的邻居,不是另一个组件库。
@@ -14,17 +23,36 @@
 import { useEffect, useState } from "react";
 
 import { Button } from "@/components/ui/button.js";
-import { addonLine, countdown, liveWindow, planCards, planCardsOrNull, upgradeCards, windowPercent } from "../lib/billingView.js";
-import { fmtCredit } from "../../../shared/billing.js";
+import { cn } from "@/lib/utils.js";
+import {
+  addonLine, countdown, fmtRemainingPercent, liveWindow, periodLine, planCards, planCardsOrNull,
+  quotaTone, remainingPercent, upgradeCards, usageTitle, windowPercent,
+} from "../lib/billingView.js";
 import { useNow } from "../lib/useNow.js";
 import { useChat } from "../store.js";
 
-/** 一张价目卡：档名 + 价格 + 一句话 + 订阅按钮 */
-function PlanCard({ id, name, priceUsd, blurb, pending, disabled, onSubscribe }: {
+/** 条的颜色。**充足时是中性灰**，不是品牌蓝：颜色在这张卡里只用来说「出事了」 */
+const TONE_BAR = {
+  brand: "bg-foreground/40",
+  warn: "bg-warn",
+  deny: "bg-deny",
+} as const;
+
+/** 一张价目卡：档名 + 价格 + 一句话 + 订阅按钮。
+    `current` = 这是用户此刻所在的档（今天只有 Free 用得上）——它不是一个可买的东西，
+    所以虚线边框、底色沉一档、**不给主行动按钮**：画成第四张可买的卡会让人去点它 */
+function PlanCard({ id, name, priceUsd, blurb, tag, caps, current, action, pending, disabled, onSubscribe }: {
   id: string;
   name: string;
   priceUsd: number;
   blurb: string;
+  /** 档名后面那枚小标（「当前」/「多数人选这个」）。没有就不画 */
+  tag?: string;
+  /** 能力行。空数组 = 整行不画（服务端没下发能力时不猜） */
+  caps: string[];
+  current?: boolean;
+  /** 当前档那颗次要按钮的文案。current 为真时代替「订阅」 */
+  action?: { label: string; onClick: () => void };
   /** 这张卡自己的下单在飞——按钮换文案 */
   pending: boolean;
   /** 有任意一张卡（或加购/管理）在飞——全部按钮跟着禁掉,防重复下单开出两个 Stripe session */
@@ -32,21 +60,57 @@ function PlanCard({ id, name, priceUsd, blurb, pending, disabled, onSubscribe }:
   onSubscribe: () => void;
 }) {
   return (
-    <div className="flex flex-col gap-2 rounded-[12px] border border-border bg-card p-3">
-      <div className="text-[13.5px] font-[550]">{name}</div>
+    <div
+      className={cn(
+        "flex flex-col gap-2 rounded-[12px] border p-3",
+        current ? "border-dashed border-border bg-transparent" : "border-border bg-card",
+        tag && !current && "border-primary/55",
+      )}
+    >
+      <div className="flex items-center gap-[6px] text-[13.5px] font-[550]">
+        {name}
+        {tag && (
+          <span
+            className={cn(
+              "rounded-[5px] px-[6px] py-[2px] text-[10.5px] font-[600]",
+              current ? "bg-accent text-muted-foreground" : "bg-primary/16 text-primary",
+            )}
+          >
+            {tag}
+          </span>
+        )}
+      </div>
       <div className="flex items-baseline gap-1">
         <span className="text-[17px] font-[550] tabular-nums">${priceUsd}</span>
         <span className="text-[11px] text-muted-foreground">/月</span>
       </div>
       <p className="text-[11.5px] leading-[1.5] text-muted-foreground">{blurb}</p>
-      <Button size="sm" className="mt-1" disabled={disabled} onClick={onSubscribe} data-testid={`plan-subscribe-${id}`}>
-        {pending ? "打开中…" : "订阅"}
-      </Button>
+      {caps.length > 0 && (
+        <div className="flex flex-wrap gap-[5px]">
+          {caps.map((c) => (
+            <span key={c} className="rounded-[5px] bg-accent px-[6px] py-[2px] text-[10.5px] text-foreground/80">
+              {c}
+            </span>
+          ))}
+        </div>
+      )}
+      {/* 能力行与按钮靠 mt-auto 压到底：四张卡的一句话长短不一，不压的话下半截错位 */}
+      <div className="mt-auto pt-1">
+        {current && action ? (
+          <Button size="sm" variant="ghost" className="w-full text-muted-foreground" onClick={action.onClick}>
+            {action.label}
+          </Button>
+        ) : (
+          <Button size="sm" className="w-full" disabled={disabled} onClick={onSubscribe} data-testid={`plan-subscribe-${id}`}>
+            {pending ? "打开中…" : "订阅"}
+          </Button>
+        )}
+      </div>
     </div>
   );
 }
 
-/** 一条额度窗口：标题 + 用量/倒计时 + 进度条。
+/** 一扇额度窗：标签 + 倒计时 / 大字剩余百分比 / 一根按剩余填充的条。
     过了 resetAt 的窗按清零画（liveWindow）——快照来自上一次网关响应，而窗口到点会
     自己清零；开着这一页坐过一扇窗的人会看着一个早就不成立的占用。与浮层里那段
     （components/PlanQuotaSection.tsx）共用同一个换算，两处报同一个窗不能给出两个数 */
@@ -56,20 +120,60 @@ function WindowRow({ label, w: raw, now }: {
   now: number;
 }) {
   const w = liveWindow(raw, now);
+  // 色档按**已用**判（与浮层、上下文环共用的那组阈值），画出来的却是剩余：
+  // 同一件事的两个说法，判据只能有一份
+  const tone = TONE_BAR[quotaTone(windowPercent(w))];
   return (
-    <div className="space-y-1">
-      <div className="flex items-baseline justify-between text-[11.5px]">
+    <div className="space-y-[6px]" title={usageTitle(w)}>
+      <div className="flex items-baseline justify-between gap-2 text-[11.5px]">
         <span className="text-foreground/80">{label}</span>
-        <span className="text-muted-foreground tabular-nums">
-          {fmtCredit(w.usedMicro)} / {fmtCredit(w.limitMicro)} · {countdown(w.resetAt, now)}
-        </span>
+        <span className="text-muted-foreground tabular-nums">{countdown(w.resetAt, now)}</span>
       </div>
-      <div className="h-[5px] overflow-hidden rounded-full bg-muted">
+      <div className="flex items-baseline gap-[5px]">
+        <span className="text-[28px] font-[600] leading-[1.1] tracking-[-0.02em] tabular-nums">
+          {fmtRemainingPercent(w)}
+        </span>
+        <span className="text-[11.5px] text-muted-foreground">可用</span>
+      </div>
+      <div className="h-[6px] overflow-hidden rounded-full bg-foreground/10">
         <div
-          className="h-full rounded-full bg-foreground/70 transition-[width] duration-300 ease-[var(--ease-strong)]"
-          style={{ width: `${windowPercent(w)}%` }}
+          className={cn("h-full rounded-full transition-[width] duration-300 ease-[var(--ease-strong)]", tone)}
+          style={{ width: `${remainingPercent(w)}%` }}
         />
       </div>
+    </div>
+  );
+}
+
+/** 出事时那条横幅：一句话 + 一个能点的出口。
+    原来这两件事各是一句灰字（「· 扣款失败」缀在 11px 小标题后面、额度用完是一行小字），
+    一个会让人停止付费的事故写得比「加购 $10」还轻，而且没有任何一条可走的路 */
+function Strip({ tone, title, note, action }: {
+  tone: "warn" | "deny";
+  title: string;
+  note: string;
+  action?: { label: string; onClick: () => void; disabled?: boolean };
+}) {
+  return (
+    <div
+      className={cn(
+        "flex flex-wrap items-center gap-[10px] rounded-[10px] px-[11px] py-[9px] text-[12px] leading-[1.5]",
+        tone === "warn" ? "bg-warn/12 text-warn" : "bg-deny/12 text-deny",
+      )}
+    >
+      <b className="font-[650]">{title}</b>
+      <span className="text-muted-foreground">{note}</span>
+      {action && (
+        <Button
+          size="xs"
+          variant="outline"
+          className="ml-auto border-current bg-transparent text-current hover:bg-current/10"
+          disabled={action.disabled}
+          onClick={action.onClick}
+        >
+          {action.label}
+        </Button>
+      )}
     </div>
   );
 }
@@ -79,6 +183,7 @@ export function BillingSettings() {
   const loadBilling = useChat((s) => s.loadBilling);
   const checkout = useChat((s) => s.billingCheckout);
   const portal = useChat((s) => s.billingPortal);
+  const openSettings = useChat((s) => s.openSettings);
 
   // 开页取一次最新的(refresh:true 先打 /me)——同 ModelProviderSettings 开页
   // 拉 refreshProviderStats 一致:这一页是"改配置"的地方,不做轮询
@@ -110,97 +215,158 @@ export function BillingSettings() {
     // 先画骨架：名字照给、价格留空、按钮禁用——不拿一个猜的数贴订阅按钮（ADR-0203
     // 偏差 (a)：以前价格抄死在前端，改价那天卡片和 Stripe 结账页对不上）
     const cards = planCardsOrNull(me) ?? [];
+    const capsOf = (id: string) =>
+      me?.plans.find((p) => p.id === id)?.capabilities.image ? ["图像"] : [];
     return (
       <section className="flex flex-col gap-[6px]">
         <h2 className="px-1 text-[11px] tracking-[0.06em] text-muted-foreground uppercase">订阅</h2>
         <p className="px-1 text-[11.5px] leading-[1.5] text-muted-foreground">
-          订阅后模型调用走 Mr Otto 的 key，不用自己配。自带 key 的免费档能力全开。
+          订阅后模型调用走 Mr Otto 的 key，不用自己配。
         </p>
-        <div className="grid grid-cols-3 gap-2">
+        <div className="grid grid-cols-4 gap-2">
+          {/* Free 不是服务端 plan 表里的一行，是「没有订阅」这个状态本身的名字。
+              价格 $0 由定义得出，不是抄来的数，所以它不受「价目由服务端下发」那条约束 */}
+          <PlanCard
+            id="free"
+            name="Free"
+            tag="当前"
+            priceUsd={0}
+            blurb="自己配模型 key，账单在厂商那边"
+            caps={[]}
+            current
+            action={{ label: "去配 key", onClick: () => void openSettings("keys") }}
+            pending={false}
+            disabled={pending !== null}
+            onSubscribe={() => undefined}
+          />
           {cards.map((c) => (
             <PlanCard
               key={c.id}
               {...c}
+              caps={capsOf(c.id)}
               pending={pending === `plan:${c.id}`}
               disabled={pending !== null}
               onSubscribe={() => run(`plan:${c.id}`, () => checkout({ planId: c.id }))}
             />
           ))}
         </div>
+        <p className="px-1 text-[11px] leading-[1.5] text-muted-foreground">
+          价目由服务端下发，改价不用发版；查不到价的档位整张不画。
+        </p>
       </section>
     );
   }
 
   const cards = planCards(me.plans);
-  const planName = cards.find((c) => c.id === me.plan)?.name ?? me.plan;
+  const current = cards.find((c) => c.id === me.plan);
+  const planLabel = current?.name ?? me.plan;
   const upgrades = upgradeCards(me.plans, me.plan);
   const addonText = addonLine(me.addon, now);
+  const period = periodLine(me);
 
   return (
     <section className="flex flex-col gap-[10px]">
-      <div className="flex items-center justify-between px-1">
-        <h2 className="text-[11px] tracking-[0.06em] text-muted-foreground uppercase">
-          订阅 · {planName}
-          {me.status === "past_due" && <span className="text-warn"> · 扣款失败</span>}
-        </h2>
-        <Button
-          size="xs"
-          variant="ghost"
-          className="text-muted-foreground"
-          disabled={pending !== null}
-          onClick={() => run("portal", () => portal())}
-        >
-          {pending === "portal" ? "打开中…" : "管理"}
-        </Button>
-      </div>
+      <h2 className="px-1 text-[11px] tracking-[0.06em] text-muted-foreground uppercase">订阅</h2>
 
-      <div className="flex flex-col gap-[10px] rounded-[14px] border border-border bg-card p-3">
-        {me.windows && (
-          <>
-            <WindowRow label="5 小时窗" w={me.windows.h5} now={now} />
-            <WindowRow label="本周" w={me.windows.week} now={now} />
-          </>
-        )}
-
-        {billing?.exhausted && (
-          <p className="text-[11.5px] leading-[1.5] text-warn">
-            额度已用完，{countdown(billing.exhausted.resetAt, now)}；配了自己的 key 会自动切过去。
-          </p>
-        )}
-
-        <div className="flex items-center justify-between gap-2 text-[11.5px]">
-          <span className="text-muted-foreground">{addonText ?? "没有加购余额"}</span>
+      <div className="flex flex-col gap-[14px] rounded-[14px] border border-border bg-card p-4">
+        {/* 档位那一行：档名 + 价格 + 下次扣款。periodEnd 一直在 BillingMe 里，
+            这一页从来没画过它——而「下一次什么时候扣钱」是账号页的前三个问题之一 */}
+        <div className="flex flex-wrap items-center gap-[10px]">
+          <span
+            className={cn(
+              "rounded-[7px] px-[8px] py-[3px] text-[11.5px] font-[650] tracking-[0.05em]",
+              me.status === "past_due" ? "bg-warn/18 text-warn" : "bg-primary/18 text-primary",
+            )}
+          >
+            {planLabel.toUpperCase()}
+          </span>
+          <span className="text-[12px] text-muted-foreground tabular-nums">
+            {current ? `$${current.priceUsd} / 月` : null}
+            {current && period ? " · " : null}
+            {period}
+          </span>
           <Button
             size="xs"
             variant="outline"
+            className="ml-auto"
+            disabled={pending !== null}
+            onClick={() => run("portal", () => portal())}
+          >
+            {pending === "portal" ? "打开中…" : "管理订阅"}
+          </Button>
+        </div>
+
+        {me.status === "past_due" && (
+          <Strip
+            tone="warn"
+            title="扣款失败"
+            note="补上之前额度照常用，Stripe 重试失败后订阅会暂停。"
+            action={{
+              label: pending === "portal" ? "打开中…" : "更新支付方式",
+              disabled: pending !== null,
+              onClick: () => run("portal", () => portal()),
+            }}
+          />
+        )}
+
+        {billing?.exhausted && (
+          <Strip
+            tone="deny"
+            title="额度已用完"
+            note={`${countdown(billing.exhausted.resetAt, now)}；配了自己的 key 会自动切过去。`}
+            action={{ label: "去配 key", onClick: () => void openSettings("keys") }}
+          />
+        )}
+
+        {me.windows && (
+          <div className="grid grid-cols-2 gap-[22px]">
+            <WindowRow label="5 小时窗" w={me.windows.h5} now={now} />
+            <div className="border-l border-border pl-[22px]">
+              <WindowRow label="本周" w={me.windows.week} now={now} />
+            </div>
+          </div>
+        )}
+
+        <div className="h-px bg-border" />
+
+        {/* 「没有加购余额」那句否定式换成一行有值的账：这张卡上其余全是数，
+            只有这一格在讲「没有」 */}
+        <div className="flex items-center gap-2 text-[12px]">
+          <span className="text-muted-foreground">加购余额</span>
+          <span className="tabular-nums">{addonText ?? "0 credit"}</span>
+          <Button
+            size="xs"
+            variant="outline"
+            className="ml-auto"
             disabled={pending !== null}
             onClick={() => run("addon", () => checkout({ addon: true, quantity: 1 }))}
           >
             {pending === "addon" ? "打开中…" : "加购 $10"}
           </Button>
         </div>
-      </div>
 
-      {upgrades.length > 0 && (
-        <div className="flex flex-wrap gap-2 px-1">
-          {upgrades.map((c) => (
-            <Button
-              key={c.id}
-              size="xs"
-              variant="outline"
-              disabled={pending !== null}
-              // 升档走 Customer Portal，**不是**再开一张 Checkout（C2）：后者会在
-              // Stripe 那边长出第二条订阅、两笔一起扣款。Portal 在同一条订阅上换
-              // price 并按比例结算，是 Stripe 给「换档」准备的那扇门。
-              // 按钮 key 仍然按档位记（哪一颗在飞就换哪一颗的文案），落到的动作是同一个
-              // portal —— 边缘那侧也会把「已有订阅还来 checkout」拒成 409。
-              onClick={() => run(`plan:${c.id}`, () => portal())}
-            >
-              {pending === `plan:${c.id}` ? "打开中…" : `升到 ${c.name}（在管理页切换）`}
-            </Button>
-          ))}
-        </div>
-      )}
+        {upgrades.length > 0 && (
+          <div className="flex flex-wrap items-center gap-2 text-[11.5px] text-muted-foreground">
+            {upgrades.map((c) => (
+              <Button
+                key={c.id}
+                size="xs"
+                variant="outline"
+                disabled={pending !== null}
+                // 升档走 Customer Portal，**不是**再开一张 Checkout（C2）：后者会在
+                // Stripe 那边长出第二条订阅、两笔一起扣款。Portal 在同一条订阅上换
+                // price 并按比例结算，是 Stripe 给「换档」准备的那扇门。
+                // 按钮 key 仍然按档位记（哪一颗在飞就换哪一颗的文案），落到的动作是同一个
+                // portal —— 边缘那侧也会把「已有订阅还来 checkout」拒成 409。
+                onClick={() => run(`plan:${c.id}`, () => portal())}
+              >
+                {pending === `plan:${c.id}` ? "打开中…" : `升到 ${c.name}（$${c.priceUsd} / 月）`}
+              </Button>
+            ))}
+            <span>换档在管理页完成，按比例结算</span>
+          </div>
+        )}
+      </div>
     </section>
   );
 }

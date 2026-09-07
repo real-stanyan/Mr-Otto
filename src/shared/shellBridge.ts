@@ -17,6 +17,7 @@ import type { SessionSummary, FtsHit } from "../session/store.js";
 import type { ProviderId } from "./providerCatalog.js";
 import type { ModelLane } from "./modelLane.js";
 import type { UsageSnapshot } from "./usageStats.js";
+import type { ModelShareWindow } from "./modelShare.js";
 import type { IslandUsageRow } from "./islandUsage.js";
 import type { CsModelRoute, CsRepoState } from "./remote/cloudSession.js";
 import type { TerminalInfo } from "./terminal.js";
@@ -902,6 +903,11 @@ export interface ShellBridge {
   /** 全库用量按厂商 + 按天投影（设置页那张柱状图）。
       窗口 days 天，另附紧邻的前 days 天合计供对比 */
   usageByProvider(days: number): Promise<UsageSnapshot>;
+  /** 全库用量按**型号**投影成占比（账号页那半张卡，#1022）。
+      窗口由渲染层给：它要和额度卡那扇「本周」是同一扇，而窗口起点只有那边算得出
+      （me.windows.week.resetAt 减一周）。认不出的型号照样在清单里 —— 按型号归并
+      没有归属问题，不像按厂商那条路必须把认不出的整行丢掉 */
+  usageByModel(since: number): Promise<ModelShareWindow>;
   /** 各厂商账户余额。见 ProviderBalance —— 拿不到的厂商不在数组里 */
   providerBalances(): Promise<ProviderBalance[]>;
   /** 订阅制托管额度快照（ADR-0176/Task 11）。refresh=true 先打一次 /me 再回最新的；
@@ -1518,6 +1524,7 @@ export const CHANNELS = {
   hasAuthRecord: "otter:hasAuthRecord",
   configRoot: "otter:configRoot",
   usageByProvider: "otter:usageByProvider",
+  usageByModel: "otter:usageByModel",
   providerBalances: "otter:providerBalances",
   billingSnapshot: "otter:billingSnapshot",
   billingCheckout: "otter:billingCheckout",

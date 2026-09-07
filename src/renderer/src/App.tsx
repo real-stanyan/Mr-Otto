@@ -84,7 +84,7 @@ import { SideChatWindow } from "./components/SideChatWindow.js";
 import { ProfileCard } from "./components/ProfileCard.js";
 import { CostPanel } from "./components/CostPanel.js";
 import { PlanQuotaSection } from "./components/PlanQuotaSection.js";
-import { SessionActivity } from "./components/SessionActivity.js";
+import { AccountUsageCard } from "./components/AccountUsageCard.js";
 import { SessionOrb } from "./components/SessionOrb.js";
 import { spawnedFromOf } from "./lib/subagentTimeline.js";
 import { fallbackSessionLabel, sessionDisplayName } from "./lib/sessionLabel.js";
@@ -1327,11 +1327,11 @@ function AccountPage() {
             <SignInCard />
           </div>
         )}
-        {/* 会话热力图。放这一页而不是新会话屏:它是"我用了多久"这类统计,
-            和额度卡是同一类东西;而新会话屏的正事是开始干活,一张半年统计摆在
-            输入框底下只是让人多看一眼。只在登录后画 —— 数据虽是本机日志,
-            但未登录时这一屏的正事是登录,一张半年统计只会把登录卡挤成配角 */}
-        {account.signedIn && <SessionActivity workspace={null} className="max-w-none" />}
+        {/* 使用情况:左会话热力图 + 右本周各模型 token 占比(#1022)。
+            放这一页而不是新会话屏:它是"我用了多久 / 烧在哪"这类统计,和额度卡是
+            同一类东西;而新会话屏的正事是开始干活。只在登录后画 —— 数据虽是本机日志,
+            但未登录时这一屏的正事是登录,一张统计只会把登录卡挤成配角 */}
+        {account.signedIn && <AccountUsageCard />}
         {error && <p className={ERR_TXT}>{error}</p>}
       </section>
     </div>

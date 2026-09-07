@@ -97,6 +97,42 @@ export function windowPercent(w: WindowState): number {
   return Math.min(100, Math.max(0, Math.round((w.usedMicro / w.limitMicro) * 100)));
 }
 
+/** 还剩百分之几。**一位小数、向下取整**，两条都是判据不是审美：
+    ① 报剩余不报已用 —— 用户问这个数就是想知道「我还能干多久」，而
+       `0.1 / 311.5` 要人当场做减法（同 bindingWindow 那段注释的理由）；
+    ② 向下取整 —— `0.1 / 311.5` 的真值是 99.9679%，四舍五入写出来是 100.0%，
+       把「刚烧了一点」和「一次没动」说成同一件事。向下取整之后 100.0% 只在
+       真的一次没用过时出现，0.0% 只在正好用完时出现。
+    没有额度可言（limitMicro <= 0）时回 100：与 windowPercent 的「已用 0%」互为补角，
+    两个函数对同一扇窗不能给出互相矛盾的答案。 */
+export function remainingPercent(w: { usedMicro: number; limitMicro: number }): number {
+  if (w.limitMicro <= 0) return 100;
+  const left = (1 - w.usedMicro / w.limitMicro) * 100;
+  return Math.floor(Math.min(100, Math.max(0, left)) * 10) / 10;
+}
+
+/** 「99.9%」。单位只写一次，调用方自己配「可用」 */
+export function fmtRemainingPercent(w: { usedMicro: number; limitMicro: number }): string {
+  return `${remainingPercent(w).toFixed(1)}%`;
+}
+
+/** 悬停时给出的精确数。百分比是给人扫一眼的，对账的人还得看得到 credit */
+export function usageTitle(w: { usedMicro: number; limitMicro: number }): string {
+  return `已用 ${creditOf(w.usedMicro).toFixed(1).replace(/\.0$/, "")} / ${fmtCredit(w.limitMicro)}`;
+}
+
+/** 「下次扣款 9月30日」。`periodEnd` 一直在 BillingMe 里，渲染层从来没画过它 ——
+    而「下一次什么时候扣钱」是账号页的前三个问题之一。
+    措辞跟着 status 分叉：扣款失败时说「到期」不说「下次扣款」（那句会读成一切正常），
+    退订过的人说「服务到 X 为止」。查不到日期就整行不画，不写破折号 */
+export function periodLine(me: Pick<BillingMe, "status" | "periodEnd">): string | null {
+  if (!me.periodEnd) return null;
+  const day = new Date(me.periodEnd).toLocaleDateString("zh-CN", { month: "long", day: "numeric" });
+  if (me.status === "canceled") return `服务到 ${day} 为止`;
+  if (me.status === "past_due") return `${day} 到期`;
+  return `下次扣款 ${day}`;
+}
+
 /** 满一天进「天」这一档：周窗的倒计时按小时写出来是「96 小时 0 分后恢复」——
     一个没人这样读时间的数，而它要挤进浮层里 300px 宽的一行。天数向上取整
     （还剩 3 天半说「4 天后恢复」会早一点，比说「3 天」晚说恢复要好：

@@ -112,6 +112,7 @@ import type {
 } from "../../shared/shellBridge.js";
 import type { CloudSessionListRow } from "./lib/workspaceView.js";
 import { DEFAULT_USAGE_DAYS, type UsageSnapshot } from "../../shared/usageStats.js";
+import type { ModelShareWindow } from "../../shared/modelShare.js";
 import { laneOf, type ModelLane } from "../../shared/modelLane.js";
 import type { MyProfile, ProfilePatch } from "../../shared/profile.js";
 import {
@@ -455,6 +456,9 @@ interface ChatState {
   providerUsage: UsageSnapshot | null;
   /** 各厂商账户余额。只有四家有这回事，查不到的厂商压根不在数组里 */
   providerBalances: ProviderBalance[];
+  /** 本周（或最近 7 天）各**型号**的 token 占比（账号页那半张卡，#1022）。
+      null = 还没查过 —— 和"这一周一次都没调过"不是一回事（后者是 totalTokens 为 0） */
+  modelShare: ModelShareWindow | null;
   /** 订阅制托管额度快照（ADR-0176/issue #696，Task 11）。null = 还没查过——
       和"没有订阅"不是一回事（区分靠 billing.me，不是靠这层 null）。
       boot() 订阅 onBillingChanged 保持热更新，登录态变化时另外 loadBilling(true) 一次 */
@@ -716,6 +720,8 @@ interface ChatState {
   /** 拉「模型配置」页要的两份数：跨会话用量 + 各家余额。开页时取一次。
       两份各自成败（余额那趟要出网，慢且可能失败，不该拖累用量图） */
   refreshProviderStats(days: number): Promise<void>;
+  /** 拉账号页那半张卡的数据。窗口起点由调用方给：它要和额度卡那扇「本周」是同一扇 */
+  refreshModelShare(since: number): Promise<void>;
   /** 拉一次托管额度快照。refresh=true 先打 /me（开订阅页 / 登录态变化时用），
       失败保留旧值——同 hostedQuota 那条"拿不到"≠"没订阅"的纪律 */
   loadBilling(refresh?: boolean): Promise<void>;
@@ -1297,6 +1303,7 @@ export const useChat = create<ChatState>((set, get) => ({
   holdGateForPasswordReset: false,
   configRoot: "",
   myProfile: null,
+  modelShare: null,
   profileSetupOpen: false,
   modelSetupOpen: false,
   sessionSearchOpen: false,
@@ -1855,6 +1862,15 @@ export const useChat = create<ChatState>((set, get) => ({
       .providerBalances()
       .then((providerBalances) => set({ providerBalances }))
       .catch(() => set({ providerBalances: [] }));
+  },
+
+  async refreshModelShare(since) {
+    try {
+      set({ modelShare: await window.otter.usageByModel(since) });
+    } catch {
+      // 维持 null（"还没查过"）——空清单会被画成"这一周一个模型都没用过"，
+      // 同 providerUsage 的路子
+    }
   },
 
   async loadBilling(refresh = false) {
