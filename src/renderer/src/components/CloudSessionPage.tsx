@@ -322,8 +322,8 @@ export function CloudSessionPage({
     setSendError(null);
     setSendNotice(null);
     // 「沙箱内免审没改上」是一句关于**某个工作区**的话；换到另一个工作区的会话上
-    // 还挂着它就是在说一件跟这里无关的事（`sandboxBusy` 不清：写在飞时 ws.id 已经
-    // 在闭包里定死了，回来那一下把它置回 false 就是对的）
+    // 还挂着它就是在说一件跟这里无关的事。`sandboxBusy` 故意不清，理由写在它的
+    // 声明处；这道闸也不是全部——await 回来得更晚的那一次由 toggleSandbox 自己比对
     setSandboxError(null);
   }, [csSessionId]);
 
@@ -374,9 +374,10 @@ export function CloudSessionPage({
   const modelStatus = modelStatusText(cs.modelRoute);
   const canSend = ready && !sending && draft.trim().length > 0;
   const timelineEmpty = cloudEmptyState(cs.state, events.length);
+  // owner 判据在 `sandboxApprovalControl` 里取 `ws.ownerUid` 不取 `cs.ownerUid`：
+  // 后者在开会话的占位期间是空串（welcome 到了才真），照它判 owner 自己会先看到
+  // 一拍「所有者可改」再跳变——所以这里喂进去的是快照不是 cs
   const sandbox = sandboxApprovalControl(ws, selfUid);
-  // owner 判据取 `ws.ownerUid` 不取 `cs.ownerUid`：后者在开会话的占位期间是空串
-  // （welcome 到了才真），照它判 owner 自己会先看到一拍「所有者可改」再跳变
   const sandboxBanner = sandboxApprovalBanner(sandbox);
 
   /** 翻那颗开关。**不做乐观翻转**：值是快照的投影，写成功才 patch 那一格
