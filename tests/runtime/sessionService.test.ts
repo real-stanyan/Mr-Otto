@@ -991,8 +991,29 @@ describe("沙箱内工具的工作区审批策略（#977 第 1 条，ADR-0231）
     for (const d of decisions) expect(d).toMatchObject({ decision: "approved", reason: "工作区设置：沙箱内工具免审" });
     expect(events.filter((e) => e.type === "tool_result").every((e) => (e as { status: string }).status === "ok")).toBe(true);
     expect(events.some((e) => e.type === "turn_ended" && (e as { outcome: string }).outcome === "completed")).toBe(true);
-    // 一轮两次撞门只查一次策略（第一次撞门时查、这一轮复用）
+    // auto **不缓存**（#1029，ADR-0240）：两次撞门查两次库，这样 owner 半路
+    // 关掉免审时刹车立刻生效。原来这里断言的是 1（一轮只查一次），
+    // 改数字的产品改动就在同一个 PR 里——policyApprover 解析成 auto 后丢缓存
+    expect(policyCalls).toBe(2);
+  });
+
+  it("一轮之内策略只能收紧：第一把刀 auto 放行，owner 半路关掉，第二把刀就弹卡（#1029）", async () => {
+    let n = 0;
+    const { events, policyCalls } = await runBashTurn(async () => (++n === 1 ? "auto" : "ask"));
+    expect(policyCalls).toBe(2);
+    // 第一把刀是策略放的（没有卡），第二把刀弹了卡
+    expect(events.filter((e) => e.type === "approval_request")).toHaveLength(1);
+    const decisions = events.filter((e) => e.type === "approval_decision");
+    expect(decisions[0]).toMatchObject({ reason: "工作区设置：沙箱内工具免审" });
+    expect((decisions[1] as { decidedBy?: unknown }).decidedBy).toBeDefined();
+  });
+
+  it("反方向不生效：这一轮已经解析成 ask，owner 半路打开免审也照旧问人（同 ADR-0231 的「下一轮生效」）", async () => {
+    let n = 0;
+    const { events, policyCalls } = await runBashTurn(async () => (++n === 1 ? "ask" : "auto"));
+    // ask 钉住这一轮：只查一次，两把刀都弹卡
     expect(policyCalls).toBe(1);
+    expect(events.filter((e) => e.type === "approval_request")).toHaveLength(2);
   });
 
   it("ask（默认）：行为一字不变——两把刀各弹一张卡，人批了才执行", async () => {

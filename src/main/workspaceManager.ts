@@ -104,7 +104,7 @@ export interface WorkspaceManager {
       笔记不该被上限拦住，同 applyUserEdit。`version` 是编辑器打开时读到的那一行的
       CAS 令牌，回的是这次写完之后的新令牌——渲染层拿它原地更新那一行，不必整份重拉（#962） */
   saveMemory(id: string, agentId: string, text: string, version: string): Promise<FriendsResult<string>>;
-  /** owner 在智能体 tab 改「沙箱内工具要不要人批」（#977）。RLS（0024 ws_update_owner）
+  /** owner 在云会话输入框那一行改「沙箱内工具要不要人批」（#977；控件位置见 ADR-0240）。RLS（0024 ws_update_owner）
       落地判断，非 owner 撞「无权修改」 */
   setSandboxApproval(id: string, value: SandboxApproval): Promise<FriendsResult<null>>;
   /** 我在籍工作区里别人贡献的 host（proxyManager 借用源）。内存缓存,list()
@@ -129,7 +129,9 @@ function unreadableSnapshot(row: { id: string; name: string; owner_uid: string }
     connectors: [],
     sessions: [],
     agents: [],
-    sandboxApproval: normalizeSandboxApproval(undefined),
+    // null 不是 "ask"（#1029）：整份快照都没拉下来，这一格更谈不上读到了。
+    // 兜底成 "ask" 会让侧栏那格挂着的工作区在云会话里画出一枚「关着」的开关
+    sandboxApproval: null,
     loadError: humanizeWorkspaceError(reason),
   };
 }

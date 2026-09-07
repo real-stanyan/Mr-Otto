@@ -12,7 +12,7 @@
 // 本文件手机端也会 import 同一份源码，纯类型 + 纯函数，零 IO。
 
 import { normalizeAgentTools, type AgentToolAllow } from "./agentToolAllow.js";
-import { normalizeSandboxApproval, type SandboxApproval } from "./workspaceAgents.js";
+import type { SandboxApproval } from "./workspaceAgents.js";
 
 export interface WorkspaceMemberRow {
   uid: string;
@@ -85,9 +85,14 @@ export interface WorkspaceSnapshot {
   connectors: WorkspaceConnectorRow[];
   sessions: WorkspaceSessionRow[];
   agents: WorkspaceAgentRow[];
-  /** 沙箱内 bash / write_file 要不要人批（#977，ADR-0231）。owner 在智能体 tab 改，
-      runtime 每个 job 第一次撞审批门时现查一次。形状不对回 "ask" */
-  sandboxApproval: SandboxApproval;
+  /** 沙箱内 bash / write_file 要不要人批（#977，ADR-0231；控件位置见 ADR-0240）。
+      owner 在云会话输入框那一行翻，runtime 撞审批门时现查。
+      **`null` = 这一格此刻读不到**，不是「关着」（#1029）——那一列走单独一条容错查询，
+      查挂了照 `normalizeSandboxApproval` 兜底就会把一次网络抖动画成「要逐条批」，
+      而 runtime 用 service key 走的是另一条查询、照旧按真值免批：界面与实际反着说，
+      且一个字的提示都没有。形状不对（脏值）仍然回 "ask"——那是「读到了但值不认识」，
+      往严的一边倒，与读不到是两件事 */
+  sandboxApproval: SandboxApproval | null;
   /** 这个工作区的快照没拉下来（#843 ②）：列表页只拿到 workspaces 那一行，
       members/connectors/sessions/agents 都是空的**占位**，不是「真的没有」。
       在场 = 这一格暂时读不到，值是说给人听的原因（已过 humanizeWorkspaceError）。
@@ -123,7 +128,7 @@ function resolveLabel(uid: string, profile: MemberProfile | null): string {
 
 /** 行数据 → snapshot（label/avatarUrl 由 profiles 表查来，缺席回 uid 前 8 位 / 空串） */
 export function assembleSnapshot(
-  ws: { id: string; name: string; owner_uid: string; sandbox_approval: unknown },
+  ws: { id: string; name: string; owner_uid: string; sandbox_approval: SandboxApproval | null },
   members: readonly { uid: string; role: string }[],
   connectors: readonly {
     workspace_id: string; host_uid: string; server_id: string; label: string; tools: unknown;
@@ -177,7 +182,7 @@ export function assembleSnapshot(
       updatedTs: toEpochMs(a.updated_at),
       avatarSlot: normalizeAvatarSlot(a.avatar_slot),
     })),
-    sandboxApproval: normalizeSandboxApproval(ws.sandbox_approval),
+    sandboxApproval: ws.sandbox_approval,
   };
 }
 

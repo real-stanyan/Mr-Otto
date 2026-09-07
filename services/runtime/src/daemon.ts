@@ -319,7 +319,7 @@ async function main(): Promise<void> {
     return (data as { owner_uid: string }).owner_uid;
   }
 
-  /** 沙箱内工具要不要人批（#977，0026 迁移）。owner 在智能体 tab 改，这里现查不缓存
+  /** 沙箱内工具要不要人批（#977，0026 迁移）。owner 在云会话输入框那一行改（ADR-0240），这里现查不缓存
       ——同 queryAgents 的纪律，改了下一轮生效。查询失败原样抛，**不在这里回落**：
       回落成 ask 还是 auto 是调用方的决定，这个函数只如实报告「查到了什么」 */
   async function querySandboxApproval(workspaceId: string): Promise<SandboxApproval> {

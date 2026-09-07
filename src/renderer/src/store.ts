@@ -928,9 +928,12 @@ interface ChatState {
   /** 成员手改一档；主进程归一化后落库。version 见 shellBridge.workspaceMemorySave（#962）：
       递进去的是编辑器打开时那一行的 CAS 令牌，回来的是写完之后的新令牌 */
   saveWorkspaceMemory(id: string, agentId: string, text: string, version: string): Promise<FriendsResult<string>>;
-  /** owner 改「沙箱内工具要不要人批」（#977）：同十四件套的套路，成功后
-      refreshWorkspaceGroups() 重拉整份快照，失败落 workspaceGroupsError */
-  setWorkspaceSandboxApproval(id: string, value: "ask" | "auto"): Promise<boolean>;
+  /** owner 改「沙箱内工具要不要人批」（#977；控件搬进云会话输入框后改了形状，#1029）。
+      **不碰 workspaceGroupsError**、也不整份重拉：这颗开关此刻坐在输入框那一行上，
+      翻一次就把页脚那格共享错误擦掉（ADR-0228 C2-I4 已经为 say/approve/stop 拆过这条线），
+      而 refreshWorkspaceGroups 是每个工作区一次 fetchWorkspace、设置页里点一次付得起、
+      输入框上付不起。成功就地 patch 那一格——写进去的值就是刚写成功的那个 */
+  setWorkspaceSandboxApproval(id: string, value: "ask" | "auto"): Promise<FriendsResult<null>>;
   /** 把当前/指定会话发布进工作区。回是否成功——rowId/pkgId 用不上时调用方不必接 */
   publishWorkspaceSession(id: string, sessionId: string, title: string): Promise<boolean>;
   /** 只有发布者能撤（服务端也会拦，见 index.ts workspaceUnpublishSession handler） */
@@ -2289,13 +2292,12 @@ export const useChat = create<ChatState>((set, get) => ({
 
   async setWorkspaceSandboxApproval(id, value) {
     const r = await window.otter.workspaceSetSandboxApproval(id, value);
-    if (!r.ok) {
-      set({ workspaceGroupsError: r.message });
-      return false;
+    if (r.ok) {
+      set((s) => ({
+        workspaceGroups: s.workspaceGroups.map((g) => (g.id === id ? { ...g, sandboxApproval: value } : g)),
+      }));
     }
-    set({ workspaceGroupsError: null });
-    await get().refreshWorkspaceGroups();
-    return true;
+    return r;
   },
 
   async publishWorkspaceSession(id, sessionId, title) {

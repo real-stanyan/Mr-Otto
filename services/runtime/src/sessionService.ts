@@ -530,8 +530,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       onRequest 现去 load 日志：onRequest 是 decide 的同步回调，为一句旁白读一遍
       日志是白付的 IO */
   let currentJob: { agentId: string; fromUid: string; openingContent: string } | null = null;
-  /** 这一轮的沙箱审批策略（#977）：第一次撞门时查、之后同一轮复用。runJob 进门
-      复位——作用域是一个 job，owner 中途翻开关下一轮才生效（同 relayRemainingMicro） */
+  /** 这一轮的沙箱审批策略（#977）：第一次撞门时查。runJob 进门复位。
+      **复用是单向的**（#1029，ADR-0240）：查出来是 `ask` 就钉住这一轮（owner 半路
+      打开免审不影响已经在问的这一轮，同 ADR-0231 的「下一轮生效」）；查出来是 `auto`
+      就把这一格丢回 null，下次撞门重查——关掉免审必须立刻生效，判据写在 policyApprover 里 */
   let jobSandboxPolicy: Promise<SandboxApproval> | null = null;
   /** 这个 job 已经为审批出过一次声了吗（#959 复审 Medium 2）。每进一次 runJob
       复位（紧挨 `router.setRelayTurn`，同一个时机同一个作用域）——判据是"这一轮"
@@ -780,6 +782,16 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
           return "ask" as const;
         });
         if ((await jobSandboxPolicy) === "auto") {
+          // **这一轮之内策略只能收紧，不能放松**（#1029，ADR-0240）：解析成 auto 就把
+          // 缓存丢掉，下一次撞门再问一次库——所以 owner 关掉开关是**立刻**生效的，
+          // 不必等下一轮。开关此刻坐在输入框那一行上，形状说的是「随时踩得到的刹车」
+          // （本地那颗 `setApprovalMode` 的 handler 就故意不查 runningSessions），
+          // 一轮之内踩下去毫无反应是这次搬家最不该带来的静默失败。
+          // 反方向照旧钉住：解析成 ask 之后这一轮就按 ask 走到底（缓存留着），
+          // 与 ADR-0231「下一轮生效」逐字相同——一轮里问过一次的人不会因为
+          // 别人半路翻了开关而突然不再被问。
+          // 代价：免审的工作区里每次跑命令/写文件多一次单行主键查询（只在真撞门时）。
+          jobSandboxPolicy = null;
           return { decision: "approved", reason: "工作区设置：沙箱内工具免审" };
         }
       }
