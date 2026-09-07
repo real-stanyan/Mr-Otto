@@ -1,11 +1,11 @@
-// assembleSnapshot 纯逻辑单测：三条断言钉住行数据 → snapshot 的转换规则
-// （tools 形状不对回 []、label 缺席回 uid 截断 + avatarUrl 缺席回空串、updated_at ISO → ms）+
-// relay_max_depth 形状不对回默认（#950 Task 9，同 normalizeRelayMaxDepth 口径）。
+// assembleSnapshot 纯逻辑单测：钉住行数据 → snapshot 的转换规则
+// （tools 形状不对回 []、label 缺席回 uid 截断 + avatarUrl 缺席回空串、updated_at ISO → ms、
+// avatar_slot 归一、sandbox_approval 形状不对回 ask）。
 
 import { describe, expect, it } from "vitest";
 import { assembleSnapshot } from "../../src/shared/workspaces.js";
 
-const WS = { id: "ws-1", name: "测试工作区", owner_uid: "owner-uid-12345678", relay_max_depth: 6, sandbox_approval: "ask" };
+const WS = { id: "ws-1", name: "测试工作区", owner_uid: "owner-uid-12345678", sandbox_approval: "ask" };
 
 describe("assembleSnapshot", () => {
   it("组装成员/连接器/会话三张表 + label 查得到时原样用", () => {
@@ -36,7 +36,6 @@ describe("assembleSnapshot", () => {
         pkgId: "pkg-1", title: "会话标题", updatedTs: Date.parse("2026-08-30T12:00:00.000Z"),
       }],
       agents: [],
-      relayMaxDepth: 6,
       sandboxApproval: "ask",
     });
   });
@@ -130,12 +129,5 @@ describe("assembleSnapshot", () => {
     expect(assembleSnapshot({ ...WS, sandbox_approval: undefined }, [], [], [], [], () => null).sandboxApproval).toBe("ask");
     expect(assembleSnapshot({ ...WS, sandbox_approval: null }, [], [], [], [], () => null).sandboxApproval).toBe("ask");
     expect(assembleSnapshot({ ...WS, sandbox_approval: "AUTO" }, [], [], [], [], () => null).sandboxApproval).toBe("ask");
-  });
-
-  it("relay_max_depth：范围内的整数原样用，形状不对（字符串/null/越界）回默认 6", () => {
-    expect(assembleSnapshot({ ...WS, relay_max_depth: 4 }, [], [], [], [], () => null).relayMaxDepth).toBe(4);
-    expect(assembleSnapshot({ ...WS, relay_max_depth: "4" }, [], [], [], [], () => null).relayMaxDepth).toBe(6);
-    expect(assembleSnapshot({ ...WS, relay_max_depth: null }, [], [], [], [], () => null).relayMaxDepth).toBe(6);
-    expect(assembleSnapshot({ ...WS, relay_max_depth: 99 }, [], [], [], [], () => null).relayMaxDepth).toBe(6);
   });
 });

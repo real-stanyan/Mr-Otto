@@ -26,7 +26,6 @@ import type * as WorkspacesApi from "./supabaseWorkspacesApi.js";
 import { normalizeAvatarSlot } from "../shared/workspaces.js";
 import type { WorkspaceMemoryRow, WorkspaceSnapshot } from "../shared/workspaces.js";
 import { humanizeWorkspaceError } from "../shared/workspaceError.js";
-import { normalizeRelayMaxDepth } from "../shared/agentRelay.js";
 import { formatEntries, parseEntries } from "../shared/memoryStore.js";
 import { ADMIN_AGENT_ID, agentNameConflict, normalizeAgentName, normalizeSandboxApproval, type SandboxApproval } from "../shared/workspaceAgents.js";
 import { parseCreateAgentArgs, scanCreateAgentThreat, validateAgentPatch } from "../shared/createAgentDraft.js";
@@ -58,7 +57,6 @@ export interface WorkspaceManagerDeps {
   listAgentNames: typeof WorkspacesApi.listAgentNames;
   listMemoryRows: typeof WorkspacesApi.listMemoryRows;
   saveMemoryRow: typeof WorkspacesApi.saveMemoryRow;
-  updateRelayMaxDepth: typeof WorkspacesApi.updateRelayMaxDepth;
   updateSandboxApproval: typeof WorkspacesApi.updateSandboxApproval;
   client: () => SupabaseClient | null;
   selfUid: () => string | null;
@@ -106,12 +104,8 @@ export interface WorkspaceManager {
       笔记不该被上限拦住，同 applyUserEdit。`version` 是编辑器打开时读到的那一行的
       CAS 令牌，回的是这次写完之后的新令牌——渲染层拿它原地更新那一行，不必整份重拉（#962） */
   saveMemory(id: string, agentId: string, text: string, version: string): Promise<FriendsResult<string>>;
-  /** owner 在智能体 tab 改「接力上限」（#950 Task 9）。表单已经过
-      validateRelayMaxDepth，这里不重复校验——RLS（0024 ws_update_owner）落地
-      判断，非 owner 会撞「无权修改」 */
-  setRelayMaxDepth(id: string, maxDepth: number): Promise<FriendsResult<null>>;
-  /** owner 在智能体 tab 改「沙箱内工具要不要人批」（#977）。同 setRelayMaxDepth：
-      RLS（0024 ws_update_owner）落地判断，非 owner 撞「无权修改」 */
+  /** owner 在智能体 tab 改「沙箱内工具要不要人批」（#977）。RLS（0024 ws_update_owner）
+      落地判断，非 owner 撞「无权修改」 */
   setSandboxApproval(id: string, value: SandboxApproval): Promise<FriendsResult<null>>;
   /** 我在籍工作区里别人贡献的 host（proxyManager 借用源）。内存缓存,list()
       后更新——proxyManager 借用路径要同步读,不能每次都等一轮网络往返 */
@@ -135,7 +129,6 @@ function unreadableSnapshot(row: { id: string; name: string; owner_uid: string }
     connectors: [],
     sessions: [],
     agents: [],
-    relayMaxDepth: normalizeRelayMaxDepth(undefined),
     sandboxApproval: normalizeSandboxApproval(undefined),
     loadError: humanizeWorkspaceError(reason),
   };
@@ -373,13 +366,6 @@ export function createWorkspaceManager(deps: WorkspaceManagerDeps): WorkspaceMan
         // （#949 review finding 2）——saveMemoryRow 只在这一行此刻的版本仍等于 version 时才
         // 允许覆盖，不等则抛 MEMORY_CONFLICT，原样冒泡给 withSession 收成 FriendsResult 错误。
         return deps.saveMemoryRow(client, id, agentId, formatEntries(parseEntries(text)), version);
-      });
-    },
-
-    async setRelayMaxDepth(id, maxDepth) {
-      return withSession(async (client) => {
-        await deps.updateRelayMaxDepth(client, id, maxDepth);
-        return null;
       });
     },
 

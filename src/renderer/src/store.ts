@@ -922,17 +922,8 @@ interface ChatState {
   /** 成员手改一档；主进程归一化后落库。version 见 shellBridge.workspaceMemorySave（#962）：
       递进去的是编辑器打开时那一行的 CAS 令牌，回来的是写完之后的新令牌 */
   saveWorkspaceMemory(id: string, agentId: string, text: string, version: string): Promise<FriendsResult<string>>;
-  /** owner 在智能体 tab 改「接力上限」（#950 Task 9）：同十四件套的套路，成功后
-      refreshWorkspaceGroups() 重拉整份快照，失败落 workspaceGroupsError。
-
-      **此刻没有调用方**（#1017）：智能体 tab 上那行输入框已经撤了——`relay_max_depth`
-      量的是**棒数**，而棒数跟钱和进展都不成比例，owner 没有任何依据填得出正确值。
-      读路径还活着（runtime 每条会接力的 turn 现查一次，默认 6 仍在拦），死掉的只是
-      「改」这一半。整条链（连同这个 action、IPC、`updateRelayMaxDepth`、那一列）的
-      去留等 #1017 的替换方案定了一起处理——先删一半、方案定了再删另一半是两趟 churn。
-      在那之前这条注释就是它的墓碑：读到它不用再查一遍"谁在调"。 */
-  setWorkspaceRelayMaxDepth(id: string, maxDepth: number): Promise<boolean>;
-  /** owner 改「沙箱内工具要不要人批」（#977）：同 setWorkspaceRelayMaxDepth 的套路 */
+  /** owner 改「沙箱内工具要不要人批」（#977）：同十四件套的套路，成功后
+      refreshWorkspaceGroups() 重拉整份快照，失败落 workspaceGroupsError */
   setWorkspaceSandboxApproval(id: string, value: "ask" | "auto"): Promise<boolean>;
   /** 把当前/指定会话发布进工作区。回是否成功——rowId/pkgId 用不上时调用方不必接 */
   publishWorkspaceSession(id: string, sessionId: string, title: string): Promise<boolean>;
@@ -2278,17 +2269,6 @@ export const useChat = create<ChatState>((set, get) => ({
 
   async saveWorkspaceMemory(id, agentId, text, version) {
     return window.otter.workspaceMemorySave(id, agentId, text, version);
-  },
-
-  async setWorkspaceRelayMaxDepth(id, maxDepth) {
-    const r = await window.otter.workspaceSetRelayMaxDepth(id, maxDepth);
-    if (!r.ok) {
-      set({ workspaceGroupsError: r.message });
-      return false;
-    }
-    set({ workspaceGroupsError: null });
-    await get().refreshWorkspaceGroups();
-    return true;
   },
 
   async setWorkspaceSandboxApproval(id, value) {

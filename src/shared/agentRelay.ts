@@ -2,22 +2,78 @@
 //
 // 一次**人话点火**开启一条接力链：人点名的 user_message 之后的 agent_relay 就是这条链；
 // 人每说一句（点名）就是一次新的授权，depth 归零。
-// 两层刹车（决策 3）：① 周期护栏——判据抄 toolLoopGuard.detectToolLoop（周期重复不是连续相同，
-// ADR-0212：A→B→A→B 相邻两棒从来不相等），命中注一条话**不停**；② 棒数上限——depth 到顶硬停、
-// 群里向人汇报。要第二层的理由：ADR-0212 只注话不停的前提是「用户就在屏幕前」，云会话不成立。
+//
+// ## 刹车（#1017 重排，推翻 ADR-0223 的「两层」与 ADR-0231 的分支/总量两闸）
+//
+// 维护者的判词是「定上限这个办法有点傻」。傻在**单位**：`workspaces.relay_max_depth`
+// 量的是棒数，而棒数跟任何人真正在意的东西都不成比例——一棒 200k 上下文的 turn 与
+// 一棒一句话的 turn 都算「1 棒」，成本差两个数量级，型号之间最贵与最便宜还差 21 倍
+// （seed 0017：qwen3.8-max 输出 6000000 vs deepseek-v4-flash 277778 micro/M）。于是
+// 同一个数对真活太紧（A 查→B 改→C 审→B 修→C 过，第 6 棒被砍纯属倒霉）、对空转太松
+// （6 棒纯乒乓早该停了）。owner 因此没有任何依据填得出它——那个输入框已经撤了（PR #1018）。
+//
+// 换上来的是**钱**，但**钱只能往下压、不能往上抬**。这一条是这次改动的全部要害：
+// 「一次点火允许几棒」若完全交给钱，它随（档位 × 型号）跨约 250 倍——lite 档 + Auto
+// 判 hard（`models.at(-1)` = 最贵那款）时预算只够一两棒，真活第一棒就被拒；而 max 档 +
+// 最便宜那款能跑几百棒，比今天的 24 松一个数量级，恰恰在退化接力最爱去的那一档。
+// 所以三道闸的关系是：
+//
+//   ① `RELAY_MAX_HOPS_PER_IGNITION`（24）**无条件**，绝对天花板，与档位/型号/价目全部无关
+//      ——这是三者里唯一不会因为 owner 换档就改变群聊行为的量，ADR-0231 那条决定原样成立。
+//   ② 预算闸：这次点火已经花掉的钱 >= 所有者 5h 窗口**剩余**的一半 → 停。它只可能比 ① 更早
+//      命中，永远不会让链跑得比 ① 更长。分母取**剩余**不取 limit（`limitMicro - usedMicro`，
+//      同一次探针就带着这一格）：取 limit 的话，窗口用掉 95% 时拿到的预算与全空时逐字节
+//      相同，刹车对「快没额度了」完全无感，而窗口触底之后 `hold()` 会退到用户真金白银买的
+//      加购桶（quota.ts），于是这条没被刹住的链接着吃加购额度——正是 ADR-0237 点名不许的
+//      「安静地走更贵那条路」。取剩余还顺带收敛了「人说 10 句就授权 10 份预算」：份额随窗口
+//      变小而变小。
+//   ③ 周期护栏（`detectToolLoop`）：`repeats >= RELAY_GUARD.minRepeats` 注一条话**不停**
+//      （ADR-0212），`repeats >= RELAY_SPIN_STOP_REPEATS` 硬停。加硬停的理由与 engine 的
+//      `loopGuardMaxNudges`（ADR-0225）逐字相同：ADR-0212 的「只注话不停」成立**是因为人
+//      就坐在屏幕前**，云会话没有那个人。
+//
+// **降级 = 今天的行为逐字不变**：探针问不出剩余额度（`hostedProbe` 把网络失败也缓存 60s，
+// 一次 edge 抖动就是 60 秒的降级）时，② 用不了，于是**补回** `DEFAULT_RELAY_MAX_DEPTH` 那道
+// 分支闸。不补的话，读不到钱的那条路反而比今天松——把「拿不准」翻译成「更宽松」是这套东西
+// 最不该有的方向（ADR-0237）。
+//
+// **`spentMicro` 是下界不是准数**，而这不影响安全性：它少算只会让 ② **晚**命中，而 ① 无条件
+// 兜底。已知的两处少算写在 `relayStateSince` 的头注里。
+//
 // 护栏参数取 maxPeriod 8 / minRepeats 2（#957 F2，修订原先的 3/2）：3 只 agent 全互 @ 时每轮
 // 6 跳（每只发言者对另外两只各 @ 一次）才闭合一个周期，maxPeriod 3 是永久盲区——护栏一次都不喊
 // （审计脚本复现过，见 .superpowers/audit/tests/_audit_relayGuard.test.ts 的 EG 用例）；8 覆盖
 // 周期 6，两轮（12 跳）即可命中 minRepeats 2。
 
 import type { AgentRelayEvent, SessionEvent, UserMessageEvent } from "../session/events.js";
+import { MICRO_PER_CREDIT } from "./billing.js";
 import { promptSafe } from "./promptSafe.js";
 import { detectToolLoop, type ToolLoopDetection } from "./toolLoopGuard.js";
 import { parseMentions, type MentionCandidate } from "./remote/agentMention.js";
 
+/** 降级模式（问不出所有者还剩多少额度）才用的分支闸。**不再是可配的一列**：
+    `workspaces.relay_max_depth` 的读者与写者在 #1017 里一起撤了，那一列留在库里
+    不再有人碰（删列要 migration 且不可逆，见 ADR）。这个数留下来的唯一职责是让
+    降级路径与改动前逐字相同——读不到钱时比今天松，是这次改动最不该有的后果 */
 export const DEFAULT_RELAY_MAX_DEPTH = 6;
-export const RELAY_MAX_DEPTH_RANGE = { min: 1, max: 20 } as const;
 export const RELAY_GUARD = { maxPeriod: 8, minRepeats: 2 } as const;
+/** 护栏喊到第几遍改成硬停（#1017）。同 engine 的 `loopGuardMaxNudges`（ADR-0225）：
+    ADR-0212 的「注一条话不停」前提是人就坐在屏幕前，云会话没有那个人。
+
+    取 3（= 注两次话之后停）而不是更大的数，是算过的：`detectToolLoop` 要
+    `n >= period × repeats`，所以周期 p 的链停在**第 3p 棒**——p=2（两只乒乓）→ 6 棒、
+    p=3 → 9、p=6（3 只全互 @，本文件开头记的真实形态）→ 18，全都落在 24 那道天花板
+    之内，护栏因此真的比天花板早。取 4 的话 p=6 恰好是 24（与天花板同时命中 = 白加），
+    p≥7 更是永远轮不到——一道永远不响的闸比没有更糟，它会让人以为打转有人管。 */
+export const RELAY_SPIN_STOP_REPEATS = 3;
+/** 一次点火最多花掉所有者 5h 窗口**剩余**的多大一份。
+
+    取「剩余的一半」而不是「上限的 10%」，三个理由：① 分母跟着窗口缩，所以人说十句
+    就授权十份预算这件事自己收敛；② 半数是一个不需要按档位调的数——「这一件委托吃掉
+    你剩下的一半」在每个档位上是同一句话，而「上限的 10%」在 lite 上是 6.65 credit、
+    在 max 上是 31.15，配同一款贵模型时一个够一棒、一个够四棒；③ 正常干活永远碰不到
+    它——要触发就得让一件事吃掉半个窗口，那时候停下来告诉人恰恰是对的。 */
+export const RELAY_BUDGET_FRACTION_OF_REMAINING = 0.5;
 /** 一次人话点火之后，整条接力**总共**最多几棒（#977 第 3 条，ADR-0225 D8 的账）。
     `relay_max_depth` 封的是一条**分支**的长度：一轮 @ 了 N 只就分叉出 N 条各自
     独立计数的链，最坏 N^maxDepth 条 turn——默认 6 棒、每轮 @ 两只就是 64 条，而
@@ -26,7 +82,14 @@ export const RELAY_GUARD = { maxPeriod: 8, minRepeats: 2 } as const;
     比较而已。取 24 = 默认 depth 6 × 4——够一条 3 只 agent 全互 @ 的接力网跑完
     两轮护栏周期（12 跳）再喊一次，又把 64 那种展开压到三分之一。不按 depth
     派生：owner 把 depth 调到 20 时总量不该跟着长到 80。人再说一句就重置（同
-    depth 的语义：人话点火 = 新的授权） */
+    depth 的语义：人话点火 = 新的授权）
+
+    **#1017 之后它从「第二道」升成了唯一的绝对天花板，且无条件**（ADR-0231 那条
+    决定原样成立，只是地位变了）：分支闸退成降级专用、预算闸只能更早命中，于是
+    这个数是「一次点火最多长出几条 turn」的唯一硬答案。它必须与档位/型号/价目
+    全部无关——那三样一变，同一群人在同一个工作区里会看到不同的群聊行为，而这个
+    数正是用来兜住那种漂移的。同一条理由也解释了为什么它**不由预算派生**：
+    `RELAY_MAX_HOPS_PER_IGNITION` 与钱互不换算，两道闸各自独立成立。 */
 export const RELAY_MAX_HOPS_PER_IGNITION = 24;
 
 export function relayDepthOf(opening: UserMessageEvent): number {
@@ -47,20 +110,69 @@ export function isHumanOpening(e: SessionEvent): e is UserMessageEvent {
   return e.type === "user_message" && !!e.mentions && e.mentions.length > 0 && !e.relay;
 }
 
-/** 最近一条**人**点名（带 mentions 且没有 relay）的 user_message 之后的全部 agent_relay。
-    一条都没有（旧日志 / 没人点过名）= 全部 agent_relay */
-export function relayChain(events: readonly SessionEvent[]): AgentRelayEvent[] {
+/** 这次点火已经花掉多少钱。**是一个下界，不是准数**——见 `relayStateSince`。 */
+export interface RelaySpend {
+  /** 最后一条人话点火之后，日志里记到的 credit 之和（micro-USD） */
+  spentMicro: number;
+}
+
+/** 最近一条人话点火之后：接力链 + 已花的钱，**一次扫描两个答案**。
+    合成一个函数而不是两个，是因为两者共用同一个链首判据（`isHumanOpening`）——
+    这个文件的头注已经为 `relayChain` / `advanceRelayBounds` 写过一次「只此一份」
+    的理由，再多一个各自找链首的扫描就是第三处会漂移的实现。
+
+    ## `spentMicro` 为什么是**下界**，以及为什么这不影响安全
+
+    已知的两处少算（#1017 的对抗式复审逐条查过）：
+    - **Auto 的分类调用**（`services/runtime/src/autoModel.ts`）走裸 fetch，扣所有者的
+      窗口但**一条事件都不落**，所以怎么扫都扫不到。量级约 200 输入 / 8 输出 token，
+      与一棒真 turn 差三四个数量级，认了。
+    - 任何一次 `creditCostMicro` 没落到事件上的调用（流式被中断时 edge 的尾注贴在
+      `flush` 那条路上，中断走不到）。缺席按 0 计——**不是**当作「这条不算数」：
+      把它算成 0 只是让预算闸晚一点命中，而当作「读不到钱」去降级，会因为一次抖动
+      把整条链切到另一套规则上。
+
+    压缩那一笔**已经补上了**（`context_compacted.creditCostMicro`，#1017 顺手修的）：
+    它发的是阈值处的全量上下文，是这条会话里最贵的调用之一，此前 engine 从 reply 上
+    拿到了这个数、落盘时丢掉。链越长压缩越多，而「链很长」正是这道闸存在的理由。
+
+    下界安全的理由只有一条，但足够：**少算只会让预算闸晚命中，而
+    `RELAY_MAX_HOPS_PER_IGNITION` 是无条件的**。任何少算都不可能让一条链跑得比
+    改动前更长。 */
+export function relayStateSince(events: readonly SessionEvent[]): { chain: AgentRelayEvent[]; spend: RelaySpend } {
   let start = -1;
   for (let i = events.length - 1; i >= 0; i--) {
     const e = events[i]!;
     if (isHumanOpening(e)) { start = i; break; }
   }
-  const out: AgentRelayEvent[] = [];
+  const chain: AgentRelayEvent[] = [];
+  let spentMicro = 0;
   for (let i = start + 1; i < events.length; i++) {
     const e = events[i]!;
-    if (e.type === "agent_relay") out.push(e);
+    if (e.type === "agent_relay") chain.push(e);
+    // 两类带 credit 的事件（`assistant_message` 每圈一条、`context_compacted` 压缩一次
+    // 一条）。**故意不走 deriveUsage.BILLED_EVENT_TYPES**：那张表是给「跨会话用量面板」
+    // 用的，含 section_classified / session_autotitled 等云会话根本不会落的类型，而这里
+    // 要的是「这条链花了多少」——按那张表筛等于替一个不同的问题维护同一份清单
+    else if (e.type === "assistant_message" || e.type === "context_compacted") {
+      if (typeof e.creditCostMicro === "number") spentMicro += e.creditCostMicro;
+    }
   }
-  return out;
+  return { chain, spend: { spentMicro } };
+}
+
+/** 最近一条**人**点名（带 mentions 且没有 relay）的 user_message 之后的全部 agent_relay。
+    一条都没有（旧日志 / 没人点过名）= 全部 agent_relay。
+    `relayStateSince` 的投影——链首判据只此一份 */
+export function relayChain(events: readonly SessionEvent[]): AgentRelayEvent[] {
+  return relayStateSince(events).chain;
+}
+
+/** 这次点火的钱闸开在哪儿：所有者 5h 窗口**剩余**的一半。
+    `remainingMicro` 由调用方从 `windows.h5` 算出（`limitMicro - usedMicro`，都在同一次
+    探针里）。负数（窗口已经透支）夹到 0——预算 0 = 下一棒立刻停，而那正是对的 */
+export function relayBudgetMicroOf(remainingMicro: number): number {
+  return Math.max(0, remainingMicro) * RELAY_BUDGET_FRACTION_OF_REMAINING;
 }
 
 export function hopFingerprint(fromAgentId: string, toAgentId: string): string {
@@ -74,30 +186,54 @@ export function mentionedAgents(text: string, roster: readonly MentionCandidate[
 
 export type RelayDecision =
   | { kind: "relay"; depth: number; loop: ToolLoopDetection | null }
-  | { kind: "cap"; depth: number; max: number }
-  /** 这次点火之后总棒数到顶（#977）：与 `cap` 分开一种，文案要说清停的是
-      「这一轮总共太多」不是「这条分支太长」——两句话对人的意义不同（前者
-      是"@ 得太散"，后者是"链太长"） */
-  | { kind: "cap_total"; hops: number; max: number };
+  /** 分支太长。**只在降级路上出得来**（问不出所有者剩多少额度）——正常路上这道闸
+      让位给了预算，因为「第几棒」跟钱和进展都不成比例（见文件头注） */
+  | { kind: "cap_depth"; depth: number; max: number }
+  /** 这次点火已经吃掉所有者 5h 窗口剩余的一半（#1017）。与 `cap_hops` 分开一种：
+      「太贵了」与「棒数太多」对人的意义完全不同，前者说得出该看哪里 */
+  | { kind: "cap_budget"; spentMicro: number; budgetMicro: number; remainingMicro: number }
+  /** 这次点火之后总棒数到顶（#977）：与另外两种分开，文案要说清停的是
+      「这一轮总共太多」不是「这条分支太长」也不是「太贵」——三句话对人的意义不同 */
+  | { kind: "cap_hops"; hops: number; max: number }
+  /** 打转到该硬停了（#1017）：护栏喊过 `RELAY_SPIN_STOP_REPEATS - 1` 次还在原地。
+      与 `relay` 里那个非空 `loop`（注一条话不停）是同一个探测器的两档 */
+  | { kind: "spin"; loop: ToolLoopDetection };
 
 export function decideRelay(args: {
   chain: readonly AgentRelayEvent[];
+  /** 这次点火已经花掉多少（`relayStateSince` 算的下界） */
+  spend: RelaySpend;
+  /** 所有者 5h 窗口还剩多少 micro-USD；**`null` = 这一刻问不出来** → 走降级：
+      预算闸用不了，补回 `DEFAULT_RELAY_MAX_DEPTH` 那道分支闸，于是降级路径与
+      #1017 改动之前逐字相同。缺这一句的话，读不到钱的那条路反而比今天松 */
+  remainingMicro: number | null;
   fromAgentId: string;
   toAgentId: string;
   openingDepth: number;
-  maxDepth: number;
 }): RelayDecision {
-  // maxDepth 来自 workspaces.relay_max_depth，形状不对（NaN/超范围）不该让这个纯函数自己拒 turn——
-  // 归一化在这里做一次，调用方（runtime）不用各自记得先过 normalizeRelayMaxDepth（#957 F4）
-  const max = normalizeRelayMaxDepth(args.maxDepth);
   const depth = args.openingDepth + 1;
-  if (depth > max) return { kind: "cap", depth, max };
-  // 总量闸排在分支闸之后：两者都命中时说「分支太长」更贴近这一棒的直接原因
-  if (args.chain.length >= RELAY_MAX_HOPS_PER_IGNITION) {
-    return { kind: "cap_total", hops: args.chain.length, max: RELAY_MAX_HOPS_PER_IGNITION };
+
+  // ① 降级专用的分支闸。排最前面：它代表「这一刻我们是瞎的」，而瞎的时候该按老规矩走
+  if (args.remainingMicro === null && depth > DEFAULT_RELAY_MAX_DEPTH) {
+    return { kind: "cap_depth", depth, max: DEFAULT_RELAY_MAX_DEPTH };
   }
+  // ② 钱。排在总量闸之前：两者都命中时「太贵了」比「棒数太多」更贴近这一棒该被停的原因，
+  //    也更说得出人该做什么（去看额度，而不是数棒数）
+  if (args.remainingMicro !== null) {
+    const budgetMicro = relayBudgetMicroOf(args.remainingMicro);
+    if (args.spend.spentMicro >= budgetMicro) {
+      return { kind: "cap_budget", spentMicro: args.spend.spentMicro, budgetMicro, remainingMicro: args.remainingMicro };
+    }
+  }
+  // ③ 绝对天花板，无条件。前两道都可能因为「问不出来」或「钱还够」而放行，这一道不会
+  if (args.chain.length >= RELAY_MAX_HOPS_PER_IGNITION) {
+    return { kind: "cap_hops", hops: args.chain.length, max: RELAY_MAX_HOPS_PER_IGNITION };
+  }
+  // ④ 打转：同一个探测器两档——够 minRepeats 注一条话不停，够 RELAY_SPIN_STOP_REPEATS 硬停
   const history = [...args.chain.map((h) => hopFingerprint(h.fromAgentId, h.toAgentId)), hopFingerprint(args.fromAgentId, args.toAgentId)];
-  return { kind: "relay", depth, loop: detectToolLoop(history, RELAY_GUARD) };
+  const loop = detectToolLoop(history, RELAY_GUARD);
+  if (loop && loop.repeats >= RELAY_SPIN_STOP_REPEATS) return { kind: "spin", loop };
+  return { kind: "relay", depth, loop };
 }
 
 /** 起 turn 时的接力 depth（#957 A-4）：日志里「mentions 含 agentId、且还没被本
@@ -214,6 +350,52 @@ export function relayNudgeText(fromName: string, toName: string, loop: ToolLoopD
   );
 }
 
+/** 「已经花了多少」写给人看的那一段。**单位是 credit 不是美元**（ADR-0176 决定五：
+    托管模式的花费和 BYOK 的「$X」不能长得一样），一位小数——micro 级的精度对读的人
+    没有意义，而两个整数（花了 3 credit / 还剩 6 credit）读起来像可以对得上账 */
+function creditText(micro: number): string {
+  return (micro / MICRO_PER_CREDIT).toFixed(1);
+}
+
+/** 预算到顶那句（#1017）。与另外两条 cap 文案同一形状（名字过闸、交回给人、说清
+    怎么重新开始），差别在原因说的是**钱**：花了多少、所有者那扇窗还剩多少、
+    这一件事的上限是剩余的一半。
+
+    「至少」两个字是认真的：`spentMicro` 是下界（见 `relayStateSince` 头注），
+    写成确数就是一句会被账单打脸的话 */
+export function relayBudgetCapText(
+  fromName: string, toName: string, spentMicro: number, remainingMicro: number, lastWords: string
+): string {
+  const from = promptSafe(fromName), to = promptSafe(toName);
+  const quoted = promptSafe(lastWords.trim());
+  const tail = quoted ? `${from} 最后说：「${quoted}」` : "";
+  // 剩余夹到 0 再画（同 relayBudgetMicroOf 的夹法）：网关的 hold 会让 used 短暂
+  // 越过 limit，把「剩余 -1.2 credit」印在群里读起来像我们算错了账，而它其实只是
+  // 「已经见底」的一种写法
+  const left = Math.max(0, remainingMicro);
+  return (
+    `[系统] 这一轮接力至少已经花掉 ${creditText(spentMicro)} credit，` +
+    `到了单次委托的上限（所有者订阅额度剩余 ${creditText(left)} credit 的一半）：` +
+    `${from} 想 @ ${to}，我停在这儿，交回给人。` +
+    `还没做完的请人来定——回复里 @ 谁就从头开始新一条接力。${tail}`
+  );
+}
+
+/** 打转到硬停那句（#1017）。与 `relayNudgeText` 是同一件事的两档，所以措辞要接得上：
+    那条说「别再原样甩回去」，这条说「说过了、没用、停」——同一个人第三次说同一句话时
+    该说的话 */
+export function relaySpinStopText(fromName: string, toName: string, loop: ToolLoopDetection, lastWords: string): string {
+  const from = promptSafe(fromName), to = promptSafe(toName);
+  const quoted = promptSafe(lastWords.trim());
+  const tail = quoted ? `${from} 最后说：「${quoted}」` : "";
+  return (
+    `[系统] 这条接力一直在打转：同一组 ${loop.period} 棒原样来回了 ${loop.repeats} 遍，提醒过也没出来。` +
+    `${from} 又想 @ ${to}，我停在这儿，交回给人。` +
+    `请人来定下一步——回复里 @ 谁就从头开始新一条接力。${tail}`
+  );
+}
+
+/** 降级路上的分支闸那句（#1017 之后只在问不出额度时出得来）。 */
 export function relayCapText(fromName: string, toName: string, depth: number, max: number, lastWords: string): string {
   const from = promptSafe(fromName), to = promptSafe(toName);
   // `lastWords` 是**模型自己写的**上一句原话，拼进 `「」` 里当引文——同一条判据，
@@ -260,9 +442,4 @@ export function relayApprovalWaitText(agentName: string, approverName: string, t
     `「${agent}」在等「${approver}」批准 ${tool}` +
     `（接力棒上的调用，${approvalTimeoutMinutes(timeoutMs)} 分钟内不批按拒绝处理；等待期间群里其它回复排队）`
   );
-}
-
-/** workspaces.relay_max_depth 落地成数字：整数且在范围内才认，其余回默认（形状不对 = 用默认，不是拒 turn） */
-export function normalizeRelayMaxDepth(v: unknown): number {
-  return typeof v === "number" && Number.isInteger(v) && v >= RELAY_MAX_DEPTH_RANGE.min && v <= RELAY_MAX_DEPTH_RANGE.max ? v : DEFAULT_RELAY_MAX_DEPTH;
 }

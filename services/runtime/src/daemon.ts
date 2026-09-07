@@ -47,7 +47,6 @@ import {
 } from "../../../src/shared/remote/cloudSession.js";
 import { createWsTransport } from "../../../src/shared/remote/wsTransport.js";
 import { ADMIN_AGENT_ID, DEFAULT_SANDBOX_APPROVAL, normalizeSandboxApproval, type SandboxApproval } from "../../../src/shared/workspaceAgents.js";
-import { DEFAULT_RELAY_MAX_DEPTH, normalizeRelayMaxDepth } from "../../../src/shared/agentRelay.js";
 import { findModel } from "../../../src/shared/modelCatalog.js";
 import type { RemoteTransport } from "../../../src/shared/remote/transport.js";
 
@@ -320,22 +319,13 @@ async function main(): Promise<void> {
     return (data as { owner_uid: string }).owner_uid;
   }
 
-  /** agent 互相 @ 的接力棒数上限（#950 Task 9，0024 迁移）。owner 在智能体 tab 改，
-      这里现查不缓存——同 queryAgents 的纪律，改了下一轮接力生效。查询失败原样抛，
-      **不在这里回落**——回落到默认几棒是调用方（Task 10 createCloudSession）的决定，
-      这个函数只负责如实报告「查到了什么」 */
-  /** 沙箱内工具要不要人批（#977，0026 迁移）。同 queryRelayMaxDepth：现查不缓存、
-      查询失败原样抛，回落是调用方的决定 */
+  /** 沙箱内工具要不要人批（#977，0026 迁移）。owner 在智能体 tab 改，这里现查不缓存
+      ——同 queryAgents 的纪律，改了下一轮生效。查询失败原样抛，**不在这里回落**：
+      回落成 ask 还是 auto 是调用方的决定，这个函数只如实报告「查到了什么」 */
   async function querySandboxApproval(workspaceId: string): Promise<SandboxApproval> {
     const { data, error } = await supabase.from("workspaces").select("sandbox_approval").eq("id", workspaceId).single();
     if (error) throw new Error(error.message);
     return normalizeSandboxApproval((data as { sandbox_approval: unknown } | null)?.sandbox_approval);
-  }
-
-  async function queryRelayMaxDepth(workspaceId: string): Promise<number> {
-    const { data, error } = await supabase.from("workspaces").select("relay_max_depth").eq("id", workspaceId).single();
-    if (error) throw new Error(error.message);
-    return normalizeRelayMaxDepth((data as { relay_max_depth: unknown } | null)?.relay_max_depth);
   }
 
   // ── cid → transport 的全局路由表（daemon 唯一持有）───────────────────
@@ -655,11 +645,21 @@ async function main(): Promise<void> {
       onUsage: () => {}, // usage 记账走上面的 recordUsage 钩子，这个口留白（同 T9 report 的记录）
       memory: workspaceMemory,
       agentWriter,
-      relayMaxDepth: () =>
-        queryRelayMaxDepth(workspaceId).catch((err: unknown) => {
-          console.warn(`[otto-runtime] relay_max_depth 查询失败，用默认（workspaceId=${workspaceId}）：${err instanceof Error ? err.message : String(err)}`);
-          return DEFAULT_RELAY_MAX_DEPTH;
-        }),
+      // 接力预算的分母：所有者那扇 5h 窗**还剩**多少（#1017）。走的是与路由同一只
+      // 探针（60s/uid 缓存），所以这不是每条会接力的 turn 各打一次网络。
+      // **三种「没有数」一律回 null 不回 0**：探针不可达、没有活跃订阅、旧 edge 不发
+      // windows 这一格——它们的共同点是「这一刻问不出剩余额度」，而 0 会被读成
+      // 「预算为零，下一棒立刻停」。null 走的是降级（补回 depth 那道闸），
+      // 与 #1017 改动之前逐字相同
+      relayRemainingMicro: async () => {
+        const me = await hostedProbe.me(ownerUid);
+        if (me === "unreachable" || me === null || me.windows === null) return null;
+        // **两扇窗取更吃紧的那扇**（同 billingView 的 `bindingWindow`，ADR-0209）：
+        // 网关的 hold 同时压 5h 与周窗，只看 5h 的话周窗快见底时刹车完全无感，
+        // 而那正是这道闸最该响的时候
+        const left = (w: { limitMicro: number; usedMicro: number }): number => w.limitMicro - w.usedMicro;
+        return Math.min(left(me.windows.h5), left(me.windows.week));
+      },
       // 查不到就问人（#977）：0026 没跑、Supabase 抖了，都往严的一边倒——一次抖动
       // 把「要批」翻成「免批」是最不该有的默认
       sandboxApproval: () =>

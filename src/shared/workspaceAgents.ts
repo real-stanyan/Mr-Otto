@@ -1,9 +1,8 @@
-// workspaceAgents —— 工作区 agent 表单的纯校验（#932 切片 1b）+ 接力上限表单校验
+// workspaceAgents —— 工作区 agent 表单的纯校验（#932 切片 1b）
 // （#950 Task 9）。桌面设置页用；手机端将来做同一张表单时 import 同一份（纪律同
 // workspaces.ts）。DB 那侧的约束（0021：name 1–32 字符、一个工作区不重名）在这里
 // 对齐成能提前说出口的人话；重名靠 23505 回来再翻，这里判不了。
 
-import { RELAY_MAX_DEPTH_RANGE } from "./agentRelay.js";
 
 export const AGENT_NAME_MAX = 32;
 
@@ -77,9 +76,6 @@ export function parseModelList(raw: string): string[] {
   return out;
 }
 
-/** owner 在智能体 tab 改的「接力上限」输入框校验（#950 Task 9）。范围与
-    normalizeRelayMaxDepth 同一份常量（RELAY_MAX_DEPTH_RANGE）——表单能提前
-    说人话的判据，与落库时兜底的判据必须是同一条，否则两处会各说各话 */
 /** 沙箱内工具（bash / write_file）要不要人批（#977，ADR-0231）。工作区一格，
     落在 `workspaces.sandbox_approval`，owner 改。`"ask"` = 每次都问（今天的行为）；
     `"auto"` = runtime 在审批门前直接放行——容器是隔离面，凭据不进容器（ADR-0200），
@@ -90,15 +86,4 @@ export type SandboxApproval = "ask" | "auto";
 export const DEFAULT_SANDBOX_APPROVAL: SandboxApproval = "ask";
 export function normalizeSandboxApproval(v: unknown): SandboxApproval {
   return v === "auto" ? "auto" : DEFAULT_SANDBOX_APPROVAL;
-}
-
-export function validateRelayMaxDepth(raw: string): { ok: true; value: number } | { ok: false; error: string } {
-  const errorMsg = `接力上限得是 ${RELAY_MAX_DEPTH_RANGE.min} 到 ${RELAY_MAX_DEPTH_RANGE.max} 之间的整数`;
-  const trimmed = raw.trim();
-  if (trimmed === "") return { ok: false, error: errorMsg };
-  const n = Number(trimmed);
-  if (!Number.isInteger(n) || n < RELAY_MAX_DEPTH_RANGE.min || n > RELAY_MAX_DEPTH_RANGE.max) {
-    return { ok: false, error: errorMsg };
-  }
-  return { ok: true, value: n };
 }

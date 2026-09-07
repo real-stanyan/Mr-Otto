@@ -1,7 +1,9 @@
 import { describe, it, expect } from "vitest";
 import {
-  DEFAULT_RELAY_MAX_DEPTH, RELAY_GUARD, decideRelay, hopFingerprint, mentionedAgents, normalizeRelayMaxDepth,
-  openingDepthFor, relayApprovalWaitText, relayCapText, relayChain, relayDepthOf, relayNudgeText, relayOpeningText,
+  DEFAULT_RELAY_MAX_DEPTH, RELAY_GUARD, RELAY_SPIN_STOP_REPEATS, RELAY_BUDGET_FRACTION_OF_REMAINING,
+  decideRelay, hopFingerprint, mentionedAgents, relayBudgetMicroOf, relayStateSince,
+  openingDepthFor, relayApprovalWaitText, relayBudgetCapText, relayCapText, relaySpinStopText,
+  relayChain, relayDepthOf, relayNudgeText, relayOpeningText,
   advanceRelayBounds, emptyRelayBounds, relayBoundsOf, RELAY_MAX_HOPS_PER_IGNITION, relayTotalCapText,
 } from "../../src/shared/agentRelay.js";
 import type { AgentRelayEvent, SessionEvent, TurnEndedEvent, UserMessageEvent } from "../../src/session/events.js";
@@ -11,6 +13,16 @@ let seq = 0;
 const um = (extra: Partial<UserMessageEvent>): UserMessageEvent => ({ seq: seq++, ts: 1, sessionId: "s", type: "user_message", content: "x", ...extra });
 const relay = (from: string, to: string, depth: number): AgentRelayEvent => ({ seq: seq++, ts: 1, sessionId: "s", type: "agent_relay", fromAgentId: from, toAgentId: to, depth, ignorable: true });
 const ROSTER = [{ agentId: "ops", name: "运营" }, { agentId: "ads", name: "广告" }];
+const NO_SPEND = { spentMicro: 0 };
+/** 降级（问不出剩余额度）= #1017 改动之前那条路 */
+const degraded = (o: { chain?: AgentRelayEvent[]; from?: string; to?: string; depth?: number }) =>
+  decideRelay({ chain: o.chain ?? [], spend: NO_SPEND, remainingMicro: null, fromAgentId: o.from ?? "ops", toAgentId: o.to ?? "ads", openingDepth: o.depth ?? 0 });
+/** 正常路（钱够）：给一个大到不可能命中的剩余额度 */
+const funded = (o: { chain?: AgentRelayEvent[]; from?: string; to?: string; depth?: number; spentMicro?: number; remainingMicro?: number }) =>
+  decideRelay({
+    chain: o.chain ?? [], spend: { spentMicro: o.spentMicro ?? 0 }, remainingMicro: o.remainingMicro ?? 1_000_000_000,
+    fromAgentId: o.from ?? "ops", toAgentId: o.to ?? "ads", openingDepth: o.depth ?? 0,
+  });
 
 describe("agentRelay 纯逻辑（#950，spec §8）", () => {
   it("relayDepthOf：人说的 0，接力开场白取 relay.depth", () => {
@@ -35,25 +47,60 @@ describe("agentRelay 纯逻辑（#950，spec §8）", () => {
     expect(mentionedAgents("没人", ROSTER, "ops")).toEqual([]);
   });
 
-  it("decideRelay：depth = 开场白 depth + 1；超上限回 cap", () => {
-    expect(decideRelay({ chain: [], fromAgentId: "ops", toAgentId: "ads", openingDepth: 0, maxDepth: 6 })).toEqual({ kind: "relay", depth: 1, loop: null });
-    expect(decideRelay({ chain: [], fromAgentId: "ops", toAgentId: "ads", openingDepth: 6, maxDepth: 6 })).toEqual({ kind: "cap", depth: 7, max: 6 });
+  it("decideRelay：depth = 开场白 depth + 1；钱够时 depth 多深都不拦（分支闸只活在降级路上，#1017）", () => {
+    expect(funded({})).toEqual({ kind: "relay", depth: 1, loop: null });
+    // 改动前这里是 cap：depth 那道闸量的是棒数，与钱和进展都不成比例，正常路上让位给预算
+    expect(funded({ depth: 6 })).toEqual({ kind: "relay", depth: 7, loop: null });
+    expect(funded({ depth: 19 })).toEqual({ kind: "relay", depth: 20, loop: null });
   });
 
-  it("decideRelay：一次点火总棒数到 RELAY_MAX_HOPS_PER_IGNITION 回 cap_total；分支闸先于总量闸（#977 第 3 条）", () => {
+  it("decideRelay 降级（问不出剩余额度）= 改动前逐字相同：depth 超 6 回 cap_depth（#1017）", () => {
+    // 这一条是整次改动的安全底线：读不到钱的那条路**不许比今天松**，
+    // 否则「拿不准」就被翻译成了「更宽松」（ADR-0237 点名不许的方向）
+    expect(DEFAULT_RELAY_MAX_DEPTH).toBe(6);
+    expect(degraded({ depth: 0 })).toEqual({ kind: "relay", depth: 1, loop: null });
+    expect(degraded({ depth: 5 })).toEqual({ kind: "relay", depth: 6, loop: null });
+    expect(degraded({ depth: 6 })).toEqual({ kind: "cap_depth", depth: 7, max: 6 });
+  });
+
+  it("decideRelay 钱闸：花掉剩余的一半就停；分母是**剩余**不是 limit（#1017）", () => {
+    expect(RELAY_BUDGET_FRACTION_OF_REMAINING).toBe(0.5);
+    expect(relayBudgetMicroOf(1000)).toBe(500);
+    // 窗口透支（负数）夹到 0 —— 预算 0 = 下一棒立刻停
+    expect(relayBudgetMicroOf(-5)).toBe(0);
+    expect(funded({ remainingMicro: 1000, spentMicro: 499 })).toMatchObject({ kind: "relay", depth: 1 });
+    expect(funded({ remainingMicro: 1000, spentMicro: 500 }))
+      .toEqual({ kind: "cap_budget", spentMicro: 500, budgetMicro: 500, remainingMicro: 1000 });
+    // 窗口见底：剩 0 → 预算 0 → 已花 0 也算到顶
+    expect(funded({ remainingMicro: 0, spentMicro: 0 })).toMatchObject({ kind: "cap_budget", budgetMicro: 0 });
+    // 同一笔花费，窗口剩得越少越早刹 —— 取 limit 当分母就没有这个性质
+    expect(funded({ remainingMicro: 100, spentMicro: 60 })).toMatchObject({ kind: "cap_budget" });
+    expect(funded({ remainingMicro: 10_000, spentMicro: 60 })).toMatchObject({ kind: "relay" });
+  });
+
+  it("decideRelay：钱够也拦得住——RELAY_MAX_HOPS_PER_IGNITION 是无条件的绝对天花板（#1017）", () => {
+    seq = 0;
+    // 每棒 from>to 都不同 → 打转判据永远认不出来（扇出树 / ≥9 只的环就是这个形状）
+    const aperiodic = Array.from({ length: RELAY_MAX_HOPS_PER_IGNITION }, (_, i) => relay(`a${i}`, `b${i}`, 1));
+    expect(funded({ chain: aperiodic, from: "zz", to: "yy" }))
+      .toEqual({ kind: "cap_hops", hops: RELAY_MAX_HOPS_PER_IGNITION, max: RELAY_MAX_HOPS_PER_IGNITION });
+    expect(funded({ chain: aperiodic.slice(0, -1), from: "zz", to: "yy" })).toMatchObject({ kind: "relay" });
+  });
+
+  it("decideRelay：一次点火总棒数到 RELAY_MAX_HOPS_PER_IGNITION 回 cap_hops（#977 第 3 条，#1017 之后无条件）", () => {
     seq = 0;
     // 三只 agent 互 @，每棒 depth 都很浅（人反复插话之外的形状：一轮 @ 两只不断分叉）
     const many = Array.from({ length: RELAY_MAX_HOPS_PER_IGNITION }, (_, i) =>
       relay(["ops", "ads", "fin"][i % 3]!, ["ads", "fin", "ops"][i % 3]!, 1)
     );
-    expect(decideRelay({ chain: many, fromAgentId: "ops", toAgentId: "ads", openingDepth: 1, maxDepth: 6 }))
-      .toEqual({ kind: "cap_total", hops: RELAY_MAX_HOPS_PER_IGNITION, max: RELAY_MAX_HOPS_PER_IGNITION });
+    expect(funded({ chain: many, depth: 1 }))
+      .toEqual({ kind: "cap_hops", hops: RELAY_MAX_HOPS_PER_IGNITION, max: RELAY_MAX_HOPS_PER_IGNITION });
     // 差一棒还放行（护栏可能命中，但那是 loop 不是 cap）
-    expect(decideRelay({ chain: many.slice(0, -1), fromAgentId: "ops", toAgentId: "ads", openingDepth: 1, maxDepth: 6 }))
-      .toMatchObject({ kind: "relay", depth: 2 });
-    // 两个闸都命中时说分支太长（这一棒的直接原因）
-    expect(decideRelay({ chain: many, fromAgentId: "ops", toAgentId: "ads", openingDepth: 6, maxDepth: 6 }))
-      .toEqual({ kind: "cap", depth: 7, max: 6 });
+    expect(funded({ chain: many.slice(0, -1), depth: 1 })).toMatchObject({ kind: "relay", depth: 2 });
+    // 降级路上分支闸排在总量闸之前：两个都命中时说「分支太长」（这一棒的直接原因）
+    expect(degraded({ chain: many, depth: 6 })).toEqual({ kind: "cap_depth", depth: 7, max: 6 });
+    // 钱闸也排在总量闸之前：两个都命中时说「太贵」比说「棒数太多」更说得出人该做什么
+    expect(funded({ chain: many, depth: 1, remainingMicro: 100, spentMicro: 100 })).toMatchObject({ kind: "cap_budget" });
     // 文案：名字过闸、说清是总量不是链长、说清怎么重新开始
     const t = relayTotalCapText("运\n营", "广告」", 24, 24);
     expect(t).not.toContain("\n");
@@ -65,10 +112,10 @@ describe("agentRelay 纯逻辑（#950，spec §8）", () => {
   it("decideRelay：周期重复（A→B→A→B）在第 4 棒命中护栏，不停", () => {
     seq = 0;
     const chain = [relay("ops", "ads", 1), relay("ads", "ops", 2), relay("ops", "ads", 3)];
-    const d = decideRelay({ chain, fromAgentId: "ads", toAgentId: "ops", openingDepth: 3, maxDepth: 10 });
-    expect(d).toEqual({ kind: "relay", depth: 4, loop: { period: 2, repeats: 2 } });
+    expect(funded({ chain, from: "ads", to: "ops", depth: 3 }))
+      .toEqual({ kind: "relay", depth: 4, loop: { period: 2, repeats: 2 } });
     // 第 3 棒时还没凑够两遍
-    expect(decideRelay({ chain: chain.slice(0, 2), fromAgentId: "ops", toAgentId: "ads", openingDepth: 2, maxDepth: 10 })).toMatchObject({ kind: "relay", loop: null });
+    expect(funded({ chain: chain.slice(0, 2), depth: 2 })).toMatchObject({ kind: "relay", loop: null });
   });
 
   it("文案：开场白第三人称说明谁 @ 了谁、第几棒（群里每只 agent 都读得到，「你」是歧义的）；护栏说打转；到顶说停在这儿并带最后的话", () => {
@@ -83,19 +130,46 @@ describe("agentRelay 纯逻辑（#950，spec §8）", () => {
     expect(cap).toContain("6");
   });
 
-  it("normalizeRelayMaxDepth：整数且 1–20 才认，其余回默认 6", () => {
-    expect(DEFAULT_RELAY_MAX_DEPTH).toBe(6);
-    expect(normalizeRelayMaxDepth(3)).toBe(3);
-    expect(normalizeRelayMaxDepth(0)).toBe(6);
-    expect(normalizeRelayMaxDepth(21)).toBe(6);
-    expect(normalizeRelayMaxDepth("3")).toBe(6);
-    expect(normalizeRelayMaxDepth(2.5)).toBe(6);
+  it("hopFingerprint：一棒的指纹只认 from>to", () => {
     expect(hopFingerprint("a", "b")).toBe("a>b");
   });
 
-  it("decideRelay：内部对 maxDepth 归一——NaN 与 99 都按默认 6 判 cap（#957 F4）", () => {
-    expect(decideRelay({ chain: [], fromAgentId: "ops", toAgentId: "ads", openingDepth: 6, maxDepth: NaN })).toEqual({ kind: "cap", depth: 7, max: 6 });
-    expect(decideRelay({ chain: [], fromAgentId: "ops", toAgentId: "ads", openingDepth: 6, maxDepth: 99 })).toEqual({ kind: "cap", depth: 7, max: 6 });
+  it("护栏两档：minRepeats 注话不停，RELAY_SPIN_STOP_REPEATS 硬停（#1017）", () => {
+    seq = 0;
+    // 周期 2 的乒乓：第 k 棒的 history 长度 = k，repeats = floor(k/2)
+    expect(RELAY_SPIN_STOP_REPEATS).toBe(3);
+    const pingpong = (hops: number): AgentRelayEvent[] =>
+      Array.from({ length: hops }, (_, i) => (i % 2 === 0 ? relay("ops", "ads", i + 1) : relay("ads", "ops", i + 1)));
+    // 第 3 棒（n=3，repeats 1）：还没凑够两遍
+    expect(funded({ chain: pingpong(2), from: "ops", to: "ads", depth: 2 })).toMatchObject({ kind: "relay", loop: null });
+    // 第 4 棒（n=4，repeats 2）：注一条话，**不停**
+    expect(funded({ chain: pingpong(3), from: "ads", to: "ops", depth: 3 }))
+      .toMatchObject({ kind: "relay", depth: 4, loop: { period: 2, repeats: 2 } });
+    // 第 6 棒（n=6，repeats 3）：硬停。3p 落在 24 那道天花板之内，所以护栏真的比它早
+    expect(funded({ chain: pingpong(5), from: "ads", to: "ops", depth: 5 }))
+      .toEqual({ kind: "spin", loop: { period: 2, repeats: 3 } });
+  });
+
+  it("relayStateSince：链与花费是同一次扫描的两个答案，人话点火同时重置两者（#1017）", () => {
+    seq = 0;
+    const am = (cost?: number): SessionEvent => ({
+      seq: seq++, ts: 1, sessionId: "s", type: "assistant_message", content: "x", model: "m",
+      ...(cost === undefined ? {} : { creditCostMicro: cost }),
+    } as SessionEvent);
+    const cc = (cost: number): SessionEvent => ({
+      seq: seq++, ts: 1, sessionId: "s", type: "context_compacted", summary: "s", model: "m", creditCostMicro: cost,
+    } as SessionEvent);
+    const events: SessionEvent[] = [
+      um({ mentions: ["ops"] }), am(100), relay("ops", "ads", 1), am(50),
+      um({ mentions: ["ads"] }),          // 人又说了一句 → 新链、预算归零
+      am(7), cc(3), relay("ads", "ops", 1), am(undefined), am(2),
+    ];
+    const st = relayStateSince(events);
+    expect(st.chain.map((h) => h.depth)).toEqual([1]);
+    // 压缩那一笔也算（#1017 顺手补上的 context_compacted.creditCostMicro）；
+    // 没记到成本的那条按 0 计 —— 少算只会让钱闸晚命中，而棒数天花板是无条件的
+    expect(st.spend.spentMicro).toBe(7 + 3 + 2);
+    expect(relayChain(events).map((h) => h.seq)).toEqual(st.chain.map((h) => h.seq));
   });
 
   it("RELAY_GUARD.maxPeriod 改 8——3 只全互 @ 周期 6 的接力网两轮后命中护栏（#957 F2）", () => {
@@ -106,12 +180,44 @@ describe("agentRelay 纯逻辑（#950，spec §8）", () => {
     let last: ReturnType<typeof decideRelay> | null = null;
     for (let round = 0; round < 2; round++) {
       for (const [f, t] of seqPattern) {
-        last = decideRelay({ chain, fromAgentId: f!, toAgentId: t!, openingDepth: round, maxDepth: 99 });
+        last = funded({ chain, from: f!, to: t!, depth: round });
         chain.push(relay(f!, t!, round + 1));
       }
     }
     expect(last?.kind).toBe("relay");
     expect((last as { kind: "relay"; loop: unknown }).loop).not.toBeNull();
+  });
+
+  it("文案：钱闸与打转硬停那两句——单位是 credit、名字与引文都过结构闸、说清怎么重新开始（#1017）", () => {
+    // 「至少」不是修辞：spentMicro 是下界（漏了 Auto 分类那笔、漏了没记到成本的调用），
+    // 写成确数就是一句会被账单打脸的话
+    const b = relayBudgetCapText("运\n营", "广告」", 123_400, 500_000, "报表还差一半");
+    expect(b).not.toContain("\n");
+    // 结构闸：名字里的 `」` 会撑破这句话自己的 `「」`（ADR-0226/0228），必须换成全角替身
+    expect(b).toContain("广告｣");
+    expect(b).not.toContain("广告」");
+    expect(b).toContain("至少已经花掉 12.3 credit");
+    expect(b).toContain("剩余 50.0 credit");
+    expect(b).toContain("单次委托的上限");
+    expect(b).toContain("报表还差一半");
+    expect(b).toContain("@ 谁就从头开始新一条接力");
+    // 美元不该出现：托管模式的花费与 BYOK 的「$X」不能长得一样（ADR-0176 决定五）
+    expect(b).not.toContain("$");
+
+    const sp = relaySpinStopText("运\n营", "广告」", { period: 2, repeats: 3 }, "再看一眼");
+    expect(sp).not.toContain("\n");
+    expect(sp).toContain("广告｣");
+    expect(sp).not.toContain("广告」");
+    expect(sp).toContain("同一组 2 棒原样来回了 3 遍");
+    // 与 relayNudgeText 接得上：那条说「别再原样甩回去」，这条说「说过了、没用、停」
+    expect(sp).toContain("提醒过也没出来");
+    expect(sp).toContain("再看一眼");
+    // 引文为空时不留一个空的「」
+    expect(relaySpinStopText("运营", "广告", { period: 2, repeats: 3 }, "   ")).not.toContain("「」");
+    expect(relayBudgetCapText("运营", "广告", 1, 2, "  ")).not.toContain("「」");
+    // 剩余是负数（网关的 hold 让 used 短暂越过 limit）时夹到 0：把「剩余 -1.2 credit」
+    // 印在群里读起来像我们算错了账，而它其实只是「已经见底」的一种写法
+    expect(relayBudgetCapText("运营", "广告", 100, -12_000, "")).toContain("剩余 0.0 credit");
   });
 
   it("openingDepthFor：mentions 含 agentId 且未被本 agent 的 turn_ended 收口（同 openTurns 口径）的 max relay depth（#957 A-4）", () => {

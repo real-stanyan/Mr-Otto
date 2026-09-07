@@ -84,8 +84,8 @@ export async function fetchWorkspace(
   id: string,
 ): Promise<WorkspaceSnapshot> {
   const ws = unwrap(
-    await client.from("workspaces").select("id,name,owner_uid,relay_max_depth").eq("id", id).single(),
-  ) as { id: string; name: string; owner_uid: string; relay_max_depth: unknown };
+    await client.from("workspaces").select("id,name,owner_uid").eq("id", id).single(),
+  ) as { id: string; name: string; owner_uid: string };
   // sandbox_approval **单独一条、容错**（#977，ADR-0223 部署顺序那条教训）：拼进上面
   // 那条 select 的话，0026 落地前 PostgREST 对不存在的列回 42703，整份快照打不开——
   // 不是「审批策略缺一角」，是这个工作区什么都看不见（0024 那次正是这样）。这条挂了
@@ -319,26 +319,9 @@ export async function deleteAgentRow(
   }
 }
 
-/** owner 改接力上限（#950 Task 9，0024 ws_update_owner）。同 updateAgentRow，
-    `.select` 是唯一的行数证据——0 行既可能是「工作区不存在」也可能是「不是 owner」，
-    两者在这一层分不清，也不必分清，回一句「无权修改」都对得上 */
-export async function updateRelayMaxDepth(
-  client: SupabaseClient,
-  workspaceId: string,
-  maxDepth: number,
-): Promise<void> {
-  const rows = unwrap(
-    await client.from("workspaces")
-      .update({ relay_max_depth: maxDepth })
-      .eq("id", workspaceId)
-      .select("id"),
-  );
-  if (!Array.isArray(rows) || rows.length === 0) {
-    throw new Error("无权修改");
-  }
-}
-
-/** owner 改「沙箱内工具要不要人批」（#977，0026）。行数证据同 updateRelayMaxDepth */
+/** owner 改「沙箱内工具要不要人批」（#977，0026）。`.select` 是唯一的行数证据——
+    0 行既可能是「工作区不存在」也可能是「不是 owner」，两者在这一层分不清，也不必
+    分清，回一句「无权修改」都对得上 */
 export async function updateSandboxApproval(
   client: SupabaseClient,
   workspaceId: string,

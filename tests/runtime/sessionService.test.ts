@@ -60,7 +60,7 @@ describe("createCloudSession", () => {
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
-      relayMaxDepth: async () => 6,
+      relayRemainingMicro: async () => null,
     });
 
     await session.say("u1", "alice", "你好", true);
@@ -126,7 +126,7 @@ describe("createCloudSession", () => {
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
-      relayMaxDepth: async () => 6,
+      relayRemainingMicro: async () => null,
     });
 
     await session.say("u1", "alice", "开始任务", true);
@@ -183,7 +183,7 @@ describe("createCloudSession", () => {
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
-      relayMaxDepth: async () => 6,
+      relayRemainingMicro: async () => null,
     });
 
     await session.say("u1", "alice", "帮我跑个命令", true);
@@ -252,7 +252,7 @@ describe("createCloudSession", () => {
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
-      relayMaxDepth: async () => 6,
+      relayRemainingMicro: async () => null,
     });
 
     await session.say("u1", "alice", "帮我跑个命令", true);
@@ -302,7 +302,7 @@ describe("createCloudSession", () => {
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
-      relayMaxDepth: async () => 6,
+      relayRemainingMicro: async () => null,
     });
 
     // 第一条 @：起 turn，但卡在 adapter.chat() 里不会立刻 resolve
@@ -379,7 +379,7 @@ describe("createCloudSession", () => {
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
-      memory: createInMemoryWorkspaceMemory(), relayMaxDepth: async () => 6,
+      memory: createInMemoryWorkspaceMemory(), relayRemainingMicro: async () => null,
       agentWriter: createInMemoryAgentWriter(),
     });
     await session.say("u1", "alice", "@管理员 在吗", true, ["admin"]);
@@ -422,7 +422,7 @@ describe("createCloudSession", () => {
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
-      memory: createInMemoryWorkspaceMemory(), relayMaxDepth: async () => 6,
+      memory: createInMemoryWorkspaceMemory(), relayRemainingMicro: async () => null,
       agentWriter: writer,
     });
 
@@ -482,7 +482,7 @@ describe("createCloudSession", () => {
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
-      memory: createInMemoryWorkspaceMemory(), relayMaxDepth: async () => 6,
+      memory: createInMemoryWorkspaceMemory(), relayRemainingMicro: async () => null,
       agentWriter: writer,
     });
 
@@ -518,7 +518,7 @@ describe("CloudSession.archive（issue #822）", () => {
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
-      relayMaxDepth: async () => 6,
+      relayRemainingMicro: async () => null,
     });
 
   it("落一条人话 + 一条 session_archived，两条都推给房里的人", () => {
@@ -591,7 +591,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
-      relayMaxDepth: async () => 6,
+      relayRemainingMicro: async () => null,
     });
 
     await session.say("u1", "alice", "@运营 看下销量", true, ["ops"]);
@@ -616,7 +616,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
-      relayMaxDepth: async () => 6,
+      relayRemainingMicro: async () => null,
     });
 
     await session.say("u1", "alice", "@运营 @广告 一起看", true, ["ops", "ads"]);
@@ -644,7 +644,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
-      relayMaxDepth: async () => 6,
+      relayRemainingMicro: async () => null,
     });
 
     // 先手工塞一条运营的工具痕迹,再让广告跑
@@ -674,7 +674,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
-      relayMaxDepth: async () => 6,
+      relayRemainingMicro: async () => null,
     });
     // 手机端只发得出布尔那一版
     await session.say("u1", "alice", "@广告 看投放", true);
@@ -695,7 +695,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
-      relayMaxDepth: async () => 6,
+      relayRemainingMicro: async () => null,
     });
     await session.say("u1", "alice", "在吗", true);
     await session.settled(); // #937：say() 不再等 turn 跑完，断言前显式等排空
@@ -735,7 +735,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
-      relayMaxDepth: async () => 6,
+      relayRemainingMicro: async () => null,
     });
 
     await session.say("u1", "alice", "@广告 帮我跑个命令", true, ["ads"]);
@@ -771,7 +771,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
-      relayMaxDepth: async () => 6,
+      relayRemainingMicro: async () => null,
     });
 
     // 起 ops 的 turn,卡住——这条调用是 drainer,一直没跑完
@@ -845,7 +845,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
-      relayMaxDepth: async () => 6,
+      relayRemainingMicro: async () => null,
     });
 
     const opsSay = session.say("u1", "alice", "@运营 做 A", true, ["ops"]);
@@ -905,7 +905,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
-      relayMaxDepth: async () => 6,
+      relayRemainingMicro: async () => null,
     });
 
     await session.say("u1", "alice", "你好", true);
@@ -935,7 +935,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
-      relayMaxDepth: async () => 6,
+      relayRemainingMicro: async () => null,
     });
 
     await session.say("u1", "alice", "@solo 你好", true, ["solo"]);
@@ -973,7 +973,7 @@ describe("沙箱内工具的工作区审批策略（#977 第 1 条，ADR-0231）
         }
       },
       onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
-      isMember: async () => true, contextWindowOf: () => undefined, relayMaxDepth: async () => 6,
+      isMember: async () => true, contextWindowOf: () => undefined, relayRemainingMicro: async () => null,
       sandboxApproval: () => { policyCalls++; return policy(); },
       workspaceLock: createWorkspaceLock(),
     });
@@ -1026,7 +1026,7 @@ describe("沙箱内工具的工作区审批策略（#977 第 1 条，ADR-0231）
       agents: async () => [admin], adapterFor: () => adapter, px, hostUids: async () => [],
       onEvent: (e) => events.push(e), // 故意不批：卡挂着就是证据
       onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
-      isMember: async () => true, contextWindowOf: () => undefined, relayMaxDepth: async () => 6,
+      isMember: async () => true, contextWindowOf: () => undefined, relayRemainingMicro: async () => null,
       sandboxApproval: async () => "auto",
       workspaceLock: createWorkspaceLock(),
     });
@@ -1058,7 +1058,7 @@ describe("brief 的判据是三样不是一样（#977 第 2 条）", () => {
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
-      relayMaxDepth: async () => 6,
+      relayRemainingMicro: async () => null,
     });
     const briefs = () => events.filter((e) => e.type === "agent_briefed" && e.agentId === "ops");
 
@@ -1108,7 +1108,7 @@ describe("多智能体云会话 · 切片 1b（#932 四个坑）", () => {
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
-      relayMaxDepth: async () => 6,
+      relayRemainingMicro: async () => null,
     });
   }
 
@@ -1304,7 +1304,7 @@ describe("多智能体云会话 · 切片 1b（#932 四个坑）", () => {
       },
       onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true,
-      relayMaxDepth: async () => 6,
+      relayRemainingMicro: async () => null,
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
@@ -1392,7 +1392,7 @@ describe("多智能体云会话 · 切片 1b（#932 四个坑）", () => {
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
-      relayMaxDepth: async () => 6,
+      relayRemainingMicro: async () => null,
     });
 
     const first = session.say("u1", "alice", "@运营 看下销量", true, ["ops"]);
@@ -1533,7 +1533,7 @@ describe("say() 收下即返回（issue #937）", () => {
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
-      relayMaxDepth: async () => 6,
+      relayRemainingMicro: async () => null,
     });
 
     let sayResolved = false;
@@ -1599,7 +1599,7 @@ describe("连接器白名单（#941 切片 2）", () => {
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
-      relayMaxDepth: async () => 6,
+      relayRemainingMicro: async () => null,
     });
   }
 
@@ -1631,7 +1631,7 @@ describe("工作区记忆（#949 切片 4）", () => {
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
-      relayMaxDepth: async () => 6,
+      relayRemainingMicro: async () => null,
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, chat: (m) => chat(a.agentId, m as unknown[]) }),
       onEvent: (e) => events.push(e), onUsage: () => {},
@@ -1674,7 +1674,7 @@ describe("工作区记忆（#949 切片 4）", () => {
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
-      relayMaxDepth: async () => 6,
+      relayRemainingMicro: async () => null,
       agents: async () => AGENTS,
       adapterFor: (a) => ({
         model: a.models[0]!,
@@ -1728,7 +1728,7 @@ describe("工作区记忆（#949 切片 4）", () => {
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
-      relayMaxDepth: async () => 6,
+      relayRemainingMicro: async () => null,
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { return { content: "好" }; } }),
       onEvent: (e) => events.push(e), onUsage: () => {},
@@ -1742,7 +1742,13 @@ describe("工作区记忆（#949 切片 4）", () => {
 });
 
 describe("agent 互相 @ 接力（#950 切片 5）", () => {
-  function relaySession(store: EventStore, events: SessionEvent[], reply: (agentId: string, round: number) => string, maxDepth = 6) {
+  /** `remainingMicro` = 所有者 5h 窗口还剩多少（#1017）。默认 `null` = 降级
+      （问不出额度）—— 与 #1017 改动之前逐字相同的那条路，所以既有用例照旧成立 */
+  function relaySession(
+    store: EventStore, events: SessionEvent[],
+    reply: (agentId: string, round: number) => string,
+    remainingMicro: number | null = null,
+  ) {
     const rounds: Record<string, number> = {};
     const seen: string[] = [];
     const session = createCloudSession({
@@ -1752,7 +1758,7 @@ describe("agent 互相 @ 接力（#950 切片 5）", () => {
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
-      relayMaxDepth: async () => maxDepth,
+      relayRemainingMicro: async () => remainingMicro,
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { rounds[a.agentId] = (rounds[a.agentId] ?? 0) + 1; seen.push(a.agentId); return { content: reply(a.agentId, rounds[a.agentId]!) }; } }),
       onEvent: (e) => events.push(e), onUsage: () => {},
@@ -1789,39 +1795,85 @@ describe("agent 互相 @ 接力（#950 切片 5）", () => {
     store.close();
   });
 
-  it("棒数到顶硬停：上限 2 时只跑 3 轮（人→ops→ads→ops），第 3 棒被拦，群里出一条「接力到上限」", async () => {
+  it("额度剩 0：第 1 棒就被钱拦下，群里那句说清花了多少、还剩多少（#1017）", async () => {
     const store = newStore();
     const events: SessionEvent[] = [];
-    const { session, seen } = relaySession(store, events, (id) => (id === "ops" ? "@广告 你来" : "@运营 你来"), 2);
+    // 预算 = 剩余的一半 = 0，而已花 0 >= 0 —— 窗口见底时下一棒立刻停，这正是对的
+    const { session, seen } = relaySession(store, events, (id) => (id === "ops" ? "@广告 你来" : "收到"), 0);
     await session.say("u1", "alice", "@运营 开始", true, ["ops"]);
     await session.settled();
-    expect(seen).toEqual(["ops", "ads", "ops"]);
-    expect(events.filter((e) => e.type === "agent_relay").map((e) => (e as { depth: number }).depth)).toEqual([1, 2]);
-    const cap = events.find((e) => e.type === "chat_message" && (e as { content: string }).content.includes("接力到上限"));
+    // 运营自己那一轮照常跑完（钱闸拦的是**接力**，不是当前 turn）
+    expect(seen).toEqual(["ops"]);
+    expect(events.some((e) => e.type === "agent_relay")).toBe(false);
+    const cap = events.find(
+      (e) => e.type === "chat_message" && (e as { content: string }).content.includes("单次委托的上限")
+    );
     expect(cap).toMatchObject({ fromUid: "system" });
+    expect((cap as { content: string }).content).toContain("credit");
     store.close();
   });
 
-  it("周期护栏：A↔B 来回到第 4 棒时注一条「打转」，但不停（上限 10 时链子跑到第 10 棒才停）", async () => {
+  it("钱闸端到端（#1017）：adapter 报的 credit 落进 assistant_message，攒够剩余的一半就停", async () => {
+    // 这一条走的是完整链路 —— adapter 的 creditCostMicro → engine 落进
+    // assistant_message → relayStateSince 求和 → decideRelay 的 cap_budget。
+    // 上面那条「额度剩 0」只证明了闸在，这条证明**求和这一半**真的接上了
     const store = newStore();
     const events: SessionEvent[] = [];
-    const { session } = relaySession(store, events, (id) => (id === "ops" ? "@广告 你来" : "@运营 你来"), 10);
+    // 剩余 1000 → 预算 500。每轮报 300：第一轮 300 < 500 放行，第二轮累计 600 >= 500 停
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true,
+      contextWindowOf: () => undefined,
+      sandboxApproval: async () => "ask",
+      workspaceLock: createWorkspaceLock(),
+      relayRemainingMicro: async () => 1000,
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({
+        model: a.models[0]!,
+        async chat() {
+          return { content: a.agentId === "ops" ? "@广告 你来" : "@运营 你来", creditCostMicro: 300 };
+        },
+      }),
+      onEvent: (e) => events.push(e), onUsage: () => {},
+    });
     await session.say("u1", "alice", "@运营 开始", true, ["ops"]);
     await session.settled();
-    const nudges = events.filter((e) => e.type === "chat_message" && (e as { content: string }).content.includes("打转"));
+    // 点火那一轮 300（<500，放行第 1 棒）→ 广告那一轮再 300，累计 600 >= 500 → 第 2 棒被钱拦下
+    expect(events.filter((e) => e.type === "agent_relay").map((e) => (e as { depth: number }).depth)).toEqual([1]);
+    const cap = events.find(
+      (e) => e.type === "chat_message" && (e as { content: string }).content.includes("至少已经花掉")
+    );
+    expect(cap).toMatchObject({ fromUid: "system" });
+    // 求和真的是 600（点火那一轮 + 接力那一轮），不是只数最后一条
+    expect((cap as { content: string }).content).toContain("花掉 0.1 credit");
+    store.close();
+  });
+
+  it("周期护栏两档：A↔B 来回先注一条「打转」不停，喊到第 3 遍硬停在第 6 棒（#1017）", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    const { session } = relaySession(store, events, (id) => (id === "ops" ? "@广告 你来" : "@运营 你来"));
+    await session.say("u1", "alice", "@运营 开始", true, ["ops"]);
+    await session.settled();
+    const nudges = events.filter((e) => e.type === "chat_message" && (e as { content: string }).content.includes("在打转"));
     expect(nudges.length).toBeGreaterThan(0);
-    const firstNudge = nudges[0]!;
     const relays = events.filter((e) => e.type === "agent_relay") as AgentRelayEvent[];
     const hop4 = relays.find((r) => r.depth === 4)!;
-    expect(firstNudge.seq).toBeLessThan(hop4.seq);
-    expect(relays.at(-1)!.depth).toBe(10);
+    expect(nudges[0]!.seq).toBeLessThan(hop4.seq);
+    // 周期 2 的链在第 3p = 第 6 棒硬停：第 5 棒是最后一条落盘的 agent_relay
+    expect(relays.at(-1)!.depth).toBe(5);
+    const stop = events.find(
+      (e) => e.type === "chat_message" && (e as { content: string }).content.includes("提醒过也没出来")
+    );
+    expect(stop).toMatchObject({ fromUid: "system" });
     store.close();
   });
 
   it("人再点一次名 depth 归零：到顶之后人 @运营，新链从第 1 棒开始", async () => {
     const store = newStore();
     const events: SessionEvent[] = [];
-    const { session } = relaySession(store, events, (id) => (id === "ops" ? "@广告 你来" : "收到"), 1);
+    const { session } = relaySession(store, events, (id) => (id === "ops" ? "@广告 你来" : "收到"));
     await session.say("u1", "alice", "@运营 一", true, ["ops"]);
     await session.settled();
     await session.say("u1", "alice", "@运营 二", true, ["ops"]);
@@ -1830,7 +1882,7 @@ describe("agent 互相 @ 接力（#950 切片 5）", () => {
     store.close();
   });
 
-  it("relayMaxDepth 查询抛错时用默认 6，接力照常", async () => {
+  it("剩余额度查不出来（探针抛错）：按降级走，接力照常（#1017）", async () => {
     const store = newStore();
     const events: SessionEvent[] = [];
     const session = createCloudSession({
@@ -1840,7 +1892,7 @@ describe("agent 互相 @ 接力（#950 切片 5）", () => {
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
-      relayMaxDepth: async () => { throw new Error("db down"); },
+      relayRemainingMicro: async () => { throw new Error("probe down"); },
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { return { content: a.agentId === "ops" ? "@广告 你来" : "收到" }; } }),
       onEvent: (e) => events.push(e), onUsage: () => {},
@@ -1863,7 +1915,7 @@ describe("agent 互相 @ 接力（#950 切片 5）", () => {
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
-      relayMaxDepth: async () => 6,
+      relayRemainingMicro: async () => null,
       agents: async () => AGENTS,
       adapterFor: (a) => ({
         model: a.models[0]!,
@@ -1910,7 +1962,7 @@ describe("agent 互相 @ 接力（#950 切片 5）", () => {
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
-      relayMaxDepth: async () => 6,
+      relayRemainingMicro: async () => null,
       agents: async () => AGENTS,
       adapterFor: (a) => ({
         model: a.models[0]!,
@@ -1936,23 +1988,23 @@ describe("agent 互相 @ 接力（#950 切片 5）", () => {
     store.close();
   });
 
-  it("归档落在 relayMaxDepth 的网络往返期间（终审 Important ①a）：await 之后要重新查一次 archived，不能凭 await 之前的快照继续落接力", async () => {
+  it("归档落在 relayRemainingMicro 的网络往返期间（终审 Important ①a）：await 之后要重新查一次 archived，不能凭 await 之前的快照继续落接力", async () => {
     const store = newStore();
     const events: SessionEvent[] = [];
     let session!: CloudSession;
     session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
-      // relayMaxDepth 是真的 Supabase 往返：这一 await 期间人随时可能按下归档。
+      // relayRemainingMicro 可能是真的网络往返：这一 await 期间人随时可能按下归档。
       // 顶上那句 `if (archived) return` 只挡得住"进函数之前就已经归档"，挡不住
       // 这条 await 期间才落地的归档——所以这里在 resolve 之前先把归档做了
       isMember: async () => true,
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
-      relayMaxDepth: async () => {
+      relayRemainingMicro: async () => {
         session.archive("alice");
-        return 6;
+        return null;
       },
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { return { content: a.agentId === "ops" ? "@广告 你来" : "收到" }; } }),
@@ -1990,7 +2042,7 @@ describe("agent 互相 @ 接力（#950 切片 5）", () => {
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
-      relayMaxDepth: async () => 6,
+      relayRemainingMicro: async () => null,
       agents: async () => ROSTER3,
       adapterFor: (a) => ({
         model: a.models[0]!,
@@ -2047,7 +2099,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(),
-      agentWriter: createInMemoryAgentWriter(), isMember: async () => true, relayMaxDepth: async () => 6, sandboxApproval: async () => "ask", contextWindowOf: () => undefined,
+      agentWriter: createInMemoryAgentWriter(), isMember: async () => true, relayRemainingMicro: async () => null, sandboxApproval: async () => "ask", contextWindowOf: () => undefined,
       workspaceLock: createWorkspaceLock(),
       agents: async () => roster,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { return { content: a.agentId === "ops" ? "报表好了，@广告 按这个投" : "收到" }; } }),
@@ -2102,7 +2154,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
       },
       onUsage: () => {},
       memory: createInMemoryWorkspaceMemory(), agentWriter: writer,
-      isMember: async () => true, relayMaxDepth: async () => 6,
+      isMember: async () => true, relayRemainingMicro: async () => null,
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
@@ -2124,7 +2176,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(),
-      agentWriter: createInMemoryAgentWriter(), isMember: async () => true, relayMaxDepth: async () => 6, sandboxApproval: async () => "ask", contextWindowOf: () => undefined,
+      agentWriter: createInMemoryAgentWriter(), isMember: async () => true, relayRemainingMicro: async () => null, sandboxApproval: async () => "ask", contextWindowOf: () => undefined,
       workspaceLock: createWorkspaceLock(),
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { return { content: "@财务 你来核一下账" }; } }),
@@ -2151,7 +2203,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(),
-      agentWriter: createInMemoryAgentWriter(), isMember: async () => true, relayMaxDepth: async () => 6, sandboxApproval: async () => "ask", contextWindowOf: () => undefined,
+      agentWriter: createInMemoryAgentWriter(), isMember: async () => true, relayRemainingMicro: async () => null, sandboxApproval: async () => "ask", contextWindowOf: () => undefined,
       workspaceLock: createWorkspaceLock(),
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { return { content: payload }; } }),
@@ -2174,7 +2226,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(),
-      agentWriter: createInMemoryAgentWriter(), isMember: async () => true, relayMaxDepth: async () => 6, sandboxApproval: async () => "ask", contextWindowOf: () => undefined,
+      agentWriter: createInMemoryAgentWriter(), isMember: async () => true, relayRemainingMicro: async () => null, sandboxApproval: async () => "ask", contextWindowOf: () => undefined,
       workspaceLock: createWorkspaceLock(),
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { return { content: "@运营 我自己记一下" }; } }),
@@ -2196,7 +2248,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(),
-      agentWriter: createInMemoryAgentWriter(), isMember: async () => true, relayMaxDepth: async () => 6, sandboxApproval: async () => "ask", contextWindowOf: () => undefined,
+      agentWriter: createInMemoryAgentWriter(), isMember: async () => true, relayRemainingMicro: async () => null, sandboxApproval: async () => "ask", contextWindowOf: () => undefined,
       workspaceLock: createWorkspaceLock(),
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { return { content: a.agentId === "ops" ? "@广告 你来" : "@运营 你再看看" }; } }),
@@ -2222,7 +2274,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(),
-      agentWriter: createInMemoryAgentWriter(), isMember: async () => true, relayMaxDepth: async () => 6, sandboxApproval: async () => "ask", contextWindowOf: () => undefined,
+      agentWriter: createInMemoryAgentWriter(), isMember: async () => true, relayRemainingMicro: async () => null, sandboxApproval: async () => "ask", contextWindowOf: () => undefined,
       workspaceLock: createWorkspaceLock(),
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: "答" }; } }),
@@ -2246,7 +2298,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px: pxWithGrants, hostUids: async () => ["h1"],
       memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
-      isMember: async () => true, relayMaxDepth: async () => 6,
+      isMember: async () => true, relayRemainingMicro: async () => null,
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
@@ -2291,7 +2343,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px: pxWithGrants, hostUids: async () => ["h1"],
       memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
-      isMember: async () => true, relayMaxDepth: async () => 6,
+      isMember: async () => true, relayRemainingMicro: async () => null,
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
@@ -2353,7 +2405,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px: pxWithGrants, hostUids: async () => ["h1"],
       memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
-      isMember: async () => true, relayMaxDepth: async () => 6,
+      isMember: async () => true, relayRemainingMicro: async () => null,
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
@@ -2393,7 +2445,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [],
       memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
-      isMember: async () => true, relayMaxDepth: async () => 6,
+      isMember: async () => true, relayRemainingMicro: async () => null,
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
@@ -2435,7 +2487,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
-      relayMaxDepth: async () => 6,
+      relayRemainingMicro: async () => null,
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { return { content: "答" }; } }),
       onEvent: (e) => events.push(e), onUsage: () => {},
@@ -2467,7 +2519,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
-      relayMaxDepth: async () => 6,
+      relayRemainingMicro: async () => null,
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: "答" }; } }),
       onEvent: () => {}, onUsage: () => {},
@@ -2492,7 +2544,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [],
       memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
-      isMember: async () => true, contextWindowOf: () => undefined, relayMaxDepth: async () => 6, sandboxApproval: async () => "ask",
+      isMember: async () => true, contextWindowOf: () => undefined, relayRemainingMicro: async () => null, sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
       agents: async () => AGENTS,
       adapterFor: (a) => ({
@@ -2526,7 +2578,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
       store, world: fakeWorld, px, hostUids: async () => [],
       memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
       isMember: async (uid) => uid !== "kicked",
-      contextWindowOf: () => undefined, relayMaxDepth: async () => 6, sandboxApproval: async () => "ask",
+      contextWindowOf: () => undefined, relayRemainingMicro: async () => null, sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: "答" }; } }),
@@ -2567,7 +2619,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
       store, world: fakeWorld, px, hostUids: async () => [],
       memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
       isMember: async (uid) => uid !== "kicked",
-      contextWindowOf: () => undefined, relayMaxDepth: async () => 6, sandboxApproval: async () => "ask",
+      contextWindowOf: () => undefined, relayRemainingMicro: async () => null, sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: "答" }; } }),
@@ -2601,7 +2653,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
       store, world: fakeWorld, px, hostUids: async () => [],
       memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
       isMember: async (uid) => (uid === "flaky" ? "unknown" : uid !== "kicked"),
-      contextWindowOf: () => undefined, relayMaxDepth: async () => 6, sandboxApproval: async () => "ask",
+      contextWindowOf: () => undefined, relayRemainingMicro: async () => null, sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: "答" }; } }),
@@ -2635,7 +2687,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
       store, world: fakeWorld, px, hostUids: async () => [],
       memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
       isMember: async (uid) => (uid === "flaky" ? "unknown" : true),
-      contextWindowOf: () => undefined, relayMaxDepth: async () => 6, sandboxApproval: async () => "ask",
+      contextWindowOf: () => undefined, relayRemainingMicro: async () => null, sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: "答" }; } }),
@@ -2671,7 +2723,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
       store, world: fakeWorld, px, hostUids: async () => [],
       memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
       isMember: async (uid) => uid !== "kicked",
-      contextWindowOf: () => undefined, relayMaxDepth: async () => 6, sandboxApproval: async () => "ask",
+      contextWindowOf: () => undefined, relayRemainingMicro: async () => null, sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: "答" }; } }),
@@ -2707,7 +2759,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
-      relayMaxDepth: async () => 6,
+      relayRemainingMicro: async () => null,
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: "答" }; } }),
       onEvent: () => {}, onUsage: () => {},
@@ -2734,7 +2786,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
-      relayMaxDepth: async () => 6,
+      relayRemainingMicro: async () => null,
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { return { content: "答" }; } }),
       onEvent: (e) => events.push(e), onUsage: () => {},
@@ -2766,7 +2818,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
       store, world: fakeWorld, px, hostUids: async () => [],
       memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
       isMember: async (uid) => uid !== "kicked",
-      contextWindowOf: () => undefined, relayMaxDepth: async () => 6, sandboxApproval: async () => "ask",
+      contextWindowOf: () => undefined, relayRemainingMicro: async () => null, sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: "答" }; } }),
@@ -2789,7 +2841,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px: pxWithGrants, hostUids: async () => { hostUidsCalls += 1; return ["h1"]; },
       memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
-      isMember: async () => true, relayMaxDepth: async () => 6,
+      isMember: async () => true, relayRemainingMicro: async () => null,
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
@@ -2834,7 +2886,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px: pxWithGrants, hostUids: async () => ["h1"],
       memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
-      isMember: async () => true, relayMaxDepth: async () => 6,
+      isMember: async () => true, relayRemainingMicro: async () => null,
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
@@ -2872,7 +2924,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(),
-      agentWriter: createInMemoryAgentWriter(), isMember: async () => true, relayMaxDepth: async () => 6, sandboxApproval: async () => "ask", contextWindowOf: () => undefined,
+      agentWriter: createInMemoryAgentWriter(), isMember: async () => true, relayRemainingMicro: async () => null, sandboxApproval: async () => "ask", contextWindowOf: () => undefined,
       workspaceLock: createWorkspaceLock(),
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { return { content: a.agentId === "ops" ? "@广告 @财务 你们看下" : "收到" }; } }),
@@ -2896,7 +2948,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(),
-      agentWriter: createInMemoryAgentWriter(), isMember: async () => true, relayMaxDepth: async () => 6, sandboxApproval: async () => "ask", contextWindowOf: () => undefined,
+      agentWriter: createInMemoryAgentWriter(), isMember: async () => true, relayRemainingMicro: async () => null, sandboxApproval: async () => "ask", contextWindowOf: () => undefined,
       workspaceLock: createWorkspaceLock(),
       agents: async () => AGENTS,
       // mentionTokens 吃到下一个空白为止 → token 是「广告，这个你来」，不等于任何
@@ -2926,7 +2978,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(),
-      agentWriter: createInMemoryAgentWriter(), isMember: async () => true, relayMaxDepth: async () => 6, sandboxApproval: async () => "ask", contextWindowOf: () => undefined,
+      agentWriter: createInMemoryAgentWriter(), isMember: async () => true, relayRemainingMicro: async () => null, sandboxApproval: async () => "ask", contextWindowOf: () => undefined,
       workspaceLock: createWorkspaceLock(),
       // ① say() 的解析、② runJob 起跑前那次都成功，③ relayAfterTurn 那次挂掉
       agents: async () => {
@@ -2967,7 +3019,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
     session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(),
-      agentWriter: createInMemoryAgentWriter(), isMember: async () => true, relayMaxDepth: async () => 6, sandboxApproval: async () => "ask", contextWindowOf: () => undefined,
+      agentWriter: createInMemoryAgentWriter(), isMember: async () => true, relayRemainingMicro: async () => null, sandboxApproval: async () => "ask", contextWindowOf: () => undefined,
       workspaceLock: createWorkspaceLock(),
       agents: async () => ROSTER3,
       adapterFor: (a) => ({
@@ -3037,7 +3089,7 @@ describe("云会话自动压缩（#957 A-1）", () => {
       store, world, px, hostUids: async () => [], memory,
       agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true,
-      relayMaxDepth: async () => 6,
+      relayRemainingMicro: async () => null,
       agents: async () => AGENTS,
       // 很小的窗（2000）——测试要的是"越过阈值"这个判据，不是真烧一个 128K 上下文。
       // **只认路由决出来的那个 id**：daemon 那侧就是 findModel + contextWindowKnown，
@@ -3118,7 +3170,7 @@ describe("云会话自动压缩（#957 A-1）", () => {
       memory: createInMemoryWorkspaceMemory(),
       agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true,
-      relayMaxDepth: async () => 6,
+      relayRemainingMicro: async () => null,
       agents: async () => AGENTS,
       // 这一条测的是护栏不是压缩：窗口未知 = shouldAutoCompact 一律 false
       contextWindowOf: () => undefined,
@@ -3174,7 +3226,7 @@ describe("发言人名字过 safeSpeakerLabel（#957 复审 Important 2）", () 
       px, hostUids: async () => [], onEvent: (e) => events.push(e), onUsage: () => {},
       isMember: async () => true, contextWindowOf: () => undefined,
       memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
-      relayMaxDepth: async () => 6, sandboxApproval: async () => "ask",
+      relayRemainingMicro: async () => null, sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
     });
 
@@ -3259,7 +3311,7 @@ describe("停止一轮 turn（#957 A-2）", () => {
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
-      relayMaxDepth: async () => 6,
+      relayRemainingMicro: async () => null,
       agents: async () => AGENTS,
       adapterFor: g.adapterFor,
       onEvent: (e) => events.push(e), onUsage: () => {},
@@ -3422,7 +3474,7 @@ describe("停止一轮 turn（#957 A-2）", () => {
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
-      relayMaxDepth: async () => 6,
+      relayRemainingMicro: async () => null,
       agents: async () => AGENTS,
       adapterFor: (a) => ({
         model: a.models[0]!,
@@ -3511,8 +3563,9 @@ describe("停止一轮 turn（#957 A-2）", () => {
   });
 
   // 终审 Important I1：`runLoggedTurn` 返回之后、`finally` 之前还有一整段
-  // relayAfterTurn —— 里面是**两次真 Supabase 往返**（`agents()` 取名单、
-  // `relayMaxDepth()` 取上限）。那个窗口里 `engine.turnAbort` 已经收口、
+  // relayAfterTurn —— 里面是**两次可能真打网络的调用**（`agents()` 取名单的
+  // Supabase 往返、`relayRemainingMicro()` 的订阅探针）。那个窗口里
+  // `engine.turnAbort` 已经收口、
   // `currentEngine` 却还挂着，于是 stop 走"翻信号"那条路：翻的是一个已经
   // 结束的 turn 的信号（无操作），回执照样说 ok、群里照样写"停止了"，而
   // 接力紧接着照点火 —— 人按了停止，屏幕上却冒出下一只 agent 开始回复。
@@ -3536,7 +3589,7 @@ describe("停止一轮 turn（#957 A-2）", () => {
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
-      relayMaxDepth: async () => 6,
+      relayRemainingMicro: async () => null,
       agents: async () => {
         calls += 1;
         if (calls === 3) { inRelayResolve(); await rosterGate; }
@@ -3590,7 +3643,7 @@ describe("停止一轮 turn（#957 A-2）", () => {
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [],
       memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
-      isMember: async () => true, contextWindowOf: () => undefined, relayMaxDepth: async () => 6, sandboxApproval: async () => "ask",
+      isMember: async () => true, contextWindowOf: () => undefined, relayRemainingMicro: async () => null, sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
       agents: async () => evil,
       adapterFor: g.adapterFor,
@@ -3636,7 +3689,7 @@ describe("停止之后不接力（第二轮复审 A2-I2 / E2-1）", () => {
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
-      relayMaxDepth: async () => 6,
+      relayRemainingMicro: async () => null,
       agents: async () => AGENTS,
       adapterFor: (a) => ({
         model: a.models[0]!,
@@ -3681,7 +3734,7 @@ describe("停止之后不接力（第二轮复审 A2-I2 / E2-1）", () => {
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
-      relayMaxDepth: async () => 6,
+      relayRemainingMicro: async () => null,
       agents: async () => AGENTS,
       adapterFor: (a) => ({
         model: a.models[0]!,
@@ -3726,7 +3779,7 @@ describe("stop 带 seq：按的是哪一行（第二轮复审 C2-I3）", () => {
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
-      relayMaxDepth: async () => 6,
+      relayRemainingMicro: async () => null,
       agents: async () => AGENTS,
       adapterFor: (a) => ({
         model: a.models[0]!,
@@ -3810,7 +3863,7 @@ describe("stop 带 seq：按的是哪一行（第二轮复审 C2-I3）", () => {
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
-      relayMaxDepth: async () => 6,
+      relayRemainingMicro: async () => null,
       agents: async () => AGENTS,
       adapterFor: (a) => ({
         model: a.models[0]!,
@@ -3854,7 +3907,7 @@ describe("限速下沉与名单降级（第二轮复审 B2-C1 / E2-4）", () => 
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
-      relayMaxDepth: async () => 6,
+      relayRemainingMicro: async () => null,
     });
   }
 
@@ -4008,7 +4061,7 @@ describe("runJob 的在籍三态（Task 1 复审：fail-closed 分支的执行�
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(),
-      agentWriter: createInMemoryAgentWriter(), relayMaxDepth: async () => 6, sandboxApproval: async () => "ask", contextWindowOf: () => undefined,
+      agentWriter: createInMemoryAgentWriter(), relayRemainingMicro: async () => null, sandboxApproval: async () => "ask", contextWindowOf: () => undefined,
       workspaceLock: createWorkspaceLock(),
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { return { content: "好" }; } }),
@@ -4088,7 +4141,7 @@ describe("稳态每 turn 只读日志尾段（#958）", () => {
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
-      relayMaxDepth: async () => 6,
+      relayRemainingMicro: async () => null,
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { return { content: a.agentId === "ops" ? "报表好了，@广告 按这个投" : "收到" }; } }),
       onEvent: (e) => events.push(e), onUsage: () => {},
@@ -4160,7 +4213,7 @@ describe("同工作区多条会话共用容器：容器锁（#979 第 2 条，AD
       workspaceId: "w1", sessionId: o.sessionId, ownerUid: "owner", createdByUid: "creator", store: newStore(), world,
       agents: async () => [DEFAULT_AGENT], adapterFor: () => adapter, px, hostUids: async () => [],
       onEvent: (e) => o.events.push(e), onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
-      isMember: async () => true, contextWindowOf: () => undefined, relayMaxDepth: async () => 6,
+      isMember: async () => true, contextWindowOf: () => undefined, relayRemainingMicro: async () => null,
       sandboxApproval: async () => "auto", // 不弹卡，只看锁
       workspaceLock: o.lock,
     });
@@ -4249,7 +4302,7 @@ describe("每 turn 起模型前的网络往返收敛（#979 第 5 条，ADR-0232
       px: { ...px, fetchImpl: (async () => { fetchCount.n++; return { ok: true, status: 200, json: async () => GRANTS }; }) as unknown as typeof fetch },
       hostUids: async () => ["h1"],
       onEvent: () => {}, onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
-      isMember: async () => true, contextWindowOf: () => undefined, relayMaxDepth: async () => 6,
+      isMember: async () => true, contextWindowOf: () => undefined, relayRemainingMicro: async () => null,
       sandboxApproval: async () => "ask", workspaceLock: createWorkspaceLock(),
       now,
     });
@@ -4282,7 +4335,7 @@ describe("每 turn 起模型前的网络往返收敛（#979 第 5 条，ADR-0232
       agents: async (o) => { calls.push(o?.fresh === true); return [DEFAULT_AGENT]; },
       adapterFor: () => ({ model: "m", async chat() { return { content: "ok" }; } }), px, hostUids: async () => [],
       onEvent: () => {}, onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
-      isMember: async () => true, contextWindowOf: () => undefined, relayMaxDepth: async () => 6,
+      isMember: async () => true, contextWindowOf: () => undefined, relayRemainingMicro: async () => null,
       sandboxApproval: async () => "ask", workspaceLock: createWorkspaceLock(),
     });
     await s.say("u1", "alice", "你好", true);
@@ -4311,7 +4364,7 @@ describe("每 turn 起模型前的网络往返收敛（#979 第 5 条，ADR-0232
       px, hostUids: async () => [], onEvent: () => {},
       onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true, contextWindowOf: () => undefined,
-      sandboxApproval: async () => "ask", workspaceLock: createWorkspaceLock(), relayMaxDepth: async () => 6,
+      sandboxApproval: async () => "ask", workspaceLock: createWorkspaceLock(), relayRemainingMicro: async () => null,
     });
     await session.say("u1", "alice", "@auto 写个爬虫", true);
     await session.settled();
@@ -4331,7 +4384,7 @@ describe("每 turn 起模型前的网络往返收敛（#979 第 5 条，ADR-0232
       px, hostUids: async () => [], onEvent: () => {},
       onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true, contextWindowOf: () => undefined,
-      sandboxApproval: async () => "ask", workspaceLock: createWorkspaceLock(), relayMaxDepth: async () => 6,
+      sandboxApproval: async () => "ask", workspaceLock: createWorkspaceLock(), relayRemainingMicro: async () => null,
     });
     await session.say("u1", "alice", "@auto 你好", true);
     await session.settled();
@@ -4351,7 +4404,7 @@ describe("每 turn 起模型前的网络往返收敛（#979 第 5 条，ADR-0232
       px, hostUids: async () => [], onEvent: () => {},
       onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true, contextWindowOf: () => undefined,
-      sandboxApproval: async () => "ask", workspaceLock: createWorkspaceLock(), relayMaxDepth: async () => 6,
+      sandboxApproval: async () => "ask", workspaceLock: createWorkspaceLock(), relayRemainingMicro: async () => null,
     });
     await session.say("u1", "alice", "@default 你好", true);
     await session.settled();
@@ -4370,7 +4423,7 @@ describe("每 turn 起模型前的网络往返收敛（#979 第 5 条，ADR-0232
       px, hostUids: async () => [], onEvent: () => {},
       onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true, contextWindowOf: () => undefined,
-      sandboxApproval: async () => "ask", workspaceLock: createWorkspaceLock(), relayMaxDepth: async () => 6,
+      sandboxApproval: async () => "ask", workspaceLock: createWorkspaceLock(), relayRemainingMicro: async () => null,
     });
     await session.say("u1", "alice", "@auto 你好", true);
     await session.settled();

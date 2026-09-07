@@ -329,6 +329,15 @@ export interface ContextCompactedEvent extends SessionEventBase {
   summary: string;
   model: string;                 // 摘要出自哪个模型（不同模型摘得不一样，溯源）
   usage?: TokenUsage;            // compact 本身烧的 token（一次全量输入，不便宜）
+  /** 压缩这一次调用结算的 credit（micro-USD），与 `assistant_message.creditCostMicro`
+      同一格同一来源（`reply.creditCostMicro`）。缺席 ≠ 0，同那一格的语义。
+
+      **补这一格不是为了对账好看**（#1017）：压缩发的是阈值处的**全量上下文**，
+      是这条会话里与相邻那次采样并列最贵的一次调用，而它此前是唯一「钱花了、
+      日志里查不到」的模型调用——engine 明明从 `reply` 上拿到了这个数，落盘时
+      主动丢掉。接力预算按日志求和，漏掉它就是**系统性少算**，且链越长压缩越多、
+      少算越狠，而「链很长」正是那道闸存在的理由。 */
+  creditCostMicro?: number;
   /** 谁触发的：新事件总是写这个字段（用户手动 /compact = "manual"，上下文超阈值
       自动触发 = "auto"）。缺省只出现在旧事件里——写日志的一律照实填，
       缺省 = 该事件写下时协议还没有这个字段，按语义等价于 manual 解读 */

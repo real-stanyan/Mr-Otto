@@ -1,10 +1,10 @@
-// workspaceAgents 纯校验单测：agent 表单的名字合法性 + 模型清单解析（#932 切片 1b）+
-// 接力上限的表单校验（#950 Task 9）。
+// workspaceAgents 纯校验单测：agent 表单的名字合法性 + 模型清单解析（#932 切片 1b）
+// + 沙箱免审那一格的归一（#977）。接力上限那半随 relay_max_depth 一起撤了（#1017）。
 
 import { describe, it, expect } from "vitest";
 import {
   AGENT_NAME_MAX, agentNameConflict, collapseWhitespace, normalizeAgentName,
-  parseModelList, validateAgentName, validateRelayMaxDepth,
+  parseModelList, validateAgentName,
 } from "../../src/shared/workspaceAgents.js";
 
 describe("validateAgentName", () => {
@@ -71,20 +71,5 @@ describe("parseModelList", () => {
   it("英文/中文逗号、多余空白、重复、空项", () => {
     expect(parseModelList(" deepseek-v4 ,glm-5，deepseek-v4,, ")).toEqual(["deepseek-v4", "glm-5"]);
     expect(parseModelList("")).toEqual([]);
-  });
-});
-
-describe("validateRelayMaxDepth", () => {
-  it("1–20 之间的整数字符串 → ok:true 带解析出的数字", () => {
-    expect(validateRelayMaxDepth("6")).toEqual({ ok: true, value: 6 });
-    expect(validateRelayMaxDepth("1")).toEqual({ ok: true, value: 1 });
-    expect(validateRelayMaxDepth("20")).toEqual({ ok: true, value: 20 });
-  });
-  it("空 / 非数字 / 越界 / 非整数 —— 各回一句人话（1 到 20 之间的整数）", () => {
-    for (const raw of ["", "abc", "0", "21", "2.5"]) {
-      const r = validateRelayMaxDepth(raw);
-      expect(r.ok).toBe(false);
-      if (!r.ok) expect(r.error).toMatch(/1.*20.*整数/);
-    }
   });
 });

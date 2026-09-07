@@ -35,6 +35,28 @@ describe("compact()", () => {
     store.close();
   });
 
+  it("压缩那一次调用的 credit 落进事件（#1017）：reply 上有就落，没有就不落——缺席 ≠ 0", async () => {
+    // 补这一格不是为了对账好看：压缩发的是阈值处的**全量上下文**，此前 engine 从
+    // reply 上拿到了这个数、落盘时主动丢掉，于是它是唯一「钱花了、日志里查不到」
+    // 的模型调用。接力预算按日志求和（src/shared/agentRelay.ts 的 relayStateSince），
+    // 漏掉它就是系统性少算，且链越长压缩越多、少算越狠
+    const store = new EventStore(":memory:");
+    store.append({ sessionId: "s", ts: 0, type: "session_created", workspace: "/w" });
+    store.append({ sessionId: "s", ts: 0, type: "user_message", content: "hi" });
+    const withCost: ModelAdapter = {
+      model: "m",
+      async chat() { return { content: "摘要", creditCostMicro: 4321 } as ModelReply; },
+    };
+    await engineWith(store, withCost).compact();
+    expect(store.load("s").at(-1)).toMatchObject({ type: "context_compacted", creditCostMicro: 4321 });
+
+    // direct 路 / 上游没报数：这一格不出现，而不是落一个 0（0 会读成「没花钱」）
+    const { adapter } = adapterCapturing("摘要");
+    await engineWith(store, adapter).compact();
+    expect(store.load("s").at(-1)).not.toHaveProperty("creditCostMicro");
+    store.close();
+  });
+
   it("有 memory_loaded 时摘要 prompt 带脱敏 + 截断的 MEMORY CONTEXT 段", async () => {
     const store = new EventStore(":memory:");
     store.append({ sessionId: "s", ts: 0, type: "session_created", workspace: "/w" });
