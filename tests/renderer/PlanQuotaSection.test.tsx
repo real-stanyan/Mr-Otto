@@ -34,7 +34,7 @@ const me = (over: Partial<BillingMe> = {}): BillingMe => ({
   },
   addon: { remainingMicro: 0, expiresAt: null },
   periodEnd: NOW + 20 * 86_400_000,
-  models: [],
+  models: [], modelPlatforms: {},
   ...over,
 });
 

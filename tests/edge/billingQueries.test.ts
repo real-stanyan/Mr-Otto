@@ -189,9 +189,17 @@ describe("meFromParts", () => {
     const me = meFromParts(null, null, { remainingMicro: 500, expiresAt: 123 }, ["m1"], plans);
     expect(me).toEqual({
       plan: null, status: "none", windows: null, addon: { remainingMicro: 500, expiresAt: 123 }, periodEnd: null, models: ["m1"],
+      // 调用方没给平台表时是空对象（#1011）：那一格只喂桌面下拉里的 logo，
+      // 缺席 = 不画，不该让 /me 的其余部分跟着变形
+      modelPlatforms: {},
       // plans 只带三个订阅档（addon 是加购行，不是档位），价格与 capabilities 跟着下发（#856 / #864）
       plans: [{ id: "lite", priceUsdCents: 1900, capabilities: { image: false, video: false } }],
     });
+  });
+
+  it("给了平台表就原样带出（#1011）", () => {
+    const me = meFromParts(null, null, { remainingMicro: 0, expiresAt: null }, ["glm-5.3"], plans, { "glm-5.3": "zhipu" });
+    expect(me.modelPlatforms).toEqual({ "glm-5.3": "zhipu" });
   });
   it("订阅非 active：窗口不下发（hold 此时一律拒，报满额度是谎话）", () => {
     const windows = { h5: { usedMicro: 1, limitMicro: 2, resetAt: 3 }, week: { usedMicro: 1, limitMicro: 2, resetAt: 3 } };

@@ -24,6 +24,7 @@ import {
   AUTO_MODEL, agentModelOptions, chainWarning, modelsFromSelection, selectedModelValue,
 } from "../lib/agentModelChoice.js";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select.js";
+import { ProviderMark } from "./ProviderMark.js";
 import {
   connectorChoices, modeFromTools, staleSelections, toolsDraftError, toolsFromDraft, type ToolsMode,
 } from "../lib/agentToolsForm.js";
@@ -38,6 +39,7 @@ import type { WorkspaceSnapshot, WorkspaceAgentRow } from "../../../shared/works
 const SECTION_LABEL = "text-[11px] tracking-[0.06em] text-muted-foreground uppercase";
 /** 每次 render 都新建一个 [] 会让下面几个 useMemo/依赖数组白白变身份 */
 const EMPTY_MODELS: readonly string[] = [];
+const EMPTY_PLATFORMS: Readonly<Record<string, string>> = {};
 
 /** 提示词收起时那一行摘要：首行 + 字数。合上之后还得看得出里面有没有东西、
     大概是什么——只写「已折叠」的话这颗按钮就是个盲盒 */
@@ -345,16 +347,21 @@ function AgentEditorDialog({
   // 网关此刻供着的型号。billing 还没拉到时是空数组——「读不到」与「一款都没有」
   // 在界面上要说不同的话，判断留给下面那两句文案
   const availableModels = useChat((s) => s.billing?.me?.models) ?? EMPTY_MODELS;
+  const modelPlatforms = useChat((s) => s.billing?.me?.modelPlatforms) ?? EMPTY_PLATFORMS;
   const loadBilling = useChat((s) => s.loadBilling);
-  const billingLoaded = useChat((s) => s.billing !== null);
-  // 型号清单挂在 billing 快照上，而这一页可能是冷启动后第一个被打开的界面——
-  // 没人拉过的话下拉里就只有 Auto。**只在没有快照时补一次**，不带 refresh：
-  // 这是为了填空不是为了刷新，而 billingSnapshot(true) 会真打一次网络
+  // 弹窗打开时**真刷一次**（#1011）。原来这里写的是「只在没有快照时补一次、
+  // 不带 refresh」，理由写的是「这是填空不是刷新」——那句话对**额度**成立，
+  // 对**目录**不成立：hostedQuota 的快照没有 TTL，只有三个更新源（开机 /
+  // 设置页点刷新 / 网关响应头，而响应头只带额度不带 models）。于是一台开着
+  // 不关的 app 手里那份目录可以是几小时前的，而目录是服务端随时会变的东西
+  // （2026-09-07 一天就变了两次：加了三款、改了一次价）。真机症状就是下拉里
+  // 少三款而界面什么都不说。
+  // 失败保留旧快照（hostedQuota.refresh 本来就是这个纪律），所以断网时下拉照旧能用
   useEffect(() => {
-    if (state !== null && !billingLoaded) void loadBilling();
-  }, [state, billingLoaded, loadBilling]);
+    if (state !== null) void loadBilling(true);
+  }, [state, loadBilling]);
   const currentModels = state?.mode === "edit" ? state.agent.models : EMPTY_MODELS;
-  const modelOptions = agentModelOptions(availableModels, currentModels);
+  const modelOptions = agentModelOptions(availableModels, currentModels, modelPlatforms);
   const chainNote = chainWarning(currentModels);
 
   const nameError = validateAgentName(name);
@@ -544,6 +551,13 @@ function AgentEditorDialog({
               <SelectContent>
                 {modelOptions.map((o) => (
                   <SelectItem key={o.value} value={o.value}>
+                    {/* 认不出平台就留一个同尺寸的空位，不是不画：一列有图标一列没有，
+                        文字会参差不齐，而「这一家我不认识」不值得让整列错位 */}
+                    {o.provider ? (
+                      <ProviderMark provider={o.provider} size={16} className="rounded-[4px]" />
+                    ) : (
+                      <span aria-hidden className="inline-block size-4 shrink-0" />
+                    )}
                     {o.label}
                     {o.stale && <span className="ml-1 text-[10px] text-muted-foreground">已下架</span>}
                   </SelectItem>

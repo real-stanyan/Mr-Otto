@@ -14,7 +14,7 @@ import { AGENT_HEADER, MAX_INFLIGHT, ON_BEHALF_HEADER, SESSION_HEADER, WORKSPACE
 import { billingErrorOf, errorClassOf } from "../../src/model/errorClass.js";
 import type { TokenUsage } from "../../src/session/events.js";
 
-const me: BillingMe = { plan: "pro", status: "active", plans: [], windows: null, addon: { remainingMicro: 0, expiresAt: null }, periodEnd: null, models: ["deepseek-v4-flash", "glm-5.3"] };
+const me: BillingMe = { plan: "pro", status: "active", plans: [], windows: null, addon: { remainingMicro: 0, expiresAt: null }, periodEnd: null, models: ["deepseek-v4-flash", "glm-5.3"], modelPlatforms: {} };
 const base = { ownerUid: "u1", workspaceId: "w1", sessionId: "s1", edgeBase: "https://edge", runtimeSecret: "rs" };
 
 describe("decideRuntimeRoute（ADR-0233：只有 hosted / blocked 两态）", () => {
@@ -87,7 +87,7 @@ describe("createHostedProbe", () => {
     });
     expect(await throwing.me("u1")).toBe("unreachable");
 
-    const none: BillingMe = { ...me, plan: null, status: "none", windows: null, models: [] };
+    const none: BillingMe = { ...me, plan: null, status: "none", windows: null, models: [], modelPlatforms: {} };
     const ok = createHostedProbe({
       edgeBase: "https://edge",
       runtimeSecret: "rs",

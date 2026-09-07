@@ -14,6 +14,8 @@
 
 /** 下拉里 Auto 那一项的值。不用空串：Radix 的 SelectItem 明确禁止空串 value
     （它拿空串表示「没选」），塞进去会在运行时抛错 */
+import type { ProviderId } from "../../../shared/providerCatalog.js";
+
 export const AUTO_MODEL = "__auto__";
 
 /** 当前这条链在下拉里选中哪一项 */
@@ -26,9 +28,26 @@ export function modelsFromSelection(value: string): string[] {
   return value === AUTO_MODEL ? [] : [value];
 }
 
+/** `model_route.platform` → 本仓的 `ProviderId`（#1011）。两套名字只差一处：
+    智谱那家在路由表里叫 `zhipu`、在 `providerCatalog` 里叫 `glm`。**明写一张表
+    而不是按 id 前缀猜**：`glm-*` 属于智谱今天成立，只是因为这些 id 是我们自己在
+    `model_route` 里写的——那是巧合不是保证，而 `platform` 那一列就是答案。
+    认不出的平台回 null = 不画 logo，不画错一个。 */
+const PLATFORM_PROVIDER: Readonly<Record<string, ProviderId>> = {
+  deepseek: "deepseek",
+  zhipu: "glm",
+  qwen: "qwen",
+};
+
+export function providerOfPlatform(platform: string | undefined): ProviderId | null {
+  return (platform !== undefined && PLATFORM_PROVIDER[platform]) || null;
+}
+
 export interface AgentModelOption {
   value: string;
   label: string;
+  /** 画在左边那枚厂商字形；null = 这一格没有（Auto，或平台名认不出来） */
+  provider: ProviderId | null;
   /** 这一款已经不在网关的路由表里了（被停用/下架），但这只 agent 还指着它。
       **要画出来并标出来，不能静默丢**——静默丢 = 替用户把他没碰过的配置改了，
       而藏起来就成了「看不见却仍然生效」的那种撒谎（同 agentToolsForm 的
@@ -44,19 +63,22 @@ export interface AgentModelOption {
  */
 export function agentModelOptions(
   available: readonly string[],
-  current: readonly string[]
+  current: readonly string[],
+  /** 型号 id → 平台（`BillingMe.modelPlatforms`）。缺席 = 一枚 logo 都不画，
+      不是画错——旧 edge 不发这一格 */
+  platforms: Readonly<Record<string, string>> = {}
 ): AgentModelOption[] {
-  const out: AgentModelOption[] = [{ value: AUTO_MODEL, label: "Auto" }];
+  const out: AgentModelOption[] = [{ value: AUTO_MODEL, label: "Auto", provider: null }];
   const seen = new Set<string>();
   for (const m of available) {
     if (seen.has(m)) continue;
     seen.add(m);
-    out.push({ value: m, label: m });
+    out.push({ value: m, label: m, provider: providerOfPlatform(platforms[m]) });
   }
   for (const m of current) {
     if (seen.has(m)) continue;
     seen.add(m);
-    out.push({ value: m, label: m, stale: true });
+    out.push({ value: m, label: m, provider: providerOfPlatform(platforms[m]), stale: true });
   }
   return out;
 }
