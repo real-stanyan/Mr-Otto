@@ -25,7 +25,8 @@ export interface GitGraphDeps {
 const nodeDeps: GitGraphDeps = {
   execGit(args, cwd) {
     return new Promise((resolve, reject) => {
-      execFile("git", args, { cwd, maxBuffer: 10 * 1024 * 1024 }, (err, stdout, stderr) => {
+      // windowsHide：win32 的 GUI 进程起 console 程序会弹黑框（#1027，见 shared/childProcess.ts）
+      execFile("git", args, { cwd, maxBuffer: 10 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
         if (err) reject(Object.assign(err, { stderr: String(stderr) }));
         else resolve({ stdout: String(stdout) });
       });

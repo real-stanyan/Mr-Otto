@@ -52,6 +52,8 @@ export async function primeLoginShellPath(
       timeout: timeoutMs,
       killSignal: "SIGKILL",
       stdio: ["ignore", "pipe", "ignore"],
+      // windowsHide：win32 的 GUI 进程起 console 程序会弹黑框（#1027，见 shared/childProcess.ts）
+      windowsHide: true,
     });
     let buf = "";
     child.stdout?.setEncoding("utf8");
