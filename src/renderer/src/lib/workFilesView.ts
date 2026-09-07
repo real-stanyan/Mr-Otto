@@ -4,15 +4,6 @@
 // `useMemo` 里，理由同 ADR-0244 那条：留在组件里就没有保鲜期。
 
 import type { CsWorkEntry, CsWorkNode } from "../../../shared/remote/cloudSession.js";
-import { workPathCrumbs } from "../../../shared/remote/workPath.js";
-
-/** 面包屑第一格的名字。**是产品文案不是路径**——路径的根是空串 */
-export const WORK_ROOT_LABEL = "工作文件夹";
-
-/** 面包屑：根 + 每一段。最后一格是当前位置（调用方不给它挂点击） */
-export function workCrumbs(path: string): { name: string; path: string }[] {
-  return [{ name: WORK_ROOT_LABEL, path: "" }, ...workPathCrumbs(path)];
-}
 
 /** 字节数写成人话。目录不显示大小（`size` 恒为 0，调用方自己判 kind） */
 export function formatWorkSize(bytes: number): string {
