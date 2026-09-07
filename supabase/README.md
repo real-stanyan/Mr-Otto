@@ -42,6 +42,8 @@ Realtime 通不通决定的是**快慢不是有无**(ADR-0027):客户端在订�
 | `0012_drop_poker.sql` | 删掉德州扑克的全部表 / 函数 / policy | 删除面**不含**钱包:`token_*` 三张表和 `grant_tokens` / `spend_tokens` / `rebuild_balance` 是另一套(休眠中的)功能,网关还在用 |
 | `0013_realtime_publication.sql` | 把好友三张表重新加回 `supabase_realtime` publication | 迁 Cloud 时 schema 和数据都过去了、publication 成员关系没有。没跑这一条时不报错,只是"慢":推送全断,一路走轮询兜底(ADR-0027) |
 | `0017_subscriptions.sql` | 订阅制五张表（`plan` / `subscription` / `credit_grant` / `usage_event` / `model_route`）+ RLS；seed 在 `seed/0017_plans_routes.sql`（档位数字与首批价表，**价格待核**） | ADR-0174 起三篇 + spec 2026-09-02；旧 `token_*` 三张不动不认（#696）。**尚未在 Cloud 上执行** |
+| `0028_workspace_requires_plan_capability.sql` | 建工作区从「有活跃订阅」收窄成「这一档带工作区」：`plan.capabilities.workspace` 补格 + 新函数 `can_create_workspace()` + 换 `ws_insert_self` 策略 | ADR-0242 / #1024。**判据放 plan 表不写死 `{pro,max}`**——写死的话这句话会有两份（客户端一份、RLS 一份），只在改档那天分家且分家不报错。只收窄 insert，存量一行不碰。没跑这一条时客户端走降级分支 = 行为一字不变（`plansWithWorkspace` 为空就退回旧判据），所以它不是「跑之前会坏」的那种 |
+| `0029_plan_image_capability.sql` | 三个订阅档打开 `capabilities.image`（`video` 保持 false） | #1040。**不是补一枚 chip，是开一个从来没开过的功能**：`src/main/modelRoute.ts` 拿这一格当真闸，三档全 false 意味着付费用户选视觉模型要么被拦（文案让他「升档」，而没有任何一档有 image）、要么静默改走自己的 key |
 
 ## 真库执行状态
 
@@ -59,7 +61,16 @@ public 下只剩 `profiles` / `friendships` / `messages` 与 `token_*` 三张,�
 `devices` 回 404(与一个不存在的表同码,已用对照组确认)。手机端远程投影(ADR-0094 起四篇)
 的配对一连就会 404,计划 B 开工前必须先补这一条。`0010` 的执行状态未核。
 
-`0017_subscriptions.sql` 及其 seed(`seed/0017_plans_routes.sql`)**尚未在 Cloud 上执行**。
+~~`0017_subscriptions.sql` 及其 seed(`seed/0017_plans_routes.sql`)**尚未在 Cloud 上执行**。~~
+**订正(2026-09-07)**:这一句已经过期。直查真库 `kpeemypbhkynapkjzewr`,`plan` / `subscription` /
+`model_route` 三张表都在且有数据(4 行档位 / 1 条订阅 / 6 行路由),订阅制整条链路在跑。
+这正是上面那句「这一行会过期,所以它记的是日期不是『已完成』」说的情况 —— 跑一遍 checks
+比读这段字准。
+
+**2026-09-07**:`0028_workspace_requires_plan_capability.sql` 与 `0029_plan_image_capability.sql`
+已在 Cloud 上执行,对应的 `checks/0028` (4 条) 与 `checks/0029` (3 条) 逐条 PASS。
+0028 跑完对现有用户**零行为变化**(唯一的订阅是 max active,`can_create_workspace` 与
+`has_active_subscription` 给出同一个答案;Lite 订阅一条都没有过)。
 
 这一行会过期,所以它记的是**日期**不是「已完成」:新增 migration 之后要么补一行,
 要么直接跑一遍 checks —— 校验脚本不留痕,想知道真库是什么形状,跑它比读这段字准。
