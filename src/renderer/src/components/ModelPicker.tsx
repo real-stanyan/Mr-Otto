@@ -75,16 +75,18 @@ function optionOf(it: ModelMenuItem): ModelOption {
 }
 
 
-/** 一组选项 + 画它要用的两样东西。订阅那一组和厂商那几组同一个形状，
-    渲染那一段因此只有一条路径——两种组各画一遍的话，「视觉」那枚记号
-    迟早只在其中一边跟上 */
+/** 一组选项。订阅那一组和厂商那几组同一个形状，渲染那一段因此只有一条路径 */
 interface PickerGroup {
   key: string;
-  heading: string;
+  /** `null` = 这一组不画组头（判据与理由在 lib/modelMenu.ts 的 ModelMenuGroup） */
+  heading: string | null;
   options: ModelOption[];
-  /** 与 options 同序：这一项支不支持看图。Auto 那一行恒 false */
-  vision: boolean[];
 }
+
+/** Auto 那一行的说明。**不画在行里**（#1058）：ADR-0244 当初写成第二行正文，
+    维护者看过真机后要求撤掉。降级成 `title` 是这里唯一还剩的位置 —— 触发器一行字宽，
+    浮层底下那条脚注是给「换型号作废缓存」用的 */
+const AUTO_HINT = "每轮起跑前先用最便宜那款判一手难度，再据此挑贵的还是便宜的；判不出来时按原样走。";
 
 /** Auto 那一枚记号。用的不是厂商字形——Auto 不是一家厂——而是同尺寸同圆角的
     中性方块，只求这一列对得齐（同 WorkspaceAgentsTab 的那一枚，#1015） */
@@ -204,7 +206,6 @@ export function ModelPicker({
         key: g.key,
         heading: g.heading,
         options: g.items.map((it) => optionOf(it)),
-        vision: g.items.map((it) => it.vision),
       })),
     [menu]
   );
@@ -265,29 +266,22 @@ export function ModelPicker({
           <ModelSelectorEmpty>没有匹配的模型</ModelSelectorEmpty>
 
           {groups.map((g) => (
-            <ModelSelectorGroup key={g.key} heading={g.heading}>
-              {g.options.map((o, i) => (
-                <ModelSelectorItem key={o.id} model={o} className="items-center">
+            <ModelSelectorGroup key={g.key} {...(g.heading !== null ? { heading: g.heading } : {})}>
+              {g.options.map((o) => (
+                <ModelSelectorItem
+                  key={o.id}
+                  model={o}
+                  className="items-center"
+                  {...(o.id === AUTO_MODEL ? { title: AUTO_HINT } : {})}
+                >
                   {/* 厂商标记要自己摆:给了 children 就等于整块自绘,
                       上游那套 icon + name 的默认排版不会再出现(它在 children ?? 后面) */}
                   {o.icon}
-                  {o.id === AUTO_MODEL ? (
-                    /* Auto 这一行两层：它做的事和下面那几款不是同一类（那几款是
-                       「用这一款」，它是「每轮替我挑一款」），只写一个词的话，
-                       点它的人只能靠猜。别处没有能说这句话的地方——触发器一行字宽，
-                       浮层底下那条脚注是给「换型号作废缓存」用的 */
-                    <span className="flex min-w-0 flex-1 flex-col">
-                      <span className="truncate">{o.name}</span>
-                      <span className="truncate text-[10.5px] leading-[1.35] text-muted-foreground">
-                        每轮起跑前判一手难度，再挑贵的还是便宜的
-                      </span>
-                    </span>
-                  ) : (
-                    <span className="min-w-0 flex-1 truncate">{o.name}</span>
-                  )}
-                  {g.vision[i] && (
-                    <span className="shrink-0 text-[10.5px] text-muted-foreground">视觉</span>
-                  )}
+                  {/* Auto 与下面那几款**同一个排版**（#1058）：ADR-0244 当初给它加了
+                      第二行说明（「只写一个词的话点它的人只能靠猜」），维护者看过真机
+                      后要求撤掉——一行两层会把这一列的基线打断，而这枚选单本来就靠
+                      「每行长得一样」扫得快。那句话降级成 `title`，不占版面也没丢 */}
+                  <span className="min-w-0 flex-1 truncate">{o.name}</span>
                 </ModelSelectorItem>
               ))}
             </ModelSelectorGroup>
