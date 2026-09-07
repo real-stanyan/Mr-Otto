@@ -7,7 +7,15 @@ import type { SessionEvent } from "../../session/events.js";
 import { b64decode, b64encode } from "./b64.js";
 import { MAX_FRAME_BYTES } from "./wire.js";
 
-/** 11（#1056）：加一对 `files` / `files_result`（控制房读帧）——**工作文件夹看得见了**。
+/** 12（#1066）：再加一对 `files_search` / `files_search_result`（控制房读帧）——
+    工作文件夹**搜得动**了，照右侧栏那个 Files 面板的规矩：直接输入 = 按文件名过滤，
+    `?文本` = 内容搜索。容器镜像里有 ripgrep 13（`/usr/bin/rg`，真机验过），且
+    `-w /work` 下 `rg --json` / `rg --files` 输出的相对路径与本机面板逐字同形，
+    所以**判据共用 `src/shared/files.ts` 的 `parseRgJson`/`matchesFilter`/
+    `classifyRgError` 那三个纯函数**，不另写一份（同 wire.ts 的纪律：两份迟早分家）。
+    `CsWorkHit` 与本机的 `FileHit` 结构相同但**各是各的类型**——后者住在 Files 面板
+    那一层，收窄/扩宽它会把本机那条路一起打红。
+    11（#1056）：加一对 `files` / `files_result`（控制房读帧）——**工作文件夹看得见了**。
     这一页原来叫「仓库」，整页正文的头一句在解释「你可能用不到这一页」；而真正的主语
     是「水獭在哪儿干活」：每个工作区都有一个共用工作目录（一容器一卷，ADR-0232），
     Git 仓库只是往那个目录里装东西的一种方式，而且是此前唯一做出来的一种。列得出
@@ -59,7 +67,7 @@ import { MAX_FRAME_BYTES } from "./wire.js";
     少一格状态。**加一个枚举值同理**：老客户端的 isValidCsDeniedCode 认不出
     `rate_limited`，decodeCsDown 回 null，那一帧被静默忽略，于是 create()
     要白等满超时才回一句"云端无响应"——把"你被限速了"说成"对面没回话"。 */
-export const CS_PROTOCOL_VERSION = 11;
+export const CS_PROTOCOL_VERSION = 12;
 export const CS_MAX_TEXT_BYTES = 64 * 1024;
 
 /** 一次回多少字节的文件内容（#1056）。中继单帧上限是 256 KiB（wire.ts 的
@@ -164,6 +172,21 @@ export interface CsWorkEntry {
     一句就会对一个刚建群的人说「你的文件夹是空的」——而那个文件夹此刻并不存在。
     `binary` 单列一档，因为「读不出人话」不是失败：那是一张图、一个 zip，界面上
     该画的是名字和大小，不是一屏乱码。 */
+/** 一条搜索命中（#1066）。结构与本机 Files 面板的 `FileHit` 相同——名字模式没有
+    行号和行文本，两个字段都是 `null`；内容模式两个都有。故意不共用那个类型：
+    它住在 Files 面板那一层，改它会把本机那条路一起打红 */
+export interface CsWorkHit {
+  /** 相对工作文件夹的路径，直接可以拿去发 `files` 帧 */
+  rel: string;
+  line: number | null;
+  text: string | null;
+}
+
+/** 一次搜索最多回多少条。名字模式宽一些（一行就是一个路径），内容模式每条还带
+    一行正文。两个数与本机面板的 `MAX_NAME_HITS`/`MAX_CONTENT_HITS` 取同一档 */
+export const CS_WORK_NAME_HITS_MAX = 500;
+export const CS_WORK_CONTENT_HITS_MAX = 200;
+
 export type CsWorkNode =
   | { kind: "absent" }
   | { kind: "missing" }
@@ -238,6 +261,11 @@ export type CsUp =
       `normalizeWorkPath`；服务端不信任它，自己再归一化一次并在容器里
       realpath 兜底。任何在籍成员都能读——卷是整个工作区共用的 */
   | { t: "files"; workspaceId: string; path: string }
+  /** 搜工作文件夹（控制房帧，协议 12，#1066）：回 `files_search_result`。
+      `content` = 搜正文（`?` 前缀那一路）还是只按文件名过滤。搜索**永远从工作
+      文件夹的根开始**，不带 path——同本机那个面板：过滤框问的是「这个工作区里
+      有没有」，不是「这个目录里有没有」 */
+  | { t: "files_search"; workspaceId: string; query: string; content: boolean }
   /** 收尾一条云会话——**控制房帧**（协议 9，#993）：带 workspaceId + sessionId，
       不依赖「正开着这条会话」。谁能归档由服务端判（owner 或建这条会话的人，
       issue #822 的判据原样）*/
@@ -313,6 +341,9 @@ export type CsDown =
       只问一次，但认一下比赌顺序便宜，同 workspace_state）。`ok=false` 的 message
       分得清「路径不合法」「容器里读失败」两种——两种该做的动作不一样 */
   | { t: "files_result"; workspaceId: string; path: string; ok: boolean; node?: CsWorkNode; message?: string }
+  /** `files_search` 的答复（协议 12，#1066）。`hits: []` 与 `ok:false` 是两回事：
+      前者 = 搜过了，没有；后者 = 没搜成。合成一句就会把「rg 挂了」说成「仓里没有」 */
+  | { t: "files_search_result"; workspaceId: string; query: string; ok: boolean; hits?: CsWorkHit[]; message?: string }
   /** say 的回执（#957 第三批）。同 config_result 的纪律——不复用 error。
       ok=false 时 message 说明为什么（限速 / 不在籍 / 抛错），文案不变，只是
       换了个帧承载。 */
@@ -403,6 +434,22 @@ function normalizeRepoState(v: unknown): CsRepoState | null {
 /** 线上防呆（#1056）：认不出的形状一律回 null，调用方按「读到了但看不懂」处理。
     与 normalizeModelRoute 同纪律——**不拒整帧**，因为 `ok=false` 那一路的
     message 仍然是有用的信息 */
+/** 命中列表的线上防呆（#1066）。**一条形状不对整份判无效**——少一条的清单和
+    完整的长得一模一样，同 normalizeWorkNode 里目录项那条 */
+function normalizeWorkHits(v: unknown): CsWorkHit[] | null {
+  if (!Array.isArray(v)) return null;
+  const out: CsWorkHit[] = [];
+  for (const raw of v) {
+    if (typeof raw !== "object" || raw === null) return null;
+    const h = raw as Record<string, unknown>;
+    if (typeof h.rel !== "string") return null;
+    if (h.line !== null && typeof h.line !== "number") return null;
+    if (h.text !== null && typeof h.text !== "string") return null;
+    out.push({ rel: h.rel, line: h.line as number | null, text: h.text as string | null });
+  }
+  return out;
+}
+
 function normalizeWorkNode(v: unknown): CsWorkNode | null {
   if (typeof v !== "object" || v === null || Array.isArray(v)) return null;
   const o = v as Record<string, unknown>;
@@ -524,6 +571,14 @@ export function decodeCsUp(b64: string): CsUp | null {
       return null;
     }
 
+    if (t === "files_search") {
+      // content 必填布尔：缺席意味着发送方在猜默认值，而两种模式跑的是两条命令
+      if (typeof obj.workspaceId === "string" && typeof obj.query === "string" && typeof obj.content === "boolean") {
+        return { t: "files_search", workspaceId: obj.workspaceId, query: obj.query, content: obj.content };
+      }
+      return null;
+    }
+
     if (t === "files") {
       // path 必填（`""` 是合法值，代表工作文件夹本身）——缺席意味着发送方在
       // 猜默认值，而这一层不该替它猜
@@ -621,6 +676,22 @@ export function decodeCsDown(b64: string): CsDown | null {
         (obj.message === undefined || typeof obj.message === "string")
       ) {
         const result: CsDown = { t: "delete_result", workspaceId: obj.workspaceId, sessionId: obj.sessionId, ok: obj.ok };
+        if (typeof obj.message === "string") result.message = obj.message;
+        return result;
+      }
+      return null;
+    }
+
+    if (t === "files_search_result") {
+      if (
+        typeof obj.workspaceId === "string" &&
+        typeof obj.query === "string" &&
+        typeof obj.ok === "boolean" &&
+        (obj.message === undefined || typeof obj.message === "string")
+      ) {
+        const result: CsDown = { t: "files_search_result", workspaceId: obj.workspaceId, query: obj.query, ok: obj.ok };
+        const hits = normalizeWorkHits(obj.hits);
+        if (hits) result.hits = hits;
         if (typeof obj.message === "string") result.message = obj.message;
         return result;
       }

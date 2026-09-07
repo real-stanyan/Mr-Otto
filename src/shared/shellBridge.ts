@@ -19,7 +19,7 @@ import type { ModelLane } from "./modelLane.js";
 import type { UsageSnapshot } from "./usageStats.js";
 import type { ModelShareWindow } from "./modelShare.js";
 import type { IslandUsageRow } from "./islandUsage.js";
-import type { CsModelRoute, CsRepoState, CsWorkNode } from "./remote/cloudSession.js";
+import type { CsModelRoute, CsRepoState, CsWorkHit, CsWorkNode } from "./remote/cloudSession.js";
 import type { TerminalInfo } from "./terminal.js";
 import type { BrowserTabInfo, BrowserBounds, BrowserPickedElement } from "./browser.js";
 import type { SimButton, SimFrame, SimState } from "./simulator.js";
@@ -1156,6 +1156,10 @@ export interface ShellBridge {
       那份卷是整个工作区共用的。四种正常结局都在 `CsWorkNode` 里，其中
       `absent`（容器还没建起来）与空目录是**两回事**，别合成一句 */
   workspaceCloudFiles(workspaceId: string, path: string): Promise<FriendsResult<CsWorkNode>>;
+  /** 搜工作文件夹（控制房 RPC，协议 12，#1066）：设置页「文件」tab 的过滤框用。
+      `content=false` = 按文件名过滤，`true` = 搜正文（`?` 前缀那一路）。
+      **`hits: []` 与失败是两回事**——前者是「搜过了没有」，后者是「没搜成」 */
+  workspaceCloudFilesSearch(workspaceId: string, query: string, content: boolean): Promise<FriendsResult<CsWorkHit[]>>;
   /** 改一个工作区的仓库配置（控制房 RPC，协议 8；owner 才过，服务端判）。`pat`
       三态——省略 = 保持不变，`""` = 清除，非空 = 换新（密码框预填不了，"留空 =
       清掉"会让顺手改个地址毁掉一把 token）。回服务端此刻的真实状态，失败也回
@@ -1582,6 +1586,7 @@ export const CHANNELS = {
   workspaceCloudConfig: "otter:workspaceCloudConfig",
   workspaceCloudState: "otter:workspaceCloudState",
   workspaceCloudFiles: "otter:workspaceCloudFiles",
+  workspaceCloudFilesSearch: "otter:workspaceCloudFilesSearch",
   setBadgeCount: "otter:setBadgeCount",
   friendsChanged: "otter:friendsChanged",
   presenceChanged: "otter:presenceChanged",

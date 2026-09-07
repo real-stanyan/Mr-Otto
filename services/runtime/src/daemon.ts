@@ -736,6 +736,7 @@ async function main(): Promise<void> {
     // 翻工作文件夹直接下到 sandbox（#1056）：读动作，不经 ensure()，
     // 所以打开设置页不会建容器、不会触发 clone
     readWork: (workspaceId, path) => sandbox.readWork(workspaceId, path),
+    searchWork: (workspaceId, query, content) => sandbox.searchWork(workspaceId, query, content),
     sessions: {
       get(workspaceId, sessionId) {
         const active = activeSessions.get(sessionId);

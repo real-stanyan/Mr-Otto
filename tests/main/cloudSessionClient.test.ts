@@ -1468,6 +1468,31 @@ describe("createCloudSessionClient — workspaceState / workspaceConfig（控制
     expect(t.close).toHaveBeenCalledTimes(1);
   });
 
+  it("workspaceFilesSearch：帧带 content 标志；hits 原样回来", async () => {
+    const h = harness();
+    const promise = h.client.workspaceFilesSearch("w1", "hello", true);
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    expect(t.decoded().at(-1)).toEqual({ t: "files_search", workspaceId: "w1", query: "hello", content: true });
+    const hits = [{ rel: "a.md", line: 3, text: "hello" }];
+    t.emitDown({ t: "files_search_result", workspaceId: "w1", query: "hello", ok: true, hits });
+    expect(await promise).toEqual({ ok: true, value: hits });
+  });
+
+  it("workspaceFilesSearch：ok=true 却没有 hits → 当失败，**不兜底成空数组**", async () => {
+    // 「搜过了没有」与「没搜成」在界面上长得一样，而两者该做的动作相反
+    const h = harness();
+    const promise = h.client.workspaceFilesSearch("w1", "x", false);
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({ t: "files_search_result", workspaceId: "w1", query: "x", ok: true });
+    expect((await promise).ok).toBe(false);
+  });
+
   it("workspaceFiles：路径本地就判死的不开连接（`..` 一律拒）", async () => {
     const h = harness();
     const r = await h.client.workspaceFiles("w1", "../etc");

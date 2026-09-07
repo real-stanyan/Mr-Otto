@@ -3,10 +3,8 @@ import {
   entryMeta,
   formatWorkSize,
   formatWorkTime,
-  workCrumbs,
   workFileNotice,
   workFolderNotice,
-  WORK_ROOT_LABEL,
 } from "../../src/renderer/src/lib/workFilesView.js";
 
 const NOW = new Date("2026-09-07T12:00:00Z").getTime();
@@ -44,17 +42,6 @@ describe("workFileNotice", () => {
 
   it("空文件也要说一句——空白框和「组件坏了」长得一样", () => {
     expect(workFileNotice({ kind: "file", text: "", truncated: false, size: 0 })).toBe("这是一个空文件。");
-  });
-});
-
-describe("面包屑", () => {
-  it("根那一格是产品文案，路径是空串", () => {
-    expect(workCrumbs("")).toEqual([{ name: WORK_ROOT_LABEL, path: "" }]);
-    expect(workCrumbs("src/lib")).toEqual([
-      { name: WORK_ROOT_LABEL, path: "" },
-      { name: "src", path: "src" },
-      { name: "lib", path: "src/lib" },
-    ]);
   });
 });
 

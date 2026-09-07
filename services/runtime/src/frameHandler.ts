@@ -27,6 +27,7 @@ import {
   type CsDown,
   type CsModelRoute,
   type CsRepoState,
+  type CsWorkHit,
   type CsWorkNode,
 } from "../../../src/shared/remote/cloudSession.js";
 import { normalizeWorkPath } from "../../../src/shared/remote/workPath.js";
@@ -157,6 +158,9 @@ export interface FrameHandlerDeps {
       别的信号能说出「其实是没接上」。`path` 这一层再归一化一次——客户端那次
       是省往返，不是安全边界。抛错 = 容器里读失败，回执照实说 */
   readWork: (workspaceId: string, path: string) => Promise<CsWorkNode>;
+  /** 搜工作文件夹（#1066）。同 `readWork` 是必需的：忘接线那天这一格安静地
+      永远搜不出东西，而「搜过了没有」与「压根没搜」在界面上长得一模一样 */
+  searchWork: (workspaceId: string, query: string, content: boolean) => Promise<CsWorkHit[]>;
   /** 三档令牌桶（issue #819）。**必需，不是可选**：过渡期烧的是维护者的
       模型 key，一个"忘了接线"的默认值等于把闸门悄悄拆了——这种东西不该
       靠记性，该靠编译错误。桶按 uid 分而不是按 cid：按 cid 分等于"多开
@@ -389,12 +393,13 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
 
       if (msg.t === "hello") return; // 已验籍，重复 hello 当幂等刷新，不重复应答
 
-      // 控制房认六种帧（协议 8 起：create / workspace / config；协议 9 加 archive，
-      // 协议 10 加 delete，协议 11 加 files）——
+      // 控制房认七种帧（协议 8 起：create / workspace / config；协议 9 加 archive，
+      // 协议 10 加 delete，协议 11 加 files，协议 12 加 files_search）——
       // 都是「关于某个工作区」的动作，不挂在任何一条会话上。在籍是共同前提
       if (
         msg.t !== "create" && msg.t !== "workspace" && msg.t !== "config" &&
-        msg.t !== "archive" && msg.t !== "delete" && msg.t !== "files"
+        msg.t !== "archive" && msg.t !== "delete" && msg.t !== "files" &&
+        msg.t !== "files_search"
       ) {
         deny(cid, "not_authorized");
         return;
@@ -414,6 +419,34 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
           repo: deps.repoState(msg.workspaceId),
           modelRoute: await deps.modelRoute(msg.workspaceId, ownerUid),
         });
+        return;
+      }
+
+      if (msg.t === "files_search") {
+        // 与 files 共用同一只桶：这两条帧是同一个动作的两半（翻 / 找），
+        // 花的也是同一样东西（一次 docker exec）
+        if (!deps.rateLimit.allow("files", entry.uid)) {
+          deny(cid, "rate_limited");
+          return;
+        }
+        const query = msg.query.trim();
+        if (query === "") {
+          // 空查询不下到容器：`rg --files` 会把整个仓库的文件名清单跑一遍，
+          // 而调用方要的是「回到树」，那件事渲染层自己做得了
+          deps.send(cid, { t: "files_search_result", workspaceId: msg.workspaceId, query: msg.query, ok: true, hits: [] });
+          return;
+        }
+        try {
+          const hits = await deps.searchWork(msg.workspaceId, query, msg.content);
+          deps.send(cid, { t: "files_search_result", workspaceId: msg.workspaceId, query: msg.query, ok: true, hits });
+        } catch (err) {
+          // 「搜不成」不许说成「没有匹配」：后者会让人以为仓里真的没有这个东西
+          deps.log(`files_search 失败（workspace=${msg.workspaceId}）：${String(err)}`);
+          deps.send(cid, {
+            t: "files_search_result", workspaceId: msg.workspaceId, query: msg.query, ok: false,
+            message: err instanceof Error ? err.message : "这一刻搜不了工作文件夹。稍后再试。",
+          });
+        }
         return;
       }
 
@@ -753,6 +786,7 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
         case "create": // 控制房专用帧，出现在会话房里视为越权
         case "workspace": // 同上（协议 8，#991）
         case "files": // 同上（协议 11，#1056）：工作文件夹是工作区的，不是这条会话的
+        case "files_search": // 同上（协议 12，#1066）
         case "config": // 同上：仓库是工作区的属性，配它不该以开着一条会话为前提
         case "archive": // 同上（协议 9，#993）：归档不该以「你正开着这条会话」为前提
         case "delete": // 同上（协议 10，#1044）：删的多半是归档掉的那些，根本没有房间

@@ -40,7 +40,7 @@ import type {
   McpPromptInfo,
   CloudWorkspaceState,
 } from "../../shared/shellBridge.js";
-import type { CsWorkNode } from "../../shared/remote/cloudSession.js";
+import type { CsWorkHit, CsWorkNode } from "../../shared/remote/cloudSession.js";
 import type { CatalogEntry } from "../../shared/mcpCatalog.js";
 import type { CsModelRoute, CsRepoState } from "../../shared/remote/cloudSession.js";
 import {
@@ -1022,6 +1022,8 @@ interface ChatState {
       「文件」tab 自己画错误；这一页有可能同时在读两条路径（点进子目录的那一刻），
       所以这里不存任何状态，谁调谁拿 */
   workspaceFiles(workspaceId: string, path: string): Promise<FriendsResult<CsWorkNode>>;
+  /** 搜工作文件夹（控制房 RPC，协议 12，#1066）。同上不存状态，谁调谁拿 */
+  workspaceFilesSearch(workspaceId: string, query: string, content: boolean): Promise<FriendsResult<CsWorkHit[]>>;
   /** 改一个工作区的仓库配置（控制房 RPC，协议 8）。PAT 纪律同 ProviderKeyDialog：
       渲染层不留 key 的任何副本，这里只是这一次 IPC 调用的参数。回服务端此刻的
       真实状态（失败也回） */
@@ -2489,6 +2491,9 @@ export const useChat = create<ChatState>((set, get) => ({
   },
   workspaceFiles(workspaceId, path) {
     return window.otter.workspaceCloudFiles(workspaceId, path);
+  },
+  workspaceFilesSearch(workspaceId, query, content) {
+    return window.otter.workspaceCloudFilesSearch(workspaceId, query, content);
   },
   workspaceRepoConfig(workspaceId, patch) {
     return window.otter.workspaceCloudConfig(workspaceId, patch);

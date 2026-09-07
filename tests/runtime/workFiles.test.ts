@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   buildWorkReadScript,
+  buildWorkSearchScript,
   parseWorkReadOutput,
+  parseWorkSearchOutput,
   WORK_LIST_MAX_ENTRIES,
 } from "../../services/runtime/src/workFiles.js";
 import { CS_WORK_FILE_MAX_BYTES } from "../../src/shared/remote/cloudSession.js";
@@ -117,5 +119,74 @@ describe("parseWorkReadOutput（#1056）", () => {
     expect(parseWorkReadOutput("").ok).toBe(false);
     expect(parseWorkReadOutput("什么鬼\n").ok).toBe(false);
     expect(parseWorkReadOutput(`file${TAB}abc${TAB}0\nx`).ok).toBe(false);
+  });
+});
+
+describe("buildWorkSearchScript（#1066）", () => {
+  it("内容模式：查询进单引号，且排在 `--` 之后", () => {
+    // 单引号挡命令注入，`--` 挡「-foo 被 rg 当成选项」——两件不同的事，都要
+    const script = buildWorkSearchScript("-i'; rm -rf /", true);
+    expect(script).toContain("rg --json -n --max-count 5 --no-ignore --hidden --");
+    expect(script).toContain(String.raw`'-i'\''; rm -rf /'`);
+  });
+
+  it("文件名模式压根不把查询递给 rg（过滤在 runtime 进程里做）", () => {
+    const script = buildWorkSearchScript("菜单", false);
+    expect(script).toContain("rg --files --no-ignore --hidden");
+    expect(script).not.toContain("菜单");
+  });
+
+  it("恒含被忽略与隐藏文件——树是全显的，搜索另设一套规矩会变成怪现象", () => {
+    for (const content of [true, false]) {
+      expect(buildWorkSearchScript("x", content)).toContain("--no-ignore --hidden");
+    }
+  });
+
+  it("退出码单独带回来，不靠管道之后的 $?", () => {
+    // 管道到 head 之后 `$?` 是 head 的，「rg 没装」(127) 与「没有匹配」(1) 会
+    // 长得一模一样，于是「rg 挂了」被说成「仓里没有」
+    const script = buildWorkSearchScript("x", true);
+    expect(script).toContain("tmp=$(mktemp)");
+    expect(script).toContain("rc=$?");
+    expect(script).toContain(String.raw`printf 'hits\t%s\n' "$rc"`);
+  });
+});
+
+describe("parseWorkSearchOutput（#1066）", () => {
+  it("退出码 1 = 没匹配，**不是失败**（rg 的正常出口）", () => {
+    expect(parseWorkSearchOutput(`hits${TAB}1\n`, "x")).toEqual({ ok: true, hits: [] });
+    expect(parseWorkSearchOutput(`files${TAB}1\n`, "x")).toEqual({ ok: true, hits: [] });
+  });
+
+  it("退出码 127 = 容器里没有 rg，单说一句——它跟「没有匹配」该做的动作相反", () => {
+    const r = parseWorkSearchOutput(`hits${TAB}127\n`, "x");
+    expect(r.ok).toBe(false);
+    expect(r.ok === false && r.message).toMatch(/ripgrep/);
+  });
+
+  it("别的非零退出码 = 搜索出错", () => {
+    expect(parseWorkSearchOutput(`hits${TAB}2\n`, "x").ok).toBe(false);
+  });
+
+  it("内容模式：走 rg 的 NDJSON，与本机面板同一个解析器", () => {
+    const line = JSON.stringify({
+      type: "match",
+      data: { path: { text: "sub/b.md" }, lines: { text: "hello\n" }, line_number: 3 },
+    });
+    const r = parseWorkSearchOutput(`hits${TAB}0\n${line}\n`, "hello");
+    expect(r).toEqual({ ok: true, hits: [{ rel: "sub/b.md", line: 3, text: "hello" }] });
+  });
+
+  it("文件名模式：子序列匹配（与本机面板同一个 matchesFilter）", () => {
+    const payload = ["src/lib/a.ts", "docs/readme.md", "菜单.md"].join("\n");
+    const r = parseWorkSearchOutput(`files${TAB}0\n${payload}`, "sla");
+    // s-l-a 依次出现在 src/lib/a.ts 里；另两条没有
+    expect(r).toEqual({ ok: true, hits: [{ rel: "src/lib/a.ts", line: null, text: null }] });
+  });
+
+  it("看不懂的输出回 ok:false，不猜成空结果", () => {
+    expect(parseWorkSearchOutput("", "x").ok).toBe(false);
+    expect(parseWorkSearchOutput("什么鬼\n", "x").ok).toBe(false);
+    expect(parseWorkSearchOutput(`hits${TAB}abc\n`, "x").ok).toBe(false);
   });
 });
