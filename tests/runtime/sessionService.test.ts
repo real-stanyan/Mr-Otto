@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { join } from "node:path";
-import { createCloudSession, kickedNoteText, SayRejectedError, speakerLabelOf, type CloudSession } from "../../services/runtime/src/sessionService.js";
+import { createCloudSession, kickedNoteText, SANDBOX_PROBE_FAIL_TEXT, SayRejectedError, speakerLabelOf, type CloudSession } from "../../services/runtime/src/sessionService.js";
 import { createInMemoryWorkspaceMemory } from "../../services/runtime/src/workspaceMemory.js";
 import { EventStore } from "../../src/session/store.js";
 import type { SessionEvent, ApprovalRequestEvent, AgentRelayEvent, ChatMessageEvent, UserMessageEvent } from "../../src/session/events.js";
@@ -991,8 +991,29 @@ describe("沙箱内工具的工作区审批策略（#977 第 1 条，ADR-0231）
     for (const d of decisions) expect(d).toMatchObject({ decision: "approved", reason: "工作区设置：沙箱内工具免审" });
     expect(events.filter((e) => e.type === "tool_result").every((e) => (e as { status: string }).status === "ok")).toBe(true);
     expect(events.some((e) => e.type === "turn_ended" && (e as { outcome: string }).outcome === "completed")).toBe(true);
-    // 一轮两次撞门只查一次策略（第一次撞门时查、这一轮复用）
+    // auto **不缓存**（#1029，ADR-0243）：两次撞门查两次库，这样 owner 半路
+    // 关掉免审时刹车立刻生效。原来这里断言的是 1（一轮只查一次），
+    // 改数字的产品改动就在同一个 PR 里——policyApprover 解析成 auto 后丢缓存
+    expect(policyCalls).toBe(2);
+  });
+
+  it("一轮之内策略只能收紧：第一把刀 auto 放行，owner 半路关掉，第二把刀就弹卡（#1029）", async () => {
+    let n = 0;
+    const { events, policyCalls } = await runBashTurn(async () => (++n === 1 ? "auto" : "ask"));
+    expect(policyCalls).toBe(2);
+    // 第一把刀是策略放的（没有卡），第二把刀弹了卡
+    expect(events.filter((e) => e.type === "approval_request")).toHaveLength(1);
+    const decisions = events.filter((e) => e.type === "approval_decision");
+    expect(decisions[0]).toMatchObject({ reason: "工作区设置：沙箱内工具免审" });
+    expect((decisions[1] as { decidedBy?: unknown }).decidedBy).toBeDefined();
+  });
+
+  it("反方向不生效：这一轮已经解析成 ask，owner 半路打开免审也照旧问人（同 ADR-0231 的「下一轮生效」）", async () => {
+    let n = 0;
+    const { events, policyCalls } = await runBashTurn(async () => (++n === 1 ? "ask" : "auto"));
+    // ask 钉住这一轮：只查一次，两把刀都弹卡
     expect(policyCalls).toBe(1);
+    expect(events.filter((e) => e.type === "approval_request")).toHaveLength(2);
   });
 
   it("ask（默认）：行为一字不变——两把刀各弹一张卡，人批了才执行", async () => {
@@ -1004,6 +1025,23 @@ describe("沙箱内工具的工作区审批策略（#977 第 1 条，ADR-0231）
   it("策略查询抛错：按 ask 问人，不是按 auto 放行——往严的一边倒", async () => {
     const { events } = await runBashTurn(async () => { throw new Error("db down"); });
     expect(events.filter((e) => e.type === "approval_request")).toHaveLength(2);
+  });
+
+  it("抖一下不等于确认是 ask：第一把刀查挂了按 ask 问人，第二把刀照旧重查、查到 auto 就放行（#1029）", async () => {
+    let n = 0;
+    const { events, policyCalls } = await runBashTurn(async () => {
+      if (++n === 1) throw new Error("db blip");
+      return "auto";
+    });
+    // 「问不出来」不钉住这一轮——否则一次网络抖动会把这个 auto 工作区剩下的
+    // 每一把刀都翻成要人批，而群里没有任何人看得出为什么突然开始弹卡
+    expect(policyCalls).toBe(2);
+    expect(events.filter((e) => e.type === "approval_request")).toHaveLength(1);
+    const decisions = events.filter((e) => e.type === "approval_decision");
+    expect(decisions[1]).toMatchObject({ reason: "工作区设置：沙箱内工具免审" });
+    // 群里说了一句：不说的话，「免审开着却弹了张卡」与「这开关坏了」不可区分
+    const notes = events.filter((e) => e.type === "chat_message" && (e as { content: string }).content === SANDBOX_PROBE_FAIL_TEXT);
+    expect(notes).toHaveLength(1);
   });
 
   it("auto 只管沙箱那两把刀：create_agent 照旧要批", async () => {

@@ -77,6 +77,8 @@ import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 import type { CloudAck } from "../../../shared/shellBridge.js";
 import { CS_PROTOCOL_VERSION } from "../../../shared/remote/cloudSession.js";
 import { modelStatusText } from "../lib/cloudModelStatus.js";
+import { sandboxApprovalBanner, sandboxApprovalControl } from "../lib/sandboxApprovalControl.js";
+import { SandboxApprovalToggle } from "./BypassSwitch.js";
 
 // cs 还没到位时兜底（正常路径下 WorkspacePage 只在 cloudSession 非空时才
 // 挂载这个组件，但 hooks 不能条件调用，events 得先算出一个稳定引用——
@@ -178,6 +180,7 @@ export function CloudSessionPage({
   const cloudSay = useChat((s) => s.cloudSay);
   const cloudApprove = useChat((s) => s.cloudApprove);
   const cloudArchive = useChat((s) => s.cloudArchive);
+  const setSandboxApproval = useChat((s) => s.setWorkspaceSandboxApproval);
   // 名单陈旧时的刷新（#935 / #957 C-I4）：选人弹层的空态按钮、发送前对认不出
   // 的 @ 先刷一次都要它
   const refreshWorkspaceGroups = useChat((s) => s.refreshWorkspaceGroups);
@@ -225,6 +228,14 @@ export function CloudSessionPage({
   // 重发**确定失败**时换成「重新发送失败：<原因>」——否则屏幕上一条红字
   // 「限速…」旁边挂着一行灰字「没有收到回执」，读起来像两件事
   const [unsent, setUnsent] = useState<UnsentLine | null>(null);
+  // 「沙箱内免审」那颗开关（#1029，ADR-0243）：值是快照的投影（受控），
+  // 这两格只管「写在飞吗」与「上一次写为什么没成」。错误**不进 actionError**——
+  // 那一格随便哪件不相干的成功都会把它清掉，而这条说的是一次安全设置没改上。
+  // `sandboxBusy` **故意不随换会话清**：清了之后，A 那次写回来时的
+  // `setSandboxBusy(false)` 会把 B 此刻在飞的那次也解禁，于是同一颗开关点得动两次。
+  // 代价是从 A 换到 B 的那一小段里 B 的开关是灰的——比多发一次写好
+  const [sandboxBusy, setSandboxBusy] = useState(false);
+  const [sandboxError, setSandboxError] = useState<string | null>(null);
   // 光标位置（#932 切片 1b）：「正在打 @ 吗」是 draft × caret 的函数，光标
   // 不跟着走的话，把光标挪回一个旧的 @ 后面时弹层不会出来。textarea 自己的
   // selectionStart 是 DOM 状态，读不进渲染——所以四个入口（改字/选区/键起/
@@ -296,7 +307,8 @@ export function CloudSessionPage({
   }, [optionKey]);
 
   const csSessionId = cs?.sessionId ?? null;
-  // 换云会话时把这三格本地状态清干净（复审 H1）。**这个组件在换会话时不卸载**
+  // 换云会话时把这四格本地状态清干净（复审 H1；第四格是 #1029 那颗开关的错误行）。
+  // **这个组件在换会话时不卸载**
   // ——侧栏点另一条云会话走 openCloudSession，它直接把 cloudSession 整格替换，
   // 中间没有 null，而 CloudSessionMain 挂它时没给 key。不清的话 A 的那行提示
   // 和红字会摆在 B 的页面上，说着一件跟 B 无关的事。
@@ -309,6 +321,10 @@ export function CloudSessionPage({
     setUnsent(null);
     setSendError(null);
     setSendNotice(null);
+    // 「沙箱内免审没改上」是一句关于**某个工作区**的话；换到另一个工作区的会话上
+    // 还挂着它就是在说一件跟这里无关的事。`sandboxBusy` 故意不清，理由写在它的
+    // 声明处；这道闸也不是全部——await 回来得更晚的那一次由 toggleSandbox 自己比对
+    setSandboxError(null);
   }, [csSessionId]);
 
   // 开局卡那句话没发出去时的原文（issue #957 C-I6）的去处。两种失败去处不同
@@ -358,6 +374,27 @@ export function CloudSessionPage({
   const modelStatus = modelStatusText(cs.modelRoute);
   const canSend = ready && !sending && draft.trim().length > 0;
   const timelineEmpty = cloudEmptyState(cs.state, events.length);
+  // owner 判据在 `sandboxApprovalControl` 里取 `ws.ownerUid` 不取 `cs.ownerUid`：
+  // 后者在开会话的占位期间是空串（welcome 到了才真），照它判 owner 自己会先看到
+  // 一拍「所有者可改」再跳变——所以这里喂进去的是快照不是 cs
+  const sandbox = sandboxApprovalControl(ws, selfUid);
+  const sandboxBanner = sandboxApprovalBanner(sandbox);
+
+  /** 翻那颗开关。**不做乐观翻转**：值是快照的投影，写成功才 patch 那一格
+      （store.setWorkspaceSandboxApproval），失败原样停在旧值 + 一行原因 */
+  const toggleSandbox = async (next: boolean): Promise<void> => {
+    if (sandboxBusy) return;
+    const at = csSessionId;
+    setSandboxBusy(true);
+    setSandboxError(null);
+    const r = await setSandboxApproval(ws.id, next ? "auto" : "ask");
+    setSandboxBusy(false);
+    // **回来时人可能已经换到别的会话了**（同 `unsent.sessionId` 那道闸的道理，复审 H1）：
+    // 这个组件换会话不卸载，而上面那个按 csSessionId 清空的 effect 在这次 await
+    // 之前就跑完了——判据必须在数据里，不能靠 effect 的时序。那句失败原文里没有
+    // 工作区名，落在 B 的页面上看不出它说的是 A
+    if (!r.ok && useChat.getState().cloudSession?.sessionId === at) setSandboxError(r.message);
+  };
 
   /** 一次发送：mentions 缺席就不传第二参（老语义，服务端按名字解析 + 回落
       名单第一只），给了就以它为准 —— 重发走的是同一条路 */
@@ -757,13 +794,24 @@ export function CloudSessionPage({
       <footer className="relative shrink-0 px-4 pt-[10px] pb-3">
         {/* 滚动缘渐隐，同 App.tsx 的 footer：正文淡进底色，不画 1px 分隔线 */}
         <div aria-hidden className="pointer-events-none absolute inset-x-0 -top-10 h-10 bg-gradient-to-b from-transparent to-background" />
+        {/* 免审开着时**常驻**这一行（ADR-0231 把「开关旁边那句提示」记成了这笔账的
+            缓解措施，退化成一条要悬停才看得见的 title 就是把它悄悄降级）。关着不占
+            这一行——那是今天的行为，不值得一条常驻警示。全群可见不按人分：花的是
+            owner 的额度、动的是大家共用的那个卷 */}
+        {sandboxBanner && <p className="mb-[6px] px-1 text-[11px] text-warn">{sandboxBanner}</p>}
+        {/* 这次翻开关自己的失败原因，不进共享的 actionError（那一格随便哪件不相干
+            的成功都会把它清掉，而这条说的是一次安全设置没改上） */}
+        {sandboxError && <p className="mb-[6px] px-1 text-[11px] text-err">{sandboxError}</p>}
         {/* 外壳与本地会话的输入框**同一套**（#985；App.tsx 的 ChatComposer）：
             elements/composer 的 ComposerBar 把「这一条要发的东西」当成一摞来排——
-            点名行 / 输入 / 工具条——类名逐字照抄那边。少掉的是工具条左边那条偏好栏
-            （审批模式 / 型号 / thinking / 用量环）：那几样在云会话里是**工作区**的属性
-            不是这条会话的（ADR-0202 / 0233，同 CloudWelcome 头注），摆上来就是几个
-            点了不生效的控件。cursor-text + 点空白处聚焦：本地那边由 ComposerPrimitive.Root
-            代劳，这里没有它，自己接一下 */}
+            点名行 / 输入 / 工具条——类名逐字照抄那边。工具条左边那条偏好栏只留下
+            **免审那一颗**（#1029，ADR-0243）：型号 / thinking / 用量环在云会话里是
+            **工作区**的属性不是这条会话的（ADR-0202 / 0233，同 CloudWelcome 头注），
+            摆上来就是几个点了不生效的控件；而免审那颗虽然也是工作区级的，却是**踩刹车
+            的地方就该在手边**——它要在一张审批卡挡着群聊的那一刻够得着，而不是让人先
+            去翻设置抽屉。作用域上的代价（翻一次全工作区跟着变）由它自己的文案 + 开着时
+            那条常驻警示行说出口。cursor-text + 点空白处聚焦：本地那边由
+            ComposerPrimitive.Root 代劳，这里没有它，自己接一下 */}
         <ComposerBar
           className="focus-within:border-border dark:border-muted-foreground/15 dark:focus-within:border-muted-foreground/30 relative cursor-text shadow-sm transition-[border-color,background-color]"
           onClick={(e) => {
@@ -930,16 +978,27 @@ export function CloudSessionPage({
           <ComposerToolbar className="relative items-end gap-2">
             {/* 这颗钮不再是"对 Agent 说"的开关（有了名单，得说清对哪一只）——
                 它现在只做一件事：在光标处插一个 @，把弹层叫出来 */}
-            <button
-              type="button"
-              disabled={!ready}
-              onClick={insertAt}
-              title="@ 智能体"
-              aria-label="@ 智能体"
-              className={cn(ghostButton, "size-8 disabled:pointer-events-none disabled:opacity-30")}
-            >
-              <AtSign className="size-4" aria-hidden />
-            </button>
+            {/* 左簇包一层：ComposerToolbar 是 justify-between，直接摆三个兄弟会把
+                中间那个推到正中央。本地那边靠偏好栏外壳 flex-1 做同一件事 */}
+            <div className="flex min-w-0 items-center gap-2">
+              <button
+                type="button"
+                disabled={!ready}
+                onClick={insertAt}
+                title="@ 智能体"
+                aria-label="@ 智能体"
+                className={cn(ghostButton, "size-8 disabled:pointer-events-none disabled:opacity-30")}
+              >
+                <AtSign className="size-4" aria-hidden />
+              </button>
+              {/* 本地会话的免审开关就在这个位置（App.tsx 的 approvalToggle）。
+                  管的东西不一样，所以名字也不一样——见 lib/sandboxApprovalControl.ts */}
+              <SandboxApprovalToggle
+                control={sandbox}
+                busy={sandboxBusy}
+                onChange={(next) => void toggleSandbox(next)}
+              />
+            </div>
             <ComposerActions>
               <Tooltip>
                 <TooltipTrigger asChild>

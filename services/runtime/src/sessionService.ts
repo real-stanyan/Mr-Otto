@@ -435,6 +435,13 @@ export interface CloudSession {
     catchUp），到这个数就不再排、改落一条真正的收口 */
 export const MAX_CATCHUP_ATTEMPTS = 3;
 
+/** 沙箱免审策略这一刻问不出来时，群里那一句（#1029，ADR-0243）。
+    往严的一边倒（这一次照旧问人）是对的，但**不出声就与「这开关坏了」不可区分**：
+    输入框上方那行常驻警示此刻正写着「不会再问你」，而一张卡刚刚弹了出来。
+    说的是「这一次」不是「这一轮」——判断本身不钉住，下次撞门还会重查。 */
+export const SANDBOX_PROBE_FAIL_TEXT =
+  "这一刻读不到这个工作区的「沙箱内免审」设置，所以这一次照旧问人。稍后再跑就会重新读一次。";
+
 /** 「被踢的那位在群里叫什么」：日志里没有 profiles 表，开场白正文那个
     `[label]: ` 前缀是唯一现成的名字来源。取不到就退回 uid 前 8 位——与
     safeSpeakerLabel 撞上保留名时的退路同一个口径，不猜、也不编一个名字出来。
@@ -530,9 +537,14 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       onRequest 现去 load 日志：onRequest 是 decide 的同步回调，为一句旁白读一遍
       日志是白付的 IO */
   let currentJob: { agentId: string; fromUid: string; openingContent: string } | null = null;
-  /** 这一轮的沙箱审批策略（#977）：第一次撞门时查、之后同一轮复用。runJob 进门
-      复位——作用域是一个 job，owner 中途翻开关下一轮才生效（同 relayRemainingMicro） */
-  let jobSandboxPolicy: Promise<SandboxApproval> | null = null;
+  /** 这一轮的沙箱审批策略（#977）：第一次撞门时查。runJob 进门复位。
+      `null`（promise 的结果，不是这一格本身）= **这一次问不出来**，与确认的 "ask" 分开：
+      只有确认的 "ask" 才钉住这一轮，判据与三种结局的理由写在 policyApprover 里
+      （#1029，ADR-0243） */
+  let jobSandboxPolicy: Promise<SandboxApproval | null> | null = null;
+  /** 这个 job 已经为「策略读不到」在群里出过一次声了吗（#1029）。同 relayWaitAnnounced：
+      判据是「这一轮」不是「这一次撞门」——一轮里每把刀各喊一句就成了刷屏 */
+  let sandboxProbeFailAnnounced = false;
   /** 这个 job 已经为审批出过一次声了吗（#959 复审 Medium 2）。每进一次 runJob
       复位（紧挨 `router.setRelayTurn`，同一个时机同一个作用域）——判据是"这一轮"
       不是"这张卡"，所以它跟着 job 走而不是跟着 callId 走 */
@@ -775,12 +787,34 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   const policyApprover: Approver = {
     async decide(call, tool, signal) {
       if (tool === bashTool || tool === writeFileTool) {
+        // 三种结局各有各的缓存策略（#1029，ADR-0243）——**这一轮之内只能收紧**：
+        //   · 确认的 `ask` → **钉住这一轮**。与 ADR-0231「下一轮生效」逐字相同：
+        //     一轮里已经被问过一次的人，不会因为别人半路翻了开关而突然不再被问。
+        //   · `auto` → **不钉**，下一次撞门重查。开关此刻坐在输入框那一行上，
+        //     形状说的是「随时踩得到的刹车」（本地那颗 `setApprovalMode` 的 handler
+        //     就故意不查 runningSessions，注释原话「必须随时可踩」），一轮之内踩下去
+        //     毫无反应是这次搬家最不该带来的静默失败。代价：免审的工作区里每次真
+        //     跑命令/写文件多一次单行主键查询（不撞门的 turn 一次都不查）。
+        //   · **问不出来（null）→ 也不钉**。这一次按 ask 问人（往严的一边倒不变），
+        //     但不能拿它当「确认是 ask」钉住整轮——那样一次网络抖动就会把一个
+        //     `auto` 工作区剩下的每一把刀全部翻成要人批，而这一轮里没有任何人
+        //     看得出为什么突然开始弹卡。
         jobSandboxPolicy ??= opts.sandboxApproval().catch((err: unknown) => {
-          console.warn(`[otto-runtime] sandbox_approval 查询失败，本轮按 ask（session=${sessionId}）`, err);
-          return "ask" as const;
+          console.warn(`[otto-runtime] sandbox_approval 查询失败，这一次按 ask 问人（session=${sessionId}）`, err);
+          return null;
         });
-        if ((await jobSandboxPolicy) === "auto") {
-          return { decision: "approved", reason: "工作区设置：沙箱内工具免审" };
+        const policy = await jobSandboxPolicy;
+        if (policy !== "ask") {
+          jobSandboxPolicy = null;
+          if (policy === "auto") return { decision: "approved", reason: "工作区设置：沙箱内工具免审" };
+          // 问不出来时**在群里说一句**（每个 job 一次，同 relayWaitAnnounced 的去重）：
+          // 免审开着的工作区里，输入框上方那行常驻警示写着「不会再问你」，而这一刻
+          // 突然弹出一张卡——不出声的话，这个观测与「这开关坏了」一模一样，
+          // 而真实原因只在 VPS 日志里
+          if (!sandboxProbeFailAnnounced) {
+            sandboxProbeFailAnnounced = true;
+            logChat("system", "系统", SANDBOX_PROBE_FAIL_TEXT, false);
+          }
         }
       }
       return router.decide(call, tool, signal);
@@ -1260,7 +1294,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // 出声一轮只出一次（#959 复审 Medium 2）：与上一行同一个时机复位，两处分家
     // 就会出现"接力口径开了、旁白却还记着上一轮已经说过"这种只在第二轮才现形的漏说
     relayWaitAnnounced = false;
-    jobSandboxPolicy = null; // 每轮现查（#977）：owner 翻了开关下一轮生效
+    // 每轮现查（#977）。**这一轮之内只能收紧**（#1029，ADR-0243）：查出来是
+    // 确认的 ask 才钉住这一轮，auto 与「问不出来」都不钉，判据在 policyApprover
+    jobSandboxPolicy = null;
+    sandboxProbeFailAnnounced = false;
     jobLockAbort = new AbortController(); // 这一轮等容器锁的中断信号（#979 第 2 条）
     currentInitiator = job.fromUid;
     currentAgentId = job.agentId;

@@ -7,7 +7,7 @@ import {
   assembleSnapshot, MEMORY_CONFLICT,
   type MemberProfile, type WorkspaceMemoryRow, type WorkspaceSnapshot,
 } from "../shared/workspaces.js";
-import type { SandboxApproval } from "../shared/workspaceAgents.js";
+import { normalizeSandboxApproval, type SandboxApproval } from "../shared/workspaceAgents.js";
 import type { AgentToolAllow } from "../shared/agentToolAllow.js";
 
 /** supabase-js 的 {data,error} 归一:error 转 throw(带 pg code,上层认 23505 等) */
@@ -89,8 +89,8 @@ export async function fetchWorkspace(
   // sandbox_approval **单独一条、容错**（#977，ADR-0223 部署顺序那条教训）：拼进上面
   // 那条 select 的话，0026 落地前 PostgREST 对不存在的列回 42703，整份快照打不开——
   // 不是「审批策略缺一角」，是这个工作区什么都看不见（0024 那次正是这样）。这条挂了
-  // 只影响它自己，回 undefined = normalizeSandboxApproval 的默认 "ask"。代价是每个
-  // 工作区多一次单行主键查询
+  // 只影响它自己，回 null =「这一格读不到」（#1029 起不再兜底成 "ask"，理由在
+  // fetchSandboxApproval 的注释里）。代价是每个工作区多一次单行主键查询
   const sandboxApproval = await fetchSandboxApproval(client, id);
   const members = (unwrap(
     await client.from("workspace_members").select("uid,role").eq("workspace_id", id),
@@ -123,11 +123,15 @@ export async function fetchWorkspace(
   return assembleSnapshot({ ...ws, sandbox_approval: sandboxApproval }, members, connectors, sessions, agents, (uid) => profiles.get(uid) ?? null);
 }
 
-/** `workspaces.sandbox_approval` 那一格；列不存在 / 查询抖了回 undefined（调用方按默认 "ask"） */
-async function fetchSandboxApproval(client: SupabaseClient, id: string): Promise<unknown> {
+/** `workspaces.sandbox_approval` 那一格。**两种失败分开回**（#1029）：
+    列不存在 / 查询抖了 / 那一行读不到 = `null`「读不到」，界面据此画「读不到」而不是
+    画一个看起来是关着的开关——runtime 用 service key 走另一条查询，它照旧按真值放行，
+    界面这一格猜错的代价是「说的和做的相反」；读到了但值不认识（脏数据）走
+    `normalizeSandboxApproval` 回 "ask"，往严的一边倒。 */
+async function fetchSandboxApproval(client: SupabaseClient, id: string): Promise<SandboxApproval | null> {
   const res = await client.from("workspaces").select("sandbox_approval").eq("id", id).maybeSingle();
-  if (res.error) return undefined;
-  return (res.data as { sandbox_approval?: unknown } | null)?.sandbox_approval;
+  if (res.error || res.data === null) return null;
+  return normalizeSandboxApproval((res.data as { sandbox_approval?: unknown }).sandbox_approval);
 }
 
 /** owner 拉人(RLS 只放行自己 own 的群) */
