@@ -945,41 +945,14 @@ export function CloudSessionPage({
                 </div>
               ) : (
                 options.map((o, i) => (
-                  <div
+                  <MentionOptionRow
                     key={o.key}
-                    role="option"
-                    aria-selected={i === hi}
-                    // mousedown + preventDefault：用 click 的话 textarea 会先失焦，
-                    // 写回之后那次 setSelectionRange 就落在一个没焦点的框上
-                    onMouseDown={(e) => {
-                      e.preventDefault();
-                      pick(i);
-                    }}
-                    onMouseEnter={() => setHi(i)}
-                    // **高亮不给 transition**：这一行是方向键连着按出来的，一次
-                    // 挑人可能扫过五六行，补间会让高亮拖在手指后面 —— 键盘发起的
-                    // 动作不做动效（同 App.tsx 的 ⌘K 那套）。上游 assistant-ui 那份
-                    // 带 transition-colors，是因为它主要靠鼠标悬停
-                    className={cn(
-                      "flex cursor-default items-center gap-2 rounded-sm px-2 py-[5px] text-[12.5px]",
-                      i === hi && "bg-foreground/[0.06]"
-                    )}
-                  >
-                    <MentionAvatar ws={ws} row={o} />
-                    {/* 名字**可截断**（原来是 shrink-0）：右边那格标注是常驻的，
-                        再加上一个不肯让位的名字，长名字会把这张 320px 的卡顶破。
-                        截了还能悬停看全（title）—— 顶破的话整张列表跟着歪 */}
-                    <span className="min-w-0 truncate font-medium" title={o.name}>{o.name}</span>
-                    {o.detail !== "" && (
-                      <span className="min-w-0 flex-1 truncate text-muted-foreground">{o.detail}</span>
-                    )}
-                    {/* 贴右边缘（ms-auto）：一列扫下来对齐，而不是跟着名字长短漂。
-                        这一格回答的是「这一行是人还是 agent」——两族并排在同一张
-                        列表里，不标出来就只能靠头像的画风猜 */}
-                    <span className="ms-auto shrink-0 text-[11px] text-muted-foreground/70">
-                      {MENTION_KIND_LABEL[o.kind]}
-                    </span>
-                  </div>
+                    ws={ws}
+                    row={o}
+                    selected={i === hi}
+                    onPick={() => pick(i)}
+                    onHover={() => setHi(i)}
+                  />
                 ))
               )}
             </PopoverContent>
@@ -1147,6 +1120,58 @@ function AgentAvatar({ ws, agentId, name }: { ws: WorkspaceSnapshot; agentId: st
     20px 而不是上面两处的 24px（`size="sm"`）：这一行的字号是 12.5px，脸跟气泡
     旁边一样大会把行撑到 34px，一屏就少两行。所以不复用 PersonAvatar/AgentAvatar，
     尺寸是这一格与那两处唯一的差别，但它决定整张列表能一眼扫几行 */
+/** @ 选人弹层里的一行（#1068 从 CloudSessionPage 内联那段提出来）：
+    **头像 · 名字 · 灰字 · 靠右的「成员 / 智能体」**。
+    导出是为了让 `tests/renderer/mentionOptionRow.test.tsx` 真渲染一遍——纯逻辑那份
+    （`workspaceMentionItems.test.ts`）钉的是 `MentionRow` 每一格的值，钉不到"这几格
+    有没有真被画出来"；维护者对这块 UI 提的两件事（左边圆圈是这个人的脸、右边标出
+    人还是 agent）恰好都只在这一层看得见。行为一字未改，纯提取。 */
+export function MentionOptionRow({
+  ws, row, selected, onPick, onHover,
+}: {
+  ws: WorkspaceSnapshot;
+  row: MentionRow;
+  selected: boolean;
+  onPick: () => void;
+  onHover: () => void;
+}) {
+  return (
+    <div
+      role="option"
+      aria-selected={selected}
+      // mousedown + preventDefault：用 click 的话 textarea 会先失焦，
+      // 写回之后那次 setSelectionRange 就落在一个没焦点的框上
+      onMouseDown={(e) => {
+        e.preventDefault();
+        onPick();
+      }}
+      onMouseEnter={onHover}
+      // **高亮不给 transition**：这一行是方向键连着按出来的，一次挑人可能扫过
+      // 五六行，补间会让高亮拖在手指后面 —— 键盘发起的动作不做动效（同 App.tsx
+      // 的 ⌘K 那套）。上游 assistant-ui 那份带 transition-colors，是因为它主要
+      // 靠鼠标悬停
+      className={cn(
+        "flex cursor-default items-center gap-2 rounded-sm px-2 py-[5px] text-[12.5px]",
+        selected && "bg-foreground/[0.06]"
+      )}
+    >
+      <MentionAvatar ws={ws} row={row} />
+      {/* 名字**可截断**（原来是 shrink-0）：右边那格标注是常驻的，再加上一个不肯
+          让位的名字，长名字会把这张 320px 的卡顶破。截了还能悬停看全（title） */}
+      <span className="min-w-0 truncate font-medium" title={row.name}>{row.name}</span>
+      {row.detail !== "" && (
+        <span className="min-w-0 flex-1 truncate text-muted-foreground">{row.detail}</span>
+      )}
+      {/* 贴右边缘（ms-auto）：一列扫下来对齐，而不是跟着名字长短漂。这一格回答的是
+          「这一行是人还是 agent」——两族并排在同一张列表里，不标出来就只能靠头像
+          的画风猜 */}
+      <span className="ms-auto shrink-0 text-[11px] text-muted-foreground/70">
+        {MENTION_KIND_LABEL[row.kind]}
+      </span>
+    </div>
+  );
+}
+
 function MentionAvatar({ ws, row }: { ws: WorkspaceSnapshot; row: MentionRow }) {
   const src = row.kind === "agent" && row.agentId !== null ? agentAvatarSrc(ws, row.agentId) : row.avatarUrl;
   return (
