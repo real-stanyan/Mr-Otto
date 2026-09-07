@@ -84,15 +84,16 @@
 // relayAfterTurn：扫这只 agent 这一轮说的话，@ 到谁就替它落一条 agent_relay
 // （群事实）+ 一条带 relay 字段的 user_message 开场白，再原样 enqueue——我们
 // 此刻就在 drain 的 while 循环里，enqueue 只会回 "queued"，不需要也不能自己
-// 调 startDrain()。棒数上限每次现查一次（CloudSessionOpts.relayMaxDepth，
-// daemon 那边接 workspaces.relay_max_depth，查询失败已经在 daemon 里回落成
-// 默认值——这里拿到的永远是一个数，但仍兜一层 try/catch，防的是 daemon 之外
-// 的调用方（测试、未来的第二个 daemon 实现）没做那层回落）。到顶硬停 /
-// 周期打转两条纯判据都在 src/shared/agentRelay.ts（decideRelay），这里只管
-// 落盘：到顶发一条系统话（群里所有人可见，也进每只 agent 的上下文）不再往
-// 下接力；打转发一条系统话但**不停**（ADR-0212 的教训：云会话没有人盯着
-// 屏幕替它按停止，硬停靠的是上面那层棒数上限，这一层只是提醒模型别再原样
-// 甩回去）。复审 fix round 1 补了两条：归档后不再接力、扫描窗口按每只 job
+// 调 startDrain()。刹车的**判据全在** src/shared/agentRelay.ts 的 decideRelay
+// （四种停法：降级专用的分支闸 / 预算 / 无条件的总棒数天花板 / 打转硬停，排序
+// 与理由见那个文件的头注与 ADR-0238），这里只管落盘：停就发一条系统话（群里
+// 所有人可见，也进每只 agent 的上下文）不再往下接力；打转**够 minRepeats 还不够
+// RELAY_SPIN_STOP_REPEATS** 时发一条系统话但不停（ADR-0212），够了就走 spin 硬停。
+// 预算的分母每条会接力的 turn 现查一次（CloudSessionOpts.relayRemainingMicro，
+// daemon 那边读的是路由那只 60s/uid 缓存探针，不是 Supabase）——**它可以回 null**
+// （这一刻问不出剩余额度），所以这里既兜 try/catch 也把 null 原样往下递：
+// 兜成 0 会被读成「预算为零、下一棒立刻停」，兜成一个数会跳过降级那道分支闸。
+// 复审 fix round 1 补了两条：归档后不再接力、扫描窗口按每只 job
 // 起跑前的日志尾（scanFrom）而不是它的开场白 seq 划界——详见 relayAfterTurn
 // 自己的注释。
 //
@@ -287,9 +288,10 @@ export interface CloudSessionOpts {
   onUsage: (u: { uid: string; model: string; promptTokens: number; completionTokens: number }) => void;
   /** 工作区记忆的读写口（#949）。**必需**：忘接线该编译不过，而不是安静地跑一个没记忆的 agent */
   memory: WorkspaceMemoryStore;
-  /** 接力棒数上限（#950，spec §8）：每次要接力时现查一次（owner 改了下一棒生效）。查询失败由
-      daemon 兜成默认值——这里拿到的永远是一个数 */
-  /** 所有者 5h 订阅窗口**还剩**多少 micro-USD（`limitMicro - usedMicro`），接力预算的分母。
+  /** 所有者订阅窗口**还剩**多少 micro-USD，接力预算的分母（#1017）。取 5h 与周窗
+      里**更吃紧的那扇**（`min`，同 billingView 的 `bindingWindow`，ADR-0209）：网关
+      的 hold 同时压两扇窗，只看 5h 的话周窗快见底时刹车完全无感，而窗口触底之后
+      `hold()` 会退到用户真金白银买的加购桶。
       **`null` = 这一刻问不出来**（探针不可达 / 没有活跃订阅），不是 0——`decideRelay`
       见到 null 就走降级：预算闸用不了，补回 `DEFAULT_RELAY_MAX_DEPTH` 那道分支闸，
       于是降级路径与 #1017 改动前逐字相同。
@@ -322,7 +324,7 @@ export interface CloudSessionOpts {
   /** 沙箱内 bash / write_file 要不要人批（#977，ADR-0231）。**必需**（同 memory /
       isMember 的纪律）：忘接线该编译不过，而不是安静地跑成两种口径里的一种。
       每个 job **第一次撞审批门时**现查一次、这一轮内缓存（owner 改了下一轮生效，
-      同 relayMaxDepth「每条会接力的 turn 现查」的纪律；没撞门的 turn 一次都不查）。
+      同 relayRemainingMicro「每条会接力的 turn 现查」的纪律；没撞门的 turn 一次都不查）。
       daemon 接 `workspaces.sandbox_approval`，查询失败回落 "ask"——往严的一边倒 */
   sandboxApproval: () => Promise<SandboxApproval>;
   /** 这个工作区的容器锁（#979 第 2 条，ADR-0232）。**必需**（同 memory / isMember
@@ -529,7 +531,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       日志是白付的 IO */
   let currentJob: { agentId: string; fromUid: string; openingContent: string } | null = null;
   /** 这一轮的沙箱审批策略（#977）：第一次撞门时查、之后同一轮复用。runJob 进门
-      复位——作用域是一个 job，owner 中途翻开关下一轮才生效（同 relayMaxDepth） */
+      复位——作用域是一个 job，owner 中途翻开关下一轮才生效（同 relayRemainingMicro） */
   let jobSandboxPolicy: Promise<SandboxApproval> | null = null;
   /** 这个 job 已经为审批出过一次声了吗（#959 复审 Medium 2）。每进一次 runJob
       复位（紧挨 `router.setRelayTurn`，同一个时机同一个作用域）——判据是"这一轮"
@@ -1450,8 +1452,9 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       const outcome = await engine.runLoggedTurn(job.opening);
       // **一返回就交还停止键**（#957 终审 Important I1）：`runLoggedTurn` 返回
       // 时 engine 那一轮已经收口（`engine.turnAbort` 早已 null），而 `finally`
-      // 还在下面一整段 relayAfterTurn 之后 —— 中间是两次真 Supabase 往返
-      // （`agents()` / `relayMaxDepth()`）。这个窗口里 `currentEngine` 还挂着
+      // 还在下面一整段 relayAfterTurn 之后 —— 中间是两次可能真打网络的调用
+      // （`agents()` 的 Supabase 往返 / `relayRemainingMicro()` 的订阅探针）。
+      // 这个窗口里 `currentEngine` 还挂着
       // 的话，stop 会走"翻信号"那条路：翻的是一个已经结束的 turn 的信号，一次
       // 无操作，而回执说 ok、群里写了"停止了"，接力紧接着照点火 —— 人按下停止
       // 之后屏幕上冒出下一只 agent 开始回复。清成 null 让这个窗口里的停止改走

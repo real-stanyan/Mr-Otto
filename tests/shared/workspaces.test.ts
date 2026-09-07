@@ -1,11 +1,11 @@
-// assembleSnapshot 纯逻辑单测：三条断言钉住行数据 → snapshot 的转换规则
-// （tools 形状不对回 []、label 缺席回 uid 截断 + avatarUrl 缺席回空串、updated_at ISO → ms）+
-// relay_max_depth 形状不对回默认（#950 Task 9，同 normalizeRelayMaxDepth 口径）。
+// assembleSnapshot 纯逻辑单测：钉住行数据 → snapshot 的转换规则
+// （tools 形状不对回 []、label 缺席回 uid 截断 + avatarUrl 缺席回空串、updated_at ISO → ms、
+// avatar_slot 归一、sandbox_approval 形状不对回 ask）。
 
 import { describe, expect, it } from "vitest";
 import { assembleSnapshot } from "../../src/shared/workspaces.js";
 
-const WS = { id: "ws-1", name: "测试工作区", owner_uid: "owner-uid-12345678", relay_max_depth: 6, sandbox_approval: "ask" };
+const WS = { id: "ws-1", name: "测试工作区", owner_uid: "owner-uid-12345678", sandbox_approval: "ask" };
 
 describe("assembleSnapshot", () => {
   it("组装成员/连接器/会话三张表 + label 查得到时原样用", () => {

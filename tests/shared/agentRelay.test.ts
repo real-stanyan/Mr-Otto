@@ -193,6 +193,9 @@ describe("agentRelay 纯逻辑（#950，spec §8）", () => {
     // 写成确数就是一句会被账单打脸的话
     const b = relayBudgetCapText("运\n营", "广告」", 123_400, 500_000, "报表还差一半");
     expect(b).not.toContain("\n");
+    // 结构闸：名字里的 `」` 会撑破这句话自己的 `「」`（ADR-0226/0228），必须换成全角替身
+    expect(b).toContain("广告｣");
+    expect(b).not.toContain("广告」");
     expect(b).toContain("至少已经花掉 12.3 credit");
     expect(b).toContain("剩余 50.0 credit");
     expect(b).toContain("单次委托的上限");
@@ -203,6 +206,8 @@ describe("agentRelay 纯逻辑（#950，spec §8）", () => {
 
     const sp = relaySpinStopText("运\n营", "广告」", { period: 2, repeats: 3 }, "再看一眼");
     expect(sp).not.toContain("\n");
+    expect(sp).toContain("广告｣");
+    expect(sp).not.toContain("广告」");
     expect(sp).toContain("同一组 2 棒原样来回了 3 遍");
     // 与 relayNudgeText 接得上：那条说「别再原样甩回去」，这条说「说过了、没用、停」
     expect(sp).toContain("提醒过也没出来");
@@ -210,6 +215,9 @@ describe("agentRelay 纯逻辑（#950，spec §8）", () => {
     // 引文为空时不留一个空的「」
     expect(relaySpinStopText("运营", "广告", { period: 2, repeats: 3 }, "   ")).not.toContain("「」");
     expect(relayBudgetCapText("运营", "广告", 1, 2, "  ")).not.toContain("「」");
+    // 剩余是负数（网关的 hold 让 used 短暂越过 limit）时夹到 0：把「剩余 -1.2 credit」
+    // 印在群里读起来像我们算错了账，而它其实只是「已经见底」的一种写法
+    expect(relayBudgetCapText("运营", "广告", 100, -12_000, "")).toContain("剩余 0.0 credit");
   });
 
   it("openingDepthFor：mentions 含 agentId 且未被本 agent 的 turn_ended 收口（同 openTurns 口径）的 max relay depth（#957 A-4）", () => {

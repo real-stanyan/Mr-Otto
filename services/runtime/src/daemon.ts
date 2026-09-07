@@ -654,7 +654,11 @@ async function main(): Promise<void> {
       relayRemainingMicro: async () => {
         const me = await hostedProbe.me(ownerUid);
         if (me === "unreachable" || me === null || me.windows === null) return null;
-        return me.windows.h5.limitMicro - me.windows.h5.usedMicro;
+        // **两扇窗取更吃紧的那扇**（同 billingView 的 `bindingWindow`，ADR-0209）：
+        // 网关的 hold 同时压 5h 与周窗，只看 5h 的话周窗快见底时刹车完全无感，
+        // 而那正是这道闸最该响的时候
+        const left = (w: { limitMicro: number; usedMicro: number }): number => w.limitMicro - w.usedMicro;
+        return Math.min(left(me.windows.h5), left(me.windows.week));
       },
       // 查不到就问人（#977）：0026 没跑、Supabase 抖了，都往严的一边倒——一次抖动
       // 把「要批」翻成「免批」是最不该有的默认

@@ -1813,6 +1813,43 @@ describe("agent 互相 @ 接力（#950 切片 5）", () => {
     store.close();
   });
 
+  it("钱闸端到端（#1017）：adapter 报的 credit 落进 assistant_message，攒够剩余的一半就停", async () => {
+    // 这一条走的是完整链路 —— adapter 的 creditCostMicro → engine 落进
+    // assistant_message → relayStateSince 求和 → decideRelay 的 cap_budget。
+    // 上面那条「额度剩 0」只证明了闸在，这条证明**求和这一半**真的接上了
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    // 剩余 1000 → 预算 500。每轮报 300：第一轮 300 < 500 放行，第二轮累计 600 >= 500 停
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true,
+      contextWindowOf: () => undefined,
+      sandboxApproval: async () => "ask",
+      workspaceLock: createWorkspaceLock(),
+      relayRemainingMicro: async () => 1000,
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({
+        model: a.models[0]!,
+        async chat() {
+          return { content: a.agentId === "ops" ? "@广告 你来" : "@运营 你来", creditCostMicro: 300 };
+        },
+      }),
+      onEvent: (e) => events.push(e), onUsage: () => {},
+    });
+    await session.say("u1", "alice", "@运营 开始", true, ["ops"]);
+    await session.settled();
+    // 点火那一轮 300（<500，放行第 1 棒）→ 广告那一轮再 300，累计 600 >= 500 → 第 2 棒被钱拦下
+    expect(events.filter((e) => e.type === "agent_relay").map((e) => (e as { depth: number }).depth)).toEqual([1]);
+    const cap = events.find(
+      (e) => e.type === "chat_message" && (e as { content: string }).content.includes("至少已经花掉")
+    );
+    expect(cap).toMatchObject({ fromUid: "system" });
+    // 求和真的是 600（点火那一轮 + 接力那一轮），不是只数最后一条
+    expect((cap as { content: string }).content).toContain("花掉 0.1 credit");
+    store.close();
+  });
+
   it("周期护栏两档：A↔B 来回先注一条「打转」不停，喊到第 3 遍硬停在第 6 棒（#1017）", async () => {
     const store = newStore();
     const events: SessionEvent[] = [];
@@ -1951,7 +1988,7 @@ describe("agent 互相 @ 接力（#950 切片 5）", () => {
     store.close();
   });
 
-  it("归档落在 relayMaxDepth 的网络往返期间（终审 Important ①a）：await 之后要重新查一次 archived，不能凭 await 之前的快照继续落接力", async () => {
+  it("归档落在 relayRemainingMicro 的网络往返期间（终审 Important ①a）：await 之后要重新查一次 archived，不能凭 await 之前的快照继续落接力", async () => {
     const store = newStore();
     const events: SessionEvent[] = [];
     let session!: CloudSession;
@@ -3526,8 +3563,9 @@ describe("停止一轮 turn（#957 A-2）", () => {
   });
 
   // 终审 Important I1：`runLoggedTurn` 返回之后、`finally` 之前还有一整段
-  // relayAfterTurn —— 里面是**两次真 Supabase 往返**（`agents()` 取名单、
-  // `relayMaxDepth()` 取上限）。那个窗口里 `engine.turnAbort` 已经收口、
+  // relayAfterTurn —— 里面是**两次可能真打网络的调用**（`agents()` 取名单的
+  // Supabase 往返、`relayRemainingMicro()` 的订阅探针）。那个窗口里
+  // `engine.turnAbort` 已经收口、
   // `currentEngine` 却还挂着，于是 stop 走"翻信号"那条路：翻的是一个已经
   // 结束的 turn 的信号（无操作），回执照样说 ok、群里照样写"停止了"，而
   // 接力紧接着照点火 —— 人按了停止，屏幕上却冒出下一只 agent 开始回复。

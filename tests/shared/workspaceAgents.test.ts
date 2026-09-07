@@ -1,5 +1,5 @@
-// workspaceAgents 纯校验单测：agent 表单的名字合法性 + 模型清单解析（#932 切片 1b）+
-// 接力上限的表单校验（#950 Task 9）。
+// workspaceAgents 纯校验单测：agent 表单的名字合法性 + 模型清单解析（#932 切片 1b）
+// + 沙箱免审那一格的归一（#977）。接力上限那半随 relay_max_depth 一起撤了（#1017）。
 
 import { describe, it, expect } from "vitest";
 import {

@@ -38,7 +38,7 @@
 // 最不该有的方向（ADR-0237）。
 //
 // **`spentMicro` 是下界不是准数**，而这不影响安全性：它少算只会让 ② **晚**命中，而 ① 无条件
-// 兜底。已知的两处少算写在 `relaySpendSince` 的头注里。
+// 兜底。已知的两处少算写在 `relayStateSince` 的头注里。
 //
 // 护栏参数取 maxPeriod 8 / minRepeats 2（#957 F2，修订原先的 3/2）：3 只 agent 全互 @ 时每轮
 // 6 跳（每只发言者对另外两只各 @ 一次）才闭合一个周期，maxPeriod 3 是永久盲区——护栏一次都不喊
@@ -110,7 +110,7 @@ export function isHumanOpening(e: SessionEvent): e is UserMessageEvent {
   return e.type === "user_message" && !!e.mentions && e.mentions.length > 0 && !e.relay;
 }
 
-/** 这次点火已经花掉多少钱。**是一个下界，不是准数**——见 `relaySpendSince`。 */
+/** 这次点火已经花掉多少钱。**是一个下界，不是准数**——见 `relayStateSince`。 */
 export interface RelaySpend {
   /** 最后一条人话点火之后，日志里记到的 credit 之和（micro-USD） */
   spentMicro: number;
@@ -369,9 +369,13 @@ export function relayBudgetCapText(
   const from = promptSafe(fromName), to = promptSafe(toName);
   const quoted = promptSafe(lastWords.trim());
   const tail = quoted ? `${from} 最后说：「${quoted}」` : "";
+  // 剩余夹到 0 再画（同 relayBudgetMicroOf 的夹法）：网关的 hold 会让 used 短暂
+  // 越过 limit，把「剩余 -1.2 credit」印在群里读起来像我们算错了账，而它其实只是
+  // 「已经见底」的一种写法
+  const left = Math.max(0, remainingMicro);
   return (
     `[系统] 这一轮接力至少已经花掉 ${creditText(spentMicro)} credit，` +
-    `到了单次委托的上限（所有者 5 小时额度剩余 ${creditText(remainingMicro)} credit 的一半）：` +
+    `到了单次委托的上限（所有者订阅额度剩余 ${creditText(left)} credit 的一半）：` +
     `${from} 想 @ ${to}，我停在这儿，交回给人。` +
     `还没做完的请人来定——回复里 @ 谁就从头开始新一条接力。${tail}`
   );
