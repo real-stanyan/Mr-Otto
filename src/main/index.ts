@@ -3367,6 +3367,9 @@ void app.whenReady().then(() => {
     cloudClient.stop(seq ?? undefined)
   );
   ipcMain.handle(CHANNELS.workspaceCloudState, (_e, workspaceId: string) => cloudClient.workspaceState(workspaceId));
+  ipcMain.handle(CHANNELS.workspaceCloudFiles, (_e, workspaceId: string, path: string) =>
+    cloudClient.workspaceFiles(workspaceId, path)
+  );
   ipcMain.handle(
     CHANNELS.workspaceCloudConfig,
     (_e, workspaceId: string, patch: { repoUrl?: string; pat?: string }) =>
