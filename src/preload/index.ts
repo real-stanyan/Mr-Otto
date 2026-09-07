@@ -165,8 +165,6 @@ const bridge: ShellBridge = {
   stopTurn: (sessionId) => ipcRenderer.invoke(CHANNELS.stopTurn, sessionId),
   resendMessage: (sessionId, seq, attachments) =>
     ipcRenderer.invoke(CHANNELS.resendMessage, sessionId, seq, attachments),
-  steerTurn: (sessionId, text, expectedTurnId) =>
-    ipcRenderer.invoke(CHANNELS.steerTurn, sessionId, text, expectedTurnId),
   compact: (sessionId) => ipcRenderer.invoke(CHANNELS.compact, sessionId),
   decideApproval: (sessionId, toolCallId, outcome) =>
     ipcRenderer.invoke(CHANNELS.decideApproval, sessionId, toolCallId, outcome),

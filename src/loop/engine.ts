@@ -139,13 +139,13 @@ export class LoopEngine {
       烧钱（老的一压一次就锁死整 turn），但工具密集的超长 turn 里摘要后又胀
       回去是真实场景，新料够多时第二刀是值得的 */
   private compactFloor: number | null = null;
-  /** 正在跑的 turn 的身份 = 开启它的 user_message 的 seq（issue #344 steer）。
-      idle / compact 专场时为 null。seq 是日志分配的稳定身份——渲染层从事件流
-      里看到的就是它，乐观锁两端说的天然是同一个数 */
+  /** 正在跑的 turn 的身份 = 开启它的 user_message 的 seq（appendBackground
+      用它判「此刻有没有 turn 可接后台结果」）。idle / compact 专场时为 null。
+      seq 是日志分配的稳定身份——渲染层从事件流里看到的就是它 */
   private currentTurnId: number | null = null;
-  /** 压缩进行中（auto compact 在 turn 中途触发时为 true）。此时拒绝 steer：
+  /** 压缩进行中（auto compact 在 turn 中途触发时为 true）。此时拒绝后台回注：
       compact 以它开跑那一刻的日志为准，之后落的 user_message 会被
-      context_compacted 的"之前一切被替换"语义静默吞掉——宁可让用户重发 */
+      context_compacted 的"之前一切被替换"语义静默吞掉——宁可攒着另开一轮 */
   private compacting = false;
   /** 模型调用进行中（issue #871）：这段时间到达的后台结果先攒进
       deferredBackground，assistant_message 落盘后再追加（见 appendBackground） */
@@ -514,8 +514,9 @@ export class LoopEngine {
       auto 是上下文超阈值自动触发（trigger 字段落盘，溯源谁点的火）。
       摘要出自模型（不确定），而模型今后看到的就是它 —— model-visible means logged。 */
   async compact(opts: { trigger: "auto" | "manual"; signal?: AbortSignal } = { trigger: "manual" }): Promise<void> {
-    // 压缩是"特殊 turn"，拒绝 steer（issue #344）：compact 以此刻的日志为准，
-    // 中途落的 user_message 会被 context_compacted 的替换语义吞掉
+    // 压缩是"特殊 turn"，后台回注此时不落（appendBackground 回 false）：
+    // compact 以此刻的日志为准，中途落的 user_message 会被
+    // context_compacted 的替换语义吞掉
     this.compacting = true;
     try {
       await this.compactInner(opts);
@@ -588,36 +589,16 @@ export class LoopEngine {
     this.turnAbort?.abort();
   }
 
-  /** 正在跑的 turn 的身份（给 UI 做乐观锁的另一端）。idle = null */
+  /** 正在跑的 turn 的身份（turnDiff 聚合拿它当本轮的键，agent.ts 的
+      createTurnDiffMiddleware 现读）。idle = null */
   get runningTurnId(): number | null {
     return this.currentTurnId;
-  }
-
-  /** 插话（issue #344，codex turn/steer 同款）：不中断，把用户输入注入正在跑的
-      turn。先落盘（user_message 事件）——loop 每圈都从日志重新投影，模型下一次
-      采样自然看到它并转向，已完成的工具调用全部保留。
-      expectedTurnId 乐观锁：提交瞬间 turn 可能刚好结束/换代，id 对不上就拒绝并
-      让用户重发——绝不把话注进错的 turn。压缩进行中同样拒绝（见 compacting）。
-      投影层保证乱序安全：工具组进行中落的 user_message 会被推迟到组的结果之后
-      再进上下文（deriveMessages 的顺序修复），OpenAI 方言的配对约束不被打破 */
-  steer(text: string, expectedTurnId: number): void {
-    if (this.compacting) {
-      throw new Error("正在压缩上下文，暂时不能插话——请稍后重发这句话");
-    }
-    if (this.currentTurnId === null) {
-      throw new Error("turn 已结束，插话没有目标——这句话请作为新消息发送");
-    }
-    if (this.currentTurnId !== expectedTurnId) {
-      throw new Error("turn 对不上号（它可能刚结束、新 turn 又开了）——请确认现场后重发");
-    }
-    if (!text.trim()) throw new Error("插话内容为空");
-    this.append({ ...this.envBase(), type: "user_message", content: text });
   }
 
   /** 后台任务结果尾部追加（issue #871，Claude Code task-notification 对照）：
       turn 在跑时把完成结果作为 user_message(origin:"background") 追加进日志——
       loop 每圈从日志重新投影，模型下一次采样就看到，同一 turn 里接着干，
-      不必等收口再另开一轮。与 steer 同一条路：纯尾部追加，前缀字节不变，
+      不必等收口再另开一轮。纯尾部追加，前缀字节不变，
       prefix cache 不受影响（ADR-0088 那条「mid-splice 毁缓存」说的是中段重写，
       不是这个形状）。
       回 false = 此刻不能追加（idle：没有 turn 可接；compacting：压缩以它开跑
@@ -700,7 +681,8 @@ export class LoopEngine {
   }
 
   private async runFrom(opening: SessionEvent): Promise<"completed" | "aborted"> {
-    // turn 的身份 = 开启它的 user_message 的 seq（issue #344 steer 的乐观锁）
+    // turn 的身份 = 开启它的 user_message 的 seq（appendBackground 拿它判
+    // 「此刻有没有 turn 可接后台结果」）
     this.currentTurnId = opening.seq;
     this.turnAbort = new AbortController();
     this.compactFloor = null;
@@ -727,8 +709,8 @@ export class LoopEngine {
       // 必须在 try 里：provider 是调用方给的任意函数（agent.ts 的 buildTools 里有
       // createMcpTools/applyExposurePolicy），抛错要走下面的 catch 落 turn_ended:
       // outcome:"error"，不能让已经落盘的 user_message 和已置位的 currentTurnId/
-      // turnAbort 永远没有对应的收口（append-only 日志的配对不变量、steer 的乐观锁
-      // 目标都靠 turn_ended/finally 收场）
+      // turnAbort 永远没有对应的收口（append-only 日志的配对不变量、后台回注的
+      // 落点判断都靠 turn_ended/finally 收场）
       this.rebuildTools();
       await this.loop(this.turnAbort.signal);
       this.append({ ...endEnv(), type: "turn_ended", outcome: "completed" });
@@ -750,7 +732,7 @@ export class LoopEngine {
       throw err;
     } finally {
       this.turnAbort = null;
-      this.currentTurnId = null; // steer 的目标随 turn 一起消失
+      this.currentTurnId = null; // 后台回注的落点随 turn 一起消失
       this.turnLog = null; // 快照只活一个 turn：长会话不常驻在内存里
       this.loopFingerprints = []; // 同上：循环判据的作用域是这一趟活
       this.loopNudges = 0; // 同上：喊过几次也只在这一趟活里算数
@@ -902,8 +884,8 @@ export class LoopEngine {
 
       if (!reply.toolCalls || reply.toolCalls.length === 0) {
         // 模型说完了——除非它说话的当口有人往日志尾巴上追加了用户消息
-        // （后台任务结果 appendBackground / 插话 steer）而这次采样没看到
-        // （issue #871）：那条消息在投影之后才落盘，就这么收口的话它会永远
+        // （后台任务结果 appendBackground 这类中途落的 user_message）而这次采样
+        // 没看到（issue #871）：那条消息在投影之后才落盘，就这么收口的话它会永远
         // 挂在日志尾上没人答，后台结果等于丢了。再采样一圈让模型接上——
         // 代价只在真撞上这个窗口时付，而且每圈都消费掉新消息，不会空转
         if (this.unseenUserTail(log)) continue;

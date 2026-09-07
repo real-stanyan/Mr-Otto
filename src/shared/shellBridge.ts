@@ -180,11 +180,6 @@ export type TurnStatus = "idle" | "running";
 export interface TurnStatusUpdate {
   sessionId: string;
   status: TurnStatus;
-  /** 正在跑的 turn 的身份 = 开启它的 user_message 的 seq（issue #344 steer）。
-      running 推送分两拍：turn 锁一上先推不带 turnId 的（此刻 engine 还没
-      分配），engine 落下开场 user_message 后再推一次带上——渲染层拿它做
-      插话的乐观锁。idle 推送永远不带 */
-  turnId?: number;
 }
 
 /** 一条会话此刻的运行时状态（issue #548）。**推送之外的那一半**：
@@ -198,9 +193,6 @@ export interface TurnStatusUpdate {
     第二个消费者。 */
 export interface SessionRuntime {
   status: TurnStatus;
-  /** 正在跑的 turn 的身份（插话乐观锁，同 TurnStatusUpdate.turnId）。
-      idle、或 engine 还没分配时缺席 */
-  turnId?: number;
   /** 正在压缩上下文。它复用 running 灯，靠这一位才分得出「压缩中」和「思考中」 */
   compacting: boolean;
   /** 此刻挂着的审批卡，没有就是 null。形状与 onApprovalRequest 推的那张**完全一致**
@@ -939,12 +931,6 @@ export interface ShellBridge {
   /** 中断该会话正在跑的 turn（ADR-0006）。幂等：没在跑 = 无操作。
       生效凭证是流回来的 turn_ended(aborted) 事件 + turnStatus idle，不是这个 Promise */
   stopTurn(sessionId: string): Promise<void>;
-  /** 插话（issue #344）：不中断，把用户输入注入正在跑的 turn——已完成的工具
-      调用保留，模型下次采样看到并转向。expectedTurnId 是渲染层眼中正在跑的
-      turn（来自 turnStatus 推送），提交瞬间 turn 可能刚好结束/换代，对不上就
-      reject（乐观锁）——用户把话重发一遍即可。刻意绕过 sendMessage 的会话
-      串行队列：它就是要在 turn 跑着时进去 */
-  steerTurn(sessionId: string, text: string, expectedTurnId: number): Promise<void>;
   /** /compact：调模型把会话历史摘要化，落 context_compacted 事件（耗 token，手动触发） */
   compact(sessionId: string): Promise<void>;
   /** 审批卡上的按钮最终调到这——resolve 对应会话里挂起的 Approver */
@@ -1609,7 +1595,6 @@ export const CHANNELS = {
   attachmentDataUrl: "otter:attachmentDataUrl",
   stopTurn: "otter:stopTurn",
   resendMessage: "otter:resendMessage",
-  steerTurn: "otter:steerTurn",
   compact: "otter:compact",
   decideApproval: "otter:decideApproval",
   answerQuestions: "otter:answerQuestions",

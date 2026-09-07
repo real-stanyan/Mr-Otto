@@ -7,7 +7,6 @@ import type { ApprovalRequest, AskUserRequest, SessionRuntime } from "../../../s
 
 const empty: RuntimeSlice = {
   statusBySession: {},
-  turnIdBySession: {},
   compactingBySession: {},
   approvals: {},
   asks: {},
@@ -31,9 +30,8 @@ const ask = (sessionId: string): AskUserRequest => ({
 
 describe("runtimePatch", () => {
   it("查无此会话：状态落位（这正是重载后丢掉的那一拍，issue #548）", () => {
-    expect(runtimePatch(empty, "s1", { ...running, turnId: 7 })).toEqual({
+    expect(runtimePatch(empty, "s1", running)).toEqual({
       statusBySession: { s1: "running" },
-      turnIdBySession: { s1: 7 },
     });
   });
 
@@ -43,7 +41,7 @@ describe("runtimePatch", () => {
 
   it("店里已经有这条会话 = 推送这一路是通的，快照一个字都不许改", () => {
     const prev: RuntimeSlice = { ...empty, statusBySession: { s1: "idle" } };
-    expect(runtimePatch(prev, "s1", { ...running, turnId: 7, compacting: true })).toEqual({});
+    expect(runtimePatch(prev, "s1", { ...running, compacting: true })).toEqual({});
   });
 
   it("别的会话有记录不影响这一条", () => {
@@ -65,10 +63,6 @@ describe("runtimePatch", () => {
     expect(runtimePatch(empty, "s1", { ...idle, compacting: true })).toEqual({
       statusBySession: { s1: "idle" },
     });
-  });
-
-  it("turnId 缺席时不写空值——插话乐观锁宁可没有，也不要一个假的", () => {
-    expect(runtimePatch(empty, "s1", running).turnIdBySession).toBeUndefined();
   });
 
   it("挂起的审批一起补回来（重载后卡片也会消失，同一个洞）", () => {
