@@ -63,6 +63,8 @@ function makeDeps(config: {
   rateLimit?: FrameHandlerDeps["rateLimit"];
   /** #1056：默认回一个空目录——绝大多数用例不关心工作文件夹 */
   readWork?: FrameHandlerDeps["readWork"];
+  /** #1066：默认搜不到东西 */
+  searchWork?: FrameHandlerDeps["searchWork"];
 } = {}): { deps: FrameHandlerDeps; sent: Sent[]; dropCidCalls: string[]; logs: string[] } {
   const sent: Sent[] = [];
   const dropCidCalls: string[] = [];
@@ -84,6 +86,7 @@ function makeDeps(config: {
     repoState: config.repoState ?? (() => null),
     modelRoute: config.modelRoute ?? (async () => null),
     readWork: config.readWork ?? (async () => ({ kind: "dir", entries: [], truncated: false })),
+    searchWork: config.searchWork ?? (async () => []),
     rateLimit: config.rateLimit ?? { allow: () => true },
     send: (cid, msg) => sent.push({ cid, msg }),
     dropCid: config.dropCid ?? ((cid) => dropCidCalls.push(cid)),
@@ -1711,5 +1714,87 @@ describe("files 读帧（协议 11，#1056）", () => {
     await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "files", workspaceId: "w1", path: "" }));
     expect(sent.at(-1)!.msg).toEqual({ t: "denied", code: "not_authorized" });
     expect(calls).toEqual([]);
+  });
+});
+
+describe("files_search 读帧（协议 12，#1066）", () => {
+  it("查询被 trim 之后递给 searchWork；回执带原样的 query", async () => {
+    const calls: [string, string, boolean][] = [];
+    const { deps, sent } = makeDeps({
+      searchWork: async (w, q, c) => {
+        calls.push([w, q, c]);
+        return [{ rel: "a.md", line: 3, text: "hello" }];
+      },
+    });
+    const handler = createFrameHandler(deps);
+    await handler.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+
+    await handler.onCtlFrame("c1", encodeCs({ t: "files_search", workspaceId: "w1", query: " hello ", content: true }));
+    expect(calls).toEqual([["w1", "hello", true]]);
+    expect(sent.at(-1)!.msg).toEqual({
+      t: "files_search_result", workspaceId: "w1", query: " hello ", ok: true,
+      hits: [{ rel: "a.md", line: 3, text: "hello" }],
+    });
+  });
+
+  it("空查询不下到容器——`rg --files` 会把整个仓库跑一遍，而调用方要的是「回到树」", async () => {
+    const calls: string[] = [];
+    const { deps, sent } = makeDeps({
+      searchWork: async (_w, q) => {
+        calls.push(q);
+        return [];
+      },
+    });
+    const handler = createFrameHandler(deps);
+    await handler.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+
+    await handler.onCtlFrame("c1", encodeCs({ t: "files_search", workspaceId: "w1", query: "   ", content: false }));
+    expect(calls).toEqual([]);
+    expect(sent.at(-1)!.msg).toMatchObject({ t: "files_search_result", ok: true, hits: [] });
+  });
+
+  it("搜挂了 → ok:false，**绝不回一个空 hits**", async () => {
+    // 「搜不成」说成「没有匹配」会让人以为仓里真的没有这个东西
+    const { deps, sent, logs } = makeDeps({
+      searchWork: async () => {
+        throw new Error("云端沙箱里没有 ripgrep，搜不了。");
+      },
+    });
+    const handler = createFrameHandler(deps);
+    await handler.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    sent.length = 0;
+
+    await handler.onCtlFrame("c1", encodeCs({ t: "files_search", workspaceId: "w1", query: "x", content: false }));
+    expect(sent).toHaveLength(1);
+    expect(sent[0]!.msg).toMatchObject({ t: "files_search_result", ok: false });
+    expect((sent[0]!.msg as { hits?: unknown }).hits).toBeUndefined();
+    expect(logs.join("\n")).toContain("ripgrep");
+  });
+
+  it("与 files 共用同一只桶（同一个动作的两半，花的也是同一样东西）", async () => {
+    const calls: string[] = [];
+    const { deps, sent } = makeDeps({
+      rateLimit: { allow: (kind) => kind !== "files" },
+      searchWork: async (_w, q) => {
+        calls.push(q);
+        return [];
+      },
+    });
+    const handler = createFrameHandler(deps);
+    await handler.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+
+    await handler.onCtlFrame("c1", encodeCs({ t: "files_search", workspaceId: "w1", query: "x", content: false }));
+    expect(sent.at(-1)).toEqual({ cid: "c1", msg: { t: "denied", code: "rate_limited" } });
+    expect(calls).toEqual([]);
+  });
+
+  it("会话房里发 files_search → denied not_authorized", async () => {
+    const { deps, sent } = makeDeps();
+    const handler = createFrameHandler(deps);
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    sent.length = 0;
+
+    await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "files_search", workspaceId: "w1", query: "x", content: false }));
+    expect(sent.at(-1)!.msg).toEqual({ t: "denied", code: "not_authorized" });
   });
 });

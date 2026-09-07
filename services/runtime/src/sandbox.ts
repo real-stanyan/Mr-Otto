@@ -8,8 +8,13 @@
 
 import { Writable } from "node:stream";
 import type { ContainerLike } from "../../../src/world/dockerWorld.js";
-import type { CsWorkNode } from "../../../src/shared/remote/cloudSession.js";
-import { buildWorkReadScript, parseWorkReadOutput } from "./workFiles.js";
+import type { CsWorkHit, CsWorkNode } from "../../../src/shared/remote/cloudSession.js";
+import {
+  buildWorkReadScript,
+  buildWorkSearchScript,
+  parseWorkReadOutput,
+  parseWorkSearchOutput,
+} from "./workFiles.js";
 
 /** dockerode 顶层句柄的最小注入面 */
 export interface DockerLike {
@@ -60,6 +65,10 @@ export interface Sandbox {
       认得它、30 分钟后收掉——不打点的话它反而永远没人扫）。
       抛错 = 容器里那次 exec 失败，调用方翻译成回执 */
   readWork(workspaceId: string, path: string): Promise<CsWorkNode>;
+  /** 搜工作文件夹（#1066）。`content` = 搜正文还是只按文件名过滤。副作用纪律同
+      `readWork`：不建容器、不跑 clone。容器不存在 = 空结果（没有卷就没有东西可搜，
+      与 `absent` 说的是同一件事，而搜索这一格没有第二句话要讲） */
+  searchWork(workspaceId: string, query: string, content: boolean): Promise<CsWorkHit[]>;
 }
 
 /** owner 经 cs_config 发来的工作区云配置（issue #821 slice 1）——落点见
@@ -1113,5 +1122,22 @@ export function createSandbox(
     return parsed.node;
   }
 
-  return { ensure, markActive, sweepIdle, reconcile, destroy, invalidateClone, readWork };
+  async function searchWork(workspaceId: string, query: string, content: boolean): Promise<CsWorkHit[]> {
+    const found = await findByName(containerName(workspaceId));
+    if (!found) return [];
+
+    const container = docker.getContainer(found.Id);
+    if (found.State !== "running") await container.start();
+    markActive(workspaceId);
+
+    const r = await execInContainer(container, buildWorkSearchScript(query, content));
+    if (r.exitCode !== 0) {
+      throw new Error(`搜工作文件夹失败（exit ${r.exitCode}）：${r.stderr.trim() || "没有错误输出"}`);
+    }
+    const parsed = parseWorkSearchOutput(r.stdout, query);
+    if (!parsed.ok) throw new Error(parsed.message);
+    return parsed.hits;
+  }
+
+  return { ensure, markActive, sweepIdle, reconcile, destroy, invalidateClone, readWork, searchWork };
 }
