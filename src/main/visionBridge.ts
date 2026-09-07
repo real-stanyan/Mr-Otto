@@ -5,7 +5,7 @@
 
 import { createOpenAICompatibleAdapter } from "../model/openaiCompatible.js";
 import { errorClassOf, markErrorClass } from "../model/errorClass.js";
-import { routeModel } from "./modelRoute.js";
+import { routeModel, type HostedInput } from "./modelRoute.js";
 import { findModel } from "../shared/modelCatalog.js";
 import { DEFAULT_VISION_MODEL } from "../shared/visionModel.js";
 import type { UserAttachmentRef } from "../session/events.js";
@@ -34,7 +34,11 @@ function brandBridgeError(e: unknown, model: string): Error {
 export function createVisionBridge(
   readAttachment: (id: string) => Uint8Array,
   sleep: (ms: number) => Promise<void> = (ms) => new Promise((r) => setTimeout(r, ms)),
-  model: string = DEFAULT_VISION_MODEL
+  model: string = DEFAULT_VISION_MODEL,
+  /** 托管那一路的三样，调用方在**发起这一次代读之前**现解好（#1051）。
+      缺席 = 老行为（只看自带 key）—— 而订阅用户没有自带 key 了，所以订阅那条路
+      必须把这仨递进来，否则每一条带图消息都会在这一步 blocked，连带整个 turn 失败 */
+  hosted?: { input: HostedInput; baseUrl: string; token: string } | undefined
 ) {
   return async function describeImages(
     refs: UserAttachmentRef[],
@@ -50,6 +54,7 @@ export function createVisionBridge(
       choice,
       ownKey: process.env[choice.apiKeyEnv] ?? "",
       ownBaseUrl: process.env[choice.baseUrlEnv],
+      ...(hosted ? { hosted: hosted.input, hostedBaseUrl: hosted.baseUrl, hostedToken: hosted.token } : {}),
     });
     if (route.kind === "blocked") {
       throw new Error(

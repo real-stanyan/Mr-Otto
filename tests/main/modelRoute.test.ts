@@ -78,10 +78,16 @@ describe("routeModel：托管优先（ADR-0176 决定二）", () => {
     });
   });
 
-  it("耗尽 + 有自己的 key → direct（耗尽处置第二条出路）", () => {
-    expect(
-      route({ ownKey: "sk-mine", ...hostedArgs, hosted: { ...hosted, exhausted: true, resetAt: 5 } }).kind
-    ).toBe("direct");
+  // 这三条原来断言的是「订阅用户退回自带 key」。#1051 把那条路整个关了（维护者
+  // 的产品口径：订阅用户不可以使用自带 api key），所以三条一起翻面——**不是删测试
+  // 换绿**，是同一个问题在新规则下的新答案，产品代码就在同一个 diff 里。
+  it("耗尽 + 有自己的 key → 仍然 blocked（#1051：订阅这一侧没有 direct）", () => {
+    // 悄悄改烧用户自己的账号正是 ADR-0233 点名不许的失败模式，本机这一半同理
+    const r = route({ ownKey: "sk-mine", ...hostedArgs, hosted: { ...hosted, exhausted: true, resetAt: 5 } });
+    expect(r.kind).toBe("blocked");
+    // 措辞里不许再出现「填自己的 key」——那条建议在新规则下无法执行
+    expect(r.kind === "blocked" && r.reason).not.toContain(deepseek.apiKeyEnv);
+    expect(r.kind === "blocked" && r.reason).toContain("加购");
   });
 
   it("耗尽 + 没 key → blocked，措辞带恢复时间", () => {
@@ -90,9 +96,11 @@ describe("routeModel：托管优先（ADR-0176 决定二）", () => {
     expect(r.kind === "blocked" && r.reason).toMatch(/额度.*恢复/);
   });
 
-  it("网关不供这款 + 没 key → blocked，措辞说清是型号不在网关", () => {
+  it("订阅不供这款 → blocked，措辞指向选单里换一款（那里现在只列订阅供的）", () => {
     const r = route({ ...hostedArgs, hosted: { ...hosted, supportsModel: false } });
-    expect(r.kind === "blocked" && r.reason).toContain("网关");
+    expect(r.kind).toBe("blocked");
+    expect(r.kind === "blocked" && r.reason).toContain("换一款");
+    expect(r.kind === "blocked" && r.reason).not.toContain(deepseek.apiKeyEnv);
   });
 
   it("无订阅 + 没 key → blocked，措辞把两条出路都说出来", () => {
@@ -101,8 +109,25 @@ describe("routeModel：托管优先（ADR-0176 决定二）", () => {
     expect(r.kind === "blocked" && r.reason).toContain(deepseek.apiKeyEnv);
   });
 
-  it("有订阅但没拿到 JWT（token 过期）→ 退回 direct/blocked，不发一个空 Bearer", () => {
-    expect(route({ ownKey: "sk", hosted, hostedBaseUrl: "https://edge/llm/v1" }).kind).toBe("direct");
+  it("有订阅但没拿到 JWT（token 过期）→ blocked 且**说清是连不上**，不发空 Bearer 也不改烧自己的 key", () => {
+    // 这一条以前是悄悄退回 direct 的。说成「你没订阅」会让一个正在付钱的人
+    // 去点续费解决一个不存在的问题（同 ADR-0233 把三种 blocked 分开措辞）
+    const r = route({ ownKey: "sk", hosted, hostedBaseUrl: "https://edge/llm/v1" });
+    expect(r.kind).toBe("blocked");
+    expect(r.kind === "blocked" && r.reason).toContain("连不上");
+    expect(r.kind === "blocked" && r.reason).not.toMatch(/没有订阅|去订阅/);
+  });
+
+  it("Ollama 也在射程内：订阅用户不给本机免 key 的路（选单里没有、路由却通 = 两边说两句话）", () => {
+    const ollama = { ...deepseek, model: "ollama/llama3", keyless: true, apiKeyEnv: "OLLAMA_API_KEY" };
+    // 网关当然不供本机型号，所以 supportsModel 是 false —— 关键在于此时**不再**
+    // 掉进那条 keyless 直连，而是 blocked
+    const subscribedHosted = { ...hostedArgs, hosted: { ...hosted, supportsModel: false } };
+    expect(routeModel({ choice: ollama, ownKey: "", ...subscribedHosted }).kind).toBe("blocked");
+    // 没订阅的人照旧直连本机
+    expect(
+      routeModel({ choice: ollama, ownKey: "", hosted: { subscribed: false, exhausted: false, supportsModel: false } }).kind
+    ).toBe("direct");
   });
 });
 

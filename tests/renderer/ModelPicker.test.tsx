@@ -46,6 +46,11 @@ function seedSubscribedNoKeys(): void {
   });
 }
 
+/** 选单里那几个组头。**不能用 getByText**：「DeepSeek」既是组头也是每一行厂商
+    字形的 alt 文本，撞名。cmdk 给组头挂的是 `[cmdk-group-heading]` */
+const groupHeadings = (): string[] =>
+  [...document.querySelectorAll("[cmdk-group-heading]")].map((el) => el.textContent ?? "");
+
 afterEach(() => {
   cleanup();
   useChat.setState({ keyStatus: {}, ollamaModels: [], billing: null });
@@ -69,8 +74,34 @@ describe("ModelPicker：订阅那一组", () => {
       "DeepSeekDeepSeek V4 Pro",
       "ZhipuGLM-5.3",
       "QwenQwen3.8 Max视觉",
-      "添加更多模型…",
     ]);
+    // 「添加更多模型…」也没了（#1051）：它通往「模型配置」，而那一页对订阅用户
+    // 已经收起来了 —— 留着就是一条点了跳去一个不存在的页面的路
+    expect(screen.queryByText("添加更多模型…")).not.toBeInTheDocument();
+  });
+
+  it("订阅用户一个厂商组都没有 —— 配着 key 的、和免 key 的本机 Ollama 都没有（#1051）", async () => {
+    seedSubscribedNoKeys();
+    useChat.setState({
+      keyStatus: { DEEPSEEK_API_KEY: "sk-x", GLM_API_KEY: "sk-y" },
+      ollamaModels: [
+        { id: "ollama/a", tag: "a", contextLength: 8192, tools: true, vision: false, thinking: false },
+      ],
+    });
+    render(<ModelPicker value="glm-5.3" onChange={() => {}} />);
+    await userEvent.click(screen.getByRole("combobox"));
+    expect(groupHeadings()).toEqual(["订阅"]);
+  });
+
+  it("没订阅的人一个字都没变：厂商组照旧、「添加更多模型…」照旧", async () => {
+    useChat.setState({
+      keyStatus: { DEEPSEEK_API_KEY: "sk-x" }, ollamaModels: [], billing: null,
+    });
+    render(<ModelPicker value="deepseek-v4-flash" onChange={() => {}} />);
+    await userEvent.click(screen.getByRole("combobox"));
+    expect(groupHeadings()).toContain("DeepSeek");
+    expect(groupHeadings()).not.toContain("订阅");
+    expect(screen.getByText("添加更多模型…")).toBeInTheDocument();
   });
 
   it("没订阅（billing 为 null）时整组不出现，只剩「添加更多模型…」那条路", async () => {

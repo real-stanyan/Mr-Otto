@@ -26,3 +26,23 @@ export function normaliseHelperModel(input: unknown): string {
   if (typeof input !== "string") return DEFAULT_HELPER_MODEL;
   return findModel(input) ? input : DEFAULT_HELPER_MODEL;
 }
+
+/**
+ * 订阅用户的后台小模型必须取自订阅供的那几款（#1051，同 `visionModelFor`）。
+ *
+ * 出厂默认 `glm-4.7-flash` 是免费档、网关不供。与代读员的差别在代价：这三个外挂
+ * 失败只是少一条标题（文件开头那段账），所以这里**不要求带眼睛**，直接取最便宜
+ * 那款（`hosted` 从便宜到贵有序）。
+ *
+ * 顺带补上一个存量的洞：`createCheapAdapter` 一直是直接读 env 里的 key 的，
+ * 于是没配 key 的订阅用户三个外挂**从来没跑起来过**，配了 key 的则记在他自己账上。
+ */
+export function helperModelFor(
+  configured: string,
+  hosted: readonly string[],
+  subscribed: boolean
+): string {
+  if (!subscribed) return configured;
+  if (hosted.includes(configured)) return configured;
+  return hosted[0] ?? configured;
+}

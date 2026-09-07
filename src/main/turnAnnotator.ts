@@ -129,7 +129,9 @@ export async function annotateTurn(
   titleSource: string | null = null,
   /** 会话主题分类的素材 + 可选桶索引（topicSource 的产出 + topicIndexOf）。null = 不需要
       分类（不是 Default 主会话/已有主题），这一边不进提示词——判定住在调用方 */
-  topicChoice: TopicChoice | null = null
+  topicChoice: TopicChoice | null = null,
+  /** 订阅用户走这一路（#1051）：缺席 = 老行为（`createCheapAdapter` 读 env 里的 key） */
+  route?: { baseUrl: string; apiKey: string } | undefined
 ): Promise<TurnAnnotation | null> {
   const span = summarizeSpan(unclassifiedSpan(classifyEvents));
   const exchange = summarizeExchange(lastExchange(exchangeEvents));
@@ -143,7 +145,7 @@ export async function annotateTurn(
     // key 闸门 / thinking 关 / 超时信号：见 cheapAdapter.ts。
     // 造 adapter 这一步也在 try 里：它读配置、查型号目录，同样可能抛——
     // 摆在 try 外面，"永不抛"就只是注释里的承诺，turn 的收尾路径会被它掀翻
-    const cheap = createCheapAdapter(model, ANNOTATE_TIMEOUT_MS);
+    const cheap = createCheapAdapter(model, ANNOTATE_TIMEOUT_MS, route);
     if (!cheap) return null;
 
     const currentTitle = wantSection ? currentSectionTitle(classifyEvents) : null;
