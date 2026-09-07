@@ -36,7 +36,6 @@ describe("assembleSnapshot", () => {
         pkgId: "pkg-1", title: "会话标题", updatedTs: Date.parse("2026-08-30T12:00:00.000Z"),
       }],
       agents: [],
-      relayMaxDepth: 6,
       sandboxApproval: "ask",
     });
   });
@@ -130,12 +129,5 @@ describe("assembleSnapshot", () => {
     expect(assembleSnapshot({ ...WS, sandbox_approval: undefined }, [], [], [], [], () => null).sandboxApproval).toBe("ask");
     expect(assembleSnapshot({ ...WS, sandbox_approval: null }, [], [], [], [], () => null).sandboxApproval).toBe("ask");
     expect(assembleSnapshot({ ...WS, sandbox_approval: "AUTO" }, [], [], [], [], () => null).sandboxApproval).toBe("ask");
-  });
-
-  it("relay_max_depth：范围内的整数原样用，形状不对（字符串/null/越界）回默认 6", () => {
-    expect(assembleSnapshot({ ...WS, relay_max_depth: 4 }, [], [], [], [], () => null).relayMaxDepth).toBe(4);
-    expect(assembleSnapshot({ ...WS, relay_max_depth: "4" }, [], [], [], [], () => null).relayMaxDepth).toBe(6);
-    expect(assembleSnapshot({ ...WS, relay_max_depth: null }, [], [], [], [], () => null).relayMaxDepth).toBe(6);
-    expect(assembleSnapshot({ ...WS, relay_max_depth: 99 }, [], [], [], [], () => null).relayMaxDepth).toBe(6);
   });
 });

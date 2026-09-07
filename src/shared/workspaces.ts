@@ -12,7 +12,6 @@
 // 本文件手机端也会 import 同一份源码，纯类型 + 纯函数，零 IO。
 
 import { normalizeAgentTools, type AgentToolAllow } from "./agentToolAllow.js";
-import { normalizeRelayMaxDepth } from "./agentRelay.js";
 import { normalizeSandboxApproval, type SandboxApproval } from "./workspaceAgents.js";
 
 export interface WorkspaceMemberRow {
@@ -86,10 +85,6 @@ export interface WorkspaceSnapshot {
   connectors: WorkspaceConnectorRow[];
   sessions: WorkspaceSessionRow[];
   agents: WorkspaceAgentRow[];
-  /** agent 互相 @ 的接力棒数上限（#950 spec §8）。owner 在智能体 tab 改，
-      runtime 起 turn 前现查（daemon.ts 的 queryRelayMaxDepth）。形状不对回默认 6——
-      同 normalizeRelayMaxDepth 口径 */
-  relayMaxDepth: number;
   /** 沙箱内 bash / write_file 要不要人批（#977，ADR-0231）。owner 在智能体 tab 改，
       runtime 每个 job 第一次撞审批门时现查一次。形状不对回 "ask" */
   sandboxApproval: SandboxApproval;
@@ -128,7 +123,7 @@ function resolveLabel(uid: string, profile: MemberProfile | null): string {
 
 /** 行数据 → snapshot（label/avatarUrl 由 profiles 表查来，缺席回 uid 前 8 位 / 空串） */
 export function assembleSnapshot(
-  ws: { id: string; name: string; owner_uid: string; relay_max_depth: unknown; sandbox_approval: unknown },
+  ws: { id: string; name: string; owner_uid: string; sandbox_approval: unknown },
   members: readonly { uid: string; role: string }[],
   connectors: readonly {
     workspace_id: string; host_uid: string; server_id: string; label: string; tools: unknown;
@@ -182,7 +177,6 @@ export function assembleSnapshot(
       updatedTs: toEpochMs(a.updated_at),
       avatarSlot: normalizeAvatarSlot(a.avatar_slot),
     })),
-    relayMaxDepth: normalizeRelayMaxDepth(ws.relay_max_depth),
     sandboxApproval: normalizeSandboxApproval(ws.sandbox_approval),
   };
 }

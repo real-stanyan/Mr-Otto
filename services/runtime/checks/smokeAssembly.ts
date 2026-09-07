@@ -164,7 +164,7 @@ async function scenarioMainFlow(): Promise<void> {
             memory: createInMemoryWorkspaceMemory(),
             agentWriter: createInMemoryAgentWriter(),
             isMember: async () => true,
-            relayMaxDepth: async () => 6,
+            relayRemainingMicro: async () => null,
             // 冒烟用的是一个假型号，目录里查不到窗口 —— 一律「不知道」，
             // 自动压缩因此不触发（shouldAutoCompact 见 undefined 直接 false）
             contextWindowOf: () => undefined,

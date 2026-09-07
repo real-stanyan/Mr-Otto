@@ -4,7 +4,7 @@
 import { describe, it, expect } from "vitest";
 import {
   AGENT_NAME_MAX, agentNameConflict, collapseWhitespace, normalizeAgentName,
-  parseModelList, validateAgentName, validateRelayMaxDepth,
+  parseModelList, validateAgentName,
 } from "../../src/shared/workspaceAgents.js";
 
 describe("validateAgentName", () => {
@@ -71,20 +71,5 @@ describe("parseModelList", () => {
   it("英文/中文逗号、多余空白、重复、空项", () => {
     expect(parseModelList(" deepseek-v4 ,glm-5，deepseek-v4,, ")).toEqual(["deepseek-v4", "glm-5"]);
     expect(parseModelList("")).toEqual([]);
-  });
-});
-
-describe("validateRelayMaxDepth", () => {
-  it("1–20 之间的整数字符串 → ok:true 带解析出的数字", () => {
-    expect(validateRelayMaxDepth("6")).toEqual({ ok: true, value: 6 });
-    expect(validateRelayMaxDepth("1")).toEqual({ ok: true, value: 1 });
-    expect(validateRelayMaxDepth("20")).toEqual({ ok: true, value: 20 });
-  });
-  it("空 / 非数字 / 越界 / 非整数 —— 各回一句人话（1 到 20 之间的整数）", () => {
-    for (const raw of ["", "abc", "0", "21", "2.5"]) {
-      const r = validateRelayMaxDepth(raw);
-      expect(r.ok).toBe(false);
-      if (!r.ok) expect(r.error).toMatch(/1.*20.*整数/);
-    }
   });
 });

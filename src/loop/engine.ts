@@ -575,6 +575,9 @@ export class LoopEngine {
       model: this.adapter.model,
       trigger: opts.trigger,
       ...(reply.usage ? { usage: reply.usage } : {}),
+      // 与 :895 那一格同源、同语义（#1017）：这次调用的钱真的扣了，此前落盘时
+      // 被丢掉，于是它成了这条会话里唯一「花了钱、日志里查不到」的模型调用
+      ...(reply.creditCostMicro !== undefined ? { creditCostMicro: reply.creditCostMicro } : {}),
     });
   }
 

@@ -239,8 +239,6 @@ const bridge: ShellBridge = {
   workspaceMemoryList: (id) => ipcRenderer.invoke(CHANNELS.workspaceMemoryList, id),
   workspaceMemorySave: (id, agentId, text, version) =>
     ipcRenderer.invoke(CHANNELS.workspaceMemorySave, id, agentId, text, version),
-  workspaceSetRelayMaxDepth: (id, maxDepth) =>
-    ipcRenderer.invoke(CHANNELS.workspaceSetRelayMaxDepth, id, maxDepth),
   workspaceSetSandboxApproval: (id, value) =>
     ipcRenderer.invoke(CHANNELS.workspaceSetSandboxApproval, id, value),
   workspacePublishSession: (id, sessionId, title) =>

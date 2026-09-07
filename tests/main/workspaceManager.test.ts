@@ -73,9 +73,6 @@ function harness(over: Partial<WorkspaceManagerDeps> = {}) {
       calls.push(`saveMemoryRow:${content}:${version}`);
       return "v-new";
     },
-    updateRelayMaxDepth: async (_c, _ws, maxDepth) => {
-      calls.push(`updateRelayMaxDepth:${maxDepth}`);
-    },
     updateSandboxApproval: async (_c, _ws, value) => {
       calls.push(`updateSandboxApproval:${value}`);
     },
@@ -256,7 +253,6 @@ describe("workspaceManager（Task 8，ADR-0198 切片 2）", () => {
       ],
       sessions: [],
       agents: [],
-      relayMaxDepth: 6,
       sandboxApproval: "ask",
     });
 
@@ -281,7 +277,6 @@ describe("workspaceManager（Task 8，ADR-0198 切片 2）", () => {
       connectors: [{ workspaceId: "ws-ok", hostUid: "friend-a", serverId: "s1", label: "L1", tools: [] }],
       sessions: [],
       agents: [],
-      relayMaxDepth: 6,
       sandboxApproval: "ask",
     });
 
@@ -310,7 +305,6 @@ describe("workspaceManager（Task 8，ADR-0198 切片 2）", () => {
       connectors: [{ workspaceId: "ws-1", hostUid: "friend-a", serverId: "s1", label: "L1", tools: [] }],
       sessions: [],
       agents: [],
-      relayMaxDepth: 6,
       sandboxApproval: "ask",
     });
     expect((await h.manager.list()).ok).toBe(true);
@@ -577,23 +571,18 @@ describe("workspace relay max depth（#950 Task 9）", () => {
     expect(h.calls).toContain("updateSandboxApproval:auto");
   });
 
-  it("setRelayMaxDepth：透传给 updateRelayMaxDepth", async () => {
-    const { manager, calls } = harness();
-    expect(await manager.setRelayMaxDepth("ws-1", 10)).toEqual({ ok: true, value: null });
-    expect(calls).toContain("updateRelayMaxDepth:10");
-  });
   it("未登录：回 还没登录，不打网络", async () => {
     const h = harness();
     h.signOut();
-    expect(await h.manager.setRelayMaxDepth("ws-1", 10)).toEqual({ ok: false, message: "还没登录" });
+    expect(await h.manager.setSandboxApproval("ws-1", "auto")).toEqual({ ok: false, message: "还没登录" });
     expect(h.calls).toEqual([]);
   });
-  it("updateRelayMaxDepth 抛「无权修改」：原样冒泡成 FriendsResult 错误", async () => {
+  it("updateSandboxApproval 抛「无权修改」：原样冒泡成 FriendsResult 错误", async () => {
     const { manager } = harness({
-      updateRelayMaxDepth: async () => {
+      updateSandboxApproval: async () => {
         throw new Error("无权修改");
       },
     });
-    expect(await manager.setRelayMaxDepth("ws-1", 10)).toEqual({ ok: false, message: "无权修改" });
+    expect(await manager.setSandboxApproval("ws-1", "auto")).toEqual({ ok: false, message: "无权修改" });
   });
 });

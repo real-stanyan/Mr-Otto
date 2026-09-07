@@ -18,7 +18,6 @@ const WS: WorkspaceSnapshot = {
   connectors: [],
   sessions: [],
   agents: [],
-  relayMaxDepth: 6,
   sandboxApproval: "ask",
 };
 

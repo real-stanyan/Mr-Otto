@@ -1116,9 +1116,6 @@ export interface ShellBridge {
       前置条件（#949 review finding 2），不等则拒并回 MEMORY_CONFLICT 文案。
       成功回的是这次写完之后的新令牌，渲染层拿它原地更新那一行、不必整份重拉 */
   workspaceMemorySave(id: string, agentId: string, text: string, version: string): Promise<FriendsResult<string>>;
-  /** owner 在智能体 tab 改「接力上限」（#950 Task 9）。非 owner 会撞 RLS，
-      主进程翻成「无权修改」 */
-  workspaceSetRelayMaxDepth(id: string, maxDepth: number): Promise<FriendsResult<null>>;
   /** owner 改「沙箱内 bash / write_file 要不要人批」（#977，ADR-0231）。非 owner 撞 RLS */
   workspaceSetSandboxApproval(id: string, value: "ask" | "auto"): Promise<FriendsResult<null>>;
   /** 把 sessionId 这个会话发布进工作区（Task 9 publishSessionToWorkspace）。
@@ -1568,7 +1565,6 @@ export const CHANNELS = {
   workspaceUsage: "otter:workspaceUsage",
   workspaceMemoryList: "otter:workspaceMemoryList",
   workspaceMemorySave: "otter:workspaceMemorySave",
-  workspaceSetRelayMaxDepth: "otter:workspaceSetRelayMaxDepth",
   workspaceSetSandboxApproval: "otter:workspaceSetSandboxApproval",
   workspacePublishSession: "otter:workspacePublishSession",
   workspaceUnpublishSession: "otter:workspaceUnpublishSession",
