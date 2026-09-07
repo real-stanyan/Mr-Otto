@@ -45,79 +45,15 @@ export function userRowIdentity(
   return { label: parsed.label, text: parsed.text, mine, targets, uid: e.fromUid ?? null };
 }
 
-// ─── agent 中间步骤折叠（#971，ADR-0229） ────────────────────────────────
-
-/** 一段被折起来的中间步骤：同一只 agent 在一轮里、最终答案之前的那几条
-    assistant_message（带 toolCalls 的，或一个字没说的）。closedBy 是把它
-    收口的那条事件的 seq（最终答案 / turn_ended），null = 这一轮还在跑 */
-export interface AgentStepsFold {
-  agentId: string | undefined;
-  steps: AssistantMessageEvent[];
-  closedBy: number | null;
-}
+// ─── agent 的中间步骤（#971，ADR-0229；#1055 把折叠头也撤了） ──────────────
 
 /** 一条 assistant_message 是「步骤」还是「答案」：要了工具 = 步骤（这一条的
     全部意义是接下来要干活）；一个字没说也算步骤（画出来是一个空气泡）；
-    有正文且没要工具 = 答案 */
+    有正文且没要工具 = 答案。
+    判据本身没变，变的是步骤的下场——ADR-0229 折成一行摘要，#1055 整段不画，
+    见 `hiddenFromCloudTimeline` 第 ⑥ 条 */
 export function isAgentStep(e: AssistantMessageEvent): boolean {
   return (e.toolCalls?.length ?? 0) > 0 || e.content.trim() === "";
-}
-
-/** 云会话时间线把 agent 的中间步骤折起来、只画最终答案（#971）：
-    维护者原话「智能体发言时不需要在 UI 里显示思考过程，只需要显示最终答案，
-    不然整个页面看起来太长太乱」。
-    按 agentId 各自开一段 run：碰到步骤就攒进当前 run，碰到答案或这只 agent
-    的 turn_ended 就收口（fold 挂在收口那条事件的 seq 上，渲染层画在它前面）；
-    事件流走完还没收口的 run 照样返回（closedBy: null），渲染层画在时间线末尾
-    ——「正在处理」这件事人得看得见，只是不摊开。
-    **不删事件、不改投影**：日志一个字节不动，这只是渲染层的分组，展开就全在。
-    agentId 缺席（旧日志/单 agent）归到 undefined 那一组，turn_ended 同样按
-    agentId 配对——两边都缺席时自然配上 */
-export function foldAgentSteps(events: readonly SessionEvent[]): {
-  /** 被折进某个 fold 的 assistant_message seq——渲染层跳过这些行 */
-  hidden: Set<number>;
-  /** 已收口的 fold，按收口事件的 seq 索引 */
-  byCloser: Map<number, AgentStepsFold>;
-  /** 还在跑的 run（按出现顺序） */
-  open: AgentStepsFold[];
-} {
-  const hidden = new Set<number>();
-  const byCloser = new Map<number, AgentStepsFold>();
-  const runs = new Map<string | undefined, AgentStepsFold>();
-  const close = (agentId: string | undefined, seq: number): void => {
-    const run = runs.get(agentId);
-    if (!run) return;
-    run.closedBy = seq;
-    byCloser.set(seq, run);
-    runs.delete(agentId);
-  };
-  for (const e of events) {
-    if (e.type === "assistant_message") {
-      if (isAgentStep(e)) {
-        hidden.add(e.seq);
-        const run = runs.get(e.agentId);
-        if (run) run.steps.push(e);
-        else runs.set(e.agentId, { agentId: e.agentId, steps: [e], closedBy: null });
-      } else {
-        close(e.agentId, e.seq);
-      }
-    } else if (e.type === "turn_ended") {
-      close(e.agentId, e.seq);
-    }
-  }
-  // Map 保插入顺序 = 各 run 第一条步骤的出现顺序
-  return { hidden, byCloser, open: [...runs.values()] };
-}
-
-/** 折叠行那一句摘要：「运营」处理过程 · 3 步 · 5 次工具调用。步数是被折的
-    assistant_message 条数，工具数是它们 toolCalls 的总和——两个数说的不是
-    一件事（一步可以要好几把工具）。没有 agentId 时不带名字 */
-export function agentStepsSummary(fold: AgentStepsFold, ws: WorkspaceSnapshot): string {
-  const who = fold.agentId ? `「${agentNameOf(ws, fold.agentId)}」` : "";
-  const tools = fold.steps.reduce((n, s) => n + (s.toolCalls?.length ?? 0), 0);
-  const state = fold.closedBy === null ? "正在处理" : "处理过程";
-  const toolPart = tools > 0 ? ` · ${tools} 次工具调用` : "";
-  return `${who}${state} · ${fold.steps.length} 步${toolPart}`;
 }
 
 /** assistant_message 的署名：agentId 查名单（agentNameOf 查不到回 agentId 本身，
@@ -134,12 +70,12 @@ export function relayLineText(e: AgentRelayEvent, ws: WorkspaceSnapshot): string
   return `${agentNameOf(ws, e.fromAgentId)} → ${agentNameOf(ws, e.toAgentId)} · 接力第 ${e.depth} 棒`;
 }
 
-/** 这条事件在云会话时间线上要不要**藏起来**（#950；#993 扩了四类）。
+/** 这条事件在云会话时间线上要不要**藏起来**（#950；#993 扩了四类，#1055 又添一类）。
     群聊时间线的读者是工作区里各行各业的人，不是在读一份审计日志——本地会话
     那套 AUDIT 小灰字（会话已创建 / 请求信封已更新 / 由谁批准）在这里是纯噪音：
     它们说的是机器的内务，不是群里发生的事。
 
-    五类：
+    六类：
     ① 带 relay 的 `user_message`——那条开场白是给模型看的（"[系统] 「运营」@ 了你"），
        人看接力线（agent_relay 那一行）就够，画出来是同一件事说两遍；
     ② `session_created`——点开一条会话本来就意味着它存在了，这行字零信息；
@@ -148,13 +84,22 @@ export function relayLineText(e: AgentRelayEvent, ws: WorkspaceSnapshot): string
        没有任何人做了任何事；
     ④ `request_envelope`——「请求信封已更新：型号 · 工具 3 把」是给维护者调参用的；
     ⑤ **批准**了的 `approval_decision`——放行不是对话事实。**拒绝仍然画**：它中断了
-       流程，群里得看得见"这件事没做成、以及为什么"，那不是噪音。
+       流程，群里得看得见"这件事没做成、以及为什么"，那不是噪音；
+    ⑥ agent 的**中间步骤**（`isAgentStep`：要了工具的、或一个字没说的
+       `assistant_message`）——ADR-0229 已经把它们折进一行「「管理员」处理过程 ·
+       1 步 · 1 次工具调用」，#1055 连那一行也撤了：那句摘要说的是机器干活的量
+       （几步、几次调用），不是群里发生的事，而人要知道的「它此刻在忙」已经由
+       输入指示器（`elements/typing-indicator`，画在时间线末尾那几行未收口的
+       turn 上）说了。**判据合进这一个函数**：原来渲染层要连问两道
+       （`hiddenFromCloudTimeline` + `foldAgentSteps().hidden`），同一个问题两份
+       判据迟早分家。代价写在这里——工具调用在云会话时间线上**没有任何痕迹**，
+       只跑工具没说话的一轮，收口后什么都不留（`turn_ended{error}` 那行还在）。
 
-    留在时间线上的因此只剩：人说的话、agent 说的话、agent 干的活（折叠段）、
-    接力线、出错、归档。 */
+    留在时间线上的因此只剩：人说的话、agent 的最终答案、接力线、出错、归档。 */
 export function hiddenFromCloudTimeline(e: SessionEvent): boolean {
   if (e.type === "user_message") return e.relay !== undefined;
   if (e.type === "approval_decision") return e.decision === "approved";
+  if (e.type === "assistant_message") return isAgentStep(e);
   return e.type === "session_created" || e.type === "agent_briefed" || e.type === "request_envelope";
 }
 
