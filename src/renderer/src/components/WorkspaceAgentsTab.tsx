@@ -19,12 +19,13 @@ import {
 } from "@/components/ui/dialog.js";
 import { useChat } from "../store.js";
 import { agentRows, type AgentRowView } from "../lib/workspaceView.js";
-import { AGENT_AVATARS, agentAvatarSrc } from "../lib/agentAvatar.js";
+import { AGENT_AVATARS, agentAvatarSrc, avatarPreviewSrc } from "../lib/agentAvatar.js";
 import {
   AUTO_MODEL, agentModelOptions, chainWarning, modelsFromSelection, selectedModelValue,
 } from "../lib/agentModelChoice.js";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select.js";
 import { ProviderMark } from "./ProviderMark.js";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover.js";
 import {
   connectorChoices, modeFromTools, staleSelections, toolsDraftError, toolsFromDraft, type ToolsMode,
 } from "../lib/agentToolsForm.js";
@@ -304,6 +305,7 @@ function AgentEditorDialog({
   // 就把型号、连接器挤到折叠线以下——而那两样正是人开这张表单最常来改的。
   // **只管显示不管内容**：收起时 instructions 照旧在 state 里，保存照发
   const [promptOpen, setPromptOpen] = useState(false);
+  const [avatarPickerOpen, setAvatarPickerOpen] = useState(false);
   const [toolsMode, setToolsMode] = useState<ToolsMode>("all");
   const [toolsSel, setToolsSel] = useState<ProxySelection>({});
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
@@ -340,6 +342,7 @@ function AgentEditorDialog({
     }
     setExpanded(new Set());
     setPromptOpen(false);
+    setAvatarPickerOpen(false);
     setError(null);
     setStale(false);
   }, [state]);
@@ -363,6 +366,9 @@ function AgentEditorDialog({
   const currentModels = state?.mode === "edit" ? state.agent.models : EMPTY_MODELS;
   const modelOptions = agentModelOptions(availableModels, currentModels, modelPlatforms);
   const chainNote = chainWarning(currentModels);
+  // 头像那一格画什么：挑过就画挑的，没挑过画派生的；新建且没挑回 null
+  // （agentId 还没铸出来，见 avatarPreviewSrc 的头注）
+  const avatarPreview = avatarPreviewSrc(ws, state?.mode === "edit" ? state.agent.agentId : null, avatarSlot);
 
   const nameError = validateAgentName(name);
   const toolsError = toolsDraftError(toolsMode, toolsSel);
@@ -449,57 +455,104 @@ function AgentEditorDialog({
         </DialogHeader>
 
         <div className="flex min-h-0 flex-col gap-3 overflow-y-auto">
-          {/* 头像（#1007）：13 张内置，点一张就是它；再点一次取消，回到按 agentId
-              哈希派生的那张。「不挑」是正当状态不是没配完——存量 agent 一行不改
-              也有脸，所以取消这颗钮得一直在 */}
-          <div className="flex flex-col gap-1">
-            <span className={SECTION_LABEL}>头像</span>
-            <div className="flex flex-wrap gap-1">
-              {AGENT_AVATARS.map((src, i) => (
-                <button
-                  key={i}
-                  type="button"
-                  aria-label={`头像 ${i + 1}`}
-                  aria-pressed={avatarSlot === i}
-                  disabled={busy}
-                  onClick={() => setAvatarSlot((v) => (v === i ? null : i))}
-                  className={cn(
-                    "rounded-full border-2 bg-transparent p-0 transition-colors disabled:opacity-50",
-                    avatarSlot === i ? "border-[var(--brand)]" : "border-transparent hover:border-border"
-                  )}
-                >
-                  <img src={src} alt="" aria-hidden className="size-8 rounded-full" />
-                </button>
-              ))}
+          {/* 身份那一行（#1013）：头像在左占 40%，名字与职责竖排在右。
+              头像那一格**只画此刻在用的那一张**，点开才挑——13 张平铺会占掉表单
+              顶部一大块，而「此刻用的是哪张」还得靠找那个高亮框。
+
+              选择面板用 **Popover 不用嵌套 Dialog**：嵌套 modal 的失败模式是
+              「按 Esc 把外层也关了」，代价是整张表单的草稿一起没；而这一格只有
+              13 个方块，一个锚在头像上的小面板本来就够。Popover portal 到 body，
+              所以不会被表单那层 overflow-y-auto 裁掉（同 ADR-0220 @ 选人那条教训）*/}
+          <div className="flex items-center gap-3">
+            <div className="flex basis-[40%] flex-col gap-1">
+              <span className={SECTION_LABEL}>头像</span>
+              <Popover open={avatarPickerOpen} onOpenChange={setAvatarPickerOpen}>
+                <PopoverTrigger asChild>
+                  <button
+                    type="button"
+                    disabled={busy}
+                    aria-label="更换头像"
+                    title="点一下换头像"
+                    className={cn(
+                      "aspect-square w-full max-w-[128px] self-center overflow-hidden rounded-xl",
+                      "border border-border bg-transparent p-0 transition-colors",
+                      "hover:border-[var(--brand)] focus-visible:border-[var(--brand)] focus-visible:outline-none",
+                      "disabled:opacity-50"
+                    )}
+                  >
+                    {avatarPreview !== null ? (
+                      <img src={avatarPreview} alt="" aria-hidden className="size-full object-cover" />
+                    ) : (
+                      /* 新建且没挑：派生用的 agentId 是主进程落库那一刻才铸的，
+                         表单里无从得知将来分到哪张脸。随便挑一张顶上是撒谎——
+                         人会以为已经定了 */
+                      <span className="flex size-full items-center justify-center px-2 text-center text-[10.5px] text-muted-foreground">
+                        保存后自动分配
+                      </span>
+                    )}
+                  </button>
+                </PopoverTrigger>
+                <PopoverContent align="start" className="w-[248px] p-2">
+                  <div className="grid grid-cols-5 gap-1">
+                    {/* 第一格是「自动分配」，取代原来那条「再点一次挑中的那张可以
+                        取消」——一个说得出名字的选项，好过一条要背下来的手势 */}
+                    <button
+                      type="button"
+                      aria-label="自动分配"
+                      aria-pressed={avatarSlot === null}
+                      title="按名字自动分配一张"
+                      onClick={() => { setAvatarSlot(null); setAvatarPickerOpen(false); }}
+                      className={cn(
+                        "flex aspect-square items-center justify-center rounded-full border-2 bg-transparent p-0 text-[9px] leading-tight text-muted-foreground transition-colors",
+                        avatarSlot === null ? "border-[var(--brand)]" : "border-transparent hover:border-border"
+                      )}
+                    >
+                      自动
+                    </button>
+                    {AGENT_AVATARS.map((src, i) => (
+                      <button
+                        key={i}
+                        type="button"
+                        aria-label={`头像 ${i + 1}`}
+                        aria-pressed={avatarSlot === i}
+                        onClick={() => { setAvatarSlot(i); setAvatarPickerOpen(false); }}
+                        className={cn(
+                          "rounded-full border-2 bg-transparent p-0 transition-colors",
+                          avatarSlot === i ? "border-[var(--brand)]" : "border-transparent hover:border-border"
+                        )}
+                      >
+                        <img src={src} alt="" aria-hidden className="size-full rounded-full" />
+                      </button>
+                    ))}
+                  </div>
+                </PopoverContent>
+              </Popover>
             </div>
-            <p className="text-[10.5px] text-muted-foreground">
-              {avatarSlot === null
-                ? "没挑：按名字自动分配一张（再点一次挑中的那张可以取消）。"
-                : "挑好了。再点一次同一张就回到自动分配。"}
-            </p>
-          </div>
 
-          <div className="flex flex-col gap-1">
-            <span className={SECTION_LABEL}>名字</span>
-            <Input
-              value={name}
-              onChange={(e) => setName(e.target.value)}
-              onKeyDown={onInputKeyDown}
-              placeholder="运营"
-              disabled={busy}
-            />
-            {nameError && <p className="text-xs text-err">{nameError}</p>}
-          </div>
+            <div className="flex min-w-0 flex-1 flex-col gap-2">
+              <div className="flex flex-col gap-1">
+                <span className={SECTION_LABEL}>名字</span>
+                <Input
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  onKeyDown={onInputKeyDown}
+                  placeholder="运营"
+                  disabled={busy}
+                />
+                {nameError && <p className="text-xs text-err">{nameError}</p>}
+              </div>
 
-          <div className="flex flex-col gap-1">
-            <span className={SECTION_LABEL}>职责</span>
-            <Input
-              value={description}
-              onChange={(e) => setDescription(e.target.value)}
-              onKeyDown={onInputKeyDown}
-              placeholder="一句话，进别人 @ 它时的名册"
-              disabled={busy}
-            />
+              <div className="flex flex-col gap-1">
+                <span className={SECTION_LABEL}>职责</span>
+                <Input
+                  value={description}
+                  onChange={(e) => setDescription(e.target.value)}
+                  onKeyDown={onInputKeyDown}
+                  placeholder="一句话，进别人 @ 它时的名册"
+                  disabled={busy}
+                />
+              </div>
+            </div>
           </div>
 
           {/* 提示词默认收起（#1005）。收起时**只是不画那个框**，instructions

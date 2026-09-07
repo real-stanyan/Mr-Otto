@@ -39,3 +39,23 @@ export function agentAvatarSrc(ws: WorkspaceSnapshot, agentId: string): string {
   const roster = ws.agents.map((a) => a.agentId);
   return AGENT_AVATARS[agentAvatarSlot(agentId, roster)]!;
 }
+
+/**
+ * 编辑弹窗里那一格头像该画什么（#1013）。
+ *
+ * `null` = **画不出来**，不是「没有头像」：新建时派生用的 `agentId` 还没铸出来
+ * （`a_` + 12 hex 是主进程在落库那一刻生成的），表单里无从得知它将来会分到哪张脸。
+ * 这时候随便挑一张顶上是撒谎——人会以为头像已经定了。调用方该画的是一句
+ * 「保存后自动分配」。
+ *
+ * `slot` 取的是**表单里此刻的选择**不是库里那份：改了还没保存时，预览要跟着手走。
+ */
+export function avatarPreviewSrc(
+  ws: WorkspaceSnapshot,
+  agentId: string | null,
+  slot: number | null
+): string | null {
+  if (slot !== null && slot >= 0 && slot < AGENT_AVATARS.length) return AGENT_AVATARS[slot]!;
+  if (agentId === null) return null;
+  return agentAvatarSrc(ws, agentId);
+}
