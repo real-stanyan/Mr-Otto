@@ -1027,6 +1027,20 @@ describe("沙箱内工具的工作区审批策略（#977 第 1 条，ADR-0231）
     expect(events.filter((e) => e.type === "approval_request")).toHaveLength(2);
   });
 
+  it("抖一下不等于确认是 ask：第一把刀查挂了按 ask 问人，第二把刀照旧重查、查到 auto 就放行（#1029）", async () => {
+    let n = 0;
+    const { events, policyCalls } = await runBashTurn(async () => {
+      if (++n === 1) throw new Error("db blip");
+      return "auto";
+    });
+    // 「问不出来」不钉住这一轮——否则一次网络抖动会把这个 auto 工作区剩下的
+    // 每一把刀都翻成要人批，而群里没有任何人看得出为什么突然开始弹卡
+    expect(policyCalls).toBe(2);
+    expect(events.filter((e) => e.type === "approval_request")).toHaveLength(1);
+    const decisions = events.filter((e) => e.type === "approval_decision");
+    expect(decisions[1]).toMatchObject({ reason: "工作区设置：沙箱内工具免审" });
+  });
+
   it("auto 只管沙箱那两把刀：create_agent 照旧要批", async () => {
     const store = newStore();
     const events: SessionEvent[] = [];

@@ -106,6 +106,19 @@ export function SandboxApprovalToggle({
       <div title={control.title} className={cn(pill(false, false), className)}>
         <span>{SANDBOX_APPROVAL_LABEL}</span>
         <span className="text-[11px]">读不到</span>
+        {/* 读不到也照样按得下刹车（只有这一个方向，ADR-0240 决策 6 同一条纪律）：
+            不知道现状就打开免审等于蒙着眼睛放行，而「改成逐条批」在任何现状下
+            都是安全的那一边 */}
+        {control.canForceAsk && (
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => onChange(false)}
+            className="text-[11px] underline underline-offset-2 disabled:no-underline disabled:opacity-50"
+          >
+            改成逐条批
+          </button>
+        )}
       </div>
     );
   }

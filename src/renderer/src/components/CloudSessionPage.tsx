@@ -228,15 +228,18 @@ export function CloudSessionPage({
   // 重发**确定失败**时换成「重新发送失败：<原因>」——否则屏幕上一条红字
   // 「限速…」旁边挂着一行灰字「没有收到回执」，读起来像两件事
   const [unsent, setUnsent] = useState<UnsentLine | null>(null);
+  // 「沙箱内免审」那颗开关（#1029，ADR-0240）：值是快照的投影（受控），
+  // 这两格只管「写在飞吗」与「上一次写为什么没成」。错误**不进 actionError**——
+  // 那一格随便哪件不相干的成功都会把它清掉，而这条说的是一次安全设置没改上。
+  // `sandboxBusy` **故意不随换会话清**：清了之后，A 那次写回来时的
+  // `setSandboxBusy(false)` 会把 B 此刻在飞的那次也解禁，于是同一颗开关点得动两次。
+  // 代价是从 A 换到 B 的那一小段里 B 的开关是灰的——比多发一次写好
+  const [sandboxBusy, setSandboxBusy] = useState(false);
+  const [sandboxError, setSandboxError] = useState<string | null>(null);
   // 光标位置（#932 切片 1b）：「正在打 @ 吗」是 draft × caret 的函数，光标
   // 不跟着走的话，把光标挪回一个旧的 @ 后面时弹层不会出来。textarea 自己的
   // selectionStart 是 DOM 状态，读不进渲染——所以四个入口（改字/选区/键起/
   // 点击）都往这一格里抄一次
-  // 「沙箱内免审」那颗开关（#1029，ADR-0240）：值是快照的投影（受控），
-  // 这两格只管「写在飞吗」与「上一次写为什么没成」。错误**不进 actionError**——
-  // 那一格随便哪件不相干的成功都会把它清掉，而这条说的是一次安全设置没改上
-  const [sandboxBusy, setSandboxBusy] = useState(false);
-  const [sandboxError, setSandboxError] = useState<string | null>(null);
   const [caret, setCaret] = useState(0);
   // Escape 关掉的是**这一个** @（记它的下标）：记成布尔的话，同一句话里
   // 再打一个 @ 会因为上一次的关闭而不弹

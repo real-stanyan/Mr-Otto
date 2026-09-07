@@ -30,8 +30,10 @@ export type SandboxApprovalControl =
   /** 成员：看得到、改不了。危险状态对全群可见是故意的——它花的是 owner 的额度、
       动的是大家共用的那个卷，藏起来只会让「刚才为什么没弹卡」永远问不出答案 */
   | { kind: "readonly"; on: boolean; title: string; note: string }
-  /** 这一格读不到：不画开关、也不假装它是关着的 */
-  | { kind: "unknown"; title: string };
+  /** 这一格读不到：不画开关、也不假装它是关着的。owner 仍然给一条**只往严的一边**
+      的出路（`canForceAsk`）——不知道现在是什么，也照样按得下「改成逐条批」；
+      反方向按不得（不知道现状就打开免审，等于蒙着眼睛放行） */
+  | { kind: "unknown"; title: string; canForceAsk: boolean };
 
 const SCOPE = "整个工作区都跟着变：这个工作区里所有会话、所有成员。";
 const COVERS = "只管智能体在自己容器里跑命令、写文件；连接器与新建智能体照旧要批。";
@@ -43,6 +45,7 @@ export function sandboxApprovalControl(ws: WorkspaceSnapshot, selfUid: string): 
   if (ws.sandboxApproval === null) {
     return {
       kind: "unknown",
+      canForceAsk: ws.ownerUid === selfUid,
       title: `这个工作区的「${SANDBOX_APPROVAL_LABEL}」此刻读不到，所以这里不画开关——画一个看起来关着的开关，而智能体那头照旧按真值走，是比读不到更糟的一件事。${COVERS}`,
     };
   }
@@ -58,9 +61,15 @@ export function sandboxApprovalControl(ws: WorkspaceSnapshot, selfUid: string): 
   return { kind: "toggle", on, title: `${SCOPE}${COVERS}${TIMING}` };
 }
 
-/** 开着的时候输入框上方常驻的那一句（ADR-0231 把这句话记成了免审这笔账的缓解措施，
-    所以它不能退化成一条要悬停才看得见的 title）。关着 = 今天的行为，不占这一行 */
+/** 输入框上方常驻的那一句（ADR-0231 把这句话记成了免审这笔账的缓解措施，
+    所以它不能退化成一条要悬停才看得见的 title）。三种情形只有两种要出这一行：
+    · 免审开着 —— 说清此刻不会有人替你看每一条命令。
+    · **读不到** —— 这一格恰恰可能正开着免审。不出声就是把一个「可能正危险」的
+      状态藏进一枚灰药丸的 title 里，等于 ADR-0240 决策 4 明确否掉的那条路。
+    关着 = 今天的行为，不占这一行。 */
 export function sandboxApprovalBanner(c: SandboxApprovalControl): string | null {
-  if (c.kind === "unknown" || !c.on) return null;
-  return `这个工作区正在免审：智能体在自己的容器里跑命令、写文件不会再问你。${COVERS}`;
+  if (c.kind === "unknown") {
+    return `读不到这个工作区的「${SANDBOX_APPROVAL_LABEL}」：此刻说不准智能体跑命令、写文件会不会先问你。`;
+  }
+  return c.on ? `这个工作区正在免审：智能体在自己的容器里跑命令、写文件不会再问你。${COVERS}` : null;
 }

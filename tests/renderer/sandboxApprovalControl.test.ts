@@ -37,6 +37,13 @@ describe("sandboxApprovalControl", () => {
     expect(c.title).toContain("读不到");
   });
 
+  it("读不到时 owner 仍然按得下刹车、按不动放行——只往严的一边（同 ADR-0240 决策 6 那条纪律）", () => {
+    const mine = sandboxApprovalControl({ ...WS, sandboxApproval: null }, "owner");
+    const theirs = sandboxApprovalControl({ ...WS, sandboxApproval: null }, "member");
+    expect(mine.kind === "unknown" && mine.canForceAsk).toBe(true);
+    expect(theirs.kind === "unknown" && theirs.canForceAsk).toBe(false);
+  });
+
   it("标签不许是「免审批」——那是本地那颗的名字，两颗管的东西不一样", () => {
     expect(SANDBOX_APPROVAL_LABEL).not.toBe("免审批");
     expect(SANDBOX_APPROVAL_LABEL).toBe("沙箱内免审");
@@ -48,7 +55,12 @@ describe("sandboxApprovalBanner", () => {
     expect(sandboxApprovalBanner(sandboxApprovalControl({ ...WS, sandboxApproval: "auto" }, "owner")))
       .toContain("正在免审");
     expect(sandboxApprovalBanner(sandboxApprovalControl(WS, "owner"))).toBeNull();
-    expect(sandboxApprovalBanner(sandboxApprovalControl({ ...WS, sandboxApproval: null }, "owner"))).toBeNull();
+  });
+
+  it("读不到也要出声：那一格恰恰可能正开着免审，闷着就是把危险状态藏进一枚灰药丸的 title 里", () => {
+    const line = sandboxApprovalBanner(sandboxApprovalControl({ ...WS, sandboxApproval: null }, "member"));
+    expect(line).not.toBeNull();
+    expect(line).toContain("说不准");
   });
 
   it("成员那一侧照样看得见——危险状态不按人分可见性（花的是 owner 的额度、动的是共用的卷）", () => {

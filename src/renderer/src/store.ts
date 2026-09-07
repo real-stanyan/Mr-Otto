@@ -932,8 +932,8 @@ interface ChatState {
       **失败时不碰 workspaceGroupsError**：这颗开关此刻坐在输入框那一行上，一次写失败
       不该把页脚那格共享错误擦掉、也不该借它说话（ADR-0228 C2-I4 已经为 say/approve/stop
       拆过这条线，原因归属必须是确定的）——原因原样回给调用方，它画在开关旁边。
-      成功则先就地 patch 那一格（当场对上）再补一次权威重拉（挡「旧快照后到把它盖回去」，
-      理由在实现里） */
+      成功则先就地 patch 那一格（当场对上）再自己拉一次权威清单（挡「旧快照后到把它
+      盖回去」；**不走 refreshWorkspaceGroups**，那个 action 会碰共享错误格，理由在实现里） */
   setWorkspaceSandboxApproval(id: string, value: "ask" | "auto"): Promise<FriendsResult<null>>;
   /** 把当前/指定会话发布进工作区。回是否成功——rowId/pkgId 用不上时调用方不必接 */
   publishWorkspaceSession(id: string, sessionId: string, title: string): Promise<boolean>;
@@ -2298,12 +2298,16 @@ export const useChat = create<ChatState>((set, get) => ({
     set((s) => ({
       workspaceGroups: s.workspaceGroups.map((g) => (g.id === id ? { ...g, sandboxApproval: value } : g)),
     }));
-    // 再补一次权威重拉，**不因为它失败而把这次写报成失败**（写已经成功了）。
-    // 只 patch 不重拉挡不住一种情形：写之前就在飞的那次 workspaceList 后到，
-    // 拿一份不含这次改动的旧快照把整格盖回去——屏幕上那颗开关自己弹回旧位置，
-    // 而库里是新值。这颗开关说的是「会不会有人替你看每一条命令」，
-    // 让它显示一个旧值不能只靠「下次刷新会自己好」。
-    await get().refreshWorkspaceGroups();
+    // 再补一次权威重拉。**故意不走 refreshWorkspaceGroups()**：那个 action
+    // 成功清空、失败写入 `workspaceGroupsError`，而这颗开关坐在输入框那一行上——
+    // 翻一次就把页脚那格共享错误擦掉，正是 ADR-0228 C2-I4 为 say/approve/stop
+    // 拆掉的那条线。这里只认 `workspaceGroups` 一格，拉挂了就留着上面 patch 的值
+    // （写是成功的，本来就不该因为一次读失败被报成失败）。
+    // 为什么不能只 patch：写之前就在飞的那次 workspaceList 后到，会拿一份不含这次
+    // 改动的旧快照把整格盖回去——屏幕上那颗开关自己弹回旧位置而库里是新值。
+    // 这颗开关说的是「会不会有人替你看每一条命令」，不能靠「下次刷新会自己好」。
+    const fresh = await window.otter.workspaceList();
+    if (fresh.ok) set({ workspaceGroups: fresh.value });
     return r;
   },
 
