@@ -59,7 +59,8 @@ export function createSessionWorktreeService(deps: SessionWorktreeDeps): Session
   const root = join(deps.userData, "worktrees");
 
   const git = (args: string[], cwd: string): string =>
-    execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+    // windowsHide：win32 的 GUI 进程起 console 程序会弹黑框（#1027，见 shared/childProcess.ts）
+    execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], windowsHide: true }).trim();
 
   const tryGit = (args: string[], cwd: string): string | null => {
     try {

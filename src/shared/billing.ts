@@ -20,8 +20,12 @@ export interface PlanInfo {
   id: PlanId;
   /** 月费，美元分（plan.price_usd_cents） */
   priceUsdCents: number;
-  /** 多模态能力门禁（plan.capabilities）：false 的档在 hosted 路上收不到这类输入 */
-  capabilities: { image: boolean; video: boolean };
+  /** 档位能力（plan.capabilities）。`image`/`video` 是多模态门禁：false 的档在 hosted
+      路上收不到这类输入。`workspace` 是「这一档能不能建工作区」（#1024）。
+      三格一律「读不到按 false」—— 给没买的能力开门是漏钱，关门只是少一颗按钮；
+      `workspace` 那一格的「服务端还没有这个概念」由 `workspaceAccess` 另行分辨，
+      不在解析这一层猜（见那个文件的注释） */
+  capabilities: { image: boolean; video: boolean; workspace: boolean };
 }
 
 export interface BillingMe {
@@ -180,7 +184,11 @@ export function parseBillingMe(payload: unknown): BillingMe | null {
           id: pid, priceUsdCents: p.priceUsdCents,
           // 缺省 false（关）：门禁漏报的能力按没有算——给没买的能力开门是漏钱，
           // 给买了的能力关门是 UI 上少一颗按钮，前者才不可逆
-          capabilities: { image: caps.image === true, video: caps.video === true },
+          capabilities: {
+            image: caps.image === true,
+            video: caps.video === true,
+            workspace: caps.workspace === true,
+          },
         });
       }
     }

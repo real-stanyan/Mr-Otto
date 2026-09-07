@@ -8,6 +8,9 @@
 // 四个状态各有各的出口，一个都不能是死胡同（wayfinding：任何一屏都要能出去）：
 // · allowed —— 填名字，回车即建
 // · no_subscription —— 说清为什么要订阅（规则二：额度记在创建者头上），给「去订阅」
+// · plan_too_low —— 订着呢，只是这一档不带工作区（#1024）。**和上一条分开说**：
+//   这个人不该被劝去「订阅」（他已经订了，再开一张 checkout 会变成第二条订阅），
+//   该被劝去换档；带工作区的是哪几档从 plan 表现读，不在文案里写死
 // · signed_out —— 给「去登录」
 // · unknown —— 还没问到 billing（冷启动/断网）。**不说「你没有订阅」**，那句话
 //   可能是假的，见 workspaceAccess.ts 的注释；这里打开时顺手补一次 loadBilling
@@ -27,7 +30,8 @@ import {
 } from "@/components/ui/dialog.js";
 import { Input } from "@/components/ui/input.js";
 import { useChat } from "../store.js";
-import { workspaceAccess } from "../lib/workspaceAccess.js";
+import { plansWithWorkspace, workspaceAccess } from "../lib/workspaceAccess.js";
+import { PLAN_BADGE_LABEL } from "../lib/billingView.js";
 
 export function NewWorkspaceDialog({
   open,
@@ -50,6 +54,11 @@ export function NewWorkspaceDialog({
   const error = useChat((s) => s.workspaceGroupsError);
 
   const access = workspaceAccess({ signedIn, billing });
+  /** 「Pro 或 Max」这句话从 plan 表现读，不写死（同 ADR-0203 对价格的规矩）。
+      查不到就整句省掉——宁可少半句，也不说一个可能已经不成立的档位名 */
+  const tiers = (billing?.me ? plansWithWorkspace(billing.me) : [])
+    .map((id) => PLAN_BADGE_LABEL[id])
+    .join(" 或 ");
 
   // 打开时补一次订阅快照：没查过就点开这扇窗的概率不低（冷启动后第一件事），
   // 而 unknown 这一态本身没有内容可给，能自己变成结论就别让用户干等
@@ -88,9 +97,13 @@ export function NewWorkspaceDialog({
             <p className="text-[12px] leading-relaxed text-muted-foreground">
               {access === "signed_out"
                 ? "工作区跟着账号走——先登录才能建。"
-                : // 规则一，连同它的理由一起说：光说「要订阅」听起来像收过路费，
-                  // 说清「谁付这笔钱」才解释得通为什么门槛在创建者这一侧
-                  "建工作区要一份订阅。工作区里的每一次模型调用都记在创建者的额度上（你拉进来的人跑的那些也算），所以得先有额度可记。"}
+                : access === "plan_too_low"
+                  ? // 已经在付钱的人，别再说一遍「要订阅」。带工作区的档从 plan 表现读：
+                    // 哪天档位的能力变了，这句话跟着变，不用发版
+                    `你当前的档位不带工作区${tiers ? `，${tiers} 可以` : ""}。工作区里的每一次模型调用都记在创建者的额度上（你拉进来的人跑的那些也算），所以它跟着档位走。`
+                  : // 规则一，连同它的理由一起说：光说「要订阅」听起来像收过路费，
+                    // 说清「谁付这笔钱」才解释得通为什么门槛在创建者这一侧
+                    "建工作区要一份订阅。工作区里的每一次模型调用都记在创建者的额度上（你拉进来的人跑的那些也算），所以得先有额度可记。"}
             </p>
             <DialogFooter>
               <Button type="button" variant="ghost" className="press-scale" onClick={() => onOpenChange(false)}>
@@ -104,7 +117,7 @@ export function NewWorkspaceDialog({
                   onGoBilling();
                 }}
               >
-                {access === "signed_out" ? "去登录" : "去订阅"}
+                {access === "signed_out" ? "去登录" : access === "plan_too_low" ? "去升档" : "去订阅"}
               </Button>
             </DialogFooter>
           </>

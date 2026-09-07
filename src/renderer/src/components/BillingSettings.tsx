@@ -25,9 +25,10 @@ import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button.js";
 import { cn } from "@/lib/utils.js";
 import {
-  addonLine, countdown, fmtRemainingPercent, liveWindow, periodLine, planCards, planCardsOrNull,
-  quotaTone, remainingPercent, upgradeCards, usageTitle, windowPercent,
+  addonLine, countdown, fmtRemainingPercent, liveWindow, periodLine, planBadge, planCards,
+  planCardsOrNull, quotaTone, remainingPercent, upgradeCards, usageTitle, windowPercent,
 } from "../lib/billingView.js";
+import { PlanBadge } from "./PlanBadge.js";
 import { useNow } from "../lib/useNow.js";
 import { useChat } from "../store.js";
 
@@ -210,13 +211,23 @@ export function BillingSettings() {
   // （升档按钮都走 Portal 了，而他没有可管理的活跃订阅）。网关那侧 canceled→checkout
   // 是放行的（ADR-0203 决定 18：「退订过又想回来」本来就该重开一张），所以这里
   // 直接给他三张价目卡，等于应用内的重新订阅入口
-  if (!me || me.status === "none" || me.status === "canceled" || me.plan === null) {
+  // 判据与侧栏那枚徽章**共用一份** planBadge()：null = 还没查到，"free" = 确实没订阅。
+  // 这一页两者都画价目卡（骨架 vs 真价目），侧栏那边则必须分开——不知道时一格都不画
+  // `me.plan === null` 这一条对 planBadge 是多余的（它已经算进 "free" 里了），
+  // 留着是给 tsc 看的：下面 upgradeCards 要的是 PlanId 不是 PlanId | null
+  if (me === null || planBadge(me) === "free" || me.plan === null) {
     // 价目是服务端下发的（plan 表是事实，改价不发版）。me 还没回来/里面没有价目时
     // 先画骨架：名字照给、价格留空、按钮禁用——不拿一个猜的数贴订阅按钮（ADR-0203
     // 偏差 (a)：以前价格抄死在前端，改价那天卡片和 Stripe 结账页对不上）
     const cards = planCardsOrNull(me) ?? [];
-    const capsOf = (id: string) =>
-      me?.plans.find((p) => p.id === id)?.capabilities.image ? ["图像"] : [];
+    // 能力行：只画服务端说有的那几格（plan.capabilities 是事实，客户端不抄一份档位表）。
+    // 「视频」产品上暂时不做，字段还在但不画（ADR-0239 决定 3）
+    const capsOf = (id: string) => {
+      const caps = me?.plans.find((p) => p.id === id)?.capabilities;
+      return [caps?.image ? "图像" : null, caps?.workspace ? "工作区" : null].filter(
+        (x): x is string => x !== null,
+      );
+    };
     return (
       <section className="flex flex-col gap-[6px]">
         <h2 className="px-1 text-[11px] tracking-[0.06em] text-muted-foreground uppercase">订阅</h2>
@@ -259,7 +270,6 @@ export function BillingSettings() {
 
   const cards = planCards(me.plans);
   const current = cards.find((c) => c.id === me.plan);
-  const planLabel = current?.name ?? me.plan;
   const upgrades = upgradeCards(me.plans, me.plan);
   const addonText = addonLine(me.addon, now);
   const period = periodLine(me);
@@ -272,14 +282,10 @@ export function BillingSettings() {
         {/* 档位那一行：档名 + 价格 + 下次扣款。periodEnd 一直在 BillingMe 里，
             这一页从来没画过它——而「下一次什么时候扣钱」是账号页的前三个问题之一 */}
         <div className="flex flex-wrap items-center gap-[10px]">
-          <span
-            className={cn(
-              "rounded-[7px] px-[8px] py-[3px] text-[11.5px] font-[650] tracking-[0.05em]",
-              me.status === "past_due" ? "bg-warn/18 text-warn" : "bg-primary/18 text-primary",
-            )}
-          >
-            {planLabel.toUpperCase()}
-          </span>
+          {/* 每档一个颜色（与侧栏那枚同一张色表）。原来这里是「past_due 橙 / 其余蓝」，
+              而 Max 本身就是橙的——两套含义压在同一个颜色上就都说不清了。
+              「扣款失败」由紧接着的那条 warn 横幅说，它带得动一颗按钮，一枚徽章带不动 */}
+          <PlanBadge id={me.plan} size="md" />
           <span className="text-[12px] text-muted-foreground tabular-nums">
             {current ? `$${current.priceUsd} / 月` : null}
             {current && period ? " · " : null}

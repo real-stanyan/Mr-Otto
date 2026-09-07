@@ -20,7 +20,8 @@ const RUN_CMD_TIMEOUT_MS = 5_000;
     残留审计不该继承 exec() 那套超时/审批管线——它是旁路，独立一条轻量实现即可。 */
 async function defaultRunCmd(cmd: string): Promise<string> {
   return new Promise((resolvePromise, reject) => {
-    const child = spawn(cmd, { shell: true });
+    // windowsHide：win32 的 GUI 进程起 console 程序会弹黑框（#1027，见 shared/childProcess.ts）
+    const child = spawn(cmd, { shell: true, windowsHide: true });
     let stdout = "";
     let stderr = "";
     const timer = setTimeout(() => {

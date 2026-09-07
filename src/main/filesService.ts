@@ -56,7 +56,8 @@ const iconCache = new Map<string, string>();
 
 function run(cmd: string, args: string[]): Promise<string> {
   return new Promise((res, rej) => {
-    execFile(cmd, args, { maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
+    // windowsHide：win32 的 GUI 进程起 console 程序会弹黑框（#1027，见 shared/childProcess.ts）
+    execFile(cmd, args, { maxBuffer: 4 * 1024 * 1024, windowsHide: true }, (err, stdout) => {
       if (err) rej(err);
       else res(String(stdout));
     });
@@ -107,7 +108,7 @@ export const nodeFilesDeps: Omit<FilesDeps, "openPath" | "showInFolder"> = {
   },
   openWith(appPath, target) {
     // 参数走数组不过 shell;appPath 只可能来自本服务探出来的名单(reveal 里校验过)
-    execFile("open", ["-a", appPath, target], () => {});
+    execFile("open", ["-a", appPath, target], { windowsHide: true }, () => {});
   },
   listDir(abs) {
     return readdirSync(abs, { withFileTypes: true }).map((d) => {
@@ -148,7 +149,7 @@ export const nodeFilesDeps: Omit<FilesDeps, "openPath" | "showInFolder"> = {
   },
   execRg(args, cwd) {
     return new Promise((res, rej) => {
-      execFile("rg", args, { cwd, maxBuffer: 16 * 1024 * 1024 }, (err, stdout, stderr) => {
+      execFile("rg", args, { cwd, maxBuffer: 16 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
         if (err) rej(Object.assign(err, { stderr: String(stderr) }));
         else res({ stdout: String(stdout) });
       });

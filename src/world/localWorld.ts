@@ -5,7 +5,7 @@
 // exec 只把 cwd 设为 root（挡不住 `cd ..`，诚实说明）——硬隔离是 v2 Docker world 的活。
 
 import { readFile, writeFile, mkdir, readdir } from "node:fs/promises";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { resolve, relative, isAbsolute, dirname } from "node:path";
 import type {
   DetachedOptions,
@@ -18,6 +18,7 @@ import { createLocalResidue } from "./residueLocal.js";
 import { stripSecretEnv } from "../shared/secretEnv.js";
 import { loginShellPath } from "./loginShellEnv.js";
 import { HeadTailBuffer } from "../shared/headTail.js";
+import { consoleSafeSpawnOpts } from "../shared/childProcess.js";
 
 /** exec 输出的内存上限（字符，每条流各一份，头尾各半）——三层截断的第一层
     （issue #343）。与 IPC 限流（shared/execStream.ts）、模型可见预算（tools/bash.ts）
@@ -26,19 +27,74 @@ import { HeadTailBuffer } from "../shared/headTail.js";
     尾部（往往是最终结果）全丢；HeadTail 让进程跑到自然结束，只丢中段 */
 const EXEC_BUFFER_CAP = 1_000_000;
 
+/** killGroup / groupAlive 的平台与系统调用注入点（issue #1033）。
+    生产代码一个都不传；测试喂 platform:"win32" + 假 runner，
+    在 mac 上也能钉住 win32 分支的形状（vitest 跑不到 Windows） */
+export interface KillDeps {
+  platform?: NodeJS.Platform;
+  /** win32 杀整棵进程树。缺省 = 下面的 taskkillTree（taskkill /T /F） */
+  killTree?: (pid: number) => void;
+  /** POSIX 给进程组发信号。缺省 = process.kill(-pgid, signal)；win32 分支不该调到它 */
+  signalGroup?: (pgid: number, signal: NodeJS.Signals) => void;
+  /** signal 0 探活。POSIX 探进程组（probe(-pgid)），win32 探树头（probe(pgid)）。
+      缺省 = process.kill(pid, 0)；约定：进程不存在抛 code ESRCH */
+  probe?: (pid: number) => void;
+}
+
+/** win32 的杀树实现（#1033）：taskkill /T 沿 pid 树整棵杀、/F 强制。
+    选 spawnSync 而不是 fire-and-forget spawn：killGroup 是同步接口（三条调用
+    路径都没有 await），返回时杀树动作必须已经落地——否则紧跟着的 groupAlive
+    探活（KILL_GRACE 那一拍、residue 的 confirmDead）会在 taskkill 还没跑完时
+    给出错误答案。阻塞代价是 taskkill 的一次进程起停（几十毫秒级），而调用点
+    极罕（停止 turn / 超时），可接受；fire-and-forget 省下的这点阻塞换来的是
+    「杀没杀成没人知道」，不划算。
+    windowsHide 必带：taskkill 是 console 程序，不带的话 #1027 刚修的弹窗
+    从这条路复活。结果不看：树已死（exit 128）是常态不是错误，同 POSIX 分支 */
+function taskkillTree(pid: number): void {
+  try {
+    spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], {
+      windowsHide: true, // taskkill 是 console 程序（#1027），别弹黑框
+      stdio: "ignore",
+      timeout: 10_000,
+    });
+  } catch { /* 树已死 */ }
+}
+
 /** 杀整个进程组（负 pid）。组已死是常态不是错误（issue #759）。
     detached:true 起的子进程是组长（pgid = child.pid），全组连坐堵住
-    「SIGTERM 只打 shell、`&` 起的孙进程被 reparent 到 launchd 逃逸」的洞 */
-export function killGroup(pgid: number, signal: NodeJS.Signals = "SIGTERM"): void {
-  try { process.kill(-pgid, signal); } catch { /* 组已死 */ }
+    「SIGTERM 只打 shell、`&` 起的孙进程被 reparent 到 launchd 逃逸」的洞。
+    win32 分支（#1033）：负 pid 信号是 POSIX 原语，process.kill(-pgid) 在
+    Windows 是静默 no-op——改走 taskkill 杀整棵 pid 树（上一班去掉 detached
+    后 cmd.exe 是直接子进程，树头就是它）。SIGTERM/SIGKILL 两档在 win32
+    合并成一档：Node 的 child.kill() 在 Windows 本来就是 TerminateProcess
+    硬杀，没有可保真的优雅信号，分两档是自欺。调用点的「SIGTERM → 宽限 →
+    SIGKILL」两拍结构不动：taskkill 幂等（树已死只是 exit 128），第二拍
+    重发无害 */
+export function killGroup(
+  pgid: number,
+  signal: NodeJS.Signals = "SIGTERM",
+  deps: KillDeps = {}
+): void {
+  if ((deps.platform ?? process.platform) === "win32") {
+    (deps.killTree ?? taskkillTree)(pgid);
+    return;
+  }
+  const signalGroup = deps.signalGroup ?? ((g, s) => process.kill(-g, s));
+  try { signalGroup(pgid, signal); } catch { /* 组已死 */ }
 }
 
 /** SIGTERM 后的宽限：组里还有硬骨头就 SIGKILL 补刀 */
 export const KILL_GRACE_MS = 5_000;
 
-/** 探组存活：EPERM 也算活着（有进程但无权限，本 app 起的组不该出现） */
-export function groupAlive(pgid: number): boolean {
-  try { process.kill(-pgid, 0); return true; }
+/** 探组存活：EPERM 也算活着（有进程但无权限，本 app 起的组不该出现）。
+    win32 分支（#1033）：正 pid + signal 0 是 libuv 明写的健康检查
+    （win/process.c uv__kill case 0：进程已退出 → ESRCH，还在跑 → 0）；
+    探的是树头 pid，taskkill /T 杀完整树后树头没了 = 树没了。
+    权限不够的进程 OpenProcess 报 EACCES ≠ ESRCH，照 POSIX 语义算活着 */
+export function groupAlive(pgid: number, deps: KillDeps = {}): boolean {
+  const probe = deps.probe ?? ((p) => { process.kill(p, 0); });
+  const target = (deps.platform ?? process.platform) === "win32" ? pgid : -pgid;
+  try { probe(target); return true; }
   catch (e) { return (e as NodeJS.ErrnoException).code !== "ESRCH"; }
 }
 
@@ -119,7 +175,9 @@ export function createLocalWorld(
         }
         const child = spawn(cmd, {
           shell: true,
-          detached: true,            // 独立进程组，组长 pgid = child.pid
+          // 平台取值收口在 shared/childProcess.ts（#1027）：win32 不能 detached
+          // （与 windowsHide 互斥，MSDN/ADR-0163），其他平台独立进程组（pgid = child.pid）
+          ...consoleSafeSpawnOpts(),
           // timeout / killSignal / signal 三个原生选项全部移除——它们只打直接子进程，
           // 改为下面自管：到点/中断 killGroup 全组连坐
           // 凭据不跟着子进程出去：bash 工具和终端是同一个向量,一句 echo 就够
@@ -199,7 +257,7 @@ export function createLocalWorld(
     // 是它存在的意义）、超时放宽到 30 分钟（无限 = 泄漏出走的进程；
     // 30 分钟够全量构建/测试，真要更久的活该上 CI）。同款 HeadTail 有界缓冲、
     // 同款"被信号杀 = exitCode 124 + stderr 标注"语义。
-    // detached:true 同 exec（issue #759）：不然命令里 `&` 起的孙进程在超时时
+    // detached:true 同 exec（issue #759；win32 例外见 shared/childProcess.ts，#1027）：不然命令里 `&` 起的孙进程在超时时
     // 只会看着 shell 死掉、自己被 reparent 到 launchd 逃逸——这正是 exec 要堵的洞，
     // execDetached 没理由留着。app 退出时孤儿风险与 exec 相同，接受它换全组硬杀。
     // 直播在 issue #772 补上（后台任务面板要画终端），边界同 exec：
@@ -208,7 +266,8 @@ export function createLocalWorld(
       return new Promise<ExecResult>((done) => {
         const child = spawn(cmd, {
           shell: true,
-          detached: true,          // 独立进程组，组长 pgid = child.pid
+          // 同 exec：平台取值收口在 shared/childProcess.ts（#1027），win32 不 detached
+          ...consoleSafeSpawnOpts(),
           env: childEnv(),
           ...(root ? { cwd: root } : {}),
         });
