@@ -6,7 +6,7 @@
 //
 // 钱的规矩(shared/modelPricing.ts 定的):查不到价的型号**不显示钱数**,
 // 不是显示 $0 —— 0 是"免费"这个事实,不是"我不知道"。所以:
-//   · 每一行:价目已知 → 钱数;未知 → 破折号
+//   · 每一行:价目已知 → 钱数;没有按次单价(订阅制第三方) → 「订阅」;真的查不到 → 破折号
 //   · 顶上那个大数(本会话合计):只有**每一款**型号都有价才是钱,只要有一款没价就整个退回 token 总数
 //     —— 把已知的几款加起来当"本会话花费",是在报一个偏小的数,比不报更坏。
 //
@@ -18,7 +18,7 @@ import { useMemo } from "react";
 import { CostMeter } from "@/components/elements/cost-meter.js";
 import { cn } from "@/lib/utils.js";
 import { mono } from "@/lib/surfaces.js";
-import { costUsd, fmtUsd } from "../../../shared/modelPricing.js";
+import { costUsd, fmtUsd, unpricedReason } from "../../../shared/modelPricing.js";
 import { fmtCredit } from "../../../shared/billing.js";
 import { cacheStats, totalTokens, usageByModel, type ModelUsage } from "../../../session/deriveUsage.js";
 import type { SessionEvent } from "../../../session/events.js";
@@ -34,6 +34,13 @@ const UNKNOWN = "—";
     中断的流、旧日志、以及网关那侧还没升级的版本都拿不到 —— 缺席 ≠ 0 */
 const HOSTED = "托管";
 
+/** 「订阅」= 这一款**没有按次单价**，钱在月费里（Kimi Code 那类"按月限频不限量"的
+    订阅制第三方）。和上面「托管」与「—」的分别是同一条：破折号说的是"我不知道"，
+    而这里我们知道得很清楚——不存在这样一个数。
+    它与「托管」也不是一回事：「托管」是走**我们自己**的 key、按 credit 计，只是这一笔
+    没记到；「订阅」是用户自己在别人那儿包了月，钱压根不经过我们。 */
+const FLAT_RATE = "订阅";
+
 /** 顶上那个数字得短:它待在一枚浮层里,写成 "199.8K tokens" 会折行。
     不带单位不会读错:带 $ 的是钱,不带的是 token(下面每一行也都在报 in/out) */
 const fmtTokens = (n: number): string =>
@@ -44,12 +51,17 @@ const fmtTokens = (n: number): string =>
 function money(u: ModelUsage): string {
   if (u.route === "hosted") return u.creditCostMicro === undefined ? HOSTED : fmtCredit(u.creditCostMicro);
   const usd = costUsd(u.model, u);
-  return usd === undefined ? UNKNOWN : fmtUsd(usd);
+  if (usd !== undefined) return fmtUsd(usd);
+  return unpricedReason(u.model) === "flat_rate" ? FLAT_RATE : UNKNOWN;
 }
 
 /** 合计那个数。两种计费口径不能相加,所以只有"清一色且每一笔都有数"才报得出来:
     全 direct 且都有价 → $;全 hosted 且每一笔都记到了 credit → credit;其余退回 token 总数。
-    退回 token 不是认输 —— 把已知的几笔加起来当"本会话花费"是在报一个偏小的数 */
+    退回 token 不是认输 —— 把已知的几笔加起来当"本会话花费"是在报一个偏小的数。
+
+    **订阅制那几款照旧让合计退回 token**(#1025):它们的边际成本确实是 0,但把它们当 0
+    加进去,等于对一个每月付着钱的人说"这个会话花了 $0.03"。这一格没有 $ 答案不是缺陷,
+    是"这一次花了多少钱"这个问题对包月的部分本来就问不出数来 */
 export function sessionTotal(rows: ModelUsage[], tokens: number): string {
   if (rows.length > 0 && rows.every((r) => r.route === "direct")) {
     const costs = rows.map((r) => costUsd(r.model, r));

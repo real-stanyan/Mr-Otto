@@ -105,14 +105,45 @@ const PRICES: Readonly<Record<string, ModelPrice>> = {
   "deepseek-ai/DeepSeek-V4-Flash": { input: 0.13, output: 0.28, cachedInput: 0.028 },
 };
 
-/** 目录里有、但这张表里**故意留空**的几款（留空不是偷懒，是查不到确切现价）：
-      · kimi-k2.7-code —— Kimi 的定价页把它拆到单独的型号页，按量价没查到公开数
-      · qwen3.8-flash —— 百炼国际站的价目页上还没有这一档
-      · llama-3.3-70b-versatile —— Groq 的型号页有这款，价目页上没单列
-      · deepseek-ai/DeepSeek-V4-Pro —— 硅基流动只公开了 Flash 那一页的单价
-    留空的后果是这几款不显示 cost，而不是显示 0 —— 宁可少一行，不能给一个错的钱数。
+/** 目录里有、`PRICES` 里没有的每一款，**都得在这张表里说明为什么**。
+    没说明的那款会被 `tests/shared/modelPricing.test.ts` 顶红 —— 这类"两张表对不上"
+    是静默失败：界面上只多一个破折号，肉眼分不出"抄错一个字符"和"真的没有价"（#1025）。
+
+    两种理由不能混，因为**它们在界面上该说不同的话**：
+
+    - `flat_rate` —— 这一款**根本没有按次单价**，钱在月费里（订阅制）。这不是"查不到"，
+      是"不存在"。CostPanel 因此给它「订阅」而不是破折号：破折号说的是"我不知道"，
+      而这里我们知道得很清楚。同一条分辨在 hosted 那侧已经有过一次（「托管」vs「—」）。
+    - `unknown` —— 这一款**有**按量单价，只是查不到公开数（或上游没单列）。破折号说的
+      正是这件事。
+
+    留空的后果一律是不显示 $，而不是显示 0 —— 宁可少一行，不能给一个错的钱数。
     上一版这段名单记的是"上游已经下架"的一批（grok-4 / kimi-k2-0905-preview /
     pixtral-large-latest / Qwen/Qwen3-235B-A22B 等），那批 id 这一轮已经从目录里删掉了 */
+export type UnpricedReason = "flat_rate" | "unknown";
+
+export const UNPRICED: Readonly<Record<string, UnpricedReason>> = {
+  // Kimi Code（provider `kimicode`）整族订阅制 —— providerCatalog 原话：
+  // "编程订阅制，按月限频不限量"。它与按量的 `moonshot` 是两套账号体系（ADR-0117：
+  // ProviderId 是「一个端点 + 一把 key」不是「一家公司」），所以 `k3` **不是** `kimi-k3`
+  // 的笔误，两者的钱根本不是同一种钱；把按量价抄过来就是编一个用户没花过的数（#1025）。
+  "kimi-for-coding": "flat_rate",
+  "kimi-for-coding-highspeed": "flat_rate",
+  "k3": "flat_rate",
+  "k3-256k": "flat_rate",
+
+  // 有按量价、只是查不到公开数的
+  "kimi-k2.7-code": "unknown", // Kimi 的定价页把它拆到单独的型号页，按量价没查到公开数
+  "qwen3.8-flash": "unknown", // 百炼国际站的价目页上还没有这一档
+  "llama-3.3-70b-versatile": "unknown", // Groq 的型号页有这款，价目页上没单列
+  "deepseek-ai/DeepSeek-V4-Pro": "unknown", // 硅基流动只公开了 Flash 那一页的单价
+};
+
+/** 这一款为什么没有价。`undefined` = 它在 `PRICES` 里有价（或是本机那一族）。
+    调用方只在 `priceOf` 回 undefined 时才需要问这一句 */
+export function unpricedReason(model: string): UnpricedReason | undefined {
+  return UNPRICED[model];
+}
 
 /** 表里写了价的型号 id。只给测试用:key 是手抄的,抄错一个字符不会报错,
     只会安静地变成"这一款查不到价"—— 而"查不到价"本身是合法状态(上游下架了),

@@ -1,5 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { priceOf, costUsd, fmtUsd, PRICED_IDS } from "../../src/shared/modelPricing.js";
+import {
+  priceOf, costUsd, fmtUsd, PRICED_IDS, UNPRICED, unpricedReason,
+} from "../../src/shared/modelPricing.js";
 import { MODEL_CATALOG } from "../../src/shared/modelCatalog.js";
 
 describe("priceOf", () => {
@@ -94,5 +96,56 @@ describe("价目表和目录对得上", () => {
       expect(p.input, model).toBeGreaterThanOrEqual(0);
       expect(p.output, model).toBeGreaterThanOrEqual(0);
     }
+  });
+});
+
+// ── 目录 × 价目的保鲜期（#1025）──
+//
+// 「两张表的键对不上」是静默失败：界面上只多一个破折号，而破折号本身是合法状态
+// （上游下架了、查不到公开价），肉眼分不出「抄错一个字符」和「真的没有价」。
+// 所以这里要求**目录里每一款都得有个交代**：要么有价，要么在 UNPRICED 里说明理由。
+
+describe("目录里每一款都得有交代", () => {
+  it("有价 / 本机那一族 / UNPRICED 里说明了理由 —— 三者必居其一", () => {
+    const 没交代 = MODEL_CATALOG.filter(
+      (m) => priceOf(m.model) === undefined && unpricedReason(m.model) === undefined
+    ).map((m) => `${m.provider}/${m.model}`);
+    // 加一款型号时这里会红。修法二选一：把现价抄进 PRICES，或者在 UNPRICED 里
+    // 写明它为什么没有价（flat_rate = 订阅制没有按次单价 / unknown = 查不到公开数）
+    expect(没交代).toEqual([]);
+  });
+
+  it("UNPRICED 里不许躺着目录里已经没有的 id —— 那是过期的解释", () => {
+    const ids = new Set(MODEL_CATALOG.map((m) => m.model));
+    expect(Object.keys(UNPRICED).filter((id) => !ids.has(id))).toEqual([]);
+  });
+
+  it("UNPRICED 与 PRICES 不许同时命中同一款（说明了理由却又有价，两处必有一处是错的）", () => {
+    expect(PRICED_IDS.filter((id) => unpricedReason(id) !== undefined)).toEqual([]);
+  });
+});
+
+describe("订阅制与「查不到价」是两回事（#1025）", () => {
+  it("Kimi Code 整族是 flat_rate —— 它是订阅制，没有按次单价", () => {
+    // providerCatalog 原话：「编程订阅制，按月限频不限量」
+    for (const id of ["kimi-for-coding", "kimi-for-coding-highspeed", "k3", "k3-256k"]) {
+      expect(unpricedReason(id)).toBe("flat_rate");
+    }
+  });
+
+  it("`k3` 不是 `kimi-k3` 的笔误 —— 两者是两个端点两套账号，钱不是同一种钱", () => {
+    // ADR-0117：ProviderId 是「一个端点 + 一把 key」，不是「一家公司」。
+    // 把按量的 kimi-k3 价抄到订阅的 k3 上，是编一个用户从没花过的数
+    expect(priceOf("kimi-k3")).toBeDefined();
+    expect(priceOf("k3")).toBeUndefined();
+  });
+
+  it("查不到公开价的那几款仍然是 unknown，不许被顺手写成 flat_rate", () => {
+    expect(unpricedReason("llama-3.3-70b-versatile")).toBe("unknown");
+    expect(unpricedReason("qwen3.8-flash")).toBe("unknown");
+  });
+
+  it("没听说过的型号两边都答不上来 —— 不猜", () => {
+    expect(unpricedReason("某个没见过的型号")).toBeUndefined();
   });
 });
