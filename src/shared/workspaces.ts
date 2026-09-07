@@ -51,6 +51,10 @@ export interface WorkspaceAgentRow {
   tools: AgentToolAllow[];
   createdBy: string;
   updatedTs: number;
+  /** 内置头像坑位（0 起）。**null = 没挑过，按 agentId 哈希派生**（agentAvatarSlot.ts，
+      ADR-0229）——0027 迁移加这一列时故意不回填，存量 agent 的脸一张都不变。
+      越界的值（旧客户端读到新版才有的坑位）由渲染层兜底，DB 约束只管 >= 0（#1007） */
+  avatarSlot: number | null;
 }
 
 /** 工作区记忆（#949）：一档一行，agent_id 空串 = 共享档，非空 = 那只 agent 的私有档。
@@ -135,7 +139,7 @@ export function assembleSnapshot(
   }[],
   agents: readonly {
     agent_id: string; name: string; description: string; instructions: string; models: unknown;
-    tools: unknown; created_by: string; updated_at: string;
+    tools: unknown; created_by: string; updated_at: string; avatar_slot?: unknown;
   }[],
   profileOf: (uid: string) => MemberProfile | null,
 ): WorkspaceSnapshot {
@@ -176,8 +180,18 @@ export function assembleSnapshot(
       tools: normalizeAgentTools(a.tools),
       createdBy: a.created_by,
       updatedTs: toEpochMs(a.updated_at),
+      avatarSlot: normalizeAvatarSlot(a.avatar_slot),
     })),
     relayMaxDepth: normalizeRelayMaxDepth(ws.relay_max_depth),
     sandboxApproval: normalizeSandboxApproval(ws.sandbox_approval),
   };
+}
+
+/** `avatar_slot` 那一格 → number | null。
+    **列不存在（0027 还没跑）与「没挑过」在这里同义**：都回 null，都走派生。
+    这不是把错误藏起来——头像是纯展示，没有第二条路可走，而让整份快照因为
+    一列缺席就炸掉，会把「设置页打不开」当成迁移没跑的症状（同
+    `fetchSandboxApproval` 对 0026 的处理）。非整数、负数一律当没挑过。 */
+export function normalizeAvatarSlot(v: unknown): number | null {
+  return typeof v === "number" && Number.isInteger(v) && v >= 0 ? v : null;
 }

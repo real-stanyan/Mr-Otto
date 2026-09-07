@@ -102,9 +102,26 @@ describe("assembleSnapshot", () => {
       () => null,
     );
     expect(snapshot.agents).toEqual([
-      { agentId: "admin", name: "管理员", description: "", instructions: "", models: ["deepseek-v4"], tools: [{ serverId: "shopify", tools: [] }], createdBy: "owner-uid-12345678", updatedTs: Date.parse("2026-09-01T00:00:00.000Z") },
-      { agentId: "a1", name: "运营", description: "管店铺", instructions: "你管运营", models: [], tools: [], createdBy: "u2", updatedTs: 0 },
+      { agentId: "admin", name: "管理员", description: "", instructions: "", models: ["deepseek-v4"], tools: [{ serverId: "shopify", tools: [] }], createdBy: "owner-uid-12345678", updatedTs: Date.parse("2026-09-01T00:00:00.000Z"), avatarSlot: null },
+      { agentId: "a1", name: "运营", description: "管店铺", instructions: "你管运营", models: [], tools: [], createdBy: "u2", updatedTs: 0, avatarSlot: null },
     ]);
+  });
+
+  it("avatar_slot：非负整数原样带出；缺列 / null / 负数 / 小数一律 null（= 按 agentId 派生，#1007）", () => {
+    const agentRow = (avatar_slot: unknown) => ({
+      agent_id: "a1", name: "运营", description: "", instructions: "",
+      models: [], tools: [], created_by: "u2", updated_at: "1970-01-01T00:00:00.000Z",
+      avatar_slot,
+    });
+    const slotOf = (v: unknown) =>
+      assembleSnapshot(WS, [], [], [], [agentRow(v)], () => null).agents[0]!.avatarSlot;
+    expect(slotOf(0)).toBe(0);   // 0 是合法坑位，不能被当成假值吞掉
+    expect(slotOf(7)).toBe(7);
+    expect(slotOf(undefined)).toBeNull();  // 0027 还没跑：列不存在与「没挑过」同义
+    expect(slotOf(null)).toBeNull();
+    expect(slotOf(-1)).toBeNull();
+    expect(slotOf(1.5)).toBeNull();
+    expect(slotOf("3")).toBeNull();
   });
 
   it("sandbox_approval：只认 'auto'，其余（缺列 undefined / null / 别的串）一律回 'ask'——往严的一边倒（#977）", () => {

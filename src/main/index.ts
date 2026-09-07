@@ -3233,7 +3233,10 @@ void app.whenReady().then(() => {
     (
       _e,
       id: string,
-      draft: { name: string; description: string; instructions: string; models: string[]; tools: AgentToolAllow[] },
+      draft: {
+        name: string; description: string; instructions: string; models: string[];
+        tools: AgentToolAllow[]; avatarSlot?: number | null;
+      },
     ) => workspaceManager.createAgent(id, draft),
   );
   ipcMain.handle(
@@ -3242,7 +3245,10 @@ void app.whenReady().then(() => {
       _e,
       id: string,
       agentId: string,
-      patch: { name?: string; description?: string; instructions?: string; models?: string[]; tools?: AgentToolAllow[] },
+      patch: {
+        name?: string; description?: string; instructions?: string; models?: string[];
+        tools?: AgentToolAllow[]; avatarSlot?: number | null;
+      },
     ) => workspaceManager.updateAgent(id, agentId, patch),
   );
   ipcMain.handle(CHANNELS.workspaceAgentDelete, (_e, id: string, agentId: string) =>

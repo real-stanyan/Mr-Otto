@@ -23,6 +23,7 @@
 import { randomBytes } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type * as WorkspacesApi from "./supabaseWorkspacesApi.js";
+import { normalizeAvatarSlot } from "../shared/workspaces.js";
 import type { WorkspaceMemoryRow, WorkspaceSnapshot } from "../shared/workspaces.js";
 import { humanizeWorkspaceError } from "../shared/workspaceError.js";
 import { normalizeRelayMaxDepth } from "../shared/agentRelay.js";
@@ -82,13 +83,19 @@ export interface WorkspaceManager {
       翻成人话 */
   createAgent(
     id: string,
-    draft: { name: string; description: string; instructions: string; models: string[]; tools: AgentToolAllow[] },
+    draft: {
+      name: string; description: string; instructions: string; models: string[];
+      tools: AgentToolAllow[]; avatarSlot?: number | null;
+    },
   ): Promise<FriendsResult<{ agentId: string }>>;
   /** 改一只 agent（建的人或 owner，RLS 落地判断）。重名同样会撞 23505 */
   updateAgent(
     id: string,
     agentId: string,
-    patch: { name?: string; description?: string; instructions?: string; models?: string[]; tools?: AgentToolAllow[] },
+    patch: {
+      name?: string; description?: string; instructions?: string; models?: string[];
+      tools?: AgentToolAllow[]; avatarSlot?: number | null;
+    },
   ): Promise<FriendsResult<null>>;
   /** 删一只 agent（建的人或 owner，RLS 落地判断）。'admin' 那只谁都删不掉——
       RLS 也会拦，但这里在打网络之前就先拒，回一句人话 */
@@ -305,7 +312,13 @@ export function createWorkspaceManager(deps: WorkspaceManagerDeps): WorkspaceMan
         await assertNameFree(client, id, clean.name, null);
         const agentId = "a_" + randomBytes(6).toString("hex");
         try {
-          await deps.insertAgentRow(client, { workspaceId: id, agentId, createdBy: uid, ...clean });
+          // avatarSlot 不走 parseCreateAgentArgs：那份 schema 是 `create_agent`
+          // **工具**的参数表（审批卡逐字段渲染它），而管理员替人建 agent 时不该
+          // 挑脸——那条路省略这一格 = null = 派生。桌面表单挑的那一格在这里单独并进去
+          await deps.insertAgentRow(client, {
+            workspaceId: id, agentId, createdBy: uid, ...clean,
+            avatarSlot: normalizeAvatarSlot(draft.avatarSlot),
+          });
         } catch (e) {
           if ((e as { code?: string }).code === "23505") throw new Error(DUPLICATE_AGENT_NAME);
           throw e;
@@ -323,7 +336,12 @@ export function createWorkspaceManager(deps: WorkspaceManagerDeps): WorkspaceMan
         // 名单只在真的改名时查——不改名时那是一次白打的网络往返
         if (clean.name !== undefined) await assertNameFree(client, id, clean.name, agentId);
         try {
-          await deps.updateAgentRow(client, id, agentId, clean);
+          // 同上：avatarSlot 不过 validateAgentPatch。**省略与 null 在这里不同义**——
+          // 省略 = 这次没碰头像，null = 明确清回派生，所以不能写成 `?? null`
+          await deps.updateAgentRow(client, id, agentId, {
+            ...clean,
+            ...(patch.avatarSlot === undefined ? {} : { avatarSlot: normalizeAvatarSlot(patch.avatarSlot) }),
+          });
         } catch (e) {
           if ((e as { code?: string }).code === "23505") throw new Error(DUPLICATE_AGENT_NAME);
           throw e;

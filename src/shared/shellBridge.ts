@@ -1087,13 +1087,23 @@ export interface ShellBridge {
       改/删 */
   workspaceAgentCreate(
     id: string,
-    draft: { name: string; description: string; instructions: string; models: string[]; tools: AgentToolAllow[] },
+    draft: {
+      name: string; description: string; instructions: string; models: string[];
+      tools: AgentToolAllow[];
+      /** 内置头像坑位；省略/null = 按 agentId 哈希派生（#1007） */
+      avatarSlot?: number | null;
+    },
   ): Promise<FriendsResult<{ agentId: string }>>;
   /** 改一只 agent（建的人或 owner，RLS 拦其余人） */
   workspaceAgentUpdate(
     id: string,
     agentId: string,
-    patch: { name?: string; description?: string; instructions?: string; models?: string[]; tools?: AgentToolAllow[] },
+    patch: {
+      name?: string; description?: string; instructions?: string; models?: string[];
+      tools?: AgentToolAllow[];
+      /** 省略 = 不动这一格；显式 null = 清回「按 agentId 派生」（#1007） */
+      avatarSlot?: number | null;
+    },
   ): Promise<FriendsResult<null>>;
   /** 删一只 agent（建的人或 owner；'admin' 谁都删不掉，主进程层先拒） */
   workspaceAgentDelete(id: string, agentId: string): Promise<FriendsResult<null>>;

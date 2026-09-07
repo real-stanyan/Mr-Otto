@@ -19,7 +19,7 @@ import {
 } from "@/components/ui/dialog.js";
 import { useChat } from "../store.js";
 import { agentRows, type AgentRowView } from "../lib/workspaceView.js";
-import { agentAvatarSrc } from "../lib/agentAvatar.js";
+import { AGENT_AVATARS, agentAvatarSrc } from "../lib/agentAvatar.js";
 import {
   AUTO_MODEL, agentModelOptions, chainWarning, modelsFromSelection, selectedModelValue,
 } from "../lib/agentModelChoice.js";
@@ -296,6 +296,8 @@ function AgentEditorDialog({
   // 下拉选中的那一项（AUTO_MODEL 或某个 logical_model）。存回去的仍然是
   // workspace_agents.models 那条有序链，映射规则在 agentModelChoice.ts
   const [model, setModel] = useState<string>(AUTO_MODEL);
+  // 挑中的头像坑位。null = 没挑过 = 按 agentId 哈希派生（#1007）
+  const [avatarSlot, setAvatarSlot] = useState<number | null>(null);
   // 提示词默认收起（#1005）：它是这张表单里唯一会长到几百字的一块，展开着
   // 就把型号、连接器挤到折叠线以下——而那两样正是人开这张表单最常来改的。
   // **只管显示不管内容**：收起时 instructions 照旧在 state 里，保存照发
@@ -322,6 +324,7 @@ function AgentEditorDialog({
       setDescription(state.agent.description);
       setInstructions(state.agent.instructions);
       setModel(selectedModelValue(state.agent.models));
+      setAvatarSlot(state.agent.avatarSlot);
       setToolsMode(modeFromTools(state.agent.tools));
       setToolsSel(selectionFromAllow(state.agent.tools));
     } else {
@@ -329,6 +332,7 @@ function AgentEditorDialog({
       setDescription("");
       setInstructions("");
       setModel(AUTO_MODEL);
+      setAvatarSlot(null);
       setToolsMode("all");
       setToolsSel({});
     }
@@ -369,6 +373,7 @@ function AgentEditorDialog({
       state.mode === "create"
         ? await createAgent(ws.id, {
             name: name.trim(), description: description.trim(), instructions, models, tools,
+            avatarSlot,
           })
         : await updateAgent(ws.id, state.agent.agentId, {
             // edit 只发变了的字段——同 CloudRepoConfigDialog 那份三态：省略 = 不动
@@ -377,6 +382,7 @@ function AgentEditorDialog({
             ...(instructions !== state.agent.instructions ? { instructions } : {}),
             ...(sameModels(models, state.agent.models) ? {} : { models }),
             ...(sameAgentTools(tools, state.agent.tools) ? {} : { tools }),
+            ...(avatarSlot === state.agent.avatarSlot ? {} : { avatarSlot }),
           });
     setBusy(false);
     if (result === "ok") {
@@ -436,6 +442,36 @@ function AgentEditorDialog({
         </DialogHeader>
 
         <div className="flex min-h-0 flex-col gap-3 overflow-y-auto">
+          {/* 头像（#1007）：13 张内置，点一张就是它；再点一次取消，回到按 agentId
+              哈希派生的那张。「不挑」是正当状态不是没配完——存量 agent 一行不改
+              也有脸，所以取消这颗钮得一直在 */}
+          <div className="flex flex-col gap-1">
+            <span className={SECTION_LABEL}>头像</span>
+            <div className="flex flex-wrap gap-1">
+              {AGENT_AVATARS.map((src, i) => (
+                <button
+                  key={i}
+                  type="button"
+                  aria-label={`头像 ${i + 1}`}
+                  aria-pressed={avatarSlot === i}
+                  disabled={busy}
+                  onClick={() => setAvatarSlot((v) => (v === i ? null : i))}
+                  className={cn(
+                    "rounded-full border-2 bg-transparent p-0 transition-colors disabled:opacity-50",
+                    avatarSlot === i ? "border-[var(--brand)]" : "border-transparent hover:border-border"
+                  )}
+                >
+                  <img src={src} alt="" aria-hidden className="size-8 rounded-full" />
+                </button>
+              ))}
+            </div>
+            <p className="text-[10.5px] text-muted-foreground">
+              {avatarSlot === null
+                ? "没挑：按名字自动分配一张（再点一次挑中的那张可以取消）。"
+                : "挑好了。再点一次同一张就回到自动分配。"}
+            </p>
+          </div>
+
           <div className="flex flex-col gap-1">
             <span className={SECTION_LABEL}>名字</span>
             <Input
