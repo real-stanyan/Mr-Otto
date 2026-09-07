@@ -15,7 +15,7 @@
 // 会话状态，切换要过 switchModel 落成 model_changed 事件（日志唯一事实来源），
 // 让 assistant-ui 再持有一份等于开了第二条写入路径。
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { SettingsIcon, Sparkles } from "lucide-react";
 
 import {
@@ -146,6 +146,34 @@ export function ModelPicker({
   const openSettings = useChat((s) => s.openSettings);
   const signedIn = useChat((s) => s.account.signedIn);
   const [open, setOpen] = useState(false);
+  const listRef = useRef<HTMLDivElement>(null);
+
+  // 浮层打开、版面定下来之后，把滚动位置重新算一遍（#1049）。
+  //
+  // 为什么需要：`ModelSelectorContent` 给 cmdk 的 `Command` 传了 `defaultValue`，
+  // cmdk 挂载时就对选中项调了一次 `scrollIntoView({block:"nearest"})` —— 而那一刻
+  // Radix 还没把浮层量完位、列表高度不是最终值，于是「nearest」把选中项顶到了列表
+  // **最上方**，它上面的 Auto 与「订阅」那个组头一起被滚出视野。真机上就是这样：
+  // #1042 做的那件事，人人都有一个选中的型号，于是人人在打开的第一眼里都看不见 Auto。
+  //
+  // 先回顶再 `nearest`，两件事都要，`scrollTop = 0` 一句是二选一：选中项就在前几行
+  // 时留在顶上（Auto 可见），真在下面很远时才最小幅度滚过去（「我现在用的是哪款」
+  // 照旧找得到）。
+  //
+  // 这条判据**故意没写成断言**：jsdom 没有布局，`scrollIntoView` 是空实现、`scrollTop`
+  // 恒为 0，写出来的断言只会钉住「调了这个函数」，而真正会坏的是时序（同 ADR-0236
+  // 第 1 条那笔 `pb-14` 的账）。保鲜期就在这段注释里。
+  useEffect(() => {
+    if (!open) return;
+    // 等一帧：Radix 定位与列表布局都在这一帧里落定，早于它做等于重演上面那个 bug
+    const id = requestAnimationFrame(() => {
+      const el = listRef.current;
+      if (!el) return;
+      el.scrollTop = 0;
+      el.querySelector('[data-selected="true"]')?.scrollIntoView({ block: "nearest" });
+    });
+    return () => cancelAnimationFrame(id);
+  }, [open]);
 
   const choice = describeModel(value);
   // 网关此刻供着哪几款（从便宜到贵，ADR-0237 那条排序键）。没订阅 / 还没查到 = 空，
@@ -225,7 +253,7 @@ export function ModelPicker({
           并补上一个 sr-only 的输入锚点 —— 没有它,方向键/回车在列表里就不工作了。
           border-0:浮层靠 bg-popover + 阴影浮起来,不靠一圈描边 */}
       <ModelSelectorContent align="end" searchable={false} className="w-[268px] border-0">
-        <ModelSelectorList className="max-h-[320px]">
+        <ModelSelectorList ref={listRef} className="max-h-[320px]">
           <ModelSelectorEmpty>没有匹配的模型</ModelSelectorEmpty>
 
           {groups.map((g) => (

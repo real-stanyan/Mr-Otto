@@ -100,6 +100,16 @@ describe("ModelPicker：Auto", () => {
     expect(screen.queryByText("Auto")).not.toBeInTheDocument();
   });
 
+  it("Auto 是 DOM 顺序里的第一项 —— 它排在选中的那一款之上（#1049 的另一半在滚动位置上）", async () => {
+    seedSubscribedNoKeys();
+    render(<ModelPicker value="glm-5.3" allowAuto onChange={() => {}} />);
+    await userEvent.click(screen.getByRole("combobox"));
+    const options = screen.getAllByRole("option").map((o) => o.textContent);
+    expect(options[0]).toBe("Auto每轮起跑前判一手难度，再挑贵的还是便宜的");
+    // 「订阅」那个组头也在它上面 —— 真机上这两样是一起被滚出视野的，见 #1049
+    expect(screen.getByText("订阅")).toBeInTheDocument();
+  });
+
   it("点 Auto 回的是那个口令，不是某一款型号 id", async () => {
     seedSubscribedNoKeys();
     const onChange = vi.fn();
