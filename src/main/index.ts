@@ -145,6 +145,7 @@ import { isDefaultWorkspace as isDefaultWorkspaceOf } from "../shared/defaultWor
 import { allocateSessionWorkspace } from "./taskWorkspace.js";
 import { maskKey } from "../shared/keyMask.js";
 import type { ModelLane } from "../shared/modelLane.js";
+import { AUTO_MODEL } from "../shared/autoModel.js";
 import { findProvider, providerKeyEnvs, type ProviderId } from "../shared/providerCatalog.js";
 import { markSecretEnv, unmarkSecretEnv } from "../shared/secretEnv.js";
 import { knownMcpToolNames } from "../shared/mcp.js";
@@ -2531,7 +2532,9 @@ void app.whenReady().then(() => {
     currentSessionId = agent.sessionId;
     // 开局偏好复用运行时切换的既有通道：model 落 model_changed（resume 记得，
     // 与默认相同时 switchModel 内部 no-op，零多余事件）；审批/thinking 是运行时偏好
-    if (opts.model) agent.switchModel(opts.model, opts.lane ?? "auto");
+    // 开局卡上也能选 Auto（#1042）：同一个口令、同一条通道，型号保持默认那一款
+    if (opts.model === AUTO_MODEL) agent.switchModel(agent.model, opts.lane ?? "auto", true);
+    else if (opts.model) agent.switchModel(opts.model, opts.lane ?? "auto");
     if (opts.approvalMode === "ask" || opts.approvalMode === "auto") {
       agent.setApprovalMode(opts.approvalMode);
     }
@@ -3652,7 +3655,10 @@ void app.whenReady().then(() => {
     const agent = currentSessionId ? agents.get(currentSessionId) : undefined;
     if (!agent) throw new Error("还没有会话");
     if (runningSessions.has(agent.sessionId)) throw new Error("turn 进行中不能换模型");
-    agent.switchModel(model, lane ?? "auto");
+    // Auto 是这一格的一个取值，不是第二个控件（#1042）：选中它 = 型号不动、
+    // 从此每轮起跑前判一手。所以它走同一条 IPC，用一个不可能与真型号 id 撞车的口令
+    if (model === AUTO_MODEL) agent.switchModel(agent.model, lane ?? "auto", true);
+    else agent.switchModel(model, lane ?? "auto");
     // 换模型也是"活跃会话的快照变了"——同 setActiveSession,喂一次投影器,
     // 岛上挂着的模型名跟着换
     feedIsland({ kind: "activeSession", boot: islandSnapshot(), now: Date.now() });
@@ -3816,6 +3822,12 @@ void app.whenReady().then(() => {
       // 永久生效"（ADR-0066），append-only 日志又收不回。先把会失败的外呼做完，
       // 全成了再按原序落盘，失败一条不落
       const modelText = composeUserText(text, textFiles);
+      // Auto 判一手排在**代读员那道判断之前**（#1042）：判据是 `agent.model` 的
+      // supportsVision，而 Auto 这一下就可能把型号从看不见图的换成看得见图的
+      // （或反过来）——排在后面就会拿上一轮的型号决定这一轮要不要代读。
+      // 也排在 skill_invoked / image_described 两条 append **之前**：`barrenTurns`
+      // 按 `events[i-1]` 认领 image_described，中间夹一条 model_changed 就断了
+      await agent.pickAutoModel(modelText);
       let described: { content: string; model: string } | null = null;
       if (refs.length > 0 && !(describeModel(agent.model)?.supportsVision ?? false)) {
         // 代读员型号现读设置（改了对下一条带图消息生效）；事件里记的必须是

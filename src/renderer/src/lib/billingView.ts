@@ -1,5 +1,6 @@
 // 订阅页的纯逻辑（数字 → 文案），组件只负责画。credit 换算在 shared/billing.ts。
 import { creditOf, fmtCredit, type BillingMe, type PlanId, type PlanInfo, type WindowState } from "../../../shared/billing.js";
+import type { BillingSnapshotView } from "../../../shared/shellBridge.js";
 
 /** 价目卡的静态骨架：名字与一句话。价格是服务端下发的（plan 表是事实，
     改价不发版——ADR-0203 偏差 (a) 以前这张表连价格也抄死在这里，改价那天
@@ -184,4 +185,26 @@ export function planBadge(me: BillingMe | null): PlanBadgeId | null {
   if (!me) return null;
   if (me.plan === null || me.status === "none" || me.status === "canceled") return "free";
   return me.plan;
+}
+
+/**
+ * 网关此刻供着哪几款，且这个人现在就能用（#1042）。
+ *
+ * 判据与 `routeModel` 那条 hosted 分支逐字同一份（`main/hostedQuota.ts` 的
+ * `routeInput`）：`status === "active"` 且有档才算——`past_due` 不算活跃（同
+ * ADR-0217 的取舍：扣款失败时真正花钱那层也不认它，选单里列出来就是给一颗
+ * 点了跑不动的钮）。
+ *
+ * **`null`（billing 还没查过）与「没订阅」在这里给同一个答案：空**。空 = 选单退回
+ * 改动前的样子（只列配了 key 的厂商）。这个方向是安全的那一个：反过来（拿不到时
+ * 按「都能用」画）会给一个没订阅的人列出一排他点了必然 blocked 的型号。冷启动那
+ * 一瞬间的空窗由侧栏那发 `loadBilling` 种子补上（ADR-0240）。
+ *
+ * 返回的**顺序有意义**：edge 的 `routesQuery` 按 `price_out_micro_per_m.asc` 排过，
+ * 所以这一串是从便宜到贵（ADR-0237）——选单照这个顺序画，Auto 的两档也取自它。
+ */
+export function hostedModels(billing: BillingSnapshotView | null): readonly string[] {
+  const me = billing?.me;
+  if (!me || me.status !== "active" || me.plan === null) return [];
+  return me.models;
 }

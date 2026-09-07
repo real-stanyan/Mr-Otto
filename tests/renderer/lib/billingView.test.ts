@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   addonLine, bindingWindow, countdown, liveWindow, planCards, planCardsOrNull, planName, quotaTone,
-  upgradeCards, usageLine, windowPercent,
+  upgradeCards, usageLine, windowPercent, hostedModels,
 } from "../../../src/renderer/src/lib/billingView.js";
 import type { BillingMe, PlanInfo } from "../../../src/shared/billing.js";
 
@@ -135,5 +135,36 @@ describe("usageLine / quotaTone / planName", () => {
     expect(planName("pro")).toBe("Pro");
     expect(planName(null)).toBeNull();
     expect(planName("ultra" as never)).toBe("ultra");
+  });
+});
+
+describe("hostedModels（#1042：菜单里那一组「订阅」列谁）", () => {
+  const me = (over: Partial<BillingMe>): BillingMe =>
+    ({
+      plan: "pro", status: "active", plans, models: ["cheap", "mid", "dear"],
+      modelPlatforms: {}, windows: {}, addon: { remainingMicro: 0 }, periodEnd: null,
+      ...over,
+    }) as unknown as BillingMe;
+  const snap = (m: BillingMe | null) => ({ me: m, fetchedAt: 1, exhausted: null });
+
+  it("有活跃订阅：原样给出网关那份清单，顺序不动（那是从便宜到贵，ADR-0237）", () => {
+    expect(hostedModels(snap(me({})))).toEqual(["cheap", "mid", "dear"]);
+  });
+
+  it("billing 还没查过（null）与「没订阅」给同一个答案：空", () => {
+    // 这两种情况在别处（工作区那道闸、ADR-0217）必须分开说，在这里不必：
+    // 两者都该让菜单退回改动前的样子，而不是列一排点了必然 blocked 的型号
+    expect(hostedModels(null)).toEqual([]);
+    expect(hostedModels(snap(null))).toEqual([]);
+  });
+
+  it("past_due 不算活跃 —— 与真正花钱那层（routeModel 的 subscribed）逐字同一条判据", () => {
+    expect(hostedModels(snap(me({ status: "past_due" })))).toEqual([]);
+    expect(hostedModels(snap(me({ status: "canceled" })))).toEqual([]);
+    expect(hostedModels(snap(me({ status: "none" })))).toEqual([]);
+  });
+
+  it("status 是 active 但没有档（plan=null）也算没有：那是「订阅记录在、但不知道哪一档」", () => {
+    expect(hostedModels(snap(me({ plan: null })))).toEqual([]);
   });
 });

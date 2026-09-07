@@ -114,6 +114,7 @@ import type { CloudSessionListRow } from "./lib/workspaceView.js";
 import { DEFAULT_USAGE_DAYS, type UsageSnapshot } from "../../shared/usageStats.js";
 import type { ModelShareWindow } from "../../shared/modelShare.js";
 import { laneOf, type ModelLane } from "../../shared/modelLane.js";
+import { autoModelOf } from "../../shared/autoModel.js";
 import type { MyProfile, ProfilePatch } from "../../shared/profile.js";
 import {
   failOptimistic, mergeDm, nextTempId, optimisticMessage, prependOlder, settleOptimistic,
@@ -209,6 +210,10 @@ interface ChatState {
   model: string;
   /** 当前型号走哪条路（ADR-0045）。和 model 一样是日志投影：model_changed 说了算 */
   lane: ModelLane;
+  /** 型号那一格此刻是不是「Auto」（#1042）。同上，也是 model_changed 的投影——
+      `model` 仍然是**上一轮真跑的那一款**（Auto 每挑一次就落一条），两者不冲突：
+      选择器显示 Auto，而上下文窗口/挡位表照旧问那一款要 */
+  autoModel: boolean;
   workspace: string;
   events: SessionEvent[];
   /** 本会话挂在 engine 上的工具声明（主进程报的，不在日志里）。
@@ -1107,7 +1112,9 @@ export const absorbEvent = (
     approvals,
     events: [...s.events, e],
     // header 的当前模型也是日志投影：model_changed 流回来才变，UI 不抢跑
-    ...(e.type === "model_changed" ? { model: e.model, lane: e.lane ?? "auto" } : {}),
+    ...(e.type === "model_changed"
+      ? { model: e.model, lane: e.lane ?? "auto", autoModel: e.auto === true }
+      : {}),
   };
 };
 
@@ -1174,6 +1181,7 @@ export const enterChat = (
   sessionId: info.sessionId,
   model: info.model,
   lane: laneOf(info.events),
+  autoModel: autoModelOf(info.events),
   workspace: info.workspace,
   events: info.events,
   toolDefs: info.toolDefs ?? [],
@@ -1227,6 +1235,7 @@ export const useChat = create<ChatState>((set, get) => ({
   sessionId: "",
   model: "",
   lane: "auto" as ModelLane,
+  autoModel: false,
   workspace: "",
   events: [],
   toolDefs: [],

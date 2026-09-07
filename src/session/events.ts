@@ -215,6 +215,13 @@ export interface ModelChangedEvent extends SessionEventBase {
       可选 = 旧日志无此字段照样重放（schema 向后兼容硬规则）；
       落进日志而不是当运行时偏好，是因为它决定这个 turn 的钱从谁账上出 */
   lane?: ModelLane;
+  /** 这一格此刻是「Auto」（#1042）。**两种事件都带它**：用户把选择器切成 Auto 的
+      那一下（型号不变、只是从此由 Auto 说了算），以及之后每一轮 Auto 真的挑出一款
+      时落的那一条。于是「Auto 开着没有」是最后一条 model_changed 的投影，与型号、
+      lane 同一个取法，不用第二种持久化。
+      可选 = 旧日志无此字段照样重放（schema 向后兼容硬规则）；手动挑一款时**不带**
+      它，那一条本身就是关掉 Auto 的动作 */
+  auto?: true;
 }
 
 /** 额外 N：调用中途改道（issue #696）。托管额度用完、自动落到用户自己的 key 那一刻——
