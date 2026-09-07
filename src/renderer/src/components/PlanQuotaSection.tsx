@@ -14,35 +14,45 @@
 import { useChat } from "../store.js";
 import { useNow } from "../lib/useNow.js";
 import {
-  WINDOW_LABELS, addonLine, bindingWindow, countdown, liveWindow, planName, quotaTone, usageLine, windowPercent,
+  WINDOW_LABELS, addonLine, bindingWindow, countdown, fmtRemainingPercent, liveWindow, planName,
+  quotaTone, remainingPercent, usageTitle, windowPercent,
   type LiveWindow,
 } from "../lib/billingView.js";
 import { cn } from "@/lib/utils.js";
 
-const TONE_BAR = { brand: "bg-brand", warn: "bg-warn", deny: "bg-deny" } as const;
+/** 条的颜色。**充足时是中性灰不是品牌蓝**（与设置页那张卡逐字同一张表，ADR-0239 决定 1）：
+    条按**剩余**填之后，「一切正常」= 一根几乎满格的条，画成品牌蓝会比「快没了」还响；
+    颜色在这两处只用来说「出事了」。当主/非当主的分别改由标签字色 + 那行倒计时承担 */
+const TONE_BAR = { brand: "bg-foreground/40", warn: "bg-warn", deny: "bg-deny" } as const;
 
 /** 一扇窗：标签 + 用量一行，条一行（同设置页 WindowRow 的版式，尺寸按浮层收紧）。
     非当主的那扇整条走中性灰：一张卡里两条彩条会互相抢，而先拦住人的只有一扇。
 
     倒计时**只在当主那扇底下、单独一行**：三样东西挤一行时最长的形态
-    （「4.1 / 6.7 credit · 2 小时 12 分后恢复」）会顶出这张 300px 的卡，标签跟着折行；
+    （「99.9% 可用 · 2 小时 12 分后恢复」）会顶出这张 300px 的卡，标签跟着折行；
     而另一扇窗的恢复时刻本来也不是此刻要做决定的依据——真轮到它拦人时它就是当主的那扇。 */
 function WindowRow({ label, w, primary, now }: { label: string; w: LiveWindow; primary: boolean; now: number }) {
-  const pct = windowPercent(w);
+  // 色档按**已用**判（与设置页、上下文环共用的那组阈值），画出来的却是剩余：
+  // 同一件事的两个说法，判据只能有一份
+  const tone = TONE_BAR[quotaTone(windowPercent(w))];
   return (
-    <div className="mt-[5px] first:mt-0">
+    <div className="mt-[5px] first:mt-0" title={usageTitle(w)}>
       <div className="flex justify-between items-baseline gap-3 text-[11px]">
         <span className={primary ? "text-foreground/80" : "text-muted-foreground"}>{label}</span>
-        <span className="font-mono tabular-nums text-muted-foreground whitespace-nowrap">{usageLine(w)}</span>
+        {/* 剩余百分比 + 「可用」，与设置页同一口径（#1026）。精确 credit 进 title：
+            百分比是给人扫一眼的，对账的人还得看得到数 */}
+        <span className="font-mono tabular-nums text-muted-foreground whitespace-nowrap">
+          {fmtRemainingPercent(w)} 可用
+        </span>
       </div>
       <div className="mt-[3px] h-[4px] overflow-hidden rounded-full bg-foreground/10">
         {/* 条宽会动（额度是活的），走 transition 不走 keyframes：下一帧数据到了要能就地改道 */}
         <div
           className={cn(
             "h-full rounded-full transition-[width] duration-300 ease-[var(--ease-strong)]",
-            primary ? TONE_BAR[quotaTone(pct)] : "bg-foreground/25",
+            primary ? tone : "bg-foreground/25",
           )}
-          style={{ width: `${pct}%` }}
+          style={{ width: `${remainingPercent(w)}%` }}
         />
       </div>
       {primary && (

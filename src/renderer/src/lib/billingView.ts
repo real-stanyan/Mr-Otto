@@ -116,9 +116,11 @@ export function fmtRemainingPercent(w: { usedMicro: number; limitMicro: number }
   return `${remainingPercent(w).toFixed(1)}%`;
 }
 
-/** 悬停时给出的精确数。百分比是给人扫一眼的，对账的人还得看得到 credit */
+/** 悬停时给出的精确数。百分比是给人扫一眼的，对账的人还得看得到 credit。
+    正文那半走 `usageLine` —— #1026 之后两处界面都只画百分比，那串 credit 只剩这一个
+    出口，两份写法就该合成一份（否则「4.1 / 6.7 credit」的格式还有两个地方能各改各的） */
 export function usageTitle(w: { usedMicro: number; limitMicro: number }): string {
-  return `已用 ${creditOf(w.usedMicro).toFixed(1).replace(/\.0$/, "")} / ${fmtCredit(w.limitMicro)}`;
+  return `已用 ${usageLine(w)}`;
 }
 
 /** 「下次扣款 9月30日」。`periodEnd` 一直在 BillingMe 里，渲染层从来没画过它 ——
