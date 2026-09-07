@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from "vitest";
 import { join } from "node:path";
-import { createCloudSession, kickedNoteText, SayRejectedError, speakerLabelOf, type CloudSession } from "../../services/runtime/src/sessionService.js";
+import { createCloudSession, kickedNoteText, SANDBOX_PROBE_FAIL_TEXT, SayRejectedError, speakerLabelOf, type CloudSession } from "../../services/runtime/src/sessionService.js";
 import { createInMemoryWorkspaceMemory } from "../../services/runtime/src/workspaceMemory.js";
 import { EventStore } from "../../src/session/store.js";
 import type { SessionEvent, ApprovalRequestEvent, AgentRelayEvent, ChatMessageEvent, UserMessageEvent } from "../../src/session/events.js";
@@ -1039,6 +1039,9 @@ describe("沙箱内工具的工作区审批策略（#977 第 1 条，ADR-0231）
     expect(events.filter((e) => e.type === "approval_request")).toHaveLength(1);
     const decisions = events.filter((e) => e.type === "approval_decision");
     expect(decisions[1]).toMatchObject({ reason: "工作区设置：沙箱内工具免审" });
+    // 群里说了一句：不说的话，「免审开着却弹了张卡」与「这开关坏了」不可区分
+    const notes = events.filter((e) => e.type === "chat_message" && (e as { content: string }).content === SANDBOX_PROBE_FAIL_TEXT);
+    expect(notes).toHaveLength(1);
   });
 
   it("auto 只管沙箱那两把刀：create_agent 照旧要批", async () => {

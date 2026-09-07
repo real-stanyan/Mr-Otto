@@ -46,7 +46,7 @@ import {
   type CsDown,
 } from "../../../src/shared/remote/cloudSession.js";
 import { createWsTransport } from "../../../src/shared/remote/wsTransport.js";
-import { ADMIN_AGENT_ID, DEFAULT_SANDBOX_APPROVAL, normalizeSandboxApproval, type SandboxApproval } from "../../../src/shared/workspaceAgents.js";
+import { ADMIN_AGENT_ID, normalizeSandboxApproval, type SandboxApproval } from "../../../src/shared/workspaceAgents.js";
 import { findModel } from "../../../src/shared/modelCatalog.js";
 import type { RemoteTransport } from "../../../src/shared/remote/transport.js";
 
@@ -661,12 +661,15 @@ async function main(): Promise<void> {
         return Math.min(left(me.windows.h5), left(me.windows.week));
       },
       // 查不到就问人（#977）：0026 没跑、Supabase 抖了，都往严的一边倒——一次抖动
-      // 把「要批」翻成「免批」是最不该有的默认
-      sandboxApproval: () =>
-        querySandboxApproval(workspaceId).catch((err: unknown) => {
-          console.warn(`[otto-runtime] sandbox_approval 查询失败，按 ask（workspaceId=${workspaceId}）：${err instanceof Error ? err.message : String(err)}`);
-          return DEFAULT_SANDBOX_APPROVAL;
-        }),
+      // 把「要批」翻成「免批」是最不该有的默认。
+      // **失败原样往上抛，不在这里吞成 "ask"**（#1029，ADR-0240）：吞掉之后
+      // 「问不出来」与「库里确认是 ask」在 sessionService 那一层形状完全相同，
+      // 而它对这两者的处理刚好相反——确认的 ask 钉住这一轮、问不出来只管这一次。
+      // 吞在这里的话，那边区分两者的整段代码在真机接线下一次都跑不到（单测直接
+      // 递函数进去所以照样绿，正是最难发现的那种漏接线）。往严的一边倒这个决定
+      // 原样成立，只是做决定的地方在调用方——这也是 querySandboxApproval 头注
+      // 早就写着的契约
+      sandboxApproval: () => querySandboxApproval(workspaceId),
     });
 
     activeSessions.set(sessionId, { session, workspaceId });

@@ -383,11 +383,16 @@ export function CloudSessionPage({
       （store.setWorkspaceSandboxApproval），失败原样停在旧值 + 一行原因 */
   const toggleSandbox = async (next: boolean): Promise<void> => {
     if (sandboxBusy) return;
+    const at = csSessionId;
     setSandboxBusy(true);
     setSandboxError(null);
     const r = await setSandboxApproval(ws.id, next ? "auto" : "ask");
     setSandboxBusy(false);
-    if (!r.ok) setSandboxError(r.message);
+    // **回来时人可能已经换到别的会话了**（同 `unsent.sessionId` 那道闸的道理，复审 H1）：
+    // 这个组件换会话不卸载，而上面那个按 csSessionId 清空的 effect 在这次 await
+    // 之前就跑完了——判据必须在数据里，不能靠 effect 的时序。那句失败原文里没有
+    // 工作区名，落在 B 的页面上看不出它说的是 A
+    if (!r.ok && useChat.getState().cloudSession?.sessionId === at) setSandboxError(r.message);
   };
 
   /** 一次发送：mentions 缺席就不传第二参（老语义，服务端按名字解析 + 回落

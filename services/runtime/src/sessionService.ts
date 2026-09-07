@@ -435,6 +435,13 @@ export interface CloudSession {
     catchUp），到这个数就不再排、改落一条真正的收口 */
 export const MAX_CATCHUP_ATTEMPTS = 3;
 
+/** 沙箱免审策略这一刻问不出来时，群里那一句（#1029，ADR-0240）。
+    往严的一边倒（这一次照旧问人）是对的，但**不出声就与「这开关坏了」不可区分**：
+    输入框上方那行常驻警示此刻正写着「不会再问你」，而一张卡刚刚弹了出来。
+    说的是「这一次」不是「这一轮」——判断本身不钉住，下次撞门还会重查。 */
+export const SANDBOX_PROBE_FAIL_TEXT =
+  "这一刻读不到这个工作区的「沙箱内免审」设置，所以这一次照旧问人。稍后再跑就会重新读一次。";
+
 /** 「被踢的那位在群里叫什么」：日志里没有 profiles 表，开场白正文那个
     `[label]: ` 前缀是唯一现成的名字来源。取不到就退回 uid 前 8 位——与
     safeSpeakerLabel 撞上保留名时的退路同一个口径，不猜、也不编一个名字出来。
@@ -535,6 +542,9 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       只有确认的 "ask" 才钉住这一轮，判据与三种结局的理由写在 policyApprover 里
       （#1029，ADR-0240） */
   let jobSandboxPolicy: Promise<SandboxApproval | null> | null = null;
+  /** 这个 job 已经为「策略读不到」在群里出过一次声了吗（#1029）。同 relayWaitAnnounced：
+      判据是「这一轮」不是「这一次撞门」——一轮里每把刀各喊一句就成了刷屏 */
+  let sandboxProbeFailAnnounced = false;
   /** 这个 job 已经为审批出过一次声了吗（#959 复审 Medium 2）。每进一次 runJob
       复位（紧挨 `router.setRelayTurn`，同一个时机同一个作用域）——判据是"这一轮"
       不是"这张卡"，所以它跟着 job 走而不是跟着 callId 走 */
@@ -797,6 +807,14 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         if (policy !== "ask") {
           jobSandboxPolicy = null;
           if (policy === "auto") return { decision: "approved", reason: "工作区设置：沙箱内工具免审" };
+          // 问不出来时**在群里说一句**（每个 job 一次，同 relayWaitAnnounced 的去重）：
+          // 免审开着的工作区里，输入框上方那行常驻警示写着「不会再问你」，而这一刻
+          // 突然弹出一张卡——不出声的话，这个观测与「这开关坏了」一模一样，
+          // 而真实原因只在 VPS 日志里
+          if (!sandboxProbeFailAnnounced) {
+            sandboxProbeFailAnnounced = true;
+            logChat("system", "系统", SANDBOX_PROBE_FAIL_TEXT, false);
+          }
         }
       }
       return router.decide(call, tool, signal);
@@ -1279,6 +1297,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // 每轮现查（#977）。**这一轮之内只能收紧**（#1029，ADR-0240）：查出来是
     // 确认的 ask 才钉住这一轮，auto 与「问不出来」都不钉，判据在 policyApprover
     jobSandboxPolicy = null;
+    sandboxProbeFailAnnounced = false;
     jobLockAbort = new AbortController(); // 这一轮等容器锁的中断信号（#979 第 2 条）
     currentInitiator = job.fromUid;
     currentAgentId = job.agentId;
