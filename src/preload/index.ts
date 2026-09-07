@@ -140,6 +140,7 @@ const bridge: ShellBridge = {
   hasAuthRecord: () => ipcRenderer.invoke(CHANNELS.hasAuthRecord),
   configRoot: () => ipcRenderer.invoke(CHANNELS.configRoot),
   usageByProvider: (days: number) => ipcRenderer.invoke(CHANNELS.usageByProvider, days),
+  usageByModel: (since: number) => ipcRenderer.invoke(CHANNELS.usageByModel, since),
   providerBalances: () => ipcRenderer.invoke(CHANNELS.providerBalances),
   billingSnapshot: (refresh) => ipcRenderer.invoke(CHANNELS.billingSnapshot, refresh),
   billingCheckout: (target) => ipcRenderer.invoke(CHANNELS.billingCheckout, target),

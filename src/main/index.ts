@@ -127,6 +127,7 @@ import type { ThinkingMode } from "../shared/thinking.js";
 import { probeOllamaModels, rememberOllamaModels } from "./ollamaModels.js";
 import { clearBalanceCache, fetchProviderBalances } from "./providerBalance.js";
 import { usageSnapshot } from "../shared/usageStats.js";
+import { modelShares } from "../shared/modelShare.js";
 import { islandUsage, type IslandUsageRow } from "../shared/islandUsage.js";
 import type { AgentToolAllow } from "../shared/agentToolAllow.js";
 import { createWorkspaceLens, withDefaultFold } from "./workspaceLens.js";
@@ -3119,6 +3120,13 @@ void app.whenReady().then(() => {
     const now = Date.now();
     const since = now - span * 2 * 86_400_000;
     return usageSnapshot(store.billedUsage(since), { now, days: span });
+  });
+  // 账号页那半张卡：同一批计费行，按**型号**投影成占比。窗口起点由渲染层给 ——
+  // 它要和额度卡那扇「本周」是同一扇，而只有那边算得出起点（#1022）
+  ipcMain.handle(CHANNELS.usageByModel, (_e, since: number) => {
+    const now = Date.now();
+    const from = Number.isFinite(since) ? Math.min(since, now) : now - 7 * 86_400_000;
+    return modelShares(store.billedUsage(from), { since: from, until: now });
   });
   // 余额：key 在主进程 env 里，问的是签出这把 key 的那家自己（见 providerBalance.ts）
   ipcMain.handle(CHANNELS.providerBalances, () => fetchProviderBalances());
