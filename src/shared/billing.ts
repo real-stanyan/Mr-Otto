@@ -34,8 +34,15 @@ export interface BillingMe {
   windows: { h5: WindowState; week: WindowState } | null;
   addon: { remainingMicro: number; expiresAt: number | null };
   periodEnd: number | null;
-  /** 网关此刻供的逻辑型号 id（model_route 里 enabled 的） */
+  /** 网关此刻供的逻辑型号 id（model_route 里 enabled 的）。
+      **从便宜到贵有序**（ADR-0237：routesQuery 按 priority,输出价,id 全序），
+      所以 `models[0]` = 没指定型号时用的那款，`at(-1)` = 最贵那款 */
   models: string[];
+  /** 型号 id → `model_route.platform`（`deepseek` / `zhipu` / `qwen`…，#1011）。
+      **不靠 id 前缀猜**：`glm-*` 属于智谱今天成立，只是因为这些 id 是我们自己在
+      `model_route` 里写的——那是巧合不是保证，而这一列就是答案。
+      旧 edge 不发这一格 = 空对象，消费方（下拉里的 logo）画不出来就不画 */
+  modelPlatforms: Record<string, string>;
 }
 
 export const BILLING_HEADERS = {
@@ -154,6 +161,14 @@ export function parseBillingMe(payload: unknown): BillingMe | null {
   const expiresAt = typeof payload.addon.expiresAt === "number" ? payload.addon.expiresAt : null;
   const periodEnd = typeof payload.periodEnd === "number" ? payload.periodEnd : null;
   const models = Array.isArray(payload.models) ? payload.models.filter((m): m is string => typeof m === "string") : [];
+  // 缺席 / 形状不对一律回空对象——这一格只喂 logo，读不到就不画，不该让整份
+  // 快照解析失败（那会把「edge 比我旧」升级成「拿不到订阅状态」）
+  const modelPlatforms: Record<string, string> = {};
+  if (isObj(payload.modelPlatforms)) {
+    for (const [k, v] of Object.entries(payload.modelPlatforms)) {
+      if (typeof v === "string") modelPlatforms[k] = v;
+    }
+  }
   const plans: PlanInfo[] = [];
   if (Array.isArray(payload.plans)) {
     for (const p of payload.plans) {
@@ -170,7 +185,7 @@ export function parseBillingMe(payload: unknown): BillingMe | null {
       }
     }
   }
-  return { plan, status, plans, windows, addon: { remainingMicro: payload.addon.remainingMicro, expiresAt }, periodEnd, models };
+  return { plan, status, plans, windows, addon: { remainingMicro: payload.addon.remainingMicro, expiresAt }, periodEnd, models, modelPlatforms };
 }
 
 export const MICRO_PER_CREDIT = 10_000;

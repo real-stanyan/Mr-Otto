@@ -243,7 +243,9 @@ export function meFromParts(
   windows: { h5: WindowState; week: WindowState } | null,
   addon: { remainingMicro: number; expiresAt: number | null },
   models: string[],
-  plans: PlanRow[]
+  plans: PlanRow[],
+  /** 型号 id → 平台（#1011）。给下拉里的厂商 logo 用；缺省空对象让既有调用方不必改 */
+  modelPlatforms: Record<string, string> = {}
 ): BillingMe {
   const plan = sub && (sub.plan_id === "lite" || sub.plan_id === "pro" || sub.plan_id === "max") ? sub.plan_id : null;
   return {
@@ -254,6 +256,6 @@ export function meFromParts(
       .filter((p): p is PlanRow & { id: "lite" | "pro" | "max" } => p.id === "lite" || p.id === "pro" || p.id === "max")
       .map((p) => ({ id: p.id, priceUsdCents: p.price_usd_cents, capabilities: p.capabilities })),
     windows: sub && sub.status === "active" ? windows : null,
-    addon, periodEnd: sub ? Date.parse(sub.current_period_end) : null, models,
+    addon, periodEnd: sub ? Date.parse(sub.current_period_end) : null, models, modelPlatforms,
   };
 }
