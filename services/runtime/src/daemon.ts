@@ -12,6 +12,7 @@ import Docker from "dockerode";
 import { createClient } from "@supabase/supabase-js";
 
 import { loadConfig } from "./config.js";
+import { createGitCredentialStore } from "./gitCredentialStore.js";
 import { createFrameHandler, safeEncodeCs, type FrameHandlerDeps } from "./frameHandler.js";
 import {
   createSandbox,
@@ -112,15 +113,10 @@ function createFileOrphansStore(path: string): OrphansStore {
   };
 }
 
-// 这儿原来住着 workspaceConfigStore（一个工作区绑一个仓库 + 一把 PAT，#834）。
-// #1102 拆掉绑定之后它没有消费方了：sandbox 的 repoConfig 与 config 帧都走了。
-//
-// 片 2（#1103）会在这个位置新建 gitCredentialStore：形状从「一个仓库 + 一把
-// token」换成「host → token」，落盘纪律（0600 + 已有文件再 chmod 一刀）照抄
-// 它——那条纪律来自 src/main/mcpAuthStore.ts:89-90，不是这里发明的。
-//
-// 注意 VPS 上 workspace-config.json 一个都不存在（2026-09-08 实测），所以这次
-// 删除没有任何存量数据要迁移。
+// Git 凭据（#1103）住在 gitCredentialStore.ts。它替代的是 workspaceConfigStore
+// （一个工作区绑一个仓库 + 一把 PAT，#834），#1102 拆掉绑定时一起走了——形状从
+// 「一个仓库 + 一把 token」换成「host → token」，因为 git 自己就是按 host 匹配
+// credential 的。落盘纪律（0600 + 已有文件再 chmod 一刀）照抄 mcpAuthStore.ts:89-90。
 
 
 /** 这份 bundle 的内容指纹（#791）。`scripts/runtime-deploy.mjs` 打包时用 esbuild
@@ -356,6 +352,8 @@ async function main(): Promise<void> {
       sessionBroadcast.get(sessionId)?.(e);
     }
   }
+
+  const gitCredentials = createGitCredentialStore(join(config.dataDir, "git-credentials.json"));
 
   const sandbox: Sandbox = createSandbox(docker as unknown as DockerLike, {
     orphans: createFileOrphansStore(join(config.dataDir, "orphans.json")),
@@ -769,6 +767,13 @@ async function main(): Promise<void> {
         return true;
       },
     },
+    // #1103：token 从不下行——hosts() 回的东西里根本没有它
+    gitHosts: (workspaceId) => gitCredentials.hosts(workspaceId),
+    putGitCredential: (workspaceId, host, token, addedBy) => {
+      // `""` = 删掉这台主机（协议 15 的两态，见 CsUp.git_credential 的注释）
+      if (token === "") gitCredentials.remove(workspaceId, host);
+      else gitCredentials.put(workspaceId, host, token, addedBy);
+    },
     // 三档令牌桶（issue #819）。日志"一个时段只记一笔"由 createFrameRateLimiter
     // 自己保证——不然日志本身就成了第二个能被刷爆的东西（ADR-0167 同款）
     rateLimit: createFrameRateLimiter({
@@ -815,12 +820,11 @@ async function main(): Promise<void> {
       return;
     }
     const validIds = new Set((workspaceRows ?? []).map((r: { id: string }) => r.id));
-    await sandbox.reconcile(validIds);
-    // 这儿原来还有一步：容器+卷真的删掉的那一刻，把这个工作区的仓库配置
-    // （**含明文 PAT**）一起删掉（issue #835④——上一版只写不删，凭据条目
-    // 永久留在 VPS 上）。#1102 之后没有配置可删了。
-    // **片 2（#1103）必须把这一步接回来**：凭据换成 host→token 之后，
-    // 「工作区没了，它那把 token 也得跟着没」这条不变量一个字都没变。
+    const { removed } = await sandbox.reconcile(validIds);
+    // 容器+卷真的删掉的那一刻，把这个工作区的 Git 凭据（**含明文 token**）
+    // 一起删掉（issue #835④ 的同一条不变量：上一版只写不删，凭据条目永久
+    // 留在 VPS 上；#1103 换成 host→token 之后这条一个字都没变）
+    for (const workspaceId of removed) gitCredentials.purge(workspaceId);
   }
 
   await runReconcile();

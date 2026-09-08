@@ -32,7 +32,7 @@ describe("cs 帧协议", () => {
     // 之后静默少一格状态。**加一个枚举值同理**：老客户端的
     // isValidCsDeniedCode 认不出 rate_limited，整帧被 decodeCsDown 判成
     // null 静默丢掉，create() 于是白等满超时才回一句"云端无响应"
-    expect(CS_PROTOCOL_VERSION).toBe(14);
+    expect(CS_PROTOCOL_VERSION).toBe(15);
   });
   it("房名生成", () => {
     expect(csCtlChannel()).toBe("cs-ctl");
@@ -177,7 +177,7 @@ describe("rate_limited 码（issue #819）", () => {
 // 留下的是 modelRoute 那一格，它换了唯一的载体（welcome + workspace_state）
 describe("协议 14：config 帧没了，modelRoute 还在（#1102）", () => {
   it("协议号进位到 14", () => {
-    expect(CS_PROTOCOL_VERSION).toBe(14);
+    expect(CS_PROTOCOL_VERSION).toBe(15);
   });
 
   it("config 帧解不出来了 —— 老客户端发过来一律 null", () => {
@@ -215,7 +215,8 @@ describe("协议 14：config 帧没了，modelRoute 还在（#1102）", () => {
       t: "workspace_state", workspaceId: "w", modelRoute: null,
       repo: { url: "https://a.com/x.git", hasPat: true, clone: null },
     })));
-    expect(decodeCsDown(raw)).toEqual({ t: "workspace_state", workspaceId: "w", modelRoute: null });
+    // gitHosts 缺席 → null（协议 15 之后多的那一格，老服务端不带）
+    expect(decodeCsDown(raw)).toEqual({ t: "workspace_state", workspaceId: "w", modelRoute: null, gitHosts: null });
   });
 });
 
@@ -230,13 +231,67 @@ describe("协议 8：控制房的 workspace 读帧", () => {
   it("workspace_state 答复往返，modelRoute 与 welcome 同一套归一化", () => {
     const down = decodeCsDown(encodeCs({
       t: "workspace_state", workspaceId: "w",
-      modelRoute: { kind: "hosted", model: "m" },
+      modelRoute: { kind: "hosted", model: "m" }, gitHosts: [],
     }));
     expect(down).toEqual({
       t: "workspace_state", workspaceId: "w",
-      modelRoute: { kind: "hosted", model: "m" },
+      modelRoute: { kind: "hosted", model: "m" }, gitHosts: [],
     });
     const bad = b64encode(new TextEncoder().encode(JSON.stringify({ t: "workspace_state", modelRoute: null })));
     expect(decodeCsDown(bad)).toBeNull();
+  });
+});
+
+// 协议 15（#1103）：Git 凭据按「工作区 + 主机」回来了。**token 从不下行**，所以
+// 这一组盯的是「清单那一格怎么归一化」——尤其是 null 与 [] 的分别。
+describe("协议 15：git_credential / gitHosts（#1103）", () => {
+  it("git_credential 往返；三格缺一整帧无效", () => {
+    const frame = { t: "git_credential" as const, workspaceId: "w", host: "github.com", token: "ghp_x" };
+    expect(decodeCsUp(encodeCs(frame))).toEqual(frame);
+    for (const missing of ["workspaceId", "host", "token"]) {
+      const partial: Record<string, unknown> = { ...frame };
+      delete partial[missing];
+      expect(decodeCsUp(b64encode(new TextEncoder().encode(JSON.stringify(partial))))).toBeNull();
+    }
+  });
+
+  it("token 的空串是**有意义的取值**（删掉这台），不许被当成「没带这个键」", () => {
+    const frame = { t: "git_credential" as const, workspaceId: "w", host: "github.com", token: "" };
+    expect(decodeCsUp(encodeCs(frame))).toEqual(frame);
+  });
+
+  it("gitHosts：`null`（读不到）与 `[]`（一台都没配）是两回事，不许合并", () => {
+    const withNull = decodeCsDown(b64encode(new TextEncoder().encode(
+      JSON.stringify({ t: "workspace_state", workspaceId: "w", modelRoute: null })
+    )));
+    expect(withNull && withNull.t === "workspace_state" && withNull.gitHosts).toBeNull();
+
+    const withEmpty = decodeCsDown(encodeCs({ t: "workspace_state", workspaceId: "w", modelRoute: null, gitHosts: [] }));
+    expect(withEmpty && withEmpty.t === "workspace_state" && withEmpty.gitHosts).toEqual([]);
+  });
+
+  it("清单里坏掉的那一条被丢掉，整份不判 null —— 一条坏记录不该让整张表消失", () => {
+    const raw = b64encode(new TextEncoder().encode(JSON.stringify({
+      t: "workspace_state", workspaceId: "w", modelRoute: null,
+      gitHosts: [
+        { host: "github.com", addedBy: "u", addedAt: 1 },
+        { host: "", addedBy: "u", addedAt: 2 },          // 空主机名
+        { host: "gitlab.com", addedAt: 3 },               // 缺 addedBy
+        { host: "bitbucket.org", addedBy: "u", addedAt: "x" }, // addedAt 不是数字
+        "不是对象",
+      ],
+    })));
+    const down = decodeCsDown(raw);
+    expect(down && down.t === "workspace_state" && down.gitHosts).toEqual([
+      { host: "github.com", addedBy: "u", addedAt: 1 },
+    ]);
+  });
+
+  it("git_credential_result 往返；ok=false 带 message", () => {
+    const okFrame = decodeCsDown(encodeCs({ t: "git_credential_result", workspaceId: "w", ok: true, gitHosts: [] }));
+    expect(okFrame).toEqual({ t: "git_credential_result", workspaceId: "w", ok: true, gitHosts: [] });
+
+    const bad = decodeCsDown(encodeCs({ t: "git_credential_result", workspaceId: "w", ok: false, message: "不行", gitHosts: null }));
+    expect(bad).toEqual({ t: "git_credential_result", workspaceId: "w", ok: false, message: "不行", gitHosts: null });
   });
 });

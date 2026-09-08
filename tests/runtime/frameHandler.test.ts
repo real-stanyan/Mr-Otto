@@ -55,6 +55,8 @@ function makeDeps(config: {
   removeSession?: FrameHandlerDeps["sessions"]["remove"];
   /** issue #945：默认「探不到」（null）——绝大多数用例不关心这一格 */
   modelRoute?: FrameHandlerDeps["modelRoute"];
+  gitHosts?: FrameHandlerDeps["gitHosts"];
+  putGitCredential?: FrameHandlerDeps["putGitCredential"];
   dropCid?: FrameHandlerDeps["dropCid"];
   /** issue #819：默认全放行（绝大多数用例不关心限流）。要验闸门的用例
       传一个只对某几档说 false 的假货 */
@@ -68,6 +70,8 @@ function makeDeps(config: {
   const dropCidCalls: string[] = [];
   const logs: string[] = [];
   const deps: FrameHandlerDeps = {
+    gitHosts: config.gitHosts ?? (() => []),
+    putGitCredential: config.putGitCredential ?? (() => {}),
     verifyJwt: config.verifyJwt ?? (async (token) => (token.startsWith("jwt:") ? { userId: token.slice(4) } : null)),
     isMember: config.isMember ?? (async () => true),
     labelOf: config.labelOf ?? (async (uid) => `Label(${uid})`),
@@ -1601,5 +1605,146 @@ describe("files_search 读帧（协议 12，#1066）", () => {
 
     await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "files_search", workspaceId: "w1", query: "x", content: false }));
     expect(sent.at(-1)!.msg).toEqual({ t: "denied", code: "not_authorized" });
+  });
+});
+
+// ── Git 凭据（协议 15，#1103）──────────────────────────────────────────────
+// 三条判据各盯一处：**谁能写**（owner，服务端判，不信客户端）、**写什么**（主机名
+// 服务端自己再校验一次——渲染层不是安全边界）、**回执带清单**（省掉「我存完了但
+// 列表还是旧的」那种自相矛盾的中间态）。
+describe("git_credential（协议 15，#1103）", () => {
+  const OWNER = "owner-uid";
+  const put = (workspaceId: string, host: string, token: string) =>
+    encodeCs({ t: "git_credential", workspaceId, host, token });
+
+  it("非 owner → denied not_authorized，一个字都没落盘", async () => {
+    const writes: unknown[] = [];
+    const { deps, sent } = makeDeps({
+      ownerOf: async () => OWNER,
+      putGitCredential: (w, h, t, by) => { writes.push([w, h, t, by]); },
+    });
+    const handler = createFrameHandler(deps);
+    await handler.onCtlFrame("cMember", hello(CS_PROTOCOL_VERSION, "jwt:member-uid"));
+    sent.length = 0;
+
+    await handler.onCtlFrame("cMember", put("w1", "github.com", "ghp_x"));
+
+    expect(sent.at(-1)).toEqual({ cid: "cMember", msg: { t: "denied", code: "not_authorized" } });
+    expect(writes).toEqual([]);
+  });
+
+  it("owner 存一把 → 落盘且回执带服务端此刻的清单；token 不在回执里", async () => {
+    const writes: [string, string, string, string][] = [];
+    const { deps, sent } = makeDeps({
+      ownerOf: async () => OWNER,
+      putGitCredential: (w, h, t, by) => { writes.push([w, h, t, by]); },
+      gitHosts: () => [{ host: "github.com", addedBy: OWNER, addedAt: 111 }],
+    });
+    const handler = createFrameHandler(deps);
+    await handler.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, `jwt:${OWNER}`));
+    sent.length = 0;
+
+    await handler.onCtlFrame("c1", put("w1", "  GitHub.COM ", "ghp_secret"));
+
+    // 主机名归一化之后才落盘——大小写/空白不该产生两条记录
+    expect(writes).toEqual([["w1", "github.com", "ghp_secret", OWNER]]);
+    const msg = sent.at(-1)!.msg as Record<string, unknown>;
+    expect(msg).toMatchObject({ t: "git_credential_result", workspaceId: "w1", ok: true });
+    expect(msg["gitHosts"]).toEqual([{ host: "github.com", addedBy: OWNER, addedAt: 111 }]);
+    expect(JSON.stringify(msg)).not.toContain("ghp_secret");
+  });
+
+  it("token 为空串 = 删掉那台主机 —— 照样落到写入口，由它分派", async () => {
+    const writes: [string, string, string, string][] = [];
+    const { deps } = makeDeps({
+      ownerOf: async () => OWNER,
+      putGitCredential: (w, h, t, by) => { writes.push([w, h, t, by]); },
+    });
+    const handler = createFrameHandler(deps);
+    await handler.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, `jwt:${OWNER}`));
+
+    await handler.onCtlFrame("c1", put("w1", "github.com", ""));
+
+    expect(writes).toEqual([["w1", "github.com", "", OWNER]]);
+  });
+
+  it("主机名服务端自己再校验一次 → 回 ok:false，一个字都没落盘", async () => {
+    const writes: unknown[] = [];
+    const { deps, sent } = makeDeps({
+      ownerOf: async () => OWNER,
+      putGitCredential: (w, h, t, by) => { writes.push([w, h, t, by]); },
+    });
+    const handler = createFrameHandler(deps);
+    await handler.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, `jwt:${OWNER}`));
+    sent.length = 0;
+
+    // 渲染层拦得住这一条，但渲染层不是安全边界（同 validateRepoUrl 的理由）
+    await handler.onCtlFrame("c1", put("w1", "https://x:ghp_leak@github.com/", "ghp_x"));
+
+    expect(writes).toEqual([]);
+    const msg = sent.at(-1)!.msg as Record<string, unknown>;
+    expect(msg).toMatchObject({ t: "git_credential_result", ok: false });
+    expect(JSON.stringify(msg)).not.toContain("ghp_leak");
+  });
+
+  it("落盘抛异常 → 回 ok:false 带原因，不假装存过了", async () => {
+    const { deps, sent } = makeDeps({
+      ownerOf: async () => OWNER,
+      putGitCredential: () => { throw new Error("磁盘满了"); },
+    });
+    const handler = createFrameHandler(deps);
+    await handler.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, `jwt:${OWNER}`));
+    sent.length = 0;
+
+    await handler.onCtlFrame("c1", put("w1", "github.com", "ghp_x"));
+
+    expect(sent.at(-1)!.msg).toMatchObject({ t: "git_credential_result", ok: false, message: "保存失败：磁盘满了" });
+  });
+
+  it("读清单抛异常 → gitHosts 回 null（读不到），不是空数组（一台都没配）", async () => {
+    const { deps, sent } = makeDeps({
+      ownerOf: async () => OWNER,
+      gitHosts: () => { throw new Error("文件读不了"); },
+    });
+    const handler = createFrameHandler(deps);
+    await handler.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, `jwt:${OWNER}`));
+    sent.length = 0;
+
+    await handler.onCtlFrame("c1", encodeCs({ t: "workspace", workspaceId: "w1" }));
+
+    expect(sent.at(-1)!.msg).toMatchObject({ t: "workspace_state", gitHosts: null });
+  });
+
+  it("workspace 读帧对任何在籍成员都带清单 —— 有哪几台主机不是秘密，那把钥匙才是", async () => {
+    const { deps, sent } = makeDeps({
+      ownerOf: async () => OWNER,
+      gitHosts: () => [{ host: "github.com", addedBy: OWNER, addedAt: 1 }],
+    });
+    const handler = createFrameHandler(deps);
+    await handler.onCtlFrame("cMember", hello(CS_PROTOCOL_VERSION, "jwt:member-uid"));
+    sent.length = 0;
+
+    await handler.onCtlFrame("cMember", encodeCs({ t: "workspace", workspaceId: "w1" }));
+
+    expect(sent.at(-1)!.msg).toMatchObject({
+      t: "workspace_state",
+      gitHosts: [{ host: "github.com", addedBy: OWNER, addedAt: 1 }],
+    });
+  });
+
+  it("会话房里发 git_credential → denied not_authorized（控制房专用帧）", async () => {
+    const writes: unknown[] = [];
+    const { deps, sent } = makeDeps({
+      ownerOf: async () => OWNER,
+      putGitCredential: (w, h, t, by) => { writes.push([w, h, t, by]); },
+    });
+    const handler = createFrameHandler(deps);
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, `jwt:${OWNER}`));
+    sent.length = 0;
+
+    await handler.onSessionFrame("w1", "s1", "c1", put("w1", "github.com", "ghp_x"));
+
+    expect(sent.at(-1)).toEqual({ cid: "c1", msg: { t: "denied", code: "not_authorized" } });
+    expect(writes).toEqual([]);
   });
 });

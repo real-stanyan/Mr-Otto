@@ -20,7 +20,7 @@ import type { UsageSnapshot } from "./usageStats.js";
 import type { ModelShareWindow } from "./modelShare.js";
 import type { WorkspaceMentionRow } from "./workspaceMentions.js";
 import type { IslandUsageRow } from "./islandUsage.js";
-import type { CsModelRoute, CsWorkHit, CsWorkNode } from "./remote/cloudSession.js";
+import type { CsGitHost, CsModelRoute, CsWorkHit, CsWorkNode } from "./remote/cloudSession.js";
 import type { TerminalInfo } from "./terminal.js";
 import type { BrowserTabInfo, BrowserBounds, BrowserPickedElement } from "./browser.js";
 import type { SimButton, SimFrame, SimState } from "./simulator.js";
@@ -499,6 +499,10 @@ export interface CloudSessionStatus {
     这一个）：与 CloudSessionStatus 上的 modelRoute 同形，一处画法 */
 export interface CloudWorkspaceState {
   modelRoute: CsModelRoute | null;
+  /** 这个工作区能认证哪几台 Git 主机（#1103）。**没有 token**——它从不下行。
+      `null` = 这一刻读不到，**不是**「一台都没配」（后者是 `[]`）：两句话在
+      界面上一句是红字一句是空态，同 ADR-0243 对 `sandbox_approval` 的处置 */
+  gitHosts: CsGitHost[] | null;
 }
 
 /** 桥上的托管额度快照（Task 11）。结构与主进程 `hostedQuota.ts` 的 `HostedSnapshot`
@@ -1176,6 +1180,16 @@ export interface ShellBridge {
       `content=false` = 按文件名过滤，`true` = 搜正文（`?` 前缀那一路）。
       **`hits: []` 与失败是两回事**——前者是「搜过了没有」，后者是「没搜成」 */
   workspaceCloudFilesSearch(workspaceId: string, query: string, content: boolean): Promise<FriendsResult<CsWorkHit[]>>;
+  /** 存 / 删一台主机的 Git 凭据（控制房 RPC，协议 15，#1103；**owner 才过**，服务端判）。
+      `token` 两态：非空 = 存这一把（同一台主机再存就是换新），`""` = 删掉这台主机。
+      PAT 纪律同 `ProviderKeyDialog`：渲染层不留 key 的任何副本，这里只是这一次
+      IPC 调用的参数。成功回服务端此刻的清单，界面直接换上——省掉「我存完了但
+      列表还是旧的」那种自相矛盾的中间态 */
+  workspaceCloudGitCredential(
+    workspaceId: string,
+    host: string,
+    token: string,
+  ): Promise<FriendsResult<CsGitHost[] | null>>;
   /** macOS dock 角标(0 = 清掉)。未读数只有渲染层知道,所以由它来报 */
   setBadgeCount(count: number): Promise<void>;
   /** 关系链任何变化(本端操作或对端 Realtime 推)→ 全量快照 */
@@ -1605,6 +1619,7 @@ export const CHANNELS = {
   workspaceCloudState: "otter:workspaceCloudState",
   workspaceCloudFiles: "otter:workspaceCloudFiles",
   workspaceCloudFilesSearch: "otter:workspaceCloudFilesSearch",
+  workspaceCloudGitCredential: "otter:workspaceCloudGitCredential",
   setBadgeCount: "otter:setBadgeCount",
   friendsChanged: "otter:friendsChanged",
   presenceChanged: "otter:presenceChanged",

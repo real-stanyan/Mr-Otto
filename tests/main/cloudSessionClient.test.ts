@@ -1423,8 +1423,8 @@ describe("createCloudSessionClient — workspaceState（控制房）", () => {
       { t: "hello", v: CS_PROTOCOL_VERSION, jwt: "token-abc" },
       { t: "workspace", workspaceId: "w1" },
     ]);
-    t.emitDown({ t: "workspace_state", workspaceId: "w1", modelRoute: { kind: "hosted", model: "m" } });
-    expect(await promise).toEqual({ ok: true, value: { modelRoute: { kind: "hosted", model: "m" } } });
+    t.emitDown({ t: "workspace_state", workspaceId: "w1", modelRoute: { kind: "hosted", model: "m" }, gitHosts: [] });
+    expect(await promise).toEqual({ ok: true, value: { modelRoute: { kind: "hosted", model: "m" }, gitHosts: [] } });
     expect(t.close).toHaveBeenCalledTimes(1);
   });
 

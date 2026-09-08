@@ -7,7 +7,16 @@ import type { SessionEvent } from "../../session/events.js";
 import { b64decode, b64encode } from "./b64.js";
 import { MAX_FRAME_BYTES } from "./wire.js";
 
-/** 14（#1102）：**repo 那一组整个走了**——`config` / `config_result` 两条帧删除，
+/** 15（#1103）：Git 凭据回来了，但形状换了——**按「工作区 + 主机」存，不绑仓库**。
+    新增上行 `git_credential{workspaceId, host, token}`（`token: ""` = 删掉这台主机）
+    与下行 `git_credential_result`；`workspace_state` 多一格 `gitHosts`。
+    `CsGitHost = {host, addedBy, addedAt}` —— **没有 `hasToken`**：在这张清单里
+    就等于有 token，一个恒为 true 的字段只会让人猜它什么时候是 false。
+    **token 从不下行**（同 #834 那条纪律，只是那时下行的是 `hasPat` 布尔）。
+    写/删只有 owner（判据同 `sandbox_approval`，ADR-0243：它花的是 owner 的额度、
+    动的是共用的卷），读给任何在籍成员——「这个工作区能认证 github.com」不是秘密，
+    那把钥匙才是。
+    14（#1102）：**repo 那一组整个走了**——`config` / `config_result` 两条帧删除，
     `welcome.repo` 与 `workspace_state.repo` 删除，`CsRepoState` 删除。工作区不再
     绑一个仓库：ADR-0234 把仓库配置搬进设置页时，主语还是「这个工作区的仓库是
     哪个」，而真正的主语是「水獭在哪儿干活」（ADR-0251 已经为「文件」那一页立过
@@ -80,7 +89,7 @@ import { MAX_FRAME_BYTES } from "./wire.js";
     少一格状态。**加一个枚举值同理**：老客户端的 isValidCsDeniedCode 认不出
     `rate_limited`，decodeCsDown 回 null，那一帧被静默忽略，于是 create()
     要白等满超时才回一句"云端无响应"——把"你被限速了"说成"对面没回话"。 */
-export const CS_PROTOCOL_VERSION = 14;
+export const CS_PROTOCOL_VERSION = 15;
 export const CS_MAX_TEXT_BYTES = 64 * 1024;
 
 /** 一次回多少字节的文件内容（#1056）。中继单帧上限是 256 KiB（wire.ts 的
@@ -99,6 +108,14 @@ export const CS_WORK_FILE_MAX_BYTES = 64 * 1024;
     而它修的正是「失败无声」（同 daemon 看门狗不认日志文案那条纪律）。
     放在协议文件里而不是任一端：它就是一条线上约定，形状同 wire.ts 的纪律。 */
 export const BACKLOG_SKIP_MARKER = "已跳过";
+
+/** 一个工作区能认证哪台主机（#1103）。**这里没有 token**——它从不下行。
+    `addedBy` 是 uid（渲染层自己去名单里换名字，同 `fromUid` 的纪律：改名不断账）。 */
+export interface CsGitHost {
+  host: string;
+  addedBy: string;
+  addedAt: number;
+}
 
 /** 仓库地址的**结构化白名单**校验（issue #834）——两端共用一份。
 
@@ -247,9 +264,17 @@ export type CsUp =
   | { t: "say"; text: string; mention: boolean; mentions?: string[]; memberMentions?: string[] }
   | { t: "backlog"; afterSeq: number }
   | { t: "approve"; callId: string; decision: "approved" | "denied" }
-  /** 读这个工作区此刻的路由（控制房帧，协议 8；#1102 之后只剩这一格）：回
-      `workspace_state`。任何在籍成员都能读——它本来就在 welcome 上给所有人看 */
+  /** 读这个工作区此刻的路由 + Git 凭据清单（控制房帧，协议 8；协议 15 多了后者）：
+      回 `workspace_state`。任何在籍成员都能读——路由本来就在 welcome 上给所有人看，
+      凭据清单里没有 token（有哪几台主机不是秘密，那把钥匙才是） */
   | { t: "workspace"; workspaceId: string }
+  /** 存 / 删一台主机的 Git 凭据（控制房帧，协议 15，#1103）。**owner 才受理**，
+      服务端判。`token` 两态：非空 = 存这一把（同一台主机再存就是换新），
+      `""` = **删掉这台主机**。
+      没有第三态——「省略 = 保持不变」在这里没有意义：主机那一格本来就是主键，
+      改 token 就是重新存一次。（这一点与 #834 那个 `pat` 三态不同，那时地址与
+      token 是同一条记录的两格，密码框预填不了才需要「省略 = 别动」） */
+  | { t: "git_credential"; workspaceId: string; host: string; token: string }
   /** 读工作文件夹的一格（控制房帧，协议 11，#1056）：回 `files_result`。
       `path` 是**相对工作文件夹**的路径（`""` = 它本身），发出去之前先过
       `normalizeWorkPath`；服务端不信任它，自己再归一化一次并在容器里
@@ -309,10 +334,18 @@ export type CsDown =
       让还在看的人知道发生了什么）。`ok=false` 的 message 分得清三种：这条会话
       不存在 / 这一刻读不到（查询挂了，**不是**「不存在」）/ 删库那一步失败 */
   | { t: "delete_result"; workspaceId: string; sessionId: string; ok: boolean; message?: string }
-  /** `workspace` 读帧的答复（协议 8，#991）：与 welcome 上那一格同形。
-      #1102 摘掉 `repo` 之后只剩 `modelRoute`，但这对帧**不删**——它是
-      ADR-0246 那句「起不了 turn」在设置页唯一的落点 */
-  | { t: "workspace_state"; workspaceId: string; modelRoute: CsModelRoute | null }
+  /** `workspace` 读帧的答复（协议 8，#991；协议 15 加 `gitHosts`）。#1102 摘掉
+      `repo` 之后这对帧本来只剩 `modelRoute`——留着它是因为 ADR-0246 那句
+      「起不了 turn」在设置页是它唯一的落点。
+      `gitHosts` 缺席（`null`）= **这一刻读不到**，不是「一台都没配」：前者该说
+      「读不到」，后者该画空态，两句话不一样（同 ADR-0243 对 `sandbox_approval`
+      三态的处置） */
+  | { t: "workspace_state"; workspaceId: string; modelRoute: CsModelRoute | null; gitHosts: CsGitHost[] | null }
+  /** `git_credential` 的回执（协议 15，#1103）。形状照 `archive_result` 的先例：
+      不复用 `error`（那条帧还承载别的消息，await 它会被不相干的 error 提前唤醒）。
+      成功时带回**服务端此刻的**清单，界面直接换上——省一次往返，也省掉「我存完了
+      但列表还是旧的」那种自相矛盾的中间态（#843 症状 1 的一般形式） */
+  | { t: "git_credential_result"; workspaceId: string; ok: boolean; message?: string; gitHosts: CsGitHost[] | null }
   /** `files` 读帧的答复（协议 11，#1056）。`path` 回带是为了对上号（一条连接
       只问一次，但认一下比赌顺序便宜，同 workspace_state）。`ok=false` 的 message
       分得清「路径不合法」「容器里读失败」两种——两种该做的动作不一样 */
@@ -380,6 +413,23 @@ function isValidCsDeniedCode(v: unknown): v is CsDeniedCode {
     解码永远向后兼容——一个还没升级的 runtime 发来的 welcome 少这一格是正常的，
     把它判成无效帧等于让客户端白等满超时。hosted 必须带非空 model：没有型号的
     hosted 界面上写不出任何有意义的东西，那和「探不到」是同一种处境 */
+/** 线上防呆（#1103）：缺席 / `null` / 不是数组 → `null`（= 这一刻读不到），
+    **不拒整帧**。是数组时逐条过滤，形状不对的那条丢掉而不是整份判 null——
+    一条坏记录不该让整张清单消失。空数组原样保留：`[]`（一台都没配）与
+    `null`（读不到）是两回事，合并它们就是把「读不到」画成空态。 */
+function normalizeGitHosts(v: unknown): CsGitHost[] | null {
+  if (!Array.isArray(v)) return null;
+  const out: CsGitHost[] = [];
+  for (const item of v) {
+    if (typeof item !== "object" || item === null) continue;
+    const o = item as Record<string, unknown>;
+    if (typeof o.host !== "string" || o.host === "") continue;
+    if (typeof o.addedBy !== "string" || typeof o.addedAt !== "number") continue;
+    out.push({ host: o.host, addedBy: o.addedBy, addedAt: o.addedAt });
+  }
+  return out;
+}
+
 function normalizeModelRoute(v: unknown): CsModelRoute | null {
   if (typeof v !== "object" || v === null || Array.isArray(v)) return null;
   const o = v as Record<string, unknown>;
@@ -516,6 +566,14 @@ export function decodeCsUp(b64: string): CsUp | null {
     if (t === "workspace") {
       if (typeof obj.workspaceId === "string") return { t: "workspace", workspaceId: obj.workspaceId };
       return null;
+    }
+
+    if (t === "git_credential") {
+      // 三格全必填且都是 string：少一格就不知道在动谁的哪台主机，而 token 的
+      // 空串是**有意义的取值**（删掉这台），不能与"没带这个键"混为一谈
+      const { workspaceId, host, token } = obj;
+      if (typeof workspaceId !== "string" || typeof host !== "string" || typeof token !== "string") return null;
+      return { t: "git_credential", workspaceId, host, token };
     }
 
     if (t === "files_search") {
@@ -666,7 +724,26 @@ export function decodeCsDown(b64: string): CsDown | null {
           t: "workspace_state",
           workspaceId: obj.workspaceId,
           modelRoute: normalizeModelRoute(obj.modelRoute),
+          gitHosts: normalizeGitHosts(obj.gitHosts),
         };
+      }
+      return null;
+    }
+
+    if (t === "git_credential_result") {
+      if (
+        typeof obj.workspaceId === "string" &&
+        typeof obj.ok === "boolean" &&
+        (obj.message === undefined || typeof obj.message === "string")
+      ) {
+        const result: CsDown = {
+          t: "git_credential_result",
+          workspaceId: obj.workspaceId,
+          ok: obj.ok,
+          gitHosts: normalizeGitHosts(obj.gitHosts),
+        };
+        if (typeof obj.message === "string") result.message = obj.message;
+        return result;
       }
       return null;
     }
