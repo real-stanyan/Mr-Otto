@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { mentionTokens, parseMentions } from "../../src/shared/remote/agentMention.js";
+import { mentionTokens, parseMemberMentions, parseMentionSpans, parseMentions } from "../../src/shared/remote/agentMention.js";
 
 const roster = [
   { agentId: "admin", name: "管理员" },
@@ -112,5 +112,71 @@ describe("mentionTokens（#957 F4——原始 token，不按名单解析）", ()
 
   it("全角 ＠ 前面是构词字符（邮箱）不算边界", () => {
     expect(mentionTokens("rick＠运营 的邮箱")).toEqual([]);
+  });
+});
+
+// ── parseMentionSpans / parseMemberMentions（#1064）────────────────────────
+// 撞名归 agent 的判据是**同一个 @ 的位置**，不是名字前缀 —— 后者只覆盖一个
+// 方向，反方向（agent 名字更长）会给一个根本没被点到的人发提醒。
+
+describe("parseMentionSpans", () => {
+  it("回 @ 的下标，且不去重（同一个人被 @ 两次就是两条）", () => {
+    expect(parseMentionSpans("@运营 在吗 @运营", roster)).toEqual([
+      { agentId: "ops", at: 0 },
+      { agentId: "ops", at: 7 },
+    ]);
+  });
+
+  it("最长匹配与 parseMentions 逐字同一条：@运营助理 归 ops2", () => {
+    expect(parseMentionSpans("@运营助理 看下", roster)).toEqual([{ agentId: "ops2", at: 0 }]);
+  });
+
+  it("全角 ＠ 是等长替换，下标对原文同样成立", () => {
+    expect(parseMentionSpans("你好，＠运营 看下", roster)).toEqual([{ agentId: "ops", at: 3 }]);
+  });
+});
+
+describe("parseMemberMentions（这句话点了哪几个人）", () => {
+  const agents = [{ agentId: "ops", name: "运营" }];
+  const members = [
+    { agentId: "u-hong", name: "小红" },
+    { agentId: "u-ops", name: "运营助理" },
+    { agentId: "u-space", name: "Mingxuan Zhang" },
+  ];
+
+  it("只 @ 人：回那个 uid", () => {
+    expect(parseMemberMentions("@小红 帮我看下", agents, members)).toEqual(["u-hong"]);
+  });
+
+  it("名字里有空格照样认（parseMentions 按名单最长匹配，不按空白切词）", () => {
+    expect(parseMemberMentions("@Mingxuan Zhang 看下", agents, members)).toEqual(["u-space"]);
+  });
+
+  it("成员名以 agent 名开头：那个 @ 归 agent，成员不通知（ADR-0252）", () => {
+    // "@运营助理" 在 agent 那一遍匹配到「运营」（最长匹配吃完就收工），
+    // 于是同一个 @ 的位置被占了 —— 这与选人弹层上写的
+    // 「@ 会点到智能体「运营」」是同一句话
+    expect(parseMentions("@运营助理 看下", agents)).toEqual(["ops"]);
+    expect(parseMemberMentions("@运营助理 看下", agents, members)).toEqual([]);
+  });
+
+  it("反方向也对：agent 名字更长时，成员那一遍的短匹配同样作废（按名字前缀判会误报）", () => {
+    const longAgent = [{ agentId: "a1", name: "小红助手" }];
+    // 按名字判：「小红」不以「小红助手」开头 → 不算被抢 → 会给小红发一条
+    // 她根本没被点到的提醒。按位置判：那个 @ 归 a1，小红不通知
+    expect(parseMemberMentions("@小红助手 看下", longAgent, members)).toEqual([]);
+  });
+
+  it("一句话里 agent 与人各占一个 @：两边各认各的", () => {
+    expect(parseMentions("@运营 @小红 一起看", agents)).toEqual(["ops"]);
+    expect(parseMemberMentions("@运营 @小红 一起看", agents, members)).toEqual(["u-hong"]);
+  });
+
+  it("同一个人 @ 两次只回一个 uid", () => {
+    expect(parseMemberMentions("@小红 在吗 @小红", agents, members)).toEqual(["u-hong"]);
+  });
+
+  it("名单为空 = 谁都没点到", () => {
+    expect(parseMemberMentions("@小红 看下", agents, [])).toEqual([]);
   });
 });

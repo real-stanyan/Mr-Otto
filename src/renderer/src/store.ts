@@ -108,6 +108,7 @@ import type {
 // 撞名是历史遗留（Task 11 report 已确认 IPC channel 不冲突）——本文件里凡是这个协作工作区
 // 的状态字段/action 一律加 workspaceGroup 前缀，不用裸的 "workspace"/"workspaces"
 import type { WorkspaceMemoryRow, WorkspaceSnapshot } from "../../shared/workspaces.js";
+import { markSessionRead, mergeMentionRow, type WorkspaceMentionRow } from "../../shared/workspaceMentions.js";
 import type { AgentToolAllow } from "../../shared/agentToolAllow.js";
 import type {
   CloudAck, NotificationTarget, ProviderBalance, ProxyBorrowView, ProxyHostView, WorkspaceSettingsInfo,
@@ -130,9 +131,14 @@ import { isOnboardingTestAccount } from "../../shared/onboardingTestAccount.js";
 import { terminalRegistry, startTerminalLiveFeed } from "./lib/terminalRegistry.js";
 
 /** dock 角标数 = 未读 DM + 待处理好友请求(纯投影,好测) */
-export function pendingAttention(s: Pick<ChatState, "unreadByFriend" | "friendsSnapshot">): number {
+export function pendingAttention(
+  s: Pick<ChatState, "unreadByFriend" | "friendsSnapshot" | "workspaceMentions">
+): number {
   const unread = Object.values(s.unreadByFriend).reduce((a, b) => a + b, 0);
-  return unread + s.friendsSnapshot.incoming.length;
+  // 工作区里 @ 我的也算「有人在等你」（#1064）：dock 角标问的是同一个问题，
+  // 而被点名比一条私信更明确地在等一个人
+  const mentions = s.workspaceMentions.filter((m) => !m.read).length;
+  return unread + s.friendsSnapshot.incoming.length + mentions;
 }
 
 /** 从 Record 里删一个 key 的不可变写法 */
@@ -542,6 +548,10 @@ interface ChatState {
       的后果是「两张卡同时提交时谁都说不清是哪一条被拒了」，而成功时顺手清空它
       又会替一件不相干的失败盖章（`gapNote` 那条持久提示原来就是被它擦掉的） */
   workspaceGroupsError: string | null;
+  /** 「谁在工作区里 @ 了我」的整份收件箱（#1064）。含已读——未读只是它的一个
+      投影（`unreadMentionCounts`）。三条来源汇进这一格：开机/聚焦时的拉取、
+      realtime 推上来的单行、进会话时本地先落的已读 */
+  workspaceMentions: readonly WorkspaceMentionRow[];
   /** 云会话（Task 13，ADR-0199）：当前 join 着的那一条，没有 = null。全局单条——
       同 main/cloudSessionClient.ts 的"同时只保留一条连接"，join 新的自动顶掉旧的。
       events 按 seq 去重后 append-only；state/deniedCode/initiatorUid/ownerUid 由
@@ -882,7 +892,13 @@ interface ChatState {
   /** 工作区协作组(issue #811, ADR-0198 切片 3)。全部经 ShellBridge——十一个
       IPC 方法（Task 11）没有推送通道，每条改动成功后都调一次 refreshWorkspaceGroups
       重拉整份快照，成功/失败都落 workspaceGroupsError */
-  refreshWorkspaceGroups(): Promise<void>;
+/** 拉一次「谁在工作区里 @ 了我」（#1064）。开机与窗口重新聚焦时各一次；
+      realtime 那条推送只是让它变快，不是唯一的路——0030 还没在真库跑过、
+      或那条通道挂了的时候，这条拉取就是全部 */
+  refreshWorkspaceMentions(): Promise<void>;
+  /** 进了这条云会话 = 里面 @ 我的那几条看见了。本地先灭角标再发出去 */
+  markWorkspaceMentionsRead(sessionId: string): Promise<void>;
+    refreshWorkspaceGroups(): Promise<void>;
   /** 回是否成功；失败原因落 workspaceGroupsError */
   createWorkspaceGroup(name: string): Promise<boolean>;
   /** owner 解散工作区 */
@@ -998,7 +1014,8 @@ interface ChatState {
       落进那格共享错误带就归不了属（页脚那条还会赖着不走，它归下一次别的操作
       清）。三态由调用方分开处理——`ok:true` 清草稿、`ok:false` 且 `unknown`
       「不确定发没发出去」、其余确定失败草稿原样留着 */
-  cloudSay(text: string, mentions?: string[]): Promise<CloudAck>;
+  /** `memberMentions`：点到的人类成员 uid（#1064）。不起 turn，只发提醒 */
+  cloudSay(text: string, mentions?: string[], memberMentions?: string[]): Promise<CloudAck>;
   /** 批/拒当前云会话里的一个审批请求。原样透传 `CloudAck`（同上，不碰
       `workspaceGroupsError`）——审批卡按它的三态决定按钮放不放回来 */
   cloudApprove(callId: string, decision: "approved" | "denied"): Promise<CloudAck>;
@@ -1344,6 +1361,7 @@ export const useChat = create<ChatState>((set, get) => ({
   proxyBorrows: [],
   proxyHosts: [],
   workspaceGroups: [],
+  workspaceMentions: [],
   workspaceGroupsError: null,
   cloudDraftWorkspaceId: null,
   cloudPendingFirstMessage: null,
@@ -2177,6 +2195,25 @@ export const useChat = create<ChatState>((set, get) => ({
     set({ proxyAudits: r.value.audits, friendError: null });
   },
 
+  /** 拉一次收件箱。**失败不落 `workspaceGroupsError`**：那一格是整页共用的，
+      而这一格挂了只影响几个角标——把它写进去会让一次角标查询失败盖掉别处
+      一条真正需要人看的错误（同 #957 C2-I4 那三条动作的纪律）。
+      角标画不出来时的表现是「没有未读」，这确实是一次静默降级——已知代价，
+      写在 ADR-0256 里；真正兜住它的是 realtime 那条推送与下一次聚焦重拉 */
+  async refreshWorkspaceMentions() {
+    const r = await window.otter.workspaceMentions();
+    if (!r.ok) return;
+    set({ workspaceMentions: r.value });
+  },
+
+  async markWorkspaceMentionsRead(sessionId) {
+    // 先落本地（乐观）：角标该在点开那一刻就灭，而不是等一次网络往返。
+    // 写失败时下一次拉取会把它变回来 —— 反过来（等回执再灭）在断网时
+    // 会让一条已经读过的会话永远顶着角标
+    set((st) => ({ workspaceMentions: markSessionRead(st.workspaceMentions, sessionId) }));
+    await window.otter.workspaceMentionsRead(sessionId);
+  },
+
   async refreshWorkspaceGroups() {
     const r = await window.otter.workspaceList();
     if (!r.ok) {
@@ -2408,6 +2445,9 @@ export const useChat = create<ChatState>((set, get) => ({
       },
       workspaceGroupsError: null,
     });
+    // 进了这间房 = 里面 @ 我的看见了（#1064）。**排在 join 之前**：这一步只碰
+    // 收件箱，不依赖房间连没连上，而连接失败时人确实已经点开过它了
+    void get().markWorkspaceMentionsRead(sid);
     const r = await window.otter.workspaceCloudJoin(workspaceId, sid);
     if (!r.ok) {
       // 只在这仍是我们刚占位的那一条时才清——异步期间用户可能已经手快切到
@@ -2472,10 +2512,13 @@ export const useChat = create<ChatState>((set, get) => ({
   // 失败，而两张审批卡同时提交时谁都说不清是哪一条被拒了），清空则会把一件
   // 不相干的失败替它盖章抹掉（用户发出的第一句话就擦干净了「你的历史缺了
   // 一块」）。这三次调用的结果都只跟点它的那一处有关，画在那一处旁边
-  async cloudSay(text, mentions) {
-    // 布尔与数组同源：mentions 缺席 = 老语义（开局卡那句话不 @ 也由名单第一只接）
+  async cloudSay(text, mentions, memberMentions) {
+    // 布尔与数组同源：mentions 缺席 = 老语义（开局卡那句话不 @ 也由名单第一只接）。
+    // **memberMentions 不进这个布尔**（#1064）：`mention` 决定的是「起不起 turn」，
+    // 而 @ 一个人从来不起 turn —— 把它算进去，一句只 @ 了同事的话会被服务端
+    // 按老语义派给名单第一只 agent
     const mention = mentions === undefined ? true : mentions.length > 0;
-    return await window.otter.workspaceCloudSay(text, mention, mentions);
+    return await window.otter.workspaceCloudSay(text, mention, mentions, memberMentions);
   },
 
   async cloudApprove(callId, decision) {
@@ -2827,6 +2870,14 @@ export const useChat = create<ChatState>((set, get) => ({
         if (get().sessionId !== target.sessionId) void get().resume(target.sessionId);
         return;
       }
+      // 工作区里有人 @ 了我（#1064）：点它 = 打开那条云会话。已经开着就什么
+      // 都不做——重进一次会把 backlog 重拉一遍，而人要的只是"看一眼"
+      if (target.kind === "workspaceMention") {
+        if (get().cloudSession?.sessionId !== target.sessionId) {
+          void get().openCloudSession(target.workspaceId, target.sessionId);
+        }
+        return;
+      }
       // 远程握手被挡下(issue #485):该做的事全在设置页那一栏上
       if (target.kind === "settings") {
         void get().openSettings(target.section);
@@ -2839,10 +2890,22 @@ export const useChat = create<ChatState>((set, get) => ({
     useChat.subscribe((s, prev) => {
       if (
         s.unreadByFriend === prev.unreadByFriend &&
-        s.friendsSnapshot === prev.friendsSnapshot
+        s.friendsSnapshot === prev.friendsSnapshot &&
+        s.workspaceMentions === prev.workspaceMentions
       ) return;
       void window.otter.setBadgeCount(pendingAttention(s));
     });
+    // realtime 推上来的一条点名（#1064）。**并进来，不重拉整份**：重拉是一次
+    // 网络往返，而这一行的内容就是全部；`mergeMentionRow` 按主键去重，所以
+    // 断线重连时 Supabase 把同一条 INSERT 再推一次也不会让角标凭空 +1。
+    // **正开着那条会话时直接算已读**：人就看着它，角标亮一下再灭是纯噪音
+    window.otter.onWorkspaceMention((row: WorkspaceMentionRow) =>
+      set((st) => {
+        const open = st.cloudSession?.sessionId === row.sessionId;
+        if (open) void window.otter.workspaceMentionsRead(row.sessionId);
+        return { workspaceMentions: mergeMentionRow(st.workspaceMentions, open ? { ...row, read: true } : row) };
+      })
+    );
     window.otter.onDirectMessage((msg) =>
       set((s) => {
         const open = s.friendChat?.id === msg.sender;

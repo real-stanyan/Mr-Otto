@@ -23,6 +23,7 @@ import { createFrameHandler, type FrameHandlerDeps } from "../src/frameHandler.j
 import { createCloudSession, type CloudSession, type AgentSpec } from "../src/sessionService.js";
 import { createInMemoryWorkspaceMemory } from "../src/workspaceMemory.js";
 import { createInMemoryAgentWriter } from "../src/agentRegistry.js";
+import { createInMemoryMentionInbox } from "../src/mentionInbox.js";
 import { EventStore } from "../../../src/session/store.js";
 import type { SessionEvent } from "../../../src/session/events.js";
 import type { ModelAdapter } from "../../../src/model/adapter.js";
@@ -164,6 +165,7 @@ async function scenarioMainFlow(): Promise<void> {
             },
             onUsage: () => {},
             memory: createInMemoryWorkspaceMemory(),
+            mentionInbox: createInMemoryMentionInbox(),
             agentWriter: createInMemoryAgentWriter(),
             isMember: async () => true,
             relayRemainingMicro: async () => null,

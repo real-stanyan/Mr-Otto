@@ -10,6 +10,7 @@ import type { PxCallDeps } from "../../services/runtime/src/pxTools.js";
 import type { AgentToolAllow } from "../../src/shared/agentToolAllow.js";
 import { tempDir } from "../helpers/tempDir.js";
 import { createInMemoryAgentWriter } from "../../services/runtime/src/agentRegistry.js";
+import { createInMemoryMentionInbox } from "../../services/runtime/src/mentionInbox.js";
 import { createWorkspaceLock, CONTAINER_BUSY_TEXT } from "../../services/runtime/src/workspaceLock.js";
 import type { ToolDefinition } from "../../src/model/adapter.js";
 
@@ -55,7 +56,7 @@ describe("createCloudSession", () => {
       px,
       hostUids: async () => [],
       onEvent: (e) => events.push(e),
-      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true,
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
@@ -121,7 +122,7 @@ describe("createCloudSession", () => {
       px,
       hostUids: async () => [],
       onEvent: (e) => events.push(e),
-      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true,
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
@@ -178,7 +179,7 @@ describe("createCloudSession", () => {
       px,
       hostUids: async () => [],
       onEvent,
-      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true,
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
@@ -247,7 +248,7 @@ describe("createCloudSession", () => {
       px,
       hostUids: async () => [],
       onEvent,
-      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true,
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
@@ -297,7 +298,7 @@ describe("createCloudSession", () => {
       px,
       hostUids: async () => [],
       onEvent: (e) => events.push(e),
-      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true,
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
@@ -380,7 +381,7 @@ describe("createCloudSession", () => {
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
       memory: createInMemoryWorkspaceMemory(), relayRemainingMicro: async () => null,
-      agentWriter: createInMemoryAgentWriter(),
+      mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
     });
     await session.say("u1", "alice", "@管理员 在吗", true, ["admin"]);
     await session.settled();
@@ -423,7 +424,7 @@ describe("createCloudSession", () => {
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
       memory: createInMemoryWorkspaceMemory(), relayRemainingMicro: async () => null,
-      agentWriter: writer,
+      mentionInbox: createInMemoryMentionInbox(), agentWriter: writer,
     });
 
     await session.say("u1", "alice", "@管理员 建一只管广告投放的", true, ["admin"]);
@@ -483,7 +484,7 @@ describe("createCloudSession", () => {
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
       memory: createInMemoryWorkspaceMemory(), relayRemainingMicro: async () => null,
-      agentWriter: writer,
+      mentionInbox: createInMemoryMentionInbox(), agentWriter: writer,
     });
 
     await session.say("u1", "alice", "@管理员 建一只", true, ["admin"]);
@@ -513,7 +514,7 @@ describe("CloudSession.archive（issue #822）", () => {
       px,
       hostUids: async () => [],
       onEvent: (e) => events.push(e),
-      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true,
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
@@ -586,7 +587,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
       store, world: fakeWorld, px, hostUids: async () => [],
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: `${a.name}答` }; } }),
-      onEvent: (e) => events.push(e), onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      onEvent: (e) => events.push(e), onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true,
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
@@ -611,7 +612,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
       store, world: fakeWorld, px, hostUids: async () => [],
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: `${a.name}答` }; } }),
-      onEvent: () => {}, onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      onEvent: () => {}, onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true,
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
@@ -639,7 +640,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
           return { content: `${a.name}答` };
         },
       }),
-      onEvent: () => {}, onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      onEvent: () => {}, onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true,
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
@@ -669,7 +670,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
       store, world: fakeWorld, px, hostUids: async () => [],
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: "答" }; } }),
-      onEvent: () => {}, onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      onEvent: () => {}, onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true,
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
@@ -690,7 +691,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
       store, world: fakeWorld, px, hostUids: async () => [],
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: "答" }; } }),
-      onEvent: () => {}, onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      onEvent: () => {}, onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true,
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
@@ -730,7 +731,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
         };
       },
       onEvent,
-      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true,
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
@@ -766,7 +767,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
           return { content: `${a.name}答` };
         },
       }),
-      onEvent: (e) => events.push(e), onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      onEvent: (e) => events.push(e), onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true,
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
@@ -840,7 +841,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
           return { content: `${a.name}答` };
         },
       }),
-      onEvent: (e) => events.push(e), onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      onEvent: (e) => events.push(e), onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true,
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
@@ -900,7 +901,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
       store, world: fakeWorld, px, hostUids: async () => [],
       agents: async () => [SOLO_AGENT],
       adapterFor: () => ({ model: "m-solo", async chat() { return { content: "答" }; } }),
-      onEvent: (e) => events.push(e), onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      onEvent: (e) => events.push(e), onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true,
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
@@ -930,7 +931,7 @@ describe("多智能体云会话（#928 切片 1a）", () => {
       store, world: fakeWorld, px, hostUids: async () => [],
       agents: async () => ROSTER,
       adapterFor: () => ({ model: "m-solo", async chat() { return { content: "答" }; } }),
-      onEvent: (e) => events.push(e), onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      onEvent: (e) => events.push(e), onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true,
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
@@ -972,7 +973,7 @@ describe("沙箱内工具的工作区审批策略（#977 第 1 条，ADR-0231）
           session.approve((e as ApprovalRequestEvent).callId, "owner", "Owner", "approved");
         }
       },
-      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true, contextWindowOf: () => undefined, relayRemainingMicro: async () => null,
       sandboxApproval: () => { policyCalls++; return policy(); },
       workspaceLock: createWorkspaceLock(),
@@ -1063,7 +1064,7 @@ describe("沙箱内工具的工作区审批策略（#977 第 1 条，ADR-0231）
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator", store, world: fakeWorld,
       agents: async () => [admin], adapterFor: () => adapter, px, hostUids: async () => [],
       onEvent: (e) => events.push(e), // 故意不批：卡挂着就是证据
-      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true, contextWindowOf: () => undefined, relayRemainingMicro: async () => null,
       sandboxApproval: async () => "auto",
       workspaceLock: createWorkspaceLock(),
@@ -1091,7 +1092,7 @@ describe("brief 的判据是三样不是一样（#977 第 2 条）", () => {
       store, world: fakeWorld, px, hostUids: async () => [],
       agents: async () => roster,
       adapterFor: () => ({ model: "m", async chat() { return { content: "好" }; } }),
-      onEvent: (e) => events.push(e), onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      onEvent: (e) => events.push(e), onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true,
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
@@ -1141,7 +1142,7 @@ describe("多智能体云会话 · 切片 1b（#932 四个坑）", () => {
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [],
       agents: opts.agents, adapterFor: opts.adapterFor,
-      onEvent: (e) => opts.events?.push(e), onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      onEvent: (e) => opts.events?.push(e), onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true,
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
@@ -1340,7 +1341,7 @@ describe("多智能体云会话 · 切片 1b（#932 四个坑）", () => {
           markerSnapshot = openTurns(store.load("s1"));
         }
       },
-      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true,
       relayRemainingMicro: async () => null,
       contextWindowOf: () => undefined,
@@ -1425,7 +1426,7 @@ describe("多智能体云会话 · 切片 1b（#932 四个坑）", () => {
       onEvent: (e) => {
         if (e.type === "turn_ended" && midTurnLedger.length === 0) midTurnLedger.push(openTurns(store.load("s1")));
       },
-      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true,
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
@@ -1566,7 +1567,7 @@ describe("say() 收下即返回（issue #937）", () => {
         events.push(e);
         if (e.type === "approval_request") announceRequest(e as ApprovalRequestEvent);
       },
-      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true,
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
@@ -1632,7 +1633,7 @@ describe("连接器白名单（#941 切片 2）", () => {
       agents: async () => [{ ...DEFAULT_AGENT, tools }],
       adapterFor: () => adapter, px: pxWithGrants,
       hostUids: async () => ["h1"],
-      onEvent: () => {}, onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      onEvent: () => {}, onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true,
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
@@ -1664,7 +1665,7 @@ describe("工作区记忆（#949 切片 4）", () => {
   function memSession(store: EventStore, memory: ReturnType<typeof createInMemoryWorkspaceMemory>, chat: (agentId: string, messages: unknown[]) => Promise<ModelReply>, events: SessionEvent[]) {
     return createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
-      store, world: fakeWorld, px, hostUids: async () => [], memory, agentWriter: createInMemoryAgentWriter(),
+      store, world: fakeWorld, px, hostUids: async () => [], memory, mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true,
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
@@ -1707,7 +1708,7 @@ describe("工作区记忆（#949 切片 4）", () => {
     const tools: Record<string, string[]> = {};
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
-      store, world: fakeWorld, px, hostUids: async () => [], memory, agentWriter: createInMemoryAgentWriter(),
+      store, world: fakeWorld, px, hostUids: async () => [], memory, mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true,
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
@@ -1761,7 +1762,7 @@ describe("工作区记忆（#949 切片 4）", () => {
     const broken = { read: async () => { throw new Error("db down"); }, write: async () => {} };
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
-      store, world: fakeWorld, px, hostUids: async () => [], memory: broken, agentWriter: createInMemoryAgentWriter(),
+      store, world: fakeWorld, px, hostUids: async () => [], memory: broken, mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true,
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
@@ -1791,7 +1792,7 @@ describe("agent 互相 @ 接力（#950 切片 5）", () => {
     const seen: string[] = [];
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
-      store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true,
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
@@ -1860,7 +1861,7 @@ describe("agent 互相 @ 接力（#950 切片 5）", () => {
     // 剩余 1000 → 预算 500。每轮报 300：第一轮 300 < 500 放行，第二轮累计 600 >= 500 停
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
-      store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true,
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
@@ -1925,7 +1926,7 @@ describe("agent 互相 @ 接力（#950 切片 5）", () => {
     const events: SessionEvent[] = [];
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
-      store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true,
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
@@ -1948,7 +1949,7 @@ describe("agent 互相 @ 接力（#950 切片 5）", () => {
     let opsCalls = 0;
     session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
-      store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true,
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
@@ -1995,7 +1996,7 @@ describe("agent 互相 @ 接力（#950 切片 5）", () => {
     let session!: CloudSession;
     session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
-      store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true,
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
@@ -2032,7 +2033,7 @@ describe("agent 互相 @ 接力（#950 切片 5）", () => {
     let session!: CloudSession;
     session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
-      store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       // relayRemainingMicro 可能是真的网络往返：这一 await 期间人随时可能按下归档。
       // 顶上那句 `if (archived) return` 只挡得住"进函数之前就已经归档"，挡不住
       // 这条 await 期间才落地的归档——所以这里在 resolve 之前先把归档做了
@@ -2075,7 +2076,7 @@ describe("agent 互相 @ 接力（#950 切片 5）", () => {
     let session!: CloudSession;
     session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
-      store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true,
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
@@ -2137,7 +2138,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(),
-      agentWriter: createInMemoryAgentWriter(), isMember: async () => true, relayRemainingMicro: async () => null, sandboxApproval: async () => "ask", contextWindowOf: () => undefined,
+      mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(), isMember: async () => true, relayRemainingMicro: async () => null, sandboxApproval: async () => "ask", contextWindowOf: () => undefined,
       workspaceLock: createWorkspaceLock(),
       agents: async () => roster,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { return { content: a.agentId === "ops" ? "报表好了，@广告 按这个投" : "收到" }; } }),
@@ -2191,7 +2192,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
         if (e.type === "approval_request") session.approve((e as ApprovalRequestEvent).callId, "owner", "Owner", "approved");
       },
       onUsage: () => {},
-      memory: createInMemoryWorkspaceMemory(), agentWriter: writer,
+      memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: writer,
       isMember: async () => true, relayRemainingMicro: async () => null,
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
@@ -2214,7 +2215,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(),
-      agentWriter: createInMemoryAgentWriter(), isMember: async () => true, relayRemainingMicro: async () => null, sandboxApproval: async () => "ask", contextWindowOf: () => undefined,
+      mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(), isMember: async () => true, relayRemainingMicro: async () => null, sandboxApproval: async () => "ask", contextWindowOf: () => undefined,
       workspaceLock: createWorkspaceLock(),
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { return { content: "@财务 你来核一下账" }; } }),
@@ -2241,7 +2242,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(),
-      agentWriter: createInMemoryAgentWriter(), isMember: async () => true, relayRemainingMicro: async () => null, sandboxApproval: async () => "ask", contextWindowOf: () => undefined,
+      mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(), isMember: async () => true, relayRemainingMicro: async () => null, sandboxApproval: async () => "ask", contextWindowOf: () => undefined,
       workspaceLock: createWorkspaceLock(),
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { return { content: payload }; } }),
@@ -2264,7 +2265,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(),
-      agentWriter: createInMemoryAgentWriter(), isMember: async () => true, relayRemainingMicro: async () => null, sandboxApproval: async () => "ask", contextWindowOf: () => undefined,
+      mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(), isMember: async () => true, relayRemainingMicro: async () => null, sandboxApproval: async () => "ask", contextWindowOf: () => undefined,
       workspaceLock: createWorkspaceLock(),
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { return { content: "@运营 我自己记一下" }; } }),
@@ -2286,7 +2287,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(),
-      agentWriter: createInMemoryAgentWriter(), isMember: async () => true, relayRemainingMicro: async () => null, sandboxApproval: async () => "ask", contextWindowOf: () => undefined,
+      mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(), isMember: async () => true, relayRemainingMicro: async () => null, sandboxApproval: async () => "ask", contextWindowOf: () => undefined,
       workspaceLock: createWorkspaceLock(),
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { return { content: a.agentId === "ops" ? "@广告 你来" : "@运营 你再看看" }; } }),
@@ -2312,7 +2313,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(),
-      agentWriter: createInMemoryAgentWriter(), isMember: async () => true, relayRemainingMicro: async () => null, sandboxApproval: async () => "ask", contextWindowOf: () => undefined,
+      mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(), isMember: async () => true, relayRemainingMicro: async () => null, sandboxApproval: async () => "ask", contextWindowOf: () => undefined,
       workspaceLock: createWorkspaceLock(),
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: "答" }; } }),
@@ -2335,7 +2336,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
     session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px: pxWithGrants, hostUids: async () => ["h1"],
-      memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true, relayRemainingMicro: async () => null,
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
@@ -2380,7 +2381,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
     session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px: pxWithGrants, hostUids: async () => ["h1"],
-      memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true, relayRemainingMicro: async () => null,
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
@@ -2442,7 +2443,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
     session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px: pxWithGrants, hostUids: async () => ["h1"],
-      memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true, relayRemainingMicro: async () => null,
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
@@ -2482,7 +2483,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
     session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [],
-      memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true, relayRemainingMicro: async () => null,
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
@@ -2520,7 +2521,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(),
-      agentWriter: createInMemoryAgentWriter(),
+      mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async (uid) => uid !== "kicked",
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
@@ -2552,7 +2553,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(),
-      agentWriter: createInMemoryAgentWriter(),
+      mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async (uid) => uid !== "kicked",
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
@@ -2581,7 +2582,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
     session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [],
-      memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true, contextWindowOf: () => undefined, relayRemainingMicro: async () => null, sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
       agents: async () => AGENTS,
@@ -2614,7 +2615,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [],
-      memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async (uid) => uid !== "kicked",
       contextWindowOf: () => undefined, relayRemainingMicro: async () => null, sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
@@ -2655,7 +2656,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [],
-      memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async (uid) => uid !== "kicked",
       contextWindowOf: () => undefined, relayRemainingMicro: async () => null, sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
@@ -2689,7 +2690,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [],
-      memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async (uid) => (uid === "flaky" ? "unknown" : uid !== "kicked"),
       contextWindowOf: () => undefined, relayRemainingMicro: async () => null, sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
@@ -2723,7 +2724,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [],
-      memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async (uid) => (uid === "flaky" ? "unknown" : true),
       contextWindowOf: () => undefined, relayRemainingMicro: async () => null, sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
@@ -2759,7 +2760,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [],
-      memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async (uid) => uid !== "kicked",
       contextWindowOf: () => undefined, relayRemainingMicro: async () => null, sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
@@ -2792,7 +2793,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(),
-      agentWriter: createInMemoryAgentWriter(),
+      mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => "unknown",
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
@@ -2819,7 +2820,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(),
-      agentWriter: createInMemoryAgentWriter(),
+      mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => "unknown",
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
@@ -2854,7 +2855,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [],
-      memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async (uid) => uid !== "kicked",
       contextWindowOf: () => undefined, relayRemainingMicro: async () => null, sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
@@ -2878,7 +2879,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px: pxWithGrants, hostUids: async () => { hostUidsCalls += 1; return ["h1"]; },
-      memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true, relayRemainingMicro: async () => null,
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
@@ -2923,7 +2924,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
     session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px: pxWithGrants, hostUids: async () => ["h1"],
-      memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true, relayRemainingMicro: async () => null,
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
@@ -2962,7 +2963,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(),
-      agentWriter: createInMemoryAgentWriter(), isMember: async () => true, relayRemainingMicro: async () => null, sandboxApproval: async () => "ask", contextWindowOf: () => undefined,
+      mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(), isMember: async () => true, relayRemainingMicro: async () => null, sandboxApproval: async () => "ask", contextWindowOf: () => undefined,
       workspaceLock: createWorkspaceLock(),
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { return { content: a.agentId === "ops" ? "@广告 @财务 你们看下" : "收到" }; } }),
@@ -2984,7 +2985,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(),
-      agentWriter: createInMemoryAgentWriter(), isMember: async () => true, relayRemainingMicro: async () => null, sandboxApproval: async () => "ask", contextWindowOf: () => undefined,
+      mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(), isMember: async () => true, relayRemainingMicro: async () => null, sandboxApproval: async () => "ask", contextWindowOf: () => undefined,
       workspaceLock: createWorkspaceLock(),
       agents: async () => AGENTS,
       // mentionTokens 吃到下一个空白为止 → token 是「广告，这个你来」，不等于任何
@@ -3011,7 +3012,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(),
-      agentWriter: createInMemoryAgentWriter(), isMember: async () => true, relayRemainingMicro: async () => null, sandboxApproval: async () => "ask", contextWindowOf: () => undefined,
+      mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(), isMember: async () => true, relayRemainingMicro: async () => null, sandboxApproval: async () => "ask", contextWindowOf: () => undefined,
       workspaceLock: createWorkspaceLock(),
       // ① say() 的解析、② runJob 起跑前那次都成功，③ relayAfterTurn 那次挂掉
       agents: async () => {
@@ -3052,7 +3053,7 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
     session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(),
-      agentWriter: createInMemoryAgentWriter(), isMember: async () => true, relayRemainingMicro: async () => null, sandboxApproval: async () => "ask", contextWindowOf: () => undefined,
+      mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(), isMember: async () => true, relayRemainingMicro: async () => null, sandboxApproval: async () => "ask", contextWindowOf: () => undefined,
       workspaceLock: createWorkspaceLock(),
       agents: async () => ROSTER3,
       adapterFor: (a) => ({
@@ -3120,7 +3121,7 @@ describe("云会话自动压缩（#957 A-1）", () => {
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world, px, hostUids: async () => [], memory,
-      agentWriter: createInMemoryAgentWriter(),
+      mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true,
       relayRemainingMicro: async () => null,
       agents: async () => AGENTS,
@@ -3201,7 +3202,7 @@ describe("云会话自动压缩（#957 A-1）", () => {
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world, px, hostUids: async () => [],
       memory: createInMemoryWorkspaceMemory(),
-      agentWriter: createInMemoryAgentWriter(),
+      mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true,
       relayRemainingMicro: async () => null,
       agents: async () => AGENTS,
@@ -3258,7 +3259,7 @@ describe("发言人名字过 safeSpeakerLabel（#957 复审 Important 2）", () 
       adapterFor: () => ({ model: "fake-model", async chat() { return { content: "好" }; } }),
       px, hostUids: async () => [], onEvent: (e) => events.push(e), onUsage: () => {},
       isMember: async () => true, contextWindowOf: () => undefined,
-      memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       relayRemainingMicro: async () => null, sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
     });
@@ -3339,7 +3340,7 @@ describe("停止一轮 turn（#957 A-2）", () => {
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [],
-      memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true,
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
@@ -3502,7 +3503,7 @@ describe("停止一轮 turn（#957 A-2）", () => {
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px,
       hostUids: async () => { entered(); await held; return []; },
-      memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true,
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
@@ -3617,7 +3618,7 @@ describe("停止一轮 turn（#957 A-2）", () => {
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [],
-      memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true,
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
@@ -3675,7 +3676,7 @@ describe("停止一轮 turn（#957 A-2）", () => {
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [],
-      memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true, contextWindowOf: () => undefined, relayRemainingMicro: async () => null, sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
       agents: async () => evil,
@@ -3717,7 +3718,7 @@ describe("停止之后不接力（第二轮复审 A2-I2 / E2-1）", () => {
     session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [],
-      memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true,
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
@@ -3762,7 +3763,7 @@ describe("停止之后不接力（第二轮复审 A2-I2 / E2-1）", () => {
     session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [],
-      memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true,
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
@@ -3807,7 +3808,7 @@ describe("stop 带 seq：按的是哪一行（第二轮复审 C2-I3）", () => {
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [],
-      memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true,
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
@@ -3889,7 +3890,7 @@ describe("stop 带 seq：按的是哪一行（第二轮复审 C2-I3）", () => {
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [],
-      memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       // 卡在起跑那一刻的复查在籍上：currentJob 已经置位（界面上那行在转），
       // currentEngine 与 turnBoundary 都还是 null
       isMember: async () => { if (first) { first = false; entered(); await held; } return true; },
@@ -3935,7 +3936,7 @@ describe("限速下沉与名单降级（第二轮复审 B2-C1 / E2-4）", () => 
       agents,
       adapterFor: noModel,
       onEvent: () => {}, onUsage: () => {},
-      memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true,
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
@@ -4094,7 +4095,7 @@ describe("runJob 的在籍三态（Task 1 复审：fail-closed 分支的执行�
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(),
-      agentWriter: createInMemoryAgentWriter(), relayRemainingMicro: async () => null, sandboxApproval: async () => "ask", contextWindowOf: () => undefined,
+      mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(), relayRemainingMicro: async () => null, sandboxApproval: async () => "ask", contextWindowOf: () => undefined,
       workspaceLock: createWorkspaceLock(),
       agents: async () => AGENTS,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { return { content: "好" }; } }),
@@ -4169,7 +4170,7 @@ describe("稳态每 turn 只读日志尾段（#958）", () => {
     const session = createCloudSession({
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store: countingStore(store, fullLoads),
-      world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      world: fakeWorld, px, hostUids: async () => [], memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true,
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
@@ -4245,7 +4246,7 @@ describe("同工作区多条会话共用容器：容器锁（#979 第 2 条，AD
     return createCloudSession({
       workspaceId: "w1", sessionId: o.sessionId, ownerUid: "owner", createdByUid: "creator", store: newStore(), world,
       agents: async () => [DEFAULT_AGENT], adapterFor: () => adapter, px, hostUids: async () => [],
-      onEvent: (e) => o.events.push(e), onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      onEvent: (e) => o.events.push(e), onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true, contextWindowOf: () => undefined, relayRemainingMicro: async () => null,
       sandboxApproval: async () => "auto", // 不弹卡，只看锁
       workspaceLock: o.lock,
@@ -4334,7 +4335,7 @@ describe("每 turn 起模型前的网络往返收敛（#979 第 5 条，ADR-0232
       agents: async () => [DEFAULT_AGENT], adapterFor: () => adapter,
       px: { ...px, fetchImpl: (async () => { fetchCount.n++; return { ok: true, status: 200, json: async () => GRANTS }; }) as unknown as typeof fetch },
       hostUids: async () => ["h1"],
-      onEvent: () => {}, onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      onEvent: () => {}, onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true, contextWindowOf: () => undefined, relayRemainingMicro: async () => null,
       sandboxApproval: async () => "ask", workspaceLock: createWorkspaceLock(),
       now,
@@ -4367,7 +4368,7 @@ describe("每 turn 起模型前的网络往返收敛（#979 第 5 条，ADR-0232
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator", store: newStore(), world: fakeWorld,
       agents: async (o) => { calls.push(o?.fresh === true); return [DEFAULT_AGENT]; },
       adapterFor: () => ({ model: "m", async chat() { return { content: "ok" }; } }), px, hostUids: async () => [],
-      onEvent: () => {}, onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      onEvent: () => {}, onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true, contextWindowOf: () => undefined, relayRemainingMicro: async () => null,
       sandboxApproval: async () => "ask", workspaceLock: createWorkspaceLock(),
     });
@@ -4395,7 +4396,7 @@ describe("每 turn 起模型前的网络往返收敛（#979 第 5 条，ADR-0232
       adapterFor: (a) => { seen.push([...a.models]); return adapter; },
       pickAutoModel: async () => "picked-model",
       px, hostUids: async () => [], onEvent: () => {},
-      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true, contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask", workspaceLock: createWorkspaceLock(), relayRemainingMicro: async () => null,
     });
@@ -4415,7 +4416,7 @@ describe("每 turn 起模型前的网络往返收敛（#979 第 5 条，ADR-0232
       adapterFor: (a) => { seen.push([...a.models]); return adapter; },
       pickAutoModel: async () => null,
       px, hostUids: async () => [], onEvent: () => {},
-      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true, contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask", workspaceLock: createWorkspaceLock(), relayRemainingMicro: async () => null,
     });
@@ -4435,7 +4436,7 @@ describe("每 turn 起模型前的网络往返收敛（#979 第 5 条，ADR-0232
       adapterFor: () => adapter,
       pickAutoModel: async () => { asked += 1; return "picked-model"; },
       px, hostUids: async () => [], onEvent: () => {},
-      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true, contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask", workspaceLock: createWorkspaceLock(), relayRemainingMicro: async () => null,
     });
@@ -4454,12 +4455,155 @@ describe("每 turn 起模型前的网络往返收敛（#979 第 5 条，ADR-0232
       agents: async () => [{ agentId: "auto", name: "auto", description: "", instructions: "", models: [], tools: [] }],
       adapterFor: (a) => { seen.push([...a.models]); return adapter; },
       px, hostUids: async () => [], onEvent: () => {},
-      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), agentWriter: createInMemoryAgentWriter(),
+      onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true, contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask", workspaceLock: createWorkspaceLock(), relayRemainingMicro: async () => null,
     });
     await session.say("u1", "alice", "@auto 你好", true);
     await session.settled();
     expect(seen.every((m) => m.length === 0)).toBe(true);
+  });
+});
+
+// ── 被 @ 的人类成员的收件箱（#1064，ADR-0256）─────────────────────────────
+// 客户端算好点了谁，服务端按**此刻**的成员名单复核并剔掉发言人自己。
+// 这一族用例守的是「服务端不信客户端」与「只 @ 人不起 turn」两件事。
+describe("点名提醒（#1064）", () => {
+  const inboxSession = (
+    inbox: ReturnType<typeof createInMemoryMentionInbox>,
+    members: string[],
+    seen: string[] = [],
+    store: EventStore = newStore()
+  ) => createCloudSession({
+    workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+    store, world: fakeWorld, px, hostUids: async () => members,
+    agents: async () => AGENTS,
+    adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: "答" }; } }),
+    onEvent: () => {}, onUsage: () => {},
+    memory: createInMemoryWorkspaceMemory(), mentionInbox: inbox,
+    agentWriter: createInMemoryAgentWriter(),
+    isMember: async () => true,
+    contextWindowOf: () => undefined,
+    sandboxApproval: async () => "ask",
+    workspaceLock: createWorkspaceLock(),
+    relayRemainingMicro: async () => null,
+  });
+
+  it("只 @ 人：落一行收件箱，一条 turn 都不起（mentions 是权威的空数组）", async () => {
+    const inbox = createInMemoryMentionInbox();
+    const seen: string[] = [];
+    const store = newStore();
+    const session = inboxSession(inbox, ["u1", "u-hong"], seen, store);
+
+    await session.say("u1", "alice", "@小红 帮我看下", false, [], undefined, ["u-hong"]);
+    await session.settled();
+
+    expect(seen).toEqual([]);
+    expect(inbox.rows).toHaveLength(1);
+    expect(inbox.rows[0]).toMatchObject({
+      workspaceId: "w1", sessionId: "s1", uid: "u-hong",
+      fromUid: "u1", fromLabel: "alice", text: "@小红 帮我看下",
+    });
+    // seq 是那条 chat_message 在日志里的 seq —— 收件箱那一行的主键靠它。
+    // 对不上号的话「这条提醒指的是哪句话」就永远答不出来
+    const chat = store.load("s1").find((e) => e.type === "chat_message");
+    expect(inbox.rows[0]!.seq).toBe(chat!.seq);
+  });
+
+  it("@ 了 agent 也 @ 了人：turn 照跑，人照样收到提醒，seq 是开场白那条", async () => {
+    const inbox = createInMemoryMentionInbox();
+    const seen: string[] = [];
+    const session = inboxSession(inbox, ["u1", "u-hong"], seen);
+
+    await session.say("u1", "alice", "@运营 @小红 一起看", true, ["ops"], undefined, ["u-hong"]);
+    await session.settled();
+
+    expect(seen).toEqual(["ops"]);
+    expect(inbox.rows.map((r) => r.uid)).toEqual(["u-hong"]);
+  });
+
+  // 客户端那份不是权威：uid 直接来自帧，没有长度上限也没有字符集校验
+  it("不在这个工作区的 uid 一行都不落", async () => {
+    const inbox = createInMemoryMentionInbox();
+    const session = inboxSession(inbox, ["u1", "u-hong"]);
+
+    await session.say("u1", "alice", "@路人 看下", false, [], undefined, ["u-stranger", "u-hong"]);
+    await session.settled();
+
+    expect(inbox.rows.map((r) => r.uid)).toEqual(["u-hong"]);
+  });
+
+  // 选人名单里仍然有自己（ADR-0252 决策 1）——那份答的是「认不认得这个名字」，
+  // 这里答的是「要不要惊动他」，两个问题两个答案
+  it("@ 自己不落行", async () => {
+    const inbox = createInMemoryMentionInbox();
+    const session = inboxSession(inbox, ["u1", "u-hong"]);
+
+    await session.say("u1", "alice", "@alice 提醒自己", false, [], undefined, ["u1"]);
+    await session.settled();
+
+    expect(inbox.rows).toEqual([]);
+  });
+
+  it("同一个 uid 报两遍只落一行", async () => {
+    const inbox = createInMemoryMentionInbox();
+    const session = inboxSession(inbox, ["u1", "u-hong"]);
+
+    await session.say("u1", "alice", "@小红 @小红", false, [], undefined, ["u-hong", "u-hong"]);
+    await session.settled();
+
+    expect(inbox.rows).toHaveLength(1);
+  });
+
+  // 缺席 = 手机端 / 旧桌面：行为与改动前逐字一样（谁都不通知）
+  it("memberMentions 缺席时一行都不落，且不多打一次成员名单的网络", async () => {
+    const inbox = createInMemoryMentionInbox();
+    let hostCalls = 0;
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store: newStore(), world: fakeWorld, px,
+      hostUids: async () => { hostCalls += 1; return ["u1", "u-hong"]; },
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({ model: a.models[0]!, async chat() { return { content: "答" }; } }),
+      onEvent: () => {}, onUsage: () => {},
+      memory: createInMemoryWorkspaceMemory(), mentionInbox: inbox,
+      agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true,
+      contextWindowOf: () => undefined,
+      sandboxApproval: async () => "ask",
+      workspaceLock: createWorkspaceLock(),
+      relayRemainingMicro: async () => null,
+    });
+
+    await session.say("u1", "alice", "大家好", false, []);
+    await session.settled();
+
+    expect(inbox.rows).toEqual([]);
+    expect(hostCalls).toBe(0);
+  });
+
+  // 收件箱是日志的投影：权威那份已经落盘，把一句已经发出去的话翻成失败更糟
+  it("收件箱写挂了，这句话照旧发出去", async () => {
+    const store = newStore();
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => ["u1", "u-hong"],
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({ model: a.models[0]!, async chat() { return { content: "答" }; } }),
+      onEvent: () => {}, onUsage: () => {},
+      memory: createInMemoryWorkspaceMemory(),
+      mentionInbox: { async record() { throw new Error("supabase 挂了"); } },
+      agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true,
+      contextWindowOf: () => undefined,
+      sandboxApproval: async () => "ask",
+      workspaceLock: createWorkspaceLock(),
+      relayRemainingMicro: async () => null,
+    });
+
+    await expect(
+      session.say("u1", "alice", "@小红 看下", false, [], undefined, ["u-hong"])
+    ).resolves.toBeUndefined();
+    expect(store.load("s1").some((e) => e.type === "chat_message")).toBe(true);
   });
 });

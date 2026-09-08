@@ -182,6 +182,7 @@ import { CONTAINER_BUSY_TEXT, type WorkspaceLock } from "./workspaceLock.js";
 import { filterGrantedByAllow, type AgentToolAllow } from "../../../src/shared/agentToolAllow.js";
 import { createWorkspaceMemoryTool } from "./workspaceMemoryTool.js";
 import type { WorkspaceMemoryStore, WorkspaceMemoryValue } from "./workspaceMemory.js";
+import type { MentionInbox, MentionInboxRow } from "./mentionInbox.js";
 import { SHARED_MEMORY_AGENT_ID } from "../../../src/shared/workspaceMemory.js";
 import { DEFAULT_AUTO_COMPACT } from "../../../src/shared/autoCompact.js";
 import { createCreateAgentTool } from "./createAgentTool.js";
@@ -288,6 +289,12 @@ export interface CloudSessionOpts {
   onUsage: (u: { uid: string; model: string; promptTokens: number; completionTokens: number }) => void;
   /** 工作区记忆的读写口（#949）。**必需**：忘接线该编译不过，而不是安静地跑一个没记忆的 agent */
   memory: WorkspaceMemoryStore;
+  /** 被 @ 的人类成员的收件箱（#1064）。**必需**（同 memory / agentWriter / isMember
+      的纪律）：忘接线该编译不过，而不是安静地跑一条「@ 了人但谁都没收到提醒」的
+      会话 —— 那正是这条 issue 要拆掉的东西，而它的失败模式本来就是无声的。
+      写入是**日志的投影**（权威那份已经落盘），所以它失败只记一行日志、不把一句
+      已经发出去的话翻成失败 */
+  mentionInbox: MentionInbox;
   /** 所有者订阅窗口**还剩**多少 micro-USD，接力预算的分母（#1017）。取 5h 与周窗
       里**更吃紧的那扇**（`min`，同 billingView 的 `bindingWindow`，ADR-0209）：网关
       的 hold 同时压两扇窗，只看 5h 的话周窗快见底时刹车完全无感，而窗口触底之后
@@ -361,14 +368,20 @@ export interface CloudSession {
       为什么价钱不在 frameHandler 那侧算：那边看得见的只有客户端自报的
       mention/mentions，而真实 targets 要解析完才知道 —— 省掉 mentions 字段的
       客户端一条 @ 了 40 个人的话在那边按 1 扣。缺席 = 不限速（测试与 daemon
-      的其他调用方照旧） */
+      的其他调用方照旧）。
+      memberMentions：这句话点到了哪几个**人类成员**的 uid（#1064）。与 `mentions`
+      是两族两张表：这一格一个都不会进 `resolveTargets`（人类 uid 放进去只会被
+      静默过滤），它唯一的去处是收件箱 —— @ 一个人**不起 turn、不花钱**，只让他
+      收到一条提醒。服务端仍然按此刻的成员名单过滤一遍（`hostUids`）并剔掉
+      发言人自己，客户端那份不是权威。缺席 = 老行为（手机端 / 旧桌面：谁都不通知） */
   say(
     fromUid: string,
     label: string,
     text: string,
     mention: boolean,
     mentions?: string[],
-    budget?: (targetCount: number) => string | null
+    budget?: (targetCount: number) => string | null,
+    memberMentions?: string[]
   ): Promise<void>;
   /** 排空跑完了吗——**给测试与冒烟脚本等待用的，不是协议的一部分**
       （issue #937）：say() 不再等 turn，可断言「turn 跑完之后」的地方需要一个
@@ -994,23 +1007,25 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   }
 
   /** 落一条纯观察性发言——没人被点名，或者名单里查无此 agent 的那条系统提示。
-      不碰 engine：中途注入靠 engine 每轮从 store 重新投影天然生效 */
-  function logChat(fromUid: string, label: string, text: string, mention: boolean): void {
-    notify(
-      store.append({
-        sessionId,
-        ts: Date.now(),
-        type: "chat_message",
-        fromUid,
-        // 发言人名字过闸（#957 复审 Important 2）：daemon.labelOf 已经过一遍，
-        // 这里再过是给别的调用方兜底（测试/冒烟/将来别的入口）——safeSpeakerLabel
-        // 幂等，跑两遍与跑一遍同一个结果。保留名「系统」只对 fromUid === "system"
-        // 放行，所以下面那几条系统旁白照旧叫「系统」
-        label: safeSpeakerLabel(label, fromUid),
-        content: text,
-        mention,
-      })
-    );
+      不碰 engine：中途注入靠 engine 每轮从 store 重新投影天然生效。
+      **回刚落盘那条事件**（#1064）：收件箱那一行的主键要 seq，而「只 @ 了人」
+      那条路走的正是这里（targets 为空，不起 turn，只落一条 chat_message） */
+  function logChat(fromUid: string, label: string, text: string, mention: boolean): SessionEvent {
+    const logged = store.append({
+      sessionId,
+      ts: Date.now(),
+      type: "chat_message",
+      fromUid,
+      // 发言人名字过闸（#957 复审 Important 2）：daemon.labelOf 已经过一遍，
+      // 这里再过是给别的调用方兜底（测试/冒烟/将来别的入口）——safeSpeakerLabel
+      // 幂等，跑两遍与跑一遍同一个结果。保留名「系统」只对 fromUid === "system"
+      // 放行，所以下面那几条系统旁白照旧叫「系统」
+      label: safeSpeakerLabel(label, fromUid),
+      content: text,
+      mention,
+    });
+    notify(logged);
+    return logged;
   }
 
   /** 此刻能停的那一轮（#957 A-2）：正在跑的 agent + 点火的人，没有就是 null。
@@ -1562,7 +1577,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   }
 
   const session: CloudSession = {
-    async say(fromUid, label, text, mention, mentions, budget) {
+    async say(fromUid, label, text, mention, mentions, budget, memberMentions) {
       // 人刚开口 → 要此刻的名单（#979 第 5 条）：他在设置页刚建/改的那只要能立刻 @ 到
       const roster = await opts.agents({ fresh: true });
       // **名单降级 + 这句话点了名 = 一个字节都不落**（#957 E2-4）：degraded 那份
@@ -1625,10 +1640,48 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         );
       };
 
+      // 这句话点到了哪几个**人类成员** —— 客户端算好，服务端按此刻的成员名单
+      // 复核一遍（#1064）。**不是 resolveTargets 的第四级**：那个函数回答的是
+      // 「起几条 turn」，人类 uid 在那儿一直是被静默过滤掉的，也应该继续是。
+      //
+      // 为什么服务端不自己从正文里认：认得出人类名字要先有一份**成员显示名**
+      // 的名单（profiles.name，一次 Supabase 往返），于是「@小红算不算点到小红」
+      // 就有了第二份判据 —— 而客户端那份是用户**看得见**的（弹层里那一行、
+      // chip 行），两份迟早分家，界面说点到了、服务端说没有。同 #932 坑 ④。
+      //
+      // 客户端不是权威，两道闸照旧：`members` 挡「@ 一个不在这个群里的人」，
+      // `!== fromUid` 挡「@ 自己」（选人名单里仍然有自己 —— 那份答的是
+      // 「认不认得这个名字」，这里答的是「要不要惊动他」，两个问题两个答案）。
+      // 最坏情形下一个恶意客户端能做的，只是给他本来就能发消息的那几个人
+      // 多推一条提醒，而 say 令牌那道粗闸照旧按帧扣
+      const recordMemberMentions = async (seq: number): Promise<void> => {
+        if (memberMentions === undefined || memberMentions.length === 0) return;
+        try {
+          const members = new Set(await opts.hostUids());
+          const seen = new Set<string>();
+          const rows: MentionInboxRow[] = [];
+          for (const uid of memberMentions) {
+            if (uid === fromUid || !members.has(uid) || seen.has(uid)) continue;
+            seen.add(uid);
+            rows.push({
+              workspaceId: opts.workspaceId, sessionId, seq, uid, fromUid, fromLabel: label, text,
+            });
+          }
+          await opts.mentionInbox.record(rows);
+        } catch (err) {
+          // 收件箱是日志的投影，权威那份已经落盘了：写不上的后果是「他要自己
+          // 进来才看得见」= 改动前的行为，不该把一句已经发出去的话翻成失败
+          console.error(`[otto-runtime] 点名提醒写入失败（session=${sessionId}）`, err);
+        }
+      };
+
       if (targets.length === 0) {
-        // 没人被点名：只落 chat_message，不起 turn
-        logChat(fromUid, label, text, mention);
+        // 没人被点名：只落 chat_message，不起 turn。**「只 @ 了人」走的正是这条路**
+        // ——那是这条 issue 里最常见的一种消息（ADR-0252 让客户端在这种情形下发
+        // 一个权威的空数组）
+        const logged = logChat(fromUid, label, text, mention);
         sayUnknown();
+        await recordMemberMentions(logged.seq);
         return;
       }
 
@@ -1658,6 +1711,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // 的那一轮开跑时读的是整份日志，看得见它（engine 的 unseenUserTail 也认
       // 得它）——1a 那套"补一条 chat_message 免得凭空丢"的特例连同它的三种
       // decisions 组合判断一起没了：落盘不再取决于跑不跑
+      // 收件箱排在**入队之后、startDrain 之前**（#1064）：turn 起跑不等这次
+      // 网络往返，而 say() 的回执等它 —— 写完再回 ok，测试与真机才不用去猜
+      // 「这一行到底落没落」（fire-and-forget 那版在进程收摊时还会丢）
+      await recordMemberMentions(opening.seq);
       if (!decisions.includes("start_turn")) return;
       // **不等排空**（issue #937）：frameHandler 按 cid 把同一条连接的帧串成一条
       // 链（#915），等在这里意味着发起人自己的下一帧排在这个 await 后面——包括

@@ -25,6 +25,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type * as WorkspacesApi from "./supabaseWorkspacesApi.js";
 import { normalizeAvatarSlot } from "../shared/workspaces.js";
 import type { WorkspaceMemoryRow, WorkspaceSnapshot } from "../shared/workspaces.js";
+import type { WorkspaceMentionRow } from "../shared/workspaceMentions.js";
 import { humanizeWorkspaceError } from "../shared/workspaceError.js";
 import { formatEntries, parseEntries } from "../shared/memoryStore.js";
 import { ADMIN_AGENT_ID, agentNameConflict, normalizeAgentName, normalizeSandboxApproval, type SandboxApproval } from "../shared/workspaceAgents.js";
@@ -58,6 +59,8 @@ export interface WorkspaceManagerDeps {
   listMemoryRows: typeof WorkspacesApi.listMemoryRows;
   saveMemoryRow: typeof WorkspacesApi.saveMemoryRow;
   updateSandboxApproval: typeof WorkspacesApi.updateSandboxApproval;
+  listMentions: typeof WorkspacesApi.listMentions;
+  markMentionsRead: typeof WorkspacesApi.markMentionsRead;
   client: () => SupabaseClient | null;
   selfUid: () => string | null;
   loadStore: () => ProxyStoreData;
@@ -107,6 +110,13 @@ export interface WorkspaceManager {
   /** owner 在云会话输入框那一行改「沙箱内工具要不要人批」（#977；控件位置见 ADR-0243）。RLS（0024 ws_update_owner）
       落地判断，非 owner 撞「无权修改」 */
   setSandboxApproval(id: string, value: SandboxApproval): Promise<FriendsResult<null>>;
+
+  /** 「谁在工作区里 @ 了我」的整份收件箱（#1064）。**不按工作区分**——角标问的
+      是「哪个群里有」这个横向的答案，而它此刻画在侧栏所有组头上 */
+  listMentions(): Promise<FriendsResult<WorkspaceMentionRow[]>>;
+  /** 进了这条会话 = 里面 @ 我的那些看见了。回执只说成没成功，未读那份角标
+      由渲染层自己先落（乐观）—— 失败时它会在下一次 listMentions 变回来 */
+  markMentionsRead(sessionId: string): Promise<FriendsResult<null>>;
   /** 我在籍工作区里别人贡献的 host（proxyManager 借用源）。内存缓存,list()
       后更新——proxyManager 借用路径要同步读,不能每次都等一轮网络往返 */
   hostUids(): readonly string[];
@@ -374,6 +384,17 @@ export function createWorkspaceManager(deps: WorkspaceManagerDeps): WorkspaceMan
     async setSandboxApproval(id, value) {
       return withSession(async (client) => {
         await deps.updateSandboxApproval(client, id, value);
+        return null;
+      });
+    },
+
+    async listMentions() {
+      return withSession((client, uid) => deps.listMentions(client, uid));
+    },
+
+    async markMentionsRead(sessionId) {
+      return withSession(async (client, uid) => {
+        await deps.markMentionsRead(client, uid, sessionId);
         return null;
       });
     },

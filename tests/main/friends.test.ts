@@ -75,6 +75,7 @@ function mkPush() {
   return {
     friendsChanged: vi.fn(), presenceChanged: vi.fn(), workspacesChanged: vi.fn(), directMessage: vi.fn(),
     healthChanged: vi.fn(),
+    workspaceMention: vi.fn(),
   };
 }
 const noPush = mkPush();
