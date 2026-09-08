@@ -1,7 +1,14 @@
 // @vitest-environment jsdom
 //
-// 花费面板的钱数写法（#857 / #895）。托管段按 credit 记、直连段按 $ 记，两种口径
-// 不能相加——这里盯的就是「什么时候报得出一个数、什么时候必须闭嘴」：
+// 花费面板：**什么时候整段不画**（#1071），以及画的时候钱数怎么写（#857 / #895）。
+//
+// 订阅用户整段不画 —— 他按额度跑，「这一次花了多少」是个和他买的东西相矛盾的问题；
+// 判据是**有没有一笔走自己的 key**（`showsCost`），不是「有没有订阅」：混着跑的时候
+// direct 那几笔是真金白银，账要报得出来。ADR-0248 之后订阅用户不再有 direct 那条路，
+// 所以实际效果就是「订阅用户看不到这一段」，但判据仍然挂在日志这个事实上。
+//
+// 托管段按 credit 记、直连段按 $ 记，两种口径不能相加——下面盯的是
+// 「什么时候报得出一个数、什么时候必须闭嘴」：
 //
 // · 一行：托管记到了 credit → 写 credit；没记到 → 写「托管」（不是破折号，
 //   破折号说的是「查不到价」，与「不按 $ 计」是两回事）；直连查得到价 → $，查不到 → 破折号
@@ -12,7 +19,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 
-import { CostPanel, sessionTotal } from "../../src/renderer/src/components/CostPanel.js";
+import { CostPanel, sessionTotal, showsCost } from "../../src/renderer/src/components/CostPanel.js";
 import type { ModelUsage } from "../../src/session/deriveUsage.js";
 import type { SessionEvent } from "../../src/session/events.js";
 
@@ -53,27 +60,48 @@ describe("sessionTotal（合计那个数：清一色且齐全才报）", () => {
   });
 });
 
+describe("showsCost（整段画不画）", () => {
+  it("清一色托管 → 整段不画：订阅用户按额度跑，「这一次花了多少」是个矛盾的问题", () => {
+    expect(showsCost([row({ creditCostMicro: 12_000 }), row({ model: "glm-5.3", creditCostMicro: 8_000 })])).toBe(false);
+  });
+
+  it("有一笔走自己的 key → 画：那几笔是真金白银，账要报得出来", () => {
+    expect(showsCost([row({ creditCostMicro: 12_000 }), row({ route: "direct", model: "gpt-x" })])).toBe(true);
+  });
+
+  it("一行都没有 → 不画（一次模型都没调过就不占地方）", () => {
+    expect(showsCost([])).toBe(false);
+  });
+});
+
 describe("CostPanel 渲染", () => {
-  it("托管行记到了 credit → 写 credit，不再写「托管」（合计只有这一行，所以两处都是它）", () => {
-    render(<CostPanel events={[msg({ route: "hosted", creditCostMicro: 12_000 })]} />);
-    expect(screen.getAllByText("1.2 credit")).toHaveLength(2); // 合计 + 这一行
+  it("清一色托管：整段不渲染", () => {
+    const { container } = render(<CostPanel events={[msg({ route: "hosted", creditCostMicro: 12_000 })]} />);
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it("托管行记到了 credit → 写 credit，不再写「托管」", () => {
+    render(<CostPanel events={[
+      msg({ route: "hosted", creditCostMicro: 12_000 }),
+      msg({ route: "direct", model: "gpt-x" }),
+    ]} />);
+    expect(screen.getByText("1.2 credit")).toBeInTheDocument();
     expect(screen.queryByText("托管")).toBeNull();
   });
 
-  it("两款托管型号：行各报各的，合计是和", () => {
+  it("两款托管型号：行各报各的（混着一笔直连，所以这一段画得出来）", () => {
     render(<CostPanel events={[
       msg({ route: "hosted", creditCostMicro: 12_000 }),
       msg({ route: "hosted", model: "glm-5.3", creditCostMicro: 8_000 }),
+      msg({ route: "direct", model: "gpt-x" }),
     ]} />);
     expect(screen.getByText("1.2 credit")).toBeInTheDocument();
     expect(screen.getByText("0.8 credit")).toBeInTheDocument();
-    expect(screen.getByText("2 credit")).toBeInTheDocument(); // 合计
   });
 
   it("托管行没记到（中断的流 / 旧日志 / 网关没升级）→ 仍写「托管」，不是破折号也不是 0", () => {
-    render(<CostPanel events={[msg({ route: "hosted" })]} />);
+    render(<CostPanel events={[msg({ route: "hosted" }), msg({ route: "direct", model: "gpt-x" })]} />);
     expect(screen.getByText("托管")).toBeInTheDocument();
-    expect(screen.queryByText("—")).toBeNull();
   });
 
   it("一次模型都没调过就不占地方", () => {
