@@ -8,8 +8,9 @@
 //    这条会红，而那正是 #919 要消灭的形态
 // ② 归档的云会话不进侧栏——同本地：归档的会话在「已归档会话」那一屏，不在工程组里
 // ③ 收起来的组不画会话行，但报条数——不报的话收起来就等于把这个工作区藏了
-// ④ 一条工作区都没有 + 没有错误 = 整节不渲染；有错误就要出（空列表 + 有错 =
-//    「读不到」，不是「没有」，这两件事该做的动作相反）
+// ④ 一条工作区都没有 + 没有错误 = 画空态（#1087 之前是整节不渲染：那时它挂在项目栏
+//    顶上，底下就有一段「还没有项目」；独占一栏之后不画就是一片空白）；有错误时出的
+//    是错误那句（空列表 + 有错 = 「读不到」，不是「没有」，这两件事该做的动作相反）
 // ⑤ 还没发过话的云会话（title 是空串，不是 null）显示「新会话」——真机上它长成
 //    一格空白，一行看不出是什么也看不出能不能点（#925）
 // ⑥ 未读点名角标（#1064）：组头 + 会话行各一枚，已读的不算，一条未读都没有时
@@ -153,18 +154,18 @@ describe("WorkspacesSidebarSection（#917 / #919）", () => {
     expect(screen.queryByTitle(/@ 你的消息没看/)).not.toBeInTheDocument();
   });
 
-  it("一条工作区都没有：没错误 = 整节不出；有错误 = 要出（「读不到」≠「没有」）", () => {
+  it("一条工作区都没有：没错误 = 空态那句话；有错误 = 错误那句（「读不到」≠「没有」）", () => {
     seed({ workspaceGroups: [] });
-    const { container } = render(
-      <SidebarProvider>
-        <WorkspacesSidebarSection collapsed={new Set()} onToggle={() => {}} onManage={() => {}} />
-      </SidebarProvider>
-    );
-    expect(container.textContent).toBe("");
+    draw();
+    // 独占一栏之后这一栏里没有别的东西会说话（#1087）：不画空态 = 切过来一片空白，
+    // 人分不出「还没建过」和「坏了」
+    expect(screen.getByText(/还没有工作区/)).toBeInTheDocument();
     cleanup();
 
     seed({ workspaceGroups: [], workspaceGroupsError: "读不到工作区：网络超时" });
     draw();
     expect(screen.getByText("读不到工作区：网络超时")).toBeInTheDocument();
+    // 「读不到」不许说成「里面是空的」：出了错就不该再劝人去建一个
+    expect(screen.queryByText(/还没有工作区/)).not.toBeInTheDocument();
   });
 });
