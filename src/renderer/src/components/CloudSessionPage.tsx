@@ -39,7 +39,7 @@
 // 新造。
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ArrowLeft, AtSign, Settings2 } from "lucide-react";
+import { ArrowLeft, AtSign, Download, Settings2 } from "lucide-react";
 import { cn } from "@/lib/utils.js";
 import { Button } from "@/components/ui/button.js";
 import { Bubble, BubbleContent } from "@/components/ui/bubble.js";
@@ -77,6 +77,8 @@ import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 import type { CloudAck } from "../../../shared/shellBridge.js";
 import { CS_PROTOCOL_VERSION } from "../../../shared/remote/cloudSession.js";
 import { modelStatusText } from "../lib/cloudModelStatus.js";
+import { buildCloudLogExport } from "../lib/cloudExport.js";
+import { downloadText } from "../lib/downloadText.js";
 import { sandboxApprovalBanner, sandboxApprovalControl } from "../lib/sandboxApprovalControl.js";
 import { SandboxApprovalToggle } from "./BypassSwitch.js";
 
@@ -663,6 +665,35 @@ export function CloudSessionPage({
               设置
             </Button>
           )}
+          {/* 导出本会话全部事件日志（#1117）：jsonl 无损全量，拿出去分析优化用。
+              数据本来就在渲染层（backlog 全量 + 直播），纯本地动作不打网络。
+              历史有缺口（gapNote）时照导不误，但 title 里说出来——那份文件
+              不是「全部」，读它的人必须知道 */}
+          <Button
+            variant="outline"
+            size="xs"
+            className="shrink-0"
+            disabled={!cs || events.length === 0}
+            onClick={() => {
+              if (!cs || events.length === 0) return;
+              const file = buildCloudLogExport({
+                sessionId: cs.sessionId,
+                events,
+                exportedTs: Date.now(),
+              });
+              downloadText(file.filename, file.mime, file.text);
+            }}
+            title={
+              !cs || events.length === 0
+                ? "还没有可导出的事件"
+                : cs.gapNote
+                  ? `导出本会话全部事件日志（jsonl）。注意：${cs.gapNote}`
+                  : "导出本会话全部事件日志（jsonl），用于分析优化"
+            }
+          >
+            <Download className="size-[13px]" aria-hidden />
+            导出
+          </Button>
         </div>
       </div>
 
