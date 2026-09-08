@@ -28,9 +28,7 @@ import rehypeHighlight from "rehype-highlight";
 import { Button } from "@/components/ui/button.js";
 import { Input } from "@/components/ui/input.js";
 import { useChat } from "../store.js";
-import { repoStatusText } from "../lib/cloudRepoStatus.js";
 import { modelStatusText } from "../lib/cloudModelStatus.js";
-import { EMBEDDED_CREDENTIAL_MESSAGE, repoUrlHasEmbeddedCredential } from "../lib/cloudRepoUrl.js";
 import { entryMeta, workFileNotice, workFolderNotice } from "../lib/workFilesView.js";
 import { joinWorkPath } from "../../../shared/remote/workPath.js";
 import { FileTypeIcon, FolderIcon } from "./FileTypeIcon.js";
@@ -52,12 +50,9 @@ type Loaded =
   | { kind: "error"; message: string }
   | { kind: "ok"; value: CloudWorkspaceState };
 
-export function WorkspaceFilesTab({ ws, selfUid }: { ws: WorkspaceSnapshot; selfUid: string }) {
-  const load = useChat((s) => s.workspaceRepoState);
-  const save = useChat((s) => s.workspaceRepoConfig);
-  const isOwner = ws.ownerUid === selfUid;
+export function WorkspaceFilesTab({ ws }: { ws: WorkspaceSnapshot }) {
+  const load = useChat((s) => s.workspaceCloudState);
   const [state, setState] = useState<Loaded>({ kind: "loading" });
-  const [reloadTick, setReloadTick] = useState(0);
 
   useEffect(() => {
     let alive = true;
@@ -69,10 +64,8 @@ export function WorkspaceFilesTab({ ws, selfUid }: { ws: WorkspaceSnapshot; self
     return () => {
       alive = false;
     };
-  }, [ws.id, load, reloadTick]);
+  }, [ws.id, load]);
 
-  const repo = state.kind === "ok" ? state.value.repo : null;
-  const repoStatus = repoStatusText(repo);
   // 起不了 turn 这件事仍然在这一页说一次（ADR-0246 的判据原样：只在起不了 turn
   // 的时候出现）。它跟文件无关，摆在最上面是因为**这一页是它在会话界面之外唯一
   // 的落点**——真正该住的地方是页头（跨 tab 可见），那要给设置页每次打开都加一次
@@ -87,52 +80,6 @@ export function WorkspaceFilesTab({ ws, selfUid }: { ws: WorkspaceSnapshot; self
       )}
 
       <WorkFolder workspaceId={ws.id} />
-
-      <section className="flex flex-col gap-[10px] border-t border-border pt-4">
-        <p className={SECTION_LABEL}>从 Git 仓库带一份代码进来（可选）</p>
-        <p className="text-[12px] text-muted-foreground">
-          配了仓库，水獭就在它的一份工作副本里干活。
-          <strong className="font-medium text-foreground">不是每个工作区都需要仓库</strong>
-          ——做文案、运营这类活留空就行。
-        </p>
-
-        {state.kind === "loading" ? (
-          <p className="text-xs text-muted-foreground">正在读取…</p>
-        ) : state.kind === "error" ? (
-          <div className="flex flex-wrap items-center gap-2">
-            <p className="text-xs text-err">{state.message}</p>
-            <Button variant="ghost" size="xs" onClick={() => setReloadTick((t) => t + 1)}>
-              重试
-            </Button>
-          </div>
-        ) : (
-          <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
-            <dt className="text-muted-foreground">仓库</dt>
-            <dd className="min-w-0 break-all" title={repoStatus.full}>{repoStatus.short}</dd>
-            {repo?.clone && (
-              <>
-                <dt className="text-muted-foreground">最近一次</dt>
-                <dd className="min-w-0 break-words">{repo.clone.text}</dd>
-              </>
-            )}
-          </dl>
-        )}
-
-        {isOwner ? (
-          <RepoForm
-            key={ws.id}
-            repo={repo}
-            disabled={state.kind !== "ok"}
-            onSave={async (patch) => {
-              const r = await save(ws.id, patch);
-              if (r.ok) setState({ kind: "ok", value: r.value });
-              return r;
-            }}
-          />
-        ) : (
-          <p className="text-[11px] text-muted-foreground">只有所有者能改仓库配置。</p>
-        )}
-      </section>
     </div>
   );
 }
@@ -407,106 +354,5 @@ function WorkFolder({ workspaceId }: { workspaceId: string }) {
 
       {error !== null && <p className="text-xs text-err">{error}</p>}
     </section>
-  );
-}
-
-function RepoForm({
-  repo,
-  disabled,
-  onSave,
-}: {
-  repo: CloudWorkspaceState["repo"];
-  disabled: boolean;
-  onSave: (patch: { repoUrl?: string; pat?: string }) => Promise<{ ok: true } | { ok: false; message: string }>;
-}) {
-  const [repoUrl, setRepoUrl] = useState(repo?.url ?? "");
-  const [pat, setPat] = useState("");
-  const [clearPat, setClearPat] = useState(false);
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [saved, setSaved] = useState(false);
-  // 服务端那份地址到了（首次读取 / 保存回执）就用它预填：预填的是服务端刚说的
-  // 事实，不是本地草稿（#834）。人正在打字时不覆盖——只在 repo.url 变化时同步
-  useEffect(() => {
-    setRepoUrl(repo?.url ?? "");
-  }, [repo?.url]);
-
-  const url = repoUrl.trim();
-  const dirty = url !== (repo?.url ?? "") || pat.trim() !== "" || clearPat;
-
-  const submit = async (): Promise<void> => {
-    if (busy || !dirty) return;
-    if (url !== "" && repoUrlHasEmbeddedCredential(url)) {
-      setError(EMBEDDED_CREDENTIAL_MESSAGE);
-      return;
-    }
-    setError(null);
-    setBusy(true);
-    const patch: { repoUrl?: string; pat?: string } = {};
-    if (url !== "" && url !== (repo?.url ?? "")) patch.repoUrl = url;
-    // 三态：清除 > 新值 > 不动
-    const typed = pat.trim();
-    if (clearPat) patch.pat = "";
-    else if (typed !== "") patch.pat = typed;
-    if (patch.repoUrl === undefined && patch.pat === undefined) {
-      setBusy(false);
-      setError(url === "" && (repo?.url ?? "") !== "" ? "要撤掉仓库的话把地址改成别的；这一版还不支持清空。" : "没有要保存的内容。");
-      return;
-    }
-    const r = await onSave(patch);
-    setBusy(false);
-    if (r.ok) {
-      setPat(""); // 存完即清
-      setClearPat(false);
-      setSaved(true);
-      window.setTimeout(() => setSaved(false), 2000);
-    } else {
-      setError(r.message);
-    }
-  };
-
-  return (
-    <div className="flex flex-col gap-[10px]">
-      <Input
-        autoComplete="off"
-        spellCheck={false}
-        disabled={disabled || busy}
-        className="font-mono text-[13px]"
-        placeholder="https://github.com/x/y.git（留空 = 不用仓库）"
-        value={repoUrl}
-        onChange={(e) => { setRepoUrl(e.target.value); setError(null); }}
-      />
-      <Input
-        type="password"
-        autoComplete="off"
-        spellCheck={false}
-        disabled={disabled || busy || clearPat}
-        className="font-mono text-[13px]"
-        placeholder={repo?.hasPat ? "已存了一个 token（留空 = 不改动）" : "Personal Access Token（可选，私有仓库需要）"}
-        value={pat}
-        onChange={(e) => setPat(e.target.value)}
-      />
-      <p className="text-[11px] text-muted-foreground">
-        私有仓库的 token 请填在这一栏——不要拼进上面的仓库地址。保存不会立刻触发 clone，要等下一次工具调用。
-      </p>
-      {repo?.hasPat && (
-        <button
-          type="button"
-          className="w-fit text-[11px] text-muted-foreground underline-offset-2 hover:underline"
-          onClick={() => {
-            setClearPat((v) => !v);
-            setPat("");
-          }}
-        >
-          {clearPat ? "取消清除（保留已存的 token）" : "清除已存的 token"}
-        </button>
-      )}
-      {error && <p className="text-xs text-err">{error}</p>}
-      <div className="flex items-center gap-2">
-        <Button size="sm" disabled={disabled || busy || !dirty} onClick={() => void submit()}>
-          {busy ? "保存中…" : saved ? "已保存" : "保存"}
-        </Button>
-      </div>
-    </div>
   );
 }

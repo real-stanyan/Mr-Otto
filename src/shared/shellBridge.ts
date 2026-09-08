@@ -20,7 +20,7 @@ import type { UsageSnapshot } from "./usageStats.js";
 import type { ModelShareWindow } from "./modelShare.js";
 import type { WorkspaceMentionRow } from "./workspaceMentions.js";
 import type { IslandUsageRow } from "./islandUsage.js";
-import type { CsModelRoute, CsRepoState, CsWorkHit, CsWorkNode } from "./remote/cloudSession.js";
+import type { CsModelRoute, CsWorkHit, CsWorkNode } from "./remote/cloudSession.js";
 import type { TerminalInfo } from "./terminal.js";
 import type { BrowserTabInfo, BrowserBounds, BrowserPickedElement } from "./browser.js";
 import type { SimButton, SimFrame, SimState } from "./simulator.js";
@@ -471,12 +471,8 @@ export interface CloudSessionStatus {
   initiatorUid: string | null;
   ownerUid: string;
   selfUid: string;
-  /** 这个工作区当前配的仓库 + 最近一次 clone 结局（issue #834）。
-      welcome 带来，config 存成功后再刷一次。null = 没配 / 还没 welcome。
-      **不含 token 本身**，只有 hasPat 布尔 */
-  repo: CsRepoState | null;
   /** 这个工作区此刻的 turn 会走哪条路（issue #945；ADR-0233 之后只有 hosted / blocked）。runtime 用 turn 同一份
-      decideRuntimeRoute 算好、welcome/config_result 带下来的，渲染层照画不重算。
+      decideRuntimeRoute 算好、welcome 带下来的，渲染层照画不重算。
       null = 探不到——「拿不到」≠「起不了」，别拿它当 blocked 画 */
   modelRoute: CsModelRoute | null;
   /** runtime 说的一句话，**给这条连接的人看**（issue #819）：限速、审批
@@ -499,10 +495,9 @@ export interface CloudSessionStatus {
   gapNote?: string;
 }
 
-/** `workspace_state` / `config_result` 带回来的那两格（协议 8，#991）：与
-    CloudSessionStatus 上的 repo / modelRoute 同形，一处画法 */
+/** `workspace_state` 带回来的那一格（协议 8，#991；#1102 摘掉 repo 之后只剩
+    这一个）：与 CloudSessionStatus 上的 modelRoute 同形，一处画法 */
 export interface CloudWorkspaceState {
-  repo: CsRepoState | null;
   modelRoute: CsModelRoute | null;
 }
 
@@ -1167,9 +1162,10 @@ export interface ShellBridge {
       `seq` = 按钮所在那一行开场白自己的 seq（复审 C2-I3）：停止按钮按**行**
       画，不带 seq 的话按第二行那颗停掉的是第一行。缺席 = 旧语义（停当前） */
   workspaceCloudStop(seq?: number): Promise<CloudAck>;
-  /** 配置当前云会话绑定的仓库（repoUrl + 可选 PAT，PAT 不落 Supabase） */
-  /** 读一个工作区的仓库状态 + 路由（控制房 RPC，协议 8，#991）：任何在籍成员都能读，
-      不依赖开着云会话——工作区设置页的「仓库」tab 用 */
+  /** 读一个工作区此刻的路由（控制房 RPC，协议 8，#991）：任何在籍成员都能读，
+      不依赖开着云会话。**#1102 之后只剩这一格**——原来它还带仓库配置，而工作区
+      不再绑仓库；留着这条 RPC 是因为 ADR-0246 那句「起不了 turn」在设置页
+      是它唯一的落点 */
   workspaceCloudState(workspaceId: string): Promise<FriendsResult<CloudWorkspaceState>>;
   /** 读一格工作文件夹（控制房 RPC，协议 11，#1056）：工作区设置页的「文件」tab 用。
       `path` 相对工作文件夹，`""` = 它本身；任何在籍成员都能读——一容器一卷，
@@ -1180,15 +1176,6 @@ export interface ShellBridge {
       `content=false` = 按文件名过滤，`true` = 搜正文（`?` 前缀那一路）。
       **`hits: []` 与失败是两回事**——前者是「搜过了没有」，后者是「没搜成」 */
   workspaceCloudFilesSearch(workspaceId: string, query: string, content: boolean): Promise<FriendsResult<CsWorkHit[]>>;
-  /** 改一个工作区的仓库配置（控制房 RPC，协议 8；owner 才过，服务端判）。`pat`
-      三态——省略 = 保持不变，`""` = 清除，非空 = 换新（密码框预填不了，"留空 =
-      清掉"会让顺手改个地址毁掉一把 token）。回服务端此刻的真实状态，失败也回
-      ——它正好告诉 owner「那你现在配的还是这个」 */
-  workspaceCloudConfig(
-    workspaceId: string,
-    patch: { repoUrl?: string; pat?: string },
-  ): Promise<FriendsResult<CloudWorkspaceState>>;
-
   /** macOS dock 角标(0 = 清掉)。未读数只有渲染层知道,所以由它来报 */
   setBadgeCount(count: number): Promise<void>;
   /** 关系链任何变化(本端操作或对端 Realtime 推)→ 全量快照 */

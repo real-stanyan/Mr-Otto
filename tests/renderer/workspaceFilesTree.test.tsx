@@ -35,16 +35,17 @@ const WS: WorkspaceSnapshot = {
 const file = (name: string, size: number): CsWorkEntry => ({ name, kind: "file", size, mtimeMs: 1_757_300_000_000 });
 const dir = (name: string): CsWorkEntry => ({ name, kind: "dir", size: 0, mtimeMs: 1_757_300_000_000 });
 
-/** 仓库那一节要它才画得出来；这一份测试只关心上半的文件树 */
+/** `workspaceCloudState` 只剩路由那一格（#1102）——这一页顶上那句「起不了 turn」
+    靠它，`null` = 一切正常、什么都不画 */
 function seed(files: (path: string) => Promise<{ ok: true; value: CsWorkNode } | { ok: false; message: string }>) {
   useChat.setState({
-    workspaceRepoState: async () => ({ ok: true, value: { repoUrl: "", hasPat: false, lastClone: null } }) as never,
+    workspaceCloudState: async () => ({ ok: true, value: { modelRoute: null } }) as never,
     workspaceFiles: (async (_id: string, path: string) => files(path)) as never,
     workspaceFilesSearch: (async () => ({ ok: true, value: [] })) as never,
   });
 }
 
-const show = () => render(<WorkspaceFilesTab ws={WS} selfUid={OWNER} />);
+const show = () => render(<WorkspaceFilesTab ws={WS} />);
 
 afterEach(() => cleanup());
 
@@ -83,5 +84,16 @@ describe("WorkspaceFilesTab 的工作文件夹树", () => {
 
     await waitFor(() => expect(screen.getByText(/读工作文件夹失败/)).toBeInTheDocument());
     expect(screen.queryByText(/还是空的/)).not.toBeInTheDocument();
+  });
+
+  it("这一页只剩文件 —— 仓库那一节整个走了（#1102）", async () => {
+    seed(async () => ({ ok: true, value: { kind: "dir", entries: [file("a.txt", 1)], truncated: false } }));
+    show();
+
+    await screen.findByText("a.txt");
+    // 三样一起没：分节标题、PAT 输入框、保存钮。少查一样都可能只是「这一版没渲染出来」
+    expect(screen.queryByText(/从 Git 仓库带一份代码进来/)).not.toBeInTheDocument();
+    expect(screen.queryByPlaceholderText(/Personal Access Token/)).not.toBeInTheDocument();
+    expect(screen.queryByText("保存")).not.toBeInTheDocument();
   });
 });

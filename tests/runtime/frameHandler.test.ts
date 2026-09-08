@@ -53,8 +53,6 @@ function makeDeps(config: {
   archiveSession?: FrameHandlerDeps["sessions"]["archive"];
   creatorOf?: FrameHandlerDeps["sessions"]["creatorOf"];
   removeSession?: FrameHandlerDeps["sessions"]["remove"];
-  saveConfig?: FrameHandlerDeps["saveConfig"];
-  repoState?: FrameHandlerDeps["repoState"];
   /** issue #945：默认「探不到」（null）——绝大多数用例不关心这一格 */
   modelRoute?: FrameHandlerDeps["modelRoute"];
   dropCid?: FrameHandlerDeps["dropCid"];
@@ -82,8 +80,6 @@ function makeDeps(config: {
       creatorOf: config.creatorOf ?? (async () => "owner-uid"),
       remove: config.removeSession ?? (async () => true),
     },
-    saveConfig: config.saveConfig ?? (async () => {}),
-    repoState: config.repoState ?? (() => null),
     modelRoute: config.modelRoute ?? (async () => null),
     readWork: config.readWork ?? (async () => ({ kind: "dir", entries: [], truncated: false })),
     searchWork: config.searchWork ?? (async () => []),
@@ -156,46 +152,12 @@ describe("createFrameHandler", () => {
         lastSeq: 7,
         initiatorUid: "u1",
         ownerUid: "owner-uid",
-        repo: null, // 没配仓库（issue #834：welcome 现在带这一格）
         modelRoute: null, // 探不到（issue #945：假 deps 默认不探）
       },
     });
   });
 
   // 协议 8（#991）：config 走控制房（带 workspaceId），不再依赖开着一条会话
-  it("③ config（控制房）：非 owner 拒 not_authorized；owner 过，saveConfig 收到 pat", async () => {
-    const saveConfigCalls: {
-      workspaceId: string;
-      cfg: { repoUrl?: string; pat?: string };
-    }[] = [];
-    const { deps, sent } = makeDeps({
-      ownerOf: async () => "owner-uid",
-      saveConfig: async (workspaceId, cfg) => {
-        saveConfigCalls.push({ workspaceId, cfg });
-      },
-    });
-    const handler = createFrameHandler(deps);
-
-    await handler.onCtlFrame("cMember", hello(CS_PROTOCOL_VERSION, "jwt:member-uid"));
-    await handler.onCtlFrame("cOwner", hello(CS_PROTOCOL_VERSION, "jwt:owner-uid"));
-    sent.length = 0; // 只关心 config 之后发生了什么
-
-    await handler.onCtlFrame("cMember", encodeCs({ t: "config", workspaceId: "w1", repoUrl: "https://example.com/repo.git", pat: "secret-pat" })
-    );
-    expect(sent).toEqual([{ cid: "cMember", msg: { t: "denied", code: "not_authorized" } }]);
-    expect(saveConfigCalls).toHaveLength(0);
-
-    await handler.onCtlFrame("cOwner", encodeCs({ t: "config", workspaceId: "w1", repoUrl: "https://example.com/repo.git", pat: "secret-pat" })
-    );
-    expect(saveConfigCalls).toEqual([
-      { workspaceId: "w1", cfg: { repoUrl: "https://example.com/repo.git", pat: "secret-pat" } },
-    ]);
-    // issue #834：存成功要回执，不再静默
-    expect(sent.at(-1)).toEqual({
-      cid: "cOwner",
-      msg: { t: "config_result", workspaceId: "w1", ok: true, repo: null,  modelRoute: null },
-    });
-  });
 
   it("③e welcome 带 modelRoute——runtime 用 decideRuntimeRoute 算好下发，客户端不重算（#945）", async () => {
     const { deps, sent } = makeDeps({ modelRoute: async () => ({ kind: "hosted", model: "glm-5" }) });
@@ -217,45 +179,7 @@ describe("createFrameHandler", () => {
     return { modelRoute, calls };
   };
 
-  it("③f config_result 成功回执带的是 saveConfig **之后**探到的那份（#945）", async () => {
-    // 协议 8 起 config 走控制房，hello 不探路由（没有 welcome）——所以 config 那一帧
-    // 的那次探测就是**第一次**调用：答案排成「存之前 blocked、存之后 hosted」没有
-    // 意义了，改成只数次数（恰好一次）+ 回执带的是这次探到的
-    const spy = routeSpy({ kind: "hosted", model: "glm-5" });
-    const { deps, sent } = makeDeps({ ownerOf: async () => "owner-uid", modelRoute: spy.modelRoute });
-    const handler = createFrameHandler(deps);
-    await handler.onCtlFrame("cOwner", hello(CS_PROTOCOL_VERSION, "jwt:owner-uid"));
-    // 控制房 hello 不探；从这里开始只数 config 那一帧
-    const beforeConfig = spy.calls.length;
-    sent.length = 0;
 
-    await handler.onCtlFrame("cOwner", encodeCs({ t: "config", workspaceId: "w1", repoUrl: "https://example.com/repo.git" })
-    );
-
-    // 第二次调用的答案 = 存完之后那份。拿存之前那份（blocked）就是让界面继续撒谎
-    expect(sent.at(-1)!.msg).toMatchObject({ t: "config_result", ok: true, modelRoute: { kind: "hosted", model: "glm-5" } });
-    // 恰好一次：不预探（那是替一条罕见路径给每条帧收费），也不探两次
-    expect(spy.calls.length - beforeConfig).toBe(1);
-  });
-
-  it("③g config_result 失败回执的 modelRoute 也是**当场**探的，不是复用别处的（#945）", async () => {
-    const spy = routeSpy({ kind: "hosted", model: "glm-5" });
-    const { deps, sent } = makeDeps({ ownerOf: async () => "owner-uid", modelRoute: spy.modelRoute });
-    const handler = createFrameHandler(deps);
-    await handler.onCtlFrame("cOwner", hello(CS_PROTOCOL_VERSION, "jwt:owner-uid"));
-    const beforeConfig = spy.calls.length;
-    sent.length = 0;
-
-    // 过不了服务端校验（非 https 的仓库地址）→ 一个字都没存
-    await handler.onCtlFrame("cOwner", encodeCs({ t: "config", workspaceId: "w1", repoUrl: "ext::sh -c id" })
-    );
-
-    const msg = sent.at(-1)!.msg;
-    expect(msg).toMatchObject({ t: "config_result", ok: false });
-    // 失败路径也带这一格，且它来自失败那一刻的一次真探测
-    expect(msg).toMatchObject({ modelRoute: { kind: "hosted", model: "glm-5" } });
-    expect(spy.calls.length - beforeConfig).toBe(1);
-  });
 
   it("③h modelRoute 拿到的是这一层已经查过的 ownerUid，不让实现自己再查一次（#945 复审 F2）", async () => {
     const spy = routeSpy({ kind: "blocked" });
@@ -270,62 +194,19 @@ describe("createFrameHandler", () => {
   // 写着），一个改造过的客户端能直接发 `ext::sh -c ...` 上来，那是 git 的
   // 一种传输，会以 root 在容器里跑起来。
 
-  it("③b config：地址过不了服务端校验 → 回 config_result ok:false，saveConfig 一次都不调", async () => {
-    const saveConfigCalls: unknown[] = [];
+  it("③d welcome 不再带 repo —— 工作区不绑仓库了（#1102），但 modelRoute 那一格照旧", async () => {
     const { deps, sent } = makeDeps({
       ownerOf: async () => "owner-uid",
-      saveConfig: async (workspaceId, cfg) => {
-        saveConfigCalls.push({ workspaceId, cfg });
-      },
-    });
-    const handler = createFrameHandler(deps);
-    await handler.onCtlFrame("cOwner", hello(CS_PROTOCOL_VERSION, "jwt:owner-uid"));
-    sent.length = 0;
-
-    for (const repoUrl of ["ext::sh -c whoami", "git@github.com:acme/x.git", "https://tok@github.com/a/b.git"]) {
-      await handler.onCtlFrame("cOwner", encodeCs({ t: "config", workspaceId: "w1", repoUrl }));
-    }
-
-    expect(saveConfigCalls).toHaveLength(0);
-    expect(sent).toHaveLength(3);
-    for (const s of sent) {
-      expect(s.msg.t).toBe("config_result");
-      expect(s.msg).toMatchObject({ ok: false });
-    }
-  });
-
-  it("③c config：saveConfig 抛异常 → 也回执（以前只冒到 daemon 的 .catch 记一行日志，按钮照样说已保存）", async () => {
-    const { deps, sent } = makeDeps({
-      ownerOf: async () => "owner-uid",
-      saveConfig: async () => {
-        throw new Error("EACCES: 落盘失败");
-      },
-    });
-    const handler = createFrameHandler(deps);
-    await handler.onCtlFrame("cOwner", hello(CS_PROTOCOL_VERSION, "jwt:owner-uid"));
-    sent.length = 0;
-
-    await handler.onCtlFrame("cOwner", encodeCs({ t: "config", workspaceId: "w1", repoUrl: "https://example.com/repo.git" })
-    );
-
-    expect(sent).toHaveLength(1);
-    expect(sent[0]!.msg).toMatchObject({ t: "config_result", ok: false });
-    expect((sent[0]!.msg as { message: string }).message).toContain("EACCES");
-  });
-
-  it("③d welcome 带 repoState——任何成员一 join 就看得见仓库状态，不必是 owner", async () => {
-    const { deps, sent } = makeDeps({
-      ownerOf: async () => "owner-uid",
-      repoState: () => ({ url: "https://example.com/repo.git", hasPat: true, clone: null }),
+      modelRoute: async () => ({ kind: "hosted", model: "glm-5" }),
     });
     const handler = createFrameHandler(deps);
 
     await handler.onSessionFrame("w1", "s1", "cMember", hello(CS_PROTOCOL_VERSION, "jwt:member-uid"));
 
-    expect(sent.at(-1)!.msg).toMatchObject({
-      t: "welcome",
-      repo: { url: "https://example.com/repo.git", hasPat: true, clone: null },
-    });
+    const msg = sent.at(-1)!.msg as Record<string, unknown>;
+    expect(msg).toMatchObject({ t: "welcome", modelRoute: { kind: "hosted", model: "glm-5" } });
+    // 键本身要没了，不是「值是 null」——后者会让下一个人以为它还在被谁读
+    expect("repo" in msg).toBe(false);
   });
 
   it("④ say 落到 sessions.get(...).say 且带 label（hello 时缓存的那份，不是每次现查）", async () => {
@@ -1240,85 +1121,9 @@ describe("删除（协议 10，#1044）", () => {
   });
 });
 
-// ADR-0233：云会话统一走所有者订阅额度，config 帧只剩仓库那一组。老客户端多发的
-// model 字段在 decodeCsUp 里被丢掉——这里钉住「只发 model 等于什么都没发」
-describe("config 帧没有模型那半边（ADR-0233）", () => {
-  const ownerDeps = (extra: Parameters<typeof makeDeps>[0] = {}) =>
-    makeDeps({ ownerOf: async () => "u1", ...extra });
-
-  it("一格都没给 → 明确说「没有要保存的内容」，不假装存过了", async () => {
-    const calls: unknown[] = [];
-    const { deps, sent } = ownerDeps({ saveConfig: async (w, cfg) => { calls.push([w, cfg]); } });
-    const handler = createFrameHandler(deps);
-    await handler.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
-    sent.length = 0;
-
-    await handler.onCtlFrame("c1", encodeCs({ t: "config", workspaceId: "w1" }));
-
-    expect(calls).toEqual([]);
-    expect((sent.at(-1)!.msg as { ok: boolean }).ok).toBe(false);
-  });
-
-  it("老客户端只发 model 那一组 → 等于什么都没发：不落盘、回「没有要保存的内容」", async () => {
-    const calls: unknown[] = [];
-    const { deps, sent } = ownerDeps({ saveConfig: async (w, cfg) => { calls.push([w, cfg]); } });
-    const handler = createFrameHandler(deps);
-    await handler.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
-    sent.length = 0;
-
-    const raw = b64encode(new TextEncoder().encode(JSON.stringify({
-      t: "config",
-      workspaceId: "w1",
-      model: { baseUrl: "https://api.deepseek.com/v1", modelId: "deepseek-v4-flash", apiKey: "sk-x" },
-    })));
-    await handler.onCtlFrame("c1", raw);
-
-    expect(calls).toEqual([]);
-    const last = sent.at(-1)!.msg as Extract<CsDown, { t: "config_result" }>;
-    expect(last.t).toBe("config_result");
-    expect(last.ok).toBe(false);
-  });
-});
-
-// 协议 8（#991，ADR-0234）：仓库是工作区的属性——读写都在控制房，不以「开着一条
-// 这个工作区的云会话」为前提；会话房里出现 config/workspace 视为越权（同 create）
-describe("控制房的 workspace 读帧 / 会话房拒 config（协议 8）", () => {
-  it("workspace：在籍成员读到 repo + modelRoute（与 welcome 同形）；非成员 denied not_member", async () => {
-    const { deps, sent } = makeDeps({
-      isMember: async (workspaceId, uid) => workspaceId === "w-ok" && uid === "u1",
-      repoState: (w) => (w === "w-ok" ? { url: "https://example.com/repo.git", hasPat: true, clone: null } : null),
-      modelRoute: async () => ({ kind: "hosted", model: "glm-5" }),
-    });
-    const handler = createFrameHandler(deps);
-    await handler.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
-
-    await handler.onCtlFrame("c1", encodeCs({ t: "workspace", workspaceId: "w-bad" }));
-    expect(sent.at(-1)).toEqual({ cid: "c1", msg: { t: "denied", code: "not_member" } });
-
-    await handler.onCtlFrame("c1", encodeCs({ t: "workspace", workspaceId: "w-ok" }));
-    expect(sent.at(-1)).toEqual({
-      cid: "c1",
-      msg: {
-        t: "workspace_state",
-        workspaceId: "w-ok",
-        repo: { url: "https://example.com/repo.git", hasPat: true, clone: null },
-        modelRoute: { kind: "hosted", model: "glm-5" },
-      },
-    });
-  });
-
-  it("会话房里发 config / workspace → denied not_authorized（控制房专用帧，同 create）", async () => {
-    const calls: unknown[] = [];
-    const { deps, sent } = makeDeps({ ownerOf: async () => "u1", saveConfig: async (w, cfg) => { calls.push([w, cfg]); } });
-    const handler = createFrameHandler(deps);
-    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
-    sent.length = 0;
-
-    await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "config", workspaceId: "w1", repoUrl: "https://example.com/repo.git" }));
-    expect(sent.at(-1)).toEqual({ cid: "c1", msg: { t: "denied", code: "not_authorized" } });
-    expect(calls).toEqual([]);
-  });
-});
+// 协议 14（#1102）：config 帧整条走了。会话房那条越权用例改盯别的控制房专用帧
+// ——判据没变（控制房专用帧出现在会话房 = not_authorized），只是 config 不再是
+// 其中之一。create / workspace / archive / delete / files 这几条各自的用例都在上面
 
 // issue #915：真机上「新建云会话」一律回 not_authorized，而发起者是工作区所有者。
 //

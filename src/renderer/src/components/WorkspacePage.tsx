@@ -132,7 +132,7 @@ export function WorkspacePage({
         </TabsContent>
         <TabsContent value="files" className="pt-3">
           {/* key：换工作区时整块重挂，免得上一个工作区的路径/清单多活一帧 */}
-          <WorkspaceFilesTab key={ws.id} ws={ws} selfUid={selfUid} />
+          <WorkspaceFilesTab key={ws.id} ws={ws} />
         </TabsContent>
         <TabsContent value="connectors" className="pt-3">
           <ConnectorsTab ws={ws} selfUid={selfUid} />

@@ -22,8 +22,8 @@ describe("cs_say 的 mentions（#928 切片 1a）", () => {
 });
 
 describe("cs 协议 6（#957 第三批：stop 帧与 say/approve/stop 回执）", () => {
-  it("CS_PROTOCOL_VERSION === 13（…；11 = #1056 工作文件夹读帧；12 = #1066 搜索；13 = #1064 点名提醒）", () => {
-    expect(CS_PROTOCOL_VERSION).toBe(13);
+  it("CS_PROTOCOL_VERSION === 14（…；11 = #1056 工作文件夹读帧；12 = #1066 搜索；13 = #1064 点名提醒；14 = #1102 拆掉工作区绑仓库）", () => {
+    expect(CS_PROTOCOL_VERSION).toBe(14);
   });
 
   it("stop 上行往返", () => {

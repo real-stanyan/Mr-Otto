@@ -78,7 +78,6 @@ import {
   type CsDeniedCode,
   type CsModelRoute,
   type CsDown,
-  type CsRepoState,
   type CsUp,
   type CsWorkHit,
   type CsWorkNode,
@@ -226,12 +225,6 @@ export interface CloudSessionClient {
   /** 读一个工作区的仓库状态 + 路由（控制房 RPC，协议 8，#991）。不依赖任何
       一条会话——工作区设置页从侧栏 ⚙ 进来时手上未必开着这个工作区的云会话 */
   workspaceState(workspaceId: string): Promise<FriendsResult<WorkspaceCloudState>>;
-  /** 改一个工作区的仓库配置（控制房 RPC，协议 8）。resolve 的是服务端的
-      `config_result`——「已保存」必须等服务端说话（#834 的纪律原样成立） */
-  workspaceConfig(
-    workspaceId: string,
-    patch: { repoUrl?: string; pat?: string },
-  ): Promise<FriendsResult<WorkspaceCloudState>>;
   /** 读一格工作文件夹（控制房 RPC，协议 11，#1056）。`path` 相对工作文件夹，
       `""` = 它本身。任何在籍成员都能读——卷是整个工作区共用的一份 */
   workspaceFiles(workspaceId: string, path: string): Promise<FriendsResult<CsWorkNode>>;
@@ -240,7 +233,7 @@ export interface CloudSessionClient {
   workspaceFilesSearch(workspaceId: string, query: string, content: boolean): Promise<FriendsResult<CsWorkHit[]>>;
 }
 
-/** `workspace_state` / `config_result` 带回来的那两格（协议 8）——与 shellBridge
+/** `workspace_state` 带回来的那一格（协议 8；#1102 摘掉 repo 之后只剩它）——与 shellBridge
     那份同一个类型，渲染层拿到的就是这份 */
 export type WorkspaceCloudState = CloudWorkspaceState;
 
@@ -297,10 +290,7 @@ interface ActiveSession {
       Date.now() 当占位——cloudSessionFleetRow 的 lastTs 最终用的是
       activeSummary() 那一份 */
   lastEventTs: number | null;
-  /** welcome 给的仓库配置 + 最近一次 clone 结局（issue #834）；config 存成功
-      后由回执刷新。null = 没配，或者还没 welcome */
-  repo: CsRepoState | null;
-  /** welcome 给的路由判定（issue #945），config 回执后刷新。null = runtime 探不到
+  /** welcome 给的路由判定（issue #945）。null = runtime 探不到
       （edge 抖了 / 还没 welcome）——「拿不到」≠「起不了」，这一层原样透传不加工 */
   modelRoute: CsModelRoute | null;
   /** 还没等到 `say_result` 的那一句（#957 第三批，#964）。协议 6 之前
@@ -388,7 +378,6 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
       initiatorUid: session.initiatorUid,
       ownerUid: session.ownerUid,
       selfUid: deps.selfUid() ?? "",
-      repo: session.repo,
       modelRoute: session.modelRoute,
       ...(notice === undefined ? {} : { notice }),
       // 持久（issue #957 C-I7）：与上面那条一次性的 notice 相反，只要这一份
@@ -544,7 +533,6 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
         session.lastSeq = msg.lastSeq; // issue #957 C-I7：backlog 落定时拿它对账
         session.initiatorUid = msg.initiatorUid;
         session.ownerUid = msg.ownerUid;
-        session.repo = msg.repo; // issue #834：任何人一 join 就看得见仓库状态
         // issue #945：runtime 用 turn 同一份 decideRuntimeRoute 算好的路由。
         // 桌面是显示器不是执行者——这一格照收不重算
         session.modelRoute = msg.modelRoute;
@@ -558,10 +546,9 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
         }
         return;
       }
-      case "config_result":
       case "workspace_state":
       case "archive_result":
-        // 协议 8/9 起这三条只在控制房出现（#991 / #993），会话房里当噪音忽略
+        // 协议 8/9 起这两条只在控制房出现（#991 / #993），会话房里当噪音忽略
         return;
       // ── say/approve/stop 的回执（#957 第三批，#964）────────────────────
       // 在这之前这三条路都是"帧交给 socket 就算成功"，服务端的拒绝要过一会儿
@@ -800,7 +787,7 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
 
   function workspaceFiles(workspaceId: string, path: string): Promise<FriendsResult<CsWorkNode>> {
     // 本地先归一化一次省一次明知会被拒的往返；服务端仍然自己归一化一次
-    // （主进程不是安全边界，同 workspaceConfig 里那份地址校验的理由）
+    // （主进程不是安全边界，同 validateRepoUrl 注释里那条理由）
     const normalized = normalizeWorkPath(path);
     if (normalized === null) return Promise.resolve({ ok: false, message: "这条路径不合法。" });
     return ctlRequest({ t: "files", workspaceId, path: normalized }, (msg) => {
@@ -832,40 +819,9 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     return ctlRequest({ t: "workspace", workspaceId }, (msg) =>
       // 答复带 workspaceId：一条连接只问一个，但认一下比赌顺序便宜
       msg.t === "workspace_state" && msg.workspaceId === workspaceId
-        ? { ok: true, value: { repo: msg.repo, modelRoute: msg.modelRoute } }
+        ? { ok: true, value: { modelRoute: msg.modelRoute } }
         : null
     );
-  }
-
-  /** `pat` 三态跟着服务端那份走（daemon 的 workspaceConfigStore.save）：省略 =
-      保持不变，`""` = 显式清除，非空 = 换成新的。本地先过一遍同一份地址校验，
-      省掉一次明知会被拒的往返（服务端仍然会自己校验一次——渲染层/主进程都不是
-      安全边界，见 validateRepoUrl 注释）。resolve 的是服务端的 `config_result`
-      ——「已保存」必须等服务端说话（#834）；超时那句照实说"不知道"，服务端完全
-      可能已经存好了，只是回执没回来，重试一次是安全的（同一份配置存两遍等价） */
-  async function workspaceConfig(
-    workspaceId: string,
-    patch: { repoUrl?: string; pat?: string },
-  ): Promise<FriendsResult<WorkspaceCloudState>> {
-    const frame: CsUp = { t: "config", workspaceId };
-    if (patch.repoUrl !== undefined) {
-      const valid = validateRepoUrl(patch.repoUrl);
-      if (!valid.ok) return { ok: false, message: valid.message };
-      frame.repoUrl = valid.url;
-    }
-    // exactOptionalPropertyTypes：可选字段不接受显式 undefined，得真的省略
-    // 这个键才行——不能靠 JSON.stringify 事后替我们咽掉它
-    if (patch.pat !== undefined) frame.pat = patch.pat;
-    if (frame.repoUrl === undefined && frame.pat === undefined) {
-      return { ok: false, message: "没有要保存的内容。" };
-    }
-    return ctlRequest(frame, (msg) => {
-      if (msg.t !== "config_result" || msg.workspaceId !== workspaceId) return null;
-      // 失败也带着服务端此刻的真实状态回去——它正好告诉 owner「那你现在配的还是这个」
-      return msg.ok
-        ? { ok: true, value: { repo: msg.repo, modelRoute: msg.modelRoute } }
-        : { ok: false, message: msg.message ?? "保存被拒绝" };
-    });
   }
 
   async function join(workspaceId: string, sessionId: string): Promise<FriendsResult<null>> {
@@ -890,7 +846,6 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
       // null = 还没有任何事件事实（不能用 Date.now() 占位，见 ActiveSession
       // 的字段注释——那样会给历史事件的 ts 强加一个不该有的下限）
       lastEventTs: null,
-      repo: null,
       modelRoute: null,
       pendingSay: null,
       pendingApprove: new Map(),
@@ -1048,5 +1003,5 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     };
   }
 
-  return { currentSessionId, activeSummary, create, join, leave, say, approve, archive, remove, stop, workspaceState, workspaceConfig, workspaceFiles, workspaceFilesSearch };
+  return { currentSessionId, activeSummary, create, join, leave, say, approve, archive, remove, stop, workspaceState, workspaceFiles, workspaceFilesSearch };
 }
