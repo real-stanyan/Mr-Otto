@@ -86,6 +86,55 @@ export function quotaTone(percent: number): "brand" | "warn" | "deny" {
   return "brand";
 }
 
+/** 静息界面上那枚**额度告警点**画不画、画成什么色（#1073）。
+ *
+ * 为什么要有这一层：额度那两扇窗只画在上下文浮层里，**不悬停就看不见**
+ * （ADR-0209 把这条记成已知代价，#1071 重做那张卡时也没动它）。而额度是唯一
+ * 会真正把人拦住的那一个 —— 上下文满了还能压缩，额度用完那一刻只能等。
+ *
+ * 三条判据：
+ *
+ * ① **`null`（billing 还没查到）一个像素都不画**。冷启动那一瞬间渲染层手上
+ *    必然是 null，把它画成「没事」是撒谎、画成「告警」是吓人 —— 同 ADR-0240
+ *    那枚档位徽章为什么不许把 `null` 退成 Free。没订阅（`windows === null`）
+ *    同样不画：他没有额度可言，不是「额度充足」。
+ * ② **`exhausted` 排在百分比前面**。它是网关亲口说的「此刻拦住你了」（429，
+ *    或响应头报剩余为 0），而百分比是从响应头换算出来的推论 —— 只走 429 那条
+ *    路时窗口数还停在上一次的值，光看百分比会漏掉本条 issue 标题说的那一刻。
+ *    渲染层这份快照是 push 来的、不会自己在 resetAt 那一刻过期，所以这里跟
+ *    `hostedQuota.liveExhausted` 一样**现算**：过了 resetAt 的记号不算数。
+ * ③ 百分比走 `bindingWindow` + `quotaTone` —— **与浮层里那两只表、与设置页
+ *    共用同一组阈值**（>90 危 / >75 警）。分家的那天，点亮着而卡里两只环全是
+ *    灰的，人会先怀疑这个点坏了。
+ *
+ * 返回 `null` = 什么都不画。颜色在这里只用来说「出事了」，所以没有 `brand` 一档。
+ */
+export interface QuotaAlert {
+  tone: "warn" | "deny";
+  /** 说给读屏软件听的那句（挂在触发钮的 aria-label 尾巴上）。点本身是装饰、
+      **不带 title** —— 原生气泡会跟浮层抢同一次悬停，成了重影 */
+  label: string;
+}
+
+export function quotaAlert(billing: BillingSnapshotView | null, now: number): QuotaAlert | null {
+  if (!billing) return null;
+  const ex = billing.exhausted;
+  if (ex && ex.resetAt > now) {
+    return { tone: "deny", label: `额度：${ex.window === "5h" ? WINDOW_LABELS.h5 : WINDOW_LABELS.week}已用完` };
+  }
+  const me = billing.me;
+  if (!me?.windows) return null;
+  const b = bindingWindow(me.windows, now);
+  const tone = quotaTone(b.percent);
+  if (tone === "brand") return null;
+  return {
+    tone,
+    label: remainingPercent(b.w) <= 0
+      ? `额度：${b.label}已用完`
+      : `额度：${b.label}仅剩 ${fmtRemainingPercent(b.w)}`,
+  };
+}
+
 /** 档位显示名。查不到（服务端上了新档而客户端还没跟上）回 id 本身，不回 null ——
     卡片角上空着会读成「没有档位」，而事实是「有一个我不认识的档位」 */
 export function planName(id: PlanId | null): string | null {

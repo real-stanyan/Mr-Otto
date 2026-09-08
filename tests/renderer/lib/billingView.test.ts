@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
-  addonLine, bindingWindow, countdown, liveWindow, planCards, planCardsOrNull, planName, quotaTone,
-  upgradeCards, usageLine, windowPercent, hostedModels,
+  addonLine, bindingWindow, countdown, liveWindow, planCards, planCardsOrNull, planName, quotaAlert,
+  quotaTone, upgradeCards, usageLine, windowPercent, hostedModels,
 } from "../../../src/renderer/src/lib/billingView.js";
 import type { BillingMe, PlanInfo } from "../../../src/shared/billing.js";
+import type { BillingSnapshotView } from "../../../src/shared/shellBridge.js";
 
 const plans: PlanInfo[] = [
   { id: "lite", priceUsdCents: 1900, capabilities: { image: false, video: false, workspace: false } },
@@ -166,5 +167,72 @@ describe("hostedModels（#1042：菜单里那一组「订阅」列谁）", () =>
 
   it("status 是 active 但没有档（plan=null）也算没有：那是「订阅记录在、但不知道哪一档」", () => {
     expect(hostedModels(snap(me({ plan: null })))).toEqual([]);
+  });
+});
+
+// 静息界面上那枚额度告警点的判据（#1073）。这一族每条都是「不画」与「画错」
+// 之间的取舍 —— 这个点常年挂在输入框上，一个假警报比不报更坏。
+describe("quotaAlert（#1073：触发器那枚点画不画）", () => {
+  const NOW = 1_700_000_000_000;
+  const HOUR = 3_600_000;
+
+  const win = (used: number, limit: number, resetAt = NOW + HOUR) =>
+    ({ usedMicro: used, limitMicro: limit, resetAt });
+
+  const me = (h5: [number, number], week: [number, number], resetH5 = NOW + HOUR): BillingMe =>
+    ({
+      plan: "pro", status: "active", plans: [], models: [], modelPlatforms: {},
+      windows: { h5: win(h5[0], h5[1], resetH5), week: win(week[0], week[1], NOW + 96 * HOUR) },
+      addon: { remainingMicro: 0, expiresAt: null }, periodEnd: null,
+    }) as unknown as BillingMe;
+
+  const snap = (over: Partial<BillingSnapshotView> = {}): BillingSnapshotView =>
+    ({ me: me([100, 1000], [100, 1000]), fetchedAt: NOW, exhausted: null, ...over }) as BillingSnapshotView;
+
+  it("**billing 还没查到就一个像素都不画** —— 冷启动那一瞬间「不知道」不许画成「没事」也不许画成「告警」", () => {
+    expect(quotaAlert(null, NOW)).toBeNull();
+  });
+
+  it("快照到了但没有 me（没登录/查失败）同样不画", () => {
+    expect(quotaAlert(snap({ me: null }), NOW)).toBeNull();
+  });
+
+  it("没订阅（windows=null）不画 —— 他没有额度可言，那不是「额度充足」", () => {
+    expect(quotaAlert(snap({ me: { ...me([100, 1000], [100, 1000]), windows: null } }), NOW)).toBeNull();
+  });
+
+  it("两扇窗都宽裕就不画：颜色在这里只用来说「出事了」", () => {
+    expect(quotaAlert(snap(), NOW)).toBeNull();
+  });
+
+  it("刚过 75% 那条线 → 橙点，且说得出是哪一扇窗、还剩多少", () => {
+    expect(quotaAlert(snap({ me: me([820, 1000], [100, 1000]) }), NOW)).toEqual({
+      tone: "warn", label: "额度：5 小时窗仅剩 18.0%",
+    });
+  });
+
+  it("周窗先拦住人时报的是周窗（判据与浮层那两只表共用 bindingWindow）", () => {
+    expect(quotaAlert(snap({ me: me([100, 1000], [940, 1000]) }), NOW)).toEqual({
+      tone: "deny", label: "额度：本周仅剩 6.0%",
+    });
+  });
+
+  it("正好用光 → 说「已用完」不说「仅剩 0.0%」", () => {
+    expect(quotaAlert(snap({ me: me([1000, 1000], [100, 1000]) }), NOW)?.label).toBe("额度：5 小时窗已用完");
+  });
+
+  it("**exhausted 排在百分比前面**：网关亲口说的「拦住你了」，窗口数还停在上一次也照报", () => {
+    // 只走 429 那条路时 hostedQuota 不更新 windows —— 光看百分比会漏掉本条 issue
+    // 标题说的那一刻（额度用完，界面一个字都不说）
+    const v = quotaAlert(snap({ exhausted: { window: "5h", resetAt: NOW + HOUR } }), NOW);
+    expect(v).toEqual({ tone: "deny", label: "额度：5 小时窗已用完" });
+  });
+
+  it("过了 resetAt 的 exhausted 记号不算数 —— 渲染层这份快照不会自己过期，得现算", () => {
+    expect(quotaAlert(snap({ exhausted: { window: "week", resetAt: NOW - 1 } }), NOW)).toBeNull();
+  });
+
+  it("过了 resetAt 的窗按清零算：睡一觉回来不该对着一个早就恢复了的红点", () => {
+    expect(quotaAlert(snap({ me: me([1000, 1000], [100, 1000], NOW - 1) }), NOW)).toBeNull();
   });
 });
