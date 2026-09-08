@@ -44,6 +44,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu.js";
 import { buildExport, type ExportFormat } from "./trajectoryExport.js";
+import { downloadText } from "../lib/downloadText.js";
 
 /* 三类角色三种色：input 绿 / model 紫 / tools 橙（对齐 deepseek-harness 的泳道配色）。
    system 行归 input 道但灰显——它们不是人说的话 */
@@ -467,20 +468,6 @@ function Detail({ row, onClose }: { row: TrajRow; onClose: () => void }) {
 
 /* ─── 导出 ─── */
 
-/** 把一份文本交给系统「保存」。渲染进程不碰 fs（ShellBridge 硬规则），
-    走 <a download> —— 和图片下载同一条路（components/assistant-ui/image.tsx） */
-function saveText(filename: string, mime: string, text: string): void {
-  const url = URL.createObjectURL(new Blob([text], { type: `${mime};charset=utf-8` }));
-  const a = document.createElement("a");
-  a.href = url;
-  a.download = filename;
-  a.rel = "noopener";
-  document.body.appendChild(a);
-  a.click();
-  document.body.removeChild(a);
-  setTimeout(() => URL.revokeObjectURL(url), 40_000);
-}
-
 const FORMATS: { format: ExportFormat; label: string; hint: string }[] = [
   { format: "json", label: "JSON · 结构化轨迹", hint: "一步一条，带时长 / token / 工具入参出参" },
   { format: "jsonl", label: "JSONL · 原始事件日志", hint: "无损全量，可重放（不受搜索过滤影响）" },
@@ -505,7 +492,7 @@ function ExportMenu({ traj, rows, query }: { traj: Traj; rows: TrajRow[]; query:
       events,
       meta: { sessionId, title, workspace, model, exportedTs: Date.now(), query },
     });
-    saveText(file.filename, file.mime, file.text);
+    downloadText(file.filename, file.mime, file.text);
   };
 
   return (
