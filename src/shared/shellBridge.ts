@@ -240,6 +240,17 @@ export interface AssistantDelta {
   kind: "content" | "reasoning";
 }
 
+/** 云会话的流式帧（协议 16，#1107，与 AssistantDelta 同一份契约：
+    临时预览不落日志，终态 assistant_message 一到就作废）。多一个 agentId
+    槽位——群里同一刻可能有好几只在打字，按 agent 分槽。`text` 是**累计
+    快照**（这只 agent 这一轮到此刻的完整正文），渲染层整槽替换不拼接 */
+export interface CloudSessionDelta {
+  sessionId: string;
+  agentId: string;
+  text: string;
+  kind: "content" | "reasoning";
+}
+
 /** 工具输出直播碎片（bash 的 stdout/stderr，临时直播，不落日志）：
     渲染层按 toolCallId 攒着给"执行中"的工具行当终端尾巴看，
     tool_result 事件一到就作废——完整输出以它为准 */
@@ -1202,6 +1213,9 @@ export interface ShellBridge {
   onCloudSessionEvent(cb: (event: SessionEvent) => void): Unsubscribe;
   /** 当前云会话的连接状态变化（connecting/ready/denied/gone） */
   onCloudSessionStatus(cb: (status: CloudSessionStatus) => void): Unsubscribe;
+  /** 当前云会话的流式碎片（协议 16，#1107）：不过 seq 机器、不去重，拿到
+      就攒；同一只 agent 的终态 assistant_message / turn_ended 事件到了清槽 */
+  onCloudSessionDelta(cb: (delta: CloudSessionDelta) => void): Unsubscribe;
   /** presence 集合变化 → 当前在线的 userId 全量列表(Realtime presence ∪ 心跳窗口) */
   onPresenceChanged(cb: (onlineUserIds: string[]) => void): Unsubscribe;
   /** 对端发来的新 DM(自己发的不推——bridge 调用已回真行,渲染层自己落) */
@@ -1626,6 +1640,7 @@ export const CHANNELS = {
   workspacesChanged: "otter:workspacesChanged",
   cloudSessionEvent: "otter:cloudSessionEvent",
   cloudSessionStatus: "otter:cloudSessionStatus",
+  cloudSessionDelta: "otter:cloudSessionDelta",
   directMessage: "otter:directMessage",
   realtimeHealth: "otter:realtimeHealth",
   notificationActivated: "otter:notificationActivated",

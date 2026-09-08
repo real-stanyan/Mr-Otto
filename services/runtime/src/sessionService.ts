@@ -165,7 +165,8 @@
 import { LoopEngine } from "../../../src/loop/engine.js";
 import type { EventStore } from "../../../src/session/store.js";
 import type { SessionEvent, UserMessageEvent, AssistantMessageEvent, AgentRelayEvent } from "../../../src/session/events.js";
-import type { ModelAdapter } from "../../../src/model/adapter.js";
+import type { DeltaKind, ModelAdapter } from "../../../src/model/adapter.js";
+import { createDeltaStream } from "./deltaStream.js";
 import type { ExecutionWorld } from "../../../src/world/executionWorld.js";
 import type { Tool } from "../../../src/tools/tool.js";
 import { readFileTool } from "../../../src/tools/readFile.js";
@@ -287,6 +288,24 @@ export interface CloudSessionOpts {
       daemon 给；每 turn 起跑前现取一次（成员变化下一 turn 生效） */
   hostUids: () => Promise<string[]>;
   onEvent: (e: SessionEvent) => void; // daemon 拿去定向广播
+  /** 流式碎片出口（#1107，协议 16 的 `delta` 帧）。**可选**：缺席 = 这条会话
+      照旧非流式（adapter 只在拿到 onDelta 时才走 streaming 分支，行为与今天
+      逐字相同）。在场时契约两条：碎片永远不落事件日志（临时预览不是事实，
+      同 persistencePolicy 的 TransientPushKind）；任何事件从 notify 出门
+      **之前**先把积存的碎片放完，终态 `assistant_message` 之后不会再冒出
+      迟到的文字。text 是**累计快照**（这只 agent 这一轮到此刻为止的完整
+      正文，见 deltaStream.ts 头注 ②）——中继掉帧/客户端中途 join/重连都
+      不会在预览上咬出洞。`kind` 今天只会是 "content"——终态气泡不画
+      reasoning（CloudSessionPage 的 AssistantMessageRow），预览不该展示
+      终态不存在的东西，推理碎片的字节因此不过线 */
+  onDelta?: (agentId: string, kind: "content" | "reasoning", text: string) => void;
+  /** 合帧时钟，只给测试拧（同本机 deltaCoalescer 的注入纪律）。
+      缺席 = 50ms setTimeout（deltaStream.ts 的 CLOUD_DELTA_INTERVAL_MS） */
+  deltaTimers?: {
+    intervalMs?: number;
+    setTimer?: (fn: () => void, ms: number) => unknown;
+    clearTimer?: (h: unknown) => void;
+  };
   onUsage: (u: { uid: string; model: string; promptTokens: number; completionTokens: number }) => void;
   /** 工作区记忆的读写口（#949）。**必需**：忘接线该编译不过，而不是安静地跑一个没记忆的 agent */
   memory: WorkspaceMemoryStore;
@@ -602,6 +621,13 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   let cachedPxTools: Tool[] = [];
   const now = opts.now ?? (() => Date.now());
 
+  // 流式碎片的合帧（#1107）：碎片永远不落日志，出口只有 opts.onDelta；
+  // notify() 开头那声 flush 是「事件先放完碎片再出门」那一半纪律
+  const deltas = createDeltaStream(
+    (agentId, kind, text) => opts.onDelta?.(agentId, kind, text),
+    opts.deltaTimers
+  );
+
   // ── 容器互斥（#979 第 2 条，ADR-0232）────────────────────────────────
   // 同工作区多条会话共用一容器一卷，锁由 daemon 按工作区注入。**第一次碰容器才拿**
   // （read_file / write_file / bash 三条路都经这道门），这一轮收口（runJob 的
@@ -681,6 +707,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       的（chat_message / approval_request / agent_briefed / session_archived），
       都从这过一遍，lastSeq() 才对得上 */
   function notify(e: SessionEvent): void {
+    // 任何事件出门之前先把积存的流式碎片放完（#1107）：否则一条迟到的 delta
+    // 尾巴会在终态 assistant_message 之后到达，渲染层清完缓冲又冒出一段鬼影
+    // 文字（本地那条纪律写在 src/main/index.ts 的 send 包装里，这里是同一处）
+    deltas.flush();
     lastSeqSeen = e.seq;
     // 尾段下界跟着走（#958）。**别把它读成「这里是唯一的落盘口，所以折叠结果
     // 精确等于对整份日志折叠一次」**（复审 Minor ③）：那句话不真——daemon.ts 往
@@ -696,6 +726,12 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // daemon.ts 那几条绕过 notify 的 append 在这里也不构成正确性问题
     learnSpeakerLabel(e);
     opts.onEvent(e);
+    // 终态事件落盘之后清掉这只 agent 的流式累计（#1107）：delta 帧走的是
+    // 累计快照语义，不清的话它下一轮的预览会从上一次的残句开头。缺席
+    // agentId = 旧日志/本机会话的事件，本来也没有碎片可清
+    if ((e.type === "assistant_message" || e.type === "turn_ended") && e.agentId) {
+      deltas.clearAgent(e.agentId);
+    }
   }
 
   const router = createApprovalRouter({
@@ -919,6 +955,17 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // 策略层包在 router 外面（#977）：沙箱工具按工作区开关放行，其余进 router 问人
       approver: policyApprover,
       onEvent: notify,
+      // 流式（#1107）：opts.onDelta 缺席就不接——adapter 只在拿到 onDelta 时
+      // 走 streaming 分支，缺席 = 与今天逐字相同的非流式。reasoning 不过线：
+      // 终态气泡只画 content（CloudSessionPage 的 AssistantMessageRow），
+      // 预览不该展示终态不存在的东西
+      ...(opts.onDelta
+        ? {
+            onAssistantDelta: (text: string, kind: DeltaKind) => {
+              if (kind === "content") deltas.push(spec.agentId, "content", text);
+            },
+          }
+        : {}),
       middlewares: [],
       // 自动压缩（#957 A-1，ADR-0062）。桌面在 src/main/agent.ts 里一直有这一格，
       // runtime 从头到尾没有——于是云会话的上下文**单调增长**，直到每一轮都因超窗

@@ -97,6 +97,7 @@ import { mergeResidue, residueSettled, type ResidueItem } from "../../shared/res
 import { PROXY_SHARE_INVITE_TTL_MS } from "../../shared/remote/proxyInvite.js";
 import { runtimePatch } from "./lib/runtimeHydration.js";
 import { createAgentLanded } from "./lib/cloudTimeline.js";
+import { applyCloudDelta, clearCloudStreamingOn } from "./lib/cloudStreaming.js";
 import { createRequestGate } from "./lib/latestRequest.js";
 import { mergeStaged } from "./lib/staging.js";
 import { outgoingFrom } from "./lib/resendPayload.js";
@@ -559,6 +560,10 @@ interface ChatState {
       events 按 seq 去重后 append-only；state/deniedCode/initiatorUid/ownerUid 由
       onCloudSessionStatus 推送刷新，selfUid 推送首次给出后不再变 */
   cloudSession: CloudSessionState | null;
+  /** 云会话的流式缓冲（#1107，协议 16）：agentId → 这一轮到此刻的正文预览。
+      纯逻辑在 lib/cloudStreaming.ts——累计快照整槽替换，终态事件清槽；
+      不落任何持久层（临时预览不是事实） */
+  cloudStreaming: Record<string, string>;
   /** 「＋ 新会话」在某个工作区上按下了、云会话还没落地的那个中间态（issue #919）：
       主区画一张只有输入框的开局卡，同本地的 Welcome。值 = 在哪个工作区开，
       null = 没在开。本地那条路的对应物是 `phase === "welcome"` + pendingWorkspace */
@@ -1374,6 +1379,7 @@ export const useChat = create<ChatState>((set, get) => ({
   cloudPendingFirstMessage: null,
   cloudDraftSeed: null,
   cloudSession: null,
+  cloudStreaming: {},
   cloudSessionList: {},
   realtimeHealth: "connecting",
   friendsPanelOpen: false,
@@ -2477,7 +2483,9 @@ export const useChat = create<ChatState>((set, get) => ({
 
   closeCloudSession() {
     void window.otter.workspaceCloudLeave();
-    set({ cloudSession: null, cloudPendingFirstMessage: null });
+    // cloudStreaming 一起清：它按 agentId 分槽不带 sessionId，不清的话下一条
+    // 云会话打开时，上一只 agent 的半截预览会挂在新房间的「正在回复」行上
+    set({ cloudSession: null, cloudPendingFirstMessage: null, cloudStreaming: {} });
   },
 
   startCloudDraft: (workspaceId) =>
@@ -2799,7 +2807,14 @@ export const useChat = create<ChatState>((set, get) => ({
         // （main/cloudSessionClient.ts 文件头「:gone」段），重复送达在这里
         // 无害地被过滤掉，不会在时间线上出现两条一样的事件
         if (s.cloudSession.events.some((e) => e.seq === event.seq)) return s;
-        return { cloudSession: { ...s.cloudSession, events: [...s.cloudSession.events, event] } };
+        // 流式缓冲清槽（#1107）：终态 assistant_message 整份覆盖预览；
+        // turn_ended（aborted/error）= 预览作废——「不完整就不是消息」，
+        // 与本机 absorbEvent 清 streamingBySession 同一条纪律
+        const cloudStreaming = clearCloudStreamingOn(s.cloudStreaming, event);
+        return {
+          cloudSession: { ...s.cloudSession, events: [...s.cloudSession.events, event] },
+          ...(cloudStreaming !== s.cloudStreaming ? { cloudStreaming } : {}),
+        };
       });
       // 归档广播回来了（issue #822）：这条会话到此为止——服务端两秒后收摊
       // 房间。**判据是日志里那条事件**，不是"我刚点了归档"：谁点的都算，
@@ -2817,6 +2832,16 @@ export const useChat = create<ChatState>((set, get) => ({
       if (after && after.sessionId === event.sessionId && createAgentLanded(after.events, event)) {
         void get().refreshWorkspaceGroups();
       }
+    });
+    // 云会话的流式帧（#1107，协议 16）：守卫与上面 event 那条同款（只认当前
+    // join 着的这条）；快照语义 = 整槽替换不拼接。不落 cloudSession.events——
+    // 那份是 append-only 的重放源，预览不是事实
+    window.otter.onCloudSessionDelta((delta) => {
+      set((s) => {
+        if (!s.cloudSession || s.cloudSession.sessionId !== delta.sessionId) return s;
+        const cloudStreaming = applyCloudDelta(s.cloudStreaming, delta);
+        return cloudStreaming === s.cloudStreaming ? s : { cloudStreaming };
+      });
     });
     window.otter.onCloudSessionStatus((status) => {
       set((s) => {

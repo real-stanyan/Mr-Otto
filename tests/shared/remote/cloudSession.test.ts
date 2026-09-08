@@ -32,7 +32,7 @@ describe("cs 帧协议", () => {
     // 之后静默少一格状态。**加一个枚举值同理**：老客户端的
     // isValidCsDeniedCode 认不出 rate_limited，整帧被 decodeCsDown 判成
     // null 静默丢掉，create() 于是白等满超时才回一句"云端无响应"
-    expect(CS_PROTOCOL_VERSION).toBe(15);
+    expect(CS_PROTOCOL_VERSION).toBe(16);
   });
   it("房名生成", () => {
     expect(csCtlChannel()).toBe("cs-ctl");
@@ -176,8 +176,8 @@ describe("rate_limited 码（issue #819）", () => {
 // 协议 14（#1102）：repo 那一组整个走了——config / config_result 两条帧删除。
 // 留下的是 modelRoute 那一格，它换了唯一的载体（welcome + workspace_state）
 describe("协议 14：config 帧没了，modelRoute 还在（#1102）", () => {
-  it("协议号进位到 14", () => {
-    expect(CS_PROTOCOL_VERSION).toBe(15);
+  it("协议号跟着最新一条变更走（此刻 = 16，#1107 的流式 delta 帧是最近进位者）", () => {
+    expect(CS_PROTOCOL_VERSION).toBe(16);
   });
 
   it("config 帧解不出来了 —— 老客户端发过来一律 null", () => {

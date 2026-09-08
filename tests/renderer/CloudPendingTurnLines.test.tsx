@@ -14,7 +14,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 
 import { PendingTurnLines } from "../../src/renderer/src/components/CloudSessionPage.js";
-import type { CloudSessionState } from "../../src/renderer/src/store.js";
+import { useChat, type CloudSessionState } from "../../src/renderer/src/store.js";
 import type { SessionEvent } from "../../src/session/events.js";
 import type { WorkspaceSnapshot } from "../../src/shared/workspaces.js";
 
@@ -45,7 +45,10 @@ const events: SessionEvent[] = [
 const typingIndicators = (): HTMLElement[] =>
   Array.from(document.querySelectorAll<HTMLElement>('[data-slot="typing-indicator"]'));
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  useChat.setState({ cloudStreaming: {} });
+});
 
 describe("PendingTurnLines（#1055：等待过程改用输入指示器呈现）", () => {
   it("running 那只画一枚输入指示器，queued 那只不画 —— 排着队的一个 token 都还没跑", () => {
@@ -60,6 +63,24 @@ describe("PendingTurnLines（#1055：等待过程改用输入指示器呈现）"
     expect(screen.getByText("广告 排队中…")).toBeInTheDocument();
     // queued 那行不该冒出「正在输入」这类说它在打字的话
     expect(screen.queryByLabelText("广告 正在输入")).toBeNull();
+  });
+
+  it("流式帧攒出了正文就把点换成正在长的文字（#1107）——同一张气泡同一个位置", () => {
+    useChat.setState({ cloudStreaming: { a_1: "看了一圈，结论是" } });
+    render(<PendingTurnLines events={events} ws={ws} selfUid="u1" cs={cs} />);
+
+    // running 那行的气泡里是正在长的文字，三点退场；queued 那行原样
+    expect(screen.getByText("看了一圈，结论是")).toBeInTheDocument();
+    expect(screen.queryByLabelText("运营 正在输入")).toBeNull();
+    expect(screen.getByText("广告 排队中…")).toBeInTheDocument();
+    // 预览的文字长在与终态同款的 muted 气泡里（答案到了是点变成字，不是换个东西）
+    expect(screen.getByText("看了一圈，结论是").closest('[data-slot="bubble"]')).not.toBeNull();
+  });
+
+  it("缓冲里没有正文（空串/只有 reasoning）时照旧画三点——「它在忙」的信号不能断档", () => {
+    useChat.setState({ cloudStreaming: { a_1: "" } });
+    render(<PendingTurnLines events={events} ws={ws} selfUid="u1" cs={cs} />);
+    expect(screen.getByLabelText("运营 正在输入")).toBeInTheDocument();
   });
 
   it("指示器长在气泡里 —— 答案到了是同一张气泡里点变成字，不是一个东西消失另一个出现", () => {

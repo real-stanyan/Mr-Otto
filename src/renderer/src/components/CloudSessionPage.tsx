@@ -1328,9 +1328,11 @@ function AgentRelayRow({ event, ws }: { event: AgentRelayEvent; ws: WorkspaceSna
     两个状态**画成两种东西**，不是同一行换个颜色（#1055）：
     - `running` = 那只 agent 此刻正在攒话 → 一枚**输入指示器**（三点跳动的气泡），
       长在它待会儿那条回复要落的位置上：同一个 `SpeakerRow`、同一张 `muted` 气泡，
-      答案到了就地把点换成字。中间步骤自 #1055 起整段不画
-      （`hiddenFromCloudTimeline` 第 ⑥ 条），所以这枚指示器是「它在忙」在界面上
-      **唯一**的痕迹——不是装饰。
+      答案到了就地把点换成字。协议 16 起（#1107）这只气泡还有第二态：这只 agent
+      的流式帧攒出了正文就**把点换成正在长的文字**（同一张气泡、同一个位置，
+      终态 assistant_message 到达时整份覆盖——预览从来不是事实）。中间步骤自
+      #1055 起整段不画（`hiddenFromCloudTimeline` 第 ⑥ 条），所以这枚气泡是
+      「它在忙」在界面上**唯一**的痕迹——不是装饰。
     - `queued` = 还没轮到它 → 照旧一行小灰字。**故意不给打字气泡**：那句话说的是
       「它正在打字」，而一个排着队的 turn 一个 token 都还没跑，画上去就是 #722
       那个撒谎的勾的一般形式。两者的分别因此是结构性的（有没有气泡），不是
@@ -1350,6 +1352,9 @@ export function PendingTurnLines({
   cs: CloudSessionState;
 }) {
   const pending = useMemo(() => openTurns(events), [events]);
+  // 流式缓冲（#1107）：agentId → 这一轮到此刻的正文预览。整表订阅——pending
+  // 行一只手数得过来，不存在按行细分的必要；快照语义 = 读出来就是要画的那串
+  const streaming = useChat((s) => s.cloudStreaming);
   // 哪几行画得出「停止」（第四批 C2-I3）：同一只 agent 排了两句话时两行都读成
   // running（turnLedger 认不出「那条动静属于哪一轮」），而在跑的只有最早那一条
   // ——晚的那行上那颗钮点下去停的是别人的轮次。stopButtonRows 把这条判据算成
@@ -1369,6 +1374,7 @@ export function PendingTurnLines({
             </div>
           );
         }
+        const streamed = streaming[t.agentId];
         return (
           <SpeakerRow key={key} mine={false} avatar={<AgentAvatar ws={ws} agentId={t.agentId} name={name} />}>
             <span className="flex items-center gap-1 px-1 text-[10.5px] text-muted-foreground">
@@ -1377,12 +1383,19 @@ export function PendingTurnLines({
             </span>
             {/* 气泡与 AssistantMessageRow 那张逐字同款（muted / align start）：
                 答案落下来时人看到的是同一张气泡里点变成了字，不是一个东西消失、
-                另一个东西出现。`py-2.5` 比正文那档矮一点——一行字的气泡约 39px，
-                这枚是 26px，读起来是「还没成形的一句话」 */}
+                另一个东西出现。有正文预览（#1107）就画正在长的文字，否则照旧
+                三点——文字本身就是「它在长」的信号，不再叠加光标或点。
+                `py-2.5` 只留给三点那档：一行字的气泡约 39px，那枚是 26px，
+                读起来是「还没成形的一句话」；预览档与终态同一把尺，答案落下时
+                像素一动不动 */}
             <Bubble align="start" variant="muted">
-              <BubbleContent className="flex items-center py-2.5">
-                <TypingIndicator variant="bare" label={`${name} 正在输入`} />
-              </BubbleContent>
+              {streamed ? (
+                <BubbleContent className="whitespace-pre-wrap break-words">{streamed}</BubbleContent>
+              ) : (
+                <BubbleContent className="flex items-center py-2.5">
+                  <TypingIndicator variant="bare" label={`${name} 正在输入`} />
+                </BubbleContent>
+              )}
             </Bubble>
           </SpeakerRow>
         );

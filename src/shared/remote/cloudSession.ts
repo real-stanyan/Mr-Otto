@@ -7,7 +7,15 @@ import type { SessionEvent } from "../../session/events.js";
 import { b64decode, b64encode } from "./b64.js";
 import { MAX_FRAME_BYTES } from "./wire.js";
 
-/** 15（#1103）：Git 凭据回来了，但形状换了——**按「工作区 + 主机」存，不绑仓库**。
+/** 16（issue #1107）：`CsDown` 加 `delta` 帧——云会话的助手输出**流式下行**。
+    与本机会话的 delta 同一份契约（`persistencePolicy` 的 `TransientPushKind`）：
+    碎片是临时 UI 预览不是事实，**不进事件日志**，终态 `assistant_message`
+    整份覆盖预览。帧不带 seq、不进 backlog、不参与去重；`text` 走**累计快照**
+    语义（这只 agent 这一轮到此刻的完整正文），不是增量——中继掉帧、客户端
+    中途 join、gone 后重连都不会在预览上咬出洞。runtime 侧按 agent 合帧
+    （50ms，deltaStream.ts），不经任何限速桶（限速只管上行帧；下行的泄洪闸
+    就是合帧本身 + 中继 256 KiB 单帧上限）。
+    15（#1103）：Git 凭据回来了，但形状换了——**按「工作区 + 主机」存，不绑仓库**。
     新增上行 `git_credential{workspaceId, host, token}`（`token: ""` = 删掉这台主机）
     与下行 `git_credential_result`；`workspace_state` 多一格 `gitHosts`。
     `CsGitHost = {host, addedBy, addedAt}` —— **没有 `hasToken`**：在这张清单里
@@ -89,7 +97,7 @@ import { MAX_FRAME_BYTES } from "./wire.js";
     少一格状态。**加一个枚举值同理**：老客户端的 isValidCsDeniedCode 认不出
     `rate_limited`，decodeCsDown 回 null，那一帧被静默忽略，于是 create()
     要白等满超时才回一句"云端无响应"——把"你被限速了"说成"对面没回话"。 */
-export const CS_PROTOCOL_VERSION = 15;
+export const CS_PROTOCOL_VERSION = 16;
 export const CS_MAX_TEXT_BYTES = 64 * 1024;
 
 /** 一次回多少字节的文件内容（#1056）。中继单帧上限是 256 KiB（wire.ts 的
@@ -325,6 +333,15 @@ export type CsDown =
       桌面退回原来那句通用文案。 */
   | { t: "denied"; code: CsDeniedCode; v?: number }
   | { t: "event"; event: SessionEvent }
+  /** 助手输出的流式帧（协议 16，#1107）——**临时预览，不是事实**：不落日志、
+      不带 seq、不进 backlog、不参与去重。`text` 是**累计快照**（这只 agent
+      这一轮到此刻为止的完整正文），不是增量——中继掉帧 / 客户端中途 join /
+      gone 后重连都不会在预览上咬出洞，丢一帧只是少一次刷新。同一 agent 的
+      终态 `assistant_message` 事件到达时整份覆盖预览（与本地
+      `streamingBySession` 同一份契约）。`agentId` 是 stable key 不是名字。
+      `kind` 与 `ModelAdapter` 的 `DeltaKind` 同值；runtime 今天只发
+      "content"（终态气泡不画 reasoning，预览也不画） */
+  | { t: "delta"; agentId: string; kind: "content" | "reasoning"; text: string }
   | { t: "backlog"; events: SessionEvent[]; done: boolean }
   /** archive 的回执（协议 9，#993）。会话房那条路靠 `session_archived` 广播当回执
       （所有人都看得见的那一份），控制房没有房间可广播，得单独回一条 */
@@ -809,6 +826,19 @@ export function decodeCsDown(b64: string): CsDown | null {
     if (t === "event") {
       if (isSessionEvent(obj.event)) {
         return { t: "event", event: obj.event };
+      }
+      return null;
+    }
+
+    if (t === "delta") {
+      // text 允许空串之外的一切字符串；kind 认不出一律拒整帧——content 与
+      // reasoning 在界面上是两个槽，猜错了比不显示更糟
+      if (
+        typeof obj.agentId === "string" &&
+        typeof obj.text === "string" &&
+        (obj.kind === "content" || obj.kind === "reasoning")
+      ) {
+        return { t: "delta", agentId: obj.agentId, kind: obj.kind, text: obj.text };
       }
       return null;
     }
