@@ -22,8 +22,22 @@ describe("cs_say 的 mentions（#928 切片 1a）", () => {
 });
 
 describe("cs 协议 6（#957 第三批：stop 帧与 say/approve/stop 回执）", () => {
-  it("CS_PROTOCOL_VERSION === 13（…；11 = #1056 工作文件夹读帧；12 = #1066 搜索；13 = #1064 点名提醒）", () => {
-    expect(CS_PROTOCOL_VERSION).toBe(13);
+  it("CS_PROTOCOL_VERSION === 14（…；12 = #1066 搜索；13 = #1064 点名提醒；14 = #1107 流式 delta 帧）", () => {
+    expect(CS_PROTOCOL_VERSION).toBe(14);
+  });
+
+  it("delta 下行往返（协议 14，#1107）", () => {
+    expect(decodeCsDown(encodeCs({ t: "delta", agentId: "admin", kind: "content", text: "半句话" })))
+      .toEqual({ t: "delta", agentId: "admin", kind: "content", text: "半句话" });
+    expect(decodeCsDown(encodeCs({ t: "delta", agentId: "ops", kind: "reasoning", text: "想" })))
+      .toEqual({ t: "delta", agentId: "ops", kind: "reasoning", text: "想" });
+  });
+
+  it("delta 形状不对整帧拒掉——kind 认不出不许猜（两个槽画错位置比不显示更糟）", () => {
+    expect(decodeCsDown(b64({ t: "delta", agentId: "a", kind: "thinking", text: "x" }))).toBeNull();
+    expect(decodeCsDown(b64({ t: "delta", agentId: "a", kind: "content" }))).toBeNull();
+    expect(decodeCsDown(b64({ t: "delta", kind: "content", text: "x" }))).toBeNull();
+    expect(decodeCsDown(b64({ t: "delta", agentId: 1, kind: "content", text: "x" }))).toBeNull();
   });
 
   it("stop 上行往返", () => {

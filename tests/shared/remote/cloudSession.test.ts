@@ -32,7 +32,7 @@ describe("cs 帧协议", () => {
     // 之后静默少一格状态。**加一个枚举值同理**：老客户端的
     // isValidCsDeniedCode 认不出 rate_limited，整帧被 decodeCsDown 判成
     // null 静默丢掉，create() 于是白等满超时才回一句"云端无响应"
-    expect(CS_PROTOCOL_VERSION).toBe(13);
+    expect(CS_PROTOCOL_VERSION).toBe(14);
   });
   it("房名生成", () => {
     expect(csCtlChannel()).toBe("cs-ctl");
