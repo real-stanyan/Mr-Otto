@@ -34,7 +34,7 @@ function harness() {
       billingCalls.push(`workspaceUsage:${uid}:${workspaceId}`);
       if (workspaceId === U3) return { ok: false, code: "not_member", message: "不在籍" };
       if (workspaceId === U2) return { ok: false, code: "not_found", message: "没有这个工作区" };
-      return { ok: true, value: { workspaceId, ownerUid: "o", weekStartAt: 1, weekEndAt: 2, rows: [] } };
+      return { ok: true, value: { workspaceId, ownerUid: "o", weekStartAt: 1, weekEndAt: 2, weekLimitMicro: null, rows: [] } };
     },
   };
   const handle = createEdge({
@@ -130,7 +130,7 @@ describe("/billing/v1/*", () => {
         me: async () => { throw new Error("quota view 503"); },
         checkout: async () => ({ url: "x" }), portal: async () => ({ url: "x" }),
         webhook: async () => ({ status: 200, body: {} }),
-        workspaceUsage: async () => ({ ok: true, value: { workspaceId: "w", ownerUid: "o", weekStartAt: 1, weekEndAt: 2, rows: [] } }),
+        workspaceUsage: async () => ({ ok: true, value: { workspaceId: "w", ownerUid: "o", weekStartAt: 1, weekEndAt: 2, weekLimitMicro: null, rows: [] } }),
       },
     });
     const res = await handle(new Request("https://edge/billing/v1/me", { headers: { authorization: `Bearer ${token("u1")}` } }));
@@ -181,7 +181,7 @@ describe("/billing/v1/*", () => {
         checkout: async () => ({ error: "已有订阅，换档请走「管理」", code: "already_subscribed" as const }),
         portal: async () => ({ url: "x" }),
         webhook: async () => ({ status: 200, body: {} }),
-        workspaceUsage: async () => ({ ok: true, value: { workspaceId: "w", ownerUid: "o", weekStartAt: 1, weekEndAt: 2, rows: [] } }),
+        workspaceUsage: async () => ({ ok: true, value: { workspaceId: "w", ownerUid: "o", weekStartAt: 1, weekEndAt: 2, weekLimitMicro: null, rows: [] } }),
       },
     });
     const res = await handle(post("/billing/v1/checkout", { authorization: `Bearer ${token()}` }, JSON.stringify({ planId: "pro" })));
@@ -199,7 +199,7 @@ describe("/billing/v1/*", () => {
         checkout: async () => ({ error: "stripe checkout/sessions 500: ?" }),
         portal: async () => ({ url: "x" }),
         webhook: async () => ({ status: 200, body: {} }),
-        workspaceUsage: async () => ({ ok: true, value: { workspaceId: "w", ownerUid: "o", weekStartAt: 1, weekEndAt: 2, rows: [] } }),
+        workspaceUsage: async () => ({ ok: true, value: { workspaceId: "w", ownerUid: "o", weekStartAt: 1, weekEndAt: 2, weekLimitMicro: null, rows: [] } }),
       },
     });
     const res = await handle(post("/billing/v1/checkout", { authorization: `Bearer ${token()}` }, JSON.stringify({ planId: "pro" })));

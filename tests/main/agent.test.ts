@@ -52,7 +52,7 @@ function fakeHosted(imageInput: { subscribed: boolean; exhausted: boolean; image
     noteExhausted: () => {},
     checkout: async () => "",
     portal: async () => "",
-    workspaceUsage: async () => ({ workspaceId: "", ownerUid: "", weekStartAt: 0, weekEndAt: 0, rows: [] }),
+    workspaceUsage: async () => ({ workspaceId: "", ownerUid: "", weekStartAt: 0, weekEndAt: 0, weekLimitMicro: null, rows: [] }),
     onChange: () => () => {},
   };
   return { quota, edgeBaseUrl: () => "https://edge", accessToken: async () => "jwt" };

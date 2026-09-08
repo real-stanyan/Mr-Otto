@@ -7,7 +7,7 @@
 // worker.ts 不进 vitest，所以能单测的判断全在这里：查询串、行解析、聚合、窗口。
 
 import { WEEK_MS, weekStartFor } from "./quota.js";
-import { pageAll, parseSubscriptionRows, subscriptionQuery } from "./billingQueries.js";
+import { pageAll, parsePlanRows, parseSubscriptionRows, plansQuery, subscriptionQuery } from "./billingQueries.js";
 import type { WorkspaceUsage, WorkspaceUsageRow } from "../../../src/shared/billing.js";
 
 export const WORKSPACE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -98,6 +98,19 @@ export async function fetchWorkspaceUsage(
   if (!Array.isArray(member) || member.length === 0) return { ok: false, code: "not_member", message: "你不在这个工作区里" };
   const sub = parseSubscriptionRows(await get(subscriptionQuery(owner)));
   const window = usageWindowFor(now, sub ? Date.parse(sub.current_period_start) : null);
+  const weekLimitMicro = sub ? weekLimitFor(parsePlanRows(await get(plansQuery())), sub.plan_id) : null;
   const rows = parseAttributionRows(await pageAll(get, workspaceUsageQuery(owner, workspaceId, window.weekStartAt)));
-  return { ok: true, value: { workspaceId, ownerUid: owner, ...window, rows: aggregateByAgent(rows) } };
+  return { ok: true, value: { workspaceId, ownerUid: owner, ...window, weekLimitMicro, rows: aggregateByAgent(rows) } };
+}
+
+/** 这一档的周额度上限——用量页把 credit 换算成「占本周额度的百分之几」的分母（#1120）。
+    没订阅时**根本不查 plan 表**：分母无论如何是 null，多一次往返只为拿一个用不上的数。
+
+    档位查不到（plan 表里没有这一行）也回 `null` 而不是挑一个顶上：分母错了，那一页
+    上每一个百分比都跟着错，而它不会以任何方式报错——只会安静地给出一组假数。
+    `status` 不参与判断：past_due 仍报原来的档（ADR-0239 决定 2），而 canceled 的人
+    这一周确实还在这个额度里烧。 */
+export function weekLimitFor(plans: readonly { id: string; week_limit_micro: number }[], planId: string): number | null {
+  const limit = plans.find((p) => p.id === planId)?.week_limit_micro;
+  return typeof limit === "number" && Number.isFinite(limit) && limit > 0 ? limit : null;
 }

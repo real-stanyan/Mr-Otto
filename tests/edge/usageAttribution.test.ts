@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
-  aggregateByAgent, fetchWorkspaceUsage, memberQuery, parseAttributionRows, parseOwnerRows, usageWindowFor, workspaceOwnerQuery, workspaceUsageQuery,
+  aggregateByAgent, fetchWorkspaceUsage, memberQuery, parseAttributionRows, parseOwnerRows, usageWindowFor, weekLimitFor,
+  workspaceOwnerQuery, workspaceUsageQuery,
 } from "../../services/edge/src/usageAttribution.js";
 import { WEEK_MS } from "../../services/edge/src/quota.js";
 
@@ -62,7 +63,7 @@ describe("fetchWorkspaceUsage 的编排（在籍那道闸唯一的执行覆盖�
 
   /** 按查询串前缀分派的假 PostgREST 读口，顺带记下**问了哪几张表**——
       「不该问的没问」是这组用例的一半（早退了才不会去拉别人的账） */
-  function fakeGet(rows: { owner?: unknown[]; member?: unknown[]; sub?: unknown[]; usage?: unknown[] }) {
+  function fakeGet(rows: { owner?: unknown[]; member?: unknown[]; sub?: unknown[]; plan?: unknown[]; usage?: unknown[] }) {
     const asked: string[] = [];
     const get = async (query: string): Promise<unknown> => {
       const table = query.split("?")[0]!;
@@ -70,6 +71,7 @@ describe("fetchWorkspaceUsage 的编排（在籍那道闸唯一的执行覆盖�
       if (table === "workspaces") return rows.owner ?? [];
       if (table === "workspace_members") return rows.member ?? [];
       if (table === "subscription") return rows.sub ?? [];
+      if (table === "plan") return rows.plan ?? [];
       if (table === "usage_event") return rows.usage ?? [];
       throw new Error(`没预期到的查询：${query}`);
     };
@@ -77,6 +79,10 @@ describe("fetchWorkspaceUsage 的编排（在籍那道闸唯一的执行覆盖�
   }
 
   const ownerRow = [{ owner_uid: OWNER }];
+  const planRows = [
+    { id: "lite", week_limit_micro: 2_000_000, window5h_limit_micro: 1, addon_unit_micro: 1, stripe_price_id: "p_lite", price_usd_cents: 900, capabilities: { image: false, video: false, workspace: false } },
+    { id: "pro", week_limit_micro: 9_000_000, window5h_limit_micro: 1, addon_unit_micro: 1, stripe_price_id: "p_pro", price_usd_cents: 2900, capabilities: { image: true, video: false, workspace: true } },
+  ];
   const memberRow = [{ uid: "u1" }];
   const subRow = (start: number) => [{
     user_id: OWNER, plan_id: "lite", status: "active", stripe_customer_id: "c", stripe_subscription_id: "s",
@@ -99,7 +105,7 @@ describe("fetchWorkspaceUsage 的编排（在籍那道闸唯一的执行覆盖�
 
   it("在籍 + owner 有订阅：周窗按 owner 的 period 分段，账按 owner 的 uid 拉", async () => {
     const f = fakeGet({
-      owner: ownerRow, member: memberRow, sub: subRow(P),
+      owner: ownerRow, member: memberRow, sub: subRow(P), plan: planRows,
       usage: [
         { agent_id: "a", cost_micro: 3, prompt_tokens: 1, cached_tokens: 0, completion_tokens: 1 },
         { agent_id: "a", cost_micro: 4, prompt_tokens: 1, cached_tokens: 0, completion_tokens: 1 },
@@ -110,6 +116,7 @@ describe("fetchWorkspaceUsage 的编排（在籍那道闸唯一的执行覆盖�
       ok: true,
       value: {
         workspaceId: W, ownerUid: OWNER, weekStartAt: P + WEEK_MS, weekEndAt: P + 2 * WEEK_MS,
+        weekLimitMicro: 2_000_000,
         rows: [{ agentId: "a", costMicro: 7, calls: 2, promptTokens: 2, cachedTokens: 0, completionTokens: 2 }],
       },
     });
@@ -122,6 +129,26 @@ describe("fetchWorkspaceUsage 的编排（在籍那道闸唯一的执行覆盖�
   it("在籍 + owner 没订阅 → 退回滚动 7 天（自带 key 的工作区，窗只是给界面一个日期范围）", async () => {
     const f = fakeGet({ owner: ownerRow, member: memberRow, sub: [], usage: [] });
     const r = await fetchWorkspaceUsage(f.get, "u1", W, NOW);
-    expect(r).toEqual({ ok: true, value: { workspaceId: W, ownerUid: OWNER, weekStartAt: NOW - WEEK_MS, weekEndAt: NOW, rows: [] } });
+    expect(r).toEqual({ ok: true, value: { workspaceId: W, ownerUid: OWNER, weekStartAt: NOW - WEEK_MS, weekEndAt: NOW, weekLimitMicro: null, rows: [] } });
+    // 没订阅时 **不查 plan 表**：分母无论如何是 null，多一次往返只为拿一个用不上的数
+    expect(f.tables()).not.toContain("plan");
+  });
+
+  it("在籍 + 有订阅但 plan 表里没有这一档 → 分母回 null，不挑一个顶上", async () => {
+    const f = fakeGet({ owner: ownerRow, member: memberRow, sub: subRow(P), plan: [], usage: [] });
+    const r = await fetchWorkspaceUsage(f.get, "u1", W, NOW);
+    expect(r.ok && r.value.weekLimitMicro).toBeNull();
+  });
+});
+
+describe("weekLimitFor（用量页那个百分比的分母，#1120）", () => {
+  const plans = [{ id: "lite", week_limit_micro: 2_000_000 }, { id: "pro", week_limit_micro: 9_000_000 }];
+  it("查得到就用这一档的上限", () => {
+    expect(weekLimitFor(plans, "pro")).toBe(9_000_000);
+  });
+  it("查不到 / 上限不是正数 → null。挑一个顶上会让那一页每个百分比都错，且不报错", () => {
+    expect(weekLimitFor(plans, "max")).toBeNull();
+    expect(weekLimitFor([{ id: "x", week_limit_micro: 0 }], "x")).toBeNull();
+    expect(weekLimitFor([{ id: "x", week_limit_micro: Number.NaN }], "x")).toBeNull();
   });
 });

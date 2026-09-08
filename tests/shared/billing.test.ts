@@ -81,7 +81,14 @@ describe("workspace usage（#946）", () => {
       workspaceId: "w1", ownerUid: "o", weekStartAt: 1, weekEndAt: 2,
       rows: [{ agentId: "admin", costMicro: 10, calls: 2, promptTokens: 5, cachedTokens: 1, completionTokens: 3 }],
     };
-    expect(parseWorkspaceUsage(ok)).toEqual(ok);
+    // 旧 edge 不发 weekLimitMicro：**缺席 = null 不是解析失败**，
+    // 新客户端连老网关时整张表还得画得出来（#1120）
+    expect(parseWorkspaceUsage(ok)).toEqual({ ...ok, weekLimitMicro: null });
+    expect(parseWorkspaceUsage({ ...ok, weekLimitMicro: 2_000_000 })).toEqual({ ...ok, weekLimitMicro: 2_000_000 });
+    // 0 / 负数 / 非数都当没有：那是个分母，0 会让每个百分比变成 Infinity
+    for (const bad of [0, -1, "2000000", null]) {
+      expect(parseWorkspaceUsage({ ...ok, weekLimitMicro: bad })!.weekLimitMicro).toBeNull();
+    }
     expect(parseWorkspaceUsage({ ...ok, rows: [{ agentId: "x" }] })).toBeNull();
     expect(parseWorkspaceUsage(null)).toBeNull();
   });
