@@ -9,6 +9,11 @@
 // 后三个是"外挂"小调用,但它们照样烧钱:漏掉哪一类,统计就从此少算一截
 // (events.ts 里 SuggestionsGeneratedEvent 的注释写的就是这件事)。
 // 微压缩尤其不能漏:它每 turn 收口都烧一次,开着的话是这里最高频的一笔。
+//
+// 「这一笔走的哪条路、花了多少 credit」两格都**不按事件类型分叉**(#1091 / #1021):
+// 按类型列举的那两版各漏过一次——route 那版漏掉了改走托管的外挂小调用(于是订阅
+// 用户的浮层整段冒出来、还标了个他没花过的钱数),credit 那版漏掉了压缩(于是那一笔
+// 「有 token 没有钱」)。判据挂在事件**有没有这一格**上,不挂在它叫什么名字上。
 
 import type { SessionEvent } from "./events.js";
 
@@ -30,7 +35,9 @@ export interface ModelUsage {
       那边是命中率度量,分母要剔掉不报数的调用;这边是钱,漏算命中只会报高不报错 */
   cachedTokens: number;
   /** hosted 段这次调用实际结算的 credit（micro-USD）。只在 route=hosted 且事件
-      记了它（非流式；流式的 settle 在响应发出后）才有。缺席 ≠ 0 —— 是「这笔没记到」 */
+      记了它（非流式；流式的 settle 在响应发出后）才有。缺席 ≠ 0 —— 是「这笔没记到」。
+      **`assistant_message` 与 `context_compacted` 两类都算**（#1021）：压缩发的是
+      阈值处的全量上下文，那一笔不小，而它的 credit #1017 就落盘了 */
   creditCostMicro?: number;
 }
 
@@ -74,7 +81,13 @@ function billed(
     promptTokens: e.usage.promptTokens,
     completionTokens: e.usage.completionTokens,
     cachedTokens: e.usage.cachedTokens ?? 0,
-    ...(e.type === "assistant_message" && typeof e.creditCostMicro === "number" ? { creditCostMicro: e.creditCostMicro } : {}),
+    // 同上，**这一格也不再分事件类型**（#1021）。#1017 给 `context_compacted` 补了
+    // `creditCostMicro`（压缩发的是阈值处的全量上下文，那一笔不小），数据早就在日志里，
+    // 只是被这句 `e.type === "assistant_message"` 挡在账外——token 那半一直在算、
+    // credit 那半一直丢，于是同一条会话里压缩那一笔「有 token 没有钱」。
+    // 用 `in` 收窄不是用类型名穷举：哪天第三类事件也开始记 credit，这里不改也是对的，
+    // 而按类型名列举的那版会安静地漏掉它（正是这条 issue 的形状）
+    ...("creditCostMicro" in e && typeof e.creditCostMicro === "number" ? { creditCostMicro: e.creditCostMicro } : {}),
   };
 }
 

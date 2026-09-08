@@ -78,6 +78,30 @@ describe("usageByModel", () => {
     expect(rows.map((r) => r.route)).toEqual(["direct"]);
   });
 
+  it("压缩那一笔的 credit 也进账（#1021）—— 数据 #1017 就落盘了，只是被挡在账外", () => {
+    // 压缩发的是阈值处的**全量上下文**，那一笔不小；原来 token 那半一直在算、
+    // credit 那半被 `e.type === "assistant_message"` 挡住，于是同一条会话里
+    // 压缩那一笔「有 token 没有钱」
+    const rows = usageByModel([
+      ev({ type: "assistant_message", content: "", model: "m", usage: { promptTokens: 10, completionTokens: 2 }, route: "hosted", creditCostMicro: 3_000 }),
+      ev({ type: "context_compacted", model: "m", summary: "", usage: { promptTokens: 90, completionTokens: 5 }, route: "hosted", creditCostMicro: 40_000 }),
+    ]);
+    // **并成一行**：键是（型号, route），压缩与采样本来就是同一款型号在同一条路上
+    // 花的钱，分开要多一个维度的键 + 一个用户据此做不了任何事的标签，而合计那个数
+    // 只有并起来才对得上账单
+    expect(rows).toEqual([
+      { model: "m", route: "hosted", promptTokens: 100, completionTokens: 7, cachedTokens: 0, creditCostMicro: 43_000 },
+    ]);
+  });
+
+  it("压缩记了 credit、采样那条没记 → 整行不报数（#1021）—— 缺席 ≠ 0", () => {
+    const rows = usageByModel([
+      ev({ type: "assistant_message", content: "", model: "m", usage: { promptTokens: 10, completionTokens: 2 }, route: "hosted" }),
+      ev({ type: "context_compacted", model: "m", summary: "", usage: { promptTokens: 90, completionTokens: 5 }, route: "hosted", creditCostMicro: 40_000 }),
+    ]);
+    expect(rows[0]?.creditCostMicro).toBeUndefined();
+  });
+
   it("没记用量的调用不进账 —— 当 0 会让「没记」和「没花」看起来一样", () => {
     expect(usageByModel([ev({ type: "assistant_message", content: "", model: "m" })])).toEqual([]);
   });
