@@ -18,6 +18,7 @@
 // 判据挂在 `hosted.subscribed` 上，所以**没装配托管的那些装配**（探针 / 测试 / 裸装配，
 // `hosted` 缺席）行为一字不变。
 
+import { pickImageModel } from "../shared/imageModel.js";
 import type { ModelChoice } from "../shared/modelCatalog.js";
 import type { ModelLane } from "../shared/modelLane.js";
 
@@ -167,11 +168,18 @@ export interface ImageRouteInput {
   };
   hostedBaseUrl?: string;
   hostedToken?: string;
+  /** 用户在选单里挑的那一款（`image_model_changed` 的投影，#1086）。
+      **不在网关清单里就回落 `imageModels[0]`**，不报错 —— 同 `visionModelFor` /
+      `helperModelFor` 的纪律：网关下架一款不该让出图整个不通，而「你选的那款没了」
+      这件事没有任何用户能据此行动的出路。缺席 = 没选过，照旧走最便宜那款 */
+  preferred?: string | null | undefined;
 }
 
 export type ImageRoute =
   | { kind: "hosted"; url: string; model: string }
   | { kind: "blocked"; reason: string };
+
+
 
 /** 快照就能回答的那三条（订阅 / 额度 / 网关供不供出图）。`null` = 这三关都过了。
     **单独拎出来是因为它是同步的**：`generate_image` 的 `available()`（决定这把刀进不进
@@ -193,9 +201,13 @@ export function routeImage(input: ImageRouteInput): ImageRoute {
   const blocked = imageBlocked(input.hosted);
   if (blocked !== null) return { kind: "blocked", reason: blocked };
   // imageBlocked 过了就一定有第 0 款（那正是它的最后一条）
-  const model = input.hosted!.imageModels[0]!;
+  const model = pickImageModel(input.hosted!.imageModels, input.preferred);
   if (!input.hostedBaseUrl || !input.hostedToken) {
     return { kind: "blocked", reason: "连不上订阅网关（多半是网络或登录状态），稍后再试。" };
   }
-  return { kind: "hosted", url: `${input.hostedBaseUrl}/chat/completions`, model };
+  // `/images` 不是 `/chat/completions`（#1086）：纯出图模型（Seedream 一族、GPT Image 2）
+  // 在后者上一律 404 —— 上游按输出模态过滤端点。网关那侧真正决定打哪个上游端点的是
+  // 路由行的 `kind`（`upstreamPathFor`），这里敲哪扇门只影响「读这段代码的人以为
+  // 它是什么形状」，而请求体与回包确实是另一套形状，所以门也换
+  return { kind: "hosted", url: `${input.hostedBaseUrl}/images`, model };
 }

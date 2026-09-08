@@ -42,19 +42,21 @@ export interface GenerateImageDeps {
   latestImage: () => Promise<{ data: Uint8Array; mimeType: string } | null>;
 }
 
-interface OrImage { image_url?: { url?: unknown } }
-interface OrReply { choices?: { message?: { content?: unknown; images?: OrImage[] } }[] }
+/** `/images` 的回包（#1086）：`{created, data:[{b64_json, media_type}], usage}`。
+    与 `/chat/completions` 那套 `choices[].message.images[].image_url.url` 不是一个形状 */
+interface OrImage { b64_json?: unknown; media_type?: unknown }
+interface OrReply { data?: OrImage[] }
 
-/** `data:<mime>;base64,<...>` → 字节。认不出的形状回 null（跳过这一张，不炸整次调用，
+/** 回包里的一张 → 字节。认不出的形状回 null（跳过这一张，不炸整次调用，
     同 mcpTool.imagesOf 的立场）。Buffer.from 对坏 base64 是静默截断而不是抛错，
-    空结果是唯一能查的信号 */
-function decodeDataUrl(url: unknown): ToolImage | null {
-  if (typeof url !== "string") return null;
-  const m = /^data:([^;,]+);base64,(.+)$/s.exec(url);
-  if (!m) return null;
-  const data = Buffer.from(m[2]!, "base64");
+    空结果是唯一能查的信号。
+    `media_type` 缺席时按 png：上游七款里实测回的是 `image/png` 或 `image/jpeg`，
+    但这一格是可选的，猜错的代价只是附件卡的扩展名，猜「没有图」的代价是整次调用失败 */
+function decodeImage(img: OrImage): ToolImage | null {
+  if (typeof img.b64_json !== "string" || img.b64_json === "") return null;
+  const data = Buffer.from(img.b64_json, "base64");
   if (data.byteLength === 0) return null;
-  return { data: new Uint8Array(data), mimeType: m[1]! };
+  return { data: new Uint8Array(data), mimeType: typeof img.media_type === "string" ? img.media_type : "image/png" };
 }
 
 const dataUrlOf = (img: { data: Uint8Array; mimeType: string }): string =>
@@ -91,34 +93,31 @@ export function createGenerateImageTool(deps: GenerateImageDeps): Tool {
       if ("blocked" in route) throw new Error(route.blocked);
       const { url, headers, model } = route;
 
-      let content: unknown = prompt;
+      // 底图（图生图）走 `input_references`，不是塞进 messages（#1086）
+      let refs: { type: "image_url"; image_url: { url: string } }[] | null = null;
       if (edit_last === true) {
         const base = await deps.latestImage();
         // 没有底图时不能照发：那样得到的是一张凭空捏的图，而用户以为你改了他那张
         if (base === null) throw new Error("generate_image: 这个会话里还没有图可改，先生成一张或让用户贴一张");
-        content = [
-          { type: "text", text: prompt },
-          { type: "image_url", image_url: { url: dataUrlOf(base) } },
-        ];
+        refs = [{ type: "image_url", image_url: { url: dataUrlOf(base) } }];
       }
 
       // **不带 stream**：网关对流式那条路会强塞 stream_options.include_usage 并旁路
       // 挑 usage，而出图是一次性 JSON，走非流式那条分支才对得上
-      const body = { model, modalities: ["image", "text"], messages: [{ role: "user", content }] };
+      const body = { model, prompt, ...(refs ? { input_references: refs } : {}) };
       const data = (await world.http.postJson(url, body, { headers, timeoutMs: IMAGE_TIMEOUT_MS })) as OrReply;
 
-      const msg = data.choices?.[0]?.message;
       const images: ToolImage[] = [];
-      for (const img of msg?.images ?? []) {
-        const decoded = decodeDataUrl(img.image_url?.url);
+      for (const img of data.data ?? []) {
+        const decoded = decodeImage(img);
         if (decoded) images.push(decoded);
       }
 
       if (images.length === 0) {
         // 一张图都没有是**真结局**（内容政策拒绝最常见），不是「成功但没图」。
-        // 把模型那句话带出来——它往往正是「为什么没画」的唯一说明
-        const said = typeof msg?.content === "string" ? msg.content.trim() : "";
-        throw new Error(said === "" ? "generate_image: 上游没有返回图片" : `generate_image: 上游没有返回图片：${said}`);
+        // `/images` 的回包里没有一格「模型说了什么」（chat 那条有 `message.content`，
+        // 拒绝的理由常常写在那儿）—— 这条端点换来七款可用，代价是拒绝时说不出原因
+        throw new Error("generate_image: 上游没有返回图片（最常见的原因是内容政策拒绝，换个说法再试）");
       }
 
       return {

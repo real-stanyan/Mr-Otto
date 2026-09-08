@@ -54,6 +54,18 @@ describe("路由", () => {
     expect((await harness().handle(new Request("http://edge/nope"))).status).toBe(404);
   });
 
+  it("/llm/v1/images 是网关的第二扇门，不是未知路径（#1086）", async () => {
+    // 这个 harness 没注 `llm`，所以两条路都回 404 —— 区分它们的是**错误码**：
+    // 认得的路径回 `llm_disabled`（「这个服务没开托管网关」），认不得的回 `not_found`。
+    // 不写这条的话，`/images` 那扇门漏掉时的表现就是一个和拼错路径一模一样的 404，
+    // 而客户端那侧看到的是「出图突然全都不通」
+    const body = async (path: string) =>
+      (await harness().handle(new Request(`http://edge${path}`, { method: "POST" }))).json() as Promise<{ error: { code: string } }>;
+    expect((await body("/llm/v1/images")).error.code).toBe("llm_disabled");
+    expect((await body("/llm/v1/chat/completions")).error.code).toBe("llm_disabled");
+    expect((await body("/llm/v1/nope")).error.code).toBe("not_found");
+  });
+
   it("/auth/landing 不要令牌:回 HTML,内含 mrotto 深链转发(OAuth 落地页)", async () => {
     const res = await harness().handle(new Request("http://edge/auth/landing?code=abc"));
     expect(res.status).toBe(200);

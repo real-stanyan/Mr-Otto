@@ -4,7 +4,7 @@
 
 import { createContext, memo, useContext, useEffect, useMemo, useState } from "react";
 import { ThinkingOrb } from "thinking-orbs";
-import { GitBranch, KeyRound, Share2 } from "lucide-react";
+import { GitBranch, ImageIcon, KeyRound, Share2 } from "lucide-react";
 import type {
   ContextCompactedEvent,
   ModelChangedEvent,
@@ -15,6 +15,7 @@ import type {
 } from "../../../session/events.js";
 import { Hl } from "../replay/HlText.js";
 import { toolPhase, toolSummary } from "../../../shared/toolSummary.js";
+import { imageModelLabel } from "../../../shared/imageModel.js";
 import { compactedCardMeta, microCompactedHeadline } from "../lib/autoCompactCopy.js";
 import { buildToolIndex, type ToolIndex } from "../lib/toolIndex.js";
 import { useNow } from "../lib/useNow.js";
@@ -529,6 +530,20 @@ export const EventRow = memo(function EventRow({ event, isLast = false }: { even
 
     case "model_changed":
       return <ModelHandoffRow event={event} />;
+
+    // 出图型号（#1086）。**不用 ModelHandoffRow 那种交接卡**：交接卡说的是「之后的话
+    // 由谁来说」，而出图型号换的只是 `generate_image` 那把刀用哪支笔——没有「谁交给谁」
+    // 这回事，用 AUDIT 那种缩进小字就够。
+    // 落成一行而不是完全不画：ADR-0261 的判据是**用户能不能据此行动**，而这一格
+    // 决定下一张图花多少钱（七款差 4 倍），往回翻时「这张图是谁画的」只有这一行答得出——
+    // 与同一条 ADR 撤掉的 `request_envelope` / `session_created` 的分别正在这里
+    case "image_model_changed":
+      return (
+        <div className={`${AUDIT} inline-flex items-center gap-1.5`}>
+          <ImageIcon className="size-3.5 shrink-0" aria-hidden />
+          <span>出图模型换成 {imageModelLabel(event.model)}</span>
+        </div>
+      );
 
     // 分支切换（issue #411 / ADR-0093）：往回翻的时候，「这一段话是在哪个分支上说的」
     // 只有这一行能回答。用 Marker 的 separator 变体——它是一条横穿时间线的界线，

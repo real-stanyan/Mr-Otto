@@ -102,6 +102,7 @@ import { UIQuestioner } from "./uiQuestioner.js";
 import { createAskUserTool } from "../tools/askUser.js";
 import type { AskUserOutcome, AskUserQuestion } from "../shared/askUser.js";
 import { imageBlocked, routeImage, routeModel } from "./modelRoute.js";
+import { currentImageModel } from "../shared/imageModel.js";
 import type { HostedQuota } from "./hostedQuota.js";
 
 /** 主进程这一侧「能不能走托管」要的三样。**具名而不是内联**（#1051）：子 agent
@@ -579,6 +580,10 @@ export function createAgent(opts: {
             hosted: h.quota.imageInput(),
             hostedBaseUrl: `${h.edgeBaseUrl()}/llm/v1`,
             ...(token ? { hostedToken: token } : {}),
+            // 用户在选单里挑的那款（#1086）。**每次调用现读日志**，不在构造时定死：
+            // 换出图型号不拦 turn（switchImageModel 那条 IPC 没有 runningSessions 闸），
+            // 所以同一轮里换过之后，下一次 generate_image 就该用新的那款
+            preferred: currentImageModel(store.load(sessionId)),
           });
           if (route.kind === "blocked") return { blocked: route.reason };
           // routeImage 的最后一条闸就是「没有 token 就走不通」，所以到这儿它一定在

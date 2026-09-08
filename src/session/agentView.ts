@@ -46,6 +46,7 @@ const OTHER_AGENT_VERDICTS: Record<SessionEvent["type"], OtherAgentVerdict> = {
   session_topic_set: "keep",
   route_changed: "keep",
   model_changed: "keep",
+  image_model_changed: "keep",
 
   // ── 那只 agent 说出口的话 ──
   assistant_message: "spoken",

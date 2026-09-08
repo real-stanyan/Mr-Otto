@@ -107,6 +107,8 @@ export const PRIVACY_VERDICTS: Record<SessionEvent["type"], PrivacyVerdict> = {
   tool_hook: "keep",
   turn_ended: "keep",
   model_changed: "keep",
+  // 出图型号（#1086）：说的是「这段对话用哪支笔画的图」，不是发送方这台机器的私事
+  image_model_changed: "keep",
   model_usage: "keep",
   session_archived: "keep",
   session_unarchived: "keep",

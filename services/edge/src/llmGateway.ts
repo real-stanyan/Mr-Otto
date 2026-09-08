@@ -120,6 +120,23 @@ export function upstreamKeyOf(
   return typeof v === "string" && v !== "" ? v : undefined;
 }
 
+/** 这条路由该打上游的哪个端点（#1086）。
+    **判据是路由行自己的 `kind`，不是客户端敲的那个路径** —— 两个门（`/llm/v1/images`
+    与 `/llm/v1/chat/completions`）都通到同一个处理函数，路径只是给客户端读的；
+    真正决定发去哪的是这一行是什么。照客户端的路径判，就等于让「这款模型该怎么调」
+    有两份事实，而其中一份在用户的机器上。
+
+    为什么出图要单独一条：OpenRouter 的 `/chat/completions` 会按输出模态过滤端点，
+    纯出图模型（`output_modalities` 只有 `["image"]`，Seedream 一族与 GPT Image 2）
+    在那条路上一律 404 —— 上游原话 `No endpoints found that support the requested
+    output modalities: image, text`。而 `/api/v1/images` 是**所有**出图模型的统一入口
+    （它的 `/images/models` 清单里连 Gemini 那三款也在），请求体 `{model, prompt}`、
+    回 `data[].b64_json`，`usage` 形状与 chat 那条**逐字相同** —— 所以 `parseUsage` /
+    `costMicro` / hold-settle 整套一个字都不用改，这条改动只有「打哪个 URL」这一格。 */
+export function upstreamPathFor(kind: RouteRow["kind"]): string {
+  return kind === "image" ? "/images" : "/chat/completions";
+}
+
 export interface LlmGatewayDeps {
   routes: () => Promise<RouteRow[]>;
   quota: QuotaPort;
@@ -397,7 +414,7 @@ export function createLlmGateway(deps: LlmGatewayDeps): (req: Request, caller: C
 
         let res: Response;
         try {
-          res = await doFetch(`${route.baseUrl}/chat/completions`, {
+          res = await doFetch(`${route.baseUrl}${upstreamPathFor(route.kind)}`, {
             method: "POST",
             headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
             body: upstreamBody,
