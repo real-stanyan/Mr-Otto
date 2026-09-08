@@ -1552,3 +1552,94 @@ describe("parseWorkState / decideCloneAction / sameRepo（issue #832 决策表�
     expect(cloneOutcomeText({ kind: "failed", repoUrl: URL_A, reason: "403" })).toContain("403");
   });
 });
+
+// ── 容器已经在跑时 dockerode 的 304（issue #1097）────────────────────────
+// `findByName` 回的 `State` 是 list 那一刻的快照。这一页展开着几层就同时发几条
+// `files` 帧（「刷新」更是一次全发），它们都看到 stopped、都去 start()，赢的
+// 那条把容器拉起来，输的那条拿 `(HTTP code 304) container already started` 抛
+// 出去——真机日志里就是这一行，症状是「文件」tab 读不出内容且看着像随机。
+
+/** 让 start() 按 dockerode 的形状抛（`statusCode` 由 docker-modem 的
+    `buildPayload` 挂上，见 modem.js:395），并保持 state 不变——304 的语义是
+    「别人已经把它起起来了」，所以状态照样得是 running */
+function withStartError(docker: DockerLike, err: Error, containers: Map<string, FakeContainer>): DockerLike {
+  return {
+    ...docker,
+    getContainer(id: string) {
+      const base = docker.getContainer(id);
+      return {
+        ...base,
+        start: async () => {
+          const c = containers.get(id);
+          if (c) c.state = "running"; // 赢下竞态的那条帧干的事
+          throw err;
+        },
+      };
+    },
+  };
+}
+
+function code304(): Error {
+  return Object.assign(new Error("(HTTP code 304) container already started - "), { statusCode: 304 });
+}
+
+/** 一层目录的 stdout：header 行 + NUL 收尾的记录（字段顺序见 workFiles.ts 的
+    parseEntries，名字放最后因为文件名里换行和制表符都合法） */
+const DIR_STDOUT = "dir\n" + "f\t12\t1757300000\tmenu.md\0" + "d\t0\t1757300000\tmarketing\0";
+
+describe("createSandbox — 容器已经在跑时的 304（issue #1097）", () => {
+  const stopped = () => [{ id: "c1", name: "otto-ws-ws1", state: "exited", labels: { "mrotto.workspace": "ws1" } }];
+
+  it("readWork：start() 抛 304 = 别人已经起好了，照常读出内容，不当失败", async () => {
+    const { docker, containers } = makeFakeDocker(stopped());
+    const execLog: ExecLog = [];
+    const withExec = withCloneExec(docker, () => ({ exitCode: 0, stdout: DIR_STDOUT }), execLog, nameOf(containers));
+    const sandbox = createSandbox(withStartError(withExec, code304(), containers));
+
+    const node = await sandbox.readWork("ws1", "");
+
+    expect(node.kind).toBe("dir");
+    // 目录排在文件前面（排序在 workFiles.ts 那一侧，这里只是照它写）
+    expect(node.kind === "dir" && node.entries.map((e) => e.name)).toEqual(["marketing", "menu.md"]);
+  });
+
+  it("searchWork：同一条路，304 不该把搜索打成失败", async () => {
+    const { docker, containers } = makeFakeDocker(stopped());
+    const execLog: ExecLog = [];
+    const withExec = withCloneExec(docker, () => ({ exitCode: 0, stdout: "files\t0\n" }), execLog, nameOf(containers));
+    const sandbox = createSandbox(withStartError(withExec, code304(), containers));
+
+    await expect(sandbox.searchWork("ws1", "奶茶", false)).resolves.toEqual([]);
+  });
+
+  it("ensure：同上——两条会话同时起 turn 撞得上同一个竞态", async () => {
+    const { docker, containers } = makeFakeDocker(stopped());
+    const execLog: ExecLog = [];
+    const withExec = withCloneExec(docker, () => ({ exitCode: 0, stdout: "" }), execLog, nameOf(containers));
+    const sandbox = createSandbox(withStartError(withExec, code304(), containers));
+
+    await expect(sandbox.ensure("ws1")).resolves.toBeDefined();
+  });
+
+  it("304 之外的 start 失败照旧抛出去 —— 镜像没了/磁盘满了不许被吞掉", async () => {
+    const { docker, containers } = makeFakeDocker(stopped());
+    const execLog: ExecLog = [];
+    const withExec = withCloneExec(docker, () => ({ exitCode: 0, stdout: DIR_STDOUT }), execLog, nameOf(containers));
+    const boom = Object.assign(new Error("(HTTP code 500) server error - no space left on device"), { statusCode: 500 });
+    const sandbox = createSandbox(withStartError(withExec, boom, containers));
+
+    await expect(sandbox.readWork("ws1", "")).rejects.toThrow("no space left on device");
+  });
+
+  it("列表说它已经在跑时压根不 start —— 少打一次 docker 往返", async () => {
+    const running = [{ id: "c1", name: "otto-ws-ws1", state: "running", labels: { "mrotto.workspace": "ws1" } }];
+    const { docker, containers, calls } = makeFakeDocker(running);
+    const execLog: ExecLog = [];
+    const withExec = withCloneExec(docker, () => ({ exitCode: 0, stdout: DIR_STDOUT }), execLog, nameOf(containers));
+    const sandbox = createSandbox(withExec);
+
+    await sandbox.readWork("ws1", "");
+
+    expect(calls.filter((c) => c.startsWith("start:"))).toEqual([]);
+  });
+});
