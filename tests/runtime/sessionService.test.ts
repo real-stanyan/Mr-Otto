@@ -4607,3 +4607,127 @@ describe("点名提醒（#1064）", () => {
     expect(store.load("s1").some((e) => e.type === "chat_message")).toBe(true);
   });
 });
+
+describe("流式输出（#1107，协议 14 的 delta 帧）", () => {
+  // 契约两条，与本地 streamingBySession 同一份：① 碎片不落日志（这里断言
+  // 事件序列一个不多）；② 任何事件出门前先把积存的碎片放完（这里断言
+  // delta 到达的**顺序**在 assistant_message 之前）
+  it("onDelta 在场：adapter 拿到流式口，碎片合帧成累计快照、先于终态事件出门，reasoning 不过线", async () => {
+    const store = newStore();
+    const order: string[] = [];
+    let sawStreaming = false;
+    const adapter: ModelAdapter = {
+      model: "fake-model",
+      async chat(_m, _t, onDelta): Promise<ModelReply> {
+        sawStreaming = onDelta !== undefined;
+        onDelta?.("你", "content");
+        onDelta?.("好", "content");
+        onDelta?.("在想", "reasoning"); // 终态气泡不画它，预览也不画
+        return { content: "你好" };
+      },
+    };
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [],
+      agents: async () => [DEFAULT_AGENT],
+      adapterFor: () => adapter,
+      onEvent: (e) => order.push(`event:${e.type}`),
+      onDelta: (agentId, kind, text) => order.push(`delta:${agentId}:${kind}:${text}`),
+      onUsage: () => {},
+      memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(),
+      agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true,
+      contextWindowOf: () => undefined,
+      sandboxApproval: async () => "ask",
+      workspaceLock: createWorkspaceLock(),
+      relayRemainingMicro: async () => null,
+    });
+
+    await session.say("u1", "alice", "你好", true);
+    await session.settled();
+
+    expect(sawStreaming).toBe(true);
+    // 两片合进一帧、累计快照、reasoning 被拦在源头
+    const deltas = order.filter((l) => l.startsWith("delta:"));
+    expect(deltas).toEqual(["delta:default:content:你好"]);
+    // 顺序闸：碎片先于终态事件出门（notify 开头的 flush）
+    expect(order.indexOf("delta:default:content:你好")).toBeLessThan(order.indexOf("event:assistant_message"));
+    // 碎片不落日志：事件序列与「① 完整 turn」那条逐字相同
+    const types = order.filter((l) => l.startsWith("event:")).map((l) => l.slice("event:".length));
+    expect(types).toEqual(["user_message", "workspace_memory_loaded", "request_envelope", "assistant_message", "turn_ended"]);
+    store.close();
+  });
+
+  it("onDelta 缺席：adapter 的 onDelta 是 undefined——整条会话退回非流式，与改动前逐字相同", async () => {
+    const store = newStore();
+    let sawStreaming: boolean | null = null;
+    const adapter: ModelAdapter = {
+      model: "fake-model",
+      async chat(_m, _t, onDelta): Promise<ModelReply> {
+        sawStreaming = onDelta !== undefined;
+        return { content: "答" };
+      },
+    };
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [],
+      agents: async () => [DEFAULT_AGENT],
+      adapterFor: () => adapter,
+      onEvent: () => {},
+      onUsage: () => {},
+      memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(),
+      agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true,
+      contextWindowOf: () => undefined,
+      sandboxApproval: async () => "ask",
+      workspaceLock: createWorkspaceLock(),
+      relayRemainingMicro: async () => null,
+    });
+
+    await session.say("u1", "alice", "你好", true);
+    await session.settled();
+
+    expect(sawStreaming).toBe(false);
+    store.close();
+  });
+
+  it("两只 agent 各说各的：碎片按 agentId 分槽，谁也不串谁的", async () => {
+    const store = newStore();
+    const sent: [string, string][] = [];
+    const TWO = [
+      { ...DEFAULT_AGENT, agentId: "a_1", name: "运营" },
+      { ...DEFAULT_AGENT, agentId: "a_2", name: "广告" },
+    ];
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [],
+      agents: async () => TWO,
+      adapterFor: (a) => ({
+        model: a.models[0]!,
+        async chat(_m, _t, onDelta): Promise<ModelReply> {
+          onDelta?.(`${a.name}的半截`, "content");
+          return { content: `${a.name}答` };
+        },
+      }),
+      onEvent: () => {},
+      onDelta: (agentId, _kind, text) => sent.push([agentId, text]),
+      onUsage: () => {},
+      memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(),
+      agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true,
+      contextWindowOf: () => undefined,
+      sandboxApproval: async () => "ask",
+      workspaceLock: createWorkspaceLock(),
+      relayRemainingMicro: async () => null,
+    });
+
+    await session.say("u1", "alice", "@运营 @广告 一起看下", true, ["a_1", "a_2"]);
+    await session.settled();
+
+    expect(sent).toEqual([
+      ["a_1", "运营的半截"],
+      ["a_2", "广告的半截"],
+    ]);
+    store.close();
+  });
+});

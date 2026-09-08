@@ -650,6 +650,13 @@ async function main(): Promise<void> {
         return c?.contextWindowKnown ? c.contextWindow : undefined;
       },
       onEvent: broadcast,
+      // 流式碎片（#1107，协议 14）：与 broadcast 同一条 roster 扇出，帧是
+      // 临时预览、不落日志。合帧与「事件出门前先放完碎片」都在 sessionService
+      // 那层（notify 开头 flush），这里只管直发——两路都过 globalSend，同一
+      // cid 上的到达序就是这里的调用序
+      onDelta: (agentId, kind, text) => {
+        for (const cid of roster) globalSend(cid, { t: "delta", agentId, kind, text });
+      },
       onUsage: () => {}, // usage 记账走上面的 recordUsage 钩子，这个口留白（同 T9 report 的记录）
       memory: workspaceMemory,
       // 被 @ 的人类成员的收件箱（#1064）：service key 绕 RLS——那张表没有给
