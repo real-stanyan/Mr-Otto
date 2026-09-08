@@ -102,6 +102,9 @@ export function groupAlive(pgid: number, deps: KillDeps = {}): boolean {
     30 分钟够全量构建/测试跑完 */
 const DETACHED_TIMEOUT_MS = 1_800_000;
 
+/** 一次 http 请求的默认超时。调用方可用 HttpPostOptions.timeoutMs 覆盖（#1081） */
+const HTTP_TIMEOUT_MS = 30_000;
+
 /** 把 path 解析到 root 下并验证没越界；没配 root = 不设防（旧行为）。
     what：错误文案里叫什么围栏——fs 用「工程文件夹」，config 用「配置目录」 */
 function fence(root: string | undefined, path: string, what = "工程文件夹"): string {
@@ -318,8 +321,9 @@ export function createLocalWorld(
     http: {
       async postJson(url, body, o) {
         const fetchImpl = opts.fetchImpl ?? fetch;
-        // 30s 超时与外部中断信号合并;两者都能掐死请求
-        const timeout = AbortSignal.timeout(30_000);
+        // 超时与外部中断信号合并;两者都能掐死请求。
+        // timeoutMs 缺席 = 30s（改动前的行为）；出图那条路自己声明更长的（#1081）
+        const timeout = AbortSignal.timeout(o?.timeoutMs ?? HTTP_TIMEOUT_MS);
         const signal = o?.signal ? AbortSignal.any([o.signal, timeout]) : timeout;
         let res: Response;
         try {
@@ -342,8 +346,8 @@ export function createLocalWorld(
 
       async getJson(url, o) {
         const fetchImpl = opts.fetchImpl ?? fetch;
-        // 30s 超时与外部中断信号合并;两者都能掐死请求（同 postJson）
-        const timeout = AbortSignal.timeout(30_000);
+        // 超时与外部中断信号合并;两者都能掐死请求（同 postJson）
+        const timeout = AbortSignal.timeout(o?.timeoutMs ?? HTTP_TIMEOUT_MS);
         const signal = o?.signal ? AbortSignal.any([o.signal, timeout]) : timeout;
         let res: Response;
         try {
