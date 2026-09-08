@@ -6,7 +6,7 @@ const T0 = 1_800_000_000_000;
 const me: BillingMe = {
   plan: "pro", status: "active", plans: [],
   windows: { h5: { usedMicro: 0, limitMicro: 100, resetAt: T0 + 5000 }, week: { usedMicro: 0, limitMicro: 1000, resetAt: T0 + 9000 } },
-  addon: { remainingMicro: 0, expiresAt: null }, periodEnd: T0 + 99_999, models: ["deepseek-v4-flash"], modelPlatforms: {},
+  addon: { remainingMicro: 0, expiresAt: null }, periodEnd: T0 + 99_999, models: ["deepseek-v4-flash"], imageModels: ["gemini-3.1-flash-image"], modelPlatforms: {},
 };
 
 function make(responses: Array<() => Response>, token: string | null = "jwt") {
@@ -60,6 +60,24 @@ describe("hostedQuota", () => {
     expect(q.snapshot().me?.windows?.h5.usedMicro).toBe(60);
     q.noteHeaders(new Headers({ [BILLING_HEADERS.week]: "0" }));
     expect(q.routeInput("deepseek-v4-flash")).toMatchObject({ exhausted: true, resetAt: T0 + 9000 });
+  });
+
+  it("imageInput：出图清单原样带出，订阅/耗尽两格与 routeInput 同源（#1081）", async () => {
+    const { q, tick } = make([() => Response.json(me)]);
+    await q.refresh();
+    expect(q.imageInput()).toEqual({ subscribed: true, exhausted: false, imageModels: ["gemini-3.1-flash-image"] });
+    q.noteExhausted({ window: "5h", resetAt: T0 + 5000 });
+    // 耗尽这一格必须和 routeInput 说同一句话：两处各判一遍的话，会出现
+    // 「聊天说额度用完了、出图却照跑」这种自相矛盾的状态
+    expect(q.imageInput()).toMatchObject({ exhausted: true, resetAt: T0 + 5000 });
+    tick(5001);
+    expect(q.imageInput().exhausted).toBe(false);
+  });
+
+  it("imageInput：没登录 / 旧 edge 不下发那一格 → 清单为空（= 这台网关不供出图，不是「出错了」）", async () => {
+    const { q } = make([], null);
+    await q.refresh();
+    expect(q.imageInput()).toEqual({ subscribed: false, exhausted: false, imageModels: [] });
   });
 
   it("checkout / portal 回 url；服务端报错抛 message", async () => {

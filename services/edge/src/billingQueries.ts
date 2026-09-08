@@ -120,7 +120,7 @@ export function routesQuery(): string {
   // 默认款 = 最便宜那款（是个承诺），且 Auto 那一档能拿「第一个 / 最后一个」当
   // 「最便宜 / 最贵」用（autoModel.ts 的 modelForDifficulty，价是能力的代理）。
   // 第三个键 `id.asc` 兜住「两款价一样」——否则那一对之间又回到未定义顺序。
-  return "model_route?enabled=eq.true&quantization=eq.none&select=id,logical_model,platform,base_url,wire_model,price_in_micro_per_m,price_cache_micro_per_m,price_out_micro_per_m,default_max_tokens&order=priority.asc,price_out_micro_per_m.asc,id.asc";
+  return "model_route?enabled=eq.true&quantization=eq.none&select=id,logical_model,platform,base_url,wire_model,price_in_micro_per_m,price_cache_micro_per_m,price_out_micro_per_m,default_max_tokens,kind&order=priority.asc,price_out_micro_per_m.asc,id.asc";
 }
 export function parseRouteRows(v: unknown): RouteRow[] {
   if (!Array.isArray(v)) return [];
@@ -130,9 +130,40 @@ export function parseRouteRows(v: unknown): RouteRow[] {
     const id = str(r.id), lm = str(r.logical_model), pf = str(r.platform), bu = str(r.base_url), wm = str(r.wire_model);
     const pi = num(r.price_in_micro_per_m), pc = num(r.price_cache_micro_per_m), po = num(r.price_out_micro_per_m), mt = num(r.default_max_tokens);
     if (!id || !lm || !pf || !bu || !wm || pi === null || pc === null || po === null || mt === null) continue;
-    out.push({ id, logicalModel: lm, platform: pf, baseUrl: bu, wireModel: wm, priceInMicroPerM: pi, priceCacheMicroPerM: pc, priceOutMicroPerM: po, defaultMaxTokens: mt });
+    // kind 缺席 = 迁移还没跑（旧库没这一列），认不出的值同样按 chat：
+    // 两种情形都要落回**改动前的行为**，而不是把这一行丢掉——一个拼错的 kind
+    // 不该让这款模型从网关上整个消失（#1081）
+    const kind = r.kind === "image" ? "image" : "chat";
+    out.push({ id, logicalModel: lm, platform: pf, baseUrl: bu, wireModel: wm, priceInMicroPerM: pi, priceCacheMicroPerM: pc, priceOutMicroPerM: po, defaultMaxTokens: mt, kind });
   }
   return out;
+}
+
+/** 路由表 → `/me` 下发的那三格（对话型号清单 / 出图型号清单 / 型号→平台）。
+    **两张清单分开**（#1081）：`models` 喂输入框那枚模型选择器，`imageModels` 喂
+    `generate_image` 那把刀。合成一格的代价是 ADR-0237 的 Auto 拿 `models.at(-1)`
+    当「最贵 = 最强」，而出图那款 $60/M —— 一次正常提问会得到一张图。
+
+    这段判断原来是 `worker.ts` 的 `me()` 里两行 map/for，而 worker.ts 不进 vitest ——
+    同 `usageAttribution` 与 `UPSTREAM_KEY_ENV` 那两次的教训：唯一的判断零执行覆盖。
+
+    顺序照抄传进来那份（`routesQuery` 已按 priority,输出价,id 全序，ADR-0237），
+    所以两张清单都是从便宜到贵——`imageModels[0]` = 最便宜那款出图模型，是个承诺。
+    同一款多条路由取**第一条**的平台，那就是选路真正会先试的那家。
+    `modelPlatforms` 只覆盖对话那张：它的消费方是那枚选单里的厂商 logo */
+export function modelsForMe(routes: RouteRow[]): {
+  models: string[]; imageModels: string[]; modelPlatforms: Record<string, string>;
+} {
+  const chat = routes.filter((r) => r.kind === "chat");
+  const modelPlatforms: Record<string, string> = {};
+  for (const r of chat) {
+    if (!(r.logicalModel in modelPlatforms)) modelPlatforms[r.logicalModel] = r.platform;
+  }
+  return {
+    models: [...new Set(chat.map((r) => r.logicalModel))],
+    imageModels: [...new Set(routes.filter((r) => r.kind === "image").map((r) => r.logicalModel))],
+    modelPlatforms,
+  };
 }
 
 export function usageEventInsert(
@@ -250,7 +281,11 @@ export function meFromParts(
   models: string[],
   plans: PlanRow[],
   /** 型号 id → 平台（#1011）。给下拉里的厂商 logo 用；缺省空对象让既有调用方不必改 */
-  modelPlatforms: Record<string, string> = {}
+  modelPlatforms: Record<string, string> = {},
+  /** 出图型号清单（#1081）。**加在最末**：这个函数是七个位置参数，插在中间会让既有
+      调用把 modelPlatforms 悄悄喂给新参数——类型都是"数组或对象"，tsc 拦不住的那一类。
+      缺省空数组 = 这台网关不供出图 = 改动前的行为 */
+  imageModels: string[] = []
 ): BillingMe {
   const plan = sub && (sub.plan_id === "lite" || sub.plan_id === "pro" || sub.plan_id === "max") ? sub.plan_id : null;
   return {
@@ -261,6 +296,6 @@ export function meFromParts(
       .filter((p): p is PlanRow & { id: "lite" | "pro" | "max" } => p.id === "lite" || p.id === "pro" || p.id === "max")
       .map((p) => ({ id: p.id, priceUsdCents: p.price_usd_cents, capabilities: p.capabilities })),
     windows: sub && sub.status === "active" ? windows : null,
-    addon, periodEnd: sub ? Date.parse(sub.current_period_end) : null, models, modelPlatforms,
+    addon, periodEnd: sub ? Date.parse(sub.current_period_end) : null, models, imageModels, modelPlatforms,
   };
 }

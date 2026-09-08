@@ -28,6 +28,14 @@
 
 import { BILLING_HEADERS, SSE_COST_COMMENT } from "../../../src/shared/billing.js";
 
+/** 这一行路由是给谁用的（#1081）。`chat` = 输入框那枚选单里选得到的对话模型；
+    `image` = 出图工具专用，**不进 `me.models`**。
+    分开的理由不是洁癖：`me.models` 是选单的数据源，而 ADR-0237 的 Auto 拿
+    `models.at(-1)` 当「最贵 = 最强」——出图那一行 $60/M，不隔离的话纳米香蕉会
+    变成 Auto 的 hard 档主模型。选路（`pickRoute`）不看这一格：它只按
+    `logical_model` 匹配，出图请求点名的就是出图那款 */
+export type RouteKind = "chat" | "image";
+
 export interface RouteRow {
   id: string;
   logicalModel: string;
@@ -38,6 +46,7 @@ export interface RouteRow {
   priceCacheMicroPerM: number;
   priceOutMicroPerM: number;
   defaultMaxTokens: number;
+  kind: RouteKind;
 }
 
 export interface Caller {
@@ -91,6 +100,11 @@ export const UPSTREAM_KEY_ENV: Readonly<Record<string, string>> = {
   zhipu: "ZHIPU_API_KEY",
   /** 千问 = 阿里云百炼 DashScope 国际站（dashscope-intl），OpenAI 兼容端点 */
   qwen: "QWEN_API_KEY",
+  /** OpenRouter：出图那条路的上游（#1081）。这把 key 是**官方的**、只活在
+      Worker secret 里——客户端一个字节都拿不到。写进桌面包的方案否掉了：
+      app bundle 是用户机器上的可读文件，key 挖得出来 = 无限花维护者的钱，
+      而额度闸在客户端根本不存在 */
+  openrouter: "OPENROUTER_API_KEY",
 };
 
 /** `LlmGatewayDeps.upstreamKey` 的标准实现：按上表从 env 取。

@@ -10,6 +10,7 @@ const flash: RouteRow = {
   id: "deepseek-v4-flash@deepseek", logicalModel: "deepseek-v4-flash", platform: "deepseek",
   baseUrl: "https://up/v1", wireModel: "deepseek-v4-flash",
   priceInMicroPerM: 1_000_000, priceCacheMicroPerM: 100_000, priceOutMicroPerM: 2_000_000, defaultMaxTokens: 1000,
+  kind: "chat",
 };
 /** 同款逻辑模型在另一个平台的备选路（failover 的「下一条」） */
 const alt: RouteRow = { ...flash, id: "deepseek-v4-flash@siliconflow", platform: "siliconflow", baseUrl: "https://up2/v1" };
@@ -190,6 +191,38 @@ describe("createLlmGateway", () => {
     // 50×1 + 50×0.1 + 10×2 = 75
     expect(calls.settle[0]!.costMicro).toBe(75);
     expect(calls.release).toEqual([]);
+  });
+
+  it("出图：body 里的自定义字段（modalities）原样透传，images 原样回来，按输出价结算", async () => {
+    // 出图整条能力**建立在这条透传上**（#1081）：网关只改 model / stream，
+    // 其余字段是 `...body` 展开的。这条断言在这儿，是因为「透传」今天是实现的一个
+    // 副产品——哪天有人给转发体加一层白名单，出图会安静地退化成一次纯文本回复，
+    // 而那时候错的表现是「模型说它画好了但一张图都没有」
+    const image: RouteRow = {
+      id: "gemini-3.1-flash-image@openrouter", logicalModel: "gemini-3.1-flash-image", platform: "openrouter",
+      baseUrl: "https://or/v1", wireModel: "google/gemini-3.1-flash-image",
+      priceInMicroPerM: 500_000, priceCacheMicroPerM: 500_000, priceOutMicroPerM: 60_000_000, defaultMaxTokens: 1500,
+      kind: "image",
+    };
+    const { quota, calls } = quotaStub();
+    const up = upstream(() => new Response(JSON.stringify({
+      choices: [{ message: { role: "assistant", content: "", images: [{ type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } }] } }],
+      usage: { prompt_tokens: 11, completion_tokens: 1120 },
+    }), { status: 200, headers: { "content-type": "application/json" } }));
+    const gw = createLlmGateway({ routes: async () => [image], quota, upstreamKey: (p) => (p === "openrouter" ? "sk-or" : undefined), fetchImpl: up.fetchImpl, newRequestId: () => "rid-img" });
+    const res = await gw(chatReq({ model: "gemini-3.1-flash-image", modalities: ["image", "text"], messages: [{ role: "user", content: "a red otter" }] }), caller);
+    expect(res.status).toBe(200);
+    const sentBody = JSON.parse(await up.seen[0]!.text());
+    expect(sentBody.modalities).toEqual(["image", "text"]);
+    expect(sentBody.model).toBe("google/gemini-3.1-flash-image");
+    const back = await res.json() as { choices: { message: { images: { image_url: { url: string } }[] } }[] };
+    expect(back.choices[0]!.message.images[0]!.image_url.url).toBe("data:image/png;base64,AAAA");
+    // 真机实测的那一笔（#1081）：prompt 11 / completion 1120，OpenRouter 报
+    // $0.0672055 = 67205.5 micro。网关按 11×0.5 + 1120×60 算出 67205.5、ceil 成 67206——
+    // **与上游账单逐 micro 对得上**，这就是 price_out 取 60_000_000 的全部理由。
+    // 这条断言同时钉住「出图不是按张收费，是按输出 token 收费」：改成按张就得
+    // 在网关里另开一条计价路径，而这条路径不存在
+    expect(calls.settle[0]!.costMicro).toBe(67_206);
   });
 
   it("非流式：JSON 回来直接结算", async () => {
@@ -559,13 +592,14 @@ describe("流式的「本次花费」尾注（#857 的另一半）", () => {
 // 让下面这几条跑得到。
 
 describe("upstreamKeyOf", () => {
-  it("三家平台都在表里，且键与 model_route.platform 逐字相同", () => {
+  it("四家平台都在表里，且键与 model_route.platform 逐字相同", () => {
     // 值写死一份而不是从被测代码反推：这几个名字同时出现在 wrangler secret、
     // README 部署步骤和 Env 类型里，改名要四处一起改，断言在这儿把它钉住
     expect(UPSTREAM_KEY_ENV).toEqual({
       deepseek: "DEEPSEEK_API_KEY",
       zhipu: "ZHIPU_API_KEY",
       qwen: "QWEN_API_KEY",
+      openrouter: "OPENROUTER_API_KEY",
     });
   });
 

@@ -141,3 +141,61 @@ export function routeModel(input: RouteInput): ModelRoute {
     reason: `${grantGone}用 ${choice.label} 有两条路：订阅 Mr Otto（设置 → 订阅），或在设置里填自己的 ${choice.apiKeyEnv}。`,
   };
 }
+
+// ── 出图那条路（#1081） ───────────────────────────────────────────────
+//
+// 与上面 routeModel 的差别只有一处，但那一处是根本的：**出图没有「自带 key」这一档**。
+// 维护者定的口径是「生图统一走用户订阅额度、官方 key 所有用户共用一把」，而那把 key
+// 只活在 edge 的 Worker secret 里 —— 客户端一个字节都拿不到。于是这条路要么走托管、
+// 要么走不通，没有第三种结局，也就不存在 ADR-0233 点名的那个静默失败模式
+//（「额度用完悄悄改烧你自己的账号」）：这里压根没有可改道的第二条路。
+//
+// 四种 blocked 分开措辞，纪律与 ADR-0248 那张表逐条对应 —— 尤其是后两种：
+// 「网关不供出图」和「连不上网关」都**不许写成「你没订阅」**，那会让一个正在付钱的人
+// 去点续费解决一个不存在的问题。
+
+export interface ImageRouteInput {
+  /** 托管额度快照（main/hostedQuota.ts 的 imageInput）。缺席 = 没装配托管
+      （子会话 / 探针 / 测试）—— 与 routeModel 同款，这条路永远不会通 */
+  hosted?: {
+    subscribed: boolean;
+    exhausted: boolean;
+    resetAt?: number;
+    /** 网关此刻供的出图型号（`model_route` 里 kind='image' 那些）。
+        **从便宜到贵有序**（routesQuery 的全序，ADR-0237），所以取 `[0]` 是个承诺 */
+    imageModels: string[];
+  };
+  hostedBaseUrl?: string;
+  hostedToken?: string;
+}
+
+export type ImageRoute =
+  | { kind: "hosted"; url: string; model: string }
+  | { kind: "blocked"; reason: string };
+
+/** 快照就能回答的那三条（订阅 / 额度 / 网关供不供出图）。`null` = 这三关都过了。
+    **单独拎出来是因为它是同步的**：`generate_image` 的 `available()`（决定这把刀进不进
+    模型的工具表）必须同步作答，而拿 JWT 是异步的。拆成两半之后，两个消费方共用这一份
+    判据 —— 各写一遍的结果会是「工具表里有这把刀、点下去说你没订阅」那种自相矛盾。 */
+export function imageBlocked(hosted: ImageRouteInput["hosted"]): string | null {
+  if (!hosted || !hosted.subscribed) return "生成图片要订阅 Mr Otto（设置 → 订阅）。";
+  // 额度用完排在「不供出图」前面：它是网关亲口说的那句「拦住你了」，
+  // 而清单空只是一张表读出来的推断（同 ADR-0255 让 exhausted 排在百分比前面）
+  if (hosted.exhausted) {
+    const when = hosted.resetAt ? `${fmtReset(hosted.resetAt)} 恢复` : "窗口重置后恢复";
+    return `订阅额度已用完，${when}。等不及可以在账号页加购。`;
+  }
+  if (hosted.imageModels[0] === undefined) return "订阅网关暂时不供出图。";
+  return null;
+}
+
+export function routeImage(input: ImageRouteInput): ImageRoute {
+  const blocked = imageBlocked(input.hosted);
+  if (blocked !== null) return { kind: "blocked", reason: blocked };
+  // imageBlocked 过了就一定有第 0 款（那正是它的最后一条）
+  const model = input.hosted!.imageModels[0]!;
+  if (!input.hostedBaseUrl || !input.hostedToken) {
+    return { kind: "blocked", reason: "连不上订阅网关（多半是网络或登录状态），稍后再试。" };
+  }
+  return { kind: "hosted", url: `${input.hostedBaseUrl}/chat/completions`, model };
+}

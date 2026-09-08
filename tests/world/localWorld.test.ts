@@ -172,6 +172,33 @@ describe("http.postJson", () => {
     ac.abort();
     await expect(pending).rejects.toThrow(/中断/);
   });
+
+  it("timeoutMs 覆盖默认 30s —— 出图那条路比一次 chat 慢得多（#1081）", async () => {
+    // 判据是「到点真的断了」，不是「传了这个字段」：默认的 30s 若没被覆盖，
+    // 这条用例会挂在 vitest 自己的超时上，而那种失败读起来像卡死不像断言不成立
+    const fetchImpl = (async (_u: string | URL | Request, init?: RequestInit) =>
+      new Promise((_res, rej) => {
+        init!.signal!.addEventListener("abort", () => rej(new DOMException("TimeoutError", "TimeoutError")));
+      })) as unknown as typeof fetch;
+    const world = createLocalWorld({ fetchImpl });
+    const t0 = Date.now();
+    await expect(world.http.postJson("https://x.test/rpc", {}, { timeoutMs: 20 })).rejects.toThrow();
+    expect(Date.now() - t0).toBeLessThan(5_000);
+  });
+
+  it("外部 signal 与 timeoutMs 并存时两者都还能掐死请求", async () => {
+    // 合并写错（比如用 timeoutMs 那条替掉了 AbortSignal.any）的表现是用户点停止
+    // 不再管用，而那条路径平时没人走
+    const fetchImpl = (async (_u: string | URL | Request, init?: RequestInit) =>
+      new Promise((_res, rej) => {
+        init!.signal!.addEventListener("abort", () => rej(new DOMException("Aborted", "AbortError")));
+      })) as unknown as typeof fetch;
+    const world = createLocalWorld({ fetchImpl });
+    const ac = new AbortController();
+    const pending = world.http.postJson("https://x.test/rpc", {}, { signal: ac.signal, timeoutMs: 300_000 });
+    ac.abort();
+    await expect(pending).rejects.toThrow(/中断/);
+  });
 });
 
 describe("http.getJson", () => {

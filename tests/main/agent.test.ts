@@ -40,6 +40,24 @@ const push: AgentPush = { event: () => {}, approvalRequest: () => {}, askUserReq
 // 这批测试不碰附件读写,共用一个临时目录的 store 即可(不需要 per-test 隔离)
 const attachments = new AttachmentStore(tempDir("otter-agent-test-"));
 
+/** 只填出图这条路要用的那几格的假托管能力（#1081）。routeInput 走的是另一条路，
+    这里给一个恒真的值即可——本组用例只问「出图那把刀挂没挂上」 */
+function fakeHosted(imageInput: { subscribed: boolean; exhausted: boolean; imageModels: string[] }) {
+  const quota: HostedQuota = {
+    snapshot: () => ({ me: null, fetchedAt: 0, exhausted: null }),
+    routeInput: () => ({ subscribed: imageInput.subscribed, exhausted: imageInput.exhausted, supportsModel: true }),
+    imageInput: () => imageInput,
+    refresh: async () => null,
+    noteHeaders: () => {},
+    noteExhausted: () => {},
+    checkout: async () => "",
+    portal: async () => "",
+    workspaceUsage: async () => ({ workspaceId: "", ownerUid: "", weekStartAt: 0, weekEndAt: 0, rows: [] }),
+    onChange: () => () => {},
+  };
+  return { quota, edgeBaseUrl: () => "https://edge", accessToken: async () => "jwt" };
+}
+
 describe("createAgent 会话生命周期", () => {
   // ①号接线的回归（issue #759）：登记表是组装根注入的，工具层不碰——所以
   // 「传了就有 residue 能力、不传就没有」是这条接线唯一能被断言的形状。
@@ -316,6 +334,37 @@ describe("createAgent 会话生命周期", () => {
     const withConfig = createAgent({ store: store2, workspace: "/proj/x", push, attachments, world });
     expect(withConfig.toolDefs.map((d) => d.name)).toContain("memory");
     store2.close();
+  });
+
+  // 出图那把刀的挂载条件有两层（#1081）：装配根给没给托管（一次定终身），
+  // 以及**此刻**订没订阅、网关供不供出图（每 turn 现算的 available）。
+  // 两层都要有断言 —— 只测第一层的话，「订阅用户才有出图」这条产品口径零覆盖
+  it("没装配托管 = 没有 generate_image；订阅且网关供出图才挂上", () => {
+    const store = new EventStore(":memory:");
+    const bare = createAgent({ store, workspace: "/proj/x", push, attachments });
+    expect(bare.toolDefs.map((d) => d.name)).not.toContain("generate_image");
+    store.close();
+
+    const store2 = new EventStore(":memory:");
+    const withHosted = createAgent({
+      store: store2, workspace: "/proj/x", push, attachments,
+      hosted: fakeHosted({ subscribed: true, exhausted: false, imageModels: ["gemini-3.1-flash-image"] }),
+    });
+    expect(withHosted.toolDefs.map((d) => d.name)).toContain("generate_image");
+    store2.close();
+  });
+
+  it("没订阅 / 网关不供出图 / 额度用完 → 工具表里没有 generate_image（模型于是不会承诺一张画不出来的图）", () => {
+    for (const input of [
+      { subscribed: false, exhausted: false, imageModels: ["gemini-3.1-flash-image"] },
+      { subscribed: true, exhausted: false, imageModels: [] },
+      { subscribed: true, exhausted: true, imageModels: ["gemini-3.1-flash-image"] },
+    ]) {
+      const store = new EventStore(":memory:");
+      const a = createAgent({ store, workspace: "/proj/x", push, attachments, hosted: fakeHosted(input) });
+      expect(a.toolDefs.map((d) => d.name)).not.toContain("generate_image");
+      store.close();
+    }
   });
 
   it("world 有 history 才挂 session_search", () => {
@@ -1031,6 +1080,7 @@ describe("hosted 额度耗尽那一刻（ADR-0176 的 onReroute；#1051 之后�
     const fakeQuota: HostedQuota = {
       snapshot: () => ({ me: null, fetchedAt: 0, exhausted: null }),
       routeInput: () => ({ subscribed: true, exhausted: false, supportsModel: true }),
+      imageInput: () => ({ subscribed: true, exhausted: false, imageModels: [] }),
       refresh: async () => null,
       noteHeaders: () => {},
       noteExhausted: () => {},
@@ -1073,6 +1123,7 @@ describe("hosted 额度耗尽那一刻（ADR-0176 的 onReroute；#1051 之后�
     const fakeQuota: HostedQuota = {
       snapshot: () => ({ me: null, fetchedAt: 0, exhausted: null }),
       routeInput: () => ({ subscribed: false, exhausted: false, supportsModel: false }),
+      imageInput: () => ({ subscribed: false, exhausted: false, imageModels: [] }),
       refresh: async () => null,
       noteHeaders: () => {},
       noteExhausted: () => {},

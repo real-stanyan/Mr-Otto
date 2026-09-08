@@ -51,6 +51,13 @@ export type DetachedOptions = Pick<ExecOptions, "onOutput">;
 export interface HttpPostOptions {
   headers?: Record<string, string>;
   signal?: AbortSignal;
+  /** 这一次请求的超时（毫秒）。缺席 = 各世界自己的默认（LocalWorld 30s）。
+      给它的理由是**出图**（#1081）：一次 chat 的首字节以秒计，出图是整张图算完
+      才回，实测 `gemini-3.1-flash-image` 10.4s、`gpt-5-image-mini` 44.5s——
+      30s 写死会让后者永远超时，而超时的表现是「模型说它画好了，然后报了个网络错」。
+      **不是把默认放宽**：默认放宽等于让每一个卡住的普通请求都多占半分钟；
+      这一格是「我知道这一次会很慢」的调用方自己声明的 */
+  timeoutMs?: number;
 }
 
 /** 一个活着的交互终端（PTY）。与 exec 的一次性命令是两回事：

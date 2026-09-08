@@ -52,6 +52,10 @@ export interface HostedQuota {
     subscribed: boolean; exhausted: boolean; supportsModel: boolean;
     capabilities?: { image: boolean; video: boolean }; resetAt?: number;
   };
+  /** 出图那条路的输入（#1081）。**订阅/耗尽两格与 routeInput 同源** —— 各判一遍
+      会出现「聊天说额度用完了、出图却照跑」这种自相矛盾的状态。
+      清单空 = 这台网关不供出图（旧 edge / 迁移还没跑），不是「出错了」 */
+  imageInput(): { subscribed: boolean; exhausted: boolean; resetAt?: number; imageModels: string[] };
   refresh(): Promise<BillingMe | null>; // GET /billing/v1/me；失败保留旧快照
   noteHeaders(h: Headers): void; // 每次网关响应头
   noteExhausted(info: RerouteInfo): void; // 429 那一刻
@@ -108,6 +112,17 @@ export function createHostedQuota(deps: HostedQuotaDeps): HostedQuota {
         subscribed, exhausted: ex !== null, supportsModel: me?.models.includes(model) ?? false,
         ...(caps ? { capabilities: caps } : {}),
         ...(ex ? { resetAt: ex.resetAt } : {}),
+      };
+    },
+
+    imageInput() {
+      const me = snap.me;
+      const ex = liveExhausted();
+      return {
+        subscribed: me !== null && me.status === "active" && me.plan !== null,
+        exhausted: ex !== null,
+        ...(ex ? { resetAt: ex.resetAt } : {}),
+        imageModels: me?.imageModels ?? [],
       };
     },
 
