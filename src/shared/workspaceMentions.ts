@@ -45,26 +45,34 @@ export function mentionExcerpt(text: string, max = MENTION_EXCERPT_MAX): string 
   return flat.length <= max ? flat : `${flat.slice(0, max - 1)}…`;
 }
 
-/** 未读条数：按工作区、按会话各一份。
+/** 未读条数：总数一份，按工作区、按会话各一份。
  *
- * **两份都要**：组头收起来的时候会话行根本不在屏幕上，只有组头那一格能说话；
- * 展开之后又必须指出是**哪一条**会话，否则人得一条条点开找。
+ * **三份都要**：工作区自己独占一栏之后（#1087），人站在任务/项目栏时整份清单
+ * 都不在屏幕上，只有切换器那一格能说话，而它认识的只有 `total`；组头收起来的
+ * 时候会话行不在屏幕上，只有组头那一格能说话；展开之后又必须指出是**哪一条**
+ * 会话，否则人得一条条点开找。
+ *
+ * `total` 是这里算的不是调用方 `filter(r => !r.read).length` 出来的：「哪一条算
+ * 未读」只能有一份判据，抄第二遍的那天两处会各自演化。
  *
  * 已读的行照旧留在入参里（`markMentionsRead` 只翻 `read`，不删行）——删了的话
  * 「这条会话里有没有人喊过我」这个问题就再也答不出来了，而那正是以后要做的
  * 「@ 我的」清单唯一的数据源。 */
 export function unreadMentionCounts(rows: readonly WorkspaceMentionRow[]): {
+  total: number;
   byWorkspace: Record<string, number>;
   bySession: Record<string, number>;
 } {
   const byWorkspace: Record<string, number> = {};
   const bySession: Record<string, number> = {};
+  let total = 0;
   for (const r of rows) {
     if (r.read) continue;
+    total += 1;
     byWorkspace[r.workspaceId] = (byWorkspace[r.workspaceId] ?? 0) + 1;
     bySession[r.sessionId] = (bySession[r.sessionId] ?? 0) + 1;
   }
-  return { byWorkspace, bySession };
+  return { total, byWorkspace, bySession };
 }
 
 /** 一条 realtime 推上来的新行并进手上这份清单。

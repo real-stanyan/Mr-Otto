@@ -1,5 +1,11 @@
-// WorkspacesSidebarSection —— 侧栏「项目」栏顶部的工作区一节（issue #917 搬进来，
-// issue #919 长成工程组的样子）。
+// WorkspacesSidebarSection —— 侧栏「工作区」这一栏的全部内容（issue #917 从抽屉
+// 搬进侧栏，issue #919 长成工程组的样子，issue #1087 独占一栏）。
+//
+// **它曾经是「项目」栏顶上的一节**：#917 规则三让工作区和本地工程分开显示，做法是
+// 置顶 + 段尾一道内缩的细线。#1087 把它抬成切换器上的第三档 —— 维护者的判断是
+// 工作区和任务、项目一样是「我在哪儿干活」的一个完整答案，不是项目的一个子类。
+// 于是那道分组线没了消费方（自己一栏，下面没有第二组要分开），空态反过来成了
+// 必需的（见下面 groups.length === 0 那段）。
 //
 // 前身是 WorkspacesPanel：收在 footer icon 的右侧抽屉里，列表和详情页两层都归它管
 // （ADR-0198 切片 3）。搬进侧栏是因为工作区和本地工程是同一个问题的两个答案
@@ -76,11 +82,22 @@ export function WorkspacesSidebarSection({
     for (const id of ids === "" ? [] : ids.split(",")) void refreshCloud(id);
   }, [ids, refreshCloud]);
 
-  // 一条都没有就整节不出：**不画空态**。项目栏底下已经有一段「还没有项目」的
-  // 空态文案，顶上再压一句「还没有工作区」，第一次进来的人要读两段才走到列表。
-  // 发现入口是侧栏头部那颗常驻的「新工作区」，空态本来就是它的活。
-  // 拉取失败时也要出（groups 为空 + 有错 = 「读不到」，不是「没有」）
-  if (groups.length === 0 && error === null) return null;
+  // 一条都没有时画空态（#1087 反过来了）。原来是整节不出、**故意不画空态**，
+  // 理由是「项目栏底下已经有一段『还没有项目』，顶上再压一句，第一次进来的人
+  // 要读两段才走到列表」—— 独占一栏之后那个前提没了：这一栏里没有别的东西会
+  // 说话，不画就是切过来一片空白，人分不出「还没建过」和「读不到 / 坏了」。
+  // 文案照抄项目栏那段的写法：先说这栏是什么，再指向头部那颗常驻的「新工作区」。
+  // **不在这儿讲订阅**（建群那道闸在 NewWorkspaceDialog / workspaceAccess 里，
+  // 那是一份四态的判据，抄一句到这里就是第二份且必然分家）
+  if (groups.length === 0 && error === null) {
+    // 那一整段写在一行：JSX 把换行加缩进折成一个半角空格，而中文这段靠标点断句，
+    // 折进来的空格在真机上就是「云端，␣群里」这样一个多余的坑
+    return (
+      <div className="px-[10px] py-2 text-xs text-muted-foreground leading-relaxed">
+        还没有工作区。工作区是和别人一起干活的地方——会话跑在云端，群里的人和你派的智能体都能说话。点上面的「新工作区」开一个。
+      </div>
+    );
+  }
 
   return (
     <>
@@ -95,9 +112,6 @@ export function WorkspacesSidebarSection({
           unread={unread}
         />
       ))}
-      {/* 分组线内缩（左右各让出 14px = 组的 8px 内边距再多 6px）。通栏的横线读作
-          「界面构件之间的分隔」，内缩的才读作「同一份清单里的两组」 */}
-      <div className="mx-[14px] mb-1 border-b border-sidebar-border" aria-hidden />
     </>
   );
 }
