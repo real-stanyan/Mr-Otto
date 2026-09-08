@@ -86,8 +86,8 @@ interface PickerGroup {
 }
 
 /** Auto 那一行的说明。**不画在行里**（#1058）：ADR-0244 当初写成第二行正文，
-    维护者看过真机后要求撤掉。降级成 `title` 是这里唯一还剩的位置 —— 触发器一行字宽，
-    浮层底下那条脚注是给「换型号作废缓存」用的 */
+    维护者看过真机后要求撤掉。降级成 `title` 是这里唯一还剩的位置 —— 触发器只有一行
+    字宽，而浮层底下已经没有脚注那一栏了（#1095） */
 const AUTO_HINT = "每轮起跑前先用最便宜那款判一手难度，再据此挑贵的还是便宜的；判不出来时按原样走。";
 
 /** Auto 那一枚记号。用的不是厂商字形——Auto 不是一家厂——而是同尺寸同圆角的
@@ -150,12 +150,6 @@ function ImageRow({
   );
 }
 
-/** token 数的紧凑写法 */
-function fmtTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  return n >= 1000 ? `${(n / 1000).toFixed(1)}K` : String(n);
-}
-
 export function ModelPicker({
   value,
   lane = "auto",
@@ -166,7 +160,6 @@ export function ModelPicker({
   className,
   placeholder,
   filter,
-  cachedTokens = 0,
   imageModels = [],
   imageModel = null,
   onImageChange,
@@ -192,10 +185,6 @@ export function ModelPicker({
   placeholder?: string;
   /** 只列一部分型号（看图设置那格只列 supportsVision 的款）。滤空的组整组不出现 */
   filter?: (m: ModelChoice) => boolean;
-  /** 此刻服务端缓存着多少 prompt token（issue #434）。给了就在浮层底部说一句
-      "换型号会作废它"。只有换**活会话型号**的那个入口传它 —— 设置页里挑代读员/
-      小模型的那几处换的不是这条会话的模型，缓存不受影响，说了反而是误导 */
-  cachedTokens?: number;
   /** 网关此刻供的出图型号（`billing.me.imageModels`，从便宜到贵）。**空 = 整枚开关不画**
       （#1086）：没订阅 / 还没查到 / 网关不供出图，三种情形给同一个答案 —— 整块退回
       改动前的样子，同 `modelMenu` 对 `hosted` 的处置。一行的清单照画：它至少回答了
@@ -454,19 +443,6 @@ export function ModelPicker({
             </>
           )}
         </ModelSelectorList>
-        {/* 换型号的代价，就写在做这个决定的地方（issue #434）。
-            缓存是按型号存的：换过去那一刻新型号没见过这段前缀，整个上下文
-            按未命中价重算一次（命中价约为未命中的十分之一）。
-            不做成确认弹窗 —— 换型号是每天要做很多次的动作，拦一道等于天天罚站；
-            这里只把数字摆在眼前，值不值由人自己判断。
-            门槛 1000：几百 token 的缓存不值得占一行，说了才是噪音 */}
-        {tab === "text" && cachedTokens >= 1000 && (
-          <div className="border-t border-border/60 px-3 py-2 text-[11px] leading-[1.5] text-muted-foreground">
-            换模型会作废
-            <span className="tabular-nums text-foreground/80"> {fmtTokens(cachedTokens)} </span>
-            已缓存 token，下一轮全价重算。
-          </div>
-        )}
         {/* 挡位那一排不画了：这个浮层只回答"用哪个型号"。
             挡位搬去了 components/ThinkingPicker.tsx（输入框控件行上单独一枚浮窗钮）——
             它是型号的属性没错，但改它是一件独立的事，不该只能顺路在选型号时碰到。

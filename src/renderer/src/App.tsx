@@ -44,7 +44,7 @@ import type {
   McpToolPreview,
   SessionSummary,
 } from "../../shared/shellBridge.js";
-import { contextBreakdown, cachedTokensNow } from "../../shared/contextEstimate.js";
+import { contextBreakdown } from "../../shared/contextEstimate.js";
 import { displaySessionTitle } from "../../shared/sessionTitle.js";
 import { countTodos, deriveTodos, turnsSinceTodoUpdate } from "../../session/deriveTodos.js";
 import { deriveSections } from "../../session/deriveSections.js";
@@ -630,8 +630,6 @@ function ComposerPrefsBar() {
         allowAuto
         onChange={(m, l) => void switchModel(m, l)}
         className={BAR_SELECT}
-        // 只有这一处传缓存量：换的是这条活会话的型号，作废的就是它的缓存（issue #434）
-        cachedTokens={cachedTokensNow(events)}
         // 出图型号只在**活会话**上换（#1086）：它落的是一条会话事件，而新会话卡那一处
         // 还没有会话可落。少一格好过给一颗点了报「还没有会话」的钮
         imageModels={imageModels}
