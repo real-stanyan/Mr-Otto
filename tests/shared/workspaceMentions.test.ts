@@ -27,7 +27,7 @@ describe("mentionExcerpt", () => {
 });
 
 describe("unreadMentionCounts", () => {
-  it("按工作区与按会话各一份，已读不计", () => {
+  it("总数、按工作区、按会话各一份，已读不计", () => {
     const rows = [
       ROW({ seq: 1 }),
       ROW({ seq: 2, read: true }),
@@ -35,13 +35,25 @@ describe("unreadMentionCounts", () => {
       ROW({ seq: 4, workspaceId: "w2", sessionId: "s9" }),
     ];
     expect(unreadMentionCounts(rows)).toEqual({
+      total: 3,
       byWorkspace: { w1: 2, w2: 1 },
       bySession: { s1: 1, s2: 1, s9: 1 },
     });
   });
 
-  it("全读完了 = 两份都空（不是 0 这个键）", () => {
-    expect(unreadMentionCounts([ROW({ read: true })])).toEqual({ byWorkspace: {}, bySession: {} });
+  it("全读完了 = 总数 0 + 两份都空（不是 0 这个键）", () => {
+    expect(unreadMentionCounts([ROW({ read: true })])).toEqual({
+      total: 0,
+      byWorkspace: {},
+      bySession: {},
+    });
+  });
+
+  // 切换器上那颗点只认 total（#1087）：它是跨工作区的和，不是某一格的投影 ——
+  // 拿 byWorkspace 里最大的那格当它，两个工作区各有一条未读时就少报一条
+  it("total 是跨工作区的和", () => {
+    const rows = [ROW({ seq: 1 }), ROW({ seq: 2, workspaceId: "w2", sessionId: "s9" })];
+    expect(unreadMentionCounts(rows).total).toBe(2);
   });
 });
 

@@ -18,7 +18,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu.js";
 import { useChat } from "./store.js";
-import type { SettingsSection } from "./store.js";
+import type { SettingsSection, SidebarTab } from "./store.js";
 import ottoLogo from "./assets/otto.png";
 import { CodeDiff } from "@/components/elements/code-diff.js";
 import { ReviewableDiff } from "@/components/elements/reviewable-diff.js";
@@ -78,6 +78,7 @@ import { PublishSessionDialog } from "./components/PublishSessionDialog.js";
 import { ShareGrantDialog, type ShareGrantTarget } from "./components/ShareGrantDialog.js";
 import { serversUsedInSession } from "../../shared/shareGrant.js";
 import { isDefaultWorkspace } from "../../shared/defaultWorkspace.js";
+import { unreadMentionCounts } from "../../shared/workspaceMentions.js";
 import { SEARCH_LEFT, SidebarNub, SidebarToggle, SidebarTriggerSlot, TOGGLE_TOP } from "./components/SidebarNub.js";
 import { FriendChatView } from "./components/FriendChatView.js";
 import { SideChatWindow } from "./components/SideChatWindow.js";
@@ -1623,16 +1624,11 @@ const WS_COLLAPSED_KEY = "otter-sidebar-collapsed-workspaces";
    按下去得有反应 */
 const HEADER_BUTTON =
   "press-scale min-w-0 py-[7px] text-[13px] font-normal border border-border hover:bg-foreground/[0.06]";
-/* 项目栏并排那一对（「新会话」/「新工作区」，issue #921）。**一份类名串两处共用**
-   而不是各写各的：这两颗要长一样是维护者点名的要求，抄两遍的话下次只改一边就又不一样了。
-   px-2 不是 px-3——侧栏窄，等分之后每颗只有一百出头的像素，px-3 会让「新工作区」
-   四个字顶到图标上。justify-center 而不是 start：等宽的一对，左对齐会在各自右边留一段
-   长短不一的空，居中让两颗的内容各自以自己为轴 */
-const TWIN_BUTTON = `${HEADER_BUTTON} flex-1 justify-center gap-1.5 px-2`;
-/* 任务栏只有「新会话」一颗时的样子（issue #923）：撑满一行、内容**左对齐**。
-   居中是上面那一对为了等分才要的，通栏之后那个理由就没了；而正下方的「已归档会话」
-   是通栏左对齐——两条通栏按钮上下叠着，一个居中一个靠左读起来就是没对齐。
-   gap/px 跟着「已归档会话」那一颗走，不跟上面那一对 */
+/* 每一栏那颗开局钮的样子（任务/项目栏是「新会话」，工作区栏是「新工作区」）：
+   撑满一行、内容**左对齐**。#921 那一版曾经是并排等宽的一对（TWIN_BUTTON，居中），
+   #1087 把工作区抬成独立一栏之后每一栏都只剩一颗，居中那个理由（等分的一对各自
+   以自己为轴）随之消失；而正下方的「已归档会话」是通栏左对齐——两条通栏按钮上下
+   叠着，一个居中一个靠左读起来就是没对齐。gap/px 跟着「已归档会话」那一颗走 */
 const SOLO_BUTTON = `${HEADER_BUTTON} w-full justify-start gap-2 px-3`;
 /** 归档区「没有工程记录」那段的折叠键。真路径都以 / 开头，撞不上 */
 const NO_WORKSPACE_KEY = "\u0000no-workspace";
@@ -1809,6 +1805,13 @@ function AppSidebar() {
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
   }, [account.signedIn, refreshWorkspaceMentions]);
+  // 切换器上「工作区」那一格要不要亮点（#1087）。工作区独占一栏之后，#1064 那两处
+  // 角标（组头 + 会话行）在人站在任务/项目栏时一处都不在屏幕上——被 @ 这件事整个
+  // 消失了，而它恰恰是"有人在等你"。总数在这一层算一次:同 WorkspacesSidebarSection
+  // 的写法，依赖取那个数组本身（`unreadMentionCounts` 每次都造新对象，写进 selector
+  // 就是 useSyncExternalStore 上一个真的死循环）
+  const mentionRows = useChat((s) => s.workspaceMentions);
+  const unreadMentions = useMemo(() => unreadMentionCounts(mentionRows).total, [mentionRows]);
   // 详情页开着的那个此刻还在不在(被解散/退群后它会从快照里消失)——找不到就等于
   // 关掉,不用另写一条善后逻辑
   const openedWorkspace = workspaceGroups.find((g) => g.id === openWorkspaceId) ?? null;
@@ -1863,9 +1866,13 @@ function AppSidebar() {
     [sessions, builtin]
   );
   const archivedCount =
-    tab === "tasks"
-      ? archivedTask.length
-      : archived.groups.reduce((n, g) => n + g.sessions.length, 0) + archived.ungrouped.length;
+    tab === "workspaces"
+      // 工作区栏没有这一屏（#1087）：归档的云会话在工作区设置页底部（ADR-0218），
+      // 这两个数（本机 Default / 本机工程）在那一栏一个都不该报
+      ? 0
+      : tab === "tasks"
+        ? archivedTask.length
+        : archived.groups.reduce((n, g) => n + g.sessions.length, 0) + archived.ungrouped.length;
   // 归档行：分组区和"没有工程记录"那段共用同一份行，行为完全一致——
   // 点击只是翻历史（不自动恢复归档），⋮ 里放恢复和删除
   const archivedRow = (s: SessionSummary) => (
@@ -2000,6 +2007,14 @@ function AppSidebar() {
   // 换成和设置模式同一套互斥逻辑——整个侧栏切过去，带一条返回的路。
   // 纯 UI 位置，不进事件日志，也不必跨会话记忆：切走再回来该回到会话列表
   const [archivedView, setArchivedView] = useState(false);
+  /** 切档（#1087）。顺手退出归档屏：归档那一屏只有任务/项目两种，人站在它上面切到
+      工作区栏时，画的是项目的归档、切换器却写着「工作区」（下面那棵树的分支顺序上
+      archivedView 排在 tab 之前）。收在**入口**这一处，而不是给那棵树再加一个
+      `tab !== "workspaces"` 的条件——同一个判据写两处迟早分家 */
+  const switchTab = (next: SidebarTab): void => {
+    setTab(next);
+    if (next === "workspaces") setArchivedView(false);
+  };
   // 重命名走应用内对话框：Electron 的 window.prompt 是**抛异常**的
   // （"prompt() is not supported."），原来那句 prompt() 让整条 onClick 半路夭折，
   // 点「重命名」什么都不发生。alert/confirm 在 Electron 里能用，prompt 不能
@@ -2103,40 +2118,83 @@ function AppSidebar() {
             设置模式下侧栏不是会话导航，这颗按钮没有落点，隐掉 */}
         {settingsSection === null && (
           <>
-            {/* 任务/项目档位（原 Work/Game 的位置与实现套路,60e0479）：它切的是
-                整个会话列表在展示什么,属于导航。面板不在这棵树里,Root 只当分段
-                控件用——把 Root 提出去罩住两边会让 shadcn sidebar 的 peer 兄弟
-                选择器算错宽度(主区不被推开);代价是 trigger 的 aria-controls
-                指向一个不存在的 panel id */}
-            <Tabs value={tab} onValueChange={(v) => setTab(v as "tasks" | "projects")}>
+            {/* 任务/项目/工作区档位（原 Work/Game 的位置与实现套路,60e0479;
+                第三档是 #1087）：它切的是整个会话列表在展示什么,属于导航。
+                面板不在这棵树里,Root 只当分段控件用——把 Root 提出去罩住三边会让
+                shadcn sidebar 的 peer 兄弟选择器算错宽度(主区不被推开);代价是
+                trigger 的 aria-controls 指向一个不存在的 panel id。
+                **px-1.5 gap-1 是三档之后在真机上量出来的**（默认 px-2 gap-1.5）：
+                侧栏 16rem 减去 header 的 p-2 与 TabsList 的 p-[3px] = 234px，三等分
+                每颗 78px；而「工作区」三个全角字量得 42px、图标 16px，配默认内边距
+                16 + 间距 6 = 80 > 78。flex 项的 min-width 是 auto，所以**它不截断也
+                不撑破侧栏，它自己长到 82px 再把两个邻居各挤成 76px** —— 一排分段
+                控件从此不等宽，且切档时那颗白药丸的宽度会跳。收窄到 px-1.5 gap-1
+                之后需要 74px，三颗都稳在 78。两档时代富余 12px，所以这笔账是第三档
+                带来的；同 ADR-0236 第 1 条，这两个字面量之间的算术**故意没写成断言**
+                （扫源码的正则会在任何无害重构上翻红），保鲜期就是这段注释 */}
+            <Tabs value={tab} onValueChange={(v) => switchTab(v as SidebarTab)}>
               <TabsList className="w-full">
-                {/* 图标沿用两栏各自的既有语汇:任务清单面板用的就是 ListChecks,
-                    工程分组/设置「工作区」用的是 FolderOpen——同一个概念一张脸 */}
-                <TabsTrigger value="tasks">
+                {/* 图标沿用三栏各自的既有语汇:任务清单面板用的就是 ListChecks,
+                    工程分组/设置「工作区」用的是 FolderOpen,工作区那颗新建钮、
+                    弹窗标题、侧栏组头用的是 Boxes——同一个概念一张脸 */}
+                <TabsTrigger value="tasks" className="px-1.5 gap-1">
                   <ListChecks aria-hidden />
                   任务
                 </TabsTrigger>
-                <TabsTrigger value="projects">
+                <TabsTrigger value="projects" className="px-1.5 gap-1">
                   <FolderOpen aria-hidden />
                   项目
                 </TabsTrigger>
+                <TabsTrigger
+                  value="workspaces"
+                  className="px-1.5 gap-1"
+                  /* 有未读点名时把话说进 aria-label(点自己 aria-hidden):这一栏的
+                     名字仍然要在里面,读屏念出来的是整个可及名 */
+                  aria-label={
+                    unreadMentions > 0 ? `工作区（有 ${unreadMentions} 条 @ 你的消息没看）` : undefined
+                  }
+                >
+                  <Boxes aria-hidden />
+                  工作区
+                  {/* 未读点名的记号（#1064 的角标被 #1087 这道 tab 挡住了：人站在
+                      任务/项目栏时，组头和会话行那两处角标一处都不在屏幕上，
+                      谁 @ 了他完全无声）。**画点不画数**：这一格只有 78px 宽，
+                      塞不下数字；量级本来就在下一层（组头 + 会话行各一枚带数的
+                      角标），这颗只回答「工作区那边有事」——同 ADR-0255 那颗额度点
+                      的取舍。绝对定位不占版面宽度,不然「工作区」三个字先被顶出去。
+                      色取 --brand 不取 --warn:被 @ 不是「出事了」(同 MentionBadge) */}
+                  {unreadMentions > 0 && (
+                    <span
+                      className="absolute top-1 right-1 size-1.5 rounded-full bg-brand"
+                      aria-hidden
+                    />
+                  )}
+                </TabsTrigger>
               </TabsList>
             </Tabs>
-            {/* 项目栏是并排的一对,**同一副样子**(issue #921):同一个 TWIN_BUTTON 类名串、
-                各占一半宽、图标同尺寸、字色同一档。#919 那一版曾经想用「描边/不描边 +
-                宽度 + 字色」三样一起分主次,维护者看完真机说这两颗要长一样——
-                两个入口本来就是并列的两件事(开一条会话 / 开一块地方),
-                样式上分出主次反而是在说"右边那颗不太重要"。
-                ＋ 从原来那个全角字符换成 lucide 的 Plus:一颗图标一颗字符,
-                两边的视觉重量对不齐,而"长一样"第一眼看的就是这个。
-                任务栏只有左边那颗(issue #923):工作区是项目那一侧的概念,而任务栏的
-                全部意义就是「不用先懂文件夹」,摆一颗建工作区的钮进去等于把它刚省掉的
-                概念又端回来。它生出来的东西(WorkspacesSidebarSection)本来也只在项目栏
-                画得出来——按钮留在任务栏的话,点完人在原地看不见任何结果 */}
-            <div className="flex items-center gap-2">
+            {/* 一栏一颗开局钮,**跟着这一栏生出来的东西走**（#1087）。
+                #923 那条判据原样成立、只是换了一栏:「按钮留在任务栏的话,点完人在
+                原地看不见任何结果」—— 新工作区生出来的东西(WorkspacesSidebarSection)
+                如今只在工作区栏画得出来,所以那颗钮跟着搬过来了。
+                工作区栏**没有「新会话」**:云会话必须落在某一个工作区里,而这一栏
+                顶上没有「哪一个」可言;开一条的入口在每个工作区组头那颗 ＋ 上。
+                #921 那条「两颗要长一样」跟着 TWIN_BUTTON 一起没了消费方——它要的是
+                并排那一对不分主次,而现在任何一栏都只有一颗,不再有"并排" */}
+            {tab === "workspaces" ? (
+              // 新工作区(issue #917)。图标沿用 Boxes,和侧栏里工作区组头、
+              // 弹窗标题是同一张脸
               <Button
                 variant="ghost"
-                className={tab === "projects" ? TWIN_BUTTON : SOLO_BUTTON}
+                className={SOLO_BUTTON}
+                onClick={() => setNewWorkspaceOpen(true)}
+              >
+                <Boxes className="size-4 shrink-0" aria-hidden />
+                新工作区
+              </Button>
+            ) : (
+              <Button
+                variant="ghost"
+                className={SOLO_BUTTON}
                 onClick={() => {
                   setArchivedView(false); // 开新会话就是回到干活那一屏,别把人留在归档里
                   // 任务档的新会话直接落进内置 Default(不用选文件夹);
@@ -2147,21 +2205,13 @@ function AppSidebar() {
                 <Plus className="size-4 shrink-0" aria-hidden />
                 新会话
               </Button>
-              {/* 新工作区(issue #917)。图标沿用 Boxes,和侧栏里工作区组头、
-                  弹窗标题是同一张脸 */}
-              {tab === "projects" && (
-                <Button
-                  variant="ghost"
-                  className={TWIN_BUTTON}
-                  onClick={() => setNewWorkspaceOpen(true)}
-                >
-                  <Boxes className="size-4 shrink-0" aria-hidden />
-                  新工作区
-                </Button>
-              )}
-            </div>
+            )}
             {/* 已归档入口。次级:不描边、字色压一档 —— 它和上面那颗不是并列的两件事,
-                上面是"开始干活",这里是"去翻旧账"。再点一次原路返回,省一次找返回钮 */}
+                上面是"开始干活",这里是"去翻旧账"。再点一次原路返回,省一次找返回钮。
+                **工作区栏不画它**（#1087）:归档的云会话不在这一屏,它们在每个工作区
+                ⚙ 那一页的底部（ADR-0218）。摆一颗在这儿等于给一颗永远报 0、点开永远
+                是空屏的钮 —— 而空屏那句「会话行的 ⋮ 菜单里有归档」在这一栏还是假的 */}
+            {tab !== "workspaces" && (
             <Button
               variant="ghost"
               aria-pressed={archivedView}
@@ -2179,6 +2229,7 @@ function AppSidebar() {
                 </span>
               )}
             </Button>
+            )}
           </>
         )}
       </SidebarHeader>
@@ -2274,6 +2325,15 @@ function AppSidebar() {
               </>
             )}
           </>
+        ) : tab === "workspaces" ? (
+          // 工作区视图（#1087）：这一栏从头到尾就是这一节。原来它置顶挂在项目栏上、
+          // 段尾一道内缩细线和本地工程分开（#917 规则三），现在分开这件事由切换器
+          // 本身承担，那道线跟着删了；空态反过来成了必需的（组件里那段注释）
+          <WorkspacesSidebarSection
+            collapsed={wsCollapsed}
+            onToggle={toggleWorkspaceGroup}
+            onManage={setOpenWorkspaceId}
+          />
         ) : tab === "tasks" ? (
           // 任务视图：内置 Default 工作区的会话，不出现路径——这一栏的全部意义
           // 就是不用先懂「文件夹」。按主题桶分组（#846），组内仍是最近活跃在前。
@@ -2297,17 +2357,9 @@ function AppSidebar() {
           </SidebarMenu>
         ) : (
           <>
-            {/* 工作区置顶（issue #917 规则三：和自己的项目分开显示）。放最上面不是
-                因为它更重要,是因为它是上面那颗「新工作区」生出来的东西——按钮在
-                头部,产物就该在紧挨着头部的地方出现(空间一致性)。段尾那道内缩的
-                细线是「分开显示」的落点,见组件注释。
-                每个工作区自己是一个组（＋ 开新会话、⚙ 进设置、组内列云会话），
-                骨架与下面的本地工程组同款——issue #919 */}
-            <WorkspacesSidebarSection
-              collapsed={wsCollapsed}
-              onToggle={toggleWorkspaceGroup}
-              onManage={setOpenWorkspaceId}
-            />
+            {/* 工作区不在这一栏了（#1087 把它抬成切换器上的第三档）。#917 规则三
+                「和自己的项目分开显示」还在，只是从"同一栏里的两组 + 一道分组线"
+                变成了两栏 */}
             {/* 同步过的会话单列一段在最上（issue #809）：分享的单位是会话不是工程，
                 平铺；行的 fallback 标题给它原属工程的文件夹名，线索不断 */}
             {projectParts.shared.length > 0 && (

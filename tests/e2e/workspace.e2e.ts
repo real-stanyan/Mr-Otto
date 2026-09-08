@@ -10,14 +10,15 @@
 // 生命周期里都是 false。
 //
 // 于是这一屏必然停在 `workspaceAccess` 的 signed_out 那一档（见
-// src/renderer/src/lib/workspaceAccess.ts）：侧栏里没有工作区那一节（一条都
-// 没有 + 没有错误 = 整节不出），「新工作区」照常在——它是项目栏常驻的发现入口，
-// 点开告诉你为什么现在不行、并给一条出去的路。这两件事正是这条用例能诚实
-// 断言的全部；建群 → 改名 → 贡献连接器 → 撤回的完整链路需要两个真实登录的
-// 账号，走 docs/dev-two-accounts.md 手册手动验，不写进自动化。
+// src/renderer/src/lib/workspaceAccess.ts）：工作区栏里一条工作区都没有，
+// 「新工作区」照常在——它是那一栏常驻的发现入口，点开告诉你为什么现在不行、
+// 并给一条出去的路。这两件事正是这条用例能诚实断言的全部；建群 → 改名 →
+// 贡献连接器 → 撤回的完整链路需要两个真实登录的账号，走
+// docs/dev-two-accounts.md 手册手动验，不写进自动化。
 //
-// 先点一下「项目」：那颗钮只在项目栏（issue #923），而全新的 HOME 一条会话都
-// 没有，侧栏初值落在任务栏。
+// 先点一下「工作区」：切换器三档，那颗钮只在这一栏（issue #1087 把它从项目栏
+// 搬过来，判据没变——按钮跟着它生出来的东西走，#923），而全新的 HOME 一条会话
+// 都没有，侧栏初值落在任务栏。
 
 import { expect, test } from "@playwright/test";
 
@@ -26,10 +27,11 @@ import { expectNoRendererErrors, launchOtto } from "./harness.js";
 test("新工作区：未登录时弹窗说清为什么 + 给出去的路，关得掉也开得回来", async () => {
   const otto = await launchOtto();
   try {
-    // 侧栏里没有工作区那一节：一条工作区都没有（也拉不到）时整节不渲染，
-    // 段头「工作区」这三个字不该出现在侧栏里
-    await otto.win.getByRole("tab", { name: "项目" }).click();
+    // 工作区栏是空的：一条都没有 + 没有错误 = 那一栏画空态那句话（#1087 之前
+    // 是整节不出，那时它还挂在项目栏顶上、底下就有一段「还没有项目」）
+    await otto.win.getByRole("tab", { name: "工作区" }).click();
     await expect(otto.win.getByRole("button", { name: "新工作区" })).toBeVisible({ timeout: 15_000 });
+    await expect(otto.win.getByText(/还没有工作区/)).toBeVisible();
 
     await otto.win.getByRole("button", { name: "新工作区" }).click();
     const dialog = otto.win.getByRole("dialog");

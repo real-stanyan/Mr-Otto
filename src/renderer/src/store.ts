@@ -186,6 +186,11 @@ export interface McpPromptFormState {
     刷出来，调用方不能当"没成"处理（那会让用户重试一遍撞 23505 同名冲突） */
 export type WorkspaceAgentMutationResult = "ok" | "ok_stale" | "failed";
 
+/** 侧栏顶部那个切换器的三档（#1087）。**一处定义三处用**（state / setter /
+    AppSidebar 里的 onValueChange 断言）：三份字面量并排放着，加一档时漏改一处
+    tsc 不会红，只会让那一档在某一处静默不认识 */
+export type SidebarTab = "tasks" | "projects" | "workspaces";
+
 /** 当前 join 着的云会话（Task 13，ADR-0199）。state/deniedCode/initiatorUid/
     ownerUid/selfUid 逐字段照抄 ShellBridge 的 CloudSessionStatus——onCloudSessionStatus
     推来的就是这五个字段，这里只多一个 events（推送另开 onCloudSessionEvent 通道，
@@ -254,10 +259,10 @@ interface ChatState {
   /** 兜底工作区镜像(#559):Welcome 预填与设置页「工作区」栏目共用。
       null = 还没从主进程读到(loadWorkspaceSettings 补) */
   workspaceSettings: WorkspaceSettingsInfo | null;
-  /** 侧栏「任务/项目」档位(#559 后续)。进 store 而不是留在 AppSidebar 本地:
-      Welcome composer 要按它决定「锁死 Default 还是让选文件夹」。
+  /** 侧栏「任务/项目/工作区」档位(#559 后续,#1087 加第三档)。进 store 而不是
+      留在 AppSidebar 本地: Welcome composer 要按它决定「锁死 Default 还是让选文件夹」。
       纯本机视图状态,不落日志(60e0479 的先例) */
-  sidebarTab: "tasks" | "projects";
+  sidebarTab: SidebarTab;
   /** turn 状态按会话记：A 跑着时你可能正看 B。缺省 = idle */
   statusBySession: Record<string, TurnStatus>;
   /** turn 级聚合 diff（issue #345）：主进程每次写盘后整份替换推送。
@@ -772,7 +777,7 @@ interface ChatState {
   pickWorkspace(): Promise<string | null>;
   /** 兜底工作区镜像补一次(#559)。幂等:已读到就不再问 */
   loadWorkspaceSettings(): Promise<void>;
-  setSidebarTab(tab: "tasks" | "projects"): void;
+  setSidebarTab(tab: SidebarTab): void;
   /** 设置默认工作文件夹;null = 恢复内置 Default。落盘后镜像跟着更新 */
   setDefaultWorkspace(dir: string | null): Promise<void>;
   /** 清理 Default 下空的任务文件夹（#851） */
