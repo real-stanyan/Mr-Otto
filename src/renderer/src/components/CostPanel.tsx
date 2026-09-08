@@ -73,12 +73,29 @@ export function sessionTotal(rows: ModelUsage[], tokens: number): string {
   return fmtTokens(tokens);
 }
 
+/**
+ * 这个会话该不该看到「花了多少」。
+ *
+ * **订阅用户整段不画**（#1071）：他按额度跑，而这一段回答的是「这一次花了多少」
+ * —— 一个和他买的东西相矛盾的心智模型。注意订阅用户今天看到的**不是 `$` 而是
+ * `credit`**（`money()` 对 hosted 段走 `fmtCredit`）：换了单位，心智模型没换，
+ * 所以要删的是整段，不是把单位改回来。他那半张卡改由「套餐额度」两只环 +
+ * 一行型号脚注回答（PlanQuotaSection / ModelFootnote）。
+ *
+ * 判据是**有没有一笔走自己的 key**，不是「有没有订阅」：混着跑的时候 direct
+ * 那几笔是真金白银，账要报得出来；全托管才闭嘴。一行都没有时同样不画
+ * （一次模型都没调过就不占地方）。
+ */
+export function showsCost(rows: ModelUsage[]): boolean {
+  return rows.some((r) => r.route === "direct");
+}
+
 export function CostPanel({ events }: { events: SessionEvent[] }) {
   const rows = useMemo(() => usageByModel(events), [events]);
   const total = useMemo(() => totalTokens(events), [events]);
   const cache = useMemo(() => cacheStats(events), [events]);
 
-  if (rows.length === 0) return null; // 一次模型都没调过就不占地方
+  if (!showsCost(rows)) return null;
 
   const sessionCost = sessionTotal(rows, total);
 
