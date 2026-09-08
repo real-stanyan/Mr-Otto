@@ -12,7 +12,16 @@
 //     认不出的**原样显示 id**，不猜也不美化 —— 网关上了新款而本仓这张表还没跟上时，
 //     裸 id 至少是真的，编一个名字则是假的。
 
+import { AUTO_MODEL } from "./autoModel.js";
 import type { SessionEvent } from "../session/events.js";
+
+/** 出图那一格此刻是不是「Auto」（#1086）。**「没选过」与「显式选了 Auto」是同一档**：
+    两者行为逐字相同（都由系统挑），分成两格的话，一个从没碰过这一格的人会看到
+    「一行都没勾」，而他其实正处在 Auto 里。合成一档之后，勾在 Auto 上还是在某一款上，
+    恰好就回答了「这是我选的，还是默认就是它」—— 那正是 ADR-0260 记的已知代价 ④。 */
+export function isImageAuto(selected: string | null): boolean {
+  return selected === null || selected === AUTO_MODEL;
+}
 
 /** 这条会话此刻选的出图型号。`null` = 没选过（照旧走网关最便宜那款）。
     与型号 / lane / Auto 同一个取法：最后一条事件胜出，不加第二种持久化 */
@@ -50,4 +59,42 @@ export const IMAGE_MODEL_LABELS: Readonly<Record<string, string>> = {
 /** 选单上写什么。认不出就原样回 id（见文件头） */
 export function imageModelLabel(id: string): string {
   return IMAGE_MODEL_LABELS[id] ?? id;
+}
+
+// ── 厂商标那一格（#1086） ─────────────────────────────────────────────
+
+/** 出图型号是谁家的。**与 `ProviderId` 是两套东西**：`model_route.platform` 对
+    七行出图路由全是 `openrouter`（那说的是上游是谁，不是牌子是谁），而 ByteDance
+    压根不是本仓的一家模型提供商（没有 key、没有端点、目录里一款聊天模型都没有）——
+    往 `providerCatalog` 里塞一个只为画图标而存在的条目，是让那张表开始撒谎。 */
+export type ImageVendor = "google" | "openai" | "bytedance";
+
+export const IMAGE_VENDOR_NAMES: Readonly<Record<ImageVendor, string>> = {
+  google: "Google",
+  openai: "OpenAI",
+  bytedance: "ByteDance",
+};
+
+/** id → 牌子。键与 `IMAGE_MODEL_LABELS` **必须逐个对上**（`tests/shared/imageModel.test.ts`
+    钉住）：两张表都是人手维护的，只补一张的样子是「有名字没有标」或反过来，
+    而那两种都只是少一格、不报错 */
+export const IMAGE_MODEL_VENDORS: Readonly<Record<string, ImageVendor>> = {
+  "gemini-2.5-flash-image": "google",
+  "gemini-3.1-flash-image": "google",
+  "gemini-3.1-flash-lite-image": "google",
+  "gemini-3-pro-image": "google",
+  "seedream-4.5": "bytedance",
+  "seedream-5-0-lite": "bytedance",
+  "seedream-5-0-pro": "bytedance",
+  "gpt-image-1": "openai",
+  "gpt-image-1-mini": "openai",
+  "gpt-image-2": "openai",
+  "gpt-5.4-image-2": "openai",
+};
+
+/** 这一款画哪家的标。**认不出的不画**（`null`），不按 id 前缀猜 —— 那条路会在
+    网关上一款陌生前缀的新模型时给它安一家厂，而 logo 的全部用处是让人一眼认出来，
+    认错了比认不出更坏（同 ADR-0254 「认不出的型号不画标」） */
+export function imageModelVendor(id: string): ImageVendor | null {
+  return IMAGE_MODEL_VENDORS[id] ?? null;
 }

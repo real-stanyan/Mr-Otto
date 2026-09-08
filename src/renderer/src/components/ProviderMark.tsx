@@ -15,6 +15,8 @@
 import type { IconType } from "@lobehub/icons/es/types/index.js";
 
 import AnthropicMono from "@lobehub/icons/es/Anthropic/components/Mono.js";
+import ByteDanceMono from "@lobehub/icons/es/ByteDance/components/Mono.js";
+import * as bytedanceStyle from "@lobehub/icons/es/ByteDance/style.js";
 import * as anthropicStyle from "@lobehub/icons/es/Anthropic/style.js";
 import DeepSeekMono from "@lobehub/icons/es/DeepSeek/components/Mono.js";
 import * as deepseekStyle from "@lobehub/icons/es/DeepSeek/style.js";
@@ -45,6 +47,8 @@ import * as xaiStyle from "@lobehub/icons/es/XAI/style.js";
 import ZhipuMono from "@lobehub/icons/es/Zhipu/components/Mono.js";
 import * as zhipuStyle from "@lobehub/icons/es/Zhipu/style.js";
 
+import type { ImageVendor } from "../../../shared/imageModel.js";
+import { IMAGE_VENDOR_NAMES } from "../../../shared/imageModel.js";
 import type { ProviderId } from "../../../shared/providerCatalog.js";
 import { findProvider } from "../../../shared/providerCatalog.js";
 import { cn } from "@/lib/utils.js";
@@ -103,25 +107,34 @@ const BRANDS: Record<ProviderId, Brand> = {
   ollama: brand(asIcon(OllamaMono), ollamaStyle),
 };
 
+/** 出图型号那一格的厂商（#1086）。**与 `ProviderId` 是两套东西**：出图路由的
+    `platform` 全是 `openrouter`（那说的是上游是谁，不是牌子是谁），而 ByteDance
+    压根不是本仓的一家模型提供商（没有 key、没有端点、目录里一款聊天模型都没有）。
+    往 `providerCatalog` 里塞一个只为画图标而存在的条目，是让那张表开始撒谎。 */
+const IMAGE_VENDOR_BRANDS: Record<ImageVendor, Brand> = {
+  google: BRANDS.google,
+  openai: BRANDS.openai,
+  bytedance: brand(asIcon(ByteDanceMono), bytedanceStyle),
+};
+
 /** size = 方块边长（px，默认 20）；图形按各家官方比例居中 */
-export function ProviderMark({
-  provider,
-  size = 20,
+function Mark({
+  b,
+  size,
   className,
   title,
 }: {
-  provider: ProviderId;
-  size?: number;
-  className?: string;
-  title?: string;
+  b: Brand;
+  size: number;
+  className?: string | undefined;
+  title: string | undefined;
 }) {
-  const b = BRANDS[provider];
   const { Icon } = b;
   const glyph = Math.round(size * b.multiple);
   return (
     <span
       aria-hidden
-      title={title ?? findProvider(provider)?.name}
+      title={title}
       style={{ background: b.background, color: b.color, width: size, height: size }}
       className={cn(
         "inline-flex shrink-0 items-center justify-center rounded-[6px] ring-1 ring-black/10 ring-inset dark:ring-white/[0.14]",
@@ -138,5 +151,38 @@ export function ProviderMark({
         style={{ width: glyph, height: glyph }}
       />
     </span>
+  );
+}
+
+/** 模型下拉框与「模型配置」页那枚方块 */
+export function ProviderMark({
+  provider,
+  size = 20,
+  className,
+  title,
+}: {
+  provider: ProviderId;
+  size?: number;
+  className?: string;
+  title?: string;
+}) {
+  return (
+    <Mark b={BRANDS[provider]} size={size} className={className} title={title ?? findProvider(provider)?.name} />
+  );
+}
+
+/** 出图那一格的同一枚方块（#1086）。**共用 `Mark` 不是各画一遍**：两处并排在同一枚
+    选单的两格里，圆角 / 内描边 / 图占比只要有一处漂移，切一下格子就看得出来 */
+export function ImageVendorMark({
+  vendor,
+  size = 20,
+  className,
+}: {
+  vendor: ImageVendor;
+  size?: number;
+  className?: string;
+}) {
+  return (
+    <Mark b={IMAGE_VENDOR_BRANDS[vendor]} size={size} className={className} title={IMAGE_VENDOR_NAMES[vendor]} />
   );
 }

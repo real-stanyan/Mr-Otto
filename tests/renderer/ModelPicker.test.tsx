@@ -178,6 +178,12 @@ describe("ModelPicker：「文字 / 图像」那枚开关（#1086）", () => {
     await userEvent.click(screen.getByRole("tab", { name: "图像" }));
   }
 
+  /** 此刻哪一行带着勾。**不能靠「行里有没有 svg」**：每一行左边都有厂商标那枚 svg，
+      那样认会把所有行都认成选中（加 logo 那天真的这样了） */
+  const picked = (): string[] =>
+    screen.getAllByRole("option").filter((o) => o.getAttribute("data-picked") === "true")
+      .map((o) => o.textContent ?? "");
+
   it("清单空 = 整枚开关不画，下面一切照旧 —— 没订阅 / 还没查到 / 网关不供出图同一个答案", async () => {
     seedSubscribedNoKeys();
     render(<ModelPicker value="glm-5.3" onChange={() => {}} />);
@@ -193,7 +199,7 @@ describe("ModelPicker：「文字 / 图像」那枚开关（#1086）", () => {
     expect(screen.queryByRole("tab")).not.toBeInTheDocument();
   });
 
-  it("切到「图像」：列的是出图型号的人话名字，文字那几款一个都不剩", async () => {
+  it("切到「图像」：Auto 在最上，每一款带人话名字与厂商标，文字那几款一个都不剩", async () => {
     seedSubscribedNoKeys();
     render(
       <ModelPicker value="glm-5.3" onChange={() => {}} imageModels={IMAGES} onImageChange={() => {}} />
@@ -201,27 +207,51 @@ describe("ModelPicker：「文字 / 图像」那枚开关（#1086）", () => {
     // 浮层开着的时候有两个 combobox（cmdk 那个 sr-only 输入锚点也是），所以先抓
     const trigger = screen.getByRole("combobox");
     await openImageTab();
+    // 行的文字 = 厂商字形的可访问名 + 人话标签，同文字那一格的形状
     expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual([
-      "Seedream 5.0 Lite", "Nano Banana 2", "Nano Banana Pro",
+      "Auto",
+      "ByteDanceSeedream 5.0 Lite",
+      "GeminiNano Banana 2",
+      "GeminiNano Banana Pro",
     ]);
-    // 上面那条 toEqual 已经钉住「文字那几款一行都不剩」。这里再钉一件：
     // 触发器上那行字**照旧是文字模型** —— 它回答的是「这一轮跟谁说话」，
-    // 不该因为你翻到了图像那一格就变（同下面那条点选用例）
+    // 不该因为你翻到了图像那一格就变
     expect(trigger.textContent).toContain("GLM-5.3");
   });
 
-  it("没选过时勾落在**会被用到的那一款**（最便宜那款），不是一行都不勾", async () => {
+  it("不到两款不画 Auto —— 那时它和唯一那款是同一件事（同文字那格的 AUTO_MIN_MODELS）", async () => {
+    seedSubscribedNoKeys();
+    render(
+      <ModelPicker value="glm-5.3" onChange={() => {}} imageModels={["seedream-4.5"]} onImageChange={() => {}} />
+    );
+    await openImageTab();
+    expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual(["ByteDanceSeedream 4.5"]);
+  });
+
+  it("没选过 = Auto 那一档，勾在 Auto 上而不是某一款上", async () => {
+    // 「没选过」与「显式选了 Auto」行为逐字相同，分成两格的话，一个从没碰过这一格的人
+    // 会看到「一行都没勾」而他其实正在 Auto 里
     seedSubscribedNoKeys();
     render(
       <ModelPicker value="glm-5.3" onChange={() => {}} imageModels={IMAGES} onImageChange={() => {}} />
     );
     await openImageTab();
-    // cmdk 的 option 上没有 aria-selected 可用（选中态是自绘的勾），所以看勾挂在哪一行
-    const checked = screen.getAllByRole("option").filter((o) => o.querySelector("svg"));
-    expect(checked.map((o) => o.textContent)).toEqual(["Seedream 5.0 Lite"]);
+    expect(picked()).toEqual(["Auto"]);
   });
 
-  it("选中的那款网关下架了：勾落回最便宜那款 —— 与主进程解路共用 pickImageModel", async () => {
+  it("选了某一款：勾落在那一款上 —— 这一格因此分得出「我选的」和「默认就是它」", async () => {
+    seedSubscribedNoKeys();
+    render(
+      <ModelPicker
+        value="glm-5.3" onChange={() => {}}
+        imageModels={IMAGES} imageModel="gemini-3-pro-image" onImageChange={() => {}}
+      />
+    );
+    await openImageTab();
+    expect(picked()).toEqual(["GeminiNano Banana Pro"]);
+  });
+
+  it("选中的那款网关下架了：勾落回真会跑的那款 —— 与主进程解路共用 pickImageModel", async () => {
     seedSubscribedNoKeys();
     render(
       <ModelPicker
@@ -230,8 +260,7 @@ describe("ModelPicker：「文字 / 图像」那枚开关（#1086）", () => {
       />
     );
     await openImageTab();
-    const checked = screen.getAllByRole("option").filter((o) => o.querySelector("svg"));
-    expect(checked.map((o) => o.textContent)).toEqual(["Seedream 5.0 Lite"]);
+    expect(picked()).toEqual(["ByteDanceSeedream 5.0 Lite"]);
   });
 
   it("点一行只回调出图型号，**触发器上那行字一个字不变** —— 那颗按钮说的是文字模型", async () => {
@@ -248,6 +277,20 @@ describe("ModelPicker：「文字 / 图像」那枚开关（#1086）", () => {
     expect(onImageChange).toHaveBeenCalledWith("gemini-3-pro-image");
     expect(onChange).not.toHaveBeenCalled();
     expect(trigger.textContent).toBe(before);
+  });
+
+  it("点 Auto 回的是那个口令 —— 路由那侧它不在清单里，于是天然回落最便宜那款", async () => {
+    seedSubscribedNoKeys();
+    const onImageChange = vi.fn();
+    render(
+      <ModelPicker
+        value="glm-5.3" onChange={() => {}}
+        imageModels={IMAGES} imageModel="gemini-3-pro-image" onImageChange={onImageChange}
+      />
+    );
+    await openImageTab();
+    await userEvent.click(screen.getByText("Auto"));
+    expect(onImageChange).toHaveBeenCalledWith(AUTO_MODEL);
   });
 
   it("重新打开时回到「文字」那一格 —— 触发器写的是文字模型，开出来停在别处就是按钮说假话", async () => {

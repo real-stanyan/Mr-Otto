@@ -102,6 +102,10 @@ export interface StartSessionOptions {
   /** 缺省 = 该型号的默认档。挡位是型号的属性（见 shared/thinking.ts），
       不是全局布尔——同一个"开"在 GPT-5 上根本不是合法档 */
   thinking?: ThinkingMode;
+  /** 出图型号（#1086）。缺省 = 没选过，`generate_image` 照旧走网关最便宜那款。
+      与 model 一样落成一条事件（`image_model_changed`）——新会话卡上那一格是渲染层
+      草稿，落地这一刻才成为日志事实 */
+  imageModel?: string;
 }
 
 /** 一个已安装的 skill（Claude Code 兼容：<根目录>/<名字>/SKILL.md + YAML frontmatter）。

@@ -117,7 +117,7 @@ import { McpPromptCard } from "./components/McpPromptCard.js";
 import { SectionRail } from "./components/SectionRail.js";
 import { FolderIcon } from "./components/FileTypeIcon.js";
 import { AUTO_MODEL } from "../../shared/autoModel.js";
-import { currentImageModel } from "../../shared/imageModel.js";
+import { currentImageModel, isImageAuto } from "../../shared/imageModel.js";
 import { hostedImageModels, isSubscribed } from "./lib/billingView.js";
 import { DEFAULT_MODEL, describeModel } from "../../shared/modelCatalog.js";
 import type { ModelLane } from "../../shared/modelLane.js";
@@ -2987,6 +2987,10 @@ function Welcome() {
   // 会话仍然有一个确定的起手型号
   const [auto, setAuto] = useState(lastAuto);
   const [mode, setMode] = useState<"ask" | "auto">("ask");
+  // 出图型号也是开局卡上的一格草稿（#1086）：这一刻还没有会话可落事件，
+  // 落地时跟着 startSession 过去（同 model / lane / thinking 那几格）
+  const [imageModel, setImageModel] = useState<string | null>(null);
+  const imageModels = useChat((s) => hostedImageModels(s.billing));
   const [busy, setBusy] = useState(false);
   const choice = useModelChoice(model);
   const thinkingSpec = thinkingSpecOf(choice);
@@ -3002,7 +3006,12 @@ function Welcome() {
     setBusy(true);
     try {
       // 显式传全部偏好：下拉框显示什么就落地什么（宁多一条 model_changed，不让 UI 说谎）
-      await startSession({ workspace: effectiveWorkspace, model: auto ? AUTO_MODEL : model, lane, approvalMode: mode, thinking });
+      await startSession({
+        workspace: effectiveWorkspace, model: auto ? AUTO_MODEL : model, lane, approvalMode: mode, thinking,
+        // Auto = 不传（「没选过」与「显式 Auto」是同一档，`isImageAuto`）：
+        // 传一个口令过去只会在新会话的日志头上落一条什么都没改变的事件
+        ...(imageModel !== null && !isImageAuto(imageModel) ? { imageModel } : {}),
+      });
       const t = text.trim();
       // 建会话成功才发首条消息（失败时 phase 停在 welcome，草稿原样保留）。
       // 只贴了图不打字也算一条消息——附件本身就是内容(同会话中的 submit 口径)。
@@ -3112,6 +3121,9 @@ function Welcome() {
             }}
             // 同上:不封硬顶,写得下就写全(新会话卡这一行本来就宽)
             className={NSC_SELECT}
+            imageModels={imageModels}
+            imageModel={imageModel}
+            onImageChange={setImageModel}
           />
           {/* 挡位单独一枚钮,与会话中的输入框同一套 */}
           <ThinkingPicker

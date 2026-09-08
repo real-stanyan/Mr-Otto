@@ -32,7 +32,7 @@ import {
 } from "@/components/assistant-ui/model-selector.js";
 import { CommandGroup, CommandItem } from "@/components/ui/command.js";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs.js";
-import { imageModelLabel, pickImageModel } from "../../../shared/imageModel.js";
+import { imageModelLabel, imageModelVendor, isImageAuto, pickImageModel } from "../../../shared/imageModel.js";
 import { describeModel } from "../../../shared/modelCatalog.js";
 import { laneValue, parseLaneValue, type ModelLane } from "../../../shared/modelLane.js";
 import type { ModelChoice } from "../../../shared/modelCatalog.js";
@@ -45,9 +45,9 @@ import {
 import { cn } from "@/lib/utils.js";
 import { AUTO_MODEL } from "../../../shared/autoModel.js";
 import { hostedModels, isSubscribed } from "../lib/billingView.js";
-import { modelMenuGroups, type ModelMenuItem } from "../lib/modelMenu.js";
+import { AUTO_MIN_MODELS, modelMenuGroups, type ModelMenuItem } from "../lib/modelMenu.js";
 import { useChat } from "../store.js";
-import { ProviderMark } from "./ProviderMark.js";
+import { ImageVendorMark, ProviderMark } from "./ProviderMark.js";
 
 /** thinking 挡位 → ModelSelector 的 effort 选项。
     不可切换的型号（一档 / 零档）返回 undefined：Effort 那一排会整排消失。
@@ -100,6 +100,55 @@ const AUTO_MARK = (
     <Sparkles className="size-[9px]" />
   </span>
 );
+
+/** 出图那一格的 Auto 是什么。**与文字那格不是同一套机制**，所以话也不一样：
+    文字那边每轮起跑前真打一次分类调用判难度（ADR-0237），这边只是「由系统挑」。
+    降级成 `title` 的理由同 ADR-0249：这一列每天要扫很多遍，Auto 只需读懂一次 */
+const IMAGE_AUTO_HINT = "由系统挑一款（当前规则：网关清单里最便宜那款）。不选就是这一档。";
+
+/** 出图型号那一格的厂商标。认不出的**不画**，也不占位 —— 那一行左边空着，
+    比给一个陌生型号安一家厂好（同 ADR-0254） */
+function ImageVendorIcon({ id }: { id: string }) {
+  const vendor = imageModelVendor(id);
+  return vendor === null ? null : (
+    <ImageVendorMark vendor={vendor} size={14} className="rounded-[3px]" />
+  );
+}
+
+/** 图像那一格的一行。**不走 `ModelSelectorItem`**（理由在渲染处那段注释），所以
+    类名是照它抄的一份 —— 抽成组件是因为 Auto 与各款必须逐像素同款：一行两个样子，
+    人会以为 Auto 是另一种东西 */
+function ImageRow({
+  id, label, icon, checked, title, onPick,
+}: {
+  id: string;
+  label: string;
+  icon: React.ReactNode;
+  checked: boolean;
+  title?: string;
+  onPick: () => void;
+}) {
+  return (
+    <CommandItem
+      value={id}
+      keywords={[label]}
+      className="relative items-center gap-2 rounded-lg py-2 ps-3 pe-9"
+      // 「这一行是不是当前那一档」写成一个可寻址的状态：行里本来就有厂商标那枚 svg，
+      // 靠「有没有 svg」认勾会在加了标的那天全部认成选中（真发生过）
+      data-picked={checked ? "true" : undefined}
+      onSelect={onPick}
+      {...(title === undefined ? {} : { title })}
+    >
+      {icon}
+      <span className="min-w-0 flex-1 truncate">{label}</span>
+      {checked && (
+        <span className="absolute end-3 top-2.5 flex size-4 items-center justify-center">
+          <CheckIcon className="size-4" />
+        </span>
+      )}
+    </CommandItem>
+  );
+}
 
 /** token 数的紧凑写法 */
 function fmtTokens(n: number): string {
@@ -203,7 +252,15 @@ export function ModelPicker({
   // 勾画在**真正会被用到的那一款**上，不是画在 `imageModel` 上：没选过时用户看到的
   // 该是网关会替他挑的那款（最便宜那款），而不是一行都不勾；选过但网关下架了它时，
   // 勾也该落在真会跑的那款上 —— 与主进程解路共用 `pickImageModel` 这一份判据
-  const effectiveImage = showsImageTab ? pickImageModel(imageModels, imageModel) : null;
+  // Auto 至少要有两款可挑才成立（同文字那格的 `AUTO_MIN_MODELS`）：只有一款时
+  // 「Auto」与那一款是同一件事，画两行只是让人多读一遍
+  const showsImageAuto = showsImageTab && imageModels.length >= AUTO_MIN_MODELS;
+  const imageAuto = showsImageAuto && isImageAuto(imageModel);
+  // 勾画在**真正会被用到的那一款**上，不是画在 `imageModel` 上：选过但网关下架了它时，
+  // 勾也该落在真会跑的那款上 —— 与主进程解路共用 `pickImageModel` 这一份判据。
+  // Auto 那一档的勾归 Auto 那一行（`imageAuto`），下面各款一个都不勾：那一格此刻
+  // 由系统挑，勾一款会读成「我选了它」
+  const effectiveImage = showsImageTab && !imageAuto ? pickImageModel(imageModels, imageModel) : null;
 
   const choice = describeModel(value);
   // 网关此刻供着哪几款（从便宜到贵，ADR-0237 那条排序键）。没订阅 / 还没查到 = 空，
@@ -320,28 +377,36 @@ export function ModelPicker({
               是一列），勾自己画在 `effectiveImage` 上 */}
           {tab === "image" && (
             <CommandGroup>
+              {/* Auto（#1086）。与文字那格**不是同一套机制**，所以文案也不同：文字那边
+                  每轮起跑前真打一次分类调用判难度（ADR-0237），出图这边只是「由系统挑」
+                  ——今天的规则就是网关清单里最便宜那款，也就是没选过时的行为。
+                  写成一行而不是留白，是因为「没选过」本来就是这一档：不画它，一个从没
+                  碰过这一格的人会看到「一行都没勾」，而他其实正在 Auto 里 */}
+              {showsImageAuto && (
+                <ImageRow
+                  id={AUTO_MODEL}
+                  label="Auto"
+                  icon={AUTO_MARK}
+                  checked={imageAuto}
+                  title={IMAGE_AUTO_HINT}
+                  onPick={() => {
+                    setOpen(false);
+                    onImageChange?.(AUTO_MODEL);
+                  }}
+                />
+              )}
               {imageModels.map((id) => (
-                <CommandItem
+                <ImageRow
                   key={id}
-                  value={id}
-                  keywords={[imageModelLabel(id)]}
-                  className="relative items-center gap-2 rounded-lg py-2 ps-3 pe-9"
-                  onSelect={() => {
+                  id={id}
+                  label={imageModelLabel(id)}
+                  icon={<ImageVendorIcon id={id} />}
+                  checked={id === effectiveImage}
+                  onPick={() => {
                     setOpen(false);
                     onImageChange?.(id);
                   }}
-                >
-                  {/* 不画厂商标：`model_route.platform` 对七行出图路由全是 `openrouter`
-                      （那说的是上游是谁，不是厂商是谁），画出来是七行同一个标；
-                      按 id 猜厂商则是给一列本仓没有的字形安一家厂（同 ADR-0254
-                      「认不出的型号不画标」） */}
-                  <span className="min-w-0 flex-1 truncate">{imageModelLabel(id)}</span>
-                  {id === effectiveImage && (
-                    <span className="absolute end-3 top-2.5 flex size-4 items-center justify-center">
-                      <CheckIcon className="size-4" />
-                    </span>
-                  )}
-                </CommandItem>
+                />
               ))}
             </CommandGroup>
           )}

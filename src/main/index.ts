@@ -148,7 +148,7 @@ import { allocateSessionWorkspace } from "./taskWorkspace.js";
 import { maskKey } from "../shared/keyMask.js";
 import type { ModelLane } from "../shared/modelLane.js";
 import { AUTO_MODEL } from "../shared/autoModel.js";
-import { currentImageModel } from "../shared/imageModel.js";
+import { currentImageModel, isImageAuto } from "../shared/imageModel.js";
 import { findProvider, providerKeyEnvs, type ProviderId } from "../shared/providerCatalog.js";
 import { markSecretEnv, unmarkSecretEnv } from "../shared/secretEnv.js";
 import { knownMcpToolNames } from "../shared/mcp.js";
@@ -2588,6 +2588,15 @@ void app.whenReady().then(() => {
       agent.setApprovalMode(opts.approvalMode);
     }
     if (opts.thinking && opts.thinking !== agent.thinking) agent.setThinking(opts.thinking);
+    // 出图型号（#1086）：开局卡上那一格是渲染层草稿，到这一刻才成为日志事实。
+    // 落在 bootInfo() **之前**：那份快照要带着这条事件回渲染层，否则新会话开出来
+    // 选单里的勾落在网关默认那款上，而用户明明在开局卡上选过
+    if (opts.imageModel) {
+      store.append({
+        sessionId: agent.sessionId, ts: Date.now(), type: "image_model_changed",
+        model: opts.imageModel, ignorable: true,
+      });
+    }
     const info = bootInfo();
     if (!info) throw new Error("创建会话失败"); // 理论不可达，让 TS 安心
     return info;
@@ -3735,7 +3744,10 @@ void app.whenReady().then(() => {
     // **turn 进行中也允许**（与 switchModel 相反）：出图那把刀每次调用才现解一次路
     // （agent.ts 的 resolve），换完下一次 generate_image 就生效，不会把正在跑的
     // 这一轮劈成两半。所以这里没有 runningSessions 那道闸
-    if (currentImageModel(store.load(agent.sessionId)) === model) return; // 没变就不落事件
+    // 「没选过」与「显式选 Auto」是同一档（`isImageAuto`），所以从没碰过这一格的人
+    // 点一下 Auto 不该在时间线上留下一行什么都没改变的记录
+    const now = currentImageModel(store.load(agent.sessionId));
+    if (now === model || (isImageAuto(now) && isImageAuto(model))) return;
     const appended = store.append({
       sessionId: agent.sessionId, ts: Date.now(), type: "image_model_changed", model, ignorable: true,
     });
