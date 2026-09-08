@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { routeModel } from "../../src/main/modelRoute.js";
+import { routeImage, routeModel } from "../../src/main/modelRoute.js";
 import { findModel, resolveModel } from "../../src/shared/modelCatalog.js";
 
 const deepseek = findModel("deepseek-v4-flash")!;
@@ -152,5 +152,66 @@ describe("免 key 的本机厂商（Ollama）", () => {
       kind: "direct",
       baseUrl: "http://box.lan:11434/v1",
     });
+  });
+});
+
+// ── 出图那条路（#1081） ───────────────────────────────────────────────
+//
+// 与 routeModel 的差别只有一处、但那一处是根本的：**出图没有「自带 key」这一档**。
+// 官方 key 只活在 Worker secret 里，客户端一个字节都拿不到，所以这条路要么走托管、
+// 要么走不通——没有第三种结局，也就没有「悄悄改烧你自己的账号」这个失败模式。
+
+describe("routeImage", () => {
+  const base = { hostedBaseUrl: "https://edge/llm/v1", hostedToken: "jwt" };
+  const hosted = (over: Partial<{ subscribed: boolean; exhausted: boolean; resetAt: number; imageModels: string[] }> = {}) =>
+    ({ subscribed: true, exhausted: false, imageModels: ["gemini-3.1-flash-image"], ...over });
+
+  it("订阅 + 网关供 + 拿得到 JWT → 走网关，点名最便宜那款", () => {
+    const r = routeImage({ ...base, hosted: hosted({ imageModels: ["cheap-image", "pricey-image"] }) });
+    expect(r).toEqual({ kind: "hosted", url: "https://edge/llm/v1/chat/completions", model: "cheap-image" });
+  });
+
+  it("没订阅：说订阅，**不提「填自己的 key」** —— 出图压根没有那条路（ADR-0248 的措辞纪律）", () => {
+    const r = routeImage({ ...base, hosted: hosted({ subscribed: false }) });
+    expect(r.kind).toBe("blocked");
+    if (r.kind !== "blocked") return;
+    expect(r.reason).toContain("订阅");
+    expect(r.reason).not.toContain("key");
+  });
+
+  it("额度用完：报恢复时间 + 加购这条真点得动的路", () => {
+    const r = routeImage({ ...base, hosted: hosted({ exhausted: true, resetAt: Date.UTC(2026, 8, 8, 6, 30) }) });
+    expect(r.kind).toBe("blocked");
+    if (r.kind !== "blocked") return;
+    expect(r.reason).toContain("额度已用完");
+    expect(r.reason).toContain("加购");
+  });
+
+  it("网关一款出图模型都不供：说的是「不供出图」，**不是「你没订阅」** —— 后者会让一个正在付钱的人去点续费解决一个不存在的问题", () => {
+    const r = routeImage({ ...base, hosted: hosted({ imageModels: [] }) });
+    expect(r.kind).toBe("blocked");
+    if (r.kind !== "blocked") return;
+    expect(r.reason).toContain("出图");
+    expect(r.reason).not.toContain("没有订阅");
+  });
+
+  it("拿不到 JWT / 网关地址：说连不上，同样不许写成「你没订阅」", () => {
+    for (const partial of [{ hostedBaseUrl: base.hostedBaseUrl }, { hostedToken: base.hostedToken }]) {
+      const r = routeImage({ ...partial, hosted: hosted() });
+      expect(r.kind).toBe("blocked");
+      if (r.kind !== "blocked") continue;
+      expect(r.reason).toContain("连不上");
+    }
+  });
+
+  it("没装配托管（子会话 / 探针 / 测试）：走不通", () => {
+    expect(routeImage({ ...base }).kind).toBe("blocked");
+  });
+
+  it("额度用完排在「不供出图」前面 —— 前者是网关亲口说的，后者只是一张清单读出来的", () => {
+    const r = routeImage({ ...base, hosted: hosted({ exhausted: true, imageModels: [] }) });
+    expect(r.kind).toBe("blocked");
+    if (r.kind !== "blocked") return;
+    expect(r.reason).toContain("额度已用完");
   });
 });
