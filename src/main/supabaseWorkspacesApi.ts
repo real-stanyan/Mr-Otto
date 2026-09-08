@@ -9,6 +9,7 @@ import {
 } from "../shared/workspaces.js";
 import { normalizeSandboxApproval, type SandboxApproval } from "../shared/workspaceAgents.js";
 import type { AgentToolAllow } from "../shared/agentToolAllow.js";
+import type { WorkspaceMentionRow } from "../shared/workspaceMentions.js";
 
 /** supabase-js 的 {data,error} 归一:error 转 throw(带 pg code,上层认 23505 等) */
 function unwrap<T>(res: { data: T; error: { message: string; code?: string } | null }): T {
@@ -446,4 +447,58 @@ export async function listCloudSessions(
     archived: r.archived,
     updatedTs: toEpochMs(r.updated_at),
   }));
+}
+
+// ── 点名收件箱（#1064，ADR-0256）─────────────────────────────────────────────
+// 写方是 runtime（service key）；这里只有读与「标成已读」两条，都靠 RLS 收在
+// 本人自己的行上（wsmn_select_self / wsmn_update_self）。
+
+/** 我此刻所有的点名（含已读——已读那些是「@ 我的」清单以后唯一的数据源）。
+    **不按工作区分批**：一条查询把全部拿回来，角标要的是「哪个群里有」这个
+    横向的答案，按群各查一次只是把同一件事拆成 N 次往返。
+    新的排在前面（`created_at desc`），封顶 200 条：角标只关心有没有和几条，
+    而一份能把内存吃掉的收件箱不该由「很久没开 app」这件事造出来。 */
+export async function listMentions(
+  client: SupabaseClient,
+  uid: string,
+): Promise<WorkspaceMentionRow[]> {
+  const res = await client
+    .from("workspace_mentions")
+    .select("workspace_id,session_id,seq,uid,from_uid,from_label,excerpt,created_at,read_at")
+    .eq("uid", uid)
+    .order("created_at", { ascending: false })
+    .limit(200);
+  const rows = (unwrap(res) ?? []) as {
+    workspace_id: string; session_id: string; seq: number; uid: string; from_uid: string;
+    from_label: string; excerpt: string; created_at: string; read_at: string | null;
+  }[];
+  return rows.map((r) => ({
+    workspaceId: r.workspace_id,
+    sessionId: r.session_id,
+    seq: r.seq,
+    uid: r.uid,
+    fromUid: r.from_uid,
+    fromLabel: r.from_label,
+    excerpt: r.excerpt,
+    createdTs: toEpochMs(r.created_at),
+    read: r.read_at !== null,
+  }));
+}
+
+/** 把这条会话里我的未读全部标成已读（进了那间房 = 看见了）。
+    **`is("read_at", null)` 那道条件不是优化**：没有它，重开一条早就读过的会话
+    会把当初的 `read_at` 改成此刻——那一列是「什么时候看见的」，改写它等于把
+    一段真实的时间线换成最后一次打开的时间。 */
+export async function markMentionsRead(
+  client: SupabaseClient,
+  uid: string,
+  sessionId: string,
+): Promise<void> {
+  const { error } = await client
+    .from("workspace_mentions")
+    .update({ read_at: new Date().toISOString() })
+    .eq("uid", uid)
+    .eq("session_id", sessionId)
+    .is("read_at", null);
+  if (error) throw new Error(error.message);
 }

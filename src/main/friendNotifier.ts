@@ -28,6 +28,24 @@ export function dmNotification(senderName: string, body: string, friendId: strin
   return { title: senderName || "好友", body: truncate(body), target: { kind: "dm", friendId } };
 }
 
+/** 工作区里有人 @ 了我（#1064）。**带提示音**（同会话类那四条、不同于好友动静的
+    静默角标）：被点名是「有人在等你」，跟一条群里的闲聊不是一回事。
+    正文与署名取**落库那一刻的快照**，不现查 profiles——回头看「那天是谁喊我、
+    喊的什么」不该被后来的改名改写。名字空着时退回「有人」，同 dmNotification */
+export function workspaceMentionNotification(
+  fromLabel: string,
+  excerpt: string,
+  workspaceId: string,
+  sessionId: string
+): NotifySpec {
+  return {
+    title: `${truncate(fromLabel, 40) || "有人"} @ 了你`,
+    body: truncate(excerpt),
+    target: { kind: "workspaceMention", workspaceId, sessionId },
+    sound: "Ping",
+  };
+}
+
 export function friendRequestNotification(name: string): NotifySpec {
   return { title: "新的好友请求", body: truncate(`${name || "有人"} 想加你好友`), target: { kind: "friendRequest" } };
 }

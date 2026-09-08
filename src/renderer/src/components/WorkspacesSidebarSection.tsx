@@ -25,7 +25,7 @@
 // effect 写在这儿就永远等不到第一次拉取）；云会话清单倒是在这一层拉，因为它按
 // 工作区分，而这一层才知道有哪几个工作区。
 
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import { ChevronRight, Ellipsis, Plus, Settings2 } from "lucide-react";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
@@ -34,6 +34,7 @@ import { useChat } from "../store.js";
 import { cloudSessionRows } from "../lib/workspaceView.js";
 import type { CloudSessionListRow } from "../lib/workspaceView.js";
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
+import { unreadMentionCounts } from "../../../shared/workspaceMentions.js";
 import {
   SidebarGroup, SidebarGroupAction, SidebarGroupContent, SidebarGroupLabel, SidebarMenuAction,
   SidebarMenu, SidebarMenuButton, SidebarMenuItem,
@@ -57,6 +58,13 @@ export function WorkspacesSidebarSection({
   const groups = useChat((s) => s.workspaceGroups);
   const error = useChat((s) => s.workspaceGroupsError);
   const refreshCloud = useChat((s) => s.refreshCloudSessions);
+  // 未读点名（#1064）。**在这一层算一次往下传**，不在每个组里各 select 一次：
+  // `unreadMentionCounts` 每次都造新对象，直接写进 selector 就是每次渲染都
+  // "变了" —— zustand 走 useSyncExternalStore，那是一个真的死循环（不是慢，
+  // 是 Maximum update depth exceeded）。依赖取那个数组本身，它只在三条写入
+  // 路径上换引用
+  const mentionRows = useChat((s) => s.workspaceMentions);
+  const unread = useMemo(() => unreadMentionCounts(mentionRows), [mentionRows]);
 
   // 每个工作区各拉一次云会话清单（没有推送通道，同 workspaceGroups 的待遇）。
   // 依赖是 id 拼成的串而不是 groups 本身：快照每次重拉都是新数组，用它当依赖
@@ -84,6 +92,7 @@ export function WorkspacesSidebarSection({
           collapsed={collapsed.has(ws.id)}
           onToggle={onToggle}
           onManage={onManage}
+          unread={unread}
         />
       ))}
       {/* 分组线内缩（左右各让出 14px = 组的 8px 内边距再多 6px）。通栏的横线读作
@@ -96,16 +105,37 @@ export function WorkspacesSidebarSection({
 /** 一个工作区 = 一个组。骨架逐处对齐 App.tsx 里的本地工程组（同一个 SidebarGroup +
     可折叠 SidebarGroupLabel + SidebarGroupAction + 带竖脊的组内列表），改的只有
     「组里装的是云会话」和「多一颗 ⚙」。 */
+/** 未读点名的角标。**两处都画**（组头 + 会话行）：收起来的时候会话行根本
+    不在屏幕上，只有组头那一格能说话；展开之后又必须指出是**哪一条**会话，
+    否则人得一条条点开找。
+    颜色取 `--brand` 不取 `--warn`：被 @ 不是「出事了」，而本仓 warn 这个语义
+    是留给出事的（ADR-0240 那笔账已经让 Max 徽章借走一次形，不能再借第二次）。
+    **不做入场动效**：它是个挂着的状态记号不是一次事件（同 ADR-0255） */
+function MentionBadge({ count, title }: { count: number; title: string }) {
+  if (count <= 0) return null;
+  return (
+    <span
+      className="shrink-0 min-w-[16px] h-4 px-[5px] rounded-full bg-brand text-white
+                 text-[10px] leading-4 text-center font-medium tabular-nums"
+      title={title}
+    >
+      {count > 99 ? "99+" : count}
+    </span>
+  );
+}
+
 function WorkspaceGroup({
   ws,
   collapsed,
   onToggle,
   onManage,
+  unread,
 }: {
   ws: WorkspaceSnapshot;
   collapsed: boolean;
   onToggle: (workspaceId: string) => void;
   onManage: (workspaceId: string) => void;
+  unread: ReturnType<typeof unreadMentionCounts>;
 }) {
   const list = useChat((s) => s.cloudSessionList[ws.id]) ?? EMPTY_CLOUD_SESSIONS;
   const openCloud = useChat((s) => s.openCloudSession);
@@ -153,6 +183,12 @@ function WorkspaceGroup({
           {collapsed && rows.length > 0 && (
             <span className="shrink-0 font-mono text-[10px] opacity-70">{rows.length}</span>
           )}
+          {/* 角标**收不收起来都画**（#1064）：条数展开就数得出来，所以收起来才报；
+              未读数展开也数不出来——它不是这份列表的函数 */}
+          <MentionBadge
+            count={unread.byWorkspace[ws.id] ?? 0}
+            title={`这个工作区里有 ${unread.byWorkspace[ws.id] ?? 0} 条 @ 你的消息没看`}
+          />
         </button>
       </SidebarGroupLabel>
       {/* ⚙ 排在 ＋ 左边。工作区独有的那一颗：它是一群人的东西，得有地方拉人、
@@ -190,6 +226,10 @@ function WorkspaceGroup({
                     title={`${row.title} · ${row.creatorLabel}`}
                   >
                     <span className="min-w-0 flex-1 truncate text-xs">{row.title}</span>
+                    <MentionBadge
+                      count={unread.bySession[row.id] ?? 0}
+                      title={`这条会话里有 ${unread.bySession[row.id] ?? 0} 条 @ 你的消息没看`}
+                    />
                   </SidebarMenuButton>
                   {/* ⋮ 菜单（#993 第 5 条）：归档从会话头部搬到这里，同本地会话那行的
                       ⋮。**「删除」是 #1044 补上的**：原来没有，理由是 0016 迁移把

@@ -189,7 +189,7 @@ import {
   createWorkspace, listWorkspaces, fetchWorkspace, addMember, removeMember, leave,
   deleteWorkspace, upsertConnectorRow, deleteConnectorRow, insertSessionRow, listCloudSessions,
   insertAgentRow, updateAgentRow, deleteAgentRow, listAgentNames, listMemoryRows, saveMemoryRow,
-  updateSandboxApproval,
+  updateSandboxApproval, listMentions, markMentionsRead,
 } from "./supabaseWorkspacesApi.js";
 import type { SandboxApproval } from "../shared/workspaceAgents.js";
 import {
@@ -206,6 +206,7 @@ import { UserProfileManager } from "./userProfile.js";
 import { createSupabaseUserProfileApi } from "./supabaseUserProfileApi.js";
 import {
   approvalRequestNotification, askUserNotification, createNotifier, dmNotification,
+  workspaceMentionNotification,
   friendRequestNotification, remotePairingNotification, turnCompleteNotification,
   turnFailedNotification, newIncomingRequests,
 } from "./friendNotifier.js";
@@ -611,6 +612,13 @@ void app.whenReady().then(() => {
         send(CHANNELS.directMessage, m);
       },
       healthChanged: (health) => send(CHANNELS.realtimeHealth, health),
+      // 工作区里有人 @ 了我（#1064）：一条系统通知 + 推给渲染层加角标。
+      // 通知的正文与署名取**落库那一刻的快照**（fromLabel/excerpt），不现查
+      // profiles —— 「那天是谁喊我、喊的什么」不该被后来的改名改写
+      workspaceMention: (row) => {
+        notify(workspaceMentionNotification(row.fromLabel, row.excerpt, row.workspaceId, row.sessionId));
+        send(CHANNELS.workspaceMention, row);
+      },
     },
   });
   /** 叫醒远程传输(登录那一刻)。远程那一块装配得比 accountManager 晚,
@@ -1550,7 +1558,7 @@ void app.whenReady().then(() => {
     createWorkspace, listWorkspaces, fetchWorkspace, addMember, removeMember, leave,
     deleteWorkspace, upsertConnectorRow, deleteConnectorRow,
     insertAgentRow, updateAgentRow, deleteAgentRow, listAgentNames, listMemoryRows, saveMemoryRow,
-    updateSandboxApproval,
+    updateSandboxApproval, listMentions, markMentionsRead,
     client: () => supabase.raw,
     // 登录判据取账号管理器，不取好友子系统的缓存（issue #943）：onChange 先
     // send(accountChanged) 再 friends.start()，而 friends.uid 要等 start() 里
@@ -3268,6 +3276,9 @@ void app.whenReady().then(() => {
   // 的 withSession），这层不用再判一次 null（workspaceManager 本身不会是 null）。
   const NOT_SIGNED_IN = { ok: false as const, message: "还没登录" };
   ipcMain.handle(CHANNELS.workspaceList, () => workspaceManager.list());
+  ipcMain.handle(CHANNELS.workspaceMentions, () => workspaceManager.listMentions());
+  ipcMain.handle(CHANNELS.workspaceMentionsRead, (_e, sessionId: string) =>
+    workspaceManager.markMentionsRead(sessionId));
   ipcMain.handle(CHANNELS.workspaceCreate, (_e, name: string) => workspaceManager.create(name));
   ipcMain.handle(CHANNELS.workspaceDelete, (_e, id: string) => workspaceManager.remove(id));
   ipcMain.handle(CHANNELS.workspaceAddMember, (_e, id: string, uid: string) =>

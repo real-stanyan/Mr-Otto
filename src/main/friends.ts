@@ -12,6 +12,7 @@ import type {
   DirectMessage, FriendProfile, FriendsResult, FriendsSnapshot, FriendshipEntry,
   FriendWorkspace, RealtimeHealth, WorkspacePresence, WorkspacesSnapshot,
 } from "../shared/friends.js";
+import type { WorkspaceMentionRow } from "../shared/workspaceMentions.js";
 
 // email 可空:auth.users.email 本就可为 null(手机/匿名注册),见 docs/adr/0025。
 // null 只活到主进程边界为止,toFriendProfile 归一成 ""
@@ -35,6 +36,11 @@ export type FriendsSubscribeHandlers = {
   onPresence(entries: PresenceEntry[]): void;
   /** 订阅通道健康度:所有通道全 SUBSCRIBED 才算 live,任一报错/超时/关闭即 degraded */
   onHealth(health: "live" | "degraded"): void;
+  /** 工作区里有人 @ 了我（#1064）。**住在这套订阅里不是因为它跟好友有关**——
+      它跟好友一点关系都没有；住在这里是因为「登录 → 建订阅 → 断线重连 →
+      登出拆掉」这套生命周期只有一份，另起一套就要把它抄一遍，而抄错的那次
+      失败是无声的（订阅没起来 = 提醒永远不到，界面上什么都不说） */
+  onWorkspaceMention(row: WorkspaceMentionRow): void;
 };
 
 export type FriendsApi = {
@@ -68,6 +74,8 @@ export type FriendsPush = {
   workspacesChanged(snapshot: WorkspacesSnapshot): void;
   directMessage(message: DirectMessage): void;
   healthChanged(health: RealtimeHealth): void;
+  /** 工作区里有人 @ 了我（#1064）：主进程据此弹一条系统通知 + 推给渲染层加角标 */
+  workspaceMention(row: WorkspaceMentionRow): void;
 };
 
 /** 可注入的时钟/定时器(单测不睡真时间) */
@@ -467,6 +475,9 @@ export class FriendsManager {
         this.realtimeOnline = entries.map((e) => e.id).sort();
         this.pushPresence();
       },
+      // 原样递出去（#1064）：这一层没有可加的判断——去重与已读都在渲染层那份
+      // 清单上（mergeMentionRow 按主键），通知发不发由 notify() 的聚焦判定管
+      onWorkspaceMention: (row) => { this.push.workspaceMention(row); },
       onHealth: (health) => {
         if (gen !== this.generation) return;
         this.setHealth(health);

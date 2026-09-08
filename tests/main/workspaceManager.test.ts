@@ -20,6 +20,13 @@ function harness(over: Partial<WorkspaceManagerDeps> = {}) {
   const fakeClient = { fake: "client" } as unknown as import("@supabase/supabase-js").SupabaseClient;
 
   const deps: WorkspaceManagerDeps = {
+    listMentions: async () => {
+      calls.push("listMentions");
+      return [];
+    },
+    markMentionsRead: async () => {
+      calls.push("markMentionsRead");
+    },
     createWorkspace: async (_client, name, selfUid) => {
       calls.push("createWorkspace");
       return { id: "ws-new", name, owner_uid: selfUid, created_at: "2026-01-01T00:00:00Z" };

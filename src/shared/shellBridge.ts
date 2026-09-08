@@ -18,6 +18,7 @@ import type { ProviderId } from "./providerCatalog.js";
 import type { ModelLane } from "./modelLane.js";
 import type { UsageSnapshot } from "./usageStats.js";
 import type { ModelShareWindow } from "./modelShare.js";
+import type { WorkspaceMentionRow } from "./workspaceMentions.js";
 import type { IslandUsageRow } from "./islandUsage.js";
 import type { CsModelRoute, CsRepoState, CsWorkHit, CsWorkNode } from "./remote/cloudSession.js";
 import type { TerminalInfo } from "./terminal.js";
@@ -1134,7 +1135,12 @@ export interface ShellBridge {
       以它为准，覆盖 mention（#932 切片 1b，runtime 那侧同一条判据） */
   /** `memberMentions`：这句话点到的**人类成员 uid**（#1064）。`mentions` 那一族
       起 turn、花钱；这一族只让被 @ 的人收到一条提醒，不起 turn */
-  workspaceCloudSay(
+/** 「谁在工作区里 @ 了我」的整份收件箱（#1064）。含已读——未读只是它的一个
+    投影，而已读那些是以后「@ 我的」清单唯一的数据源 */
+  workspaceMentions(): Promise<FriendsResult<WorkspaceMentionRow[]>>;
+  /** 进了这条云会话 = 里面 @ 我的那几条看见了 */
+  workspaceMentionsRead(sessionId: string): Promise<FriendsResult<null>>;
+    workspaceCloudSay(
     text: string, mention: boolean, mentions?: string[], memberMentions?: string[]
   ): Promise<CloudAck>;
   /** 批/拒当前云会话里的一个审批请求（callId 来自 approval_request 事件） */
@@ -1189,6 +1195,9 @@ export interface ShellBridge {
   onPresenceChanged(cb: (onlineUserIds: string[]) => void): Unsubscribe;
   /** 对端发来的新 DM(自己发的不推——bridge 调用已回真行,渲染层自己落) */
   onDirectMessage(cb: (message: DirectMessage) => void): Unsubscribe;
+  /** 工作区里有人 @ 了我（#1064）——realtime 推上来的那一行原样转发。
+      渲染层按主键并进自己那份清单（`mergeMentionRow`），未读角标是它的投影 */
+  onWorkspaceMention(cb: (row: WorkspaceMentionRow) => void): Unsubscribe;
   /** 实时链路健康度:degraded = 已切轮询兜底,UI 该如实说"慢几秒"而不是装作正常 */
   onRealtimeHealth(cb: (health: RealtimeHealth) => void): Unsubscribe;
   /** 用户点了系统通知 → 主进程已聚焦窗口,渲染层负责把对应面板打开 */
@@ -1367,7 +1376,11 @@ export type NotificationTarget =
   /** 落到设置页的某个栏目。section 是渲染层 SettingsSection 的子集 ——
       shared 不能 import 渲染层的类型,而这里只需要通知真能落到的那几个,
       写成窄字面量比把整个联合搬过来更不容易漂 */
-  | { kind: "settings"; section: "remote" };
+  | { kind: "settings"; section: "remote" }
+  /** 工作区里有人 @ 了我（#1064）：点通知 = 打开那条云会话。**两格都要**——
+      `openCloudSession` 按 (workspaceId, sessionId) 进房，光有 sessionId
+      进不去（那张台账在服务端按工作区分） */
+  | { kind: "workspaceMention"; workspaceId: string; sessionId: string };
 
 export interface OllamaModelInfo {
   /** 带 ollama/ 前缀的 id —— 会话日志里存的就是它 */
@@ -1583,6 +1596,9 @@ export const CHANNELS = {
   workspaceCloudJoin: "otter:workspaceCloudJoin",
   workspaceCloudLeave: "otter:workspaceCloudLeave",
   workspaceCloudSay: "otter:workspaceCloudSay",
+  workspaceMentions: "otter:workspaceMentions",
+  workspaceMentionsRead: "otter:workspaceMentionsRead",
+  workspaceMention: "otter:workspaceMention",
   workspaceCloudApprove: "otter:workspaceCloudApprove",
   workspaceCloudArchive: "otter:workspaceCloudArchive",
   workspaceCloudDelete: "otter:workspaceCloudDelete",

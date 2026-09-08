@@ -7,6 +7,7 @@ import type { RealtimeChannel, SupabaseClient } from "@supabase/supabase-js";
 import type {
   FriendsApi, FriendshipRow, LastSeenRow, MessageRow, PresenceEntry, ProfileRow,
 } from "./friends.js";
+import type { WorkspaceMentionRow } from "../shared/workspaceMentions.js";
 import type { WorkspacePresence } from "../shared/friends.js";
 import { dmOr, mergeChannelHealth, profileSearchOr } from "../shared/friendsQuery.js";
 
@@ -62,6 +63,29 @@ function presenceMeta(workspace: WorkspacePresence | null): Record<string, unkno
   return workspace
     ? { at: Date.now(), repoKey: workspace.repoKey, branch: workspace.branch }
     : { at: Date.now() };
+}
+
+/** realtime 推上来的那一行（列名原样，snake_case） */
+type MentionRowRaw = {
+  workspace_id: string; session_id: string; seq: number; uid: string;
+  from_uid: string; from_label: string; excerpt: string; created_at: string; read_at: string | null;
+};
+
+/** 与 supabaseWorkspacesApi.listMentions 的映射逐字同一份——两条路（拉取 / 推送）
+    喂的是渲染层同一份清单，字段名对不上的话新到的那条会在去重时被当成另一条 */
+function toMentionRow(r: MentionRowRaw): WorkspaceMentionRow {
+  const ts = Date.parse(r.created_at);
+  return {
+    workspaceId: r.workspace_id,
+    sessionId: r.session_id,
+    seq: r.seq,
+    uid: r.uid,
+    fromUid: r.from_uid,
+    fromLabel: r.from_label ?? "",
+    excerpt: r.excerpt ?? "",
+    createdTs: Number.isNaN(ts) ? Date.now() : ts,
+    read: r.read_at !== null,
+  };
 }
 
 export function createSupabaseFriendsApi(client: SupabaseClient): FriendsApi {
@@ -203,6 +227,22 @@ export function createSupabaseFriendsApi(client: SupabaseClient): FriendsApi {
           (payload) => handlers.onMessage(payload.new as MessageRow))
         .subscribe((s) => report("messages", s));
 
+      // 工作区点名（#1064）：只订"@ 我的"那些 insert。
+      // **状态不进上面那份健康度合并**：那一格画在好友面板上、名字叫「好友实时
+      // 连接」，而这张表是工作区的；更要紧的是 0030 还没在真库跑过的那段时间里
+      // 这条通道会一直报错（表不在 publication 里），把它并进去等于让一次没跑的
+      // migration 表现成「好友功能连不上」——ADR-0223 部署顺序那条教训。
+      // 它挂了不是无声的：桌面另有一条**拉取**路径（开机 + 窗口重新聚焦时
+      // listMentions 一次），realtime 只是让它变快，不是唯一的路
+      const mentionChannel = client.channel(`workspace-mentions-${uid}`)
+        .on("postgres_changes",
+          { event: "INSERT", schema: "public", table: "workspace_mentions", filter: `uid=eq.${uid}` },
+          (payload) => handlers.onWorkspaceMention(toMentionRow(payload.new as MentionRowRaw)))
+        .subscribe((st) => {
+          if (st === "SUBSCRIBED" || st === "CLOSED") return;
+          console.warn(`[otto] 工作区点名订阅状态：${st}（提醒改走开机/聚焦时的拉取）`);
+        });
+
       // presence:track key = 自己 uid,sync 时把整个 state 的 key 集推出去
       const channel = client.channel("online-users", {
         config: { presence: { key: uid } },
@@ -221,6 +261,7 @@ export function createSupabaseFriendsApi(client: SupabaseClient): FriendsApi {
         if (presenceChannel === channel) presenceChannel = null;
         void client.removeChannel(fsChannel);
         void client.removeChannel(msgChannel);
+        void client.removeChannel(mentionChannel);
         void client.removeChannel(channel);
       };
     },

@@ -1786,6 +1786,19 @@ function AppSidebar() {
   useEffect(() => {
     if (account.signedIn) void refreshWorkspaceGroups();
   }, [account.signedIn, refreshWorkspaceGroups]);
+  // 「谁在工作区里 @ 了我」（#1064）：开机一次 + **每次窗口重新聚焦**一次。
+  // realtime 那条推送是这一格的主力，这两次拉取是它的兜底——0030 还没在真库
+  // 跑过、订阅没建起来、睡了一觉断过线，三种情形下推送都不会到，而"没有角标"
+  // 与"真的没人 @ 我"在屏幕上长得一模一样。**不做定时轮询**：会看到角标的
+  // 那一刻必然是人回到这扇窗前，focus 就是那个信号（同 pxAuditSync 的取舍）
+  const refreshWorkspaceMentions = useChat((s) => s.refreshWorkspaceMentions);
+  useEffect(() => {
+    if (!account.signedIn) return;
+    void refreshWorkspaceMentions();
+    const onFocus = (): void => { void refreshWorkspaceMentions(); };
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [account.signedIn, refreshWorkspaceMentions]);
   // 详情页开着的那个此刻还在不在(被解散/退群后它会从快照里消失)——找不到就等于
   // 关掉,不用另写一条善后逻辑
   const openedWorkspace = workspaceGroups.find((g) => g.id === openWorkspaceId) ?? null;
