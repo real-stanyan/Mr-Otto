@@ -82,7 +82,10 @@ import { SEARCH_LEFT, SidebarNub, SidebarToggle, SidebarTriggerSlot, TOGGLE_TOP 
 import { FriendChatView } from "./components/FriendChatView.js";
 import { SideChatWindow } from "./components/SideChatWindow.js";
 import { ProfileCard } from "./components/ProfileCard.js";
-import { CostPanel } from "./components/CostPanel.js";
+import { CostPanel, showsCost } from "./components/CostPanel.js";
+import { ModelFootnote } from "./components/ModelFootnote.js";
+import { fmtCtx } from "./lib/fmtTokens.js";
+import { cacheStats, usageByModel } from "../../session/deriveUsage.js";
 import { PlanQuotaSection } from "./components/PlanQuotaSection.js";
 import { AccountUsageCard } from "./components/AccountUsageCard.js";
 import { SessionOrb } from "./components/SessionOrb.js";
@@ -271,17 +274,6 @@ const APPROVAL_PRE = "font-mono text-xs text-muted-foreground mt-[6px] whitespac
 
 // 上下文占用估算住 shared（账单锚点 + 未计费事件估算 + 按来源拆分），这里只消费
 
-/** 用量弹窗的数字格式：~119K / 1M 那一路。K 以下给整数，10 万以上不要小数
-    （119.0K 的那位小数没有信息量，估算精度也撑不起它） */
-function fmtCtx(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, "")}M`;
-  if (n >= 1000) {
-    const k = n / 1000;
-    return `${k >= 100 ? Math.round(k) : k.toFixed(1).replace(/\.0$/, "")}K`;
-  }
-  return String(n);
-}
-
 /** 四类占用的配色 —— 条形段与图例色块共用一处，两边永远同色。
     对话消息用品牌色（和圆环同源，"主角"一眼认出）；工具用紫，项目指令用青，
     系统提示词用灰。前三段是**每轮都要重付**的固定开销，排在一起，
@@ -306,8 +298,18 @@ function CtxDetails({ events, toolDefs, ctxWindow }: {
   ctxWindow: number;
 }) {
   const breakdown = useMemo(() => contextBreakdown(events, toolDefs), [events, toolDefs]);
+  const rows = useMemo(() => usageByModel(events), [events]);
+  const cache = useMemo(() => cacheStats(events), [events]);
   const pct = Math.min(100, Math.round((breakdown.total / ctxWindow) * 100));
-  const n = (x: number) => x.toLocaleString("en-US");
+  /** 条尾那截空白第一次有了名字。原来它只是"没被填满的部分"，而这张卡两半
+      现在都在答同一个问题（还剩多少），说出来才对得上 */
+  const rest = Math.max(0, ctxWindow - breakdown.total);
+  /** 图例按大小降序：行序本身就是"谁吃掉了它"的答案。条形段仍按 CTX_CATEGORIES
+      的固定顺序（前三段是每轮重付的固定开销，排在一起才看得出底噪有多厚） */
+  const legend = useMemo(
+    () => [...CTX_CATEGORIES].sort((a, b) => breakdown[b.key] - breakdown[a.key]),
+    [breakdown],
+  );
   /** 段宽按窗口占比（不是按三者互相占比）——条尾的空白就是"还剩多少"。
       非零的段至少 1.5px：1.5K 的系统提示词在 1M 窗口里不该被抹成不存在 */
   const width = (v: number) => (v > 0 ? `max(1.5px, ${(v / ctxWindow) * 100}%)` : "0px");
@@ -324,16 +326,32 @@ function CtxDetails({ events, toolDefs, ctxWindow }: {
       className="w-[300px] px-3 py-[10px] bg-card border border-border text-foreground text-xs cursor-default"
       aria-label="上下文用量详情"
     >
-      {/* 标题位换成会滚的数(number-ticker):这张卡的主语就是"现在有多少 token
+      {/* 账号那半在**上**（订阅用户才画）：额度是会真正把人拦住的那一个，
+          而上下文满了还能压缩。分隔线挂在那一段自己的下沿——它 return null
+          那天线跟着消失，这里不用判"上面到底有没有画" */}
+      <PlanQuotaSection />
+
+      {/* 会话那半。段头把两半摆成平级的两件事（账号的 / 这个会话的），
+          右上角那个数是条尾空白的名字 */}
+      <div className="flex items-baseline justify-between gap-3">
+        <span className="text-[11px] text-muted-foreground">会话上下文</span>
+        <span className="font-mono text-[11px] tabular-nums text-muted-foreground">剩 {fmtCtx(rest)}</span>
+      </div>
+
+      {/* 标题位是会滚的数(number-ticker):这张卡的主语就是"现在有多少 token
           在上下文里",而它在一个 turn 里是**活的** —— 每翻一位就是刚发生的事。
-          原来那行 `~22.7K / 128K` 里的分母挪进底下的标签,分子留在这里 */}
+          单位跟卡上别的数一致走 K（`865,481` 与 `52.7K` 是两套读法,#1071）;
+          说明挪到右边同一条基线上,原来它在数字底下、把这张卡撑高一行 */}
       <div className="flex items-baseline justify-between gap-3 mb-[7px]">
         <NumberTicker
           value={breakdown.total}
-          label={`已用 ${pct}% · 窗口 ${fmtCtx(ctxWindow)}`}
+          format={fmtCtx}
           valueClassName="text-[22px]"
-          className="items-start gap-0.5"
+          className="items-start"
         />
+        <span className="font-mono text-[11px] tabular-nums whitespace-nowrap text-muted-foreground">
+          已用 {pct}% · 窗口 {fmtCtx(ctxWindow)}
+        </span>
       </div>
 
       {/* 分段占用条：段宽 = 该类占窗口的比例，尾部留白 = 还没被吃掉的部分 */}
@@ -351,32 +369,40 @@ function CtxDetails({ events, toolDefs, ctxWindow }: {
         ))}
       </div>
 
-      <div className="mt-[9px] mb-1">
-        {CTX_CATEGORIES.map((c) => (
-          <div key={c.key} className={POP_ROW}>
-            <span className="flex items-center gap-[7px] min-w-0">
+      {/* 图例两列:额度那半上了两只 62px 的表,四行一列会把这张卡拉太长。
+          零值行留着但压成弱色 —— 删掉会让卡片在类别出现/消失时抖动,
+          而"这个类别存在且是空的"本身是信息 */}
+      <div className="mt-[8px] grid grid-cols-2 gap-x-3">
+        {legend.map((c) => (
+          <div key={c.key} className={cn(POP_ROW, "py-[2px]")}>
+            <span className="flex items-center gap-[6px] min-w-0">
               <i
                 className="w-[7px] h-[7px] rounded-[2px] shrink-0"
                 style={{ background: c.color }}
                 aria-hidden="true"
               />
-              {c.label}
+              <span className="truncate">{c.label}</span>
             </span>
-            {/* 带上单位:小值(~43)不带单位会像个裸数字,和 ~22.7K 不是一套读法 */}
-            <span className={V}>~{fmtCtx(breakdown[c.key])} tokens</span>
+            {/* 单位不再逐行写:两列排下来"tokens"要出现四次,而这张卡上的数
+                现在是同一把尺子(hero / 剩余 / 脚注都走 fmtCtx) */}
+            <span className={cn(V, "text-[11px]", breakdown[c.key] === 0 && "text-muted-foreground")}>
+              {fmtCtx(breakdown[c.key])}
+            </span>
           </div>
         ))}
       </div>
 
-      <div className="pt-[6px] border-t border-border">
-        {/* 花费按型号拆开(cost-meter):正文走贵的、压缩/分区/建议走便宜的,
-            只报一个总数会把这件事抹平 */}
-        <CostPanel events={events} />
-      </div>
-
-      {/* 套餐额度(ADR-0174 的双固定窗)。读起来是一路往外拉:窗口里装了什么 →
-          这个会话花了多少 → 我的账号还剩多少。没订阅时整段不画 */}
-      <PlanQuotaSection />
+      {/* 自带 key 才看到钱:花费按型号拆开(cost-meter),正文走贵的、压缩/分区/
+          建议走便宜的,只报一个总数会把这件事抹平。**订阅用户整段不画**
+          (#1071)——他按额度跑,"这一次花了多少"是个和他买的东西相矛盾的问题;
+          那时这一行脚注顶上,说清"调了哪几款、一共多少 token" */}
+      {showsCost(rows) ? (
+        <div className="mt-[8px] pt-[7px] border-t border-border">
+          <CostPanel events={events} />
+        </div>
+      ) : (
+        <ModelFootnote rows={rows} cache={cache} />
+      )}
     </TooltipContent>
   );
 }
