@@ -1114,12 +1114,14 @@ void app.whenReady().then(() => {
     // 幽灵会话，而删除按 ADR-0002 是不可逆的物理抹除。agents 只在 purge 时删条目，
     // 所以它在不在就是会话还活不活着
     if (!agents.has(sessionId)) return;
-    // 一次调用一份账：usage 只挂在先落的那条事件上，两条都挂 deriveUsage 会算两次
+    // 一次调用一份账：usage 只挂在先落的那条事件上，两条都挂 deriveUsage 会算两次。
+    // **route 跟着 usage 走**（#1091）：这一格是「这笔钱从谁账上出」，只对挂了账的
+    // 那条事件有意义；分开挂的话另外三条会各带一个没有账的 route，读起来像三笔
     let usageSpent = false;
     const billOnce = () => {
       if (usageSpent || !result.usage) return {};
       usageSpent = true;
-      return { usage: result.usage };
+      return { usage: result.usage, route: annotateRoute ? ("hosted" as const) : ("direct" as const) };
     };
     if (result.section) {
       const sectionEvent = store.append({
@@ -1279,7 +1281,8 @@ void app.whenReady().then(() => {
     const event = store.append({
       sessionId, ts: Date.now(), type: "micro_compacted",
       summary: result.summary, coversUpTo: result.coversUpTo, model,
-      ...(result.usage ? { usage: result.usage } : {}),
+      // route 跟着 usage 走（#1091）：没有账的事件不带这一格
+      ...(result.usage ? { usage: result.usage, route: route ? ("hosted" as const) : ("direct" as const) } : {}),
     });
     send(CHANNELS.event, event);
   };

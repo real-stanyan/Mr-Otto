@@ -58,6 +58,26 @@ describe("usageByModel", () => {
     expect(rows).toEqual([{ model: "cheap", route: "direct", promptTokens: 12, completionTokens: 3, cachedTokens: 0 }]);
   });
 
+  it("外挂小调用带了 route 就按 route 记（#1091）—— 订阅用户的小模型走的是托管", () => {
+    // ADR-0248 之前「外挂只走用户自己的 key」是真的，`billed()` 里那句写死的 direct
+    // 因此一直是对的；那条规矩改了之后它成了假的，而失败模式是安静的——一次真·hosted
+    // 的调用被记成 direct，上下文浮层那半于是整段冒出来（`showsCost` 判的就是
+    // 「有没有一笔走自己的 key」），还按价目表给它标一个用户没花过的钱数
+    const rows = usageByModel([
+      ev({ type: "context_compacted", model: "cheap", summary: "", usage: { promptTokens: 7, completionTokens: 1 }, route: "hosted" }),
+      ev({ type: "section_classified", title: null, model: "cheap", usage: { promptTokens: 2, completionTokens: 1 }, route: "hosted" }),
+      ev({ type: "micro_compacted", summary: "", coversUpTo: 3, model: "cheap", usage: { promptTokens: 1, completionTokens: 1 }, route: "hosted" }),
+    ]);
+    expect(rows).toEqual([{ model: "cheap", route: "hosted", promptTokens: 10, completionTokens: 3, cachedTokens: 0 }]);
+  });
+
+  it("外挂小调用缺 route 仍按 direct —— 旧日志里它们确实是 direct", () => {
+    const rows = usageByModel([
+      ev({ type: "session_autotitled", title: "t", model: "cheap", usage: { promptTokens: 2, completionTokens: 1 } }),
+    ]);
+    expect(rows.map((r) => r.route)).toEqual(["direct"]);
+  });
+
   it("没记用量的调用不进账 —— 当 0 会让「没记」和「没花」看起来一样", () => {
     expect(usageByModel([ev({ type: "assistant_message", content: "", model: "m" })])).toEqual([]);
   });
