@@ -208,64 +208,118 @@ function SessionsTab({ ws, selfUid }: { ws: WorkspaceSnapshot; selfUid: string }
   );
 }
 
-/** 归档了的云会话（issue #919，前身是这一页顶部那节「云会话」，Task 13/ADR-0199）。
-    与上面「已发布会话」（一次性快照，导入即 fork 成本机新会话）是两种不同的东西，
-    分开一节，不混进同一张表。列表本身没有推送通道（同 workspaceGroups 的十一个
-    action，workspaceCloudList 无 onChanged），挂载时拉一次。活着的那些在侧栏工作区组里，新建也在那儿——
-    这里只是归档的去处，同本地会话的「已归档会话」那一屏。云端没有"恢复归档"
-    （daemon 启动只捞 archived=false 的会话重开房间），所以这些行只读，点进去
-    也只是看：openCloudSession 对归档会话仍然连得上房间读历史。一条归档的都没有
-    时整节不出——这一页是管理面，不该为一件没发生过的事留一行空态。
+/** 这个工作区的云会话（issue #919，前身是这一页顶部那节「云会话」，Task 13/ADR-0199；
+    **#1115 把「只列归档的」翻成「全部都列」**）。与上面「已发布会话」（一次性
+    快照，导入即 fork 成本机新会话）是两种不同的东西，分开一节，不混进同一张表。
 
-    行尾那颗 🗑 是 #1044 补的：删除的入口不能只有侧栏那个 ⋮，**归档掉的才是最
-    想清掉的那批**，而它们根本不在侧栏里。判据与侧栏那颗逐字相同（owner 或建的
-    人），服务端仍然自己判一次。行因此从一颗 button 拆成 div + 两颗 button——
-    button 套 button 是非法 HTML。 */
+    翻过来的理由：这一 tab 叫「会话」，还是点 ⚙ 落地的第一格，而原来它只画
+    `archived` 那一半、一条归档的都没有时整节 `return null` —— 于是一个有两条
+    云会话的工作区在这一屏上一个字都不提它们（真机上就是这个形态，#1115）。
+    原来的理由（活着的那些在侧栏，这里只是归档的去处，依据 ADR-0217「入口留
+    两个只会让人以为它们是两样东西」）**成立但代价没付**：同一个判据在 #1056
+    已经下过一次 —— 一个叫「文件」却一个文件都列不出来的页面是 #722 撒谎的勾
+    的近亲。重复的代价用**分工**抵掉：这一页负责「有哪些」，动作仍然各在各家 ——
+    活着的那几条的归档/删除在侧栏那颗 ⋮，这里只读、点进去打开。
+
+    行尾那颗 🗑 只挂在**归档**那一节（#1044）：删除的入口不能只有侧栏那个 ⋮，
+    而**归档掉的才是最想清掉的那批**、它们根本不在侧栏里。判据与侧栏那颗逐字
+    相同（owner 或建的人），服务端仍然自己判一次。行因此从一颗 button 拆成
+    div + 两颗 button —— button 套 button 是非法 HTML。云端没有「恢复归档」
+    （daemon 启动只捞 archived=false 的会话重开房间），所以归档那几行点进去
+    也只是看：openCloudSession 对归档会话仍然连得上房间读历史。
+
+    **「读不到」不许画成「一条都没有」**（同 ADR-0243/0251 那条纪律）：清单没有
+    推送通道（workspaceCloudList 无 onChanged），挂载时拉一次，而 `refreshCloudSessions`
+    失败时只写 `workspaceGroupsError`、**不动** `cloudSessionList`（那是对的 ——
+    「拿不到」≠「被清空」，同 ADR-0197 grants 缓存的规矩）。于是三态的判据是
+    「这一趟拉完了没有」+「拉完之后这一格有没有值」：`loaded && list === undefined`
+    只可能是失败。第一帧什么都不画而不是画一句空态 —— 那一瞬间还没有任何证据。 */
 function CloudSessionsSection({ ws }: { ws: WorkspaceSnapshot }) {
-  const list = useChat((s) => s.cloudSessionList[ws.id]) ?? EMPTY_CLOUD_SESSIONS;
+  const list = useChat((s) => s.cloudSessionList[ws.id]);
   const refresh = useChat((s) => s.refreshCloudSessions);
   const openCloud = useChat((s) => s.openCloudSession);
   const deleteCloud = useChat((s) => s.cloudDelete);
   const selfUid = useChat((s) => s.account.id);
+  const [loaded, setLoaded] = useState(false);
 
   useEffect(() => {
-    void refresh(ws.id);
+    let alive = true;
+    setLoaded(false);
+    // refresh 自己吞掉失败（写进 workspaceGroupsError），所以它永远 resolve；
+    // 「成功了没有」只能看它有没有往 cloudSessionList 里写这一格
+    void refresh(ws.id).then(() => {
+      if (alive) setLoaded(true);
+    });
+    return () => {
+      alive = false;
+    };
   }, [ws.id, refresh]);
 
-  const rows = cloudSessionRows(list, ws).filter((r) => r.archived);
-  if (rows.length === 0) return null;
+  const all = cloudSessionRows(list ?? EMPTY_CLOUD_SESSIONS, ws);
+  const live = all.filter((r) => !r.archived);
+  const archived = all.filter((r) => r.archived);
 
   return (
-    <div className="flex flex-col gap-1">
-      <span className={SECTION_LABEL}>已归档的云会话</span>
-      {rows.map((row) => (
-        <div key={row.id} className={cn(ROW, "border border-border")}>
-          <button
-            type="button"
-            className="flex min-w-0 flex-1 bg-transparent text-left"
-            onClick={() => void openCloud(ws.id, row.id)}
-          >
-            <span className="min-w-0 flex-1 truncate">
-              <b className="font-medium">{row.title}</b>
-              <span className="text-muted-foreground"> · {row.creatorLabel} · {formatProxyTime(row.updatedTs)}</span>
-            </span>
-          </button>
-          {(selfUid === ws.ownerUid || selfUid === row.creatorUid) && (
-            <button
-              type="button"
-              className="shrink-0 bg-transparent text-muted-foreground hover:text-err"
-              title="彻底删除这条会话（整段对话从云端抹掉，不可恢复）"
-              onClick={() => {
-                if (!window.confirm(`彻底删除「${row.title}」？\n整段对话会从云端抹掉，群里所有人都再也看不到，不可恢复。`)) return;
-                void deleteCloud(ws.id, row.id);
-              }}
-            >
-              <Trash2 className="size-[13px]" />
-            </button>
-          )}
+    <>
+      <div className="flex flex-col gap-1">
+        <span className={SECTION_LABEL}>云会话</span>
+        {!loaded && list === undefined ? null : list === undefined ? (
+          <p className="px-2 text-xs text-err">读不到云会话清单。</p>
+        ) : live.length === 0 ? (
+          <p className="px-2 text-xs text-muted-foreground">
+            这个工作区还没有进行中的云会话。用侧栏「团队」里这个工作区那颗 ＋ 开一条。
+          </p>
+        ) : (
+          live.map((row) => (
+            <div key={row.id} className={cn(ROW, "border border-border")}>
+              <button
+                type="button"
+                className="flex min-w-0 flex-1 bg-transparent text-left"
+                onClick={() => void openCloud(ws.id, row.id)}
+                title="打开这条会话"
+              >
+                <span className="min-w-0 flex-1 truncate">
+                  <b className="font-medium">{row.title}</b>
+                  <span className="text-muted-foreground"> · {row.creatorLabel} · {formatProxyTime(row.updatedTs)}</span>
+                </span>
+              </button>
+            </div>
+          ))
+        )}
+      </div>
+      {archived.length > 0 && (
+        <div className="flex flex-col gap-1">
+          <span className={SECTION_LABEL}>已归档的云会话</span>
+          {archived.map((row) => (
+            <div key={row.id} className={cn(ROW, "border border-border")}>
+              <button
+                type="button"
+                className="flex min-w-0 flex-1 bg-transparent text-left"
+                onClick={() => void openCloud(ws.id, row.id)}
+              >
+                <span className="min-w-0 flex-1 truncate">
+                  <b className="font-medium">{row.title}</b>
+                  <span className="text-muted-foreground"> · {row.creatorLabel} · {formatProxyTime(row.updatedTs)}</span>
+                </span>
+              </button>
+              {(selfUid === ws.ownerUid || selfUid === row.creatorUid) && (
+                <button
+                  type="button"
+                  className="shrink-0 bg-transparent text-muted-foreground hover:text-err"
+                  title="彻底删除这条会话（整段对话从云端抹掉，不可恢复）"
+                  onClick={() => {
+                    if (!window.confirm(`彻底删除「${row.title}」？\n整段对话会从云端抹掉，群里所有人都再也看不到，不可恢复。`)) return;
+                    void deleteCloud(ws.id, row.id);
+                  }}
+                >
+                  <Trash2 className="size-[13px]" />
+                </button>
+              )}
+            </div>
+          ))}
         </div>
-      ))}
-    </div>
+      )}
+    </>
   );
 }
 
