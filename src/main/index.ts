@@ -1601,6 +1601,10 @@ void app.whenReady().then(() => {
       }),
     sendEvent: (event) => send(CHANNELS.cloudSessionEvent, event),
     sendStatus: (status) => send(CHANNELS.cloudSessionStatus, status),
+    // 流式碎片（#1107）：runtime 那侧已按 50ms 合帧（deltaStream.ts），这里
+    // 直发不再进本机那道 16ms 合帧。顺序靠 webContents 的 FIFO：清槽的终态
+    // 事件（cloudSessionEvent）与碎片同一条管，先到的先处理
+    sendDelta: (delta) => send(CHANNELS.cloudSessionDelta, delta),
     onApprovalRequest: (req) => {
       pendingApprovals.set(req.sessionId, req);
       send(CHANNELS.approvalRequest, req);

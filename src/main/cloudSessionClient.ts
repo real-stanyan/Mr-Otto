@@ -134,6 +134,14 @@ export interface CloudSessionClientDeps {
   createTransport: (channel: string) => RemoteTransport;
   /** 去重之后的事件转给渲染层（otter:cloudSessionEvent） */
   sendEvent: (event: SessionEvent) => void;
+  /** 流式碎片转给渲染层（otter:cloudSessionDelta，协议 14，#1107）。
+      **绕开 liveBuffer/seenSeqs 那套 seq 机器**：碎片没有 seq、不进 backlog、
+      不去重，拿到就直转；text 是**累计快照**（见协议文件那条帧的注释），
+      渲染层整槽替换不拼接。终态 assistant_message 走 event 那条路照常到达，
+      渲染层据此清缓冲。sessionId 由本层从 ActiveSession 补上——帧里没有
+      （房间本身已经是会话粒度的信道），渲染层那道「是不是当前这条」的
+      守卫与 cloudSessionEvent 同款 */
+  sendDelta: (delta: { sessionId: string; agentId: string; kind: "content" | "reasoning"; text: string }) => void;
   /** 状态变化转给渲染层（otter:cloudSessionStatus） */
   sendStatus: (status: CloudSessionStatus) => void;
   /** approval_request 命中 self 可批 → 装配方接进 pendingApprovals/推送/岛 */
@@ -592,6 +600,13 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
         } else {
           deliverEvent(session, msg.event);
         }
+        return;
+      case "delta":
+        // 流式碎片（协议 14，#1107）：不过 seq 机器（没有 seq、不去重、不进
+        // liveBuffer），拿到就直转渲染层。connecting 期间到的碎片也照转——
+        // 渲染层那行「正在回复」要等 backlog 落定才画得出，但缓冲是按
+        // agentId 攒的，行一出现文字就在，不需要在这里排队等 ready
+        deps.sendDelta({ sessionId: session.sessionId, agentId: msg.agentId, kind: msg.kind, text: msg.text });
         return;
       case "backlog": {
         // liveBuffer 只在**最后一片**（done:true）才参与合并 flush（复审

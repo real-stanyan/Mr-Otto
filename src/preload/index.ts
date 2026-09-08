@@ -282,6 +282,7 @@ const bridge: ShellBridge = {
   onWorkspacesChanged: subscribe(CHANNELS.workspacesChanged),
   onCloudSessionEvent: subscribe(CHANNELS.cloudSessionEvent),
   onCloudSessionStatus: subscribe(CHANNELS.cloudSessionStatus),
+  onCloudSessionDelta: subscribe(CHANNELS.cloudSessionDelta),
   onDirectMessage: subscribe(CHANNELS.directMessage),
   onRealtimeHealth: subscribe(CHANNELS.realtimeHealth),
   onNotificationActivated: subscribe(CHANNELS.notificationActivated),

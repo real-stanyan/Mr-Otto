@@ -78,6 +78,7 @@ type FakeTransport = ReturnType<typeof fakeTransport>;
 function harness(overrides: Partial<CloudSessionClientDeps> = {}) {
   const transports: FakeTransport[] = [];
   const events: SessionEvent[] = [];
+  const deltas: { sessionId: string; agentId: string; kind: "content" | "reasoning"; text: string }[] = [];
   const statuses: CloudSessionStatus[] = [];
   const approvalRequests: ApprovalRequest[] = [];
   const approvalDecisions: ApprovalDecisionEvent[] = [];
@@ -93,6 +94,7 @@ function harness(overrides: Partial<CloudSessionClientDeps> = {}) {
       return t as unknown as RemoteTransport;
     },
     sendEvent: (e) => events.push(e),
+    sendDelta: (d) => deltas.push(d),
     sendStatus: (s) => statuses.push(s),
     onApprovalRequest: (r) => approvalRequests.push(r),
     onApprovalDecision: (e) => approvalDecisions.push(e),
@@ -102,7 +104,7 @@ function harness(overrides: Partial<CloudSessionClientDeps> = {}) {
 
   const client = createCloudSessionClient(deps);
   return {
-    client, transports, events, statuses, approvalRequests, approvalDecisions, inactiveSessionIds, state,
+    client, transports, events, deltas, statuses, approvalRequests, approvalDecisions, inactiveSessionIds, state,
   };
 }
 
@@ -190,6 +192,28 @@ describe("createCloudSessionClient — join / welcome / backlog 去重", () => {
 
     // 还没 ready：不立即转发，攒着
     expect(h.events).toHaveLength(0);
+  });
+
+  // ── 流式帧（协议 14，#1107）──────────────────────────────────────────
+  it("delta 帧不过 seq 机器：拿到就直转 sendDelta，补上 sessionId，connecting 期间也转", async () => {
+    const h = harness();
+    await h.client.join("w1", "cloud-s1");
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: 7, initiatorUid: "u1", ownerUid: "u2" , repo: null,  modelRoute: null });
+
+    // 还在 connecting（backlog 没落定）：delta 不等 ready——渲染层那行
+    // 「正在回复」要等 backlog 才画得出，但缓冲按 agentId 攒，行一出现文字就在
+    t.emitDown({ t: "delta", agentId: "admin", kind: "content", text: "半句" });
+    expect(h.deltas).toEqual([{ sessionId: "cloud-s1", agentId: "admin", kind: "content", text: "半句" }]);
+    // 不碰事件通道：events 仍为空，backlog 落定后也不该因为这条 delta 多转什么
+    expect(h.events).toHaveLength(0);
+
+    t.emitDown({ t: "backlog", events: [0, 1, 2, 3, 4, 5, 6, 7].map((n) => chatMsg(n)), done: true });
+    t.emitDown({ t: "delta", agentId: "admin", kind: "reasoning", text: "想" });
+    expect(h.deltas).toHaveLength(2);
+    expect(h.deltas[1]).toMatchObject({ kind: "reasoning", text: "想" });
   });
 
   it("直播 event 抢跑在 backlog 之前到达（非 0 的 seq）：backlog 落定后按 seq 升序转发，不是到达顺序", async () => {
