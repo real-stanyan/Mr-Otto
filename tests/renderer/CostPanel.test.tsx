@@ -74,6 +74,31 @@ describe("showsCost（整段画不画）", () => {
   });
 });
 
+// #1091：真实日志走一遍投影再问「画不画」。上面那几条喂的是造好的 `ModelUsage`，
+// 所以它们**看不见**这个 bug —— 病在 `deriveUsage` 把没带 route 的外挂小调用一律
+// 记成 direct，而订阅用户的小模型早就改走托管了（ADR-0248）。判据是造好的行时，
+// 那一步压根不在射程里
+describe("订阅用户的整段（从事件日志推一遍，#1091）", () => {
+  const helper = (over: Partial<{ route: "hosted" | "direct" }> = {}): SessionEvent => ({
+    seq: seq++, sessionId: "s", ts: 1_000, type: "session_autotitled", title: "标题",
+    model: "glm-4.7-flash", usage: { promptTokens: 700, completionTokens: 20 }, ...over,
+  } as SessionEvent);
+
+  it("正文托管 + 外挂小调用也托管 → 整段不画", () => {
+    const events = [msg({ route: "hosted", creditCostMicro: 12_000 }), helper({ route: "hosted" })];
+    const { container } = render(<CostPanel events={events} />);
+    expect(container).toBeEmptyDOMElement();
+  });
+
+  it("外挂那条没带 route → 被当成 direct，整段冒出来并给它标一个用户没花过的钱数", () => {
+    // 这一条守的是 bug 的**形状**不是它的修法：哪天有人把「缺席按 direct」改掉，
+    // 这条会红，而那正是要停下来想一想的时刻（旧日志里它们确实是 direct）
+    const events = [msg({ route: "hosted", creditCostMicro: 12_000 }), helper()];
+    render(<CostPanel events={events} />);
+    expect(screen.getByText("本会话")).toBeInTheDocument();
+  });
+});
+
 describe("CostPanel 渲染", () => {
   it("清一色托管：整段不渲染", () => {
     const { container } = render(<CostPanel events={[msg({ route: "hosted", creditCostMicro: 12_000 })]} />);

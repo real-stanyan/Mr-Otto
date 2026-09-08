@@ -579,6 +579,9 @@ export class LoopEngine {
       // 与 assistant_message 那一格同源、同语义（#1017）：这次调用的钱真的扣了，此前落盘时
       // 被丢掉，于是它成了这条会话里唯一「花了钱、日志里查不到」的模型调用
       ...(reply.creditCostMicro !== undefined ? { creditCostMicro: reply.creditCostMicro } : {}),
+      // 同源的还有 route（#1091）：这条事件此前记了 credit 却没记「这笔走的哪条路」，
+      // 于是 deriveUsage 把一条自带 credit 的账判成 direct，转头按价目表给它标了个 $
+      ...(reply.route ? { route: reply.route } : {}),
     });
   }
 

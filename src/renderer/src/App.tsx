@@ -2125,13 +2125,14 @@ function AppSidebar() {
                 trigger 的 aria-controls 指向一个不存在的 panel id。
                 **px-1.5 gap-1 是三档之后在真机上量出来的**（默认 px-2 gap-1.5）：
                 侧栏 16rem 减去 header 的 p-2 与 TabsList 的 p-[3px] = 234px，三等分
-                每颗 78px；而「工作区」三个全角字量得 42px、图标 16px，配默认内边距
-                16 + 间距 6 = 80 > 78。flex 项的 min-width 是 auto，所以**它不截断也
-                不撑破侧栏，它自己长到 82px 再把两个邻居各挤成 76px** —— 一排分段
-                控件从此不等宽，且切档时那颗白药丸的宽度会跳。收窄到 px-1.5 gap-1
-                之后需要 74px，三颗都稳在 78。两档时代富余 12px，所以这笔账是第三档
-                带来的；同 ADR-0236 第 1 条，这两个字面量之间的算术**故意没写成断言**
-                （扫源码的正则会在任何无害重构上翻红），保鲜期就是这段注释 */}
+                每颗 78px；当年第三档叫「工作区」，三个全角字量得 42px、图标 16px，
+                配默认内边距 16 + 间距 6 = 80 > 78。flex 项的 min-width 是 auto，所以
+                **它不截断也不撑破侧栏，它自己长到 82px 再把两个邻居各挤成 76px** ——
+                一排分段控件从此不等宽，且切档时那颗白药丸的宽度会跳。改名「团队」后
+                三颗都是两个字，默认内边距也装得下了，但收窄这组类名留着没动（两个
+                字面量无害，动它又是一轮真机核对）；同 ADR-0236 第 1 条，这层算术
+                **故意没写成断言**（扫源码的正则会在任何无害重构上翻红），保鲜期就是
+                这段注释 */}
             <Tabs value={tab} onValueChange={(v) => switchTab(v as SidebarTab)}>
               <TabsList className="w-full">
                 {/* 图标沿用三栏各自的既有语汇:任务清单面板用的就是 ListChecks,
@@ -2151,17 +2152,17 @@ function AppSidebar() {
                   /* 有未读点名时把话说进 aria-label(点自己 aria-hidden):这一栏的
                      名字仍然要在里面,读屏念出来的是整个可及名 */
                   aria-label={
-                    unreadMentions > 0 ? `工作区（有 ${unreadMentions} 条 @ 你的消息没看）` : undefined
+                    unreadMentions > 0 ? `团队（有 ${unreadMentions} 条 @ 你的消息没看）` : undefined
                   }
                 >
                   <Boxes aria-hidden />
-                  工作区
+                  团队
                   {/* 未读点名的记号（#1064 的角标被 #1087 这道 tab 挡住了：人站在
                       任务/项目栏时，组头和会话行那两处角标一处都不在屏幕上，
                       谁 @ 了他完全无声）。**画点不画数**：这一格只有 78px 宽，
                       塞不下数字；量级本来就在下一层（组头 + 会话行各一枚带数的
-                      角标），这颗只回答「工作区那边有事」——同 ADR-0255 那颗额度点
-                      的取舍。绝对定位不占版面宽度,不然「工作区」三个字先被顶出去。
+                      角标），这颗只回答「团队那边有事」——同 ADR-0255 那颗额度点
+                      的取舍。绝对定位不占版面宽度,不然「团队」两个字先被顶出去。
                       色取 --brand 不取 --warn:被 @ 不是「出事了」(同 MentionBadge) */}
                   {unreadMentions > 0 && (
                     <span
@@ -3971,12 +3972,20 @@ export function App() {
           <span className="font-[650] text-sm min-w-0 truncate" title={sessionId}>
             {sessionDisplayName(sessionTitle, events, fallbackSessionLabel(workspace, builtinWorkspace))}
           </span>
-          <span className="text-muted-foreground text-xs shrink-0">·</span>
-          {/* 内置 Default 工作区不显示文字——「Default」是系统内部名字，不是用户起的 */}
-          {workspace !== builtinWorkspace && (
-            <span className="text-muted-foreground text-xs font-mono shrink-0 max-w-[180px] truncate" title={workspace}>
-              {folderName(workspace)}
-            </span>
+          {/* 内置 Default 的工作区不显示文字——那不是用户起的名字。判据是
+              `isDefaultWorkspace` 不是 `!== builtinWorkspace`（#1091）：ADR-0206 之后
+              任务会话拿的是 `<Default>/<sessionId>/` 这个**子目录**，于是等号判据
+              漏掉了它们，头部写出来的是一串 `s-20260908062342-2bfb27…`——原来那条
+              规则想挡的正是这种东西，只是它在 #851 那天悄悄失效了。
+              分隔点放在条件里面（同 BranchPicker 的 `leadingSep`）：整块消失时
+              点跟着走，不然头部留一个孤零零的「·」 */}
+          {!isDefaultWorkspace(workspace, builtinWorkspace) && (
+            <>
+              <span className="text-muted-foreground text-xs shrink-0">·</span>
+              <span className="text-muted-foreground text-xs font-mono shrink-0 max-w-[180px] truncate" title={workspace}>
+                {folderName(workspace)}
+              </span>
+            </>
           )}
           {/* 分支从 composer 上方搬来:它回答的是"我在哪",属于头部这排身份信息,
               不是输入区的控件 */}

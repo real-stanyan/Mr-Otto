@@ -34,7 +34,7 @@ test("云会话冒烟：未真实登录时侧栏没有工作区可点，云会�
     // 下面那几条负向断言才有意义，否则「什么都没有」也可能只是界面崩了。
     // 先切到工作区栏：那颗钮只在这一栏（issue #1087 把它从项目栏搬过来，
     // 判据没变——按钮跟着它生出来的东西走，#923），新 HOME 的初值是任务栏
-    await otto.win.getByRole("tab", { name: "工作区" }).click();
+    await otto.win.getByRole("tab", { name: "团队" }).click();
     await expect(otto.win.getByRole("button", { name: "新工作区" })).toBeVisible({ timeout: 15_000 });
 
     // 负向断言：证明「摸不到」是确定行为，不是巧合——这一屏不该露出云会话的

@@ -353,6 +353,13 @@ export interface ContextCompactedEvent extends SessionEventBase {
   summary: string;
   model: string;                 // 摘要出自哪个模型（不同模型摘得不一样，溯源）
   usage?: TokenUsage;            // compact 本身烧的 token（一次全量输入，不便宜）
+  /** 这笔账走的哪条路（#1091）。**外挂小调用也要带**：ADR-0248 之前它们只走用户自己的
+      key，于是 `deriveUsage` 里「没有 route 就按 direct」是对的；ADR-0248 让订阅用户的
+      小模型改走托管之后那句话成了假的——一次真·hosted 的调用被记成 direct，浮层那半
+      于是①整段冒出来（`showsCost` 判的就是「有没有一笔走自己的 key」）②按价目表给它
+      标一个 `<$0.01`，而那是**用户没花过的钱**（同 ADR-0241）。缺席 = direct（旧日志
+      照常重放，那时它们确实是 direct）。 */
+  route?: "hosted" | "direct";
   /** 压缩这一次调用结算的 credit（micro-USD），与 `assistant_message.creditCostMicro`
       同一格同一来源（`reply.creditCostMicro`）。缺席 ≠ 0，同那一格的语义。
 
@@ -464,6 +471,9 @@ export interface SectionClassifiedEvent extends SessionEventBase {
   title: string | null;
   model: string;                 // 分类出自哪个模型（溯源）
   usage?: TokenUsage;            // 本次分类烧的 token
+  /** 这笔账走的哪条路（#1091，同 `ContextCompactedEvent.route` 那段注释）。
+      缺席 = direct（旧日志照常重放） */
+  route?: "hosted" | "direct";
 }
 
 /** 额外 11：跟进建议。turn 收口后跑一次便宜模型：站在用户的位置，接下来最可能想说的
@@ -480,6 +490,9 @@ export interface SuggestionsGeneratedEvent extends SessionEventBase {
   suggestions: string[];
   model: string;                 // 建议出自哪个模型（溯源）
   usage?: TokenUsage;            // 本次生成烧的 token
+  /** 这笔账走的哪条路（#1091，同 `ContextCompactedEvent.route` 那段注释）。
+      缺席 = direct（旧日志照常重放） */
+  route?: "hosted" | "direct";
 }
 
 /** 额外 12：派活给 subagent（落**父**会话）。
@@ -638,6 +651,9 @@ export interface MicroCompactedEvent extends SessionEventBase {
   coversUpTo: number;    // 被吸收的最后一个事件的 seq
   model: string;         // 摘要出自哪个（便宜）模型
   usage?: TokenUsage;    // 本次（含 defrag 那次）烧的 token
+  /** 这笔账走的哪条路（#1091，同 `ContextCompactedEvent.route` 那段注释）。
+      缺席 = direct（旧日志照常重放） */
+  route?: "hosted" | "direct";
 }
 
 /** 额外 18：会话自动命名（issue #335）。第一条 user_message 首行过长时，turn 收口后
@@ -650,6 +666,9 @@ export interface SessionAutoTitledEvent extends SessionEventBase {
   title: string;
   model: string;                 // 标题出自哪个模型（溯源）
   usage?: TokenUsage;            // 本次浓缩烧的 token
+  /** 这笔账走的哪条路（#1091，同 `ContextCompactedEvent.route` 那段注释）。
+      缺席 = direct（旧日志照常重放） */
+  route?: "hosted" | "direct";
 }
 
 /** 额外 21：会话主题分类（#846）。Default 主会话第一次 turn 收口后，合并调用
@@ -662,6 +681,9 @@ export interface SessionTopicAssignedEvent extends SessionEventBase {
   topic: string;
   model: string;
   usage?: TokenUsage;
+  /** 这笔账走的哪条路（#1091，同 `ContextCompactedEvent.route` 那段注释）。
+      缺席 = direct（旧日志照常重放） */
+  route?: "hosted" | "direct";
 }
 
 /** 额外 22：用户手动把会话归到某个主题桶（侧栏「归到…」）。null = 归到未分类。

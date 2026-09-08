@@ -18,7 +18,7 @@ import type { SessionEvent } from "../session/events.js";
 /** 出图那一格此刻是不是「Auto」（#1086）。**「没选过」与「显式选了 Auto」是同一档**：
     两者行为逐字相同（都由系统挑），分成两格的话，一个从没碰过这一格的人会看到
     「一行都没勾」，而他其实正处在 Auto 里。合成一档之后，勾在 Auto 上还是在某一款上，
-    恰好就回答了「这是我选的，还是默认就是它」—— 那正是 ADR-0260 记的已知代价 ④。 */
+    恰好就回答了「这是我选的，还是默认就是它」—— 那正是 ADR-0261 记的已知代价 ④。 */
 export function isImageAuto(selected: string | null): boolean {
   return selected === null || selected === AUTO_MODEL;
 }

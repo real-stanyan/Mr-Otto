@@ -29,7 +29,7 @@ test("新工作区：未登录时弹窗说清为什么 + 给出去的路，关�
   try {
     // 工作区栏是空的：一条都没有 + 没有错误 = 那一栏画空态那句话（#1087 之前
     // 是整节不出，那时它还挂在项目栏顶上、底下就有一段「还没有项目」）
-    await otto.win.getByRole("tab", { name: "工作区" }).click();
+    await otto.win.getByRole("tab", { name: "团队" }).click();
     await expect(otto.win.getByRole("button", { name: "新工作区" })).toBeVisible({ timeout: 15_000 });
     await expect(otto.win.getByText(/还没有工作区/)).toBeVisible();
 

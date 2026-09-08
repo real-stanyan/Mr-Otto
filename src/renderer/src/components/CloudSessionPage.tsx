@@ -231,7 +231,7 @@ export function CloudSessionPage({
   // 重发**确定失败**时换成「重新发送失败：<原因>」——否则屏幕上一条红字
   // 「限速…」旁边挂着一行灰字「没有收到回执」，读起来像两件事
   const [unsent, setUnsent] = useState<UnsentLine | null>(null);
-  // 「沙箱内免审」那颗开关（#1029，ADR-0243）：值是快照的投影（受控），
+  // 「免审批」那颗开关（#1029，ADR-0243）：值是快照的投影（受控），
   // 这两格只管「写在飞吗」与「上一次写为什么没成」。错误**不进 actionError**——
   // 那一格随便哪件不相干的成功都会把它清掉，而这条说的是一次安全设置没改上。
   // `sandboxBusy` **故意不随换会话清**：清了之后，A 那次写回来时的
@@ -345,7 +345,7 @@ export function CloudSessionPage({
     setUnsent(null);
     setSendError(null);
     setSendNotice(null);
-    // 「沙箱内免审没改上」是一句关于**某个工作区**的话；换到另一个工作区的会话上
+    // 「免审批没改上」是一句关于**某个工作区**的话；换到另一个工作区的会话上
     // 还挂着它就是在说一件跟这里无关的事。`sandboxBusy` 故意不清，理由写在它的
     // 声明处；这道闸也不是全部——await 回来得更晚的那一次由 toggleSandbox 自己比对
     setSandboxError(null);
@@ -829,10 +829,10 @@ export function CloudSessionPage({
       <footer className="relative shrink-0 px-4 pt-[10px] pb-3">
         {/* 滚动缘渐隐，同 App.tsx 的 footer：正文淡进底色，不画 1px 分隔线 */}
         <div aria-hidden className="pointer-events-none absolute inset-x-0 -top-10 h-10 bg-gradient-to-b from-transparent to-background" />
-        {/* 免审开着时**常驻**这一行（ADR-0231 把「开关旁边那句提示」记成了这笔账的
-            缓解措施，退化成一条要悬停才看得见的 title 就是把它悄悄降级）。关着不占
-            这一行——那是今天的行为，不值得一条常驻警示。全群可见不按人分：花的是
-            owner 的额度、动的是大家共用的那个卷 */}
+        {/* 这一行如今只剩「读不到」一种情形：免审开着时的常驻警示 2026-09-08
+            被维护者撤掉（开着就是开着，警示色药丸自己说）；「读不到」那句留下，
+            因为那一格恰恰可能正开着免审，闷着等于把危险藏进 title（判据与原文
+            都在 sandboxApprovalControl.ts 的 `sandboxApprovalBanner` 头注里） */}
         {sandboxBanner && <p className="mb-[6px] px-1 text-[11px] text-warn">{sandboxBanner}</p>}
         {/* 这次翻开关自己的失败原因，不进共享的 actionError（那一格随便哪件不相干
             的成功都会把它清掉，而这条说的是一次安全设置没改上） */}
