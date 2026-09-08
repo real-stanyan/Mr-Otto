@@ -1,6 +1,6 @@
-// 「沙箱内免审」那颗开关的三态与文案（#1029，ADR-0243）。
-// 这里钉的不是像素是**话有没有说错**：谁能翻、显示的是不是真的、以及标签
-// 不许退化成本地那颗的名字。
+// 「免审批」那颗开关（工作区那颗）的三态与文案（#1029，ADR-0243）。
+// 这里钉的不是像素是**话有没有说错**：谁能翻、显示的是不是真的。
+// 标签与警示行两条旧钉法 2026-09-08 被维护者对着真机翻掉（见下两条用例的注释）。
 
 import { describe, expect, it } from "vitest";
 import {
@@ -44,27 +44,26 @@ describe("sandboxApprovalControl", () => {
     expect(theirs.kind === "unknown" && theirs.canForceAsk).toBe(false);
   });
 
-  it("标签不许是「免审批」——那是本地那颗的名字，两颗管的东西不一样", () => {
-    expect(SANDBOX_APPROVAL_LABEL).not.toBe("免审批");
-    expect(SANDBOX_APPROVAL_LABEL).toBe("沙箱内免审");
+  it("标签就是「免审批」——与本地那颗同名是维护者 2026-09-08 拍板的（ADR-0243 原先钉死不同名，那条断言随之作废）", () => {
+    expect(SANDBOX_APPROVAL_LABEL).toBe("免审批");
   });
 });
 
 describe("sandboxApprovalBanner", () => {
-  it("只在真的免审时占那一行——关着是今天的行为，不值得一条常驻警示", () => {
+  it("免审开着不占那一行——常驻警示被维护者撤掉（2026-09-08），开着就是开着，警示色药丸自己说", () => {
     expect(sandboxApprovalBanner(sandboxApprovalControl({ ...WS, sandboxApproval: "auto" }, "owner")))
-      .toContain("正在免审");
+      .toBeNull();
     expect(sandboxApprovalBanner(sandboxApprovalControl(WS, "owner"))).toBeNull();
   });
 
-  it("读不到也要出声：那一格恰恰可能正开着免审，闷着就是把危险状态藏进一枚灰药丸的 title 里", () => {
+  it("读不到仍要出声：那一格恰恰可能正开着免审，闷着就是把危险状态藏进一枚灰药丸的 title 里（这条没被撤）", () => {
     const line = sandboxApprovalBanner(sandboxApprovalControl({ ...WS, sandboxApproval: null }, "member"));
     expect(line).not.toBeNull();
     expect(line).toContain("说不准");
   });
 
-  it("成员那一侧照样看得见——危险状态不按人分可见性（花的是 owner 的额度、动的是共用的卷）", () => {
+  it("成员那一侧同样不出警示行——开着时不按人分的那条可见性，随警示行一起撤了", () => {
     expect(sandboxApprovalBanner(sandboxApprovalControl({ ...WS, sandboxApproval: "auto" }, "member")))
-      .toContain("正在免审");
+      .toBeNull();
   });
 });

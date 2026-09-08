@@ -1,4 +1,4 @@
-// 「沙箱内免审」那颗开关在云会话输入框那一行长什么样（#1029，ADR-0243）。
+// 「免审批」那颗开关在云会话输入框那一行长什么样（#1029，ADR-0243）。
 //
 // 判断留在纯函数里、组件只画：这颗开关一次说错话的代价是**人以为每条命令都会
 // 弹卡给他看，而实际一条都不弹**，所以「此刻能不能翻」「显示的是不是真的」这两问
@@ -12,7 +12,10 @@
 //      这颗只管容器里的 `bash` / `write_file`；连接器与 `create_agent` 照旧要批。
 //   ③ 谁能改：本地是自己，这颗只有 owner（RLS `ws_update_owner`）。
 //   ④ 持久化：本地是内存态、新会话默认 ask；这颗落库、翻了就一直是那样。
-// 所以标签**不叫「免审批」**：同名同形 = 位置搬对了、话说错了。
+// 标签原来因此钉死「沙箱内免审」、刻意与本地那颗不同名（ADR-0243）；2026-09-08
+// 维护者对着真机拍板改回「免审批」——同名被接受，四点差别改由 title 与下文那几句
+// 文案承担。同日维护者还定了一条：免审开着时输入框上方**不再常驻警示行**（ADR-0243
+// 当初把它列为这笔账的缓解措施，见 `sandboxApprovalBanner`）。
 //
 // 三态而不是两态：`ws.sandboxApproval === null` 是「这一格读不到」（那一列走单独一条
 // 容错查询，见 supabaseWorkspacesApi.fetchSandboxApproval）。兜底画成「关着」是最坏的
@@ -21,8 +24,9 @@
 
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 
-/** 药丸上那几个字。**不许改成「免审批」**——那是本地那颗的名字，两颗管的东西不一样 */
-export const SANDBOX_APPROVAL_LABEL = "沙箱内免审";
+/** 药丸上那几个字。与本地那颗同名是**维护者 2026-09-08 拍板的**（ADR-0243 原先
+    刻意不同名）；两颗管的东西不一样，差别在各自的 title 里说 */
+export const SANDBOX_APPROVAL_LABEL = "免审批";
 
 export type SandboxApprovalControl =
   /** owner：翻得动 */
@@ -61,15 +65,14 @@ export function sandboxApprovalControl(ws: WorkspaceSnapshot, selfUid: string): 
   return { kind: "toggle", on, title: `${SCOPE}${COVERS}${TIMING}` };
 }
 
-/** 输入框上方常驻的那一句（ADR-0231 把这句话记成了免审这笔账的缓解措施，
-    所以它不能退化成一条要悬停才看得见的 title）。三种情形只有两种要出这一行：
-    · 免审开着 —— 说清此刻不会有人替你看每一条命令。
-    · **读不到** —— 这一格恰恰可能正开着免审。不出声就是把一个「可能正危险」的
-      状态藏进一枚灰药丸的 title 里，等于 ADR-0243 决策 4 明确否掉的那条路。
-    关着 = 今天的行为，不占这一行。 */
+/** 输入框上方的那一行。**免审开着时不再出声**——ADR-0231 曾把那句话记成这笔账的
+    缓解措施，2026-09-08 维护者对着真机撤了它（开着就是开着，药丸整枚染警示色
+    已经说了）。唯一还会占这一行的是**读不到**：那一格恰恰可能正开着免审，闷着
+    就是把一个「可能正危险」的状态藏进一枚灰药丸的 title 里（ADR-0243 决策 4
+    否掉的那条路，这一条没被撤）。 */
 export function sandboxApprovalBanner(c: SandboxApprovalControl): string | null {
   if (c.kind === "unknown") {
     return `读不到这个工作区的「${SANDBOX_APPROVAL_LABEL}」：此刻说不准智能体跑命令、写文件会不会先问你。`;
   }
-  return c.on ? `这个工作区正在免审：智能体在自己的容器里跑命令、写文件不会再问你。${COVERS}` : null;
+  return null;
 }
