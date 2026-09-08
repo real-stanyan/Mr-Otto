@@ -4464,3 +4464,146 @@ describe("每 turn 起模型前的网络往返收敛（#979 第 5 条，ADR-0232
     expect(seen.every((m) => m.length === 0)).toBe(true);
   });
 });
+
+// ── 被 @ 的人类成员的收件箱（#1064，ADR-0256）─────────────────────────────
+// 客户端算好点了谁，服务端按**此刻**的成员名单复核并剔掉发言人自己。
+// 这一族用例守的是「服务端不信客户端」与「只 @ 人不起 turn」两件事。
+describe("点名提醒（#1064）", () => {
+  const inboxSession = (
+    inbox: ReturnType<typeof createInMemoryMentionInbox>,
+    members: string[],
+    seen: string[] = [],
+    store: EventStore = newStore()
+  ) => createCloudSession({
+    workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+    store, world: fakeWorld, px, hostUids: async () => members,
+    agents: async () => AGENTS,
+    adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: "答" }; } }),
+    onEvent: () => {}, onUsage: () => {},
+    memory: createInMemoryWorkspaceMemory(), mentionInbox: inbox,
+    agentWriter: createInMemoryAgentWriter(),
+    isMember: async () => true,
+    contextWindowOf: () => undefined,
+    sandboxApproval: async () => "ask",
+    workspaceLock: createWorkspaceLock(),
+    relayRemainingMicro: async () => null,
+  });
+
+  it("只 @ 人：落一行收件箱，一条 turn 都不起（mentions 是权威的空数组）", async () => {
+    const inbox = createInMemoryMentionInbox();
+    const seen: string[] = [];
+    const store = newStore();
+    const session = inboxSession(inbox, ["u1", "u-hong"], seen, store);
+
+    await session.say("u1", "alice", "@小红 帮我看下", false, [], undefined, ["u-hong"]);
+    await session.settled();
+
+    expect(seen).toEqual([]);
+    expect(inbox.rows).toHaveLength(1);
+    expect(inbox.rows[0]).toMatchObject({
+      workspaceId: "w1", sessionId: "s1", uid: "u-hong",
+      fromUid: "u1", fromLabel: "alice", text: "@小红 帮我看下",
+    });
+    // seq 是那条 chat_message 在日志里的 seq —— 收件箱那一行的主键靠它。
+    // 对不上号的话「这条提醒指的是哪句话」就永远答不出来
+    const chat = store.load("s1").find((e) => e.type === "chat_message");
+    expect(inbox.rows[0]!.seq).toBe(chat!.seq);
+  });
+
+  it("@ 了 agent 也 @ 了人：turn 照跑，人照样收到提醒，seq 是开场白那条", async () => {
+    const inbox = createInMemoryMentionInbox();
+    const seen: string[] = [];
+    const session = inboxSession(inbox, ["u1", "u-hong"], seen);
+
+    await session.say("u1", "alice", "@运营 @小红 一起看", true, ["ops"], undefined, ["u-hong"]);
+    await session.settled();
+
+    expect(seen).toEqual(["ops"]);
+    expect(inbox.rows.map((r) => r.uid)).toEqual(["u-hong"]);
+  });
+
+  // 客户端那份不是权威：uid 直接来自帧，没有长度上限也没有字符集校验
+  it("不在这个工作区的 uid 一行都不落", async () => {
+    const inbox = createInMemoryMentionInbox();
+    const session = inboxSession(inbox, ["u1", "u-hong"]);
+
+    await session.say("u1", "alice", "@路人 看下", false, [], undefined, ["u-stranger", "u-hong"]);
+    await session.settled();
+
+    expect(inbox.rows.map((r) => r.uid)).toEqual(["u-hong"]);
+  });
+
+  // 选人名单里仍然有自己（ADR-0252 决策 1）——那份答的是「认不认得这个名字」，
+  // 这里答的是「要不要惊动他」，两个问题两个答案
+  it("@ 自己不落行", async () => {
+    const inbox = createInMemoryMentionInbox();
+    const session = inboxSession(inbox, ["u1", "u-hong"]);
+
+    await session.say("u1", "alice", "@alice 提醒自己", false, [], undefined, ["u1"]);
+    await session.settled();
+
+    expect(inbox.rows).toEqual([]);
+  });
+
+  it("同一个 uid 报两遍只落一行", async () => {
+    const inbox = createInMemoryMentionInbox();
+    const session = inboxSession(inbox, ["u1", "u-hong"]);
+
+    await session.say("u1", "alice", "@小红 @小红", false, [], undefined, ["u-hong", "u-hong"]);
+    await session.settled();
+
+    expect(inbox.rows).toHaveLength(1);
+  });
+
+  // 缺席 = 手机端 / 旧桌面：行为与改动前逐字一样（谁都不通知）
+  it("memberMentions 缺席时一行都不落，且不多打一次成员名单的网络", async () => {
+    const inbox = createInMemoryMentionInbox();
+    let hostCalls = 0;
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store: newStore(), world: fakeWorld, px,
+      hostUids: async () => { hostCalls += 1; return ["u1", "u-hong"]; },
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({ model: a.models[0]!, async chat() { return { content: "答" }; } }),
+      onEvent: () => {}, onUsage: () => {},
+      memory: createInMemoryWorkspaceMemory(), mentionInbox: inbox,
+      agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true,
+      contextWindowOf: () => undefined,
+      sandboxApproval: async () => "ask",
+      workspaceLock: createWorkspaceLock(),
+      relayRemainingMicro: async () => null,
+    });
+
+    await session.say("u1", "alice", "大家好", false, []);
+    await session.settled();
+
+    expect(inbox.rows).toEqual([]);
+    expect(hostCalls).toBe(0);
+  });
+
+  // 收件箱是日志的投影：权威那份已经落盘，把一句已经发出去的话翻成失败更糟
+  it("收件箱写挂了，这句话照旧发出去", async () => {
+    const store = newStore();
+    const session = createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => ["u1", "u-hong"],
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({ model: a.models[0]!, async chat() { return { content: "答" }; } }),
+      onEvent: () => {}, onUsage: () => {},
+      memory: createInMemoryWorkspaceMemory(),
+      mentionInbox: { async record() { throw new Error("supabase 挂了"); } },
+      agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true,
+      contextWindowOf: () => undefined,
+      sandboxApproval: async () => "ask",
+      workspaceLock: createWorkspaceLock(),
+      relayRemainingMicro: async () => null,
+    });
+
+    await expect(
+      session.say("u1", "alice", "@小红 看下", false, [], undefined, ["u-hong"])
+    ).resolves.toBeUndefined();
+    expect(store.load("s1").some((e) => e.type === "chat_message")).toBe(true);
+  });
+});
