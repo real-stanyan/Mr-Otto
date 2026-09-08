@@ -42,7 +42,7 @@ import type {
 } from "../../shared/shellBridge.js";
 import type { CsWorkHit, CsWorkNode } from "../../shared/remote/cloudSession.js";
 import type { CatalogEntry } from "../../shared/mcpCatalog.js";
-import type { CsModelRoute } from "../../shared/remote/cloudSession.js";
+import type { CsGitHost, CsModelRoute } from "../../shared/remote/cloudSession.js";
 import {
   initialMcpPromptValues,
   isCurrentMcpPromptSubmission,
@@ -1041,6 +1041,14 @@ interface ChatState {
       workspaceGroupsError 那一格（那格是整页共用的，设置页刚打开那一刻可能还
       留着一条毫不相干的旧错误） */
   workspaceCloudState(workspaceId: string): Promise<FriendsResult<CloudWorkspaceState>>;
+  /** 存 / 删一台主机的 Git 凭据（控制房 RPC，协议 15，#1103；owner 才过，服务端判）。
+      `token: ""` = 删。PAT 纪律同 ProviderKeyDialog：渲染层不留 key 的任何副本，
+      这里只是这一次 IPC 调用的参数。成功回服务端此刻的清单 */
+  workspaceCloudGitCredential(
+    workspaceId: string,
+    host: string,
+    token: string,
+  ): Promise<FriendsResult<CsGitHost[] | null>>;
   /** 读一格工作文件夹（控制房 RPC，协议 11，#1056）。同上，透传 FriendsResult ——
       「文件」tab 自己画错误；这一页有可能同时在读两条路径（点进子目录的那一刻），
       所以这里不存任何状态，谁调谁拿 */
@@ -2537,6 +2545,9 @@ export const useChat = create<ChatState>((set, get) => ({
 
   workspaceCloudState(workspaceId) {
     return window.otter.workspaceCloudState(workspaceId);
+  },
+  workspaceCloudGitCredential(workspaceId, host, token) {
+    return window.otter.workspaceCloudGitCredential(workspaceId, host, token);
   },
   workspaceFiles(workspaceId, path) {
     return window.otter.workspaceCloudFiles(workspaceId, path);

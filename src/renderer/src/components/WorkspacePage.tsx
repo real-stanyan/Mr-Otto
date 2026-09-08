@@ -24,6 +24,7 @@ import { useEffect, useState } from "react";
 import { ArrowLeft, ChevronDown, ChevronRight, LogOut, Trash2, UserPlus } from "lucide-react";
 import { cn } from "@/lib/utils.js";
 import { Button } from "@/components/ui/button.js";
+import { Input } from "@/components/ui/input.js";
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog.js";
@@ -41,6 +42,9 @@ import {
   buildAllow, isServerOn, isToolOn, selectionFromAllow, toggleServer, toggleTool,
   formatProxyTime, type ProxySelection,
 } from "../lib/proxyShare.js";
+import { gitHostRows, gitHostsNotice } from "../lib/gitHostsView.js";
+import { validateGitHost } from "../../../shared/remote/gitHost.js";
+import type { CsGitHost } from "../../../shared/remote/cloudSession.js";
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 
 // 云会话清单没拉过时的兜底：模块级常量而非每次渲染 `?? []`，保证 selector
@@ -286,6 +290,11 @@ function CloudStateDot({ state }: { state: ConnectorCloudState }) {
   return <span className="size-[7px] shrink-0 rounded-full bg-border" aria-label="云端不可用" />;
 }
 
+/** 连接器 tab（#1104 起分两组）。两组都在回答「这个工作区能够到外面的什么」：
+    上面是 MCP 服务，下面是代码仓库的凭据。它们走的是**完全不同的执行路径**
+    ——MCP 那半是 edge 的托管箱（ADR-0197），Git 这半是 runtime 上一台一次性
+    旁路容器（ADR-0200 决策②，凭据不进水獭那台容器）——所以分节标题不是装饰，
+    它是这一页上唯一说清「这两样不是一类」的地方。 */
 function ConnectorsTab({ ws, selfUid }: { ws: WorkspaceSnapshot; selfUid: string }) {
   const withdraw = useChat((s) => s.withdrawWorkspaceConnector);
   // hostedServerIds 的渲染层来源目前只有 A 侧「云端可用」总览按 friendUid 聚合
@@ -324,7 +333,198 @@ function ConnectorsTab({ ws, selfUid }: { ws: WorkspaceSnapshot; selfUid: string
         </div>
       )}
       <ContributeConnectorDialog ws={ws} selfUid={selfUid} open={contributeOpen} onOpenChange={setContributeOpen} />
+
+      <GitHostsSection ws={ws} selfUid={selfUid} />
     </div>
+  );
+}
+
+/** 添加一台主机（#1104）。两个框：主机名 + 令牌。
+
+    **令牌框存完即清**——纪律照抄 `ProviderKeyDialog` 的原话：「输入框存完即清，
+    渲染层不留 key 的任何副本；状态只有布尔」。这里连布尔都不留：存完整个弹窗
+    就关了，本地 state 跟着卸载。
+
+    主机名**本地先过一遍 `validateGitHost`** 省掉一次明知会被拒的往返；服务端
+    仍然自己校验一次——渲染层不是安全边界（同 `validateRepoUrl` 注释里那条理由）。 */
+function AddGitHostDialog({
+  ws, open, onOpenChange, onSaved,
+}: {
+  ws: WorkspaceSnapshot;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  onSaved: (hosts: readonly CsGitHost[] | null) => void;
+}) {
+  const save = useChat((s) => s.workspaceCloudGitCredential);
+  const [host, setHost] = useState("github.com");
+  const [token, setToken] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  // 每次开框回到干净状态——不带着上一次的输入或失败提示（同 ContributeConnectorDialog）
+  const onDialogOpenChange = (o: boolean): void => {
+    if (o) {
+      setHost("github.com");
+      setToken("");
+      setError(null);
+    }
+    onOpenChange(o);
+  };
+
+  const doSave = async (): Promise<void> => {
+    const valid = validateGitHost(host);
+    if (!valid.ok) {
+      setError(valid.message);
+      return;
+    }
+    if (token.trim() === "") {
+      // 空串在协议里是「删掉这台主机」，从「添加」这条路发出去就是南辕北辙
+      setError("令牌不能为空。要删掉一台主机，用列表行上的「删除」。");
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    const r = await save(ws.id, valid.host, token);
+    setBusy(false);
+    if (!r.ok) {
+      setError(r.message);
+      return;
+    }
+    setToken(""); // 存完即清，不等弹窗卸载
+    onSaved(r.value);
+    onOpenChange(false);
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={(o) => { if (!busy) onDialogOpenChange(o); }}>
+      <DialogContent className="sm:max-w-[420px]">
+        <DialogHeader>
+          <DialogTitle>添加代码仓库主机</DialogTitle>
+          <DialogDescription>
+            令牌存在服务端，工作区里的水獭替你拉私有仓库时用它；**它不会下发到任何人的客户端**，
+            成员在这一页只看得到主机名。
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="flex flex-col gap-2">
+          <Input
+            value={host}
+            onChange={(e) => setHost(e.target.value)}
+            placeholder="github.com"
+            disabled={busy}
+            autoFocus
+          />
+          <Input
+            type="password"
+            value={token}
+            onChange={(e) => setToken(e.target.value)}
+            placeholder="访问令牌（Personal Access Token）"
+            disabled={busy}
+          />
+          <p className="text-[11px] text-muted-foreground">
+            同一台主机再存一次就是换新的那把。
+          </p>
+          {error !== null && <p className="text-xs text-err">{error}</p>}
+        </div>
+
+        <DialogFooter>
+          <Button variant="ghost" size="sm" disabled={busy} onClick={() => onOpenChange(false)}>取消</Button>
+          <Button size="sm" disabled={busy} onClick={() => void doSave()}>{busy ? "保存中…" : "保存"}</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
+/** 「代码仓库」那一组（#1104）。**token 从不下行**——这张表里一行 = 一台能认证的
+    主机，那把钥匙只活在 runtime 那台 VPS 上。
+
+    owner 才画 ＋ 与删除；非 owner 看到的是**同一份清单**、只是没有那两颗钮——
+    不是整组藏起来（藏起来会让人以为这个工作区没配过，同 ADR-0243 对非 owner 的处置）。 */
+function GitHostsSection({ ws, selfUid }: { ws: WorkspaceSnapshot; selfUid: string }) {
+  const load = useChat((s) => s.workspaceCloudState);
+  const save = useChat((s) => s.workspaceCloudGitCredential);
+  const isOwner = ws.ownerUid === selfUid;
+
+  const [hosts, setHosts] = useState<readonly CsGitHost[] | null | undefined>(undefined);
+  const [loading, setLoading] = useState(true);
+  const [adding, setAdding] = useState(false);
+  const [now] = useState(() => Date.now());
+
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    void load(ws.id).then((r) => {
+      if (!alive) return;
+      // 拉不到整份 = 读不到（null），与「一台都没配」（[]）分开画
+      setHosts(r.ok ? r.value.gitHosts : null);
+      setLoading(false);
+    });
+    return () => {
+      alive = false;
+    };
+  }, [ws.id, load]);
+
+  const rows = gitHostRows(hosts ?? [], ws.members, isOwner, now);
+  const notice = gitHostsNotice(hosts, loading);
+
+  return (
+    <section className="flex flex-col gap-2 border-t border-border pt-4">
+      <div className="flex items-center justify-between">
+        <p className={SECTION_LABEL}>代码仓库</p>
+        {isOwner && (
+          <Button size="sm" variant="ghost" onClick={() => setAdding(true)} disabled={loading}>
+            添加主机…
+          </Button>
+        )}
+      </div>
+      <p className="text-[12px] text-muted-foreground">
+        存一把访问令牌，水獭就能替你拉私有仓库。
+        <b className="font-medium text-foreground">令牌只留在服务端</b>
+        ——这张表里看得到有哪几台主机，看不到那把钥匙。
+      </p>
+
+      {notice && (
+        <p className={cn("px-1 text-xs", notice.tone === "err" ? "text-err" : "text-muted-foreground")}>
+          {notice.text}
+        </p>
+      )}
+
+      {rows.length > 0 && (
+        <div className="flex flex-col gap-1">
+          {rows.map((row) => (
+            <div key={row.host} className={cn(ROW, "border border-border")}>
+              <span className="min-w-0 flex-1 truncate">
+                <b className="font-medium">{row.host}</b>
+                <span className="text-muted-foreground"> · {row.meta}</span>
+              </span>
+              {row.canRemove && (
+                <Button
+                  variant="ghost" size="xs" className="shrink-0 text-err"
+                  onClick={() => {
+                    // `token: ""` = 删掉这台主机（协议 15 的两态）。成功时服务端
+                    // 回的是**它此刻的**清单，直接换上——不本地推算，那会在
+                    // 「我删了但服务端没删成」时画出一个假状态
+                    void save(ws.id, row.host, "").then((r) => {
+                      if (r.ok) setHosts(r.value);
+                    });
+                  }}
+                >
+                  删除
+                </Button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+
+      <AddGitHostDialog
+        ws={ws}
+        open={adding}
+        onOpenChange={setAdding}
+        onSaved={(next) => setHosts(next)}
+      />
+    </section>
   );
 }
 
