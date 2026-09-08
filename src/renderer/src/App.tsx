@@ -205,11 +205,8 @@ import {
   useAui,
   useAuiState,
 } from "@assistant-ui/react";
-import {
-  ContextDisplayRoot,
-  ContextDisplayTrigger,
-  ContextDisplayRingVisual,
-} from "@/components/assistant-ui/context-display.js";
+import { ContextDisplayRoot } from "@/components/assistant-ui/context-display.js";
+import { ContextRingTrigger } from "@/components/ContextRingTrigger.js";
 import type { Unstable_TriggerAdapter, Unstable_TriggerItem } from "@assistant-ui/core";
 import { ComposerTriggerPopover } from "@/components/assistant-ui/composer-trigger-popover.js";
 import {
@@ -713,14 +710,11 @@ function ComposerPrefsBar() {
               窗口未知（兜底常量）时整个环不画:假百分比不如没有 */}
           {ctxWindow !== null && (
             <ContextDisplayRoot modelContextWindow={ctxWindow} usage={{ totalTokens: used }}>
-              {/* 不给 title:富 tooltip 已经把同样的数字说了一遍,
-                  原生气泡会在它旁边再冒一个,成了重影 */}
-              <ContextDisplayTrigger
-                className="p-[3px] hover:bg-foreground/[0.07]"
-                aria-label="上下文用量详情"
-              >
-                <ContextDisplayRingVisual />
-              </ContextDisplayTrigger>
+              {/* 钮 + 环 + 右上角那枚额度告警点整块搬进 ContextRingTrigger(#1073):
+                  那枚点要读 billing、还要一颗每分钟走一格的表,圈在它自己的组件里,
+                  每分钟的重渲就不会摊到整条 composer 上。为什么不给 title、
+                  为什么是点不是外弧,判据写在那个文件头上 */}
+              <ContextRingTrigger />
               <CtxDetails events={events} toolDefs={toolDefs} ctxWindow={ctxWindow} />
             </ContextDisplayRoot>
           )}
