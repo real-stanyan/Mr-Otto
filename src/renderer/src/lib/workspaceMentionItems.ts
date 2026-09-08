@@ -12,14 +12,15 @@
 // 两条必须一致：**列表上写着的字，必须搜得出来**。摆出一个字段又不认它，和界面
 // 骗人是同一类毛病。
 //
-// ── @ 一个人类成员今天会发生什么 ────────────────────────────────────────
-// 只有一件事：那个名字进正文，房里所有人（含各只 agent 的上下文）都看得见。
-// **不起 turn、也没有任何通知**：服务端 resolveTargets 按 agent id 的集合过滤
-// mentions（sessionService.ts），人类 uid 放进去会被静默丢掉；客户端因此只把
-// agent 那几个 id 填进 mentions（只 @ 人时就是 `[]` —— 那是一句权威的「我确认
-// 没点任何 agent」，服务端照 targets.length === 0 那条分支只落一条 chat_message）。
-// 所以这一版**服务端零改动**。真正给被 @ 的成员发通知（未读角标 / 推送）是另一件
-// 事，今天工作区一条往成员那边推的通道都没有，另开 issue（见 ADR-0252）。
+// ── @ 一个人类成员会发生什么 ────────────────────────────────────────────
+// **不起 turn**：服务端 resolveTargets 按 agent id 的集合过滤 mentions
+// （sessionService.ts），人类 uid 放进去会被静默丢掉；客户端因此只把 agent
+// 那几个 id 填进 mentions（只 @ 人时就是 `[]` —— 那是一句权威的「我确认没点任何
+// agent」，服务端照 targets.length === 0 那条分支只落一条 chat_message）。
+// **但他会收到提醒**（#1064，ADR-0256）：点到的人类 uid 走 say 帧上另一格
+// `memberMentions`，服务端按此刻的成员名单复核后落进 `workspace_mentions`，
+// 桌面拿到 realtime 推送弹一条系统通知 + 侧栏角标。两格分开带，因为去处根本
+// 不同——一格花钱起 turn，一格只是让人知道有人喊他。
 
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 
