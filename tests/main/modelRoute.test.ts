@@ -166,9 +166,21 @@ describe("routeImage", () => {
   const hosted = (over: Partial<{ subscribed: boolean; exhausted: boolean; resetAt: number; imageModels: string[] }> = {}) =>
     ({ subscribed: true, exhausted: false, imageModels: ["gemini-3.1-flash-image"], ...over });
 
-  it("订阅 + 网关供 + 拿得到 JWT → 走网关，点名最便宜那款", () => {
+  it("订阅 + 网关供 + 拿得到 JWT → 走网关的 /images，没选过就点名最便宜那款", () => {
+    // `/images` 不是 `/chat/completions`（#1086）：纯出图模型在后者上一律 404
     const r = routeImage({ ...base, hosted: hosted({ imageModels: ["cheap-image", "pricey-image"] }) });
-    expect(r).toEqual({ kind: "hosted", url: "https://edge/llm/v1/chat/completions", model: "cheap-image" });
+    expect(r).toEqual({ kind: "hosted", url: "https://edge/llm/v1/images", model: "cheap-image" });
+  });
+
+  it("选过的那款优先（#1086）；网关下架了它就回落最便宜那款，不报错", () => {
+    // 回落而不是报错，同 visionModelFor / helperModelFor 的纪律：网关下架一款不该让
+    // 出图整个不通，而「你选的那款没了」这件事没有任何用户能据此行动的出路
+    const models = ["cheap-image", "pricey-image"];
+    const pick = (preferred?: string) =>
+      routeImage({ ...base, hosted: hosted({ imageModels: models }), ...(preferred === undefined ? {} : { preferred }) });
+    expect(pick("pricey-image")).toMatchObject({ model: "pricey-image" });
+    expect(pick("gone-image")).toMatchObject({ model: "cheap-image" });
+    expect(pick()).toMatchObject({ model: "cheap-image" });
   });
 
   it("没订阅：说订阅，**不提「填自己的 key」** —— 出图压根没有那条路（ADR-0248 的措辞纪律）", () => {

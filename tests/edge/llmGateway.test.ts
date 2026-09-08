@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   costMicro, createLlmGateway, estimateMicro, estimateUsage, parseUsage, pickRoute, tapSseUsage,
-  UPSTREAM_KEY_ENV, upstreamKeyOf,
+  UPSTREAM_KEY_ENV, upstreamKeyOf, upstreamPathFor,
   type Caller, type HoldOutcome, type QuotaPort, type RouteRow, type SettleMeta,
 } from "../../services/edge/src/llmGateway.js";
 import { BILLING_HEADERS, SSE_COST_COMMENT, parseSseCostComment } from "../../src/shared/billing.js";
@@ -46,12 +46,27 @@ const chatReq = (body: unknown) =>
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
   });
 
+/** 出图那扇门（#1086）。两扇门通到同一个处理函数，所以这两个构造器唯一的差别
+    就是路径本身 —— 用例里分开写，是为了让「客户端敲哪扇门」这件事在断言里看得见 */
+const imageReq = (body: unknown) =>
+  new Request("https://edge/llm/v1/images", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+  });
+
 /** 中断结算（C1）落的那一笔：网关按 body 的 UTF-8 字节数 + max_tokens 估算，
     测试里照同一个算式算一遍——断言的是「结算的正好是预扣的那一笔」 */
 const estUsageFor = (body: unknown, maxTokens = flash.defaultMaxTokens) =>
   estimateUsage(new TextEncoder().encode(JSON.stringify(body)).length, maxTokens);
 
 describe("纯函数", () => {
+  it("upstreamPathFor：出图打 /images，其余打 /chat/completions", () => {
+    // 穷举两个取值。`kind` 是 `RouteKind` 这个联合类型，加第三种（video…）时
+    // 这条不会红——但 `upstreamPathFor` 的 else 会把它默默送去 chat 那条路，
+    // 而那正是纯出图模型今天 404 的原因。加新 kind 的人要连这里一起改
+    expect(upstreamPathFor("image")).toBe("/images");
+    expect(upstreamPathFor("chat")).toBe("/chat/completions");
+  });
+
   it("pickRoute：无粘性时按有效混合价取最低（cache 权重最大）；不认识回 null", () => {
     // 便宜站与贵站：贵站标价 in 低但 cache 价飞天，混合价反而更贵（ADR-0175 的坑）
     const cheap: RouteRow = { ...flash, id: "flash@cheap", priceInMicroPerM: 1_000_000, priceCacheMicroPerM: 100_000, priceOutMicroPerM: 2_000_000 };
@@ -193,11 +208,18 @@ describe("createLlmGateway", () => {
     expect(calls.release).toEqual([]);
   });
 
-  it("出图：body 里的自定义字段（modalities）原样透传，images 原样回来，按输出价结算", async () => {
-    // 出图整条能力**建立在这条透传上**（#1081）：网关只改 model / stream，
-    // 其余字段是 `...body` 展开的。这条断言在这儿，是因为「透传」今天是实现的一个
-    // 副产品——哪天有人给转发体加一层白名单，出图会安静地退化成一次纯文本回复，
-    // 而那时候错的表现是「模型说它画好了但一张图都没有」
+  it("出图：打上游的 /images、body 原样透传、回包原样回来，按输出价结算", async () => {
+    // 三件事钉在同一条用例里，因为它们是同一条链上的三环（#1081 / #1086）：
+    //
+    // ① **端点由 `kind` 决定**（`upstreamPathFor`）。纯出图模型（Seedream 一族、
+    //    GPT Image 2）在 `/chat/completions` 上一律 404 —— 上游原话
+    //    `No endpoints found that support the requested output modalities`。
+    //    这条断言看的是**真正打出去的 URL**，不是「调了哪个函数」。
+    // ② **透传**：网关只改 model / stream，其余字段是 `...body` 展开的。出图整条能力
+    //    建立在这条上，而它今天只是实现的一个副产品 —— 哪天有人给转发体加一层字段
+    //    白名单，出图会安静退化（`input_references` 被吃掉 = 图生图变成从零画，
+    //    用户看到的是「它没照我给的图改」）。
+    // ③ **按输出 token 计价**，不是按张。
     const image: RouteRow = {
       id: "gemini-3.1-flash-image@openrouter", logicalModel: "gemini-3.1-flash-image", platform: "openrouter",
       baseUrl: "https://or/v1", wireModel: "google/gemini-3.1-flash-image",
@@ -206,23 +228,43 @@ describe("createLlmGateway", () => {
     };
     const { quota, calls } = quotaStub();
     const up = upstream(() => new Response(JSON.stringify({
-      choices: [{ message: { role: "assistant", content: "", images: [{ type: "image_url", image_url: { url: "data:image/png;base64,AAAA" } }] } }],
+      created: 1, data: [{ b64_json: "AAAA", media_type: "image/png" }],
       usage: { prompt_tokens: 11, completion_tokens: 1120 },
     }), { status: 200, headers: { "content-type": "application/json" } }));
     const gw = createLlmGateway({ routes: async () => [image], quota, upstreamKey: (p) => (p === "openrouter" ? "sk-or" : undefined), fetchImpl: up.fetchImpl, newRequestId: () => "rid-img" });
-    const res = await gw(chatReq({ model: "gemini-3.1-flash-image", modalities: ["image", "text"], messages: [{ role: "user", content: "a red otter" }] }), caller);
+    const refs = [{ type: "image_url", image_url: { url: "data:image/png;base64,BBBB" } }];
+    const res = await gw(imageReq({ model: "gemini-3.1-flash-image", prompt: "a red otter", input_references: refs }), caller);
     expect(res.status).toBe(200);
+    expect(up.seen[0]!.url).toBe("https://or/v1/images");
     const sentBody = JSON.parse(await up.seen[0]!.text());
-    expect(sentBody.modalities).toEqual(["image", "text"]);
+    expect(sentBody.prompt).toBe("a red otter");
+    expect(sentBody.input_references).toEqual(refs);
     expect(sentBody.model).toBe("google/gemini-3.1-flash-image");
-    const back = await res.json() as { choices: { message: { images: { image_url: { url: string } }[] } }[] };
-    expect(back.choices[0]!.message.images[0]!.image_url.url).toBe("data:image/png;base64,AAAA");
+    const back = await res.json() as { data: { b64_json: string; media_type: string }[] };
+    expect(back.data[0]).toEqual({ b64_json: "AAAA", media_type: "image/png" });
     // 真机实测的那一笔（#1081）：prompt 11 / completion 1120，OpenRouter 报
     // $0.0672055 = 67205.5 micro。网关按 11×0.5 + 1120×60 算出 67205.5、ceil 成 67206——
     // **与上游账单逐 micro 对得上**，这就是 price_out 取 60_000_000 的全部理由。
-    // 这条断言同时钉住「出图不是按张收费，是按输出 token 收费」：改成按张就得
-    // 在网关里另开一条计价路径，而这条路径不存在
+    // `/images` 与 `/chat/completions` 的 `usage` 形状逐字相同，所以换端点这件事
+    // 一分钱都没动 —— 这条断言就是那句话的可执行版
     expect(calls.settle[0]!.costMicro).toBe(67_206);
+  });
+
+  it("出图：客户端敲 /chat/completions 也照样打上游的 /images", async () => {
+    // 判据是路由行的 `kind`，不是客户端敲的路径（`upstreamPathFor` 的头注）。
+    // 反过来写（照客户端的路径判）会让「这款模型该怎么调」有两份事实，
+    // 而其中一份在用户的机器上 —— 装着旧版桌面的人会把每一次出图都打成 404
+    const image: RouteRow = {
+      id: "seedream-4.5@openrouter", logicalModel: "seedream-4.5", platform: "openrouter",
+      baseUrl: "https://or/v1", wireModel: "bytedance-seed/seedream-4.5",
+      priceInMicroPerM: 0, priceCacheMicroPerM: 0, priceOutMicroPerM: 9_580_838, defaultMaxTokens: 4096,
+      kind: "image",
+    };
+    const { quota } = quotaStub();
+    const up = upstream(() => Response.json({ data: [{ b64_json: "AAAA" }], usage: { prompt_tokens: 0, completion_tokens: 10 } }));
+    const gw = createLlmGateway({ routes: async () => [image], quota, upstreamKey: () => "sk-or", fetchImpl: up.fetchImpl });
+    await gw(chatReq({ model: "seedream-4.5", prompt: "x" }), caller);
+    expect(up.seen[0]!.url).toBe("https://or/v1/images");
   });
 
   it("非流式：JSON 回来直接结算", async () => {

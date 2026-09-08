@@ -439,7 +439,12 @@ export function createEdge(deps: EdgeDeps): (req: Request) => Promise<Response> 
     }
     if (pathname === "/rl/v1/connect") return relayConnect(req);
     if (pathname.startsWith("/px/v1/")) return px(req, pathname);
-    if (pathname === "/llm/v1/chat/completions") {
+    // 两个门通到同一个处理函数（#1086）。`/images` 是出图那条路的门 —— 它的请求体
+    // （`{model, prompt, input_references}`）与回包（`data[].b64_json`）都和 chat 不是
+    // 一个形状，挂在一个叫 `chat/completions` 的路径上会让下一个读的人以为它们同形。
+    // **发去上游哪个端点不由这个路径决定**，由路由行的 `kind` 决定（`upstreamPathFor`）：
+    // 判据只能有一份，而这一份不该在用户的机器上。
+    if (pathname === "/llm/v1/chat/completions" || pathname === "/llm/v1/images") {
       if (!deps.llm) return apiError(404, "这个服务没开托管网关", "llm_disabled");
       if (req.method !== "POST") return apiError(405, "只收 POST", "method_not_allowed");
       const caller = await callerOf(req);
