@@ -20,7 +20,7 @@ import type { UsageSnapshot } from "./usageStats.js";
 import type { ModelShareWindow } from "./modelShare.js";
 import type { WorkspaceMentionRow } from "./workspaceMentions.js";
 import type { IslandUsageRow } from "./islandUsage.js";
-import type { CsModelRoute, CsRepoState, CsWorkHit, CsWorkNode } from "./remote/cloudSession.js";
+import type { CsGitHost, CsModelRoute, CsWorkHit, CsWorkNode } from "./remote/cloudSession.js";
 import type { TerminalInfo } from "./terminal.js";
 import type { BrowserTabInfo, BrowserBounds, BrowserPickedElement } from "./browser.js";
 import type { SimButton, SimFrame, SimState } from "./simulator.js";
@@ -240,7 +240,7 @@ export interface AssistantDelta {
   kind: "content" | "reasoning";
 }
 
-/** 云会话的流式帧（协议 14，#1107，与 AssistantDelta 同一份契约：
+/** 云会话的流式帧（协议 16，#1107，与 AssistantDelta 同一份契约：
     临时预览不落日志，终态 assistant_message 一到就作废）。多一个 agentId
     槽位——群里同一刻可能有好几只在打字，按 agent 分槽。`text` 是**累计
     快照**（这只 agent 这一轮到此刻的完整正文），渲染层整槽替换不拼接 */
@@ -482,12 +482,8 @@ export interface CloudSessionStatus {
   initiatorUid: string | null;
   ownerUid: string;
   selfUid: string;
-  /** 这个工作区当前配的仓库 + 最近一次 clone 结局（issue #834）。
-      welcome 带来，config 存成功后再刷一次。null = 没配 / 还没 welcome。
-      **不含 token 本身**，只有 hasPat 布尔 */
-  repo: CsRepoState | null;
   /** 这个工作区此刻的 turn 会走哪条路（issue #945；ADR-0233 之后只有 hosted / blocked）。runtime 用 turn 同一份
-      decideRuntimeRoute 算好、welcome/config_result 带下来的，渲染层照画不重算。
+      decideRuntimeRoute 算好、welcome 带下来的，渲染层照画不重算。
       null = 探不到——「拿不到」≠「起不了」，别拿它当 blocked 画 */
   modelRoute: CsModelRoute | null;
   /** runtime 说的一句话，**给这条连接的人看**（issue #819）：限速、审批
@@ -510,11 +506,14 @@ export interface CloudSessionStatus {
   gapNote?: string;
 }
 
-/** `workspace_state` / `config_result` 带回来的那两格（协议 8，#991）：与
-    CloudSessionStatus 上的 repo / modelRoute 同形，一处画法 */
+/** `workspace_state` 带回来的那一格（协议 8，#991；#1102 摘掉 repo 之后只剩
+    这一个）：与 CloudSessionStatus 上的 modelRoute 同形，一处画法 */
 export interface CloudWorkspaceState {
-  repo: CsRepoState | null;
   modelRoute: CsModelRoute | null;
+  /** 这个工作区能认证哪几台 Git 主机（#1103）。**没有 token**——它从不下行。
+      `null` = 这一刻读不到，**不是**「一台都没配」（后者是 `[]`）：两句话在
+      界面上一句是红字一句是空态，同 ADR-0243 对 `sandbox_approval` 的处置 */
+  gitHosts: CsGitHost[] | null;
 }
 
 /** 桥上的托管额度快照（Task 11）。结构与主进程 `hostedQuota.ts` 的 `HostedSnapshot`
@@ -1178,9 +1177,10 @@ export interface ShellBridge {
       `seq` = 按钮所在那一行开场白自己的 seq（复审 C2-I3）：停止按钮按**行**
       画，不带 seq 的话按第二行那颗停掉的是第一行。缺席 = 旧语义（停当前） */
   workspaceCloudStop(seq?: number): Promise<CloudAck>;
-  /** 配置当前云会话绑定的仓库（repoUrl + 可选 PAT，PAT 不落 Supabase） */
-  /** 读一个工作区的仓库状态 + 路由（控制房 RPC，协议 8，#991）：任何在籍成员都能读，
-      不依赖开着云会话——工作区设置页的「仓库」tab 用 */
+  /** 读一个工作区此刻的路由（控制房 RPC，协议 8，#991）：任何在籍成员都能读，
+      不依赖开着云会话。**#1102 之后只剩这一格**——原来它还带仓库配置，而工作区
+      不再绑仓库；留着这条 RPC 是因为 ADR-0246 那句「起不了 turn」在设置页
+      是它唯一的落点 */
   workspaceCloudState(workspaceId: string): Promise<FriendsResult<CloudWorkspaceState>>;
   /** 读一格工作文件夹（控制房 RPC，协议 11，#1056）：工作区设置页的「文件」tab 用。
       `path` 相对工作文件夹，`""` = 它本身；任何在籍成员都能读——一容器一卷，
@@ -1191,15 +1191,16 @@ export interface ShellBridge {
       `content=false` = 按文件名过滤，`true` = 搜正文（`?` 前缀那一路）。
       **`hits: []` 与失败是两回事**——前者是「搜过了没有」，后者是「没搜成」 */
   workspaceCloudFilesSearch(workspaceId: string, query: string, content: boolean): Promise<FriendsResult<CsWorkHit[]>>;
-  /** 改一个工作区的仓库配置（控制房 RPC，协议 8；owner 才过，服务端判）。`pat`
-      三态——省略 = 保持不变，`""` = 清除，非空 = 换新（密码框预填不了，"留空 =
-      清掉"会让顺手改个地址毁掉一把 token）。回服务端此刻的真实状态，失败也回
-      ——它正好告诉 owner「那你现在配的还是这个」 */
-  workspaceCloudConfig(
+  /** 存 / 删一台主机的 Git 凭据（控制房 RPC，协议 15，#1103；**owner 才过**，服务端判）。
+      `token` 两态：非空 = 存这一把（同一台主机再存就是换新），`""` = 删掉这台主机。
+      PAT 纪律同 `ProviderKeyDialog`：渲染层不留 key 的任何副本，这里只是这一次
+      IPC 调用的参数。成功回服务端此刻的清单，界面直接换上——省掉「我存完了但
+      列表还是旧的」那种自相矛盾的中间态 */
+  workspaceCloudGitCredential(
     workspaceId: string,
-    patch: { repoUrl?: string; pat?: string },
-  ): Promise<FriendsResult<CloudWorkspaceState>>;
-
+    host: string,
+    token: string,
+  ): Promise<FriendsResult<CsGitHost[] | null>>;
   /** macOS dock 角标(0 = 清掉)。未读数只有渲染层知道,所以由它来报 */
   setBadgeCount(count: number): Promise<void>;
   /** 关系链任何变化(本端操作或对端 Realtime 推)→ 全量快照 */
@@ -1212,7 +1213,7 @@ export interface ShellBridge {
   onCloudSessionEvent(cb: (event: SessionEvent) => void): Unsubscribe;
   /** 当前云会话的连接状态变化（connecting/ready/denied/gone） */
   onCloudSessionStatus(cb: (status: CloudSessionStatus) => void): Unsubscribe;
-  /** 当前云会话的流式碎片（协议 14，#1107）：不过 seq 机器、不去重，拿到
+  /** 当前云会话的流式碎片（协议 16，#1107）：不过 seq 机器、不去重，拿到
       就攒；同一只 agent 的终态 assistant_message / turn_ended 事件到了清槽 */
   onCloudSessionDelta(cb: (delta: CloudSessionDelta) => void): Unsubscribe;
   /** presence 集合变化 → 当前在线的 userId 全量列表(Realtime presence ∪ 心跳窗口) */
@@ -1632,6 +1633,7 @@ export const CHANNELS = {
   workspaceCloudState: "otter:workspaceCloudState",
   workspaceCloudFiles: "otter:workspaceCloudFiles",
   workspaceCloudFilesSearch: "otter:workspaceCloudFilesSearch",
+  workspaceCloudGitCredential: "otter:workspaceCloudGitCredential",
   setBadgeCount: "otter:setBadgeCount",
   friendsChanged: "otter:friendsChanged",
   presenceChanged: "otter:presenceChanged",

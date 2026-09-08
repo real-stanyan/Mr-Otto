@@ -198,10 +198,10 @@ async function scenarioMainFlow(): Promise<void> {
           return operatorUid;
         },
       },
-      saveConfig: async () => {},
-      repoState: () => null,
       // issue #945：冒烟不打 edge，这一格一律「探不到」
       modelRoute: async (_ws: string, _owner: string) => null,
+      gitHosts: () => [],
+      putGitCredential: () => {},
       rateLimit: { allow: () => true },
       send,
       dropCid: (cid) => {
@@ -376,6 +376,8 @@ async function scenarioAssemblyResilience(): Promise<void> {
 
   const resilientDeps: FrameHandlerDeps = {
     log: (m) => console.log(`[smoke] 帧：${m}`),
+    gitHosts: () => [],
+    putGitCredential: () => {},
     verifyJwt: async (jwt) => verifyToken(jwt),
     isMember: async () => true,
     labelOf: async (uid) => uid,
@@ -405,8 +407,6 @@ async function scenarioAssemblyResilience(): Promise<void> {
         return resilientOwnerUid;
       },
     },
-    saveConfig: async () => {},
-    repoState: () => null,
     // issue #945：同上
     modelRoute: async (_ws: string, _owner: string) => null,
     rateLimit: { allow: () => true },

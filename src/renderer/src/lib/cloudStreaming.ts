@@ -1,4 +1,4 @@
-// cloudStreaming —— 云会话流式缓冲的纯逻辑（issue #1107，协议 14 的 delta 帧）。
+// cloudStreaming —— 云会话流式缓冲的纯逻辑（issue #1107，协议 16 的 delta 帧）。
 // 与本机 `streamingBySession`（store.ts）同一份契约，两条差别：
 //   ① 分槽键是 **agentId** 不是 sessionId——群里同一刻可能有好几只在打字；
 //   ② 帧里的 text 是**累计快照**不是增量（协议文件那条帧的注释），所以这里

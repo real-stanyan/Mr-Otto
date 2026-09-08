@@ -22,11 +22,11 @@ describe("cs_say 的 mentions（#928 切片 1a）", () => {
 });
 
 describe("cs 协议 6（#957 第三批：stop 帧与 say/approve/stop 回执）", () => {
-  it("CS_PROTOCOL_VERSION === 14（…；12 = #1066 搜索；13 = #1064 点名提醒；14 = #1107 流式 delta 帧）", () => {
-    expect(CS_PROTOCOL_VERSION).toBe(14);
+  it("CS_PROTOCOL_VERSION === 16（…；14 = #1102 拆掉工作区绑仓库；15 = #1103 Git 凭据；16 = #1107 流式 delta 帧）", () => {
+    expect(CS_PROTOCOL_VERSION).toBe(16);
   });
 
-  it("delta 下行往返（协议 14，#1107）", () => {
+  it("delta 下行往返（协议 16，#1107）", () => {
     expect(decodeCsDown(encodeCs({ t: "delta", agentId: "admin", kind: "content", text: "半句话" })))
       .toEqual({ t: "delta", agentId: "admin", kind: "content", text: "半句话" });
     expect(decodeCsDown(encodeCs({ t: "delta", agentId: "ops", kind: "reasoning", text: "想" })))

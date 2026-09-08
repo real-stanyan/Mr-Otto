@@ -12,11 +12,11 @@ import Docker from "dockerode";
 import { createClient } from "@supabase/supabase-js";
 
 import { loadConfig } from "./config.js";
+import { createGitCredentialStore } from "./gitCredentialStore.js";
+import { cloneWithSidecar, sanitizeCloneText } from "./sandbox.js";
 import { createFrameHandler, safeEncodeCs, type FrameHandlerDeps } from "./frameHandler.js";
 import {
-  cloneOutcomeText,
   createSandbox,
-  type CloneOutcome,
   type DockerLike,
   type OrphansStore,
   type Sandbox,
@@ -44,7 +44,6 @@ import {
   csCtlChannel,
   csChannel,
   CS_PROTOCOL_VERSION,
-  type CsCloneKind,
   type CsDown,
 } from "../../../src/shared/remote/cloudSession.js";
 import { createWsTransport } from "../../../src/shared/remote/wsTransport.js";
@@ -115,99 +114,11 @@ function createFileOrphansStore(path: string): OrphansStore {
   };
 }
 
-/** repoUrl/pat 的落点：本任务规划里没有任何一张 Supabase 表承接它（T4 的
-    migration 0016 只加了 workspace_sessions.kind/archived 和 usage_ledger），
-    所以落本地文件，形状同 orphans.json——一个按 workspaceId 键控的小 JSON。
-    pat 是敏感凭据，不落 Supabase 也更保守（同 ADR-0151「凭证不出你的机器」
-    的精神，虽然这里的「机器」换成了 runtime VPS）。
-    消费方是 sandbox.ts 的 ensure()（issue #821 slice 1）：`load` 按
-    workspaceId 现查一次（同步读本地 JSON 文件，快到可以忽略），不额外
-    做缓存——sandbox.ts 自己那层 cloneAttempts 缓存的是"是否已经跑过
-    clone"，不是配置本身。 */
-interface WorkspaceConfigRecord {
-  repoUrl: string;
-  pat?: string;
-  /** 最近一次 clone 判定的结局。落这儿而不是内存：daemon 一重启，
-      "这个工作区的仓库到底拉下来没有"就再也没人答得上来了，而这正是
-      #834 要给 owner 看的那一格。类型直接借线上契约那份（CsCloneKind）
-      ——`setCloneState` 的调用点塞的是 sandbox 的 `CloneOutcome["kind"]`，
-      两组值真分叉的话这个文件编译不过，不用两处人肉同步 */
-  clone?: { kind: CsCloneKind; text: string; at: number };
-  /** ADR-0233 之前这里还有一格 `model`（工作区自带 key，#844）。云会话统一走所有者
-      订阅额度之后它没有消费方了——`loadAll` 读到存量记录里的这一格会当场剥掉并
-      回写（那是别人的凭据，没用了就不该继续躺在这台 VPS 上） */
-}
+// Git 凭据（#1103）住在 gitCredentialStore.ts。它替代的是 workspaceConfigStore
+// （一个工作区绑一个仓库 + 一把 PAT，#834），#1102 拆掉绑定时一起走了——形状从
+// 「一个仓库 + 一把 token」换成「host → token」，因为 git 自己就是按 host 匹配
+// credential 的。落盘纪律（0600 + 已有文件再 chmod 一刀）照抄 mcpAuthStore.ts:89-90。
 
-function createWorkspaceConfigStore(path: string) {
-  function loadAll(): Record<string, WorkspaceConfigRecord> {
-    if (!existsSync(path)) return {};
-    let all: Record<string, WorkspaceConfigRecord & { model?: unknown }>;
-    try {
-      all = JSON.parse(readFileSync(path, "utf8")) as typeof all;
-    } catch {
-      return {};
-    }
-    // 存量记录里的自带 key 一次性剥掉（ADR-0233）：读到就删、回写。不等下一次
-    // save——一个工作区可能再也不会被 config 一次，那把 key 就永远留在这儿
-    const stale = Object.entries(all).filter(([, r]) => r.model !== undefined);
-    if (stale.length > 0) {
-      for (const [, r] of stale) delete r.model;
-      writeAll(all);
-      console.log(`[otto-runtime] 剥掉 ${stale.length} 个工作区的存量自带模型 key（ADR-0233：云会话统一走订阅额度）`);
-    }
-    return all;
-  }
-  function writeAll(all: Record<string, WorkspaceConfigRecord>): void {
-    // pat 是敏感凭据，这份文件是**所有工作区共用**的一份，泄漏面比单机
-    // 凭据库大——照抄本仓已确立的落盘纪律（src/main/mcpAuthStore.ts:89-90）：
-    // mode 只在新建时生效，已有文件要再补一刀 chmod（复审 Important）
-    writeFileSync(path, JSON.stringify(all, null, 2), { mode: 0o600 });
-    chmodSync(path, 0o600);
-  }
-  return {
-    /** `pat` 的三态（issue #834）：**省略 = 保持原样**，`""` = 显式清除，
-        非空串 = 换成新的。改配置的界面预填了仓库地址却不可能预填 token
-        （密码框永远是空的），"留空 = 清掉 token"会让"顺手改个地址"
-        静默毁掉一个私有仓库的配置——所以省略必须是"别动"。 */
-    async save(workspaceId: string, cfg: { repoUrl?: string; pat?: string }): Promise<void> {
-      const all = loadAll();
-      const prev = all[workspaceId];
-      const repoUrl = cfg.repoUrl ?? prev?.repoUrl ?? "";
-      const next: WorkspaceConfigRecord = { repoUrl };
-      const pat = cfg.pat === undefined ? prev?.pat : cfg.pat === "" ? undefined : cfg.pat;
-      if (pat !== undefined) next.pat = pat;
-      // 换了仓库就别把上一个仓库的 clone 结果留着冒充现状
-      if (prev?.clone && prev.repoUrl === repoUrl) next.clone = prev.clone;
-      all[workspaceId] = next;
-      writeAll(all);
-    },
-    setCloneState(workspaceId: string, clone: WorkspaceConfigRecord["clone"]): void {
-      const all = loadAll();
-      const prev = all[workspaceId];
-      if (!prev) return; // 配置都没了（工作区被回收），没有可挂的地方
-      // exactOptionalPropertyTypes：可选字段不接受显式 undefined，得真的
-      // 省略这个键（同 cloudSessionClient.config 的既有先例）
-      const next: WorkspaceConfigRecord = { repoUrl: prev.repoUrl };
-      if (prev.pat !== undefined) next.pat = prev.pat;
-      if (clone !== undefined) next.clone = clone;
-      all[workspaceId] = next;
-      writeAll(all);
-    },
-    /** 工作区没了就把它这条整个删掉（issue #835④）。上一版只有 save/load，
-        于是 PAT 明文条目一旦写进去就**永远**留在这台 VPS 上——工作区删了、
-        仓库换了都不会清。调用点在 runReconcile：孤儿回收真的删掉容器+卷
-        的那一刻。 */
-    remove(workspaceId: string): void {
-      const all = loadAll();
-      if (!(workspaceId in all)) return;
-      delete all[workspaceId];
-      writeAll(all);
-    },
-    load(workspaceId: string): WorkspaceConfigRecord | undefined {
-      return loadAll()[workspaceId];
-    },
-  };
-}
 
 /** 这份 bundle 的内容指纹（#791）。`scripts/runtime-deploy.mjs` 打包时用 esbuild
     的 `define` 换成真值；**默认 "dev" 不是空串**——直接 `tsx daemon.ts` 跑起来的
@@ -221,7 +132,6 @@ async function main(): Promise<void> {
 
   const supabase = createClient(config.supabaseUrl, config.supabaseServiceKey);
   const docker = new Docker();
-  const workspaceConfigStore = createWorkspaceConfigStore(join(config.dataDir, "workspace-config.json"));
 
   // sandbox 的构造挪到下面（activeSessions/storeFor/sessionBroadcast 定义
   // 之后）——onCloneResult 要用 notifyWorkspace 通报活跃会话，见那里的注释
@@ -444,21 +354,10 @@ async function main(): Promise<void> {
     }
   }
 
+  const gitCredentials = createGitCredentialStore(join(config.dataDir, "git-credentials.json"));
+
   const sandbox: Sandbox = createSandbox(docker as unknown as DockerLike, {
     orphans: createFileOrphansStore(join(config.dataDir, "orphans.json")),
-    repoConfig: async (workspaceId) => workspaceConfigStore.load(workspaceId),
-    onCloneOutcome: (workspaceId, outcome) => {
-      const text = cloneOutcomeText(outcome);
-      const bad = outcome.kind === "failed" || outcome.kind === "refused";
-      (bad ? console.warn : console.log)(`[otto-runtime] ${text}（workspaceId=${workspaceId}）`);
-      // 状态那一格每个 kind 都记（含 skipped）——它回答的是"现在到底
-      // 拉下来没有"，重启之后也得答得上来（#834）
-      workspaceConfigStore.setCloneState(workspaceId, { kind: outcome.kind, text, at: Date.now() });
-      // 聊天流里只说"发生了变化"这几种。skipped 不进聊天：它每个进程
-      // 生命周期都会来一次，进了就是每次重启都对着老结果刷一遍屏——
-      // 这是原来"幂等跳过不回调"想防的事，防的是刷屏不是防被人看见
-      if (outcome.kind !== "skipped") notifyWorkspace(workspaceId, text);
-    },
   });
 
   /** 开一条会话房：起 transport、装配 CloudSession、接好扇出与 cid 清理。
@@ -650,7 +549,7 @@ async function main(): Promise<void> {
         return c?.contextWindowKnown ? c.contextWindow : undefined;
       },
       onEvent: broadcast,
-      // 流式碎片（#1107，协议 14）：与 broadcast 同一条 roster 扇出，帧是
+      // 流式碎片（#1107，协议 16）：与 broadcast 同一条 roster 扇出，帧是
       // 临时预览、不落日志。合帧与「事件出门前先放完碎片」都在 sessionService
       // 那层（notify 开头 flush），这里只管直发——两路都过 globalSend，同一
       // cid 上的到达序就是这里的调用序
@@ -664,6 +563,40 @@ async function main(): Promise<void> {
       // 「有人 @ 了你」）
       mentionInbox: createSupabaseMentionInbox(supabase, (m) => console.warn(m)),
       agentWriter,
+      labelOf,
+      // 三把 Git 刀（#1105）。凭据只到旁路容器为止——`tokenFor` 是取 token 的
+      // 唯一入口，`execSidecar` / `clone` 是唯二会带着它跑的地方，两者都在
+      // 一次性容器里（ADR-0200 决策②）
+      git: {
+        tokenFor: (host) => gitCredentials.token(workspaceId, host),
+        execInWorkspace: (script) => sandbox.execWork(workspaceId, script),
+        execInSidecar: (cfg, script) => sandbox.execSidecar(workspaceId, cfg, script),
+        clone: (cfg, dest) => cloneWithSidecar(
+          {
+            docker: docker as unknown as DockerLike,
+            workspaceId,
+            containerName: `otto-clone-${workspaceId}-${Date.now()}`,
+          },
+          // dest 由 clone_repo 过完 normalizeWorkPath 再进来
+          { ...cfg, subdir: dest },
+        ),
+        sanitize: sanitizeCloneText,
+        // 真 GitHub REST。抽成 dep 是为了单测能在 HTTP 层打假、不去打真 GitHub
+        githubApi: async (path, init) => {
+          const res = await fetch(`https://api.github.com${path}`, {
+            method: init.method,
+            headers: {
+              authorization: `Bearer ${init.token}`,
+              accept: "application/vnd.github+json",
+              "content-type": "application/json",
+              "user-agent": "mr-otto-runtime",
+            },
+            ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
+          });
+          const json: unknown = await res.json().catch(() => ({}));
+          return { status: res.status, json };
+        },
+      },
       // 接力预算的分母：所有者那扇 5h 窗**还剩**多少（#1017）。走的是与路由同一只
       // 探针（60s/uid 缓存），所以这不是每条会接力的 turn 各打一次网络。
       // **三种「没有数」一律回 null 不回 0**：探针不可达、没有活跃订阅、旧 edge 不发
@@ -876,14 +809,12 @@ async function main(): Promise<void> {
         return true;
       },
     },
-    // owner 纠正 repoUrl/PAT 后，光写盘不够——sandbox.ts 的 cloneAttempts
-    // 缓存（settle 后刻意不删，见该文件注释）会一直挡着重新尝试，只有
-    // daemon 重启才会失效，且没有任何提示告诉 owner「你的修正没生效」
-    // （复审 I4）。落盘成功后立刻调 invalidateClone，让下一次 ensure()
-    // 重新走一遍幂等检查/clone。
-    saveConfig: async (workspaceId, cfg) => {
-      await workspaceConfigStore.save(workspaceId, cfg);
-      if (cfg.repoUrl !== undefined || cfg.pat !== undefined) sandbox.invalidateClone(workspaceId);
+    // #1103：token 从不下行——hosts() 回的东西里根本没有它
+    gitHosts: (workspaceId) => gitCredentials.hosts(workspaceId),
+    putGitCredential: (workspaceId, host, token, addedBy) => {
+      // `""` = 删掉这台主机（协议 15 的两态，见 CsUp.git_credential 的注释）
+      if (token === "") gitCredentials.remove(workspaceId, host);
+      else gitCredentials.put(workspaceId, host, token, addedBy);
     },
     // 三档令牌桶（issue #819）。日志"一个时段只记一笔"由 createFrameRateLimiter
     // 自己保证——不然日志本身就成了第二个能被刷爆的东西（ADR-0167 同款）
@@ -892,12 +823,6 @@ async function main(): Promise<void> {
         console.warn(`[otto-runtime] 限流生效（kind=${kind}, uid=${uid}）：这一分钟内不再重复记`);
       },
     }),
-    // token 本身从不下行——只回一个 hasPat 布尔（issue #834）
-    repoState: (workspaceId) => {
-      const record = workspaceConfigStore.load(workspaceId);
-      if (!record || record.repoUrl === "") return null;
-      return { url: record.repoUrl, hasPat: record.pat !== undefined, clone: record.clone ?? null };
-    },
     // issue #945：与 turn 同一份 decideRuntimeRoute。`ownerUid` 由 frameHandler 递进来
     // ——那一层每条 welcome/config 都已经查过一次 ownerOf（未缓存的 Supabase 往返），
     // 这里再查一遍就是同一帧上打两到三次。
@@ -938,9 +863,10 @@ async function main(): Promise<void> {
     }
     const validIds = new Set((workspaceRows ?? []).map((r: { id: string }) => r.id));
     const { removed } = await sandbox.reconcile(validIds);
-    // 容器+卷真的删掉的那一刻，把这个工作区的仓库配置（**含明文 PAT**）
-    // 一起删掉（issue #835④）——上一版只写不删，凭据条目永久留在 VPS 上
-    for (const workspaceId of removed) workspaceConfigStore.remove(workspaceId);
+    // 容器+卷真的删掉的那一刻，把这个工作区的 Git 凭据（**含明文 token**）
+    // 一起删掉（issue #835④ 的同一条不变量：上一版只写不删，凭据条目永久
+    // 留在 VPS 上；#1103 换成 host→token 之后这条一个字都没变）
+    for (const workspaceId of removed) gitCredentials.purge(workspaceId);
   }
 
   await runReconcile();

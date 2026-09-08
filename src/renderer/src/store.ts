@@ -42,7 +42,7 @@ import type {
 } from "../../shared/shellBridge.js";
 import type { CsWorkHit, CsWorkNode } from "../../shared/remote/cloudSession.js";
 import type { CatalogEntry } from "../../shared/mcpCatalog.js";
-import type { CsModelRoute, CsRepoState } from "../../shared/remote/cloudSession.js";
+import type { CsGitHost, CsModelRoute } from "../../shared/remote/cloudSession.js";
 import {
   initialMcpPromptValues,
   isCurrentMcpPromptSubmission,
@@ -207,9 +207,6 @@ export interface CloudSessionState {
   initiatorUid: string | null;
   ownerUid: string;
   selfUid: string;
-  /** 这个工作区当前配的仓库 + 最近一次 clone 结局（issue #834）。
-      null = 没配 / 还没 welcome。**没有 token 本身**，只有 hasPat */
-  repo: CsRepoState | null;
   /** 这个工作区此刻的 turn 会走哪条路（issue #945；ADR-0233 之后只有 hosted / blocked）。null = 探不到 */
   modelRoute: CsModelRoute | null;
   /** 这一份历史缺了东西（issue #957 C-I7）。null = 完整。**持久**——主进程
@@ -563,7 +560,7 @@ interface ChatState {
       events 按 seq 去重后 append-only；state/deniedCode/initiatorUid/ownerUid 由
       onCloudSessionStatus 推送刷新，selfUid 推送首次给出后不再变 */
   cloudSession: CloudSessionState | null;
-  /** 云会话的流式缓冲（#1107，协议 14）：agentId → 这一轮到此刻的正文预览。
+  /** 云会话的流式缓冲（#1107，协议 16）：agentId → 这一轮到此刻的正文预览。
       纯逻辑在 lib/cloudStreaming.ts——累计快照整槽替换，终态事件清槽；
       不落任何持久层（临时预览不是事实） */
   cloudStreaming: Record<string, string>;
@@ -1044,23 +1041,25 @@ interface ChatState {
       点的那一行，服务端拿它与采样边界比对后可以回 `not_current`。缺席 = 旧
       语义（停当前那一轮） */
   cloudStop(seq?: number): Promise<CloudAck>;
-  /** 读一个工作区的仓库状态 + 路由（控制房 RPC，协议 8，#991）。透传 FriendsResult，
-      错误由「仓库」tab 自己画——不落 workspaceGroupsError 那一格（那格是整页共用的，
-      设置页刚打开那一刻可能还留着一条跟仓库毫不相干的旧错误） */
-  workspaceRepoState(workspaceId: string): Promise<FriendsResult<CloudWorkspaceState>>;
+  /** 读一个工作区此刻的路由（控制房 RPC，协议 8，#991；#1102 摘掉仓库之后只剩
+      这一格）。透传 FriendsResult，错误由「文件」tab 自己画——不落
+      workspaceGroupsError 那一格（那格是整页共用的，设置页刚打开那一刻可能还
+      留着一条毫不相干的旧错误） */
+  workspaceCloudState(workspaceId: string): Promise<FriendsResult<CloudWorkspaceState>>;
+  /** 存 / 删一台主机的 Git 凭据（控制房 RPC，协议 15，#1103；owner 才过，服务端判）。
+      `token: ""` = 删。PAT 纪律同 ProviderKeyDialog：渲染层不留 key 的任何副本，
+      这里只是这一次 IPC 调用的参数。成功回服务端此刻的清单 */
+  workspaceCloudGitCredential(
+    workspaceId: string,
+    host: string,
+    token: string,
+  ): Promise<FriendsResult<CsGitHost[] | null>>;
   /** 读一格工作文件夹（控制房 RPC，协议 11，#1056）。同上，透传 FriendsResult ——
       「文件」tab 自己画错误；这一页有可能同时在读两条路径（点进子目录的那一刻），
       所以这里不存任何状态，谁调谁拿 */
   workspaceFiles(workspaceId: string, path: string): Promise<FriendsResult<CsWorkNode>>;
   /** 搜工作文件夹（控制房 RPC，协议 12，#1066）。同上不存状态，谁调谁拿 */
   workspaceFilesSearch(workspaceId: string, query: string, content: boolean): Promise<FriendsResult<CsWorkHit[]>>;
-  /** 改一个工作区的仓库配置（控制房 RPC，协议 8）。PAT 纪律同 ProviderKeyDialog：
-      渲染层不留 key 的任何副本，这里只是这一次 IPC 调用的参数。回服务端此刻的
-      真实状态（失败也回） */
-  workspaceRepoConfig(
-    workspaceId: string,
-    patch: { repoUrl?: string; pat?: string },
-  ): Promise<FriendsResult<CloudWorkspaceState>>;
   /** 归档（收尾）一条云会话（issue #822；#993 起走控制房 RPC，不再要求"正开着它"）。
       等服务端的 `archive_result` 才算数。失败落 workspaceGroupsError（同名单十一件套）。
       云端没有"恢复归档"那一半（daemon 启动只捞 archived=false 的会话重开房间），
@@ -2460,7 +2459,6 @@ export const useChat = create<ChatState>((set, get) => ({
       cloudSession: {
         workspaceId, sessionId: sid, state: "connecting",
         initiatorUid: null, ownerUid: "", selfUid: get().account.id,
-        repo: null, // welcome 一到就补真值
         modelRoute: null, // 同上（issue #945）
         gapNote: null, // 同上（issue #957 C-I7）：backlog 落定才知道缺没缺
         events: [],
@@ -2553,17 +2551,17 @@ export const useChat = create<ChatState>((set, get) => ({
     return await window.otter.workspaceCloudStop(seq);
   },
 
-  workspaceRepoState(workspaceId) {
+  workspaceCloudState(workspaceId) {
     return window.otter.workspaceCloudState(workspaceId);
+  },
+  workspaceCloudGitCredential(workspaceId, host, token) {
+    return window.otter.workspaceCloudGitCredential(workspaceId, host, token);
   },
   workspaceFiles(workspaceId, path) {
     return window.otter.workspaceCloudFiles(workspaceId, path);
   },
   workspaceFilesSearch(workspaceId, query, content) {
     return window.otter.workspaceCloudFilesSearch(workspaceId, query, content);
-  },
-  workspaceRepoConfig(workspaceId, patch) {
-    return window.otter.workspaceCloudConfig(workspaceId, patch);
   },
 
   async cloudArchive(workspaceId, sessionId) {
@@ -2835,7 +2833,7 @@ export const useChat = create<ChatState>((set, get) => ({
         void get().refreshWorkspaceGroups();
       }
     });
-    // 云会话的流式帧（#1107，协议 14）：守卫与上面 event 那条同款（只认当前
+    // 云会话的流式帧（#1107，协议 16）：守卫与上面 event 那条同款（只认当前
     // join 着的这条）；快照语义 = 整槽替换不拼接。不落 cloudSession.events——
     // 那份是 append-only 的重放源，预览不是事实
     window.otter.onCloudSessionDelta((delta) => {
@@ -2859,7 +2857,6 @@ export const useChat = create<ChatState>((set, get) => ({
             initiatorUid: status.initiatorUid,
             ownerUid: status.ownerUid,
             selfUid: status.selfUid,
-            repo: status.repo,
             modelRoute: status.modelRoute,
             // issue #957 C-I7：照抄推送（缺席 → null）。**不能**学下面
             // deniedCode 那样"没带就留着旧的"：缺口补齐时主进程正是靠不带

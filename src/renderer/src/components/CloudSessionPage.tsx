@@ -1328,7 +1328,7 @@ function AgentRelayRow({ event, ws }: { event: AgentRelayEvent; ws: WorkspaceSna
     两个状态**画成两种东西**，不是同一行换个颜色（#1055）：
     - `running` = 那只 agent 此刻正在攒话 → 一枚**输入指示器**（三点跳动的气泡），
       长在它待会儿那条回复要落的位置上：同一个 `SpeakerRow`、同一张 `muted` 气泡，
-      答案到了就地把点换成字。协议 14 起（#1107）这只气泡还有第二态：这只 agent
+      答案到了就地把点换成字。协议 16 起（#1107）这只气泡还有第二态：这只 agent
       的流式帧攒出了正文就**把点换成正在长的文字**（同一张气泡、同一个位置，
       终态 assistant_message 到达时整份覆盖——预览从来不是事实）。中间步骤自
       #1055 起整段不画（`hiddenFromCloudTimeline` 第 ⑥ 条），所以这枚气泡是
