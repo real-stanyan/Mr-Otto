@@ -16,7 +16,7 @@
 // 让 assistant-ui 再持有一份等于开了第二条写入路径。
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { SettingsIcon, Sparkles } from "lucide-react";
+import { CheckIcon, ImageIcon, SettingsIcon, Sparkles, TypeIcon } from "lucide-react";
 
 import {
   ModelSelectorContent,
@@ -31,6 +31,8 @@ import {
   type ModelOption,
 } from "@/components/assistant-ui/model-selector.js";
 import { CommandGroup, CommandItem } from "@/components/ui/command.js";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs.js";
+import { imageModelLabel, pickImageModel } from "../../../shared/imageModel.js";
 import { describeModel } from "../../../shared/modelCatalog.js";
 import { laneValue, parseLaneValue, type ModelLane } from "../../../shared/modelLane.js";
 import type { ModelChoice } from "../../../shared/modelCatalog.js";
@@ -116,6 +118,9 @@ export function ModelPicker({
   placeholder,
   filter,
   cachedTokens = 0,
+  imageModels = [],
+  imageModel = null,
+  onImageChange,
 }: {
   value: string;
   /** 当前走哪条路。选单里赠额那一份和自己 key 那一份是同一个型号的两个条目 */
@@ -142,6 +147,15 @@ export function ModelPicker({
       "换型号会作废它"。只有换**活会话型号**的那个入口传它 —— 设置页里挑代读员/
       小模型的那几处换的不是这条会话的模型，缓存不受影响，说了反而是误导 */
   cachedTokens?: number;
+  /** 网关此刻供的出图型号（`billing.me.imageModels`，从便宜到贵）。**空 = 整枚开关不画**
+      （#1086）：没订阅 / 还没查到 / 网关不供出图，三种情形给同一个答案 —— 整块退回
+      改动前的样子，同 `modelMenu` 对 `hosted` 的处置。一行的清单照画：它至少回答了
+      「我这张图是谁画的」，而第二款上线那天零改动就变成真选择 */
+  imageModels?: readonly string[];
+  /** 这条会话选着的出图型号（`image_model_changed` 的投影）。`null` = 没选过 */
+  imageModel?: string | null;
+  /** 缺席 = 这个入口不给出图那一格（设置页那几处换的不是这条会话的笔） */
+  onImageChange?: ((model: string) => void) | undefined;
 }) {
   const keyStatus = useChat((s) => s.keyStatus);
   const ollamaModels = useChat((s) => s.ollamaModels);
@@ -149,6 +163,13 @@ export function ModelPicker({
   const signedIn = useChat((s) => s.account.signedIn);
   const [open, setOpen] = useState(false);
   const listRef = useRef<HTMLDivElement>(null);
+  // 「文字 / 图像」那枚开关（#1086）。**每次打开都回到「文字」那一格**：触发器上写的
+  // 是文字模型，开出来却停在图像那一格，就是按钮说一件事、浮层说另一件事。代价是
+  // 连着改两次出图型号要各点一下「图像」——比让人怀疑「我这按钮什么时候变的」便宜
+  const [tab, setTab] = useState<"text" | "image">("text");
+  useEffect(() => {
+    if (open) setTab("text");
+  }, [open]);
 
   // 浮层打开、版面定下来之后，把滚动位置重新算一遍（#1049）。
   //
@@ -176,6 +197,13 @@ export function ModelPicker({
     });
     return () => cancelAnimationFrame(id);
   }, [open]);
+
+  // 出图那一格：清单空 / 这个入口不给回调 = 整枚开关不画，下面一切照旧
+  const showsImageTab = imageModels.length > 0 && onImageChange !== undefined;
+  // 勾画在**真正会被用到的那一款**上，不是画在 `imageModel` 上：没选过时用户看到的
+  // 该是网关会替他挑的那款（最便宜那款），而不是一行都不勾；选过但网关下架了它时，
+  // 勾也该落在真会跑的那款上 —— 与主进程解路共用 `pickImageModel` 这一份判据
+  const effectiveImage = showsImageTab ? pickImageModel(imageModels, imageModel) : null;
 
   const choice = describeModel(value);
   // 网关此刻供着哪几款（从便宜到贵，ADR-0237 那条排序键）。没订阅 / 还没查到 = 空，
@@ -262,10 +290,63 @@ export function ModelPicker({
           并补上一个 sr-only 的输入锚点 —— 没有它,方向键/回车在列表里就不工作了。
           border-0:浮层靠 bg-popover + 阴影浮起来,不靠一圈描边 */}
       <ModelSelectorContent align="end" searchable={false} className="w-[268px] border-0">
+        {/* 「文字 / 图像」（#1086）。摆在 `ModelSelectorList` **外面**：列表是可滚的
+            （max-h-320），开关跟着滚走的话，翻到底下就不知道自己在哪一格了。
+            用的是侧栏「任务 / 项目」那一套同一个组件 —— 同一种交互在两处长一样，
+            这件事共用骨架才不会漂移 */}
+        {showsImageTab && (
+          <div className="px-1.5 pt-1.5">
+            <Tabs value={tab} onValueChange={(v) => setTab(v as "text" | "image")}>
+              <TabsList className="w-full">
+                <TabsTrigger value="text">
+                  <TypeIcon aria-hidden />
+                  文字
+                </TabsTrigger>
+                <TabsTrigger value="image">
+                  <ImageIcon aria-hidden />
+                  图像
+                </TabsTrigger>
+              </TabsList>
+            </Tabs>
+          </div>
+        )}
         <ModelSelectorList ref={listRef} className="max-h-[320px]">
           <ModelSelectorEmpty>没有匹配的模型</ModelSelectorEmpty>
 
-          {groups.map((g) => (
+          {/* 图像那一格：**不走 `ModelSelectorItem`**。那个组件的选中态与 `setValue`
+              都挂在 Root 的 `value` 上，而 Root 的 `value` 是文字模型 —— 借它画出图
+              清单，触发器上那行字会跟着变成出图型号，也就是那颗按钮开始说假话。
+              所以这一段自己用 `CommandItem`（类名抄 ModelSelectorItem，两格看起来
+              是一列），勾自己画在 `effectiveImage` 上 */}
+          {tab === "image" && (
+            <CommandGroup>
+              {imageModels.map((id) => (
+                <CommandItem
+                  key={id}
+                  value={id}
+                  keywords={[imageModelLabel(id)]}
+                  className="relative items-center gap-2 rounded-lg py-2 ps-3 pe-9"
+                  onSelect={() => {
+                    setOpen(false);
+                    onImageChange?.(id);
+                  }}
+                >
+                  {/* 不画厂商标：`model_route.platform` 对七行出图路由全是 `openrouter`
+                      （那说的是上游是谁，不是厂商是谁），画出来是七行同一个标；
+                      按 id 猜厂商则是给一列本仓没有的字形安一家厂（同 ADR-0254
+                      「认不出的型号不画标」） */}
+                  <span className="min-w-0 flex-1 truncate">{imageModelLabel(id)}</span>
+                  {id === effectiveImage && (
+                    <span className="absolute end-3 top-2.5 flex size-4 items-center justify-center">
+                      <CheckIcon className="size-4" />
+                    </span>
+                  )}
+                </CommandItem>
+              ))}
+            </CommandGroup>
+          )}
+
+          {tab === "text" && groups.map((g) => (
             <ModelSelectorGroup key={g.key} {...(g.heading !== null ? { heading: g.heading } : {})}>
               {g.options.map((o) => (
                 <ModelSelectorItem
@@ -289,7 +370,7 @@ export function ModelPicker({
           {/* 目录里其余厂商都在这扇门后面：菜单只留能跑的，要加新的一家从这里进。
               **订阅用户没有这一行**（#1051）：它通往「模型配置」，而那一页对订阅
               用户已经收起来了——留着就是一条点了跳去一个不存在的页面的路 */}
-          {!subscribed && (
+          {tab === "text" && !subscribed && (
             <>
               <ModelSelectorSeparator />
               <CommandGroup>
@@ -314,7 +395,7 @@ export function ModelPicker({
             不做成确认弹窗 —— 换型号是每天要做很多次的动作，拦一道等于天天罚站；
             这里只把数字摆在眼前，值不值由人自己判断。
             门槛 1000：几百 token 的缓存不值得占一行，说了才是噪音 */}
-        {cachedTokens >= 1000 && (
+        {tab === "text" && cachedTokens >= 1000 && (
           <div className="border-t border-border/60 px-3 py-2 text-[11px] leading-[1.5] text-muted-foreground">
             换模型会作废
             <span className="tabular-nums text-foreground/80"> {fmtTokens(cachedTokens)} </span>

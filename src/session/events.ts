@@ -224,6 +224,23 @@ export interface ModelChangedEvent extends SessionEventBase {
   auto?: true;
 }
 
+/** 额外 N：出图型号切换（#1086）。**与 `model_changed` 分成两条事件不是洁癖**：
+    `model_changed.model` 说的是「这一轮跟谁说话」，出图型号说的是 `generate_image`
+    那把刀用哪支笔 —— 合成一条的话，每次换文字模型都得把出图那格一并带上，否则
+    「这一条里出图那格缺席」到底是「没变」还是「清空了」就说不清了，而换文字模型
+    是每天做很多次的动作。
+    落日志而不是当运行时偏好：它决定这一次出图**花多少钱**（七款差 4 倍），
+    与 `model_changed` 的 lane 同一个理由；resume / 重放 / 分享因此全部免费拿到。
+    ignorable：模型不可见的注记（同 route_changed）。 */
+export interface ImageModelChangedEvent extends SessionEventBase {
+  type: "image_model_changed";
+  /** 网关的出图型号 id（`model_route` 里 kind='image' 那几行的 logical_model）。
+      **不校验它此刻还在不在网关清单里**——那是 `pickImageModel` 在用的时候现判的事，
+      日志记的是「用户当时选了什么」这个事实（同 model_changed 记着一个后来下架的型号） */
+  model: string;
+  ignorable: true;
+}
+
 /** 额外 N：调用中途改道（issue #696）。托管额度用完、自动落到用户自己的 key 那一刻——
     钱从谁账上出变了，日志推不出来（assistant_message.route 只说结果，不说为什么），
     而 UI 要在那一刻提示一次「本次起用的是你自己的 key」。ignorable：模型不可见的注记 */
@@ -930,6 +947,7 @@ export type SessionEvent =
   | ApprovalDecisionEvent
   | ToolResultEvent
   | ModelChangedEvent
+  | ImageModelChangedEvent
   | RouteChangedEvent
   | SessionArchivedEvent
   | SessionUnarchivedEvent
@@ -989,6 +1007,7 @@ const KNOWN_EVENT_TYPES_MAP: Record<SessionEvent["type"], true> = {
   approval_decision: true,
   tool_result: true,
   model_changed: true,
+  image_model_changed: true,
   route_changed: true,
   session_archived: true,
   session_unarchived: true,

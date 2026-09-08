@@ -53,6 +53,9 @@ export function shouldPersist(kind: EmittedKind): boolean {
     case "approval_decision":
     case "tool_result": // 终态：完整输出，覆盖 tool_output 拼出的预览
     case "model_changed":
+    // 出图型号（#1086）：与 model_changed 同列——它决定这一次出图花多少钱，
+    // 而「当时用的是哪支笔」在重放时必须还原得出
+    case "image_model_changed":
     case "route_changed": // 改道事件（ADR-0176/issue #696）：钱从谁账上出变了的事实，ignorable 不代表 transient——UI 要在重放时也能提示一次
     case "session_archived":
     case "session_unarchived": // 归档/恢复都是列表投影的事实来源（ADR-0087）

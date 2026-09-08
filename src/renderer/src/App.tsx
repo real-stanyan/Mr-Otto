@@ -116,7 +116,8 @@ import { McpPromptCard } from "./components/McpPromptCard.js";
 import { SectionRail } from "./components/SectionRail.js";
 import { FolderIcon } from "./components/FileTypeIcon.js";
 import { AUTO_MODEL } from "../../shared/autoModel.js";
-import { isSubscribed } from "./lib/billingView.js";
+import { currentImageModel } from "../../shared/imageModel.js";
+import { hostedImageModels, isSubscribed } from "./lib/billingView.js";
 import { DEFAULT_MODEL, describeModel } from "../../shared/modelCatalog.js";
 import type { ModelLane } from "../../shared/modelLane.js";
 import { clampThinking, thinkingLabel, type ThinkingMode } from "../../shared/thinking.js";
@@ -589,6 +590,10 @@ function ComposerPrefsBar() {
   const thinking = useChat((s) => s.thinking);
   const status = useChat((s) => s.statusBySession[s.sessionId] ?? "idle");
   const switchModel = useChat((s) => s.switchModel);
+  // 出图那一格（#1086）。清单空（没订阅 / 还没查到 / 网关不供出图）时 ModelPicker
+  // 整枚开关不画，下面这两个值就没有消费方
+  const switchImageModel = useChat((s) => s.switchImageModel);
+  const imageModels = useChat((s) => hostedImageModels(s.billing));
   const setApprovalMode = useChat((s) => s.setApprovalMode);
   const setThinking = useChat((s) => s.setThinking);
   const [prefsOpen, setPrefsOpen] = useState(false);
@@ -626,6 +631,11 @@ function ComposerPrefsBar() {
         className={BAR_SELECT}
         // 只有这一处传缓存量：换的是这条活会话的型号，作废的就是它的缓存（issue #434）
         cachedTokens={cachedTokensNow(events)}
+        // 出图型号只在**活会话**上换（#1086）：它落的是一条会话事件，而新会话卡那一处
+        // 还没有会话可落。少一格好过给一颗点了报「还没有会话」的钮
+        imageModels={imageModels}
+        imageModel={currentImageModel(events)}
+        onImageChange={(m) => void switchImageModel(m)}
       />
       {/* 会话正在跑时换型号，提示「下一条消息生效」——当前这条已经用旧模型在跑了 */}
       {status === "running" && (

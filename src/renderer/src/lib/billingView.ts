@@ -272,6 +272,17 @@ export function isSubscribed(billing: BillingSnapshotView | null): boolean {
   return me !== null && me !== undefined && me.status === "active" && me.plan !== null;
 }
 
+/**
+ * 网关此刻供的**出图**型号（#1086）。判据、取舍、顺序全部与 `hostedModels` 逐字相同
+ * （包括那个共享的空数组实例 —— 它是 `useChat(selector)` 的选择器）。分成两个函数
+ * 而不是加一个参数，是因为两张清单的消费方不同：`models` 喂文字那一格、`imageModels`
+ * 喂图像那一格，而 edge 一开始就是分开下发的（`modelsForMe`，ADR-0257）。
+ */
+export function hostedImageModels(billing: BillingSnapshotView | null): readonly string[] {
+  if (!isSubscribed(billing)) return NO_HOSTED_MODELS;
+  return billing!.me!.imageModels;
+}
+
 /** 「一款都没有」那个答案必须是**同一个数组实例**：这个函数是 `useChat(selector)` 的
     选择器，而 zustand 按 `Object.is` 比较——每次现造一个 `[]` 就是每次都「变了」，
     组件无限重渲染（`Maximum update depth exceeded`，写这条注释的那一版真的这样了，

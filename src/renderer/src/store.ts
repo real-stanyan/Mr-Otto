@@ -600,6 +600,9 @@ interface ChatState {
   boot(): Promise<void>;
   setReplayCursor(cursor: number | null): void;
   switchModel(model: string, lane?: ModelLane): Promise<void>;
+  /** 换出图型号（#1086）。不落镜像：跟着 `image_model_changed` 事件流回来，
+      选单读的是 `currentImageModel(events)` —— 同 model / lane，UI 不抢跑 */
+  switchImageModel(model: string): Promise<void>;
   setApprovalMode(mode: ApprovalMode): Promise<void>;
   setThinking(mode: ThinkingMode): Promise<void>;
   /** 进设置模式，落到指定栏目（缺省"account"）。同栏目内的数据刷新副作用
@@ -1384,6 +1387,14 @@ export const useChat = create<ChatState>((set, get) => ({
       // lane 不在这里落镜像：它跟着 model_changed 事件流回来（同 model 那一条，
       // UI 不抢跑）——抢跑的话主进程拒了这次切换，界面上却已经换过去了
       set({ thinking: await window.otter.switchModel(model, lane) });
+    } catch (e) {
+      set({ error: e instanceof Error ? e.message : String(e) });
+    }
+  },
+
+  async switchImageModel(model) {
+    try {
+      await window.otter.switchImageModel(model);
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
     }

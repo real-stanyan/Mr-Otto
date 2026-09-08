@@ -817,6 +817,7 @@ export function deriveMessages(
       // 同一段日志加不加 lifecycle 事件，投影结果逐字节一致（有测试钉住）
       case "approval_decision":
       case "model_changed":
+      case "image_model_changed":
       case "session_archived":
       case "session_unarchived":
       case "session_renamed":

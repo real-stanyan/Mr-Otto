@@ -18,6 +18,7 @@
 // 判据挂在 `hosted.subscribed` 上，所以**没装配托管的那些装配**（探针 / 测试 / 裸装配，
 // `hosted` 缺席）行为一字不变。
 
+import { pickImageModel } from "../shared/imageModel.js";
 import type { ModelChoice } from "../shared/modelCatalog.js";
 import type { ModelLane } from "../shared/modelLane.js";
 
@@ -171,19 +172,14 @@ export interface ImageRouteInput {
       **不在网关清单里就回落 `imageModels[0]`**，不报错 —— 同 `visionModelFor` /
       `helperModelFor` 的纪律：网关下架一款不该让出图整个不通，而「你选的那款没了」
       这件事没有任何用户能据此行动的出路。缺席 = 没选过，照旧走最便宜那款 */
-  preferred?: string | undefined;
+  preferred?: string | null | undefined;
 }
 
 export type ImageRoute =
   | { kind: "hosted"; url: string; model: string }
   | { kind: "blocked"; reason: string };
 
-/** 这一次出图用哪一款。`imageModels` 非空是前提（由 `imageBlocked` 守着）。
-    拎成导出的纯函数是因为选单那侧要问同一个问题（「我选的这款此刻还在不在」），
-    两处各写一遍就会在网关下架某款的那天给出两个答案 */
-export function pickImageModel(imageModels: readonly string[], preferred?: string | undefined): string {
-  return preferred !== undefined && imageModels.includes(preferred) ? preferred : imageModels[0]!;
-}
+
 
 /** 快照就能回答的那三条（订阅 / 额度 / 网关供不供出图）。`null` = 这三关都过了。
     **单独拎出来是因为它是同步的**：`generate_image` 的 `available()`（决定这把刀进不进

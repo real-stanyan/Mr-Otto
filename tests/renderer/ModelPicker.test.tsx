@@ -168,3 +168,97 @@ describe("ModelPicker：Auto", () => {
     expect(screen.getByRole("combobox")).toHaveTextContent("GLM-5.3");
   });
 });
+
+describe("ModelPicker：「文字 / 图像」那枚开关（#1086）", () => {
+  const IMAGES = ["seedream-5-0-lite", "gemini-3.1-flash-image", "gemini-3-pro-image"];
+
+  /** 打开浮层并切到「图像」那一格 */
+  async function openImageTab(): Promise<void> {
+    await userEvent.click(screen.getByRole("combobox"));
+    await userEvent.click(screen.getByRole("tab", { name: "图像" }));
+  }
+
+  it("清单空 = 整枚开关不画，下面一切照旧 —— 没订阅 / 还没查到 / 网关不供出图同一个答案", async () => {
+    seedSubscribedNoKeys();
+    render(<ModelPicker value="glm-5.3" onChange={() => {}} />);
+    await userEvent.click(screen.getByRole("combobox"));
+    expect(screen.queryByRole("tab")).not.toBeInTheDocument();
+    expect(screen.getAllByRole("option").length).toBe(6);
+  });
+
+  it("给了清单但没给回调 = 也不画 —— 一颗点了什么都不会发生的开关就是撒谎的勾", async () => {
+    seedSubscribedNoKeys();
+    render(<ModelPicker value="glm-5.3" onChange={() => {}} imageModels={IMAGES} />);
+    await userEvent.click(screen.getByRole("combobox"));
+    expect(screen.queryByRole("tab")).not.toBeInTheDocument();
+  });
+
+  it("切到「图像」：列的是出图型号的人话名字，文字那几款一个都不剩", async () => {
+    seedSubscribedNoKeys();
+    render(
+      <ModelPicker value="glm-5.3" onChange={() => {}} imageModels={IMAGES} onImageChange={() => {}} />
+    );
+    // 浮层开着的时候有两个 combobox（cmdk 那个 sr-only 输入锚点也是），所以先抓
+    const trigger = screen.getByRole("combobox");
+    await openImageTab();
+    expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual([
+      "Seedream 5.0 Lite", "Nano Banana 2", "Nano Banana Pro",
+    ]);
+    // 上面那条 toEqual 已经钉住「文字那几款一行都不剩」。这里再钉一件：
+    // 触发器上那行字**照旧是文字模型** —— 它回答的是「这一轮跟谁说话」，
+    // 不该因为你翻到了图像那一格就变（同下面那条点选用例）
+    expect(trigger.textContent).toContain("GLM-5.3");
+  });
+
+  it("没选过时勾落在**会被用到的那一款**（最便宜那款），不是一行都不勾", async () => {
+    seedSubscribedNoKeys();
+    render(
+      <ModelPicker value="glm-5.3" onChange={() => {}} imageModels={IMAGES} onImageChange={() => {}} />
+    );
+    await openImageTab();
+    // cmdk 的 option 上没有 aria-selected 可用（选中态是自绘的勾），所以看勾挂在哪一行
+    const checked = screen.getAllByRole("option").filter((o) => o.querySelector("svg"));
+    expect(checked.map((o) => o.textContent)).toEqual(["Seedream 5.0 Lite"]);
+  });
+
+  it("选中的那款网关下架了：勾落回最便宜那款 —— 与主进程解路共用 pickImageModel", async () => {
+    seedSubscribedNoKeys();
+    render(
+      <ModelPicker
+        value="glm-5.3" onChange={() => {}}
+        imageModels={IMAGES} imageModel="gone-image" onImageChange={() => {}}
+      />
+    );
+    await openImageTab();
+    const checked = screen.getAllByRole("option").filter((o) => o.querySelector("svg"));
+    expect(checked.map((o) => o.textContent)).toEqual(["Seedream 5.0 Lite"]);
+  });
+
+  it("点一行只回调出图型号，**触发器上那行字一个字不变** —— 那颗按钮说的是文字模型", async () => {
+    seedSubscribedNoKeys();
+    const onImageChange = vi.fn();
+    const onChange = vi.fn();
+    render(
+      <ModelPicker value="glm-5.3" onChange={onChange} imageModels={IMAGES} onImageChange={onImageChange} />
+    );
+    const trigger = screen.getByRole("combobox");
+    const before = trigger.textContent;
+    await openImageTab();
+    await userEvent.click(screen.getByText("Nano Banana Pro"));
+    expect(onImageChange).toHaveBeenCalledWith("gemini-3-pro-image");
+    expect(onChange).not.toHaveBeenCalled();
+    expect(trigger.textContent).toBe(before);
+  });
+
+  it("重新打开时回到「文字」那一格 —— 触发器写的是文字模型，开出来停在别处就是按钮说假话", async () => {
+    seedSubscribedNoKeys();
+    render(
+      <ModelPicker value="glm-5.3" onChange={() => {}} imageModels={IMAGES} onImageChange={() => {}} />
+    );
+    await openImageTab();
+    expect(screen.getByRole("tab", { name: "图像" })).toHaveAttribute("data-state", "active");
+    await userEvent.keyboard("{Escape}");
+    await userEvent.click(screen.getByRole("combobox"));
+    expect(screen.getByRole("tab", { name: "文字" })).toHaveAttribute("data-state", "active");
+  });
+});

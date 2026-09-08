@@ -574,6 +574,12 @@ export interface ShellBridge {
   /** 换型号 / 换路（同一款型号从自己的 key 换到官方赠额也是一次切换）。
       回的是钳位后的 thinking 档（新型号的挡位表未必装得下旧档） */
   switchModel(model: string, lane?: ModelLane): Promise<ThinkingMode>;
+  /** 换出图型号（#1086）。生效凭证是流回来的 `image_model_changed` 事件，不是这个
+      Promise —— 同 switchModel 的纪律（日志是唯一事实来源，渲染层不抢跑）。
+      与 switchModel 分开一条 IPC 而不是加个参数：它换的不是「这一轮跟谁说话」，
+      而且 turn 进行中**允许**换（出图那把刀下次被调用时才现解路，不像文字模型
+      换到一半会把正在跑的这一轮劈成两半） */
+  switchImageModel(model: string): Promise<void>;
   /** 切审批模式（运行时偏好，不落日志）。turn 中途可切，下一个工具调用生效 */
   setApprovalMode(sessionId: string, mode: ApprovalMode): Promise<void>;
   /** 切 thinking 挡位（型号没有挡位表时无意义）。turn 进行中拒绝。
@@ -1428,6 +1434,7 @@ export const CHANNELS = {
   setSessionTopic: "otter:setSessionTopic",
   rewindToCheckpoint: "otter:rewindToCheckpoint",
   switchModel: "otter:switchModel",
+  switchImageModel: "otter:switchImageModel",
   setApprovalMode: "otter:setApprovalMode",
   setThinking: "otter:setThinking",
   listPermissions: "otter:listPermissions",

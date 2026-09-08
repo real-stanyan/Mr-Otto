@@ -65,6 +65,8 @@ function isAuditEvent(e: SessionEvent): boolean {
     case "session_renamed":
     case "session_autotitled":
     case "model_changed":
+    // 出图型号（#1086）：同 model_changed —— 换的是「这段之后用哪支笔」，是审计事实
+    case "image_model_changed":
     case "skill_invoked":
     // 停用（ADR-0122）：和 skill_invoked 一对——启用那行上了时间线，停用那行
     // 也必须上，否则用户只能靠「停用按钮消失」这个隐式信号猜到底停没停。

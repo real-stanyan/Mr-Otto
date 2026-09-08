@@ -31,6 +31,7 @@ const bridge: ShellBridge = {
   rewindToCheckpoint: (sessionId, checkpointSeq) =>
     ipcRenderer.invoke(CHANNELS.rewindToCheckpoint, sessionId, checkpointSeq),
   switchModel: (model, lane) => ipcRenderer.invoke(CHANNELS.switchModel, model, lane),
+  switchImageModel: (model) => ipcRenderer.invoke(CHANNELS.switchImageModel, model),
   setApprovalMode: (sessionId, mode) => ipcRenderer.invoke(CHANNELS.setApprovalMode, sessionId, mode),
   setThinking: (sessionId, mode) => ipcRenderer.invoke(CHANNELS.setThinking, sessionId, mode),
   listPermissions: () => ipcRenderer.invoke(CHANNELS.listPermissions),

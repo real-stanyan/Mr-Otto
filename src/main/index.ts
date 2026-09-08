@@ -148,6 +148,7 @@ import { allocateSessionWorkspace } from "./taskWorkspace.js";
 import { maskKey } from "../shared/keyMask.js";
 import type { ModelLane } from "../shared/modelLane.js";
 import { AUTO_MODEL } from "../shared/autoModel.js";
+import { currentImageModel } from "../shared/imageModel.js";
 import { findProvider, providerKeyEnvs, type ProviderId } from "../shared/providerCatalog.js";
 import { markSecretEnv, unmarkSecretEnv } from "../shared/secretEnv.js";
 import { knownMcpToolNames } from "../shared/mcp.js";
@@ -3726,6 +3727,19 @@ void app.whenReady().then(() => {
     feedIsland({ kind: "activeSession", boot: islandSnapshot(), now: Date.now() });
     // 换完之后 thinking 落在哪一档由主进程说了算（新型号的挡位表未必装得下旧档）
     return agent.thinking;
+  });
+
+  ipcMain.handle(CHANNELS.switchImageModel, (_e, model: string) => {
+    const agent = currentSessionId ? agents.get(currentSessionId) : undefined;
+    if (!agent) throw new Error("还没有会话");
+    // **turn 进行中也允许**（与 switchModel 相反）：出图那把刀每次调用才现解一次路
+    // （agent.ts 的 resolve），换完下一次 generate_image 就生效，不会把正在跑的
+    // 这一轮劈成两半。所以这里没有 runningSessions 那道闸
+    if (currentImageModel(store.load(agent.sessionId)) === model) return; // 没变就不落事件
+    const appended = store.append({
+      sessionId: agent.sessionId, ts: Date.now(), type: "image_model_changed", model, ignorable: true,
+    });
+    send(CHANNELS.event, appended);
   });
 
   ipcMain.handle(CHANNELS.setApprovalMode, (_e, sessionId: string, mode: "ask" | "auto") => {
