@@ -186,6 +186,7 @@ import type { MentionInbox, MentionInboxRow } from "./mentionInbox.js";
 import { SHARED_MEMORY_AGENT_ID } from "../../../src/shared/workspaceMemory.js";
 import { DEFAULT_AUTO_COMPACT } from "../../../src/shared/autoCompact.js";
 import { createCreateAgentTool } from "./createAgentTool.js";
+import { createGitTools, type GitToolDeps } from "./gitTools.js";
 import type { WorkspaceAgentWriter } from "./agentRegistry.js";
 import {
   CREATE_AGENT_TOOL_NAME, createAgentApprovalFields, createAgentApprovalSummary, parseCreateAgentArgs, scanCreateAgentThreat,
@@ -309,6 +310,14 @@ export interface CloudSessionOpts {
   /** 管理员替用户建 agent 的写入口（#954，切片 6）。**必需**：忘接线该编译不过，
       而不是安静地跑一个建不了 agent 的管理员（同 memory 的纪律） */
   agentWriter: WorkspaceAgentWriter;
+  /** 三把 Git 刀的执行面（#1105）。**可选**，与上面那几个「必需」的不同——
+      缺席 = 这套装配没接 Git，三把刀一把都不挂（探针 / 测试 / 裸装配行为
+      一字不变）。挂着一把点下去必然报「没接线」才是那个撒谎的勾。
+      `workspaceId` 与 `initiator` 由 sessionService 自己填，这里不要 */
+  git?: Omit<GitToolDeps, "workspaceId" | "initiator">;
+  /** uid → 显示名。git_push 的提交署名要它（**现取**：改名之后下一次提交
+      就是新名字，同 ADR-0202「每次 chat() 现读」）。缺席 = 退回 uid */
+  labelOf?: (uid: string) => Promise<string>;
   /** 这个 uid 此刻还在这个工作区吗（#957 B-I1）。**必需**（同 memory / agentWriter
       的纪律）：忘接线该编译不过，而不是安静地跑一条谁都能起的 turn。
       frameHandler 在收帧那一刻已经验过一次籍，但 turn 可以在队列里等很久、
@@ -849,6 +858,23 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     writer: opts.agentWriter,
   });
 
+  /** 三把 Git 刀（#1105）。**给所有 agent**，不像 create_agent 那样只给管理员：
+      真正的闸是审批门（三把都 `requiresApproval: true`），再叠一层「只有管理员
+      能 clone」没有理由。
+
+      缺席 = 这套装配没接 Git（探针 / 测试 / 裸装配），三把刀一把都不挂——挂着
+      一把点下去必然报「没接线」，那是 #722 那个撒谎的勾。 */
+  const gitTools = opts.git === undefined ? [] : createGitTools({
+    ...opts.git,
+    workspaceId: opts.workspaceId,
+    // 署名取点火的那个人（spec §4.2）。`label` 现取——改名之后下一次提交就是新名字
+    initiator: async () => {
+      const uid = currentInitiator;
+      if (uid === null) return null;
+      return { uid, label: (await opts.labelOf?.(uid)) ?? uid };
+    },
+  });
+
   /** 按 agentId 惰性建 engine、缓存复用（#928）。隔离靠构造：这台 engine 从头
       到尾只看得见它自己的痕迹 + 全场的发言。engine 内部三处 model-facing
       的读一个都不用改（ADR-0047 的教训：挨个补过滤漏一处就安静地灌错上下文） */
@@ -885,6 +911,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       tools: () => [
         readFileTool, writeFileTool, bashTool, memoryTool,
         ...(spec.agentId === ADMIN_AGENT_ID ? [createAgentTool] : []),
+        ...gitTools,
         ...cachedPxTools,
       ],
       world, // 过容器锁的那份（#979 第 2 条），不是裸的 opts.world
