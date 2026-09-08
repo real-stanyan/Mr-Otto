@@ -76,6 +76,7 @@ import {
   decodeCsDown,
   validateRepoUrl,
   type CsDeniedCode,
+  type CsGitHost,
   type CsModelRoute,
   type CsDown,
   type CsUp,
@@ -231,6 +232,9 @@ export interface CloudSessionClient {
   /** 搜工作文件夹（控制房 RPC，协议 12，#1066）。`content` = 搜正文还是只按
       文件名过滤，判据与本机 Files 面板的 `?` 前缀同一条 */
   workspaceFilesSearch(workspaceId: string, query: string, content: boolean): Promise<FriendsResult<CsWorkHit[]>>;
+  /** 存 / 删一台主机的 Git 凭据（控制房 RPC，协议 15，#1103）。owner 才过，服务端判；
+      `token: ""` = 删。成功回服务端此刻的清单 */
+  workspaceGitCredential(workspaceId: string, host: string, token: string): Promise<FriendsResult<CsGitHost[] | null>>;
 }
 
 /** `workspace_state` 带回来的那一格（协议 8；#1102 摘掉 repo 之后只剩它）——与 shellBridge
@@ -819,9 +823,24 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     return ctlRequest({ t: "workspace", workspaceId }, (msg) =>
       // 答复带 workspaceId：一条连接只问一个，但认一下比赌顺序便宜
       msg.t === "workspace_state" && msg.workspaceId === workspaceId
-        ? { ok: true, value: { modelRoute: msg.modelRoute } }
+        ? { ok: true, value: { modelRoute: msg.modelRoute, gitHosts: msg.gitHosts } }
         : null
     );
+  }
+
+  /** 存 / 删一台主机的 Git 凭据（协议 15，#1103）。resolve 的是服务端的
+      `git_credential_result`——「已保存」必须等服务端说话（#834 的纪律原样成立）。
+      **本地不预校验主机名**：那份判据两端共用（`validateGitHost`），渲染层在输入
+      框旁边即时用它说人话，而这一层是 IPC 转发，多判一次只会让同一句话有两个出处。 */
+  function workspaceGitCredential(
+    workspaceId: string,
+    host: string,
+    token: string,
+  ): Promise<FriendsResult<CsGitHost[] | null>> {
+    return ctlRequest({ t: "git_credential", workspaceId, host, token }, (msg) => {
+      if (msg.t !== "git_credential_result" || msg.workspaceId !== workspaceId) return null;
+      return msg.ok ? { ok: true, value: msg.gitHosts } : { ok: false, message: msg.message ?? "保存被拒绝" };
+    });
   }
 
   async function join(workspaceId: string, sessionId: string): Promise<FriendsResult<null>> {
@@ -1003,5 +1022,5 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     };
   }
 
-  return { currentSessionId, activeSummary, create, join, leave, say, approve, archive, remove, stop, workspaceState, workspaceFiles, workspaceFilesSearch };
+  return { currentSessionId, activeSummary, create, join, leave, say, approve, archive, remove, stop, workspaceState, workspaceGitCredential, workspaceFiles, workspaceFilesSearch };
 }

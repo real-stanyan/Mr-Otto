@@ -3440,6 +3440,9 @@ void app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.workspaceCloudFilesSearch, (_e, workspaceId: string, query: string, content: boolean) =>
     cloudClient.workspaceFilesSearch(workspaceId, query, content)
   );
+  ipcMain.handle(CHANNELS.workspaceCloudGitCredential, (_e, workspaceId: string, host: string, token: string) =>
+    cloudClient.workspaceGitCredential(workspaceId, host, token)
+  );
   // @好友分享会话(issue #611)：发送端编排，依赖在装配根填真实现。
   // store.load 读事件、attachmentStore.read 读附件字节、Storage 上传、
   // friends.sendMessage 发 DM 信封——四件事各有各的真身，本层只接线。

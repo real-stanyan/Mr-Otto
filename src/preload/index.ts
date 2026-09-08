@@ -271,6 +271,8 @@ const bridge: ShellBridge = {
   workspaceCloudStop: (seq) => ipcRenderer.invoke(CHANNELS.workspaceCloudStop, seq ?? null),
   workspaceCloudState: (workspaceId) => ipcRenderer.invoke(CHANNELS.workspaceCloudState, workspaceId),
   workspaceCloudFiles: (workspaceId, path) => ipcRenderer.invoke(CHANNELS.workspaceCloudFiles, workspaceId, path),
+  workspaceCloudGitCredential: (workspaceId, host, token) =>
+    ipcRenderer.invoke(CHANNELS.workspaceCloudGitCredential, workspaceId, host, token),
   workspaceCloudFilesSearch: (workspaceId, query, content) =>
     ipcRenderer.invoke(CHANNELS.workspaceCloudFilesSearch, workspaceId, query, content),
   setBadgeCount: (count) => ipcRenderer.invoke(CHANNELS.setBadgeCount, count),

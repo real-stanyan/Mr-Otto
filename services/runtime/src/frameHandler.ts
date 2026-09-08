@@ -15,6 +15,7 @@
 // 房名可猜（csChannel 是纯字符串拼接），所以「连上了」不代表「有权限」——
 // 每条非 hello 的帧都先过这张表，没过表的 cid 什么都做不了。
 
+import { validateGitHost } from "../../../src/shared/remote/gitHost.js";
 import {
   BACKLOG_SKIP_MARKER,
   CS_PROTOCOL_VERSION,
@@ -24,6 +25,7 @@ import {
   type CsUp,
   type CsDeniedCode,
   type CsDown,
+  type CsGitHost,
   type CsModelRoute,
   type CsWorkHit,
   type CsWorkNode,
@@ -137,6 +139,13 @@ export interface FrameHandlerDeps {
         这条会话还能重开）。归档过的会话直接走后两步。 */
     remove(workspaceId: string, sessionId: string, byLabel: string): Promise<boolean>;
   };
+  /** 这个工作区能认证哪几台 Git 主机（#1103）。**实现必须保证不下发 token 本身**
+      ——同 #834 那条 `hasPat` 纪律，只是这次连布尔都不用回：在清单里就等于有。
+      抛异常 = 这一刻读不到，调用方回 `gitHosts: null`（不是空数组，见协议注释） */
+  gitHosts: (workspaceId: string) => CsGitHost[];
+  /** 存 / 删一台主机的凭据（#1103）。`token: ""` = 删。owner 判据在调用点，
+      不在这里——这一层只管落盘 */
+  putGitCredential: (workspaceId: string, host: string, token: string, addedBy: string) => void;
   /** 这个工作区此刻的 turn 会走哪条路（issue #945）。async：要问一次订阅快照
       （hostedProbe 有 60s 缓存）。`ownerUid` 由调用点递进来而不是让实现自己再查
       一次——这一层每条 welcome/config 都已经 await 过 `sessions.ownerOf`，那是一次
@@ -290,6 +299,71 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
   /** 被踢时那三种回执共用的一句话：说"你已经不在这个工作区了"，不说"失败了" */
   const NOT_MEMBER_MESSAGE = "你已经不在这个工作区了。";
 
+  /** 凭据清单，读不出来回 `null`。**`null` 与 `[]` 不是一回事**：前者是「这一刻
+      读不到」，后者是「一台都没配」，界面上一句是红字一句是空态（同 ADR-0243 对
+      `sandbox_approval` 三态的处置）。落盘那一层几乎不会抛，但「几乎」不是判据 */
+  function readGitHosts(workspaceId: string): CsGitHost[] | null {
+    try {
+      return deps.gitHosts(workspaceId);
+    } catch {
+      return null;
+    }
+  }
+
+  /** 存 / 删一台主机的凭据（协议 15，#1103）。**owner 判据在这里**——控制房里这是
+      唯一的凭据写帧，会话房没有它。
+
+      主机名服务端自己校验一次：渲染层那份的定位是"提交前的早期 UX 提示"，一个
+      改造过的客户端可以直接发一条上来（同 validateRepoUrl 注释里那条理由）。 */
+  async function applyGitCredential(
+    cid: string,
+    uid: string,
+    msg: Extract<CsUp, { t: "git_credential" }>
+  ): Promise<void> {
+    const ownerUid = await deps.sessions.ownerOf(msg.workspaceId);
+    if (uid !== ownerUid) {
+      deny(cid, "not_authorized");
+      return;
+    }
+    const fail = (message: string): void => {
+      deps.send(cid, {
+        t: "git_credential_result",
+        workspaceId: msg.workspaceId,
+        ok: false,
+        message,
+        gitHosts: readGitHosts(msg.workspaceId),
+      });
+    };
+
+    const valid = validateGitHost(msg.host);
+    if (!valid.ok) {
+      fail(valid.message);
+      return;
+    }
+    // token 上限：一把 PAT 再长也就百来字节，这里给的是「明显不是 token」的闸。
+    // 不设的话这条帧就是一个能往 VPS 磁盘上写任意大小的口子
+    if (msg.token.length > 4096) {
+      fail("这一串太长了，不像一把访问令牌。");
+      return;
+    }
+
+    try {
+      deps.putGitCredential(msg.workspaceId, valid.host, msg.token, uid);
+    } catch (err) {
+      // 落盘失败以前只会冒到调用方的 .catch 里记一行日志，而 owner 那边的按钮
+      // 照样显示「已保存」——回执这条路存在的意义就是别再这样（同 #834 的教训）
+      fail(`保存失败：${err instanceof Error ? err.message : String(err)}`);
+      return;
+    }
+
+    deps.send(cid, {
+      t: "git_credential_result",
+      workspaceId: msg.workspaceId,
+      ok: true,
+      gitHosts: readGitHosts(msg.workspaceId),
+    });
+  }
+
 
   const inner: FrameHandler = {
     async onCtlFrame(cid, raw) {
@@ -322,7 +396,7 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
       // 拿走了 config——工作区不再绑一个仓库，#1102）——
       // 都是「关于某个工作区」的动作，不挂在任何一条会话上。在籍是共同前提
       if (
-        msg.t !== "create" && msg.t !== "workspace" &&
+        msg.t !== "create" && msg.t !== "workspace" && msg.t !== "git_credential" &&
         msg.t !== "archive" && msg.t !== "delete" && msg.t !== "files" &&
         msg.t !== "files_search"
       ) {
@@ -342,6 +416,7 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
           t: "workspace_state",
           workspaceId: msg.workspaceId,
           modelRoute: await deps.modelRoute(msg.workspaceId, ownerUid),
+          gitHosts: readGitHosts(msg.workspaceId),
         });
         return;
       }
@@ -401,6 +476,11 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
             message: "这一刻读不到工作文件夹。稍后再试。",
           });
         }
+        return;
+      }
+
+      if (msg.t === "git_credential") {
+        await applyGitCredential(cid, entry.uid, msg);
         return;
       }
 
@@ -705,6 +785,7 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
 
         case "create": // 控制房专用帧，出现在会话房里视为越权
         case "workspace": // 同上（协议 8，#991）
+        case "git_credential": // 同上（协议 15，#1103）：凭据是工作区的属性
         case "files": // 同上（协议 11，#1056）：工作文件夹是工作区的，不是这条会话的
         case "files_search": // 同上（协议 12，#1066）
         case "archive": // 同上（协议 9，#993）：归档不该以「你正开着这条会话」为前提
