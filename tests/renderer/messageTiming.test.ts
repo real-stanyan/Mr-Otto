@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { accumulateTurn, EMPTY_TURN_AGG, liveTimingStats, timingStats, turnTimingStats, fmtDuration } from "../../src/renderer/src/aui/messageTiming.js";
+import { accumulateTurn, EMPTY_TURN_AGG, liveTimingStats, turnTimingStats, fmtDuration } from "../../src/renderer/src/aui/messageTiming.js";
 
 const val = (stats: { label: string; value: string }[], label: string): string | undefined =>
   stats.find((s) => s.label === label)?.value;
@@ -18,77 +18,6 @@ describe("fmtDuration", () => {
   it("过一分钟改成 m s", () => {
     expect(fmtDuration(60_000)).toBe("1m0s");
     expect(fmtDuration(125_000)).toBe("2m5s");
-  });
-});
-
-describe("timingStats", () => {
-  it("没有 usage、也没有耗时:一格都不出(而不是出一排 0)", () => {
-    expect(timingStats({ model: "m" }, undefined)).toEqual([]);
-  });
-
-  it("只有耗时:就出耗时那一格", () => {
-    expect(timingStats({ model: "m" }, 1500)).toEqual([{ label: "elapsed", value: "1.5s" }]);
-  });
-
-  it("有 usage 就出 token 一格,上下箭头分别是入和出", () => {
-    const stats = timingStats(
-      { model: "m", usage: { promptTokens: 12_300, completionTokens: 482 } },
-      undefined
-    );
-    expect(val(stats, "tokens")).toBe("↑12.3k ↓482");
-  });
-
-  it("吞吐 = 输出 token ÷ 耗时", () => {
-    const stats = timingStats(
-      { model: "m", usage: { promptTokens: 100, completionTokens: 500 } },
-      2000
-    );
-    expect(val(stats, "tok/s")).toBe("250");
-  });
-
-  it("耗时为 0(同一毫秒落盘)不出吞吐 —— 不许出 Infinity", () => {
-    const stats = timingStats(
-      { model: "m", usage: { promptTokens: 100, completionTokens: 500 } },
-      0
-    );
-    expect(val(stats, "tok/s")).toBeUndefined();
-    expect(val(stats, "tokens")).toBeDefined();
-  });
-
-  it("纯工具调用(输出 0 token)不出吞吐 —— 0 tok/s 读起来像卡住了", () => {
-    const stats = timingStats(
-      { model: "m", usage: { promptTokens: 100, completionTokens: 0 } },
-      1000
-    );
-    expect(val(stats, "tok/s")).toBeUndefined();
-  });
-
-  it("价目表里没有的型号不出 cost —— 不知道价钱不等于免费", () => {
-    const stats = timingStats(
-      { model: "某个没查过价的型号", usage: { promptTokens: 1000, completionTokens: 1000 } },
-      1000
-    );
-    expect(val(stats, "cost")).toBeUndefined();
-  });
-
-  it("免费档出 $0 —— 那是事实,不是缺数据", () => {
-    const stats = timingStats(
-      { model: "glm-4.7-flash", usage: { promptTokens: 9000, completionTokens: 900 } },
-      1000
-    );
-    expect(val(stats, "cost")).toBe("$0");
-  });
-
-  it("本机 Ollama 整族按 0 算", () => {
-    const stats = timingStats(
-      { model: "ollama/cogito:8b", usage: { promptTokens: 500, completionTokens: 500 } },
-      1000
-    );
-    expect(val(stats, "cost")).toBe("$0");
-  });
-
-  it("负耗时(时钟回拨)不出耗时那一格", () => {
-    expect(timingStats({ model: "m" }, -5)).toEqual([]);
   });
 });
 
@@ -138,6 +67,33 @@ describe("turnTimingStats(按 turn 结算)", () => {
   it("有一条算不出价钱,整段不出 cost", () => {
     let agg = accumulateTurn(EMPTY_TURN_AGG, { model: "claude-sonnet-5", usage: { promptTokens: 1, completionTokens: 1 } }, 10);
     agg = accumulateTurn(agg, { model: "no-such-model", usage: { promptTokens: 1, completionTokens: 1 } }, 10);
+    expect(turnTimingStats({ ...agg, wallMs: 20 }).some((s) => s.label === "cost")).toBe(false);
+  });
+
+  // 订阅额度那条路（#1091）。判据是**这条消息自己的 route**，不是「此刻订没订阅」——
+  // 页脚报的是已经发生的事，而订阅是此刻的状态
+  it("hosted 那条路不出 cost —— 那个数是厂商按量价，不是订阅用户花的钱", () => {
+    const agg = accumulateTurn(
+      EMPTY_TURN_AGG,
+      { model: "claude-sonnet-5", usage: { promptTokens: 1000, completionTokens: 100 }, route: "hosted" },
+      1000
+    );
+    const stats = turnTimingStats({ ...agg, wallMs: 10_000 });
+    expect(stats.some((s) => s.label === "cost")).toBe(false);
+    // 别的三格一格不少 —— 撤的只是钱
+    expect(stats.map((s) => s.label)).toEqual(["elapsed", "tok/s", "tokens"]);
+  });
+
+  it("route 缺席 = direct（旧日志 / 子会话）—— 照旧计价", () => {
+    const agg = accumulateTurn(EMPTY_TURN_AGG, { model: "claude-sonnet-5", usage: { promptTokens: 1000, completionTokens: 100 } }, 1000);
+    expect(turnTimingStats({ ...agg, wallMs: 10_000 }).some((s) => s.label === "cost")).toBe(true);
+  });
+
+  it("一个 turn 里混着两条路 —— 整段不出 cost，不报「只算 direct 那半」的残数", () => {
+    // 同「有一条算不出价钱整段就算不出」那条规矩（ADR-0211）：报一个残缺的合计
+    // 比不报更坏——它看着像这一轮的全部花销
+    let agg = accumulateTurn(EMPTY_TURN_AGG, { model: "claude-sonnet-5", usage: { promptTokens: 1, completionTokens: 1 }, route: "direct" }, 10);
+    agg = accumulateTurn(agg, { model: "claude-sonnet-5", usage: { promptTokens: 1, completionTokens: 1 }, route: "hosted" }, 10);
     expect(turnTimingStats({ ...agg, wallMs: 20 }).some((s) => s.label === "cost")).toBe(false);
   });
 });

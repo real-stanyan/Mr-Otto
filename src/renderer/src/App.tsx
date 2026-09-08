@@ -3949,12 +3949,20 @@ export function App() {
           <span className="font-[650] text-sm min-w-0 truncate" title={sessionId}>
             {sessionDisplayName(sessionTitle, events, fallbackSessionLabel(workspace, builtinWorkspace))}
           </span>
-          <span className="text-muted-foreground text-xs shrink-0">·</span>
-          {/* 内置 Default 工作区不显示文字——「Default」是系统内部名字，不是用户起的 */}
-          {workspace !== builtinWorkspace && (
-            <span className="text-muted-foreground text-xs font-mono shrink-0 max-w-[180px] truncate" title={workspace}>
-              {folderName(workspace)}
-            </span>
+          {/* 内置 Default 的工作区不显示文字——那不是用户起的名字。判据是
+              `isDefaultWorkspace` 不是 `!== builtinWorkspace`（#1091）：ADR-0206 之后
+              任务会话拿的是 `<Default>/<sessionId>/` 这个**子目录**，于是等号判据
+              漏掉了它们，头部写出来的是一串 `s-20260908062342-2bfb27…`——原来那条
+              规则想挡的正是这种东西，只是它在 #851 那天悄悄失效了。
+              分隔点放在条件里面（同 BranchPicker 的 `leadingSep`）：整块消失时
+              点跟着走，不然头部留一个孤零零的「·」 */}
+          {!isDefaultWorkspace(workspace, builtinWorkspace) && (
+            <>
+              <span className="text-muted-foreground text-xs shrink-0">·</span>
+              <span className="text-muted-foreground text-xs font-mono shrink-0 max-w-[180px] truncate" title={workspace}>
+                {folderName(workspace)}
+              </span>
+            </>
           )}
           {/* 分支从 composer 上方搬来:它回答的是"我在哪",属于头部这排身份信息,
               不是输入区的控件 */}

@@ -469,8 +469,11 @@ export const EventRow = memo(function EventRow({ event, isLast = false }: { even
       );
     }
 
+    // 会话诞生（#1091，同 isAuditEvent 的同名分支）：**不画**。光秃秃四个字
+    // 「会话已创建」，而它必然是每条会话的第一条事件——每条会话的第一眼都是它。
+    // 它带的字段（工程目录 / 是不是独立副本 / 是不是云会话）在头部一直写着
     case "session_created":
-      return <div className={AUDIT}>会话已创建</div>;
+      return null;
 
     case "session_archived":
       return <div className={AUDIT}>会话已归档</div>;

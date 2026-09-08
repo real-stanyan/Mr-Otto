@@ -60,6 +60,13 @@ function toToolCallPart(call: ToolCallRequest, index: ToolIndex): Part {
 function isAuditEvent(e: SessionEvent): boolean {
   switch (e.type) {
     case "session_created":
+      // 会话诞生（#1091）：**不占行**。同 `request_envelope`，判据抄云会话那侧
+      // （ADR-0235 ①）——机器的内务，不是对话事实。它画出来只有光秃秃四个字
+      // 「会话已创建」：既不说在哪个文件夹、也不说用哪款模型（那两样头部一直写着），
+      // 而它必然是每条会话的第一条事件，于是每条会话的第一眼都是这一行。
+      // 它带的三个字段（workspace / isolated / cloud）都另有常驻出口：
+      // 头部的工程名、`IsolatedChip`、云会话页自己——一个都不靠这行灰字
+      return false;
     case "session_archived":
     case "session_unarchived":
     case "session_renamed":
