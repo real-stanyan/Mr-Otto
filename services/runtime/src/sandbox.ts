@@ -33,6 +33,27 @@ export interface DockerLike {
   getVolume(name: string): { remove(): Promise<void> };
 }
 
+/** 容器停着就起一下。**`listedState` 是 `listContainers` 那一刻的快照，不是此刻的
+    真相**，所以这里必须容忍 304。
+
+    dockerode 把 docker 的 `304 container already started` 抛成异常，而 304 说的
+    恰恰是我们想要的状态。三处调用方（`ensure` / `readWork` / `searchWork`）都是
+    「先 list 再按 State 决定要不要 start」，两条帧同时进来时会双双看到 stopped、
+    双双 start，赢的那条把容器拉起来，输的那条拿 304 抛出去——于是「打开工作区
+    「文件」tab」在容器被 idle 回收之后大概率读不出内容，而症状看着像随机
+    （issue #1097：这一页展开着几层就同时发几条 `files` 帧，「刷新」更是一次全发）。
+
+    只吞 304，其余照抛：`start()` 真失败（镜像没了、磁盘满了）必须继续是错误，
+    否则下一步 `exec` 会拿到一句难懂得多的话。 */
+async function startIfStopped(container: { start(): Promise<void> }, listedState: string): Promise<void> {
+  if (listedState === "running") return;
+  try {
+    await container.start();
+  } catch (e) {
+    if ((e as { statusCode?: number }).statusCode !== 304) throw e;
+  }
+}
+
 /** 孤儿标记表的存取——测试给内存假货，daemon 给 `/var/lib/otto-runtime/orphans.json` 的文件版 */
 export interface OrphansStore {
   load(): Record<string, number>;
@@ -952,9 +973,7 @@ export function createSandbox(
       await container.start();
     } else {
       container = docker.getContainer(found.Id);
-      if (found.State !== "running") {
-        await container.start();
-      }
+      await startIfStopped(container, found.State);
     }
     markActive(workspaceId);
 
@@ -1110,7 +1129,7 @@ export function createSandbox(
     if (!found) return { kind: "absent" };
 
     const container = docker.getContainer(found.Id);
-    if (found.State !== "running") await container.start();
+    await startIfStopped(container, found.State);
     markActive(workspaceId);
 
     const r = await execInContainer(container, buildWorkReadScript(path));
@@ -1127,7 +1146,7 @@ export function createSandbox(
     if (!found) return [];
 
     const container = docker.getContainer(found.Id);
-    if (found.State !== "running") await container.start();
+    await startIfStopped(container, found.State);
     markActive(workspaceId);
 
     const r = await execInContainer(container, buildWorkSearchScript(query, content));
