@@ -164,11 +164,18 @@ function SessionsTab({ ws, selfUid }: { ws: WorkspaceSnapshot; selfUid: string }
 
   return (
     <div className="flex flex-col gap-4">
+      {/* 一份都没发布过时**整节不出**（#1115）：这一节说的是 kind='package' ——
+          本机某条会话的一次性快照包，从会话头部「更多」→「发布到工作区…」放
+          上来（ADR-0198 切片 3），跟下面那节云会话是两样东西。原来它在空的时候
+          画一句「还没有人发布会话到这个工作区」，与紧邻的归档那一节自己写着的
+          规矩（「不该为一件没发生过的事留一行空态」）矛盾，而这一 tab 上一个
+          没发布过、没归档过的工作区因此顶着一句与它无关的话当唯一内容。
+          能这么收是因为云会话那节现在常驻且自带空态 —— 这一页不会整个空掉。
+          发布的入口本来也不在这一页，在会话的「更多」菜单里。 */}
+      {rows.length > 0 && (
       <div className="flex flex-col gap-1">
         <span className={SECTION_LABEL}>已发布会话</span>
-        {rows.length === 0 ? (
-          <p className="px-2 text-xs text-muted-foreground">还没有人发布会话到这个工作区。</p>
-        ) : (
+        {
           rows.map((row) => {
             const raw = ws.sessions.find((s) => s.id === row.id)!;
             const mine = raw.publisherUid === selfUid;
@@ -200,9 +207,11 @@ function SessionsTab({ ws, selfUid }: { ws: WorkspaceSnapshot; selfUid: string }
               </div>
             );
           })
-        )}
+        }
       </div>
-      {/* 归档的云会话垫在最底下：翻旧账的东西不该排在还有用的东西前面 */}
+      )}
+      {/* 云会话垫在下面：这一页的主语是它，但「已发布」那份是本机快照、
+          语义更接近上面那半，所以顺序不动 */}
       <CloudSessionsSection ws={ws} />
     </div>
   );

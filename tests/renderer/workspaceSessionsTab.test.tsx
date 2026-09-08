@@ -111,6 +111,14 @@ describe("「会话」tab 的云会话一节", () => {
     expect(screen.queryByText(/读不到云会话清单/)).not.toBeInTheDocument();
   });
 
+  it("一份都没发布过 → 「已发布会话」整节不出（它说的是 kind='package'，不是云会话）", async () => {
+    seed([{ id: "s-1", title: "冬季新品", publisherUid: OWNER, archived: false, updatedTs: T1 }]);
+    show();
+    await screen.findByText("冬季新品");
+    expect(screen.queryByText("已发布会话")).not.toBeInTheDocument();
+    expect(screen.queryByText(/还没有人发布会话到这个工作区/)).not.toBeInTheDocument();
+  });
+
   it("读不到 → 说读不到，**不许画成「一条都没有」**", async () => {
     seed(null);
     show();
