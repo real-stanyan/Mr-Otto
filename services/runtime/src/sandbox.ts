@@ -79,6 +79,17 @@ export interface Sandbox {
       `readWork`：不建容器、不跑 clone。容器不存在 = 空结果（没有卷就没有东西可搜，
       与 `absent` 说的是同一件事，而搜索这一格没有第二句话要讲） */
   searchWork(workspaceId: string, query: string, content: boolean): Promise<CsWorkHit[]>;
+  /** 在工作区容器里跑一段脚本（#1105 的三把 Git 刀用）。**走 `ensure()`**——
+      与 `readWork` 刻意不建容器（ADR-0251）方向相反而理由一致：判据是「这个
+      动作要不要往卷里写」，而 Git 那几把刀是写 */
+  execWork(workspaceId: string, script: string): Promise<{ stdout: string; stderr: string; exitCode: number }>;
+  /** 在一次性旁路容器里跑一段**要凭据**的脚本（#1105）。凭据只活在那台容器的
+      可写层，跑完整台删掉——ADR-0200 决策②那条不变量的另一个出口 */
+  execSidecar(
+    workspaceId: string,
+    cfg: CloneRequest,
+    script: string,
+  ): Promise<{ stdout: string; stderr: string; exitCode: number }>;
 }
 
 const DEFAULT_IMAGE = "otto-sandbox";
@@ -216,7 +227,7 @@ export function safeRepoLabel(repoUrl: string): string {
     泄漏案例。跟 redactPat 一样是尽力而为，不是形式化证明——真正的安全
     边界是 CloneResult.repoUrl 从来不存原始 repoUrl，这个函数是给 reason
     这种自由文本字段的第二道防线，不是唯一防线。 */
-function sanitizeCloneText(text: string, cfg: { repoUrl: string; pat?: string }): string {
+export function sanitizeCloneText(text: string, cfg: { repoUrl: string; pat?: string }): string {
   let url: URL;
   try {
     url = new URL(cfg.repoUrl);
@@ -420,6 +431,13 @@ export interface CloneRequest {
   repoUrl: string;
   /** 私有仓库的 token。经 stdin 喂给 `git credential approve`，绝不进 Cmd/URL */
   pat?: string;
+  /** clone 进 `/work` 下的哪个子目录（#1105）。**必须已经过 `normalizeWorkPath`**。
+      缺席 = `/work` 本身，那是 #1102 之前的老形状（今天没有调用方走那条）。
+
+      给了子目录时**不做那一步 `find -delete`**：调用方（`clone_repo`）已经
+      判过 `cloneTargetState === "empty"`，而那张三态表里没有任何一条会导向
+      删除——#832 的教训是清空无声且不可逆 */
+  subdir?: string;
 }
 
 async function performClone(
@@ -460,7 +478,11 @@ async function performClone(
 
     // find -mindepth 1 -delete 连隐藏文件一起删，但保留 /work 本身
     // （挂载点）；对本来就空的目录是无操作。
-    const clear = await execInContainer(container, "find /work -mindepth 1 -delete");
+    // 子目录那条路（#1105）**跳过这一步**：调用方已经判过目标是空的，而这套
+    // 东西里不该有任何一条会删用户文件的分支
+    const clear = cfg.subdir === undefined
+      ? await execInContainer(container, "find /work -mindepth 1 -delete")
+      : { exitCode: 0, stdout: "", stderr: "" };
     if (clear.exitCode !== 0) {
       const detail = clear.stderr || clear.stdout || `exitCode ${clear.exitCode}`;
       return { ok: false, reason: sanitizeCloneText(`清空目标目录失败：${detail}`, cfg) };
@@ -477,7 +499,8 @@ async function performClone(
     // `git fetch --unshallow`），比"整台 VPS 磁盘满了"这个代价小得多。
     // 这不是配额：一个 50G 的工作树照样是 50G，真配额见 #836 里验过的
     // 那两条路（这台机器 overlayfs + ext4，`--storage-opt size=` 用不了）
-    const cloneCmd = `export GIT_TERMINAL_PROMPT=0\ngit clone --depth 1 -- ${shellQuote(repoUrl)} /work`;
+    const target = cfg.subdir === undefined ? "/work" : `/work/${cfg.subdir}`;
+    const cloneCmd = `export GIT_TERMINAL_PROMPT=0\ngit clone --depth 1 -- ${shellQuote(repoUrl)} ${shellQuote(target)}`;
     const cloneResult = await execInContainer(container, cloneCmd, { timeoutSec: CLONE_TIMEOUT_SEC });
     if (cloneResult.exitCode !== 0) {
       // 最容易实际携带原始 repoUrl 的一条：git clone 失败时的 stderr
@@ -797,5 +820,40 @@ export function createSandbox(
     return parsed.hits;
   }
 
-  return { ensure, markActive, sweepIdle, reconcile, destroy, readWork, searchWork };
+  async function execWork(workspaceId: string, script: string) {
+    const container = await ensure(workspaceId);
+    markActive(workspaceId);
+    return execInContainer(container, script);
+  }
+
+  let sidecarSeq = 0;
+  async function execSidecar(workspaceId: string, cfg: CloneRequest, script: string) {
+    // 名字要不重（docker 重名直接 409），且带 CLONE_LABEL 让 reconcile 收得走
+    // 崩在中途漏下的那台——里面有 PAT
+    const name = `otto-clone-${workspaceId}-${Date.now()}-${sidecarSeq++}`;
+    return withCloneContainer(
+      {
+        docker,
+        image,
+        workspaceId,
+        name,
+        onCreated: (n) => liveCloneContainers.add(n),
+        onReleased: (n) => liveCloneContainers.delete(n),
+      },
+      async (container) => {
+        if (cfg.pat !== undefined) {
+          // 凭据先配好再跑正事——与 performClone 逐字走同一条路：**stdin，不进 argv**
+          // （容器里跑着水獭自己的 bash，argv 会出现在 ps aux 里）
+          const helper = await execInContainer(container, "git config --global credential.helper store");
+          if (helper.exitCode !== 0) throw new Error("credential.helper 配置失败");
+          const block = `protocol=https\nhost=${safeHostOf(cfg.repoUrl)}\nusername=${CREDENTIAL_USERNAME}\npassword=${cfg.pat}\n\n`;
+          const fed = await execInContainer(container, "git credential approve", { stdin: block });
+          if (fed.exitCode !== 0) throw new Error("凭据写入失败");
+        }
+        return execInContainer(container, script);
+      },
+    );
+  }
+
+  return { ensure, markActive, sweepIdle, reconcile, destroy, readWork, searchWork, execWork, execSidecar };
 }

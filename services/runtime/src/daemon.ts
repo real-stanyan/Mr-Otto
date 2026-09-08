@@ -13,6 +13,7 @@ import { createClient } from "@supabase/supabase-js";
 
 import { loadConfig } from "./config.js";
 import { createGitCredentialStore } from "./gitCredentialStore.js";
+import { cloneWithSidecar, sanitizeCloneText } from "./sandbox.js";
 import { createFrameHandler, safeEncodeCs, type FrameHandlerDeps } from "./frameHandler.js";
 import {
   createSandbox,
@@ -555,6 +556,40 @@ async function main(): Promise<void> {
       // 「有人 @ 了你」）
       mentionInbox: createSupabaseMentionInbox(supabase, (m) => console.warn(m)),
       agentWriter,
+      labelOf,
+      // 三把 Git 刀（#1105）。凭据只到旁路容器为止——`tokenFor` 是取 token 的
+      // 唯一入口，`execSidecar` / `clone` 是唯二会带着它跑的地方，两者都在
+      // 一次性容器里（ADR-0200 决策②）
+      git: {
+        tokenFor: (host) => gitCredentials.token(workspaceId, host),
+        execInWorkspace: (script) => sandbox.execWork(workspaceId, script),
+        execInSidecar: (cfg, script) => sandbox.execSidecar(workspaceId, cfg, script),
+        clone: (cfg, dest) => cloneWithSidecar(
+          {
+            docker: docker as unknown as DockerLike,
+            workspaceId,
+            containerName: `otto-clone-${workspaceId}-${Date.now()}`,
+          },
+          // dest 由 clone_repo 过完 normalizeWorkPath 再进来
+          { ...cfg, subdir: dest },
+        ),
+        sanitize: sanitizeCloneText,
+        // 真 GitHub REST。抽成 dep 是为了单测能在 HTTP 层打假、不去打真 GitHub
+        githubApi: async (path, init) => {
+          const res = await fetch(`https://api.github.com${path}`, {
+            method: init.method,
+            headers: {
+              authorization: `Bearer ${init.token}`,
+              accept: "application/vnd.github+json",
+              "content-type": "application/json",
+              "user-agent": "mr-otto-runtime",
+            },
+            ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }),
+          });
+          const json: unknown = await res.json().catch(() => ({}));
+          return { status: res.status, json };
+        },
+      },
       // 接力预算的分母：所有者那扇 5h 窗**还剩**多少（#1017）。走的是与路由同一只
       // 探针（60s/uid 缓存），所以这不是每条会接力的 turn 各打一次网络。
       // **三种「没有数」一律回 null 不回 0**：探针不可达、没有活跃订阅、旧 edge 不发
