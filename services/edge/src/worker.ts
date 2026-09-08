@@ -76,7 +76,7 @@ export interface Env {
   /** Stripe。`wrangler secret put STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` */
   STRIPE_SECRET_KEY?: string;
   STRIPE_WEBHOOK_SECRET?: string;
-  /** 这份 worker 的内容指纹（#791，ADR-0257）。**vars 不是 secret**，由
+  /** 这份 worker 的内容指纹（#791，ADR-0258）。**vars 不是 secret**，由
       `scripts/edge-deploy.mjs` 用 `wrangler deploy --var BUILD_STAMP:<戳>` 注入，
       所以 wrangler.jsonc 里没有它——写死在那儿的话每次部署都要手改一行 */
   BUILD_STAMP?: string;

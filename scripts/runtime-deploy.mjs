@@ -61,7 +61,7 @@ function runOrDie(cmd, args, label) {
 //
 // entryPoints/outfile 用 brief 给的原样相对路径字符串（逐字照用），
 // absWorkingDir 钉死成 repoRoot 只是让这份配置不依赖调用者的 cwd。
-// 内容指纹先算（#791，ADR-0257）：它 define 进 bundle，daemon 起来时打进那行
+// 内容指纹先算（#791，ADR-0258）：它 define 进 bundle，daemon 起来时打进那行
 // 「就绪」，收尾那一步再从 journal 里把它读回来核。指纹算的是**真实模块图的内容**
 // 不是 git sha —— 理由写在 deploy-stamp.mjs 的文件头
 const stamp = await deployStamp({ absWorkingDir: repoRoot, ...STAMP_TARGETS.runtime });
@@ -131,7 +131,7 @@ runOrDie("rsync", ["-avz", ...sshOpt, DOCKERFILE, `${RUNTIME_SSH}:${REMOTE_DIR}/
 const remoteCmd = `cd ${REMOTE_DIR} && npm install --omit=dev && docker build -t otto-sandbox ./sandbox && sudo systemctl restart otto-runtime`;
 runOrDie("ssh", ["-p", SSH_PORT, RUNTIME_SSH, remoteCmd], "远端部署命令");
 
-// ── ⑤ 自检：跑着的那个进程真的是这一份吗（#791，ADR-0257）────────────────
+// ── ⑤ 自检：跑着的那个进程真的是这一份吗（#791，ADR-0258）────────────────
 // #790 那次坏的不是部署，是**证据层**：命令打印了成功，没有任何一处核过线上真的
 // 动了。这一步把「部署成功」从「命令退出码是 0」换成「那台机器上跑着的进程亲口
 // 报出了这次的指纹」。判据故意不落在磁盘上那个文件——rsync 成功而 systemd 起不来

@@ -1096,7 +1096,7 @@ async function main(): Promise<void> {
     }
   }
 
-  // 这一行是「线上此刻跑的是哪一份代码」唯一的证据（#791，ADR-0257）：
+  // 这一行是「线上此刻跑的是哪一份代码」唯一的证据（#791，ADR-0258）：
   // `stamp` 由 `scripts/runtime-deploy.mjs` 在打包时 define 进来，`deploy-check`
   // 从 journal 里读它。**判据落在跑着的进程上不落在磁盘那个文件上**——
   // rsync 成功、systemd 却起不来（或起的是上一份还没被覆盖的 bundle）时，

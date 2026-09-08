@@ -1,4 +1,4 @@
-// scripts/edge-deploy.mjs —— 部署 edge worker 并**核一遍线上真的动了**（#791，ADR-0257）。
+// scripts/edge-deploy.mjs —— 部署 edge worker 并**核一遍线上真的动了**（#791，ADR-0258）。
 //
 // 为什么不是直接 `npm --prefix services/edge run deploy`：那条命令退出 0 只证明
 // wrangler 把包交出去了。#790 那次坏的正是这一层——代码合了、门禁绿了、客户端发版了，

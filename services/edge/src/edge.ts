@@ -29,7 +29,7 @@ export interface EdgeConfig {
       （ADR-0199）——本地/测试环境常常没有,这条路径就该整个不存在,
       不是"配了空字符串所以永远比不中" */
   runtimeSecret?: string;
-  /** 这份 worker 是从哪一份源码构建的（#791，ADR-0257）：`deploy-stamp.mjs` 算出的
+  /** 这份 worker 是从哪一份源码构建的（#791，ADR-0258）：`deploy-stamp.mjs` 算出的
       12 位内容指纹，由 `wrangler deploy --var BUILD_STAMP:<戳>` 注进来。
       **缺席不是「当前」是「不知道」**——手跑一次不带 `--var` 的 `wrangler deploy`
       就会落成这个状态，而把它当成「和仓库一致」正是 #790 那次的失败形状：
