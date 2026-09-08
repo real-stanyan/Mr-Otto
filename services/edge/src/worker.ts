@@ -24,7 +24,7 @@ import {
 import { checkoutParams, portalParams } from "./billing.js";
 import { handleWebhookEvent } from "./webhookHandler.js";
 import {
-  grantsQuery, meFromParts, pageAll, parseGrantRows, parsePlanRows, parseRouteRows, parseSubscriptionRows,
+  grantsQuery, meFromParts, modelsForMe, pageAll, parseGrantRows, parsePlanRows, parseRouteRows, parseSubscriptionRows,
   parseUsageEventRows, planSnapshotOf, plansQuery, routesQuery, subscriptionQuery, usageEventInsert, usageEventsQuery,
   type SubscriptionRow,
 } from "./billingQueries.js";
@@ -636,15 +636,10 @@ function billingPort(env: Env): BillingPort {
         addon: { remainingMicro: number; expiresAt: number | null };
       }>(env, uid, "view", {});
       const [routes, plans] = await Promise.all([routesOf(env), db.get(plansQuery()).then(parsePlanRows)]);
-      const models = [...new Set(routes.map((x) => x.logicalModel))];
-      // 型号 → 平台（#1011）：给桌面下拉里的厂商 logo 用。同一个 logical_model
-      // 理论上可以有多行路由（不同平台互为备份），这里取**第一条**——routes 已按
-      // priority,输出价,id 全序（ADR-0237），第一条就是选路真正会先试的那家
-      const modelPlatforms: Record<string, string> = {};
-      for (const r of routes) {
-        if (!(r.logicalModel in modelPlatforms)) modelPlatforms[r.logicalModel] = r.platform;
-      }
-      return meFromParts(v.sub, v.windows, v.addon, models, plans, modelPlatforms);
+      // 型号清单 + 型号→平台（#1011）**都在 chatModelsOf 里**，因为这个文件不进 vitest：
+      // 出图行要不要滤掉、同款多路由取哪条平台，这两个判断留在这里就零执行覆盖（#1081）
+      const { models, imageModels, modelPlatforms } = modelsForMe(routes);
+      return meFromParts(v.sub, v.windows, v.addon, models, plans, modelPlatforms, imageModels);
     },
 
     // 归因从 usage_event 现算（不碰 Quota DO —— 那是限流用的投影，没有 agent 维度）。

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  grantByPaymentIntentQuery, grantInsertBody, grantsQuery, meFromParts, pageAll, pagedQuery, parseGrantRow,
+  modelsForMe, grantByPaymentIntentQuery, grantInsertBody, grantsQuery, meFromParts, pageAll, pagedQuery, parseGrantRow,
   parseGrantRows, parsePlanRows, parseRouteRows, parseSubscriptionOwner, parseSubscriptionRows, parseUsageEventRows,
   planIdForPrice, planSnapshotOf, plansQuery, REBUILD_PAGE_SIZE, routesQuery, subscriptionByStripeIdQuery,
   subscriptionQuery, subscriptionUpsertBody, usageEventInsert, usageEventsQuery,
@@ -28,6 +28,12 @@ describe("查询串", () => {
     expect(routesQuery()).toContain("enabled=eq.true");
     expect(routesQuery()).toContain("quantization=eq.none");
     expect(routesQuery()).toContain("order=priority.asc");
+  });
+  it("routesQuery 的 select 带 kind —— 出图行要能和聊天行分开（#1081）", () => {
+    // 不带这一列，parseRouteRows 只能把每一行都当 chat，于是出图行会漏进
+    // `me.models`（那是输入框那枚模型选择器的数据源），而 ADR-0237 的 Auto
+    // 拿 `models.at(-1)` 当「最贵 = 最强」——$60/M 会让出图模型变成 hard 档主模型
+    expect(routesQuery()).toContain("kind");
   });
   it("routesQuery 的排序是**全序**：priority 同分时按输出价、再同分按 id（#1009）", () => {
     // 这条断言钉的是两件事同时成立的前提：`me.models[0]` = 没指定型号时用哪款
@@ -121,7 +127,17 @@ describe("行解析", () => {
       id: "r", logical_model: "deepseek-v4-flash", platform: "deepseek", base_url: "https://u", wire_model: "w",
       price_in_micro_per_m: 1, price_cache_micro_per_m: 2, price_out_micro_per_m: 3, default_max_tokens: 100,
     }, { id: "bad" }]);
-    expect(rows).toEqual([{ id: "r", logicalModel: "deepseek-v4-flash", platform: "deepseek", baseUrl: "https://u", wireModel: "w", priceInMicroPerM: 1, priceCacheMicroPerM: 2, priceOutMicroPerM: 3, defaultMaxTokens: 100 }]);
+    expect(rows).toEqual([{ id: "r", logicalModel: "deepseek-v4-flash", platform: "deepseek", baseUrl: "https://u", wireModel: "w", priceInMicroPerM: 1, priceCacheMicroPerM: 2, priceOutMicroPerM: 3, defaultMaxTokens: 100, kind: "chat" }]);
+  });
+  it("parseRouteRows 的 kind：缺席和认不出的值都按 chat —— 缺席 = 迁移还没跑，行为要与改动前一字不差（#1081）", () => {
+    const row = (extra: Record<string, unknown>) => ({
+      id: "r", logical_model: "m", platform: "p", base_url: "https://u", wire_model: "w",
+      price_in_micro_per_m: 1, price_cache_micro_per_m: 2, price_out_micro_per_m: 3, default_max_tokens: 100, ...extra,
+    });
+    expect(parseRouteRows([row({})])[0]!.kind).toBe("chat");
+    expect(parseRouteRows([row({ kind: "image" })])[0]!.kind).toBe("image");
+    // 认不出的值按 chat 而不是丢掉整行：一个拼错的 kind 不该让这款模型从网关上消失
+    expect(parseRouteRows([row({ kind: "vidoe" })])[0]!.kind).toBe("chat");
   });
   it("planSnapshotOf：订阅 + 档位 → 快照（period 转毫秒）；缺任一回 null", () => {
     const s = planSnapshotOf(sub as never, plans)!;
@@ -160,7 +176,7 @@ describe("写入体", () => {
   it("usageEventInsert 列名与 0017/0018 一致；锚 null 落 null、有就转 ISO", () => {
     const meta = {
       caller: { uid: "u1", source: "runtime" as const, workspaceId: "w", sessionId: "s", agentId: "a_1" },
-      route: { id: "r", logicalModel: "m", platform: "p", baseUrl: "", wireModel: "", priceInMicroPerM: 0, priceCacheMicroPerM: 0, priceOutMicroPerM: 0, defaultMaxTokens: 0 },
+      route: { id: "r", logicalModel: "m", platform: "p", baseUrl: "", wireModel: "", priceInMicroPerM: 0, priceCacheMicroPerM: 0, priceOutMicroPerM: 0, defaultMaxTokens: 0, kind: "chat" as const },
       usage: { promptTokens: 10, cachedTokens: 2, completionTokens: 3 }, costMicro: 42,
     };
     expect(usageEventInsert("rid", meta, "addon", null)).toEqual({
@@ -188,7 +204,7 @@ describe("meFromParts", () => {
   it("没订阅：plan null / status none / 没有窗口，加购与型号照给", () => {
     const me = meFromParts(null, null, { remainingMicro: 500, expiresAt: 123 }, ["m1"], plans);
     expect(me).toEqual({
-      plan: null, status: "none", windows: null, addon: { remainingMicro: 500, expiresAt: 123 }, periodEnd: null, models: ["m1"],
+      plan: null, status: "none", windows: null, imageModels: [], addon: { remainingMicro: 500, expiresAt: 123 }, periodEnd: null, models: ["m1"],
       // 调用方没给平台表时是空对象（#1011）：那一格只喂桌面下拉里的 logo，
       // 缺席 = 不画，不该让 /me 的其余部分跟着变形
       modelPlatforms: {},
@@ -212,5 +228,57 @@ describe("meFromParts", () => {
     const windows = { h5: { usedMicro: 1, limitMicro: 2, resetAt: 3 }, week: { usedMicro: 4, limitMicro: 5, resetAt: 6 } };
     expect(meFromParts(sub as never, windows, { remainingMicro: 0, expiresAt: null }, [], plans).windows).toEqual(windows);
     expect(meFromParts({ ...sub, plan_id: "addon" } as never, windows, { remainingMicro: 0, expiresAt: null }, [], plans).plan).toBeNull();
+  });
+});
+
+// ── 出图行不许漏进模型选择器（#1081） ────────────────────────────────
+//
+// 这段判断原来住在 worker.ts 的 `me()` 里（两行 map/for），而 **worker.ts 不进
+// vitest** —— 同 usageAttribution 与 UPSTREAM_KEY_ENV 那两次的教训：唯一的判断
+// 零执行覆盖。搬进这里就是为了下面这几条跑得到。
+
+describe("modelsForMe", () => {
+  const r = (id: string, logicalModel: string, platform: string, kind: "chat" | "image") => ({
+    id, logicalModel, platform, baseUrl: "https://u", wireModel: logicalModel,
+    priceInMicroPerM: 1, priceCacheMicroPerM: 1, priceOutMicroPerM: 1, defaultMaxTokens: 100, kind,
+  });
+
+  it("出图行不进 models —— 它进去就是输入框那枚选单里多一款点了不干活的型号", () => {
+    const { models } = modelsForMe([
+      r("a@deepseek", "deepseek-v4-flash", "deepseek", "chat"),
+      r("i@openrouter", "gemini-3.1-flash-image", "openrouter", "image"),
+    ]);
+    expect(models).toEqual(["deepseek-v4-flash"]);
+  });
+
+  it("出图行也不进 modelPlatforms —— 那张表的消费方是同一枚选单里的厂商 logo", () => {
+    const { modelPlatforms } = modelsForMe([
+      r("a@deepseek", "deepseek-v4-flash", "deepseek", "chat"),
+      r("i@openrouter", "gemini-3.1-flash-image", "openrouter", "image"),
+    ]);
+    expect(modelPlatforms).toEqual({ "deepseek-v4-flash": "deepseek" });
+  });
+
+  it("同一款多条路由只留第一条的平台，且顺序照抄传进来的那份（ADR-0237 的全序不能在这儿丢）", () => {
+    const { models, modelPlatforms } = modelsForMe([
+      r("a@deepseek", "deepseek-v4-flash", "deepseek", "chat"),
+      r("a@siliconflow", "deepseek-v4-flash", "siliconflow", "chat"),
+      r("b@zhipu", "glm-5.3", "zhipu", "chat"),
+    ]);
+    expect(models).toEqual(["deepseek-v4-flash", "glm-5.3"]);
+    expect(modelPlatforms["deepseek-v4-flash"]).toBe("deepseek");
+  });
+
+  it("一行都没有时回空 —— 不兜底成任何一款默认型号", () => {
+    expect(modelsForMe([])).toEqual({ models: [], imageModels: [], modelPlatforms: {} });
+  });
+
+  it("出图行进 imageModels（那是 generate_image 那把刀的清单），且同样从便宜到贵有序", () => {
+    const { imageModels } = modelsForMe([
+      r("a@deepseek", "deepseek-v4-flash", "deepseek", "chat"),
+      r("cheap@openrouter", "cheap-image", "openrouter", "image"),
+      r("pricey@openrouter", "pricey-image", "openrouter", "image"),
+    ]);
+    expect(imageModels).toEqual(["cheap-image", "pricey-image"]);
   });
 });

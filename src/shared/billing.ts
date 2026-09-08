@@ -42,6 +42,13 @@ export interface BillingMe {
       **从便宜到贵有序**（ADR-0237：routesQuery 按 priority,输出价,id 全序），
       所以 `models[0]` = 没指定型号时用的那款，`at(-1)` = 最贵那款 */
   models: string[];
+  /** 网关此刻供的**出图**型号（`model_route` 里 kind='image' 那些，#1081）。
+      与 `models` 分开是因为它们的消费方完全不同：`models` 喂输入框那枚模型选择器，
+      这一格喂 `generate_image` 那把刀。合成一格的代价写在 ADR 里 —— ADR-0237 的
+      Auto 拿 `models.at(-1)` 当「最贵 = 最强」，出图那款 $60/M 会直接变成 hard 档主模型。
+      **缺席 = 空数组**（旧 edge / 迁移还没跑）＝ 这台网关不供出图，工具不挂 —— 
+      也就是改动前的行为 */
+  imageModels: string[];
   /** 型号 id → `model_route.platform`（`deepseek` / `zhipu` / `qwen`…，#1011）。
       **不靠 id 前缀猜**：`glm-*` 属于智谱今天成立，只是因为这些 id 是我们自己在
       `model_route` 里写的——那是巧合不是保证，而这一列就是答案。
@@ -165,6 +172,9 @@ export function parseBillingMe(payload: unknown): BillingMe | null {
   const expiresAt = typeof payload.addon.expiresAt === "number" ? payload.addon.expiresAt : null;
   const periodEnd = typeof payload.periodEnd === "number" ? payload.periodEnd : null;
   const models = Array.isArray(payload.models) ? payload.models.filter((m): m is string => typeof m === "string") : [];
+  // 缺席 = 旧 edge / 迁移还没跑 = 这台网关不供出图。**不能让它把整份快照解析成 null**：
+  // 那会把「edge 比我旧」升级成「拿不到订阅状态」（同下面 modelPlatforms 的立场）
+  const imageModels = Array.isArray(payload.imageModels) ? payload.imageModels.filter((m): m is string => typeof m === "string") : [];
   // 缺席 / 形状不对一律回空对象——这一格只喂 logo，读不到就不画，不该让整份
   // 快照解析失败（那会把「edge 比我旧」升级成「拿不到订阅状态」）
   const modelPlatforms: Record<string, string> = {};
@@ -193,7 +203,7 @@ export function parseBillingMe(payload: unknown): BillingMe | null {
       }
     }
   }
-  return { plan, status, plans, windows, addon: { remainingMicro: payload.addon.remainingMicro, expiresAt }, periodEnd, models, modelPlatforms };
+  return { plan, status, plans, windows, addon: { remainingMicro: payload.addon.remainingMicro, expiresAt }, periodEnd, models, imageModels, modelPlatforms };
 }
 
 export const MICRO_PER_CREDIT = 10_000;
