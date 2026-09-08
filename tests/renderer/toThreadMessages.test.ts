@@ -9,12 +9,10 @@ function ev(partial: Partial<SessionEvent> & { type: SessionEvent["type"] }, seq
 }
 
 describe("toThreadMessages — 骨架", () => {
-  it("session_created 投成一条 system 审计消息（Task 3:它是 8 类审计事件之一）", () => {
-    const e = ev({ type: "session_created" }, 0);
-    const events = [e];
-    expect(toThreadMessages(events)).toEqual([
-      { role: "system", id: "0", createdAt: new Date(1000), content: [{ type: "text", text: "" }], metadata: { custom: { otto: e } } },
-    ]);
+  it("session_created 一行都不占（#1091）—— 光秃秃四个字「会话已创建」，而它必然是每条会话的第一条事件", () => {
+    // 它带的三个字段（工程目录 / 是不是独立副本 / 是不是云会话）在头部一直写着，
+    // 这行灰字一个都没在说。判据同 `request_envelope`：机器的内务不占对话的行
+    expect(toThreadMessages([ev({ type: "session_created", workspace: "/w" }, 0)])).toEqual([]);
   });
 
   it("user_message 变成 user 角色的 text part", () => {
@@ -276,9 +274,8 @@ describe("toThreadMessages — 边界", () => {
     expect(out[2]?.role).toBe("user");
   });
 
-  it("九类审计事件一个不漏", () => {
+  it("八类审计事件一个不漏（session_created 已在 #1091 撤掉）", () => {
     const events = [
-      ev({ type: "session_created" }, 0),
       ev({ type: "session_archived" }, 1),
       ev({ type: "session_unarchived" }, 2),
       ev({ type: "session_renamed", title: "新名字" }, 3),
@@ -289,10 +286,10 @@ describe("toThreadMessages — 边界", () => {
       ev({ type: "context_compacted", summary: "摘要", model: "m" }, 8),
     ];
     const out = toThreadMessages(events);
-    expect(out).toHaveLength(9);
+    expect(out).toHaveLength(8);
     expect(out.every((m) => m.role === "system")).toBe(true);
     expect(out.map((m) => (m.metadata?.custom?.["otto"] as { type: string }).type)).toEqual([
-      "session_created", "session_archived", "session_unarchived", "session_renamed", "model_changed",
+      "session_archived", "session_unarchived", "session_renamed", "model_changed",
       "skill_invoked", "image_described", "approval_decision", "context_compacted",
     ]);
   });
@@ -550,6 +547,27 @@ describe("branch_checked_out（issue #411）", () => {
     expect(toThreadMessages([e])).toEqual([
       { role: "system", id: "0", createdAt: new Date(1000), content: [{ type: "text", text: "" }], metadata: { custom: { otto: e } } },
     ]);
+  });
+});
+
+describe("request_envelope（#1091）", () => {
+  it("聊天区一行都不占 —— 落盘照旧，只是不进对话", () => {
+    // 判据抄云会话那侧（ADR-0235 ③）：这条事件说的是机器的内务，不是对话事实。
+    // 与旁边 `branch_checked_out` / `session_shared` 的分别在于「用户能不能据此行动」——
+    // 那两条能（这段话在哪条分支上说的 / 这个会话给谁了），信封换了不能。
+    //
+    // 落进 `isAuditEvent` 的 default 也会得到同一个答案，所以这条断言钉的是**决定**
+    // 不是实现：哪天有人顺手把它加回放行名单，这里红；而两份名单对表那条
+    // （timelineLists.test.ts）只管两处一致，两处一起加回来它照样绿
+    const e = ev({ type: "request_envelope", model: "deepseek-v4-flash", thinking: "on", system: "…", tools: [{ name: "read_file", description: "", parameters: {} }] }, 0);
+    expect(toThreadMessages([e])).toEqual([]);
+  });
+
+  it("夹在对话中间也不留白行 —— 前后两句照常相邻", () => {
+    const a = ev({ type: "user_message", content: "画一张" }, 0);
+    const env = ev({ type: "request_envelope", model: "m", system: "…", tools: [] }, 1);
+    const b = ev({ type: "assistant_message", content: "好", model: "m" }, 2);
+    expect(toThreadMessages([a, env, b]).map((m) => m.role)).toEqual(["user", "assistant"]);
   });
 });
 

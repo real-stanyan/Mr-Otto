@@ -18,8 +18,10 @@ export interface ModelUsage {
   /** 这笔账走的哪条路（ADR-0176 决定五）：hosted = 官方 key + 订阅额度（按 credit 记账，
       UI 不显示 $）,direct = 用户自己的 key（按 $ 记账）。同一款型号换过路要分两行——
       合成一行会把两种不同的计费口径混进同一个 $ 数字里，读者会当成一次双重扣费。
-      非 assistant_message 的外挂小调用（压缩/分区/建议…）没有 route 字段,billed()
-      里一律按 direct 记（这些账目前只走用户自己的 key） */
+      **每一类计费事件都带这一格**（#1091）：外挂小调用（压缩/分区/建议…）原来没有
+      这个字段、`billed()` 里一律按 direct 记，依据是那句「这些账只走用户自己的 key」——
+      而 ADR-0248 让订阅用户的小模型改走托管之后，那句话成了假的。缺席仍按 direct
+      （旧日志照常重放，那时它们确实是 direct） */
   route: "hosted" | "direct";
   promptTokens: number;
   completionTokens: number;
@@ -62,9 +64,13 @@ function billed(
   if (!e.usage) return null;
   return {
     model: e.model,
-    // 只有 assistant_message 携带 route；外挂小调用（压缩/分区/建议…）没有这个字段，
-    // 按 direct 记（ADR-0176 决定五：缺省 = direct，旧日志 / 子会话照常重放）
-    route: e.type === "assistant_message" ? (e.route ?? "direct") : "direct",
+    // 缺席 = direct（ADR-0176 决定五：旧日志 / 子会话照常重放）。**判据不再分事件类型**
+    // （#1091）：原来写的是「只有 assistant_message 携带 route，其余一律 direct」，依据
+    // 是那句「外挂小调用只走用户自己的 key」——ADR-0248 让订阅用户的小模型改走托管之后
+    // 那句话就成了假的，而它的失败模式是安静的：一次真·hosted 的调用被记成 direct，
+    // 于是上下文浮层那半整段冒出来（`showsCost` 判的就是「有没有一笔走自己的 key」），
+    // 还按价目表给它标一个用户没花过的钱数
+    route: e.route ?? "direct",
     promptTokens: e.usage.promptTokens,
     completionTokens: e.usage.completionTokens,
     cachedTokens: e.usage.cachedTokens ?? 0,

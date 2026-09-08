@@ -4,7 +4,8 @@
 //   耗时  = 本条 assistant_message.ts − 前一条事件的 ts
 //   吞吐  = completionTokens ÷ 耗时
 //   token = usage（早就落在事件上了）
-//   花费  = usage × 价目表（shared/modelPricing.ts）
+//   花费  = usage × 价目表（shared/modelPricing.ts）—— **只对走自己 key 的那几笔**，
+//           托管路（订阅额度）不出这一格，见 accumulateTurn
 //
 // 「前一条事件」这个取法值得说清楚：一个 turn 里的时间线是
 //   user_message → assistant(toolCalls) → approval_decision? → tool_execution_started
@@ -38,42 +39,6 @@ function fmtTokens(n: number): string {
   return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
 }
 
-/**
- * 一条 assistant 消息的页脚数字。
- *
- * @param e         这条消息的事件
- * @param elapsedMs 这次模型调用花的时间；undefined = 算不出（日志里它是第一条）
- */
-export function timingStats(
-  e: Pick<AssistantMessageEvent, "model" | "usage">,
-  elapsedMs: number | undefined
-): TimingStat[] {
-  const stats: TimingStat[] = [];
-
-  if (elapsedMs !== undefined && elapsedMs >= 0) {
-    stats.push({ label: "elapsed", value: fmtDuration(elapsedMs) });
-  }
-
-  const usage = e.usage;
-  if (usage) {
-    // 吞吐要有分母才有意义：耗时为 0（同一毫秒落盘）时不出这一格，
-    // 而不是出一个 Infinity 或者假装是 0
-    if (elapsedMs !== undefined && elapsedMs > 0 && usage.completionTokens > 0) {
-      const perSecond = usage.completionTokens / (elapsedMs / 1000);
-      stats.push({ label: "tok/s", value: perSecond.toFixed(perSecond < 10 ? 1 : 0) });
-    }
-    stats.push({
-      label: "tokens",
-      value: `↑${fmtTokens(usage.promptTokens)} ↓${fmtTokens(usage.completionTokens)}`,
-    });
-    const usd = costUsd(e.model, usage);
-    // 价目表里没有这款就不出这一格 —— 见 modelPricing.ts：不知道价钱和免费是两回事
-    if (usd !== undefined) stats.push({ label: "cost", value: fmtUsd(usd) });
-  }
-
-  return stats;
-}
-
 /** 一个 turn 的累计:从用户发话到最终回复,中间几波工具调用全算在一起。
     页脚只出现在**最终那条回复**下面,不在每一波工具调用后面各出一行 ——
     那是一个回答的结算,不是每次模型调用的流水 */
@@ -102,7 +67,7 @@ export const EMPTY_TURN_AGG: TurnTimingAgg = {
 /** 把一条 assistant_message 累进 turn 的总账 */
 export function accumulateTurn(
   agg: TurnTimingAgg,
-  e: Pick<AssistantMessageEvent, "model" | "usage">,
+  e: Pick<AssistantMessageEvent, "model" | "usage" | "route">,
   elapsedMs: number | undefined
 ): TurnTimingAgg {
   const next: TurnTimingAgg = { ...agg };
@@ -111,7 +76,20 @@ export function accumulateTurn(
     next.hasUsage = true;
     next.promptTokens += e.usage.promptTokens;
     next.completionTokens += e.usage.completionTokens;
-    const usd = costUsd(e.model, e.usage);
+    // 托管路（订阅额度）不出钱这一格（#1091）。**不是「嫌它吵」，是那个数根本不是
+    // 他花的钱**：`costUsd` 查的是厂商的按量价，而订阅用户付的是月费——把按量价
+    // 写在页脚上，等于编一个他没花过的数（同 ADR-0241 给 kimicode 那条的教训）。
+    // 判据挂在**这条消息自己的 `route`** 上，不是「此刻订没订阅」：页脚报的是
+    // 已经发生的事，而订阅是此刻的状态——退订过的人那些 hosted 行确实由额度承担过，
+    // 订阅之前那几笔 direct 是真金白银（同 ADR-0254 的 `showsCost` 为什么不判
+    // `isSubscribed`）。缺席 = direct（旧日志 / 子会话），照旧计价。
+    //
+    // 不给替身：不写「本次用掉额度的 0.4%」那类数（ADR-0254 里维护者砍掉过一次——
+    // 换了单位仍然在回答「这一次花了多少」），也不改写成 credit：那是花费面板的活，
+    // 页脚只有四格、每格一眼扫过，混着两种单位读的人得先分辨这一格是哪一种。
+    // 与「算不出价钱」共用 undefined 这一档：页脚上两者的正确表现同为**不出这一格**，
+    // 而它没有位置说清楚是哪一种（花费面板有，那边照旧分开画「托管」与「—」）
+    const usd = e.route === "hosted" ? undefined : costUsd(e.model, e.usage);
     next.costUsd = usd === undefined || next.costUsd === undefined ? undefined : next.costUsd + usd;
   }
   return next;
