@@ -7,7 +7,16 @@ import type { SessionEvent } from "../../session/events.js";
 import { b64decode, b64encode } from "./b64.js";
 import { MAX_FRAME_BYTES } from "./wire.js";
 
-/** 12（#1066）：再加一对 `files_search` / `files_search_result`（控制房读帧）——
+/** 14（#1102）：**repo 那一组整个走了**——`config` / `config_result` 两条帧删除，
+    `welcome.repo` 与 `workspace_state.repo` 删除，`CsRepoState` 删除。工作区不再
+    绑一个仓库：ADR-0234 把仓库配置搬进设置页时，主语还是「这个工作区的仓库是
+    哪个」，而真正的主语是「水獭在哪儿干活」（ADR-0251 已经为「文件」那一页立过
+    同一句）。仓库改由片 4（#1105）的 `clone_repo` 工具拉进来，**路径由用户自己
+    决定**，凭据按「工作区 + 主机」存（片 2，#1103）。
+    `workspace` / `workspace_state` 这对帧**不删**：它还驮着 `modelRoute`
+    ——ADR-0246 那句「起不了 turn」在设置页是它唯一的落点。
+    减字段照样进位，理由同下面 7 那条。
+    12（#1066）：再加一对 `files_search` / `files_search_result`（控制房读帧）——
     工作文件夹**搜得动**了，照右侧栏那个 Files 面板的规矩：直接输入 = 按文件名过滤，
     `?文本` = 内容搜索。容器镜像里有 ripgrep 13（`/usr/bin/rg`，真机验过），且
     `-w /work` 下 `rg --json` / `rg --files` 输出的相对路径与本机面板逐字同形，
@@ -71,7 +80,7 @@ import { MAX_FRAME_BYTES } from "./wire.js";
     少一格状态。**加一个枚举值同理**：老客户端的 isValidCsDeniedCode 认不出
     `rate_limited`，decodeCsDown 回 null，那一帧被静默忽略，于是 create()
     要白等满超时才回一句"云端无响应"——把"你被限速了"说成"对面没回话"。 */
-export const CS_PROTOCOL_VERSION = 13;
+export const CS_PROTOCOL_VERSION = 14;
 export const CS_MAX_TEXT_BYTES = 64 * 1024;
 
 /** 一次回多少字节的文件内容（#1056）。中继单帧上限是 256 KiB（wire.ts 的
@@ -91,36 +100,21 @@ export const CS_WORK_FILE_MAX_BYTES = 64 * 1024;
     放在协议文件里而不是任一端：它就是一条线上约定，形状同 wire.ts 的纪律。 */
 export const BACKLOG_SKIP_MARKER = "已跳过";
 
-/** clone 判定的结局种类。与 runtime 侧 `CloneOutcome["kind"]` 是同一组值，
-    但**这份是线上契约**：daemon 往 CsRepoState 里塞 outcome.kind 时由 tsc
-    对齐两边（真分叉了 daemon 编译不过），不需要两处人肉同步。 */
-export type CsCloneKind = "cloned" | "switched" | "skipped" | "refused" | "failed";
-
-/** 一个工作区此刻的仓库配置 + 最近一次 clone 的结局（issue #834）。
-    协议上原本**只有写路径**：owner 发一条 config 上去，服务端静默保存，
-    没有回执也没有任何查询窗口——弹窗只能每次开成空白，clone 结果只在
-    "恰好开着会话"的人的聊天流里出现一次。这个类型是那扇窗户。
-    **token 本身永远不下行**，只回一个布尔。 */
-export interface CsRepoState {
-  /** 当前配的仓库地址（进服务端时已经过 validateRepoUrl，不含 userinfo） */
-  url: string;
-  hasPat: boolean;
-  /** 最近一次 clone 判定。null = 还没判过（刚配完、还没有人触发工具调用） */
-  clone: { kind: CsCloneKind; text: string; at: number } | null;
-}
-
 /** 仓库地址的**结构化白名单**校验（issue #834）——两端共用一份。
 
     刻意不是"检测这串里有没有藏凭据"那种黑名单：那条路在 #821 被复审
-    连破三轮（全角 ＠、11 层嵌套 percent 编码…），教训写在
-    `src/renderer/src/lib/cloudRepoUrl.ts` 的文件头。这里只问四个
+    连破三轮（全角 ＠、11 层嵌套 percent 编码…）——**输入校验做不完美，
+    所以安全边界搬到输出侧**（`safeRepoLabel`）。这里只问四个
     URL 解析器**自己**答得上来的问题：解析得开吗、是不是 https、
     userinfo 空不空、host 有没有。凭据在 git URL 里只能住在 userinfo，
     所以"username/password 都是空"这一条是结构性的，不依赖认出任何花样。
 
-    服务端必须自己校验一次（frameHandler 的 config 分支），不能只靠渲染层：
-    渲染层那份的定位是"提交前的早期 UX 提示"，一个改造过的客户端可以
-    直接发一条 `ext::sh -c ...` 上来，那会以 root 在容器里执行。 */
+    服务端必须自己校验一次，不能只靠渲染层：一个改造过的客户端可以直接发
+    一条 `ext::sh -c ...` 上来，那会以 root 在容器里执行。
+
+    **#1102 之后消费方换了人**：原来是 `config` 帧（工作区绑一个仓库），
+    现在是片 4（#1105）的 `clone_repo` 工具。校验的对象一个字没变——还是
+    「用户给的一个仓库地址」，所以这个函数原样留着。 */
 export function validateRepoUrl(raw: string): { ok: true; url: string } | { ok: false; message: string } {
   const url = raw.trim();
   if (url === "") return { ok: false, message: "仓库地址不能为空。" };
@@ -253,19 +247,8 @@ export type CsUp =
   | { t: "say"; text: string; mention: boolean; mentions?: string[]; memberMentions?: string[] }
   | { t: "backlog"; afterSeq: number }
   | { t: "approve"; callId: string; decision: "approved" | "denied" }
-  /** 工作区的仓库配置——**控制房帧**（协议 8，#991）：带 `workspaceId`，不依赖
-      任何一条会话。ADR-0233 之后只剩仓库这一组（模型统一走所有者订阅）。两格
-      各自可选，都不给是无操作。`pat` 三态——省略 = 保持不变，`""` = 显式清除，
-      非空 = 换成新的。密码框永远预填不了，"留空 = 清掉"会让"顺手改个地址"
-      静默毁掉一个私有仓库的 token */
-  | {
-      t: "config";
-      workspaceId: string;
-      repoUrl?: string;
-      pat?: string;
-    }
-  /** 读这个工作区的仓库状态 + 路由（控制房帧，协议 8）：回 `workspace_state`。
-      任何在籍成员都能读——这两格本来就在 welcome 上给所有人看 */
+  /** 读这个工作区此刻的路由（控制房帧，协议 8；#1102 之后只剩这一格）：回
+      `workspace_state`。任何在籍成员都能读——它本来就在 welcome 上给所有人看 */
   | { t: "workspace"; workspaceId: string }
   /** 读工作文件夹的一格（控制房帧，协议 11，#1056）：回 `files_result`。
       `path` 是**相对工作文件夹**的路径（`""` = 它本身），发出去之前先过
@@ -305,10 +288,6 @@ export type CsDown =
       lastSeq: number;
       initiatorUid: string | null;
       ownerUid: string;
-      /** 这个工作区此刻的仓库配置与最近一次 clone 结局（issue #834）。
-          搭在 welcome 上而不是另开一个查询往返：任何人一 join 就看得见，
-          不用等"恰好有人在配"或"恰好开着会话时 clone 跑了一次" */
-      repo: CsRepoState | null;
       /** 这个工作区此刻的 turn 会走哪条路（issue #945）：hosted / blocked / 探不到 */
       modelRoute: CsModelRoute | null;
     }
@@ -322,22 +301,6 @@ export type CsDown =
   | { t: "denied"; code: CsDeniedCode; v?: number }
   | { t: "event"; event: SessionEvent }
   | { t: "backlog"; events: SessionEvent[]; done: boolean }
-  /** config 的回执（issue #834）。**不复用 `error`**：那条帧还承载
-      backlog 跳过、审批失效之类跟配置无关的消息，客户端 await 它会被
-      一条不相干的 error 提前唤醒。ok=false 时 message 说明为什么被拒
-      （服务端校验不通过 / 保存失败），repo 是**服务端此刻的真实状态**，
-      成功失败都带——失败时它正好告诉 owner「那你现在配的还是这个」 */
-  | {
-      t: "config_result";
-      /** 协议 8：回执说的是哪个工作区（控制房一条连接可以连着问几个） */
-      workspaceId: string;
-      ok: boolean;
-      message?: string;
-      repo: CsRepoState | null;
-      /** 存完之后再探一次的路由判定（issue #945）——仓库配置不影响路由，带上只是
-          让回执与 welcome 同形，界面一处画法 */
-      modelRoute: CsModelRoute | null;
-    }
   /** archive 的回执（协议 9，#993）。会话房那条路靠 `session_archived` 广播当回执
       （所有人都看得见的那一份），控制房没有房间可广播，得单独回一条 */
   | { t: "archive_result"; workspaceId: string; sessionId: string; ok: boolean; message?: string }
@@ -346,8 +309,10 @@ export type CsDown =
       让还在看的人知道发生了什么）。`ok=false` 的 message 分得清三种：这条会话
       不存在 / 这一刻读不到（查询挂了，**不是**「不存在」）/ 删库那一步失败 */
   | { t: "delete_result"; workspaceId: string; sessionId: string; ok: boolean; message?: string }
-  /** `workspace` 读帧的答复（协议 8，#991）：与 welcome / config_result 上那两格同形 */
-  | { t: "workspace_state"; workspaceId: string; repo: CsRepoState | null; modelRoute: CsModelRoute | null }
+  /** `workspace` 读帧的答复（协议 8，#991）：与 welcome 上那一格同形。
+      #1102 摘掉 `repo` 之后只剩 `modelRoute`，但这对帧**不删**——它是
+      ADR-0246 那句「起不了 turn」在设置页唯一的落点 */
+  | { t: "workspace_state"; workspaceId: string; modelRoute: CsModelRoute | null }
   /** `files` 读帧的答复（协议 11，#1056）。`path` 回带是为了对上号（一条连接
       只问一次，但认一下比赌顺序便宜，同 workspace_state）。`ok=false` 的 message
       分得清「路径不合法」「容器里读失败」两种——两种该做的动作不一样 */
@@ -411,23 +376,6 @@ function isValidCsDeniedCode(v: unknown): v is CsDeniedCode {
   );
 }
 
-function isCsCloneKind(v: unknown): v is CsCloneKind {
-  return v === "cloned" || v === "switched" || v === "skipped" || v === "refused" || v === "failed";
-}
-
-/** 线上防呆：形状不对就整条帧判 null（同本文件其余 decode 的一贯做法）。
-    `clone` 允许缺席——`null` 与"没这个键"都归成 null，少一次两端为了一个
-    可选字段各自较劲的机会。 */
-function isCsRepoState(v: unknown): v is CsRepoState {
-  if (typeof v !== "object" || v === null) return false;
-  const o = v as Record<string, unknown>;
-  if (typeof o.url !== "string" || typeof o.hasPat !== "boolean") return false;
-  if (o.clone === undefined || o.clone === null) return true;
-  if (typeof o.clone !== "object") return false;
-  const c = o.clone as Record<string, unknown>;
-  return isCsCloneKind(c.kind) && typeof c.text === "string" && typeof c.at === "number";
-}
-
 /** 线上防呆（issue #945）：缺席、`null`、形状不对一律降级成 null，**不拒整帧**。
     解码永远向后兼容——一个还没升级的 runtime 发来的 welcome 少这一格是正常的，
     把它判成无效帧等于让客户端白等满超时。hosted 必须带非空 model：没有型号的
@@ -440,14 +388,6 @@ function normalizeModelRoute(v: unknown): CsModelRoute | null {
   return null;
 }
 
-/** decode 出来的 CsRepoState 一律走这里补齐 `clone`——调用方拿到的永远是
-    `{url, hasPat, clone: X | null}`，不必再判"这个键在不在" */
-function normalizeRepoState(v: unknown): CsRepoState | null {
-  if (v === null || v === undefined) return null;
-  if (!isCsRepoState(v)) return null;
-  const o = v as unknown as { url: string; hasPat: boolean; clone?: CsRepoState["clone"] };
-  return { url: o.url, hasPat: o.hasPat, clone: o.clone ?? null };
-}
 
 /** 线上防呆（#1056）：认不出的形状一律回 null，调用方按「读到了但看不懂」处理。
     与 normalizeModelRoute 同纪律——**不拒整帧**，因为 `ok=false` 那一路的
@@ -573,22 +513,6 @@ export function decodeCsUp(b64: string): CsUp | null {
       return null;
     }
 
-    if (t === "config") {
-      // 两格各自可选：类型不对（不是 string）一律判整帧无效——半个配置比没有
-      // 配置更危险。`model` 那半边随 ADR-0233 删了：老客户端多发的 model 字段
-      // 这里直接忽略（握手是精确相等，本来也连不上）。协议 8 起 workspaceId
-      // 必填——缺了就不知道在配谁的仓库
-      const { workspaceId, repoUrl, pat } = obj;
-      if (typeof workspaceId !== "string") return null;
-      if (repoUrl !== undefined && typeof repoUrl !== "string") return null;
-      if (pat !== undefined && typeof pat !== "string") return null;
-
-      const result: CsUp = { t: "config", workspaceId };
-      if (typeof repoUrl === "string") result.repoUrl = repoUrl;
-      if (typeof pat === "string") result.pat = pat;
-      return result;
-    }
-
     if (t === "workspace") {
       if (typeof obj.workspaceId === "string") return { t: "workspace", workspaceId: obj.workspaceId };
       return null;
@@ -670,7 +594,6 @@ export function decodeCsDown(b64: string): CsDown | null {
           lastSeq: obj.lastSeq,
           initiatorUid: obj.initiatorUid as string | null,
           ownerUid: obj.ownerUid,
-          repo: normalizeRepoState(obj.repo),
           modelRoute: normalizeModelRoute(obj.modelRoute),
         };
       }
@@ -742,28 +665,8 @@ export function decodeCsDown(b64: string): CsDown | null {
         return {
           t: "workspace_state",
           workspaceId: obj.workspaceId,
-          repo: normalizeRepoState(obj.repo),
           modelRoute: normalizeModelRoute(obj.modelRoute),
         };
-      }
-      return null;
-    }
-
-    if (t === "config_result") {
-      if (
-        typeof obj.workspaceId === "string" &&
-        typeof obj.ok === "boolean" &&
-        (obj.message === undefined || typeof obj.message === "string")
-      ) {
-        const result: CsDown = {
-          t: "config_result",
-          workspaceId: obj.workspaceId,
-          ok: obj.ok,
-          repo: normalizeRepoState(obj.repo),
-          modelRoute: normalizeModelRoute(obj.modelRoute),
-        };
-        if (typeof obj.message === "string") result.message = obj.message;
-        return result;
       }
       return null;
     }
