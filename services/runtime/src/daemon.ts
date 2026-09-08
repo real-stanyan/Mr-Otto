@@ -43,6 +43,7 @@ import {
   BACKLOG_SKIP_MARKER,
   csCtlChannel,
   csChannel,
+  CS_PROTOCOL_VERSION,
   type CsCloneKind,
   type CsDown,
 } from "../../../src/shared/remote/cloudSession.js";
@@ -207,6 +208,12 @@ function createWorkspaceConfigStore(path: string) {
     },
   };
 }
+
+/** 这份 bundle 的内容指纹（#791）。`scripts/runtime-deploy.mjs` 打包时用 esbuild
+    的 `define` 换成真值；**默认 "dev" 不是空串**——直接 `tsx daemon.ts` 跑起来的
+    那份本来就不是任何一次部署，报一个看起来像指纹的空值比报 "dev" 更糟 */
+declare const __OTTO_BUILD_STAMP__: string | undefined;
+const BUILD_STAMP = typeof __OTTO_BUILD_STAMP__ === "string" ? __OTTO_BUILD_STAMP__ : "dev";
 
 async function main(): Promise<void> {
   const config = loadConfig();
@@ -1089,7 +1096,15 @@ async function main(): Promise<void> {
     }
   }
 
-  console.log(`[otto-runtime] 就绪：data=${config.dataDir}`);
+  // 这一行是「线上此刻跑的是哪一份代码」唯一的证据（#791，ADR-0257）：
+  // `stamp` 由 `scripts/runtime-deploy.mjs` 在打包时 define 进来，`deploy-check`
+  // 从 journal 里读它。**判据落在跑着的进程上不落在磁盘那个文件上**——
+  // rsync 成功、systemd 却起不来（或起的是上一份还没被覆盖的 bundle）时，
+  // 文件说的话是假的，而这正是 #790 那次「部署看着成功了」的一般形式。
+  // `CS_PROTOCOL_VERSION` 一起报：桌面连不上时第一个要对的就是它
+  console.log(
+    `[otto-runtime] 就绪：data=${config.dataDir} stamp=${BUILD_STAMP} 协议=${CS_PROTOCOL_VERSION}`
+  );
 }
 
 main().catch((err: unknown) => {

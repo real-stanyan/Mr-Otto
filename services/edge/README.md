@@ -74,7 +74,8 @@ OAuth 的 `redirect_to` 直接填 `mrotto://` 深链时，浏览器把深链丢�
 ## 部署
 
 ```bash
-npm --prefix services/edge run deploy       # wrangler deploy
+npm run edge:deploy                         # 推荐：带内容指纹 + 部署后自检（#791）
+npm --prefix services/edge run deploy       # 裸 wrangler deploy（不注指纹，deploy:check 之后会报 unknown）
 npx wrangler secret put SUPABASE_JWT_SECRET # 只做一次，值不进 git
 ```
 

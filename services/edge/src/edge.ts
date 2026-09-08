@@ -29,6 +29,12 @@ export interface EdgeConfig {
       （ADR-0199）——本地/测试环境常常没有,这条路径就该整个不存在,
       不是"配了空字符串所以永远比不中" */
   runtimeSecret?: string;
+  /** 这份 worker 是从哪一份源码构建的（#791，ADR-0257）：`deploy-stamp.mjs` 算出的
+      12 位内容指纹，由 `wrangler deploy --var BUILD_STAMP:<戳>` 注进来。
+      **缺席不是「当前」是「不知道」**——手跑一次不带 `--var` 的 `wrangler deploy`
+      就会落成这个状态，而把它当成「和仓库一致」正是 #790 那次的失败形状：
+      没有证据被读成了没有问题 */
+  buildStamp?: string | undefined;
 }
 
 /** 平台身份认作的 userId。relay 房间键、px 三道闸都认这个常量当"不是真人" */
@@ -421,7 +427,10 @@ export function createEdge(deps: EdgeDeps): (req: Request) => Promise<Response> 
   return async function handle(req: Request): Promise<Response> {
     const { pathname } = new URL(req.url);
 
-    if (pathname === "/healthz") return json(200, { ok: true });
+    // `stamp` 是这份 worker 的内容指纹（#791）：`npm run deploy:check` 拿它跟
+    // 本地现算的比。**没注戳时回 "unknown" 不回省略**——少一个字段与「值是
+    // unknown」在客户端要写两条判断，而它们说的是同一件事
+    if (pathname === "/healthz") return json(200, { ok: true, stamp: config.buildStamp ?? "unknown" });
     // OAuth 落地页(无鉴权,浏览器裸访问):深链转发让登录流在浏览器里有个明确终点
     if (pathname === "/auth/landing") {
       return req.method === "GET"

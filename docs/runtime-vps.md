@@ -56,7 +56,14 @@ RUNTIME_SSH=user@host npm run runtime:deploy
 
 `RUNTIME_SSH` 是唯一必需的 env（形如 `user@host`，脚本按 `-p 2222` 连）——没有目标地址
 `scripts/runtime-deploy.mjs` 直接打印用法退出 2，不往下走半步：这是一次会真的连真机、真的
-重启线上服务的操作。脚本做四件事：
+重启线上服务的操作。
+
+> **发版会自己跑这一步**（#791，ADR-0257）：`npm run release` 在升版之前先部署 edge 再部署
+> runtime，`RUNTIME_SSH` 没设就停在那里不发版。想单独问一句「线上是不是当前的」用
+> `RUNTIME_SSH=… npm run deploy:check` —— 它回 current / stale / **unknown** 三态，
+> 「问不出来」不许读成「没问题」。
+
+脚本做五件事：
 
 1. **esbuild 打包**：把 `services/runtime/src/daemon.ts` 打成单文件 ESM bundle
    （`services/runtime/dist/runtime.mjs`）。`better-sqlite3` / `dockerode` 两个原生绑定
@@ -71,6 +78,11 @@ RUNTIME_SSH=user@host npm run runtime:deploy
    先 `ssh mkdir -p` 确保子目录存在，旧版 rsync 不会自动建父目录）。
 4. **远端命令**：`cd /opt/otto-runtime && npm install --omit=dev && docker build -t
    otto-sandbox ./sandbox && sudo systemctl restart otto-runtime`。
+5. **自检**（#791，ADR-0257）：轮询 journal（最多 60 秒），要看到跑着的那个进程亲口报出
+   这次的内容指纹——`[otto-runtime] 就绪：data=… stamp=<戳> 协议=<N>`。**判据落在跑着的
+   进程上不落在磁盘那个 bundle 上**：rsync 成功而 systemd 起不来（配置缺项 fail fast /
+   原生件装错架构），或者崩溃重启循环里跑的还是上一份时，文件会撒谎。60 秒内没等到就
+   把 journal 尾巴打出来并以退出码 1 收场——「部署没有被证实」不写成「部署成功」。
 
 ## 2. 手验清单（DockerWorld / 沙箱真机面）
 
