@@ -36,6 +36,8 @@ import { createWaitTaskTool } from "../tools/waitTask.js";
 import { BackgroundTasks } from "./backgroundTasks.js";
 import { createWebSearchTool } from "../tools/webSearch.js";
 import { createWebExtractTool } from "../tools/webExtract.js";
+import { createGenerateImageTool } from "../tools/generateImage.js";
+import { latestImageRef } from "../session/latestImage.js";
 import { browserReadTool } from "../tools/browserRead.js";
 import { simulatorTool } from "../tools/simulator.js";
 import { packageProjectTool } from "../tools/packageProject.js";
@@ -99,7 +101,7 @@ import type { Tool } from "../tools/tool.js";
 import { UIQuestioner } from "./uiQuestioner.js";
 import { createAskUserTool } from "../tools/askUser.js";
 import type { AskUserOutcome, AskUserQuestion } from "../shared/askUser.js";
-import { routeModel } from "./modelRoute.js";
+import { imageBlocked, routeImage, routeModel } from "./modelRoute.js";
 import type { HostedQuota } from "./hostedQuota.js";
 
 /** 主进程这一侧「能不能走托管」要的三样。**具名而不是内联**（#1051）：子 agent
@@ -560,6 +562,42 @@ export function createAgent(opts: {
     return { baseUrl: route.baseUrl, apiKey: route.apiKey, route: route.kind };
   };
 
+  // 出图（#1081）。**只有装配了托管额度的会话才有这把刀**：出图统一走用户的订阅额度，
+  // 官方 key 只活在 edge 的 Worker secret 里，没有托管就没有这条路 —— 同 world.config
+  // 决定挂不挂 memory 的纪律（没有那个能力的装配不该对模型宣称有这把工具）。
+  const generateImage = opts.hosted
+    ? createGenerateImageTool({
+        // 粗闸，同步：订阅 / 额度 / 网关供不供出图，快照就能答。没过 = 工具表里
+        // 根本没有它，模型于是不会先承诺一张画不出来的图再失败
+        mounted: () => imageBlocked(opts.hosted!.quota.imageInput()) === null,
+        // 真要发请求那一刻现解一次路（同 resolveEndpoint 的立场：不在构造时定死，
+        // 用户可能刚订阅、额度可能刚恢复）
+        resolve: async () => {
+          const h = opts.hosted!;
+          const token = await h.accessToken();
+          const route = routeImage({
+            hosted: h.quota.imageInput(),
+            hostedBaseUrl: `${h.edgeBaseUrl()}/llm/v1`,
+            ...(token ? { hostedToken: token } : {}),
+          });
+          if (route.kind === "blocked") return { blocked: route.reason };
+          // routeImage 的最后一条闸就是「没有 token 就走不通」，所以到这儿它一定在
+          return { url: route.url, headers: { authorization: `Bearer ${token!}` }, model: route.model };
+        },
+        // 图生图的底图（ADR-0144 的产出 + 用户贴的附件，倒着扫）。附件库里那份文件
+        // 丢了就当作没有图 —— 那是 ADR-0009 对用户附件的既定取舍，不该炸掉这次调用
+        latestImage: async () => {
+          const ref = latestImageRef(store.load(sessionId));
+          if (!ref) return null;
+          try {
+            return { data: opts.attachments.read(ref.id), mimeType: ref.mediaType };
+          } catch {
+            return null;
+          }
+        },
+      })
+    : null;
+
   const makeAdapter = (choice: ModelChoice) =>
     createOpenAICompatibleAdapter({
       baseUrl: process.env[choice.baseUrlEnv] ?? choice.baseUrl,
@@ -681,6 +719,8 @@ export function createAgent(opts: {
       createWaitTaskTool(backgroundTasks),
       createWebSearchTool(() => process.env["ANYSEARCH_API_KEY"] ?? BUILTIN_ANYSEARCH_KEY),
       createWebExtractTool(() => process.env["ANYSEARCH_API_KEY"] ?? BUILTIN_ANYSEARCH_KEY),
+      // 出图：没装配托管的（子会话 / 测试 / 裸装配）压根没有这把刀
+      ...(generateImage ? [generateImage] : []),
       // 有浏览器能力才上这把工具。无条件挂着的话,没浏览器的装配(裸装配/测试)
       // 会对模型宣称有这把工具,模型试一次、吃一个"这个世界没有内置浏览器",
       // 白烧一轮。工具表同时也是 UI 报的上下文占用(BootInfo.toolDefs),
