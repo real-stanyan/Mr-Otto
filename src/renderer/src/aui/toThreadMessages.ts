@@ -84,8 +84,6 @@ function isAuditEvent(e: SessionEvent): boolean {
     case "tool_hook":
     // 项目指令注入（issue #353）：注入了什么、从哪来——审计事实，时间线留痕
     case "project_instructions":
-    // 请求信封（issue #383）：请求配置从这一刻起变了——审计事实，时间线留痕
-    case "request_envelope":
     // 分支切换（issue #411）：往回翻时「这段话是在哪个分支上说的」只有这一行能答——
     // 它比模型切换管得更宽，聊天区当然要占一行
     case "branch_checked_out":
@@ -102,6 +100,16 @@ function isAuditEvent(e: SessionEvent): boolean {
       return e.decision === "denied";
     case "turn_ended":
       return e.outcome !== "completed";
+    case "request_envelope":
+      // 请求信封（issue #383）：**落盘照旧、聊天区不占行**（#1091）。它是 log-only 审计
+      // 快照——「这次请求由什么拼出来」的唯一凭据，隐私闸（`PRIVACY_VERDICTS`）也要它在。
+      // 撤的只是那一行小灰字：判据抄云会话那侧（ADR-0235 ③）——「这条事件说的是对话里
+      // 发生的事，还是机器的内务」，请求配置变了是内务。它与旁边 `model_changed` 的
+      // 分别正在这里：换模型是「之后的话由谁说」，用户能据此行动；信封换了（思考开关、
+      // 工具从 16 把变 17 把）没有任何用户能据此做的事，而它每次开关工具都要冒一行。
+      // 要调参的时候在轨迹视图里看（`replay/trajectory.ts` 的 default 分支照旧画它）
+      return false;
+
     case "section_classified":
       // main 合并进来的事件类型(会话分区分类)。目录挂在分区轨(SectionRail)上,
       // 不进正文——同 Timeline.tsx 的 EventRow 里同一分支。原先落到

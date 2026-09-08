@@ -553,6 +553,27 @@ describe("branch_checked_out（issue #411）", () => {
   });
 });
 
+describe("request_envelope（#1091）", () => {
+  it("聊天区一行都不占 —— 落盘照旧，只是不进对话", () => {
+    // 判据抄云会话那侧（ADR-0235 ③）：这条事件说的是机器的内务，不是对话事实。
+    // 与旁边 `branch_checked_out` / `session_shared` 的分别在于「用户能不能据此行动」——
+    // 那两条能（这段话在哪条分支上说的 / 这个会话给谁了），信封换了不能。
+    //
+    // 落进 `isAuditEvent` 的 default 也会得到同一个答案，所以这条断言钉的是**决定**
+    // 不是实现：哪天有人顺手把它加回放行名单，这里红；而两份名单对表那条
+    // （timelineLists.test.ts）只管两处一致，两处一起加回来它照样绿
+    const e = ev({ type: "request_envelope", model: "deepseek-v4-flash", thinking: "on", system: "…", tools: [{ name: "read_file", description: "", parameters: {} }] }, 0);
+    expect(toThreadMessages([e])).toEqual([]);
+  });
+
+  it("夹在对话中间也不留白行 —— 前后两句照常相邻", () => {
+    const a = ev({ type: "user_message", content: "画一张" }, 0);
+    const env = ev({ type: "request_envelope", model: "m", system: "…", tools: [] }, 1);
+    const b = ev({ type: "assistant_message", content: "好", model: "m" }, 2);
+    expect(toThreadMessages([a, env, b]).map((m) => m.role)).toEqual(["user", "assistant"]);
+  });
+});
+
 describe("session_shared（issue #705）", () => {
   it("投成 system 审计消息 —— `@好友` 那条正文不进模型，这一行是那个动作唯一的痕迹", () => {
     const e = ev({ type: "session_shared", friendName: "小明", message: "帮我退了" }, 0);

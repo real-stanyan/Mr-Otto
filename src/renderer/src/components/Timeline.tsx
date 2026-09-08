@@ -4,7 +4,7 @@
 
 import { createContext, memo, useContext, useEffect, useMemo, useState } from "react";
 import { ThinkingOrb } from "thinking-orbs";
-import { GitBranch, KeyRound, Mail, Share2 } from "lucide-react";
+import { GitBranch, KeyRound, Share2 } from "lucide-react";
 import type {
   ContextCompactedEvent,
   ModelChangedEvent,
@@ -518,18 +518,11 @@ export const EventRow = memo(function EventRow({ event, isLast = false }: { even
         </div>
       );
 
-    // 请求信封（issue #383）：log-only 审计快照——一行说清这之后的请求长什么样。
-    // 全文（system/工具 schema）在回放/日志里看，时间线不摊开
+    // 请求信封（issue #383）：**落盘照旧、聊天区不画**（#1091，同 isAuditEvent 的同名分支）。
+    // 它一行说清这之后的请求长什么样，是给维护者调参用的——而每开关一次工具、
+    // 一动思考挡位就冒一行，对着对话读的人无法据此做任何事。全文与这一行都在轨迹视图里
     case "request_envelope":
-      return (
-        <div className={`${AUDIT} inline-flex items-center gap-1.5`}>
-          <Mail className="size-3.5 shrink-0" aria-hidden />
-          <span>
-            请求信封已更新：{event.model}
-            {event.thinking ? ` · 思考 ${event.thinking}` : ""} · 工具 {event.tools.length} 把
-          </span>
-        </div>
-      );
+      return null;
 
     case "model_changed":
       return <ModelHandoffRow event={event} />;
