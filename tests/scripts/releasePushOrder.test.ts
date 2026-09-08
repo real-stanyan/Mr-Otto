@@ -12,6 +12,11 @@
 //
 // `gh` 和真构建都换成临时目录里的假货（PATH 前置 + package.json 里的 stub），
 // 脚本本身一行没改地跑。
+//
+// #791 之后这里多钉一条同族的顺序不变量：**两个服务端的部署发生在升版之前**。
+// 判据同样不看源码里 `run(...)` 的先后——看部署 stub 留下的脚印里记的**当时的
+// 版本号**（还是旧的 = 它跑在 `npm version` 前面）。另有两条钉「缺凭据就拒绝
+// 发版」：那道闸退化成静默跳过的话，#790 会原样复发而门禁全绿。
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { execFileSync } from "node:child_process";
@@ -31,14 +36,16 @@ function git(cwd: string, ...args: string[]): string {
   return execFileSync("git", args, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 }
 
-/** 跑 release.mjs，PATH 前置假 gh。回退出码与合并输出——失败路径也要能读到话。 */
-function release(bump: string): { ok: boolean; out: string } {
+/** 跑 release.mjs，PATH 前置假 gh。回退出码与合并输出——失败路径也要能读到话。
+    `RUNTIME_SSH` 默认给一个假值：#791 之后没有它 release 一步都不走，而这一族
+    用例钉的是**顺序**不是那道闸（那道闸另有两条用例）。 */
+function release(bump: string, env: Record<string, string> = {}): { ok: boolean; out: string } {
   try {
     const out = execFileSync(process.execPath, [RELEASE, bump], {
       cwd: work,
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
-      env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}` },
+      env: { ...process.env, RUNTIME_SSH: "fake@example.invalid", PATH: `${bin}:${process.env.PATH ?? ""}`, ...env },
     });
     return { ok: true, out };
   } catch (e) {
@@ -52,6 +59,13 @@ function release(bump: string): { ok: boolean; out: string } {
 const DIST_MAC = [
   "node -e \"require('fs').writeFileSync('built.txt','mac')\"",
   "&& node -e \"require('fs').writeFileSync('remote-at-build.txt', require('child_process').execFileSync('git',['ls-remote','origin','refs/heads/main'],{encoding:'utf8'}))\"",
+].join(" ");
+
+/** 两个服务端部署的 stub（#791）：各留一个脚印，并把**当时** package.json 里的版本号
+    记下来——部署必须发生在升版之前，那时版本号还是旧的。 */
+const deployStub = (name: string) => [
+  `node -e "require('fs').writeFileSync('${name}-at.txt', require('./package.json').version)"`,
+  `&& node -e "require('fs').appendFileSync('deploy-order.txt', '${name}\\n')"`,
 ].join(" ");
 
 const DIST_WIN = [
@@ -99,7 +113,14 @@ beforeEach(async () => {
 
   await writeFile(
     join(work, "package.json"),
-    JSON.stringify({ name: "t", version: "1.0.0", private: true, scripts: { "dist:mac": DIST_MAC, "dist:win": DIST_WIN } }, null, 2),
+    JSON.stringify({
+      name: "t", version: "1.0.0", private: true,
+      scripts: {
+        "dist:mac": DIST_MAC, "dist:win": DIST_WIN,
+        "edge:deploy": deployStub("edge-deploy"),
+        "runtime:deploy": deployStub("runtime-deploy"),
+      },
+    }, null, 2),
   );
   git(work, "add", "-A");
   git(work, "commit", "-m", "init");
@@ -178,7 +199,11 @@ describe("release.mjs 的步骤顺序（#679）", () => {
       JSON.stringify(
         {
           name: "t", version: "1.0.0", private: true,
-          scripts: { "dist:mac": `node ${join(root, "advance.mjs")} && ${DIST_MAC}`, "dist:win": DIST_WIN },
+          scripts: {
+            "dist:mac": `node ${join(root, "advance.mjs")} && ${DIST_MAC}`, "dist:win": DIST_WIN,
+            "edge:deploy": deployStub("edge-deploy"),
+            "runtime:deploy": deployStub("runtime-deploy"),
+          },
         },
         null, 2,
       ),
@@ -199,5 +224,61 @@ describe("release.mjs 的步骤顺序（#679）", () => {
     expect(git(work, "ls-remote", "--tags", "origin")).toContain("v1.0.1");
     expect(git(work, "rev-parse", "v1.0.1^{commit}")).toBe(head);
     expect(existsSync(join(root, "gh-calls.txt"))).toBe(true);
+  });
+});
+
+
+describe("release.mjs 的服务端部署（#791）", () => {
+  it("两个部署都在升版之前跑：脚印里记的版本号还是旧的", () => {
+    const r = release("patch");
+    expect(r.ok, r.out).toBe(true);
+
+    // 真跑了
+    expect(existsSync(join(work, "edge-deploy-at.txt"))).toBe(true);
+    expect(existsSync(join(work, "runtime-deploy-at.txt"))).toBe(true);
+    // 而跑的时候 package.json 还是 1.0.0（升版之后是 1.0.1）——
+    // 挪到升版之后的话，一次部署失败会留下一个版本提交要人收拾
+    expect(readFileSync(join(work, "edge-deploy-at.txt"), "utf8")).toBe("1.0.0");
+    expect(readFileSync(join(work, "runtime-deploy-at.txt"), "utf8")).toBe("1.0.0");
+    expect(readFileSync(join(work, "package.json"), "utf8")).toContain('"version": "1.0.1"');
+  });
+
+  // 判据是一份**追加**出来的顺序清单，不是两个文件的 mtime：两个 stub 跑得太快，
+  // mtime 常常相等，而「相等」证明不了顺序
+  it("edge 先于 runtime：runtime 的 EDGE_BASE/RELAY_BASE 指着 edge，反过来是把新 daemon 接到旧网关上", () => {
+    expect(release("patch").ok).toBe(true);
+    expect(readFileSync(join(work, "deploy-order.txt"), "utf8").trim().split("\n"))
+      .toEqual(["edge-deploy", "runtime-deploy"]);
+  });
+
+  // 这一条是整条 issue 的核心：**没有凭据时拒绝发版，不是静默跳过**。
+  // 跳过 = #790 原样复发（客户端出门、服务端没动），而且门禁照样全绿
+  it("RUNTIME_SSH 缺席：一步都不走，版本没升、tag 没打、什么都没推", () => {
+    const before = git(work, "rev-parse", "HEAD");
+    const r = release("patch", { RUNTIME_SSH: "" });
+
+    expect(r.ok).toBe(false);
+    expect(r.out).toContain("RUNTIME_SSH");
+    // 收拾成本是零：没有版本提交、没有 tag、两个部署一个都没跑
+    expect(git(work, "rev-parse", "HEAD")).toBe(before);
+    expect(readFileSync(join(work, "package.json"), "utf8")).toContain('"version": "1.0.0"');
+    expect(git(work, "tag", "--list")).toBe("");
+    expect(existsSync(join(work, "edge-deploy-at.txt"))).toBe(false);
+    expect(existsSync(join(work, "runtime-deploy-at.txt"))).toBe(false);
+  });
+
+  it("edge 部署失败：停在那里，版本没升、runtime 也没跑", async () => {
+    const pkg = JSON.parse(readFileSync(join(work, "package.json"), "utf8"));
+    pkg.scripts["edge:deploy"] = "node -e \"process.exit(3)\"";
+    await writeFile(join(work, "package.json"), JSON.stringify(pkg, null, 2));
+    git(work, "add", "-A");
+    git(work, "commit", "-m", "edge 部署会失败");
+    git(work, "push", "origin", "main");
+    const before = git(work, "rev-parse", "HEAD");
+
+    expect(release("patch").ok).toBe(false);
+    expect(git(work, "rev-parse", "HEAD")).toBe(before);
+    expect(git(work, "tag", "--list")).toBe("");
+    expect(existsSync(join(work, "runtime-deploy-at.txt"))).toBe(false);
   });
 });

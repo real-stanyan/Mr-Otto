@@ -76,6 +76,10 @@ export interface Env {
   /** Stripe。`wrangler secret put STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` */
   STRIPE_SECRET_KEY?: string;
   STRIPE_WEBHOOK_SECRET?: string;
+  /** 这份 worker 的内容指纹（#791，ADR-0257）。**vars 不是 secret**，由
+      `scripts/edge-deploy.mjs` 用 `wrangler deploy --var BUILD_STAMP:<戳>` 注入，
+      所以 wrangler.jsonc 里没有它——写死在那儿的话每次部署都要手改一行 */
+  BUILD_STAMP?: string;
   RELAY: DurableObjectNamespace<Relay>;
   ESCROW: DurableObjectNamespace<Escrow>;
   /** 一户一个额度实例：getByName(uid) */
@@ -722,7 +726,11 @@ function friendChecker(env: Env): (a: string, b: string) => Promise<boolean> {
 const handler = {
   async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const handle = createEdge({
-      config: { jwtSecret: env.SUPABASE_JWT_SECRET, runtimeSecret: env.RUNTIME_SECRET },
+      config: {
+        jwtSecret: env.SUPABASE_JWT_SECRET,
+        runtimeSecret: env.RUNTIME_SECRET,
+        buildStamp: env.BUILD_STAMP,
+      },
       relay: (userId): RelayStub => env.RELAY.getByName(userId),
       escrow: (hostUid): RelayStub => env.ESCROW.getByName(hostUid),
       isFriend: friendChecker(env),

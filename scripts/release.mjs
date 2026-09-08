@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // 本地发布一条龙（ADR-0075）：npm run release -- patch|minor|major
-// 升版本号 → 推 main 占位 → dist:mac（dmg + zip）+ dist:win（exe）→ SHA256SUMS → 推 tag → gh release create。
+// 部署 edge + runtime（#791）→ 升版本号 → 推 main 占位 → dist:mac（dmg + zip）+ dist:win（exe）
+// → SHA256SUMS → 推 tag → gh release create。
 // win 的 exe 必须每个 release 都带（issue #314）：win 端 OTA 按 -win-x64-setup.exe
 // 后缀认资产、按 SHA256SUMS 校验，缺了 exe 那个版本对 win 用户就是不存在。
 // 为什么本地不走 CI：单人发版，本机就是构建环境（Swift island + native 模块都在），
@@ -44,6 +45,32 @@ if (branch !== "main") {
   console.error(`当前在 ${branch}，发版必须在 main——半成品分支的包发出去收不回来`);
   process.exit(1);
 }
+
+// ── 服务端先出门（issue #791，ADR-0257）────────────────────────────────────
+// 有害的偏差方向只有一个：**客户端比服务端新**。#790 就是这个形状——ADR-0151/0129
+// 给 relay 加了角色，代码合了、门禁绿了、客户端发版了，线上 worker 还是旧的，于是
+// 好友代理真机握手从没成功过，而桌面报的是「云端无响应」（方向指向 VPS 宕机）。
+// `npm run release` 正是客户端出门的那一刻，把两个服务端的部署绑在它前面，等于
+// 按构造关掉那个方向。反方向（服务端比客户端新）无害，本来就该这样。
+//
+// **排在升版之前**：这一步失败时还没有版本提交、没有 tag、没有推过任何东西，
+// 收拾成本是零（同 ADR-0215 把失败点往便宜处挪的那条思路）。
+//
+// **缺凭据一律拒绝发版，没有跳过开关**：一个用过一次的逃生门下次就是默认，而这条
+// issue 修的正是「忘了部署」。真遇上 Cloudflare 挂了那天，正确的动作是不发版——
+// 发出去的客户端会去打一个对不上的服务端。
+if (!process.env.RUNTIME_SSH) {
+  console.error(
+    "RUNTIME_SSH 没设，发版停在这里（issue #791）。\n\n" +
+    "  发版 = 客户端出门，而客户端出门就必须有对得上的服务端。云 runtime 的部署\n" +
+    "  要 ssh 进那台 VPS（形如 user@host，见 docs/runtime-vps.md）：\n\n" +
+    "    RUNTIME_SSH=<user>@<host> npm run release -- " + bump + "\n\n" +
+    "  线上此刻是不是当前的，可以先问一句：npm run deploy:check\n",
+  );
+  process.exit(1);
+}
+run("npm", ["run", "edge:deploy"]);
+run("npm", ["run", "runtime:deploy"]);
 
 // npm version 一步做完：升 package.json + commit + tag v<version>
 run("npm", ["version", bump, "-m", "release: v%s"]);

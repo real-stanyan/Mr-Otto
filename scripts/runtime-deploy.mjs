@@ -13,6 +13,7 @@
 //   （或直接 node scripts/runtime-deploy.mjs）
 
 import { build } from "esbuild";
+import { deployStamp, STAMP_TARGETS } from "./deploy-stamp.mjs";
 import { spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
@@ -60,9 +61,16 @@ function runOrDie(cmd, args, label) {
 //
 // entryPoints/outfile 用 brief 给的原样相对路径字符串（逐字照用），
 // absWorkingDir 钉死成 repoRoot 只是让这份配置不依赖调用者的 cwd。
+// 内容指纹先算（#791，ADR-0257）：它 define 进 bundle，daemon 起来时打进那行
+// 「就绪」，收尾那一步再从 journal 里把它读回来核。指纹算的是**真实模块图的内容**
+// 不是 git sha —— 理由写在 deploy-stamp.mjs 的文件头
+const stamp = await deployStamp({ absWorkingDir: repoRoot, ...STAMP_TARGETS.runtime });
+console.log(`[runtime-deploy] 内容指纹：${stamp}`);
+
 console.log("[runtime-deploy] esbuild 打包 daemon.ts …");
 mkdirSync(DIST_DIR, { recursive: true });
 await build({
+  define: { __OTTO_BUILD_STAMP__: JSON.stringify(stamp) },
   absWorkingDir: repoRoot,
   entryPoints: ["services/runtime/src/daemon.ts"],
   bundle: true,
@@ -123,4 +131,39 @@ runOrDie("rsync", ["-avz", ...sshOpt, DOCKERFILE, `${RUNTIME_SSH}:${REMOTE_DIR}/
 const remoteCmd = `cd ${REMOTE_DIR} && npm install --omit=dev && docker build -t otto-sandbox ./sandbox && sudo systemctl restart otto-runtime`;
 runOrDie("ssh", ["-p", SSH_PORT, RUNTIME_SSH, remoteCmd], "远端部署命令");
 
+// ── ⑤ 自检：跑着的那个进程真的是这一份吗（#791，ADR-0257）────────────────
+// #790 那次坏的不是部署，是**证据层**：命令打印了成功，没有任何一处核过线上真的
+// 动了。这一步把「部署成功」从「命令退出码是 0」换成「那台机器上跑着的进程亲口
+// 报出了这次的指纹」。判据故意不落在磁盘上那个文件——rsync 成功而 systemd 起不来
+// （或起的是崩溃重启循环里的上一份）时，文件说的话是假的。
+//
+// 重启是异步的，systemd 起进程 + daemon 建两条中继连接要几秒；轮询而不是睡死一个
+// 数，超时了就把 journal 尾巴打出来——那时最需要的正是它。
+const READY_RE = new RegExp(`就绪：.*stamp=${stamp}\\b`);
+const DEADLINE = Date.now() + 60_000;
+let verified = false;
+let lastTail = "";
+while (Date.now() < DEADLINE) {
+  const probe = spawnSync(
+    "ssh",
+    ["-p", SSH_PORT, RUNTIME_SSH, "sudo journalctl -u otto-runtime --since '-2 min' --no-pager | tail -40"],
+    { encoding: "utf8" }
+  );
+  lastTail = String(probe.stdout ?? "") + String(probe.stderr ?? "");
+  if (READY_RE.test(lastTail)) { verified = true; break; }
+  await new Promise((r) => setTimeout(r, 2000));
+}
+if (!verified) {
+  console.error(
+    `[runtime-deploy] **部署没有被证实**：60 秒内没在 journal 里看到 stamp=${stamp} 的「就绪」行。
+` +
+    `rsync 与远端命令都成功了，所以最可能的是 daemon 起不来（配置缺项 fail fast / 原生件装错架构），
+` +
+    `或者它起来了但报的是另一份指纹（推上去的不是刚打的这个 bundle）。journal 尾巴：
+
+${lastTail}`
+  );
+  process.exit(1);
+}
+console.log(`[runtime-deploy] 自检通过：线上进程报的指纹是 ${stamp}`);
 console.log("[runtime-deploy] 完成");
