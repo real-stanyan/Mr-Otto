@@ -1,14 +1,16 @@
 // @vitest-environment jsdom
 //
-// 上下文浮层底部那段「套餐额度」（#886）。纯逻辑（哪扇窗当主、过期怎么算）钉在
-// tests/renderer/lib/billingView.test.ts；这里只盯组件这一层三件会咬人的事：
+// 上下文浮层**顶上**那段「套餐额度」：两扇固定窗画成并排两只表（#1071 重做，原来是
+// 主/次两条条子）。纯逻辑（剩余百分比、过期怎么算）钉在 tests/renderer/lib/billingView.test.ts；
+// 这里只盯组件这一层四件会咬人的事：
 //
 // ① 没有活跃订阅时**整段不画** —— 报一份满额度的窗口是谎话，而这段常驻在一张
 //    每个人都会悬停的卡里，画错的成本是「以为自己有额度」。
-// ② 主次两条条子不一样深：先拦住人的那扇会在吃紧时变色，另一扇一直是中性灰。
-//    两条彩条会互相抢，而真正会停下你的只有一扇；**充足时连主条也是灰的**
-//    （ADR-0239 决定 1：条按剩余填之后，「一切正常」是一根满格的条）。
-// ③ 过了 resetAt 的窗按清零画（0 + 已恢复），不是照着上一次响应留下的旧数字画。
+// ② 两扇窗**平级**画，谁先拦住人**由颜色说**：吃紧的那扇变色，另一扇一直中性灰。
+//    **充足时两扇都是灰的**（ADR-0239 决定 1：环按剩余填之后，「一切正常」= 一只满环）。
+// ③ 环填的是**剩余**：闲着的账号是两只满环，不是两只空环（#1026 那笔账）。
+// ④ 过了 resetAt 的窗按清零画，且**不画倒计时** —— 清零之后不存在「几点恢复」，
+//    原来那版会同时说「100.0% 可用」和「已恢复」，两行自相矛盾。
 
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
@@ -39,9 +41,16 @@ const me = (over: Partial<BillingMe> = {}): BillingMe => ({
   ...over,
 });
 
-/** 条子 = 唯一带 width 内联样式的那几个 div，按 DOM 顺序（5 小时窗、本周） */
-function bars(): HTMLElement[] {
-  return Array.from(document.querySelectorAll<HTMLElement>("div[style*='width']"));
+/** 两只环的弧（轨道那两个圈没有 stroke-dasharray），按 DOM 顺序：5 小时窗、本周 */
+function arcs(): SVGCircleElement[] {
+  return Array.from(document.querySelectorAll<SVGCircleElement>("circle[stroke-dasharray]"));
+}
+
+/** 弧长换回「还剩百分之几」：offset = C − left/100 × C */
+function arcPercent(el: SVGCircleElement): number {
+  const c = Number(el.getAttribute("stroke-dasharray"));
+  const off = Number(el.getAttribute("stroke-dashoffset"));
+  return Math.round((1 - off / c) * 1000) / 10;
 }
 
 afterEach(() => {
@@ -62,7 +71,7 @@ describe("PlanQuotaSection", () => {
     expect(container).toBeEmptyDOMElement();
   });
 
-  it("画两扇窗 + 档位名；报的是**剩余百分比**（#1026，与设置页同一口径）", () => {
+  it("画两只表 + 档位徽章；报的是**剩余百分比**（#1026，与设置页同一口径）", () => {
     seed(me());
     render(<PlanQuotaSection />);
     expect(screen.getByText("套餐额度")).toBeInTheDocument();
@@ -70,31 +79,34 @@ describe("PlanQuotaSection", () => {
     expect(screen.getByText("5 小时窗")).toBeInTheDocument();
     expect(screen.getByText("本周")).toBeInTheDocument();
     // 41 / 67 已用 → 还剩 38.8%（向下取整到一位小数，同设置页）
-    expect(screen.getByText("38.8% 可用")).toBeInTheDocument();
+    expect(screen.getByText("38.8%")).toBeInTheDocument();
+    // 「可用」两只环各一份：只写一个百分数会读成「已用」，而填的是剩余
+    expect(screen.getAllByText("可用")).toHaveLength(2);
     // 精确 credit 没丢，进了 title —— 百分比给人扫一眼，对账的人还得看得到数
     expect(screen.getByText("5 小时窗").closest("[title]")).toHaveAttribute("title", "已用 4.1 / 6.7 credit");
   });
 
-  it("倒计时只跟着当主那扇走，且只有一份 —— 三样东西挤一行会顶出这张 300px 的卡", () => {
+  it("环填的是剩余，不是已用：38.8% 的窗画出来就是 38.8% 的弧", () => {
     seed(me());
     render(<PlanQuotaSection />);
-    const counts = screen.queryAllByText(/后恢复|已恢复/);
-    expect(counts).toHaveLength(1);
-    expect(counts[0]!.textContent).toMatch(/小时/); // 当主的是 5h 窗
+    expect(arcPercent(arcs()[0]!)).toBe(38.8);
   });
 
-  it("5h 窗更紧 → 它是主条，周窗更淡；**充足时主条也是中性灰不是品牌蓝**", () => {
-    // ADR-0239 决定 1：条按剩余填之后「一切正常」= 一根几乎满格的条，
-    // 画成品牌蓝会比「快没了」还响。颜色在这两处只用来说「出事了」
-    seed(me());
+  it("**充足时两只环都是中性灰**：颜色在这里只用来说「出事了」", () => {
+    seed(me({
+      windows: {
+        h5: { usedMicro: 1_000, limitMicro: 67_000, resetAt: NOW + 2 * HOUR },
+        week: { usedMicro: 1_000, limitMicro: 332_500, resetAt: NOW + 96 * HOUR },
+      },
+    }));
     render(<PlanQuotaSection />);
-    const [h5, week] = bars();
-    expect(h5!.className).toContain("bg-foreground/40");
-    expect(h5!.className).not.toContain("bg-brand");
-    expect(week!.className).toContain("bg-foreground/25");
+    for (const arc of arcs()) {
+      expect(arc.getAttribute("class")).toContain("stroke-foreground/40");
+      expect(arc.getAttribute("class")).not.toContain("stroke-brand");
+    }
   });
 
-  it("周窗打满而 5h 窗空着 → 主条换成周窗，且过了 90% 走 deny 色", () => {
+  it("周窗打满而 5h 窗空着 → **只有周窗那只变色**，布局一个像素不动", () => {
     seed(me({
       windows: {
         h5: { usedMicro: 1_000, limitMicro: 67_000, resetAt: NOW + 2 * HOUR },
@@ -102,12 +114,19 @@ describe("PlanQuotaSection", () => {
       },
     }));
     render(<PlanQuotaSection />);
-    const [h5, week] = bars();
-    expect(h5!.className).toContain("bg-foreground/25");
-    expect(week!.className).toContain("bg-deny");
+    const [h5, week] = arcs();
+    expect(h5!.getAttribute("class")).toContain("stroke-foreground/40");
+    expect(week!.getAttribute("class")).toContain("stroke-deny"); // 已用 96% > 90
   });
 
-  it("过了 resetAt 的窗按清零画：100% 可用 + 条满格，不是上一次响应留下的旧数字", () => {
+  it("两扇窗**各自**画自己的倒计时 —— 它们平级，没有当主的那一扇", () => {
+    seed(me());
+    render(<PlanQuotaSection />);
+    expect(screen.getByText(/小时.*分后恢复/)).toBeInTheDocument();
+    expect(screen.getByText(/天后恢复/)).toBeInTheDocument();
+  });
+
+  it("过了 resetAt 的窗：100.0% 可用 + 满环，且**那一扇不画倒计时**（清零之后没有「几点恢复」）", () => {
     seed(me({
       windows: {
         h5: { usedMicro: 66_000, limitMicro: 67_000, resetAt: NOW - 1000 },
@@ -115,11 +134,11 @@ describe("PlanQuotaSection", () => {
       },
     }));
     render(<PlanQuotaSection />);
-    expect(screen.getByText("100.0% 可用")).toBeInTheDocument();
-    // 条按**剩余**填：闲着的时候它是满的（原来这里是 0%，那个形态在屏幕上和「组件坏了」一样）
-    expect(bars()[0]!.style.width).toBe("100%");
-    // 清零之后 5h 窗不再是吃紧的那扇，倒计时跟着挪到周窗底下
-    expect(screen.getByText(/天后恢复/)).toBeInTheDocument();
+    expect(screen.getByText("100.0%")).toBeInTheDocument();
+    expect(arcPercent(arcs()[0]!)).toBe(100);
+    // 只剩周窗那一行倒计时；「已恢复」不该出现（它和「100.0% 可用」是同一句话说两遍）
+    expect(screen.queryByText("已恢复")).toBeNull();
+    expect(screen.getAllByText(/后恢复/)).toHaveLength(1);
   });
 
   it("有加购余额才画那一行", () => {
