@@ -1132,7 +1132,11 @@ export interface ShellBridge {
   /** 往当前云会话发一句话（群聊）。mention = @ 了本机操作者对应的那个成员；
       mentions 缺席 = 老语义（mention 那个 boolean 说了算），给了（含 []）=
       以它为准，覆盖 mention（#932 切片 1b，runtime 那侧同一条判据） */
-  workspaceCloudSay(text: string, mention: boolean, mentions?: string[]): Promise<CloudAck>;
+  /** `memberMentions`：这句话点到的**人类成员 uid**（#1064）。`mentions` 那一族
+      起 turn、花钱；这一族只让被 @ 的人收到一条提醒，不起 turn */
+  workspaceCloudSay(
+    text: string, mention: boolean, mentions?: string[], memberMentions?: string[]
+  ): Promise<CloudAck>;
   /** 批/拒当前云会话里的一个审批请求（callId 来自 approval_request 事件） */
   workspaceCloudApprove(callId: string, decision: "approved" | "denied"): Promise<CloudAck>;
   /** 收尾一条云会话（控制房 RPC，协议 9，#993）：不依赖「正开着它」。谁能归档

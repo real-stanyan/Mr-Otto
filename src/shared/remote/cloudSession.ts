@@ -53,6 +53,10 @@ import { MAX_FRAME_BYTES } from "./wire.js";
     `error`，那条帧还承载 backlog 跳过等不相干消息，await 它会被无关 error
     提前唤醒。旧 runtime × 新桌面 / 新 runtime × 旧桌面都走既有
     version_mismatch，不做双版本兼容。
+    13（issue #1064）：`say` 多了 `memberMentions` 一格——「这句话点到了哪几个
+    人类成员」。**加字段照样进位**（同下面 4 那条）：老 runtime 收到带这一格的
+    say 会照常处理（多余字段被 decode 丢掉），但那意味着**通知静默不发**，而
+    握手精确相等本来就把这种"看起来能用、其实少一半"的组合挡在外面。
     5（issue #945）：welcome/config_result 多了 `modelRoute` 一格——runtime 用
     decideRuntimeRoute 算好「这个工作区此刻的 turn 会走哪条路」下发，客户端不再
     拿 `model === null` 推断「起不了 turn」（订阅用户走托管路照跑，那句是假的）。
@@ -67,7 +71,7 @@ import { MAX_FRAME_BYTES } from "./wire.js";
     少一格状态。**加一个枚举值同理**：老客户端的 isValidCsDeniedCode 认不出
     `rate_limited`，decodeCsDown 回 null，那一帧被静默忽略，于是 create()
     要白等满超时才回一句"云端无响应"——把"你被限速了"说成"对面没回话"。 */
-export const CS_PROTOCOL_VERSION = 12;
+export const CS_PROTOCOL_VERSION = 13;
 export const CS_MAX_TEXT_BYTES = 64 * 1024;
 
 /** 一次回多少字节的文件内容（#1056）。中继单帧上限是 256 KiB（wire.ts 的
@@ -239,7 +243,14 @@ export type CsDeniedCode =
 export type CsUp =
   | { t: "hello"; v: number; jwt: string }
   | { t: "create"; workspaceId: string }
-  | { t: "say"; text: string; mention: boolean; mentions?: string[] }
+  /** 一条群发言。`mentions` = 点到的 **agent id**（起 turn 的那一族），
+      `memberMentions` = 点到的**人类成员 uid**（协议 13，#1064）——两族分开带，
+      因为它们的去处根本不同：前者进 `resolveTargets` 决定起几条 turn（花钱），
+      后者只进收件箱（不起 turn、不花钱，只让被 @ 的人收到一条提醒）。
+      合成一格再让服务端去分，等于要求服务端认得出哪个 id 是人——它只有 agent
+      名单，人类 uid 会被静默丢掉，那正是 ADR-0252 留下的那半个承诺。
+      服务端仍按此刻的成员名单复核并剔掉发言人自己，客户端这份不是权威 */
+  | { t: "say"; text: string; mention: boolean; mentions?: string[]; memberMentions?: string[] }
   | { t: "backlog"; afterSeq: number }
   | { t: "approve"; callId: string; decision: "approved" | "denied" }
   /** 工作区的仓库配置——**控制房帧**（协议 8，#991）：带 `workspaceId`，不依赖
@@ -380,6 +391,13 @@ export function encodeCs(msg: CsUp | CsDown): string {
   }
 
   return encoded;
+}
+
+/** `undefined` 或一个纯字符串数组。两格点名（agent / 人类成员）共用这一条：
+    形状不对整帧拒掉，不悄悄丢字段 */
+function isOptionalStringArray(v: unknown): boolean {
+  if (v === undefined) return true;
+  return Array.isArray(v) && v.every((x) => typeof x === "string");
 }
 
 function isValidCsDeniedCode(v: unknown): v is CsDeniedCode {
@@ -524,11 +542,16 @@ export function decodeCsUp(b64: string): CsUp | null {
 
     if (t === "say") {
       if (typeof obj.text === "string" && typeof obj.mention === "boolean") {
-        if (obj.mentions === undefined) return { t: "say", text: obj.text, mention: obj.mention };
         // 形状不对就整帧拒掉,不是悄悄把字段丢了当没带 —— 后者会让一句
-        // "@运营" 静默变成"谁都没点名",而那两件事该做的动作不一样
-        if (!Array.isArray(obj.mentions) || obj.mentions.some((m) => typeof m !== "string")) return null;
-        return { t: "say", text: obj.text, mention: obj.mention, mentions: obj.mentions as string[] };
+        // "@运营" 静默变成"谁都没点名",而那两件事该做的动作不一样。
+        // memberMentions 同一条纪律：丢掉它 = 被 @ 的人永远收不到那条提醒，
+        // 而发言人那侧完全无声（#1064）
+        if (!isOptionalStringArray(obj.mentions)) return null;
+        if (!isOptionalStringArray(obj.memberMentions)) return null;
+        const say: Extract<CsUp, { t: "say" }> = { t: "say", text: obj.text, mention: obj.mention };
+        if (obj.mentions !== undefined) say.mentions = obj.mentions as string[];
+        if (obj.memberMentions !== undefined) say.memberMentions = obj.memberMentions as string[];
+        return say;
       }
       return null;
     }

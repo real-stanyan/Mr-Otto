@@ -998,7 +998,8 @@ interface ChatState {
       落进那格共享错误带就归不了属（页脚那条还会赖着不走，它归下一次别的操作
       清）。三态由调用方分开处理——`ok:true` 清草稿、`ok:false` 且 `unknown`
       「不确定发没发出去」、其余确定失败草稿原样留着 */
-  cloudSay(text: string, mentions?: string[]): Promise<CloudAck>;
+  /** `memberMentions`：点到的人类成员 uid（#1064）。不起 turn，只发提醒 */
+  cloudSay(text: string, mentions?: string[], memberMentions?: string[]): Promise<CloudAck>;
   /** 批/拒当前云会话里的一个审批请求。原样透传 `CloudAck`（同上，不碰
       `workspaceGroupsError`）——审批卡按它的三态决定按钮放不放回来 */
   cloudApprove(callId: string, decision: "approved" | "denied"): Promise<CloudAck>;
@@ -2472,10 +2473,13 @@ export const useChat = create<ChatState>((set, get) => ({
   // 失败，而两张审批卡同时提交时谁都说不清是哪一条被拒了），清空则会把一件
   // 不相干的失败替它盖章抹掉（用户发出的第一句话就擦干净了「你的历史缺了
   // 一块」）。这三次调用的结果都只跟点它的那一处有关，画在那一处旁边
-  async cloudSay(text, mentions) {
-    // 布尔与数组同源：mentions 缺席 = 老语义（开局卡那句话不 @ 也由名单第一只接）
+  async cloudSay(text, mentions, memberMentions) {
+    // 布尔与数组同源：mentions 缺席 = 老语义（开局卡那句话不 @ 也由名单第一只接）。
+    // **memberMentions 不进这个布尔**（#1064）：`mention` 决定的是「起不起 turn」，
+    // 而 @ 一个人从来不起 turn —— 把它算进去，一句只 @ 了同事的话会被服务端
+    // 按老语义派给名单第一只 agent
     const mention = mentions === undefined ? true : mentions.length > 0;
-    return await window.otter.workspaceCloudSay(text, mention, mentions);
+    return await window.otter.workspaceCloudSay(text, mention, mentions, memberMentions);
   },
 
   async cloudApprove(callId, decision) {

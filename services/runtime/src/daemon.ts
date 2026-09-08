@@ -27,6 +27,7 @@ import { createWorkspaceLocks } from "./workspaceLock.js";
 import { createFrameRateLimiter } from "./rateLimit.js";
 import { createCloudSession, type CloudSession, type AgentSpec } from "./sessionService.js";
 import { createSupabaseWorkspaceMemory } from "./workspaceMemory.js";
+import { createSupabaseMentionInbox } from "./mentionInbox.js";
 import { createSupabaseAgentWriter, type WorkspaceAgentWriter } from "./agentRegistry.js";
 import { normalizeAgentTools } from "../../../src/shared/agentToolAllow.js";
 import { safeSpeakerLabel } from "../../../src/shared/promptSafe.js";
@@ -644,6 +645,10 @@ async function main(): Promise<void> {
       onEvent: broadcast,
       onUsage: () => {}, // usage 记账走上面的 recordUsage 钩子，这个口留白（同 T9 report 的记录）
       memory: workspaceMemory,
+      // 被 @ 的人类成员的收件箱（#1064）：service key 绕 RLS——那张表没有给
+      // authenticated 的 insert 策略（给了就是让任何在籍成员替别人伪造一条
+      // 「有人 @ 了你」）
+      mentionInbox: createSupabaseMentionInbox(supabase, (m) => console.warn(m)),
       agentWriter,
       // 接力预算的分母：所有者那扇 5h 窗**还剩**多少（#1017）。走的是与路由同一只
       // 探针（60s/uid 缓存），所以这不是每条会接力的 turn 各打一次网络。

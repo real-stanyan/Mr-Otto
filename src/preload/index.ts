@@ -254,8 +254,10 @@ const bridge: ShellBridge = {
   // mentions ?? null：IPC 结构化克隆会把对象里的 undefined 丢掉，位置参数的
   // undefined 倒是能过，但显式传 null 让"缺席 vs []"这条区分在线上不会被
   // 揣测——主进程 handler 再 `?? undefined` 转回来（#932 切片 1b）。
-  workspaceCloudSay: (text, mention, mentions) =>
-    ipcRenderer.invoke(CHANNELS.workspaceCloudSay, text, mention, mentions ?? null),
+  workspaceCloudSay: (text, mention, mentions, memberMentions) =>
+    ipcRenderer.invoke(
+      CHANNELS.workspaceCloudSay, text, mention, mentions ?? null, memberMentions ?? null
+    ),
   workspaceCloudApprove: (callId, decision) =>
     ipcRenderer.invoke(CHANNELS.workspaceCloudApprove, callId, decision),
   workspaceCloudArchive: (workspaceId, sessionId) =>

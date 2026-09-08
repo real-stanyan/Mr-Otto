@@ -10,6 +10,7 @@
 // 输入框钉底），这里只负责把高度交下去。
 
 import { useEffect } from "react";
+import { parseMemberMentions } from "../../../shared/remote/agentMention.js";
 import { useChat } from "../store.js";
 import { CloudSessionPage } from "./CloudSessionPage.js";
 
@@ -50,12 +51,24 @@ export function CloudSessionMain({ onManage }: { onManage: (workspaceId: string)
     if (pending === null || state !== "ready" || sessionId === null) return;
     const text = take();
     if (text === null) return;
+    // 开局卡上写的 @ 也要通知到人（#1064）：这一屏没有选人弹层，但正文里的
+    // `@小红` 与 composer 里那一句是同一件事——只在 composer 那一条路上通知，
+    // 就是同一个动作按入口不同给两种结果。撞名归 agent 的判据与那边同一份
+    // （parseMemberMentions）。`ws` 还没到 = 两份名单都空 = 谁都不通知，
+    // 与改动前一样
+    const memberMentions = ws
+      ? parseMemberMentions(
+          text,
+          ws.agents.map((a) => ({ agentId: a.agentId, name: a.name })),
+          ws.members.map((m) => ({ agentId: m.uid, name: m.label }))
+        )
+      : [];
     void (async () => {
       // 开局卡那句不 @ 也由名单第一只接（老语义：mentions 缺席）
-      const r = await cloudSay(text);
+      const r = await cloudSay(text, undefined, memberMentions);
       if (!r.ok) seedDraft(sessionId, text, r.unknown ? "unknown" : "unsent");
     })();
-  }, [pending, state, sessionId, take, cloudSay, seedDraft]);
+  }, [pending, state, sessionId, take, cloudSay, seedDraft, ws]);
 
   if (cs === null) return null;
   if (ws === null) {

@@ -68,7 +68,7 @@ import { TurnErrorState } from "./TurnErrorState.js";
 import { ThreadHistorySkeleton } from "./assistant-ui/thread.js";
 import { openTurns } from "../../../shared/turnLedger.js";
 import { safeSpeakerLabel, SYSTEM_SPEAKER_UID } from "../../../shared/promptSafe.js";
-import { mentionTokens, parseMentions, type MentionCandidate } from "../../../shared/remote/agentMention.js";
+import { mentionTokens, parseMemberMentions, parseMentions, type MentionCandidate } from "../../../shared/remote/agentMention.js";
 import type {
   AgentBriefedEvent, AgentRelayEvent, ApprovalDecisionEvent, ApprovalRequestEvent, AssistantMessageEvent,
   ChatMessageEvent, SessionEvent,
@@ -151,6 +151,9 @@ type UnsentLine = {
   sessionId: string;
   text: string;
   mentions: string[] | undefined;
+  /** 点到的人类成员 uid（#1064）。重发要连它一起带——不带的话「重新发送」
+      那一下把提醒悄悄吞了，而用户以为这次和上次发的是同一句话 */
+  memberMentions: string[];
   note: string;
 };
 
@@ -286,6 +289,12 @@ export function CloudSessionPage({
     [ws.agents]
   );
   const rows = useMemo(() => mentionRows(ws), [ws]);
+  // 人类那一族的候选（uid 借 agentId 那一格，永远不会进 `mentions`）。#1064
+  // 之后它有了第二个消费方：算出这句话点到了哪几个人，好让他们真收到提醒
+  const memberCandidates = useMemo(
+    () => ws.members.map((m) => ({ agentId: m.uid, name: m.label })),
+    [ws.members]
+  );
   // 「此刻是不是停在一个没打完的 @ 后面」——只决定弹不弹层，**不**决定这句
   // 话点了谁（那是下面 parseMentions 的事，两个问题，见 agentMentionInput 头注）
   const rawPicking = mentionQueryAt(draft, caret);
@@ -304,6 +313,14 @@ export function CloudSessionPage({
   // 发送时点了谁：与 chip 行**同一次**调用算出来的同一份 —— 界面上写着发给
   // 谁，服务端就跑谁。两边各算各的就会分家（坑 ④）
   const mentions = useMemo(() => parseMentions(draft, candidates), [draft, candidates]);
+  // 这句话点到了哪几个**人类成员**（#1064）。撞名归 agent：判据是**同一个 @
+  // 的位置**（parseMemberMentions），不是名字前缀——agent「小红助手」+ 成员
+  // 「小红」时，`@小红助手` 在成员那一遍照样匹配得到「小红」，按名字判会给
+  // 一个根本没被点到的人发提醒
+  const memberMentions = useMemo(
+    () => parseMemberMentions(draft, candidates, memberCandidates),
+    [draft, candidates, memberCandidates]
+  );
   // 候选变了高亮归零：不归零的话，从三个候选里选中第三个、再多打一个字缩到
   // 一个候选时，hi 还停在 2，Enter 什么都选不中
   // key 而不是 agentId：人类那一族的 agentId 恒为 null，按它拼出来的串在
@@ -351,7 +368,16 @@ export function CloudSessionPage({
     if (seed.unknown) {
       // mentions 缺席：开局卡那句走的是老语义（不 @ 也由名单第一只接），
       // 重发要走同一条路，不能凭空补一个权威空数组（ADR-0220 决策 2）
-      setUnsent({ sessionId: csSessionId, text: seed.text, mentions: undefined, note: unknownNote(seed.text) });
+      // memberMentions 从**此刻的名单**重算（#1064）：这条 seed 来自开局卡那一句，
+      // 它当初算过一次，但那份没有被交接过来——重算比把它一路带下来简单，
+      // 而且这一刻的名单只会更新
+      setUnsent({
+        sessionId: csSessionId,
+        text: seed.text,
+        mentions: undefined,
+        memberMentions: parseMemberMentions(seed.text, candidates, memberCandidates),
+        note: unknownNote(seed.text),
+      });
       return;
     }
     setDraft(seed.text);
@@ -406,7 +432,12 @@ export function CloudSessionPage({
   /** 一次发送：mentions 缺席就不传第二参（老语义，服务端按名字解析 + 回落
       名单第一只），给了就以它为准 —— 重发走的是同一条路 */
   const sendOnce = async (payload: UnsentLine): Promise<CloudAck> =>
-    payload.mentions === undefined ? await cloudSay(payload.text) : await cloudSay(payload.text, payload.mentions);
+    // 第一格 `undefined` 与 `[]` 是两句不同的话（缺席 = 交给云端解析），所以
+    // 这里仍然分两条；第二格没有这个区别（空数组 = 没点到人 = 一行都不写），
+    // 原样带过去就行
+    payload.mentions === undefined
+      ? await cloudSay(payload.text, undefined, payload.memberMentions)
+      : await cloudSay(payload.text, payload.mentions, payload.memberMentions);
 
   /** 一次发送的结果落地（第四批 C2-I4），三态各有各的去处：
       · `ok` → 那行「不确定」的提示可以撤了（这一次是确定成功的）
@@ -480,6 +511,7 @@ export function CloudSessionPage({
     // freshCandidates 同一条纪律。名字来自 profiles.name（label），uid 只是拿来
     // 占 MentionCandidate 的 agentId 那一格，永远不会进 `mentions`
     let freshMembers: MentionCandidate[] = [];
+    let sendMemberMentions = memberMentions;
     if (mentionTokens(text).length > 0 && mentions.length === 0) {
       await refreshWorkspaceGroups();
       // 不从这个组件已经渲染出的 `ws`/`candidates` 闭包读（那份还是刷新前的
@@ -492,6 +524,11 @@ export function CloudSessionPage({
       // 这个人」去拦，就是对着一句完全正常的话说「没有叫 X 的智能体」
       freshCandidates = freshWs ? freshWs.agents.map((a) => ({ agentId: a.agentId, name: a.name })) : null;
       freshMembers = freshWs ? freshWs.members.map((m) => ({ agentId: m.uid, name: m.label })) : [];
+      // 提醒名单也用这一次刷新的结果重算（#1064）：走到这条分支说明本地快照
+      // 很可能过期，而 `memberMentions` 那个 memo 算的正是过期那份。找不到
+      // 这个工作区时（被踢 / 群没了）两份名单都是空的，于是谁都不通知——
+      // 这与「把解析权交给云端」并不矛盾：云端认得 agent，认不得人
+      sendMemberMentions = parseMemberMentions(text, freshCandidates ?? [], freshMembers);
     }
     const plan = resolveSendMentions({
       text, parsed: mentions, refreshFailed, freshCandidates, memberCandidates: freshMembers,
@@ -511,6 +548,7 @@ export function CloudSessionPage({
       // 于是一句 "@管理员 帮我看下" 照旧有人接；`[]` 是权威的「没点任何 agent」，
       // resolveSendMentions 只在**这几个 @ 全点在人类成员上**时才给出它（#1059）
       mentions: plan.mentions,
+      memberMentions: sendMemberMentions,
       note: unknownNote(text),
     };
     const r = await sendOnce(payload);

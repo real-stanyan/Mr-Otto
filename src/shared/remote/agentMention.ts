@@ -38,27 +38,84 @@ function normalizeAtSign(text: string): string {
   return text.replace(/＠/g, "@");
 }
 
-export function parseMentions(text: string, names: readonly MentionCandidate[]): string[] {
+export interface MentionSpan {
+  /** 命中的候选的 agentId（成员那一族借这一格放 uid，同 MentionCandidate） */
+  readonly agentId: string;
+  /** 那个 `@` 在**归一化后的正文**里的下标。全角＠替换成半角是等长替换，
+      所以这个下标对原文同样成立（normalizeAtSign 的注释里说过） */
+  readonly at: number;
+}
+
+/**
+ * `parseMentions` 的孪生函数，多回一格 **@ 的位置**，且**不去重**（同一个人被
+ * @ 两次就是两条 span）。
+ *
+ * 位置这一格是给「两份名单各解析一遍、撞上了算谁的」用的（#1064）：agent 与
+ * 人类成员是两张表，撞名时按 ADR-0252 归 agent 接。光比名字判不出来——
+ * `memberShadowedBy` 那条「成员名以 agent 名开头」只覆盖一个方向，反过来
+ * （agent「小红助手」+ 成员「小红」，正文 `@小红助手`）成员那一遍照样在同一个
+ * `@` 上匹配成功，于是小红被通知了一次她根本没被点到的名。判据换成**同一个 @
+ * 的位置**之后两个方向一起对：那个 @ 归谁，就是谁。
+ */
+export function parseMentionSpans(
+  text: string,
+  names: readonly MentionCandidate[]
+): MentionSpan[] {
   const normalized = normalizeAtSign(text);
   // 防御:DB 层的唯一性约束还没合并,候选里过滤掉空名字,否则 String.startsWith("", i) 恒真
   const filtered = names.filter(c => c.name.length > 0);
   const byLength = [...filtered].sort((a, b) => b.name.length - a.name.length);
-  const out: string[] = [];
-  const seen = new Set<string>();
+  const out: MentionSpan[] = [];
   let lastMatchEnd = 0; // 上次成功匹配结束的位置
 
   for (let i = 0; i < normalized.length; i++) {
     if (normalized[i] !== "@" || !isBoundary(normalized, i, lastMatchEnd)) continue;
     for (const c of byLength) {
       if (!normalized.startsWith(c.name, i + 1)) continue;
-      if (!seen.has(c.agentId)) {
-        seen.add(c.agentId);
-        out.push(c.agentId);
-      }
+      out.push({ agentId: c.agentId, at: i });
       lastMatchEnd = i + 1 + c.name.length; // 记下这次匹配的结束位置
       i = lastMatchEnd - 1; // for 循环下一个 i++ 会把它推到 lastMatchEnd
       break;
     }
+  }
+  return out;
+}
+
+export function parseMentions(text: string, names: readonly MentionCandidate[]): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const span of parseMentionSpans(text, names)) {
+    if (seen.has(span.agentId)) continue;
+    seen.add(span.agentId);
+    out.push(span.agentId);
+  }
+  return out;
+}
+
+/**
+ * 这句话点了哪几个**人类成员**（回 uid，按出现顺序去重）。
+ *
+ * 与 `parseMentions` 的关系是「同一次切词的另一半」，不是另一套判据：两族各解析
+ * 一遍，**同一个 `@` 上 agent 那遍也命中的，成员这遍作废** —— agent 与成员撞名时
+ * 归 agent 接（ADR-0252：成员显示名来自 `profiles.name`，从没过 agent 那套
+ * `agentNameConflict` 前缀检查，而选人弹层里那一行已经用「@ 会点到智能体「X」」
+ * 把这件事说出口了）。
+ *
+ * 这一格只用来决定**要不要给他发一条提醒**（#1064），一个 uid 都不会进 `mentions`
+ * ——服务端 `resolveTargets` 按 agent id 的集合过滤，人类 uid 放进去只会被静默丢掉。
+ */
+export function parseMemberMentions(
+  text: string,
+  agents: readonly MentionCandidate[],
+  members: readonly MentionCandidate[]
+): string[] {
+  const claimed = new Set(parseMentionSpans(text, agents).map((s) => s.at));
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const span of parseMentionSpans(text, members)) {
+    if (claimed.has(span.at) || seen.has(span.agentId)) continue;
+    seen.add(span.agentId);
+    out.push(span.agentId);
   }
   return out;
 }
