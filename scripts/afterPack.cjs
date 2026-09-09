@@ -26,5 +26,12 @@ exports.default = async function afterPack(ctx) {
   if (!existsSync(simBin)) throw new Error("afterPack:模拟器输入 helper 缺失,先跑 build-siminput");
   copyFileSync(simBin, join(resources, "MrOttoSimInput"));
   execFileSync("codesign", ["--force", "--sign", "-", join(resources, "MrOttoSimInput")], { stdio: "inherit" });
+
+  // 语音识别 helper(#1176,ADR-0273):同样一个裸二进制,Info.plist 嵌在 __TEXT,__info_plist
+  // 里(麦克风 / 语音识别的 usage description 跟着二进制走)。缺了 = build-speech 那步出了事,拦下
+  const speechBin = join(__dirname, "../native/MrOttoSpeech/.build/release/MrOttoSpeech");
+  if (!existsSync(speechBin)) throw new Error("afterPack:语音识别 helper 缺失,先跑 build-speech");
+  copyFileSync(speechBin, join(resources, "MrOttoSpeech"));
+  execFileSync("codesign", ["--force", "--sign", "-", join(resources, "MrOttoSpeech")], { stdio: "inherit" });
   console.log("afterPack:helper + 资源 bundle 已拷入并 ad-hoc 签");
 };
