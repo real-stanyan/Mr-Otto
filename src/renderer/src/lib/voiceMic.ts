@@ -124,6 +124,8 @@ export const SPEECH_HINTS_DEV: readonly string[] = [
   "deploy", "release", "build", "bug", "fix", "feature", "issue", "review", "API", "SDK", "CLI",
   "Docker", "VPS", "Supabase", "Stripe", "Cloudflare", "Electron", "React", "TypeScript", "Swift",
   "Python", "Node", "npm", "Git", "token", "JWT", "OAuth", "MCP", "Otto", "Mr Otto",
+  // 中文这边也有识别器常听岔的产品词（真机「侧栏」→「下册栏」）
+  "侧栏", "浮窗", "弹窗", "按钮", "页面", "首页", "网页版", "手机版", "桌面端", "仓库", "分支", "提交", "合并", "部署", "上线", "测试", "接口", "数据库",
 ];
 
 /** 这个团队开麦时的词表：agent 名 + 成员名 + 团队名在前，开发常用词在后；空串丢、去重、封顶 */
