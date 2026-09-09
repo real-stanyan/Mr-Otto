@@ -77,6 +77,15 @@ describe("PendingTurnLines（#1055：等待过程改用输入指示器呈现）"
     expect(screen.getByText("看了一圈，结论是").closest('[data-slot="bubble"]')).not.toBeNull();
   });
 
+  it("预览也按空行拆气泡（#1132）——答案落下来时张数不变，只是最后一张停止生长", () => {
+    useChat.setState({ cloudStreaming: { a_1: "看了一圈，结论是没问题。\n\n下一步我" } });
+    render(<PendingTurnLines events={events} ws={ws} selfUid="u1" cs={cs} />);
+    const bubbles = Array.from(document.querySelectorAll('[data-slot="bubble"]'));
+    expect(bubbles).toHaveLength(2);
+    expect(bubbles[0]).toHaveTextContent("看了一圈，结论是没问题。");
+    expect(bubbles[1]).toHaveTextContent("下一步我");
+  });
+
   it("缓冲里没有正文（空串/只有 reasoning）时照旧画三点——「它在忙」的信号不能断档", () => {
     useChat.setState({ cloudStreaming: { a_1: "" } });
     render(<PendingTurnLines events={events} ws={ws} selfUid="u1" cs={cs} />);

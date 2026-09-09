@@ -47,9 +47,23 @@ describe("云会话的 system 段（issue #833）", () => {
     expect(withCloud).not.toContain("otto-spec");
     expect(withCloud).not.toContain("otto-compare");
     expect(withCloud).toContain("各行各业");
-    expect(withCloud).toContain("别用 JSON、表格");
     expect(plain).toContain("otto-spec");
     expect(plain).not.toContain("各行各业");
+  });
+
+  it("cloud 的口径是「像同事在群里聊天」：先说结论、别倒细节、空行 = 下一条消息、不用 Markdown 骨架（#1132）", () => {
+    const withCloud = systemPromptText("/work", "d", undefined, undefined, { workspaceId: "w" });
+    // 四句各对应一条真机上看到的病：术语堆砌 / 一口气五百字 / 加粗编号小标题（气泡
+    // 是纯文字，星号原样露出来）/ 该拆成几条的一坨。界面按空行拆气泡（chatBubbles.ts），
+    // 所以「空行 = 下一条消息」这句话必须与渲染层说的是同一件事
+    expect(withCloud).toContain("先说结论");
+    expect(withCloud).toContain("别一次把细节全倒出来");
+    expect(withCloud).toContain("空一行");
+    expect(withCloud).toContain("连发的一条消息");
+    expect(withCloud).toContain("星号井号会原样露出来");
+    // 本地会话一个字不沾
+    const plain = systemPromptText("/work", "d");
+    expect(plain).not.toContain("连发的一条消息");
   });
 
   it("cloud 与 workspaceKind/isolated 互不干扰（各自独立注入）", () => {
