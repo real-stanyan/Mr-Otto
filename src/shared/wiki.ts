@@ -4,6 +4,7 @@
 
 import { charCount, parseEntries } from "./memoryStore.js";
 import { scanThreat } from "./threatPatterns.js";
+import { promptSafe } from "./promptSafe.js";
 
 export const WIKI_DIR = "wiki";
 export const WIKI_TMP_DIR = ".tmp";
@@ -533,5 +534,52 @@ export function renderCheckReport(r: WikiCheckReport): string {
     out += `\n## ${RULE_TITLE[rule]}（${list.length}）\n`;
     for (const f of list) out += `- ${f.path}：${f.detail}\n`;
   }
+  return out;
+}
+
+// ── 投影（spec §3.2）：system 尾部的那一段 ──────────────────────────────────
+export interface WikiSnapshotForPrompt {
+  agentId: string;
+  agentName: string;
+  index: string;
+  pinned: { path: string; title: string; body: string }[];
+  own: string | null;
+  nudge: string | null;
+}
+
+/** 静态的约定摘要——SCHEMA.md 的浓缩，只放不会变的机制句（spec §13） */
+export const WIKI_PROMPT_INTRO =
+  `\n你有这个团队的 wiki（/work/wiki，互链的 markdown 页面），用两把工具维护：wiki_read 查（读页 / 搜索），wiki 记（write / remove / check）。` +
+  `记什么：业务口径、数据定义、客户 / 产品 / 供应商这类实体、稳定的分工、工具怪癖——优先记能减少同事再次纠正你的事；不记任务进度、一周内会过期的东西。` +
+  `怎么记：一个实体或概念一页，先 wiki_read 搜有没有页，有就改那页别另开；页里用 [[路径]] 链到相关页；sources 写会话 id#seq 或 /work 路径。` +
+  `团队级口径写 team（常驻，所有人每轮都看得到，预算 ${WIKI_PINNED_BUDGET} 字），只对你成立的写 agents/<你的 id>（常驻，只注入给你，${WIKI_OWN_BUDGET} 字）。写陈述句不写祈使句。` +
+  `怎么查：涉及客户、口径、分工、历史决定时先看下面的索引，有对应页就 wiki_read 读了再答。` +
+  `\n机制（被问到时照实说，别脑补）：每次轮到你发言前注入索引 + 常驻页 + 你自己那页，其余页要你自己读，没有按相关性检索；你或别人写的下一次轮到你时可见；成员可在团队设置页「记忆」看和改。\n`;
+
+export function truncateIndexForPrompt(index: string, limit = WIKI_INDEX_INJECT_LIMIT): string {
+  if (index.length <= limit) return index;
+  const lines = index.split("\n");
+  const kept: string[] = [];
+  let used = 0;
+  for (const line of lines) {
+    if (used + line.length + 1 > limit) break;
+    kept.push(line);
+    used += line.length + 1;
+  }
+  const left = lines.length - kept.length;
+  return `${kept.join("\n")}\n…（索引还有 ${left} 行，用 wiki_read 搜索或读 index.md 看全部）`;
+}
+
+export function renderWikiPrompt(s: WikiSnapshotForPrompt): string {
+  const self = agentPagePath(s.agentId);
+  let out = WIKI_PROMPT_INTRO;
+  out += `\n[索引]\n${truncateIndexForPrompt(s.index)}\n`;
+  if (s.pinned.length > 0) {
+    out += `\n[常驻页]\n`;
+    for (const p of s.pinned) out += `### ${promptSafe(p.title)}（${p.path}）\n${p.body}\n`;
+  }
+  out += `\n[你的页 ${linkTarget(self)}]\n`;
+  out += s.own === null ? `你还没有自己那页，用 wiki write ${self} 建（只注入给「${promptSafe(s.agentName)}」）。\n` : `${s.own}\n`;
+  if (s.nudge !== null) out += `\n${s.nudge}\n`;
   return out;
 }

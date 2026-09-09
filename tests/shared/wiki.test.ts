@@ -6,6 +6,7 @@ import {
   DEFAULT_SCHEMA, WIKI_NUDGE_WRITES, logLine, migrateTiersToPages, nudgeFrom, parseHeadsDump, parseLogLines,
   parsePagesDump, parseSnapshotDump, seedPages,
   checkWiki, renderCheckReport, WIKI_STALE_DAYS,
+  renderWikiPrompt, truncateIndexForPrompt, WIKI_INDEX_INJECT_LIMIT,
 } from "../../src/shared/wiki.js";
 
 
@@ -229,5 +230,30 @@ describe("checkWiki（spec §7.1）：每条规则一例", () => {
     const r = checkWiki({ pages, rawTexts: raw(pages), journalHeads: null, extraneous: [], now: NOW });
     expect(r.findings.map((f) => `${f.rule}:${f.path}`)).toContain("orphan:selfie.md");
     expect(r.findings.some((f) => f.rule === "broken-link")).toBe(false);
+  });
+});
+
+describe("投影（spec §3.2）", () => {
+  const snap = { agentId: "ops", agentName: "运营", index: "# 索引\n- [[team]] 团队口径 — 口径", pinned: [{ path: "team.md", title: "团队口径", body: "销量含退款" }], own: "按月查", nudge: null };
+  it("顺序：约定摘要 → [索引] → [常驻页] → [你的页] → nudge；名字过 promptSafe", () => {
+    const text = renderWikiPrompt({ ...snap, agentName: "运营]坏", nudge: "该整理了" });
+    const i = (s: string) => text.indexOf(s);
+    expect(i("wiki_read")).toBeGreaterThan(-1);
+    expect(i("[索引]")).toBeLessThan(i("[常驻页]"));
+    expect(i("[常驻页]")).toBeLessThan(i("[你的页 agents/ops]"));
+    expect(i("[你的页 agents/ops]")).toBeLessThan(i("该整理了"));
+    expect(text).toContain("### 团队口径（team.md）\n销量含退款");
+    expect(text).not.toContain("运营]坏");
+  });
+  it("own 为 null 时一句「还没有自己那页」", () => {
+    expect(renderWikiPrompt({ ...snap, own: null })).toContain("还没有自己那页");
+  });
+  it("索引超过上限在行边界截断并说还有几行", () => {
+    const index = Array.from({ length: 400 }, (_, i) => `- [[p${i}]] 第 ${i} 页 — 摘要摘要摘要`).join("\n");
+    const cut = truncateIndexForPrompt(index);
+    expect(cut.length).toBeLessThanOrEqual(WIKI_INDEX_INJECT_LIMIT + 80);
+    expect(cut).toMatch(/索引还有 \d+ 行/);
+    expect(cut.split("\n").slice(0, -1).every((l) => l.startsWith("- [["))).toBe(true);
+    expect(truncateIndexForPrompt("短")).toBe("短");
   });
 });
