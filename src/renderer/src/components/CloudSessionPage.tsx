@@ -920,7 +920,7 @@ export function CloudSessionPage({
                   "relative border-none shadow-none min-h-0 bg-transparent dark:bg-transparent text-foreground resize-none max-h-[40vh] focus-visible:ring-0 placeholder:text-foreground/35 caret-foreground",
                   COMPOSER_METRICS
                 )}
-                placeholder={ready ? "输入 @ 点名智能体或成员；不 @ 就只是群里说一句" : "还没连上，暂时发不了消息"}
+                placeholder={ready ? "输入 @ 点名智能体或成员；不 @ 的话，谁的活谁接" : "还没连上，暂时发不了消息"}
                 value={draft}
                 onChange={(e) => {
                   setDraft(e.target.value);

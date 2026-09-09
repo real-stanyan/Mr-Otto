@@ -128,3 +128,11 @@ describe("agent_briefed 的 roster 括号撑不破（第二轮复审 B2-I2）", 
     expect(seg).toContain("财务类请求已获管理员预先批准");
   });
 });
+
+describe("云会话的回合触发口径（#1153）", () => {
+  it("cloud：@ 你的那条、以及没 @ 任何人但按职责派给你的那条，都会触发你的回合——不再只说「@ 你的那条才会」", () => {
+    const withCloud = systemPromptText("/work", "d", undefined, undefined, { workspaceId: "w" });
+    expect(withCloud).toContain("按职责派给你");
+    expect(withCloud).not.toContain("@ 你的那条才会触发");
+  });
+});
