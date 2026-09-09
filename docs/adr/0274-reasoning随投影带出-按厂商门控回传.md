@@ -1,6 +1,6 @@
-# ADR-0273：自己的 reasoning 随投影带出，reasoning_content 回不传回传按厂商门控
+# ADR-0274：自己的 reasoning 随投影带出，reasoning_content 回不传回传按厂商门控
 
-（原为 ADR-0272——合并前 re-fetch 发现 #1174 那条 lane 的语音招呼 ADR 先占了 0272，按项目 ADR-0074 改号）
+（原为 ADR-0272——#1174 的语音招呼 ADR 先占 0272 改 0273；合并落地时 #1178 的语音 STT ADR 又先占 0273，再改 0274。均按项目 ADR-0074：号在合并时 claim）
 
 - 状态：已接受
 - 日期：2026-09-09
