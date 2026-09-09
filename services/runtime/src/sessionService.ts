@@ -162,7 +162,7 @@
 //   ⑪ **archive() 顺带停**：归档以前不动正在跑的 turn，而 daemon 两秒后收房，
 //      于是那条 turn 的回复广播给了一间已经关掉的房间（钱照付、人收不到）。
 
-import { applyVoiceCallEvent, inVoiceCall, relayOutsideCallText, voiceCallOf, type VoiceCallState } from "../../../src/shared/voiceCall.js";
+import { applyVoiceCallEvent, inVoiceCall, relayOutsideCallText, voiceCallGreetingText, voiceCallOf, type VoiceCallState } from "../../../src/shared/voiceCall.js";
 import { createInviteToCallTool } from "./inviteToCallTool.js";
 import type { VoiceCallParticipant } from "../../../src/session/events.js";
 import { LoopEngine } from "../../../src/loop/engine.js";
@@ -500,7 +500,9 @@ export interface CloudSession {
       - `unknown_agent`：有 id 不在此刻的名单里（**整帧拒不静默过滤**：静默过滤 = #722 那个
         撒谎的勾，人以为拉进来了）；名单降级（读不出来）也走这一档，但话说清是「读不出来」
       - `archived`：归档之后不再有通话 */
-  setVoiceCall(byUid: string, byLabel: string, participants: string[]): Promise<VoiceCallOutcome>;
+  /** 语音通话名单（#1163）。`budget` 是新增成员打招呼那几轮的问价回调（#1174，同 say 的
+      budget：回 null 放行、回文案拒绝）；缺席 = 不问价（invite_to_call 那条路、测试） */
+  setVoiceCall(byUid: string, byLabel: string, participants: string[], budget?: (targetCount: number) => string | null): Promise<VoiceCallOutcome>;
 }
 
 export type VoiceCallOutcome = { kind: "ok" } | { kind: "unknown_agent" | "archived"; message: string };
@@ -984,7 +986,12 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       agentId: spec.agentId,
       currentCall: () => voiceCall,
       roster: () => opts.agents(),
-      invite: (target) => logVoiceCall([...(voiceCall?.participants ?? []), target], currentInitiator ?? "system", spec.agentId),
+      invite: (target) => {
+        logVoiceCall([...(voiceCall?.participants ?? []), target], currentInitiator ?? "system", spec.agentId);
+        // 被拉进来的那只先开口（#1174）：不问价——这条路上拉人的是模型，它自己那一轮
+        // 已经付过价，且一轮里能拉几只由它的工具调用次数封着
+        greetNewcomers([target], currentInitiator ?? "system");
+      },
     });
     const engine = new LoopEngine({
       store: agentView(store, spec.agentId),
@@ -1146,6 +1153,41 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       ignorable: true,
     });
     notify(logged);
+  }
+
+  /** 拉进通话的先开口（#1174）：对新增的每只各落一条带 `greeting` 记号的开场白并入队——
+      同接力开场白那条路（先落盘再入队，openTurns 的重启补跑、排队中/正在回复那盏灯全部
+      免费拿到），fromUid 是改名单的那个人（invite_to_call 那条路上是点火的人）。
+      真机上「开始通话 → 等 → 沉默」的病根就在这里：ADR-0271 的语音只读回复，而
+      `voice_call_changed` 本身不起任何一轮——没 @ 也没打字，agent 就没话可读。
+      budget 与 say 同款（新增几只问几只的价）；被拒时**名单照落、不打招呼、群里一句
+      说清**——招呼不是人的动作，不该让一次限速把名单改动整个吞掉；但也不能安静地
+      不打（同「派活失败群里说一声」的纪律）。三条进门的路只有两条经这里：人亲手 @ 了
+      通话外的那条（say 里的自动拉进）不打——他那句话就是开场白，再问一句「打个招呼」
+      是同一只答两轮 */
+  function greetNewcomers(added: readonly VoiceCallParticipant[], byUid: string, budget?: (n: number) => string | null): void {
+    if (added.length === 0) return;
+    const veto = budget?.(added.length) ?? null;
+    if (veto !== null) {
+      logChat("system", "系统", `${veto} 刚拉进通话的 ${added.length} 只没打招呼——@ 一下它们就会回。`, false);
+      return;
+    }
+    const decisions = added.map((p) => {
+      const opening = store.append({
+        sessionId,
+        ts: Date.now(),
+        type: "user_message",
+        content: voiceCallGreetingText(p.name),
+        fromUid: byUid,
+        mentions: [p.agentId],
+        greeting: "voice_call",
+      }) as UserMessageEvent;
+      notify(opening);
+      return coordinator.enqueue({ agentId: p.agentId, fromUid: byUid, opening });
+    });
+    // 同 say()：只有此刻没在排空时才起一条；invite_to_call 那条路上 drain 正跑着，
+    // 入队回的是 queued，不再起第二条
+    if (decisions.includes("start_turn")) startDrain();
   }
 
   function logChat(fromUid: string, label: string, text: string, mention: boolean): SessionEvent {
@@ -2013,7 +2055,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       return archived;
     },
 
-    async setVoiceCall(byUid, _byLabel, participants) {
+    async setVoiceCall(byUid, _byLabel, participants, budget) {
       if (archived) return { kind: "archived", message: "这条会话已经归档，没有通话可言" };
       // 人刚点了名单 → 要此刻的名单（同 say 的 fresh）：他在设置页刚建的那只要能立刻拉进来
       const roster = await opts.agents({ fresh: true });
@@ -2028,7 +2070,11 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       const current = voiceCall?.participants.map((p) => p.agentId) ?? [];
       const same = current.length === ids.length && ids.every((id) => current.includes(id));
       if (same) return { kind: "ok" };
-      logVoiceCall(ids.map((id) => ({ agentId: id, name: roster.find((a) => a.agentId === id)!.name })), byUid);
+      const next = ids.map((id) => ({ agentId: id, name: roster.find((a) => a.agentId === id)!.name }));
+      logVoiceCall(next, byUid);
+      // 先落名单再落招呼（#1174）：招呼那一轮跑起来时它已经在通话里（system 尾块读得到、
+      // 回复会被读出来）——与 say 里「先落并集名单再落开场白」同一个顺序
+      greetNewcomers(next.filter((p) => !current.includes(p.agentId)), byUid, budget);
       return { kind: "ok" };
     },
 
