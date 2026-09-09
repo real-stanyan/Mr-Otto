@@ -19,7 +19,7 @@ describe("createMemoryWikiFs", () => {
     expect(await fs.readPage("nope.md")).toBeNull();
     expect((await fs.listHeads()).map((h) => h.path)).toEqual(["customers/acme.md"]);
     expect((await fs.listHeads())[0]!.head).toBe("title: Acme\nsummary: s\npinned: false\nupdated_by: x\nupdated_at: 2026-09-09T00:00:00Z\nsources: []");
-    expect((await fs.listPages()).map((p) => p.path)).toEqual(["customers/acme.md"]);
+    expect(await fs.listPages()).toEqual([{ path: "customers/acme.md", text: PAGE("Acme"), truncated: false }]);
     expect(await fs.listExtraneous()).toEqual(["notes.txt"]);
     await fs.removePage("customers/acme.md");
     expect(await fs.readPage("customers/acme.md")).toBeNull();
@@ -89,13 +89,16 @@ describe("createContainerWikiFs：脚本接线", () => {
     const { world } = fakeWorld((cmd) => {
       if (cmd.includes("own-missing")) return ok("index\t# 索引\0own-missing\0log\t\0");
       if (cmd.includes("-printf '%P\\t%y\\0'")) return ok("notes.txt\tf\0customers\td\0deep/er\td\0customers/acme.md\tf\0link.md\tl\0");
-      if (cmd.includes("head -c 65536")) return ok("a.md\t---\ntitle: A\n---\n正文\0");
+      if (cmd.includes("head -c 65536")) return ok("a.md\tf\t---\ntitle: A\n---\n正文\0big.md\tt\t前 64 KiB\0");
       return ok("a.md\ttitle: A\n\0");
     });
     const fs = createContainerWikiFs(world);
     expect((await fs.snapshot("ops")).own).toBeNull();
     expect(await fs.listHeads()).toEqual([{ path: "a.md", head: "title: A" }]);
-    expect(await fs.listPages()).toEqual([{ path: "a.md", text: "---\ntitle: A\n---\n正文" }]);
+    expect(await fs.listPages()).toEqual([
+      { path: "a.md", text: "---\ntitle: A\n---\n正文", truncated: false },
+      { path: "big.md", text: "前 64 KiB", truncated: true },
+    ]);
     expect(await fs.listExtraneous()).toEqual(["notes.txt", "deep/er", "link.md"]);
   });
 });

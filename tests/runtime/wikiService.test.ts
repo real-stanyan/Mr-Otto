@@ -220,4 +220,16 @@ describe("read / search / check", () => {
     expect(journal.rows.at(-1)).toMatchObject({ path: "b.md", kind: "external", authorKind: "external" });
     expect(fs.files.get("log.md")).toContain("] check |");
   });
+  it("check 不给被截断的页补记 external：journal 里会落进 head -c 砍剩的半页，ensure 的恢复会把它当成全文写回去", async () => {
+    const base = createMemoryWikiFs();
+    // listPages 是 check 唯一的正文来源，容器版对超 64 KiB 的页只给前 64 KiB——这里模拟那一份
+    const fs = { ...base, listPages: async () => (await base.listPages()).map((p) => ({ ...p, truncated: p.path === "big.md", text: p.path === "big.md" ? p.text.slice(0, 40) : p.text })) };
+    const { svc, journal } = setup({ fs: fs as typeof base });
+    await svc.ensure();
+    await svc.write({ path: "big.md", title: "Big", summary: "s", body: "x".repeat(200) }, OPS);
+    const before = journal.rows.length;
+    const report = await svc.check(OPS);
+    expect(journal.rows.slice(before).some((r) => r.path === "big.md")).toBe(false);
+    expect(report).toContain("没法核对备份");
+  });
 });

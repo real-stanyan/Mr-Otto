@@ -31,5 +31,9 @@ describe("wiki 脚本里不许有裸控制字符（#1140，同 #1066）", () => 
     expect(buildWikiSnapshotScript("admin")).toContain(String.raw`printf 'own-missing\0'`);
     expect(buildWikiSearchScript("q")).toContain(String.raw`printf 'rc\t%s\n' "$?"`);
     expect(buildWikiReadScript("a'b.md")).toContain(String.raw`'/work/wiki/a'\''b.md'`);
+    // 截断标志：先量真实字节数再决定印 t 还是 f（`head -c` 之后就问不出来了，#1140 终审 Important 2）
+    expect(buildWikiPagesScript()).toContain(String.raw`[ "$(wc -c < "$rel")" -gt 65536 ]`);
+    expect(buildWikiPagesScript()).toContain(String.raw`printf '%s\tt\t' "$rel"`);
+    expect(buildWikiPagesScript()).toContain(String.raw`printf '%s\tf\t' "$rel"`);
   });
 });

@@ -258,7 +258,10 @@ export function createWikiService(deps: WikiServiceDeps): WikiService {
       } catch (err) {
         log(`wiki journal 读取失败，本次 check 跳过漂移规则：${String(err)}`);
       }
-      const report = checkWiki({ pages, rawTexts, journalHeads: heads, extraneous: await deps.fs.listExtraneous(), now: now() });
+      // 截断的页不进 drifted（checkWiki 里），所以下面那圈 external 补记天然碰不到它们——
+      // 补记的内容会是 head -c 砍剩的半页，而 ensure 的恢复会把它当全文写回去
+      const truncated = new Set(raw.filter((p) => p.truncated).map((p) => p.path));
+      const report = checkWiki({ pages, rawTexts, journalHeads: heads, truncated, extraneous: await deps.fs.listExtraneous(), now: now() });
       for (const path of report.drifted) await journalAppend("external", path, rawTexts.get(path) ?? null, { kind: "external", id: "", label: "external" });
       for (const path of report.removedOutside) await journalAppend("external", path, null, { kind: "external", id: "", label: "external" });
       await regenIndex();

@@ -443,8 +443,18 @@ function pathPayload(stdout: string): { path: string; payload: string }[] {
 export function parseHeadsDump(stdout: string): { path: string; head: string }[] {
   return pathPayload(stdout).map((r) => ({ path: r.path, head: r.payload }));
 }
-export function parsePagesDump(stdout: string): { path: string; text: string }[] {
-  return pathPayload(stdout).map((r) => ({ path: r.path, text: r.payload }));
+/** 记录形状 `路径\t截断标志\t正文`：容器脚本对每页只取前 64 KiB，**砍完就问不出来了**，
+    所以标志必须由脚本在 `head -c` 之前量真实字节数印出来。标志不是 `t`/`f` 的记录整条丢——
+    形状对不上就是发送方与这份解析不同版，猜一个默认值只会把「不知道」写成「没截断」 */
+export function parsePagesDump(stdout: string): { path: string; text: string; truncated: boolean }[] {
+  const out: { path: string; text: string; truncated: boolean }[] = [];
+  for (const r of pathPayload(stdout)) {
+    const t = r.payload.indexOf("\t");
+    const flag = t < 0 ? null : r.payload.slice(0, t);
+    if (flag !== "t" && flag !== "f") continue;
+    out.push({ path: r.path, text: r.payload.slice(t + 1), truncated: flag === "t" });
+  }
+  return out;
 }
 
 // ── 体检（spec §7.1）：机械的归代码，语义的归模型 ──────────────────────────
@@ -462,6 +472,9 @@ export interface WikiCheckInput {
   rawTexts: ReadonlyMap<string, string>;
   /** journal 各路径的最新版本；null = journal 这一刻读不到，跳过那条规则 */
   journalHeads: ReadonlyMap<string, string | null> | null;
+  /** 正文被 `head -c` 砍过的页（listPages 的截断标志）——这些页的正文不是全文，
+      拿它与 journal 比一定不等，而那个「不等」是我们自己造的（#1140 终审 Important 2） */
+  truncated: ReadonlySet<string>;
   /** wiki/ 下不该在的东西（非 md、第二层目录、软链），由 fs 层列出 */
   extraneous: readonly string[];
   now: number;
@@ -507,6 +520,13 @@ export function checkWiki(input: WikiCheckInput): WikiCheckReport {
   const removedOutside: string[] = [];
   if (input.journalHeads !== null) {
     for (const p of input.pages) {
+      // 截断页一律不比：手上这份正文只有前 64 KiB，比出来的「不同」是我们自己造的，
+      // 而调用方对 drifted 的动作是「把手上这份补记进 journal」——那会让备份变成半页，
+      // 再由 ensure 的恢复原样写回去。报一条说清楚，剩下的留给人
+      if (input.truncated.has(p.path)) {
+        findings.push({ rule: "journal-drift", path: p.path, detail: "页太大（>64 KiB），没法核对备份" });
+        continue;
+      }
       const head = input.journalHeads.get(p.path);
       const raw = input.rawTexts.get(p.path);
       if (head === undefined || head === null || head !== raw) {

@@ -25,7 +25,8 @@ export interface WikiFs {
   writePage(path: string, text: string): Promise<void>;
   removePage(path: string): Promise<void>;
   listHeads(): Promise<{ path: string; head: string }[]>;
-  listPages(): Promise<{ path: string; text: string }[]>;
+  /** 每页的**全文或前 64 KiB**；`truncated` 说的就是哪一种——check 靠它决定比不比 journal */
+  listPages(): Promise<{ path: string; text: string; truncated: boolean }[]>;
   listExtraneous(): Promise<string[]>;
   appendLog(line: string): Promise<void>;
   search(query: string): Promise<WikiSearchHit[]>;
@@ -86,7 +87,8 @@ export function buildWikiPagesScript(): string {
     "cd /work/wiki || exit 3",
     String.raw`find . -path ./.tmp -prune -o -type f -name '*.md' -printf '%P\0' | while IFS= read -r -d '' rel; do`,
     String.raw`  case "$rel" in index.md|log.md|log-*.md) continue;; esac`,
-    String.raw`  printf '%s\t' "$rel"`,
+    // 截断标志要在 `head -c` **之前**量：砍完之后没有任何办法分辨「这页正好 64 KiB」与「被砍了」
+    String.raw`  if [ "$(wc -c < "$rel")" -gt 65536 ]; then printf '%s\tt\t' "$rel"; else printf '%s\tf\t' "$rel"; fi`,
     String.raw`  head -c 65536 -- "$rel"`,
     String.raw`  printf '\0'`,
     "done",
@@ -231,7 +233,8 @@ export function createMemoryWikiFs(seed: Record<string, string> = {}): WikiFs & 
     async writePage(path, text) { files.set(path, text); },
     async removePage(path) { files.delete(path); },
     async listHeads() { return pages().map((p) => ({ path: p, head: headOf(files.get(p)!) ?? "" })); },
-    async listPages() { return pages().map((p) => ({ path: p, text: files.get(p)! })); },
+    // 内存版不截断（没有 head -c 这一步），所以恒 false——与容器版语义对齐，不是省略
+    async listPages() { return pages().map((p) => ({ path: p, text: files.get(p)!, truncated: false })); },
     async listExtraneous() { return [...files.keys()].filter((p) => !(isWikiPagePath(p) || isLogLike(p) || p.startsWith(`${WIKI_TMP_DIR}/`))); },
     async appendLog(line) {
       const cur = files.get(WIKI_LOG_PATH) ?? "";
