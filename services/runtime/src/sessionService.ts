@@ -192,7 +192,7 @@ import { DEFAULT_AUTO_COMPACT } from "../../../src/shared/autoCompact.js";
 import { createCreateAgentTool } from "./createAgentTool.js";
 import { createGitTools, type GitToolDeps } from "./gitTools.js";
 import type { WorkspaceAgentWriter } from "./agentRegistry.js";
-import { dispatchContext, dispatchFailedText, dispatchFallbackOf, type DispatchInput, type DispatchVerdict } from "./dispatch.js";
+import { dispatchContext, dispatchFailedText, dispatchFallbackOf, lastSpeakerAmong, type DispatchInput, type DispatchVerdict } from "./dispatch.js";
 import {
   CREATE_AGENT_TOOL_NAME, createAgentApprovalFields, createAgentApprovalSummary, parseCreateAgentArgs, scanCreateAgentThreat,
 } from "../../../src/shared/createAgentDraft.js";
@@ -1773,9 +1773,20 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       failed 回，不让发言失败（同 pickAutoModel 的纪律） */
   /** `roster` 是全名单（上下文里的名字要认得出通话外的人说的话），`candidates` 是分类器
       能挑的那几只——通话进行中只有通话成员（#1163），没有通话时两者是同一份 */
+  /** 派活读的那段日志尾（同一个窗口给分类器的上下文与「最近开口的那只」两处用） */
+  function dispatchTail(): SessionEvent[] {
+    return store.load(sessionId, { afterSeq: Math.max(-1, lastSeqSeen - DISPATCH_TAIL_WINDOW) });
+  }
+
+  /** 通话里没人对口时谁应（#1183，维护者拍板）：最近开口的通话成员；一只都没开过口（招呼被
+      限速掐掉、或超出尾段窗口）退回 dispatchFallbackOf（管理员在通话里就是它，否则通话第一只） */
+  function callAnswerer(callRoster: AgentSpec[]): string | null {
+    return lastSpeakerAmong(dispatchTail(), callRoster.map((a) => a.agentId)) ?? dispatchFallbackOf(callRoster);
+  }
+
   async function dispatchVerdictFor(roster: AgentSpec[], candidates: AgentSpec[], fromUid: string, label: string, text: string): Promise<DispatchVerdict> {
     const nameOf = (id: string): string => roster.find((a) => a.agentId === id)?.name ?? (id === "" ? "Agent" : id);
-    const tail = store.load(sessionId, { afterSeq: Math.max(-1, lastSeqSeen - DISPATCH_TAIL_WINDOW) });
+    const tail = dispatchTail();
     const input: DispatchInput = {
       roster: candidates.map((a) => ({ agentId: a.agentId, name: a.name, description: a.description })),
       fallbackAgentId: dispatchFallbackOf(candidates),
@@ -1841,9 +1852,25 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
           // 名单降级 = 分类器读到的是占位不是真名册，判出来的答案必然错；按「这次
           // 分类没成功」走回落，与网关挂了同一个出口——读不到不许说成「没人该接」
           // （ADR-0243 那条三态纪律）
-          const verdict: DispatchVerdict = roster.some((a) => a.degraded)
+          const degraded = roster.some((a) => a.degraded);
+          // **通话里必须有人应**（#1183，ADR-0275）：文字群聊里「闲聊没人接」是对的
+          // （#1153 的口径），电话里没人应答就是坏了——真机第一句「我说话你能听到吗？」
+          // 被判成 none、整场沉默。通话里：只有一只时**不问分类器**直接派给它（省掉
+          // 一次网关往返，这是人说完到 agent 开口之间最贵的一段之一，#1184）；多只时
+          // 照问（活要派给对口的那只），但 none / failed 一律落到「最近开口的那只」
+          // （callAnswerer）。名单降级时不算在通话里：占位名册上谁都不该应
+          const inCall = voiceCall !== null && callRoster.length > 0 && !degraded;
+          const verdict: DispatchVerdict = degraded
             ? { kind: "failed", reason: "智能体名单这会儿读不出来" }
-            : await dispatchVerdictFor(roster, callRoster, fromUid, label, text);
+            : inCall && callRoster.length === 1
+              ? { kind: "picked", agentIds: [callRoster[0]!.agentId] }
+              : await dispatchVerdictFor(roster, callRoster, fromUid, label, text);
+          const answerInCall = (): void => {
+            const id = callAnswerer(callRoster);
+            if (id === null) return;
+            targets = [id];
+            dispatch = "auto";
+          };
           if (verdict.kind === "picked") {
             const known = new Set(roster.map((a) => a.agentId));
             const picked = [...new Set(verdict.agentIds.filter((id) => known.has(id)))];
@@ -1851,20 +1878,26 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
             if (picked.length > 0) {
               targets = picked;
               dispatch = "auto";
+            } else if (inCall) {
+              answerInCall();
             }
           } else if (verdict.kind === "failed") {
             // **回落今天的行为**（ADR-0237 那条纪律）：开局卡 / 旧手机的 mention:true
             // 仍由名单第一只接；composer 的 mention:false 仍是只落 chat_message——但
-            // 要说出口，不然人以为有人会接、干等（维护者拍板，#1153）
+            // 要说出口，不然人以为有人会接、干等（维护者拍板，#1153）。通话里另有人应，
+            // 不用说：分类没成功只在 daemon 日志里有痕迹
             targets = legacy;
-            if (targets.length === 0) dispatchNote = dispatchFailedText(verdict.reason);
+            if (inCall) answerInCall();
+            else if (targets.length === 0) dispatchNote = dispatchFailedText(verdict.reason);
           } else if (verdict.kind === "skipped") {
             // 这条路此刻走不了且不是临时的（所有者没订阅）：同样回落改动前的行为，
             // 但**不出声**——那个团队一只 agent 都起不了 turn，头部那行 blocked 已经
             // 在说这件事，每句话再落一条「没派出去」是噪音（判据见 DispatchVerdict）
             targets = legacy;
+          } else if (inCall) {
+            // none：文字群聊里闲聊照旧是闲聊（targets 留空）；通话里由最近开口的那只应
+            answerInCall();
           }
-          // none：targets 留空，闲聊照旧是闲聊
         }
       }
       // **价钱在判据的同一侧算**（#957 B2-C1）：限速原来跑在 frameHandler 里、
