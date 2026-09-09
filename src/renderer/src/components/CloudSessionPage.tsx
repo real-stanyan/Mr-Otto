@@ -84,6 +84,8 @@ import { sandboxApprovalBanner, sandboxApprovalControl } from "../lib/sandboxApp
 import { SandboxApprovalToggle } from "./BypassSwitch.js";
 import { CloudContextRing } from "./CloudContextRing.js";
 import { VoiceCallBar } from "./VoiceCallBar.js";
+import { VoiceCallOverlay } from "./VoiceCallOverlay.js";
+import { callStarterUid } from "../lib/voiceCallView.js";
 import { VoicePickerPopover } from "./VoicePickerPopover.js";
 import { voiceCallAvailable } from "../lib/voiceCall.js";
 import { voiceCallOf } from "../../../shared/voiceCall.js";
@@ -274,6 +276,12 @@ export function CloudSessionPage({
   // 每条 voice_call_changed 的前一条，渲染循环里 O(1) 查
   const call = useMemo(() => voiceCallOf(events), [events]);
   const voiceAvailable = voiceCallAvailable(billing);
+  // 全屏通话视图（#1185，ADR-0278）：本机界面状态；通话结束（call 变 null）时随之关掉
+  const [callOpen, setCallOpen] = useState(false);
+  const callView = useMemo(
+    () => ({ selfUid, starterUid: call ? callStarterUid(events, call) : null, openAgentIds: new Set(openTurns(events).map((t) => t.agentId)) }),
+    [events, call, selfUid]
+  );
   /** 结束通话 = 全组（拍板 ⑥）：一条空名单事件让所有人的栏消失，所以先问一句 */
   const endCall = async (): Promise<CloudAck> => {
     const ok = await confirm({
@@ -749,6 +757,24 @@ export function CloudSessionPage({
           onJoin={joinVoiceCall}
           onMute={setVoiceMuted}
           onMic={setVoiceMic}
+          onUpdate={(ids) => cloudCall(ids)}
+          onEnd={endCall}
+          onExpand={() => setCallOpen(true)}
+        />
+      )}
+      {call && cs && (
+        <VoiceCallOverlay
+          open={callOpen}
+          onOpenChange={setCallOpen}
+          ws={ws}
+          call={call}
+          voice={voice && voice.sessionId === cs.sessionId ? voice : null}
+          view={callView}
+          available={voiceAvailable}
+          ready={ready}
+          onJoin={joinVoiceCall}
+          onMic={setVoiceMic}
+          onMute={setVoiceMuted}
           onUpdate={(ids) => cloudCall(ids)}
           onEnd={endCall}
         />
