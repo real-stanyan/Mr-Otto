@@ -84,6 +84,7 @@ export function InsetRow({
   title,
   label,
   subtitle,
+  below,
   trailing,
   chevron,
   onClick,
@@ -98,6 +99,8 @@ export function InsetRow({
   /** 读屏念什么。`title` 不是字符串时必填 */
   label?: string;
   subtitle?: ReactNode;
+  /** 副标题下面那块**不截断**的地方（条、进度、多行说明） */
+  below?: ReactNode;
   trailing?: ReactNode;
   chevron?: boolean;
   onClick?: () => void;
@@ -121,6 +124,10 @@ export function InsetRow({
         {subtitle !== undefined && subtitle !== null && (
           <span className="truncate text-[11.5px] leading-[1.4] text-muted-foreground">{subtitle}</span>
         )}
+        {/* `below` 与 `subtitle` 的分别不是排版是**能不能截断**：副标题那行是
+            `truncate`（单行、超出打点），而条、进度、多行说明放进去会被那三条
+            属性压坏。要画块状东西就用这一格 */}
+        {below !== undefined && below !== null && <span className="block">{below}</span>}
       </span>
       {trailing !== undefined && trailing !== null && (
         <span className="relative z-10 flex shrink-0 items-center gap-[7px] text-[12.5px] text-muted-foreground">{trailing}</span>
