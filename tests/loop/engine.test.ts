@@ -185,6 +185,53 @@ describe("LoopEngine", () => {
     store.close();
   });
 
+  it("工具里套着的那次模型调用的账摊平到 tool_result 上（#1084）", async () => {
+    const store = new EventStore(":memory:");
+    const paintTool: Tool = {
+      def: {
+        name: "generate_image",
+        description: "出图",
+        parameters: { type: "object", properties: {} },
+      },
+      requiresApproval: false,
+      run: async () => ({
+        output: "已生成 1 张图并显示给用户。",
+        billing: {
+          model: "gemini-3.1-flash-image",
+          usage: { promptTokens: 12, completionTokens: 1120 },
+          route: "hosted",
+          creditCostMicro: 67206,
+        },
+      }),
+    };
+    const { adapter } = fakeAdapter([
+      { content: "", toolCalls: [{ id: "c1", name: "generate_image", args: { prompt: "x" } }] },
+      { content: "画好了" },
+    ]);
+
+    const engine = new LoopEngine({
+      store,
+      adapter,
+      tools: [paintTool],
+      world: fakeWorld,
+      sessionId: "s1",
+    });
+    await engine.runTurn("画一只水獭");
+
+    // 摊平成与 assistant_message 同名的四格——deriveUsage 的 billed() 按
+    // 「有没有这一格」记账，不为工具单写分支
+    const tr = store.load("s1").find((e) => e.type === "tool_result");
+    expect(tr).toMatchObject({
+      toolCallId: "c1",
+      status: "ok",
+      model: "gemini-3.1-flash-image",
+      usage: { promptTokens: 12, completionTokens: 1120 },
+      route: "hosted",
+      creditCostMicro: 67206,
+    });
+    store.close();
+  });
+
   it("reasoning 随 assistant_message 落盘：思考是模型产出的新信息，丢了回放永远缺", async () => {
     const store = new EventStore(":memory:");
     const { adapter } = fakeAdapter([{ content: "答", reasoning: "先想想：用户在问……" }]);

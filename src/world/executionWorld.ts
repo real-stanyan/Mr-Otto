@@ -308,6 +308,18 @@ export interface ExecutionWorld {
   /** JSON POST——工具的全部网络面。v1 LocalWorld 用 fetch;v2 Docker 按 bot 走代理/断网 */
   http: {
     postJson(url: string, body: unknown, opts?: HttpPostOptions): Promise<unknown>;
+    /** 可选：连响应头一起回来的 JSON POST（#1084）。出图那笔钱由网关在响应头里
+        结算（x-otto-cost-micro，非流式，ADR-0211），body 里只有 usage——
+        postJson 把响应头丢掉之后，工具只能报 token、报不了 credit。
+        可选的理由同 getJson（仓里几十处测试假 world 只实现了 postJson，必填
+        会让它们全红）。缺席 = 这个世界读不到响应头，调用方按「没记到」处理
+        （creditCostMicro 缺席 ≠ 0：不落那个键，而不是记 0）。headers 的键
+        一律小写（fetch Headers.entries 的约定） */
+    postJsonWithHeaders?(
+      url: string,
+      body: unknown,
+      opts?: HttpPostOptions
+    ): Promise<{ body: unknown; headers: Record<string, string> }>;
     /** 可选：JSON GET。可选的理由同 execDetached/openTerminal——仓里几十处测试
         假 world 只实现了 postJson，必填会让它们全红，而那些红跟网络能力无关。
         缺席 = 这个世界不提供 GET，调用方（tools/mcpCatalog.ts）据此说人话。
@@ -381,6 +393,13 @@ export function withAbortSignal(world: ExecutionWorld, signal: AbortSignal): Exe
       // 探测发生在构造 wrapper 的这一刻，必须扛住 http 缺席，不能提前把它炸穿
       ...(world.http?.getJson
         ? { getJson: (url: string, opts?: HttpPostOptions) => world.http.getJson!(url, { ...opts, signal }) }
+        : {}),
+      // 同 getJson 的探测纪律：缺席不焊、不提前炸穿（#1084）
+      ...(world.http?.postJsonWithHeaders
+        ? {
+            postJsonWithHeaders: (url: string, body: unknown, opts?: HttpPostOptions) =>
+              world.http.postJsonWithHeaders!(url, body, { ...opts, signal }),
+          }
         : {}),
     },
     ...(world.openTerminal ? { openTerminal: (o: OpenTerminalOptions) => world.openTerminal!(o) } : {}),

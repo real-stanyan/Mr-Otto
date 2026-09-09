@@ -1,6 +1,7 @@
 // Tool — 工具的统一形状。run 只拿到 args 和 world，别的世界一概不知。
 
 import type { ToolDefinition } from "../model/adapter.js";
+import type { TokenUsage } from "../session/events.js";
 import type { ExecutionWorld } from "../world/executionWorld.js";
 
 /** 执行器透给 run 的一点点上下文。绝大多数工具用不着——
@@ -32,6 +33,21 @@ export interface ToolImage {
   mimeType: string;
 }
 
+/** 工具调用里套着的那次模型调用的账（#1084）。绝大多数工具不烧钱、没有这个字段；
+    generate_image 那种「工具内部又打了一次模型 API」的才带——那笔钱的载体是
+    tool_result（它不产生 assistant_message），不带的话日志里查不到这次花费
+    （usage_event 在网关那边有，本机账上没有）。四个字段与 assistant_message
+    同名格同语义；engine 把它们原样摊到 tool_result 事件上 */
+export interface ToolBilling {
+  /** 实际跑这次调用的模型（事实，非配置）——出图那一格是出图型号，不是会话的文字型号 */
+  model: string;
+  usage: TokenUsage;
+  route: "hosted" | "direct";
+  /** hosted 路本次结算的 credit（micro-USD）。缺席 ≠ 0：世界读不到响应头时
+      这一格就不在（「没记到」，不是「没花」） */
+  creditCostMicro?: number;
+}
+
 export interface Tool {
   def: ToolDefinition;
   /** 缺席 = "direct"。事后改数据结构很痛——趁工具还少先把字段落进注册表（#348） */
@@ -53,10 +69,13 @@ export interface Tool {
   available?: () => boolean;
   /** 返回值 = 喂回模型的 tool_result.output；抛错 = status: "error"。
       也可返回 { output, concludesTurn } —— concludesTurn:true 时 engine 在当步收口整个 turn。
-      images 是给人看的产出（见 ToolImage）：喂模型的仍然只有 output */
+      images 是给人看的产出（见 ToolImage）：喂模型的仍然只有 output。
+      billing 是这次调用里套着的那次模型调用的账（见 ToolBilling，#1084） */
   run(
     args: unknown,
     world: ExecutionWorld,
     ctx?: ToolRunContext
-  ): Promise<string | { output: string; concludesTurn?: true; images?: readonly ToolImage[] }>;
+  ): Promise<
+    string | { output: string; concludesTurn?: true; images?: readonly ToolImage[]; billing?: ToolBilling }
+  >;
 }
