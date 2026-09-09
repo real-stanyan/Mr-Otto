@@ -31,7 +31,7 @@ const me = (over: Partial<BillingMe> = {}): BillingMe => ({
   plan: "pro",
   status: "active",
   plans: [],
-  imageModels: [],
+  imageModels: [], ttsModels: [],
   windows: {
     h5: { usedMicro: 41_000, limitMicro: 67_000, resetAt: NOW + 2 * HOUR },
     week: { usedMicro: 76_000, limitMicro: 332_500, resetAt: NOW + 96 * HOUR },

@@ -93,3 +93,11 @@ describe("workspace usage（#946）", () => {
     expect(parseWorkspaceUsage(null)).toBeNull();
   });
 });
+
+describe("parseBillingMe：ttsModels（#1163）", () => {
+  const base = { plan: null, status: "none", windows: null, addon: { remainingMicro: 0, expiresAt: null }, periodEnd: null, models: [] };
+  it("缺席 = 空数组（旧 edge），不让整份快照解析成 null；在场原样，非字符串剔掉", () => {
+    expect(parseBillingMe(base)?.ttsModels).toEqual([]);
+    expect(parseBillingMe({ ...base, ttsModels: ["speech-2.8-turbo", 3] })?.ttsModels).toEqual(["speech-2.8-turbo"]);
+  });
+});

@@ -6,7 +6,7 @@ const T0 = 1_800_000_000_000;
 const me: BillingMe = {
   plan: "pro", status: "active", plans: [],
   windows: { h5: { usedMicro: 0, limitMicro: 100, resetAt: T0 + 5000 }, week: { usedMicro: 0, limitMicro: 1000, resetAt: T0 + 9000 } },
-  addon: { remainingMicro: 0, expiresAt: null }, periodEnd: T0 + 99_999, models: ["deepseek-v4-flash"], imageModels: ["gemini-3.1-flash-image"], modelPlatforms: {},
+  addon: { remainingMicro: 0, expiresAt: null }, periodEnd: T0 + 99_999, models: ["deepseek-v4-flash"], imageModels: ["gemini-3.1-flash-image"], ttsModels: ["speech-2.8-turbo"], modelPlatforms: {},
 };
 
 function make(responses: Array<() => Response>, token: string | null = "jwt") {
