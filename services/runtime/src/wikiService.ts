@@ -145,7 +145,11 @@ export function createWikiService(deps: WikiServiceDeps): WikiService {
       return { path: p.path, title: page.front.title, body: guardBody(p.path, page.body) };
     });
     const own = dump.own === null ? null : guardBody(`agents/${agentId}.md`, parseWikiPage(`agents/${agentId}.md`, dump.own).body);
-    const snap: WikiSnapshotForAgent = { index: dump.index, pinned, own, nudge: nudgeFrom(dump.logTail, now()) };
+    // 索引整份进 system 提示词，而它是**磁盘上的文件**——工具每次重生成它，但 bash 也写得动，
+    // 而且页正文那道闸放不到这里（索引不是页）。换在建事件之前，日志里那份才等于喂给模型那份
+    const indexHit = scanThreat(dump.index);
+    const index = indexHit ? `（索引含可疑指令（${indexHit}），本轮未注入索引；跑 wiki check 并检查 index.md）` : dump.index;
+    const snap: WikiSnapshotForAgent = { index, pinned, own, nudge: nudgeFrom(dump.logTail, now()) };
     snapshotCache.set(agentId, snap);
     return { ...snap, nudge: opts.nudge ? snap.nudge : null };
   }

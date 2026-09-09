@@ -232,12 +232,19 @@ export function indexGroups(pages: readonly WikiPage[]): WikiIndexGroup[] {
   return order.filter((g) => byGroup.has(g)).map((g) => ({ name: g, entries: byGroup.get(g)! }));
 }
 
+/** 索引整份会拼进 system 提示词，而 title / summary 是从**磁盘上的页头**读回来的——
+    走工具那条路的过了 validateWikiFields，bash 直接写出来的页头一道闸都没过。所以行里
+    那两格各过一次 `promptSafe`（`]` 与全角括号换同形替身、折空白、剥不可见字符），判据同
+    ADR-0226：这段字面量靠 `[[` `]]` ` — ` 撑结构，撑结构的字符就得转。`parseIndex` 仍是
+    正常标题的逆运算——promptSafe 对不含那几个字符的标题是恒等的 */
 export function renderIndex(pages: readonly WikiPage[]): string {
   let out = INDEX_HEADER;
   for (const g of indexGroups(pages)) {
     out += `\n## ${g.name}\n`;
     for (const e of g.entries) {
-      out += e.summary === "" ? `- [[${linkTarget(e.path)}]] ${e.title}\n` : `- [[${linkTarget(e.path)}]] ${e.title} — ${e.summary}\n`;
+      const title = promptSafe(e.title);
+      const summary = promptSafe(e.summary);
+      out += summary === "" ? `- [[${linkTarget(e.path)}]] ${title}\n` : `- [[${linkTarget(e.path)}]] ${title} — ${summary}\n`;
     }
   }
   return out;
