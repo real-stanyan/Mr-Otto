@@ -5,8 +5,13 @@
 // 段与段之间不留空白。合成失败（没订阅 / 额度用完 / 网关抖）记成 error 跳过这段接着播
 // 下一段——一段读不出来不该把整场通话卡死。
 //
-// 只有这个文件碰 Audio 与 blob URL，而且都经 deps 注入（测试里换成假件）；合成本身
+// 只有这个文件碰播放（Web Audio），而且经 deps 注入（测试里换成假件）；合成本身
 // 走 window.otter.teamVoiceSpeak（主进程拿 JWT 打网关，渲染层只拿字节）。
+//
+// **为什么是 Web Audio 不是 `<audio src=blob:…>`**（#1170）：真机上 blob URL 被渲染层的 CSP
+// 挡掉（`default-src 'self'`，没有 media-src），每段都是「这段音频播不出来」。Web Audio
+// 解码的是内存里的字节，没有 URL，CSP 管不着；也不用 revoke blob。不放宽 CSP——那是安全
+// 边界，为一段自己生成的音频开 `media-src blob:` 不是必要的。
 
 import type { VoiceSpeakResult } from "../../../shared/shellBridge.js";
 
@@ -19,7 +24,7 @@ export interface VoicePlayerState {
   error: string | null;
 }
 
-/** <audio> 用到的那几格。Audio 元素本身就满足它；测试里造一个假的 */
+/** 播放一段要用到的那几格。Web Audio 那份实现在 webAudioPlayback；测试里造一个假的 */
 export interface PlayerAudio {
   play(): Promise<void>;
   pause(): void;
@@ -29,7 +34,7 @@ export interface PlayerAudio {
 
 export interface VoicePlayerDeps {
   speak: (text: string, voiceId: string) => Promise<VoiceSpeakResult>;
-  /** 字节 → 能播的东西。缺省：Blob + `URL.createObjectURL` + `new Audio()`，播完 revoke */
+  /** 字节 → 能播的东西。缺省：Web Audio（webAudioPlayback + 一个共享的 AudioContext） */
   createAudio?: (bytes: Uint8Array) => PlayerAudio;
   onChange: (s: VoicePlayerState) => void;
 }
@@ -42,15 +47,68 @@ interface Item {
   fetch: Promise<VoiceSpeakResult> | null;
 }
 
-function defaultCreateAudio(bytes: Uint8Array): PlayerAudio {
-  const url = URL.createObjectURL(new Blob([bytes as BlobPart], { type: "audio/mpeg" }));
-  const audio = new Audio(url);
-  // 包一层而不是直接回 Audio 元素：它的 onended 签名带 this/ev，与 PlayerAudio 那两格
-  // 对不上；blob URL 播完 / 播坏都要 revoke，包一层正好把这件事收在一处
-  const wrapper: PlayerAudio = { play: () => audio.play(), pause: () => audio.pause(), onended: null, onerror: null };
-  audio.addEventListener("ended", () => { URL.revokeObjectURL(url); wrapper.onended?.(); }, { once: true });
-  audio.addEventListener("error", () => { URL.revokeObjectURL(url); wrapper.onerror?.(); }, { once: true });
+/** AudioContext 用到的子集。经工厂注入：jsdom 里没有它，真机上惰性造一个共享的 */
+export interface AudioContextLike {
+  state: string;
+  destination: unknown;
+  resume(): Promise<void>;
+  decodeAudioData(buf: ArrayBuffer): Promise<unknown>;
+  createBufferSource(): AudioBufferSourceNodeLike;
+}
+
+export interface AudioBufferSourceNodeLike {
+  buffer: unknown;
+  connect(dest: unknown): unknown;
+  start(): void;
+  stop(): void;
+  addEventListener(type: "ended", cb: () => void): void;
+}
+
+/** 一段字节 → Web Audio 播放（#1170）。play() 里才解码（解码是异步的、可能失败——
+    失败让 play() 拒绝，VoicePlayer 据此当播放失败跳到下一段）；pause() 之后迟到的解码
+    不再 start。字节按 byteOffset/byteLength 切出来：视图未必从 0 开始 */
+export function webAudioPlayback(bytes: Uint8Array, getCtx: () => AudioContextLike): PlayerAudio {
+  let source: AudioBufferSourceNodeLike | null = null;
+  let stopped = false;
+  const wrapper: PlayerAudio = {
+    onended: null,
+    onerror: null,
+    async play() {
+      const ctx = getCtx();
+      const buf = bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
+      const decoded = await ctx.decodeAudioData(buf);
+      if (stopped) return;
+      const s = ctx.createBufferSource();
+      s.buffer = decoded;
+      s.connect(ctx.destination);
+      s.addEventListener("ended", () => wrapper.onended?.());
+      // 自动播放策略下 context 可能是 suspended：resume 一次（用户点过语音钮，算有过手势）
+      if (ctx.state === "suspended") await ctx.resume();
+      if (stopped) return;
+      source = s;
+      s.start();
+    },
+    pause() {
+      stopped = true;
+      try {
+        source?.stop();
+      } catch {
+        /* 还没 start 或已经停了：stop 会抛 InvalidStateError，这里不关心 */
+      }
+      source = null;
+    },
+  };
   return wrapper;
+}
+
+let sharedCtx: AudioContextLike | null = null;
+function sharedAudioContext(): AudioContextLike {
+  if (sharedCtx === null) sharedCtx = new AudioContext();
+  return sharedCtx;
+}
+
+function defaultCreateAudio(bytes: Uint8Array): PlayerAudio {
+  return webAudioPlayback(bytes, sharedAudioContext);
 }
 
 export class VoicePlayer {
