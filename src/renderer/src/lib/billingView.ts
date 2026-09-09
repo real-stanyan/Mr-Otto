@@ -166,6 +166,22 @@ export function fmtRemainingPercent(w: { usedMicro: number; limitMicro: number }
   return `${remainingPercent(w).toFixed(1)}%`;
 }
 
+/** 一笔花费占一扇窗的**百分之几**（工作区用量页用它，#1120）。与 `remainingPercent`
+    是同一把尺子的两头：那边报剩余、这边报已用，**一位小数、向下取整**的理由也同一条
+    （四舍五入会把「刚烧了一点」写成一个更大的数）。两个函数放在一起是为了让「同一件事
+    只有一份判据」这句话在代码里看得见。
+    分母 <= 0 时回 0：调用方在那种情形下本来就不该画百分比（见 `usageScale`）。 */
+export function usedPercentOf(micro: number, limitMicro: number): number {
+  if (limitMicro <= 0) return 0;
+  const used = (micro / limitMicro) * 100;
+  return Math.floor(Math.min(100, Math.max(0, used)) * 10) / 10;
+}
+
+/** 「3.7%」 */
+export function fmtUsedPercent(micro: number, limitMicro: number): string {
+  return `${usedPercentOf(micro, limitMicro).toFixed(1)}%`;
+}
+
 /** 悬停时给出的精确数。百分比是给人扫一眼的，对账的人还得看得到 credit。
     正文那半走 `usageLine` —— #1026 之后两处界面都只画百分比，那串 credit 只剩这一个
     出口，两份写法就该合成一份（否则「4.1 / 6.7 credit」的格式还有两个地方能各改各的） */

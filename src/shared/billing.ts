@@ -256,6 +256,15 @@ export interface WorkspaceUsage {
   ownerUid: string;
   weekStartAt: number;
   weekEndAt: number;
+  /** 所有者这一档的**周额度上限**（micro）——用量页把每只 agent 的花费换算成
+      「占本周额度的百分之几」的那个分母（#1120）。credit 也是一笔钱数（1 credit =
+      1 美分，见文件头注），而云会话统一走所有者的订阅额度（ADR-0233）：用户问这个数
+      就是想知道「我还能干多久」，ADR-0209/0239 已经为账号页与浮层判过同一条。
+
+      **`null` = 没有活跃订阅，或这台 edge 还不发这一格**（旧版本）。两种都表示
+      「分母缺席」，界面退回「占本工作区本周用量的百分比」并说明换了口径——**绝不
+      回落到 credit**：那正是这次要拆掉的东西。 */
+  weekLimitMicro: number | null;
   rows: WorkspaceUsageRow[];
 }
 
@@ -264,6 +273,10 @@ export function parseWorkspaceUsage(payload: unknown): WorkspaceUsage | null {
   const { workspaceId, ownerUid, weekStartAt, weekEndAt } = payload;
   if (typeof workspaceId !== "string" || typeof ownerUid !== "string") return null;
   if (typeof weekStartAt !== "number" || typeof weekEndAt !== "number") return null;
+  // 缺席 = null（旧 edge 不发这一格），不是解析失败：新客户端连老网关时整张表还得画得出来
+  const rawLimit = payload.weekLimitMicro;
+  const weekLimitMicro =
+    typeof rawLimit === "number" && Number.isFinite(rawLimit) && rawLimit > 0 ? rawLimit : null;
   if (!Array.isArray(payload.rows)) return null;
   const rows: WorkspaceUsageRow[] = [];
   for (const r of payload.rows) {
@@ -275,5 +288,5 @@ export function parseWorkspaceUsage(payload: unknown): WorkspaceUsage | null {
       promptTokens: r.promptTokens as number, cachedTokens: r.cachedTokens as number, completionTokens: r.completionTokens as number,
     });
   }
-  return { workspaceId, ownerUid, weekStartAt, weekEndAt, rows };
+  return { workspaceId, ownerUid, weekStartAt, weekEndAt, weekLimitMicro, rows };
 }

@@ -1,59 +1,90 @@
-// WorkspacePage —— 工作区详情页：七 tab（会话 / 智能体 / 文件 / 连接器 / 成员 / 用量 / 记忆）（Task 12，ADR-0198 切片 3）。
+// WorkspacePage —— 工作区详情页。**七格从分段控件换成推入式导航**（#1120）。
 //
-// 页而不是弹窗（照 McpConnectorPage 的换页惯例，ADR-0185）：三张表加起来随时
-// 超过一屏，弹窗只会滚动条套滚动条；而且这里挂了好几个二次确认，弹窗里嵌
-// 二次确认的视觉层级会很怪。
+// 页而不是弹窗（照 McpConnectorPage 的换页惯例，ADR-0185）：几张表加起来随时超过一屏，
+// 弹窗只会滚动条套滚动条。
 //
-// 没有推送通道（workspaceList 无 onChanged，见 Task 11 report）：每次改动
-// 成功后 store 那十一个 action 都会自己重拉一次整份快照，这一页只管拿最新的
-// ws 传进来的那份画，不自己维护本地缓存。
+// ## 为什么不再是七个 tab
 //
-// 危险动作（踢人 / 解散工作区 / 撤回发布 / 退出工作区）走 `confirm()`——同
-// FriendsSection「删除好友」、侧栏「删除会话」一样的原生确认，不新造一套
-// AlertDialog 视觉语言（本仓这一类判定至今都是这么做的）。
+// 抽屉宽 `w-[min(420px,92vw)]`（`App.tsx`），里面原来塞着七个 `TabsTrigger`：真机上
+// 「智能体」「连接器」已经挤到快认不出，再加一格就得开始截断。换成目录 + 推入页之后：
+// 每一格有多宽由它自己说了算、目录那层能给每行写一句「里面有什么」（tab 只有两个字）、
+// 二级页有完整一屏，于是那几个原来必须开弹窗的编辑器可以直接摊开。代价是换一格从一次
+// 点击变成两次——设置面是低频、且人来这儿通常只为改一件事，这个代价换上面三条划算；
+// 哪天这一页变成每天要在几格之间来回跳的东西，这个判断就该重判。
 //
-// 云会话（Task 13，ADR-0199）曾经也归这一页：顶部一节列清单 + 一颗「新建云会话」，
-// 点开整页换成 CloudSessionPage。**issue #919 把这两件事都搬走了**——建会话走侧栏
-// 工作区组头那颗 ＋（同本地工程组），开会话在主区（同本地会话）。这一页只剩
-// 「管理」：成员、连接器、已发布会话，外加**已归档**的云会话（同本地那批归档的
-// 会话不在侧栏里一样，它们得有个去处，而这里就是这个工作区的那个去处）。
+// ## 「解散工作区」从页头搬到最底下
 //
-// 智能体 tab（#932 切片 1b）：@ 得着的那几只在这儿建改删。
+// 原来它是页头右上角一颗红色实心按钮——**整页视觉上最响的元素，是最危险、最少用的
+// 那一个**。搬进最后一组、红字、单独一行，并保留 `confirm()` 二次确认（同 FriendsSection
+// 「删除好友」、侧栏「删除会话」，不新造一套 AlertDialog 视觉语言）。
+//
+// 没有推送通道（workspaceList 无 onChanged）：每次改动成功后 store 那十一个 action 都会
+// 自己重拉一次整份快照，这一页只管拿最新的 ws 传进来的那份画，不自己维护本地缓存。
 
-import { useEffect, useState } from "react";
-import { ArrowLeft, ChevronDown, ChevronRight, LogOut, Trash2, UserPlus } from "lucide-react";
-import { cn } from "@/lib/utils.js";
-import { Button } from "@/components/ui/button.js";
-import { Input } from "@/components/ui/input.js";
-import {
-  Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
-} from "@/components/ui/dialog.js";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs.js";
+import type { ReactNode } from "react";
+import { ArrowLeft, Bot, FolderOpen, Gauge, MessagesSquare, Plug, Sparkles, Users } from "lucide-react";
+import { InsetGroup, InsetIcon, InsetNote, InsetRow } from "@/components/ui/inset-list.js";
+import { NavStack, useNav, type NavScreen } from "@/components/ui/nav-stack.js";
 import { useChat } from "../store.js";
-import {
-  cloudSessionRows, connectorBatchErrorText, connectorRows, memberRows, sessionRows,
-  type ConnectorCloudState, type CloudSessionListRow,
-} from "../lib/workspaceView.js";
 import { WorkspaceAgentsTab } from "./WorkspaceAgentsTab.js";
 import { WorkspaceUsageTab } from "./WorkspaceUsageTab.js";
 import { WorkspaceFilesTab } from "./WorkspaceFilesTab.js";
 import { WorkspaceMemoryTab } from "./WorkspaceMemoryTab.js";
-import {
-  buildAllow, isServerOn, isToolOn, selectionFromAllow, toggleServer, toggleTool,
-  formatProxyTime, type ProxySelection,
-} from "../lib/proxyShare.js";
-import { gitHostRows, gitHostsNotice } from "../lib/gitHostsView.js";
-import { validateGitHost } from "../../../shared/remote/gitHost.js";
-import type { CsGitHost } from "../../../shared/remote/cloudSession.js";
+import { WorkspaceSessionsTab } from "./WorkspaceSessionsTab.js";
+import { WorkspaceConnectorsTab } from "./WorkspaceConnectorsTab.js";
+import { WorkspaceMembersTab } from "./WorkspaceMembersTab.js";
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 
-// 云会话清单没拉过时的兜底：模块级常量而非每次渲染 `?? []`，保证 selector
-// 每次返回同一引用，不触发 zustand 无谓重渲（仓库 selector 约定，同
-// FriendChatView 的 EMPTY 先例）
-const EMPTY_CLOUD_SESSIONS: CloudSessionListRow[] = [];
+interface Section {
+  id: string;
+  label: string;
+  icon: ReactNode;
+  /** 目录行上那句「里面有什么」。**只从已经在手的 `ws` 推**——为了给目录写一个数就
+      多打一次网络，等于让「打开抽屉」这个动作变贵；而这句话的活是「让人知道该点哪一格」，
+      不是报数。顺带它也堵掉「同一个事实两份写法」那一类洞（#1120 那次漏的正是这个）。 */
+  hint: (ws: WorkspaceSnapshot) => string;
+  render: (ws: WorkspaceSnapshot, selfUid: string) => ReactNode;
+}
 
-const SECTION_LABEL = "text-[11px] tracking-[0.06em] text-muted-foreground uppercase";
-const ROW = "flex items-center gap-2 px-2 py-[6px] rounded-md text-xs";
+const SECTIONS: readonly Section[] = [
+  {
+    id: "sessions", label: "会话", icon: <MessagesSquare />,
+    hint: (ws) => (ws.sessions.length > 0 ? `云会话 · ${ws.sessions.length} 条已发布` : "这个工作区里的会话"),
+    render: (ws, selfUid) => <WorkspaceSessionsTab ws={ws} selfUid={selfUid} />,
+  },
+  {
+    id: "agents", label: "智能体", icon: <Bot />,
+    // 智能体排在会话之后、连接器之前——它是用得最多的一页，连接器/成员是配一次的东西
+    hint: (ws) => (ws.agents.length > 0 ? ws.agents.map((a) => a.name).slice(0, 3).join("、") : "群里 @ 得着的那几只"),
+    render: (ws, selfUid) => <WorkspaceAgentsTab ws={ws} selfUid={selfUid} />,
+  },
+  {
+    id: "files", label: "文件", icon: <FolderOpen />,
+    // 「文件」不叫「仓库」：主语是「水獭在哪儿干活」，Git 只是往里装东西的一种方式（ADR-0251）
+    hint: () => "水獭干活的那个共用文件夹",
+    render: (ws) => <WorkspaceFilesTab key={ws.id} ws={ws} />,
+  },
+  {
+    id: "connectors", label: "连接器", icon: <Plug />,
+    hint: (ws) => (ws.connectors.length > 0 ? `${ws.connectors.length} 台 MCP 服务` : "还没有人贡献"),
+    render: (ws, selfUid) => <WorkspaceConnectorsTab ws={ws} selfUid={selfUid} />,
+  },
+  {
+    id: "members", label: "成员", icon: <Users />,
+    hint: (ws) => `${ws.members.length} 人`,
+    render: (ws, selfUid) => <WorkspaceMembersTab ws={ws} selfUid={selfUid} />,
+  },
+  {
+    id: "usage", label: "用量", icon: <Gauge />,
+    hint: () => "各智能体占了多少额度",
+    render: (ws) => <WorkspaceUsageTab ws={ws} />,
+  },
+  {
+    id: "memory", label: "记忆", icon: <Sparkles />,
+    hint: () => "共享档 + 每只的私有档",
+    render: (ws) => <WorkspaceMemoryTab ws={ws} />,
+  },
+];
 
 export function WorkspacePage({
   ws,
@@ -64,6 +95,39 @@ export function WorkspacePage({
   selfUid: string;
   onBack: () => void;
 }) {
+  const root: NavScreen = {
+    // key 带上 ws.id：换工作区时整棵栈重挂，上一个工作区的二级页不会多活一帧
+    key: `ws-root:${ws.id}`,
+    title: ws.name,
+    largeTitle: {
+      title: ws.name,
+      subtitle: `${ws.members.length} 人 · ${ws.ownerUid === selfUid ? "你是所有者" : "成员"}`,
+    },
+    leading: (
+      <button
+        type="button"
+        onClick={onBack}
+        className="inline-flex h-8 items-center gap-[3px] rounded-[9px] pr-2 pl-1 text-[14px] tracking-[-0.01em] text-brand transition-[transform,background-color] duration-150 active:scale-[0.96] active:bg-foreground/[0.06] focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:outline-none"
+      >
+        <ArrowLeft className="size-[17px]" aria-hidden />
+        工作区
+      </button>
+    ),
+    render: () => <RootBody ws={ws} selfUid={selfUid} onLeftWorkspace={onBack} />,
+  };
+
+  return <NavStack root={root} />;
+}
+
+/** 根页正文。单独一个组件是因为它要 `useNav()`——那个上下文只在 `<NavStack>` 里面才有 */
+function RootBody({
+  ws, selfUid, onLeftWorkspace,
+}: {
+  ws: WorkspaceSnapshot;
+  selfUid: string;
+  onLeftWorkspace: () => void;
+}) {
+  const nav = useNav();
   const deleteGroup = useChat((s) => s.deleteWorkspaceGroup);
   const leaveGroup = useChat((s) => s.leaveWorkspaceGroup);
   const error = useChat((s) => s.workspaceGroupsError);
@@ -71,678 +135,55 @@ export function WorkspacePage({
 
   const onDelete = async (): Promise<void> => {
     if (!confirm(`解散工作区「${ws.name}」？全体成员的连接器授权与已发布会话会立即失效，且不可撤销。`)) return;
-    if (await deleteGroup(ws.id)) onBack();
+    if (await deleteGroup(ws.id)) onLeftWorkspace();
   };
 
   const onLeave = async (): Promise<void> => {
     if (!confirm(`退出工作区「${ws.name}」？你贡献的连接器授权会立即失效。`)) return;
-    if (await leaveGroup(ws.id)) onBack();
+    if (await leaveGroup(ws.id)) onLeftWorkspace();
   };
 
   return (
-    <div className="flex flex-col gap-4">
-      <button
-        type="button"
-        onClick={onBack}
-        className={cn(
-          "press-scale -ml-1 inline-flex w-fit items-center gap-1.5 rounded-[7px] px-1.5 py-1",
-          "text-[12.5px] text-muted-foreground transition-colors duration-150",
-          "hover:bg-foreground/[0.06] hover:text-foreground"
-        )}
-      >
-        <ArrowLeft className="size-[13px]" aria-hidden />
-        工作区
-      </button>
-
-      <header className="flex items-start justify-between gap-3">
-        <div className="flex min-w-0 flex-col gap-1">
-          <h3 className="min-w-0 truncate text-[17px] leading-tight font-medium">{ws.name}</h3>
-          <p className="text-[12px] text-muted-foreground">
-            {ws.members.length} 人 · {isOwner ? "你是所有者" : "成员"}
-          </p>
-        </div>
-        <Button
-          variant="destructive" size="sm"
-          onClick={() => void (isOwner ? onDelete() : onLeave())}
-        >
-          {isOwner ? <Trash2 className="size-[13px]" /> : <LogOut className="size-[13px]" />}
-          {isOwner ? "解散工作区" : "退出工作区"}
-        </Button>
-      </header>
-
-      {error && <p className="text-xs text-err">{error}</p>}
-
-      <Tabs defaultValue="sessions">
-        <TabsList>
-          <TabsTrigger value="sessions">会话</TabsTrigger>
-          {/* 智能体排在会话之后、连接器之前——智能体是用得最多的一页，
-              连接器/成员是配一次的东西 */}
-          <TabsTrigger value="agents">智能体</TabsTrigger>
-          {/* 文件是工作区的属性（#991，ADR-0234）：从云会话头部搬到这里。
-              **#1056 把它从「仓库」改名成「文件」**——主语是「水獭在哪儿干活」，
-              每个工作区都有一个共用工作文件夹，而 Git 仓库只是往里装东西的一种
-              方式。叫「仓库」等于让非程序员读到的第一个词就跟自己无关 */}
-          <TabsTrigger value="files">文件</TabsTrigger>
-          <TabsTrigger value="connectors">连接器</TabsTrigger>
-          <TabsTrigger value="members">成员</TabsTrigger>
-          <TabsTrigger value="usage">用量</TabsTrigger>
-          <TabsTrigger value="memory">记忆</TabsTrigger>
-        </TabsList>
-        <TabsContent value="sessions" className="pt-3">
-          <SessionsTab ws={ws} selfUid={selfUid} />
-        </TabsContent>
-        <TabsContent value="agents" className="pt-3">
-          <WorkspaceAgentsTab ws={ws} selfUid={selfUid} />
-        </TabsContent>
-        <TabsContent value="files" className="pt-3">
-          {/* key：换工作区时整块重挂，免得上一个工作区的路径/清单多活一帧 */}
-          <WorkspaceFilesTab key={ws.id} ws={ws} />
-        </TabsContent>
-        <TabsContent value="connectors" className="pt-3">
-          <ConnectorsTab ws={ws} selfUid={selfUid} />
-        </TabsContent>
-        <TabsContent value="members" className="pt-3">
-          <MembersTab ws={ws} selfUid={selfUid} />
-        </TabsContent>
-        <TabsContent value="usage" className="pt-3">
-          <WorkspaceUsageTab ws={ws} />
-        </TabsContent>
-        <TabsContent value="memory" className="pt-3">
-          <WorkspaceMemoryTab ws={ws} />
-        </TabsContent>
-      </Tabs>
-    </div>
-  );
-}
-
-// ─── 会话 tab ─────────────────────────────────────────────────────────
-
-function SessionsTab({ ws, selfUid }: { ws: WorkspaceSnapshot; selfUid: string }) {
-  const importSession = useChat((s) => s.importWorkspaceSession);
-  const unpublish = useChat((s) => s.unpublishWorkspaceSession);
-  const rows = sessionRows(ws);
-
-  return (
-    <div className="flex flex-col gap-4">
-      <div className="flex flex-col gap-1">
-        <span className={SECTION_LABEL}>已发布会话</span>
-        {rows.length === 0 ? (
-          <p className="px-2 text-xs text-muted-foreground">还没有人发布会话到这个工作区。</p>
-        ) : (
-          rows.map((row) => {
-            const raw = ws.sessions.find((s) => s.id === row.id)!;
-            const mine = raw.publisherUid === selfUid;
-            return (
-              <div key={row.id} className={cn(ROW, "border border-border")}>
-                <button
-                  type="button"
-                  className="flex min-w-0 flex-1 flex-col items-start gap-0.5 bg-transparent text-left"
-                  onClick={() => void importSession(raw.publisherUid, raw.pkgId)}
-                  title="导入到本机成为一个新会话"
-                >
-                  <span className="min-w-0 truncate font-medium">{row.title}</span>
-                  <span className="text-[10.5px] text-muted-foreground">
-                    {row.publisherLabel} · {formatProxyTime(row.updatedTs)}
-                  </span>
-                </button>
-                {mine && (
-                  <Button
-                    variant="ghost" size="xs" className="shrink-0 text-err"
-                    onClick={() => {
-                      if (confirm(`撤回会话「${row.title}」？其他成员将不能再导入它。`)) {
-                        void unpublish(ws.id, row.id);
-                      }
-                    }}
-                  >
-                    撤回
-                  </Button>
-                )}
-              </div>
-            );
-          })
-        )}
-      </div>
-      {/* 归档的云会话垫在最底下：翻旧账的东西不该排在还有用的东西前面 */}
-      <CloudSessionsSection ws={ws} />
-    </div>
-  );
-}
-
-/** 归档了的云会话（issue #919，前身是这一页顶部那节「云会话」，Task 13/ADR-0199）。
-    与上面「已发布会话」（一次性快照，导入即 fork 成本机新会话）是两种不同的东西，
-    分开一节，不混进同一张表。列表本身没有推送通道（同 workspaceGroups 的十一个
-    action，workspaceCloudList 无 onChanged），挂载时拉一次。活着的那些在侧栏工作区组里，新建也在那儿——
-    这里只是归档的去处，同本地会话的「已归档会话」那一屏。云端没有"恢复归档"
-    （daemon 启动只捞 archived=false 的会话重开房间），所以这些行只读，点进去
-    也只是看：openCloudSession 对归档会话仍然连得上房间读历史。一条归档的都没有
-    时整节不出——这一页是管理面，不该为一件没发生过的事留一行空态。
-
-    行尾那颗 🗑 是 #1044 补的：删除的入口不能只有侧栏那个 ⋮，**归档掉的才是最
-    想清掉的那批**，而它们根本不在侧栏里。判据与侧栏那颗逐字相同（owner 或建的
-    人），服务端仍然自己判一次。行因此从一颗 button 拆成 div + 两颗 button——
-    button 套 button 是非法 HTML。 */
-function CloudSessionsSection({ ws }: { ws: WorkspaceSnapshot }) {
-  const list = useChat((s) => s.cloudSessionList[ws.id]) ?? EMPTY_CLOUD_SESSIONS;
-  const refresh = useChat((s) => s.refreshCloudSessions);
-  const openCloud = useChat((s) => s.openCloudSession);
-  const deleteCloud = useChat((s) => s.cloudDelete);
-  const selfUid = useChat((s) => s.account.id);
-
-  useEffect(() => {
-    void refresh(ws.id);
-  }, [ws.id, refresh]);
-
-  const rows = cloudSessionRows(list, ws).filter((r) => r.archived);
-  if (rows.length === 0) return null;
-
-  return (
-    <div className="flex flex-col gap-1">
-      <span className={SECTION_LABEL}>已归档的云会话</span>
-      {rows.map((row) => (
-        <div key={row.id} className={cn(ROW, "border border-border")}>
-          <button
-            type="button"
-            className="flex min-w-0 flex-1 bg-transparent text-left"
-            onClick={() => void openCloud(ws.id, row.id)}
-          >
-            <span className="min-w-0 flex-1 truncate">
-              <b className="font-medium">{row.title}</b>
-              <span className="text-muted-foreground"> · {row.creatorLabel} · {formatProxyTime(row.updatedTs)}</span>
-            </span>
-          </button>
-          {(selfUid === ws.ownerUid || selfUid === row.creatorUid) && (
-            <button
-              type="button"
-              className="shrink-0 bg-transparent text-muted-foreground hover:text-err"
-              title="彻底删除这条会话（整段对话从云端抹掉，不可恢复）"
-              onClick={() => {
-                if (!window.confirm(`彻底删除「${row.title}」？\n整段对话会从云端抹掉，群里所有人都再也看不到，不可恢复。`)) return;
-                void deleteCloud(ws.id, row.id);
-              }}
-            >
-              <Trash2 className="size-[13px]" />
-            </button>
-          )}
-        </div>
-      ))}
-    </div>
-  );
-}
-
-// ─── 连接器 tab ───────────────────────────────────────────────────────
-
-/** 云端状态的点：三档不能合并成两档——"unknown"（拿不到清单）与 "off"
-    （清单里确实没有）是两件事，前者不该说成后者的负面措辞（同 px 一节
-    hostStatusLine 的纪律：拿不到 ≠ 不可用，审查 round 1 finding）*/
-function CloudStateDot({ state }: { state: ConnectorCloudState }) {
-  if (state === "ready") {
-    return <span className="size-[7px] shrink-0 rounded-full bg-brand" aria-label="云端可用" title="云端可用" />;
-  }
-  if (state === "unknown") {
-    return (
-      <span
-        className="size-[7px] shrink-0 rounded-full bg-muted-foreground/40"
-        aria-label="云端状态未知"
-        title="云端状态未知——本机暂时拿不到这份清单"
-      />
-    );
-  }
-  return <span className="size-[7px] shrink-0 rounded-full bg-border" aria-label="云端不可用" />;
-}
-
-/** 连接器 tab（#1104 起分两组）。两组都在回答「这个工作区能够到外面的什么」：
-    上面是 MCP 服务，下面是代码仓库的凭据。它们走的是**完全不同的执行路径**
-    ——MCP 那半是 edge 的托管箱（ADR-0197），Git 这半是 runtime 上一台一次性
-    旁路容器（ADR-0200 决策②，凭据不进水獭那台容器）——所以分节标题不是装饰，
-    它是这一页上唯一说清「这两样不是一类」的地方。 */
-function ConnectorsTab({ ws, selfUid }: { ws: WorkspaceSnapshot; selfUid: string }) {
-  const withdraw = useChat((s) => s.withdrawWorkspaceConnector);
-  // hostedServerIds 的渲染层来源目前只有 A 侧「云端可用」总览按 friendUid 聚合
-  // （ProxyHostView.cloudReady），没有拆到 serverId 粒度的清单可复用——
-  // TODO(#811): hostedServerIds 需要一条 IPC，届时这里换成真实来源
-  const hostedServerIds: readonly string[] | null = null;
-  const rows = connectorRows(ws, selfUid, hostedServerIds);
-  const [contributeOpen, setContributeOpen] = useState(false);
-
-  return (
-    <div className="flex flex-col gap-2">
-      <div className="flex justify-end">
-        <Button size="sm" onClick={() => setContributeOpen(true)}>贡献连接器…</Button>
-      </div>
-      {rows.length === 0 ? (
-        <p className="px-2 text-xs text-muted-foreground">还没有人贡献连接器。</p>
-      ) : (
-        <div className="flex flex-col gap-1">
-          {rows.map((row) => (
-            <div key={row.serverId} className={cn(ROW, "border border-border")}>
-              <CloudStateDot state={row.cloudState} />
-              <span className="min-w-0 flex-1 truncate">
-                <b className="font-medium">{row.serverId}</b>
-                <span className="text-muted-foreground"> · {row.hostLabel} · {row.toolsSummary}</span>
-              </span>
-              {row.mine && (
-                <Button
-                  variant="ghost" size="xs" className="shrink-0 text-err"
-                  onClick={() => void withdraw(ws.id, row.serverId)}
-                >
-                  撤回
-                </Button>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-      <ContributeConnectorDialog ws={ws} selfUid={selfUid} open={contributeOpen} onOpenChange={setContributeOpen} />
-
-      <GitHostsSection ws={ws} selfUid={selfUid} />
-    </div>
-  );
-}
-
-/** 添加一台主机（#1104）。两个框：主机名 + 令牌。
-
-    **令牌框存完即清**——纪律照抄 `ProviderKeyDialog` 的原话：「输入框存完即清，
-    渲染层不留 key 的任何副本；状态只有布尔」。这里连布尔都不留：存完整个弹窗
-    就关了，本地 state 跟着卸载。
-
-    主机名**本地先过一遍 `validateGitHost`** 省掉一次明知会被拒的往返；服务端
-    仍然自己校验一次——渲染层不是安全边界（同 `validateRepoUrl` 注释里那条理由）。 */
-function AddGitHostDialog({
-  ws, open, onOpenChange, onSaved,
-}: {
-  ws: WorkspaceSnapshot;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  onSaved: (hosts: readonly CsGitHost[] | null) => void;
-}) {
-  const save = useChat((s) => s.workspaceCloudGitCredential);
-  const [host, setHost] = useState("github.com");
-  const [token, setToken] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-
-  // 每次开框回到干净状态——不带着上一次的输入或失败提示（同 ContributeConnectorDialog）
-  const onDialogOpenChange = (o: boolean): void => {
-    if (o) {
-      setHost("github.com");
-      setToken("");
-      setError(null);
-    }
-    onOpenChange(o);
-  };
-
-  const doSave = async (): Promise<void> => {
-    const valid = validateGitHost(host);
-    if (!valid.ok) {
-      setError(valid.message);
-      return;
-    }
-    if (token.trim() === "") {
-      // 空串在协议里是「删掉这台主机」，从「添加」这条路发出去就是南辕北辙
-      setError("令牌不能为空。要删掉一台主机，用列表行上的「删除」。");
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    const r = await save(ws.id, valid.host, token);
-    setBusy(false);
-    if (!r.ok) {
-      setError(r.message);
-      return;
-    }
-    setToken(""); // 存完即清，不等弹窗卸载
-    onSaved(r.value);
-    onOpenChange(false);
-  };
-
-  return (
-    <Dialog open={open} onOpenChange={(o) => { if (!busy) onDialogOpenChange(o); }}>
-      <DialogContent className="sm:max-w-[420px]">
-        <DialogHeader>
-          <DialogTitle>添加代码仓库主机</DialogTitle>
-          <DialogDescription>
-            令牌存在服务端，工作区里的水獭替你拉私有仓库时用它；**它不会下发到任何人的客户端**，
-            成员在这一页只看得到主机名。
-          </DialogDescription>
-        </DialogHeader>
-
-        <div className="flex flex-col gap-2">
-          <Input
-            value={host}
-            onChange={(e) => setHost(e.target.value)}
-            placeholder="github.com"
-            disabled={busy}
-            autoFocus
+    <div className="flex flex-col">
+      {error && <p className="px-1 pb-2 text-xs text-err">{error}</p>}
+      <InsetGroup sepInset={51}>
+        {SECTIONS.map((s) => (
+          <InsetRow
+            key={s.id}
+            leading={<InsetIcon>{s.icon}</InsetIcon>}
+            title={s.label}
+            subtitle={s.hint(ws)}
+            chevron
+            onClick={() =>
+              nav.push({
+                key: `ws-${s.id}:${ws.id}`,
+                title: s.label,
+                // 返回钮上写**上一页叫什么**。工作区名字长起来会顶到中间那行标题，
+                // 那时退回「返回」——一个截断的名字比一个通用词更难认
+                backLabel: ws.name.length > 6 ? "返回" : ws.name,
+                largeTitle: { title: s.label },
+                render: () => s.render(ws, selfUid),
+              })
+            }
           />
-          <Input
-            type="password"
-            value={token}
-            onChange={(e) => setToken(e.target.value)}
-            placeholder="访问令牌（Personal Access Token）"
-            disabled={busy}
-          />
-          <p className="text-[11px] text-muted-foreground">
-            同一台主机再存一次就是换新的那把。
-          </p>
-          {error !== null && <p className="text-xs text-err">{error}</p>}
-        </div>
-
-        <DialogFooter>
-          <Button variant="ghost" size="sm" disabled={busy} onClick={() => onOpenChange(false)}>取消</Button>
-          <Button size="sm" disabled={busy} onClick={() => void doSave()}>{busy ? "保存中…" : "保存"}</Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-/** 「代码仓库」那一组（#1104）。**token 从不下行**——这张表里一行 = 一台能认证的
-    主机，那把钥匙只活在 runtime 那台 VPS 上。
-
-    owner 才画 ＋ 与删除；非 owner 看到的是**同一份清单**、只是没有那两颗钮——
-    不是整组藏起来（藏起来会让人以为这个工作区没配过，同 ADR-0243 对非 owner 的处置）。 */
-function GitHostsSection({ ws, selfUid }: { ws: WorkspaceSnapshot; selfUid: string }) {
-  const load = useChat((s) => s.workspaceCloudState);
-  const save = useChat((s) => s.workspaceCloudGitCredential);
-  const isOwner = ws.ownerUid === selfUid;
-
-  const [hosts, setHosts] = useState<readonly CsGitHost[] | null | undefined>(undefined);
-  const [loading, setLoading] = useState(true);
-  const [adding, setAdding] = useState(false);
-  const [now] = useState(() => Date.now());
-
-  useEffect(() => {
-    let alive = true;
-    setLoading(true);
-    void load(ws.id).then((r) => {
-      if (!alive) return;
-      // 拉不到整份 = 读不到（null），与「一台都没配」（[]）分开画
-      setHosts(r.ok ? r.value.gitHosts : null);
-      setLoading(false);
-    });
-    return () => {
-      alive = false;
-    };
-  }, [ws.id, load]);
-
-  const rows = gitHostRows(hosts ?? [], ws.members, isOwner, now);
-  const notice = gitHostsNotice(hosts, loading);
-
-  return (
-    <section className="flex flex-col gap-2 border-t border-border pt-4">
-      <div className="flex items-center justify-between">
-        <p className={SECTION_LABEL}>代码仓库</p>
-        {isOwner && (
-          <Button size="sm" variant="ghost" onClick={() => setAdding(true)} disabled={loading}>
-            添加主机…
-          </Button>
-        )}
-      </div>
-      <p className="text-[12px] text-muted-foreground">
-        存一把访问令牌，水獭就能替你拉私有仓库。
-        <b className="font-medium text-foreground">令牌只留在服务端</b>
-        ——这张表里看得到有哪几台主机，看不到那把钥匙。
-      </p>
-
-      {notice && (
-        <p className={cn("px-1 text-xs", notice.tone === "err" ? "text-err" : "text-muted-foreground")}>
-          {notice.text}
-        </p>
-      )}
-
-      {rows.length > 0 && (
-        <div className="flex flex-col gap-1">
-          {rows.map((row) => (
-            <div key={row.host} className={cn(ROW, "border border-border")}>
-              <span className="min-w-0 flex-1 truncate">
-                <b className="font-medium">{row.host}</b>
-                <span className="text-muted-foreground"> · {row.meta}</span>
-              </span>
-              {row.canRemove && (
-                <Button
-                  variant="ghost" size="xs" className="shrink-0 text-err"
-                  onClick={() => {
-                    // `token: ""` = 删掉这台主机（协议 15 的两态）。成功时服务端
-                    // 回的是**它此刻的**清单，直接换上——不本地推算，那会在
-                    // 「我删了但服务端没删成」时画出一个假状态
-                    void save(ws.id, row.host, "").then((r) => {
-                      if (r.ok) setHosts(r.value);
-                    });
-                  }}
-                >
-                  删除
-                </Button>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-
-      <AddGitHostDialog
-        ws={ws}
-        open={adding}
-        onOpenChange={setAdding}
-        onSaved={(next) => setHosts(next)}
-      />
-    </section>
-  );
-}
-
-function ContributeConnectorDialog({
-  ws, selfUid, open, onOpenChange,
-}: {
-  ws: WorkspaceSnapshot;
-  selfUid: string;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-}) {
-  const mcpServers = useChat((s) => s.mcpServers);
-  const contribute = useChat((s) => s.contributeWorkspaceConnector);
-  const withdraw = useChat((s) => s.withdrawWorkspaceConnector);
-  const refreshWorkspaceGroups = useChat((s) => s.refreshWorkspaceGroups);
-  // 只有本机已接通的 http-transport server 能贡献进云端箱——同 escrowSync
-  // 「进箱只收 live 的 https http-transport server」那条闸（ADR-0197）。
-  // 进箱三条准入之一是 https（pxEscrow.buildEscrowDoc）——这里不滤，贡献
-  // 出去就是一行永远「云端不可用」的死目录（终审 M3）。
-  const eligible = mcpServers.servers.filter(
-    (s) => s.config.kind === "http" && s.status === "connected" && s.config.url?.startsWith("https://")
-  );
-  const mine = ws.connectors.filter((c) => c.hostUid === selfUid);
-  const [sel, setSel] = useState<ProxySelection>(() => selectionFromAllow(mine));
-  const [expanded, setExpanded] = useState<Set<string>>(new Set());
-  const [busy, setBusy] = useState(false);
-  // 本地错误态，不订阅全局 workspaceGroupsError——理由同 AgentEditorDialog：
-  // 那一格是整页共用的，弹窗刚打开可能还留着上一次跟这次批量操作毫不相干的
-  // 旧错误。每一步的失败原因都落在那一格里，这里用 getState() 现取快照
-  // （#957 C-C1：两个循环一个返回值都不看，是这条 finding 的根）
-  const [error, setError] = useState<string | null>(null);
-
-  // 每次开框重新从当前已贡献的那份回填——不带着上一次开框时的临时勾选状态，
-  // 也不带上一次的失败提示
-  const onDialogOpenChange = (o: boolean): void => {
-    if (o) {
-      setSel(selectionFromAllow(mine));
-      setError(null);
-    }
-    onOpenChange(o);
-  };
-
-  const doConfirm = async (): Promise<void> => {
-    setBusy(true);
-    setError(null);
-    const next = buildAllow(sel);
-    const nextIds = new Set(next.map((a) => a.serverId));
-    const prevIds = new Set(mine.map((c) => c.serverId));
-    // 每一步都收返回值，失败的那台记进各自的清单——不再让下一步成功把
-    // 上一步失败的痕迹抹掉（原 bug 的核心：两个循环一个返回值都不看）。
-    // opts.refresh:false 关掉每步自带的 refreshWorkspaceGroups()，循环
-    // 结束后统一刷一次：N 步不再是 2N 次往返，而且部分失败时也要刷出
-    // 已经生效的那部分真实状态，不能靠本地草稿去猜
-    const failedContribute: string[] = [];
-    for (const a of next) {
-      const ok = await contribute(ws.id, a.serverId, a.tools, { refresh: false });
-      if (!ok) failedContribute.push(a.serverId);
-    }
-    const failedWithdraw: string[] = [];
-    for (const id of prevIds) {
-      if (!nextIds.has(id)) {
-        const ok = await withdraw(ws.id, id, { refresh: false });
-        if (!ok) failedWithdraw.push(id);
-      }
-    }
-    await refreshWorkspaceGroups();
-    setBusy(false);
-    const batchError = connectorBatchErrorText(failedContribute, failedWithdraw);
-    if (batchError !== null) {
-      // 撤回失败尤其不能被无条件关掉的弹窗盖过去：那台连接器这一刻仍然
-      // 共享给全体成员、凭证仍在 edge 的托管箱里——「我撤回了」与「我以为
-      // 我撤回了」不能长一个样（house rule）
-      setError(batchError);
-      return;
-    }
-    onOpenChange(false);
-  };
-
-  return (
-    <Dialog open={open} onOpenChange={(o) => { if (!busy) onDialogOpenChange(o); }}>
-      <DialogContent className="sm:max-w-[480px]">
-        <DialogHeader>
-          <DialogTitle>贡献连接器给「{ws.name}」</DialogTitle>
-          <DialogDescription>
-            工作区全体成员（含未来加入者）将以你的身份使用这些工具，凭证托管到 Mr Otto 云端——你下线成员照样能用。
-          </DialogDescription>
-        </DialogHeader>
-
-        {eligible.length === 0 ? (
-          <p className="px-1 text-xs text-muted-foreground">还没有连上的 MCP 服务（只有 http 接入方式能贡献）。</p>
-        ) : (
-          <div className="max-h-[280px] overflow-y-auto rounded-md border border-border py-1">
-            {eligible.map((srv) => {
-              const toolNames = srv.tools.map((t) => t.name);
-              const isOpen = expanded.has(srv.id);
-              return (
-                <div key={srv.id}>
-                  <div className={ROW}>
-                    <button
-                      type="button"
-                      className="bg-transparent p-0 text-muted-foreground hover:text-foreground"
-                      aria-label={isOpen ? "收起工具" : "展开工具"}
-                      onClick={() => setExpanded((prev) => {
-                        const nextSet = new Set(prev);
-                        if (nextSet.has(srv.id)) nextSet.delete(srv.id);
-                        else nextSet.add(srv.id);
-                        return nextSet;
-                      })}
-                    >
-                      {isOpen ? <ChevronDown className="size-[13px]" /> : <ChevronRight className="size-[13px]" />}
-                    </button>
-                    <label className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 select-none">
-                      <input
-                        type="checkbox"
-                        checked={isServerOn(sel, srv.id)}
-                        onChange={() => setSel((p) => toggleServer(p, srv.id, !isServerOn(p, srv.id)))}
-                        className="size-[13px] shrink-0 accent-[var(--brand)]"
-                        aria-label={srv.id}
-                      />
-                      <span className="truncate">{srv.id}</span>
-                    </label>
-                    <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
-                      {srv.tools.length} 个工具
-                    </span>
-                  </div>
-                  {isOpen && (
-                    <div className="pb-1 pl-8">
-                      {toolNames.map((tool) => (
-                        <div key={tool} className={ROW}>
-                          <label className="flex cursor-pointer items-center gap-2 select-none">
-                            <input
-                              type="checkbox"
-                              checked={isToolOn(sel, srv.id, tool)}
-                              onChange={() => setSel((p) => toggleTool(p, srv.id, tool, toolNames))}
-                              className="size-[13px] shrink-0 accent-[var(--brand)]"
-                              aria-label={tool}
-                            />
-                            <span className="truncate">{tool}</span>
-                          </label>
-                        </div>
-                      ))}
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        )}
-
-        {error && <p className="text-xs text-err whitespace-pre-wrap break-words">{error}</p>}
-
-        <DialogFooter className="gap-2">
-          <Button variant="ghost" size="sm" disabled={busy} onClick={() => onOpenChange(false)}>取消</Button>
-          <Button size="sm" disabled={busy} onClick={() => void doConfirm()}>
-            {busy ? "保存中…" : "确认贡献"}
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-// ─── 成员 tab ─────────────────────────────────────────────────────────
-
-function MembersTab({ ws, selfUid }: { ws: WorkspaceSnapshot; selfUid: string }) {
-  const kick = useChat((s) => s.kickWorkspaceGroupMember);
-  const addMember = useChat((s) => s.addWorkspaceGroupMember);
-  const friends = useChat((s) => s.friendsSnapshot.friends);
-  const rows = memberRows(ws, selfUid);
-
-  const memberUids = new Set(ws.members.map((m) => m.uid));
-  const candidates = friends.filter((f) => !memberUids.has(f.profile.id));
-
-  return (
-    <div className="flex flex-col gap-3">
-      <div className="flex flex-col gap-1">
-        {rows.map((row) => (
-          <div key={row.uid} className={cn(ROW, "border border-border")}>
-            <span className="min-w-0 flex-1 truncate">
-              {row.label}
-              {row.role === "owner" && <span className="ml-1 text-[10.5px] text-muted-foreground">· 所有者</span>}
-            </span>
-            {row.canKick && (
-              <Button
-                variant="ghost" size="xs" className="shrink-0 text-err"
-                onClick={() => {
-                  if (confirm(`把 ${row.label} 移出工作区？TA 借用/贡献的连接器授权会立即失效。`)) {
-                    void kick(ws.id, row.uid);
-                  }
-                }}
-              >
-                移出
-              </Button>
-            )}
-          </div>
         ))}
-      </div>
+      </InsetGroup>
 
-      {ws.ownerUid === selfUid && (
-        <div className="flex flex-col gap-1">
-          <span className={SECTION_LABEL}>拉好友加入</span>
-          {candidates.length === 0 ? (
-            <p className="px-2 text-xs text-muted-foreground">好友都已经在这个工作区里了。</p>
-          ) : (
-            candidates.map((f) => (
-              <div key={f.profile.id} className={ROW}>
-                <span className="min-w-0 flex-1 truncate">{f.profile.name || f.profile.email}</span>
-                <Button
-                  variant="ghost" size="xs" className="shrink-0"
-                  onClick={() => void addMember(ws.id, f.profile.id)}
-                >
-                  <UserPlus className="size-[12px]" /> 加入
-                </Button>
-              </div>
-            ))
-          )}
-        </div>
-      )}
+      {/* 危险动作住在最底下、红字、单独一组——不是页头那颗最响的实心按钮 */}
+      <div className="pt-[22px]">
+        <InsetGroup>
+          <InsetRow
+            tone="danger"
+            title={isOwner ? "解散工作区" : "退出工作区"}
+            onClick={() => void (isOwner ? onDelete() : onLeave())}
+          />
+        </InsetGroup>
+      </div>
+      <InsetNote>
+        {isOwner
+          ? "解散会让全体成员的连接器授权与已发布会话立即失效，且不可撤销。"
+          : "退出后你贡献的连接器授权会立即失效。"}
+      </InsetNote>
     </div>
   );
 }

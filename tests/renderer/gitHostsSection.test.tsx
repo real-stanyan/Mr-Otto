@@ -61,9 +61,10 @@ function seed(opts: {
 const show = (selfUid = OWNER) =>
   render(<WorkspacePage ws={WS} selfUid={selfUid} onBack={() => {}} />);
 
-/** 这一组住在「连接器」tab 里，默认 tab 不是它 */
+/** 这一组住在「连接器」那一页里。#1120 之后目录是**推入式**不是 tab：
+    根页点「连接器」那一行推一页出来（行是一层铺满的透明按钮，`aria-label` 就是标题） */
 async function openConnectors() {
-  await userEvent.click(screen.getByRole("tab", { name: "连接器" }));
+  await userEvent.click(await screen.findByRole("button", { name: "连接器" }));
 }
 
 afterEach(() => cleanup());
@@ -100,7 +101,7 @@ describe("连接器 tab 的「代码仓库」组", () => {
     await openConnectors();
 
     expect(await screen.findByText("github.com")).toBeInTheDocument(); // 清单照画
-    expect(screen.queryByText("添加主机…")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "添加主机" })).not.toBeInTheDocument();
     expect(screen.queryByText("删除")).not.toBeInTheDocument();
   });
 
@@ -115,7 +116,7 @@ describe("连接器 tab 的「代码仓库」组", () => {
     });
     show();
     await openConnectors();
-    await userEvent.click(await screen.findByText("添加主机…"));
+    await userEvent.click(await screen.findByRole("button", { name: "添加主机" }));
 
     const [hostBox, tokenBox] = screen.getAllByRole("textbox").concat(
       // password 型 input 不在 textbox role 里，单独取
@@ -137,7 +138,7 @@ describe("连接器 tab 的「代码仓库」组", () => {
     seed({ gitHosts: [], save: async (...a) => { calls.push(a); return { ok: true, value: [] }; } });
     show();
     await openConnectors();
-    await userEvent.click(await screen.findByText("添加主机…"));
+    await userEvent.click(await screen.findByRole("button", { name: "添加主机" }));
     await userEvent.click(screen.getByText("保存"));
 
     expect(await screen.findByText(/令牌不能为空/)).toBeInTheDocument();
@@ -149,7 +150,7 @@ describe("连接器 tab 的「代码仓库」组", () => {
     seed({ gitHosts: [], save: async (...a) => { calls.push(a); return { ok: true, value: [] }; } });
     show();
     await openConnectors();
-    await userEvent.click(await screen.findByText("添加主机…"));
+    await userEvent.click(await screen.findByRole("button", { name: "添加主机" }));
 
     const hostBox = screen.getAllByRole("textbox")[0]!;
     await userEvent.clear(hostBox);

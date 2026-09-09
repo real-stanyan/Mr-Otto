@@ -6,19 +6,27 @@
 // 权限矩阵钉在 workspaceView.ts 的 agentRows（spec §9）：canEdit = 建的人或
 // owner，canDelete = canEdit 且不是种子管理员——admin 是每个工作区开箱自带
 // 的那份，这里没有删除钮。
+//
+// **编辑器 #1120 从弹窗变成推入页**：抽屉只有 420px，而那张弹窗写着
+// `sm:max-w-[480px]`——它从来就装不下，靠 `92vw` 勉强缩着用。摊成一页之后
+// #997/#998 那套「DialogContent 没有 max-h/overflow 兜底」的账在这一处自动清掉
+// （页自己就是一个 `min-h-0` 的滚动区），头像也从 popover 摊回一整排。
+//
+// 保存钮**在页脚不在导航条**：导航条那一格由 `NavScreen.trailing` 给，而它是在
+// 表单组件外面渲染的——要让它读得到 `canSave/busy` 得给 NavStack 加一层「每页
+// 自己的 provider」。那是个说得通但更大的改动，这次没做（写在 ADR 的已知代价里）。
 
 import { useEffect, useState } from "react";
 import type { KeyboardEvent as ReactKeyboardEvent } from "react";
-import { ChevronDown, ChevronRight, Sparkles } from "lucide-react";
+import { ChevronDown, ChevronRight, Plus, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils.js";
 import { Button } from "@/components/ui/button.js";
 import { Input } from "@/components/ui/input.js";
 import { Textarea } from "@/components/ui/textarea.js";
-import {
-  Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
-} from "@/components/ui/dialog.js";
+import { InsetEmpty, InsetGroup, InsetNote, InsetRow } from "@/components/ui/inset-list.js";
+import { useNav } from "@/components/ui/nav-stack.js";
 import { useChat } from "../store.js";
-import { agentRows, type AgentRowView } from "../lib/workspaceView.js";
+import { agentRows } from "../lib/workspaceView.js";
 import { AGENT_AVATARS, agentAvatarSrc, avatarPreviewSrc } from "../lib/agentAvatar.js";
 import {
   AUTO_MODEL, agentModelOptions, chainWarning, modelsFromSelection, selectedModelValue,
@@ -59,140 +67,145 @@ function sameModels(a: readonly string[], b: readonly string[]): boolean {
 }
 
 export function WorkspaceAgentsTab({ ws, selfUid }: { ws: WorkspaceSnapshot; selfUid: string }) {
+  const nav = useNav();
   const deleteAgent = useChat((s) => s.deleteWorkspaceAgent);
   const refreshWorkspaceGroups = useChat((s) => s.refreshWorkspaceGroups);
   const rows = agentRows(ws, selfUid);
-  const [editorState, setEditorState] = useState<
-    { mode: "create" } | { mode: "edit"; agent: WorkspaceAgentRow } | null
-  >(null);
-  // 删除成功、但紧跟着那次 refreshWorkspaceGroups() 挂了（#938①，同 AgentEditorDialog
-  // 那半）——这一行没有弹窗可以留着显示，单独在名单上方挂一条横幅
+  // 删除成功、但紧跟着那次 refreshWorkspaceGroups() 挂了（#938①，同编辑页那半）——
+  // 这一行没有弹窗可以留着显示，单独在名单上方挂一条
   const [deleteStale, setDeleteStale] = useState(false);
 
+  const openEditor = (state: { mode: "create" } | { mode: "edit"; agent: WorkspaceAgentRow }): void => {
+    nav.push({
+      // key 带上 agentId：连点两只不同的 agent 要推出两页，而同一只连点两下只推一页
+      key: state.mode === "create" ? `agent-new:${ws.id}` : `agent-edit:${state.agent.agentId}`,
+      title: state.mode === "edit" ? `编辑「${state.agent.name}」` : "新建智能体",
+      backLabel: "智能体",
+      render: () => <AgentEditorScreen ws={ws} state={state} onDone={() => nav.pop()} />,
+    });
+  };
+
   return (
-    <div className="flex flex-col gap-2">
-      <div className="flex justify-end">
-        <Button size="sm" onClick={() => setEditorState({ mode: "create" })}>新建智能体…</Button>
-      </div>
+    <div className="flex flex-col">
       {deleteStale && (
-        <div className={cn(ROW, "border border-border")}>
-          <span className="min-w-0 flex-1">已删除，但列表没刷出来——点『刷新』。</span>
-          <Button
-            size="xs" variant="secondary" className="shrink-0"
-            onClick={() => { void refreshWorkspaceGroups(); setDeleteStale(false); }}
-          >
-            刷新
-          </Button>
-        </div>
-      )}
-      {/* 名单空只发生在"还没读到"——每个工作区至少种了一份管理员，真出现这句
-          说的是拿不到，不是没有（同 CloudStateDot 的"拿不到 ≠ 不可用"纪律）*/}
-      {ws.agents.length === 0 ? (
-        <p className="px-2 text-xs text-muted-foreground">还没读到这个工作区的智能体名单。</p>
-      ) : (
-        <div className="flex flex-col gap-1">
-          {rows.map((row) => (
-            <AgentRow
-              key={row.agentId}
-              row={row}
-              avatarSrc={agentAvatarSrc(ws, row.agentId)}
-              onEdit={() => setEditorState({ mode: "edit", agent: ws.agents.find((a) => a.agentId === row.agentId)! })}
-              onDelete={() => {
-                if (
-                  confirm(
-                    `删除智能体「${row.name}」？它的提示词和模型配置会一起消失，正在排队的消息会被标成没人接。`
-                  )
-                ) {
-                  void (async () => {
-                    const result = await deleteAgent(ws.id, row.agentId);
-                    if (result === "ok_stale") setDeleteStale(true);
-                  })();
-                }
-              }}
+        <div className="mb-2">
+          <InsetGroup>
+            <InsetRow
+              title="已删除，但列表没刷出来"
+              subtitle="点右边「刷新」把这份名单重拉一次。"
+              trailing={
+                <Button
+                  size="xs" variant="secondary"
+                  onClick={() => { void refreshWorkspaceGroups(); setDeleteStale(false); }}
+                >
+                  刷新
+                </Button>
+              }
             />
-          ))}
+          </InsetGroup>
         </div>
       )}
-      <AgentEditorDialog
-        ws={ws}
-        state={editorState}
-        onOpenChange={(open) => { if (!open) setEditorState(null); }}
-      />
-    </div>
-  );
-}
 
-function AgentRow({
-  row, avatarSrc, onEdit, onDelete,
-}: {
-  row: AgentRowView;
-  /** 群聊里这只 agent 画的那张脸（#971）——名单页也画同一张，人在群里认脸、
-      来这页改配置时对得上号 */
-  avatarSrc: string;
-  onEdit: () => void;
-  onDelete: () => void;
-}) {
-  return (
-    <div className={cn(ROW, "border border-border")}>
-      <img src={avatarSrc} alt="" aria-hidden className="size-8 shrink-0 rounded-full" />
-      <span className="min-w-0 flex-1 truncate">
-        <b className="font-medium">{row.name}</b>
-        {/* 「管理员不能删除」挂在这枚徽标上，不挂在「编辑」钮上（终审 Minor）：
-            那句话解释的是**这一行为什么没有删除钮**，挂在编辑钮上等于说
-            「编辑这个动作不能删除」 */}
-        {row.isAdmin && (
-          <span className="ml-1 text-[10.5px] text-muted-foreground" title="管理员不能删除">
-            · 管理员
-          </span>
+      <InsetGroup sepInset={58}>
+        {/* 名单空只发生在「还没读到」——每个工作区至少种了一份管理员，真出现这句
+            说的是拿不到，不是没有（同 CloudStateDot 的「拿不到 ≠ 不可用」纪律）*/}
+        {ws.agents.length === 0 ? (
+          <InsetEmpty
+            title="还没读到这个工作区的智能体名单"
+            hint="每个工作区开箱都带一只管理员，所以这句话说的是「这一刻拿不到」，不是「一只都没有」。"
+          />
+        ) : (
+          rows.map((row) => (
+            <InsetRow
+              key={row.agentId}
+              leading={<img src={agentAvatarSrc(ws, row.agentId)} alt="" aria-hidden className="size-[34px] shrink-0 rounded-full" />}
+              title={
+                <span className="inline-flex items-center gap-1">
+                  <b className="font-medium">{row.name}</b>
+                  {/* 「管理员不能删除」挂在这枚徽标上，不挂在别处（终审 Minor）：
+                      那句话解释的是**这一行为什么没有删除钮** */}
+                  {row.isAdmin && (
+                    <span className="rounded-[5px] bg-foreground/[0.09] px-[5px] py-[2px] text-[10px] leading-none text-muted-foreground" title="管理员不能删除">
+                      管理员
+                    </span>
+                  )}
+                </span>
+              }
+              label={row.name}
+              subtitle={`${row.description || "没有写职责"} · ${row.modelsSummary} · ${row.toolsSummary}`}
+              chevron={row.canEdit}
+              // 改不了的那几只不给点：给一颗点了什么都不发生的行，就是 #722 那个撒谎的勾
+              {...(row.canEdit
+                ? { onClick: () => openEditor({ mode: "edit", agent: ws.agents.find((a) => a.agentId === row.agentId)! }) }
+                : {})}
+              trailing={
+                row.canDelete ? (
+                  <Button
+                    variant="ghost" size="xs" className="text-err"
+                    onClick={() => {
+                      if (
+                        confirm(
+                          `删除智能体「${row.name}」？它的提示词和模型配置会一起消失，正在排队的消息会被标成没人接。`
+                        )
+                      ) {
+                        void (async () => {
+                          const result = await deleteAgent(ws.id, row.agentId);
+                          if (result === "ok_stale") setDeleteStale(true);
+                        })();
+                      }
+                    }}
+                  >
+                    删除
+                  </Button>
+                ) : null
+              }
+            />
+          ))
         )}
-        <span className="block text-[10.5px] text-muted-foreground">
-          {row.description || "没有写职责"} · {row.modelsSummary} · {row.toolsSummary} · {row.creatorLabel}
-        </span>
-      </span>
-      {row.canEdit && (
-        <Button
-          variant="ghost" size="xs" className="shrink-0"
-          onClick={onEdit}
-        >
-          编辑
-        </Button>
-      )}
-      {row.canDelete && (
-        <Button variant="ghost" size="xs" className="shrink-0 text-err" onClick={onDelete}>
-          删除
-        </Button>
-      )}
+        <InsetRow
+          leading={<span aria-hidden className="grid size-[34px] shrink-0 place-items-center rounded-full bg-foreground/[0.09] text-muted-foreground"><Plus className="size-[16px]" /></span>}
+          title="新建智能体"
+          tone="action"
+          onClick={() => openEditor({ mode: "create" })}
+        />
+      </InsetGroup>
+      <InsetNote>
+        群里 <b className="font-medium text-foreground">@ 名字</b> 就能点它干活。管理员那只是开箱自带的、删不掉——
+        没 @ 谁的时候由它接。
+      </InsetNote>
     </div>
   );
 }
 
-function AgentEditorDialog({
-  ws, state, onOpenChange,
+function AgentEditorScreen({
+  ws, state, onDone,
 }: {
   ws: WorkspaceSnapshot;
-  state: { mode: "create" } | { mode: "edit"; agent: WorkspaceAgentRow } | null;
-  onOpenChange: (open: boolean) => void;
+  state: { mode: "create" } | { mode: "edit"; agent: WorkspaceAgentRow };
+  /** 存好了 / 用户主动退出：由调用方把这一页弹掉 */
+  onDone: () => void;
 }) {
   const createAgent = useChat((s) => s.createWorkspaceAgent);
   const updateAgent = useChat((s) => s.updateWorkspaceAgent);
   const refreshWorkspaceGroups = useChat((s) => s.refreshWorkspaceGroups);
   const choices = connectorChoices(ws);
 
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
-  const [instructions, setInstructions] = useState("");
+  const edit = state.mode === "edit" ? state.agent : null;
+  const [name, setName] = useState(edit?.name ?? "");
+  const [description, setDescription] = useState(edit?.description ?? "");
+  const [instructions, setInstructions] = useState(edit?.instructions ?? "");
   // 下拉选中的那一项（AUTO_MODEL 或某个 logical_model）。存回去的仍然是
   // workspace_agents.models 那条有序链，映射规则在 agentModelChoice.ts
-  const [model, setModel] = useState<string>(AUTO_MODEL);
+  const [model, setModel] = useState<string>(edit ? selectedModelValue(edit.models) : AUTO_MODEL);
   // 挑中的头像坑位。null = 没挑过 = 按 agentId 哈希派生（#1007）
-  const [avatarSlot, setAvatarSlot] = useState<number | null>(null);
+  const [avatarSlot, setAvatarSlot] = useState<number | null>(edit?.avatarSlot ?? null);
   // 提示词默认收起（#1005）：它是这张表单里唯一会长到几百字的一块，展开着
   // 就把型号、连接器挤到折叠线以下——而那两样正是人开这张表单最常来改的。
   // **只管显示不管内容**：收起时 instructions 照旧在 state 里，保存照发
   const [promptOpen, setPromptOpen] = useState(false);
   const [avatarPickerOpen, setAvatarPickerOpen] = useState(false);
-  const [toolsMode, setToolsMode] = useState<ToolsMode>("all");
-  const [toolsSel, setToolsSel] = useState<ProxySelection>({});
+  const [toolsMode, setToolsMode] = useState<ToolsMode>(edit ? modeFromTools(edit.tools) : "all");
+  const [toolsSel, setToolsSel] = useState<ProxySelection>(edit ? selectionFromAllow(edit.tools) : {});
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [busy, setBusy] = useState(false);
   // 本地校验和 create/update 失败共用这一格，理由同 CloudRepoConfigDialog：
@@ -203,34 +216,6 @@ function AgentEditorDialog({
   // IPC 成功、紧跟着那次 refreshWorkspaceGroups() 挂了（#938①）——数据已经
   // 落库，不是失败，弹窗照旧开着，只是换一句话 + 一颗手动刷新钮
   const [stale, setStale] = useState(false);
-
-  const open = state !== null;
-
-  useEffect(() => {
-    if (state === null) return;
-    if (state.mode === "edit") {
-      setName(state.agent.name);
-      setDescription(state.agent.description);
-      setInstructions(state.agent.instructions);
-      setModel(selectedModelValue(state.agent.models));
-      setAvatarSlot(state.agent.avatarSlot);
-      setToolsMode(modeFromTools(state.agent.tools));
-      setToolsSel(selectionFromAllow(state.agent.tools));
-    } else {
-      setName("");
-      setDescription("");
-      setInstructions("");
-      setModel(AUTO_MODEL);
-      setAvatarSlot(null);
-      setToolsMode("all");
-      setToolsSel({});
-    }
-    setExpanded(new Set());
-    setPromptOpen(false);
-    setAvatarPickerOpen(false);
-    setError(null);
-    setStale(false);
-  }, [state]);
 
   // 网关此刻供着的型号。billing 还没拉到时是空数组——「读不到」与「一款都没有」
   // 在界面上要说不同的话，判断留给下面那两句文案
@@ -245,15 +230,13 @@ function AgentEditorDialog({
   // （2026-09-07 一天就变了两次：加了三款、改了一次价）。真机症状就是下拉里
   // 少三款而界面什么都不说。
   // 失败保留旧快照（hostedQuota.refresh 本来就是这个纪律），所以断网时下拉照旧能用
-  useEffect(() => {
-    if (state !== null) void loadBilling(true);
-  }, [state, loadBilling]);
-  const currentModels = state?.mode === "edit" ? state.agent.models : EMPTY_MODELS;
+  useEffect(() => { void loadBilling(true); }, [loadBilling]);
+  const currentModels = edit?.models ?? EMPTY_MODELS;
   const modelOptions = agentModelOptions(availableModels, currentModels, modelPlatforms);
   const chainNote = chainWarning(currentModels);
   // 头像那一格画什么：挑过就画挑的，没挑过画派生的；新建且没挑回 null
   // （agentId 还没铸出来，见 avatarPreviewSrc 的头注）
-  const avatarPreview = avatarPreviewSrc(ws, state?.mode === "edit" ? state.agent.agentId : null, avatarSlot);
+  const avatarPreview = avatarPreviewSrc(ws, edit?.agentId ?? null, avatarSlot);
 
   const nameError = validateAgentName(name);
   const toolsError = toolsDraftError(toolsMode, toolsSel);
@@ -261,7 +244,7 @@ function AgentEditorDialog({
   const canSave = nameError === null && toolsError === null && !busy;
 
   const submit = async (): Promise<void> => {
-    if (!canSave || state === null) return;
+    if (!canSave) return;
     setBusy(true);
     setError(null);
     setStale(false);
@@ -284,9 +267,9 @@ function AgentEditorDialog({
           });
     setBusy(false);
     if (result === "ok") {
-      onOpenChange(false);
+      onDone();
     } else if (result === "ok_stale") {
-      // 弹窗照旧开着——已经存进去了，关掉等于让用户以为要再存一次
+      // 这一页照旧留着——已经存进去了，弹掉等于让用户以为要再存一次
       setStale(true);
     } else {
       setError(useChat.getState().workspaceGroupsError);
@@ -308,42 +291,10 @@ function AgentEditorDialog({
   };
 
   return (
-    <Dialog open={open} onOpenChange={(o) => { if (!busy) onOpenChange(o); }}>
-      {/* 封顶 + 表单区自己滚：DialogContent **默认既没有 max-h 也没有 overflow**，
-          内容一旦高过视口就朝上下两头溢出，两头都够不着（#997）。
-
-          `flex` 是这里的关键，不是随手换的写法：DialogContent 原本是 `grid`，而
-          **auto 行在 max-height 夹住的 grid 里不会缩**——容器先按 max-content 定
-          轨道（此时可用空间是不定的），再把自己的高度夹到 max-height，轨道已经定死，
-          于是内容照样溢出到卡片外，中间那层一格都不滚。实测（Chromium，容器
-          max-height 500px、内容 1200px）：grid 的 body 轨道仍是 1200px 且
-          `bodyScrolls: false`，换成 flex 后 body 缩到 434px 且真的滚起来。
-          flex 的收缩是布局算法自带的（负剩余空间按 flex-shrink 分摊，标题与页脚
-          撞上各自的 min-content 就冻住，剩下的全落在 `min-h-0` 的表单区上）。
-          `grid-rows-[auto_1fr_auto]` 也能修，但那要求消费方结构恰好三段；flex
-          不假设格子数。内容短时两者行为一致（不溢出就不收缩，弹窗照旧紧凑）。
-
-          滚动放在中间那层而不是 DialogContent 上：放外层的话标题、保存/取消跟着
-          滚走，改完长提示词还得先滚回底部才点得到保存；而关闭那颗 X 是 `absolute`，
-          包含块就是滚动容器的内边距盒，也会跟着滚出视野。
-
-          全仓在这条上裸奔的消费方还有十几处，`MemorySettings.tsx` 是唯一一处自己
-          记得处理的——它把 `overflow-y-auto` 挂在 DialogContent **自己**身上，那条
-          路绕开了上面的轨道问题（容器自己滚，实测有效），代价正是标题与 X 跟着滚走。
-          两种写法各自的取舍与该不该收进 dialog.tsx 记在 #998 */}
-      <DialogContent className="flex flex-col sm:max-w-[480px] max-h-[calc(100dvh-4rem)]">
-        <DialogHeader>
-          <DialogTitle>{state?.mode === "edit" ? `编辑「${state.agent.name}」` : `新建智能体`}</DialogTitle>
-          {/* 只给读屏，不画出来（#1015）：那句话是一段自我介绍，而人打开这张
-              表单时已经知道自己要干什么——标题就写着在编辑哪一只。**不是删掉**：
-              Radix 的 Dialog 要么有 Description、要么要显式 aria-describedby，
-              两样都没有会在控制台留一条警告，而读屏用户本来就该听到这一句 */}
-          <DialogDescription className="sr-only">
-            在这里建改工作区里 @ 得到的智能体：名字、职责、提示词、模型、连接器。
-          </DialogDescription>
-        </DialogHeader>
-
-        <div className="flex min-h-0 flex-col gap-3 overflow-y-auto">
+    <div className="flex flex-col gap-3">
+        {/* 滚动归这一页自己（NavStack 的每页都是一个 min-h-0 的滚动区），
+            所以这里不再套第二层 overflow —— 套了就是滚动条里的滚动条 */}
+        <div className="flex flex-col gap-3">
           {/* 身份那一行（#1013）：头像在左占 40%，名字与职责竖排在右。
               头像那一格**只画此刻在用的那一张**，点开才挑——13 张平铺会占掉表单
               顶部一大块，而「此刻用的是哪张」还得靠找那个高亮框。
@@ -652,13 +603,13 @@ function AgentEditorDialog({
           )}
         </div>
 
-        <DialogFooter className="gap-2">
-          <Button variant="ghost" size="sm" disabled={busy} onClick={() => onOpenChange(false)}>取消</Button>
-          <Button size="sm" disabled={!canSave} onClick={() => void submit()}>
+        {/* 页脚：通栏一颗保存。取消不另给钮——导航条左上角那颗返回就是取消，
+            再摆一颗「取消」等于同一件事在一屏上有两个入口 */}
+        <div className="flex flex-col gap-2 pt-2">
+          <Button className="w-full" disabled={!canSave} onClick={() => void submit()}>
             {busy ? "保存中…" : "保存"}
           </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
+        </div>
+    </div>
   );
 }

@@ -133,7 +133,9 @@ describe("hostedQuota", () => {
   it("workspaceUsage：GET /billing/v1/workspace-usage?workspace=<id> 带 JWT；形状不对抛", async () => {
     const usage = { workspaceId: "w1", ownerUid: "o", weekStartAt: 1, weekEndAt: 2, rows: [] };
     const { q, fetchImpl } = make([() => Response.json(usage), () => Response.json({ nope: true })]);
-    expect(await q.workspaceUsage("w1")).toEqual(usage);
+    // 这份响应没有 weekLimitMicro（= 旧 edge）：解析补一个 null，不是解析失败——
+    // 新客户端连老网关时那一页还得画得出来（#1120）
+    expect(await q.workspaceUsage("w1")).toEqual({ ...usage, weekLimitMicro: null });
     const req = (fetchImpl as unknown as { mock: { calls: unknown[][] } }).mock.calls[0]!;
     expect(req[0]).toBe("https://edge/billing/v1/workspace-usage?workspace=w1");
     expect((req[1] as RequestInit).headers).toMatchObject({ authorization: "Bearer jwt" });
