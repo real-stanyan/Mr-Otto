@@ -97,6 +97,9 @@ const OTHER_AGENT_VERDICTS: Record<SessionEvent["type"], OtherAgentVerdict> = {
   // 接力棒（#950）：没有 agentId 字段，早退路径本来就放行（两只 agent 都要看得见
   // 这一棒），这里仍要表态——Record 是穷尽表，"反正放行了"不构成不写的理由
   agent_relay: "keep",
+  // 语音通话名单（#1163）：群事实，每只都要读到——派活只在通话成员里进行、system 尾块
+  // 列出谁在通话里。没有 agentId 字段，早退路径本来就放行，这里仍要表态（Record 是穷尽表）
+  voice_call_changed: "keep",
   background_task_started: "drop",
   background_task_completed: "drop",
   image_described: "drop",
