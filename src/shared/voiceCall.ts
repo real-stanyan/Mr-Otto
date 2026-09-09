@@ -36,3 +36,8 @@ export function voiceCallOf(events: readonly SessionEvent[]): VoiceCallState | n
 export function inVoiceCall(state: VoiceCallState | null, agentId: string): boolean {
   return state !== null && state.participants.some((p) => p.agentId === agentId);
 }
+
+/** agent 把人拉进通话那把刀的名字（#1163）。定义在 shared：deriveMessages 的通话块要
+    点名它，而 src/session 不能 import services/runtime——工具实现在
+    services/runtime/src/inviteToCallTool.ts，从这儿取名字 */
+export const INVITE_TO_CALL_TOOL_NAME = "invite_to_call";
