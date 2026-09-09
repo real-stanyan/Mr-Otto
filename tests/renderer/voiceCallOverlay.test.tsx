@@ -95,3 +95,24 @@ describe("VoiceCallOverlay", () => {
     expect(screen.getByText("语音要订阅 Mr Otto")).toBeInTheDocument();
   });
 });
+
+describe("VoiceCallOverlay：mac 红绿灯（#1198）", () => {
+  it("trafficInset 时头部给红绿灯让位（pl-[74px]）且整条头部可拖窗口；全屏 / 非 mac 不让位", () => {
+    const h = handlers();
+    const { unmount } = render(
+      <VoiceCallOverlay open onOpenChange={h.onOpenChange} ws={ws} call={call} voice={null} trafficInset
+        view={{ selfUid: "u1", starterUid: null, openAgentIds: new Set() }}
+        available ready onJoin={h.onJoin} onMic={h.onMic} onMute={h.onMute} onUpdate={h.onUpdate} onEnd={h.onEnd} />
+    );
+    const header = screen.getByRole("banner");
+    expect(header).toHaveClass("drag-region");
+    expect(header).toHaveClass("pl-[74px]");
+    unmount();
+    render(
+      <VoiceCallOverlay open onOpenChange={h.onOpenChange} ws={ws} call={call} voice={null} trafficInset={false}
+        view={{ selfUid: "u1", starterUid: null, openAgentIds: new Set() }}
+        available ready onJoin={h.onJoin} onMic={h.onMic} onMute={h.onMute} onUpdate={h.onUpdate} onEnd={h.onEnd} />
+    );
+    expect(screen.getByRole("banner")).not.toHaveClass("pl-[74px]");
+  });
+});
