@@ -65,9 +65,10 @@
 // store.append 一条 chat_message）不用碰 engine 半个字就能被下一轮模型看到。
 //
 // 切片 4（#949）在这个文件里改了三处：
-//   ① CloudSessionOpts 加 `memory: WorkspaceMemoryStore`——**必需**不是可选。
-//      忘接线该编译不过，而不是安静地跑一个没有团队记忆的 agent（同
-//      agentToolAllow.ts 的 `encode` 必填无默认那条纪律）。
+//   ① CloudSessionOpts 加 `wiki: WikiService`（#1140 取代旧的 `memory:
+//      WorkspaceMemoryStore`）——**必需**不是可选。忘接线该编译不过，而不是
+//      安静地跑一个没有团队记忆的 agent（同 agentToolAllow.ts 的 `encode`
+//      必填无默认那条纪律）。
 //   ② engineFor 建刀那一支给每只 agent 挂一对 wiki 工具（`createWikiTools`，
 //      #1140 取代旧的 `createWorkspaceMemoryTool`）：作者名取的是**此刻**的
 //      名字（specNames，runJob 每次刷新），不是建刀那一刻定死的 spec.name
@@ -901,8 +902,15 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
 
       缺席 = 这套装配没接 Git（探针 / 测试 / 裸装配），三把刀一把都不挂——挂着
       一把点下去必然报「没接线」，那是 #722 那个撒谎的勾。 */
-  const gitTools = opts.git === undefined ? [] : createGitTools({
-    ...opts.git,
+  const git = opts.git;
+  const gitTools = git === undefined ? [] : createGitTools({
+    ...git,
+    // Git 三把刀也算「碰过容器」（#1140 复审）：过一次 gateContainer 就拿了工作区锁，
+    // 收口时 heldRelease !== null 于是快照缓存跟着作废——与 bash 同一条判据，不加第二个标志。
+    // 代价：clone 那种长操作从此排在工作区锁后面（ADR-0232 的锁本来就该覆盖往共用卷里写的动作）
+    execInWorkspace: async (script) => { await gateContainer(); return git.execInWorkspace(script); },
+    execInSidecar: async (cfg, script) => { await gateContainer(); return git.execInSidecar(cfg, script); },
+    clone: async (cfg, dest) => { await gateContainer(); return git.clone(cfg, dest); },
     workspaceId: opts.workspaceId,
     // 署名取点火的那个人（spec §4.2）。`label` 现取——改名之后下一次提交就是新名字
     initiator: async () => {
@@ -1602,7 +1610,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       stopRequested = false;
       // 这一轮收口就放容器锁（#979 第 2 条）；没碰过容器的 turn 这里是 null。
       // 放在 finally：engine 抛错、合成收口、跳过接力棒……哪条路出去都得放
-      // 这一轮碰过容器 = bash 可能改了 wiki/ 而探不出来——快照缓存作废（spec §3.3）
+      // 这一轮碰过容器 = bash / git 可能改了 wiki/ 而探不出来——快照缓存作废（spec §3.3）
       if (heldRelease !== null) opts.wiki.invalidateSnapshot();
       heldRelease?.();
       heldRelease = null;

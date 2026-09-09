@@ -4,6 +4,7 @@ import { createCloudSession, kickedNoteText, SANDBOX_PROBE_FAIL_TEXT, SayRejecte
 import { createWikiService, type WikiService } from "../../services/runtime/src/wikiService.js";
 import { createMemoryWikiFs } from "../../services/runtime/src/wikiFs.js";
 import { createInMemoryWikiJournal } from "../../services/runtime/src/wikiJournal.js";
+import { serializeWikiPage } from "../../src/shared/wiki.js";
 import { EventStore } from "../../src/session/store.js";
 import type { SessionEvent, ApprovalRequestEvent, AgentRelayEvent, ChatMessageEvent, UserMessageEvent } from "../../src/session/events.js";
 import type { ModelAdapter, ModelReply } from "../../src/model/adapter.js";
@@ -1692,9 +1693,10 @@ describe("连接器白名单（#941 切片 2）", () => {
 // memory 工具自己的写入语义，wiki 工具的写入形状完全不同（path/title/summary/
 // body，不是 target/action/content），对应粒度的覆盖在 wikiService.test.ts /
 // wikiTool.test.ts（#1140 任务 1-9），这里不再重建一份。② 系统提示里有 OWN
-// 块、别人的 OWN 块进不来——那半（deriveMessages 怎么把 wiki 快照拼进 system
-// 消息）同样在 wikiService.test.ts 那一层测得更细；「memory 工具挂在工具表
-// 上」这半改成断言 wiki_read/wiki，留在下面这条里。
+// 块、别人的 OWN 块进不来——那半由 tests/session/agentView.test.ts（别人的
+// workspace_wiki_loaded 不进我的视图）与 tests/session/deriveMessages.
+// workspaceWiki.test.ts（拼进 system 尾部那段投影）护着，测得比这一层集成
+// 断言更细；「memory 工具挂在工具表上」这半改成断言 wiki_read/wiki，留在下面这条里。
 describe("团队 wiki 接入工具表（#1140，取代旧的「团队记忆」#949 切片 4）", () => {
   it("engine 的工具表挂着 wiki_read 与 wiki，不再有 memory", async () => {
     const store = newStore();
@@ -4687,14 +4689,38 @@ describe("流式输出（#1107，协议 16 的 delta 帧）", () => {
 });
 
 describe("团队 wiki 快照（#1140）", () => {
-  it("快照事件：第一 turn 落一条（含 seed 出来的 team 常驻页），内容没变的下一 turn 不再落", async () => {
+  it("快照事件：第一 turn 落一条（含 seed 出来的 team 常驻页、own 页、agentName），内容没变的下一 turn 不再落；team.md 内容变了才再落一条（复审 fix round 1，#1140）", async () => {
+    const fs = createMemoryWikiFs();
+    const wiki = testWiki({ fs });
+    await wiki.ensure();
+    // own 页直接种进底层 fs（不走 wiki.write，模拟"这页已经在那儿"）：
+    // 删掉的旧测试①断言过 agentId/agentName/own 三个字段，新快照的字段换了形状
+    // （own/pinned/index/nudge 取代 shared/own），这三个字段在这里补回来
+    fs.files.set("agents/default.md", serializeWikiPage({
+      path: "agents/default.md",
+      front: { title: "default", summary: "", pinned: false, updatedBy: "x", updatedAt: "2026-09-09T00:00:00Z", sources: [] },
+      body: "我的手感",
+    }));
     const store = newStore(); const events: SessionEvent[] = [];
-    const session = createCloudSession({ ...baseOpts(store, events), wiki: testWiki() });
+    const session = createCloudSession({ ...baseOpts(store, events), wiki });
     await session.say("u1", "alice", "你好", true); await session.settled();
     await session.say("u1", "alice", "再来", true); await session.settled();
     const snaps = events.filter((e) => e.type === "workspace_wiki_loaded");
     expect(snaps).toHaveLength(1);
-    expect(snaps[0]).toMatchObject({ agentId: "default", index: expect.stringContaining("[[team]]") });
+    expect(snaps[0]).toMatchObject({
+      agentId: "default", agentName: "default", own: "我的手感\n", index: expect.stringContaining("[[team]]"),
+    });
+
+    // "内容变了才落"的另一面：team.md 换一份新 body，下一 turn 该再落一条新快照
+    fs.files.set("team.md", serializeWikiPage({
+      path: "team.md",
+      front: { title: "团队口径", summary: "所有智能体每轮都看得到的团队口径与分工", pinned: true, updatedBy: "x", updatedAt: "2026-09-09T00:00:00Z", sources: [] },
+      body: "新口径",
+    }));
+    await session.say("u1", "alice", "第三条", true); await session.settled();
+    const snaps2 = events.filter((e) => e.type === "workspace_wiki_loaded");
+    expect(snaps2).toHaveLength(2);
+    expect((snaps2[1] as { pinned: { body: string }[] }).pinned.some((p) => p.body === "新口径\n")).toBe(true);
     store.close();
   });
   it("wiki 起不来（ensure 抛）→ 不落快照、turn 照跑", async () => {
@@ -4726,6 +4752,45 @@ describe("团队 wiki 快照（#1140）", () => {
     expect(invalidated).toBe(1);            // 第一轮碰过容器 → 收口作废一次
     await session.say("u1", "alice", "聊两句", true); await session.settled();
     expect(invalidated).toBe(1);            // 第二轮只聊天 → 不作废
+    store.close();
+  });
+  it("git 刀也算碰过容器：clone_repo 那一轮收口作废快照缓存（复审 fix round 1，#1140）", async () => {
+    const wiki = testWiki();
+    let invalidated = 0;
+    const spied: WikiService = { ...wiki, invalidateSnapshot: () => { invalidated++; wiki.invalidateSnapshot(); } };
+    let round = 0;
+    const adapter: ModelAdapter = {
+      model: "fake-model",
+      async chat(): Promise<ModelReply> {
+        round++;
+        return round === 1
+          ? { content: "", toolCalls: [{ id: "cG", name: "clone_repo", args: { repo_url: "https://github.com/a/b.git", dest: "code" } }] }
+          : { content: "好" };
+      },
+    };
+    const store = newStore(); const events: SessionEvent[] = [];
+    let session!: CloudSession;
+    // git 刀 requiresApproval:true 且不在 policyApprover 放行的沙箱两把刀之内（gitTools.ts
+    // 头注），所以照旧要人批——同其余用例那套自动批准手法
+    const onEvent = (e: SessionEvent): void => {
+      events.push(e);
+      if (e.type === "approval_request") session.approve((e as ApprovalRequestEvent).callId, "owner", "Owner", "approved");
+    };
+    session = createCloudSession({
+      ...baseOpts(store, events, adapter),
+      onEvent,
+      wiki: spied,
+      git: {
+        tokenFor: () => null,
+        execInWorkspace: async () => ({ stdout: "entries=0\norigin=\n", stderr: "", exitCode: 0 }),
+        execInSidecar: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+        clone: async () => ({ ok: true }),
+        sanitize: (t) => t,
+        githubApi: async () => ({ status: 201, json: {} }),
+      },
+    });
+    await session.say("u1", "alice", "把这个仓库 clone 下来", true); await session.settled();
+    expect(invalidated).toBe(1); // clone_repo 摸了容器（execInWorkspace 探路 + clone）→ 收口作废
     store.close();
   });
   it("nudge 只给管理员：log 里 20 次写入时 admin 的快照带 nudge，别的 agent 是 null", async () => {
