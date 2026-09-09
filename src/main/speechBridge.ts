@@ -61,6 +61,7 @@ export function decodeSpeechEvent(line: string): SpeechEvent | null {
         mic: e.mic,
         onDevice: typeof e.onDevice === "boolean" ? e.onDevice : null,
         locale: typeof e.locale === "string" ? e.locale : null,
+        aec: typeof e.aec === "boolean" ? e.aec : null,
       };
     case "listening":
       return typeof e.on === "boolean" ? { type: "listening", on: e.on } : null;
@@ -71,6 +72,10 @@ export function decodeSpeechEvent(line: string): SpeechEvent | null {
     case "partial":
     case "final":
       return typeof e.text === "string" ? { type: e.type, text: e.text } : null;
+    case "level":
+      return typeof e.value === "number" && Number.isFinite(e.value)
+        ? { type: "level", value: e.value, active: e.active === true }
+        : null;
     case "error":
       return typeof e.message === "string" ? { type: "error", message: e.message } : null;
     default:

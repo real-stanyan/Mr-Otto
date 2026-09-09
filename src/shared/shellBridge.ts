@@ -258,12 +258,16 @@ export type VoiceSpeakResult =
     说完了的一句；`paused` / `resumed` 是半双工（agent 在说时闭麦）的回执 */
 export type SpeechAuth = "authorized" | "denied" | "restricted" | "notDetermined";
 export type SpeechEvent =
-  | { type: "status"; speech: SpeechAuth; mic: SpeechAuth; onDevice: boolean | null; locale: string | null }
+  /** `aec`（#1184）：helper 开着系统回声消除 = 扬声器里 agent 的话不会被录回去，麦可以常开、
+      人可以插话；`false` = 开不了（渲染层退回半双工），`null` = 旧 helper / 还没开过麦 */
+  | { type: "status"; speech: SpeechAuth; mic: SpeechAuth; onDevice: boolean | null; locale: string | null; aec: boolean | null }
   | { type: "listening"; on: boolean }
   | { type: "paused" }
   | { type: "resumed" }
   | { type: "partial"; text: string }
   | { type: "final"; text: string }
+  /** 麦克风此刻的能量（0..1，给界面画声浪）+ 能量门判「有人在说话」；helper 每 100ms 一条 */
+  | { type: "level"; value: number; active: boolean }
   | { type: "error"; message: string };
 
 export interface CloudSessionDelta {

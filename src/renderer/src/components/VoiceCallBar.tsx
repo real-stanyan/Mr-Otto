@@ -11,8 +11,9 @@
 // 计时从这一场第一条非空名单事件的 ts 起（`sinceTs`），每秒一跳、作用域圈在这条栏里。
 //
 // 麦克风那半（#1176，ADR-0273）：在听时多一颗麦克风钮——常开麦（进通话就开），说完停顿
-// 自动发出；agent 在说时半双工暂停（钮还是「关麦」，只是标出「对方在说」）；没权限那句画在
-// 错误行。字幕一行「你：…」画正在说的这一句，收口即清。
+// 自动发出；没回声消除的机器上 agent 在说时半双工暂停（钮还是「关麦」，只是标出「对方在说」），
+// 有回声消除（#1184，ADR-0277）麦一直开着、人可以插嘴；没权限那句画在错误行。
+// 字幕一行「你：…」画正在说的这一句，收口即清。
 
 import { useEffect, useState } from "react";
 import { Mic, MicOff, Phone, PhoneOff, UserPlus, Volume2, VolumeX } from "lucide-react";
@@ -84,12 +85,16 @@ export function VoiceCallBar({
   const micOn = voice !== null && voice.mic.status !== "off" && voice.mic.status !== "denied";
   const micTitle = (): string => {
     switch (voice?.mic.status) {
-      case "listening": return "关麦（只影响这台机器；说完停顿约 1.5 秒自动发出）";
+      case "listening":
+        // 回声消除开着（#1184）麦是真常开：对方说话时人可以直接插嘴
+        return voice?.mic.aec === true
+          ? "关麦（只影响这台机器；说完就自动发出，对方说话时可以直接插嘴）"
+          : "关麦（只影响这台机器；说完停顿自动发出）";
       case "paused": return "对方在说话，暂时闭麦；说完自动开回。点一下彻底关麦";
       case "starting": return "正在开麦…点一下取消";
       case "error": return "识别出了点问题，正在重试；点一下关麦";
       case "denied": return "开麦——没有权限，见下方提示";
-      default: return "开麦（常开：说完停顿自动发出；agent 在说话时自动闭麦）";
+      default: return "开麦（常开：说完停顿自动发出）";
     }
   };
 

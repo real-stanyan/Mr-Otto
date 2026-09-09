@@ -2,7 +2,7 @@
 // （开着 / 暂停 / 没权限 / 出错 / 实时字幕），final 交给调用方发出去；半双工的判据
 // （agent 在说或排着要说 → 闭麦）。零 DOM、零 IPC。
 import { describe, expect, it } from "vitest";
-import { applySpeechEvent, MIC_OFF, micShouldPause, type MicState } from "../../src/renderer/src/lib/voiceMic.js";
+import { applySpeechEvent, bargeInOn, isSelfEcho, MIC_OFF, micShouldPause, type MicState } from "../../src/renderer/src/lib/voiceMic.js";
 
 const starting: MicState = { ...MIC_OFF, status: "starting" };
 
@@ -34,19 +34,19 @@ describe("applySpeechEvent", () => {
   });
 
   it("status：哪道权限没过就说清去哪儿勾；都过了记 onDevice 不改状态", () => {
-    let r = applySpeechEvent(starting, { type: "status", speech: "denied", mic: "authorized", onDevice: true, locale: "zh-CN" });
+    let r = applySpeechEvent(starting, { type: "status", speech: "denied", mic: "authorized", onDevice: true, locale: "zh-CN", aec: null });
     expect(r.state.status).toBe("denied");
     expect(r.state.error).toContain("语音识别");
     expect(r.state.error).toContain("系统设置");
-    r = applySpeechEvent(starting, { type: "status", speech: "authorized", mic: "denied", onDevice: true, locale: "zh-CN" });
+    r = applySpeechEvent(starting, { type: "status", speech: "authorized", mic: "denied", onDevice: true, locale: "zh-CN", aec: null });
     expect(r.state.status).toBe("denied");
     expect(r.state.error).toContain("麦克风");
-    r = applySpeechEvent(starting, { type: "status", speech: "authorized", mic: "authorized", onDevice: false, locale: "zh-CN" });
+    r = applySpeechEvent(starting, { type: "status", speech: "authorized", mic: "authorized", onDevice: false, locale: "zh-CN", aec: null });
     expect(r.state.status).toBe("starting");
     expect(r.state.onDevice).toBe(false);
     expect(r.state.error).toBeNull();
     // notDetermined = 系统正在问，还不是拒绝
-    r = applySpeechEvent(starting, { type: "status", speech: "notDetermined", mic: "notDetermined", onDevice: null, locale: null });
+    r = applySpeechEvent(starting, { type: "status", speech: "notDetermined", mic: "notDetermined", onDevice: null, locale: null, aec: null });
     expect(r.state.status).toBe("starting");
   });
 
@@ -62,8 +62,57 @@ describe("applySpeechEvent", () => {
 
 describe("micShouldPause（半双工）", () => {
   it("agent 在说、或队列里还有段要说 → 闭麦；静默 → 开麦", () => {
-    expect(micShouldPause({ speaking: "a_1", queued: 0 })).toBe(true);
-    expect(micShouldPause({ speaking: null, queued: 2 })).toBe(true);
-    expect(micShouldPause({ speaking: null, queued: 0 })).toBe(false);
+    expect(micShouldPause({ speaking: "a_1", queued: 0, aec: null })).toBe(true);
+    expect(micShouldPause({ speaking: null, queued: 2, aec: null })).toBe(true);
+    expect(micShouldPause({ speaking: null, queued: 0, aec: null })).toBe(false);
+  });
+});
+
+// 常开麦 + 打断（#1184）：helper 开着系统回声消除时 agent 说话不闭麦；人一开口就停播放。
+describe("回声消除与声浪（#1184）", () => {
+  it("status 带 aec → 记下来；level → 声浪与「有人在说话」；listening:off 声浪归零", () => {
+    let r = applySpeechEvent(starting, { type: "status", speech: "authorized", mic: "authorized", onDevice: true, locale: "zh-CN", aec: true });
+    expect(r.state.aec).toBe(true);
+    r = applySpeechEvent(r.state, { type: "level", value: 0.42, active: true });
+    expect(r.state).toMatchObject({ level: 0.42, active: true });
+    r = applySpeechEvent(r.state, { type: "listening", on: false });
+    expect(r.state).toMatchObject({ level: 0, active: false });
+  });
+
+  it("micShouldPause：回声消除开着 → 永远不闭麦；开不了 / 不知道 → 照旧半双工", () => {
+    expect(micShouldPause({ speaking: "a_1", queued: 0, aec: true })).toBe(false);
+    expect(micShouldPause({ speaking: null, queued: 2, aec: true })).toBe(false);
+    expect(micShouldPause({ speaking: "a_1", queued: 0, aec: false })).toBe(true);
+    expect(micShouldPause({ speaking: "a_1", queued: 0, aec: null })).toBe(true);
+    expect(micShouldPause({ speaking: null, queued: 0, aec: null })).toBe(false);
+  });
+});
+
+describe("bargeInOn：人一开口就停 agent 的播放", () => {
+  const playing = { speaking: "a_1", queued: 0 };
+  it("agent 在说 + 人的一句够长 → 打断；静默时不算打断（没东西可停）", () => {
+    expect(bargeInOn("等一下我想问", playing, "能听到，你说话我这边都收得到")).toBe(true);
+    expect(bargeInOn("等一下我想问", { speaking: null, queued: 1 }, "")).toBe(true);
+    expect(bargeInOn("等一下我想问", { speaking: null, queued: 0 }, "")).toBe(false);
+  });
+  it("太短的碎片（嗯 / 啊 / 两个字）不打断——咳嗽和应声不是插话", () => {
+    expect(bargeInOn("嗯", playing, "")).toBe(false);
+    expect(bargeInOn("好的", playing, "")).toBe(false);
+    expect(bargeInOn("好的呀", playing, "")).toBe(true);
+    expect(bargeInOn("ok sure", playing, "")).toBe(false);
+    expect(bargeInOn("ok sure wait", playing, "")).toBe(true);
+  });
+  it("像是它自己的话被录回来的（与正在读的那段 token 重叠 ≥ 70%）不打断——回声消除的兜底", () => {
+    expect(bargeInOn("能听到你说话", playing, "能听到，你说话我这边都收得到，很清楚。")).toBe(false);
+    expect(bargeInOn("能听到你说话，我想问个问题", playing, "能听到，你说话我这边都收得到，很清楚。")).toBe(true);
+  });
+});
+
+describe("isSelfEcho：token 重叠", () => {
+  it("汉字逐字算 token；标点不算；重叠比例按识别出来的那句算", () => {
+    expect(isSelfEcho("能听到你说话", "能听到，你说话我这边都收得到")).toBe(true);
+    expect(isSelfEcho("我想问个问题", "能听到，你说话我这边都收得到")).toBe(false);
+    expect(isSelfEcho("", "能听到")).toBe(false);
+    expect(isSelfEcho("能听到", "")).toBe(false);
   });
 });

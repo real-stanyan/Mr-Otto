@@ -41,15 +41,15 @@ describe("VoicePlayer", () => {
     await flush();
     expect(audios).toHaveLength(1);
     expect(audios[0]!.played).toBe(1);
-    expect(player.state()).toEqual({ speaking: "a", queued: 1, error: null });
+    expect(player.state()).toEqual({ speaking: "a", queued: 1, error: null, text: "一" });
     audios[0]!.ended();
     await flush();
     expect(audios).toHaveLength(2);
-    expect(player.state()).toEqual({ speaking: "b", queued: 0, error: null });
+    expect(player.state()).toEqual({ speaking: "b", queued: 0, error: null, text: "二" });
     audios[1]!.ended();
     await flush();
-    expect(player.state()).toEqual({ speaking: null, queued: 0, error: null });
-    expect(states.at(-1)).toEqual({ speaking: null, queued: 0, error: null });
+    expect(player.state()).toEqual({ speaking: null, queued: 0, error: null, text: null });
+    expect(states.at(-1)).toEqual({ speaking: null, queued: 0, error: null, text: null });
   });
 
   it("预取：第一段还在播时第二段的合成已经发出去了", async () => {
@@ -72,8 +72,8 @@ describe("VoicePlayer", () => {
     const solo = harness(() => ({ ok: false, message: "额度用完" }));
     solo.player.enqueue({ agentId: "a", text: "x", voiceId: "v" });
     await flush();
-    expect(solo.player.state()).toEqual({ speaking: null, queued: 0, error: "额度用完" });
-    expect(player.state()).toEqual({ speaking: "a", queued: 0, error: null });
+    expect(solo.player.state()).toEqual({ speaking: null, queued: 0, error: "额度用完", text: null });
+    expect(player.state()).toEqual({ speaking: "a", queued: 0, error: null, text: "好" });
   });
 
   it("stop：清队列、停当前、speaking 归零；之后入队照常", async () => {
@@ -81,8 +81,11 @@ describe("VoicePlayer", () => {
     player.enqueue({ agentId: "a", text: "一", voiceId: "v" });
     player.enqueue({ agentId: "a", text: "二", voiceId: "v" });
     await flush();
+    expect(player.state()).toMatchObject({ speaking: "a", text: "一" }); // 正在读的原文：回声兜底与字幕都要它
+    expect(player.pendingAgentIds()).toEqual(["a"]); // 在说的 + 排着的，去重
     player.stop();
-    expect(player.state()).toEqual({ speaking: null, queued: 0, error: null });
+    expect(player.state()).toEqual({ speaking: null, queued: 0, error: null, text: null });
+    expect(player.pendingAgentIds()).toEqual([]);
     audios[0]!.ended(); // 旧的那段播完不该再推进
     await flush();
     expect(audios).toHaveLength(1);
