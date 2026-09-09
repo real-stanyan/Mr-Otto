@@ -58,6 +58,31 @@ describe("usageByModel", () => {
     expect(rows).toEqual([{ model: "cheap", route: "direct", promptTokens: 12, completionTokens: 3, cachedTokens: 0 }]);
   });
 
+  it("出图那一笔也进账（#1084）：generate_image 的模型调用挂在 tool_result 上，带 credit", () => {
+    const rows = usageByModel([
+      said("glm-4.7", 100, 10),
+      ev({
+        type: "tool_result",
+        toolCallId: "c1",
+        status: "ok",
+        output: "已生成 1 张图并显示给用户。",
+        model: "gemini-3.1-flash-image",
+        usage: { promptTokens: 12, completionTokens: 1120 },
+        route: "hosted",
+        creditCostMicro: 67206,
+      }),
+    ]);
+    // 文字与出图是不同的型号、不同的路，分两行；出图那行的 credit 原样过桥
+    expect(rows).toEqual([
+      { model: "gemini-3.1-flash-image", route: "hosted", promptTokens: 12, completionTokens: 1120, cachedTokens: 0, creditCostMicro: 67206 },
+      { model: "glm-4.7", route: "direct", promptTokens: 100, completionTokens: 10, cachedTokens: 0 },
+    ]);
+  });
+
+  it("没有 usage 的 tool_result 不算账 —— 日志里绝大多数工具结果一行不多", () => {
+    expect(usageByModel([ev({ type: "tool_result", toolCallId: "c1", status: "ok", output: "x" })])).toEqual([]);
+  });
+
   it("外挂小调用带了 route 就按 route 记（#1091）—— 订阅用户的小模型走的是托管", () => {
     // ADR-0248 之前「外挂只走用户自己的 key」是真的，`billed()` 里那句写死的 direct
     // 因此一直是对的；那条规矩改了之后它成了假的，而失败模式是安静的——一次真·hosted

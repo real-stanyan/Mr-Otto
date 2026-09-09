@@ -207,6 +207,18 @@ export interface ToolResultEvent extends SessionEventBase {
       可选 = 旧日志无此字段照样重放（schema 向后兼容硬规则）。
       图丢了不该炸时间线 —— 同 ADR-0009 对用户附件的取舍，UI 退成一行缺图提示 */
   images?: UserAttachmentRef[];
+  /** 这次工具调用里套着的那次模型调用的账（#1084）：generate_image 走网关出图，
+      钱扣在网关那边（usage_event 有行），本机的账也得能从日志求和——它的载体
+      只能是这条 tool_result（出图不产生 assistant_message）。四格与
+      assistant_message 同名格同语义（model = 出图型号，不是会话的文字型号；
+      route 缺席 = direct；creditCostMicro 缺席 ≠ 0）。
+      全可选 = 旧日志与绝大多数不烧钱的工具照样重放（schema 向后兼容硬规则）。
+      记账侧由 deriveUsage 的 billed() 按「有没有 usage 这一格」收它，
+      不为工具单写分支 */
+  model?: string;
+  usage?: TokenUsage;
+  route?: "hosted" | "direct";
+  creditCostMicro?: number;
   /** 这条是哪只工作区 agent 干的（#928） */
   agentId?: string;
 }

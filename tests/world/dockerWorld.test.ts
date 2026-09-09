@@ -156,12 +156,16 @@ describe("DockerWorld", () => {
     const fetchImpl = vi.fn(async () => ({
       ok: true,
       json: async () => ({ ok: true }),
+      headers: new Headers({ "x-otto-cost-micro": "42" }),
     })) as unknown as typeof fetch;
     const { container } = createFakeContainer({ exitCode: 0 });
     const world = createDockerWorld({ container: async () => container, fetchImpl });
     const result = await world.http.postJson("https://example.com", { a: 1 });
     expect(result).toEqual({ ok: true });
     expect(fetchImpl).toHaveBeenCalled();
+    // postJsonWithHeaders 同一次 fetch 的另一种取法（#1084）：body 之外还拿得到响应头
+    const withHeaders = await world.http.postJsonWithHeaders!("https://example.com", { a: 1 });
+    expect(withHeaders.headers["x-otto-cost-micro"]).toBe("42");
   });
 
   // ---- 复审四条 findings 的回归测试 ----

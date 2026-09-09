@@ -133,7 +133,7 @@ describe("LocalWorld exec 内存有界（issue #343 第一层 HeadTail）", () =
 
 describe("http.postJson", () => {
   const okResponse = (json: unknown) =>
-    ({ ok: true, status: 200, json: async () => json, text: async () => "" }) as Response;
+    ({ ok: true, status: 200, json: async () => json, text: async () => "", headers: new Headers() }) as Response;
 
   it("POST JSON body,带 Content-Type 与自定义 header,返回解析后的 JSON", async () => {
     const calls: { url: string; init: RequestInit }[] = [];
@@ -152,6 +152,25 @@ describe("http.postJson", () => {
     const headers = calls[0]!.init.headers as Record<string, string>;
     expect(headers["Content-Type"]).toBe("application/json");
     expect(headers["Authorization"]).toBe("Bearer k");
+  });
+
+  it("postJsonWithHeaders：同一次请求，body 与响应头都拿得回来（#1084）", async () => {
+    // 出图那笔钱的结算数在网关响应头里（x-otto-cost-micro）——头丢掉工具就报不了 credit
+    const fetchImpl = (async () =>
+      ({
+        ok: true,
+        status: 200,
+        json: async () => ({ created: 1 }),
+        text: async () => "",
+        headers: new Headers({ "X-Otto-Cost-Micro": "67206" }),
+      }) as Response) as typeof fetch;
+    const world = createLocalWorld({ fetchImpl });
+
+    const res = await world.http.postJsonWithHeaders!("https://x.test/images", { prompt: "x" });
+
+    expect(res.body).toEqual({ created: 1 });
+    // Headers.entries 的键一律小写 —— 接口注释承诺的就是小写键
+    expect(res.headers["x-otto-cost-micro"]).toBe("67206");
   });
 
   it("非 2xx 抛错并带状态码与响应片段", async () => {
