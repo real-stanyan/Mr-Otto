@@ -41,3 +41,10 @@ export function inVoiceCall(state: VoiceCallState | null, agentId: string): bool
     点名它，而 src/session 不能 import services/runtime——工具实现在
     services/runtime/src/inviteToCallTool.ts，从这儿取名字 */
 export const INVITE_TO_CALL_TOOL_NAME = "invite_to_call";
+
+/** 通话进行中，一只 agent 在回复里 @ 了通话外的另一只：这一棒不接，群里这一句说清为什么、
+    人能怎么办（#1163）。判据与接力过滤同源：写这句话的是模型，读的是人——它没照「先问
+    再拉」的纪律做时，这一行是人唯一的信号 */
+export function relayOutsideCallText(fromName: string, toName: string): string {
+  return `「${fromName}」@ 了不在通话里的「${toName}」——通话中只有通话成员接活，这一棒没接。要让 TA 参与，答应「${fromName}」的询问、或点通话栏的加人。`;
+}

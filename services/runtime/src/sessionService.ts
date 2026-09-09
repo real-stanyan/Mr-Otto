@@ -162,7 +162,8 @@
 //   ⑪ **archive() 顺带停**：归档以前不动正在跑的 turn，而 daemon 两秒后收房，
 //      于是那条 turn 的回复广播给了一间已经关掉的房间（钱照付、人收不到）。
 
-import { applyVoiceCallEvent, voiceCallOf, type VoiceCallState } from "../../../src/shared/voiceCall.js";
+import { applyVoiceCallEvent, inVoiceCall, relayOutsideCallText, voiceCallOf, type VoiceCallState } from "../../../src/shared/voiceCall.js";
+import { createInviteToCallTool } from "./inviteToCallTool.js";
 import type { VoiceCallParticipant } from "../../../src/session/events.js";
 import { LoopEngine } from "../../../src/loop/engine.js";
 import type { EventStore } from "../../../src/session/store.js";
@@ -249,11 +250,14 @@ function resolveTargets(
   text: string,
   mention: boolean,
   mentions: string[] | undefined,
-  roster: AgentSpec[]
+  roster: AgentSpec[],
+  /** 第 ③ 级老语义回落到谁（#1163）：通话进行中是通话成员的第一只，不是名单第一只——
+      「只有通话成员参与」对开局卡那条路也成立。缺省 = roster 本身 = 改动前逐字相同 */
+  fallbackRoster: AgentSpec[] = roster
 ): string[] {
   const explicit = resolveExplicitTargets(text, mentions, roster);
   if (explicit.length > 0 || mentions !== undefined) return explicit;
-  return mention && roster[0] ? [roster[0].agentId] : [];
+  return mention && fallbackRoster[0] ? [fallbackRoster[0].agentId] : [];
 }
 
 /** 上面三级里的前两级——**人亲手点的名**（客户端算好的 mentions，或正文里
@@ -973,6 +977,15 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       agentName: () => specNames.get(spec.agentId) ?? spec.name,
       memory: opts.memory,
     });
+    // 语音通话里把人拉进来那把刀（#1163），每只都挂：通话进行中只有通话成员参与，任何一只
+    // 都可能撞上「这件事该由通话外的人做」。不过审批门（口头同意就行，纪律在提示词里）；
+    // byUid 是点火的那个人（同 create_agent 的 created_by），byAgentId 是这只自己
+    const inviteToCallTool = createInviteToCallTool({
+      agentId: spec.agentId,
+      currentCall: () => voiceCall,
+      roster: () => opts.agents(),
+      invite: (target) => logVoiceCall([...(voiceCall?.participants ?? []), target], currentInitiator ?? "system", spec.agentId),
+    });
     const engine = new LoopEngine({
       store: agentView(store, spec.agentId),
       adapter,
@@ -982,7 +995,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // 只有管理员那只有 create_agent（spec §10 切片 6）。判据是 agentId 不是名字——
       // 名字随时能改，'admin' 是 0021 触发器种下的稳定键
       tools: () => [
-        readFileTool, writeFileTool, bashTool, memoryTool,
+        readFileTool, writeFileTool, bashTool, memoryTool, inviteToCallTool,
         ...(spec.agentId === ADMIN_AGENT_ID ? [createAgentTool] : []),
         ...gitTools,
         ...cachedPxTools,
@@ -1261,7 +1274,18 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       return;
     }
     const candidates = roster.map((a) => ({ agentId: a.agentId, name: a.name }));
-    const targets = mentionedAgents(said, candidates, spec.agentId);
+    let targets = mentionedAgents(said, candidates, spec.agentId);
+    // 通话进行中只有通话成员接活（#1163）：@ 了通话外的那一棒不接，群里说一声——写那个
+    // @ 的是模型，它该做的是先问用户、用户同意后调 invite_to_call；这一行是人看得见
+    // 「它没照做」的唯一信号（与 #1055 撤掉的那条不同：那条说的是 @ 了不存在的名字）
+    if (voiceCall !== null) {
+      const call = voiceCall;
+      const nameOf0 = (id: string): string => roster.find((a) => a.agentId === id)?.name ?? id;
+      for (const to of targets.filter((id) => !inVoiceCall(call, id))) {
+        logChat("system", "系统", relayOutsideCallText(nameOf0(spec.agentId), nameOf0(to)), false);
+      }
+      targets = targets.filter((id) => inVoiceCall(call, id));
+    }
     // 这一轮里 @ 了、但**没落到名单上**的那几个（#957 A-6）曾经在群里落一条
     // 「「运营」@ 了 N 个名单里没有的名字（可能改过名或还没建），这一棒没人接」。
     // #1055 把它撤了，判据是**这句话说给谁听、他能拿它做什么**：
@@ -1705,12 +1729,14 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       **尾段**（最近 DISPATCH_TAIL_WINDOW 条事件，dispatchContext 再从里面挑说出口
       的话、截到最近 8 句）——不读全量：say() 的回执等着这一步。分类器抛错也按
       failed 回，不让发言失败（同 pickAutoModel 的纪律） */
-  async function dispatchVerdictFor(roster: AgentSpec[], fromUid: string, label: string, text: string): Promise<DispatchVerdict> {
+  /** `roster` 是全名单（上下文里的名字要认得出通话外的人说的话），`candidates` 是分类器
+      能挑的那几只——通话进行中只有通话成员（#1163），没有通话时两者是同一份 */
+  async function dispatchVerdictFor(roster: AgentSpec[], candidates: AgentSpec[], fromUid: string, label: string, text: string): Promise<DispatchVerdict> {
     const nameOf = (id: string): string => roster.find((a) => a.agentId === id)?.name ?? (id === "" ? "Agent" : id);
     const tail = store.load(sessionId, { afterSeq: Math.max(-1, lastSeqSeen - DISPATCH_TAIL_WINDOW) });
     const input: DispatchInput = {
-      roster: roster.map((a) => ({ agentId: a.agentId, name: a.name, description: a.description })),
-      fallbackAgentId: dispatchFallbackOf(roster),
+      roster: candidates.map((a) => ({ agentId: a.agentId, name: a.name, description: a.description })),
+      fallbackAgentId: dispatchFallbackOf(candidates),
       context: dispatchContext(tail, nameOf),
       fromLabel: safeSpeakerLabel(label, fromUid),
       text,
@@ -1749,8 +1775,12 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // （#1153，ADR-0270）：接了分类器、且这句话不是说给某个具体的人听的 → 派活；
       // 其余 → 改动前逐字相同（第 ③ 级老语义：mention:true 回落名单第一只，否则
       // 只落 chat_message）。`legacy` 就是改动前 resolveTargets 给的那份答案
+      // 通话进行中只有通话成员参与（#1163）：派活的候选、开局卡的回落都只在名单里挑；
+      // 人亲手 @ 的照旧对着**全名单**解析——@ 了通话外的那只会在落开场白之前被自动拉进来
+      // （拍板 ⑤：人亲手点名 = 要它参与）。没有通话 = 全名单 = 改动前逐字相同
+      const callRoster = voiceCall === null ? roster : roster.filter((a) => inVoiceCall(voiceCall, a.agentId));
       const explicit = [...new Set(resolveExplicitTargets(text, mentions, roster))];
-      const legacy = [...new Set(resolveTargets(text, mention, mentions, roster))];
+      const legacy = [...new Set(resolveTargets(text, mention, mentions, roster, callRoster))];
       let targets = explicit;
       /** 这几只是分类器派的、不是人点的——落进开场白的 `dispatch` 字段（投影可从
           日志推导：「为什么运营答了」要能从日志里读出来） */
@@ -1771,7 +1801,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
           // （ADR-0243 那条三态纪律）
           const verdict: DispatchVerdict = roster.some((a) => a.degraded)
             ? { kind: "failed", reason: "智能体名单这会儿读不出来" }
-            : await dispatchVerdictFor(roster, fromUid, label, text);
+            : await dispatchVerdictFor(roster, callRoster, fromUid, label, text);
           if (verdict.kind === "picked") {
             const known = new Set(roster.map((a) => a.agentId));
             const picked = [...new Set(verdict.agentIds.filter((id) => known.has(id)))];
@@ -1890,6 +1920,19 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         return;
       }
 
+      // 通话进行中而人亲手 @ 了通话外的（#1163，拍板 ⑤）：自动拉进通话——人亲手点名 =
+      // 要它参与。**先落名单再落开场白**：这一轮跑起来时它已经在通话里（system 尾块
+      // 读得到、它的回复会被读出来）。派活挑出来的那几只本来就只在通话成员里，这里
+      // 只会碰到人亲手点的
+      if (voiceCall !== null) {
+        const outsiders = targets.filter((id) => !inVoiceCall(voiceCall, id));
+        if (outsiders.length > 0) {
+          logVoiceCall(
+            [...voiceCall.participants, ...outsiders.map((id) => ({ agentId: id, name: roster.find((a) => a.agentId === id)?.name ?? id }))],
+            fromUid
+          );
+        }
+      }
       // 先落盘再排队（#932 坑 ②）：收下了 = 记下了。1a 是"起 turn 那一刻由
       // engine 落 user_message"，于是排队中的话在日志里一个字节都没有——群里
       // 其他人看不见它，daemon 一重启它就真的没发生过。排队仍然纯内存、重启
