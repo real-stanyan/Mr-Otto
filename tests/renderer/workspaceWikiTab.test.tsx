@@ -44,7 +44,7 @@ beforeAll(() => {
 });
 const WS: WorkspaceSnapshot = { id: "ws-1", name: "奶茶店", ownerUid: "u1", members: [{ uid: "u1", role: "owner", label: "小红", avatarUrl: "" }], connectors: [], sessions: [], agents: [], sandboxApproval: "ask" };
 const INDEX = "# 索引\n\n## 常驻\n- [[team]] 团队口径 — 所有人都看得到\n\n## customers\n- [[customers/acme]] Acme — 华东最大客户\n";
-const PAGE = "---\ntitle: Acme\nsummary: 华东最大客户\npinned: false\nupdated_by: 运营\nupdated_at: 2026-09-09T00:00:00Z\nsources: []\n---\n月结 60 天\n";
+const PAGE = "---\ntitle: Acme\nsummary: 华东最大客户\npinned: false\nupdated_by: 运营\nupdated_at: 2026-09-09T00:00:00Z\nsources: [s-1#12, /work/合同.pdf]\n---\n月结 60 天\n";
 const file = (text: string): CsWorkNode => ({ kind: "file", text, truncated: false, size: text.length });
 
 function stubStore(files: Record<string, CsWorkNode | { error: string }>, write: () => Promise<FriendsResult<null>> = async () => ({ ok: true, value: null })) {
@@ -108,7 +108,8 @@ describe("WorkspaceWikiTab", () => {
     await userEvent.type(body, "月结 30 天");
     await userEvent.click(screen.getByRole("button", { name: "保存" }));
     await waitFor(() => expect(writes).toHaveLength(1));
-    expect(writes[0]).toEqual({ op: "write", path: "customers/acme.md", title: "Acme", summary: "华东最大客户", pinned: false, body: "月结 30 天" });
+    // 整页替换：界面上没有编辑 sources 的地方，那就把页头原来那份原样带回去（#1140 终审 Important 4）
+    expect(writes[0]).toEqual({ op: "write", path: "customers/acme.md", title: "Acme", summary: "华东最大客户", pinned: false, body: "月结 30 天", sources: ["s-1#12", "/work/合同.pdf"] });
     fail = true;
     await userEvent.click(await screen.findByRole("button", { name: "编辑" }));
     await userEvent.click(screen.getByRole("button", { name: "保存" }));
@@ -127,7 +128,7 @@ describe("WorkspaceWikiTab", () => {
     await userEvent.type(screen.getByLabelText("路径"), "suppliers/tea.md");
     await userEvent.click(screen.getByRole("button", { name: "保存" }));
     await waitFor(() => expect(writes).toHaveLength(1));
-    expect(writes[0]).toMatchObject({ op: "write", path: "suppliers/tea.md", title: "X" });
+    expect(writes[0]).toEqual({ op: "write", path: "suppliers/tea.md", title: "X", summary: "", pinned: false, body: "" }); // 新建页没有「原来那份」，这一格不带
     await userEvent.click(await screen.findByRole("button", { name: "Acme" }));
     await userEvent.click(await screen.findByRole("button", { name: "删除" }));
     await userEvent.click(await screen.findByRole("button", { name: "删除这一页" })); // confirm 对话框的确认钮文案

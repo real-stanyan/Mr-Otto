@@ -744,7 +744,8 @@ async function main(): Promise<void> {
       await svc.ensure();
       const who = { kind: "member" as const, id: author.uid, label: author.label };
       if (req.op === "remove") await svc.remove(req.path, who);
-      else await svc.write({ path: req.path, title: req.title, summary: req.summary, body: req.body, pinned: req.pinned }, who);
+      // sources 缺席就不带这个键（exactOptionalPropertyTypes；wikiService 按「没给」处理 = 空）
+      else await svc.write({ path: req.path, title: req.title, summary: req.summary, body: req.body, pinned: req.pinned, ...(req.sources ? { sources: req.sources } : {}) }, who);
     },
     sessions: {
       get(workspaceId, sessionId) {

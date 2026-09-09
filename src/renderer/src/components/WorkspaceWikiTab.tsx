@@ -162,7 +162,9 @@ function WikiEditScreen({ ws, page, onSaved }: { ws: WorkspaceSnapshot; page: Wi
     if (!isWikiPagePath(p)) { setError(`路径不合法：${p || "（空）"}。一层目录、小写英文 kebab、.md 结尾，例如 customers/acme.md`); return; }
     setBusy(true);
     setError(null);
-    const req: CsWikiWriteReq = { op: "write", path: p, title, summary, pinned, body };
+    // write 是整页替换，而这张表没有编辑 sources 的地方——不把页头原来那份带回去，
+    // 人每改一句正文就顺手删掉了它（新建页没有「原来那份」，那一格干脆不带）
+    const req: CsWikiWriteReq = { op: "write", path: p, title, summary, pinned, body, ...(page ? { sources: page.front.sources } : {}) };
     const r = await write(ws.id, req);
     setBusy(false);
     if (!r.ok) { setError(r.message); return; }

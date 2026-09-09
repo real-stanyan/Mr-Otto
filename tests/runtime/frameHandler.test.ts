@@ -1770,6 +1770,17 @@ describe("wiki_write（协议 18，#1140）", () => {
     await handler.onSessionFrame("w-ok", "s1", "c2", encodeCs(frame));
     expect(sent.at(-1)).toEqual({ cid: "c2", msg: { t: "denied", code: "not_authorized" } });
   });
+  it("sources 原样递给 writeWiki（帧上有就带，没有就不带这个键）", async () => {
+    const calls: unknown[] = [];
+    const { deps } = makeDeps({ writeWiki: async (_w, req) => { calls.push(req); } });
+    const handler = createFrameHandler(deps);
+    await handler.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    const base = { t: "wiki_write", workspaceId: "w1", op: "write", path: "a.md", title: "A", summary: "s", pinned: false, body: "正文" } as const;
+    await handler.onCtlFrame("c1", encodeCs({ ...base, sources: ["s-1#12"] }));
+    await handler.onCtlFrame("c1", encodeCs(base));
+    const req = { op: "write", path: "a.md", title: "A", summary: "s", pinned: false, body: "正文" }; // t / workspaceId 由 frameHandler 摘掉
+    expect(calls).toEqual([{ ...req, sources: ["s-1#12"] }, req]);
+  });
   it("writeWiki 抛错 → 回执 ok:false 带那句人话；限速 → denied rate_limited", async () => {
     const { deps, sent } = makeDeps({ writeWiki: async () => { throw new Error("常驻页合计 2300 字，超过预算 2200"); } });
     const handler = createFrameHandler(deps);

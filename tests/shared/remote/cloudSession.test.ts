@@ -310,6 +310,15 @@ describe("wiki_write / wiki_write_result（协议 18，#1140）", () => {
     expect(decodeCsUp(encodeCs({ t: "wiki_write", workspaceId: "w1", op: "write", path: "a.md" } as never))).toBeNull();
     expect(decodeCsUp(encodeCs({ t: "wiki_write", workspaceId: "w1", op: "nope", path: "a.md" } as never))).toBeNull();
   });
+  it("sources 可选：带了原样往返、没带就不出现在解出来的帧上；形状不对整帧拒", () => {
+    // 设置页那张表整页替换，不带这一格就等于每次人改一句话都把页头的 sources 抹掉（#1140 终审 Important 4）
+    const w: CsUp = { t: "wiki_write", workspaceId: "w1", op: "write", path: "a.md", title: "A", summary: "s", pinned: false, body: "正文", sources: ["s-1#12", "/work/x.csv"] };
+    expect(decodeCsUp(encodeCs(w))).toEqual(w);
+    const bare = { t: "wiki_write", workspaceId: "w1", op: "write", path: "a.md", title: "A", summary: "s", pinned: false, body: "正文" } as const;
+    expect(decodeCsUp(encodeCs(bare))).toEqual(bare);
+    expect(decodeCsUp(encodeCs({ ...bare, sources: "s-1#12" } as never))).toBeNull();
+    expect(decodeCsUp(encodeCs({ ...bare, sources: [1] } as never))).toBeNull();
+  });
   it("下行回执往返，message 可选", () => {
     const ok = { t: "wiki_write_result", workspaceId: "w1", path: "a.md", ok: true } as const;
     expect(decodeCsDown(encodeCs(ok))).toEqual(ok);

@@ -268,9 +268,12 @@ export type CsDeniedCode =
       再来"，两者语义相反——会话房里的限速回的是 `error` 帧 */
   | "rate_limited";
 
-/** 设置页改一页 wiki（控制房帧，协议 17，#1140）：write 整页替换、remove 删页。服务端走与 wiki 工具同一条写入路径 */
+/** 设置页改一页 wiki（控制房帧，协议 18，#1140）：write 整页替换、remove 删页。服务端走与 wiki 工具同一条写入路径。
+    `sources` 是 add-only 的一格（协议号不进位）：write 是**整页替换**，不带它就等于人每改一句正文
+    都把页头原来的 sources 抹掉——而界面上根本没有编辑它的地方，那是一次谁都没要求过的删除。
+    缺席 = 这条帧没有意见（服务端按空处理，与新建页一致），不是「清空」 */
 export type CsWikiWriteReq =
-  | { op: "write"; path: string; title: string; summary: string; pinned: boolean; body: string }
+  | { op: "write"; path: string; title: string; summary: string; pinned: boolean; body: string; sources?: string[] }
   | { op: "remove"; path: string };
 
 /** 成员 → runtime */
@@ -647,7 +650,14 @@ export function decodeCsUp(b64: string): CsUp | null {
         obj.op === "write" && typeof obj.title === "string" && typeof obj.summary === "string" &&
         typeof obj.pinned === "boolean" && typeof obj.body === "string"
       ) {
-        return { t: "wiki_write", workspaceId: obj.workspaceId, op: "write", path: obj.path, title: obj.title, summary: obj.summary, pinned: obj.pinned, body: obj.body };
+        // sources 缺席合法；在场但形状不对整帧拒（同 call 的 participants）——半懂的帧比拒了更糟
+        const src = obj.sources;
+        if (src !== undefined && !(Array.isArray(src) && src.every((x) => typeof x === "string"))) return null;
+        return {
+          t: "wiki_write", workspaceId: obj.workspaceId, op: "write", path: obj.path,
+          title: obj.title, summary: obj.summary, pinned: obj.pinned, body: obj.body,
+          ...(src !== undefined ? { sources: src as string[] } : {}),
+        };
       }
       return null;
     }
