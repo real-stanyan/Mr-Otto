@@ -714,11 +714,19 @@ export interface MicroCompactedEvent extends SessionEventBase {
   route?: "hosted" | "direct";
 }
 
-/** 额外 18：会话自动命名（issue #335）。第一条 user_message 首行过长时，turn 收口后
-    的合并调用（turnAnnotator）顺手把它浓缩成短标题。标题出自模型、日志推不出 → 必须
-    落盘；给人看的侧栏/岛上标题，不喂回模型 → 投影丢弃（同 section_classified 纪律）。
-    标题优先级：session_renamed（手动，最后一条胜出）> 本事件（最后一条胜出）>
-    第一条 user_message 首行。已有本事件或手动改名后不再触发（一次会话最多一条）。 */
+/** 额外 18：会话自动命名（issue #335；云端团队会话的生产者见 #1213 / ADR-0283）。
+    两个生产者，触发频率不同：
+    ① 本机单人会话：第一条 user_message 首行过长时，turn 收口后的合并调用
+    （turnAnnotator）顺手把它浓缩成短标题——一次会话最多落一条，已有本事件或
+    手动改名（session_renamed）之后不再触发。
+    ② 云端团队会话：runtime 的 sessionTitler 按 TITLE_EVERY 每隔几条人类发言就
+    重判一次，话题漂了就再落一条新的——同一条会话上可以有很多条，这是拍板
+    「话题漂了就重命名」故意要的效果，不是「一次会话最多一条」这条旧说法的例外。
+    标题出自模型、日志推不出 → 必须落盘；给人看的侧栏/岛上标题，不喂回模型 →
+    投影丢弃（同 section_classified 纪律）。标题优先级：session_renamed（手动，
+    最后一条胜出）> 本事件（最后一条胜出）> 第一条 user_message 首行——「最后
+    一条胜出」这条投影规矩本身就是两个生产者都安全的原因：不管一条会话上落了
+    几条本事件、由哪个生产者落的，下游只认最新那一条。 */
 export interface SessionAutoTitledEvent extends SessionEventBase {
   type: "session_autotitled";
   title: string;
