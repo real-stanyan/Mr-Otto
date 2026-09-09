@@ -1526,6 +1526,16 @@ void app.whenReady().then(() => {
     if (agent) send(CHANNELS.toolDefsChanged, { sessionId: agent.sessionId, toolDefs: agent.toolDefs });
   };
   mcpHub.onChange(() => { send(CHANNELS.mcpChanged, mcpSnapshot()); sendToolDefs(); });
+  // 开机就把握手跑掉（#1187）。在这之前，MCP 连接**只由会话装配发起**
+  // （startSession / resumeSession 里的 await mcpHub.ready()），于是 app 起来
+  // 之后第一次点会话的人替所有人付这趟网络：真机实测，三台远程 server 能让
+  // 一条 7 条事件的会话等 879ms，而这段成本跟会话大小毫无关系。
+  //
+  // **不 await**（也没人能 await：这里是装配期）：预热失败/超时都不影响开机，
+  // 没连完的那几台照旧留在 connecting，等它们自己 emit() 收尾。
+  // 排在 onChange 接线**之后**：预热每连上一台都会 emit 一次，接线在后面的话
+  // 这几发推送就没人收，设置页要等下一次状态变化才对得上。
+  void mcpHub.ready();
 
   // ─── 好友代理（issue #622 / #657，ADR-0151 / ADR-0162）─────────────────
   // A 把「操作我已接通的服务」这件能力临时授给好友：B 的工具调用经 relay 打到
@@ -2997,11 +3007,13 @@ void app.whenReady().then(() => {
 
   // ── MCP ─────────────────────────────────────────────────────────
   ipcMain.handle(CHANNELS.listMcpServers, (): McpServersSnapshot => {
-    // 打开设置页 = 想知道每台此刻是什么状态。而连接只由 ready() 发起（会话
-    // 开始时），在那之前每台的 status 都停在 connecting —— 那个 connecting
-    // 的意思是「还没试过」，不是「正在连」（见 mcpHub.ts syncFromDisk 的注释）。
-    // 于是重启后第一次进设置页，一台连得好好的 server 和一台需要授权的长得
-    // 一模一样，页面上下两半都在说同一句没有信息量的话（issue #722）。
+    // 打开设置页 = 想知道每台此刻是什么状态。连接由 ready() 发起，而 ready()
+    // 过去只挂在会话装配上 —— 在那之前每台的 status 都停在 connecting，
+    // 那个 connecting 的意思是「还没试过」，不是「正在连」（见 mcpHub.ts
+    // syncFromDisk 的注释）。于是重启后第一次进设置页，一台连得好好的 server
+    // 和一台需要授权的长得一模一样，页面上下两半都在说同一句没有信息量的话
+    // （issue #722）。#1187 之后开机就预热了一遍，这一句通常已经是空操作 ——
+    // 留着是因为「预热那一发之后才配好的 server」仍然只能靠它转正。
     //
     // **不 await**：ready() 最长要等 10 秒，而每连上一台 hub 都会 emit 一次，
     // 顺着 mcpChanged 推给渲染层。页面立刻拿到当前快照先画出来，状态随后

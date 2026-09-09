@@ -33,6 +33,12 @@ interface Entry {
   status: McpStatus;
   error?: string;
   conn?: McpClientConn;
+  /** 上一次连接尝试**结束**的时刻（#1187）。ready() 拿它分两拨：没有这个值 =
+      从没试过 = 这次装配要等它（它决定这个会话有没有这些工具）；有值而且没连上 =
+      已经问过一次了，重试挪到后台。undefined 和「此刻正在连」不是一回事，
+      后者看 inflight —— 判据分开写，是因为「超时返回但连接还在飞」这个状态
+      同时满足前者的 undefined 和后者的在飞（见 ready() 里那两条注释） */
+  triedAt?: number;
 }
 
 /** ready() 单次调用的等待上限。SDK 的 client.connect() 没设超时,兜底是它自己
@@ -44,6 +50,15 @@ interface Entry {
     预留的。超时不等于失败:见 ready() 内部注释,没连完的那几台继续在后台跑,
     只是这一次装配等不到它们的工具了(consequence 见 agent.ts 顶部注释)。 */
 const READY_TIMEOUT_MS = 10_000;
+
+/** 一台连不上的 server 隔多久才值得再试一次（#1187）。
+    重试本身没错（用户可能刚把 npx 装上、刚把网连回来），错的是**频率**：
+    ready() 挂在每一次会话装配上，而"点开一条不在内存里的会话"是个高频动作 ——
+    不设这个窗，连着点五条会话就是对同一台挂了的 server 打五次网络。
+    30 秒选在"用户点几下之间大概率只打一次"和"环境真变好了不用等太久"之间；
+    真等不及的那条路一直都在：设置页每行那颗重连按钮（reconnect）和授权完
+    自动重连都是直接调 connectOne，一次都不看这个窗。 */
+const RETRY_COOLDOWN_MS = 30_000;
 
 /** 遮罩往返合并：设置页的表单是拿 list() 给的遮罩值预填的,用户没碰某个
     env/headers 字段时,交回来的 save() 请求里那个字段还是那串 `sk-xxx*****xxx`。
@@ -134,7 +149,6 @@ export function createMcpHub(opts: {
 }): McpHub {
   const entries = new Map<string, Entry>();
   const listeners = new Set<() => void>();
-  let readying: Promise<void> | null = null;
   // 解析阶段的人话错误(见 McpHub.configErrors 的接口注释),每次 syncFromDisk 刷新
   let parseErrors: string[] = [];
   // 同一次 load() 里解析不动的 id 清单，写回时要原样保护（见上方 save 的接口注释）
@@ -215,7 +229,25 @@ export function createMcpHub(opts: {
       e.status = err instanceof McpAuthRequiredError ? "needs-auth" : "failed";
       e.error = err instanceof Error ? err.message : String(err);
     }
+    // 试过了（不管成没成）——ready() 靠这一格把「没试过」和「问过一次了」分开
+    e.triedAt = Date.now();
     emit();
+  }
+
+  /** 同一个 id 同时只有一次连接在飞。
+      这道闸原来是 ready() 的单飞 `readying` 顺带提供的（"超时之后再调 ready()
+      不会对同一台还在连接中的 server 重复发起连接"），而 #1187 把重试挪到后台
+      之后，那个前提没了：后台那次还挂着的时候，下一次 ready() 会走到同一个 id
+      上。挡不住的后果不是慢，是 stdio 场景下的两个孤儿子进程（原注在下面
+      ready() 里）。所以这道闸落在 id 上，而不是落在"这一轮 ready 等不等"上 */
+  const inflight = new Map<string, Promise<void>>();
+  function attempt(id: string): Promise<void> {
+    const running = inflight.get(id);
+    if (running) return running;
+    // connectOne 自己吞掉所有失败（状态机里表达），所以这里没有 rejected 的可能
+    const p = connectOne(id).finally(() => { inflight.delete(id); });
+    inflight.set(id, p);
+    return p;
   }
 
   function handleOf(id: string, e: Entry): McpServerHandle {
@@ -290,26 +322,45 @@ export function createMcpHub(opts: {
 
   return {
     async ready() {
-      // 并发调只连一次；连完清空,下次 ready() 会重试 failed 的那些
-      // ——用户可能刚把 npx 装上,或者刚把网连回来。
-      // readying 挂的是"真正在跑的那份工作",不是"这次调用愿意等多久"——
-      // 两者拆开是这个函数不撞车的关键：下面的超时只影响这次调用返回得多快,
-      // 不影响 readying 本身；超时之后 readying 还留着，其余没连完的
-      // connectOne 继续在后台跑到底、跑完了正常 emit()。要是让超时把
-      // readying 提前置 null，下一次 ready() 调用会对同一台还在连接中的
-      // server 重新发起一次 opts.connect()——同一个 id 并发连两次，
-      // stdio 场景就是两个孤儿子进程。
-      if (!readying) {
-        readying = (async () => {
-          syncFromDisk();
-          await Promise.all([...entries.keys()].map((id) => connectOne(id)));
-        })().finally(() => { readying = null; });
+      // 这个函数挂在**每一次会话装配**上（startSession / resumeSession /
+      // toolCatalog 都 await 它），所以它等谁、不等谁，就是"点开一条不在内存
+      // 里的会话要卡多久"（#1187）。分工只有一条判据 —— **这台问过了没有**：
+      //
+      //   · 没问过（triedAt 缺席）→ 这次等它。它的答案决定这个会话有没有这些
+      //     工具，而工具表是挂载一次定终身的（agent.ts 顶部注释）；不等就等于
+      //     替用户决定"这一条会话没有这几台的刀"。
+      //   · 问过了、没连上 → 不等，后台重试（还要过 RETRY_COOLDOWN_MS 那道窗）。
+      //     上一次已经给出过答案，而这次装配为它多付的那趟网络往返是纯亏：
+      //     真机实测，三台没授权的远程 server 能让一条 7 条事件的会话等 879ms。
+      //   · needs-auth → 一次都不后台重试：那是"要人去点那颗授权按钮"，
+      //     拿同一份凭据再打一遍，答案不会变，只是白付一趟往返。真要重来的
+      //     两条路（设置页的重连、authorize 完的自动重连）都直接调 connectOne。
+      //   · 已连上 → connectOne 自己会跳过。
+      //
+      // 开机预热（index.ts 装配末尾那句 `void mcpHub.ready()`）是这套分工的
+      // 另一半：真正要等的那一次被挪到了没人盯着的时刻，于是点击路径上通常
+      // 一台都不用等。
+      syncFromDisk();
+      const now = Date.now();
+      const wait: Promise<void>[] = [];
+      for (const [id, e] of entries) {
+        if (!e.cfg.enabled || e.status === "connected") continue;
+        // 没问过：等它。注意这里不看 inflight —— 上一次 ready() 超时返回、
+        // 而那次连接还挂在那儿没死，就是这个形状（triedAt 仍然缺席）：
+        // attempt() 会把**同一个** promise 交回来，于是这次装配接着等它、
+        // 而不是对同一个 id 再发起一次连接。
+        if (e.triedAt === undefined) { wait.push(attempt(id)); continue; }
+        if (e.status === "needs-auth") continue;
+        if (inflight.has(id)) continue; // 上一次后台重试还在飞
+        if (now - e.triedAt < RETRY_COOLDOWN_MS) continue;
+        void attempt(id); // 后台重试：不进 wait，这次装配不为它多等一毫秒
       }
+      if (wait.length === 0) return;
       // 超时不是失败：没连完的那几台留在 connecting，装配这次会话时它们
       // 就是没有工具（挂载一次定终身，见 agent.ts 顶部注释里的 consequence），
       // 但状态机本身没有被撕裂——它们迟早会自己 emit() 收尾。
       await Promise.race([
-        readying,
+        Promise.all(wait),
         new Promise<void>((resolve) => { setTimeout(resolve, READY_TIMEOUT_MS); }),
       ]);
     },
