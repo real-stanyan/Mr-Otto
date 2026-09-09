@@ -206,6 +206,16 @@ describe("snapshot（spec §3.3）", () => {
 });
 
 describe("read / search / check", () => {
+  it("read：head -c 砍过的页改报真实字节数——从砍剩的文本数字数一定是低报（#1210）", async () => {
+    const mem = createMemoryWikiFs({ "big.md": "x".repeat(13_000) });
+    // 容器那台的形状：text 被 200000 字节封顶砍过，bytes 是 wc -c 量出的真实大小
+    mem.readPage = async () => ({ text: "x".repeat(13_000), bytes: 250_000 });
+    const { svc } = setup({ fs: mem });
+    const [r] = await svc.read(["big.md"]);
+    expect(r!.truncated).toBe(true);
+    expect(r!.text).toContain("全文 250000 字节");
+    expect(r!.text).not.toContain("这页有");
+  });
   it("read 多页：缺页 text 为 null，超长截断；search 透传 fs", async () => {
     const { svc } = setup();
     await svc.ensure();
