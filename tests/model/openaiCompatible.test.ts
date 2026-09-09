@@ -117,7 +117,10 @@ describe("openaiCompatible 流式（SSE）", () => {
   });
 
   it("服务器不带尾换行也能收尾：缓冲里的残行在流关闭后补喂", async () => {
-    mockFetchSSE(['data: {"choices":[{"delta":{"content":"尾巴"}}]}']); // 无 \n
+    // 终块 `[DONE]` 后面没有 \n：它整行留在缓冲里，流关了才补喂。不补喂的话
+    // 这条流会被当成没收尾（#1131），所以这条用例同时钉住「补喂」与「补喂的
+    // 那一行也算数」
+    mockFetchSSE(['data: {"choices":[{"delta":{"content":"尾巴"}}]}\n\n', "data: [DONE]"]);
     const reply = await adapter.chat([], undefined, () => {});
     expect(reply.content).toBe("尾巴");
   });
@@ -619,5 +622,93 @@ describe("errorClass 标记（issue #389）——抛错处分类，下游读标�
     vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new TypeError("fetch failed")));
     const err = await clsAdapter().chat([]).catch((e: unknown) => e);
     expect(errorClassOf(err)).toBe("retryable");
+  });
+});
+
+describe("流没收尾（#1131）——中途断开要说清是断流，不是拿半截 JSON 报语法错", () => {
+  const fastAdapter = (timing?: Partial<import("../../src/model/openaiCompatible.js").AdapterTiming>) =>
+    createOpenAICompatibleAdapter({
+      baseUrl: "https://api.example.com/v1",
+      apiKey: "test-key",
+      model: "test-model",
+      timing: { backoffMs: [0], ...timing },
+    });
+
+  it("流在一行中间断掉、什么都没播过 → 报断流并重试，第二次成功（真机形态：一块的 id 串写了一半）", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, body: streamOf(['data: {"id":"1b2c3d4e-5f6a-']) })
+      .mockResolvedValueOnce({
+        ok: true,
+        body: streamOf(['data: {"choices":[{"delta":{"content":"第二次"}}]}\n\n', "data: [DONE]\n\n"]),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+    const reply = await fastAdapter().chat([], undefined, () => {});
+    expect(reply.content).toBe("第二次");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("每次都断 → 抛「流中途断开」带 retryable 分类；绝不是 Unterminated string", async () => {
+    const fetchMock = vi.fn(async () => ({ ok: true, body: streamOf(['data: {"id":"1b2c3d4e-5f6a-']) }));
+    vi.stubGlobal("fetch", fetchMock);
+    let caught: unknown;
+    try {
+      await fastAdapter({ maxAttempts: 2 }).chat([], undefined, () => {});
+    } catch (err) {
+      caught = err;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).toMatch(/流中途断开/);
+    expect((caught as Error).message).not.toMatch(/Unterminated/);
+    expect(errorClassOf(caught)).toBe("retryable");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("内容播出去之后才断 → 不重试（半条消息续不上），错误照样说清是断流", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      body: streamOf(['data: {"choices":[{"delta":{"content":"说了一半"}}]}\n\n', 'data: {"id":"半']),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(fastAdapter().chat([], undefined, () => {})).rejects.toThrow(/流中途断开/);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("流整齐地关了但既没有 [DONE] 也没有 finish_reason → 同样算断流", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      body: streamOf(['data: {"choices":[{"delta":{"content":"半"}}]}\n\n']),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    await expect(fastAdapter().chat([], undefined, () => {})).rejects.toThrow(/流中途断开/);
+  });
+
+  it("没有 [DONE] 但终块带 finish_reason → 算正常收尾（不是每家都发 [DONE]）", async () => {
+    mockFetchSSE(['data: {"choices":[{"delta":{"content":"完"},"finish_reason":"stop"}]}\n\n']);
+    const reply = await adapter.chat([], undefined, () => {});
+    expect(reply.content).toBe("完");
+  });
+
+  it("上游把错误塞在流里再关流 → 错误文案带上游那句话，不是「断流」", async () => {
+    mockFetchSSE(['data: {"error":{"message":"upstream exploded","type":"server_error"}}\n\n']);
+    await expect(fastAdapter({ maxAttempts: 1 }).chat([], undefined, () => {})).rejects.toThrow(
+      /upstream exploded/
+    );
+  });
+
+  it("finish_reason=length 把工具参数截成半截 → 错误说明撞了长度上限，带工具名", async () => {
+    mockFetchSSE([
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"read_file","arguments":"{\\"path\\": \\"/work/mandy"}}]},"finish_reason":"length"}]}\n\n',
+      "data: [DONE]\n\n",
+    ]);
+    await expect(adapter.chat([], undefined, () => {})).rejects.toThrow(/长度上限.*read_file|read_file.*长度上限/);
+  });
+
+  it("正常收尾但模型给的工具参数不是合法 JSON → 错误带工具名与原因，不是裸 SyntaxError", async () => {
+    mockFetchSSE([
+      'data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c1","function":{"name":"bash","arguments":"{\\"cmd\\": ls}"}}]},"finish_reason":"tool_calls"}]}\n\n',
+      "data: [DONE]\n\n",
+    ]);
+    await expect(adapter.chat([], undefined, () => {})).rejects.toThrow(/bash.*不是合法 JSON/);
   });
 });
