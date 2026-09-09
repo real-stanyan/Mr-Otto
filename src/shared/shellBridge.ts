@@ -20,7 +20,7 @@ import type { UsageSnapshot } from "./usageStats.js";
 import type { ModelShareWindow } from "./modelShare.js";
 import type { WorkspaceMentionRow } from "./workspaceMentions.js";
 import type { IslandUsageRow } from "./islandUsage.js";
-import type { CsGitHost, CsModelRoute, CsWorkHit, CsWorkNode } from "./remote/cloudSession.js";
+import type { CsGitHost, CsModelRoute, CsWikiWriteReq, CsWorkHit, CsWorkNode } from "./remote/cloudSession.js";
 import type { TerminalInfo } from "./terminal.js";
 import type { BrowserTabInfo, BrowserBounds, BrowserPickedElement } from "./browser.js";
 import type { SimButton, SimFrame, SimState } from "./simulator.js";
@@ -44,7 +44,7 @@ import type {
   WorkspacesSnapshot,
 } from "./friends.js";
 import type { MyProfile, ProfilePatch, ProfileResult } from "./profile.js";
-import type { WorkspaceMemoryRow, WorkspaceSnapshot } from "./workspaces.js";
+import type { WorkspaceSnapshot } from "./workspaces.js";
 import type {
   AskUserAnswer,
   AskUserOption,
@@ -1122,13 +1122,6 @@ export interface ShellBridge {
   workspaceAgentDelete(id: string, agentId: string): Promise<FriendsResult<null>>;
   /** 设置页「用量」tab（#946）：每只 agent 本周烧了多少。经 hostedQuota 打 edge，失败翻成 FriendsResult */
   workspaceUsage(id: string): Promise<FriendsResult<WorkspaceUsage>>;
-  /** 设置页「记忆」tab（#949）：团队的记忆行（共享档 agentId 为空串 + 每只 agent 的私有档） */
-  workspaceMemoryList(id: string): Promise<FriendsResult<WorkspaceMemoryRow[]>>;
-  /** 成员手改一档；主进程归一化后落库。version 是编辑器打开时读到的那一行的 CAS 令牌
-      （`updated_at` 原串，#962）——同一 daemon 内桌面手编与 agent 写档的丢更新用它做乐观
-      前置条件（#949 review finding 2），不等则拒并回 MEMORY_CONFLICT 文案。
-      成功回的是这次写完之后的新令牌，渲染层拿它原地更新那一行、不必整份重拉 */
-  workspaceMemorySave(id: string, agentId: string, text: string, version: string): Promise<FriendsResult<string>>;
   /** owner 改「沙箱内 bash / write_file 要不要人批」（#977，ADR-0231）。非 owner 撞 RLS */
   workspaceSetSandboxApproval(id: string, value: "ask" | "auto"): Promise<FriendsResult<null>>;
   /** 把 sessionId 这个会话发布进团队（Task 9 publishSessionToWorkspace）。
@@ -1191,6 +1184,9 @@ export interface ShellBridge {
       `content=false` = 按文件名过滤，`true` = 搜正文（`?` 前缀那一路）。
       **`hits: []` 与失败是两回事**——前者是「搜过了没有」，后者是「没搜成」 */
   workspaceCloudFilesSearch(workspaceId: string, query: string, content: boolean): Promise<FriendsResult<CsWorkHit[]>>;
+  /** 改一页 wiki（控制房 RPC，协议 17，#1140）：write 整页替换 / remove 删页。服务端走与 wiki 工具同一条写入路径，
+      预算 / 保留页 / 可疑指令那几句拒绝原样回来 */
+  workspaceCloudWikiWrite(workspaceId: string, req: CsWikiWriteReq): Promise<FriendsResult<null>>;
   /** 存 / 删一台主机的 Git 凭据（控制房 RPC，协议 15，#1103；**owner 才过**，服务端判）。
       `token` 两态：非空 = 存这一把（同一台主机再存就是换新），`""` = 删掉这台主机。
       PAT 纪律同 `ProviderKeyDialog`：渲染层不留 key 的任何副本，这里只是这一次
@@ -1611,8 +1607,6 @@ export const CHANNELS = {
   workspaceAgentUpdate: "otter:workspaceAgentUpdate",
   workspaceAgentDelete: "otter:workspaceAgentDelete",
   workspaceUsage: "otter:workspaceUsage",
-  workspaceMemoryList: "otter:workspaceMemoryList",
-  workspaceMemorySave: "otter:workspaceMemorySave",
   workspaceSetSandboxApproval: "otter:workspaceSetSandboxApproval",
   workspacePublishSession: "otter:workspacePublishSession",
   workspaceUnpublishSession: "otter:workspaceUnpublishSession",
@@ -1633,6 +1627,7 @@ export const CHANNELS = {
   workspaceCloudState: "otter:workspaceCloudState",
   workspaceCloudFiles: "otter:workspaceCloudFiles",
   workspaceCloudFilesSearch: "otter:workspaceCloudFilesSearch",
+  workspaceCloudWikiWrite: "otter:workspaceCloudWikiWrite",
   workspaceCloudGitCredential: "otter:workspaceCloudGitCredential",
   setBadgeCount: "otter:setBadgeCount",
   friendsChanged: "otter:friendsChanged",

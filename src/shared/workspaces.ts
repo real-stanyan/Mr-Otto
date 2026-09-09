@@ -56,27 +56,6 @@ export interface WorkspaceAgentRow {
   avatarSlot: number | null;
 }
 
-/** 团队记忆（#949）：一档一行，agent_id 空串 = 共享档，非空 = 那只 agent 的私有档。
-    与 WorkspaceSnapshot 平级——记忆行不进快照本体，snapshot 只描述"这个团队有哪些
-    agent"，记忆的读取走独立的 IPC（listMemories），两者在渲染层用 memoryDocs 拼到一起 */
-export interface WorkspaceMemoryRow {
-  agentId: string;
-  content: string;
-  updatedTs: number;
-  /** 乐观写的 CAS 令牌（#962）= PostgREST 回的 `updated_at` **原串**，原样递回
-      `.eq("updated_at", version)`——**不要 `Date.parse` 它**：timestamptz 存微秒，
-      解析成毫秒就丢精度（这正是原来那版否决 updated_at 而改按 content 比对的理由），
-      而原串两边都由 Postgres 解析成同一个时刻，一个位都不丢。旁边的 updatedTs 是
-      解析后的毫秒，只给显示排序用，永远别拿它当版本。行不存在 = 空串（保存时走 insert） */
-  version: string;
-}
-
-/** 桌面手编档 vs agent 写档的同一 daemon 内丢更新（#949 review finding 2）：
-    saveMemoryRow 的乐观前置条件（按 version 相等，#962）没通过时抛这条错——文案已经是人话，
-    渲染层原样显示即可。导出常量而不是内联字符串，好让调用方需要时能做恰好相等的比较
-    （比如决定要不要弹「刷新」按钮），不必抄一遍这句话 */
-export const MEMORY_CONFLICT = "这一档刚被别人改过，刷新后再改";
-
 export interface WorkspaceSnapshot {
   id: string;
   name: string;

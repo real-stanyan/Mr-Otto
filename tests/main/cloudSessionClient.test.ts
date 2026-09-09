@@ -1533,6 +1533,52 @@ describe("createCloudSessionClient — workspaceState（控制房）", () => {
 
 
 
+  it("workspaceWikiWrite：write 帧带整页字段；wiki_write_result 按 path 认领后 resolve", async () => {
+    const h = harness();
+    const req = { op: "write" as const, path: "customers/acme.md", title: "Acme", summary: "华东最大客户", pinned: false, body: "月结 60 天" };
+    const promise = h.client.workspaceWikiWrite("w1", req);
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    expect(t.decoded()).toEqual([
+      { t: "hello", v: CS_PROTOCOL_VERSION, jwt: "token-abc" },
+      { t: "wiki_write", workspaceId: "w1", ...req },
+    ]);
+    t.emitDown({ t: "wiki_write_result", workspaceId: "w1", path: "customers/acme.md", ok: true });
+    expect(await promise).toEqual({ ok: true, value: null });
+    expect(t.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("workspaceWikiWrite：wiki_write_result ok:false → 带着服务端那句拒绝理由失败", async () => {
+    const h = harness();
+    const promise = h.client.workspaceWikiWrite("w1", { op: "remove", path: "customers/acme.md" });
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({ t: "wiki_write_result", workspaceId: "w1", path: "customers/acme.md", ok: false, message: "常驻页合计 2300 字，超过预算 2200" });
+    expect(await promise).toEqual({ ok: false, message: "常驻页合计 2300 字，超过预算 2200" });
+  });
+
+  it("workspaceWikiWrite：别的路径的回执不认（一条连接只问一个，但认一下比赌顺序便宜）", async () => {
+    const h = harness();
+    const promise = h.client.workspaceWikiWrite("w1", { op: "remove", path: "customers/acme.md" });
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    let settled = false;
+    void promise.then(() => { settled = true; });
+    t.emitDown({ t: "wiki_write_result", workspaceId: "w1", path: "别的页.md", ok: true });
+    await tick();
+    expect(settled).toBe(false);
+    t.emitDown({ t: "wiki_write_result", workspaceId: "w1", path: "customers/acme.md", ok: true });
+    expect(await promise).toEqual({ ok: true, value: null });
+  });
+
+
+
 
   it("控制房 denied → 失败并关连接", async () => {
     const h = harness();

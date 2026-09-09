@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createWorkspaceManager, type WorkspaceManagerDeps } from "../../src/main/workspaceManager.js";
 import type { ProxyStoreData } from "../../src/main/proxyStore.js";
 import { emptyProxyStore } from "../../src/main/proxyStore.js";
-import { MEMORY_CONFLICT, type WorkspaceSnapshot } from "../../src/shared/workspaces.js";
+import type { WorkspaceSnapshot } from "../../src/shared/workspaces.js";
 import type { WorkspaceListRow } from "../../src/main/supabaseWorkspacesApi.js";
 
 // workspaceManager 编排测试（Task 8，ADR-0198 切片 2）：api/client 全假货，
@@ -71,14 +71,6 @@ function harness(over: Partial<WorkspaceManagerDeps> = {}) {
     listAgentNames: async () => {
       calls.push("listAgentNames");
       return agentNames;
-    },
-    listMemoryRows: async () => {
-      calls.push("listMemoryRows");
-      return [];
-    },
-    saveMemoryRow: async (_c, _ws, _agentId, content, version) => {
-      calls.push(`saveMemoryRow:${content}:${version}`);
-      return "v-new";
     },
     updateSandboxApproval: async (_c, _ws, value) => {
       calls.push(`updateSandboxApproval:${value}`);
@@ -543,30 +535,6 @@ describe("建/改 agent 的服务端校验（#957 B-C1/B-I2）", () => {
     const h = harness({ updateAgentRow: async (_c, _ws, _id, patch) => { updated.push(patch as Record<string, unknown>); } });
     await h.manager.updateAgent("ws-1", "a_1", { models: ["glm-5"] });
     expect(Object.keys(updated[0]!)).toEqual(["models"]);
-  });
-});
-
-describe("workspace memory（#949）", () => {
-  it("saveMemory：写前归一化（去空条目、保序去重）后才落库，version 原样透传给 saveMemoryRow，新 version 回给调用方（#962）", async () => {
-    const { manager, calls } = harness();
-    const res = await manager.saveMemory("ws-1", "ops", "a\n§\n\n§\na", "v-old");
-    expect(res).toEqual({ ok: true, value: "v-new" });
-    expect(calls).toContain("saveMemoryRow:a:v-old");
-  });
-  it("未登录：saveMemory/listMemories 都回 还没登录，不打网络", async () => {
-    const h = harness();
-    h.signOut();
-    expect(await h.manager.listMemories("ws-1")).toEqual({ ok: false, message: "还没登录" });
-    expect(await h.manager.saveMemory("ws-1", "ops", "x", "")).toEqual({ ok: false, message: "还没登录" });
-    expect(h.calls).toEqual([]);
-  });
-  it("saveMemoryRow 抛 MEMORY_CONFLICT：原样冒泡成 FriendsResult 错误（#949 review finding 2）", async () => {
-    const { manager } = harness({
-      saveMemoryRow: async (): Promise<string> => {
-        throw new Error(MEMORY_CONFLICT);
-      },
-    });
-    expect(await manager.saveMemory("ws-1", "ops", "a", "v-old")).toEqual({ ok: false, message: MEMORY_CONFLICT });
   });
 });
 

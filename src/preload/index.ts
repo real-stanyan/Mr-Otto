@@ -236,9 +236,6 @@ const bridge: ShellBridge = {
   workspaceAgentDelete: (id, agentId) =>
     ipcRenderer.invoke(CHANNELS.workspaceAgentDelete, id, agentId),
   workspaceUsage: (id) => ipcRenderer.invoke(CHANNELS.workspaceUsage, id),
-  workspaceMemoryList: (id) => ipcRenderer.invoke(CHANNELS.workspaceMemoryList, id),
-  workspaceMemorySave: (id, agentId, text, version) =>
-    ipcRenderer.invoke(CHANNELS.workspaceMemorySave, id, agentId, text, version),
   workspaceSetSandboxApproval: (id, value) =>
     ipcRenderer.invoke(CHANNELS.workspaceSetSandboxApproval, id, value),
   workspacePublishSession: (id, sessionId, title) =>
@@ -271,6 +268,7 @@ const bridge: ShellBridge = {
   workspaceCloudStop: (seq) => ipcRenderer.invoke(CHANNELS.workspaceCloudStop, seq ?? null),
   workspaceCloudState: (workspaceId) => ipcRenderer.invoke(CHANNELS.workspaceCloudState, workspaceId),
   workspaceCloudFiles: (workspaceId, path) => ipcRenderer.invoke(CHANNELS.workspaceCloudFiles, workspaceId, path),
+  workspaceCloudWikiWrite: (workspaceId, req) => ipcRenderer.invoke(CHANNELS.workspaceCloudWikiWrite, workspaceId, req),
   workspaceCloudGitCredential: (workspaceId, host, token) =>
     ipcRenderer.invoke(CHANNELS.workspaceCloudGitCredential, workspaceId, host, token),
   workspaceCloudFilesSearch: (workspaceId, query, content) =>
