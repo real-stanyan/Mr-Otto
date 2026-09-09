@@ -49,7 +49,13 @@ const WS: WorkspaceSnapshot = {
   sandboxApproval: "ask",
 };
 
-type Row = { id: string; title: string; publisherUid: string; archived: boolean; updatedTs: number };
+// participantUids 补于 Task 7（#1213）：这一格是 CloudSessionListRow 的真实
+// 字段（Task 6 起就有），之前这里的本地 Row 类型缺了它——反正是被下面
+// `as unknown as Window["otter"]` 挡住的 excess-property 检查，tsc 从不会报。
+// 这一页此刻还没有第二个消费方读这一格，但 store.ts 的参与者合并逻辑
+// （Task 7）与 Task 8 的头像都要读它，补上让这份假件配得上它假冒的类型
+// （同 progress.md「T6 minor (deferred) → 提醒 T7/T8 复审」那条）
+type Row = { id: string; title: string; publisherUid: string; archived: boolean; updatedTs: number; participantUids: string[] };
 
 beforeAll(() => {
   // 推入式导航在 reduced-motion 下是同步的（不起 rAF、不等动画），断言不必去等帧
@@ -87,8 +93,8 @@ afterEach(() => cleanup());
 describe("「会话」页的云会话一节", () => {
   it("进行中的云会话进 DOM —— 这一页不再只画归档的", async () => {
     seed([
-      { id: "s-1", title: "冬季新品", publisherUid: OWNER, archived: false, updatedTs: T1 },
-      { id: "s-2", title: "门店排班", publisherUid: OTHER, archived: false, updatedTs: T2 },
+      { id: "s-1", title: "冬季新品", publisherUid: OWNER, archived: false, updatedTs: T1, participantUids: [] },
+      { id: "s-2", title: "门店排班", publisherUid: OTHER, archived: false, updatedTs: T2, participantUids: [] },
     ]);
     await show();
 
@@ -99,7 +105,7 @@ describe("「会话」页的云会话一节", () => {
 
   it("点一行 = 打开那条会话", async () => {
     const opened: [string, string | null][] = [];
-    seed([{ id: "s-1", title: "冬季新品", publisherUid: OWNER, archived: false, updatedTs: T1 }]);
+    seed([{ id: "s-1", title: "冬季新品", publisherUid: OWNER, archived: false, updatedTs: T1, participantUids: [] }]);
     useChat.setState({
       openCloudSession: (async (w: string, s: string | null) => { opened.push([w, s]); }) as never,
     });
@@ -110,8 +116,8 @@ describe("「会话」页的云会话一节", () => {
 
   it("归档的单列一节，且**只有那一节**带彻底删除——活着那几条的动作在侧栏（ADR-0245 的分工）", async () => {
     seed([
-      { id: "s-1", title: "冬季新品", publisherUid: OWNER, archived: false, updatedTs: T1 },
-      { id: "s-9", title: "去年双十一", publisherUid: OWNER, archived: true, updatedTs: T2 },
+      { id: "s-1", title: "冬季新品", publisherUid: OWNER, archived: false, updatedTs: T1, participantUids: [] },
+      { id: "s-9", title: "去年双十一", publisherUid: OWNER, archived: true, updatedTs: T2, participantUids: [] },
     ]);
     await show();
 
@@ -124,7 +130,7 @@ describe("「会话」页的云会话一节", () => {
   });
 
   it("一条归档的都没有 → 不画那一节（不为没发生过的事留一行空态）", async () => {
-    seed([{ id: "s-1", title: "冬季新品", publisherUid: OWNER, archived: false, updatedTs: T1 }]);
+    seed([{ id: "s-1", title: "冬季新品", publisherUid: OWNER, archived: false, updatedTs: T1, participantUids: [] }]);
     await show();
     await screen.findByText("冬季新品");
     expect(screen.queryByText("已归档的云会话")).not.toBeInTheDocument();
@@ -138,7 +144,7 @@ describe("「会话」页的云会话一节", () => {
   });
 
   it("一份都没发布过 → 「已发布会话」整节不出（它说的是 kind='package'，不是云会话）", async () => {
-    seed([{ id: "s-1", title: "冬季新品", publisherUid: OWNER, archived: false, updatedTs: T1 }]);
+    seed([{ id: "s-1", title: "冬季新品", publisherUid: OWNER, archived: false, updatedTs: T1, participantUids: [] }]);
     await show();
     await screen.findByText("冬季新品");
     expect(screen.queryByText("已发布会话")).not.toBeInTheDocument();

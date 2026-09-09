@@ -98,13 +98,21 @@ export function relayLineText(e: AgentRelayEvent, ws: WorkspaceSnapshot): string
     ⑦ 语音通话的**招呼开场白**（#1174，带 `greeting` 的 `user_message`）——runtime 替
        改名单的人落的「打个招呼」，与接力开场白同款：正文是写给模型的措辞，而
        `voice_call_changed` 那一行已经说了「拉进了通话」，两条都画是同一件事说两遍。
+    ⑧ `session_autotitled`（#1213）——会话被自动命名了是机器的内务：人不能据此
+       行动（ADR-0260 的判据），而侧栏那一行的字已经跟着换了，画出来是同一件事
+       说两遍。**藏的是投影不是事实**：落盘/重放/隐私闸一个字不动。
 
     留在时间线上的因此只剩：人说的话、agent 的最终答案、接力线、出错、归档。 */
 export function hiddenFromCloudTimeline(e: SessionEvent): boolean {
   if (e.type === "user_message") return e.relay !== undefined || e.greeting !== undefined;
   if (e.type === "approval_decision") return e.decision === "approved";
   if (e.type === "assistant_message") return isAgentStep(e);
-  return e.type === "session_created" || e.type === "agent_briefed" || e.type === "request_envelope";
+  return (
+    e.type === "session_created" ||
+    e.type === "agent_briefed" ||
+    e.type === "request_envelope" ||
+    e.type === "session_autotitled"
+  );
 }
 
 /** 审批卡第一行（#957 C-I3）：多智能体是这一批六片的全部意义，两张卡工具名
