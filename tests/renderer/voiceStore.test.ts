@@ -227,6 +227,7 @@ describe("store：回声消除下的常开麦与打断（#1184）", () => {
     st.joinVoiceCall();
     aecOn();
     useChat.setState((s) => ({ voice: { ...s.voice!, speaking: "a_1", queued: 1 } }));
+    st.speechOnEvent({ type: "level", value: 0.5, active: true }); // 能量门：真有人在说
     st.speechOnEvent({ type: "partial", text: "嗯" });
     expect(useChat.getState().voice?.speaking).toBe("a_1");
     st.speechOnEvent({ type: "partial", text: "等一下我想问" });

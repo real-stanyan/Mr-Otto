@@ -2703,7 +2703,7 @@ export const useChat = create<ChatState>((set, get) => ({
     // 那点由 bargeInOn 的 token 重叠兜底）
     if (ev.type === "partial" && (v.speaking !== null || v.queued > 0)) {
       const player = voicePlayerFor(set, get);
-      if (bargeInOn(ev.text, { speaking: v.speaking, queued: v.queued }, player.state().text ?? "")) {
+      if (bargeInOn(ev.text, { speaking: v.speaking, queued: v.queued }, player.state().text ?? "", v.mic.active)) {
         for (const id of new Set([...(v.speaking !== null ? [v.speaking] : []), ...player.pendingAgentIds()])) {
           voiceFeed = markInterrupted(voiceFeed, id);
         }

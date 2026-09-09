@@ -103,6 +103,11 @@ describe("bargeInOn：人一开口就停 agent 的播放", () => {
     expect(bargeInOn("ok sure", playing, "")).toBe(false);
     expect(bargeInOn("ok sure wait", playing, "")).toBe(true);
   });
+  it("能量门说没人在说话（AEC 残留那点声音）→ 不打断，哪怕转写够长", () => {
+    expect(bargeInOn("等一下我想问", playing, "", false)).toBe(false);
+    expect(bargeInOn("等一下我想问", playing, "", true)).toBe(true);
+  });
+
   it("像是它自己的话被录回来的（与正在读的那段 token 重叠 ≥ 70%）不打断——回声消除的兜底", () => {
     expect(bargeInOn("能听到你说话", playing, "能听到，你说话我这边都收得到，很清楚。")).toBe(false);
     expect(bargeInOn("能听到你说话，我想问个问题", playing, "能听到，你说话我这边都收得到，很清楚。")).toBe(true);
