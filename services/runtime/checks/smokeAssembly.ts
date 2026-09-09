@@ -144,6 +144,7 @@ async function scenarioMainFlow(): Promise<void> {
       labelOf: async (uid) => `smoke-${uid.slice(0, 8)}`,
       readWork: async () => ({ kind: "dir", entries: [], truncated: false }),
       searchWork: async () => [],
+      writeWiki: async () => {},
       sessions: {
         get(ws, sessionId) {
           const active = activeSessions.get(sessionId);
@@ -385,6 +386,7 @@ async function scenarioAssemblyResilience(): Promise<void> {
     labelOf: async (uid) => uid,
     readWork: async () => ({ kind: "absent" }),
     searchWork: async () => [],
+    writeWiki: async () => {},
     sessions: {
       get: () => stubSession,
       async create() {

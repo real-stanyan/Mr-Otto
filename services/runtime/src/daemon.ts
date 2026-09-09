@@ -712,6 +712,14 @@ async function main(): Promise<void> {
     // 所以打开设置页不会建容器、不会触发 clone
     readWork: (workspaceId, path) => sandbox.readWork(workspaceId, path),
     searchWork: (workspaceId, query, content) => sandbox.searchWork(workspaceId, query, content),
+    // 设置页改 wiki（#1140）：与工具同一个 wikiService 实例——进程内锁才锁得住两条路
+    writeWiki: async (workspaceId, req, author) => {
+      const svc = wikiFor(workspaceId);
+      await svc.ensure();
+      const who = { kind: "member" as const, id: author.uid, label: author.label };
+      if (req.op === "remove") await svc.remove(req.path, who);
+      else await svc.write({ path: req.path, title: req.title, summary: req.summary, body: req.body, pinned: req.pinned }, who);
+    },
     sessions: {
       get(workspaceId, sessionId) {
         const active = activeSessions.get(sessionId);

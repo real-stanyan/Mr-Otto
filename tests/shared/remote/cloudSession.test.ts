@@ -8,6 +8,8 @@ import { b64encode } from "../../../src/shared/remote/b64.js";
 
 describe("cs 帧协议", () => {
   it("协议版本", () => {
+    // 17 = #1140（ADR-0267）：加一对 wiki_write / wiki_write_result（控制房写帧）——
+    //      团队 wiki 从设置页改得了。
     // 10 = #1044：加一对 delete / delete_result（控制房帧，形状同 archive）——
     //     彻底删除一条云会话。原来这颗钮不存在，理由是 0016 的 RLS 把
     //     wss_delete_publisher 钉死在 kind='package'；而那条前提只对客户端
@@ -32,7 +34,7 @@ describe("cs 帧协议", () => {
     // 之后静默少一格状态。**加一个枚举值同理**：老客户端的
     // isValidCsDeniedCode 认不出 rate_limited，整帧被 decodeCsDown 判成
     // null 静默丢掉，create() 于是白等满超时才回一句"云端无响应"
-    expect(CS_PROTOCOL_VERSION).toBe(16);
+    expect(CS_PROTOCOL_VERSION).toBe(17);
   });
   it("房名生成", () => {
     expect(csCtlChannel()).toBe("cs-ctl");
@@ -176,8 +178,8 @@ describe("rate_limited 码（issue #819）", () => {
 // 协议 14（#1102）：repo 那一组整个走了——config / config_result 两条帧删除。
 // 留下的是 modelRoute 那一格，它换了唯一的载体（welcome + workspace_state）
 describe("协议 14：config 帧没了，modelRoute 还在（#1102）", () => {
-  it("协议号跟着最新一条变更走（此刻 = 16，#1107 的流式 delta 帧是最近进位者）", () => {
-    expect(CS_PROTOCOL_VERSION).toBe(16);
+  it("协议号跟着最新一条变更走（此刻 = 17，#1140 的 wiki_write 帧是最近进位者）", () => {
+    expect(CS_PROTOCOL_VERSION).toBe(17);
   });
 
   it("config 帧解不出来了 —— 老客户端发过来一律 null", () => {
@@ -294,4 +296,22 @@ describe("协议 15：git_credential / gitHosts（#1103）", () => {
     const bad = decodeCsDown(encodeCs({ t: "git_credential_result", workspaceId: "w", ok: false, message: "不行", gitHosts: null }));
     expect(bad).toEqual({ t: "git_credential_result", workspaceId: "w", ok: false, message: "不行", gitHosts: null });
   });
+});
+
+describe("wiki_write / wiki_write_result（协议 17，#1140）", () => {
+  it("上行两种 op 往返；缺字段 → null", () => {
+    const w = { t: "wiki_write", workspaceId: "w1", op: "write", path: "team.md", title: "团队口径", summary: "s", pinned: true, body: "正文" } as const;
+    expect(decodeCsUp(encodeCs(w))).toEqual(w);
+    const r = { t: "wiki_write", workspaceId: "w1", op: "remove", path: "a.md" } as const;
+    expect(decodeCsUp(encodeCs(r))).toEqual(r);
+    expect(decodeCsUp(encodeCs({ t: "wiki_write", workspaceId: "w1", op: "write", path: "a.md" } as never))).toBeNull();
+    expect(decodeCsUp(encodeCs({ t: "wiki_write", workspaceId: "w1", op: "nope", path: "a.md" } as never))).toBeNull();
+  });
+  it("下行回执往返，message 可选", () => {
+    const ok = { t: "wiki_write_result", workspaceId: "w1", path: "a.md", ok: true } as const;
+    expect(decodeCsDown(encodeCs(ok))).toEqual(ok);
+    const bad = { ...ok, ok: false, message: "常驻超预算" };
+    expect(decodeCsDown(encodeCs(bad))).toEqual(bad);
+  });
+  it("CS_PROTOCOL_VERSION 是 17", () => { expect(CS_PROTOCOL_VERSION).toBe(17); });
 });

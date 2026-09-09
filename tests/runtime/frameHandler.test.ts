@@ -65,6 +65,8 @@ function makeDeps(config: {
   readWork?: FrameHandlerDeps["readWork"];
   /** #1066：默认搜不到东西 */
   searchWork?: FrameHandlerDeps["searchWork"];
+  /** #1140：默认成功、什么都不记——绝大多数用例不关心 wiki */
+  writeWiki?: FrameHandlerDeps["writeWiki"];
 } = {}): { deps: FrameHandlerDeps; sent: Sent[]; dropCidCalls: string[]; logs: string[] } {
   const sent: Sent[] = [];
   const dropCidCalls: string[] = [];
@@ -87,6 +89,7 @@ function makeDeps(config: {
     modelRoute: config.modelRoute ?? (async () => null),
     readWork: config.readWork ?? (async () => ({ kind: "dir", entries: [], truncated: false })),
     searchWork: config.searchWork ?? (async () => []),
+    writeWiki: config.writeWiki ?? (async () => {}),
     rateLimit: config.rateLimit ?? { allow: () => true },
     send: (cid, msg) => sent.push({ cid, msg }),
     dropCid: config.dropCid ?? ((cid) => dropCidCalls.push(cid)),
@@ -1746,5 +1749,35 @@ describe("git_credential（协议 15，#1103）", () => {
 
     expect(sent.at(-1)).toEqual({ cid: "c1", msg: { t: "denied", code: "not_authorized" } });
     expect(writes).toEqual([]);
+  });
+});
+
+describe("wiki_write（协议 17，#1140）", () => {
+  it("在籍成员写 → 走 writeWiki，author 是 uid + labelOf；回 wiki_write_result ok；不在籍 → not_member；会话房里 → not_authorized", async () => {
+    const calls: unknown[] = [];
+    const { deps, sent } = makeDeps({ isMember: async (w) => w === "w-ok", writeWiki: async (w, req, author) => { calls.push([w, req, author]); } });
+    const handler = createFrameHandler(deps);
+    await handler.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    const frame = { t: "wiki_write", workspaceId: "w-ok", op: "write", path: "team.md", title: "团队口径", summary: "s", pinned: true, body: "正文" } as const;
+    await handler.onCtlFrame("c1", encodeCs(frame));
+    expect(calls).toEqual([["w-ok", { op: "write", path: "team.md", title: "团队口径", summary: "s", pinned: true, body: "正文" }, { uid: "u1", label: "Label(u1)" }]]);
+    expect(sent.at(-1)).toEqual({ cid: "c1", msg: { t: "wiki_write_result", workspaceId: "w-ok", path: "team.md", ok: true } });
+    await handler.onCtlFrame("c1", encodeCs({ ...frame, workspaceId: "w-bad" }));
+    expect(sent.at(-1)).toEqual({ cid: "c1", msg: { t: "denied", code: "not_member" } });
+    await handler.onSessionFrame("w-ok", "s1", "c2", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    await handler.onSessionFrame("w-ok", "s1", "c2", encodeCs(frame));
+    expect(sent.at(-1)).toEqual({ cid: "c2", msg: { t: "denied", code: "not_authorized" } });
+  });
+  it("writeWiki 抛错 → 回执 ok:false 带那句人话；限速 → denied rate_limited", async () => {
+    const { deps, sent } = makeDeps({ writeWiki: async () => { throw new Error("常驻页合计 2300 字，超过预算 2200"); } });
+    const handler = createFrameHandler(deps);
+    await handler.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    await handler.onCtlFrame("c1", encodeCs({ t: "wiki_write", workspaceId: "w1", op: "remove", path: "a.md" }));
+    expect(sent.at(-1)).toEqual({ cid: "c1", msg: { t: "wiki_write_result", workspaceId: "w1", path: "a.md", ok: false, message: "常驻页合计 2300 字，超过预算 2200" } });
+    const limited = makeDeps({ rateLimit: { allow: (kind) => kind !== "wiki" } });
+    const h2 = createFrameHandler(limited.deps);
+    await h2.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    await h2.onCtlFrame("c1", encodeCs({ t: "wiki_write", workspaceId: "w1", op: "remove", path: "a.md" }));
+    expect(limited.sent.at(-1)).toEqual({ cid: "c1", msg: { t: "denied", code: "rate_limited" } });
   });
 });

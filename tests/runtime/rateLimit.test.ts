@@ -5,6 +5,7 @@ import {
   CREATE_BUCKET,
   SAY_BUCKET,
   TURN_BUCKET,
+  WIKI_BUCKET,
   createFrameRateLimiter,
   createRateLimiter,
   throttleMessage,
@@ -104,8 +105,16 @@ describe("createFrameRateLimiter（三档 + 日志收口）", () => {
   });
 
   it("拒绝语说的是「慢一点」不是「出错了」—— 后者会让人反复重试", () => {
-    for (const kind of ["say", "turn", "create"] as const) {
+    for (const kind of ["say", "turn", "create", "wiki"] as const) {
       expect(throttleMessage(kind)).toMatch(/稍等|太快|超了/);
     }
+  });
+
+  // wiki：设置页改一页（#1140）。每帧一次 docker exec（同 files 的判据），且往卷里写
+  it("wiki：连着 21 次第 21 次才拒", () => {
+    const c = clock();
+    const l = createFrameRateLimiter({ now: c.now });
+    for (let i = 0; i < WIKI_BUCKET.capacity; i += 1) expect(l.allow("wiki", "u1")).toBe(true);
+    expect(l.allow("wiki", "u1")).toBe(false);
   });
 });

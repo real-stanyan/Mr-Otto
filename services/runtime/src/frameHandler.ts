@@ -29,6 +29,7 @@ import {
   type CsModelRoute,
   type CsWorkHit,
   type CsWorkNode,
+  type CsWikiWriteReq,
 } from "../../../src/shared/remote/cloudSession.js";
 import { normalizeWorkPath } from "../../../src/shared/remote/workPath.js";
 import type { SessionEvent } from "../../../src/session/events.js";
@@ -162,6 +163,11 @@ export interface FrameHandlerDeps {
   /** 搜工作文件夹（#1066）。同 `readWork` 是必需的：忘接线那天这一格安静地
       永远搜不出东西，而「搜过了没有」与「压根没搜」在界面上长得一模一样 */
   searchWork: (workspaceId: string, query: string, content: boolean) => Promise<CsWorkHit[]>;
+  /** 设置页改一页 wiki（协议 17，#1140）。**必需**（同 readWork 的理由）：写成可选的话，
+      忘接线那天这条帧安静地永远拒——而这一层没有任何别的信号能说出「其实是没接上」。
+      走 wikiService 与工具同一条写入路径（盖章 / 重生成 index / log / journal）；
+      抛出的 Error.message 是给人看的那句（预算 / 路径 / 保留页），原样进回执 */
+  writeWiki: (workspaceId: string, req: CsWikiWriteReq, author: { uid: string; label: string }) => Promise<void>;
   /** 三档令牌桶（issue #819）。**必需，不是可选**：过渡期烧的是维护者的
       模型 key，一个"忘了接线"的默认值等于把闸门悄悄拆了——这种东西不该
       靠记性，该靠编译错误。桶按 uid 分而不是按 cid：按 cid 分等于"多开
@@ -391,14 +397,14 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
 
       if (msg.t === "hello") return; // 已验籍，重复 hello 当幂等刷新，不重复应答
 
-      // 控制房认六种帧（协议 8 起：create / workspace；协议 9 加 archive，
+      // 控制房认的帧（协议 8 起：create / workspace；协议 9 加 archive，
       // 协议 10 加 delete，协议 11 加 files，协议 12 加 files_search；协议 14
-      // 拿走了 config——团队不再绑一个仓库，#1102）——
+      // 拿走了 config——团队不再绑一个仓库，#1102；协议 17 加 wiki_write）——
       // 都是「关于某个团队」的动作，不挂在任何一条会话上。在籍是共同前提
       if (
         msg.t !== "create" && msg.t !== "workspace" && msg.t !== "git_credential" &&
         msg.t !== "archive" && msg.t !== "delete" && msg.t !== "files" &&
-        msg.t !== "files_search"
+        msg.t !== "files_search" && msg.t !== "wiki_write"
       ) {
         deny(cid, "not_authorized");
         return;
@@ -475,6 +481,22 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
             t: "files_result", workspaceId: msg.workspaceId, path, ok: false,
             message: "这一刻读不到工作文件夹。稍后再试。",
           });
+        }
+        return;
+      }
+
+      if (msg.t === "wiki_write") {
+        // 判据同 files：任何在籍成员。写路径由 wikiService 把关（保留页 / 预算 / 可疑指令），这里只管在籍与限速
+        if (!deps.rateLimit.allow("wiki", entry.uid)) {
+          deny(cid, "rate_limited");
+          return;
+        }
+        const { t: _t, workspaceId, ...req } = msg;
+        try {
+          await deps.writeWiki(workspaceId, req, { uid: entry.uid, label: await deps.labelOf(entry.uid) });
+          deps.send(cid, { t: "wiki_write_result", workspaceId, path: msg.path, ok: true });
+        } catch (err) {
+          deps.send(cid, { t: "wiki_write_result", workspaceId, path: msg.path, ok: false, message: err instanceof Error ? err.message : "这一刻改不了 wiki。稍后再试。" });
         }
         return;
       }
@@ -788,6 +810,7 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
         case "git_credential": // 同上（协议 15，#1103）：凭据是团队的属性
         case "files": // 同上（协议 11，#1056）：工作文件夹是团队的，不是这条会话的
         case "files_search": // 同上（协议 12，#1066）
+        case "wiki_write": // 同上（协议 17，#1140）：wiki 是团队的
         case "archive": // 同上（协议 9，#993）：归档不该以「你正开着这条会话」为前提
         case "delete": // 同上（协议 10，#1044）：删的多半是归档掉的那些，根本没有房间
         default:
