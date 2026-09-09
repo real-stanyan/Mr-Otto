@@ -96,10 +96,19 @@ export function NavStack({ root, className }: { root: NavScreen; className?: str
 
   const rendered = useMemo(() => [...stack, ...leaving], [stack, leaving]);
 
+  // rAF 循环读的是**这个 ref**，不是 `rendered` 这个闭包变量。`push` 里的 `kick()`
+  // 是在 setState 之后、重渲之前调的，它注册进 rAF 的那个 `tick` 因此捕获的是
+  // **推入之前**那一版栈——照闭包走的话，刚推上来的那一页在整段动画里一次都不会
+  // 被布局，停在画外（`translate3d(width)`），而根页每帧又被设回 `auto`：真机上
+  // 就是「第一次点没反应，点第二行才把第一页放出来」。回执是
+  // `tests/renderer/navStack.test.tsx` 的「动画路径」那一组
+  const renderedRef = useRef(rendered);
+
   /** 把每一页此刻的进度写进 transform。**每帧直接写 DOM**，不走 React state——
       一次转场 25 帧，25 次重渲整棵子树在这个尺寸上是看得见的卡 */
   const applyLayout = useCallback(() => {
     const width = hostRef.current?.clientWidth ?? 0;
+    const rendered = renderedRef.current;
     rendered.forEach((screen, i) => {
       const el = pageEls.current.get(screen.key);
       if (!el) return;
@@ -116,7 +125,7 @@ export function NavStack({ root, className }: { root: NavScreen; className?: str
         if (dim) dim.style.opacity = String(p * DIM);
       }
     });
-  }, [rendered]);
+  }, []);
 
   const tick = useCallback(() => {
     const now = performance.now();
@@ -184,9 +193,13 @@ export function NavStack({ root, className }: { root: NavScreen; className?: str
     kick();
   }, [kick]);
 
-  // 每次渲染后把布局重算一遍：新页刚挂上（进度 0）时必须先落到画外，
-  // 否则会先闪一帧在正位上
-  useLayoutEffect(() => { applyLayout(); }, [applyLayout]);
+  // 每次渲染后把镜像同步 + 布局重算一遍：新页刚挂上（进度 0）时必须先落到画外，
+  // 否则会先闪一帧在正位上。**顺序要紧**——rAF 回调排在 layout effect 之后，
+  // 所以这一行跑完，正在跑的那条动画下一帧读到的就是新栈
+  useLayoutEffect(() => {
+    renderedRef.current = rendered;
+    applyLayout();
+  }, [rendered, applyLayout]);
 
   useEffect(() => {
     const onResize = () => applyLayout();
