@@ -77,3 +77,11 @@ describe("通话里像打电话（#1183）", () => {
     expect(text).toContain("一两句");
   });
 });
+
+describe("通话名单以通话块为准（#1194）", () => {
+  it("提示词要说清：聊天记录里更早的招呼 / 通话是上一场的，别据此推断谁在这一场里", () => {
+    const text = renderVoiceCallPrompt([{ agentId: "admin", name: "管理员" }], "管理员", [{ name: "开发", description: "管代码" }]);
+    expect(text).toContain("以这一块的名单为准");
+    expect(text).toContain("上一场");
+  });
+});
