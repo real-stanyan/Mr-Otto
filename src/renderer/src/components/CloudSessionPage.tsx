@@ -1304,7 +1304,7 @@ export function AssistantMessageRow({ event, ws }: { event: AssistantMessageEven
   );
 }
 
-/** agent 的一轮回复画成几张气泡（#1132，ADR-0265）：按空行拆（chatBubbles.ts），
+/** agent 的一轮回复画成几张气泡（#1132，ADR-0266）：按空行拆（chatBubbles.ts），
     像真人在群里连发几条。终态与流式预览共用这一份——预览是累计快照（#1107），
     每帧重新拆一遍，前几张早就定形、只有最后一张在长，答案落下来时张数不变。
     一个字都拆不出来（纯空白）时仍画一张，与改动前的形状一致：这一行能画出来
