@@ -1755,6 +1755,11 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
             // 要说出口，不然人以为有人会接、干等（维护者拍板，#1153）
             targets = legacy;
             if (targets.length === 0) dispatchNote = dispatchFailedText(verdict.reason);
+          } else if (verdict.kind === "skipped") {
+            // 这条路此刻走不了且不是临时的（所有者没订阅）：同样回落改动前的行为，
+            // 但**不出声**——那个团队一只 agent 都起不了 turn，头部那行 blocked 已经
+            // 在说这件事，每句话再落一条「没派出去」是噪音（判据见 DispatchVerdict）
+            targets = legacy;
           }
           // none：targets 留空，闲聊照旧是闲聊
         }

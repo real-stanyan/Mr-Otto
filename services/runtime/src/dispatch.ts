@@ -58,8 +58,13 @@ export type DispatchVerdict =
   | { kind: "picked"; agentIds: string[] }
   /** 分类器明确说没人该接（闲聊/问候/确认） */
   | { kind: "none" }
-  /** 这次分类没成功（网关/超时/认不出）——调用方决定回落成什么 */
-  | { kind: "failed"; reason: string };
+  /** 这次分类没成功（网关/超时/认不出）——调用方回落改动前的行为，且说一声 */
+  | { kind: "failed"; reason: string }
+  /** 派活这条路此刻走不了、且**不是临时的**（所有者没订阅 / 订阅不活跃）——调用方
+      回落改动前的行为，**不出声**：那个团队里一只 agent 都起不了 turn，云会话头部
+      那行 blocked 已经在说这件事（ADR-0246），逐句再说一遍「没派出去」是噪音。
+      与 failed 的分别只在要不要说：transient（网关抖了）说，persistent 不说 */
+  | { kind: "skipped"; reason: string };
 
 /** 一句话最多派给几只。分类器挑出更多时**截断不拒绝**：一句话真要三只以上接的
     情形几乎不存在，四只以上几乎必然是分类器过热——而「不是所有 agent 都抢活」

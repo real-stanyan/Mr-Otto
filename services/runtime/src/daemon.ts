@@ -531,12 +531,14 @@ async function main(): Promise<void> {
       // 最便宜那款读一遍名册 + 最近几句判该谁接。装配在这一层的理由同上一格
       // （凭据与订阅探针都在这里）。**三种问不出来的情形各说各的话**（同 ADR-0233
       // 的措辞纪律：一次 edge 抖动不许写成「你没订阅」）——它们会原样落进群里那句
-      // 「这句话没派出去（…）」，所以措辞是说给人听的
+      // 「这句话没派出去（…）」，所以措辞是说给人听的。**探不到是 failed（说一声），
+      // 没订阅/不活跃是 skipped（不说）**：前者是一次抖动、下一句就可能好，后者是
+      // 那个团队一只 agent 都起不了 turn 的常态，头部那行 blocked 已经在说
       dispatch: async (input) => {
         const me = await hostedProbe.me(ownerUid);
         if (me === "unreachable") return { kind: "failed", reason: "订阅状态这会儿探不到" };
-        if (me === null) return { kind: "failed", reason: "团队所有者没有订阅" };
-        if (me.status !== "active") return { kind: "failed", reason: "团队所有者的订阅不是活跃状态" };
+        if (me === null) return { kind: "skipped", reason: "团队所有者没有订阅" };
+        if (me.status !== "active") return { kind: "skipped", reason: "团队所有者的订阅不是活跃状态" };
         return requestDispatchAsOwner(
           {
             edgeBase: config.edgeBase,

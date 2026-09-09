@@ -4976,3 +4976,44 @@ describe("不 @ 谁的话，谁的活谁接（#1153）", () => {
     store.close();
   });
 });
+
+describe("派活 skipped：这条路此刻走不了且不是临时的（所有者没订阅），按改动前走、不出声（#1153）", () => {
+  function open(store: EventStore, seen: string[]): CloudSession {
+    return createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [],
+      agents: async () => AGENTS,
+      adapterFor: (a) => ({ model: a.models[0]!, async chat() { seen.push(a.agentId); return { content: "答" }; } }),
+      onEvent: () => {}, onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true,
+      contextWindowOf: () => undefined,
+      sandboxApproval: async () => "ask",
+      workspaceLock: createWorkspaceLock(),
+      relayRemainingMicro: async () => null,
+      dispatch: async () => ({ kind: "skipped", reason: "团队所有者没有订阅" }),
+    });
+  }
+
+  it("mention:false：只落 chat_message，没有那句「没派出去」——头部那行 blocked 已经在说这件事，逐句再说一遍是噪音", async () => {
+    const store = newStore();
+    const seen: string[] = [];
+    const session = open(store, seen);
+    await session.say("u1", "alice", "帮我看下昨天的销量", false, [], undefined, []);
+    await session.settled();
+    expect(seen).toEqual([]);
+    expect(store.load("s1").map((e) => e.type)).toEqual(["chat_message"]);
+    store.close();
+  });
+
+  it("mention:true：名单第一只接（= 改动前，它那一轮会自己报「没订阅」），开场白不带记号", async () => {
+    const store = newStore();
+    const seen: string[] = [];
+    const session = open(store, seen);
+    await session.say("u1", "alice", "在吗", true);
+    await session.settled();
+    expect(seen).toEqual(["ops"]);
+    const opening = store.load("s1").find((e) => e.type === "user_message") as UserMessageEvent;
+    expect(opening.dispatch).toBeUndefined();
+    store.close();
+  });
+});
