@@ -268,6 +268,9 @@ export type SpeechEvent =
   | { type: "final"; text: string }
   /** 麦克风此刻的能量（0..1，给界面画声浪）+ 能量门判「有人在说话」；helper 每 100ms 一条 */
   | { type: "level"; value: number; active: boolean }
+  /** helper 侧播放（#1201）：speechPlay 交出去的那段播完了 / 播不了 */
+  | { type: "played"; id: string }
+  | { type: "playError"; id: string; message: string }
   | { type: "error"; message: string };
 
 export interface CloudSessionDelta {
@@ -1213,6 +1216,11 @@ export interface ShellBridge {
   speechStop(): Promise<void>;
   speechPause(): Promise<void>;
   speechResume(): Promise<void>;
+  /** 一段合成好的音频交给 helper 用它的音频引擎播（#1201：回声消除开着时 macOS 会压低别的 app
+      的声音，Electron 放的 agent 语音正是「别的 app」）。回这段的 id，播完 / 播不了走 onSpeechEvent
+      的 played / playError；没有 helper 回 error */
+  speechPlay(bytes: Uint8Array): Promise<{ id: string } | { error: string }>;
+  speechStopPlay(): Promise<void>;
   /** 改当前云会话的语音通话名单（协议 17，#1163）：`participants` = 该在通话里的 agent id，
       空 = 结束通话。resolve 的是 `call_result` 回执（同 stop：15 秒没回执 = unknown）；
       名单本身以日志里那条 `voice_call_changed` 为准，不以「我刚点了」为准 */
@@ -1676,6 +1684,8 @@ export const CHANNELS = {
   speechStop: "otter:speechStop",
   speechPause: "otter:speechPause",
   speechResume: "otter:speechResume",
+  speechPlay: "otter:speechPlay",
+  speechStopPlay: "otter:speechStopPlay",
   speechEvent: "otter:speechEvent",
   workspaceCloudCall: "otter:workspaceCloudCall",
   workspaceCloudConfig: "otter:workspaceCloudConfig",

@@ -46,6 +46,11 @@ private func nowMs() -> Double { Date().timeIntervalSince1970 * 1000 }
 final class Recognizer {
   private let emit: (Event) -> Void
   private let engine = AVAudioEngine()
+  /// helper 侧播放（#1201），与识别共用 engine
+  private lazy var playback = Playback(engine: engine) { [weak self] e in
+    self?.emit(e)
+    if e.type == "played" || e.type == "playError" { self?.playbackSettled() }
+  }
   private var recognizer: SFSpeechRecognizer?
   private var request: SFSpeechAudioBufferRecognitionRequest?
   private var task: SFSpeechRecognitionTask?
@@ -288,7 +293,29 @@ final class Recognizer {
     request = nil
     endpointer = Endpointer(silenceMs: endpointer.silenceMs, completeMs: endpointer.completeMs, midMs: endpointer.midMs, midSilenceMs: endpointer.midSilenceMs)  // 通话结束，手上那半句作废
     engine.inputNode.removeTap(onBus: 0)
-    engine.stop()
+    // 正在放 agent 的话就别停引擎（播放也挂在它上面）；播完那一刻再停
+    if !playback.isPlaying { engine.stop() }
     emit(Event(type: "listening", on: false))
+  }
+
+  /// 播一段（#1201）。没在听时引擎可能没起：起它——这时没开 voice processing，也就没有 ducking
+  /// 的问题，走普通输出；在听时走 VPIO 输出（不被压、是回声参考）
+  func play(id: String, path: String) {
+    playback.play(id: id, path: path) { [engine] in
+      if !engine.isRunning {
+        engine.prepare()
+        try engine.start()
+      }
+    }
+  }
+
+  func stopPlay() {
+    playback.stop()
+    if !running, engine.isRunning { engine.stop() }
+  }
+
+  /// 播完一段之后（Playback 发 played 前后）：没在听就把引擎停了，别占着麦
+  func playbackSettled() {
+    if !running, !playback.isPlaying, engine.isRunning { engine.stop() }
   }
 }

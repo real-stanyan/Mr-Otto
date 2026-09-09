@@ -101,7 +101,8 @@ import { createAgentLanded } from "./lib/cloudTimeline.js";
 import { applyCloudDelta, clearCloudStreamingOn } from "./lib/cloudStreaming.js";
 import { EMPTY_VOICE_FEED, feedDelta, feedEvent, markInterrupted, type VoiceFeedState } from "./lib/voiceCall.js";
 import { applySpeechEvent, bargeInOn, MIC_OFF, micShouldPause, SPEECH_LOCALE, speechHints, type MicState } from "./lib/voiceMic.js";
-import { VoicePlayer } from "./lib/voicePlayer.js";
+import { defaultCreateAudio, VoicePlayer } from "./lib/voicePlayer.js";
+import { createHelperAudio, helperAudioEvent } from "./lib/helperAudio.js";
 import { voiceCallOf } from "../../shared/voiceCall.js";
 import { agentVoiceId } from "../../shared/agentVoice.js";
 import type { CloudSessionDelta } from "../../shared/shellBridge.js";
@@ -1356,6 +1357,11 @@ function voicePlayerFor(set: StoreApi<ChatState>["setState"], get: () => ChatSta
   if (voicePlayer === null) {
     voicePlayer = new VoicePlayer({
       speak: (text, voiceId) => window.otter.teamVoiceSpeak(text, voiceId),
+      // 回声消除开着 → 交给 helper 播（#1201，不被 macOS 压低）；否则 Web Audio。每段起播时现判
+      createAudio: (bytes) =>
+        get().voice?.mic.aec === true
+          ? createHelperAudio(bytes, { play: (b) => window.otter.speechPlay(b), stop: () => window.otter.speechStopPlay() })
+          : defaultCreateAudio(bytes),
       onChange: (p) => {
         set((s) => (s.voice ? { voice: { ...s.voice, speaking: p.speaking, queued: p.queued, error: p.error, text: p.text } } : s));
         micSync({ speaking: p.speaking, queued: p.queued, aec: get().voice?.mic.aec ?? null });
@@ -2685,6 +2691,8 @@ export const useChat = create<ChatState>((set, get) => ({
     }
   },
   speechOnEvent(ev) {
+    // 播放回执先于麦克风状态：关着麦也可能在放（#1201）
+    if (helperAudioEvent(ev)) return;
     const v = get().voice;
     // 关着麦时 helper 迟到的事件不再动状态（stop 之后它还会吐一条 listening:false）
     if (!v || v.mic.status === "off") return;
@@ -2695,7 +2703,7 @@ export const useChat = create<ChatState>((set, get) => ({
     // 那点由 bargeInOn 的 token 重叠兜底）
     if (ev.type === "partial" && (v.speaking !== null || v.queued > 0)) {
       const player = voicePlayerFor(set, get);
-      if (bargeInOn(ev.text, { speaking: v.speaking, queued: v.queued }, player.state().text ?? "")) {
+      if (bargeInOn(ev.text, { speaking: v.speaking, queued: v.queued }, player.state().text ?? "", v.mic.active)) {
         for (const id of new Set([...(v.speaking !== null ? [v.speaking] : []), ...player.pendingAgentIds()])) {
           voiceFeed = markInterrupted(voiceFeed, id);
         }

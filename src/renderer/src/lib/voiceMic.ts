@@ -61,6 +61,9 @@ export function applySpeechEvent(state: MicState, ev: SpeechEvent): { state: Mic
         : { state: { ...state, status: "off", transcript: "", level: 0, active: false } };
     case "level":
       return { state: { ...state, level: ev.value, active: ev.active } };
+    case "played":
+    case "playError":
+      return { state }; // 播放回执归 helperAudio，不是麦克风的状态
     case "paused":
       return { state: { ...state, status: "paused" } };
     case "resumed":
@@ -107,9 +110,12 @@ export function isSelfEcho(text: string, spoken: string, threshold = 0.7): boole
 /** 插话的最短长度：三个 token。「嗯」「好的」是应声不是插话，「等一下」才是 */
 export const BARGE_IN_MIN_TOKENS = 3;
 
-/** 人开口了（一片 partial 到了）：要不要打断 agent 的播放。没东西可停 → 否 */
-export function bargeInOn(partial: string, playing: { speaking: string | null; queued: number }, spoken: string): boolean {
+/** 人开口了（一片 partial 到了）：要不要打断 agent 的播放。没东西可停 → 否。
+    `active`（能量门此刻说有人在说话，缺省按有）是第三道门：AEC 漏出来的那点残留能量很低，
+    识别器却可能从中转出几个字——同 dryrun 的 bargeInGate 拿「持续的麦克风能量」隔开键盘声 */
+export function bargeInOn(partial: string, playing: { speaking: string | null; queued: number }, spoken: string, active = true): boolean {
   if (playing.speaking === null && playing.queued === 0) return false;
+  if (!active) return false;
   if (speechTokens(partial).length < BARGE_IN_MIN_TOKENS) return false;
   return !isSelfEcho(partial, spoken);
 }

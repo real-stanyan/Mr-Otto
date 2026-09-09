@@ -31,7 +31,8 @@ export interface PlayerAudio {
   play(): Promise<void>;
   pause(): void;
   onended: (() => void) | null;
-  onerror: (() => void) | null;
+  /** 播不了；带得出原因就带（helper 那条路有原文，Web Audio 没有） */
+  onerror: ((message?: string) => void) | null;
 }
 
 export interface VoicePlayerDeps {
@@ -109,7 +110,8 @@ function sharedAudioContext(): AudioContextLike {
   return sharedCtx;
 }
 
-function defaultCreateAudio(bytes: Uint8Array): PlayerAudio {
+/** Web Audio 那条路（缺省）。store 在回声消除开着时换成 helperAudio（#1201） */
+export function defaultCreateAudio(bytes: Uint8Array): PlayerAudio {
   return webAudioPlayback(bytes, sharedAudioContext);
 }
 
@@ -196,8 +198,8 @@ export class VoicePlayer {
       void this.pump();
     };
     audio.onended = done;
-    audio.onerror = () => {
-      this.error = "这段音频播不出来";
+    audio.onerror = (message) => {
+      this.error = message ?? "这段音频播不出来";
       done();
     };
     this.current = { item: head, audio };

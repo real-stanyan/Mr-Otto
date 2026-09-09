@@ -18,10 +18,13 @@ struct Command: Decodable {
   /// start：上下文词表（agent 名 / 成员名 / 开发常用英文词），喂给识别器的 contextualStrings——
   /// 本机 zh-CN 识别器遇到英文词会往拼音上靠（GitHub → get up），给了词表才认得出（#1196）
   var hints: [String]?
+  /// play：这段的 id（played / playError 带回来）与落好的临时文件路径
+  var id: String?
+  var path: String?
 }
 
 struct Event: Encodable {
-  /// status / listening / paused / resumed / partial / final / level / error
+  /// status / listening / paused / resumed / partial / final / level / played / playError / error
   let type: String
   /// partial / final
   var text: String?
@@ -43,6 +46,8 @@ struct Event: Encodable {
   var value: Double?
   /// level：能量门判「有人在说话」
   var active: Bool?
+  /// played / playError：哪一段
+  var id: String?
 }
 
 /// 一句是不是像说完了：句末标点 = 说完；逗号 / 顿号 / 冒号收尾 = 没说完；没标点时很短的

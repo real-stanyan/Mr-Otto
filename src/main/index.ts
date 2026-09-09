@@ -1412,10 +1412,17 @@ void app.whenReady().then(() => {
             kill: () => void c.kill(),
           };
         },
-        onEvent: (ev) => send(CHANNELS.speechEvent, ev),
+        onEvent: (ev) => {
+          // helper 侧播放（#1201）：那段临时文件播完 / 播不了就删，不等 app 退出
+          if (ev.type === "played" || ev.type === "playError") void rm(speechPlayFile(ev.id), { force: true });
+          send(CHANNELS.speechEvent, ev);
+        },
         log: (m) => console.warn(`[speech] ${m}`),
       })
     : null;
+  const speechPlayDir = join(tmpdir(), "mrotto-speech");
+  const speechPlayFile = (id: string): string => join(speechPlayDir, `${id}.audio`);
+  let speechPlaySeq = 0;
 
   const simulators = createSimulatorHub({
     run: runSimctl,
@@ -3501,6 +3508,24 @@ void app.whenReady().then(() => {
     speechSend({ type: "start", locale: typeof locale === "string" && locale !== "" ? locale : "zh-CN", ...(list.length > 0 ? { hints: list } : {}) });
   });
   ipcMain.handle(CHANNELS.speechStop, () => speechSend({ type: "stop" }));
+  // 字节落成临时文件再递路径：一段 TTS 几百 KB，走 stdin 的 NDJSON 得 base64 且一行读完才解析
+  ipcMain.handle(CHANNELS.speechPlay, async (_e, bytes: unknown): Promise<{ id: string } | { error: string }> => {
+    if (speech === null) return { error: "这台机器没有语音识别 helper" };
+    if (!(bytes instanceof Uint8Array)) return { error: "speechPlay：不是字节" };
+    const id = `p${Date.now().toString(36)}-${++speechPlaySeq}`;
+    try {
+      await mkdir(speechPlayDir, { recursive: true });
+      await writeFile(speechPlayFile(id), bytes);
+    } catch (err) {
+      return { error: `写不了临时音频：${err instanceof Error ? err.message : String(err)}` };
+    }
+    if (!speech.send({ type: "play", id, path: speechPlayFile(id) })) {
+      void rm(speechPlayFile(id), { force: true });
+      return { error: "语音 helper 没起来，这段播不了" };
+    }
+    return { id };
+  });
+  ipcMain.handle(CHANNELS.speechStopPlay, () => speechSend({ type: "stopPlay" }));
   ipcMain.handle(CHANNELS.speechPause, () => speechSend({ type: "pause" }));
   ipcMain.handle(CHANNELS.speechResume, () => speechSend({ type: "resume" }));
   ipcMain.handle(CHANNELS.workspaceCloudCall, (_e, participants: string[]) =>
