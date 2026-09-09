@@ -115,8 +115,37 @@ describe("mapRegistryServer —— remote 形态", () => {
     expect(mapRegistryServer(REMOTE_WITH_TOKEN)!.id).toBe("smithery-notion");
   });
 
-  it("没有 title 就退回 name 的末段当显示名", () => {
-    expect(mapRegistryServer(STDIO_PKG)!.name).toBe("notion");
+  it("title 在场时显示名就是 title", () => {
+    expect(mapRegistryServer(REMOTE_WITH_TOKEN)!.name).toBe("Notion");
+  });
+
+  // #701：官方发布者习惯把服务命名成 <公司域名>/mcp，退回末段就是满屏的「mcp」
+  it("没有 title 就退回「发布者域名/末段」——com.notion/mcp 显示成 notion/mcp", () => {
+    const official = {
+      ...REMOTE_NO_AUTH,
+      server: { ...REMOTE_NO_AUTH.server, name: "com.notion/mcp", title: undefined },
+    };
+    expect(mapRegistryServer(official)!.name).toBe("notion/mcp");
+  });
+
+  it("没有 title：末段本身有信息量时也带上发布者——谁包的一眼看得出", () => {
+    expect(mapRegistryServer(STDIO_PKG)!.name).toBe("mcparmory/notion");
+  });
+
+  it("首段不是已知公共后缀就不剥——labs.notion 是发布者名字本身", () => {
+    const record = {
+      ...REMOTE_NO_AUTH,
+      server: { ...REMOTE_NO_AUTH.server, name: "labs.notion/mcp", title: undefined },
+    };
+    expect(mapRegistryServer(record)!.name).toBe("labs.notion/mcp");
+  });
+
+  it("name 连斜杠都没有时退回 id（slug 后的末段）", () => {
+    const record = {
+      ...REMOTE_NO_AUTH,
+      server: { ...REMOTE_NO_AUTH.server, name: "plain", title: undefined },
+    };
+    expect(mapRegistryServer(record)!.name).toBe("plain");
   });
 
   it("必填的 header 变成 param，取模板占位符的名字", () => {
