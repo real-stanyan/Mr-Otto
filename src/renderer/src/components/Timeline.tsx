@@ -670,6 +670,7 @@ export const EventRow = memo(function EventRow({ event, isLast = false }: { even
     case "memory_user_edit":
     case "memory_nudge":
     case "workspace_memory_loaded": // 工作区记忆快照（#949），同上不是对话内容
+    case "workspace_wiki_loaded": // 团队 wiki 快照（#1140），同上
       return null;
 
     // 接力棒（#950）：谁传给了谁、第几棒——路标不是对话内容，云页自己画（那边

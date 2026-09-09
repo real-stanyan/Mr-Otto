@@ -45,6 +45,7 @@ const DURABLE = [
   "agent_relay",
   "memory_loaded",
   "workspace_memory_loaded",
+  "workspace_wiki_loaded",
   "memory_user_edit",
   "memory_nudge",
   "micro_compacted",

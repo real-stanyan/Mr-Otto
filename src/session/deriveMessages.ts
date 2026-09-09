@@ -3,13 +3,14 @@
 
 import { isolatedPromptText, type IsolatedWorkspace } from "../shared/sessionWorktree.js";
 import { promptSafe, promptSafeBody, safeSpeakerLabel } from "../shared/promptSafe.js";
-import type { CloudSessionFacts, MemoryTopicSnapshot, SessionEvent, UserTextFile, WorkspaceMemoryLoadedEvent } from "./events.js";
+import type { CloudSessionFacts, MemoryTopicSnapshot, SessionEvent, UserTextFile, WorkspaceMemoryLoadedEvent, WorkspaceWikiLoadedEvent } from "./events.js";
 import { barrenEventIndexes } from "./barrenTurns.js";
 import { activeSkills } from "./activeSkills.js";
 import { absorbedIndexes } from "./microCompact.js";
 import { charCount, MEMORY_LIMITS, parseEntries, formatEntries, tierRuleText, topicRuleText, topicIndexOf } from "../shared/memoryStore.js";
 import { renderTopicIndex } from "../shared/memoryTopics.js";
 import { WORKSPACE_MEMORY_LIMITS, workspaceTierRuleText } from "../shared/workspaceMemory.js";
+import { renderWikiPrompt } from "../shared/wiki.js";
 import { sanitizeForPrompt } from "../shared/threatPatterns.js";
 
 /** 用户正文 + 文本文件全文拼成模型可见文本。日志里二者分开存
@@ -469,6 +470,8 @@ export function deriveMessages(
   let agentBrief: string | null = null;
   // 工作区记忆快照（#949）：最新一条胜出，主循环结束后统一拼一次（见下方）
   let workspaceMemoryPrompt: string | null = null;
+  // 团队 wiki 快照（#1140）：最新一条胜出，主循环结束后统一拼一次（见下方）
+  let workspaceWikiPrompt: string | null = null;
   const boundary = compression ? fidelityBoundary(events, compression.keepRecentTurns, barren) : 0;
   // 孤儿 tool_result 过滤（issue #186）：nudge 派活的收口 tool_result
   // （toolCallId = memory-nudge-N）没有对应的 assistant_message.toolCalls，
@@ -774,6 +777,11 @@ export function deriveMessages(
         workspaceMemoryPrompt = renderWorkspaceMemoryPrompt(event);
         break;
 
+      case "workspace_wiki_loaded":
+        // 同 workspace_memory_loaded：不 +=，最新一条胜出，主循环结束后拼一次到 system 尾部（#1140）
+        workspaceWikiPrompt = renderWikiPrompt(event);
+        break;
+
       case "context_compacted":
         // 摘要替换此前的一切投影：清空重来。两点讲究：
         // ① 围栏 system 消息必须幸存——工作目录认知不能被压掉；
@@ -887,6 +895,8 @@ export function deriveMessages(
   if (systemMessage && agentBrief) systemMessage.content += agentBrief;
   // 工作区记忆块拼在 system 末尾（#949）。systemMessage 为 null（旧日志 / 没带 workspace）时静默不补造，同 memory_loaded
   if (systemMessage && workspaceMemoryPrompt) systemMessage.content += workspaceMemoryPrompt;
+  // 团队 wiki 块拼在 system 末尾（#1140）。systemMessage 为 null（旧日志 / 没带 workspace）时静默不补造，同 workspace_memory_loaded
+  if (systemMessage && workspaceWikiPrompt) systemMessage.content += workspaceWikiPrompt;
 
   // summaryAt 可能 === events.length（被吸收区是日志尾巴）——循环里插不到，这里补
   if (micro && micro.summaryAt >= events.length) {

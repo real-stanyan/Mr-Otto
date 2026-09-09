@@ -83,6 +83,15 @@ describe("projectForAgent（#928 切片 1a）", () => {
     const mine = projectForAgent(events, "ops");
     expect(mine.map((e) => e.seq)).toEqual([0]);
   });
+
+  it("别人的 workspace_wiki_loaded 不进我的视图，自己的照留（#1140）", () => {
+    const events = [
+      { seq: 0, ts: 1, sessionId: "s", type: "workspace_wiki_loaded", agentId: "ops", agentName: "运营", index: "# 索引", pinned: [], own: null, nudge: null },
+      { seq: 1, ts: 2, sessionId: "s", type: "workspace_wiki_loaded", agentId: "ads", agentName: "广告", index: "# 索引", pinned: [], own: null, nudge: null },
+    ] as unknown as SessionEvent[];
+    const mine = projectForAgent(events, "ops");
+    expect(mine.map((e) => e.seq)).toEqual([0]);
+  });
 });
 
 describe("agentView（#928 切片 1a：EventLog wrapper）", () => {
