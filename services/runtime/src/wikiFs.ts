@@ -162,7 +162,11 @@ export function createContainerWikiFs(world: Pick<ExecutionWorld, "fs" | "exec">
       await run(buildWikiRemoveScript(path));
     },
     async listHeads() {
-      return parseHeadsDump(await run(buildWikiHeadsScript()));
+      // awk 的默认 ORS 让每行 head 后面都带着换行，且脚本在遇到收尾的 `---`
+      // 就 exit，没机会去掉最后那个 \n（真机字节验过：`... 3a 20 5b 5d 0a`）。
+      // 内存实现的 headOf() 用 join("\n") 不产生这条尾巴——这里补一刀让两个
+      // 实现和 brief 的契约一致，awk 那段脚本本身不动（#1140 复审 finding 1）
+      return parseHeadsDump(await run(buildWikiHeadsScript())).map((h) => ({ path: h.path, head: h.head.replace(/\n$/, "") }));
     },
     async listPages() {
       return parsePagesDump(await run(buildWikiPagesScript()));

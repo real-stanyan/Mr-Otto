@@ -90,7 +90,7 @@ describe("createContainerWikiFs：脚本接线", () => {
       if (cmd.includes("own-missing")) return ok("index\t# 索引\0own-missing\0log\t\0");
       if (cmd.includes("-printf '%P\\t%y\\0'")) return ok("notes.txt\tf\0customers\td\0deep/er\td\0customers/acme.md\tf\0link.md\tl\0");
       if (cmd.includes("head -c 65536")) return ok("a.md\t---\ntitle: A\n---\n正文\0");
-      return ok("a.md\ttitle: A\0");
+      return ok("a.md\ttitle: A\n\0");
     });
     const fs = createContainerWikiFs(world);
     expect((await fs.snapshot("ops")).own).toBeNull();

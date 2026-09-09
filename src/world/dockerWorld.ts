@@ -230,6 +230,7 @@ export function createDockerWorld(opts: {
         {
           ...(execOpts?.onOutput ? { onOutput: execOpts.onOutput } : {}),
           ...(execOpts?.signal ? { signal: execOpts.signal } : {}),
+          ...(execOpts?.stdin !== undefined ? { attachStdin: true, stdin: execOpts.stdin } : {}),
         }
       );
     },

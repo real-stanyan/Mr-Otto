@@ -227,4 +227,17 @@ describe("DockerWorld", () => {
     const world = createDockerWorld({ container: async () => container });
     await expect(world.exec("echo x", { timeoutMs: -5 })).rejects.toThrow(/timeoutMs 不得为负数/);
   });
+
+  it("exec(cmd, { stdin }) 转发到 AttachStdin + exec stream（wikiFs.appendLog 靠它写日志，" +
+     "原来 exec() 只转发 onOutput/signal 不转发 stdin，cat >> 会读到立即 EOF 静默写零字节，#1140 复审 finding 2）", async () => {
+    let received = "";
+    const { container, calls } = createFakeContainer({
+      exitCode: 0,
+      stdinSink: (data) => { received += data; },
+    });
+    const world = createDockerWorld({ container: async () => container });
+    await world.exec("cat >> /work/wiki/log.md", { stdin: "## [x] write | a | b | c\n" });
+    expect(calls[0]!.AttachStdin).toBe(true);
+    expect(received).toBe("## [x] write | a | b | c\n");
+  });
 });
