@@ -224,4 +224,10 @@ describe("checkWiki（spec §7.1）：每条规则一例", () => {
     expect(r.findings).toEqual([]);
     expect(renderCheckReport(r)).toContain("没有发现问题");
   });
+  it("自链不算入链：只链到自己的页仍是孤儿", () => {
+    const pages = [mk("team.md", "口径", { pinned: true }), mk("selfie.md", "见 [[selfie]]")];
+    const r = checkWiki({ pages, rawTexts: raw(pages), journalHeads: null, extraneous: [], now: NOW });
+    expect(r.findings.map((f) => `${f.rule}:${f.path}`)).toContain("orphan:selfie.md");
+    expect(r.findings.some((f) => f.rule === "broken-link")).toBe(false);
+  });
 });

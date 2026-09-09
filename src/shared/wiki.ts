@@ -477,7 +477,7 @@ export function checkWiki(input: WikiCheckInput): WikiCheckReport {
   for (const p of input.pages) {
     for (const target of extractWikiLinks(p.body)) {
       if (!paths.has(target)) findings.push({ rule: "broken-link", path: p.path, detail: `链到不存在的 [[${linkTarget(target)}]]` });
-      inbound.set(target, (inbound.get(target) ?? 0) + 1);
+      if (target !== p.path) inbound.set(target, (inbound.get(target) ?? 0) + 1);
     }
   }
   let pinnedChars = 0;
