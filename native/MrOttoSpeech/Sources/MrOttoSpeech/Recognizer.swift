@@ -282,7 +282,7 @@ final class Recognizer {
     request?.endAudio()
     task = nil
     request = nil
-    endpointer = Endpointer(silenceMs: endpointer.silenceMs, completeMs: endpointer.completeMs, midMs: endpointer.midMs)  // 通话结束，手上那半句作废
+    endpointer = Endpointer(silenceMs: endpointer.silenceMs, completeMs: endpointer.completeMs, midMs: endpointer.midMs, midSilenceMs: endpointer.midSilenceMs)  // 通话结束，手上那半句作废
     engine.inputNode.removeTap(onBus: 0)
     engine.stop()
     emit(Event(type: "listening", on: false))
