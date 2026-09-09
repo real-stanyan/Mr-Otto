@@ -22,10 +22,10 @@ const WS: WorkspaceSnapshot = {
 };
 
 const ROWS: CloudSessionListRow[] = [
-  { id: "cs-1", title: "会话一", publisherUid: "owner-uid", archived: false, updatedTs: 1000 },
-  { id: "cs-2", title: "会话二", publisherUid: "member-uid", archived: false, updatedTs: 3000 },
-  { id: "cs-3", title: "已归档但更新过", publisherUid: "owner-uid", archived: true, updatedTs: 9000 },
-  { id: "cs-4", title: "陌生发起人", publisherUid: "left-the-group-uid", archived: false, updatedTs: 2000 },
+  { id: "cs-1", title: "会话一", publisherUid: "owner-uid", archived: false, updatedTs: 1000, participantUids: [] },
+  { id: "cs-2", title: "会话二", publisherUid: "member-uid", archived: false, updatedTs: 3000, participantUids: [] },
+  { id: "cs-3", title: "已归档但更新过", publisherUid: "owner-uid", archived: true, updatedTs: 9000, participantUids: [] },
+  { id: "cs-4", title: "陌生发起人", publisherUid: "left-the-group-uid", archived: false, updatedTs: 2000, participantUids: [] },
 ];
 
 describe("cloudSessionRows", () => {
@@ -57,7 +57,7 @@ describe("cloudSessionRows", () => {
     expect(rows).toEqual([
       // creatorUid（#993）：侧栏 ⋮ 里「归档」的显隐判据之一——服务端认的是
       // "owner 或建这条会话的人"，渲染层照抄同一条。名字会变，权限判断按 uid
-      { id: "cs-1", title: "会话一", creatorLabel: "Stan", creatorUid: "owner-uid", archived: false, updatedTs: 1000 },
+      { id: "cs-1", title: "会话一", creatorLabel: "Stan", creatorUid: "owner-uid", archived: false, updatedTs: 1000, participantUids: [] },
     ]);
   });
 

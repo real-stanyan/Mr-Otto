@@ -207,6 +207,8 @@ export interface CloudSessionListRow {
   publisherUid: string;
   archived: boolean;
   updatedTs: number;
+  /** 见 main/supabaseWorkspacesApi.ts 的同名字段（形状凑巧相同、各留一份） */
+  participantUids: string[];
 }
 
 export interface CloudSessionRowView {
@@ -219,6 +221,9 @@ export interface CloudSessionRowView {
   creatorUid: string;
   archived: boolean;
   updatedTs: number;
+  /** 最近有过对话的那个 5 小时窗里说过话的人（#1213）。**带 uid 不带名字**：
+      名字要现查 `labelOf`（会变），而退了群的人 uid 仍然要画得出来 */
+  participantUids: string[];
 }
 
 /** archived 沉底、同档内 updatedTs 降序——同一本团队列表里"还能进去接着说话的"
@@ -237,6 +242,7 @@ export function cloudSessionRows(
       creatorUid: r.publisherUid,
       archived: r.archived,
       updatedTs: r.updatedTs,
+      participantUids: r.participantUids,
     }))
     .sort((a, b) => (a.archived !== b.archived ? (a.archived ? 1 : -1) : b.updatedTs - a.updatedTs));
 }

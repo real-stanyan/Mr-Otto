@@ -67,8 +67,8 @@ function seed(over: Partial<Parameters<typeof useChat.setState>[0]> = {}): {
     cloudSession: null,
     cloudSessionList: {
       w1: [
-        { id: "cs-live", title: "周报自动化", publisherUid: "u2", archived: false, updatedTs: 2 },
-        { id: "cs-old", title: "上个月的爬虫", publisherUid: "u2", archived: true, updatedTs: 1 },
+        { id: "cs-live", title: "周报自动化", publisherUid: "u2", archived: false, updatedTs: 2, participantUids: [] },
+        { id: "cs-old", title: "上个月的爬虫", publisherUid: "u2", archived: true, updatedTs: 1, participantUids: [] },
       ],
     },
     refreshCloudSessions: async () => {},

@@ -414,6 +414,9 @@ export interface CloudSessionRow {
   publisherUid: string;
   archived: boolean;
   updatedTs: number;
+  /** 最近有过对话的那个 5 小时窗里说过话的人（#1213）。runtime 写的投影，
+      形状不对（不是字符串数组）一律回 []——同 normalizeStringArray 的纪律 */
+  participantUids: string[];
 }
 
 /** ISO 字符串 → epoch ms；解析不出来回 0，不让脏数据混进排序比较
@@ -434,11 +437,12 @@ export async function listCloudSessions(
 ): Promise<CloudSessionRow[]> {
   const res = await client
     .from("workspace_sessions")
-    .select("id,publisher_uid,title,archived,updated_at")
+    .select("id,publisher_uid,title,archived,updated_at,participants")
     .eq("workspace_id", workspaceId)
     .eq("kind", "cloud");
   const rows = (unwrap(res) ?? []) as {
     id: string; publisher_uid: string; title: string; archived: boolean; updated_at: string;
+    participants: unknown;
   }[];
   return rows.map((r) => ({
     id: r.id,
@@ -446,6 +450,10 @@ export async function listCloudSessions(
     publisherUid: r.publisher_uid,
     archived: r.archived,
     updatedTs: toEpochMs(r.updated_at),
+    // 0034 还没跑的库上这一格是 undefined —— 回 [] 让整条路退回改动前的样子
+    participantUids: Array.isArray(r.participants) && r.participants.every((x) => typeof x === "string")
+      ? (r.participants as string[])
+      : [],
   }));
 }
 
