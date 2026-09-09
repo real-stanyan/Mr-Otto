@@ -55,6 +55,13 @@ describe("parseTitleReply", () => {
     expect(parseTitleReply("字".repeat(30))).toBe("字".repeat(TITLE_MAX_CHARS));
   });
 
+  it("弯引号（中文输出最常见的包裹符号）也剥——测试串用 \\u 转义拼，不靠眼睛抄字符", () => {
+    // U+201C/U+201D 双弯引号、U+2018/U+2019 单弯引号。上一版实现把这四个抄成了
+    // 重复的直引号，字符类静默漏空、vitest 却全绿——这里连测试串本身都不敢手打
+    expect(parseTitleReply("\u201C奶茶店选址\u201D")).toBe("奶茶店选址");
+    expect(parseTitleReply("\u2018奶茶店选址\u2019")).toBe("奶茶店选址");
+  });
+
   it("空串 / 只有标点 → null（认不出来一律回落，不是编一个）", () => {
     expect(parseTitleReply("")).toBeNull();
     expect(parseTitleReply("。。。")).toBeNull();
@@ -111,5 +118,18 @@ describe("requestTitle", () => {
     const fetchImpl = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ choices: [{ message: {} }] }) });
     await expect(requestTitle({ llmBase: "http://x/llm/v1", headers: {}, fetchImpl: fetchImpl as never }, input, ["cheap"]))
       .resolves.toBeNull();
+  });
+
+  it("超时 → null，且日志说清是「超时」不是随便一种失败（信号打到 fetch 上，不是干等；形状同 dispatch.test.ts 的同名用例）", async () => {
+    const log = vi.fn();
+    const fetchImpl = ((_url: string, init: RequestInit) =>
+      new Promise((_, reject) => {
+        init.signal!.addEventListener("abort", () => reject(new Error("aborted")));
+      })) as unknown as typeof fetch;
+    await expect(
+      requestTitle({ llmBase: "http://x/llm/v1", headers: {}, fetchImpl, timeoutMs: 10, log }, input, ["cheap"])
+    ).resolves.toBeNull();
+    // 返回类型没有 reason 字段，唯一能分辨「超时」与「随便一种失败」的地方是日志
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("超时"));
   });
 });

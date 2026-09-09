@@ -88,8 +88,13 @@ export function parseTitleReply(raw: string): string | null {
   const first = (raw.split("\n").find((l) => l.trim() !== "") ?? "").trim();
   if (first === "") return null;
   if (/^keep\b/i.test(first)) return null;
-  // 剥常见的包裹符号（模型爱加）：直角引号、书名号、成对的直/弯引号
-  const stripped = first.replace(/^[「『《"'""'']+/, "").replace(/[」』》"'""'']+$/, "").trim();
+  // 剥常见的包裹符号（模型爱加）：直角引号、书名号、成对的直引号、成对的弯引号。
+  // 弯引号（U+201C/U+201D/U+2018/U+2019）用 \u 转义字面量拼、不直接敲字符——上一版
+  // 就是敲字符时把这四个抄成了重复的直引号，字符类静默少了一半，vitest 照样全绿
+  const stripped = first
+    .replace(/^[「『《"'\u201C\u201D\u2018\u2019]+/, "")
+    .replace(/[」』》"'\u201C\u201D\u2018\u2019]+$/, "")
+    .trim();
   // 只剩标点/空白 = 没有内容。判据是「有没有字母数字或 CJK」，不是长度
   if (!/[\p{L}\p{N}]/u.test(stripped)) return null;
   return stripped.length > TITLE_MAX_CHARS ? stripped.slice(0, TITLE_MAX_CHARS) : stripped;
