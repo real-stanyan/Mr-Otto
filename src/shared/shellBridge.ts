@@ -244,6 +244,14 @@ export interface AssistantDelta {
     临时预览不落日志，终态 assistant_message 一到就作废）。多一个 agentId
     槽位——群里同一刻可能有好几只在打字，按 agent 分槽。`text` 是**累计
     快照**（这只 agent 这一轮到此刻的完整正文），渲染层整槽替换不拼接 */
+/** 团队语音通话：主进程替渲染层合成一段语音的回值（#1163）。字节是 mp3；
+    `costMicro` 是这一笔的 credit（响应头 x-otto-cost-micro），`audioMs` 这段多长
+    （上游报的，缺席 null）。`ok:false` 的 message 是给人看的一句（routeTts 的四种
+    blocked 或网关的错误信封） */
+export type VoiceSpeakResult =
+  | { ok: true; audio: Uint8Array; costMicro: number; audioMs: number | null }
+  | { ok: false; message: string };
+
 export interface CloudSessionDelta {
   sessionId: string;
   agentId: string;
@@ -1177,6 +1185,9 @@ export interface ShellBridge {
       `seq` = 按钮所在那一行开场白自己的 seq（复审 C2-I3）：停止按钮按**行**
       画，不带 seq 的话按第二行那颗停掉的是第一行。缺席 = 旧语义（停当前） */
   workspaceCloudStop(seq?: number): Promise<CloudAck>;
+  /** 团队语音通话（#1163）：把一段文字合成语音。主进程拿 JWT 打网关，钱记在
+      **听的人**自己的额度上；渲染层只拿字节去播 */
+  teamVoiceSpeak(text: string, voiceId: string): Promise<VoiceSpeakResult>;
   /** 读一个团队此刻的路由（控制房 RPC，协议 8，#991）：任何在籍成员都能读，
       不依赖开着云会话。**#1102 之后只剩这一格**——原来它还带仓库配置，而团队
       不再绑仓库；留着这条 RPC 是因为 ADR-0246 那句「起不了 turn」在设置页
@@ -1629,6 +1640,7 @@ export const CHANNELS = {
   workspaceCloudArchive: "otter:workspaceCloudArchive",
   workspaceCloudDelete: "otter:workspaceCloudDelete",
   workspaceCloudStop: "otter:workspaceCloudStop",
+  teamVoiceSpeak: "otter:teamVoiceSpeak",
   workspaceCloudConfig: "otter:workspaceCloudConfig",
   workspaceCloudState: "otter:workspaceCloudState",
   workspaceCloudFiles: "otter:workspaceCloudFiles",

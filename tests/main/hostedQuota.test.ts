@@ -189,3 +189,21 @@ describe("parseCheckoutTarget", () => {
     expect(parseCheckoutTarget({})).toBeNull();
   });
 });
+
+describe("hostedQuota.ttsInput（#1163）", () => {
+  it("语音清单原样带出，订阅/耗尽两格与 routeInput 同源", async () => {
+    const { q, tick } = make([() => Response.json(me)]);
+    await q.refresh();
+    expect(q.ttsInput()).toEqual({ subscribed: true, exhausted: false, ttsModels: ["speech-2.8-turbo"] });
+    q.noteExhausted({ window: "5h", resetAt: T0 + 5000 });
+    expect(q.ttsInput()).toMatchObject({ exhausted: true, resetAt: T0 + 5000 });
+    tick(5001);
+    expect(q.ttsInput().exhausted).toBe(false);
+  });
+
+  it("没登录 / 旧 edge 不下发那一格 → 清单为空（= 这台网关不供语音，不是「出错了」）", async () => {
+    const { q } = make([], null);
+    await q.refresh();
+    expect(q.ttsInput()).toEqual({ subscribed: false, exhausted: false, ttsModels: [] });
+  });
+});

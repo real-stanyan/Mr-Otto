@@ -269,6 +269,7 @@ const bridge: ShellBridge = {
   workspaceCloudDelete: (workspaceId, sessionId) =>
     ipcRenderer.invoke(CHANNELS.workspaceCloudDelete, workspaceId, sessionId),
   workspaceCloudStop: (seq) => ipcRenderer.invoke(CHANNELS.workspaceCloudStop, seq ?? null),
+  teamVoiceSpeak: (text, voiceId) => ipcRenderer.invoke(CHANNELS.teamVoiceSpeak, text, voiceId),
   workspaceCloudState: (workspaceId) => ipcRenderer.invoke(CHANNELS.workspaceCloudState, workspaceId),
   workspaceCloudFiles: (workspaceId, path) => ipcRenderer.invoke(CHANNELS.workspaceCloudFiles, workspaceId, path),
   workspaceCloudGitCredential: (workspaceId, host, token) =>

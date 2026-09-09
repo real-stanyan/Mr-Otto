@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { routeImage, routeModel } from "../../src/main/modelRoute.js";
+import { routeImage, routeModel, routeTts } from "../../src/main/modelRoute.js";
 import { findModel, resolveModel } from "../../src/shared/modelCatalog.js";
 
 const deepseek = findModel("deepseek-v4-flash")!;
@@ -225,5 +225,56 @@ describe("routeImage", () => {
     expect(r.kind).toBe("blocked");
     if (r.kind !== "blocked") return;
     expect(r.reason).toContain("额度已用完");
+  });
+});
+
+// ── 语音那条路（#1163） ───────────────────────────────────────────────
+//
+// 与出图同形：没有「自带 key」这一档，要么走托管、要么走不通。四种 blocked 分开措辞，
+// 后两种（网关不供语音 / 连不上网关）不许写成「你没订阅」——那会让一个正在付钱的人去点续费。
+
+describe("routeTts", () => {
+  const base = { hostedBaseUrl: "https://edge/llm/v1", hostedToken: "jwt" };
+  const hosted = (over: Partial<{ subscribed: boolean; exhausted: boolean; resetAt: number; ttsModels: string[] }> = {}) =>
+    ({ subscribed: true, exhausted: false, ttsModels: ["speech-2.8-turbo"], ...over });
+
+  it("订阅 + 网关供 + 拿得到 JWT → 走网关的 /speech，点名清单第一款", () => {
+    expect(routeTts({ ...base, hosted: hosted() })).toEqual({ kind: "hosted", url: "https://edge/llm/v1/speech", model: "speech-2.8-turbo" });
+  });
+
+  it("没订阅：说订阅，不提 key", () => {
+    const r = routeTts({ ...base, hosted: hosted({ subscribed: false }) });
+    expect(r.kind).toBe("blocked");
+    if (r.kind !== "blocked") return;
+    expect(r.reason).toContain("订阅");
+    expect(r.reason).not.toContain("key");
+  });
+
+  it("额度用完：报恢复时间 + 加购", () => {
+    const r = routeTts({ ...base, hosted: hosted({ exhausted: true, resetAt: Date.UTC(2026, 8, 8, 6, 30) }) });
+    expect(r.kind).toBe("blocked");
+    if (r.kind !== "blocked") return;
+    expect(r.reason).toContain("额度已用完");
+    expect(r.reason).toContain("加购");
+  });
+
+  it("网关一款语音模型都不供：说「不供语音」，不是「你没订阅」", () => {
+    const r = routeTts({ ...base, hosted: hosted({ ttsModels: [] }) });
+    expect(r.kind).toBe("blocked");
+    if (r.kind !== "blocked") return;
+    expect(r.reason).toContain("语音");
+    expect(r.reason).not.toContain("没有订阅");
+  });
+
+  it("拿不到 JWT / 网关地址：说连不上；没装配托管也走不通；额度用完排在「不供语音」前面", () => {
+    for (const partial of [{ hostedBaseUrl: base.hostedBaseUrl }, { hostedToken: base.hostedToken }]) {
+      const r = routeTts({ ...partial, hosted: hosted() });
+      expect(r.kind).toBe("blocked");
+      if (r.kind !== "blocked") continue;
+      expect(r.reason).toContain("连不上");
+    }
+    expect(routeTts({ ...base }).kind).toBe("blocked");
+    const r = routeTts({ ...base, hosted: hosted({ exhausted: true, ttsModels: [] }) });
+    if (r.kind === "blocked") expect(r.reason).toContain("额度已用完");
   });
 });
