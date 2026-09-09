@@ -148,6 +148,7 @@ import {
 import { SEED_TOPICS, withSeedTopics } from "../../shared/memoryTopics.js";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar.js";
 import { Button } from "@/components/ui/button.js";
+import { ConfirmProvider, useConfirm } from "@/components/ui/confirm-dialog.js";
 import { Input } from "@/components/ui/input.js";
 import {
   Dialog,
@@ -1723,6 +1724,7 @@ function SharedAvatars({ names }: { names: readonly string[] }) {
 }
 
 function AppSidebar() {
+  const confirm = useConfirm();
   const sessions = useChat((s) => s.sessions);
   const asks = useChat((s) => s.asks);
   const sessionId = useChat((s) => s.sessionId);
@@ -1898,9 +1900,15 @@ function AppSidebar() {
           <DropdownMenuItem
             variant="destructive"
             onClick={() => {
-              if (confirm(`彻底删除会话 ${s.sessionId}？\n整段事件日志将从数据库抹除，不可恢复。`)) {
-                void deleteSession(s.sessionId);
-              }
+              void (async () => {
+                const ok = await confirm({
+                  title: `彻底删除会话 ${s.sessionId}？`,
+                  description: "整段事件日志将从数据库抹除，不可恢复。",
+                  confirmLabel: "删除",
+                  tone: "danger",
+                });
+                if (ok) await deleteSession(s.sessionId);
+              })();
             }}
           >
             删除
@@ -1989,9 +1997,15 @@ function AppSidebar() {
             onClick={() => {
               // 报的是行上那一格此刻写着的字（#925 之前这里报的是 fallbackLabel，
               // 于是有标题的会话在确认框里被叫成它所在的文件夹名——和行上对不上）
-              if (confirm(`彻底删除会话 ${displaySessionTitle(s.title)} · ${s.sessionId}？\n整段事件日志将从数据库抹除，不可恢复。`)) {
-                void deleteSession(s.sessionId);
-              }
+              void (async () => {
+                const ok = await confirm({
+                  title: `彻底删除会话 ${displaySessionTitle(s.title)} · ${s.sessionId}？`,
+                  description: "整段事件日志将从数据库抹除，不可恢复。",
+                  confirmLabel: "删除",
+                  tone: "danger",
+                });
+                if (ok) await deleteSession(s.sessionId);
+              })();
             }}
           >
             删除
@@ -2455,9 +2469,15 @@ function AppSidebar() {
                       title="删除会话（整段日志从库里抹除，不可恢复）"
                       onClick={(e) => {
                         e.stopPropagation();
-                        if (confirm(`彻底删除史前会话 ${s.sessionId}？\n整段事件日志将从数据库抹除，不可恢复。`)) {
-                          void deleteSession(s.sessionId);
-                        }
+                        void (async () => {
+                          const ok = await confirm({
+                            title: `彻底删除史前会话 ${s.sessionId}？`,
+                            description: "整段事件日志将从数据库抹除，不可恢复。",
+                            confirmLabel: "删除",
+                            tone: "danger",
+                          });
+                          if (ok) await deleteSession(s.sessionId);
+                        })();
                       }}
                     >
                       ✕
@@ -4177,6 +4197,10 @@ export function App() {
     // 让这层重新成为有界 flex 容器（原 h-screen 链路的等价物）。
     // min-h-svh 与 h-screen 分属不同 tailwind-merge 分组,不会互相 dedupe,
     // 两条规则共存但不冲突(dev 环境下 svh≈vh,数值一致)
+    // 二次确认弹窗的宿主（#1127）：包在最外层，因为问「真的要删吗」的地方遍布
+    // 侧栏、设置抽屉与各张卡；`useConfirm` 缺 provider 会抛，所以漏一棵子树不会
+    // 安静退回原生 confirm，是当场红
+    <ConfirmProvider>
     <SidebarProvider className="h-screen">
       <TooltipProvider delayDuration={400}>
         <AppSidebar />
@@ -4263,6 +4287,7 @@ export function App() {
         <SideChatWindow />
       </TooltipProvider>
     </SidebarProvider>
+    </ConfirmProvider>
   );
 }
 

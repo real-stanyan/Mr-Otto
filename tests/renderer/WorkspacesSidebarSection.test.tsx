@@ -18,7 +18,7 @@
 //    条数（rows.length）展开就数得出来所以只在收起时报，未读数展开也数不出来
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render as rtlRender, screen } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import "@testing-library/jest-dom/vitest";
 
@@ -27,6 +27,13 @@ import { SidebarProvider } from "../../src/renderer/src/components/ui/sidebar.js
 import { useChat } from "../../src/renderer/src/store.js";
 import type { WorkspaceSnapshot } from "../../src/shared/workspaces.js";
 import type { WorkspaceMentionRow } from "../../src/shared/workspaceMentions.js";
+import { ConfirmProvider } from "../../src/renderer/src/components/ui/confirm-dialog.js";
+
+// 这一屏里有组件调 `useConfirm()`（#1127），缺 provider 会在**渲染那一刻**抛——
+// 这是故意的（不回落到 window.confirm），所以测试自己把 provider 包上。
+// 换掉 `render` 这个名字而不是逐处改调用：以后这个文件里新写的用例自动带上
+const render = (ui: Parameters<typeof rtlRender>[0]) => rtlRender(ui, { wrapper: ConfirmProvider });
+
 
 const MENTION = (over: Partial<WorkspaceMentionRow> = {}): WorkspaceMentionRow => ({
   workspaceId: "w1", sessionId: "cs-live", seq: 1, uid: "u-me", fromUid: "u2",

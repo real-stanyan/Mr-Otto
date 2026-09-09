@@ -1,7 +1,7 @@
 // WorkspaceAgentsTab —— 工作区设置页「智能体」tab：建/改/删 @ 得着的那几只
 // 水獭（issue #932 切片 1b，Task 7）。骨架照抄 WorkspacePage.tsx 的
 // ConnectorsTab + ContributeConnectorDialog（同一份 ROW/SECTION_LABEL 令牌、
-// 同一套 confirm() 二次确认惯例，不新造视觉语言）。
+// 同一套二次确认惯例）。
 //
 // 权限矩阵钉在 workspaceView.ts 的 agentRows（spec §9）：canEdit = 建的人或
 // owner，canDelete = canEdit 且不是种子管理员——admin 是每个工作区开箱自带
@@ -21,6 +21,7 @@ import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { ChevronDown, ChevronRight, Plus, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils.js";
 import { Button } from "@/components/ui/button.js";
+import { useConfirm } from "@/components/ui/confirm-dialog.js";
 import { Input } from "@/components/ui/input.js";
 import { Textarea } from "@/components/ui/textarea.js";
 import { InsetEmpty, InsetGroup, InsetNote, InsetRow } from "@/components/ui/inset-list.js";
@@ -67,6 +68,7 @@ function sameModels(a: readonly string[], b: readonly string[]): boolean {
 }
 
 export function WorkspaceAgentsTab({ ws, selfUid }: { ws: WorkspaceSnapshot; selfUid: string }) {
+  const confirm = useConfirm();
   const nav = useNav();
   const deleteAgent = useChat((s) => s.deleteWorkspaceAgent);
   const refreshWorkspaceGroups = useChat((s) => s.refreshWorkspaceGroups);
@@ -143,16 +145,18 @@ export function WorkspaceAgentsTab({ ws, selfUid }: { ws: WorkspaceSnapshot; sel
                   <Button
                     variant="ghost" size="xs" className="text-err"
                     onClick={() => {
-                      if (
-                        confirm(
-                          `删除智能体「${row.name}」？它的提示词和模型配置会一起消失，正在排队的消息会被标成没人接。`
-                        )
-                      ) {
-                        void (async () => {
+                      void (async () => {
+                        const ok = await confirm({
+                          title: `删除智能体「${row.name}」？`,
+                          description: "它的提示词和模型配置会一起消失，正在排队的消息会被标成没人接。",
+                          confirmLabel: "删除",
+                          tone: "danger",
+                        });
+                        if (ok) {
                           const result = await deleteAgent(ws.id, row.agentId);
                           if (result === "ok_stale") setDeleteStale(true);
-                        })();
-                      }
+                        }
+                      })();
                     }}
                   >
                     删除

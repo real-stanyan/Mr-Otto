@@ -3,6 +3,7 @@
 
 import { UserPlus } from "lucide-react";
 import { Button } from "@/components/ui/button.js";
+import { useConfirm } from "@/components/ui/confirm-dialog.js";
 import { InsetEmpty, InsetGroup, InsetLabel, InsetNote, InsetRow } from "@/components/ui/inset-list.js";
 import { useChat } from "../store.js";
 import { memberRows } from "../lib/workspaceView.js";
@@ -22,6 +23,7 @@ function MemberChip({ name }: { name: string }) {
 }
 
 export function WorkspaceMembersTab({ ws, selfUid }: { ws: WorkspaceSnapshot; selfUid: string }) {
+  const confirm = useConfirm();
   const kick = useChat((s) => s.kickWorkspaceGroupMember);
   const addMember = useChat((s) => s.addWorkspaceGroupMember);
   const friends = useChat((s) => s.friendsSnapshot.friends);
@@ -45,9 +47,15 @@ export function WorkspaceMembersTab({ ws, selfUid }: { ws: WorkspaceSnapshot; se
                 <Button
                   variant="ghost" size="xs" className="text-err"
                   onClick={() => {
-                    if (confirm(`把 ${row.label} 移出工作区？TA 借用/贡献的连接器授权会立即失效。`)) {
-                      void kick(ws.id, row.uid);
-                    }
+                    void (async () => {
+                      const ok = await confirm({
+                        title: `把 ${row.label} 移出工作区？`,
+                        description: "TA 借用/贡献的连接器授权会立即失效。",
+                        confirmLabel: "移出",
+                        tone: "danger",
+                      });
+                      if (ok) await kick(ws.id, row.uid);
+                    })();
                   }}
                 >
                   移出

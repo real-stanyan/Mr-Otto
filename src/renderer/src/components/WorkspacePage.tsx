@@ -15,8 +15,12 @@
 // ## 「解散工作区」从页头搬到最底下
 //
 // 原来它是页头右上角一颗红色实心按钮——**整页视觉上最响的元素，是最危险、最少用的
-// 那一个**。搬进最后一组、红字、单独一行，并保留 `confirm()` 二次确认（同 FriendsSection
-// 「删除好友」、侧栏「删除会话」，不新造一套 AlertDialog 视觉语言）。
+// 那一个**。搬进最后一组、红字、单独一行，二次确认照旧。
+//
+// 那句二次确认 #1127 已经从原生 `confirm()` 换成 `useConfirm()`（`ui/confirm-dialog`）：
+// 本文件原来写着「不新造一套 AlertDialog 视觉语言」，而那套语言早就在仓库里
+// （三个登录弹窗在用），保留原生的代价才是真的——系统脸、英文按钮、问题与后果挤成
+// 一块文字。
 //
 // 没有推送通道（workspaceList 无 onChanged）：每次改动成功后 store 那十一个 action 都会
 // 自己重拉一次整份快照，这一页只管拿最新的 ws 传进来的那份画，不自己维护本地缓存。
@@ -25,6 +29,7 @@ import type { ReactNode } from "react";
 import { ArrowLeft, Bot, FolderOpen, Gauge, MessagesSquare, Plug, Sparkles, Users } from "lucide-react";
 import { InsetGroup, InsetIcon, InsetNote, InsetRow } from "@/components/ui/inset-list.js";
 import { NavStack, useNav, type NavScreen } from "@/components/ui/nav-stack.js";
+import { useConfirm } from "@/components/ui/confirm-dialog.js";
 import { useChat } from "../store.js";
 import { WorkspaceAgentsTab } from "./WorkspaceAgentsTab.js";
 import { WorkspaceUsageTab } from "./WorkspaceUsageTab.js";
@@ -128,18 +133,31 @@ function RootBody({
   onLeftWorkspace: () => void;
 }) {
   const nav = useNav();
+  const confirm = useConfirm();
   const deleteGroup = useChat((s) => s.deleteWorkspaceGroup);
   const leaveGroup = useChat((s) => s.leaveWorkspaceGroup);
   const error = useChat((s) => s.workspaceGroupsError);
   const isOwner = ws.ownerUid === selfUid;
 
   const onDelete = async (): Promise<void> => {
-    if (!confirm(`解散工作区「${ws.name}」？全体成员的连接器授权与已发布会话会立即失效，且不可撤销。`)) return;
+    const ok = await confirm({
+      title: `解散工作区「${ws.name}」？`,
+      description: "全体成员的连接器授权与已发布会话会立即失效，且不可撤销。",
+      confirmLabel: "解散",
+      tone: "danger",
+    });
+    if (!ok) return;
     if (await deleteGroup(ws.id)) onLeftWorkspace();
   };
 
   const onLeave = async (): Promise<void> => {
-    if (!confirm(`退出工作区「${ws.name}」？你贡献的连接器授权会立即失效。`)) return;
+    const ok = await confirm({
+      title: `退出工作区「${ws.name}」？`,
+      description: "你贡献的连接器授权会立即失效。",
+      confirmLabel: "退出",
+      tone: "danger",
+    });
+    if (!ok) return;
     if (await leaveGroup(ws.id)) onLeftWorkspace();
   };
 

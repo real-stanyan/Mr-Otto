@@ -25,6 +25,7 @@
 import { useEffect, useState } from "react";
 import { Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button.js";
+import { useConfirm } from "@/components/ui/confirm-dialog.js";
 import { InsetEmpty, InsetGroup, InsetLabel, InsetNote, InsetRow } from "@/components/ui/inset-list.js";
 import { useChat } from "../store.js";
 import { cloudSessionRows, sessionRows } from "../lib/workspaceView.js";
@@ -41,6 +42,7 @@ export function WorkspaceSessionsTab({ ws, selfUid }: { ws: WorkspaceSnapshot; s
 }
 
 function CloudSessionsSection({ ws, selfUid }: { ws: WorkspaceSnapshot; selfUid: string }) {
+  const confirm = useConfirm();
   // `undefined` = 这一格从来没被成功写过（还没拉 / 拉失败），`[]` = 确实一条都没有
   const list = useChat((s) => s.cloudSessionList[ws.id]);
   const refresh = useChat((s) => s.refreshCloudSessions);
@@ -119,8 +121,15 @@ function CloudSessionsSection({ ws, selfUid }: { ws: WorkspaceSnapshot; selfUid:
                       aria-label={`彻底删除「${row.title}」`}
                       title="彻底删除这条会话（整段对话从云端抹掉，不可恢复）"
                       onClick={() => {
-                        if (!window.confirm(`彻底删除「${row.title}」？\n整段对话会从云端抹掉，群里所有人都再也看不到，不可恢复。`)) return;
-                        void deleteCloud(ws.id, row.id);
+                        void (async () => {
+                          const ok = await confirm({
+                            title: `彻底删除「${row.title}」？`,
+                            description: "整段对话会从云端抹掉，群里所有人都再也看不到，不可恢复。",
+                            confirmLabel: "删除",
+                            tone: "danger",
+                          });
+                          if (ok) await deleteCloud(ws.id, row.id);
+                        })();
                       }}
                     >
                       <Trash2 />
@@ -149,6 +158,7 @@ function CloudSessionsSection({ ws, selfUid }: { ws: WorkspaceSnapshot; selfUid:
     能这么收是因为云会话那节常驻且自带空态。代价：这一页不再教人「怎么发布」——
     而发布的入口本来就不在这一页，在会话的「更多」菜单里。 */
 function PublishedSection({ ws, selfUid }: { ws: WorkspaceSnapshot; selfUid: string }) {
+  const confirm = useConfirm();
   const importSession = useChat((s) => s.importWorkspaceSession);
   const unpublish = useChat((s) => s.unpublishWorkspaceSession);
   const rows = sessionRows(ws);
@@ -171,9 +181,15 @@ function PublishedSection({ ws, selfUid }: { ws: WorkspaceSnapshot; selfUid: str
                   <Button
                     variant="ghost" size="xs" className="text-err"
                     onClick={() => {
-                      if (confirm(`撤回会话「${row.title}」？其他成员将不能再导入它。`)) {
-                        void unpublish(ws.id, row.id);
-                      }
+                      void (async () => {
+                        const ok = await confirm({
+                          title: `撤回会话「${row.title}」？`,
+                          description: "其他成员将不能再导入它。",
+                          confirmLabel: "撤回",
+                          tone: "danger",
+                        });
+                        if (ok) await unpublish(ws.id, row.id);
+                      })();
                     }}
                   >
                     撤回

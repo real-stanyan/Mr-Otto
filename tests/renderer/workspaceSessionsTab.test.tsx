@@ -15,13 +15,20 @@
 // #1120 之后目录是**推入式**不是 tab，所以每条用例先点一下根页那行「会话」。
 
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render as rtlRender, screen } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import "@testing-library/jest-dom/vitest";
 
 import { WorkspacePage } from "../../src/renderer/src/components/WorkspacePage.js";
 import { useChat } from "../../src/renderer/src/store.js";
 import type { WorkspaceSnapshot } from "../../src/shared/workspaces.js";
+import { ConfirmProvider } from "../../src/renderer/src/components/ui/confirm-dialog.js";
+
+// 这一屏里有组件调 `useConfirm()`（#1127），缺 provider 会在**渲染那一刻**抛——
+// 这是故意的（不回落到 window.confirm），所以测试自己把 provider 包上。
+// 换掉 `render` 这个名字而不是逐处改调用：以后这个文件里新写的用例自动带上
+const render = (ui: Parameters<typeof rtlRender>[0]) => rtlRender(ui, { wrapper: ConfirmProvider });
+
 
 const OWNER = "u-owner";
 const OTHER = "u-other";

@@ -3,6 +3,7 @@
 // 选中哪一行是视图自己的瞬态状态，不进 store：换会话 / 离开视图即作废，没人需要恢复它。
 
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { useConfirm } from "@/components/ui/confirm-dialog.js";
 import { Download, Search, X } from "lucide-react";
 import { useChat } from "../store.js";
 import {
@@ -296,6 +297,7 @@ function Swimlanes({
 /** 「回到这一步」（issue #395 / ADR-0090）：fork 会话（零拷贝）+ 文件 reset
     回检查点，成功后直接切进新分支会话。破坏性动作走 confirm（同删除会话的模式） */
 function RewindButton({ checkpointId, seq }: { checkpointId: string; seq: number }) {
+  const confirm = useConfirm();
   const sessionId = useChat((s) => s.sessionId);
   const resume = useChat((s) => s.resume);
   const [busy, setBusy] = useState(false);
@@ -304,12 +306,13 @@ function RewindButton({ checkpointId, seq }: { checkpointId: string; seq: number
       disabled={busy}
       className="mt-4 w-full text-[12.5px] px-3 py-[7px] rounded-lg border border-border bg-foreground/[0.04] hover:bg-foreground/[0.08] transition-colors disabled:opacity-50 disabled:cursor-wait"
       onClick={async () => {
-        if (
-          !confirm(
-            `回到这一步？\n将从这里分叉出一个新会话（原会话原样保留），并把工作区文件恢复到检查点 ${checkpointId.slice(0, 8)} 时刻。\n此后对存过档文件的改动会被覆盖；从未进过检查点的新文件保留。`
-          )
-        )
-          return;
+        const ok = await confirm({
+          title: "回到这一步？",
+          description: `将从这里分叉出一个新会话（原会话原样保留），并把工作区文件恢复到检查点 ${checkpointId.slice(0, 8)} 时刻。\n此后对存过档文件的改动会被覆盖；从未进过检查点的新文件保留。`,
+          confirmLabel: "回到这一步",
+          tone: "danger",
+        });
+        if (!ok) return;
         setBusy(true);
         try {
           const newId = await window.otter.rewindToCheckpoint(sessionId, seq);

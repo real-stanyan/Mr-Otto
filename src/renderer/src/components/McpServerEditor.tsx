@@ -12,6 +12,7 @@
 import { useState } from "react";
 import { RotateCw, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button.js";
+import { useConfirm } from "@/components/ui/confirm-dialog.js";
 import { Input } from "@/components/ui/input.js";
 import { Switch } from "@/components/ui/switch.js";
 import { cn } from "@/lib/utils.js";
@@ -48,6 +49,7 @@ export function McpServerEditor({
       #760 只挡住了上半张页面，同一个撒谎的形状在这份管理面里原样活着 */
   blocked: string | undefined;
 }) {
+  const confirm = useConfirm();
   const saveMcpServer = useChat((s) => s.saveMcpServer);
   // mcp.json 跟着账号走（ADR-0187）：写死 ~/.mr-otto/mcp.json 的话，照着提示去手改
   // 的用户会编辑一个对本账号完全不生效的文件
@@ -152,7 +154,13 @@ export function McpServerEditor({
   };
 
   const remove = async () => {
-    if (!window.confirm(`删除「${server.id}」？下一次新开的会话就不会再挂载它。`)) return;
+    const ok = await confirm({
+      title: `删除「${server.id}」？`,
+      description: "下一次新开的会话就不会再挂载它。",
+      confirmLabel: "删除",
+      tone: "danger",
+    });
+    if (!ok) return;
     setRemoving(true);
     setSaveError(null);
     setAuthError(null); // 同 save：别让旧的授权失败文案留在一台已删除/重建的 server 旁

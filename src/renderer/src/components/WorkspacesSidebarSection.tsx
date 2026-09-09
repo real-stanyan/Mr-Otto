@@ -36,6 +36,7 @@ import { ChevronRight, Ellipsis, Plus, Settings2 } from "lucide-react";
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu.js";
+import { useConfirm } from "@/components/ui/confirm-dialog.js";
 import { useChat } from "../store.js";
 import { cloudSessionRows } from "../lib/workspaceView.js";
 import type { CloudSessionListRow } from "../lib/workspaceView.js";
@@ -151,6 +152,7 @@ function WorkspaceGroup({
   onManage: (workspaceId: string) => void;
   unread: ReturnType<typeof unreadMentionCounts>;
 }) {
+  const confirm = useConfirm();
   const list = useChat((s) => s.cloudSessionList[ws.id]) ?? EMPTY_CLOUD_SESSIONS;
   const openCloud = useChat((s) => s.openCloudSession);
   const startDraft = useChat((s) => s.startCloudDraft);
@@ -267,10 +269,16 @@ function WorkspaceGroup({
                         <DropdownMenuItem
                           onClick={() => {
                             // 云端没有"恢复归档"那一半（daemon 启动只捞 archived=false
-                            // 的会话重开房间），所以先问一句——同侧栏「删除会话」、
-                            // 踢人那几处的原生 confirm，不新造一套视觉语言
-                            if (!window.confirm(`归档「${row.title}」？群里所有人都会看到它收尾，之后不能再发言，也不能恢复。`)) return;
-                            void archiveCloud(ws.id, row.id);
+                            // 的会话重开房间），所以先问一句
+                            void (async () => {
+                              const ok = await confirm({
+                                title: `归档「${row.title}」？`,
+                                description: "群里所有人都会看到它收尾，之后不能再发言，也不能恢复。",
+                                confirmLabel: "归档",
+                                tone: "danger",
+                              });
+                              if (ok) await archiveCloud(ws.id, row.id);
+                            })();
                           }}
                         >
                           归档
@@ -282,8 +290,15 @@ function WorkspaceGroup({
                             // 两句话说清它与归档的差别：归档是"收尾但还看得见"，
                             // 删除是**整段对话从云端消失**，而那段对话是一群人一起
                             // 写的——本机那颗删除只影响自己，这颗不是
-                            if (!window.confirm(`彻底删除「${row.title}」？\n整段对话会从云端抹掉，群里所有人都再也看不到，不可恢复。`)) return;
-                            void deleteCloud(ws.id, row.id);
+                            void (async () => {
+                              const ok = await confirm({
+                                title: `彻底删除「${row.title}」？`,
+                                description: "整段对话会从云端抹掉，群里所有人都再也看不到，不可恢复。",
+                                confirmLabel: "删除",
+                                tone: "danger",
+                              });
+                              if (ok) await deleteCloud(ws.id, row.id);
+                            })();
                           }}
                         >
                           删除
