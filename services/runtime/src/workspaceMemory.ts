@@ -1,5 +1,5 @@
 // workspaceMemory —— ADR-0222 那张 workspace_memories 表的**只读**口（#1140 之后只剩迁移一个用途：
-// wikiService.ensure 在 wiki/ 不存在且 journal 为空时把两档迁成页）。写路径与 memory 工具已随 ADR-0281 删除。
+// wikiService.ensure 在 wiki/ 不存在且 journal 为空时把两档迁成页）。写路径与 memory 工具已随 ADR-0282 删除。
 // 表不删、行不动；删表的 migration 没有触发日（spec §13）。
 
 import type { SupabaseClient } from "@supabase/supabase-js";

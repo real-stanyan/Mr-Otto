@@ -1,4 +1,4 @@
-// WorkspaceWikiTab —— 团队设置里的「记忆」那一页（#1140，ADR-0281 推翻 ADR-0222 的两档编辑器）。
+// WorkspaceWikiTab —— 团队设置里的「记忆」那一页（#1140，ADR-0282 推翻 ADR-0222 的两档编辑器）。
 // 读走现成的 files 帧（wiki/index.md、wiki/log.md、wiki/<页>），改走 wiki_write 帧——服务端与 wiki 工具同一条
 // 写入路径，人改的和 agent 改的过同一道门。
 // 三态（同 ADR-0264 决策 8）：loading / 读不到（上一份留在原地，错误另起一行）/ 读到了。`absent`（容器还没建）

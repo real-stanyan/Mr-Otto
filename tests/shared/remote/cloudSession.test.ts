@@ -8,7 +8,7 @@ import { b64encode } from "../../../src/shared/remote/b64.js";
 
 describe("cs 帧协议", () => {
   it("协议版本", () => {
-    // 18 = #1140（ADR-0281）：加一对 wiki_write / wiki_write_result（控制房写帧）——
+    // 18 = #1140（ADR-0282）：加一对 wiki_write / wiki_write_result（控制房写帧）——
     //      团队 wiki 从设置页改得了。本来是 17：它与语音那批（#1163）并行开发、
     //      各自把 16 进到 17，而握手是精确相等——两个 17 都过得了版本闸却各缺
     //      对方一半的帧，所以合并后进到 18。

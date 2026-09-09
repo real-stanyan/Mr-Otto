@@ -7,7 +7,7 @@ import type { SessionEvent } from "../../session/events.js";
 import { b64decode, b64encode } from "./b64.js";
 import { MAX_FRAME_BYTES } from "./wire.js";
 
-/** 18（#1140，ADR-0281）：加一对 `wiki_write` / `wiki_write_result`（控制房写帧）——**团队 wiki 从设置页改得了**。
+/** 18（#1140，ADR-0282）：加一对 `wiki_write` / `wiki_write_result`（控制房写帧）——**团队 wiki 从设置页改得了**。
     团队记忆从两档小黑板换成 /work/wiki/ 里的 markdown 页面之后，人改一页要经 runtime 走**与工具同一条写入路径**
     （盖章 / 重生成 index / log / journal），所以是一条帧不是直连 Supabase。任何在籍成员都能写，判据同 files。
     **本来是 17**：语音那批（#1163）与这一批并行开发，各自把 16 进到 17，合并时两个 17 各缺对方一半的帧——

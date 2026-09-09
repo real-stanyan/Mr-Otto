@@ -1,6 +1,6 @@
-# ADR-0281：团队记忆换成 LLM wiki——文件是事实、工具强制结构、journal 单向备份
+# ADR-0282：团队记忆换成 LLM wiki——文件是事实、工具强制结构、journal 单向备份
 
-- 原为 ADR-0267，合并前改过 0279，再撞号改到 0281（每次都是与 main 上已落地的 ADR 撞号，按 ADR-0074 改号；0279 现属 #998「弹窗溢出兜底」）
+- 原为 ADR-0267，合并前改过 0279，再撞号改到 0281，合并当天又与 #758 的 0281 撞上改到 0282（每次都是与 main 上已落地的 ADR 撞号，按 ADR-0074 改号；0279 现属 #998「弹窗溢出兜底」）
 - 状态：已采纳
 - 日期：2026-09-09
 - 关联：issue #1140；spec `docs/superpowers/specs/2026-09-09-team-llm-wiki-design.md`；计划 `docs/superpowers/plans/2026-09-09-team-llm-wiki.md`；
