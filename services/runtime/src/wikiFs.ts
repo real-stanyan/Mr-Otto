@@ -7,9 +7,10 @@
 
 import type { ExecutionWorld, ExecOptions } from "../../../src/world/executionWorld.js";
 import { parseRgJson } from "../../../src/shared/files.js";
+import { byteCount } from "../../../src/shared/memoryStore.js";
 import {
   WIKI_AGENTS_DIR, WIKI_DIR, WIKI_INDEX_PATH, WIKI_LOG_PATH, WIKI_LOG_ROTATE_BYTES, WIKI_LOG_TAIL_LINES, WIKI_TMP_DIR,
-  agentPagePath, isWikiPagePath, parseHeadsDump, parsePagesDump, parseSnapshotDump, type WikiSnapshotDump,
+  agentPagePath, isWikiPagePath, isWikiSegment, parseHeadsDump, parsePagesDump, parseSnapshotDump, type WikiSnapshotDump,
 } from "../../../src/shared/wiki.js";
 
 export interface WikiSearchHit {
@@ -21,7 +22,9 @@ export interface WikiSearchHit {
 export interface WikiFs {
   state(): Promise<"absent" | "present">;
   init(): Promise<void>;
-  readPage(path: string): Promise<string | null>;
+  /** null = 页不存在。`bytes` 是文件的真实大小（`wc -c`，在 `head -c` 封顶**之前**量，
+      #1210）——text 可能被砍过，报「这页多大」时只有 bytes 是实话 */
+  readPage(path: string): Promise<{ text: string; bytes: number } | null>;
   writePage(path: string, text: string): Promise<void>;
   removePage(path: string): Promise<void>;
   listHeads(): Promise<{ path: string; head: string }[]>;
@@ -59,7 +62,9 @@ export function buildWikiReadScript(path: string): string {
   return [
     "set -u",
     `f=${shellQuote(abs(path))}`,
-    String.raw`if [ -f "$f" ]; then printf 'ok\n'; head -c 200000 -- "$f"; else printf 'missing\n'; fi`,
+    // 真实大小要在 head -c **之前**量（同 listPages 的截断标志）：砍完之后没有任何办法
+    // 分辨「这页正好 200000 字节」与「被砍了」，报数只能按 bytes 报（#1210）
+    String.raw`if [ -f "$f" ]; then printf 'ok\t%s\n' "$(wc -c < "$f")"; head -c 200000 -- "$f"; else printf 'missing\n'; fi`,
   ].join("\n");
 }
 export function buildWikiMoveScript(tmpRel: string, path: string): string {
@@ -131,6 +136,48 @@ export function buildWikiSnapshotScript(agentId: string): string {
   ].join("\n");
 }
 
+// ── 杂物判据（两个实现共用一份，#1211）─────────────────────────────────────
+/** find 输出的一条记录：相对路径 + 类型字母（`%y`：f 文件 / d 目录 / l 软链…） */
+export interface WikiFsEntry {
+  rel: string;
+  type: string;
+}
+
+/**
+ * wiki/ 下什么算杂物。文件一条规则；目录分两层：
+ * - **顶层目录**：`agents` 与 `.tmp` 是工具自己的，跳过；其余**名字不满足 slug 规则、
+ *   或里头一个合法页都没有**才算杂物（`customers/` 这种一层分组目录是合法形态，
+ *   不能照名字一刀切）。旧判据只管含 `/` 的目录，于是 `wiki/node_modules/` 这种
+ *   顶层杂物永远不进 check 报告。
+ * - **第二层及更深**：一律杂物（页只活在一层目录下）。
+ * 内存实现没有目录条目（Map 里只有文件），「空目录」那一半它观测不到——天花板，
+ * 不是漏做。
+ */
+export function collectExtraneous(entries: readonly WikiFsEntry[]): string[] {
+  const out: string[] = [];
+  const dirsWithPage = new Set<string>();
+  for (const e of entries) {
+    if (e.type === "f" && isWikiPagePath(e.rel) && e.rel.includes("/")) {
+      dirsWithPage.add(e.rel.slice(0, e.rel.indexOf("/")));
+    }
+  }
+  for (const { rel, type } of entries) {
+    if (type === "d") {
+      if (rel === WIKI_TMP_DIR || rel === WIKI_AGENTS_DIR) continue;
+      if (!rel.includes("/")) {
+        if (!isWikiSegment(rel) || !dirsWithPage.has(rel)) out.push(rel);
+        continue;
+      }
+      out.push(rel);
+      continue;
+    }
+    if (type !== "f") { out.push(rel); continue; }
+    if (isWikiPagePath(rel) || isLogLike(rel) || rel.startsWith(`${WIKI_TMP_DIR}/`)) continue;
+    out.push(rel);
+  }
+  return out;
+}
+
 // ── 容器实现 ──────────────────────────────────────────────────────────────
 export function createContainerWikiFs(world: Pick<ExecutionWorld, "fs" | "exec">, opts: { now?: () => number } = {}): WikiFs {
   const now = opts.now ?? Date.now;
@@ -152,8 +199,9 @@ export function createContainerWikiFs(world: Pick<ExecutionWorld, "fs" | "exec">
       const nl = out.indexOf("\n");
       const head = nl < 0 ? out : out.slice(0, nl);
       if (head === "missing") return null;
-      if (head !== "ok") throw new Error(`读 ${path} 的输出看不懂`);
-      return out.slice(nl + 1);
+      const m = /^ok\t(\d+)$/.exec(head);
+      if (!m) throw new Error(`读 ${path} 的输出看不懂`);
+      return { text: out.slice(nl + 1), bytes: Number(m[1]) };
     },
     async writePage(path, text) {
       const tmpRel = `${WIKI_TMP_DIR}/w-${now()}-${tmpSeq++}.md`;
@@ -174,18 +222,13 @@ export function createContainerWikiFs(world: Pick<ExecutionWorld, "fs" | "exec">
       return parsePagesDump(await run(buildWikiPagesScript()));
     },
     async listExtraneous() {
-      const out: string[] = [];
+      const entries: WikiFsEntry[] = [];
       for (const rec of (await run(buildWikiExtraneousScript())).split("\0")) {
         const t = rec.lastIndexOf("\t");
         if (t < 0) continue;
-        const rel = rec.slice(0, t);
-        const type = rec.slice(t + 1);
-        if (type === "d") { if (rel.includes("/")) out.push(rel); continue; }
-        if (type !== "f") { out.push(rel); continue; }
-        if (isWikiPagePath(rel) || rel === WIKI_INDEX_PATH || rel === WIKI_LOG_PATH || ROTATED_LOG_RE.test(rel)) continue;
-        out.push(rel);
+        entries.push({ rel: rec.slice(0, t), type: rec.slice(t + 1) });
       }
-      return out;
+      return collectExtraneous(entries);
     },
     async appendLog(line) {
       await run(buildWikiLogAppendScript(), { stdin: `${line}\n` });
@@ -229,13 +272,18 @@ export function createMemoryWikiFs(seed: Record<string, string> = {}): WikiFs & 
     files,
     async state() { return present ? "present" : "absent"; },
     async init() { present = true; },
-    async readPage(path) { return files.get(path) ?? null; },
+    async readPage(path) {
+      const text = files.get(path);
+      return text === undefined ? null : { text, bytes: byteCount(text) };
+    },
     async writePage(path, text) { files.set(path, text); },
     async removePage(path) { files.delete(path); },
     async listHeads() { return pages().map((p) => ({ path: p, head: headOf(files.get(p)!) ?? "" })); },
     // 内存版不截断（没有 head -c 这一步），所以恒 false——与容器版语义对齐，不是省略
     async listPages() { return pages().map((p) => ({ path: p, text: files.get(p)!, truncated: false })); },
-    async listExtraneous() { return [...files.keys()].filter((p) => !(isWikiPagePath(p) || isLogLike(p) || p.startsWith(`${WIKI_TMP_DIR}/`))); },
+    // 与容器版共用 collectExtraneous。内存版没有目录条目（Map 里只有文件），
+    // 顶层空目录那一半规则观测不到——collectExtraneous 头注里写明的天花板
+    async listExtraneous() { return collectExtraneous([...files.keys()].map((rel) => ({ rel, type: "f" }))); },
     async appendLog(line) {
       const cur = files.get(WIKI_LOG_PATH) ?? "";
       if (new TextEncoder().encode(cur).length > WIKI_LOG_ROTATE_BYTES) {

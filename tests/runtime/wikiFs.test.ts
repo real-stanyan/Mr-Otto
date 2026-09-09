@@ -15,7 +15,7 @@ describe("createMemoryWikiFs", () => {
     await fs.writePage("index.md", "# 索引");
     await fs.writePage("log-20260901-000000.md", "old");
     fs.files.set("notes.txt", "杂物");
-    expect(await fs.readPage("customers/acme.md")).toBe(PAGE("Acme"));
+    expect(await fs.readPage("customers/acme.md")).toEqual({ text: PAGE("Acme"), bytes: Buffer.byteLength(PAGE("Acme"), "utf8") });
     expect(await fs.readPage("nope.md")).toBeNull();
     expect((await fs.listHeads()).map((h) => h.path)).toEqual(["customers/acme.md"]);
     expect((await fs.listHeads())[0]!.head).toBe("title: Acme\nsummary: s\npinned: false\nupdated_by: x\nupdated_at: 2026-09-09T00:00:00Z\nsources: []");
@@ -59,11 +59,15 @@ describe("createContainerWikiFs：脚本接线", () => {
   }
   const ok = (stdout: string): ExecResult => ({ stdout, stderr: "", exitCode: 0 });
 
-  it("readPage：ok 行后面是内容；missing → null；其余退出码 → 抛", async () => {
-    const { world } = fakeWorld((cmd) => (cmd.includes("nope") ? ok("missing\n") : ok("ok\n---\ntitle: A\n---\n正文")));
+  it("readPage：ok 行带真实字节数（head -c 之前量，#1210）；missing → null；其余退出码 → 抛", async () => {
+    const body = "---\ntitle: A\n---\n正文";
+    const bytes = Buffer.byteLength(body, "utf8");
+    const { world } = fakeWorld((cmd) => (cmd.includes("nope") ? ok("missing\n") : ok(`ok\t${bytes}\n${body}`)));
     const fs = createContainerWikiFs(world);
-    expect(await fs.readPage("a.md")).toBe("---\ntitle: A\n---\n正文");
+    expect(await fs.readPage("a.md")).toEqual({ text: body, bytes });
     expect(await fs.readPage("nope.md")).toBeNull();
+    // 老格式（ok 不带字节数）与看不懂的头一律抛——解析错了比报错更糟
+    await expect(createContainerWikiFs(fakeWorld(() => ok(`ok\n${body}`)).world).readPage("a.md")).rejects.toThrow("看不懂");
     const bad = createContainerWikiFs(fakeWorld(() => ({ stdout: "", stderr: "boom", exitCode: 2 })).world);
     await expect(bad.readPage("a.md")).rejects.toThrow("boom");
   });
@@ -100,5 +104,15 @@ describe("createContainerWikiFs：脚本接线", () => {
       { path: "big.md", text: "前 64 KiB", truncated: true },
     ]);
     expect(await fs.listExtraneous()).toEqual(["notes.txt", "deep/er", "link.md"]);
+  });
+  it("listExtraneous 连顶层目录一起判（#1211）：名字不合法或没有合法页才报；有页的分组目录与 agents/.tmp 不报", async () => {
+    const { world } = fakeWorld((cmd) =>
+      cmd.includes("-printf '%P\\t%y\\0'")
+        ? ok("customers\td\0customers/acme.md\tf\0agents\td\0node_modules\td\0Foo\td\0emptydir\td\0deep/er\td\0")
+        : ok("")
+    );
+    // customers 有合法页 → 不是杂物；agents 是工具自己的目录；node_modules/Foo 名字不合法；
+    // emptydir 名字合法但一个合法页都没有；deep/er 是第二层目录照旧报
+    expect(await createContainerWikiFs(world).listExtraneous()).toEqual(["node_modules", "Foo", "emptydir", "deep/er"]);
   });
 });

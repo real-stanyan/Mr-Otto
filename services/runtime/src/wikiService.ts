@@ -4,7 +4,7 @@
 // 只依赖注入的 WikiFs / WikiJournal，不碰 fs / docker / supabase（硬规则）。
 // 互斥：进程内 withMemoryFileLock(wikiLockKey)——daemon 级，工具路径与帧路径同一把锁。
 
-import { withMemoryFileLock, charCount } from "../../../src/shared/memoryStore.js";
+import { withMemoryFileLock, byteCount, charCount } from "../../../src/shared/memoryStore.js";
 import { scanThreat } from "../../../src/shared/threatPatterns.js";
 import {
   WIKI_INDEX_PATH, WIKI_OWN_BUDGET, WIKI_PINNED_BUDGET, WIKI_READ_PAGE_LIMIT, WIKI_TEAM_PATH,
@@ -162,10 +162,14 @@ export function createWikiService(deps: WikiServiceDeps): WikiService {
     const out: { path: string; text: string | null; truncated: boolean }[] = [];
     for (const path of paths) {
       if (classifyWikiPath(path) === "invalid") throw new Error(`路径不合法：${path}（一层目录、小写 kebab、.md）`);
-      const text = await deps.fs.readPage(path);
-      if (text === null) { out.push({ path, text: null, truncated: false }); continue; }
-      const truncated = charCount(text) > WIKI_READ_PAGE_LIMIT;
-      out.push({ path, text: truncated ? `${[...text].slice(0, WIKI_READ_PAGE_LIMIT).join("")}\n…（已截断，这页有 ${charCount(text)} 字）` : text, truncated });
+      const page = await deps.fs.readPage(path);
+      if (page === null) { out.push({ path, text: null, truncated: false }); continue; }
+      const truncated = charCount(page.text) > WIKI_READ_PAGE_LIMIT;
+      // 报数只有两种实话（#1210）：`head -c` 没砍过 → 手上的就是全文，报字数；
+      // 砍过 → 字数要数出来就得读全文，只有 bytes 是真的，这时改报字节
+      const capped = page.bytes > byteCount(page.text);
+      const size = capped ? `全文 ${page.bytes} 字节，这里只读到前一部分` : `这页有 ${charCount(page.text)} 字`;
+      out.push({ path, text: truncated ? `${[...page.text].slice(0, WIKI_READ_PAGE_LIMIT).join("")}\n…（已截断，${size}）` : page.text, truncated });
     }
     return out;
   }
@@ -201,7 +205,7 @@ export function createWikiService(deps: WikiServiceDeps): WikiService {
     const chars = bodyCharCount(args.body);
     return withMemoryFileLock(wikiLockKey(deps.workspaceId), async () => {
       const before = await deps.fs.readPage(args.path);
-      const beforePage = before === null ? null : parseWikiPage(args.path, before);
+      const beforePage = before === null ? null : parseWikiPage(args.path, before.text);
       const beforeChars = beforePage === null ? 0 : bodyCharCount(beforePage.body);
       // 自己那页的闸：那一页就是预算本身，「超限且没变小才拒」按本页比是对的
       const shrinking = before !== null && chars < beforeChars;

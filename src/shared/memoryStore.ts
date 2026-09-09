@@ -97,6 +97,11 @@ export function charCount(s: string): number {
   return n;
 }
 
+/** UTF-8 字节数。字数要数出来就得读全文，被 `head -c` 砍过的内容只能按字节报实数（#1210） */
+export function byteCount(s: string): number {
+  return new TextEncoder().encode(s).length;
+}
+
 /** 切条目：trim、去空、保序去重（hermes 用 dict.fromkeys 的同款语义） */
 export function parseEntries(text: string | null): string[] {
   if (!text) return [];
