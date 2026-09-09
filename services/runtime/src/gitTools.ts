@@ -122,7 +122,8 @@ function gitPushTool(deps: GitToolDeps): Tool {
       description:
         "把某个子目录里的改动提交并推到远端的一条分支。会弹审批卡请用户确认仓库、分支、改了几个文件和提交信息。" +
         "**不能推默认分支（main/master 那条），也不能强推**——要合进主干请用户自己去开 PR。" +
-        "提交的作者记的是这一轮的发起人，不是你。",
+        "提交的作者记的是这一轮的发起人，不是你。" +
+        "推永远要凭据（公开仓库也一样）：团队得先在「团队设置 → 连接器 → 代码仓库」存过这台主机的访问令牌，没存过会直接告诉你去哪儿加。",
       parameters: {
         type: "object",
         properties: {
@@ -151,7 +152,16 @@ function gitPushTool(deps: GitToolDeps): Tool {
       }
       const host = hostOfRepoUrl(probe.origin);
       const pat = host === null ? null : deps.tokenFor(host);
-      const cfg = pat === null ? { repoUrl: probe.origin } : { repoUrl: probe.origin, pat };
+      // 推**永远**要凭据（公开仓也一样；clone 那把不需要，所以两把的判据不同）。
+      // 没存 token 时不进旁路容器让 git 撞 `could not read Username`——模型读到那句
+      // 只会说「沙箱不允许推」（#1206 真机原话），在起容器之前就把人指到那一页。
+      // 措辞与 create_repo 逐字同一条路径
+      if (pat === null) {
+        throw new Error(
+          `这个团队还没有存 ${host ?? "这台主机"} 的访问令牌——请团队所有者去「团队设置 → 连接器 → 代码仓库」加一台。`
+        );
+      }
+      const cfg = { repoUrl: probe.origin, pat };
 
       // 默认分支现查。**查不到也拒绝**（ADR-0243：没有任何输入能让这一轮更松）
       const headOut = await deps.execInSidecar(cfg, buildDefaultBranchScript(args.dest));

@@ -35,10 +35,31 @@ describe("云会话的 system 段（issue #833）", () => {
     expect(content).toContain("群聊"); // ② 对面是一群人
     expect(content).toContain("[名字]: 内容"); // ② 消息长什么样
     expect(content).toContain("团队所有者"); // ③ 审批归谁
-    expect(content).toContain("不允许 git push"); // ④ 提交推不出去
+    expect(content).toContain("git_push"); // ④ 推得出去，但要走那把刀（#1105 / #1206）
     // ⑤ 浅克隆（issue #836）：只说限制不给解法，模型会以为 blame 坏了
     expect(content).toContain("--depth 1");
     expect(content).toContain("git fetch --unshallow");
+  });
+
+  /** #1206：真机语音通话里「开发」手里有 git_push（envelope 工具表里在），却照着
+      这段旧文案告诉用户「沙箱不允许 push、凭据用完就烧了」——那两句写于团队绑一个
+      仓库的时代（#833/#836），#1101/#1105 换成「凭据 + 三把刀」之后没跟着改。
+      提示词与工具表必须说同一句话：模型信的是提示词，不是工具表 */
+  it("cloud 的 Git 口径与三把刀一致（#1206）：推走 git_push、没存 token 说去哪儿加、私有仓补不了历史", () => {
+    const withCloud = systemPromptText("/work", "d", undefined, undefined, { workspaceId: "w" });
+    expect(withCloud).not.toContain("不允许 git push");
+    expect(withCloud).not.toContain("用完就烧了");
+    expect(withCloud).toContain("clone_repo");
+    expect(withCloud).toContain("git_push");
+    // 没存 token 时模型该把人指到哪儿——与 create_repo / git_push 报错里的路径逐字相同
+    expect(withCloud).toContain("团队设置 → 连接器 → 代码仓库");
+    // 主干仍然推不了，要人开 PR
+    expect(withCloud).toContain("非默认分支");
+    // --unshallow 跑在水獭自己的容器里，那台容器从不带凭据（ADR-0200 决策②）：只对公开仓成立
+    expect(withCloud).toContain("私有仓库");
+    // 本地会话一个字不沾
+    const plain = systemPromptText("/work", "d");
+    expect(plain).not.toContain("git_push");
   });
 
   it("cloud 不宣传 otto-* 围栏、换成「说人话」；本地照旧宣传（#989）", () => {
