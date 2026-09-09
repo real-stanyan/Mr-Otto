@@ -108,7 +108,7 @@ Supabase 一列、没有这个投影，所以要显式写一次。它同时是�
 
 ### 存哪：`workspace_sessions` 加两列，不新建表
 
-migration `0034_cloud_session_participants.sql`：
+migration `0035_cloud_session_participants.sql`（原为 0034，与另一条 lane 撞号后改号）：
 
 ```sql
 participants        jsonb  not null default '[]'::jsonb   -- uid 数组
@@ -252,7 +252,7 @@ runtime 在 `say()` 落盘之后算一遍整份、`update` 那两列。
 2. 重判每 5 条人类发言一次，忙的群里是常态开销（每次约 $0.00005，算所有者的额度）。
 3. 参与者只在桌面**回到前台**时刷新，一直开着不动的窗口里那排头像会陈旧。
 4. 只做桌面——手机端还没有云会话客户端。
-5. **要跑 migration 0034 + 重新部署 runtime 才生效**（#791）。
+5. **要跑 migration 0035 + 重新部署 runtime 才生效**（#791）。
 6. 首行兜底写的是**发言原文**首行，可能很难看（比如一句「在吗」）；模型那一跑
    （`n === 2`）会覆盖它，但两句之间那段时间侧栏上就是那句话。
 

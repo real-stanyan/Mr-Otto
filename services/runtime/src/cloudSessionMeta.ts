@@ -38,7 +38,7 @@ export function createInMemoryCloudSessionMeta(): CloudSessionMeta & {
   };
 }
 
-/** 真库实现。0034 还没跑的库上，两个方法都会拿到 PostgREST 的 42703（列不存在）
+/** 真库实现。0035 还没跑的库上，两个方法都会拿到 PostgREST 的 42703（列不存在）
     ——那正好是「只记一行日志不抛」要接住的形态：功能降级成改动前的样子，
     而不是每一句话都失败 */
 export function createSupabaseCloudSessionMeta(

@@ -1,6 +1,6 @@
 // supabaseWorkspacesApi 的 listCloudSessions：participants 归一化（#1213 复审）。
 // 这一层薄到本来不单测（原 supabaseWorkspacesApi.memory.test.ts 文件头注），但这里是
-// 例外：生产库还没跑 migration 0034，这条 `Array.isArray(...) && ...every(isString)`
+// 例外：生产库还没跑 migration 0035，这条 `Array.isArray(...) && ...every(isString)`
 // 判断是今天唯一挡在"列缺席/脏数据"与"渲染层收到垃圾"之间的东西。
 //
 // 渲染层（tests/renderer/workspaceView.test.ts / workspaceView.cloud.test.ts）测的是
@@ -47,7 +47,7 @@ describe("listCloudSessions（#1213 复审）", () => {
     expect(calls).toContain("eq:kind=cloud");
   });
 
-  it("participants 列整个缺席（今天生产库的真实状态，0034 还没跑）→ participantUids 回 []，这条会话本身照常读出来", async () => {
+  it("participants 列整个缺席（今天生产库的真实状态，0035 还没跑）→ participantUids 回 []，这条会话本身照常读出来", async () => {
     const client = fakeClient(
       { data: [{ id: "cs-1", publisher_uid: "u1", title: "会话", archived: false, updated_at: TS_A }] },
       [],

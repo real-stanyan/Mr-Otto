@@ -33,7 +33,7 @@
 | `src/shared/sessionParticipants.ts` | 纯投影：谁算「人类发言」、5 小时窗口怎么切、最后一个有对话的窗里有谁 |
 | `services/runtime/src/sessionTitler.ts` | 标题：提示词 / 解析 / 一次网关调用 / 档位判据。不碰 store，不知道 sessionService 存在（形状抄 `dispatch.ts`） |
 | `services/runtime/src/cloudSessionMeta.ts` | `workspace_sessions` 那三格（title / participants / participants_window）的写入口。接口 + 内存假件 + Supabase 实现（分层抄 `mentionInbox.ts`） |
-| `supabase/migrations/0034_cloud_session_participants.sql` | 加两列，幂等 |
+| `supabase/migrations/0035_cloud_session_participants.sql` | 加两列，幂等 |
 | `tests/shared/sessionParticipants.test.ts` | |
 | `tests/runtime/sessionTitler.test.ts` | |
 | `tests/renderer/WorkspaceSessionRow.test.tsx` | 侧栏那一行真渲染一遍 |
@@ -721,10 +721,10 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 ---
 
-## Task 3: migration 0034 + 投影写入口
+## Task 3: migration 0035 + 投影写入口
 
 **Files:**
-- Create: `supabase/migrations/0034_cloud_session_participants.sql`
+- Create: `supabase/migrations/0035_cloud_session_participants.sql`
 - Create: `services/runtime/src/cloudSessionMeta.ts`
 - Test: `tests/runtime/cloudSessionMeta.test.ts`
 
@@ -737,10 +737,10 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 
 - [ ] **Step 1: 写 migration**
 
-创建 `supabase/migrations/0034_cloud_session_participants.sql`：
+创建 `supabase/migrations/0035_cloud_session_participants.sql`：
 
 ```sql
--- 0034_cloud_session_participants.sql —— 「最近谁在这条云会话里说过话」（#1213）。幂等，重跑不炸。
+-- 0035_cloud_session_participants.sql —— 「最近谁在这条云会话里说过话」（#1213）。幂等，重跑不炸。
 -- 与 0016 / 0021 / 0026 / 0030 同一约定：Supabase SQL editor / Management API 手动执行一次
 -- （那个端点只回最后一条语句的结果，逐条发，整份贴进去看不出哪条炸了）。
 --
@@ -885,7 +885,7 @@ export function createInMemoryCloudSessionMeta(): CloudSessionMeta & {
   };
 }
 
-/** 真库实现。0034 还没跑的库上，两个方法都会拿到 PostgREST 的 42703（列不存在）
+/** 真库实现。0035 还没跑的库上，两个方法都会拿到 PostgREST 的 42703（列不存在）
     ——那正好是「只记一行日志不抛」要接住的形态：功能降级成改动前的样子，
     而不是每一句话都失败 */
 export function createSupabaseCloudSessionMeta(
@@ -919,7 +919,7 @@ Expected: 全绿
 - [ ] **Step 7: 提交**
 
 ```bash
-git add supabase/migrations/0034_cloud_session_participants.sql services/runtime/src/cloudSessionMeta.ts tests/runtime/cloudSessionMeta.test.ts
+git add supabase/migrations/0035_cloud_session_participants.sql services/runtime/src/cloudSessionMeta.ts tests/runtime/cloudSessionMeta.test.ts
 git commit -m "feat(cloud): workspace_sessions 加两列存参与者 + 投影写入口（#1213）
 
 加列不是新表：这份东西只有一个当前值（固定窗、永远显示最后一个有过对话的那个），
@@ -927,7 +927,7 @@ git commit -m "feat(cloud): workspace_sessions 加两列存参与者 + 投影写
 查询，还会凭空长出一个没有消费方的历史维度。
 
 两个方法都不抛：写的是日志的投影，权威那份已经落盘了——失败的后果是侧栏那一格
-陈旧，下一次发言会补上，不该把一句已经发出去的话翻成失败。0034 还没跑的库上拿到
+陈旧，下一次发言会补上，不该把一句已经发出去的话翻成失败。0035 还没跑的库上拿到
 的 42703 正好是这条要接住的形态。
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
@@ -1350,7 +1350,7 @@ export interface CloudSessionRow {
     publisherUid: r.publisher_uid,
     archived: r.archived,
     updatedTs: toEpochMs(r.updated_at),
-    // 0034 还没跑的库上这一格是 undefined —— 回 [] 让整条路退回改动前的样子
+    // 0035 还没跑的库上这一格是 undefined —— 回 [] 让整条路退回改动前的样子
     participantUids: Array.isArray(r.participants) && r.participants.every((x) => typeof x === "string")
       ? (r.participants as string[])
       : [],
@@ -1406,7 +1406,7 @@ Expected: 全绿。其他构造 `CloudSessionListRow` 的测试会因为缺字�
 git add src/main/supabaseWorkspacesApi.ts src/renderer/src/lib/workspaceView.ts tests/renderer/workspaceView.test.ts
 git commit -m "feat(cloud): 云会话清单带出参与者 uid（#1213）
 
-一个帧都不加：这一格走 Supabase 直查，协议不进位。0034 还没跑的库上那一格是
+一个帧都不加：这一格走 Supabase 直查，协议不进位。0035 还没跑的库上那一格是
 undefined，回空数组让整条路退回改动前的样子。
 
 不选 participants_window：桌面不判窗口边界（那是 runtime 的活），多选一格只会
@@ -1743,7 +1743,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 在 `AGENTS.md` 的「Where to find things」列表末尾加：
 
 ```
-- `src/shared/sessionParticipants.ts` / `services/runtime/src/sessionTitler.ts` / `services/runtime/src/cloudSessionMeta.ts` — 云会话的名字与最近参与的人（ADR-0281，#1213）：**两件事共用一个挂载点和一张表**。标题挂在**人类发言之后**不挂在 turn 收口上——群聊里人可以只跟人说话（解出空名单时只落一条 `chat_message`，一个 turn 都不起），挂 turn 上那种会话永远不会被命名；第 1 条走**首行兜底**（不打网关，与本机「手动改名 > `session_autotitled` > 首行」同口径，同时是模型那条路的降级出口），第 2 条起每 5 条让模型**带着当前标题**重判一次——多数轮回 `KEEP`，这是「话题漂了就重命名」不至于让侧栏那行字天天乱变的全部原因。参与者是 `workspace_sessions` 的**两列不是新表**：固定窗切桶、永远显示最后一个有过对话的那个窗，所以只有一个当前值（没有历史消费方），而 `listCloudSessions` 已经在查这张表、RLS 也已经有。判据里唯一不显然的一处是**排除 `relay` / `greeting` 开场白**——它们的 `fromUid` 是**点火的那个人**（ADR-0223 §4.2 / #1174），不排除的话一条接力链会在几小时之后、在他早就离开的窗里替他重新「参与」一次；这条与 `hiddenFromCloudTimeline` 第 ①⑦ 条逐字同一个问题。两份内存状态装配时折叠一次、之后在 `notify` 里逐条推进（同 `bounds` / `voiceCall` / `speakerLabels` 的形状），**变了才写库**。`sessionMeta` 必需、`retitle` 可选：忘接线前者该编译不过（失败模式本来就是无声的），后者缺席 = 只有首行兜底。刷新挂 `focus` 不做轮询（同 #1064 的取舍）。**要跑 migration 0034 + 重新部署 runtime 才生效**（#791）
+- `src/shared/sessionParticipants.ts` / `services/runtime/src/sessionTitler.ts` / `services/runtime/src/cloudSessionMeta.ts` — 云会话的名字与最近参与的人（ADR-0281，#1213）：**两件事共用一个挂载点和一张表**。标题挂在**人类发言之后**不挂在 turn 收口上——群聊里人可以只跟人说话（解出空名单时只落一条 `chat_message`，一个 turn 都不起），挂 turn 上那种会话永远不会被命名；第 1 条走**首行兜底**（不打网关，与本机「手动改名 > `session_autotitled` > 首行」同口径，同时是模型那条路的降级出口），第 2 条起每 5 条让模型**带着当前标题**重判一次——多数轮回 `KEEP`，这是「话题漂了就重命名」不至于让侧栏那行字天天乱变的全部原因。参与者是 `workspace_sessions` 的**两列不是新表**：固定窗切桶、永远显示最后一个有过对话的那个窗，所以只有一个当前值（没有历史消费方），而 `listCloudSessions` 已经在查这张表、RLS 也已经有。判据里唯一不显然的一处是**排除 `relay` / `greeting` 开场白**——它们的 `fromUid` 是**点火的那个人**（ADR-0223 §4.2 / #1174），不排除的话一条接力链会在几小时之后、在他早就离开的窗里替他重新「参与」一次；这条与 `hiddenFromCloudTimeline` 第 ①⑦ 条逐字同一个问题。两份内存状态装配时折叠一次、之后在 `notify` 里逐条推进（同 `bounds` / `voiceCall` / `speakerLabels` 的形状），**变了才写库**。`sessionMeta` 必需、`retitle` 可选：忘接线前者该编译不过（失败模式本来就是无声的），后者缺席 = 只有首行兜底。刷新挂 `focus` 不做轮询（同 #1064 的取舍）。**要跑 migration 0035 + 重新部署 runtime 才生效**（#791）
 ```
 
 - [ ] **Step 3: 跑完整门禁**
@@ -1763,7 +1763,7 @@ gh pr create --title "feat(team): 云会话自动命名 + 侧栏画出最近 5 �
 ```
 
 PR 正文要写明**三件不做完就不生效的事**：
-1. `supabase/migrations/0034_cloud_session_participants.sql` 要在生产库手动跑一次；
+1. `supabase/migrations/0035_cloud_session_participants.sql` 要在生产库手动跑一次；
 2. runtime 要重新部署（`services/runtime/` 改了，#791）；
 3. 桌面要发版。
 

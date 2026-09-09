@@ -1,4 +1,11 @@
--- 0034_cloud_session_participants.sql —— 「最近谁在这条云会话里说过话」（#1213）。幂等，重跑不炸。
+-- 0035_cloud_session_participants.sql —— 「最近谁在这条云会话里说过话」（#1213）。幂等，重跑不炸。
+--
+-- 原为 0034：合并 origin/main 时撞号，另一条 lane（#1140）的
+-- `0034_workspace_wiki_journal.sql` 已于 2026-09-09 在生产 Supabase 上执行过（见
+-- docs/adr/0282、supabase/README.md 的执行状态记录），这个号先到先得，改号的是这份
+-- 从没跑过的（project ADR-0074）。库认的是 workspace_sessions 与两个新列名，不是
+-- 文件编号——这次改号不改 SQL 本体一个字，之前算好的列定义仍然原样。
+--
 -- 与 0016 / 0021 / 0026 / 0030 同一约定：Supabase SQL editor / Management API 手动执行一次
 -- （那个端点只回最后一条语句的结果，逐条发，整份贴进去看不出哪条炸了）。
 --
