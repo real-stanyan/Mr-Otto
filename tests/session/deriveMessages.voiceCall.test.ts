@@ -69,3 +69,11 @@ describe("云会话 system 尾部的通话块（#1163）", () => {
     expect(text).toContain("不在通话里的：管理员");
   });
 });
+
+describe("通话里像打电话（#1183）", () => {
+  it("通话块要模型先说结论、一两句就停——回复是要读出来的，长篇等于让人干等", () => {
+    const text = renderVoiceCallPrompt([{ agentId: "admin", name: "管理员" }], "管理员", []);
+    expect(text).toContain("像打电话");
+    expect(text).toContain("一两句");
+  });
+});
