@@ -66,6 +66,8 @@ export interface Sandbox {
   sweepIdle(runningWorkspaces: ReadonlySet<string>): Promise<string[]>; // 停掉的 workspaceId 列表；跑着 turn 的不停
   reconcile(validWorkspaceIds: ReadonlySet<string>): Promise<{ marked: string[]; removed: string[] }>;
   destroy(workspaceId: string): Promise<void>; // 容器+卷一起删（团队删除级联）
+  /** 容器此刻在不在跑（#1140）。只 list 不 start：wiki 快照缓存的判据是「停着 = 卷没变」，探这一下不许把它叫起来 */
+  isRunning(workspaceId: string): Promise<boolean>;
   /** 读一格工作文件夹（#1056）。`path` 已过 `normalizeWorkPath`。
       **刻意不走 `ensure()`**：那条路会建容器、会跑 clone 流程、会重置 idle 计时。
       翻一眼文件是个**读**动作，不该有这些副作用——尤其不该让「打开设置页」
@@ -786,6 +788,11 @@ export function createSandbox(
     forget(workspaceId); // 见 forget 的注释（issue #835②）
   }
 
+  async function isRunning(workspaceId: string): Promise<boolean> {
+    const found = await findByName(containerName(workspaceId));
+    return found?.State === "running";
+  }
+
   async function readWork(workspaceId: string, path: string): Promise<CsWorkNode> {
     const found = await findByName(containerName(workspaceId));
     if (!found) return { kind: "absent" };
@@ -855,5 +862,5 @@ export function createSandbox(
     );
   }
 
-  return { ensure, markActive, sweepIdle, reconcile, destroy, readWork, searchWork, execWork, execSidecar };
+  return { ensure, markActive, sweepIdle, reconcile, destroy, isRunning, readWork, searchWork, execWork, execSidecar };
 }

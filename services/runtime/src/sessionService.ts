@@ -68,16 +68,18 @@
 //   ① CloudSessionOpts 加 `memory: WorkspaceMemoryStore`——**必需**不是可选。
 //      忘接线该编译不过，而不是安静地跑一个没有团队记忆的 agent（同
 //      agentToolAllow.ts 的 `encode` 必填无默认那条纪律）。
-//   ② engineFor 建刀那一支给每只 agent 挂一把 `createWorkspaceMemoryTool`：
-//      共享档的写入者前缀取的是**此刻**的名字（specNames，runJob 每次刷新），
-//      不是建刀那一刻定死的 spec.name——改名之后不用重开会话就能生效。
-//   ③ runJob 里 briefIfNeeded 之后、engineFor 之前加 loadMemoryIfChanged：
-//      起 turn 前把这只 agent 看得见的两档（shared/own）落成一条
-//      workspace_memory_loaded 快照。**缺席或内容变了才落**（同 briefIfNeeded
-//      的两条判据）——每 turn 都落会把日志堆满同一段文字，只判"有没有"则
-//      别人改了共享档我下一 turn 看不见。读失败 warn 跳过、不阻塞 turn：
-//      记忆副作用永不阻塞回复（同本机 memory 工具的纪律），代价是这一 turn
-//      用的是上一条快照（或没有快照）——记忆不是这条会话的正确性前提。
+//   ② engineFor 建刀那一支给每只 agent 挂一对 wiki 工具（`createWikiTools`，
+//      #1140 取代旧的 `createWorkspaceMemoryTool`）：作者名取的是**此刻**的
+//      名字（specNames，runJob 每次刷新），不是建刀那一刻定死的 spec.name
+//      ——改名之后不用重开会话就能生效。
+//   ③ runJob 里 briefIfNeeded 之后、engineFor 之前加 loadWikiIfChanged（#1140
+//      取代旧的 loadMemoryIfChanged）：起 turn 前把这只 agent 看得见的 wiki
+//      （索引 + 常驻页 + 自己那页 + nudge）落成一条 workspace_wiki_loaded
+//      快照。**缺席或内容变了才落**（同 briefIfNeeded 的两条判据）——每 turn
+//      都落会把日志堆满同一段文字，只判"有没有"则别人改了 wiki 我下一 turn
+//      看不见。ensure/snapshot 失败 warn 跳过、不阻塞 turn：记忆副作用永不
+//      阻塞回复，代价是这一 turn 用的是上一条快照（或没有快照）——wiki 不是
+//      这条会话的正确性前提。
 //
 // 切片 5（#950）：agent 互相 @ 接力。runJob 里 `engine.runLoggedTurn` 收口
 // 后（只有 "completed" 才算——aborted 是人按了停止，不该替它再点起别人）调
@@ -181,10 +183,9 @@ import { createApprovalRouter, RELAY_APPROVAL_TIMEOUT_MS, type ApproveOutcome } 
 import { fetchGrantedTools, buildPxTools, type PxCallDeps, type GrantedPxServer } from "./pxTools.js";
 import { CONTAINER_BUSY_TEXT, type WorkspaceLock } from "./workspaceLock.js";
 import { filterGrantedByAllow, type AgentToolAllow } from "../../../src/shared/agentToolAllow.js";
-import { createWorkspaceMemoryTool } from "./workspaceMemoryTool.js";
-import type { WorkspaceMemoryStore, WorkspaceMemoryValue } from "./workspaceMemory.js";
+import { createWikiTools } from "./wikiTool.js";
+import type { WikiService, WikiSnapshotForAgent } from "./wikiService.js";
 import type { MentionInbox, MentionInboxRow } from "./mentionInbox.js";
-import { SHARED_MEMORY_AGENT_ID } from "../../../src/shared/workspaceMemory.js";
 import { DEFAULT_AUTO_COMPACT } from "../../../src/shared/autoCompact.js";
 import { createCreateAgentTool } from "./createAgentTool.js";
 import { createGitTools, type GitToolDeps } from "./gitTools.js";
@@ -307,8 +308,8 @@ export interface CloudSessionOpts {
     clearTimer?: (h: unknown) => void;
   };
   onUsage: (u: { uid: string; model: string; promptTokens: number; completionTokens: number }) => void;
-  /** 团队记忆的读写口（#949）。**必需**：忘接线该编译不过，而不是安静地跑一个没记忆的 agent */
-  memory: WorkspaceMemoryStore;
+  /** 团队 wiki（#1140，取代 ADR-0222 的两档）。每团队一份，daemon 按 workspaceId 缓存 */
+  wiki: WikiService;
   /** 被 @ 的人类成员的收件箱（#1064）。**必需**（同 memory / agentWriter / isMember
       的纪律）：忘接线该编译不过，而不是安静地跑一条「@ 了人但谁都没收到提醒」的
       会话 —— 那正是这条 issue 要拆掉的东西，而它的失败模式本来就是无声的。
@@ -929,12 +930,11 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       hit.setAdapter(adapter);
       return hit;
     }
-    // 云侧 memory 工具按 agent 各一把（前缀写谁的名字取决于是哪只在写）。名字现取：改名后下一 turn 的前缀就是新名字
-    const memoryTool = createWorkspaceMemoryTool({
-      workspaceId: opts.workspaceId,
+    // 云侧 wiki 两把刀按 agent 各一把（作者名现取：改名后下一 turn 的署名就是新名字，同 ADR-0222 决策 4）
+    const [wikiReadTool, wikiTool] = createWikiTools({
+      service: opts.wiki,
       agentId: spec.agentId,
       agentName: () => specNames.get(spec.agentId) ?? spec.name,
-      memory: opts.memory,
     });
     const engine = new LoopEngine({
       store: agentView(store, spec.agentId),
@@ -945,7 +945,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // 只有管理员那只有 create_agent（spec §10 切片 6）。判据是 agentId 不是名字——
       // 名字随时能改，'admin' 是 0021 触发器种下的稳定键
       tools: () => [
-        readFileTool, writeFileTool, bashTool, memoryTool,
+        readFileTool, writeFileTool, bashTool, wikiReadTool, wikiTool,
         ...(spec.agentId === ADMIN_AGENT_ID ? [createAgentTool] : []),
         ...gitTools,
         ...cachedPxTools,
@@ -991,27 +991,29 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     return engine;
   }
 
-  /** 起 turn 前落这只 agent 的记忆快照（#949）。**缺席或内容变了才落**（同 briefIfNeeded 的两条判据）：
-      每 turn 都落 = 日志里堆满同一段文字；只判"有没有"= 别人改了共享档我下一 turn 看不见。
-      读失败 warn 跳过、不阻塞 turn（记忆副作用永不阻塞回复，同本机 memory 工具的纪律）——代价是
-      这一 turn 用的是上一条快照（或没有快照），记忆不是这条会话的正确性前提 */
-  async function loadMemoryIfChanged(spec: AgentSpec): Promise<void> {
-    let rows: Map<string, WorkspaceMemoryValue>;
+  /** 起 turn 前落这只 agent 的 wiki 快照（#1140）。判据逐字沿用 ADR-0222 决策 2：**缺席或内容变了才落**。
+      ensure/snapshot 失败 warn 跳过、不阻塞 turn（记忆副作用永不阻塞回复）。nudge 只给管理员（spec §7.2） */
+  async function loadWikiIfChanged(spec: AgentSpec): Promise<void> {
+    let snap: WikiSnapshotForAgent;
     try {
-      rows = await opts.memory.read(opts.workspaceId, [SHARED_MEMORY_AGENT_ID, spec.agentId]);
+      await opts.wiki.ensure();
+      snap = await opts.wiki.snapshot(spec.agentId, { nudge: spec.agentId === ADMIN_AGENT_ID });
     } catch (err) {
-      console.warn(`[otto-runtime] 团队记忆读取失败，本 turn 不落快照（workspaceId=${opts.workspaceId} agent=${spec.agentId}）`, err);
+      console.warn(`[otto-runtime] 团队 wiki 读取失败，本 turn 不落快照（workspaceId=${opts.workspaceId} agent=${spec.agentId}）`, err);
       return;
     }
-    const shared = rows.get(SHARED_MEMORY_AGENT_ID)?.content ?? "";
-    const own = rows.get(spec.agentId)?.content ?? "";
-    // 裸 store 查（同 briefIfNeeded 的理由：记账判断读事实的原始来源）
     const last = store
-      .ofType(sessionId, "workspace_memory_loaded")
-      .filter((e) => e.type === "workspace_memory_loaded" && e.agentId === spec.agentId)
+      .ofType(sessionId, "workspace_wiki_loaded")
+      .filter((e) => e.type === "workspace_wiki_loaded" && e.agentId === spec.agentId)
       .at(-1);
-    if (last && last.type === "workspace_memory_loaded" && last.shared === shared && last.own === own && last.agentName === spec.name) return;
-    notify(store.append({ sessionId, ts: Date.now(), type: "workspace_memory_loaded", agentId: spec.agentId, agentName: spec.name, shared, own }));
+    if (
+      last && last.type === "workspace_wiki_loaded" && last.agentName === spec.name && last.index === snap.index &&
+      last.own === snap.own && last.nudge === snap.nudge && JSON.stringify(last.pinned) === JSON.stringify(snap.pinned)
+    ) return;
+    notify(store.append({
+      sessionId, ts: Date.now(), type: "workspace_wiki_loaded",
+      agentId: spec.agentId, agentName: spec.name, index: snap.index, pinned: snap.pinned, own: snap.own, nudge: snap.nudge,
+    }));
   }
 
   /** 这只 agent 在这条会话里有没有被介绍过、介绍的还是不是现在这份指令。
@@ -1451,7 +1453,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
 
       briefIfNeeded(spec, roster);
       specNames.set(spec.agentId, spec.name);
-      await loadMemoryIfChanged(spec);
+      await loadWikiIfChanged(spec);
 
       // 「Auto」那一档（#1009）：白名单为空 = 界面上选了 Auto = 这一轮先让最便宜
       // 那款读一遍开场白，判 simple/hard，再据此挑型号。配了型号的 agent 一字不变
@@ -1600,6 +1602,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       stopRequested = false;
       // 这一轮收口就放容器锁（#979 第 2 条）；没碰过容器的 turn 这里是 null。
       // 放在 finally：engine 抛错、合成收口、跳过接力棒……哪条路出去都得放
+      // 这一轮碰过容器 = bash 可能改了 wiki/ 而探不出来——快照缓存作废（spec §3.3）
+      if (heldRelease !== null) opts.wiki.invalidateSnapshot();
       heldRelease?.();
       heldRelease = null;
       jobLockAbort = null;

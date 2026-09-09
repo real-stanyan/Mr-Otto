@@ -21,7 +21,9 @@ import { join } from "node:path";
 
 import { createFrameHandler, type FrameHandlerDeps } from "../src/frameHandler.js";
 import { createCloudSession, type CloudSession, type AgentSpec } from "../src/sessionService.js";
-import { createInMemoryWorkspaceMemory } from "../src/workspaceMemory.js";
+import { createMemoryWikiFs } from "../src/wikiFs.js";
+import { createInMemoryWikiJournal } from "../src/wikiJournal.js";
+import { createWikiService } from "../src/wikiService.js";
 import { createInMemoryAgentWriter } from "../src/agentRegistry.js";
 import { createInMemoryMentionInbox } from "../src/mentionInbox.js";
 import { EventStore } from "../../../src/session/store.js";
@@ -164,7 +166,7 @@ async function scenarioMainFlow(): Promise<void> {
               for (const cid of roster) send(cid, { t: "event", event: e });
             },
             onUsage: () => {},
-            memory: createInMemoryWorkspaceMemory(),
+            wiki: createWikiService({ workspaceId: ws, fs: createMemoryWikiFs(), journal: createInMemoryWikiJournal(), legacyMemories: async () => [], agentNames: async () => new Map(), isRunning: async () => true }),
             mentionInbox: createInMemoryMentionInbox(),
             agentWriter: createInMemoryAgentWriter(),
             isMember: async () => true,
