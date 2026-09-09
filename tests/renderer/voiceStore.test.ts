@@ -2,8 +2,8 @@
 //
 // store 里语音那一片的接线（#1163）：加入通话 → 之后落下来的 assistant_message /
 // 流式快照按名单喂播放器（voiceId 按 agentId 派生）、静音不喂、通话结束事件把它收掉、
-// 换会话收掉。播放本身不在这里验：jsdom 的 <audio> 不会真播（play 打桩成拒绝，于是
-// 每段都当播放失败跳到下一段）——这条测试断言的是**送去合成的是什么**。
+// 换会话收掉。播放本身不在这里验：jsdom 没有 AudioContext，默认适配的 play() 拒绝、播放器
+// 把每段当播放失败跳到下一段——这条测试断言的是**送去合成的是什么**。
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useChat } from "../../src/renderer/src/store.js";
 import { agentVoiceId } from "../../src/shared/agentVoice.js";
@@ -30,11 +30,6 @@ const spoken: { text: string; voiceId: string }[] = [];
 
 beforeEach(() => {
   spoken.length = 0;
-  // jsdom：blob URL 与 <audio> 都是空壳。play 打桩成拒绝，让播放器把每段当播放失败
-  // 接着播下一段——否则第一段「永远在播」，后面的段永远轮不到合成
-  Object.defineProperty(window.HTMLMediaElement.prototype, "play", { configurable: true, value: () => Promise.reject(new Error("jsdom 不播")) });
-  if (typeof URL.createObjectURL !== "function") URL.createObjectURL = () => "blob:jsdom";
-  if (typeof URL.revokeObjectURL !== "function") URL.revokeObjectURL = () => {};
   (window as unknown as { otter: unknown }).otter = {
     teamVoiceSpeak: vi.fn(async (text: string, voiceId: string) => {
       spoken.push({ text, voiceId });
