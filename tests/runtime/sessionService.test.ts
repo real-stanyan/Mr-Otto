@@ -5671,6 +5671,42 @@ describe("会话的名字与最近参与的人（#1213）", () => {
     expect(meta.title).toBe("第一句");
   });
 
+  // 复审 Important 1：`maintainTitle` 的网关往返是 fire-and-forget
+  // （sessionService.ts:1262 那句注释——"不 await（say() 的回执不等这次网关
+  // 往返）"）。但现有两个"model 步"测试的 `retitle` 都是
+  // `vi.fn().mockResolvedValue(...)`——一份**已经 resolve** 的 promise，
+  // 哪怕这条契约哪天被破坏（`maintainTitle` 改成 `async`、`say()` 里两处
+  // 调用点改成 `await maintainTitle(text)`），await 一个已经 resolve 的 promise
+  // 不会挂住，那两个测试照样绿。这里换一份自己攥着 resolve 权柄、全程不放
+  // 的 promise：契约要是被破坏，下面第二次 `s.say()` 会一直挂着直到测试
+  // 超时——这正是要钉住的回归
+  it("say() 不等 retitle 落地才回执（#1213 复审 Important 1）", async () => {
+    const meta = createInMemoryCloudSessionMeta();
+    let settle: (v: null) => void = () => {};
+    const pending = new Promise<null>((resolve) => { settle = resolve; });
+    const retitle = vi.fn().mockReturnValue(pending);
+    const s = makeSession({ sessionMeta: meta, retitle });
+    // 第一条走首行兜底，不碰 retitle
+    await s.say("u1", "张三", "第一句", false, [], undefined, undefined);
+
+    // 第二条踩进 titleStepFor(2) === "model" 那一步。这一行如果卡住不返回，
+    // 就是 say() 被改成等了 retitle 的网关往返——测试会在默认超时后失败
+    await s.say("u1", "张三", "第二句", false, [], undefined, undefined);
+
+    expect(retitle).toHaveBeenCalledTimes(1);
+    // retitle 那份 promise 此刻仍然 pending：`await retitle(...)` 之后的续体
+    // （写 title / 落 session_autotitled）都还没跑过，标题应该还停在第一条的
+    // 首行兜底上。上面那次 await 能走到这里而不是一直挂着，加上标题没有被
+    // 提前改写，合起来就是"say() 没有等 retitle"的证据
+    expect(meta.title).toBe("第一句");
+    expect(s.backlog(-1).filter((e) => e.type === "session_autotitled")).toHaveLength(0);
+
+    // 收尾：resolve 掉这份 promise，不留下悬空的 pending 状态（避免
+    // unhandled rejection、挂起句柄污染输出）
+    settle(null);
+    await s.settled();
+  });
+
   it("每条人类发言都推进参与者；同一个窗里是并集", async () => {
     const meta = createInMemoryCloudSessionMeta();
     const s = makeSession({ sessionMeta: meta });
@@ -5684,5 +5720,27 @@ describe("会话的名字与最近参与的人（#1213）", () => {
     const s = makeSession({ sessionMeta: meta });
     await s.say("u1", "张三", "@不存在的人 你好", false, ["查无此人"], undefined, undefined);
     expect(meta.participants?.uids).toEqual(["u1"]);
+  });
+
+  // 复审 Important 2：`notify` 里那道判据是"变了才写库"
+  // （sessionService.ts:806-807 那句注释——"一个人连说十句只打一次网络"），
+  // 靠的是 `advanceParticipants` 没变时回同一个引用、
+  // `nextParticipants !== participants` 才写（sessionService.ts:812-814）。
+  // 现有的参与者测试都是直接读 `meta.participants` 的落地值，从不看调用
+  // 次数——一个把这道 identity 闸撤掉、变成"只要有人说话就写"的回归，那些
+  // 断言会照样绿（落地值本来就没变）。这里换成 spy 数"网络"打了几次
+  it("同一个人在同一个窗里连说两句只打一次网络；换个人才再打一次（#1213 复审 Important 2）", async () => {
+    const meta = createInMemoryCloudSessionMeta();
+    const setParticipants = vi.spyOn(meta, "setParticipants");
+    const s = makeSession({ sessionMeta: meta });
+    await s.say("u1", "张三", "一", false, [], undefined, undefined);
+    // 同一个人、同一个窗——参与者集合没变，advanceParticipants 回同一个引用
+    await s.say("u1", "张三", "二", false, [], undefined, undefined);
+    expect(setParticipants).toHaveBeenCalledTimes(1);
+
+    // 换一个新说话人：参与者集合真的变了，spy 应该再被调一次——证明它不是
+    // 一个永远不会触发的坏 spy，上面那次"恰好调用一次"不是巧合
+    await s.say("u2", "李四", "三", false, [], undefined, undefined);
+    expect(setParticipants).toHaveBeenCalledTimes(2);
   });
 });
