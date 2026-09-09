@@ -57,6 +57,8 @@ final class Recognizer {
   private var generation = 0
   private var requestStartedAt: Double = 0
   private var locale = "zh-CN"
+  /// 上下文词表（start 命令给的），每个 request 都带
+  private var hints: [String] = []
   /// 系统回声消除开没开；nil = 还没开过麦
   private var aec: Bool? = nil
   private var lastLevelEmitAt: Double = 0
@@ -78,12 +80,13 @@ final class Recognizer {
       aec: aec)
   }
 
-  func start(locale: String, silenceMs: Double, completeMs: Double, midMs: Double) {
+  func start(locale: String, silenceMs: Double, completeMs: Double, midMs: Double, hints: [String]) {
     if running {
       emit(Event(type: "listening", on: true))
       return
     }
     self.locale = locale
+    self.hints = hints
     endpointer = Endpointer(silenceMs: silenceMs, completeMs: completeMs, midMs: midMs)
     gate = LevelGate()
     guard let r = SFSpeechRecognizer(locale: Locale(identifier: locale)) else {
@@ -195,6 +198,7 @@ final class Recognizer {
     req.taskHint = .dictation
     req.requiresOnDeviceRecognition = recognizer.supportsOnDeviceRecognition
     if #available(macOS 13, *) { req.addsPunctuation = true }
+    if !hints.isEmpty { req.contextualStrings = hints }
     request = req
     requestStartedAt = nowMs()
     task = recognizer.recognitionTask(with: req) { [weak self] result, error in

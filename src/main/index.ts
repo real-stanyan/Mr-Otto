@@ -3493,9 +3493,13 @@ void app.whenReady().then(() => {
     }
     speech.send(c);
   };
-  ipcMain.handle(CHANNELS.speechStart, (_e, locale: unknown) =>
-    speechSend({ type: "start", locale: typeof locale === "string" && locale !== "" ? locale : "zh-CN" })
-  );
+  ipcMain.handle(CHANNELS.speechStart, (_e, locale: unknown, hints: unknown) => {
+    // 词表只收字符串数组、每条 ≤64 字、最多 100 条（识别器的 contextualStrings 建议上限；渲染层那份已封顶，这里是闸）
+    const list = Array.isArray(hints)
+      ? hints.filter((h): h is string => typeof h === "string" && h.trim() !== "" && h.length <= 64).slice(0, 100)
+      : [];
+    speechSend({ type: "start", locale: typeof locale === "string" && locale !== "" ? locale : "zh-CN", ...(list.length > 0 ? { hints: list } : {}) });
+  });
   ipcMain.handle(CHANNELS.speechStop, () => speechSend({ type: "stop" }));
   ipcMain.handle(CHANNELS.speechPause, () => speechSend({ type: "pause" }));
   ipcMain.handle(CHANNELS.speechResume, () => speechSend({ type: "resume" }));

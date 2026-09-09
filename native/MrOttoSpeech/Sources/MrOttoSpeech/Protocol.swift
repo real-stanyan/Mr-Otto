@@ -15,6 +15,9 @@ struct Command: Decodable {
   var completeMs: Double?
   /// start：没说完的一句（逗号 / 没标点收尾），人停嘴之后等多久收口（毫秒）
   var midMs: Double?
+  /// start：上下文词表（agent 名 / 成员名 / 开发常用英文词），喂给识别器的 contextualStrings——
+  /// 本机 zh-CN 识别器遇到英文词会往拼音上靠（GitHub → get up），给了词表才认得出（#1196）
+  var hints: [String]?
 }
 
 struct Event: Encodable {

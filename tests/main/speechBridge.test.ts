@@ -36,6 +36,10 @@ describe("encodeSpeechCommand / decodeSpeechEvent", () => {
       '{"type":"start","locale":"zh-CN","silenceMs":1500}\n'
     );
     expect(encodeSpeechCommand({ type: "pause" })).toBe('{"type":"pause"}\n');
+    // 上下文词表（#1196）：agent 名 / 成员名 / 开发常用英文词，识别器据此把「get up」认成 GitHub
+    expect(encodeSpeechCommand({ type: "start", locale: "zh-CN", hints: ["GitHub", "管理员"] })).toBe(
+      '{"type":"start","locale":"zh-CN","hints":["GitHub","管理员"]}\n'
+    );
   });
   it("解七种事件；坏 JSON / 未知 type / 字段形状不对 → null", () => {
     expect(decodeSpeechEvent('{"type":"partial","text":"你好"}')).toEqual({ type: "partial", text: "你好" });

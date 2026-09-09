@@ -1208,7 +1208,8 @@ export interface ShellBridge {
   teamVoiceSpeak(text: string, voiceId: string): Promise<VoiceSpeakResult>;
   /** 群语音里的麦克风（#1176）：开 / 关 / 半双工暂停 / 恢复。结果不从返回值来——
       全部走 onSpeechEvent（识别结果是 helper 自己冒出来的，没有哪条命令在等它） */
-  speechStart(locale: string): Promise<void>;
+  /** `hints`：上下文词表（voiceMic.ts 的 speechHints），可选——旧调用方不传照旧 */
+  speechStart(locale: string, hints?: string[]): Promise<void>;
   speechStop(): Promise<void>;
   speechPause(): Promise<void>;
   speechResume(): Promise<void>;
