@@ -1,4 +1,4 @@
--- supabase/migrations/0033_workspace_wiki_journal.sql —— 团队 wiki 的追加式备份 + 历史（#1140，spec §6）。
+-- supabase/migrations/0034_workspace_wiki_journal.sql —— 团队 wiki 的追加式备份 + 历史（#1140，spec §6）。
 -- 幂等，重跑不炸；与 0021 起同一约定：在 Supabase SQL editor 手动执行一次。
 -- 单向：/work/wiki/ 里的文件是事实，这张表是备份；wiki/ 不存在时 runtime 从各路径最新版本物化回来。
 -- 写方只有 runtime（service key）。authenticated 没有 insert / update / delete 策略：

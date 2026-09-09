@@ -6,7 +6,7 @@
 
 **Architecture:** 纯逻辑全部在 `src/shared/wiki.ts`（页头 / 索引 / 日志 / 体检 / 迁移 / 投影，三端共用）；runtime 里 `wikiFs.ts`（容器脚本 + 内存假货两套实现同一接口）→ `wikiJournal.ts`（Supabase 追加表 + 内存版）→ `wikiService.ts`（ensure / snapshot / read / search / write / remove / check，工具与桌面帧共用的本体）→ `wikiTool.ts`（两把刀：`wiki_read` 只读且 parallelSafe，`wiki` 写）。注入是新事件 `workspace_wiki_loaded`（缺席或变了才落、投影最新一条胜出）。桌面走现成 `files` 帧读、新 `wiki_write` 帧写（协议 16→17）。
 
-**Tech Stack:** TypeScript strict / vitest / Electron 渲染层 React + shadcn / Supabase（migration 0033）/ 容器里 GNU find + awk + ripgrep 13。
+**Tech Stack:** TypeScript strict / vitest / Electron 渲染层 React + shadcn / Supabase（migration 0034）/ 容器里 GNU find + awk + ripgrep 13。
 
 **Spec:** `docs/superpowers/specs/2026-09-09-team-llm-wiki-design.md`（执行者先读 §1–§9，任务里引用 §号）。
 
@@ -49,8 +49,8 @@
 | `src/main/cloudSessionClient.ts` / `src/main/index.ts` / `src/preload/index.ts` / `src/shared/shellBridge.ts` / `src/renderer/src/store.ts`（改） | 桌面 RPC 管道；拆掉 memory 那对 IPC |
 | `src/main/workspaceManager.ts` / `src/main/supabaseWorkspacesApi.ts` / `src/shared/workspaces.ts`（改） | 拆 `listMemories` / `saveMemory` / `WorkspaceMemoryRow` |
 | `src/renderer/src/components/WorkspaceWikiTab.tsx`（新）/ `WorkspaceMemoryTab.tsx`（删）/ `lib/workspaceMemoryView.ts`（删）/ `WorkspacePage.tsx`（改） | 设置页「记忆」tab 换成 wiki 视图 |
-| `supabase/migrations/0033_workspace_wiki_journal.sql`（新） | journal 表 + RLS |
-| `docs/adr/0267-*.md`（新）/ `docs/adr/0222-*.md`（改）/ `CONTEXT.md` / `AGENTS.md` / `supabase/README.md`（改） | 决策记录与索引 |
+| `supabase/migrations/0034_workspace_wiki_journal.sql`（新） | journal 表 + RLS |
+| `docs/adr/0279-*.md`（新）/ `docs/adr/0222-*.md`（改）/ `CONTEXT.md` / `AGENTS.md` / `supabase/README.md`（改） | 决策记录与索引 |
 
 ---
 
@@ -1610,10 +1610,10 @@ export function createMemoryWikiFs(seed: Record<string, string> = {}): WikiFs & 
 
 ---
 
-### Task 7: `services/runtime/src/wikiJournal.ts` + migration 0033
+### Task 7: `services/runtime/src/wikiJournal.ts` + migration 0034
 
 **Files:**
-- Create: `services/runtime/src/wikiJournal.ts`、`supabase/migrations/0033_workspace_wiki_journal.sql`
+- Create: `services/runtime/src/wikiJournal.ts`、`supabase/migrations/0034_workspace_wiki_journal.sql`
 - Test: `tests/runtime/wikiJournal.test.ts`
 
 **Interfaces:**
@@ -1696,7 +1696,7 @@ describe("createSupabaseWikiJournal", () => {
 // services/runtime/src/wikiJournal.ts
 // wikiJournal —— wiki 的追加式备份 + 历史（#1140，spec §6）。**单向：文件是事实，journal 是备份。**
 // 不做双向同步、不做对账；恢复只发生在 wiki/ 不存在时（wikiService.ensure）。
-// 写方只有 runtime（service key）；客户端没有 insert/delete 策略（0033）。
+// 写方只有 runtime（service key）；客户端没有 insert/delete 策略（0034）。
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 
@@ -1766,7 +1766,7 @@ export function createSupabaseWikiJournal(client: SupabaseClient): WikiJournal {
 ```
 
 ```sql
--- supabase/migrations/0033_workspace_wiki_journal.sql —— 团队 wiki 的追加式备份 + 历史（#1140，spec §6）。
+-- supabase/migrations/0034_workspace_wiki_journal.sql —— 团队 wiki 的追加式备份 + 历史（#1140，spec §6）。
 -- 幂等，重跑不炸；与 0021 起同一约定：在 Supabase SQL editor 手动执行一次。
 -- 单向：/work/wiki/ 里的文件是事实，这张表是备份；wiki/ 不存在时 runtime 从各路径最新版本物化回来。
 -- 写方只有 runtime（service key）。authenticated 没有 insert / update / delete 策略：
@@ -1794,7 +1794,7 @@ create policy wwj_select_member on public.workspace_wiki_journal for select to a
 ```
 
 - [ ] **Step 4: Run** → PASS；另跑 `npx vitest run tests/docs` 确认没有 migration 编号断言翻红
-- [ ] **Step 5: Commit** — `git commit -m "feat(wiki): journal 追加表（0033）+ Supabase / 内存两套实现（#1140）"`
+- [ ] **Step 5: Commit** — `git commit -m "feat(wiki): journal 追加表（0034）+ Supabase / 内存两套实现（#1140）"`
 
 ---
 
@@ -2612,7 +2612,7 @@ describe("isRunning（#1140，spec §3.3）", () => {
 
 ```ts
 // workspaceMemory —— ADR-0222 那张 workspace_memories 表的**只读**口（#1140 之后只剩迁移一个用途：
-// wikiService.ensure 在 wiki/ 不存在且 journal 为空时把两档迁成页）。写路径与 memory 工具已随 ADR-0267 删除。
+// wikiService.ensure 在 wiki/ 不存在且 journal 为空时把两档迁成页）。写路径与 memory 工具已随 ADR-0279 删除。
 // 表不删、行不动；删表的 migration 没有触发日（spec §13）。
 
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -2958,7 +2958,7 @@ describe("wiki_write（协议 17，#1140）", () => {
 `cloudSession.ts`：
 - 改日志（`:44` 那段最上面加）：
 ```
-    17（#1140，ADR-0267）：加一对 `wiki_write` / `wiki_write_result`（控制房写帧）——**团队 wiki 从设置页改得了**。
+    17（#1140，ADR-0279）：加一对 `wiki_write` / `wiki_write_result`（控制房写帧）——**团队 wiki 从设置页改得了**。
     团队记忆从两档小黑板换成 /work/wiki/ 里的 markdown 页面之后，人改一页要经 runtime 走**与工具同一条写入路径**
     （盖章 / 重生成 index / log / journal），所以是一条帧不是直连 Supabase。任何在籍成员都能写，判据同 files。
 ```
@@ -3243,7 +3243,7 @@ describe("WorkspaceWikiTab", () => {
 
 ```tsx
 // src/renderer/src/components/WorkspaceWikiTab.tsx
-// WorkspaceWikiTab —— 团队设置里的「记忆」那一页（#1140，ADR-0267 推翻 ADR-0222 的两档编辑器）。
+// WorkspaceWikiTab —— 团队设置里的「记忆」那一页（#1140，ADR-0279 推翻 ADR-0222 的两档编辑器）。
 // 读走现成的 files 帧（wiki/index.md、wiki/log.md、wiki/<页>），改走 wiki_write 帧——服务端与 wiki 工具同一条
 // 写入路径，人改的和 agent 改的过同一道门。
 // 三态（同 ADR-0264 决策 8）：loading / 读不到（上一份留在原地，错误另起一行）/ 读到了。`absent`（容器还没建）
@@ -3456,15 +3456,15 @@ function WikiEditScreen({ ws, page, onSaved }: { ws: WorkspaceSnapshot; page: Wi
 ### Task 15: 文档、ADR、索引、门禁、PR
 
 **Files:**
-- Create: `docs/adr/0267-团队记忆换成LLM-wiki.md`（合并前按 ADR-0074 复核编号：`ls docs/adr | tail -1`，撞了改成 max+1 并在文件顶加 `原为 ADR-0267`）
-- Modify: `docs/adr/0222-工作区多智能体记忆.md`（`- 状态：已采纳` → `- 状态：已被 ADR-0267 推翻（记忆落点与形状换成 /work/wiki/ 的 LLM wiki，#1140）；表与投影留作重放`）
-- Modify: `CONTEXT.md`（`:117-118` 两条改写 + 加三条）、`AGENTS.md`（「Where to find things」里 `- \`src/shared/workspaceMemory.ts\` / …` 那一整条替换）、`supabase/README.md`（migration 清单加 0033 一行，照 0030-0032 的写法）
+- Create: `docs/adr/0279-团队记忆换成LLM-wiki.md`（合并前按 ADR-0074 复核编号：`ls docs/adr | tail -1`，撞了改成 max+1 并在文件顶加 `原为 ADR-0279`）
+- Modify: `docs/adr/0222-工作区多智能体记忆.md`（`- 状态：已采纳` → `- 状态：已被 ADR-0279 推翻（记忆落点与形状换成 /work/wiki/ 的 LLM wiki，#1140）；表与投影留作重放`）
+- Modify: `CONTEXT.md`（`:117-118` 两条改写 + 加三条）、`AGENTS.md`（「Where to find things」里 `- \`src/shared/workspaceMemory.ts\` / …` 那一整条替换）、`supabase/README.md`（migration 清单加 0034 一行，照 0030-0032 的写法）
 - Test: `npm test`（门禁）
 
-- [ ] **Step 1: ADR-0267**（全文；「代价」「推翻前提」从 spec §13 / §14 照抄，不另写一份）
+- [ ] **Step 1: ADR-0279**（全文；「代价」「推翻前提」从 spec §13 / §14 照抄，不另写一份）
 
 ```markdown
-# ADR-0267：团队记忆换成 LLM wiki——文件是事实、工具强制结构、journal 单向备份
+# ADR-0279：团队记忆换成 LLM wiki——文件是事实、工具强制结构、journal 单向备份
 
 - 状态：已采纳
 - 日期：2026-09-09
@@ -3485,7 +3485,7 @@ ADR-0222 落地四天的形状（spec §0 那张表）：紧上限逼出的是�
 3. **agent 自己维护，工具强制结构**：`wiki_read`（parallelSafe）+ `wiki`（write / remove / check），不过审批门；页头盖章、`scanThreat`、所有权、预算都在写入路径上，不靠模型自觉（ADR-0222 决策 4 的纪律）。
 4. **注入是新事件 `workspace_wiki_loaded`**：索引 + 常驻页 + 自己那页 + （只给管理员的）nudge；缺席或变了才落、投影最新一条胜出（ADR-0222 决策 2 逐字）。事件里的正文是已经过 `scanThreat` 的版本——事件里的内容就是注入的内容。
 5. **两个预算**：常驻页合计 2200（= 今天 SHARED）、自己那页 1100（= 今天 OWN）——最重要的事实仍然零检索失败；其余页无上限。「超限且没变小才拒」沿用 ADR-0116。
-6. **journal 追加表单向备份**（0033）：文件是事实，journal 是备份 + 历史；恢复只发生在 `wiki/` 不存在时。客户端只读不写（同 ADR-0256）。
+6. **journal 追加表单向备份**（0034）：文件是事实，journal 是备份 + 历史；恢复只发生在 `wiki/` 不存在时。客户端只读不写（同 ADR-0256）。
 7. **容器停着 = 卷没变**：快照缓存按这条规则用——只聊天的 turn 不把停着的容器叫起来；任何碰过容器的 turn 收口时作废缓存。
 8. **人改走 `wiki_write` 帧（协议 17）**，服务端与工具同一条写入路径；不直连 Supabase。
 9. **迁移一次**：`wiki/` 不存在且 journal 为空时把 `workspace_memories` 两档迁成页（保留 `[名字]` 前缀）；表不删、行不动。
@@ -3512,12 +3512,12 @@ ADR-0222 落地四天的形状（spec §0 那张表）：紧上限逼出的是�
 
 - [ ] **Step 2: CONTEXT.md**
 
-`:117` 「工作区记忆（shared / own）」与 `:118` 「`workspace_memory_loaded`」两条各在末尾加「**已被 ADR-0267 推翻**（#1140）：落点与形状换成团队 wiki，表与事件只为重放/迁移保留」。在它们下面加三条（产品/技术术语那一节）：
+`:117` 「工作区记忆（shared / own）」与 `:118` 「`workspace_memory_loaded`」两条各在末尾加「**已被 ADR-0279 推翻**（#1140）：落点与形状换成团队 wiki，表与事件只为重放/迁移保留」。在它们下面加三条（产品/技术术语那一节）：
 
 ```
-| 团队 wiki | 团队记忆的落点（ADR-0267，推翻 ADR-0222）：`/work/wiki/` 里由智能体维护、人也能改的互链 markdown 页面。`index.md` 由工具从页头生成（禁止手写）、`log.md` 追加、`SCHEMA.md` 约定、`team.md` 恒常驻、`agents/<id>.md` 每只一页（全员可读、只注入给它自己、只有它自己或人能写）；其余页一层目录小写 kebab。两把刀 `wiki_read`（parallelSafe）/ `wiki`（write / remove / check），不过审批门。两个预算：常驻合计 2200、自己那页 1100（= 原两档的上限），其余无上限 | ADR-0267；`src/shared/wiki.ts`、`services/runtime/src/wikiService.ts` |
-| `workspace_wiki_loaded` | 云会话里一只 agent 起 turn 前的 wiki 快照事件（索引 + 常驻页 + 自己那页 + 只给管理员的 nudge）：缺席或内容变了才落、投影最新一条胜出（与 `workspace_memory_loaded` 同一条判据）。正文是落盘那一刻已经过 `scanThreat` 的版本——事件里的内容就是注入的内容。快照缓存的规则一条：**容器停着 = 卷没变**（所有写者都在容器里跑），只聊天的 turn 不把停着的容器叫起来 | ADR-0267；`sessionService.loadWikiIfChanged` |
-| wiki journal | `workspace_wiki_journal` 追加表：文件是事实，它是**单向**备份 + 历史（每次写入一行，content null = 删）。恢复只发生在 `wiki/` 不存在时；bash 绕开工具改的页由 `check` 补记 `external`。客户端只读不写（同 `workspace_mentions` 的理由） | ADR-0267；migration 0033、`services/runtime/src/wikiJournal.ts` |
+| 团队 wiki | 团队记忆的落点（ADR-0279，推翻 ADR-0222）：`/work/wiki/` 里由智能体维护、人也能改的互链 markdown 页面。`index.md` 由工具从页头生成（禁止手写）、`log.md` 追加、`SCHEMA.md` 约定、`team.md` 恒常驻、`agents/<id>.md` 每只一页（全员可读、只注入给它自己、只有它自己或人能写）；其余页一层目录小写 kebab。两把刀 `wiki_read`（parallelSafe）/ `wiki`（write / remove / check），不过审批门。两个预算：常驻合计 2200、自己那页 1100（= 原两档的上限），其余无上限 | ADR-0279；`src/shared/wiki.ts`、`services/runtime/src/wikiService.ts` |
+| `workspace_wiki_loaded` | 云会话里一只 agent 起 turn 前的 wiki 快照事件（索引 + 常驻页 + 自己那页 + 只给管理员的 nudge）：缺席或内容变了才落、投影最新一条胜出（与 `workspace_memory_loaded` 同一条判据）。正文是落盘那一刻已经过 `scanThreat` 的版本——事件里的内容就是注入的内容。快照缓存的规则一条：**容器停着 = 卷没变**（所有写者都在容器里跑），只聊天的 turn 不把停着的容器叫起来 | ADR-0279；`sessionService.loadWikiIfChanged` |
+| wiki journal | `workspace_wiki_journal` 追加表：文件是事实，它是**单向**备份 + 历史（每次写入一行，content null = 删）。恢复只发生在 `wiki/` 不存在时；bash 绕开工具改的页由 `check` 补记 `external`。客户端只读不写（同 `workspace_mentions` 的理由） | ADR-0279；migration 0034、`services/runtime/src/wikiJournal.ts` |
 ```
 
 - [ ] **Step 3: AGENTS.md 索引**
@@ -3525,10 +3525,10 @@ ADR-0222 落地四天的形状（spec §0 那张表）：紧上限逼出的是�
 把「Where to find things」里以 `- \`src/shared/workspaceMemory.ts\` / \`services/runtime/src/workspaceMemory.ts\` / \`services/runtime/src/workspaceMemoryTool.ts\`` 开头的那一整条替换成：
 
 ```
-- `src/shared/wiki.ts` / `services/runtime/src/wikiFs.ts` / `wikiJournal.ts` / `wikiService.ts` / `wikiTool.ts` / `src/renderer/src/components/WorkspaceWikiTab.tsx` — **团队记忆换成 LLM wiki**（ADR-0267，#1140，推翻 ADR-0222 的两档小黑板）：`/work/wiki/` 里由智能体维护的互链 markdown 页面。纯逻辑全在 `src/shared/wiki.ts`（页头读宽写严、索引从页头**生成**不手写、日志行、体检规则、迁移、投影文本），runtime 只有 IO：`wikiFs` 是容器脚本（`String.raw`，字节有断言，同 #1066）+ 内存假货同一接口，`wikiService` 是工具与桌面 `wiki_write` 帧**共用的本体**（人改的和 agent 改的过同一道门），`wikiTool` 是两把刀（只读那把 `parallelSafe`——`Tool.parallelSafe` 按刀不按 action，所以拆开）。注入是新事件 `workspace_wiki_loaded`，判据逐字沿用 ADR-0222 决策 2（缺席或变了才落、最新一条胜出），事件里的正文是**落盘前**已过 `scanThreat` 的版本。两个预算（常驻合计 2200 / 自己那页 1100）= 原两档上限，最重要的事实仍零检索失败。**容器停着 = 卷没变**是快照缓存的唯一规则（所有写者都在容器里跑；`clone_repo` 的 dest 因此不许落在 `wiki/`），碰过容器的 turn 收口作废。journal（0033）单向备份不同步：文件是事实、恢复只在 `wiki/` 不存在时；bash 绕开工具的改动由 `check` 补记。存量两档在 `wiki/` 首次不存在时迁成页（`[名字]` 前缀保留），表不删。已知代价与推翻前提各十来条在 spec §13/§14 与 ADR-0267
+- `src/shared/wiki.ts` / `services/runtime/src/wikiFs.ts` / `wikiJournal.ts` / `wikiService.ts` / `wikiTool.ts` / `src/renderer/src/components/WorkspaceWikiTab.tsx` — **团队记忆换成 LLM wiki**（ADR-0279，#1140，推翻 ADR-0222 的两档小黑板）：`/work/wiki/` 里由智能体维护的互链 markdown 页面。纯逻辑全在 `src/shared/wiki.ts`（页头读宽写严、索引从页头**生成**不手写、日志行、体检规则、迁移、投影文本），runtime 只有 IO：`wikiFs` 是容器脚本（`String.raw`，字节有断言，同 #1066）+ 内存假货同一接口，`wikiService` 是工具与桌面 `wiki_write` 帧**共用的本体**（人改的和 agent 改的过同一道门），`wikiTool` 是两把刀（只读那把 `parallelSafe`——`Tool.parallelSafe` 按刀不按 action，所以拆开）。注入是新事件 `workspace_wiki_loaded`，判据逐字沿用 ADR-0222 决策 2（缺席或变了才落、最新一条胜出），事件里的正文是**落盘前**已过 `scanThreat` 的版本。两个预算（常驻合计 2200 / 自己那页 1100）= 原两档上限，最重要的事实仍零检索失败。**容器停着 = 卷没变**是快照缓存的唯一规则（所有写者都在容器里跑；`clone_repo` 的 dest 因此不许落在 `wiki/`），碰过容器的 turn 收口作废。journal（0034）单向备份不同步：文件是事实、恢复只在 `wiki/` 不存在时；bash 绕开工具的改动由 `check` 补记。存量两档在 `wiki/` 首次不存在时迁成页（`[名字]` 前缀保留），表不删。已知代价与推翻前提各十来条在 spec §13/§14 与 ADR-0279
 ```
 
-- [ ] **Step 4: supabase/README.md** 的 migration 清单加 `0033_workspace_wiki_journal.sql`（照 0030 那行的写法，注明「团队 wiki 的 journal 备份表；不跑的话 runtime 每次写入 warn 一行、恢复路不可用，其余功能不受影响」）。
+- [ ] **Step 4: supabase/README.md** 的 migration 清单加 `0034_workspace_wiki_journal.sql`（照 0030 那行的写法，注明「团队 wiki 的 journal 备份表；不跑的话 runtime 每次写入 warn 一行、恢复路不可用，其余功能不受影响」）。
 
 - [ ] **Step 5: 门禁 + 自查**
 
@@ -3536,7 +3536,7 @@ ADR-0222 落地四天的形状（spec §0 那张表）：紧上限逼出的是�
 npm test
 grep -rn "createWorkspaceMemoryTool\|WorkspaceMemoryTab\|workspaceMemoryView\|loadWorkspaceMemories\|workspaceMemoryList\|MEMORY_CONFLICT" src services tests   # 期望零命中
 grep -rn "workspace_memory_loaded" src | grep -v "events.ts\|deriveMessages.ts\|persistencePolicy.ts\|agentView.ts\|modelContextScan.ts\|sessionPackage.ts\|contextEstimate.ts\|Timeline.tsx"   # 期望零命中（只剩重放那几处）
-ls docs/adr | tail -2   # 复核 0267 没撞号
+ls docs/adr | tail -2   # 复核 0279 没撞号
 ```
 Expected: `npm test` 全绿；两条 grep 零命中。
 
@@ -3544,14 +3544,14 @@ Expected: `npm test` 全绿；两条 grep 零命中。
 
 ```bash
 git add -A
-git commit -m "docs(wiki): ADR-0267 + CONTEXT/AGENTS 索引 + 0222 标记推翻（#1140）"
+git commit -m "docs(wiki): ADR-0279 + CONTEXT/AGENTS 索引 + 0222 标记推翻（#1140）"
 git push -u origin claude/team-llm-wiki-809603
-gh pr create --title "feat(team): 团队记忆换成 LLM wiki（#1140，ADR-0267）" --body "$(cat <<'EOF'
+gh pr create --title "feat(team): 团队记忆换成 LLM wiki（#1140，ADR-0279）" --body "$(cat <<'EOF'
 Closes #1140。spec：docs/superpowers/specs/2026-09-09-team-llm-wiki-design.md；计划：docs/superpowers/plans/2026-09-09-team-llm-wiki.md。
 
-ADR-0267 推翻 ADR-0222：团队记忆从两档小黑板换成 /work/wiki/ 的 LLM wiki。协议 16→17（wiki_write 帧），migration 0033（journal）。
+ADR-0279 推翻 ADR-0222：团队记忆从两档小黑板换成 /work/wiki/ 的 LLM wiki。协议 16→17（wiki_write 帧），migration 0034（journal）。
 
-合并后要做（按序）：① 生产跑 0033 ② 部署 runtime（#791）③ 真机按 spec §11 的八条验 ④ 桌面等下一次 release。
+合并后要做（按序）：① 生产跑 0034 ② 部署 runtime（#791）③ 真机按 spec §11 的八条验 ④ 桌面等下一次 release。
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
 
@@ -3560,13 +3560,13 @@ EOF
 )"
 ```
 
-合并前：`git fetch origin && ls docs/adr | tail -2` 复核编号（ADR-0074）；CI 绿后 merge commit（不 squash）；合并后 `npm run lane:prune -- --apply`，开交接 issue（Task 型，五段式 Memory），列出真机欠账（spec §11 那八条 + 0033 + 部署）。
+合并前：`git fetch origin && ls docs/adr | tail -2` 复核编号（ADR-0074）；CI 绿后 merge commit（不 squash）；合并后 `npm run lane:prune -- --apply`，开交接 issue（Task 型，五段式 Memory），列出真机欠账（spec §11 那八条 + 0034 + 部署）。
 
 ---
 
 ## 真机验收清单（合并 + 部署之后，spec §11）
 
-前置：生产 Supabase 跑 0033；`npm run runtime:deploy`（或 `npm run release` 那条链）；`npm run build` 起桌面。
+前置：生产 Supabase 跑 0034；`npm run runtime:deploy`（或 `npm run release` 那条链）；`npm run build` 起桌面。
 1. 旧团队第一次起 turn → `wiki/` 出现，`team.md` 里是原 SHARED 的条目、`agents/<id>.md` 是原 OWN，`log.md` 有 `migrate`
 2. 问 agent 一条客户约定 → 时间线看不见工具痕迹（ADR-0250），但 VPS 日志 / 轨迹里有 `wiki_read`
 3. agent `wiki write` 新页 → 设置页「记忆」里出现、「文件」页 `wiki/` 下有文件、`index.md` 多一行、Supabase `workspace_wiki_journal` 多一行

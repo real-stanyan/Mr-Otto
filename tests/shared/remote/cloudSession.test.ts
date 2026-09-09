@@ -8,7 +8,7 @@ import { b64encode } from "../../../src/shared/remote/b64.js";
 
 describe("cs 帧协议", () => {
   it("协议版本", () => {
-    // 17 = #1140（ADR-0267）：加一对 wiki_write / wiki_write_result（控制房写帧）——
+    // 17 = #1140（ADR-0279）：加一对 wiki_write / wiki_write_result（控制房写帧）——
     //      团队 wiki 从设置页改得了。
     // 10 = #1044：加一对 delete / delete_result（控制房帧，形状同 archive）——
     //     彻底删除一条云会话。原来这颗钮不存在，理由是 0016 的 RLS 把

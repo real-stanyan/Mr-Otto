@@ -1,7 +1,7 @@
 # 团队 agent 的记忆换成 LLM wiki —— 设计稿
 
 日期：2026-09-09 ｜ issue：#1140 ｜ 状态：设计已定，待实现
-ADR：合并前按 ADR-0074 定号（写稿时下一个空号是 0267）；推翻 ADR-0222
+ADR：0279（ADR-0074 claim-at-merge：写稿时下一个空号是 0267，合并前与 main 上先落的 ADR 撞号，改到 0279）；推翻 ADR-0222
 
 ## 0. 背景
 
@@ -276,7 +276,7 @@ bash；旁路 clone 容器不碰 `wiki/`，§1.1 那条校验保证）。所以�
 
 ## 6. journal 表（对策：持久性 + 历史）
 
-migration `supabase/migrations/0033_workspace_wiki_journal.sql`（幂等，手动执行一次，同 0021 起的约定）：
+migration `supabase/migrations/0034_workspace_wiki_journal.sql`（幂等，手动执行一次，同 0021 起的约定）：
 
 ```sql
 create table if not exists public.workspace_wiki_journal (
@@ -430,7 +430,7 @@ memories, now, isRunning })`，方法 `ensure / snapshot / read / search / write
 
 ### 门禁里跑不到，必须真机
 
-1. 在生产 Supabase 跑 0033；2. 部署 runtime（#791，协议 17）；3. 桌面构建；然后：
+1. 在生产 Supabase 跑 0034；2. 部署 runtime（#791，协议 17）；3. 桌面构建；然后：
 ① 旧团队第一次起 turn → `wiki/` 出现，`team.md` 里是原 SHARED 的条目、`agents/<id>.md` 是原 OWN，log 有 `migrate`；
 ② agent 被问客户约定 → 看见索引后 `read` 对应页；③ agent `write` 新页 → 文件页里看得到、index 更新、
 journal 多一行；④ `pinned` 超预算被拒的文案；⑤ 桌面改一页 → agent 下一 turn 快照变了；
@@ -441,12 +441,12 @@ journal 多一行；④ `pinned` 超预算被拒的文案；⑤ 桌面改一页 
 
 1. 纯层 `src/shared/wiki.ts` + `wikiService` + `wikiTool` + 事件/投影/十一处表态 + sessionService 接线
    （快照、`ensureWiki`、缓存）。
-2. journal 表（0033）+ Supabase 实现 + 迁移路 + 拆云侧 `memory` 工具与桌面直连路。
+2. journal 表（0034）+ Supabase 实现 + 迁移路 + 拆云侧 `memory` 工具与桌面直连路。
 3. `wiki_write` 帧 + 协议 17 + `WorkspaceWikiTab`。
 4. ADR-02xx（推翻 0222）+ CONTEXT.md 三条术语（团队 wiki / `workspace_wiki_loaded` / journal）+
    AGENTS.md 索引换掉 0222 那条 + ADR-0222 头部加「已被推翻」指针。
 
-合并后立刻：跑 0033、部署 runtime、按 §11 真机清单验；桌面等下一次 `npm run release`。
+合并后立刻：跑 0034、部署 runtime、按 §11 真机清单验；桌面等下一次 `npm run release`。
 
 ## 13. 已知代价与天花板（接受）
 
@@ -463,7 +463,7 @@ journal 多一行；④ `pinned` 超预算被拒的文案；⑤ 桌面改一页 
 - **手机端不接**。
 - **`workspace_memories` 表暂留**，删表 migration 没有触发日。
 - **每次 `write` 5 次容器往返**（≈ 250 ms）。
-- **真机一次都没跑过**：与 ADR-0222 同一条——前置是 0033 + 部署 + 发版。
+- **真机一次都没跑过**：与 ADR-0222 同一条——前置是 0034 + 部署 + 发版。
 
 ## 14. 推翻它的前提
 

@@ -1,6 +1,6 @@
 // wikiJournal —— wiki 的追加式备份 + 历史（#1140，spec §6）。**单向：文件是事实，journal 是备份。**
 // 不做双向同步、不做对账；恢复只发生在 wiki/ 不存在时（wikiService.ensure）。
-// 写方只有 runtime（service key）；客户端没有 insert/delete 策略（0033）。
+// 写方只有 runtime（service key）；客户端没有 insert/delete 策略（0034）。
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 
