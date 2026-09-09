@@ -16,7 +16,7 @@
 // 字幕一行「你：…」画正在说的这一句，收口即清。
 
 import { useEffect, useState } from "react";
-import { Mic, MicOff, Phone, PhoneOff, UserPlus, Volume2, VolumeX } from "lucide-react";
+import { Maximize2, Mic, MicOff, Phone, PhoneOff, UserPlus, Volume2, VolumeX } from "lucide-react";
 import { cn } from "@/lib/utils.js";
 import { Button } from "@/components/ui/button.js";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar.js";
@@ -44,6 +44,7 @@ export function VoiceCallBar({
   onMic,
   onUpdate,
   onEnd,
+  onExpand,
 }: {
   ws: WorkspaceSnapshot;
   call: VoiceCallState;
@@ -59,6 +60,8 @@ export function VoiceCallBar({
   onUpdate: (ids: string[]) => Promise<CloudAck>;
   /** 结束通话（全组）。二次确认在调用方；回 ok:false 时那句话画在栏下 */
   onEnd: () => Promise<CloudAck>;
+  /** 展开成全屏视图（#1185，ADR-0278）：点栏左半（标题 / 计时 / 头像）或右边那颗钮 */
+  onExpand: () => void;
 }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -101,10 +104,18 @@ export function VoiceCallBar({
   return (
     <div role="region" aria-label="语音通话" className="shrink-0 border-b border-border/60 px-4 py-1.5">
       <div className="flex items-center gap-2 text-[12px]">
+        {/* 左半整块可点 = 展开全屏（#1185）：一条栏上「点开看看」是最自然的手势；右边另有一颗带名字的钮给找不到的人 */}
+        <button
+          type="button"
+          className="flex min-w-0 items-center gap-2 rounded-sm text-left hover:bg-accent/60 focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
+          aria-label="展开通话视图"
+          title="展开：全屏看谁在说话"
+          onClick={onExpand}
+        >
         <Phone className="size-[13px] text-[var(--brand)]" aria-hidden />
         <span className="font-medium">语音通话中</span>
         <span className="tabular-nums text-muted-foreground">{fmtElapsed(now - call.sinceTs)}</span>
-        <div className="flex items-center gap-1 pl-1" aria-label="通话成员">
+        <span className="flex items-center gap-1 pl-1" aria-label="通话成员">
           {call.participants.map((p) => {
             const speaking = voice?.speaking === p.agentId;
             const name = nameOf(p);
@@ -124,8 +135,12 @@ export function VoiceCallBar({
               </Avatar>
             );
           })}
-        </div>
+        </span>
+        </button>
         <div className="ml-auto flex items-center gap-1">
+          <Button variant="ghost" size="xs" aria-label="全屏" title="全屏通话视图" onClick={onExpand}>
+            <Maximize2 className="size-[13px]" aria-hidden />
+          </Button>
           <VoicePickerPopover ws={ws} current={call.participants.map((p) => p.agentId)} ready={ready} onSubmit={onUpdate}>
             <Button variant="ghost" size="xs" disabled={!ready} aria-label="加人" title="加人 / 移出">
               <UserPlus className="size-[13px]" aria-hidden />

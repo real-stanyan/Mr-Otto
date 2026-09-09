@@ -5,7 +5,7 @@
 // 没在听 → 有订阅画「加入」、没订阅画一句话不画钮（#722 纪律：点了必然失败的钮是撒谎）；
 // 在听 → 静音 / 结束通话两颗钮。
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 
 import { VoiceCallBar } from "../../src/renderer/src/components/VoiceCallBar.js";
@@ -33,7 +33,7 @@ const call: VoiceCallState = {
 const listening = (over: Partial<VoiceListenState> = {}): VoiceListenState => ({
   sessionId: "s", listening: true, muted: false, sinceSeq: 3, speaking: null, queued: 0, error: null, mic: MIC_OFF, ...over,
 });
-const noop = { onJoin: () => {}, onMute: () => {}, onMic: () => {}, onUpdate: async () => ({ ok: true as const }), onEnd: async () => ({ ok: true as const }) };
+const noop = { onJoin: () => {}, onMute: () => {}, onMic: () => {}, onUpdate: async () => ({ ok: true as const }), onEnd: async () => ({ ok: true as const }), onExpand: () => {} };
 
 describe("VoiceCallBar", () => {
   it("画通话中的参与者（名字现查名单）、计时从 sinceTs 起", () => {
@@ -116,5 +116,15 @@ describe("VoiceCallBar：麦克风", () => {
   it("没在听：没有麦克风钮", () => {
     render(<VoiceCallBar ws={ws} call={call} voice={null} available={true} ready={true} {...noop} />);
     expect(screen.queryByRole("button", { name: /麦/ })).not.toBeInTheDocument();
+  });
+});
+
+describe("VoiceCallBar：展开全屏（#1185）", () => {
+  it("点栏左半（标题 / 计时 / 头像那块）或右边「全屏」钮 → onExpand", () => {
+    const onExpand = vi.fn();
+    render(<VoiceCallBar ws={ws} call={call} voice={listening()} available={true} ready={true} {...noop} onExpand={onExpand} />);
+    fireEvent.click(screen.getByRole("button", { name: "展开通话视图" }));
+    fireEvent.click(screen.getByRole("button", { name: "全屏" }));
+    expect(onExpand).toHaveBeenCalledTimes(2);
   });
 });
