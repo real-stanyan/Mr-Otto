@@ -4,7 +4,7 @@
 
 import { charCount, parseEntries } from "./memoryStore.js";
 import { scanThreat } from "./threatPatterns.js";
-import { promptSafe } from "./promptSafe.js";
+import { promptSafe, promptSafeLine } from "./promptSafe.js";
 
 export const WIKI_DIR = "wiki";
 export const WIKI_TMP_DIR = ".tmp";
@@ -41,6 +41,10 @@ export function classifyWikiPath(p: string): WikiPathKind {
 }
 export function isWikiPagePath(p: string): boolean {
   return classifyWikiPath(p) === "page";
+}
+/** 一段目录/页名合不合法（小写 kebab）——check 的杂物规则拿它判顶层目录（#1211） */
+export function isWikiSegment(s: string): boolean {
+  return new RegExp(`^${SEGMENT}$`).test(s);
 }
 /** SCHEMA / team 可写不可删（spec §1.1） */
 export function isRemovableWikiPath(p: string): boolean {
@@ -234,16 +238,19 @@ export function indexGroups(pages: readonly WikiPage[]): WikiIndexGroup[] {
 
 /** 索引整份会拼进 system 提示词，而 title / summary 是从**磁盘上的页头**读回来的——
     走工具那条路的过了 validateWikiFields，bash 直接写出来的页头一道闸都没过。所以行里
-    那两格各过一次 `promptSafe`（`]` 与全角括号换同形替身、折空白、剥不可见字符），判据同
-    ADR-0226：这段字面量靠 `[[` `]]` ` — ` 撑结构，撑结构的字符就得转。`parseIndex` 仍是
-    正常标题的逆运算——promptSafe 对不含那几个字符的标题是恒等的 */
+    那两格各过一次 `promptSafeLine`（`]` 换同形替身、折空白、剥不可见字符），判据同
+    ADR-0226：这段字面量靠 `[[` `]]` ` — ` 撑结构，撑结构的字符就得转。
+    **不用全量 promptSafe**（#1215）：索引行的结构里没有全角括号/「」当分隔符，
+    全量版会把标题里的全角括号折成半角，索引与页详情就长成两个样子
+    （`毛利(口径)` vs `毛利（口径）`）。`parseIndex` 仍是正常标题的逆运算——
+    promptSafeLine 对不含 `]` 的标题是恒等的 */
 export function renderIndex(pages: readonly WikiPage[]): string {
   let out = INDEX_HEADER;
   for (const g of indexGroups(pages)) {
     out += `\n## ${g.name}\n`;
     for (const e of g.entries) {
-      const title = promptSafe(e.title);
-      const summary = promptSafe(e.summary);
+      const title = promptSafeLine(e.title);
+      const summary = promptSafeLine(e.summary);
       out += summary === "" ? `- [[${linkTarget(e.path)}]] ${title}\n` : `- [[${linkTarget(e.path)}]] ${title} — ${summary}\n`;
     }
   }
@@ -518,8 +525,14 @@ export function checkWiki(input: WikiCheckInput): WikiCheckReport {
     if (agentId !== null && bodyCharCount(p.body) > WIKI_OWN_BUDGET) findings.push({ rule: "own-over-budget", path: p.path, detail: `${bodyCharCount(p.body)} 字 > ${WIKI_OWN_BUDGET}` });
     const at = Date.parse(f.updatedAt);
     if (!f.pinned && Number.isFinite(at) && input.now - at >= WIKI_STALE_DAYS * 24 * 60 * 60 * 1000) findings.push({ rule: "stale", path: p.path, detail: `stale? ${Math.floor((input.now - at) / (24 * 60 * 60 * 1000))} 天没动` });
+    // 标题/摘要也要扫（#1215）：它们经 renderIndex 整份拼进 system 提示词，snapshot
+    // 那道闸认得出索引里的可疑指令，check 只扫正文的话报告里没有一条指向病因
+    const titleHit = scanThreat(f.title);
+    if (titleHit) findings.push({ rule: "threat", path: p.path, detail: `标题含可疑指令（${titleHit}），注入时索引会整份跳过` });
+    const summaryHit = scanThreat(f.summary);
+    if (summaryHit) findings.push({ rule: "threat", path: p.path, detail: `摘要含可疑指令（${summaryHit}），注入时索引会整份跳过` });
     const hit = scanThreat(p.body);
-    if (hit) findings.push({ rule: "threat", path: p.path, detail: `含可疑指令（${hit}），注入时已跳过正文` });
+    if (hit) findings.push({ rule: "threat", path: p.path, detail: `正文含可疑指令（${hit}），注入时已跳过正文` });
   }
   if (pinnedChars > WIKI_PINNED_BUDGET) findings.push({ rule: "pinned-over-budget", path: WIKI_TEAM_PATH, detail: `常驻合计 ${pinnedChars} 字 > ${WIKI_PINNED_BUDGET}` });
   for (const x of input.extraneous) findings.push({ rule: "extraneous", path: x, detail: "不是一层目录下的 .md 页" });

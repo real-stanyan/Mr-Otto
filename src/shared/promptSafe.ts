@@ -51,6 +51,21 @@ export const RESERVED_SPEAKER_LABEL = "系统";
 /** 系统旁白的 fromUid（sessionService 的 logChat 用这一个） */
 export const SYSTEM_SPEAKER_UID = "system";
 
+/** 窄版（#1215）：只转「闭合符 `]` + 空白折叠 + 不可见字符」，**不动全角括号与「」**。
+    给结构里没有拿全角括号/「」当分隔符的模板位用——wiki 索引行的结构符只有
+    `[[` `]]` 与 ` — `，全量 promptSafe 会把标题里的全角括号折成半角，索引和页详情
+    就长成两个样子（`毛利(口径)` vs `毛利（口径）`）。
+    promptSafe 本身就是在这个窄版之上再补那四个全角替换——空白折叠与 Cf/Cc 剥除
+    只有这一份实现，两处各写一份正则迟早分家 */
+export const promptSafeLine = (s: string): string =>
+  collapseWhitespace(s)
+    .replace(/\]/g, "］")
+    // Cf（格式字符，如 U+200B/U+2060/双向覆盖符）与 Cc（控制字符）：先折叠
+    // 空白再剥，顺序不能反——`\n` 要先变成空格，剩下的才是真正"不属于任何
+    // 已知空白类"的不可见字符。直接删除（不留替身）：这些字符本身就不该
+    // 有任何可见形态，留替身没有意义
+    .replace(/[\p{Cf}\p{Cc}]/gu, "");
+
 /** 换行折成空格；结构用到的分隔符各换一个同形不同码的替身：
     `]`→`］`、`（`→`(`、`）`→`)`、`「`→`｢`、`」`→`｣`。
     **空白那一半直接借 `collapseWhitespace`**（`/\s+/g`）而不是自己写 `[\r\n]`：
@@ -60,17 +75,11 @@ export const SYSTEM_SPEAKER_UID = "system";
     **替换不是删除**：注入的正文照旧留在原处让人看得见、让日志对得上，
     只是失去结构意义。 */
 export const promptSafe = (s: string): string =>
-  collapseWhitespace(s)
-    .replace(/\]/g, "］")
+  promptSafeLine(s)
     .replace(/（/g, "(")
     .replace(/）/g, ")")
     .replace(/「/g, "｢")
-    .replace(/」/g, "｣")
-    // Cf（格式字符，如 U+200B/U+2060/双向覆盖符）与 Cc（控制字符）：先折叠
-    // 空白再剥，顺序不能反——`\n` 要先变成空格，剩下的才是真正"不属于任何
-    // 已知空白类"的不可见字符。直接删除（不留替身）：这些字符本身就不该
-    // 有任何可见形态，留替身没有意义
-    .replace(/[\p{Cf}\p{Cc}]/gu, "");
+    .replace(/」/g, "｣");
 
 /** 正文过闸（#965）：`[label]: text` 框架下，正文里一个 `\n[系统]: …` 就是一行干净的
     伪造说话人行——标签那一栏硬化了，正文这条路结构性地封不住，只能让"换行之后
