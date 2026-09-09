@@ -3,7 +3,10 @@ import {
   WIKI_SCHEMA_PATH, agentIdOfPage, agentPagePath, classifyWikiPath, extractWikiLinks, indexGroups,
   isRemovableWikiPath, parseIndex, parseWikiPage, renderIndex, serializeWikiPage, singleLine,
   validateWikiFields, type WikiPage,
+  DEFAULT_SCHEMA, WIKI_NUDGE_WRITES, logLine, migrateTiersToPages, nudgeFrom, parseHeadsDump, parseLogLines,
+  parsePagesDump, parseSnapshotDump, seedPages,
 } from "../../src/shared/wiki.js";
+
 
 const page = (path: string, over: Partial<WikiPage["front"]> = {}, body = "正文"): WikiPage => ({
   path,
@@ -100,5 +103,76 @@ describe("索引（spec §1.3）", () => {
     const text = renderIndex(p);
     expect(text).toContain("- [[q]] Q – A — one");
     expect(parseIndex(text)).toEqual([{ name: "未分目录", entries: [{ path: "q.md", title: "Q – A", summary: "one", pinned: false }] }]);
+  });
+});
+
+const DAY = 24 * 60 * 60 * 1000;
+const T0 = Date.UTC(2026, 8, 9, 14, 2); // 2026-09-09 14:02 UTC
+
+describe("日志行（spec §1.4）", () => {
+  it("格式固定，往返解析；note 里的换行折成空格；认不出的 kind 跳过", () => {
+    const line = logLine(T0, "write", "customers/acme.md", "运营", "补月结\n条款");
+    expect(line).toBe("## [2026-09-09 14:02] write | customers/acme.md | 运营 | 补月结 条款");
+    expect(parseLogLines(`${line}\n## [2026-09-09 14:03] bogus | x | y | z\n乱七八糟`)).toEqual([
+      { at: T0, kind: "write", path: "customers/acme.md", who: "运营", note: "补月结 条款" },
+    ]);
+  });
+});
+
+describe("nudge（spec §7.2）", () => {
+  const lines = (n: number, kind = "write", from = T0) => Array.from({ length: n }, (_, i) => logLine(from + i * 60_000, kind as never, `p${i}.md`, "x", "")).join("\n");
+  it("空日志 → null；写入不足 20 且不到 14 天 → null", () => {
+    expect(nudgeFrom("", T0)).toBeNull();
+    expect(nudgeFrom(lines(5), T0 + DAY)).toBeNull();
+  });
+  it("自上次 check 起写入 ≥ 20 → 说次数", () => {
+    const text = `${logLine(T0 - DAY, "check", "", "系统", "")}\n${lines(WIKI_NUDGE_WRITES)}`;
+    expect(nudgeFrom(text, T0 + DAY)).toContain("20 次");
+  });
+  it("没 check 过、距第一条写入 ≥ 14 天 → 说天数；check 过则按 check 那条算", () => {
+    expect(nudgeFrom(lines(1), T0 + 14 * DAY)).toContain("14 天");
+    expect(nudgeFrom(`${lines(1)}\n${logLine(T0 + 10 * DAY, "check", "", "系统", "")}`, T0 + 14 * DAY)).toBeNull();
+  });
+});
+
+describe("迁移（spec §5）", () => {
+  it("SHARED 的 § 条目 → team.md 的 bullet（保留写入者前缀，pinned）；OWN → agents/<id>.md（标题用名字）；空 OWN 不出页", () => {
+    const pages = migrateTiersToPages(
+      [{ agentId: "", content: "[运营] 销量含退款\n§\n[广告] ROI 按周" }, { agentId: "ops", content: "常用查询：按月" }, { agentId: "ads", content: "" }],
+      new Map([["ops", "运营"]]),
+      "2026-09-09T00:00:00Z",
+    );
+    expect(pages.map((p) => p.path)).toEqual(["team.md", "agents/ops.md"]);
+    expect(pages[0]!.front.pinned).toBe(true);
+    expect(pages[0]!.body).toBe("- [运营] 销量含退款\n- [广告] ROI 按周\n");
+    expect(pages[1]!.front.title).toBe("运营");
+    expect(pages[1]!.body).toBe("- 常用查询：按月\n");
+  });
+  it("种子：SCHEMA + 空的 team（pinned）", () => {
+    const pages = seedPages("2026-09-09T00:00:00Z");
+    expect(pages.map((p) => p.path)).toEqual(["SCHEMA.md", "team.md"]);
+    expect(pages[0]!.body).toBe(DEFAULT_SCHEMA);
+    expect(pages[1]!.front.pinned).toBe(true);
+  });
+});
+
+describe("三种 dump 解析（NUL 分记录、TAB 分字段）", () => {
+  it("snapshot：index / pinned×N / own 或 own-missing / log；尾记录不完整 → 抛", () => {
+    const out = "index\t# 索引\n\0pinned\tteam.md\t---\ntitle: T\n---\n口径\0own-missing\0log\t## [2026-09-09 14:02] write | a.md | x | \0";
+    expect(parseSnapshotDump(out)).toEqual({
+      index: "# 索引\n",
+      pinned: [{ path: "team.md", text: "---\ntitle: T\n---\n口径" }],
+      own: null,
+      logTail: "## [2026-09-09 14:02] write | a.md | x | ",
+    });
+    expect(parseSnapshotDump("index\t# 索引\0own\t我的\0log\t\0").own).toBe("我的");
+    expect(() => parseSnapshotDump("index\t# 索引\0pinned\tteam.md\t半截")).toThrow("截断");
+  });
+  it("heads / pages：path\\t载荷，不完整的尾记录丢弃", () => {
+    expect(parseHeadsDump("a.md\ttitle: A\0b/c.md\ttitle: C\nsummary: s\0b/d.md\t半")).toEqual([
+      { path: "a.md", head: "title: A" },
+      { path: "b/c.md", head: "title: C\nsummary: s" },
+    ]);
+    expect(parsePagesDump("a.md\t---\ntitle: A\n---\n正文\0")).toEqual([{ path: "a.md", text: "---\ntitle: A\n---\n正文" }]);
   });
 });

@@ -2,7 +2,7 @@
 // 三端共用（runtime 工具/服务、桌面设置页、将来手机端），纪律同 memoryStore.ts：不 import fs / docker / supabase。
 // 这里只有「页面长什么样、索引怎么生成、什么算合法」；读写容器的事在 services/runtime/src/wikiFs.ts。
 
-import { charCount } from "./memoryStore.js";
+import { charCount, parseEntries } from "./memoryStore.js";
 
 export const WIKI_DIR = "wiki";
 export const WIKI_TMP_DIR = ".tmp";
@@ -256,4 +256,186 @@ export function parseIndex(text: string): WikiIndexGroup[] {
     current.entries.push({ path, title, summary, pinned: current.name === INDEX_PINNED_GROUP });
   }
   return groups;
+}
+
+// ── 日志（spec §1.4）───────────────────────────────────────────────────────
+export type WikiLogKind = "write" | "remove" | "edit" | "migrate" | "restore" | "seed" | "check" | "external";
+const LOG_KINDS: ReadonlySet<string> = new Set(["write", "remove", "edit", "migrate", "restore", "seed", "check", "external"]);
+export interface WikiLogEntry {
+  at: number;
+  kind: WikiLogKind;
+  path: string;
+  who: string;
+  note: string;
+}
+export const WIKI_NUDGE_WRITES = 20;
+export const WIKI_NUDGE_DAYS = 14;
+export const WIKI_STALE_DAYS = 60;
+export const WIKI_LOG_TAIL_LINES = 50;
+export const WIKI_LOG_ROTATE_BYTES = 100 * 1024;
+
+/** UTC，分钟精度——VPS 的钟就是 UTC，SCHEMA 里写明 */
+export function formatLogTime(ms: number): string {
+  return new Date(ms).toISOString().slice(0, 16).replace("T", " ");
+}
+export function logLine(atMs: number, kind: WikiLogKind, path: string, who: string, note: string): string {
+  return `## [${formatLogTime(atMs)}] ${kind} | ${singleLine(path)} | ${singleLine(who)} | ${singleLine(note)}`;
+}
+export function parseLogLines(text: string): WikiLogEntry[] {
+  const out: WikiLogEntry[] = [];
+  for (const line of text.split("\n")) {
+    const m = /^## \[(\d{4})-(\d{2})-(\d{2}) (\d{2}):(\d{2})\] (\w+) \| ([^|]*) \| ([^|]*) \| (.*)$/.exec(line);
+    if (!m || !LOG_KINDS.has(m[6]!)) continue;
+    const at = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]), Number(m[4]), Number(m[5]));
+    out.push({ at, kind: m[6] as WikiLogKind, path: m[7]!.trim(), who: m[8]!.trim(), note: m[9]!.trim() });
+  }
+  return out;
+}
+
+/** 自上一条 check 起写入 ≥ 20，或距上一条 check（没有的话距第一条写入）≥ 14 天 → 一句话；否则 null（spec §7.2） */
+export function nudgeFrom(logTail: string, now: number): string | null {
+  const entries = parseLogLines(logTail);
+  if (entries.length === 0) return null;
+  let lastCheck = -1;
+  for (let i = entries.length - 1; i >= 0; i--) if (entries[i]!.kind === "check") { lastCheck = i; break; }
+  const isWrite = (e: WikiLogEntry): boolean => e.kind === "write" || e.kind === "remove" || e.kind === "edit";
+  const since = entries.slice(lastCheck + 1).filter(isWrite);
+  const anchor = lastCheck >= 0 ? entries[lastCheck]!.at : entries.find(isWrite)?.at;
+  const days = anchor === undefined ? 0 : Math.floor((now - anchor) / (24 * 60 * 60 * 1000));
+  if (since.length < WIKI_NUDGE_WRITES && days < WIKI_NUDGE_DAYS) return null;
+  const why = since.length >= WIKI_NUDGE_WRITES ? `自上次整理以来写入了 ${since.length} 次` : `已 ${days} 天没整理`;
+  return `wiki ${why}；有空档时跑 wiki check 并按 SCHEMA.md 的整理步骤处理。`;
+}
+
+// ── 迁移与种子（spec §5）────────────────────────────────────────────────────
+const SYSTEM_WRITER = "系统";
+
+function bullets(entries: readonly string[]): string {
+  return entries.map((e) => `- ${e}`).join("\n") + (entries.length ? "\n" : "");
+}
+
+export function migrateTiersToPages(
+  rows: readonly { agentId: string; content: string }[],
+  names: ReadonlyMap<string, string>,
+  nowIso: string,
+): WikiPage[] {
+  const out: WikiPage[] = [];
+  const shared = rows.find((r) => r.agentId === "");
+  out.push({
+    path: WIKI_TEAM_PATH,
+    front: { title: "团队口径", summary: "所有智能体每轮都看得到的团队口径与分工", pinned: true, updatedBy: SYSTEM_WRITER, updatedAt: nowIso, sources: [] },
+    body: bullets(parseEntries(shared?.content ?? null)),
+  });
+  for (const r of rows) {
+    if (r.agentId === "") continue;
+    const entries = parseEntries(r.content);
+    if (entries.length === 0) continue;
+    out.push({
+      path: agentPagePath(r.agentId),
+      front: { title: names.get(r.agentId) ?? r.agentId, summary: "这只智能体自己的工作习惯与踩过的坑", pinned: false, updatedBy: SYSTEM_WRITER, updatedAt: nowIso, sources: [] },
+      body: bullets(entries),
+    });
+  }
+  return out;
+}
+
+export const DEFAULT_SCHEMA = `# 约定
+
+这个目录是团队的 wiki：由智能体维护、人也能改的一组互链 markdown 页面。时间一律 UTC。
+
+## 1. 页面类型与命名
+- 实体页（客户 / 产品 / 供应商 / 人）、概念页（口径 / 定义）、来源摘要（一份文档说了什么）、综合页（把几页合成一个结论）。
+- 一层目录、小写英文 kebab：customers/acme.md、concepts/gross-sales.md。标题可以是中文，住页头。
+- team.md 是常驻页（所有智能体每轮都看得到），agents/<id>.md 是每只智能体自己的一页（只注入给它自己）。
+
+## 2. 页头
+title / summary（索引里就这一行）/ pinned / updated_by / updated_at / sources。updated_by 与 updated_at 由工具盖章。
+sources 写「会话 id#seq」或 /work 里的路径——原始材料不复制进来。
+
+## 3. 什么时候记、记哪一页
+- 记：业务口径、数据定义、客户约定、稳定的分工、工具怪癖——优先记能减少同事再次纠正你的事。不记：任务进度、一周内会过期的东西。
+- 先 wiki_read 搜一下有没有页；有就改那页，别另开一页。一个事实只住一页，用 [[路径]] 链到相关页。
+- 团队级口径写 team（常驻预算 2200 字）；只对你成立的写 agents/<你>（1100 字）。pinned 是「每轮都注入」，别轻易点。
+
+## 4. 怎么答
+涉及客户、口径、分工、历史决定：先看索引，有对应页就 read 再答；答里引用页路径。答得好的问题回填成一页。
+
+## 5. 整理步骤（人说「整理 wiki」时由管理员跑）
+1. wiki check 拿机械报告 2. 修断链、处理孤儿页 3. 逐页看 stale? 标记：更新或删除 4. 找矛盾（同一实体两页说法不同、team 里两条口径打架）5. 合并重复页 6. 把答过的好问题回填成页 7. 再 check 一次收口。
+`;
+
+export function schemaPage(nowIso: string): WikiPage {
+  return {
+    path: WIKI_SCHEMA_PATH,
+    front: { title: "约定", summary: "这个 wiki 怎么用：页面类型、页头、什么时候记、整理步骤", pinned: false, updatedBy: SYSTEM_WRITER, updatedAt: nowIso, sources: [] },
+    body: DEFAULT_SCHEMA,
+  };
+}
+
+export function seedPages(nowIso: string): WikiPage[] {
+  return [
+    schemaPage(nowIso),
+    {
+      path: WIKI_TEAM_PATH,
+      front: { title: "团队口径", summary: "所有智能体每轮都看得到的团队口径与分工", pinned: true, updatedBy: SYSTEM_WRITER, updatedAt: nowIso, sources: [] },
+      body: "还没有口径。用 wiki write 写第一条——这一页所有智能体每轮都看得到。\n",
+    },
+  ];
+}
+
+// ── 容器脚本输出的解析（NUL 分记录、TAB 分字段；同 workFiles.ts 的纪律）──────
+export interface WikiSnapshotDump {
+  index: string;
+  pinned: { path: string; text: string }[];
+  own: string | null;
+  logTail: string;
+}
+
+/** 记录以 NUL 结尾；最后一段非空 = 被截断的尾记录 */
+function records(stdout: string, onTruncated: "throw" | "drop"): string[] {
+  const parts = stdout.split("\0");
+  const tail = parts.pop() ?? "";
+  if (tail !== "") {
+    if (onTruncated === "throw") throw new Error("脚本输出被截断（尾记录没有结尾 NUL）");
+  }
+  return parts;
+}
+
+export function parseSnapshotDump(stdout: string): WikiSnapshotDump {
+  const out: WikiSnapshotDump = { index: "", pinned: [], own: null, logTail: "" };
+  for (const rec of records(stdout, "throw")) {
+    const t1 = rec.indexOf("\t");
+    const kind = t1 < 0 ? rec : rec.slice(0, t1);
+    const rest = t1 < 0 ? "" : rec.slice(t1 + 1);
+    switch (kind) {
+      case "index": out.index = rest; break;
+      case "own": out.own = rest; break;
+      case "own-missing": out.own = null; break;
+      case "log": out.logTail = rest; break;
+      case "pinned": {
+        const t2 = rest.indexOf("\t");
+        if (t2 < 0) throw new Error("脚本输出被截断（pinned 记录缺字段）");
+        out.pinned.push({ path: rest.slice(0, t2), text: rest.slice(t2 + 1) });
+        break;
+      }
+      default: break;
+    }
+  }
+  return out;
+}
+
+function pathPayload(stdout: string): { path: string; payload: string }[] {
+  const out: { path: string; payload: string }[] = [];
+  for (const rec of records(stdout, "drop")) {
+    const t = rec.indexOf("\t");
+    if (t < 0) continue;
+    out.push({ path: rec.slice(0, t), payload: rec.slice(t + 1) });
+  }
+  return out;
+}
+export function parseHeadsDump(stdout: string): { path: string; head: string }[] {
+  return pathPayload(stdout).map((r) => ({ path: r.path, head: r.payload }));
+}
+export function parsePagesDump(stdout: string): { path: string; text: string }[] {
+  return pathPayload(stdout).map((r) => ({ path: r.path, text: r.payload }));
 }
