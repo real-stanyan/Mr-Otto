@@ -83,6 +83,12 @@ export interface UserMessageEvent extends SessionEventBase {
       runtime 替它落的（fromUid 仍是点火那个人——审批与代理授权按人算）。depth 与前一条
       agent_relay 相同。缺席 = 人说的 / 旧日志。**只影响 UI 与接力判据**，模型投影照普通 user 消息读 */
   relay?: { fromAgentId: string; depth: number };
+  /** 云会话派活（#1153，ADR-0269）：这句话没有 @ 任何人，`mentions` 里那几只是
+      runtime 用便宜模型按职责判出来的，不是人点的。缺席 = 人亲手 @ 的 / 接力 /
+      旧日志。**只是记号**：起 turn、排队、护栏、接力链首（`isHumanOpening`）都
+      把它当普通的人话点火——它与人亲手 @ 的那条走同一条路，这正是设计（判完再
+      落、单事件，见 ADR-0269）。模型投影不读它 */
+  dispatch?: "auto";
 }
 
 /** 文本文件附件:全文进日志(快照),不进附件库(附件库只收图片) */
