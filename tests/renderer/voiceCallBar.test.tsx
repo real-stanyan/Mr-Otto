@@ -12,6 +12,7 @@ import { VoiceCallBar } from "../../src/renderer/src/components/VoiceCallBar.js"
 import type { WorkspaceSnapshot } from "../../src/shared/workspaces.js";
 import type { VoiceCallState } from "../../src/shared/voiceCall.js";
 import type { VoiceListenState } from "../../src/renderer/src/store.js";
+import { MIC_OFF } from "../../src/renderer/src/lib/voiceMic.js";
 
 afterEach(() => cleanup());
 
@@ -30,9 +31,9 @@ const call: VoiceCallState = {
   sinceSeq: 3, sinceTs: Date.now() - 65_000,
 };
 const listening = (over: Partial<VoiceListenState> = {}): VoiceListenState => ({
-  sessionId: "s", listening: true, muted: false, sinceSeq: 3, speaking: null, queued: 0, error: null, ...over,
+  sessionId: "s", listening: true, muted: false, sinceSeq: 3, speaking: null, queued: 0, error: null, mic: MIC_OFF, ...over,
 });
-const noop = { onJoin: () => {}, onMute: () => {}, onUpdate: async () => ({ ok: true as const }), onEnd: async () => ({ ok: true as const }) };
+const noop = { onJoin: () => {}, onMute: () => {}, onMic: () => {}, onUpdate: async () => ({ ok: true as const }), onEnd: async () => ({ ok: true as const }) };
 
 describe("VoiceCallBar", () => {
   it("画通话中的参与者（名字现查名单）、计时从 sinceTs 起", () => {
@@ -79,5 +80,41 @@ describe("VoiceCallBar", () => {
     render(<VoiceCallBar ws={ws} call={call} voice={listening()} available={true} ready={false} {...noop} />);
     expect(screen.getByRole("button", { name: "结束通话" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "加人" })).toBeDisabled();
+  });
+});
+
+// 麦克风那半（#1176，ADR-0273）：在听时多一颗麦克风钮（开着 = 「关麦」，关着 = 「开麦」），
+// 实时字幕一行，没权限那句画在错误行。
+describe("VoiceCallBar：麦克风", () => {
+  it("麦开着：钮叫「关麦」、点了 onMic(false)；字幕画「你：…」", () => {
+    const onMic = vi.fn();
+    render(<VoiceCallBar ws={ws} call={call} voice={listening({ mic: { ...MIC_OFF, status: "listening", transcript: "帮我看" } })} available={true} ready={true} {...noop} onMic={onMic} />);
+    screen.getByRole("button", { name: "关麦" }).click();
+    expect(onMic).toHaveBeenCalledWith(false);
+    expect(screen.getByText(/你：帮我看/)).toBeInTheDocument();
+  });
+
+  it("麦关着：钮叫「开麦」、点了 onMic(true)；没字幕", () => {
+    const onMic = vi.fn();
+    render(<VoiceCallBar ws={ws} call={call} voice={listening({ mic: MIC_OFF })} available={true} ready={true} {...noop} onMic={onMic} />);
+    screen.getByRole("button", { name: "开麦" }).click();
+    expect(onMic).toHaveBeenCalledWith(true);
+    expect(screen.queryByText(/你：/)).not.toBeInTheDocument();
+  });
+
+  it("半双工暂停：钮仍是「关麦」但标出「对方在说」；没权限：那句话画在错误行", () => {
+    render(<VoiceCallBar ws={ws} call={call} voice={listening({ mic: { ...MIC_OFF, status: "paused" } })} available={true} ready={true} {...noop} />);
+    const btn = screen.getByRole("button", { name: "关麦" });
+    expect(btn).toHaveAttribute("data-mic", "paused");
+    expect(btn).toHaveAttribute("title", expect.stringContaining("在说话"));
+    cleanup();
+    render(<VoiceCallBar ws={ws} call={call} voice={listening({ mic: { ...MIC_OFF, status: "denied", error: "没有「麦克风」权限：系统设置 → 隐私与安全性 → 麦克风" } })} available={true} ready={true} {...noop} />);
+    expect(screen.getByText(/系统设置/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "开麦" })).toHaveAttribute("data-mic", "denied");
+  });
+
+  it("没在听：没有麦克风钮", () => {
+    render(<VoiceCallBar ws={ws} call={call} voice={null} available={true} ready={true} {...noop} />);
+    expect(screen.queryByRole("button", { name: /麦/ })).not.toBeInTheDocument();
   });
 });

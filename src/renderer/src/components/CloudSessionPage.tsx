@@ -198,6 +198,7 @@ export function CloudSessionPage({
   const billing = useChat((s) => s.billing);
   const joinVoiceCall = useChat((s) => s.joinVoiceCall);
   const setVoiceMuted = useChat((s) => s.setVoiceMuted);
+  const setVoiceMic = useChat((s) => s.setVoiceMic);
   const confirm = useConfirm();
   const setSandboxApproval = useChat((s) => s.setWorkspaceSandboxApproval);
   // 名单陈旧时的刷新（#935 / #957 C-I4）：选人弹层的空态按钮、发送前对认不出
@@ -747,6 +748,7 @@ export function CloudSessionPage({
           ready={ready}
           onJoin={joinVoiceCall}
           onMute={setVoiceMuted}
+          onMic={setVoiceMic}
           onUpdate={(ids) => cloudCall(ids)}
           onEnd={endCall}
         />
