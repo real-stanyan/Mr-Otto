@@ -350,8 +350,9 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
   - `parseTitleReply(raw: string): string | null`
   - `titlePrompt(input: TitleInput): string`
   - `interface TitleInput { currentTitle: string; context: readonly string[] }`
-  - `requestTitle(deps: TitleDeps, input: TitleInput, models: readonly string[]): Promise<string | null>`
-  - `requestTitleAsOwner(deps: OwnerTitleDeps, input: TitleInput, models: readonly string[]): Promise<string | null>`
+  - `interface TitleVerdict { title: string; model: string }`
+  - `requestTitle(deps: TitleDeps, input: TitleInput, models: readonly string[]): Promise<TitleVerdict | null>`
+  - `requestTitleAsOwner(deps: OwnerTitleDeps, input: TitleInput, models: readonly string[]): Promise<TitleVerdict | null>`
 
 - [ ] **Step 1: 写失败的测试**
 
@@ -442,7 +443,7 @@ describe("requestTitle", () => {
       json: async () => ({ choices: [{ message: { content: "新名字" } }] }),
     });
     await expect(requestTitle({ llmBase: "http://x/llm/v1", headers: {}, fetchImpl: fetchImpl as never }, input, ["cheap", "pricey"]))
-      .resolves.toBe("新名字");
+      .resolves.toEqual({ title: "新名字", model: "cheap" });
     // 用的是最便宜那款（me.models 是从便宜到贵有序的，ADR-0237）
     const body = JSON.parse((fetchImpl.mock.calls[0]![1] as { body: string }).body) as { model: string };
     expect(body.model).toBe("cheap");
@@ -582,6 +583,12 @@ export function parseTitleReply(raw: string): string | null {
   return stripped.length > TITLE_MAX_CHARS ? stripped.slice(0, TITLE_MAX_CHARS) : stripped;
 }
 
+/** 模型起的名字 + 它是哪个模型起的。`session_autotitled.model` 要的就是后者 */
+export interface TitleVerdict {
+  title: string;
+  model: string;
+}
+
 export interface TitleDeps {
   /** 网关的 `/llm/v1` 前缀（不带尾斜杠） */
   llmBase: string;
@@ -606,7 +613,7 @@ export async function requestTitle(
   deps: TitleDeps,
   input: TitleInput,
   models: readonly string[]
-): Promise<string | null> {
+): Promise<TitleVerdict | null> {
   const fail = (reason: string): null => {
     deps.log?.(`会话命名：${reason}`);
     return null;
@@ -636,7 +643,10 @@ export async function requestTitle(
     const body = (await res.json()) as { choices?: { message?: { content?: unknown } }[] };
     const content = body.choices?.[0]?.message?.content;
     if (typeof content !== "string") return fail("模型没有回正文");
-    return parseTitleReply(content);
+    const title = parseTitleReply(content);
+    // 型号一起回：`session_autotitled.model` 那一格是**溯源**用的（「这个名字是
+    // 哪个模型起的」），写一个我们自己编的常量进去就是句假话
+    return title === null ? null : { title, model: cheap };
   } catch (e) {
     if (controller.signal.aborted) return fail(`命名超时（${timeoutMs}ms）`);
     return fail((e as Error).message);
@@ -663,7 +673,7 @@ export async function requestTitleAsOwner(
   deps: OwnerTitleDeps,
   input: TitleInput,
   models: readonly string[]
-): Promise<string | null> {
+): Promise<TitleVerdict | null> {
   return requestTitle(
     {
       llmBase: `${deps.edgeBase}/llm/v1`,
@@ -935,7 +945,7 @@ Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>"
 - Consumes: Task 1（`lastActiveWindowParticipants` / `advanceParticipants` / `countHumanMessages` / `humanSpeakerOf`）、Task 2（`titleStepFor` / `seedTitleFrom` / `TitleInput`）、Task 3（`CloudSessionMeta`）、已有的 `dispatchContext`
 - Produces: `CloudSessionOpts` 新增两格
   - `sessionMeta: CloudSessionMeta`（**必需**）
-  - `retitle?: (input: TitleInput) => Promise<string | null>`（**可选**，缺席 = 只有首行兜底、不打网关）
+  - `retitle?: (input: TitleInput) => Promise<TitleVerdict | null>`（**可选**，缺席 = 只有首行兜底、不打网关）
 
 - [ ] **Step 1: 写失败的测试**
 
@@ -962,7 +972,7 @@ describe("会话的名字与最近参与的人（#1213）", () => {
 
   it("第二条人类发言让模型判一次；回了新标题就落 session_autotitled 并写库", async () => {
     const meta = createInMemoryCloudSessionMeta();
-    const retitle = vi.fn().mockResolvedValue("月度报表");
+    const retitle = vi.fn().mockResolvedValue({ title: "月度报表", model: "cheap" });
     const s = makeSession({ sessionMeta: meta, retitle });
     await s.say("u1", "张三", "第一句", false, [], undefined, undefined);
     await s.say("u1", "张三", "第二句", false, [], undefined, undefined);
@@ -1031,17 +1041,19 @@ Expected: FAIL —— 装配缺 `sessionMeta`（tsc）/ 断言拿到 `null`
       谁在里面说过话」的会话——那正是这条 issue 要拆掉的东西，失败模式本来就是无声的。
       写的是日志的投影，所以它失败只记一行日志、不把一句已经发出去的话翻成失败 */
   sessionMeta: CloudSessionMeta;
-  /** 会话命名（#1213）：拿最便宜那款读「当前标题 + 最近几句」，回新标题或 null（不改）。
+  /** 会话命名（#1213）：拿最便宜那款读「当前标题 + 最近几句」，回新标题 + 起名的
+      那个型号，或 null（不改）。**要带型号**：`session_autotitled.model` 那一格是
+      溯源用的，写一个我们自己编的常量进去就是句假话。
       daemon 给——它才有 hostedProbe 与 edge 凭据（同 dispatch / pickAutoModel）。
       **可选**：缺席 = 只有第一条人类发言那次首行兜底，一次网关都不打 */
-  retitle?: (input: TitleInput) => Promise<string | null>;
+  retitle?: (input: TitleInput) => Promise<TitleVerdict | null>;
 ```
 
 文件顶部补两条 import：
 
 ```ts
 import type { CloudSessionMeta } from "./cloudSessionMeta.js";
-import { seedTitleFrom, titleStepFor, type TitleInput } from "./sessionTitler.js";
+import { seedTitleFrom, titleStepFor, type TitleInput, type TitleVerdict } from "./sessionTitler.js";
 import {
   advanceParticipants,
   countHumanMessages,
@@ -1123,16 +1135,18 @@ import {
       // `opts.agents()` 的 Supabase 往返，为一个侧栏上的名字多打一次网络不值
       const context = dispatchContext(dispatchTail(), (id) => id);
       const next = await retitle({ currentTitle: title, context });
-      if (next === null || next === title) return;
-      title = next;
+      if (next === null || next.title === title) return;
+      title = next.title;
       notify(store.append({
         sessionId,
         ts: Date.now(),
         type: "session_autotitled",
-        title: next,
-        model: "cloud-titler",
+        title: next.title,
+        // 溯源：这个名字是哪个模型起的（不落 usage —— 钱的事实在网关的
+        // usage_event 里，那才是唯一一本账；这里挂一份只会变成第二份）
+        model: next.model,
       }));
-      await opts.sessionMeta.setTitle(next);
+      await opts.sessionMeta.setTitle(next.title);
     })().catch((err) => {
       console.warn(`[otto-runtime] 会话命名失败（session=${sessionId}）：${err instanceof Error ? err.message : String(err)}`);
     });
