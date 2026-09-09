@@ -162,6 +162,9 @@ function thinkingBody(t: OpenAICompatibleOptions["thinking"]): Record<string, un
 /** 非流式返回里我们关心的最小结构 */
 interface ChatCompletionResponse {
   choices: {
+    /** stop / tool_calls / length / content_filter…；工具参数解析失败时靠它分辨
+        「被截断」与「写错了」（#1131） */
+    finish_reason?: string | null;
     message: {
       content: string | null;
       /** 思考过程。DeepSeek/GLM 叫 reasoning_content，Ollama 的 /v1 叫 reasoning
@@ -190,8 +193,15 @@ interface ChatCompletionChunk {
         function?: { name?: string; arguments?: string };
       }[];
     };
+    /** 终块才带。它与 `data: [DONE]` 是「流收尾了」的两个凭据——有一个就算收尾，
+        两个都没有才是断流（#1131；不是每家都发 [DONE]） */
+    finish_reason?: string | null;
   }[];
   usage?: Usage | null;
+  /** 上游把错误塞进流里的写法（OpenRouter 有文档，OpenAI 兼容的别家也见过）：
+      一块只有 error 没有 choices，之后流就关了。不认它，这一块会被当空块跳过、
+      随后按「断流」报，上游那句话就丢了 */
+  error?: { message?: string; code?: unknown; type?: string } | string | null;
 }
 
 interface Usage {
@@ -228,6 +238,15 @@ async function readSSE(
   usage?: Usage;
   /** 网关贴在流末尾那笔「本次花费」（micro-USD，#857）。缺席 ≠ 0 */
   costMicro?: number;
+  /** 流有没有正常收尾：见过 `data: [DONE]` 或带 finish_reason 的块。false = 上游
+      在终块之前就关了连接（#1131） */
+  terminated: boolean;
+  /** 终块报的 finish_reason；没报 = null */
+  finishReason: string | null;
+  /** 上游塞在流里的错误文案；null = 没有 */
+  streamError: string | null;
+  /** 一共读到多少字节——断流的错误文案里报它，让人分得清「一个字都没来」与「说到一半」 */
+  bytes: number;
 }> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
@@ -236,6 +255,10 @@ async function readSSE(
   let reasoning = "";
   let usage: Usage | undefined;
   let costMicro: number | undefined;
+  let terminated = false;
+  let finishReason: string | null = null;
+  let streamError: string | null = null;
+  let bytes = 0;
   // index 稀疏归位：理论上模型可以乱序发多个 tool_call 的碎片
   const calls: { id: string; name: string; args: string }[] = [];
 
@@ -246,10 +269,24 @@ async function readSSE(
     if (cost !== null) { costMicro = cost; return; }
     if (!line.startsWith("data:")) return; // SSE 注释行 / 空行
     const payload = line.slice(5).trim();
-    if (!payload || payload === "[DONE]") return;
+    if (!payload) return;
+    if (payload === "[DONE]") {
+      terminated = true;
+      return;
+    }
     const chunk = JSON.parse(payload) as ChatCompletionChunk;
+    if (chunk.error) {
+      streamError =
+        typeof chunk.error === "string" ? chunk.error : (chunk.error.message ?? JSON.stringify(chunk.error));
+      return;
+    }
     if (chunk.usage) usage = chunk.usage; // 终块专属（include_usage）
-    const delta = chunk.choices?.[0]?.delta;
+    const choice = chunk.choices?.[0];
+    if (choice?.finish_reason) {
+      terminated = true;
+      finishReason = choice.finish_reason;
+    }
+    const delta = choice?.delta;
     if (!delta) return;
     // 思考碎片先于正文到达（模型先想后说），两条频道分开攒、分开播
     const think = delta.reasoning_content ?? delta.reasoning;
@@ -272,18 +309,46 @@ async function readSSE(
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
+    bytes += value.byteLength;
     buf += decoder.decode(value, { stream: true });
     const lines = buf.split("\n");
     buf = lines.pop() ?? ""; // 最后一段可能是半行，留着
     for (const line of lines) feedLine(line);
   }
-  if (buf) feedLine(buf); // 流关了缓冲还有货 = 服务器没带尾换行
+  if (buf) {
+    // 流关了缓冲还有货：要么服务器没带尾换行（完整的一行，照喂），要么流在一行
+    // 中间断掉（#1131 真机：一块的 id 串写了一半上游就关了）。后者 JSON.parse
+    // 必炸，但那不是这一行的错，是流没收尾——吞掉语法错，让调用方按 terminated
+    // 说清是断流。已经收尾之后的残渣仍然照抛：那是真的协议违规，别悄悄放过
+    try {
+      feedLine(buf);
+    } catch (err) {
+      if (terminated) throw err;
+    }
+  }
 
   return {
     content, reasoning, toolCalls: calls.filter(Boolean),
     ...(usage ? { usage } : {}),
     ...(costMicro !== undefined ? { costMicro } : {}),
+    terminated, finishReason, streamError, bytes,
   };
+}
+
+/** 碎片拼完才 parse——半截 JSON parse 必炸，所以失败要说清是哪一种（#1131）：
+    终块说 length = 模型输出撞了长度上限、参数被截断，不是模型写错了；其余才是
+    模型给的参数本身不合法。两种都发生在首 token 之后，不重试，但话得让人看得懂——
+    原来冒上去的是裸的 `Unterminated string in JSON at position 21` */
+function parseToolArgs(tc: { name: string; args: string }, finishReason: string | null): unknown {
+  try {
+    return JSON.parse(tc.args) as unknown;
+  } catch (err) {
+    const why = err instanceof Error ? err.message : String(err);
+    if (finishReason === "length") {
+      throw new Error(`模型输出撞了长度上限（finish_reason=length），工具 ${tc.name} 的参数只剩半截：${why}`);
+    }
+    throw new Error(`模型给工具 ${tc.name} 的参数不是合法 JSON：${why}`);
+  }
 }
 
 export function createOpenAICompatibleAdapter(opts: OpenAICompatibleOptions): ModelAdapter {
@@ -431,7 +496,30 @@ export function createOpenAICompatibleAdapter(opts: OpenAICompatibleOptions): Mo
           },
           ctrl.signal
         );
-        const acc = await readSSE(watched, onDelta).catch(normalize);
+        // 「UI 已经播出去了没有」的判据：真交给 onDelta 过一个碎片才算。上面的
+        // consumed 数的是字节——第一块往往只是 role 块或半截 id，什么都没播出去，
+        // 按它判会把一次完全安全的重发也拒掉
+        let played = false;
+        const acc = await readSSE(watched, (text, kind) => {
+          played = true;
+          onDelta(text, kind);
+        }).catch(normalize);
+        // 上游在流里塞了错误（#1131）：按瞬态处理，话原样带上；没播过就可重发
+        if (acc.streamError !== null) {
+          const err = markErrorClass(new Error(`model API 流里报错：${acc.streamError}`), "retryable");
+          throw played ? err : markRetryable(err);
+        }
+        // 流没收尾（#1131）：既没等到 `[DONE]` 也没见过 finish_reason 就关了。真机形态
+        // 是上游 2 秒后在一行中间断掉，原来这里拿半截 JSON 报 `Unterminated string in
+        // JSON at position 21`——一句把真实原因（断流）盖住的语法错。没播过就重发
+        // （同首字节前静默超时那条），播过了不重发（半条消息续不上），但话要说清
+        if (!acc.terminated) {
+          const err = markErrorClass(
+            new Error(`model API 流中途断开：收到 ${acc.bytes} 字节后上游关了连接，没等到终块`),
+            "retryable"
+          );
+          throw played ? err : markRetryable(err);
+        }
         return {
           content: acc.content,
           route: endpoint.route ?? "direct",
@@ -447,7 +535,7 @@ export function createOpenAICompatibleAdapter(opts: OpenAICompatibleOptions): Mo
                 toolCalls: acc.toolCalls.map((tc) => ({
                   id: tc.id,
                   name: tc.name,
-                  args: JSON.parse(tc.args) as unknown, // 碎片拼完才 parse——半截 JSON parse 必炸
+                  args: parseToolArgs(tc, acc.finishReason),
                 })),
               }
             : {}),
@@ -480,7 +568,10 @@ export function createOpenAICompatibleAdapter(opts: OpenAICompatibleOptions): Mo
               toolCalls: msg.tool_calls.map((tc) => ({
                 id: tc.id,
                 name: tc.function.name,
-                args: JSON.parse(tc.function.arguments) as unknown,
+                args: parseToolArgs(
+                  { name: tc.function.name, args: tc.function.arguments },
+                  data.choices[0]?.finish_reason ?? null
+                ),
               })),
             }
           : {}),
