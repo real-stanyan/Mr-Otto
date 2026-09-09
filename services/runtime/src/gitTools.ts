@@ -81,6 +81,13 @@ function cloneRepoTool(deps: GitToolDeps): Tool {
     requiresApproval: true,
     async run(raw: unknown, _world: ExecutionWorld) {
       const args = parseCloneArgs(raw);
+
+      // wiki/ 是团队记忆的落点（#1140，spec §1.1）：一个仓库被 clone 进去，索引器会把 .git 里的东西当杂物、
+      // 页面判据全部失效；而且「容器停着 = 卷没变」那条缓存规则的前提之一就是旁路容器不碰 wiki/
+      if (args.dest === "wiki" || args.dest.startsWith("wiki/")) {
+        throw new Error(`dest 不能落在 wiki/ 下（那是团队 wiki 的目录）：${args.dest}`);
+      }
+
       const valid = validateRepoUrl(args.repoUrl);
       if (!valid.ok) throw new Error(valid.message);
 
