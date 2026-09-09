@@ -213,7 +213,7 @@ function groupOf(path: string): string {
 export function indexGroups(pages: readonly WikiPage[]): WikiIndexGroup[] {
   const entries: WikiIndexEntry[] = pages
     .filter((p) => classifyWikiPath(p.path) === "page" && p.path !== WIKI_SCHEMA_PATH)
-    .map((p) => ({ path: p.path, title: singleLine(p.front.title) || pageSlug(p.path), summary: singleLine(p.front.summary), pinned: p.front.pinned }))
+    .map((p) => ({ path: p.path, title: (singleLine(p.front.title) || pageSlug(p.path)).replaceAll(" — ", " – "), summary: singleLine(p.front.summary), pinned: p.front.pinned }))
     .sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
   const byGroup = new Map<string, WikiIndexEntry[]>();
   for (const e of entries) {

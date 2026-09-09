@@ -95,4 +95,10 @@ describe("索引（spec §1.3）", () => {
     expect(text).toContain("- [[customers/zeta]] Zeta\n");
     expect(parseIndex(text)).toEqual(indexGroups(pages));
   });
+  it("宽读进来的标题里含「 — 」时折成 en dash，渲染 → 解析仍然互逆", () => {
+    const p = [page("q.md", { title: "Q — A", summary: "one" })];
+    const text = renderIndex(p);
+    expect(text).toContain("- [[q]] Q – A — one");
+    expect(parseIndex(text)).toEqual([{ name: "未分目录", entries: [{ path: "q.md", title: "Q – A", summary: "one", pinned: false }] }]);
+  });
 });
