@@ -49,15 +49,16 @@ helper 懒起（第一次开麦才 spawn：没开过麦的 app 不该多一个�
 
 麦克风 + 语音识别两道 TCC 授权按顺序问；任何一道没过，helper 发 `status`，渲染层据它说人话
 （系统设置 → 隐私与安全性 → 哪一格 → 勾上 Mr Otto（开发时是 Electron / MrOttoSpeech））。
-**TCC 把授权归到责任进程**——helper 是主进程 spawn 的裸二进制，责任进程是它爹：打包后是
-Mr Otto.app（`electron-builder.yml` 的 `extendInfo` 补两句 usage description），开发时是
-node_modules 里的 Electron.app（出厂带麦克风那句、不带语音识别那句，`build-speech.mjs --debug`
-用 `plutil -replace` 幂等地补上）。爹少那一句时 TCC **把 helper 杀掉**（EXC_CRASH，namespace TCC；
-2026-09-09 从终端直接起 helper 就是这么死的——终端没那句）。试过让 helper 自己当责任进程
-（`responsibility_spawnattrs_setdisclaim` + `POSIX_SPAWN_SETEXEC`，Chromium 给 helper 用的私有接口）：
-不再被杀，但 60 秒内授权框一次都没弹出来（`notDetermined` 到底），放弃。二进制里仍用
-`-sectcreate __TEXT,__info_plist` 嵌了一份 Info.plist，命令行调试时至少不崩。打包时 `afterPack.cjs`
-把 release 二进制拷进 Resources 并 ad-hoc 签，同另外两个 helper。
+**helper 自己当 TCC 的责任进程**（#1180 订正）。TCC 把授权归到责任进程，而责任进程是沿进程树
+一路归到**最顶上的 GUI app**：打包后由 Finder 起是 Mr Otto.app，dev 从终端起就是那个终端
+（cmux / iTerm / Terminal，谁都不带 NSSpeechRecognitionUsageDescription）——真机上 helper 就这么被 TCC
+杀掉（EXC_CRASH，崩溃报告 `responsibleProc = cmux`）。第一版押的「归到爹（Electron.app），给它补
+plist」因此是错的：它不是顶上那个。修法是 helper 启动时 `responsibility_spawnattrs_setdisclaim(1)` +
+`POSIX_SPAWN_SETEXEC` 原地 exec 自己一遍（Chromium 给 helper 进程用的同一私有接口），TCC 从此读
+它用 `-sectcreate __TEXT,__info_plist` 嵌在二进制里的 Info.plist，弹窗写的是 MrOttoSpeech。真机验过：
+`setdisclaim rc=0` → 4 秒内 speech / mic 都 authorized。（第一次 60 秒探测没等到授权回调、误判成
+「弹不出框」，实际是框没人点。）接口没了就原样往下跑，那时授权归爹、打包态有 `extendInfo` 兜着。
+打包时 `afterPack.cjs` 把 release 二进制拷进 Resources 并 ad-hoc 签，同另外两个 helper。
 
 ## 否掉的候选
 

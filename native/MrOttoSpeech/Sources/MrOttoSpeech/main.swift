@@ -6,13 +6,41 @@ import Foundation
 
 setbuf(stdout, nil)
 
-// TCC 授权归到**责任进程**——这个裸二进制是主 app spawn 的，责任进程是它爹：开发时是
-// node_modules 里的 Electron.app（build-speech.mjs --debug 给它补 NSSpeechRecognitionUsageDescription），
-// 打包后是 Mr Otto.app（electron-builder.yml 的 extendInfo）。爹的 Info.plist 少那一句的话 TCC 会把
-// **这个进程**杀掉（EXC_CRASH，namespace TCC，2026-09-09 从终端直接起就是这么死的——终端没那句）。
-// 试过 responsibility_spawnattrs_setdisclaim + POSIX_SPAWN_SETEXEC 让它自己当责任进程：不再被杀，
-// 但 60 秒内授权框一次都没弹出来（notDetermined 到底），放弃；二进制里嵌的那份 Info.plist 留着，
-// 命令行调试时至少不崩。
+// 让自己成为 TCC 的「责任进程」（#1180）。麦克风 / 语音识别的授权归到责任进程，而 TCC 沿进程树
+// 一路归到**最顶上的 GUI app**：dev 是从终端起的，那就是终端（cmux / iTerm / Terminal，谁都不带
+// NSSpeechRecognitionUsageDescription），TCC 于是把**这个进程**杀掉（EXC_CRASH，namespace TCC——
+// 2026-09-09 真机就是这么死的，崩溃报告里 responsibleProc = cmux）。给 Electron.app 补 plist 没用：
+// 它不是顶上那个。
+// responsibility_spawnattrs_setdisclaim 是 libSystem 的私有接口（Chromium 给 helper 进程用的就是它），
+// 配 POSIX_SPAWN_SETEXEC = 原地 exec 自己一遍、不多一个进程；stdin/stdout 原样继承。成了之后 TCC 读
+// 嵌在二进制里的那份 Info.plist（Package.swift 的 -sectcreate），弹窗写的是 MrOttoSpeech。
+// 真机验过：setdisclaim rc=0 → 4 秒内 speech/mic 都 authorized。
+// 失败（接口没了 / exec 被拒）就原样往下跑——那时授权归爹，打包的 app 有 extendInfo 兜着。
+@_silgen_name("responsibility_spawnattrs_setdisclaim")
+private func responsibility_spawnattrs_setdisclaim(_ attrs: UnsafeMutablePointer<posix_spawnattr_t?>, _ disclaim: Int32) -> Int32
+
+private func disclaimResponsibility() {
+  let marker = "MROTTO_SPEECH_DISCLAIMED"
+  if ProcessInfo.processInfo.environment[marker] == "1" { return }
+  var attrs: posix_spawnattr_t? = nil
+  guard posix_spawnattr_init(&attrs) == 0 else { return }
+  defer { posix_spawnattr_destroy(&attrs) }
+  guard posix_spawnattr_setflags(&attrs, Int16(POSIX_SPAWN_SETEXEC)) == 0 else { return }
+  guard responsibility_spawnattrs_setdisclaim(&attrs, 1) == 0 else { return }
+  let exe = CommandLine.arguments[0]
+  var env = ProcessInfo.processInfo.environment
+  env[marker] = "1"
+  let cEnv = env.map { strdup("\($0.key)=\($0.value)") } + [nil]
+  let cArgs = CommandLine.arguments.map { strdup($0) } + [nil]
+  defer {
+    cEnv.forEach { free($0) }
+    cArgs.forEach { free($0) }
+  }
+  var pid: pid_t = 0
+  // SETEXEC：成功就不会回来；回来 = 失败，照旧往下跑
+  _ = posix_spawn(&pid, exe, nil, &attrs, cArgs, cEnv)
+}
+disclaimResponsibility()
 
 let encoder = JSONEncoder()
 func emit(_ e: Event) {
