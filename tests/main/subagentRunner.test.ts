@@ -652,3 +652,43 @@ describe("createSubagentRunner", () => {
     expect(spawns.length).toBe(SUBAGENT_SESSION_CAP);
   });
 });
+
+// #1155：memory-reviewer 写了近七成记忆却没有项目档——子会话装配时 memoryProject 为 null，
+// memory 工具的 target 枚举里没有 project、点名守卫（ADR-0143）也整段跳过，项目事实
+// 只能落全局档且不被拦。父会话的项目档要原样递给子会话（同一份对象，不重新解析）
+describe("子会话继承父会话的项目档（#1155）", () => {
+  const runTurnOf = (store: EventStore) => async (agent: { sessionId: string }) => {
+    store.append({
+      sessionId: agent.sessionId, ts: Date.now(), type: "assistant_message", content: "好了", model: "deepseek-chat",
+    });
+  };
+
+  it("父给了 memoryProject：子会话拿到同一份", async () => {
+    const base = fixtures();
+    const project = { id: "github.com/x/y", root: base.dir, dir: "memories/projects/abc" };
+    const children: { memoryProject: unknown }[] = [];
+    const runner = createSubagentRunner({
+      store: base.store, attachments: base.attachments, push: base.push,
+      list: () => [def()],
+      parent: () => ({ ...base.parent()(), memoryProject: project }),
+      register: (c) => void children.push(c),
+      runTurn: runTurnOf(base.store),
+    });
+    await runner.run({ agent: "searcher", task: "T", parentToolCallId: "call_1" });
+    expect(children[0]?.memoryProject).toEqual(project);
+  });
+
+  it("父没有项目档：子会话仍是 null（非 git 工作区的原行为）", async () => {
+    const bare = fixtures();
+    const children: { memoryProject: unknown }[] = [];
+    const runner = createSubagentRunner({
+      store: bare.store, attachments: bare.attachments, push: bare.push,
+      list: () => [def()],
+      parent: bare.parent(),
+      register: (c) => void children.push(c),
+      runTurn: runTurnOf(bare.store),
+    });
+    await runner.run({ agent: "searcher", task: "T", parentToolCallId: "call_1" });
+    expect(children[0]?.memoryProject).toBeNull();
+  });
+});

@@ -50,7 +50,7 @@ import type { ToolCallRequest, UserAttachmentRef, UserTextFile, MemoryTopicSnaps
 import type { Tool } from "../tools/tool.js";
 import { knownSkillToolName } from "../tools/skill.js";
 import { composeUserText, deriveMessages, COMPACT_COMPRESSION } from "../session/deriveMessages.js";
-import { settleNudgeSpawn, MEMORY_NUDGE_EVERY, reviewerTranscript, buildReviewerTask } from "./memoryNudge.js";
+import { settleNudgeSpawn, MEMORY_NUDGE_EVERY, reviewerTranscript, buildReviewerTask, reviewerInstructionsFrom } from "./memoryNudge.js";
 import { intakeFile } from "./attachmentIntake.js";
 import { nativeImageEncoder } from "./imageCodec.js";
 import { createUploadPool } from "../shared/remote/uploads.js";
@@ -1194,6 +1194,7 @@ void app.whenReady().then(() => {
     // tool_calls 里，reviewerTranscript 里有截尾逻辑，纯函数拆进 memoryNudge.ts 好测
     const transcript = reviewerTranscript(deriveMessages(log, COMPACT_COMPRESSION));
     const mem = memoryFiles.readTiers(agent.workspace);
+    const instructions = reviewerInstructionsFrom(log);
     const runner = createSubagentRunner({
       store,
       attachments: attachmentStore,
@@ -1205,6 +1206,7 @@ void app.whenReady().then(() => {
         world: agent.world,
         model: agent.model,
         approvalMode: agent.approvalMode,
+        memoryProject: agent.memoryProject,
       }),
       alwaysAllow: () => loadAlwaysAllow(permissionsPath),
       // forbidden 规则对子 agent 同样生效（用户写的"永不放行"不该被派活绕过）；
@@ -1229,7 +1231,9 @@ void app.whenReady().then(() => {
       sessionId, toolCallId,
       () => runner.run({
         agent: "memory-reviewer",
-        task: buildReviewerTask(mem, transcript),
+        // 项目指令跟着一起给（#1155）：reviewer 要判「这条记忆是不是 AGENTS.md 里已经写了的」，
+        // 就得看见主会话看见的那份——从同一条日志里取，不另读盘
+        task: buildReviewerTask(mem, transcript, instructions ? { instructions } : {}),
         parentToolCallId: toolCallId,
       }),
     );
@@ -2370,6 +2374,7 @@ void app.whenReady().then(() => {
           world: self.world,
           model: self.model,
           approvalMode: self.approvalMode,
+          memoryProject: self.memoryProject,
         }),
         alwaysAllow: () => loadAlwaysAllow(permissionsPath),
         execPolicy: () => loadExecPolicy(execPolicyPath), // 同上：forbidden 不被派活绕过

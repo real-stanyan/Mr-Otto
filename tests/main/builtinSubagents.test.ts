@@ -128,3 +128,16 @@ describe("withBuiltins", () => {
     expect(withBuiltins([onDisk("explore")], ALL).find((d) => d.name === "explore")!.overridesBuiltin).toBe(true);
   });
 });
+
+// #1155：reviewer 写了近七成记忆，却没有一遍对着整份记忆找错档 / 重复 / 过期的巡检——
+// 真机上全局档 11 条里 7 条是项目事实、3 条与 AGENTS.md 逐字重复。巡检要有证据纪律：
+// 没证据不猜不删，否则一个便宜档模型会把仍然为真的事实当过期删掉
+describe("memory-reviewer 先巡检再新增（#1155）", () => {
+  it("指令写明：先巡检；错档搬进 PROJECT；与项目指令重复的删；没有证据不改", () => {
+    const def = builtinSubagents(["memory"]).find((s) => s.name === "memory-reviewer")!;
+    expect(def.instructions).toContain("先巡检");
+    expect(def.instructions).toMatch(/搬进 PROJECT|搬到 PROJECT/);
+    expect(def.instructions).toContain("项目指令");
+    expect(def.instructions).toContain("没有证据");
+  });
+});

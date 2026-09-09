@@ -50,6 +50,7 @@ Domain glossary. All agents' understanding of domain terms is grounded here; cod
 | 退化循环（degenerate loop） | 一条 turn 里模型把**同一组工具调用逐字重复**多遍、零进展。判据是「后缀上存在周期 p ≤ 24 且原样重复 ≥ 3 遍」，不是「连续两圈相同」——真实形态里相邻两圈从来不相等。命中只往对话里注一条 `user_message`（`origin:"loop_guard"`）把事实摆给模型，**不停 turn**：无步数天花板仍是 ADR-0006 的决定，硬停只有停止键 | ADR-0212、#891；`src/shared/toolLoopGuard.ts` |
 | 任务文件夹 | 内置 Default 下每个任务会话一个子目录 `<Default>/<sessionId>/`（完整 id，不是前 8 位）；旧会话直接等于 Default 根也算任务，判据 `isDefaultWorkspace`；归档不删，设置页可清空壳 | ADR-0206、#851 |
 | 主题桶（TOPIC 档） | 记忆第四档：`memories/topics/<slug>.md`，种子 work/hobbies/life/learning + 模型可建（先看索引的闸），预算 700 字/桶、封顶 8 桶、整份注入不做检索 | ADR-0204、#846 |
+| 记忆巡检（reviewer 第一步） | memory-reviewer 每次被派出（每 10 个 user turn）先对既有条目逐条判四件事：错档（MEMORY 里点名当前项目的搬进 PROJECT，**先 add 后 remove**）、与项目指令重复（删）、重复合并、过时或矛盾（**只有对话或项目指令给出反证才改，没有证据不猜不删**）；之后才看对话里有没有新事实。任务串附主会话本次注入的项目指令（同一条日志的 `project_instructions`，不另读盘）。子会话从父会话原样继承 `memoryProject`，否则 reviewer 没有 project 档也不过点名守卫——真机上近七成记忆写入由它落进全局档 | ADR-0269、#1155 |
 | 会话主题（session topic） | 任务会话（workspaceKind=default）挂靠某个主题桶：turnAnnotator 合并调用自动分类落 `session_topic_assigned`（投影丢弃），手动 `session_topic_set` 压过自动结果；侧栏任务栏据此分组 | ADR-0204、#846 |
 | 跨会话回忆（session_search） | 模型主动查历史会话的工具，四形态零 LLM：query 全文检索 / session_id 读整段 / session_id+around_seq 看前后 / 无参列最近。不自动注入；排除**系统**归档、子会话、当前会话（用户归档照常可搜，ADR-0087） | ADR-0065 |
 | 会话归档（archive） | 删除之外的中间态：`session_archived(reason:"user")` 把会话从主列表收进侧栏「已归档」区——日志完整保留、仍可被 session_search 召回、`session_unarchived` 可恢复。归档状态 = 最后一条 archived/unarchived 事件说了算。`reason:"system"`（或缺席 = 遗留）是系统藏会话：列表和召回都排除（sys-memory-edits） | ADR-0087 |
