@@ -179,7 +179,7 @@ describe("createLocalResidue.cleanup", () => {
       // 真·SIGTERM 免疫的组：sh 自己 trap 掉 TERM，循环里的 sleep 是短命子进程
       // ——组收到 SIGTERM，sh 忽略、当前那条 sleep 死掉，下一轮马上补上，组照样活。
       // 单写 `trap '' TERM; sleep 100` 不够：那条 sleep 自己不免疫，它一死 sh 就退了
-      const child = spawn("trap '' TERM; while true; do sleep 0.2; done", {
+      const child = spawn("trap '' TERM; echo READY; while true; do sleep 0.2; done", {
         shell: true, detached: true,
       });
       const pgid = child.pid!;
@@ -187,9 +187,19 @@ describe("createLocalResidue.cleanup", () => {
       reg.register(pgid, "loop", "detached");
       reg.noteClosed(pgid);
 
-      // 等 shell 真的跑到 `trap` 那一行：spawn 返回时它还没开始执行，
-      // 这时候发 SIGTERM 打的是一个还没设好陷阱的默认处置的进程
-      await new Promise((r) => setTimeout(r, 300));
+      // 等 shell 真的把 trap 挂上再发信号：spawn 返回时它还没开始执行。原来睡固定
+      // 300ms——全量跑负载高时 sh 还没执行到 trap 那一行就吃了 SIGTERM，组被真杀、
+      // 下面自证那条翻红（issue #777）。READY 打在 trap 之后，收到它 = 陷阱已就位；
+      // 5 秒都等不到是环境坏了，报错说清而不是闷头等用例超时
+      await new Promise<void>((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error("5s 内没等到夹具的 READY")), 5_000);
+        child.stdout!.on("data", (chunk) => {
+          if (String(chunk).includes("READY")) {
+            clearTimeout(timer);
+            resolve();
+          }
+        });
+      });
       // 先自证这个组确实吃不动 SIGTERM，否则这条用例测的就不是补刀那条路
       process.kill(-pgid, "SIGTERM");
       await new Promise((r) => setTimeout(r, 400));
