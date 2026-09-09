@@ -125,7 +125,7 @@ describe("WorkspacesSidebarSection（#917 / #919）", () => {
       cloudSessionList: {
         // 云会话那张表的 title 是 string 不是 string | null：没标题时落库的是
         // 空串，只挡 null 的兜底挡不住它
-        w1: [{ id: "cs-new", title: "", publisherUid: "u-me", archived: false, updatedTs: 3 }],
+        w1: [{ id: "cs-new", title: "", publisherUid: "u-me", archived: false, updatedTs: 3, participantUids: [] }],
       },
     });
     draw();
