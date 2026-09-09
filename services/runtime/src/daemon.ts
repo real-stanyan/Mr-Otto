@@ -28,6 +28,8 @@ import { createFrameRateLimiter } from "./rateLimit.js";
 import { createCloudSession, type CloudSession, type AgentSpec } from "./sessionService.js";
 import { createSupabaseWorkspaceMemory } from "./workspaceMemory.js";
 import { createSupabaseMentionInbox } from "./mentionInbox.js";
+import { createSupabaseCloudSessionMeta } from "./cloudSessionMeta.js";
+import { requestTitleAsOwner } from "./sessionTitler.js";
 import { createSupabaseAgentWriter, type WorkspaceAgentWriter } from "./agentRegistry.js";
 import { normalizeAgentTools } from "../../../src/shared/agentToolAllow.js";
 import { safeSpeakerLabel } from "../../../src/shared/promptSafe.js";
@@ -588,6 +590,27 @@ async function main(): Promise<void> {
       // authenticated 的 insert 策略（给了就是让任何在籍成员替别人伪造一条
       // 「有人 @ 了你」）
       mentionInbox: createSupabaseMentionInbox(supabase, (m) => console.warn(m)),
+      sessionMeta: createSupabaseCloudSessionMeta(supabase, sessionId, (m) => console.warn(m)),
+      // 会话命名（#1213）：装配在这一层的理由同 dispatch —— 凭据与订阅探针都在这里。
+      // **探不到与没订阅在这里给同一个答案：不改名**。这与 dispatch 那三种分说不同，
+      // 因为命名失败不产生任何对用户说的话（侧栏那一格保持现状），没有需要区分措辞
+      // 的消费方；而多打一次注定 403 的网关调用只是浪费
+      retitle: async (input) => {
+        const me = await hostedProbe.me(ownerUid);
+        if (me === "unreachable" || me === null || me.status !== "active") return null;
+        return requestTitleAsOwner(
+          {
+            edgeBase: config.edgeBase,
+            runtimeSecret: config.runtimeSecret,
+            ownerUid,
+            workspaceId,
+            sessionId,
+            log: (m) => console.warn(`[otto-runtime] ${m}（session=${sessionId}）`),
+          },
+          input,
+          me.models
+        );
+      },
       agentWriter,
       labelOf,
       // 三把 Git 刀（#1105）。凭据只到旁路容器为止——`tokenFor` 是取 token 的
