@@ -22,6 +22,11 @@ export const WIKI_TITLE_MAX = 80;
 export const WIKI_SUMMARY_MAX = 140;
 const SOURCE_MAX = 200;
 
+/** 正文字数的唯一算法：序列化补的那一个尾换行不是内容，先剥掉再数。写入闸 / 常驻预算 / 体检三处必须用同一把尺子 */
+export function bodyCharCount(body: string): number {
+  return charCount(body.replace(/\n$/, ""));
+}
+
 const SEGMENT = "[a-z0-9][a-z0-9-]{0,63}";
 const PAGE_RE = new RegExp(`^(?:${SEGMENT}/)?${SEGMENT}\\.md$`);
 const AGENT_PAGE_RE = new RegExp(`^${WIKI_AGENTS_DIR}/(${SEGMENT})\\.md$`);
@@ -484,13 +489,13 @@ export function checkWiki(input: WikiCheckInput): WikiCheckReport {
   let pinnedChars = 0;
   for (const p of input.pages) {
     const f = p.front;
-    if (f.pinned) pinnedChars += charCount(p.body);
+    if (f.pinned) pinnedChars += bodyCharCount(p.body);
     const exemptOrphan = f.pinned || p.path === WIKI_TEAM_PATH || p.path === WIKI_SCHEMA_PATH || agentIdOfPage(p.path) !== null;
     if (!exemptOrphan && !(inbound.get(p.path) ?? 0)) findings.push({ rule: "orphan", path: p.path, detail: "没有任何页链到它" });
     const missing = [f.title.trim() === "" ? "title" : null, f.summary.trim() === "" ? "summary" : null, f.updatedAt.trim() === "" ? "updated_at" : null].filter((x) => x !== null);
     if (missing.length) findings.push({ rule: "missing-field", path: p.path, detail: `页头缺 ${missing.join(" / ")}` });
     const agentId = agentIdOfPage(p.path);
-    if (agentId !== null && charCount(p.body) > WIKI_OWN_BUDGET) findings.push({ rule: "own-over-budget", path: p.path, detail: `${charCount(p.body)} 字 > ${WIKI_OWN_BUDGET}` });
+    if (agentId !== null && bodyCharCount(p.body) > WIKI_OWN_BUDGET) findings.push({ rule: "own-over-budget", path: p.path, detail: `${bodyCharCount(p.body)} 字 > ${WIKI_OWN_BUDGET}` });
     const at = Date.parse(f.updatedAt);
     if (!f.pinned && Number.isFinite(at) && input.now - at >= WIKI_STALE_DAYS * 24 * 60 * 60 * 1000) findings.push({ rule: "stale", path: p.path, detail: `stale? ${Math.floor((input.now - at) / (24 * 60 * 60 * 1000))} 天没动` });
     const hit = scanThreat(p.body);

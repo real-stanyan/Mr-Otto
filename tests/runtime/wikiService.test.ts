@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createWikiService, type WikiAuthor } from "../../services/runtime/src/wikiService.js";
 import { createMemoryWikiFs } from "../../services/runtime/src/wikiFs.js";
 import { createInMemoryWikiJournal } from "../../services/runtime/src/wikiJournal.js";
-import { WIKI_PINNED_BUDGET, parseWikiPage } from "../../src/shared/wiki.js";
+import { WIKI_PINNED_BUDGET, parseWikiPage, serializeWikiPage } from "../../src/shared/wiki.js";
 
 const OPS: WikiAuthor = { kind: "agent", id: "ops", label: "运营" };
 const ADS: WikiAuthor = { kind: "agent", id: "ads", label: "广告" };
@@ -121,6 +121,15 @@ describe("write / remove（spec §2.2 / §2.3）", () => {
     expect(fs.files.has("c.md")).toBe(false);
     expect(fs.files.get("index.md")).not.toContain("[[c]]");
     expect(journal.rows.at(-1)).toMatchObject({ path: "c.md", content: null, kind: "remove" });
+  });
+  it("超限的页原样重写仍然被拒（判据是没变小，不是没变大）", async () => {
+    const { svc, fs } = setup();
+    await svc.ensure();
+    fs.files.set("agents/ops.md", serializeWikiPage({ path: "agents/ops.md", front: { title: "运营", summary: "", pinned: false, updatedBy: "x", updatedAt: "2026-09-09T00:00:00Z", sources: [] }, body: "z".repeat(1105) }));
+    await expect(svc.write({ path: "agents/ops.md", title: "运营", summary: "", body: "z".repeat(1105) }, OPS)).rejects.toThrow("1100");
+    await svc.write({ path: "agents/ops.md", title: "运营", summary: "", body: "z".repeat(1104) }, OPS);
+    const r = await svc.write({ path: "c.md", title: "C", summary: "", body: "abc\n" }, OPS);
+    expect(r.chars).toBe(3);
   });
   it("journal 写失败只 log 不让 write 失败", async () => {
     const fs = createMemoryWikiFs();

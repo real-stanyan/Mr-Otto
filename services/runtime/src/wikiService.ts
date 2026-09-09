@@ -8,7 +8,7 @@ import { withMemoryFileLock, charCount } from "../../../src/shared/memoryStore.j
 import { scanThreat } from "../../../src/shared/threatPatterns.js";
 import {
   WIKI_INDEX_PATH, WIKI_OWN_BUDGET, WIKI_PINNED_BUDGET, WIKI_READ_PAGE_LIMIT, WIKI_TEAM_PATH,
-  agentIdOfPage, checkWiki, classifyWikiPath, isRemovableWikiPath, logLine, migrateTiersToPages, nudgeFrom, parseWikiPage,
+  agentIdOfPage, bodyCharCount, checkWiki, classifyWikiPath, isRemovableWikiPath, logLine, migrateTiersToPages, nudgeFrom, parseWikiPage,
   renderCheckReport, renderIndex, schemaPage, seedPages, serializeWikiPage, singleLine, validateWikiFields,
   type WikiLogKind, type WikiPage,
 } from "../../../src/shared/wiki.js";
@@ -168,11 +168,9 @@ export function createWikiService(deps: WikiServiceDeps): WikiService {
 
   async function currentPinned(exclude: string): Promise<{ path: string; chars: number }[]> {
     const dump = await deps.fs.snapshot("");
-    // serializeWikiPage 保证落盘的 body 恒以一个 \n 收尾（没有就补一个）；这里在从已落盘文本
-    // 反推「这页占多少预算」时把那一个补上的 \n 退回去，跟 write() 里当次那份 chars（算在原始
-    // args.body 上，从不走序列化）用同一把尺子——否则每一页的预算数会比调用方写的多算 1（#1140
-    // 复审：brief verbatim 实现在「常驻预算」用例上会得到 2001 而非 2000，见 task-8-report.md）
-    return dump.pinned.filter((p) => p.path !== exclude).map((p) => ({ path: p.path, chars: charCount(parseWikiPage(p.path, p.text).body.replace(/\n$/, "")) }));
+    // bodyCharCount 是唯一的算法（复审 fix round 1，#1140）：写入闸的 chars/beforeChars 与这里
+    // 用同一把尺子，见 src/shared/wiki.ts 的 bodyCharCount 注释
+    return dump.pinned.filter((p) => p.path !== exclude).map((p) => ({ path: p.path, chars: bodyCharCount(parseWikiPage(p.path, p.text).body) }));
   }
 
   async function write(args: WikiWriteArgs, author: WikiAuthor): Promise<{ path: string; chars: number }> {
@@ -196,10 +194,10 @@ export function createWikiService(deps: WikiServiceDeps): WikiService {
       throw new Error(`${args.path} 只有智能体「${pageAgent}」自己（或成员在设置页）能写`);
     }
     const pinned = args.path === WIKI_TEAM_PATH ? true : args.pinned === true;
-    const chars = charCount(args.body);
+    const chars = bodyCharCount(args.body);
     return withMemoryFileLock(wikiLockKey(deps.workspaceId), async () => {
       const before = await deps.fs.readPage(args.path);
-      const beforeChars = before === null ? 0 : charCount(parseWikiPage(args.path, before).body);
+      const beforeChars = before === null ? 0 : bodyCharCount(parseWikiPage(args.path, before).body);
       const shrinking = before !== null && chars < beforeChars;
       if (pageAgent !== null && chars > WIKI_OWN_BUDGET && !shrinking) {
         throw new Error(`${args.path} 是智能体自己那页，上限 ${WIKI_OWN_BUDGET} 字，这次 ${chars} 字。精简后再写`);
