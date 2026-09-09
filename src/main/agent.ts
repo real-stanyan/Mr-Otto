@@ -624,6 +624,10 @@ export function createAgent(opts: {
         : {}),
       // 有眼睛的型号 image_ref 才解 bytes;没眼睛的换占位文本(vision-bridge 供文字)
       vision: choice.supportsVision,
+      // 自己那轮的 reasoning 要不要以 reasoning_content 回传（#1151）：目录
+      // 按厂商验过才开。开着的（DeepSeek）不传 = 赌它服务端的思考缓存还在，
+      // 等一次长审批（ask 最长 10 分钟）或 app 重启后续跑，缓存没了 turn 中途 400
+      reasoningPassback: choice.reasoningPassback,
       readAttachment: (id) => opts.attachments.read(id),
       // 本机推理（Ollama）：首 token 前的冷加载 + prefill 是在干活不是挂死，
       // 看门狗放宽到 10 分钟（见 localTiming 的注释）；云端型号 {} = 默认

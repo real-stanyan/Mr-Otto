@@ -314,6 +314,12 @@ export interface UserChatMessage {
 export interface AssistantChatMessage {
   role: "assistant";
   content: string;
+  /** 这条回复的思考过程（#1151）：日志 assistant_message.reasoning 原样带出来。
+      logged ≠ model-visible 的默认没变——发不发上线由 adapter 按厂商门控
+      （openaiCompatible 的 reasoningPassback：默认剥掉；DeepSeek 真机验过
+      「必须回传」才开，见 modelCatalog 的 REASONING_PASSBACK）。
+      可选 = 旧日志 / thinking 关 / 该型号不思考，投影行为逐字节不变 */
+  reasoning?: string;
   tool_calls?: {
     id: string;
     type: "function";
@@ -632,6 +638,10 @@ export function deriveMessages(
         messages.push({
           role: "assistant",
           content: event.content,
+          // 自己的思考随投影带出来（#1151）：DeepSeek thinking 模式要求把它
+          // 回传，否则按 tool_call id 查服务端缓存、查不到就 400。发不发由
+          // adapter 的 reasoningPassback 门控，这里只负责让事实够得着
+          ...(event.reasoning ? { reasoning: event.reasoning } : {}),
           ...(event.toolCalls && event.toolCalls.length > 0
             ? {
                 tool_calls: event.toolCalls.map((tc) => ({

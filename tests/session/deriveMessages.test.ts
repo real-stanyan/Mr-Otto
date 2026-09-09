@@ -266,12 +266,26 @@ describe("deriveMessages context_compacted", () => {
     ]);
   });
 
-  it("reasoning 落盘但不进模型视野：API 禁止思考回流上下文（塞了 400）", () => {
+  it("reasoning 随投影带出来：发不发上线由 adapter 按厂商门控（#1151）", () => {
+    // 旧规矩「API 禁止思考回流，投影必须丢弃」是 R1 时代的；DeepSeek 自 V3.2 起
+    // 反过来要求回传（按 tool_call id 查服务端缓存，查不到 400）。投影从此把
+    // 事实带出来，「默认不发」的闸挪到 openaiCompatible 的 reasoningPassback
     const withReasoning: SessionEvent[] = [
       { ...env(), type: "user_message", content: "hi" },
       { ...env(), type: "assistant_message", content: "答", model: "m", reasoning: "先想想……" },
     ];
     expect(deriveMessages(withReasoning)).toEqual([
+      { role: "user", content: "hi" },
+      { role: "assistant", content: "答", reasoning: "先想想……" },
+    ]);
+  });
+
+  it("没有 reasoning 的旧日志：assistant 消息投影逐字节不变（不出空字段）", () => {
+    const noReasoning: SessionEvent[] = [
+      { ...env(), type: "user_message", content: "hi" },
+      { ...env(), type: "assistant_message", content: "答", model: "m" },
+    ];
+    expect(deriveMessages(noReasoning)).toEqual([
       { role: "user", content: "hi" },
       { role: "assistant", content: "答" },
     ]);

@@ -5,6 +5,7 @@ import {
   describeModel,
   describeModelWith,
   findModel,
+  MODEL_CATALOG,
   ollamaChoiceFrom,
   resolveModel,
   type OllamaCaps,
@@ -96,5 +97,29 @@ describe("三个出厂默认必须在目录里", () => {
 
   it("看图代读员——还得真有眼睛，没眼睛的代读员会让所有带图消息集体失败", () => {
     expect(findModel(DEFAULT_VISION_MODEL)?.supportsVision, DEFAULT_VISION_MODEL).toBe(true);
+  });
+});
+
+describe("reasoningPassback（#1151）——thinking 模式要不要回传 reasoning_content，逐家验过才准开", () => {
+  it("DeepSeek 开：探针验过「必须回传」——按 tool_call id 查服务端缓存，查不到 400", () => {
+    for (const m of ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"]) {
+      expect(findModel(m)?.reasoningPassback, m).toBe(true);
+    }
+  });
+
+  it("GLM / Kimi 不开：同一次探针验过「接受但不要求」——开了白开，收紧那天再开", () => {
+    for (const m of ["glm-5.3", "glm-4.7-flash", "kimi-k3", "kimi-for-coding"]) {
+      expect(findModel(m)?.reasoningPassback, m).toBe(false);
+    }
+  });
+
+  it("没验过的一律不开：目录里除 DeepSeek 外全是 false——错开 = 给会拒陌生字段的 API 当场 400", () => {
+    const on = MODEL_CATALOG.filter((c) => c.reasoningPassback).map((c) => c.provider);
+    expect([...new Set(on)]).toEqual(["deepseek"]);
+  });
+
+  it("目录外的兜底型号 / 未探测的 Ollama：不开（自建代理严格校验与否问不出来）", () => {
+    expect(resolveModel("某个没见过的型号").reasoningPassback).toBe(false);
+    expect(describeModel("ollama/qwen3:30b")?.reasoningPassback).toBe(false);
   });
 });
