@@ -1,4 +1,4 @@
-// shadcn/ui 的 dialog(new-york,radix-ui 命名空间导入)。相对上游的改动只有三处,
+// shadcn/ui 的 dialog(new-york,radix-ui 命名空间导入)。相对上游的改动有四处,
 // 都是为了对上本仓库的既有形态:
 //   ① 去掉 "use client"(不是 RSC 项目)
 //   ② import 加 .js 后缀(nodenext)
@@ -7,6 +7,17 @@
 //      tailwindcss-animate/tw-animate-css,本仓库没装(app.css 只 @import "tailwindcss")。
 //      照抄会得到一堆不生效的类名,弹窗直接闪现。其他 ui/* 组件里那些同款类名
 //      同样是死的,不要拿它们当"能用"的证据
+//   ④ **溢出兜底(#998,ADR-0279)**:grid 换成 flex-col + max-h + overflow-y-auto。
+//      上游默认没有 max-h/overflow,内容高过视口就朝上下两头等量溢出、两头都
+//      够不着,而且这个失败是静默的——每个弹窗只有内容碰巧变长那天才暴露。
+//      三层分工:
+//      - 什么都不写的消费方:整张卡滚(关闭 X 是 absolute,会跟着滚走——这是
+//        兜底已知的代价,至少内容够得着)
+//      - 想固定头/尾的消费方:把会长的那截包一层 `min-h-0 overflow-y-auto`。
+//        只有 flex 下这层才缩得动——grid 的 auto 行在被 max-height 夹住的
+//        容器里按 max-content 定死,内层一格都不滚(实测见 #998 评论)
+//      - 自己另有安排的(MemorySettings 整窗滚、TrajectoryView 内层滚):
+//        className 照写,twMerge 让消费方那份赢
 
 import * as React from "react"
 import { XIcon } from "lucide-react"
@@ -52,9 +63,11 @@ function DialogContent({
       <DialogPrimitive.Content
         data-slot="dialog-content"
         className={cn(
-          "dialog-content fixed top-1/2 left-1/2 z-50 grid w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2",
+          "dialog-content fixed top-1/2 left-1/2 z-50 flex w-full max-w-[calc(100%-2rem)] -translate-x-1/2 -translate-y-1/2 flex-col",
           "gap-4 rounded-xl border border-border bg-card p-6 shadow-lg sm:max-w-lg",
-          // grid 子项默认 min-width:auto —— 里头只要有一个 nowrap 的东西
+          // 溢出兜底(#998):超高整窗滚。为什么是 flex 不是 grid 见文件头 ④
+          "max-h-[calc(100dvh-2rem)] overflow-y-auto",
+          // flex/grid 子项默认 min-width:auto —— 里头只要有一个 nowrap 的东西
           // （`truncate` 的那类行、等宽长串），它的 min-content 就是整行宽度，
           // 撑开轨道，把内容画到卡片外面去：卡片底色还是 720px 那一块，
           // 文字却跑到了页面上，看起来就是"弹窗变透明了"。这一条是兜底，
