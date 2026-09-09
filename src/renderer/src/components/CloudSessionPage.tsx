@@ -40,7 +40,7 @@
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, AtSign, Download, Phone, Settings2 } from "lucide-react";
-import { cn } from "@/lib/utils.js";
+import { cn, isMac } from "@/lib/utils.js";
 import { Button } from "@/components/ui/button.js";
 import { Bubble, BubbleContent } from "@/components/ui/bubble.js";
 import { splitBubbles } from "@/lib/chatBubbles.js";
@@ -278,6 +278,8 @@ export function CloudSessionPage({
   const voiceAvailable = voiceCallAvailable(billing);
   // 全屏通话视图（#1185，ADR-0278）：本机界面状态；通话结束（call 变 null）时随之关掉
   const [callOpen, setCallOpen] = useState(false);
+  const fullscreen = useChat((s) => s.fullscreen);
+  const trafficInset = isMac() && !fullscreen;
   const callView = useMemo(
     () => ({ selfUid, starterUid: call ? callStarterUid(events, call) : null, openAgentIds: new Set(openTurns(events).map((t) => t.agentId)) }),
     [events, call, selfUid]
@@ -777,6 +779,7 @@ export function CloudSessionPage({
           onMute={setVoiceMuted}
           onUpdate={(ids) => cloudCall(ids)}
           onEnd={endCall}
+          trafficInset={trafficInset}
         />
       )}
 

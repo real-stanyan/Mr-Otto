@@ -76,6 +76,7 @@ export function VoiceCallOverlay({
   onMute,
   onUpdate,
   onEnd,
+  trafficInset = false,
 }: {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -92,6 +93,8 @@ export function VoiceCallOverlay({
   onUpdate: (ids: string[]) => Promise<CloudAck>;
   /** 结束通话（全组）。二次确认在调用方 */
   onEnd: () => Promise<CloudAck>;
+  /** mac 窗口模式（hiddenInset）红绿灯叠在左上角：头部给它让位（同 App.tsx 侧栏头部的 pl-[74px]，#1198） */
+  trafficInset?: boolean;
 }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -127,7 +130,8 @@ export function VoiceCallOverlay({
         >
           <DialogPrimitive.Title className="sr-only">语音通话</DialogPrimitive.Title>
 
-          <header className="flex items-center gap-2 px-5 pt-4 text-[13px]">
+          {/* 头部是这一屏唯一的窗口拖拽区（原生标题栏藏着，同 app.css 的 drag-region；钮由那条后代选择器标回 no-drag） */}
+          <header className={cn("drag-region flex items-center gap-2 px-5 pt-4 text-[13px]", trafficInset && "pl-[74px]")}>
             <Phone className="size-4 text-[var(--brand)]" aria-hidden />
             <span className="font-medium">语音通话中</span>
             <span className="tabular-nums text-white/60">{fmtElapsed(now - call.sinceTs)}</span>
