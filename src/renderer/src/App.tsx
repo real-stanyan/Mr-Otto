@@ -2603,9 +2603,12 @@ function AppSidebar() {
             <DrawerTitle>{openedWorkspace?.name ?? "工作区"}</DrawerTitle>
           </DrawerHeader>
           {/* SidebarMenu 系列需要 SidebarProvider 上下文(抽屉 portal 到 body,
-              根 provider 够不着)——包一层只喂上下文,不带侧栏结构 */}
-          <div className="flex-1 min-h-0 overflow-y-auto scrollbar-stable px-[6px] py-2">
-            <SidebarProvider defaultOpen className="flex-col min-h-0">
+              根 provider 够不着)——包一层只喂上下文,不带侧栏结构。
+              **这一层不再滚也不再留内边距**(#1120)：WorkspacePage 换成推入式导航之后，
+              滚动归每一页自己（页与页各自记着滚到哪），左右留白也归页内——外层再套一个
+              滚动容器的话，绝对定位的页会按这个容器的高度铺开，栈就没有边界了 */}
+          <div className="flex min-h-0 flex-1 flex-col">
+            <SidebarProvider defaultOpen className="min-h-0 flex-1 flex-col">
               {openedWorkspace && (
                 <WorkspacePage
                   ws={openedWorkspace}

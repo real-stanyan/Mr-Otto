@@ -71,10 +71,18 @@ export type InsetRowTone = "default" | "action" | "danger";
  *
  * 行用**高亮**不用缩放：一列行里某一行忽然缩小会把整列的基线打断，而按钮是独立
  * 元素、缩放读起来是「被按下去了」。两种反馈各归各的，别互换。
+ *
+ * 能点的行**不是一颗 `<button>`，是一个 div 加一层铺满的透明按钮**：行尾经常还要
+ * 挂一颗自己的按钮（撤回 / 删除 / 加入），而 button 套 button 是非法 HTML —— 本仓
+ * 在 #1044 已经为这件事把一行拆过一次。铺满那层在底下（`z-0`），行尾那颗在上面
+ * （`z-10`），于是「点行」和「点行尾那颗」天然分开，不必到处 `stopPropagation`。
+ * 代价：读屏念的是 `label ?? title`，不是行里那串可见文字——所以 `title` 不是字符串
+ * 时必须给 `label`。
  */
 export function InsetRow({
   leading,
   title,
+  label,
   subtitle,
   trailing,
   chevron,
@@ -87,6 +95,8 @@ export function InsetRow({
   /** 前导槽位：图标底座、头像，或什么都不放 */
   leading?: ReactNode;
   title: ReactNode;
+  /** 读屏念什么。`title` 不是字符串时必填 */
+  label?: string;
   subtitle?: ReactNode;
   trailing?: ReactNode;
   chevron?: boolean;
@@ -113,7 +123,7 @@ export function InsetRow({
         )}
       </span>
       {trailing !== undefined && trailing !== null && (
-        <span className="flex shrink-0 items-center gap-[7px] text-[12.5px] text-muted-foreground">{trailing}</span>
+        <span className="relative z-10 flex shrink-0 items-center gap-[7px] text-[12.5px] text-muted-foreground">{trailing}</span>
       )}
       {chevron && (
         <svg
@@ -136,20 +146,21 @@ export function InsetRow({
 
   if (!onClick) return <div className={shared} {...rest}>{body}</div>;
   return (
-    <button
-      type="button"
-      disabled={disabled}
-      onClick={onClick}
-      className={cn(
-        shared,
-        "transition-colors duration-100 active:bg-foreground/[0.055]",
-        "disabled:pointer-events-none disabled:opacity-50",
-        "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-inset"
-      )}
-      {...rest}
-    >
+    <div className={shared} {...rest}>
+      <button
+        type="button"
+        disabled={disabled}
+        onClick={onClick}
+        aria-label={label ?? (typeof title === "string" ? title : undefined)}
+        className={cn(
+          "absolute inset-0 z-0 bg-transparent",
+          "transition-colors duration-100 active:bg-foreground/[0.055]",
+          "disabled:pointer-events-none disabled:opacity-50",
+          "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:ring-inset"
+        )}
+      />
       {body}
-    </button>
+    </div>
   );
 }
 

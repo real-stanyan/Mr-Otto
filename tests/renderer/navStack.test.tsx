@@ -10,8 +10,7 @@
 // （`clientWidth` 恒为 0），在这儿断言 transform 只会钉住一个假的 0。
 
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
-import userEvent from "@testing-library/user-event";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 
 import { NavStack, useNav, type NavScreen } from "../../src/renderer/src/components/ui/nav-stack.js";
@@ -60,41 +59,37 @@ describe("NavStack", () => {
     expect(screen.getByRole("button", { name: "关闭" })).toBeInTheDocument();
   });
 
-  it("推一页：新页的内容在屏幕上，返回按钮写的是**上一页叫什么**", async () => {
-    const user = userEvent.setup();
+  it("推一页：新页的内容在屏幕上，返回按钮写的是**上一页叫什么**", () => {
     render(<NavStack root={root} />);
-    await user.click(screen.getByRole("button", { name: "进去" }));
+    fireEvent.click(screen.getByRole("button", { name: "进去" }));
     expect(screen.getByText("三只水獭")).toBeInTheDocument();
     // 「返回」两个字对每一页都成立，等于没说；backLabel 是这一格的全部价值
     expect(screen.getByRole("button", { name: "工作区" })).toBeInTheDocument();
   });
 
-  it("根页留在树上（返回时它还带着原来的滚动位置），但不再接指针事件", async () => {
-    const user = userEvent.setup();
+  it("根页留在树上（返回时它还带着原来的滚动位置），但不再接指针事件", () => {
     render(<NavStack root={root} />);
-    await user.click(screen.getByRole("button", { name: "进去" }));
+    fireEvent.click(screen.getByRole("button", { name: "进去" }));
     const rootPage = screen.getByRole("heading", { name: "mandy's bubble tea" }).closest("section")!;
     expect(rootPage).toBeInTheDocument();
     expect(rootPage.style.pointerEvents).toBe("none");
   });
 
-  it("返回：那一页从树上摘掉（reduced-motion 下是同步的，不留退场残影）", async () => {
-    const user = userEvent.setup();
+  it("返回：那一页从树上摘掉（reduced-motion 下是同步的，不留退场残影）", () => {
     render(<NavStack root={root} />);
-    await user.click(screen.getByRole("button", { name: "进去" }));
-    await user.click(screen.getByRole("button", { name: "工作区" }));
+    fireEvent.click(screen.getByRole("button", { name: "进去" }));
+    fireEvent.click(screen.getByRole("button", { name: "工作区" }));
     expect(screen.queryByText("三只水獭")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "进去" })).toBeInTheDocument();
   });
 
-  it("同一个键推两次 = 同一页：连点两下不叠两层", async () => {
-    const user = userEvent.setup();
+  it("同一个键推两次 = 同一页：连点两下不叠两层", () => {
     render(<NavStack root={root} />);
     const go = screen.getByRole("button", { name: "进去" });
-    await user.click(go);
+    fireEvent.click(go);
     // 第二次点在被压住的那一页上（真机上点不到），直接再调一次 push 模拟竞态
-    await user.click(screen.getByRole("button", { name: "工作区" }));
-    await user.click(screen.getByRole("button", { name: "进去" }));
+    fireEvent.click(screen.getByRole("button", { name: "工作区" }));
+    fireEvent.click(screen.getByRole("button", { name: "进去" }));
     expect(screen.getAllByText("三只水獭")).toHaveLength(1);
   });
 
