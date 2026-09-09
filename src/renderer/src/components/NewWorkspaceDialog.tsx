@@ -1,4 +1,4 @@
-// NewWorkspaceDialog —— 侧栏「＋ 新工作区」那颗按钮的落点（issue #917，ADR-0217）。
+// NewWorkspaceDialog —— 侧栏「＋ 新团队」那颗按钮的落点（issue #917，ADR-0217）。
 //
 // 弹窗而不是换页（与 WorkspacePage 的「换页不是弹窗」相反，理由也相反）：这里
 // 只有一个字段、一次性、做完就走，是 ADR-0185 说的那种「模态任务」；换页会把
@@ -8,9 +8,9 @@
 // 四个状态各有各的出口，一个都不能是死胡同（wayfinding：任何一屏都要能出去）：
 // · allowed —— 填名字，回车即建
 // · no_subscription —— 说清为什么要订阅（规则二：额度记在创建者头上），给「去订阅」
-// · plan_too_low —— 订着呢，只是这一档不带工作区（#1024）。**和上一条分开说**：
+// · plan_too_low —— 订着呢，只是这一档不带团队（#1024）。**和上一条分开说**：
 //   这个人不该被劝去「订阅」（他已经订了，再开一张 checkout 会变成第二条订阅），
-//   该被劝去换档；带工作区的是哪几档从 plan 表现读，不在文案里写死
+//   该被劝去换档；带团队的是哪几档从 plan 表现读，不在文案里写死
 // · signed_out —— 给「去登录」
 // · unknown —— 还没问到 billing（冷启动/断网）。**不说「你没有订阅」**，那句话
 //   可能是假的，见 workspaceAccess.ts 的注释；这里打开时顺手补一次 loadBilling
@@ -19,7 +19,7 @@
 // createWorkspaceGroup 成功后自己 refresh 一次，refresh 失败落的是**同一个**
 // workspaceGroupsError——照直关掉弹窗，用户看到的就是「一条错误 + 空列表」，与
 // 「没建成」一模一样，而这两件事该做的动作正好相反（别重建 / 重建）。真机上因此
-// 多建了一个同名工作区。#843 的另外两条（一个群坏掉整份列表全挂、数据库原文直出）
+// 多建了一个同名团队。#843 的另外两条（一个群坏掉整份列表全挂、数据库原文直出）
 // 不在这条 issue 的范围里，留在 #843。
 
 import { useEffect, useState } from "react";
@@ -74,10 +74,10 @@ export function NewWorkspaceDialog({
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2 text-sm">
             <Boxes className="size-4 text-muted-foreground" aria-hidden />
-            新建工作区
+            新建团队
           </DialogTitle>
           <DialogDescription className="text-[12px] leading-relaxed">
-            工作区是和好友共用的一块地方：共享连接器、共享会话，会话跑在云端，
+            团队是和好友共用的一块地方：共享连接器、共享会话，会话跑在云端，
             你不开机也在跑。
           </DialogDescription>
         </DialogHeader>
@@ -96,14 +96,14 @@ export function NewWorkspaceDialog({
           <>
             <p className="text-[12px] leading-relaxed text-muted-foreground">
               {access === "signed_out"
-                ? "工作区跟着账号走——先登录才能建。"
+                ? "团队跟着账号走——先登录才能建。"
                 : access === "plan_too_low"
-                  ? // 已经在付钱的人，别再说一遍「要订阅」。带工作区的档从 plan 表现读：
+                  ? // 已经在付钱的人，别再说一遍「要订阅」。带团队的档从 plan 表现读：
                     // 哪天档位的能力变了，这句话跟着变，不用发版
-                    `你当前的档位不带工作区${tiers ? `，${tiers} 可以` : ""}。工作区里的每一次模型调用都记在创建者的额度上（你拉进来的人跑的那些也算），所以它跟着档位走。`
+                    `你当前的档位不带团队${tiers ? `，${tiers} 可以` : ""}。团队里的每一次模型调用都记在创建者的额度上（你拉进来的人跑的那些也算），所以它跟着档位走。`
                   : // 规则一，连同它的理由一起说：光说「要订阅」听起来像收过路费，
                     // 说清「谁付这笔钱」才解释得通为什么门槛在创建者这一侧
-                    "建工作区要一份订阅。工作区里的每一次模型调用都记在创建者的额度上（你拉进来的人跑的那些也算），所以得先有额度可记。"}
+                    "建团队要一份订阅。团队里的每一次模型调用都记在创建者的额度上（你拉进来的人跑的那些也算），所以得先有额度可记。"}
             </p>
             <DialogFooter>
               <Button type="button" variant="ghost" className="press-scale" onClick={() => onOpenChange(false)}>
@@ -173,7 +173,7 @@ function NewWorkspaceForm({
     return (
       <>
         <p className="text-[12px] leading-relaxed">
-          工作区<span className="font-medium">「{trimmed}」</span>已经建好了，但列表没刷新出来。
+          团队<span className="font-medium">「{trimmed}」</span>已经建好了，但列表没刷新出来。
           <span className="text-muted-foreground">别再建一次</span>——重开一次或稍后再看，它就在那儿。
         </p>
         {attempted && error && <p className="text-[12px] text-err break-words">{error}</p>}
@@ -199,8 +199,8 @@ function NewWorkspaceForm({
         value={name}
         disabled={busy}
         onChange={(e) => setName(e.target.value)}
-        placeholder="工作区名称"
-        aria-label="工作区名称"
+        placeholder="团队名称"
+        aria-label="团队名称"
       />
       {/* 规则二写在建之前，不写在建之后：这是一句要在掏钱前听见的话 */}
       <p className="text-[12px] leading-relaxed text-muted-foreground">
@@ -212,7 +212,7 @@ function NewWorkspaceForm({
         <Button type="button" variant="ghost" className="press-scale" disabled={busy} onClick={onCancel}>
           取消
         </Button>
-        {/* 空名字不给建：一个没有名字的工作区在侧栏里就是一行空白。
+        {/* 空名字不给建：一个没有名字的团队在侧栏里就是一行空白。
             checking 期间也按不动——还不知道有没有订阅，按下去只会拿到一条服务端拒绝 */}
         <Button type="submit" className="press-scale" disabled={!trimmed || busy || checking}>
           {busy ? "创建中…" : checking ? "正在确认订阅…" : "创建"}

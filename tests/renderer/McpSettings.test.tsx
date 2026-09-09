@@ -8,7 +8,7 @@
 // 等实现)。所以这里的"造一份最小桥"就是往 window.otter 上钉一份最小实现——
 // 这是全局注入,不是发明一个组件本来没有的 prop。
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render as rtlRender, screen, waitFor, within } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import "@testing-library/jest-dom/vitest";
 
@@ -16,6 +16,13 @@ import { McpSettings } from "../../src/renderer/src/components/McpSettings.js";
 import { SidebarProvider } from "../../src/renderer/src/components/ui/sidebar.js";
 import type { ShellBridge } from "../../src/shared/shellBridge.js";
 import type { McpServersSnapshot } from "../../src/shared/mcp.js";
+import { ConfirmProvider } from "../../src/renderer/src/components/ui/confirm-dialog.js";
+
+// 这一屏里有组件调 `useConfirm()`（#1127），缺 provider 会在**渲染那一刻**抛——
+// 这是故意的（不回落到 window.confirm），所以测试自己把 provider 包上。
+// 换掉 `render` 这个名字而不是逐处改调用：以后这个文件里新写的用例自动带上
+const render = (ui: Parameters<typeof rtlRender>[0]) => rtlRender(ui, { wrapper: ConfirmProvider });
+
 
 // McpSettings 顶部挂了 <SidebarNub />,它读 useSidebar() 的 context——同真实
 // app 里所有设置页一样(App.tsx 用 <SidebarProvider> 包着挂载),不是这个
@@ -172,13 +179,17 @@ describe("McpSettings 的授权按钮", () => {
       authorizeMcpServer: vi.fn(() => Promise.reject(new Error("等授权超时（300 秒没等到浏览器回调）"))),
       removeMcpServer: vi.fn((): Promise<McpServersSnapshot> => Promise.resolve({ servers: [], errors: [] })),
     } as Partial<ShellBridge>);
-    vi.spyOn(window, "confirm").mockReturnValue(true);
     renderMcpSettings();
     await openCard("Supabase");
     await userEvent.click(await screen.findByRole("button", { name: "授权" }));
     expect(await screen.findByText(/等授权超时/)).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "删除" }));
+    // 二次确认从原生 confirm 换成了 AlertDialog（#1127）：卡上那颗和确认框里那颗
+    // 同名，所以按角色圈到弹窗里再点
+    await userEvent.click(
+      within(await screen.findByRole("alertdialog")).getByRole("button", { name: "删除" })
+    );
     await waitFor(() => {
       expect(screen.queryByText(/等授权超时/)).not.toBeInTheDocument();
     });

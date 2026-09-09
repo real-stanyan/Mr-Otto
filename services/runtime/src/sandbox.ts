@@ -1,4 +1,4 @@
-// 沙箱编排 — 每工作区一容器一卷，dockerode 直管（ADR-0199）。
+// 沙箱编排 — 每团队一容器一卷，dockerode 直管（ADR-0199）。
 // 命名约定 `otto-ws-<workspaceId>`：容器名与卷名共用同一个字符串，
 // ensure/destroy/reconcile 都靠它按名找容器，不额外维护一张 workspaceId→containerId 表。
 //
@@ -39,7 +39,7 @@ export interface DockerLike {
     dockerode 把 docker 的 `304 container already started` 抛成异常，而 304 说的
     恰恰是我们想要的状态。三处调用方（`ensure` / `readWork` / `searchWork`）都是
     「先 list 再按 State 决定要不要 start」，两条帧同时进来时会双双看到 stopped、
-    双双 start，赢的那条把容器拉起来，输的那条拿 304 抛出去——于是「打开工作区
+    双双 start，赢的那条把容器拉起来，输的那条拿 304 抛出去——于是「打开团队
     「文件」tab」在容器被 idle 回收之后大概率读不出内容，而症状看着像随机
     （issue #1097：这一页展开着几层就同时发几条 `files` 帧，「刷新」更是一次全发）。
 
@@ -65,12 +65,12 @@ export interface Sandbox {
   markActive(workspaceId: string): void; // 每条 turn 起跑时打点
   sweepIdle(runningWorkspaces: ReadonlySet<string>): Promise<string[]>; // 停掉的 workspaceId 列表；跑着 turn 的不停
   reconcile(validWorkspaceIds: ReadonlySet<string>): Promise<{ marked: string[]; removed: string[] }>;
-  destroy(workspaceId: string): Promise<void>; // 容器+卷一起删（工作区删除级联）
+  destroy(workspaceId: string): Promise<void>; // 容器+卷一起删（团队删除级联）
   /** 读一格工作文件夹（#1056）。`path` 已过 `normalizeWorkPath`。
       **刻意不走 `ensure()`**：那条路会建容器、会跑 clone 流程、会重置 idle 计时。
       翻一眼文件是个**读**动作，不该有这些副作用——尤其不该让「打开设置页」
       触发一次可能长达十分钟的 clone。所以这里只认**已经存在**的那台容器：
-      不存在 = `absent`（那意味着卷也还没有，这个工作区真的一次活都没干过），
+      不存在 = `absent`（那意味着卷也还没有，这个团队真的一次活都没干过），
       停着就起一下（exec 要求容器在跑；起完照样 markActive，好让 sweepIdle
       认得它、30 分钟后收掉——不打点的话它反而永远没人扫）。
       抛错 = 容器里那次 exec 失败，调用方翻译成回执 */
@@ -79,7 +79,7 @@ export interface Sandbox {
       `readWork`：不建容器、不跑 clone。容器不存在 = 空结果（没有卷就没有东西可搜，
       与 `absent` 说的是同一件事，而搜索这一格没有第二句话要讲） */
   searchWork(workspaceId: string, query: string, content: boolean): Promise<CsWorkHit[]>;
-  /** 在工作区容器里跑一段脚本（#1105 的三把 Git 刀用）。**走 `ensure()`**——
+  /** 在团队容器里跑一段脚本（#1105 的三把 Git 刀用）。**走 `ensure()`**——
       与 `readWork` 刻意不建容器（ADR-0251）方向相反而理由一致：判据是「这个
       动作要不要往卷里写」，而 Git 那几把刀是写 */
   execWork(workspaceId: string, script: string): Promise<{ stdout: string; stderr: string; exitCode: number }>;
@@ -137,16 +137,16 @@ function memoryOrphansStore(): OrphansStore {
 //      #832，见 decideCloneAction）。上一版只问"能不能 `rev-parse HEAD`"，
 //      于是两头都错：答"能"就跳过 ⇒ owner 换了仓库地址永远不生效，而且
 //      跳过分支从不通报，人完全看不出；答"不能"就 `find -delete` ⇒ 一个
-//      "用了一阵才配仓库"的工作区，水獭之前的产出被无声清空，而本期不许
+//      "用了一阵才配仓库"的团队，水獭之前的产出被无声清空，而本期不许
 //      push = 没有任何远程备份。现在 /work 的现状先探成 WorkState 四态，
 //      再由纯函数决定 clone / switch / skip / refuse，**每条分支都有回执**。
 //   4. clone 失败绝不向上抛出——ensure() 永远正常返回容器，只是内容是
 //      空的；onCloneOutcome 回调自己抛出也不例外（复审 I5）。
 //   5. 除 clone 本身给 10 分钟外，其余每条 exec 都套一个较短的默认超时
 //      （复审 I6：ensure() 是 dockerWorld 拿容器句柄的唯一入口，任何一条
-//      卡住不返回，这个工作区之后所有工具调用永久挂起，没有看门狗）。
+//      卡住不返回，这个团队之后所有工具调用永久挂起，没有看门狗）。
 //   6. （#1102 删去）原来这一条讲的是 `Sandbox.invalidateClone`——owner 改
-//      完仓库配置怎么让下一次 ensure() 重新 clone。工作区不再绑仓库之后
+//      完仓库配置怎么让下一次 ensure() 重新 clone。团队不再绑仓库之后
 //      这个问题不存在了：每次 `clone_repo` 就是一次显式调用，没有缓存要失效。
 //   7. 结果经 onCloneOutcome 回调通报，sandbox.ts 自己不做任何 console/IO。
 
@@ -239,7 +239,7 @@ export function sanitizeCloneText(text: string, cfg: { repoUrl: string; pat?: st
     // URL——改写后的文本跟原始 cfg.repoUrl 逐字比对不上，子串替换直接
     // 落空；而这里又拿不到 username/password 做第二道匹配（parse 都
     // 失败了）。继续放行这段自由文本，就是继续赌"这次 git 没有在输出里
-    // 留下凭据碎片"——赌输一次就是把凭据广播给工作区全体成员（复审四轮
+    // 留下凭据碎片"——赌输一次就是把凭据广播给团队全体成员（复审四轮
     // 实测出的 3 个真实案例：全角 ＠ 被百分号编码回显、scp 语法被 ssh
     // 回显 user@host 片段、%40 被解码回显，都属于"整条子串匹配对不上"）。
     // 宁可损失这条路径下的排错细节，也不放行任何一个字符——owner 少看到
@@ -282,7 +282,7 @@ async function inspectExecExitCode(exec: { inspect(): Promise<{ ExitCode: number
 /** src/world/dockerWorld.ts 的 runExec 精简版，只服务 clone 流程：不需要
     onOutput/AbortSignal 那一整套，但保留了它的两个关键行为——WorkingDir
     固定 /work、exitCode 124 补一句"命令超时"（复审 M8：两边行为不该
-    分叉，clone 失败的 reason 会直接进 chat_message 给工作区成员看，裸
+    分叉，clone 失败的 reason 会直接进 chat_message 给团队成员看，裸
     `exitCode 124` 不是人话）。两边按分工不共用代码（本刀范围只能动
     services/runtime/ 下的文件）；真要合并成一份留给后续专门的 ADR/PR。
 
@@ -406,7 +406,7 @@ async function withCloneContainer<T>(
     每卷配额要看存储驱动，overlay2+xfs prjquota 才支持 `--storage-opt
     size=`，而这台 runtime VPS 还没开出来、没法验），只是一道下限闸：
     挡不住"一个 50G 的仓库占 50G"，能挡住"磁盘已经快满了还起一次 clone
-    把整台机器写死"——后者会连累这台机器上所有工作区。 */
+    把整台机器写死"——后者会连累这台机器上所有团队。 */
 const MIN_FREE_KIB = 2 * 1024 * 1024; // 2 GiB
 
 /** 真正跑一次 clone。**跑在旁路容器里**（调用方用 withCloneContainer 起，
@@ -418,7 +418,7 @@ const MIN_FREE_KIB = 2 * 1024 * 1024; // 2 GiB
     失败/空间不足/清空目标目录失败/clone 本身失败/repoUrl 解析失败/任何
     一步的 execInContainer 直接抛异常）全部转成 {ok:false, reason}。
     reason 一律过 sanitizeCloneText（既擦 pat，也擦 repoUrl 里可能藏的
-    凭据）——它会被广播给工作区全员。
+    凭据）——它会被广播给团队全员。
 
     **#1102 之后暂时没有调用方**，片 4（#1105）的 `clone_repo` 工具接回来。
     到那时调用方的保证换了一条：目标是**用户指名的子目录**且已判定为
@@ -585,7 +585,7 @@ export function createSandbox(
   }
 
   /** 同一 workspaceId 的并发 ensure() 合成一次（issue #835①）。没有这层，
-      同一工作区的两条会话同时起 turn 会各跑一遍"查不到 → createContainer"，
+      同一团队的两条会话同时起 turn 会各跑一遍"查不到 → createContainer"，
       后者拿 docker 的 409 Conflict（容器名唯一），那次工具调用直接报错。
       clone 那层的去重管不着这里：撞的是**建容器**，发生在 clone 之前。
       settle 之后立刻摘掉（不像 cloneAttempts 那样长留）——容器可能被
@@ -683,7 +683,7 @@ export function createSandbox(
   /** 本进程此刻正在用的一次性旁路容器，按名字。`sweepCloneContainers` 靠它
       跳过"正在用的那几台"。
 
-      **#1102 之后这个集合是空的**——工作区不再绑仓库，本进程没有任何地方
+      **#1102 之后这个集合是空的**——团队不再绑仓库，本进程没有任何地方
       会起旁路容器。片 4（#1105）的 `clone_repo` 接回 `withCloneContainer`
       时把 `onCreated`/`onReleased` 接到这里，它就活过来了。
       **不能因为"现在总是空的"就把 sweepCloneContainers 一起删掉**：那道清扫
@@ -771,8 +771,8 @@ export function createSandbox(
     return { marked, removed };
   }
 
-  /** 工作区删除级联。**目前没有调用方**（issue #835③ 验过：全仓 grep 无
-      命中）——runtime 没有"工作区被删了"的通知源，实际的删除路径是
+  /** 团队删除级联。**目前没有调用方**（issue #835③ 验过：全仓 grep 无
+      命中）——runtime 没有"团队被删了"的通知源，实际的删除路径是
       reconcile 的两阶段孤儿回收（mark → 7 天宽限 → remove）。留着这个
       方法是为了将来真接上删除事件时有个口子；在那之前，**reconcile 才是
       唯一会真的删东西的地方**，读这个文件的人别被这个方法误导。 */

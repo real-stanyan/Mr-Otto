@@ -13,7 +13,7 @@ const ws: WorkspaceSnapshot = {
   agents: [agent("admin", "管理员"), agent("a_ops", "运营")],
   sandboxApproval: "ask",
 };
-/** 合计 200_000 micro = 20 credit；周额度 2_000_000 → 工作区吃掉 10.0% */
+/** 合计 200_000 micro = 20 credit；周额度 2_000_000 → 团队吃掉 10.0% */
 const usage: WorkspaceUsage = {
   workspaceId: "w", ownerUid: "owner",
   weekStartAt: Date.UTC(2026, 8, 1, 12), weekEndAt: Date.UTC(2026, 8, 8, 12),
@@ -39,7 +39,7 @@ describe("usageRows", () => {
     expect(usageRows(ws, tiny)[0]!.percent).toBe("0.0%");
   });
 
-  it("条按**本工作区合计**归一化，各行加起来正好是 1——不按最大值归一化（那样最大那只常年满格）", () => {
+  it("条按**本团队合计**归一化，各行加起来正好是 1——不按最大值归一化（那样最大那只常年满格）", () => {
     const shares = usageRows(ws, usage).map((r) => r.share);
     expect(shares).toEqual([0.6, 0.3, 0.1]);
     expect(shares.reduce((a, b) => a + b, 0)).toBeCloseTo(1, 10);
@@ -65,20 +65,20 @@ describe("usageRows", () => {
 describe("分母缺席时的退路（没订阅 / 旧 edge）", () => {
   const noLimit: WorkspaceUsage = { ...usage, weekLimitMicro: null };
 
-  it("usageScale 退到本工作区合计，标签跟着换——两个分母算出来是两个意思完全不同的数", () => {
+  it("usageScale 退到本团队合计，标签跟着换——两个分母算出来是两个意思完全不同的数", () => {
     expect(usageScale(usage)).toEqual({ kind: "window", limitMicro: 2_000_000 });
     expect(usageScale(noLimit)).toEqual({ kind: "workspace", totalMicro: 200_000 });
     expect(usageScaleNote(usageScale(usage))).toContain("额度窗口");
-    expect(usageScaleNote(usageScale(noLimit))).toContain("本工作区本周合计");
+    expect(usageScaleNote(usageScale(noLimit))).toContain("本团队本周合计");
   });
 
-  it("退路上百分比按工作区合计算，加起来是 100%——**绝不回落到 credit**", () => {
+  it("退路上百分比按团队合计算，加起来是 100%——**绝不回落到 credit**", () => {
     const rows = usageRows(ws, noLimit);
     expect(rows.map((r) => r.percent)).toEqual(["60.0%", "30.0%", "10.0%"]);
     expect(rows.every((r) => !r.percent.includes("credit") && !r.percent.includes("$"))).toBe(true);
   });
 
-  it("页顶那格：分母缺席时不报百分比，只报调用次数（拿工作区合计当分母硬报 100% 什么都没说）", () => {
+  it("页顶那格：分母缺席时不报百分比，只报调用次数（拿团队合计当分母硬报 100% 什么都没说）", () => {
     expect(usageHeadline(usage)).toEqual({ percent: "10.0%", fill: 0.1, calls: 5 });
     expect(usageHeadline(noLimit)).toEqual({ percent: null, fill: null, calls: 5 });
   });

@@ -1,14 +1,14 @@
 // @vitest-environment jsdom
 //
-// 侧栏里的工作区一节（issue #917 搬进侧栏，#919 长成工程组的样子）。
+// 侧栏里的团队一节（issue #917 搬进侧栏，#919 长成工程组的样子）。
 //
 // 四条断言各自对着一个具体的失败：
 // ① 组头那颗 ＋ **只开开局卡，不建任何东西**——这是「和本地会话一致」的全部内容
 //    （本地那颗 ＋ 也只是把主区换成 composer）。改回「点一下就建一条空会话」的话
 //    这条会红，而那正是 #919 要消灭的形态
 // ② 归档的云会话不进侧栏——同本地：归档的会话在「已归档会话」那一屏，不在工程组里
-// ③ 收起来的组不画会话行，但报条数——不报的话收起来就等于把这个工作区藏了
-// ④ 一条工作区都没有 + 没有错误 = 画空态（#1087 之前是整节不渲染：那时它挂在项目栏
+// ③ 收起来的组不画会话行，但报条数——不报的话收起来就等于把这个团队藏了
+// ④ 一条团队都没有 + 没有错误 = 画空态（#1087 之前是整节不渲染：那时它挂在项目栏
 //    顶上，底下就有一段「还没有项目」；独占一栏之后不画就是一片空白）；有错误时出的
 //    是错误那句（空列表 + 有错 = 「读不到」，不是「没有」，这两件事该做的动作相反）
 // ⑤ 还没发过话的云会话（title 是空串，不是 null）显示「新会话」——真机上它长成
@@ -18,7 +18,7 @@
 //    条数（rows.length）展开就数得出来所以只在收起时报，未读数展开也数不出来
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render as rtlRender, screen } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import "@testing-library/jest-dom/vitest";
 
@@ -27,6 +27,13 @@ import { SidebarProvider } from "../../src/renderer/src/components/ui/sidebar.js
 import { useChat } from "../../src/renderer/src/store.js";
 import type { WorkspaceSnapshot } from "../../src/shared/workspaces.js";
 import type { WorkspaceMentionRow } from "../../src/shared/workspaceMentions.js";
+import { ConfirmProvider } from "../../src/renderer/src/components/ui/confirm-dialog.js";
+
+// 这一屏里有组件调 `useConfirm()`（#1127），缺 provider 会在**渲染那一刻**抛——
+// 这是故意的（不回落到 window.confirm），所以测试自己把 provider 包上。
+// 换掉 `render` 这个名字而不是逐处改调用：以后这个文件里新写的用例自动带上
+const render = (ui: Parameters<typeof rtlRender>[0]) => rtlRender(ui, { wrapper: ConfirmProvider });
+
 
 const MENTION = (over: Partial<WorkspaceMentionRow> = {}): WorkspaceMentionRow => ({
   workspaceId: "w1", sessionId: "cs-live", seq: 1, uid: "u-me", fromUid: "u2",
@@ -99,7 +106,7 @@ describe("WorkspacesSidebarSection（#917 / #919）", () => {
     expect(openCloudSession).not.toHaveBeenCalled();
   });
 
-  it("归档的云会话不进侧栏（它们在工作区设置页底部，同本地的「已归档会话」）", () => {
+  it("归档的云会话不进侧栏（它们在团队设置页底部，同本地的「已归档会话」）", () => {
     seed();
     draw();
     expect(screen.getByText("周报自动化")).toBeInTheDocument();
@@ -135,7 +142,7 @@ describe("WorkspacesSidebarSection（#917 / #919）", () => {
       ],
     });
     draw();
-    expect(screen.getByTitle("这个工作区里有 2 条 @ 你的消息没看")).toHaveTextContent("2");
+    expect(screen.getByTitle("这个团队里有 2 条 @ 你的消息没看")).toHaveTextContent("2");
     expect(screen.getByTitle("这条会话里有 2 条 @ 你的消息没看")).toHaveTextContent("2");
   });
 
@@ -145,7 +152,7 @@ describe("WorkspacesSidebarSection（#917 / #919）", () => {
     seed({ workspaceMentions: [MENTION()] });
     draw(["w1"]);
     expect(screen.queryByText("周报自动化")).not.toBeInTheDocument();
-    expect(screen.getByTitle("这个工作区里有 1 条 @ 你的消息没看")).toBeInTheDocument();
+    expect(screen.getByTitle("这个团队里有 1 条 @ 你的消息没看")).toBeInTheDocument();
   });
 
   it("一条未读都没有 = 一枚角标都不画（不是画个 0）", () => {
@@ -154,18 +161,18 @@ describe("WorkspacesSidebarSection（#917 / #919）", () => {
     expect(screen.queryByTitle(/@ 你的消息没看/)).not.toBeInTheDocument();
   });
 
-  it("一条工作区都没有：没错误 = 空态那句话；有错误 = 错误那句（「读不到」≠「没有」）", () => {
+  it("一条团队都没有：没错误 = 空态那句话；有错误 = 错误那句（「读不到」≠「没有」）", () => {
     seed({ workspaceGroups: [] });
     draw();
     // 独占一栏之后这一栏里没有别的东西会说话（#1087）：不画空态 = 切过来一片空白，
     // 人分不出「还没建过」和「坏了」
-    expect(screen.getByText(/还没有工作区/)).toBeInTheDocument();
+    expect(screen.getByText(/还没有团队/)).toBeInTheDocument();
     cleanup();
 
-    seed({ workspaceGroups: [], workspaceGroupsError: "读不到工作区：网络超时" });
+    seed({ workspaceGroups: [], workspaceGroupsError: "读不到团队：网络超时" });
     draw();
-    expect(screen.getByText("读不到工作区：网络超时")).toBeInTheDocument();
+    expect(screen.getByText("读不到团队：网络超时")).toBeInTheDocument();
     // 「读不到」不许说成「里面是空的」：出了错就不该再劝人去建一个
-    expect(screen.queryByText(/还没有工作区/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/还没有团队/)).not.toBeInTheDocument();
   });
 });

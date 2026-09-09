@@ -1,13 +1,13 @@
-// PublishSessionDialog —— 会话头部「更多」菜单里的「发布到工作区…」（Task 12，
+// PublishSessionDialog —— 会话头部「更多」菜单里的「发布到团队…」（Task 12，
 // ADR-0198 切片 3，issue #811）。
 //
-// 跟 `@好友` 分享是两条不同的路：分享是一次性给一个人，发布是常驻挂在工作区里
+// 跟 `@好友` 分享是两条不同的路：分享是一次性给一个人，发布是常驻挂在团队里
 // 给全体成员（含未来加入者）反复导入（workspace_sessions 那张表，Task 9）。
 //
-// 两步走，同一个 Dialog：① 选工作区 + 起标题 → 发布；② 发布成功后，如果这个
+// 两步走，同一个 Dialog：① 选团队 + 起标题 → 发布；② 发布成功后，如果这个
 // 会话用过此刻还连着的 MCP 服务，弹一屏跟 ShareGrantDialog 同款的确认——
 // 复用同一个 `serversUsedInSession` 纯函数选候选，但文案是这里独有的：
-// 「工作区全体成员（含未来加入者）将以你的身份使用这些工具」——比 DM 分享的
+// 「团队全体成员（含未来加入者）将以你的身份使用这些工具」——比 DM 分享的
 // 后果更大（不是给一个人，是给一整个会不断加人的组），必须单独说清楚。
 
 import { useEffect, useState } from "react";
@@ -106,7 +106,7 @@ export function PublishSessionDialog({
           <DialogHeader>
             <DialogTitle>连带贡献这个会话用过的服务？</DialogTitle>
             <DialogDescription>
-              工作区全体成员（含未来加入者）将以你的身份使用这些工具，凭证托管到 Mr Otto 云端——
+              团队全体成员（含未来加入者）将以你的身份使用这些工具，凭证托管到 Mr Otto 云端——
               你下线成员照样能用。不勾就只发布对话本身。
             </DialogDescription>
           </DialogHeader>
@@ -147,22 +147,22 @@ export function PublishSessionDialog({
     <Dialog open={open} onOpenChange={(o) => { if (!busy) onOpenChange(o); }}>
       <DialogContent className="sm:max-w-[440px]">
         <DialogHeader>
-          <DialogTitle>发布到工作区</DialogTitle>
+          <DialogTitle>发布到团队</DialogTitle>
           <DialogDescription>
-            工作区里的成员可以随时导入这份会话继续接力——跟 @好友 分享不同，这是常驻挂在工作区里的，
+            团队里的成员可以随时导入这份会话继续接力——跟 @好友 分享不同，这是常驻挂在团队里的，
             以后加入的成员也能看见。
           </DialogDescription>
         </DialogHeader>
 
         {groups.length === 0 ? (
           <p className="text-xs text-muted-foreground">
-            还没有工作区。先在侧栏「工作区」里建一个，再回来发布。
+            还没有团队。先在侧栏「团队」里建一个，再回来发布。
           </p>
         ) : (
           <div className="flex flex-col gap-3">
             <Select value={wsId} onValueChange={setWsId}>
               <SelectTrigger className="w-full">
-                <SelectValue placeholder="选一个工作区" />
+                <SelectValue placeholder="选一个团队" />
               </SelectTrigger>
               <SelectContent>
                 {groups.map((g) => (

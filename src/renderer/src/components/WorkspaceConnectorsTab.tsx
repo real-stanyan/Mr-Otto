@@ -1,6 +1,6 @@
-// WorkspaceConnectorsTab —— 工作区设置里的「连接器」那一页（#1120 从 WorkspacePage 抽出）。
+// WorkspaceConnectorsTab —— 团队设置里的「连接器」那一页（#1120 从 WorkspacePage 抽出）。
 //
-// 两组都在回答「这个工作区能够到外面的什么」：上面是 MCP 服务，下面是代码仓库的凭据。
+// 两组都在回答「这个团队能够到外面的什么」：上面是 MCP 服务，下面是代码仓库的凭据。
 // 它们走的是**完全不同的执行路径**——MCP 那半是 edge 的托管箱（ADR-0197），Git 这半是
 // runtime 上一台一次性旁路容器（ADR-0200 决策②，凭据不进水獭那台容器）——所以分组标题
 // 不是装饰，它是这一页上唯一说清「这两样不是一类」的地方。
@@ -107,7 +107,7 @@ export function WorkspaceConnectorsTab({ ws, selfUid }: { ws: WorkspaceSnapshot;
     那把钥匙只活在 runtime 那台 VPS 上。
 
     owner 才画 ＋ 与删除；非 owner 看到的是**同一份清单**、只是没有那两颗钮——不是整组
-    藏起来（藏起来会让人以为这个工作区没配过，同 ADR-0243 对非 owner 的处置）。 */
+    藏起来（藏起来会让人以为这个团队没配过，同 ADR-0243 对非 owner 的处置）。 */
 function GitHostsSection({ ws, selfUid }: { ws: WorkspaceSnapshot; selfUid: string }) {
   const load = useChat((s) => s.workspaceCloudState);
   const save = useChat((s) => s.workspaceCloudGitCredential);

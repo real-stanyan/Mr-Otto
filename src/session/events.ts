@@ -263,8 +263,8 @@ export interface RouteChangedEvent extends SessionEventBase {
 }
 
 /** 云会话（工作区群聊）的身份（issue #833）。目前只需要 workspaceId——
-    留成对象而不是布尔，是因为「哪个工作区」这条信息将来一定会有第二个
-    消费方（比如把工作区名字写进提示词），到时候不用再改一次 schema。 */
+    留成对象而不是布尔，是因为「哪个团队」这条信息将来一定会有第二个
+    消费方（比如把团队名字写进提示词），到时候不用再改一次 schema。 */
 export interface CloudSessionFacts {
   workspaceId: string;
 }
@@ -595,7 +595,7 @@ export interface MemoryLoadedEvent extends SessionEventBase {
 }
 
 /** 工作区多智能体的记忆快照（#949，spec §6）。每只 agent 起 turn 前，runtime 把它此刻能看见的
-    两档（shared = 工作区共享档、own = 它自己的私有档）落成一条——**缺席或内容变了才落**，不是每 turn
+    两档（shared = 团队共享档、own = 它自己的私有档）落成一条——**缺席或内容变了才落**，不是每 turn
     都落（日志里堆满同一段文字、模型每轮重读一遍）。投影拼进 system 尾部，**最新一条胜出**（本机
     memory_loaded 是一会话一条，这条是一会话多条：共享档会被别的 agent 在本会话中途改）。
     带 agentId：别人的快照不进我的上下文（agentView 判 drop）。agentName 是快照那一刻的名字，

@@ -224,7 +224,7 @@ export function BillingSettings() {
     // 「视频」产品上暂时不做，字段还在但不画（ADR-0239 决定 3）
     const capsOf = (id: string) => {
       const caps = me?.plans.find((p) => p.id === id)?.capabilities;
-      return [caps?.image ? "图像" : null, caps?.workspace ? "工作区" : null].filter(
+      return [caps?.image ? "图像" : null, caps?.workspace ? "团队" : null].filter(
         (x): x is string => x !== null,
       );
     };

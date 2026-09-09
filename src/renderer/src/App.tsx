@@ -148,6 +148,7 @@ import {
 import { SEED_TOPICS, withSeedTopics } from "../../shared/memoryTopics.js";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar.js";
 import { Button } from "@/components/ui/button.js";
+import { ConfirmProvider, useConfirm } from "@/components/ui/confirm-dialog.js";
 import { Input } from "@/components/ui/input.js";
 import {
   Dialog,
@@ -1622,9 +1623,9 @@ const WS_COLLAPSED_KEY = "otter-sidebar-collapsed-workspaces";
    按下去得有反应 */
 const HEADER_BUTTON =
   "press-scale min-w-0 py-[7px] text-[13px] font-normal border border-border hover:bg-foreground/[0.06]";
-/* 每一栏那颗开局钮的样子（任务/项目栏是「新会话」，工作区栏是「新工作区」）：
+/* 每一栏那颗开局钮的样子（任务/项目栏是「新会话」，团队栏是「新团队」）：
    撑满一行、内容**左对齐**。#921 那一版曾经是并排等宽的一对（TWIN_BUTTON，居中），
-   #1087 把工作区抬成独立一栏之后每一栏都只剩一颗，居中那个理由（等分的一对各自
+   #1087 把团队抬成独立一栏之后每一栏都只剩一颗，居中那个理由（等分的一对各自
    以自己为轴）随之消失；而正下方的「已归档会话」是通栏左对齐——两条通栏按钮上下
    叠着，一个居中一个靠左读起来就是没对齐。gap/px 跟着「已归档会话」那一颗走 */
 const SOLO_BUTTON = `${HEADER_BUTTON} w-full justify-start gap-2 px-3`;
@@ -1723,6 +1724,7 @@ function SharedAvatars({ names }: { names: readonly string[] }) {
 }
 
 function AppSidebar() {
+  const confirm = useConfirm();
   const sessions = useChat((s) => s.sessions);
   const asks = useChat((s) => s.asks);
   const sessionId = useChat((s) => s.sessionId);
@@ -1779,7 +1781,7 @@ function AppSidebar() {
   // 也要开它,搬进 store 是两处都够得着的最近一层
   const openWorkspaceId = useChat((s) => s.openWorkspaceId);
   const setOpenWorkspaceId = useChat((s) => s.setOpenWorkspaceId);
-  // 「＋ 新工作区」那扇窗的开关。按钮在 SidebarHeader、窗挂在 Sidebar 末尾,
+  // 「＋ 新团队」那扇窗的开关。按钮在 SidebarHeader、窗挂在 Sidebar 末尾,
   // 两头都够得着的最近一层就是这里
   const [newWorkspaceOpen, setNewWorkspaceOpen] = useState(false);
   const workspaceGroups = useChat((s) => s.workspaceGroups);
@@ -1898,9 +1900,15 @@ function AppSidebar() {
           <DropdownMenuItem
             variant="destructive"
             onClick={() => {
-              if (confirm(`彻底删除会话 ${s.sessionId}？\n整段事件日志将从数据库抹除，不可恢复。`)) {
-                void deleteSession(s.sessionId);
-              }
+              void (async () => {
+                const ok = await confirm({
+                  title: `彻底删除会话 ${s.sessionId}？`,
+                  description: "整段事件日志将从数据库抹除，不可恢复。",
+                  confirmLabel: "删除",
+                  tone: "danger",
+                });
+                if (ok) await deleteSession(s.sessionId);
+              })();
             }}
           >
             删除
@@ -1989,9 +1997,15 @@ function AppSidebar() {
             onClick={() => {
               // 报的是行上那一格此刻写着的字（#925 之前这里报的是 fallbackLabel，
               // 于是有标题的会话在确认框里被叫成它所在的文件夹名——和行上对不上）
-              if (confirm(`彻底删除会话 ${displaySessionTitle(s.title)} · ${s.sessionId}？\n整段事件日志将从数据库抹除，不可恢复。`)) {
-                void deleteSession(s.sessionId);
-              }
+              void (async () => {
+                const ok = await confirm({
+                  title: `彻底删除会话 ${displaySessionTitle(s.title)} · ${s.sessionId}？`,
+                  description: "整段事件日志将从数据库抹除，不可恢复。",
+                  confirmLabel: "删除",
+                  tone: "danger",
+                });
+                if (ok) await deleteSession(s.sessionId);
+              })();
             }}
           >
             删除
@@ -2006,7 +2020,7 @@ function AppSidebar() {
   // 纯 UI 位置，不进事件日志，也不必跨会话记忆：切走再回来该回到会话列表
   const [archivedView, setArchivedView] = useState(false);
   /** 切档（#1087）。顺手退出归档屏：归档那一屏只有任务/项目两种，人站在它上面切到
-      工作区栏时，画的是项目的归档、切换器却写着「工作区」（下面那棵树的分支顺序上
+      团队栏时，画的是项目的归档、切换器却写着「团队」（下面那棵树的分支顺序上
       archivedView 排在 tab 之前）。收在**入口**这一处，而不是给那棵树再加一个
       `tab !== "workspaces"` 的条件——同一个判据写两处迟早分家 */
   const switchTab = (next: SidebarTab): void => {
@@ -2134,7 +2148,8 @@ function AppSidebar() {
             <Tabs value={tab} onValueChange={(v) => switchTab(v as SidebarTab)}>
               <TabsList className="w-full">
                 {/* 图标沿用三栏各自的既有语汇:任务清单面板用的就是 ListChecks,
-                    工程分组/设置「工作区」用的是 FolderOpen,工作区那颗新建钮、
+                    工程分组/设置「工作区」用的是 FolderOpen（那一个说的是本机干活的文件夹，
+                    跟这一栏的团队不是一回事）,团队那颗新建钮、
                     弹窗标题、侧栏组头用的是 Boxes——同一个概念一张脸 */}
                 <TabsTrigger value="tasks" className="px-1.5 gap-1">
                   <ListChecks aria-hidden />
@@ -2173,14 +2188,14 @@ function AppSidebar() {
             </Tabs>
             {/* 一栏一颗开局钮,**跟着这一栏生出来的东西走**（#1087）。
                 #923 那条判据原样成立、只是换了一栏:「按钮留在任务栏的话,点完人在
-                原地看不见任何结果」—— 新工作区生出来的东西(WorkspacesSidebarSection)
-                如今只在工作区栏画得出来,所以那颗钮跟着搬过来了。
-                工作区栏**没有「新会话」**:云会话必须落在某一个工作区里,而这一栏
-                顶上没有「哪一个」可言;开一条的入口在每个工作区组头那颗 ＋ 上。
+                原地看不见任何结果」—— 新团队生出来的东西(WorkspacesSidebarSection)
+                如今只在团队栏画得出来,所以那颗钮跟着搬过来了。
+                团队栏**没有「新会话」**:云会话必须落在某一个团队里,而这一栏
+                顶上没有「哪一个」可言;开一条的入口在每个团队组头那颗 ＋ 上。
                 #921 那条「两颗要长一样」跟着 TWIN_BUTTON 一起没了消费方——它要的是
                 并排那一对不分主次,而现在任何一栏都只有一颗,不再有"并排" */}
             {tab === "workspaces" ? (
-              // 新工作区(issue #917)。图标沿用 Boxes,和侧栏里工作区组头、
+              // 新团队(issue #917)。图标沿用 Boxes,和侧栏里团队组头、
               // 弹窗标题是同一张脸
               <Button
                 variant="ghost"
@@ -2188,7 +2203,7 @@ function AppSidebar() {
                 onClick={() => setNewWorkspaceOpen(true)}
               >
                 <Boxes className="size-4 shrink-0" aria-hidden />
-                新工作区
+                新团队
               </Button>
             ) : (
               <Button
@@ -2455,9 +2470,15 @@ function AppSidebar() {
                       title="删除会话（整段日志从库里抹除，不可恢复）"
                       onClick={(e) => {
                         e.stopPropagation();
-                        if (confirm(`彻底删除史前会话 ${s.sessionId}？\n整段事件日志将从数据库抹除，不可恢复。`)) {
-                          void deleteSession(s.sessionId);
-                        }
+                        void (async () => {
+                          const ok = await confirm({
+                            title: `彻底删除史前会话 ${s.sessionId}？`,
+                            description: "整段事件日志将从数据库抹除，不可恢复。",
+                            confirmLabel: "删除",
+                            tone: "danger",
+                          });
+                          if (ok) await deleteSession(s.sessionId);
+                        })();
                       }}
                     >
                       ✕
@@ -2589,9 +2610,9 @@ function AppSidebar() {
         </DrawerContent>
       </Drawer>
       {/* 工作区详情页(issue #917 之后这个抽屉只剩这一层内容)。开合判据是
-          openedWorkspace 而不是 openWorkspaceId:那个工作区被解散/退群后会从快照里
-          消失,抽屉跟着自己关掉,不用另写一条善后。标题就是工作区名——抽屉里装的
-          是「这一个」,再写一遍「工作区」等于什么都没说 */}
+          openedWorkspace 而不是 openWorkspaceId:那个团队被解散/退群后会从快照里
+          消失,抽屉跟着自己关掉,不用另写一条善后。标题就是团队名——抽屉里装的
+          是「这一个」,再写一遍「团队」等于什么都没说 */}
       <Drawer
         open={openedWorkspace !== null}
         onOpenChange={(o) => { if (!o) setOpenWorkspaceId(null); }}
@@ -2600,7 +2621,7 @@ function AppSidebar() {
       >
         <DrawerContent side="right" className="w-[min(420px,92vw)]">
           <DrawerHeader className="sr-only">
-            <DrawerTitle>{openedWorkspace?.name ?? "工作区"}</DrawerTitle>
+            <DrawerTitle>{openedWorkspace?.name ?? "团队"}</DrawerTitle>
           </DrawerHeader>
           {/* SidebarMenu 系列需要 SidebarProvider 上下文(抽屉 portal 到 body,
               根 provider 够不着)——包一层只喂上下文,不带侧栏结构。
@@ -2620,9 +2641,9 @@ function AppSidebar() {
           </div>
         </DrawerContent>
       </Drawer>
-      {/* 新工作区(issue #917)。按钮只在项目栏(issue #923),所以 setTab 这一下不是
+      {/* 新团队(issue #917)。按钮只在项目栏(issue #923),所以 setTab 这一下不是
           为了换栏,是为了归档视图那一路:在「已归档」里点的钮,建完得把人带回列表,
-          不然新建的工作区在他此刻看的那一屏上根本不出现 */}
+          不然新建的团队在他此刻看的那一屏上根本不出现 */}
       <NewWorkspaceDialog
         open={newWorkspaceOpen}
         onOpenChange={setNewWorkspaceOpen}
@@ -4044,10 +4065,10 @@ export function App() {
             </DropdownMenuItem>
             <DropdownMenuSeparator />
             {/* 发布到工作区(ADR-0198 切片 3,issue #811):跟 @好友 分享是两条不同的路——
-                分享是一次性给一个人,发布是常驻挂在工作区里给全体成员(含未来加入者)
-                反复导入。没有工作区时对话框自己说"先建一个",这一项不藏起来 */}
+                分享是一次性给一个人,发布是常驻挂在团队里给全体成员(含未来加入者)
+                反复导入。没有团队时对话框自己说"先建一个",这一项不藏起来 */}
             <DropdownMenuItem onClick={() => setPublishOpen(true)}>
-              <UploadCloud /> 发布到工作区…
+              <UploadCloud /> 发布到团队…
             </DropdownMenuItem>
             {/* 子智能体设置页开页时自动落到当前会话的 workspace 那一层
                 (SubagentSettings 的 initialSubagentScope),所以从这进去编的就是
@@ -4177,6 +4198,10 @@ export function App() {
     // 让这层重新成为有界 flex 容器（原 h-screen 链路的等价物）。
     // min-h-svh 与 h-screen 分属不同 tailwind-merge 分组,不会互相 dedupe,
     // 两条规则共存但不冲突(dev 环境下 svh≈vh,数值一致)
+    // 二次确认弹窗的宿主（#1127）：包在最外层，因为问「真的要删吗」的地方遍布
+    // 侧栏、设置抽屉与各张卡；`useConfirm` 缺 provider 会抛，所以漏一棵子树不会
+    // 安静退回原生 confirm，是当场红
+    <ConfirmProvider>
     <SidebarProvider className="h-screen">
       <TooltipProvider delayDuration={400}>
         <AppSidebar />
@@ -4263,6 +4288,7 @@ export function App() {
         <SideChatWindow />
       </TooltipProvider>
     </SidebarProvider>
+    </ConfirmProvider>
   );
 }
 

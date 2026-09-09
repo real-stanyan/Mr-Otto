@@ -36,7 +36,7 @@ afterEach(cleanup);
 const detail: NavScreen = {
   key: "detail",
   title: "智能体",
-  backLabel: "工作区",
+  backLabel: "团队",
   largeTitle: { title: "智能体" },
   render: () => <p>三只水獭</p>,
 };
@@ -59,7 +59,7 @@ describe("NavStack", () => {
     render(<NavStack root={root} />);
     expect(screen.getByRole("heading", { name: "mandy's bubble tea" })).toBeInTheDocument();
     expect(screen.getByText("3 人")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /返回|工作区/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /返回|团队/ })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "关闭" })).toBeInTheDocument();
   });
 
@@ -68,7 +68,7 @@ describe("NavStack", () => {
     fireEvent.click(screen.getByRole("button", { name: "进去" }));
     expect(screen.getByText("三只水獭")).toBeInTheDocument();
     // 「返回」两个字对每一页都成立，等于没说；backLabel 是这一格的全部价值
-    expect(screen.getByRole("button", { name: "工作区" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "团队" })).toBeInTheDocument();
   });
 
   it("根页留在树上（返回时它还带着原来的滚动位置），但不再接指针事件", () => {
@@ -82,7 +82,7 @@ describe("NavStack", () => {
   it("返回：那一页从树上摘掉（reduced-motion 下是同步的，不留退场残影）", () => {
     render(<NavStack root={root} />);
     fireEvent.click(screen.getByRole("button", { name: "进去" }));
-    fireEvent.click(screen.getByRole("button", { name: "工作区" }));
+    fireEvent.click(screen.getByRole("button", { name: "团队" }));
     expect(screen.queryByText("三只水獭")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "进去" })).toBeInTheDocument();
   });
@@ -92,7 +92,7 @@ describe("NavStack", () => {
     const go = screen.getByRole("button", { name: "进去" });
     fireEvent.click(go);
     // 第二次点在被压住的那一页上（真机上点不到），直接再调一次 push 模拟竞态
-    fireEvent.click(screen.getByRole("button", { name: "工作区" }));
+    fireEvent.click(screen.getByRole("button", { name: "团队" }));
     fireEvent.click(screen.getByRole("button", { name: "进去" }));
     expect(screen.getAllByText("三只水獭")).toHaveLength(1);
   });
@@ -188,7 +188,7 @@ describe("动画路径", () => {
     render(<NavStack root={root} />);
     fireEvent.click(screen.getByRole("button", { name: "进去" }));
     settleFrames();
-    fireEvent.click(screen.getByRole("button", { name: "工作区" }));
+    fireEvent.click(screen.getByRole("button", { name: "团队" }));
     // 动画期间那一页还得在树上（退场残影），跑完才卸载；收完之前根页不接指针
     const rootPage = screen.getByRole("heading", { name: "mandy's bubble tea" }).closest("section")!;
     expect(screen.getByText("三只水獭")).toBeInTheDocument();

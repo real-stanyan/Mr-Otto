@@ -7,8 +7,8 @@
 //   · isMemberOrUnknown → "unknown"（重启补跑那条路径用）。补跑发生在 daemon 刚
 //     起来、N 条会话错峰查 Supabase 的那一刻——正是它最不稳的时候。那条路径上
 //     "拿不到"被当成"不在籍"的后果是 append-only 的：每条排队消息落一条
-//     turn_ended{error:"发起人已不在这个工作区"}，永远关口，用户看到的是"你被移出
-//     了工作区"。**"查不到"与"确认不在"必须分得开**，因为两者该做的动作相反：
+//     turn_ended{error:"发起人已不在这个团队"}，永远关口，用户看到的是"你被移出
+//     了团队"。**"查不到"与"确认不在"必须分得开**，因为两者该做的动作相反：
 //     前者留着开场白等下一次重启，后者才写收口。
 
 /** 在籍查询的三态：在籍 / 确认不在籍 / 这一刻查不出来 */
@@ -21,7 +21,7 @@ export interface MembershipCache {
       永久收口"的调用方（重启补跑）用 */
   isMemberOrUnknown(workspaceId: string, uid: string): Promise<Membership>;
   invalidate(workspaceId: string): void;
-  /** 这个工作区此刻的成员集合（同一份 60s 缓存；#979 第 5 条）。给 hostUids()
+  /** 这个团队此刻的成员集合（同一份 60s 缓存；#979 第 5 条）。给 hostUids()
       用——它与在籍判断是**同一条 SQL**，原来每 turn 另打一次。查询抛错**原样抛**，
       不回空集：「拿不到」≠「没有成员」（同 ADR-0197 grants 缓存的规矩），调用方
       （sessionService 的授权拉取）见到异常就本 turn 不挂代理工具 */

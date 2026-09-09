@@ -66,7 +66,7 @@
 //
 // 切片 4（#949）在这个文件里改了三处：
 //   ① CloudSessionOpts 加 `memory: WorkspaceMemoryStore`——**必需**不是可选。
-//      忘接线该编译不过，而不是安静地跑一个没有工作区记忆的 agent（同
+//      忘接线该编译不过，而不是安静地跑一个没有团队记忆的 agent（同
 //      agentToolAllow.ts 的 `encode` 必填无默认那条纪律）。
 //   ② engineFor 建刀那一支给每只 agent 挂一把 `createWorkspaceMemoryTool`：
 //      共享档的写入者前缀取的是**此刻**的名字（specNames，runJob 每次刷新），
@@ -210,7 +210,7 @@ import {
   relayBoundsOf,
 } from "../../../src/shared/agentRelay.js";
 
-/** 一个工作区 agent 的完整规格（#928）。daemon 从 workspace_agents 表查出来
+/** 一个团队 agent 的完整规格（#928）。daemon 从 workspace_agents 表查出来
     （Task 10/11），装配时递给 sessionService。 */
 export interface AgentSpec {
   agentId: string;
@@ -218,7 +218,7 @@ export interface AgentSpec {
   /** 一句话职责。进别人 briefing 的 roster —— 「@ 得着谁、他管什么」 */
   description: string;
   instructions: string;
-  /** 允许的逻辑型号；[0] 是默认。空 = 用工作区那份（ADR-0202） */
+  /** 允许的逻辑型号；[0] 是默认。空 = 用团队那份（ADR-0202） */
   models: string[];
   /** 连接器白名单（spec §3，切片 2）：[] = 整池放行。接在 fetchGrantedTools 之后过一道 */
   tools: AgentToolAllow[];
@@ -263,9 +263,9 @@ export interface CloudSessionOpts {
   workspaceId: string;
   sessionId: string;
   ownerUid: string;
-  store: EventStore; // daemon 按工作区开
+  store: EventStore; // daemon 按团队开
   world: ExecutionWorld; // DockerWorld
-  /** 这个工作区此刻有哪几只 agent。**每 turn 现取一次**,同 hostUids ——
+  /** 这个团队此刻有哪几只 agent。**每 turn 现取一次**,同 hostUids ——
       建/改 agent 下一 turn 生效,不用重开会话。
       `fresh`（#979 第 5 条，ADR-0232）：say() 递 `{fresh:true}`——人刚开口，要的是
       此刻的名单；runJob / relayAfterTurn 不递——daemon 那侧可以回一份 ≤60s 的快照
@@ -284,7 +284,7 @@ export interface CloudSessionOpts {
       owner 或建的人才能收尾（issue #822）。daemon 给：create 时是 byUid，
       重启恢复房间时从那张表现读 */
   createdByUid: string;
-  /** 这条云会话所在工作区此刻的成员（= 可借代理服务的 host 候选）。
+  /** 这条云会话所在团队此刻的成员（= 可借代理服务的 host 候选）。
       daemon 给；每 turn 起跑前现取一次（成员变化下一 turn 生效） */
   hostUids: () => Promise<string[]>;
   onEvent: (e: SessionEvent) => void; // daemon 拿去定向广播
@@ -307,7 +307,7 @@ export interface CloudSessionOpts {
     clearTimer?: (h: unknown) => void;
   };
   onUsage: (u: { uid: string; model: string; promptTokens: number; completionTokens: number }) => void;
-  /** 工作区记忆的读写口（#949）。**必需**：忘接线该编译不过，而不是安静地跑一个没记忆的 agent */
+  /** 团队记忆的读写口（#949）。**必需**：忘接线该编译不过，而不是安静地跑一个没记忆的 agent */
   memory: WorkspaceMemoryStore;
   /** 被 @ 的人类成员的收件箱（#1064）。**必需**（同 memory / agentWriter / isMember
       的纪律）：忘接线该编译不过，而不是安静地跑一条「@ 了人但谁都没收到提醒」的
@@ -337,7 +337,7 @@ export interface CloudSessionOpts {
   /** uid → 显示名。git_push 的提交署名要它（**现取**：改名之后下一次提交
       就是新名字，同 ADR-0202「每次 chat() 现读」）。缺席 = 退回 uid */
   labelOf?: (uid: string) => Promise<string>;
-  /** 这个 uid 此刻还在这个工作区吗（#957 B-I1）。**必需**（同 memory / agentWriter
+  /** 这个 uid 此刻还在这个团队吗（#957 B-I1）。**必需**（同 memory / agentWriter
       的纪律）：忘接线该编译不过，而不是安静地跑一条谁都能起的 turn。
       frameHandler 在收帧那一刻已经验过一次籍，但 turn 可以在队列里等很久、
       也可以被 relayAfterTurn 在几分钟后替他重新点起——起跑那一刻再查一次，
@@ -362,7 +362,7 @@ export interface CloudSessionOpts {
       同 relayRemainingMicro「每条会接力的 turn 现查」的纪律；没撞门的 turn 一次都不查）。
       daemon 接 `workspaces.sandbox_approval`，查询失败回落 "ask"——往严的一边倒 */
   sandboxApproval: () => Promise<SandboxApproval>;
-  /** 这个工作区的容器锁（#979 第 2 条，ADR-0232）。**必需**（同 memory / isMember
+  /** 这个团队的容器锁（#979 第 2 条，ADR-0232）。**必需**（同 memory / isMember
       的纪律）：忘接线该编译不过，而不是安静地跑成两条会话同时改同一个 `/work`。
       daemon 按 workspaceId 一把（createWorkspaceLocks）；测试各给一把新的，要验互斥
       的两条会话共用同一把。sessionService **第一次碰容器才拿**、这一轮收口才放，
@@ -481,7 +481,7 @@ export const MAX_CATCHUP_ATTEMPTS = 3;
     界面上那颗「免审批」药丸此刻可能正亮着，而一张卡刚刚弹了出来。
     说的是「这一次」不是「这一轮」——判断本身不钉住，下次撞门还会重查。 */
 export const SANDBOX_PROBE_FAIL_TEXT =
-  "这一刻读不到这个工作区的「免审批」设置，所以这一次照旧问人。稍后再跑就会重新读一次。";
+  "这一刻读不到这个团队的「免审批」设置，所以这一次照旧问人。稍后再跑就会重新读一次。";
 
 /** 「被踢的那位在群里叫什么」：日志里没有 profiles 表，开场白正文那个
     `[label]: ` 前缀是唯一现成的名字来源。取不到就退回 uid 前 8 位——与
@@ -490,7 +490,7 @@ export const SANDBOX_PROBE_FAIL_TEXT =
     **取出来还要再过一遍 `safeSpeakerLabel`**（Task 1 复审）：新落盘的开场白确实
     已经过过一次，但这是一个**发言人身份**，而日志是 append-only 的——批次 2 之前
     落盘的那些开场白里，前缀是原样拼的，一个带换行的旧 label 从这里出去就成了
-    `<换行伪造行> 已不在这个工作区…` 这条模型可见的系统发言的一部分。幂等，
+    `<换行伪造行> 已不在这个团队…` 这条模型可见的系统发言的一部分。幂等，
     所以对新行是空操作（`promptSafe.ts` 头注：三层各跑一遍正是它的设计前提） */
 export function speakerLabelOf(content: string | undefined, fromUid: string): string {
   const label = labelFromPrefix(content);
@@ -514,7 +514,7 @@ function labelFromPrefix(content: string | undefined): string | null {
     不说这一声的话：收口落了（turn 不跑），但那条开场白照旧躺在每一只 agent 的
     上下文里，读起来就是一条没人执行的正常指令——下一轮谁顺手把它做了都不奇怪 */
 export function kickedNoteText(label: string): string {
-  return `${label} 已不在这个工作区，上面那句点名不作数`;
+  return `${label} 已不在这个团队，上面那句点名不作数`;
 }
 
 export function createCloudSession(opts: CloudSessionOpts): CloudSession {
@@ -629,7 +629,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   );
 
   // ── 容器互斥（#979 第 2 条，ADR-0232）────────────────────────────────
-  // 同工作区多条会话共用一容器一卷，锁由 daemon 按工作区注入。**第一次碰容器才拿**
+  // 同团队多条会话共用一容器一卷，锁由 daemon 按团队注入。**第一次碰容器才拿**
   // （read_file / write_file / bash 三条路都经这道门），这一轮收口（runJob 的
   // finally）才放；只聊天的 turn 不排队。等锁可被停止键打断：jobLockAbort 是这一轮
   // 的信号，abortCurrent 顺手翻它——否则「停止」要等别的会话做完才生效。
@@ -831,7 +831,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     },
   });
 
-  /** 审批门前的**工作区策略**（#977，ADR-0231）：沙箱内那两把刀（bash / write_file）
+  /** 审批门前的**团队策略**（#977，ADR-0231）：沙箱内那两把刀（bash / write_file）
       在 `sandbox_approval = "auto"` 时直接放行，其余（好友代理连接器、create_agent）
       原样递给 router 让人批。为什么在这里包一层而不是改 approvalGate：门只认
       `requiresApproval` 这一个布尔，"谁来批、批不批"从来是 approver 的事——桌面那套
@@ -851,11 +851,11 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         //   · `auto` → **不钉**，下一次撞门重查。开关此刻坐在输入框那一行上，
         //     形状说的是「随时踩得到的刹车」（本地那颗 `setApprovalMode` 的 handler
         //     就故意不查 runningSessions，注释原话「必须随时可踩」），一轮之内踩下去
-        //     毫无反应是这次搬家最不该带来的静默失败。代价：免审的工作区里每次真
+        //     毫无反应是这次搬家最不该带来的静默失败。代价：免审的团队里每次真
         //     跑命令/写文件多一次单行主键查询（不撞门的 turn 一次都不查）。
         //   · **问不出来（null）→ 也不钉**。这一次按 ask 问人（往严的一边倒不变），
         //     但不能拿它当「确认是 ask」钉住整轮——那样一次网络抖动就会把一个
-        //     `auto` 工作区剩下的每一把刀全部翻成要人批，而这一轮里没有任何人
+        //     `auto` 团队剩下的每一把刀全部翻成要人批，而这一轮里没有任何人
         //     看得出为什么突然开始弹卡。
         jobSandboxPolicy ??= opts.sandboxApproval().catch((err: unknown) => {
           console.warn(`[otto-runtime] sandbox_approval 查询失败，这一次按 ask 问人（session=${sessionId}）`, err);
@@ -864,9 +864,9 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         const policy = await jobSandboxPolicy;
         if (policy !== "ask") {
           jobSandboxPolicy = null;
-          if (policy === "auto") return { decision: "approved", reason: "工作区设置：沙箱内工具免审" };
+          if (policy === "auto") return { decision: "approved", reason: "团队设置：沙箱内工具免审" };
           // 问不出来时**在群里说一句**（每个 job 一次，同 relayWaitAnnounced 的去重）：
-          // 免审开着的工作区里，输入框上方那行常驻警示写着「不会再问你」，而这一刻
+          // 免审开着的团队里，输入框上方那行常驻警示写着「不会再问你」，而这一刻
           // 突然弹出一张卡——不出声的话，这个观测与「这开关坏了」一模一样，
           // 而真实原因只在 VPS 日志里
           if (!sandboxProbeFailAnnounced) {
@@ -952,7 +952,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       ],
       world, // 过容器锁的那份（#979 第 2 条），不是裸的 opts.world
       sessionId,
-      // 策略层包在 router 外面（#977）：沙箱工具按工作区开关放行，其余进 router 问人
+      // 策略层包在 router 外面（#977）：沙箱工具按团队开关放行，其余进 router 问人
       approver: policyApprover,
       onEvent: notify,
       // 流式（#1107）：opts.onDelta 缺席就不接——adapter 只在拿到 onDelta 时
@@ -973,7 +973,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // 是新开一条会话）。窗口**现读**这台 engine 此刻的 adapter 的型号：改型号
       // 下一 turn 生效（同 #932 坑 ①），锁死建 engine 那一刻的型号就是同一个教训
       // 在这一格上再犯一次。settings 取全局默认——云会话没有"设置页"这个概念，
-      // 每工作区可配阈值不是今天的需求（要的话在这加一个现读的 opts）
+      // 每团队可配阈值不是今天的需求（要的话在这加一个现读的 opts）
       autoCompact: {
         // 没有 `?? adapter` 兜底：engineFor 在**每条**路径上都先 set 再用，这台
         // engine 存在就意味着那一格写过了。兜一个"建 engine 那一刻的 adapter"
@@ -1000,7 +1000,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     try {
       rows = await opts.memory.read(opts.workspaceId, [SHARED_MEMORY_AGENT_ID, spec.agentId]);
     } catch (err) {
-      console.warn(`[otto-runtime] 工作区记忆读取失败，本 turn 不落快照（workspaceId=${opts.workspaceId} agent=${spec.agentId}）`, err);
+      console.warn(`[otto-runtime] 团队记忆读取失败，本 turn 不落快照（workspaceId=${opts.workspaceId} agent=${spec.agentId}）`, err);
       return;
     }
     const shared = rows.get(SHARED_MEMORY_AGENT_ID)?.content ?? "";
@@ -1026,12 +1026,12 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // 终审 Critical，修复轮 3/5）：
     //   有提示词、没同伴 → 要落（模型得知道自己管什么）
     //   没提示词、有同伴 → 要落（"群里还有：广告（管投放）"是有用的）
-    //   两样都没有     → 落出来是「[你是这个工作区里的「管理员」。]\n」这种
+    //   两样都没有     → 落出来是「[你是这个团队里的「管理员」。]\n」这种
     //                     零信息量的句子——而且是一条**永久**事件，会让既有
     //                     云会话升级后的第一个 turn 多出这一条、打断一次
     //                     前缀缓存（ADR-0073）
     // 两个条件必须是 && 不是 ||：写成或的话，"有提示词但暂时没同伴"这种
-    // 完全正常的单 agent 工作区会被一起挡掉，那条 brief 明明说得出话。
+    // 完全正常的单 agent 团队会被一起挡掉，那条 brief 明明说得出话。
     //
     // 这个守卫顺带让 `npm run runtime:smoke` 的事件序列断言（"event 帧序列
     // 以 user_message 开头"）重新变绿——冒烟脚本与 daemon.ts 的临时占位
@@ -1387,13 +1387,13 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // **起跑那一刻再验一次籍**（#957 B-I1）。frameHandler 收帧时验过一次，但
       // 那一刻与这一刻之间隔着一整条队列——更要命的是接力：一条 relay 开场白的
       // fromUid 仍是最初点火的那个人（spec §4.2），他可能在这条链跑到第 4 棒时
-      // 已经被踢出工作区，而这一棒还在用他的代理授权、烧 owner 的钱。
+      // 已经被踢出团队，而这一棒还在用他的代理授权、烧 owner 的钱。
       // **合成收口的 readUpToSeq 取 lastSeqSeen（落盘那一刻的日志尾）不是
       // job.opening.seq**：这只 agent 可能还欠着更晚的、折叠进同一个 job 的开场白
       // （去重命中），只收开场白那条的口会把后面那些永远留在「排队中」（#957 F1）
       // **三态**（#957 终审 Critical 1）：`"unknown"` = 这一刻查不出来。这条路
       // 上仍然 fail-closed（不跑）——发送者在线、看得见错误、能重发；但文案要
-      // 与"已不在这个工作区"分开：后者说的是一件确定的事（人会去找管理员），
+      // 与"已不在这个团队"分开：后者说的是一件确定的事（人会去找管理员），
       // 前者只是"这一刻问不出来"（人重发一次就好）。说成同一句话，一次
       // Supabase 抖动就会被读成"我被踢了"
       const membership = await opts.isMember(job.fromUid);
@@ -1401,7 +1401,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         // 确认不在籍那一支也要在群里说一声（复审 E2-5 的另一半）：收口只让这条
         // turn 不跑，那句点名正文照旧躺在每只 agent 的上下文里。补跑那条路上的
         // 同一句话见 catchUp。**只给 `false` 说**——"这一刻问不出来"是发送者
-        // 重发一次就好的事，替他在群里宣布"他不在这个工作区"是在说一件没被证实的事
+        // 重发一次就好的事，替他在群里宣布"他不在这个团队"是在说一件没被证实的事
         if (membership === false) {
           logChat("system", "系统", kickedNoteText(speakerLabelOf(job.opening.content, job.fromUid)), false);
         }
@@ -1412,8 +1412,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
           outcome: "error",
           error:
             membership === "unknown"
-              ? "暂时确认不了你还在不在这个工作区，这条没跑，请重发"
-              : "发起人已不在这个工作区，这条 turn 不跑",
+              ? "暂时确认不了你还在不在这个团队，这条没跑，请重发"
+              : "发起人已不在这个团队，这条 turn 不跑",
           agentId: job.agentId,
           readUpToSeq: lastSeqSeen,
         }));
@@ -1436,7 +1436,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
           outcome: "error",
           // 用 agentId 不用名字：名字已经查不到了（就是因为它被删了），
           // 别为一条错误信息再去猜
-          error: `智能体 ${job.agentId} 已不在这个工作区，这句话没人接`,
+          error: `智能体 ${job.agentId} 已不在这个团队，这句话没人接`,
           agentId: job.agentId,
           // **落盘那一刻的日志尾**，不是 job.opening.seq（#957 F1）。原来那版
           // 的理由是"合成的收口没有跑到哪儿，就按 job 拿着的那条算"——它漏了
@@ -1945,7 +1945,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         // **只在确认不在籍时才收口**（#957 终审 Critical 1）。daemon 启动时 N 条
         // 会话错峰补跑，正是 Supabase 最不稳的那一刻；把一次抖动读成"被踢了"的
         // 代价是 append-only 的——每条排队消息落一条永久收口，用户看到的是"你被
-        // 移出了工作区"，而事实上他好好地在群里。查不到 = 什么都不写，开场白留
+        // 移出了团队"，而事实上他好好地在群里。查不到 = 什么都不写，开场白留
         // 到下一次重启再问一遍（它仍然停在「排队中」，那是诚实的状态）
         const membership = await opts.isMember(t.fromUid);
         if (membership === "unknown") {
@@ -1992,7 +1992,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
               ts: Date.now(),
               type: "turn_ended",
               outcome: "error",
-              error: "发起人已不在这个工作区，这条 turn 不跑",
+              error: "发起人已不在这个团队，这条 turn 不跑",
               agentId,
               readUpToSeq: item.seq,
             }));
@@ -2068,7 +2068,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       }
       if (kicked.length > 0) {
         console.log(
-          `[otto-runtime] 重启补跑不排 ${kicked.length} 条（发起人已不在这个工作区，队头连续的落收口、排在有效开场白后面的留到下次）：` +
+          `[otto-runtime] 重启补跑不排 ${kicked.length} 条（发起人已不在这个团队，队头连续的落收口、排在有效开场白后面的留到下次）：` +
             `session=${sessionId} seq=${kicked.map((k) => k.seq).join(",")}`
         );
       }

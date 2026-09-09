@@ -162,7 +162,7 @@ export type EntryOp =
   | { action: "remove"; old_text: string };
 
 /** 原子批量的本体：任一条失败整批不落；上限只在最终结果上校验。
-    label/limit 由调用方给——本机四档查 LABEL/MEMORY_LIMITS，工作区两档查它自己那份 */
+    label/limit 由调用方给——本机四档查 LABEL/MEMORY_LIMITS，团队两档查它自己那份 */
 export function applyEntryOps(entries: string[], ops: EntryOp[], bounds: { label: string; limit: number }): ApplyResult {
   const next = [...entries];
   const changed = { added: [] as string[], updated: [] as string[], removed: [] as string[] };

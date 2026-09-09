@@ -1,4 +1,4 @@
-// cs（cloud session）帧协议——工作区云会话的线上约定（ADR-0199）。
+// cs（cloud session）帧协议——团队云会话的线上约定（ADR-0199）。
 // 与 wire.ts 同纪律：多端共用一份，只有类型 + 纯函数。
 // 帧走 relay 的 payload 通道（cid 定向），内容是 base64url(JSON)。
 // 事件只发给已过 hello 验籍的 cid——房名可猜，所以不存在房间级广播。
@@ -15,21 +15,21 @@ import { MAX_FRAME_BYTES } from "./wire.js";
     中途 join、gone 后重连都不会在预览上咬出洞。runtime 侧按 agent 合帧
     （50ms，deltaStream.ts），不经任何限速桶（限速只管上行帧；下行的泄洪闸
     就是合帧本身 + 中继 256 KiB 单帧上限）。
-    15（#1103）：Git 凭据回来了，但形状换了——**按「工作区 + 主机」存，不绑仓库**。
+    15（#1103）：Git 凭据回来了，但形状换了——**按「团队 + 主机」存，不绑仓库**。
     新增上行 `git_credential{workspaceId, host, token}`（`token: ""` = 删掉这台主机）
     与下行 `git_credential_result`；`workspace_state` 多一格 `gitHosts`。
     `CsGitHost = {host, addedBy, addedAt}` —— **没有 `hasToken`**：在这张清单里
     就等于有 token，一个恒为 true 的字段只会让人猜它什么时候是 false。
     **token 从不下行**（同 #834 那条纪律，只是那时下行的是 `hasPat` 布尔）。
     写/删只有 owner（判据同 `sandbox_approval`，ADR-0243：它花的是 owner 的额度、
-    动的是共用的卷），读给任何在籍成员——「这个工作区能认证 github.com」不是秘密，
+    动的是共用的卷），读给任何在籍成员——「这个团队能认证 github.com」不是秘密，
     那把钥匙才是。
     14（#1102）：**repo 那一组整个走了**——`config` / `config_result` 两条帧删除，
-    `welcome.repo` 与 `workspace_state.repo` 删除，`CsRepoState` 删除。工作区不再
-    绑一个仓库：ADR-0234 把仓库配置搬进设置页时，主语还是「这个工作区的仓库是
+    `welcome.repo` 与 `workspace_state.repo` 删除，`CsRepoState` 删除。团队不再
+    绑一个仓库：ADR-0234 把仓库配置搬进设置页时，主语还是「这个团队的仓库是
     哪个」，而真正的主语是「水獭在哪儿干活」（ADR-0251 已经为「文件」那一页立过
     同一句）。仓库改由片 4（#1105）的 `clone_repo` 工具拉进来，**路径由用户自己
-    决定**，凭据按「工作区 + 主机」存（片 2，#1103）。
+    决定**，凭据按「团队 + 主机」存（片 2，#1103）。
     `workspace` / `workspace_state` 这对帧**不删**：它还驮着 `modelRoute`
     ——ADR-0246 那句「起不了 turn」在设置页是它唯一的落点。
     减字段照样进位，理由同下面 7 那条。
@@ -43,7 +43,7 @@ import { MAX_FRAME_BYTES } from "./wire.js";
     那一层，收窄/扩宽它会把本机那条路一起打红。
     11（#1056）：加一对 `files` / `files_result`（控制房读帧）——**工作文件夹看得见了**。
     这一页原来叫「仓库」，整页正文的头一句在解释「你可能用不到这一页」；而真正的主语
-    是「水獭在哪儿干活」：每个工作区都有一个共用工作目录（一容器一卷，ADR-0232），
+    是「水獭在哪儿干活」：每个团队都有一个共用工作目录（一容器一卷，ADR-0232），
     Git 仓库只是往那个目录里装东西的一种方式，而且是此前唯一做出来的一种。列得出
     内容之后，不配仓库的那半边人（文案、运营）打开这一页才有东西可看。
     读帧给**所有在籍成员**，判据同 `workspace`：卷是共用的，不是谁的私产。
@@ -62,13 +62,13 @@ import { MAX_FRAME_BYTES } from "./wire.js";
     侧栏那条会话行的 ⋮ 菜单，同本地会话）。`archive` 帧带 `workspaceId` + `sessionId`、
     只在控制房接，新增 `archive_result` 回执（控制房没有会话房那条 `session_archived`
     广播可当回执）。会话房的 `archive` 删了——出现在会话房视为越权，同 create/config。
-    8（#991，ADR-0234）：仓库配置从会话房搬进**控制房**——仓库是工作区的属性，
-    配它不该以「开着一条这个工作区的云会话」为前提（文案类工作区压根没有仓库，
+    8（#991，ADR-0234）：仓库配置从会话房搬进**控制房**——仓库是团队的属性，
+    配它不该以「开着一条这个团队的云会话」为前提（文案类团队压根没有仓库，
     头部常驻一格「未配仓库」是噪音）。`CsUp` 的 `config` 帧改带 `workspaceId`、
     只在控制房接；新增 `workspace{workspaceId}` 读帧，回 `workspace_state{repo,
     modelRoute}`（与 welcome 上那两格同形）；`config_result` 带回 `workspaceId`。
     会话房的 `config` 删了——出现在会话房视为越权，同 create。
-    7（#981，ADR-0233）：云会话不再支持工作区自带 key——`config` 帧去掉 `model`，
+    7（#981，ADR-0233）：云会话不再支持团队自带 key——`config` 帧去掉 `model`，
     welcome/config_result 去掉 `model` 一格，`CsModelRoute` 去掉 `workspace`。
     减字段也进位：握手是精确相等，而「新桌面还画着一格永远为 null 的模型配置」
     正是这次要消灭的假话。
@@ -84,7 +84,7 @@ import { MAX_FRAME_BYTES } from "./wire.js";
     say 会照常处理（多余字段被 decode 丢掉），但那意味着**通知静默不发**，而
     握手精确相等本来就把这种"看起来能用、其实少一半"的组合挡在外面。
     5（issue #945）：welcome/config_result 多了 `modelRoute` 一格——runtime 用
-    decideRuntimeRoute 算好「这个工作区此刻的 turn 会走哪条路」下发，客户端不再
+    decideRuntimeRoute 算好「这个团队此刻的 turn 会走哪条路」下发，客户端不再
     拿 `model === null` 推断「起不了 turn」（订阅用户走托管路照跑，那句是假的）。
     4（issue #844）：welcome/config_result 多了 `model` 一格，config 帧多了
     `model` 字段、`repoUrl` 变成可选（模型配置与仓库配置是两件独立的事，
@@ -117,7 +117,7 @@ export const CS_WORK_FILE_MAX_BYTES = 64 * 1024;
     放在协议文件里而不是任一端：它就是一条线上约定，形状同 wire.ts 的纪律。 */
 export const BACKLOG_SKIP_MARKER = "已跳过";
 
-/** 一个工作区能认证哪台主机（#1103）。**这里没有 token**——它从不下行。
+/** 一个团队能认证哪台主机（#1103）。**这里没有 token**——它从不下行。
     `addedBy` 是 uid（渲染层自己去名单里换名字，同 `fromUid` 的纪律：改名不断账）。 */
 export interface CsGitHost {
   host: string;
@@ -137,7 +137,7 @@ export interface CsGitHost {
     服务端必须自己校验一次，不能只靠渲染层：一个改造过的客户端可以直接发
     一条 `ext::sh -c ...` 上来，那会以 root 在容器里执行。
 
-    **#1102 之后消费方换了人**：原来是 `config` 帧（工作区绑一个仓库），
+    **#1102 之后消费方换了人**：原来是 `config` 帧（团队绑一个仓库），
     现在是片 4（#1105）的 `clone_repo` 工具。校验的对象一个字没变——还是
     「用户给的一个仓库地址」，所以这个函数原样留着。 */
 export function validateRepoUrl(raw: string): { ok: true; url: string } | { ok: false; message: string } {
@@ -167,9 +167,9 @@ export function validateRepoUrl(raw: string): { ok: true; url: string } | { ok: 
   return { ok: true, url };
 }
 
-/** 这个工作区此刻的 turn 会走哪条路（issue #945；ADR-0233 收成两态）。与 runtime 的
+/** 这个团队此刻的 turn 会走哪条路（issue #945；ADR-0233 收成两态）。与 runtime 的
     `decideRuntimeRoute` 同源：hosted 带**实际会用的**型号（网关第一款，按 agent 各自的
-    白名单会有差异，这一格答的是工作区默认那份）。blocked = 所有者没有活跃订阅 / 额度
+    白名单会有差异，这一格答的是团队默认那份）。blocked = 所有者没有活跃订阅 / 额度
     用完——云会话统一走所有者的订阅额度，没有第二条路。
     null = **runtime 探测本身抛错**——「拿不到」≠「起不了」，客户端别下结论。
     **edge 挂掉不长这样**：runtime 的订阅探针把失败缓存成「没有订阅」，所以一次 edge
@@ -190,7 +190,7 @@ export interface CsWorkEntry {
 }
 
 /** `files` 读帧看到的东西（#1056）。
-    **`absent` 与空目录是两回事**：前者 = 这个工作区的容器还没建起来（第一次真让
+    **`absent` 与空目录是两回事**：前者 = 这个团队的容器还没建起来（第一次真让
     水獭干活时才建），后者 = 建起来了、里面还没有东西。两句话该说的不一样，合成
     一句就会对一个刚建群的人说「你的文件夹是空的」——而那个文件夹此刻并不存在。
     `binary` 单列一档，因为「读不出人话」不是失败：那是一张图、一个 zip，界面上
@@ -272,7 +272,7 @@ export type CsUp =
   | { t: "say"; text: string; mention: boolean; mentions?: string[]; memberMentions?: string[] }
   | { t: "backlog"; afterSeq: number }
   | { t: "approve"; callId: string; decision: "approved" | "denied" }
-  /** 读这个工作区此刻的路由 + Git 凭据清单（控制房帧，协议 8；协议 15 多了后者）：
+  /** 读这个团队此刻的路由 + Git 凭据清单（控制房帧，协议 8；协议 15 多了后者）：
       回 `workspace_state`。任何在籍成员都能读——路由本来就在 welcome 上给所有人看，
       凭据清单里没有 token（有哪几台主机不是秘密，那把钥匙才是） */
   | { t: "workspace"; workspaceId: string }
@@ -286,11 +286,11 @@ export type CsUp =
   /** 读工作文件夹的一格（控制房帧，协议 11，#1056）：回 `files_result`。
       `path` 是**相对工作文件夹**的路径（`""` = 它本身），发出去之前先过
       `normalizeWorkPath`；服务端不信任它，自己再归一化一次并在容器里
-      realpath 兜底。任何在籍成员都能读——卷是整个工作区共用的 */
+      realpath 兜底。任何在籍成员都能读——卷是整个团队共用的 */
   | { t: "files"; workspaceId: string; path: string }
   /** 搜工作文件夹（控制房帧，协议 12，#1066）：回 `files_search_result`。
       `content` = 搜正文（`?` 前缀那一路）还是只按文件名过滤。搜索**永远从工作
-      文件夹的根开始**，不带 path——同本机那个面板：过滤框问的是「这个工作区里
+      文件夹的根开始**，不带 path——同本机那个面板：过滤框问的是「这个团队里
       有没有」，不是「这个目录里有没有」 */
   | { t: "files_search"; workspaceId: string; query: string; content: boolean }
   /** 收尾一条云会话——**控制房帧**（协议 9，#993）：带 workspaceId + sessionId，
@@ -321,7 +321,7 @@ export type CsDown =
       lastSeq: number;
       initiatorUid: string | null;
       ownerUid: string;
-      /** 这个工作区此刻的 turn 会走哪条路（issue #945）：hosted / blocked / 探不到 */
+      /** 这个团队此刻的 turn 会走哪条路（issue #945）：hosted / blocked / 探不到 */
       modelRoute: CsModelRoute | null;
     }
   | { t: "created"; workspaceId: string; sessionId: string; channel: string }

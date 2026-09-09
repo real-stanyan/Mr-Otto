@@ -13,6 +13,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import { Button } from "@/components/ui/button.js";
+import { useConfirm } from "@/components/ui/confirm-dialog.js";
 import { Input } from "@/components/ui/input.js";
 import {
   Dialog,
@@ -81,6 +82,7 @@ function MemoryField({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [saved, setSaved] = useState(false);
+  const confirm = useConfirm();
   const [open, setOpen] = useState(false);
 
   useEffect(() => {
@@ -119,9 +121,19 @@ function MemoryField({
   const pct = (n: number) => (limit > 0 ? Math.max(0, Math.min(100, (n / limit) * 100)) : 0);
 
   // 有未保存的改动就别静默丢:草稿只活在这个组件里,关掉就没了
-  const requestClose = (next: boolean) => {
+  // 异步之后 Dialog 仍然停在打开态（`open` 是受控的，这里不 setOpen 它就不关），
+  // 确认卡叠在它上面——所以「先关掉再问要不要关」那种错位不会发生
+  const requestClose = async (next: boolean): Promise<void> => {
     if (next) { setOpen(true); return; }
-    if (dirty && !window.confirm(`「${label}」有未保存的修改，丢弃？`)) return;
+    if (dirty) {
+      const ok = await confirm({
+        title: `「${label}」有未保存的修改，丢弃？`,
+        description: "关掉之后这段草稿就没了。",
+        confirmLabel: "丢弃",
+        tone: "danger",
+      });
+      if (!ok) return;
+    }
     setText(loaded ?? "");
     setError(null);
     setOpen(false);
@@ -151,7 +163,13 @@ function MemoryField({
   };
 
   const clear = async () => {
-    if (!window.confirm(`清空「${label}」的全部记忆？`)) return;
+    const ok = await confirm({
+      title: `清空「${label}」的全部记忆？`,
+      description: "这一档里已经记下的条目会全部消失。",
+      confirmLabel: "清空",
+      tone: "danger",
+    });
+    if (!ok) return;
     setBusy(true);
     setError(null);
     try {
@@ -213,7 +231,7 @@ function MemoryField({
         {error !== null && !open && <p className="text-destructive text-[13px]">{error}</p>}
       </div>
 
-      <Dialog open={open} onOpenChange={requestClose}>
+      <Dialog open={open} onOpenChange={(next) => void requestClose(next)}>
         {/* 高度也要有个头：条目一多，field-sizing-content 的 textarea 会一直长，
             弹窗顶穿视口，页脚那两个按钮就够不着了。超出的部分自己滚 */}
         <DialogContent className="sm:max-w-[720px] max-h-[calc(100dvh-4rem)] overflow-y-auto">
@@ -265,7 +283,7 @@ function MemoryField({
             </Button>
             <div className="flex items-center gap-2">
               {saved && !dirty && <span className="saved-hint text-xs text-muted-foreground">已保存</span>}
-              <Button variant="ghost" size="sm" disabled={busy} onClick={() => requestClose(false)}>
+              <Button variant="ghost" size="sm" disabled={busy} onClick={() => void requestClose(false)}>
                 关闭
               </Button>
               <Button size="sm" disabled={busy || loaded === null || !dirty || over} onClick={() => void submit()}>
@@ -341,6 +359,7 @@ function ProjectMemoryCard({
   sessionScope: string | undefined;
   refreshProjects: () => Promise<void>;
 }) {
+  const confirm = useConfirm();
   const [picked, setPicked] = useState<string | null>(null);
   const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -361,7 +380,13 @@ function ProjectMemoryCard({
   const current = (projects.find((p) => p.id === (picked ?? sessionScope)) ?? projects[0])!;
 
   const deleteCurrent = async () => {
-    if (!window.confirm(`删掉「${current.id}」的项目记忆？不可恢复。`)) return;
+    const ok = await confirm({
+      title: `删掉「${current.id}」的项目记忆？`,
+      description: "不可恢复。",
+      confirmLabel: "删除",
+      tone: "danger",
+    });
+    if (!ok) return;
     setDeleting(true);
     setError(null);
     try {
@@ -418,6 +443,7 @@ type TopicMemory = { slug: string; label: string; text: string; seed: boolean };
 /** 主题桶分区（第四档，#846）：列表选一个桶，正文用 MemoryField（与三档同一套编辑/忘掉），
     改显示名落 .label，非种子桶可删。桶的创建不在这里——建桶是模型写记忆时的动作 */
 function TopicMemoryCard() {
+  const confirm = useConfirm();
   const [topics, setTopics] = useState<TopicMemory[]>([]);
   const [picked, setPicked] = useState<string | null>(null);
   const [label, setLabel] = useState("");
@@ -444,7 +470,13 @@ function TopicMemoryCard() {
   };
   const remove = async () => {
     if (!current || current.seed) return;
-    if (!window.confirm(`删掉主题桶「${current.label}」（${current.slug}）？不可恢复。`)) return;
+    const ok = await confirm({
+      title: `删掉主题桶「${current.label}」（${current.slug}）？`,
+      description: "不可恢复。",
+      confirmLabel: "删除",
+      tone: "danger",
+    });
+    if (!ok) return;
     try {
       await window.otter.deleteTopicMemory(current.slug);
       setPicked(null);

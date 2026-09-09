@@ -21,9 +21,9 @@ describe("agentRows（spec §9 权限矩阵）", () => {
     const rows = agentRows(ws, "m1");
     expect(rows.map((r) => [r.agentId, r.canEdit, r.canDelete])).toEqual([["admin", false, false], ["a_1", true, true]]);
   });
-  it("型号摘要：空 = 用工作区默认；否则点连", () => {
+  it("型号摘要：空 = 用团队默认；否则点连", () => {
     const rows = agentRows(ws, "owner");
-    expect(rows.map((r) => r.modelsSummary)).toEqual(["用工作区默认模型", "deepseek-v4 · glm-5"]);
+    expect(rows.map((r) => r.modelsSummary)).toEqual(["用团队默认模型", "deepseek-v4 · glm-5"]);
     expect(rows[1]!.creatorLabel).toBe("Mei");
   });
   it("连接器摘要：[] = 全部连接器；否则列服务与工具数", () => {

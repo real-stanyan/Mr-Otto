@@ -1,10 +1,10 @@
-// WorkspaceAgentsTab —— 工作区设置页「智能体」tab：建/改/删 @ 得着的那几只
+// WorkspaceAgentsTab —— 团队设置页「智能体」tab：建/改/删 @ 得着的那几只
 // 水獭（issue #932 切片 1b，Task 7）。骨架照抄 WorkspacePage.tsx 的
 // ConnectorsTab + ContributeConnectorDialog（同一份 ROW/SECTION_LABEL 令牌、
-// 同一套 confirm() 二次确认惯例，不新造视觉语言）。
+// 同一套二次确认惯例）。
 //
 // 权限矩阵钉在 workspaceView.ts 的 agentRows（spec §9）：canEdit = 建的人或
-// owner，canDelete = canEdit 且不是种子管理员——admin 是每个工作区开箱自带
+// owner，canDelete = canEdit 且不是种子管理员——admin 是每个团队开箱自带
 // 的那份，这里没有删除钮。
 //
 // **编辑器 #1120 从弹窗变成推入页**：抽屉只有 420px，而那张弹窗写着
@@ -21,6 +21,7 @@ import type { KeyboardEvent as ReactKeyboardEvent } from "react";
 import { ChevronDown, ChevronRight, Plus, Sparkles } from "lucide-react";
 import { cn } from "@/lib/utils.js";
 import { Button } from "@/components/ui/button.js";
+import { useConfirm } from "@/components/ui/confirm-dialog.js";
 import { Input } from "@/components/ui/input.js";
 import { Textarea } from "@/components/ui/textarea.js";
 import { InsetEmpty, InsetGroup, InsetNote, InsetRow } from "@/components/ui/inset-list.js";
@@ -67,6 +68,7 @@ function sameModels(a: readonly string[], b: readonly string[]): boolean {
 }
 
 export function WorkspaceAgentsTab({ ws, selfUid }: { ws: WorkspaceSnapshot; selfUid: string }) {
+  const confirm = useConfirm();
   const nav = useNav();
   const deleteAgent = useChat((s) => s.deleteWorkspaceAgent);
   const refreshWorkspaceGroups = useChat((s) => s.refreshWorkspaceGroups);
@@ -107,12 +109,12 @@ export function WorkspaceAgentsTab({ ws, selfUid }: { ws: WorkspaceSnapshot; sel
       )}
 
       <InsetGroup sepInset={58}>
-        {/* 名单空只发生在「还没读到」——每个工作区至少种了一份管理员，真出现这句
+        {/* 名单空只发生在「还没读到」——每个团队至少种了一份管理员，真出现这句
             说的是拿不到，不是没有（同 CloudStateDot 的「拿不到 ≠ 不可用」纪律）*/}
         {ws.agents.length === 0 ? (
           <InsetEmpty
-            title="还没读到这个工作区的智能体名单"
-            hint="每个工作区开箱都带一只管理员，所以这句话说的是「这一刻拿不到」，不是「一只都没有」。"
+            title="还没读到这个团队的智能体名单"
+            hint="每个团队开箱都带一只管理员，所以这句话说的是「这一刻拿不到」，不是「一只都没有」。"
           />
         ) : (
           rows.map((row) => (
@@ -143,16 +145,18 @@ export function WorkspaceAgentsTab({ ws, selfUid }: { ws: WorkspaceSnapshot; sel
                   <Button
                     variant="ghost" size="xs" className="text-err"
                     onClick={() => {
-                      if (
-                        confirm(
-                          `删除智能体「${row.name}」？它的提示词和模型配置会一起消失，正在排队的消息会被标成没人接。`
-                        )
-                      ) {
-                        void (async () => {
+                      void (async () => {
+                        const ok = await confirm({
+                          title: `删除智能体「${row.name}」？`,
+                          description: "它的提示词和模型配置会一起消失，正在排队的消息会被标成没人接。",
+                          confirmLabel: "删除",
+                          tone: "danger",
+                        });
+                        if (ok) {
                           const result = await deleteAgent(ws.id, row.agentId);
                           if (result === "ok_stale") setDeleteStale(true);
-                        })();
-                      }
+                        }
+                      })();
                     }}
                   >
                     删除
@@ -470,7 +474,7 @@ function AgentEditorScreen({
             <p className="text-[10.5px] text-muted-foreground">
               {model === AUTO_MODEL
                 ? "Auto：每次起跑前先用最便宜那款读一遍你的请求，判简单还是复杂，再据此挑模型。判不出来时按最便宜那款走。"
-                : "云会话统一走工作区所有者的订阅额度；这一款网关哪天不供了，会自动退回首选款。"}
+                : "云会话统一走团队所有者的订阅额度；这一款网关哪天不供了，会自动退回首选款。"}
             </p>
             {availableModels.length === 0 && (
               <p className="text-[10.5px] text-muted-foreground">
@@ -498,7 +502,7 @@ function AgentEditorScreen({
             </div>
             {toolsMode === "some" && (
               choices.length === 0 && staleIds.length === 0 ? (
-                <p className="text-[10.5px] text-muted-foreground">这个工作区还没有人贡献连接器。</p>
+                <p className="text-[10.5px] text-muted-foreground">这个团队还没有人贡献连接器。</p>
               ) : (
                 <div className="max-h-[220px] overflow-y-auto rounded-md border border-border py-1">
                   {choices.map((srv) => {
@@ -562,7 +566,7 @@ function AgentEditorScreen({
                       </div>
                     );
                   })}
-                  {/* 存量白名单里点着名、但这台连接器已经从工作区撤回的条目——不能悄悄
+                  {/* 存量白名单里点着名、但这台连接器已经从团队撤回的条目——不能悄悄
                       丢掉：静默丢弃 = 替用户把一份他没碰过的授权收窄了；藏起来更糟，
                       那就成了一枚勾选表上看不见却仍然生效的「撒谎的勾」（同 #722）。
                       只给一个取消勾选的出口，重新勾不需要——撤回之后这行本来就不该再有 */}
@@ -579,7 +583,7 @@ function AgentEditorScreen({
                         <span className="truncate">{id}</span>
                       </label>
                       <span className="ml-auto shrink-0 text-[10px] text-muted-foreground">
-                        已撤回 · 这台连接器已不在工作区里
+                        已撤回 · 这台连接器已不在团队里
                       </span>
                     </div>
                   ))}

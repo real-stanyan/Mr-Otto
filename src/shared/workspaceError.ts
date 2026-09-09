@@ -1,4 +1,4 @@
-// workspaceError —— 工作区那几条 Supabase 错误说给人听（#843 ③）。
+// workspaceError —— 团队那几条 Supabase 错误说给人听（#843 ③）。
 //
 // 主进程把 PostgREST 的原话（`column workspace_sessions.kind does not exist`、
 // `new row violates row-level security policy`）原样递给渲染层贴在侧栏上——
@@ -46,7 +46,7 @@ export function humanizeWorkspaceError(e: unknown): string {
   }
   if (code === "23505" || /duplicate key value/i.test(t)) return "已经有同名的了";
   if (code === "42501" || /row-level security/i.test(t)) {
-    return "没有权限做这件事——你已不是这个工作区的成员，或者这一步只有 owner 能做";
+    return "没有权限做这件事——你已不是这个团队的成员，或者这一步只有 owner 能做";
   }
   if (/\bJWT expired\b|invalid JWT|\b401\b/i.test(t)) return "登录已过期，重新登录再试";
   if (/fetch failed|ENOTFOUND|EAI_AGAIN|getaddrinfo|ECONNREFUSED|ECONNRESET/i.test(t)) {

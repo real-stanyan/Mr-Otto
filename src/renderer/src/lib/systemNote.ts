@@ -14,7 +14,7 @@
 // 两边都能直接 import，不必为了一个布尔判断把云会话的名册解析也一起拖进来。
 //
 // 判据只看 origin 在场——不看 agentId：loop_guard 在本机单 agent会话里也
-// 活着（护栏是 engine 级、无条件的，不是云会话专属），本机没有工作区/名册
+// 活着（护栏是 engine 级、无条件的，不是云会话专属），本机没有团队/名册
 // 概念，agentId 缺席是本机的常态，不能拿它当判据。
 
 import type { SessionEvent, UserMessageEvent } from "../../../session/events.js";
@@ -27,7 +27,7 @@ export function isSystemNote(e: SessionEvent): e is SystemNoteEvent {
 }
 
 /** 旁白正文。agent 名由调用方解析好传进来——云端有名册（agentNameOf）、
-    本机没有工作区概念，永远传 null（同 assistantLabel 等函数的"查不到/
+    本机没有团队概念，永远传 null（同 assistantLabel 等函数的"查不到/
     没有名册就不装作答得出"纪律）。origin 在场是这个函数的前提，调用方须
     先过 isSystemNote 收窄类型 */
 export function systemNoteBody(e: SystemNoteEvent, agentName: string | null): string {

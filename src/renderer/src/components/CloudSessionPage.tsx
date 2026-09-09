@@ -98,7 +98,7 @@ function cloudDeniedMessage(code: string | undefined, serverVersion?: number): s
     case "bad_jwt":
       return "登录状态已过期，请重新登录后再试";
     case "not_member":
-      return "你不是这个工作区的成员";
+      return "你不是这个团队的成员";
     case "version_mismatch":
       // 方向说得出来才有用（复审 C2-I6，与 main/cloudSessionClient.ts 的
       // deniedMessage 同一判据）：「更新 Mr Otto」对「云端还没部署」的那半是
@@ -177,7 +177,7 @@ export function CloudSessionPage({
       离开云会话的方式和离开本地会话一样，点侧栏里别的一行）。抽屉时代它是
       唯一的出口，所以那时是必填 */
   onBack?: () => void;
-  /** 头部那颗「设置」（#991）：打开这个工作区的设置抽屉（仓库 / 智能体 / 成员 /
+  /** 头部那颗「设置」（#991）：打开这个团队的设置抽屉（仓库 / 智能体 / 成员 /
       连接器）。省掉 = 不画（抽屉时代这一页自己就在设置里） */
   onSettings?: () => void;
 }) {
@@ -277,7 +277,7 @@ export function CloudSessionPage({
   }, [events]);
 
   // ── @ 选人（#932 切片 1b；名单加人 + 换版式见 #1059 / ADR-0252）──────────
-  // 名单第一只 = 这个工作区的管理员（服务端按 created_at 升序给，见 Task 3）
+  // 名单第一只 = 这个团队的管理员（服务端按 created_at 升序给，见 Task 3）
   //
   // **两份名单，各管一件事，故意不合并**：
   //   · `candidates`（只有 agent）→ parseMentions / chip 行 / 发送时的 `mentions`。
@@ -347,7 +347,7 @@ export function CloudSessionPage({
     setUnsent(null);
     setSendError(null);
     setSendNotice(null);
-    // 「免审批没改上」是一句关于**某个工作区**的话；换到另一个工作区的会话上
+    // 「免审批没改上」是一句关于**某个团队**的话；换到另一个团队的会话上
     // 还挂着它就是在说一件跟这里无关的事。`sandboxBusy` 故意不清，理由写在它的
     // 声明处；这道闸也不是全部——await 回来得更晚的那一次由 toggleSandbox 自己比对
     setSandboxError(null);
@@ -427,7 +427,7 @@ export function CloudSessionPage({
     // **回来时人可能已经换到别的会话了**（同 `unsent.sessionId` 那道闸的道理，复审 H1）：
     // 这个组件换会话不卸载，而上面那个按 csSessionId 清空的 effect 在这次 await
     // 之前就跑完了——判据必须在数据里，不能靠 effect 的时序。那句失败原文里没有
-    // 工作区名，落在 B 的页面上看不出它说的是 A
+    // 团队名，落在 B 的页面上看不出它说的是 A
     if (!r.ok && useChat.getState().cloudSession?.sessionId === at) setSandboxError(r.message);
   };
 
@@ -476,7 +476,7 @@ export function CloudSessionPage({
     setSendError(null);
     setSendNotice(null);
     const r = await sendOnce(unsent);
-    // await 期间人可能已经切到同工作区的另一条会话（**这个组件换会话不卸载**），
+    // await 期间人可能已经切到同团队的另一条会话（**这个组件换会话不卸载**），
     // 那一格清空 effect 已经跑过了，这里再写就是把 A 的结果画在 B 的 composer 上。
     // 判据在数据里（同 `unsent.sessionId` 那条纪律），不靠 effect 的时序
     if (useChat.getState().cloudSession?.sessionId !== unsent.sessionId) {
@@ -521,14 +521,14 @@ export function CloudSessionPage({
       const fresh = useChat.getState();
       refreshFailed = fresh.workspaceGroupsError !== null;
       const freshWs = fresh.workspaceGroups.find((g) => g.id === ws.id);
-      // 刷新「成功」但这个工作区不在返回的清单里 = 名单同样没拿到（被踢出去 /
-      // 工作区没了），按 null 走「交给云端按名字解析」那条：拿它当「名单里没有
+      // 刷新「成功」但这个团队不在返回的清单里 = 名单同样没拿到（被踢出去 /
+      // 团队没了），按 null 走「交给云端按名字解析」那条：拿它当「名单里没有
       // 这个人」去拦，就是对着一句完全正常的话说「没有叫 X 的智能体」
       freshCandidates = freshWs ? freshWs.agents.map((a) => ({ agentId: a.agentId, name: a.name })) : null;
       freshMembers = freshWs ? freshWs.members.map((m) => ({ agentId: m.uid, name: m.label })) : [];
       // 提醒名单也用这一次刷新的结果重算（#1064）：走到这条分支说明本地快照
       // 很可能过期，而 `memberMentions` 那个 memo 算的正是过期那份。找不到
-      // 这个工作区时（被踢 / 群没了）两份名单都是空的，于是谁都不通知——
+      // 这个团队时（被踢 / 群没了）两份名单都是空的，于是谁都不通知——
       // 这与「把解析权交给云端」并不矛盾：云端认得 agent，认不得人
       sendMemberMentions = parseMemberMentions(text, freshCandidates ?? [], freshMembers);
     }
@@ -554,7 +554,7 @@ export function CloudSessionPage({
       note: unknownNote(text),
     };
     const r = await sendOnce(payload);
-    // 会话对不上就什么都不写（终审 Finding 4）：await 期间人可能已经切到同工作区的
+    // 会话对不上就什么都不写（终审 Finding 4）：await 期间人可能已经切到同团队的
     // 另一条会话，**这个组件不卸载**，[csSessionId] 那个清空 effect 早就跑完了 ——
     // 这之后每一次 setState 都会落在 B 的 composer 上（A 的失败原因、A 的 notice，
     // 连 setDraft("") 都会清掉 B 的草稿）。`unsent` 那一格靠自带的 sessionId 躲过了，
@@ -618,7 +618,7 @@ export function CloudSessionPage({
   return (
     <div className="flex flex-1 min-h-0 flex-col">
       {/* 头部钉在顶上（#993）：与 footer 对称——#987 那次只钉了输入框，头部还
-          跟着内容滚，翻旧消息时「这是哪个工作区、路由走哪条、设置在哪」全看不见。
+          跟着内容滚，翻旧消息时「这是哪个团队、路由走哪条、设置在哪」全看不见。
           本地会话的 header 也是这么钉的（settingsShell 的 HEADER：h-11 + border-b） */}
       <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border/60 px-4 py-2">
         {onBack ? (
@@ -635,7 +635,7 @@ export function CloudSessionPage({
             {ws.name}
           </button>
         ) : (
-          // 没有返回键时工作区名仍然要在：这一行回答的是「我在哪个工作区里」，
+          // 没有返回键时团队名仍然要在：这一行回答的是「我在哪个团队里」，
           // 而云会话的每一件事（谁能看见、扣谁的额度、用哪把 key）都挂在它上面
           <span className="px-1.5 py-1 text-[12.5px] text-muted-foreground">{ws.name}</span>
         )}
@@ -645,9 +645,9 @@ export function CloudSessionPage({
               搬进控制房正是为了让那颗菜单项不必先开着这条会话 */}
           {/* 模型那一格**只在起不了 turn 的时候出现**（#1052，ADR-0246）：正常那两态
               （hosted / 探不到）不画——「一切正常」不需要常驻标签，何况 hosted 报的
-              只是工作区默认款，真跑一轮按 agent 白名单/Auto 现取，两者可以不一样。
-              仓库同理不在头部（#991）：不是每个工作区都有仓库，常驻一格「未配仓库」
-              对文案类工作区是噪音——它去了「设置」里的仓库 tab */}
+              只是团队默认款，真跑一轮按 agent 白名单/Auto 现取，两者可以不一样。
+              仓库同理不在头部（#991）：不是每个团队都有仓库，常驻一格「未配仓库」
+              对文案类团队是噪音——它去了「设置」里的仓库 tab */}
           {modelStatus && (
             <span className="max-w-[150px] truncate text-[11px] text-err" title={modelStatus.full}>
               {modelStatus.short}
@@ -872,10 +872,10 @@ export function CloudSessionPage({
             elements/composer 的 ComposerBar 把「这一条要发的东西」当成一摞来排——
             点名行 / 输入 / 工具条——类名逐字照抄那边。工具条左边那条偏好栏只留下
             **免审那一颗**（#1029，ADR-0243）：型号 / thinking / 用量环在云会话里是
-            **工作区**的属性不是这条会话的（ADR-0202 / 0233，同 CloudWelcome 头注），
-            摆上来就是几个点了不生效的控件；而免审那颗虽然也是工作区级的，却是**踩刹车
+            **团队**的属性不是这条会话的（ADR-0202 / 0233，同 CloudWelcome 头注），
+            摆上来就是几个点了不生效的控件；而免审那颗虽然也是团队级的，却是**踩刹车
             的地方就该在手边**——它要在一张审批卡挡着群聊的那一刻够得着，而不是让人先
-            去翻设置抽屉。作用域上的代价（翻一次全工作区跟着变）由它自己的文案 + 开着时
+            去翻设置抽屉。作用域上的代价（翻一次全团队跟着变）由它自己的文案 + 开着时
             那条常驻警示行说出口。cursor-text + 点空白处聚焦：本地那边由
             ComposerPrimitive.Root 代劳，这里没有它，自己接一下 */}
         <ComposerBar

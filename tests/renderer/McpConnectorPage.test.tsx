@@ -9,7 +9,7 @@
 // ① 横幅（#760 —— 判据加了，但只接了 installSlot 一个渲染点）
 // ② 管理面里那颗授权按钮和那条错误红字（#764 —— 同一个判据没接第二处）
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render as rtlRender, screen } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 
 import { McpConnectorPage } from "../../src/renderer/src/components/McpConnectorPage.js";
@@ -17,6 +17,13 @@ import type { DirectoryItem } from "../../src/renderer/src/lib/mcpDirectory.js";
 import type { CatalogEntry } from "../../src/shared/mcpCatalog.js";
 import type { McpServerStatus } from "../../src/shared/mcp.js";
 import type { ShellBridge } from "../../src/shared/shellBridge.js";
+import { ConfirmProvider } from "../../src/renderer/src/components/ui/confirm-dialog.js";
+
+// 这一屏里有组件调 `useConfirm()`（#1127），缺 provider 会在**渲染那一刻**抛——
+// 这是故意的（不回落到 window.confirm），所以测试自己把 provider 包上。
+// 换掉 `render` 这个名字而不是逐处改调用：以后这个文件里新写的用例自动带上
+const render = (ui: Parameters<typeof rtlRender>[0]) => rtlRender(ui, { wrapper: ConfirmProvider });
+
 
 afterEach(() => {
   cleanup();

@@ -12,13 +12,20 @@
 // 图真的 load 完才换掉 fallback，jsdom 里那个 load 事件永远不来，断 <img> 必然假红。
 
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render as rtlRender, screen, waitFor } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import "@testing-library/jest-dom/vitest";
 
 import { FriendsSection } from "../../src/renderer/src/components/FriendsSection.js";
 import { useChat } from "../../src/renderer/src/store.js";
 import type { FriendProfile } from "../../src/shared/friends.js";
+import { ConfirmProvider } from "../../src/renderer/src/components/ui/confirm-dialog.js";
+
+// 这一屏里有组件调 `useConfirm()`（#1127），缺 provider 会在**渲染那一刻**抛——
+// 这是故意的（不回落到 window.confirm），所以测试自己把 provider 包上。
+// 换掉 `render` 这个名字而不是逐处改调用：以后这个文件里新写的用例自动带上
+const render = (ui: Parameters<typeof rtlRender>[0]) => rtlRender(ui, { wrapper: ConfirmProvider });
+
 
 const HITS: FriendProfile[] = [
   { id: "u1", email: "stan@a.com", name: "Stan Yan", avatarUrl: "https://img/1.png" },

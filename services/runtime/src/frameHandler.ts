@@ -129,7 +129,7 @@ export interface FrameHandlerDeps {
     archive(workspaceId: string, sessionId: string, byLabel: string): Promise<boolean>;
     /** 这条会话是谁建的（#1044）。`get()` 只认**活着的**房间，而归档的会话恰恰是
         最常被删的那批——所以这一格从 Supabase 那行现查。
-        `null` = 确认这个工作区里没有这条会话；**查询本身挂了要 throw**，
+        `null` = 确认这个团队里没有这条会话；**查询本身挂了要 throw**，
         不许兜底成 null：那等于把「这一刻读不到」说成「不存在」，同 ADR-0243
         那条纪律（读不到 ≠ 没有）。 */
     creatorOf(workspaceId: string, sessionId: string): Promise<string | null>;
@@ -139,14 +139,14 @@ export interface FrameHandlerDeps {
         这条会话还能重开）。归档过的会话直接走后两步。 */
     remove(workspaceId: string, sessionId: string, byLabel: string): Promise<boolean>;
   };
-  /** 这个工作区能认证哪几台 Git 主机（#1103）。**实现必须保证不下发 token 本身**
+  /** 这个团队能认证哪几台 Git 主机（#1103）。**实现必须保证不下发 token 本身**
       ——同 #834 那条 `hasPat` 纪律，只是这次连布尔都不用回：在清单里就等于有。
       抛异常 = 这一刻读不到，调用方回 `gitHosts: null`（不是空数组，见协议注释） */
   gitHosts: (workspaceId: string) => CsGitHost[];
   /** 存 / 删一台主机的凭据（#1103）。`token: ""` = 删。owner 判据在调用点，
       不在这里——这一层只管落盘 */
   putGitCredential: (workspaceId: string, host: string, token: string, addedBy: string) => void;
-  /** 这个工作区此刻的 turn 会走哪条路（issue #945）。async：要问一次订阅快照
+  /** 这个团队此刻的 turn 会走哪条路（issue #945）。async：要问一次订阅快照
       （hostedProbe 有 60s 缓存）。`ownerUid` 由调用点递进来而不是让实现自己再查
       一次——这一层每条 welcome/config 都已经 await 过 `sessions.ownerOf`，那是一次
       未缓存的 Supabase 往返，实现里再查一遍就是同一帧上打两到三次。
@@ -264,7 +264,7 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
     return next;
   }
 
-  /** say/approve/config/backlog 能读写会话状态或敏感信息——被踢出工作区
+  /** say/approve/config/backlog 能读写会话状态或敏感信息——被踢出团队
       的成员只要连接不断（wsTransport 心跳就是奔着长期不断线去的）就不该
       继续被当在籍成员对待（复审 Important：hello 之后从不复查在籍，被踢
       的成员能无限期发言/批审批；复审补漏：backlog 的 afterSeq 由客户端
@@ -296,8 +296,8 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
     return false;
   }
 
-  /** 被踢时那三种回执共用的一句话：说"你已经不在这个工作区了"，不说"失败了" */
-  const NOT_MEMBER_MESSAGE = "你已经不在这个工作区了。";
+  /** 被踢时那三种回执共用的一句话：说"你已经不在这个团队了"，不说"失败了" */
+  const NOT_MEMBER_MESSAGE = "你已经不在这个团队了。";
 
   /** 凭据清单，读不出来回 `null`。**`null` 与 `[]` 不是一回事**：前者是「这一刻
       读不到」，后者是「一台都没配」，界面上一句是红字一句是空态（同 ADR-0243 对
@@ -393,8 +393,8 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
 
       // 控制房认六种帧（协议 8 起：create / workspace；协议 9 加 archive，
       // 协议 10 加 delete，协议 11 加 files，协议 12 加 files_search；协议 14
-      // 拿走了 config——工作区不再绑一个仓库，#1102）——
-      // 都是「关于某个工作区」的动作，不挂在任何一条会话上。在籍是共同前提
+      // 拿走了 config——团队不再绑一个仓库，#1102）——
+      // 都是「关于某个团队」的动作，不挂在任何一条会话上。在籍是共同前提
       if (
         msg.t !== "create" && msg.t !== "workspace" && msg.t !== "git_credential" &&
         msg.t !== "archive" && msg.t !== "delete" && msg.t !== "files" &&
@@ -450,7 +450,7 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
       }
 
       if (msg.t === "files") {
-        // 读路径同 `workspace`：**所有在籍成员**。卷是整个工作区共用的一份
+        // 读路径同 `workspace`：**所有在籍成员**。卷是整个团队共用的一份
         // （一容器一卷，ADR-0232），不是谁的私产；何况水獭做出来的东西正是
         // 群里其他人要看的那个东西
         if (!deps.rateLimit.allow("files", entry.uid)) {
@@ -543,7 +543,7 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
         if (creator === null) {
           deps.send(cid, {
             t: "delete_result", workspaceId: msg.workspaceId, sessionId: msg.sessionId,
-            ok: false, message: "这条会话不在这个工作区里，可能已经被删掉了。",
+            ok: false, message: "这条会话不在这个团队里，可能已经被删掉了。",
           });
           return;
         }
@@ -785,8 +785,8 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
 
         case "create": // 控制房专用帧，出现在会话房里视为越权
         case "workspace": // 同上（协议 8，#991）
-        case "git_credential": // 同上（协议 15，#1103）：凭据是工作区的属性
-        case "files": // 同上（协议 11，#1056）：工作文件夹是工作区的，不是这条会话的
+        case "git_credential": // 同上（协议 15，#1103）：凭据是团队的属性
+        case "files": // 同上（协议 11，#1056）：工作文件夹是团队的，不是这条会话的
         case "files_search": // 同上（协议 12，#1066）
         case "archive": // 同上（协议 9，#993）：归档不该以「你正开着这条会话」为前提
         case "delete": // 同上（协议 10，#1044）：删的多半是归档掉的那些，根本没有房间

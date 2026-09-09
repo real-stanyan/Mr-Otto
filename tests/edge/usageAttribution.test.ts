@@ -8,7 +8,7 @@ import { WEEK_MS } from "../../services/edge/src/quota.js";
 const W = "77777777-7777-4777-8777-777777777777";
 
 describe("查询串", () => {
-  it("workspaceUsageQuery 按 owner + 工作区 + created_at 起点，select 五列，稳定排序（分页要全序）", () => {
+  it("workspaceUsageQuery 按 owner + 团队 + created_at 起点，select 五列，稳定排序（分页要全序）", () => {
     expect(workspaceUsageQuery("o1", W, Date.UTC(2026, 8, 1))).toBe(
       `usage_event?user_id=eq.o1&workspace_id=eq.${W}&created_at=gte.2026-09-01T00:00:00.000Z&select=agent_id,cost_micro,prompt_tokens,cached_tokens,completion_tokens&order=created_at.asc,id.asc`
     );
@@ -90,15 +90,15 @@ describe("fetchWorkspaceUsage 的编排（在籍那道闸唯一的执行覆盖�
     last_event_at: new Date(start).toISOString(),
   }];
 
-  it("没有这个工作区 → not_found，且不去查在籍、不去拉账", async () => {
+  it("没有这个团队 → not_found，且不去查在籍、不去拉账", async () => {
     const f = fakeGet({ owner: [] });
-    expect(await fetchWorkspaceUsage(f.get, "u1", W, NOW)).toEqual({ ok: false, code: "not_found", message: "没有这个工作区" });
+    expect(await fetchWorkspaceUsage(f.get, "u1", W, NOW)).toEqual({ ok: false, code: "not_found", message: "没有这个团队" });
     expect(f.tables()).toEqual(["workspaces"]);
   });
 
-  it("工作区在但不在籍 → not_member，且不去拉账（不在籍的人不该看见 owner 花了多少）", async () => {
+  it("团队在但不在籍 → not_member，且不去拉账（不在籍的人不该看见 owner 花了多少）", async () => {
     const f = fakeGet({ owner: ownerRow, member: [] });
-    expect(await fetchWorkspaceUsage(f.get, "u1", W, NOW)).toEqual({ ok: false, code: "not_member", message: "你不在这个工作区里" });
+    expect(await fetchWorkspaceUsage(f.get, "u1", W, NOW)).toEqual({ ok: false, code: "not_member", message: "你不在这个团队里" });
     expect(f.tables()).toEqual(["workspaces", "workspace_members"]);
     expect(f.asked[1]).toBe(memberQuery(W, "u1"));
   });
@@ -120,13 +120,13 @@ describe("fetchWorkspaceUsage 的编排（在籍那道闸唯一的执行覆盖�
         rows: [{ agentId: "a", costMicro: 7, calls: 2, promptTokens: 2, cachedTokens: 0, completionTokens: 2 }],
       },
     });
-    // 账是按 **owner** 拉的（工作区烧的是 owner 的额度），起点是这扇窗的开头
+    // 账是按 **owner** 拉的（团队烧的是 owner 的额度），起点是这扇窗的开头
     const usage = f.asked.find((q) => q.startsWith("usage_event?"))!;
     expect(usage).toContain(`user_id=eq.${OWNER}`);
     expect(usage).toContain(`created_at=gte.${new Date(P + WEEK_MS).toISOString()}`);
   });
 
-  it("在籍 + owner 没订阅 → 退回滚动 7 天（自带 key 的工作区，窗只是给界面一个日期范围）", async () => {
+  it("在籍 + owner 没订阅 → 退回滚动 7 天（自带 key 的团队，窗只是给界面一个日期范围）", async () => {
     const f = fakeGet({ owner: ownerRow, member: memberRow, sub: [], usage: [] });
     const r = await fetchWorkspaceUsage(f.get, "u1", W, NOW);
     expect(r).toEqual({ ok: true, value: { workspaceId: W, ownerUid: OWNER, weekStartAt: NOW - WEEK_MS, weekEndAt: NOW, weekLimitMicro: null, rows: [] } });

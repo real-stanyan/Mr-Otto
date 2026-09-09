@@ -42,7 +42,7 @@ const isObj = (v: unknown): v is Record<string, unknown> =>
 export type PxDeny = { ok: false; status: number; code: string; message: string };
 export type PxPass = { ok: true; service: EscrowService; grant: EscrowGrant };
 
-/** 关系闸群组化的输入（ADR-0198 切片 1）：好友与工作区各自的判定结果，
+/** 关系闸群组化的输入（ADR-0198 切片 1）：好友与团队各自的判定结果，
     由调用方（worker）分别查好注入——这层只消化，不查数据库 */
 export interface PxRelations {
   friendAccepted: boolean;
@@ -63,7 +63,7 @@ export function pxGate(
 ): PxPass | PxDeny {
   if (!doc) return { ok: false, status: 404, code: "no_escrow", message: "对方没有托管任何服务（或已撤销）" };
   // 关系闸在白名单之前：删好友 = 代理权限跟着死（ADR-0151 决策 1），云端同样成立；
-  // 工作区那一支同理——不在籍 = 授权随之失效。两支各自算「适用授权」，任一给过即放行
+  // 团队那一支同理——不在籍 = 授权随之失效。两支各自算「适用授权」，任一给过即放行
   const friendGrants = doc.grants.filter((g) => isFriendGrant(g) && g.friendUid === req.fromUid);
   const wsGrants = doc.grants.filter((g) => !isFriendGrant(g));
   const applicable: EscrowGrant[] = [
@@ -75,7 +75,7 @@ export function pxGate(
       return { ok: false, status: 403, code: "not_friends", message: "你们已不是好友，代理授权随之失效" };
     }
     if (wsGrants.length > 0) {
-      return { ok: false, status: 403, code: "not_member", message: "你或对方已不在该工作区，授权随之失效" };
+      return { ok: false, status: 403, code: "not_member", message: "你或对方已不在该团队，授权随之失效" };
     }
     return { ok: false, status: 403, code: "no_grant", message: "对方没有为你开通代理授权" };
   }
@@ -99,7 +99,7 @@ export function pxGate(
 /** B 视角的授权清单（GET /px/v1/grants 的载荷）：只给 B 被授权的那部分，
     且剥掉凭据——toolDefs 是唯一目的。同一服务两路都给时按 name 去重取并集
     （任一来源 tools 为空 = 全量 toolDefs）；来源全是 workspace 才带 workspaceId，
-    有 friend 来源则不带（friend 授权是更强的信任来源，UI 不该把它标成工作区共享） */
+    有 friend 来源则不带（friend 授权是更强的信任来源，UI 不该把它标成团队共享） */
 export function grantedView(doc: EscrowDoc | null, fromUid: string, rel: PxRelations): {
   servers: { serverId: string; toolDefs: EscrowService["toolDefs"]; workspaceId?: string }[];
 } {

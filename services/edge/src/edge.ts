@@ -172,7 +172,7 @@ export function createEdge(deps: EdgeDeps): (req: Request) => Promise<Response> 
     // 32 字节——知道它 = 被邀请,relay 不用懂好友关系(鉴权在握手层,ADR-0151)。
     const channel = params.get("channel");
 
-    // cs-* 房间(工作区云会话,ADR-0199)角色收口(终审 C1):role=host 仅当
+    // cs-* 房间(团队云会话,ADR-0199)角色收口(终审 C1):role=host 仅当
     // 对面是平台身份(VPS runtime,已在上面 identify() 里用
     // x-runtime-secret/子协议 secret 验过)。真人一律降级成 guest——cs 房名
     // 是 `cs-${workspaceId}-${sessionId}`,现任成员和被踢的前成员都知道,
@@ -268,7 +268,7 @@ export function createEdge(deps: EdgeDeps): (req: Request) => Promise<Response> 
         if (!declared) return apiError(400, "平台身份必须显式声明 fromUid", "bad_request");
         fromUid = declared;
       }
-      // 不再在门口拒非好友：同工作区成员不必是好友（ADR-0198）。
+      // 不再在门口拒非好友：同团队成员不必是好友（ADR-0198）。
       // 关系闸整个下沉进 DO——它读得到 doc，才知道要查哪些 workspace 的在籍
       const friend = await deps.isFriend(fromUid, host);
       return forward(host, "grants", { fromUid, friendAccepted: friend });
@@ -380,7 +380,7 @@ export function createEdge(deps: EdgeDeps): (req: Request) => Promise<Response> 
 
     if (pathname === "/billing/v1/workspace-usage" && req.method === "GET") {
       // 平台身份代表谁都没意义（它不会来看设置页），和下面 checkout/portal 同一条理由
-      if (caller.source === "runtime") return apiError(403, "平台身份不能查工作区用量", "forbidden");
+      if (caller.source === "runtime") return apiError(403, "平台身份不能查团队用量", "forbidden");
       const workspaceId = new URL(req.url).searchParams.get("workspace") ?? "";
       if (!WORKSPACE_ID_RE.test(workspaceId)) return apiError(400, "workspace 必须是 uuid", "bad_request");
       try {

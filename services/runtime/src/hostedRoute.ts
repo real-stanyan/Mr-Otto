@@ -1,13 +1,13 @@
-// 云会话的模型路由（spec 第 5 节，ADR-0233 收窄）：**工作区所有者**有订阅 → 平台 key
-// （扣所有者）；没有 → 一句人能看懂的错。**没有第二条路**：云会话不再支持工作区自带 key
-// （ADR-0233 推翻 ADR-0202 与 ADR-0203 D4 的改道）——维护者定的产品口径是「工作区统一
+// 云会话的模型路由（spec 第 5 节，ADR-0233 收窄）：**团队所有者**有订阅 → 平台 key
+// （扣所有者）；没有 → 一句人能看懂的错。**没有第二条路**：云会话不再支持团队自带 key
+// （ADR-0233 推翻 ADR-0202 与 ADR-0203 D4 的改道）——维护者定的产品口径是「团队统一
 // 走订阅额度」，自带 key 那条路存在一天，「额度用完悄悄改烧所有者自己的 key」这个
 // 静默失败模式就存在一天。runtime 仍然一把模型 key 都不拿：托管那条路的凭据是平台身份
 // + 「我代表谁」，key 在 edge 那边。
 //
 // 「扣谁的账」在 issue #917（ADR-0217）改过一次：原来是**发起人**。维护者定的规则是
-// 「工作区走的都是创建者的订阅额度」，配套的另一半是「非订阅用户建不出工作区」——
-// 两条一起，工作区成了「所有者请客、成员进来干活」的形状，成员自己有没有订阅与这本账
+// 「团队走的都是创建者的订阅额度」，配套的另一半是「非订阅用户建不出团队」——
+// 两条一起，团队成了「所有者请客、成员进来干活」的形状，成员自己有没有订阅与这本账
 // 无关。注意本地事件日志里的 `model_usage.uid` 记的仍是**发起人**——那是「谁动的手」，
 // 和「谁付的钱」是两个事实，不该合并成一个。
 import type { ModelAdapter } from "../../../src/model/adapter.js";
@@ -18,7 +18,7 @@ import { AGENT_HEADER, MAX_INFLIGHT, ON_BEHALF_HEADER, SESSION_HEADER, WORKSPACE
 import { billingErrorOf, markBilling, markErrorClass } from "../../../src/model/errorClass.js";
 
 /** 云端并发已满时的排队节奏（#960）。edge 的 Quota DO 按 uid 卡 MAX_INFLIGHT 条
-    并发，而 ADR-0217 让一个工作区里所有云会话都记在**所有者**头上：成员的会话 +
+    并发，而 ADR-0217 让一个团队里所有云会话都记在**所有者**头上：成员的会话 +
     所有者自己的桌面共用那几个槽位，一个 hold 活到流结束（HOLD_TTL 10 分钟），
     所以撞上是常态不是异常。原来 adapter 退避三次（≈2.5s）就报废整轮。
     等满 ≈90s：比一条流式 turn 的典型长度长（等得到别人让出槽位），比 HOLD_TTL 短
@@ -87,11 +87,11 @@ export type RuntimeRoute =
   | { kind: "blocked"; reason: string };
 
 /** 决策（spec 第 5 节，ADR-0233 收窄成两态）：
-    1. 工作区所有者有活跃订阅 + 网关供着一款模型 → hosted（endpoint 带平台身份 + on-behalf-of +
+    1. 团队所有者有活跃订阅 + 网关供着一款模型 → hosted（endpoint 带平台身份 + on-behalf-of +
        workspace/session 头，apiKey 留空——edge 的 pxIdentify 先看 x-runtime-secret，
        比中就不看 Authorization，空 Bearer 无害）。
     2. 否则 blocked，一句人话说清楚为什么、该谁做什么。
-    **没有「工作区自带 key」这一级**（ADR-0233）。 */
+    **没有「团队自带 key」这一级**（ADR-0233）。 */
 export function decideRuntimeRoute(o: {
   /** `"unreachable"` 在这一层与 `null` 同义（都走不了 hosted）；分歧只在措辞：
       「问不到订阅状态」与「问到了、没有订阅」该做的动作不同（#957 D3） */
@@ -99,13 +99,13 @@ export function decideRuntimeRoute(o: {
   /** 这只 agent 在我们的网关上想点哪几款，**按顺序取网关供着的第一个**（#979 第 4 条，
       ADR-0232）：agent 白名单按顺序 → 网关第一款。空数组 = 直接网关第一款 */
   requestedModels: readonly string[];
-  /** 扣谁的账 = 工作区所有者（ADR-0217）。`me` 也必须是**这个 uid** 的订阅快照 */
+  /** 扣谁的账 = 团队所有者（ADR-0217）。`me` 也必须是**这个 uid** 的订阅快照 */
   ownerUid: string;
   workspaceId: string;
   sessionId: string;
   edgeBase: string;
   runtimeSecret: string;
-  /** 这一 turn 是哪只工作区 agent（#946）。带上就落 usage_event.agent_id；桌面直连没有这一格 */
+  /** 这一 turn 是哪只团队 agent（#946）。带上就落 usage_event.agent_id；桌面直连没有这一格 */
   agentId?: string;
   /** 网关刚说过额度用完了、窗口还没到（#957 D4）。true = 不再撞 hosted，直接 blocked
       并说「额度用完」——ADR-0233 之前这里改道自带 key，现在没有第二条路，
@@ -117,7 +117,7 @@ export function decideRuntimeRoute(o: {
     return {
       kind: "blocked",
       reason:
-        "工作区所有者的订阅额度用完了，这个 turn 起不了。等这扇额度窗口刷新，或所有者加购额度后再 @。",
+        "团队所有者的订阅额度用完了，这个 turn 起不了。等这扇额度窗口刷新，或所有者加购额度后再 @。",
     };
   }
   if (me && me.status === "active" && me.plan && me.models.length > 0) {
@@ -145,8 +145,8 @@ export function decideRuntimeRoute(o: {
     kind: "blocked",
     reason:
       o.me === "unreachable"
-        ? "这一刻查不到工作区所有者的订阅状态，这个 turn 没跑；稍后再 @ 一次。"
-        : "工作区所有者没有活跃订阅，这个 turn 起不了。云会话统一走所有者的订阅额度——所有者订阅 Mr Otto（桌面端设置 → 账号 → 订阅）后再 @。",
+        ? "这一刻查不到团队所有者的订阅状态，这个 turn 没跑；稍后再 @ 一次。"
+        : "团队所有者没有活跃订阅，这个 turn 起不了。云会话统一走所有者的订阅额度——所有者订阅 Mr Otto（桌面端设置 → 账号 → 订阅）后再 @。",
   };
 }
 
@@ -178,11 +178,11 @@ export interface HostedRuntimeAdapterDeps {
   edgeBase: string;
   runtimeSecret: string;
   probe: HostedProbe;
-  /** 工作区所有者（ADR-0217）。不是 thunk：所有者不会在会话中途换人 */
+  /** 团队所有者（ADR-0217）。不是 thunk：所有者不会在会话中途换人 */
   ownerUid: string;
   workspaceId: string;
   sessionId: string;
-  /** 这一台 adapter 服务哪只工作区 agent（#946）；桌面直连没有这一格 */
+  /** 这一台 adapter 服务哪只团队 agent（#946）；桌面直连没有这一格 */
   agentId?: string;
   /** 这只 agent 的型号白名单，**按顺序**（#957 D1 / #979 第 4 条）。**每次现读**
       （白名单在设置页里随时可改，会话房是长命的）。缺席/回 [] = 网关第一款 */
@@ -264,7 +264,7 @@ export function createHostedRuntimeAdapter(deps: HostedRuntimeAdapterDeps): Mode
         },
         resolveEndpoint: async () => route.endpoint,
         // 并发已满就排队（#960）：edge 的 Quota DO 按 uid 卡 MAX_INFLIGHT 条并发，
-        // 整个工作区所有云会话共用所有者那几个槽位，撞上是常态
+        // 整个团队所有云会话共用所有者那几个槽位，撞上是常态
         retryDelayFor: (err, attempt) =>
           billingErrorOf(err)?.code === "too_many_inflight" && attempt <= INFLIGHT_MAX_ATTEMPTS
             ? INFLIGHT_RETRY_MS
@@ -276,7 +276,7 @@ export function createHostedRuntimeAdapter(deps: HostedRuntimeAdapterDeps): Mode
       } catch (err) {
         // 等满了还是没轮上 → 换成人话再抛（#960）。原来冒上去的是
         // `model API 429: {"error":{"type":"otto_edge",...}}`，用户在群里看到的
-        // 就是那一坨信封：它既没说这是**工作区**共用的闸门（所以不是「我的额度」
+        // 就是那一坨信封：它既没说这是**团队**共用的闸门（所以不是「我的额度」
         // 出了问题），也没说等一等就好。秒数从两个常量算出来，别写死——改了节奏
         // 而话没改，就成了另一句言之凿凿的假话
         const billing = billingErrorOf(err);
@@ -287,7 +287,7 @@ export function createHostedRuntimeAdapter(deps: HostedRuntimeAdapterDeps): Mode
         throw markBilling(
           markErrorClass(
             new Error(
-              `工作区的云端模型并发已满：同一时刻最多 ${MAX_INFLIGHT} 条模型调用（整个工作区所有云会话共用），等了约 ${waited} 秒还没轮上。稍后再 @ 一次。`
+              `团队的云端模型并发已满：同一时刻最多 ${MAX_INFLIGHT} 条模型调用（整个团队所有云会话共用），等了约 ${waited} 秒还没轮上。稍后再 @ 一次。`
             ),
             "rate-limit"
           ),

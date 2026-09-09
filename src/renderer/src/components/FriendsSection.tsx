@@ -5,6 +5,7 @@
 import { useEffect, useState } from "react";
 import { KeyRound, Search } from "lucide-react";
 import { useChat } from "../store.js";
+import { useConfirm } from "@/components/ui/confirm-dialog.js";
 import { ProxyDialog } from "./ProxyDialog.js";
 import type { FriendProfile } from "../../../shared/friends.js";
 import {
@@ -35,6 +36,7 @@ function FriendAvatar({ profile, online }: { profile: FriendProfile; online: boo
 }
 
 export function FriendsSection({ embedded = false }: { embedded?: boolean }) {
+  const confirm = useConfirm();
   const account = useChat((s) => s.account);
   const snapshot = useChat((s) => s.friendsSnapshot);
   const onlineIds = useChat((s) => s.onlineIds);
@@ -205,9 +207,15 @@ export function FriendsSection({ embedded = false }: { embedded?: boolean }) {
               title="删除好友"
               onClick={(ev) => {
                 ev.stopPropagation();
-                if (confirm(`删除好友 ${e.profile.name || e.profile.email}?`)) {
-                  void removeFriend(e.friendshipId);
-                }
+                void (async () => {
+                  const ok = await confirm({
+                    title: `删除好友 ${e.profile.name || e.profile.email}？`,
+                    description: "TA 借给你、和你借出去的连接器授权会一起失效。",
+                    confirmLabel: "删除",
+                    tone: "danger",
+                  });
+                  if (ok) await removeFriend(e.friendshipId);
+                })();
               }}
             >
               ✕

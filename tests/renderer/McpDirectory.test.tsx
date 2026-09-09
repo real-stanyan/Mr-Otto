@@ -15,7 +15,7 @@
 // 同 McpSettings.test.tsx：McpDirectory 只认 useChat，而 store 的方法直接读
 // window.otter，所以"造一份最小桥"就是往 window.otter 上钉一份最小实现。
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render as rtlRender, screen, waitFor } from "@testing-library/react";
 import { userEvent } from "@testing-library/user-event";
 import "@testing-library/jest-dom/vitest";
 
@@ -23,6 +23,13 @@ import { McpDirectory } from "../../src/renderer/src/components/McpDirectory.js"
 import type { ShellBridge } from "../../src/shared/shellBridge.js";
 import type { CatalogEntry } from "../../src/shared/mcpCatalog.js";
 import type { McpServerStatus } from "../../src/shared/mcp.js";
+import { ConfirmProvider } from "../../src/renderer/src/components/ui/confirm-dialog.js";
+
+// 这一屏里有组件调 `useConfirm()`（#1127），缺 provider 会在**渲染那一刻**抛——
+// 这是故意的（不回落到 window.confirm），所以测试自己把 provider 包上。
+// 换掉 `render` 这个名字而不是逐处改调用：以后这个文件里新写的用例自动带上
+const render = (ui: Parameters<typeof rtlRender>[0]) => rtlRender(ui, { wrapper: ConfirmProvider });
+
 
 /** 盘上的一台。#753 起 McpDirectory 吃的是完整快照——已装的那几台也画成卡片，
     而"目录里没有的那些"只能从 config 现造条目 */

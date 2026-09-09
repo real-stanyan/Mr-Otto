@@ -1,4 +1,4 @@
-// workspaces —— 工作区快照的纯类型 + 纯函数（ADR-0198 切片 2，issue #811）。
+// workspaces —— 团队快照的纯类型 + 纯函数（ADR-0198 切片 2，issue #811）。
 //
 // IPC 与 UI 全用这份形状；行数据（PostgREST 返回的原始行）→ WorkspaceSnapshot 的
 // 组装逻辑收在 assembleSnapshot 一处，方便单测钉住三条易错的转换规则：
@@ -56,8 +56,8 @@ export interface WorkspaceAgentRow {
   avatarSlot: number | null;
 }
 
-/** 工作区记忆（#949）：一档一行，agent_id 空串 = 共享档，非空 = 那只 agent 的私有档。
-    与 WorkspaceSnapshot 平级——记忆行不进快照本体，snapshot 只描述"这个工作区有哪些
+/** 团队记忆（#949）：一档一行，agent_id 空串 = 共享档，非空 = 那只 agent 的私有档。
+    与 WorkspaceSnapshot 平级——记忆行不进快照本体，snapshot 只描述"这个团队有哪些
     agent"，记忆的读取走独立的 IPC（listMemories），两者在渲染层用 memoryDocs 拼到一起 */
 export interface WorkspaceMemoryRow {
   agentId: string;
@@ -93,7 +93,7 @@ export interface WorkspaceSnapshot {
       且一个字的提示都没有。形状不对（脏值）仍然回 "ask"——那是「读到了但值不认识」，
       往严的一边倒，与读不到是两件事 */
   sandboxApproval: SandboxApproval | null;
-  /** 这个工作区的快照没拉下来（#843 ②）：列表页只拿到 workspaces 那一行，
+  /** 这个团队的快照没拉下来（#843 ②）：列表页只拿到 workspaces 那一行，
       members/connectors/sessions/agents 都是空的**占位**，不是「真的没有」。
       在场 = 这一格暂时读不到，值是说给人听的原因（已过 humanizeWorkspaceError）。
       侧栏画出来但不给动作；消费方读到它别把空名册当事实 */

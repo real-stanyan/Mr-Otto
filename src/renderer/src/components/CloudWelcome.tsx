@@ -1,13 +1,13 @@
-// CloudWelcome —— 在工作区里开新会话的开局卡（issue #919）。
+// CloudWelcome —— 在团队里开新会话的开局卡（issue #919）。
 //
-// 维护者要的是「工作区创建会话方式应该和用户本地会话一致」。本地那条路是：侧栏
+// 维护者要的是「团队创建会话方式应该和用户本地会话一致」。本地那条路是：侧栏
 // 工程组头一颗 ＋ → 主区一张 composer → 写完第一句、发出去才真的建会话。这一屏
 // 是它在云那边的对应物，位置（主区正中）、外壳（ComposerBar）、回车即发、
 // 空文本发不出去——都逐处对齐 App.tsx 的 Welcome。
 //
 // **少掉的控件不是漏做**：文件夹、型号、thinking 挡位在云会话里都不是「这一条
-// 会话」的属性，而是**工作区**的属性（仓库在 config 帧里由 owner 配，模型 key
-// 跟着工作区走见 ADR-0202，云会话本来就没有型号选单）。把它们摆上来会得到三个
+// 会话」的属性，而是**团队**的属性（仓库在 config 帧里由 owner 配，模型 key
+// 跟着团队走见 ADR-0202，云会话本来就没有型号选单）。把它们摆上来会得到三个
 // 点了不生效的控件——那比少三个控件糟得多。**免审那颗开关不在这一屏，但它存在**
 // （#1029，ADR-0243）：它住在真正开起来的那条会话的输入框那一行。这里不摆，
 // 是因为此刻还没有会话、也还没有任何东西在等审批——它要解决的问题（一张卡挡着
@@ -25,7 +25,7 @@ import { Button } from "@/components/ui/button.js";
 import { useChat } from "../store.js";
 
 export function CloudWelcome({ workspaceId }: { workspaceId: string }) {
-  const name = useChat((s) => s.workspaceGroups.find((g) => g.id === workspaceId)?.name ?? "工作区");
+  const name = useChat((s) => s.workspaceGroups.find((g) => g.id === workspaceId)?.name ?? "团队");
   const error = useChat((s) => s.workspaceGroupsError);
   const createFromDraft = useChat((s) => s.createCloudSessionFromDraft);
   const cancel = useChat((s) => s.cancelCloudDraft);
@@ -48,7 +48,7 @@ export function CloudWelcome({ workspaceId }: { workspaceId: string }) {
         <p className="text-[19px] font-[600] tracking-[-0.01em]">在「{name}」里开一条会话</p>
         {/* 云会话和本地会话最要紧的那点不同，说在开始之前：它不在这台机器上跑 */}
         <p className="text-[12px] text-muted-foreground">
-          跑在云端，你关掉 app 它也接着跑；工作区里的人都看得见，也都能插话。
+          跑在云端，你关掉 app 它也接着跑；团队里的人都看得见，也都能插话。
         </p>
       </div>
       <ComposerBar className="focus-within:border-border dark:border-muted-foreground/15 dark:focus-within:border-muted-foreground/30 w-[min(640px,90%)] text-left transition-colors duration-[120ms]">

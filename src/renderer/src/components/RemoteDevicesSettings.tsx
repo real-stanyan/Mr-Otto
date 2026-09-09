@@ -15,6 +15,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { QrCode, Smartphone, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button.js";
+import { useConfirm } from "@/components/ui/confirm-dialog.js";
 import { PairingQr } from "./PairingQr.js";
 import { PAIRING_TTL_MS } from "../../../shared/remote/pairing.js";
 import { HEADER, HINT, MAIN_COL, SETTINGS_BODY, SettingsTitle } from "../settingsShell.js";
@@ -50,6 +51,7 @@ const REJECTED_TEXT: Record<RemoteRejection["reason"], { title: string; hint: st
 };
 
 export function RemoteDevicesSettings() {
+  const confirm = useConfirm();
   const closeSettings = useChat((s) => s.closeSettings);
   const [status, setStatus] = useState<RemoteStatus | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
@@ -132,7 +134,13 @@ export function RemoteDevicesSettings() {
   // "已配对"那个标记同时是解除配对的入口。做成 ghost 按钮而不是另起一个红色的
   // "解除":这一屏的主动作是配对,解除是回头路,不该在视觉上跟它平起平坐
   const unpair = async (deviceId: string, label: string): Promise<void> => {
-    if (!window.confirm(`解除和「${label}」的配对？它就连不上这台电脑了，之后可以重新核对安全码再配。`)) return;
+    const ok = await confirm({
+      title: `解除和「${label}」的配对？`,
+      description: "它就连不上这台电脑了，之后可以重新核对安全码再配。",
+      confirmLabel: "解除配对",
+      tone: "danger",
+    });
+    if (!ok) return;
     setBusy(deviceId);
     try {
       await window.otter.remoteUnpairDevice(deviceId);
@@ -146,7 +154,13 @@ export function RemoteDevicesSettings() {
   // 删它会连着解除配对,而列表上"已配对"三个字不会让人预期到这一层
   const forget = async (deviceId: string, label: string, pinned: boolean): Promise<void> => {
     const extra = pinned ? "，配对会一起解除" : "";
-    if (!window.confirm(`把「${label}」从目录里删掉${extra}？装着 Mr Otto 的设备下次打开会重新出现。`)) return;
+    const ok = await confirm({
+      title: `把「${label}」从目录里删掉${extra}？`,
+      description: "装着 Mr Otto 的设备下次打开会重新出现。",
+      confirmLabel: "删除",
+      tone: "danger",
+    });
+    if (!ok) return;
     setBusy(deviceId);
     try {
       await window.otter.remoteForgetDevice(deviceId);

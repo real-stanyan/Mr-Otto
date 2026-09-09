@@ -25,7 +25,7 @@ export interface EscrowService {
 /** tools 空数组 = 整服务放行（与 proxyProtocol.grantAllows 同口径） */
 export interface AllowEntry { serverId: string; tools: string[] }
 
-/** 授权来源二选一：好友（原有）或工作区（ADR-0198 切片 1）。恰好一个键，
+/** 授权来源二选一：好友（原有）或团队（ADR-0198 切片 1）。恰好一个键，
     两个都有/都没有的一律在 parseEscrowDoc 里判非法 */
 export type EscrowGrant =
   | { friendUid: string; allow: AllowEntry[] }
@@ -42,7 +42,7 @@ export const WORKSPACE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}
 
 /** 类型收窄：friendUid 变体判据。**按值不按键**——`{ friendUid: "", workspaceId: "w" }`
     这种半吊子形状如果按 `"friendUid" in g` 判，会被误判成一个「空 allow 的好友授权」
-    而不是它实际该归属的工作区授权（审查 round 1）。parseEscrowDoc 已经把这种形状
+    而不是它实际该归属的团队授权（审查 round 1）。parseEscrowDoc 已经把这种形状
     归一化掉了，这里按值判是第二道保险——防止有人绕过 parse 直接构造 EscrowGrant */
 export function isFriendGrant(g: EscrowGrant): g is Extract<EscrowGrant, { friendUid: string }> {
   const friendUid = (g as { friendUid?: unknown }).friendUid;
@@ -103,7 +103,7 @@ export function parseEscrowDoc(raw: unknown): EscrowDoc | null {
 export interface EscrowSources {
   hostUid: string;
   grants: readonly ProxyGrant[];
-  /** 工作区来源的授权（ADR-0198 切片 1）。在籍校验是边缘侧的事，这层只搬形状 */
+  /** 团队来源的授权（ADR-0198 切片 1）。在籍校验是边缘侧的事，这层只搬形状 */
   workspaceGrants: readonly WorkspaceGrant[];
   /** mcpHub.servers() 的形状子集 */
   servers: readonly {

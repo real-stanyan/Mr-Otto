@@ -1,12 +1,12 @@
-// workspaceAgents —— 工作区 agent 表单的纯校验（#932 切片 1b）
+// workspaceAgents —— 团队 agent 表单的纯校验（#932 切片 1b）
 // （#950 Task 9）。桌面设置页用；手机端将来做同一张表单时 import 同一份（纪律同
-// workspaces.ts）。DB 那侧的约束（0021：name 1–32 字符、一个工作区不重名）在这里
+// workspaces.ts）。DB 那侧的约束（0021：name 1–32 字符、一个团队不重名）在这里
 // 对齐成能提前说出口的人话；重名靠 23505 回来再翻，这里判不了。
 
 
 export const AGENT_NAME_MAX = 32;
 
-/** 每个工作区开箱自带的那只（0021 migration 的 seed_workspace_admin_agent
+/** 每个团队开箱自带的那只（0021 migration 的 seed_workspace_admin_agent
     触发器种的行）。不能删、名单里恒排第一（按 created_at 升序），也是
     "客户端没给 mentions 时唤醒谁"的老语义答案。
     **DB 那侧的触发器与 RLS 里写着同一个字面量**——那半改不了常量，所以这里
@@ -76,11 +76,11 @@ export function parseModelList(raw: string): string[] {
   return out;
 }
 
-/** 沙箱内工具（bash / write_file）要不要人批（#977，ADR-0231）。工作区一格，
+/** 沙箱内工具（bash / write_file）要不要人批（#977，ADR-0231）。团队一格，
     落在 `workspaces.sandbox_approval`，owner 改。`"ask"` = 每次都问（今天的行为）；
     `"auto"` = runtime 在审批门前直接放行——容器是隔离面，凭据不进容器（ADR-0200），
     这道闸挡的是空气而付的是「群冻 10 分钟」。**只管沙箱那两把刀**：好友代理连接器
-    （用的是点火者的授权）与 create_agent（改的是工作区名册）照旧要批。
+    （用的是点火者的授权）与 create_agent（改的是团队名册）照旧要批。
     形状不对回 `"ask"`——一列没建（migration 还没跑）或值坏了，都往严的一边倒 */
 export type SandboxApproval = "ask" | "auto";
 export const DEFAULT_SANDBOX_APPROVAL: SandboxApproval = "ask";

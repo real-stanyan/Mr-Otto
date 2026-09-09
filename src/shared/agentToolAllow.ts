@@ -1,8 +1,8 @@
-// agentToolAllow —— 工作区 agent 的连接器白名单（spec §3，切片 2）。
+// agentToolAllow —— 团队 agent 的连接器白名单（spec §3，切片 2）。
 // 三端共用一份（runtime 过滤 / 桌面快照与表单 / 手机端将来），只有类型 + 纯函数。
 //
 // 口径与 workspace_connectors / proxyShare.ts 一致，两层都是「空 = 全给」：
-//   顶层 []                    = 整池放行（这只 agent 拿得到工作区里贡献的全部连接器）
+//   顶层 []                    = 整池放行（这只 agent 拿得到团队里贡献的全部连接器）
 //   条目 { serverId, tools: [] } = 这台服务的全部工具
 //   条目 { serverId, tools: [..] } = 只给点名的这几个
 // 「一台都不给」在这个编码里**表达不了**——表单层负责不让用户存出那种状态

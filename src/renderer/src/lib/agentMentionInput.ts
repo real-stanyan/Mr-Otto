@@ -73,7 +73,7 @@ export type SendMentionPlan =
 /** 纯函数：不碰 store，也不自己发起刷新——`refreshFailed` 与 `freshCandidates`
     由组件在 `await refreshWorkspaceGroups()` 之后算好递进来。
     `freshCandidates === null` = 这一刻的名单压根没拿到（刷新失败，或刷新成功
-    但这个工作区已经不在返回的清单里），与「拿到了、里面没有这个名字」是两回事。
+    但这个团队已经不在返回的清单里），与「拿到了、里面没有这个名字」是两回事。
     `mentions: undefined` = 缺席，让服务端拿它自己那份名单解析正文（老语义）；
     `[]` 是权威的「没点任何 agent」。**#1059 之前这个函数在正文写了 @token 时
     永远不返回 `[]`**，现在有且只有一种情形返回它：那几个 @ 全都点在人类成员上
