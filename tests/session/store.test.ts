@@ -368,6 +368,33 @@ describe("EventStore", () => {
       expect(store.billedUsage(0)).toEqual([]);
     });
 
+    it("出图挂在 tool_result 上的账也捞得到（#1084）；没账的普通工具结果不出现", () => {
+      store.append({
+        sessionId: "s1",
+        ts: 400,
+        type: "tool_result",
+        toolCallId: "c1",
+        status: "ok",
+        output: "已生成 1 张图并显示给用户。",
+        model: "gemini-3.1-flash-image",
+        usage: { promptTokens: 12, completionTokens: 1120 },
+        route: "hosted",
+        creditCostMicro: 67206,
+      });
+      store.append({
+        sessionId: "s1",
+        ts: 500,
+        type: "tool_result",
+        toolCallId: "c2",
+        status: "ok",
+        output: "普通工具结果，没有自己的模型账",
+      });
+
+      expect(store.billedUsage(0)).toEqual([
+        { ts: 400, model: "gemini-3.1-flash-image", promptTokens: 12, completionTokens: 1120, cachedTokens: null },
+      ]);
+    });
+
     it("不计费的事件不出现", () => {
       store.append(userMsg("s1", "你好"));
       expect(store.billedUsage(0)).toEqual([]);

@@ -7,7 +7,7 @@ function snap(me: BillingMe | null): BillingSnapshotView {
   return { me, fetchedAt: 0, exhausted: null };
 }
 function withStatus(status: SubscriptionStatus, plan: BillingMe["plan"] = "pro"): BillingMe {
-  return { plan, status, plans: [], windows: null, addon: { remainingMicro: 0, expiresAt: null }, periodEnd: null, models: [], imageModels: [], modelPlatforms: {} };
+  return { plan, status, plans: [], windows: null, addon: { remainingMicro: 0, expiresAt: null }, periodEnd: null, models: [], imageModels: [], ttsModels: [], modelPlatforms: {} };
 }
 
 describe("workspaceAccess（issue #917 规则一：非订阅用户建不出工作区）", () => {

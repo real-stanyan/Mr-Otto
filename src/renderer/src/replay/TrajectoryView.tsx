@@ -107,9 +107,11 @@ function ClampedPre({ label, text, hl }: { label: string; text: string; hl?: boo
         <span className="text-muted-foreground select-none">…（共 {text.length} 字符，点击看全文）</span>
       </pre>
       <Dialog open={open} onOpenChange={setOpen}>
-        {/* grid-rows：header 定高 + 内容行 minmax(0,1fr)，滚动发生在内容行里，
-            不然长文把整个弹窗撑出 85vh，关闭钮都飘出屏外 */}
-        <DialogContent className="sm:max-w-[880px] max-h-[85vh] grid-rows-[auto_minmax(0,1fr)] gap-3">
+        {/* 内容行 min-h-0 overflow-y-auto：滚动发生在内容行里，
+            不然长文把整个弹窗撑出 85vh，关闭钮都飘出屏外。
+            DialogContent 是 flex-col(#998),这一行作为 flex 子项缩得动;
+            不要再写 grid-rows——grid 的 auto 行在 max-h 容器里不缩(实测见 #998) */}
+        <DialogContent className="sm:max-w-[880px] max-h-[85vh] gap-3">
           <DialogHeader>
             <DialogTitle>{label}</DialogTitle>
             <DialogDescription>共 {text.length} 字符</DialogDescription>

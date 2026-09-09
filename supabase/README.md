@@ -44,7 +44,7 @@ Realtime 通不通决定的是**快慢不是有无**(ADR-0027):客户端在订�
 | `0017_subscriptions.sql` | 订阅制五张表（`plan` / `subscription` / `credit_grant` / `usage_event` / `model_route`）+ RLS；seed 在 `seed/0017_plans_routes.sql`（档位数字与首批价表，**价格待核**） | ADR-0174 起三篇 + spec 2026-09-02；旧 `token_*` 三张不动不认（#696）。**尚未在 Cloud 上执行** |
 | `0028_workspace_requires_plan_capability.sql` | 建工作区从「有活跃订阅」收窄成「这一档带工作区」：`plan.capabilities.workspace` 补格 + 新函数 `can_create_workspace()` + 换 `ws_insert_self` 策略 | ADR-0242 / #1024。**判据放 plan 表不写死 `{pro,max}`**——写死的话这句话会有两份（客户端一份、RLS 一份），只在改档那天分家且分家不报错。只收窄 insert，存量一行不碰。没跑这一条时客户端走降级分支 = 行为一字不变（`plansWithWorkspace` 为空就退回旧判据），所以它不是「跑之前会坏」的那种 |
 | `0029_plan_image_capability.sql` | 三个订阅档打开 `capabilities.image`（`video` 保持 false） | #1040。**不是补一枚 chip，是开一个从来没开过的功能**：`src/main/modelRoute.ts` 拿这一格当真闸，三档全 false 意味着付费用户选视觉模型要么被拦（文案让他「升档」，而没有任何一档有 image）、要么静默改走自己的 key |
-| `0034_workspace_wiki_journal.sql` | 团队 wiki 的 journal 备份表（`workspace_wiki_journal`，追加式，`content` null = 删）：`/work/wiki/` 里的文件是事实，这张表单向备份 + 历史，恢复只发生在 `wiki/` 不存在时 | ADR-0279，#1140。不跑的话 runtime 每次写入 warn 一行、恢复路不可用，其余功能不受影响。**已在 Cloud 上执行**（2026-09-09，controller 手动跑的）——文件编号从 0033 改到 0034 是合并前的撞号改号（origin/main 先落了 `0033_model_route_tts.sql`，project ADR-0074），跑的是同一张表定义，表名才是认的凭据，文件编号不是 |
+| `0034_workspace_wiki_journal.sql` | 团队 wiki 的 journal 备份表（`workspace_wiki_journal`，追加式，`content` null = 删）：`/work/wiki/` 里的文件是事实，这张表单向备份 + 历史，恢复只发生在 `wiki/` 不存在时 | ADR-0281，#1140。不跑的话 runtime 每次写入 warn 一行、恢复路不可用，其余功能不受影响。**已在 Cloud 上执行**（2026-09-09，controller 手动跑的）——文件编号从 0033 改到 0034 是合并前的撞号改号（origin/main 先落了 `0033_model_route_tts.sql`，project ADR-0074），跑的是同一张表定义，表名才是认的凭据，文件编号不是 |
 
 ## 真库执行状态
 

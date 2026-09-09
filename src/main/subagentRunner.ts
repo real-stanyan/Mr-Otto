@@ -39,6 +39,10 @@ export interface SubagentRunnerDeps {
     /** 父会话此刻的审批档。approval: "inherit" 的定义直接用它——
         "用户有没有打开免审批"是个运行时状态，读一次快照会在长会话里过期 */
     approvalMode: "ask" | "auto";
+    /** 父会话的 memory 工具挂着的项目档（#1155）。子会话原样继承：自己推导必然得 null
+        （没有 memory 快照、日志里也没有 memory_loaded），于是 memory-reviewer 手里没有
+        project 档、点名守卫也不跑，项目事实只能落全局档。缺席 = 旧接线，行为不变 */
+    memoryProject?: { id: string; root: string; dir: string } | null;
   };
   alwaysAllow?: () => ReadonlySet<string>;
   /** execpolicy 规则现读器（issue #347，同 alwaysAllow 的活引用规矩）：
@@ -139,6 +143,8 @@ export function createSubagentRunner(deps: SubagentRunnerDeps): SubagentRunner {
         attachments: deps.attachments,
         allowTools: def.tools,
         spawnedBy: { sessionId: parent.sessionId, toolCallId: parentToolCallId, agent: def.name },
+        // 项目档跟着父走（#1155）：同一份对象，不重新解析
+        ...(parent.memoryProject !== undefined ? { memoryProject: parent.memoryProject } : {}),
         ...(deps.autoCompactSettings ? { autoCompactSettings: deps.autoCompactSettings } : {}),
         // 子 agent 与父走同一条路由（#1051）：订阅额度是**账号**的，不是某条会话的
         ...(deps.hosted ? { hosted: deps.hosted } : {}),

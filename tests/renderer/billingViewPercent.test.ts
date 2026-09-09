@@ -11,6 +11,7 @@ import {
   periodLine,
   remainingPercent,
   usageTitle,
+  usedPercentOf,
   windowPercent,
 } from "../../src/renderer/src/lib/billingView.js";
 
@@ -91,5 +92,37 @@ describe("下次扣款那一行", () => {
 
   it("查不到日期就整行不画，不写破折号", () => {
     expect(periodLine({ status: "active", periodEnd: null })).toBeNull();
+  });
+});
+
+// #1075：浮点毛刺在向下取整面前会被吃掉整整一位——`(1 - 80/100) * 100` 的真值是
+// 19.999999999999996，旧实现报 19.9。这不是零星几个值：枚举全部千分位，约两成中招，
+// 且几乎整个「剩不到 20%」区间都错（99.9% 已用会报 0.0，quotaAlert 据此喊「已用完」）。
+// 所以这里的判据是**全量扫一遍**而不是挑几个代表——挑代表恰好是当初漏掉它的原因。
+// 输入直接给整数 micro（真实输入就是整数），期望值按整数算，两边都不引入新的浮点。
+describe("整十分之一的值不许被浮点吃掉一位（#1075）", () => {
+  /** t 个千分位 = t/10 %，limit 取 1e8 micro（$1000，大到让步进足够细），两边都是精确整数 */
+  const LIMIT = 1e8;
+
+  it("剩余：0% 到 100% 已用的每一个十分之一都报准（issue 的 80/100 → 20.0 在其中）", () => {
+    for (let t = 0; t <= 1000; t++) {
+      const got = remainingPercent({ usedMicro: t * 1e5, limitMicro: LIMIT });
+      expect(got, `已用 ${t / 10}%`).toBe((1000 - t) / 10);
+    }
+  });
+
+  it("已用：镜子的那一头同一把尺子（工作区用量页用它）", () => {
+    for (let t = 0; t <= 1000; t++) {
+      const got = usedPercentOf(t * 1e5, LIMIT);
+      expect(got, `已用 ${t / 10}%`).toBe(t / 10);
+    }
+  });
+
+  it("99.9% 已用报 0.1 而不是 0.0 —— 报 0.0 的话 quotaAlert 会把这扇窗说成「已用完」", () => {
+    expect(remainingPercent({ usedMicro: 999 * 1e5, limitMicro: LIMIT })).toBe(0.1);
+  });
+
+  it("抹平噪声不动判据：99.9679% 仍然写成 99.9%（ADR-0239 那条不变）", () => {
+    expect(fmtRemainingPercent(w(0.1, 311.5))).toBe("99.9%");
   });
 });

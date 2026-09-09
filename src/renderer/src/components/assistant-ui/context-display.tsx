@@ -412,6 +412,10 @@ ContextDisplay.Text = ContextDisplayText;
 // 与上游 Content 显示的"上一次请求的 usage 分项"是两码事,换不得
 export { RingVisual as ContextDisplayRingVisual };
 
+// 本仓改动:再多导一个 getUsageSeverity(75/90 那两道档)。云会话浮层里逐只 agent
+// 那一行要按同一组阈值上色 —— 阈值只能有一份,那一行与环分家的那天没人会报错(#1138)
+export { getUsageSeverity as usageSeverity, type UsageSeverity };
+
 export {
   ContextDisplay,
   ContextDisplayRoot,

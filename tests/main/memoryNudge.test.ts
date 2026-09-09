@@ -6,9 +6,10 @@ import {
   MEMORY_NUDGE_EVERY,
   reviewerTranscript,
   buildReviewerTask,
+  reviewerInstructionsFrom,
 } from "../../src/main/memoryNudge.js";
 import type { SessionEvent } from "../../src/session/events.js";
-import type { ChatMessage } from "../../src/session/deriveMessages.js";
+import { projectInstructionsText, type ChatMessage } from "../../src/session/deriveMessages.js";
 
 const u = (seq: number): SessionEvent => ({ seq, sessionId: "s", ts: 0, type: "user_message", content: "x" });
 const nudge = (seq: number): SessionEvent => ({ seq, sessionId: "s", ts: 0, type: "memory_nudge", userTurns: 10 });
@@ -185,5 +186,42 @@ describe("settleNudgeSpawn", () => {
       type: "tool_result", toolCallId: "memory-nudge-7", status: "error",
     });
     expect((d.appended[0] as { output: string }).output).toContain("模型不可用");
+  });
+});
+
+// #1155：reviewer 要能判「这条记忆是不是项目指令里已经写了的」，就得看见主会话看见的
+// 那份项目指令——同一条日志里的 project_instructions 事件，渲成同一份文案，不另读盘
+describe("buildReviewerTask 的项目指令节选（#1155）", () => {
+  it("附了项目指令：拼在记忆块之后、转写之前，标题写明「项目指令」", () => {
+    const task = buildReviewerTask(
+      { memory: "M", user: "U" },
+      "转写",
+      { instructions: "[以下是本工作区的项目指令文件]\n── 来自 /w/AGENTS.md ──\nPR 用 merge commit" },
+    );
+    expect(task).toContain("项目指令");
+    expect(task).toContain("PR 用 merge commit");
+    expect(task.indexOf("项目指令")).toBeGreaterThan(task.indexOf("当前 USER"));
+    expect(task.indexOf("项目指令")).toBeLessThan(task.indexOf("最近对话"));
+  });
+
+  it("没附项目指令：一个字都不提（reviewer 不该被告知一份它看不见的文档）", () => {
+    expect(buildReviewerTask({ memory: "M", user: "U" }, "转写")).not.toContain("项目指令");
+  });
+});
+
+describe("reviewerInstructionsFrom", () => {
+  it("取日志里最后一条 project_instructions，渲成与主会话同一份文案", () => {
+    const segments = [{ path: "/w/AGENTS.md", content: "规则 A" }];
+    const events: SessionEvent[] = [
+      { seq: 0, sessionId: "s", ts: 0, type: "session_created", workspace: "/w" },
+      { seq: 1, sessionId: "s", ts: 0, type: "project_instructions", segments: [{ path: "/w/OLD.md", content: "旧" }] },
+      { seq: 2, sessionId: "s", ts: 0, type: "project_instructions", segments },
+      u(3),
+    ];
+    expect(reviewerInstructionsFrom(events)).toBe(projectInstructionsText(segments));
+  });
+
+  it("日志里没有 project_instructions：undefined", () => {
+    expect(reviewerInstructionsFrom([u(1), u(2)])).toBeUndefined();
   });
 });

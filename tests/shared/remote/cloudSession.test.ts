@@ -8,8 +8,10 @@ import { b64encode } from "../../../src/shared/remote/b64.js";
 
 describe("cs 帧协议", () => {
   it("协议版本", () => {
-    // 17 = #1140（ADR-0279）：加一对 wiki_write / wiki_write_result（控制房写帧）——
-    //      团队 wiki 从设置页改得了。
+    // 18 = #1140（ADR-0281）：加一对 wiki_write / wiki_write_result（控制房写帧）——
+    //      团队 wiki 从设置页改得了。本来是 17：它与语音那批（#1163）并行开发、
+    //      各自把 16 进到 17，而握手是精确相等——两个 17 都过得了版本闸却各缺
+    //      对方一半的帧，所以合并后进到 18。
     // 10 = #1044：加一对 delete / delete_result（控制房帧，形状同 archive）——
     //     彻底删除一条云会话。原来这颗钮不存在，理由是 0016 的 RLS 把
     //     wss_delete_publisher 钉死在 kind='package'；而那条前提只对客户端
@@ -27,6 +29,7 @@ describe("cs 帧协议", () => {
     // 5 = issue #945 那次进位（welcome/config_result 多了 modelRoute 一格）。
     // 4 = issue #844 那次进位（welcome/config_result 多了 model 一格，
     //     config 帧多了 model 字段、repoUrl 变成可选）。
+    // 17 = #1163：CsUp 加 call（语音通话名单），CsDown 加 call_result 回执。
     // 3 = issue #819 那次（denied 多了 rate_limited 码）。
     // 2 = issue #834 那次（welcome 多了 repo、下行多了 config_result）。
     // 握手是精确相等，两端同一个仓库一起发版——加字段照样进位，宁可让
@@ -34,7 +37,7 @@ describe("cs 帧协议", () => {
     // 之后静默少一格状态。**加一个枚举值同理**：老客户端的
     // isValidCsDeniedCode 认不出 rate_limited，整帧被 decodeCsDown 判成
     // null 静默丢掉，create() 于是白等满超时才回一句"云端无响应"
-    expect(CS_PROTOCOL_VERSION).toBe(17);
+    expect(CS_PROTOCOL_VERSION).toBe(18);
   });
   it("房名生成", () => {
     expect(csCtlChannel()).toBe("cs-ctl");
@@ -178,8 +181,8 @@ describe("rate_limited 码（issue #819）", () => {
 // 协议 14（#1102）：repo 那一组整个走了——config / config_result 两条帧删除。
 // 留下的是 modelRoute 那一格，它换了唯一的载体（welcome + workspace_state）
 describe("协议 14：config 帧没了，modelRoute 还在（#1102）", () => {
-  it("协议号跟着最新一条变更走（此刻 = 17，#1140 的 wiki_write 帧是最近进位者）", () => {
-    expect(CS_PROTOCOL_VERSION).toBe(17);
+  it("协议号跟着最新一条变更走（此刻 = 18，#1140 的 wiki_write 帧是最近进位者；#1163 的 call 帧是 17）", () => {
+    expect(CS_PROTOCOL_VERSION).toBe(18);
   });
 
   it("config 帧解不出来了 —— 老客户端发过来一律 null", () => {
@@ -298,7 +301,7 @@ describe("协议 15：git_credential / gitHosts（#1103）", () => {
   });
 });
 
-describe("wiki_write / wiki_write_result（协议 17，#1140）", () => {
+describe("wiki_write / wiki_write_result（协议 18，#1140）", () => {
   it("上行两种 op 往返；缺字段 → null", () => {
     const w = { t: "wiki_write", workspaceId: "w1", op: "write", path: "team.md", title: "团队口径", summary: "s", pinned: true, body: "正文" } as const;
     expect(decodeCsUp(encodeCs(w))).toEqual(w);
@@ -313,5 +316,26 @@ describe("wiki_write / wiki_write_result（协议 17，#1140）", () => {
     const bad = { ...ok, ok: false, message: "常驻超预算" };
     expect(decodeCsDown(encodeCs(bad))).toEqual(bad);
   });
-  it("CS_PROTOCOL_VERSION 是 17", () => { expect(CS_PROTOCOL_VERSION).toBe(17); });
+  it("CS_PROTOCOL_VERSION 是 18", () => { expect(CS_PROTOCOL_VERSION).toBe(18); });
+});
+
+// 协议 17（#1163）：语音通话名单。会话房帧——任何在籍成员都能发，服务端复核名单里的 id
+describe("协议 17：call / call_result（#1163）", () => {
+  it("call 帧 roundtrip；participants 不是字符串数组整帧拒", () => {
+    const call: CsUp = { t: "call", participants: ["admin", "a_1"] };
+    expect(decodeCsUp(encodeCs(call))).toEqual(call);
+    expect(decodeCsUp(encodeCs({ t: "call", participants: [] }))).toEqual({ t: "call", participants: [] });
+    const bad = (obj: unknown) => decodeCsUp(b64encode(new TextEncoder().encode(JSON.stringify(obj))));
+    expect(bad({ t: "call" })).toBeNull();
+    expect(bad({ t: "call", participants: "admin" })).toBeNull();
+    expect(bad({ t: "call", participants: ["admin", 3] })).toBeNull();
+  });
+
+  it("call_result 回执：ok 必填、message 可选", () => {
+    expect(decodeCsDown(encodeCs({ t: "call_result", ok: true }))).toEqual({ t: "call_result", ok: true });
+    expect(decodeCsDown(encodeCs({ t: "call_result", ok: false, message: "名单里没有" }))).toEqual({ t: "call_result", ok: false, message: "名单里没有" });
+    const bad = (obj: unknown) => decodeCsDown(b64encode(new TextEncoder().encode(JSON.stringify(obj))));
+    expect(bad({ t: "call_result" })).toBeNull();
+    expect(bad({ t: "call_result", ok: true, message: 5 })).toBeNull();
+  });
 });

@@ -9,6 +9,7 @@
 // ② **话进 aria-label 不进 title** —— 这枚钮当初就是为了不跟富浮层抢悬停才不给
 //    title 的，给点加一个等于把那笔账重新欠上；而读屏软件是这枚点唯一的出口。
 // ③ 色档跟着 tone 走（warn/deny 两档），充足时**整枚点不存在**。
+// ④ `quotaApplies=false`（云会话里我不是 owner）：这份 billing 不是这条会话烧的那份，点整枚不画。
 
 import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
@@ -80,6 +81,17 @@ describe("ContextRingTrigger", () => {
     draw();
     expect(dot()).toHaveAttribute("data-tone", "deny");
     expect(dot()!.className).toContain("bg-deny");
+  });
+
+  it("quotaApplies=false → 额度再吃紧也没有点，名字不多一个字（云会话里我不是 owner，烧的不是我的额度，#1138）", () => {
+    seed(1000);
+    render(
+      <ContextDisplayRoot modelContextWindow={200_000} usage={{ totalTokens: 20_000 }}>
+        <ContextRingTrigger quotaApplies={false} />
+      </ContextDisplayRoot>,
+    );
+    expect(dot()).toBeNull();
+    expect(screen.getByRole("button")).toHaveAccessibleName("上下文用量详情");
   });
 
   it("话挂在钮的 aria-label 上，**点自己不带 title**（原生气泡会跟富浮层抢同一次悬停）", () => {

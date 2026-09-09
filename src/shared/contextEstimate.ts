@@ -182,6 +182,10 @@ function pendingAfter(
         // 压根不会插那条摘要消息——这里也不能加，不然圆环凭空多出一段没人看见的文本
         if (micro && e === latestMicro) pending += estimateTokens(e.summary);
         break;
+      case "voice_call_changed":
+        // 云会话专属（#1163）：同 workspace_memory_loaded——本机圆环不读它；云会话页的环
+        // （cloudContext.ts）哪天要算，按最新一条名单计 renderVoiceCallPrompt 的 token
+        break;
       case "workspace_memory_loaded":
       case "workspace_wiki_loaded": // 团队 wiki 快照（#1140），同上——云会话页不读圆环，故意不计
         // 云会话专属；本文件只服务本机圆环（消费方 App.tsx / OttoThread.tsx），

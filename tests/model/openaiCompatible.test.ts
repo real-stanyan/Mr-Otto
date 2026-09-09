@@ -585,6 +585,63 @@ describe("思考过程的字段名不止一个", () => {
   });
 });
 
+describe("reasoningPassback（#1151）——reasoning 回不回传是厂商门控，默认剥掉", () => {
+  const TURN = [
+    { role: "user" as const, content: "跑一下 ls" },
+    {
+      role: "assistant" as const,
+      content: "",
+      reasoning: "用户让我跑 ls，我应该调用 bash 工具。",
+      tool_calls: [
+        { id: "call_00_x", type: "function" as const, function: { name: "bash", arguments: '{"cmd":"ls"}' } },
+      ],
+    },
+    { role: "tool" as const, tool_call_id: "call_00_x", content: "a.txt" },
+  ];
+  const bodyOf = async (passback: boolean | undefined, messages: unknown[] = TURN) => {
+    const bodies = mockFetchSSE(["data: [DONE]\n\n"]);
+    await createOpenAICompatibleAdapter({
+      baseUrl: "https://api.example.com/v1",
+      apiKey: "k",
+      model: "m",
+      ...(passback !== undefined ? { reasoningPassback: passback } : {}),
+    }).chat(messages as never, undefined, () => {});
+    return JSON.parse(bodies[0]!) as { messages: Record<string, unknown>[] };
+  };
+
+  it("开：assistant 带 reasoning_content 原文——DeepSeek thinking + tools 时键必须在，缺了 400", async () => {
+    const body = await bodyOf(true);
+    expect(body.messages[1]).toMatchObject({
+      role: "assistant",
+      reasoning_content: "用户让我跑 ls，我应该调用 bash 工具。",
+    });
+    // 内部字段名不许漏上线（线上只认 reasoning_content）
+    expect(body.messages[1]).not.toHaveProperty("reasoning");
+    // 别的消息形状不动
+    expect(body.messages[0]).toEqual({ role: "user", content: "跑一下 ls" });
+    expect(body.messages[2]).toEqual({ role: "tool", tool_call_id: "call_00_x", content: "a.txt" });
+  });
+
+  it("开：没有 reasoning 的 assistant 发空串——探针验过「键在即可，空串也行」（旧日志/ thinking 关过的轮次）", async () => {
+    const body = await bodyOf(true, [
+      { role: "user", content: "hi" },
+      { role: "assistant", content: "答" },
+    ]);
+    expect(body.messages[1]).toEqual({ role: "assistant", content: "答", reasoning_content: "" });
+  });
+
+  it.each([["缺省", undefined], ["显式关", false]] as const)(
+    "%s：reasoning 剥掉不发——会拒陌生字段的 API（R1 时代的 DeepSeek 就是）当场 400",
+    async (_label, passback) => {
+      const body = await bodyOf(passback);
+      expect(body.messages[1]).not.toHaveProperty("reasoning_content");
+      expect(body.messages[1]).not.toHaveProperty("reasoning");
+      // 其余字段原样
+      expect(body.messages[1]).toMatchObject({ role: "assistant", content: "" });
+    }
+  );
+});
+
 describe("localTiming — 本机推理的看门狗放宽（issue #300）", () => {
   it("keyless（本机 Ollama）：headers/idle 都放宽到 10 分钟 —— 冷加载 + prefill 是干活不是挂死", () => {
     expect(localTiming({ keyless: true })).toEqual({

@@ -137,10 +137,17 @@ describe("指纹", () => {
     expect(fingerprint(P, b, a)).toBe(f);
   });
   it("换一把公钥就换一个指纹", () => {
-    const a = P.generateEd25519().publicKey;
-    const b = P.generateEd25519().publicKey;
-    const c = P.generateEd25519().publicKey;
-    expect(fingerprint(P, a, c)).not.toBe(fingerprint(P, a, b));
+    // 三把**固定**公钥 —— 原来这里每把都是现生成的随机公钥，而指纹只有 1e6 个取值，
+    // 两把随机公钥撞同一个指纹的概率 ~1e-6/次（生日悖论），在 CI 上真炸过一次
+    // （issue #1147：两把都报 107121）。断言的意图是「指纹随对端公钥变化」，
+    // 换成固定公钥做确定性断言，随机性从这条断言里拿掉。
+    // 顺手把算出来的值钉死：这 6 位数是桌面与手机两端各自算出来给人核对的，
+    // 算法一改新旧客户端就对不上 —— 这个数是个跨版本协议，不许漂移。
+    const a = b64decode("y4ukZ4GjjVcMDoGvcSNwgkDSjsduRweu9AHrMGTAK8g")!;
+    const b = b64decode("YzTZ57VQGOgB3st46Zwk5J1eq8Tf-3e4xtF2nQVO9Bg")!;
+    const c = b64decode("Z2xBU9aD-CBh2uEtpGI9AXIreDbj3AAKkyit5aK98_w")!;
+    expect(fingerprint(P, a, b)).toBe("968403");
+    expect(fingerprint(P, a, c)).toBe("215149");
   });
 });
 

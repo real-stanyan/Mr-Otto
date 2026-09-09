@@ -16,7 +16,9 @@
 // base64 解码用 Buffer：这是 src/tools 层，允许（同 mcpTool.imagesOf）。放不进
 // src/shared —— 手机端 import 同一份源码，而 RN 上没有 Buffer。
 
-import type { Tool, ToolImage } from "./tool.js";
+import { BILLING_HEADERS } from "../shared/billing.js";
+import type { TokenUsage } from "../session/events.js";
+import type { Tool, ToolBilling, ToolImage } from "./tool.js";
 import type { ExecutionWorld } from "../world/executionWorld.js";
 
 /** 出图比一次 chat 慢一个量级：实测 `gemini-3.1-flash-image` 10.4s、
@@ -45,7 +47,31 @@ export interface GenerateImageDeps {
 /** `/images` 的回包（#1086）：`{created, data:[{b64_json, media_type}], usage}`。
     与 `/chat/completions` 那套 `choices[].message.images[].image_url.url` 不是一个形状 */
 interface OrImage { b64_json?: unknown; media_type?: unknown }
-interface OrReply { data?: OrImage[] }
+interface OrReply { data?: OrImage[]; usage?: unknown }
+
+/** 回包里的 usage（OpenAI 蛇形）折成日志里的 TokenUsage（驼峰）。字段与网关那份
+    parseUsage 同源（ADR-0261：两条端点的 usage 形状逐字相同），但刻意不共享代码——
+    那份在 services/edge，这一层够不着；字段就这四个，各读各的。
+    一处刻意不同：cached 缺席就**缺席**，不像网关那份补 0——日志里「这家不报 cache」
+    与「报了但没中」是两个事实（issue #213），记账不在乎的区别，日志在乎 */
+function parseImageUsage(v: unknown): TokenUsage | null {
+  if (typeof v !== "object" || v === null) return null;
+  const u = v as Record<string, unknown>;
+  if (typeof u.prompt_tokens !== "number" || typeof u.completion_tokens !== "number") return null;
+  const details =
+    typeof u.prompt_tokens_details === "object" && u.prompt_tokens_details !== null
+      ? (u.prompt_tokens_details as Record<string, unknown>)
+      : null;
+  const cached =
+    typeof u.prompt_cache_hit_tokens === "number" ? u.prompt_cache_hit_tokens
+    : details && typeof details.cached_tokens === "number" ? details.cached_tokens
+    : undefined;
+  return {
+    promptTokens: u.prompt_tokens,
+    completionTokens: u.completion_tokens,
+    ...(cached !== undefined ? { cachedTokens: cached } : {}),
+  };
+}
 
 /** 回包里的一张 → 字节。认不出的形状回 null（跳过这一张，不炸整次调用，
     同 mcpTool.imagesOf 的立场）。Buffer.from 对坏 base64 是静默截断而不是抛错，
@@ -105,7 +131,18 @@ export function createGenerateImageTool(deps: GenerateImageDeps): Tool {
       // **不带 stream**：网关对流式那条路会强塞 stream_options.include_usage 并旁路
       // 挑 usage，而出图是一次性 JSON，走非流式那条分支才对得上
       const body = { model, prompt, ...(refs ? { input_references: refs } : {}) };
-      const data = (await world.http.postJson(url, body, { headers, timeoutMs: IMAGE_TIMEOUT_MS })) as OrReply;
+      // 这次调用的账（#1084）：usage 在 body 里；结算的 credit 在响应头
+      // （x-otto-cost-micro，非流式，ADR-0211）——世界读得到响应头才拿得到它，
+      // 读不到（旧实现/测试假 world）就按「没记到」处理：creditCostMicro 缺席 ≠ 0
+      let data: OrReply;
+      let costHeader: string | undefined;
+      if (world.http.postJsonWithHeaders) {
+        const res = await world.http.postJsonWithHeaders(url, body, { headers, timeoutMs: IMAGE_TIMEOUT_MS });
+        data = res.body as OrReply;
+        costHeader = res.headers[BILLING_HEADERS.cost];
+      } else {
+        data = (await world.http.postJson(url, body, { headers, timeoutMs: IMAGE_TIMEOUT_MS })) as OrReply;
+      }
 
       const images: ToolImage[] = [];
       for (const img of data.data ?? []) {
@@ -120,11 +157,28 @@ export function createGenerateImageTool(deps: GenerateImageDeps): Tool {
         throw new Error("generate_image: 上游没有返回图片（最常见的原因是内容政策拒绝，换个说法再试）");
       }
 
+      // 出图的钱：usage 缺席 = 回包没报数，整条账不带（deriveUsage 的规矩：
+      // usage 缺省的事件不算账——没记 ≠ 没花）。route 恒 hosted：出图没有
+      // direct 这一档（ADR-0257），走通了就是托管
+      const usage = parseImageUsage(data.usage);
+      const costMicro = costHeader === undefined ? undefined : Number(costHeader);
+      const billing: ToolBilling | undefined = usage
+        ? {
+            model,
+            usage,
+            route: "hosted",
+            ...(costMicro !== undefined && Number.isFinite(costMicro) && costMicro >= 0
+              ? { creditCostMicro: costMicro }
+              : {}),
+          }
+        : undefined;
+
       return {
         // 模型看到的只有这句话（ADR-0144 §范围外）。**必须说清它自己看不到内容**，
         // 否则它会以为这次调用什么都没产出，转头再画一次
         output: `已生成 ${images.length} 张图并显示给用户。你自己看不到图的内容，但可以就它和用户对话；要改这张图就再调一次并带上 edit_last: true。`,
         images,
+        ...(billing ? { billing } : {}),
       };
     },
   };

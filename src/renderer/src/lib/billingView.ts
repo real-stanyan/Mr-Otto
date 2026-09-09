@@ -147,6 +147,15 @@ export function windowPercent(w: WindowState): number {
   return Math.min(100, Math.max(0, Math.round((w.usedMicro / w.limitMicro) * 100)));
 }
 
+/** 浮点毛刺先按 1e-9 精度抹平，再交给向下取整（#1075）。`(1 - 80/100) * 100`
+    的真值是 19.999999999999996，直接 floor 会把这个 ~1e-13 的噪声吃掉整整一位，
+    报成 19.9——枚举过全部千分位，约两成的整十分之一值中招，且几乎整个
+    「剩不到 20%」区间都在其列（99.9% 已用会报 0.0，quotaAlert 据此喊「已用完」）。
+    1e-9 比显示精度（0.1）小七位，而真实读数的最小步进是 1 micro / limit
+    （现实额度下远大于 1e-9），所以抹得掉噪声、碰不动真值——向下取整那条判据
+    原样成立（99.9679% 仍然写成 99.9%） */
+const deFloat = (percent: number): number => Math.round(percent * 1e9) / 1e9;
+
 /** 还剩百分之几。**一位小数、向下取整**，两条都是判据不是审美：
     ① 报剩余不报已用 —— 用户问这个数就是想知道「我还能干多久」，而
        `0.1 / 311.5` 要人当场做减法（同 bindingWindow 那段注释的理由）；
@@ -158,7 +167,7 @@ export function windowPercent(w: WindowState): number {
 export function remainingPercent(w: { usedMicro: number; limitMicro: number }): number {
   if (w.limitMicro <= 0) return 100;
   const left = (1 - w.usedMicro / w.limitMicro) * 100;
-  return Math.floor(Math.min(100, Math.max(0, left)) * 10) / 10;
+  return Math.floor(Math.min(100, Math.max(0, deFloat(left))) * 10) / 10;
 }
 
 /** 「99.9%」。单位只写一次，调用方自己配「可用」 */
@@ -174,7 +183,7 @@ export function fmtRemainingPercent(w: { usedMicro: number; limitMicro: number }
 export function usedPercentOf(micro: number, limitMicro: number): number {
   if (limitMicro <= 0) return 0;
   const used = (micro / limitMicro) * 100;
-  return Math.floor(Math.min(100, Math.max(0, used)) * 10) / 10;
+  return Math.floor(Math.min(100, Math.max(0, deFloat(used))) * 10) / 10;
 }
 
 /** 「3.7%」 */

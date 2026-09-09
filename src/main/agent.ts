@@ -302,6 +302,12 @@ export function createAgent(opts: {
     memory: string; user: string; project?: string;
     projectRoot?: string; projectScope?: string; topics?: MemoryTopicSnapshot[];
   };
+  /** 记忆工具要挂的项目档（#1155）。给了就照它挂（null = 明确没有项目档），不给
+      = 照旧从 memory 快照 / 日志里的 memory_loaded 推导。子会话装配走这一格：它没有
+      memory 快照、日志里也没有 memory_loaded，推导必然得 null——于是 memory-reviewer
+      手里没有 project 档、点名守卫（ADR-0143）整段跳过，项目事实只能落全局档且不被拦。
+      父会话把自己那份原样递过来（同一份对象，不重新解析——键与路径必须出自同一来源） */
+  memoryProject?: { id: string; root: string; dir: string } | null;
   /** 用户级配置目录（如 ~/.mr-otto），只在自己新造 LocalWorld 时用得上
       （opts.world 给了就走那条路，这个字段被忽略——同 makeBrowser 的取舍）。
       不给 = 造出来的 world 没有 config 能力，memory 工具不挂、记忆快照也落不了盘 */
@@ -618,6 +624,10 @@ export function createAgent(opts: {
         : {}),
       // 有眼睛的型号 image_ref 才解 bytes;没眼睛的换占位文本(vision-bridge 供文字)
       vision: choice.supportsVision,
+      // 自己那轮的 reasoning 要不要以 reasoning_content 回传（#1151）：目录
+      // 按厂商验过才开。开着的（DeepSeek）不传 = 赌它服务端的思考缓存还在，
+      // 等一次长审批（ask 最长 10 分钟）或 app 重启后续跑，缓存没了 turn 中途 400
+      reasoningPassback: choice.reasoningPassback,
       readAttachment: (id) => opts.attachments.read(id),
       // 本机推理（Ollama）：首 token 前的冷加载 + prefill 是在干活不是挂死，
       // 看门狗放宽到 10 分钟（见 localTiming 的注释）；云端型号 {} = 默认
@@ -687,12 +697,14 @@ export function createAgent(opts: {
   // 作用域键（#886）：新快照/新日志里直接有；**旧日志没有这个字段**，它当时的键
   // 就是那条绝对路径——按今天的规则重解析一次（有 remote 的仓解析出 remote 键），
   // 恢复出来的老会话才不会把记忆写回一个已经被并走的旧目录
-  const memoryProject = loadedProjectRoot
+  const derivedMemoryProject = loadedProjectRoot
     ? (() => {
         const id = loadedMemory?.projectScope ?? projectScopeId(loadedProjectRoot);
         return { id, root: loadedProjectRoot, dir: projectMemoryDir(id) };
       })()
     : null;
+  // 显式给的压过推导（#1155）：子会话从父那儿继承，不靠自己的日志推——它推不出来
+  const memoryProject = opts.memoryProject !== undefined ? opts.memoryProject : derivedMemoryProject;
 
   // Deferred 检索口（issue #348）：可见集是**闭包外**的共享活 Set，跨 turn 存活——
   // tool_search 搜出来的刀不该因为下一轮重算又缩回去。声明提到 buildTools 之前
@@ -986,6 +998,9 @@ export function createAgent(opts: {
     },
     sessionId,
     workspace: opts.workspace,
+    /** 这个 agent 的 memory 工具挂着哪个项目档（null = 没有）。子会话装配从父身上拿
+        这一份（subagentRunner 的 parent()），不重新解析（#1155） */
+    memoryProject,
     /** 后台任务登记口（issue #389）：index.ts 在这上面接完成回调（onCompletion），
         决定回注时机；没接线的装配 bash 拒绝 run_in_background */
     backgroundTasks,

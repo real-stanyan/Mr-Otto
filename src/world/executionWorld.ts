@@ -119,7 +119,10 @@ export interface McpServerHandle {
 }
 
 export interface McpCapability {
-  /** 把所有 enabled 的 server 连一遍，全部落定后 resolve。幂等：已连上的不重连。
+  /** 把**还没试过**的 server 连一遍，它们全部落定后 resolve（封顶 10 秒）。
+      幂等：已连上的不重连；试过而没连上的在后台重试、**不等**（#1187 —— 这个
+      函数挂在每次会话装配上，为一台已经问过一次的 server 再付一趟网络往返，
+      就是"点开一条会话要卡一下"）。
       agent.ts 拼工具表之前 await 它 —— 工具表是一次性拼好的（挂载一次定终身），
       拼的时候必须已经知道每台提供了什么。 */
   ready(): Promise<void>;
@@ -308,6 +311,18 @@ export interface ExecutionWorld {
   /** JSON POST——工具的全部网络面。v1 LocalWorld 用 fetch;v2 Docker 按 bot 走代理/断网 */
   http: {
     postJson(url: string, body: unknown, opts?: HttpPostOptions): Promise<unknown>;
+    /** 可选：连响应头一起回来的 JSON POST（#1084）。出图那笔钱由网关在响应头里
+        结算（x-otto-cost-micro，非流式，ADR-0211），body 里只有 usage——
+        postJson 把响应头丢掉之后，工具只能报 token、报不了 credit。
+        可选的理由同 getJson（仓里几十处测试假 world 只实现了 postJson，必填
+        会让它们全红）。缺席 = 这个世界读不到响应头，调用方按「没记到」处理
+        （creditCostMicro 缺席 ≠ 0：不落那个键，而不是记 0）。headers 的键
+        一律小写（fetch Headers.entries 的约定） */
+    postJsonWithHeaders?(
+      url: string,
+      body: unknown,
+      opts?: HttpPostOptions
+    ): Promise<{ body: unknown; headers: Record<string, string> }>;
     /** 可选：JSON GET。可选的理由同 execDetached/openTerminal——仓里几十处测试
         假 world 只实现了 postJson，必填会让它们全红，而那些红跟网络能力无关。
         缺席 = 这个世界不提供 GET，调用方（tools/mcpCatalog.ts）据此说人话。
@@ -381,6 +396,13 @@ export function withAbortSignal(world: ExecutionWorld, signal: AbortSignal): Exe
       // 探测发生在构造 wrapper 的这一刻，必须扛住 http 缺席，不能提前把它炸穿
       ...(world.http?.getJson
         ? { getJson: (url: string, opts?: HttpPostOptions) => world.http.getJson!(url, { ...opts, signal }) }
+        : {}),
+      // 同 getJson 的探测纪律：缺席不焊、不提前炸穿（#1084）
+      ...(world.http?.postJsonWithHeaders
+        ? {
+            postJsonWithHeaders: (url: string, body: unknown, opts?: HttpPostOptions) =>
+              world.http.postJsonWithHeaders!(url, body, { ...opts, signal }),
+          }
         : {}),
     },
     ...(world.openTerminal ? { openTerminal: (o: OpenTerminalOptions) => world.openTerminal!(o) } : {}),

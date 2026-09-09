@@ -48,6 +48,13 @@ export interface OpenAICompatibleOptions {
       image_url;false/缺省 = 换占位文本——无视觉模型发 base64 必 400,
       图片内容由 vision-bridge 的 image_described 事件以文字供给 */
   vision?: boolean;
+  /** 把自己那轮 assistant 消息的 reasoning 以 reasoning_content 回传（#1151）。
+      默认关 = 剥掉不发：多数 API 会拒陌生字段（R1 时代的 DeepSeek 就是塞了 400）。
+      只给探针验过「thinking 模式必须回传」的厂商开（2026-09-09 真接口：DeepSeek
+      按它发出的 tool_call id 在服务端存思考、客户端不传就去查，缓存没了 400；
+      同一次探针验过它在任何位置/档位/空串都收，所以开启后不做位置与 tools 判断）。
+      目录哪几家开着：modelCatalog 的 REASONING_PASSBACK */
+  reasoningPassback?: boolean;
   /** 重试/超时参数覆盖。生产装配用默认常量；唯一例外是本机推理
       （keyless，装配时传 localTiming()）；测试也走这里。 */
   timing?: Partial<AdapterTiming>;
@@ -355,6 +362,20 @@ export function createOpenAICompatibleAdapter(opts: OpenAICompatibleOptions): Mo
   /** image_ref → OpenAI vision 方言(data URL)。string content 原样返回——
       老路径请求体逐字节不变 */
   const toWireMessage = (m: ChatMessage): unknown => {
+    if (m.role === "assistant") {
+      // reasoning 是日志事实不是线上字段：默认剥掉（多数 API 拒陌生字段）；
+      // 验过「必须回传」的厂商（#1151）发 reasoning_content——有原文发原文，
+      // 没有发空串（探针：空串也收，且 thinking 模式 + tools 时键必须在）
+      if (opts.reasoningPassback) {
+        const { reasoning, ...rest } = m;
+        return { ...rest, reasoning_content: reasoning ?? "" };
+      }
+      if (m.reasoning !== undefined) {
+        const { reasoning: _stripped, ...rest } = m;
+        return rest;
+      }
+      return m;
+    }
     if (m.role !== "user" || typeof m.content === "string") return m;
     return {
       role: "user",

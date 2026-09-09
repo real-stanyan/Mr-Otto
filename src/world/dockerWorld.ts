@@ -13,7 +13,7 @@
 
 import { resolve as posixResolve, relative as posixRelative, isAbsolute as posixIsAbsolute } from "node:path/posix";
 import { Writable } from "node:stream";
-import type { ExecOptions, ExecResult, ExecutionWorld } from "./executionWorld.js";
+import type { ExecOptions, ExecResult, ExecutionWorld, HttpPostOptions } from "./executionWorld.js";
 
 /** dockerode 的最小可注入面——测试给假货，生产给 new Docker().getContainer(id) 的容器句柄。
     形状对齐 dockerode 的 Container/Exec：exec() 起一次执行、start() 拿到读写流、
@@ -188,6 +188,25 @@ export function createDockerWorld(opts: {
   container: () => Promise<ContainerLike>; // 惰性取——T8 的 ensureContainer 喂进来
   fetchImpl?: typeof fetch;
 }): ExecutionWorld {
+  /** 与 LocalWorld 同一个字段（#1084）：出图那笔钱的结算数在网关响应头里，
+      postJson 把它丢了工具就报不了 credit。同一次 fetch 的两种取法 */
+  const postJsonWithHeaders = async (
+    url: string,
+    body: unknown,
+    o?: HttpPostOptions
+  ): Promise<{ body: unknown; headers: Record<string, string> }> => {
+    const fetchImpl = opts.fetchImpl ?? fetch;
+    const res = await fetchImpl(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...o?.headers },
+      body: JSON.stringify(body),
+      ...(o?.signal ? { signal: o.signal } : {}),
+    });
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    }
+    return { body: (await res.json()) as unknown, headers: Object.fromEntries(res.headers.entries()) };
+  };
   return {
     fs: {
       async read(path) {
@@ -236,19 +255,8 @@ export function createDockerWorld(opts: {
     },
 
     http: {
-      async postJson(url, body, o) {
-        const fetchImpl = opts.fetchImpl ?? fetch;
-        const res = await fetchImpl(url, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", ...o?.headers },
-          body: JSON.stringify(body),
-          ...(o?.signal ? { signal: o.signal } : {}),
-        });
-        if (!res.ok) {
-          throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
-        }
-        return res.json();
-      },
+      postJson: async (url, body, o) => (await postJsonWithHeaders(url, body, o)).body,
+      postJsonWithHeaders,
     },
   };
 }

@@ -204,7 +204,7 @@ describe("meFromParts", () => {
   it("没订阅：plan null / status none / 没有窗口，加购与型号照给", () => {
     const me = meFromParts(null, null, { remainingMicro: 500, expiresAt: 123 }, ["m1"], plans);
     expect(me).toEqual({
-      plan: null, status: "none", windows: null, imageModels: [], addon: { remainingMicro: 500, expiresAt: 123 }, periodEnd: null, models: ["m1"],
+      plan: null, status: "none", windows: null, imageModels: [], ttsModels: [], addon: { remainingMicro: 500, expiresAt: 123 }, periodEnd: null, models: ["m1"],
       // 调用方没给平台表时是空对象（#1011）：那一格只喂桌面下拉里的 logo，
       // 缺席 = 不画，不该让 /me 的其余部分跟着变形
       modelPlatforms: {},
@@ -270,7 +270,7 @@ describe("modelsForMe", () => {
   });
 
   it("一行都没有时回空 —— 不兜底成任何一款默认型号", () => {
-    expect(modelsForMe([])).toEqual({ models: [], imageModels: [], modelPlatforms: {} });
+    expect(modelsForMe([])).toEqual({ models: [], imageModels: [], ttsModels: [], modelPlatforms: {} });
   });
 
   it("出图行进 imageModels（那是 generate_image 那把刀的清单），且同样从便宜到贵有序", () => {
@@ -280,5 +280,29 @@ describe("modelsForMe", () => {
       r("pricey@openrouter", "pricey-image", "openrouter", "image"),
     ]);
     expect(imageModels).toEqual(["cheap-image", "pricey-image"]);
+  });
+});
+
+// ── 语音行（#1163）：第三张清单 ─────────────────────────────────────────
+describe("modelsForMe / meFromParts：kind=tts 单列一张 ttsModels", () => {
+  const row = (id: string, logicalModel: string, platform: string, kind: "chat" | "image" | "tts") => ({
+    id, logicalModel, platform, baseUrl: "https://u", wireModel: logicalModel,
+    priceInMicroPerM: 1, priceCacheMicroPerM: 1, priceOutMicroPerM: 1, defaultMaxTokens: 100, kind,
+  });
+  it("tts 行只进 ttsModels，不进 models / imageModels / modelPlatforms", () => {
+    const out = modelsForMe([
+      row("a@deepseek", "deepseek-v4-flash", "deepseek", "chat"),
+      row("i@openrouter", "gemini-3.1-flash-image", "openrouter", "image"),
+      row("s@minimax", "speech-2.8-turbo", "minimax", "tts"),
+    ]);
+    expect(out).toEqual({
+      models: ["deepseek-v4-flash"], imageModels: ["gemini-3.1-flash-image"], ttsModels: ["speech-2.8-turbo"],
+      modelPlatforms: { "deepseek-v4-flash": "deepseek" },
+    });
+  });
+  it("meFromParts 第八参透传；缺省 [] = 这台网关不供语音", () => {
+    const withTts = meFromParts(null, null, { remainingMicro: 0, expiresAt: null }, [], plans, {}, [], ["speech-2.8-turbo"]);
+    expect(withTts.ttsModels).toEqual(["speech-2.8-turbo"]);
+    expect(meFromParts(null, null, { remainingMicro: 0, expiresAt: null }, [], plans).ttsModels).toEqual([]);
   });
 });

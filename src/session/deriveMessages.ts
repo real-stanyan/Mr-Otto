@@ -1,8 +1,10 @@
 // deriveMessages — 从事件日志投影出模型上下文（OpenAI-compatible 消息格式）
 // 纯函数：同样的 events 永远得到同样的 messages。resume/fork/replay 全靠它。
 
+import type { VoiceCallParticipant } from "./events.js";
 import { isolatedPromptText, type IsolatedWorkspace } from "../shared/sessionWorktree.js";
 import { promptSafe, promptSafeBody, safeSpeakerLabel } from "../shared/promptSafe.js";
+import { INVITE_TO_CALL_TOOL_NAME } from "../shared/voiceCall.js";
 import type { CloudSessionFacts, MemoryTopicSnapshot, SessionEvent, UserTextFile, WorkspaceMemoryLoadedEvent, WorkspaceWikiLoadedEvent } from "./events.js";
 import { barrenEventIndexes } from "./barrenTurns.js";
 import { activeSkills } from "./activeSkills.js";
@@ -105,7 +107,7 @@ export function systemPromptText(
 const CLOUD_SESSION_TEXT =
   `你跑在一台云沙箱容器里（Linux），工具都在容器内执行，工作目录就是上面那个。\n` +
   `这是一条**群聊**会话：团队的多个成员都能发言，他们的消息以「[名字]: 内容」的形式到你这里；` +
-  `@ 你的那条才会触发你的回合，其余的你看得见但不必逐条回应。\n` +
+  `@ 你的那条、以及没 @ 任何人但系统按职责派给你的那条，会触发你的回合；其余的你看得见但不必逐条回应。\n` +
   `危险操作的审批由发起这一轮的人或团队所有者决定，不是"某个用户"——` +
   `被拒同样是"别做这件事"，别换个写法绕过去。\n` +
   `这个沙箱不允许 git push（拉代码用的凭据用完就烧了）。你的提交只留在这个团队的工作目录里，` +
@@ -229,6 +231,40 @@ export function renderMemoryPrompt(
   );
 }
 
+/** 语音通话进行中时焊进云会话 system 尾部的那一块（#1163）。三件事各一句：
+    ① 谁在通话里、谁不在（带职责）——派活 / 接力只在通话成员里进行，模型得知道自己
+       能 @ 谁；② 活该由通话外的人做时**先问用户**，用户同意了再调 invite_to_call
+       把 TA 拉进来（维护者拍板：口头同意就行，不弹审批卡）；③ 回复会被读出来——
+       短句、口语、代码只放围栏。
+    `selfName` 是这只 agent 自己（brief 的 name，roster 里没有它）；名单事件自带名字
+    快照，不在 roster 里的名字照样列得出。拼进结构的每个名字都过 promptSafe（#957 B-C1：
+    这一段是拼出来的，拼进去的是别人写的字） */
+export function renderVoiceCallPrompt(
+  participants: readonly VoiceCallParticipant[],
+  selfName: string | null,
+  roster: readonly { name: string; description: string }[]
+): string {
+  const inCall = new Set(participants.map((p) => p.name));
+  const everyone: { name: string; description: string }[] = [
+    ...(selfName !== null && !roster.some((r) => r.name === selfName) ? [{ name: selfName, description: "" }] : []),
+    ...roster,
+  ];
+  const outside = everyone.filter((r) => !inCall.has(r.name));
+  const members = participants.map((p) => promptSafe(p.name)).join("、");
+  const others = outside.length
+    ? `不在通话里的：${outside.map((r) => (r.description ? `${promptSafe(r.name)}（${promptSafe(r.description)}）` : promptSafe(r.name))).join("、")}。`
+    : "";
+  return (
+    `\n[语音通话进行中。通话里的成员：${members}。${others}` +
+    // 名单以这一块为准（#1194）：上一场通话的招呼还留在日志里，模型会拿它们当这一场的名单
+    // （真机：只有管理员在，它说「开发刚才进来打过招呼，设计也在」）
+    `谁在通话里以这一块的名单为准——聊天记录里更早的招呼、通话是上一场的，别据此认为谁在这一场里。` +
+    `规则：只有通话里的成员参与这件事。如果这件事该由不在通话里的人做，先用一句话问用户要不要把 TA 拉进通话，` +
+    `用户同意后再调用 ${INVITE_TO_CALL_TOOL_NAME} 把 TA 拉进来、然后 @ TA；用户没同意就别替 TA 做、也别 @ TA。` +
+    `你的回复会被读出来，像打电话：先说结论，一两句就停，对方要细节再展开；口语，代码只放围栏里。]`
+  );
+}
+
 /** workspace_memory_loaded 专属的指引 + 块（#949）。与 renderMemoryPrompt 分开写而不是加参数：
     云端没有 user/project/topic 三档、没有 session_search、没有「下个会话才可见」（共享档本会话
     中途就会被别的 agent 改，下一 turn 的快照就带上了）——共用一段文案得处处加分支 */
@@ -282,6 +318,12 @@ export interface UserChatMessage {
 export interface AssistantChatMessage {
   role: "assistant";
   content: string;
+  /** 这条回复的思考过程（#1151）：日志 assistant_message.reasoning 原样带出来。
+      logged ≠ model-visible 的默认没变——发不发上线由 adapter 按厂商门控
+      （openaiCompatible 的 reasoningPassback：默认剥掉；DeepSeek 真机验过
+      「必须回传」才开，见 modelCatalog 的 REASONING_PASSBACK）。
+      可选 = 旧日志 / thinking 关 / 该型号不思考，投影行为逐字节不变 */
+  reasoning?: string;
   tool_calls?: {
     id: string;
     type: "function";
@@ -472,6 +514,14 @@ export function deriveMessages(
   let workspaceMemoryPrompt: string | null = null;
   // 团队 wiki 快照（#1140）：最新一条胜出，主循环结束后统一拼一次（见下方）
   let workspaceWikiPrompt: string | null = null;
+  // 语音通话名单（#1163）：同上，最新一条胜出、空名单 = 没有。只在云会话注入——
+  // 通话是云会话的东西，本机日志里不会有这条事件，有也不该长出一块提示词
+  let voiceCall: VoiceCallParticipant[] | null = null;
+  let isCloud = false;
+  // 最近一条 brief 的名字 + 花名册：通话块要说得出「不在通话里的」是谁、管什么，
+  // 而这份信息只在 agent_briefed 上（roster 不带 id，所以名单事件自带名字快照）
+  let briefName: string | null = null;
+  let briefRoster: { name: string; description: string }[] = [];
   const boundary = compression ? fidelityBoundary(events, compression.keepRecentTurns, barren) : 0;
   // 孤儿 tool_result 过滤（issue #186）：nudge 派活的收口 tool_result
   // （toolCallId = memory-nudge-N）没有对应的 assistant_message.toolCalls，
@@ -594,6 +644,10 @@ export function deriveMessages(
         messages.push({
           role: "assistant",
           content: event.content,
+          // 自己的思考随投影带出来（#1151）：DeepSeek thinking 模式要求把它
+          // 回传，否则按 tool_call id 查服务端缓存、查不到就 400。发不发由
+          // adapter 的 reasoningPassback 门控，这里只负责让事实够得着
+          ...(event.reasoning ? { reasoning: event.reasoning } : {}),
           ...(event.toolCalls && event.toolCalls.length > 0
             ? {
                 tool_calls: event.toolCalls.map((tc) => ({
@@ -655,6 +709,7 @@ export function deriveMessages(
             content: systemPromptText(event.workspace, today, event.workspaceKind, event.isolated, event.cloud),
           };
           messages.push(systemMessage);
+          isCloud = event.cloud !== undefined;
         }
         break;
 
@@ -750,6 +805,8 @@ export function deriveMessages(
             `要谁搭手就在你的回复里 @ 他的名字。`
           : "";
         const text = `[你是这个团队里的「${promptSafe(event.name)}」。${others}]\n${event.instructions}`;
+        briefName = event.name;
+        briefRoster = event.roster;
         // 没有围栏 system 时（旧日志 / 没带 workspace 的裸装配）退回事件位置那条
         // user 消息 —— 理由同 project_instructions：那种日志本来就没有清场保护
         // 可言，但「我是谁」是这只 agent 能不能开口的前提，宁可退化不能没有
@@ -768,6 +825,12 @@ export function deriveMessages(
         // 提示——不补造一条。主会话的 session_created 总是带 workspace，缺口
         // 只发生在子会话或旧日志上，不影响主线记忆功能。
         if (systemMessage) systemMessage.content += renderMemoryPrompt(event.memory, event.user, event.project, event.projectRoot, event.topics);
+        break;
+
+      case "voice_call_changed":
+        // 最新一条胜出、空名单 = 通话结束（#1163）。同 workspace_memory_loaded：记下来
+        // 主循环结束后拼一次，不在这里 +=——两条名单叠在 system 里模型读到两套口径
+        voiceCall = event.participants.length > 0 ? event.participants : null;
         break;
 
       case "workspace_memory_loaded":
@@ -897,6 +960,9 @@ export function deriveMessages(
   if (systemMessage && workspaceMemoryPrompt) systemMessage.content += workspaceMemoryPrompt;
   // 团队 wiki 块拼在 system 末尾（#1140）。systemMessage 为 null（旧日志 / 没带 workspace）时静默不补造，同 workspace_memory_loaded
   if (systemMessage && workspaceWikiPrompt) systemMessage.content += workspaceWikiPrompt;
+  // 通话块排在记忆与 wiki 之后（#1163）：它是此刻的状态，也是最会变的那一段——放最尾
+  // 前缀缓存只从这里往下失效
+  if (systemMessage && isCloud && voiceCall) systemMessage.content += renderVoiceCallPrompt(voiceCall, briefName, briefRoster);
 
   // summaryAt 可能 === events.length（被吸收区是日志尾巴）——循环里插不到，这里补
   if (micro && micro.summaryAt >= events.length) {

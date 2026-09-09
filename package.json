@@ -8,7 +8,7 @@
     "pretest": "node scripts/check-node.mjs && node scripts/fix-pty-perms.mjs",
     "test": "npm run typecheck && vitest run",
     "e2e": "electron-vite build && playwright test",
-    "dev": "node scripts/build-island.mjs --debug && node scripts/build-siminput.mjs --debug && electron-vite dev",
+    "dev": "node scripts/build-island.mjs --debug && node scripts/build-siminput.mjs --debug && node scripts/build-speech.mjs --debug && electron-vite dev",
     "dev:sync": "node scripts/sync-dev-data.mjs",
     "build": "electron-vite build",
     "postinstall": "node scripts/fix-pty-perms.mjs",
@@ -21,7 +21,7 @@
     "edge:deploy": "node scripts/edge-deploy.mjs",
     "deploy:check": "node scripts/deploy-check.mjs",
     "rebuild-native": "electron-rebuild -f -w better-sqlite3 -w node-pty",
-    "dist:mac": "node scripts/build-island.mjs && node scripts/build-siminput.mjs && electron-vite build && electron-builder --mac --arm64",
+    "dist:mac": "node scripts/build-island.mjs && node scripts/build-siminput.mjs && node scripts/build-speech.mjs && electron-vite build && electron-builder --mac --arm64",
     "dist:win": "node scripts/ensure-win-bindings.mjs && electron-vite build && electron-builder --win --x64 --config.npmRebuild=false",
     "release": "node scripts/release.mjs"
   },

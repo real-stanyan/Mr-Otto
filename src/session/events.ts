@@ -83,6 +83,19 @@ export interface UserMessageEvent extends SessionEventBase {
       runtime 替它落的（fromUid 仍是点火那个人——审批与代理授权按人算）。depth 与前一条
       agent_relay 相同。缺席 = 人说的 / 旧日志。**只影响 UI 与接力判据**，模型投影照普通 user 消息读 */
   relay?: { fromAgentId: string; depth: number };
+  /** 云会话派活（#1153，ADR-0270）：这句话没有 @ 任何人，`mentions` 里那几只是
+      runtime 用便宜模型按职责判出来的，不是人点的。缺席 = 人亲手 @ 的 / 接力 /
+      旧日志。**只是记号**：起 turn、排队、护栏、接力链首（`isHumanOpening`）都
+      把它当普通的人话点火——它与人亲手 @ 的那条走同一条路，这正是设计（判完再
+      落、单事件，见 ADR-0270）。模型投影不读它 */
+  dispatch?: "auto";
+  /** 语音通话的招呼开场白（#1174）：这只刚被拉进通话，runtime 替改名单的人落的
+      「打个招呼」开场白（`mentions` 是它自己，`fromUid` 是改名单的人 / invite_to_call
+      那条路上点火的人）。缺席 = 人说的 / 接力 / 派活 / 旧日志。**只是记号**：起 turn、
+      排队、护栏、接力链首（`isHumanOpening`）都把它当普通的人话点火——它与人亲手 @ 的
+      那条走同一条路；云会话时间线据它不画正文（`voice_call_changed` 那行已经说了
+      「拉进了通话」）。模型投影不读它 */
+  greeting?: "voice_call";
 }
 
 /** 文本文件附件:全文进日志(快照),不进附件库(附件库只收图片) */
@@ -129,8 +142,10 @@ export interface AssistantMessageEvent extends SessionEventBase {
   /** 本次调用的 token 消耗。可选 = 旧日志/不报 usage 的 API 照样重放 */
   usage?: TokenUsage;
   /** 思考过程（reasoning_content，thinking 开启时才有）。模型产出的新信息，
-      日志推不出 → 必须落盘；但 API 明令禁止塞回上下文（塞了 400）→
-      投影必须丢弃它。logged ≠ model-visible：给人回看的事实，不是给模型的。
+      日志推不出 → 必须落盘。回不回喂模型按厂商分（#1151）：DeepSeek 自 V3.2
+      起反过来**要求**回传（按 tool_call id 查服务端缓存，查不到 400），
+      OpenAI 那类严格校验的会拒陌生字段——所以投影把它带出来（ChatMessage.reasoning），
+      发不发由 adapter 按目录门控（REASONING_PASSBACK，默认剥掉）。
       可选 = 旧日志/关 thinking 照样重放 */
   reasoning?: string;
   /** 纯思考耗时(ms):第一个 reasoning 碎片到第一个 content 碎片之间(reasoningClock)。
@@ -201,6 +216,18 @@ export interface ToolResultEvent extends SessionEventBase {
       可选 = 旧日志无此字段照样重放（schema 向后兼容硬规则）。
       图丢了不该炸时间线 —— 同 ADR-0009 对用户附件的取舍，UI 退成一行缺图提示 */
   images?: UserAttachmentRef[];
+  /** 这次工具调用里套着的那次模型调用的账（#1084）：generate_image 走网关出图，
+      钱扣在网关那边（usage_event 有行），本机的账也得能从日志求和——它的载体
+      只能是这条 tool_result（出图不产生 assistant_message）。四格与
+      assistant_message 同名格同语义（model = 出图型号，不是会话的文字型号；
+      route 缺席 = direct；creditCostMicro 缺席 ≠ 0）。
+      全可选 = 旧日志与绝大多数不烧钱的工具照样重放（schema 向后兼容硬规则）。
+      记账侧由 deriveUsage 的 billed() 按「有没有 usage 这一格」收它，
+      不为工具单写分支 */
+  model?: string;
+  usage?: TokenUsage;
+  route?: "hosted" | "direct";
+  creditCostMicro?: number;
   /** 这条是哪只工作区 agent 干的（#928） */
   agentId?: string;
 }
@@ -457,6 +484,15 @@ export interface ImageDescribedEvent extends SessionEventBase {
   type: "image_described";
   content: string;
   model: string;                 // 解析出自哪个视觉模型(溯源)
+  /** 本次代读烧的 token（#1093：代读是真跑了一次视觉模型，账要和别的外挂
+      小调用一样能从日志求和）。缺席 = 旧日志/没报，不算账（没记 ≠ 没花） */
+  usage?: TokenUsage;
+  /** 这笔账走的哪条路（同 `ContextCompactedEvent.route` 那段注释）。
+      缺席 = direct（旧日志照常重放，那时确实是 direct） */
+  route?: "hosted" | "direct";
+  /** hosted 路这次结算的 credit（micro-USD），同 `assistant_message.creditCostMicro`
+      那一格。缺席 ≠ 0 */
+  creditCostMicro?: number;
 }
 
 /** 额外 10：分区分类（会话目录）。每个 turn 收口后跑一次便宜模型：这一段是延续
@@ -545,6 +581,28 @@ export interface AgentBriefedEvent extends SessionEventBase {
     必须落盘而不是只活在内存里：时间线要投影"谁接了谁的棒"，棒数判据
     （decideRelay 的周期护栏/上限）也得从日志重放出来，不能靠进程内状态——
     重启一次接力链的历史就丢了，护栏形同虚设 */
+/** 语音通话名单里的一只（#1163）。`name` 是拉进来那一刻的快照：模型可见面（deriveMessages
+    的通话块）要说得出名字，而它手上只有 agent_briefed 的 roster（不带 id）；渲染层照旧按 id
+    现查 `agentNameOf`，查不到才退回这份快照（同 workspace_mentions.from_label 的取舍） */
+export interface VoiceCallParticipant {
+  agentId: string;
+  name: string;
+}
+
+/** 团队语音通话的名单变了（#1163）。**空名单 = 通话结束**；最后一条说了算（投影在
+    src/shared/voiceCall.ts）。群事件——没有 agentId 字段，每只 agent 都要读到它（派活只在
+    通话成员里进行、system 尾块列出谁在通话里）；模型可见面是 deriveMessages 投影出来的
+    那一块，事件本身 `ignorable`：旧版本跳过它只少一行时间线 + 少一块提示，不会复活残缺会话。
+    `byUid` 是谁改的（人的 uid；agent 用 invite_to_call 拉人时是点火的那个人，同 create_agent
+    的 created_by），`byAgentId` 在场 = 是那只 agent 拉的 */
+export interface VoiceCallChangedEvent extends SessionEventBase {
+  type: "voice_call_changed";
+  participants: VoiceCallParticipant[];
+  byUid: string;
+  byAgentId?: string;
+  ignorable: true;
+}
+
 export interface AgentRelayEvent extends SessionEventBase {
   type: "agent_relay";
   fromAgentId: string;
@@ -1001,6 +1059,7 @@ export type SessionEvent =
   | SubagentBriefedEvent
   | AgentBriefedEvent
   | AgentRelayEvent
+  | VoiceCallChangedEvent
   | MemoryLoadedEvent
   | WorkspaceMemoryLoadedEvent
   | WorkspaceWikiLoadedEvent
@@ -1062,6 +1121,7 @@ const KNOWN_EVENT_TYPES_MAP: Record<SessionEvent["type"], true> = {
   subagent_briefed: true,
   agent_briefed: true,
   agent_relay: true,
+  voice_call_changed: true,
   memory_loaded: true,
   workspace_memory_loaded: true,
   workspace_wiki_loaded: true,

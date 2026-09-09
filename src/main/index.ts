@@ -34,6 +34,8 @@ import type { GitCheckoutResult } from "../shared/gitGraph.js";
 import type { CatalogEntry } from "../shared/mcpCatalog.js";
 import { createSimInputBridge } from "./simInputBridge.js";
 import { resolveSimInputBinPath } from "./simInputBinPath.js";
+import { createSpeechBridge, type SpeechCommand } from "./speechBridge.js";
+import { resolveSpeechBinPath } from "./speechBinPath.js";
 import { createBrowserHub } from "./browserHub.js";
 import { createMcpHub } from "./mcpHub.js";
 import { configDir } from "./configDir.js";
@@ -46,11 +48,11 @@ import { searchMcpRegistry } from "./mcpRegistry.js";
 import { createWebContentsViewHandle } from "./webContentsViewFactory.js";
 import { EventStore, type SessionSummary } from "../session/store.js";
 import { AttachmentStore, detectImageType } from "../session/attachments.js";
-import type { ToolCallRequest, UserAttachmentRef, UserTextFile, MemoryTopicSnapshot } from "../session/events.js";
+import type { ToolCallRequest, TokenUsage, UserAttachmentRef, UserTextFile, MemoryTopicSnapshot } from "../session/events.js";
 import type { Tool } from "../tools/tool.js";
 import { knownSkillToolName } from "../tools/skill.js";
 import { composeUserText, deriveMessages, COMPACT_COMPRESSION } from "../session/deriveMessages.js";
-import { settleNudgeSpawn, MEMORY_NUDGE_EVERY, reviewerTranscript, buildReviewerTask } from "./memoryNudge.js";
+import { settleNudgeSpawn, MEMORY_NUDGE_EVERY, reviewerTranscript, buildReviewerTask, reviewerInstructionsFrom } from "./memoryNudge.js";
 import { intakeFile } from "./attachmentIntake.js";
 import { nativeImageEncoder } from "./imageCodec.js";
 import { createUploadPool } from "../shared/remote/uploads.js";
@@ -185,6 +187,7 @@ import { createEscrowSync, type EscrowSync } from "./pxEscrowSync.js";
 import { createAuditBackflow } from "./pxAuditSync.js";
 import { createPxCloudClient } from "./pxCloudClient.js";
 import { createHostedQuota, parseCheckoutTarget, type HostedQuota } from "./hostedQuota.js";
+import { createTeamVoice } from "./teamVoice.js";
 import type { WorkspaceUsage } from "../shared/billing.js";
 import { createWorkspaceManager } from "./workspaceManager.js";
 import {
@@ -1195,6 +1198,7 @@ void app.whenReady().then(() => {
     // tool_calls 里，reviewerTranscript 里有截尾逻辑，纯函数拆进 memoryNudge.ts 好测
     const transcript = reviewerTranscript(deriveMessages(log, COMPACT_COMPRESSION));
     const mem = memoryFiles.readTiers(agent.workspace);
+    const instructions = reviewerInstructionsFrom(log);
     const runner = createSubagentRunner({
       store,
       attachments: attachmentStore,
@@ -1206,6 +1210,7 @@ void app.whenReady().then(() => {
         world: agent.world,
         model: agent.model,
         approvalMode: agent.approvalMode,
+        memoryProject: agent.memoryProject,
       }),
       alwaysAllow: () => loadAlwaysAllow(permissionsPath),
       // forbidden 规则对子 agent 同样生效（用户写的"永不放行"不该被派活绕过）；
@@ -1230,7 +1235,9 @@ void app.whenReady().then(() => {
       sessionId, toolCallId,
       () => runner.run({
         agent: "memory-reviewer",
-        task: buildReviewerTask(mem, transcript),
+        // 项目指令跟着一起给（#1155）：reviewer 要判「这条记忆是不是 AGENTS.md 里已经写了的」，
+        // 就得看见主会话看见的那份——从同一条日志里取，不另读盘
+        task: buildReviewerTask(mem, transcript, instructions ? { instructions } : {}),
         parentToolCallId: toolCallId,
       }),
     );
@@ -1391,6 +1398,33 @@ void app.whenReady().then(() => {
       })
     : null;
 
+  // 群语音里「人说话」那一半（#1176，ADR-0273）：macOS 原生本机识别 helper（native/MrOttoSpeech），
+  // 懒起——第一次开麦才 spawn。缺席（非 mac / 没 build）时开麦得到一句人话，通话与 TTS 照旧
+  const speechBin = process.platform === "darwin" ? resolveSpeechBinPath() : null;
+  const speech = speechBin
+    ? createSpeechBridge({
+        binPath: speechBin,
+        spawn: (bin) => {
+          const c = spawn(bin, [], { stdio: ["pipe", "pipe", "ignore"] });
+          return {
+            stdin: { write: (str: string) => void c.stdin?.write(str) },
+            stdout: { on: (_ev: "data", cb: (b: Buffer) => void) => void c.stdout?.on("data", cb) },
+            on: (_ev: "exit", cb: () => void) => void c.on("exit", cb),
+            kill: () => void c.kill(),
+          };
+        },
+        onEvent: (ev) => {
+          // helper 侧播放（#1201）：那段临时文件播完 / 播不了就删，不等 app 退出
+          if (ev.type === "played" || ev.type === "playError") void rm(speechPlayFile(ev.id), { force: true });
+          send(CHANNELS.speechEvent, ev);
+        },
+        log: (m) => console.warn(`[speech] ${m}`),
+      })
+    : null;
+  const speechPlayDir = join(tmpdir(), "mrotto-speech");
+  const speechPlayFile = (id: string): string => join(speechPlayDir, `${id}.audio`);
+  let speechPlaySeq = 0;
+
   const simulators = createSimulatorHub({
     run: runSimctl,
     capture: async (udid) => {
@@ -1500,6 +1534,16 @@ void app.whenReady().then(() => {
     if (agent) send(CHANNELS.toolDefsChanged, { sessionId: agent.sessionId, toolDefs: agent.toolDefs });
   };
   mcpHub.onChange(() => { send(CHANNELS.mcpChanged, mcpSnapshot()); sendToolDefs(); });
+  // 开机就把握手跑掉（#1187）。在这之前，MCP 连接**只由会话装配发起**
+  // （startSession / resumeSession 里的 await mcpHub.ready()），于是 app 起来
+  // 之后第一次点会话的人替所有人付这趟网络：真机实测，三台远程 server 能让
+  // 一条 7 条事件的会话等 879ms，而这段成本跟会话大小毫无关系。
+  //
+  // **不 await**（也没人能 await：这里是装配期）：预热失败/超时都不影响开机，
+  // 没连完的那几台照旧留在 connecting，等它们自己 emit() 收尾。
+  // 排在 onChange 接线**之后**：预热每连上一台都会 emit 一次，接线在后面的话
+  // 这几发推送就没人收，设置页要等下一次状态变化才对得上。
+  void mcpHub.ready();
 
   // ─── 好友代理（issue #622 / #657，ADR-0151 / ADR-0162）─────────────────
   // A 把「操作我已接通的服务」这件能力临时授给好友：B 的工具调用经 relay 打到
@@ -1533,6 +1577,9 @@ void app.whenReady().then(() => {
     edgeBaseUrl: () => edgeBaseUrl(),
     accessToken: () => accountManager?.getAccessToken() ?? Promise.resolve(null),
   };
+  // 团队语音通话（#1163）：渲染层每段文字经这里合成——拿 JWT 打网关，钱记在听的人
+  // 自己的额度上，额度头与 chat 那条路同一份纪律（noteHeaders / noteExhausted）
+  const teamVoice = createTeamVoice(hostedDeps);
 
   // ── 「不是这条会话主模型」的那几次调用（#1051）─────────────────────────────
   // 代读员（vision-bridge）与后台小模型（分区分类 / 跟进建议 / 微压缩）原来各走各的
@@ -2371,6 +2418,7 @@ void app.whenReady().then(() => {
           world: self.world,
           model: self.model,
           approvalMode: self.approvalMode,
+          memoryProject: self.memoryProject,
         }),
         alwaysAllow: () => loadAlwaysAllow(permissionsPath),
         execPolicy: () => loadExecPolicy(execPolicyPath), // 同上：forbidden 不被派活绕过
@@ -2967,11 +3015,13 @@ void app.whenReady().then(() => {
 
   // ── MCP ─────────────────────────────────────────────────────────
   ipcMain.handle(CHANNELS.listMcpServers, (): McpServersSnapshot => {
-    // 打开设置页 = 想知道每台此刻是什么状态。而连接只由 ready() 发起（会话
-    // 开始时），在那之前每台的 status 都停在 connecting —— 那个 connecting
-    // 的意思是「还没试过」，不是「正在连」（见 mcpHub.ts syncFromDisk 的注释）。
-    // 于是重启后第一次进设置页，一台连得好好的 server 和一台需要授权的长得
-    // 一模一样，页面上下两半都在说同一句没有信息量的话（issue #722）。
+    // 打开设置页 = 想知道每台此刻是什么状态。连接由 ready() 发起，而 ready()
+    // 过去只挂在会话装配上 —— 在那之前每台的 status 都停在 connecting，
+    // 那个 connecting 的意思是「还没试过」，不是「正在连」（见 mcpHub.ts
+    // syncFromDisk 的注释）。于是重启后第一次进设置页，一台连得好好的 server
+    // 和一台需要授权的长得一模一样，页面上下两半都在说同一句没有信息量的话
+    // （issue #722）。#1187 之后开机就预热了一遍，这一句通常已经是空操作 ——
+    // 留着是因为「预热那一发之后才配好的 server」仍然只能靠它转正。
     //
     // **不 await**：ready() 最长要等 10 秒，而每连上一台 hub 都会 emit 一次，
     // 顺着 mcpChanged 推给渲染层。页面立刻拿到当前快照先画出来，状态随后
@@ -3433,6 +3483,50 @@ void app.whenReady().then(() => {
     cloudClient.remove(workspaceId, sessionId));
   ipcMain.handle(CHANNELS.workspaceCloudStop, (_e, seq: number | null) =>
     cloudClient.stop(seq ?? undefined)
+  );
+  ipcMain.handle(CHANNELS.teamVoiceSpeak, (_e, text: string, voiceId: string) => teamVoice.speak(text, voiceId));
+  // 麦克风四条命令（#1176）：没有 helper 的机器上，开麦要把「为什么没声」说出口——
+  // 一条 error + 一条 listening:false，通话栏据此画「开麦」而不是一直转着「正在开麦」
+  const speechSend = (c: SpeechCommand): void => {
+    if (speech === null) {
+      if (c.type === "start") {
+        send(CHANNELS.speechEvent, { type: "error", message: "这台机器没有语音识别 helper（只支持 macOS；开发时先跑 npm run dev 编译 native/MrOttoSpeech）" });
+        send(CHANNELS.speechEvent, { type: "listening", on: false });
+      }
+      return;
+    }
+    speech.send(c);
+  };
+  ipcMain.handle(CHANNELS.speechStart, (_e, locale: unknown, hints: unknown) => {
+    // 词表只收字符串数组、每条 ≤64 字、最多 100 条（识别器的 contextualStrings 建议上限；渲染层那份已封顶，这里是闸）
+    const list = Array.isArray(hints)
+      ? hints.filter((h): h is string => typeof h === "string" && h.trim() !== "" && h.length <= 64).slice(0, 100)
+      : [];
+    speechSend({ type: "start", locale: typeof locale === "string" && locale !== "" ? locale : "zh-CN", ...(list.length > 0 ? { hints: list } : {}) });
+  });
+  ipcMain.handle(CHANNELS.speechStop, () => speechSend({ type: "stop" }));
+  // 字节落成临时文件再递路径：一段 TTS 几百 KB，走 stdin 的 NDJSON 得 base64 且一行读完才解析
+  ipcMain.handle(CHANNELS.speechPlay, async (_e, bytes: unknown): Promise<{ id: string } | { error: string }> => {
+    if (speech === null) return { error: "这台机器没有语音识别 helper" };
+    if (!(bytes instanceof Uint8Array)) return { error: "speechPlay：不是字节" };
+    const id = `p${Date.now().toString(36)}-${++speechPlaySeq}`;
+    try {
+      await mkdir(speechPlayDir, { recursive: true });
+      await writeFile(speechPlayFile(id), bytes);
+    } catch (err) {
+      return { error: `写不了临时音频：${err instanceof Error ? err.message : String(err)}` };
+    }
+    if (!speech.send({ type: "play", id, path: speechPlayFile(id) })) {
+      void rm(speechPlayFile(id), { force: true });
+      return { error: "语音 helper 没起来，这段播不了" };
+    }
+    return { id };
+  });
+  ipcMain.handle(CHANNELS.speechStopPlay, () => speechSend({ type: "stopPlay" }));
+  ipcMain.handle(CHANNELS.speechPause, () => speechSend({ type: "pause" }));
+  ipcMain.handle(CHANNELS.speechResume, () => speechSend({ type: "resume" }));
+  ipcMain.handle(CHANNELS.workspaceCloudCall, (_e, participants: string[]) =>
+    cloudClient.call(Array.isArray(participants) ? participants.filter((p): p is string => typeof p === "string") : [])
   );
   ipcMain.handle(CHANNELS.workspaceCloudState, (_e, workspaceId: string) => cloudClient.workspaceState(workspaceId));
   ipcMain.handle(CHANNELS.workspaceCloudFiles, (_e, workspaceId: string, path: string) =>
@@ -3921,7 +4015,13 @@ void app.whenReady().then(() => {
       // 也排在 skill_invoked / image_described 两条 append **之前**：`barrenTurns`
       // 按 `events[i-1]` 认领 image_described，中间夹一条 model_changed 就断了
       await agent.pickAutoModel(modelText);
-      let described: { content: string; model: string } | null = null;
+      let described: {
+        content: string;
+        model: string;
+        usage?: TokenUsage;
+        route?: "hosted" | "direct";
+        creditCostMicro?: number;
+      } | null = null;
       if (refs.length > 0 && !(describeModel(agent.model)?.supportsVision ?? false)) {
         // 代读员型号现读设置（改了对下一条带图消息生效）；事件里记的必须是
         // 真正代读的那一款，不是常量
@@ -3934,7 +4034,7 @@ void app.whenReady().then(() => {
           bridgeModel,
           (await helperHostedRoute(bridgeModel)) ?? undefined
         );
-        described = { content: await describeImages(refs, modelText), model: bridgeModel };
+        described = { ...(await describeImages(refs, modelText)), model: bridgeModel };
       }
       if (invoked) {
         // 快照落在 user_message 之前：模型先看到说明书，再看到任务
@@ -3946,6 +4046,11 @@ void app.whenReady().then(() => {
         const descEvent = store.append({
           sessionId, ts: Date.now(), type: "image_described",
           content: described.content, model: described.model,
+          // #1093：代读那次视觉调用的账跟着落——三格都缺席 = 旧日志/上游没报，
+          // deriveUsage 照旧跳过（没记 ≠ 没花），不会凭空多出行
+          ...(described.usage ? { usage: described.usage } : {}),
+          ...(described.route ? { route: described.route } : {}),
+          ...(described.creditCostMicro !== undefined ? { creditCostMicro: described.creditCostMicro } : {}),
         });
         send(CHANNELS.event, descEvent);
       }
@@ -4415,6 +4520,7 @@ void app.whenReady().then(() => {
     // 画面轮询是个 interval,helper 是个子进程:窗口没了两个都该跟着没
     simulators.dispose();
     simInput?.dispose();
+    speech?.dispose(); // 麦克风 helper 是子进程：app 退了它不该还占着麦克风
     // 代理通道是长连的 WebSocket + 定时器:app 退了还挂着等于替一个不存在的 A 守房间
     proxy?.closeAll();
     // 云会话连接同理是长连的 WebSocket（Task 12 复审 Medium）：app 退了还挂着

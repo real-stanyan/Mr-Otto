@@ -39,6 +39,7 @@ import type {
   McpServersSnapshot,
   McpPromptInfo,
   CloudWorkspaceState,
+  SpeechEvent,
 } from "../../shared/shellBridge.js";
 import type { CsWikiWriteReq, CsWorkHit, CsWorkNode } from "../../shared/remote/cloudSession.js";
 import type { CatalogEntry } from "../../shared/mcpCatalog.js";
@@ -98,6 +99,14 @@ import { PROXY_SHARE_INVITE_TTL_MS } from "../../shared/remote/proxyInvite.js";
 import { runtimePatch } from "./lib/runtimeHydration.js";
 import { createAgentLanded } from "./lib/cloudTimeline.js";
 import { applyCloudDelta, clearCloudStreamingOn } from "./lib/cloudStreaming.js";
+import { EMPTY_VOICE_FEED, feedDelta, feedEvent, markInterrupted, type VoiceFeedState } from "./lib/voiceCall.js";
+import { applySpeechEvent, bargeInOn, MIC_OFF, micShouldPause, SPEECH_LOCALE, speechHints, type MicState } from "./lib/voiceMic.js";
+import { defaultCreateAudio, VoicePlayer } from "./lib/voicePlayer.js";
+import { createHelperAudio, helperAudioEvent } from "./lib/helperAudio.js";
+import { voiceCallOf } from "../../shared/voiceCall.js";
+import { agentVoiceId } from "../../shared/agentVoice.js";
+import type { CloudSessionDelta } from "../../shared/shellBridge.js";
+import type { StoreApi } from "zustand";
 import { createRequestGate } from "./lib/latestRequest.js";
 import { mergeStaged } from "./lib/staging.js";
 import { outgoingFrom } from "./lib/resendPayload.js";
@@ -196,6 +205,27 @@ export type SidebarTab = "tasks" | "projects" | "workspaces";
     ownerUid/selfUid 逐字段照抄 ShellBridge 的 CloudSessionStatus——onCloudSessionStatus
     推来的就是这五个字段，这里只多一个 events（推送另开 onCloudSessionEvent 通道，
     两路在 store 里合成一份） */
+/** 本机「我在听」那一份（#1163）。通话名单是团队事实（日志里的 voice_call_changed，投影
+    voiceCallOf），这一格只是**我这台**有没有把他们的回复读出来——不落盘、不广播、换会话
+    即清。发起通话的人自动加入；别的成员看见通话栏后点「加入」才开始听 */
+export interface VoiceListenState {
+  sessionId: string;
+  listening: true;
+  /** 静音 = 本机不播（队列清空、之后的话记成已读不补读）；通话本身照旧 */
+  muted: boolean;
+  /** 加入那一刻的日志尾：只读之后落下来的话，历史不念 */
+  sinceSeq: number;
+  /** 此刻在说话的 agent（播放器报的） */
+  speaking: string | null;
+  queued: number;
+  /** 此刻在读的那句原文（播放器报的；全屏视图的字幕，#1185）；静默时 null */
+  text: string | null;
+  /** 最近一段合成 / 播放失败的那句话（routeTts 的四种 blocked 或网关信封） */
+  error: string | null;
+  /** 麦克风那半（#1176）：常开麦是默认，加入通话顺手开；agent 在说时半双工暂停 */
+  mic: MicState;
+}
+
 export interface CloudSessionState {
   workspaceId: string;
   sessionId: string;
@@ -564,6 +594,8 @@ interface ChatState {
       纯逻辑在 lib/cloudStreaming.ts——累计快照整槽替换，终态事件清槽；
       不落任何持久层（临时预览不是事实） */
   cloudStreaming: Record<string, string>;
+  /** 语音通话里「我在听」（#1163）。null = 没在听（没加入 / 通话结束 / 换了会话） */
+  voice: VoiceListenState | null;
   /** 「＋ 新会话」在某个工作区上按下了、云会话还没落地的那个中间态（issue #919）：
       主区画一张只有输入框的开局卡，同本地的 Welcome。值 = 在哪个团队开，
       null = 没在开。本地那条路的对应物是 `phase === "welcome"` + pendingWorkspace */
@@ -1039,6 +1071,24 @@ interface ChatState {
       点的那一行，服务端拿它与采样边界比对后可以回 `not_current`。缺席 = 旧
       语义（停当前那一轮） */
   cloudStop(seq?: number): Promise<CloudAck>;
+  /** 改当前云会话的语音通话名单（#1163）。空 = 结束。原样透传 CloudAck，不碰共享错误格；
+      通话栏画的是日志里那条 voice_call_changed，不是「我刚点了」 */
+  cloudCall(participants: string[]): Promise<CloudAck>;
+  /** 开始听当前云会话的通话（#1163）：记下此刻的日志尾，之后名单里那几只的回复读出来。
+      没有云会话 = 空操作 */
+  joinVoiceCall(): void;
+  /** 本机不听了（通话本身照旧）：停播、清队列 */
+  leaveVoiceCall(): void;
+  setVoiceMuted(muted: boolean): void;
+  /** 麦克风开关（#1176）：关 = 本机不收音（通话、播放照旧）；开 = 再起识别 */
+  setVoiceMic(on: boolean): void;
+  /** 内部：onSpeechEvent 之后进 store；final 当成我在群里说的一句发出去（不 @ = 派活）。
+      公开成 action 同 voiceOnEvent 的理由（测试不经 IPC 直接喂） */
+  speechOnEvent(ev: SpeechEvent): void;
+  /** 内部：onCloudSessionEvent / onCloudSessionDelta 之后喂播放器。公开成 action 是为了
+      测试能不经 IPC 直接喂（同 absorbEvent 的纪律） */
+  voiceOnEvent(event: SessionEvent): void;
+  voiceOnDelta(delta: CloudSessionDelta): void;
   /** 读一个工作区此刻的路由（控制房 RPC，协议 8，#991；#1102 摘掉仓库之后只剩
       这一格）。透传 FriendsResult，错误由「文件」tab 自己画——不落
       workspaceGroupsError 那一格（那格是整页共用的，设置页刚打开那一刻可能还
@@ -1271,6 +1321,63 @@ const protocolDetailGate = createRequestGate();
     作废;这里要作废的只有"跨过一次切换"的那些 */
 let subagentScopeGen = 0;
 
+// ── 语音通话的播放器（#1163）：模块级单例，第一次加入通话才造 ─────────────────
+// 队列全局串行（一次只一只说话）、预取下一段；合成走 window.otter.teamVoiceSpeak
+// （主进程拿 JWT 打网关，渲染层只拿字节）。feed 状态（每只 agent 这一轮已读的段）也在
+// 模块级——它不是界面要画的东西，进 store 只会让每一片 delta 多一次 set
+let voicePlayer: VoicePlayer | null = null;
+let voiceFeed: VoiceFeedState = EMPTY_VOICE_FEED;
+// 麦克风（#1176）也在模块级：helper 是懒起的，「开过没有」决定收尾时发不发 stop（没开过
+// 就发一条 stop 会白起一个进程）；「我们让它暂停着」是半双工的去重记号
+let micStarted = false;
+let micPaused = false;
+function startMic(hints: string[]): void {
+  micStarted = true;
+  micPaused = false;
+  void window.otter.speechStart(SPEECH_LOCALE, hints);
+}
+function stopMic(): void {
+  if (!micStarted) return;
+  micStarted = false;
+  micPaused = false;
+  void window.otter.speechStop();
+}
+/** 半双工：播放器每次变动都来问一遍该不该闭麦；只在跨过那条线时才发命令。
+    回声消除开着（#1184）永远不闭——人在 agent 说话时开口是插话，见 speechOnEvent */
+function micSync(p: { speaking: string | null; queued: number; aec: boolean | null }): void {
+  if (!micStarted) return;
+  const want = micShouldPause(p);
+  if (want === micPaused) return;
+  micPaused = want;
+  void (want ? window.otter.speechPause() : window.otter.speechResume());
+}
+function voicePlayerFor(set: StoreApi<ChatState>["setState"], get: () => ChatState): VoicePlayer {
+  if (voicePlayer === null) {
+    voicePlayer = new VoicePlayer({
+      speak: (text, voiceId) => window.otter.teamVoiceSpeak(text, voiceId),
+      // 回声消除开着 → 交给 helper 播（#1201，不被 macOS 压低）；否则 Web Audio。每段起播时现判
+      createAudio: (bytes) =>
+        get().voice?.mic.aec === true
+          ? createHelperAudio(bytes, { play: (b) => window.otter.speechPlay(b), stop: () => window.otter.speechStopPlay() })
+          : defaultCreateAudio(bytes),
+      onChange: (p) => {
+        set((s) => (s.voice ? { voice: { ...s.voice, speaking: p.speaking, queued: p.queued, error: p.error, text: p.text } } : s));
+        micSync({ speaking: p.speaking, queued: p.queued, aec: get().voice?.mic.aec ?? null });
+      },
+    });
+  }
+  return voicePlayer;
+}
+function stopVoice(): void {
+  voicePlayer?.stop();
+  voiceFeed = EMPTY_VOICE_FEED;
+  stopMic();
+}
+/** 音色按 agentId 从团队名单派生（agentVoice.ts）：名单顺序解撞，同一只两台机器同一个声音 */
+function rosterIdsOf(s: ChatState, workspaceId: string): string[] {
+  return s.workspaceGroups.find((w) => w.id === workspaceId)?.agents.map((a) => a.agentId) ?? [];
+}
+
 export const useChat = create<ChatState>((set, get) => ({
   phase: "connecting",
   sessionId: "",
@@ -1378,6 +1485,7 @@ export const useChat = create<ChatState>((set, get) => ({
   cloudDraftSeed: null,
   cloudSession: null,
   cloudStreaming: {},
+  voice: null,
   cloudSessionList: {},
   realtimeHealth: "connecting",
   friendsPanelOpen: false,
@@ -2430,6 +2538,9 @@ export const useChat = create<ChatState>((set, get) => ({
   },
 
   async openCloudSession(workspaceId, sessionId) {
+    // 换会话先把上一条的语音监听收掉（#1163）：它绑着上一条的 sessionId 与名单
+    stopVoice();
+    if (get().voice !== null) set({ voice: null });
     let sid = sessionId;
     if (sid === null) {
       const created = await window.otter.workspaceCloudCreate(workspaceId);
@@ -2475,7 +2586,9 @@ export const useChat = create<ChatState>((set, get) => ({
     void window.otter.workspaceCloudLeave();
     // cloudStreaming 一起清：它按 agentId 分槽不带 sessionId，不清的话下一条
     // 云会话打开时，上一只 agent 的半截预览会挂在新房间的「正在回复」行上
-    set({ cloudSession: null, cloudPendingFirstMessage: null, cloudStreaming: {} });
+    // 语音那份本机状态一起清（#1163）：它绑着这条会话
+    stopVoice();
+    set({ cloudSession: null, cloudPendingFirstMessage: null, cloudStreaming: {}, voice: null });
   },
 
   startCloudDraft: (workspaceId) =>
@@ -2539,6 +2652,100 @@ export const useChat = create<ChatState>((set, get) => ({
 
   async cloudStop(seq) {
     return await window.otter.workspaceCloudStop(seq);
+  },
+  async cloudCall(participants) {
+    return await window.otter.workspaceCloudCall(participants);
+  },
+
+  joinVoiceCall() {
+    const cs = get().cloudSession;
+    if (!cs) return;
+    stopVoice();
+    const sinceSeq = cs.events.length > 0 ? cs.events[cs.events.length - 1]!.seq : -1;
+    // 常开麦（#1176）：进通话就开
+    set({ voice: { sessionId: cs.sessionId, listening: true, muted: false, sinceSeq, speaking: null, queued: 0, error: null, text: null, mic: { ...MIC_OFF, status: "starting" } } });
+    startMic(speechHints(get().workspaceGroups.find((w) => w.id === get().cloudSession?.workspaceId) ?? null));
+  },
+  leaveVoiceCall() {
+    stopVoice();
+    if (get().voice !== null) set({ voice: null });
+  },
+  setVoiceMic(on) {
+    if (get().voice === null) return;
+    if (on) {
+      set((s) => (s.voice ? { voice: { ...s.voice, mic: { ...MIC_OFF, status: "starting" } } } : s));
+      startMic(speechHints(get().workspaceGroups.find((w) => w.id === get().cloudSession?.workspaceId) ?? null));
+    } else {
+      stopMic();
+      set((s) => (s.voice ? { voice: { ...s.voice, mic: MIC_OFF } } : s));
+    }
+  },
+  speechOnEvent(ev) {
+    // 播放回执先于麦克风状态：关着麦也可能在放（#1201）
+    if (helperAudioEvent(ev)) return;
+    const v = get().voice;
+    // 关着麦时 helper 迟到的事件不再动状态（stop 之后它还会吐一条 listening:false）
+    if (!v || v.mic.status === "off") return;
+    const r = applySpeechEvent(v.mic, ev);
+    if (r.state !== v.mic) set((s) => (s.voice ? { voice: { ...s.voice, mic: r.state } } : s));
+    // 插话（#1184）：agent 在说 / 排着要说时人开口够长 → 停播放，这几只这一轮剩下的话不读。
+    // 回声消除开着麦才会在播放时开着，所以走到这里的 partial 本身就是人说的（AEC 漏出来的
+    // 那点由 bargeInOn 的 token 重叠兜底）
+    if (ev.type === "partial" && (v.speaking !== null || v.queued > 0)) {
+      const player = voicePlayerFor(set, get);
+      if (bargeInOn(ev.text, { speaking: v.speaking, queued: v.queued }, player.state().text ?? "", v.mic.active)) {
+        for (const id of new Set([...(v.speaking !== null ? [v.speaking] : []), ...player.pendingAgentIds()])) {
+          voiceFeed = markInterrupted(voiceFeed, id);
+        }
+        player.stop();
+      }
+    }
+    if (r.final === undefined) return;
+    // 说完的一句 = 我在群里说的一句：不 @（走派活），人类点名也没有
+    const sessionId = v.sessionId;
+    void get().cloudSay(r.final, [], []).then((ack) => {
+      if (ack.ok) return;
+      set((s) => (s.voice && s.voice.sessionId === sessionId ? { voice: { ...s.voice, mic: { ...s.voice.mic, error: ack.message } } } : s));
+    });
+  },
+  setVoiceMuted(muted) {
+    if (muted) voicePlayer?.stop();
+    set((s) => (s.voice ? { voice: { ...s.voice, muted, speaking: muted ? null : s.voice.speaking, queued: muted ? 0 : s.voice.queued, text: muted ? null : s.voice.text } } : s));
+  },
+  voiceOnEvent(event) {
+    const s = get();
+    const v = s.voice;
+    const cs = s.cloudSession;
+    if (!v || !cs || cs.sessionId !== event.sessionId || v.sessionId !== event.sessionId) return;
+    // 通话结束（这条或更早那条空名单）：本机的监听跟着收掉——判据是日志里的名单，不是「我按了」
+    const call = voiceCallOf(cs.events);
+    if (call === null) {
+      stopVoice();
+      set({ voice: null });
+      return;
+    }
+    const participants = new Set(call.participants.map((p) => p.agentId));
+    const r = feedEvent(voiceFeed, participants, v.sinceSeq, event);
+    voiceFeed = r.state; // 静音时也推进：取消静音不补读静音期间的话
+    if (v.muted) return;
+    const roster = rosterIdsOf(s, cs.workspaceId);
+    const player = voicePlayerFor(set, get);
+    for (const u of r.out) player.enqueue({ ...u, voiceId: agentVoiceId(u.agentId, roster) });
+  },
+  voiceOnDelta(delta) {
+    const s = get();
+    const v = s.voice;
+    const cs = s.cloudSession;
+    if (!v || !cs || cs.sessionId !== delta.sessionId || v.sessionId !== delta.sessionId || delta.kind !== "content") return;
+    const call = voiceCallOf(cs.events);
+    if (call === null) return;
+    const participants = new Set(call.participants.map((p) => p.agentId));
+    const r = feedDelta(voiceFeed, participants, delta.agentId, delta.text);
+    voiceFeed = r.state;
+    if (v.muted) return;
+    const roster = rosterIdsOf(s, cs.workspaceId);
+    const player = voicePlayerFor(set, get);
+    for (const u of r.out) player.enqueue({ ...u, voiceId: agentVoiceId(u.agentId, roster) });
   },
 
   workspaceCloudState(workspaceId) {
@@ -2809,6 +3016,8 @@ export const useChat = create<ChatState>((set, get) => ({
           ...(cloudStreaming !== s.cloudStreaming ? { cloudStreaming } : {}),
         };
       });
+      // 语音通话（#1163）：名单里那只的终态按段补读；空名单事件把本机监听收掉
+      get().voiceOnEvent(event);
       // 归档广播回来了（issue #822）：这条会话到此为止——服务端两秒后收摊
       // 房间。**判据是日志里那条事件**，不是"我刚点了归档"：谁点的都算，
       // 而且投影从日志推导（同一条硬规则）。收页 + 刷新清单，那边有
@@ -2835,6 +3044,12 @@ export const useChat = create<ChatState>((set, get) => ({
         const cloudStreaming = applyCloudDelta(s.cloudStreaming, delta);
         return cloudStreaming === s.cloudStreaming ? s : { cloudStreaming };
       });
+      // 一段写完就出声（#1163，拍板 ③）：完成的段立刻送去合成
+      get().voiceOnDelta(delta);
+    });
+    // 麦克风 helper 的事件（#1176）：字幕 / 断句 / 权限 / 出错
+    window.otter.onSpeechEvent((ev) => {
+      get().speechOnEvent(ev);
     });
     window.otter.onCloudSessionStatus((status) => {
       set((s) => {

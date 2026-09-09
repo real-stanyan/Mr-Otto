@@ -39,8 +39,8 @@
 // 新造。
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ArrowLeft, AtSign, Download, Settings2 } from "lucide-react";
-import { cn } from "@/lib/utils.js";
+import { ArrowLeft, AtSign, Download, Phone, Settings2 } from "lucide-react";
+import { cn, isMac } from "@/lib/utils.js";
 import { Button } from "@/components/ui/button.js";
 import { Bubble, BubbleContent } from "@/components/ui/bubble.js";
 import { splitBubbles } from "@/lib/chatBubbles.js";
@@ -62,7 +62,7 @@ import { applyAgentMention, mentionQueryAt, pickerEmptyState, resolveSendMention
 import { filterMentionRows, mentionRows, MENTION_KIND_LABEL, type MentionRow } from "../lib/workspaceMentionItems.js";
 import {
   approvalCardTitle, assistantLabel, canStopTurn, cloudEmptyState, hiddenFromCloudTimeline, relayLineText,
-  stopButtonRows, systemNoteText, turnEndedLineText, userRowIdentity,
+  stopButtonRows, systemNoteText, turnEndedLineText, userRowIdentity, voiceCallLineText,
 } from "../lib/cloudTimeline.js";
 import { systemNoteDetail } from "../lib/systemNote.js";
 import { TurnErrorState } from "./TurnErrorState.js";
@@ -72,7 +72,7 @@ import { safeSpeakerLabel, SYSTEM_SPEAKER_UID } from "../../../shared/promptSafe
 import { mentionTokens, parseMemberMentions, parseMentions, type MentionCandidate } from "../../../shared/remote/agentMention.js";
 import type {
   AgentBriefedEvent, AgentRelayEvent, ApprovalDecisionEvent, ApprovalRequestEvent, AssistantMessageEvent,
-  ChatMessageEvent, SessionEvent,
+  ChatMessageEvent, SessionEvent, VoiceCallChangedEvent,
 } from "../../../session/events.js";
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 import type { CloudAck } from "../../../shared/shellBridge.js";
@@ -82,6 +82,14 @@ import { buildCloudLogExport } from "../lib/cloudExport.js";
 import { downloadText } from "../lib/downloadText.js";
 import { sandboxApprovalBanner, sandboxApprovalControl } from "../lib/sandboxApprovalControl.js";
 import { SandboxApprovalToggle } from "./BypassSwitch.js";
+import { CloudContextRing } from "./CloudContextRing.js";
+import { VoiceCallBar } from "./VoiceCallBar.js";
+import { VoiceCallOverlay } from "./VoiceCallOverlay.js";
+import { callStarterUid } from "../lib/voiceCallView.js";
+import { VoicePickerPopover } from "./VoicePickerPopover.js";
+import { voiceCallAvailable } from "../lib/voiceCall.js";
+import { voiceCallOf } from "../../../shared/voiceCall.js";
+import { useConfirm } from "@/components/ui/confirm-dialog.js";
 
 // cs 还没到位时兜底（正常路径下 WorkspacePage 只在 cloudSession 非空时才
 // 挂载这个组件，但 hooks 不能条件调用，events 得先算出一个稳定引用——
@@ -186,6 +194,14 @@ export function CloudSessionPage({
   const cloudSay = useChat((s) => s.cloudSay);
   const cloudApprove = useChat((s) => s.cloudApprove);
   const cloudArchive = useChat((s) => s.cloudArchive);
+  // 语音通话（#1163）：名单是日志事实（voiceCallOf），「我在听」是本机状态（store.voice）
+  const cloudCall = useChat((s) => s.cloudCall);
+  const voice = useChat((s) => s.voice);
+  const billing = useChat((s) => s.billing);
+  const joinVoiceCall = useChat((s) => s.joinVoiceCall);
+  const setVoiceMuted = useChat((s) => s.setVoiceMuted);
+  const setVoiceMic = useChat((s) => s.setVoiceMic);
+  const confirm = useConfirm();
   const setSandboxApproval = useChat((s) => s.setWorkspaceSandboxApproval);
   // 名单陈旧时的刷新（#935 / #957 C-I4）：选人弹层的空态按钮、发送前对认不出
   // 的 @ 先刷一次都要它
@@ -256,6 +272,39 @@ export function CloudSessionPage({
   // hooks 不能条件调用：cs 可能是 null 的这一拍(WorkspacePage 换页与
   // cloudSession 置空之间那一帧)也得让下面这些 Hook 正常跑完
   const events = cs?.events ?? EMPTY_EVENTS;
+  // 通话旁白要看前一条名单（差集出「拉进 / 移出 / 开始 / 结束」，#1163）：一次扫出
+  // 每条 voice_call_changed 的前一条，渲染循环里 O(1) 查
+  const call = useMemo(() => voiceCallOf(events), [events]);
+  const voiceAvailable = voiceCallAvailable(billing);
+  // 全屏通话视图（#1185，ADR-0278）：本机界面状态；通话结束（call 变 null）时随之关掉
+  const [callOpen, setCallOpen] = useState(false);
+  const fullscreen = useChat((s) => s.fullscreen);
+  const trafficInset = isMac() && !fullscreen;
+  const callView = useMemo(
+    () => ({ selfUid, starterUid: call ? callStarterUid(events, call) : null, openAgentIds: new Set(openTurns(events).map((t) => t.agentId)) }),
+    [events, call, selfUid]
+  );
+  /** 结束通话 = 全组（拍板 ⑥）：一条空名单事件让所有人的栏消失，所以先问一句 */
+  const endCall = async (): Promise<CloudAck> => {
+    const ok = await confirm({
+      title: "结束语音通话？",
+      description: "所有人的通话栏都会消失，之后的回复只出字。只想自己不听的话用「静音」。",
+      confirmLabel: "结束",
+      tone: "danger",
+    });
+    if (!ok) return { ok: true };
+    return cloudCall([]);
+  };
+  const prevVoiceCall = useMemo(() => {
+    const m = new Map<number, VoiceCallChangedEvent | null>();
+    let prev: VoiceCallChangedEvent | null = null;
+    for (const e of events) {
+      if (e.type !== "voice_call_changed") continue;
+      m.set(e.seq, prev);
+      prev = e;
+    }
+    return m;
+  }, [events]);
 
   // 时间线行共读的日志投影,同 OttoThread 顶层的算法(aui/OttoThread.tsx:957)
   const timelineProjection = useMemo(
@@ -698,6 +747,42 @@ export function CloudSessionPage({
         </div>
       </div>
 
+      {/* 语音通话中（#1163）：头部之下一条常驻栏，照微信群语音。判据是日志里的名单，
+          谁都看得见；「我在听」那份只在 sessionId 对得上时才算（换会话不带过去） */}
+      {call && cs && (
+        <VoiceCallBar
+          ws={ws}
+          call={call}
+          voice={voice && voice.sessionId === cs.sessionId ? voice : null}
+          available={voiceAvailable}
+          ready={ready}
+          onJoin={joinVoiceCall}
+          onMute={setVoiceMuted}
+          onMic={setVoiceMic}
+          onUpdate={(ids) => cloudCall(ids)}
+          onEnd={endCall}
+          onExpand={() => setCallOpen(true)}
+        />
+      )}
+      {call && cs && (
+        <VoiceCallOverlay
+          open={callOpen}
+          onOpenChange={setCallOpen}
+          ws={ws}
+          call={call}
+          voice={voice && voice.sessionId === cs.sessionId ? voice : null}
+          view={callView}
+          available={voiceAvailable}
+          ready={ready}
+          onJoin={joinVoiceCall}
+          onMic={setVoiceMic}
+          onMute={setVoiceMuted}
+          onUpdate={(ids) => cloudCall(ids)}
+          onEnd={endCall}
+          trafficInset={trafficInset}
+        />
+      )}
+
       {/* 滚动区：横幅 + 时间线 + 错误行。scrollbar-stable 同外层原来那份；
           px-4 与本地会话一条量尺（aui viewport 的 `max-w-(--thread-max-width) px-4`，
           那个变量本仓没定义 = 无上限，所以本地就是「占满 + px-4」，#993 第 2 条）；
@@ -780,6 +865,9 @@ export function CloudSessionPage({
               }
               if (e.type === "agent_briefed") {
                 return <AgentBriefedRow key={e.seq} event={e} />;
+              }
+              if (e.type === "voice_call_changed") {
+                return <VoiceCallRow key={e.seq} text={voiceCallLineText(prevVoiceCall.get(e.seq) ?? null, e, ws)} />;
               }
               if (e.type === "agent_relay") {
                 return <AgentRelayRow key={e.seq} event={e} ws={ws} />;
@@ -872,9 +960,11 @@ export function CloudSessionPage({
         {/* 外壳与本地会话的输入框**同一套**（#985；App.tsx 的 ChatComposer）：
             elements/composer 的 ComposerBar 把「这一条要发的东西」当成一摞来排——
             点名行 / 输入 / 工具条——类名逐字照抄那边。工具条左边那条偏好栏只留下
-            **免审那一颗**（#1029，ADR-0243）：型号 / thinking / 用量环在云会话里是
-            **团队**的属性不是这条会话的（ADR-0202 / 0233，同 CloudWelcome 头注），
-            摆上来就是几个点了不生效的控件；而免审那颗虽然也是团队级的，却是**踩刹车
+            **免审那一颗**（#1029，ADR-0243）：型号 / thinking 在云会话里是**团队**的
+            属性不是这条会话的（ADR-0202 / 0233，同 CloudWelcome 头注），摆上来就是
+            两个点了不生效的控件；用量环**回来了**（#1138，发送键左边，同本地的位置）
+            ——上下文是每只 agent 各自的事实，日志里推得出来，见 CloudContextRing.tsx。
+            而免审那颗虽然也是团队级的，却是**踩刹车
             的地方就该在手边**——它要在一张审批卡挡着群聊的那一刻够得着，而不是让人先
             去翻设置抽屉。作用域上的代价（翻一次全团队跟着变）由它自己的文案 + 开着时
             那条常驻警示行说出口。cursor-text + 点空白处聚焦：本地那边由
@@ -917,7 +1007,7 @@ export function CloudSessionPage({
                   "relative border-none shadow-none min-h-0 bg-transparent dark:bg-transparent text-foreground resize-none max-h-[40vh] focus-visible:ring-0 placeholder:text-foreground/35 caret-foreground",
                   COMPOSER_METRICS
                 )}
-                placeholder={ready ? "输入 @ 点名智能体或成员；不 @ 就只是群里说一句" : "还没连上，暂时发不了消息"}
+                placeholder={ready ? "输入 @ 点名智能体或成员；不 @ 的话，谁的活谁接" : "还没连上，暂时发不了消息"}
                 value={draft}
                 onChange={(e) => {
                   setDraft(e.target.value);
@@ -1047,6 +1137,28 @@ export function CloudSessionPage({
               >
                 <AtSign className="size-4" aria-hidden />
               </button>
+              {/* 语音通话（#1163）：拉谁进语音。没订阅 / 还没查到 / 网关不供语音一律不画
+                  （同 modelMenu 对 hosted 的处置，#722 纪律）；通话进行中这颗钮亮成品牌色，
+                  点开是同一个弹层改名单 */}
+              {voiceAvailable && cs && (
+                <VoicePickerPopover
+                  ws={ws}
+                  current={call?.participants.map((p) => p.agentId) ?? null}
+                  ready={ready}
+                  onSubmit={(ids) => cloudCall(ids)}
+                  onStarted={joinVoiceCall}
+                >
+                  <button
+                    type="button"
+                    disabled={!ready}
+                    title={call ? "更新通话名单" : "开始语音通话"}
+                    aria-label={call ? "更新通话名单" : "开始语音通话"}
+                    className={cn(ghostButton, "size-8 disabled:pointer-events-none disabled:opacity-30", call && "text-[var(--brand)]")}
+                  >
+                    <Phone className="size-4" aria-hidden />
+                  </button>
+                </VoicePickerPopover>
+              )}
               {/* 本地会话的免审开关就在这个位置（App.tsx 的 approvalToggle）。
                   管的东西不一样，所以名字也不一样——见 lib/sandboxApprovalControl.ts */}
               <SandboxApprovalToggle
@@ -1056,6 +1168,18 @@ export function CloudSessionPage({
               />
             </div>
             <ComposerActions>
+              {/* 上下文用量环（#1138）：数据源全是日志投影——每只 agent 各自的视野 +
+                  信封里的工具表 + 目录里的窗口，画最吃紧那只；额度那半只在我是 owner
+                  时画（云会话烧的是 owner 的额度，ADR-0233，而 store.billing 是我的）。
+                  团队默认型号只给还没跑过一轮的 agent 兜底 */}
+              {cs && (
+                <CloudContextRing
+                  events={events}
+                  ws={ws}
+                  fallbackModel={cs.modelRoute?.kind === "hosted" ? cs.modelRoute.model : null}
+                  quotaApplies={cs.ownerUid === selfUid}
+                />
+              )}
               <Tooltip>
                 <TooltipTrigger asChild>
                   <ComposerSend
@@ -1369,6 +1493,12 @@ function AgentRelayRow({ event, ws }: { event: AgentRelayEvent; ws: WorkspaceSna
       {relayLineText(event, ws)}
     </p>
   );
+}
+
+/** 通话名单那一行（#1163）：谁开的、拉了谁、结束了——审计性质的旁白，样式照
+    AgentRelayRow。事件只记事实（此刻谁在通话里），动作是投影出来的，见 voiceCallLineText */
+function VoiceCallRow({ text }: { text: string }) {
+  return <p className="px-1 text-[10.5px] italic text-muted-foreground/70">{text}</p>;
 }
 
 /** 「谁还没回」（Task 10，src/shared/turnLedger.ts 的 openTurns 是事实来源）：

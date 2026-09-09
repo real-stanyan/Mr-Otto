@@ -244,6 +244,35 @@ export interface AssistantDelta {
     临时预览不落日志，终态 assistant_message 一到就作废）。多一个 agentId
     槽位——群里同一刻可能有好几只在打字，按 agent 分槽。`text` 是**累计
     快照**（这只 agent 这一轮到此刻的完整正文），渲染层整槽替换不拼接 */
+/** 团队语音通话：主进程替渲染层合成一段语音的回值（#1163）。字节是 mp3；
+    `costMicro` 是这一笔的 credit（响应头 x-otto-cost-micro），`audioMs` 这段多长
+    （上游报的，缺席 null）。`ok:false` 的 message 是给人看的一句（routeTts 的四种
+    blocked 或网关的错误信封） */
+export type VoiceSpeakResult =
+  | { ok: true; audio: Uint8Array; costMicro: number; audioMs: number | null }
+  | { ok: false; message: string };
+
+/** 群语音里「人说话」那一半（#1176，ADR-0273）：macOS 原生本机识别 helper
+    （native/MrOttoSpeech）吐的事件，主进程原样推给渲染层。`status` 两道授权各一格
+    （语音识别 / 麦克风）；`partial` 是正在说的这一句的实时快照，`final` 是断句器判定
+    说完了的一句；`paused` / `resumed` 是半双工（agent 在说时闭麦）的回执 */
+export type SpeechAuth = "authorized" | "denied" | "restricted" | "notDetermined";
+export type SpeechEvent =
+  /** `aec`（#1184）：helper 开着系统回声消除 = 扬声器里 agent 的话不会被录回去，麦可以常开、
+      人可以插话；`false` = 开不了（渲染层退回半双工），`null` = 旧 helper / 还没开过麦 */
+  | { type: "status"; speech: SpeechAuth; mic: SpeechAuth; onDevice: boolean | null; locale: string | null; aec: boolean | null }
+  | { type: "listening"; on: boolean }
+  | { type: "paused" }
+  | { type: "resumed" }
+  | { type: "partial"; text: string }
+  | { type: "final"; text: string }
+  /** 麦克风此刻的能量（0..1，给界面画声浪）+ 能量门判「有人在说话」；helper 每 100ms 一条 */
+  | { type: "level"; value: number; active: boolean }
+  /** helper 侧播放（#1201）：speechPlay 交出去的那段播完了 / 播不了 */
+  | { type: "played"; id: string }
+  | { type: "playError"; id: string; message: string }
+  | { type: "error"; message: string };
+
 export interface CloudSessionDelta {
   sessionId: string;
   agentId: string;
@@ -1170,6 +1199,25 @@ export interface ShellBridge {
       `seq` = 按钮所在那一行开场白自己的 seq（复审 C2-I3）：停止按钮按**行**
       画，不带 seq 的话按第二行那颗停掉的是第一行。缺席 = 旧语义（停当前） */
   workspaceCloudStop(seq?: number): Promise<CloudAck>;
+  /** 团队语音通话（#1163）：把一段文字合成语音。主进程拿 JWT 打网关，钱记在
+      **听的人**自己的额度上；渲染层只拿字节去播 */
+  teamVoiceSpeak(text: string, voiceId: string): Promise<VoiceSpeakResult>;
+  /** 群语音里的麦克风（#1176）：开 / 关 / 半双工暂停 / 恢复。结果不从返回值来——
+      全部走 onSpeechEvent（识别结果是 helper 自己冒出来的，没有哪条命令在等它） */
+  /** `hints`：上下文词表（voiceMic.ts 的 speechHints），可选——旧调用方不传照旧 */
+  speechStart(locale: string, hints?: string[]): Promise<void>;
+  speechStop(): Promise<void>;
+  speechPause(): Promise<void>;
+  speechResume(): Promise<void>;
+  /** 一段合成好的音频交给 helper 用它的音频引擎播（#1201：回声消除开着时 macOS 会压低别的 app
+      的声音，Electron 放的 agent 语音正是「别的 app」）。回这段的 id，播完 / 播不了走 onSpeechEvent
+      的 played / playError；没有 helper 回 error */
+  speechPlay(bytes: Uint8Array): Promise<{ id: string } | { error: string }>;
+  speechStopPlay(): Promise<void>;
+  /** 改当前云会话的语音通话名单（协议 17，#1163）：`participants` = 该在通话里的 agent id，
+      空 = 结束通话。resolve 的是 `call_result` 回执（同 stop：15 秒没回执 = unknown）；
+      名单本身以日志里那条 `voice_call_changed` 为准，不以「我刚点了」为准 */
+  workspaceCloudCall(participants: string[]): Promise<CloudAck>;
   /** 读一个团队此刻的路由（控制房 RPC，协议 8，#991）：任何在籍成员都能读，
       不依赖开着云会话。**#1102 之后只剩这一格**——原来它还带仓库配置，而团队
       不再绑仓库；留着这条 RPC 是因为 ADR-0246 那句「起不了 turn」在设置页
@@ -1212,6 +1260,8 @@ export interface ShellBridge {
   /** 当前云会话的流式碎片（协议 16，#1107）：不过 seq 机器、不去重，拿到
       就攒；同一只 agent 的终态 assistant_message / turn_ended 事件到了清槽 */
   onCloudSessionDelta(cb: (delta: CloudSessionDelta) => void): Unsubscribe;
+  /** 语音识别 helper 的事件（#1176）：status / listening / paused / resumed / partial / final / error */
+  onSpeechEvent(cb: (ev: SpeechEvent) => void): Unsubscribe;
   /** presence 集合变化 → 当前在线的 userId 全量列表(Realtime presence ∪ 心跳窗口) */
   onPresenceChanged(cb: (onlineUserIds: string[]) => void): Unsubscribe;
   /** 对端发来的新 DM(自己发的不推——bridge 调用已回真行,渲染层自己落) */
@@ -1623,6 +1673,15 @@ export const CHANNELS = {
   workspaceCloudArchive: "otter:workspaceCloudArchive",
   workspaceCloudDelete: "otter:workspaceCloudDelete",
   workspaceCloudStop: "otter:workspaceCloudStop",
+  teamVoiceSpeak: "otter:teamVoiceSpeak",
+  speechStart: "otter:speechStart",
+  speechStop: "otter:speechStop",
+  speechPause: "otter:speechPause",
+  speechResume: "otter:speechResume",
+  speechPlay: "otter:speechPlay",
+  speechStopPlay: "otter:speechStopPlay",
+  speechEvent: "otter:speechEvent",
+  workspaceCloudCall: "otter:workspaceCloudCall",
   workspaceCloudConfig: "otter:workspaceCloudConfig",
   workspaceCloudState: "otter:workspaceCloudState",
   workspaceCloudFiles: "otter:workspaceCloudFiles",

@@ -16,6 +16,7 @@ import type { TokenUsage } from "../../../src/session/events.js";
 import type { CsModelRoute } from "../../../src/shared/remote/cloudSession.js";
 import { AGENT_HEADER, MAX_INFLIGHT, ON_BEHALF_HEADER, SESSION_HEADER, WORKSPACE_HEADER, parseBillingMe, type BillingMe } from "../../../src/shared/billing.js";
 import { billingErrorOf, markBilling, markErrorClass } from "../../../src/model/errorClass.js";
+import { findModel } from "../../../src/shared/modelCatalog.js";
 
 /** 云端并发已满时的排队节奏（#960）。edge 的 Quota DO 按 uid 卡 MAX_INFLIGHT 条
     并发，而 ADR-0217 让一个团队里所有云会话都记在**所有者**头上：成员的会话 +
@@ -270,6 +271,11 @@ export function createHostedRuntimeAdapter(deps: HostedRuntimeAdapterDeps): Mode
             ? INFLIGHT_RETRY_MS
             : null,
         model: route.model,
+        // DeepSeek 那轮工具调用能过是靠它服务端的思考缓存（#1151）：runtime
+        // 不发 thinking 字段，服务端默认思考，于是照样按 tool_call id 查缓存、
+        // 查不到 400——等审批（接力棒上 2 分钟、人审批更久）与 daemon 重启补跑
+        // 都在赌它。目录认不出的型号 = 没验过 = 不开（改动前的行为）
+        reasoningPassback: findModel(route.model)?.reasoningPassback ?? false,
       });
       try {
         return await adapter.chat(messages, tools, onDelta, signal);

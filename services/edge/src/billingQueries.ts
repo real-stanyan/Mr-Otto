@@ -133,7 +133,7 @@ export function parseRouteRows(v: unknown): RouteRow[] {
     // kind 缺席 = 迁移还没跑（旧库没这一列），认不出的值同样按 chat：
     // 两种情形都要落回**改动前的行为**，而不是把这一行丢掉——一个拼错的 kind
     // 不该让这款模型从网关上整个消失（#1081）
-    const kind = r.kind === "image" ? "image" : "chat";
+    const kind = r.kind === "image" ? "image" : r.kind === "tts" ? "tts" : "chat";
     out.push({ id, logicalModel: lm, platform: pf, baseUrl: bu, wireModel: wm, priceInMicroPerM: pi, priceCacheMicroPerM: pc, priceOutMicroPerM: po, defaultMaxTokens: mt, kind });
   }
   return out;
@@ -152,7 +152,7 @@ export function parseRouteRows(v: unknown): RouteRow[] {
     同一款多条路由取**第一条**的平台，那就是选路真正会先试的那家。
     `modelPlatforms` 只覆盖对话那张：它的消费方是那枚选单里的厂商 logo */
 export function modelsForMe(routes: RouteRow[]): {
-  models: string[]; imageModels: string[]; modelPlatforms: Record<string, string>;
+  models: string[]; imageModels: string[]; ttsModels: string[]; modelPlatforms: Record<string, string>;
 } {
   const chat = routes.filter((r) => r.kind === "chat");
   const modelPlatforms: Record<string, string> = {};
@@ -162,6 +162,9 @@ export function modelsForMe(routes: RouteRow[]): {
   return {
     models: [...new Set(chat.map((r) => r.logicalModel))],
     imageModels: [...new Set(routes.filter((r) => r.kind === "image").map((r) => r.logicalModel))],
+    // 第三张清单（#1163）：语音合成那款。消费方是桌面的语音通话（teamVoice），
+    // 与前两张一样互不相通——它进 models 就是选单里多一款点了不干活的型号
+    ttsModels: [...new Set(routes.filter((r) => r.kind === "tts").map((r) => r.logicalModel))],
     modelPlatforms,
   };
 }
@@ -285,7 +288,9 @@ export function meFromParts(
   /** 出图型号清单（#1081）。**加在最末**：这个函数是七个位置参数，插在中间会让既有
       调用把 modelPlatforms 悄悄喂给新参数——类型都是"数组或对象"，tsc 拦不住的那一类。
       缺省空数组 = 这台网关不供出图 = 改动前的行为 */
-  imageModels: string[] = []
+  imageModels: string[] = [],
+  /** 语音合成型号清单（#1163）。同上一格的理由加在最末；缺省空数组 = 这台网关不供语音 */
+  ttsModels: string[] = []
 ): BillingMe {
   const plan = sub && (sub.plan_id === "lite" || sub.plan_id === "pro" || sub.plan_id === "max") ? sub.plan_id : null;
   return {
@@ -296,6 +301,6 @@ export function meFromParts(
       .filter((p): p is PlanRow & { id: "lite" | "pro" | "max" } => p.id === "lite" || p.id === "pro" || p.id === "max")
       .map((p) => ({ id: p.id, priceUsdCents: p.price_usd_cents, capabilities: p.capabilities })),
     windows: sub && sub.status === "active" ? windows : null,
-    addon, periodEnd: sub ? Date.parse(sub.current_period_end) : null, models, imageModels, modelPlatforms,
+    addon, periodEnd: sub ? Date.parse(sub.current_period_end) : null, models, imageModels, ttsModels, modelPlatforms,
   };
 }

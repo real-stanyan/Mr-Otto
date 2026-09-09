@@ -10,16 +10,36 @@ function ev(partial: Partial<SessionEvent> & { type: SessionEvent["type"]; seq: 
 }
 
 describe("projectForAgent（#928 切片 1a）", () => {
-  it("别人的 assistant_message 剥掉 toolCalls —— 留着它会让悬空自愈捏造一条「没执行」", () => {
+  it("别人的 assistant_message 投影成带名字的 chat_message —— 剥掉 toolCalls（留着它会让悬空自愈捏造一条「没执行」），且不再冒充我自己的发言（#1146）", () => {
     const log: SessionEvent[] = [
-      ev({ seq: 0, type: "assistant_message", content: "查了，下滑 12%", model: "m", agentId: "ops",
+      ev({ seq: 0, type: "agent_briefed", agentId: "ops", name: "运营", instructions: "盯销量", roster: [] } as never),
+      ev({ seq: 1, type: "assistant_message", content: "查了，下滑 12%", model: "m", agentId: "ops", reasoning: "先看昨天的",
+           usage: { promptTokens: 1, completionTokens: 1 },
            toolCalls: [{ id: "c1", name: "bash", arguments: "{}" }] } as never),
-      ev({ seq: 1, type: "tool_result", toolCallId: "c1", status: "ok", output: "12%", agentId: "ops" } as never),
+      ev({ seq: 2, type: "tool_result", toolCallId: "c1", status: "ok", output: "12%", agentId: "ops" } as never),
     ];
     const out = projectForAgent(log, "ads");
-    expect(out).toHaveLength(1);
-    expect(out[0]!).toMatchObject({ type: "assistant_message", content: "查了，下滑 12%" });
-    expect("toolCalls" in out[0]!).toBe(false);
+    // 它的 briefing 照旧不进我的视图（drop），但名字从那里来
+    expect(out).toEqual([
+      { seq: 1, sessionId: "s1", ts: 0, type: "chat_message", fromUid: "ops", label: "运营", content: "查了，下滑 12%", mention: false },
+    ]);
+  });
+
+  it("名字按日志顺序现取：改名之前说的话叫旧名字，之后的叫新名字（同 chat_message 的「发言那一刻的快照」）", () => {
+    const log: SessionEvent[] = [
+      ev({ seq: 0, type: "agent_briefed", agentId: "ops", name: "运营", instructions: "", roster: [] } as never),
+      ev({ seq: 1, type: "assistant_message", content: "第一句", model: "m", agentId: "ops" } as never),
+      ev({ seq: 2, type: "agent_briefed", agentId: "ops", name: "运营部", instructions: "", roster: [] } as never),
+      ev({ seq: 3, type: "assistant_message", content: "第二句", model: "m", agentId: "ops" } as never),
+    ];
+    expect(projectForAgent(log, "ads").map((e) => (e as { label: string }).label)).toEqual(["运营", "运营部"]);
+  });
+
+  it("日志里没有它的 briefing（旧日志）：标签退回 agentId，不编名字", () => {
+    const log: SessionEvent[] = [
+      ev({ seq: 0, type: "assistant_message", content: "第一句", model: "m", agentId: "a_8e93" } as never),
+    ];
+    expect(projectForAgent(log, "ads")).toMatchObject([{ type: "chat_message", fromUid: "a_8e93", label: "a_8e93" }]);
   });
 
   it("别人纯工具调用那一轮（content 为空）整条丢弃 —— 它没说话", () => {
@@ -218,5 +238,54 @@ describe("agentView（#928 切片 1a：EventLog wrapper）", () => {
       (m) => typeof m.content === "string" && m.content.includes("ads 的回复")
     );
     expect(adsOwnMessage).toBe(true);
+  });
+});
+
+// #1146：真机上「管理员」那一轮 400——`The reasoning_content in the thinking mode must be
+// passed back to the API`。用真接口对着从日志重建的请求逐字复现过（记在 #1146）：DeepSeek
+// thinking 模式 + 请求带 tools 时，**最后一条 user 之后的任何 assistant 消息**都得带
+// reasoning_content；而别人的发言此前被投影成 assistant 角色（没有工具调用、也不可能有它的
+// reasoning），于是接力开场白之后跟着的两条「开发」的话就是那两条 assistant。同一个投影还让
+// 每只 agent 把别人说过的话读成自己说过的（真机上「开发」答「收到接力，管理员这棒我来收个尾」）。
+// 群里我听得见你说话，但那是**你**在说——投影成 `[名字]: 内容` 的成员发言，两个病一起好。
+describe("别人的发言是群里的话，不是我说过的话（#1146）", () => {
+  it("接力之后紧跟着别人的两条发言：模型看到的是两条带名字的 user 消息，最后一条 user 之后没有 assistant", () => {
+    const log: SessionEvent[] = [
+      ev({ seq: 0, type: "session_created", workspace: null, title: "t",
+           cloud: { workspaceId: "w", workspaceName: "mandy", memberLabels: [] } } as never),
+      ev({ seq: 1, type: "agent_briefed", agentId: "dev", name: "开发", instructions: "写代码", roster: [] } as never),
+      ev({ seq: 2, type: "agent_briefed", agentId: "admin", name: "管理员", instructions: "管群", roster: [] } as never),
+      ev({ seq: 3, type: "user_message", content: "[stan]: @开发 @管理员 对接得怎么样", fromUid: "u1", mentions: ["dev", "admin"] } as never),
+      ev({ seq: 4, type: "user_message", content: "[系统] 「设计」在上一条发言里 @ 了「管理员」（接力第 1 棒）。",
+           fromUid: "u1", mentions: ["admin"], relay: { fromAgentId: "design", depth: 1 } } as never),
+      ev({ seq: 5, type: "assistant_message", content: "收到接力，我先查一件事。", model: "m", agentId: "dev", reasoning: "…",
+           toolCalls: [{ id: "call_00_x", name: "bash", arguments: "{\"command\":\"ls\"}" }] } as never),
+      ev({ seq: 6, type: "tool_result", toolCallId: "call_00_x", status: "ok", output: "README.md", agentId: "dev" } as never),
+      ev({ seq: 7, type: "assistant_message", content: "查完了，闭环。", model: "m", agentId: "dev", reasoning: "…" } as never),
+      ev({ seq: 8, type: "turn_ended", outcome: "completed", agentId: "dev" } as never),
+    ];
+    const messages = deriveMessages(projectForAgent(log, "admin"));
+    const roles = messages.map((m) => m.role);
+    const lastUser = roles.lastIndexOf("user");
+    // 这条断言就是那家 API 的规矩：最后一条 user 之后一条 assistant 都不许有（我这一轮还没开口）
+    expect(roles.slice(lastUser)).not.toContain("assistant");
+    expect(roles).not.toContain("tool");
+    const tail = messages.slice(-3).map((m) => m.content);
+    expect(tail).toEqual([
+      "[系统] 「设计」在上一条发言里 @ 了「管理员」（接力第 1 棒）。",
+      "[开发]: 收到接力，我先查一件事。",
+      "[开发]: 查完了，闭环。",
+    ]);
+  });
+
+  it("自己的视图一个字不变：自己的 assistant_message 仍是 assistant 角色、带 tool_calls（工具回合要配对）", () => {
+    const log: SessionEvent[] = [
+      ev({ seq: 0, type: "user_message", content: "[stan]: @开发 看看目录", fromUid: "u1", mentions: ["dev"] } as never),
+      ev({ seq: 1, type: "assistant_message", content: "我看看。", model: "m", agentId: "dev",
+           toolCalls: [{ id: "call_00_x", name: "bash", arguments: "{}" }] } as never),
+      ev({ seq: 2, type: "tool_result", toolCallId: "call_00_x", status: "ok", output: "README.md", agentId: "dev" } as never),
+    ];
+    const roles = deriveMessages(projectForAgent(log, "dev")).map((m) => m.role);
+    expect(roles).toEqual(["user", "assistant", "tool"]);
   });
 });

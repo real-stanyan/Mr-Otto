@@ -9,7 +9,18 @@
 // 替它造一条「没执行」的 tool 消息塞进我的上下文 —— 别人明明跑成功了,我的
 // 模型读到的是它没执行。安静地捏造事实,比 400 难查。
 //
-// reasoning / usage 一并剥掉:前者 API 明令禁止塞回上下文,后者是账不是话。
+// **而且那是你在说，不是我说过的**（#1146，ADR-0268）：别人的 assistant_message 投影成
+// 一条带名字的 chat_message（`[名字]: 内容`，user 角色），不是一条剥掉字段的
+// assistant_message。原来那样做有两个病，真机上一起发作：① 每只 agent 把别人的话读成
+// 自己说过的（「开发」答「收到接力，管理员这棒我来收个尾」——那棒是 @ 管理员的）；
+// ② DeepSeek thinking 模式 + 请求带 tools 时，**最后一条 user 之后的每一条 assistant
+// 消息都得带 reasoning_content**，别人的话没有、也不该有它的思考，于是接力开场白后面
+// 跟着别人两句话 = 这一轮开口前就 400（用真接口对着日志重建的请求逐字复现，记在 #1146）。
+// 名字从它自己的 agent_briefed 里现取——那是日志里唯一写着「a_8e93… 叫开发」的地方，
+// 按日志顺序推进 = 发言那一刻的名字（同 chat_message.label 的快照规矩）；日志里没有就
+// 退回 agentId，不编。reasoning / usage 从此不用单独剥：chat_message 本来没这两格。
+// **自己**那轮的 reasoning 则随投影带出来、由 adapter 按厂商门控回传（#1151，
+// DeepSeek 按它发的 tool_call id 在服务端缓存思考，缓存没了同样 400；ADR-0274）。
 //
 // **这是一个 Record 不是一张名单**:每个事件类型都必须表态,加了新事件类型不来
 // 这里写一笔,tsc 直接红。形状照 sessionPackage.ts 的 PRIVACY_VERDICTS。
@@ -18,7 +29,7 @@
 // messages.length = 0,清场重来)。名单漏一个是静默灾难,Record 漏一个是编译错误。
 
 import type { EventLog } from "./eventLog.js";
-import type { SessionEvent } from "./events.js";
+import type { AssistantMessageEvent, ChatMessageEvent, SessionEvent } from "./events.js";
 
 /** 别人的这条事件,我看得见吗(#928)。判据一句话:这条事件说的是「群里发生的事」,
     还是「那只 agent 自己干活的过程」?后者 drop */
@@ -27,7 +38,7 @@ type OtherAgentVerdict =
   | "keep"
   /** 别人干活留下的痕迹 —— 整条不进 */
   | "drop"
-  /** 只留它说出口的那部分(assistant_message:剥掉 toolCalls / reasoning / usage) */
+  /** 只留它说出口的那部分:assistant_message 变成一条带名字的 chat_message（#1146） */
   | "spoken";
 
 const OTHER_AGENT_VERDICTS: Record<SessionEvent["type"], OtherAgentVerdict> = {
@@ -87,6 +98,9 @@ const OTHER_AGENT_VERDICTS: Record<SessionEvent["type"], OtherAgentVerdict> = {
   // 接力棒（#950）：没有 agentId 字段，早退路径本来就放行（两只 agent 都要看得见
   // 这一棒），这里仍要表态——Record 是穷尽表，"反正放行了"不构成不写的理由
   agent_relay: "keep",
+  // 语音通话名单（#1163）：群事实，每只都要读到——派活只在通话成员里进行、system 尾块
+  // 列出谁在通话里。没有 agentId 字段，早退路径本来就放行，这里仍要表态（Record 是穷尽表）
+  voice_call_changed: "keep",
   background_task_started: "drop",
   background_task_completed: "drop",
   image_described: "drop",
@@ -105,7 +119,10 @@ const FOREIGN_SCAN_LIMIT = 64;
 
 export function projectForAgent(events: SessionEvent[], agentId: string): SessionEvent[] {
   const out: SessionEvent[] = [];
+  // agentId → 此刻的名字。别人的 agent_briefed 不进我的视图（drop），但要先从它读名字
+  const names = new Map<string, string>();
   for (const e of events) {
+    if (e.type === "agent_briefed") names.set(e.agentId, e.name);
     const owner = "agentId" in e ? e.agentId : undefined;
     // 没有 agentId = 全场共有(session_created / user_message / chat_message /
     // memory_loaded …),或者这是一条单 agent 会话的旧事件。这条早退路径别动
@@ -121,11 +138,10 @@ export function projectForAgent(events: SessionEvent[], agentId: string): Sessio
       continue;
     }
     if (verdict === "spoken") {
-      // assistant_message:纯工具调用那一轮它没说话,剥完就是一条空消息 —— 不该占我上下文一格
+      // assistant_message:纯工具调用那一轮它没说话,说出口的部分是空的 —— 不该占我上下文一格
       if (e.type === "assistant_message") {
         if (e.content.trim() === "") continue;
-        const { toolCalls: _tc, reasoning: _r, usage: _u, ...stripped } = e;
-        out.push(stripped as unknown as SessionEvent);
+        out.push(memberSpeech(e, owner, names.get(owner) ?? owner));
       } else {
         out.push(e);
       }
@@ -133,6 +149,24 @@ export function projectForAgent(events: SessionEvent[], agentId: string): Sessio
     }
   }
   return out;
+}
+
+/** 别人说出口的那句话，按群成员发言的样子进我的上下文：deriveMessages 把 chat_message 投影成
+    `[名字]: 内容` 的 user 消息，label 过 safeSpeakerLabel、正文过 promptSafeBody——一只 agent 也
+    伪造不出别人的说话人行。fromUid 填 agentId：它在投影里只用作保留名判定，不是 auth uid、
+    也不落盘（spec §4.2「不给 agent 发伪 uid」管的是写路径，这里是读）*/
+function memberSpeech(e: AssistantMessageEvent, agentId: string, label: string): ChatMessageEvent {
+  return {
+    seq: e.seq,
+    sessionId: e.sessionId,
+    ts: e.ts,
+    ...(e.sandboxId !== undefined ? { sandboxId: e.sandboxId } : {}),
+    type: "chat_message",
+    fromUid: agentId,
+    label,
+    content: e.content,
+    mention: false,
+  };
 }
 
 /** 把一份日志包成「这只 agent 眼里的日志」。写路径原样转发 —— 只有读要隔离 */

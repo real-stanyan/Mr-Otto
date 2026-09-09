@@ -5,8 +5,11 @@
 //
 // 谁携带一次模型调用的账:凡是"跑了一次模型"的事件都带 usage —— 正文
 // (assistant_message)、压缩(context_compacted)、分区(section_classified)、
-// 跟进建议(suggestions_generated)、微压缩(micro_compacted,ADR-0064)。
-// 后三个是"外挂"小调用,但它们照样烧钱:漏掉哪一类,统计就从此少算一截
+// 跟进建议(suggestions_generated)、微压缩(micro_compacted,ADR-0064)、
+// 代读员(image_described,#1093——每条带图消息都真跑一次视觉模型)、
+// 出图(tool_result,#1084——generate_image 在工具调用里套了一次出图模型,
+// 它不产生 assistant_message,账只能挂在 tool_result 上)。
+// 后几个是"外挂"小调用,但它们照样烧钱:漏掉哪一类,统计就从此少算一截
 // (events.ts 里 SuggestionsGeneratedEvent 的注释写的就是这件事)。
 // 微压缩尤其不能漏:它每 turn 收口都烧一次,开着的话是这里最高频的一笔。
 //
@@ -53,6 +56,13 @@ export const BILLED_EVENT_TYPES = [
   "micro_compacted",
   "session_autotitled",
   "session_topic_assigned",
+  // 代读员（#1093）：每条带图消息都真跑一次视觉模型。旧日志里的
+  // image_described 没有 usage——`billed()` 与 store 那条 SQL
+  // （`promptTokens IS NOT NULL`）都跳过，不会凭空多出行
+  "image_described",
+  // 出图（#1084）：generate_image 在工具调用里套了一次出图模型的调用。
+  // 只有带了 usage 的 tool_result 才有账——其余几百万条工具结果一行不多
+  "tool_result",
 ] as const;
 
 type BilledEvent = Extract<SessionEvent, { type: (typeof BILLED_EVENT_TYPES)[number] }>;
@@ -69,6 +79,9 @@ function billed(
 ): { model: string; route: "hosted" | "direct"; promptTokens: number; completionTokens: number; cachedTokens: number; creditCostMicro?: number } | null {
   if (!isBilledEvent(e)) return null;
   if (!e.usage) return null;
+  // tool_result 的 model 是可选的（#1084：绝大多数工具结果没有自己的模型账，
+  // 四格全缺）；其余几类 model 是必填，这条守卫对它们是空操作
+  if (typeof e.model !== "string") return null;
   return {
     model: e.model,
     // 缺席 = direct（ADR-0176 决定五：旧日志 / 子会话照常重放）。**判据不再分事件类型**

@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   approvalCardTitle, assistantLabel, canStopTurn, cloudEmptyState, createAgentLanded, decisionLineText,
-  hiddenFromCloudTimeline, isAgentStep, relayLineText, routeChangedText, stopButtonRows, systemNoteText, turnEndedLineText,
+  hiddenFromCloudTimeline, isAgentStep, relayLineText, routeChangedText, stopButtonRows, systemNoteText, turnEndedLineText, voiceCallLineText,
   userRowIdentity,
 } from "../../src/renderer/src/lib/cloudTimeline.js";
 import type { WorkspaceSnapshot } from "../../src/shared/workspaces.js";
@@ -306,5 +306,43 @@ describe("cloudEmptyState（#983）", () => {
     expect(cloudEmptyState("connecting", 3)).toBe("none");
     expect(cloudEmptyState("gone", 3)).toBe("none");
     expect(cloudEmptyState("ready", 3)).toBe("none");
+  });
+});
+
+// ── 语音通话那一行旁白（#1163） ────────────────────────────────────────
+describe("voiceCallLineText", () => {
+  const ev = (seq: number, ids: string[], over: Partial<{ byUid: string; byAgentId: string }> = {}) => ({
+    ...base, seq, type: "voice_call_changed" as const, ignorable: true as const,
+    participants: ids.map((id) => ({ agentId: id, name: `快照${id}` })),
+    byUid: over.byUid ?? "u1", ...(over.byAgentId ? { byAgentId: over.byAgentId } : {}),
+  });
+
+  it("从无到有 = 开始；名字现查名单，查不到退回事件里的快照", () => {
+    expect(voiceCallLineText(null, ev(1, ["a_1", "a_x"]), ws)).toBe("Stan 开始了语音通话：运营、快照a_x");
+  });
+  it("多了 = 拉进；agent 拉的署它的名", () => {
+    expect(voiceCallLineText(ev(1, ["a_1"]), ev(2, ["a_1", "a_2"]), ws)).toBe("Stan 把广告拉进了通话");
+    expect(voiceCallLineText(ev(1, ["a_1"]), ev(2, ["a_1", "a_2"], { byAgentId: "a_1" }), ws)).toBe("「运营」把广告拉进了通话");
+  });
+  it("少了 = 移出；空名单 = 结束；有增有减 = 更新", () => {
+    expect(voiceCallLineText(ev(1, ["a_1", "a_2"]), ev(2, ["a_1"]), ws)).toBe("Stan 把广告移出了通话");
+    expect(voiceCallLineText(ev(1, ["a_1"]), ev(2, []), ws)).toBe("Stan 结束了语音通话");
+    expect(voiceCallLineText(ev(1, ["a_1"]), ev(2, ["a_2"]), ws)).toBe("Stan 更新了通话名单：广告");
+  });
+  it("上一条是空名单 = 又开了一场", () => {
+    expect(voiceCallLineText(ev(1, []), ev(2, ["a_2"]), ws)).toBe("Stan 开始了语音通话：广告");
+  });
+  it("不在时间线上藏：hiddenFromCloudTimeline 对它回 false", () => {
+    expect(hiddenFromCloudTimeline(ev(1, ["a_1"]))).toBe(false);
+  });
+});
+
+// #1174：拉进语音通话的招呼开场白是 runtime 替人落的 user_message，`voice_call_changed`
+// 那一行已经说了「拉进了通话」，正文不画（同接力开场白的处置）
+describe("hiddenFromCloudTimeline：招呼开场白（#1174）", () => {
+  const base = { sessionId: "s1", ts: 1, seq: 1 };
+  it("带 greeting 记号的 user_message 隐藏", () => {
+    const e = { ...base, type: "user_message" as const, content: "[系统] 「运营」被拉进了语音通话", greeting: "voice_call" as const, mentions: ["a_1"], fromUid: "u1" };
+    expect(hiddenFromCloudTimeline(e)).toBe(true);
   });
 });

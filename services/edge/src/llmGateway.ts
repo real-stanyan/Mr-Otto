@@ -27,6 +27,8 @@
 // 让客户端看到上游 401 会让用户去怀疑自己的 key——而他根本没用自己的 key。
 
 import { BILLING_HEADERS, SSE_COST_COMMENT } from "../../../src/shared/billing.js";
+import { TTS_HEADERS, ttsUnits } from "../../../src/shared/tts.js";
+import { parseTtsReply, parseTtsRequest, ttsUpstreamBody } from "./ttsUpstream.js";
 
 /** 这一行路由是给谁用的（#1081）。`chat` = 输入框那枚选单里选得到的对话模型；
     `image` = 出图工具专用，**不进 `me.models`**。
@@ -34,7 +36,7 @@ import { BILLING_HEADERS, SSE_COST_COMMENT } from "../../../src/shared/billing.j
     `models.at(-1)` 当「最贵 = 最强」——出图那一行 $60/M，不隔离的话纳米香蕉会
     变成 Auto 的 hard 档主模型。选路（`pickRoute`）不看这一格：它只按
     `logical_model` 匹配，出图请求点名的就是出图那款 */
-export type RouteKind = "chat" | "image";
+export type RouteKind = "chat" | "image" | "tts";
 
 export interface RouteRow {
   id: string;
@@ -105,6 +107,10 @@ export const UPSTREAM_KEY_ENV: Readonly<Record<string, string>> = {
       app bundle 是用户机器上的可读文件，key 挖得出来 = 无限花维护者的钱，
       而额度闸在客户端根本不存在 */
   openrouter: "OPENROUTER_API_KEY",
+  /** MiniMax：语音合成那条路的上游（#1163）。同 openrouter：官方 key、只活在 Worker
+      secret 里。上游是**国内站** `api.minimaxi.com`（给的 key 在 `.io` 国际站回
+      2049 invalid api key，真机验过） */
+  minimax: "MINIMAX_API_KEY",
 };
 
 /** `LlmGatewayDeps.upstreamKey` 的标准实现：按上表从 env 取。
@@ -134,6 +140,9 @@ export function upstreamKeyOf(
     回 `data[].b64_json`，`usage` 形状与 chat 那条**逐字相同** —— 所以 `parseUsage` /
     `costMicro` / hold-settle 整套一个字都不用改，这条改动只有「打哪个 URL」这一格。 */
 export function upstreamPathFor(kind: RouteRow["kind"]): string {
+  // 语音（#1163）：MiniMax 的 t2a_v2，请求体与回包都不是 OpenAI 形状——翻译在
+  // ttsUpstream.ts，这里只答「打哪个 URL」
+  if (kind === "tts") return "/t2a_v2";
   return kind === "image" ? "/images" : "/chat/completions";
 }
 
@@ -359,7 +368,90 @@ export function createLlmGateway(deps: LlmGatewayDeps): (req: Request, caller: C
     const ordered = [first, ...candidates.filter((r) => r.id !== first.id)];
 
 
+    /** hold 被拒的三种回执（chat / image / tts 三扇门共用一份）。M8：带上剩余额度头，
+        省得客户端再问一次；取额度这一步自己失败不该连累这条错误响应发不出去。
+        先判 quota_exhausted：它是唯一带 window/resetAt 字段的分支，先摘出来才能让
+        tsc 把剩下那支缩窄成 { code: "no_subscription" | "too_many_inflight" } */
+    const holdRejected = async (held: Exclude<HoldOutcome, { ok: true }>): Promise<Response> => {
+      const billingHeaders = await remainingHeaders(caller.uid).catch(() => ({}));
+      if (held.code === "quota_exhausted") {
+        return apiError(429, held.window === "5h" ? "5 小时额度已用完" : "本周额度已用完", "quota_exhausted", {
+          window: held.window, resetAt: held.resetAt,
+        }, billingHeaders);
+      }
+      if (held.code === "no_subscription") return apiError(402, "没有活跃订阅", "no_subscription", {}, billingHeaders);
+      return apiError(429, "同时进行的请求太多，稍后再试", "too_many_inflight", {}, billingHeaders);
+    };
+
+    // 语音那扇门（#1163）：与 chat / image 共用 hold / settle / release，差三处——
+    // ① 钱按**字符数**不按 token（MiniMax 按字符计费，回包里没有 token）：预扣 =
+    //    ttsUnits(text) × price_out，结算用上游报的 usage_characters（没报就按本地算的，
+    //    同 chat 那条「挑不出 usage 也按预扣结算」）；
+    // ② 请求体要翻成 MiniMax 的形状（voice_setting / audio_setting，ttsUpstream.ts）；
+    // ③ 回包里音频是 hex、错误是 **HTTP 200 + status_code≠0**——只看 HTTP 状态会把一次
+    //    鉴权失败当成功结算，再把一段空音频交给桌面。这里解成字节按 audio/mpeg 回
+    //    （hex 是两倍体积，别让它再走 edge → 主进程 → 渲染层三跳）。
+    // 不换站：tts 今天只有一条路，failover 那套梯队对它没有意义
+    const serveTts = async (route: RouteRow, key: string): Promise<Response> => {
+      const parsed = parseTtsRequest(body);
+      if (!parsed.ok) return apiError(400, parsed.message, "bad_request");
+      const units = ttsUnits(parsed.req.text);
+      const requestId = newId();
+      let held: HoldOutcome;
+      try {
+        held = await deps.quota.hold(caller.uid, requestId, costMicro({ promptTokens: 0, cachedTokens: 0, completionTokens: units }, route));
+      } catch {
+        return apiError(503, "额度服务暂时不可用，稍后再试", "upstream");
+      }
+      if (!held.ok) return holdRejected(held);
+      try {
+        let res: Response;
+        try {
+          res = await doFetch(`${route.baseUrl}${upstreamPathFor(route.kind)}`, {
+            method: "POST",
+            headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
+            body: ttsUpstreamBody(route.wireModel, parsed.req),
+            signal: req.signal,
+          });
+        } catch {
+          await deps.quota.release(caller.uid, requestId);
+          return apiError(502, `上游连不上：${route.platform}`, "upstream");
+        }
+        if (!res.ok) {
+          await deps.quota.release(caller.uid, requestId);
+          const snippet = (await res.text().catch(() => "")).slice(0, 300);
+          return apiError(502, `上游 ${res.status}：${snippet}`, "upstream", { upstreamStatus: res.status });
+        }
+        const reply = parseTtsReply(await res.text());
+        if (!reply.ok) {
+          await deps.quota.release(caller.uid, requestId);
+          return apiError(502, reply.message, "upstream");
+        }
+        const usage: UsageCounts = { promptTokens: 0, cachedTokens: 0, completionTokens: reply.usageChars ?? units };
+        const cost = costMicro(usage, route);
+        await deps.quota.settle(caller.uid, requestId, { caller, route, usage, costMicro: cost });
+        const headers = await remainingHeaders(caller.uid);
+        // Node 的 lib 只把 ArrayBuffer 当 BodyInit（Uint8Array<ArrayBufferLike> 过不了 tsc）；
+        // 按 byteOffset/byteLength 切一份，不假设这个视图从 0 开始
+        const audio = reply.audio.buffer.slice(reply.audio.byteOffset, reply.audio.byteOffset + reply.audio.byteLength) as ArrayBuffer;
+        return new Response(audio, {
+          status: 200,
+          headers: {
+            "content-type": "audio/mpeg",
+            ...headers,
+            [BILLING_HEADERS.cost]: String(cost),
+            [TTS_HEADERS.chars]: String(usage.completionTokens),
+            ...(reply.audioMs !== null ? { [TTS_HEADERS.audioMs]: String(reply.audioMs) } : {}),
+          },
+        });
+      } catch (err) {
+        await deps.quota.release(caller.uid, requestId).catch(() => {});
+        return apiError(502, `处理请求时出错：${err instanceof Error ? err.message : String(err)}`, "upstream");
+      }
+    };
+
     const serve = async (route: RouteRow, key: string): Promise<Response | null> => {
+      if (route.kind === "tts") return serveTts(route, key);
       // I2：字节数要按 UTF-8 编码算，`raw.length` 是 UTF-16 code unit 数——中日韩字符
       // 一个字符 3 字节却只占 1 个 code unit，用 code unit 数会把 CJK 请求的估算打三折。
       const bodyBytes = new TextEncoder().encode(raw).length;
@@ -380,22 +472,7 @@ export function createLlmGateway(deps: LlmGatewayDeps): (req: Request, caller: C
       } catch {
         return apiError(503, "额度服务暂时不可用，稍后再试", "upstream");
       }
-      if (!held.ok) {
-        // M8：hold 被拒也带上剩余额度头，省得客户端再问一次；取额度这一步本身失败
-        // 不该连累这条错误响应发不出去——查不到就不带头，不能因为这个再抛一次错。
-        const billingHeaders = await remainingHeaders(caller.uid).catch(() => ({}));
-        // 先判 quota_exhausted：它是唯一带 window/resetAt 字段的分支，先摘出来才能让
-        // tsc 把剩下那支缩窄成 { code: "no_subscription" | "too_many_inflight" }
-        // ——反过来顺序写（先判 no_subscription 再判 too_many_inflight）在这版 tsc
-        // 下窄不动最后一支，`held.window` 会报「不存在」。
-        if (held.code === "quota_exhausted") {
-          return apiError(429, held.window === "5h" ? "5 小时额度已用完" : "本周额度已用完", "quota_exhausted", {
-            window: held.window, resetAt: held.resetAt,
-          }, billingHeaders);
-        }
-        if (held.code === "no_subscription") return apiError(402, "没有活跃订阅", "no_subscription", {}, billingHeaders);
-        return apiError(429, "同时进行的请求太多，稍后再试", "too_many_inflight", {}, billingHeaders);
-      }
+      if (!held.ok) return holdRejected(held);
 
       // I5：hold 已经拿到了——从这里往后（取上游 key 已经拿过、剩下的是拼请求体/打上游/读
       // 剩余额度/非流式读正文）任何一步再炸，都不能让这笔 hold 变成永远没人认领的孤儿。

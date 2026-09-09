@@ -55,6 +55,11 @@ export interface ModelChoice {
   supportsVision: boolean;
   /** 该型号所属厂商免 key（本机推理服务）。路由据此放行，UI 据此不出输入框 */
   keyless: boolean;
+  /** thinking 模式要把 reasoning_content 回传的厂商（#1151，真接口逐家验过才准开）：
+      DeepSeek 按它发出的 tool_call id 在服务端存思考、客户端不传就去查——
+      缓存没了就 400，等一次长审批 / daemon 重启补跑都在赌那份缓存。
+      GLM / Kimi 同一次探针验过「接受但不要求」不开；没验过的一律不开 */
+  reasoningPassback: boolean;
 }
 
 /** 目录条目的手写部分：端点三件套由厂商目录补齐，这里只写型号自己的事 */
@@ -163,6 +168,12 @@ const MODEL_SPECS: ModelSpec[] = [
   { provider: "siliconflow", model: "deepseek-ai/DeepSeek-V4-Pro", label: "DeepSeek V4 Pro", contextWindow: 1_000_000, thinking: THINKING_ENABLE, supportsVision: false },
 ];
 
+/** thinking 模式要求 reasoning_content 回传的厂商集合（#1151，2026-09-09 真接口探针，
+    逐家验过才准进；探针记录与判据表在 issue 与 ADR-0274）。
+    开错方向的代价不对称：漏开 = 还在赌服务端缓存（今天的病）；错开 = 给会拒
+    陌生字段的 API 发 reasoning_content，当场 400——所以默认关，验过才开 */
+const REASONING_PASSBACK: ReadonlySet<ProviderId> = new Set<ProviderId>(["deepseek"]);
+
 function expand(spec: ModelSpec): ModelChoice {
   const p = findProvider(spec.provider);
   if (!p) throw new Error(`模型 ${spec.model} 指向了不存在的厂商: ${spec.provider}`);
@@ -179,6 +190,7 @@ function expand(spec: ModelSpec): ModelChoice {
     thinking: spec.thinking,
     supportsVision: spec.supportsVision,
     keyless: p.keyless ?? false,
+    reasoningPassback: REASONING_PASSBACK.has(spec.provider),
   };
 }
 
@@ -218,6 +230,7 @@ function ollamaChoice(tag: string): ModelChoice {
     thinking: THINKING_NONE,
     supportsVision: false,
     keyless: true,
+    reasoningPassback: false, // Ollama 未验（#1151 的纪律：没验过的一律不开）
   };
 }
 
@@ -309,6 +322,10 @@ export function resolveModel(model: string): ModelChoice {
       thinking: THINKING_NONE,
       supportsVision: false,
       keyless: false,
+      // 目录外 id：可能是 DeepSeek 官方型号，也可能是 *_BASE_URL 指去的自建
+      // 代理——后者严格校验与否问不出来。没验过就不开（#1151 的纪律），
+      // 代价是官方自定义 id 继续赌服务端缓存（与改动前相同，不是回退）
+      reasoningPassback: false,
     }
   );
 }

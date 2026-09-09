@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import {
   DEFAULT_RELAY_MAX_DEPTH, RELAY_GUARD, RELAY_SPIN_STOP_REPEATS, RELAY_BUDGET_FRACTION_OF_REMAINING,
-  decideRelay, hopFingerprint, mentionedAgents, relayBudgetMicroOf, relayStateSince,
+  decideRelay, hopFingerprint, isHumanOpening, mentionedAgents, relayBudgetMicroOf, relayStateSince,
   openingDepthFor, relayApprovalWaitText, relayBudgetCapText, relayCapText, relaySpinStopText,
   relayChain, relayDepthOf, relayNudgeText, relayOpeningText,
   advanceRelayBounds, emptyRelayBounds, relayBoundsOf, RELAY_MAX_HOPS_PER_IGNITION, relayTotalCapText,
@@ -428,5 +428,14 @@ describe("relayApprovalWaitText（#959）", () => {
 
   it("名字里的 `「」` 也换替身——否则一个名字就能提前闭合引号栏位", () => {
     expect(relayApprovalWaitText("广「告」", "b", "c", 120_000)).toContain("「广｢告｣」");
+  });
+});
+
+describe("派活开场白（#1153）", () => {
+  it("系统按职责派的那条 user_message{dispatch:\"auto\"} 算人话点火：链首归零，不是接力棒", () => {
+    const dispatched = { sessionId: "s", ts: 1, seq: 1, type: "user_message", content: "[alice]: 看下销量", fromUid: "u1", mentions: ["ops"], dispatch: "auto" } as unknown as SessionEvent;
+    const relayed = { sessionId: "s", ts: 2, seq: 2, type: "user_message", content: "[系统] …", fromUid: "u1", mentions: ["ads"], relay: { fromAgentId: "ops", depth: 1 } } as unknown as SessionEvent;
+    expect(isHumanOpening(dispatched)).toBe(true);
+    expect(isHumanOpening(relayed)).toBe(false);
   });
 });

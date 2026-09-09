@@ -5,6 +5,7 @@ import {
   type Caller, type HoldOutcome, type QuotaPort, type RouteRow, type SettleMeta,
 } from "../../services/edge/src/llmGateway.js";
 import { BILLING_HEADERS, SSE_COST_COMMENT, parseSseCostComment } from "../../src/shared/billing.js";
+import { TTS_HEADERS } from "../../src/shared/tts.js";
 
 const flash: RouteRow = {
   id: "deepseek-v4-flash@deepseek", logicalModel: "deepseek-v4-flash", platform: "deepseek",
@@ -634,7 +635,7 @@ describe("流式的「本次花费」尾注（#857 的另一半）", () => {
 // 让下面这几条跑得到。
 
 describe("upstreamKeyOf", () => {
-  it("四家平台都在表里，且键与 model_route.platform 逐字相同", () => {
+  it("五家平台都在表里，且键与 model_route.platform 逐字相同", () => {
     // 值写死一份而不是从被测代码反推：这几个名字同时出现在 wrangler secret、
     // README 部署步骤和 Env 类型里，改名要四处一起改，断言在这儿把它钉住
     expect(UPSTREAM_KEY_ENV).toEqual({
@@ -642,6 +643,7 @@ describe("upstreamKeyOf", () => {
       zhipu: "ZHIPU_API_KEY",
       qwen: "QWEN_API_KEY",
       openrouter: "OPENROUTER_API_KEY",
+      minimax: "MINIMAX_API_KEY", // 语音（#1163）
     });
   });
 
@@ -655,5 +657,109 @@ describe("upstreamKeyOf", () => {
 
   it("空字符串当没配 —— wrangler 上一个删了值的 secret 与「从没配过」该是同一种行为", () => {
     expect(upstreamKeyOf({ QWEN_API_KEY: "" }, "qwen")).toBeUndefined();
+  });
+});
+
+// ── 语音那扇门（#1163） ────────────────────────────────────────────────
+//
+// 与出图那扇门同一条纪律：打哪个上游端点由路由行的 `kind` 决定，路径只是给客户端
+// 读的。与 chat / image 不同的是**钱按字符数算**（MiniMax 按字符计费，回包里没有
+// token）：预扣 = ttsUnits(text) × price_out，结算用上游报的 usage_characters；
+// 回包里的音频是 hex，网关解成字节交给桌面（hex 是两倍体积，别让它再走两跳）。
+
+const tts: RouteRow = {
+  id: "speech-2.8-turbo@minimax", logicalModel: "speech-2.8-turbo", platform: "minimax",
+  baseUrl: "https://mm/v1", wireModel: "speech-2.8-turbo",
+  priceInMicroPerM: 0, priceCacheMicroPerM: 0, priceOutMicroPerM: 27_777_778, defaultMaxTokens: 400,
+  kind: "tts",
+};
+const speechReq = (body: unknown) =>
+  new Request("https://edge/llm/v1/speech", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+  });
+const mmOk = (hex = "fffb", chars = 41) => () =>
+  Response.json({
+    data: { audio: hex, status: 2 },
+    extra_info: { usage_characters: chars, audio_length: 5508 },
+    base_resp: { status_code: 0, status_msg: "success" },
+  });
+const SPEECH_TEXT = "你好，我是管理员。这条消息是语音通话的测试。"; // ttsUnits = 41（真机对账）
+
+describe("语音那扇门（#1163）：kind=tts 打 /t2a_v2，按字符数预扣与结算，hex 解成 audio/mpeg", () => {
+  it("upstreamPathFor(tts) = /t2a_v2；UPSTREAM_KEY_ENV 有 minimax", () => {
+    expect(upstreamPathFor("tts")).toBe("/t2a_v2");
+    expect(UPSTREAM_KEY_ENV.minimax).toBe("MINIMAX_API_KEY");
+  });
+
+  it("成功：预扣 = 41 字符 × 单价；结算用 usage_characters；回 mp3 字节与三个头；上游收到 MiniMax 形状", async () => {
+    const { quota, calls } = quotaStub();
+    const holdArgs: number[] = [];
+    quota.hold = async (_uid, rid, est) => { calls.hold.push(rid); holdArgs.push(est); return { ok: true, chargedTo: "window" }; };
+    const up = upstream(mmOk());
+    const handle = createLlmGateway({ routes: async () => [tts], quota, upstreamKey: () => "k", fetchImpl: up.fetchImpl });
+    const res = await handle(speechReq({ model: "speech-2.8-turbo", text: SPEECH_TEXT, voice_id: "male-qn-jingying" }), caller);
+    expect(res.status).toBe(200);
+    expect(res.headers.get("content-type")).toBe("audio/mpeg");
+    expect(new Uint8Array(await res.arrayBuffer())).toEqual(new Uint8Array([0xff, 0xfb]));
+    expect(holdArgs).toEqual([Math.round((41 * 27_777_778) / 1_000_000)]);
+    expect(calls.settle).toHaveLength(1);
+    expect(calls.settle[0]!.usage).toEqual({ promptTokens: 0, cachedTokens: 0, completionTokens: 41 });
+    expect(res.headers.get(BILLING_HEADERS.cost)).toBe(String(calls.settle[0]!.costMicro));
+    expect(res.headers.get(TTS_HEADERS.audioMs)).toBe("5508");
+    expect(res.headers.get(TTS_HEADERS.chars)).toBe("41");
+    expect(res.headers.get(BILLING_HEADERS.h5)).toBe("100"); // 额度头照带
+    expect(res.headers.get("x-otto-route-id")).toBe(tts.id);
+    const sent = up.seen[0]!;
+    expect(sent.url).toBe("https://mm/v1/t2a_v2");
+    expect(sent.headers.get("authorization")).toBe("Bearer k");
+    expect(await sent.json()).toMatchObject({ model: "speech-2.8-turbo", stream: false, voice_setting: { voice_id: "male-qn-jingying" } });
+  });
+
+  it("上游没报 usage_characters：按本地算的字符数结算（同 chat 那条「挑不出 usage 也按预扣结算」）", async () => {
+    const { quota, calls } = quotaStub();
+    const up = upstream(() => Response.json({ data: { audio: "00" }, base_resp: { status_code: 0 } }));
+    const handle = createLlmGateway({ routes: async () => [tts], quota, upstreamKey: () => "k", fetchImpl: up.fetchImpl });
+    const res = await handle(speechReq({ model: "speech-2.8-turbo", text: SPEECH_TEXT, voice_id: "v" }), caller);
+    expect(res.status).toBe(200);
+    expect(calls.settle[0]!.usage.completionTokens).toBe(41);
+    expect(res.headers.get(TTS_HEADERS.audioMs)).toBeNull();
+  });
+
+  it("HTTP 200 + status_code≠0：释放预扣、回 502 带 MiniMax 的话，不结算", async () => {
+    const { quota, calls } = quotaStub();
+    const up = upstream(() => Response.json({ base_resp: { status_code: 1004, status_msg: "auth failed" } }));
+    const handle = createLlmGateway({ routes: async () => [tts], quota, upstreamKey: () => "k", fetchImpl: up.fetchImpl });
+    const res = await handle(speechReq({ model: "speech-2.8-turbo", text: "hi", voice_id: "v" }), caller);
+    expect(res.status).toBe(502);
+    expect(calls.release).toHaveLength(1);
+    expect(calls.settle).toHaveLength(0);
+    expect(((await res.json()) as { error: { message: string } }).error.message).toContain("1004");
+  });
+
+  it("上游非 2xx：释放预扣、502（不换站——tts 只有一条路）", async () => {
+    const { quota, calls } = quotaStub();
+    const up = upstream(() => new Response("boom", { status: 500 }));
+    const handle = createLlmGateway({ routes: async () => [tts], quota, upstreamKey: () => "k", fetchImpl: up.fetchImpl });
+    const res = await handle(speechReq({ model: "speech-2.8-turbo", text: "hi", voice_id: "v" }), caller);
+    expect(res.status).toBe(502);
+    expect(calls.release).toHaveLength(1);
+  });
+
+  it("形状不对 400：一个字节都不发、不 hold", async () => {
+    const { quota, calls } = quotaStub();
+    const up = upstream(mmOk());
+    const handle = createLlmGateway({ routes: async () => [tts], quota, upstreamKey: () => "k", fetchImpl: up.fetchImpl });
+    const res = await handle(speechReq({ model: "speech-2.8-turbo", text: "hi" }), caller);
+    expect(res.status).toBe(400);
+    expect(calls.hold).toHaveLength(0);
+    expect(up.seen).toHaveLength(0);
+  });
+
+  it("额度用完：429 quota_exhausted，与 chat 那条路同一个信封", async () => {
+    const { quota } = quotaStub({ ok: false, code: "quota_exhausted", window: "5h", resetAt: 1 });
+    const handle = createLlmGateway({ routes: async () => [tts], quota, upstreamKey: () => "k", fetchImpl: upstream(mmOk()).fetchImpl });
+    const res = await handle(speechReq({ model: "speech-2.8-turbo", text: "hi", voice_id: "v" }), caller);
+    expect(res.status).toBe(429);
+    expect(((await res.json()) as { error: { code: string } }).error.code).toBe("quota_exhausted");
   });
 });

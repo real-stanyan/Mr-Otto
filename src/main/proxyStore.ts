@@ -267,12 +267,12 @@ export function mergeCloudAudits(
   entries: readonly { ts: number; fromUid: string; serverId: string; tool: string; outcome: "ok" | "denied" | "error"; note?: string }[]
 ): ProxyStoreData {
   if (entries.length === 0) return data;
-  const seen = new Set(data.audits.map((a) => `${a.ts} ${a.friendUid} ${a.tool}`));
+  const seen = new Set(data.audits.map((a) => `${a.ts}\u0000${a.friendUid}\u0000${a.tool}`));
   const fresh: ProxyAuditRecord[] = [];
   let cursor = data.cloudAuditCursor ?? 0;
   for (const e of entries) {
     if (e.ts > cursor) cursor = e.ts;
-    const key = `${e.ts} ${e.fromUid} ${e.tool}`;
+    const key = `${e.ts}\u0000${e.fromUid}\u0000${e.tool}`;
     if (seen.has(key)) continue;
     seen.add(key);
     fresh.push({

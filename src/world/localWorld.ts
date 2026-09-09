@@ -11,6 +11,7 @@ import type {
   DetachedOptions,
   ExecutionWorld,
   ExecResult,
+  HttpPostOptions,
   TerminalSession,
 } from "./executionWorld.js";
 import type { LiveGroupRegistry } from "./liveGroups.js";
@@ -153,6 +154,39 @@ export function createLocalWorld(
       ...(path ? { PATH: path } : {}),
       ...extra,
     };
+  };
+
+  /** POST JSON 并把响应头一起交出来（#1084）：出图那笔钱由网关在响应头里结算
+      （x-otto-cost-micro，非流式，ADR-0211），body 里只有 usage——postJson 把
+      响应头丢掉之后，工具只能报 token、报不了 credit。postJson 与它是同一次
+      fetch 的两种取法，超时/中断/报错语义只有这一份 */
+  const postJsonWithHeaders = async (
+    url: string,
+    body: unknown,
+    o?: HttpPostOptions
+  ): Promise<{ body: unknown; headers: Record<string, string> }> => {
+    const fetchImpl = opts.fetchImpl ?? fetch;
+    // 超时与外部中断信号合并;两者都能掐死请求。
+    // timeoutMs 缺席 = 30s（改动前的行为）；出图那条路自己声明更长的（#1081）
+    const timeout = AbortSignal.timeout(o?.timeoutMs ?? HTTP_TIMEOUT_MS);
+    const signal = o?.signal ? AbortSignal.any([o.signal, timeout]) : timeout;
+    let res: Response;
+    try {
+      res = await fetchImpl(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...o?.headers },
+        body: JSON.stringify(body),
+        signal,
+      });
+    } catch (err) {
+      // 中断是外力,不是请求自身失败——语义对齐 exec(ADR-0006)
+      if (o?.signal?.aborted) throw new Error("请求被中断：用户停止了 turn");
+      throw err;
+    }
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
+    }
+    return { body: (await res.json()) as unknown, headers: Object.fromEntries(res.headers.entries()) };
   };
   return {
     fs: {
@@ -319,30 +353,8 @@ export function createLocalWorld(
     },
 
     http: {
-      async postJson(url, body, o) {
-        const fetchImpl = opts.fetchImpl ?? fetch;
-        // 超时与外部中断信号合并;两者都能掐死请求。
-        // timeoutMs 缺席 = 30s（改动前的行为）；出图那条路自己声明更长的（#1081）
-        const timeout = AbortSignal.timeout(o?.timeoutMs ?? HTTP_TIMEOUT_MS);
-        const signal = o?.signal ? AbortSignal.any([o.signal, timeout]) : timeout;
-        let res: Response;
-        try {
-          res = await fetchImpl(url, {
-            method: "POST",
-            headers: { "Content-Type": "application/json", ...o?.headers },
-            body: JSON.stringify(body),
-            signal,
-          });
-        } catch (err) {
-          // 中断是外力,不是请求自身失败——语义对齐 exec(ADR-0006)
-          if (o?.signal?.aborted) throw new Error("请求被中断：用户停止了 turn");
-          throw err;
-        }
-        if (!res.ok) {
-          throw new Error(`HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
-        }
-        return res.json();
-      },
+      postJson: async (url, body, o) => (await postJsonWithHeaders(url, body, o)).body,
+      postJsonWithHeaders,
 
       async getJson(url, o) {
         const fetchImpl = opts.fetchImpl ?? fetch;

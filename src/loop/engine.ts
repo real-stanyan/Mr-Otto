@@ -425,7 +425,7 @@ export class LoopEngine {
         toolCallId: ctx.call.id,
         ...(ctx.signal ? { signal: ctx.signal } : {}),
       });
-      // run 可返回字符串（现状）或 { output, concludesTurn, images }（DSH 式提前收口 / 出图）
+      // run 可返回字符串（现状）或 { output, concludesTurn, images, billing }（DSH 式提前收口 / 出图）
       outcome =
         typeof raw === "string"
           ? { status: "ok", output: raw }
@@ -435,6 +435,8 @@ export class LoopEngine {
               ...(raw.concludesTurn ? { concludesTurn: true } : {}),
               // 原始字节到此为止：能不能落盘由 imageIntake 中间件说了算
               ...(raw.images && raw.images.length > 0 ? { images: raw.images } : {}),
+              // 工具里套着的那次模型调用的账（#1084）：透传给落盘处摊平
+              ...(raw.billing ? { billing: raw.billing } : {}),
             };
     } catch (err) {
       // 中断（AbortError）原样上抛语义不变：外面的收口逻辑靠它。
@@ -939,6 +941,20 @@ export class LoopEngine {
             // imageRefs = 这个键整个不出现,旧日志形状不变
             ...(outcome.imageRefs && outcome.imageRefs.length > 0
               ? { images: [...outcome.imageRefs] }
+              : {}),
+            // 工具里套着的那次模型调用的账（#1084）：摊平成与 assistant_message
+            // 同名的四格，deriveUsage 的 billed() 按「有没有这一格」记账，
+            // 不为工具单写分支。creditCostMicro 缺席 ≠ 0（世界读不到响应头时
+            // 这一格不在，usageByModel 会把整行标成「没记到」而不是报偏小的数）
+            ...(outcome.billing
+              ? {
+                  model: outcome.billing.model,
+                  usage: outcome.billing.usage,
+                  route: outcome.billing.route,
+                  ...(outcome.billing.creditCostMicro !== undefined
+                    ? { creditCostMicro: outcome.billing.creditCostMicro }
+                    : {}),
+                }
               : {}),
           });
           // concludesTurn = 数据驱动的提前收口（DSH 同款）：本步到此为止，

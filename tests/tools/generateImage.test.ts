@@ -123,6 +123,44 @@ describe("generate_image", () => {
     await expect(tool.run({ prompt: "   " }, world)).rejects.toThrow(/prompt/);
   });
 
+  it("账跟着回包走（#1084）：usage 从 body、credit 从响应头，route 恒 hosted", async () => {
+    // 世界读得到响应头时（postJsonWithHeaders 在场），这笔账两格都有
+    const world: ExecutionWorld = {
+      fs: { read: async () => "", write: async () => {} },
+      exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }),
+      http: {
+        postJson: async () => ({}),
+        postJsonWithHeaders: async () => ({
+          body: { created: 1, data: [png()], usage: { prompt_tokens: 12, completion_tokens: 1120 } },
+          headers: { "x-otto-cost-micro": "67206" },
+        }),
+      },
+    };
+    const out = await createGenerateImageTool(deps()).run({ prompt: "一只水獭" }, world);
+    if (typeof out === "string") throw new Error("出图工具必须回对象形态");
+    expect(out.billing).toEqual({
+      model: "gemini-3.1-flash-image",
+      usage: { promptTokens: 12, completionTokens: 1120 },
+      route: "hosted",
+      creditCostMicro: 67206,
+    });
+  });
+
+  it("世界读不到响应头时只有 token 没有钱 —— 缺席 ≠ 0，不落 creditCostMicro 这个键", async () => {
+    const { world } = fakeWorld({ created: 1, data: [png()], usage: { prompt_tokens: 12, completion_tokens: 1120 } });
+    const out = await createGenerateImageTool(deps()).run({ prompt: "x" }, world);
+    if (typeof out === "string") throw new Error("出图工具必须回对象形态");
+    expect(out.billing?.usage).toEqual({ promptTokens: 12, completionTokens: 1120 });
+    expect(out.billing && "creditCostMicro" in out.billing).toBe(false);
+  });
+
+  it("回包没报 usage = 这笔账不在 —— 没记 ≠ 没花，deriveUsage 不收没有 usage 的事件", async () => {
+    const { world } = fakeWorld(reply([png()]));
+    const out = await createGenerateImageTool(deps()).run({ prompt: "x" }, world);
+    if (typeof out === "string") throw new Error("出图工具必须回对象形态");
+    expect(out.billing).toBeUndefined();
+  });
+
   it("不过审批门、可并发 —— 与 web_search 同级（它也花钱）", () => {
     const tool = createGenerateImageTool(deps());
     expect(tool.requiresApproval).toBe(false);

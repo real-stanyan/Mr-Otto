@@ -232,6 +232,10 @@ export interface CloudSessionClient {
       或 owner，与 approve 同一判据）——resolve 的是 `stop_result` 那条回执，
       不是「帧交给 socket 了」 */
   stop(seq?: number): Promise<CloudAck>;
+  /** 改语音通话名单（协议 17，#1163）：空 = 结束。任何在籍成员都能改（服务端复核名单里
+      的 id）——resolve 的是 `call_result` 那条回执，不是「帧交给 socket 了」；通话栏画的是
+      随后广播回来的 `voice_call_changed`，不是这个回执 */
+  call(participants: string[]): Promise<CloudAck>;
   /** 读一个团队的仓库状态 + 路由（控制房 RPC，协议 8，#991）。不依赖任何
       一条会话——团队设置页从侧栏 ⚙ 进来时手上未必开着这个团队的云会话 */
   workspaceState(workspaceId: string): Promise<FriendsResult<WorkspaceCloudState>>;
@@ -322,6 +326,8 @@ interface ActiveSession {
   pendingApprove: Map<string, CsPending>;
   /** 还没等到 `stop_result` 的那一次停（#957 第三批） */
   pendingStop: CsPending | null;
+  /** 还没等到 `call_result` 的那一次改名单（#1163） */
+  pendingCall: CsPending | null;
 }
 
 /** 一次「等服务端回执」的挂起态：resolve 用的 settle + 超时定时器。
@@ -420,6 +426,14 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     pending.settle(result);
   }
 
+  function settleCall(session: ActiveSession, result: CloudAck): void {
+    const pending = session.pendingCall;
+    if (!pending) return;
+    session.pendingCall = null;
+    clearTimeout(pending.timer);
+    pending.settle(result);
+  }
+
   /** 按 callId 收口一次审批（#957 第三批）。callId 缺席 = 收口全部——
       连接进终态时没有哪一张卡还有机会等到回执 */
   function settleApprove(session: ActiveSession, callId: string | null, result: CloudAck): void {
@@ -440,6 +454,7 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
   function settleWaiters(session: ActiveSession, result: CloudAck): void {
     settleSay(session, result);
     settleStop(session, result);
+    settleCall(session, result);
     settleApprove(session, null, result);
   }
 
@@ -583,6 +598,9 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
         return;
       case "stop_result":
         settleStop(session, msg.ok ? { ok: true } : { ok: false, message: msg.message ?? "没能停下这一轮" });
+        return;
+      case "call_result":
+        settleCall(session, msg.ok ? { ok: true } : { ok: false, message: msg.message ?? "通话名单没有改上" });
         return;
       case "denied":
         markDenied(session, msg.code, msg.v);
@@ -896,6 +914,7 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
       pendingSay: null,
       pendingApprove: new Map(),
       pendingStop: null,
+      pendingCall: null,
     };
     active = session;
     pushStatus(session);
@@ -1019,6 +1038,22 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     });
   }
 
+  async function call(participants: string[]): Promise<CloudAck> {
+    const r = requireReady();
+    if (!r.ok) return r;
+    const session = r.session;
+    // 不叠发：上一次的回执还没到就再发，两条 call_result 分不清是谁的（同 stop / say）
+    if (session.pendingCall) return { ok: false, message: "上一次改名单还没有回执，稍等" };
+    const sent = sendFrame(session, { t: "call", participants });
+    if (!sent.ok) return sent;
+    return new Promise<CloudAck>((resolve) => {
+      const timer = setTimeout(() => {
+        settleCall(session, { ok: false, message: ACK_TIMEOUT_MESSAGE, ...ACK_UNKNOWN });
+      }, ACK_TIMEOUT_MS);
+      session.pendingCall = { settle: resolve, timer };
+    });
+  }
+
   function archive(workspaceId: string, sessionId: string): Promise<FriendsResult<null>> {
     return ctlRequest({ t: "archive", workspaceId, sessionId }, (msg) => {
       if (msg.t !== "archive_result" || msg.sessionId !== sessionId) return null;
@@ -1049,5 +1084,5 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     };
   }
 
-  return { currentSessionId, activeSummary, create, join, leave, say, approve, archive, remove, stop, workspaceState, workspaceGitCredential, workspaceFiles, workspaceFilesSearch, workspaceWikiWrite };
+  return { currentSessionId, activeSummary, create, join, leave, say, approve, archive, remove, stop, call, workspaceState, workspaceGitCredential, workspaceFiles, workspaceFilesSearch, workspaceWikiWrite };
 }

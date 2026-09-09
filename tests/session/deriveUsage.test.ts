@@ -58,6 +58,31 @@ describe("usageByModel", () => {
     expect(rows).toEqual([{ model: "cheap", route: "direct", promptTokens: 12, completionTokens: 3, cachedTokens: 0 }]);
   });
 
+  it("出图那一笔也进账（#1084）：generate_image 的模型调用挂在 tool_result 上，带 credit", () => {
+    const rows = usageByModel([
+      said("glm-4.7", 100, 10),
+      ev({
+        type: "tool_result",
+        toolCallId: "c1",
+        status: "ok",
+        output: "已生成 1 张图并显示给用户。",
+        model: "gemini-3.1-flash-image",
+        usage: { promptTokens: 12, completionTokens: 1120 },
+        route: "hosted",
+        creditCostMicro: 67206,
+      }),
+    ]);
+    // 文字与出图是不同的型号、不同的路，分两行；出图那行的 credit 原样过桥
+    expect(rows).toEqual([
+      { model: "gemini-3.1-flash-image", route: "hosted", promptTokens: 12, completionTokens: 1120, cachedTokens: 0, creditCostMicro: 67206 },
+      { model: "glm-4.7", route: "direct", promptTokens: 100, completionTokens: 10, cachedTokens: 0 },
+    ]);
+  });
+
+  it("没有 usage 的 tool_result 不算账 —— 日志里绝大多数工具结果一行不多", () => {
+    expect(usageByModel([ev({ type: "tool_result", toolCallId: "c1", status: "ok", output: "x" })])).toEqual([]);
+  });
+
   it("外挂小调用带了 route 就按 route 记（#1091）—— 订阅用户的小模型走的是托管", () => {
     // ADR-0248 之前「外挂只走用户自己的 key」是真的，`billed()` 里那句写死的 direct
     // 因此一直是对的；那条规矩改了之后它成了假的，而失败模式是安静的——一次真·hosted
@@ -104,6 +129,26 @@ describe("usageByModel", () => {
 
   it("没记用量的调用不进账 —— 当 0 会让「没记」和「没花」看起来一样", () => {
     expect(usageByModel([ev({ type: "assistant_message", content: "", model: "m" })])).toEqual([]);
+  });
+
+  it("代读员那一笔也进账（#1093）—— 每条带图消息都真跑一次视觉模型", () => {
+    // image_described 原来没有 usage 字段，本机这本账一次都没算过它；一个天天
+    // 贴图的用户在本机看不到他在这上面花了多少（网关侧 usage_event 一直是全的，
+    // 钱没少收——错的是本机这本）
+    const rows = usageByModel([
+      said("main-model", 10, 5),
+      ev({ type: "image_described", content: "一只像素水獭", model: "vision-m", usage: { promptTokens: 500, completionTokens: 80 }, route: "hosted", creditCostMicro: 6_000 }),
+    ]);
+    expect(rows).toEqual([
+      { model: "vision-m", route: "hosted", promptTokens: 500, completionTokens: 80, cachedTokens: 0, creditCostMicro: 6_000 },
+      { model: "main-model", route: "direct", promptTokens: 10, completionTokens: 5, cachedTokens: 0 },
+    ]);
+  });
+
+  it("旧日志里的 image_described 没有 usage → 不进账，不凭空多出行（#1093）", () => {
+    // BILLED_EVENT_TYPES 同时是 store 那条 SQL 的筛选清单（设置页跨会话用量）——
+    // 加进清单之后旧事件靠「usage 缺席跳过」这条既有判据天然免疫
+    expect(usageByModel([ev({ type: "image_described", content: "一只像素水獭", model: "vision-m" })])).toEqual([]);
   });
 
   it("不是模型调用的事件不进账", () => {

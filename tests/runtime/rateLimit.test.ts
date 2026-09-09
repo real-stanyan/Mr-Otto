@@ -105,7 +105,7 @@ describe("createFrameRateLimiter（三档 + 日志收口）", () => {
   });
 
   it("拒绝语说的是「慢一点」不是「出错了」—— 后者会让人反复重试", () => {
-    for (const kind of ["say", "turn", "create", "wiki"] as const) {
+    for (const kind of ["say", "turn", "create", "stop", "files", "wiki", "call"] as const) {
       expect(throttleMessage(kind)).toMatch(/稍等|太快|超了/);
     }
   });
