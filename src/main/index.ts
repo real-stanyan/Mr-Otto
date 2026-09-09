@@ -34,6 +34,8 @@ import type { GitCheckoutResult } from "../shared/gitGraph.js";
 import type { CatalogEntry } from "../shared/mcpCatalog.js";
 import { createSimInputBridge } from "./simInputBridge.js";
 import { resolveSimInputBinPath } from "./simInputBinPath.js";
+import { createSpeechBridge, type SpeechCommand } from "./speechBridge.js";
+import { resolveSpeechBinPath } from "./speechBinPath.js";
 import { createBrowserHub } from "./browserHub.js";
 import { createMcpHub } from "./mcpHub.js";
 import { configDir } from "./configDir.js";
@@ -1392,6 +1394,26 @@ void app.whenReady().then(() => {
           };
         },
         log: (m) => console.warn(`[simInput] ${m}`),
+      })
+    : null;
+
+  // 群语音里「人说话」那一半（#1176，ADR-0273）：macOS 原生本机识别 helper（native/MrOttoSpeech），
+  // 懒起——第一次开麦才 spawn。缺席（非 mac / 没 build）时开麦得到一句人话，通话与 TTS 照旧
+  const speechBin = process.platform === "darwin" ? resolveSpeechBinPath() : null;
+  const speech = speechBin
+    ? createSpeechBridge({
+        binPath: speechBin,
+        spawn: (bin) => {
+          const c = spawn(bin, [], { stdio: ["pipe", "pipe", "ignore"] });
+          return {
+            stdin: { write: (str: string) => void c.stdin?.write(str) },
+            stdout: { on: (_ev: "data", cb: (b: Buffer) => void) => void c.stdout?.on("data", cb) },
+            on: (_ev: "exit", cb: () => void) => void c.on("exit", cb),
+            kill: () => void c.kill(),
+          };
+        },
+        onEvent: (ev) => send(CHANNELS.speechEvent, ev),
+        log: (m) => console.warn(`[speech] ${m}`),
       })
     : null;
 
@@ -3447,6 +3469,24 @@ void app.whenReady().then(() => {
     cloudClient.stop(seq ?? undefined)
   );
   ipcMain.handle(CHANNELS.teamVoiceSpeak, (_e, text: string, voiceId: string) => teamVoice.speak(text, voiceId));
+  // 麦克风四条命令（#1176）：没有 helper 的机器上，开麦要把「为什么没声」说出口——
+  // 一条 error + 一条 listening:false，通话栏据此画「开麦」而不是一直转着「正在开麦」
+  const speechSend = (c: SpeechCommand): void => {
+    if (speech === null) {
+      if (c.type === "start") {
+        send(CHANNELS.speechEvent, { type: "error", message: "这台机器没有语音识别 helper（只支持 macOS；开发时先跑 npm run dev 编译 native/MrOttoSpeech）" });
+        send(CHANNELS.speechEvent, { type: "listening", on: false });
+      }
+      return;
+    }
+    speech.send(c);
+  };
+  ipcMain.handle(CHANNELS.speechStart, (_e, locale: unknown) =>
+    speechSend({ type: "start", locale: typeof locale === "string" && locale !== "" ? locale : "zh-CN" })
+  );
+  ipcMain.handle(CHANNELS.speechStop, () => speechSend({ type: "stop" }));
+  ipcMain.handle(CHANNELS.speechPause, () => speechSend({ type: "pause" }));
+  ipcMain.handle(CHANNELS.speechResume, () => speechSend({ type: "resume" }));
   ipcMain.handle(CHANNELS.workspaceCloudCall, (_e, participants: string[]) =>
     cloudClient.call(Array.isArray(participants) ? participants.filter((p): p is string => typeof p === "string") : [])
   );
@@ -4439,6 +4479,7 @@ void app.whenReady().then(() => {
     // 画面轮询是个 interval,helper 是个子进程:窗口没了两个都该跟着没
     simulators.dispose();
     simInput?.dispose();
+    speech?.dispose(); // 麦克风 helper 是子进程：app 退了它不该还占着麦克风
     // 代理通道是长连的 WebSocket + 定时器:app 退了还挂着等于替一个不存在的 A 守房间
     proxy?.closeAll();
     // 云会话连接同理是长连的 WebSocket（Task 12 复审 Medium）：app 退了还挂着

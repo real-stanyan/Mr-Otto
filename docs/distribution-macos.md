@@ -55,6 +55,19 @@ app 做了 ad-hoc 签名（`codesign --verify --deep --strict` 能过），但�
 
 运行时是另一条路径，行为不同：主进程启动时用 `resolveIslandBinPath()`（`src/main/islandBinPath.ts`）在 `process.resourcesPath` 下找这个二进制；打包完整（上面两步都跑过）就能找到。**找不到（非 mac、Swift 未装、build-island 没跑过、或二进制被后续步骤删掉）时，`resolveIslandBinPath()` 返回 `null`，岛静默不启动**——不弹错误、不拖死启动链、主窗和其余功能照常跑，只是没有灵动岛。
 
+
+## 语音识别 helper（MrOttoSpeech，#1176 / ADR-0273）
+
+群语音里「人说话」那一半：`native/MrOttoSpeech`，macOS 原生本机识别（SFSpeechRecognizer），与上面两个 helper 同一套打包路：`dist:mac` 前置跑 `scripts/build-speech.mjs`（release），`afterPack.cjs` 把 `native/MrOttoSpeech/.build/release/MrOttoSpeech` 拷进 `Contents/Resources/MrOttoSpeech` 并 ad-hoc 签，缺了整个 `dist:mac` 失败。
+
+权限有两道（麦克风、语音识别），第一次开麦时系统各弹一次：
+
+1. helper 是裸二进制没有 .app 壳，两条 usage description（`NSMicrophoneUsageDescription` / `NSSpeechRecognitionUsageDescription`）用链接器 `-sectcreate __TEXT,__info_plist` 嵌进二进制（`native/MrOttoSpeech/Package.swift` 的 `linkerSettings`，plist 在 `Sources/MrOttoSpeech/Info.plist`）；`otool -s __TEXT __info_plist <二进制>` 能看到它。
+2. TCC 把授权归到**责任进程**——helper 是主 app spawn 的，所以主 app 的 Info.plist 也得有这两句：`electron-builder.yml` 的 `mac.extendInfo`。缺了系统不弹窗直接拒，界面上只是一句「没有权限」。
+3. 开发时（`npm run dev`）责任进程是 `node_modules/electron/dist/Electron.app`，弹窗里写的是 Electron；勾在系统设置里的也是它。Electron 出厂只带麦克风那句，语音识别那句由 `scripts/build-speech.mjs --debug`（`npm run dev` 的前置）用 `plutil -replace` 补进它的 Info.plist（幂等；重装 electron 会丢，下次 dev 再补）。换一份 Electron（升版）要重新授权一次。
+
+没有 hardened runtime、不沙箱，所以不需要 `com.apple.security.device.audio-input` 那类 entitlement。
+
 ## OTA 更新（ADR-0075）
 
 装过一次之后，后续版本 app 自己更新：打包版启动 30s 后（此后每 6h）查本仓

@@ -36,6 +36,12 @@ beforeEach(() => {
       return { ok: true, audio: new Uint8Array([1]), costMicro: 1, audioMs: 10 };
     }),
     workspaceCloudLeave: vi.fn(async () => ({ ok: true, value: null })),
+    // 麦克风那半（#1176）：四条命令 + 发话
+    speechStart: vi.fn(async () => {}),
+    speechStop: vi.fn(async () => {}),
+    speechPause: vi.fn(async () => {}),
+    speechResume: vi.fn(async () => {}),
+    workspaceCloudSay: vi.fn(async () => ({ ok: true })),
   };
   useChat.setState({
     workspaceGroups: [ws],
@@ -104,5 +110,90 @@ describe("store 的语音接线（#1163）", () => {
     useChat.setState({ cloudSession: null });
     useChat.getState().joinVoiceCall();
     expect(useChat.getState().voice).toBeNull();
+  });
+});
+
+// 麦克风（#1176，ADR-0273）：进通话就开麦（常开），helper 的事件进 store，final 当成
+// 我在群里说的一句发出去（不 @ = 走派活）；agent 在说 / 排着要说时闭麦（半双工），说完开回。
+describe("store 的麦克风接线（#1176）", () => {
+  const otter = () => (window as unknown as { otter: Record<string, ReturnType<typeof vi.fn>> }).otter;
+  const m = (k: string): ReturnType<typeof vi.fn> => otter()[k]!;
+
+  it("加入通话 → speechStart(zh-CN)，mic 状态 starting；helper 报 listening → listening；partial 进字幕", () => {
+    const st = useChat.getState();
+    st.joinVoiceCall();
+    expect(m("speechStart")).toHaveBeenCalledWith("zh-CN");
+    expect(useChat.getState().voice?.mic.status).toBe("starting");
+    st.speechOnEvent({ type: "listening", on: true });
+    expect(useChat.getState().voice?.mic.status).toBe("listening");
+    st.speechOnEvent({ type: "partial", text: "帮我看" });
+    expect(useChat.getState().voice?.mic.transcript).toBe("帮我看");
+  });
+
+  it("final → 当成我在群里说的一句发出去（不 @），字幕清空；发不出去把话记进 mic.error", async () => {
+    const st = useChat.getState();
+    st.joinVoiceCall();
+    st.speechOnEvent({ type: "listening", on: true });
+    st.speechOnEvent({ type: "final", text: "帮我看下投放" });
+    await flush();
+    expect(m("workspaceCloudSay")).toHaveBeenCalledWith("帮我看下投放", false, [], []);
+    expect(useChat.getState().voice?.mic.transcript).toBe("");
+    m("workspaceCloudSay").mockImplementationOnce(async () => ({ ok: false, message: "发得太快了" }));
+    st.speechOnEvent({ type: "final", text: "再看一眼" });
+    await flush();
+    expect(useChat.getState().voice?.mic.error).toBe("发得太快了");
+  });
+
+  it("半双工：agent 的回复开始播 → speechPause；播完 → speechResume", async () => {
+    const st = useChat.getState();
+    st.joinVoiceCall();
+    st.speechOnEvent({ type: "listening", on: true });
+    st.voiceOnEvent(said("a_1", 2, "在的"));
+    await flush();
+    expect(m("speechPause")).toHaveBeenCalled();
+    // jsdom 没有 AudioContext：这段当播放失败跳过 → 队列空、没人在说 → 开回麦
+    expect(m("speechResume")).toHaveBeenCalled();
+    expect(m("speechPause").mock.invocationCallOrder[0]!).toBeLessThan(m("speechResume").mock.invocationCallOrder[0]!);
+  });
+
+  it("关麦 → speechStop、状态 off、字幕清空；开麦 → 再 speechStart", () => {
+    const st = useChat.getState();
+    st.joinVoiceCall();
+    st.speechOnEvent({ type: "listening", on: true });
+    st.speechOnEvent({ type: "partial", text: "在" });
+    st.setVoiceMic(false);
+    expect(m("speechStop")).toHaveBeenCalledTimes(1);
+    expect(useChat.getState().voice?.mic).toMatchObject({ status: "off", transcript: "" });
+    st.setVoiceMic(true);
+    expect(m("speechStart")).toHaveBeenCalledTimes(2);
+    expect(useChat.getState().voice?.mic.status).toBe("starting");
+  });
+
+  it("关了麦之后 helper 迟到的事件不再动状态；离开通话 / 通话结束 → speechStop", () => {
+    const st = useChat.getState();
+    st.joinVoiceCall();
+    st.setVoiceMic(false);
+    st.speechOnEvent({ type: "partial", text: "迟到的" });
+    expect(useChat.getState().voice?.mic).toMatchObject({ status: "off", transcript: "" });
+    st.setVoiceMic(true);
+    st.leaveVoiceCall();
+    expect(m("speechStop")).toHaveBeenCalledTimes(2);
+    st.joinVoiceCall();
+    useChat.setState((s) => ({ cloudSession: { ...s.cloudSession!, events: [...s.cloudSession!.events, call(9, [])] } }));
+    st.voiceOnEvent(call(9, []));
+    expect(m("speechStop")).toHaveBeenCalledTimes(3);
+    // 没开过麦的收尾不发 stop（helper 是懒起的，一条 stop 会白起一个进程）
+    useChat.getState().closeCloudSession();
+    expect(m("speechStop")).toHaveBeenCalledTimes(3);
+  });
+
+  it("没权限：status 说清去哪儿勾，之后的 error 不盖掉那句话", () => {
+    const st = useChat.getState();
+    st.joinVoiceCall();
+    st.speechOnEvent({ type: "status", speech: "denied", mic: "authorized", onDevice: true, locale: "zh-CN" });
+    st.speechOnEvent({ type: "error", message: "没有「语音识别」权限" });
+    const mic = useChat.getState().voice?.mic;
+    expect(mic?.status).toBe("denied");
+    expect(mic?.error).toContain("系统设置");
   });
 });

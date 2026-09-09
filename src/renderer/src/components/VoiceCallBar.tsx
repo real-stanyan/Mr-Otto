@@ -9,9 +9,13 @@
 // 消失，所以要二次确认——确认框由调用方包，这个组件不碰 ConfirmProvider）；**「静音」=
 // 本机**（只是我这台不播，通话照旧）。「加人」与输入框那颗语音钮是同一个弹层。
 // 计时从这一场第一条非空名单事件的 ts 起（`sinceTs`），每秒一跳、作用域圈在这条栏里。
+//
+// 麦克风那半（#1176，ADR-0273）：在听时多一颗麦克风钮——常开麦（进通话就开），说完停顿
+// 自动发出；agent 在说时半双工暂停（钮还是「关麦」，只是标出「对方在说」）；没权限那句画在
+// 错误行。字幕一行「你：…」画正在说的这一句，收口即清。
 
 import { useEffect, useState } from "react";
-import { Phone, PhoneOff, UserPlus, Volume2, VolumeX } from "lucide-react";
+import { Mic, MicOff, Phone, PhoneOff, UserPlus, Volume2, VolumeX } from "lucide-react";
 import { cn } from "@/lib/utils.js";
 import { Button } from "@/components/ui/button.js";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar.js";
@@ -36,6 +40,7 @@ export function VoiceCallBar({
   ready,
   onJoin,
   onMute,
+  onMic,
   onUpdate,
   onEnd,
 }: {
@@ -48,6 +53,8 @@ export function VoiceCallBar({
   ready: boolean;
   onJoin: () => void;
   onMute: (muted: boolean) => void;
+  /** 麦克风开 / 关（#1176，只影响这台机器） */
+  onMic: (on: boolean) => void;
   onUpdate: (ids: string[]) => Promise<CloudAck>;
   /** 结束通话（全组）。二次确认在调用方；回 ok:false 时那句话画在栏下 */
   onEnd: () => Promise<CloudAck>;
@@ -72,7 +79,19 @@ export function VoiceCallBar({
     if (!r.ok) setEndError(r.message);
   };
 
-  const error = voice?.error ?? endError;
+  const error = voice?.error ?? voice?.mic.error ?? endError;
+  // 「开着」= 我们让它开着（正在起 / 在听 / 半双工暂停 / 出错重试中）；关着 / 没权限画「开麦」
+  const micOn = voice !== null && voice.mic.status !== "off" && voice.mic.status !== "denied";
+  const micTitle = (): string => {
+    switch (voice?.mic.status) {
+      case "listening": return "关麦（只影响这台机器；说完停顿约 1.5 秒自动发出）";
+      case "paused": return "对方在说话，暂时闭麦；说完自动开回。点一下彻底关麦";
+      case "starting": return "正在开麦…点一下取消";
+      case "error": return "识别出了点问题，正在重试；点一下关麦";
+      case "denied": return "开麦——没有权限，见下方提示";
+      default: return "开麦（常开：说完停顿自动发出；agent 在说话时自动闭麦）";
+    }
+  };
 
   return (
     <div role="region" aria-label="语音通话" className="shrink-0 border-b border-border/60 px-4 py-1.5">
@@ -108,6 +127,18 @@ export function VoiceCallBar({
             </Button>
           </VoicePickerPopover>
           {voice ? (
+            <>
+            <Button
+              variant="ghost"
+              size="xs"
+              aria-label={micOn ? "关麦" : "开麦"}
+              title={micTitle()}
+              data-mic={voice.mic.status}
+              className={cn(voice.mic.status === "paused" && "text-muted-foreground")}
+              onClick={() => onMic(!micOn)}
+            >
+              {micOn ? <Mic className="size-[13px]" aria-hidden /> : <MicOff className="size-[13px]" aria-hidden />}
+            </Button>
             <Button
               variant="ghost"
               size="xs"
@@ -117,6 +148,7 @@ export function VoiceCallBar({
             >
               {voice.muted ? <VolumeX className="size-[13px]" aria-hidden /> : <Volume2 className="size-[13px]" aria-hidden />}
             </Button>
+            </>
           ) : available ? (
             <Button size="xs" onClick={onJoin}>
               加入
@@ -131,6 +163,9 @@ export function VoiceCallBar({
           </Button>
         </div>
       </div>
+      {voice && voice.mic.transcript !== "" && (
+        <p className="pt-1 text-[11px] text-muted-foreground" aria-live="polite">你：{voice.mic.transcript}</p>
+      )}
       {error && <p className="pt-1 text-[11px] text-err">{error}</p>}
     </div>
   );

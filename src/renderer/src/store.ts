@@ -39,6 +39,7 @@ import type {
   McpServersSnapshot,
   McpPromptInfo,
   CloudWorkspaceState,
+  SpeechEvent,
 } from "../../shared/shellBridge.js";
 import type { CsWorkHit, CsWorkNode } from "../../shared/remote/cloudSession.js";
 import type { CatalogEntry } from "../../shared/mcpCatalog.js";
@@ -99,6 +100,7 @@ import { runtimePatch } from "./lib/runtimeHydration.js";
 import { createAgentLanded } from "./lib/cloudTimeline.js";
 import { applyCloudDelta, clearCloudStreamingOn } from "./lib/cloudStreaming.js";
 import { EMPTY_VOICE_FEED, feedDelta, feedEvent, type VoiceFeedState } from "./lib/voiceCall.js";
+import { applySpeechEvent, MIC_OFF, micShouldPause, SPEECH_LOCALE, type MicState } from "./lib/voiceMic.js";
 import { VoicePlayer } from "./lib/voicePlayer.js";
 import { voiceCallOf } from "../../shared/voiceCall.js";
 import { agentVoiceId } from "../../shared/agentVoice.js";
@@ -217,6 +219,8 @@ export interface VoiceListenState {
   queued: number;
   /** 最近一段合成 / 播放失败的那句话（routeTts 的四种 blocked 或网关信封） */
   error: string | null;
+  /** 麦克风那半（#1176）：常开麦是默认，加入通话顺手开；agent 在说时半双工暂停 */
+  mic: MicState;
 }
 
 export interface CloudSessionState {
@@ -1075,6 +1079,11 @@ interface ChatState {
   /** 本机不听了（通话本身照旧）：停播、清队列 */
   leaveVoiceCall(): void;
   setVoiceMuted(muted: boolean): void;
+  /** 麦克风开关（#1176）：关 = 本机不收音（通话、播放照旧）；开 = 再起识别 */
+  setVoiceMic(on: boolean): void;
+  /** 内部：onSpeechEvent 之后进 store；final 当成我在群里说的一句发出去（不 @ = 派活）。
+      公开成 action 同 voiceOnEvent 的理由（测试不经 IPC 直接喂） */
+  speechOnEvent(ev: SpeechEvent): void;
   /** 内部：onCloudSessionEvent / onCloudSessionDelta 之后喂播放器。公开成 action 是为了
       测试能不经 IPC 直接喂（同 absorbEvent 的纪律） */
   voiceOnEvent(event: SessionEvent): void;
@@ -1317,11 +1326,37 @@ let subagentScopeGen = 0;
 // 模块级——它不是界面要画的东西，进 store 只会让每一片 delta 多一次 set
 let voicePlayer: VoicePlayer | null = null;
 let voiceFeed: VoiceFeedState = EMPTY_VOICE_FEED;
+// 麦克风（#1176）也在模块级：helper 是懒起的，「开过没有」决定收尾时发不发 stop（没开过
+// 就发一条 stop 会白起一个进程）；「我们让它暂停着」是半双工的去重记号
+let micStarted = false;
+let micPaused = false;
+function startMic(): void {
+  micStarted = true;
+  micPaused = false;
+  void window.otter.speechStart(SPEECH_LOCALE);
+}
+function stopMic(): void {
+  if (!micStarted) return;
+  micStarted = false;
+  micPaused = false;
+  void window.otter.speechStop();
+}
+/** 半双工：播放器每次变动都来问一遍该不该闭麦；只在跨过那条线时才发命令 */
+function micSync(p: { speaking: string | null; queued: number }): void {
+  if (!micStarted) return;
+  const want = micShouldPause(p);
+  if (want === micPaused) return;
+  micPaused = want;
+  void (want ? window.otter.speechPause() : window.otter.speechResume());
+}
 function voicePlayerFor(set: StoreApi<ChatState>["setState"]): VoicePlayer {
   if (voicePlayer === null) {
     voicePlayer = new VoicePlayer({
       speak: (text, voiceId) => window.otter.teamVoiceSpeak(text, voiceId),
-      onChange: (p) => set((s) => (s.voice ? { voice: { ...s.voice, speaking: p.speaking, queued: p.queued, error: p.error } } : s)),
+      onChange: (p) => {
+        set((s) => (s.voice ? { voice: { ...s.voice, speaking: p.speaking, queued: p.queued, error: p.error } } : s));
+        micSync(p);
+      },
     });
   }
   return voicePlayer;
@@ -1329,6 +1364,7 @@ function voicePlayerFor(set: StoreApi<ChatState>["setState"]): VoicePlayer {
 function stopVoice(): void {
   voicePlayer?.stop();
   voiceFeed = EMPTY_VOICE_FEED;
+  stopMic();
 }
 /** 音色按 agentId 从团队名单派生（agentVoice.ts）：名单顺序解撞，同一只两台机器同一个声音 */
 function rosterIdsOf(s: ChatState, workspaceId: string): string[] {
@@ -2627,11 +2663,37 @@ export const useChat = create<ChatState>((set, get) => ({
     if (!cs) return;
     stopVoice();
     const sinceSeq = cs.events.length > 0 ? cs.events[cs.events.length - 1]!.seq : -1;
-    set({ voice: { sessionId: cs.sessionId, listening: true, muted: false, sinceSeq, speaking: null, queued: 0, error: null } });
+    // 常开麦（#1176）：进通话就开
+    set({ voice: { sessionId: cs.sessionId, listening: true, muted: false, sinceSeq, speaking: null, queued: 0, error: null, mic: { ...MIC_OFF, status: "starting" } } });
+    startMic();
   },
   leaveVoiceCall() {
     stopVoice();
     if (get().voice !== null) set({ voice: null });
+  },
+  setVoiceMic(on) {
+    if (get().voice === null) return;
+    if (on) {
+      set((s) => (s.voice ? { voice: { ...s.voice, mic: { ...MIC_OFF, status: "starting" } } } : s));
+      startMic();
+    } else {
+      stopMic();
+      set((s) => (s.voice ? { voice: { ...s.voice, mic: MIC_OFF } } : s));
+    }
+  },
+  speechOnEvent(ev) {
+    const v = get().voice;
+    // 关着麦时 helper 迟到的事件不再动状态（stop 之后它还会吐一条 listening:false）
+    if (!v || v.mic.status === "off") return;
+    const r = applySpeechEvent(v.mic, ev);
+    if (r.state !== v.mic) set((s) => (s.voice ? { voice: { ...s.voice, mic: r.state } } : s));
+    if (r.final === undefined) return;
+    // 说完的一句 = 我在群里说的一句：不 @（走派活），人类点名也没有
+    const sessionId = v.sessionId;
+    void get().cloudSay(r.final, [], []).then((ack) => {
+      if (ack.ok) return;
+      set((s) => (s.voice && s.voice.sessionId === sessionId ? { voice: { ...s.voice, mic: { ...s.voice.mic, error: ack.message } } } : s));
+    });
   },
   setVoiceMuted(muted) {
     if (muted) voicePlayer?.stop();
@@ -2968,6 +3030,10 @@ export const useChat = create<ChatState>((set, get) => ({
       });
       // 一段写完就出声（#1163，拍板 ③）：完成的段立刻送去合成
       get().voiceOnDelta(delta);
+    });
+    // 麦克风 helper 的事件（#1176）：字幕 / 断句 / 权限 / 出错
+    window.otter.onSpeechEvent((ev) => {
+      get().speechOnEvent(ev);
     });
     window.otter.onCloudSessionStatus((status) => {
       set((s) => {
