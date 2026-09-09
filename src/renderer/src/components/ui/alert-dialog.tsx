@@ -1,10 +1,11 @@
-// shadcn/ui 的 alert-dialog(new-york,radix-ui 命名空间导入)。相对上游的改动只有三处,
-// 与 ui/dialog.tsx 完全同源同因:
+// shadcn/ui 的 alert-dialog(new-york,radix-ui 命名空间导入)。相对上游的改动有四处,
+// 与 ui/dialog.tsx 完全同源同因(④ 就是同一条,#998):
 //   ① 去掉 "use client"(不是 RSC 项目)
 //   ② import 加 .js 后缀(nodenext)
 //   ③ **进出场动画换成 app.css 里的 .dialog-overlay / .dialog-content**
 //      —— 上游那套  依赖
 //      tw-animate-css,本仓库没装。照抄会得到一堆不生效的类名,弹窗直接闪现。
+//   ④ **溢出兜底**:flex-col + max-h + overflow-y-auto,分层与实测依据见 dialog.tsx ④
 
 import * as React from "react"
 import { AlertDialog as AlertDialogPrimitive } from "radix-ui"
@@ -64,7 +65,8 @@ function AlertDialogContent({
         data-slot="alert-dialog-content"
         data-size={size}
         className={cn(
-          "dialog-content group/alert-dialog-content fixed top-[50%] left-[50%] z-50 grid w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] gap-4 rounded-lg border bg-background p-6 shadow-lg data-[size=sm]:max-w-xs data-[size=default]:sm:max-w-lg",
+          // flex-col + max-h + overflow-y-auto:与 dialog.tsx ④ 同一条溢出兜底(#998)
+          "dialog-content group/alert-dialog-content fixed top-[50%] left-[50%] z-50 flex w-full max-w-[calc(100%-2rem)] translate-x-[-50%] translate-y-[-50%] flex-col gap-4 rounded-lg border bg-background p-6 shadow-lg max-h-[calc(100dvh-2rem)] overflow-y-auto data-[size=sm]:max-w-xs data-[size=default]:sm:max-w-lg",
           className
         )}
         {...props}
