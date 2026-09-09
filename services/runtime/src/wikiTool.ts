@@ -1,3 +1,4 @@
+// services/runtime/src/wikiTool.ts
 // wikiTool —— 团队 wiki 的两把刀（#1140，spec §2.1）。与 spec 的一处偏离：`Tool.parallelSafe` 是整把刀的
 // 属性，按 action 分不开，所以只读的 read / search 拆成 `wiki_read`（parallelSafe），write / remove / check
 // 留在 `wiki`。两把都 requiresApproval:false——它们是记忆写入，不是沙箱里的任意写（同 memory 工具）。
@@ -11,6 +12,29 @@ import type { WikiAuthor, WikiService } from "./wikiService.js";
 export const WIKI_READ_TOOL_NAME = "wiki_read";
 export const WIKI_TOOL_NAME = "wiki";
 const MAX_CONSECUTIVE_FAILURES = 3;
+
+/** 连续失败 N 次就本轮收手（同 memory 工具）。这两把刀不过审批门、没有任何外部刹车，
+    而「撞同一堵墙」是它们最常见的退化形态：预算超了 / 路径不合法 / 保留页删不掉，
+    模型换个措辞再来一次，答案一个字都不会变。
+    **计数各刀一份**：读撞墙不该花掉写的额度，反过来也一样——那是两个不同的墙 */
+function withFailureTerminal(run: (args: unknown) => Promise<string>, terminal: (n: number) => string): (args: unknown, world: ExecutionWorld) => Promise<string> {
+  let consecutive = 0;
+  return async (args: unknown, _world: ExecutionWorld) => {
+    if (consecutive >= MAX_CONSECUTIVE_FAILURES) {
+      const n = consecutive;
+      consecutive = 0;
+      return terminal(n);
+    }
+    try {
+      const out = await run(args);
+      consecutive = 0;
+      return out;
+    } catch (err) {
+      consecutive++;
+      throw err;
+    }
+  };
+}
 
 function strList(v: unknown): string[] | null {
   if (typeof v === "string") return v.trim() === "" ? [] : [v.trim()];
@@ -37,30 +61,32 @@ export function createWikiTools(deps: { service: WikiService; agentId: string; a
     },
     requiresApproval: false,
     parallelSafe: true,
-    async run(args: unknown, _world: ExecutionWorld) {
-      const a = (args ?? {}) as Record<string, unknown>;
-      const paths = strList(a["paths"]);
-      const query = typeof a["query"] === "string" ? a["query"].trim() : "";
-      if (query !== "") {
-        const hits = await deps.service.search(query);
-        if (hits.length === 0) return "没有匹配。换个词，或读 index.md 看有哪些页。";
-        return hits.map((h) => `${h.path}:${h.line}: ${h.text}`).join("\n");
-      }
-      if (paths && paths.length > 0) {
-        const pages = await deps.service.read(paths);
-        return pages.map((p) => `### ${p.path}\n${p.text === null ? "（没有这页）" : p.text.replace(/\n$/, "")}`).join("\n\n");
-      }
-      throw new Error("要给 paths 或 query 之一（paths 读页，query 搜索）");
-    },
+    run: withFailureTerminal(readOnce, (n) => `wiki_read 连续失败 ${n} 次，本轮放弃，不再重试。用手上已有的信息继续回答。`),
   };
 
-  let consecutiveFailures = 0;
+  async function readOnce(args: unknown): Promise<string> {
+    const a = (args ?? {}) as Record<string, unknown>;
+    const paths = strList(a["paths"]);
+    const query = typeof a["query"] === "string" ? a["query"].trim() : "";
+    if (query !== "") {
+      const hits = await deps.service.search(query);
+      if (hits.length === 0) return "没有匹配。换个词，或读 index.md 看有哪些页。";
+      return hits.map((h) => `${h.path}:${h.line}: ${h.text}`).join("\n");
+    }
+    if (paths && paths.length > 0) {
+      const pages = await deps.service.read(paths);
+      return pages.map((p) => `### ${p.path}\n${p.text === null ? "（没有这页）" : p.text.replace(/\n$/, "")}`).join("\n\n");
+    }
+    throw new Error("要给 paths 或 query 之一（paths 读页，query 搜索）");
+  }
+
   const writeTool: Tool = {
     def: {
       name: WIKI_TOOL_NAME,
       description:
         "维护团队 wiki。action=write 整页写入（新建或覆盖）：path（一层目录、小写 kebab、.md）、title、summary（一句话，进索引）、" +
-        `content（整页正文 markdown，用 [[路径]] 链到相关页）、pinned（每轮都注入，常驻合计 ≤ ${WIKI_PINNED_BUDGET} 字，team.md 恒常驻）、sources（会话 id#seq 或 /work 路径）。` +
+        `content（整页正文 markdown，用 [[路径]] 链到相关页）、pinned（每轮都注入给所有人，常驻合计 ≤ ${WIKI_PINNED_BUDGET} 字）、sources（会话 id#seq 或 /work 路径）。` +
+        "write 是整页替换：不带 pinned = 取消常驻（team.md 除外，它恒常驻）。" +
         `agents/<你的 id>.md 是你自己的页（≤ ${WIKI_OWN_BUDGET} 字，只有你能写）。action=remove 删一页；action=check 机械体检（断链 / 孤儿 / 过期 / 预算），` +
         "人说「整理 wiki」时先跑它再按 SCHEMA.md 的步骤处理。先用 wiki_read 搜有没有页，有就改那页别另开。index.md / log.md 由工具维护，别写。",
       parameters: {
@@ -78,21 +104,7 @@ export function createWikiTools(deps: { service: WikiService; agentId: string; a
       },
     },
     requiresApproval: false,
-    async run(args: unknown, _world: ExecutionWorld) {
-      if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
-        const n = consecutiveFailures;
-        consecutiveFailures = 0;
-        return `wiki 连续失败 ${n} 次，本轮放弃，不再重试。继续回答；下一轮再整理 wiki。`;
-      }
-      try {
-        const out = await execute(args);
-        consecutiveFailures = 0;
-        return out;
-      } catch (err) {
-        consecutiveFailures++;
-        throw err;
-      }
-    },
+    run: withFailureTerminal(execute, (n) => `wiki 连续失败 ${n} 次，本轮放弃，不再重试。继续回答；下一轮再整理 wiki。`),
   };
 
   async function execute(args: unknown): Promise<string> {

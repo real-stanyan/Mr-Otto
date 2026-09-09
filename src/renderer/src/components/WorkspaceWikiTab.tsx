@@ -17,7 +17,7 @@ import { useNav } from "@/components/ui/nav-stack.js";
 import { useConfirm } from "@/components/ui/confirm-dialog.js";
 import { useChat } from "../store.js";
 import {
-  WIKI_DIR, WIKI_INDEX_PATH, WIKI_LOG_PATH, isRemovableWikiPath, isWikiPagePath, nudgeFrom, parseIndex, parseWikiPage,
+  WIKI_DIR, WIKI_INDEX_PATH, WIKI_LOG_PATH, WIKI_PINNED_BUDGET, isRemovableWikiPath, isWikiPagePath, nudgeFrom, parseIndex, parseWikiPage,
   type WikiIndexGroup, type WikiPage,
 } from "../../../shared/wiki.js";
 import type { CsWikiWriteReq, CsWorkNode } from "../../../shared/remote/cloudSession.js";
@@ -65,7 +65,7 @@ export function WorkspaceWikiTab({ ws }: { ws: WorkspaceSnapshot }) {
   if (state.kind === "absent") {
     return <InsetGroup><InsetEmpty title="这个团队的工作文件夹还没建起来" hint="第一次让水獭干活时会建；wiki 也在那时候生成。" /></InsetGroup>;
   }
-  const groups = state.kind === "ok" ? state.groups : state.groups;
+  const groups = state.groups; // loading / absent 在上面已经 return，剩下的两态都带 groups
   return (
     <div className="flex flex-col">
       {state.kind === "error" && (
@@ -195,7 +195,7 @@ function WikiEditScreen({ ws, page, onSaved }: { ws: WorkspaceSnapshot; page: Wi
         <Textarea aria-label="正文" className="min-h-[280px] border-0 bg-transparent px-[13px] py-[11px] font-mono text-[12.5px] shadow-none focus-visible:ring-0" value={body} onChange={(e) => setBody(e.target.value)} disabled={busy} />
       </InsetGroup>
       {error && <p className="px-1 text-xs text-err">{error}</p>}
-      <InsetNote>正文是 markdown，用 <code>[[路径]]</code> 链到别的页。常驻页合计有 2200 字预算，超了保存会被拒并告诉你现有的常驻页。</InsetNote>
+      <InsetNote>正文是 markdown，用 <code>[[路径]]</code> 链到别的页。常驻页合计有 {WIKI_PINNED_BUDGET} 字预算，超了保存会被拒并告诉你现有的常驻页。</InsetNote>
       <div className="pt-2">
         <Button className="w-full" onClick={() => void onSave()} disabled={busy}>{busy ? "保存中…" : "保存"}</Button>
       </div>

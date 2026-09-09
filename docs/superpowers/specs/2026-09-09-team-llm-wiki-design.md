@@ -430,7 +430,7 @@ memories, now, isRunning })`，方法 `ensure / snapshot / read / search / write
 
 ### 门禁里跑不到，必须真机
 
-1. 在生产 Supabase 跑 0034；2. 部署 runtime（#791，协议 17）；3. 桌面构建；然后：
+1. 在生产 Supabase 跑 0034；2. 部署 runtime（#791，协议 18）；3. 桌面构建；然后：
 ① 旧团队第一次起 turn → `wiki/` 出现，`team.md` 里是原 SHARED 的条目、`agents/<id>.md` 是原 OWN，log 有 `migrate`；
 ② agent 被问客户约定 → 看见索引后 `read` 对应页；③ agent `write` 新页 → 文件页里看得到、index 更新、
 journal 多一行；④ `pinned` 超预算被拒的文案；⑤ 桌面改一页 → agent 下一 turn 快照变了；

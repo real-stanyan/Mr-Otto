@@ -1782,11 +1782,13 @@ describe("wiki_write（协议 18，#1140）", () => {
     expect(calls).toEqual([{ ...req, sources: ["s-1#12"] }, req]);
   });
   it("writeWiki 抛错 → 回执 ok:false 带那句人话；限速 → denied rate_limited", async () => {
-    const { deps, sent } = makeDeps({ writeWiki: async () => { throw new Error("常驻页合计 2300 字，超过预算 2200"); } });
+    const { deps, sent, logs } = makeDeps({ writeWiki: async () => { throw new Error("常驻页合计 2300 字，超过预算 2200"); } });
     const handler = createFrameHandler(deps);
     await handler.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
     await handler.onCtlFrame("c1", encodeCs({ t: "wiki_write", workspaceId: "w1", op: "remove", path: "a.md" }));
     expect(sent.at(-1)).toEqual({ cid: "c1", msg: { t: "wiki_write_result", workspaceId: "w1", path: "a.md", ok: false, message: "常驻页合计 2300 字，超过预算 2200" } });
+    // 同 files 那支：回执是说给用户的，日志是说给维护者的——只回执的话服务端这边一个字都没有
+    expect(logs.join("\n")).toContain("wiki_write 失败（workspace=w1 path=a.md）");
     const limited = makeDeps({ rateLimit: { allow: (kind) => kind !== "wiki" } });
     const h2 = createFrameHandler(limited.deps);
     await h2.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));

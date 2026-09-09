@@ -1232,7 +1232,7 @@ export interface ShellBridge {
       `content=false` = 按文件名过滤，`true` = 搜正文（`?` 前缀那一路）。
       **`hits: []` 与失败是两回事**——前者是「搜过了没有」，后者是「没搜成」 */
   workspaceCloudFilesSearch(workspaceId: string, query: string, content: boolean): Promise<FriendsResult<CsWorkHit[]>>;
-  /** 改一页 wiki（控制房 RPC，协议 17，#1140）：write 整页替换 / remove 删页。服务端走与 wiki 工具同一条写入路径，
+  /** 改一页 wiki（控制房 RPC，协议 18，#1140）：write 整页替换 / remove 删页。服务端走与 wiki 工具同一条写入路径，
       预算 / 保留页 / 可疑指令那几句拒绝原样回来 */
   workspaceCloudWikiWrite(workspaceId: string, req: CsWikiWriteReq): Promise<FriendsResult<null>>;
   /** 存 / 删一台主机的 Git 凭据（控制房 RPC，协议 15，#1103；**owner 才过**，服务端判）。

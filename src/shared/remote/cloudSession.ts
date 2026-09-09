@@ -321,7 +321,7 @@ export type CsUp =
       与归档的差别写在 `delete_result` 上：归档是「收尾，还看得见」，删除是
       「整段事件日志从 VPS 上抹掉，谁都再看不到」 */
   | { t: "delete"; workspaceId: string; sessionId: string }
-  /** 设置页改一页 wiki（协议 17，#1140）：write 整页替换、remove 删页。判据同 files——任何在籍成员都能写，
+  /** 设置页改一页 wiki（协议 18，#1140）：write 整页替换、remove 删页。判据同 files——任何在籍成员都能写，
       服务端走与 wiki 工具同一条写入路径（保留页 / 预算 / 可疑指令由 wikiService 把关） */
   | ({ t: "wiki_write"; workspaceId: string } & CsWikiWriteReq)
   /** 停掉当前正在跑的这一轮 turn（#957 第三批）。谁能停与 approve 同一判据——
@@ -397,7 +397,7 @@ export type CsDown =
   /** `files_search` 的答复（协议 12，#1066）。`hits: []` 与 `ok:false` 是两回事：
       前者 = 搜过了，没有；后者 = 没搜成。合成一句就会把「rg 挂了」说成「仓里没有」 */
   | { t: "files_search_result"; workspaceId: string; query: string; ok: boolean; hits?: CsWorkHit[]; message?: string }
-  /** `wiki_write` 的回执（协议 17，#1140）。ok=false 的 message 是 wikiService 抛出的那句人话
+  /** `wiki_write` 的回执（协议 18，#1140）。ok=false 的 message 是 wikiService 抛出的那句人话
       （预算超了 / 路径不合法 / 保留页），原样带回——同 archive_result 的先例，不复用 `error` */
   | { t: "wiki_write_result"; workspaceId: string; path: string; ok: boolean; message?: string }
   /** say 的回执（#957 第三批）。同 config_result 的纪律——不复用 error。

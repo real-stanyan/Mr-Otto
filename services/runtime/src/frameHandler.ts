@@ -163,7 +163,7 @@ export interface FrameHandlerDeps {
   /** 搜工作文件夹（#1066）。同 `readWork` 是必需的：忘接线那天这一格安静地
       永远搜不出东西，而「搜过了没有」与「压根没搜」在界面上长得一模一样 */
   searchWork: (workspaceId: string, query: string, content: boolean) => Promise<CsWorkHit[]>;
-  /** 设置页改一页 wiki（协议 17，#1140）。**必需**（同 readWork 的理由）：写成可选的话，
+  /** 设置页改一页 wiki（协议 18，#1140）。**必需**（同 readWork 的理由）：写成可选的话，
       忘接线那天这条帧安静地永远拒——而这一层没有任何别的信号能说出「其实是没接上」。
       走 wikiService 与工具同一条写入路径（盖章 / 重生成 index / log / journal）；
       抛出的 Error.message 是给人看的那句（预算 / 路径 / 保留页），原样进回执 */
@@ -399,7 +399,7 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
 
       // 控制房认的帧（协议 8 起：create / workspace；协议 9 加 archive，
       // 协议 10 加 delete，协议 11 加 files，协议 12 加 files_search；协议 14
-      // 拿走了 config——团队不再绑一个仓库，#1102；协议 17 加 wiki_write）——
+      // 拿走了 config——团队不再绑一个仓库，#1102；协议 18 加 wiki_write）——
       // 都是「关于某个团队」的动作，不挂在任何一条会话上。在籍是共同前提
       if (
         msg.t !== "create" && msg.t !== "workspace" && msg.t !== "git_credential" &&
@@ -496,6 +496,9 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
           await deps.writeWiki(workspaceId, req, { uid: entry.uid, label: await deps.labelOf(entry.uid) });
           deps.send(cid, { t: "wiki_write_result", workspaceId, path: msg.path, ok: true });
         } catch (err) {
+          // 回执是说给用户的（那句人话），日志是说给维护者的——同 files 那支：
+          // 只回执的话，服务端这边对一次失败的写入一个字都没有
+          deps.log(`wiki_write 失败（workspace=${workspaceId} path=${msg.path}）：${String(err)}`);
           deps.send(cid, { t: "wiki_write_result", workspaceId, path: msg.path, ok: false, message: err instanceof Error ? err.message : "这一刻改不了 wiki。稍后再试。" });
         }
         return;
@@ -840,7 +843,7 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
         case "git_credential": // 同上（协议 15，#1103）：凭据是团队的属性
         case "files": // 同上（协议 11，#1056）：工作文件夹是团队的，不是这条会话的
         case "files_search": // 同上（协议 12，#1066）
-        case "wiki_write": // 同上（协议 17，#1140）：wiki 是团队的
+        case "wiki_write": // 同上（协议 18，#1140）：wiki 是团队的
         case "archive": // 同上（协议 9，#993）：归档不该以「你正开着这条会话」为前提
         case "delete": // 同上（协议 10，#1044）：删的多半是归档掉的那些，根本没有房间
         default:

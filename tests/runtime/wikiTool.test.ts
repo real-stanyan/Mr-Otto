@@ -55,6 +55,14 @@ describe("createWikiTools", () => {
     await expect(wiki.run({ action: "write", path: "x.md" }, world)).rejects.toThrow("title");
     await expect(wiki.run({ action: "bogus" }, world)).rejects.toThrow("action 只能是 write / remove / check");
   });
+  it("wiki_read 也有连续失败 3 次的终态，且与写那把各数各的（读撞墙不该花掉写的额度）", async () => {
+    const { svc } = fakeService({ search: async () => { throw new Error("rg 挂了"); }, write: async () => { throw new Error("boom"); } });
+    const [read, wiki] = createWikiTools({ service: svc, agentId: "ops", agentName: () => "运营" });
+    for (let i = 0; i < 3; i++) await expect(read.run({ query: "月结" }, world)).rejects.toThrow("rg 挂了");
+    expect(await read.run({ query: "月结" }, world)).toContain("连续失败 3 次");
+    // 共用一个计数器的话，写这把此刻已经是终态、只会回一句话而不抛
+    await expect(wiki.run({ action: "write", path: "x.md", title: "t", summary: "", content: "c" }, world)).rejects.toThrow("boom");
+  });
   it("连续失败 3 次回终态不再重试（同 memory 工具）", async () => {
     const { svc } = fakeService({ write: async () => { throw new Error("boom"); } });
     const [, wiki] = createWikiTools({ service: svc, agentId: "ops", agentName: () => "运营" });

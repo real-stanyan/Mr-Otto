@@ -5,7 +5,7 @@ import type { VoiceCallParticipant } from "./events.js";
 import { isolatedPromptText, type IsolatedWorkspace } from "../shared/sessionWorktree.js";
 import { promptSafe, promptSafeBody, safeSpeakerLabel } from "../shared/promptSafe.js";
 import { INVITE_TO_CALL_TOOL_NAME } from "../shared/voiceCall.js";
-import type { CloudSessionFacts, MemoryTopicSnapshot, SessionEvent, UserTextFile, WorkspaceMemoryLoadedEvent, WorkspaceWikiLoadedEvent } from "./events.js";
+import type { CloudSessionFacts, MemoryTopicSnapshot, SessionEvent, UserTextFile, WorkspaceMemoryLoadedEvent } from "./events.js";
 import { barrenEventIndexes } from "./barrenTurns.js";
 import { activeSkills } from "./activeSkills.js";
 import { absorbedIndexes } from "./microCompact.js";

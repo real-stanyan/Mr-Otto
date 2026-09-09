@@ -248,7 +248,7 @@ export interface CloudSessionClient {
   /** 存 / 删一台主机的 Git 凭据（控制房 RPC，协议 15，#1103）。owner 才过，服务端判；
       `token: ""` = 删。成功回服务端此刻的清单 */
   workspaceGitCredential(workspaceId: string, host: string, token: string): Promise<FriendsResult<CsGitHost[] | null>>;
-  /** 改一页 wiki（控制房 RPC，协议 17，#1140）：write 整页替换 / remove 删页。服务端走
+  /** 改一页 wiki（控制房 RPC，协议 18，#1140）：write 整页替换 / remove 删页。服务端走
       与 wiki 工具同一条写入路径，预算 / 保留页 / 可疑指令那几句拒绝原样回来 */
   workspaceWikiWrite(workspaceId: string, req: CsWikiWriteReq): Promise<FriendsResult<null>>;
 }
