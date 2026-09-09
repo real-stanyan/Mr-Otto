@@ -15,6 +15,7 @@
 // 接受——只在撞过的那对之间发生，且删 agent 本来就是罕见操作。
 
 import { ADMIN_AGENT_ID } from "../../../shared/workspaceAgents.js";
+import { fnv1a } from "../../../shared/fnv1a.js";
 
 /** 内置头像张数。与 assets/agent-avatars/ 里的文件数一致，agentAvatar.ts 的
     数组长度由测试钉住 */
@@ -24,16 +25,7 @@ export const AGENT_AVATAR_COUNT = 13;
     跨团队认得出来——它是唯一一只在所有团队都存在的 agent */
 export const ADMIN_AVATAR_SLOT = 6;
 
-/** FNV-1a 32 位。要的只是稳定 + 分布均匀，不需要密码学强度；
-    不用 String.prototype.hashCode 那类——JS 没有内置的，各写各的迟早分家 */
-function fnv1a(s: string): number {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i);
-    h = Math.imul(h, 0x01000193) >>> 0;
-  }
-  return h >>> 0;
-}
+// FNV-1a 在 src/shared/fnv1a.ts（#1163 音色派生要对同一个 agent_id 给出同一个数，两份实现迟早分家）
 
 /** 一只 agent 的「天然」坑位：管理员固定，其余按 agent_id 哈希 */
 function preferredSlot(agentId: string): number {

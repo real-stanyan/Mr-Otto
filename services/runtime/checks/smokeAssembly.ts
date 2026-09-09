@@ -339,6 +339,9 @@ async function scenarioAssemblyResilience(): Promise<void> {
     async say() {
       /* 不会被调用 */
     },
+    async setVoiceCall() {
+      return { kind: "ok" as const };
+    },
     async settled() {
       /* 不会被调用 */
     },

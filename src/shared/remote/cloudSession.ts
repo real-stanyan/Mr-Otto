@@ -97,7 +97,7 @@ import { MAX_FRAME_BYTES } from "./wire.js";
     少一格状态。**加一个枚举值同理**：老客户端的 isValidCsDeniedCode 认不出
     `rate_limited`，decodeCsDown 回 null，那一帧被静默忽略，于是 create()
     要白等满超时才回一句"云端无响应"——把"你被限速了"说成"对面没回话"。 */
-export const CS_PROTOCOL_VERSION = 16;
+export const CS_PROTOCOL_VERSION = 17;
 export const CS_MAX_TEXT_BYTES = 64 * 1024;
 
 /** 一次回多少字节的文件内容（#1056）。中继单帧上限是 256 KiB（wire.ts 的
@@ -310,7 +310,13 @@ export type CsUp =
       "当前那一轮"——按第二行那颗，停掉的是第一行。服务端拿它与这一轮的采样
       边界比，更晚就回 `stop_result{ok:false}` 不动手。缺席 = 旧语义（停当前），
       旧客户端照常工作。 */
-  | { t: "stop"; seq?: number };
+  | { t: "stop"; seq?: number }
+  /** 改语音通话的名单（协议 17，#1163）：`participants` = 此刻该在通话里的 agent id，
+      **空数组 = 结束通话**。会话房帧，任何在籍成员都能发（微信群语音谁都能拉人）；
+      服务端按此刻的名单复核每个 id，名单外的整帧拒不静默过滤（静默过滤 = #722 那个
+      撒谎的勾）。落成 `voice_call_changed` 事件广播给房里所有人——那条事件就是回执
+      之外的事实，`call_result` 只答「收没收下」 */
+  | { t: "call"; participants: string[] };
 
 /** runtime → 成员 */
 export type CsDown =
@@ -380,6 +386,9 @@ export type CsDown =
   /** stop 的回执（#957 第三批）。ok=false 常见两种：没有在跑的 turn、或
       发起人/owner 之外的人点了停。 */
   | { t: "stop_result"; ok: boolean; message?: string }
+  /** call 的回执（协议 17，#1163）。ok=false 的 message 分得清：名单里没有的 id /
+      名单读不出来 / 已归档 / 限速 / 不在籍——文案由服务端给，桌面原样画 */
+  | { t: "call_result"; ok: boolean; message?: string }
   | { t: "error"; msg: string };
 
 export function encodeCs(msg: CsUp | CsDown): string {
@@ -626,6 +635,14 @@ export function decodeCsUp(b64: string): CsUp | null {
       return null;
     }
 
+    if (t === "call") {
+      // 名单不是字符串数组整帧拒——一个混进来的数字会在服务端按 id 查名单时炸出
+      // 一句看不懂的错，而不是「形状不对」
+      const p = obj.participants;
+      if (!Array.isArray(p) || !p.every((x) => typeof x === "string")) return null;
+      return { t: "call", participants: p as string[] };
+    }
+
     if (t === "stop") {
       // 缺席即不带（旧客户端）；带了就校验形状——非负整数以外一律判**整帧
       // 无效**，而不是"当没带过"：后者会把一条本该被拒的停止悄悄升级成
@@ -790,6 +807,15 @@ export function decodeCsDown(b64: string): CsDown | null {
     if (t === "stop_result") {
       if (typeof obj.ok === "boolean" && (obj.message === undefined || typeof obj.message === "string")) {
         const result: CsDown = { t: "stop_result", ok: obj.ok };
+        if (typeof obj.message === "string") result.message = obj.message;
+        return result;
+      }
+      return null;
+    }
+
+    if (t === "call_result") {
+      if (typeof obj.ok === "boolean" && (obj.message === undefined || typeof obj.message === "string")) {
+        const result: CsDown = { t: "call_result", ok: obj.ok };
         if (typeof obj.message === "string") result.message = obj.message;
         return result;
       }

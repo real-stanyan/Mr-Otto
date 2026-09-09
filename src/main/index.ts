@@ -184,6 +184,7 @@ import { createEscrowSync, type EscrowSync } from "./pxEscrowSync.js";
 import { createAuditBackflow } from "./pxAuditSync.js";
 import { createPxCloudClient } from "./pxCloudClient.js";
 import { createHostedQuota, parseCheckoutTarget, type HostedQuota } from "./hostedQuota.js";
+import { createTeamVoice } from "./teamVoice.js";
 import type { WorkspaceUsage } from "../shared/billing.js";
 import { createWorkspaceManager } from "./workspaceManager.js";
 import {
@@ -1536,6 +1537,9 @@ void app.whenReady().then(() => {
     edgeBaseUrl: () => edgeBaseUrl(),
     accessToken: () => accountManager?.getAccessToken() ?? Promise.resolve(null),
   };
+  // 团队语音通话（#1163）：渲染层每段文字经这里合成——拿 JWT 打网关，钱记在听的人
+  // 自己的额度上，额度头与 chat 那条路同一份纪律（noteHeaders / noteExhausted）
+  const teamVoice = createTeamVoice(hostedDeps);
 
   // ── 「不是这条会话主模型」的那几次调用（#1051）─────────────────────────────
   // 代读员（vision-bridge）与后台小模型（分区分类 / 跟进建议 / 微压缩）原来各走各的
@@ -3441,6 +3445,10 @@ void app.whenReady().then(() => {
     cloudClient.remove(workspaceId, sessionId));
   ipcMain.handle(CHANNELS.workspaceCloudStop, (_e, seq: number | null) =>
     cloudClient.stop(seq ?? undefined)
+  );
+  ipcMain.handle(CHANNELS.teamVoiceSpeak, (_e, text: string, voiceId: string) => teamVoice.speak(text, voiceId));
+  ipcMain.handle(CHANNELS.workspaceCloudCall, (_e, participants: string[]) =>
+    cloudClient.call(Array.isArray(participants) ? participants.filter((p): p is string => typeof p === "string") : [])
   );
   ipcMain.handle(CHANNELS.workspaceCloudState, (_e, workspaceId: string) => cloudClient.workspaceState(workspaceId));
   ipcMain.handle(CHANNELS.workspaceCloudFiles, (_e, workspaceId: string, path: string) =>

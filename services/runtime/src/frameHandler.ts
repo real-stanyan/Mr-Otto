@@ -783,6 +783,27 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
           return;
         }
 
+        case "call": {
+          // 语音通话名单（#1163）。这一层不判名单合不合法（那要现取 roster，在
+          // CloudSession.setVoiceCall 里）——只做在籍复查、令牌桶、把三态翻成 call_result，
+          // 并把拒绝记一笔（拒绝是这一层唯一的失败出口，同 stop）
+          if (!(await requireStillMember(workspaceId, cid, entry.uid, () =>
+            deps.send(cid, { t: "call_result", ok: false, message: NOT_MEMBER_MESSAGE })
+          ))) return;
+          if (!deps.rateLimit.allow("call", entry.uid)) {
+            deps.send(cid, { t: "call_result", ok: false, message: throttleMessage("call") });
+            return;
+          }
+          const outcome = await session.setVoiceCall(entry.uid, entry.label, msg.participants);
+          if (outcome.kind === "ok") {
+            deps.send(cid, { t: "call_result", ok: true });
+            return;
+          }
+          deps.log(`通话名单被拒 session=${sessionId} uid=${entry.uid}：${outcome.kind}`);
+          deps.send(cid, { t: "call_result", ok: false, message: outcome.message });
+          return;
+        }
+
         case "create": // 控制房专用帧，出现在会话房里视为越权
         case "workspace": // 同上（协议 8，#991）
         case "git_credential": // 同上（协议 15，#1103）：凭据是团队的属性

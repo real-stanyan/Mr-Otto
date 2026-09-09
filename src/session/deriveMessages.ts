@@ -1,8 +1,10 @@
 // deriveMessages — 从事件日志投影出模型上下文（OpenAI-compatible 消息格式）
 // 纯函数：同样的 events 永远得到同样的 messages。resume/fork/replay 全靠它。
 
+import type { VoiceCallParticipant } from "./events.js";
 import { isolatedPromptText, type IsolatedWorkspace } from "../shared/sessionWorktree.js";
 import { promptSafe, promptSafeBody, safeSpeakerLabel } from "../shared/promptSafe.js";
+import { INVITE_TO_CALL_TOOL_NAME } from "../shared/voiceCall.js";
 import type { CloudSessionFacts, MemoryTopicSnapshot, SessionEvent, UserTextFile, WorkspaceMemoryLoadedEvent } from "./events.js";
 import { barrenEventIndexes } from "./barrenTurns.js";
 import { activeSkills } from "./activeSkills.js";
@@ -225,6 +227,37 @@ export function renderMemoryPrompt(
     `本会话中途写入的下个会话才可见；用户可在设置页查看和手动编辑这几份笔记；` +
     `session_search 查的是历史会话正文，和记忆是分开的两条路。` +
     renderMemoryBlocks(memory, user, project, topics)
+  );
+}
+
+/** 语音通话进行中时焊进云会话 system 尾部的那一块（#1163）。三件事各一句：
+    ① 谁在通话里、谁不在（带职责）——派活 / 接力只在通话成员里进行，模型得知道自己
+       能 @ 谁；② 活该由通话外的人做时**先问用户**，用户同意了再调 invite_to_call
+       把 TA 拉进来（维护者拍板：口头同意就行，不弹审批卡）；③ 回复会被读出来——
+       短句、口语、代码只放围栏。
+    `selfName` 是这只 agent 自己（brief 的 name，roster 里没有它）；名单事件自带名字
+    快照，不在 roster 里的名字照样列得出。拼进结构的每个名字都过 promptSafe（#957 B-C1：
+    这一段是拼出来的，拼进去的是别人写的字） */
+export function renderVoiceCallPrompt(
+  participants: readonly VoiceCallParticipant[],
+  selfName: string | null,
+  roster: readonly { name: string; description: string }[]
+): string {
+  const inCall = new Set(participants.map((p) => p.name));
+  const everyone: { name: string; description: string }[] = [
+    ...(selfName !== null && !roster.some((r) => r.name === selfName) ? [{ name: selfName, description: "" }] : []),
+    ...roster,
+  ];
+  const outside = everyone.filter((r) => !inCall.has(r.name));
+  const members = participants.map((p) => promptSafe(p.name)).join("、");
+  const others = outside.length
+    ? `不在通话里的：${outside.map((r) => (r.description ? `${promptSafe(r.name)}（${promptSafe(r.description)}）` : promptSafe(r.name))).join("、")}。`
+    : "";
+  return (
+    `\n[语音通话进行中。通话里的成员：${members}。${others}` +
+    `规则：只有通话里的成员参与这件事。如果这件事该由不在通话里的人做，先用一句话问用户要不要把 TA 拉进通话，` +
+    `用户同意后再调用 ${INVITE_TO_CALL_TOOL_NAME} 把 TA 拉进来、然后 @ TA；用户没同意就别替 TA 做、也别 @ TA。` +
+    `你的回复会被读出来：短句、口语，代码只放围栏里。]`
   );
 }
 
@@ -469,6 +502,14 @@ export function deriveMessages(
   let agentBrief: string | null = null;
   // 工作区记忆快照（#949）：最新一条胜出，主循环结束后统一拼一次（见下方）
   let workspaceMemoryPrompt: string | null = null;
+  // 语音通话名单（#1163）：同上，最新一条胜出、空名单 = 没有。只在云会话注入——
+  // 通话是云会话的东西，本机日志里不会有这条事件，有也不该长出一块提示词
+  let voiceCall: VoiceCallParticipant[] | null = null;
+  let isCloud = false;
+  // 最近一条 brief 的名字 + 花名册：通话块要说得出「不在通话里的」是谁、管什么，
+  // 而这份信息只在 agent_briefed 上（roster 不带 id，所以名单事件自带名字快照）
+  let briefName: string | null = null;
+  let briefRoster: { name: string; description: string }[] = [];
   const boundary = compression ? fidelityBoundary(events, compression.keepRecentTurns, barren) : 0;
   // 孤儿 tool_result 过滤（issue #186）：nudge 派活的收口 tool_result
   // （toolCallId = memory-nudge-N）没有对应的 assistant_message.toolCalls，
@@ -652,6 +693,7 @@ export function deriveMessages(
             content: systemPromptText(event.workspace, today, event.workspaceKind, event.isolated, event.cloud),
           };
           messages.push(systemMessage);
+          isCloud = event.cloud !== undefined;
         }
         break;
 
@@ -747,6 +789,8 @@ export function deriveMessages(
             `要谁搭手就在你的回复里 @ 他的名字。`
           : "";
         const text = `[你是这个团队里的「${promptSafe(event.name)}」。${others}]\n${event.instructions}`;
+        briefName = event.name;
+        briefRoster = event.roster;
         // 没有围栏 system 时（旧日志 / 没带 workspace 的裸装配）退回事件位置那条
         // user 消息 —— 理由同 project_instructions：那种日志本来就没有清场保护
         // 可言，但「我是谁」是这只 agent 能不能开口的前提，宁可退化不能没有
@@ -765,6 +809,12 @@ export function deriveMessages(
         // 提示——不补造一条。主会话的 session_created 总是带 workspace，缺口
         // 只发生在子会话或旧日志上，不影响主线记忆功能。
         if (systemMessage) systemMessage.content += renderMemoryPrompt(event.memory, event.user, event.project, event.projectRoot, event.topics);
+        break;
+
+      case "voice_call_changed":
+        // 最新一条胜出、空名单 = 通话结束（#1163）。同 workspace_memory_loaded：记下来
+        // 主循环结束后拼一次，不在这里 +=——两条名单叠在 system 里模型读到两套口径
+        voiceCall = event.participants.length > 0 ? event.participants : null;
         break;
 
       case "workspace_memory_loaded":
@@ -887,6 +937,9 @@ export function deriveMessages(
   if (systemMessage && agentBrief) systemMessage.content += agentBrief;
   // 工作区记忆块拼在 system 末尾（#949）。systemMessage 为 null（旧日志 / 没带 workspace）时静默不补造，同 memory_loaded
   if (systemMessage && workspaceMemoryPrompt) systemMessage.content += workspaceMemoryPrompt;
+  // 通话块排在记忆之后（#1163）：它是此刻的状态，也是最会变的那一段——放最尾
+  // 前缀缓存只从这里往下失效
+  if (systemMessage && isCloud && voiceCall) systemMessage.content += renderVoiceCallPrompt(voiceCall, briefName, briefRoster);
 
   // summaryAt 可能 === events.length（被吸收区是日志尾巴）——循环里插不到，这里补
   if (micro && micro.summaryAt >= events.length) {

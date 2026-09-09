@@ -17,7 +17,7 @@ function me(over: { plan?: PlanId | null; status?: SubscriptionStatus }): Billin
     addon: { remainingMicro: 0, expiresAt: null },
     periodEnd: null,
     models: [],
-    imageModels: [], modelPlatforms: {},
+    imageModels: [], ttsModels: [], modelPlatforms: {},
   };
 }
 

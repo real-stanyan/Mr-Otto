@@ -25,6 +25,7 @@ describe("cs 帧协议", () => {
     // 5 = issue #945 那次进位（welcome/config_result 多了 modelRoute 一格）。
     // 4 = issue #844 那次进位（welcome/config_result 多了 model 一格，
     //     config 帧多了 model 字段、repoUrl 变成可选）。
+    // 17 = #1163：CsUp 加 call（语音通话名单），CsDown 加 call_result 回执。
     // 3 = issue #819 那次（denied 多了 rate_limited 码）。
     // 2 = issue #834 那次（welcome 多了 repo、下行多了 config_result）。
     // 握手是精确相等，两端同一个仓库一起发版——加字段照样进位，宁可让
@@ -32,7 +33,7 @@ describe("cs 帧协议", () => {
     // 之后静默少一格状态。**加一个枚举值同理**：老客户端的
     // isValidCsDeniedCode 认不出 rate_limited，整帧被 decodeCsDown 判成
     // null 静默丢掉，create() 于是白等满超时才回一句"云端无响应"
-    expect(CS_PROTOCOL_VERSION).toBe(16);
+    expect(CS_PROTOCOL_VERSION).toBe(17);
   });
   it("房名生成", () => {
     expect(csCtlChannel()).toBe("cs-ctl");
@@ -176,8 +177,8 @@ describe("rate_limited 码（issue #819）", () => {
 // 协议 14（#1102）：repo 那一组整个走了——config / config_result 两条帧删除。
 // 留下的是 modelRoute 那一格，它换了唯一的载体（welcome + workspace_state）
 describe("协议 14：config 帧没了，modelRoute 还在（#1102）", () => {
-  it("协议号跟着最新一条变更走（此刻 = 16，#1107 的流式 delta 帧是最近进位者）", () => {
-    expect(CS_PROTOCOL_VERSION).toBe(16);
+  it("协议号跟着最新一条变更走（此刻 = 17，#1163 的语音通话 call 帧是最近进位者）", () => {
+    expect(CS_PROTOCOL_VERSION).toBe(17);
   });
 
   it("config 帧解不出来了 —— 老客户端发过来一律 null", () => {
@@ -293,5 +294,26 @@ describe("协议 15：git_credential / gitHosts（#1103）", () => {
 
     const bad = decodeCsDown(encodeCs({ t: "git_credential_result", workspaceId: "w", ok: false, message: "不行", gitHosts: null }));
     expect(bad).toEqual({ t: "git_credential_result", workspaceId: "w", ok: false, message: "不行", gitHosts: null });
+  });
+});
+
+// 协议 17（#1163）：语音通话名单。会话房帧——任何在籍成员都能发，服务端复核名单里的 id
+describe("协议 17：call / call_result（#1163）", () => {
+  it("call 帧 roundtrip；participants 不是字符串数组整帧拒", () => {
+    const call: CsUp = { t: "call", participants: ["admin", "a_1"] };
+    expect(decodeCsUp(encodeCs(call))).toEqual(call);
+    expect(decodeCsUp(encodeCs({ t: "call", participants: [] }))).toEqual({ t: "call", participants: [] });
+    const bad = (obj: unknown) => decodeCsUp(b64encode(new TextEncoder().encode(JSON.stringify(obj))));
+    expect(bad({ t: "call" })).toBeNull();
+    expect(bad({ t: "call", participants: "admin" })).toBeNull();
+    expect(bad({ t: "call", participants: ["admin", 3] })).toBeNull();
+  });
+
+  it("call_result 回执：ok 必填、message 可选", () => {
+    expect(decodeCsDown(encodeCs({ t: "call_result", ok: true }))).toEqual({ t: "call_result", ok: true });
+    expect(decodeCsDown(encodeCs({ t: "call_result", ok: false, message: "名单里没有" }))).toEqual({ t: "call_result", ok: false, message: "名单里没有" });
+    const bad = (obj: unknown) => decodeCsDown(b64encode(new TextEncoder().encode(JSON.stringify(obj))));
+    expect(bad({ t: "call_result" })).toBeNull();
+    expect(bad({ t: "call_result", ok: true, message: 5 })).toBeNull();
   });
 });

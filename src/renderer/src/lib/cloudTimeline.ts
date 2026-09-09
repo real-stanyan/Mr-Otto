@@ -9,7 +9,7 @@ import { agentNameOf, labelOf } from "./workspaceView.js";
 import { isSystemNote, systemNoteBody } from "./systemNote.js";
 import type {
   AgentRelayEvent, ApprovalDecisionEvent, ApprovalRequestEvent, AssistantMessageEvent, RouteChangedEvent, SessionEvent, TurnEndedEvent,
-  UserMessageEvent,
+  UserMessageEvent, VoiceCallChangedEvent,
 } from "../../../session/events.js";
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 import { CREATE_AGENT_TOOL_NAME } from "../../../shared/createAgentDraft.js";
@@ -257,4 +257,26 @@ export function cloudEmptyState(
     case "denied":
       return "none";
   }
+}
+
+/** 语音通话名单那一行旁白（#1163）：判据是**前后两条名单的差集**，不是事件上的一个
+    「动作」字段——事件只记事实（此刻谁在通话里），动作是投影出来的：
+    从无到有 = 开始；空 = 结束；只多 = 拉进；只少 = 移出；有增有减 = 更新。
+    名字现查名单（`agentNameOf`），查不到（那只后来被删了）退回事件里的快照——同
+    `assistantLabel` 的兜底纪律。`byAgentId` 在场 = agent 用 invite_to_call 拉的，署它的名 */
+export function voiceCallLineText(prev: VoiceCallChangedEvent | null, e: VoiceCallChangedEvent, ws: WorkspaceSnapshot): string {
+  const nameOf = (p: { agentId: string; name: string }): string =>
+    ws.agents.some((a) => a.agentId === p.agentId) ? agentNameOf(ws, p.agentId) : p.name;
+  // 人名后空一格、书名号后不空：「Stan 开始了」与「「运营」把」——中文排版里括号自己就是间隔
+  const who = e.byAgentId ? `「${agentNameOf(ws, e.byAgentId)}」` : `${labelOf(ws, e.byUid)} `;
+  const before = new Set((prev?.participants ?? []).map((p) => p.agentId));
+  const after = new Set(e.participants.map((p) => p.agentId));
+  const list = (ps: readonly { agentId: string; name: string }[]): string => ps.map(nameOf).join("、");
+  if (after.size === 0) return `${who}结束了语音通话`;
+  if (before.size === 0) return `${who}开始了语音通话：${list(e.participants)}`;
+  const added = e.participants.filter((p) => !before.has(p.agentId));
+  const removed = (prev?.participants ?? []).filter((p) => !after.has(p.agentId));
+  if (added.length > 0 && removed.length === 0) return `${who}把${list(added)}拉进了通话`;
+  if (removed.length > 0 && added.length === 0) return `${who}把${list(removed)}移出了通话`;
+  return `${who}更新了通话名单：${list(e.participants)}`;
 }

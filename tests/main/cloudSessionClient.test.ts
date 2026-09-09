@@ -1547,3 +1547,61 @@ describe("createCloudSessionClient — workspaceState（控制房）", () => {
     expect(t.close).toHaveBeenCalledTimes(1);
   });
 });
+
+// ── #1163：语音通话名单的桌面半边 ──────────────────────────────────────
+describe("createCloudSessionClient — call 帧与 call_result 回执（#1163）", () => {
+  async function ready(): Promise<{ h: ReturnType<typeof harness>; t: FakeTransport }> {
+    const h = harness();
+    await h.client.join("w1", "cloud-s1");
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({
+      t: "welcome", v: CS_PROTOCOL_VERSION, sessionId: "cloud-s1",
+      lastSeq: -1, initiatorUid: "self-uid", ownerUid: "u2", modelRoute: null,
+    });
+    t.emitDown({ t: "backlog", events: [], done: true });
+    return { h, t };
+  }
+
+  it("call：发一个 call 帧，call_result{ok:true} 到达才 resolve", async () => {
+    const { h, t } = await ready();
+    const pending = h.client.call(["admin", "a_1"]);
+    expect(t.decoded()[t.decoded().length - 1]).toEqual({ t: "call", participants: ["admin", "a_1"] });
+    expect(t.sent[t.sent.length - 1]!.to).toBe(HOST_CID);
+    t.emitDown({ t: "call_result", ok: true });
+    expect(await pending).toEqual({ ok: true });
+  });
+
+  it("call：服务端拒绝的理由原样透出来", async () => {
+    const { h, t } = await ready();
+    const denied = h.client.call(["ghost"]);
+    t.emitDown({ t: "call_result", ok: false, message: "有 1 个智能体不在名单里" });
+    expect(await denied).toEqual({ ok: false, message: "有 1 个智能体不在名单里" });
+  });
+
+  it("call：15 秒没回执 → 「不确定」；断线也就地结掉；上一次没回执时不叠发", async () => {
+    const { h } = await ready();
+    vi.useFakeTimers();
+    try {
+      const pending = h.client.call([]);
+      expect(await h.client.call(["x"])).toMatchObject({ ok: false });
+      await vi.advanceTimersByTimeAsync(15_000);
+      const r = await pending;
+      expect(r.ok === false && r.unknown).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+    const { h: h2, t: t2 } = await ready();
+    const pending2 = h2.client.call([]);
+    t2.emitGone();
+    expect((await pending2).ok).toBe(false);
+  });
+
+  it("call：没 join / 没 ready 一律失败，不挂 15 秒", async () => {
+    const h = harness();
+    expect(await h.client.call([])).toEqual({ ok: false, message: "没有已连接的云会话" });
+    await h.client.join("w1", "cloud-s1");
+    expect(await h.client.call([])).toEqual({ ok: false, message: "云会话未就绪" });
+  });
+});

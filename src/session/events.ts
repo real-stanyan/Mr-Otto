@@ -560,6 +560,28 @@ export interface AgentBriefedEvent extends SessionEventBase {
     必须落盘而不是只活在内存里：时间线要投影"谁接了谁的棒"，棒数判据
     （decideRelay 的周期护栏/上限）也得从日志重放出来，不能靠进程内状态——
     重启一次接力链的历史就丢了，护栏形同虚设 */
+/** 语音通话名单里的一只（#1163）。`name` 是拉进来那一刻的快照：模型可见面（deriveMessages
+    的通话块）要说得出名字，而它手上只有 agent_briefed 的 roster（不带 id）；渲染层照旧按 id
+    现查 `agentNameOf`，查不到才退回这份快照（同 workspace_mentions.from_label 的取舍） */
+export interface VoiceCallParticipant {
+  agentId: string;
+  name: string;
+}
+
+/** 团队语音通话的名单变了（#1163）。**空名单 = 通话结束**；最后一条说了算（投影在
+    src/shared/voiceCall.ts）。群事件——没有 agentId 字段，每只 agent 都要读到它（派活只在
+    通话成员里进行、system 尾块列出谁在通话里）；模型可见面是 deriveMessages 投影出来的
+    那一块，事件本身 `ignorable`：旧版本跳过它只少一行时间线 + 少一块提示，不会复活残缺会话。
+    `byUid` 是谁改的（人的 uid；agent 用 invite_to_call 拉人时是点火的那个人，同 create_agent
+    的 created_by），`byAgentId` 在场 = 是那只 agent 拉的 */
+export interface VoiceCallChangedEvent extends SessionEventBase {
+  type: "voice_call_changed";
+  participants: VoiceCallParticipant[];
+  byUid: string;
+  byAgentId?: string;
+  ignorable: true;
+}
+
 export interface AgentRelayEvent extends SessionEventBase {
   type: "agent_relay";
   fromAgentId: string;
@@ -1001,6 +1023,7 @@ export type SessionEvent =
   | SubagentBriefedEvent
   | AgentBriefedEvent
   | AgentRelayEvent
+  | VoiceCallChangedEvent
   | MemoryLoadedEvent
   | WorkspaceMemoryLoadedEvent
   | MemoryUserEditEvent
@@ -1061,6 +1084,7 @@ const KNOWN_EVENT_TYPES_MAP: Record<SessionEvent["type"], true> = {
   subagent_briefed: true,
   agent_briefed: true,
   agent_relay: true,
+  voice_call_changed: true,
   memory_loaded: true,
   workspace_memory_loaded: true,
   memory_user_edit: true,

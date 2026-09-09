@@ -444,7 +444,10 @@ export function createEdge(deps: EdgeDeps): (req: Request) => Promise<Response> 
     // 一个形状，挂在一个叫 `chat/completions` 的路径上会让下一个读的人以为它们同形。
     // **发去上游哪个端点不由这个路径决定**，由路由行的 `kind` 决定（`upstreamPathFor`）：
     // 判据只能有一份，而这一份不该在用户的机器上。
-    if (pathname === "/llm/v1/chat/completions" || pathname === "/llm/v1/images") {
+    // 第三扇门 `/speech`（#1163）：语音合成。同一条纪律——打 MiniMax 哪个端点由路由行的
+    // `kind` 决定；这个路径只是让读的人知道请求体（`{model, text, voice_id}`）与回包
+    // （`audio/mpeg` 字节）都不是 chat 的形状
+    if (pathname === "/llm/v1/chat/completions" || pathname === "/llm/v1/images" || pathname === "/llm/v1/speech") {
       if (!deps.llm) return apiError(404, "这个服务没开托管网关", "llm_disabled");
       if (req.method !== "POST") return apiError(405, "只收 POST", "method_not_allowed");
       const caller = await callerOf(req);

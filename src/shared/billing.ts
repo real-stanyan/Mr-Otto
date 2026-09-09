@@ -49,6 +49,10 @@ export interface BillingMe {
       **缺席 = 空数组**（旧 edge / 迁移还没跑）＝ 这台网关不供出图，工具不挂 —— 
       也就是改动前的行为 */
   imageModels: string[];
+  /** 网关此刻供的**语音合成**型号（`model_route` 里 kind='tts' 那些，#1163）。
+      消费方是团队语音通话（主进程 teamVoice / 渲染层的语音钮可不可用）。
+      **缺席 = 空数组**（旧 edge / 0033 还没跑）＝ 这台网关不供语音，桌面不画语音钮 */
+  ttsModels: string[];
   /** 型号 id → `model_route.platform`（`deepseek` / `zhipu` / `qwen`…，#1011）。
       **不靠 id 前缀猜**：`glm-*` 属于智谱今天成立，只是因为这些 id 是我们自己在
       `model_route` 里写的——那是巧合不是保证，而这一列就是答案。
@@ -175,6 +179,8 @@ export function parseBillingMe(payload: unknown): BillingMe | null {
   // 缺席 = 旧 edge / 迁移还没跑 = 这台网关不供出图。**不能让它把整份快照解析成 null**：
   // 那会把「edge 比我旧」升级成「拿不到订阅状态」（同下面 modelPlatforms 的立场）
   const imageModels = Array.isArray(payload.imageModels) ? payload.imageModels.filter((m): m is string => typeof m === "string") : [];
+  // 同上（#1163）：缺席 = 这台网关不供语音，不是「拿不到订阅状态」
+  const ttsModels = Array.isArray(payload.ttsModels) ? payload.ttsModels.filter((m): m is string => typeof m === "string") : [];
   // 缺席 / 形状不对一律回空对象——这一格只喂 logo，读不到就不画，不该让整份
   // 快照解析失败（那会把「edge 比我旧」升级成「拿不到订阅状态」）
   const modelPlatforms: Record<string, string> = {};
@@ -203,7 +209,7 @@ export function parseBillingMe(payload: unknown): BillingMe | null {
       }
     }
   }
-  return { plan, status, plans, windows, addon: { remainingMicro: payload.addon.remainingMicro, expiresAt }, periodEnd, models, imageModels, modelPlatforms };
+  return { plan, status, plans, windows, addon: { remainingMicro: payload.addon.remainingMicro, expiresAt }, periodEnd, models, imageModels, ttsModels, modelPlatforms };
 }
 
 export const MICRO_PER_CREDIT = 10_000;
