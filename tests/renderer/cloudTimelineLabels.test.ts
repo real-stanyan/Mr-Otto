@@ -336,3 +336,13 @@ describe("voiceCallLineText", () => {
     expect(hiddenFromCloudTimeline(ev(1, ["a_1"]))).toBe(false);
   });
 });
+
+// #1174：拉进语音通话的招呼开场白是 runtime 替人落的 user_message，`voice_call_changed`
+// 那一行已经说了「拉进了通话」，正文不画（同接力开场白的处置）
+describe("hiddenFromCloudTimeline：招呼开场白（#1174）", () => {
+  const base = { sessionId: "s1", ts: 1, seq: 1 };
+  it("带 greeting 记号的 user_message 隐藏", () => {
+    const e = { ...base, type: "user_message" as const, content: "[系统] 「运营」被拉进了语音通话", greeting: "voice_call" as const, mentions: ["a_1"], fromUid: "u1" };
+    expect(hiddenFromCloudTimeline(e)).toBe(true);
+  });
+});

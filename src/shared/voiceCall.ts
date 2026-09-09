@@ -10,6 +10,7 @@
 // 用 `voiceCallOf` 折叠一次播种。两者对拍的断言在 tests/shared/voiceCall.test.ts。
 
 import type { SessionEvent, VoiceCallChangedEvent, VoiceCallParticipant } from "../session/events.js";
+import { promptSafe } from "./promptSafe.js";
 
 export interface VoiceCallState {
   /** 此刻在通话里的 agent（id + 拉进来那一刻的名字快照） */
@@ -47,4 +48,14 @@ export const INVITE_TO_CALL_TOOL_NAME = "invite_to_call";
     再拉」的纪律做时，这一行是人唯一的信号 */
 export function relayOutsideCallText(fromName: string, toName: string): string {
   return `「${fromName}」@ 了不在通话里的「${toName}」——通话中只有通话成员接活，这一棒没接。要让 TA 参与，答应「${fromName}」的询问、或点通话栏的加人。`;
+}
+
+/** 拉进通话的那只先开口（#1174）：runtime 在 setVoiceCall / invite_to_call 落下新名单之后，
+    替改名单的人对每只新成员落一条带 `greeting` 记号的开场白（user_message，模型直接读）。
+    形状同 relayOpeningText：`[系统]` 开头、第三人称点名（群里每只都读得到这条）、再用
+    「名字：」对上被叫到的那只；名字过 promptSafe——agent 名是成员可写字段，`]` 与换行
+    都能撑破 `[系统] …` 这个结构 */
+export function voiceCallGreetingText(name: string): string {
+  const n = promptSafe(name);
+  return `[系统] 「${n}」被拉进了语音通话。${n}：用一两句话打个招呼——说你是谁、能帮什么，然后等对方开口。这句话会被读出来，别用列表和记号。`;
 }

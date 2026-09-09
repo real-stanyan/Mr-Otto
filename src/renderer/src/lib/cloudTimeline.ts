@@ -95,9 +95,13 @@ export function relayLineText(e: AgentRelayEvent, ws: WorkspaceSnapshot): string
        判据迟早分家。代价写在这里——工具调用在云会话时间线上**没有任何痕迹**，
        只跑工具没说话的一轮，收口后什么都不留（`turn_ended{error}` 那行还在）。
 
+    ⑦ 语音通话的**招呼开场白**（#1174，带 `greeting` 的 `user_message`）——runtime 替
+       改名单的人落的「打个招呼」，与接力开场白同款：正文是写给模型的措辞，而
+       `voice_call_changed` 那一行已经说了「拉进了通话」，两条都画是同一件事说两遍。
+
     留在时间线上的因此只剩：人说的话、agent 的最终答案、接力线、出错、归档。 */
 export function hiddenFromCloudTimeline(e: SessionEvent): boolean {
-  if (e.type === "user_message") return e.relay !== undefined;
+  if (e.type === "user_message") return e.relay !== undefined || e.greeting !== undefined;
   if (e.type === "approval_decision") return e.decision === "approved";
   if (e.type === "assistant_message") return isAgentStep(e);
   return e.type === "session_created" || e.type === "agent_briefed" || e.type === "request_envelope";
