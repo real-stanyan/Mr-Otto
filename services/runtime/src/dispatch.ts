@@ -173,6 +173,20 @@ export function dispatchContext(events: readonly SessionEvent[], agentName: (age
   return lines.slice(-DISPATCH_CONTEXT_LINES);
 }
 
+/** 通话里最近开口的那只（#1183）：候选里**最后一条有正文的** assistant_message 的 agent。
+    只要了工具没说话的那一轮不算开口（群里看不见它）；候选外的（通话外那只、或 agentId
+    缺席的旧日志）跳过往前找。一只都没开过口回 null——调用方退回 dispatchFallbackOf。
+    通话里闲聊/确认该由「刚说完话的那个」应，像真对话；这是维护者拍板的口径（#1183） */
+export function lastSpeakerAmong(events: readonly SessionEvent[], candidateIds: readonly string[]): string | null {
+  const known = new Set(candidateIds);
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i]!;
+    if (e.type !== "assistant_message" || e.content.trim() === "") continue;
+    if (e.agentId !== undefined && known.has(e.agentId)) return e.agentId;
+  }
+  return null;
+}
+
 /** 名册里「没人对口的活归它」那一只：管理员（稳定键 `admin`，ADR-0224 的判据），
     名册里没有它才退回第一只（= 改动前「不点名时接话的就是名单第一只」那条老语义
     的落点）。名册为空回 null */

@@ -9,6 +9,7 @@ import {
   dispatchContext,
   dispatchFailedText,
   dispatchPrompt,
+  lastSpeakerAmong,
   parseDispatchReply,
   requestDispatch,
   requestDispatchAsOwner,
@@ -249,5 +250,26 @@ describe("requestDispatchAsOwner（daemon 那一侧的接线）", () => {
     expect(h["x-otto-workspace"]).toBe("ws");
     expect(h["x-otto-session"]).toBe("ses");
     expect(Object.keys(h).some((k) => k.includes("agent"))).toBe(false);
+  });
+});
+
+describe("lastSpeakerAmong（#1183）：通话里没人对口时，最近开口的那只接", () => {
+  const am = (seq: number, agentId: string, content: string): SessionEvent =>
+    ({ type: "assistant_message", seq, ts: seq, sessionId: "s1", agentId, content, toolCalls: [] }) as unknown as SessionEvent;
+  it("最后一条有正文的 assistant_message、且在候选里 → 那只", () => {
+    const events = [am(1, "ops", "在的"), am(2, "ads", "投放我看"), am(3, "ops", "好")];
+    expect(lastSpeakerAmong(events, ["ops", "ads"])).toBe("ops");
+  });
+  it("最后开口的不在候选里（通话外的那只）→ 往前找候选里最近的一只", () => {
+    const events = [am(1, "ops", "在的"), am(2, "admin", "我来")];
+    expect(lastSpeakerAmong(events, ["ops", "ads"])).toBe("ops");
+  });
+  it("只要了工具没说话的那一轮（content 空）不算开口", () => {
+    const events = [am(1, "ops", "在的"), am(2, "ads", "")];
+    expect(lastSpeakerAmong(events, ["ops", "ads"])).toBe("ops");
+  });
+  it("一只都没开口过 → null", () => {
+    expect(lastSpeakerAmong([], ["ops"])).toBeNull();
+    expect(lastSpeakerAmong([am(1, "admin", "我来")], ["ops"])).toBeNull();
   });
 });

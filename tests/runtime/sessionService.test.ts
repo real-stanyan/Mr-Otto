@@ -5126,11 +5126,12 @@ describe("语音通话里只有通话成员参与（#1163）", () => {
     const store = newStore();
     const calls: DispatchCall[] = [];
     const session = open(store, { calls, verdict: { kind: "none" } });
-    await session.setVoiceCall("u1", "alice", ["ads"]);
-    await session.settled(); // 拉进来的先打招呼（#1174），那一轮收口再验派活
+    // 两只：只有一只时分类器根本不会被问（#1183）
+    await session.setVoiceCall("u1", "alice", ["ads", "ops"]);
+    await session.settled(); // 拉进来的先打招呼（#1174），那几轮收口再验派活
     await session.say("u1", "alice", "帮我看下投放", false, [], undefined, []);
-    expect(calls[0]!.roster.map((a) => a.agentId)).toEqual(["ads"]);
-    expect(calls[0]!.fallbackAgentId).toBe("ads");
+    expect(calls[0]!.roster.map((a) => a.agentId)).toEqual(["ops", "ads"]);
+    expect(calls[0]!.fallbackAgentId).toBe("ops");
     await session.settled();
     store.close();
   });
@@ -5382,6 +5383,109 @@ describe("拉进通话先打招呼（#1174）", () => {
     await session.settled();
     expect(openings(store).map((g) => [g.mentions, g.greeting])).toEqual([[["ops"], "voice_call"], [["ads"], undefined]]);
     expect(seen).toEqual(["ops", "ads"]);
+    store.close();
+  });
+});
+
+describe("通话里必须有人应（#1183）", () => {
+  type DispatchCall = Parameters<NonNullable<Parameters<typeof createCloudSession>[0]["dispatch"]>>[0];
+  type Verdict = { kind: "picked"; agentIds: string[] } | { kind: "none" } | { kind: "failed"; reason: string };
+  const ROSTER3 = [
+    ...AGENTS,
+    { agentId: "admin", name: "管理员", description: "兜底", instructions: "", models: ["m-admin"], tools: [] as AgentToolAllow[] },
+  ];
+
+  function open(store: EventStore, opts: { verdict: Verdict; calls?: DispatchCall[]; seen?: string[] }): CloudSession {
+    return createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => ["u1"], agents: async () => ROSTER3,
+      adapterFor: (a) => ({ model: a.models[0]!, async chat() { opts.seen?.push(a.agentId); return { content: `${a.name}答` }; } }),
+      onEvent: () => {}, onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true, contextWindowOf: () => undefined, sandboxApproval: async () => "ask",
+      workspaceLock: createWorkspaceLock(), relayRemainingMicro: async () => null,
+      dispatch: async (input: DispatchCall) => { opts.calls?.push(input); return opts.verdict; },
+    });
+  }
+
+  /** 招呼那几轮收口之后再开口，且只看这句话之后的日志 */
+  async function afterGreetings(store: EventStore, session: CloudSession, seen: string[]): Promise<number> {
+    await session.settled();
+    seen.length = 0;
+    return store.load("s1").at(-1)!.seq;
+  }
+
+  it("通话里只有一只：不问分类器，直接派给它（一次分类调用都不打）", async () => {
+    const store = newStore();
+    const calls: DispatchCall[] = [];
+    const seen: string[] = [];
+    const session = open(store, { verdict: { kind: "none" }, calls, seen });
+    await session.setVoiceCall("u1", "alice", ["ads"]);
+    const from = await afterGreetings(store, session, seen);
+    await session.say("u1", "alice", "我说话你能听到吗？", false, [], undefined, []);
+    await session.settled();
+    expect(calls).toHaveLength(0);
+    const log = store.load("s1", { afterSeq: from });
+    expect(log.filter((e) => e.type === "chat_message")).toHaveLength(0);
+    expect(log.find((e) => e.type === "user_message")).toMatchObject({ content: "[alice]: 我说话你能听到吗？", mentions: ["ads"], dispatch: "auto" });
+    expect(seen).toEqual(["ads"]);
+    store.close();
+  });
+
+  it("通话里两只、分类器说 none（闲聊）：最近开口的那只接，不落 chat_message", async () => {
+    const store = newStore();
+    const calls: DispatchCall[] = [];
+    const seen: string[] = [];
+    const session = open(store, { verdict: { kind: "none" }, calls, seen });
+    await session.setVoiceCall("u1", "alice", ["ads", "ops"]); // 招呼按名单顺序：广告先、运营后 → 最近开口的是运营
+    const from = await afterGreetings(store, session, seen);
+    await session.say("u1", "alice", "哈哈好的", false, [], undefined, []);
+    await session.settled();
+    expect(calls).toHaveLength(1); // 两只以上才问分类器（候选按名单顺序，不按拉进来的顺序）
+    expect(calls[0]!.roster.map((a) => a.agentId)).toEqual(["ops", "ads"]);
+    const log = store.load("s1", { afterSeq: from });
+    expect(log.filter((e) => e.type === "chat_message")).toHaveLength(0);
+    expect(log.find((e) => e.type === "user_message")).toMatchObject({ mentions: ["ops"], dispatch: "auto" });
+    expect(seen).toEqual(["ops"]);
+    store.close();
+  });
+
+  it("通话里两只、分类器失败：同样最近开口的那只接，群里**不**落「没派出去」", async () => {
+    const store = newStore();
+    const seen: string[] = [];
+    const session = open(store, { verdict: { kind: "failed", reason: "网关无响应" }, seen });
+    await session.setVoiceCall("u1", "alice", ["ads", "ops"]);
+    const from = await afterGreetings(store, session, seen);
+    await session.say("u1", "alice", "帮我看下投放", false, [], undefined, []);
+    await session.settled();
+    const log = store.load("s1", { afterSeq: from });
+    expect(log.filter((e) => e.type === "chat_message")).toHaveLength(0);
+    expect(log.find((e) => e.type === "user_message")).toMatchObject({ mentions: ["ops"], dispatch: "auto" });
+    expect(seen).toEqual(["ops"]);
+    store.close();
+  });
+
+  it("通话里一只都没开过口时兜底是管理员（在通话里）——否则通话第一只", async () => {
+    const store = newStore();
+    const seen: string[] = [];
+    const session = open(store, { verdict: { kind: "none" }, seen });
+    // 招呼那几轮不算：把它们的 assistant_message 排除——用一份只有名单事件的日志验兜底
+    await session.setVoiceCall("u1", "alice", ["ads", "admin"], () => "限速：这会儿先不打招呼");
+    await session.settled();
+    seen.length = 0;
+    await session.say("u1", "alice", "在吗", false, [], undefined, []);
+    await session.settled();
+    expect(seen).toEqual(["admin"]);
+    store.close();
+  });
+
+  it("没有通话：分类器说 none 照旧只落 chat_message（改动前逐字相同）", async () => {
+    const store = newStore();
+    const seen: string[] = [];
+    const session = open(store, { verdict: { kind: "none" }, seen });
+    await session.say("u1", "alice", "我说话你能听到吗？", false, [], undefined, []);
+    await session.settled();
+    expect(seen).toEqual([]);
+    expect(store.load("s1").map((e) => e.type)).toEqual(["chat_message"]);
     store.close();
   });
 });
