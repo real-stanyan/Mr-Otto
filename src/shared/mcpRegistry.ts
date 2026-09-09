@@ -44,6 +44,29 @@ function slugId(name: string): string {
   return slug === "" ? "server" : slug;
 }
 
+/** 剥反向域名首段时认得的公共后缀标签。反向域名与写反了的普通域名（mcp.so）
+    从字符串上分不开，所以只剥这一小撮——不在表里的首段一律当成发布者名字本身 */
+const REGISTRY_TLD_LABELS = new Set([
+  "com", "org", "net", "io", "dev", "app", "ai", "so", "co", "sh", "run", "cloud", "xyz", "me",
+]);
+
+/** title 缺席时的显示名兜底：发布者域名 + 末段（com.notion/mcp → notion/mcp）。
+    官方发布者习惯把服务命名成 <公司域名>/mcp——末段毫无信息量，而发布者域名
+    恰恰是判断「是不是官方」最直接的线索（#701；注册表分两层就是为帮用户做
+    这个判断，ADR-0171）。剥不掉（没有斜杠 / 剥完空了）就不兜底，退回 id */
+function publisherFallbackName(fullName: string): string | undefined {
+  const slash = fullName.indexOf("/");
+  if (slash <= 0 || slash === fullName.length - 1) return undefined;
+  const ns = fullName.slice(0, slash);
+  const tail = fullName.slice(slash + 1);
+  const firstDot = ns.indexOf(".");
+  const publisher =
+    firstDot > 0 && REGISTRY_TLD_LABELS.has(ns.slice(0, firstDot).toLowerCase())
+      ? ns.slice(firstDot + 1)
+      : ns;
+  return publisher === "" ? undefined : `${publisher}/${tail}`;
+}
+
 /** header 的 value 模板形如 "Bearer {smithery_api_key}"——占位符的名字才是
     要问用户的东西，header 自己的名字（Authorization）不是 */
 function paramNameFromHeader(h: Record<string, unknown>): string | undefined {
@@ -131,7 +154,7 @@ export function mapRegistryServer(record: unknown): CatalogEntry | null {
   if (fullName === undefined) return null;
 
   const id = slugId(fullName);
-  const name = str(s.title) ?? id;
+  const name = str(s.title) ?? publisherFallbackName(fullName) ?? id;
   const description = str(s.description) ?? "";
 
   const remote = arr(s.remotes).find(
