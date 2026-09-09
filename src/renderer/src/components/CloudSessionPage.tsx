@@ -43,6 +43,7 @@ import { ArrowLeft, AtSign, Download, Settings2 } from "lucide-react";
 import { cn } from "@/lib/utils.js";
 import { Button } from "@/components/ui/button.js";
 import { Bubble, BubbleContent } from "@/components/ui/bubble.js";
+import { splitBubbles } from "@/lib/chatBubbles.js";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar.js";
 import { Textarea } from "@/components/ui/textarea.js";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip.js";
@@ -1291,17 +1292,36 @@ function UserMessageRow({
     保证**到不了的（同 ADR-0214「让『只有一个』由构造保证」的纪律），留着就是
     两条永远跑不到的死支。ws 是查 agentId → 名字的名单，多智能体上线前落的
     旧消息没有 agentId，assistantLabel 据此回退到 "Agent" */
-function AssistantMessageRow({ event, ws }: { event: AssistantMessageEvent; ws: WorkspaceSnapshot }) {
+export function AssistantMessageRow({ event, ws }: { event: AssistantMessageEvent; ws: WorkspaceSnapshot }) {
   const name = assistantLabel(event, ws);
   return (
     <SpeakerRow mine={false} avatar={<AgentAvatar ws={ws} agentId={event.agentId} name={name} />}>
       <span className="px-1 text-[10.5px] text-muted-foreground">
         {name} · {formatProxyTime(event.ts)}
       </span>
-      <Bubble align="start" variant="muted">
-        <BubbleContent className="whitespace-pre-wrap break-words">{event.content}</BubbleContent>
-      </Bubble>
+      <AgentBubbles text={event.content} />
     </SpeakerRow>
+  );
+}
+
+/** agent 的一轮回复画成几张气泡（#1132，ADR-0265）：按空行拆（chatBubbles.ts），
+    像真人在群里连发几条。终态与流式预览共用这一份——预览是累计快照（#1107），
+    每帧重新拆一遍，前几张早就定形、只有最后一张在长，答案落下来时张数不变。
+    一个字都拆不出来（纯空白）时仍画一张，与改动前的形状一致：这一行能画出来
+    就说明时间线认为它该在（isAgentStep 已经把空回复滤掉了）。
+    第二张起 `mt-1`：SpeakerRow 那一摞的 gap 是给「署名行 → 气泡」定的 2px，
+    两张气泡只隔 2px 读起来是一张裂开的，6px 才是两条消息 */
+function AgentBubbles({ text }: { text: string }) {
+  const parts = splitBubbles(text);
+  const chunks = parts.length > 0 ? parts : [text];
+  return (
+    <>
+      {chunks.map((part, i) => (
+        <Bubble key={i} align="start" variant="muted" className={i > 0 ? "mt-1" : undefined}>
+          <BubbleContent className="whitespace-pre-wrap break-words">{part}</BubbleContent>
+        </Bubble>
+      ))}
+    </>
   );
 }
 
@@ -1419,15 +1439,15 @@ export function PendingTurnLines({
                 `py-2.5` 只留给三点那档：一行字的气泡约 39px，那枚是 26px，
                 读起来是「还没成形的一句话」；预览档与终态同一把尺，答案落下时
                 像素一动不动 */}
-            <Bubble align="start" variant="muted">
-              {streamed ? (
-                <BubbleContent className="whitespace-pre-wrap break-words">{streamed}</BubbleContent>
-              ) : (
+            {streamed ? (
+              <AgentBubbles text={streamed} />
+            ) : (
+              <Bubble align="start" variant="muted">
                 <BubbleContent className="flex items-center py-2.5">
                   <TypingIndicator variant="bare" label={`${name} 正在输入`} />
                 </BubbleContent>
-              )}
-            </Bubble>
+              </Bubble>
+            )}
           </SpeakerRow>
         );
       })}
