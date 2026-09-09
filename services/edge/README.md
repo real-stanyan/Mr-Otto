@@ -29,6 +29,7 @@ Mr Otto 的边缘服务。三件事，互不相干：**OAuth 落地页**、**远
 | GET | `/auth/landing` | OAuth 落地页。不要令牌，浏览器裸访问，回 HTML |
 | GET | `/rl/v1/connect?role=desktop\|mobile` | 中继。WebSocket upgrade，上下行同一条。`101` 接上，`400` role 不合法，`401` 凭据问题，`404` 未开中继，`426` 不是 upgrade 请求 |
 | POST | `/llm/v1/chat/completions` | 托管模型网关（OpenAI 兼容，流式/非流式都收）。`200` 正常（响应头带剩余额度），`400` `bad_request`/`unknown_model`，`401` 凭据问题，`402` `no_subscription`，`429` `quota_exhausted`（带 `window`/`resetAt`）或 `too_many_inflight`，`502` `upstream`（上游出错），`503` `upstream`（额度算不出来，稍后再试） |
+| POST | `/llm/v1/speech` | 语音合成（#1163）：`{model, text, voice_id, speed?}` → `200` **`audio/mpeg` 字节**（响应头带剩余额度 + `x-otto-cost-micro` + `x-otto-audio-ms` + `x-otto-tts-chars`），钱按字符数算（`ttsUnits`）；错误码同上一行。上游是 MiniMax `t2a_v2`（路由行 `kind='tts'`，0033） |
 | GET | `/billing/v1/me` | 这个人的档位 / 两个窗口 / 加购余额 / 网关此刻供的型号（`BillingMe`）。`200`，`502` `upstream`（Quota DO / Supabase 挂了） |
 | POST | `/billing/v1/checkout` | 开一张 Stripe Checkout：`{planId}` 订阅或 `{addon:true,quantity}` 加购。`200 {url}`，`400` 形状不对，`403` `forbidden`（平台身份不能买），`409` `already_subscribed`（已有非 canceled 的订阅还想再订 —— 换档走 `/portal`），`502` Stripe 那边出错 |
 | POST | `/billing/v1/portal` | 开一张 Stripe Billing Portal（改卡/退订）。`200 {url}`，`502`（含"还没有订阅记录"） |
@@ -177,6 +178,7 @@ DO**：这样"行插进去了、通知那步炸了"才有救——Stripe 的重�
 npx wrangler secret put DEEPSEEK_API_KEY      # 上游模型 key
 npx wrangler secret put ZHIPU_API_KEY
 npx wrangler secret put QWEN_API_KEY        # 千问 = 阿里云百炼 DashScope 国际站
+npx wrangler secret put MINIMAX_API_KEY     # 语音合成（#1163）；国内站 api.minimaxi.com 的 key
 npx wrangler secret put STRIPE_SECRET_KEY     # sk_live_… / sk_test_…
 npx wrangler secret put STRIPE_WEBHOOK_SECRET # whsec_…
 ```
