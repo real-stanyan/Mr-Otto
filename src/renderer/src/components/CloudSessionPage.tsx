@@ -39,7 +39,7 @@
 // 新造。
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ArrowLeft, AtSign, Download, Settings2 } from "lucide-react";
+import { ArrowLeft, AtSign, Download, Phone, Settings2 } from "lucide-react";
 import { cn } from "@/lib/utils.js";
 import { Button } from "@/components/ui/button.js";
 import { Bubble, BubbleContent } from "@/components/ui/bubble.js";
@@ -83,6 +83,11 @@ import { downloadText } from "../lib/downloadText.js";
 import { sandboxApprovalBanner, sandboxApprovalControl } from "../lib/sandboxApprovalControl.js";
 import { SandboxApprovalToggle } from "./BypassSwitch.js";
 import { CloudContextRing } from "./CloudContextRing.js";
+import { VoiceCallBar } from "./VoiceCallBar.js";
+import { VoicePickerPopover } from "./VoicePickerPopover.js";
+import { voiceCallAvailable } from "../lib/voiceCall.js";
+import { voiceCallOf } from "../../../shared/voiceCall.js";
+import { useConfirm } from "@/components/ui/confirm-dialog.js";
 
 // cs 还没到位时兜底（正常路径下 WorkspacePage 只在 cloudSession 非空时才
 // 挂载这个组件，但 hooks 不能条件调用，events 得先算出一个稳定引用——
@@ -187,6 +192,13 @@ export function CloudSessionPage({
   const cloudSay = useChat((s) => s.cloudSay);
   const cloudApprove = useChat((s) => s.cloudApprove);
   const cloudArchive = useChat((s) => s.cloudArchive);
+  // 语音通话（#1163）：名单是日志事实（voiceCallOf），「我在听」是本机状态（store.voice）
+  const cloudCall = useChat((s) => s.cloudCall);
+  const voice = useChat((s) => s.voice);
+  const billing = useChat((s) => s.billing);
+  const joinVoiceCall = useChat((s) => s.joinVoiceCall);
+  const setVoiceMuted = useChat((s) => s.setVoiceMuted);
+  const confirm = useConfirm();
   const setSandboxApproval = useChat((s) => s.setWorkspaceSandboxApproval);
   // 名单陈旧时的刷新（#935 / #957 C-I4）：选人弹层的空态按钮、发送前对认不出
   // 的 @ 先刷一次都要它
@@ -259,6 +271,19 @@ export function CloudSessionPage({
   const events = cs?.events ?? EMPTY_EVENTS;
   // 通话旁白要看前一条名单（差集出「拉进 / 移出 / 开始 / 结束」，#1163）：一次扫出
   // 每条 voice_call_changed 的前一条，渲染循环里 O(1) 查
+  const call = useMemo(() => voiceCallOf(events), [events]);
+  const voiceAvailable = voiceCallAvailable(billing);
+  /** 结束通话 = 全组（拍板 ⑥）：一条空名单事件让所有人的栏消失，所以先问一句 */
+  const endCall = async (): Promise<CloudAck> => {
+    const ok = await confirm({
+      title: "结束语音通话？",
+      description: "所有人的通话栏都会消失，之后的回复只出字。只想自己不听的话用「静音」。",
+      confirmLabel: "结束",
+      tone: "danger",
+    });
+    if (!ok) return { ok: true };
+    return cloudCall([]);
+  };
   const prevVoiceCall = useMemo(() => {
     const m = new Map<number, VoiceCallChangedEvent | null>();
     let prev: VoiceCallChangedEvent | null = null;
@@ -711,6 +736,22 @@ export function CloudSessionPage({
         </div>
       </div>
 
+      {/* 语音通话中（#1163）：头部之下一条常驻栏，照微信群语音。判据是日志里的名单，
+          谁都看得见；「我在听」那份只在 sessionId 对得上时才算（换会话不带过去） */}
+      {call && cs && (
+        <VoiceCallBar
+          ws={ws}
+          call={call}
+          voice={voice && voice.sessionId === cs.sessionId ? voice : null}
+          available={voiceAvailable}
+          ready={ready}
+          onJoin={joinVoiceCall}
+          onMute={setVoiceMuted}
+          onUpdate={(ids) => cloudCall(ids)}
+          onEnd={endCall}
+        />
+      )}
+
       {/* 滚动区：横幅 + 时间线 + 错误行。scrollbar-stable 同外层原来那份；
           px-4 与本地会话一条量尺（aui viewport 的 `max-w-(--thread-max-width) px-4`，
           那个变量本仓没定义 = 无上限，所以本地就是「占满 + px-4」，#993 第 2 条）；
@@ -1065,6 +1106,28 @@ export function CloudSessionPage({
               >
                 <AtSign className="size-4" aria-hidden />
               </button>
+              {/* 语音通话（#1163）：拉谁进语音。没订阅 / 还没查到 / 网关不供语音一律不画
+                  （同 modelMenu 对 hosted 的处置，#722 纪律）；通话进行中这颗钮亮成品牌色，
+                  点开是同一个弹层改名单 */}
+              {voiceAvailable && cs && (
+                <VoicePickerPopover
+                  ws={ws}
+                  current={call?.participants.map((p) => p.agentId) ?? null}
+                  ready={ready}
+                  onSubmit={(ids) => cloudCall(ids)}
+                  onStarted={joinVoiceCall}
+                >
+                  <button
+                    type="button"
+                    disabled={!ready}
+                    title={call ? "更新通话名单" : "开始语音通话"}
+                    aria-label={call ? "更新通话名单" : "开始语音通话"}
+                    className={cn(ghostButton, "size-8 disabled:pointer-events-none disabled:opacity-30", call && "text-[var(--brand)]")}
+                  >
+                    <Phone className="size-4" aria-hidden />
+                  </button>
+                </VoicePickerPopover>
+              )}
               {/* 本地会话的免审开关就在这个位置（App.tsx 的 approvalToggle）。
                   管的东西不一样，所以名字也不一样——见 lib/sandboxApprovalControl.ts */}
               <SandboxApprovalToggle
