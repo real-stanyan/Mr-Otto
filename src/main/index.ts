@@ -224,6 +224,7 @@ import {
   adoptLegacyData,
   needsRelaunch,
   parkUnclaimed,
+  windowSessionPartition,
   writeWho,
   LEGACY_CONFIG_ENTRIES,
   LEGACY_USER_DATA_ENTRIES,
@@ -421,6 +422,10 @@ function createWindow(): BrowserWindow {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: false,
+      // localStorage 跟着账号抽屉走（#758）：不写 partition 就是默认 session，
+      // 落在抽屉外面、两个账号共用一份。bootUid 模块顶层已同步算好；内置浏览器
+      // 不受影响（WebContentsView 用它自己写死的 persist:otto-browser）
+      partition: windowSessionPartition(bootUid),
     },
   });
   // mac 惯例:Cmd+W / 点红灯是"收起窗口",app 不退。这里必须拦,否则主窗一关

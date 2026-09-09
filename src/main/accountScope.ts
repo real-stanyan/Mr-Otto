@@ -62,6 +62,18 @@ export function accountDirName(uid: string | null): string {
   return createHash("sha256").update(uid).digest("hex").slice(0, 16);
 }
 
+/** 主窗的 Chromium session partition（issue #758）。localStorage / IndexedDB / Cache
+    Storage 落在哪由 partition 决定——不写就是默认 session，落在 userData 根那一层，
+    在抽屉的**外面**，两个账号共用一份（侧栏折叠状态的 key 是工程目录绝对路径，
+    「上一个账号开过哪些项目」就这么漏给下一个登录的人）。
+    名字带 otto- 前缀：Partitions/ 下还有内置浏览器写死的 persist:otto-browser，
+    两摊存储分得开。换号靠重启（needsRelaunch），重启后这里自然拿到新抽屉名。
+    代价：partition 一换存量 localStorage 不迁移——侧栏折叠 / 主题 / 面板宽度
+    清一次，重置密码那笔记号（SetPasswordDialog）也在这，跨升级的人重走一遍 */
+export function windowSessionPartition(uid: string | null): string {
+  return `persist:otto-${accountDirName(uid)}`;
+}
+
 /** 这个账号在 userData 下的抽屉。auth.json 不在里面 —— 它是 uid 的来源 */
 export function accountDataDir(userData: string, uid: string | null): string {
   return join(userData, ACCOUNTS_DIR, accountDirName(uid));
