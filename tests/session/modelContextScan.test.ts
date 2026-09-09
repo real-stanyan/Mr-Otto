@@ -68,6 +68,17 @@ describe("boundedContextEvents（issue #351）", () => {
     store.close();
   });
 
+  it("团队 wiki 快照（#1140）：checkpoint 之前落的 workspace_wiki_loaded 幸存于有界重建", () => {
+    const store = new EventStore(":memory:");
+    put(store, { type: "session_created", title: "t", workspace: "/w", cloud: { workspaceId: "w1" } });
+    put(store, { type: "workspace_wiki_loaded", agentId: "ops", agentName: "运营", index: "# 索引", pinned: [], own: null, nudge: null });
+    for (let i = 1; i <= 8; i++) turn(store, i);
+    put(store, { type: "context_compacted", summary: "前八轮的摘要", model: "m" });
+    for (let i = 9; i <= 11; i++) turn(store, i);
+    assertEquivalent(store);
+    store.close();
+  });
+
   it("agent 身份快照（#957 A-3）：checkpoint 之前落的 agent_briefed 幸存于有界重建", () => {
     const store = new EventStore(":memory:");
     put(store, { type: "session_created", title: "t", workspace: "/w", cloud: { workspaceId: "w1" } });

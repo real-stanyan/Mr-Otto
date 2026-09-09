@@ -134,6 +134,7 @@ import { usageSnapshot } from "../shared/usageStats.js";
 import { modelShares } from "../shared/modelShare.js";
 import { islandUsage, type IslandUsageRow } from "../shared/islandUsage.js";
 import type { AgentToolAllow } from "../shared/agentToolAllow.js";
+import type { CsWikiWriteReq } from "../shared/remote/cloudSession.js";
 import { createWorkspaceLens, withDefaultFold } from "./workspaceLens.js";
 import { loadIslandSettings, normaliseIslandSettings, saveIslandSettings } from "./islandSettingsStore.js";
 import { packageProject } from "./projectPackager.js";
@@ -192,7 +193,7 @@ import { createWorkspaceManager } from "./workspaceManager.js";
 import {
   createWorkspace, listWorkspaces, fetchWorkspace, addMember, removeMember, leave,
   deleteWorkspace, upsertConnectorRow, deleteConnectorRow, insertSessionRow, listCloudSessions,
-  insertAgentRow, updateAgentRow, deleteAgentRow, listAgentNames, listMemoryRows, saveMemoryRow,
+  insertAgentRow, updateAgentRow, deleteAgentRow, listAgentNames,
   updateSandboxApproval, listMentions, markMentionsRead,
 } from "./supabaseWorkspacesApi.js";
 import type { SandboxApproval } from "../shared/workspaceAgents.js";
@@ -1613,7 +1614,7 @@ void app.whenReady().then(() => {
   const workspaceManager = createWorkspaceManager({
     createWorkspace, listWorkspaces, fetchWorkspace, addMember, removeMember, leave,
     deleteWorkspace, upsertConnectorRow, deleteConnectorRow,
-    insertAgentRow, updateAgentRow, deleteAgentRow, listAgentNames, listMemoryRows, saveMemoryRow,
+    insertAgentRow, updateAgentRow, deleteAgentRow, listAgentNames,
     updateSandboxApproval, listMentions, markMentionsRead,
     client: () => supabase.raw,
     // 登录判据取账号管理器，不取好友子系统的缓存（issue #943）：onChange 先
@@ -3387,10 +3388,6 @@ void app.whenReady().then(() => {
   );
   ipcMain.handle(CHANNELS.workspaceAgentDelete, (_e, id: string, agentId: string) =>
     workspaceManager.deleteAgent(id, agentId));
-  // 设置页「记忆」tab（#949）：共享档 + 每只 agent 的私有档
-  ipcMain.handle(CHANNELS.workspaceMemoryList, (_e, id: string) => workspaceManager.listMemories(id));
-  ipcMain.handle(CHANNELS.workspaceMemorySave, (_e, id: string, agentId: string, text: string, version: string) =>
-    workspaceManager.saveMemory(id, agentId, text, version));
   // 云会话输入框那一行的「沙箱内工具要不要人批」（#977，控件位置见 ADR-0243）：owner 才能改
   ipcMain.handle(CHANNELS.workspaceSetSandboxApproval, (_e, id: string, value: SandboxApproval) =>
     workspaceManager.setSandboxApproval(id, value));
@@ -3539,6 +3536,9 @@ void app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.workspaceCloudState, (_e, workspaceId: string) => cloudClient.workspaceState(workspaceId));
   ipcMain.handle(CHANNELS.workspaceCloudFiles, (_e, workspaceId: string, path: string) =>
     cloudClient.workspaceFiles(workspaceId, path)
+  );
+  ipcMain.handle(CHANNELS.workspaceCloudWikiWrite, (_e, workspaceId: string, req: CsWikiWriteReq) =>
+    cloudClient.workspaceWikiWrite(workspaceId, req)
   );
   ipcMain.handle(CHANNELS.workspaceCloudFilesSearch, (_e, workspaceId: string, query: string, content: boolean) =>
     cloudClient.workspaceFilesSearch(workspaceId, query, content)

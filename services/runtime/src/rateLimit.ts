@@ -47,6 +47,8 @@ export const CALL_BUCKET: BucketSpec = { capacity: 10, refillPerMin: 10 };
     容器起起来。人手点目录一分钟点不到 60 次，脚本能。突发 30 接住「连着点进
     三层目录再退回来」这种真实形态 */
 export const FILES_BUCKET: BucketSpec = { capacity: 30, refillPerMin: 60 };
+/** wiki：设置页改一页（#1140）。每帧一次 docker exec（同 files 的判据），且往卷里写。人一分钟改不到 30 页 */
+export const WIKI_BUCKET: BucketSpec = { capacity: 20, refillPerMin: 30 };
 
 /** 被限流时的日志窗口：同一个 uid 在这段时间里只记一笔（ADR-0167 同款）。 */
 const THROTTLE_LOG_WINDOW_MS = 60_000;
@@ -97,7 +99,7 @@ export function createRateLimiter(spec: BucketSpec, now: () => number = Date.now
   };
 }
 
-export type ThrottleKind = "say" | "turn" | "create" | "stop" | "files" | "call";
+export type ThrottleKind = "say" | "turn" | "create" | "stop" | "files" | "wiki" | "call";
 
 export interface FrameRateLimiter {
   /** true = 放行。false = 超速，调用方负责回一条**看得见**的拒绝
@@ -121,6 +123,7 @@ export function createFrameRateLimiter(opts: {
     create: createRateLimiter(CREATE_BUCKET, now),
     stop: createRateLimiter(STOP_BUCKET, now),
     files: createRateLimiter(FILES_BUCKET, now),
+    wiki: createRateLimiter(WIKI_BUCKET, now),
     call: createRateLimiter(CALL_BUCKET, now),
   };
   const loggedAt = new Map<string, number>();
@@ -155,6 +158,8 @@ export function throttleMessage(kind: ThrottleKind): string {
       return "停止按得太快了，稍等一会儿再按。";
     case "files":
       return "翻得太快了，稍等一会儿再点。";
+    case "wiki":
+      return "改 wiki 的频率超了，稍等一会儿再试。";
     case "call":
       return "通话名单改得太快了，稍等一会儿再改。";
   }

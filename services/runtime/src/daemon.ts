@@ -26,7 +26,10 @@ import { createTtlCache } from "./ttlCache.js";
 import { createWorkspaceLocks } from "./workspaceLock.js";
 import { createFrameRateLimiter } from "./rateLimit.js";
 import { createCloudSession, type CloudSession, type AgentSpec } from "./sessionService.js";
-import { createSupabaseWorkspaceMemory } from "./workspaceMemory.js";
+import { createSupabaseLegacyMemoryReader } from "./workspaceMemory.js";
+import { createSupabaseWikiJournal } from "./wikiJournal.js";
+import { createContainerWikiFs } from "./wikiFs.js";
+import { createWikiService, type WikiService } from "./wikiService.js";
 import { createSupabaseMentionInbox } from "./mentionInbox.js";
 import { createSupabaseAgentWriter, type WorkspaceAgentWriter } from "./agentRegistry.js";
 import { normalizeAgentTools } from "../../../src/shared/agentToolAllow.js";
@@ -138,7 +141,8 @@ async function main(): Promise<void> {
   // 之后）——onCloneResult 要用 notifyWorkspace 通报活跃会话，见那里的注释
 
   const px: PxCallDeps = { edgeBase: config.edgeBase, runtimeSecret: config.runtimeSecret };
-  const workspaceMemory = createSupabaseWorkspaceMemory(supabase);
+  const legacyMemories = createSupabaseLegacyMemoryReader(supabase);
+  const wikiJournal = createSupabaseWikiJournal(supabase);
 
   // 发起人有订阅 → 走网关代表发起人（Task 13，spec 第 5 节，扣发起人不扣 owner）；
   // /me 60s/uid 缓存——一个坏掉的 edge 不该被每个 turn 打一次
@@ -360,6 +364,25 @@ async function main(): Promise<void> {
   const sandbox: Sandbox = createSandbox(docker as unknown as DockerLike, {
     orphans: createFileOrphansStore(join(config.dataDir, "orphans.json")),
   });
+
+  /** 每团队一份 wiki 本体（#1140）：工具路径与 wiki_write 帧共用同一个实例，进程内锁才锁得住两条路。
+      fs 用一个只为 wiki 建的 DockerWorld——ensure() 起容器是有意的（写 wiki 要往卷里写，同 execWork 的判据） */
+  const wikiServices = new Map<string, WikiService>();
+  function wikiFor(workspaceId: string): WikiService {
+    const hit = wikiServices.get(workspaceId);
+    if (hit) return hit;
+    const svc = createWikiService({
+      workspaceId,
+      fs: createContainerWikiFs(createDockerWorld({ container: () => sandbox.ensure(workspaceId) })),
+      journal: wikiJournal,
+      legacyMemories: () => legacyMemories.readAll(workspaceId),
+      agentNames: async () => new Map((await agentsCache.get(workspaceId)).map((a) => [a.agentId, a.name] as const)),
+      isRunning: () => sandbox.isRunning(workspaceId),
+      log: (m) => console.warn(`[otto-runtime] ${m}`),
+    });
+    wikiServices.set(workspaceId, svc);
+    return svc;
+  }
 
   /** 开一条会话房：起 transport、装配 CloudSession、接好扇出与 cid 清理。
       调用时机两处——create 流程（新会话）与启动时把存量 kind='cloud' 会话
@@ -583,7 +606,7 @@ async function main(): Promise<void> {
         for (const cid of roster) globalSend(cid, { t: "delta", agentId, kind, text });
       },
       onUsage: () => {}, // usage 记账走上面的 recordUsage 钩子，这个口留白（同 T9 report 的记录）
-      memory: workspaceMemory,
+      wiki: wikiFor(workspaceId),
       // 被 @ 的人类成员的收件箱（#1064）：service key 绕 RLS——那张表没有给
       // authenticated 的 insert 策略（给了就是让任何在籍成员替别人伪造一条
       // 「有人 @ 了你」）
@@ -715,6 +738,15 @@ async function main(): Promise<void> {
     // 所以打开设置页不会建容器、不会触发 clone
     readWork: (workspaceId, path) => sandbox.readWork(workspaceId, path),
     searchWork: (workspaceId, query, content) => sandbox.searchWork(workspaceId, query, content),
+    // 设置页改 wiki（#1140）：与工具同一个 wikiService 实例——进程内锁才锁得住两条路
+    writeWiki: async (workspaceId, req, author) => {
+      const svc = wikiFor(workspaceId);
+      await svc.ensure();
+      const who = { kind: "member" as const, id: author.uid, label: author.label };
+      if (req.op === "remove") await svc.remove(req.path, who);
+      // sources 缺席就不带这个键（exactOptionalPropertyTypes；wikiService 按「没给」处理 = 空）
+      else await svc.write({ path: req.path, title: req.title, summary: req.summary, body: req.body, pinned: req.pinned, ...(req.sources ? { sources: req.sources } : {}) }, who);
+    },
     sessions: {
       get(workspaceId, sessionId) {
         const active = activeSessions.get(sessionId);

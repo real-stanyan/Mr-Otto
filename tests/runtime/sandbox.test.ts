@@ -761,3 +761,14 @@ describe("cloneWithSidecar —— 凭据只在一次性旁路容器里（#1102�
     expect(execLog.some((c) => c.cmd.join(" ").includes("git clone --"))).toBe(true);
   });
 });
+
+describe("isRunning（#1140，spec §3.3）", () => {
+  it("容器 running → true；exited / 不存在 → false；只 list 不 start", async () => {
+    const running = makeFakeDocker([{ id: "c1", name: "otto-ws-w1", state: "running", labels: { "mrotto.workspace": "w1" } }]);
+    expect(await createSandbox(running.docker).isRunning("w1")).toBe(true);
+    const stopped = makeFakeDocker([{ id: "c1", name: "otto-ws-w1", state: "exited", labels: { "mrotto.workspace": "w1" } }]);
+    expect(await createSandbox(stopped.docker).isRunning("w1")).toBe(false);
+    expect(await createSandbox(stopped.docker).isRunning("w2")).toBe(false);
+    expect(stopped.calls.some((c) => c.startsWith("start"))).toBe(false);
+  });
+});

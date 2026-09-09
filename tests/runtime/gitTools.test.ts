@@ -107,6 +107,14 @@ describe("clone_repo", () => {
     await clone.run({ repo_url: REPO, dest: "x" }, WORLD);
     expect(rec.clones[0]!.cfg.pat).toBeUndefined();
   });
+
+  it("clone_repo：dest 落在 wiki/ 下一律拒（#1140）——wiki 目录是团队记忆，clone 进去索引器会对着 .git 发呆", async () => {
+    const { clone, rec } = harness();
+    await expect(clone.run({ repo_url: REPO, dest: "wiki" }, WORLD)).rejects.toThrow("wiki/");
+    await expect(clone.run({ repo_url: REPO, dest: "wiki/sub" }, WORLD)).rejects.toThrow("wiki/");
+    expect(rec.workspaceScripts).toEqual([]); // 一条 exec 都没起
+    expect(rec.clones).toEqual([]);
+  });
 });
 
 describe("git_push", () => {
