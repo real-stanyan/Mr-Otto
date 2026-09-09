@@ -189,6 +189,7 @@ import { DEFAULT_AUTO_COMPACT } from "../../../src/shared/autoCompact.js";
 import { createCreateAgentTool } from "./createAgentTool.js";
 import { createGitTools, type GitToolDeps } from "./gitTools.js";
 import type { WorkspaceAgentWriter } from "./agentRegistry.js";
+import { dispatchContext, dispatchFailedText, dispatchFallbackOf, type DispatchInput, type DispatchVerdict } from "./dispatch.js";
 import {
   CREATE_AGENT_TOOL_NAME, createAgentApprovalFields, createAgentApprovalSummary, parseCreateAgentArgs, scanCreateAgentThreat,
 } from "../../../src/shared/createAgentDraft.js";
@@ -209,6 +210,10 @@ import {
   advanceRelayBounds,
   relayBoundsOf,
 } from "../../../src/shared/agentRelay.js";
+
+/** 派活分类器读日志尾段多少条事件（#1153）。一轮 turn 十几条事件是常态，200 条
+    足够捞出最近 8 句说出口的话；不读全量是因为 say() 的回执等着这一步 */
+const DISPATCH_TAIL_WINDOW = 200;
 
 /** 一个团队 agent 的完整规格（#928）。daemon 从 workspace_agents 表查出来
     （Task 10/11），装配时递给 sessionService。 */
@@ -244,19 +249,27 @@ function resolveTargets(
   mentions: string[] | undefined,
   roster: AgentSpec[]
 ): string[] {
+  const explicit = resolveExplicitTargets(text, mentions, roster);
+  if (explicit.length > 0 || mentions !== undefined) return explicit;
+  return mention && roster[0] ? [roster[0].agentId] : [];
+}
+
+/** 上面三级里的前两级——**人亲手点的名**（客户端算好的 mentions，或正文里
+    解析出来的 @）。拆出来是给派活那条路用的（#1153）：「人没点名」这个判据
+    要在第 ③ 级的老语义回落**之前**问，否则 mention:true 的开局卡永远轮不到
+    分类器（③ 会先把它派给名单第一只）。
+    判据是 `!== undefined` 不是 `?.length`：客户端给了 mentions（**含空数组**）
+    = 它已经决定了这句话点了谁——新版桌面的 chip 输入让用户看得见自己 @ 到了
+    谁，服务端再解析一遍只会让界面说「我没 @ 任何人」而服务端认为 @ 了
+    （#932 坑 ④）。`[]` 是一句"我确认谁都没点"，与"这台客户端算不出
+    mentions"（缺席）是两回事，前者回落去解析正文就是无视用户 */
+function resolveExplicitTargets(text: string, mentions: string[] | undefined, roster: AgentSpec[]): string[] {
   const known = new Set(roster.map((a) => a.agentId));
-  // 客户端给了 mentions（**含空数组**）= 它已经决定了这句话点了谁：新版桌面
-  // 的 chip 输入让用户看得见自己 @ 到了谁，服务端再解析一遍只会让界面说
-  // 「我没 @ 任何人」而服务端认为 @ 了（#932 坑 ④）。以它为准，不回落——
-  // 判据是 `!== undefined` 不是 `?.length`：`[]` 是一句"我确认谁都没点"，
-  // 与"这台客户端算不出 mentions"（缺席）是两回事，前者回落就是无视用户
   if (mentions !== undefined) return mentions.filter((id) => known.has(id));
-  const parsed = parseMentions(
+  return parseMentions(
     text,
     roster.map((a) => ({ agentId: a.agentId, name: a.name }))
   );
-  if (parsed.length) return parsed;
-  return mention && roster[0] ? [roster[0].agentId] : [];
 }
 
 export interface CloudSessionOpts {
@@ -279,6 +292,13 @@ export interface CloudSessionOpts {
       （路由照旧取网关首选款）。daemon 给——它才有 hostedProbe 与 edge 凭据。
       **可选**：缺席 = 今天的行为一字不变（测试假件与旧装配不必关心这一格） */
   pickAutoModel?: (agent: AgentSpec, text: string) => Promise<string | null>;
+  /** 不 @ 谁的话，谁的活谁接（#1153，ADR-0270）：人类的一句话没有 @ 任何人时，
+      用最便宜那款读一遍「名册 + 最近几句 + 这句话」，回该由哪几只接。判出来的
+      那几只与人亲手 @ 的走同一条路（user_message{mentions, dispatch:"auto"} 起
+      turn）。daemon 给——它才有 hostedProbe 与 edge 凭据（同 pickAutoModel）。
+      **可选**：缺席 = 今天的行为一字不变（不 @ 就只落 chat_message；开局卡回落
+      名单第一只）。何时不调、失败回落到哪，全在 say() 里 */
+  dispatch?: (input: DispatchInput) => Promise<DispatchVerdict>;
   px: PxCallDeps;
   /** 建这条会话的人（workspace_sessions.publisher_uid）。归档权限用它——
       owner 或建的人才能收尾（issue #822）。daemon 给：create 时是 byUid，
@@ -1650,6 +1670,27 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     inflight = p;
   }
 
+  /** 派活（#1153）：把「名册 + 最近几句 + 这句话」交给分类器。上下文只读日志
+      **尾段**（最近 DISPATCH_TAIL_WINDOW 条事件，dispatchContext 再从里面挑说出口
+      的话、截到最近 8 句）——不读全量：say() 的回执等着这一步。分类器抛错也按
+      failed 回，不让发言失败（同 pickAutoModel 的纪律） */
+  async function dispatchVerdictFor(roster: AgentSpec[], fromUid: string, label: string, text: string): Promise<DispatchVerdict> {
+    const nameOf = (id: string): string => roster.find((a) => a.agentId === id)?.name ?? (id === "" ? "Agent" : id);
+    const tail = store.load(sessionId, { afterSeq: Math.max(-1, lastSeqSeen - DISPATCH_TAIL_WINDOW) });
+    const input: DispatchInput = {
+      roster: roster.map((a) => ({ agentId: a.agentId, name: a.name, description: a.description })),
+      fallbackAgentId: dispatchFallbackOf(roster),
+      context: dispatchContext(tail, nameOf),
+      fromLabel: safeSpeakerLabel(label, fromUid),
+      text,
+    };
+    try {
+      return await opts.dispatch!(input);
+    } catch (err) {
+      return { kind: "failed", reason: err instanceof Error ? err.message : String(err) };
+    }
+  }
+
   const session: CloudSession = {
     async say(fromUid, label, text, mention, mentions, budget, memberMentions) {
       // 人刚开口 → 要此刻的名单（#979 第 5 条）：他在设置页刚建/改的那只要能立刻 @ 到
@@ -1673,15 +1714,73 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // `for (const agentId of u.mentions)` 展开的——同一只在界面上就成了两行
       // 「排队中」，其中一行永远收不了口（协调器只会排一个 job）。入队那侧
       // 本来就去重（enqueue 命中 logged_only），落盘这侧也得去
-      const targets = [...new Set(resolveTargets(text, mention, mentions, roster))];
+      // **人亲手点的名**（resolveTargets 的 ①② 两级）先算；一只都没点到时分两条路
+      // （#1153，ADR-0270）：接了分类器、且这句话不是说给某个具体的人听的 → 派活；
+      // 其余 → 改动前逐字相同（第 ③ 级老语义：mention:true 回落名单第一只，否则
+      // 只落 chat_message）。`legacy` 就是改动前 resolveTargets 给的那份答案
+      const explicit = [...new Set(resolveExplicitTargets(text, mentions, roster))];
+      const legacy = [...new Set(resolveTargets(text, mention, mentions, roster))];
+      let targets = explicit;
+      /** 这几只是分类器派的、不是人点的——落进开场白的 `dispatch` 字段（投影可从
+          日志推导：「为什么运营答了」要能从日志里读出来） */
+      let dispatch: "auto" | undefined;
+      /** 派活没成（失败 / 限速 / 名单读不出来）时群里那句系统话。**只在没人接的
+          时候说**：回落成名单第一只（mention:true）时有人答，不用说 */
+      let dispatchNote: string | null = null;
+      if (explicit.length === 0) {
+        // 正文里有 @ token（哪怕解析不出——打错的名字、名单刚变过）或点了人类成员
+        // = 人已经在指名，这句话有明确的收件人，分类器不该替他改主意。前者由
+        // sayUnknown 那句系统话接手（「有 N 个点名找不到」），后者是说给人听的
+        const humanAddressed = mentionTokens(text).length > 0 || (memberMentions?.length ?? 0) > 0;
+        if (opts.dispatch === undefined || humanAddressed) {
+          targets = legacy;
+        } else {
+          // 名单降级 = 分类器读到的是占位不是真名册，判出来的答案必然错；按「这次
+          // 分类没成功」走回落，与网关挂了同一个出口——读不到不许说成「没人该接」
+          // （ADR-0243 那条三态纪律）
+          const verdict: DispatchVerdict = roster.some((a) => a.degraded)
+            ? { kind: "failed", reason: "智能体名单这会儿读不出来" }
+            : await dispatchVerdictFor(roster, fromUid, label, text);
+          if (verdict.kind === "picked") {
+            const known = new Set(roster.map((a) => a.agentId));
+            const picked = [...new Set(verdict.agentIds.filter((id) => known.has(id)))];
+            // 一个都不剩（递来的 id 名单上没有）= 没人该接，同 none
+            if (picked.length > 0) {
+              targets = picked;
+              dispatch = "auto";
+            }
+          } else if (verdict.kind === "failed") {
+            // **回落今天的行为**（ADR-0237 那条纪律）：开局卡 / 旧手机的 mention:true
+            // 仍由名单第一只接；composer 的 mention:false 仍是只落 chat_message——但
+            // 要说出口，不然人以为有人会接、干等（维护者拍板，#1153）
+            targets = legacy;
+            if (targets.length === 0) dispatchNote = dispatchFailedText(verdict.reason);
+          } else if (verdict.kind === "skipped") {
+            // 这条路此刻走不了且不是临时的（所有者没订阅）：同样回落改动前的行为，
+            // 但**不出声**——那个团队一只 agent 都起不了 turn，头部那行 blocked 已经
+            // 在说这件事，每句话再落一条「没派出去」是噪音（判据见 DispatchVerdict）
+            targets = legacy;
+          }
+          // none：targets 留空，闲聊照旧是闲聊
+        }
+      }
       // **价钱在判据的同一侧算**（#957 B2-C1）：限速原来跑在 frameHandler 里、
       // 按客户端自报的 mention/mentions 计价，而这句话真正会起几条 turn 是上面
       // resolveTargets 之后才知道的 —— 省掉 mentions 字段的客户端发一句 @ 了
       // 40 个名字的话，那边扣 1 个令牌、这边起 40 条真花钱的模型调用。问价挪到
       // 真实 targets 算出来之后、**任何 store.append 之前**：拒绝时这句话一个
-      // 字节都不落盘，半落盘的开场白会被 openTurns 当成"欠一个回答"永远补跑
+      // 字节都不落盘，半落盘的开场白会被 openTurns 当成"欠一个回答"永远补跑。
+      // 派活出来的那几只也在这里问价（分类器挑出几只就按几只扣）
       const veto = budget?.(targets.length) ?? null;
-      if (veto !== null) throw new SayRejectedError(veto);
+      if (veto !== null) {
+        // 人亲手点的名被限速：整句拒收（一个字节都不落，同改动前）。分类器派的
+        // 那几只被限速：话照落、只是没派出去——这几只不是他 @ 出来的，因为系统
+        // 自己的决定把人的话整句吞掉说不过去
+        if (dispatch === undefined) throw new SayRejectedError(veto);
+        targets = [];
+        dispatch = undefined;
+        dispatchNote = dispatchFailedText(veto);
+      }
       // 客户端点了名、而这几个 id 名单里没有（它拿的是旧快照 / 名单刚变过 /
       // 那只刚被删掉）。resolveTargets 是**静默**过滤掉它们的，于是一句
       // "@管理员 帮我看下" 在发言人那侧和一句普通闲聊长得一模一样——他会
@@ -1750,11 +1849,12 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       };
 
       if (targets.length === 0) {
-        // 没人被点名：只落 chat_message，不起 turn。**「只 @ 了人」走的正是这条路**
-        // ——那是这条 issue 里最常见的一种消息（ADR-0252 让客户端在这种情形下发
-        // 一个权威的空数组）
+        // 没人被点名（也没派出去）：只落 chat_message，不起 turn。**「只 @ 了人」走的
+        // 正是这条路**——那是这条 issue 里最常见的一种消息（ADR-0252 让客户端在这种
+        // 情形下发一个权威的空数组）。派活没成的那句系统话排在正文之后
         const logged = logChat(fromUid, label, text, mention);
         sayUnknown();
+        if (dispatchNote !== null) logChat("system", "系统", dispatchNote, false);
         await recordMemberMentions(logged.seq);
         return;
       }
@@ -1772,6 +1872,9 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         content: `[${safeSpeakerLabel(label, fromUid)}]: ${text}`,
         fromUid,
         mentions: targets,
+        // 分类器派的（#1153）才带；人亲手 @ 的缺席（exactOptionalPropertyTypes 不许
+        // 塞 undefined，同 engine.env() 的写法）
+        ...(dispatch !== undefined ? { dispatch } : {}),
       }) as UserMessageEvent; // append 回的是 union；这一条我们刚亲手写的就是 user_message
       notify(opening);
       sayUnknown(); // 排在开场白之后：先有那句话，再说"其中这几个没人接"
