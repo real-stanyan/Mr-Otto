@@ -42,6 +42,7 @@ import { cloudSessionRows, labelOf } from "../lib/workspaceView.js";
 import type { CloudSessionListRow } from "../lib/workspaceView.js";
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 import { unreadMentionCounts } from "../../../shared/workspaceMentions.js";
+import { PARTICIPANT_WINDOW_MS } from "../../../shared/sessionParticipants.js";
 import {
   SidebarGroup, SidebarGroupAction, SidebarGroupContent, SidebarGroupLabel, SidebarMenuAction,
   SidebarMenu, SidebarMenuButton, SidebarMenuItem,
@@ -150,6 +151,12 @@ function MentionBadge({ count, title }: { count: number; title: string }) {
 /** 一行最多画几枚头像。侧栏 16rem、会话行可用约 230px，标题还要占大头 */
 const PARTICIPANT_STACK_MAX = 3;
 
+/** 提示文案里的「最近 N 小时」——从 `PARTICIPANT_WINDOW_MS` 现算，不写死 5（复审
+    Minor 5）：那个常量放 `src/shared/` 的唯一理由就是这句文案要用它
+    （sessionParticipants.ts 头注原话），写死字面量的话它就成了一个没有消费方的
+    常量、和这行硬编码的「5」各说各的——改窗口长度时两处必然有一处忘改 */
+const PARTICIPANT_WINDOW_HOURS = PARTICIPANT_WINDOW_MS / (60 * 60 * 1000);
+
 /** 「最近有过对话的那个 5 小时窗里说过话的人」（#1213）。
     叠罗汉：向左重叠、每枚一圈与侧栏同色的描边分层。
     **不给入场动效**：它是挂着的状态记号不是一次事件（同 ADR-0255 / #1064 那枚角标）。
@@ -161,7 +168,7 @@ function ParticipantStack({ ws, uids }: { ws: WorkspaceSnapshot; uids: readonly 
   const rest = uids.length - shown.length;
   const names = uids.map((uid) => labelOf(ws, uid)).join("、");
   return (
-    <span className="shrink-0 flex items-center pl-1" title={`最近 5 小时说过话的：${names}`}>
+    <span className="shrink-0 flex items-center pl-1" title={`最近 ${PARTICIPANT_WINDOW_HOURS} 小时说过话的：${names}`}>
       {shown.map((uid) => {
         const member = ws.members.find((m) => m.uid === uid);
         const label = labelOf(ws, uid);

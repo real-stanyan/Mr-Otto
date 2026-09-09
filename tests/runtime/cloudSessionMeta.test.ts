@@ -45,4 +45,20 @@ describe("createSupabaseCloudSessionMeta", () => {
     expect(log).toHaveBeenCalledTimes(1);
     expect(String(log.mock.calls[0]![0])).toContain("column does not exist");
   });
+
+  it("client 调用本身 reject（网络层，不是 Supabase 回的 {error} 信封）→ 依然 resolve、只记一行日志——" +
+     "复审 Critical 2：这一层原来只接住 {error} 信封那一半，网络层 reject（断网/超时）完全没人接，" +
+     "会带走整个 daemon 进程（同 daemon.ts:465-471 那条先例）。触发点是这次改动新增的最高频写入：" +
+     "云会话里每来一个新说话人都要调一次 setParticipants", async () => {
+    const log = vi.fn();
+    const eq = vi.fn().mockRejectedValue(new Error("fetch failed"));
+    const update = vi.fn().mockReturnValue({ eq });
+    const from = vi.fn().mockReturnValue({ update });
+    const client = { from } as never;
+    await expect(
+      createSupabaseCloudSessionMeta(client, "s", log).setParticipants({ window: 1, uids: ["u1"] }),
+    ).resolves.toBeUndefined();
+    expect(log).toHaveBeenCalledTimes(1);
+    expect(String(log.mock.calls[0]![0])).toContain("fetch failed");
+  });
 });

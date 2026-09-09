@@ -49,6 +49,15 @@ describe("parseTitleReply", () => {
     expect(parseTitleReply("  keep\n")).toBeNull();
   });
 
+  it("KEEP 被包了一层引号也要回 null（复审 Important 3）：剥引号必须排在判 KEEP 之前，" +
+     "不然「已经被模型包起来的 KEEP」会被剥出三个字母当成一个新标题写回去，" +
+     "而且是个自我延续的坏名字——测试串用 \\u 转义拼弯引号，同上一条纪律不靠眼睛抄字符", () => {
+    expect(parseTitleReply('"KEEP"')).toBeNull();
+    expect(parseTitleReply("「KEEP」")).toBeNull();
+    expect(parseTitleReply("\u201CKEEP\u201D")).toBeNull();
+    expect(parseTitleReply("'keep'")).toBeNull();
+  });
+
   it("正常标题取首行、剥引号、截断", () => {
     expect(parseTitleReply("「奶茶店选址」")).toBe("奶茶店选址");
     expect(parseTitleReply('"Q4 营销预算"\n（理由略）')).toBe("Q4 营销预算");

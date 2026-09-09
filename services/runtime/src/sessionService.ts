@@ -813,7 +813,12 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // 这句判断不改变行为
     if (nextParticipants !== participants && nextParticipants !== null) {
       participants = nextParticipants;
-      void opts.sessionMeta.setParticipants(nextParticipants);
+      // 复审 Critical 2：与下面 maintainTitle 里 setTitle 的调用（:1284）对称——那条
+      // 一直带 `.catch(() => undefined)`，这条原来独漏，是这个文件唯一一处 fire-and-
+      // forget 却没接的调用，会变成一次带走整个 daemon 进程的 unhandledRejection。
+      // `write()` 现在自己也兜了 try/catch（cloudSessionMeta.ts），这里的 `.catch`
+      // 是第二层、不依赖那份实现细节：这个调用点自己就不该产出未捕获的 rejection
+      void opts.sessionMeta.setParticipants(nextParticipants).catch(() => undefined);
     }
     if (humanSpeakerOf(e) !== null) humanSaid += 1;
     opts.onEvent(e);

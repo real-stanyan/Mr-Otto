@@ -375,24 +375,54 @@ export async function listCloudSessions(
 ): Promise<CloudSessionRow[]> {
   const res = await client
     .from("workspace_sessions")
-    .select("id,publisher_uid,title,archived,updated_at,participants")
+    .select("id,publisher_uid,title,archived,updated_at")
     .eq("workspace_id", workspaceId)
     .eq("kind", "cloud");
   const rows = (unwrap(res) ?? []) as {
     id: string; publisher_uid: string; title: string; archived: boolean; updated_at: string;
-    participants: unknown;
   }[];
+  const participants = await fetchCloudParticipants(client, workspaceId);
   return rows.map((r) => ({
     id: r.id,
     title: r.title,
     publisherUid: r.publisher_uid,
     archived: r.archived,
     updatedTs: toEpochMs(r.updated_at),
-    // 0035 还没跑的库上这一格是 undefined —— 回 [] 让整条路退回改动前的样子
-    participantUids: Array.isArray(r.participants) && r.participants.every((x) => typeof x === "string")
-      ? (r.participants as string[])
-      : [],
+    participantUids: participants.get(r.id) ?? [],
   }));
+}
+
+/** `workspace_sessions.participants` 那一列，**单独一条、容错**（#1213 复审 Critical 1，
+    同 `fetchSandboxApproval` 那条注释里的教训、ADR-0223 部署顺序那条教训——这个仓库
+    第二次踩同一个坑）：拼进上面那条主 select 的话，0035 落地前 PostgREST 对不存在的
+    列回 400/42703，`unwrap` 抛出，`workspaceCloudList` 的 IPC handler（src/main/index.ts）
+    接住转成 `{ok:false}`、渲染层 `refreshCloudSessions` 落 `workspaceGroupsError`——
+    不是「参与者头像缺一角」，是**这个团队所有云会话一条都读不出来**，侧栏和设置页
+    一起挂一条红色错误，云会话在 0035 跑之前变得完全摸不到。这条挂了只影响它自己：
+    **整个团队一次查询**（按 workspace_id + kind='cloud'，与上面那条主查询同一个键），
+    不按行查——按行查是 N 次往返，这里 1 次；查询失败时每一行的参与者都回 []，
+    退回改动前的样子。**不要把这一列「顺手」合回主 select**——那正是这条注释要挡住的事。 */
+async function fetchCloudParticipants(
+  client: SupabaseClient,
+  workspaceId: string,
+): Promise<Map<string, string[]>> {
+  const res = await client
+    .from("workspace_sessions")
+    .select("id,participants")
+    .eq("workspace_id", workspaceId)
+    .eq("kind", "cloud");
+  const map = new Map<string, string[]>();
+  if (res.error) return map; // 读不到就整个团队回 []，调用方据此兜底——不抛
+  const rows = (res.data ?? []) as { id: string; participants: unknown }[];
+  for (const r of rows) {
+    map.set(
+      r.id,
+      Array.isArray(r.participants) && r.participants.every((x) => typeof x === "string")
+        ? (r.participants as string[])
+        : [],
+    );
+  }
+  return map;
 }
 
 // ── 点名收件箱（#1064，ADR-0256）─────────────────────────────────────────────

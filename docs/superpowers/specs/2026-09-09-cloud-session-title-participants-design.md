@@ -93,8 +93,12 @@ Supabase 一列、没有这个投影，所以要显式写一次。它同时是�
 ### 载体
 
 已有的 `session_autotitled` 事件（最后一条胜出，同本机 `store.ts:502`）+ 同步写
-`workspace_sessions.title`。日志是事实，那一列是投影——写库失败不重试，下一次命名
-或下一次 daemon 重启会把它补上。
+`workspace_sessions.title`。日志是事实，那一列是投影——写库失败不重试，也不会被
+下一次命名或下一次 daemon 重启自动补上（复审 Minor 6，#1213）：重启只把 title 从
+日志重新摆回内存（sessionService 装配那段），不会重新写库；下一次例行重判如果判
+出的标题和内存里已经相同也不会重写（`if (next.title === title) return`）。真正
+盖掉这次失败的是下一次内容**不同**的写入——话题真的漂移、模型判出一个新标题的
+那一刻。
 
 **唯一要动的是 `hiddenFromCloudTimeline`（加第 ⑧ 条）**：「会话被自动命名了」人不能
 据此行动，是机器的内务，按 ADR-0235 / ADR-0260 的判据在群聊时间线上藏起来。
