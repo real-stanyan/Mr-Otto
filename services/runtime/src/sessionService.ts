@@ -292,7 +292,7 @@ export interface CloudSessionOpts {
       （路由照旧取网关首选款）。daemon 给——它才有 hostedProbe 与 edge 凭据。
       **可选**：缺席 = 今天的行为一字不变（测试假件与旧装配不必关心这一格） */
   pickAutoModel?: (agent: AgentSpec, text: string) => Promise<string | null>;
-  /** 不 @ 谁的话，谁的活谁接（#1153，ADR-0269）：人类的一句话没有 @ 任何人时，
+  /** 不 @ 谁的话，谁的活谁接（#1153，ADR-0270）：人类的一句话没有 @ 任何人时，
       用最便宜那款读一遍「名册 + 最近几句 + 这句话」，回该由哪几只接。判出来的
       那几只与人亲手 @ 的走同一条路（user_message{mentions, dispatch:"auto"} 起
       turn）。daemon 给——它才有 hostedProbe 与 edge 凭据（同 pickAutoModel）。
@@ -1715,7 +1715,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // 「排队中」，其中一行永远收不了口（协调器只会排一个 job）。入队那侧
       // 本来就去重（enqueue 命中 logged_only），落盘这侧也得去
       // **人亲手点的名**（resolveTargets 的 ①② 两级）先算；一只都没点到时分两条路
-      // （#1153，ADR-0269）：接了分类器、且这句话不是说给某个具体的人听的 → 派活；
+      // （#1153，ADR-0270）：接了分类器、且这句话不是说给某个具体的人听的 → 派活；
       // 其余 → 改动前逐字相同（第 ③ 级老语义：mention:true 回落名单第一只，否则
       // 只落 chat_message）。`legacy` 就是改动前 resolveTargets 给的那份答案
       const explicit = [...new Set(resolveExplicitTargets(text, mentions, roster))];
