@@ -15,6 +15,9 @@ struct Command: Decodable {
   var completeMs: Double?
   /// start：没说完的一句（逗号 / 没标点收尾），人停嘴之后等多久收口（毫秒）
   var midMs: Double?
+  /// start：上下文词表（agent 名 / 成员名 / 开发常用英文词），喂给识别器的 contextualStrings——
+  /// 本机 zh-CN 识别器遇到英文词会往拼音上靠（GitHub → get up），给了词表才认得出（#1196）
+  var hints: [String]?
 }
 
 struct Event: Encodable {
@@ -51,7 +54,9 @@ func utteranceLooksFinished(_ text: String) -> Bool {
   guard let last = t.last else { return false }
   if "。！？!?.…".contains(last) { return true }
   if "，、,;；:：".contains(last) { return false }
-  return t.count <= 4
+  // 三个字以内才算闭合的短答（「好的」「在吗」「不用了」）；四个字已经可以是长句的开头
+  // （真机把「我们近期」切成了一条，#1196）
+  return t.count <= 3
 }
 
 /// 断句。识别器在连续模式下不会自己说「这句完了」——isFinal 只在 endAudio 之后来——
@@ -59,25 +64,29 @@ func utteranceLooksFinished(_ text: String) -> Bool {
 /// - **能量**：`feedLevel` 报人在不在说话；停嘴之后安静够久（像说完了 completeMs、没说完
 ///   midMs）且转写稳住 stableMs → 收口。识别器在人停嘴之后还会再变几百毫秒（重打分），
 ///   只看文本等于在识别器滞后之上再加一层等待；
-/// - **文本**：转写 silenceMs 没变 = 一定收口。这是天花板不是主路：背景一直响（能量永远
-///   「活着」）时不能永远不收口。没收到过能量样本时只剩这条（旧行为）。
+/// - **文本**：转写没变够久 = 一定收口。这是天花板不是主路：背景一直响（能量永远「活着」）时
+///   不能永远不收口。像说完了的用 silenceMs（1.5 s），没说完的用 midSilenceMs（3 s）——人边想边说
+///   的停顿常超过 1.5 s，真机把「我们近期 / 在web上做了浮窗式的栅栏 / 近期做了外部版的」切成了
+///   三条（#1196）。没收到过能量样本时只剩这条。
 /// 时间由调用方递进来（毫秒），Tests 才能不等真时间。
 struct Endpointer {
   let silenceMs: Double
   let completeMs: Double
   let midMs: Double
   let stableMs: Double
+  let midSilenceMs: Double
   private(set) var text: String = ""
   private var changedAt: Double = 0
   /// 能量门上一次从「说话」翻成「安静」的时刻；nil = 此刻在说话（或还没收到过能量）
   private var quietSince: Double? = nil
   private var sawLevel = false
 
-  init(silenceMs: Double = 1500, completeMs: Double = 700, midMs: Double = 1500, stableMs: Double = 250) {
+  init(silenceMs: Double = 1500, completeMs: Double = 700, midMs: Double = 2500, stableMs: Double = 250, midSilenceMs: Double = 3000) {
     self.silenceMs = silenceMs
     self.completeMs = completeMs
     self.midMs = midMs
     self.stableMs = stableMs
+    self.midSilenceMs = midSilenceMs
   }
 
   /// 新的转写快照到了。变了记时间并回 true（调用方发 partial）；没变回 false。
@@ -103,9 +112,12 @@ struct Endpointer {
   /// 定时检查：有字、且（文本静默到天花板，或人停嘴够久且转写稳住）→ 这一句收口并清空
   mutating func tick(now: Double) -> String? {
     guard !text.isEmpty else { return nil }
-    if now - changedAt >= silenceMs { return flush() }
-    guard sawLevel, let quiet = quietSince else { return nil }
-    let need = utteranceLooksFinished(text) ? completeMs : midMs
+    // 没收到过能量样本（旧路 / 探针）：只剩文本静默这一条，不分说没说完
+    guard sawLevel else { return now - changedAt >= silenceMs ? flush() : nil }
+    let finished = utteranceLooksFinished(text)
+    if now - changedAt >= (finished ? silenceMs : midSilenceMs) { return flush() }
+    guard let quiet = quietSince else { return nil }
+    let need = finished ? completeMs : midMs
     guard now - quiet >= need, now - changedAt >= stableMs else { return nil }
     return flush()
   }

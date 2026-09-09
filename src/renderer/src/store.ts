@@ -100,7 +100,7 @@ import { runtimePatch } from "./lib/runtimeHydration.js";
 import { createAgentLanded } from "./lib/cloudTimeline.js";
 import { applyCloudDelta, clearCloudStreamingOn } from "./lib/cloudStreaming.js";
 import { EMPTY_VOICE_FEED, feedDelta, feedEvent, markInterrupted, type VoiceFeedState } from "./lib/voiceCall.js";
-import { applySpeechEvent, bargeInOn, MIC_OFF, micShouldPause, SPEECH_LOCALE, type MicState } from "./lib/voiceMic.js";
+import { applySpeechEvent, bargeInOn, MIC_OFF, micShouldPause, SPEECH_LOCALE, speechHints, type MicState } from "./lib/voiceMic.js";
 import { VoicePlayer } from "./lib/voicePlayer.js";
 import { voiceCallOf } from "../../shared/voiceCall.js";
 import { agentVoiceId } from "../../shared/agentVoice.js";
@@ -1332,10 +1332,10 @@ let voiceFeed: VoiceFeedState = EMPTY_VOICE_FEED;
 // 就发一条 stop 会白起一个进程）；「我们让它暂停着」是半双工的去重记号
 let micStarted = false;
 let micPaused = false;
-function startMic(): void {
+function startMic(hints: string[]): void {
   micStarted = true;
   micPaused = false;
-  void window.otter.speechStart(SPEECH_LOCALE);
+  void window.otter.speechStart(SPEECH_LOCALE, hints);
 }
 function stopMic(): void {
   if (!micStarted) return;
@@ -2668,7 +2668,7 @@ export const useChat = create<ChatState>((set, get) => ({
     const sinceSeq = cs.events.length > 0 ? cs.events[cs.events.length - 1]!.seq : -1;
     // 常开麦（#1176）：进通话就开
     set({ voice: { sessionId: cs.sessionId, listening: true, muted: false, sinceSeq, speaking: null, queued: 0, error: null, text: null, mic: { ...MIC_OFF, status: "starting" } } });
-    startMic();
+    startMic(speechHints(get().workspaceGroups.find((w) => w.id === get().cloudSession?.workspaceId) ?? null));
   },
   leaveVoiceCall() {
     stopVoice();
@@ -2678,7 +2678,7 @@ export const useChat = create<ChatState>((set, get) => ({
     if (get().voice === null) return;
     if (on) {
       set((s) => (s.voice ? { voice: { ...s.voice, mic: { ...MIC_OFF, status: "starting" } } } : s));
-      startMic();
+      startMic(speechHints(get().workspaceGroups.find((w) => w.id === get().cloudSession?.workspaceId) ?? null));
     } else {
       stopMic();
       set((s) => (s.voice ? { voice: { ...s.voice, mic: MIC_OFF } } : s));

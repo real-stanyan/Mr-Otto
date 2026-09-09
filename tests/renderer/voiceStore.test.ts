@@ -122,7 +122,8 @@ describe("store 的麦克风接线（#1176）", () => {
   it("加入通话 → speechStart(zh-CN)，mic 状态 starting；helper 报 listening → listening；partial 进字幕", () => {
     const st = useChat.getState();
     st.joinVoiceCall();
-    expect(m("speechStart")).toHaveBeenCalledWith("zh-CN");
+    // 词表跟着团队走：agent 名、成员名，加一份开发常用英文词（#1196）
+    expect(m("speechStart")).toHaveBeenCalledWith("zh-CN", expect.arrayContaining(["管理员", "运营", "Stan", "GitHub"]));
     expect(useChat.getState().voice?.mic.status).toBe("starting");
     st.speechOnEvent({ type: "listening", on: true });
     expect(useChat.getState().voice?.mic.status).toBe("listening");

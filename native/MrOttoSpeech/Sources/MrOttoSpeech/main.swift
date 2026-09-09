@@ -53,7 +53,7 @@ let recognizer = Recognizer(emit: emit)
 func handle(_ cmd: Command) {
   switch cmd.type {
   case "start":
-    recognizer.start(locale: cmd.locale ?? "zh-CN", silenceMs: cmd.silenceMs ?? 1500, completeMs: cmd.completeMs ?? 700, midMs: cmd.midMs ?? 1500)
+    recognizer.start(locale: cmd.locale ?? "zh-CN", silenceMs: cmd.silenceMs ?? 1500, completeMs: cmd.completeMs ?? 700, midMs: cmd.midMs ?? 2500, hints: cmd.hints ?? [])
   case "stop":
     recognizer.stop()
   case "pause":

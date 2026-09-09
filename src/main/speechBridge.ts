@@ -13,7 +13,8 @@
 import type { SpeechAuth, SpeechEvent } from "../shared/shellBridge.js";
 
 export type SpeechCommand =
-  | { type: "start"; locale: string; silenceMs?: number }
+  /** `hints`（#1196）：上下文词表——agent 名 / 成员名 / 开发常用英文词，helper 喂给识别器的 contextualStrings */
+  | { type: "start"; locale: string; silenceMs?: number; hints?: string[] }
   | { type: "stop" }
   | { type: "pause" }
   | { type: "resume" }
@@ -34,7 +35,7 @@ export const SPEECH_HELPER_GAVE_UP = "语音识别 helper 反复退出，已停�
 export function encodeSpeechCommand(c: SpeechCommand): string {
   const wire =
     c.type === "start"
-      ? { type: "start", locale: c.locale, ...(c.silenceMs !== undefined ? { silenceMs: c.silenceMs } : {}) }
+      ? { type: "start", locale: c.locale, ...(c.silenceMs !== undefined ? { silenceMs: c.silenceMs } : {}), ...(c.hints !== undefined ? { hints: c.hints } : {}) }
       : { type: c.type };
   return JSON.stringify(wire) + "\n";
 }

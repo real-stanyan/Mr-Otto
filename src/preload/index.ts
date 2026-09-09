@@ -270,7 +270,7 @@ const bridge: ShellBridge = {
     ipcRenderer.invoke(CHANNELS.workspaceCloudDelete, workspaceId, sessionId),
   workspaceCloudStop: (seq) => ipcRenderer.invoke(CHANNELS.workspaceCloudStop, seq ?? null),
   teamVoiceSpeak: (text, voiceId) => ipcRenderer.invoke(CHANNELS.teamVoiceSpeak, text, voiceId),
-  speechStart: (locale) => ipcRenderer.invoke(CHANNELS.speechStart, locale),
+  speechStart: (locale, hints) => ipcRenderer.invoke(CHANNELS.speechStart, locale, hints),
   speechStop: () => ipcRenderer.invoke(CHANNELS.speechStop),
   speechPause: () => ipcRenderer.invoke(CHANNELS.speechPause),
   speechResume: () => ipcRenderer.invoke(CHANNELS.speechResume),

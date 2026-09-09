@@ -2,7 +2,8 @@
 // （开着 / 暂停 / 没权限 / 出错 / 实时字幕），final 交给调用方发出去；半双工的判据
 // （agent 在说或排着要说 → 闭麦）。零 DOM、零 IPC。
 import { describe, expect, it } from "vitest";
-import { applySpeechEvent, bargeInOn, isSelfEcho, MIC_OFF, micShouldPause, type MicState } from "../../src/renderer/src/lib/voiceMic.js";
+import { applySpeechEvent, bargeInOn, isSelfEcho, MIC_OFF, micShouldPause, SPEECH_HINTS_MAX, speechHints, type MicState } from "../../src/renderer/src/lib/voiceMic.js";
+import type { WorkspaceSnapshot } from "../../src/shared/workspaces.js";
 
 const starting: MicState = { ...MIC_OFF, status: "starting" };
 
@@ -114,5 +115,28 @@ describe("isSelfEcho：token 重叠", () => {
     expect(isSelfEcho("我想问个问题", "能听到，你说话我这边都收得到")).toBe(false);
     expect(isSelfEcho("", "能听到")).toBe(false);
     expect(isSelfEcho("能听到", "")).toBe(false);
+  });
+});
+
+describe("speechHints：喂给识别器的上下文词表（#1196）", () => {
+  const ws: WorkspaceSnapshot = {
+    id: "w", name: "奶茶店", ownerUid: "u1", connectors: [], sessions: [],
+    members: [{ uid: "u1", role: "owner", label: "Stan", avatarUrl: "" }, { uid: "u2", role: "member", label: "", avatarUrl: "" }],
+    agents: [
+      { agentId: "admin", name: "管理员", description: "", instructions: "", models: [], tools: [], createdBy: "u1", updatedTs: 0, avatarSlot: null },
+      { agentId: "a_1", name: "GitHub", description: "", instructions: "", models: [], tools: [], createdBy: "u1", updatedTs: 0, avatarSlot: null },
+    ],
+    sandboxApproval: "ask",
+  };
+  it("agent 名 + 成员名 + 团队名在前，开发常用词在后；空串丢掉、去重、封顶", () => {
+    const h = speechHints(ws);
+    expect(h.slice(0, 4)).toEqual(["管理员", "GitHub", "Stan", "奶茶店"]);
+    expect(h).toContain("push");
+    expect(h.filter((x) => x === "GitHub")).toHaveLength(1);
+    expect(h).not.toContain("");
+    expect(h.length).toBeLessThanOrEqual(SPEECH_HINTS_MAX);
+  });
+  it("没有团队快照：只剩开发常用词", () => {
+    expect(speechHints(null)).toContain("GitHub");
   });
 });

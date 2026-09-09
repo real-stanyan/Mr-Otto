@@ -76,6 +76,8 @@ final class EnergyEndpointerTests: XCTestCase {
     XCTAssertTrue(utteranceLooksFinished("好的。"))
     XCTAssertTrue(utteranceLooksFinished("Sure!"))
     XCTAssertTrue(utteranceLooksFinished("在吗"))  // 很短 = 一句闭合的短答
+    XCTAssertTrue(utteranceLooksFinished("不用了"))
+    XCTAssertFalse(utteranceLooksFinished("我们近期"))  // 四个字已经可以是长句的开头（真机切过这一刀，#1196）
     XCTAssertFalse(utteranceLooksFinished("我想问一下，"))
     XCTAssertFalse(utteranceLooksFinished("然后帮我把那个投放的数据"))
     XCTAssertFalse(utteranceLooksFinished(""))
@@ -121,12 +123,31 @@ final class EnergyEndpointerTests: XCTestCase {
   }
 
   func testTextSilenceRemainsTheCeilingWhenEnergyNeverGoesQuiet() {
-    var e = Endpointer(silenceMs: 1500, completeMs: 700, midMs: 1500, stableMs: 250)
-    _ = e.feed("帮我看下投放", now: 0)
+    var e = Endpointer(silenceMs: 1500, completeMs: 700, midMs: 2500, stableMs: 250)
+    _ = e.feed("帮我看下投放。", now: 0)
     for t in stride(from: 100.0, through: 1400.0, by: 100.0) { e.feedLevel(active: true, now: t) }  // 背景一直响
     XCTAssertNil(e.tick(now: 1400))
     e.feedLevel(active: true, now: 1500)
-    XCTAssertEqual(e.tick(now: 1500), "帮我看下投放")
+    XCTAssertEqual(e.tick(now: 1500), "帮我看下投放。")
+  }
+
+  func testUnfinishedUtteranceHasItsOwnLongerCeiling() {
+    // 没标点的长句：能量一直「活着」时也要收口，但比有句末标点的多等——人边想边说的停顿常超过 1.5 秒（#1196）
+    var e = Endpointer(silenceMs: 1500, completeMs: 700, midMs: 2500, stableMs: 250, midSilenceMs: 3000)
+    _ = e.feed("在web上做了浮窗式的", now: 0)
+    for t in stride(from: 100.0, through: 2900.0, by: 100.0) { e.feedLevel(active: true, now: t) }
+    XCTAssertNil(e.tick(now: 2900))
+    e.feedLevel(active: true, now: 3000)
+    XCTAssertEqual(e.tick(now: 3000), "在web上做了浮窗式的")
+  }
+
+  func testUnfinishedUtteranceWaitsMidMsOfQuiet() {
+    var e = Endpointer(silenceMs: 1500, completeMs: 700, midMs: 2500, stableMs: 250, midSilenceMs: 3000)
+    _ = e.feed("我们近期", now: 0)
+    e.feedLevel(active: false, now: 300)
+    XCTAssertNil(e.tick(now: 1500))  // 文本静默 1.5 s 到了，但这句没说完：不按短答的天花板收
+    XCTAssertNil(e.tick(now: 2700))  // 安静 2.4 s < 2.5 s
+    XCTAssertEqual(e.tick(now: 2800), "我们近期")
   }
 
   func testWithoutLevelSamplesFallsBackToTextSilence() {

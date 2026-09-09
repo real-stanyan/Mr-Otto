@@ -15,6 +15,7 @@
 // token 重叠 < 70%，AEC 的兜底——同 dryrun 的 echoFilter）。
 
 import type { SpeechEvent } from "../../../shared/shellBridge.js";
+import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 
 export type MicStatus = "off" | "starting" | "listening" | "paused" | "denied" | "error";
 
@@ -111,4 +112,31 @@ export function bargeInOn(partial: string, playing: { speaking: string | null; q
   if (playing.speaking === null && playing.queued === 0) return false;
   if (speechTokens(partial).length < BARGE_IN_MIN_TOKENS) return false;
   return !isSelfEcho(partial, spoken);
+}
+
+/** 喂给识别器的上下文词表最多几条（SFSpeech 的 contextualStrings 建议不超过百来条） */
+export const SPEECH_HINTS_MAX = 100;
+
+/** 开发者群里常说、本机 zh-CN 识别器却往拼音上靠的英文词（真机：「push 到 GitHub 的 main」听成
+    「p到get up的密封值」，#1196）。人手维护、会过时；团队自己的名字（agent / 成员 / 团队名）排在前面 */
+export const SPEECH_HINTS_DEV: readonly string[] = [
+  "GitHub", "push", "pull", "merge", "PR", "main", "master", "commit", "branch", "checkout", "rebase",
+  "deploy", "release", "build", "bug", "fix", "feature", "issue", "review", "API", "SDK", "CLI",
+  "Docker", "VPS", "Supabase", "Stripe", "Cloudflare", "Electron", "React", "TypeScript", "Swift",
+  "Python", "Node", "npm", "Git", "token", "JWT", "OAuth", "MCP", "Otto", "Mr Otto",
+  // 中文这边也有识别器常听岔的产品词（真机「侧栏」→「下册栏」）
+  "侧栏", "浮窗", "弹窗", "按钮", "页面", "首页", "网页版", "手机版", "桌面端", "仓库", "分支", "提交", "合并", "部署", "上线", "测试", "接口", "数据库",
+];
+
+/** 这个团队开麦时的词表：agent 名 + 成员名 + 团队名在前，开发常用词在后；空串丢、去重、封顶 */
+export function speechHints(ws: WorkspaceSnapshot | null): string[] {
+  const own = ws === null ? [] : [...ws.agents.map((a) => a.name), ...ws.members.map((m) => m.label), ws.name];
+  const out: string[] = [];
+  for (const h of [...own, ...SPEECH_HINTS_DEV]) {
+    const t = h.trim();
+    if (t === "" || out.includes(t)) continue;
+    out.push(t);
+    if (out.length >= SPEECH_HINTS_MAX) break;
+  }
+  return out;
 }
