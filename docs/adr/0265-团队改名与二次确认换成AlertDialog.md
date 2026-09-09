@@ -2,7 +2,7 @@
 
 - 状态：已接受
 - 日期：2026-09-09
-- issue：#1126（改名）、#1127（确认弹窗）、#1125（顺带修掉的 NavStack bug）
+- issue：#1126（改名）、#1127（确认弹窗）；#1125 被 PR #1128 抢先修了，见末节撞车记录
 - 相关：ADR-0259（#1087 把这一栏抬成第三档时已经改过切换器那一格）、
   ADR-0264（它写下的「保留 `confirm()`……不新造 AlertDialog 视觉语言」被这条推翻）、
   ADR-0217/0218（这一族界面的来历）、ADR-0070（CONTEXT.md 分两节）
@@ -83,21 +83,24 @@ AlertDialog 默认行为）——一个不可逆的动作不该按回车就发�
 进出场动画一个字没写：`app.css` 里 `.dialog-overlay` / `.dialog-content` 那四行本来
 就管着（200ms 进 / 140ms 出，退场比进场快；`prefers-reduced-motion` 下只剩淡入淡出）。
 
-## 顺带修掉的：NavStack 第一次点没反应（#1125）
+## 撞车记录：NavStack 那个 bug 两条 lane 各修了一遍（#1125）
 
-真机上点设置目录任意一行都没反应，点第二行才把第一页放出来。根因是
-`applyLayout` 闭包捕获了 `rendered`，而 `push()` 里的 `kick()` 是在 `setStack`
-之后、重渲之前调的——它注册进 rAF 的那个 `tick` 拿的是**推入前**那一版栈。于是整段
-动画里刚推上来的那一页一次都没被布局，停在 `translate3d(width)`（画外），根页反而
-每帧被设回 `pointerEvents: auto`。
+这一轮开工时先修的是「点第一行没反应、点第二行才把第一页放出来」：`applyLayout`
+闭包捕获了 `rendered`，而 `push()` 里的 `kick()` 在 `setStack` 之后、重渲之前调，
+rAF 里跑的是**推入前**那一版栈。修法是让循环从 `renderedRef` 读栈。
 
-修法是 rAF 循环从 `renderedRef` 读栈（layout effect 里同步，排在 rAF 回调之前）。
+合并前 re-fetch 时发现 **PR #1128 已经落地了同一个修复**（同根因、同修法、同样
+closes #1125），于是 `nav-stack.tsx` 与 `navStack.test.tsx` 两个文件整份取 main 的、
+丢掉这边那份 —— 先到先得（AGENTS.md：已经做了就别重做）。它的用例还比这边多两处：
+`cancelAnimationFrame` 按 id 摘回调、以及「趁桩还在位先 `cleanup()`」（撤桩之后
+组件卸载那次 `cancelAnimationFrame` 会打到 jsdom 真身上）。
 
-**为什么 #1120 的用例没抓到**：那一组全程 `prefers-reduced-motion: reduce`，走的是
-同步分支，真机跑的动画那条路一条断言都没有。补的「动画路径」那组自己驱动 rAF **并推
-一只假表**——`tick` 的 dt 取 `performance.now()`，同步循环里它几乎不动（差值是个极小
-的非零数，`|| 1/60` 那条兜底轮不到），不推表的话弹簧原地踏步、用例会对着一个假的
-「没动」全绿。
+**为什么两条 lane 会撞**：这个 bug 是维护者在真机上报的，两条 lane 各自从同一句
+话出发。start-of-shift 的碰撞检查（ADR-0148 / `npm run lane`）搜的是**开工那一刻**
+的 issue 与分支 —— 而 #1128 的 issue 与分支都是在这条 lane 开工**之后**才出现的，
+那道闸结构上盖不住它。真正接住的是合并前的 re-fetch（项目 ADR-0074 为 ADR 撞号写的
+那条规矩，这次撞的是代码）。代价只是一份白写的实现，没有更坏的结局 —— 因为两边的
+判据一致。
 
 ## 代价与已知未做
 

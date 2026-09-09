@@ -3,7 +3,7 @@
 //
 // ## 为什么不是分段控件
 //
-// 工作区设置原来把七格塞进一条 `TabsList`，而抽屉只有 420px 宽（`App.tsx` 的
+// 团队设置原来把七格塞进一条 `TabsList`，而抽屉只有 420px 宽（`App.tsx` 的
 // `w-[min(420px,92vw)]`）：真机上「智能体」「连接器」已经挤到快认不出，再加一格
 // 就得开始截断。推入式换来的三件事：① 每格有多宽由它自己说了算，加第八格不影响
 // 前七格；② 目录那一层能给每行写一句「里面有什么」，而 tab 只有两个字；③ 二级页
@@ -95,30 +95,27 @@ export function NavStack({ root, className }: { root: NavScreen; className?: str
   const lastT = useRef(0);
 
   const rendered = useMemo(() => [...stack, ...leaving], [stack, leaving]);
-
-  // rAF 循环读的是**这个 ref**，不是 `rendered` 这个闭包变量。`push` 里的 `kick()`
-  // 是在 setState 之后、重渲之前调的，它注册进 rAF 的那个 `tick` 因此捕获的是
-  // **推入之前**那一版栈——照闭包走的话，刚推上来的那一页在整段动画里一次都不会
-  // 被布局，停在画外（`translate3d(width)`），而根页每帧又被设回 `auto`：真机上
-  // 就是「第一次点没反应，点第二行才把第一页放出来」。回执是
-  // `tests/renderer/navStack.test.tsx` 的「动画路径」那一组
+  // rAF 循环从这只 ref 读栈，不从闭包读：push 的 kick 注册 tick 时还在重渲之前，
+  // 闭包抓到的是推入前那一版 rendered（#1125——整段动画里新页一次都没被布局，
+  // 停在画外；点第二下闭包换新才把它摆到正位）。同步发生在下面的 layout effect
+  // 里，先于任何 rAF 回调。applyLayout 因此不依赖 rendered，身份稳定
   const renderedRef = useRef(rendered);
 
   /** 把每一页此刻的进度写进 transform。**每帧直接写 DOM**，不走 React state——
       一次转场 25 帧，25 次重渲整棵子树在这个尺寸上是看得见的卡 */
   const applyLayout = useCallback(() => {
     const width = hostRef.current?.clientWidth ?? 0;
-    const rendered = renderedRef.current;
-    rendered.forEach((screen, i) => {
+    const list = renderedRef.current;
+    list.forEach((screen, i) => {
       const el = pageEls.current.get(screen.key);
       if (!el) return;
       const p = i === 0 ? 1 : (lives.current.get(screen.key)?.spring.x ?? 0);
       el.style.transform = `translate3d(${(1 - p) * width}px,0,0)`;
       // 只有栈里有第二页时才画阴影：根页孤零零挂着一道左阴影是无中生有
       el.style.boxShadow = i > 0 && p > 0.001 ? "-14px 0 34px rgba(0,0,0,.34)" : "none";
-      el.style.pointerEvents = i === rendered.length - 1 ? "auto" : "none";
+      el.style.pointerEvents = i === list.length - 1 ? "auto" : "none";
       // 下面那页跟着往后退 + 压暗
-      const below = pageEls.current.get(rendered[i - 1]?.key ?? "");
+      const below = pageEls.current.get(list[i - 1]?.key ?? "");
       if (below) {
         below.style.transform = `translate3d(${-p * width * PARALLAX}px,0,0)`;
         const dim = below.querySelector<HTMLElement>("[data-nav-dim]");
@@ -193,13 +190,12 @@ export function NavStack({ root, className }: { root: NavScreen; className?: str
     kick();
   }, [kick]);
 
-  // 每次渲染后把镜像同步 + 布局重算一遍：新页刚挂上（进度 0）时必须先落到画外，
-  // 否则会先闪一帧在正位上。**顺序要紧**——rAF 回调排在 layout effect 之后，
-  // 所以这一行跑完，正在跑的那条动画下一帧读到的就是新栈
+  // 每次渲染后先同步栈的镜像、再重算布局：新页刚挂上（进度 0）时必须先落到画外，
+  // 否则会先闪一帧在正位上。同步走 layout effect 是为了先于任何 rAF 回调（#1125）
   useLayoutEffect(() => {
     renderedRef.current = rendered;
     applyLayout();
-  }, [rendered, applyLayout]);
+  });
 
   useEffect(() => {
     const onResize = () => applyLayout();
