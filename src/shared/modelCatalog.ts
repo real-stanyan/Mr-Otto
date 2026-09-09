@@ -169,7 +169,7 @@ const MODEL_SPECS: ModelSpec[] = [
 ];
 
 /** thinking 模式要求 reasoning_content 回传的厂商集合（#1151，2026-09-09 真接口探针，
-    逐家验过才准进；探针记录与判据表在 issue 与 ADR-0272）。
+    逐家验过才准进；探针记录与判据表在 issue 与 ADR-0273）。
     开错方向的代价不对称：漏开 = 还在赌服务端缓存（今天的病）；错开 = 给会拒
     陌生字段的 API 发 reasoning_content，当场 400——所以默认关，验过才开 */
 const REASONING_PASSBACK: ReadonlySet<ProviderId> = new Set<ProviderId>(["deepseek"]);
