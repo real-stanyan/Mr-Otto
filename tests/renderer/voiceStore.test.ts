@@ -27,6 +27,7 @@ const said = (agentId: string, seq: number, content: string): SessionEvent =>
   ({ sessionId: "s1", ts: 0, seq, type: "assistant_message", content, model: "m", agentId });
 
 const spoken: { text: string; voiceId: string }[] = [];
+let playSeq = 0;
 
 beforeEach(() => {
   spoken.length = 0;
@@ -42,6 +43,9 @@ beforeEach(() => {
     speechPause: vi.fn(async () => {}),
     speechResume: vi.fn(async () => {}),
     workspaceCloudSay: vi.fn(async () => ({ ok: true })),
+    // helper 侧播放（#1201）
+    speechPlay: vi.fn(async () => ({ id: `p${++playSeq}` })),
+    speechStopPlay: vi.fn(async () => {}),
   };
   useChat.setState({
     workspaceGroups: [ws],
@@ -243,5 +247,52 @@ describe("store：回声消除下的常开麦与打断（#1184）", () => {
     st.joinVoiceCall();
     st.speechOnEvent({ type: "level", value: 0.3, active: true });
     expect(useChat.getState().voice?.mic).toMatchObject({ level: 0.3, active: true });
+  });
+});
+
+// helper 侧播放（#1201）：回声消除开着时 macOS 会压低别的 app 的音频（ducking），agent 的语音正是
+// Electron 放的——字节交给 helper、用同一个音频引擎播（不被压，且是回声消除的参考）。
+describe("store：回声消除开着时 TTS 交给 helper 播（#1201）", () => {
+  const otter = () => (window as unknown as { otter: Record<string, ReturnType<typeof vi.fn>> }).otter;
+  const m = (k: string): ReturnType<typeof vi.fn> => otter()[k]!;
+  const aecOn = (): void => {
+    useChat.getState().speechOnEvent({ type: "status", speech: "authorized", mic: "authorized", onDevice: true, locale: "zh-CN", aec: true });
+    useChat.getState().speechOnEvent({ type: "listening", on: true });
+  };
+
+  it("aec 开：一段合成好的字节走 speechPlay；helper 报 played 才算播完、下一段接着走", async () => {
+    playSeq = 0;
+    const st = useChat.getState();
+    st.joinVoiceCall();
+    aecOn();
+    st.voiceOnEvent(said("a_1", 2, "第一句。第二句。"));
+    await flush();
+    expect(m("speechPlay")).toHaveBeenCalledTimes(1);
+    expect(m("speechPlay").mock.calls[0]![0]).toBeInstanceOf(Uint8Array);
+    expect(useChat.getState().voice).toMatchObject({ speaking: "a_1", text: "第一句。" });
+    st.speechOnEvent({ type: "played", id: "p1" });
+    await flush();
+    expect(m("speechPlay")).toHaveBeenCalledTimes(2);
+    expect(useChat.getState().voice?.text).toBe("第二句。");
+    st.speechOnEvent({ type: "playError", id: "p2", message: "解不开" });
+    await flush();
+    expect(useChat.getState().voice).toMatchObject({ speaking: null, error: "解不开" });
+  });
+
+  it("插嘴 / 静音停播放 → speechStopPlay；aec 没开不走 helper", async () => {
+    playSeq = 0;
+    const st = useChat.getState();
+    st.joinVoiceCall();
+    aecOn();
+    st.voiceOnEvent(said("a_1", 2, "在的。"));
+    await flush();
+    st.setVoiceMuted(true);
+    expect(m("speechStopPlay")).toHaveBeenCalled();
+    st.leaveVoiceCall();
+    st.joinVoiceCall();
+    st.speechOnEvent({ type: "listening", on: true }); // 没报 aec
+    st.voiceOnEvent(said("a_1", 3, "在的。"));
+    await flush();
+    expect(m("speechPlay")).toHaveBeenCalledTimes(1); // 还是上一场那次
   });
 });

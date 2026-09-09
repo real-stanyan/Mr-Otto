@@ -37,6 +37,12 @@ describe("encodeSpeechCommand / decodeSpeechEvent", () => {
     );
     expect(encodeSpeechCommand({ type: "pause" })).toBe('{"type":"pause"}\n');
     // 上下文词表（#1196）：agent 名 / 成员名 / 开发常用英文词，识别器据此把「get up」认成 GitHub
+    // helper 侧播放（#1201）：字节落成临时文件，命令只带路径；播完 / 播不了各一条事件
+    expect(encodeSpeechCommand({ type: "play", id: "p1", path: "/tmp/a.mp3" })).toBe('{"type":"play","id":"p1","path":"/tmp/a.mp3"}\n');
+    expect(encodeSpeechCommand({ type: "stopPlay" })).toBe('{"type":"stopPlay"}\n');
+    expect(decodeSpeechEvent('{"type":"played","id":"p1"}')).toEqual({ type: "played", id: "p1" });
+    expect(decodeSpeechEvent('{"type":"playError","id":"p1","message":"解不开"}')).toEqual({ type: "playError", id: "p1", message: "解不开" });
+    expect(decodeSpeechEvent('{"type":"played"}')).toBeNull();
     expect(encodeSpeechCommand({ type: "start", locale: "zh-CN", hints: ["GitHub", "管理员"] })).toBe(
       '{"type":"start","locale":"zh-CN","hints":["GitHub","管理员"]}\n'
     );

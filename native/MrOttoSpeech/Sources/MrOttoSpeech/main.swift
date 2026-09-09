@@ -62,6 +62,10 @@ func handle(_ cmd: Command) {
     recognizer.resume()
   case "status":
     emit(recognizer.status())
+  case "play":
+    if let id = cmd.id, let path = cmd.path { recognizer.play(id: id, path: path) }
+  case "stopPlay":
+    recognizer.stopPlay()
   default:
     break  // 认不出的命令直接丢（同 SimInput）
   }

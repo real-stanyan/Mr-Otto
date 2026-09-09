@@ -18,7 +18,10 @@ export type SpeechCommand =
   | { type: "stop" }
   | { type: "pause" }
   | { type: "resume" }
-  | { type: "status" };
+  | { type: "status" }
+  /** helper 侧播放（#1201）：字节已落成临时文件，命令只带路径 */
+  | { type: "play"; id: string; path: string }
+  | { type: "stopPlay" };
 
 export interface SpeechChild {
   stdin: { write(s: string): void };
@@ -36,7 +39,9 @@ export function encodeSpeechCommand(c: SpeechCommand): string {
   const wire =
     c.type === "start"
       ? { type: "start", locale: c.locale, ...(c.silenceMs !== undefined ? { silenceMs: c.silenceMs } : {}), ...(c.hints !== undefined ? { hints: c.hints } : {}) }
-      : { type: c.type };
+      : c.type === "play"
+        ? { type: "play", id: c.id, path: c.path }
+        : { type: c.type };
   return JSON.stringify(wire) + "\n";
 }
 
@@ -77,6 +82,10 @@ export function decodeSpeechEvent(line: string): SpeechEvent | null {
       return typeof e.value === "number" && Number.isFinite(e.value)
         ? { type: "level", value: e.value, active: e.active === true }
         : null;
+    case "played":
+      return typeof e.id === "string" ? { type: "played", id: e.id } : null;
+    case "playError":
+      return typeof e.id === "string" && typeof e.message === "string" ? { type: "playError", id: e.id, message: e.message } : null;
     case "error":
       return typeof e.message === "string" ? { type: "error", message: e.message } : null;
     default:

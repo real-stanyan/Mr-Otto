@@ -61,6 +61,9 @@ export function applySpeechEvent(state: MicState, ev: SpeechEvent): { state: Mic
         : { state: { ...state, status: "off", transcript: "", level: 0, active: false } };
     case "level":
       return { state: { ...state, level: ev.value, active: ev.active } };
+    case "played":
+    case "playError":
+      return { state }; // 播放回执归 helperAudio，不是麦克风的状态
     case "paused":
       return { state: { ...state, status: "paused" } };
     case "resumed":
