@@ -3,6 +3,7 @@
 // 这里只有「页面长什么样、索引怎么生成、什么算合法」；读写容器的事在 services/runtime/src/wikiFs.ts。
 
 import { charCount, parseEntries } from "./memoryStore.js";
+import { scanThreat } from "./threatPatterns.js";
 
 export const WIKI_DIR = "wiki";
 export const WIKI_TMP_DIR = ".tmp";
@@ -438,4 +439,99 @@ export function parseHeadsDump(stdout: string): { path: string; head: string }[]
 }
 export function parsePagesDump(stdout: string): { path: string; text: string }[] {
   return pathPayload(stdout).map((r) => ({ path: r.path, text: r.payload }));
+}
+
+// ── 体检（spec §7.1）：机械的归代码，语义的归模型 ──────────────────────────
+export type WikiCheckRule =
+  | "broken-link" | "orphan" | "missing-field" | "pinned-over-budget" | "own-over-budget"
+  | "stale" | "threat" | "extraneous" | "journal-drift";
+export interface WikiCheckFinding {
+  rule: WikiCheckRule;
+  path: string;
+  detail: string;
+}
+export interface WikiCheckInput {
+  pages: readonly WikiPage[];
+  /** 每页落盘的原文（含页头）——journal 漂移按它比 */
+  rawTexts: ReadonlyMap<string, string>;
+  /** journal 各路径的最新版本；null = journal 这一刻读不到，跳过那条规则 */
+  journalHeads: ReadonlyMap<string, string | null> | null;
+  /** wiki/ 下不该在的东西（非 md、第二层目录、软链），由 fs 层列出 */
+  extraneous: readonly string[];
+  now: number;
+}
+export interface WikiCheckReport {
+  findings: WikiCheckFinding[];
+  /** 文件与 journal 最新版本不一致的页（bash 绕开工具改的）——调用方补记 external */
+  drifted: string[];
+  /** journal 还记着、文件已经不在的页——调用方补记 external 删除 */
+  removedOutside: string[];
+  pinnedChars: number;
+}
+
+
+export function checkWiki(input: WikiCheckInput): WikiCheckReport {
+  const findings: WikiCheckFinding[] = [];
+  const paths = new Set(input.pages.map((p) => p.path));
+  const inbound = new Map<string, number>();
+  for (const p of input.pages) {
+    for (const target of extractWikiLinks(p.body)) {
+      if (!paths.has(target)) findings.push({ rule: "broken-link", path: p.path, detail: `链到不存在的 [[${linkTarget(target)}]]` });
+      inbound.set(target, (inbound.get(target) ?? 0) + 1);
+    }
+  }
+  let pinnedChars = 0;
+  for (const p of input.pages) {
+    const f = p.front;
+    if (f.pinned) pinnedChars += charCount(p.body);
+    const exemptOrphan = f.pinned || p.path === WIKI_TEAM_PATH || p.path === WIKI_SCHEMA_PATH || agentIdOfPage(p.path) !== null;
+    if (!exemptOrphan && !(inbound.get(p.path) ?? 0)) findings.push({ rule: "orphan", path: p.path, detail: "没有任何页链到它" });
+    const missing = [f.title.trim() === "" ? "title" : null, f.summary.trim() === "" ? "summary" : null, f.updatedAt.trim() === "" ? "updated_at" : null].filter((x) => x !== null);
+    if (missing.length) findings.push({ rule: "missing-field", path: p.path, detail: `页头缺 ${missing.join(" / ")}` });
+    const agentId = agentIdOfPage(p.path);
+    if (agentId !== null && charCount(p.body) > WIKI_OWN_BUDGET) findings.push({ rule: "own-over-budget", path: p.path, detail: `${charCount(p.body)} 字 > ${WIKI_OWN_BUDGET}` });
+    const at = Date.parse(f.updatedAt);
+    if (!f.pinned && Number.isFinite(at) && input.now - at >= WIKI_STALE_DAYS * 24 * 60 * 60 * 1000) findings.push({ rule: "stale", path: p.path, detail: `stale? ${Math.floor((input.now - at) / (24 * 60 * 60 * 1000))} 天没动` });
+    const hit = scanThreat(p.body);
+    if (hit) findings.push({ rule: "threat", path: p.path, detail: `含可疑指令（${hit}），注入时已跳过正文` });
+  }
+  if (pinnedChars > WIKI_PINNED_BUDGET) findings.push({ rule: "pinned-over-budget", path: WIKI_TEAM_PATH, detail: `常驻合计 ${pinnedChars} 字 > ${WIKI_PINNED_BUDGET}` });
+  for (const x of input.extraneous) findings.push({ rule: "extraneous", path: x, detail: "不是一层目录下的 .md 页" });
+  const drifted: string[] = [];
+  const removedOutside: string[] = [];
+  if (input.journalHeads !== null) {
+    for (const p of input.pages) {
+      const head = input.journalHeads.get(p.path);
+      const raw = input.rawTexts.get(p.path);
+      if (head === undefined || head === null || head !== raw) {
+        drifted.push(p.path);
+        findings.push({ rule: "journal-drift", path: p.path, detail: head === undefined || head === null ? "journal 里没有这一版，已补记" : "文件与 journal 最新版本不同，已补记" });
+      }
+    }
+    for (const [path, content] of input.journalHeads) {
+      if (content !== null && !paths.has(path)) {
+        removedOutside.push(path);
+        findings.push({ rule: "journal-drift", path, detail: "文件已不在，journal 还记着，已补记删除" });
+      }
+    }
+  }
+  return { findings, drifted, removedOutside, pinnedChars };
+}
+
+const RULE_TITLE: Record<WikiCheckRule, string> = {
+  "broken-link": "断链", orphan: "孤儿页", "missing-field": "页头缺字段", "pinned-over-budget": "常驻超预算",
+  "own-over-budget": "智能体自己那页超预算", stale: "可能过期", threat: "可疑指令", extraneous: "wiki 下的杂物",
+  "journal-drift": "journal 漂移",
+};
+
+export function renderCheckReport(r: WikiCheckReport): string {
+  if (r.findings.length === 0) return `体检完成：没有发现问题。常驻合计 ${r.pinnedChars}/${WIKI_PINNED_BUDGET} 字。`;
+  const byRule = new Map<WikiCheckRule, WikiCheckFinding[]>();
+  for (const f of r.findings) byRule.set(f.rule, [...(byRule.get(f.rule) ?? []), f]);
+  let out = `体检完成，${r.findings.length} 条发现（常驻合计 ${r.pinnedChars}/${WIKI_PINNED_BUDGET} 字）：\n`;
+  for (const [rule, list] of byRule) {
+    out += `\n## ${RULE_TITLE[rule]}（${list.length}）\n`;
+    for (const f of list) out += `- ${f.path}：${f.detail}\n`;
+  }
+  return out;
 }
