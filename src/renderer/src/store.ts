@@ -1041,6 +1041,9 @@ interface ChatState {
       点的那一行，服务端拿它与采样边界比对后可以回 `not_current`。缺席 = 旧
       语义（停当前那一轮） */
   cloudStop(seq?: number): Promise<CloudAck>;
+  /** 改当前云会话的语音通话名单（#1163）。空 = 结束。原样透传 CloudAck，不碰共享错误格；
+      通话栏画的是日志里那条 voice_call_changed，不是「我刚点了」 */
+  cloudCall(participants: string[]): Promise<CloudAck>;
   /** 读一个工作区此刻的路由（控制房 RPC，协议 8，#991；#1102 摘掉仓库之后只剩
       这一格）。透传 FriendsResult，错误由「文件」tab 自己画——不落
       workspaceGroupsError 那一格（那格是整页共用的，设置页刚打开那一刻可能还
@@ -2549,6 +2552,9 @@ export const useChat = create<ChatState>((set, get) => ({
 
   async cloudStop(seq) {
     return await window.otter.workspaceCloudStop(seq);
+  },
+  async cloudCall(participants) {
+    return await window.otter.workspaceCloudCall(participants);
   },
 
   workspaceCloudState(workspaceId) {

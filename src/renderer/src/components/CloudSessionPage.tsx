@@ -62,7 +62,7 @@ import { applyAgentMention, mentionQueryAt, pickerEmptyState, resolveSendMention
 import { filterMentionRows, mentionRows, MENTION_KIND_LABEL, type MentionRow } from "../lib/workspaceMentionItems.js";
 import {
   approvalCardTitle, assistantLabel, canStopTurn, cloudEmptyState, hiddenFromCloudTimeline, relayLineText,
-  stopButtonRows, systemNoteText, turnEndedLineText, userRowIdentity,
+  stopButtonRows, systemNoteText, turnEndedLineText, userRowIdentity, voiceCallLineText,
 } from "../lib/cloudTimeline.js";
 import { systemNoteDetail } from "../lib/systemNote.js";
 import { TurnErrorState } from "./TurnErrorState.js";
@@ -72,7 +72,7 @@ import { safeSpeakerLabel, SYSTEM_SPEAKER_UID } from "../../../shared/promptSafe
 import { mentionTokens, parseMemberMentions, parseMentions, type MentionCandidate } from "../../../shared/remote/agentMention.js";
 import type {
   AgentBriefedEvent, AgentRelayEvent, ApprovalDecisionEvent, ApprovalRequestEvent, AssistantMessageEvent,
-  ChatMessageEvent, SessionEvent,
+  ChatMessageEvent, SessionEvent, VoiceCallChangedEvent,
 } from "../../../session/events.js";
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 import type { CloudAck } from "../../../shared/shellBridge.js";
@@ -257,6 +257,18 @@ export function CloudSessionPage({
   // hooks 不能条件调用：cs 可能是 null 的这一拍(WorkspacePage 换页与
   // cloudSession 置空之间那一帧)也得让下面这些 Hook 正常跑完
   const events = cs?.events ?? EMPTY_EVENTS;
+  // 通话旁白要看前一条名单（差集出「拉进 / 移出 / 开始 / 结束」，#1163）：一次扫出
+  // 每条 voice_call_changed 的前一条，渲染循环里 O(1) 查
+  const prevVoiceCall = useMemo(() => {
+    const m = new Map<number, VoiceCallChangedEvent | null>();
+    let prev: VoiceCallChangedEvent | null = null;
+    for (const e of events) {
+      if (e.type !== "voice_call_changed") continue;
+      m.set(e.seq, prev);
+      prev = e;
+    }
+    return m;
+  }, [events]);
 
   // 时间线行共读的日志投影,同 OttoThread 顶层的算法(aui/OttoThread.tsx:957)
   const timelineProjection = useMemo(
@@ -781,6 +793,9 @@ export function CloudSessionPage({
               }
               if (e.type === "agent_briefed") {
                 return <AgentBriefedRow key={e.seq} event={e} />;
+              }
+              if (e.type === "voice_call_changed") {
+                return <VoiceCallRow key={e.seq} text={voiceCallLineText(prevVoiceCall.get(e.seq) ?? null, e, ws)} />;
               }
               if (e.type === "agent_relay") {
                 return <AgentRelayRow key={e.seq} event={e} ws={ws} />;
@@ -1384,6 +1399,12 @@ function AgentRelayRow({ event, ws }: { event: AgentRelayEvent; ws: WorkspaceSna
       {relayLineText(event, ws)}
     </p>
   );
+}
+
+/** 通话名单那一行（#1163）：谁开的、拉了谁、结束了——审计性质的旁白，样式照
+    AgentRelayRow。事件只记事实（此刻谁在通话里），动作是投影出来的，见 voiceCallLineText */
+function VoiceCallRow({ text }: { text: string }) {
+  return <p className="px-1 text-[10.5px] italic text-muted-foreground/70">{text}</p>;
 }
 
 /** 「谁还没回」（Task 10，src/shared/turnLedger.ts 的 openTurns 是事实来源）：

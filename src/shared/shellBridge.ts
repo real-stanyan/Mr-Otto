@@ -1188,6 +1188,10 @@ export interface ShellBridge {
   /** 团队语音通话（#1163）：把一段文字合成语音。主进程拿 JWT 打网关，钱记在
       **听的人**自己的额度上；渲染层只拿字节去播 */
   teamVoiceSpeak(text: string, voiceId: string): Promise<VoiceSpeakResult>;
+  /** 改当前云会话的语音通话名单（协议 17，#1163）：`participants` = 该在通话里的 agent id，
+      空 = 结束通话。resolve 的是 `call_result` 回执（同 stop：15 秒没回执 = unknown）；
+      名单本身以日志里那条 `voice_call_changed` 为准，不以「我刚点了」为准 */
+  workspaceCloudCall(participants: string[]): Promise<CloudAck>;
   /** 读一个团队此刻的路由（控制房 RPC，协议 8，#991）：任何在籍成员都能读，
       不依赖开着云会话。**#1102 之后只剩这一格**——原来它还带仓库配置，而团队
       不再绑仓库；留着这条 RPC 是因为 ADR-0246 那句「起不了 turn」在设置页
@@ -1641,6 +1645,7 @@ export const CHANNELS = {
   workspaceCloudDelete: "otter:workspaceCloudDelete",
   workspaceCloudStop: "otter:workspaceCloudStop",
   teamVoiceSpeak: "otter:teamVoiceSpeak",
+  workspaceCloudCall: "otter:workspaceCloudCall",
   workspaceCloudConfig: "otter:workspaceCloudConfig",
   workspaceCloudState: "otter:workspaceCloudState",
   workspaceCloudFiles: "otter:workspaceCloudFiles",

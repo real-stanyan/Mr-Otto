@@ -3447,6 +3447,9 @@ void app.whenReady().then(() => {
     cloudClient.stop(seq ?? undefined)
   );
   ipcMain.handle(CHANNELS.teamVoiceSpeak, (_e, text: string, voiceId: string) => teamVoice.speak(text, voiceId));
+  ipcMain.handle(CHANNELS.workspaceCloudCall, (_e, participants: string[]) =>
+    cloudClient.call(Array.isArray(participants) ? participants.filter((p): p is string => typeof p === "string") : [])
+  );
   ipcMain.handle(CHANNELS.workspaceCloudState, (_e, workspaceId: string) => cloudClient.workspaceState(workspaceId));
   ipcMain.handle(CHANNELS.workspaceCloudFiles, (_e, workspaceId: string, path: string) =>
     cloudClient.workspaceFiles(workspaceId, path)
