@@ -118,8 +118,9 @@ system 里模型读到两套口径），空名单块消失，本机会话（无 
 - `invite_to_call` 的「先问再调」只靠提示词。
 - 通话期间归档不落「结束」事件（归档之后 `setVoiceCall` 拒；投影上通话名单仍非空但没有 turn 会跑）。
 - 用户语音输入（STT）、真人之间语音、手机端：不做。
-- **要跑 0033 + `wrangler secret put MINIMAX_API_KEY` + 部署 edge + 部署 runtime（协议 17
-  精确相等握手）才生效**；真机一次没跑过。
+- **要 `wrangler secret put MINIMAX_API_KEY` + 部署 edge + 跑 0033 + 部署 runtime（协议 17
+  精确相等握手）才生效**，且**顺序是 worker 先、0033 后**（与 0031 相反：旧 worker 把认不出的
+  kind 当 chat，先插行会让 TTS 那款漏进对话选单、还是 Auto 的 hard 档）；真机一次没跑过。
 
 ## 推翻前提
 

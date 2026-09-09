@@ -9,8 +9,11 @@
 --
 -- **为什么是第三种 kind 而不是复用 image**：`/me` 分三张清单下发（`models` / `imageModels` /
 -- `ttsModels`），消费方三不相通——语音行漏进对话选单就是一款点了不干活的型号，漏进出图
--- 清单则 generate_image 会点名它。`parseRouteRows` 对认不出的值按 chat，所以**顺序上要先跑
--- 本条再部署 worker**；反了也不会炸——check 拒插、`ttsModels` 为空、桌面不画语音钮而已。
+-- 清单则 generate_image 会点名它。**顺序上要先部署 worker 再跑本条**（与 0031 相反）：旧 worker 的
+-- `parseRouteRows` 对认不出的 kind 按 chat，本条先跑的话这一行会在新 worker 上线之前漏进
+-- 对话选单——而它的 `price_out` 比最贵的对话款还高，ADR-0237 的 Auto 拿 `at(-1)` 当 hard 档，
+-- 一次难题提问会得到一段 hex。反过来（worker 先）什么都不会发生：没有这一行 = `ttsModels`
+-- 为空 = 桌面不画语音钮。
 --
 -- **价怎么定的**：MiniMax 官网按量计费页（2026-09-09）speech-2.8-turbo = ¥2.00 / 万字符，
 -- 计费单位是回包里的 `extra_info.usage_characters`（1 个汉字算 2 个字符，英文字母 / 标点 /
