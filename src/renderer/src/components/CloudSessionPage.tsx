@@ -82,6 +82,7 @@ import { buildCloudLogExport } from "../lib/cloudExport.js";
 import { downloadText } from "../lib/downloadText.js";
 import { sandboxApprovalBanner, sandboxApprovalControl } from "../lib/sandboxApprovalControl.js";
 import { SandboxApprovalToggle } from "./BypassSwitch.js";
+import { CloudContextRing } from "./CloudContextRing.js";
 
 // cs 还没到位时兜底（正常路径下 WorkspacePage 只在 cloudSession 非空时才
 // 挂载这个组件，但 hooks 不能条件调用，events 得先算出一个稳定引用——
@@ -872,9 +873,11 @@ export function CloudSessionPage({
         {/* 外壳与本地会话的输入框**同一套**（#985；App.tsx 的 ChatComposer）：
             elements/composer 的 ComposerBar 把「这一条要发的东西」当成一摞来排——
             点名行 / 输入 / 工具条——类名逐字照抄那边。工具条左边那条偏好栏只留下
-            **免审那一颗**（#1029，ADR-0243）：型号 / thinking / 用量环在云会话里是
-            **团队**的属性不是这条会话的（ADR-0202 / 0233，同 CloudWelcome 头注），
-            摆上来就是几个点了不生效的控件；而免审那颗虽然也是团队级的，却是**踩刹车
+            **免审那一颗**（#1029，ADR-0243）：型号 / thinking 在云会话里是**团队**的
+            属性不是这条会话的（ADR-0202 / 0233，同 CloudWelcome 头注），摆上来就是
+            两个点了不生效的控件；用量环**回来了**（#1138，发送键左边，同本地的位置）
+            ——上下文是每只 agent 各自的事实，日志里推得出来，见 CloudContextRing.tsx。
+            而免审那颗虽然也是团队级的，却是**踩刹车
             的地方就该在手边**——它要在一张审批卡挡着群聊的那一刻够得着，而不是让人先
             去翻设置抽屉。作用域上的代价（翻一次全团队跟着变）由它自己的文案 + 开着时
             那条常驻警示行说出口。cursor-text + 点空白处聚焦：本地那边由
@@ -1056,6 +1059,18 @@ export function CloudSessionPage({
               />
             </div>
             <ComposerActions>
+              {/* 上下文用量环（#1138）：数据源全是日志投影——每只 agent 各自的视野 +
+                  信封里的工具表 + 目录里的窗口，画最吃紧那只；额度那半只在我是 owner
+                  时画（云会话烧的是 owner 的额度，ADR-0233，而 store.billing 是我的）。
+                  团队默认型号只给还没跑过一轮的 agent 兜底 */}
+              {cs && (
+                <CloudContextRing
+                  events={events}
+                  ws={ws}
+                  fallbackModel={cs.modelRoute?.kind === "hosted" ? cs.modelRoute.model : null}
+                  quotaApplies={cs.ownerUid === selfUid}
+                />
+              )}
               <Tooltip>
                 <TooltipTrigger asChild>
                   <ComposerSend
