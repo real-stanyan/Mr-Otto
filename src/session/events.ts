@@ -135,8 +135,10 @@ export interface AssistantMessageEvent extends SessionEventBase {
   /** 本次调用的 token 消耗。可选 = 旧日志/不报 usage 的 API 照样重放 */
   usage?: TokenUsage;
   /** 思考过程（reasoning_content，thinking 开启时才有）。模型产出的新信息，
-      日志推不出 → 必须落盘；但 API 明令禁止塞回上下文（塞了 400）→
-      投影必须丢弃它。logged ≠ model-visible：给人回看的事实，不是给模型的。
+      日志推不出 → 必须落盘。回不回喂模型按厂商分（#1151）：DeepSeek 自 V3.2
+      起反过来**要求**回传（按 tool_call id 查服务端缓存，查不到 400），
+      OpenAI 那类严格校验的会拒陌生字段——所以投影把它带出来（ChatMessage.reasoning），
+      发不发由 adapter 按目录门控（REASONING_PASSBACK，默认剥掉）。
       可选 = 旧日志/关 thinking 照样重放 */
   reasoning?: string;
   /** 纯思考耗时(ms):第一个 reasoning 碎片到第一个 content 碎片之间(reasoningClock)。

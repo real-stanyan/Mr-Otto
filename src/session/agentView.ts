@@ -19,8 +19,8 @@
 // 名字从它自己的 agent_briefed 里现取——那是日志里唯一写着「a_8e93… 叫开发」的地方，
 // 按日志顺序推进 = 发言那一刻的名字（同 chat_message.label 的快照规矩）；日志里没有就
 // 退回 agentId，不编。reasoning / usage 从此不用单独剥：chat_message 本来没这两格。
-// 自己的 reasoning 要不要传回给 API 是另一件事（DeepSeek 按它发的 tool_call id 在服务端
-// 缓存，缓存没了同样 400），见 #1151。
+// **自己**那轮的 reasoning 则随投影带出来、由 adapter 按厂商门控回传（#1151，
+// DeepSeek 按它发的 tool_call id 在服务端缓存思考，缓存没了同样 400；ADR-0272）。
 //
 // **这是一个 Record 不是一张名单**:每个事件类型都必须表态,加了新事件类型不来
 // 这里写一笔,tsc 直接红。形状照 sessionPackage.ts 的 PRIVACY_VERDICTS。
