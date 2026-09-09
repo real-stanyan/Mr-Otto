@@ -217,6 +217,8 @@ export interface VoiceListenState {
   /** 此刻在说话的 agent（播放器报的） */
   speaking: string | null;
   queued: number;
+  /** 此刻在读的那句原文（播放器报的；全屏视图的字幕，#1185）；静默时 null */
+  text: string | null;
   /** 最近一段合成 / 播放失败的那句话（routeTts 的四种 blocked 或网关信封） */
   error: string | null;
   /** 麦克风那半（#1176）：常开麦是默认，加入通话顺手开；agent 在说时半双工暂停 */
@@ -1355,7 +1357,7 @@ function voicePlayerFor(set: StoreApi<ChatState>["setState"], get: () => ChatSta
     voicePlayer = new VoicePlayer({
       speak: (text, voiceId) => window.otter.teamVoiceSpeak(text, voiceId),
       onChange: (p) => {
-        set((s) => (s.voice ? { voice: { ...s.voice, speaking: p.speaking, queued: p.queued, error: p.error } } : s));
+        set((s) => (s.voice ? { voice: { ...s.voice, speaking: p.speaking, queued: p.queued, error: p.error, text: p.text } } : s));
         micSync({ speaking: p.speaking, queued: p.queued, aec: get().voice?.mic.aec ?? null });
       },
     });
@@ -2665,7 +2667,7 @@ export const useChat = create<ChatState>((set, get) => ({
     stopVoice();
     const sinceSeq = cs.events.length > 0 ? cs.events[cs.events.length - 1]!.seq : -1;
     // 常开麦（#1176）：进通话就开
-    set({ voice: { sessionId: cs.sessionId, listening: true, muted: false, sinceSeq, speaking: null, queued: 0, error: null, mic: { ...MIC_OFF, status: "starting" } } });
+    set({ voice: { sessionId: cs.sessionId, listening: true, muted: false, sinceSeq, speaking: null, queued: 0, error: null, text: null, mic: { ...MIC_OFF, status: "starting" } } });
     startMic();
   },
   leaveVoiceCall() {
@@ -2710,7 +2712,7 @@ export const useChat = create<ChatState>((set, get) => ({
   },
   setVoiceMuted(muted) {
     if (muted) voicePlayer?.stop();
-    set((s) => (s.voice ? { voice: { ...s.voice, muted, speaking: muted ? null : s.voice.speaking, queued: muted ? 0 : s.voice.queued } } : s));
+    set((s) => (s.voice ? { voice: { ...s.voice, muted, speaking: muted ? null : s.voice.speaking, queued: muted ? 0 : s.voice.queued, text: muted ? null : s.voice.text } } : s));
   },
   voiceOnEvent(event) {
     const s = get();

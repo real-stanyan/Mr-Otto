@@ -64,7 +64,7 @@ describe("store 的语音接线（#1163）", () => {
   it("加入 → 之后名单里那只的回复按段送去合成，voiceId 按 agentId 派生；名单外的不送", async () => {
     const st = useChat.getState();
     st.joinVoiceCall();
-    expect(useChat.getState().voice).toMatchObject({ sessionId: "s1", listening: true, muted: false, sinceSeq: 1 });
+    expect(useChat.getState().voice).toMatchObject({ sessionId: "s1", listening: true, muted: false, sinceSeq: 1, text: null });
     st.voiceOnEvent(said("a_1", 2, "第一段\n\n第二段"));
     st.voiceOnEvent(said("admin", 3, "我不在通话里"));
     await flush();

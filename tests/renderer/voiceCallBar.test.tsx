@@ -31,7 +31,7 @@ const call: VoiceCallState = {
   sinceSeq: 3, sinceTs: Date.now() - 65_000,
 };
 const listening = (over: Partial<VoiceListenState> = {}): VoiceListenState => ({
-  sessionId: "s", listening: true, muted: false, sinceSeq: 3, speaking: null, queued: 0, error: null, mic: MIC_OFF, ...over,
+  sessionId: "s", listening: true, muted: false, sinceSeq: 3, speaking: null, queued: 0, error: null, text: null, mic: MIC_OFF, ...over,
 });
 const noop = { onJoin: () => {}, onMute: () => {}, onMic: () => {}, onUpdate: async () => ({ ok: true as const }), onEnd: async () => ({ ok: true as const }), onExpand: () => {} };
 
