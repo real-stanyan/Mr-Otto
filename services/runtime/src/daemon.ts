@@ -68,7 +68,7 @@ const ARCHIVE_SETTLE_MAX_WAIT_MS = 10_000;
     的常态路径，是异常路径的安全网。**不缓存**：单纯是"这一次查询失败了，
     这一条消息该派给谁"的兜底答案，下一条消息会重新查一次，不影响查询
     恢复正常之后的行为。
-    与 migration 里 seed_workspace_admin_agent 触发器给每个工作区种的默认行
+    与 migration 里 seed_workspace_admin_agent 触发器给每个团队种的默认行
     同一个 agentId（"admin"），这不是巧合：migration 跑完之后，查询成功时
     第一条返回结果本来就是这一行，回落值因此与"真实结果"同构，不是另造一个
     会漂移的占位身份。
@@ -77,13 +77,13 @@ const ARCHIVE_SETTLE_MAX_WAIT_MS = 10_000;
     那条动机已经是历史：migration 在 PR #931 合并时由维护者在生产库执行并
     验过，见 #932 正文「数据库状态」。回落本身留着——查询失败这条路一直在。）
     两种情况都不该让"这一条消息"整个失败、更不该让 roster 变成空数组——
-    resolveTargets 在空 roster 时永远回 []，那样存量工作区会安静地再也起不了
+    resolveTargets 在空 roster 时永远回 []，那样存量团队会安静地再也起不了
     turn（比抛错更难查，因为界面上什么都不会说），见 queryAgents 消费点的
     注释。 */
 const DEFAULT_WORKSPACE_AGENT: AgentSpec = {
   agentId: ADMIN_AGENT_ID,
   name: "管理员",
-  description: "这个工作区的默认智能体",
+  description: "这个团队的默认智能体",
   instructions: "",
   models: [],
   tools: [],
@@ -115,7 +115,7 @@ function createFileOrphansStore(path: string): OrphansStore {
 }
 
 // Git 凭据（#1103）住在 gitCredentialStore.ts。它替代的是 workspaceConfigStore
-// （一个工作区绑一个仓库 + 一把 PAT，#834），#1102 拆掉绑定时一起走了——形状从
+// （一个团队绑一个仓库 + 一把 PAT，#834），#1102 拆掉绑定时一起走了——形状从
 // 「一个仓库 + 一把 token」换成「host → token」，因为 git 自己就是按 host 匹配
 // credential 的。落盘纪律（0600 + 已有文件再 chmod 一刀）照抄 mcpAuthStore.ts:89-90。
 
@@ -143,7 +143,7 @@ async function main(): Promise<void> {
   // /me 60s/uid 缓存——一个坏掉的 edge 不该被每个 turn 打一次
   const hostedProbe = createHostedProbe({ edgeBase: config.edgeBase, runtimeSecret: config.runtimeSecret });
 
-  /** 每只 agent 一台 adapter（#928 task-11），路由只有一条：**工作区所有者**有活跃
+  /** 每只 agent 一台 adapter（#928 task-11），路由只有一条：**团队所有者**有活跃
       订阅 → 走网关代表所有者（runtime 仍不持有模型 key，ADR-0217）；没有 → 抛一条
       给人看的错走 turn 失败路径落日志，群里所有人都看得见。**没有自带 key 那一级**
       （ADR-0233 推翻 ADR-0202）：那条路存在一天，「额度用完悄悄改烧所有者自己的 key」
@@ -179,7 +179,7 @@ async function main(): Promise<void> {
     return new Set((data ?? []).map((r: { uid: string }) => r.uid));
   }
 
-  /** 这个工作区此刻的 agent 名单。**这个函数不缓存**（缓存住在 agentsCache 那一层，
+  /** 这个团队此刻的 agent 名单。**这个函数不缓存**（缓存住在 agentsCache 那一层，
       #979 第 5 条）——建/改 agent 下一句人话生效、接力链内 ≤60s。
       **故意 fail-fast**（error 直接 throw，不在这里回落）：查询失败到底是
       "表还没迁移"还是"这一次 Supabase 抖了"，这个函数分不清楚，也不该由
@@ -219,7 +219,7 @@ async function main(): Promise<void> {
       return r;
     },
   };
-  /** 每个工作区一把容器锁（#979 第 2 条，ADR-0232）：一容器一卷，多条会话共用 */
+  /** 每个团队一把容器锁（#979 第 2 条，ADR-0232）：一容器一卷，多条会话共用 */
   const workspaceLocks = createWorkspaceLocks();
 
   async function labelOf(uid: string): Promise<string> {
@@ -326,16 +326,16 @@ async function main(): Promise<void> {
   /** 每个会话房的"收摊"闭包（issue #822）——归档时用 */
   const closeRoom = new Map<string, () => void>();
 
-  /** clone 结果通报：console 之外，再给该工作区**此刻还活着**的每一条云
+  /** clone 结果通报：console 之外，再给该团队**此刻还活着**的每一条云
       会话各追加一条 chat_message（fromUid:"system"、label:"系统"）+ 实时
       广播——和真人发言走同一条日志/推送路径，客户端不需要为"系统消息"
       单独处理一套。只在 sandbox.ts 真的跑了一次 clone 时被调（幂等跳过
       的情况不触发，见 sandbox.ts 的 runCloneAttempt），不会在每次进程
       重启时对旧结果重复刷屏。
-      已知限制：这个工作区如果此刻没有任何活跃会话（比如 daemon 刚重启，
+      已知限制：这个团队如果此刻没有任何活跃会话（比如 daemon 刚重启，
       还没人发过言），这条通报没有落点——下一个人发言时新开的会话不会
       补看到它，只有 console 那份日志还在。UI 入口是这个 issue 的第二刀，
-      到时候"任何人一打开工作区就能看见 clone 状态"要在那边解决，不是
+      到时候"任何人一打开团队就能看见 clone 状态"要在那边解决，不是
       在这条只服务"已经开着的会话"的通报线里硬塞。 */
   function notifyWorkspace(workspaceId: string, text: string): void {
     for (const [sessionId, entry] of activeSessions) {
@@ -394,7 +394,7 @@ async function main(): Promise<void> {
       cidTransport.set(cid, transport); // 保险登记：onMessage 早于/独立于 onPeer 的边缘情况
       // .catch 不能省：Node 默认 --unhandled-rejections=throw，一次 reject
       // （workspace 被删后在 isMember 60s 缓存窗口内还有人发帧、Supabase
-      // 抖动、SQLite 偶发写失败……）不该终止整个进程、踢掉所有工作区的连接
+      // 抖动、SQLite 偶发写失败……）不该终止整个进程、踢掉所有团队的连接
       // （复审 Critical；写法照抄 src/main/index.ts:1210-1214 的既有先例）
       frameHandler.onSessionFrame(workspaceId, sessionId, cid, payload).catch((err: unknown) => {
         console.error(
@@ -420,7 +420,7 @@ async function main(): Promise<void> {
       const uid = session.initiatorUid();
       if (!uid) return; // usage 只在 chat() resolve 时产生，chat() 只在 turn 里被调
       // 这笔账是哪只 agent 花的（#957 D7）。同一个理由 usage_event.agent_id
-      // 已经有了（ADR-0221），本地日志这一份原来没有——于是「这个工作区里
+      // 已经有了（ADR-0221），本地日志这一份原来没有——于是「这个团队里
       // 哪只水獭最烧钱」在日志里推不出来。exactOptionalPropertyTypes：只有
       // 非空才落这一格（同 decideRuntimeRoute 里 agentId 的既有纪律）
       const agentId = session.currentAgentId();
@@ -475,17 +475,17 @@ async function main(): Promise<void> {
       createdByUid,
       store,
       world,
-      // 这个工作区此刻的 agent 名单，真查询（#928 task-11）。**不回落到空
+      // 这个团队此刻的 agent 名单，真查询（#928 task-11）。**不回落到空
       // 名单**：查询失败（Supabase 抖动、网络）时——sessionService 的 say()
       // 第一行就是
       // await opts.agents()，不接住的话每一条消息都会失败，而且从发言人
       // 这一侧看是彻底的沉默（frameHandler 的 say 分支没有 try/catch，
       // 异常只冒到本文件 onMessage 的 .catch(console.error)，连一条 error
       // 帧都不回客户端）。回落到 DEFAULT_WORKSPACE_AGENT 而不是 []：
-      // resolveTargets 在 roster 为空时永远回 []，那样存量工作区的每一句
+      // resolveTargets 在 roster 为空时永远回 []，那样存量团队的每一句
       // 话都只会落 chat_message、永远起不了 turn，而且没有任何可见信号——
       // 比抛错更难查。回落值取 DEFAULT_WORKSPACE_AGENT 而不是另造一个占位：
-      // migration 的 seed_workspace_admin_agent 触发器给每个工作区种的正是
+      // migration 的 seed_workspace_admin_agent 触发器给每个团队种的正是
       // 同一个 agentId "admin"，migration 跑完之后查询成功的第一条结果本来
       // 就是这一行，回落与"真实结果"同构（见该常量注释）。console.error
       // （不是 warn）：0021 已经在真库上跑过了（PR #931 合并时执行并验过），
@@ -534,11 +534,11 @@ async function main(): Promise<void> {
       // 起跑那一刻再验一次籍（#957 B-I1）。与 frameHandler 的那道闸共用同一个
       // membershipCache（60s 记忆化 + fail-closed）：收帧时验过一次不够——turn
       // 可以在队列里等很久，接力那条链更是可以在几分钟后替最初点火的那个人
-      // 重新起 turn，而他可能早已被踢出这个工作区
+      // 重新起 turn，而他可能早已被踢出这个团队
       // **isMemberOrUnknown 不是 isMember**（#957 终审 Critical 1）：这只手同时
       // 供 runJob（fail-closed，只是文案分开）与重启补跑（查不到就什么都不写）。
       // 接 fail-closed 那个出口的话，daemon 启动那一刻的一次 Supabase 抖动会把
-      // 每条排队消息永久收口成"发起人已不在这个工作区"
+      // 每条排队消息永久收口成"发起人已不在这个团队"
       isMember: (uid) => membership.isMemberOrUnknown(workspaceId, uid),
       // 自动压缩要知道窗口有多大（#957 A-1）。**目录说不认识的型号一律回
       // undefined**，不猜一个数——`contextWindowKnown` 那一位存在的全部理由就是
@@ -852,9 +852,9 @@ async function main(): Promise<void> {
   const frameHandler = createFrameHandler(frameHandlerDeps);
 
   // ── 沙箱 reconcile：起初只在启动时跑一次（T8 复审 Minor 落地处），终审
-  // I2 指出 systemd 常驻的 daemon 上这样不够——被删工作区的容器+卷永不
+  // I2 指出 systemd 常驻的 daemon 上这样不够——被删团队的容器+卷永不
   // 回收。抽成函数，启动时先跑一次打底，再挂到下面与 sweepIdle 同一个
-  // 5 分钟定时器上反复跑（工作区名单每次现查，不是启动时那份快照的复用）。
+  // 5 分钟定时器上反复跑（团队名单每次现查，不是启动时那份快照的复用）。
   async function runReconcile(): Promise<void> {
     const { data: workspaceRows, error: workspacesErr } = await supabase.from("workspaces").select("id");
     if (workspacesErr) {
@@ -863,7 +863,7 @@ async function main(): Promise<void> {
     }
     const validIds = new Set((workspaceRows ?? []).map((r: { id: string }) => r.id));
     const { removed } = await sandbox.reconcile(validIds);
-    // 容器+卷真的删掉的那一刻，把这个工作区的 Git 凭据（**含明文 token**）
+    // 容器+卷真的删掉的那一刻，把这个团队的 Git 凭据（**含明文 token**）
     // 一起删掉（issue #835④ 的同一条不变量：上一版只写不删，凭据条目永久
     // 留在 VPS 上；#1103 换成 host→token 之后这条一个字都没变）
     for (const workspaceId of removed) gitCredentials.purge(workspaceId);
@@ -897,7 +897,7 @@ async function main(): Promise<void> {
       });
       // 终审 I2：孤儿回收不能只在启动那一刻跑——挂到同一个定时器上，
       // .catch 写法与 sweepIdle 同理（一次 Supabase/Docker 抖动不该带走
-      // 整个进程）。不接 destroy()：runtime 没有工作区删除的通知源，两阶段
+      // 整个进程）。不接 destroy()：runtime 没有团队删除的通知源，两阶段
       // 孤儿回收（reconcile 自己的 mark→grace→remove）正是为此设计的，
       // 不需要额外接一条"删除事件"的线
       runReconcile().catch((err: unknown) => {

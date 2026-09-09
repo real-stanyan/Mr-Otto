@@ -9,7 +9,7 @@ describe("parseCreateAgentArgs（#954）", () => {
     expect(CREATE_AGENT_TOOL_NAME).toBe("create_agent");
   });
 
-  it("只给 name：其余字段落默认（空职责/空提示词/[]型号=工作区默认/[]连接器=整池放行），name 两端空白剪掉", () => {
+  it("只给 name：其余字段落默认（空职责/空提示词/[]型号=团队默认/[]连接器=整池放行），name 两端空白剪掉", () => {
     expect(parseCreateAgentArgs({ name: " 广告 " })).toEqual({
       name: "广告", description: "", instructions: "", models: [], tools: [],
     });
@@ -124,7 +124,7 @@ describe("scanCreateAgentThreat（M3，工具与 summarizeArgs 共用同一份�
 describe("createAgentApprovalSummary（ADR-0118 第二条：卡片逐字段）", () => {
   it("五行：名字 / 职责 / 模型 / 连接器 / 提示词全文，缺省各有说法", () => {
     expect(createAgentApprovalSummary({ name: "广告", description: "", instructions: "", models: [], tools: [] })).toBe(
-      ["名字：广告", "职责：（没写）", "模型：工作区默认", "连接器：全部（不限）", "提示词（0 字）：（没写）"].join("\n")
+      ["名字：广告", "职责：（没写）", "模型：团队默认", "连接器：全部（不限）", "提示词（0 字）：（没写）"].join("\n")
     );
   });
 

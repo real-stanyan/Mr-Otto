@@ -26,7 +26,7 @@ export interface PlanRow {
   price_usd_cents: number;
   /** 档位能力（`{"image":false,"video":false,"workspace":true}`）。读不到一律按关——
       给没买的能力开门是漏钱，关门只是少一颗按钮。`workspace` 是「这一档能不能建
-      工作区」（#1024，ADR-0242）：pro/max 为 true，lite 为 false */
+      团队」（#1024，ADR-0242）：pro/max 为 true，lite 为 false */
   capabilities: { image: boolean; video: boolean; workspace: boolean };
 }
 export interface SubscriptionRow {

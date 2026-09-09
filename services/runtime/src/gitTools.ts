@@ -1,14 +1,14 @@
 // 三把 Git 刀（#1105，ADR 见 spec 决策 5）：`clone_repo` / `git_push` /
 // `create_repo`。
 //
-// **三把全部 `requiresApproval: true`。** 这就是「工作区开着免审也管不到它们」
+// **三把全部 `requiresApproval: true`。** 这就是「团队开着免审也管不到它们」
 // 的落地方式，而且是**由构造保证**的：`sessionService` 的 `policyApprover` 只对
 // `tool === bashTool || tool === writeFileTool` 放行（按工具身份比，不按名字，
 // ADR-0231），新刀天然不在射程里。
 //
 // **凭据不进水獭那台容器**（ADR-0200 决策②）：要 token 的两步（clone、push 前
 // 查默认分支、push 本身）全部跑在一次性旁路容器里；不要 token 的那一步（探目标
-// 目录）跑在工作区容器上，它只读。
+// 目录）跑在团队容器上，它只读。
 //
 // 三把刀的**任何**输出都过 `sanitizeCloneText`——git 经常把整条带 userinfo 的
 // URL 原样回显进 stderr，而这些话会进日志、进群聊。
@@ -31,7 +31,7 @@ export interface GitToolDeps {
   workspaceId: string;
   /** 这台主机有没有存过 token（`null` = 没有）。**取 token 的唯一入口** */
   tokenFor: (host: string) => string | null;
-  /** 在工作区容器里跑一段只读脚本（探目标目录）。不碰凭据 */
+  /** 在团队容器里跑一段只读脚本（探目标目录）。不碰凭据 */
   execInWorkspace: (script: string) => Promise<{ stdout: string; stderr: string; exitCode: number }>;
   /** 在一次性旁路容器里跑一段要凭据的脚本。`repoUrl`/`pat` 只到那台容器为止 */
   execInSidecar: (
@@ -66,7 +66,7 @@ function cloneRepoTool(deps: GitToolDeps): Tool {
       name: CLONE_REPO_TOOL_NAME,
       description:
         "把一个 Git 仓库 clone 进工作文件夹的某个子目录。会弹审批卡请用户确认仓库与落地路径。" +
-        "私有仓库需要工作区在「连接器 → 代码仓库」里存过这台主机的访问令牌；令牌不会经过你，也不会进这个容器。" +
+        "私有仓库需要团队在「连接器 → 代码仓库」里存过这台主机的访问令牌；令牌不会经过你，也不会进这个容器。" +
         "目标目录非空且不是同一个仓库时会被拒绝——换一个路径，不要试图先删掉它。",
       parameters: {
         type: "object",
@@ -88,7 +88,7 @@ function cloneRepoTool(deps: GitToolDeps): Tool {
       const pat = host === null ? null : deps.tokenFor(host);
       const cfg = pat === null ? { repoUrl: valid.url } : { repoUrl: valid.url, pat };
 
-      // ① 探目标目录。只读，不要凭据，跑在工作区容器上
+      // ① 探目标目录。只读，不要凭据，跑在团队容器上
       const probeOut = await deps.execInWorkspace(buildCloneProbeScript(args.dest));
       const probe = parseCloneProbe(probeOut.stdout);
       if (probe.kind === "denied") throw new Error(`dest 解析之后落在了工作文件夹外面：${args.dest}`);
@@ -208,7 +208,7 @@ function createRepoTool(deps: GitToolDeps): Tool {
       const token = deps.tokenFor(GITHUB_HOST);
       if (token === null) {
         throw new Error(
-          "这个工作区还没有存 github.com 的访问令牌——请工作区所有者去「工作区设置 → 连接器 → 代码仓库」加一台。"
+          "这个团队还没有存 github.com 的访问令牌——请团队所有者去「团队设置 → 连接器 → 代码仓库」加一台。"
         );
       }
 

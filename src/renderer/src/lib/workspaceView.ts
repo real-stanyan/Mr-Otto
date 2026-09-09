@@ -136,9 +136,9 @@ export interface AgentRowView {
   creatorLabel: string;
 }
 
-/** []（留空用工作区默认）→ 一句人话；否则把型号 id 点连起来（spec §9） */
+/** []（留空用团队默认）→ 一句人话；否则把型号 id 点连起来（spec §9） */
 function modelsSummaryOf(models: readonly string[]): string {
-  return models.length === 0 ? "用工作区默认模型" : models.join(" · ");
+  return models.length === 0 ? "用团队默认模型" : models.join(" · ");
 }
 
 /** []（整池放行）→ 一句人话；否则复用 proxyShare 的描述（服务名 + 全部/几个工具） */
@@ -147,7 +147,7 @@ function toolsSummaryOf(tools: readonly AgentToolAllow[]): string {
 }
 
 /** 权限矩阵（spec §9）：canEdit = 建的人或 owner；canDelete = canEdit 且不是
-    种子管理员——admin 是每个工作区开箱自带的那份，界面上不给删除钮，同
+    种子管理员——admin 是每个团队开箱自带的那份，界面上不给删除钮，同
     memberRows 里 owner 不能对自己动踢人按钮的纪律（"出口另有一条，不是这颗按钮"）*/
 export function agentRows(ws: WorkspaceSnapshot, selfUid: string): AgentRowView[] {
   const selfIsOwner = ws.ownerUid === selfUid;
@@ -221,7 +221,7 @@ export interface CloudSessionRowView {
   updatedTs: number;
 }
 
-/** archived 沉底、同档内 updatedTs 降序——同一本工作区列表里"还能进去接着说话的"
+/** archived 沉底、同档内 updatedTs 降序——同一本团队列表里"还能进去接着说话的"
     排在"已经收尾的"前面，档内新的在前（sessionRows/connectorRows 都没有排序，
     这是云会话独有的规则：会话列表天然按"最近动过"排序才好用，发布会话那张表
     是一次性快照，没有这个诉求） */

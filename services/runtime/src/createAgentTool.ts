@@ -28,7 +28,7 @@ export function createCreateAgentTool(deps: {
     def: {
       name: CREATE_AGENT_TOOL_NAME,
       description:
-        "在这个工作区里新建一只智能体（agent）。会弹审批卡请用户确认名字、职责、型号、连接器与提示词全文，" +
+        "在这个团队里新建一只智能体（agent）。会弹审批卡请用户确认名字、职责、型号、连接器与提示词全文，" +
         "用户批准后才落库；之后群里 @ 它就能让它干活。先看你 briefing 里的花名册，别用已有的名字。" +
         "用户没说清职责或提示词时先问清楚再建；提示词写成对那只 agent 说的话（它负责什么、怎么做、不该做什么）。",
       parameters: {
@@ -37,7 +37,7 @@ export function createCreateAgentTool(deps: {
           name: { type: "string", description: `群里 @ 它用的名字，1–${AGENT_NAME_MAX} 字，不含 @` },
           description: { type: "string", description: `一句话职责，≤ ${AGENT_DESCRIPTION_MAX} 字；会进别人的花名册` },
           instructions: { type: "string", description: `它的 system 提示词，≤ ${AGENT_INSTRUCTIONS_MAX} 字` },
-          models: { type: "array", items: { type: "string" }, description: `允许的型号 id，按优先顺序：网关供着的第一个生效；不传 = 用工作区默认；最多 ${AGENT_MODELS_MAX} 个` },
+          models: { type: "array", items: { type: "string" }, description: `允许的型号 id，按优先顺序：网关供着的第一个生效；不传 = 用团队默认；最多 ${AGENT_MODELS_MAX} 个` },
           tools: {
             type: "array",
             description: "连接器白名单：[{serverId, tools:[工具名…]}]；条目 tools 为 [] = 那台整台放行；不传 = 全部连接器都能用",

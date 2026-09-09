@@ -46,7 +46,7 @@ export interface WorkspaceShareSendDeps extends ShareSendDeps {
   packSession?: typeof realPackSession;
 }
 
-/** 把 sessionId 这个会话发布进 workspaceId 工作区，标题 title（展示用，不脱敏—— 由
+/** 把 sessionId 这个会话发布进 workspaceId 团队，标题 title（展示用，不脱敏—— 由
     发布者自己填，不含会话内容）。
     全过程：load → 收集附件字节 → 打包（隐私闸在这道，同 shareSessionToFriend）→
     上传（路径前缀 {自己 uid}/{pkgId}，同 0014 RLS 的"第一段目录 = 上传者 uid"）→
@@ -127,7 +127,7 @@ export async function publishSessionToWorkspace(
     两步**不共用一个 try**：行删失败要真的报 { ok:false }（撤回没生效，列表页
     还看得到这次发布，用户需要知道）；行删成功之后，包清理是纯粹的收尾——
     包删失败最多留几个孤儿文件，不该让一次已经对用户可见生效的撤回显示失败
-    （那会让人误以为会话还挂在工作区里，其实已经看不到了）。
+    （那会让人误以为会话还挂在团队里，其实已经看不到了）。
     pkgPrefix = {publisher_uid}/{pkg_id}，与 publishSessionToWorkspace 里的
     prefix 同一个值——调用方（index.ts）从行数据里取，不是这里现拼 */
 export async function unpublishSession(

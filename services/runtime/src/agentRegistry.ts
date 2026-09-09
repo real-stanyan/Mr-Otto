@@ -14,7 +14,7 @@ import { agentNameConflict, normalizeAgentName } from "../../../src/shared/works
     （23505 回来才知道），前缀冲突由落库前那次查名单说了算（DB 拦不住） */
 export class AgentNameError extends Error {}
 
-/** 撞了 workspace_agents_name 唯一索引（一个工作区里 name 不重） */
+/** 撞了 workspace_agents_name 唯一索引（一个团队里 name 不重） */
 export class DuplicateAgentNameError extends AgentNameError {
   constructor(name: string) {
     super(`已有同名的智能体「${name}」`);

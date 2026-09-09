@@ -1,4 +1,4 @@
-// supabaseWorkspacesApi —— 工作区（migration 0015）的薄查询层，照 supabaseFriendsApi
+// supabaseWorkspacesApi —— 团队（migration 0015）的薄查询层，照 supabaseFriendsApi
 // 的 unwrap 惯例：每个函数一条查询链，逻辑收在 src/shared/workspaces.ts 的
 // assembleSnapshot 里单测，这里薄到无逻辑不单测（错误原样上抛给调用方收敛）。
 
@@ -19,7 +19,7 @@ function unwrap<T>(res: { data: T; error: { message: string; code?: string } | n
   return res.data;
 }
 
-/** 工作区列表页用的轻量行：不带成员/连接器/会话明细(那些留给 fetchWorkspace) */
+/** 团队列表页用的轻量行：不带成员/连接器/会话明细(那些留给 fetchWorkspace) */
 export interface WorkspaceListRow {
   id: string;
   name: string;
@@ -64,7 +64,7 @@ export async function createWorkspace(
         .insert({ workspace_id: ws.id, uid: selfUid, role: "owner", added_by: selfUid }),
     );
   } catch (e) {
-    // 补偿：孤儿工作区行删掉再抛——两笔插入不原子，断在中间不该留一个「只有 owner 看得见的空群」。
+    // 补偿：孤儿团队行删掉再抛——两笔插入不原子，断在中间不该留一个「只有 owner 看得见的空群」。
     // 删失败就算了（原错误优先，补偿是尽力而为）
     await client.from("workspaces").delete().eq("id", ws.id).then(() => undefined, () => undefined);
     throw e;
@@ -72,7 +72,7 @@ export async function createWorkspace(
   return ws;
 }
 
-/** 自己能看到的工作区列表(RLS 已经把可见范围钉在"owner 或成员") */
+/** 自己能看到的团队列表(RLS 已经把可见范围钉在"owner 或成员") */
 export async function listWorkspaces(client: SupabaseClient): Promise<WorkspaceListRow[]> {
   const res = await client.from("workspaces").select("id,name,owner_uid,created_at");
   return (unwrap(res) ?? []) as WorkspaceListRow[];
@@ -89,9 +89,9 @@ export async function fetchWorkspace(
   ) as { id: string; name: string; owner_uid: string };
   // sandbox_approval **单独一条、容错**（#977，ADR-0223 部署顺序那条教训）：拼进上面
   // 那条 select 的话，0026 落地前 PostgREST 对不存在的列回 42703，整份快照打不开——
-  // 不是「审批策略缺一角」，是这个工作区什么都看不见（0024 那次正是这样）。这条挂了
+  // 不是「审批策略缺一角」，是这个团队什么都看不见（0024 那次正是这样）。这条挂了
   // 只影响它自己，回 null =「这一格读不到」（#1029 起不再兜底成 "ask"，理由在
-  // fetchSandboxApproval 的注释里）。代价是每个工作区多一次单行主键查询
+  // fetchSandboxApproval 的注释里）。代价是每个团队多一次单行主键查询
   const sandboxApproval = await fetchSandboxApproval(client, id);
   const members = (unwrap(
     await client.from("workspace_members").select("uid,role").eq("workspace_id", id),
@@ -258,7 +258,7 @@ export async function insertAgentRow(
   );
 }
 
-/** 落库前查一次这个工作区已有的 agent 名字（#957 B-I2）：同名靠 DB 唯一索引拦得住，
+/** 落库前查一次这个团队已有的 agent 名字（#957 B-I2）：同名靠 DB 唯一索引拦得住，
     **前缀冲突拦不住**——「管理员」与「管理员帮手」在 DB 眼里是两个合法的名字，而
     `parseMentions` 的最长匹配会把 `@管理员帮手` 认成后者，用户以为自己 @ 的是前者。
     带上 agent_id 而不只是 name：改名时要把正在改的那只从名单里排掉，否则「改成自己
@@ -325,7 +325,7 @@ export async function deleteAgentRow(
 }
 
 /** owner 改「沙箱内工具要不要人批」（#977，0026）。`.select` 是唯一的行数证据——
-    0 行既可能是「工作区不存在」也可能是「不是 owner」，两者在这一层分不清，也不必
+    0 行既可能是「团队不存在」也可能是「不是 owner」，两者在这一层分不清，也不必
     分清，回一句「无权修改」都对得上 */
 export async function updateSandboxApproval(
   client: SupabaseClient,
@@ -343,7 +343,7 @@ export async function updateSandboxApproval(
   }
 }
 
-/** 工作区记忆（#949）：一档一行，agent_id '' = 共享档。成员可读（0023 RLS） */
+/** 团队记忆（#949）：一档一行，agent_id '' = 共享档。成员可读（0023 RLS） */
 export async function listMemoryRows(client: SupabaseClient, workspaceId: string): Promise<WorkspaceMemoryRow[]> {
   const rows = (unwrap(
     await client.from("workspace_memories").select("agent_id,content,updated_at").eq("workspace_id", workspaceId),
@@ -425,7 +425,7 @@ function toEpochMs(iso: string): number {
   return Number.isNaN(ts) ? 0 : ts;
 }
 
-/** 这个工作区里的云会话清单，成员在籍即可见（RLS wss_select_member，同
+/** 这个团队里的云会话清单，成员在籍即可见（RLS wss_select_member，同
     kind='package' 那一半）。runtime 用 service key 写 kind='cloud' 行
     （daemon.ts 的 sessions.create），这里只读 */
 export async function listCloudSessions(
@@ -454,7 +454,7 @@ export async function listCloudSessions(
 // 本人自己的行上（wsmn_select_self / wsmn_update_self）。
 
 /** 我此刻所有的点名（含已读——已读那些是「@ 我的」清单以后唯一的数据源）。
-    **不按工作区分批**：一条查询把全部拿回来，角标要的是「哪个群里有」这个
+    **不按团队分批**：一条查询把全部拿回来，角标要的是「哪个群里有」这个
     横向的答案，按群各查一次只是把同一件事拆成 N 次往返。
     新的排在前面（`created_at desc`），封顶 200 条：角标只关心有没有和几条，
     而一份能把内存吃掉的收件箱不该由「很久没开 app」这件事造出来。 */

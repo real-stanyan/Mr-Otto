@@ -62,7 +62,7 @@ export function createWorkspaceMemoryTool(deps: {
   async function execute(args: unknown): Promise<string> {
     const { tier, ops } = parseOps(args);
     // 扫描跑在原文（未加写入者前缀）上：agent 名字不是外部输入，它经花名册/briefing
-    // 那条路才到得了每个 prompt（spec §4），且只有工作区成员能改自己 agent 的名字——
+    // 那条路才到得了每个 prompt（spec §4），且只有团队成员能改自己 agent 的名字——
     // 前缀里混不进模型没见过、扫描器该拦的可疑指令，晚一步（stamped 之后）扫不会多拦
     // 任何东西，纯属多余
     for (const op of ops) {
@@ -127,7 +127,7 @@ export function createWorkspaceMemoryTool(deps: {
     def: {
       name: WORKSPACE_MEMORY_TOOL_NAME,
       description:
-        `维护这个工作区的长期记忆。两档：${workspaceTierRuleText()}` +
+        `维护这个团队的长期记忆。两档：${workspaceTierRuleText()}` +
         "记：业务口径、数据定义、客户约定、稳定的分工、工具怪癖——优先记能减少同事再次纠正你的事。" +
         "不记：任务进度、一周内会过期的东西。写陈述句不写祈使句。上限按字符，超了不会自动淘汰——先 remove/replace 腾地。",
       parameters: {

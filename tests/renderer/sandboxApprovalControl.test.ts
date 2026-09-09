@@ -1,4 +1,4 @@
-// 「免审批」那颗开关（工作区那颗）的三态与文案（#1029，ADR-0243）。
+// 「免审批」那颗开关（团队那颗）的三态与文案（#1029，ADR-0243）。
 // 这里钉的不是像素是**话有没有说错**：谁能翻、显示的是不是真的。
 // 标签与警示行两条旧钉法 2026-09-08 被维护者对着真机翻掉（见下两条用例的注释）。
 
@@ -14,11 +14,11 @@ const WS: WorkspaceSnapshot = {
 };
 
 describe("sandboxApprovalControl", () => {
-  it("owner 翻得动；文案说清作用域是整个工作区、覆盖面只有沙箱那两把刀", () => {
+  it("owner 翻得动；文案说清作用域是整个团队、覆盖面只有沙箱那两把刀", () => {
     const c = sandboxApprovalControl({ ...WS, sandboxApproval: "auto" }, "owner");
     expect(c.kind).toBe("toggle");
     expect(c.kind === "toggle" && c.on).toBe(true);
-    expect(c.title).toContain("整个工作区");
+    expect(c.title).toContain("整个团队");
     expect(c.title).toContain("连接器");
     // 两个方向的生效时机不对称，且不对称的方向是「刹车立刻、放行要等」
     expect(c.title).toContain("关掉立刻生效");

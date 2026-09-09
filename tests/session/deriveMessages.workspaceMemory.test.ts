@@ -46,7 +46,7 @@ describe("workspace_memory_loaded 的投影（#949）", () => {
     // 本身在判据句里就把 "SHARED" 写了三遍（一次调用天然出现 4 次），数这个词
     // 测不出「渲了几次」，只有开场白这句话在每次 renderWorkspaceMemoryPrompt
     // 调用里只出现一次，两条快照没去重就会看见它出现两遍
-    expect(c.split("你有这个工作区里的长期记忆").length).toBe(2);
+    expect(c.split("你有这个团队里的长期记忆").length).toBe(2);
   });
 
   it("没有 system（旧日志没带 workspace）时静默不拼，不补造", () => {

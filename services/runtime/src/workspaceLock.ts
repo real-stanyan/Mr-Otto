@@ -1,6 +1,6 @@
-// workspaceLock —— 同一个工作区的容器同一时刻只让一条会话动手（#979 第 2 条，ADR-0232）。
+// workspaceLock —— 同一个团队的容器同一时刻只让一条会话动手（#979 第 2 条，ADR-0232）。
 //
-// 为什么需要：每个工作区**一容器一卷**（ADR-0199 / sandbox.ts），而一个工作区可以开
+// 为什么需要：每个团队**一容器一卷**（ADR-0199 / sandbox.ts），而一个团队可以开
 // 多条会话，每条会话各自 `drain`。两条会话里的 agent 于是可以同时在 `/work` 里
 // `cat > 同一个文件`、一边 `git checkout` 一边改文件——桌面那套 workspaceExclusion
 // （ADR-0152）/ coworkLog（ADR-0161）在 services/runtime 里一处都没接，云端此前是零互斥。
@@ -36,7 +36,7 @@ export function lockAbortedError(): Error {
 /** 排队时在群里说的那句话（chat_message，system 署名，模型可见——正在等的那只自己
     读得到，知道自己为什么慢） */
 export const CONTAINER_BUSY_TEXT =
-  "这个工作区的容器正被另一条会话占着（每个工作区只有一个容器），这一轮的工具调用排队等它那一轮做完";
+  "这个团队的容器正被另一条会话占着（每个团队只有一个容器），这一轮的工具调用排队等它那一轮做完";
 
 interface Waiter {
   owner: string;
@@ -88,8 +88,8 @@ export function createWorkspaceLock(): WorkspaceLock {
   };
 }
 
-/** daemon 持有的那张表：workspaceId → 锁。按需建、不回收（一个工作区一把、
-    几十字节，daemon 生命周期内活跃过的工作区数量有限） */
+/** daemon 持有的那张表：workspaceId → 锁。按需建、不回收（一个团队一把、
+    几十字节，daemon 生命周期内活跃过的团队数量有限） */
 export function createWorkspaceLocks(): { for(workspaceId: string): WorkspaceLock } {
   const locks = new Map<string, WorkspaceLock>();
   return {

@@ -1,8 +1,8 @@
-// agentAvatarSlot —— 工作区 agent 用哪张内置头像（#971）。纯逻辑零 IO，图片本身在
+// agentAvatarSlot —— 团队 agent 用哪张内置头像（#971）。纯逻辑零 IO，图片本身在
 // lib/agentAvatar.ts 里 import，这里只算「第几张」。
 //
-// 为什么不给 workspace_agents 加一列：头像是纯展示，13 张内置像素头像够一个工作区
-// 用（每工作区上限 32 只，ADR-0225；真到那个量级重复也无伤——头像是辅助辨认，
+// 为什么不给 workspace_agents 加一列：头像是纯展示，13 张内置像素头像够一个团队
+// 用（每团队上限 32 只，ADR-0225；真到那个量级重复也无伤——头像是辅助辨认，
 // 名字才是身份）。加列意味着一次要在 Supabase SQL editor 手动执行的 migration
 // （0025 到现在还没跑完，#970）+ 建/改 agent 的表单多一格 + runtime 的 create_agent
 // 多一个参数。派生比落库便宜一个量级，而且**存量 agent 立刻有头像**，不用等谁去设置页挑。
@@ -20,8 +20,8 @@ import { ADMIN_AGENT_ID } from "../../../shared/workspaceAgents.js";
     数组长度由测试钉住 */
 export const AGENT_AVATAR_COUNT = 13;
 
-/** 种子管理员固定用这一张（0 起）：每个工作区都有它，固定一张脸让「管理员」
-    跨工作区认得出来——它是唯一一只在所有工作区都存在的 agent */
+/** 种子管理员固定用这一张（0 起）：每个团队都有它，固定一张脸让「管理员」
+    跨团队认得出来——它是唯一一只在所有团队都存在的 agent */
 export const ADMIN_AVATAR_SLOT = 6;
 
 /** FNV-1a 32 位。要的只是稳定 + 分布均匀，不需要密码学强度；

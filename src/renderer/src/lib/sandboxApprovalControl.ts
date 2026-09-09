@@ -5,8 +5,8 @@
 // 必须钉得住，而不是散在 JSX 的三元里。
 //
 // 它与本地会话那颗（BypassSwitch 的 BypassToggle）**位置一样、东西不一样**，四点差别：
-//   ① 作用域：本地那颗管这一条会话，这颗管**整个工作区**（所有会话、所有成员）——
-//      隔离面是容器，而同一个工作区的所有会话共用一个容器一个卷（ADR-0232），
+//   ① 作用域：本地那颗管这一条会话，这颗管**整个团队**（所有会话、所有成员）——
+//      隔离面是容器，而同一个团队的所有会话共用一个容器一个卷（ADR-0232），
 //      做成按会话就跟 ADR-0231 否掉的「按 agent 配免审」一样挡不住任何东西。
 //   ② 覆盖面：本地那颗管每一把 `requiresApproval` 的刀（含全部 MCP 工具），
 //      这颗只管容器里的 `bash` / `write_file`；连接器与 `create_agent` 照旧要批。
@@ -39,7 +39,7 @@ export type SandboxApprovalControl =
       反方向按不得（不知道现状就打开免审，等于蒙着眼睛放行） */
   | { kind: "unknown"; title: string; canForceAsk: boolean };
 
-const SCOPE = "整个工作区都跟着变：这个工作区里所有会话、所有成员。";
+const SCOPE = "整个团队都跟着变：这个团队里所有会话、所有成员。";
 const COVERS = "只管智能体在自己容器里跑命令、写文件；连接器与新建智能体照旧要批。";
 // 「关掉立刻生效」是 sessionService 那头的承诺：解析成 auto 的那一轮每次撞门现查一次，
 // 所以踩刹车不用等下一轮。反方向要等——解析成 ask 之后这一轮就按 ask 走到底（ADR-0243）
@@ -50,7 +50,7 @@ export function sandboxApprovalControl(ws: WorkspaceSnapshot, selfUid: string): 
     return {
       kind: "unknown",
       canForceAsk: ws.ownerUid === selfUid,
-      title: `这个工作区的「${SANDBOX_APPROVAL_LABEL}」此刻读不到，所以这里不画开关——画一个看起来关着的开关，而智能体那头照旧按真值走，是比读不到更糟的一件事。${COVERS}`,
+      title: `这个团队的「${SANDBOX_APPROVAL_LABEL}」此刻读不到，所以这里不画开关——画一个看起来关着的开关，而智能体那头照旧按真值走，是比读不到更糟的一件事。${COVERS}`,
     };
   }
   const on = ws.sandboxApproval === "auto";
@@ -59,7 +59,7 @@ export function sandboxApprovalControl(ws: WorkspaceSnapshot, selfUid: string): 
       kind: "readonly",
       on,
       note: "所有者可改",
-      title: `${SCOPE}${COVERS}只有工作区所有者能改。`,
+      title: `${SCOPE}${COVERS}只有团队所有者能改。`,
     };
   }
   return { kind: "toggle", on, title: `${SCOPE}${COVERS}${TIMING}` };
@@ -72,7 +72,7 @@ export function sandboxApprovalControl(ws: WorkspaceSnapshot, selfUid: string): 
     否掉的那条路，这一条没被撤）。 */
 export function sandboxApprovalBanner(c: SandboxApprovalControl): string | null {
   if (c.kind === "unknown") {
-    return `读不到这个工作区的「${SANDBOX_APPROVAL_LABEL}」：此刻说不准智能体跑命令、写文件会不会先问你。`;
+    return `读不到这个团队的「${SANDBOX_APPROVAL_LABEL}」：此刻说不准智能体跑命令、写文件会不会先问你。`;
   }
   return null;
 }

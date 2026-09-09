@@ -21,7 +21,7 @@ export interface PlanInfo {
   /** 月费，美元分（plan.price_usd_cents） */
   priceUsdCents: number;
   /** 档位能力（plan.capabilities）。`image`/`video` 是多模态门禁：false 的档在 hosted
-      路上收不到这类输入。`workspace` 是「这一档能不能建工作区」（#1024）。
+      路上收不到这类输入。`workspace` 是「这一档能不能建团队」（#1024）。
       三格一律「读不到按 false」—— 给没买的能力开门是漏钱，关门只是少一颗按钮；
       `workspace` 那一格的「服务端还没有这个概念」由 `workspaceAccess` 另行分辨，
       不在解析这一层猜（见那个文件的注释） */
@@ -262,7 +262,7 @@ export interface WorkspaceUsage {
       就是想知道「我还能干多久」，ADR-0209/0239 已经为账号页与浮层判过同一条。
 
       **`null` = 没有活跃订阅，或这台 edge 还不发这一格**（旧版本）。两种都表示
-      「分母缺席」，界面退回「占本工作区本周用量的百分比」并说明换了口径——**绝不
+      「分母缺席」，界面退回「占本团队本周用量的百分比」并说明换了口径——**绝不
       回落到 credit**：那正是这次要拆掉的东西。 */
   weekLimitMicro: number | null;
   rows: WorkspaceUsageRow[];

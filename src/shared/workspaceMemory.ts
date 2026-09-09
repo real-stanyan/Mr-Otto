@@ -1,5 +1,5 @@
-// workspaceMemory —— 工作区多智能体的记忆纯层（spec §6，#949）。
-// 两档：shared（工作区共享，换一只 agent 还成立的事）/ own（这只 agent 自己的手感）。
+// workspaceMemory —— 团队多智能体的记忆纯层（spec §6，#949）。
+// 两档：shared（团队共享，换一只 agent 还成立的事）/ own（这只 agent 自己的手感）。
 // 档位枚举是**云侧自己的一份**，不动 memoryStore.ts 的 MemoryTarget——那个类型手机端也在用，
 // 收窄它会把桌面四档一起打红（spec §6.1）。条目切分/上限/原子批量复用 memoryStore.ts。
 // 三端共用（桌面设置页算占用、runtime 工具写入、将来手机端），纪律同 memoryStore.ts。
@@ -27,7 +27,7 @@ export function workspaceTierRuleText(opts: { upper?: boolean } = {}): string {
   const S = opts.upper ? "SHARED" : "shared";
   const O = opts.upper ? "OWN" : "own";
   return (
-    `${S} 记这个工作区里所有智能体都该知道的事（业务口径、数据定义、客户约定、谁负责什么）；` +
+    `${S} 记这个团队里所有智能体都该知道的事（业务口径、数据定义、客户约定、谁负责什么）；` +
     `${O} 记只对你这只智能体成立的事（你的工作习惯、你常用的查询方式、你踩过的坑）。` +
     `判据一句话：换一只 agent 还成立吗？成立写 ${S}，不成立写 ${O}。` +
     `一个事实只住一档；${S} 的每条会自动带上写入者名字，矛盾的口径要看得出是谁说的。`
@@ -56,8 +56,8 @@ export function collapseSharedEntry(content: string): string {
   return content.replace(/[\r\n]+\s*/g, " ").trim();
 }
 
-/** 读改写互斥的锁键（配 memoryStore.withMemoryFileLock）：同一个 daemon 进程里，同一工作区的
-    两条云会话可能同时写共享档——按 (workspaceId, agentId) 分格，不同工作区互不串 */
+/** 读改写互斥的锁键（配 memoryStore.withMemoryFileLock）：同一个 daemon 进程里，同一团队的
+    两条云会话可能同时写共享档——按 (workspaceId, agentId) 分格，不同团队互不串 */
 export function workspaceMemoryLockKey(workspaceId: string, agentId: string): string {
   return `ws-memory:${workspaceId}:${agentId}`;
 }

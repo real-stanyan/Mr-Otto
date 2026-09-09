@@ -1,4 +1,4 @@
-// 云会话（工作区群聊）的 system 段注入（issue #833）。
+// 云会话（团队群聊）的 system 段注入（issue #833）。
 // 两条底线，同 packageNudge 那套：① 没有 cloud 标记的日志（本机会话/旧
 // 日志）投影逐字节不变；② 有标记才多那一段。
 //
@@ -34,7 +34,7 @@ describe("云会话的 system 段（issue #833）", () => {
     expect(content).toContain("/work"); // ① 在容器里，工作目录是哪个
     expect(content).toContain("群聊"); // ② 对面是一群人
     expect(content).toContain("[名字]: 内容"); // ② 消息长什么样
-    expect(content).toContain("工作区所有者"); // ③ 审批归谁
+    expect(content).toContain("团队所有者"); // ③ 审批归谁
     expect(content).toContain("不允许 git push"); // ④ 提交推不出去
     // ⑤ 浅克隆（issue #836）：只说限制不给解法，模型会以为 blame 坏了
     expect(content).toContain("--depth 1");

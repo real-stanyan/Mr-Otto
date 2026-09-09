@@ -1,4 +1,4 @@
-// workspaceManager —— 工作区主进程编排（Task 8，ADR-0198 切片 2）。
+// workspaceManager —— 团队主进程编排（Task 8，ADR-0198 切片 2）。
 //
 // 只做编排,不重造逻辑:Supabase 查询薄到无逻辑那层在 supabaseWorkspacesApi.ts
 // (Task 7),快照组装在 shared/workspaces.ts,本地授权台账的读写原语在
@@ -6,7 +6,7 @@
 //
 // · **箱先于目录**(contributeConnector/withdrawConnector):本地台账
 //   (workspaceGrants)是真相——好友代理执行侧的三道闸查的是它,不是
-//   workspace_connectors 那张目录表。目录只是给人看的展示("这个工作区里
+//   workspace_connectors 那张目录表。目录只是给人看的展示("这个团队里
 //   谁贡献了什么"),写失败不该让已经生效的授权跟着回滚,所以顺序钉死
 //   "先动箱、再动目录":目录写失败时授权已经生效,下次拉 snapshot 会自愈
 //   (owner 看到的连接器列表下次刷新就对齐,但代理闸不会因为这一次网络抖动
@@ -36,7 +36,7 @@ import { removeWorkspaceGrant, setWorkspaceGrant, workspaceGrantFor } from "./pr
 import type { FriendsResult } from "./proxyManager.js";
 
 const NOT_SIGNED_IN = "还没登录";
-/** 唯一索引撞了（同工作区同名智能体）——PostgREST 的 23505，翻成人话 */
+/** 唯一索引撞了（同团队同名智能体）——PostgREST 的 23505，翻成人话 */
 const DUPLICATE_AGENT_NAME = "已有同名的智能体";
 /** RLS 也会拦 'admin' 的删除，但那条回来的是一句 PostgREST 的英文——这里
     先拦一道，不打网络 */
@@ -80,7 +80,7 @@ export interface WorkspaceManager {
   contributeConnector(id: string, serverId: string, tools: string[]): Promise<FriendsResult<null>>;
   withdrawConnector(id: string, serverId: string): Promise<FriendsResult<null>>;
   /** 建一只 agent（任何成员皆可，RLS 落地判断）。agentId 主进程生成
-      （"a_" + 12 hex），不是名字的 slug——改名不换键。23505（同工作区同名）
+      （"a_" + 12 hex），不是名字的 slug——改名不换键。23505（同团队同名）
       翻成人话 */
   createAgent(
     id: string,
@@ -101,7 +101,7 @@ export interface WorkspaceManager {
   /** 删一只 agent（建的人或 owner，RLS 落地判断）。'admin' 那只谁都删不掉——
       RLS 也会拦，但这里在打网络之前就先拒，回一句人话 */
   deleteAgent(id: string, agentId: string): Promise<FriendsResult<null>>;
-  /** 设置页「记忆」tab（#949）：这个工作区的记忆行（共享档 + 每只 agent 的私有档） */
+  /** 设置页「记忆」tab（#949）：这个团队的记忆行（共享档 + 每只 agent 的私有档） */
   listMemories(id: string): Promise<FriendsResult<WorkspaceMemoryRow[]>>;
   /** 成员手改一档；写前归一化（去空条目、保序去重）。不校验上限——人手改自己的
       笔记不该被上限拦住，同 applyUserEdit。`version` 是编辑器打开时读到的那一行的
@@ -111,13 +111,13 @@ export interface WorkspaceManager {
       落地判断，非 owner 撞「无权修改」 */
   setSandboxApproval(id: string, value: SandboxApproval): Promise<FriendsResult<null>>;
 
-  /** 「谁在工作区里 @ 了我」的整份收件箱（#1064）。**不按工作区分**——角标问的
+  /** 「谁在团队里 @ 了我」的整份收件箱（#1064）。**不按团队分**——角标问的
       是「哪个群里有」这个横向的答案，而它此刻画在侧栏所有组头上 */
   listMentions(): Promise<FriendsResult<WorkspaceMentionRow[]>>;
   /** 进了这条会话 = 里面 @ 我的那些看见了。回执只说成没成功，未读那份角标
       由渲染层自己先落（乐观）—— 失败时它会在下一次 listMentions 变回来 */
   markMentionsRead(sessionId: string): Promise<FriendsResult<null>>;
-  /** 我在籍工作区里别人贡献的 host（proxyManager 借用源）。内存缓存,list()
+  /** 我在籍团队里别人贡献的 host（proxyManager 借用源）。内存缓存,list()
       后更新——proxyManager 借用路径要同步读,不能每次都等一轮网络往返 */
   hostUids(): readonly string[];
 }
@@ -128,7 +128,7 @@ function message(e: unknown): string {
   return humanizeWorkspaceError(e);
 }
 
-/** 拉不下来的那个工作区的占位快照（#843 ②）：列表行有的字段照抄，明细全空，
+/** 拉不下来的那个团队的占位快照（#843 ②）：列表行有的字段照抄，明细全空，
     `loadError` 在场说明「这一格暂时读不到」而不是「真的没有成员/会话」 */
 function unreadableSnapshot(row: { id: string; name: string; owner_uid: string }, reason: unknown): WorkspaceSnapshot {
   return {
@@ -140,7 +140,7 @@ function unreadableSnapshot(row: { id: string; name: string; owner_uid: string }
     sessions: [],
     agents: [],
     // null 不是 "ask"（#1029）：整份快照都没拉下来，这一格更谈不上读到了。
-    // 兜底成 "ask" 会让侧栏那格挂着的工作区在云会话里画出一枚「关着」的开关
+    // 兜底成 "ask" 会让侧栏那格挂着的团队在云会话里画出一枚「关着」的开关
     sandboxApproval: null,
     loadError: humanizeWorkspaceError(reason),
   };
@@ -211,10 +211,10 @@ export function createWorkspaceManager(deps: WorkspaceManagerDeps): WorkspaceMan
     async list() {
       return withSession(async (client, uid) => {
         const rows = await deps.listWorkspaces(client);
-        // N 个小工作区各拉一次 fetchWorkspace——v1 规模小(每人在籍工作区数
+        // N 个小团队各拉一次 fetchWorkspace——v1 规模小(每人在籍团队数
         // 位数级),够用;真变大了再批量,见 Task 8 brief。
         // allSettled 不是 all（#843 ②）：一个群的快照挂了（那次是生产库缺
-        // migration 0016 的列）原来会让整份列表 reject，界面上「还没有工作区」
+        // migration 0016 的列）原来会让整份列表 reject，界面上「还没有团队」
         // ——列表是投影，投影缺一格不该等于投影不存在。挂掉的那格降级成占位
         // 快照，原因写在 loadError 里由侧栏画出来
         const settled = await Promise.allSettled(rows.map((r) => deps.fetchWorkspace(client, r.id)));

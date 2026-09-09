@@ -5,7 +5,7 @@
 // 落在同一块地皮上。离开的方式也因此一致——点侧栏里别的一行（newSession/resume
 // 都会先 closeCloudSession），不再有一颗返回键。
 //
-// 这一层只做三件事：把工作区快照喂给 CloudSessionPage、补发开局卡上那句话、
+// 这一层只做三件事：把团队快照喂给 CloudSessionPage、补发开局卡上那句话、
 // 在快照还没到时说一句人话。滚动归 CloudSessionPage 自己管（#987：时间线滚、
 // 输入框钉底），这里只负责把高度交下去。
 
@@ -72,10 +72,10 @@ export function CloudSessionMain({ onManage }: { onManage: (workspaceId: string)
 
   if (cs === null) return null;
   if (ws === null) {
-    // 工作区快照还没拉回来（冷启动时序）——不画半张空页，也不假装出错
+    // 团队快照还没拉回来（冷启动时序）——不画半张空页，也不假装出错
     return (
       <div className="flex-1 min-w-0 h-full flex items-center justify-center text-[13px] text-muted-foreground">
-        正在读取工作区…
+        正在读取团队…
       </div>
     );
   }

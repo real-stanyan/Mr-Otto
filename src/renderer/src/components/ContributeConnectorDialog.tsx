@@ -103,7 +103,7 @@ export function ContributeConnectorDialog({
         <DialogHeader>
           <DialogTitle>贡献连接器给「{ws.name}」</DialogTitle>
           <DialogDescription>
-            工作区全体成员（含未来加入者）将以你的身份使用这些工具，凭证托管到 Mr Otto 云端——你下线成员照样能用。
+            团队全体成员（含未来加入者）将以你的身份使用这些工具，凭证托管到 Mr Otto 云端——你下线成员照样能用。
           </DialogDescription>
         </DialogHeader>
 

@@ -171,23 +171,23 @@ describe("routeChangedText（第一批 Task 6 复审 Minor 7，#957 Task 7b）",
   const routeBase = { ...base, type: "route_changed" as const, ignorable: true as const };
   const now = 1_000_000;
 
-  it("hosted→workspace probe_failed：改道：托管 → 工作区自带 key（订阅探测失败）", () => {
+  it("hosted→workspace probe_failed：改道：托管 → 团队自带 key（订阅探测失败）", () => {
     const e = { ...routeBase, from: "hosted" as const, to: "workspace" as const, reason: "probe_failed" as const };
-    expect(routeChangedText(e, now)).toBe("改道：托管 → 工作区自带 key（订阅探测失败）");
+    expect(routeChangedText(e, now)).toBe("改道：托管 → 团队自带 key（订阅探测失败）");
   });
 
   it("quota_exhausted：（本周额度用完）+ resetAt 有值时带「，X 恢复」", () => {
     const noReset = { ...routeBase, from: "hosted" as const, to: "workspace" as const, reason: "quota_exhausted" as const };
-    expect(routeChangedText(noReset, now)).toBe("改道：托管 → 工作区自带 key（本周额度用完）");
+    expect(routeChangedText(noReset, now)).toBe("改道：托管 → 团队自带 key（本周额度用完）");
 
     const resetAt = now + 3 * 60 * 60 * 1000;
     const withReset = { ...noReset, resetAt };
-    expect(routeChangedText(withReset, now)).toBe(`改道：托管 → 工作区自带 key（本周额度用完，${countdown(resetAt, now)}）`);
+    expect(routeChangedText(withReset, now)).toBe(`改道：托管 → 团队自带 key（本周额度用完，${countdown(resetAt, now)}）`);
   });
 
   it("no_subscription：（所有者没有活跃订阅）", () => {
     const e = { ...routeBase, from: "hosted" as const, to: "workspace" as const, reason: "no_subscription" as const };
-    expect(routeChangedText(e, now)).toBe("改道：托管 → 工作区自带 key（所有者没有活跃订阅）");
+    expect(routeChangedText(e, now)).toBe("改道：托管 → 团队自带 key（所有者没有活跃订阅）");
   });
 
   it("workspace→hosted subscription_active：改回托管（订阅恢复），不套「改道：X → Y」模板", () => {

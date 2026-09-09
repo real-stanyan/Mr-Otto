@@ -103,11 +103,11 @@ export function systemPromptText(
        只说限制——这一条它自己解得开。 */
 const CLOUD_SESSION_TEXT =
   `你跑在一台云沙箱容器里（Linux），工具都在容器内执行，工作目录就是上面那个。\n` +
-  `这是一条**群聊**会话：工作区的多个成员都能发言，他们的消息以「[名字]: 内容」的形式到你这里；` +
+  `这是一条**群聊**会话：团队的多个成员都能发言，他们的消息以「[名字]: 内容」的形式到你这里；` +
   `@ 你的那条才会触发你的回合，其余的你看得见但不必逐条回应。\n` +
-  `危险操作的审批由发起这一轮的人或工作区所有者决定，不是"某个用户"——` +
+  `危险操作的审批由发起这一轮的人或团队所有者决定，不是"某个用户"——` +
   `被拒同样是"别做这件事"，别换个写法绕过去。\n` +
-  `这个沙箱不允许 git push（拉代码用的凭据用完就烧了）。你的提交只留在这个工作区里，` +
+  `这个沙箱不允许 git push（拉代码用的凭据用完就烧了）。你的提交只留在这个团队的工作目录里，` +
   `别当成"已经推上去了"——需要交付时说一声，让人来决定怎么带出去。\n` +
   `仓库是 \`--depth 1\` 的浅克隆（issue #836：卷没有磁盘配额，历史往往比工作树大一个量级）——` +
   `\`git log\` 只看得到最新一条。真要历史，自己跑 \`git fetch --unshallow\`。\n`;
@@ -221,7 +221,7 @@ export function renderMemoryPrompt(
     云端没有 user/project/topic 三档、没有 session_search、没有「下个会话才可见」（共享档本会话
     中途就会被别的 agent 改，下一 turn 的快照就带上了）——共用一段文案得处处加分支 */
 export function renderWorkspaceMemoryPrompt(e: WorkspaceMemoryLoadedEvent): string {
-  const s = memoryBlock("SHARED (这个工作区所有智能体共用)", e.shared, WORKSPACE_MEMORY_LIMITS.shared);
+  const s = memoryBlock("SHARED (这个团队所有智能体共用)", e.shared, WORKSPACE_MEMORY_LIMITS.shared);
   // agentName 过结构闸（终审 I4 顺手）：它拼进的是 `OWN （只有「X」看得见）` 这个
   // 块头，而块头下面就是记忆正文——一个换行就让之后的字看起来是块外的新指令。
   // **括号用全角**（第二轮复审跟进）：`promptSafe` 转的是全角 → 半角，半角
@@ -234,11 +234,11 @@ export function renderWorkspaceMemoryPrompt(e: WorkspaceMemoryLoadedEvent): stri
   const o = memoryBlock(`OWN （只有「${promptSafe(e.agentName)}」看得见）`, e.own, WORKSPACE_MEMORY_LIMITS.own);
   const blocks = s || o ? `\n${s}${o}${MEMORY_RULE}` : "";
   return (
-    `\n你有这个工作区里的长期记忆（本消息末尾的记忆块），用 memory 工具维护：记业务口径、数据定义、客户约定、稳定的分工，优先记能减少同事再次纠正你的事；` +
+    `\n你有这个团队里的长期记忆（本消息末尾的记忆块），用 memory 工具维护：记业务口径、数据定义、客户约定、稳定的分工，优先记能减少同事再次纠正你的事；` +
     `不记任务进度、一周内会过期的东西。记忆分两档：${workspaceTierRuleText({ upper: true })}` +
     `写陈述句不写祈使句。` +
     `\n记忆的工作机制（被问到时照实说，别脑补）：每次轮到你发言前整份快照注入（就是下面的记忆块），没有按相关性检索；` +
-    `你或别的智能体写入的内容，下一次轮到你时可见；成员可在工作区设置页「记忆」查看和手动编辑。` +
+    `你或别的智能体写入的内容，下一次轮到你时可见；成员可在团队设置页「记忆」查看和手动编辑。` +
     blocks
   );
 }
@@ -735,7 +735,7 @@ export function deriveMessages(
           ? `群里还有：${event.roster.map((r) => `${promptSafe(r.name)}（${promptSafe(r.description)}）`).join("、")}。` +
             `要谁搭手就在你的回复里 @ 他的名字。`
           : "";
-        const text = `[你是这个工作区里的「${promptSafe(event.name)}」。${others}]\n${event.instructions}`;
+        const text = `[你是这个团队里的「${promptSafe(event.name)}」。${others}]\n${event.instructions}`;
         // 没有围栏 system 时（旧日志 / 没带 workspace 的裸装配）退回事件位置那条
         // user 消息 —— 理由同 project_instructions：那种日志本来就没有清场保护
         // 可言，但「我是谁」是这只 agent 能不能开口的前提，宁可退化不能没有

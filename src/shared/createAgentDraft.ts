@@ -22,7 +22,7 @@ export interface CreateAgentDraft {
   name: string;
   description: string;
   instructions: string;
-  /** 允许的型号；[0] 是默认；[] = 工作区默认（ADR-0202） */
+  /** 允许的型号；[0] 是默认；[] = 团队默认（ADR-0202） */
   models: string[];
   /** 连接器白名单；[] = 整池放行（与 workspace_agents.tools 同口径） */
   tools: AgentToolAllow[];
@@ -154,7 +154,7 @@ function buildApprovalFields(d: CreateAgentDraft): { label: string; value: strin
   return [
     { label: "名字", value: d.name },
     { label: "职责", value: d.description || "（没写）" },
-    { label: "模型", value: d.models.length === 0 ? "工作区默认" : d.models.join(", ") },
+    { label: "模型", value: d.models.length === 0 ? "团队默认" : d.models.join(", ") },
     { label: "连接器", value: connectors },
     { label: `提示词（${d.instructions.length} 字）`, value: d.instructions || "（没写）" },
   ];

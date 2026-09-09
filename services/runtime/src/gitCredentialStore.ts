@@ -1,4 +1,4 @@
-// gitCredentialStore —— 一个工作区能认证哪几台 Git 主机，以及那几把 token（#1103）。
+// gitCredentialStore —— 一个团队能认证哪几台 Git 主机，以及那几把 token（#1103）。
 //
 // **落在 runtime 自己这份文件里，不搬 Supabase**，因为这条不变量：**token 从不
 // 下行**。放进 Supabase 就要么给 `authenticated` 开 select（token 到了每个成员的
@@ -9,7 +9,7 @@
 // 它替代的 workspace-config.json 也是如此，不是本次新增。
 //
 // 落盘纪律照抄 src/main/mcpAuthStore.ts:89-90：**mode 只在新建时生效，已有文件
-// 要再补一刀 chmod**。这份文件是所有工作区共用的一份，泄漏面比单机凭据库大。
+// 要再补一刀 chmod**。这份文件是所有团队共用的一份，泄漏面比单机凭据库大。
 
 import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import type { CsGitHost } from "../../../src/shared/remote/cloudSession.js";
@@ -20,11 +20,11 @@ interface HostRecord {
   addedAt: number;
 }
 
-/** 一个工作区的全部凭据：主机 → 那一把。主机名进来之前已经过 `normalizeGitHost` */
+/** 一个团队的全部凭据：主机 → 那一把。主机名进来之前已经过 `normalizeGitHost` */
 type WorkspaceRecord = Record<string, HostRecord>;
 
 export interface GitCredentialStore {
-  /** 这个工作区能认证哪几台主机。**回的东西里没有 token**——它从不下行。
+  /** 这个团队能认证哪几台主机。**回的东西里没有 token**——它从不下行。
       按 host 排序，好让界面上那张表不会因为存的顺序而跳来跳去 */
   hosts(workspaceId: string): CsGitHost[];
   /** 取一台主机的 token。`clone_repo` / `git_push` 用它。null = 没配这台 */
@@ -33,7 +33,7 @@ export interface GitCredentialStore {
   put(workspaceId: string, host: string, token: string, addedBy: string): void;
   /** 删掉一台主机。删不存在的那台不是错误——「现在没有了」是同一个结果 */
   remove(workspaceId: string, host: string): void;
-  /** 工作区整个没了：它那几把 token 也得跟着没（#835④ 的同一条不变量）。
+  /** 团队整个没了：它那几把 token 也得跟着没（#835④ 的同一条不变量）。
       调用点在 runReconcile——容器+卷真的删掉的那一刻 */
   purge(workspaceId: string): void;
 }
@@ -84,7 +84,7 @@ export function createGitCredentialStore(path: string): GitCredentialStore {
       const ws = all[workspaceId];
       if (!ws || ws[host] === undefined) return;
       delete ws[host];
-      // 空了就把这个工作区整条也删掉，别留一个 `{}` 在文件里长期占着
+      // 空了就把这个团队整条也删掉，别留一个 `{}` 在文件里长期占着
       if (Object.keys(ws).length === 0) delete all[workspaceId];
       else all[workspaceId] = ws;
       writeAll(all);

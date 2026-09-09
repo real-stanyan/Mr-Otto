@@ -1,4 +1,4 @@
-// WorkspacePage —— 工作区详情页。**七格从分段控件换成推入式导航**（#1120）。
+// WorkspacePage —— 团队详情页。**七格从分段控件换成推入式导航**（#1120）。
 //
 // 页而不是弹窗（照 McpConnectorPage 的换页惯例，ADR-0185）：几张表加起来随时超过一屏，
 // 弹窗只会滚动条套滚动条。
@@ -12,7 +12,7 @@
 // 点击变成两次——设置面是低频、且人来这儿通常只为改一件事，这个代价换上面三条划算；
 // 哪天这一页变成每天要在几格之间来回跳的东西，这个判断就该重判。
 //
-// ## 「解散工作区」从页头搬到最底下
+// ## 「解散团队」从页头搬到最底下
 //
 // 原来它是页头右上角一颗红色实心按钮——**整页视觉上最响的元素，是最危险、最少用的
 // 那一个**。搬进最后一组、红字、单独一行，二次确认照旧。
@@ -54,7 +54,7 @@ interface Section {
 const SECTIONS: readonly Section[] = [
   {
     id: "sessions", label: "会话", icon: <MessagesSquare />,
-    hint: (ws) => (ws.sessions.length > 0 ? `云会话 · ${ws.sessions.length} 条已发布` : "这个工作区里的会话"),
+    hint: (ws) => (ws.sessions.length > 0 ? `云会话 · ${ws.sessions.length} 条已发布` : "这个团队里的会话"),
     render: (ws, selfUid) => <WorkspaceSessionsTab ws={ws} selfUid={selfUid} />,
   },
   {
@@ -101,7 +101,7 @@ export function WorkspacePage({
   onBack: () => void;
 }) {
   const root: NavScreen = {
-    // key 带上 ws.id：换工作区时整棵栈重挂，上一个工作区的二级页不会多活一帧
+    // key 带上 ws.id：换团队时整棵栈重挂，上一个团队的二级页不会多活一帧
     key: `ws-root:${ws.id}`,
     title: ws.name,
     largeTitle: {
@@ -115,7 +115,7 @@ export function WorkspacePage({
         className="inline-flex h-8 items-center gap-[3px] rounded-[9px] pr-2 pl-1 text-[14px] tracking-[-0.01em] text-brand transition-[transform,background-color] duration-150 active:scale-[0.96] active:bg-foreground/[0.06] focus-visible:ring-2 focus-visible:ring-ring/60 focus-visible:outline-none"
       >
         <ArrowLeft className="size-[17px]" aria-hidden />
-        工作区
+        团队
       </button>
     ),
     render: () => <RootBody ws={ws} selfUid={selfUid} onLeftWorkspace={onBack} />,
@@ -141,7 +141,7 @@ function RootBody({
 
   const onDelete = async (): Promise<void> => {
     const ok = await confirm({
-      title: `解散工作区「${ws.name}」？`,
+      title: `解散团队「${ws.name}」？`,
       description: "全体成员的连接器授权与已发布会话会立即失效，且不可撤销。",
       confirmLabel: "解散",
       tone: "danger",
@@ -152,7 +152,7 @@ function RootBody({
 
   const onLeave = async (): Promise<void> => {
     const ok = await confirm({
-      title: `退出工作区「${ws.name}」？`,
+      title: `退出团队「${ws.name}」？`,
       description: "你贡献的连接器授权会立即失效。",
       confirmLabel: "退出",
       tone: "danger",
@@ -176,7 +176,7 @@ function RootBody({
               nav.push({
                 key: `ws-${s.id}:${ws.id}`,
                 title: s.label,
-                // 返回钮上写**上一页叫什么**。工作区名字长起来会顶到中间那行标题，
+                // 返回钮上写**上一页叫什么**。团队名字长起来会顶到中间那行标题，
                 // 那时退回「返回」——一个截断的名字比一个通用词更难认
                 backLabel: ws.name.length > 6 ? "返回" : ws.name,
                 largeTitle: { title: s.label },
@@ -192,7 +192,7 @@ function RootBody({
         <InsetGroup>
           <InsetRow
             tone="danger"
-            title={isOwner ? "解散工作区" : "退出工作区"}
+            title={isOwner ? "解散团队" : "退出团队"}
             onClick={() => void (isOwner ? onDelete() : onLeave())}
           />
         </InsetGroup>

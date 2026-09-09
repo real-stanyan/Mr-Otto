@@ -102,7 +102,7 @@ export function deniedMessage(code: CsDeniedCode, serverVersion?: number): strin
     case "bad_jwt":
       return "登录状态已过期，请重新登录后再试";
     case "not_member":
-      return "你不是这个工作区的成员";
+      return "你不是这个团队的成员";
     case "version_mismatch":
       // 方向说得出来才有用（复审 C2-I6）：严格相等判出的不匹配有两个方向，
       // 而「更新 Mr Otto」这句话对「云端还没部署」的那半是错的指引——用户
@@ -231,11 +231,11 @@ export interface CloudSessionClient {
       或 owner，与 approve 同一判据）——resolve 的是 `stop_result` 那条回执，
       不是「帧交给 socket 了」 */
   stop(seq?: number): Promise<CloudAck>;
-  /** 读一个工作区的仓库状态 + 路由（控制房 RPC，协议 8，#991）。不依赖任何
-      一条会话——工作区设置页从侧栏 ⚙ 进来时手上未必开着这个工作区的云会话 */
+  /** 读一个团队的仓库状态 + 路由（控制房 RPC，协议 8，#991）。不依赖任何
+      一条会话——团队设置页从侧栏 ⚙ 进来时手上未必开着这个团队的云会话 */
   workspaceState(workspaceId: string): Promise<FriendsResult<WorkspaceCloudState>>;
   /** 读一格工作文件夹（控制房 RPC，协议 11，#1056）。`path` 相对工作文件夹，
-      `""` = 它本身。任何在籍成员都能读——卷是整个工作区共用的一份 */
+      `""` = 它本身。任何在籍成员都能读——卷是整个团队共用的一份 */
   workspaceFiles(workspaceId: string, path: string): Promise<FriendsResult<CsWorkNode>>;
   /** 搜工作文件夹（控制房 RPC，协议 12，#1066）。`content` = 搜正文还是只按
       文件名过滤，判据与本机 Files 面板的 `?` 前缀同一条 */

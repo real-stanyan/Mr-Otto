@@ -198,7 +198,7 @@ describe("createFrameHandler", () => {
   // 写着），一个改造过的客户端能直接发 `ext::sh -c ...` 上来，那是 git 的
   // 一种传输，会以 root 在容器里跑起来。
 
-  it("③d welcome 不再带 repo —— 工作区不绑仓库了（#1102），但 modelRoute 那一格照旧", async () => {
+  it("③d welcome 不再带 repo —— 团队不绑仓库了（#1102），但 modelRoute 那一格照旧", async () => {
     const { deps, sent } = makeDeps({
       ownerOf: async () => "owner-uid",
       modelRoute: async () => ({ kind: "hosted", model: "glm-5" }),
@@ -283,14 +283,14 @@ describe("createFrameHandler", () => {
     const handler = createFrameHandler(deps);
 
     await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
-    member = false; // 被踢出工作区，但 60s 缓存窗口 / 连接本身都还没体现出来
+    member = false; // 被踢出团队，但 60s 缓存窗口 / 连接本身都还没体现出来
     sent.length = 0;
 
     await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "say", text: "还能说话吗", mention: false }));
     // #964：回执排在 denied **之前**——deny 顺手 dropCid，之后再 send 什么都是
     // 静默丢帧（daemon 的 globalSend 第一行就查不到这个 cid 的 transport）
     expect(sent).toEqual([
-      { cid: "c1", msg: { t: "say_result", ok: false, message: expect.stringContaining("不在这个工作区") } },
+      { cid: "c1", msg: { t: "say_result", ok: false, message: expect.stringContaining("不在这个团队") } },
       { cid: "c1", msg: { t: "denied", code: "not_authorized" } },
     ]);
     expect(sayCalls).toHaveLength(0); // 没有落到 CloudSession.say
@@ -319,7 +319,7 @@ describe("createFrameHandler", () => {
     const handler = createFrameHandler(deps);
 
     await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
-    member = false; // 被踢出工作区，读路径（backlog）原本完全不受影响——这正是要堵的口子
+    member = false; // 被踢出团队，读路径（backlog）原本完全不受影响——这正是要堵的口子
     sent.length = 0;
 
     await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "backlog", afterSeq: 0 }));
@@ -822,13 +822,13 @@ describe("限流接线（issue #819 / 第二轮复审 B2-C1）", () => {
     });
     const handler = createFrameHandler(deps);
     await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
-    member = false; // hello 之后被踢出工作区
+    member = false; // hello 之后被踢出团队
     sent.length = 0;
 
     await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "say", text: "x", mention: false }));
     // 说的是"你不在这了"（回执 + denied 两条都在讲同一件事），不是"慢一点"
     expect(sent.map((s) => s.msg.t)).toEqual(["say_result", "denied"]);
-    expect(sent[0]!.msg).toMatchObject({ ok: false, message: expect.stringContaining("不在这个工作区") });
+    expect(sent[0]!.msg).toMatchObject({ ok: false, message: expect.stringContaining("不在这个团队") });
     expect(sent[1]!.msg).toEqual({ t: "denied", code: "not_authorized" });
   });
 });
@@ -902,7 +902,7 @@ describe("归档（issue #822 / 协议 9 #993）", () => {
     expect(sent[0]!.msg).toMatchObject({ t: "archive_result", ok: false });
   });
 
-  it("被踢出工作区的人归档不了 —— 在籍判断在权限判断之前（控制房的 isMember 那道闸）", async () => {
+  it("被踢出团队的人归档不了 —— 在籍判断在权限判断之前（控制房的 isMember 那道闸）", async () => {
     let member = true;
     const calls: unknown[] = [];
     const { deps, sent } = makeDeps({
@@ -1019,7 +1019,7 @@ describe("删除（协议 10，#1044）", () => {
     expect(sent[0]!.msg).toMatchObject({ t: "delete_result", ok: true });
   });
 
-  it("这个工作区里没有这条会话 → delete_result ok:false，不是 denied，也不调 remove", async () => {
+  it("这个团队里没有这条会话 → delete_result ok:false，不是 denied，也不调 remove", async () => {
     const calls: unknown[] = [];
     const { deps, sent } = makeDeps({
       creatorOf: async () => null,
@@ -1091,7 +1091,7 @@ describe("删除（协议 10，#1044）", () => {
     expect(sent[0]!.msg).toMatchObject({ t: "delete_result", ok: false });
   });
 
-  it("被踢出工作区的人删不了 —— 在籍判断在权限判断之前", async () => {
+  it("被踢出团队的人删不了 —— 在籍判断在权限判断之前", async () => {
     let member = true;
     const calls: unknown[] = [];
     const { deps, sent } = makeDeps({
@@ -1129,7 +1129,7 @@ describe("删除（协议 10，#1044）", () => {
 // ——判据没变（控制房专用帧出现在会话房 = not_authorized），只是 config 不再是
 // 其中之一。create / workspace / archive / delete / files 这几条各自的用例都在上面
 
-// issue #915：真机上「新建云会话」一律回 not_authorized，而发起者是工作区所有者。
+// issue #915：真机上「新建云会话」一律回 not_authorized，而发起者是团队所有者。
 //
 // 病因是**顺序**不是权限：桌面的 create() 在同一个 tick 里连发 hello + create，
 // 而 daemon 的接线是「来一帧起一个 promise」。hello 那条要 await 验签**再** await
@@ -1363,7 +1363,7 @@ describe("停止一轮 turn（#957 A-2）", () => {
 
     await handler.onSessionFrame("w1", "s1", "c1", stopFrame);
     expect(sent.map((s) => s.msg.t)).toEqual(["stop_result", "denied"]);
-    expect((sent[0]!.msg as { message: string }).message).toContain("不在这个工作区");
+    expect((sent[0]!.msg as { message: string }).message).toContain("不在这个团队");
   });
 
   it("未过 hello 就发 stop → denied not_authorized，不落到 CloudSession.stop", async () => {

@@ -482,7 +482,7 @@ export interface CloudSessionStatus {
   initiatorUid: string | null;
   ownerUid: string;
   selfUid: string;
-  /** 这个工作区此刻的 turn 会走哪条路（issue #945；ADR-0233 之后只有 hosted / blocked）。runtime 用 turn 同一份
+  /** 这个团队此刻的 turn 会走哪条路（issue #945；ADR-0233 之后只有 hosted / blocked）。runtime 用 turn 同一份
       decideRuntimeRoute 算好、welcome 带下来的，渲染层照画不重算。
       null = 探不到——「拿不到」≠「起不了」，别拿它当 blocked 画 */
   modelRoute: CsModelRoute | null;
@@ -510,7 +510,7 @@ export interface CloudSessionStatus {
     这一个）：与 CloudSessionStatus 上的 modelRoute 同形，一处画法 */
 export interface CloudWorkspaceState {
   modelRoute: CsModelRoute | null;
-  /** 这个工作区能认证哪几台 Git 主机（#1103）。**没有 token**——它从不下行。
+  /** 这个团队能认证哪几台 Git 主机（#1103）。**没有 token**——它从不下行。
       `null` = 这一刻读不到，**不是**「一台都没配」（后者是 `[]`）：两句话在
       界面上一句是红字一句是空态，同 ADR-0243 对 `sandbox_approval` 的处置 */
   gitHosts: CsGitHost[] | null;
@@ -1077,13 +1077,13 @@ export interface ShellBridge {
       （写工具在白名单内是全自动的，事后能不能看清动了什么全靠它） */
   proxyAudit(friendUid?: string): Promise<FriendsResult<{ audits: { ts: number; friendUid: string; serverId: string; tool: string; argsSummary: string; decision: string; outcome: string; detail?: string }[] }>>;
 
-  // ─── 工作区（Task 11，ADR-0198 切片 3）：多人协作组，成员共享贡献的 MCP
+  // ─── 团队（Task 11，ADR-0198 切片 3）：多人协作组，成员共享贡献的 MCP
   // 连接器 + 发布制会话 ────────────────────────────────────────────────
-  /** 我在籍的全部工作区快照（成员/连接器/已发布会话）。未登录 → ok:false */
+  /** 我在籍的全部团队快照（成员/连接器/已发布会话）。未登录 → ok:false */
   workspaceList(): Promise<FriendsResult<WorkspaceSnapshot[]>>;
-  /** 建一个新工作区，创建者即 owner */
+  /** 建一个新团队，创建者即 owner */
   workspaceCreate(name: string): Promise<FriendsResult<{ id: string }>>;
-  /** owner 解散工作区（先 Supabase 后本地清授权，见 workspaceManager 注释） */
+  /** owner 解散团队（先 Supabase 后本地清授权，见 workspaceManager 注释） */
   workspaceDelete(id: string): Promise<FriendsResult<null>>;
   /** owner 拉人入群 */
   workspaceAddMember(id: string, uid: string): Promise<FriendsResult<null>>;
@@ -1091,7 +1091,7 @@ export interface ShellBridge {
   workspaceRemoveMember(id: string, uid: string): Promise<FriendsResult<null>>;
   /** 自己退群 */
   workspaceLeave(id: string): Promise<FriendsResult<null>>;
-  /** 把本机已接通的一台 MCP server 借给这个工作区（tools 空数组 = 整服务放行，
+  /** 把本机已接通的一台 MCP server 借给这个团队（tools 空数组 = 整服务放行，
       同好友代理白名单的换算） */
   workspaceContributeConnector(id: string, serverId: string, tools: string[]): Promise<FriendsResult<null>>;
   /** 收回上面那笔贡献 */
@@ -1122,7 +1122,7 @@ export interface ShellBridge {
   workspaceAgentDelete(id: string, agentId: string): Promise<FriendsResult<null>>;
   /** 设置页「用量」tab（#946）：每只 agent 本周烧了多少。经 hostedQuota 打 edge，失败翻成 FriendsResult */
   workspaceUsage(id: string): Promise<FriendsResult<WorkspaceUsage>>;
-  /** 设置页「记忆」tab（#949）：工作区的记忆行（共享档 agentId 为空串 + 每只 agent 的私有档） */
+  /** 设置页「记忆」tab（#949）：团队的记忆行（共享档 agentId 为空串 + 每只 agent 的私有档） */
   workspaceMemoryList(id: string): Promise<FriendsResult<WorkspaceMemoryRow[]>>;
   /** 成员手改一档；主进程归一化后落库。version 是编辑器打开时读到的那一行的 CAS 令牌
       （`updated_at` 原串，#962）——同一 daemon 内桌面手编与 agent 写档的丢更新用它做乐观
@@ -1131,17 +1131,17 @@ export interface ShellBridge {
   workspaceMemorySave(id: string, agentId: string, text: string, version: string): Promise<FriendsResult<string>>;
   /** owner 改「沙箱内 bash / write_file 要不要人批」（#977，ADR-0231）。非 owner 撞 RLS */
   workspaceSetSandboxApproval(id: string, value: "ask" | "auto"): Promise<FriendsResult<null>>;
-  /** 把 sessionId 这个会话发布进工作区（Task 9 publishSessionToWorkspace）。
+  /** 把 sessionId 这个会话发布进团队（Task 9 publishSessionToWorkspace）。
       ok:true 带 workspace_sessions 的行 id + Storage 包 id */
   workspacePublishSession(id: string, sessionId: string, title: string): Promise<FriendsResult<{ rowId: string; pkgId: string }>>;
   /** 发布者本人撤回一次发布（删行 + 删 Storage 包） */
   workspaceUnpublishSession(id: string, rowId: string): Promise<FriendsResult<null>>;
-  /** 把工作区里别人发布的会话导入成本机新 fork（Task 9 importWorkspaceSession，
+  /** 把团队里别人发布的会话导入成本机新 fork（Task 9 importWorkspaceSession，
       workspace 由渲染层按 startSession 同一条兜底规则决定落哪个目录） */
   workspaceImportSession(publisherUid: string, pkgId: string): Promise<FriendsResult<{ sessionId: string }>>;
 
   // ─── 云会话（Task 12，ADR-0199）：桌面当显示器，接 VPS 上的 runtime ──────
-  /** 这个工作区里的云会话清单（Supabase 直查 workspace_sessions，kind='cloud'） */
+  /** 这个团队里的云会话清单（Supabase 直查 workspace_sessions，kind='cloud'） */
   workspaceCloudList(workspaceId: string): Promise<FriendsResult<{ id: string; title: string; publisherUid: string; archived: boolean; updatedTs: number }[]>>;
   /** 开一个新云会话（走控制房 create 流程，拿到 sessionId 后还要 Join 才能收事件） */
   workspaceCloudCreate(workspaceId: string): Promise<FriendsResult<{ sessionId: string }>>;
@@ -1155,7 +1155,7 @@ export interface ShellBridge {
       以它为准，覆盖 mention（#932 切片 1b，runtime 那侧同一条判据） */
   /** `memberMentions`：这句话点到的**人类成员 uid**（#1064）。`mentions` 那一族
       起 turn、花钱；这一族只让被 @ 的人收到一条提醒，不起 turn */
-/** 「谁在工作区里 @ 了我」的整份收件箱（#1064）。含已读——未读只是它的一个
+/** 「谁在团队里 @ 了我」的整份收件箱（#1064）。含已读——未读只是它的一个
     投影，而已读那些是以后「@ 我的」清单唯一的数据源 */
   workspaceMentions(): Promise<FriendsResult<WorkspaceMentionRow[]>>;
   /** 进了这条云会话 = 里面 @ 我的那几条看见了 */
@@ -1177,14 +1177,14 @@ export interface ShellBridge {
       `seq` = 按钮所在那一行开场白自己的 seq（复审 C2-I3）：停止按钮按**行**
       画，不带 seq 的话按第二行那颗停掉的是第一行。缺席 = 旧语义（停当前） */
   workspaceCloudStop(seq?: number): Promise<CloudAck>;
-  /** 读一个工作区此刻的路由（控制房 RPC，协议 8，#991）：任何在籍成员都能读，
-      不依赖开着云会话。**#1102 之后只剩这一格**——原来它还带仓库配置，而工作区
+  /** 读一个团队此刻的路由（控制房 RPC，协议 8，#991）：任何在籍成员都能读，
+      不依赖开着云会话。**#1102 之后只剩这一格**——原来它还带仓库配置，而团队
       不再绑仓库；留着这条 RPC 是因为 ADR-0246 那句「起不了 turn」在设置页
       是它唯一的落点 */
   workspaceCloudState(workspaceId: string): Promise<FriendsResult<CloudWorkspaceState>>;
-  /** 读一格工作文件夹（控制房 RPC，协议 11，#1056）：工作区设置页的「文件」tab 用。
+  /** 读一格工作文件夹（控制房 RPC，协议 11，#1056）：团队设置页的「文件」tab 用。
       `path` 相对工作文件夹，`""` = 它本身；任何在籍成员都能读——一容器一卷，
-      那份卷是整个工作区共用的。四种正常结局都在 `CsWorkNode` 里，其中
+      那份卷是整个团队共用的。四种正常结局都在 `CsWorkNode` 里，其中
       `absent`（容器还没建起来）与空目录是**两回事**，别合成一句 */
   workspaceCloudFiles(workspaceId: string, path: string): Promise<FriendsResult<CsWorkNode>>;
   /** 搜工作文件夹（控制房 RPC，协议 12，#1066）：设置页「文件」tab 的过滤框用。
@@ -1220,7 +1220,7 @@ export interface ShellBridge {
   onPresenceChanged(cb: (onlineUserIds: string[]) => void): Unsubscribe;
   /** 对端发来的新 DM(自己发的不推——bridge 调用已回真行,渲染层自己落) */
   onDirectMessage(cb: (message: DirectMessage) => void): Unsubscribe;
-  /** 工作区里有人 @ 了我（#1064）——realtime 推上来的那一行原样转发。
+  /** 团队里有人 @ 了我（#1064）——realtime 推上来的那一行原样转发。
       渲染层按主键并进自己那份清单（`mergeMentionRow`），未读角标是它的投影 */
   onWorkspaceMention(cb: (row: WorkspaceMentionRow) => void): Unsubscribe;
   /** 实时链路健康度:degraded = 已切轮询兜底,UI 该如实说"慢几秒"而不是装作正常 */
@@ -1402,9 +1402,9 @@ export type NotificationTarget =
       shared 不能 import 渲染层的类型,而这里只需要通知真能落到的那几个,
       写成窄字面量比把整个联合搬过来更不容易漂 */
   | { kind: "settings"; section: "remote" }
-  /** 工作区里有人 @ 了我（#1064）：点通知 = 打开那条云会话。**两格都要**——
+  /** 团队里有人 @ 了我（#1064）：点通知 = 打开那条云会话。**两格都要**——
       `openCloudSession` 按 (workspaceId, sessionId) 进房，光有 sessionId
-      进不去（那张台账在服务端按工作区分） */
+      进不去（那张台账在服务端按团队分） */
   | { kind: "workspaceMention"; workspaceId: string; sessionId: string };
 
 export interface OllamaModelInfo {

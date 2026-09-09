@@ -71,7 +71,7 @@ export function relayLineText(e: AgentRelayEvent, ws: WorkspaceSnapshot): string
 }
 
 /** 这条事件在云会话时间线上要不要**藏起来**（#950；#993 扩了四类，#1055 又添一类）。
-    群聊时间线的读者是工作区里各行各业的人，不是在读一份审计日志——本地会话
+    群聊时间线的读者是团队里各行各业的人，不是在读一份审计日志——本地会话
     那套 AUDIT 小灰字（会话已创建 / 请求信封已更新 / 由谁批准）在这里是纯噪音：
     它们说的是机器的内务，不是群里发生的事。
 
@@ -164,7 +164,7 @@ export function turnEndedLineText(e: TurnEndedEvent, ws: WorkspaceSnapshot): str
 
 const ROUTE_LABEL: Record<RouteChangedEvent["from"], string> = {
   hosted: "托管",
-  workspace: "工作区自带 key",
+  workspace: "团队自带 key",
   direct: "自带 key",
 };
 
@@ -183,7 +183,7 @@ const ROUTE_REASON_TEXT: Record<RouteChangedEvent["reason"], string> = {
     === "hosted"` 时判这个 reason），措辞走「改回」不走「改道：X → Y」——「改道」暗示
     从谁那儿抢了额度，而这一格说的是恢复原状。
     其余（`probe_failed` / `no_subscription` / `quota_exhausted` 落在非 direct 的
-    工作区↔托管之间）用通用模板：改道：<from> → <to>（<原因>）。`resetAt` 有值时在原因后面
+    团队↔托管之间）用通用模板：改道：<from> → <to>（<原因>）。`resetAt` 有值时在原因后面
     追加「，X 恢复」——用 Timeline.tsx 原本就在用的 `countdown`（同一扇窗两处不能各写一份，
     ADR-0209 那条纪律） */
 export function routeChangedText(e: RouteChangedEvent, now: number = Date.now()): string {

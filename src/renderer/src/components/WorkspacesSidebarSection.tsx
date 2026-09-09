@@ -1,24 +1,24 @@
-// WorkspacesSidebarSection —— 侧栏「工作区」这一栏的全部内容（issue #917 从抽屉
+// WorkspacesSidebarSection —— 侧栏「团队」这一栏的全部内容（issue #917 从抽屉
 // 搬进侧栏，issue #919 长成工程组的样子，issue #1087 独占一栏）。
 //
-// **它曾经是「项目」栏顶上的一节**：#917 规则三让工作区和本地工程分开显示，做法是
+// **它曾经是「项目」栏顶上的一节**：#917 规则三让团队和本地工程分开显示，做法是
 // 置顶 + 段尾一道内缩的细线。#1087 把它抬成切换器上的第三档 —— 维护者的判断是
-// 工作区和任务、项目一样是「我在哪儿干活」的一个完整答案，不是项目的一个子类。
+// 团队和任务、项目一样是「我在哪儿干活」的一个完整答案，不是项目的一个子类。
 // 于是那道分组线没了消费方（自己一栏，下面没有第二组要分开），空态反过来成了
 // 必需的（见下面 groups.length === 0 那段）。
 //
 // 前身是 WorkspacesPanel：收在 footer icon 的右侧抽屉里，列表和详情页两层都归它管
-// （ADR-0198 切片 3）。搬进侧栏是因为工作区和本地工程是同一个问题的两个答案
+// （ADR-0198 切片 3）。搬进侧栏是因为团队和本地工程是同一个问题的两个答案
 // （「我在哪儿干活」）；**长成工程组的样子**是因为在那儿干活的方式也该是同一个
-// （#919：「工作区创建会话方式应该和用户本地会话一致」）。所以这里的每一个工作区
+// （#919：「团队创建会话方式应该和用户本地会话一致」）。所以这里的每一个团队
 // 都是一个 SidebarGroup，和下面的本地工程组用同一副骨架：可折叠的组头 + 组头右边
 // 一颗 ＋ + 组内一列会话行挂在同一道竖脊上。
 //
 // 组头右边**两颗**动作，本地工程组只有一颗：
-// · ＋ = 在这个工作区里开新会话（走 startCloudDraft → 主区开局卡，同本地的
+// · ＋ = 在这个团队里开新会话（走 startCloudDraft → 主区开局卡，同本地的
 //   newSession → Welcome；这一步不建任何东西）
-// · ⚙ = 打开工作区详情（连接器 / 成员 / 已发布会话 / 已归档的云会话）。本地工程
-//   没有「管理」这回事，工作区有——它是一群人的东西，得有地方拉人和撤授权
+// · ⚙ = 打开团队详情（连接器 / 成员 / 已发布会话 / 已归档的云会话）。本地工程
+//   没有「管理」这回事，团队有——它是一群人的东西，得有地方拉人和撤授权
 //
 // **和本地工程分开显示**（#917 规则三）：段尾一道内缩的细线。内缩而不是通栏——
 // 通栏的横线读作「界面构件之间的分隔」（工具栏/页脚那种），内缩的才读作「同一份
@@ -27,9 +27,9 @@
 // 归档的云会话不进这份清单（同本地：归档的会话在「已归档会话」那一屏，不在工程组里），
 // 它们在 ⚙ 那一页的底部。
 //
-// 拉取不在这一层：工作区快照挂在 AppSidebar 上（一条都没有时这个组件 return null，
+// 拉取不在这一层：团队快照挂在 AppSidebar 上（一条都没有时这个组件 return null，
 // effect 写在这儿就永远等不到第一次拉取）；云会话清单倒是在这一层拉，因为它按
-// 工作区分，而这一层才知道有哪几个工作区。
+// 团队分，而这一层才知道有哪几个团队。
 
 import { useEffect, useMemo } from "react";
 import { ChevronRight, Ellipsis, Plus, Settings2 } from "lucide-react";
@@ -56,10 +56,10 @@ export function WorkspacesSidebarSection({
   onToggle,
   onManage,
 }: {
-  /** 收起来的工作区 id 集合。和本地工程组共用同一套收放机制，只是另存一个键 */
+  /** 收起来的团队 id 集合。和本地工程组共用同一套收放机制，只是另存一个键 */
   collapsed: ReadonlySet<string>;
   onToggle: (workspaceId: string) => void;
-  /** 打开工作区详情（抽屉）。这一层不认识抽屉，只报「谁被点了管理」 */
+  /** 打开团队详情（抽屉）。这一层不认识抽屉，只报「谁被点了管理」 */
   onManage: (workspaceId: string) => void;
 }) {
   const groups = useChat((s) => s.workspaceGroups);
@@ -73,7 +73,7 @@ export function WorkspacesSidebarSection({
   const mentionRows = useChat((s) => s.workspaceMentions);
   const unread = useMemo(() => unreadMentionCounts(mentionRows), [mentionRows]);
 
-  // 每个工作区各拉一次云会话清单（没有推送通道，同 workspaceGroups 的待遇）。
+  // 每个团队各拉一次云会话清单（没有推送通道，同 workspaceGroups 的待遇）。
   // 依赖是 id 拼成的串而不是 groups 本身：快照每次重拉都是新数组，用它当依赖
   // 会让这个 effect 跟着每一次刷新重跑一轮网络请求
   // 读不到的那几格（loadError，#843 ②）不去拉云会话清单：快照都拉不下来，
@@ -87,7 +87,7 @@ export function WorkspacesSidebarSection({
   // 理由是「项目栏底下已经有一段『还没有项目』，顶上再压一句，第一次进来的人
   // 要读两段才走到列表」—— 独占一栏之后那个前提没了：这一栏里没有别的东西会
   // 说话，不画就是切过来一片空白，人分不出「还没建过」和「读不到 / 坏了」。
-  // 文案照抄项目栏那段的写法：先说这栏是什么，再指向头部那颗常驻的「新工作区」。
+  // 文案照抄项目栏那段的写法：先说这栏是什么，再指向头部那颗常驻的「新团队」。
   // **不在这儿讲订阅**（建群那道闸在 NewWorkspaceDialog / workspaceAccess 里，
   // 那是一份四态的判据，抄一句到这里就是第二份且必然分家）
   if (groups.length === 0 && error === null) {
@@ -95,7 +95,7 @@ export function WorkspacesSidebarSection({
     // 折进来的空格在真机上就是「云端，␣群里」这样一个多余的坑
     return (
       <div className="px-[10px] py-2 text-xs text-muted-foreground leading-relaxed">
-        还没有工作区。工作区是和别人一起干活的地方——会话跑在云端，群里的人和你派的智能体都能说话。点上面的「新工作区」开一个。
+        还没有团队。团队是和别人一起干活的地方——会话跑在云端，群里的人和你派的智能体都能说话。点上面的「新团队」开一个。
       </div>
     );
   }
@@ -117,7 +117,7 @@ export function WorkspacesSidebarSection({
   );
 }
 
-/** 一个工作区 = 一个组。骨架逐处对齐 App.tsx 里的本地工程组（同一个 SidebarGroup +
+/** 一个团队 = 一个组。骨架逐处对齐 App.tsx 里的本地工程组（同一个 SidebarGroup +
     可折叠 SidebarGroupLabel + SidebarGroupAction + 带竖脊的组内列表），改的只有
     「组里装的是云会话」和「多一颗 ⚙」。 */
 /** 未读点名的角标。**两处都画**（组头 + 会话行）：收起来的时候会话行根本
@@ -175,7 +175,7 @@ function WorkspaceGroup({
           <span className="min-w-0 truncate">{ws.name}</span>
         </SidebarGroupLabel>
         <SidebarGroupContent>
-          <p className="px-2 pt-[2px] text-[11px] text-err break-words">暂时读不到这个工作区：{ws.loadError}</p>
+          <p className="px-2 pt-[2px] text-[11px] text-err break-words">暂时读不到这个团队：{ws.loadError}</p>
         </SidebarGroupContent>
       </SidebarGroup>
     );
@@ -203,11 +203,11 @@ function WorkspaceGroup({
               未读数展开也数不出来——它不是这份列表的函数 */}
           <MentionBadge
             count={unread.byWorkspace[ws.id] ?? 0}
-            title={`这个工作区里有 ${unread.byWorkspace[ws.id] ?? 0} 条 @ 你的消息没看`}
+            title={`这个团队里有 ${unread.byWorkspace[ws.id] ?? 0} 条 @ 你的消息没看`}
           />
         </button>
       </SidebarGroupLabel>
-      {/* ⚙ 排在 ＋ 左边。工作区独有的那一颗：它是一群人的东西，得有地方拉人、
+      {/* ⚙ 排在 ＋ 左边。团队独有的那一颗：它是一群人的东西，得有地方拉人、
           调授权、撤回已发布的会话 —— 本地工程没有这回事 */}
       <SidebarGroupAction
         className="right-8 text-muted-foreground"
@@ -231,7 +231,7 @@ function WorkspaceGroup({
               还没有会话，点右上角 ＋ 开一个。
             </p>
           ) : (
-            // 一道竖脊 + 缩进：一眼看出这些会话挂在上面那个工作区下（逐字同本地工程组）
+            // 一道竖脊 + 缩进：一眼看出这些会话挂在上面那个团队下（逐字同本地工程组）
             <SidebarMenu className="border-l border-sidebar-border ml-[11px] w-[calc(100%-11px)] pl-[6px]">
               {rows.map((row) => (
                 <SidebarMenuItem key={row.id}>
@@ -310,7 +310,7 @@ function WorkspaceGroup({
               ))}
             </SidebarMenu>
           )}
-          {/* 开局卡正开在这个工作区上：给它一行占位，否则「我刚点了 ＋」这件事
+          {/* 开局卡正开在这个团队上：给它一行占位，否则「我刚点了 ＋」这件事
               在侧栏里没有任何痕迹（本地那条路上，Welcome 也是主区一整屏在说话，
               但侧栏那颗 ＋ 是组头上的，视线本来就没离开） */}
           {draftWorkspaceId === ws.id && (

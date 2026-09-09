@@ -1,4 +1,4 @@
-// WorkspaceMembersTab —— 工作区设置里的「成员」那一页（#1120 从 WorkspacePage 抽出）。
+// WorkspaceMembersTab —— 团队设置里的「成员」那一页（#1120 从 WorkspacePage 抽出）。
 // 判据、二次确认、owner 才能拉人，一个字没动；改的只有行的样子与那两段解释的位置。
 
 import { UserPlus } from "lucide-react";
@@ -49,7 +49,7 @@ export function WorkspaceMembersTab({ ws, selfUid }: { ws: WorkspaceSnapshot; se
                   onClick={() => {
                     void (async () => {
                       const ok = await confirm({
-                        title: `把 ${row.label} 移出工作区？`,
+                        title: `把 ${row.label} 移出团队？`,
                         description: "TA 借用/贡献的连接器授权会立即失效。",
                         confirmLabel: "移出",
                         tone: "danger",
@@ -66,7 +66,7 @@ export function WorkspaceMembersTab({ ws, selfUid }: { ws: WorkspaceSnapshot; se
         ))}
       </InsetGroup>
       <InsetNote>
-        工作区的账<b className="font-medium text-foreground">全记在所有者头上</b>——成员不必各自订阅。
+        团队的账<b className="font-medium text-foreground">全记在所有者头上</b>——成员不必各自订阅。
       </InsetNote>
 
       {ws.ownerUid === selfUid && (
@@ -76,7 +76,7 @@ export function WorkspaceMembersTab({ ws, selfUid }: { ws: WorkspaceSnapshot; se
             {candidates.length === 0 ? (
               <InsetEmpty
                 title="好友都已经在这里了"
-                hint="先在「好友」里加人，再回来把 TA 拉进这个工作区。"
+                hint="先在「好友」里加人，再回来把 TA 拉进这个团队。"
               />
             ) : (
               candidates.map((f) => (

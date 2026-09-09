@@ -1,4 +1,4 @@
-// WorkspaceSessionsTab —— 工作区设置里的「会话」那一页（#1120 从 WorkspacePage 抽出，
+// WorkspaceSessionsTab —— 团队设置里的「会话」那一页（#1120 从 WorkspacePage 抽出，
 // 修 #1115；四条判断是从 PR #1116 捞回来的，见文件末尾那段）。
 //
 // ## #1115：这一页原来对着两条活着的云会话说「还没有人发布会话」
@@ -70,7 +70,7 @@ function CloudSessionsSection({ ws, selfUid }: { ws: WorkspaceSnapshot; selfUid:
       {!loaded && list === undefined ? (
         // 还没拉完：说「正在读」，不说「一条都没有」——这一页是点进来的，
         // 一进来就一片空白比一句「正在读」更像坏了
-        <InsetGroup><InsetEmpty title="正在读这个工作区的会话…" /></InsetGroup>
+        <InsetGroup><InsetEmpty title="正在读这个团队的会话…" /></InsetGroup>
       ) : list === undefined ? (
         // 读不到 ≠ 里面是空的（同 ADR-0243/0251）：说成后者会让人以为群里什么都没发生过
         <InsetGroup>
@@ -84,7 +84,7 @@ function CloudSessionsSection({ ws, selfUid }: { ws: WorkspaceSnapshot; selfUid:
         <InsetGroup>
           <InsetEmpty
             title="还没有进行中的云会话"
-            hint="在侧栏「工作区」那一栏，这个工作区的组头上点 ＋ 就能开一条。"
+            hint="在侧栏「团队」那一栏，这个团队的组头上点 ＋ 就能开一条。"
           />
         </InsetGroup>
       ) : (
@@ -149,12 +149,12 @@ function CloudSessionsSection({ ws, selfUid }: { ws: WorkspaceSnapshot; selfUid:
   );
 }
 
-/** 已发布会话：一次性快照包，从会话头部「更多」→「发布到工作区…」放上来（ADR-0198
+/** 已发布会话：一次性快照包，从会话头部「更多」→「发布到团队…」放上来（ADR-0198
     切片 3）——与云会话是两样东西，分开一组。
 
     **一份都没发布过时整节不出**（#1115 / PR #1116）：原来它在空的时候画一句「还没有
-    人发布会话到这个工作区」，与紧邻那节自己写着的规矩（「不该为一件没发生过的事留一行
-    空态」）矛盾；而一个没发布过、没归档过的工作区因此顶着一句与它无关的话当唯一内容。
+    人发布会话到这个团队」，与紧邻那节自己写着的规矩（「不该为一件没发生过的事留一行
+    空态」）矛盾；而一个没发布过、没归档过的团队因此顶着一句与它无关的话当唯一内容。
     能这么收是因为云会话那节常驻且自带空态。代价：这一页不再教人「怎么发布」——
     而发布的入口本来就不在这一页，在会话的「更多」菜单里。 */
 function PublishedSection({ ws, selfUid }: { ws: WorkspaceSnapshot; selfUid: string }) {

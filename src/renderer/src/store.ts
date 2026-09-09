@@ -542,9 +542,9 @@ interface ChatState {
       （workspaceList 无 onChanged）——每次改动后本地重拉一次，见下面十一个 action */
   workspaceGroups: WorkspaceSnapshot[];
   /** 工作区面板/页面的内联错误。不复用 friendError——那个字段的注释把范围钉在
-      "好友区/DM 面板"，工作区协作组是另一件事，混一起会让读者误以为两处互相影响。
+      "好友区/DM 面板"，团队是另一件事，混一起会让读者误以为两处互相影响。
       云会话建/进房、名单刷新、配置保存那类**共享**失败也落在这——CloudSessionPage
-      是 WorkspacePage 内切换渲染出来的（同一块"工作区面板/页面"），不新开一条并行
+      是 WorkspacePage 内切换渲染出来的（同一块"团队面板/页面"），不新开一条并行
       的错误槽位。
       **发送/审批/停止不落这一格**（第四批 C2-I4）：那三件事的结果只跟点它的
       那一处有关（哪条消息、哪张卡、哪一行），画在旁边才归得了属；挤进这条共享带
@@ -565,7 +565,7 @@ interface ChatState {
       不落任何持久层（临时预览不是事实） */
   cloudStreaming: Record<string, string>;
   /** 「＋ 新会话」在某个工作区上按下了、云会话还没落地的那个中间态（issue #919）：
-      主区画一张只有输入框的开局卡，同本地的 Welcome。值 = 在哪个工作区开，
+      主区画一张只有输入框的开局卡，同本地的 Welcome。值 = 在哪个团队开，
       null = 没在开。本地那条路的对应物是 `phase === "welcome"` + pendingWorkspace */
   cloudDraftWorkspaceId: string | null;
   /** 开局卡上写的第一句话，等云会话进 ready 之后才发得出去（issue #919）。
@@ -624,7 +624,7 @@ interface ChatState {
   loadToolCatalog(): Promise<void>;
   refreshSubagents(): Promise<void>;
   /** 存一个 subagent 的 frontmatter + 正文。抛出的 Error 是已经写成中文句子的
-      用户可读提示（对不上名字 / 只读 / 不认识这个工作区），组件自己 catch 显示，这里不吞 */
+      用户可读提示（对不上名字 / 只读 / 不认识这个团队），组件自己 catch 显示，这里不吞 */
   saveSubagent(def: SubagentDef): Promise<void>;
   /** 建一个新 subagent（默认工具集、approval=deny）。name 会被后端按
       [A-Za-z0-9_-] 净化，撞名会抛错——组件负责在弹窗里先做 ASCII 校验。
@@ -1063,11 +1063,11 @@ interface ChatState {
   /** 归档（收尾）一条云会话（issue #822；#993 起走控制房 RPC，不再要求"正开着它"）。
       等服务端的 `archive_result` 才算数。失败落 workspaceGroupsError（同名单十一件套）。
       云端没有"恢复归档"那一半（daemon 启动只捞 archived=false 的会话重开房间），
-      所以调用方要先问一句。成功后自己重拉一次那个工作区的云会话清单——归档的
+      所以调用方要先问一句。成功后自己重拉一次那个团队的云会话清单——归档的
       不进侧栏，不重拉的话那一行会一直挂在那儿 */
   cloudArchive(workspaceId: string, sessionId: string): Promise<boolean>;
   /** 彻底删除一条云会话（#1044）：VPS 上那段事件日志一起抹掉，不可逆。
-      归档掉的也删得动（入口在工作区设置页底部那一节） */
+      归档掉的也删得动（入口在团队设置页底部那一节） */
   cloudDelete(workspaceId: string, sessionId: string): Promise<boolean>;
 
   setFriendsPanelOpen(open: boolean): void;
@@ -1512,7 +1512,7 @@ export const useChat = create<ChatState>((set, get) => ({
   },
 
   /** 切作用域 = 换一份清单。先把旧清单清空再拉新的，避免切换瞬间显示的是
-      上一个作用域的内容（那会让用户以为工作区里已经有这些定义了） */
+      上一个作用域的内容（那会让用户以为这个作用域里已经有这些定义了） */
   async setSubagentScope(workspace) {
     const gen = ++subagentScopeGen;
     set({ subagentScope: workspace, subagents: [], subagentsError: null });
