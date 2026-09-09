@@ -38,10 +38,13 @@ import { cn } from "@/lib/utils.js";
 /** 颜色只用来说「出事了」，所以这张表里没有第三档 */
 const TONE_DOT = { warn: "bg-warn", deny: "bg-deny" } as const;
 
-export function ContextRingTrigger() {
+/** `quotaApplies`：这条会话烧的是不是**我的**额度。本地会话恒为 true（省掉即可）；
+    云会话烧的是 owner 的额度（ADR-0233）而 `billing` 是我的——我不是 owner 时，
+    这枚点报的是一个与这条会话无关的账号，整枚不画，钮的名字也不多一个字（#1138） */
+export function ContextRingTrigger({ quotaApplies = true }: { quotaApplies?: boolean } = {}) {
   const billing = useChat((s) => s.billing);
   const now = useNow(60_000);
-  const alert = quotaAlert(billing, now);
+  const alert = quotaApplies ? quotaAlert(billing, now) : null;
 
   return (
     <ContextDisplayTrigger
