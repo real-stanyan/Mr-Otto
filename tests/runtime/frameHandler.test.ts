@@ -32,6 +32,8 @@ function fakeSession(overrides: Partial<CloudSession> = {}): CloudSession {
     isArchived: () => false,
     // #957 A-2：默认"空闲"——绝大多数用例不关心停止键
     stop: () => "idle",
+    // #1163：默认收下——绝大多数用例不关心语音通话
+    setVoiceCall: async () => ({ kind: "ok" }),
     ...overrides,
   };
 }
@@ -1746,5 +1748,71 @@ describe("git_credential（协议 15，#1103）", () => {
 
     expect(sent.at(-1)).toEqual({ cid: "c1", msg: { t: "denied", code: "not_authorized" } });
     expect(writes).toEqual([]);
+  });
+});
+
+// #1163：语音通话名单的帧接线。这一层不判名单合不合法（那条判据在
+// CloudSession.setVoiceCall 里，要现取 roster）——它只负责在籍复查、令牌桶、
+// 把三态翻成 call_result，并把拒绝记一笔。
+describe("语音通话名单（#1163）", () => {
+  const callFrame = (participants: string[]) => encodeCs({ t: "call", participants });
+
+  it("ok → call_result{ok:true}，uid/label/名单原样递下去，不记日志", async () => {
+    const calls: unknown[] = [];
+    const session = fakeSession({ setVoiceCall: async (...args) => { calls.push(args); return { kind: "ok" }; } });
+    const { deps, sent, logs } = makeDeps({ getSession: () => session });
+    const handler = createFrameHandler(deps);
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    sent.length = 0;
+    await handler.onSessionFrame("w1", "s1", "c1", callFrame(["admin", "a_1"]));
+    expect(sent.map((s) => s.msg)).toEqual([{ t: "call_result", ok: true }]);
+    expect(calls).toEqual([["u1", "Label(u1)", ["admin", "a_1"]]]);
+    expect(logs).toHaveLength(0);
+  });
+
+  it("unknown_agent / archived → call_result{ok:false} 带服务端那句话，各记一笔", async () => {
+    const outcomes = [
+      { kind: "unknown_agent" as const, message: "有 1 个智能体不在名单里" },
+      { kind: "archived" as const, message: "这条会话已经归档" },
+    ];
+    let i = 0;
+    const session = fakeSession({ setVoiceCall: async () => outcomes[i++]! });
+    const { deps, sent, logs } = makeDeps({ getSession: () => session });
+    const handler = createFrameHandler(deps);
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    sent.length = 0;
+    await handler.onSessionFrame("w1", "s1", "c1", callFrame(["x"]));
+    await handler.onSessionFrame("w1", "s1", "c1", callFrame(["x"]));
+    expect(sent.map((s) => s.msg)).toEqual([
+      { t: "call_result", ok: false, message: "有 1 个智能体不在名单里" },
+      { t: "call_result", ok: false, message: "这条会话已经归档" },
+    ]);
+    expect(logs).toHaveLength(2);
+  });
+
+  it("不在籍了 → call_result 带那句「已不在这个团队」，不落到 setVoiceCall", async () => {
+    let member = true;
+    const calls: unknown[] = [];
+    const session = fakeSession({ setVoiceCall: async (...args) => { calls.push(args); return { kind: "ok" }; } });
+    const { deps, sent } = makeDeps({ getSession: () => session, isMember: async () => member });
+    const handler = createFrameHandler(deps);
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    sent.length = 0;
+    member = false;
+    await handler.onSessionFrame("w1", "s1", "c1", callFrame(["admin"]));
+    expect(calls).toHaveLength(0);
+    expect(sent[0]!.msg).toMatchObject({ t: "call_result", ok: false });
+  });
+
+  it("桶：改名单太快 → call_result 带限速文案，不落到 setVoiceCall", async () => {
+    const calls: unknown[] = [];
+    const session = fakeSession({ setVoiceCall: async (...args) => { calls.push(args); return { kind: "ok" }; } });
+    const { deps, sent } = makeDeps({ getSession: () => session, rateLimit: { allow: (kind) => kind !== "call" } });
+    const handler = createFrameHandler(deps);
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    sent.length = 0;
+    await handler.onSessionFrame("w1", "s1", "c1", callFrame(["admin"]));
+    expect(calls).toHaveLength(0);
+    expect(sent.map((s) => s.msg)).toEqual([{ t: "call_result", ok: false, message: throttleMessage("call") }]);
   });
 });

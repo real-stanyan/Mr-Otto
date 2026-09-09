@@ -162,6 +162,8 @@
 //   ⑪ **archive() 顺带停**：归档以前不动正在跑的 turn，而 daemon 两秒后收房，
 //      于是那条 turn 的回复广播给了一间已经关掉的房间（钱照付、人收不到）。
 
+import { applyVoiceCallEvent, voiceCallOf, type VoiceCallState } from "../../../src/shared/voiceCall.js";
+import type { VoiceCallParticipant } from "../../../src/session/events.js";
 import { LoopEngine } from "../../../src/loop/engine.js";
 import type { EventStore } from "../../../src/session/store.js";
 import type { SessionEvent, UserMessageEvent, AssistantMessageEvent, AgentRelayEvent } from "../../../src/session/events.js";
@@ -488,7 +490,16 @@ export interface CloudSession {
       群里落一条系统发言说是谁停的：别人只看到 agent 突然不说话了是很糟的体验，
       与归档那句走同一条路 */
   stop(byUid: string, byLabel: string, seq?: number): "ok" | "idle" | "not_allowed" | "not_current";
+  /** 改语音通话名单（#1163）：`participants` = 此刻该在通话里的 agent id，空 = 结束。
+      任何在籍成员都能改（frameHandler 已验籍）。三态：
+      - `ok`：落了一条 voice_call_changed（名单带名字快照）——或与当前名单相同，不重复落
+      - `unknown_agent`：有 id 不在此刻的名单里（**整帧拒不静默过滤**：静默过滤 = #722 那个
+        撒谎的勾，人以为拉进来了）；名单降级（读不出来）也走这一档，但话说清是「读不出来」
+      - `archived`：归档之后不再有通话 */
+  setVoiceCall(byUid: string, byLabel: string, participants: string[]): Promise<VoiceCallOutcome>;
 }
+
+export type VoiceCallOutcome = { kind: "ok" } | { kind: "unknown_agent" | "archived"; message: string };
 
 /** 重启补跑上限（#957 A-9 / #933）：一条能确定性弄死 daemon 的 turn 不该在
     每次重启时无限重跑——那既是给 owner 无限计费的洞，也会把每次重启都拖成
@@ -545,6 +556,9 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   // **一次 load 推两件事**：末条 seq 与归档状态——它们是同一份日志的两个
   // 投影，读两遍只是把同一段 IO 做两次
   const seed = store.load(sessionId);
+  // 语音通话名单（#1163）：从 seed 折叠一次播种，之后 notify 里逐条推进（同 bounds 的手法，
+  // #958 之后 turn 起跑不再全量读日志）。派活 / 接力 / invite_to_call 读的都是这一份
+  let voiceCall: VoiceCallState | null = voiceCallOf(seed);
   let lastSeqSeen = seed.at(-1)?.seq ?? -1;
   /** 「这一轮的判据从日志的哪一条读起」的两条保守下界（#958）。装配时整份折叠
       一次，之后每条事件经 notify 增量推进——于是 runJob 与 relayAfterTurn 每个
@@ -745,6 +759,9 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // 一条只是少认识一个人（退回 speakerLabelOf 的老路），不会记错——所以
     // daemon.ts 那几条绕过 notify 的 append 在这里也不构成正确性问题
     learnSpeakerLabel(e);
+    // 通话名单跟着走（#1163）：同 advanceRelayBounds 的推理——daemon.ts 绕过 notify 的那四类
+    // append 里没有这一种，这条事件只从 logVoiceCall 出门
+    if (e.type === "voice_call_changed") voiceCall = applyVoiceCallEvent(voiceCall, e);
     opts.onEvent(e);
     // 终态事件落盘之后清掉这只 agent 的流式累计（#1107）：delta 帧走的是
     // 累计快照语义，不清的话它下一轮的预览会从上一次的残句开头。缺席
@@ -1104,6 +1121,20 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       不碰 engine：中途注入靠 engine 每轮从 store 重新投影天然生效。
       **回刚落盘那条事件**（#1064）：收件箱那一行的主键要 seq，而「只 @ 了人」
       那条路走的正是这里（targets 为空，不起 turn，只落一条 chat_message） */
+  /** 落一条通话名单（#1163）。`byAgentId` 在场 = 是那只 agent 用 invite_to_call 拉的 */
+  function logVoiceCall(participants: VoiceCallParticipant[], byUid: string, byAgentId?: string): void {
+    const logged = store.append({
+      sessionId,
+      ts: Date.now(),
+      type: "voice_call_changed",
+      participants,
+      byUid,
+      ...(byAgentId !== undefined ? { byAgentId } : {}),
+      ignorable: true,
+    });
+    notify(logged);
+  }
+
   function logChat(fromUid: string, label: string, text: string, mention: boolean): SessionEvent {
     const logged = store.append({
       sessionId,
@@ -1937,6 +1968,25 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
 
     isArchived() {
       return archived;
+    },
+
+    async setVoiceCall(byUid, _byLabel, participants) {
+      if (archived) return { kind: "archived", message: "这条会话已经归档，没有通话可言" };
+      // 人刚点了名单 → 要此刻的名单（同 say 的 fresh）：他在设置页刚建的那只要能立刻拉进来
+      const roster = await opts.agents({ fresh: true });
+      // 名单降级 = 占位不是真名单：拿它核对会把一次 Supabase 抖动说成「这只 agent 不存在」
+      if (roster.some((a) => a.degraded)) return { kind: "unknown_agent", message: "智能体名单这会儿读不出来，稍后再试" };
+      const ids = [...new Set(participants)];
+      const unknown = ids.filter((id) => !roster.some((a) => a.agentId === id));
+      // 只回显个数不回显 id 原文（同 sayUnknown 的纪律）：这些 id 直接来自客户端帧
+      if (unknown.length > 0) {
+        return { kind: "unknown_agent", message: `有 ${unknown.length} 个智能体不在名单里（名单可能刚变过，刷新再试）` };
+      }
+      const current = voiceCall?.participants.map((p) => p.agentId) ?? [];
+      const same = current.length === ids.length && ids.every((id) => current.includes(id));
+      if (same) return { kind: "ok" };
+      logVoiceCall(ids.map((id) => ({ agentId: id, name: roster.find((a) => a.agentId === id)!.name })), byUid);
+      return { kind: "ok" };
     },
 
     stop(byUid, byLabel, seq) {

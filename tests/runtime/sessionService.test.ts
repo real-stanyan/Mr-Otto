@@ -5017,3 +5017,69 @@ describe("派活 skipped：这条路此刻走不了且不是临时的（所有�
     store.close();
   });
 });
+
+// ── 语音通话名单（#1163） ─────────────────────────────────────────────
+describe("setVoiceCall（#1163）", () => {
+  function open(store: EventStore, events: SessionEvent[] = [], agents = async () => AGENTS): CloudSession {
+    return createCloudSession({
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => ["u1"], agents,
+      adapterFor: (a) => ({ model: a.models[0]!, async chat() { return { content: `${a.name}答` }; } }),
+      onEvent: (e) => events.push(e), onUsage: () => {}, memory: createInMemoryWorkspaceMemory(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true, contextWindowOf: () => undefined, sandboxApproval: async () => "ask",
+      workspaceLock: createWorkspaceLock(), relayRemainingMicro: async () => null,
+    });
+  }
+
+  it("ok：落一条 voice_call_changed，名单带名字快照、byUid 是发帧的人，onEvent 也到", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    const session = open(store, events);
+    expect(await session.setVoiceCall("u1", "alice", ["ads", "ops"])).toEqual({ kind: "ok" });
+    const e = store.load("s1").find((x) => x.type === "voice_call_changed");
+    expect(e).toMatchObject({ participants: [{ agentId: "ads", name: "广告" }, { agentId: "ops", name: "运营" }], byUid: "u1", ignorable: true });
+    expect(events.map((x) => x.type)).toEqual(["voice_call_changed"]);
+    store.close();
+  });
+
+  it("同一份名单再发一次不重复落；顺序不同也算同一份；空名单 = 结束，落一条空的", async () => {
+    const store = newStore();
+    const session = open(store);
+    await session.setVoiceCall("u1", "alice", ["ops", "ads"]);
+    expect(await session.setVoiceCall("u1", "alice", ["ads", "ops", "ops"])).toEqual({ kind: "ok" });
+    expect(store.load("s1").filter((x) => x.type === "voice_call_changed")).toHaveLength(1);
+    expect(await session.setVoiceCall("u1", "alice", [])).toEqual({ kind: "ok" });
+    const all = store.load("s1").filter((x) => x.type === "voice_call_changed");
+    expect(all).toHaveLength(2);
+    expect(all[1]).toMatchObject({ participants: [] });
+    // 结束之后再结束：没有可结束的，不重复落
+    expect(await session.setVoiceCall("u1", "alice", [])).toEqual({ kind: "ok" });
+    expect(store.load("s1").filter((x) => x.type === "voice_call_changed")).toHaveLength(2);
+    store.close();
+  });
+
+  it("名单里没有的 id：整帧拒、一个字节不落，说出个数不说 id 原文；名单读不出来说读不出来", async () => {
+    const store = newStore();
+    const session = open(store);
+    const r = await session.setVoiceCall("u1", "alice", ["ops", "ghost", "phantom"]);
+    expect(r.kind).toBe("unknown_agent");
+    if (r.kind !== "ok") {
+      expect(r.message).toContain("2");
+      expect(r.message).not.toContain("ghost");
+    }
+    expect(store.load("s1").filter((x) => x.type === "voice_call_changed")).toHaveLength(0);
+    const degraded = open(newStore(), [], async () => [{ ...DEFAULT_AGENT, degraded: true as const }]);
+    const r2 = await degraded.setVoiceCall("u1", "alice", ["default"]);
+    expect(r2.kind).toBe("unknown_agent");
+    if (r2.kind !== "ok") expect(r2.message).toContain("读不出来");
+    store.close();
+  });
+
+  it("归档之后拒", async () => {
+    const store = newStore();
+    const session = open(store);
+    session.archive("alice");
+    expect((await session.setVoiceCall("u1", "alice", ["ops"])).kind).toBe("archived");
+    store.close();
+  });
+});

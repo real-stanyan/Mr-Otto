@@ -39,6 +39,9 @@ export const SAY_BUCKET: BucketSpec = { capacity: 30, refillPerMin: 30 };
 export const TURN_BUCKET: BucketSpec = { capacity: 10, refillPerMin: 4 };
 export const CREATE_BUCKET: BucketSpec = { capacity: 5, refillPerMin: 2 };
 export const STOP_BUCKET: BucketSpec = { capacity: 5, refillPerMin: 10 };
+/** 改语音通话名单（#1163）。同 stop 的理由：不起模型调用、看着免费，但每次成功都往
+    日志落一条 voice_call_changed、还广播给房里所有人；按住加人/移出能把日志刷成一屏名单 */
+export const CALL_BUCKET: BucketSpec = { capacity: 10, refillPerMin: 10 };
 /** files：翻工作文件夹（#1056）。它是**唯一一条会 docker exec 进容器的读帧**
     ——`workspace` 那条只读内存里的配置，翻文件要起一次 exec，甚至可能先把停着的
     容器起起来。人手点目录一分钟点不到 60 次，脚本能。突发 30 接住「连着点进
@@ -94,7 +97,7 @@ export function createRateLimiter(spec: BucketSpec, now: () => number = Date.now
   };
 }
 
-export type ThrottleKind = "say" | "turn" | "create" | "stop" | "files";
+export type ThrottleKind = "say" | "turn" | "create" | "stop" | "files" | "call";
 
 export interface FrameRateLimiter {
   /** true = 放行。false = 超速，调用方负责回一条**看得见**的拒绝
@@ -118,6 +121,7 @@ export function createFrameRateLimiter(opts: {
     create: createRateLimiter(CREATE_BUCKET, now),
     stop: createRateLimiter(STOP_BUCKET, now),
     files: createRateLimiter(FILES_BUCKET, now),
+    call: createRateLimiter(CALL_BUCKET, now),
   };
   const loggedAt = new Map<string, number>();
 
@@ -151,5 +155,7 @@ export function throttleMessage(kind: ThrottleKind): string {
       return "停止按得太快了，稍等一会儿再按。";
     case "files":
       return "翻得太快了，稍等一会儿再点。";
+    case "call":
+      return "通话名单改得太快了，稍等一会儿再改。";
   }
 }
