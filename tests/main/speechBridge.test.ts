@@ -41,11 +41,15 @@ describe("encodeSpeechCommand / decodeSpeechEvent", () => {
     expect(decodeSpeechEvent('{"type":"partial","text":"你好"}')).toEqual({ type: "partial", text: "你好" });
     expect(decodeSpeechEvent('{"type":"final","text":"你好啊"}')).toEqual({ type: "final", text: "你好啊" });
     expect(decodeSpeechEvent('{"type":"status","speech":"denied","mic":"authorized","onDevice":true,"locale":"zh-CN"}')).toEqual({
-      type: "status", speech: "denied", mic: "authorized", onDevice: true, locale: "zh-CN",
+      type: "status", speech: "denied", mic: "authorized", onDevice: true, locale: "zh-CN", aec: null,
     });
     expect(decodeSpeechEvent('{"type":"status","speech":"notDetermined","mic":"notDetermined"}')).toEqual({
-      type: "status", speech: "notDetermined", mic: "notDetermined", onDevice: null, locale: null,
+      type: "status", speech: "notDetermined", mic: "notDetermined", onDevice: null, locale: null, aec: null,
     });
+    // 回声消除开没开（#1184）：开着 = 麦可以常开；缺席（旧 helper）= null，渲染层按半双工走
+    expect(decodeSpeechEvent('{"type":"status","speech":"authorized","mic":"authorized","aec":true}')).toMatchObject({ aec: true });
+    expect(decodeSpeechEvent('{"type":"level","value":0.42,"active":true}')).toEqual({ type: "level", value: 0.42, active: true });
+    expect(decodeSpeechEvent('{"type":"level","value":"x"}')).toBeNull();
     expect(decodeSpeechEvent('{"type":"listening","on":true}')).toEqual({ type: "listening", on: true });
     expect(decodeSpeechEvent('{"type":"paused"}')).toEqual({ type: "paused" });
     expect(decodeSpeechEvent('{"type":"resumed"}')).toEqual({ type: "resumed" });

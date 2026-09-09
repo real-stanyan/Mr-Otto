@@ -2,7 +2,7 @@
 // 流式预览里哪几段已经完成可以合成、终态落下来时还有哪几段没读。
 import { describe, expect, it } from "vitest";
 import {
-  EMPTY_VOICE_FEED, feedDelta, feedEvent, spokenText, voiceCallAvailable, type VoiceFeedState,
+  EMPTY_VOICE_FEED, feedDelta, feedEvent, markInterrupted, splitSpoken, spokenText, voiceCallAvailable, type VoiceFeedState,
 } from "../../src/renderer/src/lib/voiceCall.js";
 import type { BillingMe } from "../../src/shared/billing.js";
 import type { SessionEvent } from "../../src/session/events.js";
@@ -99,5 +99,54 @@ describe("feedEvent：终态落下来补读没读过的段，然后清这只的�
 
   it("不在名单里的 agent 终态：不读，也不动状态", () => {
     expect(feedEvent(EMPTY_VOICE_FEED, P, 0, chat("z", 5, "一\n\n二")).out).toEqual([]);
+  });
+});
+
+// 按句出声（#1184）：一段（气泡）里第一句写完就合成，不等整段——首句出声从「整段写完 + 合成」
+// 缩到「第一句写完 + 合成」。切句的判据与气泡切段叠着用：先按空行切段，段内再按句末标点切。
+describe("splitSpoken：段内按句切", () => {
+  it("中文句末标点（。！？）每个后面都切；逗号不切；最后一句没标点也留着", () => {
+    expect(splitSpoken("一句。两句！三句？四")).toEqual(["一句。", "两句！", "三句？", "四"]);
+    expect(splitSpoken("好的，我看一下。")).toEqual(["好的，我看一下。"]);
+  });
+  it("西文句末（.?!）后面要跟空白才切：2.0 / Dr. 不切；省略号连成一串", () => {
+    expect(splitSpoken("Hello there. How are you? Fine")).toEqual(["Hello there.", "How are you?", "Fine"]);
+    expect(splitSpoken("v2.0 is out. Wait... what")).toEqual(["v2.0 is out.", "Wait...", "what"]);
+  });
+  it("空行仍然是段界；代码围栏整块一个单位不切句", () => {
+    expect(splitSpoken("第一段。还有\n\n第二段")).toEqual(["第一段。", "还有", "第二段"]);
+    expect(splitSpoken("```\na. b.\n```\n\n然后。")).toEqual(["```\na. b.\n```", "然后。"]);
+  });
+});
+
+describe("feedDelta 按句：一段里写完的句子立刻出声", () => {
+  it("「好的，我看一下。还在写」出第一句；下一片补上后一句；终态一句都不重读", () => {
+    let r = feedDelta(EMPTY_VOICE_FEED, P, "a", "好的，我看一下。还在写");
+    expect(r.out).toEqual([{ agentId: "a", text: "好的，我看一下。" }]);
+    r = feedDelta(r.state, P, "a", "好的，我看一下。还在写的这句也完了。");
+    expect(r.out).toEqual([{ agentId: "a", text: "还在写的这句也完了。" }]);
+    const fin = feedEvent(r.state, P, 0, chat("a", 5, "好的，我看一下。还在写的这句也完了。\n\n第二段"));
+    expect(fin.out).toEqual([{ agentId: "a", text: "第二段" }]);
+  });
+  it("最后一句以西文句号收尾时不算完（可能是 2. 这种半截）；中文句号算完", () => {
+    expect(feedDelta(EMPTY_VOICE_FEED, P, "a", "Version 2.").out).toEqual([]);
+    expect(feedDelta(EMPTY_VOICE_FEED, P, "a", "好。").out).toEqual([{ agentId: "a", text: "好。" }]);
+  });
+});
+
+describe("打断（#1184）：人插话之后这只这一轮剩下的话不读", () => {
+  it("markInterrupted 之后的快照与终态都不出声（但记成已读）；turn_ended 清掉之后下一轮照读", () => {
+    let s = feedDelta(EMPTY_VOICE_FEED, P, "a", "第一句。第二").state;
+    s = markInterrupted(s, "a");
+    let r = feedDelta(s, P, "a", "第一句。第二句。第三");
+    expect(r.out).toEqual([]);
+    r = feedEvent(r.state, P, 0, chat("a", 5, "第一句。第二句。第三句。"));
+    expect(r.out).toEqual([]);
+    const ended: SessionEvent = { sessionId: "s", ts: 0, seq: 6, type: "turn_ended", outcome: "completed", agentId: "a" };
+    s = feedEvent(r.state, P, 0, ended).state;
+    expect(s.interrupted).toEqual([]);
+    expect(feedDelta(s, P, "a", "新一轮。还在").out).toEqual([{ agentId: "a", text: "新一轮。" }]);
+    // 别的那只不受影响
+    expect(feedDelta(markInterrupted(EMPTY_VOICE_FEED, "a"), P, "b", "我照说。还在").out).toEqual([{ agentId: "b", text: "我照说。" }]);
   });
 });

@@ -99,8 +99,8 @@ import { PROXY_SHARE_INVITE_TTL_MS } from "../../shared/remote/proxyInvite.js";
 import { runtimePatch } from "./lib/runtimeHydration.js";
 import { createAgentLanded } from "./lib/cloudTimeline.js";
 import { applyCloudDelta, clearCloudStreamingOn } from "./lib/cloudStreaming.js";
-import { EMPTY_VOICE_FEED, feedDelta, feedEvent, type VoiceFeedState } from "./lib/voiceCall.js";
-import { applySpeechEvent, MIC_OFF, micShouldPause, SPEECH_LOCALE, type MicState } from "./lib/voiceMic.js";
+import { EMPTY_VOICE_FEED, feedDelta, feedEvent, markInterrupted, type VoiceFeedState } from "./lib/voiceCall.js";
+import { applySpeechEvent, bargeInOn, MIC_OFF, micShouldPause, SPEECH_LOCALE, type MicState } from "./lib/voiceMic.js";
 import { VoicePlayer } from "./lib/voicePlayer.js";
 import { voiceCallOf } from "../../shared/voiceCall.js";
 import { agentVoiceId } from "../../shared/agentVoice.js";
@@ -1341,21 +1341,22 @@ function stopMic(): void {
   micPaused = false;
   void window.otter.speechStop();
 }
-/** 半双工：播放器每次变动都来问一遍该不该闭麦；只在跨过那条线时才发命令 */
-function micSync(p: { speaking: string | null; queued: number }): void {
+/** 半双工：播放器每次变动都来问一遍该不该闭麦；只在跨过那条线时才发命令。
+    回声消除开着（#1184）永远不闭——人在 agent 说话时开口是插话，见 speechOnEvent */
+function micSync(p: { speaking: string | null; queued: number; aec: boolean | null }): void {
   if (!micStarted) return;
   const want = micShouldPause(p);
   if (want === micPaused) return;
   micPaused = want;
   void (want ? window.otter.speechPause() : window.otter.speechResume());
 }
-function voicePlayerFor(set: StoreApi<ChatState>["setState"]): VoicePlayer {
+function voicePlayerFor(set: StoreApi<ChatState>["setState"], get: () => ChatState): VoicePlayer {
   if (voicePlayer === null) {
     voicePlayer = new VoicePlayer({
       speak: (text, voiceId) => window.otter.teamVoiceSpeak(text, voiceId),
       onChange: (p) => {
         set((s) => (s.voice ? { voice: { ...s.voice, speaking: p.speaking, queued: p.queued, error: p.error } } : s));
-        micSync(p);
+        micSync({ speaking: p.speaking, queued: p.queued, aec: get().voice?.mic.aec ?? null });
       },
     });
   }
@@ -2687,6 +2688,18 @@ export const useChat = create<ChatState>((set, get) => ({
     if (!v || v.mic.status === "off") return;
     const r = applySpeechEvent(v.mic, ev);
     if (r.state !== v.mic) set((s) => (s.voice ? { voice: { ...s.voice, mic: r.state } } : s));
+    // 插话（#1184）：agent 在说 / 排着要说时人开口够长 → 停播放，这几只这一轮剩下的话不读。
+    // 回声消除开着麦才会在播放时开着，所以走到这里的 partial 本身就是人说的（AEC 漏出来的
+    // 那点由 bargeInOn 的 token 重叠兜底）
+    if (ev.type === "partial" && (v.speaking !== null || v.queued > 0)) {
+      const player = voicePlayerFor(set, get);
+      if (bargeInOn(ev.text, { speaking: v.speaking, queued: v.queued }, player.state().text ?? "")) {
+        for (const id of new Set([...(v.speaking !== null ? [v.speaking] : []), ...player.pendingAgentIds()])) {
+          voiceFeed = markInterrupted(voiceFeed, id);
+        }
+        player.stop();
+      }
+    }
     if (r.final === undefined) return;
     // 说完的一句 = 我在群里说的一句：不 @（走派活），人类点名也没有
     const sessionId = v.sessionId;
@@ -2716,7 +2729,7 @@ export const useChat = create<ChatState>((set, get) => ({
     voiceFeed = r.state; // 静音时也推进：取消静音不补读静音期间的话
     if (v.muted) return;
     const roster = rosterIdsOf(s, cs.workspaceId);
-    const player = voicePlayerFor(set);
+    const player = voicePlayerFor(set, get);
     for (const u of r.out) player.enqueue({ ...u, voiceId: agentVoiceId(u.agentId, roster) });
   },
   voiceOnDelta(delta) {
@@ -2731,7 +2744,7 @@ export const useChat = create<ChatState>((set, get) => ({
     voiceFeed = r.state;
     if (v.muted) return;
     const roster = rosterIdsOf(s, cs.workspaceId);
-    const player = voicePlayerFor(set);
+    const player = voicePlayerFor(set, get);
     for (const u of r.out) player.enqueue({ ...u, voiceId: agentVoiceId(u.agentId, roster) });
   },
 

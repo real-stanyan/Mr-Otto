@@ -65,6 +65,7 @@ app 做了 ad-hoc 签名（`codesign --verify --deep --strict` 能过），但�
 1. helper 是裸二进制没有 .app 壳，两条 usage description（`NSMicrophoneUsageDescription` / `NSSpeechRecognitionUsageDescription`）用链接器 `-sectcreate __TEXT,__info_plist` 嵌进二进制（`native/MrOttoSpeech/Package.swift` 的 `linkerSettings`，plist 在 `Sources/MrOttoSpeech/Info.plist`）；`otool -s __TEXT __info_plist <二进制>` 能看到它。
 2. helper 启动时用 `responsibility_spawnattrs_setdisclaim` + `POSIX_SPAWN_SETEXEC` 原地 exec 成**自己的责任进程**（#1180）：TCC 默认沿进程树把授权归到最顶上的 GUI app（dev 下是起 dev 的那个终端，它没有语音识别那句，TCC 会直接把 helper 杀掉），disclaim 之后弹窗与系统设置里写的都是 MrOttoSpeech，读的是嵌在二进制里的那份 plist。
 3. `electron-builder.yml` 的 `mac.extendInfo` 仍给主 app 补了这两句：接口哪天没了、disclaim 失败时授权归 Mr Otto.app，打包态照样能弹窗。dev 下没有这层兜底（责任进程会是终端）。
+4. helper 开着系统回声消除（`AVAudioInputNode.setVoiceProcessingEnabled`，#1184 / ADR-0276）：扬声器里放的 agent 语音不会被录回去，麦常开、人可以插嘴。开着时输入是多声道（真机 9 声道），helper 只取第 0 声道；VPIO 默认会压低别的 app 的声音，helper 把 ducking 压到最低（macOS 14+）。排障：`MROTTO_SPEECH_NO_AEC=1` 起 app 可关掉对比；`status.aec` 为假时渲染层退回半双工。
 
 没有 hardened runtime、不沙箱，所以不需要 `com.apple.security.device.audio-input` 那类 entitlement。
 

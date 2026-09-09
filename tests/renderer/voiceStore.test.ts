@@ -190,10 +190,57 @@ describe("store 的麦克风接线（#1176）", () => {
   it("没权限：status 说清去哪儿勾，之后的 error 不盖掉那句话", () => {
     const st = useChat.getState();
     st.joinVoiceCall();
-    st.speechOnEvent({ type: "status", speech: "denied", mic: "authorized", onDevice: true, locale: "zh-CN" });
+    st.speechOnEvent({ type: "status", speech: "denied", mic: "authorized", onDevice: true, locale: "zh-CN", aec: null });
     st.speechOnEvent({ type: "error", message: "没有「语音识别」权限" });
     const mic = useChat.getState().voice?.mic;
     expect(mic?.status).toBe("denied");
     expect(mic?.error).toContain("系统设置");
+  });
+});
+
+// 常开麦 + 打断（#1184）：helper 报回声消除开着 → agent 说话时不再闭麦；人在 agent 说话时开口
+// （partial 够长）→ 停播放、这只这一轮剩下的话不读；声浪进 mic.level。
+describe("store：回声消除下的常开麦与打断（#1184）", () => {
+  const otter = () => (window as unknown as { otter: Record<string, ReturnType<typeof vi.fn>> }).otter;
+  const m = (k: string): ReturnType<typeof vi.fn> => otter()[k]!;
+  const aecOn = (): void => {
+    useChat.getState().speechOnEvent({ type: "status", speech: "authorized", mic: "authorized", onDevice: true, locale: "zh-CN", aec: true });
+    useChat.getState().speechOnEvent({ type: "listening", on: true });
+  };
+
+  it("回声消除开着：agent 的回复开始播 → 不 speechPause", async () => {
+    const st = useChat.getState();
+    st.joinVoiceCall();
+    aecOn();
+    st.voiceOnEvent(said("a_1", 2, "在的"));
+    await flush();
+    expect(m("speechPause")).not.toHaveBeenCalled();
+  });
+
+  it("agent 在说时人开口（partial 够长）→ 播放停、这只这一轮后面的话不再送去合成；太短的不算", async () => {
+    const st = useChat.getState();
+    st.joinVoiceCall();
+    aecOn();
+    useChat.setState((s) => ({ voice: { ...s.voice!, speaking: "a_1", queued: 1 } }));
+    st.speechOnEvent({ type: "partial", text: "嗯" });
+    expect(useChat.getState().voice?.speaking).toBe("a_1");
+    st.speechOnEvent({ type: "partial", text: "等一下我想问" });
+    expect(useChat.getState().voice).toMatchObject({ speaking: null, queued: 0 });
+    st.voiceOnDelta({ sessionId: "s1", agentId: "a_1", kind: "content", text: "后半段。还有" });
+    st.voiceOnEvent(said("a_1", 3, "后半段。还有一句。"));
+    await flush();
+    expect(spoken).toEqual([]);
+    // 这一轮收口之后下一轮照读
+    st.voiceOnEvent({ sessionId: "s1", ts: 0, seq: 4, type: "turn_ended", outcome: "completed", agentId: "a_1" });
+    st.voiceOnEvent(said("a_1", 5, "新一轮。"));
+    await flush();
+    expect(spoken.map((s) => s.text)).toEqual(["新一轮。"]);
+  });
+
+  it("level 事件进 mic.level / mic.active", () => {
+    const st = useChat.getState();
+    st.joinVoiceCall();
+    st.speechOnEvent({ type: "level", value: 0.3, active: true });
+    expect(useChat.getState().voice?.mic).toMatchObject({ level: 0.3, active: true });
   });
 });

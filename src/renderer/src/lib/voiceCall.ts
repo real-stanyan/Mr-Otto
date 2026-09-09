@@ -7,6 +7,13 @@
 // assistant_message 落下来时补读没读过的段，然后清这只的记号。已读的判据是**原文相等**
 // （快照与终态出自同一份正文，切段又是同一个函数），不是下标。
 //
+// **按句不按段**（#1184，ADR-0276）：段内再按句末标点切一刀（splitSpoken），一段里第一句写完就合成——
+// 首句出声从「整段写完 + 合成」缩到「第一句写完 + 合成」；已读判据不变（原文相等），只是单位
+// 从段变成句。快照末尾那一句只在以中文句末标点（。！？）或西文 !? 收尾时算完——西文句号
+// 可能是「2.」这种半截，等下一片。
+// **打断**（同上）：人在 agent 说话时开口，这只**这一轮**剩下的话不读（`interrupted`），turn_ended 清。
+// 记成已读照旧——终态落下来不该把没读的那几句补回去，人已经打断它了。
+//
 // 播放器（voicePlayer.ts）与 store 的接线不在这里：这个文件零 DOM、零 IPC。
 
 import { splitBubbles } from "./chatBubbles.js";
@@ -54,28 +61,91 @@ export interface Utterance {
   text: string;
 }
 
-/** 每只 agent **这一轮**已经读过（或跳过）的段，原文相等判重。终态 / turn_ended 一到就清 */
+/** 每只 agent **这一轮**已经读过（或跳过）的句，原文相等判重；`interrupted` 是这一轮被人打断了的
+    那几只（剩下的话不读）。终态 / turn_ended 一到就清 */
 export interface VoiceFeedState {
   spoken: Record<string, string[]>;
+  interrupted: string[];
 }
 
-export const EMPTY_VOICE_FEED: VoiceFeedState = { spoken: {} };
+export const EMPTY_VOICE_FEED: VoiceFeedState = { spoken: {}, interrupted: [] };
 
-/** 把这几段里没读过的挑出来（剥完为空的段记成已读但不出声），回新状态 + 要读的。
-    一段都没新读到时回**同一个** state 对象（调用方据此跳过一次 set） */
-function take(state: VoiceFeedState, agentId: string, bubbles: readonly string[]): { state: VoiceFeedState; out: Utterance[] } {
+const FENCE = /^\s*(```|~~~)/;
+/** 中文句末标点：后面直接切 */
+const CJK_END = "。！？";
+/** 西文句末：一串（... / !?）之后要跟空白或到底才切——「2.0」「Dr.」不切 */
+const LATIN_END = ".?!";
+
+/** 一段（气泡）里按句切。代码围栏整块一个单位 */
+function splitSentences(bubble: string): string[] {
+  if (FENCE.test(bubble)) return [bubble];
+  const out: string[] = [];
+  let start = 0;
+  let i = 0;
+  const push = (end: number): void => {
+    const s = bubble.slice(start, end).trim();
+    if (s !== "") out.push(s);
+    start = end;
+  };
+  while (i < bubble.length) {
+    const ch = bubble[i]!;
+    if (CJK_END.includes(ch)) {
+      push(i + 1);
+      i += 1;
+      continue;
+    }
+    if (LATIN_END.includes(ch)) {
+      let j = i;
+      while (j + 1 < bubble.length && LATIN_END.includes(bubble[j + 1]!)) j += 1;
+      const after = bubble[j + 1];
+      if (after === undefined || /\s/.test(after)) {
+        push(j + 1);
+        i = j + 1;
+        continue;
+      }
+      i = j + 1;
+      continue;
+    }
+    i += 1;
+  }
+  push(bubble.length);
+  return out;
+}
+
+/** 一条回复 → 要读的单位：先按空行切段（同气泡），段内再按句 */
+export function splitSpoken(text: string): string[] {
+  return splitBubbles(text).flatMap(splitSentences);
+}
+
+/** 快照末尾那一句算不算写完了：中文句末标点 / 西文 !? 收尾算；西文句号不算（可能是「2.」半截） */
+function endsSentence(unit: string): boolean {
+  const last = unit.trimEnd().slice(-1);
+  return last !== "" && (CJK_END.includes(last) || last === "!" || last === "?");
+}
+
+/** 把这几句里没读过的挑出来（剥完为空的记成已读但不出声；被打断的这只只记不读），
+    回新状态 + 要读的。一句都没新读到时回**同一个** state 对象（调用方据此跳过一次 set） */
+function take(state: VoiceFeedState, agentId: string, units: readonly string[]): { state: VoiceFeedState; out: Utterance[] } {
   const seen = state.spoken[agentId] ?? [];
-  const fresh = bubbles.filter((b) => !seen.includes(b));
+  const fresh = units.filter((b) => !seen.includes(b));
   if (fresh.length === 0) return { state, out: [] };
   const out: Utterance[] = [];
-  for (const b of fresh) {
-    const text = spokenText(b);
-    if (text !== "") out.push({ agentId, text });
+  if (!state.interrupted.includes(agentId)) {
+    for (const b of fresh) {
+      const text = spokenText(b);
+      if (text !== "") out.push({ agentId, text });
+    }
   }
-  return { state: { spoken: { ...state.spoken, [agentId]: [...seen, ...fresh] } }, out };
+  return { state: { ...state, spoken: { ...state.spoken, [agentId]: [...seen, ...fresh] } }, out };
 }
 
-/** 一片流式快照到了：完成的段（最后一段之前的每一段）里没读过的出声 */
+/** 人插话了：这只这一轮剩下的话不读（turn_ended 清） */
+export function markInterrupted(state: VoiceFeedState, agentId: string): VoiceFeedState {
+  if (state.interrupted.includes(agentId)) return state;
+  return { ...state, interrupted: [...state.interrupted, agentId] };
+}
+
+/** 一片流式快照到了：写完的句（最后一句之前的每一句，末尾那句以句末标点收尾也算）里没读过的出声 */
 export function feedDelta(
   state: VoiceFeedState,
   participants: ReadonlySet<string>,
@@ -83,7 +153,9 @@ export function feedDelta(
   text: string
 ): { state: VoiceFeedState; out: Utterance[] } {
   if (!participants.has(agentId)) return { state, out: [] };
-  const complete = splitBubbles(text).slice(0, -1);
+  const units = splitSpoken(text);
+  const last = units.at(-1);
+  const complete = last !== undefined && endsSentence(last) && !FENCE.test(last) && text.trimEnd().endsWith(last.slice(-1)) ? units : units.slice(0, -1);
   return take(state, agentId, complete);
 }
 
@@ -99,14 +171,23 @@ export function feedEvent(
   const agentId = e.agentId;
   if (agentId === undefined || !participants.has(agentId)) return { state, out: [] };
   const cleared = (s: VoiceFeedState): VoiceFeedState => {
+    const hadSpoken = agentId in s.spoken;
+    const hadInterrupt = s.interrupted.includes(agentId);
+    if (!hadSpoken && !hadInterrupt) return s;
+    const spoken = { ...s.spoken };
+    delete spoken[agentId];
+    return { spoken, interrupted: hadInterrupt ? s.interrupted.filter((id) => id !== agentId) : s.interrupted };
+  };
+  // turn_ended 才清「被打断」：终态之后 turn 还没收口，不清的话终态那一步会把剩下的补读出来
+  if (e.type === "turn_ended") return { state: cleared(state), out: [] };
+  const clearSpoken = (s: VoiceFeedState): VoiceFeedState => {
     if (!(agentId in s.spoken)) return s;
     const spoken = { ...s.spoken };
     delete spoken[agentId];
-    return { spoken };
+    return { ...s, spoken };
   };
-  if (e.type === "turn_ended") return { state: cleared(state), out: [] };
-  if (e.seq <= listenSinceSeq) return { state: cleared(state), out: [] };
-  // 工具步（content 空、只有 toolCalls）没有话可念；终态整条按段补读
-  const r = e.content.trim() === "" ? { state, out: [] } : take(state, agentId, splitBubbles(e.content));
-  return { state: cleared(r.state), out: r.out };
+  if (e.seq <= listenSinceSeq) return { state: clearSpoken(state), out: [] };
+  // 工具步（content 空、只有 toolCalls）没有话可念；终态整条按句补读
+  const r = e.content.trim() === "" ? { state, out: [] } : take(state, agentId, splitSpoken(e.content));
+  return { state: clearSpoken(r.state), out: r.out };
 }

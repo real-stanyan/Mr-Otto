@@ -22,6 +22,8 @@ export interface VoicePlayerState {
   queued: number;
   /** 最近一次合成 / 播放失败的那句话；下一段成功就清 */
   error: string | null;
+  /** 此刻在读的那句原文（#1184：插话的回声兜底要拿它比 token；全屏视图画字幕）；静默时 null */
+  text: string | null;
 }
 
 /** 播放一段要用到的那几格。Web Audio 那份实现在 webAudioPlayback；测试里造一个假的 */
@@ -124,7 +126,14 @@ export class VoicePlayer {
   }
 
   state(): VoicePlayerState {
-    return { speaking: this.current?.item.agentId ?? null, queued: this.queue.length, error: this.error };
+    return { speaking: this.current?.item.agentId ?? null, queued: this.queue.length, error: this.error, text: this.current?.item.text ?? null };
+  }
+
+  /** 此刻有话要说的每一只（在说的 + 排着的），去重。人插话时这几只这一轮剩下的都不读 */
+  pendingAgentIds(): string[] {
+    const ids = this.current ? [this.current.item.agentId] : [];
+    for (const it of this.queue) if (!ids.includes(it.agentId)) ids.push(it.agentId);
+    return ids;
   }
 
   enqueue(u: { agentId: string; text: string; voiceId: string }): void {
