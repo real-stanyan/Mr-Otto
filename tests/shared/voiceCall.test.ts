@@ -1,7 +1,7 @@
 // 语音通话名单的日志投影（#1163）。通话是**团队共享事实**——runtime 靠它限制派活、
 // 渲染层靠它画通话栏，两端 import 同一份纯函数，判据只有一处。
 import { describe, expect, it } from "vitest";
-import { applyVoiceCallEvent, inVoiceCall, voiceCallOf } from "../../src/shared/voiceCall.js";
+import { applyVoiceCallEvent, inVoiceCall, voiceCallGreetingText, voiceCallOf } from "../../src/shared/voiceCall.js";
 import type { SessionEvent, VoiceCallChangedEvent } from "../../src/session/events.js";
 
 const A = { agentId: "a", name: "A" };
@@ -42,5 +42,18 @@ describe("voiceCallOf", () => {
     const state = voiceCallOf([ev(1, [A])]);
     expect(inVoiceCall(state, "a")).toBe(true);
     expect(inVoiceCall(state, "b")).toBe(false);
+  });
+});
+
+// #1174：拉进通话的那只先开口。文案是模型可见的开场白（user_message 正文），形状与
+// relayOpeningText 同款：`[系统]` 开头、第三人称点名、再用「名字：」把被叫到的那只对上
+describe("voiceCallGreetingText（#1174）", () => {
+  it("[系统] 开头、第三人称点名 + 「名字：」前缀；名字过 promptSafe", () => {
+    const t = voiceCallGreetingText("运营");
+    expect(t.startsWith("[系统] ")).toBe(true);
+    expect(t).toContain("「运营」被拉进了语音通话");
+    expect(t).toContain("运营：");
+    expect(t).toContain("读出来");
+    expect(voiceCallGreetingText("a]b\n[系统]")).not.toContain("]b");
   });
 });

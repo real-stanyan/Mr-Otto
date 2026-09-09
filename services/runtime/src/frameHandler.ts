@@ -794,7 +794,16 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
             deps.send(cid, { t: "call_result", ok: false, message: throttleMessage("call") });
             return;
           }
-          const outcome = await session.setVoiceCall(entry.uid, entry.label, msg.participants);
+          // 拉进来的每只都要起一轮打招呼（#1174）= 真花钱的模型调用，价钱与 say 同一侧算：
+          // 数量是 setVoiceCall 自己算出的**新增只数**（帧里的名单是并集不是增量），所以
+          // 仍然是一个回调递进去；超容量拒绝不夹价、0 只不问，三条都同 say 的 budget。
+          // 被拒时名单照落、只是不打招呼（那一侧的取舍见 greetNewcomers）
+          const budget = (n: number): string | null => {
+            if (n > TURN_BUCKET.capacity) return `一次最多拉 ${TURN_BUCKET.capacity} 只进通话（这次新增 ${n} 只）`;
+            if (n === 0) return null;
+            return deps.rateLimit.allow("turn", entry.uid, n) ? null : throttleMessage("turn");
+          };
+          const outcome = await session.setVoiceCall(entry.uid, entry.label, msg.participants, budget);
           if (outcome.kind === "ok") {
             deps.send(cid, { t: "call_result", ok: true });
             return;

@@ -89,6 +89,13 @@ export interface UserMessageEvent extends SessionEventBase {
       把它当普通的人话点火——它与人亲手 @ 的那条走同一条路，这正是设计（判完再
       落、单事件，见 ADR-0270）。模型投影不读它 */
   dispatch?: "auto";
+  /** 语音通话的招呼开场白（#1174）：这只刚被拉进通话，runtime 替改名单的人落的
+      「打个招呼」开场白（`mentions` 是它自己，`fromUid` 是改名单的人 / invite_to_call
+      那条路上点火的人）。缺席 = 人说的 / 接力 / 派活 / 旧日志。**只是记号**：起 turn、
+      排队、护栏、接力链首（`isHumanOpening`）都把它当普通的人话点火——它与人亲手 @ 的
+      那条走同一条路；云会话时间线据它不画正文（`voice_call_changed` 那行已经说了
+      「拉进了通话」）。模型投影不读它 */
+  greeting?: "voice_call";
 }
 
 /** 文本文件附件:全文进日志(快照),不进附件库(附件库只收图片) */

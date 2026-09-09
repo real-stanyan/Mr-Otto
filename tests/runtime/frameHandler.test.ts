@@ -1766,8 +1766,31 @@ describe("语音通话名单（#1163）", () => {
     sent.length = 0;
     await handler.onSessionFrame("w1", "s1", "c1", callFrame(["admin", "a_1"]));
     expect(sent.map((s) => s.msg)).toEqual([{ t: "call_result", ok: true }]);
-    expect(calls).toEqual([["u1", "Label(u1)", ["admin", "a_1"]]]);
+    expect(calls).toHaveLength(1);
+    expect((calls[0] as unknown[]).slice(0, 3)).toEqual(["u1", "Label(u1)", ["admin", "a_1"]]);
+    expect(typeof (calls[0] as unknown[])[3]).toBe("function"); // 第 4 个是问价回调（#1174）
     expect(logs).toHaveLength(0);
+  });
+
+  // #1174：拉进来的每只都要起一轮打招呼 = 真花钱的模型调用。价钱与 say 同一侧算：
+  // 数量由 setVoiceCall 自己算出的**新增只数**决定（客户端帧里的名单是并集，不是增量），
+  // 所以仍然是一个回调递进去；超容量拒绝不夹价（同 say 的 budget）；0 只不问
+  it("第 4 个参数是 turn 桶的问价回调：按新增只数扣、超容量拒绝、0 只不问", async () => {
+    let budget: ((n: number) => string | null) | undefined;
+    const session = fakeSession({ setVoiceCall: async (_u, _l, _p, b) => { budget = b; return { kind: "ok" }; } });
+    const allowCalls: unknown[][] = [];
+    const { deps } = makeDeps({
+      getSession: () => session,
+      rateLimit: { allow: (...a) => { allowCalls.push(a); return a[0] !== "turn"; } },
+    });
+    const handler = createFrameHandler(deps);
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    await handler.onSessionFrame("w1", "s1", "c1", callFrame(["admin", "a_1"]));
+    expect(budget).toBeTypeOf("function");
+    expect(budget!(0)).toBeNull();
+    expect(budget!(2)).toBe(throttleMessage("turn"));
+    expect(allowCalls).toEqual([["call", "u1"], ["turn", "u1", 2]]);
+    expect(budget!(TURN_BUCKET.capacity + 1)).toContain(String(TURN_BUCKET.capacity));
   });
 
   it("unknown_agent / archived → call_result{ok:false} 带服务端那句话，各记一笔", async () => {
