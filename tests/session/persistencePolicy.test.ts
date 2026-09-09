@@ -46,6 +46,7 @@ const DURABLE = [
   "voice_call_changed",
   "memory_loaded",
   "workspace_memory_loaded",
+  "workspace_wiki_loaded",
   "memory_user_edit",
   "memory_nudge",
   "micro_compacted",

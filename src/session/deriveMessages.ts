@@ -12,6 +12,7 @@ import { absorbedIndexes } from "./microCompact.js";
 import { charCount, MEMORY_LIMITS, parseEntries, formatEntries, tierRuleText, topicRuleText, topicIndexOf } from "../shared/memoryStore.js";
 import { renderTopicIndex } from "../shared/memoryTopics.js";
 import { WORKSPACE_MEMORY_LIMITS, workspaceTierRuleText } from "../shared/workspaceMemory.js";
+import { renderWikiPrompt } from "../shared/wiki.js";
 import { sanitizeForPrompt } from "../shared/threatPatterns.js";
 
 /** 用户正文 + 文本文件全文拼成模型可见文本。日志里二者分开存
@@ -97,22 +98,30 @@ export function systemPromptText(
        或者反过来以为每条消息都要回；
     ③ 审批归发起人/所有者：桌面那句「弹给用户审批」在这里字面上不成立
        （屏幕前不止一个人）；
-    ④ 推不出去：沙箱的凭据用完即焚（services/runtime/src/sandbox.ts），
-       模型干完活习惯性 `git push` 会失败，更糟的是它可能因此以为「提交
-       已经安全了」——实际这些提交只活在这个卷里；
+    ④ 推得出去，但只走 `git_push`（#1105；#1206 改）：容器里没有任何 Git 凭据
+       （token 只在一次性旁路容器里用一下，ADR-0200 决策②），在 bash 里
+       `git push` 必撞认证失败；模型看不见工具表背后的机制，所以要说清三件事——
+       走哪把刀、主干推不了要人开 PR、没存 token 时把人指到哪儿。#1206 之前
+       这里写的是「不允许 git push、凭据用完就烧了」（团队绑一个仓库的时代），
+       真机语音通话里「开发」手里有 git_push 却照这句告诉用户推不了——
+       **模型信的是提示词不是工具表，两边必须说同一句话**；
     ⑤ 浅克隆（issue #836）：`git log` 只有一条会让它以为这是个新仓库、
        或者以为 blame 坏了。给出解法（`git fetch --unshallow`）而不是
-       只说限制——这一条它自己解得开。 */
+       只说限制——但那条命令跑在水獭自己的容器里、没凭据，**只对公开仓成立**，
+       私有仓要说清补不了（#1206）。 */
 const CLOUD_SESSION_TEXT =
   `你跑在一台云沙箱容器里（Linux），工具都在容器内执行，工作目录就是上面那个。\n` +
   `这是一条**群聊**会话：团队的多个成员都能发言，他们的消息以「[名字]: 内容」的形式到你这里；` +
   `@ 你的那条、以及没 @ 任何人但系统按职责派给你的那条，会触发你的回合；其余的你看得见但不必逐条回应。\n` +
   `危险操作的审批由发起这一轮的人或团队所有者决定，不是"某个用户"——` +
   `被拒同样是"别做这件事"，别换个写法绕过去。\n` +
-  `这个沙箱不允许 git push（拉代码用的凭据用完就烧了）。你的提交只留在这个团队的工作目录里，` +
-  `别当成"已经推上去了"——需要交付时说一声，让人来决定怎么带出去。\n` +
-  `仓库是 \`--depth 1\` 的浅克隆（issue #836：卷没有磁盘配额，历史往往比工作树大一个量级）——` +
-  `\`git log\` 只看得到最新一条。真要历史，自己跑 \`git fetch --unshallow\`。\n`;
+  `Git 走三把专用工具：拉仓库用 \`clone_repo\`，提交并推用 \`git_push\`，在 GitHub 建新仓用 \`create_repo\`。` +
+  `这个容器里没有任何 Git 凭据（token 只在一次性旁路容器里用一下），所以别在 bash 里自己 \`git push\`，私有仓库也别自己 clone。\n` +
+  `\`git_push\` 只推**非默认分支**（main/master 推不了，也不能强推），要合进主干让人去开 PR；` +
+  `它要团队先在「团队设置 → 连接器 → 代码仓库」存过这台主机的 token，没存过时照实说去那儿加，别说成沙箱不允许推。` +
+  `推之前你的提交只活在这个团队的工作目录里，别当成已经推上去了。\n` +
+  `\`clone_repo\` 拉的是 \`--depth 1\` 的浅克隆（issue #836：卷没有磁盘配额，历史往往比工作树大一个量级），` +
+  `\`git log\` 只看得到最新一条。公开仓库要完整历史就跑 \`git fetch --unshallow\`；私有仓库补不了（容器里没凭据），照实说看不到历史。\n`;
 
 /** 云会话（工作区群聊）的回复口径（#989 → #1132，ADR-0266）：群里的读者是
     各行各业的人，不是开发者。#989 那版只挡住了 otto-* 围栏，真机上留下的形态是
@@ -511,6 +520,8 @@ export function deriveMessages(
   let agentBrief: string | null = null;
   // 工作区记忆快照（#949）：最新一条胜出，主循环结束后统一拼一次（见下方）
   let workspaceMemoryPrompt: string | null = null;
+  // 团队 wiki 快照（#1140）：最新一条胜出，主循环结束后统一拼一次（见下方）
+  let workspaceWikiPrompt: string | null = null;
   // 语音通话名单（#1163）：同上，最新一条胜出、空名单 = 没有。只在云会话注入——
   // 通话是云会话的东西，本机日志里不会有这条事件，有也不该长出一块提示词
   let voiceCall: VoiceCallParticipant[] | null = null;
@@ -837,6 +848,11 @@ export function deriveMessages(
         workspaceMemoryPrompt = renderWorkspaceMemoryPrompt(event);
         break;
 
+      case "workspace_wiki_loaded":
+        // 同 workspace_memory_loaded：不 +=，最新一条胜出，主循环结束后拼一次到 system 尾部（#1140）
+        workspaceWikiPrompt = renderWikiPrompt(event);
+        break;
+
       case "context_compacted":
         // 摘要替换此前的一切投影：清空重来。两点讲究：
         // ① 围栏 system 消息必须幸存——工作目录认知不能被压掉；
@@ -950,7 +966,9 @@ export function deriveMessages(
   if (systemMessage && agentBrief) systemMessage.content += agentBrief;
   // 工作区记忆块拼在 system 末尾（#949）。systemMessage 为 null（旧日志 / 没带 workspace）时静默不补造，同 memory_loaded
   if (systemMessage && workspaceMemoryPrompt) systemMessage.content += workspaceMemoryPrompt;
-  // 通话块排在记忆之后（#1163）：它是此刻的状态，也是最会变的那一段——放最尾
+  // 团队 wiki 块拼在 system 末尾（#1140）。systemMessage 为 null（旧日志 / 没带 workspace）时静默不补造，同 workspace_memory_loaded
+  if (systemMessage && workspaceWikiPrompt) systemMessage.content += workspaceWikiPrompt;
+  // 通话块排在记忆与 wiki 之后（#1163）：它是此刻的状态，也是最会变的那一段——放最尾
   // 前缀缓存只从这里往下失效
   if (systemMessage && isCloud && voiceCall) systemMessage.content += renderVoiceCallPrompt(voiceCall, briefName, briefRoster);
 

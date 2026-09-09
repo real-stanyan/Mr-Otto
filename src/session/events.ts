@@ -666,6 +666,21 @@ export interface WorkspaceMemoryLoadedEvent extends SessionEventBase {
   own: string;
 }
 
+/** 团队 wiki 快照（#1140，推翻 workspace_memory_loaded 的落点与形状）：起 turn 前注入的
+    索引 + 常驻页 + 这只 agent 自己那页 + （只给管理员的）整理提醒。缺席或内容变了才落、投影
+    最新一条胜出——判据与 workspace_memory_loaded 逐字相同（ADR-0222 决策 2）。
+    `pinned[].body` 与 `own` 是**落盘那一刻已经过 scanThreat 的版本**（命中的页换成一行警告）：
+    事件里的内容就是注入的内容，投影不再过滤 */
+export interface WorkspaceWikiLoadedEvent extends SessionEventBase {
+  type: "workspace_wiki_loaded";
+  agentId: string;
+  agentName: string;
+  index: string;
+  pinned: { path: string; title: string; body: string }[];
+  own: string | null;
+  nudge: string | null;
+}
+
 /** 额外 15：用户在 UI（设置页 / memory-chips 的"忘掉"）直接改记忆文件。
     模型不可见。它是"记忆文件可从日志重建"这句话的凭据：工具写入已经有
     tool_call/tool_result 作证，人手改的没有——这条补上 */
@@ -1055,6 +1070,7 @@ export type SessionEvent =
   | VoiceCallChangedEvent
   | MemoryLoadedEvent
   | WorkspaceMemoryLoadedEvent
+  | WorkspaceWikiLoadedEvent
   | MemoryUserEditEvent
   | MemoryNudgeEvent
   | MicroCompactedEvent
@@ -1116,6 +1132,7 @@ const KNOWN_EVENT_TYPES_MAP: Record<SessionEvent["type"], true> = {
   voice_call_changed: true,
   memory_loaded: true,
   workspace_memory_loaded: true,
+  workspace_wiki_loaded: true,
   memory_user_edit: true,
   memory_nudge: true,
   micro_compacted: true,

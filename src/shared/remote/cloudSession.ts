@@ -7,7 +7,17 @@ import type { SessionEvent } from "../../session/events.js";
 import { b64decode, b64encode } from "./b64.js";
 import { MAX_FRAME_BYTES } from "./wire.js";
 
-/** 16（issue #1107）：`CsDown` 加 `delta` 帧——云会话的助手输出**流式下行**。
+/** 18（#1140，ADR-0282）：加一对 `wiki_write` / `wiki_write_result`（控制房写帧）——**团队 wiki 从设置页改得了**。
+    团队记忆从两档小黑板换成 /work/wiki/ 里的 markdown 页面之后，人改一页要经 runtime 走**与工具同一条写入路径**
+    （盖章 / 重生成 index / log / journal），所以是一条帧不是直连 Supabase。任何在籍成员都能写，判据同 files。
+    **本来是 17**：语音那批（#1163）与这一批并行开发，各自把 16 进到 17，合并时两个 17 各缺对方一半的帧——
+    而握手是精确相等，两个 17 都能过版本闸却谁都不认识对方的帧。所以合并后进到 18，语音那批留在 17。
+    17（#1163）：会话房加 `call` 上行帧 + `call_result` 回执——**语音通话的名单**。`participants` = 此刻该在
+    通话里的 agent id，**空数组 = 结束通话**；任何在籍成员都能发（微信群语音谁都能拉人），服务端按此刻的名单
+    复核每个 id，名单外的整帧拒不静默过滤。落成 `voice_call_changed` 事件广播给房里所有人——那条事件就是回执
+    之外的事实，`call_result` 只答「收没收下」。（这条 changelog 是合并 #1140 时补的：那一批只在帧定义上写了
+    「协议 17」，顶上这份清单漏了一条——清单跳号读起来像出错了。）
+    16（issue #1107）：`CsDown` 加 `delta` 帧——云会话的助手输出**流式下行**。
     与本机会话的 delta 同一份契约（`persistencePolicy` 的 `TransientPushKind`）：
     碎片是临时 UI 预览不是事实，**不进事件日志**，终态 `assistant_message`
     整份覆盖预览。帧不带 seq、不进 backlog、不参与去重；`text` 走**累计快照**
@@ -97,7 +107,7 @@ import { MAX_FRAME_BYTES } from "./wire.js";
     少一格状态。**加一个枚举值同理**：老客户端的 isValidCsDeniedCode 认不出
     `rate_limited`，decodeCsDown 回 null，那一帧被静默忽略，于是 create()
     要白等满超时才回一句"云端无响应"——把"你被限速了"说成"对面没回话"。 */
-export const CS_PROTOCOL_VERSION = 17;
+export const CS_PROTOCOL_VERSION = 18;
 export const CS_MAX_TEXT_BYTES = 64 * 1024;
 
 /** 一次回多少字节的文件内容（#1056）。中继单帧上限是 256 KiB（wire.ts 的
@@ -258,6 +268,14 @@ export type CsDeniedCode =
       再来"，两者语义相反——会话房里的限速回的是 `error` 帧 */
   | "rate_limited";
 
+/** 设置页改一页 wiki（控制房帧，协议 18，#1140）：write 整页替换、remove 删页。服务端走与 wiki 工具同一条写入路径。
+    `sources` 是 add-only 的一格（协议号不进位）：write 是**整页替换**，不带它就等于人每改一句正文
+    都把页头原来的 sources 抹掉——而界面上根本没有编辑它的地方，那是一次谁都没要求过的删除。
+    缺席 = 这条帧没有意见（服务端按空处理，与新建页一致），不是「清空」 */
+export type CsWikiWriteReq =
+  | { op: "write"; path: string; title: string; summary: string; pinned: boolean; body: string; sources?: string[] }
+  | { op: "remove"; path: string };
+
 /** 成员 → runtime */
 export type CsUp =
   | { t: "hello"; v: number; jwt: string }
@@ -303,6 +321,9 @@ export type CsUp =
       与归档的差别写在 `delete_result` 上：归档是「收尾，还看得见」，删除是
       「整段事件日志从 VPS 上抹掉，谁都再看不到」 */
   | { t: "delete"; workspaceId: string; sessionId: string }
+  /** 设置页改一页 wiki（协议 18，#1140）：write 整页替换、remove 删页。判据同 files——任何在籍成员都能写，
+      服务端走与 wiki 工具同一条写入路径（保留页 / 预算 / 可疑指令由 wikiService 把关） */
+  | ({ t: "wiki_write"; workspaceId: string } & CsWikiWriteReq)
   /** 停掉当前正在跑的这一轮 turn（#957 第三批）。谁能停与 approve 同一判据——
       发起人或 owner；已排队未跑的 job 照旧，停的是"这一轮"不是清队列。
       `seq`（add-only，协议号不变）= 客户端按的那一行开场白自己的 seq（复审
@@ -376,6 +397,9 @@ export type CsDown =
   /** `files_search` 的答复（协议 12，#1066）。`hits: []` 与 `ok:false` 是两回事：
       前者 = 搜过了，没有；后者 = 没搜成。合成一句就会把「rg 挂了」说成「仓里没有」 */
   | { t: "files_search_result"; workspaceId: string; query: string; ok: boolean; hits?: CsWorkHit[]; message?: string }
+  /** `wiki_write` 的回执（协议 18，#1140）。ok=false 的 message 是 wikiService 抛出的那句人话
+      （预算超了 / 路径不合法 / 保留页），原样带回——同 archive_result 的先例，不复用 `error` */
+  | { t: "wiki_write_result"; workspaceId: string; path: string; ok: boolean; message?: string }
   /** say 的回执（#957 第三批）。同 config_result 的纪律——不复用 error。
       ok=false 时 message 说明为什么（限速 / 不在籍 / 抛错），文案不变，只是
       换了个帧承载。 */
@@ -619,6 +643,25 @@ export function decodeCsUp(b64: string): CsUp | null {
       return null;
     }
 
+    if (t === "wiki_write") {
+      if (typeof obj.workspaceId !== "string" || typeof obj.path !== "string") return null;
+      if (obj.op === "remove") return { t: "wiki_write", workspaceId: obj.workspaceId, op: "remove", path: obj.path };
+      if (
+        obj.op === "write" && typeof obj.title === "string" && typeof obj.summary === "string" &&
+        typeof obj.pinned === "boolean" && typeof obj.body === "string"
+      ) {
+        // sources 缺席合法；在场但形状不对整帧拒（同 call 的 participants）——半懂的帧比拒了更糟
+        const src = obj.sources;
+        if (src !== undefined && !(Array.isArray(src) && src.every((x) => typeof x === "string"))) return null;
+        return {
+          t: "wiki_write", workspaceId: obj.workspaceId, op: "write", path: obj.path,
+          title: obj.title, summary: obj.summary, pinned: obj.pinned, body: obj.body,
+          ...(src !== undefined ? { sources: src as string[] } : {}),
+        };
+      }
+      return null;
+    }
+
     if (t === "archive") {
       // 协议 9 起 workspaceId + sessionId 必填——不知道归档谁的话，这条帧没有意义
       if (typeof obj.workspaceId === "string" && typeof obj.sessionId === "string") {
@@ -746,6 +789,20 @@ export function decodeCsDown(b64: string): CsDown | null {
         const result: CsDown = { t: "files_result", workspaceId: obj.workspaceId, path: obj.path, ok: obj.ok };
         const node = normalizeWorkNode(obj.node);
         if (node) result.node = node;
+        if (typeof obj.message === "string") result.message = obj.message;
+        return result;
+      }
+      return null;
+    }
+
+    if (t === "wiki_write_result") {
+      if (
+        typeof obj.workspaceId === "string" &&
+        typeof obj.path === "string" &&
+        typeof obj.ok === "boolean" &&
+        (obj.message === undefined || typeof obj.message === "string")
+      ) {
+        const result: CsDown = { t: "wiki_write_result", workspaceId: obj.workspaceId, path: obj.path, ok: obj.ok };
         if (typeof obj.message === "string") result.message = obj.message;
         return result;
       }

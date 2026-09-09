@@ -80,6 +80,7 @@ import {
   type CsModelRoute,
   type CsDown,
   type CsUp,
+  type CsWikiWriteReq,
   type CsWorkHit,
   type CsWorkNode,
 } from "../shared/remote/cloudSession.js";
@@ -247,6 +248,9 @@ export interface CloudSessionClient {
   /** 存 / 删一台主机的 Git 凭据（控制房 RPC，协议 15，#1103）。owner 才过，服务端判；
       `token: ""` = 删。成功回服务端此刻的清单 */
   workspaceGitCredential(workspaceId: string, host: string, token: string): Promise<FriendsResult<CsGitHost[] | null>>;
+  /** 改一页 wiki（控制房 RPC，协议 18，#1140）：write 整页替换 / remove 删页。服务端走
+      与 wiki 工具同一条写入路径，预算 / 保留页 / 可疑指令那几句拒绝原样回来 */
+  workspaceWikiWrite(workspaceId: string, req: CsWikiWriteReq): Promise<FriendsResult<null>>;
 }
 
 /** `workspace_state` 带回来的那一格（协议 8；#1102 摘掉 repo 之后只剩它）——与 shellBridge
@@ -852,6 +856,14 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     });
   }
 
+  function workspaceWikiWrite(workspaceId: string, req: CsWikiWriteReq): Promise<FriendsResult<null>> {
+    return ctlRequest({ t: "wiki_write", workspaceId, ...req }, (msg) => {
+      if (msg.t !== "wiki_write_result" || msg.workspaceId !== workspaceId || msg.path !== req.path) return null;
+      if (!msg.ok) return { ok: false, message: msg.message ?? "改不了这一页" };
+      return { ok: true, value: null };
+    });
+  }
+
   function workspaceState(workspaceId: string): Promise<FriendsResult<WorkspaceCloudState>> {
     return ctlRequest({ t: "workspace", workspaceId }, (msg) =>
       // 答复带 workspaceId：一条连接只问一个，但认一下比赌顺序便宜
@@ -1072,5 +1084,5 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     };
   }
 
-  return { currentSessionId, activeSummary, create, join, leave, say, approve, archive, remove, stop, call, workspaceState, workspaceGitCredential, workspaceFiles, workspaceFilesSearch };
+  return { currentSessionId, activeSummary, create, join, leave, say, approve, archive, remove, stop, call, workspaceState, workspaceGitCredential, workspaceFiles, workspaceFilesSearch, workspaceWikiWrite };
 }

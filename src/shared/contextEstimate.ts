@@ -187,6 +187,7 @@ function pendingAfter(
         // （cloudContext.ts）哪天要算，按最新一条名单计 renderVoiceCallPrompt 的 token
         break;
       case "workspace_memory_loaded":
+      case "workspace_wiki_loaded": // 团队 wiki 快照（#1140），同上——云会话页不读圆环，故意不计
         // 云会话专属；本文件只服务本机圆环（消费方 App.tsx / OttoThread.tsx），
         // 云会话页不读它，故意不计。哪天云会话页要画圆环，这里要按最新一条快照计
         // renderWorkspaceMemoryPrompt 的 token（注意 latest-wins 不能累加——同

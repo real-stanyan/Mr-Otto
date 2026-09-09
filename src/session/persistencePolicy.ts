@@ -75,6 +75,7 @@ export function shouldPersist(kind: EmittedKind): boolean {
     case "voice_call_changed": // 语音通话名单（#1163）：派活/接力只在通话成员里进行，判据要从日志重放；system 尾块也从它投影
     case "memory_loaded":
     case "workspace_memory_loaded": // 工作区记忆快照（#949）：模型可见 = 必须落
+    case "workspace_wiki_loaded": // 团队 wiki 快照（#1140）：模型可见 = 必须落
     case "memory_user_edit":
     case "memory_nudge":
     case "micro_compacted":

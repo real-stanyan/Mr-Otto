@@ -34,7 +34,7 @@ import { useChat } from "../store.js";
 import { WorkspaceAgentsTab } from "./WorkspaceAgentsTab.js";
 import { WorkspaceUsageTab } from "./WorkspaceUsageTab.js";
 import { WorkspaceFilesTab } from "./WorkspaceFilesTab.js";
-import { WorkspaceMemoryTab } from "./WorkspaceMemoryTab.js";
+import { WorkspaceWikiTab } from "./WorkspaceWikiTab.js";
 import { WorkspaceSessionsTab } from "./WorkspaceSessionsTab.js";
 import { WorkspaceConnectorsTab } from "./WorkspaceConnectorsTab.js";
 import { WorkspaceMembersTab } from "./WorkspaceMembersTab.js";
@@ -86,8 +86,8 @@ const SECTIONS: readonly Section[] = [
   },
   {
     id: "memory", label: "记忆", icon: <Sparkles />,
-    hint: () => "共享档 + 每只的私有档",
-    render: (ws) => <WorkspaceMemoryTab ws={ws} />,
+    hint: () => "团队的 wiki：口径、客户、分工",
+    render: (ws) => <WorkspaceWikiTab key={ws.id} ws={ws} />,
   },
 ];
 

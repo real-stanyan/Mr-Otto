@@ -41,7 +41,7 @@ import type {
   CloudWorkspaceState,
   SpeechEvent,
 } from "../../shared/shellBridge.js";
-import type { CsWorkHit, CsWorkNode } from "../../shared/remote/cloudSession.js";
+import type { CsWikiWriteReq, CsWorkHit, CsWorkNode } from "../../shared/remote/cloudSession.js";
 import type { CatalogEntry } from "../../shared/mcpCatalog.js";
 import type { CsGitHost, CsModelRoute } from "../../shared/remote/cloudSession.js";
 import {
@@ -118,7 +118,7 @@ import type {
 // friends.js 里"我+好友各自在哪个仓库哪个分支"的在场快照，issue #167）是两个不相干的概念，
 // 撞名是历史遗留（Task 11 report 已确认 IPC channel 不冲突）——本文件里凡是这个协作工作区
 // 的状态字段/action 一律加 workspaceGroup 前缀，不用裸的 "workspace"/"workspaces"
-import type { WorkspaceMemoryRow, WorkspaceSnapshot } from "../../shared/workspaces.js";
+import type { WorkspaceSnapshot } from "../../shared/workspaces.js";
 import { markSessionRead, mergeMentionRow, type WorkspaceMentionRow } from "../../shared/workspaceMentions.js";
 import type { AgentToolAllow } from "../../shared/agentToolAllow.js";
 import type {
@@ -882,7 +882,19 @@ interface ChatState {
   setSidePos(pos: { x: number; y: number }): void;
   /** 缩放浮窗（右下角 resize handle 报进来；钳制在组件侧用纯函数先算好，issue #516） */
   setSideSize(size: { w: number; h: number }): void;
-  refreshFriends(): Promise<void>;
+  /**
+   * 拉一次好友快照。quiet = 背后补一笔事实的拉法（boot/onAccountChanged 的补拉，
+   * #704）：拉不到只 console.error，不落 friendError 横幅——这不是用户刚发起的
+   * 动作（同 refreshMyProfile 的纪律）。默认（用户点的刷新）照旧落 friendError
+   */
+  refreshFriends(opts?: { quiet?: boolean }): Promise<void>;
+  /**
+   * 登录态就位后补拉账号相关的镜像（本人资料 + 好友快照）。这几份数据唯一的
+   * 数据源是主进程推送，而推送只在**变化**时开火——渲染层重载 / 冷启动竞速错过
+   * 的那一拍，靠主动问补齐（#704；同 runtimeHydration 的思路，ADR-0133）。
+   * 自己判 signedIn，调用方不必再判——但必须在登录态 set 进 store 之后调
+   */
+  refreshSocialMirrors(): Promise<void>;
   /** 用户名/邮箱模糊搜索。[] = 没有匹配;错误落 friendError 并回 [] */
   searchFriend(query: string): Promise<FriendProfile[]>;
   addFriend(userId: string): Promise<void>;
@@ -988,11 +1000,9 @@ interface ChatState {
   /** 设置页「用量」tab（#946）：不进 store 状态——这张表只在打开 tab 时看一眼，
       组件本地 state 就够（同 CloudRepoConfigDialog 现取的纪律） */
   loadWorkspaceUsage(id: string): Promise<FriendsResult<WorkspaceUsage>>;
-  /** 设置页「记忆」tab（#949）：同 loadWorkspaceUsage，不进 store 状态 */
-  loadWorkspaceMemories(id: string): Promise<FriendsResult<WorkspaceMemoryRow[]>>;
-  /** 成员手改一档；主进程归一化后落库。version 见 shellBridge.workspaceMemorySave（#962）：
-      递进去的是编辑器打开时那一行的 CAS 令牌，回来的是写完之后的新令牌 */
-  saveWorkspaceMemory(id: string, agentId: string, text: string, version: string): Promise<FriendsResult<string>>;
+  /** 改一页 wiki（设置页「记忆」tab 用，#1140）：write 整页替换 / remove 删页。服务端走
+      与 wiki 工具同一条写入路径，预算 / 保留页 / 可疑指令那几句拒绝原样回来 */
+  workspaceWikiWrite(workspaceId: string, req: CsWikiWriteReq): Promise<FriendsResult<null>>;
   /** owner 改「沙箱内工具要不要人批」（#977；控件搬进云会话输入框后改了形状，#1029）。
       **失败时不碰 workspaceGroupsError**：这颗开关此刻坐在输入框那一行上，一次写失败
       不该把页脚那格共享错误擦掉、也不该借它说话（ADR-0228 C2-I4 已经为 say/approve/stop
@@ -2176,10 +2186,17 @@ export const useChat = create<ChatState>((set, get) => ({
     set({ setPasswordOpen: open, ...(open ? {} : { holdGateForPasswordReset: false }) });
   },
 
-  async refreshFriends() {
+  async refreshFriends(opts) {
     const r = await window.otter.friendsList();
     if (r.ok) set({ friendsSnapshot: r.value, friendError: null });
+    else if (opts?.quiet) console.error("friendsList 补拉失败", r.message);
     else set({ friendError: r.message });
+  },
+
+  async refreshSocialMirrors() {
+    if (!get().account.signedIn) return;
+    void get().refreshMyProfile();
+    void get().refreshFriends({ quiet: true });
   },
 
   async shareSession(sessionId, friendUid, friendName, message, grantServers) {
@@ -2474,14 +2491,6 @@ export const useChat = create<ChatState>((set, get) => ({
     return window.otter.workspaceUsage(id);
   },
 
-  async loadWorkspaceMemories(id) {
-    return window.otter.workspaceMemoryList(id);
-  },
-
-  async saveWorkspaceMemory(id, agentId, text, version) {
-    return window.otter.workspaceMemorySave(id, agentId, text, version);
-  },
-
   async setWorkspaceSandboxApproval(id, value) {
     const r = await window.otter.workspaceSetSandboxApproval(id, value);
     if (!r.ok) return r;
@@ -2771,6 +2780,9 @@ export const useChat = create<ChatState>((set, get) => ({
   workspaceFilesSearch(workspaceId, query, content) {
     return window.otter.workspaceCloudFilesSearch(workspaceId, query, content);
   },
+  workspaceWikiWrite(workspaceId, req) {
+    return window.otter.workspaceCloudWikiWrite(workspaceId, req);
+  },
 
   async cloudArchive(workspaceId, sessionId) {
     const r = await window.otter.workspaceCloudArchive(workspaceId, sessionId);
@@ -2960,9 +2972,9 @@ export const useChat = create<ChatState>((set, get) => ({
               billing: null,
             }
       );
-      // 资料补拉必须在 set 之后:needsOnboarding 读的是 store 里的登录态,
+      // 补拉必须在 set 之后:refreshSocialMirrors 自己读 store 里的登录态,
       // 先调等于拿着旧的"未登录"去查
-      if (account.signedIn) void get().refreshMyProfile();
+      void get().refreshSocialMirrors();
       // 登录态变化就重问一次(refresh:true)——登录时是真的要最新额度,
       // 登出时 hostedQuota.refresh() 因为没有 token 会把 me 清成 null,
       // 双保险同上面那行 billing:null 一致
@@ -3384,10 +3396,10 @@ export const useChat = create<ChatState>((set, get) => ({
     // 本机 Ollama 的型号清单：下拉框在 composer 上，不进设置页也要能选到它们。
     // 不 await——没装 Ollama 时这一问要等到超时，不该拖住首屏
     void get().refreshOllamaModels();
-    // 冷启动的资料补拉。onAccountChanged 只在登录态**变化**时开火,而冷启动恢复
-    // 出来的登录是从 getAccount() 一次性读到的 —— 少了这一句,重启后一直用着
-    // provider 的旧名字,首登引导也永远不弹
-    if (account.signedIn) void get().refreshMyProfile();
+    // 冷启动补拉。onAccountChanged / onFriendsChanged 只在登录态或好友关系**变化**
+    // 时开火,而冷启动恢复出来的登录是从 getAccount() 一次性读到的 —— 少了这一句,
+    // 重启后一直用着 provider 的旧名字,首登引导永远不弹,好友名单也一直空着(#704)
+    void get().refreshSocialMirrors();
   },
 
   async pickWorkspace() {

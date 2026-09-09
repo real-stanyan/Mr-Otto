@@ -107,6 +107,14 @@ describe("clone_repo", () => {
     await clone.run({ repo_url: REPO, dest: "x" }, WORLD);
     expect(rec.clones[0]!.cfg.pat).toBeUndefined();
   });
+
+  it("clone_repo：dest 落在 wiki/ 下一律拒（#1140）——wiki 目录是团队记忆，clone 进去索引器会对着 .git 发呆", async () => {
+    const { clone, rec } = harness();
+    await expect(clone.run({ repo_url: REPO, dest: "wiki" }, WORLD)).rejects.toThrow("wiki/");
+    await expect(clone.run({ repo_url: REPO, dest: "wiki/sub" }, WORLD)).rejects.toThrow("wiki/");
+    expect(rec.workspaceScripts).toEqual([]); // 一条 exec 都没起
+    expect(rec.clones).toEqual([]);
+  });
 });
 
 describe("git_push", () => {
@@ -141,6 +149,16 @@ describe("git_push", () => {
   it("那个目录不是连着远端的工作副本 → 说清楚，不去 push", async () => {
     const { rec, push } = harness({ probe: "entries=3\norigin=\n" });
     await expect(push.run(ok, WORLD)).rejects.toThrow(/不是一个连着远端/);
+    expect(rec.sidecar).toEqual([]);
+  });
+
+  /** #1206：clone 没 token 照跑（公开仓不需要），push **永远**要凭据——公开仓也一样。
+      没存 token 时以前是带着空凭据进旁路容器让 git 撞 `could not read Username`，
+      模型读到那句只会说「沙箱不允许推」。现在在起容器之前就说清去哪儿加，
+      措辞与 create_repo 逐字同一条路径 */
+  it("没存这台主机的 token → 一台容器都不起，明说去「团队设置 → 连接器 → 代码仓库」加", async () => {
+    const { rec, push } = harness({ token: null, probe: `entries=9\norigin=${REPO}\n` });
+    await expect(push.run(ok, WORLD)).rejects.toThrow(/团队设置 → 连接器 → 代码仓库/);
     expect(rec.sidecar).toEqual([]);
   });
 
