@@ -252,6 +252,20 @@ export type VoiceSpeakResult =
   | { ok: true; audio: Uint8Array; costMicro: number; audioMs: number | null }
   | { ok: false; message: string };
 
+/** 群语音里「人说话」那一半（#1176，ADR-0273）：macOS 原生本机识别 helper
+    （native/MrOttoSpeech）吐的事件，主进程原样推给渲染层。`status` 两道授权各一格
+    （语音识别 / 麦克风）；`partial` 是正在说的这一句的实时快照，`final` 是断句器判定
+    说完了的一句；`paused` / `resumed` 是半双工（agent 在说时闭麦）的回执 */
+export type SpeechAuth = "authorized" | "denied" | "restricted" | "notDetermined";
+export type SpeechEvent =
+  | { type: "status"; speech: SpeechAuth; mic: SpeechAuth; onDevice: boolean | null; locale: string | null }
+  | { type: "listening"; on: boolean }
+  | { type: "paused" }
+  | { type: "resumed" }
+  | { type: "partial"; text: string }
+  | { type: "final"; text: string }
+  | { type: "error"; message: string };
+
 export interface CloudSessionDelta {
   sessionId: string;
   agentId: string;
@@ -1188,6 +1202,12 @@ export interface ShellBridge {
   /** 团队语音通话（#1163）：把一段文字合成语音。主进程拿 JWT 打网关，钱记在
       **听的人**自己的额度上；渲染层只拿字节去播 */
   teamVoiceSpeak(text: string, voiceId: string): Promise<VoiceSpeakResult>;
+  /** 群语音里的麦克风（#1176）：开 / 关 / 半双工暂停 / 恢复。结果不从返回值来——
+      全部走 onSpeechEvent（识别结果是 helper 自己冒出来的，没有哪条命令在等它） */
+  speechStart(locale: string): Promise<void>;
+  speechStop(): Promise<void>;
+  speechPause(): Promise<void>;
+  speechResume(): Promise<void>;
   /** 改当前云会话的语音通话名单（协议 17，#1163）：`participants` = 该在通话里的 agent id，
       空 = 结束通话。resolve 的是 `call_result` 回执（同 stop：15 秒没回执 = unknown）；
       名单本身以日志里那条 `voice_call_changed` 为准，不以「我刚点了」为准 */
@@ -1231,6 +1251,8 @@ export interface ShellBridge {
   /** 当前云会话的流式碎片（协议 16，#1107）：不过 seq 机器、不去重，拿到
       就攒；同一只 agent 的终态 assistant_message / turn_ended 事件到了清槽 */
   onCloudSessionDelta(cb: (delta: CloudSessionDelta) => void): Unsubscribe;
+  /** 语音识别 helper 的事件（#1176）：status / listening / paused / resumed / partial / final / error */
+  onSpeechEvent(cb: (ev: SpeechEvent) => void): Unsubscribe;
   /** presence 集合变化 → 当前在线的 userId 全量列表(Realtime presence ∪ 心跳窗口) */
   onPresenceChanged(cb: (onlineUserIds: string[]) => void): Unsubscribe;
   /** 对端发来的新 DM(自己发的不推——bridge 调用已回真行,渲染层自己落) */
@@ -1645,6 +1667,11 @@ export const CHANNELS = {
   workspaceCloudDelete: "otter:workspaceCloudDelete",
   workspaceCloudStop: "otter:workspaceCloudStop",
   teamVoiceSpeak: "otter:teamVoiceSpeak",
+  speechStart: "otter:speechStart",
+  speechStop: "otter:speechStop",
+  speechPause: "otter:speechPause",
+  speechResume: "otter:speechResume",
+  speechEvent: "otter:speechEvent",
   workspaceCloudCall: "otter:workspaceCloudCall",
   workspaceCloudConfig: "otter:workspaceCloudConfig",
   workspaceCloudState: "otter:workspaceCloudState",
