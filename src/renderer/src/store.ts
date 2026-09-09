@@ -881,7 +881,19 @@ interface ChatState {
   setSidePos(pos: { x: number; y: number }): void;
   /** 缩放浮窗（右下角 resize handle 报进来；钳制在组件侧用纯函数先算好，issue #516） */
   setSideSize(size: { w: number; h: number }): void;
-  refreshFriends(): Promise<void>;
+  /**
+   * 拉一次好友快照。quiet = 背后补一笔事实的拉法（boot/onAccountChanged 的补拉，
+   * #704）：拉不到只 console.error，不落 friendError 横幅——这不是用户刚发起的
+   * 动作（同 refreshMyProfile 的纪律）。默认（用户点的刷新）照旧落 friendError
+   */
+  refreshFriends(opts?: { quiet?: boolean }): Promise<void>;
+  /**
+   * 登录态就位后补拉账号相关的镜像（本人资料 + 好友快照）。这几份数据唯一的
+   * 数据源是主进程推送，而推送只在**变化**时开火——渲染层重载 / 冷启动竞速错过
+   * 的那一拍，靠主动问补齐（#704；同 runtimeHydration 的思路，ADR-0133）。
+   * 自己判 signedIn，调用方不必再判——但必须在登录态 set 进 store 之后调
+   */
+  refreshSocialMirrors(): Promise<void>;
   /** 用户名/邮箱模糊搜索。[] = 没有匹配;错误落 friendError 并回 [] */
   searchFriend(query: string): Promise<FriendProfile[]>;
   addFriend(userId: string): Promise<void>;
@@ -2173,10 +2185,17 @@ export const useChat = create<ChatState>((set, get) => ({
     set({ setPasswordOpen: open, ...(open ? {} : { holdGateForPasswordReset: false }) });
   },
 
-  async refreshFriends() {
+  async refreshFriends(opts) {
     const r = await window.otter.friendsList();
     if (r.ok) set({ friendsSnapshot: r.value, friendError: null });
+    else if (opts?.quiet) console.error("friendsList 补拉失败", r.message);
     else set({ friendError: r.message });
+  },
+
+  async refreshSocialMirrors() {
+    if (!get().account.signedIn) return;
+    void get().refreshMyProfile();
+    void get().refreshFriends({ quiet: true });
   },
 
   async shareSession(sessionId, friendUid, friendName, message, grantServers) {
@@ -2952,9 +2971,9 @@ export const useChat = create<ChatState>((set, get) => ({
               billing: null,
             }
       );
-      // 资料补拉必须在 set 之后:needsOnboarding 读的是 store 里的登录态,
+      // 补拉必须在 set 之后:refreshSocialMirrors 自己读 store 里的登录态,
       // 先调等于拿着旧的"未登录"去查
-      if (account.signedIn) void get().refreshMyProfile();
+      void get().refreshSocialMirrors();
       // 登录态变化就重问一次(refresh:true)——登录时是真的要最新额度,
       // 登出时 hostedQuota.refresh() 因为没有 token 会把 me 清成 null,
       // 双保险同上面那行 billing:null 一致
@@ -3350,10 +3369,10 @@ export const useChat = create<ChatState>((set, get) => ({
     // 本机 Ollama 的型号清单：下拉框在 composer 上，不进设置页也要能选到它们。
     // 不 await——没装 Ollama 时这一问要等到超时，不该拖住首屏
     void get().refreshOllamaModels();
-    // 冷启动的资料补拉。onAccountChanged 只在登录态**变化**时开火,而冷启动恢复
-    // 出来的登录是从 getAccount() 一次性读到的 —— 少了这一句,重启后一直用着
-    // provider 的旧名字,首登引导也永远不弹
-    if (account.signedIn) void get().refreshMyProfile();
+    // 冷启动补拉。onAccountChanged / onFriendsChanged 只在登录态或好友关系**变化**
+    // 时开火,而冷启动恢复出来的登录是从 getAccount() 一次性读到的 —— 少了这一句,
+    // 重启后一直用着 provider 的旧名字,首登引导永远不弹,好友名单也一直空着(#704)
+    void get().refreshSocialMirrors();
   },
 
   async pickWorkspace() {

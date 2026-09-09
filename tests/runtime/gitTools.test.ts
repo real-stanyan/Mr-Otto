@@ -152,6 +152,16 @@ describe("git_push", () => {
     expect(rec.sidecar).toEqual([]);
   });
 
+  /** #1206：clone 没 token 照跑（公开仓不需要），push **永远**要凭据——公开仓也一样。
+      没存 token 时以前是带着空凭据进旁路容器让 git 撞 `could not read Username`，
+      模型读到那句只会说「沙箱不允许推」。现在在起容器之前就说清去哪儿加，
+      措辞与 create_repo 逐字同一条路径 */
+  it("没存这台主机的 token → 一台容器都不起，明说去「团队设置 → 连接器 → 代码仓库」加", async () => {
+    const { rec, push } = harness({ token: null, probe: `entries=9\norigin=${REPO}\n` });
+    await expect(push.run(ok, WORLD)).rejects.toThrow(/团队设置 → 连接器 → 代码仓库/);
+    expect(rec.sidecar).toEqual([]);
+  });
+
   it("push 被远端拒（non-fast-forward）→ 原文带回去，且**擦掉凭据**", async () => {
     const { push } = harness({
       probe: `entries=9\norigin=${REPO}\n`,

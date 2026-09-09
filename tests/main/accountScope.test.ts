@@ -17,6 +17,7 @@ import {
   accountDirName,
   adoptLegacyData,
   needsRelaunch,
+  windowSessionPartition,
   writeWho,
   LEGACY_CONFIG_ENTRIES,
   LEGACY_USER_DATA_ENTRIES,
@@ -44,6 +45,29 @@ describe("accountDirName", () => {
   it("没有登录记录 → _signed-out 那一格；下划线开头，和真抽屉永远撞不上", () => {
     expect(accountDirName(null)).toBe(SIGNED_OUT_DIR);
     expect(SIGNED_OUT_DIR).not.toMatch(/^[0-9a-f]{16}$/);
+  });
+});
+
+describe("windowSessionPartition（issue #758）", () => {
+  it("partition 跟着抽屉名走：同 uid 同 partition，不同 uid 不同 partition", () => {
+    expect(windowSessionPartition(UID_A)).toBe(windowSessionPartition(UID_A));
+    expect(windowSessionPartition(UID_A)).not.toBe(windowSessionPartition(UID_B));
+    expect(windowSessionPartition(UID_A)).toContain(accountDirName(UID_A));
+  });
+
+  it("未登录也有自己那一格——persist: 开头才是持久化的，少了它就是内存态", () => {
+    expect(windowSessionPartition(null)).toBe(`persist:otto-${SIGNED_OUT_DIR}`);
+    expect(windowSessionPartition(UID_A)).toMatch(/^persist:/);
+  });
+
+  it("和内置浏览器的 persist:otto-browser 分得开——两摊存储不许撞名", () => {
+    expect(windowSessionPartition(UID_A)).not.toBe("persist:otto-browser");
+    expect(windowSessionPartition(null)).not.toBe("persist:otto-browser");
+  });
+
+  it("主窗真的把这个 partition 交给了 BrowserWindow（index.ts 没法 import，读源码钉接线）", () => {
+    const src = readFileSync(join(__dirname, "..", "..", "src", "main", "index.ts"), "utf8");
+    expect(src).toMatch(/partition:\s*windowSessionPartition\(bootUid\)/);
   });
 });
 
