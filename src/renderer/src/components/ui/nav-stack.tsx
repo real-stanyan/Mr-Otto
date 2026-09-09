@@ -276,9 +276,7 @@ function NavPage({
     if (rect.width <= 0) return;
     if (e.clientX - rect.left > EDGE_WIDTH) return;
     drag.current = { id: e.pointerId, x0: e.clientX, width: rect.width, active: false, samples: [] };
-    // 捕获指针，手指划出这一页的边界也还跟着；拿不到就退化成「划出去即结束」，
-    // 不让整条手势因此抛异常（jsdom 没实现它，老 Safari 也可能没有）
-    try { el.setPointerCapture(e.pointerId); } catch { /* 没有捕获也能用，只是没那么跟手 */ }
+    // 这里**故意不**拿指针捕获——等手势成立（onPointerMove 里过了迟滞）再拿，#1137
   };
 
   const onPointerMove = (e: React.PointerEvent<HTMLElement>): void => {
@@ -288,6 +286,13 @@ function NavPage({
     if (!d.active) {
       if (dx < HYSTERESIS) return;    // 迟滞：走够 8px 才认定这是返回，免得抢走点击
       d.active = true;
+      // 捕获指针要等到**这一刻**（#1137）。在 pointerdown 就捕获的话，之后的 pointerup 被
+      // 改派到这个 section，而 click 落在 pointerdown / pointerup 两个目标的公共祖先上——
+      // 也是这个 section——按钮自己的 onClick 永远收不到。左缘 26px 里正好是返回按钮那枚
+      // chevron，真机形态就是「点返回有时候没反应」：点箭头没反应，点「返回」两个字才有。
+      // 捕获本身仍然要：手指划出这一页的边界也还跟着；拿不到就退化成「划出去即结束」，
+      // 不让整条手势因此抛异常（jsdom 没实现它，老 Safari 也可能没有）
+      try { e.currentTarget.setPointerCapture(e.pointerId); } catch { /* 没有捕获也能用，只是没那么跟手 */ }
     }
     // 往左拉（越过起点）不硬停，给阻尼——硬停读作「卡住了」
     if (dx < 0) dx = -rubberband(-dx, d.width);
