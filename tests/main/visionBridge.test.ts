@@ -18,11 +18,21 @@ describe("visionBridge 代读", () => {
     vi.stubGlobal("fetch", vi.fn(async (url: string, init: { body: string }) => {
       expect(url).toContain("bigmodel.cn");
       bodies.push(init.body);
-      return { ok: true, json: async () => ({ choices: [{ message: { content: "一只像素水獭" } }] }) };
+      return {
+        ok: true,
+        json: async () => ({
+          choices: [{ message: { content: "一只像素水獭" } }],
+          usage: { prompt_tokens: 320, completion_tokens: 45 },
+        }),
+      };
     }));
     const describeImages = createVisionBridge(() => new Uint8Array([1, 2, 3]));
     const out = await describeImages([ref], "这是什么");
-    expect(out).toBe("一只像素水獭");
+    expect(out.content).toBe("一只像素水獭");
+    // #1093：这一次代读的账随结果回来——direct 路（自带 key），usage 透传
+    expect(out.route).toBe("direct");
+    expect(out.usage).toEqual({ promptTokens: 320, completionTokens: 45 });
+    expect(out.creditCostMicro).toBeUndefined();
     const sent = JSON.parse(bodies[0]!) as {
       model: string;
       messages: { content: { type: string; text?: string; image_url?: { url: string } }[] }[];
@@ -35,6 +45,37 @@ describe("visionBridge 代读", () => {
       type: "image_url",
       image_url: { url: `data:image/png;base64,${Buffer.from([1, 2, 3]).toString("base64")}` },
     });
+  });
+
+  it("hosted 路：route 报 hosted，credit 从 x-otto-cost-micro 响应头收（#1093）", async () => {
+    // 端点不带 route 那格的话，适配器会把这条路记成 "direct"、响应头里的
+    // credit 也被它的条件（endpoint.route === "hosted"）丢掉——账从装配那
+    // 一刻起就记错方向，而且是安静的
+    vi.stubGlobal("fetch", vi.fn(async (url: string) => {
+      expect(url).toContain("edge.example");
+      return {
+        ok: true,
+        headers: { get: (k: string) => (k === "x-otto-cost-micro" ? "67206" : null) },
+        json: async () => ({
+          choices: [{ message: { content: "一只像素水獭" } }],
+          usage: { prompt_tokens: 500, completion_tokens: 80 },
+        }),
+      };
+    }));
+    const describeImages = createVisionBridge(
+      () => new Uint8Array([1]),
+      undefined,
+      DEFAULT_VISION_MODEL,
+      {
+        input: { subscribed: true, exhausted: false, supportsModel: true, capabilities: { image: true, video: false } },
+        baseUrl: "https://edge.example",
+        token: "jwt-test",
+      }
+    );
+    const out = await describeImages([ref], "这是什么");
+    expect(out.route).toBe("hosted");
+    expect(out.usage).toEqual({ promptTokens: 500, completionTokens: 80 });
+    expect(out.creditCostMicro).toBe(67206);
   });
 
   it("视觉模型回空 → 抛错(不落无意义事件)", async () => {
@@ -61,7 +102,8 @@ describe("visionBridge 429 重试", () => {
       () => new Uint8Array([1]),
       async (ms) => { slept.push(ms); }
     );
-    await expect(describeImages([ref], "看图")).resolves.toBe("解析成功");
+    const out = await describeImages([ref], "看图");
+    expect(out.content).toBe("解析成功");
     expect(calls).toBe(3);
     expect(slept).toEqual([1500, 3000]);
   });

@@ -106,6 +106,26 @@ describe("usageByModel", () => {
     expect(usageByModel([ev({ type: "assistant_message", content: "", model: "m" })])).toEqual([]);
   });
 
+  it("代读员那一笔也进账（#1093）—— 每条带图消息都真跑一次视觉模型", () => {
+    // image_described 原来没有 usage 字段，本机这本账一次都没算过它；一个天天
+    // 贴图的用户在本机看不到他在这上面花了多少（网关侧 usage_event 一直是全的，
+    // 钱没少收——错的是本机这本）
+    const rows = usageByModel([
+      said("main-model", 10, 5),
+      ev({ type: "image_described", content: "一只像素水獭", model: "vision-m", usage: { promptTokens: 500, completionTokens: 80 }, route: "hosted", creditCostMicro: 6_000 }),
+    ]);
+    expect(rows).toEqual([
+      { model: "vision-m", route: "hosted", promptTokens: 500, completionTokens: 80, cachedTokens: 0, creditCostMicro: 6_000 },
+      { model: "main-model", route: "direct", promptTokens: 10, completionTokens: 5, cachedTokens: 0 },
+    ]);
+  });
+
+  it("旧日志里的 image_described 没有 usage → 不进账，不凭空多出行（#1093）", () => {
+    // BILLED_EVENT_TYPES 同时是 store 那条 SQL 的筛选清单（设置页跨会话用量）——
+    // 加进清单之后旧事件靠「usage 缺席跳过」这条既有判据天然免疫
+    expect(usageByModel([ev({ type: "image_described", content: "一只像素水獭", model: "vision-m" })])).toEqual([]);
+  });
+
   it("不是模型调用的事件不进账", () => {
     expect(usageByModel([ev({ type: "user_message", content: "hi" })])).toEqual([]);
   });

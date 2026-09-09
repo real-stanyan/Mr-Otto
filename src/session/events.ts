@@ -463,6 +463,15 @@ export interface ImageDescribedEvent extends SessionEventBase {
   type: "image_described";
   content: string;
   model: string;                 // 解析出自哪个视觉模型(溯源)
+  /** 本次代读烧的 token（#1093：代读是真跑了一次视觉模型，账要和别的外挂
+      小调用一样能从日志求和）。缺席 = 旧日志/没报，不算账（没记 ≠ 没花） */
+  usage?: TokenUsage;
+  /** 这笔账走的哪条路（同 `ContextCompactedEvent.route` 那段注释）。
+      缺席 = direct（旧日志照常重放，那时确实是 direct） */
+  route?: "hosted" | "direct";
+  /** hosted 路这次结算的 credit（micro-USD），同 `assistant_message.creditCostMicro`
+      那一格。缺席 ≠ 0 */
+  creditCostMicro?: number;
 }
 
 /** 额外 10：分区分类（会话目录）。每个 turn 收口后跑一次便宜模型：这一段是延续
