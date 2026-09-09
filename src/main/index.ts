@@ -46,7 +46,7 @@ import { searchMcpRegistry } from "./mcpRegistry.js";
 import { createWebContentsViewHandle } from "./webContentsViewFactory.js";
 import { EventStore, type SessionSummary } from "../session/store.js";
 import { AttachmentStore, detectImageType } from "../session/attachments.js";
-import type { ToolCallRequest, UserAttachmentRef, UserTextFile, MemoryTopicSnapshot } from "../session/events.js";
+import type { ToolCallRequest, TokenUsage, UserAttachmentRef, UserTextFile, MemoryTopicSnapshot } from "../session/events.js";
 import type { Tool } from "../tools/tool.js";
 import { knownSkillToolName } from "../tools/skill.js";
 import { composeUserText, deriveMessages, COMPACT_COMPRESSION } from "../session/deriveMessages.js";
@@ -3934,7 +3934,13 @@ void app.whenReady().then(() => {
       // 也排在 skill_invoked / image_described 两条 append **之前**：`barrenTurns`
       // 按 `events[i-1]` 认领 image_described，中间夹一条 model_changed 就断了
       await agent.pickAutoModel(modelText);
-      let described: { content: string; model: string } | null = null;
+      let described: {
+        content: string;
+        model: string;
+        usage?: TokenUsage;
+        route?: "hosted" | "direct";
+        creditCostMicro?: number;
+      } | null = null;
       if (refs.length > 0 && !(describeModel(agent.model)?.supportsVision ?? false)) {
         // 代读员型号现读设置（改了对下一条带图消息生效）；事件里记的必须是
         // 真正代读的那一款，不是常量
@@ -3947,7 +3953,7 @@ void app.whenReady().then(() => {
           bridgeModel,
           (await helperHostedRoute(bridgeModel)) ?? undefined
         );
-        described = { content: await describeImages(refs, modelText), model: bridgeModel };
+        described = { ...(await describeImages(refs, modelText)), model: bridgeModel };
       }
       if (invoked) {
         // 快照落在 user_message 之前：模型先看到说明书，再看到任务
@@ -3959,6 +3965,11 @@ void app.whenReady().then(() => {
         const descEvent = store.append({
           sessionId, ts: Date.now(), type: "image_described",
           content: described.content, model: described.model,
+          // #1093：代读那次视觉调用的账跟着落——三格都缺席 = 旧日志/上游没报，
+          // deriveUsage 照旧跳过（没记 ≠ 没花），不会凭空多出行
+          ...(described.usage ? { usage: described.usage } : {}),
+          ...(described.route ? { route: described.route } : {}),
+          ...(described.creditCostMicro !== undefined ? { creditCostMicro: described.creditCostMicro } : {}),
         });
         send(CHANNELS.event, descEvent);
       }

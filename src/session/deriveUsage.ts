@@ -5,8 +5,9 @@
 //
 // 谁携带一次模型调用的账:凡是"跑了一次模型"的事件都带 usage —— 正文
 // (assistant_message)、压缩(context_compacted)、分区(section_classified)、
-// 跟进建议(suggestions_generated)、微压缩(micro_compacted,ADR-0064)。
-// 后三个是"外挂"小调用,但它们照样烧钱:漏掉哪一类,统计就从此少算一截
+// 跟进建议(suggestions_generated)、微压缩(micro_compacted,ADR-0064)、
+// 代读员(image_described,#1093——每条带图消息都真跑一次视觉模型)。
+// 后几个是"外挂"小调用,但它们照样烧钱:漏掉哪一类,统计就从此少算一截
 // (events.ts 里 SuggestionsGeneratedEvent 的注释写的就是这件事)。
 // 微压缩尤其不能漏:它每 turn 收口都烧一次,开着的话是这里最高频的一笔。
 //
@@ -53,6 +54,10 @@ export const BILLED_EVENT_TYPES = [
   "micro_compacted",
   "session_autotitled",
   "session_topic_assigned",
+  // 代读员（#1093）：每条带图消息都真跑一次视觉模型。旧日志里的
+  // image_described 没有 usage——`billed()` 与 store 那条 SQL
+  // （`promptTokens IS NOT NULL`）都跳过，不会凭空多出行
+  "image_described",
 ] as const;
 
 type BilledEvent = Extract<SessionEvent, { type: (typeof BILLED_EVENT_TYPES)[number] }>;

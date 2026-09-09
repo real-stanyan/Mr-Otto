@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { describeGrantKey, describeExecPattern } from "../../../src/renderer/src/lib/grantDisplay.js";
-import { grantKeysFor } from "../../../src/shared/grantKey.js";
+import { GRANT_KEY_SEP, grantKeysFor } from "../../../src/shared/grantKey.js";
 
-const SEP = "";
+const SEP = GRANT_KEY_SEP;
 
 describe("describeGrantKey", () => {
   it("旧条目（裸工具名）= 整个工具放行，legacy 标出来", () => {
