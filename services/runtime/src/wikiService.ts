@@ -197,15 +197,22 @@ export function createWikiService(deps: WikiServiceDeps): WikiService {
     const chars = bodyCharCount(args.body);
     return withMemoryFileLock(wikiLockKey(deps.workspaceId), async () => {
       const before = await deps.fs.readPage(args.path);
-      const beforeChars = before === null ? 0 : bodyCharCount(parseWikiPage(args.path, before).body);
+      const beforePage = before === null ? null : parseWikiPage(args.path, before);
+      const beforeChars = beforePage === null ? 0 : bodyCharCount(beforePage.body);
+      // 自己那页的闸：那一页就是预算本身，「超限且没变小才拒」按本页比是对的
       const shrinking = before !== null && chars < beforeChars;
       if (pageAgent !== null && chars > WIKI_OWN_BUDGET && !shrinking) {
         throw new Error(`${args.path} 是智能体自己那页，上限 ${WIKI_OWN_BUDGET} 字，这次 ${chars} 字。精简后再写`);
       }
       if (pinned) {
+        // 常驻的闸守的是**合计**，而 currentPinned 把本页排除在外——所以「变没变小」也必须按合计比
+        // （终审 Important 1）：按本页比时，「不常驻写 5001 字 → 改成常驻 5000 字」两步就把 5000 字
+        // 塞进了 2200 的预算里，每一步单看都合法。本页原来不常驻的话，它一个字都不在 prevTotal 里
         const others = await currentPinned(args.path);
-        const total = others.reduce((s, p) => s + p.chars, 0) + chars;
-        if (total > WIKI_PINNED_BUDGET && !shrinking) {
+        const othersSum = others.reduce((s, p) => s + p.chars, 0);
+        const prevTotal = othersSum + (beforePage !== null && beforePage.front.pinned ? beforeChars : 0);
+        const total = othersSum + chars;
+        if (total > WIKI_PINNED_BUDGET && !(total < prevTotal)) {
           const list = others.map((p) => `${p.path}（${p.chars} 字）`).join("、");
           throw new Error(`常驻页合计 ${total} 字，超过预算 ${WIKI_PINNED_BUDGET}。现有常驻页：${list || "无"}。先取消别的页的 pinned 或精简这一页`);
         }

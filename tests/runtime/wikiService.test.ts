@@ -112,6 +112,21 @@ describe("write / remove（spec §2.2 / §2.3）", () => {
     await svc.write({ path: "b.md", title: "B", summary: "", body: "y".repeat(200), pinned: true }, OPS);
     expect(WIKI_PINNED_BUDGET).toBe(2200);
   });
+  it("常驻预算按合计比，不按本页比：先写一页超大的不常驻页，再「缩一点点 + pinned」绕不过闸", async () => {
+    // 闸守的是**合计**，而 currentPinned 把本页排除在外——按本页「变小了」放行的话，
+    // 「不常驻写 5001 字 → 改成常驻 5000 字」就把 5000 字塞进了 2200 的预算里（终审 Important 1）
+    const { svc } = setup();
+    await svc.ensure();
+    await svc.write({ path: "big.md", title: "Big", summary: "", body: "x".repeat(5001) }, OPS); // 不常驻的页没有上限
+    await expect(svc.write({ path: "big.md", title: "Big", summary: "", body: "x".repeat(5000), pinned: true }, OPS)).rejects.toThrow("常驻");
+  });
+  it("已经超预算的常驻页：让合计真的变小的那次写入放行（这条闸只拦「不往下走」的）", async () => {
+    const { svc, fs } = setup();
+    await svc.ensure();
+    fs.files.set("fat.md", serializeWikiPage({ path: "fat.md", front: { title: "Fat", summary: "", pinned: true, updatedBy: "x", updatedAt: "2026-09-09T00:00:00Z", sources: [] }, body: "x".repeat(5000) }));
+    await svc.write({ path: "fat.md", title: "Fat", summary: "", body: "x".repeat(4000), pinned: true }, OPS);
+    expect(parseWikiPage("fat.md", fs.files.get("fat.md")!).body.replace(/\n$/, "").length).toBe(4000);
+  });
   it("自己那页 > 1100 拒；remove 普通页：文件没了、index 少一行、journal content=null", async () => {
     const { svc, fs, journal } = setup();
     await svc.ensure();
