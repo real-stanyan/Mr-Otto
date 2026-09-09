@@ -197,4 +197,60 @@ describe("动画路径", () => {
     expect(screen.queryByText("三只水獭")).not.toBeInTheDocument();
     expect(rootPage.style.pointerEvents).toBe("auto");
   });
+
+  // #1137：真机上「点返回有时候没反应」。病根在指针捕获的**时机**：pointerdown 一落在
+  // 左缘 26px 里就 setPointerCapture，之后的 pointerup 被改派到这个 section，而 click
+  // 落在 pointerdown / pointerup 两个目标的公共祖先上——也是这个 section——返回按钮的
+  // onClick 永远收不到。那枚 chevron 正好在 26px 里：点箭头没反应，点「返回」两个字才有
+  // （Chromium 151 上用 playwright 逐字复现过，记在 #1137）。jsdom 不做这套改派，所以
+  // 这里钉的是机制：按下不捕获，划过迟滞（8px）才捕获，且捕获在 section 上不在按钮上。
+  describe("左缘右划：指针捕获要等手势成立才拿（#1137）", () => {
+    const rect = { x: 0, y: 0, left: 0, top: 0, right: 420, bottom: 600, width: 420, height: 600, toJSON: () => ({}) } as DOMRect;
+    let captured: { el: unknown; id: unknown }[] = [];
+
+    beforeEach(() => {
+      captured = [];
+      // jsdom 没有布局：手势那条 `rect.width <= 0` 的闸要先过得去
+      vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue(rect);
+      // jsdom 没实现 setPointerCapture（组件里那层 try/catch 就是为它留的），装一个记账的
+      Object.defineProperty(HTMLElement.prototype, "setPointerCapture", {
+        configurable: true,
+        value(this: unknown, id: unknown) { captured.push({ el: this, id }); },
+      });
+    });
+
+    afterEach(() => { Reflect.deleteProperty(HTMLElement.prototype, "setPointerCapture"); });
+
+    const pushAndSettle = (): HTMLElement => {
+      render(<NavStack root={root} />);
+      fireEvent.click(screen.getByRole("button", { name: "进去" }));
+      settleFrames();
+      return screen.getByRole("button", { name: "团队" });
+    };
+
+    it("按在左缘的返回按钮上、没有拖：不拿捕获，松手那一下 click 照常回到上一页", () => {
+      const back = pushAndSettle();
+      fireEvent.pointerDown(back, { pointerId: 1, clientX: 14, clientY: 20, button: 0, buttons: 1 });
+      expect(captured).toHaveLength(0);
+      fireEvent.pointerUp(back, { pointerId: 1, clientX: 14, clientY: 20 });
+      fireEvent.click(back);
+      settleFrames();
+      expect(screen.queryByText("三只水獭")).not.toBeInTheDocument();
+    });
+
+    it("划过迟滞才捕获、捕获在页面那层 section 上，之后那一页跟着手指走", () => {
+      const back = pushAndSettle();
+      const page = back.closest("section")!;
+      fireEvent.pointerDown(back, { pointerId: 1, clientX: 14, clientY: 20, button: 0, buttons: 1 });
+      fireEvent.pointerMove(back, { pointerId: 1, clientX: 18, clientY: 20, buttons: 1 }); // 4px：还在迟滞里
+      expect(captured).toHaveLength(0);
+      fireEvent.pointerMove(back, { pointerId: 1, clientX: 24, clientY: 20, buttons: 1 }); // 10px：手势成立
+      expect(captured).toEqual([{ el: page, id: 1 }]);
+      // 拖到 105px：进度 0.75，页面的位移就是手指走过的距离
+      fireEvent.pointerMove(back, { pointerId: 1, clientX: 119, clientY: 20, buttons: 1 });
+      expect(page.style.transform).toBe("translate3d(105px,0,0)");
+      // 再划也只捕获那一次
+      expect(captured).toHaveLength(1);
+    });
+  });
 });
