@@ -8,7 +8,7 @@ import { errorClassOf, markErrorClass } from "../model/errorClass.js";
 import { routeModel, type HostedInput } from "./modelRoute.js";
 import { findModel } from "../shared/modelCatalog.js";
 import { DEFAULT_VISION_MODEL } from "../shared/visionModel.js";
-import type { UserAttachmentRef } from "../session/events.js";
+import type { TokenUsage, UserAttachmentRef } from "../session/events.js";
 
 /** 429 重试节奏(ms)。免费档高峰限流是瞬态错(智谱 code 1305「访问量过大」),
     实测高峰期逐次成功率仅 ~1/3,两段退避常耗尽——加密到五段(总窗 ~35s)
@@ -43,7 +43,15 @@ export function createVisionBridge(
   return async function describeImages(
     refs: UserAttachmentRef[],
     userText: string
-  ): Promise<string> {
+  ): Promise<{
+    content: string;
+    /** 这一次代读的账（#1093）：代读是真跑了一次视觉模型，usage/route/credit
+        三格随 image_described 事件落盘——deriveUsage 从日志求和的那本账从此
+        不再漏掉它。usage 缺席 = 上游没报（没记 ≠ 没花） */
+    usage?: TokenUsage;
+    route: "hosted" | "direct";
+    creditCostMicro?: number;
+  }> {
     const choice = findModel(model);
     if (!choice) throw new Error(`vision-bridge 模型不在目录: ${model}`);
     // 没配代读员的 key 时别硬发:空 Bearer 打上去,上游回的是一句自己的鉴权
@@ -66,6 +74,16 @@ export function createVisionBridge(
     const adapter = createOpenAICompatibleAdapter({
       baseUrl: route.baseUrl,
       apiKey: route.apiKey,
+      // 静态两格只是底座，真正生效的是 resolveEndpoint——静态端点没有 route 一格，
+      // 于是 reply.route 永远落成 "direct"、托管路的 x-otto-cost-micro 响应头
+      // 也被那一侧的条件（endpoint.route === "hosted"）丢掉——代读员的账从
+      // 装配那一刻起就记不成（#1093）。路由在上面 routeModel 已解好，重试期间
+      // 各次尝试用同一条（不变）
+      resolveEndpoint: async () => ({
+        baseUrl: route.baseUrl,
+        apiKey: route.apiKey,
+        route: route.kind,
+      }),
       model: choice.model,
       vision: true,
       readAttachment,
@@ -93,7 +111,14 @@ export function createVisionBridge(
       try {
         const reply = await adapter.chat(messages);
         if (!reply.content.trim()) throw new Error("视觉模型没有产出图片解析,turn 已放弃");
-        return reply.content;
+        return {
+          content: reply.content,
+          // route 以本函数自己解的那次为准（reply.route 是从端点格子透传的同一份，
+          // 但那是适配器层的缺省语义，账的判据挂在我们递进去的那一格上）
+          route: route.kind,
+          ...(reply.usage ? { usage: reply.usage } : {}),
+          ...(reply.creditCostMicro !== undefined ? { creditCostMicro: reply.creditCostMicro } : {}),
+        };
       } catch (e) {
         // 只重试限流(免费档高峰,瞬态);其他错误(401 无 key/400/断网)重试无意义。
         // 判据是抛错处贴的 errorClass(issue #389)——不再从错误文案里正则倒推,
