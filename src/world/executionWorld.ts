@@ -119,7 +119,10 @@ export interface McpServerHandle {
 }
 
 export interface McpCapability {
-  /** 把所有 enabled 的 server 连一遍，全部落定后 resolve。幂等：已连上的不重连。
+  /** 把**还没试过**的 server 连一遍，它们全部落定后 resolve（封顶 10 秒）。
+      幂等：已连上的不重连；试过而没连上的在后台重试、**不等**（#1187 —— 这个
+      函数挂在每次会话装配上，为一台已经问过一次的 server 再付一趟网络往返，
+      就是"点开一条会话要卡一下"）。
       agent.ts 拼工具表之前 await 它 —— 工具表是一次性拼好的（挂载一次定终身），
       拼的时候必须已经知道每台提供了什么。 */
   ready(): Promise<void>;

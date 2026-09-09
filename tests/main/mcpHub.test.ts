@@ -135,18 +135,27 @@ describe("createMcpHub", () => {
     expect(connect).toHaveBeenCalledTimes(1);
   });
 
-  it("failed 的 server 下次 ready() 会重试 —— 用户可能刚把 npx 装上", async () => {
-    let fail = true;
-    const connect: McpConnect = vi.fn(async () => {
-      if (fail) throw new Error("炸了");
-      return conn();
-    });
-    const hub = createMcpHub({ ...memStore({ a: stdio() }), connect });
-    await hub.ready();
-    expect(hub.servers()[0]!.status).toBe("failed");
-    fail = false;
-    await hub.ready();
-    expect(hub.servers()[0]!.status).toBe("connected");
+  it("failed 的 server 后来还是会连上 —— 用户可能刚把 npx 装上（#1187 之后重试挪到后台，见下面那组）", async () => {
+    vi.useFakeTimers();
+    try {
+      let fail = true;
+      const connect: McpConnect = vi.fn(async () => {
+        if (fail) throw new Error("炸了");
+        return conn();
+      });
+      const hub = createMcpHub({ ...memStore({ a: stdio() }), connect });
+      await hub.ready();
+      expect(hub.servers()[0]!.status).toBe("failed");
+      fail = false;
+      // 过了冷却窗（RETRY_COOLDOWN_MS）这次 ready() 才会再试一遍；重试在后台跑，
+      // 所以断言写在「放完微任务」之后，而不是紧跟 await hub.ready()
+      await vi.advanceTimersByTimeAsync(30_000);
+      await hub.ready();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(hub.servers()[0]!.status).toBe("connected");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("callTool 转给对应的 conn", async () => {
@@ -305,6 +314,123 @@ describe("ready() 的超时兜底（review finding 2）", () => {
       // 两次 ready() 都超时返回，但底层只应该对 "a" 发起过一次 opts.connect() ——
       // readying 不因为超时被提前清空，才不会撞出同一个 id 的第二个孤儿进程
       expect(connect).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// #1187：点一条不在内存里的会话要等 MCP 握手。ready() 被会话装配 await（工具表
+// 挂载一次定终身），而它过去对**每一台没连上的** server 都重试一遍并等到底 ——
+// 一台没授权的远程 server 就是每次冷 resume 多等几百毫秒（真机实测：7 条事件的
+// 会话也要 879ms），一台真挂了的就是 10 秒。这一组钉住新的分工：
+// 「没试过」要等（它决定这个会话有没有这些工具），「试过、没连上」不等。
+describe("ready() 分「这次要等」和「后台重试」（#1187）", () => {
+  it("没试过的那台照旧要等 —— 工具表是挂载一次定终身的，装配前必须知道它给什么", async () => {
+    vi.useFakeTimers();
+    try {
+      const connect: McpConnect = vi.fn(
+        () => new Promise<McpClientConn>((resolve) => { setTimeout(() => resolve(conn()), 1_000); })
+      );
+      const hub = createMcpHub({ ...memStore({ a: stdio() }), connect });
+      let settled = false;
+      const p = hub.ready().then(() => { settled = true; });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(settled).toBe(false); // 握手还没完，装配就得等着
+      await vi.advanceTimersByTimeAsync(1_000);
+      await p;
+      expect(hub.servers()[0]!.status).toBe("connected");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("失败过的那台：ready() 立刻回，重试在后台跑（这一次装配不为它付网络往返）", async () => {
+    vi.useFakeTimers();
+    try {
+      let attempts = 0;
+      const connect: McpConnect = vi.fn(() => {
+        attempts += 1;
+        // 第一次当场炸（→ failed），第二次永远连不完 —— 要是 ready() 还等着它，
+        // 下面那个 settled 断言就只能靠推进 10 秒的超时兜底才成立
+        if (attempts === 1) return Promise.reject(new Error("炸了"));
+        return new Promise<McpClientConn>(() => {});
+      });
+      const hub = createMcpHub({ ...memStore({ a: stdio() }), connect });
+      await hub.ready();
+      expect(hub.servers()[0]!.status).toBe("failed");
+
+      await vi.advanceTimersByTimeAsync(30_000); // 过冷却窗
+      let settled = false;
+      const p = hub.ready().then(() => { settled = true; });
+      await vi.advanceTimersByTimeAsync(0); // 只放微任务，一毫秒都不走
+      expect(settled).toBe(true);
+      expect(connect).toHaveBeenCalledTimes(2); // 重试确实发起了，只是没人等它
+      await p;
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("冷却窗内不重试 —— 连着点几条会话是一次网络往返，不是每条一次", async () => {
+    vi.useFakeTimers();
+    try {
+      const connect: McpConnect = vi.fn(() => Promise.reject(new Error("炸了")));
+      const hub = createMcpHub({ ...memStore({ a: stdio() }), connect });
+      await hub.ready();
+      expect(connect).toHaveBeenCalledTimes(1);
+      for (let i = 0; i < 5; i++) {
+        await hub.ready();
+        await vi.advanceTimersByTimeAsync(100);
+      }
+      expect(connect).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(30_000);
+      await hub.ready();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(connect).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("needs-auth 的那台一次都不后台重试 —— 拿同一份过期凭据再打一遍，答案不会变", async () => {
+    vi.useFakeTimers();
+    try {
+      const connect: McpConnect = vi.fn(() => Promise.reject(new McpAuthRequiredError("要授权")));
+      const hub = createMcpHub({ ...memStore({ a: http() }), connect });
+      await hub.ready();
+      expect(hub.servers()[0]!.status).toBe("needs-auth");
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      await hub.ready();
+      await hub.ready();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(connect).toHaveBeenCalledTimes(1);
+      // 要人点那颗按钮：authorize/reconnect 那两条路照旧直接连，不受冷却窗管
+      await hub.reconnect("a").catch(() => {});
+      expect(connect).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("后台那次还在飞的时候不再发起第二次 —— stdio 下那是两个孤儿子进程", async () => {
+    vi.useFakeTimers();
+    try {
+      let attempts = 0;
+      const connect: McpConnect = vi.fn(() => {
+        attempts += 1;
+        if (attempts === 1) return Promise.reject(new Error("炸了"));
+        return new Promise<McpClientConn>(() => {});
+      });
+      const hub = createMcpHub({ ...memStore({ a: stdio() }), connect });
+      await hub.ready();
+      await vi.advanceTimersByTimeAsync(30_000);
+      await hub.ready(); // 起第二次（永远连不完）
+      await vi.advanceTimersByTimeAsync(10 * 60_000);
+      await hub.ready(); // 冷却早过了，但上一次还挂在那儿没死
+      await hub.ready();
+      await vi.advanceTimersByTimeAsync(0);
+      expect(connect).toHaveBeenCalledTimes(2);
     } finally {
       vi.useRealTimers();
     }
