@@ -3,7 +3,7 @@
 
 import type { SessionEvent, MemoryTopicSnapshot } from "../session/events.js";
 import type { NewSessionEvent } from "../session/store.js";
-import type { ChatMessage } from "../session/deriveMessages.js";
+import { projectInstructionsText, type ChatMessage } from "../session/deriveMessages.js";
 import { topicIndexOf } from "../shared/memoryStore.js";
 import { renderTopicIndex } from "../shared/memoryTopics.js";
 
@@ -98,6 +98,7 @@ export function reviewerTranscript(messages: ChatMessage[], cap = 12_000): strin
 export function buildReviewerTask(
   mem: { memory: string; user: string; project?: string; projectRoot?: string; topics?: MemoryTopicSnapshot[] },
   transcript: string,
+  opts: { instructions?: string } = {},
 ): string {
   const projectBlock = mem.projectRoot
     ? `当前 PROJECT（${mem.projectRoot}）:\n${mem.project || "(空)"}\n\n`
@@ -108,5 +109,21 @@ export function buildReviewerTask(
     ? `主题索引：\n${renderTopicIndex(topicIndexOf(mem.topics))}\n\n` +
       mem.topics.filter((t) => t.content).map((t) => `当前 TOPIC:${t.slug}（${t.label}）:\n${t.content}\n\n`).join("")
     : "";
-  return `当前 MEMORY:\n${mem.memory || "(空)"}\n\n当前 USER:\n${mem.user || "(空)"}\n\n${projectBlock}${topicBlock}最近对话：\n${transcript}`;
+  // 项目指令节选（#1155）：主会话本次注入的那份 AGENTS.md/CLAUDE.md，与 reviewerInstructionsFrom
+  // 出自同一条日志。reviewer 据此判「与项目指令重复」——没附就不拼、也不提，
+  // 免得它对着一份看不见的文档去猜
+  const instructionsBlock = opts.instructions
+    ? `项目指令（主会话本次注入的那份；已经写在这里的事不进记忆）：\n${opts.instructions}\n\n`
+    : "";
+  return `当前 MEMORY:\n${mem.memory || "(空)"}\n\n当前 USER:\n${mem.user || "(空)"}\n\n${projectBlock}${topicBlock}${instructionsBlock}最近对话：\n${transcript}`;
+}
+
+/** 主会话这次注入的项目指令，渲成与模型看到的同一份文案（#1155）：取日志里最后一条
+    project_instructions。没有 = undefined（老日志 / 没有指令文件的工作区），调用方不拼 */
+export function reviewerInstructionsFrom(events: SessionEvent[]): string | undefined {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i]!;
+    if (e.type === "project_instructions") return projectInstructionsText(e.segments);
+  }
+  return undefined;
 }
