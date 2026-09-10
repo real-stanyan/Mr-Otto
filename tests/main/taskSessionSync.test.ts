@@ -362,6 +362,20 @@ describe("taskSessionSync：拉", () => {
     h.sync.backfill();
     expect(h.fileRef().sessions["s9"]!.frozen).toBeUndefined();
   });
+  it("拉取时 store.append 因不相干的原因抛错（比如 SQLITE_BUSY）：TaskSyncError code=other，不当成 unknownType 冻结", async () => {
+    // appendPulled 原来的 catch 把「不是 TaskSyncError 的抛错」一律当成「这个版本不认识的类型」——
+    // 而 SQLITE_BUSY 这类瞬时故障和「类型不认识」是两回事，前者不该被冻成需要升级的终态。
+    // session_created 是这个版本认得的类型（shouldPersist 对它返回 true），却因为不相干的
+    // 原因（这里模拟 SQLITE_BUSY）抛了——这时该把原因原样抛出去，不该说「升级一下就好了」
+    const h = harness();
+    await h.cloud.api.append("s9", 0, "desktop:B", [{ seq: 0, ...created("s9") } as SessionEvent]);
+    vi.spyOn(h.store, "append").mockImplementationOnce(() => {
+      throw new Error("SQLITE_BUSY");
+    });
+    await h.sync.pullNow();
+    expect(h.sync.state()).toMatchObject({ kind: "error", message: "SQLITE_BUSY" });
+    expect(h.fileRef().sessions["s9"]?.frozen).toBeUndefined();
+  });
 });
 
 describe("taskSessionSync：冲突", () => {
@@ -396,6 +410,40 @@ describe("taskSessionSync：冲突", () => {
     expect(h.store.load("s1").map((e) => e.type)).toEqual(["session_created", "assistant_message"]);
     expect(h.replaced).toEqual([]);
   });
+  it("purge 被真正的引用式分支拒绝：冻结成 purge_rejected（不是 detached），本地日志原地不动", async () => {
+    // has_executor 分歧要把本地这段整份复制走再 purge 原会话——但如果这条会话本身是别的会话
+    // store.fork() 出来的引用起点（issue #352 的零拷贝分支），store.purge 会拒绝：
+    // 删父等于把分支的历史前缀连根抽走。冻结成终态，不能悄悄改成 detached（那会被下一条
+    // 本地事件清掉，于是每写一条就整份重推一遍再被拒一次）
+    const h = harness();
+    h.store.append(created("s1"));
+    h.store.append({ sessionId: "s1", ts: 2, type: "user_message", content: "第一句" });
+    await h.sync.flushNow();
+    await h.sync.releasePen("s1");
+    // 云端另一台设备写一条人话 + 一轮回复
+    await h.cloud.api.append("s1", 2, "desktop:B", [{ seq: 2, sessionId: "s1", ts: 9, type: "user_message", content: "B 说" }]);
+    await h.cloud.api.acquirePen("s1", "desktop:B", 30);
+    await h.cloud.api.append("s1", 3, "desktop:B", [
+      { seq: 3, sessionId: "s1", ts: 10, type: "assistant_message", content: "B 答", model: "m" },
+      { seq: 4, sessionId: "s1", ts: 11, type: "turn_ended", outcome: "completed" },
+    ]);
+    await h.cloud.api.releasePen("s1", "desktop:B");
+    h.cloud.setOffline(true);
+    h.store.append({ sessionId: "s1", ts: 3, type: "user_message", content: "离线问" });
+    h.store.append({ sessionId: "s1", ts: 4, type: "assistant_message", content: "离线答", model: "m" });
+    h.store.append({ sessionId: "s1", ts: 5, type: "turn_ended", outcome: "completed" });
+    // 真正的引用式分支，挂在本地这条 turn_ended（seq 4）上——不是 forkCopy 那种整份拷贝
+    h.store.fork("s1", 4, "s1fork", 20);
+    await h.sync.flushNow(); // 离线，推不出去
+    h.cloud.setOffline(false);
+    const before = h.store.load("s1");
+    await h.sync.flushNow(); // 撞 seq_conflict → reconcile → has_executor → forkCopy 之后 purge 被 s1fork 拒绝
+    expect(h.fileRef().sessions["s1"]).toMatchObject({ frozen: "purge_rejected" });
+    expect(h.fileRef().sessions["s1"]!.detached).toBeUndefined();
+    expect(h.sync.state().kind).toBe("error");
+    expect(h.store.load("s1")).toEqual(before); // purge 从没成功过，原地不动
+    expect(h.replaced).toEqual([]);
+  });
 });
 
 describe("taskSessionSync：笔", () => {
@@ -419,5 +467,23 @@ describe("taskSessionSync：笔", () => {
     const h = harness();
     h.store.append(created("s1"));
     expect(await h.sync.acquirePen("s1")).toEqual({ kind: "acquired" });
+  });
+  it("续期失败（笔已经在别人手上）：granted 也要清掉，不然 holdsPen 会一直说「握着」一支已经丢的笔", async () => {
+    // 建行那一批 RPC 把笔发给我们，走的是 granted 这条路（不是 pens 那条），且顺手起了续期定时器。
+    // renew() 撞上「续不上」时如果只 stopRenew 不清 granted，holdsPen 会永远报 true
+    vi.useFakeTimers();
+    try {
+      const h = harness();
+      h.store.append(created("s1"));
+      await h.sync.flushNow();
+      expect(h.sync.holdsPen("s1")).toBe(true);
+      h.cloud.now.t += 40_000; // 过了 30 s TTL，我们那支笔到期
+      await h.cloud.api.acquirePen("s1", "cloud", 30); // 另一台设备拿走
+      await vi.advanceTimersByTimeAsync(PEN_RENEW_MS); // 触发下一次续期，撞见笔已经不是我们的了
+      expect(h.sync.holdsPen("s1")).toBe(false);
+      expect(h.penLost).toContain("s1");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

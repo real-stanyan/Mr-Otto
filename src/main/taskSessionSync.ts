@@ -83,13 +83,14 @@ export interface TaskSessionSync {
 const HEX_OF = (ref: string): string => ref.slice("sha256:".length);
 const MAX_FLUSH_ROUNDS = 3;
 
-/** 停止同步的三种终态原因（落进 task-sync.json 的 frozen 字段）。只有 needs_upgrade 会被 backfill
-    解冻——换个版本重开 app 之后这个版本可能就认得那条事件了；另外两条要人介入 */
-type FreezeReason = "forbidden" | "has_children_conflict" | "needs_upgrade";
+/** 停止同步的四种终态原因（落进 task-sync.json 的 frozen 字段）。只有 needs_upgrade 会被 backfill
+    解冻——换个版本重开 app 之后这个版本可能就认得那条事件了；另外三条要人介入 */
+type FreezeReason = "forbidden" | "has_children_conflict" | "needs_upgrade" | "purge_rejected";
 const FREEZE_MESSAGE: Record<FreezeReason, (id: string, detail: string) => string> = {
   forbidden: (id, detail) => `会话 ${id} 的云端副本已停止同步：${detail}`,
   has_children_conflict: (id) => `会话 ${id} 有子智能体会话，云端与本机分歧未自动处理，已停止同步`,
   needs_upgrade: (id) => `会话 ${id} 含这个版本不认识的事件类型，请升级 Mr Otto 后再同步`,
+  purge_rejected: (id) => `会话 ${id} 有引用式分支，云端与本机分歧未自动处理，已停止同步`,
 };
 
 export function createTaskSessionSync(deps: TaskSessionSyncDeps): TaskSessionSync {
@@ -180,12 +181,14 @@ export function createTaskSessionSync(deps: TaskSessionSyncDeps): TaskSessionSyn
       const r = await deps.api.acquirePen(id, deps.holder, PEN_TTL_S);
       if (!r.ok) {
         stopRenew(id);
+        granted.delete(id); // 笔已经不是我们的了：holdsPen 不能再报 true（#1223 复审）
         deps.onPenLost?.(id);
       }
     } catch (err) {
       // 断网续不上不算丢：笔到期前回网就续上了；真过期了下一次推会撞 pen_required 再重拿
       if (err instanceof TaskSyncError && (err.code === "network" || err.code === "missing_schema")) return;
       stopRenew(id);
+      granted.delete(id);
       deps.onPenLost?.(id);
     }
   };
@@ -427,7 +430,17 @@ export function createTaskSessionSync(deps: TaskSessionSyncDeps): TaskSessionSyn
           got = deps.store.append(rest as NewSessionEvent);
         } catch (err) {
           if (err instanceof TaskSyncError) throw err;
-          return { appended, unknownType: true };
+          // 只有「这个版本真不认得这个类型」才算 unknownType（冻成 needs_upgrade）；别的抛错
+          // （SQLITE_BUSY 之类的瞬时故障）不该被当成需要升级——那会把一次可以重试的故障
+          // 错误地冻成终态。shouldPersist 本身对陌生类型也抛裸 Error，一并接住当「不认识」
+          let known = false;
+          try {
+            known = shouldPersist(e.type);
+          } catch {
+            known = false;
+          }
+          if (!known) return { appended, unknownType: true };
+          throw new TaskSyncError("other", err instanceof Error ? err.message : String(err));
         }
         if (got.seq !== e.seq) throw new TaskSyncError("other", `拉取时 seq 对不上：本地 ${got.seq} 云端 ${e.seq}`);
         appended.push(got);
@@ -635,11 +648,12 @@ export function createTaskSessionSync(deps: TaskSessionSyncDeps): TaskSessionSyn
     try {
       if (d.kind === "has_executor") forkCopy(localFull, title);
       replaceWithCloud(id, cloudFull);
-    } catch (err) {
-      // purge 被拒（这条会话有真正的引用式分支）：停止同步、本地照读，不硬来
-      st.detached = true;
-      save();
-      throw err;
+    } catch {
+      // purge 被拒（这条会话有真正的引用式分支，store.fork 的零拷贝那种）：冻结终态、本地
+      // 照读，不硬来。不能用 detached——那会被下一条本地事件清掉（「重新建行」的信号），
+      // 于是每写一条就整份重推一遍再被拒一次
+      freeze(id, "purge_rejected");
+      return;
     }
     st.pushedUpTo = cloudFull.at(-1)?.seq ?? -1;
     save();
