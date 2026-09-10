@@ -115,6 +115,13 @@ export interface FtsHit {
   score: number;
 }
 
+export interface EventStoreOptions {
+  /** 每条事件落盘（事务提交）之后回调一次（#1223）：任务会话云同步的复制器挂在这里——
+      engine 与 index.ts 直接 append 的都从 append() 一个门出，挂这一处就全覆盖。
+      回调抛错只打日志不上抛：事件已经在盘上了，观察者的失败不该让写入方以为没写成 */
+  onAppend?: (event: SessionEvent) => void;
+}
+
 export class EventStore implements EventLog {
   private db: Database.Database;
   /** 预编译语句缓存（按 SQL 文本键控）。better-sqlite3 的 prepare() 没有内建缓存，
@@ -132,7 +139,10 @@ export class EventStore implements EventLog {
     return s;
   }
 
-  constructor(path: string) {
+  private readonly onAppend: ((event: SessionEvent) => void) | null;
+
+  constructor(path: string, opts: EventStoreOptions = {}) {
+    this.onAppend = opts.onAppend ?? null;
     this.db = new Database(path);
     this.db.pragma("journal_mode = WAL");
     // WAL 的标准搭配：NORMAL 只在 checkpoint 时 fsync，不是每笔提交一次。
@@ -178,7 +188,15 @@ export class EventStore implements EventLog {
 
       return { ...e, seq: row.next } as SessionEvent;
     });
-    return insert(event);
+    const full = insert(event);
+    if (this.onAppend) {
+      try {
+        this.onAppend(full);
+      } catch (err) {
+        console.error("EventStore.onAppend 观察者抛错（事件已落盘）", err);
+      }
+    }
+    return full;
   }
 
   /** 物理抹除整个会话（被遗忘权）。
@@ -575,6 +593,13 @@ BEGIN SELECT RAISE(ABORT, 'events log is append-only'); END;`);
       "SELECT MAX(seq) AS s FROM events WHERE session_id = ? AND type = ? AND seq < ?"
     ).get(sessionId, type, beforeSeq ?? Number.MAX_SAFE_INTEGER) as { s: number | null };
     return row.s ?? -1;
+  }
+
+  /** 这条会话本地末条 seq；没有事件 = -1。云同步用它比对云端 last_seq（#1223）。
+      fork 子会话只数自己的行：它的行从 endSeq+1 起，MAX 就是正确答案 */
+  lastSeq(sessionId: string): number {
+    const row = this.prep("SELECT COALESCE(MAX(seq), -1) AS last FROM events WHERE session_id = ?").get(sessionId) as { last: number };
+    return row.last;
   }
 
   /** 某会话里某类型在 afterSeq 之后（不含）有几条。memory nudge 的
