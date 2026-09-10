@@ -48,7 +48,7 @@ import { searchMcpRegistry } from "./mcpRegistry.js";
 import { createWebContentsViewHandle } from "./webContentsViewFactory.js";
 import { EventStore, type SessionSummary } from "../session/store.js";
 import { AttachmentStore, detectImageType } from "../session/attachments.js";
-import type { ToolCallRequest, TokenUsage, UserAttachmentRef, UserTextFile, MemoryTopicSnapshot } from "../session/events.js";
+import type { ToolCallRequest, TokenUsage, UserAttachmentRef, UserTextFile, MemoryTopicSnapshot, SessionEvent } from "../session/events.js";
 import type { Tool } from "../tools/tool.js";
 import { knownSkillToolName } from "../tools/skill.js";
 import { composeUserText, deriveMessages, COMPACT_COMPRESSION } from "../session/deriveMessages.js";
@@ -233,6 +233,10 @@ import {
 } from "./accountScope.js";
 import { loadMotionSettings, normaliseMotionSettings, saveMotionSettings } from "./motionSettingsStore.js";
 import { applyMotionPref, type MotionOverrideHost } from "./motionOverride.js";
+import { createTaskSessionSync } from "./taskSessionSync.js";
+import { createSupabaseTaskSessionsApi } from "./supabaseTaskSessionsApi.js";
+import { loadTaskSyncFile, saveTaskSyncFile } from "./taskSyncStore.js";
+import { holderId } from "../shared/taskSync.js";
 
 // mrotto:// 深链：注册 + open-url 监听必须在 app ready 前完成——macOS 冷启动时
 // 深链事件可能在 ready 之前就到达。AccountManager 要等 ready 后（依赖 app.getPath）
@@ -640,6 +644,9 @@ void app.whenReady().then(() => {
   let proxyResumeNow: (() => void) | null = null;
   /** 记忆云同步：登录恢复后全量对账（#852）。同上是个空位 */
   let memoryPullNow: (() => void) | null = null;
+  /** 任务会话云同步（#1223）：登录后 start（回填 + 拉一次 + realtime + sweep），登出 stop。同上是空位 */
+  let taskSyncStart: (() => void) | null = null;
+  let taskSyncStop: (() => void) | null = null;
   /** 好友代理:登出时把通道全关掉(issue #680)。同上是个空位,理由一样 */
   let proxyCloseNow: (() => void) | null = null;
   /** 云端托管的 re-sync 触发器（ADR-0197 切片 2，issue #797）。空位理由同上，
@@ -686,8 +693,8 @@ void app.whenReady().then(() => {
       // 远程传输同理(issue #484):冷启动时没登录的话它已经停在"不连"上了,
       // 登录是它唯一的醒来时机。登出不用管 —— 流一断,下一次 connect 拿不到
       // 令牌就自己停住了
-      if (info.signedIn) { remoteRetryNow?.(); proxyResumeNow?.(); memoryPullNow?.(); hostedQuotaRefresh?.(); }
-      else proxyCloseNow?.();
+      if (info.signedIn) { remoteRetryNow?.(); proxyResumeNow?.(); memoryPullNow?.(); hostedQuotaRefresh?.(); taskSyncStart?.(); }
+      else { proxyCloseNow?.(); taskSyncStop?.(); }
       // 通知的去重基线跟着登录态清零(必须在 stop() 之后:它会同步推一份空快照,
       // 先清就又被填回去了)。留着上一个账号的基线,换号后第一份全量快照会被
       // 当成"全是新的",一屏历史请求当场弹成通知
@@ -733,7 +740,10 @@ void app.whenReady().then(() => {
 
   const dbPath = join(accountData, "sessions.db");
   // store 是 app 级资源：欢迎页列会话时 agent 还不存在，库必须先开着
-  const store = new EventStore(dbPath);
+  // 任务会话云同步的观察者（#1223）：复制器建得比 store 晚（要等 supabase client 与账号），
+  // 先留槽后填——同 memorySyncHook 的先例
+  const appendHook: { fn: ((e: SessionEvent) => void) | null } = { fn: null };
+  const store = new EventStore(dbPath, { onAppend: (e) => appendHook.fn?.(e) });
   // 图片附件库:EventStore 的邻居——日志存引用,bytes 在这(docs/adr/0009)
   const attachmentStore = new AttachmentStore(join(accountData, "attachments"));
   /**
@@ -2161,6 +2171,76 @@ void app.whenReady().then(() => {
   void migrateProjectScopes();
   memoryPullNow = () => void memorySync.pullNow().then(migrateProjectScopes);
 
+  // ── 任务会话云同步（#1223，ADR-0284）──
+  // 云端那份是事实，本机 sqlite 是它的前缀副本；谁握笔谁写 turn；人话不要笔。
+  const taskSyncPath = join(accountData, "task-sync.json");
+  /** 等笔的会话：sessionId → 谁握着（渲染层运行指示条那一档「云端 / 另一台电脑正在回复」，Task 14 写它） */
+  const waitingFor = new Map<string, "cloud" | "desktop">();
+  /** 别的设备落的人话由这台电脑接着答（Task 14 的 answerLogged）——复制器建得比它早，先留槽后填 */
+  const answerLoggedHook: { fn: ((sessionId: string) => void) | null } = { fn: null };
+  const taskSync = createTaskSessionSync({
+    store,
+    api: createSupabaseTaskSessionsApi(supabase.raw),
+    uid: () => friends.currentUid(),
+    holder: holderId("desktop", remoteKeys?.idStore.deviceId ?? "nodevice"),
+    label: hostname(),
+    file: { load: () => loadTaskSyncFile(taskSyncPath), save: (f) => saveTaskSyncFile(taskSyncPath, f) },
+    attachments: {
+      read: (id) => {
+        try {
+          return attachmentStore.read(id);
+        } catch {
+          return null;
+        }
+      },
+      save: (bytes) => attachmentStore.save(bytes),
+    },
+    isRunning: (id) => runningSessions.has(id),
+    onPulled: (sessionId, events) => {
+      // 拉进来的事件与 engine 落的走同一条路进渲染层与岛
+      for (const e of events) {
+        send(CHANNELS.event, e);
+        feedIsland({ kind: "event", event: e });
+      }
+      fleetSessionsCache = null;
+      pushFleet();
+      // 别的设备发的人话且没人答：电脑醒着就由电脑跑（spec §3.6「手机的话由电脑跑」）
+      const human = events.some((e) => e.type === "user_message" && e.origin === undefined);
+      if (human && !runningSessions.has(sessionId)) answerLoggedHook.fn?.(sessionId);
+    },
+    onReplaced: (sessionId) => {
+      // 本地日志被整份换成云端那份：内存里那只 agent 的快照已经不是这条日志的了
+      agents.delete(sessionId);
+      islandStates.delete(sessionId);
+      fleetSessionsCache = null;
+      pushFleet();
+      send(CHANNELS.taskSessionReplaced, { sessionId });
+    },
+    onPenChanged: (sessionId, holder) => {
+      // 笔空了、且本地有人在等：接着答（Task 14 的 answerLogged 自己会再拿一次笔）
+      if (holder === null && waitingFor.has(sessionId)) answerLoggedHook.fn?.(sessionId);
+    },
+    onPenLost: (sessionId) => {
+      // 续期失败 = 笔已在别人手上：正在跑的 turn 以 interrupted 停掉，接手的一方按「没答」接着答
+      if (runningSessions.has(sessionId)) agents.get(sessionId)?.engine.abortTurn("interrupted");
+    },
+    onExecutorSwitch: (_sessionId, to) => {
+      // 云端那段写的记忆落在 memory_docs：回到桌面时拉一次（spec §3.6「记忆」）
+      if (to === "desktop") memoryPullNow?.();
+    },
+    onState: (s) => send(CHANNELS.taskSyncState, s),
+  });
+  appendHook.fn = (e) => taskSync.touched(e);
+  taskSyncStart = () => taskSync.start();
+  taskSyncStop = () => taskSync.stop();
+  // 开机时 onChange 可能已经来过了（restore 早于这段装配）：登录着就现在起
+  if (friends.currentUid()) taskSync.start();
+  // 重新聚焦窗口时拉一次（同 #1064 点名收件箱的取舍）
+  win.on("focus", () => {
+    void taskSync.pullNow();
+    memoryPullNow?.(); // 云端那段写的记忆也在这一刻回拉（spec §3.6「记忆」：与会话拉取同一批触发点）
+  });
+
   /** applyUserEdit 的 fs 依赖（Task 8）：异步版 readFile/writeFile，配合
       memoryEdit.ts 保持不碰 Electron/fs 的纯函数身份——真正碰盘的活都在这里做 */
   const memoryEditDeps = {
@@ -2875,6 +2955,7 @@ void app.whenReady().then(() => {
     memoryFiles.readTopics().map((t) => ({ slug: t.slug, label: t.label, text: t.content, seed: t.slug in SEED_TOPICS }))
   );
   ipcMain.handle(CHANNELS.memorySyncStatus, () => memorySync.state());
+  ipcMain.handle(CHANNELS.taskSyncStatus, () => taskSync.state());
   ipcMain.handle(CHANNELS.deleteTopicMemory, async (_e, slug: unknown) => {
     if (!isTopicSlug(slug)) throw new Error("slug 非法");
     if (slug in SEED_TOPICS) throw new Error("种子桶不能删，只能清空");
@@ -3738,6 +3819,8 @@ void app.whenReady().then(() => {
     if (currentSessionId === sessionId) currentSessionId = null; // 渲染层据此回欢迎页
     fleetSessionsCache = null; // purge 不走事件流,缓存不会自己失效——当场清
     pushFleet(); // store.sessions() 已经不含被删的会话,重推让岛上的行跟着掉
+    // 云端那份跟着删（#1223）：级联抹事件；别的设备只会标 detached、不删本地
+    void taskSync.deleted(sessionId);
   });
 
   // 把副本合回项目本体（issue #643）。合到项目目录此刻所在的那条分支——
@@ -4521,6 +4604,8 @@ void app.whenReady().then(() => {
   app.on("before-quit", () => {
     quitting = true; // 放行 createWindow 里那道 close 拦截 —— 这次是真要退
     void memorySync.flushNow(); // 尽力而为：把 pending 推完（不 await 阻塞退出）
+    void taskSync.flushNow(); // 同上：把脏会话推完
+    taskSync.stop(); // 放掉握着的笔——不放要等 30 s 过期，对面白等半分钟
     bridge?.dispose(); // stdio 桥收掉;helper 子进程跟着退出
     terminals.killAll(); // 孤儿 dev server 会占着端口而没人知道是谁占的
     browsers.closeAll(); // 窗口没了,挂在它 contentView 上的 view 全部收掉
