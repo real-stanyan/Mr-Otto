@@ -185,6 +185,7 @@ import { openTurns } from "../../../src/shared/turnLedger.js";
 import { createTurnCoordinator, type TurnJob, type EnqueueDecision } from "./turnCoordinator.js";
 import { createApprovalRouter, RELAY_APPROVAL_TIMEOUT_MS, type ApproveOutcome } from "./approvalRouter.js";
 import { fetchGrantedTools, buildPxTools, type PxCallDeps, type GrantedPxServer } from "./pxTools.js";
+import { diskBudgetText } from "./sandbox.js";
 import { CONTAINER_BUSY_TEXT, type WorkspaceLock } from "./workspaceLock.js";
 import { filterGrantedByAllow, type AgentToolAllow } from "../../../src/shared/agentToolAllow.js";
 import { createWikiTools } from "./wikiTool.js";
@@ -416,6 +417,14 @@ export interface CloudSessionOpts {
       的两条会话共用同一把。sessionService **第一次碰容器才拿**、这一轮收口才放，
       只聊天的 turn 一次都不排队 */
   workspaceLock: WorkspaceLock;
+  /** 这个团队的工作卷上一次量出来占了多少（issue #836，ADR-0287）。**必需**
+      （同 sandboxApproval / workspaceLock 的纪律）：忘接线该编译不过，而不是
+      安静地再也不提磁盘——这条能力唯一的出口就是群里那一句话，不出声与
+      「没超」在界面上长得一模一样。
+      daemon 接 `sandbox.diskUsage(workspaceId)`：纯读缓存不打 docker，`null` =
+      本进程还没量过。**只用来说话不用来拦人**，为什么见 sandbox.ts 的
+      DISK_LIMIT_KIB */
+  diskUsage: () => { usedKib: number; limitKib: number } | null;
   /** 时钟（只给测试拧 TTL 用）。缺席 = Date.now */
   now?: () => number;
 }
@@ -664,6 +673,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       复位（紧挨 `router.setRelayTurn`，同一个时机同一个作用域）——判据是"这一轮"
       不是"这张卡"，所以它跟着 job 走而不是跟着 callId 走 */
   let relayWaitAnnounced = false;
+  /** 这个 job 已经为「工作文件夹超了预算」在群里出过一次声了吗（#836）。同
+      relayWaitAnnounced 的去重理由，而且更硬：这条 chat_message 在 agentView
+      里是 keep，一轮里每碰一次容器说一句，等于把每只 agent 的上下文喂成噪音 */
+  let diskBudgetAnnounced = false;
   /** 此刻**打得动**的那台 engine（#957 A-2 复审 Important）——`abortTurn()` 唯一
       够得着的口。位置很讲究：`runLoggedTurn` 的**前一行**置位，中间不许有
       `await`。初版置在 `engineFor(spec)` 之后，而那之后还隔着
@@ -713,6 +726,20 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   let heldRelease: (() => void) | null = null;
   let lockPending: Promise<void> | null = null;
   function gateContainer(): Promise<void> {
+    // 超预算在群里说一句（#836，一轮一次）。挂在这道门上而不是挂在 turn 起跑处：
+    // 只聊天的 turn 一次都不碰容器，对它说「你的工作文件夹太大了」是答非所问。
+    // 读的是**上一次**量出来的数（`ensure()` 里 fire-and-forget 那一次），所以
+    // 本进程第一次碰这个团队的容器时必然没有读数、不出声——超出最晚在下一次
+    // 碰容器时被说出口，这个窗口是 ADR-0287 明写的已知代价。
+    // 排在 heldRelease 早退**之前**：那条早退是「这一轮已经拿着锁了」，而这句话
+    // 的去重靠 diskBudgetAnnounced，两者管的不是同一件事
+    if (!diskBudgetAnnounced) {
+      const disk = opts.diskUsage();
+      if (disk && disk.usedKib > disk.limitKib) {
+        diskBudgetAnnounced = true;
+        logChat("system", "系统", diskBudgetText(disk.usedKib, disk.limitKib), false);
+      }
+    }
     if (heldRelease) return Promise.resolve();
     if (lockPending) return lockPending;
     const lock = opts.workspaceLock;
@@ -1594,6 +1621,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // 确认的 ask 才钉住这一轮，auto 与「问不出来」都不钉，判据在 policyApprover
     jobSandboxPolicy = null;
     sandboxProbeFailAnnounced = false;
+    diskBudgetAnnounced = false;
     jobLockAbort = new AbortController(); // 这一轮等容器锁的中断信号（#979 第 2 条）
     currentInitiator = job.fromUid;
     currentAgentId = job.agentId;
