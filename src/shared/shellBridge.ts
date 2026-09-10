@@ -20,6 +20,8 @@ import type { UsageSnapshot } from "./usageStats.js";
 import type { ModelShareWindow } from "./modelShare.js";
 import type { WorkspaceMentionRow } from "./workspaceMentions.js";
 import type { IslandUsageRow } from "./islandUsage.js";
+import type { IslandRail } from "./islandRail.js";
+import type { IslandTab } from "./islandTabs.js";
 import type { CsGitHost, CsModelRoute, CsWikiWriteReq, CsWorkHit, CsWorkNode } from "./remote/cloudSession.js";
 import type { TerminalInfo } from "./terminal.js";
 import type { BrowserTabInfo, BrowserBounds, BrowserPickedElement } from "./browser.js";
@@ -1334,6 +1336,13 @@ export interface IslandAgent {
       TurnDiffUpdate 的统计——两处只能显示同一个数。可选：旧 helper 解码时忽略，
       turn 没写过文件时缺席 */
   turnDiff?: { files: number; additions: number; deletions: number };
+  /** 这一行归顶栏哪一档：任务 / 项目 / 团队（#1229，与侧栏 ADR-0259 同一套分法）。
+      **缺席 = `"project"`** —— 旧主进程推来的行全部落进项目档，也就是改动前的行为。
+      「此刻在看哪一档」不在线上：那是 helper 的内存态，同 selectedSessionId */
+  kind?: IslandTab;
+  /** 组头写什么。`null` = 这一档不分组（任务档就是平铺）。**缺席**时 Swift 侧
+      照旧从 projectRoot 末段自己推（旧主进程） */
+  groupLabel?: string | null;
 }
 
 /** 灵动岛线上快照(多会话):侧栏可见集合每会话一行 + 主窗当前选中(默认高亮行)。
@@ -1346,6 +1355,14 @@ export interface IslandFleet {
   display?: IslandDisplay;
   /** display=usage 时的用量表(shared/islandUsage.ts 的投影);sessions 模式不带 */
   usage?: IslandUsageRow[];
+  /** 展开态最底下那一条（#1229）。**缺席 = 整条不画**：billing 还没查到、
+      或者既没订阅也没跑过一次计费调用——三种情形在岛上是同一个答案，
+      而「没有额度可言」和「额度充足」不是同一件事（ADR-0255） */
+  rail?: IslandRail;
+  /** 「团队」那一格右上角那枚未读点的数（#1229）。**缺席 = 不画**（还没查到
+      不是「没有」）。渲染层算好推给主进程——`workspace_mentions` 是渲染层直连
+      Supabase 拉的（#1064），主进程手里没有；已知代价是主窗没开时它是陈旧的 */
+  unreadMentions?: number;
 }
 
 /** 设置页「手机」栏目里的一台已登记手机(main/remoteDevices.ts 的 RemotePeer)。
