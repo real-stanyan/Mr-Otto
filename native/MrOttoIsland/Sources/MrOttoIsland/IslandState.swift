@@ -40,56 +40,99 @@ struct IslandAgent: Codable, Equatable, Identifiable {
   var branch: String?
   /// Optional → decodeIfPresent,旧主进程不带此字段照常解码(向后兼容同 workspace)
   var turnDiff: TurnDiffSummary?
+  /// 这一行归顶栏哪一档(#1229)。旧主进程不带 → nil,`tab` 里回落成 .project,
+  /// 也就是改动前的行为(那时只有一份平铺的列表)。
+  var kind: IslandTab?
+  /// 组头写什么。主进程给了就用它,没给(旧主进程,或任务档那种不分组的)
+  /// 回落到路径末段。**「这一档要不要画组头」不看这个字段看 `tab`** ——
+  /// JSON 的 `null` 与「字段缺席」在 Swift 里都是 nil,拿它当判据的话
+  /// 旧主进程推来的行会被当成「不分组」,而那时的行为是分组的。
+  var groupLabel: String?
   var id: String { sessionId }
+
+  /// 归哪一档;旧主进程不带 → 项目档
+  var tab: IslandTab { kind ?? .project }
 
   /// 分组键:项目根优先,回落 workspace(旧主进程),都没有归"其他"。
   var groupKey: String { projectRoot ?? workspace ?? "其他" }
 
-  /// 组头显示名:项目根的路径末段。nil(旧主进程且无 workspace)归到"其他"组。
+  /// 组头显示名:主进程给了就用它(#1229——云会话那一组的组头必须是团队名,
+  /// 而它的 workspace 是一串合成路径,末段是 UUID),否则退回项目根的路径末段。
+  /// 都没有归"其他"组。
   var workspaceLabel: String {
+    if let label = groupLabel, !label.isEmpty { return label }
     guard let path = projectRoot ?? workspace else { return "其他" }
     return (path as NSString).lastPathComponent
   }
 }
 
-/// 展开态上半区画哪个(#199):会话列表 or 用量表。设置页切,主进程随快照推。
-enum Display: String, Codable { case sessions, usage }
+/// 展开态顶栏那三档(#1229),与侧栏那枚切换器同一套分法(ADR-0259)。
+/// **「此刻在看哪一档」不在线上**:那是 helper 的内存态,同 selectedSessionId /
+/// collapsedWorkspaces(ADR-0063)。线上只带「每一行归哪一档」。
+enum IslandTab: String, Codable, CaseIterable {
+  case task, project, team
 
-/// 用量表的一行:一个模型在 今天/7天/14天 三个窗口的 token 合计。
-/// label 是主进程拍平好的目录显示名,这边纯渲染;provider 是厂商 id,
-/// 对应资源 bundle 里 providers/<id>.png 的 logo(#209;Optional 向后兼容)。
-struct UsageRow: Codable, Equatable, Identifiable {
-  let label: String
-  var provider: String?
-  let today: Double
-  let d7: Double
-  let d14: Double
-  var id: String { label }
+  var label: String {
+    switch self {
+    case .task: return "任务"
+    case .project: return "项目"
+    case .team: return "团队"
+    }
+  }
+}
+
+/// 额度页脚的语义色档(#1229)。`quotaTone` 的 brand 一档在主进程就映射成了
+/// neutral——ADR-0239:一根几乎满格的品牌蓝条会把「一切正常」画得比「快没了」
+/// 还响。这一行上的颜色只用来说「出事了」。
+enum RailTone: String, Codable { case neutral, warn, deny }
+
+/// 展开态最底下那一条(#1229)。主进程算好拍平(shared/islandRail.ts),
+/// 这边**一个判断都不做**——岛是纯渲染(ADR-0063)。
+/// 两支:`quota` 有订阅、`spend` 没订阅但跑过计费调用。整条缺席 = 不画。
+struct IslandRail: Codable, Equatable {
+  let kind: String            // "quota" | "spend"
+  let plan: String            // free / lite / pro / max
+  /// quota 支
+  var pastDue: Bool?
+  var windowLabel: String?
+  var remainPercent: Double?
+  var remainLabel: String?
+  var tone: RailTone?
+  var exhausted: Bool?
+  var countdown: String?
+  /// spend 支
+  var tokensLabel: String?
+  var calls: Int?
+  let title: String
+
+  var isQuota: Bool { kind == "quota" }
 }
 
 /// 主进程推来的全量快照:所有 session 的列表 + 主窗当前聚焦的那个。
-/// display/usage 是后加字段:旧主进程不带,解码兜底 sessions/空表——
-/// NDJSON 协议向后兼容(同 SessionEvent 的规矩)。
+/// rail / unreadMentions 是 #1229 加的可选字段:旧主进程不带,解码兜底 nil ——
+/// 两格都是「缺席 = 不画那一格」,NDJSON 协议向后兼容(同 SessionEvent 的规矩)。
 struct IslandFleet: Codable, Equatable {
   let agents: [IslandAgent]
   let focusedSessionId: String?
-  let display: Display
-  let usage: [UsageRow]
+  /// 展开态最底下那一条;nil = 整条不画(billing 还没查到,或既没订阅也没跑过调用)
+  let rail: IslandRail?
+  /// 「团队」那格右上角那枚未读点的数;nil = 还没查到(与 0 不是一回事,不画)
+  let unreadMentions: Int?
 
   init(agents: [IslandAgent], focusedSessionId: String?,
-       display: Display = .sessions, usage: [UsageRow] = []) {
+       rail: IslandRail? = nil, unreadMentions: Int? = nil) {
     self.agents = agents
     self.focusedSessionId = focusedSessionId
-    self.display = display
-    self.usage = usage
+    self.rail = rail
+    self.unreadMentions = unreadMentions
   }
 
   init(from decoder: Decoder) throws {
     let c = try decoder.container(keyedBy: CodingKeys.self)
     agents = try c.decode([IslandAgent].self, forKey: .agents)
     focusedSessionId = try c.decodeIfPresent(String.self, forKey: .focusedSessionId)
-    display = try c.decodeIfPresent(Display.self, forKey: .display) ?? .sessions
-    usage = try c.decodeIfPresent([UsageRow].self, forKey: .usage) ?? []
+    rail = try c.decodeIfPresent(IslandRail.self, forKey: .rail)
+    unreadMentions = try c.decodeIfPresent(Int.self, forKey: .unreadMentions)
   }
 }
 

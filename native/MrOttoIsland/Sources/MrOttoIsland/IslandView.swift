@@ -18,11 +18,13 @@ struct IslandExpandedView: View {
   /// 列表行高亮用的"有效选中 id"。镜像 model.selectedAgent 的兜底链路
   /// (selected ?? focused ?? 审批行 ?? 首行)——高亮和详情不同步会出现
   /// "详情是 A,却没有任何行被高亮"的观感错位。
+  /// 兜底链路只在**当前这一档**里找(#1229):跨档兜底会让详情区画一条
+  /// 此刻列表上根本看不见的会话——"详情是 A,却没有任何行被高亮"的加强版。
   private var effectiveSelectedId: String? {
-    model.selectedSessionId
-      ?? model.fleet.focusedSessionId
-      ?? model.fleet.agents.first(where: { $0.phase == .approval })?.id
-      ?? model.fleet.agents.first?.id
+    let visible = visibleAgents
+    if let sel = model.selectedSessionId, visible.contains(where: { $0.id == sel }) { return sel }
+    if let focused = model.fleet.focusedSessionId, visible.contains(where: { $0.id == focused }) { return focused }
+    return visible.first(where: { $0.phase == .approval })?.id ?? visible.first?.id
   }
 
   /// 会话按**项目**分组(#206 起;分组键 workspace → projectRoot):flattenFleet 保证
@@ -33,9 +35,14 @@ struct IslandExpandedView: View {
     let agents: [IslandAgent]
   }
 
+  /// 当前这一档的行。切档不往返主进程——每行自带 `kind`(#1229)
+  private var visibleAgents: [IslandAgent] {
+    model.fleet.agents.filter { $0.tab == model.tab }
+  }
+
   private var workspaceGroups: [WorkspaceGroup] {
     var groups: [WorkspaceGroup] = []
-    for agent in model.fleet.agents {
+    for agent in visibleAgents {
       let key = agent.groupKey
       if let last = groups.indices.last, groups[last].id == key {
         groups[last] = WorkspaceGroup(id: key, label: groups[last].label, agents: groups[last].agents + [agent])
@@ -46,33 +53,176 @@ struct IslandExpandedView: View {
     return groups
   }
 
-  var body: some View {
-    Group {
-      // 用量模式(#199):上半区换成用量表,下半区详情(审批三按钮 / compose 输入)
-      // 原样保留——审批 fleet-wide 强制展开的意义就是当场能按按钮,不能因为
-      // 显示的是用量就把按钮藏了。fleet 为空但有历史用量也照常显示表。
-      if model.fleet.display == .usage {
-        VStack(spacing: 0) {
-          usageTable
-          if let agent = model.selectedAgent, model.composing || agent.phase != .idle {
-            Divider()
-            detail(agent)
-          }
+  /// SPM 资源 bundle 里的 logo(与 IslandCompactView 同一张 otto.png)。
+  /// 找不到给 nil,顶栏就只画切换器——资源缺失时岛不能瞎。
+  private static let logo: NSImage? =
+    Bundle.module.url(forResource: "otto", withExtension: "png")
+      .flatMap { NSImage(contentsOf: $0) }
+
+  /// 当前这一档里选中的那条。跨档时详情区跟着空掉,不画一条看不见的会话
+  private var selectedVisibleAgent: IslandAgent? {
+    guard let id = effectiveSelectedId else { return nil }
+    return visibleAgents.first(where: { $0.id == id })
+  }
+
+  /// 空态按档说话:三档空掉的原因不一样,一句「主窗里先开会话」对团队档是错的指引
+  private var emptyHint: String {
+    switch model.tab {
+    case .task: return "没有正在跑的任务"
+    case .project: return "主窗里先开会话"
+    case .team: return "没有开着的团队会话"
+    }
+  }
+
+  /// 顶栏:logo + 三档切换器。与侧栏那枚同一套分法(ADR-0259)。
+  /// 「团队」那格右上角那枚未读点:**画点不画数**——那一格只有 40pt 宽,
+  /// 量级留给下一层(组头/行上的角标)。色取品牌蓝不取警告橙:被 @ 不是
+  /// 「出事了」(ADR-0256)。`unreadMentions` 缺席 = 还没查到,不画。
+  private var topBar: some View {
+    HStack(spacing: 9) {
+      // 与 compact 态同一张图(#201):展开是同一枚岛长开的,logo 换一张就成了两个东西
+      if let logo = Self.logo {
+        Image(nsImage: logo).resizable().scaledToFit().frame(height: 15)
+      }
+      HStack(spacing: 2) {
+        ForEach(IslandTab.allCases, id: \.self) { tab in
+          let on = model.tab == tab
+          Text(tab.label)
+            .font(.system(size: 11, weight: on ? .semibold : .medium))
+            .foregroundStyle(.white.opacity(on ? 0.95 : 0.46))
+            .padding(.horizontal, 9)
+            .padding(.vertical, 2.5)
+            .background(
+              RoundedRectangle(cornerRadius: 6, style: .continuous)
+                .fill(Color.white.opacity(on ? 0.15 : 0))
+            )
+            .overlay(alignment: .topTrailing) {
+              if tab == .team, let n = model.fleet.unreadMentions, n > 0 {
+                Circle().fill(Color(red: 0.04, green: 0.52, blue: 1.0))
+                  .frame(width: 5, height: 5)
+                  .offset(x: -2, y: 1)
+              }
+            }
+            .contentShape(Rectangle())
+            .onTapGesture { model.tab = tab }
         }
-      } else if model.fleet.agents.isEmpty {
-        Text("主窗里先开会话")
-          .foregroundStyle(.secondary)
-          .padding(.horizontal, 12)
-          .padding(.vertical, 6)
-      } else {
+      }
+      .padding(2)
+      .background(RoundedRectangle(cornerRadius: 8, style: .continuous).fill(Color.white.opacity(0.07)))
+      Spacer(minLength: 0)
+    }
+    .padding(.horizontal, 14)
+    .padding(.top, 8)
+    .padding(.bottom, 6)
+  }
+
+  /// 额度页脚(#1229 方向 A)。**这里一个判断都不做**:画什么、什么颜色、
+  /// 报哪一扇窗,全由主进程的 `islandRail` 算好(岛是纯渲染,ADR-0063)。
+  @ViewBuilder
+  private func railRow(_ rail: IslandRail) -> some View {
+    VStack(spacing: 0) {
+      Rectangle().fill(Color.white.opacity(0.09)).frame(height: 1)
+        .padding(.horizontal, 14).padding(.top, 6)
+      HStack(spacing: 9) {
+        planBadge(rail.plan)
+        if rail.pastDue == true { pill("扣款失败", Self.railColor(.deny)) }
+        if rail.isQuota {
+          if rail.exhausted == true {
+            Text("\(rail.windowLabel ?? "") 额度用完")
+              .font(.system(size: 11.5, weight: .semibold))
+              .foregroundStyle(Self.railColor(.deny))
+          } else {
+            Text(rail.windowLabel ?? "")
+              .font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.38))
+            Text(rail.remainLabel ?? "")
+              .font(.system(size: 12.5, weight: .semibold)).monospacedDigit()
+              .foregroundStyle(Self.railColor(rail.tone ?? .neutral))
+            // 条按**剩余**填(闲着时它是满的),色档按**已用**判——同一件事的两个说法,
+            // 判据只有一份,而那一份在主进程(ADR-0239)
+            GeometryReader { geo in
+              ZStack(alignment: .leading) {
+                Capsule().fill(Color.white.opacity(0.10))
+                Capsule().fill(Self.railColor(rail.tone ?? .neutral))
+                  .frame(width: geo.size.width * min(max((rail.remainPercent ?? 0) / 100, 0), 1))
+              }
+            }
+            .frame(height: 3)
+          }
+        } else {
+          Text("近 7 天").font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.38))
+          Text(rail.tokensLabel ?? "")
+            .font(.system(size: 12.5, weight: .semibold)).monospacedDigit()
+            .foregroundStyle(.white.opacity(0.78))
+          Text("tokens · \(rail.calls ?? 0) 次")
+            .font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.38))
+          Spacer(minLength: 0)
+        }
+        if let cd = rail.countdown {
+          Text(cd).font(.system(size: 10.5)).monospacedDigit()
+            .foregroundStyle(.white.opacity(0.38)).fixedSize()
+        }
+      }
+      .padding(.horizontal, 14)
+      .padding(.top, 7)
+      .padding(.bottom, 2)
+      .help(rail.title)
+    }
+  }
+
+  private static func railColor(_ tone: RailTone) -> Color {
+    switch tone {
+    // app.css 深色那一段的语义色,逐字抄:两块屏幕上同一个状态得是同一个颜色
+    case .neutral: return Color.white.opacity(0.40)
+    case .warn: return Color(red: 1.0, green: 0.62, blue: 0.04)   // --warn #ff9f0a
+    case .deny: return Color(red: 1.0, green: 0.27, blue: 0.23)   // --deny #ff453a
+    }
+  }
+
+  /// 档位徽章(ADR-0240 的四色)。`past_due` **仍报原档**——扣款失败不改变
+  /// 「你订的是 Pro」,出事那句话由旁边那枚红签说。
+  @ViewBuilder
+  private func planBadge(_ plan: String) -> some View {
+    switch plan {
+    case "lite": pill("Lite", Color(red: 0.19, green: 0.82, blue: 0.35))  // --ok
+    case "pro":  pill("Pro", Color(red: 0.04, green: 0.52, blue: 1.0))    // --brand
+    case "max":  pill("Max", Color(red: 1.0, green: 0.62, blue: 0.04))    // --warn(借形不借义,同 ADR-0240)
+    default:     pill("Free", Color.white.opacity(0.55))
+    }
+  }
+
+  private func pill(_ text: String, _ color: Color) -> some View {
+    Text(text)
+      .font(.system(size: 9.5, weight: .bold))
+      .tracking(0.5)
+      .foregroundStyle(color)
+      .padding(.horizontal, 6)
+      .padding(.vertical, 1.5)
+      .background(RoundedRectangle(cornerRadius: 5, style: .continuous).fill(color.opacity(0.18)))
+  }
+
+  var body: some View {
+    // 展开态从上到下:顶栏三档 → 列表 → 详情 → 额度页脚(#1229 方向 A)。
+    // 页脚在最下面而不是最上面:人拉开岛八成是为了看「哪几只水獭在跑」,
+    // 额度是每天问一两次的事,会话是每分钟。
+    VStack(spacing: 0) {
+      topBar
+      Group {
+        if visibleAgents.isEmpty {
+          Text(emptyHint)
+            .font(.system(size: 12))
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 14)
+        } else {
         VStack(spacing: 0) {
           ScrollView {
             // pinnedViews:组头吸顶。刘海面板一屏只放得下几行,滚起来之后
             // "现在看的是哪个项目"必须一直在场,否则组头等于没有
             LazyVStack(spacing: 2, pinnedViews: [.sectionHeaders]) {
               ForEach(workspaceGroups) { group in
-                let collapsed = model.collapsedWorkspaces.contains(group.id)
-                Section(header: workspaceHeader(group, collapsed: collapsed)) {
+                let collapsed = model.tab != .task && model.collapsedWorkspaces.contains(group.id)
+                Section(header: groupHeader(group, collapsed: collapsed)) {
                   if !collapsed {
                     ForEach(group.agents) { agent in
                       AgentRow(agent: agent, isSelected: agent.id == effectiveSelectedId, now: now) {
@@ -106,11 +256,13 @@ struct IslandExpandedView: View {
             .allowsHitTesting(false)
           }
 
-          if let agent = model.selectedAgent {
+          if let agent = selectedVisibleAgent {
             detail(agent)
           }
         }
+        }
       }
+      if let rail = model.fleet.rail { railRow(rail) }
     }
     .onReceive(timer) { now = $0 }
     // 展开态根节点限宽:AgentRow 里的 Spacer(minLength: 0) 会贪婪吃满可用宽度,
@@ -119,6 +271,13 @@ struct IslandExpandedView: View {
     // 横贯全屏的黑条。420pt:#209 字号整体放大一档(13/14pt 正文)后 380 开始
     // 挤(用量三列 58pt + logo),420 仍贴刘海尺度,不是横条。
     .frame(width: 420)
+  }
+
+  /// 任务档不画组头(#1229):那些会话各自住在 `<Default>/<sessionId>/` 里,
+  /// 按目录分组等于每行顶一个组头。收放也随之没有意义。
+  @ViewBuilder
+  private func groupHeader(_ group: WorkspaceGroup, collapsed: Bool) -> some View {
+    if model.tab == .task { EmptyView() } else { workspaceHeader(group, collapsed: collapsed) }
   }
 
   /// 组头(#206):chevron + 项目名 + 会话数,整行可点收放。
@@ -171,141 +330,12 @@ struct IslandExpandedView: View {
     .onTapGesture { model.toggleWorkspace(group.id) }
   }
 
-  /// 厂商 logo(#209):资源 bundle providers/<id>.png(lobehub dark 变体)。
-  /// 查过一次就缓存——每帧重复解码 PNG 没意义。找不到返回 nil,行内只显文字。
-  @MainActor private static var providerLogoCache: [String: NSImage?] = [:]
-  @MainActor private static func providerLogo(_ id: String?) -> NSImage? {
-    guard let id else { return nil }
-    if let hit = providerLogoCache[id] { return hit }
-    let img = Bundle.module
-      .url(forResource: id, withExtension: "png", subdirectory: "providers")
-      .flatMap { NSImage(contentsOf: $0) }
-    providerLogoCache[id] = img
-    return img
-  }
-
-  /// 用量表(#199):每模型一行,厂商 logo(#209)+ 今天/7天/14天 三列。数字
-  /// monospacedDigit + 固定列宽右对齐——列不对齐的数字表读起来是灾难。
-  /// 行数主进程已截到 6,高度可控,不套 ScrollView(表是扫一眼的东西)。
-  ///
-  /// 三处层级修正:
-  /// ① **今天是主数字**。原来三列同为 secondary、同字号,一整片同权重的数字,
-  ///    不回答"我该先看哪个"。今天 13pt/白 94%,7天/14天 11.5pt/白 42%。
-  /// ② 表头 10pt semibold + 正 tracking(小字要正 tracking 才不糊)。
-  /// ③ 行底一条按 14 天占比的 2pt 细柱:不读数字也能看出谁在吃预算。用**细柱**
-  ///    不用整行底色——满格的底色块会被读成"这一行选中了",而不是一个量。
-  private var usageTable: some View {
-    VStack(alignment: .leading, spacing: 2) {
-      if model.fleet.usage.isEmpty {
-        // 空态说的是出路,不只是事实:"还没有用量"讲完就没了,用户不知道该干什么
-        Text("跑一轮对话后这里会有数")
-          .font(.system(size: 12))
-          .foregroundStyle(.white.opacity(0.42))
-          .frame(maxWidth: .infinity, alignment: .center)
-          .padding(.vertical, 12)
-      } else {
-        let peak = model.fleet.usage.map(\.d14).max() ?? 0
-        HStack(spacing: 8) {
-          Text("模型")
-          Spacer(minLength: 0)
-          Text("今天").frame(width: 64, alignment: .trailing)
-          Text("7天").frame(width: 52, alignment: .trailing)
-          Text("14天").frame(width: 52, alignment: .trailing)
-        }
-        .font(.system(size: 10, weight: .semibold))
-        .tracking(0.6)
-        .foregroundStyle(.white.opacity(0.38))
-        .padding(.horizontal, 14)
-        .padding(.top, 10)
-        .padding(.bottom, 3)
-        ForEach(model.fleet.usage) { row in
-          HStack(spacing: 8) {
-            if let logo = Self.providerLogo(row.provider) {
-              Image(nsImage: logo)
-                .resizable()
-                .scaledToFit()
-                .frame(width: 16, height: 16)
-                // 深色 logo 压在纯黑上会糊掉边界,一圈内描边把它托住
-                .clipShape(RoundedRectangle(cornerRadius: 4, style: .continuous))
-                .overlay(
-                  RoundedRectangle(cornerRadius: 4, style: .continuous)
-                    .strokeBorder(Color.white.opacity(0.14), lineWidth: 1)
-                )
-            }
-            Text(row.label)
-              .font(.system(size: 12.5, weight: .medium))
-              .lineLimit(1)
-              .foregroundStyle(.white.opacity(0.92))
-            Spacer(minLength: 0)
-            Text(Self.fmtTokens(row.today))
-              .font(.system(size: 13, weight: .medium))
-              .foregroundStyle(.white.opacity(0.94))
-              .monospacedDigit()
-              .frame(width: 64, alignment: .trailing)
-            Group {
-              Text(Self.fmtTokens(row.d7)).frame(width: 52, alignment: .trailing)
-              Text(Self.fmtTokens(row.d14)).frame(width: 52, alignment: .trailing)
-            }
-            .font(.system(size: 11.5))
-            .foregroundStyle(.white.opacity(0.42))
-            .monospacedDigit()
-          }
-          .padding(.horizontal, 14)
-          .padding(.vertical, 5)
-          // 占比柱贴在行底,只铺"模型名"那段(总宽减去三列数字),不越到数字下面——
-          // 越过去就分不清它是量还是高亮
-          .overlay(alignment: .bottomLeading) {
-            GeometryReader { geo in
-              let usable = max(geo.size.width - 196, 0)
-              let ratio = peak > 0 ? row.d14 / peak : 0
-              Capsule()
-                .fill(Color.white.opacity(0.20))
-                .frame(width: usable * ratio, height: 2)
-                .offset(x: 14, y: geo.size.height - 2)
-            }
-            .allowsHitTesting(false)
-          }
-        }
-        // 表要收得了口:没有合计,四行数字读完不知道总共烧了多少
-        let total = model.fleet.usage.reduce(into: (t: 0.0, d7: 0.0, d14: 0.0)) {
-          $0.t += $1.today; $0.d7 += $1.d7; $0.d14 += $1.d14
-        }
-        HStack(spacing: 8) {
-          Text("合计").tracking(0.4)
-          Spacer(minLength: 0)
-          Text(Self.fmtTokens(total.t))
-            .font(.system(size: 12)).foregroundStyle(.white.opacity(0.72))
-            .frame(width: 64, alignment: .trailing)
-          Text(Self.fmtTokens(total.d7)).frame(width: 52, alignment: .trailing)
-          Text(Self.fmtTokens(total.d14)).frame(width: 52, alignment: .trailing)
-        }
-        .font(.system(size: 11, weight: .semibold))
-        .monospacedDigit()
-        .foregroundStyle(.white.opacity(0.42))
-        .padding(.horizontal, 14)
-        .padding(.top, 7)
-        .overlay(alignment: .top) {
-          Rectangle().fill(Color.white.opacity(0.09)).frame(height: 1).padding(.horizontal, 14)
-        }
-      }
-    }
-    .padding(.bottom, 9)
-  }
-
   /// 「跑了多久」的唯一算法与唯一写法。行上和详情区显示的是同一个数,不能一处
   /// `1024s` 一处 `1,024s` —— `Text("\(someInt)s")` 构造的是 LocalizedStringKey,
   /// 整数插值会按 locale 加千分位;先算成 String 再交给 `Text(_: String)` 就不会。
   /// (真机验收时抓到的:一个跑了 17 分钟的 turn 在两处长得不一样)
   static func elapsedText(sinceMs startedAt: Double, now: Date) -> String {
     "\(max(Int(now.timeIntervalSince1970 - startedAt / 1000), 0))s"
-  }
-
-  /// K/M 缩写,同渲染层 fmtTokens 的口径(ProviderUsage.tsx)——两边显示同一个数,
-  /// 写法也该长一个样。
-  static func fmtTokens(_ n: Double) -> String {
-    if n >= 1_000_000 { return String(format: "%.1fM", n / 1_000_000) }
-    if n >= 1_000 { return String(format: "%.1fK", n / 1_000) }
-    return String(Int(n))
   }
 
   /// 选中会话的详情区:输入态优先(composing 是全局开关,不分会话),否则按
