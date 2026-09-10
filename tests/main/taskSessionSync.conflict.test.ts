@@ -55,6 +55,24 @@ describe("taskSessionSync：冲突", () => {
     expect(h.replaced).toEqual(["s1"]);
     expect(h.store.sessions().filter((s) => s.title?.includes("分支"))).toHaveLength(0);
   });
+  it("human_only：onReplaced 排在重放之后——渲染层收到它就 resume() 重读日志（终审 minor）", async () => {
+    // 先发的话，渲染层读到的是还没重放那几条人为动作的版本：刚改的名字在界面上凭空消失一下，
+    // 直到下一次别的什么事触发重读
+    const seen: number[] = [];
+    const h = harness({ onReplaced: (id) => seen.push(h.store.load(id).length) });
+    h.store.append(created("s1"));
+    h.store.append({ sessionId: "s1", ts: 2, type: "user_message", content: "第一句" });
+    await h.sync.flushNow();
+    await h.sync.releasePen("s1");
+    await bWrites(h, 2);
+    h.cloud.setOffline(true);
+    h.store.append({ sessionId: "s1", ts: 3, type: "session_renamed", title: "离线改名" });
+    await h.sync.flushNow();
+    h.cloud.setOffline(false);
+    await h.sync.flushNow();
+    expect(h.store.load("s1")).toHaveLength(6); // 云端 5 条 + 重放回来的那次改名
+    expect(seen).toEqual([6]); // 通知发出去那一刻，改名已经在日志里
+  });
   it("本地离线跑了一轮（has_executor）：分叉出「（本机未同步的分支）」，原 id 换成云端那份，分叉自己上云", async () => {
     const h = await seeded();
     await bWrites(h, 2);

@@ -717,7 +717,6 @@ export function createTaskSessionSync(deps: TaskSessionSyncDeps): TaskSessionSyn
     }
     st.pushedUpTo = cloudFull.at(-1)?.seq ?? -1;
     save();
-    deps.onReplaced(id);
     if (d.kind === "human_only") {
       // 纯人为动作重放到云端日志之后：不 muted，走观察者 → 脏 → 正常推
       // 分歧在 seq 0 时这一截的头一条就是本地那条 session_created——重放它等于给这条会话
@@ -727,6 +726,10 @@ export function createTaskSessionSync(deps: TaskSessionSyncDeps): TaskSessionSyn
         deps.store.append(rest as NewSessionEvent);
       }
     }
+    // 排在重放**之后**（#1223 终审 minor）：渲染层收到 replaced 就 resume() 重读日志，
+    // 先发的话它读到的是还没重放那几条人为动作的版本——改的名字在界面上凭空消失一下，
+    // 直到下一次别的什么事触发重读
+    deps.onReplaced(id);
   }
 
   // ── 生命周期 ──

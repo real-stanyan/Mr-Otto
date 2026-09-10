@@ -112,7 +112,9 @@ export function fakeCloud(uid = "u1"): FakeCloud {
   };
 }
 
-export function harness(opts: { cloud?: FakeCloud; holder?: string; running?: () => boolean } = {}) {
+export function harness(
+  opts: { cloud?: FakeCloud; holder?: string; running?: () => boolean; onReplaced?: (id: string) => void } = {}
+) {
   const cloud = opts.cloud ?? fakeCloud();
   const dir = tempDir("mrotto-tasksync-");
   const pulled: { id: string; events: SessionEvent[] }[] = [];
@@ -135,7 +137,10 @@ export function harness(opts: { cloud?: FakeCloud; holder?: string; running?: ()
     },
     isRunning: opts.running ?? (() => false),
     onPulled: (id, events) => pulled.push({ id, events }),
-    onReplaced: (id) => replaced.push(id),
+    onReplaced: (id) => {
+      replaced.push(id);
+      opts.onReplaced?.(id); // 时序断言用：这一刻本地日志是什么样（终审 minor）
+    },
     onPenLost: (id) => penLost.push(id),
     now: () => cloud.now.t,
     debounceMs: 1,
