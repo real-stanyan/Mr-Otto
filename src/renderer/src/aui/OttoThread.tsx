@@ -828,16 +828,20 @@ const RunIndicator: ComponentType = () => {
   const streamingText = useChat((s) => s.streamingBySession[s.sessionId]?.content ?? "");
   const streamingThinking = useChat((s) => s.streamingBySession[s.sessionId]?.reasoning ?? "");
   const compacting = useChat((s) => s.compactingBySession[s.sessionId] === true);
+  const waitingFor = useChat((s) => s.waitingBySession[s.sessionId] ?? null);
 
   // 闸门排在算相位之前(issue #549):不渲染的时候连算都不用算,agentPhase 那边
-  // 也就可以理直气壮地假定"turn 在跑或有审批",不必再留一档走不到的「空闲」
-  if (status !== "running" && approval === null) return null;
+  // 也就可以理直气壮地假定"turn 在跑或有审批",不必再留一档走不到的「空闲」。
+  // 等别的执行器（#1223）也算：人话已落、turn 没起，指示条得告诉人「云端正在回复」，
+  // 不然输入框一清什么都没发生
+  if (status !== "running" && approval === null && waitingFor === null) return null;
 
   const turnPhase = agentPhase({
     hasApproval: approval !== null,
     compacting,
     streamingText,
     tool: currentTool(events),
+    waitingFor,
   });
 
   // 玻璃是给这一条挑的,不是全局皮肤:它悬在正文之上、只在 turn 跑着时存在,

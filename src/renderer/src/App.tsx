@@ -125,6 +125,7 @@ import { modelChipLabel } from "./lib/modelChip.js";
 import { ModelPicker } from "./components/ModelPicker.js";
 import { ModelProviderSettings } from "./components/ModelProviderSettings.js";
 import { BillingSettings } from "./components/BillingSettings.js";
+import { TaskSyncStatusLine } from "./components/TaskSyncStatusLine.js";
 import { SubagentSettings } from "./components/SubagentSettings.js";
 import { McpSettings } from "./components/McpSettings.js";
 import { PermissionsSettings } from "./components/PermissionsSettings.js";
@@ -1268,6 +1269,7 @@ function AccountPage() {
                 只在已登录这一支里画:未登录时这一屏的正事是登录,一排点不动的订阅卡
                 只会把登录卡挤成配角(同下面那张热力图的理由) */}
             <BillingSettings />
+            <TaskSyncStatusLine />
           </>
         ) : (
           /* 未登录时这一屏只有一张登录卡,水平垂直都居中:

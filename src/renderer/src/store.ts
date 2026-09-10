@@ -106,7 +106,7 @@ import { defaultCreateAudio, VoicePlayer } from "./lib/voicePlayer.js";
 import { createHelperAudio, helperAudioEvent } from "./lib/helperAudio.js";
 import { voiceCallOf } from "../../shared/voiceCall.js";
 import { agentVoiceId } from "../../shared/agentVoice.js";
-import type { CloudSessionDelta } from "../../shared/shellBridge.js";
+import type { CloudSessionDelta, TaskSyncState } from "../../shared/shellBridge.js";
 import type { StoreApi } from "zustand";
 import { createRequestGate } from "./lib/latestRequest.js";
 import { mergeStaged } from "./lib/staging.js";
@@ -313,6 +313,10 @@ interface ChatState {
   approvals: Record<string, ApprovalRequest>;
   /** 待作答的问卷，同样按会话挂靠（模型问了话，人还没答） */
   asks: Record<string, AskUserRequest>;
+  /** 任务会话云同步状态（#1223）：主进程推，账号页那行读 */
+  taskSync: TaskSyncState;
+  /** 在等别的执行器的会话（#1223）：sessionId → 谁握着笔。运行指示条第七档 */
+  waitingBySession: Record<string, "cloud" | "desktop">;
   /** 流式直播缓冲（按会话攒碎片，思考/正文分频道）。临时投影：完整
       assistant_message 事件一到就清——事件是事实，缓冲只是它到来前的预览 */
   streamingBySession: Record<string, { content: string; reasoning: string }>;
@@ -1414,6 +1418,8 @@ export const useChat = create<ChatState>((set, get) => ({
   queuedBySession: {},
   approvals: {},
   asks: {},
+  taskSync: { kind: "off", reason: null },
+  waitingBySession: {},
   streamingBySession: {},
   toolOutputByCall: {},
   runningToolCallBySession: {},
@@ -3316,6 +3322,21 @@ export const useChat = create<ChatState>((set, get) => ({
         };
       })
     );
+    window.otter.onTaskSyncState((s) => set({ taskSync: s }));
+    void window.otter.taskSyncStatus().then((s) => set({ taskSync: s })).catch(() => {});
+    window.otter.onTaskWaiting(({ sessionId, waitingFor }) =>
+      set((s) => ({
+        waitingBySession:
+          waitingFor === null
+            ? without(s.waitingBySession, sessionId)
+            : { ...s.waitingBySession, [sessionId]: waitingFor },
+      }))
+    );
+    window.otter.onTaskSessionReplaced(({ sessionId }) => {
+      // 日志被整份换掉：正开着它就重载（resume 会重新拉 events），侧栏刷列表
+      if (get().sessionId === sessionId) void get().resume(sessionId);
+      void window.otter.listSessions().then((sessions) => set({ sessions }));
+    });
     window.otter.onApprovalRequest((req) =>
       set((s) => ({ approvals: { ...s.approvals, [req.sessionId]: req } }))
     );
@@ -3339,6 +3360,8 @@ export const useChat = create<ChatState>((set, get) => ({
               // 问卷同理：turn 谢幕时主进程侧已把挂起的提问收成"已取消"，
               // 留一张点了没人听的问卷只会骗人
               asks: without(s.asks, sessionId),
+              // 等笔那一档同理：turn 起来过 = 不再等
+              waitingBySession: without(s.waitingBySession, sessionId),
             }
           : {}),
       }));

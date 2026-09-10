@@ -17,6 +17,8 @@ export interface AgentPhaseInput {
   streamingText: string;
   /** 当前执行中的工具（有请求、无结果 = 还没落地） */
   tool: ToolCallRequest | null;
+  /** 在等别的执行器（#1223）。审批之后、其余之前：人话已落、turn 没起，别的档都不成立 */
+  waitingFor?: "cloud" | "desktop" | null;
 }
 
 /** agent 当前阶段 → orb 动画 + 文案。审批等待最优先，其后按「在跑哪个环节」细分：
@@ -34,6 +36,11 @@ export interface AgentPhaseInput {
     不是这次清理该顺手做的事。 */
 export function agentPhase(input: AgentPhaseInput): { orb: OrbState; label: string } {
   if (input.hasApproval) return { orb: "listening", label: "等待审批…" };
+  if (input.waitingFor)
+    return {
+      orb: "listening",
+      label: input.waitingFor === "cloud" ? "云端正在回复\u2026" : "另一台电脑正在回复\u2026",
+    };
   // weaving = 把一长段历史织成一份摘要，比"思考"的旋转更贴这件事
   if (input.compacting) return { orb: "weaving", label: "压缩中…" };
   if (input.tool?.name === "read_file") return { orb: "searching", label: "检索中…" };

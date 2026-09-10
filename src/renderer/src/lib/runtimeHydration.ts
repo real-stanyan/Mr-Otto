@@ -23,6 +23,7 @@ export interface RuntimeSlice {
   compactingBySession: Record<string, boolean>;
   approvals: Record<string, ApprovalRequest>;
   asks: Record<string, AskUserRequest>;
+  waitingBySession: Record<string, "cloud" | "desktop">;
 }
 
 /** 快照 → 该往 store 里补的那一小块。没什么可补就返回空对象（`set({})` 是 no-op，
@@ -54,6 +55,11 @@ export function runtimePatch(
   }
   if (rt.ask !== null && prev.asks[sessionId] === undefined) {
     patch.asks = { ...prev.asks, [sessionId]: rt.ask };
+  }
+
+  // 等笔那一档（#1223）：同审批——有自己的推送通道，只填空不覆盖
+  if (rt.waitingFor && prev.waitingBySession[sessionId] === undefined) {
+    patch.waitingBySession = { ...prev.waitingBySession, [sessionId]: rt.waitingFor };
   }
 
   return patch;
