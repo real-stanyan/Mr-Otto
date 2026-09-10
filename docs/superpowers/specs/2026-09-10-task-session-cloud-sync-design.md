@@ -277,6 +277,11 @@ e2e（Playwright 双实例）可选，不进门禁。
 19. compact 期间放笔检查会跳过、等下一 turn 收口；F3 放笔正确性依赖收口帮手链是真异步。
 20. `answerLogged` 的 held 分支不排空 `pendingBg`（延迟不丢）。
 21. 0036 未在真库执行前，桌面状态行写「云端还没有任务会话表」（有意的失败方向）。
+22. **任务会话的「回到这一步」分支只在本机**（终审 C2）：引用式分叉（`store.fork` 的零拷贝）不上云，
+    它在别的设备上不存在，也不因这条会话同步而出现。要它跨设备就得先把还原改成复制式。
+23. **`tool_result` 里含 NUL 字节的会话会冻结**（终审 I4 的直接后果）：`\u0000` 进 jsonb 触发 22P05，
+    这一批再发一次结果一样，所以判成终态 `forbidden` 而不是每 30 s 重试。根治（推之前把 NUL 剥掉
+    / 转义）另开 issue——那要改的是「日志里已经有什么」，不是这条同步链路。
 
 ## 8. 否决的候选
 
@@ -343,3 +348,52 @@ issue #1223 的 progress 记录）。spec 正文本身不回改，读到与本�
 19. 后台回注排空 `drainPendingBg` 由两个调用方在各自 `finally` 之后调；held 分支也排空；
     `handleBackgroundDone` 的 queue-up 判据加 `admitting`。
 20. 合盖时被打断的会话记进 `interruptedBySuspend`，唤醒后 `pullNow().finally` 之后逐个接着答。
+
+### C. 终审一轮的裁定（合并前最后一轮，均已落地）
+
+21. **推送方临时借的笔推完即放**（C1）：`pushSession` 里两条路会让推送方握上笔——`needsPen && !holdsPen`
+    那次 `acquirePen`，以及 `expected === 0` 建行成功后 RPC 发下来那支。三处 `releasePen` 调用点全在
+    `index.ts` 的 `driveTurn` 里，只服务「turn 的笔」，这两支没人放：一次 `backfill()` + `flushNow()`
+    之后每条任务会话都被本机永久握笔、各起一个 10 s 续期定时器（N 条会话 = N/10 RPC/s，永远），
+    第二台电脑永远看到「另一台电脑正在回复」。改成 try/finally，`!isRunning(id)` 时放；turn 在跑时
+    不放（那支是 turn 的）。准入那条路会自己再拿一次——多一次 RPC 换「没在跑就不占笔」。
+22. **引用式分叉不上云**（C2）：「回到这一步」走 `store.fork()`（零拷贝），分支自己的第一条原始行是
+    `session_created{forkedFrom, seq = endSeq+1}`，而 `store.load()` 扁平化后前缀是父会话的 `0..endSeq`
+    ——推上去的流里于是有**两条** `session_created`（seq 0 与 endSeq+1），0036 的
+    `session_created only at seq 0` 判 P0012 → `freeze(id, "forbidden")`，这条会话永久冻结。
+    判据放进 `isTask()`（`store.forkOrigin(id) !== null` → 不是任务会话），touched / backfill /
+    deleted 一律跳过。**否决的两条**：改 migration 放行 `seq>0` 的 `session_created{forkedFrom}`
+    （拉到另一台机器后 `forkOrigin` 认出 forkedFrom、`load()` 再前缀一遍父会话 = 事件重复 seq 撞车）；
+    把任务会话的还原改成复制式（改既有功能的存储语义，不在这一轮）。代价见 §7 第 22 条。
+    同一条里给测试的假 RPC 补齐了 0036 `_task_append` 里本来没有的三条（`session_created` 只许在
+    seq 0 / 单条事件与 `user_message` 正文的字节上限 / 行 uid 与调用方不同）——假货比真 RPC 宽松的
+    地方，正是本机全绿而真库把整条会话冻死的地方。
+23. **`executor_changed` 的第一条也要落**（I1）：`driveTurn` 那道门是 `last !== null`，没人写第一条，
+    于是 Mac B 接手 Mac A 的会话时 `deriveMessages` 永远给不出「这是另一台电脑，任务文件夹里此前的
+    文件不在这台机器上」（§3.5 / §7 第 7 条）。`ExecutorChangedEvent` 加可选 `freshWorkspace?: true`
+    （这台机器恢复时发现日志里那个任务文件夹本机没有、于是新建了一个；`first.workspace` 缺席不算
+    ——云端建的会话没有「此前的文件」可言）；触发条件加第二支：`last === null && fresh`。
+    「该不该落、带不带 fresh」抽成纯函数 `executorChangeFor()` 放 `src/shared/taskSync.ts`。
+    投影侧 `changedMachine` 多认 `freshWorkspace` 这一档；`isAuditEvent` / `PRIVACY_VERDICTS` /
+    `agentView` / `persistencePolicy` 都不动（同一个事件类型）。
+24. **`frozen` 是一种状态 kind，不是一次性的 error**（I2）：`freeze()` 原来只 `setState({kind:"error"})`
+    一次，下一轮 `flush()`/`pullNow()` 开头那句 `syncing` 就把它盖掉，收尾再写「任务会话已与账号
+    同步」；而 `taskSyncText` 对 error 一律写「会自动重试」——`freeze` 恰恰不 `scheduleRetry`。
+    `TaskSyncState` 加 `{kind:"frozen", count, message, lastSyncedAt}`；发布 / 读取前过一层
+    `visible()`：idle/syncing 上叠冻结（持久事实压瞬态），error 与 off 照发。`frozenDetail` 跟着
+    落盘，重启后那行仍说得出原因。`needs_upgrade` 的文案改成「升级 Mr Otto 后会自动恢复」——它是
+    唯一会被 backfill 解冻的一条；其余三条不许出现「重试」。状态行 frozen 走 warn 色。
+25. **`SessionSummary.workspaceKind` + 渲染层单一谓词 `isTaskSummary`**（I3，这是 §3.6/§3.7 的修正）：
+    `sessionGroups.taskSessions()` 只按路径判，于是云端建的会话（日志里没有 `workspace`）掉进
+    「史前会话」、另一台 Mac 建的（本机不存在的绝对路径）在项目栏长出一个外星路径组——两种都是
+    这次同步认领来的任务会话。`SessionSummary` 从第 0 条 `session_created` 投影 `workspaceKind`
+    （同 `spawnedFrom` 的写法），`isTaskSummary(s, builtin)` = 不是子会话 且（`workspaceKind ===
+    "default"` 或 路径是 Default）；`taskSessions` / `archivedTaskSessions` / App.tsx 里五处按路径
+    排除任务会话的地方全换成它，「史前会话」的判据跟着收窄成「路径与 workspaceKind 两半都没有」。
+26. **未映射的 SQLSTATE 不再永久 30 s 重试**（I4）：`codeOf` 的 default 把一切非网络错误映成
+    `other` → `fail()` → 每 30 s 重试、会话永远脏着。`22*`（数据异常，含 22P05 = NUL 字节进 jsonb）
+    与 `23*`（完整性约束）改判 `forbidden`（走既有 freeze 终态，message 带原 SQLSTATE 与原文）；
+    `PGRST301`（JWT 过期，下次调用 supabase-js 自己会刷）判 `network`（瞬态）。`guarded()` 里那段
+    网络正则与 `codeOf` 的合成一个 `isNetworkMessage(msg)`。
+27. **`onReplaced` 排在 human_only 重放之后**（minor）：渲染层收到 replaced 就 `resume()` 重读日志，
+    先发的话它读到的是还没重放那几条人为动作的版本。
