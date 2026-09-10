@@ -12,6 +12,11 @@ final class IslandModel: ObservableObject {
   /// 用户点选的行;nil = 跟随 fleet.focusedSessionId
   @Published var selectedSessionId: String?
 
+  /// 顶栏此刻在看哪一档(#1229)。**helper 进程的内存态,不上线也不落盘** ——
+  /// 与 selectedSessionId / collapsedWorkspaces 同一族(ADR-0063):切档是
+  /// 「临时看另一批」,不是要记住的偏好,而线上带的是「每一行归哪一档」。
+  @Published var tab: IslandTab = .project
+
   /// 输入态开关。true 时 main.swift 的 desiredState 强制 `.expanded` 并抢键盘焦点
   /// (见 main.swift 的 onComposeChange),phase 本身不受影响——退出输入态后
   /// 照常回到 idle/active/approval 该有的展示。

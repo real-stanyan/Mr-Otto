@@ -1,4 +1,4 @@
-// 动效设置的落点:userData/motion.json(同 islandSettingsStore.ts 的落法)。
+// 动效设置的落点:userData/motion.json(同 autoCompactStore.ts 的落法)。
 //
 // 为什么要这么一档开关(issue #607):整个 app 都认 prefers-reduced-motion——
 // Tailwind 的 motion-reduce: 变体、app.css 里十几个 @media 块、还有跑 turn 时

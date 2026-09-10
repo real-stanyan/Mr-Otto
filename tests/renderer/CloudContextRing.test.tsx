@@ -42,7 +42,7 @@ const reply = (agentId: string, model: string, prompt: number): SessionEvent =>
 
 const NOW = Date.now();
 const HOUR = 3_600_000;
-/** 5 小时窗已用 82% —— 本地那枚环在这份账下会亮橙点（同 ContextRingTrigger.test） */
+/** 5h 窗已用 82% —— 本地那枚环在这份账下会亮橙点（同 ContextRingTrigger.test） */
 const tight = (): BillingMe =>
   ({
     plan: "pro", status: "active", plans: [], models: [], modelPlatforms: {},

@@ -10,6 +10,8 @@ import { toolFilePath, toolSummary } from "../shared/toolSummary.js";
 import type { SessionSummary } from "../session/store.js";
 import type { IslandAgent, IslandFleet } from "../shared/shellBridge.js";
 import { localWorkspaceLens, type WorkspaceLens } from "./workspaceLens.js";
+import { CLOUD_WORKSPACE_PREFIX, classifyIslandRow } from "../shared/islandTabs.js";
+import type { IslandRail } from "../shared/islandRail.js";
 
 export type IslandPhase = "idle" | "active" | "approval";
 
@@ -138,10 +140,20 @@ export function orderedVisibleSessions(
 }
 
 /** 一份 IslandState(可能没有,按 idle)+ SessionSummary → 拍平成一行 IslandAgent */
+/** 分档要的两样外部事实。两样都缺 = 每一行都落进「项目」档、组头交给 Swift 侧
+    自己从 projectRoot 推，也就是 #1229 之前的行为。 */
+export interface IslandTabContext {
+  /** 内置 Default 工作区的根；拿不到 = 没有任务档可言 */
+  builtinDefault?: string | null;
+  /** 云会话的 workspaceId → 团队显示名。查不到那条行的组头写「团队」 */
+  teamNameOf?: (workspaceId: string) => string | null;
+}
+
 export function flattenAgent(
   state: IslandState | undefined,
   session: SessionSummary,
-  lens: WorkspaceLens = localWorkspaceLens
+  lens: WorkspaceLens = localWorkspaceLens,
+  tabs: IslandTabContext = {}
 ): IslandAgent {
   const s = state ?? initialIsland;
   const ct = s.currentTool ? toolSummary(s.currentTool) : null;
@@ -150,6 +162,13 @@ export function flattenAgent(
     const sum = toolSummary(s.pendingApproval.call);
     pending = { callId: s.pendingApproval.call.id, verb: sum.verb, target: sum.target, fullPath: toolFilePath(s.pendingApproval.call) };
   }
+  const origin = session.workspace === null ? {} : facts(session.workspace, lens);
+  const cls = classifyIslandRow({
+    workspace: session.workspace,
+    projectRoot: origin.projectRoot ?? null,
+    builtinDefault: tabs.builtinDefault ?? null,
+    ...(session.workspace === null ? {} : { teamName: teamNameFor(session.workspace, tabs) }),
+  });
   return {
     sessionId: session.sessionId,
     title: session.title,
@@ -160,9 +179,18 @@ export function flattenAgent(
     workspace: session.workspace,
     // workspace 为 null 的史前会话没有可解析的来历——两个字段一起缺席,
     // Swift 侧照旧归到"其他"组
-    ...(session.workspace === null ? {} : facts(session.workspace, lens)),
+    ...origin,
     ...(s.turnDiff ? { turnDiff: s.turnDiff } : {}),
+    kind: cls.kind,
+    groupLabel: cls.groupLabel,
   };
+}
+
+/** 云会话那条虚拟行的 workspace 里带着 workspaceId，拿它换团队名。
+    不是云会话 / 没给解析器 = null（`classifyIslandRow` 那侧写「团队」） */
+function teamNameFor(workspace: string, tabs: IslandTabContext): string | null {
+  if (!tabs.teamNameOf || !workspace.startsWith(CLOUD_WORKSPACE_PREFIX)) return null;
+  return tabs.teamNameOf(workspace.slice(CLOUD_WORKSPACE_PREFIX.length));
 }
 
 /** workspace → 拍在行上的那两个可选字段。branch 只在真是副本时出现:
@@ -173,14 +201,24 @@ function facts(workspace: string, lens: WorkspaceLens): Pick<IslandAgent, "proje
 }
 
 /** 会话集合 → 线上 fleet。顺序 = 侧栏序,但审批态置顶(要人当场动手,不被淹) */
+/** 线上 fleet 里除会话行之外的那几格。**全部可选，缺席 = 岛上不画那一格**
+    （旧主进程推来的快照就是这个形状） */
+export interface FleetExtras extends IslandTabContext {
+  /** 展开态最底下那一条（`shared/islandRail.ts` 算好的） */
+  rail?: IslandRail | null;
+  /** 「团队」那格右上角那枚未读点的数 */
+  unreadMentions?: number;
+}
+
 export function flattenFleet(
   states: ReadonlyMap<string, IslandState>,
   sessions: SessionSummary[],
   focusedSessionId: string | null,
-  lens: WorkspaceLens = localWorkspaceLens
+  lens: WorkspaceLens = localWorkspaceLens,
+  extras: FleetExtras = {}
 ): IslandFleet {
   const ordered = orderedVisibleSessions(sessions, lens);
-  const agents = ordered.map((sess) => flattenAgent(states.get(sess.sessionId), sess, lens));
+  const agents = ordered.map((sess) => flattenAgent(states.get(sess.sessionId), sess, lens, extras));
   // 不再做审批置顶排序(#206):分组视图里顺序必须保持侧栏序(同 workspace 连续),
   // 置顶会把审批行拽出它的组。审批可见性改由 Swift 侧承担——selectedAgent 兜底
   // 优先审批行(auto-expand 后详情区照样当场三按钮)+ 收起的组头带橙点。
@@ -188,5 +226,12 @@ export function flattenFleet(
   // deleteSession 只清 currentSessionId,不动 activeSessionId)——线上不能带一个
   // 悬空的焦点 id,清成 null 让 helper 落回"无高亮行"
   const focused = agents.some((a) => a.sessionId === focusedSessionId) ? focusedSessionId : null;
-  return { agents, focusedSessionId: focused };
+  return {
+    agents,
+    focusedSessionId: focused,
+    // 两格都是「缺席 = 不画」：`rail` 为 null 是 islandRail 亲口说的「这条不该画」，
+    // `unreadMentions` 没给是「还没查到」——都不该在线上留一个 0 让 helper 去猜
+    ...(extras.rail ? { rail: extras.rail } : {}),
+    ...(extras.unreadMentions === undefined ? {} : { unreadMentions: extras.unreadMentions }),
+  };
 }

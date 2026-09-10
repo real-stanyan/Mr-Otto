@@ -1,4 +1,4 @@
-// 默认工作文件夹落盘(#559):userData/workspace.json,islandSettingsStore 同款模式。
+// 默认工作文件夹落盘(#559):userData/workspace.json,autoCompactStore 同款模式。
 // 文件是外部输入(用户手改过/旧版本写的/截断过),不赌形状。
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";

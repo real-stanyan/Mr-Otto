@@ -37,7 +37,6 @@ import type { GrantScope } from "../../shared/permissionGrants.js";
 import type {
   ApprovalDecisionKind,
   ApprovalRequest,
-  IslandDisplay,
   McpConfigurePreview,
   MotionPref,
   MotionSettings,
@@ -1317,23 +1316,6 @@ function KeysPage() {
 function AppearancePage() {
   const closeSettings = useChat((s) => s.closeSettings);
   const [themePref, setThemePref] = useState<ThemePref>(() => themeController().pref());
-  // 灵动岛设置(#199)。null = 还没从主进程读回来(控件禁用,同 AutoCompactSettings
-  // 的 loaded 模式);set 一点就落盘——低频离散动作,主进程 set 完立刻重推岛快照
-  const [islandDisplay, setIslandDisplay] = useState<IslandDisplay | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    window.otter
-      .getIslandSettings()
-      .then((s) => {
-        if (!cancelled) setIslandDisplay(s.display);
-      })
-      .catch(() => {
-        /* 读不到就保持禁用——非 mac 或桥出错,控件灰着比假装能切要诚实 */
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   const OPTIONS: { value: ThemePref; label: string; hint: string }[] = [
     { value: "light", label: "浅色", hint: "始终用浅色底盘" },
@@ -1341,7 +1323,7 @@ function AppearancePage() {
     { value: "system", label: "跟随系统", hint: "跟着 macOS 的外观设置走" },
   ];
 
-  // 动效(#607)。null = 还没读回来(同 islandDisplay 的 loaded 模式)。
+  // 动效(#607)。null = 还没读回来(同 AutoCompactSettings 的 loaded 模式)。
   // set 完主进程当场挂/撤覆盖,不用重启,所以这里不需要"存了但还没生效"那一档
   const [motion, setMotion] = useState<MotionSettings | null>(null);
   useEffect(() => {
@@ -1362,11 +1344,6 @@ function AppearancePage() {
   const MOTION_OPTIONS: { value: MotionPref; label: string; hint: string }[] = [
     { value: "system", label: "跟随系统", hint: "系统开了「减弱动效」就跟着停——Windows 的「动画效果」默认在不少机器上是关的" },
     { value: "always", label: "始终开启", hint: "无视系统的「减弱动效」,球会转、高光会扫、卡片会滑" },
-  ];
-
-  const ISLAND_OPTIONS: { value: IslandDisplay; label: string; hint: string }[] = [
-    { value: "sessions", label: "会话列表", hint: "展开时显示各会话状态,点选切换、当场审批" },
-    { value: "usage", label: "Token 用量", hint: "展开时显示各模型 今天/7天/14天 的 token 消耗" },
   ];
 
   return (
@@ -1440,41 +1417,6 @@ function AppearancePage() {
             {motion === null
               ? "系统开了「减弱动效」时,整个界面(包括跑 turn 时那颗球)都会停住"
               : MOTION_OPTIONS.find((o) => o.value === motion.pref)?.hint}
-          </p>
-        </div>
-        <div className="flex flex-col gap-[6px]">
-          <h2 className="px-1 text-[11px] tracking-[0.06em] text-muted-foreground uppercase">灵动岛</h2>
-          <div
-            role="radiogroup"
-            aria-label="灵动岛显示内容"
-            className="inline-flex gap-1 rounded-[10px] border border-border bg-card p-1"
-          >
-            {ISLAND_OPTIONS.map((o) => (
-              <button
-                key={o.value}
-                type="button"
-                role="radio"
-                aria-checked={islandDisplay === o.value}
-                disabled={islandDisplay === null}
-                title={o.hint}
-                className={`press-scale flex-1 rounded-[7px] px-4 py-[6px] text-[13px] transition-colors duration-150 disabled:opacity-50 ${
-                  islandDisplay === o.value
-                    ? "bg-foreground/[0.10] font-[550] text-foreground"
-                    : "text-muted-foreground hover:text-foreground"
-                }`}
-                onClick={() => {
-                  setIslandDisplay(o.value);
-                  void window.otter.setIslandSettings({ display: o.value });
-                }}
-              >
-                {o.label}
-              </button>
-            ))}
-          </div>
-          <p className={HINT}>
-            {islandDisplay === null
-              ? "刘海展开时显示的内容(仅 macOS)"
-              : ISLAND_OPTIONS.find((o) => o.value === islandDisplay)?.hint}
           </p>
         </div>
       </section>
@@ -1722,6 +1664,16 @@ function AppSidebar() {
   // 就是 useSyncExternalStore 上一个真的死循环）
   const mentionRows = useChat((s) => s.workspaceMentions);
   const unreadMentions = useMemo(() => unreadMentionCounts(mentionRows).total, [mentionRows]);
+  // 这两样推给主进程，灵动岛顶栏「团队」那一格要用（#1229）：未读点的数，
+  // 以及云会话 workspaceId → 团队名（没有它，岛上那一组的组头会是一串 UUID）。
+  // **为什么由渲染层推**：两样都住在这一层（`workspace_mentions` 是这里直连
+  // Supabase 拉的，#1064），主进程要自己拿就得把那条链路整个复制一遍。
+  // 已知代价：主窗没开时岛上那两样是陈旧的——失败形态只是角标少亮/多亮一会儿
+  useEffect(() => {
+    const teamNames = Object.fromEntries(workspaceGroups.map((g) => [g.id, g.name]));
+    void window.otter.islandContext({ unreadMentions, teamNames });
+  }, [unreadMentions, workspaceGroups]);
+
   // 详情页开着的那个此刻还在不在(被解散/退群后它会从快照里消失)——找不到就等于
   // 关掉,不用另写一条善后逻辑
   const openedWorkspace = workspaceGroups.find((g) => g.id === openWorkspaceId) ?? null;

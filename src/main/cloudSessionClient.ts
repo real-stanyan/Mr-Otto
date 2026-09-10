@@ -85,6 +85,10 @@ import {
   type CsWorkNode,
 } from "../shared/remote/cloudSession.js";
 import { normalizeWorkPath } from "../shared/remote/workPath.js";
+// 合成这串前缀的是这里，识别它的是岛的分档（shared/islandTabs.ts）——
+// 两边共用一个常量：各写一份字面量的话，改了这半而没改那半不会报错，
+// 只会让所有云会话安静地掉回「项目」档，还顶着一个 UUID 当组名
+import { CLOUD_WORKSPACE_PREFIX } from "../shared/islandTabs.js";
 import type { ApprovalDecisionEvent, SessionEvent } from "../session/events.js";
 import type { ApprovalRequest, CloudAck, CloudSessionStatus, CloudWorkspaceState } from "../shared/shellBridge.js";
 import type { FriendsResult } from "./proxyManager.js";
@@ -195,7 +199,7 @@ export function cloudSessionFleetRow(summary: CloudSessionSummary | null): Sessi
     events: 0,
     startedTs: 0,
     lastTs: summary.lastEventTs,
-    workspace: `/__otto-cloud-session__/${summary.workspaceId}`,
+    workspace: `${CLOUD_WORKSPACE_PREFIX}${summary.workspaceId}`,
     title: "云会话",
     spawnedFrom: null,
     archived: false,

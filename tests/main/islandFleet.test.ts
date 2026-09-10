@@ -217,3 +217,48 @@ describe("按项目根分组（#690）", () => {
     expect("branch" in a).toBe(false);
   });
 });
+
+describe("flattenFleet 的三档分类与页脚（#1229）", () => {
+  const BUILTIN = "/docs/Mr Otto/Default";
+  const CLOUD = "/__otto-cloud-session__/wk-9f1c";
+  const states = new Map<string, IslandState>();
+
+  const fleetOf = (extras = {}) =>
+    flattenFleet(
+      states,
+      [
+        sess("proj", { workspace: "/Users/x/Github/Mr_Otto", lastTs: 30 }),
+        sess("task", { workspace: `${BUILTIN}/s-20260910120000-ab12cd34`, lastTs: 20 }),
+        sess("team", { workspace: CLOUD, lastTs: 10 }),
+      ],
+      null,
+      undefined,
+      { builtinDefault: BUILTIN, teamNameOf: () => "Otto 核心组", ...extras }
+    );
+
+  it("每一行带上自己那一档与组头", () => {
+    const by = Object.fromEntries(fleetOf().agents.map((a) => [a.sessionId, a]));
+    expect(by.proj).toMatchObject({ kind: "project", groupLabel: "Mr_Otto" });
+    expect(by.task).toMatchObject({ kind: "task", groupLabel: null }); // 任务档平铺，不分组
+    expect(by.team).toMatchObject({ kind: "team", groupLabel: "Otto 核心组" });
+  });
+
+  it("不给分档上下文时全部落进项目档 —— 也就是 #1229 之前的行为", () => {
+    const agents = flattenFleet(states, [sess("task", { workspace: `${BUILTIN}/s-1` })], null).agents;
+    expect(agents[0]).toMatchObject({ kind: "project" });
+  });
+
+  it("rail / unreadMentions：缺席就是缺席，不在线上留一个 0 让 helper 去猜", () => {
+    const f = fleetOf();
+    expect(f).not.toHaveProperty("rail");
+    expect(f).not.toHaveProperty("unreadMentions");
+  });
+
+  it("rail 为 null（islandRail 亲口说的「这条不该画」）同样不上线", () => {
+    expect(fleetOf({ rail: null })).not.toHaveProperty("rail");
+  });
+
+  it("未读数为 0 要上线 —— 它是「查到了，是零」，与「还没查到」不是同一件事", () => {
+    expect(fleetOf({ unreadMentions: 0 })).toHaveProperty("unreadMentions", 0);
+  });
+});

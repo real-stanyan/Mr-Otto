@@ -25,6 +25,7 @@ import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button.js";
 import { cn } from "@/lib/utils.js";
 import {
+  WINDOW_LABELS,
   addonLine, countdown, fmtRemainingPercent, liveWindow, periodLine, planBadge, planCards,
   planCardsOrNull, quotaTone, remainingPercent, upgradeCards, usageTitle, windowPercent,
 } from "../lib/billingView.js";
@@ -334,9 +335,9 @@ export function BillingSettings() {
 
         {me.windows && (
           <div className="grid grid-cols-2 gap-[22px]">
-            <WindowRow label="5 小时窗" w={me.windows.h5} now={now} />
+            <WindowRow label={WINDOW_LABELS.h5} w={me.windows.h5} now={now} />
             <div className="border-l border-border pl-[22px]">
-              <WindowRow label="本周" w={me.windows.week} now={now} />
+              <WindowRow label={WINDOW_LABELS.week} w={me.windows.week} now={now} />
             </div>
           </div>
         )}

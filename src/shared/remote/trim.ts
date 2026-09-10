@@ -16,12 +16,14 @@ export function trimForMobile(fleet: IslandFleet): IslandFleet {
     // 既不分组也不显示分支(mobile/ 里没有任何地方读它们)。没人读的东西不该
     // 持续过公网,哪怕中继解不开。要是哪天手机端也要按项目分组,把这里放开、
     // 并在那时重新回答"绝对路径能不能出机器"这个问题
-    agents: fleet.agents.map(({ projectRoot: _p, branch: _b, ...agent }) => agent),
+    agents: fleet.agents.map(({ projectRoot: _p, branch: _b, kind: _k, groupLabel: _g, ...agent }) => agent),
     focusedSessionId: fleet.focusedSessionId,
-    // display / usage 一律不出机器:
-    // - display 是灵动岛展开态的本机设置,手机没有那个 UI
-    // - usage 是账单投影(近 14 天每天烧了多少 token)。手机端的职责是"看 + 审批"
-    //   (ADR-0094 的范围),用量不在里面;而它每次推送都跟着走,等于把账单流水
-    //   持续送过公网 —— 中继解不开,但这是"本来就不该发"而不是"发了也没事"
+    // kind / groupLabel 不出机器(#1229):同 projectRoot/branch 的理由——两者都是
+    // **桌面灵动岛顶栏那三档的分组用料**,而手机端既没有切换器也不分组
+    // (mobile/ 里没有任何地方读它们)。groupLabel 还顺带是本机路径的末段。
+    // rail / unreadMentions 同样一格都不带:前者是账单投影(还剩多少额度、
+    // 近 7 天烧了多少),后者是团队的未读计数——手机端的职责是"看 + 审批"
+    // (ADR-0094 的范围),这两样都不在里面。这里靠**显式列出要带的字段**
+    // 而不是删掉不要的:新加的字段默认不出机器,忘了表态也不会漏
   };
 }
