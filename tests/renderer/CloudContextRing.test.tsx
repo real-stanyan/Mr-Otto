@@ -19,7 +19,7 @@ import type { BillingMe } from "../../src/shared/billing.js";
 import type { WorkspaceSnapshot } from "../../src/shared/workspaces.js";
 import type { SessionEvent } from "../../src/session/events.js";
 
-const KNOWN = "deepseek-v4-flash";
+const KNOWN = "deepseek-flash";
 const KNOWN_WINDOW = findModel(KNOWN)!.contextWindow;
 
 const ws: WorkspaceSnapshot = {

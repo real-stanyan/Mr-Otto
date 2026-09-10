@@ -107,7 +107,7 @@ describe("modelCatalog", () => {
     expect(m.wireModel).toBe("qwen3.5:27b-coding-mxfp8"); // 发给 Ollama 的
     expect(m.label).toBe("qwen3.5:27b-coding-mxfp8");
     expect(ollamaTag("ollama/x")).toBe("x");
-    expect(ollamaTag("deepseek-v4-flash")).toBeNull();
+    expect(ollamaTag("deepseek-flash")).toBeNull();
   });
 
   // 这条是回归锚：曾经 model 一个字段兼任两职，switchModel 把剥了前缀的 id 写进

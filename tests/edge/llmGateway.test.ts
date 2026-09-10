@@ -8,13 +8,13 @@ import { BILLING_HEADERS, SSE_COST_COMMENT, parseSseCostComment } from "../../sr
 import { TTS_HEADERS } from "../../src/shared/tts.js";
 
 const flash: RouteRow = {
-  id: "deepseek-v4-flash@deepseek", logicalModel: "deepseek-v4-flash", platform: "deepseek",
-  baseUrl: "https://up/v1", wireModel: "deepseek-v4-flash",
+  id: "deepseek-flash@deepseek", logicalModel: "deepseek-flash", platform: "deepseek",
+  baseUrl: "https://up/v1", wireModel: "deepseek-flash",
   priceInMicroPerM: 1_000_000, priceCacheMicroPerM: 100_000, priceOutMicroPerM: 2_000_000, defaultMaxTokens: 1000,
   kind: "chat",
 };
 /** 同款逻辑模型在另一个平台的备选路（failover 的「下一条」） */
-const alt: RouteRow = { ...flash, id: "deepseek-v4-flash@siliconflow", platform: "siliconflow", baseUrl: "https://up2/v1" };
+const alt: RouteRow = { ...flash, id: "deepseek-flash@siliconflow", platform: "siliconflow", baseUrl: "https://up2/v1" };
 const caller: Caller = { uid: "u1", source: "desktop", workspaceId: "", sessionId: "", agentId: "" };
 
 function quotaStub(outcome: HoldOutcome = { ok: true, chargedTo: "window" }) {
@@ -72,7 +72,7 @@ describe("纯函数", () => {
     // 便宜站与贵站：贵站标价 in 低但 cache 价飞天，混合价反而更贵（ADR-0175 的坑）
     const cheap: RouteRow = { ...flash, id: "flash@cheap", priceInMicroPerM: 1_000_000, priceCacheMicroPerM: 100_000, priceOutMicroPerM: 2_000_000 };
     const trap: RouteRow = { ...flash, id: "flash@trap", priceInMicroPerM: 100_000, priceCacheMicroPerM: 50_000_000, priceOutMicroPerM: 100_000 };
-    expect(pickRoute([cheap, trap], "deepseek-v4-flash")).toBe(cheap);
+    expect(pickRoute([cheap, trap], "deepseek-flash")).toBe(cheap);
     expect(pickRoute([flash], "gpt-9")).toBeNull();
   });
 
@@ -80,11 +80,11 @@ describe("纯函数", () => {
     const cheap: RouteRow = { ...flash, id: "flash@cheap", priceCacheMicroPerM: 1 };
     const sticky: RouteRow = { ...flash, id: "flash@sticky", priceCacheMicroPerM: 9_000_000 };
     // 没有粘性 → 选便宜的
-    expect(pickRoute([cheap, sticky], "deepseek-v4-flash")).toBe(cheap);
+    expect(pickRoute([cheap, sticky], "deepseek-flash")).toBe(cheap);
     // 有粘性且它还在 → 直接它，不比价
-    expect(pickRoute([cheap, sticky], "deepseek-v4-flash", "flash@sticky")).toBe(sticky);
+    expect(pickRoute([cheap, sticky], "deepseek-flash", "flash@sticky")).toBe(sticky);
     // 粘性指的那条已经下架 → 退回比价
-    expect(pickRoute([cheap, sticky], "deepseek-v4-flash", "flash@gone")).toBe(cheap);
+    expect(pickRoute([cheap, sticky], "deepseek-flash", "flash@gone")).toBe(cheap);
   });
 
   it("estimateMicro：body 字节 ÷ 3 当 prompt token，加 max_tokens × 输出价", () => {
@@ -174,11 +174,11 @@ describe("createLlmGateway", () => {
   it("hold 被拒 → 原样映射：quota_exhausted 429 带 window/resetAt；no_subscription 402；too_many_inflight 429", async () => {
     const mk = (o: HoldOutcome) =>
       createLlmGateway({ routes: async () => [flash], quota: quotaStub(o).quota, upstreamKey: () => "k" });
-    const r1 = await mk({ ok: false, code: "quota_exhausted", window: "week", resetAt: 42 })(chatReq({ model: "deepseek-v4-flash", messages: [] }), caller);
+    const r1 = await mk({ ok: false, code: "quota_exhausted", window: "week", resetAt: 42 })(chatReq({ model: "deepseek-flash", messages: [] }), caller);
     expect(r1.status).toBe(429);
     expect(await r1.json()).toMatchObject({ error: { type: "otto_edge", code: "quota_exhausted", window: "week", resetAt: 42 } });
-    expect((await mk({ ok: false, code: "no_subscription" })(chatReq({ model: "deepseek-v4-flash", messages: [] }), caller)).status).toBe(402);
-    expect((await mk({ ok: false, code: "too_many_inflight" })(chatReq({ model: "deepseek-v4-flash", messages: [] }), caller)).status).toBe(429);
+    expect((await mk({ ok: false, code: "no_subscription" })(chatReq({ model: "deepseek-flash", messages: [] }), caller)).status).toBe(402);
+    expect((await mk({ ok: false, code: "too_many_inflight" })(chatReq({ model: "deepseek-flash", messages: [] }), caller)).status).toBe(429);
   });
 
   it("流式：换 wire_model、加平台 key、强制 include_usage；透传 SSE；结束后 settle 且带剩余额度头", async () => {
@@ -188,7 +188,7 @@ describe("createLlmGateway", () => {
       'data: {"usage":{"prompt_tokens":100,"completion_tokens":10,"prompt_cache_hit_tokens":50}}\n\ndata: [DONE]\n\n',
     ]), { status: 200, headers: { "content-type": "text/event-stream" } }));
     const gw = createLlmGateway({ routes: async () => [flash], quota, upstreamKey: (p) => (p === "deepseek" ? "sk-up" : undefined), fetchImpl: up.fetchImpl, newRequestId: () => "rid-1" });
-    const res = await gw(chatReq({ model: "deepseek-v4-flash", messages: [{ role: "user", content: "hi" }], stream: true }), caller);
+    const res = await gw(chatReq({ model: "deepseek-flash", messages: [{ role: "user", content: "hi" }], stream: true }), caller);
     expect(res.status).toBe(200);
     expect(res.headers.get(BILLING_HEADERS.h5)).toBe("100");
     expect(res.headers.get(BILLING_HEADERS.plan)).toBe("lite");
@@ -196,7 +196,7 @@ describe("createLlmGateway", () => {
     expect(sent.url).toBe("https://up/v1/chat/completions");
     expect(sent.headers.get("authorization")).toBe("Bearer sk-up");
     const sentBody = JSON.parse(await sent.text());
-    expect(sentBody.model).toBe("deepseek-v4-flash");
+    expect(sentBody.model).toBe("deepseek-flash");
     expect(sentBody.stream).toBe(true);
     expect(sentBody.stream_options).toEqual({ include_usage: true });
     const text = await res.text();
@@ -272,7 +272,7 @@ describe("createLlmGateway", () => {
     const { quota, calls } = quotaStub();
     const up = upstream(() => Response.json({ choices: [{ message: { content: "ok" } }], usage: { prompt_tokens: 10, completion_tokens: 1 } }));
     const gw = createLlmGateway({ routes: async () => [flash], quota, upstreamKey: () => "k", fetchImpl: up.fetchImpl });
-    const res = await gw(chatReq({ model: "deepseek-v4-flash", messages: [] }), caller);
+    const res = await gw(chatReq({ model: "deepseek-flash", messages: [] }), caller);
     expect(res.status).toBe(200);
     expect((await res.json()).choices[0].message.content).toBe("ok");
     expect(calls.settle[0]!.costMicro).toBe(12);
@@ -282,7 +282,7 @@ describe("createLlmGateway", () => {
     const { quota, calls } = quotaStub();
     const up = upstream(() => Response.json({ choices: [{ message: { content: "ok" } }] }));
     const gw = createLlmGateway({ routes: async () => [flash], quota, upstreamKey: () => "k", fetchImpl: up.fetchImpl });
-    const body = { model: "deepseek-v4-flash", messages: [] };
+    const body = { model: "deepseek-flash", messages: [] };
     const res = await gw(chatReq(body), caller);
     expect(res.status).toBe(200);
     expect((await res.json()).choices[0].message.content).toBe("ok");
@@ -296,7 +296,7 @@ describe("createLlmGateway", () => {
     const { quota, calls } = quotaStub();
     const up = upstream(() => new Response("<html>not json</html>", { status: 200 }));
     const gw = createLlmGateway({ routes: async () => [flash], quota, upstreamKey: () => "k", fetchImpl: up.fetchImpl });
-    const body = { model: "deepseek-v4-flash", messages: [] };
+    const body = { model: "deepseek-flash", messages: [] };
     await (await gw(chatReq(body), caller)).text();
     expect(calls.release).toEqual([]);
     expect(calls.settle[0]!.usage).toEqual(estUsageFor(body));
@@ -306,7 +306,7 @@ describe("createLlmGateway", () => {
     const { quota, calls } = quotaStub();
     const up = upstream(() => new Response("boom", { status: 503 }));
     const gw = createLlmGateway({ routes: async () => [flash], quota, upstreamKey: () => "k", fetchImpl: up.fetchImpl });
-    const res = await gw(chatReq({ model: "deepseek-v4-flash", messages: [] }), caller);
+    const res = await gw(chatReq({ model: "deepseek-flash", messages: [] }), caller);
     expect(res.status).toBe(502);
     expect((await res.json()).error).toMatchObject({ code: "upstream" });
     expect(calls.release).toHaveLength(1);
@@ -320,7 +320,7 @@ describe("createLlmGateway", () => {
       ? new Response("boom", { status: 503 })
       : new Response(JSON.stringify({ usage: { prompt_tokens: 10, completion_tokens: 5 } }), { status: 200 })));
     const gw = createLlmGateway({ routes: async () => [flash, alt], quota, upstreamKey: () => "k", fetchImpl: up.fetchImpl });
-    const res = await gw(chatReq({ model: "deepseek-v4-flash", messages: [] }), caller);
+    const res = await gw(chatReq({ model: "deepseek-flash", messages: [] }), caller);
     expect(res.status).toBe(200);
     expect(n).toBe(2);          // 两家都打过
     expect(calls.release).toHaveLength(1);  // 病的那家释放了
@@ -331,7 +331,7 @@ describe("createLlmGateway", () => {
     const { quota, calls } = quotaStub();
     const up = upstream(() => new Response("bad key", { status: 401 }));
     const gw = createLlmGateway({ routes: async () => [flash], quota, upstreamKey: () => "k", fetchImpl: up.fetchImpl });
-    expect((await gw(chatReq({ model: "deepseek-v4-flash", messages: [] }), caller)).status).toBe(502);
+    expect((await gw(chatReq({ model: "deepseek-flash", messages: [] }), caller)).status).toBe(502);
     expect(calls.release).toHaveLength(1);
   });
 
@@ -339,7 +339,7 @@ describe("createLlmGateway", () => {
     const { quota, calls } = quotaStub();
     const up = upstream(() => new Response(sse(["data: {}\n\n"]), { status: 200 }));
     const gw = createLlmGateway({ routes: async () => [flash], quota, upstreamKey: () => "k", fetchImpl: up.fetchImpl });
-    const body = { model: "deepseek-v4-flash", messages: [], stream: true };
+    const body = { model: "deepseek-flash", messages: [], stream: true };
     await (await gw(chatReq(body), caller)).text();
     expect(calls.release).toEqual([]);
     expect(calls.settle).toHaveLength(1);
@@ -350,7 +350,7 @@ describe("createLlmGateway", () => {
   it("平台没配 key → 502 upstream（code 一样，message 说清是服务端没配），不 hold", async () => {
     const { quota, calls } = quotaStub();
     const gw = createLlmGateway({ routes: async () => [flash], quota, upstreamKey: () => undefined });
-    const res = await gw(chatReq({ model: "deepseek-v4-flash", messages: [] }), caller);
+    const res = await gw(chatReq({ model: "deepseek-flash", messages: [] }), caller);
     expect(res.status).toBe(502);
     expect(calls.hold).toEqual([]);
   });
@@ -374,7 +374,7 @@ describe("createLlmGateway", () => {
     });
     const up = upstream(() => new Response(erroring, { status: 200, headers: { "content-type": "text/event-stream" } }));
     const gw = createLlmGateway({ routes: async () => [flash], quota, upstreamKey: () => "k", fetchImpl: up.fetchImpl });
-    const body = { model: "deepseek-v4-flash", messages: [], stream: true };
+    const body = { model: "deepseek-flash", messages: [], stream: true };
     const res = await gw(chatReq(body), caller);
     // **先真读出第一块再让错误浮上来**：TransformStream 的可读端默认 HWM 是 0，
     // 没人读就没人往 transform 里推——测试里不读一下的话，「上游发过内容」这个前提
@@ -399,7 +399,7 @@ describe("createLlmGateway", () => {
     });
     const up = upstream(() => new Response(stillStreaming, { status: 200, headers: { "content-type": "text/event-stream" } }));
     const gw = createLlmGateway({ routes: async () => [flash], quota, upstreamKey: () => "k", fetchImpl: up.fetchImpl });
-    const body = { model: "deepseek-v4-flash", messages: [], stream: true };
+    const body = { model: "deepseek-flash", messages: [], stream: true };
     const res = await gw(chatReq(body), caller);
     // 先收下一块（客户端已经拿到内容），再断线——同上，不读一下这个前提就不成立
     const reader = res.body!.getReader();
@@ -418,7 +418,7 @@ describe("createLlmGateway", () => {
     const silent = new ReadableStream<Uint8Array>({ start() { /* 不 enqueue 也不 close */ } });
     const up = upstream(() => new Response(silent, { status: 200, headers: { "content-type": "text/event-stream" } }));
     const gw = createLlmGateway({ routes: async () => [flash], quota, upstreamKey: () => "k", fetchImpl: up.fetchImpl });
-    const res = await gw(chatReq({ model: "deepseek-v4-flash", messages: [], stream: true }), caller);
+    const res = await gw(chatReq({ model: "deepseek-flash", messages: [], stream: true }), caller);
     await res.body!.cancel();
     await new Promise((r) => setTimeout(r, 0));
     expect(calls.release).toHaveLength(1);
@@ -435,7 +435,7 @@ describe("createLlmGateway", () => {
     const gw = createLlmGateway({ routes: async () => [flash], quota, upstreamKey: () => "k", fetchImpl: up.fetchImpl });
     // 中文在 UTF-16 下是 1 code unit/字符、UTF-8 下是 3 字节/字符——这条请求体的 code unit
     // 长度和一条等长 ASCII 请求体完全一样（都是 371），但字节数是 371 vs 971
-    const cjkBody = { model: "deepseek-v4-flash", messages: [{ role: "user", content: "中".repeat(300) }] };
+    const cjkBody = { model: "deepseek-flash", messages: [{ role: "user", content: "中".repeat(300) }] };
     await gw(chatReq(cjkBody), caller);
     const raw = JSON.stringify(cjkBody);
     const expectedCorrect = estimateMicro(new TextEncoder().encode(raw).length, flash.defaultMaxTokens, flash);
@@ -454,7 +454,7 @@ describe("createLlmGateway", () => {
       routes: async () => [flash], quota, upstreamKey: () => "k", fetchImpl: up.fetchImpl,
       waitUntil: (p) => { seen.push(p); },
     });
-    const res = await gw(chatReq({ model: "deepseek-v4-flash", messages: [], stream: true }), caller);
+    const res = await gw(chatReq({ model: "deepseek-flash", messages: [], stream: true }), caller);
     await res.text();
     await Promise.all(seen);
     expect(seen).toHaveLength(1);
@@ -470,8 +470,8 @@ describe("createLlmGateway", () => {
     };
     const up = upstream(() => Response.json({ choices: [], usage: null }));
     const gw = createLlmGateway({ routes: async () => [flash], quota, upstreamKey: () => "k", fetchImpl: up.fetchImpl });
-    const rawNeg = '{"model":"deepseek-v4-flash","messages":[],"max_tokens":-5}';
-    const rawInf = '{"model":"deepseek-v4-flash","messages":[],"max_tokens":1e400}';
+    const rawNeg = '{"model":"deepseek-flash","messages":[],"max_tokens":-5}';
+    const rawInf = '{"model":"deepseek-flash","messages":[],"max_tokens":1e400}';
     const req = (raw: string) => new Request("https://edge/llm/v1/chat/completions", { method: "POST", body: raw });
     await gw(req(rawNeg), caller);
     await gw(req(rawInf), caller);
@@ -490,7 +490,7 @@ describe("createLlmGateway", () => {
     };
     const up = upstream(() => Response.json({ choices: [], usage: { prompt_tokens: 1, completion_tokens: 1 } }));
     const gw = createLlmGateway({ routes: async () => [flash], quota, upstreamKey: () => "k", fetchImpl: up.fetchImpl });
-    const res = await gw(chatReq({ model: "deepseek-v4-flash", messages: [] }), caller);
+    const res = await gw(chatReq({ model: "deepseek-flash", messages: [] }), caller);
     expect(res.status).toBe(502);
     expect(calls.hold).toHaveLength(1);
     expect(calls.release).toHaveLength(1);
@@ -500,12 +500,12 @@ describe("createLlmGateway", () => {
   it("hold 被拒的三种情形都带 BILLING_HEADERS（M8）", async () => {
     const mk = (o: HoldOutcome) =>
       createLlmGateway({ routes: async () => [flash], quota: quotaStub(o).quota, upstreamKey: () => "k" });
-    const r1 = await mk({ ok: false, code: "quota_exhausted", window: "week", resetAt: 42 })(chatReq({ model: "deepseek-v4-flash", messages: [] }), caller);
+    const r1 = await mk({ ok: false, code: "quota_exhausted", window: "week", resetAt: 42 })(chatReq({ model: "deepseek-flash", messages: [] }), caller);
     expect(r1.headers.get(BILLING_HEADERS.h5)).toBe("100");
     expect(r1.headers.get(BILLING_HEADERS.plan)).toBe("lite");
-    const r2 = await mk({ ok: false, code: "no_subscription" })(chatReq({ model: "deepseek-v4-flash", messages: [] }), caller);
+    const r2 = await mk({ ok: false, code: "no_subscription" })(chatReq({ model: "deepseek-flash", messages: [] }), caller);
     expect(r2.headers.get(BILLING_HEADERS.week)).toBe("200");
-    const r3 = await mk({ ok: false, code: "too_many_inflight" })(chatReq({ model: "deepseek-v4-flash", messages: [] }), caller);
+    const r3 = await mk({ ok: false, code: "too_many_inflight" })(chatReq({ model: "deepseek-flash", messages: [] }), caller);
     expect(r3.headers.get(BILLING_HEADERS.addon)).toBe("0");
   });
 
@@ -517,7 +517,7 @@ describe("createLlmGateway", () => {
       remaining: async () => { throw new Error("quota DO 挂了"); },
     };
     const gw = createLlmGateway({ routes: async () => [flash], quota, upstreamKey: () => "k" });
-    const res = await gw(chatReq({ model: "deepseek-v4-flash", messages: [] }), caller);
+    const res = await gw(chatReq({ model: "deepseek-flash", messages: [] }), caller);
     expect(res.status).toBe(402);
     expect(res.headers.get(BILLING_HEADERS.h5)).toBeNull();
   });
@@ -528,7 +528,7 @@ describe("createLlmGateway", () => {
       routes: async () => { throw new Error("supabase GET model_route 500"); },
       quota, upstreamKey: () => "k",
     });
-    const res = await gw(chatReq({ model: "deepseek-v4-flash", messages: [] }), caller);
+    const res = await gw(chatReq({ model: "deepseek-flash", messages: [] }), caller);
     expect(res.status).toBe(503);
     expect((await res.json() as { error: { type: string; code: string } }).error).toMatchObject({ type: "otto_edge", code: "upstream" });
     // 还没走到 hold，不该有任何额度动作
@@ -546,7 +546,7 @@ describe("createLlmGateway", () => {
     };
     const up = upstream(() => Response.json({ choices: [] }));
     const gw = createLlmGateway({ routes: async () => [flash], quota, upstreamKey: () => "k", fetchImpl: up.fetchImpl });
-    const res = await gw(chatReq({ model: "deepseek-v4-flash", messages: [] }), caller);
+    const res = await gw(chatReq({ model: "deepseek-flash", messages: [] }), caller);
     expect(res.status).toBe(503);
     // 没拿到 hold 就没有可释放的；也绝不该打上游（那是真花钱那一步）
     expect(calls.release).toEqual([]);
@@ -559,7 +559,7 @@ describe("createLlmGateway", () => {
     const up = upstream(() => Response.json({ choices: [], usage: null }));
     const gw = createLlmGateway({ routes: async () => [flash], quota, upstreamKey: () => "k", fetchImpl: up.fetchImpl });
     // 客户端传了个非布尔的 truthy 值——我们判定 stream === true 为 false，转发时也得是 false
-    await gw(chatReq({ model: "deepseek-v4-flash", messages: [], stream: "yes" }), caller);
+    await gw(chatReq({ model: "deepseek-flash", messages: [], stream: "yes" }), caller);
     const sentBody = JSON.parse(await up.seen[0]!.text());
     expect(sentBody.stream).toBe(false);
   });
@@ -572,7 +572,7 @@ describe("流式的「本次花费」尾注（#857 的另一半）", () => {
     const { quota, calls } = quotaStub();
     const up = upstream(() => new Response(sse([usageFrame, "data: [DONE]\n\n"]), { status: 200 }));
     const gw = createLlmGateway({ routes: async () => [flash], quota, upstreamKey: () => "k", fetchImpl: up.fetchImpl });
-    const text = await (await gw(chatReq({ model: "deepseek-v4-flash", messages: [], stream: true }), caller)).text();
+    const text = await (await gw(chatReq({ model: "deepseek-flash", messages: [], stream: true }), caller)).text();
     const lines = text.split("\n").map((l) => l.trim());
     const cost = lines.map(parseSseCostComment).find((n) => n !== null);
     expect(cost).toBe(calls.settle[0]!.costMicro);
@@ -585,7 +585,7 @@ describe("流式的「本次花费」尾注（#857 的另一半）", () => {
     const { quota, calls } = quotaStub();
     const up = upstream(() => new Response(sse(["data: {}\n\n"]), { status: 200 }));
     const gw = createLlmGateway({ routes: async () => [flash], quota, upstreamKey: () => "k", fetchImpl: up.fetchImpl });
-    const body = { model: "deepseek-v4-flash", messages: [], stream: true };
+    const body = { model: "deepseek-flash", messages: [], stream: true };
     const text = await (await gw(chatReq(body), caller)).text();
     const cost = text.split("\n").map((l) => parseSseCostComment(l.trim())).find((n) => n !== null);
     expect(cost).toBe(calls.settle[0]!.costMicro);
@@ -595,7 +595,7 @@ describe("流式的「本次花费」尾注（#857 的另一半）", () => {
     const { quota } = quotaStub();
     const up = upstream(() => new Response(sse([usageFrame, "data: [DONE]\n\n"]), { status: 200 }));
     const gw = createLlmGateway({ routes: async () => [flash], quota, upstreamKey: () => "k", fetchImpl: up.fetchImpl });
-    const text = await (await gw(chatReq({ model: "deepseek-v4-flash", messages: [], stream: true }), caller)).text();
+    const text = await (await gw(chatReq({ model: "deepseek-flash", messages: [], stream: true }), caller)).text();
     const added = text.split("\n").map((l) => l.trim()).filter((l) => parseSseCostComment(l) !== null);
     expect(added).toHaveLength(1);
     expect(added[0]!.startsWith(SSE_COST_COMMENT)).toBe(true);

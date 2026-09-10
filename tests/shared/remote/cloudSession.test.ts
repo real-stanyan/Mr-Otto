@@ -200,8 +200,8 @@ describe("协议 14：config 帧没了，modelRoute 还在（#1102）", () => {
       t: "welcome" as const, v: CS_PROTOCOL_VERSION, sessionId: "s", lastSeq: 0,
       initiatorUid: null, ownerUid: "o",
     };
-    const hosted = decodeCsDown(encodeCs({ ...base, modelRoute: { kind: "hosted", model: "deepseek-v4-flash" } }));
-    expect(hosted && hosted.t === "welcome" && hosted.modelRoute).toEqual({ kind: "hosted", model: "deepseek-v4-flash" });
+    const hosted = decodeCsDown(encodeCs({ ...base, modelRoute: { kind: "hosted", model: "deepseek-flash" } }));
+    expect(hosted && hosted.t === "welcome" && hosted.modelRoute).toEqual({ kind: "hosted", model: "deepseek-flash" });
     const blocked = decodeCsDown(encodeCs({ ...base, modelRoute: { kind: "blocked" } }));
     expect(blocked && blocked.t === "welcome" && blocked.modelRoute).toEqual({ kind: "blocked" });
 

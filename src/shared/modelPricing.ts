@@ -15,7 +15,9 @@
 //
 // **抄表日期：2026-08-30**，来源是各厂自己的定价页（下面每一组标了出处）。
 // 这个日期比价格本身重要：它是判断"这张表还能不能信"的唯一依据。
-// 加/改一行的时候连日期一起改。
+// 加/改一行的时候连日期一起改——**只重抄了一家时改那一组自己的日期，别动表头这个**：
+// 把表头改成今天等于宣称另外十家也刚核过，而那正是这张表最容易撒的谎。
+// 组内标了日期的以组内为准（比表头新）。
 
 export interface ModelPrice {
   /** 输入（prompt）单价，美元 / 百万 token（缓存未命中档） */
@@ -58,13 +60,14 @@ const PRICES: Readonly<Record<string, ModelPrice>> = {
   "gemini-3.1-pro-preview": { input: 2, output: 12 },
   "gemini-3.7-flash": { input: 1.5, output: 7.5 },
 
-  // DeepSeek — api-docs.deepseek.com/quick_start/pricing
+  // DeepSeek — api-docs.deepseek.com/quick_start/pricing（**这一组抄表日期 2026-09-10**）
   // 它按时段分两档（错峰半价）。这里取**高峰价**：页脚那个数是"这一次大概花了多少"，
   // 报低了会让人以为便宜一半，而错峰是碰运气碰上的，不是常态
-  // cachedInput = 缓存命中档（同取高峰价）；vision-exp 与 flash 同价
-  "deepseek-v4-flash": { input: 0.44, output: 1.32, cachedInput: 0.014 },
+  // cachedInput = 缓存命中档（同取高峰价）
+  // 取官方**美元页**的数，不再拿人民币页 ÷7.2：那是我们自己塞进去的一个汇率假设，
+  // 而这一家自己就报美元价（两者今天差 8%，美元页高，取高的那个不会让我们贴差额）
+  "deepseek-flash": { input: 0.3, output: 1.2, cachedInput: 0.006 },
   "deepseek-v4-pro": { input: 1.32, output: 3.96, cachedInput: 0.044 },
-  "deepseek-v4-flash-vision-exp": { input: 0.44, output: 1.32, cachedInput: 0.014 },
 
   // 智谱 — docs.z.ai/guides/overview/pricing。两款 flash 官网标的就是 Free
   // glm-5.3-flash 取标准价（$0.15/$0.50）；它挂着到 2026-09-09 的五折促销，理由同上

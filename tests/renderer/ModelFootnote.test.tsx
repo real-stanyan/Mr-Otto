@@ -13,7 +13,7 @@ import { ModelFootnote } from "../../src/renderer/src/components/ModelFootnote.j
 import type { ModelUsage } from "../../src/session/deriveUsage.js";
 
 const row = (over: Partial<ModelUsage> = {}): ModelUsage => ({
-  model: "deepseek-v4-flash", route: "hosted", promptTokens: 373_500, completionTokens: 5_900, cachedTokens: 0, ...over,
+  model: "deepseek-flash", route: "hosted", promptTokens: 373_500, completionTokens: 5_900, cachedTokens: 0, ...over,
 });
 
 afterEach(cleanup);
@@ -28,7 +28,7 @@ describe("ModelFootnote", () => {
     const { container } = render(<ModelFootnote rows={[row()]} cache={null} />);
     const line = container.firstElementChild!;
     expect(line.className).toContain("whitespace-nowrap");
-    expect(screen.getByText("deepseek-v4-flash").className).toContain("truncate");
+    expect(screen.getByText("deepseek-flash").className).toContain("truncate");
     expect(screen.getByText("379K").className).toContain("shrink-0");
   });
 
@@ -46,7 +46,7 @@ describe("ModelFootnote", () => {
     );
     expect(container.firstElementChild).toHaveAttribute(
       "title",
-      "deepseek-v4-flash · 379K tokens，cache 命中 83%",
+      "deepseek-flash · 379K tokens，cache 命中 83%",
     );
   });
 });

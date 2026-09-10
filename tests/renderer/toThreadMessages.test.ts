@@ -560,7 +560,7 @@ describe("request_envelope（#1091）", () => {
     // 落进 `isAuditEvent` 的 default 也会得到同一个答案，所以这条断言钉的是**决定**
     // 不是实现：哪天有人顺手把它加回放行名单，这里红；而两份名单对表那条
     // （timelineLists.test.ts）只管两处一致，两处一起加回来它照样绿
-    const e = ev({ type: "request_envelope", model: "deepseek-v4-flash", thinking: "on", system: "…", tools: [{ name: "read_file", description: "", parameters: {} }] }, 0);
+    const e = ev({ type: "request_envelope", model: "deepseek-flash", thinking: "on", system: "…", tools: [{ name: "read_file", description: "", parameters: {} }] }, 0);
     expect(toThreadMessages([e])).toEqual([]);
   });
 

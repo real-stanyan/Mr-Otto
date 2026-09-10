@@ -102,7 +102,7 @@ describe("三个出厂默认必须在目录里", () => {
 
 describe("reasoningPassback（#1151）——thinking 模式要不要回传 reasoning_content，逐家验过才准开", () => {
   it("DeepSeek 开：探针验过「必须回传」——按 tool_call id 查服务端缓存，查不到 400", () => {
-    for (const m of ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"]) {
+    for (const m of ["deepseek-flash", "deepseek-v4-pro"]) {
       expect(findModel(m)?.reasoningPassback, m).toBe(true);
     }
   });

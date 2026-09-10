@@ -26,8 +26,8 @@ Element.prototype.scrollIntoView ??= function scrollIntoView(): void {};
 
 /** 真库 model_route 此刻供的那六款（从便宜到贵） */
 const HOSTED = [
-  "deepseek-v4-flash", "glm-5.3-flash", "qwen3.8-flash",
-  "deepseek-v4-pro", "glm-5.3", "qwen3.8-max",
+  "glm-5.3-flash", "qwen3.8-flash", "deepseek-flash",
+  "glm-5.3", "deepseek-v4-pro", "qwen3.8-max",
 ];
 
 /** 「付了钱、一把 key 都没配」—— 改动前这个人打开选择器一组都看不到 */
@@ -70,11 +70,11 @@ describe("ModelPicker：订阅那一组", () => {
     // **末尾不再有「视觉」记号**（#1058）—— 它在 `GLM-5.3 Flash（视觉）` 那一行是
     // 同一件事说两遍，而这一列的整齐比多一个信号值钱
     expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual([
-      "DeepSeekDeepSeek V4 Flash",
       "ZhipuGLM-5.3 Flash（视觉）",
       "QwenQwen3.8 Flash",
-      "DeepSeekDeepSeek V4 Pro",
+      "DeepSeekDeepSeek V4.1 Flash（视觉）",
       "ZhipuGLM-5.3",
+      "DeepSeekDeepSeek V4 Pro",
       "QwenQwen3.8 Max",
     ]);
     // 「添加更多模型…」也没了（#1051）：它通往「模型配置」，而那一页对订阅用户
@@ -101,7 +101,7 @@ describe("ModelPicker：订阅那一组", () => {
     useChat.setState({
       keyStatus: { DEEPSEEK_API_KEY: "sk-x" }, ollamaModels: [], billing: null,
     });
-    render(<ModelPicker value="deepseek-v4-flash" onChange={() => {}} />);
+    render(<ModelPicker value="deepseek-flash" onChange={() => {}} />);
     await userEvent.click(screen.getByRole("combobox"));
     expect(groupHeadings()).toContain("DeepSeek");
     expect(screen.getByText("添加更多模型…")).toBeInTheDocument();

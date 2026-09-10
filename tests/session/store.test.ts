@@ -343,7 +343,7 @@ describe("EventStore", () => {
         sessionId: "s1",
         ts: 300,
         type: "suggestions_generated",
-        model: "deepseek-v4-flash",
+        model: "deepseek-flash",
         suggestions: ["a"],
         usage: { promptTokens: 7, completionTokens: 1 },
       });
@@ -352,7 +352,7 @@ describe("EventStore", () => {
         // cachedTokens: 不报 cache 的调用提出来是 null（≠0,计价时才归 0）
         { ts: 100, model: "deepseek-v4-pro", promptTokens: 10, completionTokens: 2, cachedTokens: null },
         { ts: 200, model: "claude-opus-5", promptTokens: 30, completionTokens: 4, cachedTokens: null },
-        { ts: 300, model: "deepseek-v4-flash", promptTokens: 7, completionTokens: 1, cachedTokens: null },
+        { ts: 300, model: "deepseek-flash", promptTokens: 7, completionTokens: 1, cachedTokens: null },
       ]);
     });
 
