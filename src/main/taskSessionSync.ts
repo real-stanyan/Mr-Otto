@@ -9,7 +9,13 @@
 //     事件就从 seq 0 整份重推 = 重新建行。
 // 冲突（seq_conflict）在 reconcile：重叠段逐条相等只是游标陈旧；真分歧按「云端赢、纯人为动作重放、
 // 含 turn 痕迹分叉」处理（spec §3.6，tests/main/taskSessionSync.conflict.test.ts）。
+//
+// detached 与 frozen 是**两种**停止同步（#1223 复审）：detached 是「云端那行没了」，下一条本地事件
+// 把它清掉、从 seq 0 重新建行；frozen 是终态，任何本地事件都不清它——因为它记的正是「再试一次也
+// 一样」（RPC 拒收这批 / 冲突不敢动本地日志 / 这个版本读不懂云端那份）。只有 needs_upgrade 会在
+// backfill（换了个版本重开 app）时解冻一次。
 import type { SessionEvent } from "../session/events.js";
+import { shouldPersist } from "../session/persistencePolicy.js";
 import type { EventStore, NewSessionEvent } from "../session/store.js";
 import { newSessionId } from "../shared/sessionId.js";
 import { retargetForImport } from "../shared/sessionPackage.js";
@@ -77,6 +83,15 @@ export interface TaskSessionSync {
 const HEX_OF = (ref: string): string => ref.slice("sha256:".length);
 const MAX_FLUSH_ROUNDS = 3;
 
+/** 停止同步的三种终态原因（落进 task-sync.json 的 frozen 字段）。只有 needs_upgrade 会被 backfill
+    解冻——换个版本重开 app 之后这个版本可能就认得那条事件了；另外两条要人介入 */
+type FreezeReason = "forbidden" | "has_children_conflict" | "needs_upgrade";
+const FREEZE_MESSAGE: Record<FreezeReason, (id: string, detail: string) => string> = {
+  forbidden: (id, detail) => `会话 ${id} 的云端副本已停止同步：${detail}`,
+  has_children_conflict: (id) => `会话 ${id} 有子智能体会话，云端与本机分歧未自动处理，已停止同步`,
+  needs_upgrade: (id) => `会话 ${id} 含这个版本不认识的事件类型，请升级 Mr Otto 后再同步`,
+};
+
 export function createTaskSessionSync(deps: TaskSessionSyncDeps): TaskSessionSync {
   const now = deps.now ?? Date.now;
   const debounceMs = deps.debounceMs ?? 200;
@@ -100,6 +115,7 @@ export function createTaskSessionSync(deps: TaskSessionSyncDeps): TaskSessionSyn
   let sweepTimer: ReturnType<typeof setInterval> | null = null;
   let unsub: (() => void) | null = null;
   let flushing: Promise<void> | null = null;
+  let sweeping: Promise<void> | null = null;
   let lastSyncedAt: number | null = null;
   let current: TaskSyncState = { kind: "off", reason: null };
 
@@ -139,6 +155,15 @@ export function createTaskSessionSync(deps: TaskSessionSyncDeps): TaskSessionSyn
     }
     setState({ kind: "error", message: err instanceof Error ? err.message : String(err), lastSyncedAt });
     scheduleRetry();
+  };
+  /** 这条会话停止同步，终态（#1223 复审 I6）：落盘一个原因，而不是像 detached 那样被下一条本地
+      事件清掉。不 scheduleRetry——「再试一次也一样」正是它记的那件事；别的会话照常同步 */
+  const frozenOf = (id: string): string | undefined => file.sessions[id]?.frozen;
+  const freeze = (id: string, reason: FreezeReason, detail?: string): void => {
+    const st = ensure(id);
+    st.frozen = reason;
+    save();
+    setState({ kind: "error", message: FREEZE_MESSAGE[reason](id, detail ?? ""), lastSyncedAt });
   };
 
   // ── 笔 ──
@@ -212,6 +237,7 @@ export function createTaskSessionSync(deps: TaskSessionSyncDeps): TaskSessionSyn
     const id = event.sessionId;
     if (!isTask(id)) return;
     const st = ensure(id);
+    if (st.frozen !== undefined) return; // 终态：本地照写照读，只是不再往云上推（detached 会被清、它不会）
     if (st.detached) {
       // 云端行没了之后本地又续聊：从 seq 0 整份重推 = 重新建行
       delete st.detached;
@@ -231,7 +257,7 @@ export function createTaskSessionSync(deps: TaskSessionSyncDeps): TaskSessionSyn
   }
   async function pushSession(uid: string, id: string): Promise<void> {
     const st = ensure(id);
-    if (st.detached) return;
+    if (st.detached || st.frozen !== undefined) return;
     const tail = deps.store.load(id, { afterSeq: st.pushedUpTo });
     if (tail.length === 0) return;
     for (const e of tail) for (const ref of attachmentRefsOf(e)) await uploadRef(uid, ref);
@@ -244,15 +270,26 @@ export function createTaskSessionSync(deps: TaskSessionSyncDeps): TaskSessionSyn
         return;
       }
     }
-    for (const batch of sliceBatches(tail, TASK_EVENT_MAX_BYTES)) {
+    const batches = sliceBatches(tail, TASK_EVENT_MAX_BYTES);
+    // i 只在这一批真推上去之后才 ++：pen_required 重拿笔之后要走**同一套**分类重跑这一批，
+    // 而不是在 catch 里裸 await 一次 append（那一次的失败没有任何人分类，直接冒出去成了整轮的错）
+    let retriedPenAt = -1;
+    for (let i = 0; i < batches.length; ) {
+      const batch = batches[i]!;
       const expected = batch[0]!.seq;
       const done = (last: number): void => {
         st.pushedUpTo = last;
         save();
-        if (expected === 0) granted.add(id); // 建行那一批：RPC 把笔发给了我们（spec 实施偏差 3）
+        if (expected === 0) {
+          // 建行那一批：RPC 把笔发给了我们（spec 实施偏差 3）。**同时起续期**——只记 granted 的话
+          // holdsPen 永远说「握着」，而云端那支 30 s 就过期了，下一条 executor 事件撞 pen_required
+          granted.add(id);
+          startRenew(id);
+        }
       };
       try {
         done(await deps.api.append(id, expected, deps.holder, batch));
+        i++;
       } catch (err) {
         if (!(err instanceof TaskSyncError)) throw err;
         if (err.code === "seq_conflict") {
@@ -260,14 +297,20 @@ export function createTaskSessionSync(deps: TaskSessionSyncDeps): TaskSessionSyn
           return;
         }
         if (err.code === "pen_required") {
+          if (retriedPenAt === i) {
+            // 这一批已经重拿过一次笔了还是不行：别原地打转，留给下一轮
+            deps.onPenLost?.(id);
+            dirty.add(id);
+            return;
+          }
+          retriedPenAt = i;
           const again = await acquirePen(id);
           if (again.kind !== "acquired") {
             deps.onPenLost?.(id);
             dirty.add(id);
             return;
           }
-          done(await deps.api.append(id, expected, deps.holder, batch));
-          continue;
+          continue; // i 不动：同一批重来一次，成败照样过上面那套分类
         }
         if (err.code === "no_session") {
           st.detached = true;
@@ -276,11 +319,10 @@ export function createTaskSessionSync(deps: TaskSessionSyncDeps): TaskSessionSyn
         }
         if (err.code === "forbidden") {
           // controller ruling（Task 7 复审带入 Task 10）：RPC 判定这批不可重试（畸形 / 超限 / 不是
-          // 我们的会话）——终态，不进 30s 重试循环，别让一条超限事件卡死这条会话的推送队列；
-          // detached 只挡这一条会话，其余会话照常同步
-          st.detached = true;
-          save();
-          setState({ kind: "error", message: `会话 ${id} 的云端副本已停止同步：${err.message}`, lastSyncedAt });
+          // 我们的会话）——终态，不进 30s 重试循环，别让一条超限事件卡死这条会话的推送队列。
+          // 用 frozen 不用 detached：detached 会被下一条本地事件清掉（那是「重新建行」的信号），
+          // 于是每写一条就重新整份推一遍、再被拒一次——一条超限事件变成每条事件一次全量往返
+          freeze(id, "forbidden", err.message);
           return;
         }
         throw err;
@@ -304,19 +346,25 @@ export function createTaskSessionSync(deps: TaskSessionSyncDeps): TaskSessionSyn
         for (let round = 0; round < MAX_FLUSH_ROUNDS && dirty.size > 0; round++) {
           const batch = [...dirty];
           dirty.clear();
-          for (const id of batch) {
+          for (let i = 0; i < batch.length; i++) {
             try {
-              await serialize(id, () => pushSession(uid, id));
+              await serialize(batch[i]!, () => pushSession(uid, batch[i]!));
             } catch (err) {
-              dirty.add(id);
+              // 挂掉的那条**和这一批里还没轮到的那些**一起放回脏集合：只放回挂掉的那条，
+              // 后面那些就随 dirty.clear() 一起没了——一条会话推挂了，同批的其余会话
+              // 到下一次本地写事件之前谁也不会再推它们（离线时同批全军覆没）
+              for (const rest of batch.slice(i)) dirty.add(rest);
               throw err;
             }
           }
         }
+        // 封顶三轮之后还有脏的（笔被占 / turn 在跑那种「每轮把自己标回脏」的）：安排一次重试。
+        // 不安排的话它要等到下一次本地事件或 realtime 推行才动——而这两件事都可能不再发生
+        if (dirty.size > 0) scheduleRetry();
         lastSyncedAt = now();
-        // forbidden 分支已经把状态钉成了 error（终态、不重试）——这里不能无条件覆盖成 idle，
-        // 否则 controller ruling 要的「状态保持 error」在同一次 flush 收尾时就被抹掉了；
-        // 没有会话触发那条分支时 current 仍是这次 flush 开头设的 syncing，照常转 idle
+        // freeze 过的会话（forbidden / has_children_conflict / needs_upgrade）已经把状态钉成了
+        // error（终态、不重试）——这里不能无条件覆盖成 idle，否则那句话在同一次 flush 收尾时就被
+        // 抹掉了；没有会话被冻时 current 仍是这次 flush 开头设的 syncing，照常转 idle
         if (current.kind !== "error") setState({ kind: "idle", lastSyncedAt });
       } catch (err) {
         fail(err);
@@ -365,25 +413,33 @@ export function createTaskSessionSync(deps: TaskSessionSyncDeps): TaskSessionSyn
       if (refs.size === 0) missingAttachments.delete(id);
     }
   }
-  /** 把云端事件（带云端 seq）muted 追加进本地，断言本地分到同一个 seq */
-  function appendPulled(id: string, events: readonly SessionEvent[]): SessionEvent[] {
+  /** 把云端事件（带云端 seq）muted 追加进本地，断言本地分到同一个 seq。
+      unknownType = 撞上这个版本不认识的事件类型（persistencePolicy 的 assertNever 抛的是裸 Error）：
+      停在那一条，已经落下的仍然是云端那份的一段合法**前缀**，由调用方冻结这条会话 */
+  function appendPulled(id: string, events: readonly SessionEvent[]): { appended: SessionEvent[]; unknownType: boolean } {
     const appended: SessionEvent[] = [];
     muted = true;
     try {
       for (const e of events) {
         const { seq: _seq, ...rest } = e;
-        const got = deps.store.append(rest as NewSessionEvent);
+        let got: SessionEvent;
+        try {
+          got = deps.store.append(rest as NewSessionEvent);
+        } catch (err) {
+          if (err instanceof TaskSyncError) throw err;
+          return { appended, unknownType: true };
+        }
         if (got.seq !== e.seq) throw new TaskSyncError("other", `拉取时 seq 对不上：本地 ${got.seq} 云端 ${e.seq}`);
         appended.push(got);
       }
     } finally {
       muted = false;
     }
-    return appended;
+    return { appended, unknownType: false };
   }
   async function pullInner(uid: string, id: string, cloudLast?: number): Promise<void> {
     const st = ensure(id);
-    if (st.detached) return;
+    if (st.detached || st.frozen !== undefined) return;
     let local = deps.store.has(id) ? deps.store.lastSeq(id) : -1;
     if (cloudLast !== undefined && cloudLast <= local) {
       if (cloudLast < local) {
@@ -395,19 +451,27 @@ export function createTaskSessionSync(deps: TaskSessionSyncDeps): TaskSessionSyn
     for (;;) {
       const page = await deps.api.pullEvents(uid, id, local, PULL_PAGE);
       const fresh: SessionEvent[] = [];
+      let next = local;
       for (const e of page) {
-        if (e.seq <= local) continue;
-        if (e.seq !== local + 1) break; // 有洞：等下一次
+        if (e.seq <= next) continue;
+        if (e.seq !== next + 1) break; // 有洞：等下一次
         fresh.push(e);
-        local = e.seq;
+        next = e.seq;
       }
       if (fresh.length === 0) break;
-      const appended = appendPulled(id, fresh);
+      const { appended, unknownType } = appendPulled(id, fresh);
+      // 游标只推到**真落下来**的那一条：撞上不认识的类型时 next 已经跑到整页末尾了
+      local = appended.at(-1)?.seq ?? local;
       st.pushedUpTo = Math.max(st.pushedUpTo, local);
       save();
       await fetchAttachments(uid, id, appended);
       for (const e of appended) if (e.type === "executor_changed") deps.onExecutorSwitch?.(id, e.executor);
-      deps.onPulled(id, appended);
+      if (appended.length > 0) deps.onPulled(id, appended);
+      if (unknownType) {
+        // 别的设备是新版本，写了这个版本读不懂的事件：本地留住前缀，停在这里等升级
+        freeze(id, "needs_upgrade");
+        return;
+      }
       if (page.length < PULL_PAGE) break;
     }
   }
@@ -417,6 +481,7 @@ export function createTaskSessionSync(deps: TaskSessionSyncDeps): TaskSessionSyn
     await serialize(id, () => pullInner(uid, id, cloudLast));
   }
   async function handleRow(uid: string, row: TaskSessionRow): Promise<void> {
+    if (frozenOf(row.id) !== undefined) return; // 终态：realtime 推来的行也不再动它
     deps.onPenChanged?.(row.id, row.pen_holder);
     const local = deps.store.has(row.id) ? deps.store.lastSeq(row.id) : -1;
     if (row.last_seq > local) await serialize(row.id, () => pullInner(uid, row.id, row.last_seq));
@@ -427,27 +492,37 @@ export function createTaskSessionSync(deps: TaskSessionSyncDeps): TaskSessionSyn
   }
   async function pullNow(): Promise<void> {
     if (disposed) return;
-    const uid = deps.uid();
-    if (!uid) {
-      setState({ kind: "off", reason: "未登录" });
-      return;
-    }
-    setState({ kind: "syncing" });
-    try {
-      const rows = await deps.api.listChanged(uid, file.lastSweepIso);
-      let latest = file.lastSweepIso;
-      for (const row of rows) {
-        await handleRow(uid, row);
-        if (latest === null || row.updated_at > latest) latest = row.updated_at;
+    // 同 flushing：sweep 定时器 / realtime / 聚焦可能同时叫它，两轮并着跑会对同一批行重复处理，
+    // 还会把 lastSweepIso 写成两边交叉的值
+    if (sweeping) return sweeping;
+    sweeping = (async () => {
+      const uid = deps.uid();
+      if (!uid) {
+        setState({ kind: "off", reason: "未登录" });
+        return;
       }
-      file.lastSweepIso = latest;
-      save();
-      await retryMissingAttachments(uid);
-      lastSyncedAt = now();
-      setState({ kind: "idle", lastSyncedAt });
-    } catch (err) {
-      fail(err);
-    }
+      setState({ kind: "syncing" });
+      try {
+        const rows = await deps.api.listChanged(uid, file.lastSweepIso);
+        let latest = file.lastSweepIso;
+        for (const row of rows) {
+          await handleRow(uid, row);
+          if (latest === null || row.updated_at > latest) latest = row.updated_at;
+        }
+        file.lastSweepIso = latest;
+        save();
+        await retryMissingAttachments(uid);
+        lastSyncedAt = now();
+        // 同 flush 末尾那条：这一轮里 freeze 过的会话把状态钉成了 error（终态），不能覆盖回 idle。
+        // current 在这个函数开头刚被设成 syncing，所以这里读到 error 只可能是本轮冻出来的
+        if (current.kind !== "error") setState({ kind: "idle", lastSyncedAt });
+      } catch (err) {
+        fail(err);
+      }
+    })().finally(() => {
+      sweeping = null;
+    });
+    return sweeping;
   }
 
   // ── 冲突：云端赢，本机不丢（spec §3.6） ──
@@ -488,6 +563,8 @@ export function createTaskSessionSync(deps: TaskSessionSyncDeps): TaskSessionSyn
     file.sessions[forkId] = { pushedUpTo: -1 };
     dirty.add(forkId);
     save();
+    // 这份分叉是 muted 造出来的，观察者一条都没看见——不自己安排一次推的话它只是躺在本地
+    scheduleFlush();
   }
   async function reconcile(uid: string, id: string): Promise<void> {
     const st = ensure(id);
@@ -511,20 +588,50 @@ export function createTaskSessionSync(deps: TaskSessionSyncDeps): TaskSessionSyn
       st.pushedUpTo += overlap;
       save();
       if (cloudTail.length > overlap) {
-        const appended = appendPulled(id, cloudTail.slice(overlap));
+        const { appended, unknownType } = appendPulled(id, cloudTail.slice(overlap));
         st.pushedUpTo = appended.at(-1)?.seq ?? st.pushedUpTo;
         save();
         await fetchAttachments(uid, id, appended);
-        deps.onPulled(id, appended);
+        // 与 pullInner 同一条：拉进来的改道事件要通知主进程，不然「云端接手了」这件事只有
+        // 走 pullInner 那条路时才说得出口，走对账这条路就静默了
+        for (const e of appended) if (e.type === "executor_changed") deps.onExecutorSwitch?.(id, e.executor);
+        if (appended.length > 0) deps.onPulled(id, appended);
+        if (unknownType) {
+          freeze(id, "needs_upgrade");
+          return;
+        }
       } else if (localTail.length > overlap) {
         dirty.add(id);
         scheduleFlush();
       }
       return;
     }
+    // 真分歧了。接下来这条路会 purge 本地这条会话——而 purge **级联删掉它派出去的子会话**
+    // （store.purge 按 session_created.spawnedBy 找，ADR-0047），子会话从来不上云、云端那份
+    // 里没有它们，于是一次冲突处理会静默抹掉离线跑那轮派出去的全部子日志。有子会话就不碰，
+    // 冻结并说清（#1223 复审 C1）
+    if (deps.store.sessions().some((row) => row.spawnedFrom === id)) {
+      freeze(id, "has_children_conflict");
+      return;
+    }
     const localFull = deps.store.load(id);
     const title = deps.store.sessions().find((s) => s.sessionId === id)?.title ?? null;
     const cloudFull = await pullAll(uid, id, -1);
+    // 先验再换（#1223 复审 I7）：云端那份可能是新版本写的，含这个版本不认识的事件类型——
+    // 而 store.append 对这种类型会抛（persistencePolicy 的 assertNever）。purge 之后才发现
+    // 就是半截日志：本地那份已经没了，云端那份只灌进去一部分
+    for (const e of cloudFull) {
+      let ok = false;
+      try {
+        ok = shouldPersist(e.type);
+      } catch {
+        ok = false;
+      }
+      if (!ok) {
+        freeze(id, "needs_upgrade");
+        return;
+      }
+    }
     try {
       if (d.kind === "has_executor") forkCopy(localFull, title);
       replaceWithCloud(id, cloudFull);
@@ -539,7 +646,9 @@ export function createTaskSessionSync(deps: TaskSessionSyncDeps): TaskSessionSyn
     deps.onReplaced(id);
     if (d.kind === "human_only") {
       // 纯人为动作重放到云端日志之后：不 muted，走观察者 → 脏 → 正常推
-      for (const e of localTail.filter((x) => x.seq >= d.at)) {
+      // 分歧在 seq 0 时这一截的头一条就是本地那条 session_created——重放它等于给这条会话
+      // 追加第二条「会话已创建」，投影层从此读到两个开头
+      for (const e of localTail.filter((x) => x.seq >= d.at && x.type !== "session_created")) {
         const { seq: _seq, ...rest } = e;
         deps.store.append(rest as NewSessionEvent);
       }
@@ -548,11 +657,27 @@ export function createTaskSessionSync(deps: TaskSessionSyncDeps): TaskSessionSyn
 
   // ── 生命周期 ──
   function backfill(): void {
+    // backfill 跑在装配 / 登录那一刻 = 「这个版本重新开始」：needs_upgrade 冻的那些再给一次机会
+    // （这个版本可能就认得那条事件了）。另外两种原因不解冻——再试一次的结果一样
+    for (const [id, st] of Object.entries(file.sessions)) {
+      if (st.frozen === "needs_upgrade") {
+        delete st.frozen;
+        save();
+        dirty.add(id);
+      }
+    }
     // 未归档先推、归档的排后面（Set 按插入序），一条一条来
     const rows = [...deps.store.sessions()].sort((a, b) => Number(a.archived) - Number(b.archived));
     for (const s of rows) {
       if (s.spawnedFrom !== null || !isTask(s.sessionId)) continue;
-      if (file.sessions[s.sessionId] === undefined) dirty.add(s.sessionId);
+      const st = file.sessions[s.sessionId];
+      if (st === undefined) {
+        dirty.add(s.sessionId);
+        continue;
+      }
+      // 游标比本地日志短 = 上次推到一半就退出了（观察者那条 touched 只活在内存里）。
+      // 不补的话这条会话要等下一次本地写事件才会被想起来，而它可能再也不会有下一条
+      if (!st.detached && st.frozen === undefined && st.pushedUpTo < deps.store.lastSeq(s.sessionId)) dirty.add(s.sessionId);
     }
     if (dirty.size > 0) scheduleFlush();
   }

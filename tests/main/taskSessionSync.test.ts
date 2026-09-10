@@ -1,13 +1,13 @@
 // 复制器的核心路径（#1223）：推、拉（muted）、笔、离线、detached、附件。假 api 在内存里照 0036 的规矩行事
 // （seq CAS、executor 类事件要笔、建行发笔），所以这里测的是「复制器 + RPC 语义」合起来对不对。
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { join } from "node:path";
 import { EventStore } from "../../src/session/store.js";
 import type { SessionEvent } from "../../src/session/events.js";
 import { createTaskSessionSync, type TaskSessionSync, type TaskSessionSyncDeps } from "../../src/main/taskSessionSync.js";
 import { TaskSyncError, type TaskSessionRow, type TaskSessionsApi, type TaskSyncErrorCode } from "../../src/main/taskSessionsApi.js";
 import type { TaskSyncFile } from "../../src/main/taskSyncStore.js";
-import { HUMAN_EVENT_TYPES } from "../../src/shared/taskSync.js";
+import { HUMAN_EVENT_TYPES, PEN_RENEW_MS } from "../../src/shared/taskSync.js";
 import { tempDir } from "../helpers/tempDir.js";
 
 export interface FakeCloud {
@@ -46,19 +46,22 @@ export function fakeCloud(uid = "u1"): FakeCloud {
         throw new TaskSyncError(forced.code, forced.message);
       }
       let entry = rows.get(id);
+      const isNewRow = entry === undefined;
       if (!entry) {
         if (expected !== 0) throw new TaskSyncError("no_session", "no_session");
         entry = { row: { id, title: "", archived: false, last_seq: -1, pen_holder: holder, pen_until: new Date(now.t + 30_000).toISOString(), updated_at: new Date(now.t).toISOString() }, events: [] };
-        rows.set(id, entry);
       }
       if (entry.row.last_seq + 1 !== expected) throw new TaskSyncError("seq_conflict", "seq_conflict");
+      // 先整批验（seq 连续 + 笔），一条不过整批不落——真 RPC 那一批是一个事务，
+      // 半批落盘会让「拒绝了」和「落了一半」在云端行上长得一模一样
       let seq = expected;
       for (const e of events) {
         if (e.seq !== seq) throw new TaskSyncError("seq_conflict", "seq_conflict");
         if (!HUMAN_EVENT_TYPES.has(e.type) && !penLive(entry.row, holder)) throw new TaskSyncError("pen_required", "pen_required");
-        entry.events.push(e);
         seq++;
       }
+      if (isNewRow) rows.set(id, entry);
+      entry.events.push(...events);
       entry.row.last_seq = seq - 1;
       entry.row.updated_at = new Date(++now.t).toISOString();
       return seq - 1;
@@ -202,18 +205,90 @@ describe("taskSessionSync：推（#1223）", () => {
     expect(h.cloud.rows.get("s1")!.events.map((e) => e.seq)).toEqual([0, 1, 2]);
     expect(h.fileRef().sessions["s1"]).toEqual({ pushedUpTo: 2 });
   });
-  it("append 报 forbidden（RPC 判定这批不可重试）：detached + 状态 error，且不再对这条会话重试", async () => {
+  it("append 报 forbidden（RPC 判定这批不可重试）：frozen 终态 + 状态 error，之后再写也不重试", async () => {
     // controller ruling（Task 7 复审带入 Task 10）：forbidden（P0012）是终态，不进 30s 重试循环——
-    // 一条超限/畸形事件不该把这条会话的推送队列卡死；detached 只挡这一条会话，其余照常同步
+    // 一条超限/畸形事件不该把这条会话的推送队列卡死，其余会话照常同步。
+    // 记号必须是 frozen 不能是 detached：后者会被下一条 touched 清掉（那是「重新建行」的信号），
+    // 于是每写一条就整份重推一遍再被拒一次——一条超限事件变成每条事件一次全量往返
     const h = harness();
     h.store.append(created("s1"));
+    await h.sync.flushNow(); // 先把行建上：要测的是「行已经在了、后续那一批被拒」
     h.cloud.failAppendOnce("s1", "forbidden", "bad_request: event too large");
+    h.store.append({ sessionId: "s1", ts: 2, type: "user_message", content: "超长" });
     await h.sync.flushNow();
-    expect(h.fileRef().sessions["s1"]).toMatchObject({ detached: true });
+    expect(h.fileRef().sessions["s1"]).toMatchObject({ frozen: "forbidden" });
+    expect(h.fileRef().sessions["s1"]!.detached).toBeUndefined();
     expect(h.sync.state().kind).toBe("error");
-    const before = h.cloud.calls.filter((c) => c.startsWith("append")).length;
+    const before = h.cloud.calls.filter((c) => c.startsWith("append s1")).length;
+    h.store.append({ sessionId: "s1", ts: 3, type: "user_message", content: "再说一句" });
     await h.sync.flushNow();
-    expect(h.cloud.calls.filter((c) => c.startsWith("append")).length).toBe(before);
+    expect(h.cloud.calls.filter((c) => c.startsWith("append s1")).length).toBe(before);
+    expect(h.sync.state().kind).toBe("error");
+  });
+  it("一条会话推挂了不甩下同一批里剩下的：两条都留在脏集合，回网一起推出去", async () => {
+    // 脏集合一进循环就 clear 了；挂在第一条上时只把它放回去，后面那些连一次尝试都没有就没了——
+    // 离线时同一批全军覆没，而它们要等到各自的下一条本地事件才会被想起来
+    const h = harness();
+    h.store.append(created("s1"));
+    h.store.append(created("s2"));
+    h.cloud.setOffline(true);
+    await h.sync.flushNow();
+    expect(h.cloud.rows.size).toBe(0);
+    expect(h.sync.state().kind).toBe("error");
+    h.cloud.setOffline(false);
+    await h.sync.flushNow();
+    expect(h.cloud.rows.has("s1")).toBe(true);
+    expect(h.cloud.rows.has("s2")).toBe(true);
+  });
+  it("封顶三轮之后还有脏的：安排一次重试（不等下一条本地事件 / realtime）", async () => {
+    vi.useFakeTimers();
+    try {
+      const h = harness();
+      h.store.append(created("s1"));
+      await h.sync.flushNow();
+      await h.sync.releasePen("s1");
+      await h.cloud.api.acquirePen("s1", "cloud", 30);
+      h.store.append({ sessionId: "s1", ts: 2, type: "assistant_message", content: "a", model: "m" });
+      await h.sync.flushNow(); // 笔被占：三轮都推不出去，留在脏集合（没有抛错，所以 fail() 不会安排重试）
+      expect(h.cloud.rows.get("s1")!.events).toHaveLength(1);
+      await vi.advanceTimersByTimeAsync(1000); // 先烧掉 debounce 那一发（笔还被占）
+      expect(h.cloud.rows.get("s1")!.events).toHaveLength(1);
+      await h.cloud.api.releasePen("s1", "cloud");
+      await vi.advanceTimersByTimeAsync(1_000_001); // retryMs
+      expect(h.cloud.rows.get("s1")!.events).toHaveLength(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("建行那一批 RPC 发下来的笔也要起续期定时器", async () => {
+    // 只记 granted 的话 holdsPen 永远说「握着」，而云端那支 30 s 就过期了：
+    // 一条长 turn 写到一半，下一条 executor 事件撞 pen_required，而那支笔可能已经被别人拿走
+    vi.useFakeTimers();
+    try {
+      const h = harness();
+      h.store.append(created("s1"));
+      await h.sync.flushNow();
+      expect(h.sync.holdsPen("s1")).toBe(true);
+      const before = h.cloud.rows.get("s1")!.row.pen_until;
+      await vi.advanceTimersByTimeAsync(PEN_RENEW_MS + 1);
+      expect(h.cloud.rows.get("s1")!.row.pen_until).not.toBe(before);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+  it("backfill 补陈旧游标：条目在、没冻结，但本地日志比游标长（上次没推完就退了）", async () => {
+    const h = harness();
+    h.store.append(created("s1"));
+    h.store.append({ sessionId: "s1", ts: 2, type: "user_message", content: "第二条" });
+    await h.sync.flushNow();
+    // 把云端与游标都退回「只推了第 0 条」那一刻：脏集合此时是空的（上一轮推完清掉了），
+    // 光靠 touched 再也回不来——只有 backfill 能救它
+    h.fileRef().sessions["s1"]!.pushedUpTo = 0;
+    h.cloud.rows.get("s1")!.events.length = 1;
+    h.cloud.rows.get("s1")!.row.last_seq = 0;
+    h.sync.backfill();
+    await h.sync.flushNow();
+    expect(h.cloud.rows.get("s1")!.events.map((e) => e.seq)).toEqual([0, 1]);
   });
   it("附件先传后推；本机没有那份字节时引用照推", async () => {
     const h = harness();
@@ -265,6 +340,61 @@ describe("taskSessionSync：拉", () => {
     h.cloud.blobs.set(hex, new Uint8Array([7, 7]));
     await h.sync.pullNow();
     expect([...h.attachments.values()]).toEqual([new Uint8Array([7, 7])]);
+  });
+  it("云端那份含这个版本不认识的事件类型：落到那条为止 + frozen needs_upgrade；backfill 再给一次机会", async () => {
+    // 另一台设备是新版本，写了这个版本的 persistencePolicy 没表过态的类型——store.append 对它抛
+    // 裸 Error。不接住的话这一页整个 reject，而前面几条已经落盘了：本地既停不住也说不出为什么
+    const h = harness();
+    await h.cloud.api.append("s9", 0, "desktop:B", [
+      { seq: 0, ...created("s9") } as SessionEvent,
+      { seq: 1, sessionId: "s9", ts: 2, type: "user_message", content: "认得这条" },
+      { seq: 2, sessionId: "s9", ts: 3, type: "from_the_future", payload: 1 } as unknown as SessionEvent,
+      { seq: 3, sessionId: "s9", ts: 4, type: "user_message", content: "这条落不下来" },
+    ]);
+    await h.sync.pullNow();
+    expect(h.store.load("s9").map((e) => e.seq)).toEqual([0, 1]); // 前缀留住了
+    expect(h.fileRef().sessions["s9"]).toMatchObject({ pushedUpTo: 1, frozen: "needs_upgrade" });
+    expect(h.sync.state().kind).toBe("error");
+    // 冻着的时候再 sweep 一次也不动它（否则每 60 s 白跑一遍还把状态刷成 idle）
+    await h.sync.pullNow();
+    expect(h.store.load("s9").map((e) => e.seq)).toEqual([0, 1]);
+    // 换个版本重开 app：needs_upgrade 是唯一会解冻的原因
+    h.sync.backfill();
+    expect(h.fileRef().sessions["s9"]!.frozen).toBeUndefined();
+  });
+});
+
+describe("taskSessionSync：冲突", () => {
+  it("这条会话派过子智能体：分歧时冻结、绝不 purge（purge 会级联删掉子会话的日志）", async () => {
+    // store.purge 按 session_created.spawnedBy 级联删子会话（ADR-0047），而子会话从来不上云——
+    // 云端那份里没有它们。离线跑过一轮派活的 turn，一撞冲突就把子日志静默抹了
+    const h = harness();
+    h.store.append(created("s1"));
+    await h.sync.flushNow();
+    h.store.append(created("s1c", { spawnedBy: { sessionId: "s1", toolCallId: "t1", agent: "researcher" } }));
+    h.store.append({ sessionId: "s1c", ts: 2, type: "user_message", content: "子会话干的活" });
+    // 云端与本机在 seq 1 上各写了一条：真分歧
+    await h.cloud.api.append("s1", 1, "desktop:A", [{ seq: 1, sessionId: "s1", ts: 5, type: "user_message", content: "云端那条" }]);
+    h.store.append({ sessionId: "s1", ts: 6, type: "assistant_message", content: "本机那条", model: "m" });
+    await h.sync.flushNow();
+    expect(h.fileRef().sessions["s1"]).toMatchObject({ frozen: "has_children_conflict" });
+    expect(h.sync.state().kind).toBe("error");
+    expect(h.store.load("s1c")).toHaveLength(2); // 子会话的日志一条没少
+    expect(h.store.load("s1").map((e) => e.seq)).toEqual([0, 1]); // 本机那条也还在
+    expect(h.replaced).toEqual([]);
+  });
+  it("云端那份含不认识的事件类型：先验再换——不 purge，本地那份原样留着", async () => {
+    // replaceWithCloud 不是原子的：purge 先把本地抹了，再一条条灌云端那份。中间撞上这个版本
+    // 读不懂的类型时 store.append 抛，于是本地留下一截半截日志——比停止同步坏得多
+    const h = harness();
+    h.store.append(created("s1"));
+    await h.sync.flushNow();
+    await h.cloud.api.append("s1", 1, "desktop:A", [{ seq: 1, sessionId: "s1", ts: 5, type: "from_the_future", payload: 1 } as unknown as SessionEvent]);
+    h.store.append({ sessionId: "s1", ts: 6, type: "assistant_message", content: "本机那条", model: "m" });
+    await h.sync.flushNow();
+    expect(h.fileRef().sessions["s1"]).toMatchObject({ frozen: "needs_upgrade" });
+    expect(h.store.load("s1").map((e) => e.type)).toEqual(["session_created", "assistant_message"]);
+    expect(h.replaced).toEqual([]);
   });
 });
 
