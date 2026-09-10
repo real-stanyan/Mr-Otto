@@ -4139,6 +4139,9 @@ void app.whenReady().then(() => {
     // 收口结局留给 finally 之外的那次排空用（#1223 复审 round 2）：null = 压根没起 turn
     // （held 只落人话 / 准入路上抛错）
     let outcome: "completed" | "aborted" | null = null;
+    // held 分支从不起 turn，outcome 会一直是 null——但它照样把回注的后台文本记成了
+    // 一条人话，排空判据要另外看这一位（#1223 复审 round 3）
+    let heldLogged = false;
     try {
       // 笔（#1223，spec §3.6 turn 准入）：任务会话先问云端此刻谁在跑。拿到 / 离线 / 不是任务会话都
       // 往下走；被别人握着 → 只落人话，不起本地 turn，等笔空了由 answerLogged 接着答
@@ -4160,6 +4163,7 @@ void app.whenReady().then(() => {
         const opening = agent.engine.logUserMessage(text, refs, textFiles, background);
         send(CHANNELS.event, opening);
         setWaiting(sessionId, pen.holderKind === "cloud" ? "cloud" : "desktop");
+        heldLogged = true;
         return;
       }
       if (pen.kind === "offline") taskSync.markOfflineRun(sessionId);
@@ -4235,8 +4239,12 @@ void app.whenReady().then(() => {
       admitting.delete(sessionId);
     }
     // 排在 finally 之后（#1223 复审 round 2）：drainPendingBg 递归调回这个函数，
-    // admitting 还占着的话那一次必撞函数开头的守卫、而 pendingBg 已经删了
-    if (outcome === "completed") drainPendingBg(sessionId);
+    // admitting 还占着的话那一次必撞函数开头的守卫、而 pendingBg 已经删了。
+    // heldLogged 一并算数（#1223 复审 round 3）：准入窗口里到的后台完成落进了 pendingBg
+    // （见 handleBackgroundDone 那道改宽的守卫），而递归调用这次多半又落进 held 分支——
+    // 纯文本、人话免笔、技能/图片拒收那道闸碰不到（回注文本本来就是纯文本）——结果进了
+    // 日志的 user_message{origin:"background"}，不会被「还在跑」那道守卫静默吞掉
+    if (outcome === "completed" || heldLogged) drainPendingBg(sessionId);
   }
 
   /** turn 的躯干（#1223 从 handleSendMessage 里拆出来）：工作区锁、runningSessions、状态推送、
@@ -4379,8 +4387,7 @@ void app.whenReady().then(() => {
         setWaiting(sessionId, null);
         return;
       }
-      // offline = 网络错、不是被别人占着（同 handleSendMessage）：照跑，但记一笔——
-      // 回网后 pushSession 那条路要认得出这条会话是在没笔的情况下跑过的（#1223 复审 round 2）
+      // 离线也记一笔 offlineRun（只是诊断标记，同 handleSendMessage）
       if (pen.kind === "offline") taskSync.markOfflineRun(sessionId);
       setWaiting(sessionId, null);
       outcome = await driveTurn(sessionId, agent, {
@@ -4451,7 +4458,10 @@ void app.whenReady().then(() => {
     send(CHANNELS.event, full);
     if (c.claimed) return;
     const text = formatCompletion(c);
-    if (runningSessions.has(sessionId)) {
+    // 准入中也算在跑——那个窗口里直接 handleSendMessage 会撞自己的守卫（#1223 复审 round 3）：
+    // admitting 还没到 runningSessions.add 那一步，appendBackground 因 currentTurnId 还是
+    // null 而回 false，落进下面的 pendingBg，等这一轮真起跑或收口时再排
+    if (runningSessions.has(sessionId) || admitting.has(sessionId)) {
       if (agent.engine.appendBackground(text, [c.id])) return;
       const queued = pendingBg.get(sessionId) ?? [];
       queued.push({ taskId: c.id, text });
