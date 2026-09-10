@@ -1712,7 +1712,10 @@ function AppSidebar() {
   useEffect(() => {
     if (tabDecided.current || !builtin || sessions.length === 0) return;
     tabDecided.current = true;
-    if (sessions.some((s) => !s.archived && s.workspace !== null && !isTaskSummary(s, builtin))) {
+    // 「有没有项目会话」= 有没有顶层的、非任务的会话。`spawnedFrom === null` 这一条是换判据时
+    // 补的（#1223 终审 I3）：isTaskSummary 对子会话一律回 false（它们跑在父会话的 workspace 里），
+    // 不排掉的话一个只用任务栏的用户，只要派过一次活，开 app 就落在「项目」栏
+    if (sessions.some((s) => !s.archived && s.spawnedFrom === null && s.workspace !== null && !isTaskSummary(s, builtin))) {
       setTab("projects");
     }
   }, [sessions, builtin, setTab]);
