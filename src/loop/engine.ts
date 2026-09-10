@@ -592,7 +592,9 @@ export class LoopEngine {
 
   /** 中断当前 turn（ADR-0006）。幂等：没 turn 在跑 / 重复按都是无操作。
       效果 = 信号翻转，三个可能卡住的位置各自醒来：
-      fetch/SSE 抛 AbortError、审批 resolve 成 denied、bash 子进程收 SIGTERM */
+      fetch/SSE 抛 AbortError、审批 resolve 成 denied、bash 子进程收 SIGTERM。
+      `reason` 决定 turn_ended 的 outcome：默认 `aborted` = 人按了停止（这条人话算答过了）；
+      `interrupted` = 不是人按的（合盖睡眠、笔被别人拿走，#1223），那条人话按「没答」处理 */
   abortTurn(reason: "aborted" | "interrupted" = "aborted"): void {
     this.abortReason = reason;
     this.turnAbort?.abort();

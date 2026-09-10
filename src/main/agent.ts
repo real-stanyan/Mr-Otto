@@ -481,8 +481,10 @@ export function createAgent(opts: {
     }
     // 崩溃合成收口（issue #383，dsh 对照：恢复不截断，用合成事件关掉开着的 turn）。
     // 判据：最后一条 turn_ended 之后还有 turn 活动（消息/工具事件）= 上一进程在
-    // turn 进行中退出，收口没落盘。补 outcome:"interrupted"——loop 永不产生这个值，
-    // "修的"和"跑出来的"永远可区分。幂等：补过之后活动不再晚于 turn_ended。
+    // turn 进行中退出，收口没落盘。补 outcome:"interrupted"——这个值 loop 现在也会写
+    // （abortTurn("interrupted")：合盖睡眠 / 笔被别人拿走，#1223），所以"修的"和
+    // "跑出来的"不再单凭 outcome 区分；两边说的是同一件事——这条人话没人答完。
+    // 幂等：补过之后活动不再晚于 turn_ended。
     // 副产品：崩溃在模型开口前的空跑 turn（user_message → 无产出 → 崩），
     // barrenTurns 对非 completed 的既有语义从此把它正确跳出上下文——
     // 此前它"判不出来→留着"，用户每次崩溃重试都在上下文里多囤一句同样的话

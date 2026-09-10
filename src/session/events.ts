@@ -420,11 +420,12 @@ export interface ToolExecutionStartedEvent extends SessionEventBase {
     错误照旧向上抛：落盘是补记事实，不是吞错。模型不消费。
     aborted（ADR-0006）= 用户主动停止，不是错误：不向上抛，UI 不当故障渲染。
     union 加宽向后兼容——投影本来就丢弃 turn_ended，旧日志照常重放。
-    interrupted（issue #383，dsh 崩溃恢复对照）= resume 时发现的合成收口：
-    上一进程在 turn 进行中退出，日志里有活动无 turn_ended。**loop 永不产生
-    这个值**——它是"修复补的"和"loop 落的"永远可区分的凭据。修复 = 追加，
-    不截断不改写；barrenTurns 对非 completed 的既有语义顺带把崩溃空跑 turn
-    从上下文里正确跳掉 */
+    interrupted（issue #383，dsh 崩溃恢复对照）= 这个 turn 没被答完：resume 时发现
+    上一进程在 turn 进行中退出（日志里有活动无 turn_ended）会补一条，**loop 现在也会
+    落它**——`abortTurn("interrupted")` 的那两条路（合盖睡眠、笔被别人拿走，#1223）都是
+    「不是人按的停止」，所以尾巴按「这条人话没人答」处理（lastUnanswered）。也就是说
+    「修复补的」和「loop 落的」不再单凭 outcome 区分（修复那条仍然 = 追加，不截断不改写）；
+    barrenTurns 对非 completed 的既有语义顺带把崩溃空跑 turn 从上下文里正确跳掉 */
 export interface TurnEndedEvent extends SessionEventBase {
   type: "turn_ended";
   outcome: "completed" | "error" | "aborted" | "interrupted";
