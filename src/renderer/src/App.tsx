@@ -3706,7 +3706,7 @@ export function App() {
   // 会话目录 = 事件投影，不是 UI 状态（同 TodoPanel 的路子）
   const sections = useMemo(() => deriveSections(events), [events]);
   const [activeSection, setActiveSection] = useState<number | null>(null);
-  // 分区跳转的慢路径请求与窗口变化计数(ADR-0284 决定 3,都喂给 OttoThread):
+  // 分区跳转的慢路径请求与窗口变化计数(ADR-0285 决定 3,都喂给 OttoThread):
   // revealRequest = 「目标锚点还在窗口外,先把窗口抬上去再滚」;
   // windowNonce = 窗口上沿动过的次数,scrollspy effect 靠它重新收集锚点
   const [revealRequest, setRevealRequest] = useState<{ section: number; nonce: number } | null>(null);
@@ -3729,7 +3729,7 @@ export function App() {
   // 当前分区：IntersectionObserver 只当"位置变了"的廉价触发器，
   // 真判定靠回调里一次性读那几个锚点的 rect（锚点数就是分区数，个位数，读得起）。
   // 不挂 scroll 事件逐帧读 rect —— 那是每帧一次强制重排。
-  // 依赖里的 windowNonce:时间线窗口(ADR-0284)补挂会把新锚点挂进 DOM,
+  // 依赖里的 windowNonce:时间线窗口(ADR-0285)补挂会把新锚点挂进 DOM,
   // 不重跑这个 effect 的话,新锚点不在 IO 的观察名单里、recompute 读的
   // 也是旧名单 —— 补挂出来的那段分区永远不会高亮
   useEffect(() => {
@@ -3747,7 +3747,7 @@ export function App() {
           active = Number(a.dataset["section"]);
         }
       }
-      // 时间线窗口(ADR-0284)的兜底:窗口上方的锚点没挂载。一个都没过线时,
+      // 时间线窗口(ADR-0285)的兜底:窗口上方的锚点没挂载。一个都没过线时,
       // 视口停在第一个**已挂载**锚点之前 —— 分区是连续划分的,锚点之前那段
       // 内容属于它前一个分区。first === 0 说明锚点全挂着,维持 null(与窗口化
       // 之前的"还没进任何分区"同义)
@@ -3776,7 +3776,7 @@ export function App() {
       return;
     }
     // 慢路径:锚点在时间线窗口外,还没挂载 —— 让 OttoThread 先把窗口抬到
-    // 包含它(reveal 桥,ADR-0284 决定 3),挂载完成由它接手滚动并收口
+    // 包含它(reveal 桥,ADR-0285 决定 3),挂载完成由它接手滚动并收口
     setRevealRequest((r) => ({ section: index, nonce: (r?.nonce ?? 0) + 1 }));
   }, []);
 

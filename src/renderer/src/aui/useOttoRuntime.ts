@@ -24,7 +24,7 @@ export function useOttoRuntime() {
   const retry = retryLatest;
 
   // memo 在真正的输入上:events/live 不变就不用重问投影;变了则由
-  // toThreadMessages 的身份保持(ADR-0284:前缀复用 + turn 边界续投)把代价
+  // toThreadMessages 的身份保持(ADR-0285:前缀复用 + turn 边界续投)把代价
   // 压到追加段。retry 是模块常量,不进依赖
   const adapter = useMemo(
     () => buildOttoAdapter({ events, live, isRunning: status === "running", send, cancel, retry }),

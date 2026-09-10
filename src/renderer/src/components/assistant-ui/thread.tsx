@@ -125,7 +125,7 @@ export type ThreadProps = {
       DOM、也不用退回 data-slot 查询。上游没有暴露这个 prop —— 升级时留意 Viewport 是否
       仍然转发 ref */
   viewportRef?: Ref<HTMLDivElement> | undefined;
-  /** 本仓加的:时间线窗口(ADR-0284 决定 2,#1190)——只挂载消息列表的后缀,
+  /** 本仓加的:时间线窗口(ADR-0285 决定 2,#1190)——只挂载消息列表的后缀,
       前面 hiddenCount 条不渲染(不付它们的 markdown 解析钱)。窗口状态由
       OttoThread 持有,这里只执行。缺省 0 = 全量挂载(行为与上游逐字相同) */
   hiddenCount?: number | undefined;
@@ -255,7 +255,7 @@ const ThreadRoot: FC<{
             className="mb-14 flex flex-col gap-y-6 empty:hidden [&>[data-role=assistant]+[data-role=assistant]]:-mt-3"
           >
             {/* 本仓改动:上游是 <ThreadPrimitive.Messages> 按 index 全量挂载。
-                换成按 id 的后缀窗口(ADR-0284 决定 2):首渲只付窗口内消息的解析钱,
+                换成按 id 的后缀窗口(ADR-0285 决定 2):首渲只付窗口内消息的解析钱,
                 早的消息由哨兵按需补挂。hiddenCount = 0 时与上游逐字相同 */}
             <WindowedMessages hiddenCount={hiddenCount} onGrowWindow={onGrowWindow} />
           </div>
@@ -318,7 +318,7 @@ const ThreadMessage: FC = () => {
   return <>{anchor}<AssistantMessageComponent /></>;
 };
 
-// ─── 本仓改动:时间线窗口(ADR-0284 决定 2,#1190)───
+// ─── 本仓改动:时间线窗口(ADR-0285 决定 2,#1190)───
 //
 // 上游的 ThreadPrimitive.Messages 按 index 作 key 全量挂载,长会话首渲要为
 // 几百条历史消息各付一遍 Streamdown 解析。这里换成:unstable_useThreadMessageIds

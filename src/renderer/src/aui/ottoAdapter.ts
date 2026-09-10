@@ -30,7 +30,7 @@ function textOf(content: readonly { type: string; text?: string }[]): string {
     assistant-ui 的运行时（external-store-thread-runtime-core）发现
     `oldStore.convertMessage !== store.convertMessage` 就把 ThreadMessageConverter
     （按消息对象身份缓存的 WeakMap）整个丢掉重建 —— 内联箭头每次 buildOttoAdapter
-    都是新引用,toThreadMessages 的身份保持（ADR-0284）会在这里被整个作废 */
+    都是新引用,toThreadMessages 的身份保持（ADR-0285）会在这里被整个作废 */
 const identityConvert = (m: ThreadMessageLike) => m;
 
 export function buildOttoAdapter(input: OttoAdapterInput): ExternalStoreAdapter<ThreadMessageLike> {

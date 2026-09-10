@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 //
-// 时间线窗口的渲染缝(ADR-0284 决定 2,#1190):hiddenCount 不是纯逻辑层的一个数,
+// 时间线窗口的渲染缝(ADR-0285 决定 2,#1190):hiddenCount 不是纯逻辑层的一个数,
 // 它要真的穿过 Thread → ThreadRoot → WindowedMessages → assistant-ui 的
 // unstable_useThreadMessageIds / Unstable_MessageById 这条链,DOM 里少挂载才算数。
 // jsdom 没有 IntersectionObserver —— 正好走「哨兵退化成按钮」那条路。
@@ -64,7 +64,7 @@ function Harness({
 
 const mountedRows = (): number => document.querySelectorAll('[data-role="user"]').length;
 
-describe("Thread 的时间线窗口缝(ADR-0284)", () => {
+describe("Thread 的时间线窗口缝(ADR-0285)", () => {
   it("hiddenCount > 0 时只挂载后缀,哨兵画出剩余条数", () => {
     render(<Harness hiddenCount={40} onGrowWindow={() => {}} />);
     expect(mountedRows()).toBe(60);

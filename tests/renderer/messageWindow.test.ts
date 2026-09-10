@@ -9,7 +9,7 @@ import {
   windowIds,
 } from "../../src/renderer/src/lib/messageWindow.js";
 
-describe("messageWindow — 时间线窗口(ADR-0284)", () => {
+describe("messageWindow — 时间线窗口(ADR-0285)", () => {
   it("小列表不启用窗口:总数 ≤ INITIAL_WINDOW + 余量时一条都不藏", () => {
     expect(initialHidden(0)).toBe(0);
     expect(initialHidden(INITIAL_WINDOW)).toBe(0);

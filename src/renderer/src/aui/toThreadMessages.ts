@@ -164,7 +164,7 @@ function toAuditMessage(e: SessionEvent): ThreadMessageLike {
   };
 }
 
-// ─── 身份保持(ADR-0284,#1190)───
+// ─── 身份保持(ADR-0285,#1190)───
 //
 // 事件日志 append-only(硬规则):两次调用之间 events 要么原样、要么尾部追加、
 // 要么整份换掉(切会话/resume)。于是:

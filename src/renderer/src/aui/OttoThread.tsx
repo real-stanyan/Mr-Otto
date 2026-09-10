@@ -952,7 +952,7 @@ export function OttoThread({
   /** deriveSections(events) 的结果,App.tsx 那边已经算过一份(SectionRail 也要用),
       传进来避免在这再扫一遍事件日志算同样的东西 */
   sections: Section[];
-  /** 分区跳转的慢路径(ADR-0284 决定 3):目标锚点在时间线窗口外没挂载时,
+  /** 分区跳转的慢路径(ADR-0285 决定 3):目标锚点在时间线窗口外没挂载时,
       App 把分区号递过来,这里把窗口抬到包含它,再接手滚过去。
       nonce 让「连点同一个分区」也能再触发一次 */
   revealRequest?: { section: number; nonce: number } | null | undefined;
@@ -966,14 +966,14 @@ export function OttoThread({
   const sessionId = useChat((s) => s.sessionId);
   const skills = useChat((s) => s.skills);
   // 消息 id 顺序算一次,三个消费方共用:锚点表、时间线窗口、reveal 桥。
-  // toThreadMessages 有身份保持(ADR-0284 决定 4),同一份 events 的第二次调用
+  // toThreadMessages 有身份保持(ADR-0285 决定 4),同一份 events 的第二次调用
   // 近似零成本,所以这里不再需要「为拿 id 顺序而躲投影」
   const messageIds = useMemo(() => toThreadMessages(events).map((m) => m.id ?? ""), [events]);
   const anchorsByMessageId = useMemo(
     () => buildSectionAnchors(messageIds, sections),
     [messageIds, sections]
   );
-  // 时间线窗口(ADR-0284 决定 2):只挂载消息列表的后缀。窗口只增不缩 ——
+  // 时间线窗口(ADR-0285 决定 2):只挂载消息列表的后缀。窗口只增不缩 ——
   // 滚下来不把上面卸掉,卸载重挂会把已付过的解析钱再付一遍,还会让
   // scrollHeight 往回跳、抢走人正在读的位置
   const [hiddenCount, setHiddenCount] = useState(() => initialHidden(messageIds.length));

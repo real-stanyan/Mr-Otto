@@ -629,7 +629,7 @@ describe("同一 turn 的多个 assistant_message 合并成一条 UI 消息", ()
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// 身份保持（ADR-0284 决定 4，#1190）：append-only 前缀复用。
+// 身份保持（ADR-0285 决定 4，#1190）：append-only 前缀复用。
 // 断言分两层，各管一件事：
 //   toBe    = 对象身份。assistant-ui 的 ThreadMessageConverter 按输入身份(WeakMap)
 //             命中缓存，前缀引用不变 = 那几百条消息的转换整个跳过；
@@ -638,7 +638,7 @@ describe("同一 turn 的多个 assistant_message 合并成一条 UI 消息", ()
 //             → 走全量),不靠导出内部状态。
 // 注意顺序:同一 `it` 里,身份断言要写在全量对拍之前 —— 对拍那一下会把模块缓存
 // 换成克隆体。
-describe("toThreadMessages —— 身份保持(ADR-0284)", () => {
+describe("toThreadMessages —— 身份保持(ADR-0285)", () => {
   it("尾部追加后,已收口 turn 的前缀消息复用原对象引用", () => {
     const base = [
       ev({ type: "user_message", content: "一" }, 0),
