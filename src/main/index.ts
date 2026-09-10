@@ -236,7 +236,7 @@ import { applyMotionPref, type MotionOverrideHost } from "./motionOverride.js";
 import { createTaskSessionSync } from "./taskSessionSync.js";
 import { createSupabaseTaskSessionsApi } from "./supabaseTaskSessionsApi.js";
 import { loadTaskSyncFile, saveTaskSyncFile } from "./taskSyncStore.js";
-import { holderId, lastUnanswered } from "../shared/taskSync.js";
+import { executorChangeFor, holderId, lastUnanswered } from "../shared/taskSync.js";
 
 // mrotto:// 深链：注册 + open-url 监听必须在 app ready 前完成——macOS 冷启动时
 // 深链事件可能在 ready 之前就到达。AccountManager 要等 ready 后（依赖 app.getPath）
@@ -761,6 +761,10 @@ void app.whenReady().then(() => {
   /** 合盖时被 interrupted 收口的会话（#1223 复审）：醒来在本机接着答，不必等别的设备再发一条。
       笔由 answerLogged 里的 acquirePen 仲裁——睡着那会儿云端接手了的话，这边只会拿到 held */
   const interruptedBySuspend = new Set<string>();
+  /** 恢复时发现日志里那个任务文件夹本机没有、于是新建了一个的会话（#1223 终审 I1）：下一条
+      executor_changed 带 freshWorkspace，投影据此说「此前的文件不在这台机器上」。落一次就删——
+      这句话回答的是「接手那一刻」，不是这台机器的长期属性 */
+  const freshWorkspaces = new Set<string>();
   /** 工作区互斥的跨进程那一半（issue #634，ADR-0155）。落点是机器级临时目录——
       两个 app 实例看得见同一份，用户的工作区一个字节都不动 */
   const workspaceLock = createWorkspaceLock({ appName: app.getName() });
@@ -2794,6 +2798,12 @@ void app.whenReady().then(() => {
     if (loggedWorkspace === null) {
       throw new Error(`会话 ${sessionId} 没有记录工程文件夹，无法恢复`);
     }
+    // 这台机器给它新建了任务文件夹（#1223 终审 I1）：日志里记着的那个路径本机没有（另一台 Mac 的
+    // 绝对路径 / 本机 Default 根不同），resolveResumeWorkspace 于是按 sessionId 派生了一个新的。
+    // **first.workspace 缺席不算**——云端建的会话日志里压根没有路径，它没有「此前的文件」可言
+    if (first.workspace !== undefined && first.workspace !== "" && loggedWorkspace !== first.workspace) {
+      freshWorkspaces.add(sessionId);
+    }
     // C1 的第二道门：本次运行派出去的子会话，从 register 那一刻起就在 agents 里，
     // 走不到这里；走到这里说明登记那一环漏了。绝不能顺手再建一个 agent 顶上——
     // 第二个 agent 的崩溃修复会给还在飞的工具调用补一条"app 在执行中退出"的假结果，
@@ -4296,17 +4306,24 @@ void app.whenReady().then(() => {
     // TS 安心；真正的取值只有 runTurn 的返回
     let outcome: "completed" | "aborted" = "aborted";
     try {
-      // 换执行器（#1223，spec §3.4）：握着笔、且日志里最后一条 executor_changed 不是「这台桌面」
-      // 才落。一条都没有 = 一直是桌面（存量日志），不落——旧日志逐字节不变。
+      // 换执行器（#1223，spec §3.4）：握着笔时问一次纯函数「这一轮要不要落、带不带 fresh」
+      // （判据在 src/shared/taskSync.ts 的 executorChangeFor，进得了单测）。一条都没有 + 文件夹
+      // 是接着用的 = 一直是这台桌面（存量日志），不落——旧日志逐字节不变。
       // 排在 try 里面（#1223 复审）：store.append 抛错时，笔要走下面 catch 的放笔、
       // runningSessions 要走 finally 的清理——摆在 try 之前的话两样都漏
       if (taskSync.holdsPen(sessionId)) {
-        const last = store.lastOfType(sessionId, "executor_changed") as ExecutorChangedEvent | null;
-        if (last !== null && (last.executor !== "desktop" || last.label !== hostname())) {
+        const change = executorChangeFor({
+          last: store.lastOfType(sessionId, "executor_changed") as ExecutorChangedEvent | null,
+          hostname: hostname(),
+          fresh: freshWorkspaces.has(sessionId),
+        });
+        if (change !== null) {
           const ex = store.append({
             sessionId, ts: Date.now(), type: "executor_changed",
-            executor: "desktop", label: hostname(), ignorable: true,
+            executor: "desktop", label: change.label, ignorable: true,
+            ...(change.freshWorkspace === true ? { freshWorkspace: true as const } : {}),
           });
+          freshWorkspaces.delete(sessionId); // 只标一次：这句话说的是接手那一刻
           send(CHANNELS.event, ex);
         }
       }

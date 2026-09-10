@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { KNOWN_EVENT_TYPES, type SessionEvent } from "../../src/session/events.js";
+import { KNOWN_EVENT_TYPES, type ExecutorChangedEvent, type SessionEvent } from "../../src/session/events.js";
 import {
-  attachmentRefsOf, currentExecutor, divergence, executorOfLog, HUMAN_EVENT_TYPES, holderId, holderKindOf,
-  isTaskSessionCreated, lastUnanswered, PEN_VERDICTS, sameEvent, sliceBatches, TASK_EVENT_MAX_BYTES,
+  attachmentRefsOf, currentExecutor, divergence, executorChangeFor, executorOfLog, HUMAN_EVENT_TYPES, holderId,
+  holderKindOf, isTaskSessionCreated, lastUnanswered, PEN_VERDICTS, sameEvent, sliceBatches, TASK_EVENT_MAX_BYTES,
 } from "../../src/shared/taskSync.js";
 
 let seq = 0;
@@ -116,5 +116,26 @@ describe("sliceBatches / attachmentRefsOf / isTaskSessionCreated", () => {
     expect(isTaskSessionCreated(ev({ type: "session_created", workspaceKind: "default", spawnedBy: { sessionId: "p", toolCallId: "c", agent: "a" } }))).toBe(false);
     expect(isTaskSessionCreated(ev({ type: "session_created", workspace: "/repo" }))).toBe(false);
     expect(isTaskSessionCreated(undefined)).toBe(false);
+  });
+});
+
+describe("executorChangeFor（#1223 终审 I1）", () => {
+  const last = (executor: "desktop" | "cloud", label?: string): ExecutorChangedEvent =>
+    ({ seq: 5, sessionId: "s", ts: 1, type: "executor_changed", executor, ignorable: true, ...(label ? { label } : {}) });
+  it("一条都没有 + 刚新建了任务文件夹：落，且带 freshWorkspace", () => {
+    // Mac B 第一次接手 Mac A 的会话就长这样：旧判据（last !== null）永远落不下第一条
+    expect(executorChangeFor({ last: null, hostname: "B", fresh: true })).toEqual({ label: "B", freshWorkspace: true });
+  });
+  it("一条都没有 + 文件夹是接着用的：不落（存量日志逐字节不变）", () => {
+    expect(executorChangeFor({ last: null, hostname: "A", fresh: false })).toBeNull();
+  });
+  it("上一条是云端：落，不带 fresh", () => {
+    expect(executorChangeFor({ last: last("cloud"), hostname: "A", fresh: false })).toEqual({ label: "A" });
+  });
+  it("上一条是同一台桌面：不落", () => {
+    expect(executorChangeFor({ last: last("desktop", "A"), hostname: "A", fresh: false })).toBeNull();
+  });
+  it("上一条是另一台桌面：落", () => {
+    expect(executorChangeFor({ last: last("desktop", "A"), hostname: "B", fresh: false })).toEqual({ label: "B" });
   });
 });

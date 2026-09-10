@@ -632,6 +632,11 @@ export interface ExecutorChangedEvent extends SessionEventBase {
   type: "executor_changed";
   executor: "desktop" | "cloud";
   label?: string;
+  /** 这台机器在恢复会话时发现日志里记的任务文件夹路径本机不存在（或本机 Default 根不同），
+      于是新建了一个——**此前的文件不在这里**（#1223 终审 I1）。投影据此说那句「这是另一台
+      电脑…」，不必等日志里先有一条别的 `executor_changed` 才说得出口：Mac B 第一次接手
+      Mac A 的会话时，日志里一条都还没有。缺席 = 文件夹是接着用的（旧日志逐字节不变） */
+  freshWorkspace?: true;
   ignorable: true;
 }
 

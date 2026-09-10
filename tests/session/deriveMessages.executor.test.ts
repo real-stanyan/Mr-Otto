@@ -33,6 +33,18 @@ describe("system 尾部的执行器块（#1223）", () => {
     const same = systemOf([created, ex(1, "desktop", "A"), ex(2, "cloud"), ex(3, "desktop", "A"), user]);
     expect(same).not.toContain("这是另一台电脑");
   });
+  it("第一条 executor_changed 带 freshWorkspace：不必等日志里先有一条别的（终审 I1）", () => {
+    // Mac B 第一次接手 Mac A 的会话：日志里一条 executor_changed 都还没有，label 比对那半
+    // （要有前一条桌面 label 才成立）永远得不出「换机了」——而那正是最该说这句话的时刻
+    const fresh: SessionEvent = { ...base(1), type: "executor_changed", executor: "desktop", label: "B", ignorable: true, freshWorkspace: true };
+    expect(systemOf([created, fresh, user])).toContain("此前的文件不在这台机器上");
+    // 云端接手过再回到（同一台）电脑：只说「回到了电脑上」，不许说「另一台电脑」
+    const back = systemOf([created, ex(1, "cloud"), ex(2, "desktop", "A"), user]);
+    expect(back).toContain("你回到了电脑上");
+    expect(back).not.toContain("另一台电脑");
+    // 没有 executor_changed 的日志逐字节不变
+    expect(systemOf([created, user])).not.toContain("此前的文件不在这台机器上");
+  });
   it("renderExecutorPrompt 单独可测", () => {
     expect(renderExecutorPrompt({ kind: "desktop", everCloud: false, changedMachine: false })).toBe("");
     expect(renderExecutorPrompt({ kind: "desktop", everCloud: false, changedMachine: true })).toContain("另一台电脑");

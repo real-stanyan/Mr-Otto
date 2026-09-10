@@ -109,6 +109,24 @@ export function executorOfLog(events: readonly SessionEvent[]): { kind: Executor
   return { kind, label };
 }
 
+/** 这一轮起跑前要不要落一条 `executor_changed`，落的话带不带 `freshWorkspace`（#1223 终审 I1）。
+    调用方保证「握着笔」。两条触发条件：
+    ① 日志里最后一条 `executor_changed` 不是「这台桌面」（云端接手过、或另一台 Mac 写的）——原样；
+    ② 日志里**一条都没有**（`last === null`）而这台机器刚给它新建了任务文件夹——Mac B 第一次接手
+       Mac A 的会话恰好长这样，只认 ① 的话那句「此前的文件不在这台机器上」永远说不出口。
+    一条都没有且文件夹是接着用的 = 一直是这台桌面（存量日志），回 null：旧日志逐字节不变。 */
+export function executorChangeFor(input: {
+  last: ExecutorChangedEvent | null;
+  hostname: string;
+  fresh: boolean;
+}): { label: string; freshWorkspace?: true } | null {
+  const { last, hostname, fresh } = input;
+  const withFresh = { label: hostname, ...(fresh ? { freshWorkspace: true as const } : {}) };
+  if (last === null) return fresh ? withFresh : null;
+  if (last.executor !== "desktop" || last.label !== hostname) return withFresh;
+  return null;
+}
+
 /** 最后一条**人说的** user_message，其后没有 turn_ended、或有但 outcome 是 interrupted → 它就是没人答的那条。
     `aborted` 算答过（人按了停止），`interrupted` 算没答（睡眠 / 崩溃打断的，spec §3.3）。
     后台回注 / 护栏注入（origin 在场）不算人话——它们是 turn 内部的事 */

@@ -867,11 +867,13 @@ export function deriveMessages(
         break;
 
       case "executor_changed": {
+        // `freshWorkspace` 单独算一档（#1223 终审 I1）：Mac B 第一次接手 Mac A 的会话时，日志里
+        // 一条 executor_changed 都还没有，label 比对那半（要有前一条桌面 label 才成立）永远得
+        // 不出「换机了」——而那正是最该说「此前的文件不在这台机器上」的时刻
         const changedMachine =
           event.executor === "desktop" &&
-          event.label !== undefined &&
-          lastDesktopLabel !== null &&
-          event.label !== lastDesktopLabel;
+          (event.freshWorkspace === true ||
+            (event.label !== undefined && lastDesktopLabel !== null && event.label !== lastDesktopLabel));
         if (event.executor === "desktop" && event.label !== undefined) lastDesktopLabel = event.label;
         executor = {
           kind: event.executor,
