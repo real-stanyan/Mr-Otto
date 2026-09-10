@@ -7,12 +7,16 @@ import type { SessionEvent } from "../../src/session/events.js";
 import { createTaskSessionSync, type TaskSessionSync, type TaskSessionSyncDeps } from "../../src/main/taskSessionSync.js";
 import { TaskSyncError, type TaskSessionRow, type TaskSessionsApi, type TaskSyncErrorCode } from "../../src/main/taskSessionsApi.js";
 import type { TaskSyncFile } from "../../src/main/taskSyncStore.js";
-import { HUMAN_EVENT_TYPES, PEN_RENEW_MS } from "../../src/shared/taskSync.js";
+import { HUMAN_EVENT_TYPES, PEN_RENEW_MS, TASK_EVENT_MAX_BYTES, TASK_TEXT_MAX_BYTES } from "../../src/shared/taskSync.js";
 import { tempDir } from "../helpers/tempDir.js";
+
+const utf8bytes = (s: string): number => new TextEncoder().encode(s).length;
 
 export interface FakeCloud {
   api: TaskSessionsApi;
-  rows: Map<string, { row: TaskSessionRow; events: SessionEvent[] }>;
+  /** `uid` = 建行那一刻的调用方（0036 里是 `task_sessions.uid`）：append 拿它复核，
+      对不上回 forbidden。测试要构造「别人的会话」时直接改这一格 */
+  rows: Map<string, { row: TaskSessionRow; events: SessionEvent[]; uid: string }>;
   calls: string[];
   blobs: Map<string, Uint8Array>;
   setOffline(v: boolean): void;
@@ -24,7 +28,7 @@ export interface FakeCloud {
 }
 
 export function fakeCloud(uid = "u1"): FakeCloud {
-  const rows = new Map<string, { row: TaskSessionRow; events: SessionEvent[] }>();
+  const rows = new Map<string, { row: TaskSessionRow; events: SessionEvent[]; uid: string }>();
   const blobs = new Map<string, Uint8Array>();
   const calls: string[] = [];
   const now = { t: 1_000_000 };
@@ -49,14 +53,31 @@ export function fakeCloud(uid = "u1"): FakeCloud {
       const isNewRow = entry === undefined;
       if (!entry) {
         if (expected !== 0) throw new TaskSyncError("no_session", "no_session");
-        entry = { row: { id, title: "", archived: false, last_seq: -1, pen_holder: holder, pen_until: new Date(now.t + 30_000).toISOString(), updated_at: new Date(now.t).toISOString() }, events: [] };
+        entry = { row: { id, title: "", archived: false, last_seq: -1, pen_holder: holder, pen_until: new Date(now.t + 30_000).toISOString(), updated_at: new Date(now.t).toISOString() }, events: [], uid };
+      } else if (entry.uid !== uid) {
+        // ③ 0036：`elsif v_row.uid <> p_uid then raise 'forbidden' using errcode = 'P0012'`
+        throw new TaskSyncError("forbidden", "forbidden");
       }
       if (entry.row.last_seq + 1 !== expected) throw new TaskSyncError("seq_conflict", "seq_conflict");
-      // 先整批验（seq 连续 + 笔），一条不过整批不落——真 RPC 那一批是一个事务，
-      // 半批落盘会让「拒绝了」和「落了一半」在云端行上长得一模一样
+      // 先整批验（seq 连续 + 形状 + 笔），一条不过整批不落——真 RPC 那一批是一个事务，
+      // 半批落盘会让「拒绝了」和「落了一半」在云端行上长得一模一样。
+      // 形状那几条逐条对着 0036 的 `_task_append`（#1223 终审 C2）：假货比真 RPC 宽松的地方，
+      // 正是本机测试全绿而真库整条会话被冻死的地方
       let seq = expected;
       for (const e of events) {
         if (e.seq !== seq) throw new TaskSyncError("seq_conflict", "seq_conflict");
+        // ① `if v_type = 'session_created' and v_seq <> 0`
+        if (e.type === "session_created" && seq !== 0) {
+          throw new TaskSyncError("forbidden", "bad_request: session_created only at seq 0");
+        }
+        // ② `if octet_length(v_ev::text) > 2097152` + user_message 正文 65536
+        //    （两个数从 taskSync.ts 导入，不手抄；0036 里没有「整批上限」这一条，这里也不发明）
+        if (utf8bytes(JSON.stringify(e)) > TASK_EVENT_MAX_BYTES) {
+          throw new TaskSyncError("forbidden", "bad_request: event too large");
+        }
+        if (e.type === "user_message" && utf8bytes(e.content) > TASK_TEXT_MAX_BYTES) {
+          throw new TaskSyncError("forbidden", "bad_request: user_message too large");
+        }
         if (!HUMAN_EVENT_TYPES.has(e.type) && !penLive(entry.row, holder)) throw new TaskSyncError("pen_required", "pen_required");
         seq++;
       }
@@ -328,6 +349,54 @@ describe("taskSessionSync：推（#1223）", () => {
     await h2.sync.flushNow();
     expect(h2.sync.holdsPen("s3")).toBe(true);
     expect(h2.cloud.rows.get("s3")!.row.pen_holder).toBe("desktop:A");
+  });
+  it("引用式分支（「回到这一步」）不上云：它的流里有两条 session_created，RPC 会判 forbidden 冻死它（终审 C2）", async () => {
+    // store.fork 是零拷贝的：分支自己的第一条原始行是 session_created{forkedFrom, seq = endSeq+1}，
+    // 而 load() 扁平化后前缀是父会话的 0..endSeq——推上去就是 seq 0 与 seq endSeq+1 两条
+    // session_created，0036 的「session_created only at seq 0」判 P0012 → 整条会话永久冻结
+    const h = harness();
+    h.store.append(created("s1"));
+    h.store.append({ sessionId: "s1", ts: 2, type: "user_message", content: "第一句" });
+    h.store.append({ sessionId: "s1", ts: 3, type: "assistant_message", content: "答", model: "m" });
+    h.store.append({ sessionId: "s1", ts: 4, type: "turn_ended", outcome: "completed" });
+    await h.sync.flushNow();
+    const forkId = "s1fork";
+    h.store.fork("s1", 3, forkId, 20); // seq 3 = turn_ended，唯一合法的分叉点
+    // 两个入口都试：分支上接着聊（touched）与开机回填（backfill）
+    h.store.append({ sessionId: forkId, ts: 21, type: "user_message", content: "换个方向" });
+    h.sync.backfill();
+    await h.sync.flushNow();
+    expect(h.cloud.rows.has(forkId)).toBe(false);
+    expect(h.cloud.calls.filter((c) => c.includes(forkId))).toEqual([]);
+    expect(h.fileRef().sessions[forkId]).toBeUndefined();
+    expect(h.sync.state().kind).not.toBe("error");
+    // 父会话照常同步，一格没少
+    expect(h.cloud.rows.get("s1")!.events.map((e) => e.seq)).toEqual([0, 1, 2, 3]);
+  });
+  it("假 RPC 与 0036 逐条对：seq≠0 的 session_created / 超限事件 / 别人的会话一律 forbidden（终审 C2）", async () => {
+    const h = harness();
+    h.store.append(created("s1"));
+    await h.sync.flushNow();
+    // ① session_created 只能在 seq 0
+    await expect(
+      h.cloud.api.append("s1", 1, "desktop:A", [{ seq: 1, ...created("s1") } as SessionEvent])
+    ).rejects.toMatchObject({ code: "forbidden" });
+    // ② 单条事件 JSON 超 TASK_EVENT_MAX_BYTES / user_message 正文超 TASK_TEXT_MAX_BYTES
+    await expect(
+      h.cloud.api.append("s1", 1, "desktop:A", [
+        { seq: 1, sessionId: "s1", ts: 2, type: "user_message", content: "x".repeat(TASK_EVENT_MAX_BYTES + 1) },
+      ])
+    ).rejects.toMatchObject({ code: "forbidden" });
+    await expect(
+      h.cloud.api.append("s1", 1, "desktop:A", [
+        { seq: 1, sessionId: "s1", ts: 2, type: "user_message", content: "x".repeat(TASK_TEXT_MAX_BYTES + 1) },
+      ])
+    ).rejects.toMatchObject({ code: "forbidden" });
+    // ③ 行的 uid 与调用方不同（0036 的 `v_row.uid <> p_uid`）
+    h.cloud.rows.get("s1")!.uid = "someone-else";
+    await expect(
+      h.cloud.api.append("s1", 1, "desktop:A", [{ seq: 1, sessionId: "s1", ts: 2, type: "user_message", content: "hi" }])
+    ).rejects.toMatchObject({ code: "forbidden" });
   });
   it("附件先传后推；本机没有那份字节时引用照推", async () => {
     const h = harness();
