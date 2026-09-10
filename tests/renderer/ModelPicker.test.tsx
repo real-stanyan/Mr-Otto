@@ -67,10 +67,11 @@ describe("ModelPicker：订阅那一组", () => {
     // 一行的文字是「厂商字形的 alt + 目录里那个标签」拼起来的，所以这一条同时钉住
     // 三件事：顺序照抄网关那份（从便宜到贵，跨三家交替出现，按厂商归并就会毁掉它）、
     // 标签取的是目录那一份不是裸 id、每一行都画了厂商字形。
-    // **末尾不再有「视觉」记号**（#1058）—— 它在 `GLM-5.3 Flash（视觉）` 那一行是
-    // 同一件事说两遍，而这一列的整齐比多一个信号值钱
+    // **末尾不再有「视觉」记号**（#1058）—— 它在当时那行 `GLM-5.3 Flash（视觉）` 上是
+    // 同一件事说两遍，而这一列的整齐比多一个信号值钱。#1247 之后连 label 里那三个字
+    // 也没了（目录一款都不写「（视觉）」），所以这一行现在就叫 `GLM-5.3 Flash`
     expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual([
-      "ZhipuGLM-5.3 Flash（视觉）",
+      "ZhipuGLM-5.3 Flash",
       "QwenQwen3.8 Flash",
       "DeepSeekDeepSeek-V4.1-Flash",
       "ZhipuGLM-5.3",

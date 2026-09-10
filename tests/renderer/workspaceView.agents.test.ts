@@ -21,10 +21,22 @@ describe("agentRows（spec §9 权限矩阵）", () => {
     const rows = agentRows(ws, "m1");
     expect(rows.map((r) => [r.agentId, r.canEdit, r.canDelete])).toEqual([["admin", false, false], ["a_1", true, true]]);
   });
-  it("型号摘要：空 = 用团队默认；否则点连", () => {
+  it("型号摘要：空 = 用团队默认；否则点连。目录外的 id 原样念", () => {
     const rows = agentRows(ws, "owner");
     expect(rows.map((r) => r.modelsSummary)).toEqual(["用团队默认模型", "deepseek-v4 · glm-5"]);
     expect(rows[1]!.creatorLabel).toBe("Mei");
+  });
+
+  // #1247：这一行的下面一层就是那枚下拉，两处写两套名字时人会以为
+  // 自己选的和列表上写的不是同一款
+  it("目录认得的型号，摘要里写显示名不写 id", () => {
+    const withCatalogModels = {
+      ...ws,
+      agents: [{ ...ws.agents[1]!, models: ["deepseek-flash", "glm-5.3-flash"] }],
+    };
+    expect(agentRows(withCatalogModels, "owner")[0]!.modelsSummary).toBe(
+      "DeepSeek-V4.1-Flash · GLM-5.3 Flash"
+    );
   });
   it("连接器摘要：[] = 全部连接器；否则列服务与工具数", () => {
     const rows = agentRows(ws, "owner");

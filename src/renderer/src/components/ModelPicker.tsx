@@ -33,7 +33,7 @@ import {
 import { CommandGroup, CommandItem } from "@/components/ui/command.js";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs.js";
 import { imageModelLabel, imageModelVendor, isImageAuto, pickImageModel } from "../../../shared/imageModel.js";
-import { describeModel } from "../../../shared/modelCatalog.js";
+import { modelLabel } from "../../../shared/modelCatalog.js";
 import { laneValue, parseLaneValue, type ModelLane } from "../../../shared/modelLane.js";
 import type { ModelChoice } from "../../../shared/modelCatalog.js";
 import { findProvider } from "../../../shared/providerCatalog.js";
@@ -63,8 +63,9 @@ function optionOf(it: ModelMenuItem): ModelOption {
   const providerName = it.provider ? (findProvider(it.provider)?.name ?? it.provider) : "";
   return {
     id: it.id,
-    // 目录外的型号原样显示 id：比空白多一点信息，至少看得出是哪一款
-    name: it.auto ? "Auto" : (m?.label ?? it.id),
+    // 目录外的型号原样显示 id：比空白多一点信息，至少看得出是哪一款（`modelLabel`，
+    // 这条兜底规则的唯一一份；团队设置页那两处 #1247 之前各自画着裸 id）
+    name: it.auto ? "Auto" : modelLabel(it.id),
     ...(it.auto
       ? { icon: AUTO_MARK }
       : it.provider
@@ -251,7 +252,6 @@ export function ModelPicker({
   // 由系统挑，勾一款会读成「我选了它」
   const effectiveImage = showsImageTab && !imageAuto ? pickImageModel(imageModels, imageModel) : null;
 
-  const choice = describeModel(value);
   // 网关此刻供着哪几款（从便宜到贵，ADR-0237 那条排序键）。没订阅 / 还没查到 = 空，
   // 于是下面整块退回改动前的样子（判据与取舍在 billingView.hostedModels）
   const hosted = useChat((s) => hostedModels(s.billing));
@@ -300,8 +300,8 @@ export function ModelPicker({
     // 补一条**只给触发器看**的条目，名字取目录里那份而不是裸 id —— 触发器空着
     // 读起来像「这一格还没选」，而它其实正生效着（只是 routeModel 会 blocked 并
     // 让他在这枚选单里换一款）
-    return [...withAuto, { id: value, name: choice?.label ?? value }];
-  }, [groups, choice, value, auto]);
+    return [...withAuto, { id: value, name: modelLabel(value) }];
+  }, [groups, value, auto]);
 
   return (
     <ModelSelectorRoot
