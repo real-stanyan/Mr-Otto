@@ -1722,6 +1722,16 @@ function AppSidebar() {
   // 就是 useSyncExternalStore 上一个真的死循环）
   const mentionRows = useChat((s) => s.workspaceMentions);
   const unreadMentions = useMemo(() => unreadMentionCounts(mentionRows).total, [mentionRows]);
+  // 这两样推给主进程，灵动岛顶栏「团队」那一格要用（#1229）：未读点的数，
+  // 以及云会话 workspaceId → 团队名（没有它，岛上那一组的组头会是一串 UUID）。
+  // **为什么由渲染层推**：两样都住在这一层（`workspace_mentions` 是这里直连
+  // Supabase 拉的，#1064），主进程要自己拿就得把那条链路整个复制一遍。
+  // 已知代价：主窗没开时岛上那两样是陈旧的——失败形态只是角标少亮/多亮一会儿
+  useEffect(() => {
+    const teamNames = Object.fromEntries(workspaceGroups.map((g) => [g.id, g.name]));
+    void window.otter.islandContext({ unreadMentions, teamNames });
+  }, [unreadMentions, workspaceGroups]);
+
   // 详情页开着的那个此刻还在不在(被解散/退群后它会从快照里消失)——找不到就等于
   // 关掉,不用另写一条善后逻辑
   const openedWorkspace = workspaceGroups.find((g) => g.id === openWorkspaceId) ?? null;

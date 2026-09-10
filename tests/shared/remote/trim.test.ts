@@ -8,10 +8,17 @@ const FULL: IslandFleet = {
     turnStartedAt: 1, pendingApproval: { callId: "c1", verb: "运行", target: "rm", fullPath: "/w/x" },
     workspace: "/w", projectRoot: "/proj", branch: "otto/x-a29018",
     turnDiff: { files: 1, additions: 2, deletions: 3 },
+    kind: "team", groupLabel: "Otto 核心组",
   }],
   focusedSessionId: "s1",
   display: "usage",
   usage: [{ day: "2026-08-25", tokens: 123, cost: 0.4 } as never],
+  rail: {
+    kind: "quota", plan: "pro", pastDue: false, windowLabel: "5h",
+    remainPercent: 22, remainLabel: "22.0%", tone: "warn", exhausted: false,
+    countdown: "1h 38m 后刷新", title: "已用 243 / 311.5 credit",
+  },
+  unreadMentions: 7,
 };
 
 describe("trimForMobile", () => {
@@ -31,6 +38,23 @@ describe("trimForMobile", () => {
     expect(out.agents[0]!.branch).toBeUndefined();
     expect(JSON.stringify(out)).not.toContain("/proj");
     expect(JSON.stringify(out)).not.toContain("a29018");
+  });
+
+  it("额度页脚与未读数不出机器（#1229）：一个是账单投影，一个是团队的未读计数", () => {
+    // 手机端的职责是「看 + 审批」（ADR-0094 的范围），这两样都不在里面
+    const out = trimForMobile(FULL);
+    expect(out.rail).toBeUndefined();
+    expect(out.unreadMentions).toBeUndefined();
+    const wire = JSON.stringify(out);
+    expect(wire).not.toContain("credit");
+    expect(wire).not.toContain("22.0%");
+  });
+
+  it("岛顶栏那三档的分组用料不出机器（#1229）：手机端既没有切换器也不分组", () => {
+    const out = trimForMobile(FULL);
+    expect(out.agents[0]!.kind).toBeUndefined();
+    expect(out.agents[0]!.groupLabel).toBeUndefined();
+    expect(JSON.stringify(out)).not.toContain("核心组");
   });
 
   it("审批要用的字段一个都不能少（少了手机就没法判断该不该批）", () => {

@@ -189,6 +189,8 @@ import { createPxCloudClient } from "./pxCloudClient.js";
 import { createHostedQuota, parseCheckoutTarget, type HostedQuota } from "./hostedQuota.js";
 import { createTeamVoice } from "./teamVoice.js";
 import type { WorkspaceUsage } from "../shared/billing.js";
+import { islandRail } from "../shared/islandRail.js";
+import type { BilledRow } from "../shared/usageStats.js";
 import { createWorkspaceManager } from "./workspaceManager.js";
 import {
   createWorkspace, listWorkspaces, fetchWorkspace, addMember, removeMember, leave,
@@ -969,11 +971,34 @@ void app.whenReady().then(() => {
   // 失败模式是静默的——手机上那条审批横幅永远不出现
   let cloudFleetSession: (() => SessionSummary | null) | null = null;
 
+  /** 渲染层推来的那两样主进程自己拿不到的事实（#1229，ShellBridge.islandContext）：
+      团队的未读 @ 数、以及云会话 workspaceId → 团队名。**主窗没开时它是陈旧的**，
+      这是那条设计里明写的已知代价 */
+  let islandCtx: { unreadMentions: number; teamNames: Record<string, string> } | null = null;
+
+  // 岛的额度页脚（#1229）。`spend` 那一支要扫近 7 天的计费行，而 pushFleet 跟着
+  // **每条**事件跑——同 islandUsageRows 的理由，30s 记忆化：页脚上的数是「近 7 天
+  // 烧了多少」量级，30 秒的陈旧无感。订阅那一支不吃这份缓存（billing 快照是
+  // 内存里现成的），所以缓存只包 billedUsage 那一次查询
+  let railBilledCache: { at: number; rows: BilledRow[] } | null = null;
+  const railBilled = (now: number): BilledRow[] => {
+    if (!railBilledCache || now - railBilledCache.at > 30_000) {
+      railBilledCache = { at: now, rows: store.billedUsage(now - 7 * 86_400_000) };
+    }
+    return railBilledCache.rows;
+  };
+
   const pushFleet = (): void => {
     if (!bridge && !remoteBridge) return;
     const cloud = cloudFleetSession?.() ?? null;
     const sessions = cloud ? [...fleetSessions(), cloud] : fleetSessions();
-    const fleet = flattenFleet(islandStates, sessions, activeSessionId, workspaceLens);
+    const now = Date.now();
+    const fleet = flattenFleet(islandStates, sessions, activeSessionId, workspaceLens, {
+      builtinDefault: builtinDefaultWorkspace(app.getPath("documents")),
+      teamNameOf: (workspaceId) => islandCtx?.teamNames[workspaceId] ?? null,
+      rail: islandRail({ billing: hostedQuota.snapshot(), billed: railBilled(now), now }),
+      ...(islandCtx === null ? {} : { unreadMentions: islandCtx.unreadMentions }),
+    });
     fleet.display = islandSettings.display;
     if (islandSettings.display === "usage") fleet.usage = islandUsageRows();
     bridge?.pushState(fleet);
@@ -1576,7 +1601,12 @@ void app.whenReady().then(() => {
   hostedQuotaRefresh = () => void hostedQuota.refresh();
   // 订阅页镜像（Task 11）：快照一变就推，同 accountChanged 那条推送的写法。
   // send() 早于这里定义（line ~529），装配顺序上没有先有鸡还是先有蛋的问题
-  hostedQuota.onChange((s) => send(CHANNELS.billingChanged, s));
+  hostedQuota.onChange((s) => {
+    send(CHANNELS.billingChanged, s);
+    // 额度页脚的数就是这份快照（#1229）——不跟着推的话，岛上那一行要等到
+    // 下一条会话事件才更新，而「额度用完」恰恰是没有下一条事件的那一刻
+    pushFleet();
+  });
   const hostedDeps = {
     quota: hostedQuota,
     edgeBaseUrl: () => edgeBaseUrl(),
@@ -3257,6 +3287,24 @@ void app.whenReady().then(() => {
 
   // 订阅制托管额度（ADR-0176/issue #696，Task 11）。refresh=true 先打一次 /me——
   // 开订阅页那一刻要最新的，不是内存里可能过期的旧快照
+  // 岛要用而主进程拿不到的两样事实由渲染层推来（#1229）。收下就重推一次 fleet——
+  // 未读数变了要让那枚点当场亮/灭，等下一条会话事件才推的话它会滞后到下次干活
+  ipcMain.handle(CHANNELS.islandContext, (_e, ctx: unknown) => {
+    if (!ctx || typeof ctx !== "object") return;
+    const c = ctx as { unreadMentions?: unknown; teamNames?: unknown };
+    // IPC 边界不假设调用方守规矩（同 billingCheckout 的 parseCheckoutTarget）
+    const unread = typeof c.unreadMentions === "number" && Number.isFinite(c.unreadMentions)
+      ? Math.max(0, Math.floor(c.unreadMentions)) : 0;
+    const names: Record<string, string> = {};
+    if (c.teamNames && typeof c.teamNames === "object") {
+      for (const [k, v] of Object.entries(c.teamNames as Record<string, unknown>)) {
+        if (typeof v === "string") names[k] = v;
+      }
+    }
+    islandCtx = { unreadMentions: unread, teamNames: names };
+    pushFleet();
+  });
+
   ipcMain.handle(CHANNELS.billingSnapshot, async (_e, refresh: boolean) => {
     if (refresh) await hostedQuota.refresh();
     return hostedQuota.snapshot();

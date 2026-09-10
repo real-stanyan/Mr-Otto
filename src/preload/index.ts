@@ -144,6 +144,7 @@ const bridge: ShellBridge = {
   usageByModel: (since: number) => ipcRenderer.invoke(CHANNELS.usageByModel, since),
   providerBalances: () => ipcRenderer.invoke(CHANNELS.providerBalances),
   billingSnapshot: (refresh) => ipcRenderer.invoke(CHANNELS.billingSnapshot, refresh),
+  islandContext: (ctx) => ipcRenderer.invoke(CHANNELS.islandContext, ctx),
   billingCheckout: (target) => ipcRenderer.invoke(CHANNELS.billingCheckout, target),
   billingPortal: () => ipcRenderer.invoke(CHANNELS.billingPortal),
   signIn: (provider) => ipcRenderer.invoke(CHANNELS.signIn, provider),

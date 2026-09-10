@@ -958,6 +958,15 @@ export interface ShellBridge {
       refresh=false 只回内存里现有的（省一趟网络，开页展示用）。
       结构与主进程 hostedQuota.snapshot() 一致（结构性赋值，shellBridge 不 import main） */
   billingSnapshot(refresh: boolean): Promise<BillingSnapshotView>;
+  /** 渲染层推给灵动岛的那两样它自己拿不到的事实（#1229）。
+      **为什么由渲染层推**：`workspace_mentions` 是渲染层直连 Supabase 拉的
+      （#1064），团队名单同理住在渲染层的 store 里；主进程要自己拿就得把那条
+      链路复制一遍（多一处查询 + 一份缓存 + 一条 realtime 通道），而这里要的
+      只是一个角标的数和一张 id→名字的表。
+      **已知代价**：主窗没开时这两样是陈旧的，而岛可能还开着。这个方向可接受
+      的理由是它的失败形态——陈旧只会让角标少亮或多亮一会儿；反过来（主进程
+      自建一条 realtime 通道）要为一枚 5px 的点复制 #1064 的整条链路。 */
+  islandContext(ctx: { unreadMentions: number; teamNames: Record<string, string> }): Promise<void>;
   /** 订阅 / 加购下单：拿 checkout url 后在系统浏览器打开（Stripe 的页面不进 Electron 窗口） */
   billingCheckout(target: { planId: PlanId } | { addon: true; quantity: number }): Promise<void>;
   /** Stripe customer portal（改档/取消/换卡）：同样在系统浏览器打开 */
@@ -1631,6 +1640,7 @@ export const CHANNELS = {
   usageByModel: "otter:usageByModel",
   providerBalances: "otter:providerBalances",
   billingSnapshot: "otter:billingSnapshot",
+  islandContext: "otter:islandContext",
   billingCheckout: "otter:billingCheckout",
   billingPortal: "otter:billingPortal",
   billingChanged: "otter:billingChanged",
