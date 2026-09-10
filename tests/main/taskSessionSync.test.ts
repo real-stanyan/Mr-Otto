@@ -142,8 +142,8 @@ describe("taskSessionSync：推（#1223）", () => {
     expect(h.fileRef().sessions["s1"]).toEqual({ pushedUpTo: 2 });
     expect(h.sync.state().kind).toBe("idle");
   });
-  it("后续 executor 类事件推之前先拿笔（建行时发的那支还在，同 holder 续期即可）", async () => {
-    const h = harness();
+  it("后续 executor 类事件推之前先拿笔（turn 在跑时那支笔留着，由 driveTurn 收口时放）", async () => {
+    const h = harness({ running: () => true });
     h.store.append(created("s1"));
     await h.sync.flushNow();
     h.store.append({ sessionId: "s1", ts: 2, type: "assistant_message", content: "a", model: "m" });
@@ -262,10 +262,11 @@ describe("taskSessionSync：推（#1223）", () => {
   });
   it("建行那一批 RPC 发下来的笔也要起续期定时器", async () => {
     // 只记 granted 的话 holdsPen 永远说「握着」，而云端那支 30 s 就过期了：
-    // 一条长 turn 写到一半，下一条 executor 事件撞 pen_required，而那支笔可能已经被别人拿走
+    // 一条长 turn 写到一半，下一条 executor 事件撞 pen_required，而那支笔可能已经被别人拿走。
+    // running: true = 这条会话正在跑 turn，所以推完不放笔（C1 只放「推送方临时借的」那支）
     vi.useFakeTimers();
     try {
-      const h = harness();
+      const h = harness({ running: () => true });
       h.store.append(created("s1"));
       await h.sync.flushNow();
       expect(h.sync.holdsPen("s1")).toBe(true);
@@ -289,6 +290,44 @@ describe("taskSessionSync：推（#1223）", () => {
     h.sync.backfill();
     await h.sync.flushNow();
     expect(h.cloud.rows.get("s1")!.events.map((e) => e.seq)).toEqual([0, 1]);
+  });
+  it("推送方拿的笔推完即放：backfill + flush 之后一支都不握，云端行上笔是空的（终审 C1）", async () => {
+    // 三处 releasePen 调用点全在 index.ts 的 driveTurn 里，只服务「turn 的笔」。推送方这两支
+    // （建行那一批 RPC 发下来的、needsPen 时自己 acquire 的）没人放的话：N 条任务会话 = N 支
+    // 永久握着的笔 + N 个 10 s 续期定时器，第二台电脑永远看到「另一台电脑正在回复」
+    const h = harness();
+    h.store.append(created("s1"));
+    h.store.append({ sessionId: "s1", ts: 2, type: "user_message", content: "hi" });
+    h.store.append(created("s2"));
+    h.sync.backfill();
+    await h.sync.flushNow();
+    for (const id of ["s1", "s2"]) {
+      expect(h.sync.holdsPen(id)).toBe(false);
+      expect(h.cloud.rows.get(id)!.row.pen_holder).toBeNull();
+    }
+  });
+  it("越 turn 的 executor 事件（自己 acquire 的那支）推完同样放；turn 在跑时不放（终审 C1）", async () => {
+    // skill_released 是 executor 类但不在任何 turn 里：needsPen 那条路会 acquire 一次，
+    // 而那次 acquire 之后没有任何 driveTurn 收口会来放它
+    const h = harness();
+    h.store.append(created("s1"));
+    await h.sync.flushNow();
+    expect(h.sync.holdsPen("s1")).toBe(false); // 建行那支已经放了
+    h.store.append({ sessionId: "s1", ts: 2, type: "skill_released", name: "brainstorming" });
+    await h.sync.flushNow();
+    expect(h.cloud.rows.get("s1")!.events).toHaveLength(2); // 确实拿到过笔（不然 RPC 拒收）
+    expect(h.sync.holdsPen("s1")).toBe(false);
+    expect(h.cloud.rows.get("s1")!.row.pen_holder).toBeNull();
+
+    let running = false;
+    const h2 = harness({ running: () => running });
+    h2.store.append(created("s3"));
+    await h2.sync.flushNow();
+    running = true;
+    h2.store.append({ sessionId: "s3", ts: 2, type: "assistant_message", content: "a", model: "m" });
+    await h2.sync.flushNow();
+    expect(h2.sync.holdsPen("s3")).toBe(true);
+    expect(h2.cloud.rows.get("s3")!.row.pen_holder).toBe("desktop:A");
   });
   it("附件先传后推；本机没有那份字节时引用照推", async () => {
     const h = harness();
@@ -403,7 +442,11 @@ describe("taskSessionSync：冲突", () => {
     const h = harness();
     h.store.append(created("s1"));
     await h.sync.flushNow();
-    await h.cloud.api.append("s1", 1, "desktop:A", [{ seq: 1, sessionId: "s1", ts: 5, type: "from_the_future", payload: 1 } as unknown as SessionEvent]);
+    // 另一台设备写的（它自己拿笔、写完放掉）：本机那支建行笔推完就放了（C1），
+    // 借它的名字写等于借一支已经不在的笔
+    await h.cloud.api.acquirePen("s1", "desktop:B", 30);
+    await h.cloud.api.append("s1", 1, "desktop:B", [{ seq: 1, sessionId: "s1", ts: 5, type: "from_the_future", payload: 1 } as unknown as SessionEvent]);
+    await h.cloud.api.releasePen("s1", "desktop:B");
     h.store.append({ sessionId: "s1", ts: 6, type: "assistant_message", content: "本机那条", model: "m" });
     await h.sync.flushNow();
     expect(h.fileRef().sessions["s1"]).toMatchObject({ frozen: "needs_upgrade" });
@@ -470,10 +513,11 @@ describe("taskSessionSync：笔", () => {
   });
   it("续期失败（笔已经在别人手上）：granted 也要清掉，不然 holdsPen 会一直说「握着」一支已经丢的笔", async () => {
     // 建行那一批 RPC 把笔发给我们，走的是 granted 这条路（不是 pens 那条），且顺手起了续期定时器。
-    // renew() 撞上「续不上」时如果只 stopRenew 不清 granted，holdsPen 会永远报 true
+    // renew() 撞上「续不上」时如果只 stopRenew 不清 granted，holdsPen 会永远报 true。
+    // running: true 让建行发的那支笔留在手上（C1 之后没在跑就推完即放，续期定时器也随之停）
     vi.useFakeTimers();
     try {
-      const h = harness();
+      const h = harness({ running: () => true });
       h.store.append(created("s1"));
       await h.sync.flushNow();
       expect(h.sync.holdsPen("s1")).toBe(true);

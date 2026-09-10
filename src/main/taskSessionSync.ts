@@ -264,72 +264,86 @@ export function createTaskSessionSync(deps: TaskSessionSyncDeps): TaskSessionSyn
     const tail = deps.store.load(id, { afterSeq: st.pushedUpTo });
     if (tail.length === 0) return;
     for (const e of tail) for (const ref of attachmentRefsOf(e)) await uploadRef(uid, ref);
-    // 建行那一批（pushedUpTo === -1）不用先拿笔：RPC 建行时把笔发给创建者
-    const needsPen = st.pushedUpTo >= 0 && tail.some((e) => PEN_VERDICTS[e.type] === "executor");
-    if (needsPen && !holdsPen(id)) {
-      const pen = await acquirePen(id);
-      if (pen.kind !== "acquired") {
-        dirty.add(id); // 笔被占 / 离线：留着，realtime 推来笔空了或回网时再推
-        return;
-      }
-    }
-    const batches = sliceBatches(tail, TASK_EVENT_MAX_BYTES);
-    // i 只在这一批真推上去之后才 ++：pen_required 重拿笔之后要走**同一套**分类重跑这一批，
-    // 而不是在 catch 里裸 await 一次 append（那一次的失败没有任何人分类，直接冒出去成了整轮的错）
-    let retriedPenAt = -1;
-    for (let i = 0; i < batches.length; ) {
-      const batch = batches[i]!;
-      const expected = batch[0]!.seq;
-      const done = (last: number): void => {
-        st.pushedUpTo = last;
-        save();
-        if (expected === 0) {
-          // 建行那一批：RPC 把笔发给了我们（spec 实施偏差 3）。**同时起续期**——只记 granted 的话
-          // holdsPen 永远说「握着」，而云端那支 30 s 就过期了，下一条 executor 事件撞 pen_required
-          granted.add(id);
-          startRenew(id);
-        }
-      };
-      try {
-        done(await deps.api.append(id, expected, deps.holder, batch));
-        i++;
-      } catch (err) {
-        if (!(err instanceof TaskSyncError)) throw err;
-        if (err.code === "seq_conflict") {
-          await reconcile(uid, id);
+    // 推送方为了落这一批 executor 事件临时拿到的笔（自己 acquire 的、或建行那一批 RPC 发下来的）：
+    // 推完就放（#1223 终审 C1）。三处 releasePen 调用点全在 index.ts 的 driveTurn 里，只服务
+    // 「turn 的笔」——这两支没人放的话，一次 backfill + flush 之后每条任务会话都被本机永久握笔、
+    // 各起一个 10 s 的续期定时器，第二台电脑永远看到「另一台电脑正在回复」
+    let borrowedPen = false;
+    try {
+      // 建行那一批（pushedUpTo === -1）不用先拿笔：RPC 建行时把笔发给创建者
+      const needsPen = st.pushedUpTo >= 0 && tail.some((e) => PEN_VERDICTS[e.type] === "executor");
+      if (needsPen && !holdsPen(id)) {
+        const pen = await acquirePen(id);
+        if (pen.kind !== "acquired") {
+          dirty.add(id); // 笔被占 / 离线：留着，realtime 推来笔空了或回网时再推
           return;
         }
-        if (err.code === "pen_required") {
-          if (retriedPenAt === i) {
-            // 这一批已经重拿过一次笔了还是不行：别原地打转，留给下一轮
-            deps.onPenLost?.(id);
-            dirty.add(id);
-            return;
-          }
-          retriedPenAt = i;
-          const again = await acquirePen(id);
-          if (again.kind !== "acquired") {
-            deps.onPenLost?.(id);
-            dirty.add(id);
-            return;
-          }
-          continue; // i 不动：同一批重来一次，成败照样过上面那套分类
-        }
-        if (err.code === "no_session") {
-          st.detached = true;
+        borrowedPen = true;
+      }
+      const batches = sliceBatches(tail, TASK_EVENT_MAX_BYTES);
+      // i 只在这一批真推上去之后才 ++：pen_required 重拿笔之后要走**同一套**分类重跑这一批，
+      // 而不是在 catch 里裸 await 一次 append（那一次的失败没有任何人分类，直接冒出去成了整轮的错）
+      let retriedPenAt = -1;
+      for (let i = 0; i < batches.length; ) {
+        const batch = batches[i]!;
+        const expected = batch[0]!.seq;
+        const done = (last: number): void => {
+          st.pushedUpTo = last;
           save();
-          return;
+          if (expected === 0) {
+            // 建行那一批：RPC 把笔发给了我们（spec 实施偏差 3）。**同时起续期**——只记 granted 的话
+            // holdsPen 永远说「握着」，而云端那支 30 s 就过期了，下一条 executor 事件撞 pen_required
+            granted.add(id);
+            startRenew(id);
+            borrowedPen = true;
+          }
+        };
+        try {
+          done(await deps.api.append(id, expected, deps.holder, batch));
+          i++;
+        } catch (err) {
+          if (!(err instanceof TaskSyncError)) throw err;
+          if (err.code === "seq_conflict") {
+            await reconcile(uid, id);
+            return;
+          }
+          if (err.code === "pen_required") {
+            if (retriedPenAt === i) {
+              // 这一批已经重拿过一次笔了还是不行：别原地打转，留给下一轮
+              deps.onPenLost?.(id);
+              dirty.add(id);
+              return;
+            }
+            retriedPenAt = i;
+            const again = await acquirePen(id);
+            if (again.kind !== "acquired") {
+              deps.onPenLost?.(id);
+              dirty.add(id);
+              return;
+            }
+            borrowedPen = true;
+            continue; // i 不动：同一批重来一次，成败照样过上面那套分类
+          }
+          if (err.code === "no_session") {
+            st.detached = true;
+            save();
+            return;
+          }
+          if (err.code === "forbidden") {
+            // controller ruling（Task 7 复审带入 Task 10）：RPC 判定这批不可重试（畸形 / 超限 / 不是
+            // 我们的会话）——终态，不进 30s 重试循环，别让一条超限事件卡死这条会话的推送队列。
+            // 用 frozen 不用 detached：detached 会被下一条本地事件清掉（那是「重新建行」的信号），
+            // 于是每写一条就重新整份推一遍、再被拒一次——一条超限事件变成每条事件一次全量往返
+            freeze(id, "forbidden", err.message);
+            return;
+          }
+          throw err;
         }
-        if (err.code === "forbidden") {
-          // controller ruling（Task 7 复审带入 Task 10）：RPC 判定这批不可重试（畸形 / 超限 / 不是
-          // 我们的会话）——终态，不进 30s 重试循环，别让一条超限事件卡死这条会话的推送队列。
-          // 用 frozen 不用 detached：detached 会被下一条本地事件清掉（那是「重新建行」的信号），
-          // 于是每写一条就重新整份推一遍、再被拒一次——一条超限事件变成每条事件一次全量往返
-          freeze(id, "forbidden", err.message);
-          return;
-        }
-        throw err;
       }
+    } finally {
+      // turn 在跑（isRunning）时不放：那支笔是 turn 的，由 driveTurn 收口时放。准入那条路
+      // （index.ts 的 needsPen && !holdsPen）会自己再拿一次——多一次 RPC 换「没在跑就不占笔」
+      if (borrowedPen && !deps.isRunning(id)) await releasePen(id);
     }
   }
   async function flush(): Promise<void> {
