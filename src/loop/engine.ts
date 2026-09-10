@@ -133,6 +133,9 @@ export class LoopEngine {
   /** 当前 turn 的中断开关；idle 时为 null。每个 turn 一个新的——
       AbortSignal 是一次性的，翻过去就回不来 */
   private turnAbort: AbortController | null = null;
+  /** 这次中断以什么收口（#1223）：人按停止 = aborted；睡眠 / 笔丢了 = interrupted（系统打断，
+      lastUnanswered 把它算「没答」，接手的一方会接着答）。每个 turn 起跑时复位 */
+  private abortReason: "aborted" | "interrupted" = "aborted";
   /** 上次自动压缩尝试后的上下文占用（估算 token）；null = 本 turn 还没压过。
       runTurn 里每 turn 重置。增长闸（issue #283 ⑤）：距上次压缩后占用至少再涨
       REAUTO_MIN_GROWTH_TOKENS 才允许再压——"摘要本身仍超阈值"时原地重压只是
@@ -590,7 +593,8 @@ export class LoopEngine {
   /** 中断当前 turn（ADR-0006）。幂等：没 turn 在跑 / 重复按都是无操作。
       效果 = 信号翻转，三个可能卡住的位置各自醒来：
       fetch/SSE 抛 AbortError、审批 resolve 成 denied、bash 子进程收 SIGTERM */
-  abortTurn(): void {
+  abortTurn(reason: "aborted" | "interrupted" = "aborted"): void {
+    this.abortReason = reason;
     this.turnAbort?.abort();
   }
 
@@ -646,6 +650,29 @@ export class LoopEngine {
     for (const d of pending) this.appendBackgroundNow(d.text, d.taskIds);
   }
 
+  /** 只把这条人话落盘，不起 turn（#1223）：笔被别人握着时桌面照样先落人话，
+      等笔空了再对它 runLoggedTurn。事件形状与 runTurn 落的那条逐字节一致 */
+  logUserMessage(
+    userInput: string,
+    attachments?: UserAttachmentRef[],
+    textFiles?: UserTextFile[],
+    /** 非人类来源(issue #428):后台任务回注传它,UI 据此换皮。缺席 = 人亲手发的,
+        事件形状与从前逐字节一致。
+        taskIds = 这条回注驮的后台任务(issue #452 / ADR-0109):后台任务面板据此
+        知道结果**真的进了对话**——那比"任务完成了"晚一整个 turn */
+    background?: { taskIds: string[] }
+  ): UserMessageEvent {
+    return this.append({
+      ...this.envBase(),
+      type: "user_message",
+      content: userInput,
+      // 空数组不落字段:无附件的事件形状与从前逐字节一致(投影回归测试的前提)
+      ...(attachments && attachments.length > 0 ? { attachments } : {}),
+      ...(textFiles && textFiles.length > 0 ? { textFiles } : {}),
+      ...(background ? { origin: "background" as const, backgroundTaskIds: background.taskIds } : {}),
+    }) as UserMessageEvent;
+  }
+
   /** 跑一个完整 turn：直到模型不再要工具为止。
       收口和暴死都落 turn_ended（ADR-0004）——错误照旧向上抛，落盘是补记事实不是吞错。
       中断（ADR-0006）落 outcome:"aborted" 且不抛：停止是用户意志，不是故障。
@@ -657,22 +684,9 @@ export class LoopEngine {
     userInput: string,
     attachments?: UserAttachmentRef[],
     textFiles?: UserTextFile[],
-    /** 非人类来源(issue #428):后台任务回注传它,UI 据此换皮。缺席 = 人亲手发的,
-        事件形状与从前逐字节一致。
-        taskIds = 这条回注驮的后台任务(issue #452 / ADR-0109):后台任务面板据此
-        知道结果**真的进了对话**——那比"任务完成了"晚一整个 turn */
     background?: { taskIds: string[] }
   ): Promise<"completed" | "aborted"> {
-    const opening = this.append({
-      ...this.envBase(),
-      type: "user_message",
-      content: userInput,
-      // 空数组不落字段:无附件的事件形状与从前逐字节一致(投影回归测试的前提)
-      ...(attachments && attachments.length > 0 ? { attachments } : {}),
-      ...(textFiles && textFiles.length > 0 ? { textFiles } : {}),
-      ...(background ? { origin: "background" as const, backgroundTaskIds: background.taskIds } : {}),
-    });
-    return this.runFrom(opening);
+    return this.runFrom(this.logUserMessage(userInput, attachments, textFiles, background));
   }
 
   /** 对一条**已经在日志里**的 user_message 起 turn（#932 坑 ②）。云会话的
@@ -690,6 +704,7 @@ export class LoopEngine {
     // 「此刻有没有 turn 可接后台结果」）
     this.currentTurnId = opening.seq;
     this.turnAbort = new AbortController();
+    this.abortReason = "aborted"; // 复位（#1223）：上一 turn 的 interrupted 不漏到这一 turn
     this.compactFloor = null;
     // 这一轮开跑时日志已经到哪儿（#932 终审）。runTurn 走这条时 opening 是刚
     // append 的那条，尾巴是空的 → 就是 opening.seq 自己；runLoggedTurn 走这条时
@@ -722,7 +737,7 @@ export class LoopEngine {
       return "completed";
     } catch (err) {
       if (isAbort(err)) {
-        this.append({ ...endEnv(), type: "turn_ended", outcome: "aborted" });
+        this.append({ ...endEnv(), type: "turn_ended", outcome: this.abortReason });
         return "aborted";
       }
       // errorClass = 抛错处（adapter）贴的分类（issue #389）；error 存原文不动
