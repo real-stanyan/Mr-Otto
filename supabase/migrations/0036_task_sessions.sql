@@ -76,7 +76,10 @@ declare
 begin
   if p_uid is null then raise exception 'forbidden: no uid' using errcode = 'P0012'; end if;
   if p_holder is null or p_holder = '' then raise exception 'forbidden: holder required' using errcode = 'P0012'; end if;
-  if jsonb_typeof(p_events) <> 'array' or jsonb_array_length(p_events) = 0 then
+  if p_events is null or jsonb_typeof(p_events) is distinct from 'array' then
+    raise exception 'bad_request: p_events must be a non-empty array' using errcode = 'P0012';
+  end if;
+  if jsonb_array_length(p_events) = 0 then
     raise exception 'bad_request: p_events must be a non-empty array' using errcode = 'P0012';
   end if;
 
@@ -87,10 +90,16 @@ begin
       raise exception 'bad_request: first event must be session_created' using errcode = 'P0012';
     end if;
     -- 建行时顺手把笔发给创建者：这一批里第二条起就是 executor 类（memory_loaded…），
-    -- 没有这一手就是「要笔得先有行、有行得先追加」的死结
-    insert into public.task_sessions (id, uid, pen_holder, pen_until)
-      values (p_session_id, p_uid, p_holder, now() + make_interval(secs => 30))
-      returning * into v_row;
+    -- 没有这一手就是「要笔得先有行、有行得先追加」的死结。select ... for update 锁不住一行
+    -- 还不存在的行，两条并发的 expected_seq=0 都会走到这里；插入撞 unique_violation 是
+    -- 「输了竞态」不是表坏了，翻成 seq_conflict 让客户端走既有重试路径
+    begin
+      insert into public.task_sessions (id, uid, pen_holder, pen_until)
+        values (p_session_id, p_uid, p_holder, now() + make_interval(secs => 30))
+        returning * into v_row;
+    exception when unique_violation then
+      raise exception 'seq_conflict' using errcode = 'P0010';
+    end;
   elsif v_row.uid <> p_uid then
     raise exception 'forbidden' using errcode = 'P0012';
   end if;
@@ -129,14 +138,15 @@ begin
       values (p_session_id, v_seq, p_uid, coalesce((v_ev->>'ts')::bigint, 0), v_type, v_ev);
 
     -- 标题投影：renamed(3) > autotitled(2) > 首行(1)，低档不盖高档（同桌面 store.sessions()）
-    if v_type = 'session_renamed' then
-      v_title := coalesce(v_ev->>'title', ''); v_rank := 3;
-    elsif v_type = 'session_autotitled' and v_rank <= 2 then
-      v_title := coalesce(v_ev->>'title', ''); v_rank := 2;
-    elsif v_type = 'session_created' and v_rank = 0 and coalesce(v_ev->>'title', '') <> '' then
-      v_title := v_ev->>'title'; v_rank := 1;
-    elsif v_type = 'user_message' and v_rank = 0 and (v_ev->>'origin') is null then
-      v_title := left(split_part(coalesce(v_ev->>'content', ''), E'\n', 1), 80); v_rank := 1;
+    if v_type = 'session_renamed' and btrim(coalesce(v_ev->>'title', '')) <> '' then
+      v_title := btrim(v_ev->>'title'); v_rank := 3;
+    elsif v_type = 'session_autotitled' and v_rank <= 2 and btrim(coalesce(v_ev->>'title', '')) <> '' then
+      v_title := btrim(v_ev->>'title'); v_rank := 2;
+    elsif v_type = 'session_created' and v_rank = 0 and btrim(coalesce(v_ev->>'title', '')) <> '' then
+      v_title := btrim(v_ev->>'title'); v_rank := 1;
+    elsif v_type = 'user_message' and v_rank = 0 and (v_ev->>'origin') is null
+          and btrim(rtrim(left(split_part(coalesce(v_ev->>'content', ''), E'\n', 1), 80), E'\r')) <> '' then
+      v_title := btrim(rtrim(left(split_part(coalesce(v_ev->>'content', ''), E'\n', 1), 80), E'\r')); v_rank := 1;
     end if;
     if v_type = 'session_archived' then v_archived := true;
     elsif v_type = 'session_unarchived' then v_archived := false;
@@ -165,6 +175,7 @@ declare
   v_row public.task_sessions%rowtype;
 begin
   if p_uid is null then raise exception 'forbidden: no uid' using errcode = 'P0012'; end if;
+  if p_holder is null or p_holder = '' then raise exception 'forbidden: holder required' using errcode = 'P0012'; end if;
   select * into v_row from public.task_sessions where id = p_session_id for update;
   if not found then raise exception 'no_session' using errcode = 'P0013'; end if;
   if v_row.uid <> p_uid then raise exception 'forbidden' using errcode = 'P0012'; end if;
@@ -186,6 +197,7 @@ create or replace function public._task_pen_release(p_uid uuid, p_session_id tex
 returns boolean language plpgsql security definer set search_path = public as $$
 begin
   if p_uid is null then raise exception 'forbidden: no uid' using errcode = 'P0012'; end if;
+  if p_holder is null or p_holder = '' then raise exception 'forbidden: holder required' using errcode = 'P0012'; end if;
   update public.task_sessions
      set pen_holder = null, pen_until = null, updated_at = now()
    where id = p_session_id and uid = p_uid and pen_holder = p_holder;

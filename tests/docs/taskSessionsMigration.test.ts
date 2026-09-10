@@ -21,12 +21,15 @@ describe("0036_task_sessions.sql 与 src/shared/taskSync.ts 对表", () => {
     expect(sql).toContain(`make_interval(secs => ${PEN_TTL_S})`);
   });
   it("客户端表上没有 insert/update 策略（写只走 RPC）；事件表连 delete 都没有", () => {
-    expect(sql).not.toMatch(/create policy \w+ on public\.task_sessions for (insert|update)/);
-    expect(sql).not.toMatch(/create policy \w+ on public\.task_session_events for (insert|update|delete)/);
+    expect(sql).not.toMatch(/create policy\s+"?\w+"?\s+on\s+public\.task_sessions\s+for\s+(insert|update|all)/i);
+    expect(sql).not.toMatch(/create policy\s+"?\w+"?\s+on\s+public\.task_session_events\s+for\s+(insert|update|delete|all)/i);
   });
   it("内部实现函数对 authenticated 收回执行权，_as 只给 service_role", () => {
-    expect(sql).toMatch(/revoke all on function public\._task_append\([^)]*\) from public, anon, authenticated/);
-    expect(sql).toMatch(/grant execute on function public\.task_append_as\([^)]*\) to service_role/);
-    expect(sql).not.toMatch(/grant execute on function public\.task_append_as\([^)]*\) to authenticated/);
+    for (const name of ["task_append", "task_pen_acquire", "task_pen_release"] as const) {
+      expect(sql).toMatch(new RegExp(`revoke all on function public\\._${name}\\([^)]*\\) from public, anon, authenticated`));
+      expect(sql).toMatch(new RegExp(`grant execute on function public\\.${name}_as\\([^)]*\\) to service_role`));
+      expect(sql).not.toMatch(new RegExp(`grant execute on function public\\.${name}_as\\([^)]*\\) to authenticated`));
+      expect(sql).toMatch(new RegExp(`grant execute on function public\\.${name}\\([^)]*\\) to authenticated`));
+    }
   });
 });
