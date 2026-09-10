@@ -1,6 +1,15 @@
 -- 0036_task_sessions.sql —— 任务会话的云端日志（#1223，spec docs/superpowers/specs/2026-09-10-task-session-cloud-sync-design.md）。幂等，重跑不炸。
 -- 与 0016 / 0021 / 0030 / 0035 同一约定：Supabase SQL editor / Management API 手动执行一次
 -- （那个端点只回最后一条语句的结果，逐条发，整份贴进去看不出哪条炸了）。
+-- 已于 2026-09-10 经维护者确认后在 Cloud 执行（`supabase db query --linked -f`，整份一次过；
+-- 先 `supabase link` 拿 IPv4 pooler，直连 5432 走 IPv6 在本机不通）。跑前核过 `supabase_realtime`
+-- publication 在、两张表 / 九个函数 / bucket 都不在；跑后核过五条：
+--   ① 两张表在、RLS 开着、0 行；② 策略只有 task_sessions 的 select/delete 与 task_session_events
+--      的 select，**没有 insert/update**，事件表连 delete 都没有；③ task_sessions 进了
+--      supabase_realtime，replica identity = full；④ pg_proc 里六个包装 + 三个 _task_*，ACL 与下面
+--      的 revoke/grant 逐字一致（_task_* 与 _as 只剩 postgres + service_role，authenticated 只在三个
+--      裸包装上）；⑤ bucket task-attachments 私有、storage.objects 上四条 task_attachments_* 策略。
+--   之后原样重跑一次验幂等守卫：无报错，计数不变。
 --
 -- 为什么是两张新表而不是复用 workspace_sessions：那张表的 workspace_id 是非空外键、RLS 按在籍判，
 -- 而任务会话是**一个人**的东西，没有团队可言（spec §8）。
