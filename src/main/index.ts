@@ -2181,7 +2181,14 @@ void app.whenReady().then(() => {
   const taskSync = createTaskSessionSync({
     store,
     api: createSupabaseTaskSessionsApi(supabase.raw),
-    uid: () => friends.currentUid(),
+    // uid 同步取自 AccountManager（#1223 复审）：friends.currentUid() 要等 friends.start() 里那次
+    // await getUserId() 才有值，而 onChange 里 taskSyncStart 与 void friends.start() 在同一个同步块——
+    // 照它判 start() 永远是 no-op（realtime / sweep / backfill 一次都没起过）。getAccount() 在 onChange
+    // 之前就已赋值，info.id 就是 uid（needsRelaunch 已经这么用）
+    uid: () => {
+      const a = accountManager?.getAccount();
+      return a?.signedIn ? a.id || null : null;
+    },
     holder: holderId("desktop", remoteKeys?.idStore.deviceId ?? "nodevice"),
     label: hostname(),
     file: { load: () => loadTaskSyncFile(taskSyncPath), save: (f) => saveTaskSyncFile(taskSyncPath, f) },
@@ -2233,8 +2240,10 @@ void app.whenReady().then(() => {
   appendHook.fn = (e) => taskSync.touched(e);
   taskSyncStart = () => taskSync.start();
   taskSyncStop = () => taskSync.stop();
-  // 开机时 onChange 可能已经来过了（restore 早于这段装配）：登录着就现在起
-  if (friends.currentUid()) taskSync.start();
+  // 开机时 onChange 可能已经来过了（restore 早于这段装配，但 restore() 是异步网络调用，
+  // 到这里未必已经 resolve）：登录着就现在起；真正兜底的那次发生在 restore() 完成后
+  // 触发的 onChange 里（taskSyncStart?.()）
+  if (accountManager?.getAccount().signedIn) taskSync.start();
   // 重新聚焦窗口时拉一次（同 #1064 点名收件箱的取舍）
   win.on("focus", () => {
     void taskSync.pullNow();

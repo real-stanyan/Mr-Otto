@@ -728,6 +728,10 @@ export function createTaskSessionSync(deps: TaskSessionSyncDeps): TaskSessionSyn
     flushNow: () => flush(),
     backfill,
     async deleted(id) {
+      // 从没同步过（项目会话 / 子会话——isTask 从没让 touched 给它 ensure 过 file.sessions[id]）：
+      // 云端压根没有这一行，不打 delete。这里已经在本地 purge 之后，isTask(id) 读不到日志了，
+      // 只有游标文件能作证（#1223 复审）
+      if (file.sessions[id] === undefined) return;
       stopRenew(id);
       granted.delete(id);
       delete file.sessions[id];

@@ -487,3 +487,21 @@ describe("taskSessionSync：笔", () => {
     }
   });
 });
+
+describe("taskSessionSync：删除", () => {
+  it("从没同步过的会话（项目会话 / 子会话）：deleted 不打云端 delete、状态不动；同步过的会话照常删", async () => {
+    // file.sessions[id] 是唯一的证人：本地 purge 已经把日志抹了，isTask(id) 读不到 session_created
+    // 了（#1223 复审）。"never-synced" 这个 id 从没被 touched() 过，游标里自然没有它的条目
+    const h = harness();
+    const stateBefore = h.sync.state();
+    await h.sync.deleted("never-synced");
+    expect(h.cloud.calls).not.toContain("delete never-synced");
+    expect(h.sync.state()).toEqual(stateBefore);
+
+    h.store.append(created("s1"));
+    await h.sync.flushNow(); // 推过一轮：file.sessions["s1"] 有游标条目了
+    await h.sync.deleted("s1");
+    expect(h.cloud.calls).toContain("delete s1");
+    expect(h.fileRef().sessions["s1"]).toBeUndefined();
+  });
+});
