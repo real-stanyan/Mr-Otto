@@ -114,6 +114,7 @@ import { McpPromptCard } from "./components/McpPromptCard.js";
 // RetryButton 不在这里 import 了:main 侧原来在这渲染它,新路径下 OttoThread 自己的
 // ErrorBanner 槽已经内置了同一颗按钮(见 aui/OttoThread.tsx),App.tsx 不用重复渲染
 import { SectionRail } from "./components/SectionRail.js";
+import type { RevealRequest } from "./lib/messageWindow.js";
 import { FolderIcon } from "./components/FileTypeIcon.js";
 import { AUTO_MODEL } from "../../shared/autoModel.js";
 import { currentImageModel, isImageAuto } from "../../shared/imageModel.js";
@@ -3733,14 +3734,15 @@ export function App() {
   // 分区跳转的慢路径请求与窗口变化计数(ADR-0285 决定 3,都喂给 OttoThread):
   // revealRequest = 「目标锚点还在窗口外,先把窗口抬上去再滚」;
   // windowNonce = 窗口上沿动过的次数,scrollspy effect 靠它重新收集锚点
-  const [revealRequest, setRevealRequest] = useState<{ section: number; nonce: number } | null>(null);
+  const [revealRequest, setRevealRequest] = useState<RevealRequest | null>(null);
   const [windowNonce, setWindowNonce] = useState(0);
   // 两个回调都要稳定引用:进了 OttoThread 的 effect 依赖,每次都新建会让
   // 那边的 effect 跟着 App 的重渲染空转(reveal 桥甚至会重复滚)
   const settleReveal = useCallback(() => setRevealRequest(null), []);
   const bumpWindowNonce = useCallback(() => setWindowNonce((n) => n + 1), []);
-  // 挂起的 reveal 请求是**那条**会话的:切了会话,它的分区号在新会话里
-  // 指向另一个分区(或越界)——清掉,别拿旧请求去解新 sections
+  // 切会话清掉挂起的 revealRequest —— 这只是卫生:frame 级的正确性不靠它
+  // (passive effect 子先于父,这道清理赶不上 OttoThread 先跑的那一帧),
+  // 正确性在请求自带的 sessionId 上(messageWindow.ts 的 RevealRequest 注释)
   useEffect(() => {
     setRevealRequest(null);
   }, [sessionId]);
@@ -3800,8 +3802,14 @@ export function App() {
       return;
     }
     // 慢路径:锚点在时间线窗口外,还没挂载 —— 让 OttoThread 先把窗口抬到
-    // 包含它(reveal 桥,ADR-0285 决定 3),挂载完成由它接手滚动并收口
-    setRevealRequest((r) => ({ section: index, nonce: (r?.nonce ?? 0) + 1 }));
+    // 包含它(reveal 桥,ADR-0285 决定 3),挂载完成由它接手滚动并收口。
+    // 请求盖上此刻的 sessionId:passive effect 子先于父,OttoThread 可能在
+    // App 清理之前先看到这条请求 —— 它消费前会核对这个戳(见 planReveal)
+    setRevealRequest((r) => ({
+      section: index,
+      nonce: (r?.nonce ?? 0) + 1,
+      sessionId: useChat.getState().sessionId,
+    }));
   }, []);
 
   // 划词引用(SelectionQuote)的宿主:选区两端都要落在这个容器里才算「选中了消息」。

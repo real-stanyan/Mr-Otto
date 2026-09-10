@@ -45,3 +45,49 @@ export function revealHidden(hidden: number, targetIndex: number): number {
 export function windowIds<T>(ids: readonly T[], hidden: number): readonly T[] {
   return hidden <= 0 ? ids : ids.slice(hidden);
 }
+
+// ─── reveal 桥(ADR-0285 决定 3)的处理计划 ───
+
+export interface RevealRequest {
+  section: number;
+  /** 让「连点同一个分区」也能再触发一次 */
+  nonce: number;
+  /** 发起那一刻的 sessionId。为什么必须带:React 的 passive effect **子先于父**跑,
+      切会话那一帧,OttoThread 的 reveal effect 会**先于** App 的清理 effect
+      看到旧会话留下的请求 —— 靠 App 清理追不上那一帧,所以请求自带发起人,
+      消费前核对(判据是自己算得出的事实,不是「父组件应该已经清了」) */
+  sessionId: string;
+}
+
+export type RevealPlan =
+  /** 旧会话的残留请求:不动它(不抬窗、不滚、**也不收口** —— App 的清理 effect 随后收走) */
+  | { kind: "stale" }
+  /** 分区/锚点对不上:无处可滚,收口 */
+  | { kind: "settle" }
+  /** 目标还没挂载:先把窗口上沿抬到包含它;hiddenCount 变化后调用方再问一次 */
+  | { kind: "grow"; to: number }
+  /** 目标已挂载:滚过去 */
+  | { kind: "scroll"; selector: string };
+
+/** reveal 请求 → 动作。「分区 → 第一条带它锚点的消息」这条对齐**只反查**
+    buildSectionAnchors 建好的 anchorsByMessageId,不在这里再造一份 startSeq 比较 ——
+    两份判据并存,漂移那天不会报错。reveal 是低频动作,O(消息数) 扫一次无所谓 */
+export function planReveal(
+  request: RevealRequest,
+  currentSessionId: string,
+  anchorsByMessageId: ReadonlyMap<string, readonly number[]>,
+  messageIds: readonly string[],
+  hiddenCount: number
+): RevealPlan {
+  if (request.sessionId !== currentSessionId) return { kind: "stale" };
+  let targetIdx = -1;
+  for (let i = 0; i < messageIds.length; i++) {
+    if (anchorsByMessageId.get(messageIds[i]!)?.includes(request.section)) {
+      targetIdx = i;
+      break;
+    }
+  }
+  if (targetIdx === -1) return { kind: "settle" };
+  if (targetIdx < hiddenCount) return { kind: "grow", to: revealHidden(hiddenCount, targetIdx) };
+  return { kind: "scroll", selector: `[data-section="${request.section}"]` };
+}

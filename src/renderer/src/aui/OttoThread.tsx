@@ -80,7 +80,7 @@ import { useChat } from "../store.js";
 import { spawnedToolCallIds } from "../lib/subagentTimeline.js";
 import { totalTokens } from "../../../session/deriveUsage.js";
 import { toThreadMessages } from "./toThreadMessages.js";
-import { growHidden, initialHidden, revealHidden } from "../lib/messageWindow.js";
+import { growHidden, initialHidden, planReveal, type RevealRequest } from "../lib/messageWindow.js";
 import { ottoDirectiveFormatter } from "./ottoDirectives.js";
 import { liveTimingStats, turnTimingStats, type TurnTimingAgg } from "./messageTiming.js";
 import { contextBreakdown, estimateTokens } from "../../../shared/contextEstimate.js";
@@ -954,8 +954,9 @@ export function OttoThread({
   sections: Section[];
   /** 分区跳转的慢路径(ADR-0285 决定 3):目标锚点在时间线窗口外没挂载时,
       App 把分区号递过来,这里把窗口抬到包含它,再接手滚过去。
-      nonce 让「连点同一个分区」也能再触发一次 */
-  revealRequest?: { section: number; nonce: number } | null | undefined;
+      nonce 让「连点同一个分区」也能再触发一次;sessionId 是发起那一刻的会话,
+      切会话后残留的请求在这里被识破(planReveal 的 stale 分支) */
+  revealRequest?: RevealRequest | null | undefined;
   /** revealRequest 处理完(滚了,或发现无处可滚)回调一次,App 据此清掉请求 */
   onRevealSettled?: (() => void) | undefined;
   /** 窗口上沿动过(补挂 / reveal / 切会话归零)就回调一次 —— App 的 scrollspy
@@ -994,36 +995,31 @@ export function OttoThread({
   }, [hiddenCount, onWindowChange]);
 
   // reveal 桥:快路径(锚点已在 DOM)在 App.tsx 原地解决,走不到这里。
-  // 一段 effect 跑完两步:窗口没盖住目标 → 抬窗口;hiddenCount 变化让本 effect
-  // 再跑一次 → 目标已挂载 → 滚过去 → 收口
+  // 判定全在 planReveal(纯函数,messageWindow.ts),这里只执行它的计划。
+  // stale 分支是切会话那一帧的保命闸:passive effect 子先于父,本 effect 会
+  // 先于 App 的清理 effect 看到旧会话留下的请求 —— 对不上 sessionId 就不动它
   useEffect(() => {
     if (revealRequest === null) return;
-    const section = sections[revealRequest.section];
-    if (section === undefined) {
+    const plan = planReveal(revealRequest, sessionId, anchorsByMessageId, messageIds, hiddenCount);
+    if (plan.kind === "stale") return;
+    if (plan.kind === "settle") {
       onRevealSettled?.();
       return;
     }
-    // buildSectionAnchors 的反查:分区 startSeq → 第一条 id >= startSeq 的消息
-    const targetIdx = messageIds.findIndex((id) => Number(id) >= section.startSeq);
-    if (targetIdx === -1) {
-      onRevealSettled?.();
-      return;
-    }
-    if (targetIdx < hiddenCount) {
-      setHiddenCount(revealHidden(hiddenCount, targetIdx));
+    if (plan.kind === "grow") {
+      // 窗口抬到位后,hiddenCount 变化让本 effect 再跑一次,下一轮走进 scroll
+      setHiddenCount(plan.to);
       return;
     }
     // 已进窗口 = 锚点已挂载(窗口按消息 id 的前缀切,锚点跟着自己的消息走)
-    const anchor = viewportRef?.current?.querySelector<HTMLElement>(
-      `[data-section="${revealRequest.section}"]`
-    );
+    const anchor = viewportRef?.current?.querySelector<HTMLElement>(plan.selector);
     anchor?.scrollIntoView({
       block: "start",
       // 与 App.tsx jumpToSection 快路径同一个 smooth/reduced-motion 分支
       behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
     });
     onRevealSettled?.();
-  }, [revealRequest, hiddenCount, sections, messageIds, viewportRef, onRevealSettled]);
+  }, [revealRequest, sessionId, hiddenCount, anchorsByMessageId, messageIds, viewportRef, onRevealSettled]);
   // 每次事件追加算一次,所有工具行共读(替代原来每行各订阅各扫的写法)
   const spawnedIds = useMemo(() => spawnedToolCallIds(events), [events]);
   // 时间线行(派活卡/交接行)共读的投影,同上理由(#115):顶层算一次,Context 分发
