@@ -268,6 +268,15 @@ e2e（Playwright 双实例）可选，不进门禁。
 10. 子智能体会话不上云；另一台机器上的 `session_search` 看不到它们。
 11. realtime `postgres_changes` 大 payload 会不会静默丢**没真验过**——设计上只订小行，不依赖那个答案。
 12. 收口帮手跑完才放笔：手机在电脑刚答完那几秒里发的话要多等帮手那一两秒。
+13. 冲突分叉时若原会话有子智能体会话 → 冻结（`frozen: "has_children_conflict"`）不 purge，那条会话停止同步直到人来处理。
+14. 附件「拉到即取」：拉到那一刻下载失败进 `missingAttachments`，下次 sweep 重试，期间那张图在本机画占位。
+15. `service_role` 有 BYPASSRLS：append-only 与笔约束对 runtime 是「只走 `_as` 包装」的约定，不是 DB 强制。
+16. held 时 skill / 图片消息要等对面答完再发一次。
+17. `state()` 是瞬态、`frozen` 是持久：渲染层的那一行看不到「为什么停了」的持久原因（下一次成功 sweep 会把它刷回 idle）。
+18. `acquirePen` 没有超时：悬住的 socket 会让准入卡住到 undici 放弃。
+19. compact 期间放笔检查会跳过、等下一 turn 收口；F3 放笔正确性依赖收口帮手链是真异步。
+20. `answerLogged` 的 held 分支不排空 `pendingBg`（延迟不丢）。
+21. 0036 未在真库执行前，桌面状态行写「云端还没有任务会话表」（有意的失败方向）。
 
 ## 8. 否决的候选
 
@@ -281,3 +290,55 @@ e2e（Playwright 双实例）可选，不进门禁。
 - 换执行器重拍 `memory_loaded`：见 §7 第 5 条。
 - 手机走中继经 runtime 读日志（像 cs 帧）：runtime 挂了手机连历史都看不到；直连 Supabase 是用户自己的数据 + RLS，少一整层。
 - 同步时过 `PRIVACY_VERDICTS` 挑着传：副本不逐字节相等就没法用「本地是云端前缀」这一条不变量做对账，且云端执行器要的正是模型可见的那批。
+
+## 9. 实施偏差（写 plan 时定的，合并时以此为准）
+
+以下 20 条是实现期间对本 spec 正文的偏离，以及复审过程中新增的裁定，均已落地（对应 commit 见
+issue #1223 的 progress 记录）。spec 正文本身不回改，读到与本节冲突之处以本节为准。
+
+### A. 与 spec 正文不同的六处
+
+1. **附件「拉到即取」而非读时回取**（对应 §3.6「附件回取」）：puller 追加事件后立刻下载引用的图片
+   进本地 `AttachmentStore`，失败进 `missingAttachments` 下次 sweep 重试；§3.6 提到的四处同步读字节
+   的闭包（`index.ts:3405 / 3562 / 4037 / 4284`）一个字不动，没有改经 `attachmentFetch`。
+2. **睡眠打断用 `engine.abortTurn("interrupted")`**（对应 §3.6「睡眠 / 唤醒」），`turn_ended.outcome`
+   写 `interrupted`；`lastUnanswered` 把它算「没答」、`aborted` 算「答过」。
+3. **建行那一批（`expected_seq = 0`）由 RPC 顺手把笔发给创建者**（30 s），不是创建者另外再
+   acquire 一次。
+4. **分叉出来的兄弟会话不写 `forkedFrom`**（对应 §3.6「冲突」里 `session_created.forkedFrom` 的
+   说法）：`store.purge` 会因为引用式分支拒绝抹掉原 id；身份改靠标题后缀「（本机未同步的分支）」。
+5. **多一条 push 通道 `taskSessionReplaced`**：purge + 重拉之后渲染层整份重载，spec 正文未提及。
+6. **realtime 同时订 INSERT 与 UPDATE**（对应 §3.1「realtime 只订这张表的 UPDATE」）：INSERT 也订
+   了，用于另一台设备建会话时的即时感知。
+
+### B. 复审后新增的裁定
+
+7. **有子智能体会话的会话不 purge**：冲突时 `store.purge` 会级联删子会话（从没同步过）；改成冻结
+   （`frozen: "has_children_conflict"`）、本地全留、状态里说清，其他设备照旧在云端那份上继续。
+8. **持久化的终态标志 `frozen?: string`**（`task-sync.json`）：`forbidden`（RPC 拒收，含超限事件）
+   / `has_children_conflict` / `needs_upgrade` / `purge_rejected`（有引用式分支）。冻结的会话
+   touched/push/pull 一律跳过、不清；只有 `needs_upgrade` 在每次开机 backfill 时解冻再试。
+9. **先验再换**：`replaceWithCloud` 之前用 `shouldPersist` 逐条验云端日志，验不过 = `needs_upgrade`
+   冻结、不 purge；拉取时撞到本版本不认识的事件类型（`store.append` 的 `assertNever`）停在那一条、
+   保住前缀、冻结 `needs_upgrade`（旧桌面对新版本写的会话提示升级，而不是半截日志）。
+10. flush 按轮快照、封顶三轮；出错把同批余下的会话放回；封顶后 dirty 非空 `scheduleRetry`；
+    `forkCopy` 末尾 `scheduleFlush`；backfill 也对 `pushedUpTo < 本地末条` 的会话标脏；建行发的笔也
+    续期（`granted + startRenew`）；笔丢了清 `granted`。
+11. `sliceBatches` 按 UTF-8 字节切批（不是 UTF-16 单元）。
+12. 四个 SQLSTATE 常量 `TASK_SQLSTATE` 落 `src/shared/taskSync.ts`，api 与 migration 对表断言。
+13. 0036 SQL：`p_events` NULL 守卫、pen RPC 校验 holder、建行竞态 `unique_violation → P0010`、标题
+    `btrim`。
+14. **复制器的 uid 同步取自 `AccountManager`**（`friends.currentUid()` 在 `onChange` 那一刻还是
+    null，照它判 `start()` 永远 no-op）。
+15. `taskSync.deleted()` 只对有游标条目的会话打云端 `DELETE`。
+16. **turn 准入**：同步的 `admitting` Set 把「判 running」与「add running」之间那次
+    `await acquirePen` 盖住（`handleSendMessage` / `answerLogged` / `compact` 三处）；渲染层那
+    ~100 ms 窗口再按回车得到既有「还在跑」错误而不是排队。
+17. **笔的放法**：try 之前抛错先放笔；`executor_changed` 的 append 在 try 里；收口帮手排空后**只在
+    没有下一轮在跑/准入时**放（后台回注紧接着起下一轮）。
+18. **held（笔被别人握着）时带 skill 或图片的消息拒收**并说清（`skill_invoked` / `image_described`
+    是 executor 类事件，没有笔落不了）；纯文本照落。`answerLogged` 那条路补检查点 +
+    `pickAutoModel`，不做图片代读（另一台设备落的带图人话在没有视觉的型号上直接跑）。
+19. 后台回注排空 `drainPendingBg` 由两个调用方在各自 `finally` 之后调；held 分支也排空；
+    `handleBackgroundDone` 的 queue-up 判据加 `admitting`。
+20. 合盖时被打断的会话记进 `interruptedBySuspend`，唤醒后 `pullNow().finally` 之后逐个接着答。
