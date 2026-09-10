@@ -329,3 +329,201 @@ export function voiceCallLineParts(
   if (removed.length > 0 && added.length === 0) return [...who, t("把"), ...list(removed), t("移出了通话")];
   return [...who, t("更新了通话名单："), ...list(e.participants)];
 }
+
+// ─── 一场通话折成一张卡（#1233，ADR-0288） ─────────────────────────────
+
+/** 卡里的一行。两种形状用 `parts` 区分：非 null = 名单变了那道分隔线（复用
+    `voiceCallLineParts`，所以「「开发」把「运营」拉进了通话」这句话在卡里和
+    原来在时间线上逐字相同）；null = 有人说了一句话。 */
+export interface VoiceCallCardLine {
+  seq: number;
+  parts: readonly VoiceCallPart[] | null;
+  /** 说话人显示名。名单变更那行不用（parts 自带名字） */
+  label: string;
+  /** 空串 = 没有脸可画，退回首字母（同 `VoiceCallPart` 那条纪律） */
+  avatarSrc: string;
+  /** 相对通话开始的毫秒。画成 mm:ss —— 通话里的时间是「第几分几秒说的」，
+      墙上时间在这张卡里没有意义（整场通常只跨几分钟） */
+  offsetMs: number;
+  text: string;
+  /** 我说的（画得比别人略重一点，同气泡那侧的 mine） */
+  mine: boolean;
+}
+
+/** 一场通话。`seq` 是它在时间线上的位置 = 这场通话**第一条**
+    `voice_call_changed` 的 seq，也就是原来那行「XX 开始了语音通话」的位置。 */
+export interface VoiceCallCard {
+  seq: number;
+  sinceTs: number;
+  /** null = 还开着（卡片画「通话中」，时长自己按 now 走一只表） */
+  endedTs: number | null;
+  /** 说出来的话 + 通话里那几只 agent 的回复，不含名单变更那几行 —— 收起时报的
+      「N 句」就是这个数。名单变更计进去的话，一场谁都没说话、只是拉了两次人的
+      通话会报「2 句」 */
+  utterances: number;
+  /** 整场出现过的人与 agent（并集，不是此刻的名单）：中途被移出的那只照旧算
+      参与过这场通话，收起时那一排脸报的是「这场通话里有谁」 */
+  parties: readonly { name: string; avatarSrc: string }[];
+  lines: readonly VoiceCallCardLine[];
+}
+
+/** 把日志折成「一场通话 = 一张卡」（#1233，ADR-0288）。
+ *
+ * 维护者原话：「把通话的所有文本内容集成为一个卡片居中显示在会话框里，如果用户
+ * 想看的话，自己点进去再看。」改动前一场 12 句的通话把时间线撑开一千多像素，
+ * 前后真正的工作对话被挤到看不见。
+ *
+ * **判据不是 seq 区间**（ADR-0288 决策 1）：那条路零 schema 改动，但云会话是群聊
+ * —— 通话期间**没在通话里的人打的字会被吞进一张他没参与的通话卡**，而这条 issue
+ * 修的正是「不该进时间线的东西进了时间线」，方向修反就是同一类 bug 的新一版。
+ * 所以人说的话认 `voice` 记号（协议 19 新加的那一格，麦克风那侧唯一知道这件事），
+ * agent 的回复认「它此刻在通话名单里」—— 后者不用第二个字段：通话里那几只的回复
+ * 会被读出来（ADR-0271），这本身就是日志推得出的事实。
+ *
+ * **已知代价**：通话期间有人打字提问、而通话里的 agent 答了，那条答案进卡片、
+ * 问题留在时间线上（卡里出现一句没有问题的答案）。混着说与打字的用法很少见，
+ * 且两半都还读得到；反过来（把打字的也吞进去）会连旁人的话一起吞。
+ *
+ * 回的是两样：`cards` 按「开场那条 `voice_call_changed` 的 seq」索引，渲染循环
+ * 走到那一条就画卡；`folded` 是被卡吞掉的每一条 seq，渲染循环见到就 return null。
+ * **不塞进 `hiddenFromCloudTimeline`**：那个函数是逐事件的纯谓词，而「这一条属不
+ * 属于某场通话」要跨事件才答得出（同渲染循环里 `prevVoiceCall` 那张表的手法）。
+ */
+export function voiceCallCards(
+  events: readonly SessionEvent[],
+  ws: WorkspaceSnapshot,
+  selfUid: string
+): { cards: Map<number, VoiceCallCard>; folded: ReadonlySet<number> } {
+  const cards = new Map<number, VoiceCallCard>();
+  const folded = new Set<number>();
+  /** 正开着的那张卡的草稿。null = 此刻没有通话 */
+  let draft: {
+    seq: number;
+    sinceTs: number;
+    lines: VoiceCallCardLine[];
+    /** 整场出现过的 agentId → 事件里那份名字快照（并集，保插入顺序）。
+        **带快照不只带 id**：那只后来被删掉时名册里查不到，退回快照才还有个把手
+        ——同 `voiceCallLineParts` / `assistantLabel` 那条兜底纪律 */
+    agents: Map<string, string>;
+    /** 整场出现过的人类 uid（并集，保插入顺序） */
+    uids: Set<string>;
+    utterances: number;
+  } | null = null;
+  /** 此刻的名单，用来判「这条 assistant_message 是通话里那几只说的吗」 */
+  let roster = new Set<string>();
+  let prevCall: VoiceCallChangedEvent | null = null;
+
+  /** `snapshot` = 事件里那份名字快照（`voice_call_changed.participants[].name`）。
+      名册里查得到就现查（改名不断账：脸与名字都跟着当前名册走），查不到退回快照，
+      快照也没有才落回裸 id —— 三级兜底与 `voiceCallLineParts` 逐字同一条 */
+  const partyOfAgent = (agentId: string, snapshot?: string): { name: string; avatarSrc: string } => {
+    const known = ws.agents.some((a) => a.agentId === agentId);
+    return {
+      name: known ? agentNameOf(ws, agentId) : (snapshot ?? agentId),
+      avatarSrc: known ? agentAvatarSrc(ws, agentId) : "",
+    };
+  };
+
+  const close = (endedTs: number | null): void => {
+    if (draft === null) return;
+    cards.set(draft.seq, {
+      seq: draft.seq,
+      sinceTs: draft.sinceTs,
+      endedTs,
+      utterances: draft.utterances,
+      // agent 排在人前面：一排脸里先看到会说话的那几只（同 @ 选人名单的顺序）
+      parties: [
+        ...[...draft.agents].map(([agentId, snapshot]) => partyOfAgent(agentId, snapshot)),
+        ...[...draft.uids].map((uid) => ({ name: labelOf(ws, uid), avatarSrc: memberAvatarOf(ws, uid) })),
+      ],
+      lines: draft.lines,
+    });
+    draft = null;
+  };
+
+  const say = (e: { seq: number; ts: number }, label: string, avatarSrc: string, text: string, mine: boolean): void => {
+    if (draft === null) return;
+    folded.add(e.seq);
+    draft.utterances += 1;
+    draft.lines.push({ seq: e.seq, parts: null, label, avatarSrc, offsetMs: Math.max(0, e.ts - draft.sinceTs), text, mine });
+  };
+
+  for (const e of events) {
+    if (e.type === "voice_call_changed") {
+      if (draft === null) {
+        // 开场那一条**留在时间线上**：卡就画在它的位置
+        if (e.participants.length === 0) { prevCall = e; continue; } // 空名单开场 = 旧日志里的怪形状，不开卡
+        draft = { seq: e.seq, sinceTs: e.ts, lines: [], agents: new Map(), uids: new Set([e.byUid]), utterances: 0 };
+        for (const p of e.participants) draft.agents.set(p.agentId, p.name);
+      } else {
+        // 中途拉人 / 移出 / 结束：折进这张卡，不在时间线上另起一行
+        folded.add(e.seq);
+        draft.lines.push({
+          seq: e.seq, parts: voiceCallLineParts(prevCall, e, ws),
+          label: "", avatarSrc: "", offsetMs: Math.max(0, e.ts - draft.sinceTs), text: "", mine: false,
+        });
+        // `set` 不是 `has` 守卫：名字快照取**最后一次**看到的那份（中途改过名的话，
+        // 卡上那一排该显示他后来叫什么）
+        for (const p of e.participants) draft.agents.set(p.agentId, p.name);
+        if (e.participants.length === 0) close(e.ts);
+      }
+      roster = new Set(e.participants.map((p) => p.agentId));
+      prevCall = e;
+      continue;
+    }
+    if (draft === null) continue;
+    if (e.type === "user_message") {
+      // relay / greeting 那两种开场白本来就不画（hiddenFromCloudTimeline 第 ①⑦ 条）：
+      // 它们带不了 `voice`，走不到这里；这道判据是为了「藏起来的东西不会因为通话
+      // 开着而冒出来」由构造保证，而不是靠那两条恰好不带记号
+      if (e.voice !== true || hiddenFromCloudTimeline(e)) continue;
+      const id = userRowIdentity(e, ws, selfUid);
+      if (id.uid !== null) draft.uids.add(id.uid);
+      say(e, id.label ?? "?", id.uid !== null ? memberAvatarOf(ws, id.uid) : "", id.text, id.mine);
+      continue;
+    }
+    if (e.type === "chat_message") {
+      if (e.voice !== true) continue;
+      draft.uids.add(e.fromUid);
+      say(e, e.label, memberAvatarOf(ws, e.fromUid), e.content, e.fromUid === selfUid);
+      continue;
+    }
+    if (e.type === "assistant_message") {
+      // 中间步骤照旧整段不画（#1055）：卡里也不该有「它跑了个工具」
+      if (isAgentStep(e) || e.agentId === undefined || !roster.has(e.agentId)) continue;
+      // 名单里必有它（上面 roster.has 那道闸），所以快照一定查得到
+      const party = partyOfAgent(e.agentId, draft.agents.get(e.agentId));
+      say(e, party.name, party.avatarSrc, e.content, false);
+      continue;
+    }
+  }
+  // 还开着的那场：卡片画「通话中」。**不 close 成 ended** —— 那会把一场正在
+  // 进行的通话说成结束了（日志里那条空名单事件才是结束的唯一凭据）
+  close(null);
+  return { cards, folded };
+}
+
+/** 收起时那行「6 分 12 秒」。三档：不足一分钟只报秒（「48 秒」比「0 分 48 秒」像
+    人话）；一小时以上报「小时 + 分」**不再报秒**（那一位在这个量级上没有意义，且
+    这一格是会每秒一跳的）。
+    超一小时这一档不是洁癖：日志里「通话结束」是一条真事件，daemon 崩在通话中的话
+    那条永远不来，卡就一直是「通话中」——没有这一档它会写成「1483577 分 34 秒」 */
+export function callDurationText(ms: number): string {
+  const total = Math.max(0, Math.round(ms / 1000));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const sec = total % 60;
+  if (h > 0) return `${h} 小时 ${m} 分`;
+  return m === 0 ? `${sec} 秒` : `${m} 分 ${sec} 秒`;
+}
+
+/** 卡里每一行左边那个 mm:ss。超过一小时照 `h:mm:ss` 展开，不把 61 分钟写成 01:00 */
+export function callOffsetText(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000));
+  const h = Math.floor(total / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const sec = total % 60;
+  const mm = String(m).padStart(2, "0");
+  const ss = String(sec).padStart(2, "0");
+  return h > 0 ? `${h}:${mm}:${ss}` : `${mm}:${ss}`;
+}

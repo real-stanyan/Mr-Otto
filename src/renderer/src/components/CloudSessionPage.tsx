@@ -39,7 +39,7 @@
 // 新造。
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { ArrowLeft, AtSign, Download, Phone, Settings2 } from "lucide-react";
+import { ArrowLeft, AtSign, ChevronRight, Download, Phone, Settings2 } from "lucide-react";
 import { cn, isMac } from "@/lib/utils.js";
 import { Button } from "@/components/ui/button.js";
 import { Bubble, BubbleContent } from "@/components/ui/bubble.js";
@@ -51,6 +51,7 @@ import { COMPOSER_METRICS, ComposerActions, ComposerBar, ComposerSend, ComposerT
 import { TypingIndicator } from "@/components/elements/typing-indicator.js";
 import { ghostButton } from "@/lib/surfaces.js";
 import { Popover, PopoverAnchor, PopoverContent } from "@/components/ui/popover.js";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog.js";
 import { useChat, type CloudSessionState } from "../store.js";
 import { EventRow, TimelineProjectionContext } from "./Timeline.js";
 import { buildToolIndex } from "../lib/toolIndex.js";
@@ -61,8 +62,9 @@ import { agentAvatarSrc } from "../lib/agentAvatar.js";
 import { applyAgentMention, mentionQueryAt, pickerEmptyState, resolveSendMentions } from "../lib/agentMentionInput.js";
 import { filterMentionRows, mentionRows, MENTION_KIND_LABEL, type MentionRow } from "../lib/workspaceMentionItems.js";
 import {
-  approvalCardTitle, assistantLabel, canStopTurn, cloudEmptyState, hiddenFromCloudTimeline, relayLineText,
-  stopButtonRows, systemNoteText, turnEndedLineText, userRowIdentity, voiceCallLineParts, type VoiceCallPart,
+  approvalCardTitle, assistantLabel, callDurationText, callOffsetText, canStopTurn, cloudEmptyState,
+  hiddenFromCloudTimeline, relayLineText, stopButtonRows, systemNoteText, turnEndedLineText, userRowIdentity,
+  voiceCallCards, type VoiceCallCard,
 } from "../lib/cloudTimeline.js";
 import { systemNoteDetail } from "../lib/systemNote.js";
 import { TurnErrorState } from "./TurnErrorState.js";
@@ -72,7 +74,7 @@ import { safeSpeakerLabel, SYSTEM_SPEAKER_UID } from "../../../shared/promptSafe
 import { mentionTokens, parseMemberMentions, parseMentions, type MentionCandidate } from "../../../shared/remote/agentMention.js";
 import type {
   AgentBriefedEvent, AgentRelayEvent, ApprovalDecisionEvent, ApprovalRequestEvent, AssistantMessageEvent,
-  ChatMessageEvent, SessionEvent, VoiceCallChangedEvent,
+  ChatMessageEvent, SessionEvent,
 } from "../../../session/events.js";
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 import type { CloudAck } from "../../../shared/shellBridge.js";
@@ -295,16 +297,10 @@ export function CloudSessionPage({
     if (!ok) return { ok: true };
     return cloudCall([]);
   };
-  const prevVoiceCall = useMemo(() => {
-    const m = new Map<number, VoiceCallChangedEvent | null>();
-    let prev: VoiceCallChangedEvent | null = null;
-    for (const e of events) {
-      if (e.type !== "voice_call_changed") continue;
-      m.set(e.seq, prev);
-      prev = e;
-    }
-    return m;
-  }, [events]);
+  /** 一场通话折成一张卡（#1233，ADR-0288）：`cards` 按开场那条 voice_call_changed 的
+      seq 索引，`folded` 是被吞掉的每一条。这活不能塞进 `hiddenFromCloudTimeline`——
+      那是逐事件的纯谓词，而「这一条属不属于某场通话」要跨事件才答得出 */
+  const voiceCards = useMemo(() => voiceCallCards(events, ws, selfUid), [events, ws, selfUid]);
 
   // 时间线行共读的日志投影,同 OttoThread 顶层的算法(aui/OttoThread.tsx:957)
   const timelineProjection = useMemo(
@@ -827,6 +823,9 @@ export function CloudSessionPage({
               // 画出来是同一件事说两遍（#950）
               // 一道判据管所有「这一行画不画」（#1055 把中间步骤那道合了进来）
               if (hiddenFromCloudTimeline(e)) return null;
+              // 被通话卡吞掉的那些（#1233）：说出来的话、通话里那几只的回复、
+              // 中途的名单变更。判据在 voiceCallCards，见那个函数的头注
+              if (voiceCards.folded.has(e.seq)) return null;
               if (e.type === "chat_message") {
                 return (
                   <ChatMessageRow
@@ -867,7 +866,10 @@ export function CloudSessionPage({
                 return <AgentBriefedRow key={e.seq} event={e} />;
               }
               if (e.type === "voice_call_changed") {
-                return <VoiceCallRow key={e.seq} parts={voiceCallLineParts(prevVoiceCall.get(e.seq) ?? null, e, ws)} />;
+                const card = voiceCards.cards.get(e.seq);
+                // 开场那一条 = 卡片的位置。查不到（空名单开场那种旧日志怪形状）
+                // 就一个字都不画：那条事件说不出任何一句真话
+                return card ? <VoiceCallCardRow key={e.seq} card={card} /> : null;
               }
               if (e.type === "agent_relay") {
                 return <AgentRelayRow key={e.seq} event={e} ws={ws} />;
@@ -1495,45 +1497,202 @@ function AgentRelayRow({ event, ws }: { event: AgentRelayEvent; ws: WorkspaceSna
   );
 }
 
-/** 通话名单那一行（#1163）：谁开的、拉了谁、结束了。事件只记事实（此刻谁在通话里），
-    动作是投影出来的，见 voiceCallLineParts。
+/** 一场语音通话在时间线上的**全部**痕迹：一张居中的卡（#1233，ADR-0288）。
+    点开是一个弹窗，通话里说过的每一句在里面。
 
-    **居中 + 每个名字左边一张脸**（#1228），从此与旁边那几行旁白（AgentBriefedRow /
-    AgentRelayRow / SystemNoteRow）**故意不再同款**：那几条是机器的内务（谁就位了、
-    棒传给了谁），靠左的一行小灰字就是它们该有的分量；这一条说的是整个群此刻的状态
-    ——通话开着，之后每条回复都会被读出来（ADR-0271）——群聊里「这件事跟所有人有关」
-    的通行写法就是居中。头像回答的是「这几个名字是谁」：agent 可以随时改名（改名不
-    断账那条纪律说的正是名字会变），脸比名字稳。
+    维护者原话：「把通话的所有文本内容集成为一个卡片居中显示在会话框里，如果
+    用户想看的话，自己点进去再看。」改动前通话里每一句转写各自一条气泡，一场
+    12 句的通话把时间线撑开一千多像素，前后真正的工作对话被挤到看不见。
 
-    脸走 inline-flex 跟着文字流走，**不是**把整行排成一个 flex：名单长了必然换行，
-    而 flex 那种排法换行之后每一行各自成一个 flex 行，`text-center` 管不到它；
-    inline 之后每一行都被行盒自己居中。`whitespace-nowrap` 把脸和名字锁在一起——
-    换行断在脸与它的名字中间，读起来就是一张没有主人的脸。
-    `not-italic` 只给兜底那个首字母：外面这层是斜体，而一个斜着的首字母在 16px
-    的圆里认不出是字母还是划痕 */
-/* 导出是为了让 tests/renderer/voiceCallRow.test.tsx 真渲染一遍——纯逻辑那份
-   （cloudTimelineLabels）钉的是每一格的值，钉不到「脸有没有真被画出来」，而维护者
-   对这块 UI 提的两件事（居中、名字左边有脸）恰好都只在这一层看得见（同 #1068） */
-export function VoiceCallRow({ parts }: { parts: readonly VoiceCallPart[] }) {
+    **居中 + 每个名字左边一张脸**（ADR-0286 的两条结论原样成立，只是换了载体）：
+    这一条说的是整个群此刻的状态，不是机器的内务——那几行旁白（AgentBriefedRow /
+    AgentRelayRow / SystemNoteRow）照旧靠左。名单变更那几行搬进了卡里，仍然走
+    `voiceCallLineParts`，所以那句话逐字没变。
+
+    收起时**只报「多久 / 多少句」**：人能据此决定点不点开。不报「几步 / 几次工具
+    调用」那类量——ADR-0250 已经为折叠头判过一次，那句摘要说的是干活的量，读者
+    既不能据此判断进度也不能据此做任何事。
+
+    **收起时不带最新一句**（维护者拍板）：带了等于把转写文本又请回时间线一点，
+    而通话进行中人一般正看着通话栏或全屏通话视图（ADR-0278），那两处有字幕。
+
+    展开走**弹窗**不走内联展开（维护者对着 HTML demo 拍的，三种都做了原型）：
+    时间线上永远只剩这张约 56px 的卡——内联展开只解决默认态，展开后又把时间线
+    撑开一次；而一场几十句的通话要一整屏才读得舒服。 */
+/* 导出是为了让 tests/renderer/voiceCallCard.test.tsx 真渲染一遍——纯逻辑那份
+   （voiceCallCards）钉的是折进卡的是哪几条，钉不到「居中」「脸有没有真画出来」
+   「点一下弹窗开不开」，而维护者对这块 UI 提的几件事恰好都只在这一层看得见
+   （同 #1228 / #1068） */
+export function VoiceCallCardRow({ card }: { card: VoiceCallCard }) {
+  const live = card.endedTs === null;
+  // 通话中那只表（#1233）：**作用域圈在这张卡里**——整条时间线一秒一跳会把
+  // 窗口化那套（ADR-0285）的开销放大一倍，而这一格只有这张卡在读。已结束的
+  // 卡一个定时器都不挂（同 ADR-0255 那枚点的纪律：常驻的东西才需要表）
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!live) return;
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [live]);
+  const ms = (card.endedTs ?? now) - card.sinceTs;
+  const names = card.parties.map((p) => p.name).join("、");
   return (
-    <p className="px-1 text-center text-[10.5px] italic text-muted-foreground/70">
-      {parts.map((p, i) =>
-        p.kind === "text" ? (
-          // 下标当 key：这串 part 是同一条事件的确定投影，既不重排也不增删
-          <span key={i}>{p.text}</span>
+    <div className="flex justify-center py-1.5">
+      <Dialog>
+        <DialogTrigger asChild>
+          <button
+            type="button"
+            className={cn(
+              "w-full max-w-[402px] overflow-hidden rounded-[14px] border border-border bg-card text-left",
+              "transition-colors hover:border-foreground/20 hover:bg-[color-mix(in_srgb,var(--card)_92%,var(--foreground))]",
+              "focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:outline-none"
+            )}
+          >
+            <div className="flex items-center gap-2.5 px-3 py-2.5">
+              <div className="flex min-w-0 flex-1 flex-col gap-[3px]">
+                <span className="flex flex-wrap items-center gap-1.5 text-[12.5px] font-medium">
+                  {live ? (
+                    <>
+                      {/* --brand 不是 --warn：通话开着不是「出事了」（同 ADR-0256
+                          那枚 @ 角标的判据）。`motion-reduce` 下不呼吸 */}
+                      <span className="size-[7px] shrink-0 animate-pulse rounded-full bg-brand motion-reduce:animate-none" aria-hidden />
+                      通话中
+                    </>
+                  ) : (
+                    <>
+                      <Phone className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+                      语音通话
+                    </>
+                  )}
+                  <span className="font-normal text-muted-foreground tabular-nums">
+                    · {callDurationText(ms)} · {card.utterances} 句
+                  </span>
+                </span>
+                <span className="flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground">
+                  <span className="inline-flex shrink-0">
+                    {card.parties.map((party, i) => (
+                      // 下标当 key：parties 是同一段日志的确定投影，既不重排也不增删
+                      <Avatar key={i} className={cn("size-[18px] ring-2 ring-card", i > 0 && "-ms-1.5")}>
+                        {party.avatarSrc !== "" && <AvatarImage src={party.avatarSrc} alt="" />}
+                        <AvatarFallback className="text-[9px]">{initialOf(party.name)}</AvatarFallback>
+                      </Avatar>
+                    ))}
+                  </span>
+                  <span className="truncate">{names}</span>
+                </span>
+              </div>
+              <span className="flex shrink-0 items-center gap-0.5 text-[11px] text-muted-foreground">
+                看记录<ChevronRight className="size-3.5" aria-hidden />
+              </span>
+            </div>
+          </button>
+        </DialogTrigger>
+        {/* 头尾钉住、正文自己滚：会长的那一截包 `min-h-0 overflow-y-auto`——
+            只有 flex 下这层才缩得动（ui/dialog.tsx 文件头 ④）。`p-0` 是为了让
+            分隔线画到卡边，内边距各段自己给 */}
+        <DialogContent className="flex max-h-[min(72vh,640px)] flex-col gap-0 overflow-hidden p-0 sm:max-w-[560px]">
+          <DialogHeader className="gap-1.5 border-b border-border px-4 pt-4 pb-3 pe-11">
+            <DialogTitle className="flex items-center gap-2">
+              {live && <span className="size-[7px] shrink-0 animate-pulse rounded-full bg-brand motion-reduce:animate-none" aria-hidden />}
+              通话记录
+            </DialogTitle>
+            <DialogDescription className="flex flex-wrap items-center gap-1.5">
+              <span className="inline-flex shrink-0">
+                {card.parties.map((party, i) => (
+                  <Avatar key={i} className={cn("size-5 ring-2 ring-card", i > 0 && "-ms-1.5")}>
+                    {party.avatarSrc !== "" && <AvatarImage src={party.avatarSrc} alt="" />}
+                    <AvatarFallback className="text-[9px]">{initialOf(party.name)}</AvatarFallback>
+                  </Avatar>
+                ))}
+              </span>
+              <span>{names}</span>
+              <span>·</span>
+              <span className="tabular-nums">{live ? `${callDurationText(ms)} 进行中` : callDurationText(ms)}</span>
+              <span>·</span>
+              <span className="tabular-nums">{card.utterances} 句</span>
+            </DialogDescription>
+          </DialogHeader>
+          <div className="min-h-0 flex-1 overflow-y-auto px-4 py-3.5">
+            <CallTranscript card={card} />
+          </div>
+          {/* 页脚只剩这一颗：句数与时长上面那两行已经各说过一次，页脚再报一遍
+              就是同一件事说三遍（「每个元素都要 earn its place」） */}
+          <div className="flex items-center border-t border-border px-4 py-2 text-[11px] text-muted-foreground">
+            <button
+              type="button"
+              className="hover:text-foreground hover:underline"
+              onClick={() => void navigator.clipboard.writeText(transcriptText(card))}
+            >
+              复制全文
+            </button>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+/** 卡里的全文：剧本式悬挂缩进——脸与「名字 时刻」在上，正文缩进在下。
+    **刻意不套气泡**：弹窗本身已经是一层容器，里头再套一层气泡就是多一层边界
+    （而这一屏要读的是一段连续的对话，不是要分辨谁靠左谁靠右）。
+    名单变更那几行走同一份 `voiceCallLineParts`，画成一道居中的细线分隔。 */
+function CallTranscript({ card }: { card: VoiceCallCard }) {
+  if (card.lines.length === 0) {
+    // 刚开通话、一句话还没说。这不是「读不到」，是真的还没有（同 cloudEmptyState
+    // 那三档的纪律：不把「还没发生」说成「里面是空的」以外的任何一句话）
+    return <p className="text-[12.5px] text-muted-foreground">还没有人说话。</p>;
+  }
+  return (
+    <div className="flex flex-col gap-[11px]">
+      {card.lines.map((line) =>
+        line.parts !== null ? (
+          <p key={line.seq} className="flex items-center gap-2 py-0.5 text-[10px] text-muted-foreground/65 italic">
+            <span className="h-px flex-1 bg-border" aria-hidden />
+            <span className="text-center">
+              {line.parts.map((part, i) =>
+                part.kind === "text" ? (
+                  <span key={i}>{part.text}</span>
+                ) : (
+                  <span key={i} className="whitespace-nowrap">
+                    <Avatar className="me-1 inline-flex size-4 align-middle">
+                      {part.avatarSrc !== "" && <AvatarImage src={part.avatarSrc} alt="" />}
+                      <AvatarFallback className="text-[8px] not-italic">{initialOf(part.name)}</AvatarFallback>
+                    </Avatar>
+                    {part.text}
+                  </span>
+                )
+              )}
+            </span>
+            <span className="h-px flex-1 bg-border" aria-hidden />
+          </p>
         ) : (
-          <span key={i} className="whitespace-nowrap">
-            <Avatar className="me-1 inline-flex size-4 align-middle">
-              {/* alt 留空：名字就贴在右边，读屏念两遍是噪音 */}
-              {p.avatarSrc !== "" && <AvatarImage src={p.avatarSrc} alt="" />}
-              <AvatarFallback className="text-[8px] not-italic">{initialOf(p.name)}</AvatarFallback>
+          <div key={line.seq} className="grid grid-cols-[20px_1fr] gap-x-2 gap-y-px">
+            <Avatar className="col-start-1 row-start-1 mt-px size-5">
+              {line.avatarSrc !== "" && <AvatarImage src={line.avatarSrc} alt="" />}
+              <AvatarFallback className="text-[9px]">{initialOf(line.label)}</AvatarFallback>
             </Avatar>
-            {p.text}
-          </span>
+            <span className="col-start-2 flex items-baseline gap-1.5 text-[10.5px] text-muted-foreground">
+              <b className="font-medium text-foreground/80">{line.label}</b>
+              <span className="tabular-nums opacity-70">{callOffsetText(line.offsetMs)}</span>
+            </span>
+            <span className="col-start-2 text-[12.5px] leading-[1.62] whitespace-pre-wrap break-words">{line.text}</span>
+          </div>
         )
       )}
-    </p>
+    </div>
   );
+}
+
+/** 「复制全文」拿到的那份纯文本。名单变更那几行也带上——读一份通话记录时
+    「运营是从这里开始进来的」是要紧的一句，抄给别人的那份不该少掉它 */
+function transcriptText(card: VoiceCallCard): string {
+  return card.lines
+    .map((line) =>
+      line.parts !== null
+        ? `— ${line.parts.map((p) => p.text).join("")} —`
+        : `[${callOffsetText(line.offsetMs)}] ${line.label}：${line.text}`
+    )
+    .join("\n");
 }
 
 /** 「谁还没回」（Task 10，src/shared/turnLedger.ts 的 openTurns 是事实来源）：

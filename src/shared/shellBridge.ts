@@ -1190,8 +1190,12 @@ export interface ShellBridge {
   workspaceMentions(): Promise<FriendsResult<WorkspaceMentionRow[]>>;
   /** 进了这条云会话 = 里面 @ 我的那几条看见了 */
   workspaceMentionsRead(sessionId: string): Promise<FriendsResult<null>>;
+  /** `voice: true` = 这句话是在语音通话里**说出来的**（协议 19，#1233）：只往下传，
+      落进 `user_message.voice` / `chat_message.voice`，云会话时间线据它把一场通话
+      折成一张卡（ADR-0288）。只有麦克风那条路会带（`store.speechOnEvent`）——
+      「这句是不是说出来的」在正文里看不出来，麦克风那一侧是唯一知道的人 */
     workspaceCloudSay(
-    text: string, mention: boolean, mentions?: string[], memberMentions?: string[]
+    text: string, mention: boolean, mentions?: string[], memberMentions?: string[], voice?: true
   ): Promise<CloudAck>;
   /** 批/拒当前云会话里的一个审批请求（callId 来自 approval_request 事件） */
   workspaceCloudApprove(callId: string, decision: "approved" | "denied"): Promise<CloudAck>;

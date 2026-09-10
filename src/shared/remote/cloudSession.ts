@@ -93,6 +93,10 @@ import { MAX_FRAME_BYTES } from "./wire.js";
     人类成员」。**加字段照样进位**（同下面 4 那条）：老 runtime 收到带这一格的
     say 会照常处理（多余字段被 decode 丢掉），但那意味着**通知静默不发**，而
     握手精确相等本来就把这种"看起来能用、其实少一半"的组合挡在外面。
+    19（#1233）：say 帧多了 `voice` 一格——「这句话是在通话里说出来的」。加字段
+    照样要进位（握手精确相等）：老 runtime 拿到这一格会原样 JSON.parse 掉再丢弃，
+    于是新桌面以为通话内容会折成卡、而落盘的每一条都没有记号，时间线上又是一句
+    一条气泡——**那正是这一版要修的形态，且完全无声**。
     5（issue #945）：welcome/config_result 多了 `modelRoute` 一格——runtime 用
     decideRuntimeRoute 算好「这个团队此刻的 turn 会走哪条路」下发，客户端不再
     拿 `model === null` 推断「起不了 turn」（订阅用户走托管路照跑，那句是假的）。
@@ -107,7 +111,7 @@ import { MAX_FRAME_BYTES } from "./wire.js";
     少一格状态。**加一个枚举值同理**：老客户端的 isValidCsDeniedCode 认不出
     `rate_limited`，decodeCsDown 回 null，那一帧被静默忽略，于是 create()
     要白等满超时才回一句"云端无响应"——把"你被限速了"说成"对面没回话"。 */
-export const CS_PROTOCOL_VERSION = 18;
+export const CS_PROTOCOL_VERSION = 19;
 export const CS_MAX_TEXT_BYTES = 64 * 1024;
 
 /** 一次回多少字节的文件内容（#1056）。中继单帧上限是 256 KiB（wire.ts 的
@@ -287,7 +291,13 @@ export type CsUp =
       合成一格再让服务端去分，等于要求服务端认得出哪个 id 是人——它只有 agent
       名单，人类 uid 会被静默丢掉，那正是 ADR-0252 留下的那半个承诺。
       服务端仍按此刻的成员名单复核并剔掉发言人自己，客户端这份不是权威 */
-  | { t: "say"; text: string; mention: boolean; mentions?: string[]; memberMentions?: string[] }
+  /** `voice: true` = 这句话是在语音通话里**说出来的**（协议 19，#1233）：runtime 原样
+      落进 `user_message.voice` / `chat_message.voice`，云会话时间线据它把一场通话折成
+      一张卡（ADR-0288）。**不影响任何服务端判断**——起 turn、限速、派活、护栏一个字
+      都不看它。缺席 = 打字打的（旧客户端、手机端、开局卡都走这条）。
+      服务端不自己判「这句是不是说出来的」：转写出来的正文与手打的正文一个字节都不差，
+      唯一知道这件事的是麦克风那一侧 */
+  | { t: "say"; text: string; mention: boolean; mentions?: string[]; memberMentions?: string[]; voice?: true }
   | { t: "backlog"; afterSeq: number }
   | { t: "approve"; callId: string; decision: "approved" | "denied" }
   /** 读这个团队此刻的路由 + Git 凭据清单（控制房帧，协议 8；协议 15 多了后者）：
@@ -591,6 +601,11 @@ export function decodeCsUp(b64: string): CsUp | null {
         const say: Extract<CsUp, { t: "say" }> = { t: "say", text: obj.text, mention: obj.mention };
         if (obj.mentions !== undefined) say.mentions = obj.mentions as string[];
         if (obj.memberMentions !== undefined) say.memberMentions = obj.memberMentions as string[];
+        // voice 只认 `true` 这一个值（协议 19，#1233）：它是一个记号不是布尔，
+        // `false` 与「缺席」是同一件事。别的值一律当缺席**不拒帧**——上面那两条
+        // 拒帧是因为丢掉它们会静默改变「这句话点了谁」，而这一格只影响时间线
+        // 上折不折卡：脏值退化成「不折」= 改动前的行为，为它拒掉一句真话更糟
+        if (obj.voice === true) say.voice = true;
         return say;
       }
       return null;

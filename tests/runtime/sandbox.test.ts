@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { EventEmitter } from "node:events";
+import { readFile } from "node:fs/promises";
 import {
   cloneWithSidecar,
   createSandbox,
@@ -770,5 +771,213 @@ describe("isRunning（#1140，spec §3.3）", () => {
     expect(await createSandbox(stopped.docker).isRunning("w1")).toBe(false);
     expect(await createSandbox(stopped.docker).isRunning("w2")).toBe(false);
     expect(stopped.calls.some((c) => c.startsWith("start"))).toBe(false);
+  });
+});
+
+// ── 磁盘：全局地板硬拒 + 每团队预算只量不拦（issue #836）────────────────
+// 两层的判决**故意不同**，见 ADR-0287：地板是「机器要死了」，超预算是
+// 「这个团队占得多」。前者硬拒（拒绝写是唯一救得回来的动作），后者只量、
+// 只报数——`ensure()` 是拿容器句柄的唯一入口，超了就拒等于连 bash 一起
+// 挡住，而清理文件的唯一出路正是 bash。
+
+/** 让 fire-and-forget 的那次 du 跑完：假 exec 的收尾挂在 setImmediate 上 */
+async function settle(times = 10): Promise<void> {
+  for (let i = 0; i < times; i++) await new Promise((r) => setImmediate(r));
+}
+
+/** 只认 du 那一条命令的路由，其余一律成功 */
+function duRouter(stdout: string, exitCode = 0): ExecRouter {
+  return (cmd) => (cmd.join(" ").includes("du -sxk /work") ? { exitCode, stdout } : { exitCode: 0 });
+}
+
+describe("createSandbox — 磁盘地板（issue #836）", () => {
+  it("① 可用空间低于下限 → ensure 抛错，且一个容器都没建", async () => {
+    const { docker, calls } = makeFakeDocker([]);
+    const sandbox = createSandbox(docker, { freeKib: async () => 1024 * 1024 }); // 1 GiB < 2 GiB 下限
+
+    await expect(sandbox.ensure("w1")).rejects.toThrow(/整台机器的空间不是你这个团队的用量/);
+    expect(calls.some((c) => c.startsWith("createContainer:"))).toBe(false);
+    expect(calls.some((c) => c.startsWith("start:"))).toBe(false);
+  });
+
+  it("② 已存在的容器也拒绝——地板挡的是「往这台机器上写」，不是「建容器」", async () => {
+    const { docker, calls } = makeFakeDocker([
+      { id: "c1", name: "otto-ws-w1", state: "exited", labels: { "mrotto.workspace": "w1" } },
+    ]);
+    const sandbox = createSandbox(docker, { freeKib: async () => 0 });
+
+    await expect(sandbox.ensure("w1")).rejects.toThrow(/整台机器的空间不是你这个团队的用量/);
+    expect(calls.some((c) => c.startsWith("start:"))).toBe(false);
+  });
+
+  it("③ 空间够 → 照常放行", async () => {
+    const { docker } = makeFakeDocker([]);
+    const sandbox = createSandbox(docker, { freeKib: async () => 100 * 1024 * 1024 });
+
+    await expect(sandbox.ensure("w1")).resolves.toBeDefined();
+  });
+
+  it("④ 量不出来（null）→ 放行，不因为一个猜不出来就把整台机器停下（同 #836 clone 那道闸）", async () => {
+    const { docker } = makeFakeDocker([]);
+    const sandbox = createSandbox(docker, { freeKib: async () => null });
+
+    await expect(sandbox.ensure("w1")).resolves.toBeDefined();
+  });
+
+  it("⑤ statfs 自己抛了也放行——「拿不到」不是「没有空间」", async () => {
+    const { docker } = makeFakeDocker([]);
+    const sandbox = createSandbox(docker, {
+      freeKib: async () => {
+        throw new Error("EACCES");
+      },
+    });
+
+    await expect(sandbox.ensure("w1")).resolves.toBeDefined();
+  });
+
+  it("⑥ 缺省不注入 freeKib = 这道闸不存在（既有装配行为一字不变）", async () => {
+    const { docker } = makeFakeDocker([]);
+    await expect(createSandbox(docker).ensure("w1")).resolves.toBeDefined();
+  });
+});
+
+describe("createSandbox — 每团队用量（issue #836）", () => {
+  function setupDu(stdout: string, exitCode = 0) {
+    const { docker, containers, calls } = makeFakeDocker([]);
+    const execLog: ExecLog = [];
+    return {
+      docker: withCloneExec(docker, duRouter(stdout, exitCode), execLog, nameOf(containers)),
+      execLog,
+      calls,
+    };
+  }
+  const duCount = (log: ExecLog) => log.filter((c) => c.cmd.join(" ").includes("du -sxk /work")).length;
+
+  it("① ensure 之后量出用量，diskUsage 报出读数与上限", async () => {
+    const { docker } = setupDu("3145728\n"); // 3 GiB
+    const sandbox = createSandbox(docker, { diskLimitKib: 10 * 1024 * 1024 });
+
+    expect(sandbox.diskUsage("w1")).toBeNull(); // 还没量过
+    await sandbox.ensure("w1");
+    await settle();
+
+    expect(sandbox.diskUsage("w1")).toMatchObject({ usedKib: 3145728, limitKib: 10 * 1024 * 1024 });
+  });
+
+  it("② 量这一下不挡关键路径——du 还没回来，ensure 已经返回", async () => {
+    const { docker } = setupDu("1024\n");
+    const sandbox = createSandbox(docker);
+
+    await sandbox.ensure("w1");
+    expect(sandbox.diskUsage("w1")).toBeNull(); // 尚未 settle
+    await settle();
+    expect(sandbox.diskUsage("w1")?.usedKib).toBe(1024);
+  });
+
+  it("③ TTL 之内的第二次 ensure 不再量（du 是 O(整棵树)，挂在每条容器操作上就是白烧）", async () => {
+    let t = 1_000_000;
+    const { docker, execLog } = setupDu("2048\n");
+    const sandbox = createSandbox(docker, { now: () => t });
+
+    await sandbox.ensure("w1");
+    await settle();
+    expect(duCount(execLog)).toBe(1);
+
+    t += 30_000;
+    await sandbox.ensure("w1");
+    await settle();
+    expect(duCount(execLog)).toBe(1);
+
+    t += 40_000; // 累计 70s > 60s TTL
+    await sandbox.ensure("w1");
+    await settle();
+    expect(duCount(execLog)).toBe(2);
+  });
+
+  it("④ du 失败 → 留着上一次的读数，不清空（「拿不到」≠「变成 0」）", async () => {
+    let ok = true;
+    const { docker: base, containers } = makeFakeDocker([]);
+    const execLog: ExecLog = [];
+    let t = 1_000_000;
+    const docker = withCloneExec(
+      base,
+      (cmd) => (cmd.join(" ").includes("du -sxk /work") ? { exitCode: ok ? 0 : 1, stdout: ok ? "4096\n" : "" } : { exitCode: 0 }),
+      execLog,
+      nameOf(containers),
+    );
+    const sandbox = createSandbox(docker, { now: () => t });
+
+    await sandbox.ensure("w1");
+    await settle();
+    expect(sandbox.diskUsage("w1")?.usedKib).toBe(4096);
+
+    ok = false;
+    t += 120_000;
+    await sandbox.ensure("w1");
+    await settle();
+    expect(sandbox.diskUsage("w1")?.usedKib).toBe(4096);
+  });
+
+  it("⑤ du 吐不出数字 → 同样留着上一次（awk 输出被截断/镜像里没有 du 都长这样）", async () => {
+    let out = "8192\n";
+    const { docker: base, containers } = makeFakeDocker([]);
+    const execLog: ExecLog = [];
+    let t = 1_000_000;
+    const docker = withCloneExec(
+      base,
+      (cmd) => (cmd.join(" ").includes("du -sxk /work") ? { exitCode: 0, stdout: out } : { exitCode: 0 }),
+      execLog,
+      nameOf(containers),
+    );
+    const sandbox = createSandbox(docker, { now: () => t });
+
+    await sandbox.ensure("w1");
+    await settle();
+    expect(sandbox.diskUsage("w1")?.usedKib).toBe(8192);
+
+    out = "du: cannot read\n";
+    t += 120_000;
+    await sandbox.ensure("w1");
+    await settle();
+    expect(sandbox.diskUsage("w1")?.usedKib).toBe(8192);
+  });
+
+  it("⑥ destroy 之后这个团队的读数一起丢掉（同 forget 对 lastActive 的处置）", async () => {
+    const { docker } = setupDu("512\n");
+    const sandbox = createSandbox(docker);
+
+    await sandbox.ensure("w1");
+    await settle();
+    expect(sandbox.diskUsage("w1")).not.toBeNull();
+
+    await sandbox.destroy("w1");
+    expect(sandbox.diskUsage("w1")).toBeNull();
+  });
+
+  it("⑦ 超上限也照样交出容器句柄——拒绝等于连清理用的 bash 一起挡住", async () => {
+    const { docker } = setupDu("99999999\n");
+    const sandbox = createSandbox(docker, { diskLimitKib: 1024 });
+
+    await sandbox.ensure("w1");
+    await settle();
+    expect(sandbox.diskUsage("w1")).toMatchObject({ usedKib: 99999999, limitKib: 1024 });
+    await expect(sandbox.ensure("w1")).resolves.toBeDefined();
+  });
+});
+
+// ── 接线断言（issue #836）────────────────────────────────────────────────
+// `freeKib` 在 createSandbox 上是**可选**的（缺省 = 这道闸不存在），所以忘接线
+// 不会编译不过——而那正是 #836 报的那个洞本身，且失败模式完全静默：磁盘写满的
+// 那天什么都不会说。daemon.ts 进不了 vitest（它一 import 就要连 docker/Supabase），
+// 判据只能落在源码上，同 tests/main/accountScope.test.ts 的做法。
+describe("daemon 把磁盘地板接上了（#836）", () => {
+  it("createSandbox 的调用里带 freeKib，且量的是 dataDir", async () => {
+    const src = await readFile(new URL("../../services/runtime/src/daemon.ts", import.meta.url), "utf8");
+    const call = src.slice(src.indexOf("createSandbox("));
+    const body = call.slice(0, call.indexOf("\n  });"));
+
+    expect(body).toContain("freeKib:");
+    expect(body).toContain("statfsSync(config.dataDir)");
+    expect(src).toContain("statfsSync");
   });
 });

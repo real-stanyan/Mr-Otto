@@ -3496,8 +3496,8 @@ void app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.workspaceCloudLeave, () => cloudClient.leave());
   ipcMain.handle(
     CHANNELS.workspaceCloudSay,
-    (_e, text: string, mention: boolean, mentions: string[] | null, memberMentions: string[] | null) =>
-      cloudClient.say(text, mention, mentions ?? undefined, memberMentions ?? undefined)
+    (_e, text: string, mention: boolean, mentions: string[] | null, memberMentions: string[] | null, voice: true | null) =>
+      cloudClient.say(text, mention, mentions ?? undefined, memberMentions ?? undefined, voice ?? undefined)
   );
   ipcMain.handle(CHANNELS.workspaceCloudApprove, (_e, callId: string, decision: "approved" | "denied") =>
     cloudClient.approve(callId, decision));

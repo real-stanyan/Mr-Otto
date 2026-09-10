@@ -185,6 +185,7 @@ import { openTurns } from "../../../src/shared/turnLedger.js";
 import { createTurnCoordinator, type TurnJob, type EnqueueDecision } from "./turnCoordinator.js";
 import { createApprovalRouter, RELAY_APPROVAL_TIMEOUT_MS, type ApproveOutcome } from "./approvalRouter.js";
 import { fetchGrantedTools, buildPxTools, type PxCallDeps, type GrantedPxServer } from "./pxTools.js";
+import { diskBudgetText } from "./sandbox.js";
 import { CONTAINER_BUSY_TEXT, type WorkspaceLock } from "./workspaceLock.js";
 import { filterGrantedByAllow, type AgentToolAllow } from "../../../src/shared/agentToolAllow.js";
 import { createWikiTools } from "./wikiTool.js";
@@ -416,6 +417,14 @@ export interface CloudSessionOpts {
       的两条会话共用同一把。sessionService **第一次碰容器才拿**、这一轮收口才放，
       只聊天的 turn 一次都不排队 */
   workspaceLock: WorkspaceLock;
+  /** 这个团队的工作卷上一次量出来占了多少（issue #836，ADR-0287）。**必需**
+      （同 sandboxApproval / workspaceLock 的纪律）：忘接线该编译不过，而不是
+      安静地再也不提磁盘——这条能力唯一的出口就是群里那一句话，不出声与
+      「没超」在界面上长得一模一样。
+      daemon 接 `sandbox.diskUsage(workspaceId)`：纯读缓存不打 docker，`null` =
+      本进程还没量过。**只用来说话不用来拦人**，为什么见 sandbox.ts 的
+      DISK_LIMIT_KIB */
+  diskUsage: () => { usedKib: number; limitKib: number } | null;
   /** 时钟（只给测试拧 TTL 用）。缺席 = Date.now */
   now?: () => number;
 }
@@ -450,6 +459,11 @@ export interface CloudSession {
       静默过滤），它唯一的去处是收件箱 —— @ 一个人**不起 turn、不花钱**，只让他
       收到一条提醒。服务端仍然按此刻的成员名单过滤一遍（`hostUids`）并剔掉
       发言人自己，客户端那份不是权威。缺席 = 老行为（手机端 / 旧桌面：谁都不通知） */
+  /** `voice` 是**最后一个**位置参数不是插在中间（#1233）：这个函数已经有七个
+      位置参数，插中间会让既有调用把 `budget` 喂给新参数——两者都是「可选的、
+      形状对不上就报错」，但 `true` 与一个回调在 tsc 眼里分得开，而 `mentions`
+      与 `memberMentions` 那两个同型数组分不开（同 `meFromParts` 那条教训）。
+      它只往下传到落盘那一格，say() 里没有任何判断读它 */
   say(
     fromUid: string,
     label: string,
@@ -457,7 +471,8 @@ export interface CloudSession {
     mention: boolean,
     mentions?: string[],
     budget?: (targetCount: number) => string | null,
-    memberMentions?: string[]
+    memberMentions?: string[],
+    voice?: true
   ): Promise<void>;
   /** 排空跑完了吗——**给测试与冒烟脚本等待用的，不是协议的一部分**
       （issue #937）：say() 不再等 turn，可断言「turn 跑完之后」的地方需要一个
@@ -664,6 +679,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       复位（紧挨 `router.setRelayTurn`，同一个时机同一个作用域）——判据是"这一轮"
       不是"这张卡"，所以它跟着 job 走而不是跟着 callId 走 */
   let relayWaitAnnounced = false;
+  /** 这个 job 已经为「工作文件夹超了预算」在群里出过一次声了吗（#836）。同
+      relayWaitAnnounced 的去重理由，而且更硬：这条 chat_message 在 agentView
+      里是 keep，一轮里每碰一次容器说一句，等于把每只 agent 的上下文喂成噪音 */
+  let diskBudgetAnnounced = false;
   /** 此刻**打得动**的那台 engine（#957 A-2 复审 Important）——`abortTurn()` 唯一
       够得着的口。位置很讲究：`runLoggedTurn` 的**前一行**置位，中间不许有
       `await`。初版置在 `engineFor(spec)` 之后，而那之后还隔着
@@ -713,6 +732,20 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   let heldRelease: (() => void) | null = null;
   let lockPending: Promise<void> | null = null;
   function gateContainer(): Promise<void> {
+    // 超预算在群里说一句（#836，一轮一次）。挂在这道门上而不是挂在 turn 起跑处：
+    // 只聊天的 turn 一次都不碰容器，对它说「你的工作文件夹太大了」是答非所问。
+    // 读的是**上一次**量出来的数（`ensure()` 里 fire-and-forget 那一次），所以
+    // 本进程第一次碰这个团队的容器时必然没有读数、不出声——超出最晚在下一次
+    // 碰容器时被说出口，这个窗口是 ADR-0287 明写的已知代价。
+    // 排在 heldRelease 早退**之前**：那条早退是「这一轮已经拿着锁了」，而这句话
+    // 的去重靠 diskBudgetAnnounced，两者管的不是同一件事
+    if (!diskBudgetAnnounced) {
+      const disk = opts.diskUsage();
+      if (disk && disk.usedKib > disk.limitKib) {
+        diskBudgetAnnounced = true;
+        logChat("system", "系统", diskBudgetText(disk.usedKib, disk.limitKib), false);
+      }
+    }
     if (heldRelease) return Promise.resolve();
     if (lockPending) return lockPending;
     const lock = opts.workspaceLock;
@@ -1251,12 +1284,18 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     if (decisions.includes("start_turn")) startDrain();
   }
 
-  function logChat(fromUid: string, label: string, text: string, mention: boolean): SessionEvent {
+  /** `voice` 只有 `say()` 里「人说了话但没人接」那条出口会带（#1233）：这个函数
+      另外那七八个调用方全是系统旁白（容器忙、护栏、被踢、停止、拉进通话没打招呼
+      …），它们一律不带 —— 加成必需参数等于让每条系统话都去回答一个与它无关的
+      问题。为什么不在那条出口直接 `store.append`：`safeSpeakerLabel` 那道闸只能
+      有一处（#957 复审 Important 2），绕开它就是给「伪造说话人」开第二个入口 */
+  function logChat(fromUid: string, label: string, text: string, mention: boolean, voice?: true): SessionEvent {
     const logged = store.append({
       sessionId,
       ts: Date.now(),
       type: "chat_message",
       fromUid,
+      ...(voice !== undefined ? { voice } : {}),
       // 发言人名字过闸（#957 复审 Important 2）：daemon.labelOf 已经过一遍，
       // 这里再过是给别的调用方兜底（测试/冒烟/将来别的入口）——safeSpeakerLabel
       // 幂等，跑两遍与跑一遍同一个结果。保留名「系统」只对 fromUid === "system"
@@ -1594,6 +1633,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // 确认的 ask 才钉住这一轮，auto 与「问不出来」都不钉，判据在 policyApprover
     jobSandboxPolicy = null;
     sandboxProbeFailAnnounced = false;
+    diskBudgetAnnounced = false;
     jobLockAbort = new AbortController(); // 这一轮等容器锁的中断信号（#979 第 2 条）
     currentInitiator = job.fromUid;
     currentAgentId = job.agentId;
@@ -1912,7 +1952,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   }
 
   const session: CloudSession = {
-    async say(fromUid, label, text, mention, mentions, budget, memberMentions) {
+    async say(fromUid, label, text, mention, mentions, budget, memberMentions, voice) {
       // 人刚开口 → 要此刻的名单（#979 第 5 条）：他在设置页刚建/改的那只要能立刻 @ 到
       const roster = await opts.agents({ fresh: true });
       // **名单降级 + 这句话点了名 = 一个字节都不落**（#957 E2-4）：degraded 那份
@@ -2098,7 +2138,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         // 没人被点名（也没派出去）：只落 chat_message，不起 turn。**「只 @ 了人」走的
         // 正是这条路**——那是这条 issue 里最常见的一种消息（ADR-0252 让客户端在这种
         // 情形下发一个权威的空数组）。派活没成的那句系统话排在正文之后
-        const logged = logChat(fromUid, label, text, mention);
+        const logged = logChat(fromUid, label, text, mention, voice);
         sayUnknown();
         if (dispatchNote !== null) logChat("system", "系统", dispatchNote, false);
         await recordMemberMentions(logged.seq);
@@ -2135,6 +2175,9 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         // 分类器派的（#1153）才带；人亲手 @ 的缺席（exactOptionalPropertyTypes 不许
         // 塞 undefined，同 engine.env() 的写法）
         ...(dispatch !== undefined ? { dispatch } : {}),
+        // 通话里说出来的（#1233）才带。同 dispatch：只是记号，起 turn 那一路
+        // 一个判断都不读它
+        ...(voice !== undefined ? { voice } : {}),
       }) as UserMessageEvent; // append 回的是 union；这一条我们刚亲手写的就是 user_message
       notify(opening);
       sayUnknown(); // 排在开场白之后：先有那句话，再说"其中这几个没人接"

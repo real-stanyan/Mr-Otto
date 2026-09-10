@@ -223,7 +223,11 @@ export interface CloudSessionClient {
       以它为准，帧里带 mentions 字段（#932 切片 1b） */
   /** `memberMentions` = 这句话点到的**人类成员 uid**（协议 13，#1064）。与
       `mentions` 分开带：那一族起 turn（花钱），这一族只让被 @ 的人收到提醒 */
-  say(text: string, mention: boolean, mentions?: string[], memberMentions?: string[]): Promise<CloudAck>;
+  /** `voice: true` = 这句话是在语音通话里**说出来的**（协议 19，#1233）：只往下传，
+      落进 `user_message.voice` / `chat_message.voice`，云会话时间线据它把一场通话
+      折成一张卡（ADR-0288）。只有麦克风那条路会带（`store.speechOnEvent`）——
+      「这句是不是说出来的」在正文里看不出来，麦克风那一侧是唯一知道的人 */
+  say(text: string, mention: boolean, mentions?: string[], memberMentions?: string[], voice?: true): Promise<CloudAck>;
   approve(callId: string, decision: "approved" | "denied"): Promise<CloudAck>;
   /** 收尾一条云会话（控制房 RPC，协议 9，#993）：不依赖「正开着它」——归档
       入口在侧栏那条会话行的 ⋮ 里，同本地会话。resolve 的是 `archive_result` */
@@ -974,7 +978,7 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
       不在籍 / 抛错要过一会儿才以一条 error 帧到达，而渲染层"发送成功就清草稿"
       早就把话从输入框里抹掉了：界面上它发出去了，日志里一个字都没有。 */
   async function say(
-    text: string, mention: boolean, mentions?: string[], memberMentions?: string[]
+    text: string, mention: boolean, mentions?: string[], memberMentions?: string[], voice?: true
   ): Promise<CloudAck> {
     const r = requireReady();
     if (!r.ok) return r;
@@ -989,6 +993,8 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     // 空数组不进帧（#1064）：`memberMentions: []` 与缺席在服务端是同一个动作
     // （一行都不写），少一格就少一格
     if (memberMentions !== undefined && memberMentions.length > 0) frame.memberMentions = memberMentions;
+    // 只有 true 才进帧（#1233）：这一格是记号不是布尔，`false` 与缺席是同一件事
+    if (voice === true) frame.voice = true;
     const sent = sendFrame(session, frame);
     // 压根没发出去就别挂 15 秒（#829 的四条丢帧路径 + encode 抛错）
     if (!sent.ok) return sent;
