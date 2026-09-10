@@ -3221,7 +3221,8 @@ export const useChat = create<ChatState>((set, get) => ({
       // 这条是主进程 turn 收口后自己落的事件,只有这里能听见(含后台会话)
       // 主题事件（#846）同一条通道：自动分类(session_topic_assigned)落地、或
       // 手动「归到…」(session_topic_set)落地，侧栏分组该跟着刷
-      if (e.type === "session_autotitled" || e.type === "session_topic_assigned" || e.type === "session_topic_set") {
+      // 会话诞生也刷（#1223）：从云端拉下来的会话第一条就是它，不刷侧栏要等 sweep 之后的自动命名才出现
+      if (e.type === "session_autotitled" || e.type === "session_topic_assigned" || e.type === "session_topic_set" || e.type === "session_created") {
         void window.otter.listSessions().then((sessions) => set({ sessions }));
       }
       // 首条消息落地 = 这份镜像里的标题(首条 user_message 首行)该有值了。镜像是

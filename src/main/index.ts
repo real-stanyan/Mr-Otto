@@ -5,7 +5,7 @@ import { app, BrowserWindow, Menu, dialog, ipcMain, nativeImage, Notification, s
 import type { WebContents } from "electron";
 import { join, dirname } from "node:path";
 import { homedir, hostname, tmpdir } from "node:os";
-import { mkdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { spawn, spawnSync } from "node:child_process";
 import { readFile, writeFile, mkdir, readdir, rm } from "node:fs/promises";
 import {
@@ -147,7 +147,7 @@ import {
   saveWorkspaceSettings,
 } from "./workspaceSettingsStore.js";
 import { isDefaultWorkspace as isDefaultWorkspaceOf } from "../shared/defaultWorkspace.js";
-import { allocateSessionWorkspace } from "./taskWorkspace.js";
+import { allocateSessionWorkspace, resolveResumeWorkspace } from "./taskWorkspace.js";
 import { maskKey } from "../shared/keyMask.js";
 import type { ModelLane } from "../shared/modelLane.js";
 import { AUTO_MODEL } from "../shared/autoModel.js";
@@ -2678,7 +2678,16 @@ void app.whenReady().then(() => {
         // 围栏（LocalWorld root）和 system 消息（deriveMessages）随之自动重建。
         const events = store.load(sessionId);
         const first = events[0];
-        if (!first || first.type !== "session_created" || !first.workspace) {
+        if (!first || first.type !== "session_created") {
+          throw new Error(`会话 ${sessionId} 没有 session_created，无法恢复`);
+        }
+        // Default 路径每台机器自己算（#1223）：云端 / 另一台 Mac 建的任务会话日志里没有本机路径
+        const loggedWorkspace = resolveResumeWorkspace(first, sessionId, {
+          builtin: builtinDefaultWorkspace(app.getPath("documents")),
+          exists: (abs) => existsSync(abs),
+          mkdir: (abs) => mkdirSync(abs, { recursive: true }),
+        });
+        if (loggedWorkspace === null) {
           throw new Error(`会话 ${sessionId} 没有记录工程文件夹，无法恢复`);
         }
         // C1 的第二道门：本次运行派出去的子会话，从 register 那一刻起就在 agents 里，
@@ -2701,8 +2710,8 @@ void app.whenReady().then(() => {
         // 清过缓存、换了机器）。按日志里记着的分支重新挂一个——分支才是活的凭据，
         // 目录只是它的一个挂载点。挂不回来（分支也没了）就退回项目本体：
         // 那时这个会话已经没有自己的副本可言，围栏落在项目上比落在一个空路径上强
-        let resumeWorkspace = first.workspace;
-        if (first.isolated && !sessionWorktrees.restore(first.isolated, first.workspace)) {
+        let resumeWorkspace = loggedWorkspace;
+        if (first.isolated && !sessionWorktrees.restore(first.isolated, loggedWorkspace)) {
           resumeWorkspace = first.isolated.projectRoot;
         }
         agents.set(
