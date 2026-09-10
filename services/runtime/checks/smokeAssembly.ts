@@ -26,6 +26,7 @@ import { createInMemoryWikiJournal } from "../src/wikiJournal.js";
 import { createWikiService } from "../src/wikiService.js";
 import { createInMemoryAgentWriter } from "../src/agentRegistry.js";
 import { createInMemoryMentionInbox } from "../src/mentionInbox.js";
+import { createInMemoryCloudSessionMeta } from "../src/cloudSessionMeta.js";
 import { EventStore } from "../../../src/session/store.js";
 import type { SessionEvent } from "../../../src/session/events.js";
 import type { ModelAdapter } from "../../../src/model/adapter.js";
@@ -169,6 +170,10 @@ async function scenarioMainFlow(): Promise<void> {
             onUsage: () => {},
             wiki: createWikiService({ workspaceId: ws, fs: createMemoryWikiFs(), journal: createInMemoryWikiJournal(), legacyMemories: async () => [], agentNames: async () => new Map(), isRunning: async () => true }),
             mentionInbox: createInMemoryMentionInbox(),
+            // 会话命名与参与者投影（#1213）：**必需**字段，冒烟只装内存版——这一层
+            // 不连真 Supabase。不给 `retitle`（可选）：缺席就是「行为与这次改动之前
+            // 一致」那条路（只有首条人类发言的首行兜底，不打网关），冒烟不需要覆盖它
+            sessionMeta: createInMemoryCloudSessionMeta(),
             agentWriter: createInMemoryAgentWriter(),
             isMember: async () => true,
             relayRemainingMicro: async () => null,

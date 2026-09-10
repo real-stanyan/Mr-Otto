@@ -54,6 +54,30 @@ const WS: WorkspaceSnapshot = {
   sandboxApproval: "ask",
 };
 
+// 参与者头像叠罗汉（#1213）多加几个成员，好凑出「超过三个封顶」那条用例——
+// 基础的 WS 只有两个人，不够。不改 WS 本身：其余用例不该因为这一节多长出的
+// 成员而受影响
+const WS_WITH_MORE_MEMBERS: WorkspaceSnapshot = {
+  ...WS,
+  members: [
+    ...WS.members,
+    { uid: "u1", role: "member", label: "张三", avatarUrl: "" },
+    { uid: "u3", role: "member", label: "李四", avatarUrl: "" },
+    { uid: "u4", role: "member", label: "王五", avatarUrl: "" },
+    { uid: "u5", role: "member", label: "赵六", avatarUrl: "" },
+  ],
+};
+
+// 只改 cs-live 这一行的 participantUids，其余字段照抄 seed() 默认那份形状
+function seedParticipants(participantUids: string[]): void {
+  seed({
+    workspaceGroups: [WS_WITH_MORE_MEMBERS],
+    cloudSessionList: {
+      w1: [{ id: "cs-live", title: "周报自动化", publisherUid: "u2", archived: false, updatedTs: 2, participantUids }],
+    },
+  });
+}
+
 function seed(over: Partial<Parameters<typeof useChat.setState>[0]> = {}): {
   startCloudDraft: ReturnType<typeof vi.fn>;
   openCloudSession: ReturnType<typeof vi.fn>;
@@ -67,8 +91,8 @@ function seed(over: Partial<Parameters<typeof useChat.setState>[0]> = {}): {
     cloudSession: null,
     cloudSessionList: {
       w1: [
-        { id: "cs-live", title: "周报自动化", publisherUid: "u2", archived: false, updatedTs: 2 },
-        { id: "cs-old", title: "上个月的爬虫", publisherUid: "u2", archived: true, updatedTs: 1 },
+        { id: "cs-live", title: "周报自动化", publisherUid: "u2", archived: false, updatedTs: 2, participantUids: [] },
+        { id: "cs-old", title: "上个月的爬虫", publisherUid: "u2", archived: true, updatedTs: 1, participantUids: [] },
       ],
     },
     refreshCloudSessions: async () => {},
@@ -125,7 +149,7 @@ describe("WorkspacesSidebarSection（#917 / #919）", () => {
       cloudSessionList: {
         // 云会话那张表的 title 是 string 不是 string | null：没标题时落库的是
         // 空串，只挡 null 的兜底挡不住它
-        w1: [{ id: "cs-new", title: "", publisherUid: "u-me", archived: false, updatedTs: 3 }],
+        w1: [{ id: "cs-new", title: "", publisherUid: "u-me", archived: false, updatedTs: 3, participantUids: [] }],
       },
     });
     draw();
@@ -174,5 +198,61 @@ describe("WorkspacesSidebarSection（#917 / #919）", () => {
     expect(screen.getByText("读不到团队：网络超时")).toBeInTheDocument();
     // 「读不到」不许说成「里面是空的」：出了错就不该再劝人去建一个
     expect(screen.queryByText(/还没有团队/)).not.toBeInTheDocument();
+  });
+
+  // ── 参与者头像叠罗汉（#1213）───────────────────────────────────────────
+  // 侧栏那一行画出「最近 5 小时说过话的人」。三条各对着一个具体的失败：封顶
+  // 三枚、第四格画 +N 的算术；空 participantUids 不画任何东西（不是空容器）；
+  // 退了群的 uid 照样画——`labelOf` 回 uid 前 8 位，「他当时在场」是已经发生
+  // 的事实，不因为他后来退群而没发生
+  it("三个人以内逐个画，每枚头像的 title 是那个人的名字", () => {
+    seedParticipants(["u1", "u2"]);
+    draw();
+    const avatars = screen.getAllByTestId("participant-avatar");
+    expect(avatars).toHaveLength(2);
+    expect(avatars[0]).toHaveAttribute("title", "张三");
+    expect(avatars[1]).toHaveAttribute("title", "小红");
+  });
+
+  it("超过三个封顶，第四格画 +N（不是又画一枚头像）", () => {
+    seedParticipants(["u1", "u2", "u3", "u4", "u5"]);
+    draw();
+    expect(screen.getAllByTestId("participant-avatar")).toHaveLength(3);
+    expect(screen.getByText("+2")).toBeInTheDocument();
+  });
+
+  it("一个人都没有时整个头像堆不画，不是空容器", () => {
+    seedParticipants([]);
+    draw();
+    expect(screen.queryAllByTestId("participant-avatar")).toHaveLength(0);
+    // 连带壳（外层那个带 title 的 <span>）也不该出现——回的是 null 不是空容器
+    expect(screen.queryByTitle(/说过话的/)).not.toBeInTheDocument();
+  });
+
+  it("退了群的人照样画——labelOf 回 uid 前 8 位，「他当时在场」不因退群而没发生", () => {
+    seedParticipants(["u-gone"]);
+    draw();
+    expect(screen.getByTestId("participant-avatar")).toHaveAttribute("title", "u-gone");
+  });
+
+  // ── 参与者投影没有推送通道，回到窗前再拉一次（#1213）─────────────────────
+  it("窗口重新聚焦时再拉一次云会话清单", () => {
+    const refreshCloudSessions = vi.fn(async () => {});
+    seed({ refreshCloudSessions });
+    draw();
+    expect(refreshCloudSessions).toHaveBeenCalledTimes(1); // 挂载时那一次
+    refreshCloudSessions.mockClear();
+    window.dispatchEvent(new Event("focus"));
+    expect(refreshCloudSessions).toHaveBeenCalledWith("w1");
+  });
+
+  it("组件卸载后不再监听 focus（监听器已清理，不会内存泄漏）", () => {
+    const refreshCloudSessions = vi.fn(async () => {});
+    seed({ refreshCloudSessions });
+    draw();
+    cleanup();
+    refreshCloudSessions.mockClear();
+    window.dispatchEvent(new Event("focus"));
+    expect(refreshCloudSessions).not.toHaveBeenCalled();
   });
 });

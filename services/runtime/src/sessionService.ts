@@ -215,6 +215,15 @@ import {
   advanceRelayBounds,
   relayBoundsOf,
 } from "../../../src/shared/agentRelay.js";
+import type { CloudSessionMeta } from "./cloudSessionMeta.js";
+import { seedTitleFrom, titleStepFor, type TitleInput, type TitleVerdict } from "./sessionTitler.js";
+import {
+  advanceParticipants,
+  countHumanMessages,
+  humanSpeakerOf,
+  lastActiveWindowParticipants,
+  type ParticipantWindow,
+} from "../../../src/shared/sessionParticipants.js";
 
 /** 派活分类器读日志尾段多少条事件（#1153）。一轮 turn 十几条事件是常态，200 条
     足够捞出最近 8 句说出口的话；不读全量是因为 say() 的回执等着这一步 */
@@ -343,6 +352,17 @@ export interface CloudSessionOpts {
       写入是**日志的投影**（权威那份已经落盘），所以它失败只记一行日志、不把一句
       已经发出去的话翻成失败 */
   mentionInbox: MentionInbox;
+  /** `workspace_sessions` 那三格的写入口（#1213）。**必需**（同 memory / mentionInbox
+      的纪律）：忘接线该编译不过，而不是安静地跑一条「侧栏永远叫新会话、永远看不出
+      谁在里面说过话」的会话——那正是这条 issue 要拆掉的东西，失败模式本来就是无声的。
+      写的是日志的投影，所以它失败只记一行日志、不把一句已经发出去的话翻成失败 */
+  sessionMeta: CloudSessionMeta;
+  /** 会话命名（#1213）：拿最便宜那款读「当前标题 + 最近几句」，回新标题 + 起名的
+      那个型号，或 null（不改）。**要带型号**：`session_autotitled.model` 那一格是
+      溯源用的，写一个我们自己编的常量进去就是句假话。
+      daemon 给——它才有 hostedProbe 与 edge 凭据（同 dispatch / pickAutoModel）。
+      **可选**：缺席 = 只有第一条人类发言那次首行兜底，一次网关都不打 */
+  retitle?: (input: TitleInput) => Promise<TitleVerdict | null>;
   /** 所有者订阅窗口**还剩**多少 micro-USD，接力预算的分母（#1017）。取 5h 与周窗
       里**更吃紧的那扇**（`min`，同 billingView 的 `bindingWindow`，ADR-0209）：网关
       的 hold 同时压两扇窗，只看 5h 的话周窗快见底时刹车完全无感，而窗口触底之后
@@ -574,6 +594,18 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       跑久了的会话，每起一个 turn 都要把整份日志重读一遍再 O(n²) 扫一遍）。
       判据与安全性论证写在 agentRelay.ts 的 RelayBounds 头注上 */
   const bounds = relayBoundsOf(seed);
+  /** 最近有过对话的那个 5 小时窗里有谁（#1213）。装配时整份折叠一次、之后在
+      `notify` 里逐条推进——与 `bounds` / `voiceCall` / `speakerLabels` **同一个形状**，
+      理由也同一条：日志是这条会话唯一的事实，而每 turn 重新全量 load 的成本跟着
+      日志长。`lastActiveWindowParticipants` 自己是倒扫、越过窗起点就停的，所以
+      这次播种也只读了尾巴 */
+  let participants: ParticipantWindow | null = lastActiveWindowParticipants(seed);
+  /** 这条会话累计有多少条人类发言（标题的档位判据）。同上：播种一次、之后逐条推进 */
+  let humanSaid = countHumanMessages(seed);
+  /** 此刻的标题。空串 = 还没有。日志里最后一条 session_autotitled 胜出（同本机
+      store.ts 的标题投影），首行兜底那次也会更新它——它是重判时递给模型的那一格 */
+  let title = "";
+  for (const e of seed) if (e.type === "session_autotitled") title = e.title;
   /** uid → 他在这条会话里叫什么（#959 复审 Medium 1）。装配时从 `seed` 整份折叠
       一次、之后在 `notify` 里逐条推进——与上面 `bounds` **同一个形状**，理由也
       同一条：日志是这条会话唯一的事实，而 runtime 手上没有 profiles 表。
@@ -770,6 +802,25 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // 通话名单跟着走（#1163）：同 advanceRelayBounds 的推理——daemon.ts 绕过 notify 的那四类
     // append 里没有这一种，这条事件只从 logVoiceCall 出门
     if (e.type === "voice_call_changed") voiceCall = applyVoiceCallEvent(voiceCall, e);
+    // 最近谁说过话（#1163 那条的邻居，#1213）：同 advanceRelayBounds 的推理——
+    // daemon.ts 绕过 notify 直接 append 的那四类里有 chat_message，但那几条的
+    // fromUid 是 "system"，`humanSpeakerOf` 本来就不认；漏掉一条的后果也只是
+    // 侧栏那一格少一个人，下一句话就补上。**变了才写库**（advanceParticipants
+    // 没变时回同一个引用）：一个人连说十句只打一次网络
+    const nextParticipants = advanceParticipants(participants, e);
+    // `!== null` 只是给 tsc 看的：advanceParticipants 要么原样传回 cur（含 null），
+    // 要么给一个新对象，从不会在 cur 非空时凭空返回 null——所以「变了」蕴含「非空」，
+    // 这句判断不改变行为
+    if (nextParticipants !== participants && nextParticipants !== null) {
+      participants = nextParticipants;
+      // 复审 Critical 2：与下面 maintainTitle 里 setTitle 的调用（:1284）对称——那条
+      // 一直带 `.catch(() => undefined)`，这条原来独漏，是这个文件唯一一处 fire-and-
+      // forget 却没接的调用，会变成一次带走整个 daemon 进程的 unhandledRejection。
+      // `write()` 现在自己也兜了 try/catch（cloudSessionMeta.ts），这里的 `.catch`
+      // 是第二层、不依赖那份实现细节：这个调用点自己就不该产出未捕获的 rejection
+      void opts.sessionMeta.setParticipants(nextParticipants).catch(() => undefined);
+    }
+    if (humanSpeakerOf(e) !== null) humanSaid += 1;
     opts.onEvent(e);
     // 终态事件落盘之后清掉这只 agent 的流式累计（#1107）：delta 帧走的是
     // 累计快照语义，不清的话它下一轮的预览会从上一次的残句开头。缺席
@@ -1216,6 +1267,53 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     });
     notify(logged);
     return logged;
+  }
+
+  /**
+   * 这条会话的名字（#1213）。**在 `say()` 的两个出口各调一次**，不在 `notify` 里：
+   * 首行兜底要的是**原始正文**，而 `user_message.content` 已经被 `say()` 拼上了
+   * `[名字]: ` 前缀，从事件里再剥一次前缀是同一件事的第二份判据。
+   *
+   * 不 `await`（`say()` 的回执不等这次网关往返），但自己吞掉所有异常：命名失败
+   * 不该让一句已经发出去的话变成一个未捕获的 rejection。
+   */
+  function maintainTitle(text: string): void {
+    const step = titleStepFor(humanSaid);
+    if (step === "none") return;
+    if (step === "seed") {
+      const seeded = seedTitleFrom(text);
+      // 全是空白 → 什么都不写：一个空标题和「新会话」在界面上是同一件事，
+      // 而写进去会让下一次重判以为「已经有标题了」
+      if (seeded === "") return;
+      title = seeded;
+      void opts.sessionMeta.setTitle(seeded).catch(() => undefined);
+      return;
+    }
+    const retitle = opts.retitle;
+    if (retitle === undefined) return;
+    void (async () => {
+      // 上下文复用 `dispatchTail()` + `dispatchContext`（都已存在、已测、已过
+      // promptSafe）：不另写一份取上下文的逻辑，那会是同一个判据的第二份实现，
+      // 也不全量 load —— 那个成本是跟着日志长的。
+      // `nameOf` 给 `(id) => id`：起标题只要对话的大意，而拿真名字要一次
+      // `opts.agents()` 的 Supabase 往返，为一个侧栏上的名字多打一次网络不值
+      const context = dispatchContext(dispatchTail(), (id) => id);
+      const next = await retitle({ currentTitle: title, context });
+      if (next === null || next.title === title) return;
+      title = next.title;
+      notify(store.append({
+        sessionId,
+        ts: Date.now(),
+        type: "session_autotitled",
+        title: next.title,
+        // 溯源：这个名字是哪个模型起的（不落 usage —— 钱的事实在网关的
+        // usage_event 里，那才是唯一一本账；这里挂一份只会变成第二份）
+        model: next.model,
+      }));
+      await opts.sessionMeta.setTitle(next.title);
+    })().catch((err) => {
+      console.warn(`[otto-runtime] 会话命名失败（session=${sessionId}）：${err instanceof Error ? err.message : String(err)}`);
+    });
   }
 
   /** 此刻能停的那一轮（#957 A-2）：正在跑的 agent + 点火的人，没有就是 null。
@@ -2004,6 +2102,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         sayUnknown();
         if (dispatchNote !== null) logChat("system", "系统", dispatchNote, false);
         await recordMemberMentions(logged.seq);
+        maintainTitle(text);
         return;
       }
 
@@ -2053,6 +2152,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // 网络往返，而 say() 的回执等它 —— 写完再回 ok，测试与真机才不用去猜
       // 「这一行到底落没落」（fire-and-forget 那版在进程收摊时还会丢）
       await recordMemberMentions(opening.seq);
+      maintainTitle(text);
       if (!decisions.includes("start_turn")) return;
       // **不等排空**（issue #937）：frameHandler 按 cid 把同一条连接的帧串成一条
       // 链（#915），等在这里意味着发起人自己的下一帧排在这个 await 后面——包括

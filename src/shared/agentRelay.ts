@@ -154,8 +154,10 @@ export function relayStateSince(events: readonly SessionEvent[]): { chain: Agent
     if (e.type === "agent_relay") chain.push(e);
     // 两类带 credit 的事件（`assistant_message` 每圈一条、`context_compacted` 压缩一次
     // 一条）。**故意不走 deriveUsage.BILLED_EVENT_TYPES**：那张表是给「跨会话用量面板」
-    // 用的，含 section_classified / session_autotitled 等云会话根本不会落的类型，而这里
-    // 要的是「这条链花了多少」——按那张表筛等于替一个不同的问题维护同一份清单
+    // 用的，含 section_classified 等云会话根本不会落的类型（`session_autotitled` 原来
+    // 也在这个举例里，#1213 起云端会常态落它了，但那笔账挂的是命名调用，不是这条链，
+    // 从举例里去掉不代表判据变了），而这里要的是「这条链花了多少」——按那张表筛等于
+    // 替一个不同的问题维护同一份清单
     else if (e.type === "assistant_message" || e.type === "context_compacted") {
       if (typeof e.creditCostMicro === "number") spentMicro += e.creditCostMicro;
     }

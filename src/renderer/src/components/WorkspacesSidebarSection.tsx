@@ -38,10 +38,11 @@ import {
 } from "@/components/ui/dropdown-menu.js";
 import { useConfirm } from "@/components/ui/confirm-dialog.js";
 import { useChat } from "../store.js";
-import { cloudSessionRows } from "../lib/workspaceView.js";
+import { cloudSessionRows, labelOf } from "../lib/workspaceView.js";
 import type { CloudSessionListRow } from "../lib/workspaceView.js";
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 import { unreadMentionCounts } from "../../../shared/workspaceMentions.js";
+import { PARTICIPANT_WINDOW_MS } from "../../../shared/sessionParticipants.js";
 import {
   SidebarGroup, SidebarGroupAction, SidebarGroupContent, SidebarGroupLabel, SidebarMenuAction,
   SidebarMenu, SidebarMenuButton, SidebarMenuItem,
@@ -80,7 +81,15 @@ export function WorkspacesSidebarSection({
   // 这一趟多半也挂，白记一条错
   const ids = groups.filter((g) => g.loadError === undefined).map((g) => g.id).join(",");
   useEffect(() => {
-    for (const id of ids === "" ? [] : ids.split(",")) void refreshCloud(id);
+    const list = ids === "" ? [] : ids.split(",");
+    const pull = (): void => { for (const id of list) void refreshCloud(id); };
+    pull();
+    // 参与者与标题都是 runtime 写进 Supabase 的投影，没有推送通道（#1213）。
+    // **不做定时轮询**：会看到这一列的那一刻必然是人回到这扇窗前，focus 就是
+    // 那个信号（同 #1064 点名角标那两次拉取的取舍）。作用域天然是「这一栏挂
+    // 在屏幕上」——看不见的时候本来也不需要刷新
+    window.addEventListener("focus", pull);
+    return () => window.removeEventListener("focus", pull);
   }, [ids, refreshCloud]);
 
   // 一条都没有时画空态（#1087 反过来了）。原来是整节不出、**故意不画空态**，
@@ -135,6 +144,53 @@ function MentionBadge({ count, title }: { count: number; title: string }) {
       title={title}
     >
       {count > 99 ? "99+" : count}
+    </span>
+  );
+}
+
+/** 一行最多画几枚头像。侧栏 16rem、会话行可用约 230px，标题还要占大头 */
+const PARTICIPANT_STACK_MAX = 3;
+
+/** 提示文案里的「最近 N 小时」——从 `PARTICIPANT_WINDOW_MS` 现算，不写死 5（复审
+    Minor 5）：那个常量放 `src/shared/` 的唯一理由就是这句文案要用它
+    （sessionParticipants.ts 头注原话），写死字面量的话它就成了一个没有消费方的
+    常量、和这行硬编码的「5」各说各的——改窗口长度时两处必然有一处忘改 */
+const PARTICIPANT_WINDOW_HOURS = PARTICIPANT_WINDOW_MS / (60 * 60 * 1000);
+
+/** 「最近有过对话的那个 5 小时窗里说过话的人」（#1213）。
+    叠罗汉：向左重叠、每枚一圈与侧栏同色的描边分层。
+    **不给入场动效**：它是挂着的状态记号不是一次事件（同 ADR-0255 / #1064 那枚角标）。
+    退了群的 uid 照样画——`labelOf` 会回 uid 前 8 位，而「他当时在场」是已经发生的
+    事实，不因为他后来退群而没发生。 */
+function ParticipantStack({ ws, uids }: { ws: WorkspaceSnapshot; uids: readonly string[] }) {
+  if (uids.length === 0) return null;
+  const shown = uids.slice(0, PARTICIPANT_STACK_MAX);
+  const rest = uids.length - shown.length;
+  const names = uids.map((uid) => labelOf(ws, uid)).join("、");
+  return (
+    <span className="shrink-0 flex items-center pl-1" title={`最近 ${PARTICIPANT_WINDOW_HOURS} 小时说过话的：${names}`}>
+      {shown.map((uid) => {
+        const member = ws.members.find((m) => m.uid === uid);
+        const label = labelOf(ws, uid);
+        return (
+          <span
+            key={uid}
+            data-testid="participant-avatar"
+            title={label}
+            className="w-4 h-4 -ml-1 first:ml-0 rounded-full ring-1 ring-sidebar overflow-hidden
+                       bg-muted text-[8px] leading-4 text-center text-muted-foreground select-none"
+          >
+            {member && member.avatarUrl !== "" ? (
+              <img src={member.avatarUrl} alt="" className="w-full h-full object-cover" />
+            ) : (
+              label.slice(0, 1)
+            )}
+          </span>
+        );
+      })}
+      {rest > 0 && (
+        <span className="ml-[2px] text-[10px] leading-4 text-muted-foreground tabular-nums">+{rest}</span>
+      )}
     </span>
   );
 }
@@ -242,6 +298,7 @@ function WorkspaceGroup({
                     title={`${row.title} · ${row.creatorLabel}`}
                   >
                     <span className="min-w-0 flex-1 truncate text-xs">{row.title}</span>
+                    <ParticipantStack ws={ws} uids={row.participantUids} />
                     <MentionBadge
                       count={unread.bySession[row.id] ?? 0}
                       title={`这条会话里有 ${unread.bySession[row.id] ?? 0} 条 @ 你的消息没看`}

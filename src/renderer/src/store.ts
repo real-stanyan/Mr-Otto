@@ -98,6 +98,7 @@ import { mergeResidue, residueSettled, type ResidueItem } from "../../shared/res
 import { PROXY_SHARE_INVITE_TTL_MS } from "../../shared/remote/proxyInvite.js";
 import { runtimePatch } from "./lib/runtimeHydration.js";
 import { createAgentLanded } from "./lib/cloudTimeline.js";
+import { humanSpeakerOf } from "../../shared/sessionParticipants.js";
 import { applyCloudDelta, clearCloudStreamingOn } from "./lib/cloudStreaming.js";
 import { EMPTY_VOICE_FEED, feedDelta, feedEvent, markInterrupted, type VoiceFeedState } from "./lib/voiceCall.js";
 import { applySpeechEvent, bargeInOn, MIC_OFF, micShouldPause, SPEECH_LOCALE, speechHints, type MicState } from "./lib/voiceMic.js";
@@ -3046,6 +3047,32 @@ export const useChat = create<ChatState>((set, get) => ({
         const workspaceId = cur.workspaceId;
         get().closeCloudSession();
         void get().refreshCloudSessions(workspaceId);
+      }
+      // 会话被自动命名了（#1213）：侧栏那一行的字该换了。判据是日志里那条事件，
+      // 不是「我刚做了什么」——逐字同上面 session_archived 那条。这个事件很稀疏
+      // （第 2 条人类发言起每 5 条最多一次，且多数轮模型回 KEEP 根本不落），
+      // 一次往返不心疼
+      if (event.type === "session_autotitled" && cur && cur.sessionId === event.sessionId) {
+        void get().refreshCloudSessions(cur.workspaceId);
+      }
+      // 有人在这条会话里说话了（#1213）：把他并进侧栏那一行的参与者。**本地 patch
+      // 不打网络**，而且**只并不删**——窗口边界不在渲染层判（那是 runtime 的活），
+      // 下次拉取修正。方向是安全的：最坏是多显示一个刚说过话的人，而反过来
+      // （少显示一个正在说话的人）才是撒谎
+      const speaker = cur && cur.sessionId === event.sessionId ? humanSpeakerOf(event) : null;
+      if (speaker !== null && cur) {
+        const wsId = cur.workspaceId;
+        set((s) => {
+          const list = s.cloudSessionList[wsId];
+          if (!list) return s;
+          let changed = false;
+          const next = list.map((row) => {
+            if (row.id !== event.sessionId || row.participantUids.includes(speaker)) return row;
+            changed = true;
+            return { ...row, participantUids: [...row.participantUids, speaker] };
+          });
+          return changed ? { cloudSessionList: { ...s.cloudSessionList, [wsId]: next } } : s;
+        });
       }
       // 管理员刚建成一只 agent（#954）：名册没有推送通道，看见落地的 tool_result 就重拉
       // 一次快照，@ 选人弹层与智能体 tab 才看得见它。判据是日志里那条事件不是「我刚批了」

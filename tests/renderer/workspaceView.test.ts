@@ -6,7 +6,7 @@
 // canKick（owner 且不是自己）、toolsSummary（[] → 全部工具）。
 
 import { describe, expect, it } from "vitest";
-import { connectorBatchErrorText, connectorRows, memberRows, sessionRows } from "../../src/renderer/src/lib/workspaceView.js";
+import { connectorBatchErrorText, connectorRows, memberRows, sessionRows, cloudSessionRows } from "../../src/renderer/src/lib/workspaceView.js";
 import type { WorkspaceSnapshot } from "../../src/shared/workspaces.js";
 
 const WS: WorkspaceSnapshot = {
@@ -118,5 +118,23 @@ describe("connectorBatchErrorText（#957 C-C1）", () => {
     expect(connectorBatchErrorText(["a"], ["b"])).toBe(
       "贡献失败：a（已成功的已生效）\n撤回失败：b——这台仍然共享给全体成员"
     );
+  });
+});
+
+describe("cloudSessionRows 带出参与者（#1213）", () => {
+  it("原样带出 participantUids", () => {
+    const rows = cloudSessionRows(
+      [{ id: "s1", title: "", publisherUid: "u1", archived: false, updatedTs: 1, participantUids: ["u1", "u2"] }],
+      WS
+    );
+    expect(rows[0]!.participantUids).toEqual(["u1", "u2"]);
+  });
+
+  it("一个人都没有时是空数组，不是 undefined（渲染层不必再判）", () => {
+    const rows = cloudSessionRows(
+      [{ id: "s1", title: "", publisherUid: "u1", archived: false, updatedTs: 1, participantUids: [] }],
+      WS
+    );
+    expect(rows[0]!.participantUids).toEqual([]);
   });
 });
