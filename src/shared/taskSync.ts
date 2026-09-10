@@ -9,6 +9,14 @@ export const PULL_PAGE = 500;
 export const TASK_TEXT_MAX_BYTES = 64 * 1024;
 export const TASK_EVENT_MAX_BYTES = 2 * 1024 * 1024;
 
+/** 0036 里三条 RPC 用的 SQLSTATE：客户端按码不按文案分支（tests/docs/taskSessionsMigration.test.ts 对表） */
+export const TASK_SQLSTATE = {
+  seq_conflict: "P0010",
+  pen_required: "P0011",
+  forbidden: "P0012",
+  no_session: "P0013",
+} as const;
+
 /** 追加这类事件要不要握笔。`human` = 人的动作（改名 / 归档 / 换型号 / 人话…），任何设备随时可落；
     `executor` = 跑 turn 的一方留下的痕迹，必须握着笔。手机从不握笔，天然只发得出人话；
     桌面跑 turn 时握笔，什么都能落；runtime 同一条规矩。**穷举 Record**：新事件类型不表态 tsc 直接红 */

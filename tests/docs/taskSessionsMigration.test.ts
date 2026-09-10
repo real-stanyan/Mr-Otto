@@ -4,7 +4,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { HUMAN_EVENT_TYPES, PEN_TTL_S, TASK_EVENT_MAX_BYTES, TASK_TEXT_MAX_BYTES } from "../../src/shared/taskSync.js";
+import { HUMAN_EVENT_TYPES, PEN_TTL_S, TASK_EVENT_MAX_BYTES, TASK_SQLSTATE, TASK_TEXT_MAX_BYTES } from "../../src/shared/taskSync.js";
 
 const sql = readFileSync(join(__dirname, "..", "..", "supabase", "migrations", "0036_task_sessions.sql"), "utf8");
 
@@ -30,6 +30,11 @@ describe("0036_task_sessions.sql 与 src/shared/taskSync.ts 对表", () => {
       expect(sql).toMatch(new RegExp(`grant execute on function public\\.${name}_as\\([^)]*\\) to service_role`));
       expect(sql).not.toMatch(new RegExp(`grant execute on function public\\.${name}_as\\([^)]*\\) to authenticated`));
       expect(sql).toMatch(new RegExp(`grant execute on function public\\.${name}\\([^)]*\\) to authenticated`));
+    }
+  });
+  it("四个 SQLSTATE 与 TASK_SQLSTATE 逐字一致（客户端 supabaseTaskSessionsApi.ts 按码不按文案分支）", () => {
+    for (const code of Object.values(TASK_SQLSTATE)) {
+      expect(sql, `SQL 里找不到 errcode = '${code}'`).toContain(`errcode = '${code}'`);
     }
   });
 });
