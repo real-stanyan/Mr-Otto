@@ -255,9 +255,9 @@ const bridge: ShellBridge = {
   workspaceMentions: () => ipcRenderer.invoke(CHANNELS.workspaceMentions),
   workspaceMentionsRead: (sessionId) => ipcRenderer.invoke(CHANNELS.workspaceMentionsRead, sessionId),
   onWorkspaceMention: subscribe(CHANNELS.workspaceMention),
-  workspaceCloudSay: (text, mention, mentions, memberMentions) =>
+  workspaceCloudSay: (text, mention, mentions, memberMentions, voice) =>
     ipcRenderer.invoke(
-      CHANNELS.workspaceCloudSay, text, mention, mentions ?? null, memberMentions ?? null
+      CHANNELS.workspaceCloudSay, text, mention, mentions ?? null, memberMentions ?? null, voice ?? null
     ),
   workspaceCloudApprove: (callId, decision) =>
     ipcRenderer.invoke(CHANNELS.workspaceCloudApprove, callId, decision),
