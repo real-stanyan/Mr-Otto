@@ -50,6 +50,12 @@ export interface SessionSummary {
       **不带分支名**——日志里那条是「当初叫什么」，自动标题出来后会改名（ADR-0158），
       显示陈旧分支名比不显示更坏；要分支去问 workspaceLens（现查）。 */
   projectRoot: string | null;
+  /** 第 0 条 session_created 的 `workspaceKind`（ADR-0206）："default" = 内置 Default 的任务会话。
+      渲染层判「这条是不是任务会话」的第一判据（#1223 终审 I3）：**路径那半靠不住**——云端建的
+      任务会话日志里压根没有 workspace（runtime 不知道任何 Mac 路径），另一台 Mac 建的带着一条
+      本机不存在的绝对路径，两种都会掉出任务栏（前者进「史前会话」，后者在项目栏长出一个外星
+      路径组）。旧日志没这个字段 → null，那时靠路径判（isTaskSummary） */
+  workspaceKind: "default" | null;
 }
 
 const SCHEMA = `
@@ -487,6 +493,9 @@ BEGIN SELECT RAISE(ABORT, 'events log is append-only'); END;`);
                 (SELECT json_extract(payload, '$.isolated.projectRoot')
                    FROM events e9
                   WHERE e9.session_id = e.session_id AND e9.type = 'session_created') AS projectRoot,
+                (SELECT json_extract(payload, '$.workspaceKind')
+                   FROM events eA
+                  WHERE eA.session_id = e.session_id AND eA.type = 'session_created') AS workspaceKind,
                 (SELECT CASE WHEN e5.type = 'session_archived'
                              THEN COALESCE(json_extract(e5.payload, '$.reason'), 'system')
                         END

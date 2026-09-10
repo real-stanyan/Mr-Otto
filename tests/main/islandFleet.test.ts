@@ -14,6 +14,7 @@ const sess = (id: string, over: Partial<{ title: string | null; workspace: strin
   sharedWith: [] as string[],
   topic: null as string | null,
   projectRoot: null as string | null,
+  workspaceKind: null as "default" | null,
 });
 
 describe("orderedVisibleSessions", () => {
