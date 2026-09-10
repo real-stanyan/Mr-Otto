@@ -1,0 +1,44 @@
+import { describe, expect, it } from "vitest";
+import {
+  GROW_STEP,
+  INITIAL_WINDOW,
+  SMALL_LIST_MARGIN,
+  growHidden,
+  initialHidden,
+  revealHidden,
+  windowIds,
+} from "../../src/renderer/src/lib/messageWindow.js";
+
+describe("messageWindow — 时间线窗口(ADR-0284)", () => {
+  it("小列表不启用窗口:总数 ≤ INITIAL_WINDOW + 余量时一条都不藏", () => {
+    expect(initialHidden(0)).toBe(0);
+    expect(initialHidden(INITIAL_WINDOW)).toBe(0);
+    expect(initialHidden(INITIAL_WINDOW + SMALL_LIST_MARGIN)).toBe(0);
+    // 越过余量才开窗:只留后缀 INITIAL_WINDOW 条
+    expect(initialHidden(INITIAL_WINDOW + SMALL_LIST_MARGIN + 1)).toBe(SMALL_LIST_MARGIN + 1);
+    expect(initialHidden(624)).toBe(624 - INITIAL_WINDOW);
+  });
+
+  it("哨兵补挂按 GROW_STEP 收,到 0 为止(窗口只增不缩:没有反向的函数)", () => {
+    expect(growHidden(500, 624)).toBe(500 - GROW_STEP);
+    expect(growHidden(GROW_STEP, 624)).toBe(0);
+    expect(growHidden(10, 624)).toBe(0);
+    // 切会话那一帧:旧会话的 hidden 撞上新的短列表,夹住不切成空
+    expect(growHidden(500, 40)).toBe(0);
+    expect(growHidden(0, 624)).toBe(0);
+  });
+
+  it("reveal 桥:目标在窗口外就把上沿抬到它,已在窗口内不动", () => {
+    expect(revealHidden(500, 300)).toBe(300);   // 抬到目标所在那条
+    expect(revealHidden(500, 500)).toBe(500);   // 已在窗口内(第一条可见)
+    expect(revealHidden(500, 623)).toBe(500);
+    expect(revealHidden(0, 10)).toBe(0);
+  });
+
+  it("windowIds 切后缀;hidden ≤ 0 原样返回同一个引用(调用方按引用判重)", () => {
+    const ids = ["a", "b", "c", "d"];
+    expect(windowIds(ids, 2)).toEqual(["c", "d"]);
+    expect(windowIds(ids, 0)).toBe(ids);
+    expect(windowIds(ids, -1)).toBe(ids);
+  });
+});

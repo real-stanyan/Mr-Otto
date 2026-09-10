@@ -3,8 +3,8 @@
 // 「保留 Mr Otto 现有视觉」这条决定的落点在 SystemMessage:八类审计行直接喂回
 // 既有的 EventRow,一行没重写,也不需要第二条渲染路径。
 
-import React, { createContext, useContext, useEffect, useMemo, useState } from "react";
-import type { ComponentType, FC, ReactNode, Ref } from "react";
+import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
+import type { ComponentType, FC, ReactNode, RefObject } from "react";
 import { useAuiState } from "@assistant-ui/react";
 import type { PartState, ToolCallMessagePartProps } from "@assistant-ui/react";
 import { ThinkingOrb } from "thinking-orbs";
@@ -80,6 +80,7 @@ import { useChat } from "../store.js";
 import { spawnedToolCallIds } from "../lib/subagentTimeline.js";
 import { totalTokens } from "../../../session/deriveUsage.js";
 import { toThreadMessages } from "./toThreadMessages.js";
+import { growHidden, initialHidden, revealHidden } from "../lib/messageWindow.js";
 import { ottoDirectiveFormatter } from "./ottoDirectives.js";
 import { liveTimingStats, turnTimingStats, type TurnTimingAgg } from "./messageTiming.js";
 import { contextBreakdown, estimateTokens } from "../../../shared/contextEstimate.js";
@@ -884,12 +885,12 @@ const RunIndicator: ComponentType = () => {
 // 建在 OttoThread 顶层,用 Context 分发给挂在 thread.tsx MessageAnchor 槽上的组件读
 const SectionAnchorsContext = createContext<Map<string, number[]>>(new Map());
 
-function buildSectionAnchors(events: SessionEvent[], sections: Section[]): Map<string, number[]> {
+function buildSectionAnchors(messageIds: readonly string[], sections: Section[]): Map<string, number[]> {
   // ThreadMessageLike.id 类型上是可选的(assistant-ui 允许调用方不给、自己生成),
   // 但 toThreadMessages 的三处 push 都显式写了 `id: String(e.seq)` —— 运行时永远有值。
-  // 这里用 ?? "" 兜底而不是断言:空串在下面 Number("") 是 NaN,永远不会匹配到任何
-  // startSeq,是无害的降级,不是掩盖问题
-  const messageIds = toThreadMessages(events).map((m) => m.id ?? "");
+  // 调用方在 map 时已用 ?? "" 兜底:空串在 Number("") 是 NaN,永远不会匹配到任何
+  // startSeq,是无害的降级,不是掩盖问题。
+  // "live" 那条同理:Number("live") 是 NaN,天然不参与锚点对齐
   const map = new Map<string, number[]>();
   let si = 0;
   for (const id of messageIds) {
@@ -941,19 +942,88 @@ const STATIC_COMPONENTS = {
 export function OttoThread({
   viewportRef,
   sections,
+  revealRequest = null,
+  onRevealSettled,
+  onWindowChange,
 }: {
-  /** 转给 thread.tsx 的 ThreadPrimitive.Viewport——分区轨拿它做 scrollspy/跳转的量尺 */
-  viewportRef?: Ref<HTMLDivElement> | undefined;
+  /** 转给 thread.tsx 的 ThreadPrimitive.Viewport——分区轨拿它做 scrollspy/跳转的量尺。
+      reveal 桥也要拿它找锚点(querySelector),所以从 Ref 收窄成 RefObject */
+  viewportRef?: RefObject<HTMLDivElement | null> | undefined;
   /** deriveSections(events) 的结果,App.tsx 那边已经算过一份(SectionRail 也要用),
       传进来避免在这再扫一遍事件日志算同样的东西 */
   sections: Section[];
+  /** 分区跳转的慢路径(ADR-0284 决定 3):目标锚点在时间线窗口外没挂载时,
+      App 把分区号递过来,这里把窗口抬到包含它,再接手滚过去。
+      nonce 让「连点同一个分区」也能再触发一次 */
+  revealRequest?: { section: number; nonce: number } | null | undefined;
+  /** revealRequest 处理完(滚了,或发现无处可滚)回调一次,App 据此清掉请求 */
+  onRevealSettled?: (() => void) | undefined;
+  /** 窗口上沿动过(补挂 / reveal / 切会话归零)就回调一次 —— App 的 scrollspy
+      靠它重新收集锚点,否则补挂出来的新锚点不在 IntersectionObserver 的观察名单里 */
+  onWindowChange?: (() => void) | undefined;
 }) {
   const events = useChat((s) => s.events);
+  const sessionId = useChat((s) => s.sessionId);
   const skills = useChat((s) => s.skills);
+  // 消息 id 顺序算一次,三个消费方共用:锚点表、时间线窗口、reveal 桥。
+  // toThreadMessages 有身份保持(ADR-0284 决定 4),同一份 events 的第二次调用
+  // 近似零成本,所以这里不再需要「为拿 id 顺序而躲投影」
+  const messageIds = useMemo(() => toThreadMessages(events).map((m) => m.id ?? ""), [events]);
   const anchorsByMessageId = useMemo(
-    () => buildSectionAnchors(events, sections),
-    [events, sections]
+    () => buildSectionAnchors(messageIds, sections),
+    [messageIds, sections]
   );
+  // 时间线窗口(ADR-0284 决定 2):只挂载消息列表的后缀。窗口只增不缩 ——
+  // 滚下来不把上面卸掉,卸载重挂会把已付过的解析钱再付一遍,还会让
+  // scrollHeight 往回跳、抢走人正在读的位置
+  const [hiddenCount, setHiddenCount] = useState(() => initialHidden(messageIds.length));
+  // 切会话重新开窗。OttoThread 不随 sessionId 重挂载(App.tsx 的渲染点没有 key),
+  // 所以按 sessionId 在渲染期归零 —— 拿旧会话的 hiddenCount 给新会话渲一帧,
+  // 轻的(新会话更短)一帧空屏,重的(更长)错过去一屏的量
+  const [prevSessionId, setPrevSessionId] = useState(sessionId);
+  if (prevSessionId !== sessionId) {
+    setPrevSessionId(sessionId);
+    setHiddenCount(initialHidden(messageIds.length));
+  }
+  const totalRef = useRef(messageIds.length);
+  totalRef.current = messageIds.length;
+  // 稳定引用:哨兵的 IntersectionObserver 按它挂,重建一次观察就重挂一次
+  const growWindow = useCallback(() => setHiddenCount((h) => growHidden(h, totalRef.current)), []);
+  useEffect(() => {
+    onWindowChange?.();
+  }, [hiddenCount, onWindowChange]);
+
+  // reveal 桥:快路径(锚点已在 DOM)在 App.tsx 原地解决,走不到这里。
+  // 一段 effect 跑完两步:窗口没盖住目标 → 抬窗口;hiddenCount 变化让本 effect
+  // 再跑一次 → 目标已挂载 → 滚过去 → 收口
+  useEffect(() => {
+    if (revealRequest === null) return;
+    const section = sections[revealRequest.section];
+    if (section === undefined) {
+      onRevealSettled?.();
+      return;
+    }
+    // buildSectionAnchors 的反查:分区 startSeq → 第一条 id >= startSeq 的消息
+    const targetIdx = messageIds.findIndex((id) => Number(id) >= section.startSeq);
+    if (targetIdx === -1) {
+      onRevealSettled?.();
+      return;
+    }
+    if (targetIdx < hiddenCount) {
+      setHiddenCount(revealHidden(hiddenCount, targetIdx));
+      return;
+    }
+    // 已进窗口 = 锚点已挂载(窗口按消息 id 的前缀切,锚点跟着自己的消息走)
+    const anchor = viewportRef?.current?.querySelector<HTMLElement>(
+      `[data-section="${revealRequest.section}"]`
+    );
+    anchor?.scrollIntoView({
+      block: "start",
+      // 与 App.tsx jumpToSection 快路径同一个 smooth/reduced-motion 分支
+      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+    });
+    onRevealSettled?.();
+  }, [revealRequest, hiddenCount, sections, messageIds, viewportRef, onRevealSettled]);
   // 每次事件追加算一次,所有工具行共读(替代原来每行各订阅各扫的写法)
   const spawnedIds = useMemo(() => spawnedToolCallIds(events), [events]);
   // 时间线行(派活卡/交接行)共读的投影,同上理由(#115):顶层算一次,Context 分发
@@ -978,7 +1048,12 @@ export function OttoThread({
     <SectionAnchorsContext.Provider value={anchorsByMessageId}>
       <SpawnedToolCallsContext.Provider value={spawnedIds}>
         <TimelineProjectionContext.Provider value={timelineProjection}>
-          <Thread components={components} viewportRef={viewportRef} />
+          <Thread
+            components={components}
+            viewportRef={viewportRef}
+            hiddenCount={hiddenCount}
+            onGrowWindow={growWindow}
+          />
         </TimelineProjectionContext.Provider>
       </SpawnedToolCallsContext.Provider>
     </SectionAnchorsContext.Provider>
