@@ -97,6 +97,7 @@ import { orbState } from "./lib/sessionOrb.js";
 import { MessageQueue } from "@/components/elements/message-queue.js";
 import { pickGreeting } from "./lib/greeting.js";
 import { composeInjectedText } from "./lib/composerInject.js";
+import { composeQuotedMessage } from "./lib/quote.js";
 import { ProfileSetupDialog } from "./components/ProfileSetupDialog.js";
 import { ResiduePanel } from "./components/ResiduePanel.js";
 import { SignInCard } from "./components/SignInCard.js";
@@ -2935,6 +2936,13 @@ function Welcome() {
   const launch = async () => {
     if (!effectiveWorkspace || busy) return;
     setBusy(true);
+    // 引用照样折进首条消息(issue #881)。正常路径上这里必然是空的——欢迎页画得
+    // 出来的时候引用早就跟着上一条会话作废了(store 的 newSession / 删/归档当前 /
+    // enterChat 四处)。读在 startSession **之前**是这行的全部意义:读在后面的话
+    // enterChat 已经清过一遍,那四处漏了哪一处都看不出来。留着是为了让漏清的那天
+    // 退化成「引用被多带了一次」而不是「引用被悄悄吞了」——后者在界面上什么都不说,
+    // 而 chip 明明还画着
+    const q = useChat.getState().quotes;
     try {
       // 显式传全部偏好：下拉框显示什么就落地什么（宁多一条 model_changed，不让 UI 说谎）
       await startSession({
@@ -2943,11 +2951,12 @@ function Welcome() {
         // 传一个口令过去只会在新会话的日志头上落一条什么都没改变的事件
         ...(imageModel !== null && !isImageAuto(imageModel) ? { imageModel } : {}),
       });
-      const t = text.trim();
+      const t = composeQuotedMessage(q, text.trim());
       // 建会话成功才发首条消息（失败时 phase 停在 welcome，草稿原样保留）。
       // 只贴了图不打字也算一条消息——附件本身就是内容(同会话中的 submit 口径)。
       // 这里不走 slash 分发：会话刚出生，/compact 之类没有意义
       if (useChat.getState().phase === "chat" && (t || useChat.getState().staged.length > 0)) {
+        if (q.length > 0) useChat.getState().clearQuotes();
         void send(t);
       }
     } finally {
@@ -3240,6 +3249,8 @@ function ComposerTextarea({
 function ChatComposer() {
   const status = useChat((s) => s.statusBySession[s.sessionId] ?? "idle");
   const staged = useChat((s) => s.staged);
+  const quotes = useChat((s) => s.quotes);
+  const clearQuotes = useChat((s) => s.clearQuotes);
   const send = useChat((s) => s.send);
   const enqueue = useChat((s) => s.enqueue);
   const stop = useChat((s) => s.stop);
@@ -3401,8 +3412,9 @@ function ChatComposer() {
   }, [composerInject, composer]);
 
 
-  // 「有东西可发」:只贴了图不打字也算(附件本身就是内容,同 submit 的判据)
-  const canSend = input.trim() !== "" || staged.length > 0;
+  // 「有东西可发」:只贴了图不打字也算(附件本身就是内容,同 submit 的判据);
+  // 只引用不打字同理 —— 引用是这条消息的正文的一部分(issue #881)
+  const canSend = input.trim() !== "" || staged.length > 0 || quotes.length > 0;
 
   /** 发出去，还是排进队里。turn 跑着时敲的回车一律是"排队"（#1048：
       取代了 #344 的插话——注入跑到一半的 turn 里的话既可能晚于它的
@@ -3411,24 +3423,36 @@ function ChatComposer() {
       = 提到队首 + 中止当前 turn，收口后由 drainQueue 发出）。
       分岔只在这一处 —— 上面那些解析($skill / 空正文校验)几条路共用 */
   const dispatch = (text: string, skill?: string, skillArgs?: string) => {
+    // 引用 chips 在这一层折回正文里的引用块,在正文**之前**(issue #881)。
+    // 折在 dispatch 里而不是各个调用点:这是「给模型的话」唯一的出口,漏一处
+    // 就是引用被悄悄吞掉(chip 清了、话没带上),而那种失败在界面上一个字都不说。
+    // 也不折在 store.send() 里:排队走的是 enqueue(只存文字),在 send 里折的话
+    // turn 跑着时排的那条会把引用留在暂存区、贴到**下一条**消息上。
+    const body = composeQuotedMessage(quotes, text);
+    if (quotes.length > 0) clearQuotes();
     if (status === "running") {
-      enqueue(text, skill, skillArgs);
+      enqueue(body, skill, skillArgs);
       return;
     }
-    void send(text, skill, skillArgs);
+    void send(body, skill, skillArgs);
   };
 
   const submit = () => {
     // trim() 会把首尾换行全剥掉——用户 Shift+回车 打的格式（开头空行、结尾空行）
     // 就丢了。只剥首尾的空行，保留中间的所有换行。
     const text = input.replace(/^\n+|\n+$/g, "");
-    // 只贴了图不打字也算一条消息:附件本身就是内容
-    if (!text && staged.length === 0) return;
+    // 引用在 dispatch 那一层折进正文(见上);这里只需要知道「有没有」。
+    // addQuote 拒收全空白,所以有一条 = 折出来的正文必然非空。
+    // $skill / @好友 / 斜杠指令的判定一律读原文 text —— 那三条认的是用户敲的
+    // 头一个 token,前面糊上一段引用块会让它们一个都认不出来
+    const hasQuote = quotes.length > 0;
+    // 只贴了图不打字也算一条消息:附件本身就是内容。只引用不打字同理
+    if (!text && !hasQuote && staged.length === 0) return;
     // 但**排队**只排文字:队列里存不下附件(它们是 staged 里的一份暂存,
     // 一条队列项挂不住)。turn 跑着时附件入口整个是关的(AttachDropZone
     // disabled),所以这一条正常撞不到;真撞到了就什么都不做,而不是
     // 把图悄悄丢掉发一条空消息
-    if (status === "running" && !text) return;
+    if (status === "running" && !text && !hasQuote) return;
     // "$skill名(参数)"：名字和参数给 harness（注入 skill），剩下的正文才是给模型的话。
     // 参数在括号里显式分隔（issue #214，ponytail 的 argument-hint 档位同款需求）。
     // 指令头**在句中也算**（issue #438）——判定和输入框高亮共用一份名单、同一套
