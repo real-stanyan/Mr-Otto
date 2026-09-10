@@ -2222,7 +2222,12 @@ void app.whenReady().then(() => {
       },
       save: (bytes) => attachmentStore.save(bytes),
     },
-    isRunning: (id) => runningSessions.has(id),
+    // admitting 也算「在跑」（#1223 终审复审）：准入是 admitting.add → await acquirePen（真网络往返）
+    // → runningSessions.add，这个窗口里一次在飞的 pushSession 收尾时若只看 runningSessions，会把刚拿到
+    // 的笔当成自己借的放掉——服务端按 holder 串匹配，同一台机器的笔分不出是谁拿的。第二台设备看到
+    // 笔空了就接手，这边 renew 失败 → interrupted，同一句话两边各答一遍，正是笔要防的那件事。
+    // 两个准入入口都把 admitting 握到 driveTurn 的 finally，所以这一格盖住「准入 + turn」全程没有缝
+    isRunning: (id) => runningSessions.has(id) || admitting.has(id),
     onPulled: (sessionId, events) => {
       // 拉进来的事件与 engine 落的走同一条路进渲染层与岛
       for (const e of events) {

@@ -282,6 +282,10 @@ e2e（Playwright 双实例）可选，不进门禁。
 23. **`tool_result` 里含 NUL 字节的会话会冻结**（终审 I4 的直接后果）：`\u0000` 进 jsonb 触发 22P05，
     这一批再发一次结果一样，所以判成终态 `forbidden` 而不是每 30 s 重试。根治（推之前把 NUL 剥掉
     / 转义）另开 issue——那要改的是「日志里已经有什么」，不是这条同步链路。
+24. **compact 窗口里推送方借的笔要等下一 turn 收口才放**（终审复审 minor）：`compact` 把会话加进
+    `runningSessions` 但故意不管笔（`index.ts` 那段注释），一次 flush 恰好落在压缩那几百毫秒里时，
+    `pushSession` 的 finally 看到「在跑」就不放、之后也没有 turn 的收口来放它；直到这台桌面下一次
+    turn 结束。不是回归（C1 之前每一支推送方的笔都漏），触发窗口是 200 ms 防抖撞上压缩本身。
 
 ## 8. 否决的候选
 
@@ -388,7 +392,7 @@ issue #1223 的 progress 记录）。spec 正文本身不回改，读到与本�
     「史前会话」、另一台 Mac 建的（本机不存在的绝对路径）在项目栏长出一个外星路径组——两种都是
     这次同步认领来的任务会话。`SessionSummary` 从第 0 条 `session_created` 投影 `workspaceKind`
     （同 `spawnedFrom` 的写法），`isTaskSummary(s, builtin)` = 不是子会话 且（`workspaceKind ===
-    "default"` 或 路径是 Default）；`taskSessions` / `archivedTaskSessions` / App.tsx 里五处按路径
+    "default"` 或 路径是 Default）；`taskSessions` / `archivedTaskSessions` / App.tsx 里六处按路径
     排除任务会话的地方全换成它，「史前会话」的判据跟着收窄成「路径与 workspaceKind 两半都没有」。
 26. **未映射的 SQLSTATE 不再永久 30 s 重试**（I4）：`codeOf` 的 default 把一切非网络错误映成
     `other` → `fail()` → 每 30 s 重试、会话永远脏着。`22*`（数据异常，含 22P05 = NUL 字节进 jsonb）
