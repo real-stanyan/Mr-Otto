@@ -758,6 +758,13 @@ void app.whenReady().then(() => {
   // 事件带着自己的 sessionId 推给 UI，由渲染层按会话分流。
   const agents = new Map<string, ReturnType<typeof createAgent>>();
   const runningSessions = new Set<string>();
+  /** 准入中的会话（#1223 复审）：runningSessions.has 那道判断与 driveTurn 里的 add 之间隔着一次
+      await acquirePen（真网络往返），两条并发的发送会双双穿过守卫、在同一台 engine 上起两个 turn。
+      这个 Set 在判完的同一个同步 tick 里 add、整段 try/finally 结束时 delete——同 #155 的形状 */
+  const admitting = new Set<string>();
+  /** 合盖时被 interrupted 收口的会话（#1223 复审）：醒来在本机接着答，不必等别的设备再发一条。
+      笔由 answerLogged 里的 acquirePen 仲裁——睡着那会儿云端接手了的话，这边只会拿到 held */
+  const interruptedBySuspend = new Set<string>();
   /** 工作区互斥的跨进程那一半（issue #634，ADR-0155）。落点是机器级临时目录——
       两个 app 实例看得见同一份，用户的工作区一个字节都不动 */
   const workspaceLock = createWorkspaceLock({ appName: app.getName() });
@@ -3982,6 +3989,21 @@ void app.whenReady().then(() => {
     else waitingFor.set(sessionId, kind);
     send(CHANNELS.taskWaiting, { sessionId, waitingFor: kind });
   };
+  /** turn 开跑前把文件状态存进影子 git（issue #395）——两条入口共用：本机打字与接着答别的设备落的人话 */
+  const saveCheckpoint = async (sessionId: string, agent: ReturnType<typeof createAgent>): Promise<void> => {
+    if (!agent.world.checkpoint) return;
+    try {
+      const cpId = await agent.world.checkpoint.save(`turn @ ${new Date().toISOString()}`);
+      const cpEvent = store.append({
+        sessionId, ts: Date.now(), type: "checkpoint_created",
+        ignorable: true, // 模型不消费，旧版本跳过照常重放
+        checkpointId: cpId,
+      });
+      send(CHANNELS.event, cpEvent);
+    } catch (err) {
+      console.warn("检查点保存失败（跳过，不挡 turn）", err);
+    }
+  };
   /** 收口后的帮手链排空（annotate / microCompact 各自的串行队列）：放笔要等它们——它们会落
       session_autotitled / micro_compacted 这类 executor 事件，笔先放了就推不上去 */
   const afterTurnHelpers = (sessionId: string): Promise<unknown> =>
@@ -4009,7 +4031,7 @@ void app.whenReady().then(() => {
   ): Promise<void> {
     const agent = agents.get(sessionId);
     if (!agent) throw new Error("会话不存在或未激活");
-    if (runningSessions.has(sessionId)) throw new Error("该会话上一个 turn 还在跑");
+    if (runningSessions.has(sessionId) || admitting.has(sessionId)) throw new Error("该会话上一个 turn 还在跑");
     // 同一个文件夹，同一时刻只让一条 turn 起跑（issue #620，ADR-0152）。
     // 沙箱围的是路径，围不住共享的 .git——两个会话指着同一个工作目录时，一边
     // git checkout，另一边的未提交改动就无声消失了。与 git 自己同构：只拒绝，
@@ -4087,98 +4109,104 @@ void app.whenReady().then(() => {
         throw new Error("附件形状非法(渲染层送来的 OutgoingAttachment 不合规)");
       }
     }
-    // 笔（#1223，spec §3.6 turn 准入）：任务会话先问云端此刻谁在跑。拿到 / 离线 / 不是任务会话都
-    // 往下走；被别人握着 → 只落人话，不起本地 turn，等笔空了由 answerLogged 接着答
-    // （taskSync.onPenChanged）。网络错 ≠ 被占：桌面 app 离线必须能用（同 memorySync「off 也开
-    // 会话」），照跑，回网后的冲突是预期内的
-    const pen = await taskSync.acquirePen(sessionId);
-    if (pen.kind === "held") {
-      const opening = agent.engine.logUserMessage(text, refs, textFiles, background);
-      send(CHANNELS.event, opening);
-      setWaiting(sessionId, pen.holderKind === "cloud" ? "cloud" : "desktop");
-      return;
-    }
-    if (pen.kind === "offline") taskSync.markOfflineRun(sessionId);
-    setWaiting(sessionId, null);
-    await driveTurn(sessionId, agent, {
-      text,
-      run: async () => {
-        // vision-bridge：当前模型没眼睛而消息带图 → 先请视觉款代读成文字。
-        // 解析出自模型且随后就喂给当前模型（model-visible means logged）→ 必须
-        // 落事件；位置在 user_message 之前，投影读起来是"先解析、后问题"。
-        // 代读失败（无 key/限流/断网）＝ turn 失败，事件一条不落——不静默降级成
-        // "模型看不见图还装看过"
-        // 代读拿到的文本 = 模型将看到的同一份全文(正文+文件),口径一致
-        //
-        // 工作区检查点（issue #395）：turn 开跑前把文件状态存进影子 git——
-        // 「回到这一步」的文件侧锚点。失败只警告不挡 turn（检查点是便利品，
-        // 不是这个 turn 的前置条件）；没有能力的装配（子会话/裸装配）跳过
-        if (agent.world.checkpoint) {
-          try {
-            const cpId = await agent.world.checkpoint.save(`turn @ ${new Date().toISOString()}`);
-            const cpEvent = store.append({
-              sessionId, ts: Date.now(), type: "checkpoint_created",
-              ignorable: true, // 模型不消费，旧版本跳过照常重放
-              checkpointId: cpId,
-            });
-            send(CHANNELS.event, cpEvent);
-          } catch (err) {
-            console.warn("检查点保存失败（跳过，不挡 turn）", err);
-          }
-        }
-        // 调用先于任何 append（issue #283 ⑦）：skill_invoked 若先落、代读再失败，
-        // 日志里就留下一条没有任务跟随的孤儿 skill 事件——而台账语义是"启用过=
-        // 永久生效"（ADR-0066），append-only 日志又收不回。先把会失败的外呼做完，
-        // 全成了再按原序落盘，失败一条不落
-        const modelText = composeUserText(text, textFiles);
-        // Auto 判一手排在**代读员那道判断之前**（#1042）：判据是 `agent.model` 的
-        // supportsVision，而 Auto 这一下就可能把型号从看不见图的换成看得见图的
-        // （或反过来）——排在后面就会拿上一轮的型号决定这一轮要不要代读。
-        // 也排在 skill_invoked / image_described 两条 append **之前**：`barrenTurns`
-        // 按 `events[i-1]` 认领 image_described，中间夹一条 model_changed 就断了
-        await agent.pickAutoModel(modelText);
-        let described: {
-          content: string;
-          model: string;
-          usage?: TokenUsage;
-          route?: "hosted" | "direct";
-          creditCostMicro?: number;
-        } | null = null;
-        if (refs.length > 0 && !(describeModel(agent.model)?.supportsVision ?? false)) {
-          // 代读员型号现读设置（改了对下一条带图消息生效）；事件里记的必须是
-          // 真正代读的那一款，不是常量
-          // 订阅用户的代读员必须取自订阅供的那几款（#1051）：出厂默认 glm-4.6v-flash
-          // 网关不供，不换一款的话每条带图消息都会在代读那一步 blocked、连带整个 turn 失败
-          const bridgeModel = visionModelFor(visionModel(), hostedList(), isSubscribed());
-          const describeImages = createVisionBridge(
-            (id) => attachmentStore.read(id),
-            undefined,
-            bridgeModel,
-            (await helperHostedRoute(bridgeModel)) ?? undefined
+    // 准入占位（#1223 复审）：判完守卫的同一个同步 tick 里 add——下面 await acquirePen 那一次真网络
+    // 往返的窗口里再来一条发送，会被上面那道 has 挡住。held 的 return 与 driveTurn 的收口都从 finally 出去
+    admitting.add(sessionId);
+    try {
+      // 笔（#1223，spec §3.6 turn 准入）：任务会话先问云端此刻谁在跑。拿到 / 离线 / 不是任务会话都
+      // 往下走；被别人握着 → 只落人话，不起本地 turn，等笔空了由 answerLogged 接着答
+      // （taskSync.onPenChanged）。网络错 ≠ 被占：桌面 app 离线必须能用（同 memorySync「off 也开
+      // 会话」），照跑，回网后的冲突是预期内的
+      const pen = await taskSync.acquirePen(sessionId);
+      if (pen.kind === "held") {
+        // 带技能 / 带图的消息在这条路上拒收（#1223 复审）：skill_invoked 与 image_described 都是
+        // executor 类事件，没有笔落不下去。静默降级 = 要么落一条没有说明书的普通消息（ADR-0066
+        // 「启用过=永久生效」的台账从此对不上），要么让模型看不见图还装看过——两条都是既有纪律
+        // 明令禁止的。纯文本照旧只落人话、等笔空了由 answerLogged 接着答
+        if (invoked !== null || refs.length > 0) {
+          throw new Error(
+            pen.holderKind === "cloud"
+              ? "云端正在回复这条会话，带技能或图片的消息等它答完再发"
+              : "另一台电脑正在回复这条会话，带技能或图片的消息等它答完再发"
           );
-          described = { ...(await describeImages(refs, modelText)), model: bridgeModel };
         }
-        if (invoked) {
-          // 快照落在 user_message 之前：模型先看到说明书，再看到任务
-          const fullEvent = store.append({ sessionId, ts: Date.now(), type: "skill_invoked", ...invoked });
-          send(CHANNELS.event, fullEvent);
-        }
-        if (described) {
-          // 紧贴 user_message 之前（barrenTurns 按 events[i-1] 认领它，中间不能夹别的）
-          const descEvent = store.append({
-            sessionId, ts: Date.now(), type: "image_described",
-            content: described.content, model: described.model,
-            // #1093：代读那次视觉调用的账跟着落——三格都缺席 = 旧日志/上游没报，
-            // deriveUsage 照旧跳过（没记 ≠ 没花），不会凭空多出行
-            ...(described.usage ? { usage: described.usage } : {}),
-            ...(described.route ? { route: described.route } : {}),
-            ...(described.creditCostMicro !== undefined ? { creditCostMicro: described.creditCostMicro } : {}),
-          });
-          send(CHANNELS.event, descEvent);
-        }
-        return agent.engine.runTurn(text, refs, textFiles, background);
-      },
-    });
+        const opening = agent.engine.logUserMessage(text, refs, textFiles, background);
+        send(CHANNELS.event, opening);
+        setWaiting(sessionId, pen.holderKind === "cloud" ? "cloud" : "desktop");
+        return;
+      }
+      if (pen.kind === "offline") taskSync.markOfflineRun(sessionId);
+      setWaiting(sessionId, null);
+      await driveTurn(sessionId, agent, {
+        text,
+        run: async () => {
+          // vision-bridge：当前模型没眼睛而消息带图 → 先请视觉款代读成文字。
+          // 解析出自模型且随后就喂给当前模型（model-visible means logged）→ 必须
+          // 落事件；位置在 user_message 之前，投影读起来是"先解析、后问题"。
+          // 代读失败（无 key/限流/断网）＝ turn 失败，事件一条不落——不静默降级成
+          // "模型看不见图还装看过"
+          // 代读拿到的文本 = 模型将看到的同一份全文(正文+文件),口径一致
+          //
+          // 工作区检查点（issue #395）：turn 开跑前把文件状态存进影子 git——
+          // 「回到这一步」的文件侧锚点。失败只警告不挡 turn（检查点是便利品，
+          // 不是这个 turn 的前置条件）；没有能力的装配（子会话/裸装配）跳过
+          await saveCheckpoint(sessionId, agent);
+          // 调用先于任何 append（issue #283 ⑦）：skill_invoked 若先落、代读再失败，
+          // 日志里就留下一条没有任务跟随的孤儿 skill 事件——而台账语义是"启用过=
+          // 永久生效"（ADR-0066），append-only 日志又收不回。先把会失败的外呼做完，
+          // 全成了再按原序落盘，失败一条不落
+          const modelText = composeUserText(text, textFiles);
+          // Auto 判一手排在**代读员那道判断之前**（#1042）：判据是 `agent.model` 的
+          // supportsVision，而 Auto 这一下就可能把型号从看不见图的换成看得见图的
+          // （或反过来）——排在后面就会拿上一轮的型号决定这一轮要不要代读。
+          // 也排在 skill_invoked / image_described 两条 append **之前**：`barrenTurns`
+          // 按 `events[i-1]` 认领 image_described，中间夹一条 model_changed 就断了
+          await agent.pickAutoModel(modelText);
+          let described: {
+            content: string;
+            model: string;
+            usage?: TokenUsage;
+            route?: "hosted" | "direct";
+            creditCostMicro?: number;
+          } | null = null;
+          if (refs.length > 0 && !(describeModel(agent.model)?.supportsVision ?? false)) {
+            // 代读员型号现读设置（改了对下一条带图消息生效）；事件里记的必须是
+            // 真正代读的那一款，不是常量
+            // 订阅用户的代读员必须取自订阅供的那几款（#1051）：出厂默认 glm-4.6v-flash
+            // 网关不供，不换一款的话每条带图消息都会在代读那一步 blocked、连带整个 turn 失败
+            const bridgeModel = visionModelFor(visionModel(), hostedList(), isSubscribed());
+            const describeImages = createVisionBridge(
+              (id) => attachmentStore.read(id),
+              undefined,
+              bridgeModel,
+              (await helperHostedRoute(bridgeModel)) ?? undefined
+            );
+            described = { ...(await describeImages(refs, modelText)), model: bridgeModel };
+          }
+          if (invoked) {
+            // 快照落在 user_message 之前：模型先看到说明书，再看到任务
+            const fullEvent = store.append({ sessionId, ts: Date.now(), type: "skill_invoked", ...invoked });
+            send(CHANNELS.event, fullEvent);
+          }
+          if (described) {
+            // 紧贴 user_message 之前（barrenTurns 按 events[i-1] 认领它，中间不能夹别的）
+            const descEvent = store.append({
+              sessionId, ts: Date.now(), type: "image_described",
+              content: described.content, model: described.model,
+              // #1093：代读那次视觉调用的账跟着落——三格都缺席 = 旧日志/上游没报，
+              // deriveUsage 照旧跳过（没记 ≠ 没花），不会凭空多出行
+              ...(described.usage ? { usage: described.usage } : {}),
+              ...(described.route ? { route: described.route } : {}),
+              ...(described.creditCostMicro !== undefined ? { creditCostMicro: described.creditCostMicro } : {}),
+            });
+            send(CHANNELS.event, descEvent);
+          }
+          return agent.engine.runTurn(text, refs, textFiles, background);
+        },
+      });
+    } finally {
+      admitting.delete(sessionId);
+    }
   }
 
   /** turn 的躯干（#1223 从 handleSendMessage 里拆出来）：工作区锁、runningSessions、状态推送、
@@ -4198,26 +4226,33 @@ void app.whenReady().then(() => {
     const wsLock = parallelOk(agent.workspace)
       ? null
       : workspaceLock.acquire(agent.workspace, sessionId);
-    if (typeof wsLock === "string") throw new Error(wsLock);
+    if (typeof wsLock === "string") {
+      // 笔已经在准入那一步拿到了，而这条路一个 turn 都不会起（#1223 复审）：不当场放的话
+      // 没有任何后续代码会放它——续期定时器会一直替一台什么都没在跑的电脑续下去
+      void taskSync.releasePen(sessionId);
+      throw new Error(wsLock);
+    }
     runningSessions.add(sessionId);
     send(CHANNELS.turnStatus, { sessionId, status: "running" });
     feedIsland({ kind: "turnStatus", update: { sessionId, status: "running" }, now: Date.now() });
-    // 换执行器（#1223，spec §3.4）：握着笔、且日志里最后一条 executor_changed 不是「这台桌面」
-    // 才落。一条都没有 = 一直是桌面（存量日志），不落——旧日志逐字节不变
-    if (taskSync.holdsPen(sessionId)) {
-      const last = store.lastOfType(sessionId, "executor_changed") as ExecutorChangedEvent | null;
-      if (last !== null && (last.executor !== "desktop" || last.label !== hostname())) {
-        const ex = store.append({
-          sessionId, ts: Date.now(), type: "executor_changed",
-          executor: "desktop", label: hostname(), ignorable: true,
-        });
-        send(CHANNELS.event, ex);
-      }
-    }
     // runTurn 抛错时走不到下面（整个 sendMessage 一起抛），所以这个初值只是让
     // TS 安心；真正的取值只有 runTurn 的返回
     let outcome: "completed" | "aborted" = "aborted";
     try {
+      // 换执行器（#1223，spec §3.4）：握着笔、且日志里最后一条 executor_changed 不是「这台桌面」
+      // 才落。一条都没有 = 一直是桌面（存量日志），不落——旧日志逐字节不变。
+      // 排在 try 里面（#1223 复审）：store.append 抛错时，笔要走下面 catch 的放笔、
+      // runningSessions 要走 finally 的清理——摆在 try 之前的话两样都漏
+      if (taskSync.holdsPen(sessionId)) {
+        const last = store.lastOfType(sessionId, "executor_changed") as ExecutorChangedEvent | null;
+        if (last !== null && (last.executor !== "desktop" || last.label !== hostname())) {
+          const ex = store.append({
+            sessionId, ts: Date.now(), type: "executor_changed",
+            executor: "desktop", label: hostname(), ignorable: true,
+          });
+          send(CHANNELS.event, ex);
+        }
+      }
       outcome = await opts.run();
     } catch (err) {
       // 失败的 turn 没有帮手排队（enqueueAnnotate 那几条只在 completed 之后才排）：当场放笔（#1223）
@@ -4271,9 +4306,11 @@ void app.whenReady().then(() => {
       enqueueMicroCompact(sessionId);
     }
     // 放笔排在帮手之后（#1223，spec §3.3）：帮手会落 session_autotitled / micro_compacted 这类
-    // executor 事件，笔先放了它们就推不上去。aborted 那条没排帮手，两条队列为空，立刻放
+    // executor 事件，笔先放了它们就推不上去。aborted 那条没排帮手，两条队列为空，立刻放。
+    // 但只在此刻没有下一轮在跑 / 在准入时放（#1223 复审）：后台回注会在几行之后立刻起下一 turn，
+    // 帮手链几秒后才排空，那时无条件放笔就是把下一轮正在用的笔放掉；跑着的那一轮自己收口时会再判一次
     void afterTurnHelpers(sessionId).finally(() => {
-      void taskSync.releasePen(sessionId);
+      if (!runningSessions.has(sessionId) && !admitting.has(sessionId)) void taskSync.releasePen(sessionId);
     });
     // 后台回注排空（issue #389）：turn 在跑时没能当场追加（压缩进行中，#871）
     // 的后台任务攒在 pendingBg，正常收口后合并成一条注回。只在 completed 后排——aborted 是用户按了停止，
@@ -4301,10 +4338,11 @@ void app.whenReady().then(() => {
   /** 别的设备落的人话由这台电脑接着答（#1223，spec §3.6）：两个触发点——拉到一条没人答的人话
       （taskSync.onPulled）、等着的笔空了（taskSync.onPenChanged）。判据是日志（lastUnanswered），
       不是「我刚收到过什么」：两个触发点撞在一起也只答一次 */
-  const answering = new Set<string>();
   async function answerLogged(sessionId: string): Promise<void> {
-    if (runningSessions.has(sessionId) || answering.has(sessionId)) return;
-    answering.add(sessionId);
+    // 与 handleSendMessage 共用 admitting（#1223 复审）：两条入口各记一张表的话，
+    // 「本机打字」与「接着答」撞在一起时谁都看不见谁，照样在同一台 engine 上起两个 turn
+    if (runningSessions.has(sessionId) || admitting.has(sessionId)) return;
+    admitting.add(sessionId);
     try {
       if (!agents.has(sessionId)) await resumeOnce(sessionId, () => resumeAgent(sessionId));
       const agent = agents.get(sessionId);
@@ -4319,11 +4357,23 @@ void app.whenReady().then(() => {
         setWaiting(sessionId, pen.holderKind === "cloud" ? "cloud" : "desktop");
         return;
       }
-      if (pen.kind === "off") return;
+      // off = 同步整个关着（#1223 复审）：这条会话没有「云端 / 另一台电脑正在回复」可言，
+      // 等笔那盏灯要灭掉——不灭的话它会一直亮到下一次有人拿笔为止
+      if (pen.kind === "off") {
+        setWaiting(sessionId, null);
+        return;
+      }
       setWaiting(sessionId, null);
-      await driveTurn(sessionId, agent, { text: opening.content, run: () => agent.engine.runLoggedTurn(opening) });
+      await driveTurn(sessionId, agent, {
+        text: opening.content,
+        run: async () => {
+          await saveCheckpoint(sessionId, agent);
+          await agent.pickAutoModel(opening.content);
+          return agent.engine.runLoggedTurn(opening);
+        },
+      });
     } finally {
-      answering.delete(sessionId);
+      admitting.delete(sessionId);
     }
   }
   answerLoggedHook.fn = (id) => void answerLogged(id).catch((err) => console.error("接着答失败", err));
@@ -4333,12 +4383,21 @@ void app.whenReady().then(() => {
   // 处理；醒来先 sweep 再做任何事
   powerMonitor.on("suspend", () => {
     for (const id of runningSessions) {
-      if (taskSync.holdsPen(id)) agents.get(id)?.engine.abortTurn("interrupted");
+      if (!taskSync.holdsPen(id)) continue;
+      agents.get(id)?.engine.abortTurn("interrupted");
+      interruptedBySuspend.add(id);
     }
   });
   powerMonitor.on("resume", () => {
     void taskSync.pullNow();
     memoryPullNow?.();
+    // 合盖打断的那几条在本机接着答（#1223 复审）：那条人话按「没答」处理，而 answerLogged 的两个
+    // 触发点都要等别的设备再动一次——不补这一下，一台自己睡醒的电脑会对着自己的半截 turn 干等。
+    // 笔由 answerLogged 里的 acquirePen 仲裁：睡着那会儿云端接手了的话，这边只会拿到 held
+    for (const id of [...interruptedBySuspend]) {
+      interruptedBySuspend.delete(id);
+      answerLoggedHook.fn?.(id);
+    }
   });
 
   /** 后台任务完成（issue #389；#871 改时机，ADR-0205）：落审计事件，再按 turn
@@ -4506,7 +4565,7 @@ void app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.compact, async (_e, sessionId: string) => {
     const agent = agents.get(sessionId);
     if (!agent) throw new Error("会话不存在或未激活");
-    if (runningSessions.has(sessionId)) throw new Error("turn 进行中不能压缩上下文");
+    if (runningSessions.has(sessionId) || admitting.has(sessionId)) throw new Error("turn 进行中不能压缩上下文");
     // compact 是一次真实的模型调用（几秒），复用 turn 状态灯让 UI 有反馈、挡并发
     runningSessions.add(sessionId);
     compactingSessions.add(sessionId);
