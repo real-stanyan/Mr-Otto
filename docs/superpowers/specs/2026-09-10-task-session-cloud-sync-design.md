@@ -299,8 +299,9 @@ issue #1223 的 progress 记录）。spec 正文本身不回改，读到与本�
 ### A. 与 spec 正文不同的六处
 
 1. **附件「拉到即取」而非读时回取**（对应 §3.6「附件回取」）：puller 追加事件后立刻下载引用的图片
-   进本地 `AttachmentStore`，失败进 `missingAttachments` 下次 sweep 重试；§3.6 提到的四处同步读字节
-   的闭包（`index.ts:3405 / 3562 / 4037 / 4284`）一个字不动，没有改经 `attachmentFetch`。
+   进本地 `AttachmentStore`，失败进 `missingAttachments` 下次 sweep 重试；§3.6 提到的那几处同步读
+   附件字节的闭包（`attachmentStore.read`：分享 / 发布 / 代读员 / data-URL）一个字不动，没有改经
+   `attachmentFetch`。
 2. **睡眠打断用 `engine.abortTurn("interrupted")`**（对应 §3.6「睡眠 / 唤醒」），`turn_ended.outcome`
    写 `interrupted`；`lastUnanswered` 把它算「没答」、`aborted` 算「答过」。
 3. **建行那一批（`expected_seq = 0`）由 RPC 顺手把笔发给创建者**（30 s），不是创建者另外再
