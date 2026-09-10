@@ -111,8 +111,10 @@ const MODEL_SPECS: ModelSpec[] = [
   // label 用**上游自己那串官方写法**（连字符、大小写照抄发布公告与定价页的「模型版本」一栏），
   // 与 `model` 那格故意长得不一样：那格是发上线的 id，写成 DeepSeek-V4.1-Flash 当场 400
   //（实测原话：「The supported API model names are deepseek-flash, deepseek-v4-pro」）。
-  // 代价：这一行不带「（视觉）」后缀，与 GLM / Mistral 那几款的写法不一致——选单里看不出它能看图。
-  // 维护者定的口径：官方名就是官方名。真会撞上的路径有代读员与 routeModel 的话接着（同 ADR-0249）
+  // 维护者定的口径：官方名就是官方名。#1246 当时把「这一行不带（视觉）后缀，与 GLM / Mistral
+  // 那几款写法不一致」记成代价，#1247 从另一头抹平了它：**目录里一款都不写「（视觉）」**。
+  // 理由与 ADR-0249 撤掉选单那枚「视觉」记号逐字相同——在写着 Flash（视觉）的行上是同一件事
+  // 说两遍，在别的行上又成了唯一信号，两头不靠。真会撞上的路径有代读员与 routeModel 的话接着
   { provider: "deepseek", model: "deepseek-flash", label: "DeepSeek-V4.1-Flash", contextWindow: 1_000_000, thinking: THINKING_FLAG, supportsVision: true },
   // V4 Pro（DeepSeek-V4-Pro-0813）：官方公告**北京时间 2026-09-14 12:00 起**请求全部路由到
   // V4.1 Flash 并按 Flash 价计费（直到 V4.1 Pro 上线）。到那天为止它还是真实的另一款模型
@@ -125,11 +127,11 @@ const MODEL_SPECS: ModelSpec[] = [
   // （后台小模型 = glm-4.7-flash、看图代读员 = glm-4.6v-flash），删哪一款都会让默认失效。
   // 四个 id 都在 2026-08-30 逐个发过一次真请求，全通
   { provider: "glm", model: "glm-5.3", label: "GLM-5.3", contextWindow: 1_000_000, thinking: THINKING_FLAG, supportsVision: false },
-  { provider: "glm", model: "glm-5.3-flash", label: "GLM-5.3 Flash（视觉）", contextWindow: 1_000_000, thinking: THINKING_FLAG, supportsVision: true },
+  { provider: "glm", model: "glm-5.3-flash", label: "GLM-5.3 Flash", contextWindow: 1_000_000, thinking: THINKING_FLAG, supportsVision: true },
   { provider: "glm", model: "glm-4.7-flash", label: "GLM-4.7 Flash（免费）", contextWindow: 200_000, thinking: THINKING_FLAG, supportsVision: false },
   // 免费的那款视觉：图片附件(file-input-v1)得有人吃，同端点同 key。
   // 兼任 vision-bridge 的代读员：纯文本款发图时由它先解析成文字(image_described)
-  { provider: "glm", model: "glm-4.6v-flash", label: "GLM-4.6V Flash（免费·视觉）", contextWindow: 128_000, thinking: THINKING_FLAG, supportsVision: true },
+  { provider: "glm", model: "glm-4.6v-flash", label: "GLM-4.6V Flash（免费）", contextWindow: 128_000, thinking: THINKING_FLAG, supportsVision: true },
 
   // ── 月之暗面 Kimi（按量）──
   // K2 系与 moonshot-v1 系 2026-08-31 全平台下线，目录里那两条正好卡在下线前一天换掉。
@@ -168,7 +170,7 @@ const MODEL_SPECS: ModelSpec[] = [
   // ── Mistral ──（用 -latest 别名而不是钉版本号：这一家的日期后缀命名换过好几轮，
   // 别名是它自己长期维护的那一个入口。代价是上游换代时这一行的能力描述会滞后）
   { provider: "mistral", model: "mistral-large-latest", label: "Mistral Large 3", contextWindow: 256_000, thinking: THINKING_NONE, supportsVision: true },
-  { provider: "mistral", model: "mistral-small-latest", label: "Mistral Small 4（视觉）", contextWindow: 128_000, thinking: THINKING_NONE, supportsVision: true },
+  { provider: "mistral", model: "mistral-small-latest", label: "Mistral Small 4", contextWindow: 128_000, thinking: THINKING_NONE, supportsVision: true },
 
   // ── Groq ──（gpt-oss 一直推理，只能调档）
   { provider: "groq", model: "openai/gpt-oss-120b", label: "GPT-OSS 120B", contextWindow: 131_072, thinking: THINKING_EFFORT_ALWAYS, supportsVision: false },
@@ -289,6 +291,15 @@ export function describeModel(model: string): ModelChoice | undefined {
   if (hit) return hit;
   const tag = ollamaTag(model);
   return tag ? ollamaChoice(tag) : undefined;
+}
+
+/** 一个型号 id 在界面上叫什么（#1247）。目录认得就用目录的显示名，认不出就原样显示 id。
+    **这条兜底规则只许有一份**：它原来抄在输入框那枚选择器里（`m?.label ?? it.id`），
+    而团队设置页那两处压根没查过目录、直接画 id ——于是同一款模型在两个界面上是两个
+    名字，换代那天（#1241 把 `deepseek-v4-flash` 换成 `deepseek-flash`）人分不出这两行
+    说的是不是同一个东西。抄第二份的那天不会有任何一处报错，只会让它们慢慢分家 */
+export function modelLabel(model: string): string {
+  return describeModel(model)?.label ?? model;
 }
 
 /** describeModel + 本机探测结果。本机 Ollama 的窗多大、思不思考，

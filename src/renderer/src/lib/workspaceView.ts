@@ -21,6 +21,7 @@
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 import { displaySessionTitle } from "../../../shared/sessionTitle.js";
 import { ADMIN_AGENT_ID } from "../../../shared/workspaceAgents.js";
+import { modelLabel } from "../../../shared/modelCatalog.js";
 import type { AgentToolAllow } from "../../../shared/agentToolAllow.js";
 import { describeAllow } from "./proxyShare.js";
 
@@ -136,9 +137,11 @@ export interface AgentRowView {
   creatorLabel: string;
 }
 
-/** []（留空用团队默认）→ 一句人话；否则把型号 id 点连起来（spec §9） */
+/** []（留空用团队默认）→ 一句人话；否则把型号点连起来（spec §9）。
+    连的是**显示名不是 id**（`modelLabel`，#1247）：这一行的下面一层就是那枚下拉，
+    两处写两套名字时人会以为自己选的和列表上写的不是同一款 */
 function modelsSummaryOf(models: readonly string[]): string {
-  return models.length === 0 ? "用团队默认模型" : models.join(" · ");
+  return models.length === 0 ? "用团队默认模型" : models.map(modelLabel).join(" · ");
 }
 
 /** []（整池放行）→ 一句人话；否则复用 proxyShare 的描述（服务名 + 全部/几个工具） */
