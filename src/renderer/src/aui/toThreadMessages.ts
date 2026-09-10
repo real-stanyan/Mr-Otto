@@ -3,12 +3,16 @@
 // 和 src/session/deriveMessages.ts 同性质:都是从 append-only 日志推导的只读
 // 投影,一个喂模型,一个喂 UI。硬规则「任何投影必须可从日志推导」在这条线上。
 //
-// 纯函数不碰 React:边界情况(悬空调用、被拒、compact 断层)全靠单测逼,
+// 输出的**内容**是纯投影(同样的 events+live 永远得到逐字段相等的消息列表),
+// 但消息的**对象身份**靠模块级缓存保持(见文件下方「身份保持」一节)——
+// 测试要绕过缓存拿一份全量重投,换一批事件对象(如 structuredClone)即可:
+// 前缀判据是元素引用相等,内容相同但引用不同 = 全量,慢而不错。
+// 不碰 React:边界情况(悬空调用、被拒、compact 断层)全靠单测逼,
 // 不靠肉眼在界面上找。
 
 import { accumulateTurn, EMPTY_TURN_AGG, type TurnTimingAgg } from "./messageTiming.js";
 import type { ThreadMessageLike } from "@assistant-ui/react";
-import { buildToolIndex, effectiveArgs } from "../lib/toolIndex.js";
+import { extendToolIndex, type ToolIndexMaps } from "../lib/toolIndex.js";
 import type { ToolCallRequest } from "../../../session/events.js";
 import type { SessionEvent } from "../../../session/events.js";
 import type { ToolIndex } from "../lib/toolIndex.js";
@@ -160,21 +164,88 @@ function toAuditMessage(e: SessionEvent): ThreadMessageLike {
   };
 }
 
-export function toThreadMessages(
-  events: SessionEvent[],
-  live?: LiveBuffer
-): ThreadMessageLike[] {
-  const index = buildToolIndex(events);
-  const out: ThreadMessageLike[] = [];
-  // 本 turn 已经落下的那条 assistant 消息在 out 里的位置(没有 = null)。
-  // turn_ended 要标失败时只认它,别去动上一个 turn 的回复(见下面 turn_ended 分支)
-  let turnAssistantIdx: number | null = null;
-  // 页脚那行数字按 turn 结算(见 messageTiming.ts 的 TurnTimingAgg):
-  // 从用户发话开始累,只挂在不带工具调用的那条(= 最终回复)上
-  let turnAgg: TurnTimingAgg = EMPTY_TURN_AGG;
-  let turnStartTs: number | undefined;
+// ─── 身份保持(ADR-0285,#1190)───
+//
+// 事件日志 append-only(硬规则):两次调用之间 events 要么原样、要么尾部追加、
+// 要么整份换掉(切会话/resume)。于是:
+//   · 同一份 events 引用 → 投影原样复用,零成本;
+//   · 尾部追加 → 只从「可能被新事件影响到的最早点」起重放,之前的消息**复用原对象引用**;
+//   · 其余 → 全量重投,慢而不错。
+//
+// 为什么值得:assistant-ui 的 ThreadMessageConverter 按输入对象身份(WeakMap)缓存
+// 转换结果 —— 引用不变 = 那条消息的 fromThreadMessageLike 整个跳过。没有身份保持时,
+// 2555 条事件的会话里每来一个 token 都是 624 次全量转换。
+//
+// 复用边界找在哪:
+//   ① 同一 turn 的多条 assistant_message 合并成一条 UI 消息,turn 进行中新事件还会
+//      续进它(②③同理) → 未收口 turn 的那条合并消息永远重投,边界画在 turn 边界上。
+//      边界=「turnAssistantIdx 为 null 的时刻」,每个这样的时刻记一条 ResumePoint
+//      (含当时的 turnAgg/turnStartTs 原值 —— 不假定「边界上一定是 EMPTY」:
+//      turn_ended 不清账,坏日志里 assistant_message 可以紧跟在 turn_ended 后面,
+//      全量投影会拿着上一个 turn 的账继续累,续投必须给出逐字相同的答案);
+//   ② tool_result 按 toolCallId 全局配对,落盘会改变携带那个调用的消息(补 result)。
+//      正常时结果与调用在同一个 turn 里落地(①已覆盖);万一落在**已收口**的范围里
+//      ——引擎不变量破了的防御分支——不搞局部重投,直接全量重来;
+//   ③ live 缓冲是调用方参数、不在日志里,只影响尾部那条 id:"live" 的消息,
+//      与事件投影分两层缓存(装配层)。
+//
+// 缓存是模块级单例:同一时刻界面只有一个活会话,adapter 与 OttoThread 的
+// buildSectionAnchors 读的是同一份 events 引用,先后调用都命中。
 
-  for (let idx = 0; idx < events.length; idx++) {
+/** 「此刻没有未收口 turn」的投影现场:从 evtNext 起重放,产出与全量逐字相同 */
+interface ResumePoint {
+  /** 下一条待处理事件的下标 */
+  evtNext: number;
+  /** 该时刻输出消息数 */
+  outLen: number;
+  turnAgg: TurnTimingAgg;
+  turnStartTs: number | undefined;
+}
+
+interface ProjectionCache {
+  events: SessionEvent[];
+  /** 事件投出的消息(不含 live) */
+  messages: ThreadMessageLike[];
+  maps: ToolIndexMaps;
+  /** toolCallId → 携带它的消息在 messages 里的下标(②的防御查这张表) */
+  toolOwner: Map<string, number>;
+  resumePoints: ResumePoint[];
+  /** 未收口 turn 的合并消息下标;null = 投影收在 turn 边界上 */
+  openOutIdx: number | null;
+}
+
+let lastProjection: ProjectionCache | null = null;
+let lastAssembly: {
+  proj: ProjectionCache;
+  live: LiveBuffer | undefined;
+  out: ThreadMessageLike[];
+} | null = null;
+
+/** next 是 prev 的「尾部追加」吗:同长或更长,且前缀元素逐个引用相等。
+    内容相等但引用不同(重新读盘/克隆)不算 —— 退回全量,慢而不错 */
+function isAppendGrowth(prev: readonly SessionEvent[], next: readonly SessionEvent[]): boolean {
+  if (next.length < prev.length) return false;
+  for (let i = 0; i < prev.length; i++) if (next[i] !== prev[i]) return false;
+  return true;
+}
+
+/** 投影主循环:从 fromIdx 起把事件续进 out。state/out/maps/toolOwner/resumePoints
+    全以续投时的现场为准传入 —— 全量投影就是「从 0 起、现场全空」的特例 */
+function projectRange(
+  events: readonly SessionEvent[],
+  fromIdx: number,
+  state: {
+    turnAssistantIdx: number | null;
+    turnAgg: TurnTimingAgg;
+    turnStartTs: number | undefined;
+  },
+  out: ThreadMessageLike[],
+  maps: ToolIndexMaps,
+  toolOwner: Map<string, number>,
+  resumePoints: ResumePoint[]
+): number | null {
+  const index: ToolIndex = maps;
+  const process = (idx: number): void => {
     const e = events[idx]!;
     if (e.type === "user_message") {
       // 护栏 / 后台任务回注（#957 C-I5，#936）：engine 自己注的话，不是人打
@@ -185,11 +256,11 @@ export function toThreadMessages(
       // 沿用既有的 turn 边界重置（原本任何 user_message 都会重置）——这条
       // 分支只换目标消息的角色，不改动计时投影的既有行为
       if (isSystemNote(e)) {
-        turnAssistantIdx = null;
-        turnAgg = EMPTY_TURN_AGG;
-        turnStartTs = e.ts;
+        state.turnAssistantIdx = null;
+        state.turnAgg = EMPTY_TURN_AGG;
+        state.turnStartTs = e.ts;
         out.push(toAuditMessage(e));
-        continue;
+        return;
       }
       const parts: Part[] = [];
       // "$skill 任务"在发送时被拆成两条事件:skill_invoked(快照)紧贴在 user_message
@@ -200,9 +271,9 @@ export function toThreadMessages(
       const skill = invokedSkillBefore(events, idx);
       const text = skill === null ? e.content : `$${skill} ${e.content}`.trimEnd();
       if (text.trim() !== "") parts.push({ type: "text", text });
-      turnAssistantIdx = null; // 新一轮开始
-      turnAgg = EMPTY_TURN_AGG;
-      turnStartTs = e.ts;
+      state.turnAssistantIdx = null; // 新一轮开始
+      state.turnAgg = EMPTY_TURN_AGG;
+      state.turnStartTs = e.ts;
       out.push({
         role: "user",
         id: String(e.seq),
@@ -213,7 +284,7 @@ export function toThreadMessages(
         // 渲染交给既有的 UserAttachments(它自己懒取、自己缓存、自己降级)
         metadata: { custom: { otto: e } },
       });
-      continue;
+      return;
     }
 
     if (e.type === "assistant_message") {
@@ -242,7 +313,7 @@ export function toThreadMessages(
       const seenSources = new Set<string>();
       for (const call of e.toolCalls ?? []) {
         parts.push(toToolCallPart(call, index));
-        const result = index.results.get(call.id);
+        const result = maps.results.get(call.id);
         for (const p of sourcePartsFor(call, result)) {
           if (p.type !== "source" || seenSources.has(p.id)) continue;
           seenSources.add(p.id);
@@ -252,7 +323,7 @@ export function toThreadMessages(
       parts.push(...artifacts);
 
       // 有调用还没拿到结果 = 这条消息还在等世界回话(悬空调用,ADR-0005)
-      const pending = (e.toolCalls ?? []).some((c) => !index.results.has(c.id));
+      const pending = (e.toolCalls ?? []).some((c) => !maps.results.has(c.id));
       const message: ThreadMessageLike = {
         role: "assistant",
         id: String(e.seq),
@@ -273,11 +344,11 @@ export function toThreadMessages(
       const elapsedMs = prevTs !== undefined ? e.ts - prevTs : undefined;
       if (elapsedMs !== undefined) custom["elapsedMs"] = elapsedMs;
       custom["otto"] = e;
-      turnAgg = accumulateTurn(turnAgg, e, elapsedMs);
+      state.turnAgg = accumulateTurn(state.turnAgg, e, elapsedMs);
       if ((e.toolCalls ?? []).length === 0) {
         custom["turnTiming"] = {
-          ...turnAgg,
-          wallMs: turnStartTs !== undefined ? e.ts - turnStartTs : 0,
+          ...state.turnAgg,
+          wallMs: state.turnStartTs !== undefined ? e.ts - state.turnStartTs : 0,
         } satisfies TurnTimingAgg;
       }
       // 同一 turn 的多个 assistant_message 合并进**一条** UI 消息:
@@ -286,21 +357,23 @@ export function toThreadMessages(
       // 散在**不同消息**里 —— 分组(相邻合并)跨不过消息边界,6 个 bash 就渲染成
       // 6 条「终端 ×1」的单步时间线,而不是收进一条。合并后:旁白/思考/工具按
       // 事件序拼进同一条消息的 content,分组合并在消息内把它们收成一条时间线。
-      if (turnAssistantIdx !== null && out[turnAssistantIdx]?.role === "assistant") {
+      if (state.turnAssistantIdx !== null && out[state.turnAssistantIdx]?.role === "assistant") {
         // 本 turn 已有 assistant 消息:把这次的 parts 续进去,计时/状态取最新
-        const prev = out[turnAssistantIdx]!;
+        const prev = out[state.turnAssistantIdx]!;
         const prevCustom = (prev.metadata?.custom ?? {}) as Record<string, unknown>;
-        out[turnAssistantIdx] = {
+        out[state.turnAssistantIdx] = {
           ...prev,
           status: message.status, // 最新一条的完成状态(悬空/完成)以新事件为准
           content: [...(prev.content as Part[]), ...parts],
           metadata: { custom: { ...prevCustom, ...custom } },
         };
+        for (const c of e.toolCalls ?? []) toolOwner.set(c.id, state.turnAssistantIdx);
       } else {
-        turnAssistantIdx = out.length;
+        state.turnAssistantIdx = out.length;
         out.push({ ...message, metadata: { custom } });
+        for (const c of e.toolCalls ?? []) toolOwner.set(c.id, state.turnAssistantIdx);
       }
-      continue;
+      return;
     }
 
     if (e.type === "turn_ended") {
@@ -311,32 +384,129 @@ export function toThreadMessages(
       // 于是 turn 死在模型开口之前(429/断网/停止)时,它会把**上一个 turn**那条
       // 答得好好的回复标成失败,界面上给一条成功的回答扣一个红框。
       // 本 turn 一条都没有 = 没有可标的:失败已经由审计行(turn 失败那条)说了。
-      // 注意这里不 continue —— 它还要往下走,出一条审计行
-      if (e.outcome !== "completed" && turnAssistantIdx !== null) {
-        const m = out[turnAssistantIdx];
+      // 注意这里不 return —— 它还要往下走,出一条审计行
+      if (e.outcome !== "completed" && state.turnAssistantIdx !== null) {
+        const m = out[state.turnAssistantIdx];
         if (m !== undefined) {
-          out[turnAssistantIdx] = {
+          out[state.turnAssistantIdx] = {
             ...m,
             status: { type: "incomplete", reason: e.outcome === "aborted" ? "cancelled" : "error" },
           };
         }
       }
-      turnAssistantIdx = null;
+      state.turnAssistantIdx = null;
     }
 
     if (isAuditEvent(e)) {
       out.push(toAuditMessage(e));
-      continue;
+      return;
+    }
+  };
+
+  for (let idx = fromIdx; idx < events.length; idx++) {
+    process(idx);
+    // 每个「无未收口 turn」的时刻记一条续投点。audit 事件落在 turn 外时也记 ——
+    // 这让「干净点」永远尽可能靠后,续投代价 = 当前 turn 的长度而不是更多
+    if (state.turnAssistantIdx === null) {
+      resumePoints.push({
+        evtNext: idx + 1,
+        outLen: out.length,
+        turnAgg: state.turnAgg,
+        turnStartTs: state.turnStartTs,
+      });
     }
   }
+  return state.turnAssistantIdx;
+}
 
-  if (live !== undefined && (live.content !== "" || live.reasoning !== "")) {
-    const parts: Part[] = [];
-    if (live.reasoning !== "") parts.push({ type: "reasoning", text: live.reasoning });
-    if (live.content !== "") parts.push({ type: "text", text: live.content });
-    out.push({ role: "assistant", id: "live", status: { type: "running" }, content: parts });
+function fullProjection(events: SessionEvent[]): ProjectionCache {
+  const maps: ToolIndexMaps = { results: new Map(), starts: new Map(), revised: new Map() };
+  extendToolIndex(maps, events, 0);
+  const cache: ProjectionCache = {
+    events,
+    messages: [],
+    maps,
+    toolOwner: new Map(),
+    // 种子点:空日志的初始现场。它保证下面 extend 里「找续投点」永远不会落空
+    resumePoints: [{ evtNext: 0, outLen: 0, turnAgg: EMPTY_TURN_AGG, turnStartTs: undefined }],
+    openOutIdx: null,
+  };
+  cache.openOutIdx = projectRange(
+    events, 0,
+    { turnAssistantIdx: null, turnAgg: EMPTY_TURN_AGG, turnStartTs: undefined },
+    cache.messages, maps, cache.toolOwner, cache.resumePoints
+  );
+  return cache;
+}
+
+function extendProjection(prev: ProjectionCache, events: SessionEvent[]): ProjectionCache {
+  const oldLen = prev.events.length;
+  // 防御(头注②):追加段里的 tool_result 若属于一条已收口的消息,说明
+  // 「结果与调用同 turn 落盘」这条引擎不变量破了 —— 局部重投答不对,直接全量
+  const dirtyOut = prev.openOutIdx ?? prev.messages.length;
+  for (let i = oldLen; i < events.length; i++) {
+    const e = events[i]!;
+    if (e.type === "tool_result") {
+      const owner = prev.toolOwner.get(e.toolCallId);
+      if (owner !== undefined && owner < dirtyOut) return fullProjection(events);
+    }
   }
+  // 续投点 = 最后一个不晚于 dirtyOut 的干净点(即未收口 turn 开口之前的现场;
+  // 没有未收口 turn 时就是上次投影的末尾)。种子点保证找得到
+  let rpIdx = prev.resumePoints.length - 1;
+  while (rpIdx > 0 && prev.resumePoints[rpIdx]!.outLen > dirtyOut) rpIdx--;
+  const rp = prev.resumePoints[rpIdx]!;
+  const out = prev.messages.slice(0, rp.outLen);
+  // 工具索引在缓存副本上增量延伸:重投段里的调用,其结果可能落在追加段
+  const maps: ToolIndexMaps = {
+    results: new Map(prev.maps.results),
+    starts: new Map(prev.maps.starts),
+    revised: new Map(prev.maps.revised),
+  };
+  extendToolIndex(maps, events, oldLen);
+  // 重投段里的旧消息作废,它们名下的调用登记一并清掉,重投时重新记
+  const toolOwner = new Map(prev.toolOwner);
+  for (const [id, owner] of toolOwner) if (owner >= rp.outLen) toolOwner.delete(id);
+  const resumePoints = prev.resumePoints.slice(0, rpIdx + 1);
+  const openOutIdx = projectRange(
+    events, rp.evtNext,
+    { turnAssistantIdx: null, turnAgg: rp.turnAgg, turnStartTs: rp.turnStartTs },
+    out, maps, toolOwner, resumePoints
+  );
+  return { events, messages: out, maps, toolOwner, resumePoints, openOutIdx };
+}
 
+function liveMessageFor(live: LiveBuffer | undefined): ThreadMessageLike | null {
+  if (live === undefined || (live.content === "" && live.reasoning === "")) return null;
+  const parts: Part[] = [];
+  if (live.reasoning !== "") parts.push({ type: "reasoning", text: live.reasoning });
+  if (live.content !== "") parts.push({ type: "text", text: live.content });
+  return { role: "assistant", id: "live", status: { type: "running" }, content: parts };
+}
+
+export function toThreadMessages(
+  events: SessionEvent[],
+  live?: LiveBuffer
+): ThreadMessageLike[] {
+  // 投影层:按 events 引用命中 / 前缀增长续投 / 其余全量
+  let proj = lastProjection;
+  if (proj === null || proj.events !== events) {
+    proj =
+      proj !== null && isAppendGrowth(proj.events, events)
+        ? extendProjection(proj, events)
+        : fullProjection(events);
+    lastProjection = proj;
+  }
+  // 装配层:live 只决定尾部那条 id:"live" 的消息。两层都命中时返回的是
+  // **同一个数组引用** —— assistant-ui 的运行时对 `oldStore.messages ===
+  // store.messages` 有整段短路(external-store-thread-runtime-core),
+  // 内容没变时连每条消息的缓存查询都省掉
+  if (lastAssembly !== null && lastAssembly.proj === proj && lastAssembly.live === live) {
+    return lastAssembly.out;
+  }
+  const liveMsg = liveMessageFor(live);
+  const out = liveMsg === null ? proj.messages : [...proj.messages, liveMsg];
+  lastAssembly = { proj, live, out };
   return out;
 }
 

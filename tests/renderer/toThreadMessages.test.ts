@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { fromThreadMessageLike } from "@assistant-ui/react";
 import { toThreadMessages } from "../../src/renderer/src/aui/toThreadMessages.js";
 import type { SessionEvent } from "../../src/session/events.js";
+import { lcg } from "../helpers/relayLog.js";
 
 /** 造事件的小工具：seq 自增，ts 固定（时间不参与本文件任何断言） */
 function ev(partial: Partial<SessionEvent> & { type: SessionEvent["type"] }, seq: number): SessionEvent {
@@ -624,5 +625,282 @@ describe("同一 turn 的多个 assistant_message 合并成一条 UI 消息", ()
     // 顺序:旁白1 → tool1 → 旁白2 → tool2(时间序,不是旁白堆前面)
     const seq = parts.map((p) => (p.type === "tool-call" ? "tool" : p.text ?? p.type));
     expect(seq).toEqual(["第一句", "tool", "第二句", "tool"]);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 身份保持（ADR-0285 决定 4，#1190）：append-only 前缀复用。
+// 断言分两层，各管一件事：
+//   toBe    = 对象身份。assistant-ui 的 ThreadMessageConverter 按输入身份(WeakMap)
+//             命中缓存，前缀引用不变 = 那几百条消息的转换整个跳过；
+//   toEqual = 内容。增量续投与全量重投必须逐字段给出同一个答案 —— 全量那份用
+//             structuredClone 逼出来(前缀判据是元素**引用**相等,克隆后引用全换
+//             → 走全量),不靠导出内部状态。
+// 注意顺序:同一 `it` 里,身份断言要写在全量对拍之前 —— 对拍那一下会把模块缓存
+// 换成克隆体。
+describe("toThreadMessages —— 身份保持(ADR-0285)", () => {
+  it("尾部追加后,已收口 turn 的前缀消息复用原对象引用", () => {
+    const base = [
+      ev({ type: "user_message", content: "一" }, 0),
+      ev({ type: "assistant_message", content: "答一", model: "m" }, 1),
+      ev({ type: "turn_ended", outcome: "completed" }, 2),
+    ];
+    const out1 = toThreadMessages(base);
+    const grown = [
+      ...base,
+      ev({ type: "user_message", content: "二" }, 3),
+      ev({ type: "assistant_message", content: "答二", model: "m" }, 4),
+    ];
+    const out2 = toThreadMessages(grown);
+    expect(out2).toHaveLength(4);
+    expect(out2[0]).toBe(out1[0]);
+    expect(out2[1]).toBe(out1[1]);
+    // 内容与全量重投逐字段一致
+    expect(out2).toEqual(toThreadMessages(structuredClone(grown)));
+  });
+
+  it("未收口 turn 的合并消息永远重投;tool_result 到达只让它变引用", () => {
+    const base = [
+      ev({ type: "user_message", content: "一" }, 0),
+      ev({ type: "assistant_message", content: "答一", model: "m" }, 1),
+      ev({ type: "turn_ended", outcome: "completed" }, 2),
+      ev({ type: "user_message", content: "二" }, 3),
+      ev({ type: "assistant_message", content: "", model: "m",
+           toolCalls: [{ id: "c1", name: "bash", args: { cmd: "ls" } }] }, 4),
+    ];
+    const out1 = toThreadMessages(base);
+    // turn 进行中再续一条同 turn 的 assistant_message:合并消息(下标 3)重投,前缀不动
+    const grown1 = [
+      ...base,
+      ev({ type: "assistant_message", content: "中途一句", model: "m",
+           toolCalls: [{ id: "c2", name: "bash", args: { cmd: "pwd" } }] }, 5),
+    ];
+    const out2 = toThreadMessages(grown1);
+    expect(out2[0]).toBe(out1[0]);
+    expect(out2[1]).toBe(out1[1]);
+    expect(out2[2]).toBe(out1[2]);
+    expect(out2[3]).not.toBe(out1[3]);
+    // tool_result 到达:还是只有那一条变(结果补进 part),前面的照旧
+    const grown2 = [...grown1, ev({ type: "tool_result", toolCallId: "c1", status: "ok", output: "a" }, 6)];
+    const out3 = toThreadMessages(grown2);
+    expect(out3[0]).toBe(out2[0]);
+    expect(out3[1]).toBe(out2[1]);
+    expect(out3[2]).toBe(out2[2]);
+    expect(out3[3]).not.toBe(out2[3]);
+    expect(out3[3]!.content?.[0]).toMatchObject({ type: "tool-call", toolCallId: "c1", result: "a" });
+    expect(out3).toEqual(toThreadMessages(structuredClone(grown2)));
+  });
+
+  it("防御:tool_result 落在已收口 turn 的调用上 → 全量重投(引用全换,内容仍与全量一致)", () => {
+    // 「结果与调用在同一个 turn 里落盘」是引擎的不变量;这条用例钉的是它破了
+    // 之后的退路 —— 不搞局部重投(那个消息是历史上多个事件合并出来的,局部重投
+    // 得凭空还原它的中间态),直接全量,慢而不错
+    const base = [
+      ev({ type: "user_message", content: "一" }, 0),
+      ev({ type: "assistant_message", content: "", model: "m",
+           toolCalls: [{ id: "c1", name: "bash", args: {} }] }, 1),
+      ev({ type: "turn_ended", outcome: "aborted" }, 2),
+    ];
+    const out1 = toThreadMessages(base);
+    const grown = [...base, ev({ type: "tool_result", toolCallId: "c1", status: "ok", output: "迟到的结果" }, 3)];
+    const out2 = toThreadMessages(grown);
+    expect(out2[0]).not.toBe(out1[0]);
+    const ref = toThreadMessages(structuredClone(grown));
+    expect(out2).toEqual(ref);
+    // 结果补进了那条已收口的合并消息,aborted 标的状态不被它冲掉
+    expect(out2[1]!.status).toEqual({ type: "incomplete", reason: "cancelled" });
+  });
+
+  it("同一份 events 与 live 重复调用,返回同一个数组引用(运行时的整段短路吃的就是它)", () => {
+    const events = [
+      ev({ type: "user_message", content: "一" }, 0),
+      ev({ type: "assistant_message", content: "答一", model: "m" }, 1),
+    ];
+    const live = { content: "直播中", reasoning: "" };
+    const out1 = toThreadMessages(events, live);
+    expect(toThreadMessages(events, live)).toBe(out1);
+  });
+
+  it("live 变化只换尾部 live 消息;不带 live 的调用(buildSectionAnchors 那条路)共享同一份事件投影", () => {
+    const events = [
+      ev({ type: "user_message", content: "一" }, 0),
+      ev({ type: "assistant_message", content: "答一", model: "m" }, 1),
+    ];
+    const out1 = toThreadMessages(events, { content: "直播中", reasoning: "" });
+    // 多一个 token:事件消息引用不动,只有尾部那条 live 是新对象
+    const out2 = toThreadMessages(events, { content: "直播中…", reasoning: "" });
+    expect(out2[0]).toBe(out1[0]);
+    expect(out2[1]).toBe(out1[1]);
+    expect(out2[2]).not.toBe(out1[2]);
+    // OttoThread 的 buildSectionAnchors 调的是 toThreadMessages(events)(无 live):
+    // 同一投影,少尾部那条
+    const bare = toThreadMessages(events);
+    expect(bare).toHaveLength(out2.length - 1);
+    expect(bare[0]).toBe(out2[0]);
+    expect(bare[1]).toBe(out2[1]);
+  });
+
+  it("整份替换(切会话/resume)= 全量重投,不报错也不串台", () => {
+    const a = [ev({ type: "user_message", content: "会话甲" }, 0)];
+    toThreadMessages(a);
+    // 全新对象、更短、内容不同 —— 前缀判据在第一个元素就否了
+    const b = [ev({ type: "user_message", content: "会话乙" }, 0)];
+    const out = toThreadMessages(b);
+    expect(out).toHaveLength(1);
+    expect(out[0]?.content).toEqual([{ type: "text", text: "会话乙" }]);
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 增量续投与全量重投的伪随机对拍。手写用例钉的是规则,这里钉的是「规则合起来
+// 等价」:续投从某个 ResumePoint 起,带着当时记下的 turnAgg/turnStartTs 原值,
+// 任何一个该带没带的状态,都会在某个种子上偏掉。
+describe("toThreadMessages —— 增量与全量对拍(伪随机日志)", () => {
+  // 语料形状里每条岔路都对着增量路径上一个可能出错的地方:
+  //  · turn 中追加(assistant/tool_result)— 未收口合并消息的 turn 边界续投;
+  //  · assistant_message 直接跟在 turn_ended 后(崩溃日志的形状)— ResumePoint
+  //    必须带当时的 turnAgg 原值,不能假定边界上一定是 EMPTY;
+  //  · skill_invoked(+image_described)+ user_message 相邻 —— invokedSkillBefore
+  //    向前回扫;
+  //  · 迟到的 tool_result(落在已收口 turn 的调用上)— 防御性全量;
+  //  · live 缓冲时有时无 —— 装配层与投影层的分界。
+  function growTimeline(seed: number): {
+    steps: SessionEvent[][];
+    lives: ({ content: string; reasoning: string } | undefined)[];
+    counters: { openTurnAppends: number; lateResults: number };
+  } {
+    const rnd = lcg(seed);
+    const pick = <T>(xs: readonly T[]): T => xs[Math.floor(rnd() * xs.length)]!;
+    const events: SessionEvent[] = [];
+    const steps: SessionEvent[][] = [];
+    const lives: ({ content: string; reasoning: string } | undefined)[] = [];
+    const counters = { openTurnAppends: 0, lateResults: 0 };
+    let seq = 0;
+    let callSeq = 0;
+    let turnOpen = false;
+    const pendingCalls: string[] = [];
+    const sealedCalls: string[] = [];
+    const mk = (e: Record<string, unknown>): SessionEvent =>
+      ({ sessionId: "s1", ts: 1000 + seq, seq, ...e }) as unknown as SessionEvent;
+    const push = (e: SessionEvent): void => {
+      events.push(e);
+      seq++;
+    };
+
+    const total = 30 + Math.floor(rnd() * 50);
+    while (seq < total) {
+      const roll = rnd();
+      if (roll < 0.16) {
+        // user_message;之前可能紧贴 skill_invoked / image_described(回扫路径)
+        if (rnd() < 0.2) push(mk({ type: "skill_invoked", name: "review", content: "# S" }));
+        if (rnd() < 0.15) push(mk({ type: "image_described", content: "一张图", model: "v" }));
+        if (rnd() < 0.1) {
+          push(mk({ type: "user_message", content: "你在重复…", origin: "loop_guard" }));
+        } else {
+          push(mk({ type: "user_message", content: rnd() < 0.1 ? "" : `问题${seq}` }));
+        }
+        turnOpen = true;
+      } else if (roll < 0.52) {
+        if (turnOpen) counters.openTurnAppends++;
+        const withTools = rnd() < 0.5;
+        const toolCalls = withTools
+          ? Array.from({ length: 1 + Math.floor(rnd() * 2) }, () => {
+              const id = `c${callSeq++}`;
+              pendingCalls.push(id);
+              return rnd() < 0.3
+                ? { id, name: "web_search", args: { query: `q${id}` } }
+                : { id, name: "bash", args: { cmd: `cmd${id}` } };
+            })
+          : undefined;
+        push(mk({
+          type: "assistant_message",
+          content: rnd() < 0.7 ? `回话${seq}` : "",
+          ...(rnd() < 0.3 ? { reasoning: `想${seq}` } : {}),
+          ...(rnd() < 0.4 ? { usage: { promptTokens: 10 + seq, completionTokens: seq } } : {}),
+          ...(rnd() < 0.2 ? { reasoningMs: 100 } : {}),
+          model: "m",
+          ...(toolCalls ? { toolCalls } : {}),
+        }));
+        turnOpen = true;
+      } else if (roll < 0.68 && (pendingCalls.length > 0 || sealedCalls.length > 0)) {
+        if (turnOpen) counters.openTurnAppends++;
+        // 大多数时候解进行中的调用;偶尔解一个**已收口** turn 的(防御路径)
+        const late = sealedCalls.length > 0 && (pendingCalls.length === 0 || rnd() < 0.12);
+        if (late) counters.lateResults++;
+        const pool = late ? sealedCalls : pendingCalls;
+        const i = Math.floor(rnd() * pool.length);
+        const id = pool.splice(i, 1)[0]!;
+        push(mk({
+          type: "tool_result",
+          toolCallId: id,
+          status: pick(["ok", "ok", "ok", "error", "denied"] as const),
+          output: rnd() < 0.3 ? `[t${id}](https://a.com/${id}) 正文` : `结果${id}`,
+        }));
+      } else if (roll < 0.78 && turnOpen) {
+        const outcome = pick(["completed", "completed", "aborted", "error"] as const);
+        push(mk({ type: "turn_ended", outcome, ...(outcome === "error" ? { error: "炸了" } : {}) }));
+        // 没收口的调用从此挂在已收口 turn 上 —— 迟到结果的候选
+        sealedCalls.push(...pendingCalls.splice(0));
+        turnOpen = false;
+      } else if (roll < 0.9) {
+        // 审计事件(turn 里 turn 外都可能出现)
+        push(mk(pick([
+          { type: "model_changed", provider: "deepseek", model: "deepseek-chat" },
+          { type: "context_compacted", summary: "摘要", model: "m" },
+          { type: "session_renamed", title: "新名字" },
+          { type: "branch_checked_out", repoDir: "/r", branch: "b", from: "a" },
+          { type: "session_shared", friendName: "小明", message: "看看" },
+          { type: "image_described", content: "图", model: "v" },
+        ] as const)));
+      } else {
+        // 不可见事件(被投影吸收/跳过)
+        push(mk(pick([
+          { type: "tool_execution_started", toolCallId: pendingCalls[0] ?? "cx" },
+          { type: "approval_decision", toolCallId: pendingCalls[0] ?? "cx", decision: "approved", revisedArgs: { cmd: "改过的" } },
+          { type: "suggestions_generated", suggestions: ["再来"], model: "m" },
+        ] as const)));
+      }
+      // 每 1~4 条落一个快照步;最后一定落一步
+      if (rnd() < 0.35 || seq >= total) {
+        steps.push([...events]);
+        lives.push(
+          rnd() < 0.4
+            ? { content: rnd() < 0.6 ? `流${seq}` : "", reasoning: rnd() < 0.5 ? `想${seq}` : "" }
+            : undefined
+        );
+      }
+    }
+    return { steps, lives, counters };
+  }
+
+  it("语料真的覆盖两条关键岔路(turn 进行中追加 / 迟到结果),否则对拍看起来在验其实没验", () => {
+    // 与 tests/shared/turnLedger.test.ts 的「双身份事件」断言同一条纪律:
+    // 覆盖度断言按不住,下面的对拍可能只是 200 次全量对全量
+    let openTurnAppends = 0;
+    let lateResults = 0;
+    for (let seed = 1; seed <= 200; seed++) {
+      const { counters } = growTimeline(seed);
+      openTurnAppends += counters.openTurnAppends;
+      lateResults += counters.lateResults;
+    }
+    expect(openTurnAppends).toBeGreaterThan(0);
+    expect(lateResults).toBeGreaterThan(0);
+  });
+
+  it("200 份伪随机日志,逐步 append-only 增长,每步都与全量重投逐字段相等", () => {
+    for (let seed = 1; seed <= 200; seed++) {
+      const { steps, lives } = growTimeline(seed);
+      for (let i = 0; i < steps.length; i++) {
+        const events = steps[i]!;
+        const live = lives[i];
+        // 先增量:此刻模块缓存里是上一份快照(真数组),这一步走续投
+        const inc = toThreadMessages(events, live);
+        // 再全量:克隆把元素引用全换掉,前缀判据不通过 → 全量重投
+        const ref = toThreadMessages(structuredClone(events), live);
+        expect(inc, `seed=${seed} step=${i} events=${events.length}`).toEqual(ref);
+        // 全量那一下把缓存换成了克隆体;拨回真数组,下一步才走得到续投
+        toThreadMessages(events, live);
+      }
+    }
   });
 });

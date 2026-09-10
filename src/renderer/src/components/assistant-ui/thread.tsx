@@ -37,6 +37,7 @@ import {
   type TextMessagePartComponent,
   type ImageMessagePartComponent,
   type ToolCallMessagePartComponent,
+  unstable_useThreadMessageIds,
   useAuiState,
 } from "@assistant-ui/react";
 import {
@@ -50,6 +51,10 @@ import {
 import {
   createContext,
   useContext,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
   useState,
   type ComponentType,
   type ReactNode,
@@ -57,6 +62,7 @@ import {
   type PropsWithChildren,
   type Ref,
 } from "react";
+import { windowIds } from "@/lib/messageWindow.js";
 
 export type ThreadGroupPart = MessagePrimitive.GroupedParts.GroupPart;
 
@@ -119,6 +125,13 @@ export type ThreadProps = {
       DOM、也不用退回 data-slot 查询。上游没有暴露这个 prop —— 升级时留意 Viewport 是否
       仍然转发 ref */
   viewportRef?: Ref<HTMLDivElement> | undefined;
+  /** 本仓加的:时间线窗口(ADR-0285 决定 2,#1190)——只挂载消息列表的后缀,
+      前面 hiddenCount 条不渲染(不付它们的 markdown 解析钱)。窗口状态由
+      OttoThread 持有,这里只执行。缺省 0 = 全量挂载(行为与上游逐字相同) */
+  hiddenCount?: number | undefined;
+  /** 本仓加的:顶部哨兵进入视口(或兜底按钮被点)时回调一次,语义是「窗口再往上
+      扩一档」。每次回调扩多少、什么时候停,由调用方(lib/messageWindow.ts)决定 */
+  onGrowWindow?: (() => void) | undefined;
 };
 
 const EMPTY_COMPONENTS: ThreadComponents = {};
@@ -165,12 +178,19 @@ export const ThreadHistorySkeleton: FC = () => (
 export const Thread: FC<ThreadProps> = ({
   components = EMPTY_COMPONENTS,
   viewportRef,
+  hiddenCount = 0,
+  onGrowWindow,
 }) => {
   const isEmpty = useAuiState(isNewChatView);
 
   return (
     <ThreadComponentsContext.Provider value={components}>
-      <ThreadRoot isEmpty={isEmpty} viewportRef={viewportRef} />
+      <ThreadRoot
+        isEmpty={isEmpty}
+        viewportRef={viewportRef}
+        hiddenCount={hiddenCount}
+        onGrowWindow={onGrowWindow}
+      />
     </ThreadComponentsContext.Provider>
   );
 };
@@ -178,7 +198,9 @@ export const Thread: FC<ThreadProps> = ({
 const ThreadRoot: FC<{
   isEmpty: boolean;
   viewportRef: Ref<HTMLDivElement> | undefined;
-}> = ({ isEmpty, viewportRef }) => {
+  hiddenCount: number;
+  onGrowWindow: (() => void) | undefined;
+}> = ({ isEmpty, viewportRef, hiddenCount, onGrowWindow }) => {
   const {
     Welcome = ThreadWelcome,
     RunIndicator: RunIndicatorComponent,
@@ -232,9 +254,10 @@ const ThreadRoot: FC<{
             // 与工具行之间的间距一档,不该像换了个话题
             className="mb-14 flex flex-col gap-y-6 empty:hidden [&>[data-role=assistant]+[data-role=assistant]]:-mt-3"
           >
-            <ThreadPrimitive.Messages>
-              {() => <ThreadMessage />}
-            </ThreadPrimitive.Messages>
+            {/* 本仓改动:上游是 <ThreadPrimitive.Messages> 按 index 全量挂载。
+                换成按 id 的后缀窗口(ADR-0285 决定 2):首渲只付窗口内消息的解析钱,
+                早的消息由哨兵按需补挂。hiddenCount = 0 时与上游逐字相同 */}
+            <WindowedMessages hiddenCount={hiddenCount} onGrowWindow={onGrowWindow} />
           </div>
 
           {/* 本仓改动:这一条不铺底色、也不留那么厚的下边距。
@@ -294,6 +317,127 @@ const ThreadMessage: FC = () => {
   if (role === "system" && SystemMessageComponent) return <>{anchor}<SystemMessageComponent /></>;
   return <>{anchor}<AssistantMessageComponent /></>;
 };
+
+// ─── 本仓改动:时间线窗口(ADR-0285 决定 2,#1190)───
+//
+// 上游的 ThreadPrimitive.Messages 按 index 作 key 全量挂载,长会话首渲要为
+// 几百条历史消息各付一遍 Streamdown 解析。这里换成:unstable_useThreadMessageIds
+// 拿全量 id(内容变化时数组引用不变,流式 token 不会重跑这里),切掉前
+// hiddenCount 条,剩下的用 ThreadPrimitive.Unstable_MessageById 按 id 挂载 ——
+// key 是消息 id 而不是 index,前缀补挂时既有消息一行都不用重挂重解析。
+//
+// 升级风险:这两个 API 在 @assistant-ui/react 里标了 @deprecated(unstable/
+// experimental,随时可能变)。升级 assistant-ui 时先核对他们还在不在、签名
+// 变没变;不在了就把这里退回 <ThreadPrimitive.Messages>(本文件 git 历史里
+// 那份就是),窗口功能先撤,不要带病升级。
+//
+// 本仓自己的消息组件不走 components 槽位的类型(它读 ThreadComponentsContext),
+// 所以给 MessageById 的 components 只传一个壳
+const WINDOW_MESSAGE_COMPONENTS = { Message: ThreadMessage };
+
+const WindowedMessages: FC<{
+  hiddenCount: number;
+  onGrowWindow: (() => void) | undefined;
+}> = ({ hiddenCount, onGrowWindow }) => {
+  const ids = unstable_useThreadMessageIds();
+  const shown = useMemo(() => windowIds(ids, hiddenCount), [ids, hiddenCount]);
+  const sentinelRef = useRef<HTMLDivElement>(null);
+  // 补挂补偿用的基准:补挂前的「第一条已挂载节点」与它的 offsetTop。
+  // prepend 前后它是同一个 DOM 节点(key 是消息 id,React 复用),它的位移
+  // 就是 prepend 的净高度 —— 不量 scrollHeight 的差:同一次提交里流式消息
+  // 可能还在往底部长,会被一起算进来
+  const firstNodeRef = useRef<Element | null>(null);
+  const firstTopRef = useRef(0);
+  const prevHiddenRef = useRef(hiddenCount);
+
+  // 补挂的滚动补偿:prepend 会把视口里的内容往下顶,在 paint 之前把 scrollTop
+  // 顶回去,用户读的那一行不动。只用一层 —— Chromium 原生的 scroll anchoring
+  // (overflow-anchor 默认开,assistant-ui 与本仓的 CSS 都没关它)管的是
+  // content-visibility 消息的**延迟尺寸修正**;这里管的是 prepend 这个结构性
+  // 变化,量的对象不同,不叠两层。hiddenCount 归 0 之后窗口全开,不用再跟踪
+  useLayoutEffect(() => {
+    const prevHidden = prevHiddenRef.current;
+    prevHiddenRef.current = hiddenCount;
+    if (prevHidden > hiddenCount) {
+      const el = firstNodeRef.current;
+      if (el !== null && el.isConnected) {
+        const delta = (el as HTMLElement).offsetTop - firstTopRef.current;
+        if (delta > 0) {
+          const viewport = el.closest('[data-slot="aui_thread-viewport"]');
+          if (viewport instanceof HTMLElement) {
+            // 视口上有 scroll-smooth,直接赋 scrollTop 会被它动画化
+            // (补偿会变成一次看得见的漂移)——必须瞬时
+            viewport.scrollTo({ top: viewport.scrollTop + delta, behavior: "instant" });
+          }
+        }
+      }
+    }
+    if (hiddenCount > 0) {
+      const first = sentinelRef.current?.nextElementSibling ?? null;
+      if (first !== null) {
+        firstNodeRef.current = first;
+        firstTopRef.current = (first as HTMLElement).offsetTop;
+      }
+    }
+  });
+
+  return (
+    <>
+      {hiddenCount > 0 && (
+        <WindowSentinel
+          ref={sentinelRef}
+          hiddenCount={hiddenCount}
+          onGrowWindow={onGrowWindow}
+        />
+      )}
+      {shown.map((id) => (
+        <ThreadPrimitive.Unstable_MessageById
+          key={id}
+          messageId={id}
+          components={WINDOW_MESSAGE_COMPONENTS}
+        />
+      ))}
+    </>
+  );
+};
+
+/** 窗口顶部那枚「向上加载更早」的哨兵。IntersectionObserver 可见即补挂;
+    jsdom(没有 IO)或 IO 失效时,它自己就是那颗「显示更早的消息」按钮 ——
+    两种环境下用户都有一条走得通的路 */
+const WindowSentinel: FC<{
+  ref: Ref<HTMLDivElement>;
+  hiddenCount: number;
+  onGrowWindow: (() => void) | undefined;
+}> = ({ ref, hiddenCount, onGrowWindow }) => {
+  useEffect(() => {
+    const el = typeof ref === "object" && ref !== null ? ref.current : null;
+    if (el === null || onGrowWindow === undefined) return;
+    if (typeof IntersectionObserver === "undefined") return; // jsdom:只剩点按那条路
+    const io = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((t) => t.isIntersecting)) onGrowWindow();
+      },
+      // root 是滚动视口;向上提前 200px 触发,别等撞上顶才付解析钱。
+      // 已知代价:首挂载(scrollTop 还是 0、跟随滚动还没落地)那一帧哨兵在
+      // 视口内,会多补挂一档 —— 60 条,一次,补完哨兵就远在视口外了
+      { root: el.closest('[data-slot="aui_thread-viewport"]'), rootMargin: "200px 0px 0px 0px" }
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [ref, onGrowWindow]);
+  return (
+    <div ref={ref} data-slot="otto_window-sentinel" className="flex justify-center">
+      <button
+        type="button"
+        onClick={onGrowWindow}
+        className="text-muted-foreground/70 hover:text-muted-foreground rounded-full px-3 py-1 text-xs transition-colors"
+      >
+        显示更早的消息（还有 {hiddenCount} 条）
+      </button>
+    </div>
+  );
+};
+
 
 const ThreadScrollToBottom: FC = () => {
   return (

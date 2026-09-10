@@ -114,6 +114,7 @@ import { McpPromptCard } from "./components/McpPromptCard.js";
 // RetryButton 不在这里 import 了:main 侧原来在这渲染它,新路径下 OttoThread 自己的
 // ErrorBanner 槽已经内置了同一颗按钮(见 aui/OttoThread.tsx),App.tsx 不用重复渲染
 import { SectionRail } from "./components/SectionRail.js";
+import type { RevealRequest } from "./lib/messageWindow.js";
 import { FolderIcon } from "./components/FileTypeIcon.js";
 import { AUTO_MODEL } from "../../shared/autoModel.js";
 import { currentImageModel, isImageAuto } from "../../shared/imageModel.js";
@@ -3730,6 +3731,21 @@ export function App() {
   // 会话目录 = 事件投影，不是 UI 状态（同 TodoPanel 的路子）
   const sections = useMemo(() => deriveSections(events), [events]);
   const [activeSection, setActiveSection] = useState<number | null>(null);
+  // 分区跳转的慢路径请求与窗口变化计数(ADR-0285 决定 3,都喂给 OttoThread):
+  // revealRequest = 「目标锚点还在窗口外,先把窗口抬上去再滚」;
+  // windowNonce = 窗口上沿动过的次数,scrollspy effect 靠它重新收集锚点
+  const [revealRequest, setRevealRequest] = useState<RevealRequest | null>(null);
+  const [windowNonce, setWindowNonce] = useState(0);
+  // 两个回调都要稳定引用:进了 OttoThread 的 effect 依赖,每次都新建会让
+  // 那边的 effect 跟着 App 的重渲染空转(reveal 桥甚至会重复滚)
+  const settleReveal = useCallback(() => setRevealRequest(null), []);
+  const bumpWindowNonce = useCallback(() => setWindowNonce((n) => n + 1), []);
+  // 切会话清掉挂起的 revealRequest —— 这只是卫生:frame 级的正确性不靠它
+  // (passive effect 子先于父,这道清理赶不上 OttoThread 先跑的那一帧),
+  // 正确性在请求自带的 sessionId 上(messageWindow.ts 的 RevealRequest 注释)
+  useEffect(() => {
+    setRevealRequest(null);
+  }, [sessionId]);
   // 「发布到工作区…」弹窗开关（头部「更多」菜单，ADR-0198 切片 3，issue #811）
   const [publishOpen, setPublishOpen] = useState(false);
   // HTMLDivElement 而不是 HTMLElement:滚动元素现在是 ThreadPrimitive.Viewport
@@ -3738,7 +3754,10 @@ export function App() {
 
   // 当前分区：IntersectionObserver 只当"位置变了"的廉价触发器，
   // 真判定靠回调里一次性读那几个锚点的 rect（锚点数就是分区数，个位数，读得起）。
-  // 不挂 scroll 事件逐帧读 rect —— 那是每帧一次强制重排
+  // 不挂 scroll 事件逐帧读 rect —— 那是每帧一次强制重排。
+  // 依赖里的 windowNonce:时间线窗口(ADR-0285)补挂会把新锚点挂进 DOM,
+  // 不重跑这个 effect 的话,新锚点不在 IO 的观察名单里、recompute 读的
+  // 也是旧名单 —— 补挂出来的那段分区永远不会高亮
   useEffect(() => {
     const root = scrollRef.current;
     if (!root || sections.length === 0) return;
@@ -3754,6 +3773,14 @@ export function App() {
           active = Number(a.dataset["section"]);
         }
       }
+      // 时间线窗口(ADR-0285)的兜底:窗口上方的锚点没挂载。一个都没过线时,
+      // 视口停在第一个**已挂载**锚点之前 —— 分区是连续划分的,锚点之前那段
+      // 内容属于它前一个分区。first === 0 说明锚点全挂着,维持 null(与窗口化
+      // 之前的"还没进任何分区"同义)
+      if (active === null && anchors.length > 0) {
+        const first = Number(anchors[0]!.dataset["section"]);
+        if (first > 0) active = first - 1;
+      }
       setActiveSection(active);
     };
 
@@ -3761,15 +3788,28 @@ export function App() {
     anchors.forEach((a) => io.observe(a));
     recompute();
     return () => io.disconnect();
-  }, [sections]);
+  }, [sections, windowNonce]);
 
   const jumpToSection = useCallback((index: number) => {
     const root = scrollRef.current;
     const anchor = root?.querySelector<HTMLElement>(`[data-section="${index}"]`);
-    anchor?.scrollIntoView({
-      block: "start",
-      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
-    });
+    // 快路径:锚点已挂载,与窗口化之前逐字相同
+    if (anchor) {
+      anchor.scrollIntoView({
+        block: "start",
+        behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+      });
+      return;
+    }
+    // 慢路径:锚点在时间线窗口外,还没挂载 —— 让 OttoThread 先把窗口抬到
+    // 包含它(reveal 桥,ADR-0285 决定 3),挂载完成由它接手滚动并收口。
+    // 请求盖上此刻的 sessionId:passive effect 子先于父,OttoThread 可能在
+    // App 清理之前先看到这条请求 —— 它消费前会核对这个戳(见 planReveal)
+    setRevealRequest((r) => ({
+      section: index,
+      nonce: (r?.nonce ?? 0) + 1,
+      sessionId: useChat.getState().sessionId,
+    }));
   }, []);
 
   // 划词引用(SelectionQuote)的宿主:选区两端都要落在这个容器里才算「选中了消息」。
@@ -4043,7 +4083,13 @@ export function App() {
                   sections:锚点(哪条消息前面插第几个分区的起点)算在 OttoThread 内部——
                   它需要 toThreadMessages 产出的消息 id 顺序才能对齐,这份顺序只有
                   OttoThread 自己手上有,不值得为了传出来再破坏封装(见 aui/OttoThread.tsx) */}
-            <OttoThread viewportRef={scrollRef} sections={sections} />
+            <OttoThread
+              viewportRef={scrollRef}
+              sections={sections}
+              revealRequest={revealRequest}
+              onRevealSettled={settleReveal}
+              onWindowChange={bumpWindowNonce}
+            />
             <SelectionQuote hostRef={threadHostRef} />
             {/* 只有一个分区时目录没有意义(一条目录 = 噪音),不渲染。轨是绝对定位的浮层,
                 挂在 threadHostRef 这层(SelectionQuote 的宿主)的兄弟位置——出现和消失
