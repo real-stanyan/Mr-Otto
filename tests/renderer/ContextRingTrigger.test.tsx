@@ -97,7 +97,7 @@ describe("ContextRingTrigger", () => {
   it("话挂在钮的 aria-label 上，**点自己不带 title**（原生气泡会跟富浮层抢同一次悬停）", () => {
     seed(820);
     draw();
-    expect(screen.getByRole("button")).toHaveAccessibleName("上下文用量详情 · 额度：5 小时窗仅剩 18.0%");
+    expect(screen.getByRole("button")).toHaveAccessibleName("上下文用量详情 · 额度：5h 仅剩 18.0%");
     expect(dot()).not.toHaveAttribute("title");
     expect(screen.getByRole("button")).not.toHaveAttribute("title");
   });

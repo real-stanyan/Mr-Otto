@@ -53,7 +53,12 @@ export function liveWindow(w: WindowState, now: number): LiveWindow {
   return { usedMicro: rolled ? 0 : w.usedMicro, limitMicro: w.limitMicro, resetAt: w.resetAt, rolled };
 }
 
-export const WINDOW_LABELS = { h5: "5 小时窗", week: "本周" } as const;
+/** 两扇窗的名字。**三处界面共用这一份**（灵动岛页脚 / 账号页 / 上下文浮层）——
+    同一扇窗在两块屏幕上不能有两种叫法（同 ADR-0209「同一扇窗两个界面不能给出
+    两个数」）。`h5` 从「5 小时窗」缩成「5h」是 #1229：岛的页脚一行里要塞下
+    档位徽章 + 窗名 + 百分比 + 条 + 倒计时，而「5 小时窗」四个全角字等于两个
+    半角字符能说完的事。 */
+export const WINDOW_LABELS = { h5: "5h", week: "本周" } as const;
 
 /** 两扇窗里**先把人拦住**的那扇：占比高的那个。
     并列时取 5h —— 它的预算小、烧得快，同样的百分比下先满的一定是它。
@@ -120,7 +125,7 @@ export function quotaAlert(billing: BillingSnapshotView | null, now: number): Qu
   if (!billing) return null;
   const ex = billing.exhausted;
   if (ex && ex.resetAt > now) {
-    return { tone: "deny", label: `额度：${ex.window === "5h" ? WINDOW_LABELS.h5 : WINDOW_LABELS.week}已用完` };
+    return { tone: "deny", label: `额度：${ex.window === "5h" ? WINDOW_LABELS.h5 : WINDOW_LABELS.week} 已用完` };
   }
   const me = billing.me;
   if (!me?.windows) return null;
@@ -130,8 +135,8 @@ export function quotaAlert(billing: BillingSnapshotView | null, now: number): Qu
   return {
     tone,
     label: remainingPercent(b.w) <= 0
-      ? `额度：${b.label}已用完`
-      : `额度：${b.label}仅剩 ${fmtRemainingPercent(b.w)}`,
+      ? `额度：${b.label} 已用完`
+      : `额度：${b.label} 仅剩 ${fmtRemainingPercent(b.w)}`,
   };
 }
 
@@ -210,18 +215,26 @@ export function periodLine(me: Pick<BillingMe, "status" | "periodEnd">): string 
   return `下次扣款 ${day}`;
 }
 
-/** 满一天进「天」这一档：周窗的倒计时按小时写出来是「96 小时 0 分后恢复」——
-    一个没人这样读时间的数，而它要挤进浮层里 300px 宽的一行。天数向上取整
-    （还剩 3 天半说「4 天后恢复」会早一点，比说「3 天」晚说恢复要好：
-    这行字的用处是「别指望它马上回来」） */
+/** 满一天进「天」这一档：周窗的倒计时按小时写出来是「96h 0m 后刷新」——
+    一个没人这样读时间的数，而它要挤进浮层里 300px 宽的一行、以及岛上那条
+    420pt 的页脚。天数向上取整（还剩 3 天半说「4d 后刷新」会早一点，比说
+    「3d」晚说刷新要好：这行字的用处是「别指望它马上回来」）。
+
+    单位写成 `1h 38m` 而不是「1 小时 38 分」（#1229）：这一行在岛的页脚里
+    与档位徽章、百分比、进度条挤在同一行，四个全角字换成三个半角字符是
+    这一行放不放得下的差别。**天那一档跟着写 `4d`** —— 不跟的话同一行会
+    出现「4 天」与「1h 38m」两把尺子。
+
+    措辞从「恢复」改成「刷新」（同 #1229）：窗口清零是**到点重来一遍**，
+    而「恢复」读起来像「坏掉的东西修好了」。 */
 export function countdown(resetAt: number, now: number): string {
   const ms = resetAt - now;
-  if (ms <= 0) return "已恢复";
+  if (ms <= 0) return "已刷新";
   const mins = Math.floor(ms / 60_000);
-  if (mins < 1) return "不到 1 分钟后恢复";
-  if (ms >= 86_400_000) return `${Math.ceil(ms / 86_400_000)} 天后恢复`;
+  if (mins < 1) return "<1m 后刷新";
+  if (ms >= 86_400_000) return `${Math.ceil(ms / 86_400_000)}d 后刷新`;
   const h = Math.floor(mins / 60), m = mins % 60;
-  return h > 0 ? `${h} 小时 ${m} 分后恢复` : `${m} 分钟后恢复`;
+  return h > 0 ? `${h}h ${m}m 后刷新` : `${m}m 后刷新`;
 }
 
 export function addonLine(addon: BillingMe["addon"], now: number): string | null {
