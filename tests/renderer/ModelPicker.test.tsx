@@ -72,7 +72,7 @@ describe("ModelPicker：订阅那一组", () => {
     expect(screen.getAllByRole("option").map((o) => o.textContent)).toEqual([
       "ZhipuGLM-5.3 Flash（视觉）",
       "QwenQwen3.8 Flash",
-      "DeepSeekDeepSeek V4.1 Flash（视觉）",
+      "DeepSeekDeepSeek-V4.1-Flash",
       "ZhipuGLM-5.3",
       "DeepSeekDeepSeek V4 Pro",
       "QwenQwen3.8 Max",

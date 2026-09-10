@@ -83,6 +83,14 @@
   两处注释跟着改。它们不是装饰：接力预算闸那段论证正是拿这个跨度算出来的。
 - **代读员（vision-bridge）在订阅这条路上多了一款可选**：`visionModelFor` 挑「订阅供的、最便宜的那款
   带眼睛的」，`deepseek-flash` 现在符合条件（但排在 `glm-5.3-flash` 之后，所以实际选择没变）。
+- **显示名用上游的官方写法 `DeepSeek-V4.1-Flash`，与发上线的 id `deepseek-flash` 故意不一样。**
+  维护者定的口径。这两格本来就是两件事（`model` 发上线、`label` 给人看），而这一代把它们拉开了：
+  上游换成了**不带版本号的滚动名**——API 认 `deepseek-flash`，「V4.1」只活在文档的「模型版本」一栏里。
+  把官方那串当 id 发过去是当场 400（实测原话：「The supported API model names are deepseek-flash,
+  deepseek-v4-pro, but you passed DeepSeek-V4.1-Flash」），所以「用户看到版本号、请求发滚动名」是这一代
+  唯一能同时成立的写法。代价：这一行不带「（视觉）」后缀，与 GLM / Mistral 那几款的写法不一致，
+  选单里看不出它能看图——同 ADR-0249 撤掉「视觉」记号时接受过的那个代价，真会撞上的路径有代读员
+  与 `routeModel` 的话接着。
 - 硅基流动那两行**故意不跟着改**：那一家自己托管权重，2026-09-10 它的型号页上仍然是
   `DeepSeek-V4-Flash` / `DeepSeek-V4-Pro`，没有 V4.1。同一个牌子在两家平台上不是同一个东西。
 - **`deepseek-v4-pro` 那一行的价一并改了，而这不是"它涨价了"**：官方邮件明写「V4 Pro 的价在服务期内不变」，
