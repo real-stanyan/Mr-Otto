@@ -4,7 +4,7 @@
 
 import { createContext, memo, useContext, useEffect, useMemo, useState } from "react";
 import { ThinkingOrb } from "thinking-orbs";
-import { GitBranch, ImageIcon, KeyRound, Share2 } from "lucide-react";
+import { Cloud, GitBranch, ImageIcon, KeyRound, Monitor, Share2 } from "lucide-react";
 import type {
   ContextCompactedEvent,
   ModelChangedEvent,
@@ -20,6 +20,7 @@ import { compactedCardMeta, microCompactedHeadline } from "../lib/autoCompactCop
 import { buildToolIndex, type ToolIndex } from "../lib/toolIndex.js";
 import { useNow } from "../lib/useNow.js";
 import { decisionLineText, routeChangedText } from "../lib/cloudTimeline.js";
+import { executorMarkerText } from "../lib/executorMarker.js";
 import { isSystemNote, systemNoteBody, systemNoteDetail } from "../lib/systemNote.js";
 import { AUDIT, ROW, THINKING_BODY, THINKING_DETAILS, THINKING_SUMMARY, TOOL_PRE, TOOL_SEC } from "../timelineStyles.js";
 import { TurnErrorState } from "./TurnErrorState.js";
@@ -560,6 +561,15 @@ export const EventRow = memo(function EventRow({ event, isLast = false }: { even
             切到分支 <span className="font-medium text-foreground">{event.branch}</span>
             {event.from ? `（自 ${event.from}）` : ""}
           </MarkerContent>
+        </Marker>
+      );
+
+    // 换执行器（#1223）：同 branch_checked_out 用 separator——线之上和线之下，跑这段话的不是同一台机器
+    case "executor_changed":
+      return (
+        <Marker variant="separator" className="py-1" data-testid="executor-marker">
+          <MarkerIcon>{event.executor === "cloud" ? <Cloud /> : <Monitor />}</MarkerIcon>
+          <MarkerContent>{executorMarkerText(event)}</MarkerContent>
         </Marker>
       );
 

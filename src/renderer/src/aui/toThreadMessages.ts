@@ -104,6 +104,9 @@ function isAuditEvent(e: SessionEvent): boolean {
     // 账上出变了，assistant_message.route 只说结果不说"中途曾经改过道"，
     // 这一行是那个事实唯一的痕迹
     case "route_changed":
+    // 换执行器（#1223）：「这段是在手机上/云端续的」是往回翻时唯一能答这个问题的一行，
+    // 同 branch_checked_out——一条真的分隔线
+    case "executor_changed":
       return true;
     case "approval_decision":
       return e.decision === "denied";

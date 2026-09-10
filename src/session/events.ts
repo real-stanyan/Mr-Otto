@@ -603,6 +603,20 @@ export interface VoiceCallChangedEvent extends SessionEventBase {
   ignorable: true;
 }
 
+/** 这条任务会话此刻由谁在跑（#1223，spec §3.4）：电脑上的 Otto 还是云端 runtime。
+    拿到笔的那一方在起 turn 之前落一条，且仅当与 `currentExecutor(events)` 不同时才落
+    （一条都没有 = 桌面，存量日志全是桌面写的；云端建的会话因此天然在 seq 1 落 `cloud`）。
+    模型可见面是 deriveMessages 投影出来的 system 尾块（云端：碰不到电脑文件；回到电脑：
+    全部工具可用），事件本身 `ignorable`：旧桌面跳过它只少一行时间线，不会复活残缺会话。
+    `label` 是桌面这台设备的人话名（`os.hostname()`），云端缺席；换了一台 Mac 时投影据它
+    多说一句「文件不在这台机器上」 */
+export interface ExecutorChangedEvent extends SessionEventBase {
+  type: "executor_changed";
+  executor: "desktop" | "cloud";
+  label?: string;
+  ignorable: true;
+}
+
 export interface AgentRelayEvent extends SessionEventBase {
   type: "agent_relay";
   fromAgentId: string;
@@ -1068,6 +1082,7 @@ export type SessionEvent =
   | AgentBriefedEvent
   | AgentRelayEvent
   | VoiceCallChangedEvent
+  | ExecutorChangedEvent
   | MemoryLoadedEvent
   | WorkspaceMemoryLoadedEvent
   | WorkspaceWikiLoadedEvent
@@ -1130,6 +1145,7 @@ const KNOWN_EVENT_TYPES_MAP: Record<SessionEvent["type"], true> = {
   agent_briefed: true,
   agent_relay: true,
   voice_call_changed: true,
+  executor_changed: true,
   memory_loaded: true,
   workspace_memory_loaded: true,
   workspace_wiki_loaded: true,

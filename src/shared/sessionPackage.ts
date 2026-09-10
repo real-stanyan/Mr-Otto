@@ -141,6 +141,7 @@ export const PRIVACY_VERDICTS: Record<SessionEvent["type"], PrivacyVerdict> = {
   workspace_memory_loaded: "strip", // 工作区的记忆是那个工作区的私事，不是这段对话（#949）
   workspace_wiki_loaded: "strip", // 团队的 wiki 是那个团队的私事（#1140）
   voice_call_changed: "strip", // 语音通话名单是那个团队会话的控制面状态，不是这段对话的内容（#1163）
+  executor_changed: "strip", // 哪台设备在跑是发送方这个人的私事，不是这段对话（#1223）
   memory_user_edit: "strip",
   memory_nudge: "strip",
   checkpoint_created: "strip",
