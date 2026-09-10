@@ -5,7 +5,8 @@
 // （src/renderer/src/lib/workspaceView.ts 同款），纯函数零 React 也方便
 // 单独写测试（tests/renderer/cloudTimelineLabels.test.ts）。
 
-import { agentNameOf, labelOf } from "./workspaceView.js";
+import { agentAvatarSrc } from "./agentAvatar.js";
+import { agentNameOf, labelOf, memberAvatarOf } from "./workspaceView.js";
 import { isSystemNote, systemNoteBody } from "./systemNote.js";
 import type {
   AgentRelayEvent, ApprovalDecisionEvent, ApprovalRequestEvent, AssistantMessageEvent, RouteChangedEvent, SessionEvent, TurnEndedEvent,
@@ -271,24 +272,60 @@ export function cloudEmptyState(
   }
 }
 
+/** 通话那一行里的一格（#1228）。`text` 是它在句子里的**字面**——整串 part 的 text 一路
+    拼起来就是这句话本身（文案用例正是这么钉的），所以「这句话怎么说」不会因为多了一层
+    结构而分成两份判据。`party` 那一档额外带着画脸要的两样：`name` 是裸名（渲染层拿它
+    取首字母兜底），`avatarSrc` 空串 = **名册里查不到，不给脸**——`agentAvatarSrc` 对
+    陌生 id 会按哈希派生一张，画上去等于宣称它还在名册里（同 ADR-0264 用量表那条纪律）。
+    人那一侧的空串来自 `memberAvatarOf`（没设过头像 / 已退群），退回首字母是同一条路 */
+export type VoiceCallPart =
+  | { kind: "text"; text: string }
+  | { kind: "party"; text: string; name: string; avatarSrc: string };
+
 /** 语音通话名单那一行旁白（#1163）：判据是**前后两条名单的差集**，不是事件上的一个
     「动作」字段——事件只记事实（此刻谁在通话里），动作是投影出来的：
     从无到有 = 开始；空 = 结束；只多 = 拉进；只少 = 移出；有增有减 = 更新。
     名字现查名单（`agentNameOf`），查不到（那只后来被删了）退回事件里的快照——同
-    `assistantLabel` 的兜底纪律。`byAgentId` 在场 = agent 用 invite_to_call 拉的，署它的名 */
-export function voiceCallLineText(prev: VoiceCallChangedEvent | null, e: VoiceCallChangedEvent, ws: WorkspaceSnapshot): string {
-  const nameOf = (p: { agentId: string; name: string }): string =>
-    ws.agents.some((a) => a.agentId === p.agentId) ? agentNameOf(ws, p.agentId) : p.name;
+    `assistantLabel` 的兜底纪律。`byAgentId` 在场 = agent 用 invite_to_call 拉的，署它的名。
+
+    **回分段不回整串**（#1228）：判据与文案一个字没改，改的是返回结构——头像要画在每个
+    名字左边，而一整个字符串里「哪一段是名字」这件事根本不在。分段之后名字自成一格，
+    text 拼起来仍然逐字节等于原来那句话 */
+export function voiceCallLineParts(
+  prev: VoiceCallChangedEvent | null,
+  e: VoiceCallChangedEvent,
+  ws: WorkspaceSnapshot
+): VoiceCallPart[] {
+  const t = (text: string): VoiceCallPart => ({ kind: "text", text });
+  const agentParty = (p: { agentId: string; name: string }): VoiceCallPart => {
+    const known = ws.agents.some((a) => a.agentId === p.agentId);
+    const name = known ? agentNameOf(ws, p.agentId) : p.name;
+    return { kind: "party", text: name, name, avatarSrc: known ? agentAvatarSrc(ws, p.agentId) : "" };
+  };
   // 人名后空一格、书名号后不空：「Stan 开始了」与「「运营」把」——中文排版里括号自己就是间隔
-  const who = e.byAgentId ? `「${agentNameOf(ws, e.byAgentId)}」` : `${labelOf(ws, e.byUid)} `;
+  const byAgentId = e.byAgentId;
+  const who: VoiceCallPart[] =
+    byAgentId !== undefined
+      ? [{
+          kind: "party",
+          text: `「${agentNameOf(ws, byAgentId)}」`,
+          name: agentNameOf(ws, byAgentId),
+          // 拉人的那只自己没有快照可退（事件上只有 id），名册里查不到就不给脸
+          avatarSrc: ws.agents.some((a) => a.agentId === byAgentId) ? agentAvatarSrc(ws, byAgentId) : "",
+        }]
+      : [
+          { kind: "party", text: labelOf(ws, e.byUid), name: labelOf(ws, e.byUid), avatarSrc: memberAvatarOf(ws, e.byUid) },
+          t(" "),
+        ];
   const before = new Set((prev?.participants ?? []).map((p) => p.agentId));
   const after = new Set(e.participants.map((p) => p.agentId));
-  const list = (ps: readonly { agentId: string; name: string }[]): string => ps.map(nameOf).join("、");
-  if (after.size === 0) return `${who}结束了语音通话`;
-  if (before.size === 0) return `${who}开始了语音通话：${list(e.participants)}`;
+  const list = (ps: readonly { agentId: string; name: string }[]): VoiceCallPart[] =>
+    ps.flatMap((p, i) => (i === 0 ? [agentParty(p)] : [t("、"), agentParty(p)]));
+  if (after.size === 0) return [...who, t("结束了语音通话")];
+  if (before.size === 0) return [...who, t("开始了语音通话："), ...list(e.participants)];
   const added = e.participants.filter((p) => !before.has(p.agentId));
   const removed = (prev?.participants ?? []).filter((p) => !after.has(p.agentId));
-  if (added.length > 0 && removed.length === 0) return `${who}把${list(added)}拉进了通话`;
-  if (removed.length > 0 && added.length === 0) return `${who}把${list(removed)}移出了通话`;
-  return `${who}更新了通话名单：${list(e.participants)}`;
+  if (added.length > 0 && removed.length === 0) return [...who, t("把"), ...list(added), t("拉进了通话")];
+  if (removed.length > 0 && added.length === 0) return [...who, t("把"), ...list(removed), t("移出了通话")];
+  return [...who, t("更新了通话名单："), ...list(e.participants)];
 }
