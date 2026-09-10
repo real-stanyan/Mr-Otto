@@ -66,9 +66,13 @@
 照样是它；引用是一个指向别处的指针。
 
 落点是 `enterChat`（chat→chat）加三处回欢迎页的 `set`（`newSession` / 删当前 / 归档当前）——
-判据co-located 在「清掉 `events` 的地方」。漏清的那天，Welcome 的 `launch` 里那行
+判据与「清掉 `events` 的地方」住在一起。漏清的那天，Welcome 的 `launch` 里那行
 `composeQuotedMessage` 让它退化成「引用被多带了一次」而不是「引用被悄悄吞了」：后者在
 界面上什么都不说，而 chip 明明还画着。
+
+那一行读 `quotes` 必须在 `await startSession(...)` **之前**：`startSession` 内部就是
+`set(enterChat(...))`，读在后面的话它已经清过一遍，于是这道网只 guard 得住 `enterChat`
+自己那一处，另外三处漏了哪一处都看不出来（读到的照样是空数组）。
 
 ### 6. 全空白不收，闸在 `store.addQuote` 而不是浮钮上
 
