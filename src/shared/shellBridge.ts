@@ -19,7 +19,6 @@ import type { ModelLane } from "./modelLane.js";
 import type { UsageSnapshot } from "./usageStats.js";
 import type { ModelShareWindow } from "./modelShare.js";
 import type { WorkspaceMentionRow } from "./workspaceMentions.js";
-import type { IslandUsageRow } from "./islandUsage.js";
 import type { IslandRail } from "./islandRail.js";
 import type { IslandTab } from "./islandTabs.js";
 import type { CsGitHost, CsModelRoute, CsWikiWriteReq, CsWorkHit, CsWorkNode } from "./remote/cloudSession.js";
@@ -718,8 +717,6 @@ export interface ShellBridge {
   setVisionModel(model: string): Promise<string>;
   /** 灵动岛设置(设置页外观区读,落 userData/island.json)。set 之后主进程
       立刻重推一次岛快照——切换即时生效,不等下一个事件(#199) */
-  getIslandSettings(): Promise<IslandSettings>;
-  setIslandSettings(settings: IslandSettings): Promise<void>;
   /** 动效设置(设置页外观区读,落 userData/motion.json,issue #607)。
       set 之后主进程立刻把覆盖挂上/撤掉——当场生效,不用重启 */
   getMotionSettings(): Promise<MotionSettings>;
@@ -1360,10 +1357,6 @@ export interface IslandAgent {
 export interface IslandFleet {
   agents: IslandAgent[];
   focusedSessionId: string | null;
-  /** 展开态上半区显示什么(设置页切换,默认 sessions) */
-  display?: IslandDisplay;
-  /** display=usage 时的用量表(shared/islandUsage.ts 的投影);sessions 模式不带 */
-  usage?: IslandUsageRow[];
   /** 展开态最底下那一条（#1229）。**缺席 = 整条不画**：billing 还没查到、
       或者既没订阅也没跑过一次计费调用——三种情形在岛上是同一个答案，
       而「没有额度可言」和「额度充足」不是同一件事（ADR-0255） */
@@ -1416,13 +1409,6 @@ export type RemoteStatus =
       rejected: RemoteRejection | null;
     };
 
-/** 灵动岛展开态上半区的两种内容(#199) */
-export type IslandDisplay = "sessions" | "usage";
-
-/** 灵动岛设置(userData/island.json,main/islandSettingsStore.ts 落盘) */
-export interface IslandSettings {
-  display: IslandDisplay;
-}
 
 /** 动效偏好(#607):system = 跟随系统的 prefers-reduced-motion(出厂默认);
     always = 无视系统的"减弱动效",照常播。没有反向的"始终关闭"——系统说减弱
@@ -1552,8 +1538,6 @@ export const CHANNELS = {
   setHelperModel: "otter:setHelperModel",
   getVisionModel: "otter:getVisionModel",
   setVisionModel: "otter:setVisionModel",
-  getIslandSettings: "otter:getIslandSettings",
-  setIslandSettings: "otter:setIslandSettings",
   getMotionSettings: "otter:getMotionSettings",
   setMotionSettings: "otter:setMotionSettings",
   getWorkspaceSettings: "otter:getWorkspaceSettings",

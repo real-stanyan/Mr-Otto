@@ -1,4 +1,4 @@
-// 默认工作文件夹的落点:userData/workspace.json(同 islandSettingsStore.ts 的落法——
+// 默认工作文件夹的落点:userData/workspace.json(同 autoCompactStore.ts 的落法——
 // app 级、跨会话的东西)。现读不缓存:设置页改了不用重启。
 //
 // defaultWorkspace: null = 用内置 Default(文档区 Mr Otto/Default,惰性创建——

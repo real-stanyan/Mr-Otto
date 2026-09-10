@@ -11,8 +11,6 @@ const FULL: IslandFleet = {
     kind: "team", groupLabel: "Otto 核心组",
   }],
   focusedSessionId: "s1",
-  display: "usage",
-  usage: [{ day: "2026-08-25", tokens: 123, cost: 0.4 } as never],
   rail: {
     kind: "quota", plan: "pro", pastDue: false, windowLabel: "5h",
     remainPercent: 22, remainLabel: "22.0%", tone: "warn", exhausted: false,
@@ -22,13 +20,6 @@ const FULL: IslandFleet = {
 };
 
 describe("trimForMobile", () => {
-  it("用量与岛的显示设置不出机器", () => {
-    const out = trimForMobile(FULL);
-    expect(out.usage).toBeUndefined();
-    expect(out.display).toBeUndefined();
-    expect(JSON.stringify(out)).not.toContain("123"); // 账单数字一个都不在线上
-  });
-
   it("岛的分组用料不出机器：projectRoot 是又一条本机绝对路径，branch 是本机 git 状态", () => {
     // 手机端那一屏既不分组也不显示分支（mobile/ 里没有任何地方读它们）——
     // 没人读的东西不该持续过公网。哪天手机要按项目分组，再回来放开并重新

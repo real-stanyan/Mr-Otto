@@ -81,7 +81,7 @@ import { findProjectInstructions } from "./projectInstructions.js";
 import { loadAutoCompact, saveAutoCompact } from "./autoCompactStore.js";
 import { loadHelperModel, saveHelperModel } from "./helperModelStore.js";
 import type { AutoCompactSettings } from "../shared/autoCompact.js";
-import type { IslandSettings, MotionSettings, UpdaterState,
+import type { MotionSettings, UpdaterState,
   RemoteStatus,
   PermissionsSnapshot,
   ProxyBorrowView,
@@ -132,11 +132,9 @@ import { probeOllamaModels, rememberOllamaModels } from "./ollamaModels.js";
 import { clearBalanceCache, fetchProviderBalances } from "./providerBalance.js";
 import { usageSnapshot } from "../shared/usageStats.js";
 import { modelShares } from "../shared/modelShare.js";
-import { islandUsage, type IslandUsageRow } from "../shared/islandUsage.js";
 import type { AgentToolAllow } from "../shared/agentToolAllow.js";
 import type { CsWikiWriteReq } from "../shared/remote/cloudSession.js";
 import { createWorkspaceLens, withDefaultFold } from "./workspaceLens.js";
-import { loadIslandSettings, normaliseIslandSettings, saveIslandSettings } from "./islandSettingsStore.js";
 import { packageProject } from "./projectPackager.js";
 import { pruneEmptyTaskFolders, nodePruneFs } from "./taskFolderPrune.js";
 import {
@@ -513,12 +511,8 @@ void app.whenReady().then(() => {
   const helperModel = (): string => loadHelperModel(helperModelPath);
   const visionModelPath = join(accountData, "vision-model.json");
   const visionModel = (): string => loadVisionModel(visionModelPath);
-  // 灵动岛设置(#199)。app 级、跨会话;启动读一次进内存——只有 set handler 会改它,
-  // 不像 autoCompact 有"造 agent 前现读"的需求(岛推送每个工具事件都在跑,现读太贵)
-  const islandSettingsPath = join(accountData, "island.json");
-  let islandSettings = loadIslandSettings(islandSettingsPath);
-  // 兜底工作区(#559)。现读不缓存(islandSettingsStore 顶注的另一半理由):
-  // 读的频率是"开设置页/开新会话"量级,不值得为它维护一份内存镜像
+  // 兜底工作区(#559)。现读不缓存:读的频率是"开设置页/开新会话"量级,
+  // 不值得为它维护一份内存镜像
   const workspaceSettingsPath = join(accountData, "workspace.json");
   const workspaceSettingsInfo = (): WorkspaceSettingsInfo => {
     const s = loadWorkspaceSettings(workspaceSettingsPath);
@@ -930,19 +924,6 @@ void app.whenReady().then(() => {
 
   // 整包推当前会话集合(侧栏可见会话 × 各自 reducer 状态)。会话多时也只是几字段/行,
   // 沿用 ADR-0059 的"丢弃成本可忽略"
-  // display=usage 时每次推送都要一份用量表,但账单 SQL + 聚合不值得跟着每个
-  // 工具事件跑——30s 记忆化:表里的数字是"今天烧了多少"量级,30s 的陈旧无感,
-  // 而工具事件可以一秒好几个
-  let islandUsageCache: { at: number; rows: IslandUsageRow[] } | null = null;
-  const islandUsageRows = (): IslandUsageRow[] => {
-    const now = Date.now();
-    if (!islandUsageCache || now - islandUsageCache.at > 30_000) {
-      const since = now - 14 * 86_400_000;
-      islandUsageCache = { at: now, rows: islandUsage(store.billedUsage(since), { now }) };
-    }
-    return islandUsageCache.rows;
-  };
-
   // sessions() 是全表扫描级的查询(标题/归档子查询),而 pushFleet 跟着**每条**
   // 事件跑——工具密集的 turn 一秒好几次。1s 记忆化:岛上会用到的字段里只有
   // lastTs 排序会随普通事件漂移,晚 1 秒重排无感;真正改会话表形状的三类事件
@@ -977,7 +958,7 @@ void app.whenReady().then(() => {
   let islandCtx: { unreadMentions: number; teamNames: Record<string, string> } | null = null;
 
   // 岛的额度页脚（#1229）。`spend` 那一支要扫近 7 天的计费行，而 pushFleet 跟着
-  // **每条**事件跑——同 islandUsageRows 的理由，30s 记忆化：页脚上的数是「近 7 天
+  // **每条**事件跑——30s 记忆化：页脚上的数是「近 7 天
   // 烧了多少」量级，30 秒的陈旧无感。订阅那一支不吃这份缓存（billing 快照是
   // 内存里现成的），所以缓存只包 billedUsage 那一次查询
   let railBilledCache: { at: number; rows: BilledRow[] } | null = null;
@@ -999,8 +980,6 @@ void app.whenReady().then(() => {
       rail: islandRail({ billing: hostedQuota.snapshot(), billed: railBilled(now), now }),
       ...(islandCtx === null ? {} : { unreadMentions: islandCtx.unreadMentions }),
     });
-    fleet.display = islandSettings.display;
-    if (islandSettings.display === "usage") fleet.usage = islandUsageRows();
     bridge?.pushState(fleet);
     // 出机器的那一份要过闸门:用量和岛的显示设置不上公网(shared/remote/trim.ts)
     remoteBridge?.pushFleet(trimForMobile(fleet));
@@ -2990,14 +2969,6 @@ void app.whenReady().then(() => {
     saveMotionSettings(motionSettingsPath, normaliseMotionSettings(settings));
     await syncMotionOverride();
   });
-  ipcMain.handle(CHANNELS.getIslandSettings, () => islandSettings);
-  ipcMain.handle(CHANNELS.setIslandSettings, (_e, settings: IslandSettings) => {
-    islandSettings = normaliseIslandSettings(settings);
-    saveIslandSettings(islandSettingsPath, islandSettings);
-    islandUsageCache = null; // 切换瞬间给最新数,别端上一份 30s 前的缓存
-    pushFleet();
-  });
-
   ipcMain.handle(CHANNELS.getWorkspaceSettings, () => workspaceSettingsInfo());
   // dir 是渲染层传来的外部输入——normalise 整形(非字符串/空串都落成 null),
   // 不做存在性校验:设置的是"以后兜底用哪儿",真用到那刻 startSession 会 mkdir
