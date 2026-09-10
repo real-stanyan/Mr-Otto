@@ -44,7 +44,7 @@ describe("resolveConfig", () => {
       ...full,
       MODEL_BASE_URL: "https://api.deepseek.com/v1",
       MODEL_API_KEY: "sk-maintainer-key",
-      MODEL_ID: "deepseek-v4-flash",
+      MODEL_ID: "deepseek-flash",
     });
     // 这条断言的意义不在类型（tsc 已经拦了），在于**留一份会红的证据**：
     // 哪天有人"顺手加回兜底"，这里会红，而不是等某个工作区默默烧了别人的钱

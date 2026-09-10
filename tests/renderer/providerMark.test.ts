@@ -28,7 +28,7 @@ describe("PROVIDER_MARK", () => {
 
 describe("providerMarkOf", () => {
   it("认得出的型号 → 那家的标", () => {
-    expect(providerMarkOf("deepseek-v4-flash").mark).toBe("deepseek");
+    expect(providerMarkOf("deepseek-flash").mark).toBe("deepseek");
   });
 
   it("**认不出的型号不画标**，也不走 resolveModel 的 DeepSeek 兜底", () => {

@@ -73,7 +73,7 @@ const anon = await fetch(`${BASE}/billing/v1/me`);
 check("没带 token 回 401", anon.status === 401, `实得 ${anon.status}`);
 
 // ── 3. 一次非流式 chat：身份 → 选路 → hold →（有订阅才）真转发 ──
-const model = me && me.models.length > 0 ? me.models[0] : "deepseek-v4-flash";
+const model = me && me.models.length > 0 ? me.models[0] : "deepseek-flash";
 const chat = await fetch(`${BASE}/llm/v1/chat/completions`, {
   method: "POST",
   headers: { authorization: `Bearer ${TOKEN}`, "content-type": "application/json" },

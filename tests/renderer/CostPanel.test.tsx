@@ -24,7 +24,7 @@ import type { ModelUsage } from "../../src/session/deriveUsage.js";
 import type { SessionEvent } from "../../src/session/events.js";
 
 const row = (over: Partial<ModelUsage> = {}): ModelUsage => ({
-  model: "deepseek-v4-flash", route: "hosted", promptTokens: 1000, completionTokens: 100, cachedTokens: 0, ...over,
+  model: "deepseek-flash", route: "hosted", promptTokens: 1000, completionTokens: 100, cachedTokens: 0, ...over,
 });
 
 let seq = 0;
@@ -34,7 +34,7 @@ const msg = (over: { route?: "hosted" | "direct"; creditCostMicro?: number; mode
   ts: 1_000,
   type: "assistant_message",
   content: "hi",
-  model: over.model ?? "deepseek-v4-flash",
+  model: over.model ?? "deepseek-flash",
   usage: { promptTokens: 1000, completionTokens: 100 },
   ...(over.route ? { route: over.route } : {}),
   ...(over.creditCostMicro !== undefined ? { creditCostMicro: over.creditCostMicro } : {}),

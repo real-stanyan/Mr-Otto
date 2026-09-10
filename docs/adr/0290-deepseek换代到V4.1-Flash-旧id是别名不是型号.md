@@ -1,0 +1,89 @@
+# ADR-0290：DeepSeek 换代到 V4.1 Flash —— 旧 id 是别名不是型号，价按官方美元页重抄
+
+- 状态：已接受
+- 日期：2026-09-10
+- 相关：issue #1241、#1242（9/14 之后删 v4-pro）、ADR-0192（下线的 id 直接删）、ADR-0237（默认款 = 最便宜那款是个承诺）、ADR-0176/0203（托管路由与计价）、ADR-0241（订阅制不显示 $）
+
+## 背景
+
+用户报「DeepSeek 出 V4.1 Flash 了」。拿本机 key 打真接口（2026-09-10），实况与目录里那三行全部对不上：
+
+`GET /v1/models` 只回两条：`deepseek-flash`、`deepseek-v4-pro`。逐个 id 发真请求之后才看清关键的一点——
+**旧 id 不是"还在的老型号"，是别名**：
+
+| 发过去的 id | HTTP | 回包的 `model` |
+|---|---|---|
+| `deepseek-flash` | 200 | `deepseek-flash` |
+| `deepseek-v4-flash` | 200 | **`deepseek-flash`** |
+| `deepseek-v4-flash-vision-exp` | 200 | **`deepseek-flash`** |
+| `deepseek-v4.1-flash` / `deepseek-v4-1-flash` | 400 | — |
+
+官方定价页脚注原话：旧的两个名字「仍可调用，但对应模型已下线，请求将由 DeepSeek-V4.1-Flash 模型提供服务，
+并按 Flash 价格计费」。
+
+这带来两处**安静的错**，而且互相矛盾：
+
+1. 目录同时说 `deepseek-v4-flash` 没眼睛、`deepseek-v4-flash-vision-exp` 有眼睛——而这两行指向的是**同一个实体**。
+   vision-bridge 正是照 `supportsVision` 这一位决定要不要先找代读员（ADR-0009 追记），于是同一个模型走哪条路
+   取决于用户当初在下拉框里点的是哪一行字。实测 `deepseek-flash` **原生看图**（16x16 纯色 PNG 蓝/红/绿逐张答对，
+   prompt_tokens 31 → 226），所以"没眼睛"那一行是假的。
+2. 线上 `model_route` 里 `deepseek-v4-flash@deepseek` 标的还是 V4 Flash 的旧价（¥1.00 / ¥0.02 / ¥2.00
+   折算的 138889 / 2778 / 277778 micro-USD/M），而实际成本已经是 V4.1 Flash 的 ¥2 / ¥0.04 / ¥8。
+   **输出上我们按四分之一的价扣用户额度，差额自己贴**——同 #1003 那次 GLM 抄错价的形状，且这条路上
+   已经跑过 195 次真实调用。
+
+`thinking:{type:"enabled"|"disabled"}` 两档也当场验过仍然成立（disabled 时 `reasoning_content` 消失），
+所以 `THINKING_FLAG` 与 `REASONING_PASSBACK`（ADR-0274）一个字不动。
+
+## 决策
+
+**一、旧的两个 id 从目录里删掉，只留 `deepseek-flash`，`supportsVision: true`。**
+
+按 ADR-0192 决策一（上游下线/改名的 id 直接删，不做"标注（已下线）"）。这次多一条它当初没有的理由：
+留着的不是一个点了会 400 的死选项，而是一个**点了会通、却把同一个模型说成两款**的活选项——
+后者更糟，因为它不报错。旧日志照旧靠 `resolveModel` 的目录外兜底重放（chip 退化成裸 id），
+这正是那条兜底存在的理由。
+
+**二、`deepseek-v4-pro` 先留着，删它的活挂在 #1242 上（到期日 2026-09-14 12:00 北京时间）。**
+
+官方公告那一刻起它的请求全部路由到 V4.1 Flash 并按 Flash 价计费，也就是说**那天之后它不再是一个模型，
+是 `deepseek-flash` 的第二个名字**，按决策一就该删。但在那之前它仍然是真实的 V4-Pro-0813、且真不支持视觉，
+删早了就是把一个还活着的选项从用户手里拿走。维护者判的是留。代价明写：这一版发出去时多半已过 9/14，
+用户拿到的就是那个重复项，靠 #1242 收尾。
+
+**三、价按官方美元页的高峰档抄，不再拿人民币页 ÷7.2。**
+
+`modelPricing.ts` 与 `model_route` 两处都改成 `$0.3 / $0.006 / $1.2`（300000 / 6000 / 1200000 micro-USD/M）。
+汇率是我们自己塞进去的一个假设，而这一家自己就报美元价；两者今天差约 8%，美元页高——
+取高的那个不会让我们贴差额（同 seed 里「促销价按原价登记」「错峰价取高峰档」那两条的方向）。
+`modelPricing.ts` 的表头抄表日期**不动**，只给 DeepSeek 那一组标它自己的日期：把表头改成今天
+等于宣称另外十家也刚核过，而那正是这张表最容易撒的谎。
+
+**四、线上 `model_route` 的退役行停用（`enabled = false`）而不是删。**
+
+`usage_event.route_id` 里躺着 195 条指向它的历史记账（没有外键，删得掉——但删完那些行就对不了账）。
+新行 `deepseek-flash@deepseek` 另插一条，于是历史与现状各自成立。
+
+## 后果
+
+- **订阅用户的默认款从 DeepSeek 换成 GLM-5.3 Flash。** 这不是顺手改的，是决策三的算术结果：
+  `routesQuery` 按 `price_out_micro_per_m.asc` 排（ADR-0237），Flash 的输出价从 277778 改成 1200000 之后
+  它不再是最便宜那款。「默认款 = 最便宜那款」是个承诺，承诺兑现的样子就是它会随价目变。
+  维护者在 #1241 里明确接受了这一条。Auto 的 hard 档（`models.at(-1)`）仍是 `qwen3.8-max`，不受影响。
+- 最贵与最便宜之间的输出价差从 21 倍变成 15 倍——`agentRelay.ts` 与 `billingQueries.ts` 里引用这个数的
+  两处注释跟着改。它们不是装饰：接力预算闸那段论证正是拿这个跨度算出来的。
+- **代读员（vision-bridge）在订阅这条路上多了一款可选**：`visionModelFor` 挑「订阅供的、最便宜的那款
+  带眼睛的」，`deepseek-flash` 现在符合条件（但排在 `glm-5.3-flash` 之后，所以实际选择没变）。
+- 硅基流动那两行**故意不跟着改**：那一家自己托管权重，2026-09-10 它的型号页上仍然是
+  `DeepSeek-V4-Flash` / `DeepSeek-V4-Pro`，没有 V4.1。同一个牌子在两家平台上不是同一个东西。
+- 顺手拆掉一个与本次改动咬合的地雷：`seed/0017` 里三个档的 `capabilities` 还写着
+  `{"image":false,"video":false}`，而真库早就是 `image:true` 且 pro/max 带 `workspace:true`（ADR-0242），
+  **而那个 upsert 会刷这一列**。原先重跑一次 seed 只是把出图关掉、把工作区的闸按死；本次改动之后它还会让
+  `routeModel` 的 0 号多模态门禁把**每一个订阅用户的默认型号**判成 blocked——因为默认款从此是一款视觉模型。
+  三行按真库现值重抄。
+- 测试里 21 个文件引用的 `deepseek-v4-flash` 整体改名。其中三处不是改名而是**新答案**，产品代码在同一个
+  diff 里（ADR-0020 的 L2 例行开发）：`modelRoute` / `agent` 的托管 fixture 补上 `capabilities: {image:true}`
+  （不补就撞 0 号门禁，而真库三个档都是 image:true，补的是现实不是放宽）；`subscriberGates` 的 hosted
+  fixture 换成头一款没眼睛的组合，这样它证明的仍然是「最便宜的**带眼睛的**」而不是「最便宜的」。
+- 这份目录**还会再腐烂**，且这次的腐烂形态是 ADR-0192 没见过的一种：id 还在、请求还通、回包里换了人。
+  唯一抓得住它的动作是**看回包的 `model` 字段**，不是看 HTTP 状态码。

@@ -4,7 +4,7 @@ import { modelChipLabel } from "../../src/renderer/src/lib/modelChip.js";
 
 describe("modelChipLabel", () => {
   it("普通型号：拼上厂商", () => {
-    expect(modelChipLabel("deepseek", "deepseek-v4-flash")).toBe("deepseek/deepseek-v4-flash");
+    expect(modelChipLabel("deepseek", "deepseek-flash")).toBe("deepseek/deepseek-flash");
   });
 
   it("id 里已经有厂商前缀就不再加一遍 —— 曾经显示成 ollama/ollama/qwen3.8:27b", () => {

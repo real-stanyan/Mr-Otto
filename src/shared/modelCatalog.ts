@@ -98,10 +98,22 @@ const MODEL_SPECS: ModelSpec[] = [
   { provider: "google", model: "gemini-3.7-flash", label: "Gemini 3.7 Flash", contextWindow: 1_000_000, thinking: THINKING_EFFORT, supportsVision: true },
 
   // ── DeepSeek（官方赠额唯一覆盖的一家，见 main/modelRoute.ts）──
-  // 三条都是 2026-08-30 拿本机 key 打 GET /v1/models 拿到的实况，不是从文档抄的
-  { provider: "deepseek", model: "deepseek-v4-flash", label: "DeepSeek V4 Flash", contextWindow: 1_000_000, thinking: THINKING_FLAG, supportsVision: false },
+  // 2026-09-10 拿本机 key 打的实况（不是从文档抄的）：GET /v1/models 只回两条，
+  // deepseek-flash 与 deepseek-v4-pro。旧的 deepseek-v4-flash / deepseek-v4-flash-vision-exp
+  // 仍然收得下，但回包的 model 字段一律是 deepseek-flash —— 它们是**别名不是型号**，
+  // 上游已把对应模型下线，所以目录里一条都不留（ADR-0192 决策一：下线/改名的 id 直接删）。
+  // deepseek-flash = DeepSeek-V4.1-Flash，1M 窗 / 最大输出 384K。两件事当场验过而不是读文档：
+  // **原生看图**（16x16 纯色 PNG 蓝/红/绿逐张答对，prompt_tokens 31 → 226），
+  // thinking:{type:"enabled"|"disabled"} 两档都吃（disabled 时 reasoning_content 消失）。
+  // 注意 vision-exp 那条删掉不是"少了一款视觉款"——它指向的实体就是 deepseek-flash 本身，
+  // 而改动前目录同时说 deepseek-v4-flash 没眼睛、vision-exp 有眼睛：同一个模型两句互相
+  // 矛盾的能力描述，而 vision-bridge 正是照这一位决定要不要先找代读员
+  { provider: "deepseek", model: "deepseek-flash", label: "DeepSeek V4.1 Flash（视觉）", contextWindow: 1_000_000, thinking: THINKING_FLAG, supportsVision: true },
+  // V4 Pro（DeepSeek-V4-Pro-0813）：官方公告**北京时间 2026-09-14 12:00 起**请求全部路由到
+  // V4.1 Flash 并按 Flash 价计费（直到 V4.1 Pro 上线）。到那天为止它还是真实的另一款模型
+  // 且**真不支持视觉**，所以这一行先留着；那天之后它就是 deepseek-flash 的重复项，删它的活
+  // 记在 issue #1242
   { provider: "deepseek", model: "deepseek-v4-pro", label: "DeepSeek V4 Pro", contextWindow: 1_000_000, thinking: THINKING_FLAG, supportsVision: false },
-  { provider: "deepseek", model: "deepseek-v4-flash-vision-exp", label: "DeepSeek V4 Flash 视觉（实验）", contextWindow: 1_000_000, thinking: THINKING_FLAG, supportsVision: true },
 
   // ── 智谱 GLM ──（thinking:{type} 二选一，本机实测过：disabled 时 reasoning_content 空）
   // 这一家给到四款，比别家多一款：app 的三个出厂默认里有两个住在这儿
@@ -164,6 +176,9 @@ const MODEL_SPECS: ModelSpec[] = [
   { provider: "openrouter", model: "openai/gpt-5.6-sol", label: "GPT-5.6 Sol", contextWindow: 1_050_000, thinking: THINKING_OPENROUTER, supportsVision: true },
 
   // ── 硅基流动 ──
+  // 这两行**故意不跟着官方那次换代改**：硅基流动自己托管权重，2026-09-10 它的型号页上
+  // 仍然是 DeepSeek-V4-Flash / DeepSeek-V4-Pro，没有 V4.1。同一个牌子在两家平台上不是
+  // 同一个东西，跟着改就是把 id 改成对方不认的字符串
   { provider: "siliconflow", model: "deepseek-ai/DeepSeek-V4-Flash", label: "DeepSeek V4 Flash", contextWindow: 1_000_000, thinking: THINKING_ENABLE, supportsVision: false },
   { provider: "siliconflow", model: "deepseek-ai/DeepSeek-V4-Pro", label: "DeepSeek V4 Pro", contextWindow: 1_000_000, thinking: THINKING_ENABLE, supportsVision: false },
 ];
@@ -290,7 +305,7 @@ export function describeModelWith(
     历史上挑 DeepSeek 是因为官方赠额只覆盖它;赠额停供之后（ADR-0085）
     哪款都得自己配 key,这个默认保留只是给触发器一个确定的初值。
     与 main/agent.ts 里 OTTER_MODEL 的兜底值同源 */
-export const DEFAULT_MODEL = "deepseek-v4-flash";
+export const DEFAULT_MODEL = "deepseek-flash";
 
 export function findModel(model: string): ModelChoice | undefined {
   return MODEL_CATALOG.find((m) => m.model === model);

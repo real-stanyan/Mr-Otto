@@ -8,9 +8,14 @@
 
 insert into public.plan (id, price_usd_cents, monthly_budget_micro, week_limit_micro, window5h_limit_micro, addon_unit_micro, capabilities)
 values
-  ('lite', 1900, 13300000, 3325000, 665000, 0, '{"image":false,"video":false}'),
-  ('pro',  5900, 41300000, 10325000, 2065000, 0, '{"image":false,"video":false}'),
-  ('max',  8900, 62300000, 15575000, 3115000, 0, '{"image":false,"video":false}'),
+  -- capabilities 三行 2026-09-10 按真库现值重抄。改前这里是 `{"image":false,"video":false}`,
+  --   而真库三个档早就是 image:true、pro/max 另有 workspace:true(ADR-0242)——**这个 upsert
+  --   会刷 capabilities**,所以重跑一次 seed 就等于把出图关掉、把工作区的闸按死。
+  --   #1241 之后它还多了一个后果:出厂默认款 deepseek-flash(V4.1)原生看图,image:false
+  --   会让 routeModel 的 0 号多模态门禁把**每一个订阅用户的默认型号**判成 blocked
+  ('lite', 1900, 13300000, 3325000, 665000, 0, '{"image":true,"video":false,"workspace":false}'),
+  ('pro',  5900, 41300000, 10325000, 2065000, 0, '{"image":true,"video":false,"workspace":true}'),
+  ('max',  8900, 62300000, 15575000, 3115000, 0, '{"image":true,"video":false,"workspace":true}'),
   -- 加购：一个单位 $10，折 70% = 7 USD credit
   ('addon', 1000, 0, 0, 0, 7000000, '{}')
 on conflict (id) do update set
@@ -26,12 +31,26 @@ on conflict (id) do update set
 -- quantization 由 seed 显式声明（不留给列默认值 'none' 隐式决定）：ADR-0175 把它定成必填项，
 -- 「unknown」按量化处理——insert 列表里漏了它，excluded.quantization 会静默取列默认值，
 -- 每次重跑 seed 都把量化状态悄悄扳回 'none'（round 1 修 enabled/effective_* 时留下的同款坑）。
+-- 退役的路由行：**停用而不是删**。usage_event.route_id 里躺着 195 条指向它的历史记账
+-- （没有外键，删得掉——但删完那些行的 route_id 就指向不存在的东西，对不了账）。
+-- 这一条与下面 upsert 末尾「故意不刷 enabled」那句不矛盾：那句说的是不要把运维临时
+-- 扳下的开关在重跑 seed 时扳回去，这里是一次永久性的声明——上游把这个 id 下线了。
+update public.model_route set enabled = false where id = 'deepseek-v4-flash@deepseek';
+
 insert into public.model_route (id, logical_model, platform, base_url, wire_model, price_in_micro_per_m, price_cache_micro_per_m, price_out_micro_per_m, default_max_tokens, quantization, priority)
 values
-  -- DeepSeek V4 Flash：¥1.00 / ¥0.02 / ¥2.00
-  ('deepseek-v4-flash@deepseek', 'deepseek-v4-flash', 'deepseek', 'https://api.deepseek.com/v1', 'deepseek-v4-flash', 138889, 2778, 277778, 8192, 'none', 10),
-  -- DeepSeek V4 Pro：¥3.00 / ¥0.025 / ¥6.00（cache 价是异常值，ADR-0174「会被推翻的前提」——核实后改这一行）
-  ('deepseek-v4-pro@deepseek', 'deepseek-v4-pro', 'deepseek', 'https://api.deepseek.com/v1', 'deepseek-v4-pro', 416667, 3472, 833333, 8192, 'none', 10),
+  -- DeepSeek V4.1 Flash（2026-09-10 官方美元定价页高峰档：$0.3 / $0.006 / $1.2）。
+  --   这一行**换了 id**：旧的 deepseek-v4-flash 上游已下线（仍收，但服务它的就是 V4.1 Flash
+  --   且按 Flash 价计费），所以旧行删掉、新行是 deepseek-flash。
+  --   价格取**美元页**而不是人民币页 ÷7.2：后者是我们自己塞的一个汇率假设，
+  --   而这一家自己就报美元价（两者差 8%，美元页高——取高的那个不会让我们贴差额）。
+  --   注意改前这一行是 ¥1.00 / ¥0.02 / ¥2.00（V4 Flash 的旧价），而实际成本已经是
+  --   ¥2 / ¥0.04 / ¥8 —— 输出上我们按四分之一的价扣用户额度，差额是我们自己贴的（#1241）
+  ('deepseek-flash@deepseek', 'deepseek-flash', 'deepseek', 'https://api.deepseek.com/v1', 'deepseek-flash', 300000, 6000, 1200000, 8192, 'none', 10),
+  -- DeepSeek V4 Pro（2026-09-10 同一页高峰档：$1.32 / $0.044 / $3.96；原先那组 ¥ 折算价偏低）。
+  --   **北京时间 2026-09-14 12:00 起这一行就名不副实**：官方把它的请求全部路由到 V4.1 Flash
+  --   并按 Flash 价计费，于是我们按 Pro 价扣额度 = 多收。那天的处置在 issue #1242
+  ('deepseek-v4-pro@deepseek', 'deepseek-v4-pro', 'deepseek', 'https://api.deepseek.com/v1', 'deepseek-v4-pro', 1320000, 44000, 3960000, 8192, 'none', 10),
   -- GLM-5.3：¥8.00 / ¥2.00 / ¥28.00（2026-09-07 智谱定价页现价，已核）。
   --   改前这一行是照 **GLM-5.1** 的 ¥6 / ¥1.3 / ¥24 抄的，少算输入 25%、缓存 35%、输出 14%——
   --   窗口按 micro-USD 计，价目就是 token 换算成窗口百分比的汇率，填低了等于我们贴差额（#1003）。

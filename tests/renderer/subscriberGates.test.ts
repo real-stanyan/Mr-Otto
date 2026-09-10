@@ -66,18 +66,20 @@ describe("settingsSections", () => {
 describe("visionModelFor：订阅用户的代读员", () => {
   // 出厂默认 glm-4.6v-flash 网关不供 —— 不换的话每条带图消息都在代读那步 blocked，
   // 而代读失败会让整个 turn 失败
-  const hosted = ["deepseek-v4-flash", "glm-5.3-flash", "qwen3.8-max"];
+  // 从便宜到贵；头一款 qwen3.8-flash 没眼睛，所以这组能证明挑的是「最便宜的**带眼睛的**」
+  // 而不是「最便宜的」（#1241 之后 deepseek-flash 也带眼睛了，它排在贵的那头）
+  const hosted = ["qwen3.8-flash", "glm-5.3-flash", "deepseek-flash"];
 
   it("换成订阅供的、最便宜的那款带眼睛的（hosted 从便宜到贵有序）", () => {
     expect(visionModelFor("glm-4.6v-flash", hosted, true)).toBe("glm-5.3-flash");
   });
 
   it("配的那款本来就在订阅里且带眼睛 → 不动", () => {
-    expect(visionModelFor("qwen3.8-max", hosted, true)).toBe("qwen3.8-max");
+    expect(visionModelFor("deepseek-flash", hosted, true)).toBe("deepseek-flash");
   });
 
   it("订阅里一款带眼睛的都没供 → 原样返回，让 routeModel 去把「缺什么」说成人话", () => {
-    expect(visionModelFor("glm-4.6v-flash", ["deepseek-v4-flash"], true)).toBe("glm-4.6v-flash");
+    expect(visionModelFor("glm-4.6v-flash", ["qwen3.8-flash"], true)).toBe("glm-4.6v-flash");
   });
 
   it("没订阅 → 一个字不动", () => {
@@ -86,10 +88,10 @@ describe("visionModelFor：订阅用户的代读员", () => {
 });
 
 describe("helperModelFor：订阅用户的后台小模型", () => {
-  const hosted = ["deepseek-v4-flash", "glm-5.3"];
+  const hosted = ["deepseek-flash", "glm-5.3"];
 
   it("取最便宜那款 —— 这三个外挂是纯成本项，且**不要求带眼睛**", () => {
-    expect(helperModelFor("glm-4.7-flash", hosted, true)).toBe("deepseek-v4-flash");
+    expect(helperModelFor("glm-4.7-flash", hosted, true)).toBe("deepseek-flash");
   });
 
   it("配的那款本来就在订阅里 → 不动", () => {

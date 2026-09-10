@@ -29,7 +29,7 @@ export interface OpenAICompatibleOptions {
       给了它就以它为准,不给 = 用上面的静态 baseUrl/apiKey(老路径一字不变) */
   resolveEndpoint?: () => Promise<ResolvedEndpoint>;
   /** 事件日志里那个 id（engine 拿 adapter.model 盖进 assistant_message）。
-      例："deepseek-v4-flash" / "ollama/qwen3:30b" */
+      例："deepseek-flash" / "ollama/qwen3:30b" */
   model: string;
   /** 真正写进请求体的型号 id。缺省 = model。
       只有本机 Ollama 两者不同：日志要带 ollama/ 前缀才认得回是哪家的，

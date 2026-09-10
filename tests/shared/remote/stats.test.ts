@@ -9,7 +9,7 @@ const NOW = new Date(2026, 7, 26, 12, 0, 0).getTime();
 const daysAgo = (n: number): number => NOW - n * 86_400_000;
 
 /** 目录里真有的两款(价目也有) */
-const CHEAP = "deepseek-v4-flash";
+const CHEAP = "deepseek-flash";
 /** 目录里有、价目表里没有的那一款 —— 用来钉住"null 不是 0"这条 */
 const UNPRICED = "llama-3.3-70b-versatile";
 const row = (model: string, ts: number, inTok = 1000, outTok = 100): BilledRow =>

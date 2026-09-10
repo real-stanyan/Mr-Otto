@@ -3,13 +3,13 @@ import { laneOf, laneValue, parseLaneValue } from "../../src/shared/modelLane.js
 
 describe("lane 的选单 id", () => {
   it("auto 就是裸型号 id —— 绝大多数条目不该因为这个特性变形", () => {
-    expect(laneValue("deepseek-v4-flash", "auto")).toBe("deepseek-v4-flash");
+    expect(laneValue("deepseek-flash", "auto")).toBe("deepseek-flash");
   });
 
   it("grant 带前缀:同一款的两份在 cmdk 里得是两个 value", () => {
-    expect(laneValue("deepseek-v4-flash", "grant")).toBe("grant:deepseek-v4-flash");
-    expect(laneValue("deepseek-v4-flash", "grant")).not.toBe(
-      laneValue("deepseek-v4-flash", "auto")
+    expect(laneValue("deepseek-flash", "grant")).toBe("grant:deepseek-flash");
+    expect(laneValue("deepseek-flash", "grant")).not.toBe(
+      laneValue("deepseek-flash", "auto")
     );
   });
 

@@ -1080,7 +1080,9 @@ describe("hosted 额度耗尽那一刻（ADR-0176 的 onReroute；#1051 之后�
     const pushed: SessionEvent[] = [];
     const fakeQuota: HostedQuota = {
       snapshot: () => ({ me: null, fetchedAt: 0, exhausted: null }),
-      routeInput: () => ({ subscribed: true, exhausted: false, supportsModel: true }),
+      // capabilities 这一格是 #1241 之后必须给的：出厂默认款 deepseek-flash（V4.1）
+      // 原生看图，会先撞 routeModel 的 0 号多模态门禁；真库三个档都是 image:true
+      routeInput: () => ({ subscribed: true, exhausted: false, supportsModel: true, capabilities: { image: true, video: false } }),
       imageInput: () => ({ subscribed: true, exhausted: false, imageModels: [] }),
       ttsInput: () => ({ subscribed: true, exhausted: false, ttsModels: [] }),
       refresh: async () => null,

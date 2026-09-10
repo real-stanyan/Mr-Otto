@@ -14,7 +14,7 @@ import { AGENT_HEADER, MAX_INFLIGHT, ON_BEHALF_HEADER, SESSION_HEADER, WORKSPACE
 import { billingErrorOf, errorClassOf } from "../../src/model/errorClass.js";
 import type { TokenUsage } from "../../src/session/events.js";
 
-const me: BillingMe = { plan: "pro", status: "active", plans: [], windows: null, addon: { remainingMicro: 0, expiresAt: null }, periodEnd: null, models: ["deepseek-v4-flash", "glm-5.3"], imageModels: [], ttsModels: [], modelPlatforms: {} };
+const me: BillingMe = { plan: "pro", status: "active", plans: [], windows: null, addon: { remainingMicro: 0, expiresAt: null }, periodEnd: null, models: ["deepseek-flash", "glm-5.3"], imageModels: [], ttsModels: [], modelPlatforms: {} };
 const base = { ownerUid: "u1", workspaceId: "w1", sessionId: "s1", edgeBase: "https://edge", runtimeSecret: "rs" };
 
 describe("decideRuntimeRoute（ADR-0233：只有 hosted / blocked 两态）", () => {
@@ -28,8 +28,8 @@ describe("decideRuntimeRoute（ADR-0233：只有 hosted / blocked 两态）", ()
     expect(r.endpoint.route).toBe("hosted");
   });
   it("白名单网关都不供 → 用网关第一款；空白名单同款", () => {
-    expect(decideRuntimeRoute({ me, requestedModels: ["gpt-9"], ...base })).toMatchObject({ kind: "hosted", model: "deepseek-v4-flash" });
-    expect(decideRuntimeRoute({ me, requestedModels: [], ...base })).toMatchObject({ kind: "hosted", model: "deepseek-v4-flash" });
+    expect(decideRuntimeRoute({ me, requestedModels: ["gpt-9"], ...base })).toMatchObject({ kind: "hosted", model: "deepseek-flash" });
+    expect(decideRuntimeRoute({ me, requestedModels: [], ...base })).toMatchObject({ kind: "hosted", model: "deepseek-flash" });
   });
   it("所有者没订阅 / past_due → blocked，说的是所有者的订阅，一个字不提 key（ADR-0233 推翻 ADR-0202）", () => {
     const r = decideRuntimeRoute({ me: null, requestedModels: ["glm-5.3"], ...base });
@@ -176,7 +176,7 @@ describe("createHostedRuntimeAdapter（issue #696 fix round 1：request_envelope
     );
     const reply = await adapter.chat([{ role: "user", content: "hi" }]);
     expect(reply.content).toBe("ok");
-    expect(adapter.model).toBe("deepseek-v4-flash"); // 没给白名单 → 网关第一款
+    expect(adapter.model).toBe("deepseek-flash"); // 没给白名单 → 网关第一款
     expect(probe.me).toHaveBeenCalledTimes(1);
   });
 
@@ -237,7 +237,7 @@ describe("createHostedRuntimeAdapter · 型号与额度窗口（#957 D1/D4，ADR
     expect(a1.model).toBe("glm-5.3");
     const a2 = createHostedRuntimeAdapter({ ...solo(), probe: { me: async () => me }, preferredModels: () => ["gpt-9"] });
     await a2.prepare?.();
-    expect(a2.model).toBe("deepseek-v4-flash");
+    expect(a2.model).toBe("deepseek-flash");
   });
 
   it("D4：托管路 429 quota_exhausted → 没有第二条路：端点原样再试一次，抛的是原错（带 resetAt 的那条）", async () => {
@@ -356,7 +356,7 @@ describe("probeModelRoute（#945，ADR-0233 两态）", () => {
   const { sessionId: _sessionId, ...probeBase } = base;
 
   it("有订阅 → hosted + 网关第一款（这一格答的是工作区默认那份）", async () => {
-    expect(await probeModelRoute({ probe: probeOf(me), ...probeBase })).toEqual({ kind: "hosted", model: "deepseek-v4-flash" });
+    expect(await probeModelRoute({ probe: probeOf(me), ...probeBase })).toEqual({ kind: "hosted", model: "deepseek-flash" });
   });
 
   it("没订阅 → blocked；探不到 → 也是 blocked（这一格只有两态，措辞分歧留在 turn 那条路上）", async () => {
@@ -431,17 +431,17 @@ describe("型号白名单是优先级链（#979 第 4 条，ADR-0232）", () => 
 
   it("decideRuntimeRoute：按顺序取网关供着的第一个；一个都不供才退网关第一款", () => {
     expect(decideRuntimeRoute({ me, requestedModels: ["gpt-9", "glm-5.3"], ...base })).toMatchObject({ kind: "hosted", model: "glm-5.3" });
-    expect(decideRuntimeRoute({ me, requestedModels: ["gpt-9", "gpt-8"], ...base })).toMatchObject({ kind: "hosted", model: "deepseek-v4-flash" });
-    expect(decideRuntimeRoute({ me, requestedModels: [], ...base })).toMatchObject({ kind: "hosted", model: "deepseek-v4-flash" });
+    expect(decideRuntimeRoute({ me, requestedModels: ["gpt-9", "gpt-8"], ...base })).toMatchObject({ kind: "hosted", model: "deepseek-flash" });
+    expect(decideRuntimeRoute({ me, requestedModels: [], ...base })).toMatchObject({ kind: "hosted", model: "deepseek-flash" });
   });
 
   it("adapter：白名单第二个供 → 用第二个", async () => {
     const adapter = createHostedRuntimeAdapter({
       ...solo(),
       probe: { me: async () => me },
-      preferredModels: () => ["gpt-9", "deepseek-v4-flash"],
+      preferredModels: () => ["gpt-9", "deepseek-flash"],
     });
     await adapter.prepare?.();
-    expect(adapter.model).toBe("deepseek-v4-flash");
+    expect(adapter.model).toBe("deepseek-flash");
   });
 });

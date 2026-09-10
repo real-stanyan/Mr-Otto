@@ -23,7 +23,7 @@ import type { SessionEvent } from "../../../src/session/events.js";
 import type { ToolDefinition } from "../../../src/model/adapter.js";
 
 /** 目录里一款窗口已知的型号；数字现查目录，目录改了这里不用跟 */
-const KNOWN = "deepseek-v4-flash";
+const KNOWN = "deepseek-flash";
 const KNOWN_WINDOW = findModel(KNOWN)!.contextWindow;
 const STRANGER = "no-such-model";
 

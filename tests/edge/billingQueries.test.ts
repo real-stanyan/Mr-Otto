@@ -124,10 +124,10 @@ describe("行解析", () => {
   it("parsePlanRows / parseRouteRows 丢掉坏行", () => {
     expect(parsePlanRows([...plans, { id: 1 }])).toHaveLength(2);
     const rows = parseRouteRows([{
-      id: "r", logical_model: "deepseek-v4-flash", platform: "deepseek", base_url: "https://u", wire_model: "w",
+      id: "r", logical_model: "deepseek-flash", platform: "deepseek", base_url: "https://u", wire_model: "w",
       price_in_micro_per_m: 1, price_cache_micro_per_m: 2, price_out_micro_per_m: 3, default_max_tokens: 100,
     }, { id: "bad" }]);
-    expect(rows).toEqual([{ id: "r", logicalModel: "deepseek-v4-flash", platform: "deepseek", baseUrl: "https://u", wireModel: "w", priceInMicroPerM: 1, priceCacheMicroPerM: 2, priceOutMicroPerM: 3, defaultMaxTokens: 100, kind: "chat" }]);
+    expect(rows).toEqual([{ id: "r", logicalModel: "deepseek-flash", platform: "deepseek", baseUrl: "https://u", wireModel: "w", priceInMicroPerM: 1, priceCacheMicroPerM: 2, priceOutMicroPerM: 3, defaultMaxTokens: 100, kind: "chat" }]);
   });
   it("parseRouteRows 的 kind：缺席和认不出的值都按 chat —— 缺席 = 迁移还没跑，行为要与改动前一字不差（#1081）", () => {
     const row = (extra: Record<string, unknown>) => ({
@@ -245,28 +245,28 @@ describe("modelsForMe", () => {
 
   it("出图行不进 models —— 它进去就是输入框那枚选单里多一款点了不干活的型号", () => {
     const { models } = modelsForMe([
-      r("a@deepseek", "deepseek-v4-flash", "deepseek", "chat"),
+      r("a@deepseek", "deepseek-flash", "deepseek", "chat"),
       r("i@openrouter", "gemini-3.1-flash-image", "openrouter", "image"),
     ]);
-    expect(models).toEqual(["deepseek-v4-flash"]);
+    expect(models).toEqual(["deepseek-flash"]);
   });
 
   it("出图行也不进 modelPlatforms —— 那张表的消费方是同一枚选单里的厂商 logo", () => {
     const { modelPlatforms } = modelsForMe([
-      r("a@deepseek", "deepseek-v4-flash", "deepseek", "chat"),
+      r("a@deepseek", "deepseek-flash", "deepseek", "chat"),
       r("i@openrouter", "gemini-3.1-flash-image", "openrouter", "image"),
     ]);
-    expect(modelPlatforms).toEqual({ "deepseek-v4-flash": "deepseek" });
+    expect(modelPlatforms).toEqual({ "deepseek-flash": "deepseek" });
   });
 
   it("同一款多条路由只留第一条的平台，且顺序照抄传进来的那份（ADR-0237 的全序不能在这儿丢）", () => {
     const { models, modelPlatforms } = modelsForMe([
-      r("a@deepseek", "deepseek-v4-flash", "deepseek", "chat"),
-      r("a@siliconflow", "deepseek-v4-flash", "siliconflow", "chat"),
+      r("a@deepseek", "deepseek-flash", "deepseek", "chat"),
+      r("a@siliconflow", "deepseek-flash", "siliconflow", "chat"),
       r("b@zhipu", "glm-5.3", "zhipu", "chat"),
     ]);
-    expect(models).toEqual(["deepseek-v4-flash", "glm-5.3"]);
-    expect(modelPlatforms["deepseek-v4-flash"]).toBe("deepseek");
+    expect(models).toEqual(["deepseek-flash", "glm-5.3"]);
+    expect(modelPlatforms["deepseek-flash"]).toBe("deepseek");
   });
 
   it("一行都没有时回空 —— 不兜底成任何一款默认型号", () => {
@@ -275,7 +275,7 @@ describe("modelsForMe", () => {
 
   it("出图行进 imageModels（那是 generate_image 那把刀的清单），且同样从便宜到贵有序", () => {
     const { imageModels } = modelsForMe([
-      r("a@deepseek", "deepseek-v4-flash", "deepseek", "chat"),
+      r("a@deepseek", "deepseek-flash", "deepseek", "chat"),
       r("cheap@openrouter", "cheap-image", "openrouter", "image"),
       r("pricey@openrouter", "pricey-image", "openrouter", "image"),
     ]);
@@ -291,13 +291,13 @@ describe("modelsForMe / meFromParts：kind=tts 单列一张 ttsModels", () => {
   });
   it("tts 行只进 ttsModels，不进 models / imageModels / modelPlatforms", () => {
     const out = modelsForMe([
-      row("a@deepseek", "deepseek-v4-flash", "deepseek", "chat"),
+      row("a@deepseek", "deepseek-flash", "deepseek", "chat"),
       row("i@openrouter", "gemini-3.1-flash-image", "openrouter", "image"),
       row("s@minimax", "speech-2.8-turbo", "minimax", "tts"),
     ]);
     expect(out).toEqual({
-      models: ["deepseek-v4-flash"], imageModels: ["gemini-3.1-flash-image"], ttsModels: ["speech-2.8-turbo"],
-      modelPlatforms: { "deepseek-v4-flash": "deepseek" },
+      models: ["deepseek-flash"], imageModels: ["gemini-3.1-flash-image"], ttsModels: ["speech-2.8-turbo"],
+      modelPlatforms: { "deepseek-flash": "deepseek" },
     });
   });
   it("meFromParts 第八参透传；缺省 [] = 这台网关不供语音", () => {
