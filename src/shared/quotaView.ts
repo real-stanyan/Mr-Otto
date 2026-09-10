@@ -1,4 +1,5 @@
-// 订阅额度那两扇窗的**纯显示数学**：占比 / 剩余 / 色档 / 倒计时 / 悬停精确数。
+// 订阅那一族的**纯显示层**：两扇窗的数学（占比 / 剩余 / 色档 / 倒计时 / 悬停精确数）
+// 加上「这个账号在哪一档」那枚徽章。
 //
 // 为什么住在 shared 而不是 renderer/lib（#1229）：灵动岛的额度页脚由**主进程**
 // 算好拍平后推给 Swift helper（岛是纯渲染，同 ADR-0063），而主进程不该 import
@@ -7,7 +8,7 @@
 //
 // 这里只放「一扇窗的数字长什么样」。「这个账号在哪一档」「价目卡怎么画」
 // 那类要读 BillingSnapshotView / PlanInfo 的判断留在 renderer/lib/billingView.ts。
-import { creditOf, fmtCredit, type WindowState } from "./billing.js";
+import { creditOf, fmtCredit, type BillingMe, type PlanId, type WindowState } from "./billing.js";
 
 /** 一扇窗在「此刻」的样子。`rolled` = 它已经过了 resetAt。
     为什么要算这一层：客户端这份快照是**上一次网关响应**留下的，而窗口到点会自己清零。
@@ -141,4 +142,35 @@ export function countdown(resetAt: number, now: number): string {
   if (ms >= 86_400_000) return `${Math.ceil(ms / 86_400_000)}d 后刷新`;
   const h = Math.floor(mins / 60), m = mins % 60;
   return h > 0 ? `${h}h ${m}m 后刷新` : `${m}m 后刷新`;
+}
+
+/** 侧栏那枚档位徽章上写什么。`free` 不是服务端 plan 表里的一行，是「没有订阅」
+    这个状态本身的名字（同 ADR-0239 决定 3 给账号页那张 Free 卡的定性）。 */
+export type PlanBadgeId = "free" | PlanId;
+
+export const PLAN_BADGE_LABEL: Record<PlanBadgeId, string> = {
+  free: "Free",
+  lite: "Lite",
+  pro: "Pro",
+  max: "Max",
+};
+
+/** 这个账号此刻在哪一档。**`null` = 还没查到，一格都不许画** —— 把它退成
+    「Free」就是对着一个正在付 Max 的人说他没订阅，同 ADR-0217 的 `workspaceAccess`
+    为什么要有 `unknown` 这一态：冷启动那一瞬间「不知道」和「没有」长得一样，
+    而这两件事该说的话相反。billing 是 push 上来的，那一瞬间必然存在。
+
+    有订阅 / 没订阅的判据与账号页**共用这一份**（BillingSettings 的分支也读它）：
+    `canceled` 算没订阅是 #865 定的 —— 退订过的人该看到价目卡，网关那侧
+    canceled→checkout 本来就放行（ADR-0203 决定 18）。
+
+    `past_due` **仍然报它原来的档**：扣款失败不改变「你订的是 Pro」这个事实，
+    而「出事了」那句话由账号页那条 warn 横幅说（ADR-0239 决定 2）—— 侧栏这枚
+    24px 高的徽章不是讲事故的地方。哪天要在这里也报警，它就得多一态。 */
+export function planBadge(me: BillingMe): PlanBadgeId;
+export function planBadge(me: BillingMe | null): PlanBadgeId | null;
+export function planBadge(me: BillingMe | null): PlanBadgeId | null {
+  if (!me) return null;
+  if (me.plan === null || me.status === "none" || me.status === "canceled") return "free";
+  return me.plan;
 }
