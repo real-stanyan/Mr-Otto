@@ -154,6 +154,7 @@ async function scenarioMainFlow(): Promise<void> {
         async create(ws, byUid) {
           const sessionId = randomUUID();
           const session = createCloudSession({
+            diskUsage: () => null, // 冒烟装配没有真容器可量（#836）
             workspaceId: ws,
             sessionId,
             ownerUid: byUid,
