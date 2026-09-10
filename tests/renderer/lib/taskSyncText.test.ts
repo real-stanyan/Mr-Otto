@@ -13,4 +13,14 @@ describe("taskSyncStatusText\uFF08#1223\uFF09", () => {
       "任务会话同步失败\uFF0C会自动重试"
     );
   });
+  it("frozen 自成一句\uFF1A几条停了 + 其余照常 + 原因\uFF0C且**不许**出现\u300C重试\u300D\uFF08终审 I2\uFF09", () => {
+    // freeze 不 scheduleRetry\uFF1B并进 error 那句就是对着一个永远不会自己好的状态说\u300C会自动重试\u300D
+    const line = taskSyncStatusText({
+      kind: "frozen", count: 2, message: "会话 s-1 的云端副本已停止同步\uFF1Abad_request: event too large", lastSyncedAt: 1,
+    });
+    expect(line).toBe(
+      "任务会话有 2 条已停止同步\uFF08其余照常同步\uFF09\uFF1A会话 s-1 的云端副本已停止同步\uFF1Abad_request: event too large"
+    );
+    expect(line).not.toContain("重试");
+  });
 });

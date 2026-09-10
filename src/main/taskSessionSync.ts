@@ -86,10 +86,12 @@ const MAX_FLUSH_ROUNDS = 3;
 /** 停止同步的四种终态原因（落进 task-sync.json 的 frozen 字段）。只有 needs_upgrade 会被 backfill
     解冻——换个版本重开 app 之后这个版本可能就认得那条事件了；另外三条要人介入 */
 type FreezeReason = "forbidden" | "has_children_conflict" | "needs_upgrade" | "purge_rejected";
+/** 四种原因各自的人话。**不许出现「重试」字样**（#1223 终审 I2）：freeze 恰恰不 scheduleRetry，
+    只有 needs_upgrade 会在下次 backfill 时自己解冻，所以只有它说得出「会自动恢复」 */
 const FREEZE_MESSAGE: Record<FreezeReason, (id: string, detail: string) => string> = {
   forbidden: (id, detail) => `会话 ${id} 的云端副本已停止同步：${detail}`,
   has_children_conflict: (id) => `会话 ${id} 有子智能体会话，云端与本机分歧未自动处理，已停止同步`,
-  needs_upgrade: (id) => `会话 ${id} 含这个版本不认识的事件类型，请升级 Mr Otto 后再同步`,
+  needs_upgrade: (id) => `会话 ${id} 含这个版本不认识的事件类型；升级 Mr Otto 后会自动恢复`,
   purge_rejected: (id) => `会话 ${id} 有引用式分支，云端与本机分歧未自动处理，已停止同步`,
 };
 
@@ -120,9 +122,39 @@ export function createTaskSessionSync(deps: TaskSessionSyncDeps): TaskSessionSyn
   let lastSyncedAt: number | null = null;
   let current: TaskSyncState = { kind: "off", reason: null };
 
+  /** 最近一次 freeze 的会话（本进程内）。重启后没有这份记忆，退回「file.sessions 里最后一条冻着的」 */
+  let lastFrozenId: string | null = null;
+  const freezeMessageOf = (id: string): string => {
+    const st = file.sessions[id];
+    const fn = FREEZE_MESSAGE[st?.frozen as FreezeReason] as ((id: string, detail: string) => string) | undefined;
+    return fn ? fn(id, st?.frozenDetail ?? "") : `会话 ${id} 的云端副本已停止同步`;
+  };
+  const frozenSummary = (): { count: number; message: string } | null => {
+    let count = 0;
+    let lastInFile: string | null = null;
+    let preferred: string | null = null;
+    for (const [id, st] of Object.entries(file.sessions)) {
+      if (st.frozen === undefined) continue;
+      count++;
+      lastInFile = id;
+      if (id === lastFrozenId) preferred = id;
+    }
+    const pick = preferred ?? lastInFile;
+    return pick === null ? null : { count, message: freezeMessageOf(pick) };
+  };
+  /** 发布 / 读取前过一层（#1223 终审 I2）：冻结是**持久**事实（task-sync.json 的 frozen），而
+      idle/syncing 是这一轮的瞬态——不叠上去的话，下一轮 flush 开头那句 syncing 就把「这条会话已
+      停止同步」抹掉了，收尾再写一句「任务会话已与账号同步」。
+      error 照发（瞬态失败仍要看得见，过了自然回 frozen）；off 照发（未登录 / 没建表是整体关着，
+      不是某几条会话的事） */
+  const visible = (s: TaskSyncState): TaskSyncState => {
+    if (s.kind === "off" || s.kind === "error") return s;
+    const f = frozenSummary();
+    return f === null ? s : { kind: "frozen", count: f.count, message: f.message, lastSyncedAt };
+  };
   const setState = (s: TaskSyncState): void => {
     current = s;
-    deps.onState?.(s);
+    deps.onState?.(visible(s));
   };
   const ensure = (id: string) => (file.sessions[id] ??= { pushedUpTo: -1 });
   const isTask = (id: string): boolean => {
@@ -173,8 +205,14 @@ export function createTaskSessionSync(deps: TaskSessionSyncDeps): TaskSessionSyn
   const freeze = (id: string, reason: FreezeReason, detail?: string): void => {
     const st = ensure(id);
     st.frozen = reason;
+    // 原话跟着落盘（#1223 终审 I2）：重启之后账号页那行仍然说得出「为什么停了」
+    if (detail !== undefined && detail !== "") st.frozenDetail = detail;
+    else delete st.frozenDetail;
     save();
-    setState({ kind: "error", message: FREEZE_MESSAGE[reason](id, detail ?? ""), lastSyncedAt });
+    lastFrozenId = id;
+    // 发 frozen 不发 error：error 那句文案写着「会自动重试」，而这条恰恰不 scheduleRetry
+    const f = frozenSummary() ?? { count: 1, message: freezeMessageOf(id) };
+    setState({ kind: "frozen", count: f.count, message: f.message, lastSyncedAt });
   };
 
   // ── 笔 ──
@@ -389,9 +427,8 @@ export function createTaskSessionSync(deps: TaskSessionSyncDeps): TaskSessionSyn
         // 不安排的话它要等到下一次本地事件或 realtime 推行才动——而这两件事都可能不再发生
         if (dirty.size > 0) scheduleRetry();
         lastSyncedAt = now();
-        // freeze 过的会话（forbidden / has_children_conflict / needs_upgrade）已经把状态钉成了
-        // error（终态、不重试）——这里不能无条件覆盖成 idle，否则那句话在同一次 flush 收尾时就被
-        // 抹掉了；没有会话被冻时 current 仍是这次 flush 开头设的 syncing，照常转 idle
+        // 这一轮冻过会话的话，这句 idle 会被 visible() 叠回 frozen（#1223 终审 I2：冻结是持久事实，
+        // 不能被下一句瞬态状态抹掉）。error 那道守卫留着：瞬态失败仍要看得见，别被收尾这句盖掉
         if (current.kind !== "error") setState({ kind: "idle", lastSyncedAt });
       } catch (err) {
         fail(err);
@@ -550,8 +587,7 @@ export function createTaskSessionSync(deps: TaskSessionSyncDeps): TaskSessionSyn
         save();
         await retryMissingAttachments(uid);
         lastSyncedAt = now();
-        // 同 flush 末尾那条：这一轮里 freeze 过的会话把状态钉成了 error（终态），不能覆盖回 idle。
-        // current 在这个函数开头刚被设成 syncing，所以这里读到 error 只可能是本轮冻出来的
+        // 同 flush 末尾那条：冻结由 visible() 叠在 idle 上（终审 I2），error 那道守卫留着
         if (current.kind !== "error") setState({ kind: "idle", lastSyncedAt });
       } catch (err) {
         fail(err);
@@ -774,7 +810,7 @@ export function createTaskSessionSync(deps: TaskSessionSyncDeps): TaskSessionSyn
       ensure(id).offlineRun = true;
       save();
     },
-    state: () => current,
+    state: () => visible(current),
     start,
     stop,
     dispose() {

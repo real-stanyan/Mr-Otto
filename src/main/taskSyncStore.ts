@@ -18,6 +18,9 @@ export interface TaskSyncSessionState {
       purge 被拒。只有 needs_upgrade 会被
       backfill（= 换了个版本重开）解冻，其余要人介入 */
   frozen?: string;
+  /** 冻结那一刻 RPC 说的原话（只有 `forbidden` 有：P0012 的 message / SQLSTATE）。
+      跟着 frozen 一起落盘，重启之后账号页那行仍然说得出「为什么停了」（#1223 终审 I2） */
+  frozenDetail?: string;
 }
 
 export interface TaskSyncFile {
@@ -39,6 +42,7 @@ export function normaliseTaskSyncFile(input: unknown): TaskSyncFile {
       ...(s["detached"] === true ? { detached: true as const } : {}),
       ...(s["offlineRun"] === true ? { offlineRun: true as const } : {}),
       ...(typeof s["frozen"] === "string" && s["frozen"] !== "" ? { frozen: s["frozen"] } : {}),
+      ...(typeof s["frozenDetail"] === "string" && s["frozenDetail"] !== "" ? { frozenDetail: s["frozenDetail"] } : {}),
     };
   }
   return { v: 1, sessions, lastSweepIso: typeof obj["lastSweepIso"] === "string" ? obj["lastSweepIso"] : null };

@@ -143,7 +143,9 @@ export function harness(opts: { cloud?: FakeCloud; holder?: string; running?: ()
     sweepMs: 1_000_000,
   };
   sync = createTaskSessionSync(deps);
-  return { sync, store, cloud, pulled, replaced, penLost, attachments, fileRef: () => file };
+  /** 重开 app：同一份 task-sync.json 上重建一个复制器——内存态全丢，只剩落盘的那几格 */
+  const restart = (): TaskSessionSync => (sync = createTaskSessionSync(deps));
+  return { sync, store, cloud, pulled, replaced, penLost, attachments, fileRef: () => file, restart };
 }
 
 const created = (sessionId: string, extra: Record<string, unknown> = {}) =>
@@ -239,12 +241,12 @@ describe("taskSessionSync：推（#1223）", () => {
     await h.sync.flushNow();
     expect(h.fileRef().sessions["s1"]).toMatchObject({ frozen: "forbidden" });
     expect(h.fileRef().sessions["s1"]!.detached).toBeUndefined();
-    expect(h.sync.state().kind).toBe("error");
+    expect(h.sync.state().kind).toBe("frozen");
     const before = h.cloud.calls.filter((c) => c.startsWith("append s1")).length;
     h.store.append({ sessionId: "s1", ts: 3, type: "user_message", content: "再说一句" });
     await h.sync.flushNow();
     expect(h.cloud.calls.filter((c) => c.startsWith("append s1")).length).toBe(before);
-    expect(h.sync.state().kind).toBe("error");
+    expect(h.sync.state().kind).toBe("frozen");
   });
   it("一条会话推挂了不甩下同一批里剩下的：两条都留在脏集合，回网一起推出去", async () => {
     // 脏集合一进循环就 clear 了；挂在第一条上时只把它放回去，后面那些连一次尝试都没有就没了——
@@ -462,7 +464,7 @@ describe("taskSessionSync：拉", () => {
     await h.sync.pullNow();
     expect(h.store.load("s9").map((e) => e.seq)).toEqual([0, 1]); // 前缀留住了
     expect(h.fileRef().sessions["s9"]).toMatchObject({ pushedUpTo: 1, frozen: "needs_upgrade" });
-    expect(h.sync.state().kind).toBe("error");
+    expect(h.sync.state().kind).toBe("frozen");
     // 冻着的时候再 sweep 一次也不动它（否则每 60 s 白跑一遍还把状态刷成 idle）
     await h.sync.pullNow();
     expect(h.store.load("s9").map((e) => e.seq)).toEqual([0, 1]);
@@ -500,7 +502,7 @@ describe("taskSessionSync：冲突", () => {
     h.store.append({ sessionId: "s1", ts: 6, type: "assistant_message", content: "本机那条", model: "m" });
     await h.sync.flushNow();
     expect(h.fileRef().sessions["s1"]).toMatchObject({ frozen: "has_children_conflict" });
-    expect(h.sync.state().kind).toBe("error");
+    expect(h.sync.state().kind).toBe("frozen");
     expect(h.store.load("s1c")).toHaveLength(2); // 子会话的日志一条没少
     expect(h.store.load("s1").map((e) => e.seq)).toEqual([0, 1]); // 本机那条也还在
     expect(h.replaced).toEqual([]);
@@ -552,7 +554,7 @@ describe("taskSessionSync：冲突", () => {
     await h.sync.flushNow(); // 撞 seq_conflict → reconcile → has_executor → forkCopy 之后 purge 被 s1fork 拒绝
     expect(h.fileRef().sessions["s1"]).toMatchObject({ frozen: "purge_rejected" });
     expect(h.fileRef().sessions["s1"]!.detached).toBeUndefined();
-    expect(h.sync.state().kind).toBe("error");
+    expect(h.sync.state().kind).toBe("frozen");
     expect(h.store.load("s1")).toEqual(before); // purge 从没成功过，原地不动
     expect(h.replaced).toEqual([]);
   });
@@ -598,6 +600,56 @@ describe("taskSessionSync：笔", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe("taskSessionSync：冻结说得出口（终审 I2）", () => {
+  const msg = (sync: TaskSessionSync): string => {
+    const st = sync.state();
+    return st.kind === "frozen" ? st.message : `不是 frozen：${st.kind}`;
+  };
+  it("冻结之后每一轮 flush / pull 都还说 frozen，不被 syncing → idle 抹掉；其余会话照常同步", async () => {
+    // freeze() 原来只发一次 error，下一轮 flush 开头那句 syncing 就把它盖掉了，收尾再写一句
+    // 「任务会话已与账号同步」——而 error 那句文案还写着「会自动重试」，freeze 恰恰不 scheduleRetry
+    const h = harness();
+    h.store.append(created("s1"));
+    h.store.append(created("s2"));
+    await h.sync.flushNow();
+    h.cloud.failAppendOnce("s1", "forbidden", "bad_request: event too large");
+    h.store.append({ sessionId: "s1", ts: 2, type: "user_message", content: "超长" });
+    await h.sync.flushNow();
+    expect(h.sync.state()).toMatchObject({ kind: "frozen", count: 1 });
+    expect(msg(h.sync)).toContain("event too large");
+    // 另一条会话照常推；再来一轮 flush + 一轮 sweep，那句话仍在
+    h.store.append({ sessionId: "s2", ts: 2, type: "user_message", content: "照常" });
+    await h.sync.flushNow();
+    await h.sync.pullNow();
+    expect(h.sync.state()).toMatchObject({ kind: "frozen", count: 1 });
+    expect(h.cloud.rows.get("s2")!.events).toHaveLength(2);
+  });
+  it("重启（同一份 task-sync.json 重建复制器）：还是 frozen，RPC 当初说的原话还在", async () => {
+    const h = harness();
+    h.store.append(created("s1"));
+    await h.sync.flushNow();
+    h.cloud.failAppendOnce("s1", "forbidden", "bad_request: event too large");
+    h.store.append({ sessionId: "s1", ts: 2, type: "user_message", content: "超长" });
+    await h.sync.flushNow();
+    expect(h.fileRef().sessions["s1"]).toMatchObject({ frozen: "forbidden", frozenDetail: "bad_request: event too large" });
+    const again = h.restart(); // start() 开头就 backfill + pullNow，所以真机上这一轮总会跑
+    await again.pullNow();
+    expect(again.state()).toMatchObject({ kind: "frozen", count: 1 });
+    expect(msg(again)).toContain("event too large");
+  });
+  it("needs_upgrade 是唯一说得出「会自动恢复」的那条；四条都不许说「重试」", async () => {
+    const h = harness();
+    await h.cloud.api.append("s9", 0, "desktop:B", [
+      { seq: 0, ...created("s9") } as SessionEvent,
+      { seq: 1, sessionId: "s9", ts: 3, type: "from_the_future", payload: 1 } as unknown as SessionEvent,
+    ]);
+    await h.sync.pullNow();
+    expect(h.sync.state()).toMatchObject({ kind: "frozen", count: 1 });
+    expect(msg(h.sync)).toContain("会自动恢复"); // backfill 会解冻它，这句话是真的
+    expect(msg(h.sync)).not.toContain("重试");
   });
 });
 

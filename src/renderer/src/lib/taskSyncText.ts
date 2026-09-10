@@ -11,5 +11,9 @@ export function taskSyncStatusText(s: TaskSyncState): string {
       return "任务会话同步中\u2026";
     case "error":
       return "任务会话同步失败\uFF0C会自动重试";
+    case "frozen":
+      // 「会自动重试」这句话对冻结是假的（freeze 不 scheduleRetry），所以它自己一档：
+      // 先说清有几条停了、其余照常，再把最近那条的原因原样带出来（#1223 终审 I2）
+      return `任务会话有 ${s.count} 条已停止同步\uFF08其余照常同步\uFF09\uFF1A${s.message}`;
   }
 }

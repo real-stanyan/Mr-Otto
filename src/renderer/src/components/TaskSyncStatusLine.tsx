@@ -7,8 +7,10 @@ export function TaskSyncStatusLine() {
   const state = useChat((s) => s.taskSync);
   return (
     <p
-      className="text-xs text-muted-foreground"
-      title={state.kind === "error" ? state.message : undefined}
+      // frozen 走 warn 色（#1223 终审 I2）：它不是「这一下没成」而是「有几条停了、不会自己回来」，
+      // 与 idle/syncing 同一个灰会让这句话读起来像例行状态
+      className={state.kind === "frozen" ? "text-xs text-warn" : "text-xs text-muted-foreground"}
+      title={state.kind === "error" || state.kind === "frozen" ? state.message : undefined}
       data-testid="task-sync-status"
     >
       {taskSyncStatusText(state)}
