@@ -95,6 +95,14 @@ describe("sliceBatches / attachmentRefsOf / isTaskSessionCreated", () => {
     expect(batches.map((b) => b.length)).toEqual([1, 1, 1]);
     expect(sliceBatches([small, small], TASK_EVENT_MAX_BYTES)).toHaveLength(1);
   });
+  it("按 UTF-8 字节切批，不按 UTF-16 code unit——中文内容差三倍（#1223 复审）", () => {
+    reset();
+    const zh1 = ev({ type: "user_message", content: "中".repeat(1500) });
+    const zh2 = ev({ type: "user_message", content: "中".repeat(1500) });
+    // UTF-16 code unit 数（旧的错误度量）在 4000 以内，但真实 UTF-8 字节数超过 4000
+    expect(JSON.stringify(zh1).length).toBeLessThan(4000);
+    expect(sliceBatches([zh1, zh2], 4000)).toHaveLength(2);
+  });
   it("附件引用：user_message.attachments 与 tool_result.images 的 id", () => {
     reset();
     const ref = { id: "sha256:" + "a".repeat(64), mediaType: "image/png", bytes: 3 };

@@ -148,14 +148,17 @@ export function sameEvent(a: SessionEvent, b: SessionEvent): boolean {
   return stableStringify(a) === stableStringify(b);
 }
 
+const utf8 = new TextEncoder();
+
 /** 按字节切批：一批不超过 maxBytes；单条就超限的自成一批（推上去让 RPC 用它自己的上限拒，
-    不在这儿静默丢——丢了本地日志就不再是云端的前缀） */
+    不在这儿静默丢——丢了本地日志就不再是云端的前缀）。字节数按 UTF-8 编码计算，
+    不是 UTF-16 单元——中文内容差三倍 */
 export function sliceBatches(events: readonly SessionEvent[], maxBytes: number): SessionEvent[][] {
   const out: SessionEvent[][] = [];
   let cur: SessionEvent[] = [];
   let bytes = 0;
   for (const e of events) {
-    const n = JSON.stringify(e).length;
+    const n = utf8.encode(JSON.stringify(e)).length;
     if (cur.length > 0 && bytes + n > maxBytes) {
       out.push(cur);
       cur = [];
