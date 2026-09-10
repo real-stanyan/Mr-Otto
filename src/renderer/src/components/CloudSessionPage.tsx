@@ -62,7 +62,7 @@ import { applyAgentMention, mentionQueryAt, pickerEmptyState, resolveSendMention
 import { filterMentionRows, mentionRows, MENTION_KIND_LABEL, type MentionRow } from "../lib/workspaceMentionItems.js";
 import {
   approvalCardTitle, assistantLabel, canStopTurn, cloudEmptyState, hiddenFromCloudTimeline, relayLineText,
-  stopButtonRows, systemNoteText, turnEndedLineText, userRowIdentity, voiceCallLineText,
+  stopButtonRows, systemNoteText, turnEndedLineText, userRowIdentity, voiceCallLineParts, type VoiceCallPart,
 } from "../lib/cloudTimeline.js";
 import { systemNoteDetail } from "../lib/systemNote.js";
 import { TurnErrorState } from "./TurnErrorState.js";
@@ -867,7 +867,7 @@ export function CloudSessionPage({
                 return <AgentBriefedRow key={e.seq} event={e} />;
               }
               if (e.type === "voice_call_changed") {
-                return <VoiceCallRow key={e.seq} text={voiceCallLineText(prevVoiceCall.get(e.seq) ?? null, e, ws)} />;
+                return <VoiceCallRow key={e.seq} parts={voiceCallLineParts(prevVoiceCall.get(e.seq) ?? null, e, ws)} />;
               }
               if (e.type === "agent_relay") {
                 return <AgentRelayRow key={e.seq} event={e} ws={ws} />;
@@ -1495,10 +1495,45 @@ function AgentRelayRow({ event, ws }: { event: AgentRelayEvent; ws: WorkspaceSna
   );
 }
 
-/** 通话名单那一行（#1163）：谁开的、拉了谁、结束了——审计性质的旁白，样式照
-    AgentRelayRow。事件只记事实（此刻谁在通话里），动作是投影出来的，见 voiceCallLineText */
-function VoiceCallRow({ text }: { text: string }) {
-  return <p className="px-1 text-[10.5px] italic text-muted-foreground/70">{text}</p>;
+/** 通话名单那一行（#1163）：谁开的、拉了谁、结束了。事件只记事实（此刻谁在通话里），
+    动作是投影出来的，见 voiceCallLineParts。
+
+    **居中 + 每个名字左边一张脸**（#1228），从此与旁边那几行旁白（AgentBriefedRow /
+    AgentRelayRow / SystemNoteRow）**故意不再同款**：那几条是机器的内务（谁就位了、
+    棒传给了谁），靠左的一行小灰字就是它们该有的分量；这一条说的是整个群此刻的状态
+    ——通话开着，之后每条回复都会被读出来（ADR-0271）——群聊里「这件事跟所有人有关」
+    的通行写法就是居中。头像回答的是「这几个名字是谁」：agent 可以随时改名（改名不
+    断账那条纪律说的正是名字会变），脸比名字稳。
+
+    脸走 inline-flex 跟着文字流走，**不是**把整行排成一个 flex：名单长了必然换行，
+    而 flex 那种排法换行之后每一行各自成一个 flex 行，`text-center` 管不到它；
+    inline 之后每一行都被行盒自己居中。`whitespace-nowrap` 把脸和名字锁在一起——
+    换行断在脸与它的名字中间，读起来就是一张没有主人的脸。
+    `not-italic` 只给兜底那个首字母：外面这层是斜体，而一个斜着的首字母在 16px
+    的圆里认不出是字母还是划痕 */
+/* 导出是为了让 tests/renderer/voiceCallRow.test.tsx 真渲染一遍——纯逻辑那份
+   （cloudTimelineLabels）钉的是每一格的值，钉不到「脸有没有真被画出来」，而维护者
+   对这块 UI 提的两件事（居中、名字左边有脸）恰好都只在这一层看得见（同 #1068） */
+export function VoiceCallRow({ parts }: { parts: readonly VoiceCallPart[] }) {
+  return (
+    <p className="px-1 text-center text-[10.5px] italic text-muted-foreground/70">
+      {parts.map((p, i) =>
+        p.kind === "text" ? (
+          // 下标当 key：这串 part 是同一条事件的确定投影，既不重排也不增删
+          <span key={i}>{p.text}</span>
+        ) : (
+          <span key={i} className="whitespace-nowrap">
+            <Avatar className="me-1 inline-flex size-4 align-middle">
+              {/* alt 留空：名字就贴在右边，读屏念两遍是噪音 */}
+              {p.avatarSrc !== "" && <AvatarImage src={p.avatarSrc} alt="" />}
+              <AvatarFallback className="text-[8px] not-italic">{initialOf(p.name)}</AvatarFallback>
+            </Avatar>
+            {p.text}
+          </span>
+        )
+      )}
+    </p>
+  );
 }
 
 /** 「谁还没回」（Task 10，src/shared/turnLedger.ts 的 openTurns 是事实来源）：
