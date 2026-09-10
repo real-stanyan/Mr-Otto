@@ -4011,6 +4011,30 @@ void app.whenReady().then(() => {
       sectionQueues.get(sessionId) ?? Promise.resolve(),
       microQueues.get(sessionId) ?? Promise.resolve(),
     ]);
+  /** 后台回注排空（issue #389）：turn 在跑时没能当场追加（压缩进行中，#871）的后台任务攒在
+      pendingBg，正常收口后合并成一条注回。只在 completed 后排——aborted 是用户按了停止，这时
+      自作主张再起一个 turn 是把契约让位给后台任务（分区分类同款立场）；攒着的结果不丢，下一次
+      turn 正常收口或新完成事件到来时再排。
+      **由两个调用方在各自的 try/finally 之后调**（#1223 复审 round 2）：原来排在 driveTurn 尾部的
+      queueMicrotask 早于调用方 finally 里的 admitting.delete，递归那一次必撞「还在跑」守卫、而
+      pendingBg 已经删了——结果静默丢（正是 ADR-0205 要防的形状）。搬到 finally 之后，递归调用的
+      admitting.add 在 F3 那次放笔检查之前落（completed 路径上帮手链总有真异步，检查在几秒后） */
+  const drainPendingBg = (sessionId: string): void => {
+    const queued = pendingBg.get(sessionId);
+    if (!queued || queued.length === 0) return;
+    pendingBg.delete(sessionId);
+    // queueMicrotask：handleSendMessage 递归调自己，锁刚放开但同步重入不礼貌
+    queueMicrotask(() => {
+      void handleSendMessage(
+        sessionId,
+        queued.map((q) => q.text).join("\n\n"),
+        undefined,
+        undefined,
+        undefined,
+        { taskIds: queued.map((q) => q.taskId) }
+      ).catch((e) => console.error("后台任务回注失败", e));
+    });
+  };
 
   // 抽成命名函数:ipc handler 和 handleIslandCommand("send" 命令)都调它,
   // 逻辑只有一份——岛上发消息和主窗输入框发消息必须走同一条路(含附件校验/
@@ -4112,6 +4136,9 @@ void app.whenReady().then(() => {
     // 准入占位（#1223 复审）：判完守卫的同一个同步 tick 里 add——下面 await acquirePen 那一次真网络
     // 往返的窗口里再来一条发送，会被上面那道 has 挡住。held 的 return 与 driveTurn 的收口都从 finally 出去
     admitting.add(sessionId);
+    // 收口结局留给 finally 之外的那次排空用（#1223 复审 round 2）：null = 压根没起 turn
+    // （held 只落人话 / 准入路上抛错）
+    let outcome: "completed" | "aborted" | null = null;
     try {
       // 笔（#1223，spec §3.6 turn 准入）：任务会话先问云端此刻谁在跑。拿到 / 离线 / 不是任务会话都
       // 往下走；被别人握着 → 只落人话，不起本地 turn，等笔空了由 answerLogged 接着答
@@ -4137,7 +4164,7 @@ void app.whenReady().then(() => {
       }
       if (pen.kind === "offline") taskSync.markOfflineRun(sessionId);
       setWaiting(sessionId, null);
-      await driveTurn(sessionId, agent, {
+      outcome = await driveTurn(sessionId, agent, {
         text,
         run: async () => {
           // vision-bridge：当前模型没眼睛而消息带图 → 先请视觉款代读成文字。
@@ -4207,6 +4234,9 @@ void app.whenReady().then(() => {
     } finally {
       admitting.delete(sessionId);
     }
+    // 排在 finally 之后（#1223 复审 round 2）：drainPendingBg 递归调回这个函数，
+    // admitting 还占着的话那一次必撞函数开头的守卫、而 pendingBg 已经删了
+    if (outcome === "completed") drainPendingBg(sessionId);
   }
 
   /** turn 的躯干（#1223 从 handleSendMessage 里拆出来）：工作区锁、runningSessions、状态推送、
@@ -4216,7 +4246,7 @@ void app.whenReady().then(() => {
     sessionId: string,
     agent: ReturnType<typeof createAgent>,
     opts: { text: string; run: () => Promise<"completed" | "aborted"> }
-  ): Promise<void> {
+  ): Promise<"completed" | "aborted"> {
     const text = opts.text;
     // 跨进程那一半（issue #634）：ADR-0152 的 runningSessions 是进程内状态，
     // 两个 app 实例（dev 版 / 正式版）指着同一个文件夹时互相看不见。紧挨着进程内
@@ -4307,32 +4337,16 @@ void app.whenReady().then(() => {
     }
     // 放笔排在帮手之后（#1223，spec §3.3）：帮手会落 session_autotitled / micro_compacted 这类
     // executor 事件，笔先放了它们就推不上去。aborted 那条没排帮手，两条队列为空，立刻放。
-    // 但只在此刻没有下一轮在跑 / 在准入时放（#1223 复审）：后台回注会在几行之后立刻起下一 turn，
-    // 帮手链几秒后才排空，那时无条件放笔就是把下一轮正在用的笔放掉；跑着的那一轮自己收口时会再判一次
+    // 但只在此刻没有下一轮在跑 / 在准入时放（#1223 复审）：后台回注排空（drainPendingBg，由调用方
+    // 在它自己的 finally 之后调）会立刻起下一 turn，帮手链几秒后才排空，那时无条件放笔就是把下一轮
+    // 正在用的笔放掉；跑着的那一轮自己收口时会再判一次
+    // 已知残留（#1223 复审 round 2，判过按原样留）：compact 会 runningSessions.add 而**不碰笔**，
+    // 所以一次恰好起在这个窗口里的 compact 会让这道条件跳过放笔——笔要等这条会话下一轮收口才放
+    // （不是永久漏：pushSession 那条路 needsPen && !holdsPen 会自己重拿，日志不会因此缺一格）
     void afterTurnHelpers(sessionId).finally(() => {
       if (!runningSessions.has(sessionId) && !admitting.has(sessionId)) void taskSync.releasePen(sessionId);
     });
-    // 后台回注排空（issue #389）：turn 在跑时没能当场追加（压缩进行中，#871）
-    // 的后台任务攒在 pendingBg，正常收口后合并成一条注回。只在 completed 后排——aborted 是用户按了停止，
-    // 这时自作主张再起一个 turn 是把契约让位给后台任务（分区分类同款立场）；
-    // 攒着的结果不丢，下一次 turn 正常收口或新完成事件到来时再排。
-    // queueMicrotask：handleSendMessage 递归调自己，锁刚放开但同步重入不礼貌
-    if (outcome === "completed") {
-      const queued = pendingBg.get(sessionId);
-      if (queued && queued.length > 0) {
-        pendingBg.delete(sessionId);
-        queueMicrotask(() => {
-          void handleSendMessage(
-            sessionId,
-            queued.map((q) => q.text).join("\n\n"),
-            undefined,
-            undefined,
-            undefined,
-            { taskIds: queued.map((q) => q.taskId) }
-          ).catch((e) => console.error("后台任务回注失败", e));
-        });
-      }
-    }
+    return outcome;
   }
 
   /** 别的设备落的人话由这台电脑接着答（#1223，spec §3.6）：两个触发点——拉到一条没人答的人话
@@ -4343,6 +4357,8 @@ void app.whenReady().then(() => {
     // 「本机打字」与「接着答」撞在一起时谁都看不见谁，照样在同一台 engine 上起两个 turn
     if (runningSessions.has(sessionId) || admitting.has(sessionId)) return;
     admitting.add(sessionId);
+    // 同 handleSendMessage（#1223 复审 round 2）：排空要等 admitting 放掉之后
+    let outcome: "completed" | "aborted" | null = null;
     try {
       if (!agents.has(sessionId)) await resumeOnce(sessionId, () => resumeAgent(sessionId));
       const agent = agents.get(sessionId);
@@ -4363,8 +4379,11 @@ void app.whenReady().then(() => {
         setWaiting(sessionId, null);
         return;
       }
+      // offline = 网络错、不是被别人占着（同 handleSendMessage）：照跑，但记一笔——
+      // 回网后 pushSession 那条路要认得出这条会话是在没笔的情况下跑过的（#1223 复审 round 2）
+      if (pen.kind === "offline") taskSync.markOfflineRun(sessionId);
       setWaiting(sessionId, null);
-      await driveTurn(sessionId, agent, {
+      outcome = await driveTurn(sessionId, agent, {
         text: opening.content,
         run: async () => {
           await saveCheckpoint(sessionId, agent);
@@ -4375,6 +4394,8 @@ void app.whenReady().then(() => {
     } finally {
       admitting.delete(sessionId);
     }
+    // 同 handleSendMessage：排在 finally 之后（#1223 复审 round 2）
+    if (outcome === "completed") drainPendingBg(sessionId);
   }
   answerLoggedHook.fn = (id) => void answerLogged(id).catch((err) => console.error("接着答失败", err));
 
@@ -4389,15 +4410,18 @@ void app.whenReady().then(() => {
     }
   });
   powerMonitor.on("resume", () => {
-    void taskSync.pullNow();
-    memoryPullNow?.();
     // 合盖打断的那几条在本机接着答（#1223 复审）：那条人话按「没答」处理，而 answerLogged 的两个
     // 触发点都要等别的设备再动一次——不补这一下，一台自己睡醒的电脑会对着自己的半截 turn 干等。
-    // 笔由 answerLogged 里的 acquirePen 仲裁：睡着那会儿云端接手了的话，这边只会拿到 held
-    for (const id of [...interruptedBySuspend]) {
-      interruptedBySuspend.delete(id);
-      answerLoggedHook.fn?.(id);
-    }
+    // 笔由 answerLogged 里的 acquirePen 仲裁：睡着那会儿云端接手了的话，这边只会拿到 held。
+    // **排在 pullNow 之后**（#1223 复审 round 2）：判据是日志（lastUnanswered），而睡着那会儿别的
+    // 设备可能已经答过了——先拉再判，才不会对着一条其实已经有答复的人话再跑一轮
+    void taskSync.pullNow().finally(() => {
+      memoryPullNow?.();
+      for (const id of [...interruptedBySuspend]) {
+        interruptedBySuspend.delete(id);
+        answerLoggedHook.fn?.(id);
+      }
+    });
   });
 
   /** 后台任务完成（issue #389；#871 改时机，ADR-0205）：落审计事件，再按 turn
