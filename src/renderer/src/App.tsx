@@ -2936,6 +2936,13 @@ function Welcome() {
   const launch = async () => {
     if (!effectiveWorkspace || busy) return;
     setBusy(true);
+    // 引用照样折进首条消息(issue #881)。正常路径上这里必然是空的——欢迎页画得
+    // 出来的时候引用早就跟着上一条会话作废了(store 的 newSession / 删/归档当前 /
+    // enterChat 四处)。读在 startSession **之前**是这行的全部意义:读在后面的话
+    // enterChat 已经清过一遍,那四处漏了哪一处都看不出来。留着是为了让漏清的那天
+    // 退化成「引用被多带了一次」而不是「引用被悄悄吞了」——后者在界面上什么都不说,
+    // 而 chip 明明还画着
+    const q = useChat.getState().quotes;
     try {
       // 显式传全部偏好：下拉框显示什么就落地什么（宁多一条 model_changed，不让 UI 说谎）
       await startSession({
@@ -2944,11 +2951,6 @@ function Welcome() {
         // 传一个口令过去只会在新会话的日志头上落一条什么都没改变的事件
         ...(imageModel !== null && !isImageAuto(imageModel) ? { imageModel } : {}),
       });
-      // 引用照样折进首条消息(issue #881)。正常路径上这里必然是空的——离开一条
-      // 会话时引用就跟着作废了(store 的 newSession / enterChat)。留这一行是为了
-      // 让漏清的那天退化成「引用被多带了一次」而不是「引用被悄悄吞了」:后者在
-      // 界面上什么都不说,而 chip 明明还画着
-      const q = useChat.getState().quotes;
       const t = composeQuotedMessage(q, text.trim());
       // 建会话成功才发首条消息（失败时 phase 停在 welcome，草稿原样保留）。
       // 只贴了图不打字也算一条消息——附件本身就是内容(同会话中的 submit 口径)。
