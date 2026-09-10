@@ -23,9 +23,9 @@ export function useOttoRuntime() {
   // 动作条上的"换模型重新生成"走的是同一个动作(见 aui/OttoThread.tsx)
   const retry = retryLatest;
 
-  // memo 在真正的输入上:buildOttoAdapter 里的 toThreadMessages 是全量投影
-  // (走一遍所有事件、每条消息新建对象),不 memo 的话与本 hook 无关的任何
-  // 重渲染都要把整份转录重投影一遍。retry 是模块常量,不进依赖
+  // memo 在真正的输入上:events/live 不变就不用重问投影;变了则由
+  // toThreadMessages 的身份保持(ADR-0284:前缀复用 + turn 边界续投)把代价
+  // 压到追加段。retry 是模块常量,不进依赖
   const adapter = useMemo(
     () => buildOttoAdapter({ events, live, isRunning: status === "running", send, cancel, retry }),
     [events, live, status, send, cancel]
