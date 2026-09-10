@@ -7,7 +7,16 @@ import { TaskSyncError, type TaskSessionRow, type TaskSessionsApi, type TaskSync
 const BUCKET = "task-attachments";
 const ROW_COLUMNS = "id,title,archived,last_seq,pen_holder,pen_until,updated_at";
 
-function codeOf(err: { code?: string; message: string }): TaskSyncErrorCode {
+/** 「这句错话是不是网络挂了」——`codeOf` 的 default 分支与 `guarded` 的 catch 共用一份判据：
+    两处各写一条正则，改一处忘一处不报错，只会让同一次断网在两条路上得出两种结论 */
+export function isNetworkMessage(msg: string): boolean {
+  return /fetch failed|network|ECONN|ENOTFOUND|Failed to fetch/i.test(msg);
+}
+
+/** 22*（数据异常）与 23*（完整性约束）这两族没有专属分支：冻结那句话里要能看出到底是哪个码 */
+const TERMINAL_SQLSTATE = /^(22|23)/;
+
+export function codeOf(err: { code?: string; message: string }): TaskSyncErrorCode {
   switch (err.code) {
     case TASK_SQLSTATE.seq_conflict: return "seq_conflict";
     case TASK_SQLSTATE.pen_required: return "pen_required";
@@ -18,13 +27,25 @@ function codeOf(err: { code?: string; message: string }): TaskSyncErrorCode {
     case "PGRST205":
     case "42883":
     case "42P01": return "missing_schema";
+    // JWT 过期（#1223 终审 I4）：下一次调用 supabase-js 自己会刷 token，所以这是**瞬态**——
+    // 判成 other 的话它进 30 s 重试循环也能好，但状态行会写成一句莫名其妙的失败
+    case "PGRST301": return "network";
     default:
-      return /fetch failed|network|ECONN|ENOTFOUND|Failed to fetch/i.test(err.message) ? "network" : "other";
+      // 22P05（NUL 字节进 jsonb）/ 22P02 / 23xxx：同一批再发一次结果一模一样，**终态**。
+      // 原来一律落进 other → fail() → 每 30 s 重试一次、这条会话永远脏着，而没有任何人
+      // 说得出为什么。走 forbidden = 既有的 freeze 那条路（message 带原 SQLSTATE）
+      if (err.code !== undefined && TERMINAL_SQLSTATE.test(err.code)) return "forbidden";
+      return isNetworkMessage(err.message) ? "network" : "other";
   }
 }
 
+/** 没有专属分支的那两族要把 SQLSTATE 带进消息：冻结的原因最终会原样出现在账号页那行 */
+function messageOf(err: { code?: string; message: string }): string {
+  return err.code !== undefined && TERMINAL_SQLSTATE.test(err.code) ? `${err.code}: ${err.message}` : err.message;
+}
+
 function unwrap<T>(res: { data: T; error: { message: string; code?: string } | null }): T {
-  if (res.error) throw new TaskSyncError(codeOf(res.error), res.error.message);
+  if (res.error) throw new TaskSyncError(codeOf(res.error), messageOf(res.error));
   return res.data;
 }
 
@@ -35,7 +56,7 @@ async function guarded<T>(p: () => Promise<T>): Promise<T> {
   } catch (err) {
     if (err instanceof TaskSyncError) throw err;
     const msg = err instanceof Error ? err.message : String(err);
-    throw new TaskSyncError(err instanceof TypeError || /fetch failed|network/i.test(msg) ? "network" : "other", msg);
+    throw new TaskSyncError(err instanceof TypeError || isNetworkMessage(msg) ? "network" : "other", msg);
   }
 }
 
@@ -89,7 +110,7 @@ export function createSupabaseTaskSessionsApi(client: SupabaseClient): TaskSessi
         const res = await client.storage.from(BUCKET).download(`${uid}/${hex}`);
         if (res.error) {
           if (/not found|404/i.test(res.error.message)) return null;
-          throw new TaskSyncError(codeOf(res.error), res.error.message);
+          throw new TaskSyncError(codeOf(res.error), messageOf(res.error));
         }
         return new Uint8Array(await res.data.arrayBuffer());
       }),
