@@ -108,7 +108,12 @@ const MODEL_SPECS: ModelSpec[] = [
   // 注意 vision-exp 那条删掉不是"少了一款视觉款"——它指向的实体就是 deepseek-flash 本身，
   // 而改动前目录同时说 deepseek-v4-flash 没眼睛、vision-exp 有眼睛：同一个模型两句互相
   // 矛盾的能力描述，而 vision-bridge 正是照这一位决定要不要先找代读员
-  { provider: "deepseek", model: "deepseek-flash", label: "DeepSeek V4.1 Flash（视觉）", contextWindow: 1_000_000, thinking: THINKING_FLAG, supportsVision: true },
+  // label 用**上游自己那串官方写法**（连字符、大小写照抄发布公告与定价页的「模型版本」一栏），
+  // 与 `model` 那格故意长得不一样：那格是发上线的 id，写成 DeepSeek-V4.1-Flash 当场 400
+  //（实测原话：「The supported API model names are deepseek-flash, deepseek-v4-pro」）。
+  // 代价：这一行不带「（视觉）」后缀，与 GLM / Mistral 那几款的写法不一致——选单里看不出它能看图。
+  // 维护者定的口径：官方名就是官方名。真会撞上的路径有代读员与 routeModel 的话接着（同 ADR-0249）
+  { provider: "deepseek", model: "deepseek-flash", label: "DeepSeek-V4.1-Flash", contextWindow: 1_000_000, thinking: THINKING_FLAG, supportsVision: true },
   // V4 Pro（DeepSeek-V4-Pro-0813）：官方公告**北京时间 2026-09-14 12:00 起**请求全部路由到
   // V4.1 Flash 并按 Flash 价计费（直到 V4.1 Pro 上线）。到那天为止它还是真实的另一款模型
   // 且**真不支持视觉**，所以这一行先留着；那天之后它就是 deepseek-flash 的重复项，删它的活
