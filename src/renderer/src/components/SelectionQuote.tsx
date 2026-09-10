@@ -1,5 +1,6 @@
 // 划词引用(assistant-ui 的 SelectionToolbar 同款):在消息区选中一段文字,
-// 选区上方浮出「引用」,点了以 markdown 引用块进输入框。
+// 选区上方浮出「引用」,点了暂存成输入框上方的一张 chip(issue #881)。
+// 折成 markdown 引用块是发送那一刻的事,见 lib/quote.ts 的 composeQuotedMessage。
 //
 // 编码 agent 里"这段函数改一下"是高频动作,之前只能手动复制再粘。
 //
@@ -10,7 +11,6 @@ import { useEffect, useState } from "react";
 import type { RefObject } from "react";
 import { Quote } from "lucide-react";
 import { Button } from "@/components/ui/button.js";
-import { toBlockquote } from "../lib/quote.js";
 import { useChat } from "../store.js";
 
 interface Anchor {
@@ -94,8 +94,10 @@ export function SelectionQuote({ hostRef }: { hostRef: RefObject<HTMLElement | n
       // onMouseDown 而不是 onClick:click 之前浏览器已经把选区清了
       onMouseDown={(e) => {
         e.preventDefault();
-        const quoted = toBlockquote(anchor.text);
-        if (quoted !== "") useChat.getState().injectComposer(quoted, true);
+        // 暂存成一张 chip,不再往输入框里贴字(issue #881):贴进去之后
+        // "哪些是引来的、哪些是自己写的"就再也分不出来了。折成引用块是
+        // 发送那一刻的事(composeQuotedMessage)
+        if (anchor.text.trim() !== "") useChat.getState().addQuote(anchor.text);
         window.getSelection()?.removeAllRanges();
         setAnchor(null);
       }}

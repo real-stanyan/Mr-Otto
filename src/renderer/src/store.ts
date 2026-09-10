@@ -111,6 +111,7 @@ import type { StoreApi } from "zustand";
 import { createRequestGate } from "./lib/latestRequest.js";
 import { mergeStaged } from "./lib/staging.js";
 import { outgoingFrom } from "./lib/resendPayload.js";
+import { type QuotedSnippet } from "./lib/quote.js";
 import type {
   DirectMessage, FriendProfile, FriendsResult, FriendsSnapshot, RealtimeHealth, WorkspacesSnapshot,
 } from "../../shared/friends.js";
@@ -536,12 +537,20 @@ interface ChatState {
   sessionSearchOpen: boolean;
   /** ＋ 按钮暂存的附件(chips 数据源)。rejected 不进这——进 attachError */
   staged: (StagedAttachment & { kind: "image" | "text" })[];
+  /** 划词引用暂存(issue #881)。**不并进 staged**：staged 那一排会 travel 回主进程
+      变成 OutgoingAttachment（图片 ref / 文本文件全文），而引用发送时折回正文里的
+      引用块，一个字节都不出渲染层。两者在输入框上排成同一行 chips，在类型上是
+      两件东西（ADR-0284）。换会话必清（见 enterChat）：引用指的是**那条会话里**
+      的某段话，带进另一条会话就是让这条消息说一件没发生过的事 */
+  quotes: QuotedSnippet[];
   /** 最近一次选择被拒文件的提示(下次选择/发送时清) */
   attachError: string | null;
-  /** 待注入输入框的文本(划词引用、重试填回都走这条)。App 收下即清。
-      append=true 追加到现有草稿后面(引用),false 整体替换(重试填回)。
+  /** 待注入输入框的文本(展开 MCP prompt、@ 一个文件、贴一段选中的元素都走这条)。
+      App 收下即清。append=true 追加到现有草稿后面,false 整体替换。
       为什么不把 composer 的输入状态提到 store:那是更大的重构,
-      这条通道够用且不改动现有输入框的任何行为 */
+      这条通道够用且不改动现有输入框的任何行为。
+      **划词引用不再走这条**(issue #881):贴进输入框之后"哪些是引来的、
+      哪些是自己写的"就分不出来了,它改走 quotes 那一格 */
   composerInject: { text: string; append: boolean } | null;
   /** 好友快照(主进程推送镜像;未登录/登出 = 三空数组) */
   friendsSnapshot: FriendsSnapshot;
@@ -856,6 +865,14 @@ interface ChatState {
   pickFiles(): Promise<void>;
   /** chips 上的 × 按钮：按下标移除一个暂存附件 */
   removeStaged(index: number): void;
+  /** 划词浮钮上的「引用」：把选中的文字暂存成一张 chip（issue #881）。
+      可叠加——「这两个函数一起改」是真实动作，一次只留一条会让上一条凭空消失 */
+  addQuote(text: string): void;
+  /** 引用 chip 上的 × */
+  removeQuote(id: string): void;
+  /** 发出去之后清空（发送成功那一刻由 composer 调；/指令、@好友 两条路不清——
+      它们不是给模型的话，引用没被消费掉） */
+  clearQuotes(): void;
   injectComposer(text: string, append: boolean): void;
   /** 原样重发一条已经在日志里的用户消息(重试)。附件从那条事件上取回来:
       图片是内容寻址的 ref、文本文件是全文快照,两样都在事件里(ADR-0042)。
@@ -1319,6 +1336,10 @@ export const enterChat = (
   // IPC 正飞在半空,那份响应落地时靠的是 submitMcpPromptForm 里的
   // sessionId 比对（isCurrentMcpPromptSubmission）挡住,不是这一行
   mcpPromptForm: null,
+  // 引用指的是**那条会话里**的某段话:带进另一条会话,这条消息就在说一件
+  // 没发生过的事。与 staged 图片刻意不一致(那些今天跨会话留着)——图片是
+  // 用户从磁盘挑的内容,换个会话照样是它;引用是一个指向别处的指针
+  quotes: [],
   error: null,
 });
 
@@ -1477,6 +1498,7 @@ export const useChat = create<ChatState>((set, get) => ({
   modelSetupOpen: false,
   sessionSearchOpen: false,
   staged: [],
+  quotes: [],
   attachError: null,
   composerInject: null,
   friendsSnapshot: { friends: [], incoming: [], outgoing: [] },
@@ -1742,7 +1764,7 @@ export const useChat = create<ChatState>((set, get) => ({
       // 只挪走 `/token` 本身,更早敲的那些字不受影响、原样留在 composer 里——
       // 如果这里传 false,App.tsx 的 composerInject effect 会直接拿展开结果
       // 整体覆盖 composer.setText,把那半句话冲没(F2)。同一份 append 语义
-      // 的另一处调用见 SelectionQuote.tsx 的"引用"按钮
+      // 的另外两处调用见 FilesView(@文件) 与 BrowserPanel(选中的元素)
       get().injectComposer(text, true);
     } catch (e) {
       if (!stillCurrent()) return;
@@ -3444,6 +3466,7 @@ export const useChat = create<ChatState>((set, get) => ({
       phase: "welcome",
       sessionId: "", // 清掉投影：welcome 视图不属于任何会话（后台事件照常进 DB）
       events: [],
+      quotes: [], // 引用指的是刚才那条会话里的某段话（同 enterChat）
       replayCursor: null,
       ...panelFlags(null), // ＋新会话退出设置模式/面板，回 composer
       error: null,
@@ -3517,6 +3540,7 @@ export const useChat = create<ChatState>((set, get) => ({
           sessions,
           sessionId: "",
           events: [],
+          quotes: [], // 同 enterChat：引用跟着它指向的那条会话一起作废
           replayCursor: null,
           queuedBySession: without(s.queuedBySession, sessionId),
         }));
@@ -3543,7 +3567,7 @@ export const useChat = create<ChatState>((set, get) => ({
       const sessions = await window.otter.listSessions();
       if (get().sessionId === sessionId) {
         // 归档的是正看着的会话 → 回欢迎页。队列留着:会话还在,恢复后照常发
-        set({ phase: "welcome", sessions, sessionId: "", events: [], replayCursor: null });
+        set({ phase: "welcome", sessions, sessionId: "", events: [], quotes: [], replayCursor: null });
       } else {
         set({ sessions });
       }
@@ -3696,6 +3720,23 @@ export const useChat = create<ChatState>((set, get) => ({
 
   removeStaged(index) {
     set({ staged: get().staged.filter((_, i) => i !== index) });
+  },
+
+  addQuote(text) {
+    // 全空白不收：一条引用存在 = 折出来的正文必然非空，composer 的
+    // 「有东西可发」判据(canSend / submit)直接数 quotes.length 就靠这条不变量。
+    // 闸放在这一层而不是只放在浮钮上：第二个调用方那天不会有人记得
+    if (text.trim() === "") return;
+    // id 只服务于 React key 和 × 按钮，不进日志、不跨进程 —— randomUUID 够了（同 QueuedTask）
+    set((s) => ({ quotes: [...s.quotes, { id: crypto.randomUUID(), text }] }));
+  },
+
+  removeQuote(id) {
+    set((s) => ({ quotes: s.quotes.filter((q) => q.id !== id) }));
+  },
+
+  clearQuotes() {
+    set({ quotes: [] });
   },
 
   injectComposer(text, append) {
