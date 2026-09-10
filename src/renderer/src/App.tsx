@@ -3715,6 +3715,11 @@ export function App() {
   // 那边的 effect 跟着 App 的重渲染空转(reveal 桥甚至会重复滚)
   const settleReveal = useCallback(() => setRevealRequest(null), []);
   const bumpWindowNonce = useCallback(() => setWindowNonce((n) => n + 1), []);
+  // 挂起的 reveal 请求是**那条**会话的:切了会话,它的分区号在新会话里
+  // 指向另一个分区(或越界)——清掉,别拿旧请求去解新 sections
+  useEffect(() => {
+    setRevealRequest(null);
+  }, [sessionId]);
   // 「发布到工作区…」弹窗开关（头部「更多」菜单，ADR-0198 切片 3，issue #811）
   const [publishOpen, setPublishOpen] = useState(false);
   // HTMLDivElement 而不是 HTMLElement:滚动元素现在是 ThreadPrimitive.Viewport
