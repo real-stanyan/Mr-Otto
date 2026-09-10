@@ -19,7 +19,8 @@ import type { ModelLane } from "./modelLane.js";
 import type { UsageSnapshot } from "./usageStats.js";
 import type { ModelShareWindow } from "./modelShare.js";
 import type { WorkspaceMentionRow } from "./workspaceMentions.js";
-import type { IslandUsageRow } from "./islandUsage.js";
+import type { IslandRail } from "./islandRail.js";
+import type { IslandTab } from "./islandTabs.js";
 import type { CsGitHost, CsModelRoute, CsWikiWriteReq, CsWorkHit, CsWorkNode } from "./remote/cloudSession.js";
 import type { TerminalInfo } from "./terminal.js";
 import type { BrowserTabInfo, BrowserBounds, BrowserPickedElement } from "./browser.js";
@@ -732,8 +733,6 @@ export interface ShellBridge {
   setVisionModel(model: string): Promise<string>;
   /** 灵动岛设置(设置页外观区读,落 userData/island.json)。set 之后主进程
       立刻重推一次岛快照——切换即时生效,不等下一个事件(#199) */
-  getIslandSettings(): Promise<IslandSettings>;
-  setIslandSettings(settings: IslandSettings): Promise<void>;
   /** 动效设置(设置页外观区读,落 userData/motion.json,issue #607)。
       set 之后主进程立刻把覆盖挂上/撤掉——当场生效,不用重启 */
   getMotionSettings(): Promise<MotionSettings>;
@@ -972,6 +971,15 @@ export interface ShellBridge {
       refresh=false 只回内存里现有的（省一趟网络，开页展示用）。
       结构与主进程 hostedQuota.snapshot() 一致（结构性赋值，shellBridge 不 import main） */
   billingSnapshot(refresh: boolean): Promise<BillingSnapshotView>;
+  /** 渲染层推给灵动岛的那两样它自己拿不到的事实（#1229）。
+      **为什么由渲染层推**：`workspace_mentions` 是渲染层直连 Supabase 拉的
+      （#1064），团队名单同理住在渲染层的 store 里；主进程要自己拿就得把那条
+      链路复制一遍（多一处查询 + 一份缓存 + 一条 realtime 通道），而这里要的
+      只是一个角标的数和一张 id→名字的表。
+      **已知代价**：主窗没开时这两样是陈旧的，而岛可能还开着。这个方向可接受
+      的理由是它的失败形态——陈旧只会让角标少亮或多亮一会儿；反过来（主进程
+      自建一条 realtime 通道）要为一枚 5px 的点复制 #1064 的整条链路。 */
+  islandContext(ctx: { unreadMentions: number; teamNames: Record<string, string> }): Promise<void>;
   /** 订阅 / 加购下单：拿 checkout url 后在系统浏览器打开（Stripe 的页面不进 Electron 窗口） */
   billingCheckout(target: { planId: PlanId } | { addon: true; quantity: number }): Promise<void>;
   /** Stripe customer portal（改档/取消/换卡）：同样在系统浏览器打开 */
@@ -1204,8 +1212,12 @@ export interface ShellBridge {
   workspaceMentions(): Promise<FriendsResult<WorkspaceMentionRow[]>>;
   /** 进了这条云会话 = 里面 @ 我的那几条看见了 */
   workspaceMentionsRead(sessionId: string): Promise<FriendsResult<null>>;
+  /** `voice: true` = 这句话是在语音通话里**说出来的**（协议 19，#1233）：只往下传，
+      落进 `user_message.voice` / `chat_message.voice`，云会话时间线据它把一场通话
+      折成一张卡（ADR-0288）。只有麦克风那条路会带（`store.speechOnEvent`）——
+      「这句是不是说出来的」在正文里看不出来，麦克风那一侧是唯一知道的人 */
     workspaceCloudSay(
-    text: string, mention: boolean, mentions?: string[], memberMentions?: string[]
+    text: string, mention: boolean, mentions?: string[], memberMentions?: string[], voice?: true
   ): Promise<CloudAck>;
   /** 批/拒当前云会话里的一个审批请求（callId 来自 approval_request 事件） */
   workspaceCloudApprove(callId: string, decision: "approved" | "denied"): Promise<CloudAck>;
@@ -1356,6 +1368,13 @@ export interface IslandAgent {
       TurnDiffUpdate 的统计——两处只能显示同一个数。可选：旧 helper 解码时忽略，
       turn 没写过文件时缺席 */
   turnDiff?: { files: number; additions: number; deletions: number };
+  /** 这一行归顶栏哪一档：任务 / 项目 / 团队（#1229，与侧栏 ADR-0259 同一套分法）。
+      **缺席 = `"project"`** —— 旧主进程推来的行全部落进项目档，也就是改动前的行为。
+      「此刻在看哪一档」不在线上：那是 helper 的内存态，同 selectedSessionId */
+  kind?: IslandTab;
+  /** 组头写什么。`null` = 这一档不分组（任务档就是平铺）。**缺席**时 Swift 侧
+      照旧从 projectRoot 末段自己推（旧主进程） */
+  groupLabel?: string | null;
 }
 
 /** 灵动岛线上快照(多会话):侧栏可见集合每会话一行 + 主窗当前选中(默认高亮行)。
@@ -1364,10 +1383,14 @@ export interface IslandAgent {
 export interface IslandFleet {
   agents: IslandAgent[];
   focusedSessionId: string | null;
-  /** 展开态上半区显示什么(设置页切换,默认 sessions) */
-  display?: IslandDisplay;
-  /** display=usage 时的用量表(shared/islandUsage.ts 的投影);sessions 模式不带 */
-  usage?: IslandUsageRow[];
+  /** 展开态最底下那一条（#1229）。**缺席 = 整条不画**：billing 还没查到、
+      或者既没订阅也没跑过一次计费调用——三种情形在岛上是同一个答案，
+      而「没有额度可言」和「额度充足」不是同一件事（ADR-0255） */
+  rail?: IslandRail;
+  /** 「团队」那一格右上角那枚未读点的数（#1229）。**缺席 = 不画**（还没查到
+      不是「没有」）。渲染层算好推给主进程——`workspace_mentions` 是渲染层直连
+      Supabase 拉的（#1064），主进程手里没有；已知代价是主窗没开时它是陈旧的 */
+  unreadMentions?: number;
 }
 
 /** 设置页「手机」栏目里的一台已登记手机(main/remoteDevices.ts 的 RemotePeer)。
@@ -1412,13 +1435,6 @@ export type RemoteStatus =
       rejected: RemoteRejection | null;
     };
 
-/** 灵动岛展开态上半区的两种内容(#199) */
-export type IslandDisplay = "sessions" | "usage";
-
-/** 灵动岛设置(userData/island.json,main/islandSettingsStore.ts 落盘) */
-export interface IslandSettings {
-  display: IslandDisplay;
-}
 
 /** 动效偏好(#607):system = 跟随系统的 prefers-reduced-motion(出厂默认);
     always = 无视系统的"减弱动效",照常播。没有反向的"始终关闭"——系统说减弱
@@ -1549,8 +1565,6 @@ export const CHANNELS = {
   setHelperModel: "otter:setHelperModel",
   getVisionModel: "otter:getVisionModel",
   setVisionModel: "otter:setVisionModel",
-  getIslandSettings: "otter:getIslandSettings",
-  setIslandSettings: "otter:setIslandSettings",
   getMotionSettings: "otter:getMotionSettings",
   setMotionSettings: "otter:setMotionSettings",
   getWorkspaceSettings: "otter:getWorkspaceSettings",
@@ -1637,6 +1651,7 @@ export const CHANNELS = {
   usageByModel: "otter:usageByModel",
   providerBalances: "otter:providerBalances",
   billingSnapshot: "otter:billingSnapshot",
+  islandContext: "otter:islandContext",
   billingCheckout: "otter:billingCheckout",
   billingPortal: "otter:billingPortal",
   billingChanged: "otter:billingChanged",

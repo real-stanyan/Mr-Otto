@@ -5,7 +5,7 @@ import { modelStatusText } from "../../src/renderer/src/lib/cloudModelStatus.js"
 // #1052（ADR-0246）：判据再收一次——**只在起不了 turn 的时候出现**，正常那两态不画。
 describe("modelStatusText（#945 → ADR-0233 → #1052）", () => {
   it("hosted：一格都不画（「一切正常」不需要常驻标签）", () => {
-    expect(modelStatusText({ kind: "hosted", model: "deepseek-v4-flash" })).toBeNull();
+    expect(modelStatusText({ kind: "hosted", model: "deepseek-flash" })).toBeNull();
   });
   it("route 探不到（null）：也不画——它自己那句话就是「turn 照跑」，不可行动", () => {
     expect(modelStatusText(null)).toBeNull();

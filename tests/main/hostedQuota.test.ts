@@ -6,7 +6,7 @@ const T0 = 1_800_000_000_000;
 const me: BillingMe = {
   plan: "pro", status: "active", plans: [],
   windows: { h5: { usedMicro: 0, limitMicro: 100, resetAt: T0 + 5000 }, week: { usedMicro: 0, limitMicro: 1000, resetAt: T0 + 9000 } },
-  addon: { remainingMicro: 0, expiresAt: null }, periodEnd: T0 + 99_999, models: ["deepseek-v4-flash"], imageModels: ["gemini-3.1-flash-image"], ttsModels: ["speech-2.8-turbo"], modelPlatforms: {},
+  addon: { remainingMicro: 0, expiresAt: null }, periodEnd: T0 + 99_999, models: ["deepseek-flash"], imageModels: ["gemini-3.1-flash-image"], ttsModels: ["speech-2.8-turbo"], modelPlatforms: {},
 };
 
 function make(responses: Array<() => Response>, token: string | null = "jwt") {
@@ -23,7 +23,7 @@ describe("hostedQuota", () => {
     const req = (fetchImpl as unknown as { mock: { calls: unknown[][] } }).mock.calls[0]!;
     expect(req[0]).toBe("https://edge/billing/v1/me");
     expect((req[1] as RequestInit).headers).toMatchObject({ authorization: "Bearer jwt" });
-    expect(q.routeInput("deepseek-v4-flash")).toEqual({ subscribed: true, exhausted: false, supportsModel: true });
+    expect(q.routeInput("deepseek-flash")).toEqual({ subscribed: true, exhausted: false, supportsModel: true });
     expect(q.routeInput("gpt-9").supportsModel).toBe(false);
   });
 
@@ -31,26 +31,26 @@ describe("hostedQuota", () => {
     const { q, fetchImpl } = make([], null);
     expect(await q.refresh()).toBeNull();
     expect(fetchImpl).not.toHaveBeenCalled();
-    expect(q.routeInput("deepseek-v4-flash").subscribed).toBe(false);
+    expect(q.routeInput("deepseek-flash").subscribed).toBe(false);
   });
 
   it("refresh 失败保留旧快照（「拿不到」≠「没订阅」）", async () => {
     const { q } = make([() => Response.json(me), () => new Response("x", { status: 500 })]);
     await q.refresh();
     expect(await q.refresh()).toEqual(me);
-    expect(q.routeInput("deepseek-v4-flash").subscribed).toBe(true);
+    expect(q.routeInput("deepseek-flash").subscribed).toBe(true);
   });
 
   it("noteExhausted → exhausted 直到 resetAt；过点自动恢复；refresh 成功也清掉", async () => {
     const { q, tick } = make([() => Response.json(me), () => Response.json(me)]);
     await q.refresh();
     q.noteExhausted({ window: "5h", resetAt: T0 + 5000 });
-    expect(q.routeInput("deepseek-v4-flash")).toMatchObject({ exhausted: true, resetAt: T0 + 5000 });
+    expect(q.routeInput("deepseek-flash")).toMatchObject({ exhausted: true, resetAt: T0 + 5000 });
     tick(5001);
-    expect(q.routeInput("deepseek-v4-flash").exhausted).toBe(false);
+    expect(q.routeInput("deepseek-flash").exhausted).toBe(false);
     q.noteExhausted({ window: "week", resetAt: T0 + 9000 });
     await q.refresh();
-    expect(q.routeInput("deepseek-v4-flash").exhausted).toBe(false);
+    expect(q.routeInput("deepseek-flash").exhausted).toBe(false);
   });
 
   it("noteHeaders：剩余为 0 视为耗尽（resetAt 取快照里那个窗），非 0 更新 used", async () => {
@@ -59,7 +59,7 @@ describe("hostedQuota", () => {
     q.noteHeaders(new Headers({ [BILLING_HEADERS.h5]: "40" }));
     expect(q.snapshot().me?.windows?.h5.usedMicro).toBe(60);
     q.noteHeaders(new Headers({ [BILLING_HEADERS.week]: "0" }));
-    expect(q.routeInput("deepseek-v4-flash")).toMatchObject({ exhausted: true, resetAt: T0 + 9000 });
+    expect(q.routeInput("deepseek-flash")).toMatchObject({ exhausted: true, resetAt: T0 + 9000 });
   });
 
   it("imageInput：出图清单原样带出，订阅/耗尽两格与 routeInput 同源（#1081）", async () => {

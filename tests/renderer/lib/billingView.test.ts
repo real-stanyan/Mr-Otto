@@ -50,17 +50,17 @@ describe("windowPercent / countdown / addonLine（既有行为钉住）", () => 
     expect(windowPercent({ usedMicro: 500, limitMicro: 200, resetAt: 0 })).toBe(100);
     expect(windowPercent({ usedMicro: 1, limitMicro: 0, resetAt: 0 })).toBe(0);
   });
-  it("countdown：小时+分钟；不足一分钟说「不到 1 分钟」；过点说「已恢复」", () => {
+  it("countdown：`3h 47m`；不足一分钟说 `<1m`；过点说「已刷新」", () => {
     const now = 0;
-    expect(countdown(now + 3 * 3_600_000 + 47 * 60_000, now)).toBe("3 小时 47 分后恢复");
-    expect(countdown(now + 30_000, now)).toBe("不到 1 分钟后恢复");
-    expect(countdown(now - 1, now)).toBe("已恢复");
+    expect(countdown(now + 3 * 3_600_000 + 47 * 60_000, now)).toBe("3h 47m 后刷新");
+    expect(countdown(now + 30_000, now)).toBe("<1m 后刷新");
+    expect(countdown(now - 1, now)).toBe("已刷新");
   });
-  it("countdown：满一天进「天」档——周窗写成「96 小时 0 分后恢复」没人这样读时间，也塞不进浮层那一行", () => {
+  it("countdown：满一天进「天」档——周窗写成「96h 0m 后刷新」没人这样读时间，也塞不进浮层那一行", () => {
     const now = 0;
-    expect(countdown(now + 96 * 3_600_000, now)).toBe("4 天后恢复");
-    expect(countdown(now + 25 * 3_600_000, now)).toBe("2 天后恢复"); // 向上取整：宁可说晚也别让人白等
-    expect(countdown(now + 23 * 3_600_000, now)).toBe("23 小时 0 分后恢复"); // 不满一天仍走小时档
+    expect(countdown(now + 96 * 3_600_000, now)).toBe("4d 后刷新");
+    expect(countdown(now + 25 * 3_600_000, now)).toBe("2d 后刷新"); // 向上取整：宁可说晚也别让人白等
+    expect(countdown(now + 23 * 3_600_000, now)).toBe("23h 0m 后刷新"); // 不满一天仍走小时档
   });
   it("addonLine：没余额回 null；有余额带到期日", () => {
     expect(addonLine({ remainingMicro: 0, expiresAt: null }, 0)).toBeNull();
@@ -207,25 +207,25 @@ describe("quotaAlert（#1073：触发器那枚点画不画）", () => {
 
   it("刚过 75% 那条线 → 橙点，且说得出是哪一扇窗、还剩多少", () => {
     expect(quotaAlert(snap({ me: me([820, 1000], [100, 1000]) }), NOW)).toEqual({
-      tone: "warn", label: "额度：5 小时窗仅剩 18.0%",
+      tone: "warn", label: "额度：5h 仅剩 18.0%",
     });
   });
 
   it("周窗先拦住人时报的是周窗（判据与浮层那两只表共用 bindingWindow）", () => {
     expect(quotaAlert(snap({ me: me([100, 1000], [940, 1000]) }), NOW)).toEqual({
-      tone: "deny", label: "额度：本周仅剩 6.0%",
+      tone: "deny", label: "额度：本周 仅剩 6.0%",
     });
   });
 
   it("正好用光 → 说「已用完」不说「仅剩 0.0%」", () => {
-    expect(quotaAlert(snap({ me: me([1000, 1000], [100, 1000]) }), NOW)?.label).toBe("额度：5 小时窗已用完");
+    expect(quotaAlert(snap({ me: me([1000, 1000], [100, 1000]) }), NOW)?.label).toBe("额度：5h 已用完");
   });
 
   it("**exhausted 排在百分比前面**：网关亲口说的「拦住你了」，窗口数还停在上一次也照报", () => {
     // 只走 429 那条路时 hostedQuota 不更新 windows —— 光看百分比会漏掉本条 issue
     // 标题说的那一刻（额度用完，界面一个字都不说）
     const v = quotaAlert(snap({ exhausted: { window: "5h", resetAt: NOW + HOUR } }), NOW);
-    expect(v).toEqual({ tone: "deny", label: "额度：5 小时窗已用完" });
+    expect(v).toEqual({ tone: "deny", label: "额度：5h 已用完" });
   });
 
   it("过了 resetAt 的 exhausted 记号不算数 —— 渲染层这份快照不会自己过期，得现算", () => {

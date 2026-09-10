@@ -37,7 +37,6 @@ import type { GrantScope } from "../../shared/permissionGrants.js";
 import type {
   ApprovalDecisionKind,
   ApprovalRequest,
-  IslandDisplay,
   McpConfigurePreview,
   MotionPref,
   MotionSettings,
@@ -97,6 +96,7 @@ import { orbState } from "./lib/sessionOrb.js";
 import { MessageQueue } from "@/components/elements/message-queue.js";
 import { pickGreeting } from "./lib/greeting.js";
 import { composeInjectedText } from "./lib/composerInject.js";
+import { composeQuotedMessage } from "./lib/quote.js";
 import { ProfileSetupDialog } from "./components/ProfileSetupDialog.js";
 import { ResiduePanel } from "./components/ResiduePanel.js";
 import { SignInCard } from "./components/SignInCard.js";
@@ -113,6 +113,7 @@ import { McpPromptCard } from "./components/McpPromptCard.js";
 // RetryButton 不在这里 import 了:main 侧原来在这渲染它,新路径下 OttoThread 自己的
 // ErrorBanner 槽已经内置了同一颗按钮(见 aui/OttoThread.tsx),App.tsx 不用重复渲染
 import { SectionRail } from "./components/SectionRail.js";
+import type { RevealRequest } from "./lib/messageWindow.js";
 import { FolderIcon } from "./components/FileTypeIcon.js";
 import { AUTO_MODEL } from "../../shared/autoModel.js";
 import { currentImageModel, isImageAuto } from "../../shared/imageModel.js";
@@ -1317,23 +1318,6 @@ function KeysPage() {
 function AppearancePage() {
   const closeSettings = useChat((s) => s.closeSettings);
   const [themePref, setThemePref] = useState<ThemePref>(() => themeController().pref());
-  // 灵动岛设置(#199)。null = 还没从主进程读回来(控件禁用,同 AutoCompactSettings
-  // 的 loaded 模式);set 一点就落盘——低频离散动作,主进程 set 完立刻重推岛快照
-  const [islandDisplay, setIslandDisplay] = useState<IslandDisplay | null>(null);
-  useEffect(() => {
-    let cancelled = false;
-    window.otter
-      .getIslandSettings()
-      .then((s) => {
-        if (!cancelled) setIslandDisplay(s.display);
-      })
-      .catch(() => {
-        /* 读不到就保持禁用——非 mac 或桥出错,控件灰着比假装能切要诚实 */
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
 
   const OPTIONS: { value: ThemePref; label: string; hint: string }[] = [
     { value: "light", label: "浅色", hint: "始终用浅色底盘" },
@@ -1341,7 +1325,7 @@ function AppearancePage() {
     { value: "system", label: "跟随系统", hint: "跟着 macOS 的外观设置走" },
   ];
 
-  // 动效(#607)。null = 还没读回来(同 islandDisplay 的 loaded 模式)。
+  // 动效(#607)。null = 还没读回来(同 AutoCompactSettings 的 loaded 模式)。
   // set 完主进程当场挂/撤覆盖,不用重启,所以这里不需要"存了但还没生效"那一档
   const [motion, setMotion] = useState<MotionSettings | null>(null);
   useEffect(() => {
@@ -1362,11 +1346,6 @@ function AppearancePage() {
   const MOTION_OPTIONS: { value: MotionPref; label: string; hint: string }[] = [
     { value: "system", label: "跟随系统", hint: "系统开了「减弱动效」就跟着停——Windows 的「动画效果」默认在不少机器上是关的" },
     { value: "always", label: "始终开启", hint: "无视系统的「减弱动效」,球会转、高光会扫、卡片会滑" },
-  ];
-
-  const ISLAND_OPTIONS: { value: IslandDisplay; label: string; hint: string }[] = [
-    { value: "sessions", label: "会话列表", hint: "展开时显示各会话状态,点选切换、当场审批" },
-    { value: "usage", label: "Token 用量", hint: "展开时显示各模型 今天/7天/14天 的 token 消耗" },
   ];
 
   return (
@@ -1440,41 +1419,6 @@ function AppearancePage() {
             {motion === null
               ? "系统开了「减弱动效」时,整个界面(包括跑 turn 时那颗球)都会停住"
               : MOTION_OPTIONS.find((o) => o.value === motion.pref)?.hint}
-          </p>
-        </div>
-        <div className="flex flex-col gap-[6px]">
-          <h2 className="px-1 text-[11px] tracking-[0.06em] text-muted-foreground uppercase">灵动岛</h2>
-          <div
-            role="radiogroup"
-            aria-label="灵动岛显示内容"
-            className="inline-flex gap-1 rounded-[10px] border border-border bg-card p-1"
-          >
-            {ISLAND_OPTIONS.map((o) => (
-              <button
-                key={o.value}
-                type="button"
-                role="radio"
-                aria-checked={islandDisplay === o.value}
-                disabled={islandDisplay === null}
-                title={o.hint}
-                className={`press-scale flex-1 rounded-[7px] px-4 py-[6px] text-[13px] transition-colors duration-150 disabled:opacity-50 ${
-                  islandDisplay === o.value
-                    ? "bg-foreground/[0.10] font-[550] text-foreground"
-                    : "text-muted-foreground hover:text-foreground"
-                }`}
-                onClick={() => {
-                  setIslandDisplay(o.value);
-                  void window.otter.setIslandSettings({ display: o.value });
-                }}
-              >
-                {o.label}
-              </button>
-            ))}
-          </div>
-          <p className={HINT}>
-            {islandDisplay === null
-              ? "刘海展开时显示的内容(仅 macOS)"
-              : ISLAND_OPTIONS.find((o) => o.value === islandDisplay)?.hint}
           </p>
         </div>
       </section>
@@ -1722,6 +1666,16 @@ function AppSidebar() {
   // 就是 useSyncExternalStore 上一个真的死循环）
   const mentionRows = useChat((s) => s.workspaceMentions);
   const unreadMentions = useMemo(() => unreadMentionCounts(mentionRows).total, [mentionRows]);
+  // 这两样推给主进程，灵动岛顶栏「团队」那一格要用（#1229）：未读点的数，
+  // 以及云会话 workspaceId → 团队名（没有它，岛上那一组的组头会是一串 UUID）。
+  // **为什么由渲染层推**：两样都住在这一层（`workspace_mentions` 是这里直连
+  // Supabase 拉的，#1064），主进程要自己拿就得把那条链路整个复制一遍。
+  // 已知代价：主窗没开时岛上那两样是陈旧的——失败形态只是角标少亮/多亮一会儿
+  useEffect(() => {
+    const teamNames = Object.fromEntries(workspaceGroups.map((g) => [g.id, g.name]));
+    void window.otter.islandContext({ unreadMentions, teamNames });
+  }, [unreadMentions, workspaceGroups]);
+
   // 详情页开着的那个此刻还在不在(被解散/退群后它会从快照里消失)——找不到就等于
   // 关掉,不用另写一条善后逻辑
   const openedWorkspace = workspaceGroups.find((g) => g.id === openWorkspaceId) ?? null;
@@ -2937,6 +2891,13 @@ function Welcome() {
   const launch = async () => {
     if (!effectiveWorkspace || busy) return;
     setBusy(true);
+    // 引用照样折进首条消息(issue #881)。正常路径上这里必然是空的——欢迎页画得
+    // 出来的时候引用早就跟着上一条会话作废了(store 的 newSession / 删/归档当前 /
+    // enterChat 四处)。读在 startSession **之前**是这行的全部意义:读在后面的话
+    // enterChat 已经清过一遍,那四处漏了哪一处都看不出来。留着是为了让漏清的那天
+    // 退化成「引用被多带了一次」而不是「引用被悄悄吞了」——后者在界面上什么都不说,
+    // 而 chip 明明还画着
+    const q = useChat.getState().quotes;
     try {
       // 显式传全部偏好：下拉框显示什么就落地什么（宁多一条 model_changed，不让 UI 说谎）
       await startSession({
@@ -2945,11 +2906,12 @@ function Welcome() {
         // 传一个口令过去只会在新会话的日志头上落一条什么都没改变的事件
         ...(imageModel !== null && !isImageAuto(imageModel) ? { imageModel } : {}),
       });
-      const t = text.trim();
+      const t = composeQuotedMessage(q, text.trim());
       // 建会话成功才发首条消息（失败时 phase 停在 welcome，草稿原样保留）。
       // 只贴了图不打字也算一条消息——附件本身就是内容(同会话中的 submit 口径)。
       // 这里不走 slash 分发：会话刚出生，/compact 之类没有意义
       if (useChat.getState().phase === "chat" && (t || useChat.getState().staged.length > 0)) {
+        if (q.length > 0) useChat.getState().clearQuotes();
         void send(t);
       }
     } finally {
@@ -3242,6 +3204,8 @@ function ComposerTextarea({
 function ChatComposer() {
   const status = useChat((s) => s.statusBySession[s.sessionId] ?? "idle");
   const staged = useChat((s) => s.staged);
+  const quotes = useChat((s) => s.quotes);
+  const clearQuotes = useChat((s) => s.clearQuotes);
   const send = useChat((s) => s.send);
   const enqueue = useChat((s) => s.enqueue);
   const stop = useChat((s) => s.stop);
@@ -3403,8 +3367,9 @@ function ChatComposer() {
   }, [composerInject, composer]);
 
 
-  // 「有东西可发」:只贴了图不打字也算(附件本身就是内容,同 submit 的判据)
-  const canSend = input.trim() !== "" || staged.length > 0;
+  // 「有东西可发」:只贴了图不打字也算(附件本身就是内容,同 submit 的判据);
+  // 只引用不打字同理 —— 引用是这条消息的正文的一部分(issue #881)
+  const canSend = input.trim() !== "" || staged.length > 0 || quotes.length > 0;
 
   /** 发出去，还是排进队里。turn 跑着时敲的回车一律是"排队"（#1048：
       取代了 #344 的插话——注入跑到一半的 turn 里的话既可能晚于它的
@@ -3413,24 +3378,36 @@ function ChatComposer() {
       = 提到队首 + 中止当前 turn，收口后由 drainQueue 发出）。
       分岔只在这一处 —— 上面那些解析($skill / 空正文校验)几条路共用 */
   const dispatch = (text: string, skill?: string, skillArgs?: string) => {
+    // 引用 chips 在这一层折回正文里的引用块,在正文**之前**(issue #881)。
+    // 折在 dispatch 里而不是各个调用点:这是「给模型的话」唯一的出口,漏一处
+    // 就是引用被悄悄吞掉(chip 清了、话没带上),而那种失败在界面上一个字都不说。
+    // 也不折在 store.send() 里:排队走的是 enqueue(只存文字),在 send 里折的话
+    // turn 跑着时排的那条会把引用留在暂存区、贴到**下一条**消息上。
+    const body = composeQuotedMessage(quotes, text);
+    if (quotes.length > 0) clearQuotes();
     if (status === "running") {
-      enqueue(text, skill, skillArgs);
+      enqueue(body, skill, skillArgs);
       return;
     }
-    void send(text, skill, skillArgs);
+    void send(body, skill, skillArgs);
   };
 
   const submit = () => {
     // trim() 会把首尾换行全剥掉——用户 Shift+回车 打的格式（开头空行、结尾空行）
     // 就丢了。只剥首尾的空行，保留中间的所有换行。
     const text = input.replace(/^\n+|\n+$/g, "");
-    // 只贴了图不打字也算一条消息:附件本身就是内容
-    if (!text && staged.length === 0) return;
+    // 引用在 dispatch 那一层折进正文(见上);这里只需要知道「有没有」。
+    // addQuote 拒收全空白,所以有一条 = 折出来的正文必然非空。
+    // $skill / @好友 / 斜杠指令的判定一律读原文 text —— 那三条认的是用户敲的
+    // 头一个 token,前面糊上一段引用块会让它们一个都认不出来
+    const hasQuote = quotes.length > 0;
+    // 只贴了图不打字也算一条消息:附件本身就是内容。只引用不打字同理
+    if (!text && !hasQuote && staged.length === 0) return;
     // 但**排队**只排文字:队列里存不下附件(它们是 staged 里的一份暂存,
     // 一条队列项挂不住)。turn 跑着时附件入口整个是关的(AttachDropZone
     // disabled),所以这一条正常撞不到;真撞到了就什么都不做,而不是
     // 把图悄悄丢掉发一条空消息
-    if (status === "running" && !text) return;
+    if (status === "running" && !text && !hasQuote) return;
     // "$skill名(参数)"：名字和参数给 harness（注入 skill），剩下的正文才是给模型的话。
     // 参数在括号里显式分隔（issue #214，ponytail 的 argument-hint 档位同款需求）。
     // 指令头**在句中也算**（issue #438）——判定和输入框高亮共用一份名单、同一套
@@ -3708,6 +3685,21 @@ export function App() {
   // 会话目录 = 事件投影，不是 UI 状态（同 TodoPanel 的路子）
   const sections = useMemo(() => deriveSections(events), [events]);
   const [activeSection, setActiveSection] = useState<number | null>(null);
+  // 分区跳转的慢路径请求与窗口变化计数(ADR-0285 决定 3,都喂给 OttoThread):
+  // revealRequest = 「目标锚点还在窗口外,先把窗口抬上去再滚」;
+  // windowNonce = 窗口上沿动过的次数,scrollspy effect 靠它重新收集锚点
+  const [revealRequest, setRevealRequest] = useState<RevealRequest | null>(null);
+  const [windowNonce, setWindowNonce] = useState(0);
+  // 两个回调都要稳定引用:进了 OttoThread 的 effect 依赖,每次都新建会让
+  // 那边的 effect 跟着 App 的重渲染空转(reveal 桥甚至会重复滚)
+  const settleReveal = useCallback(() => setRevealRequest(null), []);
+  const bumpWindowNonce = useCallback(() => setWindowNonce((n) => n + 1), []);
+  // 切会话清掉挂起的 revealRequest —— 这只是卫生:frame 级的正确性不靠它
+  // (passive effect 子先于父,这道清理赶不上 OttoThread 先跑的那一帧),
+  // 正确性在请求自带的 sessionId 上(messageWindow.ts 的 RevealRequest 注释)
+  useEffect(() => {
+    setRevealRequest(null);
+  }, [sessionId]);
   // 「发布到工作区…」弹窗开关（头部「更多」菜单，ADR-0198 切片 3，issue #811）
   const [publishOpen, setPublishOpen] = useState(false);
   // HTMLDivElement 而不是 HTMLElement:滚动元素现在是 ThreadPrimitive.Viewport
@@ -3716,7 +3708,10 @@ export function App() {
 
   // 当前分区：IntersectionObserver 只当"位置变了"的廉价触发器，
   // 真判定靠回调里一次性读那几个锚点的 rect（锚点数就是分区数，个位数，读得起）。
-  // 不挂 scroll 事件逐帧读 rect —— 那是每帧一次强制重排
+  // 不挂 scroll 事件逐帧读 rect —— 那是每帧一次强制重排。
+  // 依赖里的 windowNonce:时间线窗口(ADR-0285)补挂会把新锚点挂进 DOM,
+  // 不重跑这个 effect 的话,新锚点不在 IO 的观察名单里、recompute 读的
+  // 也是旧名单 —— 补挂出来的那段分区永远不会高亮
   useEffect(() => {
     const root = scrollRef.current;
     if (!root || sections.length === 0) return;
@@ -3732,6 +3727,14 @@ export function App() {
           active = Number(a.dataset["section"]);
         }
       }
+      // 时间线窗口(ADR-0285)的兜底:窗口上方的锚点没挂载。一个都没过线时,
+      // 视口停在第一个**已挂载**锚点之前 —— 分区是连续划分的,锚点之前那段
+      // 内容属于它前一个分区。first === 0 说明锚点全挂着,维持 null(与窗口化
+      // 之前的"还没进任何分区"同义)
+      if (active === null && anchors.length > 0) {
+        const first = Number(anchors[0]!.dataset["section"]);
+        if (first > 0) active = first - 1;
+      }
       setActiveSection(active);
     };
 
@@ -3739,15 +3742,28 @@ export function App() {
     anchors.forEach((a) => io.observe(a));
     recompute();
     return () => io.disconnect();
-  }, [sections]);
+  }, [sections, windowNonce]);
 
   const jumpToSection = useCallback((index: number) => {
     const root = scrollRef.current;
     const anchor = root?.querySelector<HTMLElement>(`[data-section="${index}"]`);
-    anchor?.scrollIntoView({
-      block: "start",
-      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
-    });
+    // 快路径:锚点已挂载,与窗口化之前逐字相同
+    if (anchor) {
+      anchor.scrollIntoView({
+        block: "start",
+        behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+      });
+      return;
+    }
+    // 慢路径:锚点在时间线窗口外,还没挂载 —— 让 OttoThread 先把窗口抬到
+    // 包含它(reveal 桥,ADR-0285 决定 3),挂载完成由它接手滚动并收口。
+    // 请求盖上此刻的 sessionId:passive effect 子先于父,OttoThread 可能在
+    // App 清理之前先看到这条请求 —— 它消费前会核对这个戳(见 planReveal)
+    setRevealRequest((r) => ({
+      section: index,
+      nonce: (r?.nonce ?? 0) + 1,
+      sessionId: useChat.getState().sessionId,
+    }));
   }, []);
 
   // 划词引用(SelectionQuote)的宿主:选区两端都要落在这个容器里才算「选中了消息」。
@@ -4021,7 +4037,13 @@ export function App() {
                   sections:锚点(哪条消息前面插第几个分区的起点)算在 OttoThread 内部——
                   它需要 toThreadMessages 产出的消息 id 顺序才能对齐,这份顺序只有
                   OttoThread 自己手上有,不值得为了传出来再破坏封装(见 aui/OttoThread.tsx) */}
-            <OttoThread viewportRef={scrollRef} sections={sections} />
+            <OttoThread
+              viewportRef={scrollRef}
+              sections={sections}
+              revealRequest={revealRequest}
+              onRevealSettled={settleReveal}
+              onWindowChange={bumpWindowNonce}
+            />
             <SelectionQuote hostRef={threadHostRef} />
             {/* 只有一个分区时目录没有意义(一条目录 = 噪音),不渲染。轨是绝对定位的浮层,
                 挂在 threadHostRef 这层(SelectionQuote 的宿主)的兄弟位置——出现和消失

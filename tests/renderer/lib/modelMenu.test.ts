@@ -11,11 +11,11 @@ import { AUTO_MODEL } from "../../../src/shared/autoModel.js";
 
 /** 网关真供的那六款（`model_route` 表，从便宜到贵） */
 const HOSTED = [
-  "deepseek-v4-flash",
   "glm-5.3-flash",
   "qwen3.8-flash",
-  "deepseek-v4-pro",
+  "deepseek-flash",
   "glm-5.3",
+  "deepseek-v4-pro",
   "qwen3.8-max",
 ];
 
@@ -25,7 +25,7 @@ const base = {
   subscribed: false,
   keyStatus: {} as Record<string, string>,
   ollamaModels: [],
-  currentModel: "deepseek-v4-flash",
+  currentModel: "deepseek-flash",
   filter: undefined,
 };
 
@@ -144,7 +144,7 @@ describe("modelMenuGroups：厂商那几组（改动前的行为要一字不变�
       currentModel: "deepseek-v4-pro",
       filter: (m) => m.supportsVision === true,
     });
-    expect(ids(gs, "deepseek")).toEqual(["deepseek-v4-flash-vision-exp"]);
+    expect(ids(gs, "deepseek")).toEqual(["deepseek-flash"]);
   });
 
   it("Ollama：只列会调工具的那几款；一款都没有就整组不出现", () => {

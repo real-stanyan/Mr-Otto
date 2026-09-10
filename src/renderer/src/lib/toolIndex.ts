@@ -26,25 +26,38 @@ export interface ToolIndex {
   revised: ReadonlyMap<string, unknown>;
 }
 
-/** 全量扫一遍事件,建两张按 toolCallId 的表。
+/** 三张表的可变形态:buildToolIndex 一次建全量,extendToolIndex 供增量投影
+    (toThreadMessages 的身份保持缓存)只扫追加段接着填 —— 建表规则只能有这一份,
+    两处各写一遍,全量与增量迟早给出两个答案 */
+export interface ToolIndexMaps {
+  results: Map<string, ToolResultEvent>;
+  starts: Map<string, ToolExecutionStartedEvent>;
+  revised: Map<string, unknown>;
+}
+
+/** 把 events[fromIdx..] 扫进三张表。全量扫描 = extendToolIndex(空表, events, 0)。
     id 本来就唯一,重复只可能出在坏日志上——那时先落盘的胜出,
     与旧 ToolRow 的 all.find() 同口径(先到者赢),别让后来的覆盖既成事实 */
-export function buildToolIndex(events: SessionEvent[]): ToolIndex {
-  const results = new Map<string, ToolResultEvent>();
-  const starts = new Map<string, ToolExecutionStartedEvent>();
-  const revised = new Map<string, unknown>();
-  for (const e of events) {
+export function extendToolIndex(maps: ToolIndexMaps, events: readonly SessionEvent[], fromIdx: number): void {
+  for (let i = fromIdx; i < events.length; i++) {
+    const e = events[i]!;
     if (e.type === "tool_result") {
-      if (!results.has(e.toolCallId)) results.set(e.toolCallId, e);
+      if (!maps.results.has(e.toolCallId)) maps.results.set(e.toolCallId, e);
     } else if (e.type === "tool_execution_started") {
-      if (!starts.has(e.toolCallId)) starts.set(e.toolCallId, e);
+      if (!maps.starts.has(e.toolCallId)) maps.starts.set(e.toolCallId, e);
     } else if (e.type === "approval_decision" && e.revisedArgs !== undefined) {
       // 人在审批时改过的参数(ADR-0041 的分块取舍)。凡是要回答"到底发生了什么"的
       // 投影,都得用这一份而不是模型请求的那一份 —— 否则界面在替模型说话
-      if (!revised.has(e.toolCallId)) revised.set(e.toolCallId, e.revisedArgs);
+      if (!maps.revised.has(e.toolCallId)) maps.revised.set(e.toolCallId, e.revisedArgs);
     }
   }
-  return { results, starts, revised };
+}
+
+/** 全量扫一遍事件,建三张按 toolCallId 的表 */
+export function buildToolIndex(events: SessionEvent[]): ToolIndex {
+  const maps: ToolIndexMaps = { results: new Map(), starts: new Map(), revised: new Map() };
+  extendToolIndex(maps, events, 0);
+  return maps;
 }
 
 /** 这次调用**实际执行**用的参数。没被改过就是模型请求的那份 */

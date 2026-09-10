@@ -37,7 +37,7 @@ describe("cs 帧协议", () => {
     // 之后静默少一格状态。**加一个枚举值同理**：老客户端的
     // isValidCsDeniedCode 认不出 rate_limited，整帧被 decodeCsDown 判成
     // null 静默丢掉，create() 于是白等满超时才回一句"云端无响应"
-    expect(CS_PROTOCOL_VERSION).toBe(18);
+    expect(CS_PROTOCOL_VERSION).toBe(19);
   });
   it("房名生成", () => {
     expect(csCtlChannel()).toBe("cs-ctl");
@@ -181,8 +181,8 @@ describe("rate_limited 码（issue #819）", () => {
 // 协议 14（#1102）：repo 那一组整个走了——config / config_result 两条帧删除。
 // 留下的是 modelRoute 那一格，它换了唯一的载体（welcome + workspace_state）
 describe("协议 14：config 帧没了，modelRoute 还在（#1102）", () => {
-  it("协议号跟着最新一条变更走（此刻 = 18，#1140 的 wiki_write 帧是最近进位者；#1163 的 call 帧是 17）", () => {
-    expect(CS_PROTOCOL_VERSION).toBe(18);
+  it("协议号跟着最新一条变更走（此刻 = 19，#1233 的 say.voice 是最近进位者；#1140 的 wiki_write 帧是 18）", () => {
+    expect(CS_PROTOCOL_VERSION).toBe(19);
   });
 
   it("config 帧解不出来了 —— 老客户端发过来一律 null", () => {
@@ -200,8 +200,8 @@ describe("协议 14：config 帧没了，modelRoute 还在（#1102）", () => {
       t: "welcome" as const, v: CS_PROTOCOL_VERSION, sessionId: "s", lastSeq: 0,
       initiatorUid: null, ownerUid: "o",
     };
-    const hosted = decodeCsDown(encodeCs({ ...base, modelRoute: { kind: "hosted", model: "deepseek-v4-flash" } }));
-    expect(hosted && hosted.t === "welcome" && hosted.modelRoute).toEqual({ kind: "hosted", model: "deepseek-v4-flash" });
+    const hosted = decodeCsDown(encodeCs({ ...base, modelRoute: { kind: "hosted", model: "deepseek-flash" } }));
+    expect(hosted && hosted.t === "welcome" && hosted.modelRoute).toEqual({ kind: "hosted", model: "deepseek-flash" });
     const blocked = decodeCsDown(encodeCs({ ...base, modelRoute: { kind: "blocked" } }));
     expect(blocked && blocked.t === "welcome" && blocked.modelRoute).toEqual({ kind: "blocked" });
 
@@ -325,7 +325,7 @@ describe("wiki_write / wiki_write_result（协议 18，#1140）", () => {
     const bad = { ...ok, ok: false, message: "常驻超预算" };
     expect(decodeCsDown(encodeCs(bad))).toEqual(bad);
   });
-  it("CS_PROTOCOL_VERSION 是 18", () => { expect(CS_PROTOCOL_VERSION).toBe(18); });
+  it("CS_PROTOCOL_VERSION 是 19（#1233 的 say.voice 之后）", () => { expect(CS_PROTOCOL_VERSION).toBe(19); });
 });
 
 // 协议 17（#1163）：语音通话名单。会话房帧——任何在籍成员都能发，服务端复核名单里的 id
@@ -346,5 +346,29 @@ describe("协议 17：call / call_result（#1163）", () => {
     const bad = (obj: unknown) => decodeCsDown(b64encode(new TextEncoder().encode(JSON.stringify(obj))));
     expect(bad({ t: "call_result" })).toBeNull();
     expect(bad({ t: "call_result", ok: true, message: 5 })).toBeNull();
+  });
+});
+
+describe("say.voice（协议 19，#1233）", () => {
+  it("带 voice:true 时原样过一趟编解码", () => {
+    const up: CsUp = { t: "say", text: "能听到吗", mention: false, mentions: [], voice: true };
+    expect(decodeCsUp(encodeCs(up))).toEqual(up);
+  });
+
+  it("缺席 = 打字打的：解出来那一格不在（旧客户端、手机端、开局卡走的都是这条）", () => {
+    const decoded = decodeCsUp(encodeCs({ t: "say", text: "手打的", mention: false }));
+    expect(decoded).toEqual({ t: "say", text: "手打的", mention: false });
+    expect(decoded && "voice" in decoded).toBe(false);
+  });
+
+  it("只认 true：别的值当缺席**不拒帧**", () => {
+    // 与 mentions / memberMentions 那两格的「形状不对整帧拒掉」故意不同：
+    // 那两格丢掉会静默改变「这句话点了谁」，而这一格只影响时间线上折不折卡，
+    // 脏值退化成「不折」= 改动前的行为。为它拒掉一句真话更糟
+    for (const dirty of [false, "true", 1, null]) {
+      const frame = JSON.stringify({ t: "say", text: "x", mention: false, voice: dirty });
+      const decoded = decodeCsUp(b64encode(new TextEncoder().encode(frame)));
+      expect(decoded).toEqual({ t: "say", text: "x", mention: false });
+    }
   });
 });

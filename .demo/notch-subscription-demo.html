@@ -1,0 +1,509 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>订阅用户的灵动岛 · 三个方向</title>
+<style>
+:root{
+  /* 仓库深色 token（app.css 的 .dark 那一段），逐字抄 */
+  --brand:#0a84ff; --ok:#30d158; --warn:#ff9f0a; --deny:#ff453a;
+  --neutral:rgba(255,255,255,.40);          /* 充足时的中性灰（ADR-0239：充足不上品牌蓝） */
+  --panel:#000;                              /* DynamicNotch 面板是纯黑 */
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{
+  background:
+    radial-gradient(1200px 700px at 22% -10%, #2c3a52 0%, transparent 60%),
+    radial-gradient(900px 600px at 88% 8%, #3a2b3f 0%, transparent 55%),
+    linear-gradient(180deg,#14161a 0%, #0d0e11 100%);
+  color:#fff;
+  font:13px/1.5 -apple-system,BlinkMacSystemFont,"SF Pro Text","PingFang SC","Helvetica Neue",sans-serif;
+  min-height:100%; -webkit-font-smoothing:antialiased;
+}
+
+/* ───────── 舞台：假菜单栏 + 刘海 ───────── */
+.stage{position:relative;min-height:620px}
+.menubar{
+  height:24px;background:rgba(0,0,0,.55);backdrop-filter:blur(20px);
+  display:flex;align-items:center;justify-content:space-between;
+  padding:0 14px;font-size:11.5px;color:rgba(255,255,255,.82);position:relative;z-index:1;
+}
+.menubar .left{display:flex;gap:14px;align-items:center}
+.menubar .left b{font-weight:600}
+.menubar .right{display:flex;gap:12px;align-items:center;color:rgba(255,255,255,.7)}
+
+.notch-wrap{position:absolute;top:0;left:50%;transform:translateX(-50%);z-index:5;display:flex;justify-content:center}
+.notch{
+  background:var(--panel); border-radius:0 0 14px 14px;
+  box-shadow:0 12px 40px rgba(0,0,0,.6), 0 0 0 .5px rgba(255,255,255,.06);
+  overflow:hidden; cursor:pointer;
+  transition:width .34s cubic-bezier(.22,1,.36,1), border-radius .34s;
+}
+.notch.compact{width:212px;height:32px;border-radius:0 0 12px 12px}
+.notch.expanded{width:420px;height:auto;min-height:230px;border-radius:0 0 22px 22px;cursor:default}
+
+/* ── compact 态 ── */
+.compact-in{height:32px;display:flex;align-items:center;justify-content:space-between;padding:0 11px}
+.otter{width:19px;height:19px;border-radius:5px;background:linear-gradient(145deg,#8a6a4e,#5c4433);
+  display:flex;align-items:center;justify-content:center;font-size:11px;flex:none}
+.orb-slot{position:relative;width:20px;height:20px;display:flex;align-items:center;justify-content:center}
+.orb{width:9px;height:9px;border-radius:50%;background:var(--brand);box-shadow:0 0 9px rgba(10,132,255,.75)}
+.orb.idle{background:rgba(255,255,255,.26);box-shadow:none}
+.orb.approval{background:var(--warn);box-shadow:0 0 9px rgba(255,159,10,.8)}
+.orb.active{animation:pulse 1.7s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.42}}
+.qdot{position:absolute;top:-1px;right:-1px;width:7px;height:7px;border-radius:50%;box-shadow:0 0 0 2px var(--panel)}
+.qdot.warn{background:var(--warn)} .qdot.deny{background:var(--deny)}
+
+/* ── expanded 通用 ── */
+.pane{padding-bottom:9px;color:rgba(255,255,255,.92)}
+
+/* 顶栏：logo + 三档切换器（任务 / 项目 / 团队）+ 方向 C 的档位徽章 */
+.topbar{display:flex;align-items:center;gap:9px;padding:8px 14px 6px}
+.switch{display:flex;gap:2px;background:rgba(255,255,255,.07);padding:2px;border-radius:8px;flex:none}
+.switch button{
+  position:relative;font:inherit;font-size:11px;font-weight:500;line-height:16px;
+  padding:2.5px 9px;border:0;border-radius:6px;background:transparent;
+  color:rgba(255,255,255,.46);cursor:pointer;transition:.16s;white-space:nowrap;
+}
+.switch button.on{background:rgba(255,255,255,.15);color:rgba(255,255,255,.95);font-weight:600}
+/* 被 @ 的未读：画点不画数（ADR-0256 / 0259 的取舍），色取 --brand 不取 --warn */
+.switch .mention{position:absolute;top:1px;right:2px;width:5px;height:5px;border-radius:50%;background:var(--brand)}
+.topbar .spacer{flex:1}
+
+.grp{display:flex;align-items:center;gap:6px;padding:8px 14px 3px;user-select:none;cursor:pointer}
+.grp .chev{font-size:8px;color:rgba(255,255,255,.38);width:8px}
+.grp .gname{font-size:11px;font-weight:600;letter-spacing:.04em;color:rgba(255,255,255,.46);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.grp .gbadge{width:5px;height:5px;border-radius:50%;background:var(--brand);flex:none}
+.grp .gcount{font-size:10px;font-weight:500;color:rgba(255,255,255,.30);margin-left:auto}
+
+.row{display:flex;align-items:center;gap:8px;padding:5px 8px;position:relative;cursor:pointer;border-radius:6px;margin:0 6px}
+.row:hover{background:rgba(255,255,255,.05)}
+.row.sel{background:rgba(255,255,255,.08)}
+.row .dot{width:6px;height:6px;border-radius:50%;flex:none}
+.row .dot.active{background:var(--brand)} .row .dot.idle{background:rgba(255,255,255,.20)}
+.row .dot.approval{background:var(--warn)}
+.row .t{font-size:12.5px;font-weight:500;color:rgba(255,255,255,.92);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row .sub{font-size:11.5px;color:rgba(255,255,255,.42);margin-left:auto;white-space:nowrap;flex:none}
+.row .branch{font-size:10px;color:rgba(255,255,255,.34);border:1px solid rgba(255,255,255,.14);
+  border-radius:4px;padding:0 4px;line-height:14px;flex:none}
+.row .mdot{width:5px;height:5px;border-radius:50%;background:var(--brand);flex:none;margin-left:2px}
+/* 方向 C：行底那根「这只水獭本轮吃掉的额度」细柱 */
+.row .burn{position:absolute;left:8px;bottom:0;height:2px;border-radius:1px;background:rgba(255,255,255,.30)}
+
+.fade{height:1px;background:rgba(255,255,255,.09);margin:6px 14px 0}
+.empty{padding:14px;text-align:center;font-size:12px;color:rgba(255,255,255,.42)}
+.detail{padding:8px 14px 2px;font-size:12.5px;color:rgba(255,255,255,.92);display:flex;align-items:center;gap:8px;min-height:34px}
+.detail .verb{color:rgba(255,255,255,.55);font-size:11px}
+.detail .mono{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:11.5px;color:rgba(255,255,255,.72)}
+.btns{display:flex;gap:6px;margin-left:auto}
+.btn{font-size:11px;padding:3px 9px;border-radius:6px;border:1px solid rgba(255,255,255,.16);
+  background:rgba(255,255,255,.06);color:rgba(255,255,255,.85);cursor:pointer}
+.btn.ok{background:rgba(48,209,88,.16);border-color:rgba(48,209,88,.4)}
+.btn.no{background:rgba(255,69,58,.14);border-color:rgba(255,69,58,.38)}
+
+/* ── 档位徽章（ADR-0240 四色） ── */
+.badge{font-size:9.5px;font-weight:700;letter-spacing:.06em;padding:1.5px 6px;border-radius:5px;line-height:13px;flex:none}
+.badge.free{background:rgba(255,255,255,.10);color:rgba(255,255,255,.55)}
+.badge.lite{background:rgba(48,209,88,.16);color:var(--ok)}
+.badge.pro {background:rgba(10,132,255,.18);color:var(--brand)}
+.badge.max {background:rgba(255,159,10,.18);color:var(--warn)}
+.badge.dueflag{background:rgba(255,69,58,.18);color:var(--deny)}
+
+/* ── 额度条：条按剩余填，色档按已用判 ── */
+.bar{height:3px;border-radius:2px;background:rgba(255,255,255,.10);overflow:hidden}
+.bar > i{display:block;height:100%;border-radius:2px;transition:width .4s cubic-bezier(.22,1,.36,1)}
+.tone-neutral{background:var(--neutral)} .tone-warn{background:var(--warn)} .tone-deny{background:var(--deny)}
+.tone-neutral-fg{color:rgba(255,255,255,.78)} .tone-warn-fg{color:var(--warn)} .tone-deny-fg{color:var(--deny)}
+
+/* 方向 A：页脚条 */
+.rail{display:flex;align-items:center;gap:9px;padding:7px 14px 2px;margin-top:2px}
+.rail .pct{font-size:12.5px;font-weight:600;font-variant-numeric:tabular-nums}
+.rail .lbl{font-size:10.5px;color:rgba(255,255,255,.38)}
+.rail .bar{flex:1;min-width:40px}
+.rail .cd{font-size:10.5px;color:rgba(255,255,255,.38);white-space:nowrap;font-variant-numeric:tabular-nums}
+
+/* 方向 B：页眉双表 */
+.hero{padding:2px 14px 8px}
+.hero .top{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.meters{display:flex;gap:14px}
+.meter{flex:1;min-width:0}
+.meter .mlbl{font-size:10px;font-weight:600;letter-spacing:.05em;color:rgba(255,255,255,.38);margin-bottom:2px}
+.meter .mnum{font-size:19px;font-weight:600;font-variant-numeric:tabular-nums;line-height:1.15;letter-spacing:-.01em}
+.meter .munit{font-size:10.5px;font-weight:500;color:rgba(255,255,255,.34);margin-left:3px}
+.meter .bar{margin-top:5px}
+.hero .cd{font-size:10.5px;color:rgba(255,255,255,.38);margin-top:6px;font-variant-numeric:tabular-nums}
+
+/* 方向 C：环境 —— 顶上一根细的剩余线 */
+.hairline{height:3px;margin:2px 14px 3px;border-radius:2px;background:rgba(255,255,255,.13);overflow:hidden}
+.hairline > i{display:block;height:100%;border-radius:2px}
+
+.saystate{padding:7px 14px 3px;font-size:11.5px;display:flex;align-items:center;gap:7px}
+.saystate .txt{color:rgba(255,255,255,.55)}
+.saystate .strong{font-weight:600}
+
+/* ───────── 控制台 ───────── */
+.console{
+  position:fixed;left:18px;bottom:18px;z-index:20;width:296px;
+  background:rgba(28,28,30,.86);backdrop-filter:blur(30px) saturate(160%);
+  border:.5px solid rgba(255,255,255,.14);border-radius:14px;padding:12px 13px 13px;
+  box-shadow:0 20px 50px rgba(0,0,0,.55);
+}
+.console h4{margin:0 0 9px;font-size:11px;font-weight:600;letter-spacing:.08em;text-transform:uppercase;color:rgba(255,255,255,.42)}
+.fieldset{margin-bottom:10px}
+.fieldset > label{display:block;font-size:10.5px;color:rgba(255,255,255,.42);margin-bottom:5px;letter-spacing:.03em}
+.seg{display:flex;gap:4px;background:rgba(255,255,255,.06);padding:3px;border-radius:9px}
+.seg button{flex:1;font:inherit;font-size:11.5px;padding:5px 4px;border:0;border-radius:6px;background:transparent;
+  color:rgba(255,255,255,.6);cursor:pointer;transition:.15s;white-space:nowrap}
+.seg button.on{background:rgba(255,255,255,.16);color:#fff;font-weight:600}
+.seg.wrap{flex-wrap:wrap}
+.seg.wrap button{flex:0 0 calc(33.33% - 3px)}
+.console .hint{font-size:10.5px;line-height:1.55;color:rgba(255,255,255,.4);margin:2px 0 0}
+.toggle{display:flex;align-items:center;gap:7px;font-size:11.5px;color:rgba(255,255,255,.7);cursor:pointer;margin-top:3px}
+.toggle input{accent-color:var(--brand)}
+
+.notes{position:fixed;right:18px;top:44px;width:336px;max-height:calc(100vh - 70px);overflow:auto;z-index:20;
+  background:rgba(28,28,30,.86);backdrop-filter:blur(30px);border:.5px solid rgba(255,255,255,.14);
+  border-radius:14px;padding:14px 15px;box-shadow:0 20px 50px rgba(0,0,0,.5);font-size:11.5px;line-height:1.65}
+.notes h5{margin:0 0 8px;font-size:12.5px;font-weight:600}
+.notes p{margin:0 0 9px;color:rgba(255,255,255,.62)}
+.notes code{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:10.5px;
+  background:rgba(255,255,255,.09);padding:1px 4px;border-radius:4px;color:rgba(255,255,255,.85)}
+.notes .k{color:#fff;font-weight:600}
+.notes hr{border:0;border-top:1px solid rgba(255,255,255,.1);margin:11px 0}
+.notes[hidden]{display:none}
+
+.zoomwrap{transform-origin:top center;transition:transform .2s}
+.caption{position:fixed;left:50%;transform:translateX(-50%);bottom:20px;z-index:10;
+  font-size:11.5px;color:rgba(255,255,255,.34);text-align:center;letter-spacing:.02em}
+</style>
+</head>
+<body>
+
+<div class="stage">
+  <div class="menubar">
+    <div class="left"><b>Mr Otto</b><span>文件</span><span>编辑</span><span>会话</span><span>窗口</span></div>
+    <div class="right"><span>􀙇</span><span>􀊫</span><span>14:22</span></div>
+  </div>
+  <div class="zoomwrap" id="zoomwrap">
+    <div class="notch-wrap"><div class="notch compact" id="notch"></div></div>
+  </div>
+</div>
+
+<div class="caption" id="caption"></div>
+
+<div class="console">
+  <h4>Demo 控制台</h4>
+  <div class="fieldset"><label>方向</label>
+    <div class="seg" id="seg-dir">
+      <button data-v="A">A 页脚条</button><button data-v="B">B 页眉双表</button><button data-v="C">C 环境</button>
+    </div></div>
+  <div class="fieldset"><label>额度状态</label>
+    <div class="seg wrap" id="seg-state">
+      <button data-v="ample">充足</button><button data-v="warn">告警</button><button data-v="deny">危</button>
+      <button data-v="exhausted">耗尽</button><button data-v="past_due">扣款失败</button><button data-v="none">未订阅</button>
+    </div></div>
+  <div class="fieldset"><label>档位</label>
+    <div class="seg" id="seg-plan"><button data-v="lite">Lite</button><button data-v="pro">Pro</button><button data-v="max">Max</button></div></div>
+  <div class="fieldset"><label>岛的形态</label>
+    <div class="seg" id="seg-form"><button data-v="compact">compact</button><button data-v="expanded">展开</button></div></div>
+  <label class="toggle"><input type="checkbox" id="chk-zoom"> 放大 1.6×（判字号）</label>
+  <label class="toggle"><input type="checkbox" id="chk-notes" checked> 显示判据注释</label>
+  <p class="hint">刘海本身可点开／收起，岛内「任务 / 项目 / 团队」也真能切。百分比、色档、倒计时按 <code>billingView.ts</code> 现算。</p>
+</div>
+
+<div class="notes" id="notes"></div>
+
+<script>
+/* ═════════ 与仓库逐字对齐的纯逻辑（billingView.ts / billing.ts） ═════════ */
+const MICRO_PER_CREDIT = 10_000;
+/* ★ 改名 1：「5 小时窗」→「5h」。WINDOW_LABELS 是三处共用的（岛 / 账号页 / 上下文浮层），
+   改这里就是三处一起改 —— 同一扇窗两个界面不能给出两种叫法。 */
+const WINDOW_LABELS = { h5: "5h", week: "本周" };
+
+const deFloat = (n) => Math.round(n * 1e6) / 1e6;
+function windowPercent(w){ if(w.limitMicro<=0) return 0; return Math.floor(Math.min(100,Math.max(0,deFloat(w.usedMicro/w.limitMicro*100)))*10)/10; }
+function remainingPercent(w){ if(w.limitMicro<=0) return 100; return Math.floor(Math.min(100,Math.max(0,deFloat((1-w.usedMicro/w.limitMicro)*100)))*10)/10; }
+const fmtRemainingPercent = (w) => remainingPercent(w).toFixed(1) + "%";
+function quotaTone(p){ if(p>90) return "deny"; if(p>75) return "warn"; return "brand"; }
+function liveWindow(w, now){ const rolled = now>=w.resetAt; return {usedMicro: rolled?0:w.usedMicro, limitMicro:w.limitMicro, resetAt:w.resetAt, rolled}; }
+function bindingWindow(ws, now){
+  const h5 = liveWindow(ws.h5, now), week = liveWindow(ws.week, now);
+  const p5 = windowPercent(h5), pw = windowPercent(week);
+  return pw > p5
+    ? {key:"week", label:WINDOW_LABELS.week, w:week, percent:pw, other:{key:"h5",label:WINDOW_LABELS.h5,w:h5,percent:p5}}
+    : {key:"h5",   label:WINDOW_LABELS.h5,   w:h5,   percent:p5, other:{key:"week",label:WINDOW_LABELS.week,w:week,percent:pw}};
+}
+/* ★ 改名 2：「…后恢复」→「…后刷新」，且时长写成 `1h 38m`（countdown 同样是共用函数）。
+   天那一档跟着写成 `4d` —— 不跟的话同一行会出现「4 天」与「1h 38m」两把尺子。 */
+function countdown(resetAt, now){
+  const ms = resetAt - now;
+  if (ms <= 0) return "已刷新";
+  const mins = Math.floor(ms/60000);
+  if (mins < 1) return "<1m 后刷新";
+  if (ms >= 86400000) return Math.ceil(ms/86400000) + "d 后刷新";
+  const h = Math.floor(mins/60), m = mins%60;
+  return h>0 ? `${h}h ${m}m 后刷新` : `${m}m 后刷新`;
+}
+const fmtCredit = (m) => (m/MICRO_PER_CREDIT).toFixed(1).replace(/\.0$/,"") + " credit";
+const usageTitle = (w) => `已用 ${(w.usedMicro/MICRO_PER_CREDIT).toFixed(1).replace(/\.0$/,"")} / ${fmtCredit(w.limitMicro)}`;
+/* 「充足时中性灰不上品牌蓝」——ADR-0239 决定 1 */
+const toneClass = (t) => t === "deny" ? "deny" : t === "warn" ? "warn" : "neutral";
+
+/* ═════════ 假数据 ═════════ */
+const NOW = Date.now();
+const PLAN_LIMITS = { lite:{h5:100,week:1500}, pro:{h5:311.5,week:6200}, max:{h5:900,week:20000} };
+const STATE_USED = {
+  ample:    { h5:0.12, week:0.08,  h5In:2*3600e3+14*60e3, weekIn:4.2*86400e3 },
+  warn:     { h5:0.78, week:0.41,  h5In:1*3600e3+38*60e3, weekIn:3.1*86400e3 },
+  deny:     { h5:0.94, week:0.62,  h5In:0*3600e3+26*60e3, weekIn:2.4*86400e3 },
+  exhausted:{ h5:1.00, week:0.71,  h5In:0*3600e3+47*60e3, weekIn:2.0*86400e3 },
+  past_due: { h5:0.31, week:0.19,  h5In:3*3600e3+ 5*60e3, weekIn:5.5*86400e3 },
+};
+function billingOf(state, plan){
+  if (state === "none") return { plan:null, status:"none", windows:null };
+  const u = STATE_USED[state], L = PLAN_LIMITS[plan];
+  return { plan, status: state === "past_due" ? "past_due" : "active",
+    windows: {
+      h5:   { usedMicro: Math.round(L.h5   * u.h5   * MICRO_PER_CREDIT), limitMicro: L.h5   * MICRO_PER_CREDIT, resetAt: NOW + u.h5In },
+      week: { usedMicro: Math.round(L.week * u.week * MICRO_PER_CREDIT), limitMicro: L.week * MICRO_PER_CREDIT, resetAt: NOW + u.weekIn },
+    }};
+}
+
+/* 三档各自的清单。任务 = 内置 Default 下的一次性活；项目 = 按项目根分组的本机会话；
+   团队 = 云会话按团队分组（ADR-0259 的第三档，改名后叫「团队」ADR-0265）。 */
+const LISTS = {
+  tasks: { groups: [ { name:null, rows:[
+      { id:"t1", title:"整理下载文件夹", phase:"active", tool:{verb:"运行",target:"mv *.dmg ~/Archive"}, elapsed:"0:11", burn:.18 },
+      { id:"t2", title:"周报草稿", phase:"idle", burn:.06 },
+  ]}]},
+  projects: { groups: [
+    { name:"Mr_Otto", rows:[
+      { id:"s1", title:"订阅灵动岛 demo", phase:"active", tool:{verb:"运行",target:"npm test"}, elapsed:"0:42",
+        diff:{files:3,add:120,del:45}, branch:"macos-notch…", burn:.62 },
+      { id:"s2", title:"时间线窗口化", phase:"idle", burn:.14 },
+    ]},
+    { name:"gearbox", rows:[
+      { id:"s3", title:"协议 0286 起草", phase:"approval",
+        approval:{verb:"写入",target:"AGENTS.md"}, burn:.24 },
+    ]},
+  ]},
+  teams: { groups: [
+    { name:"Otto 核心组", unread:2, rows:[
+      { id:"c1", title:"网关限流复盘", phase:"active", tool:{verb:"开发 正在回复",target:""}, elapsed:"1:08", mention:true, burn:.44 },
+      { id:"c2", title:"0286 协议评审", phase:"idle", mention:true, burn:.09 },
+    ]},
+    { name:"奶茶店", unread:0, rows:[
+      { id:"c3", title:"周一备货单", phase:"idle", burn:.03 },
+    ]},
+  ]},
+};
+const TAB_LABEL = { tasks:"任务", projects:"项目", teams:"团队" };
+
+/* ═════════ 状态 ═════════ */
+const S = { dir:"A", state:"warn", plan:"pro", form:"expanded", tab:"projects", sel:"s1" };
+const allRows = (tab) => LISTS[tab].groups.flatMap(g=>g.rows);
+const unreadTotal = () => LISTS.teams.groups.reduce((n,g)=>n+(g.unread||0),0);
+
+/* ═════════ 片段 ═════════ */
+function badgeHTML(b){
+  if (!b.plan) return `<span class="badge free">Free</span>`;
+  const label = b.plan.charAt(0).toUpperCase() + b.plan.slice(1);
+  const due = b.status === "past_due"
+    ? `<span class="badge dueflag" title="扣款失败——档位不变，出路在账号页">扣款失败</span>` : "";
+  return `<span class="badge ${b.plan}">${label}</span>${due}`;
+}
+function quotaFacts(b){
+  if (!b.windows) return null;
+  const bind = bindingWindow(b.windows, NOW);
+  return { bind, exhausted: bind.percent >= 100, tone: quotaTone(bind.percent),
+    cls: toneClass(quotaTone(bind.percent)), remainPct: remainingPercent(bind.w),
+    remain: fmtRemainingPercent(bind.w), cd: bind.w.rolled ? null : countdown(bind.w.resetAt, NOW) };
+}
+
+/* 三档切换器：与侧栏那枚同一套（ADR-0259）。团队那格右上角亮未读点 */
+function switcherHTML(){
+  return `<div class="switch">` + ["tasks","projects","teams"].map(k=>{
+    const dot = (k==="teams" && unreadTotal()>0)
+      ? `<span class="mention" title="${unreadTotal()} 条被 @ 的未读"></span>` : "";
+    return `<button data-tab="${k}" class="${S.tab===k?"on":""}">${TAB_LABEL[k]}${dot}</button>`;
+  }).join("") + `</div>`;
+}
+
+function listHTML(){
+  const L = LISTS[S.tab];
+  if (!L.groups.some(g=>g.rows.length)) return `<div class="empty">这一档还是空的</div>`;
+  return L.groups.map(g=>{
+    const head = g.name === null ? "" : `<div class="grp">
+        <span class="chev">▾</span><span class="gname">${g.name}</span>
+        ${g.unread ? `<span class="gbadge" title="${g.unread} 条未读 @"></span>` : ""}
+        <span class="gcount">${g.rows.length}</span></div>`;
+    const rows = g.rows.map(s=>{
+      const sub = s.phase==="active" ? `${s.tool.verb}${s.tool.target?" "+s.tool.target:""} · ${s.elapsed}`
+                : s.phase==="approval" ? "等审批" : "";
+      const burn = S.dir==="C" ? `<span class="burn" style="width:${Math.round(s.burn*120)}px"></span>` : "";
+      return `<div class="row ${S.sel===s.id?"sel":""}" data-sel="${s.id}">
+        <span class="dot ${s.phase}"></span><span class="t">${s.title}</span>
+        ${s.mention?`<span class="mdot" title="有人 @ 了你"></span>`:""}
+        ${s.branch?`<span class="branch">${s.branch}</span>`:""}
+        ${sub?`<span class="sub">${sub}</span>`:""}${burn}</div>`;
+    }).join("");
+    return head + rows;
+  }).join("");
+}
+
+function detailHTML(){
+  const s = allRows(S.tab).find(x=>x.id===S.sel);
+  if (!s) return `<div class="detail"><span class="verb">这一档里没有选中的会话</span></div>`;
+  if (s.phase === "approval")
+    return `<div class="detail"><span class="verb">${s.approval.verb}</span><span class="mono">${s.approval.target}</span>
+      <span class="btns"><button class="btn ok">批准</button><button class="btn">本次</button><button class="btn no">拒绝</button></span></div>`;
+  if (s.phase === "active"){
+    const right = s.diff ? `${s.diff.files} 文件 +${s.diff.add} −${s.diff.del} · ${s.elapsed}` : s.elapsed;
+    return `<div class="detail"><span class="verb">${s.tool.verb}</span><span class="mono">${s.tool.target}</span>
+      <span class="btns"><span style="font-size:11.5px;color:rgba(255,255,255,.42)">${right}</span></span></div>`;
+  }
+  return `<div class="detail"><span class="verb">空闲 · 点这里说点什么</span></div>`;
+}
+
+/* ── 方向 A：页脚一条 ── */
+function railHTML(b, q){
+  if (!q) return `<div class="fade"></div><div class="saystate">${badgeHTML(b)}<span class="txt">未订阅 · 走自己的 API key</span></div>`;
+  if (q.exhausted) return `<div class="fade"></div><div class="saystate">${badgeHTML(b)}
+      <span class="txt strong" style="color:var(--deny)">${q.bind.label} 额度用完</span>
+      <span class="txt" style="margin-left:auto">${q.cd ?? "已刷新"}</span></div>`;
+  return `<div class="fade"></div>
+    <div class="rail" title="${usageTitle(q.bind.w)}">${badgeHTML(b)}
+      <span class="lbl">${q.bind.label}</span>
+      <span class="pct tone-${q.cls}-fg">${q.remain}</span>
+      <span class="bar"><i class="tone-${q.cls}" style="width:${q.remainPct}%"></i></span>
+      ${q.cd?`<span class="cd">${q.cd}</span>`:""}</div>`;
+}
+
+/* ── 方向 B：页眉两只表 ── */
+function heroHTML(b, q){
+  if (!q) return `<div class="hero"><div class="top">${badgeHTML(b)}
+      <span style="font-size:10.5px;color:rgba(255,255,255,.38)">未订阅 · 走自己的 API key，没有额度可言</span></div></div><div class="fade"></div>`;
+  const meter = (m, primary) => {
+    const rem = remainingPercent(m.w), cls = primary ? toneClass(quotaTone(m.percent)) : "neutral";
+    return `<div class="meter" title="${usageTitle(m.w)}">
+      <div class="mlbl">${m.label}</div>
+      <div class="mnum ${primary?`tone-${cls}-fg`:""}" ${primary?"":'style="color:rgba(255,255,255,.58)"'}>${rem.toFixed(1)}<span class="munit">% 可用</span></div>
+      <div class="bar"><i class="tone-${cls}" style="width:${rem}%"></i></div></div>`;
+  };
+  const ex = q.exhausted
+    ? `<div class="saystate" style="padding-top:2px"><span class="txt strong" style="color:var(--deny)">${q.bind.label} 额度用完，这一段起不了新一轮</span></div>` : "";
+  return `<div class="hero"><div class="top">${badgeHTML(b)}</div>
+      <div class="meters">${meter(q.bind,true)}${meter(q.bind.other,false)}</div>
+      ${q.cd?`<div class="cd">${q.bind.label} · ${q.cd}</div>`:""}</div>${ex}<div class="fade"></div>`;
+}
+
+/* ── 方向 C：环境（细线 + 行底细柱） ── */
+function hairlineHTML(q){
+  if (!q) return "";
+  const ex = q.exhausted
+    ? `<div class="saystate"><span class="txt strong" style="color:var(--deny)">${q.bind.label} 额度用完</span>
+       <span class="txt" style="margin-left:auto">${q.cd??"已刷新"}</span></div>` : "";
+  return `<div class="hairline" title="${q.bind.label} · ${usageTitle(q.bind.w)}">
+      <i class="tone-${q.cls}" style="width:${q.remainPct}%"></i></div>${ex}`;
+}
+
+/* ═════════ 渲染 ═════════ */
+function render(){
+  const b = billingOf(S.state, S.plan), q = quotaFacts(b);
+  const notch = document.getElementById("notch");
+  notch.className = "notch " + (S.form === "compact" ? "compact" : "expanded");
+
+  if (S.form === "compact"){
+    let dot = "";
+    if (q && (q.exhausted || q.tone !== "brand"))
+      dot = `<span class="qdot ${q.exhausted || q.tone==="deny" ? "deny":"warn"}"
+              title="${q.exhausted ? q.bind.label+" 额度用完" : q.bind.label+" 剩 "+q.remain}"></span>`;
+    const rows = allRows(S.tab);
+    const orbCls = rows.some(s=>s.phase==="approval") ? "approval" : rows.some(s=>s.phase==="active") ? "active" : "idle";
+    notch.innerHTML = `<div class="compact-in"><span class="otter">🦦</span>
+      <span class="orb-slot"><span class="orb ${orbCls}"></span>${dot}</span></div>`;
+  } else {
+    const topbar = `<div class="topbar"><span class="otter">🦦</span>${switcherHTML()}<span class="spacer"></span>${S.dir==="C"?badgeHTML(b):""}</div>`;
+    const list = listHTML(), detail = detailHTML();
+    let html;
+    if (S.dir === "A")      html = `${topbar}${list}<div class="fade"></div>${detail}${railHTML(b,q)}`;
+    else if (S.dir === "B") html = `${topbar}${heroHTML(b,q)}${list}<div class="fade"></div>${detail}`;
+    else                    html = `${topbar}${hairlineHTML(q)}${list}<div class="fade"></div>${detail}`;
+    notch.innerHTML = `<div class="pane">${html}</div>`;
+  }
+
+  document.getElementById("caption").textContent = S.form === "compact"
+    ? "compact 态 · 点刘海展开"
+    : ({A:"方向 A · 会话是主语，额度是常驻页脚",B:"方向 B · 额度是第一眼，会话在下面",C:"方向 C · 没有额度区块，额度弥散在环境里"})[S.dir];
+
+  notch.querySelectorAll("[data-sel]").forEach(el=>el.onclick=(e)=>{e.stopPropagation();S.sel=el.dataset.sel;render();});
+  notch.querySelectorAll("[data-tab]").forEach(el=>el.onclick=(e)=>{
+    e.stopPropagation(); S.tab = el.dataset.tab;
+    const rows = allRows(S.tab);
+    if (!rows.some(r=>r.id===S.sel)) S.sel = (rows.find(r=>r.phase==="approval") ?? rows[0])?.id ?? null;
+    render();
+  });
+  renderNotes(b, q);
+}
+
+function renderNotes(b, q){
+  const n = document.getElementById("notes");
+  n.hidden = !document.getElementById("chk-notes").checked;
+  if (n.hidden) return;
+  const dirNote = {
+    A:`<p><span class="k">方向 A · 页脚条。</span>切换器 + 会话列表一个像素不动，额度压在最底下一条：<code>档位 · 当主那扇窗 · 剩余% · 条 · 倒计时</code>。会话仍是主语，额度是常驻脚注。</p>
+       <p><span class="k">赢在哪：</span>侵入最小，一行说完，其余全是今天验收过的东西。</p>
+       <p><span class="k">代价：</span>只报<b>当主</b>那一扇（<code>bindingWindow</code>），另一扇要悬停才知道 —— 一行放不下两扇。</p>`,
+    B:`<p><span class="k">方向 B · 页眉双表。</span>切换器之下第一眼是额度：两扇窗并排，当主那扇上色、另一扇中性灰，倒计时只挂在当主那扇底下。列表退到下半。</p>
+       <p><span class="k">赢在哪：</span>与账号页 <code>PlanQuotaSection</code> 同一套语言，两处报同一个事实且长得一样。两扇窗都在场。</p>
+       <p><span class="k">代价：</span>把「我有哪几只水獭在跑」挤下去了 —— 而人拉开岛八成是为了看那个。额度是每天问一两次的事，会话是每分钟。</p>`,
+    C:`<p><span class="k">方向 C · 环境。</span>没有额度区块：档位徽章贴在顶栏右上，顶栏底下一根 3px 的剩余线，每行底下另一根细柱 =「这只水獭本轮吃掉的额度」。</p>
+       <p><span class="k">赢在哪：</span>一个纵向像素都没让给额度，还多回答了一个今天没人回答的问题 —— <b>是谁在吃</b>。</p>
+       <p><span class="k">代价：</span>不报数。ADR-0239 明说过「一根几乎满格的条会把一切正常画得比快没了还响」，这里靠<b>细</b>压住；真到 90% 它也只是变红一根线，说不出「还剩 6.1%」。行底细柱另有 ADR-0239 点过的名：满格底色会被读成「这一行选中了」。</p>`,
+  }[S.dir];
+
+  const facts = q
+    ? `<p><span class="k">此刻这份数据：</span><br>
+       当主窗 = <code>${q.bind.label}</code>（已用 ${q.bind.percent.toFixed(1)}% ＞ 另一扇 ${q.bind.other.percent.toFixed(1)}%）<br>
+       报出去的数 = <code>${q.remain}</code> 可用（<b>剩余</b>，向下取整一位小数）<br>
+       色档 = <code>${q.tone}</code>（按<b>已用</b>判：＞90 危 / ＞75 警）→ 岛上画成 <b>${q.cls==="neutral"?"中性灰（充足不上品牌蓝）":q.cls}</b><br>
+       条的填充 = <b>剩余</b> ${q.remainPct}%（闲着时它是满的）<br>
+       倒计时 = <code>${q.cd ?? "（窗已清零，不画）"}</code><br>
+       精确数只进 <code>title</code>：${usageTitle(q.bind.w)}</p>`
+    : `<p><span class="k">此刻这份数据：</span>没有订阅 = <code>windows === null</code>。<b>额度那一块整个不画</b>，不是画成 0% —— 「他没有额度可言」和「额度充足」是两件事（ADR-0255 记成两条）。</p>`;
+
+  n.innerHTML = `<h5>判据（改控制台或点岛内切换器，这里跟着变）</h5>${dirNote}<hr>${facts}<hr>
+    <p><span class="k">任务 / 项目 / 团队 三档：</span>与侧栏那枚切换器同一套（ADR-0259）—— 岛上现在也是三档，不是「会话 vs 用量」二选一。<b>团队那格右上角亮一枚点</b>：<code>unreadMentionCounts().total</code> 命中就亮，<b>画点不画数</b>（那一格 40px，量级留给下一层组头/行上的点），色取 <code>--brand</code> 不取 <code>--warn</code>（被 @ 不是「出事了」，ADR-0256）。团队栏没有「新会话」也没有「已归档」，同 ADR-0259。</p>
+    <p><span class="k">compact 态（三个方向共用）：</span>平时只有 logo + 状态球；<code>quotaAlert</code> 命中才在球右上角亮一枚点。<code>billing</code> 还没查到时一个像素都不画。</p>
+    <p><span class="k">扣款失败：</span>徽章<b>仍报原档</b>（ADR-0240：扣款失败不改变「你订的是 Pro」），另起一枚红签说出事了。岛上带不动出路，出路在账号页。</p>
+    <hr>
+    <p><span class="k">这一版的改名：</span><code>WINDOW_LABELS.h5</code>「5 小时窗」→<b>「5h」</b>；<code>countdown()</code>「…后恢复」→<b>「…后刷新」</b>，时长写成 <b><code>1h 38m</code></b>（天那一档跟着写 <code>4d</code>，不跟的话同一行会出现两把尺子；不到一分钟写 <code>&lt;1m</code>）。两个都是<b>共用函数</b>，改了就是<b>岛 / 账号页 / 上下文浮层三处一起改</b> —— 这正是要的：同一扇窗在两块屏幕上不能有两种叫法。</p>
+    <p><span class="k">被这份 demo 干掉的东西：</span>今天的「用量模式」那张表（<code>islandUsage</code>：每模型 今天/7天/14天 token）。ADR-0248 之后订阅用户不许自带 key，那张表报的 token 他一个都动不了。你定了「不分屏」，所以 <code>IslandDisplay</code> 那个二选一开关连同设置页那一格一起消失。<b>BYOK 用户怎么办，是实现阶段第一个要定的事。</b></p>`;
+}
+
+/* ═════════ 控制台接线 ═════════ */
+function sync(){
+  for (const [id,key] of [["seg-dir","dir"],["seg-state","state"],["seg-plan","plan"],["seg-form","form"]])
+    document.getElementById(id).querySelectorAll("button").forEach(b=>b.classList.toggle("on", b.dataset.v === S[key]));
+  document.getElementById("seg-plan").style.opacity = S.state === "none" ? ".4" : "1";
+}
+for (const [id,key] of [["seg-dir","dir"],["seg-state","state"],["seg-plan","plan"],["seg-form","form"]])
+  document.getElementById(id).querySelectorAll("button").forEach(btn=>{
+    btn.onclick = ()=>{ S[key] = btn.dataset.v; sync(); render(); };
+  });
+document.getElementById("notch").addEventListener("click",(e)=>{
+  if (e.target.closest("[data-sel]") || e.target.closest("[data-tab]") || e.target.closest(".btn")) return;
+  S.form = S.form === "compact" ? "expanded" : "compact"; sync(); render();
+});
+document.getElementById("chk-zoom").onchange = (e)=>{
+  document.getElementById("zoomwrap").style.transform = e.target.checked ? "scale(1.6)" : "scale(1)";
+};
+document.getElementById("chk-notes").onchange = ()=>render();
+sync(); render();
+</script>
+</body>
+</html>

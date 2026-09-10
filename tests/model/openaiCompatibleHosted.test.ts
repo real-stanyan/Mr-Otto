@@ -9,7 +9,7 @@ const okBody = JSON.stringify({ choices: [{ message: { content: "hi" } }], usage
 function adapter(endpoints: ResolvedEndpoint[], hooks: { onResponse?: (i: unknown) => void; onReroute?: (i: unknown) => void } = {}) {
   let i = 0;
   return createOpenAICompatibleAdapter({
-    baseUrl: "x", apiKey: "x", model: "deepseek-v4-flash",
+    baseUrl: "x", apiKey: "x", model: "deepseek-flash",
     resolveEndpoint: async () => endpoints[Math.min(i++, endpoints.length - 1)]!,
     timing: { maxAttempts: 3, backoffMs: [0] },
     ...hooks,
@@ -149,7 +149,7 @@ describe("并发已满（#960）", () => {
         return n <= 3 ? new Response(inflightBody, { status: 429 }) : new Response("overloaded", { status: 503 });
       });
       const a = createOpenAICompatibleAdapter({
-        baseUrl: "https://edge/llm/v1", apiKey: "jwt", model: "deepseek-v4-flash",
+        baseUrl: "https://edge/llm/v1", apiKey: "jwt", model: "deepseek-flash",
         timing: { maxAttempts: 3, backoffMs: [0] },
         retryDelayFor: (err) => (billingErrorOf(err)?.code === "too_many_inflight" ? 5_000 : null),
       });
@@ -174,7 +174,7 @@ describe("并发已满（#960）", () => {
       });
       const seen: number[] = [];
       const a = createOpenAICompatibleAdapter({
-        baseUrl: "https://edge/llm/v1", apiKey: "jwt", model: "deepseek-v4-flash",
+        baseUrl: "https://edge/llm/v1", apiKey: "jwt", model: "deepseek-flash",
         timing: { maxAttempts: 3, backoffMs: [0] },
         retryDelayFor: (err, attempt) => {
           seen.push(attempt);
@@ -195,7 +195,7 @@ describe("并发已满（#960）", () => {
   it("retryDelayFor 回 null → 走默认策略（退避 + maxAttempts 封顶），与没这个钩子时一字不差", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch").mockImplementation(async () => new Response("overloaded", { status: 503 }));
     const a = createOpenAICompatibleAdapter({
-      baseUrl: "https://up/v1", apiKey: "sk", model: "deepseek-v4-flash",
+      baseUrl: "https://up/v1", apiKey: "sk", model: "deepseek-flash",
       timing: { maxAttempts: 3, backoffMs: [0] },
       retryDelayFor: () => null,
     });

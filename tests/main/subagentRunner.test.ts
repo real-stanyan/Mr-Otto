@@ -112,13 +112,13 @@ describe("createSubagentRunner", () => {
       store,
       attachments,
       push,
-      list: () => [def({ model: "deepseek-v4-flash" })],
+      list: () => [def({ model: "deepseek-flash" })],
       parent: parent(), // 父是 deepseek-chat
       runTurn: async () => {},
     });
     const out = await runner.run({ agent: "searcher", task: "T", parentToolCallId: "call_1" });
     const briefed = store.load(out.childSessionId).find((e) => e.type === "subagent_briefed");
-    expect(briefed?.type === "subagent_briefed" && briefed.model).toBe("deepseek-v4-flash");
+    expect(briefed?.type === "subagent_briefed" && briefed.model).toBe("deepseek-flash");
   });
 
   it("subagent_briefed 记的是实际给出去的工具和内置前言拼过的全文", async () => {

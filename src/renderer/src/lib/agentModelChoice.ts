@@ -13,6 +13,7 @@
 // 任务难度自选，那是另一件还没做的事，所以文案只许写此刻的真实行为。
 
 import type { ProviderId } from "../../../shared/providerCatalog.js";
+import { modelLabel } from "../../../shared/modelCatalog.js";
 
 /** 下拉里 Auto 那一项的值。**定义在 `shared/autoModel.ts`，这里只是转出去**（#1042）：
     桌面输入框那枚选择器也长出了 Auto，同一个口令还要走 IPC 到主进程——三处各写一个
@@ -48,6 +49,9 @@ export function providerOfPlatform(platform: string | undefined): ProviderId | n
 
 export interface AgentModelOption {
   value: string;
+  /** 画出来的那串字：目录认得就是显示名，认不出原样显示 id（`modelLabel`，#1247）。
+      原来这里直接写 id —— 同一款模型在这枚下拉里叫 `deepseek-flash`、在输入框那枚
+      选择器里叫 `DeepSeek-V4.1-Flash`，而两处点下去跑的是同一条路 */
   label: string;
   /** 画在左边那枚厂商字形；null = 这一格没有（Auto，或平台名认不出来） */
   provider: ProviderId | null;
@@ -76,12 +80,12 @@ export function agentModelOptions(
   for (const m of available) {
     if (seen.has(m)) continue;
     seen.add(m);
-    out.push({ value: m, label: m, provider: providerOfPlatform(platforms[m]) });
+    out.push({ value: m, label: modelLabel(m), provider: providerOfPlatform(platforms[m]) });
   }
   for (const m of current) {
     if (seen.has(m)) continue;
     seen.add(m);
-    out.push({ value: m, label: m, provider: providerOfPlatform(platforms[m]), stale: true });
+    out.push({ value: m, label: modelLabel(m), provider: providerOfPlatform(platforms[m]), stale: true });
   }
   return out;
 }
@@ -94,5 +98,5 @@ export function agentModelOptions(
  */
 export function chainWarning(models: readonly string[]): string | null {
   if (models.length <= 1) return null;
-  return `这只智能体现在配的是一条优先级链（${models.join(" → ")}）。选一款会把整条链换成那一款。`;
+  return `这只智能体现在配的是一条优先级链（${models.map(modelLabel).join(" → ")}）。选一款会把整条链换成那一款。`;
 }

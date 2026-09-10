@@ -1,8 +1,8 @@
 import { describe, it, expect } from "vitest";
 import {
   approvalCardTitle, assistantLabel, canStopTurn, cloudEmptyState, createAgentLanded, decisionLineText,
-  hiddenFromCloudTimeline, isAgentStep, relayLineText, routeChangedText, stopButtonRows, systemNoteText, turnEndedLineText, voiceCallLineText,
-  userRowIdentity,
+  hiddenFromCloudTimeline, isAgentStep, relayLineText, routeChangedText, stopButtonRows, systemNoteText, turnEndedLineText, voiceCallLineParts,
+  userRowIdentity, type VoiceCallPart,
 } from "../../src/renderer/src/lib/cloudTimeline.js";
 import type { WorkspaceSnapshot } from "../../src/shared/workspaces.js";
 import { countdown } from "../../src/renderer/src/lib/billingView.js";
@@ -309,31 +309,63 @@ describe("cloudEmptyState（#983）", () => {
   });
 });
 
-// ── 语音通话那一行旁白（#1163） ────────────────────────────────────────
-describe("voiceCallLineText", () => {
+// ── 语音通话那一行旁白（#1163；#1228 改回分段） ──────────────────────────
+describe("voiceCallLineParts", () => {
   const ev = (seq: number, ids: string[], over: Partial<{ byUid: string; byAgentId: string }> = {}) => ({
     ...base, seq, type: "voice_call_changed" as const, ignorable: true as const,
     participants: ids.map((id) => ({ agentId: id, name: `快照${id}` })),
     byUid: over.byUid ?? "u1", ...(over.byAgentId ? { byAgentId: over.byAgentId } : {}),
   });
+  /** 这句话本身 = 所有 part 的 text 一路拼起来。#1228 之后「怎么说」与「怎么画」
+      共用同一份返回值，下面这一族用例因此仍然是文案的保鲜期 */
+  const line = (...args: Parameters<typeof voiceCallLineParts>): string =>
+    voiceCallLineParts(...args).map((p) => p.text).join("");
+  const parties = (ps: readonly VoiceCallPart[]) =>
+    ps.filter((p): p is Extract<VoiceCallPart, { kind: "party" }> => p.kind === "party");
 
   it("从无到有 = 开始；名字现查名单，查不到退回事件里的快照", () => {
-    expect(voiceCallLineText(null, ev(1, ["a_1", "a_x"]), ws)).toBe("Stan 开始了语音通话：运营、快照a_x");
+    expect(line(null, ev(1, ["a_1", "a_x"]), ws)).toBe("Stan 开始了语音通话：运营、快照a_x");
   });
   it("多了 = 拉进；agent 拉的署它的名", () => {
-    expect(voiceCallLineText(ev(1, ["a_1"]), ev(2, ["a_1", "a_2"]), ws)).toBe("Stan 把广告拉进了通话");
-    expect(voiceCallLineText(ev(1, ["a_1"]), ev(2, ["a_1", "a_2"], { byAgentId: "a_1" }), ws)).toBe("「运营」把广告拉进了通话");
+    expect(line(ev(1, ["a_1"]), ev(2, ["a_1", "a_2"]), ws)).toBe("Stan 把广告拉进了通话");
+    expect(line(ev(1, ["a_1"]), ev(2, ["a_1", "a_2"], { byAgentId: "a_1" }), ws)).toBe("「运营」把广告拉进了通话");
   });
   it("少了 = 移出；空名单 = 结束；有增有减 = 更新", () => {
-    expect(voiceCallLineText(ev(1, ["a_1", "a_2"]), ev(2, ["a_1"]), ws)).toBe("Stan 把广告移出了通话");
-    expect(voiceCallLineText(ev(1, ["a_1"]), ev(2, []), ws)).toBe("Stan 结束了语音通话");
-    expect(voiceCallLineText(ev(1, ["a_1"]), ev(2, ["a_2"]), ws)).toBe("Stan 更新了通话名单：广告");
+    expect(line(ev(1, ["a_1", "a_2"]), ev(2, ["a_1"]), ws)).toBe("Stan 把广告移出了通话");
+    expect(line(ev(1, ["a_1"]), ev(2, []), ws)).toBe("Stan 结束了语音通话");
+    expect(line(ev(1, ["a_1"]), ev(2, ["a_2"]), ws)).toBe("Stan 更新了通话名单：广告");
   });
   it("上一条是空名单 = 又开了一场", () => {
-    expect(voiceCallLineText(ev(1, []), ev(2, ["a_2"]), ws)).toBe("Stan 开始了语音通话：广告");
+    expect(line(ev(1, []), ev(2, ["a_2"]), ws)).toBe("Stan 开始了语音通话：广告");
   });
   it("不在时间线上藏：hiddenFromCloudTimeline 对它回 false", () => {
     expect(hiddenFromCloudTimeline(ev(1, ["a_1"]))).toBe(false);
+  });
+
+  it("每个名字自成一格：发起人 + 名单里每一只各一格 party，标点是 text", () => {
+    const parts = voiceCallLineParts(null, ev(1, ["a_1", "a_2"]), ws);
+    expect(parties(parts).map((p) => p.text)).toEqual(["Stan", "运营", "广告"]);
+    // 名单之间那个「、」不能长在名字那一格里——长在里面的话它会跟着名字一起被
+    // 圈进 whitespace-nowrap，换行只能断在下一个名字之后
+    expect(parts.some((p) => p.kind === "text" && p.text === "、")).toBe(true);
+  });
+
+  it("有头像就带 src：agent 取内置像素图，成员取 profiles.avatar_url", () => {
+    const withFace: WorkspaceSnapshot = {
+      ...ws, members: [{ uid: "u1", role: "owner", label: "Stan", avatarUrl: "https://example.test/stan.png" }],
+    };
+    const ps = parties(voiceCallLineParts(null, ev(1, ["a_1"]), withFace));
+    expect(ps[0]).toMatchObject({ name: "Stan", avatarSrc: "https://example.test/stan.png" });
+    expect(ps[1]!.avatarSrc).toContain("agent-avatars");
+  });
+
+  it("名册里查不到的不给脸（空串，渲染层退回首字母）——画上去等于宣称它还在名册里", () => {
+    // ① 已经被删掉的那只（名字只剩事件里的快照）② 已退群 / 没设过头像的人
+    const ps = parties(voiceCallLineParts(null, ev(1, ["a_x"]), ws));
+    expect(ps.map((p) => [p.name, p.avatarSrc])).toEqual([["Stan", ""], ["快照a_x", ""]]);
+    // agent 自己拉人时同理：事件上只有 id，没有快照可退
+    const byGhost = parties(voiceCallLineParts(ev(1, ["a_1"]), ev(2, ["a_1", "a_2"], { byAgentId: "a_ghost" }), ws));
+    expect(byGhost[0]!.avatarSrc).toBe("");
   });
 });
 

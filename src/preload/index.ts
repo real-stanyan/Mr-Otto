@@ -67,8 +67,6 @@ const bridge: ShellBridge = {
   remoteCancelPairing: () => ipcRenderer.invoke(CHANNELS.remoteCancelPairing),
   remoteUnpairDevice: (deviceId) => ipcRenderer.invoke(CHANNELS.remoteUnpairDevice, deviceId),
   remoteForgetDevice: (deviceId) => ipcRenderer.invoke(CHANNELS.remoteForgetDevice, deviceId),
-  getIslandSettings: () => ipcRenderer.invoke(CHANNELS.getIslandSettings),
-  setIslandSettings: (settings) => ipcRenderer.invoke(CHANNELS.setIslandSettings, settings),
   getMotionSettings: () => ipcRenderer.invoke(CHANNELS.getMotionSettings),
   setMotionSettings: (settings) => ipcRenderer.invoke(CHANNELS.setMotionSettings, settings),
   getWorkspaceSettings: () => ipcRenderer.invoke(CHANNELS.getWorkspaceSettings),
@@ -145,6 +143,7 @@ const bridge: ShellBridge = {
   usageByModel: (since: number) => ipcRenderer.invoke(CHANNELS.usageByModel, since),
   providerBalances: () => ipcRenderer.invoke(CHANNELS.providerBalances),
   billingSnapshot: (refresh) => ipcRenderer.invoke(CHANNELS.billingSnapshot, refresh),
+  islandContext: (ctx) => ipcRenderer.invoke(CHANNELS.islandContext, ctx),
   billingCheckout: (target) => ipcRenderer.invoke(CHANNELS.billingCheckout, target),
   billingPortal: () => ipcRenderer.invoke(CHANNELS.billingPortal),
   signIn: (provider) => ipcRenderer.invoke(CHANNELS.signIn, provider),
@@ -259,9 +258,9 @@ const bridge: ShellBridge = {
   workspaceMentions: () => ipcRenderer.invoke(CHANNELS.workspaceMentions),
   workspaceMentionsRead: (sessionId) => ipcRenderer.invoke(CHANNELS.workspaceMentionsRead, sessionId),
   onWorkspaceMention: subscribe(CHANNELS.workspaceMention),
-  workspaceCloudSay: (text, mention, mentions, memberMentions) =>
+  workspaceCloudSay: (text, mention, mentions, memberMentions, voice) =>
     ipcRenderer.invoke(
-      CHANNELS.workspaceCloudSay, text, mention, mentions ?? null, memberMentions ?? null
+      CHANNELS.workspaceCloudSay, text, mention, mentions ?? null, memberMentions ?? null, voice ?? null
     ),
   workspaceCloudApprove: (callId, decision) =>
     ipcRenderer.invoke(CHANNELS.workspaceCloudApprove, callId, decision),

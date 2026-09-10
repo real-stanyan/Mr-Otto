@@ -26,12 +26,19 @@ function textOf(content: readonly { type: string; text?: string }[]): string {
     .join("\n");
 }
 
+/** convertMessage 必须是**模块级常量**,不能是 buildOttoAdapter 里的内联闭包:
+    assistant-ui 的运行时（external-store-thread-runtime-core）发现
+    `oldStore.convertMessage !== store.convertMessage` 就把 ThreadMessageConverter
+    （按消息对象身份缓存的 WeakMap）整个丢掉重建 —— 内联箭头每次 buildOttoAdapter
+    都是新引用,toThreadMessages 的身份保持（ADR-0285）会在这里被整个作废 */
+const identityConvert = (m: ThreadMessageLike) => m;
+
 export function buildOttoAdapter(input: OttoAdapterInput): ExternalStoreAdapter<ThreadMessageLike> {
   return {
     messages: toThreadMessages(input.events, input.live),
     // 类型上必填:ExternalStoreAdapter<T> 只在 T extends ThreadMessage 时才免掉它。
     // 上一行已经产出目标格式,所以这里是恒等
-    convertMessage: (m) => m,
+    convertMessage: identityConvert,
     isRunning: input.isRunning,
     // 跟进建议也是日志投影(suggestions_generated 事件,主进程 turn 收口后生成)。
     // 点一条走的是 onNew —— 也就是下面那条 send,和用户自己打字发出去的是同一条路

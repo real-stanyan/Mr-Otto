@@ -68,6 +68,11 @@ export interface Sandbox {
   destroy(workspaceId: string): Promise<void>; // 容器+卷一起删（团队删除级联）
   /** 容器此刻在不在跑（#1140）。只 list 不 start：wiki 快照缓存的判据是「停着 = 卷没变」，探这一下不许把它叫起来 */
   isRunning(workspaceId: string): Promise<boolean>;
+  /** 这个团队的工作卷上一次量出来占了多少（issue #836）。**纯读缓存，不打 docker**：
+      量这一下发生在 `ensure()` 里、fire-and-forget，所以这里回的永远是「上一次的
+      读数」，`null` = 本进程还没量过（第一次碰容器之前、或者每一次都量失败）。
+      调用方拿它说话，不拿它拦人——为什么不拦见 DISK_LIMIT_KIB 的注释 */
+  diskUsage(workspaceId: string): { usedKib: number; limitKib: number; at: number } | null;
   /** 读一格工作文件夹（#1056）。`path` 已过 `normalizeWorkPath`。
       **刻意不走 `ensure()`**：那条路会建容器、会跑 clone 流程、会重置 idle 计时。
       翻一眼文件是个**读**动作，不该有这些副作用——尤其不该让「打开设置页」
@@ -404,12 +409,48 @@ async function withCloneContainer<T>(
   }
 }
 
-/** clone 之前要求的最低可用空间（KiB）。**不是配额**（issue #836：真正的
-    每卷配额要看存储驱动，overlay2+xfs prjquota 才支持 `--storage-opt
-    size=`，而这台 runtime VPS 还没开出来、没法验），只是一道下限闸：
-    挡不住"一个 50G 的仓库占 50G"，能挡住"磁盘已经快满了还起一次 clone
-    把整台机器写死"——后者会连累这台机器上所有团队。 */
+/** 往这台机器上写之前要求的最低可用空间（KiB）。**不是配额**——真正的每卷
+    配额在这台 runtime VPS 上**做不到**，这不是「还没做」而是实测的结论
+    （issue #836 的 2026-09-10 探针，ADR-0287）：它是一个 Incus/LXC guest，
+    没有 loop 设备（`modprobe loop` → `Module loop not found`）所以挂不了
+    per-volume 的 ext4 镜像，`/proc/filesystems` 里没有 xfs 且 `/` 的挂载
+    选项是宿主定的所以 prjquota 也上不了，而 `--storage-opt size=` 在
+    Docker 29 + overlayfs 上**被静默收下、不生效**（比报错更坏的一格）。
+
+    这道闸挡不住"一个 50G 的仓库占 50G"，能挡住"磁盘已经快满了还往里写
+    把整台机器写死"——后者会连累这台机器上所有团队。**两个消费方**：clone
+    之前（#838，量的是容器里 `df /work`）与每一次 `ensure()`（#836，量的是
+    daemon 自己那个进程看到的可用空间，见 createSandbox 的 freeKib）。 */
 const MIN_FREE_KIB = 2 * 1024 * 1024; // 2 GiB
+
+/** 每团队工作卷的用量预算（KiB）。**只用来说话，不用来拦人**——`ensure()`
+    是拿容器句柄的唯一入口，超了就拒等于连 `bash` 一起挡住，而清理文件的
+    唯一出路正是 `bash`：那样一个团队会被自己的工作卷锁死，没有出口。
+    （`readWork` / `searchWork` 不走 `ensure()`，所以「文件」tab 照样翻得
+    动——超了之后人要看的正是"哪个目录这么大"。）
+
+    **故意写成常量不做成 env 开关**：一个能调松的数，在"忘了配"那天就是
+    没有；而这个数的意义本来就是一条要写进 ADR 的策略，不是部署参数。 */
+const DISK_LIMIT_KIB = 10 * 1024 * 1024; // 10 GiB
+
+/** 两次 `du` 之间的最小间隔。`du` 是 O(整棵树)，而 `ensure()` 挂在**每一条**
+    容器操作上（read/write/bash/git 全过它）——不设这道就是每条命令前白扫
+    一遍工作树。代价：一次 turn 之内写进去的东西最多晚 60 秒才被量到 */
+const DISK_USAGE_TTL_MS = 60_000;
+
+/** 地板拒绝时说的那句话。说清**是整台机器不是这个团队**——不说的话，一个
+    自己只占了几十 MB 的团队会以为是自己超了，跑去删自己的文件 */
+export function lowDiskText(freeKib: number): string {
+  const freeMib = Math.round(freeKib / 1024);
+  return `云端这台机器的磁盘快满了（剩 ${freeMib} MiB，低于 ${MIN_FREE_KIB / 1024} MiB 下限），暂时不能往工作文件夹里写。这是整台机器的空间不是你这个团队的用量，要维护者清理之后才会恢复。`;
+}
+
+/** 超预算时往群里说的那句话。报的是**用量与上限**外加一条能执行的建议——
+    「让水獭删掉不要的文件」是这一刻真的做得到的事（工具没有被挡住） */
+export function diskBudgetText(usedKib: number, limitKib: number): string {
+  const gib = (kib: number) => (kib / 1024 / 1024).toFixed(1);
+  return `这个团队的工作文件夹已经用了 ${gib(usedKib)} GiB，超过 ${gib(limitKib)} GiB 的建议上限。云端这台机器是所有团队共用的，占太多会连累别人——让水獭删掉不需要的文件（构建产物、下载的大文件、旧的克隆），或者在「团队设置 → 文件」里看看是哪个目录这么大。`;
+}
 
 /** 真正跑一次 clone。**跑在旁路容器里**（调用方用 withCloneContainer 起，
     见那里的注释）：有 PAT 就先配好凭据（stdin 喂、绝不进 Cmd/URL），跑完
@@ -566,6 +607,13 @@ export function createSandbox(
     orphanGraceMs?: number;
     now?: () => number;
     orphans?: OrphansStore;
+    /** 这台机器此刻的可用空间（KiB），`null` = 量不出来（issue #836）。
+        daemon 注入 `fs.statfs` 那一份——runtime 是宿主上的 systemd 进程
+        （`User=otto`），量这一下不用起容器、也不要求容器在跑。
+        **缺省不注入 = 这道闸不存在**：既有装配与测试行为一字不变。 */
+    freeKib?: () => Promise<number | null>;
+    /** 每团队工作卷的用量预算（KiB），缺省 DISK_LIMIT_KIB。只用来说话不用来拦人 */
+    diskLimitKib?: number;
   },
 ): Sandbox {
   const image = opts?.image ?? DEFAULT_IMAGE;
@@ -573,8 +621,65 @@ export function createSandbox(
   const orphanGraceMs = opts?.orphanGraceMs ?? DEFAULT_ORPHAN_GRACE_MS;
   const now = opts?.now ?? (() => Date.now());
   const orphansStore = opts?.orphans ?? memoryOrphansStore();
+  const freeKib = opts?.freeKib;
+  const diskLimitKib = opts?.diskLimitKib ?? DISK_LIMIT_KIB;
 
   const lastActive = new Map<string, number>();
+  /** 每个团队上一次量出来的卷用量。**只增不改判**：量失败/读不出数字都保留
+      上一次的值——「拿不到」不是「变成 0」（同 ADR-0197 grants 缓存的规矩） */
+  const diskUsed = new Map<string, { usedKib: number; at: number }>();
+  const diskProbeInFlight = new Set<string>();
+
+  /** 地板：往这台机器上写之前问一句还剩多少。**三种「问不出来」一律放行**
+      （没注入 / 回 null / 自己抛了）——把一次 statfs 失败翻译成「整台机器
+      停止写入」，代价远大于它挡住的那点风险，而且那种失败模式是静默的：
+      界面上只会看到每个团队的每把刀都开始报同一句话。 */
+  async function assertDiskFloor(): Promise<void> {
+    if (!freeKib) return;
+    let free: number | null;
+    try {
+      free = await freeKib();
+    } catch {
+      return;
+    }
+    if (free === null || !Number.isFinite(free)) return;
+    if (free >= MIN_FREE_KIB) return;
+    throw new Error(lowDiskText(free));
+  }
+
+  /** 量一次这个团队的卷用量。**fire-and-forget**：ensure() 不等它——`du` 是
+      O(整棵树)，等它就是把「拿容器句柄」的延迟押在工作树的大小上。所以
+      `diskUsage()` 报的永远是上一次的读数，超预算最晚在下一次碰容器时被
+      说出口（一个 turn 的写入量 = 这条设计的已知窗口，见 ADR-0287）。
+
+      `-x` 不跨文件系统：/work 就是卷的挂载点，里面再挂别的东西不该算进来。 */
+  function probeDiskUsage(workspaceId: string, container: ContainerLike): void {
+    if (diskProbeInFlight.has(workspaceId)) return;
+    const last = diskUsed.get(workspaceId);
+    if (last && now() - last.at < DISK_USAGE_TTL_MS) return;
+    diskProbeInFlight.add(workspaceId);
+    // 超时给 60 秒不吃默认那 30：这一条不在关键路径上，而**最该被量到的正是
+    // 那棵最大的树**——被默认超时切掉的话，一个大到 du 跑不完的工作卷永远
+    // 量不出读数、也就永远不会被说出口。已知天花板：大到 60 秒还跑不完的
+    // 仍然量不到（那时该报的其实是「这台机器的 I/O 也被它吃光了」）
+    void execInContainer(container, "du -sxk /work | awk '{print $1}'", { timeoutSec: 60 })
+      .then((r) => {
+        const kib = Number.parseInt(r.stdout.trim(), 10);
+        if (r.exitCode === 0 && Number.isFinite(kib)) diskUsed.set(workspaceId, { usedKib: kib, at: now() });
+      })
+      .catch(() => {
+        // 量不出来就留着上一次的——见 diskUsed 的注释。这一层不做 IO/日志
+        // （sandbox.ts 的既有纪律），真要排查看的是「读数停在什么时候」
+      })
+      .finally(() => {
+        diskProbeInFlight.delete(workspaceId);
+      });
+  }
+
+  function diskUsage(workspaceId: string): { usedKib: number; limitKib: number; at: number } | null {
+    const u = diskUsed.get(workspaceId);
+    return u ? { usedKib: u.usedKib, limitKib: diskLimitKib, at: u.at } : null;
+  }
 
   function markActive(workspaceId: string): void {
     lastActive.set(workspaceId, now());
@@ -611,6 +716,10 @@ export function createSandbox(
   }
 
   async function ensureOnce(workspaceId: string): Promise<ContainerLike> {
+    // 地板排在**任何** docker 动作之前（issue #836）：拒绝的理由是「这台机器
+    // 快写满了」，那么建一台容器、起一台容器本身也是往里写。既有容器同样拒——
+    // 挡的是「往这台机器上写」，不是「建容器」
+    await assertDiskFloor();
     const name = containerName(workspaceId);
     const found = await findByName(name);
 
@@ -635,6 +744,7 @@ export function createSandbox(
       await startIfStopped(container, found.State);
     }
     markActive(workspaceId);
+    probeDiskUsage(workspaceId, container);
 
     // clone 挂在这里——容器（不管是刚建的还是既有的）已经在跑，卷已经挂
     // 好。见文件头 git clone 设计要点块的注释；ensureRepoCloned 自己处理
@@ -698,6 +808,7 @@ export function createSandbox(
       的容器白查一次 findByName。 */
   function forget(workspaceId: string): void {
     lastActive.delete(workspaceId);
+    diskUsed.delete(workspaceId); // 卷都没了，那个读数说的是一个不存在的东西
   }
 
   /** 收走漏在机器上的一次性 clone 容器（issue #835⑤）。这种残骸里有 PAT，
@@ -862,5 +973,17 @@ export function createSandbox(
     );
   }
 
-  return { ensure, markActive, sweepIdle, reconcile, destroy, isRunning, readWork, searchWork, execWork, execSidecar };
+  return {
+    ensure,
+    markActive,
+    sweepIdle,
+    reconcile,
+    destroy,
+    isRunning,
+    diskUsage,
+    readWork,
+    searchWork,
+    execWork,
+    execSidecar,
+  };
 }

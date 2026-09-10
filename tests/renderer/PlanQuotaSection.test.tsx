@@ -42,7 +42,7 @@ const me = (over: Partial<BillingMe> = {}): BillingMe => ({
   ...over,
 });
 
-/** 两只环的弧（轨道那两个圈没有 stroke-dasharray），按 DOM 顺序：5 小时窗、本周 */
+/** 两只环的弧（轨道那两个圈没有 stroke-dasharray），按 DOM 顺序：5h、本周 */
 function arcs(): SVGCircleElement[] {
   return Array.from(document.querySelectorAll<SVGCircleElement>("circle[stroke-dasharray]"));
 }
@@ -77,14 +77,14 @@ describe("PlanQuotaSection", () => {
     render(<PlanQuotaSection />);
     expect(screen.getByText("套餐额度")).toBeInTheDocument();
     expect(screen.getByText("Pro")).toBeInTheDocument();
-    expect(screen.getByText("5 小时窗")).toBeInTheDocument();
+    expect(screen.getByText("5h")).toBeInTheDocument();
     expect(screen.getByText("本周")).toBeInTheDocument();
     // 41 / 67 已用 → 还剩 38.8%（向下取整到一位小数，同设置页）
     expect(screen.getByText("38.8%")).toBeInTheDocument();
     // 「可用」两只环各一份：只写一个百分数会读成「已用」，而填的是剩余
     expect(screen.getAllByText("可用")).toHaveLength(2);
     // 精确 credit 没丢，进了 title —— 百分比给人扫一眼，对账的人还得看得到数
-    expect(screen.getByText("5 小时窗").closest("[title]")).toHaveAttribute("title", "已用 4.1 / 6.7 credit");
+    expect(screen.getByText("5h").closest("[title]")).toHaveAttribute("title", "已用 4.1 / 6.7 credit");
   });
 
   it("环填的是剩余，不是已用：38.8% 的窗画出来就是 38.8% 的弧", () => {
@@ -123,8 +123,8 @@ describe("PlanQuotaSection", () => {
   it("两扇窗**各自**画自己的倒计时 —— 它们平级，没有当主的那一扇", () => {
     seed(me());
     render(<PlanQuotaSection />);
-    expect(screen.getByText(/小时.*分后恢复/)).toBeInTheDocument();
-    expect(screen.getByText(/天后恢复/)).toBeInTheDocument();
+    expect(screen.getByText(/\dh \d+m 后刷新/)).toBeInTheDocument();
+    expect(screen.getByText(/\dd 后刷新/)).toBeInTheDocument();
   });
 
   it("过了 resetAt 的窗：100.0% 可用 + 满环，且**那一扇不画倒计时**（清零之后没有「几点恢复」）", () => {
@@ -137,9 +137,9 @@ describe("PlanQuotaSection", () => {
     render(<PlanQuotaSection />);
     expect(screen.getByText("100.0%")).toBeInTheDocument();
     expect(arcPercent(arcs()[0]!)).toBe(100);
-    // 只剩周窗那一行倒计时；「已恢复」不该出现（它和「100.0% 可用」是同一句话说两遍）
-    expect(screen.queryByText("已恢复")).toBeNull();
-    expect(screen.getAllByText(/后恢复/)).toHaveLength(1);
+    // 只剩周窗那一行倒计时；「已刷新」不该出现（它和「100.0% 可用」是同一句话说两遍）
+    expect(screen.queryByText("已刷新")).toBeNull();
+    expect(screen.getAllByText(/后刷新/)).toHaveLength(1);
   });
 
   it("有加购余额才画那一行", () => {

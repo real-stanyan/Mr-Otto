@@ -34,6 +34,10 @@ describe("enterChat(换会话的状态落位)", () => {
     expect(next.workTree).toBeNull();
   });
 
+  it("清掉引用暂存(issue #881):引用指的是**那条会话里**的某段话,带进另一条会话就是让这条消息说一件没发生过的事", () => {
+    expect(enterChat(boot()).quotes).toEqual([]);
+  });
+
   it("sessionId 落成新会话的那一个", () => {
     expect(enterChat(boot({ sessionId: "session-b" })).sessionId).toBe("session-b");
   });

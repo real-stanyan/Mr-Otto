@@ -141,7 +141,9 @@ describe("store 的麦克风接线（#1176）", () => {
     st.speechOnEvent({ type: "listening", on: true });
     st.speechOnEvent({ type: "final", text: "帮我看下投放" });
     await flush();
-    expect(m("workspaceCloudSay")).toHaveBeenCalledWith("帮我看下投放", false, [], []);
+    // 第五个参数 `true` = 这句话是**说出来的**（#1233）：云会话时间线据它把这一句
+    // 折进通话卡而不是画成一条气泡。麦克风这条路是整条链上唯一知道这件事的地方
+    expect(m("workspaceCloudSay")).toHaveBeenCalledWith("帮我看下投放", false, [], [], true);
     expect(useChat.getState().voice?.mic.transcript).toBe("");
     m("workspaceCloudSay").mockImplementationOnce(async () => ({ ok: false, message: "发得太快了" }));
     st.speechOnEvent({ type: "final", text: "再看一眼" });

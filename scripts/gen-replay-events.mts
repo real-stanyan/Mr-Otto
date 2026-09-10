@@ -12,7 +12,7 @@ import type { Approver } from "../src/loop/approvalGate.js";
 function fakeAdapter(script: ModelReply[]): ModelAdapter {
   let i = 0;
   return {
-    model: "deepseek-v4-flash",
+    model: "deepseek-flash",
     async chat() {
       const r = script[i++];
       if (!r) throw new Error("script exhausted");

@@ -6,7 +6,7 @@
 // 搬运 + env 装配，靠 T11 的冒烟 check 兜底，不进 vitest（task-10-brief.md）。
 
 import { randomUUID } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, readFileSync, statfsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import Docker from "dockerode";
 import { createClient } from "@supabase/supabase-js";
@@ -365,6 +365,22 @@ async function main(): Promise<void> {
 
   const sandbox: Sandbox = createSandbox(docker as unknown as DockerLike, {
     orphans: createFileOrphansStore(join(config.dataDir, "orphans.json")),
+    // 磁盘地板（#836，ADR-0287）。量的是 **dataDir 那个文件系统**——真配额在这台
+    // 机器上做不到（LXC guest：没有 loop 设备、没有 xfs、`--storage-opt size=`
+    // 被静默忽略，实测记在 ADR-0287），这道闸是仅剩的那一半：磁盘快满时拒绝
+    // 再往里写，别让一个团队把整台机器写死。
+    // **前提：dataDir 与 docker 的数据根在同一个文件系统上**（真机 2026-09-10：
+    // 两者都在 `/`，`/dev/md2` ext4）。分家的话这个数说的就是另一块盘——但
+    // runtime 是宿主上的 systemd 进程（`User=otto`），够不着 `/var/lib/docker`
+    // （root 0710），statfs 那条路走不通，而这个 uid 量得到的最近的那个点就是
+    // 它自己的状态目录。clone 那道闸（#838）量的是容器里的 `df /work`，那一份
+    // 才是卷所在文件系统的真读数，两道各量各的、判据同一个 MIN_FREE_KIB。
+    // 同步版 statfsSync：这行跑在每一次 ensure() 上，异步版要多排一次
+    // microtask 而这是个微秒级 syscall；抛了由 sandbox 那侧接住并放行
+    freeKib: async () => {
+      const st = statfsSync(config.dataDir);
+      return Math.floor((st.bavail * st.bsize) / 1024);
+    },
   });
 
   /** 每团队一份 wiki 本体（#1140）：工具路径与 wiki_write 帧共用同一个实例，进程内锁才锁得住两条路。
@@ -694,6 +710,9 @@ async function main(): Promise<void> {
       // 原样成立，只是做决定的地方在调用方——这也是 querySandboxApproval 头注
       // 早就写着的契约
       sandboxApproval: () => querySandboxApproval(workspaceId),
+      // 上一次量出来的卷用量（#836，ADR-0287）。纯读 sandbox 的内存缓存、不打
+      // docker——量这一下发生在 sandbox.ensure() 里，这里只是把读数递过去
+      diskUsage: () => sandbox.diskUsage(workspaceId),
     });
 
     activeSessions.set(sessionId, { session, workspaceId });

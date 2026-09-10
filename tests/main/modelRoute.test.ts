@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { routeImage, routeModel, routeTts } from "../../src/main/modelRoute.js";
 import { findModel, resolveModel } from "../../src/shared/modelCatalog.js";
 
-const deepseek = findModel("deepseek-v4-flash")!;
+const deepseek = findModel("deepseek-flash")!;
 const glm = findModel("glm-4.7-flash")!;
 
 // ADR-0129 之后只剩两种结局:有 key(或免 key 的本机 Ollama)直连,否则 blocked。
@@ -67,7 +67,13 @@ describe("老日志里的 lane=grant", () => {
 // 托管出路（ADR-0176 决定二）：付费订阅下，托管优先于自带 key——绕过用户
 // 买的东西去烧他自己的 key 才是意外。
 describe("routeModel：托管优先（ADR-0176 决定二）", () => {
-  const hosted = { subscribed: true, exhausted: false, supportsModel: true };
+  const hosted = {
+    subscribed: true, exhausted: false, supportsModel: true,
+    // #1241：deepseek-flash（V4.1）原生看图，于是它会先撞上 0 号多模态门禁。
+    // 真库三个档的 plan.capabilities 都是 image:true，所以补这一格是**对齐现实**，
+    // 不是为了让用例变绿而放宽——这个 describe 问的是托管/blocked 的分叉，不是那道门
+    capabilities: { image: true, video: false },
+  };
   const hostedArgs = { hosted, hostedBaseUrl: "https://edge/llm/v1", hostedToken: "jwt" };
 
   it("有订阅 + 未耗尽 + 网关供这款 → hosted，哪怕配了自己的 key", () => {

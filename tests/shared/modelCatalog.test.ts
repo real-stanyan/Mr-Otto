@@ -6,6 +6,7 @@ import {
   describeModelWith,
   findModel,
   MODEL_CATALOG,
+  modelLabel,
   ollamaChoiceFrom,
   resolveModel,
   type OllamaCaps,
@@ -102,7 +103,7 @@ describe("三个出厂默认必须在目录里", () => {
 
 describe("reasoningPassback（#1151）——thinking 模式要不要回传 reasoning_content，逐家验过才准开", () => {
   it("DeepSeek 开：探针验过「必须回传」——按 tool_call id 查服务端缓存，查不到 400", () => {
-    for (const m of ["deepseek-v4-flash", "deepseek-v4-pro", "deepseek-v4-flash-vision-exp"]) {
+    for (const m of ["deepseek-flash", "deepseek-v4-pro"]) {
       expect(findModel(m)?.reasoningPassback, m).toBe(true);
     }
   });
@@ -121,5 +122,33 @@ describe("reasoningPassback（#1151）——thinking 模式要不要回传 reaso
   it("目录外的兜底型号 / 未探测的 Ollama：不开（自建代理严格校验与否问不出来）", () => {
     expect(resolveModel("某个没见过的型号").reasoningPassback).toBe(false);
     expect(describeModel("ollama/qwen3:30b")?.reasoningPassback).toBe(false);
+  });
+});
+
+describe("modelLabel（#1247）——「一个型号 id 在界面上叫什么」只许有一份判据", () => {
+  it("目录认得的用显示名：团队设置页那两处从此与输入框那枚选单说同一个名字", () => {
+    expect(modelLabel("deepseek-flash")).toBe("DeepSeek-V4.1-Flash");
+    expect(modelLabel("glm-5.3-flash")).toBe("GLM-5.3 Flash");
+  });
+
+  it("目录外的原样显示 id——网关上了新款而目录没跟上时，比空白多一点信息", () => {
+    expect(modelLabel("某个没见过的型号")).toBe("某个没见过的型号");
+  });
+
+  it("不走 resolveModel 那条 DeepSeek 兜底：陌生 id 不许顶着别人的名字出现", () => {
+    expect(modelLabel("deepseek-v4-flash")).toBe("deepseek-v4-flash");
+  });
+
+  it("本机 Ollama 认得（describeModel 那条前缀路）", () => {
+    expect(modelLabel("ollama/qwen3:30b")).toBe(describeModel("ollama/qwen3:30b")?.label);
+  });
+});
+
+describe("目录里一款 label 都不写「视觉」（#1247）", () => {
+  // 维护者的口径：写在会看图那几行上是同一件事说两遍（能力位就在 supportsVision），
+  // 而写着的那几行一多，没写的行就被读成「这款看不见图」——`deepseek-flash` 原生看图、
+  // 从来没带过这个后缀。ADR-0249 已经为选单里那枚「视觉」记号判过同一件事
+  it("MODEL_CATALOG", () => {
+    expect(MODEL_CATALOG.filter((c) => c.label.includes("视觉")).map((c) => c.model)).toEqual([]);
   });
 });
