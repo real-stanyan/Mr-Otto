@@ -86,13 +86,6 @@ export type ThreadComponents = {
       它不是消息 —— 是 turn 级的状态,所以挂在 ViewportFooter 而不是消息流里。
       上游 registry 没有这个槽 —— 升级时要人工合 */
   RunIndicator?: ComponentType | undefined;
-  /** 本仓加的槽:会话分区轨的锚点(零高度、不参与布局,只给 scrollspy/跳转一个可测量
-      的位置)。每条消息 id 就是产生它的那条 SessionEvent 的 seq(见
-      aui/toThreadMessages.ts),分区起点也是 seq——同一把尺子,所以锚点该不该出现在
-      "这条消息前面"这件事,只有这条消息自己的 id 知道。挂在 ThreadMessage 里、每条
-      消息都过一遍,而不是挂在消息内容里面——system/user/assistant 三条分支都要经过它,
-      放进某一条分支会漏掉另外两种角色的消息。上游 registry 没有这个槽 —— 升级时要人工合 */
-  MessageAnchor?: ComponentType | undefined;
   Welcome?: ComponentType | undefined;
   ToolFallback?: ToolCallMessagePartComponent | undefined;
   /** 本仓加的槽:来源 chip。上游 registry 的 Sources 直接开 <a target="_blank">,
@@ -118,8 +111,8 @@ export type ThreadComponents = {
 
 export type ThreadProps = {
   components?: ThreadComponents | undefined;
-  /** 本仓加的:会话分区轨(SectionRail)量的是真正滚动的那个元素——scrollspy 的判定线、
-      跳转的 scroll-mt 都以它为准。ThreadPrimitive.Viewport 自己会转发 ref(内部用
+  /** 本仓加的:会话地图(ConversationMapRail,ADR-0292)量的是真正滚动的那个元素——
+      判定线、点一格之后的滚动都以它为准。ThreadPrimitive.Viewport 自己会转发 ref(内部用
       useComposedRefs 拼了 autoScroll/size/element 三个 ref,forwardRef 出来的还是同一个
       DOM 节点),所以直接接这个口子,不用像旧 ThreadViewport 那样另开一个回调 ref 去接管
       DOM、也不用退回 data-slot 查询。上游没有暴露这个 prop —— 升级时留意 Viewport 是否
@@ -132,6 +125,10 @@ export type ThreadProps = {
   /** 本仓加的:顶部哨兵进入视口(或兜底按钮被点)时回调一次,语义是「窗口再往上
       扩一档」。每次回调扩多少、什么时候停,由调用方(lib/messageWindow.ts)决定 */
   onGrowWindow?: (() => void) | undefined;
+  /** 本仓加的:贴底跟随的开关,原样转给 ThreadPrimitive.Viewport(缺省 = 上游行为:
+      turnAnchor="bottom" 时开)。会话地图跳走的那一刻 OttoThread 把它关掉,人回到底部 /
+      新一轮开跑 / 切会话再打开(ADR-0292)——不关的话,内容一长高 autoScroll 就把人拽回底部 */
+  autoScroll?: boolean | undefined;
 };
 
 const EMPTY_COMPONENTS: ThreadComponents = {};
@@ -180,6 +177,7 @@ export const Thread: FC<ThreadProps> = ({
   viewportRef,
   hiddenCount = 0,
   onGrowWindow,
+  autoScroll,
 }) => {
   const isEmpty = useAuiState(isNewChatView);
 
@@ -190,6 +188,7 @@ export const Thread: FC<ThreadProps> = ({
         viewportRef={viewportRef}
         hiddenCount={hiddenCount}
         onGrowWindow={onGrowWindow}
+        autoScroll={autoScroll}
       />
     </ThreadComponentsContext.Provider>
   );
@@ -200,7 +199,8 @@ const ThreadRoot: FC<{
   viewportRef: Ref<HTMLDivElement> | undefined;
   hiddenCount: number;
   onGrowWindow: (() => void) | undefined;
-}> = ({ isEmpty, viewportRef, hiddenCount, onGrowWindow }) => {
+  autoScroll: boolean | undefined;
+}> = ({ isEmpty, viewportRef, hiddenCount, onGrowWindow, autoScroll }) => {
   const {
     Welcome = ThreadWelcome,
     RunIndicator: RunIndicatorComponent,
@@ -221,6 +221,7 @@ const ThreadRoot: FC<{
     >
       <ThreadPrimitive.Viewport
         ref={viewportRef}
+        autoScroll={autoScroll}
         /* 本仓改动:registry 那份抄来的是 turnAnchor="top" —— 新一轮把用户那条消息钉在
            视口顶端,然后**整轮不动**。上游那个默认值背后还藏着一条:autoScroll 的默认值
            是 `turnAnchor !== "top"`(见 useThreadViewportAutoScroll),所以 top 锚同时
@@ -301,21 +302,16 @@ const ThreadMessage: FC = () => {
   const {
     AssistantMessage: AssistantMessageComponent = AssistantMessage,
     SystemMessage: SystemMessageComponent,
-    MessageAnchor: MessageAnchorComponent,
   } = useContext(ThreadComponentsContext);
   const role = useAuiState((s) => s.message.role);
   const isEditing = useAuiState((s) => s.message.composer.isEditing);
 
-  // 锚点在角色分支之前渲染一次:三条分支(编辑/用户/系统/assistant)都要经过它,
-  // 分区起点可能落在任意角色的消息前面
-  const anchor = MessageAnchorComponent ? <MessageAnchorComponent /> : null;
-
-  if (isEditing) return <>{anchor}<EditComposer /></>;
-  if (role === "user") return <>{anchor}<UserMessage /></>;
+  if (isEditing) return <EditComposer />;
+  if (role === "user") return <UserMessage />;
   // 本仓加的分支:不认 system 的话,审计行会掉进 assistant 分支、被当成模型回复渲染。
   // 没给 SystemMessage 时退回 assistant —— 与上游行为一致,不静默吞掉消息
-  if (role === "system" && SystemMessageComponent) return <>{anchor}<SystemMessageComponent /></>;
-  return <>{anchor}<AssistantMessageComponent /></>;
+  if (role === "system" && SystemMessageComponent) return <SystemMessageComponent />;
+  return <AssistantMessageComponent />;
 };
 
 // ─── 本仓改动:时间线窗口(ADR-0285 决定 2,#1190)───

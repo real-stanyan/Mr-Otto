@@ -127,8 +127,8 @@ function isAuditEvent(e: SessionEvent): boolean {
       return false;
 
     case "section_classified":
-      // main 合并进来的事件类型(会话分区分类)。目录挂在分区轨(SectionRail)上,
-      // 不进正文——同 Timeline.tsx 的 EventRow 里同一分支。原先落到
+      // 会话分区分类(ADR-0034)。ADR-0292 起不再产出(分区轨换成了每轮一格的会话地图),
+      // 只剩旧日志里还有;从来不进正文——同 Timeline.tsx 的 EventRow 里同一分支。原先落到
       // default 也是同一个结果(false),但那是"碰巧对";这里显式列出来,
       // 免得以后 default 分支的语义变了,这条却没人注意到
       return false;
