@@ -9,10 +9,10 @@
 import { Children, Fragment, useEffect, useRef, useState } from "react";
 import {
   AccessibilityInfo, ActivityIndicator, Animated, Easing, Image, Keyboard, LayoutAnimation,
-  Platform, Pressable, ScrollView, StyleSheet, Text, View,
-  type StyleProp, type TextStyle, type ViewStyle,
+  Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View,
+  type StyleProp, type TextInputProps, type TextStyle, type ViewStyle,
 } from "react-native";
-import { MONO, PRESS_SPRING, radius, space, type, usePalette, type Palette } from "./theme.js";
+import { MONO, PRESS_SPRING, radius, space, type, usePalette, withAlpha, type Palette } from "./theme.js";
 import { useTabInset } from "./chrome.js";
 
 /** 系统的「减弱动态效果」。缩放这种位移类反馈要让位,但反馈本身不能消失 */
@@ -280,12 +280,21 @@ export function FolderIcon({ open, color }: { open: boolean; color: string }) {
  * 桌面那侧的常规控件是**描边**的(侧栏那个「+ 新会话」= 透明底 + 一条细边),
  * 实底只留给真正的主动作。手机端跟同一条:
  *   primary  实底蓝——一屏只给一个
+ *   secondary 次级实底——弹窗里「不做这件事」那一颗（demo 的 .btn.sec），和主按钮等宽并排
  *   outline  透明底 + 细边——绝大多数按钮
  *   plain    纯文字 + 点缀色——"刷新""用邮箱密码登录"这种读成链接的
  *   quiet    纯文字 + 暗色——"拒绝"这种和主动作并排、要让位的
  *   destructive 透明底 + 红字红边——不实底,因为它不是主动作
  */
-export type ButtonVariant = "primary" | "outline" | "plain" | "quiet" | "destructive";
+export type ButtonVariant = "primary" | "secondary" | "outline" | "plain" | "quiet" | "destructive";
+
+/** 四档尺寸。高度照 demo:通栏 50、弹窗 46、进门闸 42、小胶囊 44 */
+const BUTTON_SIZE = {
+  full: { box: { borderRadius: radius.control, paddingVertical: 15, paddingHorizontal: space.md, minHeight: 50 }, font: 17 },
+  dialog: { box: { borderRadius: radius.control, paddingVertical: 12, paddingHorizontal: space.md, minHeight: 46 }, font: 16 },
+  compact: { box: { borderRadius: radius.control, paddingVertical: 10, paddingHorizontal: space.md, minHeight: 42 }, font: 15 },
+  auto: { box: { borderRadius: radius.pill, paddingVertical: 11, paddingHorizontal: space.lg, minHeight: 44 }, font: 17 },
+} as const;
 
 export function Button(props: {
   label: string;
@@ -299,8 +308,9 @@ export function Button(props: {
   /** 并排摆时平分宽度。竖着摆的按钮不要 flex —— 会把自己抻开 */
   grow?: boolean;
   /** auto = 自己多宽算多宽的小胶囊,右对齐成一行。桌面 permission-grant 的动作行
-      就是这个形状:安静、不抢卡片的主体。整屏的主按钮才用默认的通栏 */
-  size?: "full" | "auto";
+      就是这个形状:安静、不抢卡片的主体。整屏的主按钮才用默认的通栏。
+      dialog = 弹窗底下那排（46 高）；compact = 进门闸那张卡上（42 高） */
+  size?: "full" | "auto" | "dialog" | "compact";
 }) {
   const { c } = usePalette();
   const reduce = useReduceMotion();
@@ -320,6 +330,7 @@ export function Button(props: {
   const line = { borderWidth: 1 };
   const face: ViewStyle =
     v === "primary" ? { backgroundColor: c.primary }
+    : v === "secondary" ? { backgroundColor: c.secondary }
     // outline 是**实底**加一道细线,不是透明:登录页那块波场会动,
     // 透明按钮压上去时边界随着波一起闪,按钮读成了背景的一部分
     : v === "outline" ? { backgroundColor: c.card, ...line, borderColor: c.border }
@@ -328,6 +339,7 @@ export function Button(props: {
 
   const fg =
     v === "primary" ? c.primaryForeground
+    : v === "secondary" ? c.secondaryForeground
     : v === "destructive" ? c.destructive
     : v === "outline" ? c.foreground
     : v === "quiet" ? c.mutedForeground
@@ -345,9 +357,7 @@ export function Button(props: {
         // 命中区往外放一点:手指落点和视觉边界从来不完全重合
         hitSlop={8}
         style={({ pressed }) => [
-          props.size === "auto"
-            ? { borderRadius: radius.pill, paddingVertical: 11, paddingHorizontal: space.lg, minHeight: 44 }
-            : { borderRadius: radius.control, paddingVertical: 15, paddingHorizontal: space.md, minHeight: 50 },
+          BUTTON_SIZE[props.size ?? "full"].box,
           {
             // alignItems + justifyContent 都要:少一个,文字在某些容器里会跑到看不见的地方
             // (虚拟机上第一版就是一条没有字的蓝条)
@@ -360,7 +370,14 @@ export function Button(props: {
         ]}
       >
         {props.icon}
-        <Text style={{ ...type.headline, color: fg }}>{props.label}</Text>
+        <Text style={{
+          ...type.headline,
+          fontSize: BUTTON_SIZE[props.size ?? "full"].font,
+          lineHeight: BUTTON_SIZE[props.size ?? "full"].font + 5,
+          color: fg,
+        }}>
+          {props.label}
+        </Text>
       </Pressable>
     </Animated.View>
   );
@@ -669,5 +686,64 @@ export function Divider({ label }: { label: string }) {
       <Text style={{ ...type.footnote, color: c.mutedForeground }}>{label}</Text>
       <View style={line} />
     </View>
+  );
+}
+
+/**
+ * 能往里打字的框（demo 的 .input）。边框 1pt：平时 c.input（比 c.border 亮半档——一个能往里
+ * 打字的框必须先让人看见它在哪）、聚焦时换点缀色、invalid 时换红（同桌面 Input 的 aria-invalid）。
+ * 三档底色：
+ *   plain  实底 card，46 高
+ *   gate   进门闸上：card 的 60%，42 高——坐在会动的波场上，不透一点就是「贴」上去的
+ *   dialog 弹窗里：前景色 5% 叠在弹窗那张 card 上（demo 的 color-mix(fg 5%, card)），46 高
+ */
+export function Field(props: {
+  value: string;
+  onChangeText: (v: string) => void;
+  placeholder: string;
+  variant?: "plain" | "gate" | "dialog";
+  secure?: boolean;
+  invalid?: boolean;
+  maxLength?: number;
+  autoFocus?: boolean;
+  keyboardType?: TextInputProps["keyboardType"];
+  autoComplete?: TextInputProps["autoComplete"];
+  textContentType?: TextInputProps["textContentType"];
+  returnKeyType?: TextInputProps["returnKeyType"];
+  onSubmitEditing?: () => void;
+}) {
+  const { c } = usePalette();
+  const [focused, setFocused] = useState(false);
+  const v = props.variant ?? "plain";
+  const bg = v === "gate" ? withAlpha(c.card, 0.6) : v === "dialog" ? withAlpha(c.foreground, 0.05) : c.card;
+  return (
+    <TextInput
+      value={props.value}
+      onChangeText={props.onChangeText}
+      placeholder={props.placeholder}
+      placeholderTextColor={c.mutedForeground}
+      secureTextEntry={props.secure}
+      maxLength={props.maxLength}
+      autoFocus={props.autoFocus}
+      keyboardType={props.keyboardType ?? "default"}
+      autoCapitalize="none"
+      autoCorrect={false}
+      autoComplete={props.autoComplete}
+      textContentType={props.textContentType}
+      returnKeyType={props.returnKeyType}
+      onSubmitEditing={props.onSubmitEditing}
+      onFocus={() => setFocused(true)}
+      onBlur={() => setFocused(false)}
+      style={{
+        height: v === "gate" ? 42 : 46,
+        borderRadius: radius.control,
+        borderWidth: 1,
+        borderColor: props.invalid ? c.destructive : focused ? c.brand : c.input,
+        backgroundColor: bg,
+        color: c.foreground,
+        paddingHorizontal: 14,
+        fontSize: 16,
+      }}
+    />
   );
 }

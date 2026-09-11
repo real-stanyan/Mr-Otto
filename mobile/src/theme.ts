@@ -115,3 +115,11 @@ export const PRESS_SPRING = spring(0.15);
 // 输入区那块板同量级。跟上去,否则再对色也读不成同一个产品
 export const radius = { card: 20, control: 14, tile: 10, pill: 999 } as const;
 export const space = { xs: 6, sm: 10, md: 16, lg: 22, xl: 32 } as const;
+
+/** 十六进制实色（#rrggbb）加透明度 → rgba。palette 里的实色都是 #rrggbb；
+    本来就带透明度的那几格（mutedForeground / border / input）别往这里传——原样退回 */
+export function withAlpha(hex: string, alpha: number): string {
+  const m = /^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex);
+  if (!m) return hex;
+  return `rgba(${parseInt(m[1], 16)}, ${parseInt(m[2], 16)}, ${parseInt(m[3], 16)}, ${alpha})`;
+}
