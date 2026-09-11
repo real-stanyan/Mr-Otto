@@ -15,16 +15,21 @@ import { trySignIn } from "./authActions.js";
 export function ConfirmMailDialog({ email, password, onLater }: {
   email: string;
   password: string;
-  /** 「稍后再说」。确认成功那条路不走这里——闸门一抬，整张卡连同这张弹窗一起卸载 */
+  /** 「稍后再说」：弹窗退场放完才调，调用方在这里把它卸掉。确认成功那条路不走这里——闸门一抬，
+      整张卡连同这张弹窗一起卸载 */
   onLater: () => void;
 }) {
   const { c } = usePalette();
   const [checking, setChecking] = useState(false);
   /** 手动按过「我已确认」但还没生效。只用来说一句话，不拦他再按——邮件到得慢是常事 */
   const [notYet, setNotYet] = useState(false);
+  /** 按了「稍后再说」就先在这里关：Dialog 放完退场（onExited）才轮到 onLater */
+  const [open, setOpen] = useState(true);
 
-  // 一次一约的 setTimeout 而不是 setInterval：间隔会变，上一轮还在飞时也不该叠下一轮
+  // 一次一约的 setTimeout 而不是 setInterval：间隔会变，上一轮还在飞时也不该叠下一轮。
+  // 说了「稍后再说」就立刻停，不等退场放完
   useEffect(() => {
+    if (!open) return;
     let stop = false;
     let timer: ReturnType<typeof setTimeout> | undefined;
     let attempt = 0;
@@ -39,7 +44,7 @@ export function ConfirmMailDialog({ email, password, onLater }: {
       stop = true;
       if (timer) clearTimeout(timer);
     };
-  }, [email, password]);
+  }, [email, password, open]);
 
   const checkNow = async (): Promise<void> => {
     setChecking(true);
@@ -50,7 +55,7 @@ export function ConfirmMailDialog({ email, password, onLater }: {
   };
 
   return (
-    <Dialog visible>
+    <Dialog visible={open} onExited={onLater}>
       <DialogTitle>去邮箱点一下确认链接</DialogTitle>
       <DialogLead>
         确认信已经发给 <Strong>{email}</Strong>。点开里面的链接，这里会自己继续，不用回来按什么。
@@ -65,7 +70,7 @@ export function ConfirmMailDialog({ email, password, onLater }: {
         </Text>
       </View>
       <DialogFooter
-        left={{ label: "稍后再说", onPress: onLater }}
+        left={{ label: "稍后再说", onPress: () => setOpen(false) }}
         right={{ label: checking ? "查一下…" : "我已确认", onPress: () => void checkNow(), disabled: checking }}
       />
     </Dialog>

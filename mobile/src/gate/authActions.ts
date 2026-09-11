@@ -18,10 +18,15 @@ export async function signInWithPassword(email: string, password: string): Promi
   if (error) throw new Error(error.message);
 }
 
-/** 等确认信那张弹窗的探测：邮箱还没点时失败是预期，不抛、只回布尔 */
+/** 等确认信那张弹窗的探测：邮箱还没点时失败是预期，不抛、只回布尔。断网这类异常也收成 false——
+    轮询那条 setTimeout 链与「我已确认」的转圈都靠这句「不抛」：抛一次，前者断在半路、后者转个不停 */
 export async function trySignIn(email: string, password: string): Promise<boolean> {
-  const { error } = await supabase.auth.signInWithPassword({ email, password });
-  return !error;
+  try {
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
+    return !error;
+  } catch {
+    return false;
+  }
 }
 
 /**
