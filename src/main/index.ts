@@ -60,7 +60,6 @@ import { createVisionBridge } from "./visionBridge.js";
 import { loadVisionModel, saveVisionModel } from "./visionModelStore.js";
 import { visionModelFor } from "../shared/visionModel.js";
 import { helperModelFor } from "../shared/helperModel.js";
-import { classifyLogView } from "./sectionClassifier.js";
 import { annotateTurn } from "./turnAnnotator.js";
 import { autoTitleSource } from "./sessionTitler.js";
 import { topicSource } from "./sessionTopic.js";
@@ -1088,28 +1087,22 @@ void app.whenReady().then(() => {
     }
   }
 
-  // 分区分类 + 跟进建议的合并调用（issue #284，调用本体在 turnAnnotator.ts）：
-  // 两个外挂同型号、同时机、上下文重合，一次便宜模型往返各取所需。
-  // 按会话串行队列。合并调用跑在 turn 锁之外（见 sendMessage 末尾），
-  // 所以同一会话的两次分类会撞车：各自的 store.load 都看不到对方还没落的
-  // section_classified，于是两个标题描述同一段、startSeq 却各开一处。
-  // 链起来 = 同一会话永远只有一个在跑；跨度锚点本来就是自愈的
-  // （最后一条分类事件之后的全部事件），后来的那次只是看到更宽的一段。
-  // 代价：分类在飞的时候下一个 turn 可以开跑，分类#N+1 看到的跨度被分类#N 的事件
-  // 切割得只剩 turn N+1 本身那几条、汇总后是空。分类不落事件，turn N+1 根本没被
-  // 分类；若它开了新话题，章节标题要等 turn N+2 才出现，而且锚点是 N+2 不是 N+1——
-  // 导航跳过去会落在话题开始之后。下一个 turn 的分类自动补上漏掉的那段（自愈）。
-  // 这点代价换来的是输入框不被锁住，值。
-  // 建议原来不排队（没有锚点，后落盘天然覆盖前一条），合并后跟着分类串行：
-  // 排队期间新 turn 收口的话，本次跑的时候读到的已是更新的最后一轮——结果一样，
-  // 只是到得稍晚。省一次往返换来的这点延迟，值（权衡记录：ADR-0080）
-  const sectionQueues = new Map<string, Promise<void>>();
+  // turn 收口后的合并调用（跟进建议 + 自动命名 + 主题，issue #284，调用本体在 turnAnnotator.ts）：
+  // 几个外挂同型号、同时机、上下文重合，一次便宜模型往返各取所需。
+  // 按会话串行队列。合并调用跑在 turn 锁之外（见 sendMessage 末尾），同一会话的两次调用
+  // 会撞车：各自读到的「还没命名 / 还没归主题」都是对方落盘之前的状态，于是命名、主题
+  // 各落两条。链起来 = 同一会话永远只有一个在跑。
+  // 建议原来不排队（后落盘天然覆盖前一条），合并后跟着串行：排队期间新 turn 收口的话，
+  // 本次跑的时候读到的已是更新的最后一轮——结果一样，只是到得稍晚。省一次往返换来的
+  // 这点延迟，值（权衡记录：ADR-0080）。
+  // 这条队列原来叫 sectionQueues，头一个理由是分区分类撞车（两个标题描述同一段）；
+  // 分区分类删掉之后（ADR-0292）剩下命名/主题那条理由，照样成立
+  const annotateQueues = new Map<string, Promise<void>>();
 
   const annotateAndAppend = async (sessionId: string): Promise<void> => {
-    // 分类读尾段切片而不是全量 load（issue #279，等价性论证在 classifyLogView 注释里）；
-    // 建议只读最后一轮问答：lastExchange 本来就只看最后一条 user_message
-    // 起的那段——从它开始读（afterSeq 不含端点，所以 -1），没有用户消息就给空数组
-    // （lastExchange([]) 也是空，summarize 出空串那一边直接不进提示词）
+    // 建议只读最后一轮问答（issue #279：不全量 load）：lastExchange 本来就只看最后一条
+    // user_message 起的那段——从它开始读（afterSeq 不含端点，所以 -1），没有用户消息就给
+    // 空数组（lastExchange([]) 也是空，summarize 出空串那一边直接不进提示词）
     const lastUser = store.lastSeqOf(sessionId, "user_message");
     // 会话自动命名（issue #335）搭同一次便宜模型往返：手动改过名或已命名过就不再跑
     // （一次会话最多一条），首行够短也不跑（现状已是合格标题，判定在 autoTitleSource）
@@ -1136,7 +1129,6 @@ void app.whenReady().then(() => {
     const annotateModel = helperModelFor(helperModel(), hostedList(), isSubscribed());
     const annotateRoute = await helperHostedRoute(annotateModel);
     const result = await annotateTurn(
-      classifyLogView(store, sessionId),
       lastUser < 0 ? [] : store.load(sessionId, { afterSeq: lastUser - 1 }),
       annotateModel,
       titleSource,
@@ -1158,13 +1150,6 @@ void app.whenReady().then(() => {
       usageSpent = true;
       return { usage: result.usage, route: annotateRoute ? ("hosted" as const) : ("direct" as const) };
     };
-    if (result.section) {
-      const sectionEvent = store.append({
-        sessionId, ts: Date.now(), type: "section_classified",
-        title: result.section.title, model: result.model, ...billOnce(),
-      });
-      send(CHANNELS.event, sectionEvent);
-    }
     if (result.suggestions) {
       const event = store.append({
         sessionId, ts: Date.now(), type: "suggestions_generated",
@@ -1198,7 +1183,7 @@ void app.whenReady().then(() => {
     }
   };
 
-  // 记忆审查：与分区分类/跟进建议同构的第三条外挂（turn 锁之外、永不抛、
+  // 记忆审查：与跟进建议那条合并调用同构的外挂（turn 锁之外、永不抛、
   // 会话被 purge 就不落）。每 10 个 user turn 落一条 memory_nudge，然后派内置
   // memory-reviewer 子智能体；子会话自己调 memory 工具写盘，结果不回父上下文
   // （父会话整个 session 看到的记忆仍是开头那份快照，ADR-0060）。
@@ -1273,8 +1258,8 @@ void app.whenReady().then(() => {
     );
   };
 
-  // 微压缩（ADR-0064）：第四条 turn 后外挂，与分区分类同构——turn 锁外、永不抛、
-  // 会话被 purge 就不落。**必须串行**（同 sectionQueues 的理由）：两次并发的
+  // 微压缩（ADR-0064）：又一条 turn 后外挂，与合并调用同构——turn 锁外、永不抛、
+  // 会话被 purge 就不落。**必须串行**（同 annotateQueues 的理由）：两次并发的
   // microCompactOnce 各自看不到对方的 micro_compacted，会对同一个 exchange 摘两次、
   // 后落的那条 running summary 丢掉先落那条的内容。
   const MICRO_TIMEOUT_MS = 30_000;
@@ -1334,24 +1319,24 @@ void app.whenReady().then(() => {
       .then(() => microCompactAndAppend(sessionId))
       .catch((err) => console.error("微压缩失败", err));
     microQueues.set(sessionId, next);
-    // 排空即删（同 sectionQueues）：只有自己仍是队尾才删
+    // 排空即删（同 annotateQueues）：只有自己仍是队尾才删
     void next.then(() => {
       if (microQueues.get(sessionId) === next) microQueues.delete(sessionId);
     });
   };
 
   const enqueueAnnotate = (sessionId: string): void => {
-    const prev = sectionQueues.get(sessionId) ?? Promise.resolve();
+    const prev = annotateQueues.get(sessionId) ?? Promise.resolve();
     // catch 挂在链上：annotateTurn 自己不抛，但它外面的 store.append / send 会。
     // 一环炸了不能毒死后面的环，也不能变成 unhandledRejection 把主进程带走
     const next = prev
       .then(() => annotateAndAppend(sessionId))
-      .catch((err) => console.error("分区分类/跟进建议失败", err));
-    sectionQueues.set(sessionId, next);
+      .catch((err) => console.error("跟进建议/自动命名失败", err));
+    annotateQueues.set(sessionId, next);
     // 排空即删，别让 Map 随会话数无限长。只有自己仍是队尾才删——
     // 期间又排进来一个的话队尾已经换人，删了会让它从空链起跑（等于解掉串行）
     void next.then(() => {
-      if (sectionQueues.get(sessionId) === next) sectionQueues.delete(sessionId);
+      if (annotateQueues.get(sessionId) === next) annotateQueues.delete(sessionId);
     });
   };
 
@@ -1617,7 +1602,7 @@ void app.whenReady().then(() => {
   const teamVoice = createTeamVoice(hostedDeps);
 
   // ── 「不是这条会话主模型」的那几次调用（#1051）─────────────────────────────
-  // 代读员（vision-bridge）与后台小模型（分区分类 / 跟进建议 / 微压缩）原来各走各的
+  // 代读员（vision-bridge）与后台小模型（跟进建议·自动命名 / 微压缩）原来各走各的
   // 老路：前者调 routeModel 但**不喂 hosted**，后者干脆直接读 env 里的 key。订阅用户
   // 不许自带 key 之后这两条都不成立了 —— 没配 key 的订阅用户代读必然失败（连带整个
   // turn 失败）、三个外挂从来没跑起来过；配了 key 的则两边都悄悄记在他自己账上。
@@ -4042,12 +4027,12 @@ void app.whenReady().then(() => {
       session_autotitled / micro_compacted 这类 executor 事件，笔先放了就推不上去 */
   const afterTurnHelpers = (sessionId: string): Promise<unknown> =>
     Promise.allSettled([
-      sectionQueues.get(sessionId) ?? Promise.resolve(),
+      annotateQueues.get(sessionId) ?? Promise.resolve(),
       microQueues.get(sessionId) ?? Promise.resolve(),
     ]);
   /** 后台回注排空（issue #389）：turn 在跑时没能当场追加（压缩进行中，#871）的后台任务攒在
       pendingBg，正常收口后合并成一条注回。只在 completed 后排——aborted 是用户按了停止，这时
-      自作主张再起一个 turn 是把契约让位给后台任务（分区分类同款立场）；攒着的结果不丢，下一次
+      自作主张再起一个 turn 是把契约让位给后台任务（turn 后外挂同款立场）；攒着的结果不丢，下一次
       turn 正常收口或新完成事件到来时再排。
       **由两个调用方在各自的 try/finally 之后调**（#1223 复审 round 2）：原来排在 driveTurn 尾部的
       queueMicrotask 早于调用方 finally 里的 admitting.delete，递归那一次必撞「还在跑」守卫、而
@@ -4072,7 +4057,7 @@ void app.whenReady().then(() => {
 
   // 抽成命名函数:ipc handler 和 handleIslandCommand("send" 命令)都调它,
   // 逻辑只有一份——岛上发消息和主窗输入框发消息必须走同一条路(含附件校验/
-  // vision-bridge/分区分类),不能有第二套实现悄悄 drift
+  // vision-bridge/turn 后外挂),不能有第二套实现悄悄 drift
   async function handleSendMessage(
     sessionId: string,
     text: string,
@@ -4360,14 +4345,14 @@ void app.whenReady().then(() => {
       // compact 那条 finally 刻意不接：它是一次纯模型调用，起不了进程组
       reportEscapedGroups(sessionId);
     }
-    // 分区分类：turn 收口后跑一次便宜模型，判断话题是否换了（会话目录用）。
+    // turn 后外挂（跟进建议 + 自动命名 + 主题的合并调用）：turn 收口后跑一次便宜模型。
     // 位置与 vision-bridge 对称——那个在 turn 前，这个在 turn 后，都在 engine 外面。
-    // runTurn 抛错时根本走不到这（失败的 turn 不值得分区）。
-    // 刻意排在 finally 外面：分类是又一次完整往返，答案早就渲染完了，
+    // runTurn 抛错时根本走不到这（失败的 turn 不值得再花一次）。
+    // 刻意排在 finally 外面：它是又一次完整往返，答案早就渲染完了，
     // 让它压着 turn 锁 = 用户在那几秒里发不出消息、换不了模型、删不掉会话——
-    // 那不是转圈，是硬锁输入。放开锁再排队，串行由 sectionQueues 保证
-    // 用户按了停止就别再起新的模型调用。半截对话确实也是对话，但停止键的契约
-    // 是"停"——在它之后自作主张再烧一次配额，是把契约让位给了目录的完整性。
+    // 那不是转圈，是硬锁输入。放开锁再排队，串行由 annotateQueues 保证
+    // 用户按了停止就别再起新的模型调用：停止键的契约是"停"，在它之后自作主张
+    // 再烧一次配额，是把契约让位给了外挂。
     // outcome 由 runTurn 直接给（issue #112）：原来是在这里做一次全量 store.load
     // + 倒着找最后一条 turn_ended，把 engine 早一帧就知道的事实又推导了一遍——
     // 每个 turn 一次、同步跑在主进程，长会话上是白读整份日志
@@ -4376,7 +4361,7 @@ void app.whenReady().then(() => {
       // 人在屏幕前时答案已经渲染出来了,不必再弹。aborted 不通知——停止是用户自己按的。
       // titleOf 是单条 SQL 投影,不是全量 load
       notify(turnCompleteNotification(store.titleOf(sessionId), text, sessionId));
-      // 分区分类 + 跟进建议合并成一次调用（issue #284），串行由 sectionQueues 保证
+      // 跟进建议 + 自动命名 + 主题合并成一次调用（issue #284），串行由 annotateQueues 保证
       enqueueAnnotate(sessionId);
       // 记忆审查同理：只在正常收口后跑，且自己内部已经挡了子会话（nudgeMemory 开头的 spawnedBy 判定）
       // 和已被 purge 的会话（agents.has），这里只需要同款兜底不让它毒死主进程

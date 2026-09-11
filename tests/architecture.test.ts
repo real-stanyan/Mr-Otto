@@ -183,7 +183,7 @@ describe("Hard rules(AGENTS.md)是门禁的一部分", () => {
     // 其余的投影函数手机端要跑 —— 名单写死在这里,新增文件想进复用面要显式加进来,
     // 而不是"碰巧还没碰 Node 就算数"
     const MOBILE_SAFE = [
-      "events.ts", "deriveMessages.ts", "deriveSections.ts", "deriveTodos.ts",
+      "events.ts", "deriveMessages.ts", "deriveTodos.ts",
       "deriveUsage.ts", "barrenTurns.ts", "activeSkills.ts", "microCompact.ts",
       "modelContextScan.ts", "persistencePolicy.ts",
     ];

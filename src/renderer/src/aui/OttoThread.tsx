@@ -4,7 +4,7 @@
 // 既有的 EventRow,一行没重写,也不需要第二条渲染路径。
 
 import React, { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
-import type { ComponentType, FC, ReactNode, RefObject } from "react";
+import type { ComponentType, FC, ReactNode } from "react";
 import { useAuiState } from "@assistant-ui/react";
 import type { PartState, ToolCallMessagePartProps } from "@assistant-ui/react";
 import { ThinkingOrb } from "thinking-orbs";
@@ -80,12 +80,20 @@ import { useChat } from "../store.js";
 import { spawnedToolCallIds } from "../lib/subagentTimeline.js";
 import { totalTokens } from "../../../session/deriveUsage.js";
 import { toThreadMessages } from "./toThreadMessages.js";
-import { growHidden, initialHidden, planReveal, type RevealRequest } from "../lib/messageWindow.js";
+import { growHidden, initialHidden, planReveal } from "../lib/messageWindow.js";
+import { ConversationMapRail } from "../components/ConversationMapRail.js";
+import {
+  describeTurn,
+  groupIntoTurns,
+  reuseEntries,
+  scrollToTurn,
+  turnOwners,
+  type ConversationMapEntry,
+} from "../lib/conversationMap.js";
 import { ottoDirectiveFormatter } from "./ottoDirectives.js";
 import { liveTimingStats, turnTimingStats, type TurnTimingAgg } from "./messageTiming.js";
 import { contextBreakdown, estimateTokens } from "../../../shared/contextEstimate.js";
 import type { ToolDefinition } from "../../../model/adapter.js";
-import type { Section } from "../../../session/deriveSections.js";
 import type { MemoryLoadedEvent, SessionEvent, ToolCallRequest } from "../../../session/events.js";
 import { timelineLabel, toolFilePath, toolIcon, toolSummary } from "../../../shared/toolSummary.js";
 import { FileTypeIcon } from "../components/FileTypeIcon.js";
@@ -552,8 +560,8 @@ const AnsweredAskCard: FC<{ args: unknown; outcome: AskUserOutcome }> = ({ args,
 };
 
 /** 派活出去的 task 工具行名单(spawnedToolCallIds 的结果)。在 OttoThread 顶层
-    算一次、Context 分发——不让每条工具行自己订阅 events 各扫一遍(#115 教训,
-    同下面 SectionAnchorsContext 的理由) */
+    算一次、Context 分发——不让每条工具行自己订阅 events 各扫一遍(#115 教训:
+    O(消息数) 的算法在 O(消息数) 条组件上各跑一遍就是 O(n²)) */
 const SpawnedToolCallsContext = createContext<ReadonlySet<string>>(new Set());
 
 /** 工具行:用 assistant-ui 的 ToolFallback,外挂一条直播尾巴 + 一张出错卡。
@@ -874,59 +882,56 @@ const RunIndicator: ComponentType = () => {
   );
 };
 
-// ─── MessageAnchor:会话分区轨的锚点(合并 main 后重接,见 App.tsx 里 SectionRail 的挂载) ───
+// ─── 会话地图的本地那半(ADR-0292;上游 conversation-map.aui.tsx 的接线) ───
 //
-// 每条 assistant-ui 消息的 id 就是产出它的那条 SessionEvent 的 seq(toThreadMessages.ts
-// 里三处 push 都是 `id: String(e.seq)`),分区起点(Section.startSeq)也是 seq——两边
-// 同一把尺子。但严格相等会漏锚点:分区起点可能落在一条不产出消息的事件上
-// (tool_result、被 isAuditEvent 过滤掉的事件…),这条 seq 上没有消息可挂。
-// 改成"沿消息顺序找第一个 id >= startSeq 的消息",跟旧 App.tsx 里 sectionAnchors 的算法
-// 一模一样,只是索引换成了 toThreadMessages 产出的消息 id 而不是旧 groupThread(已删,#929)的渲染项键。
-//
-// 这张表需要"消息的完整顺序"才算得出来,只能在能拿到完整 events 的地方建一次,
-// 不能建在单条消息的组件里——那是 O(消息数) 的算法在 O(消息数) 条组件上各跑一遍,
-// 变成 O(n²)(toolIndex 当年就是因为这个教训才从"各自扫"改成"建一次传下去",见 #115)。
-// 建在 OttoThread 顶层,用 Context 分发给挂在 thread.tsx MessageAnchor 槽上的组件读
-const SectionAnchorsContext = createContext<Map<string, number[]>>(new Map());
+// 一轮一格:条目取自 assistant-ui runtime 的消息(`s.thread.messages`,与上游同一个来源),
+// 记号是 MessagePrimitive.Root 自带的 `data-message-id` —— 每条消息都带,所以视口里任何
+// 一条消息都能替它那一轮说「我在屏幕上」(turnOwners)。原来那条分区轨要在消息前插零高
+// 锚点(MessageAnchor 槽)、在 App 里另挂一套 IntersectionObserver scrollspy,这些都没了:
+// 格子与消息同一把尺子(消息 id),量的就是消息本身。
+// 浮层是绝对定位的,宿主是 App.tsx 里包住 OttoThread 的那层(threadHostRef,relative),
+// 与划词引用 SelectionQuote 同一个宿主
+const MESSAGE_MARK = "[data-message-id]";
+const messageMarkId = (el: HTMLElement): string | undefined => el.dataset["messageId"];
 
-function buildSectionAnchors(messageIds: readonly string[], sections: Section[]): Map<string, number[]> {
-  // ThreadMessageLike.id 类型上是可选的(assistant-ui 允许调用方不给、自己生成),
-  // 但 toThreadMessages 的三处 push 都显式写了 `id: String(e.seq)` —— 运行时永远有值。
-  // 调用方在 map 时已用 ?? "" 兜底:空串在 Number("") 是 NaN,永远不会匹配到任何
-  // startSeq,是无害的降级,不是掩盖问题。
-  // "live" 那条同理:Number("live") 是 NaN,天然不参与锚点对齐
-  const map = new Map<string, number[]>();
-  let si = 0;
-  for (const id of messageIds) {
-    const seq = Number(id);
-    while (si < sections.length && sections[si]!.startSeq <= seq) {
-      const at = map.get(id);
-      if (at) at.push(si);
-      else map.set(id, [si]);
-      si++;
-    }
+/** 视口里那条消息的元素。逐个比 dataset 而不拼选择器:id 除了 seq 串还有 "live",
+    拼进选择器就得先想转义(上游 select 同一个写法) */
+function findMessageElement(viewport: HTMLElement, id: string): HTMLElement | null {
+  for (const element of viewport.querySelectorAll<HTMLElement>(MESSAGE_MARK)) {
+    if (element.dataset["messageId"] === id) return element;
   }
-  return map;
+  return null;
 }
 
-/** 零高度、不参与布局,只给 scrollspy(IntersectionObserver)和跳转(scrollIntoView)
-    一个可测量的位置——同一份 `data-section` 约定,App.tsx 那边原样沿用旧版 */
-const SectionAnchor: ComponentType = () => {
-  const anchorsByMessageId = useContext(SectionAnchorsContext);
-  const id = useAuiState((s) => s.message.id);
-  const indices = anchorsByMessageId.get(id);
-  if (!indices) return null;
+function OttoConversationMap({
+  viewport,
+  onSelect,
+}: {
+  viewport: HTMLElement | null;
+  onSelect: (id: string) => void;
+}) {
+  const messages = useAuiState((s) => s.thread.messages);
+  const turns = useMemo(() => groupIntoTurns(messages), [messages]);
+  const owners = useMemo(() => turnOwners(turns), [turns]);
+  // 流式期间每个 token 都换一份 messages,而条目里真在变的只有最后一轮的预览:
+  // 内容没变就沿用上一份(reuseEntries),刻度那一列不跟着 token 重渲
+  const entriesRef = useRef<readonly ConversationMapEntry[]>([]);
+  const entries = useMemo(() => {
+    const next = reuseEntries(entriesRef.current, turns.map(describeTurn));
+    entriesRef.current = next;
+    return next;
+  }, [turns]);
   return (
-    <>
-      {indices.map((si) => (
-        // absolute + 不设 top/left = 停在自己的静态位置,同时彻底退出 flex 流(issue #112):
-        // 零高度的 div 在 `flex flex-col gap-2` 里照样占一格,每个分区边界上下各多 8px,
-        // 跟上面那句"不参与布局"对不上
-        <div key={si} data-section={si} aria-hidden className="absolute h-0 scroll-mt-4" />
-      ))}
-    </>
+    <ConversationMapRail
+      viewport={viewport}
+      entries={entries}
+      owners={owners}
+      markSelector={MESSAGE_MARK}
+      markId={messageMarkId}
+      onSelect={onSelect}
+    />
   );
-};
+}
 
 // 除 UserText 外都是模块级常量:每次渲染新建对象会让整棵子树白重挂。
 // UserText 造不成常量 —— 它要认「哪些 $名字 是真 skill」,而那份名单来自 store
@@ -940,90 +945,124 @@ const STATIC_COMPONENTS = {
   ReasoningGroup: ReasoningGroupWithLabel,
   RunIndicator,
   MessageFooter: MessageTimingFooter,
-  MessageAnchor: SectionAnchor,
 } satisfies ThreadComponents;
 
-export function OttoThread({
-  viewportRef,
-  sections,
-  revealRequest = null,
-  onRevealSettled,
-  onWindowChange,
-}: {
-  /** 转给 thread.tsx 的 ThreadPrimitive.Viewport——分区轨拿它做 scrollspy/跳转的量尺。
-      reveal 桥也要拿它找锚点(querySelector),所以从 Ref 收窄成 RefObject */
-  viewportRef?: RefObject<HTMLDivElement | null> | undefined;
-  /** deriveSections(events) 的结果,App.tsx 那边已经算过一份(SectionRail 也要用),
-      传进来避免在这再扫一遍事件日志算同样的东西 */
-  sections: Section[];
-  /** 分区跳转的慢路径(ADR-0285 决定 3):目标锚点在时间线窗口外没挂载时,
-      App 把分区号递过来,这里把窗口抬到包含它,再接手滚过去。
-      nonce 让「连点同一个分区」也能再触发一次;sessionId 是发起那一刻的会话,
-      切会话后残留的请求在这里被识破(planReveal 的 stale 分支) */
-  revealRequest?: RevealRequest | null | undefined;
-  /** revealRequest 处理完(滚了,或发现无处可滚)回调一次,App 据此清掉请求 */
-  onRevealSettled?: (() => void) | undefined;
-  /** 窗口上沿动过(补挂 / reveal / 切会话归零)就回调一次 —— App 的 scrollspy
-      靠它重新收集锚点,否则补挂出来的新锚点不在 IntersectionObserver 的观察名单里 */
-  onWindowChange?: (() => void) | undefined;
-}) {
+export function OttoThread() {
   const events = useChat((s) => s.events);
   const sessionId = useChat((s) => s.sessionId);
   const skills = useChat((s) => s.skills);
-  // 消息 id 顺序算一次,三个消费方共用:锚点表、时间线窗口、reveal 桥。
+  // 真正滚动的那个元素(ThreadPrimitive.Viewport 转发出来的 div,见 thread.tsx 的
+  // viewportRef)。用 state 不用 ref:会话地图量位置那个 effect 要在它挂上的那一刻重跑,
+  // ref 挂上不会触发任何渲染
+  const [viewport, setViewport] = useState<HTMLDivElement | null>(null);
+  // 消息 id 顺序算一次,两个消费方共用:时间线窗口、reveal 桥。
   // toThreadMessages 有身份保持(ADR-0285 决定 4),同一份 events 的第二次调用
   // 近似零成本,所以这里不再需要「为拿 id 顺序而躲投影」
   const messageIds = useMemo(() => toThreadMessages(events).map((m) => m.id ?? ""), [events]);
-  const anchorsByMessageId = useMemo(
-    () => buildSectionAnchors(messageIds, sections),
-    [messageIds, sections]
-  );
   // 时间线窗口(ADR-0285 决定 2):只挂载消息列表的后缀。窗口只增不缩 ——
   // 滚下来不把上面卸掉,卸载重挂会把已付过的解析钱再付一遍,还会让
   // scrollHeight 往回跳、抢走人正在读的位置
   const [hiddenCount, setHiddenCount] = useState(() => initialHidden(messageIds.length));
+  // 会话地图点了窗口外的那一轮:窗口先抬上去,这一格记着「挂上之后滚到哪条消息」。
+  // nonce 让连点同一格也能再触发一次
+  const [pendingReveal, setPendingReveal] = useState<{ id: string; nonce: number } | null>(null);
   // 切会话重新开窗。OttoThread 不随 sessionId 重挂载(App.tsx 的渲染点没有 key),
   // 所以按 sessionId 在渲染期归零 —— 拿旧会话的 hiddenCount 给新会话渲一帧,
-  // 轻的(新会话更短)一帧空屏,重的(更长)错过去一屏的量
+  // 轻的(新会话更短)一帧空屏,重的(更长)错过去一屏的量。
+  // 挂起的跳转跟着窗口在**同一次渲染**里清掉:它说的是上一条会话里的某一轮,新会话的
+  // 第一帧就不该看见它(原来这份请求住在 App、要自带 sessionId 防的正是这一帧)
+  // 贴底跟随的开关(ADR-0292,真机撞见的):本地视口是 turnAnchor="bottom",assistant-ui 的
+  // autoScroll 内容一长高就把人拽回底部 —— 会话地图跳走的那一刻它还贴着底,紧跟着的一次尺寸
+  // 回调(reveal 桥刚补挂了几百条消息,必然有)就把这次跳转整个取消。所以跳走就关;三种情形再
+  // 打开:人自己回到底部(落稳之后)、新的一轮开跑、切会话。用的是 ThreadPrimitive.Viewport
+  // 公开的 autoScroll 开关 —— 它内部怎么判「用户往上滚」(isUserScrollUp:相邻两次 scroll 回调
+  // 之间 scrollTop 变小且 scrollHeight 没变)不归我们猜,程序滚动天然凑不齐那两条
+  const [following, setFollowing] = useState(true);
+  // 跳转还在落地(按住目标那一小会儿)时不认「到底了」:平滑滚动的头一两帧还在底部附近
+  const landingRef = useRef(false);
+  const status = useChat((s) => s.statusBySession[s.sessionId] ?? "idle");
+  const [prevStatus, setPrevStatus] = useState(status);
+  if (prevStatus !== status) {
+    setPrevStatus(status);
+    // 新的一轮开跑:人要看的是最新那一段(thread.tsx 里 turnAnchor="bottom" 那段注释的原意)
+    if (status === "running") setFollowing(true);
+  }
   const [prevSessionId, setPrevSessionId] = useState(sessionId);
   if (prevSessionId !== sessionId) {
     setPrevSessionId(sessionId);
     setHiddenCount(initialHidden(messageIds.length));
+    setPendingReveal(null);
+    setFollowing(true);
   }
   const totalRef = useRef(messageIds.length);
   totalRef.current = messageIds.length;
   // 稳定引用:哨兵的 IntersectionObserver 按它挂,重建一次观察就重挂一次
   const growWindow = useCallback(() => setHiddenCount((h) => growHidden(h, totalRef.current)), []);
-  useEffect(() => {
-    onWindowChange?.();
-  }, [hiddenCount, onWindowChange]);
 
-  // reveal 桥:快路径(锚点已在 DOM)在 App.tsx 原地解决,走不到这里。
-  // 判定全在 planReveal(纯函数,messageWindow.ts),这里只执行它的计划。
-  // stale 分支是切会话那一帧的保命闸:passive effect 子先于父,本 effect 会
-  // 先于 App 的清理 effect 看到旧会话留下的请求 —— 对不上 sessionId 就不动它
-  useEffect(() => {
-    if (revealRequest === null) return;
-    const plan = planReveal(revealRequest, sessionId, anchorsByMessageId, messageIds, hiddenCount);
-    if (plan.kind === "stale") return;
-    if (plan.kind === "settle") {
-      onRevealSettled?.();
-      return;
-    }
-    if (plan.kind === "grow") {
-      // 窗口抬到位后,hiddenCount 变化让本 effect 再跑一次,下一轮走进 scroll
+  // reveal 桥(ADR-0285 决定 3;ADR-0292 把键从分区号换成消息 id):会话地图点一格 =
+  // 跳到那一轮的第一条消息。挂着的直接滚;在窗口上沿以上、还没挂载的,先把窗口抬到
+  // 包含它,挂上之后由下面那个 effect 接手滚。判定在 planReveal(纯函数,messageWindow.ts)。
+  // 读的是 ref 不是闭包:这个回调递进会话地图,每个 token 都换一次引用的话,刻度那一列
+  // 会跟着流式输出一起重渲
+  const messageIdsRef = useRef(messageIds);
+  messageIdsRef.current = messageIds;
+  const hiddenRef = useRef(hiddenCount);
+  hiddenRef.current = hiddenCount;
+  const land = useCallback(() => {
+    landingRef.current = false;
+  }, []);
+  const revealTurn = useCallback(
+    (id: string) => {
+      if (viewport === null) return;
+      setFollowing(false);
+      landingRef.current = true;
+      const mounted = findMessageElement(viewport, id);
+      if (mounted) {
+        scrollToTurn(viewport, mounted, { onSettled: land });
+        return;
+      }
+      const plan = planReveal(id, messageIdsRef.current, hiddenRef.current);
+      if (plan.kind !== "grow") {
+        land();
+        return;
+      }
       setHiddenCount(plan.to);
-      return;
-    }
-    // 已进窗口 = 锚点已挂载(窗口按消息 id 的前缀切,锚点跟着自己的消息走)
-    const anchor = viewportRef?.current?.querySelector<HTMLElement>(plan.selector);
-    anchor?.scrollIntoView({
-      block: "start",
-      // 与 App.tsx jumpToSection 快路径同一个 smooth/reduced-motion 分支
-      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
-    });
-    onRevealSettled?.();
-  }, [revealRequest, sessionId, hiddenCount, anchorsByMessageId, messageIds, viewportRef, onRevealSettled]);
+      setPendingReveal((r) => ({ id, nonce: (r?.nonce ?? 0) + 1 }));
+    },
+    [viewport, land]
+  );
+  // 窗口抬到位的那次提交之后才找得到目标。thread.tsx 的补挂补偿(useLayoutEffect,
+  // 子先于父、layout 先于 passive)已经先把视口顶回原位,这里再平滑滚过去 ——
+  // 两件事不打架。找不到(那条消息投影变了)就算了,不留一个悬着的请求
+  // 这一跳是瞬时的:刚补挂的那一大段还在排版,平滑滚过去是在追一个移动的目标
+  // (见 scrollToTurn 头注)。
+  // 已知:视口不在窗口顶时补挂,thread.tsx 那道补偿会与浏览器原生的滚动锚定叠加(锚点在
+  // 插入点下方时原生已经挪过一次),视口被推到底部夹住 —— 这条路上看不见,因为同一个任务里
+  // 紧接着就跳走了(真机时间线:补偿 75ms、跳转 77ms);哨兵那条路锚点是哨兵自己,不叠加
+  // (#1259 真机排查时撞见,单开 #1262;没顺手改那道补偿:它是 ADR-0285 的判据)
+  useEffect(() => {
+    if (pendingReveal === null || viewport === null) return;
+    const target = findMessageElement(viewport, pendingReveal.id);
+    if (target) scrollToTurn(viewport, target, { instant: true, onSettled: land });
+    else land();
+    setPendingReveal(null);
+  }, [pendingReveal, hiddenCount, viewport, land]);
+
+  // 关着跟随的时候,人自己滚回底部 = 要接着看最新的:打开。落地期间不认(landingRef)
+  useEffect(() => {
+    if (viewport === null || following) return undefined;
+    const onScroll = () => {
+      if (landingRef.current) return;
+      if (Math.abs(viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight) <= 1) setFollowing(true);
+    };
+    viewport.addEventListener("scroll", onScroll, { passive: true });
+    return () => viewport.removeEventListener("scroll", onScroll);
+  }, [viewport, following]);
+  // 重新打开的那一刻让 autoScroll 按实际位置重读一遍:它的「贴底」标记只在 scroll 回调里更新,
+  // 关着的那段时间里人滚到底的那一下,它是拿着 autoScroll=false 的闭包看的,标记没跟上
+  useEffect(() => {
+    if (following && viewport !== null) viewport.dispatchEvent(new Event("scroll"));
+  }, [following, viewport]);
   // 每次事件追加算一次,所有工具行共读(替代原来每行各订阅各扫的写法)
   const spawnedIds = useMemo(() => spawnedToolCallIds(events), [events]);
   // 时间线行(派活卡/交接行)共读的投影,同上理由(#115):顶层算一次,Context 分发
@@ -1045,17 +1084,17 @@ export function OttoThread({
     [skills]
   );
   return (
-    <SectionAnchorsContext.Provider value={anchorsByMessageId}>
-      <SpawnedToolCallsContext.Provider value={spawnedIds}>
-        <TimelineProjectionContext.Provider value={timelineProjection}>
-          <Thread
-            components={components}
-            viewportRef={viewportRef}
-            hiddenCount={hiddenCount}
-            onGrowWindow={growWindow}
-          />
-        </TimelineProjectionContext.Provider>
-      </SpawnedToolCallsContext.Provider>
-    </SectionAnchorsContext.Provider>
+    <SpawnedToolCallsContext.Provider value={spawnedIds}>
+      <TimelineProjectionContext.Provider value={timelineProjection}>
+        <Thread
+          components={components}
+          viewportRef={setViewport}
+          hiddenCount={hiddenCount}
+          onGrowWindow={growWindow}
+          autoScroll={following}
+        />
+        <OttoConversationMap viewport={viewport} onSelect={revealTurn} />
+      </TimelineProjectionContext.Provider>
+    </SpawnedToolCallsContext.Provider>
   );
 }

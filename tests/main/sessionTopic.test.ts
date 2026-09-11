@@ -22,7 +22,7 @@ describe("topicBlock", () => {
     expect(b).toContain("<abc12345>\n帮我看看 WRX 改装\n</abc12345>");
     expect(b).toContain("work（工作）· 2 条");
     expect(b).toContain("hobbies");
-    expect(b).toContain("任务四");
+    expect(b).toContain("任务三");
     expect(b).toContain("sessionTopic");
   });
 });

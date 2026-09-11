@@ -1,31 +1,38 @@
 // @vitest-environment jsdom
 //
-// reveal 桥的会话归属(#1190 复审 ①):passive effect **子先于父**跑,切会话那一帧
-// OttoThread 的 reveal effect 会先于 App 的清理 effect 看到旧会话留下的
-// revealRequest —— 修法是请求自带发起时的 sessionId、消费前核对(planReveal 的
-// stale 分支)。messageWindow.test.ts 验纯逻辑,这里验**接线**:同一个请求挂在
-// OttoThread 上,戳对会话 → 抬窗 + 滚 + 收口;戳不对 → 窗口纹丝不动。
+// 会话地图跳到时间线窗口外的那一轮(ADR-0292 × ADR-0285 决定 3 的 reveal 桥)。
+// messageWindow.test.ts 验纯逻辑(planReveal),conversationMap.test.ts 验 scrollToTurn 那几步
+// 滚动的先后;这里验**接线**:真 store + 真 useOttoRuntime 渲染 OttoThread,点地图上第一轮那一格
+// —— 它在窗口上沿以上、没挂载 —— 窗口抬到包含它、挂上之后滚到的是**那条消息**;点一格已经
+// 挂着的,只滚不抬窗。
 //
-// 会话用真 store(useChat.setState,与 filesPanelStore.test.ts 同一个手法),
-// runtime 就是真 useOttoRuntime —— 不然 OttoThread 与 Thread 各读一份假数据,
-// 验的就不是真接线了。
+// scrollToTurn 在这里是桩:jsdom 没有布局,真滚动的调用与 assistant-ui autoScroll 自己的
+// scrollTo 长得一模一样(top 全是 0),分不出谁是谁;桩下来就能直接问「滚到了哪个元素、走的
+// 哪条路」。真滚得到位这件事在真机上验过(#1259,autoScroll 取消跳转那个坑就是在真机上撞见的)。
+//
+// 原来这里验的是「旧会话留下的 revealRequest 不作用于新会话」(#1190 复审 ①):那时请求住在
+// App、被 OttoThread 消费,passive effect 子先于父,切会话那一帧清理追不上。现在挂起的跳转
+// 住在 OttoThread 自己手里,与窗口在同一次渲染里归零,那一帧不存在了 —— 最后一条用例钉住
+// 「点过的跳转不跟到新会话去:新会话照样只开后缀窗口」。
 
 import { afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { cleanup, render, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
-import { createRef, type RefObject } from "react";
 import { AssistantRuntimeProvider } from "@assistant-ui/react";
 
 import { OttoThread } from "../../src/renderer/src/aui/OttoThread.js";
 import { useOttoRuntime } from "../../src/renderer/src/aui/useOttoRuntime.js";
 import { useChat } from "../../src/renderer/src/store.js";
-import type { Section } from "../../src/session/deriveSections.js";
+import { scrollToTurn } from "../../src/renderer/src/lib/conversationMap.js";
 import type { SessionEvent } from "../../src/session/events.js";
-import type { RevealRequest } from "../../src/renderer/src/lib/messageWindow.js";
 
-// jsdom 三件套:布局/平滑滚动/媒体查询都没有。补挂那条路本来就走不到
-// (没有 IntersectionObserver,哨兵只剩按钮),这里 stub 的是 reveal 的滚动分支
-// 和视口的 autoScroll 钩子(同 threadWindow.test.tsx 的 ResizeObserver)
+vi.mock("../../src/renderer/src/lib/conversationMap.js", async (importOriginal) => {
+  const mod = await importOriginal<typeof import("../../src/renderer/src/lib/conversationMap.js")>();
+  return { ...mod, scrollToTurn: vi.fn() };
+});
+
+// jsdom 没有布局/媒体查询。补挂那条路本来就走不到(没有 IntersectionObserver,
+// 哨兵只剩按钮);scrollTo 是给视口的 autoScroll 钩子的
 beforeAll(() => {
   class NoopResizeObserver {
     observe() {}
@@ -33,9 +40,6 @@ beforeAll(() => {
     disconnect() {}
   }
   globalThis.ResizeObserver ??= NoopResizeObserver as never;
-  Element.prototype.scrollIntoView ??= vi.fn() as never;
-  // autoScroll 钩子的 scrollToBottom 走 div.scrollTo(jsdom 没有);窗口模块自己的
-  // 补偿在这条测试里走不到(没有 IO,哨兵不自动补挂)
   Element.prototype.scrollTo ??= vi.fn() as never;
   window.matchMedia ??= ((query: string) => ({
     matches: false,
@@ -51,7 +55,7 @@ beforeAll(() => {
 
 afterEach(() => {
   cleanup();
-  vi.mocked(Element.prototype.scrollIntoView).mockClear();
+  vi.mocked(scrollToTurn).mockClear();
 });
 
 /** 150 条消息(用户/助手交替)——越过小列表阈值,窗口启用,初始藏 90 条 */
@@ -64,26 +68,11 @@ function makeEvents(tag: string): SessionEvent[] {
   }).map((e, i) => ({ ...e, sessionId: tag, ts: 1000 + i, seq: i + 1 }));
 }
 
-const SECTIONS: Section[] = [{ title: "开头", startSeq: 1, preview: "" }];
-
-function Harness({
-  revealRequest,
-  onRevealSettled,
-  viewportRef,
-}: {
-  revealRequest: RevealRequest;
-  onRevealSettled: () => void;
-  viewportRef: RefObject<HTMLDivElement | null>;
-}) {
+function Harness() {
   const runtime = useOttoRuntime();
   return (
     <AssistantRuntimeProvider runtime={runtime}>
-      <OttoThread
-        sections={SECTIONS}
-        revealRequest={revealRequest}
-        onRevealSettled={onRevealSettled}
-        viewportRef={viewportRef}
-      />
+      <OttoThread />
     </AssistantRuntimeProvider>
   );
 }
@@ -101,41 +90,53 @@ function enter(sessionId: string, events: SessionEvent[]): void {
 const sentinelText = (): string | null =>
   document.querySelector('[data-slot="otto_window-sentinel"]')?.textContent ?? null;
 
-describe("reveal 桥的会话归属(#1190 复审)", () => {
-  it("戳对了会话:抬窗 → 滚过去 → 收口(对照组,证明接线本身是通的)", async () => {
+/** 第 n 次 scrollToTurn 滚的是哪条消息、走的哪条路（instant = reveal 桥那条） */
+function scrolledTo(n = 0): { messageId: string | undefined; viewport: string | null; instant: boolean } {
+  const [viewport, element, opts] = vi.mocked(scrollToTurn).mock.calls[n]!;
+  return {
+    messageId: element.dataset["messageId"],
+    viewport: viewport.getAttribute("data-slot"),
+    instant: opts?.instant === true,
+  };
+}
+
+describe("会话地图 × 时间线窗口(ADR-0292 / ADR-0285)", () => {
+  it("一轮一格:75 轮对话 = 75 格刻度,标题取那一轮的问题", async () => {
     enter("s2", makeEvents("s2"));
-    const onSettled = vi.fn();
-    const viewportRef = createRef<HTMLDivElement | null>();
-    render(
-      <Harness
-        revealRequest={{ section: 0, nonce: 1, sessionId: "s2" }}
-        onRevealSettled={onSettled}
-        viewportRef={viewportRef}
-      />
-    );
-    await waitFor(() => expect(onSettled).toHaveBeenCalledTimes(1));
-    expect(Element.prototype.scrollIntoView).toHaveBeenCalled();
-    // 窗口抬到了底(目标在第 0 条):哨兵收起
-    expect(sentinelText()).toBeNull();
+    render(<Harness />);
+    const map = await screen.findByRole("navigation", { name: "会话地图" });
+    expect(map.querySelectorAll('[data-slot="conversation-map-tick"]')).toHaveLength(75);
+    expect(screen.getByRole("button", { name: "s2 问题 1" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "s2 问题 149" })).toBeInTheDocument();
   });
 
-  it("旧会话留下的 revealRequest 不作用于新会话:不抬窗、不滚、不收口", async () => {
+  it("点窗口外的那一轮:窗口抬到包含它 → 挂上之后瞬时滚到那条消息", async () => {
     enter("s2", makeEvents("s2"));
-    const onSettled = vi.fn();
-    const viewportRef = createRef<HTMLDivElement | null>();
-    render(
-      <Harness
-        // s1 发起的请求留到了 s2 的帧里 —— 复审抓的那一行
-        revealRequest={{ section: 0, nonce: 1, sessionId: "s1" }}
-        onRevealSettled={onSettled}
-        viewportRef={viewportRef}
-      />
-    );
-    // 等一拍再说没发生:被动 effect 链(抬窗→再跑→滚)若动了,这一拍内必露馅
-    await new Promise((r) => setTimeout(r, 50));
-    expect(onSettled).not.toHaveBeenCalled();
-    expect(Element.prototype.scrollIntoView).not.toHaveBeenCalled();
-    // 窗口保持初始的 90 条,没被旧请求抬走
+    render(<Harness />);
     expect(sentinelText()).toContain("还有 90 条");
+    fireEvent.click(await screen.findByRole("button", { name: "s2 问题 1" }));
+    // 目标是第 0 条:窗口抬到底,哨兵收起
+    await waitFor(() => expect(sentinelText()).toBeNull());
+    await waitFor(() => expect(scrollToTurn).toHaveBeenCalledTimes(1));
+    expect(scrolledTo()).toEqual({ messageId: "1", viewport: "aui_thread-viewport", instant: true });
+  });
+
+  it("点已经挂着的那一轮:只滚(平滑那条路),不抬窗", async () => {
+    enter("s2", makeEvents("s2"));
+    render(<Harness />);
+    fireEvent.click(await screen.findByRole("button", { name: "s2 问题 149" }));
+    await waitFor(() => expect(scrollToTurn).toHaveBeenCalledTimes(1));
+    expect(scrolledTo()).toEqual({ messageId: "149", viewport: "aui_thread-viewport", instant: false });
+    expect(sentinelText()).toContain("还有 90 条");
+  });
+
+  it("切会话:窗口按新会话重开,上一条会话里点过的跳转不跟过来", async () => {
+    enter("s2", makeEvents("s2"));
+    render(<Harness />);
+    fireEvent.click(await screen.findByRole("button", { name: "s2 问题 1" }));
+    await waitFor(() => expect(sentinelText()).toBeNull());
+    act(() => enter("s3", makeEvents("s3")));
+    await waitFor(() => expect(sentinelText()).toContain("还有 90 条"));
+    expect(await screen.findByRole("button", { name: "s3 问题 1" })).toBeInTheDocument();
   });
 });

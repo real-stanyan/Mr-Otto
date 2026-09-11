@@ -513,7 +513,10 @@ export interface ImageDescribedEvent extends SessionEventBase {
   creditCostMicro?: number;
 }
 
-/** 额外 10：分区分类（会话目录）。每个 turn 收口后跑一次便宜模型：这一段是延续
+/** 额外 10：分区分类（会话目录）。**不再产出**（ADR-0292）：会话目录换成了每轮一格的
+    会话地图（纯投影，不打模型），分类员随之删掉。类型留在 union 里只为旧日志重放
+    （硬规则：旧日志必须永远可重放）——投影照旧丢弃它，旧账照旧计进 deriveUsage。
+    以下是它当年的语义：每个 turn 收口后跑一次便宜模型：这一段是延续
     当前分区，还是开了新分区。标题出自模型、日志里任何事件都推不出 → 必须落盘；
     但它是给人看的目录，不喂回模型 → 投影必须丢弃（同 reasoning：logged ≠ model-visible）。
     title 非空 = 从本条 seq 起进入新分区；null = 延续上一分区。

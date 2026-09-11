@@ -1,5 +1,5 @@
 // sessionTitler（issue #335）：会话自动命名的判定 + 解析纯函数。
-// 调用本体（合并进 turnAnnotator 的任务三）的覆盖在 turnAnnotator.test.ts。
+// 调用本体（合并进 turnAnnotator 的任务二）的覆盖在 turnAnnotator.test.ts。
 import { describe, expect, it } from "vitest";
 import {
   AUTO_TITLE_THRESHOLD,
@@ -45,7 +45,7 @@ describe("parseSessionTitle —— 模型产出的 JSON 不可信", () => {
     expect(parseSessionTitle('```json\n{"sessionTitle":"修登录"}\n```')).toBe("修登录");
   });
 
-  it("合并回复里只认 sessionTitle 键，不吃任务一的 title", () => {
+  it("合并回复里只认 sessionTitle 键，不吃泛名的 title 键", () => {
     expect(parseSessionTitle('{"newSection":true,"title":"分区标题"}')).toBeNull();
   });
 

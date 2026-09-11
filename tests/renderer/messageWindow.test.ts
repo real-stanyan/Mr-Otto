@@ -44,30 +44,19 @@ describe("messageWindow — 时间线窗口(ADR-0285)", () => {
   });
 });
 
-describe("planReveal — reveal 桥的处理计划(ADR-0285 决定 3)", () => {
-  // 对齐判据的来源是 buildSectionAnchors 的正查产物(分区 2 挂在消息 "12" 上,
-  // 意味着它的 startSeq 落在不产消息的事件上、顺延到了下一条)——planReveal
-  // 只反查这张表,不自己拿 startSeq 再比一遍
+describe("planReveal — reveal 桥的处理计划(ADR-0285 决定 3;ADR-0292 键换成消息 id)", () => {
+  // 会话地图的一格 = 一轮,格子的 id 就是那一轮第一条消息的 id —— 与 messageIds
+  // 同一把尺子,不再有「分区 → 第一条带锚点的消息」那张对照表
   const ids = ["10", "11", "12", "13", "live"];
-  const anchors = new Map<string, number[]>([["12", [2]]]);
-  const req = { section: 2, nonce: 1, sessionId: "s1" };
-
-  it("旧会话的 revealRequest 不作用于新会话 —— passive effect 子先于父,App 的清理赶不上那一帧", () => {
-    // 这就是 8df966d6 修歪的那条:清理放在 App 的 effect 里,而 OttoThread 的
-    // reveal effect 先跑。判据于是落在请求自带的 sessionId 上
-    expect(planReveal(req, "s2", anchors, ids, 3)).toEqual({ kind: "stale" });
-  });
 
   it("目标在窗口外 → grow,上沿抬到目标那条;已在窗口内 → scroll", () => {
     // "12" 在 ids 下标 2:hidden 3 时它在窗口外 → revealHidden(3,2)=2
-    expect(planReveal(req, "s1", anchors, ids, 3)).toEqual({ kind: "grow", to: 2 });
-    expect(planReveal(req, "s1", anchors, ids, 2)).toEqual({
-      kind: "scroll",
-      selector: '[data-section="2"]',
-    });
+    expect(planReveal("12", ids, 3)).toEqual({ kind: "grow", to: 2 });
+    expect(planReveal("12", ids, 2)).toEqual({ kind: "scroll" });
+    expect(planReveal("live", ids, 3)).toEqual({ kind: "scroll" });
   });
 
-  it("分区没有对应的锚点(越界/没产消息)→ settle,无处可滚也收口", () => {
-    expect(planReveal({ ...req, section: 7 }, "s1", anchors, ids, 3)).toEqual({ kind: "settle" });
+  it("认不出的 id(那条消息不在列表里)→ settle,无处可滚", () => {
+    expect(planReveal("99", ids, 3)).toEqual({ kind: "settle" });
   });
 });
