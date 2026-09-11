@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { splashProgress, SPLASH_MIN_MS } from "../../../src/renderer/src/lib/splashProgress.js";
+import { splashProgress, SPLASH_MIN_MS } from "../../src/shared/splashProgress.js";
 
 describe("splashProgress", () => {
   it("starts at 0", () => {

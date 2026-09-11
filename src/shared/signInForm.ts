@@ -3,7 +3,7 @@
 // 抽出来是因为它们**随 mode 变**：注册多一个「再输一遍密码」，登录没有。
 // 写在组件里就是一串串起来的三元表达式，改一处忘一处；而这两条恰好是纯函数。
 
-import { NAME_MAX } from "../../../shared/profile.js";
+import { NAME_MAX } from "./profile.js";
 
 export type SignInMode = "sign-in" | "sign-up";
 

@@ -6,7 +6,7 @@ import {
   canSubmitSignIn,
   confirmHint,
   type SignInFormState,
-} from "../../src/renderer/src/lib/signInForm.js";
+} from "../../src/shared/signInForm.js";
 
 const base: SignInFormState = {
   mode: "sign-in",

@@ -45,3 +45,19 @@ export function canSubmitOtp(code: string, busy: boolean): boolean {
 export function resendLabel(secondsLeft: number): string {
   return secondsLeft > 0 ? `重新发送（${secondsLeft}s）` : "重新发送";
 }
+
+/** 手机上那排验证码格子（4 + 4）的一格：有没有字、光标在不在这格 */
+export interface OtpCell {
+  ch: string;
+  cursor: boolean;
+}
+
+/**
+ * 手机端验证码那排格子怎么画（#1237 M1）。底下只有**一个**真输入框——粘贴、系统从邮件里
+ * 递上来的码、退格全走它——格子只是它的画法：画擦过的码（normalizeOtp），光标停在第一个
+ * 空格上；填满了就没有光标（demo 的 .otp：填满就交）。
+ */
+export function otpCells(code: string): OtpCell[] {
+  const v = normalizeOtp(code);
+  return Array.from({ length: OTP_LENGTH }, (_, i) => ({ ch: v[i] ?? "", cursor: i === v.length }));
+}

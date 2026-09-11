@@ -5,7 +5,7 @@
 // 自己打进限流，界面上还振振有词地说「试得太频繁了」。
 
 import { describe, expect, it } from "vitest";
-import { pollDelayMs } from "../../src/renderer/src/components/ConfirmEmailDialog.js";
+import { pollDelayMs } from "../../src/shared/confirmEmailPoll.js";
 
 describe("pollDelayMs", () => {
   it("开头快：人通常就在头半分钟里点完邮件，这一段要跟得上", () => {
