@@ -1,13 +1,23 @@
 # mobile —— Mr Otto 的手机端（Expo / React Native）
 
-范围只有两件事：**看**当前会话的时间线，**审批**危险操作（ADR-0094 / 0096）。
-不建会话、不改设置、不切模型、不管 MCP。
+三栏客户端：**任务 / 项目 / 团队**（ADR-0293；spec `docs/superpowers/specs/2026-09-11-mobile-app-redesign-design.md`，
+可交互 demo `.demo/mobile-app-redesign.html`）。今天做到 M0 + M1：三栏导航壳与进门。
+项目栏是到自己电脑的加密投影（ADR-0094 / 0096 原样），任务栏、团队栏在 M2 / M3 接上。
 
 **规则不写在这里。** 全仓唯一的事实源是根目录的 `AGENTS.md`。（Expo 模板会往
 子目录塞一份自己的 `AGENTS.md` + `CLAUDE.md`，已删掉——两份规则等于没有规则。
 模板里那句提醒本身是对的，抄在下面。）
 
 > Expo 变化很快。写代码前先读对应版本的文档：https://docs.expo.dev/versions/v57.0.0/
+
+## 结构
+
+- `App.tsx`：开屏 → 进门 → 三栏；此刻画哪一屏由 `src/shared/mobileGate.ts` 的 `gateView` 说了算
+- `src/nav/`：根栈（三栏 + 账号 / 好友 / 配对）、毛玻璃页签栏、右上头像
+- `src/gate/`：开屏、登录 / 注册卡、等确认信、忘记密码三步
+- `src/tabs/`、`src/projects/`、`src/account/`、`src/pair/`、`src/friends/`：各屏
+- `src/ui.tsx`、`src/dialog.tsx`、`src/icons.tsx`、`src/chrome.tsx`、`src/link.tsx`：组件层与共享状态
+- 能测的判断一律住 `src/shared/`（跟着根门禁跑），这里只放装配与画法
 
 ## 跑起来
 

@@ -251,6 +251,9 @@ M0 的 PR 带一份 ADR：手机端从「投影窗口」扩成三栏客户端（
 4. 图标不引 `lucide-react-native`，用 demo 同一份路径经 `react-native-svg` 画（§3.1）：demo 的 `spark` 不是 lucide 原图。
 5. `react-native-reanimated` / `react-native-gesture-handler` / 底部抽屉挪到 M2（§3.3）：M0 / M1 没有手势驱动的动效，抽屉的第一个消费方是 M2 的模型选单。
 6. 找回密码第二步的说明去掉「邮件里那条链接点了也算」：手机端没有接 `mrotto://auth-callback` 的深链（Expo Go 里 scheme 也不是它），这句话在手机上是假的。
+7. **弹窗的退场要放得出来**：plan 里确认信、找回密码两张弹窗的「稍后再说」「取消」直接把弹窗卸掉，`Dialog` 收不到 `visible=false`，140ms 的退场是死代码。实现改成弹窗自己持有 `open`：按钮只把它关掉，`Dialog` 放完退场调 `onExited`，调用方在那里才卸载；退场途中不接手指（Task 7 审查回流）。以后每一张「有值才画」的弹窗都照这条。
+8. 减弱动态效果时，页签与右上头像的按压反馈退成透明度 0.7：plan 只写了缩放，而 §3.3 要的是「缩放退成透明度」，不是没有反馈。
+9. 几处不改变画面的小处：进门那两处报错（闸门上、找回密码弹窗里）共用 `mobile/src/gate/NoticeLine.tsx` 一份画法；找回密码的「按住闸门」写在 `try` 里（写在外面的话，落盘失败会让锁住的弹窗一颗钮都点不动）；expo-haptics 57 的枚举是 `ImpactFeedbackStyle`（plan 写成 `ImpactStyle`）；`app.json` 多了 `expo-font` 插件那一行（`expo install` 自动加的，Expo Go 下不起作用，M7 换 dev build 时要它）。
 
 （写 plan / 实现期间的偏离与复审裁定追加在这里。）
 
