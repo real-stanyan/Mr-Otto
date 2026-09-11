@@ -38,7 +38,7 @@
 // 效果的按钮。这里另起一张更薄的卡，可视觉语言（圆角边框、pill 按钮）不
 // 新造。
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, AtSign, ChevronRight, Download, Phone, Settings2 } from "lucide-react";
 import { cn, isMac } from "@/lib/utils.js";
 import { Button } from "@/components/ui/button.js";
@@ -67,6 +67,8 @@ import {
   voiceCallCards, type VoiceCallCard,
 } from "../lib/cloudTimeline.js";
 import { systemNoteDetail } from "../lib/systemNote.js";
+import { cloudConversationEntries, scrollToTurn } from "../lib/conversationMap.js";
+import { ConversationMapRail } from "./ConversationMapRail.js";
 import { TurnErrorState } from "./TurnErrorState.js";
 import { ThreadHistorySkeleton } from "./assistant-ui/thread.js";
 import { openTurns } from "../../../shared/turnLedger.js";
@@ -92,6 +94,11 @@ import { VoicePickerPopover } from "./VoicePickerPopover.js";
 import { voiceCallAvailable } from "../lib/voiceCall.js";
 import { voiceCallOf } from "../../../shared/voiceCall.js";
 import { useConfirm } from "@/components/ui/confirm-dialog.js";
+
+/** 会话地图的记号（ADR-0292）：云会话只给**一轮的头**打（人说的话、通话卡），
+    记号值就是那一轮的 id。模块级，量位置那个 effect 按引用依赖它 */
+const TURN_MARK = "[data-turn-id]";
+const turnMarkId = (el: HTMLElement): string | undefined => el.dataset["turnId"];
 
 // cs 还没到位时兜底（正常路径下 WorkspacePage 只在 cloudSession 非空时才
 // 挂载这个组件，但 hooks 不能条件调用，events 得先算出一个稳定引用——
@@ -439,7 +446,7 @@ export function CloudSessionPage({
   // 滚动区贴底才跟底（#987）：新事件到了、人原本就在底部（或还没滚过）才跟过去；
   // 人往上翻旧消息时不抢。「原本在底部」按上一次滚动时记下的位置判——事件一进来
   // scrollHeight 就变了，事后判永远是"不在底部"
-  const scrollRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef<HTMLDivElement | null>(null);
   const stickToBottomRef = useRef(true);
   const eventCount = cs?.events.length ?? 0;
   useLayoutEffect(() => {
@@ -448,6 +455,37 @@ export function CloudSessionPage({
     el.scrollTop = el.scrollHeight;
   }, [eventCount, cs?.state]);
 
+  // 会话地图（ADR-0292）：时间线左缘一轮一格，与本地会话同一个组件。量位置那个 effect
+  // 要在滚动区挂上的那一刻重跑，所以滚动区元素另存一份 state（ref 挂上不触发渲染）；
+  // 两份指的是同一个节点，跟底那条照旧读 ref
+  const [scrollEl, setScrollEl] = useState<HTMLDivElement | null>(null);
+  const attachScroll = useCallback((el: HTMLDivElement | null) => {
+    scrollRef.current = el;
+    setScrollEl(el);
+  }, []);
+  const mapEntries = useMemo(
+    () => cloudConversationEntries(events, ws, selfUid, voiceCards),
+    [events, ws, selfUid, voiceCards]
+  );
+  // 只有头行带记号，记号自己就是那一轮。渲染循环给哪几行打记号也查这张表——
+  // 条目与记号出自同一份结果，不会出现「点了找不到」的格子
+  const mapOwners = useMemo(() => new Map(mapEntries.map((entry) => [entry.id, entry.id])), [mapEntries]);
+  const jumpToTurn = useCallback(
+    (id: string) => {
+      if (!scrollEl) return;
+      for (const head of scrollEl.querySelectorAll<HTMLElement>(TURN_MARK)) {
+        if (head.dataset["turnId"] === id) {
+          // 跳走就不再贴底：不然跳走之后正好来一条新事件，上面那条跟底 effect 会把人拽回底部
+          // （它按上一次 scroll 时记下的位置判，平滑滚动的第一帧可能还没来）
+          stickToBottomRef.current = false;
+          scrollToTurn(scrollEl, head);
+          return;
+        }
+      }
+    },
+    [scrollEl]
+  );
+
   if (!cs) return null;
 
   const ready = cs.state === "ready";
@@ -455,6 +493,9 @@ export function CloudSessionPage({
   const modelStatus = modelStatusText(cs.modelRoute);
   const canSend = ready && !sending && draft.trim().length > 0;
   const timelineEmpty = cloudEmptyState(cs.state, events.length);
+  /** 这一行是不是会话地图上某一轮的头：是就回它的记号，不是回 undefined（ADR-0292） */
+  const turnIdOf = (seq: number): string | undefined =>
+    mapOwners.has(String(seq)) ? String(seq) : undefined;
   // owner 判据在 `sandboxApprovalControl` 里取 `ws.ownerUid` 不取 `cs.ownerUid`：
   // 后者在开会话的占位期间是空串（welcome 到了才真），照它判 owner 自己会先看到
   // 一拍「所有者可改」再跳变——所以这里喂进去的是快照不是 cs
@@ -789,8 +830,11 @@ export function CloudSessionPage({
           `sticky bottom-0 z-10` 骑在渐隐之上，所以从来不糊；这里照同一把尺，
           40px 渐隐之外还剩 16px 是真正看得见的间距。onScroll 记「此刻在不在底部」
           给上面那条跟底 effect 用（阈值 48px：滚动条抖一下不算离开） */}
+      {/* relative 这一层是会话地图的宿主（ADR-0292）：地图是挂在滚动区外面的绝对定位浮层，
+          高度天然等于这一层。滚动区照旧 flex-1、自己滚 */}
+      <div className="relative flex min-h-0 flex-1 flex-col">
       <div
-        ref={scrollRef}
+        ref={attachScroll}
         onScroll={(e) => {
           const el = e.currentTarget;
           stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
@@ -833,6 +877,7 @@ export function CloudSessionPage({
                     event={e}
                     mine={e.fromUid === selfUid}
                     avatarUrl={memberAvatarOf(ws, e.fromUid)}
+                    turnId={turnIdOf(e.seq)}
                   />
                 );
               }
@@ -856,6 +901,7 @@ export function CloudSessionPage({
                     text={identity.text}
                     mine={identity.mine}
                     avatarUrl={identity.uid ? memberAvatarOf(ws, identity.uid) : ""}
+                    turnId={turnIdOf(e.seq)}
                   />
                 );
               }
@@ -869,7 +915,7 @@ export function CloudSessionPage({
                 const card = voiceCards.cards.get(e.seq);
                 // 开场那一条 = 卡片的位置。查不到（空名单开场那种旧日志怪形状）
                 // 就一个字都不画：那条事件说不出任何一句真话
-                return card ? <VoiceCallCardRow key={e.seq} card={card} /> : null;
+                return card ? <VoiceCallCardRow key={e.seq} card={card} turnId={turnIdOf(e.seq)} /> : null;
               }
               if (e.type === "agent_relay") {
                 return <AgentRelayRow key={e.seq} event={e} ws={ws} />;
@@ -946,6 +992,15 @@ export function CloudSessionPage({
         </div>
       )}
 
+      </div>
+      <ConversationMapRail
+        viewport={scrollEl}
+        entries={mapEntries}
+        owners={mapOwners}
+        markSelector={TURN_MARK}
+        markId={turnMarkId}
+        onSelect={jumpToTurn}
+      />
       </div>
 
       <footer className="relative shrink-0 px-4 pt-[10px] pb-3">
@@ -1212,10 +1267,13 @@ function ChatMessageRow({
   event,
   mine,
   avatarUrl,
+  turnId,
 }: {
   event: ChatMessageEvent;
   mine: boolean;
   avatarUrl: string;
+  /** 会话地图的记号（见 SpeakerRow）；runtime 自己的发言画成旁白，不带 */
+  turnId?: string | undefined;
 }) {
   // runtime 自己说的话（接力护栏、棒数上限、被踢那句：sessionService 落
   // chat_message 时用的 fromUid: "system"）不画成气泡（第四批 B2-I1 的 UI 半）：
@@ -1233,7 +1291,7 @@ function ChatMessageRow({
   // 少跑一处就等于那条路上的闸没关（ADR-0226）
   const name = safeSpeakerLabel(event.label, event.fromUid);
   return (
-    <SpeakerRow mine={mine} avatar={<PersonAvatar name={name} src={avatarUrl} />}>
+    <SpeakerRow mine={mine} avatar={<PersonAvatar name={name} src={avatarUrl} />} turnId={turnId}>
       <span className="px-1 text-[10.5px] text-muted-foreground">
         {name} · {formatProxyTime(event.ts)}
       </span>
@@ -1261,14 +1319,19 @@ function ChatMessageRow({
 function SpeakerRow({
   mine,
   avatar,
+  turnId,
   children,
 }: {
   mine: boolean;
   avatar: ReactNode;
+  /** 会话地图的记号（ADR-0292）：这一行是一轮的头时才给。打在这一层而不是外面包一层 div：
+      这一行靠 `self-end` / `self-start` 对齐，那是它在时间线那个 flex 列里的身份，包一层
+      就把对齐交给了包装、自己这句 self-* 从此落空 */
+  turnId?: string | undefined;
   children: ReactNode;
 }) {
   return (
-    <div className={cn("flex max-w-[85%] gap-2", mine ? "flex-row-reverse self-end" : "self-start")}>
+    <div data-turn-id={turnId} className={cn("flex max-w-[85%] gap-2", mine ? "flex-row-reverse self-end" : "self-start")}>
       <div className="shrink-0 pt-[3px]">{avatar}</div>
       <div className={cn("flex min-w-0 flex-col gap-0.5", mine ? "items-end" : "items-start")}>
         {children}
@@ -1391,15 +1454,18 @@ function UserMessageRow({
   text,
   mine,
   avatarUrl,
+  turnId,
 }: {
   ts: number;
   label: string | null;
   text: string;
   mine: boolean;
   avatarUrl: string;
+  /** 会话地图的记号（见 SpeakerRow） */
+  turnId?: string | undefined;
 }) {
   return (
-    <SpeakerRow mine={mine} avatar={<PersonAvatar name={label ?? "?"} src={avatarUrl} />}>
+    <SpeakerRow mine={mine} avatar={<PersonAvatar name={label ?? "?"} src={avatarUrl} />} turnId={turnId}>
       <span className="px-1 text-[10.5px] text-muted-foreground">
         {label ? `${label} · ` : ""}
         {formatProxyTime(ts)}
@@ -1523,7 +1589,14 @@ function AgentRelayRow({ event, ws }: { event: AgentRelayEvent; ws: WorkspaceSna
    （voiceCallCards）钉的是折进卡的是哪几条，钉不到「居中」「脸有没有真画出来」
    「点一下弹窗开不开」，而维护者对这块 UI 提的几件事恰好都只在这一层看得见
    （同 #1228 / #1068） */
-export function VoiceCallCardRow({ card }: { card: VoiceCallCard }) {
+export function VoiceCallCardRow({
+  card,
+  turnId,
+}: {
+  card: VoiceCallCard;
+  /** 会话地图的记号（ADR-0292）：一场通话在地图上自成一格 */
+  turnId?: string | undefined;
+}) {
   const live = card.endedTs === null;
   // 通话中那只表（#1233）：**作用域圈在这张卡里**——整条时间线一秒一跳会把
   // 窗口化那套（ADR-0285）的开销放大一倍，而这一格只有这张卡在读。已结束的
@@ -1537,7 +1610,7 @@ export function VoiceCallCardRow({ card }: { card: VoiceCallCard }) {
   const ms = (card.endedTs ?? now) - card.sinceTs;
   const names = card.parties.map((p) => p.name).join("、");
   return (
-    <div className="flex justify-center py-1.5">
+    <div data-turn-id={turnId} className="flex justify-center py-1.5">
       <Dialog>
         <DialogTrigger asChild>
           <button
