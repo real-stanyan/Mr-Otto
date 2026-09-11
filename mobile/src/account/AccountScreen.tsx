@@ -1,7 +1,7 @@
 // 账号页（原来底栏上的「设置」）。从 App.tsx 原样拆出来（#1237 M0），逻辑一个字没动；
 // Task 4 把它挂进根栈、改名 AccountScreen。
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ScrollView, Text, View, type ViewStyle } from "react-native";
 import type { PinnedPeerStore } from "../../../src/shared/remote/devices.js";
 import { fmtTokens, type RemoteStats } from "../../../src/shared/remote/stats.js";
@@ -11,6 +11,8 @@ import { RELAY_BASE } from "../session.js";
 import { supabase } from "../supabase.js";
 import { usePalette, type as t, space } from "../theme.js";
 import { Card, Dot, Group, Headline, Meta, Page, Row, Title } from "../ui.js";
+import { useNavigation } from "@react-navigation/native";
+import { useLink } from "../link.js";
 // 版本号只有一个事实来源:打包时用的就是这份 app.json 里的 expo.version
 import appJson from "../../app.json";
 
@@ -25,19 +27,12 @@ import appJson from "../../app.json";
 
    退出登录单独一组、居中、红字,是 iOS 的老规矩:破坏性动作不跟只读信息
    同一块板 —— 挨着邮箱那行放,手指会顺着往下点。 */
-export function Settings({
-  store, onRepair, onSignedOut, stats, online, active, onRefreshStats,
-}: {
-  store: PinnedPeerStore;
-  onRepair: () => void;
-  onSignedOut: () => void;
-  /** 桌面答回来的统计。null = 还没问到(没连上,或刚翻进来) */
-  stats: RemoteStats | null;
-  online: boolean;
-  /** 这一屏此刻是不是当前页签。三个页签都常驻挂载,不看这个就不知道人翻过来了 */
-  active: boolean;
-  onRefreshStats: () => void;
-}) {
+export function AccountScreen() {
+  const navigation = useNavigation();
+  // 到电脑那条连接归项目栏的 Fleet;这一屏只读它报上来的状态与统计,要统计时开口问一次
+  const { store, status, stats, askStats } = useLink();
+  const online = status?.tone === "ok";
+  const onRefreshStats = useCallback(() => { askStats.current?.(); }, [askStats]);
   const [email, setEmail] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const paired = store.peerIdentities().length > 0;
@@ -50,26 +45,29 @@ export function Settings({
   // 挂在推送上等于每条工具事件都拖一次;而且用量本来就不该跟着每一帧出机器
   // (shared/remote/trim.ts 那道闸门的理由,见 shared/remote/stats.ts 开头)
   useEffect(() => {
-    if (active && online) onRefreshStats();
-  }, [active, online, onRefreshStats]);
+    if (online) onRefreshStats();
+  }, [online, onRefreshStats]);
 
+  // 登出之后回登录页由 App 那层的 onAuthStateChange 接住,这一屏不用管
   const signOut = (): void => {
     void (async () => {
       setBusy(true);
       await supabase.auth.signOut();
       setBusy(false);
-      onSignedOut();
     })();
   };
 
   return (
     <Page>
-      <View style={{ paddingTop: space.sm }}><Title>设置</Title></View>
-
-      {/* 组与组之间比组内的行远一档,眼睛才会先分组再读行 */}
+      {/* 标题「账号」是原生导航栏画的。组与组之间比组内的行远一档,眼睛才会先分组再读行 */}
       <View style={{ gap: space.lg }}>
         <Group header="账号" footer="配对的电脑必须登同一个账号,否则在列表里根本看不见它。">
           <Row label="邮箱" value={email ?? "读取中…"} />
+        </Group>
+
+        {/* 好友从页签降到这里(spec §4.6);M6 设置页换皮时连同角标一起接回 */}
+        <Group>
+          <Row label="好友" chevron onPress={() => navigation.navigate("Friends")} />
         </Group>
 
         <Group>
@@ -87,7 +85,7 @@ export function Settings({
             : "还没配对 —— 配完才看得到会话。"}
         >
           <Row label={paired ? "已配对" : "未配对"} leading={<Dot tone={paired ? "ok" : "warn"} />} />
-          <Row label="重新配对" chevron onPress={onRepair} />
+          <Row label="重新配对" chevron onPress={() => navigation.navigate("Pair")} />
         </Group>
 
         <StatsSection stats={stats} online={online} onRefresh={onRefreshStats} />

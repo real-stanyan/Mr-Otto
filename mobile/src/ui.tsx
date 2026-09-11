@@ -13,6 +13,7 @@ import {
   type StyleProp, type TextStyle, type ViewStyle,
 } from "react-native";
 import { MONO, PRESS_SPRING, radius, space, type, usePalette, type Palette } from "./theme.js";
+import { useTabInset } from "./chrome.js";
 
 /** 系统的「减弱动态效果」。缩放这种位移类反馈要让位,但反馈本身不能消失 */
 export function useReduceMotion(): boolean {
@@ -519,10 +520,15 @@ export function Spinner() {
 /** 每一屏的滚动容器。标题和正文之间留一口气,列表项之间留小的。
     grow = 内容不足一屏时把容器撑满,好让里面自己去配平上下 */
 export function Page({ children, grow }: { children: React.ReactNode; grow?: boolean }) {
+  // 页签栏是浮在内容上的毛玻璃:最后一行要让出它那么高,否则压在它底下(根栈里的屏拿到 0)
+  const tabInset = useTabInset();
   return (
     <ScrollView
+      // 原生导航栏(尤其页签根那条透明的大标题栏)靠这一格把内容推到栏下面,
+      // 大标题往上滚时的收放也靠它跟手;不在导航里的屏(进门)这一格什么都不做
+      contentInsetAdjustmentBehavior="automatic"
       contentContainerStyle={[
-        { padding: space.lg, paddingBottom: space.xl, gap: space.md },
+        { padding: space.lg, paddingBottom: space.xl + tabInset, gap: space.md },
         grow && { flexGrow: 1 },
       ]}
       keyboardShouldPersistTaps="handled"

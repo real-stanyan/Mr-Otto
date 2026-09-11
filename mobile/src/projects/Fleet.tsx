@@ -18,26 +18,25 @@ import {
 } from "../ui.js";
 import { Approval, SessionView } from "./SessionView.js";
 import { elapsed, useTicker } from "./clock.js";
-
-/** 顶栏右边那一句。tone 只承担"哪一类",话由 text 说全 —— 不靠颜色单独传信息 */
-export interface ConnStatus { tone: "ok" | "warn"; text: string }
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { linkStatus } from "../../../src/shared/linkStatus.js";
+import { useLink } from "../link.js";
+import { hapticDecided } from "../haptics.js";
 
 /* ── 舰队 ───────────────────────────────────────────────
    看 + 审批。桌面不在线时不假装有内容:一句"你的 Mac 不在线"
    (中继零落盘,没有队列可回放 —— 这是设计,不是缺陷)。 */
-export function Fleet({ store, onRepair, onDetailChange, onStatus, onStats, askStats }: {
+export function Fleet({ store, onRepair, onDetailChange }: {
   store: PinnedPeerStore;
   onRepair: () => void;
-  /** 翻进详情屏时底栏要收起来 */
+  /** 翻进详情屏时,项目栏的大标题与页签栏都要让位 */
   onDetailChange: (inDetail: boolean) => void;
-  /** 连接状态报给品牌栏 —— 桥在这儿,栏在上面 */
-  onStatus: (s: ConnStatus) => void;
-  /** 桌面答回来的统计。设置页要,而桥在这儿 */
-  onStats: (s: RemoteStats) => void;
-  /** 把"问一次"这个动作交出去。**只交动作,不交桥** ——
-      桥的生命周期归这一屏,别的屏能做的只有开口问 */
-  askStats: React.RefObject<(() => void) | null>;
 }) {
+  // 连接状态、统计、「问一次」这个动作交给 LinkProvider:项目栏大标题底下那行与账号页都读它。
+  // **只交数据和动作,不交桥** —— 桥的生命周期仍然归这一屏
+  const { setStatus, setStats, askStats } = useLink();
+  /** 会话详情要自己躲开刘海和 home 条:那时原生导航栏收着 */
+  const insets = useSafeAreaInsets();
   const [fleet, setFleet] = useState<IslandFleet | null>(null);
   const [ready, setReady] = useState(false);
   /** 打开的会话。null = 停在列表上 */
@@ -69,7 +68,7 @@ export function Fleet({ store, onRepair, onDetailChange, onStatus, onStats, askS
         }));
         if (f.type === "notice") setNotice(f.text);
         else if (f.type === "fleet") setFleet(f.fleet);
-        else if (f.type === "stats") onStats(f.stats);
+        else if (f.type === "stats") setStats(f.stats);
         // 只认自己订的那一个:换会话时旧订阅的迟到帧不该覆盖新屏
         else if (f.type === "timeline" && f.sessionId === watching.current) setTimeline(f.messages);
       },
@@ -89,8 +88,7 @@ export function Fleet({ store, onRepair, onDetailChange, onStatus, onStats, askS
       askStats.current = null;
       b.dispose();
     };
-    // onStats 每次 render 都是新的(Shell 的 setState 其实是稳的,但类型上不保证),
-    // 而这条连接一辈子只建一次 —— 让它进依赖等于每次渲染都重连
+    // 这条连接一辈子只建一次 —— 让 setStats / askStats 进依赖,等于冒着每次渲染都重连的险
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [store]);
 
@@ -182,20 +180,23 @@ export function Fleet({ store, onRepair, onDetailChange, onStatus, onStats, askS
     return () => clearTimeout(id);
   }, [ready]);
 
+  // 判据在 shared/linkStatus.ts:项目栏大标题底下那行与账号页读的是同一句话
+  const link = linkStatus(ready, settled, fleet !== null);
   useEffect(() => {
-    onStatus(ready
-      ? { tone: "ok", text: "已连上你的 Mac" }
-      : { tone: "warn", text: settled ? "断开了" : "重连中…" });
-  }, [ready, settled, onStatus]);
+    setStatus(link);
+    // link 每次渲染都是新对象,按它的两格字段比
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [link.tone, link.text, setStatus]);
 
   const decide = (a: IslandAgent, ok: boolean): void => {
     const callId = a.pendingApproval?.callId;
     if (!callId) return;
     // send 回 false = 会话没建立。不乐观更新:审批这种动作显示成"批了"
-    // 而其实没发出去,比显示"没连上"糟糕得多
-    bridge.current?.send({
+    // 而其实没发出去,比显示"没连上"糟糕得多;触感也只在真发出去时给
+    const sent = bridge.current?.send({
       type: ok ? "approve" : "deny", sessionId: a.sessionId, callId,
-    });
+    }) ?? false;
+    if (sent) hapticDecided();
   };
 
   // 一无所有的两种:还在等第一份(转圈),和等够了还没有(说实话)
@@ -211,10 +212,11 @@ export function Fleet({ store, onRepair, onDetailChange, onStatus, onStats, askS
     }
     return (
       <Page>
-        <View style={{ gap: space.sm, paddingTop: space.xl }}>
-          <Title>你的 Mac 不在线</Title>
+        <StatusLine tone={link.tone}>{link.text}</StatusLine>
+        <Card>
+          <Headline>你的 Mac 不在线</Headline>
           <Hint>它上线之后这里会自动出现。中继不落盘,期间发生的事不会补播。</Hint>
-        </View>
+        </Card>
         <Button label="重新配对" variant="plain" onPress={onRepair} />
       </Page>
     );
@@ -223,24 +225,24 @@ export function Fleet({ store, onRepair, onDetailChange, onStatus, onStats, askS
   const opened = open === null ? null : fleet.agents.find((a) => a.sessionId === open) ?? null;
   if (opened) {
     return (
-      <SessionView
-        agent={opened} now={now} messages={timeline} diag={diag} online={ready}
-        notice={notice} onDismissNotice={() => setNotice(null)}
-        onBack={closeSession} onDecide={decide}
-        onSubmit={(text, files, p) => submitMessage(opened.sessionId, text, files, p)}
-        onRetry={() => bridge.current?.send({ type: "watch", sessionId: opened.sessionId })}
-      />
+      // 这时项目栏的原生导航栏收着:自己躲开刘海和 home 条
+      <View style={{ flex: 1, paddingTop: insets.top, paddingBottom: insets.bottom }}>
+        <SessionView
+          agent={opened} now={now} messages={timeline} diag={diag} online={ready}
+          notice={notice} onDismissNotice={() => setNotice(null)}
+          onBack={closeSession} onDecide={decide}
+          onSubmit={(text, files, p) => submitMessage(opened.sessionId, text, files, p)}
+          onRetry={() => bridge.current?.send({ type: "watch", sessionId: opened.sessionId })}
+        />
+      </View>
     );
   }
 
   return (
     <Page>
-      <View style={{ paddingTop: space.sm }}><Title>会话</Title></View>
-      {/* 品牌栏上那个点只说"断了",说不出"你正在看的是旧的"。这一句只在
-          真断线、而且手里确实还留着上一份快照时出现 */}
-      {ready || !settled ? null : (
-        <StatusLine tone="warn">断开了 —— 下面是断线前的</StatusLine>
-      )}
+      {/* 大标题「项目」是原生导航栏画的;它底下这一行说到电脑那条连接此刻怎么样
+          (原来挂在品牌栏上)。断线时它会说「下面是断线前的」 */}
+      <StatusLine tone={link.tone}>{link.text}</StatusLine>
       {fleet.agents.length === 0 ? (
         <Card>
           <Headline>没有打开的会话</Headline>

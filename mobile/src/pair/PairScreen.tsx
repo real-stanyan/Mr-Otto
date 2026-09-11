@@ -9,6 +9,8 @@ import { armPairing, devices } from "../session.js";
 import { myLabel } from "../deviceLabel.js";
 import { usePalette, radius, space } from "../theme.js";
 import { Button, Card, CodeTiles, Headline, Hint, Note, Page, Spinner, Title, Warn } from "../ui.js";
+import { useNavigation } from "@react-navigation/native";
+import { useLink } from "../link.js";
 
 /* ── 配对 ───────────────────────────────────────────────
    这一屏真正要人做的只有一件事:把这里的 6 位数和电脑上那个比一遍。
@@ -55,9 +57,6 @@ function ScanPair({
   if (!perm.granted) {
     return (
       <Page>
-        <View style={{ gap: space.xs, paddingTop: space.sm }}>
-          <Title>扫码配对</Title>
-        </View>
         <Card>
           <Headline>要用一下相机</Headline>
           <Hint>
@@ -75,10 +74,7 @@ function ScanPair({
 
   return (
     <Page grow>
-      <View style={{ gap: space.xs, paddingTop: space.sm }}>
-        <Title>扫码配对</Title>
-        <Hint>对准电脑「设置 → 手机」里那张二维码。</Hint>
-      </View>
+      <Hint>对准电脑「设置 → 手机」里那张二维码。</Hint>
       {err ? <Note tone="error">{err}</Note> : null}
       <View
         style={{
@@ -132,8 +128,7 @@ export function Pair({ store, onPaired }: { store: PinnedPeerStore; onPaired: ()
 
   return (
     <Page>
-      <View style={{ gap: space.xs, paddingTop: space.sm }}>
-        <Title>配对电脑</Title>
+      <View style={{ gap: space.xs }}>
         <Hint>
           下面的 6 位数会同时显示在电脑的「设置 → 手机」里。
           <Warn>对不上就不要配</Warn>——那说明中间有人换掉了公钥。
@@ -164,6 +159,22 @@ export function Pair({ store, onPaired }: { store: PinnedPeerStore; onPaired: ()
       <Button label="刷新" variant="plain" onPress={refresh} />
       <Button label="改回扫码" variant="plain" onPress={() => setScanning(true)} />
     </Page>
+  );
+}
+
+/** 根栈里的配对页。标题「配对电脑」是原生导航栏画的;配成之后回到来的地方,
+    项目栏按 pairEpoch 重建连接(新握手要带上刚扫到的那把 secret) */
+export function PairScreen() {
+  const navigation = useNavigation();
+  const { store, bumpPair } = useLink();
+  return (
+    <Pair
+      store={store}
+      onPaired={() => {
+        bumpPair();
+        navigation.goBack();
+      }}
+    />
   );
 }
 

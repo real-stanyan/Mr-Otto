@@ -17,6 +17,7 @@ import {
   Button, Card, DetailBar, Dot, Headline, Hint, Meta, Note, Spinner, StatusLine, Tile, useKeyboardInset,
 } from "../ui.js";
 import { elapsed } from "./clock.js";
+import { hapticSent } from "../haptics.js";
 
 /* ── 会话详情 ───────────────────────────────────────────
    点进来看时间线 + 就地审批。三件事值得说清楚:
@@ -84,7 +85,7 @@ export function SessionView({
       style={{ flex: 1, paddingBottom: keyboard }}
     >
       <DetailBar
-        back="会话" title={a.title ?? a.sessionId} onBack={onBack}
+        back="项目" title={a.title ?? a.sessionId} onBack={onBack}
         right={<Dot tone={tone} />}
       />
 
@@ -235,6 +236,7 @@ function Composer({ onSubmit, online, notice, onDismissNotice }: {
       try {
         const why = await onSubmit(t2, files, (done, total) => setProgress({ done, total }));
         if (why) return setErr(why);
+        hapticSent();
         // 发出去了才清空:失败时把人打的字和选的文件一起吞掉是不可接受的
         setText("");
         setFiles([]);

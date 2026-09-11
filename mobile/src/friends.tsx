@@ -36,11 +36,13 @@ function why(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
-export function Friends({ onDetailChange, onBadge }: {
-  /** 翻进「加好友」或某条聊天 = 推进一层,底栏要收起来 */
+export function Friends({ onDetailChange, onBadge, embedded = false }: {
+  /** 翻进「加好友」或某条聊天 = 推进一层,外壳要把自己那条原生导航栏收起来 */
   onDetailChange: (inDetail: boolean) => void;
-  /** 页签上那个红点该显示多少:待我处理的请求 + 没看过的消息 */
+  /** 待我处理的请求 + 没看过的消息。好友不再是页签之后这个数暂时没有地方画(M6 接回) */
   onBadge: (n: number) => void;
+  /** 挂在根栈里、头上已经有一条写着「好友」的原生导航栏:不再画自己的大标题 */
+  embedded?: boolean;
 }) {
   const [uid, setUid] = useState<string | null>(null);
   const [rows, setRows] = useState<FriendRow[] | null>(null);
@@ -152,10 +154,12 @@ export function Friends({ onDetailChange, onBadge }: {
 
   return (
     <Page>
-      <View style={{ gap: space.xs, paddingTop: space.sm }}>
-        <Title>好友</Title>
-        {live ? null : <Hint>实时推送没通，正在每隔几秒对一次表。</Hint>}
-      </View>
+      {embedded && live ? null : (
+        <View style={{ gap: space.xs, paddingTop: embedded ? 0 : space.sm }}>
+          {embedded ? null : <Title>好友</Title>}
+          {live ? null : <Hint>实时推送没通，正在每隔几秒对一次表。</Hint>}
+        </View>
+      )}
       {err ? <Note tone="error">{err}</Note> : null}
 
       {rows === null ? (

@@ -1,31 +1,24 @@
-// 手机端的全部界面。三屏,一个状态机推着走:
-//   登录 → 配对(扫电脑上那张码) → 舰队(看 + 审批)
+// 手机端的入口：开屏 → 登录 → 三栏（任务 / 项目 / 团队）。
 //
-// 范围就到这里(ADR-0094):不建会话、不改设置、不切模型、不管 MCP。
-// 屏幕少到不值得上路由 —— 一个 phase 字段比 expo-router 少一整层依赖。
-//
-// 视觉语言全部来自 src/theme.ts,那张表逐个值抄自桌面的 app.css:同一套
-// Apple 四色底盘、同一套语义色、同样跟随系统深浅色。组件在 src/ui.tsx。
+// 三栏的导航在 src/nav/（ADR-0293）：每一栏一个原生栈，账号 / 好友 / 配对在根栈里。
+// 配对不再是进门的一步——项目栏里没配过就给一张卡（spec §4.1）。
+// 视觉语言全部来自 src/theme.ts（逐值抄自桌面的 app.css），组件在 src/ui.tsx。
 
-import { useCallback, useEffect, useRef, useState } from "react";
-import {
-  Image, Pressable, SafeAreaView, StatusBar, StyleSheet, Text, TextInput, View,
-  type ViewStyle,
-} from "react-native";
-import type { RemoteStats } from "../src/shared/remote/stats.js";
+import { useEffect, useState } from "react";
+import { Image, SafeAreaView, StatusBar, Text, TextInput, View } from "react-native";
+import { StatusBar as ExpoStatusBar } from "expo-status-bar";
+import { SafeAreaProvider } from "react-native-safe-area-context";
 import type { PinnedPeerStore } from "../src/shared/remote/devices.js";
 import { AuthCancelled, signInWithProvider, type OAuthProvider } from "./src/oauth.js";
-import { Friends } from "./src/friends.js";
 import { DitherBackground } from "./src/dither.js";
 import { openStore } from "./src/session.js";
 import { supabase } from "./src/supabase.js";
 import { usePalette, type as t, radius, space } from "./src/theme.js";
-import { Button, Divider, Dot, Note, Page, Spinner, TabIcon, useKeyboardInset } from "./src/ui.js";
-import { Pair } from "./src/pair/PairScreen.js";
-import { Settings } from "./src/account/AccountScreen.js";
-import { Fleet, type ConnStatus } from "./src/projects/Fleet.js";
+import { Button, Divider, Note, Page, Spinner, useKeyboardInset } from "./src/ui.js";
+import { LinkProvider } from "./src/link.js";
+import { RootNavigator } from "./src/nav/RootNavigator.js";
 
-type Phase = "loading" | "signIn" | "pair" | "fleet";
+type Phase = "loading" | "signIn" | "main";
 
 export default function App() {
   const [phase, setPhase] = useState<Phase>("loading");
@@ -37,38 +30,44 @@ export default function App() {
       const s = await openStore();
       setStore(s);
       const { data } = await supabase.auth.getSession();
-      if (!data.session) return setPhase("signIn");
-      setPhase(s.peerIdentities().length > 0 ? "fleet" : "pair");
+      setPhase(data.session ? "main" : "signIn");
     })().catch((e: unknown) => setError(String(e)));
+    // 退出登录（账号页）/ session 过期 → 回登录页。登录成功那条路由 SignIn 的 onDone 走。
+    // 订阅时会先来一发 INITIAL_SESSION：开屏还没读完 session 时不抢着改 phase
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+      if (!session) setPhase((p) => (p === "loading" ? p : "signIn"));
+    });
+    return () => sub.subscription.unsubscribe();
   }, []);
 
-  if (error) return <Screen center><Note tone="error">{error}</Note></Screen>;
+  if (error) {
+    return (
+      <SafeAreaProvider>
+        <Screen center><Note tone="error">{error}</Note></Screen>
+      </SafeAreaProvider>
+    );
+  }
+
+  if (phase === "main" && store) {
+    return (
+      <SafeAreaProvider>
+        <ExpoStatusBar style="auto" />
+        <LinkProvider store={store}>
+          <RootNavigator />
+        </LinkProvider>
+      </SafeAreaProvider>
+    );
+  }
 
   const booting = !store || phase === "loading";
-
   return (
-    /* 抖动波场**只在开屏和登录页**:进了 app 之后每一屏都在说事(会话、好友、设置),
-       背景再有花纹就是抢戏;这两屏上除了一个图标和三个输入框什么都没有,
-       空着反而像没加载完。
-
-       两屏共用**同一个** `<Screen>`,不是两次 return:拆开的话中间那块 WebView 会
-       卸载再挂载,拿到 session 的那一刻波场从头重启一次——开屏刚起好的浪突然回到
-       第 0 帧,比一直不动还显眼。同一个元素位置,React 认它是同一棵子树,波场连着走 */
-    <Screen dither={booting || phase === "signIn"} center={booting}>
-      {booting ? (
-        <BootSpinner />
-      ) : phase === "signIn" ? (
-        <SignIn onDone={() => setPhase(store.peerIdentities().length > 0 ? "fleet" : "pair")} />
-      ) : phase === "pair" ? (
-        <Pair store={store} onPaired={() => setPhase("fleet")} />
-      ) : (
-        <Shell
-          store={store}
-          onRepair={() => setPhase("pair")}
-          onSignedOut={() => setPhase("signIn")}
-        />
-      )}
-    </Screen>
+    <SafeAreaProvider>
+      {/* 开屏与登录页共用**同一个** <Screen>：拆成两次 return 的话中间那块 WebView
+          会卸载再挂载，拿到 session 那一刻波场从头重启一次 */}
+      <Screen dither center={booting}>
+        {booting ? <BootSpinner /> : <SignIn onDone={() => setPhase("main")} />}
+      </Screen>
+    </SafeAreaProvider>
   );
 }
 
@@ -268,154 +267,3 @@ function PasswordForm(props: {
     </View>
   );
 }
-
-/* ── 底栏与三个页签 ─────────────────────────────────────
-   会话 / 好友 / 设置。**三个都常驻挂载,靠 display 切**,不是卸载重建:
-   会话那页里握着到电脑的连接(握手 + 密封流),切个页签就断线重连是不可接受的。
-
-   翻进详情屏时底栏收起来 —— 那是"推进去"的一层,不是第四个页签。 */
-type Tab = "sessions" | "friends" | "settings";
-
-const TABS: { id: Tab; label: string }[] = [
-  { id: "sessions", label: "会话" },
-  { id: "friends", label: "好友" },
-  { id: "settings", label: "设置" },
-];
-
-function Shell({ store, onRepair, onSignedOut }: {
-  store: PinnedPeerStore;
-  onRepair: () => void;
-  onSignedOut: () => void;
-}) {
-  const [tab, setTab] = useState<Tab>("sessions");
-  const [inDetail, setInDetail] = useState(false);
-  /** 好友页签上那个数:待我处理的请求 + 没看过的私信。由好友那一屏算(它握着订阅) */
-  const [friendBadge, setFriendBadge] = useState(0);
-  /** 设置页那两块统计。桥在会话那一屏手里,所以数从那儿回流到这儿再发下去 */
-  const [stats, setStats] = useState<RemoteStats | null>(null);
-  /** 向桌面要一份统计。**拉取,不订阅** —— 由 Fleet 在连上之后填进来 */
-  const askStats = useRef<(() => void) | null>(null);
-  const refreshStats = useCallback(() => { askStats.current?.(); }, []);
-  /** 连接状态由会话页那只桥算出来(它握着连接),显示在品牌栏上 */
-  const [status, setStatus] = useState<ConnStatus | null>(null);
-
-  const pane = (id: Tab): ViewStyle => ({
-    flex: 1,
-    // display:"none" 而不是条件渲染:见上面为什么不能卸载
-    display: tab === id ? "flex" : "none",
-  });
-
-  return (
-    <View style={{ flex: 1 }}>
-      {/* 品牌栏。翻进详情屏时让位给那一屏自己的返回栏——两条顶栏叠着没有意义 */}
-      {inDetail ? null : <BrandBar status={status} />}
-      <View style={pane("sessions")}>
-        <Fleet
-          store={store} onRepair={onRepair}
-          onDetailChange={setInDetail} onStatus={setStatus}
-          onStats={setStats} askStats={askStats}
-        />
-      </View>
-      <View style={pane("friends")}>
-        <Friends onDetailChange={setInDetail} onBadge={setFriendBadge} />
-      </View>
-      <View style={pane("settings")}>
-        <Settings
-          store={store} onRepair={onRepair} onSignedOut={onSignedOut}
-          stats={stats} online={status?.tone === "ok"}
-          active={tab === "settings"} onRefreshStats={refreshStats}
-        />
-      </View>
-      {inDetail ? null : <TabBar tab={tab} onTab={setTab} badges={{ friends: friendBadge }} />}
-    </View>
-  );
-}
-
-
-/** 顶部品牌栏:和桌面同一张脸 + 字标,右边挂连接状态。只出现一次,不跟着页签变。
-    状态放这儿而不是放"会话"标题底下,是因为它**不属于任何一个页签** ——
-    连的是同一条链路,在好友页和设置页一样是真的。挂在标题下面就成了会话页的
-    一个属性,切到别的页签它凭空消失,而链路并没有变。 */
-function BrandBar({ status }: { status: ConnStatus | null }) {
-  const { c } = usePalette();
-  return (
-    <View style={{
-      flexDirection: "row", alignItems: "center", gap: space.xs,
-      paddingHorizontal: space.md, paddingVertical: space.sm,
-      borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: c.border,
-    }}>
-      <Image source={require("./assets/otto-mark.png")} style={{ width: 26, height: 26 }} />
-      <Text style={{ ...t.headline, color: c.foreground }}>Mr Otto</Text>
-      {/* 撑开:状态靠右,和字标之间不留固定间距——名字多长都不影响它站的位置 */}
-      <View style={{ flex: 1 }} />
-      {status ? (
-        <View style={{ flexDirection: "row", alignItems: "center", gap: space.xs }}>
-          <Dot tone={status.tone} />
-          <Text style={{ ...t.footnote, color: c.mutedForeground }} numberOfLines={1}>
-            {status.text}
-          </Text>
-        </View>
-      ) : null}
-    </View>
-  );
-}
-
-function TabBar({ tab, onTab, badges }: {
-  tab: Tab;
-  onTab: (t: Tab) => void;
-  /** 每个页签上那个数。0 或缺省 = 不画 —— 一个"0"的角标和一个红点一样吵 */
-  badges?: Partial<Record<Tab, number>>;
-}) {
-  const { c } = usePalette();
-  return (
-    <View style={{
-      flexDirection: "row",
-      borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: c.border,
-      backgroundColor: c.background,
-    }}>
-      {TABS.map((x) => (
-        <Pressable
-          key={x.id}
-          accessibilityRole="tab"
-          accessibilityState={{ selected: tab === x.id }}
-          onPress={() => onTab(x.id)}
-          // 49pt = iOS 底栏的标准高度。整格可点,不是只有字可点
-          style={({ pressed }) => [
-            { flex: 1, minHeight: 49, alignItems: "center", justifyContent: "center", gap: 3,
-              paddingVertical: 6 },
-            pressed && { opacity: 0.5 },
-          ]}
-        >
-          <View>
-            <TabIcon name={x.id} color={tab === x.id ? c.foreground : c.mutedForeground} />
-            {/* 角标压在图标右上角,溢出图标一点点 —— iOS 的位置就是这样,
-                贴在图标里会跟线条糊在一起 */}
-            {(badges?.[x.id] ?? 0) > 0 ? (
-              <View style={{
-                position: "absolute", top: -4, right: -8,
-                minWidth: 16, height: 16, borderRadius: radius.pill, paddingHorizontal: 4,
-                backgroundColor: c.destructive, alignItems: "center", justifyContent: "center",
-              }}>
-                <Text style={{
-                  fontSize: 10, lineHeight: 12, fontWeight: "700", color: c.destructiveForeground,
-                }}>
-                  {badges![x.id]! > 99 ? "99+" : badges![x.id]}
-                </Text>
-              </View>
-            ) : null}
-          </View>
-          <Text style={{
-            // 11pt:iOS 底栏标签的量。用 footnote(13)的话图标+文字挤不进 49pt
-            fontSize: 11, lineHeight: 13, letterSpacing: 0.05,
-            // 选中只靠颜色和字重,不加下划线/底色:底栏本来就窄,多一层装饰就挤
-            color: tab === x.id ? c.foreground : c.mutedForeground,
-            fontWeight: tab === x.id ? "600" : "400",
-          }}>
-            {x.label}
-          </Text>
-        </Pressable>
-      ))}
-    </View>
-  );
-}
-
