@@ -1039,7 +1039,7 @@ export function OttoThread() {
   // 已知:视口不在窗口顶时补挂,thread.tsx 那道补偿会与浏览器原生的滚动锚定叠加(锚点在
   // 插入点下方时原生已经挪过一次),视口被推到底部夹住 —— 这条路上看不见,因为同一个任务里
   // 紧接着就跳走了(真机时间线:补偿 75ms、跳转 77ms);哨兵那条路锚点是哨兵自己,不叠加
-  // (#1259 真机排查时撞见,记在这里而不是顺手改那道补偿:它是 ADR-0285 的判据)
+  // (#1259 真机排查时撞见,单开 #1262;没顺手改那道补偿:它是 ADR-0285 的判据)
   useEffect(() => {
     if (pendingReveal === null || viewport === null) return;
     const target = findMessageElement(viewport, pendingReveal.id);
