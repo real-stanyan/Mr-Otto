@@ -37,7 +37,7 @@
 | 手机端没有导航库；`App.tsx` 一个文件 73 KB；组件层 `mobile/src/ui.tsx`（Button / Group / Row / DetailBar / Avatar…），令牌 `mobile/src/theme.ts` 逐值抄自桌面 `app.css` | `mobile/` 全目录 |
 | Expo SDK 57 的 Expo Go 自带：`react-native-screens` 4.26、`react-native-reanimated` 4.5.1、`react-native-gesture-handler` 2.32、`react-native-safe-area-context`、`react-native-svg` 15.15、`react-native-keyboard-controller` 1.21、`expo-blur`、`expo-glass-effect`、`expo-haptics`、`expo-audio`、`expo-speech`（系统 TTS）、`expo-notifications`、`expo-web-browser`、`expo-document-picker`、`expo-router` | 主 checkout 的 `mobile/node_modules/expo/bundledNativeModules.json` |
 | **语音识别（STT）不在 Expo Go 里**：上面那份清单没有任何 speech-recognition 模块 → ④ 与团队通话的「人说话」要 dev build | 同上 |
-| demo 的图标就是 lucide 的路径（`plus` / `search` / `arrow-up`…），桌面也是 lucide | demo 的 `I()` 图标表 |
+| demo 的图标大多是 lucide 的路径（`plus` / `search` / `arrow-up`…），`spark` 是自画的；桌面是 lucide | demo 的 `I()` 图标表 |
 | 桌面云会话客户端 `src/main/cloudSessionClient.ts`（1099 行）运行时只 import `src/shared/remote/*` 与 `src/shared/islandTabs.ts`；对 `session/store`、`session/events`、`shared/shellBridge`、`main/proxyManager` 全是 `import type` | 该文件 68-94 行 |
 | 团队的 Supabase 读写 `src/main/supabaseWorkspacesApi.ts` 只依赖 supabase-js + `src/shared/*`；`workspaceManager.ts` 依赖 `node:crypto` 与 `proxyStore`，留在桌面 | 两个文件的 import |
 | 手机要用的界面判据有一批在渲染层 `src/renderer/src/lib/`：`billingView`、`chatBubbles`、`agentMentionInput`、`cloudModelStatus`、`modelMenu`、`forgotPassword`（`OTP_LENGTH = 8`）只依赖 `src/shared/`；`cloudTimeline` / `workspaceView` / `workspaceUsageView` 还依赖渲染层的 `agentAvatar`；`voiceCallView` 依赖 zustand 的 `store.js` | 各文件 import |
@@ -51,7 +51,7 @@
 
 做：
 - demo 里的 42 屏 + 7 个弹层全部落成 RN（§4 清单）。
-- 导航骨架与设计系统（令牌 / 字 / 弹簧 / 材质 / 按压 / 弹窗 / 抽屉）一次立好，后面各屏只拼。
+- 导航骨架与设计系统（令牌 / 字 / 弹簧 / 材质 / 按压 / 弹窗）一次立好，后面各屏只拼；抽屉跟 M2 的第一个消费方（模型选单）一起立（§10）。
 - 与桌面共用判据：手机要用的纯逻辑**挪进 `src/shared/`**，不抄第二份。
 - 每一屏的「还没查到」「读不到」「没有」「没权限」分开说（§5）。
 
@@ -68,7 +68,7 @@
 
 - 颜色只用 `mobile/src/theme.ts`（逐值抄自桌面 `app.css`，名字逐字对齐）。**蓝色一屏只给一个主动作**；彩色只用来说「出事了」（`warn` / `destructive`），其余靠材质与字重分层——同桌面 ADR-0264「图标底座中性、不上彩色方块」。
 - 字阶沿用 `theme.ts` 的 `type`（大字负字距、正文 0、脚注微正），不另起一套。
-- 图标：`lucide-react-native`（与桌面同一套图形；demo 的路径就是 lucide）。
+- 图标：demo 同一份路径经 `react-native-svg` 画（demo 的图标大多是 lucide 的路径，`spark` 是自画的；照 lucide 画会和过目的那版不一样）。不引 `lucide-react-native`（§10）。
 
 ### 3.2 导航
 
@@ -82,7 +82,7 @@
 
 ### 3.3 动效与触感
 
-- 弹簧用 Apple 两参数口径（response / damping），默认临界阻尼；只有带动量的手势（抽屉下拉、页面右划松手）才给 .82–.86 的回弹。demo 实际用的档：response `.28–.42 s`、damping `.82–1`。实现用 `react-native-reanimated` 的 `withSpring`，换算照 `theme.ts` 的 `spring()`（ω₀ = 2π / response）。
+- 弹簧用 Apple 两参数口径（response / damping），默认临界阻尼；只有带动量的手势（抽屉下拉、页面右划松手）才给 .82–.86 的回弹。demo 实际用的档：response `.28–.42 s`、damping `.82–1`。换算照 `src/shared/appleSpring.ts`（ω₀ = 2π / response）：M0 / M1 用 RN 自带的 `Animated.spring`（吃同一套物理量），M2 起手势驱动的抽屉用 `react-native-reanimated`（§10）。
 - 按压反馈在按下那一刻：按钮 `scale .96–.98`；列表行用高亮不用缩放（一列里某行缩小会打断基线，同 ADR-0264）。
 - 系统「减弱动态效果」开着时：推入 / 升起一律退成交叉淡入，弹簧不回弹（`ui.tsx` 的 `useReduceMotion` 已有）。
 - 触感（`expo-haptics`）只在四处：批准 / 拒绝落定、发送、通话接通 / 挂断、抽屉吸附。多了就没人注意了。
@@ -90,7 +90,7 @@
 ### 3.4 文案
 
 - 品牌是 **Mr. Otto**，logo 用桌面同一张。登录页与冷启动的背景是桌面同一套抖动波场（`src/shared/dither.ts`，手机已在用），**深色模式下波场也是深色**。
-- 界面文案**不出现「水獭」**：团队里的叫「智能体」（桌面渲染层用了 61 处，是主流叫法），任务里对面叫「Otto」。demo 里还剩 18 处「水獭」，实现时一并换掉。这是**我对「已经不是水獭了」的读法**——维护者那句话是冲着 logo 说的，§11 请确认；桌面渲染层还剩 9 个文件在用这个词，另开 issue（§8 第 6 条）。
+- 界面文案**不出现「水獭」**：团队里的叫「智能体」（桌面渲染层用了 61 处，是主流叫法），任务里对面叫「Otto」。demo 里还剩 18 处「水獭」，实现时一并换掉。维护者已确认（§11）；桌面渲染层还剩的那几个文件另开 #1264（§8 第 6 条）。
 - 同一件事与桌面**用同一个词**：团队（不叫工作区）、智能体、免审批、会话、归档、订阅额度。
 
 ## 4. 屏幕清单与数据来源
@@ -193,8 +193,8 @@
 
 | # | 子项目 | 依赖 | issue |
 |---|---|---|---|
-| M0 | 骨架与设计系统：导航库、三栏壳、令牌 / 字 / 弹簧 / 材质 / 弹窗 / 抽屉组件、lucide；今天的功能搬进新壳（会话页 → 项目栏根，好友 / 设置 → 账号栈），任务 / 团队两栏先是一句「下一步做」的空态 | — | #1237 |
-| M1 | 进门：登录 / 注册 / 忘记密码 / 确认信 / 冷启动 | M0 | 新开 |
+| M0 | 骨架与设计系统：导航库、三栏壳、令牌 / 字 / 弹簧 / 材质 / 弹窗、图标；今天的功能搬进新壳（会话页 → 项目栏根，好友 / 设置 → 账号栈），任务 / 团队两栏先是一句「下一步做」的空态（抽屉挪到 M2，§10） | — | #1237 |
+| M1 | 进门：登录 / 注册 / 忘记密码 / 确认信 / 冷启动 | M0 | #1237（与 M0 同一个 PR） |
 | M2 | 任务栏 | M0、①（已合）；`pen_busy` 与问卷卡等 ② 合并 | #1254 |
 | M3 | 团队栏（群聊 + 设置七页 + 新建 + @ + 审批）+ cs 客户端挪进 shared | M0 | 新开 |
 | M4 | 项目栏（中继投影 + 三个新帧） | M0 | 新开 |
@@ -208,7 +208,7 @@
 - **B3 推送**：设备 token 表 + 发送方 + 四类事件（被 @ / 待审批 / 跑完 / 通话开始）。
 - **B4 订阅投影记 `cancel_at_period_end`**：「已取消续费」读得出来。
 
-顺序建议 **M0 → M1 → M2 → M3 → M4 → M5 → M6 → M7**。B2 / B4 小，随 M5 走；B1、B3 大，各自排期。**第一份 plan = M0 + M1**。
+顺序建议 **M0 → M1 → M2 → M3 → M4 → M5 → M6 → M7**。B2 / B4 小，随 M5 走；B1、B3 大，各自排期。**第一份 plan = M0 + M1**（`docs/superpowers/plans/2026-09-11-mobile-m0-m1-shell-and-gate.md`）。
 
 手机端没有发布渠道（Expo Go / 自签），中间态只有维护者看得到，所以 M0 合进 main 时任务 / 团队两栏是空态可以接受——空态写实话，不画假数据。
 
@@ -228,7 +228,7 @@ M0 的 PR 带一份 ADR：手机端从「投影窗口」扩成三栏客户端（
 3. `mobile/` 的类型检查不在门禁（#422）：收口前靠手跑 + PR 正文。
 4. 项目栏依赖桌面在线；B1 之前电脑睡着时项目栏只能看快照。
 5. cs 客户端挪进 shared 是桌面也要动的重构，回归面在桌面云会话。
-6. 去「水獭」只做手机端；桌面剩下的 9 个文件另开 issue，过渡期两端措辞不一致。
+6. 去「水獭」只做手机端；桌面剩下的另开 #1264，过渡期两端措辞不一致。
 7. 上 dev build 之后告别 Expo Go（STT）：开发走 `expo run:ios` + 签名。
 8. 通知在 B3 之前只是本机开关，写明白，不假装会推。
 9. 账号页的热力图与模型占比要电脑在线（今天只有 RL 的 `stats` 帧算得出）。
@@ -248,11 +248,14 @@ M0 的 PR 带一份 ADR：手机端从「投影窗口」扩成三栏客户端（
 1. 「用邮箱登录」表单、审批详情、「解散团队？」三个弹层：demo 是底部抽屉，实现改**居中弹窗**——维护者在订阅页说「采取弹窗显示，不要下拉框」，表单与确认类一律照这条（订阅页那两张 demo 里已经是）。
 2. 设置目录的「连接器」：demo 推到团队连接器，实现是个人连接器（§4.6 末）。
 3. 文案里的「水獭」全部换掉（§3.4）。
+4. 图标不引 `lucide-react-native`，用 demo 同一份路径经 `react-native-svg` 画（§3.1）：demo 的 `spark` 不是 lucide 原图。
+5. `react-native-reanimated` / `react-native-gesture-handler` / 底部抽屉挪到 M2（§3.3）：M0 / M1 没有手势驱动的动效，抽屉的第一个消费方是 M2 的模型选单。
+6. 找回密码第二步的说明去掉「邮件里那条链接点了也算」：手机端没有接 `mrotto://auth-callback` 的深链（Expo Go 里 scheme 也不是它），这句话在手机上是假的。
 
 （写 plan / 实现期间的偏离与复审裁定追加在这里。）
 
-## 11. 要维护者拍板的
+## 11. 维护者拍板（2026-09-11，对这份 spec 回了「ok」）
 
-1. 界面文案去「水獭」（团队 = 智能体、任务 = Otto）——照此做吗？桌面那 9 个文件要不要另开 issue 一起换？
-2. #422：`mobile/` 类型检查怎么进门禁（A 维持现状手跑 / B 纳入根门禁 + CI 装手机依赖 / C 单开 CI job）。动门禁 = L1。我的建议是 B。
-3. 第一份 plan 做 M0 + M1，顺序照 §6。
+1. 界面文案去「水獭」：团队里的叫「智能体」、任务里对面叫「Otto」，照此做；桌面渲染层剩下的另开 #1264。
+2. #422 走 B（`mobile/` 类型检查纳入根门禁 + CI 先装手机依赖），这是门禁改动（L1），另走自己的 PR；在它合并之前，手机 PR 手跑 `npm --prefix mobile run typecheck` 并写进 PR 正文。
+3. 第一份 plan 做 M0 + M1（`docs/superpowers/plans/2026-09-11-mobile-m0-m1-shell-and-gate.md`），顺序照 §6。
