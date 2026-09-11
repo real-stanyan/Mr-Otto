@@ -56,6 +56,7 @@ import type {
 import type { SubagentDef } from "./subagent.js";
 import type { MemoryTarget } from "./memoryStore.js";
 import type { MemorySyncState } from "./memorySyncState.js";
+import type { TaskSyncState } from "./taskSyncState.js";
 import type { AutoCompactSettings } from "./autoCompact.js";
 import type { CatalogEntry } from "./mcpCatalog.js";
 
@@ -64,6 +65,8 @@ export type { AskUserAnswer, AskUserOption, AskUserOutcome, AskUserQuestion, Ask
 export type { SubagentDef };
 
 export type { MemorySyncState };
+
+export type { TaskSyncState };
 
 export type { SessionSummary, FtsHit };
 
@@ -188,6 +191,13 @@ export interface TurnStatusUpdate {
   status: TurnStatus;
 }
 
+/** 在等别的执行器（#1223）：笔被云端 / 另一台电脑握着，这条会话的人话已落、turn 没起。
+    运行指示条按会话推送 */
+export interface TaskWaitingUpdate {
+  sessionId: string;
+  waitingFor: "cloud" | "desktop" | null;
+}
+
 /** 一条会话此刻的运行时状态（issue #548）。**推送之外的那一半**：
     turn 状态、压缩标记、挂起的审批/问卷都只在**发生的那一刻**推一次
     （onTurnStatus / onApprovalRequest / onAskUserRequest），渲染进程重载后
@@ -207,6 +217,9 @@ export interface SessionRuntime {
   approval: ApprovalRequest | null;
   /** 此刻挂着的问卷，没有就是 null。同审批：问人也是管线悬停等一次 UI 往返 */
   ask: AskUserRequest | null;
+  /** 在等别的执行器（#1223）：笔被云端 / 另一台电脑握着，这条会话的人话已落、turn 没起。
+      可选 = 旧快照形状不变；null = 没在等 */
+  waitingFor?: "cloud" | "desktop" | null;
 }
 
 /** 本 turn 里一个文件的聚合改动（issue #345）：同文件多次写盘叠加成一份
@@ -685,6 +698,9 @@ export interface ShellBridge {
   listTopicMemories(): Promise<{ slug: string; label: string; text: string; seed: boolean }[]>;
   /** 记忆同步状态（设置页显示）。off = 未登录，idle = 已同步，syncing = 同步中，error = 错误 */
   memorySyncStatus(): Promise<MemorySyncState>;
+  /** 任务会话云同步状态（#1223，账号页显示）。四态同上，off 多一格 reason
+      （未登录 / 云端还没建表 / 不是任务会话所以没开） */
+  taskSyncStatus(): Promise<TaskSyncState>;
   /** 删掉一个非种子桶（.md + .label），不可恢复——确认弹窗在渲染层；种子桶抛 */
   deleteTopicMemory(slug: string): Promise<void>;
   /** 改显示名。空串 = 删 .label 回默认（种子表 / slug） */
@@ -1008,6 +1024,12 @@ export interface ShellBridge {
   onApprovalRequest(cb: (req: ApprovalRequest) => void): Unsubscribe;
   onAskUserRequest(cb: (req: AskUserRequest) => void): Unsubscribe;
   onTurnStatus(cb: (update: TurnStatusUpdate) => void): Unsubscribe;
+  /** 任务会话云同步状态（#1223）：主进程状态一变就推；设置页那行读它 */
+  onTaskSyncState(cb: (s: TaskSyncState) => void): Unsubscribe;
+  /** 等别的执行器（#1223）：运行指示条那一档 */
+  onTaskWaiting(cb: (u: TaskWaitingUpdate) => void): Unsubscribe;
+  /** 本地日志被整份换成云端那份（冲突处理）：正开着它就重载，侧栏刷列表 */
+  onTaskSessionReplaced(cb: (u: { sessionId: string }) => void): Unsubscribe;
   /** turn 级聚合 diff 推送（issue #345）：每次写文件工具完成后整份替换 */
   onTurnDiff(cb: (update: TurnDiffUpdate) => void): Unsubscribe;
   onAssistantDelta(cb: (delta: AssistantDelta) => void): Unsubscribe;
@@ -1532,6 +1554,7 @@ export const CHANNELS = {
   deleteProjectMemory: "otter:deleteProjectMemory",
   listTopicMemories: "otter:listTopicMemories",
   memorySyncStatus: "otter:memorySyncStatus",
+  taskSyncStatus: "otter:taskSyncStatus",
   deleteTopicMemory: "otter:deleteTopicMemory",
   setTopicLabel: "otter:setTopicLabel",
   rebuildSearchIndex: "otter:rebuildSearchIndex",
@@ -1735,6 +1758,9 @@ export const CHANNELS = {
   askUserRequest: "otter:askUserRequest",
   sessionRuntime: "otter:sessionRuntime",
   turnStatus: "otter:turnStatus",
+  taskSyncState: "otter:taskSyncState",
+  taskWaiting: "otter:taskWaiting",
+  taskSessionReplaced: "otter:taskSessionReplaced",
   turnDiff: "otter:turnDiff",
   assistantDelta: "otter:assistantDelta",
   toolOutput: "otter:toolOutput",

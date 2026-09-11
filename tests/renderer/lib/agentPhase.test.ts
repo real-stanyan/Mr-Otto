@@ -61,4 +61,16 @@ describe("agentPhase", () => {
   it("什么都没有 = 思考中（reasoning 在流，或请求已发、第一个 token 还没回）", () => {
     expect(agentPhase(base).label).toBe("思考中…");
   });
+
+  it("等别的执行器\uFF08#1223\uFF09\uFF1A排在审批之后\u3001其余之前", () => {
+    expect(agentPhase({ ...base, waitingFor: "cloud" })).toEqual({ orb: "listening", label: "云端正在回复\u2026" });
+    expect(agentPhase({ ...base, waitingFor: "desktop", tool: call("bash") })).toEqual({
+      orb: "listening",
+      label: "另一台电脑正在回复\u2026",
+    });
+    expect(agentPhase({ ...base, hasApproval: true, waitingFor: "cloud" })).toEqual({
+      orb: "listening",
+      label: "等待审批\u2026",
+    });
+  });
 });

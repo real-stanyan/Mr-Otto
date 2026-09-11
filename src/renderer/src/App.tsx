@@ -126,6 +126,7 @@ import { modelChipLabel } from "./lib/modelChip.js";
 import { ModelPicker } from "./components/ModelPicker.js";
 import { ModelProviderSettings } from "./components/ModelProviderSettings.js";
 import { BillingSettings } from "./components/BillingSettings.js";
+import { TaskSyncStatusLine } from "./components/TaskSyncStatusLine.js";
 import { SubagentSettings } from "./components/SubagentSettings.js";
 import { McpSettings } from "./components/McpSettings.js";
 import { PermissionsSettings } from "./components/PermissionsSettings.js";
@@ -141,6 +142,7 @@ import {
   groupArchivedByWorkspace,
   groupSessionsByWorkspace,
   groupTasksByTopic,
+  isTaskSummary,
   partitionShared,
   taskSessions,
 } from "./sessionGroups.js";
@@ -1269,6 +1271,7 @@ function AccountPage() {
                 只在已登录这一支里画:未登录时这一屏的正事是登录,一排点不动的订阅卡
                 只会把登录卡挤成配角(同下面那张热力图的理由) */}
             <BillingSettings />
+            <TaskSyncStatusLine />
           </>
         ) : (
           /* 未登录时这一屏只有一张登录卡,水平垂直都居中:
@@ -1709,14 +1712,20 @@ function AppSidebar() {
   useEffect(() => {
     if (tabDecided.current || !builtin || sessions.length === 0) return;
     tabDecided.current = true;
-    if (sessions.some((s) => !s.archived && s.workspace !== null && !isDefaultWorkspace(s.workspace, builtin))) {
+    // 「有没有项目会话」= 有没有顶层的、非任务的会话。`spawnedFrom === null` 这一条是换判据时
+    // 补的（#1223 终审 I3）：isTaskSummary 对子会话一律回 false（它们跑在父会话的 workspace 里），
+    // 不排掉的话一个只用任务栏的用户，只要派过一次活，开 app 就落在「项目」栏
+    if (sessions.some((s) => !s.archived && s.spawnedFrom === null && s.workspace !== null && !isTaskSummary(s, builtin))) {
       setTab("projects");
     }
   }, [sessions, builtin, setTab]);
   // 没记 workspace 的史前会话（schema 长出 workspace 之前的日志）无法重建围栏，
   // 不可恢复——但事实不该被藏：藏 = 用户看不见也删不掉的库存垃圾。
   // 灰显示人 + 开放删除，点击不响应（能力问题诚实呈现，不是数据问题）
-  const prehistoric = sessions.filter((s) => s.workspace === null && !s.archived);
+  // 史前会话 = 既没有路径、也没有 workspaceKind（#1223 终审 I3）：云端建的任务会话同样没有
+  // workspace，但它是任务会话，归任务栏——只按 workspace === null 判的话它落在这一摞灰色的
+  // 「不可恢复」里，点不开也说不清为什么
+  const prehistoric = sessions.filter((s) => s.workspace === null && s.workspaceKind === null && !s.archived);
   // 用户归档的会话（ADR-0087）：不进工程组，走「已归档会话」这个独立视图，可恢复。
   // 归档区自己也按工程分组：这一屏和会话列表是同一批东西的两个状态，
   // 平铺的话「哪个工程的」这条线索在归档那一刻就断了，攒多了只能靠标题猜。
@@ -1724,7 +1733,7 @@ function AppSidebar() {
   // 两栏各自的「已归档」计数和列表互不掺和
   const archivedTask = useMemo(() => archivedTaskSessions(sessions, builtin), [sessions, builtin]);
   const archived = useMemo(
-    () => groupArchivedByWorkspace(sessions.filter((s) => !isDefaultWorkspace(s.workspace, builtin))),
+    () => groupArchivedByWorkspace(sessions.filter((s) => !isTaskSummary(s, builtin))),
     [sessions, builtin]
   );
   const archivedCount =
@@ -1830,8 +1839,8 @@ function AppSidebar() {
           >
             重命名
           </DropdownMenuItem>
-          {/* 归到…（#846）：只有任务栏（内置 Default 工作区）的会话才有主题桶这个概念 */}
-          {isDefaultWorkspace(s.workspace, builtin) && (
+          {/* 归到…（#846）：只有任务栏的会话才有主题桶这个概念（判据与任务栏同一份，终审 I3） */}
+          {isTaskSummary(s, builtin) && (
             <DropdownMenuSub>
               <DropdownMenuSubTrigger>归到…</DropdownMenuSubTrigger>
               <DropdownMenuSubContent>
@@ -1922,7 +1931,7 @@ function AppSidebar() {
     () =>
       partitionShared(
         sessions.filter(
-          (s) => !s.archived && s.spawnedFrom === null && s.workspace !== null && !isDefaultWorkspace(s.workspace, builtin)
+          (s) => !s.archived && s.spawnedFrom === null && s.workspace !== null && !isTaskSummary(s, builtin)
         )
       ),
     [sessions, builtin]
@@ -3642,6 +3651,16 @@ export function App() {
   const sessionTitle = useChat((s) => s.sessions.find((x) => x.sessionId === s.sessionId)?.title ?? null);
   // 内置 Default 的路径:兜底名要按它分「任务」还是工程文件夹名(与侧栏同一口径)
   const builtinWorkspace = useChat((s) => s.workspaceSettings?.builtinWorkspace ?? null);
+  /** 这条会话是不是任务会话——判据与侧栏那一份是同一个函数（#1223 终审 I3）。
+      按 summary 判不按路径判：云端建的会话没有 workspace、另一台 Mac 建的带着本机不存在的
+      绝对路径，两种按路径判都会被当成「项目会话」，头部于是写出一串外星路径。
+      会话还没进列表（刚建、列表还没刷回来）时退回路径那半 = 改动前的行为。
+      selector 回 boolean：整份 sessions 数组进 selector 会让 App 每次列表变化都重渲 */
+  const isTaskSession = useChat((s) => {
+    const b = s.workspaceSettings?.builtinWorkspace ?? null;
+    const summary = s.sessions.find((x) => x.sessionId === s.sessionId);
+    return summary ? isTaskSummary(summary, b) : isDefaultWorkspace(s.workspace, b);
+  });
   const replayCursor = useChat((s) => s.replayCursor);
   const setReplayCursor = useChat((s) => s.setReplayCursor);
   const settingsSection = useChat((s) => s.settingsSection);
@@ -3919,13 +3938,13 @@ export function App() {
             {sessionDisplayName(sessionTitle, events, fallbackSessionLabel(workspace, builtinWorkspace))}
           </span>
           {/* 内置 Default 的工作区不显示文字——那不是用户起的名字。判据是
-              `isDefaultWorkspace` 不是 `!== builtinWorkspace`（#1091）：ADR-0206 之后
+              `isTaskSummary`（终审 I3 之前是 `isDefaultWorkspace`）不是 `!== builtinWorkspace`（#1091）：ADR-0206 之后
               任务会话拿的是 `<Default>/<sessionId>/` 这个**子目录**，于是等号判据
               漏掉了它们，头部写出来的是一串 `s-20260908062342-2bfb27…`——原来那条
               规则想挡的正是这种东西，只是它在 #851 那天悄悄失效了。
               分隔点放在条件里面（同 BranchPicker 的 `leadingSep`）：整块消失时
               点跟着走，不然头部留一个孤零零的「·」 */}
-          {!isDefaultWorkspace(workspace, builtinWorkspace) && (
+          {!isTaskSession && (
             <>
               <span className="text-muted-foreground text-xs shrink-0">·</span>
               <span className="text-muted-foreground text-xs font-mono shrink-0 max-w-[180px] truncate" title={workspace}>

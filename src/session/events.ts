@@ -437,11 +437,12 @@ export interface ToolExecutionStartedEvent extends SessionEventBase {
     错误照旧向上抛：落盘是补记事实，不是吞错。模型不消费。
     aborted（ADR-0006）= 用户主动停止，不是错误：不向上抛，UI 不当故障渲染。
     union 加宽向后兼容——投影本来就丢弃 turn_ended，旧日志照常重放。
-    interrupted（issue #383，dsh 崩溃恢复对照）= resume 时发现的合成收口：
-    上一进程在 turn 进行中退出，日志里有活动无 turn_ended。**loop 永不产生
-    这个值**——它是"修复补的"和"loop 落的"永远可区分的凭据。修复 = 追加，
-    不截断不改写；barrenTurns 对非 completed 的既有语义顺带把崩溃空跑 turn
-    从上下文里正确跳掉 */
+    interrupted（issue #383，dsh 崩溃恢复对照）= 这个 turn 没被答完：resume 时发现
+    上一进程在 turn 进行中退出（日志里有活动无 turn_ended）会补一条，**loop 现在也会
+    落它**——`abortTurn("interrupted")` 的那两条路（合盖睡眠、笔被别人拿走，#1223）都是
+    「不是人按的停止」，所以尾巴按「这条人话没人答」处理（lastUnanswered）。也就是说
+    「修复补的」和「loop 落的」不再单凭 outcome 区分（修复那条仍然 = 追加，不截断不改写）；
+    barrenTurns 对非 completed 的既有语义顺带把崩溃空跑 turn 从上下文里正确跳掉 */
 export interface TurnEndedEvent extends SessionEventBase {
   type: "turn_ended";
   outcome: "completed" | "error" | "aborted" | "interrupted";
@@ -617,6 +618,25 @@ export interface VoiceCallChangedEvent extends SessionEventBase {
   participants: VoiceCallParticipant[];
   byUid: string;
   byAgentId?: string;
+  ignorable: true;
+}
+
+/** 这条任务会话此刻由谁在跑（#1223，spec §3.4）：电脑上的 Otto 还是云端 runtime。
+    拿到笔的那一方在起 turn 之前落一条，且仅当与 `currentExecutor(events)` 不同时才落
+    （一条都没有 = 桌面，存量日志全是桌面写的；云端建的会话因此天然在 seq 1 落 `cloud`）。
+    模型可见面是 deriveMessages 投影出来的 system 尾块（云端：碰不到电脑文件；回到电脑：
+    全部工具可用），事件本身 `ignorable`：旧桌面跳过它只少一行时间线，不会复活残缺会话。
+    `label` 是桌面这台设备的人话名（`os.hostname()`），云端缺席；换了一台 Mac 时投影据它
+    多说一句「文件不在这台机器上」 */
+export interface ExecutorChangedEvent extends SessionEventBase {
+  type: "executor_changed";
+  executor: "desktop" | "cloud";
+  label?: string;
+  /** 这台机器在恢复会话时发现日志里记的任务文件夹路径本机不存在（或本机 Default 根不同），
+      于是新建了一个——**此前的文件不在这里**（#1223 终审 I1）。投影据此说那句「这是另一台
+      电脑…」，不必等日志里先有一条别的 `executor_changed` 才说得出口：Mac B 第一次接手
+      Mac A 的会话时，日志里一条都还没有。缺席 = 文件夹是接着用的（旧日志逐字节不变） */
+  freshWorkspace?: true;
   ignorable: true;
 }
 
@@ -1093,6 +1113,7 @@ export type SessionEvent =
   | AgentBriefedEvent
   | AgentRelayEvent
   | VoiceCallChangedEvent
+  | ExecutorChangedEvent
   | MemoryLoadedEvent
   | WorkspaceMemoryLoadedEvent
   | WorkspaceWikiLoadedEvent
@@ -1155,6 +1176,7 @@ const KNOWN_EVENT_TYPES_MAP: Record<SessionEvent["type"], true> = {
   agent_briefed: true,
   agent_relay: true,
   voice_call_changed: true,
+  executor_changed: true,
   memory_loaded: true,
   workspace_memory_loaded: true,
   workspace_wiki_loaded: true,

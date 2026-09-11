@@ -14,6 +14,7 @@ import { renderTopicIndex } from "../shared/memoryTopics.js";
 import { WORKSPACE_MEMORY_LIMITS, workspaceTierRuleText } from "../shared/workspaceMemory.js";
 import { renderWikiPrompt } from "../shared/wiki.js";
 import { sanitizeForPrompt } from "../shared/threatPatterns.js";
+import type { ExecutorKind } from "../shared/taskSync.js";
 
 /** 用户正文 + 文本文件全文拼成模型可见文本。日志里二者分开存
     (content 纯正文,textFiles 结构化)——UI 按结构渲染文件卡片,
@@ -273,6 +274,24 @@ export function renderVoiceCallPrompt(
   );
 }
 
+/** 换执行器之后焊进 system 尾部的那一块（#1223，spec §3.5）。
+    云端：模型对自己的处境一无所知——不说它会以为自己还在电脑上，去「读」一个碰不到的文件。
+    回到电脑：云端那段记的待办现在能做了。换了一台 Mac：任务文件夹的文件不同步，得说。
+    三种情形都空 = 返回空串，调用方一字不加（同一台电脑、从没上过云的日志逐字节不变） */
+export function renderExecutorPrompt(s: { kind: ExecutorKind; everCloud: boolean; changedMachine: boolean }): string {
+  if (s.kind === "cloud") {
+    return (
+      `\n[你现在在云端替用户接着这条会话\uFF08用户在手机上\uFF09。电脑不在线\u2014\u2014你碰不到它的文件、终端和连接器，` +
+      `能用的只有当前工具表里那几把。要动电脑的活，用 todo_write 记下来并明说\u300C回到电脑再做\u300D，不要假装做了。` +
+      `回复像发消息：短、先说结论。]`
+    );
+  }
+  const back = s.everCloud ? "你回到了电脑上，全部工具可用；云端那段记下的待办现在能做了。" : "";
+  const moved = s.changedMachine ? "这是另一台电脑，任务文件夹里此前的文件不在这台机器上。" : "";
+  if (back === "" && moved === "") return "";
+  return `\n[${back}${moved}]`;
+}
+
 /** workspace_memory_loaded 专属的指引 + 块（#949）。与 renderMemoryPrompt 分开写而不是加参数：
     云端没有 user/project/topic 三档、没有 session_search、没有「下个会话才可见」（共享档本会话
     中途就会被别的 agent 改，下一 turn 的快照就带上了）——共用一段文案得处处加分支 */
@@ -526,6 +545,12 @@ export function deriveMessages(
   // 通话是云会话的东西，本机日志里不会有这条事件，有也不该长出一块提示词
   let voiceCall: VoiceCallParticipant[] | null = null;
   let isCloud = false;
+  // 执行器（#1223）：最后一条 executor_changed 胜出，主循环结束后拼一次到 system 最尾。
+  // everCloud / changedMachine 是折叠出来的两个事实：前者决定「回到电脑」那句要不要说，
+  // 后者按桌面 label 变没变（desktop → cloud → 另一台 desktop 也算换机）
+  let executor: { kind: ExecutorKind; everCloud: boolean; changedMachine: boolean; seen: boolean } =
+    { kind: "desktop", everCloud: false, changedMachine: false, seen: false };
+  let lastDesktopLabel: string | null = null;
   // 最近一条 brief 的名字 + 花名册：通话块要说得出「不在通话里的」是谁、管什么，
   // 而这份信息只在 agent_briefed 上（roster 不带 id，所以名单事件自带名字快照）
   let briefName: string | null = null;
@@ -841,6 +866,24 @@ export function deriveMessages(
         voiceCall = event.participants.length > 0 ? event.participants : null;
         break;
 
+      case "executor_changed": {
+        // `freshWorkspace` 单独算一档（#1223 终审 I1）：Mac B 第一次接手 Mac A 的会话时，日志里
+        // 一条 executor_changed 都还没有，label 比对那半（要有前一条桌面 label 才成立）永远得
+        // 不出「换机了」——而那正是最该说「此前的文件不在这台机器上」的时刻
+        const changedMachine =
+          event.executor === "desktop" &&
+          (event.freshWorkspace === true ||
+            (event.label !== undefined && lastDesktopLabel !== null && event.label !== lastDesktopLabel));
+        if (event.executor === "desktop" && event.label !== undefined) lastDesktopLabel = event.label;
+        executor = {
+          kind: event.executor,
+          everCloud: executor.everCloud || event.executor === "cloud",
+          changedMachine,
+          seen: true,
+        };
+        break;
+      }
+
       case "workspace_memory_loaded":
         // 最新一条胜出（#949）：一条云会话里一只 agent 会落多条快照（共享档被别人改过就再落一条）。
         // 不在这里直接 += ——那样两条快照就是两个 SHARED 块叠在 system 里，模型读到新旧两套口径。
@@ -971,6 +1014,9 @@ export function deriveMessages(
   // 通话块排在记忆与 wiki 之后（#1163）：它是此刻的状态，也是最会变的那一段——放最尾
   // 前缀缓存只从这里往下失效
   if (systemMessage && isCloud && voiceCall) systemMessage.content += renderVoiceCallPrompt(voiceCall, briefName, briefRoster);
+  // 执行器块排在最后（#1223）：它比通话名单更少变，但换执行器那一刻整段上下文都要重读，
+  // 放最尾让 prefix cache 只从这儿失效。seen 为 false（旧日志 / 一直在桌面）一字不加
+  if (systemMessage && executor.seen) systemMessage.content += renderExecutorPrompt(executor);
 
   // summaryAt 可能 === events.length（被吸收区是日志尾巴）——循环里插不到，这里补
   if (micro && micro.summaryAt >= events.length) {

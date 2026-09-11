@@ -198,6 +198,19 @@ describe("EventStore", () => {
     expect(byId["plain"]).toBeNull(); // 直接在用户选的目录里干活 → null，workspace 就是项目
   });
 
+  it("sessions()：workspaceKind 从第 0 条 session_created 投影出来（#1223 终审 I3）", () => {
+    // 渲染层判「这条是不是任务会话」的第一判据：云端建的会话日志里压根没有 workspace，
+    // 只有这一格认得出它（按路径判会把它扔进「史前会话」）
+    store.append({ sessionId: "task", ts: 1, type: "session_created", workspace: "/D/task", workspaceKind: "default" });
+    store.append({ sessionId: "cloudmade", ts: 2, type: "session_created", workspaceKind: "default" });
+    store.append({ sessionId: "proj", ts: 3, type: "session_created", workspace: "/repo" });
+
+    const byId = Object.fromEntries(store.sessions().map((s) => [s.sessionId, s.workspaceKind]));
+    expect(byId["task"]).toBe("default");
+    expect(byId["cloudmade"]).toBe("default");
+    expect(byId["proj"]).toBeNull(); // 旧日志 / 项目会话缺席这个字段 → null
+  });
+
   it("遗留兼容：旧日志里的 session_archived 标记（无 reason）仍让会话从列表消失", () => {
     // 早期"删除" = 归档标记，无 reason 字段；ADR-0087 后按 system 解读——
     // 列表和召回都排除，跟写下它时的本意（彻底藏起）一致

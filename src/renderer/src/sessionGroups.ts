@@ -70,7 +70,10 @@ export function groupArchivedByWorkspace(sessions: SessionSummary[]): ArchivedGr
   return {
     groups: buildGroups(archived.filter((s) => s.workspace !== null)),
     ungrouped: archived
-      .filter((s) => s.workspace === null)
+      // 史前会话 = 既没有路径、也没有 workspaceKind（#1223 终审 I3）：云端建的任务会话
+      // 同样没有 workspace，但它有身份，不该混进这一摞——调用方已经用 isTaskSummary 把它
+      // 挡在输入之外，这里的判据跟着收窄，免得换个调用方就静默漏出去
+      .filter((s) => s.workspace === null && s.workspaceKind === null)
       .sort((a, b) => b.lastTs - a.lastTs),
   };
 }
@@ -98,6 +101,20 @@ function buildGroups(sessions: SessionSummary[]): SessionGroup[] {
     .sort((a, b) => b.firstTs - a.firstTs);
 }
 
+/** 「这条是不是任务会话」——渲染层唯一那份判据（#1223 终审 I3）。
+    两半缺一不可：`workspaceKind === "default"` 是日志里记下的事实（ADR-0206），云端建的会话
+    （日志里压根没有 workspace）与另一台 Mac 建的会话（带着一条本机不存在的绝对路径）只有靠它
+    才认得出——按路径判的话前者掉进「史前会话」、后者在项目栏长出一个组头是外星路径的组；
+    路径那半（`isDefaultWorkspace`）留着保旧日志——`workspaceKind` 是后来才加的字段。
+    子会话（spawnedFrom 非空，ADR-0047）永远不算：它们跑在父会话的 workspace 里，而任务栏
+    恰恰是它们唯一漏得出来的口子。 */
+export function isTaskSummary(s: SessionSummary, builtin: string | null): boolean {
+  return (
+    s.spawnedFrom === null &&
+    (s.workspaceKind === "default" || (s.workspace !== null && isDefaultWorkspace(s.workspace, builtin)))
+  );
+}
+
 /** 任务栏(#559)那一摞:内置 Default 工作区的顶层会话,平铺,lastTs 倒序照原序。
     和 groupSessionsByWorkspace 共用同一条可见性口径——**子会话(spawnedFrom 非空)
     同样不进这一栏**:memory-reviewer / Explore 这些派出去的活跑在父会话的
@@ -105,16 +122,12 @@ function buildGroups(sessions: SessionSummary[]): SessionGroup[] {
     漏得出来的口子(表现:侧栏凭空多出一个叫「当前 MEMORY:」的会话,没人开过它)。
     口径写成函数而不是在 App.tsx 里再抄一遍谓词——上一次抄漏的正是这一条。 */
 export function taskSessions(sessions: SessionSummary[], builtin: string | null): SessionSummary[] {
-  return sessions.filter(
-    (s) => !s.archived && s.spawnedFrom === null && s.workspace !== null && isDefaultWorkspace(s.workspace, builtin)
-  );
+  return sessions.filter((s) => !s.archived && isTaskSummary(s, builtin));
 }
 
 /** 任务栏的「已归档」那一摞:同上,只是要 archived 的那半边 */
 export function archivedTaskSessions(sessions: SessionSummary[], builtin: string | null): SessionSummary[] {
-  return sessions.filter(
-    (s) => s.archived && s.spawnedFrom === null && s.workspace !== null && isDefaultWorkspace(s.workspace, builtin)
-  );
+  return sessions.filter((s) => s.archived && isTaskSummary(s, builtin));
 }
 
 export interface TopicGroup {

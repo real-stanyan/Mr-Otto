@@ -5,6 +5,7 @@ import {
   groupArchivedByWorkspace,
   groupSessionsByWorkspace,
   groupTasksByTopic,
+  isTaskSummary,
   partitionShared,
   taskSessions,
 } from "../../src/renderer/src/sessionGroups.js";
@@ -19,7 +20,7 @@ const s = (
   startedTs: number = lastTs - 1,
 ): SessionSummary => ({
   sessionId, workspace, lastTs, startedTs, events: 1, title: null, spawnedFrom, archived: false,
-  sharedWith: [], topic: null, projectRoot: null,
+  sharedWith: [], topic: null, projectRoot: null, workspaceKind: null,
 });
 
 /** 独立副本上的会话（ADR-0157）：workspace 是 worktree 路径，projectRoot 是用户选的项目 */
@@ -213,6 +214,33 @@ describe("taskSessions —— 侧栏「任务」那一栏", () => {
   it("#851：Default 子目录里的会话也算任务；旧形状（等于根）照旧", () => {
     const list = taskSessions([s("new", `${DEF}/s-20260903111128-a1b2c3d4`, 300), s("old", DEF, 200), s("proj", "/p/x", 100)], DEF);
     expect(list.map((x) => x.sessionId)).toEqual(["new", "old"]);
+  });
+
+  it("认领来的会话也在任务栏：云端建的（没有 workspace）与另一台 Mac 建的（外星路径）（终审 I3）", () => {
+    // 只按路径判的话：前者 workspace 为 null 掉进「史前会话」那一摞灰色的不可恢复，
+    // 后者在项目栏长出一个组头是 /Users/other/… 的组——两条都是认领来的任务会话
+    const cloud = { ...s("cloud", null, 300), workspaceKind: "default" as const };
+    const other = { ...s("other", "/Users/other/Documents/Mr Otto/Default/s9", 200), workspaceKind: "default" as const };
+    expect(taskSessions([cloud, other, s("proj", "/p/x", 100)], DEF).map((x) => x.sessionId)).toEqual(["cloud", "other"]);
+    // 项目栏那边一条都不许出现（App.tsx 三处按 !isTaskSummary 排除，输入侧就滤掉了）
+    const projects = [cloud, other, s("proj", "/p/x", 100)].filter((x) => !isTaskSummary(x, DEF));
+    expect(groupSessionsByWorkspace(projects).map((g) => g.workspace)).toEqual(["/p/x"]);
+    // 旧形状（有 Default 路径、没有 workspaceKind）仍在任务栏
+    expect(taskSessions([s("legacy", DEF, 50)], DEF).map((x) => x.sessionId)).toEqual(["legacy"]);
+    // 真·史前会话：两半都没有 → 不是任务会话
+    expect(isTaskSummary(s("pre", null, 10), DEF)).toBe(false);
+    // 子会话即便带着 workspaceKind 也不进（父会话的 workspace 里跑的活）
+    expect(isTaskSummary({ ...s("kid", null, 10, "parent"), workspaceKind: "default" as const }, DEF)).toBe(false);
+  });
+
+  it("归档那半同一判据：认领来的归档会话进任务栏的「已归档」，不进 ungrouped（终审 I3）", () => {
+    const cloudArchived = { ...s("cloud", null, 300), archived: true, workspaceKind: "default" as const };
+    expect(archivedTaskSessions([cloudArchived], DEF).map((x) => x.sessionId)).toEqual(["cloud"]);
+    const { ungrouped } = groupArchivedByWorkspace([cloudArchived]);
+    expect(ungrouped).toEqual([]);
+    // 真·史前的归档会话照旧走 ungrouped
+    const pre = { ...s("pre", null, 100), archived: true };
+    expect(groupArchivedByWorkspace([pre]).ungrouped.map((x) => x.sessionId)).toEqual(["pre"]);
   });
 });
 

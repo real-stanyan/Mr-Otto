@@ -101,6 +101,8 @@ const OTHER_AGENT_VERDICTS: Record<SessionEvent["type"], OtherAgentVerdict> = {
   // 语音通话名单（#1163）：群事实，每只都要读到——派活只在通话成员里进行、system 尾块
   // 列出谁在通话里。没有 agentId 字段，早退路径本来就放行，这里仍要表态（Record 是穷尽表）
   voice_call_changed: "keep",
+  // 换执行器（#1223）：任务会话专属，团队会话里不会出现；穷举表要它表态，群事实 = keep
+  executor_changed: "keep",
   background_task_started: "drop",
   background_task_completed: "drop",
   image_described: "drop",

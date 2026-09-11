@@ -10,6 +10,7 @@ const empty: RuntimeSlice = {
   compactingBySession: {},
   approvals: {},
   asks: {},
+  waitingBySession: {},
 };
 
 const idle: SessionRuntime = { status: "idle", compacting: false, approval: null, ask: null };

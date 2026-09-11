@@ -1,7 +1,6 @@
 // 组装根（agent 侧）— 把 store/adapter/tools/world/approver 拼成 engine。
 // 刻意不 import electron：接缝都是回调，Electron 接线在 index.ts。
 
-import { randomBytes } from "node:crypto";
 import { EventStore } from "../session/store.js";
 import { AttachmentStore } from "../session/attachments.js";
 import { LoopEngine } from "../loop/engine.js";
@@ -15,6 +14,7 @@ import {
 import { clampThinking, type ThinkingMode } from "../shared/thinking.js";
 import { DEFAULT_AUTO_COMPACT, type AutoCompactSettings } from "../shared/autoCompact.js";
 import type { ToolLoopDetection } from "../shared/toolLoopGuard.js";
+import { newSessionId } from "../shared/sessionId.js";
 import { lookupOllamaModel } from "./ollamaModels.js";
 import { projectMemoryDir, projectScopeId } from "./projectRoot.js";
 
@@ -148,16 +148,9 @@ export interface AgentPush {
   turnDiff?(update: TurnDiffUpdate): void;
 }
 
-/** 会话 id：秒级时间戳 + 随机段。
-    时间戳留着是为了人能读、列表大致按时间排；随机段是承重的那一半——
-    id 是 append-only 日志的分区键，撞一次就是两个会话的事件写进同一条日志，
-    而日志不可编辑，事后拆不开（#111）。
-    旧日志里的 `s-<14 位>` 不受影响：全仓没有任何地方解析这个形状，
-    resume 只按字符串原样取（AGENTS.md 硬规则：旧日志必须永远可重放）。 */
-export function newSessionId(): string {
-  const stamp = new Date().toISOString().replace(/[-:TZ.]/g, "").slice(0, 14);
-  return `s-${stamp}-${randomBytes(4).toString("hex")}`;
-}
+// 会话 id 的铸法搬进了 src/shared/sessionId.ts（#1223：手机端也要铸同一形状）。
+// 这里 re-export 是为了 index.ts 与既有测试的 import 路径一个字不改
+export { newSessionId } from "../shared/sessionId.js";
 
 /** skill 库接线的形状。四处装配路径共用一份（主会话 index.ts、活着的子会话
     subagentRunner、恢复出来的子会话 resumeChild、开机探针 probeToolDefs）——
@@ -488,8 +481,10 @@ export function createAgent(opts: {
     }
     // 崩溃合成收口（issue #383，dsh 对照：恢复不截断，用合成事件关掉开着的 turn）。
     // 判据：最后一条 turn_ended 之后还有 turn 活动（消息/工具事件）= 上一进程在
-    // turn 进行中退出，收口没落盘。补 outcome:"interrupted"——loop 永不产生这个值，
-    // "修的"和"跑出来的"永远可区分。幂等：补过之后活动不再晚于 turn_ended。
+    // turn 进行中退出，收口没落盘。补 outcome:"interrupted"——这个值 loop 现在也会写
+    // （abortTurn("interrupted")：合盖睡眠 / 笔被别人拿走，#1223），所以"修的"和
+    // "跑出来的"不再单凭 outcome 区分；两边说的是同一件事——这条人话没人答完。
+    // 幂等：补过之后活动不再晚于 turn_ended。
     // 副产品：崩溃在模型开口前的空跑 turn（user_message → 无产出 → 崩），
     // barrenTurns 对非 completed 的既有语义从此把它正确跳出上下文——
     // 此前它"判不出来→留着"，用户每次崩溃重试都在上下文里多囤一句同样的话

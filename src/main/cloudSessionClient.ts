@@ -206,6 +206,7 @@ export function cloudSessionFleetRow(summary: CloudSessionSummary | null): Sessi
     sharedWith: [],
     topic: null,
     projectRoot: null,
+    workspaceKind: null, // 云会话不是任务会话（它的 workspace 是合成路径，ADR-0289）
   };
 }
 
