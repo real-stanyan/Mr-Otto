@@ -4,8 +4,8 @@
 //
 // 自上而下三段：邮箱密码 → OAuth → 离开这张表单的两条路。三段共用一圈边，段间 16、段内 8，
 // 分组全靠这个比值读出来。邮箱在前、OAuth 在后是维护者定的（#731）。
-import { useState } from "react";
-import { LayoutAnimation, Pressable, StyleSheet, Text, View } from "react-native";
+import { useRef, useState } from "react";
+import { LayoutAnimation, Pressable, StyleSheet, Text, View, type TextInput } from "react-native";
 import { BlurView } from "expo-blur";
 import {
   MIN_PASSWORD, NAME_MAX, canSubmitSignIn, confirmHint, type SignInMode,
@@ -33,6 +33,10 @@ export function SignInCard({ onNotice, onForgot }: {
   const [busy, setBusy] = useState<"password" | OAuthProvider | null>(null);
   /** 注册成功、正在等确认信。存的是那一刻的邮箱密码——弹窗要拿它轮询；只活在内存里 */
   const [pending, setPending] = useState<{ email: string; password: string } | null>(null);
+  /** 「下一项」一格接一格往下交：用户名 → 邮箱 → 密码 → 再输一遍 */
+  const emailRef = useRef<TextInput>(null);
+  const passwordRef = useRef<TextInput>(null);
+  const confirmRef = useRef<TextInput>(null);
 
   const form = { mode, name, email, password, confirm, busy: busy !== null };
   const canSubmit = canSubmitSignIn(form);
@@ -107,24 +111,26 @@ export function SignInCard({ onNotice, onForgot }: {
             <Field
               variant="gate" value={name} onChangeText={setName} placeholder="用户名"
               maxLength={NAME_MAX} autoComplete="nickname" textContentType="nickname" returnKeyType="next"
+              onSubmitEditing={() => emailRef.current?.focus()}
             />
           ) : null}
           <Field
-            variant="gate" value={email} onChangeText={setEmail} placeholder="邮箱"
+            inputRef={emailRef} variant="gate" value={email} onChangeText={setEmail} placeholder="邮箱"
             keyboardType="email-address" autoComplete="email" textContentType="emailAddress" returnKeyType="next"
+            onSubmitEditing={() => passwordRef.current?.focus()}
           />
           <Field
-            variant="gate" value={password} onChangeText={setPassword}
+            inputRef={passwordRef} variant="gate" value={password} onChangeText={setPassword}
             placeholder={up ? `密码（至少 ${MIN_PASSWORD} 位）` : "密码"} secure
             autoComplete={up ? "new-password" : "current-password"}
             textContentType={up ? "newPassword" : "password"}
             returnKeyType={up ? "next" : "go"}
-            onSubmitEditing={up ? undefined : () => void submit()}
+            onSubmitEditing={up ? () => confirmRef.current?.focus() : () => void submit()}
           />
           {up ? (
             <View>
               <Field
-                variant="gate" value={confirm} onChangeText={setConfirm} placeholder="再输一遍密码" secure
+                inputRef={confirmRef} variant="gate" value={confirm} onChangeText={setConfirm} placeholder="再输一遍密码" secure
                 invalid={mismatch !== null} autoComplete="new-password" textContentType="newPassword"
                 returnKeyType="go" onSubmitEditing={() => void submit()}
               />
@@ -185,7 +191,7 @@ export function SignInCard({ onNotice, onForgot }: {
 }
 
 /** 卡底下那两条小字路（demo 的 .gatelink：12pt、暗色、无边框）。hidden = 占着位置但看不见、点不动 */
-export function GateLink({ label, onPress, hidden }: { label: string; onPress: () => void; hidden?: boolean }) {
+function GateLink({ label, onPress, hidden }: { label: string; onPress: () => void; hidden?: boolean }) {
   const { c } = usePalette();
   return (
     <Pressable

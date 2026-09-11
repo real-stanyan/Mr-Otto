@@ -8,8 +8,8 @@
 //
 // 与 demo 的一处不同（spec §10）：第二步的说明去掉「邮件里那条链接点了也算」——手机端没有接
 // 那条深链，这句话在手机上是假的。
-import { useEffect, useState } from "react";
-import { LayoutAnimation, Pressable, Text, View } from "react-native";
+import { useEffect, useRef, useState } from "react";
+import { LayoutAnimation, Pressable, Text, View, type TextInput } from "react-native";
 import {
   OTP_LENGTH, RESEND_COOLDOWN_S, canSubmitOtp, resendLabel,
 } from "../../../src/shared/forgotPassword.js";
@@ -51,6 +51,11 @@ export function ForgotDialog({ initialEmail, initialStage = "email", onClose, on
   const [notice, setNotice] = useState<AuthNotice | null>(null);
   /** 按了「取消」先在这里关：Dialog 放完退场（onExited）才轮到 onClose */
   const [open, setOpen] = useState(true);
+  /** 验码在飞。挡的是「同一批里 onChangeText 连来两次」：两次读到的 busy 都还是渲染那一刻的 false，
+      第二次拿已经用掉的码去验必然失败，而失败分支的 onRelease 会把刚按住的闸门放掉 */
+  const verifying = useRef(false);
+  /** 第一格新密码按「下一项」跳到的那一格 */
+  const pw2Ref = useRef<TextInput>(null);
 
   // 一秒一跳的倒数：setTimeout 链而不是常驻 setInterval——弹窗随时会整棵卸载
   useEffect(() => {
@@ -88,7 +93,8 @@ export function ForgotDialog({ initialEmail, initialStage = "email", onClose, on
   };
 
   const verify = async (token: string): Promise<void> => {
-    if (busy || token.length !== OTP_LENGTH) return;
+    if (verifying.current || busy || token.length !== OTP_LENGTH) return;
+    verifying.current = true;
     setBusy(true);
     setNotice(null);
     try {
@@ -101,6 +107,7 @@ export function ForgotDialog({ initialEmail, initialStage = "email", onClose, on
       await onRelease();
       setNotice(authNoticeOf(errorText(e)));
     } finally {
+      verifying.current = false;
       setBusy(false);
     }
   };
@@ -129,10 +136,11 @@ export function ForgotDialog({ initialEmail, initialStage = "email", onClose, on
         ? { label: busy ? "稍等…" : "提交", onPress: () => void verify(code), disabled: !canSubmitOtp(code, busy) }
         : { label: busy ? "保存中…" : "保存", onPress: () => void save(), disabled: !canSave };
   // 第三步左边从「取消」变成「以后再说」：验过之后已经没有东西可取消了——人已经进来了，
-  // 逼着设只是又一道收费站（同桌面 SetPasswordDialog）
+  // 逼着设只是又一道收费站（同桌面 SetPasswordDialog）。「以后再说」自己也收起弹窗：这一步若 session
+  // 没了（在别处被登出），闸门抬不起来，只放开不关会把人困在这里
   const left =
     stage === "set"
-      ? { label: "以后再说", onPress: () => void onRelease(), disabled: busy }
+      ? { label: "以后再说", onPress: () => { void onRelease(); setOpen(false); }, disabled: busy }
       : { label: "取消", onPress: () => setOpen(false), disabled: busy };
 
   return (
@@ -177,10 +185,11 @@ export function ForgotDialog({ initialEmail, initialStage = "email", onClose, on
             <Field
               variant="dialog" value={pw} onChangeText={setPw} placeholder={`新密码（至少 ${MIN_PASSWORD} 位）`}
               secure autoFocus autoComplete="new-password" textContentType="newPassword" returnKeyType="next"
+              onSubmitEditing={() => pw2Ref.current?.focus()}
             />
             <View>
               <Field
-                variant="dialog" value={pw2} onChangeText={setPw2} placeholder="再输一遍" secure
+                inputRef={pw2Ref} variant="dialog" value={pw2} onChangeText={setPw2} placeholder="再输一遍" secure
                 invalid={mismatch !== null} autoComplete="new-password" textContentType="newPassword"
                 returnKeyType="done" onSubmitEditing={() => { if (canSave) void save(); }}
               />

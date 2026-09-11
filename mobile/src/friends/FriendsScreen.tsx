@@ -18,7 +18,7 @@ export function FriendsScreen() {
   return (
     // 导航栏收起时内层那条返回栏要自己躲开刘海和 home 条
     <View style={{ flex: 1, paddingTop: inDetail ? insets.top : 0, paddingBottom: inDetail ? insets.bottom : 0 }}>
-      <Friends embedded onDetailChange={setInDetail} onBadge={ignoreBadge} />
+      <Friends onDetailChange={setInDetail} onBadge={ignoreBadge} />
     </View>
   );
 }

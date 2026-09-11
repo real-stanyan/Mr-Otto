@@ -26,3 +26,12 @@ export function gateView(s: GateInput): GateView {
   if (s.resetHold) return "resetHold";
   return "app";
 }
+
+/**
+ * 「按住」这笔记号还作不作数：只在有 session 时作数。session 没了（冷启动读到空、登出、在别处被踢、
+ * 刷新彻底失败），它就只是上一次没走完的残留——不清的话闸门会一直按着，等一个再也不会来的「设新密码」。
+ * 冷启动照这一条判；onAuthStateChange 那边 session 一没就清（不必先知道按没按着，清一个空记号不花什么）
+ */
+export function resetHoldSurvives(held: boolean, hasSession: boolean): boolean {
+  return held && hasSession;
+}

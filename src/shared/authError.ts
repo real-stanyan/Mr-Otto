@@ -58,6 +58,21 @@ const RULES: { re: RegExp; of: (m: RegExpMatchArray) => AuthNotice }[] = [
     of: () => ({ title: "这个密码太好猜了", hint: "换一个长一点、别只有数字的" }),
   },
   {
+    // 找回密码第二步：验证码打错了或者过期了。填满 8 位就自动交，所以打错一位是很多人撞到的第一个错——
+    // 它不该落进最后那条兜底（「登录没成功，反复失败的话把下面这行发给我们」）
+    re: /Token has expired or is invalid|otp_expired/i,
+    of: () => ({ title: "验证码不对或过期了", hint: "核对一下；过期了就点「重新发送」" }),
+  },
+  {
+    re: /should be different from the old password|same_password/i,
+    of: () => ({ title: "新密码和旧的一样", hint: "换一个" }),
+  },
+  {
+    // 设新密码那一步手里没有 session 了（在别处被登出、刷新彻底失败）
+    re: /Auth session missing|session_id claim in JWT does not exist/i,
+    of: () => ({ title: "登录状态没了", hint: "关掉这个窗口，从「忘记密码？」重新来一遍" }),
+  },
+  {
     // GoTrue 的防刷：`For security purposes, you can only request this after 47 seconds.`
     re: /you can only request this after (\d+) second/i,
     of: (m) => ({ title: "点得太快了", hint: `等 ${m[1]} 秒再试一次` }),

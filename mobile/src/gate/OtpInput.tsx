@@ -3,9 +3,9 @@
 //
 // 底下是**一个**真输入框（数字键盘 + oneTimeCode：iOS 会把邮件里那串数字直接递上来），
 // 铺满整排；格子只是它的画法（shared/forgotPassword.ts 的 otpCells）——粘贴、系统递码、
-// 退格全走那一个框。光标停在第一个空格上，那一格的边换点缀色。
-import { useState } from "react";
-import { StyleSheet, Text, TextInput, View } from "react-native";
+// 退格全走那一个框。光标停在第一个空格上，那一格的边换点缀色、里面一根竖线一闪一闪（真光标 caretHidden 藏着，得有人替它说「在等你」）。
+import { useEffect, useRef, useState } from "react";
+import { Animated, StyleSheet, Text, TextInput, View } from "react-native";
 import { OTP_LENGTH, normalizeOtp, otpCells } from "../../../src/shared/forgotPassword.js";
 import { MONO, radius, usePalette, withAlpha } from "../theme.js";
 
@@ -33,7 +33,11 @@ export function OtpInput({ value, onChange, busy, autoFocus }: {
               opacity: busy ? 0.45 : 1,
             }}
           >
-            <Text style={{ fontFamily: MONO, fontSize: 20, fontWeight: "600", color: c.foreground }}>{cell.ch}</Text>
+            {focused && cell.cursor && !busy ? (
+              <Caret color={c.brand} />
+            ) : (
+              <Text style={{ fontFamily: MONO, fontSize: 20, fontWeight: "600", color: c.foreground }}>{cell.ch}</Text>
+            )}
           </View>
         ))}
       </View>
@@ -57,4 +61,21 @@ export function OtpInput({ value, onChange, busy, autoFocus }: {
       />
     </View>
   );
+}
+
+/** 光标那一格里的竖线（demo 的 .otp.focus i.cur::after：2×20、点缀色、1 秒一闪、跳变不渐变） */
+function Caret({ color }: { color: string }) {
+  const on = useRef(new Animated.Value(1)).current;
+  useEffect(() => {
+    // steps(1)：亮半秒、灭半秒；duration 0 就是跳变
+    const blink = Animated.loop(Animated.sequence([
+      Animated.delay(500),
+      Animated.timing(on, { toValue: 0, duration: 0, useNativeDriver: true }),
+      Animated.delay(500),
+      Animated.timing(on, { toValue: 1, duration: 0, useNativeDriver: true }),
+    ]));
+    blink.start();
+    return () => blink.stop();
+  }, [on]);
+  return <Animated.View style={{ width: 2, height: 20, borderRadius: 1, backgroundColor: color, opacity: on }} />;
 }

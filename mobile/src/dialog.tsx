@@ -96,11 +96,15 @@ export function DialogTitle({ children }: { children: ReactNode }) {
   );
 }
 
-/** 说明：15/21、暗色、居中。里面要压重音的那几个字（邮箱）用 ui.tsx 的 Strong */
+/** 说明：15/21、暗色、居中。末行不留一个孤字（demo 的 text-wrap: pretty；iOS 上是 push-out 这条断行策略）。
+    里面要压重音的那几个字（邮箱）用 ui.tsx 的 Strong */
 export function DialogLead({ children }: { children: ReactNode }) {
   const { c } = usePalette();
   return (
-    <Text style={{ ...t.callout, textAlign: "center", color: c.mutedForeground, marginBottom: 18, paddingHorizontal: 20 }}>
+    <Text
+      lineBreakStrategyIOS="push-out"
+      style={{ ...t.callout, textAlign: "center", color: c.mutedForeground, marginBottom: 18, paddingHorizontal: 20 }}
+    >
       {children}
     </Text>
   );

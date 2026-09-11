@@ -1,18 +1,18 @@
-// 账号页（原来底栏上的「设置」）。从 App.tsx 原样拆出来（#1237 M0），逻辑一个字没动；
-// Task 4 把它挂进根栈、改名 AccountScreen。
+// 账号页（原来底栏上的「设置」）。从 App.tsx 拆出来（#1237 M0），挂在根栈里、从右上头像进（ADR-0293）。
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { ScrollView, Text, View, type ViewStyle } from "react-native";
-import type { PinnedPeerStore } from "../../../src/shared/remote/devices.js";
+import { authNoticeOf, type AuthNotice } from "../../../src/shared/authError.js";
 import { fmtTokens, type RemoteStats } from "../../../src/shared/remote/stats.js";
 import { activityWindow, heatLevel, heatWeeks } from "../../../src/shared/sessionActivity.js";
 import { fmtUsd } from "../../../src/shared/modelPricing.js";
 import { RELAY_BASE } from "../session.js";
 import { supabase } from "../supabase.js";
 import { usePalette, type as t, space } from "../theme.js";
-import { Card, Dot, Group, Headline, Meta, Page, Row, Title } from "../ui.js";
+import { Card, Dot, Group, Headline, Meta, Page, Row } from "../ui.js";
 import { useNavigation } from "@react-navigation/native";
 import { useLink } from "../link.js";
+import { NoticeLine } from "../gate/NoticeLine.js";
 // 版本号只有一个事实来源:打包时用的就是这份 app.json 里的 expo.version
 import appJson from "../../app.json";
 
@@ -48,12 +48,22 @@ export function AccountScreen() {
     if (online) onRefreshStats();
   }, [online, onRefreshStats]);
 
-  // 登出之后回登录页由 App 那层的 onAuthStateChange 接住,这一屏不用管
+  // 登出之后回登录页由 App 那层的 onAuthStateChange 接住，这一屏不用管。
+  // 但登出会失败：断网而 access token 又过期时，supabase 刷新不了 session，就原样留着本地那份、
+  // 也不发 SIGNED_OUT——这时必须说出来，否则按钮转一下又回来，什么都没发生
+  const [signOutNotice, setSignOutNotice] = useState<AuthNotice | null>(null);
   const signOut = (): void => {
     void (async () => {
       setBusy(true);
-      await supabase.auth.signOut();
-      setBusy(false);
+      setSignOutNotice(null);
+      try {
+        const { error } = await supabase.auth.signOut();
+        if (error) setSignOutNotice(authNoticeOf(error.message));
+      } catch (e: unknown) {
+        setSignOutNotice(authNoticeOf(e instanceof Error ? e.message : String(e)));
+      } finally {
+        setBusy(false);
+      }
     })();
   };
 
@@ -77,6 +87,7 @@ export function AccountScreen() {
             disabled={busy} onPress={signOut}
           />
         </Group>
+        {signOutNotice ? <NoticeLine notice={signOutNotice} /> : null}
 
         <Group
           header="配对的电脑"

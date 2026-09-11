@@ -1,11 +1,10 @@
-// 舰队：到自己那台电脑的加密连接 + 会话列表 + 审批。从 App.tsx 原样拆出来（#1237 M0），
-// 逻辑一个字没动；Task 4 把它挂到项目栏的根上。
+// 舰队：到自己那台电脑的加密连接 + 会话列表 + 审批。从 App.tsx 拆出来（#1237 M0），
+// 挂在项目栏的根上（ADR-0293）。
 
 import { useEffect, useRef, useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import type { IslandAgent, IslandFleet } from "../../../src/shared/shellBridge.js";
 import type { MobileMessage, UpFrame } from "../../../src/shared/remote/frames.js";
-import type { RemoteStats } from "../../../src/shared/remote/stats.js";
 import { chunkUpload } from "../../../src/shared/remote/uploads.js";
 import { groupByWorkspace, groupTone, type WorkspaceGroup } from "../../../src/shared/remote/groups.js";
 import type { PinnedPeerStore } from "../../../src/shared/remote/devices.js";
@@ -14,7 +13,7 @@ import { connect } from "../session.js";
 import { prepareForUpload, type Picked } from "../attach.js";
 import { usePalette, type as t, MONO, space } from "../theme.js";
 import {
-  Button, Card, Dot, FolderIcon, Headline, Hint, Meta, Page, Spinner, StatusLine, Tile, Title,
+  Button, Card, Dot, FolderIcon, Headline, Hint, Meta, Page, Spinner, StatusLine, Tile,
 } from "../ui.js";
 import { Approval, SessionView } from "./SessionView.js";
 import { elapsed, useTicker } from "./clock.js";

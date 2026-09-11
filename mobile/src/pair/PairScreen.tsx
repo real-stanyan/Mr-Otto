@@ -8,7 +8,7 @@ import { decodePairingOffer } from "../../../src/shared/remote/pairing.js";
 import { armPairing, devices } from "../session.js";
 import { myLabel } from "../deviceLabel.js";
 import { usePalette, radius, space } from "../theme.js";
-import { Button, Card, CodeTiles, Headline, Hint, Note, Page, Spinner, Title, Warn } from "../ui.js";
+import { Button, Card, CodeTiles, Headline, Hint, Note, Page, Spinner, Warn } from "../ui.js";
 import { useNavigation } from "@react-navigation/native";
 import { useLink } from "../link.js";
 

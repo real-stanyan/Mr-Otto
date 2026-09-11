@@ -23,7 +23,7 @@ export function OttoTabBar({ state, navigation }: BottomTabBarProps) {
   const { hidden } = useTabChrome();
   if (hidden) return null;
   return (
-    <View style={{
+    <View accessibilityRole="tablist" style={{
       position: "absolute", left: 0, right: 0, bottom: 0,
       height: TAB_BAR_HEIGHT + insets.bottom, paddingBottom: insets.bottom,
       flexDirection: "row",

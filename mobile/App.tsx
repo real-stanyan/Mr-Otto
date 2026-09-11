@@ -5,11 +5,11 @@
 // 三栏的导航在 src/nav/（ADR-0293）；视觉语言全部来自 src/theme.ts（逐值抄自桌面 app.css）。
 
 import { useCallback, useEffect, useState } from "react";
-import { SafeAreaView, StatusBar, View } from "react-native";
+import { StatusBar, View } from "react-native";
 import { StatusBar as ExpoStatusBar } from "expo-status-bar";
-import { SafeAreaProvider } from "react-native-safe-area-context";
+import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import type { PinnedPeerStore } from "../src/shared/remote/devices.js";
-import { gateView } from "../src/shared/mobileGate.js";
+import { gateView, resetHoldSurvives } from "../src/shared/mobileGate.js";
 import { splashProgress } from "../src/shared/splashProgress.js";
 import { DitherBackground } from "./src/dither.js";
 import { openStore } from "./src/session.js";
@@ -42,11 +42,20 @@ export default function App() {
       setHasSession(data.session !== null);
       // 上一次停在「设新密码」那一步就被杀掉了：session 还在就接着按住；session 没了就是残留，清掉
       const held = await readResetHold();
-      if (held && data.session === null) await writeResetHold(false);
-      setResetHold(held && data.session !== null);
+      const keep = resetHoldSurvives(held, data.session !== null);
+      if (held && !keep) await writeResetHold(false);
+      setResetHold(keep);
       setDone((n) => n + 1);
     })().catch((e: unknown) => setError(String(e)));
-    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => setHasSession(session !== null));
+    const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
+      setHasSession(session !== null);
+      if (session === null) {
+        // 同冷启动那条规矩（resetHoldSurvives），只是随时都算：session 一没（登出、在别处被踢、刷新彻底失败），
+        // 「按住」就只是残留——不清的话，停在「设一个新密码」那一步的人会被一个再也抬不起来的闸门困住
+        setResetHold(false);
+        void writeResetHold(false);
+      }
+    });
     return () => sub.subscription.unsubscribe();
   }, []);
 

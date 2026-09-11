@@ -164,67 +164,6 @@ export function Tile({ children }: { children: React.ReactNode }) {
   );
 }
 
-/* ── 页签图标 ──────────────────────────────────────────
-   **用 View 画的,不是图标库。** @expo/vector-icons 要 native 的 expo-font,
-   加了就得重新 build + 装机,会废掉真机上那个 build 的热重载。三个形状简单到
-   画出来比引一个依赖便宜:列表条 / 两个人头 / 两条带旋钮的滑竿(SF 的
-   slider.horizontal 那个,比齿轮好画得多,语义一样是"调设置")。
-
-   线宽 1.6 是挑过的:1 在 3x 屏上偏细发灰,2 又比 SF Symbols 的 regular 粗一档。 */
-
-const ICON = 24;
-const STROKE = 1.6;
-
-export function TabIcon({ name, color }: { name: "sessions" | "friends" | "settings"; color: string }) {
-  // 前面那个圈要挖掉后面那个的一角,两个圈才读成"一前一后两个人";
-  // 不挖的话交叠处两条弧线交在一起,整体读成一副链环
-  const bg = usePalette().c.background;
-  if (name === "sessions") {
-    // 三条长短不一的横线 = 一份列表。等长的话读起来像"菜单"而不是"内容"
-    return (
-      <View style={{ width: ICON, height: ICON, justifyContent: "center", gap: 4 }}>
-        {[18, 13, 16].map((w, i) => (
-          <View key={i} style={{ width: w, height: STROKE, borderRadius: 1, backgroundColor: color }} />
-        ))}
-      </View>
-    );
-  }
-  if (name === "friends") {
-    // 两个交叠的圈 = 两个人。交叠是"关系"的意思,并排只是"两个东西"
-    return (
-      <View style={{ width: ICON, height: ICON, alignItems: "center", justifyContent: "center" }}>
-        <View style={{ flexDirection: "row" }}>
-          <View style={{
-            width: 12, height: 12, borderRadius: radius.pill,
-            borderWidth: STROKE, borderColor: color,
-          }} />
-          <View style={{
-            width: 12, height: 12, borderRadius: radius.pill,
-            borderWidth: STROKE, borderColor: color, marginLeft: -4,
-            backgroundColor: bg,
-          }} />
-        </View>
-      </View>
-    );
-  }
-  // 两条滑竿,旋钮错开 —— 错开才读成"可调",对齐就成了两条普通横线
-  return (
-    <View style={{ width: ICON, height: ICON, justifyContent: "center", gap: 6 }}>
-      {[6, 12].map((x, i) => (
-        <View key={i} style={{ height: 7, justifyContent: "center" }}>
-          <View style={{ width: 19, height: STROKE, borderRadius: 1, backgroundColor: color }} />
-          <View style={{
-            position: "absolute", left: x, width: 7, height: 7, borderRadius: radius.pill,
-            borderWidth: STROKE, borderColor: color,
-            // 旋钮要盖住底下那条线,否则线从它中间穿过去
-            backgroundColor: "transparent",
-          }} />
-        </View>
-      ))}
-    </View>
-  );
-}
-
 /* ── 文件夹 ────────────────────────────────────────────
    团队组头左边那个东西。原来是一个 ▸/▾ 三角 —— 三角只说"这里能展开",
    而这一行说的是"下面这些属于同一个团队",文件夹把后半句也说了。
@@ -288,9 +227,11 @@ export function FolderIcon({ open, color }: { open: boolean; color: string }) {
  */
 export type ButtonVariant = "primary" | "secondary" | "outline" | "plain" | "quiet" | "destructive";
 
-/** 四档尺寸。高度照 demo:通栏 50、弹窗 46、进门闸 42、小胶囊 44 */
+/** 四档尺寸。高度照 demo：通栏 50、弹窗 46、进门闸 42、小胶囊 44。minHeight 按 border-box 算（含边框），
+    所以上下内边距 + 行高（字号 + 5）+ 两道 1pt 边不能超过它——通栏原来是 15 + 22 + 15 = 52，
+    改成 13 之后有边没边都正好 50 */
 const BUTTON_SIZE = {
-  full: { box: { borderRadius: radius.control, paddingVertical: 15, paddingHorizontal: space.md, minHeight: 50 }, font: 17 },
+  full: { box: { borderRadius: radius.control, paddingVertical: 13, paddingHorizontal: space.md, minHeight: 50 }, font: 17 },
   dialog: { box: { borderRadius: radius.control, paddingVertical: 12, paddingHorizontal: space.md, minHeight: 46 }, font: 16 },
   compact: { box: { borderRadius: radius.control, paddingVertical: 10, paddingHorizontal: space.md, minHeight: 42 }, font: 15 },
   auto: { box: { borderRadius: radius.pill, paddingVertical: 11, paddingHorizontal: space.lg, minHeight: 44 }, font: 17 },
@@ -428,7 +369,7 @@ export function Group({ header, footer, children }: {
   );
 }
 
-/** 右边那个 ›。画出来的,理由和 TabIcon 一样:不为三个形状引一个 native 依赖 */
+/** 右边那个 ›。用 View 画的：不为一个形状引一个图标依赖 */
 function Chevron({ color }: { color: string }) {
   return (
     <View style={{
@@ -711,6 +652,8 @@ export function Field(props: {
   textContentType?: TextInputProps["textContentType"];
   returnKeyType?: TextInputProps["returnKeyType"];
   onSubmitEditing?: () => void;
+  /** 「下一项」要把焦点交过来的那一格：把它的 ref 递进来 */
+  inputRef?: React.Ref<TextInput>;
 }) {
   const { c } = usePalette();
   const [focused, setFocused] = useState(false);
@@ -718,6 +661,7 @@ export function Field(props: {
   const bg = v === "gate" ? withAlpha(c.card, 0.6) : v === "dialog" ? withAlpha(c.foreground, 0.05) : c.card;
   return (
     <TextInput
+      ref={props.inputRef}
       value={props.value}
       onChangeText={props.onChangeText}
       placeholder={props.placeholder}
@@ -731,6 +675,8 @@ export function Field(props: {
       autoComplete={props.autoComplete}
       textContentType={props.textContentType}
       returnKeyType={props.returnKeyType}
+      // 「下一项」只交出去、不收键盘：焦点接着落到下一格，键盘不该先落下再弹起来
+      submitBehavior={props.returnKeyType === "next" ? "submit" : undefined}
       onSubmitEditing={props.onSubmitEditing}
       onFocus={() => setFocused(true)}
       onBlur={() => setFocused(false)}

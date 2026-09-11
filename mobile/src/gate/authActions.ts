@@ -1,13 +1,10 @@
 // 进门的动作，逐个对照桌面 src/main/account.ts 的 AccountManager：同一个 Supabase 项目、
 // 同一个 redirectTo（边缘服务的落地页）。报错一律把 supabase 的原文抛出去，
 // 由界面交给 shared/authError.ts 的 authNoticeOf 翻成人话。
-// 这一份先放登录；注册（Task 7）与找回密码（Task 8）接着往下加。
-import { authLandingUrl } from "../../../src/shared/edgeConfig.js";
+// 登录、注册、找回密码三组动作都在这一个文件里。
 import { NAME_MAX } from "../../../src/shared/profile.js";
+import { LANDING } from "../oauth.js";
 import { supabase } from "../supabase.js";
-
-/** 和桌面同一个 redirectTo（边缘服务的落地页），天然在 Supabase 的 Redirect URLs 白名单里（见 oauth.ts 顶部） */
-const LANDING = authLandingUrl({} as never);
 
 export function errorText(e: unknown): string {
   return e instanceof Error ? e.message : String(e);

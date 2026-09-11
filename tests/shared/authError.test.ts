@@ -24,4 +24,20 @@ describe("authNoticeOf", () => {
   it("已经是中文的（我们自己写的话）原样当标题", () => {
     expect(authNoticeOf("主进程还是旧的一版").title).toBe("主进程还是旧的一版");
   });
+
+  it("找回密码的验证码打错或过期：说成验证码的事，不落进兜底", () => {
+    const n = authNoticeOf("Token has expired or is invalid");
+    expect(n.title).toBe("验证码不对或过期了");
+    expect(n.raw).toBeUndefined();
+  });
+
+  it("新密码和旧的一样", () => {
+    expect(authNoticeOf("New password should be different from the old password.").title).toBe("新密码和旧的一样");
+  });
+
+  it("设新密码那一步 session 没了：说清楚，并给一条出路", () => {
+    const n = authNoticeOf("Auth session missing!");
+    expect(n.title).toBe("登录状态没了");
+    expect(n.hint).toContain("忘记密码");
+  });
 });
