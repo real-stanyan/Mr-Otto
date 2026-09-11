@@ -4,7 +4,7 @@
 // 其余进三栏。登录 / 登出 / session 过期一律跟着 onAuthStateChange 走，不在各个按钮里分别切屏。
 // 三栏的导航在 src/nav/（ADR-0293）；视觉语言全部来自 src/theme.ts（逐值抄自桌面 app.css）。
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { SafeAreaView, StatusBar, View } from "react-native";
 import { StatusBar as ExpoStatusBar } from "expo-status-bar";
 import { SafeAreaProvider } from "react-native-safe-area-context";
@@ -20,6 +20,7 @@ import { LinkProvider } from "./src/link.js";
 import { RootNavigator } from "./src/nav/RootNavigator.js";
 import { GateScreen } from "./src/gate/GateScreen.js";
 import { Splash } from "./src/gate/Splash.js";
+import { readResetHold, writeResetHold } from "./src/gate/resetHold.js";
 
 /** 冷启动的步数：身份库、读 session。进度条的「真实」那一半按它数 */
 const BOOT_STEPS = 2;
@@ -27,6 +28,7 @@ const BOOT_STEPS = 2;
 export default function App() {
   const [store, setStore] = useState<PinnedPeerStore | null>(null);
   const [hasSession, setHasSession] = useState(false);
+  const [resetHold, setResetHold] = useState(false);
   const [done, setDone] = useState(0);
   const [t0] = useState(() => Date.now());
   const [now, setNow] = useState(() => Date.now());
@@ -38,6 +40,10 @@ export default function App() {
       setDone((n) => n + 1);
       const { data } = await supabase.auth.getSession();
       setHasSession(data.session !== null);
+      // 上一次停在「设新密码」那一步就被杀掉了：session 还在就接着按住；session 没了就是残留，清掉
+      const held = await readResetHold();
+      if (held && data.session === null) await writeResetHold(false);
+      setResetHold(held && data.session !== null);
       setDone((n) => n + 1);
     })().catch((e: unknown) => setError(String(e)));
     const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => setHasSession(session !== null));
@@ -52,11 +58,21 @@ export default function App() {
     return () => clearTimeout(id);
   }, [progress, now]);
 
+  // 找回密码那条路的「按住 / 放开」：先落盘再改状态——验码换来 session 的那一刻，闸门看到的已经是按住
+  const hold = useCallback(async () => {
+    await writeResetHold(true);
+    setResetHold(true);
+  }, []);
+  const release = useCallback(async () => {
+    await writeResetHold(false);
+    setResetHold(false);
+  }, []);
+
   const view = gateView({
     booted: store !== null && done >= BOOT_STEPS,
     splashDone: progress >= 1,
     hasSession,
-    resetHold: false,
+    resetHold,
   });
 
   if (error) {
@@ -83,7 +99,9 @@ export default function App() {
       {/* 开屏与闸门共用**同一个** <Screen>：拆成两次 return 的话中间那块 WebView 会卸载再挂载，
           开屏刚起好的浪在进闸门那一刻回到第 0 帧 */}
       <Screen dither center={view === "splash"}>
-        {view === "splash" ? <Splash progress={progress} /> : <GateScreen />}
+        {view === "splash"
+          ? <Splash progress={progress} />
+          : <GateScreen resetHold={view === "resetHold"} onHold={hold} onRelease={release} />}
       </Screen>
     </SafeAreaProvider>
   );

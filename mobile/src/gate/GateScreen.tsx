@@ -5,11 +5,20 @@
 import { useEffect, useRef, useState } from "react";
 import { Animated, Easing, Image, View } from "react-native";
 import type { AuthNotice } from "../../../src/shared/authError.js";
-import { Meta, Note, Page, useKeyboardInset, useReduceMotion } from "../ui.js";
+import { Page, useKeyboardInset, useReduceMotion } from "../ui.js";
+import { ForgotDialog } from "./ForgotDialog.js";
+import { NoticeLine } from "./NoticeLine.js";
 import { SignInCard } from "./SignInCard.js";
 import { Wordmark } from "./Wordmark.js";
 
-export function GateScreen() {
+export function GateScreen({ resetHold, onHold, onRelease }: {
+  /** 闸门此刻被找回密码那条路按着（有 session、新密码还没设）——弹窗要开在「设新密码」那一步 */
+  resetHold: boolean;
+  onHold: () => Promise<void>;
+  onRelease: () => Promise<void>;
+}) {
+  /** 找回密码那张弹窗开着时带的邮箱；null = 没开 */
+  const [forgotEmail, setForgotEmail] = useState<string | null>(null);
   const reduce = useReduceMotion();
   const [notice, setNotice] = useState<AuthNotice | null>(null);
   // 键盘要让位：卡在屏幕正中，「用邮箱登录」就贴在密码框下面
@@ -45,16 +54,22 @@ export function GateScreen() {
               </View>
               <Wordmark />
             </View>
-            {notice ? (
-              <View style={{ width: "100%", gap: 4 }}>
-                <Note tone="error">{notice.hint ? `${notice.title} —— ${notice.hint}` : notice.title}</Note>
-                {notice.raw ? <Meta>{notice.raw}</Meta> : null}
-              </View>
-            ) : null}
-            <SignInCard onNotice={setNotice} />
+            {notice ? <NoticeLine notice={notice} /> : null}
+            <SignInCard onNotice={setNotice} onForgot={setForgotEmail} />
           </Animated.View>
         </View>
       </Page>
+      {/* 两条路打开它：点了「忘记密码？」；或者闸门被按着（冷启动回来、上一次停在「设新密码」）。
+          验码成功那一刻两个条件都成立，还是同一个实例——这一步不会被换掉重来 */}
+      {forgotEmail !== null || resetHold ? (
+        <ForgotDialog
+          initialEmail={forgotEmail ?? ""}
+          initialStage={forgotEmail === null ? "set" : "email"}
+          onClose={() => setForgotEmail(null)}
+          onHold={onHold}
+          onRelease={onRelease}
+        />
+      ) : null}
     </View>
   );
 }

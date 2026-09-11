@@ -18,7 +18,11 @@ import { GitHubMark, GoogleMark } from "./marks.js";
 import { errorText, signInWithPassword, signUp } from "./authActions.js";
 import { ConfirmMailDialog } from "./ConfirmMailDialog.js";
 
-export function SignInCard({ onNotice }: { onNotice: (n: AuthNotice | null) => void }) {
+export function SignInCard({ onNotice, onForgot }: {
+  onNotice: (n: AuthNotice | null) => void;
+  /** 点「忘记密码？」：带上已经填了的邮箱——人已经在那一格上打过字了 */
+  onForgot: (email: string) => void;
+}) {
   const { c } = usePalette();
   const reduce = useReduceMotion();
   const [mode, setMode] = useState<SignInMode>("sign-in");
@@ -154,10 +158,11 @@ export function SignInCard({ onNotice }: { onNotice: (n: AuthNotice | null) => v
           />
         </View>
 
-        {/* 三：两条离开这张表单的路，一行两端分开摆。左边「我进不去了」（Task 8 加上），
+        {/* 三：两条离开这张表单的路，一行两端分开摆。左边「我进不去了」，
             右边「我还没有账号」——右边照样靠右，左边先留一个空位撑住 */}
         <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>
-          <View />
+          {/* 注册态没有这条（那一屏还不存在「旧密码」这回事），但它占着位置，右边那条照样靠右 */}
+          <GateLink label="忘记密码？" hidden={up} onPress={() => onForgot(email.trim())} />
           <GateLink
             label={up ? "已有账号？登录" : "没有账号？注册"}
             onPress={() => switchMode(up ? "sign-in" : "sign-up")}

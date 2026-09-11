@@ -46,3 +46,22 @@ export async function signUp(
   if (error) throw new Error(error.message);
   return data.session ? "signed-in" : "confirm-email";
 }
+
+/** 发重置邮件。「查无此人」不报错是故意的（同桌面 resetPassword 的注释）：
+    不然等于把「这个邮箱注册过没有」做成一个人人可查的接口 */
+export async function sendReset(email: string): Promise<void> {
+  const { error } = await supabase.auth.resetPasswordForEmail(email, { redirectTo: LANDING });
+  if (error) throw new Error(error.message);
+}
+
+/** 验重置邮件里那串码。验过就是登录态（recovery OTP 换到真 session）——所以调用方要先按住闸门 */
+export async function verifyReset(email: string, token: string): Promise<void> {
+  const { error } = await supabase.auth.verifyOtp({ email, token, type: "recovery" });
+  if (error) throw new Error(error.message);
+}
+
+/** 设新密码。调用方保证此刻有 session（验码换来的那个就算） */
+export async function setNewPassword(password: string): Promise<void> {
+  const { error } = await supabase.auth.updateUser({ password });
+  if (error) throw new Error(error.message);
+}
