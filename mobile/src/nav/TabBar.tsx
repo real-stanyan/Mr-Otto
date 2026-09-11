@@ -66,7 +66,11 @@ function TabButton({ label, icon, focused, onPress }: {
     <Pressable
       accessibilityRole="tab" accessibilityState={{ selected: focused }} accessibilityLabel={label}
       onPressIn={() => to(0.88)} onPressOut={() => to(1)} onPress={onPress}
-      style={{ flex: 1, alignItems: "center", justifyContent: "center", gap: 3 }}
+      style={({ pressed }) => [
+        { flex: 1, alignItems: "center", justifyContent: "center", gap: 3 },
+        // 关了动效时，按下的反馈退成变暗——反馈本身不能没有（同 ui.tsx 的 Button）
+        reduce && pressed && { opacity: 0.7 },
+      ]}
     >
       <Animated.View style={{ transform: [{ scale }] }}>
         <Icon name={icon} size={24} stroke={focused ? 2 : 1.7} color={color} />

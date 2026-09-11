@@ -30,6 +30,10 @@ export function AvatarButton() {
       accessibilityRole="button" accessibilityLabel="账号" hitSlop={8}
       onPressIn={() => to(0.93)} onPressOut={() => to(1)}
       onPress={() => navigation.navigate("Account")}
+      style={({ pressed }) => [
+        // 关了动效时，按下的反馈退成变暗——反馈本身不能没有（同 ui.tsx 的 Button）
+        reduce && pressed && { opacity: 0.7 },
+      ]}
     >
       <Animated.View style={{ transform: [{ scale }] }}>
         <Avatar name={me.name} url={me.url} size={31} />
