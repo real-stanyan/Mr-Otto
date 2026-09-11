@@ -9,6 +9,7 @@
 // 跟随系统深浅色,和桌面一致(src/renderer/src/theme.ts 的默认 pref 就是 system)。
 
 import { Platform, useColorScheme } from "react-native";
+import { appleSpring } from "../../src/shared/appleSpring.js";
 
 export interface Palette {
   background: string;
@@ -101,17 +102,11 @@ export const type = {
 } as const;
 
 /**
- * 弹簧参数。Apple 把物理三元组(质量/劲度/阻尼)换成两个给设计师用的量:
- *   damping ratio ζ —— 1.0 临界阻尼不过冲;<1 会回弹
- *   response —— 到达目标的快慢(秒),不是"时长"(弹簧没有固定时长)
- * RN 的 Animated.spring 只吃物理量,这里做换算(质量取 1):
- *   ω₀ = 2π / response,stiffness = ω₀²,damping = 2ζω₀
- * 默认一律临界阻尼——回弹只留给"手上带着动量"的手势,而不是一个淡入的菜单。
+ * 弹簧参数：Apple 的 response / damping ratio 换成 RN 吃的物理量。换算本身住在
+ * src/shared/appleSpring.ts（有测试跟着根门禁跑），这里只是给手机端一个短名字。
+ * 默认一律临界阻尼——回弹只留给"手上带着动量"的手势，而不是一个淡入的菜单。
  */
-export function spring(response: number, zeta = 1): { stiffness: number; damping: number; mass: number } {
-  const w0 = (2 * Math.PI) / response;
-  return { stiffness: Math.round(w0 * w0), damping: Math.round(2 * zeta * w0), mass: 1 };
-}
+export const spring = appleSpring;
 
 /** 按下的反馈要快到"手指按下去的同一瞬间"。0.15s 临界阻尼 */
 export const PRESS_SPRING = spring(0.15);
