@@ -34,6 +34,8 @@ export interface Palette {
   destructiveForeground: string;
   ok: string;
   warn: string;
+  /** 弹窗底下那层暗幕（demo 的 --scrim）。深色压得更重——底本来就暗，压轻了分不出层 */
+  scrim: string;
 }
 
 /** 浅色 = app.css 的裸 `:root` */
@@ -55,6 +57,7 @@ const light: Palette = {
   destructiveForeground: "#ffffff",
   ok: "#2b8a3e",
   warn: "#e67700",
+  scrim: "rgba(0, 0, 0, 0.28)",
 };
 
 /** 深色 = app.css 的 `.dark` */
@@ -76,6 +79,7 @@ const dark: Palette = {
   destructiveForeground: "#ffffff",
   ok: "#30d158",
   warn: "#ff9f0a",
+  scrim: "rgba(0, 0, 0, 0.5)",
 };
 
 export function usePalette(): { c: Palette; isDark: boolean } {
