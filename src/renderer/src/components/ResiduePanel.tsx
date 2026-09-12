@@ -143,7 +143,7 @@ export function ResiduePanel({
           <DialogTitle>{title}</DialogTitle>
           <DialogDescription>
             这些进程/模拟器/端口没有随任务收尾自动清干净。owned
-            是水獭自己起的，已经替你勾上；suspected
+            是 Otto 自己起的，已经替你勾上；suspected
             可能是你自己留着的东西，默认不动。
           </DialogDescription>
         </DialogHeader>

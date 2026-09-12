@@ -267,7 +267,7 @@ function WorkFolder({ workspaceId }: { workspaceId: string }) {
       </div>
 
       <p className="text-[12px] text-muted-foreground">
-        水獭在这个文件夹里干活，做出来的东西都留在这儿。同一个团队的所有会话共用这一份。
+        智能体在这个文件夹里干活，做出来的东西都留在这儿。同一个团队的所有会话共用这一份。
       </p>
 
       <Input

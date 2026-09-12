@@ -41,7 +41,7 @@ export function WorkspaceSettings() {
       </header>
       <section className={SETTINGS_BODY}>
         <p className={HINT}>
-          工作区就是水獭干活的文件夹：它读的文件、写的文件都在这个文件夹里，
+          工作区就是 Otto 干活的文件夹：它读的文件、写的文件都在这个文件夹里，
           不会碰你电脑上的其它地方。每个会话开始时都会挑一个工作区——
           做不同的项目就挑不同的文件夹，互不打扰。
         </p>
@@ -70,7 +70,7 @@ export function WorkspaceSettings() {
                 </span>
                 {settings.builtin && (
                   <span className={HINT}>
-                    水獭做出来的东西会放在「文档 › Mr Otto › Default」里，每个任务一个子文件夹，随时打开就能看到。
+                    Otto 做出来的东西会放在「文档 › Mr Otto › Default」里，每个任务一个子文件夹，随时打开就能看到。
                   </span>
                 )}
               </div>
