@@ -179,7 +179,7 @@ function GitHostsSection({ ws, selfUid }: { ws: WorkspaceSnapshot; selfUid: stri
         )}
       </InsetGroup>
       <InsetNote>
-        存一把访问令牌，水獭就能替你拉私有仓库。<b className="font-medium text-foreground">令牌只留在服务端</b>
+        存一把访问令牌，智能体就能替你拉私有仓库。<b className="font-medium text-foreground">令牌只留在服务端</b>
         ——这张表里看得到有哪几台主机，看不到那把钥匙。
       </InsetNote>
     </>

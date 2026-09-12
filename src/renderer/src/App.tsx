@@ -2732,7 +2732,7 @@ function IsolatedChip({ events }: { events: SessionEvent[] }) {
       <span className="text-muted-foreground text-xs shrink-0">·</span>
       <span
         className="shrink-0 inline-flex items-center text-muted-foreground"
-        title={`这只水獭在一份独立副本上干活，你的项目目录（${iso.projectRoot}）暂时不会变。合并请用右边的「更多」菜单。`}
+        title={`Otto 在一份独立副本上干活，你的项目目录（${iso.projectRoot}）暂时不会变。合并请用右边的「更多」菜单。`}
       >
         <GitBranch className="w-3 h-3" />
       </span>
