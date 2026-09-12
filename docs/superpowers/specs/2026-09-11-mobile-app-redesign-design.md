@@ -257,6 +257,8 @@ M0 的 PR 带一份 ADR：手机端从「投影窗口」扩成三栏客户端（
 10. 登录之后先落在「项目」栏，不是 demo 的「任务」：M0 里任务 / 团队两栏还是实话空态，第一眼不该落在一张空卡上；M2 接上任务栏后改回（`mobile/src/nav/RootNavigator.tsx` 的 `initialRouteName`）。
 11. 终审回流（计划层面的缺陷，实现照改）：退出登录失败要说出来（断网且 token 过期时 supabase 既不登出、也不发 `SIGNED_OUT`）；session 任何时候没了都清掉「按住」（`shared/mobileGate.ts` 的 `resetHoldSurvives`），「以后再说」也自己收起弹窗；找回密码的三种报错（验证码不对或过期、新旧密码相同、登录状态没了）有了人话，桌面同一张表跟着受益。
 
+12. **闸门改按「盘上有没有一份登录记录」判**（维护者 2026-09-12 拍板，收掉 §8 那条已知代价）：原来照 `getSession()` 的返回值判，而它会发网络——断网且 access token 已过期时它回 `session: null`，**盘上那份 session 其实一个字节都没少**（supabase-js 2.112 只在非网络类错误且 token 真过期时才删它，读路径另有一层 `accessTokenStillValid` 判断把它答成了「没有」）。于是一个离线开 app 的人被弹回登录卡。改成与桌面同一条判据（ADR-0183 的形状判：key 里不含 `code-verifier`、值解析得出对象、带非空 `access_token`），判据挪进 `src/shared/authSession.ts` 两端共用，桌面 `authStorage.sessionValues` 改成调它。代价：离线进 app 之后每个 Supabase 查询都会 401 到刷新成功为止，所以各屏的「读不到 / 没有」必须分开说（§5 本来就要求）。
+
 （写 plan / 实现期间的偏离与复审裁定追加在这里。）
 
 ## 11. 维护者拍板（2026-09-11，对这份 spec 回了「ok」）

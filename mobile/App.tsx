@@ -21,6 +21,7 @@ import { RootNavigator } from "./src/nav/RootNavigator.js";
 import { GateScreen } from "./src/gate/GateScreen.js";
 import { Splash } from "./src/gate/Splash.js";
 import { readResetHold, writeResetHold } from "./src/gate/resetHold.js";
+import { hasStoredSessionSync } from "./src/gate/storedSession.js";
 
 /** 冷启动的步数：身份库、读 session。进度条的「真实」那一半按它数 */
 const BOOT_STEPS = 2;
@@ -38,18 +39,26 @@ export default function App() {
     void (async () => {
       setStore(await openStore());
       setDone((n) => n + 1);
+      // 闸门问的是**盘上有没有一份登录记录**，不是「此刻拿不拿得到一个活 session」：
+      // 断网 + access token 已过期时 getSession() 回 null，而盘上那份一个字节都没少
+      // （supabase 只在**非**网络类错误且 token 真过期时才删它）。照它判就是把人锁在自己的 app 外面——
+      // 桌面早就判过同一件事（ADR-0183），判据两端共用 src/shared/authSession.ts
       const { data } = await supabase.auth.getSession();
-      setHasSession(data.session !== null);
-      // 上一次停在「设新密码」那一步就被杀掉了：session 还在就接着按住；session 没了就是残留，清掉
+      const signedIn = data.session !== null || hasStoredSessionSync();
+      setHasSession(signedIn);
+      // 上一次停在「设新密码」那一步就被杀掉了：登录记录还在就接着按住；没了就是残留，清掉
       const held = await readResetHold();
-      const keep = resetHoldSurvives(held, data.session !== null);
+      const keep = resetHoldSurvives(held, signedIn);
       if (held && !keep) await writeResetHold(false);
       setResetHold(keep);
       setDone((n) => n + 1);
     })().catch((e: unknown) => setError(String(e)));
     const { data: sub } = supabase.auth.onAuthStateChange((_event, session) => {
-      setHasSession(session !== null);
-      if (session === null) {
+      // session 没了有两种，处置相反：**真登出**（supabase 把盘上那份一起清了）该落回登录卡；
+      // **刷新不上**（断网、盘上那份还在）不该。只看 session 这一个入参分不出来，所以再问一次盘
+      const signedIn = session !== null || hasStoredSessionSync();
+      setHasSession(signedIn);
+      if (!signedIn) {
         // 同冷启动那条规矩（resetHoldSurvives），只是随时都算：session 一没（登出、在别处被踢、刷新彻底失败），
         // 「按住」就只是残留——不清的话，停在「设一个新密码」那一步的人会被一个再也抬不起来的闸门困住
         setResetHold(false);

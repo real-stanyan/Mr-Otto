@@ -4,6 +4,7 @@
 
 import { readFileSync, writeFileSync, mkdirSync, chmodSync, unlinkSync } from "node:fs";
 import { dirname } from "node:path";
+import { parseStoredSession } from "../shared/authSession.js";
 
 export type AuthStorageIO = {
   read(p: string): string | null;
@@ -37,18 +38,9 @@ function loadFile(filePath: string, io: AuthStorageIO): AuthFile {
 function sessionValues(filePath: string, io: AuthStorageIO): Record<string, unknown>[] {
   const out: Record<string, unknown>[] = [];
   for (const [key, value] of Object.entries(loadFile(filePath, io))) {
-    if (key.includes("code-verifier")) continue;
-    if (typeof value !== "string") continue;
-    let parsed: unknown;
-    try {
-      parsed = JSON.parse(value);
-    } catch {
-      continue; // 解析不了就不是 session（code verifier 是裸串，走不到这儿也无妨）
-    }
-    if (parsed === null || typeof parsed !== "object") continue;
-    const token = (parsed as { access_token?: unknown }).access_token;
-    if (typeof token !== "string" || token === "") continue;
-    out.push(parsed as Record<string, unknown>);
+    // 形状判据住在 src/shared/authSession.ts —— 手机端的闸门读同一份（#1237 M1 收尾）
+    const parsed = parseStoredSession(key, value);
+    if (parsed !== null) out.push(parsed);
   }
   return out;
 }
