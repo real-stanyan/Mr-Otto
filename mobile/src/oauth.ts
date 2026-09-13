@@ -34,8 +34,10 @@ export type OAuthProvider = "google" | "github";
  *
  * env 传空对象:RN 里没有 process.env,而这个函数只在没设 OTTO_EDGE_URL 时
  * 走默认分支 —— 手机端本来也没有"本地起网关调试"这个场景。
+ *
+ * 注册与找回密码（gate/authActions.ts）的 redirectTo 也是它——只有这一份。
  */
-const LANDING = authLandingUrl({} as never);
+export const LANDING = authLandingUrl({} as never);
 
 /**
  * 落地页转发的深链,也是授权会话的拦截目标。必须和

@@ -32,20 +32,7 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog.js";
 import { Button } from "@/components/ui/button.js";
-
-/**
- * 第 n 次探测该等多久（n 从 0 起）。**前快后慢**，不是固定间隔。
- *
- * 固定 4 秒会撞 GoTrue 的限流：`/token` 默认 30 次 / 5 分钟 / IP，4 秒一次是 75 次，
- * 于是「等确认」自己把账号打进限流，用户看到的是一句「试得太频繁了」—— 一个纯粹
- * 由我们自己制造的故障。
- *
- * 前 6 次每 5 秒（人通常就在这半分钟里点完邮件，这一段要跟得上），之后退到 15 秒。
- * 任意 5 分钟窗口里最多 6 + 20 = 26 次，压在 30 以下。
- */
-export function pollDelayMs(attempt: number): number {
-  return attempt < 6 ? 5000 : 15000;
-}
+import { pollDelayMs } from "../../../shared/confirmEmailPoll.js";
 
 export function ConfirmEmailDialog({
   email,

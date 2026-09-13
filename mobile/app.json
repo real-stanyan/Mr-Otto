@@ -31,7 +31,8 @@
         {
           "cameraPermissionText": "扫描电脑上的配对二维码时要用一下相机。"
         }
-      ]
+      ],
+      "expo-font"
     ]
   }
 }

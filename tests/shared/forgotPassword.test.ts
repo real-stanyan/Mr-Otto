@@ -5,8 +5,9 @@ import {
   OTP_LENGTH,
   canSubmitOtp,
   normalizeOtp,
+  otpCells,
   resendLabel,
-} from "../../src/renderer/src/lib/forgotPassword.js";
+} from "../../src/shared/forgotPassword.js";
 
 describe("normalizeOtp", () => {
   it("从邮件里整句粘进来也认 —— 只留数字", () => {
@@ -47,5 +48,29 @@ describe("resendLabel", () => {
 
   it("解冻了就只剩四个字", () => {
     expect(resendLabel(0)).toBe("重新发送");
+  });
+});
+
+describe("otpCells", () => {
+  it(`永远画 ${OTP_LENGTH} 格；光标停在第一个空格上`, () => {
+    const cells = otpCells("123");
+    expect(cells).toHaveLength(OTP_LENGTH);
+    expect(cells.map((c) => c.ch).join("")).toBe("123");
+    expect(cells.findIndex((c) => c.cursor)).toBe(3);
+  });
+
+  it("填满之后没有光标（交出去了）", () => {
+    expect(otpCells("12345678").some((c) => c.cursor)).toBe(false);
+  });
+
+  it("画的是擦过的码：粘进来的整句只剩数字", () => {
+    expect(otpCells("验证码：1234").slice(0, 4).map((c) => c.ch).join("")).toBe("1234");
+  });
+
+  it(`多打的位数不画第 ${OTP_LENGTH + 1} 格：画的和交出去的是同一份，截到 ${OTP_LENGTH} 位`, () => {
+    const cells = otpCells("1234567890");
+    expect(cells).toHaveLength(OTP_LENGTH);
+    expect(cells.map((c) => c.ch).join("")).toBe("12345678");
+    expect(cells.some((c) => c.cursor)).toBe(false);
   });
 });
