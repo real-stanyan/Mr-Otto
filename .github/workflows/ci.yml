@@ -15,7 +15,7 @@ jobs:
           node-version: 24
       # 依赖安装是门禁的前置管线，不是门禁本身（Gate 命令仍 = npm test）
       - run: npm ci
-      # 手机端的类型检查进了门禁（#422 走 spec §11 拍板的 B，ADR-0293），它要 mobile/ 自己那份依赖。
+      # 手机端的类型检查进了门禁（#422 走 spec §11 拍板的 B，ADR-0294），它要 mobile/ 自己那份依赖。
       # 同上一条：安装仍是前置管线，Gate 命令还是那一句 npm test。
       - run: npm --prefix mobile ci
       # IMPORTANT: keep this identical to the Gate section in AGENTS.md.

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// 门禁里多的那一条（手机端类型检查，#422 / ADR-0293）需要 `mobile/` 自己那份依赖在位。
+// 门禁里多的那一条（手机端类型检查，#422 / ADR-0294）需要 `mobile/` 自己那份依赖在位。
 // 挂在 pretest 上，理由和 check-node.mjs 逐字相同：**把失败的归因从代码挪回环境**。
 //
 // 不装的失败长什么样：`npm test` 跑到 `npm --prefix mobile run typecheck` 那一步，
@@ -22,7 +22,7 @@ const pkg = join(repo, "mobile", "node_modules", "typescript", "package.json");
 if (!existsSync(pkg)) {
   process.stderr.write(
     `\n手机端的依赖还没装：找不到 ${pkg}。\n\n` +
-      `  门禁里的 \`npm test\` 现在连手机端的类型检查一起跑（#422、ADR-0293），\n` +
+      `  门禁里的 \`npm test\` 现在连手机端的类型检查一起跑（#422、ADR-0294），\n` +
       `  而 mobile/ 是 Expo/RN，有自己的 package.json 与 node_modules。\n\n` +
       `  修：npm --prefix mobile ci\n\n` +
       `  （CI 在 npm test 之前就跑这一句；本机装一次之后不用再管。）\n\n`

@@ -47,8 +47,8 @@
   // 版本不同,编进来会把根这边的类型带歪。所以它**不在这份 tsconfig 里**——
   // 它由 mobile/tsconfig.json（expo/tsconfig.base）自己管,跑法是 `npm --prefix mobile run typecheck`。
   // **但它在门禁里**:根 package.json 的 typecheck 末尾串了那一句,CI 在 npm test 之前
-  // 先 `npm --prefix mobile ci`(#422 收口,ADR-0293)。所以「排除」说的只是编译单元分家,
-  // 不是「手机端的类型错误没人接」——后者从 ADR-0293 起不再成立。
+  // 先 `npm --prefix mobile ci`(#422 收口,ADR-0294)。所以「排除」说的只是编译单元分家,
+  // 不是「手机端的类型错误没人接」——后者从 ADR-0294 起不再成立。
   "exclude": [
     "mobile",
     "node_modules",

@@ -16,7 +16,7 @@ issue：#1254。demo：`.demo/mobile-app-redesign.html` 的 `tasks` / `taskNew` 
 
 每个任务的要求都隐含包含这一节。
 
-- **门禁**：`npm test`（现已含 `npm --prefix mobile run typecheck`，#422 / ADR-0293）。没装手机依赖先 `npm --prefix mobile ci`。
+- **门禁**：`npm test`（现已含 `npm --prefix mobile run typecheck`，#422 / ADR-0294）。没装手机依赖先 `npm --prefix mobile ci`。
 - **纯逻辑进 `src/shared/`，测试进 `tests/shared/`**；`mobile/` 里不放值得单独跑的逻辑（总纲 §7）。`src/shared/` 不许 import node builtin / electron / react-native。
 - **手机从不握笔**：只发 `PEN_VERDICTS` 里的 `human` 类事件。不调 `task_pen_acquire`。
 - **四态分开说**：还没查到 / 读不到 / 没有 / 没权限（总纲 §5）。「读不到」时上一份内容留在原地、错误另起一行。

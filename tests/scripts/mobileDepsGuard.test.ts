@@ -1,4 +1,4 @@
-// scripts/check-mobile-deps.mjs 的可执行版（#422，ADR-0293）。
+// scripts/check-mobile-deps.mjs 的可执行版（#422，ADR-0294）。
 //
 // 它挡的是「手机端依赖没装」——那种失败会红，但红得像门禁自己坏了：
 // npm 回一句 `sh: tsc: command not found` 加一串它自己的 error 栈，而真相是
