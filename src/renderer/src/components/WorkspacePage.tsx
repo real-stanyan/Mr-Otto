@@ -66,7 +66,7 @@ const SECTIONS: readonly Section[] = [
   {
     id: "files", label: "文件", icon: <FolderOpen />,
     // 「文件」不叫「仓库」：主语是「水獭在哪儿干活」，Git 只是往里装东西的一种方式（ADR-0251）
-    hint: () => "水獭干活的那个共用文件夹",
+    hint: () => "智能体干活的那个共用文件夹",
     render: (ws) => <WorkspaceFilesTab key={ws.id} ws={ws} />,
   },
   {
