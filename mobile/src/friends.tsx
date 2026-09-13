@@ -13,6 +13,9 @@ import {
 } from "react-native";
 import type { DirectMessage, FriendProfile } from "../../src/shared/friends.js";
 import { mergeMessages, needsTimeLabel, timeLabel } from "../../src/shared/friendsQuery.js";
+import { decodeEnvelope } from "../../src/shared/sessionPackageCodec.js";
+import { shareCardView, type ShareCardView } from "../../src/shared/shareCard.js";
+import { Icon } from "./icons.js";
 import {
   acceptFriend, AlreadyLinked, currentUserId, latestInboxId, listInboxSince, listFriends,
   listMessages, removeFriend, requestFriend, searchProfiles, sendMessage, subscribeFriends,
@@ -505,12 +508,15 @@ function Chat({ uid, friend, messages, live, onBack, onSent }: {
         {(messages ?? []).map((m, i) => (
           <Bubble
             key={m.id} body={m.body} mine={m.sender === uid}
+            fromName={friend.profile.name || friend.profile.email}
             stamp={needsTimeLabel(m.createdAt, i === 0 ? null : messages![i - 1]!.createdAt)
               ? timeLabel(m.createdAt, Date.now())
               : null}
           />
         ))}
-        {pending.map((p) => <Bubble key={p.key} body={p.body} mine stamp={null} sending />)}
+        {pending.map((p) => (
+          <Bubble key={p.key} body={p.body} mine fromName="" stamp={null} sending />
+        ))}
       </ScrollView>
 
       <View style={{
@@ -556,14 +562,19 @@ function Chat({ uid, friend, messages, live, onBack, onSent }: {
 
 /** 一条气泡。自己的靠右、蓝底;对方的靠左、卡片底。
     尾巴那一角收小(6 而不是 18)—— 四角一样圆的气泡分不出是谁说的 */
-function Bubble({ body, mine, stamp, sending }: {
+function Bubble({ body, mine, fromName, stamp, sending }: {
   body: string;
   mine: boolean;
+  /** 对面的名字。只有「分享会话」那张卡用得上（自己发的那条用不着,传空串） */
+  fromName: string;
   /** 上面那条居中的时间;null = 和上一条挨得够近,不插 */
   stamp: string | null;
   sending?: boolean;
 }) {
   const { c } = usePalette();
+  // 「分享会话」那条私信整个 body 就是一段信封 JSON(sessionPackageCodec 的注释说了为什么是整段)。
+  // 认不出来的一律当普通话 —— decodeEnvelope 回 null 就走下面原来那条路
+  const env = decodeEnvelope(body);
   return (
     <View style={{ gap: space.xs }}>
       {stamp ? (
@@ -586,13 +597,56 @@ function Bubble({ body, mine, stamp, sending }: {
         // 还没落库的那条压暗一档:它和已经发出去的不是同一回事
         opacity: sending ? 0.55 : 1,
       }}>
-        <Text
-          selectable
-          style={{ ...t.body, color: mine ? c.primaryForeground : c.foreground }}
-        >
-          {body}
-        </Text>
+        {env ? (
+          <ShareCard view={shareCardView(env, { mine, fromName })} mine={mine} />
+        ) : (
+          <Text
+            selectable
+            style={{ ...t.body, color: mine ? c.primaryForeground : c.foreground }}
+          >
+            {body}
+          </Text>
+        )}
       </View>
+    </View>
+  );
+}
+
+/**
+ * 「分享会话」那张卡（#1271）。原来这条私信在手机上是一整坨原始 JSON,连邀请码一起明文摊开。
+ *
+ * **不画动作钮**:导入要有工作区、接服务要能配对,手机两样都没有(ADR-0114 划的范围)——
+ * 画一颗点了必然失败的钮就是 #722 那个撒谎的勾。所以最后一行是「去哪儿做」,不是一颗钮。
+ * 措辞与「邀请码不上屏」的判据都在 src/shared/shareCard.ts,跟着根门禁跑。
+ */
+function ShareCard({ view, mine }: { view: ShareCardView; mine: boolean }) {
+  const { c } = usePalette();
+  const fg = mine ? c.primaryForeground : c.foreground;
+  const dim = mine ? c.primaryForeground : c.mutedForeground;
+  return (
+    <View style={{ gap: 3, opacity: 1 }}>
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+        <Icon name="git" size={14} color={dim} />
+        <Text style={{ ...t.footnote, fontWeight: "600", color: fg }}>{view.heading}</Text>
+      </View>
+      {view.title ? (
+        <Text style={{ ...t.body, color: fg }}>《{view.title}》</Text>
+      ) : null}
+      {view.message ? (
+        <Text style={{ ...t.body, color: fg, opacity: mine ? 0.9 : 1 }}>「{view.message}」</Text>
+      ) : null}
+      <Text style={{ ...t.footnote, color: dim, opacity: mine ? 0.85 : 1 }}>{view.meta}</Text>
+      {view.grant ? (
+        <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 5, marginTop: 2 }}>
+          <View style={{ paddingTop: 2 }}><Icon name="lock" size={12} color={dim} /></View>
+          <Text style={{ ...t.footnote, color: dim, opacity: mine ? 0.85 : 1, flex: 1 }}>
+            {view.grant}
+          </Text>
+        </View>
+      ) : null}
+      <Text style={{ ...t.footnote, color: dim, opacity: mine ? 0.85 : 1, marginTop: 2 }}>
+        {view.hint}
+      </Text>
     </View>
   );
 }
