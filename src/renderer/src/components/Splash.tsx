@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import ottoLogo from "../assets/otto.png";
 import { useChat } from "../store.js";
-import { splashProgress } from "../lib/splashProgress.js";
+import { splashProgress } from "../../../shared/splashProgress.js";
 import { DitherBackground } from "./DitherBackground.js";
 
 /** 挂载时刻即"app 打开"时刻：模块级取一次，StrictMode 双挂载不会把它拨回去 */
@@ -12,7 +12,7 @@ const FADE_MS = 360;
  * 冷启动画面：Dither 背景 + 居中 logo + 进度条。
  * 盖在整个 app 上面（不是替换 connecting 占位），这样主界面在底下照常挂载，
  * 画面收起时不用再付一次首屏渲染；进度 = 真实 boot 完成数 × 最短停留时间，
- * 两边都满才淡出、卸载（见 lib/splashProgress.ts）。
+ * 两边都满才淡出、卸载（见 src/shared/splashProgress.ts）。
  */
 export function Splash() {
   const bootDone = useChat((s) => s.bootDone);

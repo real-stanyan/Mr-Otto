@@ -12,7 +12,7 @@
 import { useState } from "react";
 
 import { useChat } from "../store.js";
-import { MIN_PASSWORD } from "../lib/signInForm.js";
+import { MIN_PASSWORD } from "../../../shared/signInForm.js";
 import {
   AlertDialog,
   AlertDialogAction,

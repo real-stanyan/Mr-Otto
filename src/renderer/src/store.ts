@@ -646,7 +646,7 @@ interface ChatState {
   /** 窗口是否全屏(macOS 全屏隐红绿灯,左上角 logo 显隐看它) */
   fullscreen: boolean;
   /** 冷启动进度：boot() 里那组 Promise.all 有几个已经回来 / 一共几个。
-      给启动画面的进度条用——真实进度，不是假动画（见 lib/splashProgress.ts） */
+      给启动画面的进度条用——真实进度，不是假动画（见 src/shared/splashProgress.ts） */
   bootDone: number;
   bootTotal: number;
 

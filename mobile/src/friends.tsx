@@ -21,7 +21,7 @@ import {
 import { usePalette, type as t, radius, space } from "./theme.js";
 import {
   Avatar, Button, Card, DetailBar, Dot, Group, Headline, Hint, Meta, Note, Page, Row, Spinner,
-  Title, useKeyboardInset,
+  useKeyboardInset,
 } from "./ui.js";
 
 /** Realtime 哑了以后多久拉一次。8 秒:比人等得住的上限短,比一条心跳长 */
@@ -37,9 +37,9 @@ function why(e: unknown): string {
 }
 
 export function Friends({ onDetailChange, onBadge }: {
-  /** 翻进「加好友」或某条聊天 = 推进一层,底栏要收起来 */
+  /** 翻进「加好友」或某条聊天 = 推进一层,外壳要把自己那条原生导航栏收起来 */
   onDetailChange: (inDetail: boolean) => void;
-  /** 页签上那个红点该显示多少:待我处理的请求 + 没看过的消息 */
+  /** 待我处理的请求 + 没看过的消息。好友不再是页签之后这个数暂时没有地方画(M6 接回) */
   onBadge: (n: number) => void;
 }) {
   const [uid, setUid] = useState<string | null>(null);
@@ -152,10 +152,7 @@ export function Friends({ onDetailChange, onBadge }: {
 
   return (
     <Page>
-      <View style={{ gap: space.xs, paddingTop: space.sm }}>
-        <Title>好友</Title>
-        {live ? null : <Hint>实时推送没通，正在每隔几秒对一次表。</Hint>}
-      </View>
+      {live ? null : <Hint>实时推送没通，正在每隔几秒对一次表。</Hint>}
       {err ? <Note tone="error">{err}</Note> : null}
 
       {rows === null ? (

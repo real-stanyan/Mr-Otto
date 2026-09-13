@@ -34,7 +34,7 @@ import {
   normalizeOtp,
   resendLabel,
   type ForgotStep,
-} from "../lib/forgotPassword.js";
+} from "../../../shared/forgotPassword.js";
 import {
   AlertDialog,
   AlertDialogAction,

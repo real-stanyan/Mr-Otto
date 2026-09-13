@@ -17,7 +17,7 @@ import { useState } from "react";
 
 import { useChat } from "../store.js";
 import { localEmailProblem } from "../lib/authError.js";
-import { MIN_PASSWORD, NAME_MAX, canSubmitSignIn, confirmHint } from "../lib/signInForm.js";
+import { MIN_PASSWORD, NAME_MAX, canSubmitSignIn, confirmHint } from "../../../shared/signInForm.js";
 import { ConfirmEmailDialog } from "./ConfirmEmailDialog.js";
 import { ForgotPasswordDialog } from "./ForgotPasswordDialog.js";
 import { HINT } from "../settingsShell.js";
