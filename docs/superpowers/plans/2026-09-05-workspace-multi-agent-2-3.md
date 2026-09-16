@@ -192,7 +192,7 @@ export function filterGrantedByAllow<T extends { serverId: string; toolDefs: rea
 /** 两份白名单是不是同一份（编辑弹窗「只发变了的字段」用）。顺序无关 */
 export function sameAgentTools(a: readonly AgentToolAllow[], b: readonly AgentToolAllow[]): boolean {
   if (a.length !== b.length) return false;
-  const key = (x: AgentToolAllow): string => `${x.serverId} ${[...x.tools].sort().join("")}`;
+  const key = (x: AgentToolAllow): string => `${x.serverId}\u0000${[...x.tools].sort().join("\u0001")}`;
   const sa = a.map(key).sort();
   const sb = b.map(key).sort();
   return sa.every((k, i) => k === sb[i]);

@@ -1,0 +1,54 @@
+import { describe, it, expect } from "vitest";
+import { jsonHasNul, stripNul } from "../../src/shared/nulStrip.js";
+
+// 源码里不写字面 NUL（#841 的那条断言），造出来即可
+const NUL = String.fromCharCode(0);
+/** 反斜杠 + u + 四个零：正文里的**字面量**，不是 NUL */
+const ESCAPED_TEXT = String.fromCharCode(92) + "u0000";
+
+describe("jsonHasNul", () => {
+  it("认得出 JSON.stringify 之后的真 NUL", () => {
+    expect(jsonHasNul(JSON.stringify({ output: `a${NUL}b` }))).toBe(true);
+    expect(jsonHasNul(JSON.stringify({ nested: [{ deep: NUL }] }))).toBe(true);
+  });
+
+  it("干净的 JSON 走快路径", () => {
+    expect(jsonHasNul(JSON.stringify({ output: "普通文本 \t\n" }))).toBe(false);
+  });
+
+  it("正文写着那六个字符的字面量时误判成有——误判的方向是安全的那一侧", () => {
+    const value = { text: `字面量 ${ESCAPED_TEXT}` };
+    expect(jsonHasNul(JSON.stringify(value))).toBe(true);
+    // 慢路径白跑一趟：拷出来与原件逐字节相同
+    expect(stripNul(value)).toEqual(value);
+  });
+});
+
+describe("stripNul", () => {
+  it("字符串、数组、嵌套对象里的 NUL 一律去掉", () => {
+    expect(
+      stripNul({
+        output: `二进制${NUL}输出${NUL}`,
+        list: [`a${NUL}`, { deep: `${NUL}b` }],
+      })
+    ).toEqual({ output: "二进制输出", list: ["a", { deep: "b" }] });
+  });
+
+  it("键名里的 NUL 也去掉（jsonb 对键一样不收）", () => {
+    expect(stripNul({ [`k${NUL}`]: 1 })).toEqual({ k: 1 });
+  });
+
+  it("非字符串原样：数字 / 布尔 / null / undefined 都不动", () => {
+    expect(stripNul({ n: 1, b: false, nil: null, un: undefined })).toEqual({
+      n: 1,
+      b: false,
+      nil: null,
+      un: undefined,
+    });
+  });
+
+  it("没有 NUL 时内容不变（拷贝出来的值逐字段相等）", () => {
+    const input = { a: "x", b: [1, "y"], c: { d: "z" } };
+    expect(stripNul(input)).toEqual(input);
+  });
+});

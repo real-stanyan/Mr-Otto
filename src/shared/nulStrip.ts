@@ -1,0 +1,52 @@
+// 落盘前把 NUL 字节剥掉（#1251）。唯一的消费方是日志的唯一写入口 EventStore.append。
+//
+// 病根：任务会话把每条事件的 payload 存进 Postgres 的 jsonb，而 jsonb 一个 NUL 都不收
+// （`cat` 一个二进制文件，那条 tool_result 的 output 里就带着它）。本机 sqlite 存得下，
+// 推上云端报 22P05，而 22* 这一族是终态（ADR-0291）——整条会话就此冻结，且只能靠账号页
+// 那行字才说得出为什么。
+//
+// 为什么剥在**落盘之前**而不是推之前：本机那份是云端的前缀副本，对账用的 `sameEvent`
+// 是 stableStringify 之后逐字节比对（src/shared/taskSync.ts）。推之前剥 = 本机与云端从此
+// 每一条都不相等，`divergence` 把它判成分歧，而含 executor 痕迹的那一批会被 forkCopy
+// 整段流放进「本机未同步的分支」——比冻结更坏，且完全无声。剥在门口，两份才是同一串字节。
+//
+// 为什么不是转义成别的字符：模型读的是文本，NUL 对它没有任何用处；转义则会把工具输出里
+// 本来没有的字符塞进模型看见的那一份。代价明写在这里：二进制工具输出在日志里少了那几个
+// 字节，审计意义上不再是原样——要原样的东西该走附件（AttachmentStore 存字节）不该走正文。
+
+/** NUL 本身。**用 String.fromCharCode 而不是写转义字面量**：`tests/architecture.noControlChars.test.ts`
+    盯的是「源码里有没有真的控制字符」（#841：一个字面 NUL 会让 git 把整份文件当二进制，
+    没有行 diff、也没法逐行合并），而全仓最容易写错的就是这个文件——这么写连写错的机会都没有。 */
+const NUL = String.fromCharCode(0);
+
+/** NUL 在 JSON 里的样子（六个字符的转义形式），**由 JSON.stringify 自己给出**而不是抄一份：
+    抄的那份跟真正会出现在 haystack 里的形式分家时一个字都不会报错，只会让判据永远不命中。 */
+const NUL_IN_JSON = JSON.stringify(NUL).slice(1, -1);
+
+/** JSON.stringify 的产物里有没有 NUL。
+    **没有漏网**：一个真 NUL 一定被 JSON.stringify 转成上面那六个字符。
+    **可能误判**：正文里写着那六个字符字面量（反斜杠 + u + 四个零）的字符串，在 JSON 里
+    是反斜杠被再转义一次的七个字符、含这个子串。误判的代价只是白跑一趟深拷贝（拷出来与
+    原件逐字节相同），而漏网的代价是一条会话永久冻结——所以判据故意偏向误判这一侧。 */
+export function jsonHasNul(json: string): boolean {
+  return json.includes(NUL_IN_JSON);
+}
+
+/** 深拷贝一份、把每个字符串里的 NUL 去掉（键名也算：jsonb 对键一样不收 NUL）。
+    调用方应当先用 `jsonHasNul` 挡一道——这个函数是慢路径，不该挂在每条事件上。 */
+export function stripNul<T>(value: T): T {
+  return strip(value) as T;
+}
+
+function strip(v: unknown): unknown {
+  if (typeof v === "string") return v.includes(NUL) ? v.replaceAll(NUL, "") : v;
+  if (Array.isArray(v)) return v.map(strip);
+  if (v !== null && typeof v === "object") {
+    const out: Record<string, unknown> = {};
+    for (const [k, val] of Object.entries(v as Record<string, unknown>)) {
+      out[k.includes(NUL) ? k.replaceAll(NUL, "") : k] = strip(val);
+    }
+    return out;
+  }
+  return v;
+}

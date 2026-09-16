@@ -5,6 +5,7 @@ import Database from "better-sqlite3";
 import type { SessionEvent } from "./events.js";
 import type { EventLog } from "./eventLog.js";
 import { shouldPersist } from "./persistencePolicy.js";
+import { jsonHasNul, stripNul } from "../shared/nulStrip.js";
 import { BILLED_EVENT_TYPES } from "./deriveUsage.js";
 import type { BilledRow } from "../shared/usageStats.js";
 
@@ -188,11 +189,24 @@ export class EventStore implements EventLog {
 
       // 信封拆列，其余进 payload JSON
       const { sessionId, ts, sandboxId, type, ...payload } = e;
+      let json = JSON.stringify(payload);
+      let full = { ...e, seq: row.next } as SessionEvent;
+      // NUL 落盘前剥掉（#1251）：jsonb 一个 NUL 都不收，而任务会话的云端日志就是
+      // jsonb —— 一条 `cat 二进制文件` 的 tool_result 会让整条会话永久冻结（22P05
+      // 是终态，ADR-0291）。判据挂在**已经算出来的这串 JSON** 上，所以快路径只是
+      // 一次子串扫描；深拷贝只在真有 NUL 时跑。剥在这道门口而不是推之前：本机那份
+      // 是云端的前缀副本，`sameEvent` 逐字节比对，两边不一致会被判成分歧再分叉流放
+      //（理由全文在 nulStrip.ts 的头注）。返回值与落盘那份是同一份，观察者也一样
+      if (jsonHasNul(json)) {
+        const clean = stripNul(payload);
+        json = JSON.stringify(clean);
+        full = { ...e, ...clean, seq: row.next } as SessionEvent;
+      }
       this.prep(
         "INSERT INTO events (session_id, seq, ts, type, sandbox_id, payload) VALUES (?, ?, ?, ?, ?, ?)"
-      ).run(sessionId, row.next, ts, type, sandboxId ?? null, JSON.stringify(payload));
+      ).run(sessionId, row.next, ts, type, sandboxId ?? null, json);
 
-      return { ...e, seq: row.next } as SessionEvent;
+      return full;
     });
     const full = insert(event);
     if (this.onAppend) {

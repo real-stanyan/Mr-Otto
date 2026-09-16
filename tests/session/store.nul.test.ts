@@ -1,0 +1,84 @@
+// 落盘前剥 NUL（#1251）：一条带 NUL 的 tool_result 推上云端会让整条任务会话冻结
+// （jsonb 不收 NUL → 22P05 → 终态，ADR-0291）。这几条钉的是「日志的唯一写入口把它剥掉」。
+import { describe, it, expect, afterEach } from "vitest";
+import { EventStore, type NewSessionEvent } from "../../src/session/store.js";
+import type { SessionEvent } from "../../src/session/events.js";
+
+// 源码里不写字面 NUL（#841 的那条断言），造出来即可
+const NUL = String.fromCharCode(0);
+/** NUL 在 JSON 里的那六个字符，由 JSON.stringify 自己给出 */
+const NUL_IN_JSON = JSON.stringify(NUL).slice(1, -1);
+
+let store: EventStore | null = null;
+afterEach(() => {
+  store?.close();
+  store = null;
+});
+
+/** 云端那份是 jsonb：整条事件序列化之后不许留下 NUL */
+function hasNul(e: unknown): boolean {
+  return JSON.stringify(e).includes(NUL_IN_JSON);
+}
+
+describe("EventStore.append 剥 NUL", () => {
+  it("tool_result 的 output：返回值与读回来的那份都不含 NUL", () => {
+    store = new EventStore(":memory:");
+    const appended = store.append({
+      sessionId: "s1",
+      ts: 1,
+      type: "tool_result",
+      toolCallId: "call_1",
+      status: "ok",
+      output: `二进制${NUL}输出${NUL}`,
+    });
+    expect((appended as Extract<SessionEvent, { type: "tool_result" }>).output).toBe("二进制输出");
+
+    const loaded = store.load("s1").at(-1)!;
+    expect((loaded as Extract<SessionEvent, { type: "tool_result" }>).output).toBe("二进制输出");
+    expect(hasNul(loaded)).toBe(false);
+  });
+
+  it("嵌套字段也剥（assistant_message 的 toolCalls.args）", () => {
+    store = new EventStore(":memory:");
+    store.append({
+      sessionId: "s1",
+      ts: 1,
+      type: "assistant_message",
+      content: `说了${NUL}一句`,
+      model: "m",
+      toolCalls: [{ id: "call_1", name: "bash", args: { cmd: `cat ${NUL}bin` } }],
+    });
+    const loaded = store.load("s1")[0]! as Extract<SessionEvent, { type: "assistant_message" }>;
+    expect(loaded.content).toBe("说了一句");
+    expect(loaded.toolCalls?.[0]?.args).toEqual({ cmd: "cat bin" });
+    expect(hasNul(loaded)).toBe(false);
+  });
+
+  it("onAppend 观察者拿到的是剥过的那份——云同步的复制器就挂在这里", () => {
+    const seen: SessionEvent[] = [];
+    store = new EventStore(":memory:", { onAppend: (e) => seen.push(e) });
+    store.append({
+      sessionId: "s1",
+      ts: 1,
+      type: "tool_result",
+      toolCallId: "call_1",
+      status: "ok",
+      output: `a${NUL}b`,
+    });
+    expect(seen).toHaveLength(1);
+    expect(hasNul(seen[0])).toBe(false);
+  });
+
+  it("没有 NUL 的事件一个字段都不动（含正文里写着那六个字符字面量的那种）", () => {
+    store = new EventStore(":memory:");
+    const input: NewSessionEvent = {
+      sessionId: "s1",
+      ts: 1,
+      type: "user_message",
+      content: `这里是字面量 ${String.fromCharCode(92)}u0000，不是 NUL`,
+    };
+    const appended = store.append(input);
+    expect(appended).toEqual({ ...input, seq: 0 });
+    expect(store.load("s1")).toEqual([{ ...input, seq: 0 }]);
+  });
+});
