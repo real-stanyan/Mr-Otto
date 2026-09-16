@@ -11,7 +11,20 @@
 // 判据保守:判不出来的一律留着。
 //   · 中间出现过 assistant_message 或 tool_result → 这个 turn 产出过东西,留着
 //   · turn_ended 是 completed → 留着(正常结束)
+//   · turn_ended 是 interrupted → **留着**(见下)
 //   · 后面根本没有 turn_ended(turn 还在跑 / 日志被截断)→ 留着,不猜
+//
+// interrupted 为什么在这一侧(#1260):#383 加它进来时,它只有一个来源——resume 时
+// 给上一进程没收口的 turn 补的那条,语义是「崩在半路」。#1223 之后 loop 自己也会写
+// 它(合盖睡眠 / 笔被别人拿走),而那两条路的语义是**「这条人话还没人答,接手的一方
+// 会接着答」**(`lastUnanswered` 就是这么判的,#1253 的云端执行器也照这条契约:拿到笔
+// 先补 interrupted 收口再接着答)。两条规则撞在一起时,接手的那一方起 turn 时
+// **模型看不见那句话**——它在这里被当成空跑剔掉了,于是对着更早的一句话作答,
+// 不崩不报错。所以 interrupted 归「还没答」,不归「作废」。
+// error / aborted 照旧(429、断网、人按了停止——ADR-0042 原本的那三种)。
+// 代价:崩在模型开口前、人自己重打一遍的那种,上下文里会多一份同样的话(#383
+// 顺带拿到的那点好处没了)。对应地,任务会话的崩溃修尾不再给「尾巴只有人话」
+// 补 interrupted(src/main/agent.ts),因为那不是一次崩溃,是一句还没人答的话。
 
 import type { SessionEvent } from "./events.js";
 
@@ -32,7 +45,8 @@ export function barrenEventIndexes(events: readonly SessionEvent[]): Set<number>
         break;
       }
       if (e.type === "turn_ended") {
-        barren = e.outcome !== "completed";
+        // interrupted = 「还没人答」不是「作废」(#1260,见文件头注)
+        barren = e.outcome !== "completed" && e.outcome !== "interrupted";
         break;
       }
       // 下一条用户消息之前都没见到 turn_ended:上一个 turn 的收口没落盘
