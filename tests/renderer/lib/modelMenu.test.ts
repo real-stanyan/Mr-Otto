@@ -15,7 +15,6 @@ const HOSTED = [
   "qwen3.8-flash",
   "deepseek-flash",
   "glm-5.3",
-  "deepseek-v4-pro",
   "qwen3.8-max",
 ];
 

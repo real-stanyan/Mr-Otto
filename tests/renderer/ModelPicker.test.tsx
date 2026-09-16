@@ -24,10 +24,12 @@ class NoopResizeObserver {
 globalThis.ResizeObserver ??= NoopResizeObserver as never;
 Element.prototype.scrollIntoView ??= function scrollIntoView(): void {};
 
-/** 真库 model_route 此刻供的那六款（从便宜到贵） */
+/** 真库 model_route 此刻供的那几款（从便宜到贵）。
+    `deepseek-v4-pro` 随 #1242 从目录里删了（9/14 起它只是 deepseek-flash 的别名）——
+    线上那一行要维护者另外停掉，这份 fixture 先按「停掉之后」写 */
 const HOSTED = [
   "glm-5.3-flash", "qwen3.8-flash", "deepseek-flash",
-  "glm-5.3", "deepseek-v4-pro", "qwen3.8-max",
+  "glm-5.3", "qwen3.8-max",
 ];
 
 /** 「付了钱、一把 key 都没配」—— 改动前这个人打开选择器一组都看不到 */
@@ -75,7 +77,6 @@ describe("ModelPicker：订阅那一组", () => {
       "QwenQwen3.8 Flash",
       "DeepSeekDeepSeek-V4.1-Flash",
       "ZhipuGLM-5.3",
-      "DeepSeekDeepSeek V4 Pro",
       "QwenQwen3.8 Max",
     ]);
     // 「添加更多模型…」也没了（#1051）：它通往「模型配置」，而那一页对订阅用户
@@ -95,7 +96,7 @@ describe("ModelPicker：订阅那一组", () => {
     await userEvent.click(screen.getByRole("combobox"));
     // 一个组头都没有：订阅那组不画（#1058），厂商那几组一个都不在（#1051）
     expect(groupHeadings()).toEqual([]);
-    expect(screen.getAllByRole("option").length).toBe(6);
+    expect(screen.getAllByRole("option").length).toBe(HOSTED.length);
   });
 
   it("没订阅的人一个字都没变：厂商组照旧、「添加更多模型…」照旧", async () => {
@@ -190,7 +191,7 @@ describe("ModelPicker：「文字 / 图像」那枚开关（#1086）", () => {
     render(<ModelPicker value="glm-5.3" onChange={() => {}} />);
     await userEvent.click(screen.getByRole("combobox"));
     expect(screen.queryByRole("tab")).not.toBeInTheDocument();
-    expect(screen.getAllByRole("option").length).toBe(6);
+    expect(screen.getAllByRole("option").length).toBe(HOSTED.length);
   });
 
   it("给了清单但没给回调 = 也不画 —— 一颗点了什么都不会发生的开关就是撒谎的勾", async () => {
