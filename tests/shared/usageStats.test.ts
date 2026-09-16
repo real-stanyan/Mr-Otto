@@ -97,16 +97,16 @@ describe("usageByProviderDaily", () => {
   });
 
   it("带 cachedTokens 的行按缓存价计费 —— 命中部分不再按全价虚高", () => {
-    const full = usageByProviderDaily([row(NOW, "deepseek-v4-pro", 1_000_000, 0)], {
+    const full = usageByProviderDaily([row(NOW, "deepseek-flash", 1_000_000, 0)], {
       now: NOW,
       days: 1,
     });
     const cached = usageByProviderDaily(
-      [{ ts: NOW, model: "deepseek-v4-pro", promptTokens: 1_000_000, completionTokens: 0, cachedTokens: 1_000_000 }],
+      [{ ts: NOW, model: "deepseek-flash", promptTokens: 1_000_000, completionTokens: 0, cachedTokens: 1_000_000 }],
       { now: NOW, days: 1 }
     );
-    expect(full[0]!.costUsd).toBeCloseTo(1.32, 6);
-    expect(cached[0]!.costUsd).toBeCloseTo(0.044, 6);
+    expect(full[0]!.costUsd).toBeCloseTo(0.3, 6);
+    expect(cached[0]!.costUsd).toBeCloseTo(0.006, 6);
   });
 
   it("本机 Ollama 是 $0,不是查不到价 —— 免费和不知道是两回事", () => {
@@ -116,16 +116,18 @@ describe("usageByProviderDaily", () => {
   });
 
   it("同一家的不同型号各成一层,按用量降序摞", () => {
+    // 换成智谱那两款：DeepSeek 自 #1242 起目录里只剩一款（v4-pro 9/14 变成 flash 的别名），
+    // 一家只有一款就钉不住「各成一层」这件事
     const out = usageByProviderDaily(
       [
-        row(NOW, "deepseek-flash", 1, 1),
-        row(noon(2026, 8, 19), "deepseek-v4-pro", 50, 50),
-        row(NOW, "deepseek-v4-pro", 20, 20),
+        row(NOW, "glm-5.3-flash", 1, 1),
+        row(noon(2026, 8, 19), "glm-5.3", 50, 50),
+        row(NOW, "glm-5.3", 20, 20),
       ],
       { now: NOW, days: 2 }
     );
-    expect(out[0]?.models).toEqual(["deepseek-v4-pro", "deepseek-flash"]);
-    // days[i][m] —— 第一列是 pro(用得多,排在前),第二列是 flash
+    expect(out[0]?.models).toEqual(["glm-5.3", "glm-5.3-flash"]);
+    // days[i][m] —— 第一列是 glm-5.3(用得多,排在前),第二列是 flash
     expect(out[0]?.days).toEqual([
       [100, 0],
       [40, 2],

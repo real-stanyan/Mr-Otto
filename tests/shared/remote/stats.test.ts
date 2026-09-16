@@ -65,7 +65,8 @@ describe("projectStats", () => {
   it("按用量降序", () => {
     const s = projectStats([], [
       row(CHEAP, daysAgo(1), 10, 1),
-      row("deepseek-v4-pro", daysAgo(1), 5000, 500),
+      // 目录里另一款（原来这里是 deepseek-v4-pro，它随 #1242 退役了；认不出的型号整行会被丢掉）
+      row("glm-5.3", daysAgo(1), 5000, 500),
     ], NOW);
     expect(s.models[0]!.inTokens).toBeGreaterThan(s.models[1]!.inTokens);
   });

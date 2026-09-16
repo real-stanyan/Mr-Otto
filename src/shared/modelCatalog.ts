@@ -116,11 +116,13 @@ const MODEL_SPECS: ModelSpec[] = [
   // 理由与 ADR-0249 撤掉选单那枚「视觉」记号逐字相同——在写着 Flash（视觉）的行上是同一件事
   // 说两遍，在别的行上又成了唯一信号，两头不靠。真会撞上的路径有代读员与 routeModel 的话接着
   { provider: "deepseek", model: "deepseek-flash", label: "DeepSeek-V4.1-Flash", contextWindow: 1_000_000, thinking: THINKING_FLAG, supportsVision: true },
-  // V4 Pro（DeepSeek-V4-Pro-0813）：官方公告**北京时间 2026-09-14 12:00 起**请求全部路由到
-  // V4.1 Flash 并按 Flash 价计费（直到 V4.1 Pro 上线）。到那天为止它还是真实的另一款模型
-  // 且**真不支持视觉**，所以这一行先留着；那天之后它就是 deepseek-flash 的重复项，删它的活
-  // 记在 issue #1242
-  { provider: "deepseek", model: "deepseek-v4-pro", label: "DeepSeek V4 Pro", contextWindow: 1_000_000, thinking: THINKING_FLAG, supportsVision: false },
+  // deepseek-v4-pro 那一行 2026-09-16 删了（#1242，到期日是官方给的）：公告说**北京时间
+  // 2026-09-14 12:00 起**它的请求全部路由到 V4.1 Flash 并按 Flash 价计费（直到 V4.1 Pro
+  // 上线），所以从那一刻起它不是一款模型，是 deepseek-flash 的第二个名字 —— 同 ADR-0290 那
+  // 三个别名，按 ADR-0192 决策一直接删。留着的代价不是「多一行」：它的 `supportsVision:false`
+  // 与 deepseek-flash 的 true 指向同一个实体，而 vision-bridge 正照这一位决定要不要找代读员。
+  // 旧日志重放不受影响（`resolveModel` 的目录外兜底）。**线上 `model_route` 那一行要维护者
+  // 另外处置**（它此刻还按 Pro 价计费，两个方向都错），判据与处置写在 #1242
 
   // ── 智谱 GLM ──（thinking:{type} 二选一，本机实测过：disabled 时 reasoning_content 空）
   // 这一家给到四款，比别家多一款：app 的三个出厂默认里有两个住在这儿

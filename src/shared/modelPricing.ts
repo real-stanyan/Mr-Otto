@@ -66,8 +66,9 @@ const PRICES: Readonly<Record<string, ModelPrice>> = {
   // cachedInput = 缓存命中档（同取高峰价）
   // 取官方**美元页**的数，不再拿人民币页 ÷7.2：那是我们自己塞进去的一个汇率假设，
   // 而这一家自己就报美元价（两者今天差 8%，美元页高，取高的那个不会让我们贴差额）
+  // deepseek-v4-pro 的价 2026-09-16 随目录那一行一起删（#1242）：9/14 12:00 之后它按
+  // Flash 价计费，留着这组 Pro 价就是对着同一个实体报两个价
   "deepseek-flash": { input: 0.3, output: 1.2, cachedInput: 0.006 },
-  "deepseek-v4-pro": { input: 1.32, output: 3.96, cachedInput: 0.044 },
 
   // 智谱 — docs.z.ai/guides/overview/pricing。两款 flash 官网标的就是 Free
   // glm-5.3-flash 取标准价（$0.15/$0.50）；它挂着到 2026-09-09 的五折促销，理由同上
