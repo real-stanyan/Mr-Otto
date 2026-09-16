@@ -106,6 +106,37 @@ describe("createAgent 会话生命周期", () => {
     store.close();
   });
 
+  it("任务会话恢复：尾巴只有人话 = 还没人答，不补 interrupted（#1260）", () => {
+    const store = new EventStore(":memory:");
+    store.append({
+      sessionId: "s-task", ts: 1, type: "session_created",
+      workspace: "/D/s-task", workspaceKind: "default",
+    });
+    store.append({ sessionId: "s-task", ts: 2, type: "user_message", content: "手机上发的" });
+
+    createAgent({ store, workspace: "/D/s-task", push, resumeSessionId: "s-task", attachments });
+
+    const log = store.load("s-task");
+    expect(log).toHaveLength(2);
+    expect(log.some((e) => e.type === "turn_ended")).toBe(false);
+    store.close();
+  });
+
+  it("任务会话恢复：尾巴里有执行痕迹 = 真崩在半路，照旧补 interrupted（#1260）", () => {
+    const store = new EventStore(":memory:");
+    store.append({
+      sessionId: "s-task2", ts: 1, type: "session_created",
+      workspace: "/D/s-task2", workspaceKind: "default",
+    });
+    store.append({ sessionId: "s-task2", ts: 2, type: "user_message", content: "跑一下" });
+    store.append({ sessionId: "s-task2", ts: 3, type: "assistant_message", content: "好", model: "m" });
+
+    createAgent({ store, workspace: "/D/s-task2", push, resumeSessionId: "s-task2", attachments });
+
+    expect(store.load("s-task2").at(-1)).toMatchObject({ type: "turn_ended", outcome: "interrupted" });
+    store.close();
+  });
+
   it("切模型：先落 model_changed 再换实现，事件推给 UI", () => {
     const store = new EventStore(":memory:");
     const pushed: string[] = [];

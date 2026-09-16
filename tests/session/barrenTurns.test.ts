@@ -69,11 +69,18 @@ describe("barrenEventIndexes —— 什么也没产出的 turn", () => {
     expect(barrenEventIndexes(events).size).toBe(0);
   });
 
-  it("interrupted（issue #383 合成收口）：崩溃空跑 turn 跳掉，有产出的留着", () => {
+  it("interrupted = 还没人答，留着（#1260 翻了 #383 那条）", () => {
+    // 合盖睡眠 / 笔被别人拿走都落这个值，语义是「接手的一方会接着答」——
+    // 剔掉的话，接手那一方的模型看不见这句话，对着更早的一句作答
     const events = [
-      user("崩前发的"), ended("interrupted"),           // 无产出：跳
-      user("有回话的"), assistant(), ended("interrupted"), // 有产出：留
+      user("合盖前发的"), ended("interrupted"),
+      user("有回话的"), assistant(), ended("interrupted"),
     ];
-    expect([...barrenEventIndexes(events)]).toEqual([0]);
+    expect(barrenEventIndexes(events).size).toBe(0);
+  });
+
+  it("error / aborted 仍然算空跑 —— 它们说的是「这一条作废了」", () => {
+    const events = [user("断网那条"), ended("error"), user("按停止那条"), ended("aborted")];
+    expect([...barrenEventIndexes(events)]).toEqual([0, 2]);
   });
 });

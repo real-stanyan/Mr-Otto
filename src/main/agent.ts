@@ -15,6 +15,7 @@ import { clampThinking, type ThinkingMode } from "../shared/thinking.js";
 import { DEFAULT_AUTO_COMPACT, type AutoCompactSettings } from "../shared/autoCompact.js";
 import type { ToolLoopDetection } from "../shared/toolLoopGuard.js";
 import { newSessionId } from "../shared/sessionId.js";
+import { isTaskSessionCreated } from "../shared/taskSync.js";
 import { lookupOllamaModel } from "./ollamaModels.js";
 import { projectMemoryDir, projectScopeId } from "./projectRoot.js";
 
@@ -491,12 +492,22 @@ export function createAgent(opts: {
     const TURN_ACTIVITY = new Set<SessionEvent["type"]>([
       "user_message", "assistant_message", "tool_result", "tool_execution_started",
     ]);
-    let openTurn = false;
+    // 最后一条 turn_ended 之后还剩下什么（不是一个布尔）——任务会话要分清
+    // 「崩在半路」与「一句还没人答的话」（#1260）
+    let tail: SessionEvent[] = [];
     for (const e of log) {
-      if (e.type === "turn_ended") openTurn = false;
-      else if (TURN_ACTIVITY.has(e.type)) openTurn = true;
+      if (e.type === "turn_ended") tail = [];
+      else if (TURN_ACTIVITY.has(e.type)) tail.push(e);
     }
-    if (openTurn) {
+    // 任务会话里尾巴只有人话 = 那句话还没人答（手机上发的、或本机发完就合盖），
+    // 不是一次崩溃：补一条 interrupted 会让日志说「这一轮收口了」，而接手的一方
+    // （手机 / 另一台桌面 / ② 的云端执行器）按 `lastUnanswered` 照旧要接着答 ——
+    // 两边说的话不一致，且这条合成事件是本机凭空写的、会被推上云端当事实。
+    // 项目会话**逐字节不变**：那里没有第二个执行者，补上那条仍然是唯一诚实的收口
+    //（代价：#383 顺带拿到的「崩溃空跑不进上下文」随 barrenTurns 那半一起没了，见 ADR-0296）
+    const isTaskSession = isTaskSessionCreated(log[0]);
+    const humanOnlyTail = tail.every((e) => e.type === "user_message");
+    if (tail.length > 0 && !(isTaskSession && humanOnlyTail)) {
       const full = store.append({ sessionId, ts: Date.now(), type: "turn_ended", outcome: "interrupted" });
       repairs.push(full);
       opts.push.event(full);
