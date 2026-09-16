@@ -5,8 +5,7 @@
 // 三栏的导航在 src/nav/（ADR-0293）；视觉语言全部来自 src/theme.ts（逐值抄自桌面 app.css）。
 
 import { useCallback, useEffect, useState } from "react";
-import { StatusBar, View } from "react-native";
-import { StatusBar as ExpoStatusBar } from "expo-status-bar";
+import { View } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import type { PinnedPeerStore } from "../src/shared/remote/devices.js";
 import { gateView, resetHoldSurvives } from "../src/shared/mobileGate.js";
@@ -15,6 +14,7 @@ import { DitherBackground } from "./src/dither.js";
 import { openStore } from "./src/session.js";
 import { supabase } from "./src/supabase.js";
 import { usePalette, space } from "./src/theme.js";
+import { useStatusBarStyle } from "./src/statusBarStyle.js";
 import { Note } from "./src/ui.js";
 import { LinkProvider } from "./src/link.js";
 import { RootNavigator } from "./src/nav/RootNavigator.js";
@@ -68,6 +68,9 @@ export default function App() {
     return () => sub.subscription.unsubscribe();
   }, []);
 
+  // 状态栏字色:开屏 / 闸门 / 三栏都归这一处管(为什么要补发第二次,见 statusBarStyle.ts,#1270)
+  useStatusBarStyle(usePalette().isDark);
+
   const progress = splashProgress({ done, total: BOOT_STEPS, elapsedMs: now - t0 });
   // 开屏那只钟：进度条到头就停，进了 app 之后不再每 100ms 醒一次
   useEffect(() => {
@@ -104,7 +107,6 @@ export default function App() {
   if (view === "app" && store) {
     return (
       <SafeAreaProvider>
-        <ExpoStatusBar style="auto" />
         <LinkProvider store={store}>
           <RootNavigator />
         </LinkProvider>
@@ -143,7 +145,6 @@ function Screen({ children, center, dither }: {
         { flex: 1 },
         center && { alignItems: "center", justifyContent: "center", padding: space.lg },
       ]}>
-        <StatusBar barStyle={isDark ? "light-content" : "dark-content"} />
         {children}
       </SafeAreaView>
     </View>
