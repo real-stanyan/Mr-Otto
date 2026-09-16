@@ -13,6 +13,11 @@
 // 扫描范围与 caseCollision 同一张 SKIP 表：根门禁覆盖到的所有 .ts/.tsx（mobile/ 有
 // 自己的 tsconfig 与 node_modules，不进根门禁）。多字节 UTF-8 的字节都 ≥ 0x80，
 // 按 utf8 读成字符串再匹配 ASCII 区间的控制符不会误伤中文。
+//
+// **.md 是 #1251 加进来的**：写这条 issue 的那一班在 ADR 与 AGENTS.md 里讲「NUL 的转义
+// 长什么样」，那几处当场写成了真 NUL——而 git 把 AGENTS.md 当二进制的代价比一个源码文件
+// 更大（它是全仓唯一的规则来源，两条 lane 同时改它就是整文件冲突），当时这条断言正好
+// 看不见 .md。文档里的控制字符没有任何正当用途：要讲转义就写转义。
 import { readdirSync, readFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -30,7 +35,7 @@ function offendersUnder(dir: string): string[] {
       if (!SKIP.has(entry.name)) found.push(...offendersUnder(join(dir, entry.name)));
       continue;
     }
-    if (!/\.tsx?$/.test(entry.name)) continue;
+    if (!/\.(tsx?|md)$/.test(entry.name)) continue;
     const text = readFileSync(join(dir, entry.name), "utf8");
     const path = relative(ROOT, join(dir, entry.name));
     let lineNo = 0;
@@ -42,8 +47,8 @@ function offendersUnder(dir: string): string[] {
   return found;
 }
 
-describe("TS 源码里没有字面控制字符（issue #841）", () => {
-  it("没有任何 .ts/.tsx 含 NUL 等控制字符", () => {
+describe("源码与文档里没有字面控制字符（issue #841、#1251）", () => {
+  it("没有任何 .ts/.tsx/.md 含 NUL 等控制字符", () => {
     const offenders = offendersUnder(ROOT);
     expect(
       offenders,
