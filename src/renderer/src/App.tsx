@@ -71,6 +71,7 @@ import { friendMentionItems, searchFriendMentions } from "./lib/friendMentionIte
 import { AgentsSidebarSection } from "./components/AgentsSidebarSection.js";
 import { AgentSettingsDrawer } from "./components/AgentSettingsDrawer.js";
 import { WorkspacePage } from "./components/WorkspacePage.js";
+import { NewGroupDialog } from "./components/NewGroupDialog.js";
 import { NewWorkspaceDialog } from "./components/NewWorkspaceDialog.js";
 import { CloudWelcome } from "./components/CloudWelcome.js";
 import { CloudSessionMain } from "./components/CloudSessionMain.js";
@@ -2223,7 +2224,7 @@ function AppSidebar() {
             collapsed={wsCollapsed}
             onToggle={toggleWorkspaceGroup}
             onManage={setOpenWorkspaceId}
-            onNewGroup={() => setNewWorkspaceOpen(true)}
+            onNewGroup={() => useChat.getState().openNewGroup()}
           />
         ) : tab === "tasks" ? (
           // 任务视图：内置 Default 工作区的会话，不出现路径——这一栏的全部意义
@@ -2533,6 +2534,9 @@ function AppSidebar() {
         }}
         onGoBilling={() => void openSettings("account")}
       />
+      {/* 新群聊（#1280 A4）。开关在 store 不在这儿的本地 state：私聊头部那颗「拉人」
+          也开它，而那一块不在这棵子树上（同 openWorkspaceId 搬进 store 的理由） */}
+      <NewGroupDialog onNewTeam={() => setNewWorkspaceOpen(true)} />
     </Sidebar>
   );
 }

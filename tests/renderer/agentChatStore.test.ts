@@ -163,3 +163,49 @@ describe("聊天草稿不串台（#1280）", () => {
     });
   });
 });
+
+describe("createGroupChat（#1280 A4）", () => {
+  it("建群 → 刷清单 → 进房 → 关窗", async () => {
+    stubBridge({
+      workspaceCloudCreate: vi.fn(async (...a: unknown[]) => {
+        calls.push(["workspaceCloudCreate", ...a]);
+        return { ok: true, value: { sessionId: "g-1" } };
+      }),
+    });
+    seed({ newGroupOpen: true, newGroupPreset: ["admin"] });
+    const r = await useChat.getState().createGroupChat("上线冲刺", ["admin", "a_000000000001"]);
+    expect(r).toEqual({ ok: true });
+    expect(calls.find((c) => c[0] === "workspaceCloudCreate")).toEqual([
+      "workspaceCloudCreate", "home", { kind: "group", name: "上线冲刺", agentIds: ["admin", "a_000000000001"] },
+    ]);
+    // 刷清单排在进房之前：侧栏那一行与头部的群名都从这份清单来（房里广播回来的
+    // 是名单事件，不是群名）——顺序反了，新群要等下一次 focus 才出现
+    const order = calls.map((c) => c[0]);
+    expect(order.indexOf("workspaceCloudList")).toBeLessThan(order.indexOf("workspaceCloudJoin"));
+    expect(useChat.getState()).toMatchObject({ newGroupOpen: false, newGroupPreset: [] });
+  });
+
+  // 那句话要留在人正看着的那扇窗里，不落侧栏那一格——落过去的话这扇窗会显得
+  // 什么都没发生，而人已经按过一次「建群」了
+  it("建失败：回那句话，窗不关，workspaceGroupsError 不动", async () => {
+    stubBridge({ workspaceCloudCreate: vi.fn(async () => ({ ok: false, message: "群聊至少要两只智能体" })) });
+    seed({ newGroupOpen: true });
+    const r = await useChat.getState().createGroupChat("x", ["admin"]);
+    expect(r).toEqual({ ok: false, message: "群聊至少要两只智能体" });
+    expect(useChat.getState()).toMatchObject({ newGroupOpen: true, workspaceGroupsError: null });
+  });
+
+  it("没有主场：当场回一句，不打网络", async () => {
+    seed({ workspaceGroups: [] });
+    expect(await useChat.getState().createGroupChat("x", ["admin", "a_000000000001"]))
+      .toEqual({ ok: false, message: "还没有个人主场" });
+    expect(calls).toEqual([]);
+  });
+
+  it("openNewGroup 带预选、closeNewGroup 清掉它", () => {
+    useChat.getState().openNewGroup(["a_000000000001"]);
+    expect(useChat.getState()).toMatchObject({ newGroupOpen: true, newGroupPreset: ["a_000000000001"] });
+    useChat.getState().closeNewGroup();
+    expect(useChat.getState()).toMatchObject({ newGroupOpen: false, newGroupPreset: [] });
+  });
+});

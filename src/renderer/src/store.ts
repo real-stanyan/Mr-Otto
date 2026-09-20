@@ -627,6 +627,12 @@ interface ChatState {
   homeEnsure: "idle" | "ensuring" | "failed";
   /** 建主场失败的那句人话；null = 没失败过 */
   homeError: string | null;
+  /** 新群聊那扇弹窗开着没有（#1280 A4）。**建群不走开局卡那条路**：群是建了才有身份的
+      东西（一个名字 + 一份名单），而开局卡的规矩是「什么都不建」（ADR-0218） */
+  newGroupOpen: boolean;
+  /** 打开那扇窗时预先勾上的几只（#1280 A4）。私聊头部那颗「拉人」带着当前这一只
+      进来——那颗钮**不改这条私聊**，是另起一个群（微信同款） */
+  newGroupPreset: string[];
   /** 开局卡上写的第一句话，等云会话进 ready 之后才发得出去（issue #919）。
       主进程的 say() 要求 status === "ready"（cloudSessionClient 的 requireReady），
       而 join() 只保证连上了中继——runtime 的 welcome 还在路上。所以这句话先停在
@@ -1078,6 +1084,12 @@ interface ChatState {
   openAgentChat(agentId: string): Promise<void>;
   /** 点群聊那一行（#1280） */
   openGroupChat(sessionId: string): Promise<void>;
+  /** 开「新群聊」那扇窗（#1280 A4）。`preset` = 预先勾上的几只（私聊头部那颗「拉人」） */
+  openNewGroup(preset?: string[]): void;
+  closeNewGroup(): void;
+  /** 建一个群并进去（#1280 A4）。失败那句话回给弹窗自己画——不落
+      `workspaceGroupsError`：那一格画在侧栏上，而这句话要留在人正看着的那扇窗里 */
+  createGroupChat(name: string, agentIds: string[]): Promise<{ ok: true } | { ok: false; message: string }>;
   /** 开一张**聊天**的开局卡（#1280）。与 startCloudDraft 的唯一差别是多记一格
       「要建的是什么」 */
   startChatDraft(workspaceId: string, chat: CsChatSpec): void;
@@ -1563,6 +1575,8 @@ export const useChat = create<ChatState>((set, get) => ({
   cloudDraftChat: null,
   homeEnsure: "idle",
   homeError: null,
+  newGroupOpen: false,
+  newGroupPreset: [],
   cloudPendingFirstMessage: null,
   cloudDraftSeed: null,
   cloudSession: null,
@@ -2707,6 +2721,22 @@ export const useChat = create<ChatState>((set, get) => ({
     if (home === null) return;
     const g = groupRows(home, get().cloudSessionList[home.id] ?? []).find((r) => r.sessionId === sessionId);
     await get().openCloudSession(home.id, sessionId, undefined, g?.name);
+  },
+
+  openNewGroup: (preset) => set({ newGroupOpen: true, newGroupPreset: preset ?? [] }),
+  closeNewGroup: () => set({ newGroupOpen: false, newGroupPreset: [] }),
+
+  async createGroupChat(name, agentIds) {
+    const home = homeOf(get().workspaceGroups);
+    if (home === null) return { ok: false, message: "还没有个人主场" };
+    const r = await window.otter.workspaceCloudCreate(home.id, { kind: "group", name, agentIds });
+    if (!r.ok) return { ok: false, message: r.message };
+    // 先刷清单再进房：侧栏那一行与头部的群名都从这份清单来（房里广播回来的是
+    // 名单事件，不是群名），漏了这一刷，新群在侧栏上要等下一次 focus 才出现
+    await get().refreshCloudSessions(home.id);
+    set({ newGroupOpen: false, newGroupPreset: [] });
+    await get().openGroupChat(r.value.sessionId);
+    return { ok: true };
   },
 
   startChatDraft(workspaceId, chat) {
