@@ -1436,11 +1436,14 @@ function stopVoice(get: () => ChatState): void {
   // stopVoice 是所有"整段离开语音"路径唯一的交汇点——openCloudSession /
   // closeCloudSession / joinVoiceCall / leaveVoiceCall / voiceOnEvent 的挂断
   // 分支都调用它（它们本来就要停麦、停播放器）。flush 排在最前面，理由见
-  // flushHeld 的注释（#1281 fix round 1）
+  // flushHeld 的注释（#1281 fix round 1）。stopMic 紧跟在下一行——两者的
+  // 相对顺序本身没有约束，摆在一起纯粹是为了让
+  // tests/renderer/utteranceHoldWiring.test.ts 那条"停麦之前必先 flush"的
+  // 源码级断言在这里真的成立，不是巧合
   flushHeld(get);
+  stopMic();
   voicePlayer?.stop();
   voiceFeed = EMPTY_VOICE_FEED;
-  stopMic();
 }
 /** 音色按 agentId 从团队名单派生（agentVoice.ts）：名单顺序解撞，同一只两台机器同一个声音 */
 function rosterIdsOf(s: ChatState, workspaceId: string): string[] {

@@ -25,9 +25,17 @@ describe("store.ts：语音扣住/合并的接线（#1281）", () => {
 // 通话被挂断这五条路径原来一句都没发——计时器还留着，之后拿旧闭包里的 sendSpoken
 // 把这句话送进主进程那时已经加入的、可能是另一个房间。修法是单一收口点：
 // flushHeld() 只实现一次，stopVoice()（这五条路径的共同祖先）与 setVoiceMic(false)
-// 都调它。这里钉的是**机制**——只有一份实现、每条已知路径都接了它、顺序对——
-// 不是钉某条路径这一次跑出来的文字。
-describe("单一收口点：flushHeld 只有一份实现，五条离开语音的路径都接了它（fix round 1，#1281）", () => {
+// 都调它。
+//
+// Fix round 2（复审 Important）：round 1 在这里钉过「stopVoice(get) 出现 5 次」
+// 「flushHeld(get) 出现 2 次」——这两条数的是**特定拼法出现几次**，不是机制本身。
+// 加一条新的、合法的第六条离开路径（它也走 stopVoice）不会让任何一个数变，那两条
+// 测试对此完全失明；反过来，一条**绕开** stopVoice、自己手写
+// `voicePlayer?.stop(); stopMic(); set({ voice: null });` 的路径，也不会碰这两个
+// 数字里的任何一个——它一次都不提 flushHeld 或 stopVoice，那两条断言原样保持绿色。
+// 这正是原始 bug 的形状（setVoiceMic 记得发，其余路径各自平铺一遍收尾动作、没人
+// 记得带上 flush），所以那两条计数测试已删，换成下面这条不认拼法认动作的。
+describe("单一收口点：任何「离开语音」路径都绕不开 stopMic()，而 stopMic() 绕不开 flushHeld（fix round 2，#1281）", () => {
   it("flush 逻辑只有一份——holdStep 的 reset 只在 flushHeld 内部出现一次，不是每个调用点各写一遍", () => {
     const resets = src.match(/holdStep\(hold,\s*\{\s*type:\s*"reset"\s*\}/g) ?? [];
     expect(resets).toHaveLength(1);
@@ -36,15 +44,24 @@ describe("单一收口点：flushHeld 只有一份实现，五条离开语音的
     expect(src).toMatch(/function stopVoice\(get: \(\) => ChatState\): void \{/);
     expect(src.match(/\bstopVoice\(\s*\)/g)).toBeNull();
   });
-  it("五条已知的收尾路径——一条都没绕开 stopVoice(get)（openCloudSession / closeCloudSession / joinVoiceCall / leaveVoiceCall / voiceOnEvent 挂断分支）", () => {
-    // 加第六条离开语音的路径时这个数要跟着改——逼着改的人想一遍「这条新路径
-    // 是不是也该走 stopVoice」，而不是绕开它安静地漏发
-    const calls = src.match(/\bstopVoice\(get\)/g) ?? [];
-    expect(calls).toHaveLength(5);
-  });
-  it("setVoiceMic(false) 与 stopVoice 共用同一个 flushHeld，不是自己另一份实现", () => {
-    const calls = src.match(/\bflushHeld\(get\)/g) ?? [];
-    expect(calls).toHaveLength(2); // stopVoice 内部一次 + setVoiceMic(false) 一次
+  it("每一次 stopMic() 调用都紧跟在 flushHeld(get) 之后——一次都不能绕开", () => {
+    // 判据是「动作」不是「拼法」：停麦（stopMic）是任何离开语音的路径都绕不开的
+    // 动作——不停麦=麦一直听着，是那种一测（甚至一用）就会被发现的 bug；而
+    // 「没发扣着的话」恰恰是那种不测就不会露馅的 bug（本条 issue 修的就是它）。
+    // 所以钉住「停麦之前必须先 flush」这条因果关系，比数「stopVoice 这个名字
+    // 被打了几次」更接近这次要保护的真相：新写一条根本不提 stopVoice/flushHeld、
+    // 自己平铺 stopMic() 的路径，会让下面两个数不相等，而不是保持不变。
+    //
+    // 用「紧跟在下一行」而不是「函数体内某处」：本文件里两处真实调用
+    // （stopVoice 内部、setVoiceMic(false) 分支）都是这个形状，源码里那行注释
+    // 解释了为什么故意摆成这样；换成「同一个函数内」需要先会分函数边界，而
+    // 这份源码不值得为了这条断言引入一个解析器。
+    const bareStopMicCalls = src.match(/\bstopMic\(\);/g) ?? []; // 定义行是 `stopMic(): void {`，没有分号，不会被数进来
+    const guardedByFlush = src.match(/flushHeld\(get\);\s*\n\s*stopMic\(\);/g) ?? [];
+    // 防呆：如果两条正则都失手匹配不到任何东西，0 === 0 会让上面那条 expect
+    // 悄悄"通过"而实际什么都没钉住——先断言真的数到了东西
+    expect(bareStopMicCalls.length).toBeGreaterThan(0);
+    expect(guardedByFlush).toHaveLength(bareStopMicCalls.length);
   });
   it("closeCloudSession：flush 必须排在 workspaceCloudLeave() 之前——leave() 在主进程里同步清空当前房间，晚一步发送会被拒", () => {
     expect(src).toMatch(/stopVoice\(get\);\s*\n\s*void window\.otter\.workspaceCloudLeave\(\);/);
