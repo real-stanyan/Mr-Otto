@@ -98,7 +98,7 @@ runtime ──(x-runtime-secret + on-behalf-of 所有者)──┘            �
 7. `parseRouteRows` 的 kind 阶梯 += `decision`（`chat` 仍是末端兜底）。
 8. `modelsForMe` 多回一份 `decisionModels`；`meFromParts` **末尾追加一个对象参数** `decision: { models, uses } = { models: [], uses: {} }`——一个参数、带结构，插不错位置（那个函数已经有八个位置参数，其中三个是「数组或对象」，tsc 拦不住插在中间）。`uses` = `DECISION_USES` 且仅当 `decisionModels` 非空，否则 `{}`。
 9. `src/shared/billing.ts`：`BillingMe.decision: { models: string[]; uses: Partial<Record<DecisionUse, DecisionMode>> }`；`parseBillingMe` 里**缺席 = `{ models: [], uses: {} }`，不是解析失败**（新客户端连老网关那一页还得画得出来）；不认识的 use、不认识的 mode 逐项丢掉。
-10. migration `0037_model_route_decision.sql`：`model_route_kind_check` 重建成 `('chat','image','tts','decision')` + 幂等 upsert 一行 `jev-1.13@openrouter`（`logical_model='jev-1.13'`、`wire_model='typesafe/jev-1.13'`、`price_in=42000`、`price_cache=0`、`price_out=0`、`default_max_tokens=1`、`kind='decision'`）。**只写不跑**（生产库动作等维护者明说）。
+10. migration `0038_model_route_decision.sql`：`model_route_kind_check` 重建成 `('chat','image','tts','decision')` + 幂等 upsert 一行 `jev-1.13@openrouter`（`logical_model='jev-1.13'`、`wire_model='typesafe/jev-1.13'`、`price_in=42000`、`price_cache=0`、`price_out=0`、`default_max_tokens=1`、`kind='decision'`）。**只写不跑**（生产库动作等维护者明说）。
 11. 测试：`tests/edge/decisionUpstream.test.ts`（纯映射）、`tests/edge/llmGateway.test.ts`（复用 `quotaStub` / `upstream`：预扣 / 结算 / 三条 release 路径 / `use` 没开回 403 且 `seen` 为空 / 透传 `answers` 不改形状）、`tests/edge/billingQueries.test.ts`（kind 阶梯、`decision` 不进 `models`、`meFromParts` 第九参）、`tests/edge/edge.test.ts`（那道门回 `llm_disabled` 不是 `not_found`）。
 
 **部署顺序：worker 先，migration 后**——0033 的头注已经写过这条规则，这里是它最锋利的一次：认不出的 `kind` 会被旧 worker 按 `chat` 处理，而这一行的输出价是 0、`routesQuery` 按 `price_out` 升序，于是它会排到 `me.models[0]` = **所有订阅用户的默认聊天款 + Auto 的 simple 档**，而它压根不会聊天。migration 的头注要把这句话写在最上面。
@@ -204,7 +204,7 @@ runtime ──(x-runtime-secret + on-behalf-of 所有者)──┘            �
 ## 9. 上线步骤（谁做、按什么顺序）
 
 1. 本 PR 合并：五处全部休眠（`DECISION_USES = {}`），行为不变，门禁证明这一点。**唯一的例外是有意的**：Auto 今天那条 LLM 路补上 8s 超时（§8）——一次挂住的网关调用今天会把 turn 的起跑永久卡住。
-2. **维护者**：部署 edge worker（`OPENROUTER_API_KEY` 已在）→ 再跑 migration 0037。顺序不能反（§5.2）。
+2. **维护者**：部署 edge worker（`OPENROUTER_API_KEY` 已在）→ 再跑 migration 0038。顺序不能反（§5.2）。
 3. 我：拿 `mr-otto-dev` 那份 JWT 打一次 `/llm/v1/decision`，先确认回 403（开关没开）；然后开一个一行 PR 把 `dispatch` 设成 `shadow`，部署，再打一次真调用——**这是第一次有人真的看到 Jev 对一句中文回了什么**。形状对不上就在这里停，改 `decisionUpstream.ts`。
 4. 部署 runtime（ADR-0258：改了 `services/` 与 `src/shared/` 就要部署才生效）。影子跑几天，grep `[decision]`，定阈值。
 5. 一处一处从 `shadow` 翻到 `on`，每翻一处一个一行 PR，PR 正文贴那一处的一致率与校准数据。桌面那三处要等一次桌面发版。

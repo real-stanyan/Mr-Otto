@@ -41,7 +41,7 @@ import { parseTtsReply, parseTtsRequest, ttsUpstreamBody } from "./ttsUpstream.j
     `logical_model` 匹配，出图请求点名的就是出图那款
     `decision` = 决策模型（#1281）：不生成文字，收 state + 问题回类型化答案。它**输出价是 0**，
     漏进 `me.models` 会排到第一位 = 所有订阅用户的默认聊天款 + Auto 的 simple 档，而它压根
-    不会聊天——所以同样单列一种 kind，且部署顺序是 worker 先、migration 后（0037 头注） */
+    不会聊天——所以同样单列一种 kind，且部署顺序是 worker 先、migration 后（0038 头注） */
 export type RouteKind = "chat" | "image" | "tts" | "decision";
 
 export interface RouteRow {

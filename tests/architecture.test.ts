@@ -66,6 +66,19 @@ describe("Hard rules(AGENTS.md)是门禁的一部分", () => {
     ).toEqual([]);
   });
 
+  it("src/tools 不 import src/main —— 工具只依赖注进来的东西,装配留给 main(#1281)", () => {
+    const bad = offenders(join(ROOT, "tools"), (s) => /^(\.\.\/)+main(\/|$)/.test(s));
+    expect(
+      bad,
+      `src/tools 这些文件反向依赖了主进程:\n  ${bad.join("\n  ")}\n` +
+        "修法:把那个能力做成参数,由 src/main 装配时注入" +
+        "(如 memory 的分档核对 judgeTier —— 判据住在 src/shared,拿网关的那一半住在 src/main,见 ADR-0298);" +
+        "工具只该依赖 shared / world,和传进来的 deps\n" +
+        "为什么补这一条:上面那条只拦 fs/child_process,而「工具直接 import 主进程」一直没人拦 ——" +
+        "src/loop 有同名的一条,src/tools 漏了(#1281 加决策模型时发现)"
+    ).toEqual([]);
+  });
+
   it("src/renderer 不 import Node/Electron 模块 —— 只走 window.otter(ShellBridge)", () => {
     const bad = offenders(join(ROOT, "renderer"), NODE_BUILTIN);
     expect(

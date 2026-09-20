@@ -159,6 +159,9 @@ Domain glossary. All agents' understanding of domain terms is grounded here; cod
 - **补跑收口队列**：daemon 重启后决定「上个进程没跑完的哪几条开场白该被当场关掉」的那条规则——把每只 agent 此刻所有未收口的开场白按 seq 升序排一列，从队头起**连续的** `kicked`／`exhausted` 各落一条收口（`readUpToSeq` = 那条自己的 seq），撞上第一条 `runnable`／`unknown`／`skipped` 就停手，后面的留着不落；有 runnable 的 agent 落一条 interrupted 记号，`readUpToSeq` = 此刻队头 seq − 1。判据是「连续前缀」而不是「最早那条 runnable 之前全关」：后者会把排在它前面的 `unknown` 一起静默关掉，而 `unknown` 是「这一刻问不出来」，不是「确认不在籍」。被踢的那条另落一条模型可见的系统发言说「不作数」——日志 append-only，正文删不掉，追一句是天花板（ADR-0228，#957 第四批；`services/runtime/src/sessionService.ts`）。
 - **`CloudAck`**：桌面对一次云会话上行调用（say／approve／stop）结果的三态回值 `{ ok: true } | { ok: false; message: string; unknown?: true }`（定义只在 `src/shared/shellBridge.ts` 一处，贯穿主进程→store→渲染层）。第三格是关键：`unknown` = 15 秒 ACK 超时或连接 `:gone`，意思是**不知道有没有生效**，与「确定没发出去」（拒绝／忙／`sendFrame` 失败，都不带 `unknown`）是两件事、该做的动作相反。把 `unknown` 当「没发出去」办（把原文种回输入框）就是让用户再按一次回车，同一句话发两遍、两只 agent 各跑一轮、两笔都记在 owner 账上（ADR-0228，#957 第四批）。
 
+- **决策模型（ADR-0298）**：不生成文字的那一类模型（今天只有 Jev）：收 `state` + 一组类型化问题（`noul` 是/否、`choice` 多选一、`score` 打分），一次前向回类型化答案 + **校准概率**。在 Otto 里只用来给五处分类器做**前置判断**（派活 / Auto / 重命名 / 语音断句 / 记忆分档），今天那条 LLM 路永远是兜底；**只许加严不许放行**，审批与各种闸一处都不接。三端共用的纯层在 `src/shared/decision.ts`，只经 edge 网关的 `/llm/v1/decision`（`model_route.kind='decision'`）。
+- **影子模式（shadow，ADR-0298）**：决策模型分处开关的中间一档（没列 / `shadow` / `on`）。今天那条路说了算，决策模型并行问一次、**不等它**，回来之后记一行 `[decision] {json}` 对照日志（一致率与校准都从它 grep）。存在的理由是中文校准只能在生产上量；一处从 `shadow` 翻到 `on` 是一个一行 PR，正文贴那一处的数据。
+
 ## Key invariants
 
 - `AGENTS.md` is always the single source of rules; `CLAUDE.md` is always just the `@AGENTS.md` empty shell

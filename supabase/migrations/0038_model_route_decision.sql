@@ -1,6 +1,11 @@
--- 0037_model_route_decision.sql —— model_route 加 kind='decision' + 上决策模型 Jev 那一款（issue #1281）。幂等，重跑不炸。
+-- 0038_model_route_decision.sql —— model_route 加 kind='decision' + 上决策模型 Jev 那一款（issue #1281）。幂等，重跑不炸。
 -- 与 0024–0036 同一约定：Supabase SQL editor / Management API 手动执行一次（多条语句分开发，
 -- Management API 一次只回最后一条的结果）。
+--
+-- **本条原为 0037**（写下时 origin/main 的最大号是 0036）。合并前 re-fetch 发现另一条 lane 的
+-- `0037_home_workspace_and_chats.sql` 已经落地，于是按项目 ADR-0074 对 ADR 撞号定的那条规矩
+-- 改号到 max+1 —— `tests/docs/migrationNumbers.test.ts` 只断言编号唯一，两个 0037 会当场翻红。
+-- 提交信息改不了（它里面写的是 0037），所以这一行留着让旧引用还认得出来。
 --
 -- **顺序：先部署 edge worker，再跑本条。反过来是一次事故，不是一次小毛病。**
 -- 旧 worker 的 `parseRouteRows` 对认不出的 kind 按 chat 处理（那是故意的：一个拼错的 kind
