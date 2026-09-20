@@ -24,6 +24,11 @@
 //     不然内容一长高就把人拽回底部——开关在 OttoThread（Viewport 公开的 autoScroll prop），不在这里；
 //  ⑥ 标题 / 预览剥掉行内的 `**` `__` 反引号（上游只剥行首记号）；
 //  ⑦ 落地后按住目标一小会儿：本地消息是 content-visibility，滚到附近才换成真高（见 holdOnTarget）。
+//
+// 已知代价（#1280）：**聊天里这条轨只画已经加载的那几页**。云会话进房只拉末尾一屏、
+// 往上滚才翻更早的（ADR-0300），而 `cloudConversationEntries` 吃的是手上这份 `events`。
+// 于是一条聊了半年的线，刚进去时地图上只有最近那几轮——翻上去之后自己长出来。
+// 不在这里兜：兜底就意味着为了画一列刻度去把整份日志拉回来，而那正是尾巴分页要省掉的。
 
 import type { ThreadMessage } from "@assistant-ui/react";
 import type { SessionEvent, UserAttachmentRef } from "../../../session/events.js";
