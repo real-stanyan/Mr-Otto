@@ -31,7 +31,7 @@ const ws: WorkspaceSnapshot = {
 const cs: CloudSessionState = {
   workspaceId: "w", sessionId: "s", state: "ready",
   initiatorUid: "u1", ownerUid: "u1", selfUid: "u1",
-  modelRoute: null, gapNote: null, events: [],
+  modelRoute: null, gapNote: null, chat: null, events: [],
 };
 
 const base = { sessionId: "s", ts: 0 } as const;
