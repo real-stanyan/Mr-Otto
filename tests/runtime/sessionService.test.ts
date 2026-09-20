@@ -6187,4 +6187,51 @@ describe("聊天名单收窄（#1280）", () => {
     );
     store.close();
   });
+
+  it("私聊：不 @ 也直接给它，分类器一次都不调，落的是一条普通的点名开场白", async () => {
+    const store = newStore();
+    const calls: DispatchCall[] = [];
+    const seen: string[] = [];
+    const s = openChat(store, { roster: ["ops"], kind: "dm", calls, seen });
+    await s.say("u1", "alice", "昨天卖得怎么样", false, [], undefined, []);
+    await s.settled();
+    expect(calls).toHaveLength(0);
+    expect(seen).toEqual(["ops"]);
+    const opening = store.load("s1").find((e) => e.type === "user_message") as UserMessageEvent;
+    expect(opening.mentions).toEqual(["ops"]);
+    expect(opening.dispatch).toBeUndefined(); // 不是分类器挑的，别带那个记号
+    store.close();
+  });
+
+  it("私聊里打了个 @ 也一样归它：名单里只有它，没有第二个人可以被指名", async () => {
+    const store = newStore();
+    const seen: string[] = [];
+    const s = openChat(store, { roster: ["ops"], kind: "dm", seen });
+    await s.say("u1", "alice", "发到 ops@example.com 那个邮箱", false, undefined, undefined, []);
+    await s.settled();
+    expect(seen).toEqual(["ops"]);
+    store.close();
+  });
+
+  it("群聊掉到只剩一只（别的被删了）同理，不为一个候选打一次分类调用", async () => {
+    const store = newStore();
+    const calls: DispatchCall[] = [];
+    const seen: string[] = [];
+    const s = openChat(store, { roster: ["ops"], kind: "group", calls, seen });
+    await s.say("u1", "alice", "在吗", false, [], undefined, []);
+    await s.settled();
+    expect(calls).toHaveLength(0);
+    expect(seen).toEqual(["ops"]);
+    store.close();
+  });
+
+  it("团队会话只有一只时照旧问分类器（团队一字不变）", async () => {
+    const store = newStore();
+    const calls: DispatchCall[] = [];
+    const s = openChat(store, { calls, team: async () => [ADMIN] });
+    await s.say("u1", "alice", "在吗", false, [], undefined, []);
+    await s.settled();
+    expect(calls).toHaveLength(1);
+    store.close();
+  });
 });

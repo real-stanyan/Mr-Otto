@@ -171,7 +171,7 @@ import { createInviteToCallTool } from "./inviteToCallTool.js";
 import type { VoiceCallParticipant } from "../../../src/session/events.js";
 import { LoopEngine } from "../../../src/loop/engine.js";
 import type { EventStore } from "../../../src/session/store.js";
-import type { SessionEvent, UserMessageEvent, AssistantMessageEvent, AgentRelayEvent } from "../../../src/session/events.js";
+import type { SessionEvent, SessionCreatedEvent, UserMessageEvent, AssistantMessageEvent, AgentRelayEvent } from "../../../src/session/events.js";
 import type { DeltaKind, ModelAdapter } from "../../../src/model/adapter.js";
 import { createDeltaStream } from "./deltaStream.js";
 import type { ExecutionWorld } from "../../../src/world/executionWorld.js";
@@ -606,6 +606,9 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   // 聊天名单（#1280）：同 voiceCall 的手法——从 seed 折叠一次播种，notify 里逐条推进。
   // null = 团队会话 / 存量日志 = 不收窄
   let chatRoster: ChatRoster = chatRosterOf(seed);
+  // 这条会话是不是一条聊天（#1280）：建会话时记进日志的事实，一生不变
+  const chatKind =
+    seed.find((e): e is SessionCreatedEvent => e.type === "session_created")?.cloud?.chat?.kind ?? null;
   /** 这条会话此刻的名单 = 团队名单 ∩ 聊天名单。**全文件读名单只走这一个口**：@ 解析、派活、
       接力、brief、通话选人约 40 处下游一次全对，少改一处就是那一处还站着整个团队。
       团队名单读不出来（degraded）时原样交回：降级记号一旦被名单滤掉，下游「名单读不出来」
@@ -2009,7 +2012,13 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         // = 人已经在指名，这句话有明确的收件人，分类器不该替他改主意。前者由
         // sayUnknown 那句系统话接手（「有 N 个点名找不到」），后者是说给人听的
         const humanAddressed = mentionTokens(text).length > 0 || (memberMentions?.length ?? 0) > 0;
-        if (opts.dispatch === undefined || humanAddressed) {
+        // 聊天里只有一只（#1280，spec §6.2）：这句话只可能是对它说的——不问分类器、不花那次调用，
+        // 也不看正文里有没有 @（私聊里没有第二个人可以被指名）。同 ADR-0275 的通话单成员规则。
+        // 只对聊天生效：团队会话只有一只时照旧走分类器（闲聊没人接是团队那边的既有口径）。
+        const sole = chatKind !== null && roster.length === 1 && roster[0]!.degraded !== true ? roster[0]! : null;
+        if (sole !== null) {
+          targets = [sole.agentId];
+        } else if (opts.dispatch === undefined || humanAddressed) {
           targets = legacy;
         } else {
           // 名单降级 = 分类器读到的是占位不是真名册，判出来的答案必然错；按「这次
