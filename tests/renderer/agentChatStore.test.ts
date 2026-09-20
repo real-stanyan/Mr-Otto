@@ -209,3 +209,44 @@ describe("createGroupChat（#1280 A4）", () => {
     expect(useChat.getState()).toMatchObject({ newGroupOpen: false, newGroupPreset: [] });
   });
 });
+
+describe("updateGroupChat / dissolveGroupChat（#1280 A4）", () => {
+  it("改名：帧上只带名字，成功后刷清单", async () => {
+    stubBridge({ workspaceCloudChatUpdate: vi.fn(async (...a: unknown[]) => { calls.push(["chatUpdate", ...a]); return { ok: true, value: null }; }) });
+    seed();
+    expect(await useChat.getState().updateGroupChat("g-1", { name: "上线冲刺" })).toEqual({ ok: true });
+    expect(calls.find((c) => c[0] === "chatUpdate")).toEqual(["chatUpdate", "home", "g-1", { name: "上线冲刺" }]);
+    expect(calls.map((c) => c[0])).toContain("workspaceCloudList");
+  });
+
+  // 那句话回给调用方自己画：抽屉里改名失败时，错误得出现在人正看着的那扇抽屉里
+  it("失败：回那句话，不刷清单", async () => {
+    stubBridge({ workspaceCloudChatUpdate: vi.fn(async () => ({ ok: false, message: "只有群聊能改名" })) });
+    seed();
+    expect(await useChat.getState().updateGroupChat("g-1", { name: "x" }))
+      .toEqual({ ok: false, message: "只有群聊能改名" });
+    expect(calls.map((c) => c[0])).not.toContain("workspaceCloudList");
+  });
+
+  it("移出最后一只：空名单照样发得出去（群还在）", async () => {
+    stubBridge({ workspaceCloudChatUpdate: vi.fn(async (...a: unknown[]) => { calls.push(["chatUpdate", ...a]); return { ok: true, value: null }; }) });
+    seed();
+    await useChat.getState().updateGroupChat("g-1", { agentIds: [] });
+    expect(calls.find((c) => c[0] === "chatUpdate")).toEqual(["chatUpdate", "home", "g-1", { agentIds: [] }]);
+  });
+
+  it("解散：走删除那条路，成功后把抽屉关掉", async () => {
+    stubBridge({ workspaceCloudDelete: vi.fn(async (...a: unknown[]) => { calls.push(["delete", ...a]); return { ok: true, value: null }; }) });
+    seed({ groupSettingsFor: "g-1" });
+    expect(await useChat.getState().dissolveGroupChat("g-1")).toEqual({ ok: true });
+    expect(calls.find((c) => c[0] === "delete")).toEqual(["delete", "home", "g-1"]);
+    expect(useChat.getState().groupSettingsFor).toBeNull();
+  });
+
+  it("解散失败：抽屉留着，那句话回给它自己画", async () => {
+    stubBridge({ workspaceCloudDelete: vi.fn(async () => ({ ok: false, message: "云端无响应" })) });
+    seed({ groupSettingsFor: "g-1" });
+    expect(await useChat.getState().dissolveGroupChat("g-1")).toEqual({ ok: false, message: "云端无响应" });
+    expect(useChat.getState().groupSettingsFor).toBe("g-1");
+  });
+});

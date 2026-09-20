@@ -9,9 +9,10 @@ import { agentAvatarSrc } from "./agentAvatar.js";
 import { agentNameOf, labelOf, memberAvatarOf } from "./workspaceView.js";
 import { isSystemNote, systemNoteBody } from "./systemNote.js";
 import type {
-  AgentRelayEvent, ApprovalDecisionEvent, ApprovalRequestEvent, AssistantMessageEvent, RouteChangedEvent, SessionEvent, TurnEndedEvent,
+  AgentRelayEvent, ApprovalDecisionEvent, ApprovalRequestEvent, AssistantMessageEvent, ChatRosterChangedEvent, RouteChangedEvent, SessionEvent, TurnEndedEvent,
   UserMessageEvent, VoiceCallChangedEvent,
 } from "../../../session/events.js";
+import { chatRosterDiff } from "../../../shared/chatRoster.js";
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 import { CREATE_AGENT_TOOL_NAME } from "../../../shared/createAgentDraft.js";
 import { countdown } from "./billingView.js";
@@ -103,13 +104,12 @@ export function relayLineText(e: AgentRelayEvent, ws: WorkspaceSnapshot): string
        行动（ADR-0260 的判据），而侧栏那一行的字已经跟着换了，画出来是同一件事
        说两遍。**藏的是投影不是事实**：落盘/重放/隐私闸一个字不动。
 
-    ⑨ `chat_roster_changed`（#1280）——**这一条是暂时的**：A3 里它一行都画不出来
-       （`EventRow` 对它 return null），所以让这个谓词照实说；**A4 给「群里加了谁 /
-       移了谁」画一行时要把它从这里删掉**。留在这里的代价是那一行暂时看不见，
-       删早了的代价是时间线上多一块空白（这个谓词的消费方不止渲染循环——
-       聊天那条「一条都画不出来」的判据也读它）。
+    留在时间线上的因此只剩：人说的话、agent 的最终答案、接力线、名单变更、出错、归档。
 
-    留在时间线上的因此只剩：人说的话、agent 的最终答案、接力线、出错、归档。 */
+    **`chat_roster_changed` 故意不在这张表上**（#1280 A4）：它画不画要看**前一条**
+    名单事件（建聊天那一条与「名单没变」都不画，见 `chatRosterLineParts`），而这个
+    谓词是逐事件的——跨事件的判据塞进来就成了一个说不准的谓词。判据因此住在渲染
+    循环那张 `Map<seq, parts|null>` 里，同 `voiceCallCards` 对 `prevVoiceCall` 的手法。 */
 export function hiddenFromCloudTimeline(e: SessionEvent): boolean {
   if (e.type === "user_message") return e.relay !== undefined || e.greeting !== undefined;
   if (e.type === "approval_decision") return e.decision === "approved";
@@ -118,9 +118,47 @@ export function hiddenFromCloudTimeline(e: SessionEvent): boolean {
     e.type === "session_created" ||
     e.type === "agent_briefed" ||
     e.type === "request_envelope" ||
-    e.type === "session_autotitled" ||
-    e.type === "chat_roster_changed"
+    e.type === "session_autotitled"
   );
+}
+
+/** 名单那一行里的一格（#1280 A4）。`text` 是它在句子里的**字面**——整串拼起来就是
+    这句话本身（文案用例正是这么钉的）；`agentId` 在场 = 这一格是个名字，头像画在它
+    左边。形状比 `VoiceCallPart` 简单一档：这一行的主语是「你」，一张「你」的脸是噪音。 */
+export type RosterLinePart = { text: string; agentId?: string };
+
+/** 群名单变了那一行（#1280 A4）。判据是**前后两条名单的差集**（`chatRosterDiff`），
+    不是事件上的一个「动作」字段——事件只记事实（此刻群里站着谁），「谁进谁出」是
+    投影出来的，同 `voiceCallLineParts`。
+
+    回 `null` = **这一条不画**，两种情形：
+    · `prev === null` —— 建聊天时落的那一条。它说的就是头部那排头像，画出来等于
+      在每条群聊的第一行写一遍「这个群里有这几只」。
+    · 名单没变 —— 服务端只在真变了时才落（`updateChatRoster` 的 `changed`），这是第二道。
+
+    移出的那几只的名字取**旧名单里的那一份**：它可能已经被删了，新名单里查不到
+    （同 `voiceCallLineParts` 对快照的用法）。连着两个名字之间不加顿号——书名号
+    自己就是间隔（中文排版）。 */
+export function chatRosterLineParts(
+  prev: ChatRosterChangedEvent | null,
+  e: ChatRosterChangedEvent,
+  selfUid: string,
+): RosterLinePart[] | null {
+  const { joined, left } = chatRosterDiff(prev?.agents ?? null, e.agents);
+  if (joined.length === 0 && left.length === 0) return null;
+  // 个人主场里只有一个人，所以「不是我」只可能是旧日志或一条不该存在的团队聊天。
+  // 这一层手上没有成员名单（`ws` 不在签名里，刻意的：主场的 members 本来就是空的），
+  // 「有人」是说不出是谁时的老实话——编一个名字出来更坏
+  const who = e.byUid !== undefined && e.byUid === selfUid ? "你" : "有人";
+  const names = (list: readonly { agentId: string; name: string }[]): RosterLinePart[] =>
+    list.map((a) => ({ text: `「${a.name}」`, agentId: a.agentId }));
+  const parts: RosterLinePart[] = [{ text: `${who}把` }];
+  if (joined.length > 0) parts.push(...names(joined), { text: "拉进了群聊" });
+  if (left.length > 0) {
+    if (joined.length > 0) parts.push({ text: "，把" });
+    parts.push(...names(left), { text: "移出了群聊" });
+  }
+  return parts;
 }
 
 /** 审批卡第一行（#957 C-I3）：多智能体是这一批六片的全部意义，两张卡工具名

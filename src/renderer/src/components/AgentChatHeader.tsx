@@ -29,7 +29,7 @@ export function AgentChatHeader({
   ws,
   chat,
   onPullAgent,
-  onAddAgent,
+  addAgentSlot,
   onSettings,
   voiceSlot,
 }: {
@@ -37,8 +37,9 @@ export function AgentChatHeader({
   chat: ChatView;
   /** 私聊：「拉别的智能体，和它一起另建一个群」。**A4 才接线**，缺席不画 */
   onPullAgent?: () => void;
-  /** 群聊：「添加智能体」。**A4 才接线**，缺席不画 */
-  onAddAgent?: () => void;
+  /** 群聊：「添加智能体」那一整块（#1280 A4）。与 `voiceSlot` 同一个办法——Radix 的
+      Popover 要触发器长在自己里面，而这一层是纯展示组件，不该替它存开合状态 */
+  addAgentSlot?: React.ReactNode;
   /** ⚙。私聊开这只智能体的设置，群聊开这个群的 —— 由调用方决定接哪一个 */
   onSettings?: () => void;
   /** 语音那颗钮（#1163）。整块由调用方递进来：判据（没订阅 / 网关不供语音不画）
@@ -89,12 +90,7 @@ export function AgentChatHeader({
             <UserPlus className="size-[13px]" aria-hidden />
           </Button>
         )}
-        {!dm && onAddAgent && (
-          <Button variant="outline" size="xs" onClick={onAddAgent} title="往这个群里添加智能体">
-            <UserPlus className="size-[13px]" aria-hidden />
-            添加智能体
-          </Button>
-        )}
+        {!dm && addAgentSlot}
         {onSettings && (
           <Button
             variant="outline"

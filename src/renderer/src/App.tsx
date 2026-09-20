@@ -70,6 +70,7 @@ import { FriendsSection } from "./components/FriendsSection.js";
 import { friendMentionItems, searchFriendMentions } from "./lib/friendMentionItems.js";
 import { AgentsSidebarSection } from "./components/AgentsSidebarSection.js";
 import { AgentSettingsDrawer } from "./components/AgentSettingsDrawer.js";
+import { GroupSettingsDrawer } from "./components/GroupSettingsDrawer.js";
 import { WorkspacePage } from "./components/WorkspacePage.js";
 import { NewGroupDialog } from "./components/NewGroupDialog.js";
 import { NewWorkspaceDialog } from "./components/NewWorkspaceDialog.js";
@@ -2522,6 +2523,8 @@ function AppSidebar() {
       {/* 一只智能体自己的设置（#1280）：聊天头部那颗 ⚙ 与花名册那一行都开它。
           判据在组件里（查得到那只才开），这里只负责挂上 */}
       <AgentSettingsDrawer />
+      {/* 一个群自己的设置（#1280 A4）：群聊头部那颗 ⚙ 开它。判据同上，在组件里 */}
+      <GroupSettingsDrawer />
       {/* 新团队(issue #917)。按钮只在项目栏(issue #923),所以 setTab 这一下不是
           为了换栏,是为了归档视图那一路:在「已归档」里点的钮,建完得把人带回列表,
           不然新建的团队在他此刻看的那一屏上根本不出现 */}

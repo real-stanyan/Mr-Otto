@@ -27,6 +27,8 @@ export function CloudSessionMain({ onManage }: { onManage: (workspaceId: string)
   const refreshGroups = useChat((s) => s.refreshWorkspaceGroups);
   const openAgentSettings = useChat((s) => s.openAgentSettings);
   const openNewGroup = useChat((s) => s.openNewGroup);
+  const openGroupSettings = useChat((s) => s.openGroupSettings);
+  const updateGroupChat = useChat((s) => s.updateGroupChat);
   // 群名在清单那一行上（title），不在 welcome 里——welcome 只说 kind 与名单
   const chatTitle = useChat((s) =>
     s.cloudSession
@@ -127,6 +129,12 @@ export function CloudSessionMain({ onManage }: { onManage: (workspaceId: string)
             // 「拉人」**不改这条私聊**，是带着这一只另起一个群（微信同款）：私聊的
             // 名单是库里那条唯一索引钉死的一只，改得了的话它就不再是「和它的那条线」
             ? { onPullAgent: () => openNewGroup([chat.agentIds[0]!]) }
+            : {})}
+          {...(chat?.kind === "group" && sessionId !== null
+            ? {
+                onChatRoster: async (agentIds: string[]) => { await updateGroupChat(sessionId, { agentIds }); },
+                onGroupSettings: () => openGroupSettings(sessionId),
+              }
             : {})}
         />
       </div>
