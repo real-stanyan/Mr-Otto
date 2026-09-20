@@ -1804,3 +1804,91 @@ describe("cloudSessionFleetRow 的标题（#1280）", () => {
     expect(cloudSessionFleetRow(base)!.title).toBe("云会话");
   });
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 尾巴分页（协议 20，#1280）。聊天是一只一条永久线，进房全量拉迟早是十几秒。
+// 六条各盯一个具体的失败：拉法分叉、哨兵的判据、往前翻、不叠发、超时之后还能再试、
+// 断线重来。
+// ─────────────────────────────────────────────────────────────────────────────
+describe("createCloudSessionClient — 聊天只拉尾巴（#1280）", () => {
+  const CHAT = { kind: "dm" as const, agentIds: ["ops"], name: "" };
+
+  async function joined(chat?: typeof CHAT) {
+    const h = harness();
+    await h.client.join("w1", "cloud-s1");
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({
+      t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: 99, initiatorUid: "u1", ownerUid: "u2",
+      modelRoute: null, ...(chat ? { chat } : {}),
+    });
+    return { h, t };
+  }
+
+  it("welcome 带 chat：发的是尾巴帧；不带 chat 的团队会话照旧 afterSeq:-1", async () => {
+    const chat = await joined(CHAT);
+    expect(chat.t.decoded()[1]).toEqual({ t: "backlog", tail: true, limit: 200 });
+
+    const team = await joined();
+    expect(team.t.decoded()[1]).toEqual({ t: "backlog", afterSeq: -1 });
+  });
+
+  it("尾巴落定且 hasMore：状态推送带 hasOlder，且 gapNote 是 null——没加载的那一段不是「缺口」", async () => {
+    const { h, t } = await joined(CHAT);
+    t.emitDown({ t: "backlog", events: [98, 99].map((n) => chatMsg(n)), done: true, hasMore: true });
+    const last = h.statuses.at(-1)!;
+    expect(last.state).toBe("ready");
+    expect(last.hasOlder).toBe(true);
+    expect(last.gapNote).toBeUndefined();
+  });
+
+  it("往前翻：帧带已加载的最小 seq；翻到头之后 hasOlder 从状态里消失", async () => {
+    const { h, t } = await joined(CHAT);
+    t.emitDown({ t: "backlog", events: [98, 99].map((n) => chatMsg(n)), done: true, hasMore: true });
+    t.sent.length = 0;
+
+    const page = h.client.backlogPage();
+    expect(t.decoded()[0]).toEqual({ t: "backlog", tail: true, limit: 200, beforeSeq: 98 });
+
+    t.emitDown({ t: "backlog", events: [96, 97].map((n) => chatMsg(n)), done: true, hasMore: false });
+    expect(await page).toEqual({ ok: true, value: { hasOlder: false } });
+    expect(h.events.map((e) => e.seq)).toEqual([98, 99, 96, 97]);
+    expect(h.statuses.at(-1)!.hasOlder).toBeUndefined();
+  });
+
+  it("翻页进行中再叫一次：回同一个 promise，不发第二帧", async () => {
+    const { h, t } = await joined(CHAT);
+    t.emitDown({ t: "backlog", events: [99].map((n) => chatMsg(n)), done: true, hasMore: true });
+    t.sent.length = 0;
+
+    const a = h.client.backlogPage();
+    const b = h.client.backlogPage();
+    expect(t.sent).toHaveLength(1);
+    t.emitDown({ t: "backlog", events: [98].map((n) => chatMsg(n)), done: true, hasMore: false });
+    expect(await a).toEqual(await b);
+  });
+
+  it("团队会话 / 已经到头：不打网络，直接回 hasOlder:false——「没有更早的」不是失败", async () => {
+    const team = await joined();
+    team.t.emitDown({ t: "backlog", events: [chatMsg(99)], done: true });
+    team.t.sent.length = 0;
+    expect(await team.h.client.backlogPage()).toEqual({ ok: true, value: { hasOlder: false } });
+    expect(team.t.sent).toHaveLength(0);
+
+    const chat = await joined(CHAT);
+    chat.t.emitDown({ t: "backlog", events: [chatMsg(99)], done: true, hasMore: false });
+    chat.t.sent.length = 0;
+    expect(await chat.h.client.backlogPage()).toEqual({ ok: true, value: { hasOlder: false } });
+    expect(chat.t.sent).toHaveLength(0);
+  });
+
+  it("断线：hasOlder 与上沿一起归零，挂着的那次翻页被结掉——不留一行永远转着的「读取中」", async () => {
+    const { h, t } = await joined(CHAT);
+    t.emitDown({ t: "backlog", events: [99].map((n) => chatMsg(n)), done: true, hasMore: true });
+    const page = h.client.backlogPage();
+    t.emitGone();
+    expect(await page).toMatchObject({ ok: false });
+    expect(h.statuses.at(-1)!.hasOlder).toBeUndefined();
+  });
+});

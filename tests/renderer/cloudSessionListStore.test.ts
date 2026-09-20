@@ -61,7 +61,7 @@ const flush = async (): Promise<void> => {
 const makeCloudSession = (over: Partial<CloudSessionState> = {}): CloudSessionState => ({
   workspaceId: "w1", sessionId: "s1", state: "ready",
   initiatorUid: null, ownerUid: "o", selfUid: "u1",
-  modelRoute: null, gapNote: null, chat: null, events: [],
+  modelRoute: null, gapNote: null, chat: null, hasOlder: false, older: "idle" as const, events: [],
   ...over,
 });
 

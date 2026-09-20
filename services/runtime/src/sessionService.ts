@@ -193,7 +193,9 @@ import { filterGrantedByAllow, type AgentToolAllow } from "../../../src/shared/a
 import { createWikiTools } from "./wikiTool.js";
 import type { WikiService, WikiSnapshotForAgent } from "./wikiService.js";
 import type { MentionInbox, MentionInboxRow } from "./mentionInbox.js";
-import { DEFAULT_AUTO_COMPACT } from "../../../src/shared/autoCompact.js";
+import {
+  CHAT_AUTO_COMPACT, CHAT_IDLE_COMPACT_MS, CHAT_IDLE_COMPACT_MIN_TOKENS, DEFAULT_AUTO_COMPACT,
+} from "../../../src/shared/autoCompact.js";
 import { createCreateAgentTool } from "./createAgentTool.js";
 import { createGitTools, type GitToolDeps } from "./gitTools.js";
 import type { WorkspaceAgentWriter } from "./agentRegistry.js";
@@ -492,6 +494,11 @@ export interface CloudSession {
   settled(): Promise<void>;
   approve(callId: string, byUid: string, byLabel: string, decision: "approved" | "denied"): ApproveOutcome;
   backlog(afterSeq: number): SessionEvent[];
+  /** 尾巴分页（#1280）：`beforeSeq` 缺席 = 第一页（末尾 `limit` 条），给了 = 往前翻
+      （那一条之前的 `limit` 条）。`hasMore` 说清这一页之前还有没有。
+      只有聊天走这条路——团队会话照旧全量拉（那边的上下文环与通话折卡都靠
+      「把整份日志读一遍」，尾巴分页会让它们静默算错） */
+  backlogTail(beforeSeq: number | undefined, limit: number): { events: SessionEvent[]; hasMore: boolean };
   isRunning(): boolean;
   lastSeq(): number;
   initiatorUid(): string | null;
@@ -570,6 +577,13 @@ export type VoiceCallOutcome = { kind: "ok" } | { kind: "unknown_agent" | "archi
     catchUp），到这个数就不再排、改落一条真正的收口 */
 export const MAX_CATCHUP_ATTEMPTS = 3;
 
+/** 尾巴分页第一页的下界能往回走多远（#1280）。为了让第一页盖住「没收口的 turn」
+    与「进行中的通话」，最多比 `limit` 多带这么多条。
+    再远就不盖了：一场开了三天的通话不该让进房变回全量拉——那时候「正在回复」
+    可能少一格（一个能看见、能自己好的偏差），而进房要等十几秒是**每一次**都
+    发生的事。两个失败方向不对称，所以这条闸往「少带」那一侧倒。 */
+export const TAIL_FLOOR_MAX_EXTRA = 2000;
+
 /** 沙箱免审策略这一刻问不出来时，群里那一句（#1029，ADR-0243）。
     往严的一边倒（这一次照旧问人）是对的，但**不出声就与「这开关坏了」不可区分**：
     界面上那颗「免审批」药丸此刻可能正亮着，而一张卡刚刚弹了出来。
@@ -636,6 +650,15 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     const team = await opts.agents(o);
     return team.some((a) => a.degraded) ? team : narrowRoster(team, chatRoster);
   };
+  /** 每只智能体**自己**上一轮的收口时刻（#1280，闲置压缩用）。装配时整份折叠一次、
+      之后在 notify 里逐条推进——与 `bounds` / `voiceCall` / `speakerLabels` 同一个形状。
+      按 agentId 分开记不是洁癖：群里别人刚说过话不算这一只「没闲着」，它自己的上下文
+      照样是六小时前的那一份。`turn_ended` 带 agentId（ADR-0219），缺席的（本机日志 /
+      存量）不进表 —— 那是「读不到」，查询回 null，闲置压缩不触发 */
+  const lastTurnEndedTs = new Map<string, number>();
+  for (const e of seed) {
+    if (e.type === "turn_ended" && e.agentId) lastTurnEndedTs.set(e.agentId, e.ts);
+  }
   let lastSeqSeen = seed.at(-1)?.seq ?? -1;
   /** 「这一轮的判据从日志的哪一条读起」的两条保守下界（#958）。装配时整份折叠
       一次，之后每条事件经 notify 增量推进——于是 runJob 与 relayAfterTurn 每个
@@ -700,7 +723,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       （`speakerLabelOf` 读正文里的 `[label]: ` 前缀）。放在这里而不是让
       onRequest 现去 load 日志：onRequest 是 decide 的同步回调，为一句旁白读一遍
       日志是白付的 IO */
-  let currentJob: { agentId: string; fromUid: string; openingContent: string } | null = null;
+  // openingSeq（#1280）：尾巴分页第一页的下界之一——这一轮的开场白落在尾巴外面时，
+  // 「正在回复」那枚指示器画不出来且不报错。**挂在 currentJob 这条记录上**而不是
+  // 另起一个并列变量：它和「此刻欠着一轮」是同一个事实，一处置位一处清空
+  let currentJob: { agentId: string; fromUid: string; openingContent: string; openingSeq: number } | null = null;
   /** 这一轮的沙箱审批策略（#977）：第一次撞门时查。runJob 进门复位。
       `null`（promise 的结果，不是这一格本身）= **这一次问不出来**，与确认的 "ask" 分开：
       只有确认的 "ask" 才钉住这一轮，判据与三种结局的理由写在 policyApprover 里
@@ -853,6 +879,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // 文字（本地那条纪律写在 src/main/index.ts 的 send 包装里，这里是同一处）
     deltas.flush();
     lastSeqSeen = e.seq;
+    if (e.type === "turn_ended" && e.agentId) lastTurnEndedTs.set(e.agentId, e.ts);
     // 尾段下界跟着走（#958）。**别把它读成「这里是唯一的落盘口，所以折叠结果
     // 精确等于对整份日志折叠一次」**（复审 Minor ③）：那句话不真——daemon.ts 往
     // 同一个 store 直接 append 了四类事件（notifyWorkspace 的 chat_message /
@@ -1171,7 +1198,20 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         // engine 存在就意味着那一格写过了。兜一个"建 engine 那一刻的 adapter"
         // 只会把「Map 忘了写」这个 bug 变成静默的旧型号窗口——正是这一格要防的东西
         contextWindow: () => opts.contextWindowOf(currentAdapters.get(spec.agentId)!.model),
-        settings: () => DEFAULT_AUTO_COMPACT,
+        // 聊天走预算闸（#1280）：永久线上每句话都背着全部上下文，而按窗口比例算，
+        // 1M 窗口的型号要攒到 50 万 token 才压一次。团队会话照旧——那边一条会话
+        // 有头有尾，按比例压是对的。chatKind 是建会话时记进日志的事实，一生不变
+        settings: () => (chatKind === null ? DEFAULT_AUTO_COMPACT : CHAT_AUTO_COMPACT),
+        ...(chatKind === null
+          ? {}
+          : {
+              idle: {
+                afterMs: CHAT_IDLE_COMPACT_MS,
+                minTokens: CHAT_IDLE_COMPACT_MIN_TOKENS,
+                lastTurnEndedTs: () => lastTurnEndedTs.get(spec.agentId) ?? null,
+                ...(opts.now ? { now: opts.now } : {}),
+              },
+            }),
       },
       // 护栏硬停（#957 E-F5）。本机会话故意不配：ADR-0006 的"无步数天花板"前提是
       // 人就坐在那儿，停止键随时能按。群聊云会话没有那个人——真机上跑过 300 次
@@ -1684,7 +1724,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     currentAgentId = job.agentId;
     // 停止键的 idle 判据（#957 A-2 复审）：从**这一刻**起这条会话就欠着一轮，
     // 哪怕 engine 还要几次网络往返之后才拿得到。界面上那行此刻已经在转了
-    currentJob = { agentId: job.agentId, fromUid: job.fromUid, openingContent: job.opening.content };
+    currentJob = { agentId: job.agentId, fromUid: job.fromUid, openingContent: job.opening.content, openingSeq: job.opening.seq };
     // engine 起跑之前抛错，收口就没人写了（#932 终审 Blocking ②）：agents()
     // 查询挂了、briefIfNeeded 落盘失败、adapterFor 抛错——drain 的 catch 只
     // 打一行日志，而开场白已经落盘、它的 mentions 里有这只 agent，于是
@@ -2262,6 +2302,32 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
 
     backlog(afterSeq) {
       return store.load(sessionId, { afterSeq });
+    },
+
+    backlogTail(beforeSeq, limit) {
+      // 末条 seq **现查库**，不取 `lastSeqSeen`：后者由 notify 维护，而 daemon.ts
+      // 往同一个 store 直接 append 了四类事件（notifyWorkspace 的 chat_message /
+      // model_usage / route_changed / session_created）全都绕开 notify（那个函数
+      // 自己的注释就写着这件事）。拿它当尾巴的末端，这一页会**安静地少掉最后几条**
+      const end = (beforeSeq ?? store.lastSeq(sessionId) + 1) - 1; // 含
+      if (end < 0) return { events: [], hasMore: false };
+      let from = Math.max(0, end - limit + 1);
+      if (beforeSeq === undefined) {
+        // 第一页的下界（spec §5.3）。少了这条，「正在回复」那枚指示器和通话卡会
+        // 因为开场白 / 通话的第一条事件落在尾巴外面而画不出来，**且不报错**——
+        // 界面上的样子是「它在跑，但这一屏什么都没说」。
+        // 往前翻的那几页不盖：那是第一页的事，翻页只管把更早的补回来
+        const floors = [
+          ...coordinator.pendingOpeningSeqs(),
+          ...(currentJob === null ? [] : [currentJob.openingSeq]),
+          ...(voiceCall === null ? [] : [voiceCall.sinceSeq]),
+        ];
+        const floor = Math.min(from, ...floors);
+        // 离得太远就不盖了：一场开了三天的通话不该让进房变回全量拉。那时候
+        // 「正在回复」可能少一格，而进房要等十几秒是**每一次**都发生的事
+        if (from - floor <= TAIL_FLOOR_MAX_EXTRA) from = floor;
+      }
+      return { events: store.load(sessionId, { afterSeq: from - 1, untilSeq: end }), hasMore: from > 0 };
     },
 
     isRunning() {

@@ -69,6 +69,7 @@ import type { RemoteTransport } from "../shared/remote/transport.js";
 import type { SessionSummary } from "../session/store.js";
 import {
   BACKLOG_SKIP_MARKER,
+  BACKLOG_TAIL_DEFAULT,
   CS_PROTOCOL_VERSION,
   csCtlChannel,
   csChannel,
@@ -264,6 +265,9 @@ export interface CloudSessionClient {
       的 id）——resolve 的是 `call_result` 那条回执，不是「帧交给 socket 了」；通话栏画的是
       随后广播回来的 `voice_call_changed`，不是这个回执 */
   call(participants: string[]): Promise<CloudAck>;
+  /** 往前翻一页历史（协议 20，#1280）。只有聊天有这条路：团队会话进房就是全量，
+      没有「更早」可言，这时它不打网络、直接回 `hasOlder: false` */
+  backlogPage(): Promise<FriendsResult<{ hasOlder: boolean }>>;
   /** 读一个团队的仓库状态 + 路由（控制房 RPC，协议 8，#991）。不依赖任何
       一条会话——团队设置页从侧栏 ⚙ 进来时手上未必开着这个团队的云会话 */
   workspaceState(workspaceId: string): Promise<FriendsResult<WorkspaceCloudState>>;
@@ -361,6 +365,19 @@ interface ActiveSession {
   pendingStop: CsPending | null;
   /** 还没等到 `call_result` 的那一次改名单（#1163） */
   pendingCall: CsPending | null;
+  /** 这条是不是**聊天**（#1280）：聊天进房只拉末尾一屏，团队会话照旧全量。
+      welcome 那一刻定死（`msg.chat !== undefined`）——一条会话的身份一生不变 */
+  tail: boolean;
+  /** 已经转发给渲染层的**最小** seq。null = 还没转发过任何事件。
+      尾巴模式下它就是「这一页的上沿」：往前翻从它之前接着拉，`missingCount`
+      的下界也跟着它走——没加载的那一段不是「缺口」 */
+  oldestSeq: number | null;
+  /** 云端说这一页之前还有更早的（最后一片 backlog 的 `hasMore`）。
+      缺省 false = 没有更早的 / 团队会话（那边一次全量，天然没有「更早」） */
+  hasOlder: boolean;
+  /** 还没回来的那一次往前翻（#1280）。**不排队**：翻页进行中再叫一次回同一个
+      promise——这条路上真正常见的是滚动哨兵在同一屏里连触两次 */
+  paging: { settle: (r: FriendsResult<{ hasOlder: boolean }>) => void; promise: Promise<FriendsResult<{ hasOlder: boolean }>>; timer: ReturnType<typeof setTimeout> } | null;
 }
 
 /** 一次「等服务端回执」的挂起态：resolve 用的 settle + 超时定时器。
@@ -396,8 +413,12 @@ function gapNoteText(missing: number | null): string {
 function missingCount(session: ActiveSession): number | null {
   const last = session.lastSeq;
   if (last === null || last < 0) return null;
+  // 尾巴模式下「缺口」只数**已加载范围之内**没到的那些（#1280）：没加载的那一段
+  // 不是缺口，是还没翻到。不收这个下界的话，每条长聊天一进房就顶着一句
+  // 「这条会话有 3000 条历史事件没能下发」——而那三千条好好地躺在服务端
+  const from = session.tail ? session.oldestSeq ?? 0 : 0;
   let n = 0;
-  for (let seq = 0; seq <= last; seq++) if (!session.seenSeqs.has(seq)) n += 1;
+  for (let seq = from; seq <= last; seq++) if (!session.seenSeqs.has(seq)) n += 1;
   return n;
 }
 
@@ -439,6 +460,8 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
       // 持久（issue #957 C-I7）：与上面那条一次性的 notice 相反，只要这一份
       // 历史还缺着，**每一次**推送都带上它——渲染层因此不需要自己记着
       ...(session.gapNote === null ? {} : { gapNote: session.gapNote }),
+      // 顶上那个哨兵画不画（#1280）。缺席 = 没有更早的 / 团队会话
+      ...(session.hasOlder ? { hasOlder: true as const } : {}),
     });
   }
 
@@ -481,6 +504,15 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     }
   }
 
+  /** 往前翻那一次的收口（#1280）。三类调用点同 settleSay：回执到达、超时、连接进终态 */
+  function settlePaging(session: ActiveSession, result: FriendsResult<{ hasOlder: boolean }>): void {
+    const pending = session.paging;
+    if (!pending) return;
+    session.paging = null;
+    clearTimeout(pending.timer);
+    pending.settle(result);
+  }
+
   /** 连接进终态时把 say/approve/stop 三类挂起态一并结掉（#957 第三批）。
       三条终态路径（markGone / markDenied /
       teardown）每一条都要连它一起调，漏哪条就是那条路径上的
@@ -490,6 +522,10 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     settleStop(session, result);
     settleCall(session, result);
     settleApprove(session, null, result);
+    // 翻页那一条也在这儿收口，理由同上面三条：漏了就是顶上那行「读取中…」
+    // 永远转下去。它回的是 FriendsResult 不是 CloudAck——「没读到更早的消息」
+    // 没有「不确定有没有生效」那一档，重试是安全的
+    settlePaging(session, { ok: false, message: result.ok ? "云端连接中断，请稍后重试" : result.message });
   }
 
   function markGone(session: ActiveSession): void {
@@ -504,6 +540,10 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     // 若仍命中 self 可批会重新把 pendingApprovals 填回去（文件头「:gone」段）
     session.seenSeqs = new Set();
     session.liveBuffer = [];
+    // 重连会重新走一遍 welcome→拉尾巴，这两格跟着从头来（#1280）。
+    // 渲染层靠 seenSeqs 清空后的重放去重，同既有行为
+    session.oldestSeq = null;
+    session.hasOlder = false;
     // 这一轮 backlog 的账在这里作废（issue #957 C-I7）：host 回来会重来一遍
     // 完整的 welcome→backlog，那一轮自己重新记。gapNote **不清**——屏幕上
     // 摆着的仍然是那一份缺了东西的历史，下一轮 done:true 补齐了自然会消失
@@ -562,6 +602,8 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
   function deliverEvent(session: ActiveSession, event: SessionEvent): void {
     if (session.seenSeqs.has(event.seq)) return;
     session.seenSeqs.add(event.seq);
+    // 这一页的上沿（#1280）：往前翻从它之前接着拉，missingCount 的下界也看它
+    session.oldestSeq = session.oldestSeq === null ? event.seq : Math.min(session.oldestSeq, event.seq);
     session.lastEventTs = session.lastEventTs === null
       ? event.ts
       : Math.max(session.lastEventTs, event.ts);
@@ -605,8 +647,15 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
         // 仍是 connecting，但占位的 initiatorUid/ownerUid 已经补上真值——
         // 渲染层立刻能显示"谁发起的/谁是 owner"，不用等 backlog 跑完
         pushStatus(session);
+        // 聊天进房只拉末尾一屏（#1280）：一只一条永久线，全量拉迟早是十几秒。
+        // 团队会话照旧 afterSeq:-1——那边的上下文环与通话折卡都靠「把整份日志
+        // 读一遍」，改成分页会让它们静默算错
+        session.tail = msg.chat !== undefined;
         try {
-          session.transport.send(encodeCs({ t: "backlog", afterSeq: -1 }), session.hostCid!);
+          session.transport.send(
+            encodeCs(session.tail ? { t: "backlog", tail: true, limit: BACKLOG_TAIL_DEFAULT } : { t: "backlog", afterSeq: -1 }),
+            session.hostCid!,
+          );
         } catch (e) {
           deps.log?.(`云会话:backlog 请求编码失败:${e instanceof Error ? e.message : String(e)}`);
         }
@@ -679,6 +728,13 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
           // **每一轮都重算**：补齐了就写回 null，让它跟着消失
           let maxSeen = -1;
           for (const seq of session.seenSeqs) if (seq > maxSeen) maxSeen = seq;
+          // 这一页之前还有没有（#1280）。**只有最后一片带得到**，中间分片缺席
+          // 时不许当成 false——那会让哨兵在一次分片下发之后凭空消失
+          const hadOlder = session.hasOlder;
+          if (msg.hasMore !== undefined) session.hasOlder = msg.hasMore;
+          settlePaging(session, { ok: true, value: { hasOlder: session.hasOlder } });
+          // 对账的下界跟着已加载范围走（#1280）：尾巴模式下 maxSeen 仍然该等于
+          // lastSeq（第一页就是末尾那一屏），所以这条判据原样成立
           const gapped = session.backlogSkipped || (session.lastSeq !== null && maxSeen < session.lastSeq);
           const before = session.gapNote;
           session.gapNote = gapped ? gapNoteText(missingCount(session)) : null;
@@ -686,8 +742,10 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
           if (session.status !== "ready") {
             session.status = "ready";
             pushStatus(session);
-          } else if (session.gapNote !== before) {
-            // 状态没变但缺口的事实变了（重连补齐/新缺口）——这一格也得推
+          } else if (session.gapNote !== before || session.hasOlder !== hadOlder) {
+            // 状态没变但缺口的事实变了（重连补齐/新缺口）——这一格也得推。
+            // `hasOlder` 同理（#1280）：翻到头那一次状态一个字没变，不推的话
+            // 顶上那个哨兵就永远挂着，点它每次都空手而回
             pushStatus(session);
           }
         } else {
@@ -956,6 +1014,11 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
       pendingApprove: new Map(),
       pendingStop: null,
       pendingCall: null,
+      // welcome 之前一律按团队会话的老路算：那一刻还不知道这是不是一条聊天
+      tail: false,
+      oldestSeq: null,
+      hasOlder: false,
+      paging: null,
     };
     active = session;
     pushStatus(session);
@@ -1097,6 +1160,37 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     });
   }
 
+  /** 往前翻一页（#1280）。只有聊天有这条路——团队会话一次全量，没有「更早」可言。
+      回的是 `FriendsResult`（不是 `CloudAck`）：读一页历史没有「不确定有没有生效」
+      那一档，超时就是没读到，重试是安全的。 */
+  async function backlogPage(): Promise<FriendsResult<{ hasOlder: boolean }>> {
+    const r = requireReady();
+    if (!r.ok) return r;
+    const session = r.session;
+    // 到头了 / 团队会话：不打网络，照实回。**不回错误**——「没有更早的」不是失败
+    if (!session.tail || !session.hasOlder) return { ok: true, value: { hasOlder: false } };
+    // 正在翻就交回同一个 promise（同 mcpHub 的 inflight）：滚动哨兵在同一屏里
+    // 连触两次是常态，发第二帧只会让同一页下来两遍
+    if (session.paging) return session.paging.promise;
+    const sent = sendFrame(session, {
+      t: "backlog",
+      tail: true,
+      limit: BACKLOG_TAIL_DEFAULT,
+      // 上沿之前接着拉。null 只可能出现在「一条事件都没转发过」，那时
+      // hasOlder 必然是 false、上面已经回过了
+      ...(session.oldestSeq === null ? {} : { beforeSeq: session.oldestSeq }),
+    });
+    if (!sent.ok) return sent;
+    let settle!: (x: FriendsResult<{ hasOlder: boolean }>) => void;
+    const promise = new Promise<FriendsResult<{ hasOlder: boolean }>>((resolve) => { settle = resolve; });
+    const timer = setTimeout(() => {
+      // hasOlder **保持为真**：这一页没读到不等于没有更早的，下次还能再试
+      settlePaging(session, { ok: false, message: "没读到更早的消息" });
+    }, ACK_TIMEOUT_MS);
+    session.paging = { settle, promise, timer };
+    return promise;
+  }
+
   function archive(workspaceId: string, sessionId: string): Promise<FriendsResult<null>> {
     return ctlRequest({ t: "archive", workspaceId, sessionId }, (msg) => {
       if (msg.t !== "archive_result" || msg.sessionId !== sessionId) return null;
@@ -1141,5 +1235,5 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     };
   }
 
-  return { currentSessionId, activeSummary, create, join, leave, say, approve, archive, remove, chatUpdate, stop, call, workspaceState, workspaceGitCredential, workspaceFiles, workspaceFilesSearch, workspaceWikiWrite };
+  return { currentSessionId, activeSummary, create, join, leave, say, approve, archive, remove, chatUpdate, stop, call, backlogPage, workspaceState, workspaceGitCredential, workspaceFiles, workspaceFilesSearch, workspaceWikiWrite };
 }

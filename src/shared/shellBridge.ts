@@ -550,6 +550,11 @@ export interface CloudSessionStatus {
       历史的属性，不该由任何一次成功的操作来决定还在不在。
       缺席 = 这份历史是完整的 */
   gapNote?: string;
+  /** 这一页之前还有更早的消息（协议 20，#1280）：聊天进房只拉末尾一屏，顶上那个
+      哨兵画不画看它。**缺席 = 没有更早的 / 团队会话**（那边一次全量，没有「更早」
+      可言）——它与 `gapNote` 是两件事：那一格说「有东西下发不了」，这一格说
+      「还有东西没翻到」，后者是正常状态 */
+  hasOlder?: boolean;
 }
 
 /** `workspace_state` 带回来的那一格（协议 8，#991；#1102 摘掉 repo 之后只剩
@@ -1249,6 +1254,11 @@ export interface ShellBridge {
       `seq` = 按钮所在那一行开场白自己的 seq（复审 C2-I3）：停止按钮按**行**
       画，不带 seq 的话按第二行那颗停掉的是第一行。缺席 = 旧语义（停当前） */
   workspaceCloudStop(seq?: number): Promise<CloudAck>;
+  /** 往前翻一页聊天历史（协议 20，#1280）。那一页的事件照旧经
+      `onCloudSessionEvent` 一条条推上来；这里只回「翻完之后还有没有更早的」。
+      团队会话与「已经到头」都直接回 `hasOlder: false`、不打网络——「没有更早的」
+      不是失败 */
+  workspaceCloudBacklogPage(): Promise<FriendsResult<{ hasOlder: boolean }>>;
   /** 团队语音通话（#1163）：把一段文字合成语音。主进程拿 JWT 打网关，钱记在
       **听的人**自己的额度上；渲染层只拿字节去播 */
   teamVoiceSpeak(text: string, voiceId: string): Promise<VoiceSpeakResult>;
@@ -1733,6 +1743,7 @@ export const CHANNELS = {
   workspaceCloudArchive: "otter:workspaceCloudArchive",
   workspaceCloudDelete: "otter:workspaceCloudDelete",
   workspaceCloudChatUpdate: "otter:workspaceCloudChatUpdate",
+  workspaceCloudBacklogPage: "otter:workspaceCloudBacklogPage",
   workspaceCloudStop: "otter:workspaceCloudStop",
   teamVoiceSpeak: "otter:teamVoiceSpeak",
   speechStart: "otter:speechStart",

@@ -799,11 +799,15 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
 
         case "backlog": {
           if (!(await requireStillMember(workspaceId, cid, entry.uid))) return;
-          // 尾巴分页（协议 20，#1280）：帧形状在 Task 3 里一次定下来，实现晚几个 PR。
-          // 在那之前说出口而不是静默当成 afterSeq —— 后者会把「给我末尾一屏」
-          // 答成「从头给我全部」，正是这条能力要修的那个形态
+          // 尾巴分页（协议 20，#1280）。聊天进房只拉末尾一屏，往上滚再翻。
+          // `hasMore` **只挂在最后一片（done:true）上**：中间那些分片不知道
+          // 「这一页之前还有没有」，也不该说——渲染层拿它决定顶上那个哨兵画不画
           if ("tail" in msg) {
-            deps.send(cid, { t: "error", msg: "尾巴分页还没接上" });
+            const page = session.backlogTail(msg.beforeSeq, msg.limit);
+            const frames = chunkBacklogFrames(page.events);
+            frames.forEach((f, i) =>
+              deps.send(cid, i === frames.length - 1 && f.t === "backlog" ? { ...f, hasMore: page.hasMore } : f),
+            );
             return;
           }
           const events = session.backlog(msg.afterSeq);
