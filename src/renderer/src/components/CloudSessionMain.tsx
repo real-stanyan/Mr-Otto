@@ -13,6 +13,8 @@ import { useEffect } from "react";
 import { parseMemberMentions } from "../../../shared/remote/agentMention.js";
 import { useChat } from "../store.js";
 import { CloudSessionPage } from "./CloudSessionPage.js";
+import type { ChatView } from "./AgentChatHeader.js";
+import { agentNameOf } from "../lib/workspaceView.js";
 
 export function CloudSessionMain({ onManage }: { onManage: (workspaceId: string) => void }) {
   const cs = useChat((s) => s.cloudSession);
@@ -23,6 +25,12 @@ export function CloudSessionMain({ onManage }: { onManage: (workspaceId: string)
   const seedDraft = useChat((s) => s.seedCloudDraft);
   const cloudSay = useChat((s) => s.cloudSay);
   const refreshGroups = useChat((s) => s.refreshWorkspaceGroups);
+  // 群名在清单那一行上（title），不在 welcome 里——welcome 只说 kind 与名单
+  const chatTitle = useChat((s) =>
+    s.cloudSession
+      ? s.cloudSessionList[s.cloudSession.workspaceId]?.find((r) => r.id === s.cloudSession?.sessionId)?.title ?? ""
+      : ""
+  );
 
   const state = cs?.state ?? null;
   const sessionId = cs?.sessionId ?? null;
@@ -80,6 +88,21 @@ export function CloudSessionMain({ onManage }: { onManage: (workspaceId: string)
     );
   }
 
+  // 这一页画的是不是一条聊天（#1280）。名单与现存名册求交集——删一只智能体是三步、
+  // 不原子，那一列里可能留着一个已经不存在的 id（同 groupRows 的兜底）。
+  // 私聊的标题取那只的名字（清单那一行的 title 恒空），群聊取群名，没起名时用成员名
+  const chat: ChatView | undefined = (() => {
+    if (cs.chat === null) return undefined;
+    const agentIds = ws.agents.map((a) => a.agentId).filter((id) => cs.chat!.agentIds.includes(id));
+    const names = agentIds.map((id) => agentNameOf(ws, id));
+    if (cs.chat.kind === "dm") {
+      // 名单里那只被删掉了：退回团队会话的画法，不画一张没有主人的脸
+      if (agentIds[0] === undefined) return undefined;
+      return { kind: "dm", agentIds, title: names[0]! };
+    }
+    return { kind: "group", agentIds, title: chatTitle.trim() !== "" ? chatTitle : names.join("、") };
+  })();
+
   return (
     // 这一层**不滚**（#987）：滚动区在 CloudSessionPage 里面、只包时间线，输入框钉在
     // 它下面——同本地会话（OttoThread 的 viewport 滚，App.tsx 的 footer 不动）。
@@ -92,7 +115,12 @@ export function CloudSessionMain({ onManage }: { onManage: (workspaceId: string)
           内边距归 CloudSessionPage 自己管（头部/时间线/footer 各自 px-4，头部那条
           border-b 才画得满）。不传 onBack —— 出口是侧栏，同本地会话 */}
       <div className="flex-1 min-h-0 flex flex-col">
-        <CloudSessionPage ws={ws} selfUid={selfUid} onSettings={() => onManage(ws.id)} />
+        <CloudSessionPage
+          ws={ws}
+          selfUid={selfUid}
+          onSettings={() => onManage(ws.id)}
+          {...(chat === undefined ? {} : { chat })}
+        />
       </div>
     </div>
   );

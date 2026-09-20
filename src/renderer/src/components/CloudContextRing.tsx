@@ -62,10 +62,16 @@ export function CloudContextRing({
   if (binding === null || binding.window === null) return null;
 
   return (
-    <ContextDisplayRoot modelContextWindow={binding.window} usage={{ totalTokens: binding.breakdown.total }}>
-      <ContextRingTrigger quotaApplies={quotaApplies} />
-      <CloudCtxDetails rows={rows} binding={binding} ctxWindow={binding.window} ws={ws} events={events} quotaApplies={quotaApplies} />
-    </ContextDisplayRoot>
+    // 外面这层 span 只为挂一个记号（#1280）：`ContextDisplayRoot` 是纯 context
+    // provider、一个 DOM 节点都不画，而「聊天里不画这个环」那条断言若写成
+    // `queryByTestId(...) === null` 却根本没有这个记号，它在环画出来时照样是绿的
+    // ——一条永远为真的断言。`contents` 不占布局，视觉上等于没有这一层
+    <span data-testid="cloud-context-ring" className="contents">
+      <ContextDisplayRoot modelContextWindow={binding.window} usage={{ totalTokens: binding.breakdown.total }}>
+        <ContextRingTrigger quotaApplies={quotaApplies} />
+        <CloudCtxDetails rows={rows} binding={binding} ctxWindow={binding.window} ws={ws} events={events} quotaApplies={quotaApplies} />
+      </ContextDisplayRoot>
+    </span>
   );
 }
 
