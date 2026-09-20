@@ -137,9 +137,9 @@ interface ChatRosterChangedEvent extends SessionEventBase {
 
 - 建聊天时紧跟 `session_created` 落第一条；之后每次 `chat_update` 改了名单落一条。
 - 投影 `chatRosterOf(events): string[] | null` 放 `src/shared/chatRoster.ts`，三端一份（形状同 `voiceCallOf`）。`null` = 存量会话 = 整份名单。
-- 模型不可见（`OTHER_AGENT_VERDICTS` 判 drop，`ignorable`）：名单经 `agent_briefed.roster` 到模型那里，那条路已经按名册指纹重 brief（ADR-0231）。
+- 模型不可见（`ignorable`）：名单经 `agent_briefed.roster` 到模型那里，那条路已经按名册指纹重 brief（ADR-0231）。**判据不在 `OTHER_AGENT_VERDICTS`**（执行时核出来的）：这条事件没有 `agentId`，`projectForAgent` 的早退路径一律放行，那张穷尽表对它够不着——同 `voice_call_changed`，那格照它写 `keep` 并注明够不着，写 `drop` 是一句永远不会被戳破的假话。「模型不可见」真正的判据是 `deriveMessages` 的 switch 不认它（那个 switch 不穷举），用例因此比对投影前后逐字相等。
 - 时间线：画居中一行「你把「投放」拉进了群聊」/「你把「投放」移出了群聊」，画法同通话那一行（ADR-0286，名字左边一张脸）。**第一条不画**——它说的就是头部那排头像。
-- 新事件类型的十一处清单照走（AGENTS.md 索引里 `PRIVACY_VERDICTS` 那一条列了前十处，第十一处是 `Timeline.tsx` 的 `EventRow`，由 `tests/renderer/timelineLists.test.ts` 兜）。`PRIVACY_VERDICTS` 判 keep（它说的是这段对话里有谁，不是机器的私事）。
+- 新事件类型的登记点**实际是十处**（执行时核出来的，以计划 Task 2 那份为准）：`events.ts` 的 union + `KNOWN_EVENT_TYPES_MAP`、`persistencePolicy`、`agentView` 的 `OTHER_AGENT_VERDICTS`、`sessionPackage` 的 `PRIVACY_VERDICTS`、`taskSync` 的 `PEN_VERDICTS`、`contextEstimate` 的 `pendingAfter`、`Timeline.tsx` 的 `EventRow`，**再加 `tests/session/persistencePolicy.test.ts` 的 `DURABLE` 名单**（类型级穷举，漏了当场编译红）。`deriveMessages` 的 switch 不穷举、这条事件模型不可见，那里不用登记。`PRIVACY_VERDICTS` 判 **strip**：它是那条聊天的控制面状态，不是这段对话的内容（同 `voice_call_changed`）。
 
 ### 5.2 `session_created.cloud` 加两格（add-only，旧日志照常重放）
 
@@ -155,11 +155,12 @@ system 提示词因此仍可从日志推导（ADR-0200 决策③）。`home` = �
 
 ### 5.3 协议 19 → 20（合并前复核；#1281 那条 lane 也可能进位）
 
-**六个帧的改动一次进位**，分页那半的实现在后面的切片，但帧在第一个切片就定下来——协议位握手是精确相等，进两次位就是发两次版。
+**七处改动一次进位**（执行时多出一条 `create_failed`），分页那半的实现在后面的切片，但帧在第一个切片就定下来——协议位握手是精确相等，进两次位就是发两次版。
 
 | 帧 | 方向 | 形状 |
 |---|---|---|
 | `create` | 上，控制房 | 加 `chat?: { kind:"dm"; agentId } \| { kind:"group"; name; agentIds }`。缺席 = 团队会话，同今天。**私聊的 create 幂等**：那只已有私聊就回现成的 `sessionId` |
+| `create_failed` | 下 | `{ workspaceId, message }`。建会话**业务上**没成（名单里没这只 / 群不到两只 / 名单读不出来）。原先控制房的 `create` 只认 `created` / `denied` 两种回执，抛错就是让桌面白等满超时、把「群聊至少要两只」报成「云端无响应」 |
 | `chat_update` | 上，控制房 | `{ workspaceId, sessionId, name?, agentIds? }` |
 | `chat_update_result` | 下 | `{ ok, message? }`，回执帧（同 `archive_result` 的纪律） |
 | `welcome` | 下 | 加 `chat?: { kind, agentIds }`——尾巴分页之后客户端不能再靠「把日志读一遍」得出名单。`agentIds` 是日志投影原样，与现存智能体求交集留给读取侧（§4） |
@@ -322,7 +323,7 @@ system 提示词因此仍可从日志推导（ADR-0200 决策③）。`home` = �
 
 | 片 | 内容 | 做完能干什么 |
 |---|---|---|
-| **A1 服务端骨架** | migration；`chat_roster_changed` 十一处；协议 20 的六个帧；名单收窄；私聊直派；`create` / `chat_update`；不归档、不起名 | 跑得起来，界面看不见；团队一字不变 |
+| **A1 服务端骨架** | migration；`chat_roster_changed` 十处登记；协议 20 的七处；名单收窄；私聊直派；`create` / `chat_update`；不归档、不起名 | 跑得起来，界面看不见；团队一字不变 |
 | **A2 全免审批** | `approveAll` + 提示词三段两版 + ADR | 主场里不再弹卡 |
 | **A3 花名册** | `ensureHome`；侧栏方向 A；进门五态；聊天页的 `chat` 属性；开局卡；两扇抽屉；文案与 CONTEXT.md | 一只一只地聊 |
 | **A4 群聊** | 新群聊弹窗；添加 / 移出 / 改名 / 解散；名单那一行；私聊「拉人」 | 拉几只进群接力 |
@@ -333,7 +334,7 @@ system 提示词因此仍可从日志推导（ADR-0200 决策③）。`home` = �
 
 部署顺序（每片相同）：migration → runtime → 桌面发版。协议位一进，旧桌面连不上新 runtime（`version_mismatch`，文案已区分方向）。
 
-ADR 三份（编号合并时认领）：① 账号级智能体 = 个人主场 + 会话即聊天；② 个人主场全免审批；③ 永久线：上下文预算闸、闲置压缩与尾巴分页。
+ADR 三份：① **ADR-0297** 账号级智能体 = 个人主场 + 会话即聊天（A1 已落）；② 个人主场全免审批（A2，编号合并时认领）；③ 永久线：上下文预算闸、闲置压缩与尾巴分页（A6，同上）。
 
 ## 13. 已知代价（接受）
 
