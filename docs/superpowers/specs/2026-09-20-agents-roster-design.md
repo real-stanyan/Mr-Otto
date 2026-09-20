@@ -107,7 +107,7 @@ alter table public.workspace_sessions
 alter table public.workspace_sessions add constraint ws_sessions_chat_shape check (
   (chat_kind is null and cardinality(agent_ids) = 0)
   or (kind = 'cloud' and chat_kind = 'dm' and cardinality(agent_ids) = 1)
-  or (kind = 'cloud' and chat_kind = 'group' and cardinality(agent_ids) between 1 and 6));
+  or (kind = 'cloud' and chat_kind = 'group' and cardinality(agent_ids) between 0 and 6));
 create unique index if not exists ws_sessions_one_dm_per_agent
   on public.workspace_sessions (workspace_id, (agent_ids[1])) where chat_kind = 'dm';
 ```
@@ -117,7 +117,7 @@ create unique index if not exists ws_sessions_one_dm_per_agent
 - **闸不动**：建主场走现成的 `ws_insert_self`（`can_create_workspace()`，Pro / Max）。两台设备同时建撞 23505，回头重查，不报错。种子「管理员」由现成的 `workspaces_seed_admin` 触发器种。
 - **`agent_ids` 是投影，不是事实**。事实是日志里的 `chat_roster_changed`；这一列只为一件事存在——桌面在**没开着那条会话**时也要画得出群成员（同 `title` / `participants` 那两列，ADR-0283）。写方只有 runtime。
 - **读取侧一律与现存智能体求交集**（runtime 与渲染层都是）。删智能体是多步动作（§6.7），断在半路时 `agent_ids` 里会留一个已经不存在的 id——求交集让它退化成「群里少了一只」，不是一张画不出来的脸。
-- 群的下限是 1 不是 2：建群时界面要求 ≥2，但删智能体不该连坐删群。上限 6 取 Grok Bot 的数——本仓是串行队列，群越大越慢，派活分类器候选越多越不准。
+- 群的下限是 **0**：建群时 runtime 要求 ≥2，但删智能体不该连坐删群，也不该卡在约束上——删一只是多步动作，群里最后一只被删掉时那一列会变空，那一步的 `chat_update` 不能因为约束而失败。上限 6 取 Grok Bot 的数——本仓是串行队列，群越大越慢，派活分类器候选越多越不准。
 - **私聊唯一索引不带 `archived`**：聊天不许归档（§6.6），只有删除。
 - 新列**单独一条容错查询**读，不拼进主 select（#1213 在这上面踩过两次）：`workspaces.kind` 读不到 = 全部按团队画 + 花名册那块说实话；`chat_kind / agent_ids` 读不到同理。
 
