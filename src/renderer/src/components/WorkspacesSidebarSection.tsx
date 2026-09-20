@@ -42,6 +42,7 @@ import { cloudSessionRows, labelOf } from "../lib/workspaceView.js";
 import type { CloudSessionListRow } from "../lib/workspaceView.js";
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 import { unreadMentionCounts } from "../../../shared/workspaceMentions.js";
+import { teamsOf } from "../lib/agentRoster.js";
 import { PARTICIPANT_WINDOW_MS } from "../../../shared/sessionParticipants.js";
 import {
   SidebarGroup, SidebarGroupAction, SidebarGroupContent, SidebarGroupLabel, SidebarMenuAction,
@@ -56,14 +57,22 @@ export function WorkspacesSidebarSection({
   collapsed,
   onToggle,
   onManage,
+  hideEmpty = false,
 }: {
   /** 收起来的团队 id 集合。和本地工程组共用同一套收放机制，只是另存一个键 */
   collapsed: ReadonlySet<string>;
   onToggle: (workspaceId: string) => void;
   /** 打开团队详情（抽屉）。这一层不认识抽屉，只报「谁被点了管理」 */
   onManage: (workspaceId: string) => void;
+  /** 被 `AgentsSidebarSection` 包着时传 true（#1280）：一条团队都没有时不画那段
+      空态——这一栏的主语是智能体，外层已经有一段话在说话，这里再压一句，
+      第一次进来的人要读两段才走到列表（同 #1087 给这段空态定的那条理由的反面） */
+  hideEmpty?: boolean;
 }) {
-  const groups = useChat((s) => s.workspaceGroups);
+  const allGroups = useChat((s) => s.workspaceGroups);
+  // 主场那一行归花名册那一节画（#1280）。**`kind` 读不到的留在这里**——读不到
+  // 不许当成主场藏起来，那等于让一个团队凭空消失（判据在 lib/agentRoster.ts）
+  const groups = useMemo(() => teamsOf(allGroups), [allGroups]);
   const error = useChat((s) => s.workspaceGroupsError);
   const refreshCloud = useChat((s) => s.refreshCloudSessions);
   // 未读点名（#1064）。**在这一层算一次往下传**，不在每个组里各 select 一次：
@@ -100,6 +109,7 @@ export function WorkspacesSidebarSection({
   // **不在这儿讲订阅**（建群那道闸在 NewWorkspaceDialog / workspaceAccess 里，
   // 那是一份四态的判据，抄一句到这里就是第二份且必然分家）
   if (groups.length === 0 && error === null) {
+    if (hideEmpty) return null;
     // 那一整段写在一行：JSX 把换行加缩进折成一个半角空格，而中文这段靠标点断句，
     // 折进来的空格在真机上就是「云端，␣群里」这样一个多余的坑
     return (
