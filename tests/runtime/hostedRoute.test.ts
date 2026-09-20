@@ -14,7 +14,9 @@ import { AGENT_HEADER, MAX_INFLIGHT, ON_BEHALF_HEADER, SESSION_HEADER, WORKSPACE
 import { billingErrorOf, errorClassOf } from "../../src/model/errorClass.js";
 import type { TokenUsage } from "../../src/session/events.js";
 
-const me: BillingMe = { plan: "pro", status: "active", plans: [], windows: null, addon: { remainingMicro: 0, expiresAt: null }, periodEnd: null, models: ["deepseek-flash", "glm-5.3"], imageModels: [], ttsModels: [], modelPlatforms: {} };
+// decision 一格：parseBillingMe 总是填它（#1281），createHostedProbe 的 me() 经它解析响应，
+// 补上让下面几处 toEqual(me) / toEqual(none) 与实际返回值一致
+const me: BillingMe = { plan: "pro", status: "active", plans: [], windows: null, addon: { remainingMicro: 0, expiresAt: null }, periodEnd: null, models: ["deepseek-flash", "glm-5.3"], imageModels: [], ttsModels: [], modelPlatforms: {}, decision: { models: [], uses: {} } };
 const base = { ownerUid: "u1", workspaceId: "w1", sessionId: "s1", edgeBase: "https://edge", runtimeSecret: "rs" };
 
 describe("decideRuntimeRoute（ADR-0233：只有 hosted / blocked 两态）", () => {

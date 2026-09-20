@@ -763,3 +763,111 @@ describe("语音那扇门（#1163）：kind=tts 打 /t2a_v2，按字符数预扣
     expect(((await res.json()) as { error: { code: string } }).error.code).toBe("quota_exhausted");
   });
 });
+
+// ---------------------------------------------------------------------------
+// 决策那扇门（#1281）：kind=decision 打 /decisions，只按输入 token 计价，开关没开一个
+// 上游字节都不发。
+const jev: RouteRow = {
+  id: "jev-1.13@openrouter", logicalModel: "jev-1.13", platform: "openrouter",
+  baseUrl: "https://or/api/alpha", wireModel: "typesafe/jev-1.13",
+  priceInMicroPerM: 42_000, priceCacheMicroPerM: 0, priceOutMicroPerM: 0, defaultMaxTokens: 1,
+  kind: "decision",
+};
+const decisionReq = (body: unknown) =>
+  new Request("https://edge/llm/v1/decision", {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+  });
+const DECISION_BODY = {
+  model: "jev-1.13", use: "dispatch", state: { said: "帮我看下构建" },
+  questions: { act: { type: "noul", instructions: "在要求做事吗", criteria: { true: "是", false: "否" } } },
+};
+const jevOk = (inputTokens: number | null = 120) => () =>
+  Response.json({
+    id: "gen-1", provider: "TypeSafe", model: "jev-1.13.0",
+    answers: { act: { type: "noul", noul: 0.93 } },
+    ...(inputTokens !== null ? { usage: { input_tokens: inputTokens, output_tokens: 12, cost: 0.000005 } } : {}),
+  });
+
+describe("决策那扇门（#1281）", () => {
+  const gw = (up: ReturnType<typeof upstream>, quota: QuotaPort, uses: Record<string, "shadow" | "on"> = { dispatch: "on" }) =>
+    createLlmGateway({ routes: async () => [jev], quota, upstreamKey: () => "k", fetchImpl: up.fetchImpl, decisionUses: uses });
+
+  it("upstreamPathFor(decision) = /decisions", () => {
+    expect(upstreamPathFor("decision")).toBe("/decisions");
+  });
+
+  it("成功：预扣按请求体字节估、结算按上游报的 input_tokens、只算输入价；上游收到的没有 use", async () => {
+    const { quota, calls } = quotaStub();
+    const holdArgs: number[] = [];
+    quota.hold = async (_u, rid, est) => { calls.hold.push(rid); holdArgs.push(est); return { ok: true, chargedTo: "window" }; };
+    const up = upstream(jevOk(120));
+    const res = await gw(up, quota)(decisionReq(DECISION_BODY), caller);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ model: "jev-1.13.0", answers: { act: { type: "noul", noul: 0.93 } }, usage: { input_tokens: 120 } });
+    const bytes = new TextEncoder().encode(JSON.stringify(DECISION_BODY)).length;
+    expect(holdArgs).toEqual([Math.ceil((Math.ceil(bytes / 3) * 42_000) / 1_000_000)]);
+    expect(calls.settle[0]!.usage).toEqual({ promptTokens: 120, cachedTokens: 0, completionTokens: 0 });
+    expect(calls.settle[0]!.costMicro).toBe(Math.ceil((120 * 42_000) / 1_000_000));
+    expect(res.headers.get(BILLING_HEADERS.cost)).toBe(String(calls.settle[0]!.costMicro));
+    expect(res.headers.get(BILLING_HEADERS.h5)).toBe("100");
+    const sent = up.seen[0]!;
+    expect(sent.url).toBe("https://or/api/alpha/decisions");
+    expect(sent.headers.get("authorization")).toBe("Bearer k");
+    expect(await sent.json()).toEqual({ model: "typesafe/jev-1.13", state: DECISION_BODY.state, questions: DECISION_BODY.questions });
+  });
+
+  it("这一处没开：403 decision_use_disabled，**没预扣、没发上游**", async () => {
+    const { quota, calls } = quotaStub();
+    const up = upstream(jevOk());
+    const res = await gw(up, quota, {})(decisionReq(DECISION_BODY), caller);
+    expect(res.status).toBe(403);
+    expect((await res.json()).error.code).toBe("decision_use_disabled");
+    expect(calls.hold).toHaveLength(0);
+    expect(up.seen).toHaveLength(0);
+  });
+
+  it("shadow 也放行（影子期要真的问得到）", async () => {
+    const { quota } = quotaStub();
+    const res = await gw(upstream(jevOk()), quota, { dispatch: "shadow" })(decisionReq(DECISION_BODY), caller);
+    expect(res.status).toBe(200);
+  });
+
+  it("请求不合法：400，没预扣", async () => {
+    const { quota, calls } = quotaStub();
+    const res = await gw(upstream(jevOk()), quota)(decisionReq({ ...DECISION_BODY, questions: {} }), caller);
+    expect(res.status).toBe(400);
+    expect(calls.hold).toHaveLength(0);
+  });
+
+  it("上游没报 usage：按预扣那份估算结算", async () => {
+    const { quota, calls } = quotaStub();
+    await gw(upstream(jevOk(null)), quota)(decisionReq(DECISION_BODY), caller);
+    const bytes = new TextEncoder().encode(JSON.stringify(DECISION_BODY)).length;
+    expect(calls.settle[0]!.usage.promptTokens).toBe(Math.ceil(bytes / 3));
+  });
+
+  it("上游连不上 / 回非 2xx：release，502，不结算", async () => {
+    for (const res of [() => { throw new Error("net"); }, () => new Response("no", { status: 529 })]) {
+      const { quota, calls } = quotaStub();
+      const out = await gw(upstream(res as () => Response), quota)(decisionReq(DECISION_BODY), caller);
+      expect(out.status).toBe(502);
+      expect(calls.release).toHaveLength(1);
+      expect(calls.settle).toHaveLength(0);
+    }
+  });
+
+  it("上游回 200 但答案形状不对：**照样结算**（收了钱），再回 502", async () => {
+    const { quota, calls } = quotaStub();
+    const up = upstream(() => Response.json({ model: "m", answers: {}, usage: { input_tokens: 77 } }));
+    const out = await gw(up, quota)(decisionReq(DECISION_BODY), caller);
+    expect(out.status).toBe(502);
+    expect(calls.settle[0]!.usage.promptTokens).toBe(77);
+    expect(calls.release).toHaveLength(0);
+  });
+
+  it("hold 被拒：原样走那三种回执", async () => {
+    const { quota } = quotaStub({ ok: false, code: "no_subscription" });
+    const out = await gw(upstream(jevOk()), quota)(decisionReq(DECISION_BODY), caller);
+    expect(out.status).toBe(402);
+  });
+});

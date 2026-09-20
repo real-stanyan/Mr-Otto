@@ -210,6 +210,8 @@ describe("meFromParts", () => {
       modelPlatforms: {},
       // plans 只带三个订阅档（addon 是加购行，不是档位），价格与 capabilities 跟着下发（#856 / #864）
       plans: [{ id: "lite", priceUsdCents: 1900, capabilities: { image: false, video: false, workspace: false } }],
+      // 调用方没给决策型号时缺省清空（#1281）：没有型号，uses 也一律清空
+      decision: { models: [], uses: {} },
     });
   });
 
@@ -270,7 +272,7 @@ describe("modelsForMe", () => {
   });
 
   it("一行都没有时回空 —— 不兜底成任何一款默认型号", () => {
-    expect(modelsForMe([])).toEqual({ models: [], imageModels: [], ttsModels: [], modelPlatforms: {} });
+    expect(modelsForMe([])).toEqual({ models: [], imageModels: [], ttsModels: [], decisionModels: [], modelPlatforms: {} });
   });
 
   it("出图行进 imageModels（那是 generate_image 那把刀的清单），且同样从便宜到贵有序", () => {
@@ -296,7 +298,7 @@ describe("modelsForMe / meFromParts：kind=tts 单列一张 ttsModels", () => {
       row("s@minimax", "speech-2.8-turbo", "minimax", "tts"),
     ]);
     expect(out).toEqual({
-      models: ["deepseek-flash"], imageModels: ["gemini-3.1-flash-image"], ttsModels: ["speech-2.8-turbo"],
+      models: ["deepseek-flash"], imageModels: ["gemini-3.1-flash-image"], ttsModels: ["speech-2.8-turbo"], decisionModels: [],
       modelPlatforms: { "deepseek-flash": "deepseek" },
     });
   });
@@ -304,5 +306,35 @@ describe("modelsForMe / meFromParts：kind=tts 单列一张 ttsModels", () => {
     const withTts = meFromParts(null, null, { remainingMicro: 0, expiresAt: null }, [], plans, {}, [], ["speech-2.8-turbo"]);
     expect(withTts.ttsModels).toEqual(["speech-2.8-turbo"]);
     expect(meFromParts(null, null, { remainingMicro: 0, expiresAt: null }, [], plans).ttsModels).toEqual([]);
+  });
+});
+
+describe("决策模型那一格（#1281）", () => {
+  const raw = (over: Record<string, unknown>) => ({
+    id: "x@p", logical_model: "x", platform: "p", base_url: "https://u", wire_model: "x",
+    price_in_micro_per_m: 1, price_cache_micro_per_m: 0, price_out_micro_per_m: 1, default_max_tokens: 10, ...over,
+  });
+  it("kind='decision' 认得出；认不出的仍然按 chat（末端兜底不变）", () => {
+    const rows = parseRouteRows([raw({ kind: "decision" }), raw({ id: "y@p", kind: "bogus" })]);
+    expect(rows.map((r) => r.kind)).toEqual(["decision", "chat"]);
+  });
+  it("决策那一行**不进 models**（它输出价是 0，进去就是所有人的默认聊天款），单列一张 decisionModels", () => {
+    const rows = parseRouteRows([
+      raw({ id: "jev-1.13@openrouter", logical_model: "jev-1.13", platform: "openrouter", price_out_micro_per_m: 0, kind: "decision" }),
+      raw({ id: "flash@deepseek", logical_model: "flash", kind: "chat" }),
+    ]);
+    const m = modelsForMe(rows);
+    expect(m.models).toEqual(["flash"]);
+    expect(m.decisionModels).toEqual(["jev-1.13"]);
+    expect(m.modelPlatforms).toEqual({ flash: "p" });
+  });
+  it("meFromParts 第九参：有决策型号才带 uses；没有型号时 uses 一律清空", () => {
+    // 测试也过 tsc：readonly 元组 spread 进不了可变数组形参，所以老老实实写全
+    const addon = { remainingMicro: 0, expiresAt: null };
+    expect(meFromParts(null, null, addon, ["flash"], [], {}, [], []).decision).toEqual({ models: [], uses: {} });
+    expect(meFromParts(null, null, addon, ["flash"], [], {}, [], [], { models: ["jev-1.13"], uses: { dispatch: "shadow" } }).decision)
+      .toEqual({ models: ["jev-1.13"], uses: { dispatch: "shadow" } });
+    expect(meFromParts(null, null, addon, ["flash"], [], {}, [], [], { models: [], uses: { dispatch: "on" } }).decision)
+      .toEqual({ models: [], uses: {} });
   });
 });

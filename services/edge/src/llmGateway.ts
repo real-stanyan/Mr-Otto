@@ -28,6 +28,9 @@
 
 import { BILLING_HEADERS, SSE_COST_COMMENT } from "../../../src/shared/billing.js";
 import { TTS_HEADERS, ttsUnits } from "../../../src/shared/tts.js";
+import type { DecisionUses } from "../../../src/shared/decision.js";
+import { decisionUpstreamBody, parseDecisionRequest, parseDecisionUpstreamReply } from "./decisionUpstream.js";
+import { DECISION_USES } from "./decisionUses.js";
 import { parseTtsReply, parseTtsRequest, ttsUpstreamBody } from "./ttsUpstream.js";
 
 /** 这一行路由是给谁用的（#1081）。`chat` = 输入框那枚选单里选得到的对话模型；
@@ -35,8 +38,11 @@ import { parseTtsReply, parseTtsRequest, ttsUpstreamBody } from "./ttsUpstream.j
     分开的理由不是洁癖：`me.models` 是选单的数据源，而 ADR-0237 的 Auto 拿
     `models.at(-1)` 当「最贵 = 最强」——出图那一行 $60/M，不隔离的话纳米香蕉会
     变成 Auto 的 hard 档主模型。选路（`pickRoute`）不看这一格：它只按
-    `logical_model` 匹配，出图请求点名的就是出图那款 */
-export type RouteKind = "chat" | "image" | "tts";
+    `logical_model` 匹配，出图请求点名的就是出图那款
+    `decision` = 决策模型（#1281）：不生成文字，收 state + 问题回类型化答案。它**输出价是 0**，
+    漏进 `me.models` 会排到第一位 = 所有订阅用户的默认聊天款 + Auto 的 simple 档，而它压根
+    不会聊天——所以同样单列一种 kind，且部署顺序是 worker 先、migration 后（0038 头注） */
+export type RouteKind = "chat" | "image" | "tts" | "decision";
 
 export interface RouteRow {
   id: string;
@@ -140,6 +146,9 @@ export function upstreamKeyOf(
     回 `data[].b64_json`，`usage` 形状与 chat 那条**逐字相同** —— 所以 `parseUsage` /
     `costMicro` / hold-settle 整套一个字都不用改，这条改动只有「打哪个 URL」这一格。 */
 export function upstreamPathFor(kind: RouteRow["kind"]): string {
+  // 决策（#1281）：OpenRouter 的 Decisions 端点。base_url 是 `…/api/alpha`（路径里真有 alpha），
+  // 请求体与回包都不是 OpenAI 形状——翻译在 decisionUpstream.ts，这里只答「打哪个 URL」
+  if (kind === "decision") return "/decisions";
   // 语音（#1163）：MiniMax 的 t2a_v2，请求体与回包都不是 OpenAI 形状——翻译在
   // ttsUpstream.ts，这里只答「打哪个 URL」
   if (kind === "tts") return "/t2a_v2";
@@ -156,6 +165,9 @@ export interface LlmGatewayDeps {
   /** Workers 的 ctx.waitUntil。给了就把「流结束后 settle/release」这个后台 promise 交给它，
       不给就照旧 `void p.catch(log)`——两条路径 Worker 都不会因为响应已经发出而把这个 promise 提前收掉 */
   waitUntil?: (p: Promise<unknown>) => void;
+  /** 决策模型的分处开关（#1281）。缺省读 `decisionUses.ts` 的常量；留成可注入只为测试能
+      摆出「开着」的样子——生产装配不传 */
+  decisionUses?: DecisionUses;
 }
 
 const json = (status: number, body: unknown, extra?: Record<string, string>): Response =>
@@ -450,8 +462,70 @@ export function createLlmGateway(deps: LlmGatewayDeps): (req: Request, caller: C
       }
     };
 
+    // 决策那扇门（#1281）：与 tts 同一副骨架，差四处——
+    // ① **先查开关**：这一处没开就 403，预扣都不做。开关是 edge 里的常量，随 /me 下发给
+    //    三端；客户端本来就不会对没开的 use 发请求，这里拦的是「客户端那份快照陈旧」和
+    //    「有人直接敲这扇门」；
+    // ② 钱只算**输入** token（输出免费）：预扣按请求体字节 ÷ 3 估，结算用上游报的 input_tokens；
+    // ③ 请求体摘掉 `use` 再发（那是我们自己的字段，上游不认识）；
+    // ④ **上游回了 200 就结算**，哪怕答案形状不对（同 #855：收了钱的调用不许 release）——
+    //    结算完再回 502，客户端据此回落到原来那条路。
+    // 不换站：决策模型今天也只有一条路，所以这里返回的是 `Response` 不是 `Response | null`——
+    // 外层 failover 循环见非 null 就直接收下，不会换下一条候选（同 serveTts）
+    const serveDecision = async (route: RouteRow, key: string): Promise<Response> => {
+      const bodyBytes = new TextEncoder().encode(raw).length;
+      const parsed = parseDecisionRequest(body, bodyBytes);
+      if (!parsed.ok) return apiError(400, parsed.message, "bad_request");
+      const uses = deps.decisionUses ?? DECISION_USES;
+      if (uses[parsed.req.use] === undefined) {
+        return apiError(403, `决策模型在「${parsed.req.use}」这一处没有开`, "decision_use_disabled");
+      }
+      const estimate: UsageCounts = { promptTokens: Math.ceil(bodyBytes / 3), cachedTokens: 0, completionTokens: 0 };
+      const requestId = newId();
+      let held: HoldOutcome;
+      try {
+        held = await deps.quota.hold(caller.uid, requestId, costMicro(estimate, route));
+      } catch {
+        return apiError(503, "额度服务暂时不可用，稍后再试", "upstream");
+      }
+      if (!held.ok) return holdRejected(held);
+      try {
+        let res: Response;
+        try {
+          res = await doFetch(`${route.baseUrl}${upstreamPathFor(route.kind)}`, {
+            method: "POST",
+            headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
+            body: decisionUpstreamBody(route.wireModel, parsed.req),
+            signal: req.signal,
+          });
+        } catch {
+          await deps.quota.release(caller.uid, requestId);
+          return apiError(502, `上游连不上：${route.platform}`, "upstream");
+        }
+        if (!res.ok) {
+          await deps.quota.release(caller.uid, requestId);
+          const snippet = (await res.text().catch(() => "")).slice(0, 300);
+          return apiError(502, `上游 ${res.status}：${snippet}`, "upstream", { upstreamStatus: res.status });
+        }
+        const reply = parseDecisionUpstreamReply(await res.text(), parsed.req);
+        const inputTokens = reply.ok ? reply.reply.inputTokens : reply.inputTokens;
+        const usage: UsageCounts = inputTokens === null ? estimate : { promptTokens: inputTokens, cachedTokens: 0, completionTokens: 0 };
+        const cost = costMicro(usage, route);
+        await deps.quota.settle(caller.uid, requestId, { caller, route, usage, costMicro: cost });
+        const headers = await remainingHeaders(caller.uid);
+        if (!reply.ok) return apiError(502, reply.message, "upstream", {}, headers);
+        return json(200, {
+          model: reply.reply.model, answers: reply.reply.answers, usage: { input_tokens: usage.promptTokens },
+        }, { ...headers, [BILLING_HEADERS.cost]: String(cost) });
+      } catch (err) {
+        await deps.quota.release(caller.uid, requestId).catch(() => {});
+        return apiError(502, `处理请求时出错：${err instanceof Error ? err.message : String(err)}`, "upstream");
+      }
+    };
+
     const serve = async (route: RouteRow, key: string): Promise<Response | null> => {
       if (route.kind === "tts") return serveTts(route, key);
+      if (route.kind === "decision") return serveDecision(route, key);
       // I2：字节数要按 UTF-8 编码算，`raw.length` 是 UTF-16 code unit 数——中日韩字符
       // 一个字符 3 字节却只占 1 个 code unit，用 code unit 数会把 CJK 请求的估算打三折。
       const bodyBytes = new TextEncoder().encode(raw).length;

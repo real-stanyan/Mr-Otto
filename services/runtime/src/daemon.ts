@@ -41,6 +41,9 @@ import type { PxCallDeps } from "./pxTools.js";
 import { createHostedProbe, createHostedRuntimeAdapter, createRouteMemo, probeModelRoute, withUsage, type RouteMemo } from "./hostedRoute.js";
 import { pickAutoModel } from "./autoModel.js";
 import { requestDispatchAsOwner } from "./dispatch.js";
+import { decisionModelOf, modeOf } from "../../../src/shared/decision.js";
+import { requestDecisionAsOwner } from "./decisionOwner.js";
+import { DISPATCH_DECISION_TIMEOUT_MS, dispatchVia } from "./dispatchDecision.js";
 import { createDockerWorld, WORKDIR } from "../../../src/world/dockerWorld.js";
 import type { ModelAdapter } from "../../../src/model/adapter.js";
 import { EventStore } from "../../../src/session/store.js";
@@ -590,6 +593,9 @@ async function main(): Promise<void> {
       pickAutoModel: async (agent, text) => {
         const me = await hostedProbe.me(ownerUid);
         if (me === null || me === "unreachable" || me.status !== "active") return null;
+        // 决策模型前置（#1281）：这一处开着哪一档、网关供哪一款，都从**同一份** /me 快照读
+        // （edge 里那张开关表随它下发，60s 缓存）——翻一格最迟一分钟生效，不用重启 daemon
+        const decisionModel = decisionModelOf(me);
         return pickAutoModel(
           {
             edgeBase: config.edgeBase,
@@ -599,6 +605,7 @@ async function main(): Promise<void> {
             sessionId,
             agentId: agent.agentId,
             log: (m) => console.warn(`[otto-runtime] ${m}（session=${sessionId} agentId=${agent.agentId}）`),
+            ...(decisionModel !== null ? { decision: { mode: modeOf(me, "auto"), model: decisionModel } } : {}),
           },
           text,
           me.models
@@ -616,18 +623,24 @@ async function main(): Promise<void> {
         if (me === "unreachable") return { kind: "failed", reason: "订阅状态这会儿探不到" };
         if (me === null) return { kind: "skipped", reason: "团队所有者没有订阅" };
         if (me.status !== "active") return { kind: "skipped", reason: "团队所有者的订阅不是活跃状态" };
-        return requestDispatchAsOwner(
-          {
-            edgeBase: config.edgeBase,
-            runtimeSecret: config.runtimeSecret,
-            ownerUid,
-            workspaceId,
-            sessionId,
-            log: (m) => console.warn(`[otto-runtime] ${m}（session=${sessionId}）`),
-          },
+        const owner = {
+          edgeBase: config.edgeBase,
+          runtimeSecret: config.runtimeSecret,
+          ownerUid,
+          workspaceId,
+          sessionId,
+          log: (m: string) => console.warn(`[otto-runtime] ${m}（session=${sessionId}）`),
+        };
+        // 决策模型前置（#1281）：有把握的当场判，拿不准 / 没问出来的照旧交给下面那条 LLM 路——
+        // failed 与群里那句「没派出去」仍然只由它说
+        return dispatchVia({
+          mode: modeOf(me, "dispatch"),
+          model: decisionModelOf(me),
           input,
-          me.models
-        );
+          decide: (req) => requestDecisionAsOwner(owner, req, DISPATCH_DECISION_TIMEOUT_MS),
+          llm: () => requestDispatchAsOwner(owner, input, me.models),
+          log: owner.log,
+        });
       },
       px,
       // 与在籍判断共用同一份 60s 缓存（#979 第 5 条）：原来这里每 turn 另打一次
@@ -673,6 +686,9 @@ async function main(): Promise<void> {
       retitle: async (input) => {
         const me = await hostedProbe.me(ownerUid);
         if (me === "unreachable" || me === null || me.status !== "active") return null;
+        // 决策模型前置（#1281）：这一处开着哪一档、网关供哪一款，都从**同一份** /me 快照读
+        // （edge 里那张开关表随它下发，60s 缓存）——翻一格最迟一分钟生效，不用重启 daemon
+        const decisionModel = decisionModelOf(me);
         return requestTitleAsOwner(
           {
             edgeBase: config.edgeBase,
@@ -681,6 +697,7 @@ async function main(): Promise<void> {
             workspaceId,
             sessionId,
             log: (m) => console.warn(`[otto-runtime] ${m}（session=${sessionId}）`),
+            ...(decisionModel !== null ? { decision: { mode: modeOf(me, "title"), model: decisionModel } } : {}),
           },
           input,
           me.models

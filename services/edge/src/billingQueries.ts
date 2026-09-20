@@ -15,6 +15,7 @@ import type { PlanSnapshot, RebuildEvent, RebuildGrant, WindowState } from "./qu
 import type { RouteRow, SettleMeta } from "./llmGateway.js";
 import type { BillingAction } from "./billing.js";
 import type { BillingMe } from "../../../src/shared/billing.js";
+import type { DecisionUses } from "../../../src/shared/decision.js";
 
 const isObj = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
 const str = (v: unknown): string | null => (typeof v === "string" ? v : null);
@@ -133,13 +134,14 @@ export function parseRouteRows(v: unknown): RouteRow[] {
     // kind 缺席 = 迁移还没跑（旧库没这一列），认不出的值同样按 chat：
     // 两种情形都要落回**改动前的行为**，而不是把这一行丢掉——一个拼错的 kind
     // 不该让这款模型从网关上整个消失（#1081）
-    const kind = r.kind === "image" ? "image" : r.kind === "tts" ? "tts" : "chat";
+    const kind = r.kind === "image" ? "image" : r.kind === "tts" ? "tts" : r.kind === "decision" ? "decision" : "chat";
     out.push({ id, logicalModel: lm, platform: pf, baseUrl: bu, wireModel: wm, priceInMicroPerM: pi, priceCacheMicroPerM: pc, priceOutMicroPerM: po, defaultMaxTokens: mt, kind });
   }
   return out;
 }
 
-/** 路由表 → `/me` 下发的那三格（对话型号清单 / 出图型号清单 / 型号→平台）。
+/** 路由表 → `/me` 下发的那五格（对话型号清单 / 出图型号清单 / 语音合成型号清单 /
+    决策模型清单 / 型号→平台）。
     **两张清单分开**（#1081）：`models` 喂输入框那枚模型选择器，`imageModels` 喂
     `generate_image` 那把刀。合成一格的代价是 ADR-0237 的 Auto 拿 `models.at(-1)`
     当「最贵 = 最强」，而出图那款 $60/M —— 一次正常提问会得到一张图。
@@ -152,7 +154,7 @@ export function parseRouteRows(v: unknown): RouteRow[] {
     同一款多条路由取**第一条**的平台，那就是选路真正会先试的那家。
     `modelPlatforms` 只覆盖对话那张：它的消费方是那枚选单里的厂商 logo */
 export function modelsForMe(routes: RouteRow[]): {
-  models: string[]; imageModels: string[]; ttsModels: string[]; modelPlatforms: Record<string, string>;
+  models: string[]; imageModels: string[]; ttsModels: string[]; decisionModels: string[]; modelPlatforms: Record<string, string>;
 } {
   const chat = routes.filter((r) => r.kind === "chat");
   const modelPlatforms: Record<string, string> = {};
@@ -165,6 +167,9 @@ export function modelsForMe(routes: RouteRow[]): {
     // 第三张清单（#1163）：语音合成那款。消费方是桌面的语音通话（teamVoice），
     // 与前两张一样互不相通——它进 models 就是选单里多一款点了不干活的型号
     ttsModels: [...new Set(routes.filter((r) => r.kind === "tts").map((r) => r.logicalModel))],
+    // 第四张清单（#1281）：决策模型。消费方是三端那五处分类器，与前三张同样互不相通——
+    // 它**输出价是 0**，漏进 models 会排到第一位 = 默认聊天款 + Auto 的 simple 档
+    decisionModels: [...new Set(routes.filter((r) => r.kind === "decision").map((r) => r.logicalModel))],
     modelPlatforms,
   };
 }
@@ -290,7 +295,11 @@ export function meFromParts(
       缺省空数组 = 这台网关不供出图 = 改动前的行为 */
   imageModels: string[] = [],
   /** 语音合成型号清单（#1163）。同上一格的理由加在最末；缺省空数组 = 这台网关不供语音 */
-  ttsModels: string[] = []
+  ttsModels: string[] = [],
+  /** 决策模型（#1281）：供哪几款 + 五处各开哪一档。**一个对象参数不是两个数组**：这个函数
+      已经有八个位置参数、其中三个是「数组或对象」，tsc 拦不住插错位置；一个带结构的参数
+      插不错。缺省 = 这台网关不供决策模型 = 五处全关 */
+  decision: { models: string[]; uses: DecisionUses } = { models: [], uses: {} }
 ): BillingMe {
   const plan = sub && (sub.plan_id === "lite" || sub.plan_id === "pro" || sub.plan_id === "max") ? sub.plan_id : null;
   return {
@@ -302,5 +311,8 @@ export function meFromParts(
       .map((p) => ({ id: p.id, priceUsdCents: p.price_usd_cents, capabilities: p.capabilities })),
     windows: sub && sub.status === "active" ? windows : null,
     addon, periodEnd: sub ? Date.parse(sub.current_period_end) : null, models, imageModels, ttsModels, modelPlatforms,
+    // 没有型号时 uses 一律清空：开关开着、路由行却不在（migration 没跑 / 那一行被停用），
+    // 下发一张「开着」的表只会让三端去敲一扇必然 400 的门
+    decision: { models: decision.models, uses: decision.models.length > 0 ? decision.uses : {} },
   };
 }

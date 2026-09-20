@@ -185,6 +185,8 @@ import { createEscrowSync, type EscrowSync } from "./pxEscrowSync.js";
 import { createAuditBackflow } from "./pxAuditSync.js";
 import { createPxCloudClient } from "./pxCloudClient.js";
 import { createHostedQuota, parseCheckoutTarget, type HostedQuota } from "./hostedQuota.js";
+import { createDecisionClient } from "./decisionClient.js";
+import { createEndpointJudge, type EndpointJudge } from "./endpointJudge.js";
 import { createTeamVoice } from "./teamVoice.js";
 import type { WorkspaceUsage } from "../shared/billing.js";
 import { islandRail } from "../shared/islandRail.js";
@@ -1414,6 +1416,10 @@ void app.whenReady().then(() => {
       })
     : null;
 
+  // 「这句说完了吗」（#1281）。同 hostedQuotaRefresh 的空位理由：decisionClient 要等
+  // hostedQuota/edgeBaseUrl 都装好才能造，而 speech 桥装配在前，这里先占位
+  let endpointJudge: EndpointJudge | null = null;
+
   // 群语音里「人说话」那一半（#1176，ADR-0273）：macOS 原生本机识别 helper（native/MrOttoSpeech），
   // 懒起——第一次开麦才 spawn。缺席（非 mac / 没 build）时开麦得到一句人话，通话与 TTS 照旧
   const speechBin = process.platform === "darwin" ? resolveSpeechBinPath() : null;
@@ -1432,6 +1438,8 @@ void app.whenReady().then(() => {
         onEvent: (ev) => {
           // helper 侧播放（#1201）：那段临时文件播完 / 播不了就删，不等 app 退出
           if (ev.type === "played" || ev.type === "playError") void rm(speechPlayFile(ev.id), { force: true });
+          // 只读、先于转发：真值日志要看见每一条事件（#1281）
+          endpointJudge?.onSpeechEvent(ev);
           send(CHANNELS.speechEvent, ev);
         },
         log: (m) => console.warn(`[speech] ${m}`),
@@ -1593,11 +1601,16 @@ void app.whenReady().then(() => {
     // 下一条会话事件才更新，而「额度用完」恰恰是没有下一条事件的那一刻
     pushFleet();
   });
-  const hostedDeps = {
+  const hostedBase = {
     quota: hostedQuota,
     edgeBaseUrl: () => edgeBaseUrl(),
     accessToken: () => accountManager?.getAccessToken() ?? Promise.resolve(null),
   };
+  // 决策模型（#1281）：五处分类器的前置判断走这一条。挂在 hostedDeps 上而不是单独往下递——
+  // 主会话 / 子 agent（两处）/ 子会话重建，四处本来就原样接住这个对象，单独递就要四处各接一次
+  const decisionClient = createDecisionClient({ ...hostedBase, log: (m) => console.warn(m) });
+  const hostedDeps = { ...hostedBase, decision: decisionClient };
+  endpointJudge = createEndpointJudge({ decision: decisionClient, log: (l) => console.warn(l) });
   // 团队语音通话（#1163）：渲染层每段文字经这里合成——拿 JWT 打网关，钱记在听的人
   // 自己的额度上，额度头与 chat 那条路同一份纪律（noteHeaders / noteExhausted）
   const teamVoice = createTeamVoice(hostedDeps);
@@ -3669,6 +3682,11 @@ void app.whenReady().then(() => {
   ipcMain.handle(CHANNELS.speechStopPlay, () => speechSend({ type: "stopPlay" }));
   ipcMain.handle(CHANNELS.speechPause, () => speechSend({ type: "pause" }));
   ipcMain.handle(CHANNELS.speechResume, () => speechSend({ type: "resume" }));
+  // 「这句说完了吗」（#1281）。入参来自渲染层，照这一区别的处理器一样先验形状
+  ipcMain.handle(CHANNELS.speechJudge, (_e, said: unknown, asked: unknown) =>
+    typeof said === "string" && said.trim() !== "" && endpointJudge !== null
+      ? endpointJudge.judge(said, typeof asked === "string" ? asked : null)
+      : null);
   ipcMain.handle(CHANNELS.workspaceCloudCall, (_e, participants: string[]) =>
     cloudClient.call(Array.isArray(participants) ? participants.filter((p): p is string => typeof p === "string") : [])
   );

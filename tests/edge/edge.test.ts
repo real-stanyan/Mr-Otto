@@ -63,6 +63,7 @@ describe("路由", () => {
       (await harness().handle(new Request(`http://edge${path}`, { method: "POST" }))).json() as Promise<{ error: { code: string } }>;
     expect((await body("/llm/v1/images")).error.code).toBe("llm_disabled");
     expect((await body("/llm/v1/speech")).error.code).toBe("llm_disabled"); // 语音那扇门（#1163）
+    expect((await body("/llm/v1/decision")).error.code).toBe("llm_disabled"); // 决策那扇门（#1281）
     expect((await body("/llm/v1/chat/completions")).error.code).toBe("llm_disabled");
     expect((await body("/llm/v1/nope")).error.code).toBe("not_found");
   });

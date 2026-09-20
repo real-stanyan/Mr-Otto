@@ -23,6 +23,11 @@
 
 import { ON_BEHALF_HEADER, SESSION_HEADER, WORKSPACE_HEADER } from "../../../src/shared/billing.js";
 import { promptSafe, promptSafeBody } from "../../../src/shared/promptSafe.js";
+import {
+  noul, withDecision,
+  type DecisionModeState, type DecisionOutcome, type DecisionQuestion, type DecisionReply, type DecisionState,
+} from "../../../src/shared/decision.js";
+import { requestDecisionAsOwner } from "./decisionOwner.js";
 
 /** 模型起的标题最长几个字。侧栏那一行可用宽度约 230px，还要给头像堆和角标让位 */
 export const TITLE_MAX_CHARS = 14;
@@ -78,6 +83,27 @@ export function titlePrompt(input: TitleInput): string {
   ].join("\n");
 }
 
+/** P(当前标题还说得清这段对话) 到它 = KEEP，一次 LLM 都不打。**初值**。
+    取高不取低：判错成 KEEP 的代价是标题晚改一轮（5 句人话之后还会再判），
+    判错成「要改」的代价只是多打一次今天本来就会打的 LLM——而它自己仍然可以回 KEEP */
+export const TITLE_KEEP_AT = 0.8;
+export const TITLE_DECISION_TIMEOUT_MS = 1500;
+
+/** 决策模型写不了标题，所以它只回答那一步里**不用生成文字**的那一半：还用不用改。
+    今天每 5 句人话打一次 LLM，多数轮回 KEEP——为了一个「不用改」的答案付一次完整调用 */
+export function titleKeepQuestions(input: TitleInput): { state: DecisionState; questions: Record<string, DecisionQuestion> } {
+  return {
+    state: { title: promptSafe(input.currentTitle.trim()), recent: input.context.map((l) => promptSafeBody(l)) },
+    questions: {
+      fits: noul(
+        "`title` 是这段群聊此刻的标题，`recent` 是最近的对话。这个标题还说得清这段对话在聊什么吗？",
+        "对话仍然围绕标题说的那件事，或者是它的自然延续",
+        "话题确实换了，标题已经对不上现在在聊的事",
+      ),
+    },
+  };
+}
+
 /**
  * 模型的回答 → 新标题；`null` = 不改。
  *
@@ -122,18 +148,14 @@ export interface TitleDeps {
   timeoutMs?: number;
   /** 判不出来时说一声。不抛异常——命名失败不该让发言失败 */
   log?: (msg: string) => void;
+  /** KEEP 闸（#1281）。缺席 = 行为与改动前逐字相同 */
+  decision?: {
+    mode: DecisionModeState;
+    ask: (state: DecisionState, questions: Record<string, DecisionQuestion>) => Promise<DecisionReply | null>;
+  };
 }
 
-/**
- * 拿最便宜那款读「当前标题 + 最近几句」，回新标题或 `null`（不改）。
- *
- * **走同一条网关、带同样的归因头**，所以这一次调用照样落 `usage_event`、照样扣
- * 所有者的窗口——不做暗扣（同 ADR-0237 决策 5）。`agentId` 头故意不带：这一次
- * 调用不属于任何一只 agent（`usage_event.agent_id` 空串 = 未归因，ADR-0221）。
- *
- * 任何失败都回 `null` 不抛：清单为空、网关非 2xx、超时、fetch 抛错、正文缺席。
- */
-export async function requestTitle(
+async function requestTitleViaLlm(
   deps: TitleDeps,
   input: TitleInput,
   models: readonly string[]
@@ -179,6 +201,40 @@ export async function requestTitle(
   }
 }
 
+/**
+ * 拿最便宜那款读「当前标题 + 最近几句」，回新标题或 `null`（不改）。
+ *
+ * **走同一条网关、带同样的归因头**，所以这一次调用照样落 `usage_event`、照样扣
+ * 所有者的窗口——不做暗扣（同 ADR-0237 决策 5）。`agentId` 头故意不带：这一次
+ * 调用不属于任何一只 agent（`usage_event.agent_id` 空串 = 未归因，ADR-0221）。
+ *
+ * 任何失败都回 `null` 不抛：清单为空、网关非 2xx、超时、fetch 抛错、正文缺席。
+ */
+export async function requestTitle(
+  deps: TitleDeps,
+  input: TitleInput,
+  models: readonly string[]
+): Promise<TitleVerdict | null> {
+  const d = deps.decision;
+  // 还没有标题 = 没有东西可 KEEP，直接起名
+  if (!d || input.currentTitle.trim() === "") return requestTitleViaLlm(deps, input, models);
+  return withDecision<TitleVerdict | null>({
+    use: "title",
+    mode: d.mode,
+    viaDecision: async (): Promise<DecisionOutcome<TitleVerdict | null>> => {
+      const { state, questions } = titleKeepQuestions(input);
+      const a = (await d.ask(state, questions))?.answers.fits;
+      if (!a || a.type !== "noul") return null;
+      const scores = { fits: a.noul };
+      // `value: null` 是一个**答案**（KEEP），不是「没答案」——withDecision 分得清这两样
+      return a.noul >= TITLE_KEEP_AT ? { value: null, scores } : { escalate: true, scores };
+    },
+    viaLegacy: () => requestTitleViaLlm(deps, input, models),
+    show: (v) => (v === null ? "KEEP" : "renamed"),
+    ...(deps.log ? { log: deps.log } : {}),
+  });
+}
+
 /** daemon 那一侧的接线：替**团队所有者**调网关（逐处同 requestDispatchAsOwner——
     runtime 唯一独有的一样就是「怎么向网关证明身份」）。归因头带 workspace/session，
     **不带 agent**：这一次调用不属于任何一只 agent */
@@ -191,6 +247,7 @@ export interface OwnerTitleDeps {
   fetchImpl?: typeof fetch;
   timeoutMs?: number;
   log?: (msg: string) => void;
+  decision?: { mode: DecisionModeState; model: string };
 }
 
 export async function requestTitleAsOwner(
@@ -198,6 +255,7 @@ export async function requestTitleAsOwner(
   input: TitleInput,
   models: readonly string[]
 ): Promise<TitleVerdict | null> {
+  const dm = deps.decision;
   return requestTitle(
     {
       llmBase: `${deps.edgeBase}/llm/v1`,
@@ -210,6 +268,24 @@ export async function requestTitleAsOwner(
       ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
       ...(deps.timeoutMs !== undefined ? { timeoutMs: deps.timeoutMs } : {}),
       ...(deps.log ? { log: deps.log } : {}),
+      ...(dm
+        ? {
+            decision: {
+              mode: dm.mode,
+              ask: (state: DecisionState, questions: Record<string, DecisionQuestion>) =>
+                requestDecisionAsOwner(
+                  {
+                    edgeBase: deps.edgeBase, runtimeSecret: deps.runtimeSecret, ownerUid: deps.ownerUid,
+                    workspaceId: deps.workspaceId, sessionId: deps.sessionId,
+                    ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+                    ...(deps.log ? { log: deps.log } : {}),
+                  },
+                  { model: dm.model, use: "title", state, questions },
+                  TITLE_DECISION_TIMEOUT_MS,
+                ),
+            },
+          }
+        : {}),
     },
     input,
     models

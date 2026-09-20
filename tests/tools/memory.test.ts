@@ -346,3 +346,58 @@ describe("memory 工具 —— topic 档", () => {
     await expect(tool.run({ target: "topic", topic: "work", action: "add", content: "yyyyyyyyyy" }, world)).rejects.toThrow(/700/);
   });
 });
+
+describe("分档核对（#1281）：更像另一档的事，劝一次", () => {
+  const proj = { id: "github.com/x/mr_otto", root: "/Users/x/Github/Mr_Otto", dir: "memories/projects/d3d" };
+  const ARGS = { target: "memory", action: "add", content: "门禁前要先装手机端依赖" };
+  const mismatch = async () => [{ index: 0, suggested: "project" as const, confidence: 0.93 }];
+
+  it("命中：抛一条指路的错，什么都没写；**原样再交一次放行**，且第二次不再问", async () => {
+    let asked = 0;
+    const tool = createMemoryTool(proj, { judgeTier: async () => { asked++; return mismatch(); } });
+    const { world, store } = fakeWorld();
+    await expect(tool.run(ARGS, world)).rejects.toThrow(/target: "project"[\s\S]*原样再提交一次会放行/);
+    expect(store.get("memories/MEMORY.md")).toBeUndefined();
+    await tool.run(ARGS, world);
+    expect(store.get("memories/MEMORY.md")).toBe("门禁前要先装手机端依赖");
+    expect(asked).toBe(1);
+  });
+
+  it("judge 回 null / 回 [] / 抛错：照常写", async () => {
+    const judges = [async () => null, async () => [], async () => { throw new Error("x"); }];
+    for (const judgeTier of judges) {
+      const { world, store } = fakeWorld();
+      await createMemoryTool(proj, { judgeTier }).run({ target: "memory", action: "add", content: "brew 装在 /opt/homebrew" }, world);
+      expect(store.get("memories/MEMORY.md")).toBe("brew 装在 /opt/homebrew");
+    }
+  });
+
+  it("judge 缺席：第二个参数不给，行为与改动前相同", async () => {
+    const { world, store } = fakeWorld();
+    await createMemoryTool(proj).run({ target: "memory", action: "add", content: "brew 装在 /opt/homebrew" }, world);
+    expect(store.get("memories/MEMORY.md")).toBe("brew 装在 /opt/homebrew");
+  });
+
+  it("没有项目根 / remove：不问", async () => {
+    let asked = 0;
+    const judgeTier = async () => { asked++; return null; };
+    await createMemoryTool(null, { judgeTier }).run({ target: "memory", action: "add", content: "一条全局事实" }, fakeWorld().world);
+    // remove 定位不到会 reject——这里只关心「没问」，不关心它成没成
+    await createMemoryTool(proj, { judgeTier }).run({ target: "memory", action: "remove", old_text: "不存在的条目" }, fakeWorld().world).catch(() => {});
+    expect(asked).toBe(0);
+  });
+
+  it("target 是 project 也核（全局事实被投进了项目档是同一种错档）", async () => {
+    const tool = createMemoryTool(proj, { judgeTier: async () => [{ index: 0, suggested: "memory" as const, confidence: 0.9 }] });
+    await expect(tool.run({ target: "project", action: "add", content: "brew 装在 /opt/homebrew" }, fakeWorld().world)).rejects.toThrow(/target: "memory"/);
+  });
+
+  it("insisted 由调用方持有：换一个工具实例（agent.ts 每轮重建）照样记得被劝过", async () => {
+    const insisted = new Set<string>();
+    const judgeTier = async () => [{ index: 0, suggested: "project" as const, confidence: 0.93 }];
+    const { world, store } = fakeWorld();
+    await expect(createMemoryTool(proj, { judgeTier, insisted }).run(ARGS, world)).rejects.toThrow(/原样再提交/);
+    await createMemoryTool(proj, { judgeTier, insisted }).run(ARGS, world);
+    expect(store.get("memories/MEMORY.md")).toBe("门禁前要先装手机端依赖");
+  });
+});

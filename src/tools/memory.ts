@@ -18,6 +18,7 @@ import {
   MAX_TOPICS, TOPICS_DIR, isTopicSlug, renderTopicIndex, slugsFromFileNames, withSeedTopics,
 } from "../shared/memoryTopics.js";
 import { scanThreat } from "../shared/threatPatterns.js";
+import type { JudgedTier, MemoryTierJudge } from "../shared/memoryTierJudge.js";
 
 export { parseMemoryResult } from "../shared/memoryStore.js";
 
@@ -104,8 +105,21 @@ function parseOps(args: unknown, hasProject: boolean): {
     id 与 root 在有 remote 的仓里**不同**（#886）：写盘按 id，点名检测按 root。
     null = 这个会话的 workspace 不在任何 git 仓库里 ⇒ 不给模型看 project 这个选项：
     看不见的档就不会误写，比给它一个必然报错的选项干净 */
-export function createMemoryTool(project: { id: string; root: string; dir: string } | null): Tool {
+export function createMemoryTool(
+  project: { id: string; root: string; dir: string } | null,
+  /** 分档核对（#1281）。**注入进来的一个函数**——工具不 import 网络；缺席 = 行为与改动前
+      逐字相同 */
+  deps?: {
+    judgeTier?: MemoryTierJudge;
+    /** 「被劝过一次、模型坚持」的那些（target + 内容）。**由调用方持有**：agent.ts 每轮
+        `buildTools` 都重建这把工具，簿记住在工具实例里就每轮失忆——模型原样再交一次
+        仍然被劝，三次之后工具进终态。缺省（测试 / 别的装配）退回实例内部的一个 Set */
+    insisted?: Set<string>;
+  },
+): Tool {
   let consecutiveFailures = 0;
+  // 这是卫生劝告不是安全闸：决策模型判错一次不该把一条真事实永久挡在外面。封顶 64 条
+  const insisted = deps?.insisted ?? new Set<string>();
 
   async function execute(args: unknown, world: ExecutionWorld): Promise<string> {
     if (!world.config) throw new Error("这个世界没有长期记忆能力（配置目录不可用）");
@@ -145,6 +159,31 @@ export function createMemoryTool(project: { id: string; root: string; dir: strin
           throw new Error(
             `这条内容点名了当前项目（命中「${mention}」），像是只在本项目为真的事——改写 target: "project"。` +
             `确实换个项目也成立的话，把项目名/路径从内容里去掉再写：全局条目不点名具体项目。`,
+          );
+        }
+      }
+    }
+
+    // 分档核对（#1281）：点名守卫只认得出「点了名」的项目事实；不点名的那些
+    // （「门禁前要先装手机端依赖」）问决策模型一道多选一。落点在拿文件锁**之前**——
+    // 这一问最多等 900ms，此刻一把锁都没占。只在有项目根、且是这三档时问：要治的病是
+    // 「项目事实落进全局档」，没有项目档时那个选项不存在；topic 要连桶一起挑，不在范围里
+    if (deps?.judgeTier && project && (target === "user" || target === "memory" || target === "project")) {
+      const tier: JudgedTier = target;
+      const key = (c: string): string => `${tier}\n${c}`;
+      const pending = ops.flatMap((op) => (op.action === "remove" || insisted.has(key(op.content)) ? [] : [op.content]));
+      if (pending.length > 0) {
+        const label = project.root.split(/[\\/]/).filter(Boolean).pop() ?? project.root;
+        const hits = await deps.judgeTier(pending, tier, label).catch(() => null);
+        if (hits && hits.length > 0) {
+          for (const c of pending) {
+            if (insisted.size >= 64) insisted.clear();
+            insisted.add(key(c));
+          }
+          const h = hits[0]!;
+          throw new Error(
+            `这条内容更像 ${h.suggested} 档的事（把握 ${Math.round(h.confidence * 100)}%）——改写 target: "${h.suggested}"。` +
+            `判据一句话：换个项目还成立吗。确认就是 ${tier} 档的话，原样再提交一次会放行。`,
           );
         }
       }

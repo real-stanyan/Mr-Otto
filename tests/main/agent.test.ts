@@ -257,6 +257,38 @@ describe("createAgent 会话生命周期", () => {
     store.close();
   });
 
+  it("决策模型开着且给出答案时，Auto 直接采纳它的判决——legacy 那条 LLM 分类器一次都不打（#1281）", async () => {
+    const store = new EventStore(":memory:");
+    vi.stubGlobal("fetch", async () => {
+      throw new Error("不该打到这里：决策模型给出答案时，legacy 的 LLM 分类器一步都不该走");
+    });
+    const agent = createAgent({
+      store, workspace: "/proj/x", push, attachments,
+      hosted: {
+        quota: {
+          snapshot: () => ({ me: { models: ["glm-4.7-flash", "glm-5.3"] }, fetchedAt: 1, exhausted: null }),
+        } as never,
+        edgeBaseUrl: () => "https://edge.example",
+        accessToken: async () => "jwt-x",
+        decision: {
+          mode: () => "on",
+          decide: async () => ({ model: "jev-1.13.0", inputTokens: 1, answers: { hard: { type: "noul", noul: 0.9 } } }),
+        },
+      },
+    });
+    agent.switchModel(agent.model, "auto", true);
+    const before = store.load(agent.sessionId).length;
+
+    await agent.pickAutoModel("重构计费模块");
+
+    // 概率 0.9 越过阈值判成 hard，落在清单里最贵那款上；照旧带 auto —— 挑了一款不等于关掉 Auto
+    const log = store.load(agent.sessionId);
+    expect(log).toHaveLength(before + 1);
+    expect(log.at(-1)).toMatchObject({ type: "model_changed", model: "glm-5.3", auto: true });
+    vi.unstubAllGlobals();
+    store.close();
+  });
+
   it("恢复时模型选择从日志回来：最后一条 model_changed 说了算", () => {
     const store = new EventStore(":memory:");
     store.append({ sessionId: "s-m", ts: 1, type: "session_created", workspace: "/proj/x" });
