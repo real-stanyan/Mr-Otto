@@ -105,6 +105,7 @@ import type { AskUserOutcome, AskUserQuestion } from "../shared/askUser.js";
 import { imageBlocked, routeImage, routeModel } from "./modelRoute.js";
 import { currentImageModel } from "../shared/imageModel.js";
 import type { HostedQuota } from "./hostedQuota.js";
+import type { DecisionClient } from "./decisionClient.js";
 
 /** 主进程这一侧「能不能走托管」要的三样。**具名而不是内联**（#1051）：子 agent
     与子会话重建两处也要原样接住它，形状抄三份的话，哪天多一个字段就会有人漏接，
@@ -113,9 +114,13 @@ export interface HostedCapability {
   quota: HostedQuota;
   edgeBaseUrl: () => string;
   accessToken: () => Promise<string | null>;
+  /** 决策模型（#1281）。**可选**：缺席 = 行为与改动前逐字相同，所以没装配托管的那些装配
+      （探针 / 测试 / 裸装配）不用动；装配了的三处（主会话 / 子 agent / 子会话重建）跟着
+      `hostedDeps` 这一个对象原样接住——同这个接口具名的理由 */
+  decision?: DecisionClient;
 }
 import type { ModelLane } from "../shared/modelLane.js";
-import { pickAutoModel as pickAutoModelShared } from "../shared/autoModel.js";
+import { AUTO_DECISION_TIMEOUT_MS, pickAutoModel as pickAutoModelShared } from "../shared/autoModel.js";
 import type { Approver } from "../loop/approvalGate.js";
 import type { ExecutionWorld } from "../world/executionWorld.js";
 
@@ -1073,11 +1078,22 @@ export function createAgent(opts: {
       if (models.length < 2) return;
       const token = await h.accessToken();
       if (!token) return;
+      const dc = h.decision;
       const picked = await pickAutoModelShared(
         {
           llmBase: `${h.edgeBaseUrl()}/llm/v1`,
           headers: { authorization: `Bearer ${token}` },
           log: (m) => console.warn(`[auto-model] ${m}`),
+          // 决策模型前置（#1281）：开着哪一档由 edge 下发的那张表说了算；off 时 shared 那一层
+          // 一下都不碰 `ask`，所以这里无条件递进去
+          ...(dc
+            ? {
+                decision: {
+                  mode: dc.mode("auto"),
+                  ask: (state, questions) => dc.decide("auto", state, questions, AUTO_DECISION_TIMEOUT_MS),
+                },
+              }
+            : {}),
         },
         text,
         models

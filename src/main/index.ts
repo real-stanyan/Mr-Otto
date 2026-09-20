@@ -184,6 +184,7 @@ import { createEscrowSync, type EscrowSync } from "./pxEscrowSync.js";
 import { createAuditBackflow } from "./pxAuditSync.js";
 import { createPxCloudClient } from "./pxCloudClient.js";
 import { createHostedQuota, parseCheckoutTarget, type HostedQuota } from "./hostedQuota.js";
+import { createDecisionClient } from "./decisionClient.js";
 import { createTeamVoice } from "./teamVoice.js";
 import type { WorkspaceUsage } from "../shared/billing.js";
 import { islandRail } from "../shared/islandRail.js";
@@ -1592,11 +1593,15 @@ void app.whenReady().then(() => {
     // 下一条会话事件才更新，而「额度用完」恰恰是没有下一条事件的那一刻
     pushFleet();
   });
-  const hostedDeps = {
+  const hostedBase = {
     quota: hostedQuota,
     edgeBaseUrl: () => edgeBaseUrl(),
     accessToken: () => accountManager?.getAccessToken() ?? Promise.resolve(null),
   };
+  // 决策模型（#1281）：五处分类器的前置判断走这一条。挂在 hostedDeps 上而不是单独往下递——
+  // 主会话 / 子 agent / 子会话重建三处本来就原样接住这个对象，单独递就要三处各接一次
+  const decisionClient = createDecisionClient({ ...hostedBase, log: (m) => console.warn(m) });
+  const hostedDeps = { ...hostedBase, decision: decisionClient };
   // 团队语音通话（#1163）：渲染层每段文字经这里合成——拿 JWT 打网关，钱记在听的人
   // 自己的额度上，额度头与 chat 那条路同一份纪律（noteHeaders / noteExhausted）
   const teamVoice = createTeamVoice(hostedDeps);
