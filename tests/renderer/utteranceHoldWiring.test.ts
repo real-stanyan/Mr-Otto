@@ -56,8 +56,17 @@ describe("单一收口点：任何「离开语音」路径都绕不开 stopMic()
     // （stopVoice 内部、setVoiceMic(false) 分支）都是这个形状，源码里那行注释
     // 解释了为什么故意摆成这样；换成「同一个函数内」需要先会分函数边界，而
     // 这份源码不值得为了这条断言引入一个解析器。
-    const bareStopMicCalls = src.match(/\bstopMic\(\);/g) ?? []; // 定义行是 `stopMic(): void {`，没有分号，不会被数进来
-    const guardedByFlush = src.match(/flushHeld\(get\);\s*\n\s*stopMic\(\);/g) ?? [];
+    //
+    // fix round 3：判据不能靠「分号」把定义行 `function stopMic(): void {`
+    // 排除在外——本仓没有 lint/formatter（`npm test` 只是 `tsc --noEmit` +
+    // `vitest run`），没有任何东西逼着新写的一次调用带分号；`stopMic()`（漏了
+    // 分号，ASI 照样让它是合法语句）会被原来那条要求分号的正则直接漏数，
+    // bare 与 guarded 两个数都不变、断言悄悄保持绿色，bug 原样复活却没有任何
+    // 信号。改用「后面紧跟着的不是冒号」这条否定预测：定义行 `stopMic()` 后面
+    // 紧接着的是`: void`的冒号，调用点后面无论是分号、换行、逗号还是别的都不是
+    // 冒号——这样甄别的是"这是不是一次调用"而不是"这次调用有没有按格式写分号"。
+    const bareStopMicCalls = src.match(/\bstopMic\(\)(?!\s*:)/g) ?? [];
+    const guardedByFlush = src.match(/flushHeld\(get\);\s*\n\s*stopMic\(\)(?!\s*:)/g) ?? [];
     // 防呆：如果两条正则都失手匹配不到任何东西，0 === 0 会让上面那条 expect
     // 悄悄"通过"而实际什么都没钉住——先断言真的数到了东西
     expect(bareStopMicCalls.length).toBeGreaterThan(0);

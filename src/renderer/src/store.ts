@@ -1436,10 +1436,19 @@ function stopVoice(get: () => ChatState): void {
   // stopVoice 是所有"整段离开语音"路径唯一的交汇点——openCloudSession /
   // closeCloudSession / joinVoiceCall / leaveVoiceCall / voiceOnEvent 的挂断
   // 分支都调用它（它们本来就要停麦、停播放器）。flush 排在最前面，理由见
-  // flushHeld 的注释（#1281 fix round 1）。stopMic 紧跟在下一行——两者的
-  // 相对顺序本身没有约束，摆在一起纯粹是为了让
-  // tests/renderer/utteranceHoldWiring.test.ts 那条"停麦之前必先 flush"的
-  // 源码级断言在这里真的成立，不是巧合
+  // flushHeld 的注释（#1281 fix round 1）。
+  //
+  // stopMic 紧跟在下一行，排在 voicePlayer?.stop() 之前（#1281 fix round 2/3）
+  // ——这**不是**无关紧要的两句谁先谁后：voicePlayer.stop() 会同步触发它的
+  // onChange → micSync(...)，而 micSync 读的正是 stopMic 刚改写的那两个模块级
+  // 标记 micStarted/micPaused。stopMic 先跑，micStarted 在 micSync 看见它之前
+  // 就已经翻成 false，micSync 第一行 `if (!micStarted) return;` 直接短路——
+  // 若这一刻麦克风正因半双工防串音而暂停着，新顺序不会像旧顺序那样先补一次
+  // speechResume() 再紧跟着 stopMic 自己的 speechStop()（旧顺序下 voicePlayer
+  // 先停，此时 micStarted 还是 true，micSync 会把"agent 不说了"算成"该把麦
+  // 恢复"，真发一次 resume，一拍之后又被 stop 盖掉）。新顺序省掉这一次多余的
+  // IPC 往返，也顺手是 tests/renderer/utteranceHoldWiring.test.ts 那条"停麦
+  // 之前必先 flush"断言用得上的形状——但换序的理由是前者，不是后者。
   flushHeld(get);
   stopMic();
   voicePlayer?.stop();
