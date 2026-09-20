@@ -239,10 +239,28 @@ async function main(): Promise<void> {
     return safeSpeakerLabel(name ?? "", uid);
   }
 
+  /** 这个 workspace 的两格事实：所有者与 kind（#1280）。**一次查询给出两个答案**——
+      kind 有两个消费方（写进 session_created.cloud.home 的那一格、决定 approveAll 的
+      那一格），各查一次就有两份判据，而它们分家的形状正是 #1206：模型照提示词说
+      「这里没有审批」，审批门却在问人。kind 不可变（0037 的触发器钉着），owner 每次
+      现查（口径同改动前的 ownerOf）。查询失败原样抛，**不回落**：这两格要么写进
+      append-only 的日志、要么决定一条会话审不审批，「查不到」时宁可不开这条会话 */
+  async function workspaceFacts(workspaceId: string): Promise<{ ownerUid: string; kind: "team" | "home" }> {
+    const { data, error } = await supabase.from("workspaces").select("owner_uid,kind").eq("id", workspaceId).single();
+    if (error || !data) {
+      // kind 这一列是 0037 加的：刚升级而 migration 没跑时这里会因为列不存在整条失败，
+      // 而那条错误读起来像「workspace 不存在」——部署顺序是 migration 先于 runtime（#791）
+      throw new Error(
+        `workspace 不存在或查询失败（${workspaceId}）：${error?.message ?? "no data"}` +
+          `（若刚升级，先确认 supabase/migrations/0037 已执行）`
+      );
+    }
+    const row = data as { owner_uid: string; kind?: string };
+    return { ownerUid: row.owner_uid, kind: row.kind === "home" ? "home" : "team" };
+  }
+
   async function ownerOf(workspaceId: string): Promise<string> {
-    const { data, error } = await supabase.from("workspaces").select("owner_uid").eq("id", workspaceId).single();
-    if (error || !data) throw new Error(`workspace 不存在或查询失败（${workspaceId}）：${error?.message ?? "no data"}`);
-    return (data as { owner_uid: string }).owner_uid;
+    return (await workspaceFacts(workspaceId)).ownerUid;
   }
 
   /** 这只智能体现成的那条私聊（#1280），没有回 null。库里那条唯一索引是权威，
@@ -257,15 +275,6 @@ async function main(): Promise<void> {
       .maybeSingle();
     if (error) throw new Error(`私聊查询失败（${workspaceId}）：${error.message}`);
     return data ? (data as { id: string }).id : null;
-  }
-
-  /** 这个 workspace 是团队还是个人主场（#1280）。kind 不可变，调用方可以只查一次。
-      查询失败原样抛：这一格要写进 session_created，而一句错的事实进了 append-only
-      的日志就永远在那儿——「查不到」时宁可不建 */
-  async function kindOf(workspaceId: string): Promise<"team" | "home"> {
-    const { data, error } = await supabase.from("workspaces").select("kind").eq("id", workspaceId).single();
-    if (error || !data) throw new Error(`workspaces.kind 查询失败（${workspaceId}）：${error?.message ?? "no data"}`);
-    return (data as { kind?: string }).kind === "home" ? "home" : "team";
   }
 
   /** 沙箱内工具要不要人批（#977，0026 迁移）。owner 在云会话输入框那一行改（ADR-0243），这里现查不缓存
@@ -434,7 +443,10 @@ async function main(): Promise<void> {
     workspaceId: string,
     sessionId: string,
     ownerUid: string,
-    createdByUid: string
+    createdByUid: string,
+    /** 个人主场：审批门前一律放行（#1280，ADR-0298）。两个调用方都已经 await 过
+        workspaceFacts，所以这一格与写进 session_created.cloud.home 的那一格同源 */
+    approveAll: boolean
   ): CloudSession {
     const store = storeFor(workspaceId);
     const roster = new Set<string>();
@@ -734,6 +746,9 @@ async function main(): Promise<void> {
       // 原样成立，只是做决定的地方在调用方——这也是 querySandboxApproval 头注
       // 早就写着的契约
       sandboxApproval: () => querySandboxApproval(workspaceId),
+      // 个人主场全免审批（#1280，ADR-0298）。装配那一刻定死不现查：kind 不可变，
+      // 而且这一格与日志里 session_created.cloud.home 那一格出自同一次 workspaceFacts
+      approveAll,
       // 上一次量出来的卷用量（#836，ADR-0287）。纯读 sandbox 的内存缓存、不打
       // docker——量这一下发生在 sandbox.ensure() 里，这里只是把读数递过去
       diskUsage: () => sandbox.diskUsage(workspaceId),
@@ -820,7 +835,10 @@ async function main(): Promise<void> {
       },
       async create(workspaceId, byUid, chat) {
         const sessionId = randomUUID();
-        const owner = await ownerOf(workspaceId);
+        // 所有者与 kind 一次问出来（#1280）：kind 同时决定提示词里审批那句话
+        // （落进 session_created.cloud.home）与审批门（approveAll），两处同源
+        const { ownerUid: owner, kind } = await workspaceFacts(workspaceId);
+        const home = kind === "home";
         // 建一条聊天（#1280）。`chat` 缺席 = 团队会话，下面一个字都不变
         const plan = chat ? planChatCreate(chat, await agentsCache.refresh(workspaceId)) : null;
         if (plan && !plan.ok) throw new ChatCreateError(plan.message);
@@ -828,12 +846,10 @@ async function main(): Promise<void> {
         if (plan?.ok && plan.chatKind === "dm") {
           const existing = await findDmSession(workspaceId, plan.agentIds);
           if (existing) {
-            if (!activeSessions.has(existing)) openSessionRoom(workspaceId, existing, owner, byUid);
+            if (!activeSessions.has(existing)) openSessionRoom(workspaceId, existing, owner, byUid, home);
             return { sessionId: existing };
           }
         }
-        // 主场与否要在落 session_created 之前问出来：提示词里审批那句话从这一格投影
-        const home = plan?.ok ? (await kindOf(workspaceId)) === "home" : false;
         const { error } = await supabase.from("workspace_sessions").insert({
           id: sessionId,
           workspace_id: workspaceId,
@@ -849,7 +865,7 @@ async function main(): Promise<void> {
           if (plan?.ok && plan.chatKind === "dm") {
             const existing = await findDmSession(workspaceId, plan.agentIds);
             if (existing) {
-              if (!activeSessions.has(existing)) openSessionRoom(workspaceId, existing, owner, byUid);
+              if (!activeSessions.has(existing)) openSessionRoom(workspaceId, existing, owner, byUid, home);
               return { sessionId: existing };
             }
           }
@@ -884,7 +900,7 @@ async function main(): Promise<void> {
             ignorable: true,
           });
         }
-        openSessionRoom(workspaceId, sessionId, owner, byUid);
+        openSessionRoom(workspaceId, sessionId, owner, byUid, home);
         return { sessionId };
       },
       ownerOf,
@@ -1196,8 +1212,8 @@ async function main(): Promise<void> {
       try {
         const wait = start + i * 1500 - Date.now();
         if (wait > 0) await new Promise((r) => setTimeout(r, wait));
-        const owner = await ownerOf(row.workspace_id);
-        const session = openSessionRoom(row.workspace_id, row.id, owner, row.publisher_uid);
+        const facts = await workspaceFacts(row.workspace_id);
+        const session = openSessionRoom(row.workspace_id, row.id, facts.ownerUid, row.publisher_uid, facts.kind === "home");
         // **日志是事实，archived 那一列只是缓存**（issue #822）：归档时写库
         // 那一步失败过的话，这一行会停在 archived=false，于是一条已经收尾的
         // 会话被重新开出房间来（而且再也归档不了——CloudSession.archive 从
