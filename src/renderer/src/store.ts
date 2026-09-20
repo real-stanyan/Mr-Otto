@@ -1414,7 +1414,30 @@ function voicePlayerFor(set: StoreApi<ChatState>["setState"], get: () => ChatSta
   }
   return voicePlayer;
 }
-function stopVoice(): void {
+/** 扣着 / 等着答案的那句话在这里统一收口（#1281 fix round 1）。**唯一**一处实现：
+    `stopVoice`（整段离开语音）与 `setVoiceMic(false)`（只关麦、还在通话里）都调它，
+    不是各写一份——原来只有后者记得发，前五条路径（换会话、关云会话、重新进语音、
+    离开语音通话、通话被挂断）一句都没发，扣着的话在切房间时就没了。
+    两件事都不能省：
+    ① 计时器必须无条件清掉，即使 buffer 是空的——不清的话它之后单独触发，
+       调的是这次调用之前那个闭包里的 sendSpoken，会把这句话送进主进程那时
+       已经加入的、可能完全是另一个房间（cloudSay 不带 sessionId，认的是
+       主进程此刻加入的那间房）；
+    ② 调用方必须把这一步排在自己接下来会做的、可能换房间的动作之前，这句话
+       才赶得上此刻还开着的房间——closeCloudSession 把这一步挪到了
+       workspaceCloudLeave() 之前正是为此，见那一处注释。 */
+function flushHeld(get: () => ChatState): void {
+  if (holdTimer !== null) { clearTimeout(holdTimer); holdTimer = null; }
+  const flushed = holdStep(hold, { type: "reset" }, Date.now(), { hold: false });
+  hold = flushed.state;
+  for (const fx of flushed.effects) if (fx.type === "send") void get().cloudSay(fx.text, [], [], true);
+}
+function stopVoice(get: () => ChatState): void {
+  // stopVoice 是所有"整段离开语音"路径唯一的交汇点——openCloudSession /
+  // closeCloudSession / joinVoiceCall / leaveVoiceCall / voiceOnEvent 的挂断
+  // 分支都调用它（它们本来就要停麦、停播放器）。flush 排在最前面，理由见
+  // flushHeld 的注释（#1281 fix round 1）
+  flushHeld(get);
   voicePlayer?.stop();
   voiceFeed = EMPTY_VOICE_FEED;
   stopMic();
@@ -2594,8 +2617,10 @@ export const useChat = create<ChatState>((set, get) => ({
   },
 
   async openCloudSession(workspaceId, sessionId) {
-    // 换会话先把上一条的语音监听收掉（#1163）：它绑着上一条的 sessionId 与名单
-    stopVoice();
+    // 换会话先把上一条的语音监听收掉（#1163）：它绑着上一条的 sessionId 与名单。
+    // 扣着的话也在这里发出去（#1281 fix round 1）——旧房间真正拆除要等下面
+    // 的 join() 内部触发 teardown()，这一步还来得及送进旧房间
+    stopVoice(get);
     if (get().voice !== null) set({ voice: null });
     let sid = sessionId;
     if (sid === null) {
@@ -2639,11 +2664,14 @@ export const useChat = create<ChatState>((set, get) => ({
   },
 
   closeCloudSession() {
+    // 语音那份本机状态一起清（#1163）：它绑着这条会话。**必须排在**
+    // workspaceCloudLeave() 之前（#1281 fix round 1）：leave() 在主进程里
+    // 同步清空"当前房间"（cloudSessionClient.ts 的 teardown()），晚一步
+    // 再发，扣着的那句话会因为"没有已连接的云会话"当场被拒、静默丢掉
+    stopVoice(get);
     void window.otter.workspaceCloudLeave();
     // cloudStreaming 一起清：它按 agentId 分槽不带 sessionId，不清的话下一条
     // 云会话打开时，上一只 agent 的半截预览会挂在新房间的「正在回复」行上
-    // 语音那份本机状态一起清（#1163）：它绑着这条会话
-    stopVoice();
     set({ cloudSession: null, cloudPendingFirstMessage: null, cloudStreaming: {}, voice: null });
   },
 
@@ -2716,14 +2744,14 @@ export const useChat = create<ChatState>((set, get) => ({
   joinVoiceCall() {
     const cs = get().cloudSession;
     if (!cs) return;
-    stopVoice();
+    stopVoice(get);
     const sinceSeq = cs.events.length > 0 ? cs.events[cs.events.length - 1]!.seq : -1;
     // 常开麦（#1176）：进通话就开
     set({ voice: { sessionId: cs.sessionId, listening: true, muted: false, sinceSeq, speaking: null, queued: 0, error: null, text: null, mic: { ...MIC_OFF, status: "starting" } } });
     startMic(speechHints(get().workspaceGroups.find((w) => w.id === get().cloudSession?.workspaceId) ?? null));
   },
   leaveVoiceCall() {
-    stopVoice();
+    stopVoice(get);
     if (get().voice !== null) set({ voice: null });
   },
   setVoiceMic(on) {
@@ -2732,12 +2760,9 @@ export const useChat = create<ChatState>((set, get) => ({
       set((s) => (s.voice ? { voice: { ...s.voice, mic: { ...MIC_OFF, status: "starting" } } } : s));
       startMic(speechHints(get().workspaceGroups.find((w) => w.id === get().cloudSession?.workspaceId) ?? null));
     } else {
-      // 扣着的那句照样发出去——人确实说了（#1281）。用一次性的 send：此刻已经没有
-      // speechOnEvent 的闭包可借
-      if (holdTimer !== null) { clearTimeout(holdTimer); holdTimer = null; }
-      const flushed = holdStep(hold, { type: "reset" }, Date.now(), { hold: false });
-      hold = flushed.state;
-      for (const fx of flushed.effects) if (fx.type === "send") void get().cloudSay(fx.text, [], [], true);
+      // 扣着的那句照样发出去——人确实说了（#1281）。flushHeld 是唯一实现
+      // （fix round 1）：这里只关麦、人还在通话里，不走整段离开的 stopVoice
+      flushHeld(get);
       stopMic();
       set((s) => (s.voice ? { voice: { ...s.voice, mic: MIC_OFF } } : s));
     }
@@ -2817,7 +2842,7 @@ export const useChat = create<ChatState>((set, get) => ({
     // 通话结束（这条或更早那条空名单）：本机的监听跟着收掉——判据是日志里的名单，不是「我按了」
     const call = voiceCallOf(cs.events);
     if (call === null) {
-      stopVoice();
+      stopVoice(get);
       set({ voice: null });
       return;
     }
