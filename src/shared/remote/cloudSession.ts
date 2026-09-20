@@ -4,10 +4,15 @@
 // 事件只发给已过 hello 验籍的 cid——房名可猜，所以不存在房间级广播。
 
 import type { SessionEvent } from "../../session/events.js";
+import { AGENT_ID_RE, CHAT_NAME_MAX, normalizeChatAgentIds } from "../chatRoster.js";
 import { b64decode, b64encode } from "./b64.js";
 import { MAX_FRAME_BYTES } from "./wire.js";
 
-/** 18（#1140，ADR-0282）：加一对 `wiki_write` / `wiki_write_result`（控制房写帧）——**团队 wiki 从设置页改得了**。
+/** 20（issue #1280）：聊天。`create` 多了 `chat`（缺席 = 团队会话，同旧）；新控制房帧
+    `chat_update` / `chat_update_result`；`welcome` 多了 `chat`；`backlog` 上行多了
+    `tail` 那一种、下行最后一片多了 `hasMore`。**六处一次进位**：分页那半的实现晚几个 PR，
+    但帧先定下来——握手是精确相等，进两次位就是发两次版。
+    18（#1140，ADR-0282）：加一对 `wiki_write` / `wiki_write_result`（控制房写帧）——**团队 wiki 从设置页改得了**。
     团队记忆从两档小黑板换成 /work/wiki/ 里的 markdown 页面之后，人改一页要经 runtime 走**与工具同一条写入路径**
     （盖章 / 重生成 index / log / journal），所以是一条帧不是直连 Supabase。任何在籍成员都能写，判据同 files。
     **本来是 17**：语音那批（#1163）与这一批并行开发，各自把 16 进到 17，合并时两个 17 各缺对方一半的帧——
@@ -111,7 +116,7 @@ import { MAX_FRAME_BYTES } from "./wire.js";
     少一格状态。**加一个枚举值同理**：老客户端的 isValidCsDeniedCode 认不出
     `rate_limited`，decodeCsDown 回 null，那一帧被静默忽略，于是 create()
     要白等满超时才回一句"云端无响应"——把"你被限速了"说成"对面没回话"。 */
-export const CS_PROTOCOL_VERSION = 19;
+export const CS_PROTOCOL_VERSION = 20;
 export const CS_MAX_TEXT_BYTES = 64 * 1024;
 
 /** 一次回多少字节的文件内容（#1056）。中继单帧上限是 256 KiB（wire.ts 的
@@ -280,10 +285,26 @@ export type CsWikiWriteReq =
   | { op: "write"; path: string; title: string; summary: string; pinned: boolean; body: string; sources?: string[] }
   | { op: "remove"; path: string };
 
+/** 建一条聊天（协议 20，#1280）。create 帧上缺席 = 团队会话 */
+export type CsChatSpec =
+  | { kind: "dm"; agentId: string }
+  | { kind: "group"; name: string; agentIds: string[] };
+/** welcome 里带的聊天身份。agentIds 是日志投影原样——与现存智能体求交集留给读取侧 */
+export interface CsChatInfo {
+  kind: "dm" | "group";
+  agentIds: string[];
+}
+/** 尾巴分页（协议 20）：进房第一页的条数，与一页的上限 */
+export const BACKLOG_TAIL_DEFAULT = 200;
+export const BACKLOG_TAIL_MAX = 500;
+
 /** 成员 → runtime */
 export type CsUp =
   | { t: "hello"; v: number; jwt: string }
-  | { t: "create"; workspaceId: string }
+  /** `chat` 在场 = 这是一条聊天（协议 20，#1280），缺席 = 团队会话（同旧）。
+      形状不对**整帧拒掉**不降级成缺席：静默当成团队会话，等于这条聊天里凭空
+      站着整个团队的智能体 */
+  | { t: "create"; workspaceId: string; chat?: CsChatSpec }
   /** 一条群发言。`mentions` = 点到的 **agent id**（起 turn 的那一族），
       `memberMentions` = 点到的**人类成员 uid**（协议 13，#1064）——两族分开带，
       因为它们的去处根本不同：前者进 `resolveTargets` 决定起几条 turn（花钱），
@@ -299,6 +320,10 @@ export type CsUp =
       唯一知道这件事的是麦克风那一侧 */
   | { t: "say"; text: string; mention: boolean; mentions?: string[]; memberMentions?: string[]; voice?: true }
   | { t: "backlog"; afterSeq: number }
+  /** 尾巴分页（协议 20，#1280）：进房只要最后 `limit` 条，`beforeSeq` 在场 = 再往前翻一页。
+      与 `afterSeq` 那一种并列而不是取代它——后者是「我断线前读到这儿，补上后面的」，
+      这一种是「这条聊天太长了，先给我末尾一屏」 */
+  | { t: "backlog"; tail: true; beforeSeq?: number; limit: number }
   | { t: "approve"; callId: string; decision: "approved" | "denied" }
   /** 读这个团队此刻的路由 + Git 凭据清单（控制房帧，协议 8；协议 15 多了后者）：
       回 `workspace_state`。任何在籍成员都能读——路由本来就在 welcome 上给所有人看，
@@ -331,6 +356,12 @@ export type CsUp =
       与归档的差别写在 `delete_result` 上：归档是「收尾，还看得见」，删除是
       「整段事件日志从 VPS 上抹掉，谁都再看不到」 */
   | { t: "delete"; workspaceId: string; sessionId: string }
+  /** 改一条聊天的名字 / 名单（**控制房帧**，协议 20，#1280）：判据同 archive / delete
+      （owner 或建这条聊天的人，服务端自己判一次）。两格各自可选、至少带一样——
+      只改群名时不必把名单一起发过去（那等于替用户声明「那一格我也确认是这个值」，
+      而两个人同时改一条群聊时后发的那份会把先发的名单覆盖回去）。
+      名单落成 `chat_roster_changed` 事件广播给房里所有人，库里那两列只是投影 */
+  | { t: "chat_update"; workspaceId: string; sessionId: string; name?: string; agentIds?: string[] }
   /** 设置页改一页 wiki（协议 18，#1140）：write 整页替换、remove 删页。判据同 files——任何在籍成员都能写，
       服务端走与 wiki 工具同一条写入路径（保留页 / 预算 / 可疑指令由 wikiService 把关） */
   | ({ t: "wiki_write"; workspaceId: string } & CsWikiWriteReq)
@@ -360,6 +391,8 @@ export type CsDown =
       ownerUid: string;
       /** 这个团队此刻的 turn 会走哪条路（issue #945）：hosted / blocked / 探不到 */
       modelRoute: CsModelRoute | null;
+      /** 这是一条聊天（协议 20，#1280）：私聊或群聊 + 此刻的名单。缺席 = 团队会话 */
+      chat?: CsChatInfo;
     }
   | { t: "created"; workspaceId: string; sessionId: string; channel: string }
   /** `v`（add-only，协议号不变）= **服务端**此刻的协议号（复审 C2-I6）。
@@ -379,10 +412,15 @@ export type CsDown =
       `kind` 与 `ModelAdapter` 的 `DeltaKind` 同值；runtime 今天只发
       "content"（终态气泡不画 reasoning，预览也不画） */
   | { t: "delta"; agentId: string; kind: "content" | "reasoning"; text: string }
-  | { t: "backlog"; events: SessionEvent[]; done: boolean }
+  /** `hasMore`（协议 20，#1280）只在**最后一片**（`done: true`）上有意义：这一页之前还有没有
+      更旧的。缺席 = 没有更旧的 / 老 runtime——退化成「翻不动了」，不是「还有但翻不到」 */
+  | { t: "backlog"; events: SessionEvent[]; done: boolean; hasMore?: boolean }
   /** archive 的回执（协议 9，#993）。会话房那条路靠 `session_archived` 广播当回执
       （所有人都看得见的那一份），控制房没有房间可广播，得单独回一条 */
   | { t: "archive_result"; workspaceId: string; sessionId: string; ok: boolean; message?: string }
+  /** chat_update 的回执（协议 20，#1280）。名单真变了的话房里还会收到一条
+      `chat_roster_changed` 事件——那条是事实，这条只答「收没收下」 */
+  | { t: "chat_update_result"; workspaceId: string; sessionId: string; ok: boolean; message?: string }
   /** delete 的回执（协议 10，#1044）。删除没有任何广播可当回执——房间收掉了，
       日志也没了，房里的人拿到的是 `session_archived`（删除先走一遍归档那条路，
       让还在看的人知道发生了什么）。`ok=false` 的 message 分得清三种：这条会话
@@ -457,6 +495,43 @@ function isOptionalStringArray(v: unknown): boolean {
   if (v === undefined) return true;
   return Array.isArray(v) && v.every((x) => typeof x === "string");
 }
+
+/** 聊天名字：两头空白剥掉，剥完不许为空、不许超上限（协议 20，#1280） */
+function normalizeChatName(v: unknown): string | null {
+  if (typeof v !== "string") return null;
+  const name = v.trim();
+  return name.length >= 1 && name.length <= CHAT_NAME_MAX ? name : null;
+}
+
+/** `undefined` = 帧上没带；`null` = 带了但形状不对（调用方**拒帧**，不降级成没带） */
+function normalizeChatSpec(v: unknown): CsChatSpec | null | undefined {
+  if (v === undefined) return undefined;
+  if (v === null || typeof v !== "object") return null;
+  const o = v as Record<string, unknown>;
+  if (o.kind === "dm") {
+    return typeof o.agentId === "string" && AGENT_ID_RE.test(o.agentId)
+      ? { kind: "dm", agentId: o.agentId }
+      : null;
+  }
+  if (o.kind === "group") {
+    const name = normalizeChatName(o.name);
+    const agentIds = normalizeChatAgentIds(o.agentIds);
+    return name !== null && agentIds !== null ? { kind: "group", name, agentIds } : null;
+  }
+  return null;
+}
+
+function normalizeChatInfo(v: unknown): CsChatInfo | null | undefined {
+  if (v === undefined) return undefined;
+  if (v === null || typeof v !== "object") return null;
+  const o = v as Record<string, unknown>;
+  if (o.kind !== "dm" && o.kind !== "group") return null;
+  // 这里不用 normalizeChatAgentIds：下行名单可以是空的（群里的智能体全被删了）
+  if (!Array.isArray(o.agentIds) || !o.agentIds.every((x) => typeof x === "string")) return null;
+  return { kind: o.kind, agentIds: o.agentIds as string[] };
+}
+
+const isSeq = (v: unknown): v is number => Number.isInteger(v) && (v as number) >= 0;
 
 function isValidCsDeniedCode(v: unknown): v is CsDeniedCode {
   return (
@@ -584,10 +659,12 @@ export function decodeCsUp(b64: string): CsUp | null {
     }
 
     if (t === "create") {
-      if (typeof obj.workspaceId === "string") {
-        return { t: "create", workspaceId: obj.workspaceId };
-      }
-      return null;
+      if (typeof obj.workspaceId !== "string") return null;
+      const chat = normalizeChatSpec(obj.chat);
+      if (chat === null) return null;
+      return chat === undefined
+        ? { t: "create", workspaceId: obj.workspaceId }
+        : { t: "create", workspaceId: obj.workspaceId, chat };
     }
 
     if (t === "say") {
@@ -612,6 +689,17 @@ export function decodeCsUp(b64: string): CsUp | null {
     }
 
     if (t === "backlog") {
+      // 尾巴分页那一种（协议 20，#1280）：判据是 `tail === true` 这个记号，不是
+      // 「有没有 afterSeq」——后者会让一条漏掉 afterSeq 的老帧被当成翻页请求
+      if (obj.tail === true) {
+        if (!Number.isInteger(obj.limit) || (obj.limit as number) < 1 || (obj.limit as number) > BACKLOG_TAIL_MAX) {
+          return null;
+        }
+        if (obj.beforeSeq !== undefined && !isSeq(obj.beforeSeq)) return null;
+        const page: Extract<CsUp, { tail: true }> = { t: "backlog", tail: true, limit: obj.limit as number };
+        if (obj.beforeSeq !== undefined) page.beforeSeq = obj.beforeSeq as number;
+        return page;
+      }
       if (typeof obj.afterSeq === "number") {
         return { t: "backlog", afterSeq: obj.afterSeq };
       }
@@ -693,6 +781,28 @@ export function decodeCsUp(b64: string): CsUp | null {
       return null;
     }
 
+    if (t === "chat_update") {
+      if (typeof obj.workspaceId !== "string" || typeof obj.sessionId !== "string") return null;
+      // 两格都没带的话这条帧没有意义——不是「什么都不改」，是发帧的人漏了东西
+      if (obj.name === undefined && obj.agentIds === undefined) return null;
+      const update: Extract<CsUp, { t: "chat_update" }> = {
+        t: "chat_update",
+        workspaceId: obj.workspaceId,
+        sessionId: obj.sessionId,
+      };
+      if (obj.name !== undefined) {
+        const name = normalizeChatName(obj.name);
+        if (name === null) return null;
+        update.name = name;
+      }
+      if (obj.agentIds !== undefined) {
+        const ids = normalizeChatAgentIds(obj.agentIds);
+        if (ids === null) return null;
+        update.agentIds = ids;
+      }
+      return update;
+    }
+
     if (t === "call") {
       // 名单不是字符串数组整帧拒——一个混进来的数字会在服务端按 id 查名单时炸出
       // 一句看不懂的错，而不是「形状不对」
@@ -737,6 +847,10 @@ export function decodeCsDown(b64: string): CsDown | null {
         (obj.initiatorUid === null || typeof obj.initiatorUid === "string") &&
         typeof obj.ownerUid === "string"
       ) {
+        // 形状不对整帧拒掉（协议 20，#1280）：降级成「没带」= 一条私聊被当成团队会话，
+        // 于是整个团队的智能体凭空站进这条聊天里
+        const chat = normalizeChatInfo(obj.chat);
+        if (chat === null) return null;
         return {
           t: "welcome",
           v: obj.v,
@@ -745,6 +859,7 @@ export function decodeCsDown(b64: string): CsDown | null {
           initiatorUid: obj.initiatorUid as string | null,
           ownerUid: obj.ownerUid,
           modelRoute: normalizeModelRoute(obj.modelRoute),
+          ...(chat !== undefined ? { chat } : {}),
         };
       }
       return null;
@@ -758,6 +873,25 @@ export function decodeCsDown(b64: string): CsDown | null {
         (obj.message === undefined || typeof obj.message === "string")
       ) {
         const result: CsDown = { t: "archive_result", workspaceId: obj.workspaceId, sessionId: obj.sessionId, ok: obj.ok };
+        if (typeof obj.message === "string") result.message = obj.message;
+        return result;
+      }
+      return null;
+    }
+
+    if (t === "chat_update_result") {
+      if (
+        typeof obj.workspaceId === "string" &&
+        typeof obj.sessionId === "string" &&
+        typeof obj.ok === "boolean" &&
+        (obj.message === undefined || typeof obj.message === "string")
+      ) {
+        const result: CsDown = {
+          t: "chat_update_result",
+          workspaceId: obj.workspaceId,
+          sessionId: obj.sessionId,
+          ok: obj.ok,
+        };
         if (typeof obj.message === "string") result.message = obj.message;
         return result;
       }
@@ -950,10 +1084,14 @@ export function decodeCsDown(b64: string): CsDown | null {
         if (!obj.events.every(isSessionEvent)) {
           return null;
         }
+        // hasMore（协议 20，#1280）：带了就必须是 boolean，别的形状整帧拒——这一格
+        // 说的是「还翻不翻得动」，猜错的那一侧是一条永远翻不到底的聊天
+        if (obj.hasMore !== undefined && typeof obj.hasMore !== "boolean") return null;
         return {
           t: "backlog",
           events: obj.events as SessionEvent[],
           done: obj.done,
+          ...(typeof obj.hasMore === "boolean" ? { hasMore: obj.hasMore } : {}),
         };
       }
       return null;

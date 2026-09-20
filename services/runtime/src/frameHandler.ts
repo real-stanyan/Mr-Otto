@@ -732,6 +732,13 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
 
         case "backlog": {
           if (!(await requireStillMember(workspaceId, cid, entry.uid))) return;
+          // 尾巴分页（协议 20，#1280）：帧形状在 Task 3 里一次定下来，实现晚几个 PR。
+          // 在那之前说出口而不是静默当成 afterSeq —— 后者会把「给我末尾一屏」
+          // 答成「从头给我全部」，正是这条能力要修的那个形态
+          if ("tail" in msg) {
+            deps.send(cid, { t: "error", msg: "尾巴分页还没接上" });
+            return;
+          }
           const events = session.backlog(msg.afterSeq);
           // 终审 C2：按累计字节分片下发，不再一帧打包全量——见文件头
           // chunkBacklogFrames 的注释，一条超限事件曾经能让整条云会话

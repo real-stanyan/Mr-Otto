@@ -1,8 +1,10 @@
 import { describe, it, expect } from "vitest";
 import { CS_PROTOCOL_VERSION, encodeCs, decodeCsUp, decodeCsDown } from "../../src/shared/remote/cloudSession.js";
 
-/** 帧走 base64（encodeCs 的格式），不是裸 JSON。畸形用例编不出来，手工造一条 */
-const b64 = (o: unknown) => Buffer.from(JSON.stringify(o), "utf8").toString("base64");
+/** 帧走 base64url **无填充**（b64.ts 的格式，不是标准 base64），不是裸 JSON。畸形用例编不出来，手工造一条。
+    这里必须与 `b64encode` 逐字节同一种编码：标准 base64 的 `+` `/` `=` 三个字符 `b64decode` 一个都不认，
+    于是一条本该走到形状校验的畸形帧会在**解码**那一步就回 null——用例照样绿，但守的是另一件事（#1280 撞上的） */
+const b64 = (o: unknown) => Buffer.from(JSON.stringify(o), "utf8").toString("base64url");
 
 describe("cs_say 的 mentions（#928 切片 1a）", () => {
   it("带 mentions 解得出来", () => {
@@ -22,8 +24,8 @@ describe("cs_say 的 mentions（#928 切片 1a）", () => {
 });
 
 describe("cs 协议 6（#957 第三批：stop 帧与 say/approve/stop 回执）", () => {
-  it("CS_PROTOCOL_VERSION === 19（…；15 = #1103 Git 凭据；16 = #1107 流式 delta 帧；17 = #1163 语音通话 call 帧；18 = #1140 wiki_write 帧；19 = #1233 say.voice）", () => {
-    expect(CS_PROTOCOL_VERSION).toBe(19);
+  it("CS_PROTOCOL_VERSION === 20（…；15 = #1103 Git 凭据；16 = #1107 流式 delta 帧；17 = #1163 语音通话 call 帧；18 = #1140 wiki_write 帧；19 = #1233 say.voice；20 = #1280 聊天）", () => {
+    expect(CS_PROTOCOL_VERSION).toBe(20);
   });
 
   it("delta 下行往返（协议 16，#1107）", () => {
@@ -209,5 +211,91 @@ describe("denied 帧的服务端协议号（复审 C2-I6，add-only、版本仍�
     expect(decodeCsDown(b64({ t: "denied", code: "version_mismatch", v: -1 }))).toBeNull();
     expect(decodeCsDown(b64({ t: "denied", code: "version_mismatch", v: 6.5 }))).toBeNull();
     expect(decodeCsDown(b64({ t: "denied", code: "version_mismatch", v: null }))).toBeNull();
+  });
+});
+
+describe("协议 20：聊天（#1280）", () => {
+  const WS = "3fa85f64-5717-4562-b3fc-2c963f66afa6";
+  const SID = "8b1f0c1e-2d3a-4e5f-8a9b-0c1d2e3f4a5b";
+
+  it("create：不带 chat 与今天逐字节相同；带 dm / group 原样往返", () => {
+    const plain = { t: "create" as const, workspaceId: WS };
+    expect(decodeCsUp(encodeCs(plain))).toEqual(plain);
+    const dm = { t: "create" as const, workspaceId: WS, chat: { kind: "dm" as const, agentId: "a_0123456789ab" } };
+    expect(decodeCsUp(encodeCs(dm))).toEqual(dm);
+    const group = {
+      t: "create" as const,
+      workspaceId: WS,
+      chat: { kind: "group" as const, name: "上线冲刺", agentIds: ["admin", "a_0123456789ab"] },
+    };
+    expect(decodeCsUp(encodeCs(group))).toEqual(group);
+  });
+
+  it.each([
+    [{ kind: "dm", agentId: "运营" }],
+    [{ kind: "dm" }],
+    [{ kind: "group", name: "", agentIds: ["admin"] }],
+    [{ kind: "group", name: "x".repeat(61), agentIds: ["admin"] }],
+    [{ kind: "group", name: "群", agentIds: [] }],
+    [{ kind: "group", name: "群", agentIds: ["admin", 7] }],
+    [{ kind: "room" }],
+    ["dm"],
+  ])("create.chat 形状不对整帧拒掉（静默当成团队会话 = 这条聊天里凭空站着整个团队）：%j", (chat) => {
+    expect(decodeCsUp(b64({ t: "create", workspaceId: WS, chat }))).toBeNull();
+  });
+
+  it("chat_update：name / agentIds 至少带一样；群名两头的空白剥掉", () => {
+    const both = { t: "chat_update" as const, workspaceId: WS, sessionId: SID, name: "新名字", agentIds: ["admin"] };
+    expect(decodeCsUp(encodeCs(both))).toEqual(both);
+    expect(decodeCsUp(b64({ t: "chat_update", workspaceId: WS, sessionId: SID, name: "  改名  " }))).toEqual({
+      t: "chat_update",
+      workspaceId: WS,
+      sessionId: SID,
+      name: "改名",
+    });
+    expect(decodeCsUp(b64({ t: "chat_update", workspaceId: WS, sessionId: SID }))).toBeNull();
+    expect(decodeCsUp(b64({ t: "chat_update", workspaceId: WS, sessionId: SID, agentIds: ["nope"] }))).toBeNull();
+  });
+
+  it("backlog：老的 afterSeq 不变；tail 那一种要正整数 limit，beforeSeq 可缺", () => {
+    expect(decodeCsUp(encodeCs({ t: "backlog", afterSeq: -1 }))).toEqual({ t: "backlog", afterSeq: -1 });
+    expect(decodeCsUp(b64({ t: "backlog", tail: true, limit: 200 }))).toEqual({ t: "backlog", tail: true, limit: 200 });
+    expect(decodeCsUp(b64({ t: "backlog", tail: true, limit: 50, beforeSeq: 120 }))).toEqual({
+      t: "backlog",
+      tail: true,
+      limit: 50,
+      beforeSeq: 120,
+    });
+    for (const bad of [{ limit: 0 }, { limit: 501 }, { limit: 1.5 }, { limit: 10, beforeSeq: -1 }, {}])
+      expect(decodeCsUp(b64({ t: "backlog", tail: true, ...bad }))).toBeNull();
+  });
+
+  it("下行：welcome.chat / backlog.hasMore 缺席时与今天逐字节相同；chat_update_result 往返", () => {
+    const welcome = {
+      t: "welcome" as const,
+      v: CS_PROTOCOL_VERSION,
+      sessionId: SID,
+      lastSeq: 9,
+      initiatorUid: null,
+      ownerUid: "o",
+      modelRoute: null,
+    };
+    expect(decodeCsDown(encodeCs(welcome))).toEqual(welcome);
+    const withChat = { ...welcome, chat: { kind: "group" as const, agentIds: ["admin", "a_0123456789ab"] } };
+    expect(decodeCsDown(encodeCs(withChat))).toEqual(withChat);
+    expect(decodeCsDown(b64({ ...welcome, chat: { kind: "dm", agentIds: "admin" } }))).toBeNull();
+    expect(decodeCsDown(encodeCs({ t: "backlog", events: [], done: true }))).toEqual({
+      t: "backlog",
+      events: [],
+      done: true,
+    });
+    expect(decodeCsDown(encodeCs({ t: "backlog", events: [], done: true, hasMore: true }))).toEqual({
+      t: "backlog",
+      events: [],
+      done: true,
+      hasMore: true,
+    });
+    const res = { t: "chat_update_result" as const, workspaceId: WS, sessionId: SID, ok: false, message: "无权修改" };
+    expect(decodeCsDown(encodeCs(res))).toEqual(res);
   });
 });
