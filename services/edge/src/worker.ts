@@ -28,6 +28,7 @@ import {
   parseUsageEventRows, planSnapshotOf, plansQuery, routesQuery, subscriptionQuery, usageEventInsert, usageEventsQuery,
   type SubscriptionRow,
 } from "./billingQueries.js";
+import { DECISION_USES } from "./decisionUses.js";
 import { fetchWorkspaceUsage } from "./usageAttribution.js";
 import type { BillingPort, CheckoutTarget } from "./edge.js";
 import {
@@ -647,8 +648,8 @@ function billingPort(env: Env): BillingPort {
       const [routes, plans] = await Promise.all([routesOf(env), db.get(plansQuery()).then(parsePlanRows)]);
       // 型号清单 + 型号→平台（#1011）**都在 chatModelsOf 里**，因为这个文件不进 vitest：
       // 出图行要不要滤掉、同款多路由取哪条平台，这两个判断留在这里就零执行覆盖（#1081）
-      const { models, imageModels, ttsModels, modelPlatforms } = modelsForMe(routes);
-      return meFromParts(v.sub, v.windows, v.addon, models, plans, modelPlatforms, imageModels, ttsModels);
+      const { models, imageModels, ttsModels, decisionModels, modelPlatforms } = modelsForMe(routes);
+      return meFromParts(v.sub, v.windows, v.addon, models, plans, modelPlatforms, imageModels, ttsModels, { models: decisionModels, uses: DECISION_USES });
     },
 
     // 归因从 usage_event 现算（不碰 Quota DO —— 那是限流用的投影，没有 agent 维度）。
