@@ -1635,10 +1635,10 @@ void app.whenReady().then(() => {
     // 删一只智能体的第 1、2、4 步（#1280）：都走 runtime，不直连 Supabase——
     // 0016 那条策略把客户端的 delete 钉死在 kind='package'
     removeCloudSession: (workspaceId: string, sessionId: string) => cloudClient.remove(workspaceId, sessionId),
-    // **A4（Task 25）接上真的 chat_update**。在那之前是恒成功的空操作：那一列里
-    // 会留着一个已经不存在的 id，读取侧的「与现存智能体求交集」兜着（groupRows /
-    // CloudSessionMain）。做成空操作而不是失败，是因为失败会让这只智能体删不掉
-    removeFromGroups: async () => ({ ok: true as const, value: null }),
+    // 第 2 步（#1280 A4）：改名单也走 runtime。差集在 workspaceManager 里算——
+    // 这一层只是把算好的名单递出去
+    updateChatRoster: (workspaceId: string, sessionId: string, agentIds: string[]) =>
+      cloudClient.chatUpdate(workspaceId, sessionId, { agentIds }),
     removeAgentPage: (workspaceId: string, agentId: string) =>
       cloudClient.workspaceWikiWrite(workspaceId, { op: "remove", path: agentPagePath(agentId) }).then(() => undefined),
     client: () => supabase.raw,
@@ -3625,6 +3625,10 @@ void app.whenReady().then(() => {
     cloudClient.archive(workspaceId, sessionId));
   ipcMain.handle(CHANNELS.workspaceCloudDelete, (_e, workspaceId: string, sessionId: string) =>
     cloudClient.remove(workspaceId, sessionId));
+  ipcMain.handle(
+    CHANNELS.workspaceCloudChatUpdate,
+    (_e, workspaceId: string, sessionId: string, patch: { name?: string; agentIds?: string[] }) =>
+      cloudClient.chatUpdate(workspaceId, sessionId, patch));
   ipcMain.handle(CHANNELS.workspaceCloudStop, (_e, seq: number | null) =>
     cloudClient.stop(seq ?? undefined)
   );
