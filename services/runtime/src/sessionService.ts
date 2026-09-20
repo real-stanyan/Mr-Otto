@@ -1062,6 +1062,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     workspaceId: opts.workspaceId,
     createdBy: () => currentInitiator,
     writer: opts.agentWriter,
+    // 说明里「会不会弹卡」跟审批门读同一格（#1280 A5）：分家就是 #1206 那个形状
+    approveAll: opts.approveAll,
   });
 
   /** 三把 Git 刀（#1105）。**给所有 agent**，不像 create_agent 那样只给管理员：

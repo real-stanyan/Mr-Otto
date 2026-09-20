@@ -5,9 +5,9 @@ import type { ExecutionWorld } from "../../src/world/executionWorld.js";
 
 const world = {} as ExecutionWorld; // 这把刀不碰 world
 
-function harness(createdBy: string | null = "u1") {
+function harness(createdBy: string | null = "u1", approveAll = false) {
   const writer = createInMemoryAgentWriter();
-  const tool = createCreateAgentTool({ workspaceId: "w1", createdBy: () => createdBy, writer });
+  const tool = createCreateAgentTool({ workspaceId: "w1", createdBy: () => createdBy, writer, approveAll });
   return { writer, tool };
 }
 
@@ -56,5 +56,22 @@ describe("create_agent 工具（#954）", () => {
     const { writer, tool } = harness(null);
     await expect(tool.run({ name: "广告" }, world)).rejects.toThrow("查不到这次是谁发起的");
     expect(writer.rows()).toEqual([]);
+  });
+});
+
+describe("工具说明（#1280 A5）", () => {
+  it("写着「先问清再建、建完报告」：主场里没有审批卡，这句话是建错之前唯一的一道", () => {
+    const { tool } = harness();
+    expect(tool.def.description).toContain("先问清");
+    expect(tool.def.description).toContain("连接器");
+    expect(tool.def.description).toContain("建好之后");
+  });
+
+  it("主场（approveAll）里不许再说「会弹审批卡」：模型会照它宣布一步不存在的确认，然后那一步不发生（同 #1206 的形状）", () => {
+    expect(harness("u1", true).tool.def.description).not.toContain("审批卡");
+    expect(harness("u1", true).tool.def.description).toContain("直接落库");
+    // 团队那一支一个字不变
+    expect(harness().tool.def.description).toContain("审批卡");
+    expect(harness().tool.def.description).not.toContain("直接落库");
   });
 });

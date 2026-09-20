@@ -71,6 +71,7 @@ import { friendMentionItems, searchFriendMentions } from "./lib/friendMentionIte
 import { AgentsSidebarSection } from "./components/AgentsSidebarSection.js";
 import { AgentSettingsDrawer } from "./components/AgentSettingsDrawer.js";
 import { GroupSettingsDrawer } from "./components/GroupSettingsDrawer.js";
+import { NewAgentDrawer } from "./components/NewAgentDrawer.js";
 import { WorkspacePage } from "./components/WorkspacePage.js";
 import { NewGroupDialog } from "./components/NewGroupDialog.js";
 import { NewWorkspaceDialog } from "./components/NewWorkspaceDialog.js";
@@ -2070,15 +2071,16 @@ function AppSidebar() {
                 #921 那条「两颗要长一样」跟着 TWIN_BUTTON 一起没了消费方——它要的是
                 并排那一对不分主次,而现在任何一栏都只有一颗,不再有"并排" */}
             {tab === "workspaces" ? (
-              // 「新智能体」（#1280）。**本 Part 里它先直接进管理员的私聊**——
-              // 建一只智能体这件事本来就是跟管理员说一句话（ADR-0224 的 create_agent），
-              // A5 会在那张开局卡上补几颗提示 chip。「新团队」搬进「新群聊」弹窗
+              // 「新智能体」（#1280）。落点是**管理员的私聊**——建一只智能体这件事
+              // 本来就是跟管理员说一句话（ADR-0224 的 create_agent）。聊过就回到那条
+              // 线上接着说，没聊过就是它的开局卡（三枚提示 chip + 一条去填表的路，
+              // A5）；判据在 store 的 startNewAgent 里，这里不分叉。「新团队」搬进「新群聊」弹窗
               // 底部的那条链接（A4）；在那之前它挂在群聊节头那颗 ＋ 上，免得
               // 中间态里建不了团队
               <Button
                 variant="ghost"
                 className={SOLO_BUTTON}
-                onClick={() => void useChat.getState().openAgentChat(ADMIN_AGENT_ID)}
+                onClick={() => useChat.getState().startNewAgent()}
               >
                 <Bot className="size-4 shrink-0" aria-hidden />
                 新智能体
@@ -2525,6 +2527,9 @@ function AppSidebar() {
       <AgentSettingsDrawer />
       {/* 一个群自己的设置（#1280 A4）：群聊头部那颗 ⚙ 开它。判据同上，在组件里 */}
       <GroupSettingsDrawer />
+      {/* 「不想聊，直接填表」那条第二路（#1280 A5）：开它的是管理员开局卡底下那行
+          小字，而那一块在主区、不在侧栏这棵子树上 */}
+      <NewAgentDrawer />
       {/* 新团队(issue #917)。按钮只在项目栏(issue #923),所以 setTab 这一下不是
           为了换栏,是为了归档视图那一路:在「已归档」里点的钮,建完得把人带回列表,
           不然新建的团队在他此刻看的那一屏上根本不出现 */}
