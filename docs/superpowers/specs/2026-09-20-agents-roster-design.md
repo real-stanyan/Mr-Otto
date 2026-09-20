@@ -151,7 +151,7 @@ interface CloudSessionFacts {
 }
 ```
 
-system 提示词因此仍可从日志推导（ADR-0200 决策③）。`home` = 这条会话所在的 workspace 是个人主场，私聊和群聊都带。它与 §6.3 的 `approveAll` 说的是同一件事、各有各的来历（一个建会话时记进日志、一个装配房间时现查）；`workspaces.kind` 不可变，所以两处不会分家。
+system 提示词因此仍可从日志推导（ADR-0200 决策③）。`home` = 这条会话所在的 workspace 是个人主场，私聊和群聊都带。它与 §6.3 的 `approveAll` 说的是同一件事，且**出自同一次查询**（daemon 的 `workspaceFacts`，`select owner_uid,kind`）——落地时收紧的一处：原本打算各查一次、靠「`kind` 不可变」保证不分家，但那个保证只覆盖 workspace 这一侧，不覆盖「这条会话的日志里到底有没有记上 `home`」。所以 `create` 对**每一条**会话都问一次 kind（不再只在带聊天时问），两个消费方读同一份结果。
 
 ### 5.3 协议 19 → 20（合并前复核；#1281 那条 lane 也可能进位）
 
@@ -187,7 +187,7 @@ system 提示词因此仍可从日志推导（ADR-0200 决策③）。`home` = �
 
 ### 6.3 个人主场全免审批
 
-- `CloudSessionOpts.approveAll: boolean`，**必需字段**（忘接线该编译不过）。daemon 装配房间时查一次 `workspaces.kind`；**查不到按 team**（往严的一边倒）。`kind` 不可变，所以一条会话的一生只查这一次。
+- `CloudSessionOpts.approveAll: boolean`，**必需字段**（忘接线该编译不过）。daemon 装配房间时的 `workspaceFacts` 一次问出所有者与 `kind`（两个调用方本来就 `await` 着 `ownerOf`，零额外往返）；**查不到一律抛、不开这条会话**——比「按 team 装配」更该做的是不要开出一条提示词说没有审批、审批门却在问人的会话。`kind` 不可变，所以一条会话的一生只查这一次。必需字段只保证有人填了这一格，所以另有一条读 `daemon.ts` 源码的断言钉住它接的是 `kind` 而不是写死的 `false`。
 - `policyApprover.decide` 最前面：`approveAll` 为真 → `{ decision:"approved", reason:"个人主场：全部免审批" }`，对每一把刀都是。放行照样落 `approval_decision`（engine 的 `onDecision` 照旧写）——重放日志时一串没人批过的操作才解释得通（同 ADR-0231）。
 - 接力棒上「连接器要点火者批一次」（ADR-0225）、审批 2 分钟超时（ADR-0230）在主场里都走不到，不用拆。
 - **工具自己的护栏一条不松**：`git_push` 只推非默认分支、不强推；`clone_repo` 三态不删文件；磁盘地板照拒。去掉的只是「问人」那一步。
