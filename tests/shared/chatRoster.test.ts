@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { SessionEvent } from "../../src/session/events.js";
+import type { ChatRosterChangedEvent, SessionEvent } from "../../src/session/events.js";
 import {
   applyChatRosterEvent,
   chatRosterDiff,
@@ -9,14 +9,14 @@ import {
 } from "../../src/shared/chatRoster.js";
 
 let seq = 0;
-const rosterEvent = (ids: string[]): SessionEvent =>
-  ({
-    sessionId: "s",
-    seq: seq++,
-    ts: 1,
-    type: "chat_roster_changed",
-    agents: ids.map((id) => ({ agentId: id, name: id.toUpperCase() })),
-  }) as unknown as SessionEvent;
+const rosterEvent = (ids: string[]): ChatRosterChangedEvent => ({
+  sessionId: "s",
+  seq: seq++,
+  ts: 1,
+  type: "chat_roster_changed",
+  agents: ids.map((id) => ({ agentId: id, name: id.toUpperCase() })),
+  ignorable: true,
+});
 const chatter = (): SessionEvent =>
   ({ sessionId: "s", seq: seq++, ts: 1, type: "chat_message", fromUid: "u", text: "hi" }) as unknown as SessionEvent;
 
