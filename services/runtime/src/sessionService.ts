@@ -413,6 +413,14 @@ export interface CloudSessionOpts {
       同 relayRemainingMicro「每条会接力的 turn 现查」的纪律；没撞门的 turn 一次都不查）。
       daemon 接 `workspaces.sandbox_approval`，查询失败回落 "ask"——往严的一边倒 */
   sandboxApproval: () => Promise<SandboxApproval>;
+  /** 个人主场（workspaces.kind='home'）：审批门前一律放行——容器、连接器、推代码、
+      create_agent，一张卡都不出（#1280，维护者拍板；风险与剩下的三道软刹车在 ADR-0298）。
+      **必需**（同 sandboxApproval / diskUsage 的纪律）：写成可选的话，忘接线那天它安静地
+      退回「每一刀都问人」，而主场的界面上没有任何地方能解释为什么突然开始弹卡。
+      daemon 与 session_created.cloud.home **读同一次查询**（workspaceFacts）：提示词里
+      「这里没有审批」那句话从日志那一格投影，审批门从这一格判，两处分家就是 #1206
+      那个形状——模型照提示词说没有审批，门却在问人 */
+  approveAll: boolean;
   /** 这个团队的容器锁（#979 第 2 条，ADR-0232）。**必需**（同 memory / isMember
       的纪律）：忘接线该编译不过，而不是安静地跑成两条会话同时改同一个 `/work`。
       daemon 按 workspaceId 一把（createWorkspaceLocks）；测试各给一把新的，要验互斥
@@ -1000,6 +1008,12 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       策略拿不到（daemon 那侧已回落 "ask"，这里再兜一层）= 问人 */
   const policyApprover: Approver = {
     async decide(call, tool, signal) {
+      // 个人主场全免（#1280，ADR-0298），排在所有判断之前：放行照样落 approval_decision
+      // （engine 的 onDecision 照旧写），reason 说清是策略放的——重放日志时一串没人批过的
+      // 操作才解释得通（同 ADR-0231）。工具自己的护栏不在这一层：推代码那把刀不推默认
+      // 分支、不强推，磁盘地板照拒，去掉的只是「问人」那一步。也因此主场一次都不查
+      // workspaces.sandbox_approval——那一列在这里没有意义
+      if (opts.approveAll) return { decision: "approved", reason: "个人主场：全部免审批" };
       if (tool === bashTool || tool === writeFileTool) {
         // 三种结局各有各的缓存策略（#1029，ADR-0243）——**这一轮之内只能收紧**：
         //   · 确认的 `ask` → **钉住这一轮**。与 ADR-0231「下一轮生效」逐字相同：
