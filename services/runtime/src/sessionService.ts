@@ -166,6 +166,7 @@
 //      于是那条 turn 的回复广播给了一间已经关掉的房间（钱照付、人收不到）。
 
 import { applyVoiceCallEvent, inVoiceCall, relayOutsideCallText, voiceCallGreetingText, voiceCallOf, type VoiceCallState } from "../../../src/shared/voiceCall.js";
+import { applyChatRosterEvent, chatRosterOf, narrowRoster, type ChatRoster } from "../../../src/shared/chatRoster.js";
 import { createInviteToCallTool } from "./inviteToCallTool.js";
 import type { VoiceCallParticipant } from "../../../src/session/events.js";
 import { LoopEngine } from "../../../src/loop/engine.js";
@@ -602,6 +603,17 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   // 语音通话名单（#1163）：从 seed 折叠一次播种，之后 notify 里逐条推进（同 bounds 的手法，
   // #958 之后 turn 起跑不再全量读日志）。派活 / 接力 / invite_to_call 读的都是这一份
   let voiceCall: VoiceCallState | null = voiceCallOf(seed);
+  // 聊天名单（#1280）：同 voiceCall 的手法——从 seed 折叠一次播种，notify 里逐条推进。
+  // null = 团队会话 / 存量日志 = 不收窄
+  let chatRoster: ChatRoster = chatRosterOf(seed);
+  /** 这条会话此刻的名单 = 团队名单 ∩ 聊天名单。**全文件读名单只走这一个口**：@ 解析、派活、
+      接力、brief、通话选人约 40 处下游一次全对，少改一处就是那一处还站着整个团队。
+      团队名单读不出来（degraded）时原样交回：降级记号一旦被名单滤掉，下游「名单读不出来」
+      的那几句实话就再也说不出口，症状变成「这条聊天里没有智能体」 */
+  const rosterNow = async (o?: { fresh?: boolean }): Promise<AgentSpec[]> => {
+    const team = await opts.agents(o);
+    return team.some((a) => a.degraded) ? team : narrowRoster(team, chatRoster);
+  };
   let lastSeqSeen = seed.at(-1)?.seq ?? -1;
   /** 「这一轮的判据从日志的哪一条读起」的两条保守下界（#958）。装配时整份折叠
       一次，之后每条事件经 notify 增量推进——于是 runJob 与 relayAfterTurn 每个
@@ -835,6 +847,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // 通话名单跟着走（#1163）：同 advanceRelayBounds 的推理——daemon.ts 绕过 notify 的那四类
     // append 里没有这一种，这条事件只从 logVoiceCall 出门
     if (e.type === "voice_call_changed") voiceCall = applyVoiceCallEvent(voiceCall, e);
+    if (e.type === "chat_roster_changed") chatRoster = applyChatRosterEvent(chatRoster, e);
     // 最近谁说过话（#1163 那条的邻居，#1213）：同 advanceRelayBounds 的推理——
     // daemon.ts 绕过 notify 直接 append 的那四类里有 chat_message，但那几条的
     // fromUid 是 "system"，`humanSpeakerOf` 本来就不认；漏掉一条的后果也只是
@@ -1077,7 +1090,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     const inviteToCallTool = createInviteToCallTool({
       agentId: spec.agentId,
       currentCall: () => voiceCall,
-      roster: () => opts.agents(),
+      roster: () => rosterNow(),
       invite: (target) => {
         logVoiceCall([...(voiceCall?.participants ?? []), target], currentInitiator ?? "system", spec.agentId);
         // 被拉进来的那只先开口（#1174）：不问价——这条路上拉人的是模型，它自己那一轮
@@ -1454,7 +1467,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // ——那句话把一次接力没接上说成了一次回复失败，方向指错。这一棒不接，说一声
     let roster: AgentSpec[];
     try {
-      roster = await opts.agents();
+      roster = await rosterNow();
     } catch (err) {
       console.warn(
         `[otto-runtime] 接力取名单失败，这一棒没接上（session=${sessionId} agentId=${spec.agentId}）`,
@@ -1686,7 +1699,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       }
       // agents() 每 turn 现取一次（同 hostUids）：建/改 agent 下一 turn 生效，
       // 不用重开会话——job 可能在队列里等了一会儿，起跑前重新读一次名单
-      const roster = await opts.agents();
+      const roster = await rosterNow();
       const spec = roster.find((a) => a.agentId === job.agentId);
       if (!spec) {
         // 排队期间这只 agent 被删了（#932 坑 ③）。1a 是静默 return，那在 1b
@@ -1954,7 +1967,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   const session: CloudSession = {
     async say(fromUid, label, text, mention, mentions, budget, memberMentions, voice) {
       // 人刚开口 → 要此刻的名单（#979 第 5 条）：他在设置页刚建/改的那只要能立刻 @ 到
-      const roster = await opts.agents({ fresh: true });
+      const roster = await rosterNow({ fresh: true });
       // **名单降级 + 这句话点了名 = 一个字节都不落**（#957 E2-4）：degraded 那份
       // 是 workspace_agents 查询失败时的占位（只有 DEFAULT_WORKSPACE_AGENT 一只），
       // 拿它去 resolveTargets，"@运营" 自然解不出来 —— 于是下面那句 sayUnknown
@@ -2246,7 +2259,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     async setVoiceCall(byUid, _byLabel, participants, budget) {
       if (archived) return { kind: "archived", message: "这条会话已经归档，没有通话可言" };
       // 人刚点了名单 → 要此刻的名单（同 say 的 fresh）：他在设置页刚建的那只要能立刻拉进来
-      const roster = await opts.agents({ fresh: true });
+      const roster = await rosterNow({ fresh: true });
       // 名单降级 = 占位不是真名单：拿它核对会把一次 Supabase 抖动说成「这只 agent 不存在」
       if (roster.some((a) => a.degraded)) return { kind: "unknown_agent", message: "智能体名单这会儿读不出来，稍后再试" };
       const ids = [...new Set(participants)];
