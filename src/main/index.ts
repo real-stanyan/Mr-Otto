@@ -1606,7 +1606,7 @@ void app.whenReady().then(() => {
     accessToken: () => accountManager?.getAccessToken() ?? Promise.resolve(null),
   };
   // 决策模型（#1281）：五处分类器的前置判断走这一条。挂在 hostedDeps 上而不是单独往下递——
-  // 主会话 / 子 agent / 子会话重建三处本来就原样接住这个对象，单独递就要三处各接一次
+  // 主会话 / 子 agent（两处）/ 子会话重建，四处本来就原样接住这个对象，单独递就要四处各接一次
   const decisionClient = createDecisionClient({ ...hostedBase, log: (m) => console.warn(m) });
   const hostedDeps = { ...hostedBase, decision: decisionClient };
   endpointJudge = createEndpointJudge({ decision: decisionClient, log: (l) => console.warn(l) });

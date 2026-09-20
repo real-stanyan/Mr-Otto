@@ -12,6 +12,7 @@
 
 import { noul, type DecisionQuestion, type DecisionState } from "../shared/decision.js";
 import type { SpeechEvent } from "../shared/shellBridge.js";
+import { HOLD_MS as RESUME_WINDOW_MS } from "../shared/utteranceTiming.js";
 import type { DecisionClient } from "./decisionClient.js";
 
 /** 投机问发生在人停嘴那一刻，helper 最早 700ms 之后才 final——900ms 内回不来的答案，
@@ -19,9 +20,9 @@ import type { DecisionClient } from "./decisionClient.js";
 export const ENDPOINT_DECISION_TIMEOUT_MS = 900;
 const SAID_MAX = 600;
 const ASKED_MAX = 300;
-/** 与渲染层 utteranceHold 的 HOLD_MS 同一个数：真值问的就是「扣那么久值不值」。
-    两边各写一份是因为主进程不该 import 渲染层；数字在两处的注释里互相指着 */
-const RESUME_WINDOW_MS = 1800;
+// RESUME_WINDOW_MS 与渲染层 utteranceHold 的 HOLD_MS 是同一个数、同一处定义
+// （`src/shared/utteranceTiming.ts`）：真值问的就是「扣那么久值不值」，两处必须
+// 量同一扇窗，import 别名只是让这个文件里读起来仍是「真值窗口」这个意思。
 
 export function endpointQuestions(said: string, asked: string | null): { state: DecisionState; questions: Record<string, DecisionQuestion> } {
   return {

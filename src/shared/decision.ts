@@ -54,7 +54,11 @@ export interface DecisionReply {
   /** 真正作答的那个版本（上游报的，例如 `jev-1.13.0`）——阈值是对着某个版本调的，日志里要留 */
   model: string;
   answers: Record<string, DecisionAnswer>;
-  /** 上游没报就是 null（网关据此退回按估算结算），不是解析失败 */
+  /** `parseDecisionReply` 从上游 `usage.input_tokens` 抠出来的数，上游没报、或形状
+      不对就是 null。**网关自己是这一格唯一的生产消费方**（serveDecision 解析上游
+      回包那一跳复用的是同一个函数）：这一格是 null 时网关拿请求体字节数估一个数，
+      垫进它回给客户端的 `usage.input_tokens` 里——所以客户端这边最终看到的数不一定
+      是上游报过的那个，只是网关按不按估算结算的判据 */
   inputTokens: number | null;
 }
 
@@ -173,6 +177,10 @@ export type DecisionOutcome<T> = { value: T; scores?: unknown } | { escalate: tr
  *
  * 日志是一行 `[decision] {json}`：影子期要回答的「一致率」与「校准」都从它 grep
  * （spec §7）。判决的**结果**已经在事件日志里，概率是调参用的诊断量，不落事件。
+ *
+ * **抛错只接得住 `viaDecision()` 返回的 promise 被 reject，接不住这次调用本身的
+ * 同步抛出**（那会直接从这个函数里抛出去）——五处调用今天全部把 `viaDecision`
+ * 写成 `async` 函数，所以同步抛错不会发生，这是写法保证的，不是这里检查出来的。
  */
 export async function withDecision<T>(o: {
   use: DecisionUse;

@@ -140,7 +140,8 @@ export function parseRouteRows(v: unknown): RouteRow[] {
   return out;
 }
 
-/** 路由表 → `/me` 下发的那三格（对话型号清单 / 出图型号清单 / 型号→平台）。
+/** 路由表 → `/me` 下发的那五格（对话型号清单 / 出图型号清单 / 语音合成型号清单 /
+    决策模型清单 / 型号→平台）。
     **两张清单分开**（#1081）：`models` 喂输入框那枚模型选择器，`imageModels` 喂
     `generate_image` 那把刀。合成一格的代价是 ADR-0237 的 Auto 拿 `models.at(-1)`
     当「最贵 = 最强」，而出图那款 $60/M —— 一次正常提问会得到一张图。

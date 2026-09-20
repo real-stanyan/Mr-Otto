@@ -470,6 +470,8 @@ export function createLlmGateway(deps: LlmGatewayDeps): (req: Request, caller: C
     // ③ 请求体摘掉 `use` 再发（那是我们自己的字段，上游不认识）；
     // ④ **上游回了 200 就结算**，哪怕答案形状不对（同 #855：收了钱的调用不许 release）——
     //    结算完再回 502，客户端据此回落到原来那条路。
+    // 不换站：决策模型今天也只有一条路，所以这里返回的是 `Response` 不是 `Response | null`——
+    // 外层 failover 循环见非 null 就直接收下，不会换下一条候选（同 serveTts）
     const serveDecision = async (route: RouteRow, key: string): Promise<Response> => {
       const bodyBytes = new TextEncoder().encode(raw).length;
       const parsed = parseDecisionRequest(body, bodyBytes);

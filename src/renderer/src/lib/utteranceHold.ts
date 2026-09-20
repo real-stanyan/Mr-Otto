@@ -20,11 +20,16 @@
 //   ③ `hold: false`（影子期）：照问不误（主进程那侧据此记对照日志），但**一拍都不耽误**
 //      ——连「等答案那 200ms」都不等。
 
+import { HOLD_MS } from "../../../shared/utteranceTiming.js";
+
 /** P(说完了) 低于它才扣。**初值**，由影子期的真值数据改：那一处的真值是观测得到的
     （final 之后 1.8 秒内人有没有接着说），主进程的 endpointJudge 在记 */
 export const HOLD_BELOW = 0.35;
-/** 扣住之后等人接着说的时长。取 1.8s：helper 对「没说完」的句子本来就肯等 2.5s */
-export const HOLD_MS = 1800;
+
+/* ── 扣住之后等人接着说的时长搬去了 `src/shared/utteranceTiming.ts`（#1281：主进程
+      endpointJudge.ts 的真值窗口要量同一扇窗，而主进程不该 import 渲染层）。这里
+      原样再导出，既有 import 点一个都不用改，「同一个数只有一份」也仍然看得见。 ── */
+export { HOLD_MS } from "../../../shared/utteranceTiming.js";
 /** final 到了、答案还在路上：最多再等这么久。投机问是在 ≥700ms 之前发出的，
     正常情况下答案早到了；这一格只兜「这一次特别慢」 */
 export const VERDICT_WAIT_MS = 200;

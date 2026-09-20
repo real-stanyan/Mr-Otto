@@ -116,8 +116,8 @@ export interface HostedCapability {
   edgeBaseUrl: () => string;
   accessToken: () => Promise<string | null>;
   /** 决策模型（#1281）。**可选**：缺席 = 行为与改动前逐字相同，所以没装配托管的那些装配
-      （探针 / 测试 / 裸装配）不用动；装配了的三处（主会话 / 子 agent / 子会话重建）跟着
-      `hostedDeps` 这一个对象原样接住——同这个接口具名的理由 */
+      （探针 / 测试 / 裸装配）不用动；装配了的四处（主会话 / 子 agent 两处 / 子会话重建）
+      跟着 `hostedDeps` 这一个对象原样接住——同这个接口具名的理由 */
   decision?: DecisionClient;
 }
 import type { ModelLane } from "../shared/modelLane.js";
