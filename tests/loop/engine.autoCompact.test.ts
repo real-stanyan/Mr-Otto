@@ -205,3 +205,61 @@ describe("同 turn 二次自动压缩（增长闸，issue #283 ⑤）", () => {
     expect(types.filter((t) => t === "context_compacted")).toHaveLength(1);
   });
 });
+
+describe("闲置压缩（#1280）", () => {
+  /** 窗口给 1M：比例那条要攒到 50 万才触发，seeded() 的 80k 够不着——
+      于是这一组只在验「隔了多久」这一条 */
+  const idleEngine = (store: EventStore, adapter: ModelAdapter, idle: { afterMs: number; now: number }) =>
+    new LoopEngine({
+      store, adapter, tools: [], world, sessionId: "s",
+      autoCompact: {
+        contextWindow: () => 1_000_000,
+        settings: () => ({ enabled: true }),
+        idle: { afterMs: idle.afterMs, minTokens: 16_000, lastTurnEndedTs: () => 0, now: () => idle.now },
+      },
+    });
+
+  it("隔了够久再开口：第一圈先压再答", async () => {
+    const store = seeded();
+    const { adapter, seen } = scripted([{ content: "摘要" } as ModelReply, { content: "答" } as ModelReply]);
+    await idleEngine(store, adapter, { afterMs: 1000, now: 5000 }).runTurn("回来了");
+    expect(store.load("s").filter((e) => e.type === "context_compacted")).toHaveLength(1);
+    expect(seen).toHaveLength(2); // 一次摘要 + 一次作答
+  });
+
+  it("没隔够：不压", async () => {
+    const store = seeded();
+    const { adapter, seen } = scripted([{ content: "答" } as ModelReply]);
+    await idleEngine(store, adapter, { afterMs: 10_000, now: 5000 }).runTurn("回来了");
+    expect(store.load("s").some((e) => e.type === "context_compacted")).toBe(false);
+    expect(seen).toHaveLength(1);
+  });
+
+  it("这只还没跑过一轮（lastTurnEndedTs 回 null）：不压——「读不到」不是「隔了很久」", async () => {
+    const store = seeded();
+    const { adapter, seen } = scripted([{ content: "答" } as ModelReply]);
+    const engine = new LoopEngine({
+      store, adapter, tools: [], world, sessionId: "s",
+      autoCompact: {
+        contextWindow: () => 1_000_000,
+        settings: () => ({ enabled: true }),
+        idle: { afterMs: 1000, minTokens: 16_000, lastTurnEndedTs: () => null, now: () => 5000 },
+      },
+    });
+    await engine.runTurn("回来了");
+    expect(store.load("s").some((e) => e.type === "context_compacted")).toBe(false);
+    expect(seen).toHaveLength(1);
+  });
+
+  it("idle 缺席 = 本机会话与团队会话，一字不变", async () => {
+    const store = seeded();
+    const { adapter, seen } = scripted([{ content: "答" } as ModelReply]);
+    const engine = new LoopEngine({
+      store, adapter, tools: [], world, sessionId: "s",
+      autoCompact: { contextWindow: () => 1_000_000, settings: () => ({ enabled: true }) },
+    });
+    await engine.runTurn("回来了");
+    expect(store.load("s").some((e) => e.type === "context_compacted")).toBe(false);
+    expect(seen).toHaveLength(1);
+  });
+});

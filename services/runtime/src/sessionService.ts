@@ -193,7 +193,9 @@ import { filterGrantedByAllow, type AgentToolAllow } from "../../../src/shared/a
 import { createWikiTools } from "./wikiTool.js";
 import type { WikiService, WikiSnapshotForAgent } from "./wikiService.js";
 import type { MentionInbox, MentionInboxRow } from "./mentionInbox.js";
-import { DEFAULT_AUTO_COMPACT } from "../../../src/shared/autoCompact.js";
+import {
+  CHAT_AUTO_COMPACT, CHAT_IDLE_COMPACT_MS, CHAT_IDLE_COMPACT_MIN_TOKENS, DEFAULT_AUTO_COMPACT,
+} from "../../../src/shared/autoCompact.js";
 import { createCreateAgentTool } from "./createAgentTool.js";
 import { createGitTools, type GitToolDeps } from "./gitTools.js";
 import type { WorkspaceAgentWriter } from "./agentRegistry.js";
@@ -648,6 +650,15 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     const team = await opts.agents(o);
     return team.some((a) => a.degraded) ? team : narrowRoster(team, chatRoster);
   };
+  /** 每只智能体**自己**上一轮的收口时刻（#1280，闲置压缩用）。装配时整份折叠一次、
+      之后在 notify 里逐条推进——与 `bounds` / `voiceCall` / `speakerLabels` 同一个形状。
+      按 agentId 分开记不是洁癖：群里别人刚说过话不算这一只「没闲着」，它自己的上下文
+      照样是六小时前的那一份。`turn_ended` 带 agentId（ADR-0219），缺席的（本机日志 /
+      存量）不进表 —— 那是「读不到」，查询回 null，闲置压缩不触发 */
+  const lastTurnEndedTs = new Map<string, number>();
+  for (const e of seed) {
+    if (e.type === "turn_ended" && e.agentId) lastTurnEndedTs.set(e.agentId, e.ts);
+  }
   let lastSeqSeen = seed.at(-1)?.seq ?? -1;
   /** 「这一轮的判据从日志的哪一条读起」的两条保守下界（#958）。装配时整份折叠
       一次，之后每条事件经 notify 增量推进——于是 runJob 与 relayAfterTurn 每个
@@ -868,6 +879,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // 文字（本地那条纪律写在 src/main/index.ts 的 send 包装里，这里是同一处）
     deltas.flush();
     lastSeqSeen = e.seq;
+    if (e.type === "turn_ended" && e.agentId) lastTurnEndedTs.set(e.agentId, e.ts);
     // 尾段下界跟着走（#958）。**别把它读成「这里是唯一的落盘口，所以折叠结果
     // 精确等于对整份日志折叠一次」**（复审 Minor ③）：那句话不真——daemon.ts 往
     // 同一个 store 直接 append 了四类事件（notifyWorkspace 的 chat_message /
@@ -1186,7 +1198,20 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         // engine 存在就意味着那一格写过了。兜一个"建 engine 那一刻的 adapter"
         // 只会把「Map 忘了写」这个 bug 变成静默的旧型号窗口——正是这一格要防的东西
         contextWindow: () => opts.contextWindowOf(currentAdapters.get(spec.agentId)!.model),
-        settings: () => DEFAULT_AUTO_COMPACT,
+        // 聊天走预算闸（#1280）：永久线上每句话都背着全部上下文，而按窗口比例算，
+        // 1M 窗口的型号要攒到 50 万 token 才压一次。团队会话照旧——那边一条会话
+        // 有头有尾，按比例压是对的。chatKind 是建会话时记进日志的事实，一生不变
+        settings: () => (chatKind === null ? DEFAULT_AUTO_COMPACT : CHAT_AUTO_COMPACT),
+        ...(chatKind === null
+          ? {}
+          : {
+              idle: {
+                afterMs: CHAT_IDLE_COMPACT_MS,
+                minTokens: CHAT_IDLE_COMPACT_MIN_TOKENS,
+                lastTurnEndedTs: () => lastTurnEndedTs.get(spec.agentId) ?? null,
+                ...(opts.now ? { now: opts.now } : {}),
+              },
+            }),
       },
       // 护栏硬停（#957 E-F5）。本机会话故意不配：ADR-0006 的"无步数天花板"前提是
       // 人就坐在那儿，停止键随时能按。群聊云会话没有那个人——真机上跑过 300 次

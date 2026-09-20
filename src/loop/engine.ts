@@ -15,7 +15,7 @@ import { barrenEventIndexes } from "../session/barrenTurns.js";
 import { boundedContextEvents } from "../session/modelContextScan.js";
 import { clipHeadTail, redactSensitiveText } from "../shared/redact.js";
 import { contextUsed } from "../shared/contextEstimate.js";
-import { shouldAutoCompact, type AutoCompactSettings } from "../shared/autoCompact.js";
+import { shouldAutoCompact, shouldIdleCompact, type AutoCompactSettings } from "../shared/autoCompact.js";
 import {
   detectToolLoop,
   roundFingerprint,
@@ -87,6 +87,17 @@ export interface LoopEngineOptions {
   autoCompact?: {
     contextWindow: () => number | undefined; // 当前型号的窗口；换型号后现算
     settings: () => AutoCompactSettings; // 现读（设置页改了当场生效）
+    /** 闲置压缩（#1280）：只在一轮的**第一圈**判一次。不给 = 没有这条
+        （本机会话与团队会话一字不变）。
+        `lastTurnEndedTs` 由装配方给——engine 手上的 store 可能是按 agent 分过
+        视野的（agentView）也可能不是，「这只智能体上一轮什么时候收口」该由
+        知道的人说，而不是让 engine 去猜它手上那份日志是谁的 */
+    idle?: {
+      afterMs: number;
+      minTokens: number;
+      lastTurnEndedTs: () => number | null;
+      now?: () => number;
+    };
   };
   /** 单 turn 模型步数到 LONG_TURN_ROUNDS 时喊一次（每 turn 至多一次）。
       不给 = 不喊（测试和裸装配照旧）。装配层拿它发系统通知 */
@@ -815,7 +826,19 @@ export class LoopEngine {
         const used = contextUsed(log, barren);
         const grown =
           this.compactFloor === null || used >= this.compactFloor + REAUTO_MIN_GROWTH_TOKENS;
-        if (grown && shouldAutoCompact(used, contextWindow(), settings())) {
+        // 闲置压缩（#1280）：只在**第一圈**判（rounds 在下面才自增，这一块跑第一遍
+        // 时它就是 0）。turn 中途不再判——「隔了多久」说的是这一轮开口之前的事，
+        // 一轮里判两次会在工具密集的 turn 中间凭空多压一次
+        const idleCfg = this.opts.autoCompact.idle;
+        const last = rounds === 0 && idleCfg ? idleCfg.lastTurnEndedTs() : null;
+        const idleHit =
+          rounds === 0 &&
+          shouldIdleCompact({
+            used,
+            idleMs: last === null ? null : (idleCfg?.now ?? Date.now)() - last,
+            idle: idleCfg ? { afterMs: idleCfg.afterMs, minTokens: idleCfg.minTokens } : undefined,
+          });
+        if (idleHit || (grown && shouldAutoCompact(used, contextWindow(), settings()))) {
           try {
             await this.compact({ trigger: "auto", signal });
           } catch (err) {

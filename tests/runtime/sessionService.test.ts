@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from "vitest";
 import { join } from "node:path";
 import { readFile } from "node:fs/promises";
 import { createCloudSession, kickedNoteText, SANDBOX_PROBE_FAIL_TEXT, SayRejectedError, speakerLabelOf, TAIL_FLOOR_MAX_EXTRA, type CloudSession, type CloudSessionOpts } from "../../services/runtime/src/sessionService.js";
+import { CHAT_CONTEXT_BUDGET_TOKENS, CHAT_IDLE_COMPACT_MIN_TOKENS, CHAT_IDLE_COMPACT_MS } from "../../src/shared/autoCompact.js";
 import { createWikiService, type WikiService } from "../../services/runtime/src/wikiService.js";
 import { createMemoryWikiFs } from "../../services/runtime/src/wikiFs.js";
 import { createInMemoryWikiJournal } from "../../services/runtime/src/wikiJournal.js";
@@ -3268,6 +3269,100 @@ describe("多智能体自查第一批（#957 Task 4a）", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// ─────────────────────────────────────────────────────────────────────────────
+// 聊天的上下文口径（#1280）。两条判据各是一个分叉，断言都走**真跑一轮**、
+// 看日志里有没有落下 context_compacted —— 不去戳 engine 手上那份配置对象：
+// 那样钉得住「传了什么」，钉不住「传对了没有」（同这个文件里 #957 A-1 那一组的纪律）。
+// ─────────────────────────────────────────────────────────────────────────────
+describe("聊天的上下文口径（#1280）", () => {
+  const OPS = { agentId: "ops", name: "运营", description: "", instructions: "", models: ["m"], tools: [] as AgentToolAllow[] };
+
+  /** 把占用锚到 usedTokens（engine 的 contextUsed 读最后一条带账单的 assistant_message）。
+      `endedTs` = 这只上一轮的收口时刻，闲置压缩那条判据读它 */
+  function seedOne(store: EventStore, o: { chat: boolean; usedTokens: number; endedTs?: number }): void {
+    store.append({
+      sessionId: "s1", ts: 1, type: "session_created", workspace: "/work",
+      cloud: { workspaceId: "w1", ...(o.chat ? { chat: { kind: "dm" as const } } : {}) },
+    });
+    if (o.chat) {
+      store.append({
+        sessionId: "s1", ts: 2, type: "chat_roster_changed", ignorable: true,
+        agents: [{ agentId: "ops", name: "运营" }],
+      });
+    }
+    store.append({ sessionId: "s1", ts: 3, type: "user_message", content: "早先" });
+    store.append({
+      sessionId: "s1", ts: 4, type: "assistant_message", content: "…", model: "m", agentId: "ops",
+      usage: { promptTokens: o.usedTokens, completionTokens: 0 },
+    });
+    store.append({ sessionId: "s1", ts: o.endedTs ?? 5, type: "turn_ended", outcome: "completed", agentId: "ops" });
+  }
+
+  function open(store: EventStore, o: { chat: boolean; now?: () => number }): CloudSession {
+    return createCloudSession({
+      ...baseOpts(store, [], { model: "m", async chat() { return { content: "答" }; } }),
+      wiki: testWiki(),
+      agents: async () => [OPS],
+      adapterFor: () => ({ model: "m", async chat() { return { content: "答" }; } }),
+      // 1M 窗口：比例那条要攒到 50 万才触发，预算闸（6 万）先到——两条谁先到
+      // 正是这一组要分的事
+      contextWindowOf: () => 1_000_000,
+      ...(o.now ? { now: o.now } : {}),
+    });
+  }
+
+  const compactedCount = (store: EventStore): number =>
+    store.load("s1").filter((e) => e.type === "context_compacted").length;
+
+  it("预算闸只给聊天：6 万 token + 1M 窗口，聊天压、团队不压", async () => {
+    const chatStore = newStore();
+    seedOne(chatStore, { chat: true, usedTokens: CHAT_CONTEXT_BUDGET_TOKENS });
+    const chat = open(chatStore, { chat: true });
+    await chat.say("u1", "alice", "继续", false, ["ops"], undefined, []);
+    await chat.settled();
+    expect(compactedCount(chatStore)).toBe(1);
+    chatStore.close();
+
+    const teamStore = newStore();
+    seedOne(teamStore, { chat: false, usedTokens: CHAT_CONTEXT_BUDGET_TOKENS });
+    const team = open(teamStore, { chat: false });
+    await team.say("u1", "alice", "继续", false, ["ops"], undefined, []);
+    await team.settled();
+    expect(compactedCount(teamStore)).toBe(0);
+    teamStore.close();
+  });
+
+  it("闲置压缩只给聊天：隔了六小时再开口，聊天先压再答；团队一字不变", async () => {
+    const late = CHAT_IDLE_COMPACT_MS * 2;
+    const chatStore = newStore();
+    seedOne(chatStore, { chat: true, usedTokens: CHAT_IDLE_COMPACT_MIN_TOKENS, endedTs: 1 });
+    const chat = open(chatStore, { chat: true, now: () => 1 + late });
+    await chat.say("u1", "alice", "回来了", false, ["ops"], undefined, []);
+    await chat.settled();
+    expect(compactedCount(chatStore)).toBe(1);
+    chatStore.close();
+
+    const teamStore = newStore();
+    seedOne(teamStore, { chat: false, usedTokens: CHAT_IDLE_COMPACT_MIN_TOKENS, endedTs: 1 });
+    const team = open(teamStore, { chat: false, now: () => 1 + late });
+    await team.say("u1", "alice", "回来了", false, ["ops"], undefined, []);
+    await team.settled();
+    expect(compactedCount(teamStore)).toBe(0);
+    teamStore.close();
+  });
+
+  it("上下文不够大就不压：隔了很久但只攒了一点，白烧一次摘要不值", async () => {
+    const store = newStore();
+    // 离门槛留出余量：contextUsed 不只是这条账单，还要加上 system 提示词与这一句新话
+    seedOne(store, { chat: true, usedTokens: Math.floor(CHAT_IDLE_COMPACT_MIN_TOKENS / 2), endedTs: 1 });
+    const s = open(store, { chat: true, now: () => 1 + CHAT_IDLE_COMPACT_MS * 2 });
+    await s.say("u1", "alice", "回来了", false, ["ops"], undefined, []);
+    await s.settled();
+    expect(compactedCount(store)).toBe(0);
+    store.close();
+  });
+});
+
 // 云会话自动压缩（#957 A-1）。桌面在 src/main/agent.ts:852 给 engine 递了
 // autoCompact，runtime 的 engineFor 从头到尾没有——云会话因此**永远不压缩**，
 // 上下文单调增长到每一轮都 400，而每一轮都按全尺寸计在 owner 头上，且没有任何
