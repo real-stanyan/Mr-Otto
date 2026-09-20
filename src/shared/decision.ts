@@ -179,8 +179,11 @@ export type DecisionOutcome<T> = { value: T; scores?: unknown } | { escalate: tr
  * （spec §7）。判决的**结果**已经在事件日志里，概率是调参用的诊断量，不落事件。
  *
  * **抛错只接得住 `viaDecision()` 返回的 promise 被 reject，接不住这次调用本身的
- * 同步抛出**（那会直接从这个函数里抛出去）——五处调用今天全部把 `viaDecision`
+ * 同步抛出**（那会直接从这个函数里抛出去）——调用点今天**全部**把 `viaDecision`
  * 写成 `async` 函数，所以同步抛错不会发生，这是写法保证的，不是这里检查出来的。
+ * 不写数字：五处分类器里只有三处经过这个包装（派活 / Auto / 重命名），记忆与语音
+ * 断句各自有不走这条路的理由（前者自己分三态，后者压根没有 LLM 兜底可言），
+ * 而一个写死的数字迟早会和真相分家——上一版这里写的「五处」就是。
  */
 export async function withDecision<T>(o: {
   use: DecisionUse;
