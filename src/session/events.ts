@@ -311,6 +311,11 @@ export interface RouteChangedEvent extends SessionEventBase {
     消费方（比如把团队名字写进提示词），到时候不用再改一次 schema。 */
 export interface CloudSessionFacts {
   workspaceId: string;
+  /** 这是一条聊天（#1280）：私聊或群聊。缺席 = 团队会话（旧日志照常重放） */
+  chat?: { kind: "dm" | "group" };
+  /** 这条会话所在的 workspace 是个人主场（workspaces.kind='home'）：提示词里审批那句话怎么说
+      由它决定。与 runtime 装配时现查的 approveAll 说的是同一件事；kind 不可变，两处不会分家 */
+  home?: true;
 }
 
 /** 额外 2：会话创建 —— 永远是日志的第 0 条 */
@@ -621,6 +626,18 @@ export interface VoiceCallChangedEvent extends SessionEventBase {
   participants: VoiceCallParticipant[];
   byUid: string;
   byAgentId?: string;
+  ignorable: true;
+}
+
+/** 聊天名单变了（#1280，spec §5.1）。`agents` 是变动之后的**完整**名单，名字是写入那一刻的
+    快照（同 voice_call_changed：改名不改史）。最新一条胜出，投影在 src/shared/chatRoster.ts；
+    一条都没有 = 这条会话没有名单这回事（团队会话 / 存量日志）= 整份团队名单都在。
+    建聊天时紧跟 session_created 落第一条（不带 byUid），之后每次 chat_update 改了名单落一条。
+    模型不可见：名单经 agent_briefed.roster 到模型那里。`ignorable`：旧版本跳过它只少一行时间线 */
+export interface ChatRosterChangedEvent extends SessionEventBase {
+  type: "chat_roster_changed";
+  agents: { agentId: string; name: string }[];
+  byUid?: string;
   ignorable: true;
 }
 
@@ -1116,6 +1133,7 @@ export type SessionEvent =
   | AgentBriefedEvent
   | AgentRelayEvent
   | VoiceCallChangedEvent
+  | ChatRosterChangedEvent
   | ExecutorChangedEvent
   | MemoryLoadedEvent
   | WorkspaceMemoryLoadedEvent
@@ -1179,6 +1197,7 @@ const KNOWN_EVENT_TYPES_MAP: Record<SessionEvent["type"], true> = {
   agent_briefed: true,
   agent_relay: true,
   voice_call_changed: true,
+  chat_roster_changed: true,
   executor_changed: true,
   memory_loaded: true,
   workspace_memory_loaded: true,

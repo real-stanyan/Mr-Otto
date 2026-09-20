@@ -23,6 +23,7 @@ import {
   decodeCsUp,
   encodeCs,
   type CsUp,
+  type CsChatSpec,
   type CsDeniedCode,
   type CsDown,
   type CsGitHost,
@@ -35,6 +36,7 @@ import { normalizeWorkPath } from "../../../src/shared/remote/workPath.js";
 import type { SessionEvent } from "../../../src/session/events.js";
 import { throttleMessage, TURN_BUCKET, type FrameRateLimiter } from "./rateLimit.js";
 import { SayRejectedError, type CloudSession } from "./sessionService.js";
+import { ChatCreateError } from "./chatCreate.js";
 
 /** backlog 一次性下发的分片阈值(终审 C2):明显低于 wire.ts 的 MAX_FRAME_BYTES
     (256 KiB,那是 base64 编码后的整帧硬上限)——留出安全边际。水獭在沙箱里
@@ -122,7 +124,19 @@ export interface FrameHandlerDeps {
   labelOf: (uid: string) => Promise<string>; // profiles 查询，查不到回 uid.slice(0,8)
   sessions: {
     get(workspaceId: string, sessionId: string): CloudSession | null;
-    create(workspaceId: string, byUid: string): Promise<{ sessionId: string }>;
+    /** `chat` 在场 = 建一条聊天（#1280），缺席 = 团队会话（同旧）。
+        业务上不该建（名单里没这只、群不到两只、名单读不出来）时**抛 `ChatCreateError`**，
+        由这一层翻成 `create_failed` 回执；别的错照旧往上抛、进日志 */
+    create(workspaceId: string, byUid: string, chat?: CsChatSpec): Promise<{ sessionId: string }>;
+    /** 改一条聊天的名字 / 名单（#1280）。名单那一半只落日志（CloudSession.updateChatRoster），
+        `agent_ids` / `title` 两列归这一层写——同 archive 的分工。`ok:false` 的 message 是
+        给人看的那句话，原样进 `chat_update_result` */
+    updateChat(
+      workspaceId: string,
+      sessionId: string,
+      byUid: string,
+      patch: { name?: string; agentIds?: string[] },
+    ): Promise<{ ok: true } | { ok: false; message: string }>;
     ownerOf(workspaceId: string): Promise<string>;
     /** 收尾一条云会话（issue #822）：落日志（CloudSession.archive）+ 写
         Supabase 那行的 archived 列 + 收掉房间。三件事在 daemon 里，因为
@@ -399,12 +413,13 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
 
       // 控制房认的帧（协议 8 起：create / workspace；协议 9 加 archive，
       // 协议 10 加 delete，协议 11 加 files，协议 12 加 files_search；协议 14
-      // 拿走了 config——团队不再绑一个仓库，#1102；协议 18 加 wiki_write）——
-      // 都是「关于某个团队」的动作，不挂在任何一条会话上。在籍是共同前提
+      // 拿走了 config——团队不再绑一个仓库，#1102；协议 18 加 wiki_write；
+      // 协议 20 加 chat_update，#1280）——都是「关于某个团队」的动作，不挂在
+      // 任何一条会话上。在籍是共同前提
       if (
         msg.t !== "create" && msg.t !== "workspace" && msg.t !== "git_credential" &&
         msg.t !== "archive" && msg.t !== "delete" && msg.t !== "files" &&
-        msg.t !== "files_search" && msg.t !== "wiki_write"
+        msg.t !== "files_search" && msg.t !== "wiki_write" && msg.t !== "chat_update"
       ) {
         deny(cid, "not_authorized");
         return;
@@ -509,6 +524,34 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
         return;
       }
 
+      if (msg.t === "chat_update") {
+        // 谁能改（#1280）：所有者或建这条聊天的人——与归档 / 删除同一条判据（#822）。
+        // 在籍已经由上面那道公共的 isMember 复查过。限速复用 `create` 那一档：改名单
+        // 与建会话同属低频的结构性动作，不为它另开一种 ThrottleKind
+        if (!deps.rateLimit.allow("create", entry.uid)) {
+          deny(cid, "rate_limited");
+          return;
+        }
+        const [creator, ownerUid] = await Promise.all([
+          deps.sessions.creatorOf(msg.workspaceId, msg.sessionId),
+          deps.sessions.ownerOf(msg.workspaceId),
+        ]);
+        if (entry.uid !== ownerUid && entry.uid !== creator) {
+          deny(cid, "not_authorized");
+          return;
+        }
+        const { t: _t, workspaceId, sessionId, ...patch } = msg;
+        const r = await deps.sessions.updateChat(workspaceId, sessionId, entry.uid, patch);
+        deps.send(cid, {
+          t: "chat_update_result",
+          workspaceId,
+          sessionId,
+          ok: r.ok,
+          ...(r.ok ? {} : { message: r.message }),
+        });
+        return;
+      }
+
       if (msg.t === "archive") {
         // 谁能收尾（issue #822 的判据原样）：**owner 或建这条会话的人**。云端没有
         // "恢复归档"那一半（daemon 启动只捞 archived=false 的房间重开），所以这是
@@ -517,6 +560,18 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
         const session = deps.sessions.get(msg.workspaceId, msg.sessionId);
         if (!session) {
           deps.send(cid, { t: "archive_result", workspaceId: msg.workspaceId, sessionId: msg.sessionId, ok: false, message: "这条会话不存在或已经归档了。" });
+          return;
+        }
+        // 聊天只有删除没有归档（#1280，spec §6.6）：私聊的唯一索引不带 archived，
+        // 归档一条私聊 = 那只智能体从此再也开不出私聊
+        if (session.chat() !== null) {
+          deps.send(cid, {
+            t: "archive_result",
+            workspaceId: msg.workspaceId,
+            sessionId: msg.sessionId,
+            ok: false,
+            message: "聊天不能归档。不想要了就删除它。",
+          });
           return;
         }
         const ownerUid = await deps.sessions.ownerOf(msg.workspaceId);
@@ -597,7 +652,17 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
         return;
       }
 
-      const { sessionId } = await deps.sessions.create(msg.workspaceId, entry.uid);
+      // 建聊天有**业务**失败（名单里没这只、群不到两只、名单读不出来），而这条帧
+      // 在协议 20 之前只认 created / denied 两种回执——抛错就是让桌面白等满超时、
+      // 把「群聊至少要两只」报成「云端无响应」（方向指向 VPS 宕机）。真故障照旧往上抛
+      let sessionId: string;
+      try {
+        ({ sessionId } = await deps.sessions.create(msg.workspaceId, entry.uid, msg.chat));
+      } catch (err) {
+        if (!(err instanceof ChatCreateError)) throw err;
+        deps.send(cid, { t: "create_failed", workspaceId: msg.workspaceId, message: err.message });
+        return;
+      }
       deps.send(cid, {
         t: "created",
         workspaceId: msg.workspaceId,
@@ -642,6 +707,8 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
           initiatorUid: session.initiatorUid(),
           ownerUid,
           modelRoute: await deps.modelRoute(workspaceId, ownerUid),
+          // 聊天身份（协议 20，#1280）：团队会话回 null，那一格就不上线
+          ...(session.chat() !== null ? { chat: session.chat()! } : {}),
         });
         return;
       }
@@ -732,6 +799,13 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
 
         case "backlog": {
           if (!(await requireStillMember(workspaceId, cid, entry.uid))) return;
+          // 尾巴分页（协议 20，#1280）：帧形状在 Task 3 里一次定下来，实现晚几个 PR。
+          // 在那之前说出口而不是静默当成 afterSeq —— 后者会把「给我末尾一屏」
+          // 答成「从头给我全部」，正是这条能力要修的那个形态
+          if ("tail" in msg) {
+            deps.send(cid, { t: "error", msg: "尾巴分页还没接上" });
+            return;
+          }
           const events = session.backlog(msg.afterSeq);
           // 终审 C2：按累计字节分片下发，不再一帧打包全量——见文件头
           // chunkBacklogFrames 的注释，一条超限事件曾经能让整条云会话
@@ -846,6 +920,7 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
         case "wiki_write": // 同上（协议 18，#1140）：wiki 是团队的
         case "archive": // 同上（协议 9，#993）：归档不该以「你正开着这条会话」为前提
         case "delete": // 同上（协议 10，#1044）：删的多半是归档掉的那些，根本没有房间
+        case "chat_update": // 同上（协议 20，#1280）：改名单不该以「你正开着这条聊天」为前提
         default:
           deny(cid, "not_authorized");
           return;

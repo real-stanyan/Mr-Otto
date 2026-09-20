@@ -26,6 +26,7 @@ import { createTtlCache } from "./ttlCache.js";
 import { createWorkspaceLocks } from "./workspaceLock.js";
 import { createFrameRateLimiter } from "./rateLimit.js";
 import { createCloudSession, type CloudSession, type AgentSpec } from "./sessionService.js";
+import { ChatCreateError, planChatCreate } from "./chatCreate.js";
 import { createSupabaseLegacyMemoryReader } from "./workspaceMemory.js";
 import { createSupabaseWikiJournal } from "./wikiJournal.js";
 import { createContainerWikiFs } from "./wikiFs.js";
@@ -241,10 +242,42 @@ async function main(): Promise<void> {
     return safeSpeakerLabel(name ?? "", uid);
   }
 
+  /** 这个 workspace 的两格事实：所有者与 kind（#1280）。**一次查询给出两个答案**——
+      kind 有两个消费方（写进 session_created.cloud.home 的那一格、决定 approveAll 的
+      那一格），各查一次就有两份判据，而它们分家的形状正是 #1206：模型照提示词说
+      「这里没有审批」，审批门却在问人。kind 不可变（0037 的触发器钉着），owner 每次
+      现查（口径同改动前的 ownerOf）。查询失败原样抛，**不回落**：这两格要么写进
+      append-only 的日志、要么决定一条会话审不审批，「查不到」时宁可不开这条会话 */
+  async function workspaceFacts(workspaceId: string): Promise<{ ownerUid: string; kind: "team" | "home" }> {
+    const { data, error } = await supabase.from("workspaces").select("owner_uid,kind").eq("id", workspaceId).single();
+    if (error || !data) {
+      // kind 这一列是 0037 加的：刚升级而 migration 没跑时这里会因为列不存在整条失败，
+      // 而那条错误读起来像「workspace 不存在」——部署顺序是 migration 先于 runtime（#791）
+      throw new Error(
+        `workspace 不存在或查询失败（${workspaceId}）：${error?.message ?? "no data"}` +
+          `（若刚升级，先确认 supabase/migrations/0037 已执行）`
+      );
+    }
+    const row = data as { owner_uid: string; kind?: string };
+    return { ownerUid: row.owner_uid, kind: row.kind === "home" ? "home" : "team" };
+  }
+
   async function ownerOf(workspaceId: string): Promise<string> {
-    const { data, error } = await supabase.from("workspaces").select("owner_uid").eq("id", workspaceId).single();
-    if (error || !data) throw new Error(`workspace 不存在或查询失败（${workspaceId}）：${error?.message ?? "no data"}`);
-    return (data as { owner_uid: string }).owner_uid;
+    return (await workspaceFacts(workspaceId)).ownerUid;
+  }
+
+  /** 这只智能体现成的那条私聊（#1280），没有回 null。库里那条唯一索引是权威，
+      这个查询只是在撞上它之前先问一遍——两条路都要走，因为「先查再插」不是原子的 */
+  async function findDmSession(workspaceId: string, agentIds: string[]): Promise<string | null> {
+    const { data, error } = await supabase
+      .from("workspace_sessions")
+      .select("id")
+      .eq("workspace_id", workspaceId)
+      .eq("chat_kind", "dm")
+      .contains("agent_ids", agentIds)
+      .maybeSingle();
+    if (error) throw new Error(`私聊查询失败（${workspaceId}）：${error.message}`);
+    return data ? (data as { id: string }).id : null;
   }
 
   /** 沙箱内工具要不要人批（#977，0026 迁移）。owner 在云会话输入框那一行改（ADR-0243），这里现查不缓存
@@ -413,7 +446,10 @@ async function main(): Promise<void> {
     workspaceId: string,
     sessionId: string,
     ownerUid: string,
-    createdByUid: string
+    createdByUid: string,
+    /** 个人主场：审批门前一律放行（#1280，ADR-0298）。两个调用方都已经 await 过
+        workspaceFacts，所以这一格与写进 session_created.cloud.home 的那一格同源 */
+    approveAll: boolean
   ): CloudSession {
     const store = storeFor(workspaceId);
     const roster = new Set<string>();
@@ -727,6 +763,9 @@ async function main(): Promise<void> {
       // 原样成立，只是做决定的地方在调用方——这也是 querySandboxApproval 头注
       // 早就写着的契约
       sandboxApproval: () => querySandboxApproval(workspaceId),
+      // 个人主场全免审批（#1280，ADR-0298）。装配那一刻定死不现查：kind 不可变，
+      // 而且这一格与日志里 session_created.cloud.home 那一格出自同一次 workspaceFacts
+      approveAll,
       // 上一次量出来的卷用量（#836，ADR-0287）。纯读 sandbox 的内存缓存、不打
       // docker——量这一下发生在 sandbox.ensure() 里，这里只是把读数递过去
       diskUsage: () => sandbox.diskUsage(workspaceId),
@@ -811,18 +850,44 @@ async function main(): Promise<void> {
         const active = activeSessions.get(sessionId);
         return active && active.workspaceId === workspaceId ? active.session : null;
       },
-      async create(workspaceId, byUid) {
+      async create(workspaceId, byUid, chat) {
         const sessionId = randomUUID();
-        const owner = await ownerOf(workspaceId);
+        // 所有者与 kind 一次问出来（#1280）：kind 同时决定提示词里审批那句话
+        // （落进 session_created.cloud.home）与审批门（approveAll），两处同源
+        const { ownerUid: owner, kind } = await workspaceFacts(workspaceId);
+        const home = kind === "home";
+        // 建一条聊天（#1280）。`chat` 缺席 = 团队会话，下面一个字都不变
+        const plan = chat ? planChatCreate(chat, await agentsCache.refresh(workspaceId)) : null;
+        if (plan && !plan.ok) throw new ChatCreateError(plan.message);
+        // 私聊幂等：那只已经有一条了就回现成的（两台设备同时发第一句话，落进同一条线）
+        if (plan?.ok && plan.chatKind === "dm") {
+          const existing = await findDmSession(workspaceId, plan.agentIds);
+          if (existing) {
+            if (!activeSessions.has(existing)) openSessionRoom(workspaceId, existing, owner, byUid, home);
+            return { sessionId: existing };
+          }
+        }
         const { error } = await supabase.from("workspace_sessions").insert({
           id: sessionId,
           workspace_id: workspaceId,
           publisher_uid: byUid,
           kind: "cloud",
-          title: "",
+          title: plan?.ok ? plan.title : "",
           pkg_id: null,
+          ...(plan?.ok ? { chat_kind: plan.chatKind, agent_ids: plan.agentIds } : {}),
         });
-        if (error) throw new Error(`workspace_sessions insert 失败：${error.message}`);
+        if (error) {
+          // 私聊那条唯一索引撞了（23505）= 另一台设备抢在前面建好了：回现成的那条，
+          // 不报错——两台设备同时发第一句话时，用户看到的该是同一条线
+          if (plan?.ok && plan.chatKind === "dm") {
+            const existing = await findDmSession(workspaceId, plan.agentIds);
+            if (existing) {
+              if (!activeSessions.has(existing)) openSessionRoom(workspaceId, existing, owner, byUid, home);
+              return { sessionId: existing };
+            }
+          }
+          throw new Error(`workspace_sessions insert 失败：${error.message}`);
+        }
         // 日志的第 0 条（issue #833）。少了它，deriveMessages 那边**一条
         // system 消息都投不出来**——它只从 session_created.workspace 产出
         // 那条消息，engine 不会补默认值。后果是云端水獭不知道自己在
@@ -835,12 +900,50 @@ async function main(): Promise<void> {
           ts: Date.now(),
           type: "session_created",
           workspace: WORKDIR,
-          cloud: { workspaceId },
+          cloud: {
+            workspaceId,
+            ...(plan?.ok ? { chat: { kind: plan.chatKind } } : {}),
+            ...(home ? { home: true as const } : {}),
+          },
         });
-        openSessionRoom(workspaceId, sessionId, owner, byUid);
+        // 名单那一条紧跟着落，**都在 openSessionRoom 之前**（#1280）：chatKind 与名单
+        // 都是装配时从 seed 折叠出来的，晚一步就是一条永远不收窄的聊天
+        if (plan?.ok) {
+          storeFor(workspaceId).append({
+            sessionId,
+            ts: Date.now(),
+            type: "chat_roster_changed",
+            agents: plan.entries,
+            ignorable: true,
+          });
+        }
+        openSessionRoom(workspaceId, sessionId, owner, byUid, home);
         return { sessionId };
       },
       ownerOf,
+      /** 改一条聊天的名字 / 名单（#1280）。名单那一半的事实归日志（CloudSession 落事件），
+          这里只写两列投影——写库失败不回滚也不报失败，启动对账时日志赢 */
+      async updateChat(workspaceId, sessionId, byUid, patch) {
+        const active = activeSessions.get(sessionId);
+        if (!active || active.workspaceId !== workspaceId) return { ok: false, message: "这条聊天不存在" };
+        const row: { agent_ids?: string[]; title?: string } = {};
+        if (patch.agentIds !== undefined) {
+          const out = await active.session.updateChatRoster(byUid, patch.agentIds);
+          if (out.kind !== "ok") return { ok: false, message: out.message };
+          row.agent_ids = out.agentIds;
+        }
+        if (patch.name !== undefined) {
+          if (active.session.chat()?.kind !== "group") return { ok: false, message: "只有群聊能改名" };
+          row.title = patch.name;
+        }
+        const { error } = await supabase.from("workspace_sessions").update(row).eq("id", sessionId);
+        if (error) {
+          console.warn(
+            `[otto-runtime] chat_update 写库失败（session=${sessionId}），那一列等下次对账：${error.message}`,
+          );
+        }
+        return { ok: true };
+      },
       /** 归档三件事（issue #822）：落日志 → 写 Supabase 那行 → 收房间。
           顺序不能换：日志那条 session_archived 要先广播出去，房里的人才
           知道发生了什么；房间一关，谁都收不到了。 */
@@ -1098,13 +1201,22 @@ async function main(): Promise<void> {
   // 都收不到。启动时把它们全部重新 openSessionRoom 一遍。
   const { data: cloudSessions, error: cloudErr } = await supabase
     .from("workspace_sessions")
-    .select("id,workspace_id,publisher_uid")
+    .select("id,workspace_id,publisher_uid,chat_kind,agent_ids")
     .eq("kind", "cloud")
     .eq("archived", false);
   if (cloudErr) {
-    console.warn(`[otto-runtime] 启动时拉取存量云会话失败，本轮不恢复任何房间：${cloudErr.message}`);
+    // 0037 没跑时这条 select 会因为列不存在整条失败——部署顺序是 migration 先于 runtime
+    console.warn(
+      `[otto-runtime] 启动时拉取存量云会话失败，本轮不恢复任何房间：${cloudErr.message}` +
+        `（若刚升级，先确认 supabase/migrations/0037 已执行）`,
+    );
   } else {
-    const rows = (cloudSessions ?? []) as { id: string; workspace_id: string; publisher_uid: string }[];
+    const rows = (cloudSessions ?? []) as {
+      id: string;
+      workspace_id: string;
+      publisher_uid: string;
+      agent_ids?: unknown;
+    }[];
     // 启动错峰（#957 A-9 / #933）：openSessionRoom 装配出的 CloudSession 一开工
     // 就可能触发重启补跑，而补跑起 turn = 起 sandbox 容器。N 条会话各自补跑时
     // 若同一 tick 全部起步，就是 N 个容器同时抢这台 VPS 的 CPU/内存/磁盘 I/O
@@ -1117,8 +1229,8 @@ async function main(): Promise<void> {
       try {
         const wait = start + i * 1500 - Date.now();
         if (wait > 0) await new Promise((r) => setTimeout(r, wait));
-        const owner = await ownerOf(row.workspace_id);
-        const session = openSessionRoom(row.workspace_id, row.id, owner, row.publisher_uid);
+        const facts = await workspaceFacts(row.workspace_id);
+        const session = openSessionRoom(row.workspace_id, row.id, facts.ownerUid, row.publisher_uid, facts.kind === "home");
         // **日志是事实，archived 那一列只是缓存**（issue #822）：归档时写库
         // 那一步失败过的话，这一行会停在 archived=false，于是一条已经收尾的
         // 会话被重新开出房间来（而且再也归档不了——CloudSession.archive 从
@@ -1137,6 +1249,19 @@ async function main(): Promise<void> {
             console.warn(`[otto-runtime] 补写 archived 列失败（sessionId=${row.id}）：${fixErr.message}`);
           }
           continue;
+        }
+        // 聊天名单对账（#1280）：**日志赢**——agent_ids 那一列是给「没开着这条聊天」的
+        // 桌面看的投影，chat_update 写它失败时不回滚、不报失败，补在这里
+        const want = session.chat();
+        const have = Array.isArray(row.agent_ids) ? (row.agent_ids as string[]) : [];
+        if (want !== null && (want.agentIds.length !== have.length || want.agentIds.some((id, i) => have[i] !== id))) {
+          const { error: fixErr } = await supabase
+            .from("workspace_sessions")
+            .update({ agent_ids: want.agentIds })
+            .eq("id", row.id);
+          if (fixErr) {
+            console.warn(`[otto-runtime] 补写 agent_ids 列失败（sessionId=${row.id}）：${fixErr.message}`);
+          }
         }
       } catch (err) {
         console.warn(
