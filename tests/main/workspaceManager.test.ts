@@ -35,6 +35,21 @@ function harness(over: Partial<WorkspaceManagerDeps> = {}) {
       calls.push("findHomeWorkspace");
       return null;
     },
+    listAgentChats: async () => {
+      calls.push("listAgentChats");
+      return { dmSessionId: null, groupSessionIds: [] };
+    },
+    removeCloudSession: async () => {
+      calls.push("removeCloudSession");
+      return { ok: true as const, value: null };
+    },
+    removeFromGroups: async () => {
+      calls.push("removeFromGroups");
+      return { ok: true as const, value: null };
+    },
+    removeAgentPage: async () => {
+      calls.push("removeAgentPage");
+    },
     listWorkspaces: async () => {
       calls.push("listWorkspaces");
       return rows;
@@ -610,5 +625,56 @@ describe("ensureHome（#1280）", () => {
     h.signOut();
     expect((await h.manager.ensureHome()).ok).toBe(false);
     expect(h.calls).toEqual([]);
+  });
+});
+
+describe("deleteAgent 的三步（#1280）", () => {
+  it("顺序：先删它的私聊 → 把它从各群摘掉 → 删那一行 → 删它的记忆页", async () => {
+    const h = harness({ listAgentChats: async () => ({ dmSessionId: "dm-1", groupSessionIds: ["g-1"] }) });
+    expect(await h.manager.deleteAgent("home", "a_1")).toEqual({ ok: true, value: null });
+    expect(h.calls.filter((c) => /removeCloudSession|removeFromGroups|deleteAgentRow|removeAgentPage/.test(c)))
+      .toEqual(["removeCloudSession", "removeFromGroups", "deleteAgentRow", "removeAgentPage"]);
+  });
+
+  it("没聊过就跳过第一步；没进过群就跳过第二步", async () => {
+    const h = harness({ listAgentChats: async () => ({ dmSessionId: null, groupSessionIds: [] }) });
+    await h.manager.deleteAgent("home", "a_1");
+    expect(h.calls).not.toContain("removeCloudSession");
+    expect(h.calls).not.toContain("removeFromGroups");
+    expect(h.calls).toContain("deleteAgentRow");
+  });
+
+  it("私聊删不掉就停：那一行还在，话说清楚", async () => {
+    const h = harness({
+      listAgentChats: async () => ({ dmSessionId: "dm-1", groupSessionIds: [] }),
+      removeCloudSession: async () => ({ ok: false as const, message: "云端无响应" }),
+    });
+    expect(await h.manager.deleteAgent("home", "a_1")).toEqual({
+      ok: false,
+      message: "它的聊天记录没删掉（云端无响应），所以这只智能体也先留着。稍后再试。",
+    });
+    expect(h.calls).not.toContain("deleteAgentRow");
+  });
+
+  it("从群里摘不掉也停在删那一行之前", async () => {
+    const h = harness({
+      listAgentChats: async () => ({ dmSessionId: null, groupSessionIds: ["g-1"] }),
+      removeFromGroups: async () => ({ ok: false as const, message: "云端无响应" }),
+    });
+    expect((await h.manager.deleteAgent("home", "a_1")).ok).toBe(false);
+    expect(h.calls).not.toContain("deleteAgentRow");
+  });
+
+  it("记忆页删不掉不拦删除：只留一页没人读的记忆", async () => {
+    const h = harness({ removeAgentPage: async () => { throw new Error("x"); } });
+    expect((await h.manager.deleteAgent("home", "a_1")).ok).toBe(true);
+    expect(h.calls).toContain("deleteAgentRow");
+  });
+
+  it("管理员照旧当场拒绝，一步都不走", async () => {
+    const h = harness();
+    expect((await h.manager.deleteAgent("home", "admin")).ok).toBe(false);
+    expect(h.calls).not.toContain("listAgentChats");
+    expect(h.calls).not.toContain("deleteAgentRow");
   });
 });

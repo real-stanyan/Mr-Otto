@@ -656,6 +656,9 @@ interface ChatState {
       #991 之后云会话头部那颗「设置」也要开它——两个消费方不在同一棵子树上，
       最近的公共层就是这里 */
   openWorkspaceId: string | null;
+  /** 哪一只智能体的设置抽屉开着（#1280）。null = 没开。与 openWorkspaceId 平级，
+      理由相同：两个消费方（聊天头部那颗 ⚙、花名册那一行）不在同一棵子树上 */
+  agentSettingsFor: string | null;
   /** 窗口是否全屏(macOS 全屏隐红绿灯,左上角 logo 显隐看它) */
   fullscreen: boolean;
   /** 冷启动进度：boot() 里那组 Promise.all 有几个已经回来 / 一共几个。
@@ -1186,6 +1189,9 @@ interface ChatState {
 
   setFriendsPanelOpen(open: boolean): void;
   setOpenWorkspaceId(id: string | null): void;
+  /** 打开某一只智能体的设置抽屉（#1280） */
+  openAgentSettings(agentId: string): void;
+  closeAgentSettings(): void;
   /** 拉一次本人资料。登录后由 onAccountChanged 触发,首登引导也在这里决定要不要弹 */
   refreshMyProfile(): Promise<void>;
   /** 改本人资料。回 null = 成功,回字符串 = 给用户看的失败原因 */
@@ -1566,6 +1572,7 @@ export const useChat = create<ChatState>((set, get) => ({
   realtimeHealth: "connecting",
   friendsPanelOpen: false,
   openWorkspaceId: null,
+  agentSettingsFor: null,
   fullscreen: false,
   bootDone: 0,
   bootTotal: 0,
@@ -2998,6 +3005,8 @@ export const useChat = create<ChatState>((set, get) => ({
 
   setFriendsPanelOpen: (open) => set({ friendsPanelOpen: open }),
   setOpenWorkspaceId: (id) => set({ openWorkspaceId: id }),
+  openAgentSettings: (agentId) => set({ agentSettingsFor: agentId }),
+  closeAgentSettings: () => set({ agentSettingsFor: null }),
 
   setProfileSetupOpen: (open) =>
     set((s) => {

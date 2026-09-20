@@ -25,6 +25,7 @@ export function CloudSessionMain({ onManage }: { onManage: (workspaceId: string)
   const seedDraft = useChat((s) => s.seedCloudDraft);
   const cloudSay = useChat((s) => s.cloudSay);
   const refreshGroups = useChat((s) => s.refreshWorkspaceGroups);
+  const openAgentSettings = useChat((s) => s.openAgentSettings);
   // 群名在清单那一行上（title），不在 welcome 里——welcome 只说 kind 与名单
   const chatTitle = useChat((s) =>
     s.cloudSession
@@ -119,6 +120,7 @@ export function CloudSessionMain({ onManage }: { onManage: (workspaceId: string)
           ws={ws}
           selfUid={selfUid}
           onSettings={() => onManage(ws.id)}
+          onAgentSettings={openAgentSettings}
           {...(chat === undefined ? {} : { chat })}
         />
       </div>

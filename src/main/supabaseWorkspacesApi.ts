@@ -425,6 +425,32 @@ export async function listCloudSessions(
   }));
 }
 
+/** 这只智能体现在挂在哪几条聊天上（#1280）：它自己那条私聊 + 它在的那几个群。
+    **查询失败一律回空**（同 `fetchCloudChats` 的容错）：0037 没跑的库里团队的
+    智能体照样删得掉——那时这两列不存在，而团队本来就没有聊天这回事。
+    回空的代价是删除那三步退化成改动前的一步，正是我们想要的降级方向 */
+export async function listAgentChats(
+  client: SupabaseClient,
+  workspaceId: string,
+  agentId: string,
+): Promise<{ dmSessionId: string | null; groupSessionIds: string[] }> {
+  const res = await client
+    .from("workspace_sessions")
+    .select("id,chat_kind,agent_ids")
+    .eq("workspace_id", workspaceId)
+    .eq("kind", "cloud")
+    .contains("agent_ids", [agentId]);
+  if (res.error) return { dmSessionId: null, groupSessionIds: [] };
+  const rows = (res.data ?? []) as { id: string; chat_kind: unknown }[];
+  let dmSessionId: string | null = null;
+  const groupSessionIds: string[] = [];
+  for (const r of rows) {
+    if (r.chat_kind === "dm") dmSessionId = r.id;
+    else if (r.chat_kind === "group") groupSessionIds.push(r.id);
+  }
+  return { dmSessionId, groupSessionIds };
+}
+
 /** `workspace_sessions.chat_kind` / `agent_ids` 那两列（#1280），**单独一条、容错**——
     理由与下面 `fetchCloudParticipants` 那段逐字相同（0037 落地前合进主 select 会让
     这个团队一条云会话都读不出来）。**不要把这两列「顺手」合回主 select**。
