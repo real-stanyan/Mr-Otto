@@ -6302,4 +6302,54 @@ describe("聊天名单收窄（#1280）", () => {
     expect(await s.updateChatRoster("u1", [])).toEqual({ kind: "ok", agentIds: [], changed: true });
     store.close();
   });
+
+  it("聊天不自动起名：群名是人起的，私聊的名字就是那只智能体", async () => {
+    const store = newStore();
+    const meta = createInMemoryCloudSessionMeta();
+    store.append({
+      sessionId: "s1",
+      ts: 1,
+      type: "session_created",
+      workspace: "/work",
+      cloud: { workspaceId: "w1", chat: { kind: "dm" } },
+    });
+    store.append({
+      sessionId: "s1",
+      ts: 2,
+      type: "chat_roster_changed",
+      ignorable: true,
+      agents: [{ agentId: "ops", name: "运营" }],
+    });
+    const s = createCloudSession({
+      diskUsage: () => null,
+      sessionMeta: meta,
+      workspaceId: "w1",
+      sessionId: "s1",
+      ownerUid: "owner",
+      createdByUid: "creator",
+      store,
+      world: fakeWorld,
+      px,
+      hostUids: async () => ["u1"],
+      agents: async () => TEAM,
+      adapterFor: (a) => ({ model: a.models[0]!, async chat() { return { content: `${a.name}答` }; } }),
+      onEvent: () => {},
+      onUsage: () => {},
+      wiki: testWiki(),
+      mentionInbox: createInMemoryMentionInbox(),
+      agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true,
+      contextWindowOf: () => undefined,
+      sandboxApproval: async () => "ask",
+      workspaceLock: createWorkspaceLock(),
+      relayRemainingMicro: async () => null,
+      retitle: async () => ({ title: "不该出现", model: "m" }),
+    });
+    await s.say("u1", "alice", "帮我把九月的促销文案改得活一点", false, [], undefined, []);
+    await s.settled();
+    // null = 一次都没写过（内存版的初值），不是「写了个空串」
+    expect(meta.title).toBeNull();
+    expect(store.load("s1").some((e) => e.type === "session_autotitled")).toBe(false);
+    store.close();
+  });
 });

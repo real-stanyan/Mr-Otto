@@ -1344,6 +1344,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
    * 不该让一句已经发出去的话变成一个未捕获的 rejection。
    */
   function maintainTitle(text: string): void {
+    // 聊天不起名（#1280）：私聊的名字是那只智能体，群名是人起的——title 那一列在聊天里不归标题器管
+    if (chatKind !== null) return;
     const step = titleStepFor(humanSaid);
     if (step === "none") return;
     if (step === "seed") {

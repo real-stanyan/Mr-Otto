@@ -2014,6 +2014,28 @@ describe("chat_update（#1280）", () => {
     });
   });
 
+  it("聊天不能归档：回一句说清出路的话，sessions.archive 一次都不调（#1280）", async () => {
+    let archived = 0;
+    const { deps, sent } = makeDeps({
+      getSession: () => fakeSession({ chat: () => ({ kind: "group", agentIds: ["admin"] }) }),
+      archiveSession: async () => {
+        archived++;
+        return true;
+      },
+    });
+    const h = createFrameHandler(deps);
+    await h.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    await h.onCtlFrame("c1", encodeCs({ t: "archive", workspaceId: "w1", sessionId: "s1" }));
+    expect(archived).toBe(0);
+    expect(sent.at(-1)!.msg).toEqual({
+      t: "archive_result",
+      workspaceId: "w1",
+      sessionId: "s1",
+      ok: false,
+      message: "聊天不能归档。不想要了就删除它。",
+    });
+  });
+
   it("会话房里发过来一律 not_authorized（同 create / archive）", async () => {
     const { deps, sent } = makeDeps();
     const h = createFrameHandler(deps);

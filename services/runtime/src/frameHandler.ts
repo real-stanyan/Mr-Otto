@@ -562,6 +562,18 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
           deps.send(cid, { t: "archive_result", workspaceId: msg.workspaceId, sessionId: msg.sessionId, ok: false, message: "这条会话不存在或已经归档了。" });
           return;
         }
+        // 聊天只有删除没有归档（#1280，spec §6.6）：私聊的唯一索引不带 archived，
+        // 归档一条私聊 = 那只智能体从此再也开不出私聊
+        if (session.chat() !== null) {
+          deps.send(cid, {
+            t: "archive_result",
+            workspaceId: msg.workspaceId,
+            sessionId: msg.sessionId,
+            ok: false,
+            message: "聊天不能归档。不想要了就删除它。",
+          });
+          return;
+        }
         const ownerUid = await deps.sessions.ownerOf(msg.workspaceId);
         if (entry.uid !== ownerUid && entry.uid !== session.createdByUid()) {
           deny(cid, "not_authorized");
