@@ -95,6 +95,7 @@ function markResetPending(on: boolean, atGate = false): void {
 }
 import { shareAllow } from "../../shared/shareGrant.js";
 import { ADMIN_AGENT_ID } from "../../shared/workspaceAgents.js";
+import type { OlderState } from "./lib/cloudWindow.js";
 import { mergeResidue, residueSettled, type ResidueItem } from "../../shared/residue.js";
 import { PROXY_SHARE_INVITE_TTL_MS } from "../../shared/remote/proxyInvite.js";
 import { runtimePatch } from "./lib/runtimeHydration.js";
@@ -253,6 +254,12 @@ export interface CloudSessionState {
   /** 这条会话是哪一种聊天、名单是谁（#1280）。`null` = 团队会话，或者 welcome 还没到。
       照抄推送（缺席 → null）：welcome 到了就一定有结论，没有「读不到」这一档 */
   chat: CsChatInfo | null;
+  /** 这一页之前还有更早的消息（#1280）。照抄推送（缺席 = 没有更早的 / 团队会话）——
+      同 gapNote 的纪律：翻到头时主进程正是靠**不带**这一格来说「到头了」 */
+  hasOlder: boolean;
+  /** 上一次往前翻的结局（#1280）。纯渲染层状态，不落日志、不上线：
+      `failed` 之后哨兵**不自己重试**，那是一颗要人点的钮 */
+  older: OlderState;
   events: SessionEvent[];
 }
 
@@ -1161,6 +1168,10 @@ interface ChatState {
       点的那一行，服务端拿它与采样边界比对后可以回 `not_current`。缺席 = 旧
       语义（停当前那一轮） */
   cloudStop(seq?: number): Promise<CloudAck>;
+  /** 往前翻一页聊天历史（#1280）。那一页的事件照旧从 onCloudSessionEvent 通道
+      一条条进来（按 seq 插到对的位置），这里只管把 `older` 这一格推过三态。
+      正在拉时再叫是空操作——顶上那个哨兵在同一屏里连触两次是常态 */
+  loadOlderCloudEvents(): Promise<void>;
   /** 改当前云会话的语音通话名单（#1163）。空 = 结束。原样透传 CloudAck，不碰共享错误格；
       通话栏画的是日志里那条 voice_call_changed，不是「我刚点了」 */
   cloudCall(participants: string[]): Promise<CloudAck>;
@@ -2734,6 +2745,8 @@ export const useChat = create<ChatState>((set, get) => ({
         modelRoute: null, // 同上（issue #945）
         gapNote: null, // 同上（issue #957 C-I7）：backlog 落定才知道缺没缺
         chat: null, // 同上（#1280）：welcome 到了才知道这是哪一种聊天
+        hasOlder: false, // 同上（#1280）：尾巴落定才知道前面还有没有
+        older: "idle",
         events: [],
       },
       workspaceGroupsError: null,
@@ -2896,6 +2909,25 @@ export const useChat = create<ChatState>((set, get) => ({
   },
   async cloudCall(participants) {
     return await window.otter.workspaceCloudCall(participants);
+  },
+  async loadOlderCloudEvents() {
+    const before = get().cloudSession;
+    if (before === null || before.older === "loading" || !before.hasOlder) return;
+    const sessionId = before.sessionId;
+    /** 只在仍是同一条会话时落地：翻页要跨一次网络往返，期间人可能已经切走了，
+        而 `older` 是这条会话的状态，糊到下一条上就是那一条顶着一行「读取中」 */
+    const patch = (older: OlderState): void => {
+      const cur = get().cloudSession;
+      if (cur === null || cur.sessionId !== sessionId) return;
+      set({ cloudSession: { ...cur, older } });
+    };
+    patch("loading");
+    const r = await window.otter.workspaceCloudBacklogPage();
+    // 失败只改这一格、**不动 workspaceGroupsError**：那一格是整页共用的，
+    // 而「没读到更早的消息」这句话属于顶上那一行（同 #1056 给「文件」那页定的规矩）。
+    // `hasOlder` 不在这里改——它是主进程推上来的事实，那边失败时保持为真，
+    // 于是重试钮点下去还有得可拉
+    patch(r.ok ? "idle" : "failed");
   },
 
   joinVoiceCall() {
@@ -3323,8 +3355,28 @@ export const useChat = create<ChatState>((set, get) => ({
         // turn_ended（aborted/error）= 预览作废——「不完整就不是消息」，
         // 与本机 absorbEvent 清 streamingBySession 同一条纪律
         const cloudStreaming = clearCloudStreamingOn(s.cloudStreaming, event);
+        // 这一格原来是无条件追加（#1280 之前只有直播与一次全量，seq 天然递增）。
+        // 往前翻的那一页落在**前面**，所以要插对位置：不插的话时间线上会出现
+        // 「今天的消息底下跟着三个月前的」，而且一行都不报错。
+        // **不每条都全量排序**：那一页 200 条，逐条排就是 200 次 O(n log n)；
+        // 也**不能**只判「比头还小」——同一页是按 seq 升序到达的，第二条就不再
+        // 比新的头小了，会被甩到末尾。快路径（追加）之外走一次二分
+        const prev = s.cloudSession.events;
+        let events: SessionEvent[];
+        if (prev.length === 0 || event.seq > prev[prev.length - 1]!.seq) {
+          events = [...prev, event];
+        } else {
+          let lo = 0;
+          let hi = prev.length;
+          while (lo < hi) {
+            const mid = (lo + hi) >> 1;
+            if (prev[mid]!.seq < event.seq) lo = mid + 1;
+            else hi = mid;
+          }
+          events = [...prev.slice(0, lo), event, ...prev.slice(lo)];
+        }
         return {
-          cloudSession: { ...s.cloudSession, events: [...s.cloudSession.events, event] },
+          cloudSession: { ...s.cloudSession, events },
           ...(cloudStreaming !== s.cloudStreaming ? { cloudStreaming } : {}),
         };
       });
@@ -3410,6 +3462,9 @@ export const useChat = create<ChatState>((set, get) => ({
             gapNote: status.gapNote ?? null,
             // #1280：同上，照抄推送（缺席 = 团队会话）
             chat: status.chat ?? null,
+            // #1280：同上。**不能**「没带就留着旧的」——翻到头那一次主进程正是
+            // 靠不带这一格来说「到头了」，留着旧值就是顶上那个哨兵永远挂着
+            hasOlder: status.hasOlder ?? false,
             // exactOptionalPropertyTypes：deniedCode 是 string|undefined，
             // 目标字段是可选的 string——只在真有值时才落这个键，不能把
             // undefined 原样赋进去（那等于显式声明"这个键存在但是 undefined"，

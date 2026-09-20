@@ -87,7 +87,7 @@ function renderPage(): void {
   useChat.setState({
     cloudSession: {
       workspaceId: "w", sessionId: "cs1", state: "ready", initiatorUid: "u1", ownerUid: "u1", selfUid: "u1",
-      modelRoute: null, gapNote: null, chat: null, events,
+      modelRoute: null, gapNote: null, chat: null, hasOlder: false, older: "idle" as const, events,
     },
   });
   // 两层 provider 都是 App 根上本来就有的：确认弹窗（useConfirm）与 Radix 的 Tooltip

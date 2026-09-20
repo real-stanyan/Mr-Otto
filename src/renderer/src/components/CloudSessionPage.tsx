@@ -61,6 +61,7 @@ import { agentNameOf, labelOf, memberAvatarOf } from "../lib/workspaceView.js";
 import { AddAgentPopover } from "./AddAgentPopover.js";
 import { AgentChatHeader, type ChatView } from "./AgentChatHeader.js";
 import { withDaySeparators } from "../lib/dayLabel.js";
+import { growHidden, initialHidden, nextOlderAction, visibleCloudRows } from "../lib/cloudWindow.js";
 import { agentAvatarSrc } from "../lib/agentAvatar.js";
 import { applyAgentMention, mentionQueryAt, pickerEmptyState, resolveSendMentions } from "../lib/agentMentionInput.js";
 import { filterMentionRows, mentionRows, MENTION_KIND_LABEL, type MentionRow } from "../lib/workspaceMentionItems.js";
@@ -107,6 +108,8 @@ const turnMarkId = (el: HTMLElement): string | undefined => el.dataset["turnId"]
 // 挂载这个组件，但 hooks 不能条件调用，events 得先算出一个稳定引用——
 // 同 FriendChatView 的 EMPTY 先例，模块级常量避免每次渲染新建 []）
 const EMPTY_EVENTS: SessionEvent[] = [];
+// 团队会话不窗口化：模块级常量保证每次渲染同一个引用（`?? []` 会让下游 memo 每次都失效）
+const EMPTY_SEQS: number[] = [];
 
 /** join() 之后持续状态的 deniedCode → 人话（渲染层自己的翻译）。
     main/cloudSessionClient.ts 的 deniedMessage() 只服务 create() 那一次性
@@ -489,6 +492,9 @@ export function CloudSessionPage({
   useLayoutEffect(() => {
     const el = scrollRef.current;
     if (!el || !stickToBottomRef.current) return;
+    // 往前翻一页会让 eventCount 变大（#1280），而人此刻正在往上读——这一下
+    // 会把他一把拽回底部。补挂那次的滚动补偿跑完就放手
+    if (prependingRef.current) return;
     el.scrollTop = el.scrollHeight;
   }, [eventCount, cs?.state]);
 
@@ -590,9 +596,92 @@ export function CloudSessionPage({
     // `events.length === 0`）：刚建好的群里已经躺着 session_created 与
     // chat_roster_changed 两条，它们都画不出任何东西——照那一格判的话，这一屏是
     // **一片空白**，而不是那句「都在」。判据因此挂在真正会画出来的行数上
-    return { marks, empty: visible.length === 0 };
+    return { marks, empty: visible.length === 0, seqs: visible.map((v) => v.seq) };
   }, [chat, events, voiceCards, chatNow, rosterLines, createdAgents]);
   const dayMarks = chatTimeline?.marks ?? null;
+
+  // ── 窗口化挂载 + 往前翻（#1280）────────────────────────────────────────────
+  // 一只一条永久线，聊半年就是几千行，首屏全挂上去与本机长会话一样贵（#1190）。
+  // 尺子从 `lib/messageWindow.ts` 借，不另拍一套数。
+  //
+  // **窗口数的是「会真的画出来的行」不是事件数**：渲染循环里一路 `return null`
+  // （hidden / 通话卡 / 压缩事件三道），拿 `events.length` 去算会把被藏起来的
+  // 那些也算进窗口，于是首屏挂的远不止 60 行。
+  //
+  // 上沿**按 seq 钉**不按「隐藏几条」记（这一处与本机那份不同）：往前翻的那一页
+  // 落在列表**前面**，按条数记的话每次翻页都要把「新来了多少条」补进 hidden，
+  // 而那笔账在 StrictMode 的双渲染下很难记对；按 seq 钉的话，`indexOf` 每次
+  // 现算，前插与追加都自动对。钉不到（那一行被通话卡吞了之类）退回 0 = 全挂，
+  // 是一个看得见、会自愈的退化，不是空屏
+  const rowSeqs = chatTimeline?.seqs ?? EMPTY_SEQS;
+  const [topSeq, setTopSeq] = useState<number | null>(null);
+  useEffect(() => { setTopSeq(null); }, [csSessionId]);
+  const hidden = topSeq === null ? initialHidden(rowSeqs.length) : Math.max(0, rowSeqs.indexOf(topSeq));
+  // 第一次拿到非空列表时把上沿钉下来。不钉的话 `initialHidden(len)` 会随着
+  // 新事件一直往下走 —— 那是「窗口只增不缩」的反面：人正读着的旧行会被卸载
+  useEffect(() => {
+    if (topSeq !== null || rowSeqs.length === 0) return;
+    setTopSeq(rowSeqs[initialHidden(rowSeqs.length)] ?? null);
+  }, [topSeq, rowSeqs]);
+  const shownSeqs = useMemo(() => new Set(visibleCloudRows(rowSeqs, hidden)), [rowSeqs, hidden]);
+
+  const hasOlder = cs?.hasOlder ?? false;
+  const olderState = cs?.older ?? "idle";
+  const loadOlder = useChat((s) => s.loadOlderCloudEvents);
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  /** 补挂 / 翻页发起那一刻记下的锚点：第一条**已挂载**的旧节点与它此刻的 offsetTop。
+      不量 `scrollHeight` 的差 —— 同一次提交里流式消息可能还在往底部长，那个差
+      里混着「上面多了多少」与「下面长了多少」两件事 */
+  const anchorRef = useRef<{ el: HTMLElement; top: number } | null>(null);
+  /** 正在往前补：跟底那条 effect 要让路（它的依赖是 eventCount，翻一页会让它
+      变大、于是把人一把拽回底部——而人此刻正在往上读） */
+  const prependingRef = useRef(false);
+
+  const captureAnchor = useCallback((): void => {
+    const el = sentinelRef.current?.nextElementSibling;
+    if (!(el instanceof HTMLElement)) return;
+    anchorRef.current = { el, top: el.offsetTop };
+    prependingRef.current = true;
+  }, []);
+
+  /** 哨兵被看见 / 被点了。**先把内存里的补挂完再打网络**（判据在 cloudWindow.ts） */
+  const onSentinel = useCallback((): void => {
+    const action = nextOlderAction({ hidden, hasOlder, older: olderState });
+    if (action === "none") return;
+    captureAnchor();
+    if (action === "grow") {
+      setTopSeq(rowSeqs[growHidden(hidden, rowSeqs.length)] ?? null);
+      return;
+    }
+    void loadOlder();
+  }, [hidden, hasOlder, olderState, rowSeqs, captureAnchor, loadOlder]);
+
+  // jsdom 没有 IntersectionObserver（也没有布局）：那边把哨兵画成一颗钮，
+  // 用例点它走同一条路。真机上这颗钮不画
+  const autoSentinel = typeof IntersectionObserver !== "undefined";
+  useEffect(() => {
+    const el = sentinelRef.current;
+    if (!autoSentinel || el === null || scrollEl === null || chat === undefined) return undefined;
+    // root 是这一页自己的滚动区，不是本机会话那个 aui 视口
+    const io = new IntersectionObserver(
+      (entries) => { if (entries.some((x) => x.isIntersecting)) onSentinel(); },
+      { root: scrollEl, rootMargin: "200px 0px 0px 0px" },
+    );
+    io.observe(el);
+    return () => io.disconnect();
+  }, [autoSentinel, scrollEl, chat, onSentinel]);
+
+  // 补挂 / 翻页之后把视口按住：量的是「那条旧节点位移了多少」。behavior 必须是
+  // instant —— 视口上挂着 scroll-smooth，平滑滚一段会被人看成「它自己跳了」
+  useLayoutEffect(() => {
+    const anchor = anchorRef.current;
+    const sc = scrollRef.current;
+    if (anchor === null || sc === null) return;
+    anchorRef.current = null;
+    const delta = anchor.el.offsetTop - anchor.top;
+    if (delta !== 0) sc.scrollTo({ top: sc.scrollTop + delta, behavior: "instant" });
+    prependingRef.current = false;
+  }, [hidden, rowSeqs]);
 
   const timelineEmpty = cloudEmptyState(cs.state, events.length);
   /** 这一行是不是会话地图上某一轮的头：是就回它的记号，不是回 undefined（ADR-0292） */
@@ -1030,11 +1119,38 @@ export function CloudSessionPage({
           ) : timelineEmpty === "empty" ? (
             <p className="text-xs text-muted-foreground">还没有消息。</p>
           ) : (
-            events.map((e, i) => {
+            <>
+            {chat !== undefined && (hidden > 0 || hasOlder) && (
+              <div ref={sentinelRef} className="self-center py-1">
+                {olderState === "failed" ? (
+                  // **上一页的内容留在原地，不清屏**。重试是一颗要人点的钮：
+                  // 哨兵自己重试的话，一条连不上的线会在人往上滚的时候反复打网络
+                  <p className="text-[11.5px] text-muted-foreground">
+                    没读到更早的消息 ·{" "}
+                    <button
+                      type="button"
+                      className="underline underline-offset-[3px] hover:text-foreground"
+                      onClick={() => { captureAnchor(); void loadOlder(); }}
+                    >
+                      重试
+                    </button>
+                  </p>
+                ) : autoSentinel ? null : (
+                  <Button variant="ghost" size="xs" className="text-[11.5px] text-muted-foreground" onClick={onSentinel}>
+                    更早的消息
+                  </Button>
+                )}
+              </div>
+            )}
+            {events.map((e, i) => {
               const node = ((): ReactNode => {
               // 接力开场白（user_message 带 relay）不画：那是给模型看的
               // "[系统] 「运营」@ 了你"，人看下面那条 agent_relay 接力线就够，
               // 画出来是同一件事说两遍（#950）
+              // 窗口之外的那些（#1280）：一条聊天聊半年就是几千行，首屏只挂后缀。
+              // **排在所有判据最前面**——它问的不是「这一行画不画」而是
+              // 「这一行此刻挂不挂」，两件事。团队会话不窗口化（rowSeqs 为空）
+              if (chat !== undefined && !shownSeqs.has(e.seq)) return null;
               // 建好一只之后那颗「去和它聊」（#1280 A5）。**排在 hidden 之前**：
               // 它挂的那条 tool_result 正是被第 ⑥ 条挡住的中间步骤，判据在
               // createdAgents 里（与上面那份可见行计数读同一张表）
@@ -1146,7 +1262,8 @@ export function CloudSessionPage({
                   {node}
                 </Fragment>
               );
-            })
+            })}
+            </>
           )}
           {/* 排队中/正在回复画在时间线**末尾**而不是贴在各自那条 @ 消息下面：
               排队的东西说的是"接下来会发生什么"，那是时间线尾巴的事，不是
