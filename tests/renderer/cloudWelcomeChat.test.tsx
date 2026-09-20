@@ -9,6 +9,7 @@
 
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
+import { userEvent } from "@testing-library/user-event";
 import "@testing-library/jest-dom/vitest";
 
 import { CloudWelcome } from "../../src/renderer/src/components/CloudWelcome.js";
@@ -70,5 +71,59 @@ describe("CloudWelcome 的聊天版（#1280）", () => {
     } as never);
     render(<CloudWelcome workspaceId="home" />);
     expect(screen.getByText("在「我的智能体」里开一条会话")).toBeInTheDocument();
+  });
+});
+
+const ADMIN = agent("admin", "管理员", "替你建智能体、没人对口时接活");
+
+const HOME_WITH_ADMIN = { ...HOME, agents: [ADMIN, ...HOME.agents] } as unknown as WorkspaceSnapshot;
+const HOME_ONLY_ADMIN = { ...HOME, agents: [ADMIN] } as unknown as WorkspaceSnapshot;
+
+describe("管理员的开局卡 = 「新智能体」那颗钮的落点（#1280 A5）", () => {
+  it("三枚提示 chip + 一条去填表的路；点 chip 把那句话填进输入框、不直接发送", async () => {
+    useChat.setState({
+      workspaceGroups: [HOME_WITH_ADMIN],
+      cloudDraftChat: { kind: "dm", agentId: "admin" },
+      workspaceGroupsError: null,
+      newAgentFormOpen: false,
+    } as never);
+    render(<CloudWelcome workspaceId="home" />);
+    expect(screen.getByText("跟管理员说一句，建一只新的")).toBeInTheDocument();
+    await userEvent.click(screen.getByRole("button", { name: "客服" }));
+    expect(screen.getByRole("textbox")).toHaveValue("帮我建一只客服，回评价、整理常见问题");
+    expect(screen.getByRole("button", { name: "不想聊，直接填表" })).toBeInTheDocument();
+  });
+
+  it("名册里只有管理员时，标题换成「先建你的第一只智能体」", () => {
+    useChat.setState({
+      workspaceGroups: [HOME_ONLY_ADMIN],
+      cloudDraftChat: { kind: "dm", agentId: "admin" },
+      workspaceGroupsError: null,
+    } as never);
+    render(<CloudWelcome workspaceId="home" />);
+    expect(screen.getByText("先建你的第一只智能体")).toBeInTheDocument();
+  });
+
+  it("「直接填表」把那扇抽屉打开——两条路通向同一张表单，不是一颗只改文案的钮", async () => {
+    useChat.setState({
+      workspaceGroups: [HOME_WITH_ADMIN],
+      cloudDraftChat: { kind: "dm", agentId: "admin" },
+      workspaceGroupsError: null,
+      newAgentFormOpen: false,
+    } as never);
+    render(<CloudWelcome workspaceId="home" />);
+    await userEvent.click(screen.getByRole("button", { name: "不想聊，直接填表" }));
+    expect(useChat.getState().newAgentFormOpen).toBe(true);
+  });
+
+  it("普通那一只的私聊照旧：没有 chip、没有「直接填表」", () => {
+    useChat.setState({
+      workspaceGroups: [HOME_WITH_ADMIN],
+      cloudDraftChat: { kind: "dm", agentId: "a_000000000001" },
+      workspaceGroupsError: null,
+    } as never);
+    render(<CloudWelcome workspaceId="home" />);
+    expect(screen.queryByRole("button", { name: "客服" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "不想聊，直接填表" })).toBeNull();
   });
 });

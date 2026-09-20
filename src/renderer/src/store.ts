@@ -94,6 +94,7 @@ function markResetPending(on: boolean, atGate = false): void {
   }
 }
 import { shareAllow } from "../../shared/shareGrant.js";
+import { ADMIN_AGENT_ID } from "../../shared/workspaceAgents.js";
 import { mergeResidue, residueSettled, type ResidueItem } from "../../shared/residue.js";
 import { PROXY_SHARE_INVITE_TTL_MS } from "../../shared/remote/proxyInvite.js";
 import { runtimePatch } from "./lib/runtimeHydration.js";
@@ -670,6 +671,9 @@ interface ChatState {
   /** 哪一个群的设置抽屉开着（#1280 A4）。null = 没开。与 `agentSettingsFor` 平级、
       同一个理由：开它的是聊天头部那颗 ⚙，而那一块不在侧栏那棵子树上 */
   groupSettingsFor: string | null;
+  /** 「直接填表」那扇抽屉开不开着（#1280 A5）。建一只智能体的主路是跟管理员说一句话，
+      这是第二条路——两条通向同一张表单（AgentEditorScreen），不是两套 */
+  newAgentFormOpen: boolean;
   /** 窗口是否全屏(macOS 全屏隐红绿灯,左上角 logo 显隐看它) */
   fullscreen: boolean;
   /** 冷启动进度：boot() 里那组 Promise.all 有几个已经回来 / 一共几个。
@@ -1209,6 +1213,10 @@ interface ChatState {
   /** 打开某一只智能体的设置抽屉（#1280） */
   openAgentSettings(agentId: string): void;
   closeAgentSettings(): void;
+  /** 「新智能体」那颗钮的落点（#1280 A5）：进管理员的私聊说一句话 */
+  startNewAgent(): void;
+  openNewAgentForm(): void;
+  closeNewAgentForm(): void;
   /** 打开某个群的设置抽屉（#1280 A4） */
   openGroupSettings(sessionId: string): void;
   closeGroupSettings(): void;
@@ -1643,6 +1651,7 @@ export const useChat = create<ChatState>((set, get) => ({
   openWorkspaceId: null,
   agentSettingsFor: null,
   groupSettingsFor: null,
+  newAgentFormOpen: false,
   fullscreen: false,
   bootDone: 0,
   bootTotal: 0,
@@ -3134,6 +3143,11 @@ export const useChat = create<ChatState>((set, get) => ({
   setOpenWorkspaceId: (id) => set({ openWorkspaceId: id }),
   openAgentSettings: (agentId) => set({ agentSettingsFor: agentId }),
   closeAgentSettings: () => set({ agentSettingsFor: null }),
+  // 建一只智能体本来就是跟管理员说一句话（ADR-0224 的 create_agent）。聊过就回到那条线上
+  // 接着说，没聊过就是它的开局卡——两条路最后都落在「跟管理员说一句」，所以这里不分叉
+  startNewAgent: () => { void get().openAgentChat(ADMIN_AGENT_ID); },
+  openNewAgentForm: () => set({ newAgentFormOpen: true }),
+  closeNewAgentForm: () => set({ newAgentFormOpen: false }),
   openGroupSettings: (sessionId) => set({ groupSettingsFor: sessionId }),
   closeGroupSettings: () => set({ groupSettingsFor: null }),
 
