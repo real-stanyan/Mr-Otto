@@ -124,7 +124,7 @@ describe("connectorBatchErrorText（#957 C-C1）", () => {
 describe("cloudSessionRows 带出参与者（#1213）", () => {
   it("原样带出 participantUids", () => {
     const rows = cloudSessionRows(
-      [{ id: "s1", title: "", publisherUid: "u1", archived: false, updatedTs: 1, participantUids: ["u1", "u2"] }],
+      [{ id: "s1", title: "", publisherUid: "u1", archived: false, updatedTs: 1, participantUids: ["u1", "u2"], chatKind: null, agentIds: [] }],
       WS
     );
     expect(rows[0]!.participantUids).toEqual(["u1", "u2"]);
@@ -132,7 +132,7 @@ describe("cloudSessionRows 带出参与者（#1213）", () => {
 
   it("一个人都没有时是空数组，不是 undefined（渲染层不必再判）", () => {
     const rows = cloudSessionRows(
-      [{ id: "s1", title: "", publisherUid: "u1", archived: false, updatedTs: 1, participantUids: [] }],
+      [{ id: "s1", title: "", publisherUid: "u1", archived: false, updatedTs: 1, participantUids: [], chatKind: null, agentIds: [] }],
       WS
     );
     expect(rows[0]!.participantUids).toEqual([]);

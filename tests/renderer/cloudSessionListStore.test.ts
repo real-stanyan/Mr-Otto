@@ -67,6 +67,7 @@ const makeCloudSession = (over: Partial<CloudSessionState> = {}): CloudSessionSt
 
 const makeRow = (over: Partial<CloudSessionListRow> = {}): CloudSessionListRow => ({
   id: "s1", title: "旧标题", publisherUid: "o", archived: false, updatedTs: 1, participantUids: [],
+  chatKind: null, agentIds: [],
   ...over,
 });
 

@@ -379,6 +379,12 @@ export interface CloudSessionRow {
   /** 最近有过对话的那个 5 小时窗里说过话的人（#1213）。runtime 写的投影，
       形状不对（不是字符串数组）一律回 []——同 normalizeStringArray 的纪律 */
   participantUids: string[];
+  /** 这一行是不是一条聊天，是哪一种（#1280）。`null` = 团队会话 / 这一格读不到——
+      两者在界面上同一个答案（照团队会话画），所以不分三态 */
+  chatKind: "dm" | "group" | null;
+  /** 聊天的名单投影（#1280）。权威在日志（`chat_roster_changed`），这一列是给
+      「没开着这条聊天」的桌面看的。读不到回 [] */
+  agentIds: string[];
 }
 
 /** ISO 字符串 → epoch ms；解析不出来回 0，不让脏数据混进排序比较
@@ -406,6 +412,7 @@ export async function listCloudSessions(
     id: string; publisher_uid: string; title: string; archived: boolean; updated_at: string;
   }[];
   const participants = await fetchCloudParticipants(client, workspaceId);
+  const chats = await fetchCloudChats(client, workspaceId);
   return rows.map((r) => ({
     id: r.id,
     title: r.title,
@@ -413,7 +420,33 @@ export async function listCloudSessions(
     archived: r.archived,
     updatedTs: toEpochMs(r.updated_at),
     participantUids: participants.get(r.id) ?? [],
+    chatKind: chats.get(r.id)?.chatKind ?? null,
+    agentIds: chats.get(r.id)?.agentIds ?? [],
   }));
+}
+
+/** `workspace_sessions.chat_kind` / `agent_ids` 那两列（#1280），**单独一条、容错**——
+    理由与下面 `fetchCloudParticipants` 那段逐字相同（0037 落地前合进主 select 会让
+    这个团队一条云会话都读不出来）。**不要把这两列「顺手」合回主 select**。
+    读不到时回空 Map：每一行都退回「团队会话」的样子，也就是改动前的界面 */
+async function fetchCloudChats(
+  client: SupabaseClient,
+  workspaceId: string,
+): Promise<Map<string, { chatKind: "dm" | "group"; agentIds: string[] }>> {
+  const res = await client
+    .from("workspace_sessions")
+    .select("id,chat_kind,agent_ids")
+    .eq("workspace_id", workspaceId)
+    .eq("kind", "cloud");
+  const map = new Map<string, { chatKind: "dm" | "group"; agentIds: string[] }>();
+  if (res.error) return map;
+  const rows = (res.data ?? []) as { id: string; chat_kind: unknown; agent_ids: unknown }[];
+  for (const r of rows) {
+    if (r.chat_kind !== "dm" && r.chat_kind !== "group") continue;
+    const ids = Array.isArray(r.agent_ids) && r.agent_ids.every((x) => typeof x === "string") ? (r.agent_ids as string[]) : [];
+    map.set(r.id, { chatKind: r.chat_kind, agentIds: ids });
+  }
+  return map;
 }
 
 /** `workspace_sessions.participants` 那一列，**单独一条、容错**（#1213 复审 Critical 1，

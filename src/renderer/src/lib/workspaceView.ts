@@ -212,6 +212,10 @@ export interface CloudSessionListRow {
   updatedTs: number;
   /** 见 main/supabaseWorkspacesApi.ts 的同名字段（形状凑巧相同、各留一份） */
   participantUids: string[];
+  /** 这一行是不是一条聊天，是哪一种（#1280）。`null` = 团队会话 / 这一格读不到 */
+  chatKind: "dm" | "group" | null;
+  /** 聊天的名单投影（#1280）。权威在日志，这一列是给「没开着这条聊天」的桌面看的 */
+  agentIds: string[];
 }
 
 export interface CloudSessionRowView {

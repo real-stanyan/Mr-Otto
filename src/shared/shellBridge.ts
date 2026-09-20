@@ -21,7 +21,7 @@ import type { ModelShareWindow } from "./modelShare.js";
 import type { WorkspaceMentionRow } from "./workspaceMentions.js";
 import type { IslandRail } from "./islandRail.js";
 import type { IslandTab } from "./islandTabs.js";
-import type { CsGitHost, CsModelRoute, CsWikiWriteReq, CsWorkHit, CsWorkNode } from "./remote/cloudSession.js";
+import type { CsChatInfo, CsChatSpec, CsGitHost, CsModelRoute, CsWikiWriteReq, CsWorkHit, CsWorkNode } from "./remote/cloudSession.js";
 import type { TerminalInfo } from "./terminal.js";
 import type { BrowserTabInfo, BrowserBounds, BrowserPickedElement } from "./browser.js";
 import type { SimButton, SimFrame, SimState } from "./simulator.js";
@@ -529,6 +529,9 @@ export interface CloudSessionStatus {
       decideRuntimeRoute 算好、welcome 带下来的，渲染层照画不重算。
       null = 探不到——「拿不到」≠「起不了」，别拿它当 blocked 画 */
   modelRoute: CsModelRoute | null;
+  /** 这条会话是哪一种聊天、名单是谁（#1280）。**缺席 = 团队会话** —— 不是「读不到」：
+      这一格由 welcome 带下来，welcome 到了就一定有结论 */
+  chat?: CsChatInfo;
   /** runtime 说的一句话，**给这条连接的人看**（issue #819）：限速、审批
       失效、事件过大被跳过……这些原来只进主进程日志，用户那边是彻底静默的
       （最难查的失败形态）。一次性——只有真发生时那一次推送带它，其余推送
@@ -1194,12 +1197,17 @@ export interface ShellBridge {
 
   // ─── 云会话（Task 12，ADR-0199）：桌面当显示器，接 VPS 上的 runtime ──────
   /** 这个团队里的云会话清单（Supabase 直查 workspace_sessions，kind='cloud'） */
-  workspaceCloudList(workspaceId: string): Promise<FriendsResult<{ id: string; title: string; publisherUid: string; archived: boolean; updatedTs: number; participantUids: string[] }[]>>;
-  /** 开一个新云会话（走控制房 create 流程，拿到 sessionId 后还要 Join 才能收事件） */
-  workspaceCloudCreate(workspaceId: string): Promise<FriendsResult<{ sessionId: string }>>;
+  workspaceCloudList(workspaceId: string): Promise<FriendsResult<{ id: string; title: string; publisherUid: string; archived: boolean; updatedTs: number; participantUids: string[]; chatKind: "dm" | "group" | null; agentIds: string[] }[]>>;
+  /** 开一个新云会话（走控制房 create 流程，拿到 sessionId 后还要 Join 才能收事件）。
+      `chat` 在场 = 建一条聊天（#1280）；缺席 = 团队会话，一个字不变 */
+  workspaceCloudCreate(workspaceId: string, chat?: CsChatSpec): Promise<FriendsResult<{ sessionId: string }>>;
   /** 加入一个云会话（同时只保留一条连接，join 先断旧的）。resolve 只代表连接
-      发起成功——后续 welcome/denied/ready/gone 走 onCloudSessionStatus 推送 */
-  workspaceCloudJoin(workspaceId: string, sessionId: string): Promise<FriendsResult<null>>;
+      发起成功——后续 welcome/denied/ready/gone 走 onCloudSessionStatus 推送。
+      `title` 只喂岛上那一行（#1280）：私聊写智能体名、群聊写群名，缺席照旧写「云会话」 */
+  workspaceCloudJoin(workspaceId: string, sessionId: string, title?: string): Promise<FriendsResult<null>>;
+  /** 确保这个账号有个人主场（#1280）：有就回它的 id，没有就建。闸是库里的
+      `can_create_workspace()`（Pro / Max，ADR-0242）——界面那道只把话说清楚，真拦住的是 RLS */
+  workspaceHomeEnsure(): Promise<FriendsResult<{ id: string }>>;
   /** 断当前云会话连接 */
   workspaceCloudLeave(): Promise<FriendsResult<null>>;
   /** 往当前云会话发一句话（群聊）。mention = @ 了本机操作者对应的那个成员；
@@ -1700,6 +1708,7 @@ export const CHANNELS = {
   workspaceUnpublishSession: "otter:workspaceUnpublishSession",
   workspaceImportSession: "otter:workspaceImportSession",
   workspaceCloudList: "otter:workspaceCloudList",
+  workspaceHomeEnsure: "otter:workspaceHomeEnsure",
   workspaceCloudCreate: "otter:workspaceCloudCreate",
   workspaceCloudJoin: "otter:workspaceCloudJoin",
   workspaceCloudLeave: "otter:workspaceCloudLeave",

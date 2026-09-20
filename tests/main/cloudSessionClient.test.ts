@@ -1651,3 +1651,94 @@ describe("createCloudSessionClient — call 帧与 call_result 回执（#1163）
     expect(await h.client.call([])).toEqual({ ok: false, message: "云会话未就绪" });
   });
 });
+
+describe("createCloudSessionClient — create 带聊天（#1280）", () => {
+  it("chat 原样进 create 帧；created 照旧", async () => {
+    const h = harness();
+    const promise = h.client.create("w1", { kind: "dm", agentId: "a_0123456789ab" });
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    expect(t.decoded()).toEqual([
+      { t: "hello", v: CS_PROTOCOL_VERSION, jwt: "token-abc" },
+      { t: "create", workspaceId: "w1", chat: { kind: "dm", agentId: "a_0123456789ab" } },
+    ]);
+    t.emitDown({ t: "created", workspaceId: "w1", sessionId: "s9", channel: "cs-x" });
+    expect(await promise).toEqual({ ok: true, value: { sessionId: "s9" } });
+  });
+
+  it("不带 chat 时帧里没有这一格（团队会话逐字节不变）", async () => {
+    const h = harness();
+    const promise = h.client.create("w1");
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    expect(t.decoded()[1]).toEqual({ t: "create", workspaceId: "w1" });
+    t.emitDown({ t: "created", workspaceId: "w1", sessionId: "s1", channel: "cs-x" });
+    await promise;
+  });
+
+  // create_failed 是协议 20 新开的一条（ADR-0297 决定 ④）：控制房原来只认 created / denied，
+  // 业务失败会让桌面白等满超时，再把「群聊至少要两只」说成「云端无响应」
+  it("create_failed 把那句人话带回来，不等超时", async () => {
+    const h = harness();
+    const promise = h.client.create("w1", { kind: "group", name: "群", agentIds: ["admin"] });
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({ t: "create_failed", workspaceId: "w1", message: "群聊至少要两只智能体" });
+    expect(await promise).toEqual({ ok: false, message: "群聊至少要两只智能体" });
+    expect(t.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("别的团队的 create_failed 不认（控制房是全平台一个房）", async () => {
+    const h = harness();
+    const promise = h.client.create("w1", { kind: "dm", agentId: "a_0123456789ab" });
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({ t: "create_failed", workspaceId: "other", message: "别人的失败" });
+    await tick();
+    t.emitDown({ t: "created", workspaceId: "w1", sessionId: "s9", channel: "cs-x" });
+    expect(await promise).toEqual({ ok: true, value: { sessionId: "s9" } });
+  });
+});
+
+describe("welcome.chat 进状态推送（#1280）", () => {
+  it("带 chat：原样进 CloudSessionStatus", async () => {
+    const h = harness();
+    await h.client.join("w1", "cloud-s1");
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({
+      t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: null,
+      ownerUid: "u2", modelRoute: null, chat: { kind: "dm", agentIds: ["a_0123456789ab"] },
+    });
+    expect(h.statuses.at(-1)).toMatchObject({ chat: { kind: "dm", agentIds: ["a_0123456789ab"] } });
+  });
+
+  it("不带 chat：状态里整格不出（团队会话）", async () => {
+    const h = harness();
+    await h.client.join("w1", "cloud-s1");
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: null, ownerUid: "u2", modelRoute: null });
+    expect(h.statuses.at(-1)).not.toHaveProperty("chat");
+  });
+});
+
+describe("cloudSessionFleetRow 的标题（#1280）", () => {
+  const base = { workspaceId: "w", sessionId: "s", status: "ready" as const, lastEventTs: 1 };
+  it("join 的调用方递了名字就用它：岛上那一行写「运营」不写「云会话」", () => {
+    expect(cloudSessionFleetRow({ ...base, title: "运营" })!.title).toBe("运营");
+  });
+  it("没递（团队会话）照旧写「云会话」", () => {
+    expect(cloudSessionFleetRow(base)!.title).toBe("云会话");
+  });
+});

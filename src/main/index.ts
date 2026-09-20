@@ -132,7 +132,7 @@ import { clearBalanceCache, fetchProviderBalances } from "./providerBalance.js";
 import { usageSnapshot } from "../shared/usageStats.js";
 import { modelShares } from "../shared/modelShare.js";
 import type { AgentToolAllow } from "../shared/agentToolAllow.js";
-import type { CsWikiWriteReq } from "../shared/remote/cloudSession.js";
+import type { CsChatSpec, CsWikiWriteReq } from "../shared/remote/cloudSession.js";
 import { createWorkspaceLens, withDefaultFold } from "./workspaceLens.js";
 import { packageProject } from "./projectPackager.js";
 import { pruneEmptyTaskFolders, nodePruneFs } from "./taskFolderPrune.js";
@@ -3598,9 +3598,11 @@ void app.whenReady().then(() => {
       return { ok: false as const, message: e instanceof Error ? e.message : String(e) };
     }
   });
-  ipcMain.handle(CHANNELS.workspaceCloudCreate, (_e, workspaceId: string) => cloudClient.create(workspaceId));
-  ipcMain.handle(CHANNELS.workspaceCloudJoin, (_e, workspaceId: string, sessionId: string) =>
-    cloudClient.join(workspaceId, sessionId));
+  ipcMain.handle(CHANNELS.workspaceHomeEnsure, () => workspaceManager.ensureHome());
+  ipcMain.handle(CHANNELS.workspaceCloudCreate, (_e, workspaceId: string, chat?: CsChatSpec) =>
+    cloudClient.create(workspaceId, chat));
+  ipcMain.handle(CHANNELS.workspaceCloudJoin, (_e, workspaceId: string, sessionId: string, title?: string) =>
+    cloudClient.join(workspaceId, sessionId, title));
   ipcMain.handle(CHANNELS.workspaceCloudLeave, () => cloudClient.leave());
   ipcMain.handle(
     CHANNELS.workspaceCloudSay,

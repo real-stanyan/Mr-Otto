@@ -91,8 +91,8 @@ function seed(over: Partial<Parameters<typeof useChat.setState>[0]> = {}): {
     cloudSession: null,
     cloudSessionList: {
       w1: [
-        { id: "cs-live", title: "周报自动化", publisherUid: "u2", archived: false, updatedTs: 2, participantUids: [] },
-        { id: "cs-old", title: "上个月的爬虫", publisherUid: "u2", archived: true, updatedTs: 1, participantUids: [] },
+        { id: "cs-live", title: "周报自动化", publisherUid: "u2", archived: false, updatedTs: 2, participantUids: [], chatKind: null, agentIds: [] },
+        { id: "cs-old", title: "上个月的爬虫", publisherUid: "u2", archived: true, updatedTs: 1, participantUids: [], chatKind: null, agentIds: [] },
       ],
     },
     refreshCloudSessions: async () => {},
@@ -149,7 +149,7 @@ describe("WorkspacesSidebarSection（#917 / #919）", () => {
       cloudSessionList: {
         // 云会话那张表的 title 是 string 不是 string | null：没标题时落库的是
         // 空串，只挡 null 的兜底挡不住它
-        w1: [{ id: "cs-new", title: "", publisherUid: "u-me", archived: false, updatedTs: 3, participantUids: [] }],
+        w1: [{ id: "cs-new", title: "", publisherUid: "u-me", archived: false, updatedTs: 3, participantUids: [], chatKind: null, agentIds: [] }],
       },
     });
     draw();
