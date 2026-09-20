@@ -128,6 +128,15 @@ export interface FrameHandlerDeps {
         业务上不该建（名单里没这只、群不到两只、名单读不出来）时**抛 `ChatCreateError`**，
         由这一层翻成 `create_failed` 回执；别的错照旧往上抛、进日志 */
     create(workspaceId: string, byUid: string, chat?: CsChatSpec): Promise<{ sessionId: string }>;
+    /** 改一条聊天的名字 / 名单（#1280）。名单那一半只落日志（CloudSession.updateChatRoster），
+        `agent_ids` / `title` 两列归这一层写——同 archive 的分工。`ok:false` 的 message 是
+        给人看的那句话，原样进 `chat_update_result` */
+    updateChat(
+      workspaceId: string,
+      sessionId: string,
+      byUid: string,
+      patch: { name?: string; agentIds?: string[] },
+    ): Promise<{ ok: true } | { ok: false; message: string }>;
     ownerOf(workspaceId: string): Promise<string>;
     /** 收尾一条云会话（issue #822）：落日志（CloudSession.archive）+ 写
         Supabase 那行的 archived 列 + 收掉房间。三件事在 daemon 里，因为
@@ -404,12 +413,13 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
 
       // 控制房认的帧（协议 8 起：create / workspace；协议 9 加 archive，
       // 协议 10 加 delete，协议 11 加 files，协议 12 加 files_search；协议 14
-      // 拿走了 config——团队不再绑一个仓库，#1102；协议 18 加 wiki_write）——
-      // 都是「关于某个团队」的动作，不挂在任何一条会话上。在籍是共同前提
+      // 拿走了 config——团队不再绑一个仓库，#1102；协议 18 加 wiki_write；
+      // 协议 20 加 chat_update，#1280）——都是「关于某个团队」的动作，不挂在
+      // 任何一条会话上。在籍是共同前提
       if (
         msg.t !== "create" && msg.t !== "workspace" && msg.t !== "git_credential" &&
         msg.t !== "archive" && msg.t !== "delete" && msg.t !== "files" &&
-        msg.t !== "files_search" && msg.t !== "wiki_write"
+        msg.t !== "files_search" && msg.t !== "wiki_write" && msg.t !== "chat_update"
       ) {
         deny(cid, "not_authorized");
         return;
@@ -511,6 +521,34 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
 
       if (msg.t === "git_credential") {
         await applyGitCredential(cid, entry.uid, msg);
+        return;
+      }
+
+      if (msg.t === "chat_update") {
+        // 谁能改（#1280）：所有者或建这条聊天的人——与归档 / 删除同一条判据（#822）。
+        // 在籍已经由上面那道公共的 isMember 复查过。限速复用 `create` 那一档：改名单
+        // 与建会话同属低频的结构性动作，不为它另开一种 ThrottleKind
+        if (!deps.rateLimit.allow("create", entry.uid)) {
+          deny(cid, "rate_limited");
+          return;
+        }
+        const [creator, ownerUid] = await Promise.all([
+          deps.sessions.creatorOf(msg.workspaceId, msg.sessionId),
+          deps.sessions.ownerOf(msg.workspaceId),
+        ]);
+        if (entry.uid !== ownerUid && entry.uid !== creator) {
+          deny(cid, "not_authorized");
+          return;
+        }
+        const { t: _t, workspaceId, sessionId, ...patch } = msg;
+        const r = await deps.sessions.updateChat(workspaceId, sessionId, entry.uid, patch);
+        deps.send(cid, {
+          t: "chat_update_result",
+          workspaceId,
+          sessionId,
+          ok: r.ok,
+          ...(r.ok ? {} : { message: r.message }),
+        });
         return;
       }
 
@@ -870,6 +908,7 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
         case "wiki_write": // 同上（协议 18，#1140）：wiki 是团队的
         case "archive": // 同上（协议 9，#993）：归档不该以「你正开着这条会话」为前提
         case "delete": // 同上（协议 10，#1044）：删的多半是归档掉的那些，根本没有房间
+        case "chat_update": // 同上（协议 20，#1280）：改名单不该以「你正开着这条聊天」为前提
         default:
           deny(cid, "not_authorized");
           return;

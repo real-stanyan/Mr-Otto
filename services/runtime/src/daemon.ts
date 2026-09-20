@@ -888,6 +888,29 @@ async function main(): Promise<void> {
         return { sessionId };
       },
       ownerOf,
+      /** 改一条聊天的名字 / 名单（#1280）。名单那一半的事实归日志（CloudSession 落事件），
+          这里只写两列投影——写库失败不回滚也不报失败，启动对账时日志赢 */
+      async updateChat(workspaceId, sessionId, byUid, patch) {
+        const active = activeSessions.get(sessionId);
+        if (!active || active.workspaceId !== workspaceId) return { ok: false, message: "这条聊天不存在" };
+        const row: { agent_ids?: string[]; title?: string } = {};
+        if (patch.agentIds !== undefined) {
+          const out = await active.session.updateChatRoster(byUid, patch.agentIds);
+          if (out.kind !== "ok") return { ok: false, message: out.message };
+          row.agent_ids = out.agentIds;
+        }
+        if (patch.name !== undefined) {
+          if (active.session.chat()?.kind !== "group") return { ok: false, message: "只有群聊能改名" };
+          row.title = patch.name;
+        }
+        const { error } = await supabase.from("workspace_sessions").update(row).eq("id", sessionId);
+        if (error) {
+          console.warn(
+            `[otto-runtime] chat_update 写库失败（session=${sessionId}），那一列等下次对账：${error.message}`,
+          );
+        }
+        return { ok: true };
+      },
       /** 归档三件事（issue #822）：落日志 → 写 Supabase 那行 → 收房间。
           顺序不能换：日志那条 session_archived 要先广播出去，房里的人才
           知道发生了什么；房间一关，谁都收不到了。 */
@@ -1145,13 +1168,22 @@ async function main(): Promise<void> {
   // 都收不到。启动时把它们全部重新 openSessionRoom 一遍。
   const { data: cloudSessions, error: cloudErr } = await supabase
     .from("workspace_sessions")
-    .select("id,workspace_id,publisher_uid")
+    .select("id,workspace_id,publisher_uid,chat_kind,agent_ids")
     .eq("kind", "cloud")
     .eq("archived", false);
   if (cloudErr) {
-    console.warn(`[otto-runtime] 启动时拉取存量云会话失败，本轮不恢复任何房间：${cloudErr.message}`);
+    // 0037 没跑时这条 select 会因为列不存在整条失败——部署顺序是 migration 先于 runtime
+    console.warn(
+      `[otto-runtime] 启动时拉取存量云会话失败，本轮不恢复任何房间：${cloudErr.message}` +
+        `（若刚升级，先确认 supabase/migrations/0037 已执行）`,
+    );
   } else {
-    const rows = (cloudSessions ?? []) as { id: string; workspace_id: string; publisher_uid: string }[];
+    const rows = (cloudSessions ?? []) as {
+      id: string;
+      workspace_id: string;
+      publisher_uid: string;
+      agent_ids?: unknown;
+    }[];
     // 启动错峰（#957 A-9 / #933）：openSessionRoom 装配出的 CloudSession 一开工
     // 就可能触发重启补跑，而补跑起 turn = 起 sandbox 容器。N 条会话各自补跑时
     // 若同一 tick 全部起步，就是 N 个容器同时抢这台 VPS 的 CPU/内存/磁盘 I/O
@@ -1184,6 +1216,19 @@ async function main(): Promise<void> {
             console.warn(`[otto-runtime] 补写 archived 列失败（sessionId=${row.id}）：${fixErr.message}`);
           }
           continue;
+        }
+        // 聊天名单对账（#1280）：**日志赢**——agent_ids 那一列是给「没开着这条聊天」的
+        // 桌面看的投影，chat_update 写它失败时不回滚、不报失败，补在这里
+        const want = session.chat();
+        const have = Array.isArray(row.agent_ids) ? (row.agent_ids as string[]) : [];
+        if (want !== null && (want.agentIds.length !== have.length || want.agentIds.some((id, i) => have[i] !== id))) {
+          const { error: fixErr } = await supabase
+            .from("workspace_sessions")
+            .update({ agent_ids: want.agentIds })
+            .eq("id", row.id);
+          if (fixErr) {
+            console.warn(`[otto-runtime] 补写 agent_ids 列失败（sessionId=${row.id}）：${fixErr.message}`);
+          }
         }
       } catch (err) {
         console.warn(

@@ -206,6 +206,10 @@ async function scenarioMainFlow(): Promise<void> {
         async ownerOf() {
           return operatorUid;
         },
+        // #1280：冒烟不建聊天，这一格只要形状对得上
+        async updateChat() {
+          return { ok: false, message: "冒烟装配不支持改聊天" };
+        },
       },
       // issue #945：冒烟不打 edge，这一格一律「探不到」
       modelRoute: async (_ws: string, _owner: string) => null,
@@ -354,6 +358,9 @@ async function scenarioAssemblyResilience(): Promise<void> {
     chat() {
       return null;
     },
+    async updateChatRoster() {
+      return { kind: "not_group" as const, message: "不会被调用" };
+    },
     async settled() {
       /* 不会被调用 */
     },
@@ -412,6 +419,9 @@ async function scenarioAssemblyResilience(): Promise<void> {
       },
       async remove() {
         return false;
+      },
+      async updateChat() {
+        return { ok: false, message: "smoke：韧性场景不使用 updateChat" };
       },
       async ownerOf() {
         // 模拟"调用即抛错的假 Supabase"：onSessionFrame 的 hello 分支里

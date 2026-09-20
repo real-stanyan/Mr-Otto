@@ -6234,4 +6234,72 @@ describe("聊天名单收窄（#1280）", () => {
     expect(calls).toHaveLength(1);
     store.close();
   });
+
+  it("updateChatRoster：落一条带 byUid 的名单事件，下一句话就按新名单派活", async () => {
+    const store = newStore();
+    const calls: DispatchCall[] = [];
+    const s = openChat(store, { roster: ["admin", "ops"], calls });
+    expect(await s.updateChatRoster("u1", ["ads", "admin", "ops"])).toEqual({
+      kind: "ok",
+      agentIds: ["ops", "admin", "ads"],
+      changed: true,
+    });
+    const last = store
+      .load("s1")
+      .filter((e) => e.type === "chat_roster_changed")
+      .at(-1) as Extract<SessionEvent, { type: "chat_roster_changed" }>;
+    expect(last).toMatchObject({
+      byUid: "u1",
+      agents: [
+        { agentId: "ops", name: "运营" },
+        { agentId: "admin", name: "管理员" },
+        { agentId: "ads", name: "广告" },
+      ],
+    });
+    await s.say("u1", "alice", "看下投放", false, [], undefined, []);
+    await s.settled();
+    expect(calls[0]!.roster.map((a) => a.agentId)).toEqual(["ops", "admin", "ads"]);
+    expect(s.chat()).toEqual({ kind: "group", agentIds: ["ops", "admin", "ads"] });
+    store.close();
+  });
+
+  it("同一份名单不落第二条事件", async () => {
+    const store = newStore();
+    const s = openChat(store, { roster: ["admin", "ops"] });
+    // 「没变」这条路交回的是**日志里那一份**（chat() 与启动对账读的也是它），不是
+    // 重新按团队序排过的——交回团队序会让写库与日志的顺序对不上，下次重启对账
+    // 又按「日志赢」改回来，一格数据在两处来回翻。真实写入方（planChatCreate /
+    // 下面那条 changed 的路）本来就按团队序落，只有这里手写的 seed 事件不是
+    expect(await s.updateChatRoster("u1", ["ops", "admin"])).toEqual({
+      kind: "ok",
+      agentIds: ["admin", "ops"],
+      changed: false,
+    });
+    expect(store.load("s1").filter((e) => e.type === "chat_roster_changed")).toHaveLength(1);
+    store.close();
+  });
+
+  it("私聊和团队会话的名单改不了；团队名单里没有的那只拉不进来", async () => {
+    const dm = newStore();
+    expect((await openChat(dm, { roster: ["ops"], kind: "dm" }).updateChatRoster("u1", ["ops", "ads"])).kind).toBe(
+      "not_group",
+    );
+    dm.close();
+    const team = newStore();
+    expect((await openChat(team, {}).updateChatRoster("u1", ["ops"])).kind).toBe("not_group");
+    team.close();
+    const g = newStore();
+    expect(await openChat(g, { roster: ["admin", "ops"] }).updateChatRoster("u1", ["ops", "ghost"])).toEqual({
+      kind: "unknown_agent",
+      message: "有 1 只智能体已经不在了（名单可能刚变过，刷新再试）",
+    });
+    g.close();
+  });
+
+  it("最后一只被摘掉也行（删智能体那三步里会走到）：空名单是一份真名单", async () => {
+    const store = newStore();
+    const s = openChat(store, { roster: ["admin", "ops"] });
+    expect(await s.updateChatRoster("u1", [])).toEqual({ kind: "ok", agentIds: [], changed: true });
+    store.close();
+  });
 });

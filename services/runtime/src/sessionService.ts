@@ -544,7 +544,15 @@ export interface CloudSession {
   setVoiceCall(byUid: string, byLabel: string, participants: string[], budget?: (targetCount: number) => string | null): Promise<VoiceCallOutcome>;
   /** 这条会话的聊天身份（#1280）。null = 团队会话。agentIds 是日志投影原样 */
   chat(): CsChatInfo | null;
+  /** 改这条群聊的名单（#1280，spec §6.6）。**只落日志这一半**：workspace_sessions.agent_ids
+      那一列是投影，归 daemon 写（同 archive 的分工）。对着**团队**名单核对，不是收窄后的那份——
+      要拉进来的那只此刻当然不在聊天名单里。空名单合法：删智能体那三步会把最后一只摘掉。 */
+  updateChatRoster(byUid: string, agentIds: string[]): Promise<ChatUpdateOutcome>;
 }
+
+export type ChatUpdateOutcome =
+  | { kind: "ok"; agentIds: string[]; changed: boolean }
+  | { kind: "not_group" | "unknown_agent" | "degraded"; message: string };
 
 export type VoiceCallOutcome = { kind: "ok" } | { kind: "unknown_agent" | "archived"; message: string };
 
@@ -2270,6 +2278,37 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
 
     chat() {
       return chatKind === null ? null : { kind: chatKind, agentIds: [...(chatRoster ?? [])] };
+    },
+
+    async updateChatRoster(byUid, agentIds) {
+      if (chatKind !== "group") {
+        return { kind: "not_group", message: chatKind === "dm" ? "私聊的名单改不了" : "这不是一条群聊" };
+      }
+      // 对着**团队**名单核对不是 rosterNow：要拉进来的那只此刻当然不在聊天名单里
+      const team = await opts.agents({ fresh: true });
+      if (team.some((a) => a.degraded)) return { kind: "degraded", message: "智能体名单这会儿读不出来，稍后再试" };
+      const wanted = [...new Set(agentIds)];
+      const members = narrowRoster(team, wanted); // 顺序跟团队名单走
+      const missing = wanted.length - members.length;
+      if (missing > 0) {
+        return { kind: "unknown_agent", message: `有 ${missing} 只智能体已经不在了（名单可能刚变过，刷新再试）` };
+      }
+      const next = members.map((a) => a.agentId);
+      const current = chatRoster ?? [];
+      if (current.length === next.length && next.every((id) => current.includes(id))) {
+        return { kind: "ok", agentIds: [...current], changed: false };
+      }
+      notify(
+        store.append({
+          sessionId,
+          ts: Date.now(),
+          type: "chat_roster_changed",
+          byUid,
+          ignorable: true,
+          agents: members.map((a) => ({ agentId: a.agentId, name: a.name })),
+        }),
+      );
+      return { kind: "ok", agentIds: next, changed: true };
     },
 
     async setVoiceCall(byUid, _byLabel, participants, budget) {
