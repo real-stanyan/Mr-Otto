@@ -190,3 +190,32 @@ describe("AgentsSidebarSection（#1280）", () => {
     expect(within(row).queryByText(/在跑|空闲/)).toBeNull();
   });
 });
+
+describe("名册上新来的一只（#1280 A5）", () => {
+  const liOf = (name: string): HTMLElement => {
+    const li = screen.getByText(name).closest("li");
+    if (li === null) throw new Error(`没找到「${name}」那一行`);
+    return li;
+  };
+
+  it("多出来的那一行带 data-fresh，原来那几行不带", () => {
+    const { rerender } = render(<AgentsSidebarSection {...props} />);
+    // 首次渲染不算新来的：否则每次切到这一栏整列都闪一遍
+    expect(liOf("管理员")).not.toHaveAttribute("data-fresh");
+    expect(liOf("运营")).not.toHaveAttribute("data-fresh");
+
+    const grown = { ...HOME, agents: [...HOME.agents, agent("a_000000000002", "客服", "回评价")] };
+    seed({ workspaceGroups: [grown] });
+    rerender(<ConfirmProvider><SidebarProvider><AgentsSidebarSection {...props} /></SidebarProvider></ConfirmProvider>);
+    expect(liOf("客服")).toHaveAttribute("data-fresh", "true");
+    expect(liOf("管理员")).not.toHaveAttribute("data-fresh");
+    expect(liOf("运营")).not.toHaveAttribute("data-fresh");
+  });
+
+  it("名册没变时再渲染一次：一行都不算新的（动效只在真多出一只那一次放）", () => {
+    const { rerender } = render(<AgentsSidebarSection {...props} />);
+    rerender(<ConfirmProvider><SidebarProvider><AgentsSidebarSection {...props} /></SidebarProvider></ConfirmProvider>);
+    expect(liOf("管理员")).not.toHaveAttribute("data-fresh");
+    expect(liOf("运营")).not.toHaveAttribute("data-fresh");
+  });
+});

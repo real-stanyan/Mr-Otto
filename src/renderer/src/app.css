@@ -1116,3 +1116,32 @@
     background: color-mix(in oklab, var(--brand) 22%, transparent);
   }
 }
+
+/* 花名册上新来的一只（#1280 A5）。建一只智能体是**稀有**事件——一个人一辈子
+   大概建几只——所以它配得上一点反馈，而每天几十次的动作（切行、换栏）一律不给。
+   只在入场那一次放：记号由 AgentsSidebarSection 按「这一次才多出来的 agentId」
+   挂，首次渲染一只都不挂，否则每次切到这一栏整列都闪一遍。
+   240ms + --ease-strong（进场该用的那条强 ease-out）；blur 2px 把「凭空出现」
+   糊成「长出来」，不从 scale(0) 起——现实里没有东西从无到有。 */
+[data-fresh="true"] {
+  animation: roster-enter 240ms var(--ease-strong) both;
+}
+@keyframes roster-enter {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+    filter: blur(2px);
+  }
+}
+/* 减弱 ≠ 取消：位移和模糊去掉，留一段纯透明度——这条动效的活是「标出哪一行是
+   新的」，不靠位移也干得了 */
+@media (prefers-reduced-motion: reduce) {
+  [data-fresh="true"] {
+    animation: roster-enter-reduced 240ms var(--ease-strong) both;
+  }
+  @keyframes roster-enter-reduced {
+    from {
+      opacity: 0;
+    }
+  }
+}

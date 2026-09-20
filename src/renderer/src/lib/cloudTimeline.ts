@@ -191,6 +191,37 @@ export function createAgentLanded(events: readonly SessionEvent[], e: SessionEve
   );
 }
 
+/** 每一次 `create_agent` 真落库的那条 `tool_result` → 它建的是**谁**（#1280 A5）。
+    时间线上那颗「去和「客服」聊」拿它当唯一依据：名字是这条日志里唯一说得出「建的是
+    哪一只」的东西——agentId 压根不在事件里，而回执正文是写给模型读的一句话。
+
+    **一遍扫完回一张表**，不做成 `createAgentLanded` 那种「给一条事件问一次」的形状：
+    那个形状每问一次都要重扫整份日志，搁进渲染循环就是 O(n²)，而这条线是永久的、
+    事件只增不减。store 那一处照旧用 `createAgentLanded`——它只对**刚到的那一条**问，
+    一次 O(n) 是它该付的。
+
+    name 不是非空字符串就不进表：那颗钮要拿名字去名册里找 agentId，找不到画出来
+    就是一颗点了没反应的钮（#722 那一族）。 */
+export function createdAgentNames(events: readonly SessionEvent[]): Map<number, string> {
+  const out = new Map<number, string>();
+  // toolCallId → 那次调用写的名字。调用必然排在回执前面（append-only），所以一遍够了
+  const pending = new Map<string, string>();
+  for (const e of events) {
+    if (e.type === "assistant_message") {
+      for (const c of e.toolCalls ?? []) {
+        if (c.name !== CREATE_AGENT_TOOL_NAME) continue;
+        const name = (c.args as { name?: unknown } | undefined)?.name;
+        if (typeof name === "string" && name !== "") pending.set(c.id, name);
+      }
+      continue;
+    }
+    if (e.type !== "tool_result" || e.status !== "ok") continue;
+    const name = pending.get(e.toolCallId);
+    if (name !== undefined) out.set(e.seq, name);
+  }
+  return out;
+}
+
 /** 护栏 / 后台任务回注在云时间线上的文案（#957 C-I5 / #936）：`origin` 不在场
     （人打的话）→ null，调用方按 null 落回既有的 UserMessageRow 气泡渲染；
     在场时画成 `AgentBriefedRow` 同款审计旁白（调用方负责套样式），不再是

@@ -23,7 +23,7 @@
 //    永远等不到第一次拉取）；主场的云会话清单倒是在这一层拉，因为只有这一层
 //    知道主场是哪一个。
 
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { Plus, Settings2 } from "lucide-react";
 import { useChat } from "../store.js";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar.js";
@@ -225,6 +225,17 @@ function RosterBody({
 
   const agents = useMemo(() => rosterRows(home, list), [home, list]);
   const groups = useMemo(() => groupRows(home, list), [home, list]);
+  // 名册上这一次才多出来的那几只（#1280 A5）。记号只挂一次，动效在 app.css 里。
+  // **首次渲染一只都不算新来的**（`seen` 还是 null）——否则每次切到这一栏整列都闪一遍。
+  // 上一次的名单落在 effect 里推进、不在渲染里改 ref：StrictMode 下一次渲染跑两遍，
+  // 边渲染边改的话第二遍就看不到差集了，于是这个动效在 dev 里一次都不放
+  const seen = useRef<ReadonlySet<string> | null>(null);
+  const ids = useMemo(() => agents.map((a) => a.agentId), [agents]);
+  const fresh = useMemo<ReadonlySet<string>>(
+    () => (seen.current === null ? new Set() : new Set(ids.filter((id) => !seen.current!.has(id)))),
+    [ids],
+  );
+  useEffect(() => { seen.current = new Set(ids); }, [ids]);
   // 组件挂载那一刻取一次：行上那格时间不必跟着秒走，下次进来就对了（同 dayLabel）
   const now = useMemo(() => Date.now(), []);
 
@@ -247,6 +258,7 @@ function RosterBody({
                 row={row}
                 avatar={agentAvatarSrc(home, row.agentId)}
                 now={now}
+                fresh={fresh.has(row.agentId)}
                 active={
                   (row.sessionId !== null && row.sessionId === openSessionId) ||
                   (draftChat?.kind === "dm" && draftChat.agentId === row.agentId)
@@ -298,22 +310,26 @@ function RosterBody({
 
 /** 一只智能体一行：30px 头像 + 名字/时间 + 职责。
     **只给高亮不给缩放**：切行是每天几十次的动作，缩一下会让这一列的基线跟着跳
-    （同 ADR-0249 撤掉「一行两层」的那条理由）。 */
+    （同 ADR-0249 撤掉「一行两层」的那条理由）。
+    `fresh` = 这一次渲染才多出来的那一只（#1280 A5）：入场动效在 app.css 里按
+    `[data-fresh="true"]` 挂，只放一次。 */
 function AgentRow({
   row,
   avatar,
   now,
   active,
+  fresh,
   onOpen,
 }: {
   row: AgentRosterRow;
   avatar: string;
   now: number;
   active: boolean;
+  fresh: boolean;
   onOpen: () => void;
 }) {
   return (
-    <SidebarMenuItem>
+    <SidebarMenuItem {...(fresh ? { "data-fresh": "true" } : {})}>
       <SidebarMenuButton
         className="h-auto py-[6px] gap-2"
         isActive={active}

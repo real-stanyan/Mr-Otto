@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  approvalCardTitle, assistantLabel, canStopTurn, cloudEmptyState, createAgentLanded, decisionLineText,
+  approvalCardTitle, assistantLabel, canStopTurn, cloudEmptyState, createAgentLanded, createdAgentNames, decisionLineText,
   hiddenFromCloudTimeline, isAgentStep, relayLineText, routeChangedText, stopButtonRows, systemNoteText, turnEndedLineText, voiceCallLineParts,
   userRowIdentity, type VoiceCallPart,
 } from "../../src/renderer/src/lib/cloudTimeline.js";
@@ -94,6 +94,34 @@ describe("createAgentLanded（#954：建成后桌面刷新名册的判据）", (
   it("找不到配对的 tool_call（日志被裁过）→ false，不刷新", () => {
     const orphan = { ...base, seq: 9, type: "tool_result" as const, toolCallId: "cZ", status: "ok" as const, output: "" };
     expect(createAgentLanded([orphan], orphan)).toBe(false);
+  });
+});
+
+describe("createdAgentNames（#1280 A5：建好之后那颗「去和它聊」）", () => {
+  const call = { ...base, seq: 1, type: "assistant_message" as const, content: "", model: "m", toolCalls: [{ id: "cA", name: "create_agent", args: { name: "客服", description: "回评价" } }] };
+  const bashCall = { ...base, seq: 2, type: "assistant_message" as const, content: "", model: "m", toolCalls: [{ id: "cB", name: "bash", args: { cmd: "ls" } }] };
+  it("落库那一条 tool_result → 它建的是谁", () => {
+    const ok = { ...base, seq: 3, type: "tool_result" as const, toolCallId: "cA", status: "ok" as const, output: "已创建" };
+    expect([...createdAgentNames([call, bashCall, ok])]).toEqual([[3, "客服"]]);
+  });
+  it("失败 / 被拒 / 别的刀 / 找不到配对的调用：一条都不进表", () => {
+    const denied = { ...base, seq: 3, type: "tool_result" as const, toolCallId: "cA", status: "denied" as const, output: "" };
+    const bashOk = { ...base, seq: 4, type: "tool_result" as const, toolCallId: "cB", status: "ok" as const, output: "" };
+    const orphan = { ...base, seq: 5, type: "tool_result" as const, toolCallId: "cZ", status: "ok" as const, output: "" };
+    expect(createdAgentNames([call, bashCall, denied, bashOk, orphan]).size).toBe(0);
+  });
+  it("name 不是字符串 / 是空串：不进表——那颗钮要拿名字去名册里找 agentId，找不到就是一颗点了没反应的钮", () => {
+    const bad = { ...base, seq: 1, type: "assistant_message" as const, content: "", model: "m", toolCalls: [{ id: "cA", name: "create_agent", args: { name: 42 } }] };
+    const empty = { ...base, seq: 1, type: "assistant_message" as const, content: "", model: "m", toolCalls: [{ id: "cA", name: "create_agent", args: { name: "" } }] };
+    const ok = { ...base, seq: 3, type: "tool_result" as const, toolCallId: "cA", status: "ok" as const, output: "" };
+    expect(createdAgentNames([bad, ok]).size).toBe(0);
+    expect(createdAgentNames([empty, ok]).size).toBe(0);
+  });
+  it("一遍扫完，建了两只就两条——不做成「给一条事件问一次」（那在渲染循环里是 O(n²)，而这条线是永久的）", () => {
+    const call2 = { ...base, seq: 4, type: "assistant_message" as const, content: "", model: "m", toolCalls: [{ id: "cC", name: "create_agent", args: { name: "运营" } }] };
+    const ok1 = { ...base, seq: 3, type: "tool_result" as const, toolCallId: "cA", status: "ok" as const, output: "" };
+    const ok2 = { ...base, seq: 5, type: "tool_result" as const, toolCallId: "cC", status: "ok" as const, output: "" };
+    expect([...createdAgentNames([call, ok1, call2, ok2])]).toEqual([[3, "客服"], [5, "运营"]]);
   });
 });
 

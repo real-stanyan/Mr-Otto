@@ -66,7 +66,7 @@ import { applyAgentMention, mentionQueryAt, pickerEmptyState, resolveSendMention
 import { filterMentionRows, mentionRows, MENTION_KIND_LABEL, type MentionRow } from "../lib/workspaceMentionItems.js";
 import {
   approvalCardTitle, assistantLabel, callDurationText, callOffsetText, canStopTurn, chatRosterLineParts, cloudEmptyState,
-  hiddenFromCloudTimeline, relayLineText, stopButtonRows, systemNoteText, turnEndedLineText, userRowIdentity,
+  createdAgentNames, hiddenFromCloudTimeline, relayLineText, stopButtonRows, systemNoteText, turnEndedLineText, userRowIdentity,
   voiceCallCards, type RosterLinePart, type VoiceCallCard,
 } from "../lib/cloudTimeline.js";
 import { systemNoteDetail } from "../lib/systemNote.js";
@@ -237,6 +237,7 @@ export function CloudSessionPage({
   // 名单陈旧时的刷新（#935 / #957 C-I4）：选人弹层的空态按钮、发送前对认不出
   // 的 @ 先刷一次都要它
   const refreshWorkspaceGroups = useChat((s) => s.refreshWorkspaceGroups);
+  const openAgentChat = useChat((s) => s.openAgentChat);
   // 建这条会话的人（issue #822）：清单那一行本来就带 publisherUid，不用为
   // 这个再往协议里加字段。清单还没拉到时查不到 → 按钮不显示（服务端才是
   // 判据，这里少显示一颗按钮的代价远小于显示一颗按了被拒的）
@@ -549,10 +550,30 @@ export function CloudSessionPage({
     }
     return out;
   }, [events, selfUid]);
+  // 「去和「客服」聊」那一行（#1280 A5）。判据与 `rosterLines` 同一个形状、同一个
+  // 理由：这一条是被 `hiddenFromCloudTimeline` 第 ⑥ 条挡住的中间步骤（#1055），
+  // 要放它出来就得在循环外另算一遍，而**渲染循环与「一条都画不出来」的计数必须读
+  // 同一份结果**——两处各判一遍迟早分家（A3 在这一处栽过）。
+  // agentId 从**刷新后的名册**里按名字找：快照还没刷回来时这颗钮不画（画一颗点了
+  // 没反应的钮是撒谎的勾，#722），刷回来自然出现
+  const createdAgents = useMemo(() => {
+    const out = new Map<number, { name: string; agentId: string }>();
+    if (chat === undefined) return out;
+    for (const [seq, name] of createdAgentNames(events)) {
+      const found = ws.agents.find((a) => a.name === name);
+      if (found !== undefined) out.set(seq, { name, agentId: found.agentId });
+    }
+    return out;
+  }, [chat, events, ws]);
   const chatTimeline = useMemo(() => {
     if (chat === undefined) return null;
     const visible = events
-      .filter((e) => !hiddenFromCloudTimeline(e) && !voiceCards.folded.has(e.seq) && e.type !== "context_compacted")
+      .filter((e) =>
+        // 建好之后那一行是**从藏起来的中间步骤里放出来的**，所以它要单独算进可见行：
+        // 不算的话日期分隔条会落错位置，而「一条都画不出来」那句也会对着一屏有内容的
+        // 聊天说出口。通话卡吞掉的那几条仍然不放（那张卡自己会讲）
+        (createdAgents.has(e.seq) && !voiceCards.folded.has(e.seq)) ||
+        (!hiddenFromCloudTimeline(e) && !voiceCards.folded.has(e.seq) && e.type !== "context_compacted"))
       // 建聊天那一条名单事件画不出任何东西（`rosterLines` 里是 null）——算进来的话
       // 刚建好的群永远不是「空的」，那句「都在」一次都出不来（A3 踩过同一个坑，
       // 那时是靠把整个事件类型藏起来绕过去的）
@@ -570,7 +591,7 @@ export function CloudSessionPage({
     // chat_roster_changed 两条，它们都画不出任何东西——照那一格判的话，这一屏是
     // **一片空白**，而不是那句「都在」。判据因此挂在真正会画出来的行数上
     return { marks, empty: visible.length === 0 };
-  }, [chat, events, voiceCards, chatNow, rosterLines]);
+  }, [chat, events, voiceCards, chatNow, rosterLines, createdAgents]);
   const dayMarks = chatTimeline?.marks ?? null;
 
   const timelineEmpty = cloudEmptyState(cs.state, events.length);
@@ -1014,6 +1035,20 @@ export function CloudSessionPage({
               // 接力开场白（user_message 带 relay）不画：那是给模型看的
               // "[系统] 「运营」@ 了你"，人看下面那条 agent_relay 接力线就够，
               // 画出来是同一件事说两遍（#950）
+              // 建好一只之后那颗「去和它聊」（#1280 A5）。**排在 hidden 之前**：
+              // 它挂的那条 tool_result 正是被第 ⑥ 条挡住的中间步骤，判据在
+              // createdAgents 里（与上面那份可见行计数读同一张表）
+              const created = createdAgents.get(e.seq);
+              if (created !== undefined && !voiceCards.folded.has(e.seq)) {
+                return (
+                  <CreatedAgentRow
+                    key={e.seq}
+                    name={created.name}
+                    avatar={agentAvatarSrc(ws, created.agentId)}
+                    onOpen={() => void openAgentChat(created.agentId)}
+                  />
+                );
+              }
               // 一道判据管所有「这一行画不画」（#1055 把中间步骤那道合了进来）
               if (hiddenFromCloudTimeline(e)) return null;
               // 被通话卡吞掉的那些（#1233）：说出来的话、通话里那几只的回复、
@@ -1759,6 +1794,31 @@ export function ChatRosterRow({ parts, ws }: { parts: readonly RosterLinePart[];
         );
       })}
     </p>
+  );
+}
+
+/** 建好一只之后，时间线上那颗「去和「客服」聊」（#1280 A5）。
+    居中，与名单那一行同一族——它说的是**整个花名册此刻多了一只**，不是机器的内务。
+
+    它挂在 `create_agent` 那条落库的 `tool_result` 上，而那条本来被
+    `hiddenFromCloudTimeline` 第 ⑥ 条整段挡在时间线外（#1055）：中间步骤对读者
+    没有可行动的内容。这一条是例外，因为它**有**——下一步就是去跟它说话，而找到
+    它的另一条路是「关掉这一屏、去侧栏那一栏里翻」。
+
+    名字画在钮上不画在旁白里：一句「已经建好了」读完还要人自己去找，而这颗钮
+    读完就是下一步。 */
+function CreatedAgentRow({ name, avatar, onOpen }: { name: string; avatar: string; onOpen: () => void }) {
+  return (
+    <div className="self-center px-1 py-[2px]">
+      <Button variant="outline" size="xs" className="rounded-full font-normal" onClick={onOpen}>
+        <img
+          src={avatar}
+          alt=""
+          className="mr-[1px] size-4 shrink-0 rounded-[4px] [image-rendering:pixelated]"
+        />
+        去和「{name}」聊
+      </Button>
+    </div>
   );
 }
 
