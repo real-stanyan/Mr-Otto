@@ -82,6 +82,7 @@ runtime ──(x-runtime-secret + on-behalf-of 所有者)──┘            �
 - `noul(instructions, yes, no)` / `choice(instructions, options)` 两个构造函数。**noul 的 `criteria` 两格都必填**——构造函数的签名就不给省略的机会，OpenRouter 那条差别由构造保证。`score` 只有线上类型，不给构造函数（五处一处都用不到）。
 - `parseDecisionReply(payload, questions)`：**不信上游的「0% 类型错误」，自己验一遍**——问了的每一个 id 都要有答案、类型对得上、noul 在 [0,1]、choice 回的那一项必须是我们给过的选项。任何一处不对整份回 `null`（不挑着用）。
 - `requestDecision(deps, req)`：`POST ${llmBase}/decision`，`AbortController` 超时，任何失败回 `null` 并 `deps.log` 一句原因。依赖全部注入（`llmBase` / `headers` / `fetchImpl?` / `timeoutMs` / `log?`），同 `autoModel.ts` 的形状。
+- `withDecision({ use, mode, viaDecision, viaLegacy, show, log })`：五处共用的三态包装。决策那条路有三种结局——有答案（`{ value }`，`value` 可以是 `null`，例如重命名的 KEEP）/ 拿不准（`{ escalate: true }`）/ 没问出来（`null`）；后两种都落到 `viaLegacy`。`shadow` 时 `viaLegacy` 说了算且**不等** `viaDecision`，它回来之后记一行对照。
 - `modeOf(me, use)`：`BillingMe` → `"off" | "shadow" | "on"`；`me` 为 null、没有 `decision` 一格、清单为空、这一处没列，全部回 `"off"`。
 
 ### 5.2 edge：`kind='decision'`
@@ -115,7 +116,8 @@ runtime ──(x-runtime-secret + on-behalf-of 所有者)──┘            �
 
   | 条件 | 判决 |
   |---|---|
-  | `P(act) < 0.30` | `none` |
+  | `P(act) < 0.30`，且没有哪只 `P ≥ 0.60` | `none` |
+  | `P(act) < 0.30`，却有一只 `P ≥ 0.60`（自相矛盾——多半是一句很短的回答，两个问题各看到了一半） | `"escalate"` |
   | 有 agent `P ≥ 0.60` | `picked`（按 P 降序，封顶 `DISPATCH_MAX_TARGETS`） |
   | 没有，且 `P(act) ≥ 0.70`，且有 fallback 那一只 | `picked [fallback]`（今天「没人对口的活归它」那条） |
   | 其余 | `"escalate"` |
@@ -138,7 +140,7 @@ runtime ──(x-runtime-secret + on-behalf-of 所有者)──┘            �
 
 ### 5.4 桌面：三处
 
-`src/main/hostedQuota.ts` += `decisionInput()`；`src/main/modelRoute.ts` += `routeDecision`（照 `routeTts`；blocked 的原因只进日志——决策调用永远不向用户报错，blocked = 走今天的路）；新文件 `src/main/decisionClient.ts`：`createDecisionClient({ quota, accessToken, edgeBaseUrl, fetchImpl? })` → `decide(use, state, questions, timeoutMs)`，照 `teamVoice.ts` 处理 `noteHeaders` / `quota_exhausted`。
+新文件 `src/main/decisionClient.ts`：`createDecisionClient({ quota, accessToken, edgeBaseUrl, fetchImpl? })` → `mode(use)` + `decide(use, state, questions, timeoutMs)`，照 `teamVoice.ts` 处理 `noteHeaders` / `quota_exhausted`。「订阅 / 额度用完」两格读 `quota.routeInput("")`（与聊天、出图、语音**同源**，不另判一遍——各判一遍就会出现「聊天说额度用完了、决策却照跑」），开关读 `quota.snapshot().me`；任何一格不过 = `mode` 回 `"off"` = 走今天的路。**不给 `hostedQuota` 加 `decisionInput()`、不给 `modelRoute` 加 `routeDecision`**（写 plan 时收掉的：那两个先例存在是因为出图 / 语音要向用户说清四种 blocked 各是什么，而决策调用永远不向用户报错，blocked 的原因只进日志）。`HostedCapability` 加可选 `decision?: DecisionClient`——缺席 = 行为一字不变，子 agent 与子会话重建两处跟着 `hostedDeps` 原样接住。
 
 **④ Auto（桌面）**：`agent.ts` 的 `pickAutoModel` 把 `decide` 递给共用的那一份（5.3 ②）。`HostedCapability` 加可选 `decide?`——缺席 = 行为一字不变，`hosted` 没装配的那些装配（探针 / 测试 / 裸装配）不用动。
 
@@ -162,6 +164,7 @@ runtime ──(x-runtime-secret + on-behalf-of 所有者)──┘            �
 - 落点：`execute` 里点名守卫之后、拿文件锁之前（此刻一把锁都没拿，900ms 的网络等待不占任何东西）。**只在有项目根、且 `target ∈ {user, memory, project}` 时问**——要治的病是「项目事实落进全局档」，没有项目档时那一格不存在；`topic` 要连桶一起挑，不在这次范围里。
 - 命中 → 抛一条与点名守卫同形的错：「这条更像 `<档>` 的事——改写 target。确认就是 `<原档>` 的话，**原样再提交一次会放行**。」放行靠工具闭包里的一个集合（`target + 内容哈希`）：这是卫生劝告不是安全闸，模型坚持一次就让它过，不然 Jev 判错一次就把一条真事实永久挡在外面（三次失败工具会进终态）。
 - `shadow`：不抛，只记一行。
+- **连带的一处改动**：`agent.ts` 里记忆工具从「每轮 `buildTools` 重建」改成「每会话建一次」——那份「被劝过一次」的簿记住在工具实例里，每轮重建就每轮失忆，模型原样再交一次仍然被劝，三次之后工具进终态。它不依赖任何会话中途会变的东西（`memoryProject` 装配时就定了）。
 
 ## 6. 开关：一处三态，初始全关
 
