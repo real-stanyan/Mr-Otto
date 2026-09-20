@@ -190,7 +190,7 @@ import { islandRail } from "../shared/islandRail.js";
 import type { BilledRow } from "../shared/usageStats.js";
 import { createWorkspaceManager } from "./workspaceManager.js";
 import {
-  createWorkspace, listWorkspaces, fetchWorkspace, addMember, removeMember, leave,
+  createWorkspace, findHomeWorkspace, listWorkspaces, fetchWorkspace, addMember, removeMember, leave,
   deleteWorkspace, upsertConnectorRow, deleteConnectorRow, insertSessionRow, listCloudSessions,
   insertAgentRow, updateAgentRow, deleteAgentRow, listAgentNames,
   updateSandboxApproval, listMentions, markMentionsRead,
@@ -1627,7 +1627,7 @@ void app.whenReady().then(() => {
   // 编排装配，IPC 接线是 Task 11 的事——list() 在那之前没人调，hostUids()
   // 就一直是空数组（brief 明写的过渡态，不是 bug）。
   const workspaceManager = createWorkspaceManager({
-    createWorkspace, listWorkspaces, fetchWorkspace, addMember, removeMember, leave,
+    createWorkspace, findHomeWorkspace, listWorkspaces, fetchWorkspace, addMember, removeMember, leave,
     deleteWorkspace, upsertConnectorRow, deleteConnectorRow,
     insertAgentRow, updateAgentRow, deleteAgentRow, listAgentNames,
     updateSandboxApproval, listMentions, markMentionsRead,

@@ -23,7 +23,7 @@
 import { randomBytes } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type * as WorkspacesApi from "./supabaseWorkspacesApi.js";
-import { normalizeAvatarSlot } from "../shared/workspaces.js";
+import { HOME_WORKSPACE_NAME, normalizeAvatarSlot } from "../shared/workspaces.js";
 import type { WorkspaceSnapshot } from "../shared/workspaces.js";
 import type { WorkspaceMentionRow } from "../shared/workspaceMentions.js";
 import { humanizeWorkspaceError } from "../shared/workspaceError.js";
@@ -43,6 +43,7 @@ const ADMIN_CANNOT_DELETE = "管理员不能删除";
 
 export interface WorkspaceManagerDeps {
   createWorkspace: typeof WorkspacesApi.createWorkspace;
+  findHomeWorkspace: typeof WorkspacesApi.findHomeWorkspace;
   listWorkspaces: typeof WorkspacesApi.listWorkspaces;
   fetchWorkspace: typeof WorkspacesApi.fetchWorkspace;
   addMember: typeof WorkspacesApi.addMember;
@@ -70,6 +71,10 @@ export interface WorkspaceManagerDeps {
 export interface WorkspaceManager {
   list(): Promise<FriendsResult<WorkspaceSnapshot[]>>;
   create(name: string): Promise<FriendsResult<{ id: string }>>;
+  /** 这个账号的个人主场（#1280）：有就回它的 id，没有就建一个 `kind='home'` 的。
+      闸是库里的 `can_create_workspace()`（Pro / Max，ADR-0242）——界面那道只是为了
+      把话说清楚，真正拦住的是 RLS */
+  ensureHome(): Promise<FriendsResult<{ id: string }>>;
   remove(id: string): Promise<FriendsResult<null>>;
   addMember(id: string, uid: string): Promise<FriendsResult<null>>;
   kickMember(id: string, uid: string): Promise<FriendsResult<null>>;
@@ -133,6 +138,8 @@ function unreadableSnapshot(row: { id: string; name: string; owner_uid: string }
     // null 不是 "ask"（#1029）：整份快照都没拉下来，这一格更谈不上读到了。
     // 兜底成 "ask" 会让侧栏那格挂着的团队在云会话里画出一枚「关着」的开关
     sandboxApproval: null,
+    // 同上：整份快照都没拉下来，这一格更谈不上读到了（#1280）
+    kind: null,
     loadError: humanizeWorkspaceError(reason),
   };
 }
@@ -221,6 +228,24 @@ export function createWorkspaceManager(deps: WorkspaceManagerDeps): WorkspaceMan
       return withSession(async (client, uid) => {
         const row = await deps.createWorkspace(client, name, uid);
         return { id: row.id };
+      });
+    },
+
+    async ensureHome() {
+      return withSession(async (client, uid) => {
+        const found = await deps.findHomeWorkspace(client, uid);
+        if (found !== null) return { id: found };
+        try {
+          return { id: (await deps.createWorkspace(client, HOME_WORKSPACE_NAME, uid, "home")).id };
+        } catch (err) {
+          // 两台设备同时建：后到的那台撞 workspaces_one_home_per_owner。**不看错误码**
+          // ——PostgREST 的 code 在不同版本里挂的位置不一样（#1213 的 23505 那次就踩过），
+          // 而这里有一个比错误码更硬的判据：回头重查。查得到就是抢输了（对用户来说
+          // 什么都没发生），查不到才是真失败，原错误优先
+          const raced = await deps.findHomeWorkspace(client, uid).catch(() => null);
+          if (raced !== null) return { id: raced };
+          throw err;
+        }
       });
     },
 

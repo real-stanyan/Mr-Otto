@@ -27,9 +27,13 @@ function harness(over: Partial<WorkspaceManagerDeps> = {}) {
     markMentionsRead: async () => {
       calls.push("markMentionsRead");
     },
-    createWorkspace: async (_client, name, selfUid) => {
-      calls.push("createWorkspace");
+    createWorkspace: async (_client, name, selfUid, kind) => {
+      calls.push(kind === undefined ? "createWorkspace" : `createWorkspace:${kind}`);
       return { id: "ws-new", name, owner_uid: selfUid, created_at: "2026-01-01T00:00:00Z" };
+    },
+    findHomeWorkspace: async () => {
+      calls.push("findHomeWorkspace");
+      return null;
     },
     listWorkspaces: async () => {
       calls.push("listWorkspaces");
@@ -559,5 +563,52 @@ describe("workspace relay max depth（#950 Task 9）", () => {
       },
     });
     expect(await manager.setSandboxApproval("ws-1", "auto")).toEqual({ ok: false, message: "无权修改" });
+  });
+});
+
+describe("ensureHome（#1280）", () => {
+  it("已经有主场：直接回它，不建", async () => {
+    const h = harness({ findHomeWorkspace: async () => "home-1" });
+    expect(await h.manager.ensureHome()).toEqual({ ok: true, value: { id: "home-1" } });
+    expect(h.calls).not.toContain("createWorkspace");
+    expect(h.calls).not.toContain("createWorkspace:home");
+  });
+
+  it("没有：建一个 kind='home' 的，名字是「我的智能体」", async () => {
+    const seen: unknown[] = [];
+    const h = harness({
+      createWorkspace: async (_c, name, uid, kind) => {
+        seen.push([name, kind]);
+        return { id: "home-new", name, owner_uid: uid, created_at: "2026-01-01T00:00:00Z" };
+      },
+    });
+    expect(await h.manager.ensureHome()).toEqual({ ok: true, value: { id: "home-new" } });
+    expect(seen).toEqual([["我的智能体", "home"]]);
+  });
+
+  it("两台设备同时建，后到的那台撞唯一索引：回头重查，不报错", async () => {
+    let n = 0;
+    const h = harness({
+      findHomeWorkspace: async () => (n++ === 0 ? null : "home-raced"),
+      createWorkspace: async () => {
+        throw Object.assign(new Error("duplicate key value violates unique constraint"), { code: "23505" });
+      },
+    });
+    expect(await h.manager.ensureHome()).toEqual({ ok: true, value: { id: "home-raced" } });
+  });
+
+  it("建失败且重查也没有：把原因带回去（档位不够 / 库比客户端旧都走这条）", async () => {
+    const h = harness({
+      createWorkspace: async () => { throw new Error("new row violates row-level security policy"); },
+    });
+    const r = await h.manager.ensureHome();
+    expect(r.ok).toBe(false);
+  });
+
+  it("没登录：一次网络都不打", async () => {
+    const h = harness();
+    h.signOut();
+    expect((await h.manager.ensureHome()).ok).toBe(false);
+    expect(h.calls).toEqual([]);
   });
 });

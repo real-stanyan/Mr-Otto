@@ -5,7 +5,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import {
   assembleSnapshot,
-  type MemberProfile, type WorkspaceSnapshot,
+  type MemberProfile, type WorkspaceKind, type WorkspaceSnapshot,
 } from "../shared/workspaces.js";
 import { normalizeSandboxApproval, type SandboxApproval } from "../shared/workspaceAgents.js";
 import type { AgentToolAllow } from "../shared/agentToolAllow.js";
@@ -53,9 +53,12 @@ export async function createWorkspace(
   client: SupabaseClient,
   name: string,
   selfUid: string,
+  /** 个人主场（#1280）。**建团队时不带这一列**：0037 没跑的库里 insert 一个不存在的列
+      会整条失败，而建团队与主场毫无关系，不该被它拖下水 */
+  kind: WorkspaceKind = "team",
 ): Promise<WorkspaceListRow> {
   const ws = unwrap(
-    await client.from("workspaces").insert({ name, owner_uid: selfUid })
+    await client.from("workspaces").insert({ name, owner_uid: selfUid, ...(kind === "home" ? { kind } : {}) })
       .select("id,name,owner_uid,created_at").single(),
   ) as WorkspaceListRow;
   try {
@@ -93,6 +96,7 @@ export async function fetchWorkspace(
   // 只影响它自己，回 null =「这一格读不到」（#1029 起不再兜底成 "ask"，理由在
   // fetchSandboxApproval 的注释里）。代价是每个团队多一次单行主键查询
   const sandboxApproval = await fetchSandboxApproval(client, id);
+  const kind = await fetchWorkspaceKind(client, id);
   const members = (unwrap(
     await client.from("workspace_members").select("uid,role").eq("workspace_id", id),
   ) ?? []) as { uid: string; role: string }[];
@@ -121,7 +125,27 @@ export async function fetchWorkspace(
     tools: unknown; created_by: string; updated_at: string; avatar_slot?: unknown;
   }[];
   const profiles = await fetchProfiles(client, members.map((m) => m.uid));
-  return assembleSnapshot({ ...ws, sandbox_approval: sandboxApproval }, members, connectors, sessions, agents, (uid) => profiles.get(uid) ?? null);
+  return assembleSnapshot({ ...ws, sandbox_approval: sandboxApproval, kind }, members, connectors, sessions, agents, (uid) => profiles.get(uid) ?? null);
+}
+
+/** `workspaces.kind` 那一格（#1280）。**单独一条、容错**，理由与 `fetchSandboxApproval`
+    逐字相同：拼进主 select 的话，0037 落地前 PostgREST 对不存在的列回 42703，
+    整个团队一个字都读不出来。读不到（列不存在 / 查询抖了 / 那一行看不见）回 `null`
+    ——不是 `"team"`：`isHomeWorkspace` 对 null 回 false，所以行为上落在「当成普通团队」
+    这一侧，但快照里留着「这一格没读到」这个事实，界面据此说实话 */
+async function fetchWorkspaceKind(client: SupabaseClient, id: string): Promise<WorkspaceKind | null> {
+  const res = await client.from("workspaces").select("kind").eq("id", id).maybeSingle();
+  if (res.error || res.data === null) return null;
+  const k = (res.data as { kind?: unknown }).kind;
+  return k === "home" || k === "team" ? k : null;
+}
+
+/** 这个账号的个人主场（#1280），没有回 null。库里那条唯一索引
+    （`workspaces_one_home_per_owner`）是权威，这个查询只是在撞上它之前先问一遍——
+    两条路都要走，因为「先查再建」不是原子的（同 daemon 的 `findDmSession`） */
+export async function findHomeWorkspace(client: SupabaseClient, selfUid: string): Promise<string | null> {
+  const res = await client.from("workspaces").select("id").eq("owner_uid", selfUid).eq("kind", "home").maybeSingle();
+  return (unwrap(res) as { id: string } | null)?.id ?? null;
 }
 
 /** `workspaces.sandbox_approval` 那一格。**两种失败分开回**（#1029）：

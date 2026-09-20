@@ -3,10 +3,10 @@
 // avatar_slot 归一、sandbox_approval 原样透传）。
 
 import { describe, expect, it } from "vitest";
-import { assembleSnapshot } from "../../src/shared/workspaces.js";
+import { assembleSnapshot, isHomeWorkspace } from "../../src/shared/workspaces.js";
 import { normalizeSandboxApproval } from "../../src/shared/workspaceAgents.js";
 
-const WS = { id: "ws-1", name: "测试工作区", owner_uid: "owner-uid-12345678", sandbox_approval: "ask" as const };
+const WS = { id: "ws-1", name: "测试工作区", owner_uid: "owner-uid-12345678", sandbox_approval: "ask" as const, kind: "team" as const };
 
 describe("assembleSnapshot", () => {
   it("组装成员/连接器/会话三张表 + label 查得到时原样用", () => {
@@ -38,6 +38,7 @@ describe("assembleSnapshot", () => {
       }],
       agents: [],
       sandboxApproval: "ask",
+      kind: "team",
     });
   });
 
@@ -141,5 +142,19 @@ describe("normalizeSandboxApproval", () => {
     expect(normalizeSandboxApproval(undefined)).toBe("ask");
     expect(normalizeSandboxApproval(null)).toBe("ask");
     expect(normalizeSandboxApproval("AUTO")).toBe("ask");
+  });
+});
+
+describe("kind（#1280）", () => {
+  it("原样进快照；读不到（null）与团队分开", () => {
+    expect(assembleSnapshot({ ...WS, kind: "home" }, [], [], [], [], () => null).kind).toBe("home");
+    expect(assembleSnapshot({ ...WS, kind: null }, [], [], [], [], () => null).kind).toBeNull();
+    expect(assembleSnapshot(WS, [], [], [], [], () => null).kind).toBe("team");
+  });
+  it("isHomeWorkspace 只认 home：读不到、缺席、团队全是 false——读不到不许当成主场藏起来", () => {
+    expect(isHomeWorkspace({ kind: "home" })).toBe(true);
+    expect(isHomeWorkspace({ kind: "team" })).toBe(false);
+    expect(isHomeWorkspace({ kind: null })).toBe(false);
+    expect(isHomeWorkspace({})).toBe(false);
   });
 });
