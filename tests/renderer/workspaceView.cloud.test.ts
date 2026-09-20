@@ -22,10 +22,10 @@ const WS: WorkspaceSnapshot = {
 };
 
 const ROWS: CloudSessionListRow[] = [
-  { id: "cs-1", title: "会话一", publisherUid: "owner-uid", archived: false, updatedTs: 1000, participantUids: [] },
-  { id: "cs-2", title: "会话二", publisherUid: "member-uid", archived: false, updatedTs: 3000, participantUids: [] },
-  { id: "cs-3", title: "已归档但更新过", publisherUid: "owner-uid", archived: true, updatedTs: 9000, participantUids: [] },
-  { id: "cs-4", title: "陌生发起人", publisherUid: "left-the-group-uid", archived: false, updatedTs: 2000, participantUids: [] },
+  { id: "cs-1", title: "会话一", publisherUid: "owner-uid", archived: false, updatedTs: 1000, participantUids: [], chatKind: null, agentIds: [] },
+  { id: "cs-2", title: "会话二", publisherUid: "member-uid", archived: false, updatedTs: 3000, participantUids: [], chatKind: null, agentIds: [] },
+  { id: "cs-3", title: "已归档但更新过", publisherUid: "owner-uid", archived: true, updatedTs: 9000, participantUids: [], chatKind: null, agentIds: [] },
+  { id: "cs-4", title: "陌生发起人", publisherUid: "left-the-group-uid", archived: false, updatedTs: 2000, participantUids: [], chatKind: null, agentIds: [] },
 ];
 
 describe("cloudSessionRows", () => {

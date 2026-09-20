@@ -181,7 +181,9 @@ export function WorkspaceAgentsTab({ ws, selfUid }: { ws: WorkspaceSnapshot; sel
   );
 }
 
-function AgentEditorScreen({
+/** 导出给 `AgentSettingsDrawer` 复用（#1280）：主场里一只智能体的设置就是这张表单，
+    抄第二份的那天两处会开始各说各的（型号那一格的映射规则尤其）*/
+export function AgentEditorScreen({
   ws, state, onDone,
 }: {
   ws: WorkspaceSnapshot;

@@ -23,7 +23,7 @@
 import { randomBytes } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type * as WorkspacesApi from "./supabaseWorkspacesApi.js";
-import { normalizeAvatarSlot } from "../shared/workspaces.js";
+import { HOME_WORKSPACE_NAME, normalizeAvatarSlot } from "../shared/workspaces.js";
 import type { WorkspaceSnapshot } from "../shared/workspaces.js";
 import type { WorkspaceMentionRow } from "../shared/workspaceMentions.js";
 import { humanizeWorkspaceError } from "../shared/workspaceError.js";
@@ -43,6 +43,17 @@ const ADMIN_CANNOT_DELETE = "管理员不能删除";
 
 export interface WorkspaceManagerDeps {
   createWorkspace: typeof WorkspacesApi.createWorkspace;
+  findHomeWorkspace: typeof WorkspacesApi.findHomeWorkspace;
+  listAgentChats: typeof WorkspacesApi.listAgentChats;
+  /** 删一条云会话（#1280）：走 runtime 的 delete 帧（ADR-0245），不是直连 Supabase
+      ——0016 那条策略把客户端的 delete 钉死在 kind='package' */
+  removeCloudSession: (workspaceId: string, sessionId: string) => Promise<FriendsResult<null>>;
+  /** 把这只从它在的那几个群里摘掉（#1280）。**A4（Task 25）才接上真的 chat_update**，
+      在那之前接的是一个恒成功的空操作——读取侧对现存名册求交集兜着这段中间态
+      （`groupRows` / `CloudSessionMain` 那两处） */
+  removeFromGroups: (workspaceId: string, agentId: string, groupSessionIds: string[]) => Promise<FriendsResult<null>>;
+  /** 删它的记忆页（#1280）。删不掉不拦删除：留一页没人读的记忆，比让这只删不掉好 */
+  removeAgentPage: (workspaceId: string, agentId: string) => Promise<void>;
   listWorkspaces: typeof WorkspacesApi.listWorkspaces;
   fetchWorkspace: typeof WorkspacesApi.fetchWorkspace;
   addMember: typeof WorkspacesApi.addMember;
@@ -70,6 +81,10 @@ export interface WorkspaceManagerDeps {
 export interface WorkspaceManager {
   list(): Promise<FriendsResult<WorkspaceSnapshot[]>>;
   create(name: string): Promise<FriendsResult<{ id: string }>>;
+  /** 这个账号的个人主场（#1280）：有就回它的 id，没有就建一个 `kind='home'` 的。
+      闸是库里的 `can_create_workspace()`（Pro / Max，ADR-0242）——界面那道只是为了
+      把话说清楚，真正拦住的是 RLS */
+  ensureHome(): Promise<FriendsResult<{ id: string }>>;
   remove(id: string): Promise<FriendsResult<null>>;
   addMember(id: string, uid: string): Promise<FriendsResult<null>>;
   kickMember(id: string, uid: string): Promise<FriendsResult<null>>;
@@ -133,6 +148,8 @@ function unreadableSnapshot(row: { id: string; name: string; owner_uid: string }
     // null 不是 "ask"（#1029）：整份快照都没拉下来，这一格更谈不上读到了。
     // 兜底成 "ask" 会让侧栏那格挂着的团队在云会话里画出一枚「关着」的开关
     sandboxApproval: null,
+    // 同上：整份快照都没拉下来，这一格更谈不上读到了（#1280）
+    kind: null,
     loadError: humanizeWorkspaceError(reason),
   };
 }
@@ -221,6 +238,24 @@ export function createWorkspaceManager(deps: WorkspaceManagerDeps): WorkspaceMan
       return withSession(async (client, uid) => {
         const row = await deps.createWorkspace(client, name, uid);
         return { id: row.id };
+      });
+    },
+
+    async ensureHome() {
+      return withSession(async (client, uid) => {
+        const found = await deps.findHomeWorkspace(client, uid);
+        if (found !== null) return { id: found };
+        try {
+          return { id: (await deps.createWorkspace(client, HOME_WORKSPACE_NAME, uid, "home")).id };
+        } catch (err) {
+          // 两台设备同时建：后到的那台撞 workspaces_one_home_per_owner。**不看错误码**
+          // ——PostgREST 的 code 在不同版本里挂的位置不一样（#1213 的 23505 那次就踩过），
+          // 而这里有一个比错误码更硬的判据：回头重查。查得到就是抢输了（对用户来说
+          // 什么都没发生），查不到才是真失败，原错误优先
+          const raced = await deps.findHomeWorkspace(client, uid).catch(() => null);
+          if (raced !== null) return { id: raced };
+          throw err;
+        }
       });
     },
 
@@ -352,7 +387,26 @@ export function createWorkspaceManager(deps: WorkspaceManagerDeps): WorkspaceMan
         // PostgREST 的英文。放在 withSession 的业务体里,是为了让未登录时
         // 依旧先报"还没登录"(withSession 的早退在这之前)。
         if (agentId === ADMIN_AGENT_ID) throw new Error(ADMIN_CANNOT_DELETE);
+        // 三步、不原子（#1280，spec §6.7）。**顺序是倒着排的**：先动最贵、最可能
+        // 失败的那一步（云端那条日志），最后才删那一行——断在半路时留下的是
+        // 「智能体还在、聊天没了」，比「聊天还在、主人没了」好收拾：前者人再点一次
+        // 删除就收干净了，后者会在花名册上留下一条指向不存在的智能体的私聊。
+        // 第 2、3 步之间断了由读取侧的「与现存智能体求交集」兜住。
+        // **团队里这条路照走**：listAgentChats 在 0037 没跑的库上回空，于是三步
+        // 退化成改动前的那一步
+        const chats = await deps.listAgentChats(client, id, agentId);
+        if (chats.dmSessionId !== null) {
+          const r = await deps.removeCloudSession(id, chats.dmSessionId);
+          if (!r.ok) throw new Error(`它的聊天记录没删掉（${r.message}），所以这只智能体也先留着。稍后再试。`);
+        }
+        if (chats.groupSessionIds.length > 0) {
+          const r = await deps.removeFromGroups(id, agentId, chats.groupSessionIds);
+          if (!r.ok) throw new Error(`没能把它从群聊里摘掉（${r.message}），所以这只智能体也先留着。稍后再试。`);
+        }
         await deps.deleteAgentRow(client, id, agentId);
+        // 记忆页删不掉**不拦删除**：留下的是一页没人读的 markdown，而拦下来的话
+        // 这只智能体永远删不掉（它的私聊已经没了，界面上看不出为什么）
+        await deps.removeAgentPage(id, agentId).catch(() => undefined);
         return null;
       });
     },

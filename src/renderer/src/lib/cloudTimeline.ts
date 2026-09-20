@@ -103,6 +103,12 @@ export function relayLineText(e: AgentRelayEvent, ws: WorkspaceSnapshot): string
        行动（ADR-0260 的判据），而侧栏那一行的字已经跟着换了，画出来是同一件事
        说两遍。**藏的是投影不是事实**：落盘/重放/隐私闸一个字不动。
 
+    ⑨ `chat_roster_changed`（#1280）——**这一条是暂时的**：A3 里它一行都画不出来
+       （`EventRow` 对它 return null），所以让这个谓词照实说；**A4 给「群里加了谁 /
+       移了谁」画一行时要把它从这里删掉**。留在这里的代价是那一行暂时看不见，
+       删早了的代价是时间线上多一块空白（这个谓词的消费方不止渲染循环——
+       聊天那条「一条都画不出来」的判据也读它）。
+
     留在时间线上的因此只剩：人说的话、agent 的最终答案、接力线、出错、归档。 */
 export function hiddenFromCloudTimeline(e: SessionEvent): boolean {
   if (e.type === "user_message") return e.relay !== undefined || e.greeting !== undefined;
@@ -112,7 +118,8 @@ export function hiddenFromCloudTimeline(e: SessionEvent): boolean {
     e.type === "session_created" ||
     e.type === "agent_briefed" ||
     e.type === "request_envelope" ||
-    e.type === "session_autotitled"
+    e.type === "session_autotitled" ||
+    e.type === "chat_roster_changed"
   );
 }
 

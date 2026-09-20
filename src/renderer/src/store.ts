@@ -43,7 +43,7 @@ import type {
 } from "../../shared/shellBridge.js";
 import type { CsWikiWriteReq, CsWorkHit, CsWorkNode } from "../../shared/remote/cloudSession.js";
 import type { CatalogEntry } from "../../shared/mcpCatalog.js";
-import type { CsGitHost, CsModelRoute } from "../../shared/remote/cloudSession.js";
+import type { CsChatInfo, CsChatSpec, CsGitHost, CsModelRoute } from "../../shared/remote/cloudSession.js";
 import {
   initialMcpPromptValues,
   isCurrentMcpPromptSubmission,
@@ -133,6 +133,7 @@ import type { ModelShareWindow } from "../../shared/modelShare.js";
 import { laneOf, type ModelLane } from "../../shared/modelLane.js";
 import { autoModelOf } from "../../shared/autoModel.js";
 import { isSubscribed } from "./lib/billingView.js";
+import { groupRows, homeOf, rosterRows } from "./lib/agentRoster.js";
 import { settingsSectionVisible } from "./settingsShell.js";
 import type { MyProfile, ProfilePatch } from "../../shared/profile.js";
 import {
@@ -248,6 +249,9 @@ export interface CloudSessionState {
       deniedCode 那样"来了才覆盖、没来就留着"：缺口补齐时推送里就没有它了，
       留着旧值等于一直说一句已经不成立的话 */
   gapNote: string | null;
+  /** 这条会话是哪一种聊天、名单是谁（#1280）。`null` = 团队会话，或者 welcome 还没到。
+      照抄推送（缺席 → null）：welcome 到了就一定有结论，没有「读不到」这一档 */
+  chat: CsChatInfo | null;
   events: SessionEvent[];
 }
 
@@ -616,6 +620,15 @@ interface ChatState {
       主区画一张只有输入框的开局卡，同本地的 Welcome。值 = 在哪个团队开，
       null = 没在开。本地那条路的对应物是 `phase === "welcome"` + pendingWorkspace */
   cloudDraftWorkspaceId: string | null;
+  /** 开局卡要建的是哪一种聊天（#1280）。`null` = 团队会话（团队组头那颗 ＋ 开的草稿）。
+      与 `cloudDraftWorkspaceId` 一起生、一起死——两颗 ＋ 开的是同一张卡，
+      不清的话团队那颗会继承上一次挑的那只智能体 */
+  cloudDraftChat: CsChatSpec | null;
+  /** 个人主场的建立过程（#1280）。`failed` 之后**不自动重试**：原因多半是档位或
+      库版本，重试只会在侧栏上闪——重试由那一块上的「重试」钮发起 */
+  homeEnsure: "idle" | "ensuring" | "failed";
+  /** 建主场失败的那句人话；null = 没失败过 */
+  homeError: string | null;
   /** 开局卡上写的第一句话，等云会话进 ready 之后才发得出去（issue #919）。
       主进程的 say() 要求 status === "ready"（cloudSessionClient 的 requireReady），
       而 join() 只保证连上了中继——runtime 的 welcome 还在路上。所以这句话先停在
@@ -645,6 +658,9 @@ interface ChatState {
       #991 之后云会话头部那颗「设置」也要开它——两个消费方不在同一棵子树上，
       最近的公共层就是这里 */
   openWorkspaceId: string | null;
+  /** 哪一只智能体的设置抽屉开着（#1280）。null = 没开。与 openWorkspaceId 平级，
+      理由相同：两个消费方（聊天头部那颗 ⚙、花名册那一行）不在同一棵子树上 */
+  agentSettingsFor: string | null;
   /** 窗口是否全屏(macOS 全屏隐红绿灯,左上角 logo 显隐看它) */
   fullscreen: boolean;
   /** 冷启动进度：boot() 里那组 Promise.all 有几个已经回来 / 一共几个。
@@ -1049,7 +1065,24 @@ interface ChatState {
       非 null → 直接 join 这一条（同时只保留一条连接，join 先顶掉旧的，
       语义与 main/cloudSessionClient.ts 的 join() 完全对齐）。
       失败（含 create 阶段）落 workspaceGroupsError，cloudSession 保持/回落 null */
-  openCloudSession(workspaceId: string, sessionId: string | null): Promise<void>;
+  openCloudSession(
+    workspaceId: string,
+    sessionId: string | null,
+    /** 只在 `sessionId === null`（要新建）时有意义：建的是哪一种聊天（#1280） */
+    chat?: CsChatSpec,
+    /** 岛上那一行写什么（#1280）：私聊写智能体名、群聊写群名 */
+    title?: string,
+  ): Promise<void>;
+  /** 确保这个账号有个人主场（#1280）。**正在建的时候再叫是空操作**，失败之后
+      不自动重试——那一块上有一颗「重试」钮 */
+  ensureHome(): Promise<void>;
+  /** 点花名册上的一只（#1280）：聊过就进那条私聊，没聊过只开开局卡、什么都不建 */
+  openAgentChat(agentId: string): Promise<void>;
+  /** 点群聊那一行（#1280） */
+  openGroupChat(sessionId: string): Promise<void>;
+  /** 开一张**聊天**的开局卡（#1280）。与 startCloudDraft 的唯一差别是多记一格
+      「要建的是什么」 */
+  startChatDraft(workspaceId: string, chat: CsChatSpec): void;
   /** 在某个工作区上开一张「新云会话」的开局卡（issue #919，侧栏工作区组头那颗 ＋）。
       同本地 newSession：这一步不建任何东西，只是把主区换成开局卡 */
   startCloudDraft(workspaceId: string): void;
@@ -1158,6 +1191,9 @@ interface ChatState {
 
   setFriendsPanelOpen(open: boolean): void;
   setOpenWorkspaceId(id: string | null): void;
+  /** 打开某一只智能体的设置抽屉（#1280） */
+  openAgentSettings(agentId: string): void;
+  closeAgentSettings(): void;
   /** 拉一次本人资料。登录后由 onAccountChanged 触发,首登引导也在这里决定要不要弹 */
   refreshMyProfile(): Promise<void>;
   /** 改本人资料。回 null = 成功,回字符串 = 给用户看的失败原因 */
@@ -1565,6 +1601,9 @@ export const useChat = create<ChatState>((set, get) => ({
   workspaceMentions: [],
   workspaceGroupsError: null,
   cloudDraftWorkspaceId: null,
+  cloudDraftChat: null,
+  homeEnsure: "idle",
+  homeError: null,
   cloudPendingFirstMessage: null,
   cloudDraftSeed: null,
   cloudSession: null,
@@ -1574,6 +1613,7 @@ export const useChat = create<ChatState>((set, get) => ({
   realtimeHealth: "connecting",
   friendsPanelOpen: false,
   openWorkspaceId: null,
+  agentSettingsFor: null,
   fullscreen: false,
   bootDone: 0,
   bootTotal: 0,
@@ -2628,7 +2668,7 @@ export const useChat = create<ChatState>((set, get) => ({
     }));
   },
 
-  async openCloudSession(workspaceId, sessionId) {
+  async openCloudSession(workspaceId, sessionId, chat, title) {
     // 换会话先把上一条的语音监听收掉（#1163）：它绑着上一条的 sessionId 与名单。
     // 扣着的话也在这里发出去（#1281 fix round 1）——旧房间真正拆除要等下面
     // 的 join() 内部触发 teardown()，这一步还来得及送进旧房间
@@ -2636,7 +2676,7 @@ export const useChat = create<ChatState>((set, get) => ({
     if (get().voice !== null) set({ voice: null });
     let sid = sessionId;
     if (sid === null) {
-      const created = await window.otter.workspaceCloudCreate(workspaceId);
+      const created = await window.otter.workspaceCloudCreate(workspaceId, chat);
       if (!created.ok) {
         set({ workspaceGroupsError: created.message });
         return;
@@ -2655,6 +2695,7 @@ export const useChat = create<ChatState>((set, get) => ({
         initiatorUid: null, ownerUid: "", selfUid: get().account.id,
         modelRoute: null, // 同上（issue #945）
         gapNote: null, // 同上（issue #957 C-I7）：backlog 落定才知道缺没缺
+        chat: null, // 同上（#1280）：welcome 到了才知道这是哪一种聊天
         events: [],
       },
       workspaceGroupsError: null,
@@ -2662,7 +2703,7 @@ export const useChat = create<ChatState>((set, get) => ({
     // 进了这间房 = 里面 @ 我的看见了（#1064）。**排在 join 之前**：这一步只碰
     // 收件箱，不依赖房间连没连上，而连接失败时人确实已经点开过它了
     void get().markWorkspaceMentionsRead(sid);
-    const r = await window.otter.workspaceCloudJoin(workspaceId, sid);
+    const r = await window.otter.workspaceCloudJoin(workspaceId, sid, title);
     if (!r.ok) {
       // 只在这仍是我们刚占位的那一条时才清——异步期间用户可能已经手快切到
       // 别的云会话（新的 openCloudSession 调用会覆盖这一格），这时旧调用
@@ -2673,6 +2714,49 @@ export const useChat = create<ChatState>((set, get) => ({
           : { workspaceGroupsError: r.message }
       ));
     }
+  },
+
+  async ensureHome() {
+    // 正在建的时候再叫是空操作：这个动作挂在侧栏那一节的 effect 上，而 effect 会
+    // 因为任何一次 store 变动重跑——不挡的话一次冷启动能打出十几条建主场请求
+    if (get().homeEnsure === "ensuring") return;
+    set({ homeEnsure: "ensuring", homeError: null });
+    const r = await window.otter.workspaceHomeEnsure();
+    if (!r.ok) {
+      // **不落 workspaceGroupsError**：那一格是页脚上的共享错误，而这句话要画在
+      // 花名册那一块里、旁边跟着一颗重试钮（同 ADR-0228 C2-I4 的归属纪律）
+      set({ homeEnsure: "failed", homeError: r.message });
+      return;
+    }
+    await get().refreshWorkspaceGroups();
+    set({ homeEnsure: "idle" });
+  },
+
+  async openAgentChat(agentId) {
+    const home = homeOf(get().workspaceGroups);
+    if (home === null) return;
+    const row = rosterRows(home, get().cloudSessionList[home.id] ?? []).find((r) => r.agentId === agentId);
+    if (row === undefined) return;
+    if (row.sessionId !== null) {
+      await get().openCloudSession(home.id, row.sessionId, undefined, row.name);
+      return;
+    }
+    // 没聊过：只开开局卡，**什么都不建**（ADR-0218：那颗 ＋ 也只是把主区换成 composer）
+    get().startChatDraft(home.id, { kind: "dm", agentId });
+  },
+
+  async openGroupChat(sessionId) {
+    const home = homeOf(get().workspaceGroups);
+    if (home === null) return;
+    const g = groupRows(home, get().cloudSessionList[home.id] ?? []).find((r) => r.sessionId === sessionId);
+    await get().openCloudSession(home.id, sessionId, undefined, g?.name);
+  },
+
+  startChatDraft(workspaceId, chat) {
+    // 与 startCloudDraft 同一套收尾（关掉手上那条云会话、退出设置模式），只多记
+    // 一格「要建的是什么」——所以先叫它再写这一格，顺序反了会被它清掉
+    get().startCloudDraft(workspaceId);
+    set({ cloudDraftChat: chat });
   },
 
   closeCloudSession() {
@@ -2690,18 +2774,25 @@ export const useChat = create<ChatState>((set, get) => ({
   startCloudDraft: (workspaceId) =>
     set({
       cloudDraftWorkspaceId: workspaceId,
+      // 团队那颗 ＋ 不能继承上一次挑的那只智能体（#1280）——两颗 ＋ 开的是同一张卡
+      cloudDraftChat: null,
       cloudPendingFirstMessage: null,
       ...panelFlags(null), // 同 newSession：开局要退出设置模式与右侧面板
       error: null,
     }),
 
-  cancelCloudDraft: () => set({ cloudDraftWorkspaceId: null }),
+  cancelCloudDraft: () => set({ cloudDraftWorkspaceId: null, cloudDraftChat: null }),
 
   async createCloudSessionFromDraft(workspaceId, text) {
     // 先排待发再建：openCloudSession 里那趟 join 结束后状态随时可能翻成 ready，
     // 反过来写会让 effect 错过那一次翻转
-    set({ cloudPendingFirstMessage: text, cloudDraftWorkspaceId: null });
-    await get().openCloudSession(workspaceId, null);
+    const chat = get().cloudDraftChat ?? undefined;
+    set({ cloudPendingFirstMessage: text, cloudDraftWorkspaceId: null, cloudDraftChat: null });
+    await get().openCloudSession(workspaceId, null, chat);
+    // 那条新私聊要立刻出现在花名册那一行的 sessionId 上（#1280），否则下一次点它
+    // 又是一张开局卡、再建一条——库里那条唯一索引会把第二条挡回来，但用户看到的
+    // 是「点了没反应」
+    if (chat !== undefined && get().cloudSession !== null) void get().refreshCloudSessions(workspaceId);
     // 建群/进房失败时 openCloudSession 已经把 cloudSession 清成 null 并落了错——
     // 那句话不能留着，否则下次进别的云会话时它会自己冒出来
     if (get().cloudSession === null) set({ cloudPendingFirstMessage: null });
@@ -2996,6 +3087,8 @@ export const useChat = create<ChatState>((set, get) => ({
 
   setFriendsPanelOpen: (open) => set({ friendsPanelOpen: open }),
   setOpenWorkspaceId: (id) => set({ openWorkspaceId: id }),
+  openAgentSettings: (agentId) => set({ agentSettingsFor: agentId }),
+  closeAgentSettings: () => set({ agentSettingsFor: null }),
 
   setProfileSetupOpen: (open) =>
     set((s) => {
@@ -3230,6 +3323,8 @@ export const useChat = create<ChatState>((set, get) => ({
             // deniedCode 那样"没带就留着旧的"：缺口补齐时主进程正是靠不带
             // 这一格来说"补齐了"
             gapNote: status.gapNote ?? null,
+            // #1280：同上，照抄推送（缺席 = 团队会话）
+            chat: status.chat ?? null,
             // exactOptionalPropertyTypes：deniedCode 是 string|undefined，
             // 目标字段是可选的 string——只在真有值时才落这个键，不能把
             // undefined 原样赋进去（那等于显式声明"这个键存在但是 undefined"，

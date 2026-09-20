@@ -5,7 +5,7 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import {
   assembleSnapshot,
-  type MemberProfile, type WorkspaceSnapshot,
+  type MemberProfile, type WorkspaceKind, type WorkspaceSnapshot,
 } from "../shared/workspaces.js";
 import { normalizeSandboxApproval, type SandboxApproval } from "../shared/workspaceAgents.js";
 import type { AgentToolAllow } from "../shared/agentToolAllow.js";
@@ -53,9 +53,12 @@ export async function createWorkspace(
   client: SupabaseClient,
   name: string,
   selfUid: string,
+  /** 个人主场（#1280）。**建团队时不带这一列**：0037 没跑的库里 insert 一个不存在的列
+      会整条失败，而建团队与主场毫无关系，不该被它拖下水 */
+  kind: WorkspaceKind = "team",
 ): Promise<WorkspaceListRow> {
   const ws = unwrap(
-    await client.from("workspaces").insert({ name, owner_uid: selfUid })
+    await client.from("workspaces").insert({ name, owner_uid: selfUid, ...(kind === "home" ? { kind } : {}) })
       .select("id,name,owner_uid,created_at").single(),
   ) as WorkspaceListRow;
   try {
@@ -93,6 +96,7 @@ export async function fetchWorkspace(
   // 只影响它自己，回 null =「这一格读不到」（#1029 起不再兜底成 "ask"，理由在
   // fetchSandboxApproval 的注释里）。代价是每个团队多一次单行主键查询
   const sandboxApproval = await fetchSandboxApproval(client, id);
+  const kind = await fetchWorkspaceKind(client, id);
   const members = (unwrap(
     await client.from("workspace_members").select("uid,role").eq("workspace_id", id),
   ) ?? []) as { uid: string; role: string }[];
@@ -121,7 +125,27 @@ export async function fetchWorkspace(
     tools: unknown; created_by: string; updated_at: string; avatar_slot?: unknown;
   }[];
   const profiles = await fetchProfiles(client, members.map((m) => m.uid));
-  return assembleSnapshot({ ...ws, sandbox_approval: sandboxApproval }, members, connectors, sessions, agents, (uid) => profiles.get(uid) ?? null);
+  return assembleSnapshot({ ...ws, sandbox_approval: sandboxApproval, kind }, members, connectors, sessions, agents, (uid) => profiles.get(uid) ?? null);
+}
+
+/** `workspaces.kind` 那一格（#1280）。**单独一条、容错**，理由与 `fetchSandboxApproval`
+    逐字相同：拼进主 select 的话，0037 落地前 PostgREST 对不存在的列回 42703，
+    整个团队一个字都读不出来。读不到（列不存在 / 查询抖了 / 那一行看不见）回 `null`
+    ——不是 `"team"`：`isHomeWorkspace` 对 null 回 false，所以行为上落在「当成普通团队」
+    这一侧，但快照里留着「这一格没读到」这个事实，界面据此说实话 */
+async function fetchWorkspaceKind(client: SupabaseClient, id: string): Promise<WorkspaceKind | null> {
+  const res = await client.from("workspaces").select("kind").eq("id", id).maybeSingle();
+  if (res.error || res.data === null) return null;
+  const k = (res.data as { kind?: unknown }).kind;
+  return k === "home" || k === "team" ? k : null;
+}
+
+/** 这个账号的个人主场（#1280），没有回 null。库里那条唯一索引
+    （`workspaces_one_home_per_owner`）是权威，这个查询只是在撞上它之前先问一遍——
+    两条路都要走，因为「先查再建」不是原子的（同 daemon 的 `findDmSession`） */
+export async function findHomeWorkspace(client: SupabaseClient, selfUid: string): Promise<string | null> {
+  const res = await client.from("workspaces").select("id").eq("owner_uid", selfUid).eq("kind", "home").maybeSingle();
+  return (unwrap(res) as { id: string } | null)?.id ?? null;
 }
 
 /** `workspaces.sandbox_approval` 那一格。**两种失败分开回**（#1029）：
@@ -355,6 +379,12 @@ export interface CloudSessionRow {
   /** 最近有过对话的那个 5 小时窗里说过话的人（#1213）。runtime 写的投影，
       形状不对（不是字符串数组）一律回 []——同 normalizeStringArray 的纪律 */
   participantUids: string[];
+  /** 这一行是不是一条聊天，是哪一种（#1280）。`null` = 团队会话 / 这一格读不到——
+      两者在界面上同一个答案（照团队会话画），所以不分三态 */
+  chatKind: "dm" | "group" | null;
+  /** 聊天的名单投影（#1280）。权威在日志（`chat_roster_changed`），这一列是给
+      「没开着这条聊天」的桌面看的。读不到回 [] */
+  agentIds: string[];
 }
 
 /** ISO 字符串 → epoch ms；解析不出来回 0，不让脏数据混进排序比较
@@ -382,6 +412,7 @@ export async function listCloudSessions(
     id: string; publisher_uid: string; title: string; archived: boolean; updated_at: string;
   }[];
   const participants = await fetchCloudParticipants(client, workspaceId);
+  const chats = await fetchCloudChats(client, workspaceId);
   return rows.map((r) => ({
     id: r.id,
     title: r.title,
@@ -389,7 +420,59 @@ export async function listCloudSessions(
     archived: r.archived,
     updatedTs: toEpochMs(r.updated_at),
     participantUids: participants.get(r.id) ?? [],
+    chatKind: chats.get(r.id)?.chatKind ?? null,
+    agentIds: chats.get(r.id)?.agentIds ?? [],
   }));
+}
+
+/** 这只智能体现在挂在哪几条聊天上（#1280）：它自己那条私聊 + 它在的那几个群。
+    **查询失败一律回空**（同 `fetchCloudChats` 的容错）：0037 没跑的库里团队的
+    智能体照样删得掉——那时这两列不存在，而团队本来就没有聊天这回事。
+    回空的代价是删除那三步退化成改动前的一步，正是我们想要的降级方向 */
+export async function listAgentChats(
+  client: SupabaseClient,
+  workspaceId: string,
+  agentId: string,
+): Promise<{ dmSessionId: string | null; groupSessionIds: string[] }> {
+  const res = await client
+    .from("workspace_sessions")
+    .select("id,chat_kind,agent_ids")
+    .eq("workspace_id", workspaceId)
+    .eq("kind", "cloud")
+    .contains("agent_ids", [agentId]);
+  if (res.error) return { dmSessionId: null, groupSessionIds: [] };
+  const rows = (res.data ?? []) as { id: string; chat_kind: unknown }[];
+  let dmSessionId: string | null = null;
+  const groupSessionIds: string[] = [];
+  for (const r of rows) {
+    if (r.chat_kind === "dm") dmSessionId = r.id;
+    else if (r.chat_kind === "group") groupSessionIds.push(r.id);
+  }
+  return { dmSessionId, groupSessionIds };
+}
+
+/** `workspace_sessions.chat_kind` / `agent_ids` 那两列（#1280），**单独一条、容错**——
+    理由与下面 `fetchCloudParticipants` 那段逐字相同（0037 落地前合进主 select 会让
+    这个团队一条云会话都读不出来）。**不要把这两列「顺手」合回主 select**。
+    读不到时回空 Map：每一行都退回「团队会话」的样子，也就是改动前的界面 */
+async function fetchCloudChats(
+  client: SupabaseClient,
+  workspaceId: string,
+): Promise<Map<string, { chatKind: "dm" | "group"; agentIds: string[] }>> {
+  const res = await client
+    .from("workspace_sessions")
+    .select("id,chat_kind,agent_ids")
+    .eq("workspace_id", workspaceId)
+    .eq("kind", "cloud");
+  const map = new Map<string, { chatKind: "dm" | "group"; agentIds: string[] }>();
+  if (res.error) return map;
+  const rows = (res.data ?? []) as { id: string; chat_kind: unknown; agent_ids: unknown }[];
+  for (const r of rows) {
+    if (r.chat_kind !== "dm" && r.chat_kind !== "group") continue;
+    const ids = Array.isArray(r.agent_ids) && r.agent_ids.every((x) => typeof x === "string") ? (r.agent_ids as string[]) : [];
+    map.set(r.id, { chatKind: r.chat_kind, agentIds: ids });
+  }
+  return map;
 }
 
 /** `workspace_sessions.participants` 那一列，**单独一条、容错**（#1213 复审 Critical 1，

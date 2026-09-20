@@ -56,6 +56,20 @@ export interface WorkspaceAgentRow {
   avatarSlot: number | null;
 }
 
+/** 团队还是个人主场（#1280，ADR-0297）。`kind` 由 0037 的触发器钉成**不可变** */
+export type WorkspaceKind = "team" | "home";
+
+/** 个人主场那一行的 name，也是它在设置抽屉标题里的样子。库里存这个字符串不是为了显示
+    （花名册那一栏的标题写死在组件里），是为了别人查库时看得懂那一行是什么 */
+export const HOME_WORKSPACE_NAME = "我的智能体";
+
+/** 只认 `"home"`。**`null`（这一格读不到）与缺席（旧快照）都回 false**：读不到不许当成
+    主场藏起来——那等于让一个团队凭空从侧栏消失，而这一列走的是容错查询，0037 没跑、
+    网络抖一下都会读到 null（同 `sandboxApproval` 的三态纪律） */
+export function isHomeWorkspace(ws: { kind?: WorkspaceKind | null }): boolean {
+  return ws.kind === "home";
+}
+
 export interface WorkspaceSnapshot {
   id: string;
   name: string;
@@ -72,6 +86,12 @@ export interface WorkspaceSnapshot {
       且一个字的提示都没有。形状不对（脏值）仍然回 "ask"——那是「读到了但值不认识」，
       往严的一边倒，与读不到是两件事 */
   sandboxApproval: SandboxApproval | null;
+  /** 团队还是个人主场（#1280）。**`null` = 这一格此刻读不到**（0037 没跑 / 查询抖了），
+      不是「是团队」——那一列与 sandboxApproval 走同一条容错路，拼进主 select 的话
+      0037 落地前整份快照打不开。读不到时花名册那块说实话，团队照常列（isHomeWorkspace
+      对 null 回 false，所以最坏结果是主场暂时被当成一个普通团队，而不是凭空消失）。
+      **缺席只为存量测试夹具留的**：两个生产者（assembleSnapshot / unreadableSnapshot）都填 */
+  kind?: WorkspaceKind | null;
   /** 这个团队的快照没拉下来（#843 ②）：列表页只拿到 workspaces 那一行，
       members/connectors/sessions/agents 都是空的**占位**，不是「真的没有」。
       在场 = 这一格暂时读不到，值是说给人听的原因（已过 humanizeWorkspaceError）。
@@ -107,7 +127,7 @@ function resolveLabel(uid: string, profile: MemberProfile | null): string {
 
 /** 行数据 → snapshot（label/avatarUrl 由 profiles 表查来，缺席回 uid 前 8 位 / 空串） */
 export function assembleSnapshot(
-  ws: { id: string; name: string; owner_uid: string; sandbox_approval: SandboxApproval | null },
+  ws: { id: string; name: string; owner_uid: string; sandbox_approval: SandboxApproval | null; kind: WorkspaceKind | null },
   members: readonly { uid: string; role: string }[],
   connectors: readonly {
     workspace_id: string; host_uid: string; server_id: string; label: string; tools: unknown;
@@ -162,6 +182,7 @@ export function assembleSnapshot(
       avatarSlot: normalizeAvatarSlot(a.avatar_slot),
     })),
     sandboxApproval: ws.sandbox_approval,
+    kind: ws.kind,
   };
 }
 

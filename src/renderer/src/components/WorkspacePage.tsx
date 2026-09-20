@@ -38,7 +38,7 @@ import { WorkspaceWikiTab } from "./WorkspaceWikiTab.js";
 import { WorkspaceSessionsTab } from "./WorkspaceSessionsTab.js";
 import { WorkspaceConnectorsTab } from "./WorkspaceConnectorsTab.js";
 import { WorkspaceMembersTab } from "./WorkspaceMembersTab.js";
-import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
+import { isHomeWorkspace, type WorkspaceSnapshot } from "../../../shared/workspaces.js";
 
 interface Section {
   id: string;
@@ -161,11 +161,20 @@ function RootBody({
     if (await leaveGroup(ws.id)) onLeftWorkspace();
   };
 
+  // 个人主场只留四格（#1280）：**会话**（聊天就在花名册上，那一栏本身就是清单）、
+  // **智能体**（同上，而且每一只的设置在它自己的抽屉里）、**成员**（只有我一个人）
+  // 都没有主语，**解散**更是——解散一个人的主场等于注销这台 app 的一半。
+  // 过滤而不是给 Section 加一格 `homeOnly`：这一页的七格里，主场要的恰好是
+  // 「与团队共用的那几格」，写成白名单比逐行标记短，也不用在加新格子时想一遍
+  const sections = isHomeWorkspace(ws)
+    ? SECTIONS.filter((s) => s.id === "files" || s.id === "connectors" || s.id === "usage" || s.id === "memory")
+    : SECTIONS;
+
   return (
     <div className="flex flex-col">
       {error && <p className="px-1 pb-2 text-xs text-err">{error}</p>}
       <InsetGroup sepInset={51}>
-        {SECTIONS.map((s) => (
+        {sections.map((s) => (
           <InsetRow
             key={s.id}
             leading={<InsetIcon>{s.icon}</InsetIcon>}
@@ -187,6 +196,11 @@ function RootBody({
         ))}
       </InsetGroup>
 
+      {/* 主场里整块不画（#1280）：这里只有你一个人，没有可解散的东西 */}
+      {isHomeWorkspace(ws) ? (
+        <InsetNote>这里只有你一个人，聊天就在花名册上，所以没有「会话」「成员」，也没有可解散的东西。</InsetNote>
+      ) : (
+        <>
       {/* 危险动作住在最底下、红字、单独一组——不是页头那颗最响的实心按钮 */}
       <div className="pt-[22px]">
         <InsetGroup>
@@ -202,6 +216,8 @@ function RootBody({
           ? "解散会让全体成员的连接器授权与已发布会话立即失效，且不可撤销。"
           : "退出后你贡献的连接器授权会立即失效。"}
       </InsetNote>
+        </>
+      )}
     </div>
   );
 }

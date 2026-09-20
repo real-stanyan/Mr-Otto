@@ -23,10 +23,20 @@ import { ComposerBar, ComposerSend } from "@/components/elements/composer.js";
 import { Textarea } from "@/components/ui/textarea.js";
 import { Button } from "@/components/ui/button.js";
 import { useChat } from "../store.js";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar.js";
+import { agentAvatarSrc } from "../lib/agentAvatar.js";
 
 export function CloudWelcome({ workspaceId }: { workspaceId: string }) {
-  const name = useChat((s) => s.workspaceGroups.find((g) => g.id === workspaceId)?.name ?? "团队");
+  const ws = useChat((s) => s.workspaceGroups.find((g) => g.id === workspaceId) ?? null);
+  const name = ws?.name ?? "团队";
   const error = useChat((s) => s.workspaceGroupsError);
+  // 这张卡是不是一条**聊天**的开局卡（#1280）。私聊那一支换一整套文案：
+  // 主语从「这个团队」变成「这一只」
+  const draftChat = useChat((s) => s.cloudDraftChat);
+  const dmAgent =
+    draftChat?.kind === "dm" && ws !== null
+      ? ws.agents.find((a) => a.agentId === draftChat.agentId) ?? null
+      : null;
   const createFromDraft = useChat((s) => s.createCloudSessionFromDraft);
   const cancel = useChat((s) => s.cancelCloudDraft);
   const [text, setText] = useState("");
@@ -45,18 +55,36 @@ export function CloudWelcome({ workspaceId }: { workspaceId: string }) {
   return (
     <div className="relative flex-1 min-w-0 h-full flex flex-col items-center justify-center gap-4">
       <div className="flex w-[min(640px,90%)] flex-col items-center gap-1">
-        <p className="text-[19px] font-[600] tracking-[-0.01em]">在「{name}」里开一条会话</p>
-        {/* 云会话和本地会话最要紧的那点不同，说在开始之前：它不在这台机器上跑 */}
-        <p className="text-[12px] text-muted-foreground">
-          跑在云端，你关掉 app 它也接着跑；团队里的人都看得见，也都能插话。
-        </p>
+        {dmAgent !== null ? (
+          <>
+            {/* 56px：比侧栏那一行的 30px 大一圈——这一屏只有它一个主语 */}
+            <Avatar className="size-14 rounded-[12px] mb-1">
+              <AvatarImage src={agentAvatarSrc(ws!, dmAgent.agentId)} alt="" className="[image-rendering:pixelated]" />
+              <AvatarFallback className="rounded-[12px] text-lg">{dmAgent.name.slice(0, 1)}</AvatarFallback>
+            </Avatar>
+            <p className="text-[19px] font-[600] tracking-[-0.01em]">{dmAgent.name}</p>
+            {/* 两件事说在开始之前：**什么都还没建**（点别处走开就是取消），
+                以及这条线是永久的（以后回来接着聊，不用找「那次的会话」） */}
+            <p className="text-[12px] text-muted-foreground text-center">
+              {dmAgent.description === "" ? "" : `${dmAgent.description}。`}还没聊过，说第一句话就开始了。以后一直是这一条，回来接着聊。
+            </p>
+          </>
+        ) : (
+          <>
+            <p className="text-[19px] font-[600] tracking-[-0.01em]">在「{name}」里开一条会话</p>
+            {/* 云会话和本地会话最要紧的那点不同，说在开始之前：它不在这台机器上跑 */}
+            <p className="text-[12px] text-muted-foreground">
+              跑在云端，你关掉 app 它也接着跑；团队里的人都看得见，也都能插话。
+            </p>
+          </>
+        )}
       </div>
       <ComposerBar className="focus-within:border-border dark:border-muted-foreground/15 dark:focus-within:border-muted-foreground/30 w-[min(640px,90%)] text-left transition-colors duration-[120ms]">
         <Textarea
           className="border-none shadow-none resize-none bg-transparent dark:bg-transparent text-foreground text-sm leading-[1.45] min-h-[52px] max-h-[200px] px-3 py-2 focus-visible:ring-0 placeholder:text-foreground/35"
           autoFocus
           rows={2}
-          placeholder="要它做什么？不 @ 谁的话，谁的活谁接。回车发送"
+          placeholder={dmAgent !== null ? `跟${dmAgent.name}说点什么` : "要它做什么？不 @ 谁的话，谁的活谁接。回车发送"}
           value={text}
           disabled={busy}
           onChange={(e) => setText(e.target.value)}
@@ -70,10 +98,14 @@ export function CloudWelcome({ workspaceId }: { workspaceId: string }) {
         <div className="flex items-center gap-2">
           {/* 出口：开局卡不是死胡同。本地那一屏不需要这颗（侧栏永远在旁边、
               随便点一条会话就走了），这一屏也一样能那么走——但这里是「我刚点了
-              ＋，反悔」的最短路径，一颗字钮不占地方 */}
-          <Button variant="ghost" size="xs" className="text-muted-foreground" onClick={cancel}>
-            取消
-          </Button>
+              ＋，反悔」的最短路径，一颗字钮不占地方。
+              **聊天里没有这颗**（#1280）：点花名册上别的一只就走了，而「取消」
+              暗示这里有个待办要收拾——什么都还没建，没什么可取消的 */}
+          {draftChat === null && (
+            <Button variant="ghost" size="xs" className="text-muted-foreground" onClick={cancel}>
+              取消
+            </Button>
+          )}
           <span className="flex-1" />
           <ComposerSend
             streaming={false}
