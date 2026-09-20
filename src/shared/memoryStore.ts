@@ -17,6 +17,15 @@ export function isMemoryTarget(v: unknown): v is MemoryTarget {
 // 主题桶 700/桶、封顶 8 桶（memoryTopics.MAX_TOPICS）：合计 5600，整份注入约 1.5k token
 export const MEMORY_LIMITS: Record<MemoryTarget, number> = { memory: 1100, user: 1375, project: 2200, topic: 700 };
 
+/** 三档各记什么，一档一句。`tierRuleText`（给模型读的那段判据）与决策模型那道分档核对的
+    选项说明（shared/memoryTierJudge.ts，#1281）**都从这里取**：两处各写一份的话，哪天
+    改了一处，模型被告知的判据与核对它的判据就分家了，而分家不报错 */
+export function tierFact(tier: "project" | "memory" | "user", at = ""): string {
+  if (tier === "project") return `与当前项目${at}绑定的事（它的代码路径、分支/worktree、构建/门禁怪癖、数据目录、项目约定）`;
+  if (tier === "memory") return "换个项目还成立的事（本机 PATH、CLI 登录态、全局工具怪癖）";
+  return "关于用户本人的事";
+}
+
 /** 三档判据的唯一正文（issue #589）。此前三个注入点（memory 工具描述 /
     memory-reviewer 指令 / system 尾部）各写一份，已经各自漂移过一轮；上线首日
     审计发现旧判据「拿不准就写 memory」的实际效果是模型几乎全写全局——项目事实
@@ -30,9 +39,9 @@ export function tierRuleText(opts: { upper?: boolean; projectRoot?: string } = {
   const U = opts.upper ? "USER" : "user";
   const at = opts.projectRoot ? `（${opts.projectRoot}）` : "";
   return (
-    `${P} 记与当前项目${at}绑定的事（它的代码路径、分支/worktree、构建/门禁怪癖、数据目录、项目约定）；` +
-    `${M} 记换个项目还成立的事（本机 PATH、CLI 登录态、全局工具怪癖）——机器/环境事实不进 ${P}；` +
-    `${U} 记关于用户本人的事。` +
+    `${P} 记${tierFact("project", at)}；` +
+    `${M} 记${tierFact("memory")}——机器/环境事实不进 ${P}；` +
+    `${U} 记${tierFact("user")}。` +
     `判据一句话：换个项目还成立吗？成立写 ${M}，不成立写 ${P}。` +
     `一个事实只住一档，别跨档重复；${M} 条目不点名具体项目（点名会被拒，改投 ${P}）。`
   );
