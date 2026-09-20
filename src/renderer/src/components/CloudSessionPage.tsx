@@ -58,15 +58,16 @@ import { buildToolIndex } from "../lib/toolIndex.js";
 import { groupSubagentSpawns } from "../lib/subagentTimeline.js";
 import { formatProxyTime } from "../lib/proxyShare.js";
 import { agentNameOf, labelOf, memberAvatarOf } from "../lib/workspaceView.js";
+import { AddAgentPopover } from "./AddAgentPopover.js";
 import { AgentChatHeader, type ChatView } from "./AgentChatHeader.js";
 import { withDaySeparators } from "../lib/dayLabel.js";
 import { agentAvatarSrc } from "../lib/agentAvatar.js";
 import { applyAgentMention, mentionQueryAt, pickerEmptyState, resolveSendMentions } from "../lib/agentMentionInput.js";
 import { filterMentionRows, mentionRows, MENTION_KIND_LABEL, type MentionRow } from "../lib/workspaceMentionItems.js";
 import {
-  approvalCardTitle, assistantLabel, callDurationText, callOffsetText, canStopTurn, cloudEmptyState,
+  approvalCardTitle, assistantLabel, callDurationText, callOffsetText, canStopTurn, chatRosterLineParts, cloudEmptyState,
   hiddenFromCloudTimeline, relayLineText, stopButtonRows, systemNoteText, turnEndedLineText, userRowIdentity,
-  voiceCallCards, type VoiceCallCard,
+  voiceCallCards, type RosterLinePart, type VoiceCallCard,
 } from "../lib/cloudTimeline.js";
 import { systemNoteDetail } from "../lib/systemNote.js";
 import { cloudConversationEntries, scrollToTurn } from "../lib/conversationMap.js";
@@ -78,7 +79,7 @@ import { safeSpeakerLabel, SYSTEM_SPEAKER_UID } from "../../../shared/promptSafe
 import { mentionTokens, parseMemberMentions, parseMentions, type MentionCandidate } from "../../../shared/remote/agentMention.js";
 import type {
   AgentBriefedEvent, AgentRelayEvent, ApprovalDecisionEvent, ApprovalRequestEvent, AssistantMessageEvent,
-  ChatMessageEvent, SessionEvent,
+  ChatMessageEvent, ChatRosterChangedEvent, SessionEvent,
 } from "../../../session/events.js";
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 import type { CloudAck } from "../../../shared/shellBridge.js";
@@ -192,7 +193,8 @@ export function CloudSessionPage({
   onSettings,
   chat,
   onPullAgent,
-  onAddAgent,
+  onChatRoster,
+  onGroupSettings,
   onAgentSettings,
 }: {
   ws: WorkspaceSnapshot;
@@ -210,8 +212,11 @@ export function CloudSessionPage({
   chat?: ChatView;
   /** 私聊头部那颗「拉人」（#1280）。**A4 才接线**，缺席不画 */
   onPullAgent?: () => void;
-  /** 群聊头部那颗「添加智能体」（#1280）。**A4 才接线**，缺席不画 */
-  onAddAgent?: () => void;
+  /** 改这个群的名单（#1280 A4）。收的是**变动之后的完整名单**。缺席 = 不画
+      「添加智能体」那颗钮：点了没反应比没有这颗钮更糟 */
+  onChatRoster?: (agentIds: string[]) => void | Promise<void>;
+  /** 群聊头部那颗 ⚙ 打开这个群的设置（#1280 A4）。缺席时退回 `onSettings` */
+  onGroupSettings?: () => void;
   /** 私聊头部那颗 ⚙ 打开这只智能体的设置（#1280）。**Task 21 才接线**；
       缺席时私聊的 ⚙ 退回 `onSettings`（主场设置） */
   onAgentSettings?: (agentId: string) => void;
@@ -530,10 +535,28 @@ export function CloudSessionPage({
   // 否则一天里只有一条被藏起来的事件也会顶出一个空的分隔条。
   // `now` 取组件挂载那一刻：跨零点不追，下次进来就对了（同 dayLabel 的口径）
   const chatNow = useMemo(() => Date.now(), []);
+  // 名单那一行（#1280 A4）：这一条画不画要看**前一条**名单事件，所以判据算不进
+  // `hiddenFromCloudTimeline`（那是逐事件的纯谓词）。循环外扫一遍建表，渲染循环与
+  // 下面那条「一条都画不出来」的计数读同一份结果——两处各判一遍迟早分家。
+  // 手法同 `voiceCallCards` 对 `prevVoiceCall` 的处理
+  const rosterLines = useMemo(() => {
+    const out = new Map<number, RosterLinePart[] | null>();
+    let prev: ChatRosterChangedEvent | null = null;
+    for (const e of events) {
+      if (e.type !== "chat_roster_changed") continue;
+      out.set(e.seq, chatRosterLineParts(prev, e, selfUid));
+      prev = e;
+    }
+    return out;
+  }, [events, selfUid]);
   const chatTimeline = useMemo(() => {
     if (chat === undefined) return null;
     const visible = events
       .filter((e) => !hiddenFromCloudTimeline(e) && !voiceCards.folded.has(e.seq) && e.type !== "context_compacted")
+      // 建聊天那一条名单事件画不出任何东西（`rosterLines` 里是 null）——算进来的话
+      // 刚建好的群永远不是「空的」，那句「都在」一次都出不来（A3 踩过同一个坑，
+      // 那时是靠把整个事件类型藏起来绕过去的）
+      .filter((e) => e.type !== "chat_roster_changed" || (rosterLines.get(e.seq) ?? null) !== null)
       .map((e) => ({ ts: e.ts, seq: e.seq }));
     const marks = new Map<number, string>();
     const rowsOfDay = withDaySeparators(visible, chatNow);
@@ -544,10 +567,10 @@ export function CloudSessionPage({
     }
     // 「一条都画不出来」不等于 `cloudEmptyState` 的 "empty"（那一格只看
     // `events.length === 0`）：刚建好的群里已经躺着 session_created 与
-    // chat_roster_changed 两条，它们都是藏起来的——照那一格判的话，这一屏是
+    // chat_roster_changed 两条，它们都画不出任何东西——照那一格判的话，这一屏是
     // **一片空白**，而不是那句「都在」。判据因此挂在真正会画出来的行数上
     return { marks, empty: visible.length === 0 };
-  }, [chat, events, voiceCards, chatNow]);
+  }, [chat, events, voiceCards, chatNow, rosterLines]);
   const dayMarks = chatTimeline?.marks ?? null;
 
   const timelineEmpty = cloudEmptyState(cs.state, events.length);
@@ -799,15 +822,19 @@ export function CloudSessionPage({
           ws={ws}
           chat={chat}
           {...(onPullAgent === undefined ? {} : { onPullAgent })}
-          {...(onAddAgent === undefined ? {} : { onAddAgent })}
+          {...(chat.kind === "group" && onChatRoster !== undefined
+            ? { addAgentSlot: <AddAgentPopover ws={ws} current={chat.agentIds} onConfirm={onChatRoster} /> }
+            : {})}
           {...(() => {
-            // 私聊的 ⚙ 开这只智能体的设置（Task 21 接线）；接线之前退回主场设置，
-            // 不画一颗点了没反应的钮
-            const dmSettings =
-              chat.kind === "dm" && onAgentSettings !== undefined && chat.agentIds[0] !== undefined
-                ? () => onAgentSettings(chat.agentIds[0]!)
-                : onSettings;
-            return dmSettings === undefined ? {} : { onSettings: dmSettings };
+            // 私聊的 ⚙ 开这只智能体的设置，群聊的开这个群的；两条都没接上时退回
+            // 主场设置，不画一颗点了没反应的钮
+            const chatSettings =
+              chat.kind === "dm"
+                ? (onAgentSettings !== undefined && chat.agentIds[0] !== undefined
+                    ? () => onAgentSettings(chat.agentIds[0]!)
+                    : onSettings)
+                : (onGroupSettings ?? onSettings);
+            return chatSettings === undefined ? {} : { onSettings: chatSettings };
           })()}
           voiceSlot={voiceSlot}
         />
@@ -960,6 +987,12 @@ export function CloudSessionPage({
           {banner.text}
         </p>
       )}
+      {/* 空群（#1280 A4）：最后一只被移出 / 被删掉之后，群还在但没人接活。这是
+          合法状态不是坏掉了（删一只智能体不该连坐删掉它待过的群），所以说清
+          「说了也没人接」+ 上哪儿把人请回来，而不是让人对着一个不回话的输入框 */}
+      {chat?.kind === "group" && chat.agentIds.length === 0 && (
+        <p className="text-xs text-warn">这个群里没有智能体了——说了也没人接。用上面那颗「添加智能体」把人请回来。</p>
+      )}
 
       <div className="flex flex-col gap-2">
         <TimelineProjectionContext.Provider value={timelineProjection}>
@@ -1038,6 +1071,10 @@ export function CloudSessionPage({
               }
               if (e.type === "agent_relay") {
                 return <AgentRelayRow key={e.seq} event={e} ws={ws} />;
+              }
+              if (e.type === "chat_roster_changed") {
+                const parts = rosterLines.get(e.seq) ?? null;
+                return parts === null ? null : <ChatRosterRow key={e.seq} parts={parts} ws={ws} />;
               }
               if (e.type === "turn_ended") {
                 // isLast 恒 false：EventRow 的"重试"钮只看这个 prop（Timeline.tsx:649），
@@ -1688,6 +1725,39 @@ function AgentRelayRow({ event, ws }: { event: AgentRelayEvent; ws: WorkspaceSna
   return (
     <p className="px-1 text-[10.5px] italic text-muted-foreground/70">
       {relayLineText(event, ws)}
+    </p>
+  );
+}
+
+/** 群名单变了那一行（#1280 A4）。
+
+    **居中、每个名字左边一张脸**——ADR-0286 给通话那一行定的两条原样搬过来，理由
+    也一样：这一条说的是**整个群此刻的状态**（从现在起多一只/少一只在听、在接力），
+    不是机器的内务，所以与旁边那几行靠左的旁白（就位 / 接力线 / 系统旁白）故意分家。
+
+    **名册里查不到的不给脸**（`agentAvatarSrc` 对陌生 id 会按哈希派生一张，画上去
+    等于宣称它还在名册里）：被移出的那只常常正是刚被删掉的那只。脸与名字包在同一个
+    `whitespace-nowrap` 里——断在中间就是一张没有主人的脸；整行走 inline 不排成
+    flex，名字多了必然换行，而 flex 换行之后 `text-center` 管不到（同 VoiceCallRow）。 */
+export function ChatRosterRow({ parts, ws }: { parts: readonly RosterLinePart[]; ws: WorkspaceSnapshot }) {
+  return (
+    <p className="self-center max-w-[85%] px-1 text-center text-[11px] text-muted-foreground">
+      {parts.map((p, i) => {
+        if (p.agentId === undefined) return <span key={i}>{p.text}</span>;
+        const known = ws.agents.some((a) => a.agentId === p.agentId);
+        return (
+          <span key={i} className="whitespace-nowrap">
+            {known && (
+              <img
+                src={agentAvatarSrc(ws, p.agentId)}
+                alt=""
+                className="mr-[3px] inline-block size-[14px] rounded-[3px] align-[-2px] [image-rendering:pixelated]"
+              />
+            )}
+            {p.text}
+          </span>
+        );
+      })}
     </p>
   );
 }

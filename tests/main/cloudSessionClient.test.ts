@@ -1436,6 +1436,68 @@ describe("createCloudSessionClient — workspaceState（控制房）", () => {
     expect(await promise).toEqual({ ok: true, value: null });
   });
 
+  // 协议 20（#1280）：改一条聊天的名字 / 名单，同样走控制房——改名单不该以「你此刻
+  // 正开着这条聊天」为前提（判据与归档 / 删除逐字相同，ADR-0234）
+  it("chatUpdate：只改名时帧上不带名单", async () => {
+    const h = harness();
+    const promise = h.client.chatUpdate("w1", "s1", { name: "上线冲刺" });
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    expect(t.decoded()).toEqual([
+      { t: "hello", v: CS_PROTOCOL_VERSION, jwt: "token-abc" },
+      { t: "chat_update", workspaceId: "w1", sessionId: "s1", name: "上线冲刺" },
+    ]);
+    t.emitDown({ t: "chat_update_result", workspaceId: "w1", sessionId: "s1", ok: true });
+    expect(await promise).toEqual({ ok: true, value: null });
+    expect(t.close).toHaveBeenCalledTimes(1);
+  });
+
+  // 名单是「变动之后的完整名单」不是「摘掉谁」，所以移出最后一只 = 发一个空数组。
+  // 库里那条 CHECK 与下行的 CsChatInfo 都允许空群（0037：group 的 cardinality 0..6）
+  it("chatUpdate：空名单发得出去——移出最后一只，群还在", async () => {
+    const h = harness();
+    const promise = h.client.chatUpdate("w1", "s1", { agentIds: [] });
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    expect(t.decoded()[1]).toEqual({ t: "chat_update", workspaceId: "w1", sessionId: "s1", agentIds: [] });
+    t.emitDown({ t: "chat_update_result", workspaceId: "w1", sessionId: "s1", ok: true });
+    expect(await promise).toEqual({ ok: true, value: null });
+  });
+
+  it("chatUpdate：ok:false → 服务端那句话原样带回", async () => {
+    const h = harness();
+    const promise = h.client.chatUpdate("w1", "s1", { agentIds: ["admin"] });
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({
+      t: "chat_update_result", workspaceId: "w1", sessionId: "s1", ok: false,
+      message: "有 1 只智能体已经不在了（名单可能刚变过，刷新再试）",
+    });
+    expect(await promise).toEqual({ ok: false, message: "有 1 只智能体已经不在了（名单可能刚变过，刷新再试）" });
+  });
+
+  it("chatUpdate：别的会话的回执不认（同 archive）", async () => {
+    const h = harness();
+    const promise = h.client.chatUpdate("w1", "s1", { name: "新名字" });
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({ t: "chat_update_result", workspaceId: "w1", sessionId: "别的聊天", ok: true });
+    let settled = false;
+    void promise.then(() => { settled = true; });
+    await tick();
+    expect(settled).toBe(false);
+    t.emitDown({ t: "chat_update_result", workspaceId: "w1", sessionId: "s1", ok: true });
+    expect(await promise).toEqual({ ok: true, value: null });
+  });
+
   it("workspaceState：hello + workspace 发给第一个 host，workspace_state 回来就 resolve 并关连接", async () => {
     const h = harness();
     const promise = h.client.workspaceState("w1");

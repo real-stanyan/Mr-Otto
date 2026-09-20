@@ -70,7 +70,9 @@ import { FriendsSection } from "./components/FriendsSection.js";
 import { friendMentionItems, searchFriendMentions } from "./lib/friendMentionItems.js";
 import { AgentsSidebarSection } from "./components/AgentsSidebarSection.js";
 import { AgentSettingsDrawer } from "./components/AgentSettingsDrawer.js";
+import { GroupSettingsDrawer } from "./components/GroupSettingsDrawer.js";
 import { WorkspacePage } from "./components/WorkspacePage.js";
+import { NewGroupDialog } from "./components/NewGroupDialog.js";
 import { NewWorkspaceDialog } from "./components/NewWorkspaceDialog.js";
 import { CloudWelcome } from "./components/CloudWelcome.js";
 import { CloudSessionMain } from "./components/CloudSessionMain.js";
@@ -2223,7 +2225,7 @@ function AppSidebar() {
             collapsed={wsCollapsed}
             onToggle={toggleWorkspaceGroup}
             onManage={setOpenWorkspaceId}
-            onNewGroup={() => setNewWorkspaceOpen(true)}
+            onNewGroup={() => useChat.getState().openNewGroup()}
           />
         ) : tab === "tasks" ? (
           // 任务视图：内置 Default 工作区的会话，不出现路径——这一栏的全部意义
@@ -2521,6 +2523,8 @@ function AppSidebar() {
       {/* 一只智能体自己的设置（#1280）：聊天头部那颗 ⚙ 与花名册那一行都开它。
           判据在组件里（查得到那只才开），这里只负责挂上 */}
       <AgentSettingsDrawer />
+      {/* 一个群自己的设置（#1280 A4）：群聊头部那颗 ⚙ 开它。判据同上，在组件里 */}
+      <GroupSettingsDrawer />
       {/* 新团队(issue #917)。按钮只在项目栏(issue #923),所以 setTab 这一下不是
           为了换栏,是为了归档视图那一路:在「已归档」里点的钮,建完得把人带回列表,
           不然新建的团队在他此刻看的那一屏上根本不出现 */}
@@ -2533,6 +2537,9 @@ function AppSidebar() {
         }}
         onGoBilling={() => void openSettings("account")}
       />
+      {/* 新群聊（#1280 A4）。开关在 store 不在这儿的本地 state：私聊头部那颗「拉人」
+          也开它，而那一块不在这棵子树上（同 openWorkspaceId 搬进 store 的理由） */}
+      <NewGroupDialog onNewTeam={() => setNewWorkspaceOpen(true)} />
     </Sidebar>
   );
 }

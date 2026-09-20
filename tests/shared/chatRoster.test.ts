@@ -77,7 +77,17 @@ describe("chatRosterDiff", () => {
 
 describe("normalizeChatAgentIds", () => {
   it("去重、保序", () => {
-    expect(normalizeChatAgentIds(["admin", "a_0123456789ab", "admin"])).toEqual(["admin", "a_0123456789ab"]);
+    expect(normalizeChatAgentIds(["admin", "a_0123456789ab", "admin"], 1)).toEqual(["admin", "a_0123456789ab"]);
+  });
+  // 下限由调用方给（#1280 A4）：建聊天 ≥1、改名单 ≥0。空数组在两边是两个答案，
+  // 这正是它不许有默认值的理由——默认值会让 chat_update 安静地继承 create 的下限
+  it("空名单：建聊天拒、改名单收（移出最后一只）", () => {
+    expect(normalizeChatAgentIds([], 1)).toBeNull();
+    expect(normalizeChatAgentIds([], 0)).toEqual([]);
+  });
+  it("上限两边一样：第七只一律拒", () => {
+    const seven = ["admin", "a_0123456789ab", "a_0123456789ac", "a_0123456789ad", "a_0123456789ae", "a_0123456789af", "a_0123456789b0"];
+    expect(normalizeChatAgentIds(seven, 0)).toBeNull();
   });
   it.each([
     [null],
@@ -98,6 +108,6 @@ describe("normalizeChatAgentIds", () => {
       ],
     ],
   ])("形状不对一律 null：%j", (raw) => {
-    expect(normalizeChatAgentIds(raw)).toBeNull();
+    expect(normalizeChatAgentIds(raw, 1)).toBeNull();
   });
 });

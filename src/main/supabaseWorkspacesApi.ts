@@ -428,27 +428,37 @@ export async function listCloudSessions(
 /** 这只智能体现在挂在哪几条聊天上（#1280）：它自己那条私聊 + 它在的那几个群。
     **查询失败一律回空**（同 `fetchCloudChats` 的容错）：0037 没跑的库里团队的
     智能体照样删得掉——那时这两列不存在，而团队本来就没有聊天这回事。
-    回空的代价是删除那三步退化成改动前的一步，正是我们想要的降级方向 */
+    回空的代价是删除那三步退化成改动前的一步，正是我们想要的降级方向。
+
+    群那一半连**当前名单**一起带回（A4）：`chat_update` 要的是「变动之后的完整名单」
+    不是「摘掉谁」，调用方得先有旧名单才算得出新的。这一列是日志的投影、可能比日志旧
+    （runtime 写库失败时不回滚、等启动对账），所以算差集之外不拿它做任何判断——
+    真正的核对在服务端 `updateChatRoster` 那一侧 */
 export async function listAgentChats(
   client: SupabaseClient,
   workspaceId: string,
   agentId: string,
-): Promise<{ dmSessionId: string | null; groupSessionIds: string[] }> {
+): Promise<{ dmSessionId: string | null; groups: { sessionId: string; agentIds: string[] }[] }> {
   const res = await client
     .from("workspace_sessions")
     .select("id,chat_kind,agent_ids")
     .eq("workspace_id", workspaceId)
     .eq("kind", "cloud")
     .contains("agent_ids", [agentId]);
-  if (res.error) return { dmSessionId: null, groupSessionIds: [] };
-  const rows = (res.data ?? []) as { id: string; chat_kind: unknown }[];
+  if (res.error) return { dmSessionId: null, groups: [] };
+  const rows = (res.data ?? []) as { id: string; chat_kind: unknown; agent_ids: unknown }[];
   let dmSessionId: string | null = null;
-  const groupSessionIds: string[] = [];
+  const groups: { sessionId: string; agentIds: string[] }[] = [];
   for (const r of rows) {
     if (r.chat_kind === "dm") dmSessionId = r.id;
-    else if (r.chat_kind === "group") groupSessionIds.push(r.id);
+    else if (r.chat_kind === "group") {
+      // 这一列读不出数组时按空名单算：差集之后还是空，于是那个群被摘成空群。
+      // 比跳过它好——跳过会留下一个名单里挂着不存在智能体的群
+      const ids = Array.isArray(r.agent_ids) ? r.agent_ids.filter((x): x is string => typeof x === "string") : [];
+      groups.push({ sessionId: r.id, agentIds: ids });
+    }
   }
-  return { dmSessionId, groupSessionIds };
+  return { dmSessionId, groups };
 }
 
 /** `workspace_sessions.chat_kind` / `agent_ids` 那两列（#1280），**单独一条、容错**——

@@ -48,10 +48,13 @@ export interface WorkspaceManagerDeps {
   /** 删一条云会话（#1280）：走 runtime 的 delete 帧（ADR-0245），不是直连 Supabase
       ——0016 那条策略把客户端的 delete 钉死在 kind='package' */
   removeCloudSession: (workspaceId: string, sessionId: string) => Promise<FriendsResult<null>>;
-  /** 把这只从它在的那几个群里摘掉（#1280）。**A4（Task 25）才接上真的 chat_update**，
-      在那之前接的是一个恒成功的空操作——读取侧对现存名册求交集兜着这段中间态
-      （`groupRows` / `CloudSessionMain` 那两处） */
-  removeFromGroups: (workspaceId: string, agentId: string, groupSessionIds: string[]) => Promise<FriendsResult<null>>;
+  /** 改一条聊天的名单（#1280 A4）：收的是**变动之后的完整名单**，因为 `chat_update`
+      要的是名单不是「摘掉谁」。差集在 `deleteAgent` 里算、不在 index.ts 的接线里算——
+      index.ts 进不了 vitest，而「忘了 filter」是一次静默失败：第 3 步还没跑，服务端
+      此刻仍认得这只，于是那个群原样收下这份没变的名单，名册上从此挂着一只不存在的
+      智能体。读取侧对现存名册求交集那一层留着不撤——它从此兜的是「这几步真断在
+      半路」，不再兜一个恒成功的空操作 */
+  updateChatRoster: (workspaceId: string, sessionId: string, agentIds: string[]) => Promise<FriendsResult<null>>;
   /** 删它的记忆页（#1280）。删不掉不拦删除：留一页没人读的记忆，比让这只删不掉好 */
   removeAgentPage: (workspaceId: string, agentId: string) => Promise<void>;
   listWorkspaces: typeof WorkspacesApi.listWorkspaces;
@@ -399,8 +402,10 @@ export function createWorkspaceManager(deps: WorkspaceManagerDeps): WorkspaceMan
           const r = await deps.removeCloudSession(id, chats.dmSessionId);
           if (!r.ok) throw new Error(`它的聊天记录没删掉（${r.message}），所以这只智能体也先留着。稍后再试。`);
         }
-        if (chats.groupSessionIds.length > 0) {
-          const r = await deps.removeFromGroups(id, agentId, chats.groupSessionIds);
+        // 逐个群摘：摘成空群是合法终局（群还在，人可以再往里加），不是「这个群该删了」
+        // ——删一只智能体不该连坐删掉它待过的群（spec §4）
+        for (const g of chats.groups) {
+          const r = await deps.updateChatRoster(id, g.sessionId, g.agentIds.filter((x) => x !== agentId));
           if (!r.ok) throw new Error(`没能把它从群聊里摘掉（${r.message}），所以这只智能体也先留着。稍后再试。`);
         }
         await deps.deleteAgentRow(client, id, agentId);

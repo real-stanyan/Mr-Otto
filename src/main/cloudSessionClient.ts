@@ -245,6 +245,17 @@ export interface CloudSessionClient {
       抹掉，不可逆。归档的会话同样能删（不依赖房间还开着）。谁能删由服务端判，
       判据与归档同一条 */
   remove(workspaceId: string, sessionId: string): Promise<FriendsResult<null>>;
+  /** 改一条聊天的名字 / 名单（控制房 RPC，协议 20，#1280）：同样不依赖「正开着它」——
+      删一只智能体时要把它从它在的每个群里摘掉，而那几个群一条都没开着。
+      两格各自可选、至少带一样；`agentIds` 是**变动之后的完整名单**不是「摘掉谁」
+      （只改群名时不带它，否则等于替用户声明「那一格我也确认是这个值」，两个人
+      同时改一条群聊时后发的那份会把先发的名单覆盖回去）。
+      名单真变了的话房里还会广播一条 `chat_roster_changed`——那条是事实，回执只答收没收下 */
+  chatUpdate(
+    workspaceId: string,
+    sessionId: string,
+    patch: { name?: string; agentIds?: string[] },
+  ): Promise<FriendsResult<null>>;
   /** 停掉当前正在跑的这一轮 turn（#957 第三批）。谁能停由服务端判（发起人
       或 owner，与 approve 同一判据）——resolve 的是 `stop_result` 那条回执，
       不是「帧交给 socket 了」 */
@@ -1100,6 +1111,19 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     });
   }
 
+  function chatUpdate(
+    workspaceId: string,
+    sessionId: string,
+    patch: { name?: string; agentIds?: string[] },
+  ): Promise<FriendsResult<null>> {
+    // patch 摊平进帧：没带的那一格在帧上就是缺席，不补 undefined（编码时会被丢掉，
+    // 但显式展开让「只改名那条帧上没有名单」这件事在源码里看得见）
+    return ctlRequest({ t: "chat_update", workspaceId, sessionId, ...patch }, (msg) => {
+      if (msg.t !== "chat_update_result" || msg.sessionId !== sessionId) return null;
+      return msg.ok ? { ok: true, value: null } : { ok: false, message: msg.message ?? "没有改成" };
+    });
+  }
+
   function currentSessionId(): string | null {
     return active ? active.sessionId : null;
   }
@@ -1117,5 +1141,5 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     };
   }
 
-  return { currentSessionId, activeSummary, create, join, leave, say, approve, archive, remove, stop, call, workspaceState, workspaceGitCredential, workspaceFiles, workspaceFilesSearch, workspaceWikiWrite };
+  return { currentSessionId, activeSummary, create, join, leave, say, approve, archive, remove, chatUpdate, stop, call, workspaceState, workspaceGitCredential, workspaceFiles, workspaceFilesSearch, workspaceWikiWrite };
 }

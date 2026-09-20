@@ -51,14 +51,22 @@ export function chatRosterDiff(
   };
 }
 
-/** 线上来的 agentIds：去重保序；不是数组 / 有一个不像 agent id / 空 / 超过上限，一律 null。
-    调用方据此**拒帧**，不「修好了再用」——这一格静默变样就是「这条聊天里有谁」静默变样。 */
-export function normalizeChatAgentIds(raw: unknown): string[] | null {
+/** 线上来的 agentIds：去重保序；不是数组 / 有一个不像 agent id / 超出 `min..CHAT_GROUP_MAX`，
+    一律 null。调用方据此**拒帧**，不「修好了再用」——这一格静默变样就是「这条聊天里有谁」
+    静默变样。
+
+    **下限由调用方给、没有默认值**（#1280 A4）：它是调用方的属性不是这个形状的属性，而两个
+    调用方要的下限不同——建一条聊天要 ≥1（没有人的聊天建出来没有意义），改名单要 ≥0（移出
+    最后一只是合法终局：0037 给 group 那条 CHECK 写的就是 `cardinality 0..6`，下行的
+    `CsChatInfo` 也明说名单可以是空的）。写成有默认值的话 `chat_update` 会安静地继承「≥1」，
+    症状是移出最后一只时**整帧被拒**——没有回执，客户端白等满 15 秒超时，然后把「这个动作
+    不被允许」说成「云端无响应」。 */
+export function normalizeChatAgentIds(raw: unknown, min: 0 | 1): string[] | null {
   if (!Array.isArray(raw)) return null;
   const out: string[] = [];
   for (const x of raw) {
     if (typeof x !== "string" || !AGENT_ID_RE.test(x)) return null;
     if (!out.includes(x)) out.push(x);
   }
-  return out.length >= 1 && out.length <= CHAT_GROUP_MAX ? out : null;
+  return out.length >= min && out.length <= CHAT_GROUP_MAX ? out : null;
 }

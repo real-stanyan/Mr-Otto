@@ -519,7 +519,8 @@ function normalizeChatSpec(v: unknown): CsChatSpec | null | undefined {
   }
   if (o.kind === "group") {
     const name = normalizeChatName(o.name);
-    const agentIds = normalizeChatAgentIds(o.agentIds);
+    // 建一条群聊要 ≥1：一个人都没有的群建出来没有意义（界面上的下限是 2，见 chatRoster.ts）
+    const agentIds = normalizeChatAgentIds(o.agentIds, 1);
     return name !== null && agentIds !== null ? { kind: "group", name, agentIds } : null;
   }
   return null;
@@ -800,7 +801,9 @@ export function decodeCsUp(b64: string): CsUp | null {
         update.name = name;
       }
       if (obj.agentIds !== undefined) {
-        const ids = normalizeChatAgentIds(obj.agentIds);
+        // 下限 0：移出最后一只是合法终局（空群还在，人可以再往里加）。与 create 那一侧
+        // 的 1 故意不同——下限是调用方的属性，见 chatRoster.ts 的头注
+        const ids = normalizeChatAgentIds(obj.agentIds, 0);
         if (ids === null) return null;
         update.agentIds = ids;
       }

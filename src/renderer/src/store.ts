@@ -629,6 +629,12 @@ interface ChatState {
   homeEnsure: "idle" | "ensuring" | "failed";
   /** 建主场失败的那句人话；null = 没失败过 */
   homeError: string | null;
+  /** 新群聊那扇弹窗开着没有（#1280 A4）。**建群不走开局卡那条路**：群是建了才有身份的
+      东西（一个名字 + 一份名单），而开局卡的规矩是「什么都不建」（ADR-0218） */
+  newGroupOpen: boolean;
+  /** 打开那扇窗时预先勾上的几只（#1280 A4）。私聊头部那颗「拉人」带着当前这一只
+      进来——那颗钮**不改这条私聊**，是另起一个群（微信同款） */
+  newGroupPreset: string[];
   /** 开局卡上写的第一句话，等云会话进 ready 之后才发得出去（issue #919）。
       主进程的 say() 要求 status === "ready"（cloudSessionClient 的 requireReady），
       而 join() 只保证连上了中继——runtime 的 welcome 还在路上。所以这句话先停在
@@ -661,6 +667,9 @@ interface ChatState {
   /** 哪一只智能体的设置抽屉开着（#1280）。null = 没开。与 openWorkspaceId 平级，
       理由相同：两个消费方（聊天头部那颗 ⚙、花名册那一行）不在同一棵子树上 */
   agentSettingsFor: string | null;
+  /** 哪一个群的设置抽屉开着（#1280 A4）。null = 没开。与 `agentSettingsFor` 平级、
+      同一个理由：开它的是聊天头部那颗 ⚙，而那一块不在侧栏那棵子树上 */
+  groupSettingsFor: string | null;
   /** 窗口是否全屏(macOS 全屏隐红绿灯,左上角 logo 显隐看它) */
   fullscreen: boolean;
   /** 冷启动进度：boot() 里那组 Promise.all 有几个已经回来 / 一共几个。
@@ -1080,6 +1089,12 @@ interface ChatState {
   openAgentChat(agentId: string): Promise<void>;
   /** 点群聊那一行（#1280） */
   openGroupChat(sessionId: string): Promise<void>;
+  /** 开「新群聊」那扇窗（#1280 A4）。`preset` = 预先勾上的几只（私聊头部那颗「拉人」） */
+  openNewGroup(preset?: string[]): void;
+  closeNewGroup(): void;
+  /** 建一个群并进去（#1280 A4）。失败那句话回给弹窗自己画——不落
+      `workspaceGroupsError`：那一格画在侧栏上，而这句话要留在人正看着的那扇窗里 */
+  createGroupChat(name: string, agentIds: string[]): Promise<{ ok: true } | { ok: false; message: string }>;
   /** 开一张**聊天**的开局卡（#1280）。与 startCloudDraft 的唯一差别是多记一格
       「要建的是什么」 */
   startChatDraft(workspaceId: string, chat: CsChatSpec): void;
@@ -1194,6 +1209,17 @@ interface ChatState {
   /** 打开某一只智能体的设置抽屉（#1280） */
   openAgentSettings(agentId: string): void;
   closeAgentSettings(): void;
+  /** 打开某个群的设置抽屉（#1280 A4） */
+  openGroupSettings(sessionId: string): void;
+  closeGroupSettings(): void;
+  /** 改一个群的名字 / 名单（#1280 A4）。`agentIds` 是**变动之后的完整名单**。
+      失败那句话回给调用方自己画（同 `createGroupChat` 的纪律） */
+  updateGroupChat(
+    sessionId: string,
+    patch: { name?: string; agentIds?: string[] },
+  ): Promise<{ ok: true } | { ok: false; message: string }>;
+  /** 解散一个群（#1280 A4）：整段聊天记录从 VPS 上抹掉，不可逆；里面的智能体都还在 */
+  dissolveGroupChat(sessionId: string): Promise<{ ok: true } | { ok: false; message: string }>;
   /** 拉一次本人资料。登录后由 onAccountChanged 触发,首登引导也在这里决定要不要弹 */
   refreshMyProfile(): Promise<void>;
   /** 改本人资料。回 null = 成功,回字符串 = 给用户看的失败原因 */
@@ -1604,6 +1630,8 @@ export const useChat = create<ChatState>((set, get) => ({
   cloudDraftChat: null,
   homeEnsure: "idle",
   homeError: null,
+  newGroupOpen: false,
+  newGroupPreset: [],
   cloudPendingFirstMessage: null,
   cloudDraftSeed: null,
   cloudSession: null,
@@ -1614,6 +1642,7 @@ export const useChat = create<ChatState>((set, get) => ({
   friendsPanelOpen: false,
   openWorkspaceId: null,
   agentSettingsFor: null,
+  groupSettingsFor: null,
   fullscreen: false,
   bootDone: 0,
   bootTotal: 0,
@@ -2752,6 +2781,22 @@ export const useChat = create<ChatState>((set, get) => ({
     await get().openCloudSession(home.id, sessionId, undefined, g?.name);
   },
 
+  openNewGroup: (preset) => set({ newGroupOpen: true, newGroupPreset: preset ?? [] }),
+  closeNewGroup: () => set({ newGroupOpen: false, newGroupPreset: [] }),
+
+  async createGroupChat(name, agentIds) {
+    const home = homeOf(get().workspaceGroups);
+    if (home === null) return { ok: false, message: "还没有个人主场" };
+    const r = await window.otter.workspaceCloudCreate(home.id, { kind: "group", name, agentIds });
+    if (!r.ok) return { ok: false, message: r.message };
+    // 先刷清单再进房：侧栏那一行与头部的群名都从这份清单来（房里广播回来的是
+    // 名单事件，不是群名），漏了这一刷，新群在侧栏上要等下一次 focus 才出现
+    await get().refreshCloudSessions(home.id);
+    set({ newGroupOpen: false, newGroupPreset: [] });
+    await get().openGroupChat(r.value.sessionId);
+    return { ok: true };
+  },
+
   startChatDraft(workspaceId, chat) {
     // 与 startCloudDraft 同一套收尾（关掉手上那条云会话、退出设置模式），只多记
     // 一格「要建的是什么」——所以先叫它再写这一格，顺序反了会被它清掉
@@ -3089,6 +3134,32 @@ export const useChat = create<ChatState>((set, get) => ({
   setOpenWorkspaceId: (id) => set({ openWorkspaceId: id }),
   openAgentSettings: (agentId) => set({ agentSettingsFor: agentId }),
   closeAgentSettings: () => set({ agentSettingsFor: null }),
+  openGroupSettings: (sessionId) => set({ groupSettingsFor: sessionId }),
+  closeGroupSettings: () => set({ groupSettingsFor: null }),
+
+  async updateGroupChat(sessionId, patch) {
+    const home = homeOf(get().workspaceGroups);
+    if (home === null) return { ok: false, message: "还没有个人主场" };
+    const r = await window.otter.workspaceCloudChatUpdate(home.id, sessionId, patch);
+    if (!r.ok) return { ok: false, message: r.message };
+    // 头部那排名字与侧栏那一行都从这份清单来；时间线上那条「谁进谁出」走的是
+    // 房里广播回来的 chat_roster_changed —— 两条路各走各的，缺一样就有一处是陈旧的
+    await get().refreshCloudSessions(home.id);
+    return { ok: true };
+  },
+
+  async dissolveGroupChat(sessionId) {
+    const home = homeOf(get().workspaceGroups);
+    if (home === null) return { ok: false, message: "还没有个人主场" };
+    // 复用 cloudDelete：判据、回执、「删的正是此刻开着的那条就退回去」全都一样，
+    // 它另外把失败落进 workspaceGroupsError（那一格画在侧栏上）——这里不去动它，
+    // 抽屉那一侧另外画一句，两处说同一件事好过抽屉上什么都不说
+    if (!(await get().cloudDelete(home.id, sessionId))) {
+      return { ok: false, message: get().workspaceGroupsError ?? "没有解散成" };
+    }
+    set({ groupSettingsFor: null });
+    return { ok: true };
+  },
 
   setProfileSetupOpen: (open) =>
     set((s) => {
