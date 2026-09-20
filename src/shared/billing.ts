@@ -4,6 +4,8 @@
 // 1 credit = 1 美分 = 10_000 micro。用户看到的额度不是钱数，是 credit：
 // 托管模式的花费和 BYOK 的「$X」不能长得一样（ADR-0176 决定五）。
 
+import { isDecisionMode, isDecisionUse, type DecisionUses } from "./decision.js";
+
 export type PlanId = "lite" | "pro" | "max";
 export type SubscriptionStatus = "active" | "past_due" | "canceled" | "none";
 
@@ -58,6 +60,13 @@ export interface BillingMe {
       `model_route` 里写的——那是巧合不是保证，而这一列就是答案。
       旧 edge 不发这一格 = 空对象，消费方（下拉里的 logo）画不出来就不画 */
   modelPlatforms: Record<string, string>;
+  /** 决策模型（Jev，#1281）：网关供不供（`model_route` 里 kind='decision' 那些）+ 五处各自
+      开着哪一档。**开关住在 edge 里一个常量上**（services/edge/src/decisionUses.ts），随这份
+      快照下发给桌面与 runtime——三端一块配电盘，翻一格最迟一分钟（探针的缓存）全部生效，
+      不用发桌面版。`uses` 里**没列 = 关**。
+      **可选属性**而 `parseBillingMe` 总是填它：缺席的语义本来就是「关」，写成必填只会让
+      全仓的测试夹具各多一行 */
+  decision?: { models: string[]; uses: DecisionUses };
 }
 
 export const BILLING_HEADERS = {
@@ -189,6 +198,20 @@ export function parseBillingMe(payload: unknown): BillingMe | null {
       if (typeof v === "string") modelPlatforms[k] = v;
     }
   }
+  // 缺席 / 形状不对 = 这台网关不供决策模型 = 五处全关（#1281）。同 imageModels 的立场：
+  // 不能让它把整份快照解析成 null。不认识的 use / mode **逐项丢**不整格丢——edge 先长出
+  // 第六处的那天，老客户端该继续用它认得的那五处
+  const decision: { models: string[]; uses: DecisionUses } = { models: [], uses: {} };
+  if (isObj(payload.decision)) {
+    if (Array.isArray(payload.decision.models)) {
+      decision.models = payload.decision.models.filter((m): m is string => typeof m === "string");
+    }
+    if (isObj(payload.decision.uses)) {
+      for (const [k, v] of Object.entries(payload.decision.uses)) {
+        if (isDecisionUse(k) && isDecisionMode(v)) decision.uses[k] = v;
+      }
+    }
+  }
   const plans: PlanInfo[] = [];
   if (Array.isArray(payload.plans)) {
     for (const p of payload.plans) {
@@ -209,7 +232,7 @@ export function parseBillingMe(payload: unknown): BillingMe | null {
       }
     }
   }
-  return { plan, status, plans, windows, addon: { remainingMicro: payload.addon.remainingMicro, expiresAt }, periodEnd, models, imageModels, ttsModels, modelPlatforms };
+  return { plan, status, plans, windows, addon: { remainingMicro: payload.addon.remainingMicro, expiresAt }, periodEnd, models, imageModels, ttsModels, modelPlatforms, decision };
 }
 
 export const MICRO_PER_CREDIT = 10_000;
