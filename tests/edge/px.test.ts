@@ -274,6 +274,10 @@ describe("membershipQuery / parseMembershipRows（在籍查询，Task 5 接线�
     const rows = [{ workspace_id: "w1", uid: "a" }, "junk", { workspace_id: "w1" }, { workspace_id: "w1", uid: "b" }];
     expect(parseMembershipRows(rows, "a", "b")).toEqual(new Set(["w1"]));
   });
+  it("发起人就是 host（个人主场，#1280）：一行在籍即放行", () => {
+    expect(parseMembershipRows([{ workspace_id: "home", uid: "me" }], "me", "me")).toEqual(new Set(["home"]));
+    expect(membershipQuery(["3fa85f64-5717-4562-b3fc-2c963f66afa6"], "me", "me")).toContain("uid=in.(me,me)");
+  });
   it("membershipQuery：非 UUID 形状的 workspaceId 被防御性过滤——第二道闸，即便调用方跳过了 parseEscrowDoc", () => {
     const valid = "3fa85f64-5717-4562-b3fc-2c963f66afa6";
     const q = membershipQuery([valid, "w1)and(evil", "not-a-uuid"], "a", "b");

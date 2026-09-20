@@ -6032,3 +6032,324 @@ describe("工作文件夹用量（#836）", () => {
     expect(notes(events)).toHaveLength(2);
   });
 });
+
+describe("聊天名单收窄（#1280）", () => {
+  const ADMIN = {
+    agentId: "admin",
+    name: "管理员",
+    description: "默认智能体",
+    instructions: "",
+    models: ["m-admin"],
+    tools: [] as AgentToolAllow[],
+  };
+  const TEAM = [AGENTS[0]!, ADMIN, AGENTS[1]!]; // 运营 / 管理员 / 广告（团队名单的顺序）
+  type DispatchCall = Parameters<NonNullable<Parameters<typeof createCloudSession>[0]["dispatch"]>>[0];
+
+  /** 先把 session_created（+ 可选的名单事件）落进日志，再装配——名单是从 seed 折叠出来的 */
+  function openChat(
+    store: EventStore,
+    o: {
+      roster?: string[]; // 缺席 = 团队会话（没有名单事件）
+      kind?: "dm" | "group";
+      team?: () => Promise<Array<typeof ADMIN & { degraded?: boolean }>>;
+      reply?: (agentId: string) => string;
+      seen?: string[];
+      calls?: DispatchCall[];
+      events?: SessionEvent[];
+    },
+  ): CloudSession {
+    store.append({
+      sessionId: "s1",
+      ts: 1,
+      type: "session_created",
+      workspace: "/work",
+      cloud: { workspaceId: "w1", ...(o.roster ? { chat: { kind: o.kind ?? "group" } } : {}) },
+    });
+    if (o.roster) {
+      store.append({
+        sessionId: "s1",
+        ts: 2,
+        type: "chat_roster_changed",
+        ignorable: true,
+        agents: o.roster.map((id) => ({ agentId: id, name: TEAM.find((a) => a.agentId === id)!.name })),
+      });
+    }
+    return createCloudSession({
+      diskUsage: () => null,
+      sessionMeta: createInMemoryCloudSessionMeta(),
+      workspaceId: "w1",
+      sessionId: "s1",
+      ownerUid: "owner",
+      createdByUid: "creator",
+      store,
+      world: fakeWorld,
+      px,
+      hostUids: async () => ["u1"],
+      agents: o.team ?? (async () => TEAM),
+      adapterFor: (a) => ({
+        model: a.models[0]!,
+        async chat() {
+          o.seen?.push(a.agentId);
+          return { content: o.reply?.(a.agentId) ?? `${a.name}答` };
+        },
+      }),
+      onEvent: (e) => o.events?.push(e),
+      onUsage: () => {},
+      wiki: testWiki(),
+      mentionInbox: createInMemoryMentionInbox(),
+      agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true,
+      contextWindowOf: () => undefined,
+      sandboxApproval: async () => "ask",
+      workspaceLock: createWorkspaceLock(),
+      relayRemainingMicro: async () => null,
+      dispatch: async (input) => {
+        o.calls?.push(input);
+        return { kind: "picked", agentIds: [input.roster[0]!.agentId] };
+      },
+    });
+  }
+
+  it("派活的候选只有群里的，顺序跟团队名单走", async () => {
+    const store = newStore();
+    const calls: DispatchCall[] = [];
+    const s = openChat(store, { roster: ["admin", "ops"], calls });
+    await s.say("u1", "alice", "看下昨天的销量", false, [], undefined, []);
+    await s.settled();
+    expect(calls[0]!.roster.map((a) => a.agentId)).toEqual(["ops", "admin"]);
+    store.close();
+  });
+
+  it("群外的那只 @ 不到：不起 turn，话照落", async () => {
+    const store = newStore();
+    const seen: string[] = [];
+    const s = openChat(store, { roster: ["admin", "ops"], seen });
+    await s.say("u1", "alice", "@广告 看下投放", false, undefined, undefined, []);
+    await s.settled();
+    expect(seen).toEqual([]);
+    expect(store.load("s1").some((e) => e.type === "chat_message" && e.fromUid === "u1")).toBe(true);
+    store.close();
+  });
+
+  it("接力不出群：运营在回复里 @ 了群外的广告，这一棒不接", async () => {
+    const store = newStore();
+    const seen: string[] = [];
+    const s = openChat(store, {
+      roster: ["admin", "ops"],
+      seen,
+      reply: (id) => (id === "ops" ? "@广告 接一下" : "好"),
+    });
+    await s.say("u1", "alice", "@运营 出个方案", false, ["ops"], undefined, []);
+    await s.settled();
+    expect(seen).toEqual(["ops"]);
+    expect(store.load("s1").some((e) => e.type === "agent_relay")).toBe(false);
+    store.close();
+  });
+
+  it("brief 里的花名册只有群里的另外几只", async () => {
+    const store = newStore();
+    const s = openChat(store, { roster: ["admin", "ops"] });
+    await s.say("u1", "alice", "@运营 在吗", false, ["ops"], undefined, []);
+    await s.settled();
+    const brief = store
+      .load("s1")
+      .find((e) => e.type === "agent_briefed" && e.agentId === "ops") as Extract<
+      SessionEvent,
+      { type: "agent_briefed" }
+    >;
+    expect(brief.roster.map((r) => r.name)).toEqual(["管理员"]);
+    store.close();
+  });
+
+  it("通话只能拉群里的", async () => {
+    const store = newStore();
+    const s = openChat(store, { roster: ["admin", "ops"] });
+    expect((await s.setVoiceCall("u1", "alice", ["ads"])).kind).toBe("unknown_agent");
+    expect((await s.setVoiceCall("u1", "alice", ["ops"])).kind).toBe("ok");
+    store.close();
+  });
+
+  it("没有名单事件 = 整份团队名单（团队会话一字不变）", async () => {
+    const store = newStore();
+    const calls: DispatchCall[] = [];
+    const s = openChat(store, { calls });
+    await s.say("u1", "alice", "看下昨天的销量", false, [], undefined, []);
+    await s.settled();
+    expect(calls[0]!.roster.map((a) => a.agentId)).toEqual(["ops", "admin", "ads"]);
+    store.close();
+  });
+
+  it("团队名单读不出来（degraded）时不收窄：那一格降级记号不能被名单滤掉", async () => {
+    const store = newStore();
+    const s = openChat(store, { roster: ["ops"], team: async () => [{ ...ADMIN, degraded: true }] });
+    await expect(s.say("u1", "alice", "@运营 在吗", true, ["ops"], undefined, [])).rejects.toBeInstanceOf(
+      SayRejectedError,
+    );
+    store.close();
+  });
+
+  it("私聊：不 @ 也直接给它，分类器一次都不调，落的是一条普通的点名开场白", async () => {
+    const store = newStore();
+    const calls: DispatchCall[] = [];
+    const seen: string[] = [];
+    const s = openChat(store, { roster: ["ops"], kind: "dm", calls, seen });
+    await s.say("u1", "alice", "昨天卖得怎么样", false, [], undefined, []);
+    await s.settled();
+    expect(calls).toHaveLength(0);
+    expect(seen).toEqual(["ops"]);
+    const opening = store.load("s1").find((e) => e.type === "user_message") as UserMessageEvent;
+    expect(opening.mentions).toEqual(["ops"]);
+    expect(opening.dispatch).toBeUndefined(); // 不是分类器挑的，别带那个记号
+    store.close();
+  });
+
+  it("私聊里打了个 @ 也一样归它：名单里只有它，没有第二个人可以被指名", async () => {
+    const store = newStore();
+    const seen: string[] = [];
+    const s = openChat(store, { roster: ["ops"], kind: "dm", seen });
+    await s.say("u1", "alice", "发到 ops@example.com 那个邮箱", false, undefined, undefined, []);
+    await s.settled();
+    expect(seen).toEqual(["ops"]);
+    store.close();
+  });
+
+  it("群聊掉到只剩一只（别的被删了）同理，不为一个候选打一次分类调用", async () => {
+    const store = newStore();
+    const calls: DispatchCall[] = [];
+    const seen: string[] = [];
+    const s = openChat(store, { roster: ["ops"], kind: "group", calls, seen });
+    await s.say("u1", "alice", "在吗", false, [], undefined, []);
+    await s.settled();
+    expect(calls).toHaveLength(0);
+    expect(seen).toEqual(["ops"]);
+    store.close();
+  });
+
+  it("团队会话只有一只时照旧问分类器（团队一字不变）", async () => {
+    const store = newStore();
+    const calls: DispatchCall[] = [];
+    const s = openChat(store, { calls, team: async () => [ADMIN] });
+    await s.say("u1", "alice", "在吗", false, [], undefined, []);
+    await s.settled();
+    expect(calls).toHaveLength(1);
+    store.close();
+  });
+
+  it("updateChatRoster：落一条带 byUid 的名单事件，下一句话就按新名单派活", async () => {
+    const store = newStore();
+    const calls: DispatchCall[] = [];
+    const s = openChat(store, { roster: ["admin", "ops"], calls });
+    expect(await s.updateChatRoster("u1", ["ads", "admin", "ops"])).toEqual({
+      kind: "ok",
+      agentIds: ["ops", "admin", "ads"],
+      changed: true,
+    });
+    const last = store
+      .load("s1")
+      .filter((e) => e.type === "chat_roster_changed")
+      .at(-1) as Extract<SessionEvent, { type: "chat_roster_changed" }>;
+    expect(last).toMatchObject({
+      byUid: "u1",
+      agents: [
+        { agentId: "ops", name: "运营" },
+        { agentId: "admin", name: "管理员" },
+        { agentId: "ads", name: "广告" },
+      ],
+    });
+    await s.say("u1", "alice", "看下投放", false, [], undefined, []);
+    await s.settled();
+    expect(calls[0]!.roster.map((a) => a.agentId)).toEqual(["ops", "admin", "ads"]);
+    expect(s.chat()).toEqual({ kind: "group", agentIds: ["ops", "admin", "ads"] });
+    store.close();
+  });
+
+  it("同一份名单不落第二条事件", async () => {
+    const store = newStore();
+    const s = openChat(store, { roster: ["admin", "ops"] });
+    // 「没变」这条路交回的是**日志里那一份**（chat() 与启动对账读的也是它），不是
+    // 重新按团队序排过的——交回团队序会让写库与日志的顺序对不上，下次重启对账
+    // 又按「日志赢」改回来，一格数据在两处来回翻。真实写入方（planChatCreate /
+    // 下面那条 changed 的路）本来就按团队序落，只有这里手写的 seed 事件不是
+    expect(await s.updateChatRoster("u1", ["ops", "admin"])).toEqual({
+      kind: "ok",
+      agentIds: ["admin", "ops"],
+      changed: false,
+    });
+    expect(store.load("s1").filter((e) => e.type === "chat_roster_changed")).toHaveLength(1);
+    store.close();
+  });
+
+  it("私聊和团队会话的名单改不了；团队名单里没有的那只拉不进来", async () => {
+    const dm = newStore();
+    expect((await openChat(dm, { roster: ["ops"], kind: "dm" }).updateChatRoster("u1", ["ops", "ads"])).kind).toBe(
+      "not_group",
+    );
+    dm.close();
+    const team = newStore();
+    expect((await openChat(team, {}).updateChatRoster("u1", ["ops"])).kind).toBe("not_group");
+    team.close();
+    const g = newStore();
+    expect(await openChat(g, { roster: ["admin", "ops"] }).updateChatRoster("u1", ["ops", "ghost"])).toEqual({
+      kind: "unknown_agent",
+      message: "有 1 只智能体已经不在了（名单可能刚变过，刷新再试）",
+    });
+    g.close();
+  });
+
+  it("最后一只被摘掉也行（删智能体那三步里会走到）：空名单是一份真名单", async () => {
+    const store = newStore();
+    const s = openChat(store, { roster: ["admin", "ops"] });
+    expect(await s.updateChatRoster("u1", [])).toEqual({ kind: "ok", agentIds: [], changed: true });
+    store.close();
+  });
+
+  it("聊天不自动起名：群名是人起的，私聊的名字就是那只智能体", async () => {
+    const store = newStore();
+    const meta = createInMemoryCloudSessionMeta();
+    store.append({
+      sessionId: "s1",
+      ts: 1,
+      type: "session_created",
+      workspace: "/work",
+      cloud: { workspaceId: "w1", chat: { kind: "dm" } },
+    });
+    store.append({
+      sessionId: "s1",
+      ts: 2,
+      type: "chat_roster_changed",
+      ignorable: true,
+      agents: [{ agentId: "ops", name: "运营" }],
+    });
+    const s = createCloudSession({
+      diskUsage: () => null,
+      sessionMeta: meta,
+      workspaceId: "w1",
+      sessionId: "s1",
+      ownerUid: "owner",
+      createdByUid: "creator",
+      store,
+      world: fakeWorld,
+      px,
+      hostUids: async () => ["u1"],
+      agents: async () => TEAM,
+      adapterFor: (a) => ({ model: a.models[0]!, async chat() { return { content: `${a.name}答` }; } }),
+      onEvent: () => {},
+      onUsage: () => {},
+      wiki: testWiki(),
+      mentionInbox: createInMemoryMentionInbox(),
+      agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true,
+      contextWindowOf: () => undefined,
+      sandboxApproval: async () => "ask",
+      workspaceLock: createWorkspaceLock(),
+      relayRemainingMicro: async () => null,
+      retitle: async () => ({ title: "不该出现", model: "m" }),
+    });
+    await s.say("u1", "alice", "帮我把九月的促销文案改得活一点", false, [], undefined, []);
+    await s.settled();
+    // null = 一次都没写过（内存版的初值），不是「写了个空串」
+    expect(meta.title).toBeNull();
+    expect(store.load("s1").some((e) => e.type === "session_autotitled")).toBe(false);
+    store.close();
+  });
+});

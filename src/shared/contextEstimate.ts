@@ -186,6 +186,9 @@ function pendingAfter(
         // 云会话专属（#1163）：同 workspace_memory_loaded——本机圆环不读它；云会话页的环
         // （cloudContext.ts）哪天要算，按最新一条名单计 renderVoiceCallPrompt 的 token
         break;
+      case "chat_roster_changed":
+        // 云会话专属（#1280）：模型不可见，不占上下文
+        break;
       case "executor_changed":
         // 换执行器（#1223）：投影成 system 尾块，块的大小按最新状态计——本机圆环暂不计
         // （块最长 120 字，误差远小于 tool_result 的估算噪声）；要精确就按 renderExecutorPrompt 现算

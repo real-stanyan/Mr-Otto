@@ -692,6 +692,10 @@ export const EventRow = memo(function EventRow({ event, isLast = false }: { even
     case "voice_call_changed":
       return null;
 
+    // 聊天名单（#1280）：云页自己画居中一行，本机会话不会出现它
+    case "chat_roster_changed":
+      return null;
+
     // lifecycle 事件（ADR-0004）：聊天区是对话投影，系统脉搏不在这渲染（回放里看）。
     // 唯一例外：turn 暴死——错误从此是日志事实，重开 app 还在
     case "tool_execution_started":

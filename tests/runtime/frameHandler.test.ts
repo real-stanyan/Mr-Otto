@@ -12,6 +12,7 @@ import {
 import { BACKLOG_SKIP_MARKER, CS_PROTOCOL_VERSION, encodeCs, csChannel, type CsDown } from "../../src/shared/remote/cloudSession.js";
 import { b64encode } from "../../src/shared/remote/b64.js";
 import { SayRejectedError, type CloudSession } from "../../services/runtime/src/sessionService.js";
+import { ChatCreateError } from "../../services/runtime/src/chatCreate.js";
 import type { ChatMessageEvent, SessionEvent } from "../../src/session/events.js";
 import { TURN_BUCKET, throttleMessage } from "../../services/runtime/src/rateLimit.js";
 import { mentionTokens } from "../../src/shared/remote/agentMention.js";
@@ -34,6 +35,9 @@ function fakeSession(overrides: Partial<CloudSession> = {}): CloudSession {
     stop: () => "idle",
     // #1163：默认收下——绝大多数用例不关心语音通话
     setVoiceCall: async () => ({ kind: "ok" }),
+    // #1280：默认团队会话——绝大多数用例不关心聊天身份
+    chat: () => null,
+    updateChatRoster: async () => ({ kind: "ok", agentIds: [], changed: false }),
     ...overrides,
   };
 }
@@ -50,7 +54,7 @@ function makeDeps(config: {
   isMember?: FrameHandlerDeps["isMember"];
   labelOf?: FrameHandlerDeps["labelOf"];
   getSession?: (workspaceId: string, sessionId: string) => CloudSession | null;
-  createSession?: (workspaceId: string, byUid: string) => Promise<{ sessionId: string }>;
+  createSession?: FrameHandlerDeps["sessions"]["create"];
   ownerOf?: (workspaceId: string) => Promise<string>;
   archiveSession?: FrameHandlerDeps["sessions"]["archive"];
   creatorOf?: FrameHandlerDeps["sessions"]["creatorOf"];
@@ -69,6 +73,8 @@ function makeDeps(config: {
   searchWork?: FrameHandlerDeps["searchWork"];
   /** #1140：默认成功、什么都不记——绝大多数用例不关心 wiki */
   writeWiki?: FrameHandlerDeps["writeWiki"];
+  /** #1280：默认收下——绝大多数用例不关心聊天名单 */
+  updateChat?: FrameHandlerDeps["sessions"]["updateChat"];
 } = {}): { deps: FrameHandlerDeps; sent: Sent[]; dropCidCalls: string[]; logs: string[] } {
   const sent: Sent[] = [];
   const dropCidCalls: string[] = [];
@@ -87,6 +93,7 @@ function makeDeps(config: {
       // #1044：默认「这条会话是 owner 建的」——绝大多数用例不关心谁建的
       creatorOf: config.creatorOf ?? (async () => "owner-uid"),
       remove: config.removeSession ?? (async () => true),
+      updateChat: config.updateChat ?? (async () => ({ ok: true })),
     },
     modelRoute: config.modelRoute ?? (async () => null),
     readWork: config.readWork ?? (async () => ({ kind: "dir", entries: [], truncated: false })),
@@ -1883,5 +1890,158 @@ describe("语音通话名单（#1163）", () => {
     await handler.onSessionFrame("w1", "s1", "c1", callFrame(["admin"]));
     expect(calls).toHaveLength(0);
     expect(sent.map((s) => s.msg)).toEqual([{ t: "call_result", ok: false, message: throttleMessage("call") }]);
+  });
+});
+
+describe("create 带聊天（#1280）", () => {
+  it("chat 原样递给 sessions.create", async () => {
+    const seen: unknown[] = [];
+    const { deps, sent } = makeDeps({
+      createSession: async (_ws, _uid, chat) => {
+        seen.push(chat);
+        return { sessionId: "sid" };
+      },
+    });
+    const h = createFrameHandler(deps);
+    await h.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    await h.onCtlFrame("c1", encodeCs({ t: "create", workspaceId: "w1", chat: { kind: "dm", agentId: "admin" } }));
+    expect(seen).toEqual([{ kind: "dm", agentId: "admin" }]);
+    expect(sent.at(-1)!.msg).toMatchObject({ t: "created", sessionId: "sid" });
+  });
+
+  it("不带 chat 时那一格是 undefined（团队会话一字不变）", async () => {
+    const seen: unknown[] = [];
+    const { deps, sent } = makeDeps({
+      createSession: async (_ws, _uid, chat) => {
+        seen.push(chat);
+        return { sessionId: "sid" };
+      },
+    });
+    const h = createFrameHandler(deps);
+    await h.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    await h.onCtlFrame("c1", encodeCs({ t: "create", workspaceId: "w1" }));
+    expect(seen).toEqual([undefined]);
+    expect(sent.at(-1)!.msg).toMatchObject({ t: "created", sessionId: "sid" });
+  });
+
+  it("业务失败回 create_failed，不让桌面白等满超时", async () => {
+    const { deps, sent } = makeDeps({
+      createSession: async () => {
+        throw new ChatCreateError("群聊至少要两只智能体");
+      },
+    });
+    const h = createFrameHandler(deps);
+    await h.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    await h.onCtlFrame(
+      "c1",
+      encodeCs({ t: "create", workspaceId: "w1", chat: { kind: "group", name: "群", agentIds: ["admin"] } }),
+    );
+    expect(sent.at(-1)!.msg).toEqual({ t: "create_failed", workspaceId: "w1", message: "群聊至少要两只智能体" });
+  });
+
+  it("真故障照旧往上抛：一次 Supabase 抖动不许被说成「群聊至少要两只」", async () => {
+    const { deps } = makeDeps({
+      createSession: async () => {
+        throw new Error("supabase 挂了");
+      },
+    });
+    const h = createFrameHandler(deps);
+    await h.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    await expect(h.onCtlFrame("c1", encodeCs({ t: "create", workspaceId: "w1" }))).rejects.toThrow("supabase 挂了");
+  });
+
+  it("welcome 带上聊天身份", async () => {
+    const { deps, sent } = makeDeps({
+      getSession: () => fakeSession({ chat: () => ({ kind: "dm", agentIds: ["admin"] }) }),
+    });
+    const h = createFrameHandler(deps);
+    await h.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    expect(sent.find((x) => x.msg.t === "welcome")!.msg).toMatchObject({ chat: { kind: "dm", agentIds: ["admin"] } });
+  });
+
+  it("团队会话的 welcome 上没有 chat 这一格", async () => {
+    const { deps, sent } = makeDeps();
+    const h = createFrameHandler(deps);
+    await h.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    expect(sent.find((x) => x.msg.t === "welcome")!.msg).not.toHaveProperty("chat");
+  });
+});
+
+describe("chat_update（#1280）", () => {
+  const frame = { t: "chat_update" as const, workspaceId: "w1", sessionId: "s1", name: "改名" };
+
+  it("所有者或建这条聊天的人能改；回 chat_update_result", async () => {
+    const seen: unknown[] = [];
+    const { deps, sent } = makeDeps({
+      ownerOf: async () => "u1",
+      updateChat: async (...a) => {
+        seen.push(a);
+        return { ok: true as const };
+      },
+    });
+    const h = createFrameHandler(deps);
+    await h.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    await h.onCtlFrame("c1", encodeCs(frame));
+    expect(seen).toEqual([["w1", "s1", "u1", { name: "改名" }]]);
+    expect(sent.at(-1)!.msg).toEqual({ t: "chat_update_result", workspaceId: "w1", sessionId: "s1", ok: true });
+  });
+
+  it("别的成员改不了", async () => {
+    const { deps, sent } = makeDeps({
+      ownerOf: async () => "someone-else",
+      creatorOf: async () => "someone-else",
+    });
+    const h = createFrameHandler(deps);
+    await h.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    await h.onCtlFrame("c1", encodeCs(frame));
+    expect(sent.at(-1)!.msg).toMatchObject({ t: "denied", code: "not_authorized" });
+  });
+
+  it("业务失败把那句人话带回去", async () => {
+    const { deps, sent } = makeDeps({
+      ownerOf: async () => "u1",
+      updateChat: async () => ({ ok: false as const, message: "私聊的名单改不了" }),
+    });
+    const h = createFrameHandler(deps);
+    await h.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    await h.onCtlFrame("c1", encodeCs(frame));
+    expect(sent.at(-1)!.msg).toEqual({
+      t: "chat_update_result",
+      workspaceId: "w1",
+      sessionId: "s1",
+      ok: false,
+      message: "私聊的名单改不了",
+    });
+  });
+
+  it("聊天不能归档：回一句说清出路的话，sessions.archive 一次都不调（#1280）", async () => {
+    let archived = 0;
+    const { deps, sent } = makeDeps({
+      getSession: () => fakeSession({ chat: () => ({ kind: "group", agentIds: ["admin"] }) }),
+      archiveSession: async () => {
+        archived++;
+        return true;
+      },
+    });
+    const h = createFrameHandler(deps);
+    await h.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    await h.onCtlFrame("c1", encodeCs({ t: "archive", workspaceId: "w1", sessionId: "s1" }));
+    expect(archived).toBe(0);
+    expect(sent.at(-1)!.msg).toEqual({
+      t: "archive_result",
+      workspaceId: "w1",
+      sessionId: "s1",
+      ok: false,
+      message: "聊天不能归档。不想要了就删除它。",
+    });
+  });
+
+  it("会话房里发过来一律 not_authorized（同 create / archive）", async () => {
+    const { deps, sent } = makeDeps();
+    const h = createFrameHandler(deps);
+    await h.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    sent.length = 0;
+    await h.onSessionFrame("w1", "s1", "c1", encodeCs(frame));
+    expect(sent.at(-1)!.msg).toMatchObject({ t: "denied", code: "not_authorized" });
   });
 });
