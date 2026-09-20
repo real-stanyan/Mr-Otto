@@ -61,12 +61,13 @@ const flush = async (): Promise<void> => {
 const makeCloudSession = (over: Partial<CloudSessionState> = {}): CloudSessionState => ({
   workspaceId: "w1", sessionId: "s1", state: "ready",
   initiatorUid: null, ownerUid: "o", selfUid: "u1",
-  modelRoute: null, gapNote: null, events: [],
+  modelRoute: null, gapNote: null, chat: null, events: [],
   ...over,
 });
 
 const makeRow = (over: Partial<CloudSessionListRow> = {}): CloudSessionListRow => ({
   id: "s1", title: "旧标题", publisherUid: "o", archived: false, updatedTs: 1, participantUids: [],
+  chatKind: null, agentIds: [],
   ...over,
 });
 

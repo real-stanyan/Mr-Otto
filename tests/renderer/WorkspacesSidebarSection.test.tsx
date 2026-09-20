@@ -91,8 +91,8 @@ function seed(over: Partial<Parameters<typeof useChat.setState>[0]> = {}): {
     cloudSession: null,
     cloudSessionList: {
       w1: [
-        { id: "cs-live", title: "周报自动化", publisherUid: "u2", archived: false, updatedTs: 2, participantUids: [] },
-        { id: "cs-old", title: "上个月的爬虫", publisherUid: "u2", archived: true, updatedTs: 1, participantUids: [] },
+        { id: "cs-live", title: "周报自动化", publisherUid: "u2", archived: false, updatedTs: 2, participantUids: [], chatKind: null, agentIds: [] },
+        { id: "cs-old", title: "上个月的爬虫", publisherUid: "u2", archived: true, updatedTs: 1, participantUids: [], chatKind: null, agentIds: [] },
       ],
     },
     refreshCloudSessions: async () => {},
@@ -149,7 +149,7 @@ describe("WorkspacesSidebarSection（#917 / #919）", () => {
       cloudSessionList: {
         // 云会话那张表的 title 是 string 不是 string | null：没标题时落库的是
         // 空串，只挡 null 的兜底挡不住它
-        w1: [{ id: "cs-new", title: "", publisherUid: "u-me", archived: false, updatedTs: 3, participantUids: [] }],
+        w1: [{ id: "cs-new", title: "", publisherUid: "u-me", archived: false, updatedTs: 3, participantUids: [], chatKind: null, agentIds: [] }],
       },
     });
     draw();
@@ -254,5 +254,25 @@ describe("WorkspacesSidebarSection（#917 / #919）", () => {
     refreshCloudSessions.mockClear();
     window.dispatchEvent(new Event("focus"));
     expect(refreshCloudSessions).not.toHaveBeenCalled();
+  });
+});
+
+describe("主场那一行不归这一节画（#1280）", () => {
+  it("kind='home' 的 workspace 被摘出去；kind 读不到（null）的留着——读不到不许当成主场藏起来", () => {
+    const home = { ...WS, id: "home", name: "我的智能体", kind: "home" } as unknown as WorkspaceSnapshot;
+    const unknownKind = { ...WS, id: "w2", name: "读不到 kind 的团队", kind: null } as unknown as WorkspaceSnapshot;
+    useChat.setState({ workspaceGroups: [home, WS, unknownKind], cloudSessionList: {}, workspaceGroupsError: null, workspaceMentions: [] } as never);
+    render(<SidebarProvider><WorkspacesSidebarSection collapsed={new Set()} onToggle={() => {}} onManage={() => {}} /></SidebarProvider>);
+    expect(screen.queryByText("我的智能体")).toBeNull();
+    expect(screen.getByText("奶茶店")).toBeInTheDocument();
+    expect(screen.getByText("读不到 kind 的团队")).toBeInTheDocument();
+  });
+
+  it("hideEmpty：被花名册那一节包着时，一条团队都没有不画空态（外层统一说）", () => {
+    useChat.setState({ workspaceGroups: [], cloudSessionList: {}, workspaceGroupsError: null, workspaceMentions: [] } as never);
+    const { container } = render(
+      <SidebarProvider><WorkspacesSidebarSection collapsed={new Set()} onToggle={() => {}} onManage={() => {}} hideEmpty /></SidebarProvider>,
+    );
+    expect(container.textContent).not.toContain("还没有团队");
   });
 });

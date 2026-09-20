@@ -132,7 +132,8 @@ import { clearBalanceCache, fetchProviderBalances } from "./providerBalance.js";
 import { usageSnapshot } from "../shared/usageStats.js";
 import { modelShares } from "../shared/modelShare.js";
 import type { AgentToolAllow } from "../shared/agentToolAllow.js";
-import type { CsWikiWriteReq } from "../shared/remote/cloudSession.js";
+import type { CsChatSpec, CsWikiWriteReq } from "../shared/remote/cloudSession.js";
+import { agentPagePath } from "../shared/wiki.js";
 import { createWorkspaceLens, withDefaultFold } from "./workspaceLens.js";
 import { packageProject } from "./projectPackager.js";
 import { pruneEmptyTaskFolders, nodePruneFs } from "./taskFolderPrune.js";
@@ -190,7 +191,7 @@ import { islandRail } from "../shared/islandRail.js";
 import type { BilledRow } from "../shared/usageStats.js";
 import { createWorkspaceManager } from "./workspaceManager.js";
 import {
-  createWorkspace, listWorkspaces, fetchWorkspace, addMember, removeMember, leave,
+  createWorkspace, findHomeWorkspace, listAgentChats, listWorkspaces, fetchWorkspace, addMember, removeMember, leave,
   deleteWorkspace, upsertConnectorRow, deleteConnectorRow, insertSessionRow, listCloudSessions,
   insertAgentRow, updateAgentRow, deleteAgentRow, listAgentNames,
   updateSandboxApproval, listMentions, markMentionsRead,
@@ -1627,10 +1628,19 @@ void app.whenReady().then(() => {
   // 编排装配，IPC 接线是 Task 11 的事——list() 在那之前没人调，hostUids()
   // 就一直是空数组（brief 明写的过渡态，不是 bug）。
   const workspaceManager = createWorkspaceManager({
-    createWorkspace, listWorkspaces, fetchWorkspace, addMember, removeMember, leave,
+    createWorkspace, findHomeWorkspace, listWorkspaces, fetchWorkspace, addMember, removeMember, leave,
     deleteWorkspace, upsertConnectorRow, deleteConnectorRow,
     insertAgentRow, updateAgentRow, deleteAgentRow, listAgentNames,
-    updateSandboxApproval, listMentions, markMentionsRead,
+    updateSandboxApproval, listMentions, markMentionsRead, listAgentChats,
+    // 删一只智能体的第 1、2、4 步（#1280）：都走 runtime，不直连 Supabase——
+    // 0016 那条策略把客户端的 delete 钉死在 kind='package'
+    removeCloudSession: (workspaceId: string, sessionId: string) => cloudClient.remove(workspaceId, sessionId),
+    // **A4（Task 25）接上真的 chat_update**。在那之前是恒成功的空操作：那一列里
+    // 会留着一个已经不存在的 id，读取侧的「与现存智能体求交集」兜着（groupRows /
+    // CloudSessionMain）。做成空操作而不是失败，是因为失败会让这只智能体删不掉
+    removeFromGroups: async () => ({ ok: true as const, value: null }),
+    removeAgentPage: (workspaceId: string, agentId: string) =>
+      cloudClient.workspaceWikiWrite(workspaceId, { op: "remove", path: agentPagePath(agentId) }).then(() => undefined),
     client: () => supabase.raw,
     // 登录判据取账号管理器，不取好友子系统的缓存（issue #943）：onChange 先
     // send(accountChanged) 再 friends.start()，而 friends.uid 要等 start() 里
@@ -3598,9 +3608,11 @@ void app.whenReady().then(() => {
       return { ok: false as const, message: e instanceof Error ? e.message : String(e) };
     }
   });
-  ipcMain.handle(CHANNELS.workspaceCloudCreate, (_e, workspaceId: string) => cloudClient.create(workspaceId));
-  ipcMain.handle(CHANNELS.workspaceCloudJoin, (_e, workspaceId: string, sessionId: string) =>
-    cloudClient.join(workspaceId, sessionId));
+  ipcMain.handle(CHANNELS.workspaceHomeEnsure, () => workspaceManager.ensureHome());
+  ipcMain.handle(CHANNELS.workspaceCloudCreate, (_e, workspaceId: string, chat?: CsChatSpec) =>
+    cloudClient.create(workspaceId, chat));
+  ipcMain.handle(CHANNELS.workspaceCloudJoin, (_e, workspaceId: string, sessionId: string, title?: string) =>
+    cloudClient.join(workspaceId, sessionId, title));
   ipcMain.handle(CHANNELS.workspaceCloudLeave, () => cloudClient.leave());
   ipcMain.handle(
     CHANNELS.workspaceCloudSay,

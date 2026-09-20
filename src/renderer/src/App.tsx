@@ -18,6 +18,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu.js";
 import { useChat } from "./store.js";
+import { ADMIN_AGENT_ID } from "../../shared/workspaceAgents.js";
 import type { SettingsSection, SidebarTab } from "./store.js";
 import ottoLogo from "./assets/otto.png";
 import { CodeDiff } from "@/components/elements/code-diff.js";
@@ -67,7 +68,8 @@ import { StagedChips } from "./components/StagedChips.js";
 import { filesToPayload } from "./lib/attachIntake.js";
 import { FriendsSection } from "./components/FriendsSection.js";
 import { friendMentionItems, searchFriendMentions } from "./lib/friendMentionItems.js";
-import { WorkspacesSidebarSection } from "./components/WorkspacesSidebarSection.js";
+import { AgentsSidebarSection } from "./components/AgentsSidebarSection.js";
+import { AgentSettingsDrawer } from "./components/AgentSettingsDrawer.js";
 import { WorkspacePage } from "./components/WorkspacePage.js";
 import { NewWorkspaceDialog } from "./components/NewWorkspaceDialog.js";
 import { CloudWelcome } from "./components/CloudWelcome.js";
@@ -2033,11 +2035,14 @@ function AppSidebar() {
                   /* 有未读点名时把话说进 aria-label(点自己 aria-hidden):这一栏的
                      名字仍然要在里面,读屏念出来的是整个可及名 */
                   aria-label={
-                    unreadMentions > 0 ? `团队（有 ${unreadMentions} 条 @ 你的消息没看）` : undefined
+                    unreadMentions > 0 ? `智能体（团队里有 ${unreadMentions} 条 @ 你的消息没看）` : undefined
                   }
                 >
-                  <Boxes aria-hidden />
-                  团队
+                  {/* #1280：这一栏的主语从「团队」换成「智能体」，团队降级成这一节
+                      底下那一段。`value` 仍是 "workspaces" —— 那是持久化的键，
+                      改它等于让所有人的「上次停在哪一栏」失忆一次 */}
+                  <Bot aria-hidden />
+                  智能体
                   {/* 未读点名的记号（#1064 的角标被 #1087 这道 tab 挡住了：人站在
                       任务/项目栏时，组头和会话行那两处角标一处都不在屏幕上，
                       谁 @ 了他完全无声）。**画点不画数**：这一格只有 78px 宽，
@@ -2063,15 +2068,18 @@ function AppSidebar() {
                 #921 那条「两颗要长一样」跟着 TWIN_BUTTON 一起没了消费方——它要的是
                 并排那一对不分主次,而现在任何一栏都只有一颗,不再有"并排" */}
             {tab === "workspaces" ? (
-              // 新团队(issue #917)。图标沿用 Boxes,和侧栏里团队组头、
-              // 弹窗标题是同一张脸
+              // 「新智能体」（#1280）。**本 Part 里它先直接进管理员的私聊**——
+              // 建一只智能体这件事本来就是跟管理员说一句话（ADR-0224 的 create_agent），
+              // A5 会在那张开局卡上补几颗提示 chip。「新团队」搬进「新群聊」弹窗
+              // 底部的那条链接（A4）；在那之前它挂在群聊节头那颗 ＋ 上，免得
+              // 中间态里建不了团队
               <Button
                 variant="ghost"
                 className={SOLO_BUTTON}
-                onClick={() => setNewWorkspaceOpen(true)}
+                onClick={() => void useChat.getState().openAgentChat(ADMIN_AGENT_ID)}
               >
-                <Boxes className="size-4 shrink-0" aria-hidden />
-                新团队
+                <Bot className="size-4 shrink-0" aria-hidden />
+                新智能体
               </Button>
             ) : (
               <Button
@@ -2211,10 +2219,11 @@ function AppSidebar() {
           // 工作区视图（#1087）：这一栏从头到尾就是这一节。原来它置顶挂在项目栏上、
           // 段尾一道内缩细线和本地工程分开（#917 规则三），现在分开这件事由切换器
           // 本身承担，那道线跟着删了；空态反过来成了必需的（组件里那段注释）
-          <WorkspacesSidebarSection
+          <AgentsSidebarSection
             collapsed={wsCollapsed}
             onToggle={toggleWorkspaceGroup}
             onManage={setOpenWorkspaceId}
+            onNewGroup={() => setNewWorkspaceOpen(true)}
           />
         ) : tab === "tasks" ? (
           // 任务视图：内置 Default 工作区的会话，不出现路径——这一栏的全部意义
@@ -2509,6 +2518,9 @@ function AppSidebar() {
           </div>
         </DrawerContent>
       </Drawer>
+      {/* 一只智能体自己的设置（#1280）：聊天头部那颗 ⚙ 与花名册那一行都开它。
+          判据在组件里（查得到那只才开），这里只负责挂上 */}
+      <AgentSettingsDrawer />
       {/* 新团队(issue #917)。按钮只在项目栏(issue #923),所以 setTab 这一下不是
           为了换栏,是为了归档视图那一路:在「已归档」里点的钮,建完得把人带回列表,
           不然新建的团队在他此刻看的那一屏上根本不出现 */}

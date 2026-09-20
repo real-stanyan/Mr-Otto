@@ -77,6 +77,8 @@ import {
   validateRepoUrl,
   type CsDeniedCode,
   type CsGitHost,
+  type CsChatInfo,
+  type CsChatSpec,
   type CsModelRoute,
   type CsDown,
   type CsUp,
@@ -178,6 +180,10 @@ export interface CloudSessionSummary {
       每次都现取 Date.now()（复审 fix round 2 Minor：那样会让 ready 的云
       会话永远排在 fleet 最上面，压过所有本地项目组，不管本地会话多新） */
   lastEventTs: number;
+  /** 岛上那一行写什么（#1280）。**由 `join()` 的调用方递**：私聊写智能体名、群聊写群名——
+      这两个名字都在渲染层的快照里，主进程为一行标题再查一次库不值。缺席 = 团队会话，
+      照旧写「云会话」 */
+  title?: string;
 }
 
 /** CloudSessionSummary → 喂给 flattenFleet 的那一条虚拟 SessionSummary
@@ -200,7 +206,7 @@ export function cloudSessionFleetRow(summary: CloudSessionSummary | null): Sessi
     startedTs: 0,
     lastTs: summary.lastEventTs,
     workspace: `${CLOUD_WORKSPACE_PREFIX}${summary.workspaceId}`,
-    title: "云会话",
+    title: summary.title ?? "云会话",
     spawnedFrom: null,
     archived: false,
     sharedWith: [],
@@ -216,8 +222,10 @@ export interface CloudSessionClient {
   currentSessionId(): string | null;
   /** 当前云会话的概览，没有 join 过 = null（pushFleet 拿它合成虚拟行） */
   activeSummary(): CloudSessionSummary | null;
-  create(workspaceId: string): Promise<FriendsResult<{ sessionId: string }>>;
-  join(workspaceId: string, sessionId: string): Promise<FriendsResult<null>>;
+  /** `chat` 在场 = 建一条聊天（#1280）：私聊 / 群聊。缺席 = 团队会话，一个字不变 */
+  create(workspaceId: string, chat?: CsChatSpec): Promise<FriendsResult<{ sessionId: string }>>;
+  /** `title` 只喂岛上那一行（#1280）；缺席照旧写「云会话」 */
+  join(workspaceId: string, sessionId: string, title?: string): Promise<FriendsResult<null>>;
   /** 断当前云会话连接（不管在什么状态：connecting/ready/denied/gone 都能断） */
   leave(): Promise<FriendsResult<null>>;
   /** mentions 缺席 = 老语义（mention 那个 boolean 说了算）；给了（含 []）=
@@ -282,6 +290,11 @@ interface ActiveSession {
       在 "connecting" 早期状态下不必当真，welcome 一到就会补一次真值 */
   initiatorUid: string | null;
   ownerUid: string;
+  /** welcome 说的「这条会话是哪一种聊天、名单是谁」（#1280）。null = 团队会话，
+      或者 welcome 还没到 */
+  chat: CsChatInfo | null;
+  /** 岛上那一行写什么（#1280）。join 的调用方递，null = 团队会话（照旧写「云会话」） */
+  title: string | null;
   /** 已经转发给渲染层的事件 seq。backlog 与直播可能重叠，靠它去重（拉全量
       每次都是 -1，不靠"上次读到哪条"——那样反而在 gone→重连之间产生缺口）。
       gone 时清空——见文件头「:gone」那段 */
@@ -410,6 +423,7 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
       ownerUid: session.ownerUid,
       selfUid: deps.selfUid() ?? "",
       modelRoute: session.modelRoute,
+      ...(session.chat === null ? {} : { chat: session.chat }),
       ...(notice === undefined ? {} : { notice }),
       // 持久（issue #957 C-I7）：与上面那条一次性的 notice 相反，只要这一份
       // 历史还缺着，**每一次**推送都带上它——渲染层因此不需要自己记着
@@ -573,6 +587,7 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
         session.lastSeq = msg.lastSeq; // issue #957 C-I7：backlog 落定时拿它对账
         session.initiatorUid = msg.initiatorUid;
         session.ownerUid = msg.ownerUid;
+        session.chat = msg.chat ?? null; // #1280：缺席 = 团队会话
         // issue #945：runtime 用 turn 同一份 decideRuntimeRoute 算好的路由。
         // 桌面是显示器不是执行者——这一格照收不重算
         session.modelRoute = msg.modelRoute;
@@ -829,10 +844,14 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     });
   }
 
-  function create(workspaceId: string): Promise<FriendsResult<{ sessionId: string }>> {
-    return ctlRequest({ t: "create", workspaceId }, (msg) =>
-      msg.t === "created" ? { ok: true, value: { sessionId: msg.sessionId } } : null
-    );
+  function create(workspaceId: string, chat?: CsChatSpec): Promise<FriendsResult<{ sessionId: string }>> {
+    return ctlRequest({ t: "create", workspaceId, ...(chat === undefined ? {} : { chat }) }, (msg) => {
+      if (msg.t === "created" && msg.workspaceId === workspaceId) return { ok: true, value: { sessionId: msg.sessionId } };
+      // 业务失败当场回那句人话（协议 20，ADR-0297 决定 ④）：控制房原来只认 created /
+      // denied，抛错就是让人白等满超时、再把「群聊至少要两只」说成「云端无响应」
+      if (msg.t === "create_failed" && msg.workspaceId === workspaceId) return { ok: false, message: msg.message };
+      return null;
+    });
   }
 
   function workspaceFiles(workspaceId: string, path: string): Promise<FriendsResult<CsWorkNode>> {
@@ -897,7 +916,7 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     });
   }
 
-  async function join(workspaceId: string, sessionId: string): Promise<FriendsResult<null>> {
+  async function join(workspaceId: string, sessionId: string, title?: string): Promise<FriendsResult<null>> {
     if (!deps.selfUid()) return NOT_SIGNED_IN;
 
     teardown(); // 同时只保持一条云会话连接——join 先断旧的
@@ -906,11 +925,13 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     const session: ActiveSession = {
       workspaceId,
       sessionId,
+      title: title ?? null,
       transport,
       hostCid: null,
       status: "connecting",
       initiatorUid: null,
       ownerUid: "",
+      chat: null,
       seenSeqs: new Set(),
       liveBuffer: [],
       lastSeq: null,
@@ -1092,6 +1113,7 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
       // 只在真的一条事件都没见过时才退回"此刻"当占位——一旦有真实事件，
       // active.lastEventTs 就不再是 null，这里不会再碰 Date.now()
       lastEventTs: active.lastEventTs ?? Date.now(),
+      ...(active.title === null ? {} : { title: active.title }),
     };
   }
 

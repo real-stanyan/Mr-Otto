@@ -38,7 +38,7 @@
 // 效果的按钮。这里另起一张更薄的卡，可视觉语言（圆角边框、pill 按钮）不
 // 新造。
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { ArrowLeft, AtSign, ChevronRight, Download, Phone, Settings2 } from "lucide-react";
 import { cn, isMac } from "@/lib/utils.js";
 import { Button } from "@/components/ui/button.js";
@@ -58,6 +58,8 @@ import { buildToolIndex } from "../lib/toolIndex.js";
 import { groupSubagentSpawns } from "../lib/subagentTimeline.js";
 import { formatProxyTime } from "../lib/proxyShare.js";
 import { agentNameOf, labelOf, memberAvatarOf } from "../lib/workspaceView.js";
+import { AgentChatHeader, type ChatView } from "./AgentChatHeader.js";
+import { withDaySeparators } from "../lib/dayLabel.js";
 import { agentAvatarSrc } from "../lib/agentAvatar.js";
 import { applyAgentMention, mentionQueryAt, pickerEmptyState, resolveSendMentions } from "../lib/agentMentionInput.js";
 import { filterMentionRows, mentionRows, MENTION_KIND_LABEL, type MentionRow } from "../lib/workspaceMentionItems.js";
@@ -188,6 +190,10 @@ export function CloudSessionPage({
   selfUid,
   onBack,
   onSettings,
+  chat,
+  onPullAgent,
+  onAddAgent,
+  onAgentSettings,
 }: {
   ws: WorkspaceSnapshot;
   selfUid: string;
@@ -198,6 +204,17 @@ export function CloudSessionPage({
   /** 头部那颗「设置」（#991）：打开这个团队的设置抽屉（仓库 / 智能体 / 成员 /
       连接器）。省掉 = 不画（抽屉时代这一页自己就在设置里） */
   onSettings?: () => void;
+  /** 这一页此刻画的是一条**聊天**（#1280）。缺席 = 团队云会话，整页逐像素不变。
+      在场时换三件事：头部换成 AgentChatHeader、摘掉三样（免审开关 / 上下文环 /
+      私聊的 @ 钮）、时间线上多一条日期分隔条 */
+  chat?: ChatView;
+  /** 私聊头部那颗「拉人」（#1280）。**A4 才接线**，缺席不画 */
+  onPullAgent?: () => void;
+  /** 群聊头部那颗「添加智能体」（#1280）。**A4 才接线**，缺席不画 */
+  onAddAgent?: () => void;
+  /** 私聊头部那颗 ⚙ 打开这只智能体的设置（#1280）。**Task 21 才接线**；
+      缺席时私聊的 ⚙ 退回 `onSettings`（主场设置） */
+  onAgentSettings?: (agentId: string) => void;
 }) {
   const cs = useChat((s) => s.cloudSession);
   const cloudSay = useChat((s) => s.cloudSay);
@@ -339,11 +356,22 @@ export function CloudSessionPage({
   //     人类成员的头像与署名时间线上一直画着（#971），唯独 @ 的时候他们不存在。
   // 第三份 `memberCandidates` 是给 resolveSendMentions 判「这个 @ 认不认得」用的
   // ——不加它，@ 一个人类成员会被当成打错字整句拦下来
+  // 聊天里只列这条聊天的名单（#1280）：主场的名册上可能有十来只，而这个群里
+  // 只有三只——列出群外的那几只，点下去会被 runtime 静默丢掉（roster 在
+  // `rosterNow` 那一口就收窄了），界面上完全无声
+  const chatIds = chat?.agentIds;
   const candidates = useMemo(
-    () => ws.agents.map((a) => ({ agentId: a.agentId, name: a.name, description: a.description })),
-    [ws.agents]
+    () =>
+      ws.agents
+        .filter((a) => chatIds === undefined || chatIds.includes(a.agentId))
+        .map((a) => ({ agentId: a.agentId, name: a.name, description: a.description })),
+    [ws.agents, chatIds]
   );
-  const rows = useMemo(() => mentionRows(ws), [ws]);
+  const rows = useMemo(() => {
+    const all = mentionRows(ws);
+    // 主场里没有别的人类成员，所以聊天里人类那一族整个不出（`kind === "agent"`）
+    return chatIds === undefined ? all : all.filter((r) => r.kind === "agent" && chatIds.includes(r.agentId ?? ""));
+  }, [ws, chatIds]);
   // 人类那一族的候选（uid 借 agentId 那一格，永远不会进 `mentions`）。#1064
   // 之后它有了第二个消费方：算出这句话点到了哪几个人，好让他们真收到提醒
   const memberCandidates = useMemo(
@@ -353,7 +381,10 @@ export function CloudSessionPage({
   // 「此刻是不是停在一个没打完的 @ 后面」——只决定弹不弹层，**不**决定这句
   // 话点了谁（那是下面 parseMentions 的事，两个问题，见 agentMentionInput 头注）
   const rawPicking = mentionQueryAt(draft, caret);
-  const picking = rawPicking !== null && rawPicking.at === dismissedAt ? null : rawPicking;
+  // 私聊里不弹选人（#1280）：名单里只有它一只，弹一个只有一行的层是噪音，
+  // 而那一行点下去与不点效果相同（runtime 在私聊里直接派给它，Task 6）
+  const picking =
+    chat?.kind === "dm" || (rawPicking !== null && rawPicking.at === dismissedAt) ? null : rawPicking;
   // 光标离开这个 @（打完空格 / 退掉那个 @ / 挪到别处）就把关闭记号擦掉。
   // 不擦的话「打 @ → Escape → 退格删掉 → 在同一个位置再打一个 @」会因为
   // 下标撞上而永远不弹——一个只能靠换行躲开的死角
@@ -492,6 +523,33 @@ export function CloudSessionPage({
   const banner = statusBanner(cs);
   const modelStatus = modelStatusText(cs.modelRoute);
   const canSend = ready && !sending && draft.trim().length > 0;
+  // 日期分隔条（#1280）：聊天是一条聊上几个月的永久线，没有分隔条时上周和今天
+  // 的话粘在一起。**团队会话不画**——ADR-0235 给那边定的「标签只有名字 · 时间」
+  // 原样成立。
+  // 算的是**会真的画出来的那几条**（过了 hidden / 通话卡 / 压缩事件三道），
+  // 否则一天里只有一条被藏起来的事件也会顶出一个空的分隔条。
+  // `now` 取组件挂载那一刻：跨零点不追，下次进来就对了（同 dayLabel 的口径）
+  const chatNow = useMemo(() => Date.now(), []);
+  const chatTimeline = useMemo(() => {
+    if (chat === undefined) return null;
+    const visible = events
+      .filter((e) => !hiddenFromCloudTimeline(e) && !voiceCards.folded.has(e.seq) && e.type !== "context_compacted")
+      .map((e) => ({ ts: e.ts, seq: e.seq }));
+    const marks = new Map<number, string>();
+    const rowsOfDay = withDaySeparators(visible, chatNow);
+    for (let i = 0; i < rowsOfDay.length; i++) {
+      const row = rowsOfDay[i]!;
+      const next = rowsOfDay[i + 1];
+      if (row.kind === "day" && next !== undefined && next.kind === "item") marks.set(next.item.seq, row.label);
+    }
+    // 「一条都画不出来」不等于 `cloudEmptyState` 的 "empty"（那一格只看
+    // `events.length === 0`）：刚建好的群里已经躺着 session_created 与
+    // chat_roster_changed 两条，它们都是藏起来的——照那一格判的话，这一屏是
+    // **一片空白**，而不是那句「都在」。判据因此挂在真正会画出来的行数上
+    return { marks, empty: visible.length === 0 };
+  }, [chat, events, voiceCards, chatNow]);
+  const dayMarks = chatTimeline?.marks ?? null;
+
   const timelineEmpty = cloudEmptyState(cs.state, events.length);
   /** 这一行是不是会话地图上某一轮的头：是就回它的记号，不是回 undefined（ADR-0292） */
   const turnIdOf = (seq: number): string | undefined =>
@@ -702,11 +760,61 @@ export function CloudSessionPage({
     });
   };
 
+  // 语音那颗钮（#1163）。抽成一格是因为它有两个落点（#1280）：团队会话仍在输入框
+  // 那一行，聊天里搬进头部——判据（没订阅 / 还没查到 / 网关不供语音一律不画）
+  // 与弹层一个字不动，动的只是摆在哪儿
+  const voiceSlot = (
+    <>
+    {/* 语音通话（#1163）：拉谁进语音。没订阅 / 还没查到 / 网关不供语音一律不画
+        （同 modelMenu 对 hosted 的处置，#722 纪律）；通话进行中这颗钮亮成品牌色，
+        点开是同一个弹层改名单 */}
+    {voiceAvailable && cs && (
+      <VoicePickerPopover
+        ws={ws}
+        current={call?.participants.map((p) => p.agentId) ?? null}
+        ready={ready}
+        onSubmit={(ids) => cloudCall(ids)}
+        onStarted={joinVoiceCall}
+      >
+        <button
+          type="button"
+          disabled={!ready}
+          title={call ? "更新通话名单" : "开始语音通话"}
+          aria-label={call ? "更新通话名单" : "开始语音通话"}
+          className={cn(ghostButton, "size-8 disabled:pointer-events-none disabled:opacity-30", call && "text-[var(--brand)]")}
+        >
+          <Phone className="size-4" aria-hidden />
+        </button>
+      </VoicePickerPopover>
+    )}
+    </>
+  );
+
   return (
     <div className="flex flex-1 min-h-0 flex-col">
-      {/* 头部钉在顶上（#993）：与 footer 对称——#987 那次只钉了输入框，头部还
-          跟着内容滚，翻旧消息时「这是哪个团队、路由走哪条、设置在哪」全看不见。
-          本地会话的 header 也是这么钉的（settingsShell 的 HEADER：h-11 + border-b） */}
+      {/* 聊天换一张脸（#1280）：团队会话的头部回答「我在哪个团队里」，聊天的
+          头部回答「我在跟谁说话」。**团队那一支逐像素不变**，整块原样留在下面 */}
+      {chat !== undefined ? (
+        <AgentChatHeader
+          ws={ws}
+          chat={chat}
+          {...(onPullAgent === undefined ? {} : { onPullAgent })}
+          {...(onAddAgent === undefined ? {} : { onAddAgent })}
+          {...(() => {
+            // 私聊的 ⚙ 开这只智能体的设置（Task 21 接线）；接线之前退回主场设置，
+            // 不画一颗点了没反应的钮
+            const dmSettings =
+              chat.kind === "dm" && onAgentSettings !== undefined && chat.agentIds[0] !== undefined
+                ? () => onAgentSettings(chat.agentIds[0]!)
+                : onSettings;
+            return dmSettings === undefined ? {} : { onSettings: dmSettings };
+          })()}
+          voiceSlot={voiceSlot}
+        />
+      ) : (
+        // 头部钉在顶上（#993）：与 footer 对称——#987 那次只钉了输入框，头部还
+        // 跟着内容滚，翻旧消息时「这是哪个团队、路由走哪条、设置在哪」全看不见。
+        // 本地会话的 header 也是这么钉的（settingsShell 的 HEADER：h-11 + border-b）
       <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border/60 px-4 py-2">
         {onBack ? (
           <button
@@ -783,6 +891,7 @@ export function CloudSessionPage({
           </Button>
         </div>
       </div>
+      )}
 
       {/* 语音通话中（#1163）：头部之下一条常驻栏，照微信群语音。判据是日志里的名单，
           谁都看得见；「我在听」那份只在 sessionId 对得上时才算（换会话不带过去） */}
@@ -854,7 +963,13 @@ export function CloudSessionPage({
 
       <div className="flex flex-col gap-2">
         <TimelineProjectionContext.Provider value={timelineProjection}>
-          {timelineEmpty === "skeleton" ? (
+          {chatTimeline?.empty === true && timelineEmpty !== "skeleton" ? (
+            // 刚建好的聊天（#1280）：这一刻人需要知道的是「谁在这儿、接下来干什么」，
+            // 不是「还没有消息」那个状态描述
+            <p className="self-center text-xs text-muted-foreground">
+              {chat!.agentIds.map((id) => agentNameOf(ws, id)).join("、")}都在。说第一句话就开始了。
+            </p>
+          ) : timelineEmpty === "skeleton" ? (
             // 历史还在路上（#983）：画骨架不画「还没有消息。」——后者在这一刻
             // 是假话。形状复用主聊天切会话时那份，不另造一套
             <ThreadHistorySkeleton />
@@ -862,6 +977,7 @@ export function CloudSessionPage({
             <p className="text-xs text-muted-foreground">还没有消息。</p>
           ) : (
             events.map((e, i) => {
+              const node = ((): ReactNode => {
               // 接力开场白（user_message 带 relay）不画：那是给模型看的
               // "[系统] 「运营」@ 了你"，人看下面那条 agent_relay 接力线就够，
               // 画出来是同一件事说两遍（#950）
@@ -870,6 +986,9 @@ export function CloudSessionPage({
               // 被通话卡吞掉的那些（#1233）：说出来的话、通话里那几只的回复、
               // 中途的名单变更。判据在 voiceCallCards，见那个函数的头注
               if (voiceCards.folded.has(e.seq)) return null;
+              // 压缩是上下文系统自己的内务（#1280）：聊天里那条线不断，用户既
+              // 不用知道也做不了什么。团队会话照旧画——那边调参的人看得懂
+              if (chat !== undefined && e.type === "context_compacted") return null;
               if (e.type === "chat_message") {
                 return (
                   <ChatMessageRow
@@ -943,6 +1062,18 @@ export function CloudSessionPage({
                 return <EventRow key={e.seq} event={e} isLast={false} />;
               }
               return <EventRow key={e.seq} event={e} isLast={i === events.length - 1} />;
+              })();
+              if (node === null) return null;
+              const day = dayMarks?.get(e.seq);
+              if (day === undefined) return node;
+              return (
+                <Fragment key={`day-${e.seq}`}>
+                  <span className="self-center rounded-full bg-foreground/[0.06] px-2.5 py-0.5 text-[11px] text-muted-foreground">
+                    {day}
+                  </span>
+                  {node}
+                </Fragment>
+              );
             })
           )}
           {/* 排队中/正在回复画在时间线**末尾**而不是贴在各自那条 @ 消息下面：
@@ -1064,7 +1195,15 @@ export function CloudSessionPage({
                   "relative border-none shadow-none min-h-0 bg-transparent dark:bg-transparent text-foreground resize-none max-h-[40vh] focus-visible:ring-0 placeholder:text-foreground/35 caret-foreground",
                   COMPOSER_METRICS
                 )}
-                placeholder={ready ? "输入 @ 点名智能体或成员；不 @ 的话，谁的活谁接" : "还没连上，暂时发不了消息"}
+                placeholder={
+                  !ready
+                    ? "还没连上，暂时发不了消息"
+                    : chat === undefined
+                      ? "输入 @ 点名智能体或成员；不 @ 的话，谁的活谁接"
+                      : chat.kind === "dm"
+                        ? `跟${chat.title}说点什么`
+                        : "输入 @ 点名；不 @ 的话，谁的活谁接"
+                }
                 value={draft}
                 onChange={(e) => {
                   setDraft(e.target.value);
@@ -1184,52 +1323,42 @@ export function CloudSessionPage({
             {/* 左簇包一层：ComposerToolbar 是 justify-between，直接摆三个兄弟会把
                 中间那个推到正中央。本地那边靠偏好栏外壳 flex-1 做同一件事 */}
             <div className="flex min-w-0 items-center gap-2">
-              <button
-                type="button"
-                disabled={!ready}
-                onClick={insertAt}
-                title="@ 智能体或成员"
-                aria-label="@ 智能体或成员"
-                className={cn(ghostButton, "size-8 disabled:pointer-events-none disabled:opacity-30")}
-              >
-                <AtSign className="size-4" aria-hidden />
-              </button>
-              {/* 语音通话（#1163）：拉谁进语音。没订阅 / 还没查到 / 网关不供语音一律不画
-                  （同 modelMenu 对 hosted 的处置，#722 纪律）；通话进行中这颗钮亮成品牌色，
-                  点开是同一个弹层改名单 */}
-              {voiceAvailable && cs && (
-                <VoicePickerPopover
-                  ws={ws}
-                  current={call?.participants.map((p) => p.agentId) ?? null}
-                  ready={ready}
-                  onSubmit={(ids) => cloudCall(ids)}
-                  onStarted={joinVoiceCall}
+              {/* 私聊里不画（#1280）：名单里只有它一只，@ 谁都是它 */}
+              {chat?.kind !== "dm" && (
+                <button
+                  type="button"
+                  disabled={!ready}
+                  onClick={insertAt}
+                  title="@ 智能体或成员"
+                  aria-label="@ 智能体或成员"
+                  className={cn(ghostButton, "size-8 disabled:pointer-events-none disabled:opacity-30")}
                 >
-                  <button
-                    type="button"
-                    disabled={!ready}
-                    title={call ? "更新通话名单" : "开始语音通话"}
-                    aria-label={call ? "更新通话名单" : "开始语音通话"}
-                    className={cn(ghostButton, "size-8 disabled:pointer-events-none disabled:opacity-30", call && "text-[var(--brand)]")}
-                  >
-                    <Phone className="size-4" aria-hidden />
-                  </button>
-                </VoicePickerPopover>
+                  <AtSign className="size-4" aria-hidden />
+                </button>
               )}
+              {chat === undefined && voiceSlot}
               {/* 本地会话的免审开关就在这个位置（App.tsx 的 approvalToggle）。
-                  管的东西不一样，所以名字也不一样——见 lib/sandboxApprovalControl.ts */}
-              <SandboxApprovalToggle
-                control={sandbox}
-                busy={sandboxBusy}
-                onChange={(next) => void toggleSandbox(next)}
-              />
+                  管的东西不一样，所以名字也不一样——见 lib/sandboxApprovalControl.ts。
+                  **聊天里整颗不画**（#1280）：主场恒全免（ADR-0298），画一枚永远开着、
+                  翻了也没用的开关就是撒谎的勾。`sandbox` / `toggleSandbox` 那几个
+                  hook 照常跑——它们是团队那条路的，这里只是不画 */}
+              {chat === undefined && (
+                <SandboxApprovalToggle
+                  control={sandbox}
+                  busy={sandboxBusy}
+                  onChange={(next) => void toggleSandbox(next)}
+                />
+              )}
             </div>
             <ComposerActions>
               {/* 上下文用量环（#1138）：数据源全是日志投影——每只 agent 各自的视野 +
                   信封里的工具表 + 目录里的窗口，画最吃紧那只；额度那半只在我是 owner
                   时画（云会话烧的是 owner 的额度，ADR-0233，而 store.billing 是我的）。
                   团队默认型号只给还没跑过一轮的 agent 兜底 */}
-              {cs && (
+              {/* 上下文环（#1138）**聊天里不画**（#1280）：上下文由系统自己管
+                  （A6 的预算闸 + 闲置压缩），界面一个字都不提——画一个用户既
+                  压不动也不必压的环，只会让他以为自己该做点什么 */}
+              {cs && chat === undefined && (
                 <CloudContextRing
                   events={events}
                   ws={ws}

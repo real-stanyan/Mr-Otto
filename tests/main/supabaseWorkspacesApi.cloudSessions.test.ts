@@ -30,7 +30,7 @@ type Canned = { data?: unknown; error?: { message: string; code?: string } | nul
 /** main 服务主查询（不含 participants），participants 服务那条单独的容错查询——
     两者按 select 的列名分派，`eq` 调用共写进同一个 calls 数组（两条查询按同样的
     workspace_id + kind='cloud' 过滤，calls 里因此各出现一次是正确的形状） */
-function fakeClient(main: Canned, participants: Canned, calls: string[]): SupabaseClient {
+function fakeClient(main: Canned, participants: Canned, calls: string[], chats: Canned = { data: [] }): SupabaseClient {
   function builderFor(canned: Canned) {
     const builder = {
       eq: (col: string, v: unknown) => { calls.push(`eq:${col}=${v}`); return builder; },
@@ -43,7 +43,10 @@ function fakeClient(main: Canned, participants: Canned, calls: string[]): Supaba
     from: (_t: string) => ({
       select: (cols: string) => {
         calls.push(`select:${cols}`);
-        return builderFor(cols.includes("participants") ? participants : main);
+        if (cols.includes("participants")) return builderFor(participants);
+        // chat_kind / agent_ids 那条（#1280）：与 participants 同样的容错形状，各查各的
+        if (cols.includes("chat_kind")) return builderFor(chats);
+        return builderFor(main);
       },
     }),
   } as unknown as SupabaseClient;
@@ -59,9 +62,10 @@ describe("listCloudSessions（#1213 复审）", () => {
     await listCloudSessions(client, "w1");
     expect(calls).toContain("select:id,publisher_uid,title,archived,updated_at");
     expect(calls).toContain("select:id,participants");
+    expect(calls).toContain("select:id,chat_kind,agent_ids");
     // 各查一次——不是 N 行 N 次
-    expect(calls.filter((c) => c === "eq:workspace_id=w1")).toHaveLength(2);
-    expect(calls.filter((c) => c === "eq:kind=cloud")).toHaveLength(2);
+    expect(calls.filter((c) => c === "eq:workspace_id=w1")).toHaveLength(3);
+    expect(calls.filter((c) => c === "eq:kind=cloud")).toHaveLength(3);
   });
 
   it("participants 查询出错（今天生产库的真实状态，0035 还没跑，列不存在）→ 这个团队所有行的 participantUids 回 []，其余字段完好、整份列表照常返回", async () => {
@@ -71,7 +75,7 @@ describe("listCloudSessions（#1213 复审）", () => {
       [],
     );
     expect(await listCloudSessions(client, "w1")).toEqual([
-      { id: "cs-1", title: "会话", publisherUid: "u1", archived: false, updatedTs: Date.parse(TS_A), participantUids: [] },
+      { id: "cs-1", title: "会话", publisherUid: "u1", archived: false, updatedTs: Date.parse(TS_A), participantUids: [], chatKind: null, agentIds: [] },
     ]);
   });
 
@@ -100,7 +104,57 @@ describe("listCloudSessions（#1213 复审）", () => {
       [],
     );
     expect(await listCloudSessions(client, "w1")).toEqual([
-      { id: "cs-1", title: "会话", publisherUid: "u1", archived: false, updatedTs: Date.parse(TS_A), participantUids: ["u1", "u2"] },
+      { id: "cs-1", title: "会话", publisherUid: "u1", archived: false, updatedTs: Date.parse(TS_A), participantUids: ["u1", "u2"], chatKind: null, agentIds: [] },
     ]);
+  });
+});
+
+describe("listCloudSessions 的 chat_kind / agent_ids（#1280）", () => {
+  it("查询出错（0037 还没跑，列不存在）→ 每一行都退回团队会话的样子，整份列表照常返回", async () => {
+    const client = fakeClient(
+      { data: [ROW_A] },
+      { data: [] },
+      [],
+      { error: { message: "column workspace_sessions.chat_kind does not exist", code: "42703" } },
+    );
+    expect(await listCloudSessions(client, "w1")).toEqual([
+      { id: "cs-1", title: "会话", publisherUid: "u1", archived: false, updatedTs: Date.parse(TS_A), participantUids: [], chatKind: null, agentIds: [] },
+    ]);
+  });
+
+  it("形状对时原样带出", async () => {
+    const client = fakeClient(
+      { data: [ROW_A] },
+      { data: [] },
+      [],
+      { data: [{ id: "cs-1", chat_kind: "dm", agent_ids: ["a_0123456789ab"] }] },
+    );
+    const row = (await listCloudSessions(client, "w1"))[0]!;
+    expect(row.chatKind).toBe("dm");
+    expect(row.agentIds).toEqual(["a_0123456789ab"]);
+  });
+
+  it("chat_kind 认不出来的值：整行当团队会话，不是当聊天画一张没有名单的脸", async () => {
+    const client = fakeClient(
+      { data: [ROW_A] },
+      { data: [] },
+      [],
+      { data: [{ id: "cs-1", chat_kind: "broadcast", agent_ids: ["a_0123456789ab"] }] },
+    );
+    const row = (await listCloudSessions(client, "w1"))[0]!;
+    expect(row.chatKind).toBeNull();
+    expect(row.agentIds).toEqual([]);
+  });
+
+  it("agent_ids 混了非字符串 → 整条回 []（光判 Array.isArray 会错放这条），chatKind 照留", async () => {
+    const client = fakeClient(
+      { data: [ROW_A] },
+      { data: [] },
+      [],
+      { data: [{ id: "cs-1", chat_kind: "group", agent_ids: [1, "a_0123456789ab"] }] },
+    );
+    const row = (await listCloudSessions(client, "w1"))[0]!;
+    expect(row.chatKind).toBe("group");
+    expect(row.agentIds).toEqual([]);
   });
 });

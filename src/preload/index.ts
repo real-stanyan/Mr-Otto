@@ -248,9 +248,10 @@ const bridge: ShellBridge = {
   workspaceImportSession: (publisherUid, pkgId) =>
     ipcRenderer.invoke(CHANNELS.workspaceImportSession, publisherUid, pkgId),
   workspaceCloudList: (workspaceId) => ipcRenderer.invoke(CHANNELS.workspaceCloudList, workspaceId),
-  workspaceCloudCreate: (workspaceId) => ipcRenderer.invoke(CHANNELS.workspaceCloudCreate, workspaceId),
-  workspaceCloudJoin: (workspaceId, sessionId) =>
-    ipcRenderer.invoke(CHANNELS.workspaceCloudJoin, workspaceId, sessionId),
+  workspaceHomeEnsure: () => ipcRenderer.invoke(CHANNELS.workspaceHomeEnsure),
+  workspaceCloudCreate: (workspaceId, chat) => ipcRenderer.invoke(CHANNELS.workspaceCloudCreate, workspaceId, chat),
+  workspaceCloudJoin: (workspaceId, sessionId, title) =>
+    ipcRenderer.invoke(CHANNELS.workspaceCloudJoin, workspaceId, sessionId, title),
   workspaceCloudLeave: () => ipcRenderer.invoke(CHANNELS.workspaceCloudLeave),
   // mentions ?? null：IPC 结构化克隆会把对象里的 undefined 丢掉，位置参数的
   // undefined 倒是能过，但显式传 null 让"缺席 vs []"这条区分在线上不会被
