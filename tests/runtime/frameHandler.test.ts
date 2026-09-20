@@ -12,6 +12,7 @@ import {
 import { BACKLOG_SKIP_MARKER, CS_PROTOCOL_VERSION, encodeCs, csChannel, type CsDown } from "../../src/shared/remote/cloudSession.js";
 import { b64encode } from "../../src/shared/remote/b64.js";
 import { SayRejectedError, type CloudSession } from "../../services/runtime/src/sessionService.js";
+import { ChatCreateError } from "../../services/runtime/src/chatCreate.js";
 import type { ChatMessageEvent, SessionEvent } from "../../src/session/events.js";
 import { TURN_BUCKET, throttleMessage } from "../../services/runtime/src/rateLimit.js";
 import { mentionTokens } from "../../src/shared/remote/agentMention.js";
@@ -34,6 +35,8 @@ function fakeSession(overrides: Partial<CloudSession> = {}): CloudSession {
     stop: () => "idle",
     // #1163：默认收下——绝大多数用例不关心语音通话
     setVoiceCall: async () => ({ kind: "ok" }),
+    // #1280：默认团队会话——绝大多数用例不关心聊天身份
+    chat: () => null,
     ...overrides,
   };
 }
@@ -50,7 +53,7 @@ function makeDeps(config: {
   isMember?: FrameHandlerDeps["isMember"];
   labelOf?: FrameHandlerDeps["labelOf"];
   getSession?: (workspaceId: string, sessionId: string) => CloudSession | null;
-  createSession?: (workspaceId: string, byUid: string) => Promise<{ sessionId: string }>;
+  createSession?: FrameHandlerDeps["sessions"]["create"];
   ownerOf?: (workspaceId: string) => Promise<string>;
   archiveSession?: FrameHandlerDeps["sessions"]["archive"];
   creatorOf?: FrameHandlerDeps["sessions"]["creatorOf"];
@@ -1883,5 +1886,79 @@ describe("语音通话名单（#1163）", () => {
     await handler.onSessionFrame("w1", "s1", "c1", callFrame(["admin"]));
     expect(calls).toHaveLength(0);
     expect(sent.map((s) => s.msg)).toEqual([{ t: "call_result", ok: false, message: throttleMessage("call") }]);
+  });
+});
+
+describe("create 带聊天（#1280）", () => {
+  it("chat 原样递给 sessions.create", async () => {
+    const seen: unknown[] = [];
+    const { deps, sent } = makeDeps({
+      createSession: async (_ws, _uid, chat) => {
+        seen.push(chat);
+        return { sessionId: "sid" };
+      },
+    });
+    const h = createFrameHandler(deps);
+    await h.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    await h.onCtlFrame("c1", encodeCs({ t: "create", workspaceId: "w1", chat: { kind: "dm", agentId: "admin" } }));
+    expect(seen).toEqual([{ kind: "dm", agentId: "admin" }]);
+    expect(sent.at(-1)!.msg).toMatchObject({ t: "created", sessionId: "sid" });
+  });
+
+  it("不带 chat 时那一格是 undefined（团队会话一字不变）", async () => {
+    const seen: unknown[] = [];
+    const { deps, sent } = makeDeps({
+      createSession: async (_ws, _uid, chat) => {
+        seen.push(chat);
+        return { sessionId: "sid" };
+      },
+    });
+    const h = createFrameHandler(deps);
+    await h.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    await h.onCtlFrame("c1", encodeCs({ t: "create", workspaceId: "w1" }));
+    expect(seen).toEqual([undefined]);
+    expect(sent.at(-1)!.msg).toMatchObject({ t: "created", sessionId: "sid" });
+  });
+
+  it("业务失败回 create_failed，不让桌面白等满超时", async () => {
+    const { deps, sent } = makeDeps({
+      createSession: async () => {
+        throw new ChatCreateError("群聊至少要两只智能体");
+      },
+    });
+    const h = createFrameHandler(deps);
+    await h.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    await h.onCtlFrame(
+      "c1",
+      encodeCs({ t: "create", workspaceId: "w1", chat: { kind: "group", name: "群", agentIds: ["admin"] } }),
+    );
+    expect(sent.at(-1)!.msg).toEqual({ t: "create_failed", workspaceId: "w1", message: "群聊至少要两只智能体" });
+  });
+
+  it("真故障照旧往上抛：一次 Supabase 抖动不许被说成「群聊至少要两只」", async () => {
+    const { deps } = makeDeps({
+      createSession: async () => {
+        throw new Error("supabase 挂了");
+      },
+    });
+    const h = createFrameHandler(deps);
+    await h.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    await expect(h.onCtlFrame("c1", encodeCs({ t: "create", workspaceId: "w1" }))).rejects.toThrow("supabase 挂了");
+  });
+
+  it("welcome 带上聊天身份", async () => {
+    const { deps, sent } = makeDeps({
+      getSession: () => fakeSession({ chat: () => ({ kind: "dm", agentIds: ["admin"] }) }),
+    });
+    const h = createFrameHandler(deps);
+    await h.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    expect(sent.find((x) => x.msg.t === "welcome")!.msg).toMatchObject({ chat: { kind: "dm", agentIds: ["admin"] } });
+  });
+
+  it("团队会话的 welcome 上没有 chat 这一格", async () => {
+    const { deps, sent } = makeDeps();
+    const h = createFrameHandler(deps);
+    await h.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    expect(sent.find((x) => x.msg.t === "welcome")!.msg).not.toHaveProperty("chat");
   });
 });

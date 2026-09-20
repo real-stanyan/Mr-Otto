@@ -26,6 +26,7 @@ import { createTtlCache } from "./ttlCache.js";
 import { createWorkspaceLocks } from "./workspaceLock.js";
 import { createFrameRateLimiter } from "./rateLimit.js";
 import { createCloudSession, type CloudSession, type AgentSpec } from "./sessionService.js";
+import { ChatCreateError, planChatCreate } from "./chatCreate.js";
 import { createSupabaseLegacyMemoryReader } from "./workspaceMemory.js";
 import { createSupabaseWikiJournal } from "./wikiJournal.js";
 import { createContainerWikiFs } from "./wikiFs.js";
@@ -242,6 +243,29 @@ async function main(): Promise<void> {
     const { data, error } = await supabase.from("workspaces").select("owner_uid").eq("id", workspaceId).single();
     if (error || !data) throw new Error(`workspace 不存在或查询失败（${workspaceId}）：${error?.message ?? "no data"}`);
     return (data as { owner_uid: string }).owner_uid;
+  }
+
+  /** 这只智能体现成的那条私聊（#1280），没有回 null。库里那条唯一索引是权威，
+      这个查询只是在撞上它之前先问一遍——两条路都要走，因为「先查再插」不是原子的 */
+  async function findDmSession(workspaceId: string, agentIds: string[]): Promise<string | null> {
+    const { data, error } = await supabase
+      .from("workspace_sessions")
+      .select("id")
+      .eq("workspace_id", workspaceId)
+      .eq("chat_kind", "dm")
+      .contains("agent_ids", agentIds)
+      .maybeSingle();
+    if (error) throw new Error(`私聊查询失败（${workspaceId}）：${error.message}`);
+    return data ? (data as { id: string }).id : null;
+  }
+
+  /** 这个 workspace 是团队还是个人主场（#1280）。kind 不可变，调用方可以只查一次。
+      查询失败原样抛：这一格要写进 session_created，而一句错的事实进了 append-only
+      的日志就永远在那儿——「查不到」时宁可不建 */
+  async function kindOf(workspaceId: string): Promise<"team" | "home"> {
+    const { data, error } = await supabase.from("workspaces").select("kind").eq("id", workspaceId).single();
+    if (error || !data) throw new Error(`workspaces.kind 查询失败（${workspaceId}）：${error?.message ?? "no data"}`);
+    return (data as { kind?: string }).kind === "home" ? "home" : "team";
   }
 
   /** 沙箱内工具要不要人批（#977，0026 迁移）。owner 在云会话输入框那一行改（ADR-0243），这里现查不缓存
@@ -794,18 +818,43 @@ async function main(): Promise<void> {
         const active = activeSessions.get(sessionId);
         return active && active.workspaceId === workspaceId ? active.session : null;
       },
-      async create(workspaceId, byUid) {
+      async create(workspaceId, byUid, chat) {
         const sessionId = randomUUID();
         const owner = await ownerOf(workspaceId);
+        // 建一条聊天（#1280）。`chat` 缺席 = 团队会话，下面一个字都不变
+        const plan = chat ? planChatCreate(chat, await agentsCache.refresh(workspaceId)) : null;
+        if (plan && !plan.ok) throw new ChatCreateError(plan.message);
+        // 私聊幂等：那只已经有一条了就回现成的（两台设备同时发第一句话，落进同一条线）
+        if (plan?.ok && plan.chatKind === "dm") {
+          const existing = await findDmSession(workspaceId, plan.agentIds);
+          if (existing) {
+            if (!activeSessions.has(existing)) openSessionRoom(workspaceId, existing, owner, byUid);
+            return { sessionId: existing };
+          }
+        }
+        // 主场与否要在落 session_created 之前问出来：提示词里审批那句话从这一格投影
+        const home = plan?.ok ? (await kindOf(workspaceId)) === "home" : false;
         const { error } = await supabase.from("workspace_sessions").insert({
           id: sessionId,
           workspace_id: workspaceId,
           publisher_uid: byUid,
           kind: "cloud",
-          title: "",
+          title: plan?.ok ? plan.title : "",
           pkg_id: null,
+          ...(plan?.ok ? { chat_kind: plan.chatKind, agent_ids: plan.agentIds } : {}),
         });
-        if (error) throw new Error(`workspace_sessions insert 失败：${error.message}`);
+        if (error) {
+          // 私聊那条唯一索引撞了（23505）= 另一台设备抢在前面建好了：回现成的那条，
+          // 不报错——两台设备同时发第一句话时，用户看到的该是同一条线
+          if (plan?.ok && plan.chatKind === "dm") {
+            const existing = await findDmSession(workspaceId, plan.agentIds);
+            if (existing) {
+              if (!activeSessions.has(existing)) openSessionRoom(workspaceId, existing, owner, byUid);
+              return { sessionId: existing };
+            }
+          }
+          throw new Error(`workspace_sessions insert 失败：${error.message}`);
+        }
         // 日志的第 0 条（issue #833）。少了它，deriveMessages 那边**一条
         // system 消息都投不出来**——它只从 session_created.workspace 产出
         // 那条消息，engine 不会补默认值。后果是云端水獭不知道自己在
@@ -818,8 +867,23 @@ async function main(): Promise<void> {
           ts: Date.now(),
           type: "session_created",
           workspace: WORKDIR,
-          cloud: { workspaceId },
+          cloud: {
+            workspaceId,
+            ...(plan?.ok ? { chat: { kind: plan.chatKind } } : {}),
+            ...(home ? { home: true as const } : {}),
+          },
         });
+        // 名单那一条紧跟着落，**都在 openSessionRoom 之前**（#1280）：chatKind 与名单
+        // 都是装配时从 seed 折叠出来的，晚一步就是一条永远不收窄的聊天
+        if (plan?.ok) {
+          storeFor(workspaceId).append({
+            sessionId,
+            ts: Date.now(),
+            type: "chat_roster_changed",
+            agents: plan.entries,
+            ignorable: true,
+          });
+        }
         openSessionRoom(workspaceId, sessionId, owner, byUid);
         return { sessionId };
       },

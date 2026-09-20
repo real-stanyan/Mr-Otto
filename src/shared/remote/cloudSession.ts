@@ -8,10 +8,10 @@ import { AGENT_ID_RE, CHAT_NAME_MAX, normalizeChatAgentIds } from "../chatRoster
 import { b64decode, b64encode } from "./b64.js";
 import { MAX_FRAME_BYTES } from "./wire.js";
 
-/** 20（issue #1280）：聊天。`create` 多了 `chat`（缺席 = 团队会话，同旧）；新控制房帧
-    `chat_update` / `chat_update_result`；`welcome` 多了 `chat`；`backlog` 上行多了
-    `tail` 那一种、下行最后一片多了 `hasMore`。**六处一次进位**：分页那半的实现晚几个 PR，
-    但帧先定下来——握手是精确相等，进两次位就是发两次版。
+/** 20（issue #1280）：聊天。`create` 多了 `chat`（缺席 = 团队会话，同旧）、多了一条
+    `create_failed` 回执；新控制房帧 `chat_update` / `chat_update_result`；`welcome` 多了
+    `chat`；`backlog` 上行多了 `tail` 那一种、下行最后一片多了 `hasMore`。**七处一次进位**：
+    分页那半的实现晚几个 PR，但帧先定下来——握手是精确相等，进两次位就是发两次版。
     18（#1140，ADR-0282）：加一对 `wiki_write` / `wiki_write_result`（控制房写帧）——**团队 wiki 从设置页改得了**。
     团队记忆从两档小黑板换成 /work/wiki/ 里的 markdown 页面之后，人改一页要经 runtime 走**与工具同一条写入路径**
     （盖章 / 重生成 index / log / journal），所以是一条帧不是直连 Supabase。任何在籍成员都能写，判据同 files。
@@ -395,6 +395,10 @@ export type CsDown =
       chat?: CsChatInfo;
     }
   | { t: "created"; workspaceId: string; sessionId: string; channel: string }
+  /** 建会话**业务上**没成（协议 20，#1280）：名单里没这只、群不到两只、名单读不出来。
+      在这条帧之前，控制房的 create 只认 `created` / `denied` 两种回执，抛错就是让桌面
+      白等满超时、把「群聊至少要两只」报成「云端无响应」——方向指向 VPS 宕机 */
+  | { t: "create_failed"; workspaceId: string; message: string }
   /** `v`（add-only，协议号不变）= **服务端**此刻的协议号（复审 C2-I6）。
       `version_mismatch` 是严格相等判出来的，而只有码没有版本号的话，桌面
       分不清"我旧了"还是"云端旧了"——这两件事该做的动作相反（更新 app vs
@@ -1026,6 +1030,12 @@ export function decodeCsDown(b64: string): CsDown | null {
         return result;
       }
       return null;
+    }
+
+    if (t === "create_failed") {
+      return typeof obj.workspaceId === "string" && typeof obj.message === "string"
+        ? { t: "create_failed", workspaceId: obj.workspaceId, message: obj.message }
+        : null;
     }
 
     if (t === "created") {

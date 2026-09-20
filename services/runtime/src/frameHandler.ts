@@ -23,6 +23,7 @@ import {
   decodeCsUp,
   encodeCs,
   type CsUp,
+  type CsChatSpec,
   type CsDeniedCode,
   type CsDown,
   type CsGitHost,
@@ -35,6 +36,7 @@ import { normalizeWorkPath } from "../../../src/shared/remote/workPath.js";
 import type { SessionEvent } from "../../../src/session/events.js";
 import { throttleMessage, TURN_BUCKET, type FrameRateLimiter } from "./rateLimit.js";
 import { SayRejectedError, type CloudSession } from "./sessionService.js";
+import { ChatCreateError } from "./chatCreate.js";
 
 /** backlog 一次性下发的分片阈值(终审 C2):明显低于 wire.ts 的 MAX_FRAME_BYTES
     (256 KiB,那是 base64 编码后的整帧硬上限)——留出安全边际。水獭在沙箱里
@@ -122,7 +124,10 @@ export interface FrameHandlerDeps {
   labelOf: (uid: string) => Promise<string>; // profiles 查询，查不到回 uid.slice(0,8)
   sessions: {
     get(workspaceId: string, sessionId: string): CloudSession | null;
-    create(workspaceId: string, byUid: string): Promise<{ sessionId: string }>;
+    /** `chat` 在场 = 建一条聊天（#1280），缺席 = 团队会话（同旧）。
+        业务上不该建（名单里没这只、群不到两只、名单读不出来）时**抛 `ChatCreateError`**，
+        由这一层翻成 `create_failed` 回执；别的错照旧往上抛、进日志 */
+    create(workspaceId: string, byUid: string, chat?: CsChatSpec): Promise<{ sessionId: string }>;
     ownerOf(workspaceId: string): Promise<string>;
     /** 收尾一条云会话（issue #822）：落日志（CloudSession.archive）+ 写
         Supabase 那行的 archived 列 + 收掉房间。三件事在 daemon 里，因为
@@ -597,7 +602,17 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
         return;
       }
 
-      const { sessionId } = await deps.sessions.create(msg.workspaceId, entry.uid);
+      // 建聊天有**业务**失败（名单里没这只、群不到两只、名单读不出来），而这条帧
+      // 在协议 20 之前只认 created / denied 两种回执——抛错就是让桌面白等满超时、
+      // 把「群聊至少要两只」报成「云端无响应」（方向指向 VPS 宕机）。真故障照旧往上抛
+      let sessionId: string;
+      try {
+        ({ sessionId } = await deps.sessions.create(msg.workspaceId, entry.uid, msg.chat));
+      } catch (err) {
+        if (!(err instanceof ChatCreateError)) throw err;
+        deps.send(cid, { t: "create_failed", workspaceId: msg.workspaceId, message: err.message });
+        return;
+      }
       deps.send(cid, {
         t: "created",
         workspaceId: msg.workspaceId,
@@ -642,6 +657,8 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
           initiatorUid: session.initiatorUid(),
           ownerUid,
           modelRoute: await deps.modelRoute(workspaceId, ownerUid),
+          // 聊天身份（协议 20，#1280）：团队会话回 null，那一格就不上线
+          ...(session.chat() !== null ? { chat: session.chat()! } : {}),
         });
         return;
       }

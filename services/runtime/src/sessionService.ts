@@ -167,6 +167,7 @@
 
 import { applyVoiceCallEvent, inVoiceCall, relayOutsideCallText, voiceCallGreetingText, voiceCallOf, type VoiceCallState } from "../../../src/shared/voiceCall.js";
 import { applyChatRosterEvent, chatRosterOf, narrowRoster, type ChatRoster } from "../../../src/shared/chatRoster.js";
+import type { CsChatInfo } from "../../../src/shared/remote/cloudSession.js";
 import { createInviteToCallTool } from "./inviteToCallTool.js";
 import type { VoiceCallParticipant } from "../../../src/session/events.js";
 import { LoopEngine } from "../../../src/loop/engine.js";
@@ -541,6 +542,8 @@ export interface CloudSession {
   /** 语音通话名单（#1163）。`budget` 是新增成员打招呼那几轮的问价回调（#1174，同 say 的
       budget：回 null 放行、回文案拒绝）；缺席 = 不问价（invite_to_call 那条路、测试） */
   setVoiceCall(byUid: string, byLabel: string, participants: string[], budget?: (targetCount: number) => string | null): Promise<VoiceCallOutcome>;
+  /** 这条会话的聊天身份（#1280）。null = 团队会话。agentIds 是日志投影原样 */
+  chat(): CsChatInfo | null;
 }
 
 export type VoiceCallOutcome = { kind: "ok" } | { kind: "unknown_agent" | "archived"; message: string };
@@ -2263,6 +2266,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
 
     isArchived() {
       return archived;
+    },
+
+    chat() {
+      return chatKind === null ? null : { kind: chatKind, agentIds: [...(chatRoster ?? [])] };
     },
 
     async setVoiceCall(byUid, _byLabel, participants, budget) {

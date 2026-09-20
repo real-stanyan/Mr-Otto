@@ -298,4 +298,10 @@ describe("协议 20：聊天（#1280）", () => {
     const res = { t: "chat_update_result" as const, workspaceId: WS, sessionId: SID, ok: false, message: "无权修改" };
     expect(decodeCsDown(encodeCs(res))).toEqual(res);
   });
+
+  it("create_failed 往返", () => {
+    const f = { t: "create_failed" as const, workspaceId: WS, message: "群聊至少要两只智能体" };
+    expect(decodeCsDown(encodeCs(f))).toEqual(f);
+    expect(decodeCsDown(b64({ t: "create_failed", workspaceId: WS }))).toBeNull();
+  });
 });
