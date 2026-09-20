@@ -104,6 +104,8 @@ import { EMPTY_VOICE_FEED, feedDelta, feedEvent, markInterrupted, type VoiceFeed
 import { applySpeechEvent, bargeInOn, MIC_OFF, micShouldPause, SPEECH_LOCALE, speechHints, type MicState } from "./lib/voiceMic.js";
 import { defaultCreateAudio, VoicePlayer } from "./lib/voicePlayer.js";
 import { createHelperAudio, helperAudioEvent } from "./lib/helperAudio.js";
+import { modeOf } from "../../shared/decision.js";
+import { HOLD_IDLE, holdStep, joinSpoken, type HoldEvent, type HoldState } from "./lib/utteranceHold.js";
 import { voiceCallOf } from "../../shared/voiceCall.js";
 import { agentVoiceId } from "../../shared/agentVoice.js";
 import type { CloudSessionDelta, TaskSyncState } from "../../shared/shellBridge.js";
@@ -1371,6 +1373,10 @@ let voiceFeed: VoiceFeedState = EMPTY_VOICE_FEED;
 // 就发一条 stop 会白起一个进程）；「我们让它暂停着」是半双工的去重记号
 let micStarted = false;
 let micPaused = false;
+// 语音「扣住再合并」（#1281）。模块级而不是 store 里的一格：它不是界面状态（没有任何
+// 组件读它），是一段正在进行的对话的簿记——同 voiceFeed / voicePlayer 住在这里的理由
+let hold: HoldState = HOLD_IDLE;
+let holdTimer: ReturnType<typeof setTimeout> | null = null;
 function startMic(hints: string[]): void {
   micStarted = true;
   micPaused = false;
@@ -2726,6 +2732,12 @@ export const useChat = create<ChatState>((set, get) => ({
       set((s) => (s.voice ? { voice: { ...s.voice, mic: { ...MIC_OFF, status: "starting" } } } : s));
       startMic(speechHints(get().workspaceGroups.find((w) => w.id === get().cloudSession?.workspaceId) ?? null));
     } else {
+      // 扣着的那句照样发出去——人确实说了（#1281）。用一次性的 send：此刻已经没有
+      // speechOnEvent 的闭包可借
+      if (holdTimer !== null) { clearTimeout(holdTimer); holdTimer = null; }
+      const flushed = holdStep(hold, { type: "reset" }, Date.now(), { hold: false });
+      hold = flushed.state;
+      for (const fx of flushed.effects) if (fx.type === "send") void get().cloudSay(fx.text, [], [], true);
       stopMic();
       set((s) => (s.voice ? { voice: { ...s.voice, mic: MIC_OFF } } : s));
     }
@@ -2736,8 +2748,11 @@ export const useChat = create<ChatState>((set, get) => ({
     const v = get().voice;
     // 关着麦时 helper 迟到的事件不再动状态（stop 之后它还会吐一条 listening:false）
     if (!v || v.mic.status === "off") return;
+    const wasActive = v.mic.active;
     const r = applySpeechEvent(v.mic, ev);
-    if (r.state !== v.mic) set((s) => (s.voice ? { voice: { ...s.voice, mic: r.state } } : s));
+    // 扣着一句的时候字幕 = 扣着的 + 新 partial，不然那行字会先消失再冒出来（#1281）
+    const shown = hold.buffer !== "" ? { ...r.state, transcript: joinSpoken(hold.buffer, r.state.transcript) } : r.state;
+    if (shown !== v.mic) set((s) => (s.voice ? { voice: { ...s.voice, mic: shown } } : s));
     // 插话（#1184）：agent 在说 / 排着要说时人开口够长 → 停播放，这几只这一轮剩下的话不读。
     // 回声消除开着麦才会在播放时开着，所以走到这里的 partial 本身就是人说的（AEC 漏出来的
     // 那点由 bargeInOn 的 token 重叠兜底）
@@ -2750,15 +2765,45 @@ export const useChat = create<ChatState>((set, get) => ({
         player.stop();
       }
     }
+
+    // 「这句说完了吗」（#1281）。**没开时整套状态机旁路**：零额外延迟由构造保证，
+    // 不靠「那一问回得够快」
+    const endpointMode = modeOf(get().billing?.me ?? null, "endpoint");
+    const sessionId = v.sessionId;
+    const sendSpoken = (text: string): void => {
+      void get().cloudSay(text, [], [], true).then((ack) => {
+        if (ack.ok) return;
+        set((s) => (s.voice && s.voice.sessionId === sessionId ? { voice: { ...s.voice, mic: { ...s.voice.mic, error: ack.message } } } : s));
+      });
+    };
+    const runHold = (e: HoldEvent): void => {
+      const step = holdStep(hold, e, Date.now(), { hold: endpointMode === "on" });
+      hold = step.state;
+      for (const fx of step.effects) {
+        if (fx.type === "send") sendSpoken(fx.text);
+        else if (fx.type === "judge") {
+          const asked = get().voice?.text ?? null;
+          void window.otter.speechJudge(fx.text, asked).then(
+            (p) => runHold({ type: "verdict", key: fx.key, p }),
+            () => runHold({ type: "verdict", key: fx.key, p: null }),
+          );
+        } else {
+          if (holdTimer !== null) clearTimeout(holdTimer);
+          holdTimer = setTimeout(() => { holdTimer = null; runHold({ type: "tick" }); }, Math.max(0, fx.at - Date.now()));
+        }
+      }
+    };
+    if (endpointMode !== "off") {
+      // 人停嘴那一刻（能量门从真变假）投机问一次：700ms 之后 final 到时答案通常已经回来
+      if (ev.type === "level" && wasActive && !ev.active && r.state.transcript.trim() !== "") runHold({ type: "quiet", text: r.state.transcript });
+      if (ev.type === "partial") runHold({ type: "partial", text: ev.text });
+    }
     if (r.final === undefined) return;
     // 说完的一句 = 我在群里说的一句：不 @（走派活），人类点名也没有。
     // `voice: true` 是这条链上唯一知道「这句话是说出来的」的地方（#1233）：
     // 转写出来的正文与手打的正文一个字节都不差，服务端与时间线都判不出来
-    const sessionId = v.sessionId;
-    void get().cloudSay(r.final, [], [], true).then((ack) => {
-      if (ack.ok) return;
-      set((s) => (s.voice && s.voice.sessionId === sessionId ? { voice: { ...s.voice, mic: { ...s.voice.mic, error: ack.message } } } : s));
-    });
+    if (endpointMode === "off") sendSpoken(r.final);
+    else runHold({ type: "final", text: r.final });
   },
   setVoiceMuted(muted) {
     if (muted) voicePlayer?.stop();

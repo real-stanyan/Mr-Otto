@@ -1243,6 +1243,11 @@ export interface ShellBridge {
   speechStop(): Promise<void>;
   speechPause(): Promise<void>;
   speechResume(): Promise<void>;
+  /** 「这句说完了吗」（#1281）：人停嘴那一刻渲染层投机问一次，回 P(说完了)；`null` =
+      这一处没开 / 没问出来 = 照今天的发。`asked` 是对方刚才说的上一句（播放器最近读的那段）。
+      这是语音这条桥上**唯一一条请求-响应**——别的全是 helper 自己冒出来的事件；它不经
+      helper，走的是主进程 → edge 网关 */
+  speechJudge(said: string, asked: string | null): Promise<number | null>;
   /** 一段合成好的音频交给 helper 用它的音频引擎播（#1201：回声消除开着时 macOS 会压低别的 app
       的声音，Electron 放的 agent 语音正是「别的 app」）。回这段的 id，播完 / 播不了走 onSpeechEvent
       的 played / playError；没有 helper 回 error */
@@ -1716,6 +1721,7 @@ export const CHANNELS = {
   speechStop: "otter:speechStop",
   speechPause: "otter:speechPause",
   speechResume: "otter:speechResume",
+  speechJudge: "otter:speechJudge",
   speechPlay: "otter:speechPlay",
   speechStopPlay: "otter:speechStopPlay",
   speechEvent: "otter:speechEvent",

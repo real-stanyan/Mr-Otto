@@ -274,6 +274,7 @@ const bridge: ShellBridge = {
   speechStop: () => ipcRenderer.invoke(CHANNELS.speechStop),
   speechPause: () => ipcRenderer.invoke(CHANNELS.speechPause),
   speechResume: () => ipcRenderer.invoke(CHANNELS.speechResume),
+  speechJudge: (said, asked) => ipcRenderer.invoke(CHANNELS.speechJudge, said, asked),
   speechPlay: (bytes) => ipcRenderer.invoke(CHANNELS.speechPlay, bytes),
   speechStopPlay: () => ipcRenderer.invoke(CHANNELS.speechStopPlay),
   workspaceCloudCall: (participants) => ipcRenderer.invoke(CHANNELS.workspaceCloudCall, participants),
