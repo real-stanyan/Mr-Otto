@@ -359,6 +359,9 @@ async function scenarioAssemblyResilience(): Promise<void> {
     chat() {
       return null;
     },
+    backlogTail() {
+      return { events: [], hasMore: false };
+    },
     async updateChatRoster() {
       return { kind: "not_group" as const, message: "不会被调用" };
     },

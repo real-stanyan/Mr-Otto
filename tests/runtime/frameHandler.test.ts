@@ -24,6 +24,8 @@ function fakeSession(overrides: Partial<CloudSession> = {}): CloudSession {
     settled: async () => {},
     approve: () => "ok",
     backlog: () => [],
+    // #1280：默认空页——绝大多数用例不走尾巴分页
+    backlogTail: () => ({ events: [], hasMore: false }),
     isRunning: () => false,
     lastSeq: () => -1,
     initiatorUid: () => null,
@@ -446,6 +448,61 @@ describe("createFrameHandler", () => {
   it("backlog：回 sessions.get(...).backlog(afterSeq) 的全量结果，done:true", async () => {
     const events = [{ type: "turn_ended", sessionId: "s1", seq: 3, ts: 1, outcome: "completed" }] as never[];
     const session = fakeSession({ backlog: () => events as ReturnType<CloudSession["backlog"]> });
+    const { deps, sent } = makeDeps({ getSession: () => session });
+    const handler = createFrameHandler(deps);
+
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    sent.length = 0;
+    await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "backlog", afterSeq: 0 }));
+
+    expect(sent).toEqual([{ cid: "c1", msg: { t: "backlog", events, done: true } }]);
+  });
+
+  it("backlog{tail}：走 backlogTail，hasMore 只挂在最后一片上（#1280）", async () => {
+    const events = [{ type: "turn_ended", sessionId: "s1", seq: 9, ts: 1, outcome: "completed" }] as never[];
+    const calls: [number | undefined, number][] = [];
+    const session = fakeSession({
+      backlogTail: (beforeSeq: number | undefined, limit: number) => {
+        calls.push([beforeSeq, limit]);
+        return { events: events as ReturnType<CloudSession["backlog"]>, hasMore: true };
+      },
+    });
+    const { deps, sent } = makeDeps({ getSession: () => session });
+    const handler = createFrameHandler(deps);
+
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    sent.length = 0;
+    await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "backlog", tail: true, limit: 20 }));
+
+    expect(calls).toEqual([[undefined, 20]]);
+    expect(sent).toEqual([{ cid: "c1", msg: { t: "backlog", events, done: true, hasMore: true } }]);
+  });
+
+  it("backlog{tail, beforeSeq}：往前翻那一页原样递进去", async () => {
+    const calls: [number | undefined, number][] = [];
+    const session = fakeSession({
+      backlogTail: (beforeSeq: number | undefined, limit: number) => {
+        calls.push([beforeSeq, limit]);
+        return { events: [], hasMore: false };
+      },
+    });
+    const { deps, sent } = makeDeps({ getSession: () => session });
+    const handler = createFrameHandler(deps);
+
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    sent.length = 0;
+    await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "backlog", tail: true, beforeSeq: 40, limit: 20 }));
+
+    expect(calls).toEqual([[40, 20]]);
+    expect(sent).toEqual([{ cid: "c1", msg: { t: "backlog", events: [], done: true, hasMore: false } }]);
+  });
+
+  it("老式 backlog{afterSeq} 一个字不变：走 session.backlog，最后一片**不带** hasMore（#1280）", async () => {
+    const events = [{ type: "turn_ended", sessionId: "s1", seq: 3, ts: 1, outcome: "completed" }] as never[];
+    const session = fakeSession({
+      backlog: () => events as ReturnType<CloudSession["backlog"]>,
+      backlogTail: () => { throw new Error("不该走到尾巴分页"); },
+    });
     const { deps, sent } = makeDeps({ getSession: () => session });
     const handler = createFrameHandler(deps);
 

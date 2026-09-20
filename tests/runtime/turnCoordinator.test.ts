@@ -67,3 +67,20 @@ describe("turnCoordinator 串行队列（#928 切片 1a）", () => {
     expect(c.isRunning()).toBe(false);
   });
 });
+
+describe("pendingOpeningSeqs（#1280：尾巴分页拿它当下界）", () => {
+  it("排着队的每个 job 的开场白 seq；出队一个就少一个", () => {
+    const c = createTurnCoordinator();
+    c.enqueue({ agentId: "a", fromUid: "u", opening: um(7) });
+    c.enqueue({ agentId: "b", fromUid: "u", opening: um(9) });
+    expect(c.pendingOpeningSeqs()).toEqual([7, 9]);
+    c.nextJob();
+    expect(c.pendingOpeningSeqs()).toEqual([9]);
+    c.nextJob();
+    expect(c.pendingOpeningSeqs()).toEqual([]);
+  });
+
+  it("空队列回空数组：调用方拿它去算 Math.min，undefined 会把下界变成 NaN", () => {
+    expect(createTurnCoordinator().pendingOpeningSeqs()).toEqual([]);
+  });
+});

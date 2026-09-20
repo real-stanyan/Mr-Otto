@@ -19,6 +19,11 @@ export interface TurnCoordinator {
   enqueue(job: TurnJob): EnqueueDecision;
   nextJob(): TurnJob | null;
   isRunning(): boolean;
+  /** 还排着队的每个 job 的开场白 seq，入队顺序（#1280）。尾巴分页拿它当第一页的
+      下界：这几条开场白还没人答，它们落在尾巴外面时「排队中」那一行就画不出来，
+      而且不报错。空队列回空数组——调用方拿它去算 `Math.min`，undefined 会把下界
+      变成 NaN */
+  pendingOpeningSeqs(): number[];
 }
 
 export function createTurnCoordinator(): TurnCoordinator {
@@ -49,6 +54,10 @@ export function createTurnCoordinator(): TurnCoordinator {
 
     isRunning(): boolean {
       return running;
+    },
+
+    pendingOpeningSeqs(): number[] {
+      return queue.map((q) => q.opening.seq);
     },
   };
 }
