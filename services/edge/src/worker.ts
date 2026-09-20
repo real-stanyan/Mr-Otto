@@ -75,6 +75,9 @@ export interface Env {
   QWEN_API_KEY?: string;
   /** MiniMax 语音合成（#1163）。`wrangler secret put MINIMAX_API_KEY`；国内站的 key */
   MINIMAX_API_KEY?: string;
+  /** OpenRouter：出图（#1081）与决策模型（#1281）两条路的上游。0031 那次漏了这一格，
+      靠 `upstreamKeyOf` 的索引签名才没红——「加一家上游是两处」那条约定现在补齐 */
+  OPENROUTER_API_KEY?: string;
   /** Stripe。`wrangler secret put STRIPE_SECRET_KEY` / `STRIPE_WEBHOOK_SECRET` */
   STRIPE_SECRET_KEY?: string;
   STRIPE_WEBHOOK_SECRET?: string;
