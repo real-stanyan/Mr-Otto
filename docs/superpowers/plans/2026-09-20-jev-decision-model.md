@@ -3146,7 +3146,7 @@ git commit -m "feat(voice): 语音断句接上决策模型——停嘴那一刻�
   - `memoryStore.ts`：`tierFact(tier: "project" | "memory" | "user", at?: string): string`
   - `shared/memoryTierJudge.ts`：`type JudgedTier = "user" | "memory" | "project"`, `TIER_MISMATCH_AT = 0.85`, `TIER_DECISION_TIMEOUT_MS = 900`, `tierQuestions(contents, projectLabel)`, `tierMismatches(reply, target, count): TierMismatch[]`, `interface TierMismatch { index: number; suggested: JudgedTier; confidence: number }`, `type MemoryTierJudge = (contents: readonly string[], target: JudgedTier, projectLabel: string) => Promise<TierMismatch[] | null>`
   - `main/memoryTierJudge.ts`：`createMemoryTierJudge(decision: Pick<DecisionClient, "mode" | "decide">, log?): MemoryTierJudge`
-  - `createMemoryTool(project, deps?: { judgeTier?: MemoryTierJudge })`
+  - `createMemoryTool(project, deps?: { judgeTier?: MemoryTierJudge; insisted?: Set<string> })`——`insisted` 缺省是工具实例内部的一个 Set；agent.ts 递一个**活得比单轮长**的进来
 
 - [ ] **Step 1: 写失败的测试**
 
@@ -3400,12 +3400,17 @@ export function createMemoryTool(
   project: { id: string; root: string; dir: string } | null,
   /** 分档核对（#1281）。**注入进来的一个函数**——工具不 import 网络；缺席 = 行为与改动前
       逐字相同 */
-  deps?: { judgeTier?: MemoryTierJudge },
+  deps?: {
+    judgeTier?: MemoryTierJudge;
+    /** 「被劝过一次、模型坚持」的那些（target + 内容）。**由调用方持有**：agent.ts 每轮
+        `buildTools` 都重建这把工具，簿记住在工具实例里就每轮失忆——模型原样再交一次
+        仍然被劝，三次之后工具进终态。缺省（测试 / 别的装配）退回实例内部的一个 Set */
+    insisted?: Set<string>;
+  },
 ): Tool {
   let consecutiveFailures = 0;
-  // 「被劝过一次、模型坚持」的那些（target + 内容）。这是卫生劝告不是安全闸：决策模型判错
-  // 一次不该把一条真事实永久挡在外面（三次失败工具会进终态）。封顶 64 条，够一个会话用
-  const insisted = new Set<string>();
+  // 这是卫生劝告不是安全闸：决策模型判错一次不该把一条真事实永久挡在外面。封顶 64 条
+  const insisted = deps?.insisted ?? new Set<string>();
 ```
 
 点名守卫那个 `if (target === "memory" && project) { … }` 块之后、`const rel = memoryRelPath(…)` 之前加：
@@ -3443,22 +3448,35 @@ export function createMemoryTool(
 import { createMemoryTierJudge } from "./memoryTierJudge.js";
 ```
 
-`buildTools` 之外（闭包上方，只建一次——`insisted` 那份簿记住在工具实例里，而 `buildTools` 每轮重建工具；**所以记忆工具要提到 `buildTools` 外面建一次**，否则「原样再交一次放行」永远不成立）：
+`buildTools` 之外（闭包上方）建两样**活得比单轮长**的东西；工具本身照旧每轮重建——「连续失败计数每轮清零」那条既有行为一个字不动：
 
 ```ts
-  // 记忆工具建**一次**而不是每轮重建（#1281）：分档核对那份「被劝过一次」的簿记住在工具
-  // 实例里，每轮重建就每轮失忆——模型原样再交一次仍然被劝，三次之后工具进终态。
-  // 它不依赖任何会在会话中途变的东西（memoryProject 装配时就定了），所以提出来是安全的；
-  // 顺带：原来那个「连续失败计数」每轮清零的行为也一并没了，那本来就更接近它的本意
+  // 记忆分档核对（#1281）。judge 与那份「被劝过一次」的簿记建在 buildTools **外面**：
+  // 工具每轮重建（连续失败计数因此每轮清零，那是既有行为），簿记跟着重建就每轮失忆——
+  // 模型原样再交一次仍然被劝，三次之后工具进终态
   const dc = opts.hosted?.decision;
-  const memoryTool = world.config
-    ? createMemoryTool(memoryProject, dc ? { judgeTier: createMemoryTierJudge(dc, (l) => console.warn(l)) } : undefined)
-    : null;
+  const judgeTier = dc ? createMemoryTierJudge(dc, (l) => console.warn(l)) : null;
+  const memoryInsisted = new Set<string>();
 ```
 
-`buildTools` 里那一行改成 `...(memoryTool ? [memoryTool] : []),`（原注释保留）。
+`buildTools` 里那一行改成（原注释保留）：
 
-> **先核实再动**：`rg -n "consecutiveFailures" src/tools/memory.ts tests/tools/memory.test.ts` 读一遍那个计数的语义与测试。如果既有测试依赖「每轮一个新实例、计数清零」，**停下来报告**，不要改测试——那种情况下退回方案 B：`insisted` 提成 `createMemoryTool` 的第三个可选参数由 agent.ts 持有，工具照旧每轮重建。
+```ts
+      ...(world.config ? [createMemoryTool(memoryProject, judgeTier ? { judgeTier, insisted: memoryInsisted } : undefined)] : []),
+```
+
+并在 `tests/tools/memory.test.ts` 那组里补一条，钉住「簿记由调用方持有时，换一个工具实例照样放行」：
+
+```ts
+  it("insisted 由调用方持有：换一个工具实例（agent.ts 每轮重建）照样记得被劝过", async () => {
+    const insisted = new Set<string>();
+    const judgeTier = async () => [{ index: 0, suggested: "project" as const, confidence: 0.93 }];
+    const { world, store } = fakeWorld();
+    await expect(createMemoryTool(proj, { judgeTier, insisted }).run(ARGS, world)).rejects.toThrow(/原样再提交/);
+    await createMemoryTool(proj, { judgeTier, insisted }).run(ARGS, world);
+    expect(store.get("memories/MEMORY.md")).toBe("门禁前要先装手机端依赖");
+  });
+```
 
 - [ ] **Step 4: 绿**
 
@@ -3530,7 +3548,7 @@ Jev（TypeSafe AI，2026-09-15 发布）是为这个形状造的：不生成文�
 5. 七个阈值全是初值。
 6. 挂住不回时的额外等待：派活 / Auto +1.2s，记忆 +0.9s，语音 +0.2s。
 7. **一个有意的行为改动**：Auto 今天那条 LLM 路补上了 8s 超时（原来没有，一次挂住的网关调用会把 turn 的起跑永久卡住）。
-8. 记忆工具从「每轮重建」改成「每会话一个实例」（那份「被劝过一次」的簿记要活过一轮）。
+8. 记忆那一处把一次写入变成最多两次工具调用（被劝一次、坚持一次）；「被劝过一次」的簿记由 `agent.ts` 持有（工具每轮重建，簿记不能跟着失忆）。
 9. 主题桶归档不做（住在桌面那次合并调用里，抽出来一次 LLM 调用都省不掉）。
 
 ## 被否掉的
@@ -3545,7 +3563,7 @@ Jev（TypeSafe AI，2026-09-15 发布）是为这个形状造的：不生成文�
 - [ ] **Step 2: `AGENTS.md` 索引一条**（加在 Where to find things 列表**最末**，一段）
 
 ```markdown
-- `src/shared/decision.ts` / `services/edge/src/decisionUses.ts` / `services/edge/src/llmGateway.ts` 的 `serveDecision` / `services/runtime/src/dispatchDecision.ts` / `src/renderer/src/lib/utteranceHold.ts` / `src/shared/memoryTierJudge.ts` — **决策模型（Jev）经网关接入：五处分类器前置、LLM 兜底、分处三态开关**（ADR-0297，#1281）。五处（派活 / Auto 判难度 / 云会话重命名的 KEEP 闸 / 语音断句 / 记忆写入分档）今天都是「便宜 LLM 回一个词、正则去认」，判据里混着「模型听不听话」；决策模型不生成文字，收 `state` + 类型化问题回**类型化答案 + 校准概率**，于是「拿不准算 hard」从提示词里的一句请求变成一个阈值。**前置不替换**：没问出来 / 拿不准（`escalate`）→ 今天那条路，`requestDecision` 从不抛，`withDecision` 是五处共用的三态包装——没有哪一处会比改动前更差，除了一段有上限的等待。**不信上游的「0% 类型错误」**：`parseDecisionReply` 逐题验，一处不对整份 null（那句宣传说的是形状不是对错，而形状我们自己验得了；`Object.hasOwn` 不是 `in`——`"toString" in {}` 是 true）。**开关是 edge 里的三态常量** `DECISION_USES`（没列 / `shadow` / `on`，初始 `{}`），随 `/me` 的 `decision` 一格下发三端，翻一格最迟一分钟生效、不用发桌面版；不做成 `model_route` 上的一列，因为加列要「migration 先」而新 kind 要「worker 先」，两条相反的顺序压在同一次上线上。`shadow` = 今天那条路说了算、决策并行问一次只记一行 `[decision]` 日志——整件事最大的未知数是**中文校准**，而本机没有 OpenRouter 的 key，只能在生产上量；语音那一处的真值是**观测得到的**（final 之后 1.8 秒内人有没有接着说，`src/main/endpointJudge.ts` 在记，日志里只有字数没有正文）。**部署顺序 worker 先、migration 0037 后**：这一行输出价是 0，旧 worker 把认不出的 kind 按 chat，反过来跑它就是所有订阅用户的默认聊天款 + Auto 的 simple 档（0033 写过同一条，那次漏的是清单末尾，这次是开头）。runtime 三处**只动 `daemon.ts` 的注入点**，`sessionService.ts` 不认识决策模型（与 #1280 的约定，`tests/runtime/daemonDecisionWiring.test.ts` 钉着；daemon.ts 进不了 vitest，所以那是一条读源码的断言）。语音**不动 Swift**（重编 helper 要重新点 TCC）：渲染层的纯状态机扣住再合并，没开时整套旁路（零额外延迟由构造保证），只治「切碎」不治「没标点的整句白等 2.5s」。记忆那一处是**劝告不是闸**：模型原样再交一次就放行（判错一次不该把一条真事实永久挡在外面），为此记忆工具从每轮重建改成每会话一个实例。**只许加严不许放行**：审批 / `gitSafety` / 沙箱免审 / 护栏 / 额度闸一处都不接。已知代价九条在 ADR-0297，最要紧的三条：合进去那天五处全关、`alpha` 端点改形状时五处安静地回落（只有 `[decision]` 的失败行会说话）、新增两家数据处理方且语音转写与 USER 档记忆是新出门的内容。**要部署 edge + 跑 0037 + 部署 runtime 才生效**（#791），桌面三处还要等一次发版
+- `src/shared/decision.ts` / `services/edge/src/decisionUses.ts` / `services/edge/src/llmGateway.ts` 的 `serveDecision` / `services/runtime/src/dispatchDecision.ts` / `src/renderer/src/lib/utteranceHold.ts` / `src/shared/memoryTierJudge.ts` — **决策模型（Jev）经网关接入：五处分类器前置、LLM 兜底、分处三态开关**（ADR-0297，#1281）。五处（派活 / Auto 判难度 / 云会话重命名的 KEEP 闸 / 语音断句 / 记忆写入分档）今天都是「便宜 LLM 回一个词、正则去认」，判据里混着「模型听不听话」；决策模型不生成文字，收 `state` + 类型化问题回**类型化答案 + 校准概率**，于是「拿不准算 hard」从提示词里的一句请求变成一个阈值。**前置不替换**：没问出来 / 拿不准（`escalate`）→ 今天那条路，`requestDecision` 从不抛，`withDecision` 是五处共用的三态包装——没有哪一处会比改动前更差，除了一段有上限的等待。**不信上游的「0% 类型错误」**：`parseDecisionReply` 逐题验，一处不对整份 null（那句宣传说的是形状不是对错，而形状我们自己验得了；`Object.hasOwn` 不是 `in`——`"toString" in {}` 是 true）。**开关是 edge 里的三态常量** `DECISION_USES`（没列 / `shadow` / `on`，初始 `{}`），随 `/me` 的 `decision` 一格下发三端，翻一格最迟一分钟生效、不用发桌面版；不做成 `model_route` 上的一列，因为加列要「migration 先」而新 kind 要「worker 先」，两条相反的顺序压在同一次上线上。`shadow` = 今天那条路说了算、决策并行问一次只记一行 `[decision]` 日志——整件事最大的未知数是**中文校准**，而本机没有 OpenRouter 的 key，只能在生产上量；语音那一处的真值是**观测得到的**（final 之后 1.8 秒内人有没有接着说，`src/main/endpointJudge.ts` 在记，日志里只有字数没有正文）。**部署顺序 worker 先、migration 0037 后**：这一行输出价是 0，旧 worker 把认不出的 kind 按 chat，反过来跑它就是所有订阅用户的默认聊天款 + Auto 的 simple 档（0033 写过同一条，那次漏的是清单末尾，这次是开头）。runtime 三处**只动 `daemon.ts` 的注入点**，`sessionService.ts` 不认识决策模型（与 #1280 的约定，`tests/runtime/daemonDecisionWiring.test.ts` 钉着；daemon.ts 进不了 vitest，所以那是一条读源码的断言）。语音**不动 Swift**（重编 helper 要重新点 TCC）：渲染层的纯状态机扣住再合并，没开时整套旁路（零额外延迟由构造保证），只治「切碎」不治「没标点的整句白等 2.5s」。记忆那一处是**劝告不是闸**：模型原样再交一次就放行（判错一次不该把一条真事实永久挡在外面）；那份「被劝过一次」的簿记由 `agent.ts` 持有——工具每轮重建，簿记住在实例里就每轮失忆。**只许加严不许放行**：审批 / `gitSafety` / 沙箱免审 / 护栏 / 额度闸一处都不接。已知代价九条在 ADR-0297，最要紧的三条：合进去那天五处全关、`alpha` 端点改形状时五处安静地回落（只有 `[decision]` 的失败行会说话）、新增两家数据处理方且语音转写与 USER 档记忆是新出门的内容。**要部署 edge + 跑 0037 + 部署 runtime 才生效**（#791），桌面三处还要等一次发版
 ```
 
 - [ ] **Step 3: `CONTEXT.md` 两条术语**（`## Key invariants` 之前）
@@ -3572,7 +3590,7 @@ git commit -m "docs: ADR-0297 + 索引一条 + 两条术语（决策模型经网
 ### 收尾（主会话执行，不派子 agent）
 
 - [ ] 全门禁：`npm test`，判据只认日志末尾的退出码（后台跑时 wrapper 的退出码不算数）。
-- [ ] 终审：整分支（`origin/main..HEAD`）按 **spec** 而不是按本 plan 核，明确让它追 cross-task seams：`DecisionUses` 在 edge 常量 → `/me` → `parseBillingMe` → `modeOf` 三端是不是同一个形状；`use` 字符串在五处调用点与 `DECISION_USES` 的键是不是同一组；`withDecision` 的 `escalate` 在派活与重命名两处的语义；`hostedDeps.decision` 在子 agent / 子会话重建两处有没有真的接住；记忆工具提到 `buildTools` 外面之后有没有别的每轮重建的假设被打破。
+- [ ] 终审：整分支（`origin/main..HEAD`）按 **spec** 而不是按本 plan 核，明确让它追 cross-task seams：`DecisionUses` 在 edge 常量 → `/me` → `parseBillingMe` → `modeOf` 三端是不是同一个形状；`use` 字符串在五处调用点与 `DECISION_USES` 的键是不是同一组；`withDecision` 的 `escalate` 在派活与重命名两处的语义；`hostedDeps.decision` 在子 agent / 子会话重建两处有没有真的接住；记忆那份 `insisted` 簿记是不是真的活过了一轮（agent.ts 持有、每轮递进新实例）。
 - [ ] 留一轮修复 + scoped 复审。
 - [ ] 合并前 `git fetch`：核 ADR 号与 migration 号有没有被别的 lane 占掉；核 `src/shared/remote/cloudSession.ts` 的协议号本分支没动过。
 - [ ] PR（`Closes #1281`）→ CI 绿 → merge commit → `#1281` 关闭 → 交接 issue（五部分；要维护者动手的两步写清：部署 edge worker，**再**跑 0037）。
