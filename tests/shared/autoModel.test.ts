@@ -87,3 +87,50 @@ describe("AUTO_MODEL 这个口令", () => {
     expect(AUTO_MODEL.startsWith("__")).toBe(true);
   });
 });
+
+import { AUTO_SIMPLE_BELOW, autoQuestions, difficultyFromHard } from "../../src/shared/autoModel.js";
+import type { DecisionReply } from "../../src/shared/decision.js";
+
+describe("决策模型前置（#1281）", () => {
+  const MODELS = ["cheap", "mid", "strong"];
+  const hard = (p: number): DecisionReply => ({ model: "jev-1.13.0", inputTokens: 50, answers: { hard: { type: "noul", noul: p } } });
+  const llmSaysSimple = (async () => Response.json({ choices: [{ message: { content: "simple" } }] })) as typeof fetch;
+  const neverFetch = (async () => { throw new Error("LLM 不该被打"); }) as typeof fetch;
+
+  it("「拿不准算 hard」是一个阈值：P(hard) ≤ AUTO_SIMPLE_BELOW 才 simple", () => {
+    expect(difficultyFromHard(AUTO_SIMPLE_BELOW)).toBe("simple");
+    expect(difficultyFromHard(AUTO_SIMPLE_BELOW + 0.01)).toBe("hard");
+    expect(difficultyFromHard(0.5)).toBe("hard");
+  });
+  it("autoQuestions：一个 noul，正文截断到 CLASSIFY_MAX_CHARS", () => {
+    const { state, questions } = autoQuestions("字".repeat(5000));
+    expect(Object.keys(questions)).toEqual(["hard"]);
+    expect((state as { request: string }).request.length).toBe(1200);
+  });
+  it("on + 有答案：按它挑，LLM 一次都不打", async () => {
+    const deps = { llmBase: "https://e/llm/v1", headers: {}, fetchImpl: neverFetch, decision: { mode: "on" as const, ask: async () => hard(0.05) } };
+    expect(await pickAutoModel(deps, "你好", MODELS)).toBe("cheap");
+    expect(await pickAutoModel({ ...deps, decision: { mode: "on" as const, ask: async () => hard(0.6) } }, "重构整个模块", MODELS)).toBe("strong");
+  });
+  it("on + 没问出来：原样走今天那条 LLM 路", async () => {
+    const deps = { llmBase: "https://e/llm/v1", headers: {}, fetchImpl: llmSaysSimple, decision: { mode: "on" as const, ask: async () => null } };
+    expect(await pickAutoModel(deps, "你好", MODELS)).toBe("cheap");
+  });
+  it("shadow：LLM 说了算", async () => {
+    const deps = { llmBase: "https://e/llm/v1", headers: {}, fetchImpl: llmSaysSimple, decision: { mode: "shadow" as const, ask: async () => hard(0.99) } };
+    expect(await pickAutoModel(deps, "你好", MODELS)).toBe("cheap");
+  });
+  it("清单不足两款：连决策都不问", async () => {
+    let asked = false;
+    const deps = { llmBase: "x", headers: {}, fetchImpl: neverFetch, decision: { mode: "on" as const, ask: async () => { asked = true; return hard(0.9); } } };
+    expect(await pickAutoModel(deps, "x", ["only"])).toBeNull();
+    expect(asked).toBe(false);
+  });
+  it("今天那条 LLM 路挂住不回：到点回 null（原来会把 turn 的起跑永久卡住）", async () => {
+    const hang = ((_i: RequestInfo | URL, init?: RequestInit) =>
+      new Promise<Response>((_r, rej) => { init?.signal?.addEventListener("abort", () => rej(new Error("aborted"))); })) as typeof fetch;
+    const logs: string[] = [];
+    expect(await pickAutoModel({ llmBase: "x", headers: {}, fetchImpl: hang, llmTimeoutMs: 30, log: (m) => logs.push(m) }, "x", MODELS)).toBeNull();
+    expect(logs.join()).toContain("超时");
+  });
+});

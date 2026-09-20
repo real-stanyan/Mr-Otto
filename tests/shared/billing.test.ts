@@ -101,3 +101,17 @@ describe("parseBillingMe：ttsModels（#1163）", () => {
     expect(parseBillingMe({ ...base, ttsModels: ["speech-2.8-turbo", 3] })?.ttsModels).toEqual(["speech-2.8-turbo"]);
   });
 });
+
+describe("parseBillingMe：decision 一格（#1281）", () => {
+  const minimalMe = { plan: "pro", status: "active", plans: [], windows: null, addon: { remainingMicro: 0, expiresAt: null }, periodEnd: null, models: ["a", "b"] };
+  it("缺席 = { models: [], uses: {} }，不是解析失败（新客户端连老网关）", () => {
+    expect(parseBillingMe(minimalMe)?.decision).toEqual({ models: [], uses: {} });
+  });
+  it("认得的 use / mode 留下，不认得的逐项丢掉", () => {
+    const me = parseBillingMe({ ...minimalMe, decision: { models: ["jev-1.13", 7], uses: { dispatch: "shadow", auto: "on", approve: "on", title: "full" } } });
+    expect(me?.decision).toEqual({ models: ["jev-1.13"], uses: { dispatch: "shadow", auto: "on" } });
+  });
+  it("形状不对（不是对象）= 缺席", () => {
+    expect(parseBillingMe({ ...minimalMe, decision: "on" })?.decision).toEqual({ models: [], uses: {} });
+  });
+});

@@ -9,7 +9,9 @@
 // 的 agent 一字不变走 ADR-0232 那条优先级链。
 
 import { AGENT_HEADER, ON_BEHALF_HEADER, SESSION_HEADER, WORKSPACE_HEADER } from "../../../src/shared/billing.js";
-import { pickAutoModel as pickShared } from "../../../src/shared/autoModel.js";
+import { AUTO_DECISION_TIMEOUT_MS, pickAutoModel as pickShared } from "../../../src/shared/autoModel.js";
+import type { DecisionModeState } from "../../../src/shared/decision.js";
+import { requestDecisionAsOwner } from "./decisionOwner.js";
 
 export {
   CLASSIFY_MAX_CHARS,
@@ -29,6 +31,9 @@ export interface AutoModelDeps {
   fetchImpl?: typeof fetch;
   /** 判不出来时说一声（daemon 的 log）。不抛异常——分类失败不该让 turn 失败 */
   log?: (msg: string) => void;
+  /** 决策模型前置（#1281）。daemon 从所有者的 /me 快照里读出这一处的档位与型号再递进来；
+      缺席 = 网关不供决策模型 = 行为与改动前逐字相同 */
+  decision?: { mode: DecisionModeState; model: string };
 }
 
 /**
@@ -43,6 +48,7 @@ export async function pickAutoModel(
   text: string,
   models: readonly string[]
 ): Promise<string | null> {
+  const dm = deps.decision;
   return pickShared(
     {
       llmBase: `${deps.edgeBase}/llm/v1`,
@@ -55,6 +61,25 @@ export async function pickAutoModel(
       },
       ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
       ...(deps.log ? { log: deps.log } : {}),
+      ...(dm
+        ? {
+            decision: {
+              mode: dm.mode,
+              ask: (state, questions) =>
+                requestDecisionAsOwner(
+                  {
+                    edgeBase: deps.edgeBase, runtimeSecret: deps.runtimeSecret, ownerUid: deps.ownerUid,
+                    workspaceId: deps.workspaceId, sessionId: deps.sessionId,
+                    ...(deps.agentId ? { agentId: deps.agentId } : {}),
+                    ...(deps.fetchImpl ? { fetchImpl: deps.fetchImpl } : {}),
+                    ...(deps.log ? { log: deps.log } : {}),
+                  },
+                  { model: dm.model, use: "auto", state, questions },
+                  AUTO_DECISION_TIMEOUT_MS,
+                ),
+            },
+          }
+        : {}),
     },
     text,
     models

@@ -102,3 +102,24 @@ describe("pickAutoModel", () => {
     expect(body!.messages[1]!.content.length).toBe(CLASSIFY_MAX_CHARS);
   });
 });
+
+import { AGENT_HEADER } from "../../src/shared/billing.js";
+
+describe("runtime 接线：给了 decision 就经 /llm/v1/decision 替所有者问（#1281）", () => {
+  it("on：打的是 /decision，带 agent 头；回 P(hard)=0.9 → 最贵那款", async () => {
+    const seen: Request[] = [];
+    const fetchImpl = (async (i: RequestInfo | URL, init?: RequestInit) => {
+      seen.push(new Request(i, init));
+      return Response.json({ model: "jev-1.13.0", answers: { hard: { type: "noul", noul: 0.9 } } });
+    }) as typeof fetch;
+    const picked = await pickAutoModel(
+      { edgeBase: "https://edge", runtimeSecret: "s", ownerUid: "o", workspaceId: "w", sessionId: "c", agentId: "dev", fetchImpl, decision: { mode: "on", model: "jev-1.13" } },
+      "重构计费模块", ["cheap", "strong"],
+    );
+    expect(picked).toBe("strong");
+    expect(seen).toHaveLength(1);
+    expect(seen[0]!.url).toBe("https://edge/llm/v1/decision");
+    expect(seen[0]!.headers.get(AGENT_HEADER)).toBe("dev");
+    expect((await seen[0]!.json()).use).toBe("auto");
+  });
+});

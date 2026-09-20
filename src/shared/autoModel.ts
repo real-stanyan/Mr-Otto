@@ -26,6 +26,18 @@
 // 不猜，也不「拿不准就往贵的偏」：Auto 失灵时该有的表现是「跟以前一样」，不是「悄悄
 // 开始烧钱」。这条与 ADR-0233「额度用完不改道」同一条纪律——安静地换一条更贵的路，
 // 是这套东西最不该有的失败模式。
+//
+// ## 决策模型前置（#1281）
+//
+// 给了 `deps.decision` 就先问它一个是/否：「这条请求需要强模型吗」。于是文件头那条
+// 「拿不准算 hard」从提示词里的一句**请求**变成 `AUTO_SIMPLE_BELOW` 这个**阈值**——
+// 模型听不听话不再是判据的一部分。没问出来（超时 / 网关 403 / 形状不对）原样走下面那条
+// LLM 路，LLM 路再失败才是 null：两层回落，没有哪一层会比改动前更差。
+
+import {
+  noul, withDecision,
+  type DecisionModeState, type DecisionOutcome, type DecisionQuestion, type DecisionReply, type DecisionState,
+} from "./decision.js";
 
 /** 选单里 Auto 那一项的值，也是 IPC 上「把这一格切成 Auto」的口令。
     不用空串：Radix 的 SelectItem 明确禁止空串 value（它拿空串表示「没选」），
@@ -71,6 +83,35 @@ export function modelForDifficulty(d: Difficulty, models: readonly string[]): st
   return d === "simple" ? models[0]! : models[models.length - 1]!;
 }
 
+/** P(需要强模型) ≤ 它才走便宜那款；其余一律 hard。**初值**，由影子期的校准数据改。
+    取 0.2 不取 0.5：判错往便宜了走是一整轮白跑，往贵了走只是这一轮多花点钱 */
+export const AUTO_SIMPLE_BELOW = 0.2;
+/** 调用方拼 `ask` 时用的超时。只有「挂住不回」才付满它，付完才开始 LLM 那条路 */
+export const AUTO_DECISION_TIMEOUT_MS = 1200;
+/** LLM 那条路的超时。**这是一个有意的行为改动**（#1281 探查时发现的旧账）：原来这里没有
+    AbortController，一次挂住的网关调用会把 turn 的起跑永久卡住——派活（5s）与重命名（6s）
+    都有，唯独这一处漏了 */
+export const AUTO_LLM_TIMEOUT_MS = 8000;
+
+export function difficultyFromHard(p: number): Difficulty {
+  return p <= AUTO_SIMPLE_BELOW ? "simple" : "hard";
+}
+
+/** 是/否两格的说明逐条抄自 CLASSIFY_SYSTEM：两条路问的必须是同一个问题，
+    不然影子期量出来的「一致率」量的是两份提示词的差别，不是两个模型的差别 */
+export function autoQuestions(text: string): { state: DecisionState; questions: Record<string, DecisionQuestion> } {
+  return {
+    state: { request: text.slice(0, CLASSIFY_MAX_CHARS) },
+    questions: {
+      hard: noul(
+        "用户发来了 `request` 这条请求。它需要强模型来处理吗？",
+        "写代码或改代码、多步骤任务、需要推理或规划、数据分析、长文档处理、需求本身有歧义要先判断的",
+        "闲聊、问候、简单问答、改一句话、格式转换、明确且范围很小的改动",
+      ),
+    },
+  };
+}
+
 export interface AutoModelDeps {
   /** 网关的 `/llm/v1` 前缀（不带尾斜杠）。两边各自拼——runtime 从 env，桌面从 hostedQuota */
   llmBase: string;
@@ -79,23 +120,22 @@ export interface AutoModelDeps {
   fetchImpl?: typeof fetch;
   /** 判不出来时说一声。不抛异常——分类失败不该让 turn 失败 */
   log?: (msg: string) => void;
+  /** 决策模型前置（#1281）。缺席 = 行为与改动前逐字相同。`ask` 由调用方拼好——型号、
+      `use: "auto"`、超时、身份头都在它那一侧（两条路唯一的差别仍然是怎么证明身份） */
+  decision?: {
+    mode: DecisionModeState;
+    ask: (state: DecisionState, questions: Record<string, DecisionQuestion>) => Promise<DecisionReply | null>;
+  };
+  /** LLM 那条路的超时；缺省 AUTO_LLM_TIMEOUT_MS。留成可注入只为测试不用等 8 秒 */
+  llmTimeoutMs?: number;
 }
 
-/**
- * 判一手：拿最便宜那款读这段话，回这一 turn 该用的型号 id；判不出来回 null。
- *
- * **走同一条网关、带同样的归因头**，所以这一次调用照样落 `usage_event`、照样扣窗口
- * ——不做暗扣。代价：约 200 输入 / 5 输出，在最便宜那款上约 $0.00005，外加
- * 0.3~0.8 秒延迟。
- */
-export async function pickAutoModel(
-  deps: AutoModelDeps,
-  text: string,
-  models: readonly string[]
-): Promise<string | null> {
-  if (models.length < 2) return null;
+async function pickViaLlm(deps: AutoModelDeps, text: string, models: readonly string[]): Promise<string | null> {
   const cheap = models[0]!;
   const doFetch = deps.fetchImpl ?? fetch;
+  const timeoutMs = deps.llmTimeoutMs ?? AUTO_LLM_TIMEOUT_MS;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   try {
     const res = await doFetch(`${deps.llmBase}/chat/completions`, {
       method: "POST",
@@ -112,6 +152,7 @@ export async function pickAutoModel(
         max_tokens: 8,
         stream: false,
       }),
+      signal: controller.signal,
     });
     if (!res.ok) {
       deps.log?.(`Auto 选型：网关回 ${res.status}，这一轮按原样走`);
@@ -126,9 +167,41 @@ export async function pickAutoModel(
     }
     return modelForDifficulty(d, models);
   } catch (e) {
-    deps.log?.(`Auto 选型：${(e as Error).message}，这一轮按原样走`);
+    deps.log?.(`Auto 选型：${controller.signal.aborted ? `分类器超时（${timeoutMs}ms）` : (e as Error).message}，这一轮按原样走`);
     return null;
+  } finally {
+    clearTimeout(timer);
   }
+}
+
+/**
+ * 判一手：拿最便宜那款读这段话，回这一 turn 该用的型号 id；判不出来回 null。
+ *
+ * **走同一条网关、带同样的归因头**，所以这一次调用照样落 `usage_event`、照样扣窗口
+ * ——不做暗扣。代价：约 200 输入 / 5 输出，在最便宜那款上约 $0.00005，外加
+ * 0.3~0.8 秒延迟。
+ */
+export async function pickAutoModel(
+  deps: AutoModelDeps,
+  text: string,
+  models: readonly string[]
+): Promise<string | null> {
+  if (models.length < 2) return null;
+  const d = deps.decision;
+  if (!d) return pickViaLlm(deps, text, models);
+  return withDecision<string | null>({
+    use: "auto",
+    mode: d.mode,
+    viaDecision: async (): Promise<DecisionOutcome<string | null>> => {
+      const { state, questions } = autoQuestions(text);
+      const a = (await d.ask(state, questions))?.answers.hard;
+      if (!a || a.type !== "noul") return null;
+      return { value: modelForDifficulty(difficultyFromHard(a.noul), models), scores: { hard: a.noul } };
+    },
+    viaLegacy: () => pickViaLlm(deps, text, models),
+    show: (v) => v,
+    ...(deps.log ? { log: deps.log } : {}),
+  });
 }
 
 /** Auto 此刻开着没有 = 日志投影：最后一条 `model_changed` 说了算，没有就是关着。

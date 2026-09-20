@@ -7,6 +7,8 @@ const me: BillingMe = {
   plan: "pro", status: "active", plans: [],
   windows: { h5: { usedMicro: 0, limitMicro: 100, resetAt: T0 + 5000 }, week: { usedMicro: 0, limitMicro: 1000, resetAt: T0 + 9000 } },
   addon: { remainingMicro: 0, expiresAt: null }, periodEnd: T0 + 99_999, models: ["deepseek-flash"], imageModels: ["gemini-3.1-flash-image"], ttsModels: ["speech-2.8-turbo"], modelPlatforms: {},
+  // parseBillingMe 总是填这一格（#1281），response 走 JSON 往返后经它解析——补上让 toEqual(me) 与实际返回值一致
+  decision: { models: [], uses: {} },
 };
 
 function make(responses: Array<() => Response>, token: string | null = "jwt") {

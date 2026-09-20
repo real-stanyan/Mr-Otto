@@ -104,6 +104,8 @@ import { EMPTY_VOICE_FEED, feedDelta, feedEvent, markInterrupted, type VoiceFeed
 import { applySpeechEvent, bargeInOn, MIC_OFF, micShouldPause, SPEECH_LOCALE, speechHints, type MicState } from "./lib/voiceMic.js";
 import { defaultCreateAudio, VoicePlayer } from "./lib/voicePlayer.js";
 import { createHelperAudio, helperAudioEvent } from "./lib/helperAudio.js";
+import { modeOf } from "../../shared/decision.js";
+import { HOLD_IDLE, holdStep, joinSpoken, type HoldEvent, type HoldState } from "./lib/utteranceHold.js";
 import { voiceCallOf } from "../../shared/voiceCall.js";
 import { agentVoiceId } from "../../shared/agentVoice.js";
 import type { CloudSessionDelta, TaskSyncState } from "../../shared/shellBridge.js";
@@ -1433,6 +1435,10 @@ let voiceFeed: VoiceFeedState = EMPTY_VOICE_FEED;
 // 就发一条 stop 会白起一个进程）；「我们让它暂停着」是半双工的去重记号
 let micStarted = false;
 let micPaused = false;
+// 语音「扣住再合并」（#1281）。模块级而不是 store 里的一格：它不是界面状态（没有任何
+// 组件读它），是一段正在进行的对话的簿记——同 voiceFeed / voicePlayer 住在这里的理由
+let hold: HoldState = HOLD_IDLE;
+let holdTimer: ReturnType<typeof setTimeout> | null = null;
 function startMic(hints: string[]): void {
   micStarted = true;
   micPaused = false;
@@ -1470,10 +1476,45 @@ function voicePlayerFor(set: StoreApi<ChatState>["setState"], get: () => ChatSta
   }
   return voicePlayer;
 }
-function stopVoice(): void {
+/** 扣着 / 等着答案的那句话在这里统一收口（#1281 fix round 1）。**唯一**一处实现：
+    `stopVoice`（整段离开语音）与 `setVoiceMic(false)`（只关麦、还在通话里）都调它，
+    不是各写一份——原来只有后者记得发，前五条路径（换会话、关云会话、重新进语音、
+    离开语音通话、通话被挂断）一句都没发，扣着的话在切房间时就没了。
+    两件事都不能省：
+    ① 计时器必须无条件清掉，即使 buffer 是空的——不清的话它之后单独触发，
+       调的是这次调用之前那个闭包里的 sendSpoken，会把这句话送进主进程那时
+       已经加入的、可能完全是另一个房间（cloudSay 不带 sessionId，认的是
+       主进程此刻加入的那间房）；
+    ② 调用方必须把这一步排在自己接下来会做的、可能换房间的动作之前，这句话
+       才赶得上此刻还开着的房间——closeCloudSession 把这一步挪到了
+       workspaceCloudLeave() 之前正是为此，见那一处注释。 */
+function flushHeld(get: () => ChatState): void {
+  if (holdTimer !== null) { clearTimeout(holdTimer); holdTimer = null; }
+  const flushed = holdStep(hold, { type: "reset" }, Date.now(), { hold: false });
+  hold = flushed.state;
+  for (const fx of flushed.effects) if (fx.type === "send") void get().cloudSay(fx.text, [], [], true);
+}
+function stopVoice(get: () => ChatState): void {
+  // stopVoice 是所有"整段离开语音"路径唯一的交汇点——openCloudSession /
+  // closeCloudSession / joinVoiceCall / leaveVoiceCall / voiceOnEvent 的挂断
+  // 分支都调用它（它们本来就要停麦、停播放器）。flush 排在最前面，理由见
+  // flushHeld 的注释（#1281 fix round 1）。
+  //
+  // stopMic 紧跟在下一行，排在 voicePlayer?.stop() 之前（#1281 fix round 2/3）
+  // ——这**不是**无关紧要的两句谁先谁后：voicePlayer.stop() 会同步触发它的
+  // onChange → micSync(...)，而 micSync 读的正是 stopMic 刚改写的那两个模块级
+  // 标记 micStarted/micPaused。stopMic 先跑，micStarted 在 micSync 看见它之前
+  // 就已经翻成 false，micSync 第一行 `if (!micStarted) return;` 直接短路——
+  // 若这一刻麦克风正因半双工防串音而暂停着，新顺序不会像旧顺序那样先补一次
+  // speechResume() 再紧跟着 stopMic 自己的 speechStop()（旧顺序下 voicePlayer
+  // 先停，此时 micStarted 还是 true，micSync 会把"agent 不说了"算成"该把麦
+  // 恢复"，真发一次 resume，一拍之后又被 stop 盖掉）。新顺序省掉这一次多余的
+  // IPC 往返，也顺手是 tests/renderer/utteranceHoldWiring.test.ts 那条"停麦
+  // 之前必先 flush"断言用得上的形状——但换序的理由是前者，不是后者。
+  flushHeld(get);
+  stopMic();
   voicePlayer?.stop();
   voiceFeed = EMPTY_VOICE_FEED;
-  stopMic();
 }
 /** 音色按 agentId 从团队名单派生（agentVoice.ts）：名单顺序解撞，同一只两台机器同一个声音 */
 function rosterIdsOf(s: ChatState, workspaceId: string): string[] {
@@ -2657,8 +2698,10 @@ export const useChat = create<ChatState>((set, get) => ({
   },
 
   async openCloudSession(workspaceId, sessionId, chat, title) {
-    // 换会话先把上一条的语音监听收掉（#1163）：它绑着上一条的 sessionId 与名单
-    stopVoice();
+    // 换会话先把上一条的语音监听收掉（#1163）：它绑着上一条的 sessionId 与名单。
+    // 扣着的话也在这里发出去（#1281 fix round 1）——旧房间真正拆除要等下面
+    // 的 join() 内部触发 teardown()，这一步还来得及送进旧房间
+    stopVoice(get);
     if (get().voice !== null) set({ voice: null });
     let sid = sessionId;
     if (sid === null) {
@@ -2762,11 +2805,14 @@ export const useChat = create<ChatState>((set, get) => ({
   },
 
   closeCloudSession() {
+    // 语音那份本机状态一起清（#1163）：它绑着这条会话。**必须排在**
+    // workspaceCloudLeave() 之前（#1281 fix round 1）：leave() 在主进程里
+    // 同步清空"当前房间"（cloudSessionClient.ts 的 teardown()），晚一步
+    // 再发，扣着的那句话会因为"没有已连接的云会话"当场被拒、静默丢掉
+    stopVoice(get);
     void window.otter.workspaceCloudLeave();
     // cloudStreaming 一起清：它按 agentId 分槽不带 sessionId，不清的话下一条
     // 云会话打开时，上一只 agent 的半截预览会挂在新房间的「正在回复」行上
-    // 语音那份本机状态一起清（#1163）：它绑着这条会话
-    stopVoice();
     set({ cloudSession: null, cloudPendingFirstMessage: null, cloudStreaming: {}, voice: null });
   },
 
@@ -2846,14 +2892,14 @@ export const useChat = create<ChatState>((set, get) => ({
   joinVoiceCall() {
     const cs = get().cloudSession;
     if (!cs) return;
-    stopVoice();
+    stopVoice(get);
     const sinceSeq = cs.events.length > 0 ? cs.events[cs.events.length - 1]!.seq : -1;
     // 常开麦（#1176）：进通话就开
     set({ voice: { sessionId: cs.sessionId, listening: true, muted: false, sinceSeq, speaking: null, queued: 0, error: null, text: null, mic: { ...MIC_OFF, status: "starting" } } });
     startMic(speechHints(get().workspaceGroups.find((w) => w.id === get().cloudSession?.workspaceId) ?? null));
   },
   leaveVoiceCall() {
-    stopVoice();
+    stopVoice(get);
     if (get().voice !== null) set({ voice: null });
   },
   setVoiceMic(on) {
@@ -2862,6 +2908,9 @@ export const useChat = create<ChatState>((set, get) => ({
       set((s) => (s.voice ? { voice: { ...s.voice, mic: { ...MIC_OFF, status: "starting" } } } : s));
       startMic(speechHints(get().workspaceGroups.find((w) => w.id === get().cloudSession?.workspaceId) ?? null));
     } else {
+      // 扣着的那句照样发出去——人确实说了（#1281）。flushHeld 是唯一实现
+      // （fix round 1）：这里只关麦、人还在通话里，不走整段离开的 stopVoice
+      flushHeld(get);
       stopMic();
       set((s) => (s.voice ? { voice: { ...s.voice, mic: MIC_OFF } } : s));
     }
@@ -2872,8 +2921,11 @@ export const useChat = create<ChatState>((set, get) => ({
     const v = get().voice;
     // 关着麦时 helper 迟到的事件不再动状态（stop 之后它还会吐一条 listening:false）
     if (!v || v.mic.status === "off") return;
+    const wasActive = v.mic.active;
     const r = applySpeechEvent(v.mic, ev);
-    if (r.state !== v.mic) set((s) => (s.voice ? { voice: { ...s.voice, mic: r.state } } : s));
+    // 扣着一句的时候字幕 = 扣着的 + 新 partial，不然那行字会先消失再冒出来（#1281）
+    const shown = hold.buffer !== "" ? { ...r.state, transcript: joinSpoken(hold.buffer, r.state.transcript) } : r.state;
+    if (shown !== v.mic) set((s) => (s.voice ? { voice: { ...s.voice, mic: shown } } : s));
     // 插话（#1184）：agent 在说 / 排着要说时人开口够长 → 停播放，这几只这一轮剩下的话不读。
     // 回声消除开着麦才会在播放时开着，所以走到这里的 partial 本身就是人说的（AEC 漏出来的
     // 那点由 bargeInOn 的 token 重叠兜底）
@@ -2886,15 +2938,45 @@ export const useChat = create<ChatState>((set, get) => ({
         player.stop();
       }
     }
+
+    // 「这句说完了吗」（#1281）。**没开时整套状态机旁路**：零额外延迟由构造保证，
+    // 不靠「那一问回得够快」
+    const endpointMode = modeOf(get().billing?.me ?? null, "endpoint");
+    const sessionId = v.sessionId;
+    const sendSpoken = (text: string): void => {
+      void get().cloudSay(text, [], [], true).then((ack) => {
+        if (ack.ok) return;
+        set((s) => (s.voice && s.voice.sessionId === sessionId ? { voice: { ...s.voice, mic: { ...s.voice.mic, error: ack.message } } } : s));
+      });
+    };
+    const runHold = (e: HoldEvent): void => {
+      const step = holdStep(hold, e, Date.now(), { hold: endpointMode === "on" });
+      hold = step.state;
+      for (const fx of step.effects) {
+        if (fx.type === "send") sendSpoken(fx.text);
+        else if (fx.type === "judge") {
+          const asked = get().voice?.text ?? null;
+          void window.otter.speechJudge(fx.text, asked).then(
+            (p) => runHold({ type: "verdict", key: fx.key, p }),
+            () => runHold({ type: "verdict", key: fx.key, p: null }),
+          );
+        } else {
+          if (holdTimer !== null) clearTimeout(holdTimer);
+          holdTimer = setTimeout(() => { holdTimer = null; runHold({ type: "tick" }); }, Math.max(0, fx.at - Date.now()));
+        }
+      }
+    };
+    if (endpointMode !== "off") {
+      // 人停嘴那一刻（能量门从真变假）投机问一次：700ms 之后 final 到时答案通常已经回来
+      if (ev.type === "level" && wasActive && !ev.active && r.state.transcript.trim() !== "") runHold({ type: "quiet", text: r.state.transcript });
+      if (ev.type === "partial") runHold({ type: "partial", text: ev.text });
+    }
     if (r.final === undefined) return;
     // 说完的一句 = 我在群里说的一句：不 @（走派活），人类点名也没有。
     // `voice: true` 是这条链上唯一知道「这句话是说出来的」的地方（#1233）：
     // 转写出来的正文与手打的正文一个字节都不差，服务端与时间线都判不出来
-    const sessionId = v.sessionId;
-    void get().cloudSay(r.final, [], [], true).then((ack) => {
-      if (ack.ok) return;
-      set((s) => (s.voice && s.voice.sessionId === sessionId ? { voice: { ...s.voice, mic: { ...s.voice.mic, error: ack.message } } } : s));
-    });
+    if (endpointMode === "off") sendSpoken(r.final);
+    else runHold({ type: "final", text: r.final });
   },
   setVoiceMuted(muted) {
     if (muted) voicePlayer?.stop();
@@ -2908,7 +2990,7 @@ export const useChat = create<ChatState>((set, get) => ({
     // 通话结束（这条或更早那条空名单）：本机的监听跟着收掉——判据是日志里的名单，不是「我按了」
     const call = voiceCallOf(cs.events);
     if (call === null) {
-      stopVoice();
+      stopVoice(get);
       set({ voice: null });
       return;
     }

@@ -105,6 +105,8 @@ import type { AskUserOutcome, AskUserQuestion } from "../shared/askUser.js";
 import { imageBlocked, routeImage, routeModel } from "./modelRoute.js";
 import { currentImageModel } from "../shared/imageModel.js";
 import type { HostedQuota } from "./hostedQuota.js";
+import type { DecisionClient } from "./decisionClient.js";
+import { createMemoryTierJudge } from "./memoryTierJudge.js";
 
 /** 主进程这一侧「能不能走托管」要的三样。**具名而不是内联**（#1051）：子 agent
     与子会话重建两处也要原样接住它，形状抄三份的话，哪天多一个字段就会有人漏接，
@@ -113,9 +115,13 @@ export interface HostedCapability {
   quota: HostedQuota;
   edgeBaseUrl: () => string;
   accessToken: () => Promise<string | null>;
+  /** 决策模型（#1281）。**可选**：缺席 = 行为与改动前逐字相同，所以没装配托管的那些装配
+      （探针 / 测试 / 裸装配）不用动；装配了的四处（主会话 / 子 agent 两处 / 子会话重建）
+      跟着 `hostedDeps` 这一个对象原样接住——同这个接口具名的理由 */
+  decision?: DecisionClient;
 }
 import type { ModelLane } from "../shared/modelLane.js";
-import { pickAutoModel as pickAutoModelShared } from "../shared/autoModel.js";
+import { AUTO_DECISION_TIMEOUT_MS, pickAutoModel as pickAutoModelShared } from "../shared/autoModel.js";
 import type { Approver } from "../loop/approvalGate.js";
 import type { ExecutionWorld } from "../world/executionWorld.js";
 
@@ -721,6 +727,13 @@ export function createAgent(opts: {
       .filter((t) => t.exposure === "deferred" && !deferredExposed.has(t.def.name))
       .map((t) => ({ name: t.def.name, description: t.def.description ?? "" }));
 
+  // 记忆分档核对（#1281）。judge 与那份「被劝过一次」的簿记建在 buildTools **外面**：
+  // 工具每轮重建（连续失败计数因此每轮清零，那是既有行为），簿记跟着重建就每轮失忆——
+  // 模型原样再交一次仍然被劝，三次之后工具进终态
+  const dc = opts.hosted?.decision;
+  const judgeTier = dc ? createMemoryTierJudge(dc, (l) => console.warn(l)) : null;
+  const memoryInsisted = new Set<string>();
+
   // 工具表现在是"每 turn 现算"（engine 的 rebuildTools 调它）：MCP server
   // 在会话中途连上/掉线/改清单，这个会话就能跟着看见。内置工具每轮重建
   // 开销可以忽略（纯对象字面量），换来的是"agent 配完 MCP 当场能用"。
@@ -730,7 +743,7 @@ export function createAgent(opts: {
       todoWriteTool,
       // 只有带长期记忆能力的装配（world.config 在）才挂这把工具——没有配置目录
       // 的装配（裸装配/测试）不该对模型宣称有记忆
-      ...(world.config ? [createMemoryTool(memoryProject)] : []),
+      ...(world.config ? [createMemoryTool(memoryProject, judgeTier ? { judgeTier, insisted: memoryInsisted } : undefined)] : []),
       // 同理：world 有没有历史会话查询能力（world.history 在不在）决定挂不挂
       // session_search——没有 history 能力的装配（裸装配/测试）不该对模型宣称能查历史
       ...(world.history ? [createSessionSearchTool()] : []),
@@ -1073,11 +1086,22 @@ export function createAgent(opts: {
       if (models.length < 2) return;
       const token = await h.accessToken();
       if (!token) return;
+      const dc = h.decision;
       const picked = await pickAutoModelShared(
         {
           llmBase: `${h.edgeBaseUrl()}/llm/v1`,
           headers: { authorization: `Bearer ${token}` },
           log: (m) => console.warn(`[auto-model] ${m}`),
+          // 决策模型前置（#1281）：开着哪一档由 edge 下发的那张表说了算；off 时 shared 那一层
+          // 一下都不碰 `ask`，所以这里无条件递进去
+          ...(dc
+            ? {
+                decision: {
+                  mode: dc.mode("auto"),
+                  ask: (state, questions) => dc.decide("auto", state, questions, AUTO_DECISION_TIMEOUT_MS),
+                },
+              }
+            : {}),
         },
         text,
         models

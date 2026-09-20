@@ -1,8 +1,9 @@
 // AGENTS.md 的 Hard rules 从"写在文档里"变成"跑在门禁里"(Harness Engineering:
 // 架构约束要变成可执行检查,错误信息要带修法,不只是指出违规)。
 //
-// 六条边界。前两条是 AGENTS.md 的 Hard rules 原文,其余四条是各自 ADR 落下来的分层约束:
-//   1. 工具实现只依赖 ExecutionWorld 接口,禁止直接 import fs / child_process
+// 七条边界。前两条是 AGENTS.md 的 Hard rules 原文,其余五条是各自 ADR 落下来的分层约束:
+//   1. 工具实现只依赖 ExecutionWorld 接口,禁止直接 import fs / child_process;
+//      连带一条同源的:src/tools 也不 import src/main —— 装配留给 main(ADR-0299,#1281)
 //   2. 渲染进程只通过 ShellBridge 与后端通信,禁止直接触碰 Node API
 //   3. src/loop 不 import src/main —— turn 循环是纯逻辑层,装配(型号 id、便宜模型
 //      通道、设置文件路径)是 main 的事(ADR-0064 的微压缩就踩在这条线上)
@@ -63,6 +64,19 @@ describe("Hard rules(AGENTS.md)是门禁的一部分", () => {
       `这些工具直接碰了 Node fs/child_process:\n  ${bad.join("\n  ")}\n` +
         "修法:改走传进来的 world(world.fs.read / world.exec),让 LocalWorld 去碰真 fs;" +
         "需要新能力就在 src/world/executionWorld.ts 加接口,而不是绕过它"
+    ).toEqual([]);
+  });
+
+  it("src/tools 不 import src/main —— 工具只依赖注进来的东西,装配留给 main(#1281)", () => {
+    const bad = offenders(join(ROOT, "tools"), (s) => /^(\.\.\/)+main(\/|$)/.test(s));
+    expect(
+      bad,
+      `src/tools 这些文件反向依赖了主进程:\n  ${bad.join("\n  ")}\n` +
+        "修法:把那个能力做成参数,由 src/main 装配时注入" +
+        "(如 memory 的分档核对 judgeTier —— 判据住在 src/shared,拿网关的那一半住在 src/main,见 ADR-0299);" +
+        "工具只该依赖 shared / world,和传进来的 deps\n" +
+        "为什么补这一条:上面那条只拦 fs/child_process,而「工具直接 import 主进程」一直没人拦 ——" +
+        "src/loop 有同名的一条,src/tools 漏了(#1281 加决策模型时发现)"
     ).toEqual([]);
   });
 

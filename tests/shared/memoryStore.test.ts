@@ -238,6 +238,15 @@ describe("tierRuleText", () => {
     expect(tierRuleText({ upper: true, projectRoot: "/repo/x" })).toContain("（/repo/x）");
     expect(tierRuleText()).not.toContain("（/");
   });
+  it("tierRuleText 由 tierFact 拼出来，逐字节与改动前相同（决策模型的选项说明与它同源，#1281）", () => {
+    expect(tierRuleText({ upper: true, projectRoot: "/p" })).toBe(
+      "PROJECT 记与当前项目（/p）绑定的事（它的代码路径、分支/worktree、构建/门禁怪癖、数据目录、项目约定）；" +
+      "MEMORY 记换个项目还成立的事（本机 PATH、CLI 登录态、全局工具怪癖）——机器/环境事实不进 PROJECT；" +
+      "USER 记关于用户本人的事。" +
+      "判据一句话：换个项目还成立吗？成立写 MEMORY，不成立写 PROJECT。" +
+      "一个事实只住一档，别跨档重复；MEMORY 条目不点名具体项目（点名会被拒，改投 PROJECT）。",
+    );
+  });
 });
 
 describe("projectMentionInGlobal", () => {

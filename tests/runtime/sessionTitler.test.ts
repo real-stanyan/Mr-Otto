@@ -142,3 +142,39 @@ describe("requestTitle", () => {
     expect(log).toHaveBeenCalledWith(expect.stringContaining("超时"));
   });
 });
+
+import { TITLE_KEEP_AT, titleKeepQuestions } from "../../services/runtime/src/sessionTitler.js";
+import type { DecisionReply } from "../../src/shared/decision.js";
+
+describe("KEEP 闸（#1281）：标题还说得清就一次 LLM 都不打", () => {
+  const INPUT = { currentTitle: "修构建", context: ["[小红]: 构建为什么红了", "[开发]: 我看看"] };
+  const fits = (p: number): DecisionReply => ({ model: "jev-1.13.0", inputTokens: 40, answers: { fits: { type: "noul", noul: p } } });
+  const llmRenames = (async () => Response.json({ choices: [{ message: { content: "聊晚饭" } }] })) as typeof fetch;
+  const neverFetch = (async () => { throw new Error("LLM 不该被打"); }) as typeof fetch;
+  const deps = (fetchImpl: typeof fetch, ask: () => Promise<DecisionReply | null>, mode: "shadow" | "on" = "on") =>
+    ({ llmBase: "https://e/llm/v1", headers: {}, fetchImpl, decision: { mode, ask } });
+
+  it("titleKeepQuestions：一个 noul，标题与对话都在 state 里", () => {
+    const { state, questions } = titleKeepQuestions(INPUT);
+    expect(Object.keys(questions)).toEqual(["fits"]);
+    expect(state).toMatchObject({ title: "修构建", recent: INPUT.context });
+  });
+  it("P(还对得上) ≥ TITLE_KEEP_AT → null（= KEEP），LLM 一次都不打", async () => {
+    expect(await requestTitle(deps(neverFetch, async () => fits(TITLE_KEEP_AT)), INPUT, ["cheap"])).toBeNull();
+  });
+  it("低于它 → 交给 LLM 起名（Jev 写不了字，它只挡在前面）", async () => {
+    expect(await requestTitle(deps(llmRenames, async () => fits(0.3)), INPUT, ["cheap"])).toEqual({ title: "聊晚饭", model: "cheap" });
+  });
+  it("没问出来 → LLM", async () => {
+    expect(await requestTitle(deps(llmRenames, async () => null), INPUT, ["cheap"])).toEqual({ title: "聊晚饭", model: "cheap" });
+  });
+  it("还没有标题：不问决策（没有东西可 KEEP）", async () => {
+    let asked = false;
+    const d = deps(llmRenames, async () => { asked = true; return fits(0.99); });
+    expect(await requestTitle(d, { ...INPUT, currentTitle: "  " }, ["cheap"])).toEqual({ title: "聊晚饭", model: "cheap" });
+    expect(asked).toBe(false);
+  });
+  it("shadow：LLM 说了算", async () => {
+    expect(await requestTitle(deps(llmRenames, async () => fits(0.99), "shadow"), INPUT, ["cheap"])).toEqual({ title: "聊晚饭", model: "cheap" });
+  });
+});
