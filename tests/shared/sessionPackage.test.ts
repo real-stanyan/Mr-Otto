@@ -42,6 +42,44 @@ function richEvents(): SessionEvent[] {
     ev({ type: "session_shared", friendName: "小红", message: "你看看", grantedServers: ["shopify"] }),
     ev({ type: "session_topic_assigned", topic: "life", model: "m" }),
     ev({ type: "session_topic_set", topic: "work" }),
+    // 残留审计三兄弟（#780 M3）：基线里那两条端口/模拟器与这段对话毫无关系，
+    // 是 A 开工那一刻整台机器的照片
+    ev({
+      type: "residue_baseline",
+      ignorable: true,
+      snapshot: {
+        ts: 1,
+        simulators: [{ udid: "SIM-A 的私人模拟器", name: "iPhone 17 Pro", runtime: "iOS-26-0" }],
+        ports: [{ port: 5432, pid: 11, command: "postgres（A 自己的库）" }],
+      },
+    }),
+    ev({
+      type: "residue_detected",
+      ignorable: true,
+      origin: "archive",
+      items: [
+        {
+          detector: "ports",
+          id: "port:8080",
+          label: "A 会话期间另开的那个 app:8080",
+          confidence: "suspected",
+          cleanupHint: "仅展示，不提供清理",
+        },
+      ],
+    }),
+    ev({
+      type: "residue_cleaned",
+      ignorable: true,
+      item: {
+        detector: "process_groups",
+        id: "9001",
+        label: "python3 -m http.server 9999",
+        confidence: "owned",
+        cleanupHint: "kill 进程组 9001",
+        pgid: 9001,
+      },
+      result: { id: "9001", ok: true, kind: "cleaned" },
+    }),
     ev({ type: "turn_ended", outcome: "completed" }),
   ];
 }
@@ -115,6 +153,22 @@ describe("applyPrivacyGate（隐私闸，issue #611 的命门）", () => {
     expect(kept.map((e) => e.type)).not.toContain("session_topic_set");
     expect(stripped).toContain("session_topic_assigned");
     expect(stripped).toContain("session_topic_set");
+  });
+
+  it("剥掉残留审计三兄弟（#780 M3）——那是 A 那台机器的指纹，不是这段对话", () => {
+    const { kept, stripped } = applyPrivacyGate(richEvents());
+    const keptTypes = kept.map((e) => e.type);
+    for (const t of ["residue_baseline", "residue_detected", "residue_cleaned"] as const) {
+      expect(keptTypes).not.toContain(t);
+      expect(PRIVACY_STRIP_TYPES.has(t)).toBe(true);
+      expect(stripped).toContain(t);
+    }
+    // 判据不是「类型名没了」而是「那些字节没了」：基线里的端口/模拟器、
+    // suspected 那条里别的 app 的名字，一个都不许随包出门
+    const wire = JSON.stringify(kept);
+    expect(wire).not.toContain("postgres（A 自己的库）");
+    expect(wire).not.toContain("SIM-A 的私人模拟器");
+    expect(wire).not.toContain("A 会话期间另开的那个 app:8080");
   });
 
   it("剥掉「这条会话以前还分享给过谁」——发给 B 的包不该带发送方的社交关系与授权史", () => {
