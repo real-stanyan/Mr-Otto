@@ -43,6 +43,20 @@ export function layoutFor(ch: FaceCharacter): Layout {
   };
 }
 
+/** 想让这张脸占多高（像素）→ 该用第几档缩放。
+ *
+ *  角色的网格大小是各画各的：Otto 的 logo 原生 19×18，这批头像原生二十四五格，
+ *  同一个 scale 摆一排，Otto 会小掉四成。缩放只能取整（取小数就是次像素插值，
+ *  像素画当场糊掉），所以这里不是等比，是「就近的那一档」——一排脸高度差几格，
+ *  比差四成好看得多，也比把谁的矩阵硬拉一遍诚实。 */
+export function scaleForHeight(ch: FaceCharacter, targetPx: number): number {
+  const unit = layoutFor(ch).gridH;
+  const lo = Math.max(1, Math.floor(targetPx / unit));
+  // 正好卡在两档中间时往小里取。往大取会超出目标一整格高，而一排脸里冒出来的
+  // 那一个比整排矮一点显眼得多——Math.round 的 .5 进位恰好会踩这个坑
+  return Math.abs(lo * unit - targetPx) <= Math.abs((lo + 1) * unit - targetPx) ? lo : lo + 1;
+}
+
 export interface Frame {
   readonly w: number;
   readonly h: number;
@@ -154,8 +168,9 @@ export function composeFrame(
     const row = ch.base[j] ?? "";
     for (let i = 0; i < ch.w; i++) put(i + ox, j + oy, (row[i] ?? ".") as Tone);
   }
-  for (const [r0, r1, c0, c1] of ch.erase) {
-    for (let y = r0; y <= r1; y++) for (let x = c0; x <= c1; x++) put(x + ox, y + oy, ch.skin);
+  for (const [r0, r1, c0, c1, fill] of ch.erase) {
+    const tone = fill ?? ch.skin;
+    for (let y = r0; y <= r1; y++) for (let x = c0; x <= c1; x++) put(x + ox, y + oy, tone);
   }
 
   // ---- 五官 ----

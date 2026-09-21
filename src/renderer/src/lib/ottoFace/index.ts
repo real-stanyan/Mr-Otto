@@ -18,10 +18,10 @@ export type { FaceState, FaceStateDef, LookDriver } from "./states.js";
 export type { BadgeName } from "./badges.js";
 export type { FaceSourceInput, VoiceState } from "./adapter.js";
 export { deriveBrows, deriveEyes, deriveMouths } from "./character.js";
-export { composeFrame, layoutFor } from "./compose.js";
+export { composeFrame, layoutFor, scaleForHeight } from "./compose.js";
 export { ACCENT, FACE_STATES, FACE_STATE_LIST, isFaceState } from "./states.js";
 export { faceStateFor, SLEEP_AFTER_MS } from "./adapter.js";
-export { OTTO } from "./characters/otto.js";
+export { FACE_CHARACTERS, faceCharacter, OTTO, BERET, SPECS, SCHOLAR, BOB, SAGE, STOIC, CAP } from "./characters/index.js";
 
 export interface FaceOptions {
   readonly character: FaceCharacter;

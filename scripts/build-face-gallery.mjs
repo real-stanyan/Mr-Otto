@@ -53,6 +53,7 @@ select,button{font:inherit;font-size:13px;padding:5px 11px;border-radius:8px;bor
 button:active{transform:scale(.97)}
 button[data-on="1"]{background:var(--fg);color:var(--bg);border-color:var(--fg)}
 .seg{display:flex;gap:4px}
+#cast{display:grid;grid-template-columns:repeat(auto-fill,minmax(138px,1fr));gap:14px;justify-items:center}
 #wall{display:grid;grid-template-columns:repeat(auto-fill,minmax(178px,1fr));gap:14px}
 .card{border:1px solid var(--line);border-radius:12px;background:var(--card);padding:14px 14px 12px;overflow:hidden}
 .stage{display:flex;justify-content:center;align-items:flex-end;min-height:132px;margin-bottom:10px}
@@ -90,8 +91,13 @@ pre{border:1px solid var(--line);border-radius:12px;background:var(--card);paddi
      「空闲」跟指针，其余各有各的驱动。</p>
   <div id="wall" style="margin-top:14px"></div>
 
+  <h2>角色墙</h2>
+  <p class="note">同一套引擎，八份纯数据。引擎不认角色是谁 —— 换脸只换一个 <code>FaceCharacter</code>，
+     状态表、角标、呼吸、眨眼全共用。鼠标移到脸上，眼睛会跟。</p>
+  <div id="cast" style="margin-top:14px"></div>
+
   <h2>并行墙</h2>
-  <p class="note">八只 agent 同屏，1× 原生网格（真实花名册尺寸）。这是这套东西真正要解的场景：
+  <p class="note">八只 agent 同屏，各是各的角色、各是各的状态，按 52px 取整缩放（真实花名册尺寸）。这是这套东西真正要解的场景：
      脸负责近看，角标负责扫一眼 —— 先按色收敛（蓝＝在干活 / 琥珀＝要你 / 绿＝成了 / 红＝崩了），再看是哪一格。</p>
   <div id="roster" style="margin-top:14px"></div>
 
@@ -114,11 +120,13 @@ face.setState(faceStateFor({
 face.destroy()     // 花名册一屏十几个实例，别忘了这一行</code></pre>
 
   <h2>加一个角色</h2>
-  <pre><code>node scripts/extract-face-sprite.mjs \\
-  src/renderer/src/assets/agent-avatars/01.png --id agent01 --cols 48</code></pre>
-  <p class="note">脚本出矩阵与对照图；<b>擦除框和五官锚点是人定的</b> —— 它按深色连通块给候选，
-     写进文件注释里，对着对照图确认即可。猜错的代价（眼睛歪一格）肉眼一秒看得出来，
-     所以没让它自动判。</p>
+  <pre><code>node scripts/extract-face-sprite.mjs 头像.png --id 名字 --cols 48 --preview /tmp/看一眼.png
+# 出 characters/名字.ts + 对照图，然后：
+#   1. 对着对照图填 erase 与 anchors（脚本按深色连通块给了候选，写在文件注释里）
+#   2. 在 characters/index.ts 的 FACE_CHARACTERS 里加一行</code></pre>
+  <p class="note"><b>擦除框和五官锚点是人定的</b>，脚本只提议。猜错的代价（眼睛歪一格）肉眼一秒
+     看得出来，自动判对的收益不值得那套启发式。戴眼镜的角色<b>只抹镜片内腔</b>，镜框归脸；
+     五官长在别的东西上的（大胡子的嘴），擦除框写第五项指定填什么色。</p>
 </div>
 <script>${js}</script>
 `;

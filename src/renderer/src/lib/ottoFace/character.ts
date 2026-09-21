@@ -23,8 +23,14 @@ export type Tone = string;
 export type EyeShape = "open" | "blink" | "happy" | "wide" | "squint" | "sleep" | "dizzy";
 export type MouthShape = "smile" | "grin" | "flat" | "o" | "small" | "purse" | "wavy";
 
-/** `[row0, row1, col0, col1]`，闭区间，写在角色自己的矩阵坐标里 */
-export type Box = readonly [number, number, number, number];
+/** `[row0, row1, col0, col1]`，闭区间，写在角色自己的矩阵坐标里。
+ *
+ *  第五项是**这块抹平之后填什么色**，默认 `skin`。绝大多数角色不用写：五官长在脸上，
+ *  抹掉就该露出脸色。需要它的是五官长在别的东西上的角色——大胡子的嘴陷在胡子里，
+ *  抹成脸白会在胡子中间开一个洞。 */
+export type Box =
+  | readonly [number, number, number, number]
+  | readonly [number, number, number, number, Tone];
 
 /** 一对眼睛。左右分开存而不是镜像：这批头像多是四分之三侧脸，两眼宽度本来就差一格，
  *  镜像会把那点透视抹掉，脸立刻变正而且变呆 */
@@ -100,9 +106,12 @@ export function deriveEyes(spec: {
   };
 }
 
-/** 嘴宽 → 全套七种嘴形。宽度必须是奇数，居中对称才成立 */
+/** 嘴宽 → 全套七种嘴形。宽度必须是奇数，居中对称才成立。
+ *
+ *  下限 5：再窄的话 `corners()` 的两对嘴角就接在一起了，出来的行比 w 还长——
+ *  不是崩，是画出一张宽度对不上的嘴，正是那种没人会去报的 bug */
 export function deriveMouths(width: number): Record<MouthShape, string[]> {
-  const w = width % 2 === 0 ? width + 1 : width;
+  const w = Math.max(5, width % 2 === 0 ? width + 1 : width);
   const mid = Math.floor(w / 2);
   const row = (fill: string): string => fill.padEnd(w, ".").slice(0, w);
   const centred = (n: number): string => {

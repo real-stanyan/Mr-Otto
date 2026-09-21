@@ -2,8 +2,9 @@
 // （坐标加了两次偏移量，泡跑到网格外三列被裁掉），而那种错不会抛异常。
 
 import { describe, expect, it } from "vitest";
-import { BADGE_SIZE, composeFrame, layoutFor, PAD_L } from "@/lib/ottoFace/compose.js";
+import { BADGE_SIZE, composeFrame, layoutFor, PAD_L, scaleForHeight } from "@/lib/ottoFace/compose.js";
 import { FACE_STATE_LIST } from "@/lib/ottoFace/states.js";
+import { FACE_CHARACTERS } from "@/lib/ottoFace/characters/index.js";
 import { OTTO } from "@/lib/ottoFace/characters/otto.js";
 
 const L = layoutFor(OTTO);
@@ -100,5 +101,24 @@ describe("composeFrame", () => {
     for (let t = 0; t < 8000; t += 10) frames.add(composeFrame(OTTO, "idle", t).rows.join(""));
     // 8 秒内至少眨过一次（帧形态不止一种）
     expect(frames.size).toBeGreaterThan(1);
+  });
+});
+
+describe("scaleForHeight", () => {
+  it("永远是正整数——取小数就是次像素插值，像素画当场糊掉", () => {
+    for (const ch of FACE_CHARACTERS) {
+      for (const px of [1, 13, 52, 112, 400]) {
+        const s = scaleForHeight(ch, px);
+        expect(Number.isInteger(s)).toBe(true);
+        expect(s).toBeGreaterThanOrEqual(1);
+      }
+    }
+  });
+
+  it("同一个目标高度下，全体角色收敛到一个尺寸段里", () => {
+    // 这条是这个函数存在的理由：Otto 原生 19×18，这批头像原生二十四五格，
+    // 同一个 scale 摆一排 Otto 会小掉四成。断言最高最矮不超过 1.35 倍
+    const hs = FACE_CHARACTERS.map((ch) => layoutFor(ch).gridH * scaleForHeight(ch, 120));
+    expect(Math.max(...hs) / Math.min(...hs)).toBeLessThan(1.35);
   });
 });

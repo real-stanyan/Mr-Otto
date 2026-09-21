@@ -5,9 +5,9 @@
 // 之所以值得单独做而不是挂进应用里：数据源还没到位（#1282），接进花名册就只能看到
 // 「空闲」一格；而这一页可以把十五格同时摆出来，对着看才知道哪两格撞脸。
 
-import { createFace, FACE_STATES, FACE_STATE_LIST, OTTO, type FaceCharacter, type FaceHandle, type FaceState } from "../index.js";
+import { createFace, FACE_CHARACTERS, scaleForHeight, FACE_STATES, FACE_STATE_LIST, OTTO, type FaceCharacter, type FaceHandle, type FaceState } from "../index.js";
 
-const CHARACTERS: readonly FaceCharacter[] = [OTTO];
+const CHARACTERS: readonly FaceCharacter[] = FACE_CHARACTERS;
 /** 并行墙演示的取样：覆盖五类强调色，因为一墙头像的第一眼是按色收敛的 */
 const WALL: readonly FaceState[] = ["waiting", "queued", "thinking", "searching", "working", "answering", "done", "failed"];
 
@@ -22,8 +22,8 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: 
   return n;
 }
 
-function mount(host: HTMLElement, state: FaceState, s: number, pointer: boolean): void {
-  live.push(createFace(host, { character, state, scale: s, followPointer: pointer }));
+function mount(host: HTMLElement, state: FaceState, s: number, pointer: boolean, who: FaceCharacter = character): void {
+  live.push(createFace(host, { character: who, state, scale: s, followPointer: pointer }));
 }
 
 function render(): void {
@@ -48,15 +48,30 @@ function render(): void {
     }
   }
 
+  const cast = document.getElementById("cast");
+  if (cast !== null) {
+    cast.replaceChildren();
+    for (const who of CHARACTERS) {
+      const cell = el("div", "rcell");
+      const stage = el("div");
+      cell.append(stage, el("span", "rlabel", who.name));
+      cast.append(cell);
+      mount(stage, "idle", scaleForHeight(who, 112), true, who);
+    }
+  }
+
   const roster = document.getElementById("roster");
   if (roster !== null) {
     roster.replaceChildren();
-    for (const state of WALL) {
+    // 一人一状态，不是同一张脸摆八遍——花名册上本来就是八个不同的 agent 各干各的，
+    // 同脸摆八遍会把「角标够不够一眼分得开」这件事问漏
+    for (const [i, state] of WALL.entries()) {
+      const who = CHARACTERS[i % CHARACTERS.length] ?? OTTO;
       const cell = el("div", "rcell");
       const stage = el("div");
-      cell.append(stage, el("span", "rlabel", FACE_STATES[state].zh));
+      cell.append(stage, el("span", "rlabel", `${who.name} · ${FACE_STATES[state].zh}`));
       roster.append(cell);
-      mount(stage, state, 1, false);
+      mount(stage, state, scaleForHeight(who, 52), false, who);
     }
   }
 }
