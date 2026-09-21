@@ -140,11 +140,13 @@ describe("scaleForHeight", () => {
     }
   });
 
-  it("同一个目标高度下，全体角色收敛到一个尺寸段里", () => {
-    // 这条是这个函数存在的理由：Otto 原生 19×18，这批头像原生二十四五格，
-    // 同一个 scale 摆一排 Otto 会小掉四成。断言最高最矮不超过 1.35 倍
-    const hs = FACE_CHARACTERS.map((ch) => layoutFor(ch).gridH * scaleForHeight(ch, 120));
-    expect(Math.max(...hs) / Math.min(...hs)).toBeLessThan(1.35);
+  it("全体角色在同一个目标高度下拿到同一档缩放", () => {
+    // 十一个角色现在共用一张画布，所以这里该是全等而不是「差不多」。
+    // 还留着这条是因为它会在有人加了一个没补白的角色时立刻红
+    for (const px of [52, 96, 120, 240]) {
+      const s = new Set(FACE_CHARACTERS.map((ch) => scaleForHeight(ch, px)));
+      expect(s.size, `目标 ${px}px`).toBe(1);
+    }
   });
 });
 

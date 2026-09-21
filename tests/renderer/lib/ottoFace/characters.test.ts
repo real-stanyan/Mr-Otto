@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from "vitest";
 import { BADGE_SIZE, composeFrame, layoutFor } from "@/lib/ottoFace/compose.js";
-import { FACE_CHARACTERS, faceCharacter, SAGE } from "@/lib/ottoFace/characters/index.js";
+import { FACE_CANVAS, FACE_CHARACTERS, faceCharacter, SAGE } from "@/lib/ottoFace/characters/index.js";
 import { FACE_STATE_LIST } from "@/lib/ottoFace/states.js";
 import { deriveBrows, deriveEyes, deriveMouths, type FaceCharacter } from "@/lib/ottoFace/character.js";
 
@@ -123,5 +123,27 @@ describe("擦除框的填充色", () => {
     // 而那个洞只在 sage 身上出现，跑 Otto 的用例一格红都不会有
     const mouth = SAGE.erase.find((b) => b[4] !== undefined);
     expect(mouth?.[4]).toBe("g");
+  });
+});
+
+describe("一排头像不能一个大一个小", () => {
+  // 缩放只能取整（取小数就是次像素插值，像素画当场糊掉），所以「显示成一样大」这件事
+  // 在渲染这一侧补不回来，必须在数据里就对齐。这两条钉住的就是那个前提。
+  it("全体角色共用同一张画布", () => {
+    for (const ch of FACE_CHARACTERS) {
+      expect(ch.w, `${ch.id} 宽`).toBe(FACE_CANVAS.w);
+      expect(ch.h, `${ch.id} 高`).toBe(FACE_CANVAS.h);
+    }
+  });
+
+  it("头部外框高度最多差三格", () => {
+    // 不是「完全相等」：外框高度是提取网格的阶梯函数，会跳过某些值——齐刘海和平头
+    // 在四十到六十格之间扫一遍，46、47 两个值一次都没出现过。硬凑相等只能去拉伸矩阵，
+    // 那是拿一眼看得出的变形换一个看不出的差别。三格 ≈ 6%，原来是 33%
+    const hs = FACE_CHARACTERS.map((ch) => {
+      const ys = ch.base.flatMap((r, j) => ([...r].some((c) => c !== ".") ? [j] : []));
+      return (ys.at(-1) ?? 0) - (ys[0] ?? 0) + 1;
+    });
+    expect(Math.max(...hs) - Math.min(...hs), `头高 ${hs.join(",")}`).toBeLessThanOrEqual(3);
   });
 });

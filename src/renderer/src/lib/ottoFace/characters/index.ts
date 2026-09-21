@@ -25,3 +25,8 @@ export const FACE_CHARACTERS: readonly FaceCharacter[] = [
 export function faceCharacter(id: string): FaceCharacter | undefined {
   return FACE_CHARACTERS.find((c) => c.id === id);
 }
+
+/** 全体角色共用的网格尺寸。**加角色时新角色必须补白到这个尺寸**（有测试钉着）——
+ *  花名册上一排头像，谁大一圈谁小一圈是第一眼就看得出来的，而缩放只能取整，
+ *  靠渲染这一侧补不回来。 */
+export const FACE_CANVAS = { w: FACE_CHARACTERS[0]!.w, h: FACE_CHARACTERS[0]!.h } as const;

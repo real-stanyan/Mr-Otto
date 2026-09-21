@@ -1,86 +1,87 @@
-// specs —— 由 scripts/extract-face-sprite.mjs 从 prep4.png 提取。
+// specs —— 由 scripts/extract-face-sprite.mjs 从原图提取。
+//
+// 方框眼镜 —— 镜框是脸的一部分，不动；只抹镜片内腔，眼睛在框里换。
 //
 // 矩阵是脚本产物，可以重跑覆盖；**锚点与擦除框是人定的**，改了就别再整段覆盖。
-// 提取参数：格宽 8.067 / 相位 (1.5, 7.75) / 重建误差 6.4%
+// 头高 46 格，与花名册其余角色对齐（见 characters/index.ts）。
 
-//
-// 镜框是脸的一部分，不动。只抹镜片内腔，眼睛在框里换——这比加一层 `front` 画镜框省事：
-// 收窄擦除框是四个数字，`front` 是又一张要跟着脸对齐的矩阵。
-
-import { deriveBrows, deriveEyes, deriveMouths, type FaceCharacter } from "../character.js";
+import { deriveEyes, deriveMouths, type FaceCharacter } from "../character.js";
 
 export const SPECS: FaceCharacter = {
   id: "specs",
   name: "方框眼镜",
-  w: 46,
-  h: 45,
+  w: 55,
+  h: 48,
   ink: "#",
   skin: "o",
   palette: { "#": "#0A0A0B", "d": "#3C3F44", "o": "#FAFAFA" },
   base: [
-    "..............................................",
-    "............###################...............",
-    "............###################...............",
-    "..........##########dd#############...........",
-    "..........##########dd#############...........",
-    ".......#####dddddddd#################.........",
-    ".......#####dddddddd#################.........",
-    "....######dddddddddddd##########ddd#####......",
-    "....######dddddddddddd##########ddd#####......",
-    "....####ddddddddooooooooo########oooo###......",
-    "....####ddddddddooooooooo########oooo###......",
-    "..####ddddddddoooooooooooooooooooooooo###.....",
-    "..####ddddddddoooooooooooooooooooooooo###.....",
-    "..####ddddddddoooooooooooooooooooooooo###.....",
-    "..###dddddddddooooooooooooooooooooooooo###....",
-    "..##ddddddddddoooooooooooooooooooooooooo###...",
-    "..##ddddddddddoooooooooooooooooooooooooo###...",
-    "..##ddddddddddoooooooooooooooooooooooooo###...",
-    "..##ddddddddddooooooooo##ooooooooooo##oo###...",
-    "..##ddddddooooooooo######ooooooooooo##oo###...",
-    "..##ddddddooooooooooooooooooooooooooooooo##...",
-    "..##ddddddooooooooooooooooooooooooooooooo##...",
-    "..##ddddddooooo##############ooo##############",
-    "..######ddooooo##############ooo##############",
-    "..###############ooooo#######ooo##oo###oo#####",
-    "###oooo##########ooooo####o##ooo##oo###oo##o##",
-    "###oooo###ooooo##ooooo####o#######oo###oo##o##",
-    "###oooo###ooooo##ooooo####o#######oo###oo##o##",
-    "###oooo###ooooo##ooooo####o##ooo##oo###oo##o##",
-    "###oooooooooooo##oooooooooo##ooo##ooooooo##o##",
-    "###oooooooooooo##oooooooooo##ooo##ooooooo#####",
-    "###oooooooooooooo##########ooooooo##########..",
-    "#####oooooooooooo##########ooooooo##########..",
-    "######oooooooooooooooooooooooooooooooooo###...",
-    "...###oooooooooooooooooooooooooooooooooo###...",
-    "...#######oooooooooooooooooooooooooooooo###...",
-    "...#######oooooooooooooooooooooooooooooo###...",
-    ".......###oooooooooooooooo########oooooo###...",
-    ".......###oooooooooooooooo########oooo###.....",
-    ".......###oooooooooooooooo#######ooooo###.....",
-    ".........###oooooooooooooooooooooooo#####.....",
-    ".........###oooooooooooooooooooooooo###.......",
-    "..........###########################.........",
-    "...........#########################..........",
-    "...........#########################..........",
+    ".......................................................",
+    "................####################...................",
+    "................####################...................",
+    "................####################...................",
+    "..............##########dd##############...............",
+    ".............###########dd##############...............",
+    "...........#####dddddddd##################.............",
+    "..........######dddddddd##################.............",
+    ".......#######dddddddddddd##########dddd#####..........",
+    ".......#######dddddddddddd##########dddd#####..........",
+    ".......#####ddddddddoooooooooo########oooo###..........",
+    ".......#####ddddddddoooooooooo########oooo###..........",
+    "......###dddddddddooooooooooooooooooooooooo###.........",
+    ".....####dddddddddooooooooooooooooooooooooo###.........",
+    ".....####dddddddddooooooooooooooooooooooooo###.........",
+    ".....####dddddddddooooooooooooooooooooooooo###.........",
+    ".....###ddddddddddooooooooooooooooooooooooooo###.......",
+    ".....###ddddddddddooooooooooooooooooooooooooo###.......",
+    ".....###ddddddddddooooooooooooooooooooooooooo###.......",
+    ".....###ddddddddddooooooooooooooooooooooooooo###.......",
+    ".....###ddddddoooooooo########oooooooooo####o###.......",
+    ".....###ddddddoooooooo########oooooooooo####o###.......",
+    ".....###ddddddoooooooooooooooooooooooooooooooo##.......",
+    ".....###ddddddoooooooooooooooooooooooooooooooo##.......",
+    ".....#######ddooooo###############ooo##############....",
+    ".....#######ddooooo##ooooo########ooo#######oo#####....",
+    ".....################oooooo###oo##ooo##oo###oo##o##....",
+    "...###ooooo##########oooooo###oo#######oo###oo##o##....",
+    "...###ooooo###ooooo##oooooo###oo#######oo###oo##o##....",
+    "...###ooooo###ooooo##oooooo###oo##ooo##oo###oo##o##....",
+    "...###ooooo###ooooo##oooooo###oo##ooo##oo###oo##o##....",
+    "...###ooooooooooooo##ooooooooooo##ooo##ooooooo##o##....",
+    "...###ooooooooooooo##ooooooooooo##ooo##ooooooo#####....",
+    "...###ooooooooooooooo###########ooooooo##########......",
+    "...######oooooooooooo###########ooooooo##########......",
+    "...######oooooooooooooooooooooooooooooooooooo###.......",
+    ".......##ooooooooooooooooooooooooooooooooooooo##.......",
+    ".......#######oooooooooooooooooooooooooooooooo##.......",
+    ".......#######oooooooooooooooooooooooooooooooo##.......",
+    "..........####oooooooooooooooo#########oooooo###.......",
+    "...........###oooooooooooooooo#########oooo###.........",
+    "...........###oooooooooooooooo########ooooo###.........",
+    "............####ooooooooooooooooooooooooo#####.........",
+    ".............###ooooooooooooooooooooooooo###...........",
+    ".............###ooooooooooooooooooooooooo###...........",
+    "...............##########################..............",
+    "...............##########################..............",
+    ".......................................................",
   ],
   erase: [
-    [17, 20, 18, 25], // 左眉
-    [17, 20, 35, 38], // 右眉
-    [24, 30, 17, 26], // 左镜片内腔——不含镜框
-    [24, 30, 34, 40], // 右镜片内腔
-    [36, 40, 24, 34], // 嘴
+    [18, 22, 21, 30], // 左眉
+    [18, 22, 39, 44], // 右眉
+    [38, 42, 28, 39], // 嘴
   ],
   anchors: {
-    browL: [19, 18], browR: [36, 18],
-    eyeL: [22, 24], eyeR: [36, 24],
-    mouth: [25, 37],
+    browL: [22, 20], browR: [40, 20],
+    eyeL: [26, 25], eyeR: [41, 25],
+    mouth: [30, 39],
   },
   eyes: deriveEyes({ lw: 4, lh: 5, rw: 3, rh: 5 }),
-  brows: deriveBrows(6, 2),
+  // 眉毛直接用原图那两条，不再 deriveBrows——搬家的比例不是整数，
+  // 乘完取整会让两条眉毛差一格，而那一格肉眼一秒看得出来
+  brows: { L: ["########", "########"], R: ["####", "####"] },
   mouths: {
     ...deriveMouths(9),
-    // 原图的嘴就是一条横杠，没有笑弧。默认的 smile 会把人画成另一个角色
-    smile: ["#########", "#########", "#########"],
+    // 原图那张嘴，从矩阵里读出来的
+    smile: ["#########", "#########", "########."],
   },
 };

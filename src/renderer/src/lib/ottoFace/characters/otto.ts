@@ -1,89 +1,89 @@
-// Otto —— 产品自己的 logo（`resources/icon.png`）。
+// otto —— 由 scripts/extract-face-sprite.mjs 从原图提取。
 //
-// 它本来就是一张脸，所以这个角色不是新画的，是让 logo 自己动起来。没有第二套视觉资产
-// 要维护，也不存在「吉祥物和 logo 不像」这种问题。
+// Otto —— 产品自己的脸。矩阵由现有精修版重采样到统一头高，不是从 logo PNG 重提：那张 PNG 是软渲染，提出来是一团糊。
 //
-// 矩阵是从 icon.png 反解的：逐格取样 + 边缘抗锯齿清理（原始提取在右缘多采了一列，
-// 中段凭空多出一条 1 格宽 9 格高的竖条；清掉的是那一类）。与原图约 3% 偏差，全在右侧
-// 头发的厚度上。有原始源文件的话换掉 `base` 即可，下游一个字不用改。
-//
-// 眼睛左 2 格宽、右 3 格宽，眉毛左 5 右 3 —— 不是画错，是 logo 本身的四分之三侧脸。
-// 做成左右对称会把那点透视抹掉，脸立刻变正而且变呆。
+// 矩阵是脚本产物，可以重跑覆盖；**锚点与擦除框是人定的**，改了就别再整段覆盖。
+// 头高 46 格，与花名册其余角色对齐（见 characters/index.ts）。
 
-import { deriveBrows, deriveEyes, deriveMouths, type FaceCharacter } from "../character.js";
-
-const MOUTHS = deriveMouths(9);
+import { deriveEyes, deriveMouths, type FaceCharacter } from "../character.js";
 
 export const OTTO: FaceCharacter = {
   id: "otto",
   name: "Otto",
-  w: 38,
-  h: 36,
+  w: 55,
+  h: 48,
   ink: "#",
   skin: "o",
-  palette: { "#": "#0A0A0B", "d": "#26282A", "g": "#4E5054", "o": "#FEFEFE" },
+  palette: { "#": "#0A0A0B", "d": "#3C3F44", "o": "#FAFAFA" },
   base: [
-    "...........##################.........",
-    "...........##################.........",
-    ".........###dddddgggggggdddd###.......",
-    ".........###dddddgggggggdddd###.......",
-    "......###ddgggdgggggggggddgggdd###....",
-    "......###ddgggdgggggggggddgggdd###....",
-    "....##ddgggggggddddddddddddddddddd##..",
-    "....##ddgggggggddddddddddddddddddd##..",
-    "..##ggggggggggg###############ddddd#..",
-    "..##ggggggggggg###############ddddd#..",
-    "..##ggggggggdd##oooooooooooooo##ddddd.",
-    "..##ggggggggdd##oooooooooooooo##ddddd.",
-    "..##ggggdddd##oooooooooooooooooo##ddd.",
-    "..##ggggdddd##oooooooooooooooooo##ddd.",
-    "..##ggdddd##oooooooooooooooooooo##ddd.",
-    "..##ggdddd##oooooooooooooooooooo##ddd.",
-    "..##ddddd#oooo#####oooooooo###oo##ddd.",
-    "..##ddddd#oooo#####oooooooo###oo##ddd.",
-    "..######d#oooooooooooooooooooooooo###.",
-    "..######d#oooooooooooooooooooooooo###.",
-    "..##ooood#ooooood##oooooooo###oooo##..",
-    "..##ooood#ooooood##oooooooo###oooo##..",
-    "..##oooo##ooooood##oooooooo###oooo##..",
-    "..##oooo##ooooood##oooooooo###oooo##..",
-    "..##oooooooooooooooooooooooooooooo##..",
-    "..##oooooooooooooooooooooooooooooo##..",
-    "....##oooooooooooooooooooooooooooo##..",
-    "....##oooooooooooo##oooooggooooooo##..",
-    "....######oooooooo##ooooo##ooooooo##..",
-    "....######oooooooog#gggggdgooooooo##..",
-    "........##ooooooooo######goooooo##....",
-    "........##oooooooooooooooooooooo##....",
-    "..........##oooooooooooooooooo##......",
-    "..........##oooooooooooooooooo##......",
-    "............##################........",
-    "............##################........",
+    ".......................................................",
+    ".................######################................",
+    ".................######################................",
+    ".................#######################...............",
+    "..............##########ddddddddd#########.............",
+    "..............##########ddddddddd#########.............",
+    "...........######ddd##ddddddddddd###ddd######..........",
+    "...........######dddd#ddddddddddd###ddd#######.........",
+    "...........######dddddddddddddddd###ddd#######.........",
+    "........#####ddddddddd##########################.......",
+    "........#####ddddddddd##########################.......",
+    ".....###dddddddddddddd##########################.......",
+    ".....###dddddddddddddd##########################.......",
+    ".....###dddddddddddddd##########################.......",
+    ".....###dddddddddd#####oooooooooooooooooo#########.....",
+    ".....###dddddddddd#####oooooooooooooooooo#########.....",
+    ".....###ddddd########oooooooooooooooooooooo#######.....",
+    ".....###ddddd########oooooooooooooooooooooo#######.....",
+    ".....###ddddd########oooooooooooooooooooooo#######.....",
+    ".....###ddd#######ooooooooooooooooooooooooo#######.....",
+    ".....###ddd#######ooooooooooooooooooooooooo#######.....",
+    ".....###########ooooo######oooooooooo###ooo#######.....",
+    ".....###########ooooo######oooooooooo####oo#######.....",
+    ".....###########ooooo######oooooooooo####oo#######.....",
+    ".....###########oooooooooooooooooooooooooooooo####.....",
+    ".....###########oooooooooooooooooooooooooooooo####.....",
+    ".....###ooooo###oooooooo###oooooooooo###oooooo###......",
+    ".....###ooooo###ooooooo####oooooooooo####ooooo##.......",
+    ".....###ooooo###ooooooo####oooooooooo####ooooo##.......",
+    ".....###ooooo###ooooooo####oooooooooo####ooooo##.......",
+    ".....###ooooo###ooooooo####oooooooooo####ooooo##.......",
+    ".....###oooooooooooooooooooooooooooooooooooooo##.......",
+    ".....###oooooooooooooooooooooooooooooooooooooo##.......",
+    ".....###oooooooooooooooooooooooooooooooooooooo##.......",
+    "........###ooooooooooooooooooooooooooooooooooo##.......",
+    "........###ooooooooooooooo##oooooooooooooooooo##.......",
+    "........#######ooooooooooo##ooooooo##ooooooooo##.......",
+    "........########oooooooooo##oooooo###ooooooooo##.......",
+    "........########oooooooooo###dddd####ooooooooo##.......",
+    ".............###ooooooooooo#########ooooooo###.........",
+    ".............###ooooooooooooooooooooooooooo###.........",
+    "...............###ooooooooooooooooooooooo###...........",
+    "................##ooooooooooooooooooooooo##............",
+    "................##ooooooooooooooooooooooo##............",
+    "..................#######################..............",
+    "..................#######################..............",
+    "..................#######################..............",
+    ".......................................................",
   ],
-  // 眼睛那两块各往外多擦一列：眼眶边上留着一格抗锯齿灰，不擦掉的话换成窄一点的
-  // 表情（眯眼 / 笑眼）时它会露在外面，看着像一颗没擦干净的脏点
   erase: [
-    [16, 17, 14, 18], // 左眉
-    [16, 17, 27, 29], // 右眉
-    [20, 23, 16, 19], // 左眼
-    [20, 23, 26, 30], // 右眼
-    [27, 30, 18, 26], // 嘴
+    [20, 24, 20, 27], // 左眉
+    [20, 24, 36, 41], // 右眉
+    [26, 31, 22, 27], // 左眼
+    [26, 31, 36, 41], // 右眼
+    [35, 40, 25, 37], // 嘴
   ],
-  // 锚点是从原 logo 里量出来的，不按几何中心重排 —— 重排会让换表情时眼睛整体漂一格，
-  // 而那一格在 38 格宽的脸上肉眼可见
   anchors: {
-    browL: [14, 16],
-    browR: [27, 16],
-    eyeL: [17, 20],
-    eyeR: [27, 20],
-    mouth: [18, 27],
+    browL: [21, 21], browR: [37, 21],
+    eyeL: [23, 27], eyeR: [37, 27],
+    mouth: [26, 36],
   },
-  eyes: deriveEyes({ lw: 2, lh: 4, rw: 3, rh: 4 }),
-  brows: deriveBrows(5, 3),
+  eyes: deriveEyes({ lw: 4, lh: 4, rw: 4, rh: 4 }),
+  // 眉毛直接用原图那两条，不再 deriveBrows——搬家的比例不是整数，
+  // 乘完取整会让两条眉毛差一格，而那一格肉眼一秒看得出来
+  brows: { L: ["######", "######", "######"], R: ["###.", "####", "####"] },
   mouths: {
-    ...MOUTHS,
-    // logo 原装的那张嘴：两个上扬的嘴角 + 下面一条横杠。这是 Otto 的静息表情，
-    // 属于品牌的一部分，所以不用推导出来的对称版
-    smile: ["##.....##", "##.....##", ".########", ".######.."],
+    ...deriveMouths(11),
+    // 原图那张嘴，从矩阵里读出来的
+    smile: ["##.......##", "##......###", "###########", ".#########."],
   },
 };
