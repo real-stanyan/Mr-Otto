@@ -7,7 +7,7 @@
 // 那颗撒谎的勾。所以 plain 不画角标、也不动。顺带还掉第二笔账：一墙脸同时呼吸本身就是
 // 噪音，而名册是每天要扫几十遍的东西。
 //
-// 两条硬规矩（#1307 的法理 ①②，都不是配色细节）：
+// 三条硬规矩（都不是配色细节）：
 //
 // · `waiting`（等你处理）是**唯一**做水平摆动的。`sessionOrb.ts` 早就定死「等你」必须
 //   压过「在跑」，否则人会以为不用管它、而它其实一步都走不了；一墙静止头像里，横向
@@ -15,12 +15,14 @@
 // · `queued`（排队中）是**唯一完全不动的**。ADR-0250 规定 queued 连打字指示器都不画
 //   （「它一个 token 都还没跑，画上去就是撒谎的勾」），头像必须守同一条 —— 不能看
 //   起来像在干活。
+// · `frozen` 是**唯一降饱和的**。冻住那一档要看起来「这张脸不在了」，不是「它在歇」。
 //
-// 第三条是角标：**状态要在 40px 下可分**。光靠眼形分不出「眯眼」和「平视」，所以每个
+// 第四条是角标：**状态要在 40px 下可分**。光靠眼形分不出「眯眼」和「平视」，所以每个
 // 状态配一枚带语义色的角标，脸负责近看、角标负责扫一眼 —— 与现有 orb 同一个思路。
+// 角标画成 canvas 上的一个圆点而不是网格里的像素块：24px 下像素块只剩三个像素，认不出。
 
-/** 这一格在动没动，是**从这张表推出来的**不是另给一个开关：同一个判断有两份迟早分家。
-    调用方只管传状态，`AgentFace` 据此决定挂不挂 rAF */
+import type { EyeShape, MouthShape } from "./character.js";
+
 export type FaceState =
   | "plain"
   | "idle"
@@ -51,74 +53,103 @@ export const BADGE_COLORS: Readonly<Record<FaceBadge, string>> = {
   mute: "#8e8e93",
 };
 
-/** 一格特征：定死的一个图案名，或一个按时刻挑的函数 */
-export type Timed<T> = T | ((t: number) => T);
+/**
+ * 视线怎么动。**静态的「往上看」读起来只是个姿势**；「在思考」的本质是在搜索，
+ * 视线不游走就不成立 —— 所以思考那一档走 `scan`（一条时间线），不是 `fixed`。
+ *
+ * · `pointer` 跟鼠标（只有「此刻正在看的那只」值得订阅 pointermove）
+ * · `scan`    左上 → 正上 → 右上 → 回正
+ * · `dart`    左右急跳（检索）
+ * · `fixed`   盯住一个固定方向
+ * · `still`   不动
+ */
+export type LookDriver = "pointer" | "scan" | "dart" | "fixed" | "still";
 
 export interface FaceStateSpec {
-  /** BROWS 的键 */
-  brow: Timed<string>;
-  /** EYES 的键 */
-  eye: Timed<string>;
-  /** MOUTHS 的键 */
-  mouth: Timed<string>;
-  badge: FaceBadge | null;
-  /** 整张脸的整格位移。**只走整格**（sprites.ts 法理 ②） */
-  move: ((t: number) => readonly [number, number]) | null;
+  /** 这一档中文怎么念（读屏与陈列馆用） */
+  readonly zh: string;
+  readonly eye: EyeShape;
+  /** `"talk"` = 按时刻在几个嘴形之间循环 */
+  readonly mouth: MouthShape | "talk";
+  readonly look: LookDriver;
+  readonly fixedLook?: readonly [number, number];
+  /** 嘴整体左右挪几格（歪嘴） */
+  readonly mouthDx?: number;
+  /** 两条眉一起上下挪几格。负 = 抬眉 */
+  readonly browDy?: number;
+  /** 左眉再单独挪几格 —— **不对称才有表情**，两条一起动只是「眉毛位置变了」 */
+  readonly browAsym?: number;
+  /** 呼吸周期（毫秒）。0 = 不呼吸 */
+  readonly bobMs: number;
+  /** 呼吸幅度（格）。**整格，不做补间** */
+  readonly bobAmp: number;
+  readonly sway?: "lean" | "urgent";
+  readonly badge: FaceBadge | null;
+  /** 整张脸降饱和（冻结那一档） */
+  readonly desaturate?: boolean;
   /** 整张脸压淡（离线那一档） */
-  dim: boolean;
+  readonly dim?: boolean;
+  /** 会不会自动眨眼 */
+  readonly blinks: boolean;
 }
 
 function spec(o: Partial<FaceStateSpec>): FaceStateSpec {
-  return { brow: "flat", eye: "open", mouth: "flat", badge: null, move: null, dim: false, ...o };
-}
-
-/** 呼吸：每 `ms` 上下挪一格。整格，不做补间 */
-function breathe(ms: number): (t: number) => readonly [number, number] {
-  return (t) => [0, Math.floor(t / ms) % 2];
-}
-
-/** 循环挑一个：`cycle(["a","b"], 200)` 每 200ms 换一个 */
-function cycle<T>(frames: readonly T[], ms: number): (t: number) => T {
-  return (t) => frames[Math.floor(t / ms) % frames.length] as T;
+  return {
+    zh: "", eye: "open", mouth: "smile", look: "still",
+    bobMs: 0, bobAmp: 0, badge: null, blinks: true, ...o,
+  };
 }
 
 export const FACE_STATES: Readonly<Record<FaceState, FaceStateSpec>> = {
-  // 不画角标、不动。见文件头
-  plain: spec({ mouth: "smile" }),
-  idle: spec({ mouth: "smile", badge: "mute", move: breathe(1500) }),
+  // 不画角标、不动、不眨眼。见文件头
+  plain: spec({ zh: "形象", blinks: false }),
+  idle: spec({ zh: "空闲", look: "pointer", bobMs: 2600, bobAmp: 1, badge: "mute" }),
   // 唯一完全不动的那一档
-  queued: spec({ mouth: "flat", badge: "mute" }),
-  composing: spec({ brow: "up", eye: "up", mouth: "small", badge: "work", move: breathe(620) }),
-  searching: spec({ eye: cycle(["right", "left"], 420), badge: "work" }),
-  working: spec({ brow: "knit", badge: "work", move: breathe(300) }),
-  solving: spec({ mouth: cycle(["talk", "oh", "flat"], 220), badge: "work" }),
-  weaving: spec({ eye: "half", mouth: "small", badge: "work", move: breathe(820) }),
+  queued: spec({ zh: "排队中", mouth: "flat", badge: "mute", blinks: false }),
+  composing: spec({ zh: "思考中", mouth: "small", look: "scan", browDy: -1, bobMs: 2100, bobAmp: 1, badge: "work" }),
+  searching: spec({ zh: "检索中", mouth: "flat", look: "dart", bobMs: 1500, bobAmp: 1, badge: "work" }),
+  working: spec({
+    zh: "执行中", eye: "squint", mouth: "flat", look: "fixed", fixedLook: [0, 1],
+    browDy: 1, bobMs: 900, bobAmp: 1, badge: "work",
+  }),
+  solving: spec({ zh: "作答中", mouth: "talk", bobMs: 1200, bobAmp: 1, badge: "work" }),
+  weaving: spec({ zh: "压缩中", eye: "squint", mouth: "purse", bobMs: 3000, bobAmp: 1, badge: "work" }),
   // 唯一做水平摆动的那一档
   waiting: spec({
-    brow: "up",
-    mouth: "oh",
-    badge: "need",
-    move: cycle([[-1, 0], [0, 0], [1, 0], [0, 0]] as readonly (readonly [number, number])[], 260),
+    zh: "等你处理", eye: "wide", mouth: "o", look: "pointer",
+    browDy: -2, bobMs: 700, bobAmp: 1, sway: "urgent", badge: "need",
   }),
-  listening: spec({ brow: "up", mouth: "small", badge: "voice", move: breathe(950) }),
-  speaking: spec({ mouth: cycle(["oh", "talk", "small", "talk"], 170), badge: "voice" }),
-  done: spec({ eye: "half", mouth: "smile", badge: "ok", move: breathe(1500) }),
-  failed: spec({ brow: "knit", eye: "cross", mouth: "zig", badge: "bad" }),
-  limited: spec({ eye: "half", badge: "need", move: breathe(1700) }),
-  frozen: spec({ eye: "shut", badge: "mute" }),
-  offline: spec({ eye: "shut", badge: "mute", dim: true }),
+  listening: spec({ zh: "在听", mouth: "small", look: "pointer", bobMs: 1800, bobAmp: 1, badge: "voice" }),
+  speaking: spec({ zh: "在说话", eye: "happy", mouth: "talk", bobMs: 1000, bobAmp: 1, badge: "voice" }),
+  done: spec({ zh: "完成", eye: "happy", mouth: "grin", bobMs: 2600, bobAmp: 1, badge: "ok" }),
+  failed: spec({ zh: "出错", eye: "dizzy", mouth: "wavy", browAsym: 1, badge: "bad", blinks: false }),
+  limited: spec({ zh: "限流等待", eye: "squint", mouth: "flat", bobMs: 3400, bobAmp: 1, badge: "need" }),
+  // 唯一降饱和的那一档
+  frozen: spec({ zh: "冻结", eye: "sleep", mouth: "flat", badge: "mute", desaturate: true, blinks: false }),
+  offline: spec({ zh: "离线", eye: "sleep", mouth: "flat", badge: "mute", dim: true, blinks: false }),
 };
+
+export const FACE_STATE_LIST: readonly FaceState[] = Object.keys(FACE_STATES) as FaceState[];
+
+export function isFaceState(v: string): v is FaceState {
+  return Object.hasOwn(FACE_STATES, v);
+}
 
 /**
  * 这一档会不会动。**从状态表推导，不另立一份名单** —— 两份判据迟早分家，而分家的
  * 形态是安静的：要么一张该动的脸僵着，要么一墙本该静止的脸开始呼吸。
+ *
+ * 跟指针也算动：眼睛要跟着鼠标走，那一格就得重绘。
  */
 export function faceAnimates(state: FaceState): boolean {
   const s = FACE_STATES[state];
   return (
-    s.move !== null ||
-    typeof s.brow === "function" ||
-    typeof s.eye === "function" ||
-    typeof s.mouth === "function"
+    s.blinks ||
+    (s.bobMs > 0 && s.bobAmp > 0) ||
+    s.sway !== undefined ||
+    s.mouth === "talk" ||
+    s.look === "scan" ||
+    s.look === "dart" ||
+    s.look === "pointer"
   );
 }

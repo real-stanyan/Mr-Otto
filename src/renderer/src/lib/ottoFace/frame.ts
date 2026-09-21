@@ -4,23 +4,18 @@
 // 走的是同一段代码 —— 不会出现「不动的那版长得不一样」，也不用为名册那一墙脸另写
 // 一条渲染路径。canvas 那一层（`paint.ts`）只把网格坐标换成像素，一个判断都不做，
 // 于是这个文件进得了 vitest 而 jsdom 没有 canvas 这件事碍不着它。
+//
+// 时间是**入参不是 `Date.now()`**，所以同一个 (坑位, 状态, t) 永远是同一帧。眨眼因此也
+// 不用随机数 —— 两个互质周期叠出来的图案看着不规律，但可复现；用随机数的话下面每一条
+// 断言都是碰运气。
+//
+// 叠的顺序即盖住的顺序：角色本体 → 抹掉原装五官 → 画新的眉眼嘴 → 覆盖层（镜框 / 压脸
+// 的发丝）。**镜框归脸、不归五官**：只抹镜片内腔，眼睛在框里换，所以眯眼 / 闭眼 /
+// 左右看 / 叉叉在戴眼镜那两只身上照样成立。
 
-import {
-  BEARD_CHEEK_CELLS,
-  BROWS,
-  BROW_Y,
-  EYES,
-  EYE_LX,
-  EYE_RX,
-  EYE_Y,
-  FACE_CHARACTERS,
-  HEAD,
-  MOUTHS,
-  MOUTH_X,
-  MOUTH_Y,
-  TAIL_CELLS,
-} from "./sprites.js";
-import { BADGE_COLORS, FACE_STATES, type FaceState, type Timed } from "./states.js";
+import type { EyeShape, FaceCharacter, MouthShape, Tone } from "./character.js";
+import { FACE_PAD, faceCharacterAt } from "./sprites.js";
+import { BADGE_COLORS, FACE_STATES, type FaceState } from "./states.js";
 
 /** 一格。`x`/`y` 是网格坐标（已经把位移算进去了），`key` 是调色板的键 */
 export interface FaceCell {
@@ -31,103 +26,153 @@ export interface FaceCell {
 
 export interface FaceFrame {
   cells: readonly FaceCell[];
+  /** 色调 → CSS 颜色。**每个角色自带一份** —— 大胡子的胡子灰和头发灰不是一个值 */
+  palette: Readonly<Record<string, string>>;
   /** 右下角那枚角标的颜色；`null` = 不画（`plain` 那一档） */
   badge: string | null;
   /** 整张脸压淡 */
   dim: boolean;
 }
 
-function resolve<T>(v: Timed<T>, t: number): T {
-  return typeof v === "function" ? (v as (t: number) => T)(t) : v;
+export { faceCharacterAt };
+
+/** 思考时的扫视时间线：左上 → 正上 → 右上 → 回正。
+ *  静态的「往上看」读起来只是个姿势；思考的本质是在搜索，视线不游走就不成立 */
+const SCAN: readonly (readonly [number, number, number])[] = [
+  [-2, -1, 900], [0, -2, 620], [2, -1, 900], [0, 0, 520],
+];
+const SCAN_TOTAL = SCAN.reduce((a, s) => a + s[2], 0);
+
+function scanAt(t: number): readonly [number, number] {
+  const u = ((t % SCAN_TOTAL) + SCAN_TOTAL) % SCAN_TOTAL;
+  let acc = 0;
+  for (const step of SCAN) {
+    acc += step[2];
+    if (u < acc) return [step[0], step[1]];
+  }
+  return [0, 0];
 }
 
-/** 坑位取模：越界 / 负数都落回 0..12。调用方给的坑位已经过了 `agentAvatar.ts` 那道闸
-    （越界退回派生、不取模），这里的取模只是最后一道兜底，免得一个坏数字画成空白 */
-export function faceCharacterAt(slot: number): number {
-  const n = FACE_CHARACTERS.length;
-  return ((Math.trunc(slot) % n) + n) % n;
+/** 两个互质周期叠出来的眨眼：看着不规律，但同一个 t 永远给同一个答案 */
+function blinkingAt(t: number): boolean {
+  return t % 4200 < 110 || t % 6700 < 110;
+}
+
+const TALK_CYCLE: readonly MouthShape[] = ["smile", "o", "flat", "o"];
+
+function clampUnit(v: number): number {
+  return v < -1 ? -1 : v > 1 ? 1 : v;
+}
+
+/** 往中灰收 62% */
+function dimHex(hex: string): string {
+  const m = /^#([0-9a-f]{6})$/i.exec(hex);
+  if (m?.[1] === undefined) return hex;
+  const n = Number.parseInt(m[1], 16);
+  const mix = (c: number): number => Math.round(c * 0.38 + 0x6e * 0.62);
+  const r = mix((n >> 16) & 0xff), g = mix((n >> 8) & 0xff), b = mix(n & 0xff);
+  return `#${((r << 16) | (g << 8) | b).toString(16).padStart(6, "0")}`;
+}
+
+function desaturated(palette: Readonly<Record<string, string>>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [tone, hex] of Object.entries(palette)) out[tone] = dimHex(hex);
+  return out;
+}
+
+export interface FrameOptions {
+  /** 指针相对脸心的横纵偏移，各自 -1..1。只有 `look: "pointer"` 的状态读它 */
+  readonly pointerX?: number;
+  readonly pointerY?: number;
 }
 
 /**
  * 一帧。`t` 是毫秒时刻（`performance.now()`），静态帧传 0。
- *
- * 叠的顺序就是盖住的顺序：光头 → 头发 / 配件 → 眉眼嘴 → 眼镜。眼镜最后，因为它
- * 套在眼睛外面。
  */
-export function composeFrame(slot: number, state: FaceState, t: number): FaceFrame {
-  const ch = FACE_CHARACTERS[faceCharacterAt(slot)]!;
-  const st = FACE_STATES[state];
-  const [dx, dy] = st.move !== null ? st.move(t) : ([0, 0] as const);
+export function composeFrame(slot: number, state: FaceState, t: number, opts?: FrameOptions): FaceFrame {
+  const ch: FaceCharacter = faceCharacterAt(slot);
+  const def = FACE_STATES[state];
 
-  const cells: FaceCell[] = [];
-  const put = (x: number, y: number, key: string): void => {
-    if (key === "" || key === ".") return;
-    cells.push({ x: x + dx, y: y + dy, key });
+  // ---- 位移。全部整数格：像素画做亚像素平滑会立刻糊 ----
+  const bob = def.bobMs > 0 ? Math.round(Math.sin((t / def.bobMs) * Math.PI * 2) * def.bobAmp) : 0;
+  const sway =
+    def.sway === "urgent" ? (Math.floor(t / 260) % 2 === 0 ? -1 : 1)
+    : def.sway === "lean" ? (Math.sin(t / 3700) > 0 ? -1 : 0)
+    : 0;
+
+  let lookX = 0;
+  let lookY = 0;
+  if (def.look === "pointer") {
+    lookX = Math.round(clampUnit(opts?.pointerX ?? 0) * 2);
+    lookY = Math.round(clampUnit(opts?.pointerY ?? 0));
+  } else if (def.look === "scan") {
+    const [sx, sy] = scanAt(t);
+    lookX = sx; lookY = sy;
+  } else if (def.look === "dart") {
+    lookX = Math.floor(t / 190) % 2 === 0 ? -2 : 2;
+  } else if (def.look === "fixed") {
+    lookX = def.fixedLook?.[0] ?? 0;
+    lookY = def.fixedLook?.[1] ?? 0;
+  }
+
+  const grid: Tone[] = new Array<Tone>(ch.w * ch.h).fill(".");
+  const put = (x: number, y: number, tone: Tone): void => {
+    if (tone === "." || x < 0 || x >= ch.w || y < 0 || y >= ch.h) return;
+    grid[y * ch.w + x] = tone;
   };
-  const layer = (rows: readonly string[] | undefined): void => {
-    if (rows === undefined) return;
-    rows.forEach((row, y) => [...row].forEach((key, x) => put(x, y, key)));
+  const stamp = (sprite: readonly string[], x0: number, y0: number, tone: Tone): void => {
+    for (let j = 0; j < sprite.length; j++) {
+      const row = sprite[j] ?? "";
+      for (let i = 0; i < row.length; i++) if ((row[i] ?? ".") !== ".") put(x0 + i, y0 + j, tone);
+    }
   };
 
-  layer(HEAD);
-  layer(ch.top);
-  if (ch.side !== undefined) {
-    for (const [row, pair] of Object.entries(ch.side)) {
-      const y = Number(row);
-      const left = pair[0] ?? ".";
-      const right = pair[1] ?? ".";
-      if (left !== ".") {
-        put(3, y, left);
-        put(4, y, left);
-      }
-      if (right !== ".") {
-        put(15, y, right);
-        put(16, y, right);
-      }
+  // ---- 角色本体：品牌锁死，原样搬 ----
+  for (let j = 0; j < ch.h; j++) {
+    const row = ch.base[j] ?? "";
+    for (let i = 0; i < ch.w; i++) put(i, j, (row[i] ?? ".") as Tone);
+  }
+  // ---- 抹掉原装的眉眼嘴。第五项指定填什么色（大胡子的嘴长在胡子上）----
+  for (const [r0, r1, c0, c1, fill] of ch.erase) {
+    const tone = fill ?? ch.skin;
+    for (let y = r0; y <= r1; y++) for (let x = c0; x <= c1; x++) put(x, y, tone);
+  }
+
+  // ---- 五官 ----
+  const browDy = (def.browDy ?? 0) + (lookY < 0 ? -1 : 0);
+  stamp(ch.brows.L, ch.anchors.browL[0], ch.anchors.browL[1] + browDy + (def.browAsym ?? 0), ch.ink);
+  stamp(ch.brows.R, ch.anchors.browR[0], ch.anchors.browR[1] + browDy, ch.ink);
+
+  const eyeShape: EyeShape = def.blinks && blinkingAt(t) ? "blink" : def.eye;
+  const eye = ch.eyes[eyeShape];
+  stamp(eye.L, ch.anchors.eyeL[0] + eye.lx + lookX, ch.anchors.eyeL[1] + eye.ly + lookY, ch.ink);
+  stamp(eye.R, ch.anchors.eyeR[0] + eye.rx + lookX, ch.anchors.eyeR[1] + eye.ry + lookY, ch.ink);
+
+  const mouthShape: MouthShape =
+    def.mouth === "talk" ? (TALK_CYCLE[Math.floor(t / 130) % TALK_CYCLE.length] ?? "smile") : def.mouth;
+  stamp(ch.mouths[mouthShape], ch.anchors.mouth[0] + (def.mouthDx ?? 0), ch.anchors.mouth[1], ch.ink);
+
+  // ---- 覆盖层（镜框、压脸的发丝）画在五官之上 ----
+  if (ch.front !== undefined) {
+    for (let j = 0; j < ch.front.length; j++) {
+      const row = ch.front[j] ?? "";
+      for (let i = 0; i < row.length; i++) put(i, j, (row[i] ?? ".") as Tone);
     }
   }
-  if (ch.nub !== undefined) put(ch.nub[0], ch.nub[1], "D");
-  if (ch.tail === true) for (const [x, y] of TAIL_CELLS) put(x, y, "D");
-  if (ch.beard === true) {
-    for (const [x, y] of BEARD_CHEEK_CELLS) put(x, y, "L");
-    for (let x = 6; x < 14; x++) put(x, 12, "L"); // 下巴那一把
-    for (let x = 7; x < 12; x++) put(x, 9, "L"); // 上唇那一撇
-  }
-  if (ch.stubble === true) for (let x = 5; x < 15; x++) if ((x + 1) % 2 !== 0) put(x, 12, "L");
 
-  const brow = BROWS[resolve(st.brow, t)] ?? [];
-  const eye = EYES[resolve(st.eye, t)] ?? [];
-  const mouth = MOUTHS[resolve(st.mouth, t)] ?? [];
-  // 右眉是左眉的镜像：皱眉那一档两条眉毛得对着往里压，各画各的会变成同向的斜杠
-  for (const [x, y] of brow) {
-    put(EYE_LX + x, BROW_Y + y, "I");
-    put(EYE_RX + 1 - x, BROW_Y + y, "I");
-  }
-  for (const [x, y] of eye) {
-    put(EYE_LX + x, EYE_Y + y, "I");
-    put(EYE_RX + x, EYE_Y + y, "I");
-  }
-  for (const [x, y] of mouth) put(MOUTH_X + x, MOUTH_Y + y, "I");
-
-  if (ch.specs === true) {
-    // 眼镜画成**每只眼睛底下一道横杠 + 外侧一根镜腿 + 中间一点鼻梁**，不画整圈方框。
-    //
-    // 原型画的是完整的 4×4 方框，而眼睛本身就是 2×2、正好占满框的内腔 —— 画出来
-    // 是一坨实心黑，读作墨镜/眼罩而不是眼镜；把上下两道留着也不行，两侧的杠会在
-    // 鼻梁处连起来横贯整张脸，成了一条蒙眼带。这个分辨率上装不下「边框 + 里面还
-    // 看得见眼睛」，所以只留镜框下沿这个最容易认的特征。
-    //
-    // 顺带守住了那条硬法理：**会动的只有眉眼嘴**。方框会把眯眼 / 闭眼 / 左右看 /
-    // 叉叉全盖掉，那两只戴眼镜的水獭就再也没有表情了。
-    const lens = (x0: number, temple: number): void => {
-      for (let i = 0; i < 4; i++) put(x0 + i, 8, "I"); // 镜框下沿
-      put(temple, 6, "I"); // 镜腿
-      put(temple, 7, "I");
-    };
-    lens(5, 4);
-    lens(10, 14);
-    put(9, 6, "I"); // 鼻梁
+  const cells: FaceCell[] = [];
+  for (let y = 0; y < ch.h; y++) {
+    for (let x = 0; x < ch.w; x++) {
+      const tone = grid[y * ch.w + x]!;
+      if (tone !== ".") cells.push({ x: x + FACE_PAD + sway, y: y + FACE_PAD + bob, key: tone });
+    }
   }
 
-  return { cells, badge: st.badge === null ? null : BADGE_COLORS[st.badge], dim: st.dim };
+  const palette = def.desaturate === true ? (ch.dimPalette ?? desaturated(ch.palette)) : ch.palette;
+  return {
+    cells,
+    palette,
+    badge: def.badge === null ? null : BADGE_COLORS[def.badge],
+    dim: def.dim === true,
+  };
 }
