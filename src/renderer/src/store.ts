@@ -1400,7 +1400,13 @@ export const enterChat = (
   info: BootInfo,
   /** 上次这个会话开着哪块右侧面板(store 的 panelBySession)。切会话不带这份记忆
       就是每次回来都从"槽位空着"重新开始——面板是干活的姿势,不是弹窗 */
-  remembered: Readonly<Record<string, PanelKey | null>> = {}
+  remembered: Readonly<Record<string, PanelKey | null>> = {},
+  /** 此刻手上那份「上次残留」清单（store 的 bootResidue）。**必须带上**，否则用户
+      没处理的那批会在下一次切会话时被悄悄抹掉（#780 M6）：主进程的
+      `residueReported` 闸让 pendingResidue 只在**第一份** BootInfo 上出现一次，
+      之后每一份都没有这一格。缺省 `[]` 是为了让不关心这一格的用例照旧两参数调用，
+      真实调用点三处都传（有断言钉着） */
+  prevBootResidue: readonly ResidueItem[] = []
 ) => ({
   phase: "chat" as const,
   sessionId: info.sessionId,
@@ -1414,13 +1420,17 @@ export const enterChat = (
   approvalMode: info.approvalMode,
   thinking: info.thinking,
   replayCursor: null, // 换会话 = 换时间线，旧游标作废
-  // 「上次残留」一次性 latch(issue #759)：只在这次 boot 真带了才落位,
-  // 空/没有时给空表——ResiduePanel 空 items 不渲染,不用另判「有没有 boot 过」。
+  // 「上次残留」一次性 latch(issue #759)：只在这次 boot 真带了才**换**成新的一份,
+  // 没带就**留着手上那份**——主进程的 residueReported 闸让 pendingResidue 只出现在
+  // 第一份 BootInfo 上，所以「没带」的含义是「这一次没有新消息」，不是「清空了」。
+  // 原来这里写的是 `?? []`，于是用户没处理完就切一次会话，那张清单本次运行内
+  // 再也回不来（#780 M6）——而它的内容多半是端口/模拟器那类只在归档那一刻算得出
+  // 的条目，丢了就只能等下次重启。
   // bootResidueOpen 跟着这次 boot 是否真带了残留走(而不是像 bootResidue 那样
   // 只增不减)——每次进这个会话都该按"这次 boot 有没有"重新判一遍要不要弹。
   // liveResidue 换会话必清:它是"这个会话活着时收到的直播",不是这个会话的
   // 历史事实(历史那份已经在上面这行 bootResidue 里了);liveResidueOpen 同理归零
-  bootResidue: info.pendingResidue ?? [],
+  bootResidue: info.pendingResidue ?? [...prevBootResidue],
   bootResidueOpen: (info.pendingResidue?.length ?? 0) > 0,
   liveResidue: [],
   liveResidueOpen: false,
@@ -3870,7 +3880,7 @@ export const useChat = create<ChatState>((set, get) => ({
     ]);
     set(
       info
-        ? { ...enterChat(info, get().panelBySession), sessions, skills, mcpPrompts, account, authRecord, configRoot, keyStatus, fullscreen }
+        ? { ...enterChat(info, get().panelBySession, get().bootResidue), sessions, skills, mcpPrompts, account, authRecord, configRoot, keyStatus, fullscreen }
         : { phase: "welcome", sessions, skills, mcpPrompts, account, authRecord, configRoot, keyStatus, fullscreen }
     );
     // 冷启动补一次:用户很可能在浏览器点完重置链接、app 这才被深链唤起
@@ -3942,7 +3952,7 @@ export const useChat = create<ChatState>((set, get) => ({
   async startSession(opts) {
     try {
       const info = await window.otter.startSession(opts);
-      set((s) => enterChat(info, s.panelBySession));
+      set((s) => enterChat(info, s.panelBySession, s.bootResidue));
       set({ sessions: await window.otter.listSessions() }); // 新会话进侧栏
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
@@ -3967,7 +3977,7 @@ export const useChat = create<ChatState>((set, get) => ({
     set({ cloudDraftWorkspaceId: null });
     try {
       const info = await window.otter.resumeSession(sessionId);
-      set((s) => enterChat(info, s.panelBySession));
+      set((s) => enterChat(info, s.panelBySession, s.bootResidue));
       // 切进来的这条可能正跑着（另一条会话的 turn 不会因为没人看就停）——
       // 同 boot 的理由（issue #548）
       void get().hydrateRuntime(sessionId);

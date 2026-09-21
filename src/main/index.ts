@@ -1891,13 +1891,17 @@ void app.whenReady().then(() => {
     // **归档的会话也要扫**：残留是 app 级的（进程组/模拟器/端口都不属于哪个
     // 会话），跟会话收没收起来无关。而且 ports/simulators 条目的**唯一**来源
     // 就是归档那一刻的全量 diff——那条 residue_detected 恰恰写在刚归档的会话
-    // 上，滤掉归档会话等于这一类残留永远重放不出来，用户没当场处理就永久丢
-    for (const s of store.sessions()) {
+    // 上，滤掉归档会话等于这一类残留永远重放不出来，用户没当场处理就永久丢。
+    // **不走 `store.sessions()`**（#780 M4）：它只藏了一半——用户归档的那些照常返回、
+    // 带 archived 标志，而**系统**归档的（reason 缺席或 "system"，子会话收尾走的就是
+    // 这条）整个不出现在返回值里。按它遍历的话，那批会话上落的残留一条都重放不出来，
+    // 而失败是无声的：清单里少几条，看起来和「本来就没有」一模一样
+    for (const sessionId of store.sessionIdsWithEvent("residue_detected")) {
       // 两类事件按 seq 归并回时间序：pendingResidue 是按顺序消费的
       // （detected 落进表、cleaned 从表里删），顺序错了差集就错
       const evs = [
-        ...store.eventsOfType(s.sessionId, "residue_detected"),
-        ...store.eventsOfType(s.sessionId, "residue_cleaned"),
+        ...store.eventsOfType(sessionId, "residue_detected"),
+        ...store.eventsOfType(sessionId, "residue_cleaned"),
       ].sort((a, b) => a.seq - b.seq);
       for (const item of pendingResidue(evs)) {
         // 进程组要过身份核对：光看 pgid 还在会把回收给别人的号当成自己的残留

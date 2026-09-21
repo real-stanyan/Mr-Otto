@@ -228,6 +228,25 @@ describe("EventStore", () => {
     expect(store.sessions()).toEqual([]);
   });
 
+  // #780 M4：残留是 **app 级**事实（进程组/模拟器/端口都不属于哪个会话，ADR-0193），
+  // 它的 residue_detected 落在哪个会话上只是偶然。而 sessions() 把系统归档的会话整个
+  // 藏起来——按它遍历去重放残留，那批会话上落的条目一条都出不来，且失败无声：
+  // 清单里少几条，和「本来就没有」长得一模一样
+  it("sessionIdsWithEvent 不过滤归档——系统归档会话上落的事件照样找得回来（#780 M4）", () => {
+    store.append({ sessionId: "live", ts: 1, type: "session_created", workspace: "/a" });
+    store.append({ sessionId: "sys", ts: 2, type: "session_created", workspace: "/b" });
+    store.append({ sessionId: "sys", ts: 3, type: "session_archived", reason: "system" });
+    const item = { detector: "ports" as const, id: "port:9999", label: "python3:9999", confidence: "owned" as const, cleanupHint: "kill 进程组 1" };
+    store.append({ sessionId: "sys", ts: 4, type: "residue_detected", ignorable: true, items: [item], origin: "archive" });
+    store.append({ sessionId: "live", ts: 5, type: "user_message", content: "无关的一条" });
+
+    // sessions() 看不见 sys（这是它的既定行为，不是 bug）
+    expect(store.sessions().map((s) => s.sessionId)).toEqual(["live"]);
+    // 而这一条看得见，且只回真的落过这类事件的会话
+    expect(store.sessionIdsWithEvent("residue_detected")).toEqual(["sys"]);
+    expect(store.sessionIdsWithEvent("residue_cleaned")).toEqual([]);
+  });
+
   it("用户归档（ADR-0087）：留在列表里、带 archived 标志", () => {
     store.append({ sessionId: "active", ts: 1, type: "session_created", workspace: "/a" });
     store.append({ sessionId: "shelved", ts: 2, type: "session_created", workspace: "/b" });

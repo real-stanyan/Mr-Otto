@@ -634,6 +634,18 @@ BEGIN SELECT RAISE(ABORT, 'events log is append-only'); END;`);
     return row.n;
   }
 
+  /** 落过某一类事件的全部会话 id（升序去重）。**不过滤归档** —— `sessions()` 把
+      系统归档的会话整个藏起来（见那里的注释），而有些事实是 **app 级**的、落在哪个
+      会话上只是偶然：残留就是一例（进程组/模拟器/端口都不属于哪个会话，ADR-0193），
+      按 `sessions()` 遍历等于让系统归档会话里的那批残留永远重放不出来（#780 M4）。
+      走 `events_type_ts` 索引的 type 前缀 */
+  sessionIdsWithEvent(type: SessionEvent["type"]): string[] {
+    const rows = this.prep(
+      "SELECT DISTINCT session_id AS id FROM events WHERE type = ? ORDER BY id"
+    ).all(type) as { id: string }[];
+    return rows.map((r) => r.id);
+  }
+
   /** 某会话里某类型的全部事件（seq 升序）。适合天然稀疏的类型
       （section_classified 一个分区一条）——密集类型请走 load/window */
   eventsOfType(sessionId: string, type: SessionEvent["type"]): SessionEvent[] {

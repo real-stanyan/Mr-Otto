@@ -15,6 +15,30 @@ describe("LiveGroupRegistry", () => {
     expect(reg.escaped()).toHaveLength(0);
   });
 
+  // #780 M7：pid 会被系统回收，于是一个**新**组可能拿到某条出走记录的号。
+  // `escaped()` 的自净判据只有 `groupAlive(pgid)` —— 新组是活的，所以那条陈旧记录
+  // 活得好好的、还顶着上一个组的 cmd。后果是清单上一行写着别人的命令行，
+  // 而清理时 kill 的是这个刚起来的新组。用真进程跑：判据是「还认不认得那个号」，
+  // 而那正是 escaped() 会去问 groupAlive 的地方
+  it("同号的组重新 register：作废那条陈旧的 escaped 记录，不拿旧 cmd 当新组的标签", async () => {
+    const child = spawn("sleep 60", { shell: true, detached: true });
+    const pgid = child.pid!;
+    const reg = new LiveGroupRegistry();
+    reg.register(pgid, "上一个组：npm run dev", "exec");
+    reg.noteClosed(pgid);
+    expect(reg.escaped().map((g) => g.cmd)).toEqual(["上一个组：npm run dev"]);
+
+    // 号被回收，新组拿到同一个 pgid（这里就是同一个真进程，它仍然活着 ——
+    // 也正因为它活着，escaped() 的自净判据救不了这条记录）
+    reg.register(pgid, "新的组：python3 -m http.server", "exec");
+    expect(reg.escaped()).toHaveLength(0);
+    expect(reg.live().map((g) => g.cmd)).toEqual(["新的组：python3 -m http.server"]);
+
+    reg.sweepAll({ immediate: true });
+    await new Promise((r) => setTimeout(r, 200));
+    expect(groupAlive(pgid)).toBe(false);
+  });
+
   it("shell 死了组还活着 = escaped", async () => {
     // 手工造一个逃逸组模拟 noteClosed 时组仍存活的判定
     const child = spawn("sleep 60", { shell: true, detached: true });

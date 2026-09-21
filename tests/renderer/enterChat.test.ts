@@ -59,6 +59,26 @@ describe("enterChat(残留清单落位, issue #759)", () => {
   it("没有 pendingResidue 时 bootResidue 是空数组，不是 undefined", () => {
     expect(enterChat(boot()).bootResidue).toEqual([]);
   });
+
+  // #780 M6：主进程的 residueReported 闸让 pendingResidue 只出现在**第一份** BootInfo 上，
+  // 所以后面每一次切会话「没带」的含义是「这次没有新消息」，不是「清空了」。
+  // 原来写的是 `?? []`，于是用户没处理完就切一次会话，那张清单本次运行内再也回不来——
+  // 而它多半装着端口/模拟器那类只在归档那一刻算得出的条目
+  const ITEM = { detector: "ports" as const, id: "port:9999", label: "python3:9999", confidence: "owned" as const, cleanupHint: "kill 进程组 1" };
+
+  it("这次 boot 没带 pendingResidue：留着手上那份，不抹掉用户还没处理的条目（#780 M6）", () => {
+    const next = enterChat(boot({ sessionId: "session-b" }), {}, [ITEM]);
+    expect(next.bootResidue).toEqual([ITEM]);
+    // 但弹窗不重开：「有没有新消息」与「手上还剩什么」是两件事
+    expect(next.bootResidueOpen).toBe(false);
+  });
+
+  it("这次 boot 带了：换成新的那份（不是往上堆），弹窗照开", () => {
+    const fresh = { ...ITEM, id: "port:8080" };
+    const next = enterChat(boot({ pendingResidue: [fresh] }), {}, [ITEM]);
+    expect(next.bootResidue).toEqual([fresh]);
+    expect(next.bootResidueOpen).toBe(true);
+  });
 });
 
 describe("enterChat(每会话的右侧面板记忆,issue #578)", () => {
