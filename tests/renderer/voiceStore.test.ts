@@ -299,3 +299,96 @@ describe("store：回声消除开着时 TTS 交给 helper 播（#1201）", () =>
     expect(m("speechPlay")).toHaveBeenCalledTimes(1); // 还是上一场那次
   });
 });
+
+// 云会话在底下没了时语音怎么收口（#1289）。**gone 会自愈**（runtime 回来 →
+// connecting → ready，页面横幅写的就是「正在自动重连…」），所以它不是「通话结束」：
+// 停麦、清掉扣着的那句，但**通话保留**、恢复后把麦开回来。denied 是终态（主进程
+// markDenied 主动断连，「没有重试的意义」），整段收掉。
+describe("云会话断了 / 被拒时的语音收口（#1289）", () => {
+  const otter = () => (window as unknown as { otter: Record<string, ReturnType<typeof vi.fn>> }).otter;
+  const m = (k: string): ReturnType<typeof vi.fn> => otter()[k]!;
+  const setState = (state: string): void => {
+    const cs = useChat.getState().cloudSession;
+    useChat.setState({ cloudSession: { ...cs, state } as never });
+  };
+
+  it("gone：停麦、mic 归 off，但**通话保留**——页面正说着「正在自动重连」", () => {
+    const st = useChat.getState();
+    setState("ready");
+    st.joinVoiceCall();
+    st.speechOnEvent({ type: "listening", on: true });
+    st.voiceOnCloudState("s1", "gone");
+    expect(m("speechStop")).toHaveBeenCalled();
+    expect(useChat.getState().voice).not.toBeNull();
+    expect(useChat.getState().voice?.mic.status).toBe("off");
+  });
+
+  it("gone → ready：断线之前麦开着的话自己开回来", () => {
+    const st = useChat.getState();
+    setState("ready");
+    st.joinVoiceCall();
+    expect(m("speechStart")).toHaveBeenCalledTimes(1);
+    st.voiceOnCloudState("s1", "gone");
+    setState("gone");
+    st.voiceOnCloudState("s1", "ready");
+    expect(m("speechStart")).toHaveBeenCalledTimes(2);
+    expect(useChat.getState().voice?.mic.status).toBe("starting");
+  });
+
+  it("断线之前人自己关着麦 → ready 回来一个字都不动（他表达过意志）", () => {
+    const st = useChat.getState();
+    setState("ready");
+    st.joinVoiceCall();
+    st.setVoiceMic(false);
+    expect(m("speechStart")).toHaveBeenCalledTimes(1);
+    st.voiceOnCloudState("s1", "gone");
+    setState("gone");
+    st.voiceOnCloudState("s1", "ready");
+    expect(m("speechStart")).toHaveBeenCalledTimes(1);
+  });
+
+  it("denied 是终态：整段收掉，voice 归 null", () => {
+    const st = useChat.getState();
+    setState("ready");
+    st.joinVoiceCall();
+    st.voiceOnCloudState("s1", "denied");
+    expect(m("speechStop")).toHaveBeenCalled();
+    expect(useChat.getState().voice).toBeNull();
+  });
+
+  it("别条会话的推送一个字都不碰这条的语音", () => {
+    const st = useChat.getState();
+    setState("ready");
+    st.joinVoiceCall();
+    st.voiceOnCloudState("s2", "gone");
+    expect(m("speechStop")).not.toHaveBeenCalled();
+    expect(useChat.getState().voice).not.toBeNull();
+  });
+
+  it("同一个状态再推一遍 = 什么都不做（pushStatus 会为别的事重复推）", () => {
+    const st = useChat.getState();
+    setState("ready");
+    st.joinVoiceCall();
+    st.voiceOnCloudState("s1", "ready");
+    expect(m("speechStop")).not.toHaveBeenCalled();
+  });
+
+  it("扣着的那句**不发出去**，丢掉的原文写进麦克风那一行——清掉不等于静默", async () => {
+    const st = useChat.getState();
+    setState("ready");
+    // endpoint 这一处开着才会真扣（#1281）；判「没说完」→ 扣住
+    useChat.setState({ billing: { me: { decision: { models: ["d"], uses: { endpoint: "on" } } } } as never });
+    otter()["speechJudge"] = vi.fn(async () => 0.1);
+    st.joinVoiceCall();
+    st.speechOnEvent({ type: "listening", on: true });
+    st.speechOnEvent({ type: "partial", text: "我想让你。" });
+    st.speechOnEvent({ type: "level", value: 0.5, active: true });
+    st.speechOnEvent({ type: "level", value: 0, active: false });
+    await flush();
+    st.speechOnEvent({ type: "final", text: "我想让你。" });
+    expect(m("workspaceCloudSay")).not.toHaveBeenCalled(); // 扣住了
+    st.voiceOnCloudState("s1", "gone");
+    expect(m("workspaceCloudSay")).not.toHaveBeenCalled(); // 丢掉，不是发一次必然被拒的
+    expect(useChat.getState().voice?.mic.error).toContain("我想让你。");
+  });
+});
