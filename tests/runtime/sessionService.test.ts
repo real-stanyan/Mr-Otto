@@ -5493,6 +5493,17 @@ describe("派活 skipped：这条路此刻走不了且不是临时的（所有�
 });
 
 // ── 语音通话名单（#1163） ─────────────────────────────────────────────
+// 下面那条「ok」在 CI 上偶发 5s 超时、原封不动重跑就绿（#1249；本机同一份代码 198 条
+// 用例 1.33s 跑完）。它 `await settled()` 等的是**两条真 turn**——setVoiceCall 会给名单里
+// 每只排一条招呼开场白（#1174）——而那条路上一个定时器都没有（`settled()` 是
+// `while (inflight) await inflight`，sessionService / engine 里没有 setTimeout），adapter 也是
+// 假的。所以它不是在等某个没被 fake 掉的等待，是在等 CPU：日志是真 sqlite 文件，
+// 而门禁 609 个文件并行时这台机器是满的。
+// 于是 vitest 那条默认 5s 在这里不是这条用例的预算——它回答的是「是不是卡死了」。
+// 给这一条自己的预算，**不动全局 testTimeout**（那会顺带盖住别处真正的卡死）。
+// 同族 #1323。这个 describe 里别的用例也 `await settled()`，只是还没红过——再红照这条加。
+const TWO_TURN_SETTLE_MS = 20_000;
+
 describe("setVoiceCall（#1163）", () => {
   function open(store: EventStore, events: SessionEvent[] = [], agents = async () => AGENTS): CloudSession {
     return createCloudSession({
@@ -5518,7 +5529,7 @@ describe("setVoiceCall（#1163）", () => {
     expect(events.slice(0, 3).map((x) => x.type)).toEqual(["voice_call_changed", "user_message", "user_message"]);
     await session.settled();
     store.close();
-  });
+  }, TWO_TURN_SETTLE_MS);
 
   it("同一份名单再发一次不重复落；顺序不同也算同一份；空名单 = 结束，落一条空的", async () => {
     const store = newStore();
