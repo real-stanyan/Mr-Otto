@@ -43,10 +43,13 @@ function CloudStateDot({ state }: { state: ConnectorCloudState }) {
 
 export function WorkspaceConnectorsTab({ ws, selfUid }: { ws: WorkspaceSnapshot; selfUid: string }) {
   const withdraw = useChat((s) => s.withdrawWorkspaceConnector);
-  // hostedServerIds 的渲染层来源目前只有 A 侧「云端可用」总览按 friendUid 聚合
-  // （ProxyHostView.cloudReady），没有拆到 serverId 粒度的清单可复用——
-  // TODO(#811): hostedServerIds 需要一条 IPC，届时这里换成真实来源
-  const hostedServerIds: readonly string[] | null = null;
+  // 托管箱清单（#815 M4）：拉 + 推两条都要。拉是因为这一页可能在任何一次推送之前
+  // 就被打开（onProxyChanged 只在箱内容真变了那一刻响）；推是因为这一页上最常见的
+  // 动作——贡献 / 撤回一台连接器——正是会让箱子内容变的那一步，只拉不推的话点完
+  // 那枚点还写着上一次的答案。拉不到一律是 null = 「不知道」，不是「箱子里没有」
+  const hostedServerIds = useChat((s) => s.proxyHostedServerIds);
+  const loadProxyHosted = useChat((s) => s.loadProxyHosted);
+  useEffect(() => { void loadProxyHosted(); }, [loadProxyHosted]);
   const rows = connectorRows(ws, selfUid, hostedServerIds);
   const [contributeOpen, setContributeOpen] = useState(false);
 

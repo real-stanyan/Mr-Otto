@@ -85,6 +85,7 @@ import type { MotionSettings, UpdaterState,
   PermissionsSnapshot,
   ProxyBorrowView,
   ProxyHostView,
+  ProxyStatusSnapshot,
   WorkspaceSettingsInfo,
 } from "../shared/shellBridge.js";
 import type { FilesSearchOpts } from "../shared/files.js";
@@ -1815,6 +1816,10 @@ void app.whenReady().then(() => {
           const s = readProxyStore(proxyStorePath);
           return s.grants.length > 0 || s.channels.length > 0 || s.workspaceGrants.length > 0;
         },
+        // 箱内清单变了 = proxySnapshot 的一格变了，走它本来那条推送（#815 M4）。
+        // 不另开一条通道：两条推送各带一半快照，渲染层就得自己拼，而拼错的那一次
+        // 长得和「清单没变」一模一样
+        onHostedChanged: () => send(CHANNELS.proxyChanged, proxySnapshot()),
         log: (m) => console.warn(`[escrow] ${m}`),
       })
     : null;
@@ -1850,9 +1855,13 @@ void app.whenReady().then(() => {
   // 工具表里，模型调了才报错——账号都换了，那些刀不该还在
   proxyCloseNow = proxy ? () => proxy.closeAll() : null;
   /** 代理全景（借进来的 + 借出去的）。推送与拉取共用一份，免得两边算得不一样 */
-  const proxySnapshot = (): { borrows: ProxyBorrowView[]; hosts: ProxyHostView[] } => ({
+  const proxySnapshot = (): ProxyStatusSnapshot => ({
     borrows: proxy ? [...proxy.borrowStatus()] : [],
     hosts: proxy ? [...proxy.hostStatus()] : [],
+    // #815 M4：团队连接器行上那枚三档的点的数据源。escrowSync 造得比这个函数晚，
+    // 但它是函数、晚绑定——被问到时它早已就位（同 cloudHostedServerIds 那条）。
+    // 拿不到一律 null = 「不知道」，不是「箱子里没有」
+    hostedServerIds: escrowSync?.hostedServerIds() ?? null,
   });
 
   /**
