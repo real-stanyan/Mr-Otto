@@ -29,6 +29,7 @@ import {
   type SubscriptionRow,
 } from "./billingQueries.js";
 import { DECISION_USES } from "./decisionUses.js";
+import { attachQuotaTiming, parseTiming, type QuotaSample } from "./quotaTiming.js";
 import { fetchWorkspaceUsage } from "./usageAttribution.js";
 import type { BillingPort, CheckoutTarget } from "./edge.js";
 import {
@@ -380,6 +381,19 @@ class QuotaUnavailable extends Error {}
     「插库成功了但通知没送到」这种半截状态，靠 Stripe 的重试就能治好 */
 const GRANT_SEEN_MAX = 200;
 
+/** 这一次 dispatch 的耗时账本（#1304，形状与判据在 quotaTiming.ts 的文件头）。
+    **不能做成实例字段**：DO 单线程只保证「一次 fetch 里的读改写没人插队」，await 之间
+    照样会切出去 —— 两个并发请求进同一个 DO 时，实例字段会把两笔账混成一笔。
+    所以它由 `fetch` 现造、一路递下去 */
+interface Ledger {
+  /** dispatch 起跑那一刻 */
+  at: number;
+  plan: number;
+  planCold: boolean;
+  state: number;
+  rebuilt: boolean;
+}
+
 export class Quota extends DurableObject<Env> {
   private planCache: { v: PlanSnapshot | null; sub: SubscriptionRow | null; exp: number } | null = null;
 
@@ -389,19 +403,34 @@ export class Quota extends DurableObject<Env> {
     return this.ctx.id.name ?? "";
   }
 
-  private async plan(force = false): Promise<{ plan: PlanSnapshot | null; sub: SubscriptionRow | null }> {
+  private async plan(led: Ledger, force = false): Promise<{ plan: PlanSnapshot | null; sub: SubscriptionRow | null }> {
     if (!force && this.planCache && this.planCache.exp > Date.now()) {
       return { plan: this.planCache.v, sub: this.planCache.sub };
     }
+    // 缓存没命中 = 这一趟真打 Supabase。记号在查之前置，所以查炸了（→ 503）那条路
+    // 也报得出「它是冷的」—— 最慢的那几发恰恰是这一条（#1304）
+    led.planCold = true;
+    const at = Date.now();
     const db = supa(this.env);
     const [subRows, planRows] = await Promise.all([db.get(subscriptionQuery(this.uid())), db.get(plansQuery())]);
     const sub = parseSubscriptionRows(subRows);
     const v = planSnapshotOf(sub, parsePlanRows(planRows));
     this.planCache = { v, sub, exp: Date.now() + 60_000 };
+    led.plan = Date.now() - at;
     return { plan: v, sub };
   }
 
-  private async state(plan: PlanSnapshot | null): Promise<QuotaState> {
+  private async state(led: Ledger, plan: PlanSnapshot | null): Promise<QuotaState> {
+    const at = Date.now();
+    try {
+      return await this.loadState(led, plan);
+    } finally {
+      // finally 而不是在三条 return 上各记一次：重建失败那条（→ 503）是最该量到的一发
+      led.state = Date.now() - at;
+    }
+  }
+
+  private async loadState(led: Ledger, plan: PlanSnapshot | null): Promise<QuotaState> {
     const stored = await this.ctx.storage.get<QuotaState>("state");
     if (stored) return stored;
     // 冷启动：从事实重建。没订阅也要建 —— 加购余额不依赖订阅。
@@ -413,6 +442,9 @@ export class Quota extends DurableObject<Env> {
     return this.ctx.blockConcurrencyWhile(async () => {
       const again = await this.ctx.storage.get<QuotaState>("state");
       if (again) return again;
+      // 记号置在 `again` 这道闸**之后**：排在重建后面的那个请求什么都没重建，
+      // 置在前面就会让它也报「这一发做了冷启动重建」（#1304）
+      led.rebuilt = true;
       const db = supa(this.env);
       const uid = this.uid();
       const now = Date.now();
@@ -449,10 +481,21 @@ export class Quota extends DurableObject<Env> {
   }
 
   override async fetch(req: Request): Promise<Response> {
+    const led: Ledger = { at: Date.now(), plan: 0, planCold: false, state: 0, rebuilt: false };
+    // **每一条回执都带 `timing`**（#1304）：这一层唯一的消费方是网关侧那个头，
+    // 而额度回执的形状一格没动 —— 多一个字段，`parseRemaining` 那几处结构性解析看不见它。
+    // 为什么不另开一个诊断 op：那样量到的永远是一个热 DO（planCache 命中、state 在 storage 里），
+    // 而要分辨的那 0.83–4.90s 的抖只出现在真实流量里偶发的那几发上
     const json = (payload: unknown, status = 200): Response =>
-      new Response(JSON.stringify(payload), { status, headers: { "content-type": "application/json; charset=utf-8" } });
+      new Response(
+        JSON.stringify({
+          ...(payload as Record<string, unknown>),
+          timing: { total: Date.now() - led.at, plan: led.plan, planCold: led.planCold, state: led.state, rebuilt: led.rebuilt },
+        }),
+        { status, headers: { "content-type": "application/json; charset=utf-8" } }
+      );
     try {
-      return await this.dispatch(req, json);
+      return await this.dispatch(req, json, led);
     } catch (err) {
       // C1：重建拿不到事实 = 这一刻算不出额度，回 503「稍后再试」。
       // 别的异常照抛 —— 把所有错误都译成 503 会把真 bug 伪装成暂时性故障
@@ -463,15 +506,15 @@ export class Quota extends DurableObject<Env> {
     }
   }
 
-  private async dispatch(req: Request, json: (payload: unknown, status?: number) => Response): Promise<Response> {
+  private async dispatch(req: Request, json: (payload: unknown, status?: number) => Response, led: Ledger): Promise<Response> {
     const op = new URL(req.url).pathname.slice(1);
     const body: unknown = await req.json().catch(() => ({}));
     const b = (body ?? {}) as Record<string, unknown>;
     const now = Date.now();
 
     if (op === "hold") {
-      const { plan } = await this.plan();
-      const before = await this.state(plan);
+      const { plan } = await this.plan(led);
+      const before = await this.state(led, plan);
       const r = quotaHold(before, plan, String(b.requestId), Number(b.estimateMicro), now);
       if (r.ok) await this.ctx.storage.put("state", r.state);
       // **额度快照跟着回执一起回**（#1304）：网关原来在这之后还要单独打一趟 `remaining`
@@ -483,11 +526,11 @@ export class Quota extends DurableObject<Env> {
     }
 
     if (op === "settle") {
-      const { plan } = await this.plan();
+      const { plan } = await this.plan(led);
       // **不在这里先 roll**：quota.settle 自己 roll，且刻意先查 hold 再 roll ——
       // 先 roll 会把超过 HOLD_TTL_MS 的 hold 当成没人认领直接释放掉，
       // 这笔已经花出去的成本就没人记账了（quota.ts 文件头 fix round 2）
-      const r = quotaSettle(await this.state(plan), String(b.requestId), Number(b.costMicro), now, plan);
+      const r = quotaSettle(await this.state(led, plan), String(b.requestId), Number(b.costMicro), now, plan);
       if (!r) return json({ ok: false, reason: "no_hold" }); // 已结算/已释放：幂等，调用方据此不写 usage_event
       await this.ctx.storage.put("state", r.state);
       // #863：这笔成本落进了哪扇 5h 窗——只有真有钱进窗时才带（addon 没溢出就是 null），
@@ -513,13 +556,13 @@ export class Quota extends DurableObject<Env> {
     }
 
     if (op === "remaining") {
-      const { plan } = await this.plan();
-      return json({ ...quotaRemaining(await this.state(plan), plan, now), plan: plan?.planId ?? null });
+      const { plan } = await this.plan(led);
+      return json({ ...quotaRemaining(await this.state(led, plan), plan, now), plan: plan?.planId ?? null });
     }
 
     if (op === "view") {
-      const { plan, sub } = await this.plan();
-      const st = roll(await this.state(plan), now, plan);
+      const { plan, sub } = await this.plan(led);
+      const st = roll(await this.state(led, plan), now, plan);
       await this.ctx.storage.put("state", st); // roll 掉的过期窗/过期加购顺手落盘，别每次读都重算
       return json({
         sub, windows: quotaView(st, plan, now),
@@ -530,8 +573,8 @@ export class Quota extends DurableObject<Env> {
     if (op === "planChanged") {
       // webhook 刚改了订阅：丢缓存重读。周窗锚定日可能跟着变了，
       // roll 会按新的 periodStart 重算当前周段（对不上就整段归零）
-      const { plan } = await this.plan(true);
-      await this.ctx.storage.put("state", roll(await this.state(plan), now, plan));
+      const { plan } = await this.plan(led, true);
+      await this.ctx.storage.put("state", roll(await this.state(led, plan), now, plan));
       return json({ ok: true });
     }
 
@@ -574,20 +617,33 @@ export class Quota extends DurableObject<Env> {
 /** 打这个人的 Quota DO。实例按 uid 取名，DO 自己从实例名读身份 ——
     请求体里不带 uid，也就没有「body 里冒充别人」这条路。
     非 2xx 一律抛：让调用方走它自己的失败路径，而不是把一份错误信封
-    当成额度回执解析（那会把 500 读成「太多并发请求」） */
-async function quotaCall<T = Record<string, unknown>>(env: Env, uid: string, op: string, body: unknown): Promise<T> {
+    当成额度回执解析（那会把 500 读成「太多并发请求」）。
+    `sink` 是**必需**的（#1304，同 `FrameHandlerDeps.log` / `CloudSessionOpts.diskUsage` 的纪律）：
+    写成可选的话，哪天多一条调用路径忘了递，它安静地什么都不记 —— 而那一发多半正是想看的那发 */
+async function quotaCall<T = Record<string, unknown>>(
+  env: Env, uid: string, op: string, body: unknown, sink: QuotaSample[]
+): Promise<T> {
+  // #1304：Worker 侧量到的墙上时间。与 DO 自报的 `timing.total` 相减就是纯往返，
+  // 而**两侧各量各的时长**——不比对两边的时间戳，那两台机器的时钟对不齐
+  const at = Date.now();
   const res = await env.QUOTA.getByName(uid).fetch(new Request(`https://quota/${op}`, {
     method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
   }));
-  if (!res.ok) throw new Error(`quota ${op} ${res.status}`);
-  return (await res.json()) as T;
+  if (!res.ok) {
+    // 失败那一发照样记：`/me` 的 502 会带着这一格出去，而一次超时的 DO 正是最想看的那发
+    sink.push({ label: op, outerMs: Date.now() - at, inner: null });
+    throw new Error(`quota ${op} ${res.status}`);
+  }
+  const parsed = (await res.json()) as T;
+  sink.push({ label: op, outerMs: Date.now() - at, inner: parseTiming((parsed as Record<string, unknown>).timing) });
+  return parsed;
 }
 
-function quotaPort(env: Env): QuotaPort {
+function quotaPort(env: Env, sink: QuotaSample[]): QuotaPort {
   const db = supa(env);
   return {
     async hold(uid, requestId, estimateMicro) {
-      const r = await quotaCall(env, uid, "hold", { requestId, estimateMicro });
+      const r = await quotaCall(env, uid, "hold", { requestId, estimateMicro }, sink);
       const remaining = parseRemaining(r.remaining);
       if (r.ok === true) return { ok: true, chargedTo: r.chargedTo === "addon" ? "addon" : "window", ...(remaining ? { remaining } : {}) };
       if (r.code === "quota_exhausted") {
@@ -599,7 +655,7 @@ function quotaPort(env: Env): QuotaPort {
       return { ok: false, code: r.code === "no_subscription" ? "no_subscription" : "too_many_inflight", ...(remaining ? { remaining } : {}) };
     },
     async settle(uid, requestId, meta) {
-      const r = await quotaCall(env, uid, "settle", { requestId, costMicro: meta.costMicro });
+      const r = await quotaCall(env, uid, "settle", { requestId, costMicro: meta.costMicro }, sink);
       if (r.ok !== true) return null; // 没有挂着的 hold（重复 settle / 已释放）：不记账，幂等
       const chargedTo = r.chargedTo === "addon" ? "addon" : "window";
       const windowOpenAt = typeof r.windowOpenAt === "number" && Number.isFinite(r.windowOpenAt) ? r.windowOpenAt : null;
@@ -614,9 +670,9 @@ function quotaPort(env: Env): QuotaPort {
       }
       return parseRemaining(r.remaining);
     },
-    async release(uid, requestId) { await quotaCall(env, uid, "release", { requestId }); },
+    async release(uid, requestId) { await quotaCall(env, uid, "release", { requestId }, sink); },
     async remaining(uid) {
-      const r = await quotaCall(env, uid, "remaining", {});
+      const r = await quotaCall(env, uid, "remaining", {}, sink);
       return parseRemaining(r) ?? { h5: 0, week: 0, addon: 0, plan: null };
     },
   };
@@ -636,7 +692,7 @@ async function routesOf(env: Env): Promise<RouteRow[]> {
     subscription 表是投影，Quota DO 是投影的投影。写库顺序永远是
     「先落事实（表），再通知投影（DO）」—— 反过来的话通知成功、落库失败，
     投影里凭空多出一份没有凭据的额度 */
-function billingPort(env: Env): BillingPort {
+function billingPort(env: Env, sink: QuotaSample[]): BillingPort {
   const db = supa(env);
   const stripe = async (path: string, params: URLSearchParams): Promise<Record<string, unknown>> => {
     const res = await fetch(`https://api.stripe.com/v1/${path}`, {
@@ -658,8 +714,13 @@ function billingPort(env: Env): BillingPort {
         sub: SubscriptionRow | null;
         windows: { h5: WindowState; week: WindowState } | null;
         addon: { remainingMicro: number; expiresAt: number | null };
-      }>(env, uid, "view", {});
+      }>(env, uid, "view", {}, sink);
+      // #1304：`/me` 不止一趟 DO —— 这两条是 **Worker 侧**打 Supabase 的（routes 有
+      // isolate 级 60s 缓存所以常常约等于 0，plans 每次都真查）。不单量它，这一段时间
+      // 会在「客户端总时长 − DO 那趟」的残差里，被读成往返的一部分
+      const dbAt = Date.now();
       const [routes, plans] = await Promise.all([routesOf(env), db.get(plansQuery()).then(parsePlanRows)]);
+      sink.push({ label: "me:db", outerMs: Date.now() - dbAt, inner: null });
       // 型号清单 + 型号→平台（#1011）**都在 chatModelsOf 里**，因为这个文件不进 vitest：
       // 出图行要不要滤掉、同款多路由取哪条平台，这两个判断留在这里就零执行覆盖（#1081）
       const { models, imageModels, ttsModels, decisionModels, modelPlatforms } = modelsForMe(routes);
@@ -713,7 +774,7 @@ function billingPort(env: Env): BillingPort {
     // 编排抽在 webhookHandler.ts（#854）：三条钱路（乱序闸 / 加购去重+通知 DO /
     // planChanged）是纯函数可测的，这里只剩把真实的 Supabase/Stripe 递进去
     webhook: (payload, signatureHeader) =>
-      handleWebhookEvent({ db, quotaCall: (uid, op, body) => quotaCall(env, uid, op, body) },
+      handleWebhookEvent({ db, quotaCall: (uid, op, body) => quotaCall(env, uid, op, body, sink) },
         payload, signatureHeader, env.STRIPE_WEBHOOK_SECRET ?? "", Math.floor(Date.now() / 1000)),
   };
 }
@@ -740,6 +801,11 @@ function friendChecker(env: Env): (a: string, b: string) => Promise<boolean> {
 
 const handler = {
   async fetch(req: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+    // #1304：这一次请求打了几趟 Quota DO、每趟的时间花在哪儿。**每个请求一份**——
+    // 所有 port 都在这里现造，所以一个局部数组就够，不必按 requestId 分格。
+    // 流式 chat 的 settle 跑在 `waitUntil` 里、在响应发出之后，所以它那一趟进不了这个头
+    // （已知缺口：流式那条只看得到 hold）
+    const timing: QuotaSample[] = [];
     const handle = createEdge({
       config: {
         jwtSecret: env.SUPABASE_JWT_SECRET,
@@ -751,15 +817,17 @@ const handler = {
       isFriend: friendChecker(env),
       llm: createLlmGateway({
         routes: () => routesOf(env),
-        quota: quotaPort(env),
+        quota: quotaPort(env, timing),
         upstreamKey: (platform) => upstreamKeyOf(env as unknown as Record<string, unknown>, platform),
         // 流式响应的 settle 发生在响应已经发出之后。没有 waitUntil，Worker 会在
         // 返回响应那一刻把这个 isolate 收掉 —— 结算就永远不会落地（额度白送）
         waitUntil: (p) => ctx.waitUntil(p),
       }),
-      billing: billingPort(env),
+      billing: billingPort(env, timing),
     });
-    return handle(req);
+    const res = await handle(req);
+    attachQuotaTiming(res, timing);
+    return res;
   },
 };
 
