@@ -12,11 +12,14 @@ import { BOB } from "./bob.js";
 import { SAGE } from "./sage.js";
 import { STOIC } from "./stoic.js";
 import { CAP } from "./cap.js";
+import { MANE } from "./mane.js";
+import { SWEEP } from "./sweep.js";
+import { GRIN } from "./grin.js";
 
-export { OTTO, BERET, SPECS, SCHOLAR, BOB, SAGE, STOIC, CAP };
+export { OTTO, BERET, SPECS, SCHOLAR, BOB, SAGE, STOIC, CAP, MANE, SWEEP, GRIN };
 
 export const FACE_CHARACTERS: readonly FaceCharacter[] = [
-  OTTO, BERET, SPECS, SCHOLAR, BOB, SAGE, STOIC, CAP,
+  OTTO, BERET, SPECS, SCHOLAR, BOB, SAGE, STOIC, CAP, MANE, SWEEP, GRIN,
 ];
 
 export function faceCharacter(id: string): FaceCharacter | undefined {

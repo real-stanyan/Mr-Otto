@@ -21,7 +21,7 @@ export { deriveBrows, deriveEyes, deriveMouths } from "./character.js";
 export { composeFrame, layoutFor, scaleForHeight } from "./compose.js";
 export { ACCENT, FACE_STATES, FACE_STATE_LIST, isFaceState } from "./states.js";
 export { faceStateFor, SLEEP_AFTER_MS } from "./adapter.js";
-export { FACE_CHARACTERS, faceCharacter, OTTO, BERET, SPECS, SCHOLAR, BOB, SAGE, STOIC, CAP } from "./characters/index.js";
+export { FACE_CHARACTERS, faceCharacter, OTTO, BERET, SPECS, SCHOLAR, BOB, SAGE, STOIC, CAP, MANE, SWEEP, GRIN } from "./characters/index.js";
 
 export interface FaceOptions {
   readonly character: FaceCharacter;
