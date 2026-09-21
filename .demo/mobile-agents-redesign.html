@@ -1757,12 +1757,50 @@ function chatNav({face,name,sub,live,right=''}){
       <div class="chatid">${face}
         <div style="min-width:0">
           <div class="nm">${name}</div>
-          <div class="st${live?' live':''}">${sub}</div>
+          <div class="st${live?' live':''}" data-el="sub">${sub}</div>
         </div>
       </div>
       <div style="display:flex;gap:2px;flex:none">${right}</div>
     </div>
   </div>`;
+}
+/** 一轮活跑起来是什么样：按剧本换 `data-st` + 那行小字。**换态是瞬时的，不做过渡** ——
+    这几张脸之间的差别是像素图案（眼形、嘴形、角标），补间只会糊成一团，而状态本身
+    是离散的事实：它要么在检索要么在执行，中间没有「半个」。每一格至少停 1.2 秒 ——
+    读一眼角标 + 看清眼睛在干嘛，比这短就只剩闪烁。
+
+    剧本是 demo 的假数据；真机上这几格各有各的来源（agentPhase / turnLedger /
+    sessionOrb / 通话 per-agent 状态），映射在那一侧的 adapter.ts。 */
+function playRun(el,steps,{face='canvas[data-ch]',sub='[data-el="sub"]',onStep}={}){
+  const cv=el.querySelector(face), sb=el.querySelector(sub);
+  if(!cv) return;
+  let i=0,timer=0;
+  const step=()=>{
+    const s=steps[i%steps.length];
+    cv.dataset.st=s.st; cv.dataset.anim='1'; mountFace(cv);
+    if(sb&&s.sub!==undefined){ sb.textContent=s.sub; sb.classList.toggle('live',s.live!==false); }
+    onStep&&onStep(s,el);
+    i++; timer=setTimeout(step,s.ms);
+  };
+  step();
+  const prev=el._stop;
+  el._stop=()=>{ clearTimeout(timer); prev&&prev(); };
+}
+/** 群聊头上那一摞脸各走各的态。同一份剧本里写全三只，不是三个定时器各跑各的 ——
+    三只的状态是**同一时刻的一张快照**（谁接的活、谁在等），分开跑必然错位 */
+function playRunMulti(el,steps){
+  const faces=[...el.querySelectorAll('.chatid canvas[data-ch]')], sb=el.querySelector('[data-el="sub"]');
+  if(faces.length===0) return;
+  let i=0,timer=0;
+  const step=()=>{
+    const s=steps[i%steps.length];
+    faces.forEach((cv,n)=>{ const st=s.states[n]||'idle';
+      cv.dataset.st=st; cv.dataset.anim=st==='idle'?'0':'1'; mountFace(cv); });
+    if(sb){ sb.textContent=s.sub; sb.classList.toggle('live',s.live!==false); }
+    i++; timer=setTimeout(step,s.ms);
+  };
+  step();
+  const prev=el._stop; el._stop=()=>{ clearTimeout(timer); prev&&prev(); };
 }
 const stackFaces=(ids,sz=26)=>`<span class="stack">${ids.slice(0,3).map(i=>{const b=botOf(i);
   return b?faceOf(b.face,b.name[0],sz):''}).join('')}</span>`;
@@ -1906,7 +1944,21 @@ SCREENS.botChat={label:'私聊 · 在干活',grp:'智能体',render:(p)=>{
    ${cmpPad}
  </div>
  ${composer({ph:`说给${b.name}听…`,ctx:.41})}`},
- mount:toBottom};
+ /* 一轮活从排队到收口，脸与那行小字一起走。真机上这几格的来源各不相同
+    （turnLedger → queued、agentPhase → 思考/检索/执行/作答、turn_ended → 完成），
+    demo 里按同样的顺序排一遍 —— 要看的就是「跑起来是什么样」 */
+ mount(el){ toBottom(el);
+   const typing=el.querySelector('.typing');
+   playRun(el,[
+     {st:'queued',    sub:'排队中 · 等前一轮收口', ms:1500},
+     {st:'thinking',  sub:'思考中',                ms:2000},
+     {st:'searching', sub:'检索中 · 在读 PricingCards.tsx', ms:1900},
+     {st:'working',   sub:'执行中 · npm test',     ms:2400},
+     {st:'answering', sub:'作答中',                ms:2200, typing:true},
+     {st:'done',      sub:'完成 · 门禁三段都绿',    ms:1800},
+     {st:'idle',      sub:'空闲 · 刚刚',           ms:2200, live:false},
+   ],{onStep:(st)=>{ if(typing) typing.style.visibility=st.typing?'visible':'hidden'; }});
+ }};
 
 /* 「要你去登录一次」。个人主场里**一张审批卡都不出**（ADR-0298：每一把刀都放行），
    所以这张卡不是审批 —— 它是一件只有你做得了的事：登录这一下必须是人。
@@ -1977,7 +2029,20 @@ SCREENS.groupChat={label:'群聊',grp:'智能体',render:(p)=>{
  </div>
  ${composer({ph:'说给这一组听…',ctx:.52,model:false,
    extra:`<div style="display:flex;gap:6px;padding:0 2px 8px"><button class="chip" data-sheet="mention" style="height:28px;font-size:12.5px">${I('people',13,2)} @ 谁</button></div>`})}`},
- mount:toBottom};
+ /* 群里是一次接力：运维先干、收口之后开发接、最后设计。头上那一摞脸就是这张快照 ——
+    一眼看得出此刻是谁在跑、谁在排队、谁闲着 */
+ mount(el){ toBottom(el);
+   const typing=el.querySelector('.typing');
+   playRunMulti(el,[
+     {states:['queued','working','idle'],     sub:'运维 执行中 · 开发 排队中', ms:2100},
+     {states:['thinking','done','idle'],      sub:'运维 完成 · 开发 思考中',   ms:1900},
+     {states:['answering','idle','listening'],sub:'开发 作答中',              ms:2200},
+     {states:['idle','idle','thinking'],      sub:'设计 思考中',              ms:1800},
+     {states:['idle','idle','answering'],     sub:'设计 作答中',              ms:2100},
+     {states:['idle','idle','idle'],          sub:'开发、运维、设计', ms:2200, live:false},
+   ]);
+   if(typing) typing.style.visibility='visible';
+ }};
 
 /* ═══════════════════════════════════════════════════════════════════════
    4 · 建一只 / 改一只
