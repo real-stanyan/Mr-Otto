@@ -2767,6 +2767,24 @@ export const useChat = create<ChatState>((set, get) => ({
         events: [],
       },
       workspaceGroupsError: null,
+      // 开局卡让位（#1311）。主区那棵树里 `cloudDraftWorkspaceId !== null` 排在
+      // `cloudSession !== null` **之前**（App.tsx，为的是「开着云会话时点 ＋ 要看到
+      // 新卡」——那个方向是对的），所以不清这一格 = 会话真的进去了、侧栏那一行也
+      // 亮着，而主区还画着开局卡，看起来像「点了没反应」，于是人会再点几下，每一下
+      // 都是一次真的进房。
+      //
+      // 这不是排序排错了，是**四条清理路里漏了一条**：`newSession` / `resume` /
+      // `startCloudDraft` 都记得清，只有这里没有。
+      //
+      // 落在这一次 `set` 里而不是函数开头：`workspaceCloudCreate` 失败时上面已经
+      // 早退，那时开局卡连同用户打的字还留在屏幕上，比把他扔到一块空白地皮上好。
+      // `createCloudSessionFromDraft` 那条路进来时这两格早就是 null 了（它先清再
+      // 调），所以对它是空操作。
+      //
+      // `cloudDraftChat` 一起清：这两格「一起生、一起死」（见它的字段注释），
+      // 只清前一格的话，下一次 createCloudSessionFromDraft 会拿着上一只的 spec 去建
+      cloudDraftWorkspaceId: null,
+      cloudDraftChat: null,
     });
     // 进了这间房 = 里面 @ 我的看见了（#1064）。**排在 join 之前**：这一步只碰
     // 收件箱，不依赖房间连没连上，而连接失败时人确实已经点开过它了

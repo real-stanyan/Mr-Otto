@@ -3846,7 +3846,10 @@ export function App() {
     <AboutUpdateSettings />
   ) : cloudDraftWorkspaceId !== null ? (
     // 「＋」按在某个工作区组头上：开局卡（issue #919）。排在 cloudSession 之前——
-    // 手上开着一条云会话时点 ＋，要看到的是新的那张卡，不是旧会话
+    // 手上开着一条云会话时点 ＋，要看到的是新的那张卡，不是旧会话。
+    // **反方向不靠顺序靠清理**（#1311）：开局卡开着时点一条云会话，由
+    // `openCloudSession` 把这一格清掉（同 newSession / resume）。调这里的顺序
+    // 修不了那个方向——只会把上面这句换个方向再坏一次
     <CloudWelcome workspaceId={cloudDraftWorkspaceId} />
   ) : cloudSession !== null ? (
     // 云会话占主区（issue #919）。排在 welcome 之前：进云会话时本地 phase 还停在
