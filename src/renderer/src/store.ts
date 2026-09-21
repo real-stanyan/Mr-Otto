@@ -135,7 +135,7 @@ import type { ModelShareWindow } from "../../shared/modelShare.js";
 import { laneOf, type ModelLane } from "../../shared/modelLane.js";
 import { autoModelOf } from "../../shared/autoModel.js";
 import { isSubscribed } from "./lib/billingView.js";
-import { groupRows, homeOf, rosterRows } from "./lib/agentRoster.js";
+import { chatSeedOf, groupRows, homeOf, rosterRows } from "./lib/agentRoster.js";
 import { settingsSectionVisible } from "./settingsShell.js";
 import type { MyProfile, ProfilePatch } from "../../shared/profile.js";
 import {
@@ -251,9 +251,18 @@ export interface CloudSessionState {
       deniedCode 那样"来了才覆盖、没来就留着"：缺口补齐时推送里就没有它了，
       留着旧值等于一直说一句已经不成立的话 */
   gapNote: string | null;
-  /** 这条会话是哪一种聊天、名单是谁（#1280）。`null` = 团队会话，或者 welcome 还没到。
-      照抄推送（缺席 → null）：welcome 到了就一定有结论，没有「读不到」这一档 */
-  chat: CsChatInfo | null;
+  /** 这条会话是哪一种聊天、名单是谁（#1280）。**三态**（#1301）：
+      `undefined` = 还不知道（welcome 没到、清单里也没有这一行）/ `null` = 团队会话 /
+      值 = 一条聊天。
+
+      两个来源：打开那一刻按清单行或建会话的 spec **种**一份（`chatSeedOf`），welcome
+      到了覆盖。所以状态推送里**缺席 = 留着手上这份**，与 `gapNote` / `hasOlder` 那条
+      「照抄推送、缺席即结论」的纪律故意相反——那两格每次推送重算，这一格 welcome
+      只说一次。
+
+      名单那一半只是种子：真正画出来的名单从日志推导（`chatViewOf` → `chatRosterNow`），
+      否则改完名单头部就一直是旧的（#1302） */
+  chat: CsChatInfo | null | undefined;
   /** 这一页之前还有更早的消息（#1280）。照抄推送（缺席 = 没有更早的 / 团队会话）——
       同 gapNote 的纪律：翻到头时主进程正是靠**不带**这一格来说「到头了」 */
   hasOlder: boolean;
@@ -2723,6 +2732,11 @@ export const useChat = create<ChatState>((set, get) => ({
     // 的 join() 内部触发 teardown()，这一步还来得及送进旧房间
     stopVoice(get);
     if (get().voice !== null) set({ voice: null });
+    // 先算种子再建（#1301）：判据是**调用进来时**的那两样——要建的是什么
+    // （`chat` spec）、清单里那一行是什么。建完再算的话 sessionId 已经不是 null，
+    // 就得反过来指望刚建出来的那条已经进了清单（它没有，refreshCloudSessions
+    // 还没跑），于是新建的聊天照样要等 welcome
+    const seed = chatSeedOf({ spec: chat, sessionId, chats: get().cloudSessionList[workspaceId] ?? [] });
     let sid = sessionId;
     if (sid === null) {
       const created = await window.otter.workspaceCloudCreate(workspaceId, chat);
@@ -2744,7 +2758,10 @@ export const useChat = create<ChatState>((set, get) => ({
         initiatorUid: null, ownerUid: "", selfUid: get().account.id,
         modelRoute: null, // 同上（issue #945）
         gapNote: null, // 同上（issue #957 C-I7）：backlog 落定才知道缺没缺
-        chat: null, // 同上（#1280）：welcome 到了才知道这是哪一种聊天
+        // #1301：**不是** null。welcome 之前也得知道这是哪一种聊天，否则主区
+        // 画的是团队壳（真机十秒以上）。清单/spec 种一份，welcome 到了覆盖；
+        // 两样都没有时是 `undefined` = 还不知道，主区两种壳都不画
+        chat: seed,
         hasOlder: false, // 同上（#1280）：尾巴落定才知道前面还有没有
         older: "idle",
         events: [],
@@ -3188,8 +3205,13 @@ export const useChat = create<ChatState>((set, get) => ({
     if (home === null) return { ok: false, message: "还没有个人主场" };
     const r = await window.otter.workspaceCloudChatUpdate(home.id, sessionId, patch);
     if (!r.ok) return { ok: false, message: r.message };
-    // 头部那排名字与侧栏那一行都从这份清单来；时间线上那条「谁进谁出」走的是
-    // 房里广播回来的 chat_roster_changed —— 两条路各走各的，缺一样就有一处是陈旧的
+    // **侧栏那一行**与群名从这份清单来（群名不是日志事实，改名走的是库）；
+    // **头部那排名字不从这儿来**——它与时间线上「谁进谁出」那一行读同一份日志
+    // 事实（`chat_roster_changed` → `chatViewOf`）。
+    //
+    // 这句注释原来写的是「头部那排名字与侧栏那一行都从这份清单来」，而那是假的：
+    // 头部的名单取的是 welcome 那一刻的快照、这一刷一个字都动不到它，于是改完
+    // 名单头部是「新标题 + 旧名单」，「添加智能体」还按不动（#1302）
     await get().refreshCloudSessions(home.id);
     return { ok: true };
   },
@@ -3460,8 +3482,11 @@ export const useChat = create<ChatState>((set, get) => ({
             // deniedCode 那样"没带就留着旧的"：缺口补齐时主进程正是靠不带
             // 这一格来说"补齐了"
             gapNote: status.gapNote ?? null,
-            // #1280：同上，照抄推送（缺席 = 团队会话）
-            chat: status.chat ?? null,
+            // #1301：这一格**不照抄**——缺席 = welcome 还没到，留着打开时种的
+            // 那一份（`chatSeedOf`）。与上面 gapNote/hasOlder 的纪律相反而理由
+            // 对称：那两格每次推送重算，缺席就是最新结论；这一格 welcome 每条
+            // 连接只说一次，把缺席读成「团队会话」正是 #1301
+            ...(status.chat === undefined ? {} : { chat: status.chat }),
             // #1280：同上。**不能**「没带就留着旧的」——翻到头那一次主进程正是
             // 靠不带这一格来说「到头了」，留着旧值就是顶上那个哨兵永远挂着
             hasOlder: status.hasOlder ?? false,

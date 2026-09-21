@@ -19,9 +19,11 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { useChat, type CloudSessionState } from "../../src/renderer/src/store.js";
 import type { SessionEvent } from "../../src/session/events.js";
+import type { CloudSessionStatus } from "../../src/shared/shellBridge.js";
 import type { CloudSessionListRow } from "../../src/renderer/src/lib/workspaceView.js";
 
 let cloudEventHandler: ((e: SessionEvent) => void) | null = null;
+let cloudStatusHandler: ((s: CloudSessionStatus) => void) | null = null;
 const workspaceCloudListCalls: string[] = [];
 
 beforeAll(async () => {
@@ -29,6 +31,9 @@ beforeAll(async () => {
     getAccount: async () => ({ signedIn: false, id: "", email: "", name: "", avatarUrl: "" }),
     onCloudSessionEvent: (cb: (e: SessionEvent) => void) => {
       cloudEventHandler = cb;
+    },
+    onCloudSessionStatus: (cb: (s: CloudSessionStatus) => void) => {
+      cloudStatusHandler = cb;
     },
     workspaceCloudList: async (workspaceId: string) => {
       workspaceCloudListCalls.push(workspaceId);
@@ -143,5 +148,49 @@ describe("有人说话 → 本地并入参与者，只并不删", () => {
     // workspaceCloudListCalls）在 fire() 返回前就已经同步发生，不必等它
     expect(workspaceCloudListCalls).toEqual(["w1"]); // session_archived 既有逻辑那一次，不多不少
     expect(useChat.getState().cloudSessionList["w1"]![0]!.participantUids).toEqual(["u9"]);
+  });
+});
+
+// #1301：状态推送对 `chat` 这一格的规矩与 gapNote / hasOlder **相反**——那两格
+// 每次推送重算、缺席即最新结论；这一格 welcome 每条连接只说一次，缺席 = 还没说。
+// 照抄推送的话，打开那一刻种下去的那份会被紧跟着的 "connecting" 推送当场抹成
+// null，于是主场里的聊天又画回团队壳（这条修法自己最容易退回去的地方）
+describe("状态推送不许抹掉 chat 那一格（#1301）", () => {
+  const status = (over: Partial<CloudSessionStatus> = {}): CloudSessionStatus => ({
+    workspaceId: "w1", sessionId: "s1", state: "connecting",
+    initiatorUid: null, ownerUid: "o", selfUid: "u1", modelRoute: null,
+    ...over,
+  });
+  const fireStatus = (s: CloudSessionStatus): void => {
+    if (!cloudStatusHandler) throw new Error("boot() 没有把 onCloudSessionStatus 注册上");
+    cloudStatusHandler(s);
+  };
+
+  it("welcome 之前那几次推送不带 chat：种下去的那份原样留着", () => {
+    useChat.setState({
+      cloudSession: makeCloudSession({ chat: { kind: "group", agentIds: ["admin"] } }),
+    });
+    fireStatus(status());
+    expect(useChat.getState().cloudSession?.chat).toEqual({ kind: "group", agentIds: ["admin"] });
+  });
+
+  it("welcome 说是团队会话（null）：覆盖得掉，不会永远卡在「还不知道」", () => {
+    useChat.setState({ cloudSession: makeCloudSession({ chat: undefined }) });
+    fireStatus(status({ chat: null }));
+    expect(useChat.getState().cloudSession?.chat).toBeNull();
+  });
+
+  it("welcome 带着名单：覆盖种子（权威那份赢）", () => {
+    useChat.setState({ cloudSession: makeCloudSession({ chat: { kind: "group", agentIds: ["admin"] } }) });
+    fireStatus(status({ chat: { kind: "group", agentIds: ["admin", "a_000000000001"] } }));
+    expect(useChat.getState().cloudSession?.chat).toEqual({
+      kind: "group", agentIds: ["admin", "a_000000000001"],
+    });
+  });
+
+  it("别的会话的推送一个字都不动这一格", () => {
+    useChat.setState({ cloudSession: makeCloudSession({ chat: { kind: "dm", agentIds: ["a_000000000001"] } }) });
+    fireStatus(status({ sessionId: "别的", chat: null }));
+    expect(useChat.getState().cloudSession?.chat).toEqual({ kind: "dm", agentIds: ["a_000000000001"] });
   });
 });
