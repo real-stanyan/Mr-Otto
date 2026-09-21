@@ -47,6 +47,40 @@ describe("diffResidue", () => {
     expect(p8791?.pgid).toBeUndefined();
   });
 
+  it("孙进程监听（pid ≠ pgid）按 pgid 判 owned——真实形态就是这一种（#1336 / #780 M1）", () => {
+    // bash 工具起的是 detached 进程组：组长是那个 shell（pgid 555），真正监听端口的是
+    // 它的孩子（pid 777）。原来拿 `port.pid` 去 escapedSet 里查，这一档恒 false，
+    // `ports/owned` 于是是条死分支——「port:9999 可清」那条路一直走不通
+    const after: ResidueSnapshot = {
+      ts: 2000,
+      simulators: base.simulators,
+      ports: [...base.ports, { port: 9999, pid: 777, command: "python3", pgid: 555 }],
+    };
+    const items = diffResidue(base, after, [{ pgid: 555, cmd: "sh -c 'python3 -m http.server 9999 &'" }]);
+    const p = items.find((i) => i.id === "port:9999");
+    expect(p?.confidence).toBe("owned");
+    // 带回去的是**组**不是监听者自己：拿 pid 当 pgid 去 kill 只杀得掉那一个孩子
+    expect(p?.pgid).toBe(555);
+    expect(p?.cleanupHint).toBe("kill 进程组 555");
+    // 规则 4 照旧：这个组已经有端口条目了，就不再单列一条 process_groups
+    expect(items.find((i) => i.detector === "process_groups" && i.id === "555")).toBeUndefined();
+  });
+
+  it("快照里没有 pgid 这一格（旧日志重放出来的）= 回落 pid，行为逐字节不变", () => {
+    // ResidueSnapshot 会落进事件日志（residue_baseline），而旧日志必须永远可重放
+    const after: ResidueSnapshot = {
+      ts: 2000,
+      simulators: base.simulators,
+      ports: [...base.ports,
+        { port: 3000, pid: 555, command: "next-server" },
+        { port: 8791, pid: 777, command: "python3" }],
+    };
+    const items = diffResidue(base, after, [{ pgid: 555, cmd: "npx next dev" }]);
+    expect(items.find((i) => i.id === "port:3000")?.confidence).toBe("owned");
+    expect(items.find((i) => i.id === "port:3000")?.pgid).toBe(555);
+    expect(items.find((i) => i.id === "port:8791")?.confidence).toBe("suspected");
+  });
+
   it("escaped 组本身必进清单（owned），即使没占端口；带结构化 pgid（review C1f）", () => {
     const items = diffResidue(base, base, [{ pgid: 999, cmd: "sh -c 'sleep 100 &'" }]);
     expect(items).toEqual([

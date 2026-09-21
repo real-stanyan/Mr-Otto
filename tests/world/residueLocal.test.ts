@@ -26,17 +26,45 @@ const LSOF = [
   "postgres  100 stanyan    7u  IPv4 0x2      0t0  TCP 127.0.0.1:5432 (LISTEN)",
 ].join("\n");
 
+// ps -Ao pid=,pgid= 的典型输出：空白补齐的两列，没有表头。
+// 555 是**孙进程**（组长是 500）——lsof 报的 pid 与它所在的进程组不是一个数
+const PS_PGID = ["    1      1", "  500    500", "  555    500", "  100    100"].join("\n");
+
+/** 三条命令的桩：按命令头分流。`ps` 那一路是 #1336 加的 —— 分流写在这里而不是
+    「除了 simctl 都回 LSOF」，否则 ps 会拿到一段 lsof 输出（解析不出东西、静默没有 pgid） */
+const stubCmd = (o: { ps?: string | Error } = {}) => async (cmd: string) => {
+  if (cmd.includes("simctl")) return SIMCTL_JSON;
+  if (cmd.startsWith("ps ")) {
+    if (o.ps instanceof Error) throw o.ps;
+    return o.ps ?? PS_PGID;
+  }
+  return LSOF;
+};
+
 describe("createLocalResidue.snapshot", () => {
-  it("simctl 只收 Booted；lsof 解析出 port/pid/command", async () => {
-    const runCmd = async (cmd: string) =>
-      cmd.includes("simctl") ? SIMCTL_JSON : LSOF;
-    const residue = createLocalResidue(new LiveGroupRegistry(), runCmd);
+  it("simctl 只收 Booted；lsof 解析出 port/pid/command，ps 补上 pgid", async () => {
+    const residue = createLocalResidue(new LiveGroupRegistry(), stubCmd());
     const snap = await residue.snapshot();
     expect(snap.simulators).toEqual([
       { udid: "AAA", name: "iPhone 17", runtime: "iOS 26.5" },
     ]);
+    // pid 555 的组是 500（孙进程），pid 100 自己就是组长
+    expect(snap.ports).toContainEqual({ port: 3000, pid: 555, command: "next-serv", pgid: 500 });
+    expect(snap.ports).toContainEqual({ port: 5432, pid: 100, command: "postgres", pgid: 100 });
+  });
+
+  it("ps 挂了：端口清单照出，只是没有 pgid——回落成补这一格之前的行为（#1336）", async () => {
+    const residue = createLocalResidue(new LiveGroupRegistry(), stubCmd({ ps: new Error("no ps") }));
+    const snap = await residue.snapshot();
     expect(snap.ports).toContainEqual({ port: 3000, pid: 555, command: "next-serv" });
-    expect(snap.ports).toContainEqual({ port: 5432, pid: 100, command: "postgres" });
+    expect(snap.ports).toHaveLength(2);
+  });
+
+  it("ps 里查不到的 pid 不编一个 pgid 出来（那会把它算进别人的组）", async () => {
+    const residue = createLocalResidue(new LiveGroupRegistry(), stubCmd({ ps: "  100    100" }));
+    const snap = await residue.snapshot();
+    expect(snap.ports).toContainEqual({ port: 3000, pid: 555, command: "next-serv" });
+    expect(snap.ports).toContainEqual({ port: 5432, pid: 100, command: "postgres", pgid: 100 });
   });
 
   it("simctl/lsof 挂了不炸——回空列表（残留审计是旁路，不能拖垮主流程）", async () => {

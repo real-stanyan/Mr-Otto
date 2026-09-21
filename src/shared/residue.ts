@@ -11,6 +11,12 @@ export interface PortSnapshot {
   port: number;
   pid: number;
   command: string;
+  /** 监听者所在的**进程组**（#1336 / #780 M1）。lsof 只报 pid，而「这个端口是不是
+      本 agent 起的」问的是 pgid —— bash 工具起的是 detached 进程组（ADR-0193），
+      真正监听的多半是组长的孩子，pid ≠ pgid。
+      **可选**：`ResidueSnapshot` 会落进事件日志（`residue_baseline`），而旧日志必须
+      永远可重放（Hard rule）。缺席时回落 `pid` = 与补这一格之前逐字节相同的行为 */
+  pgid?: number;
 }
 
 export interface ResidueSnapshot {
@@ -152,11 +158,17 @@ export function diffResidue(
   const pgidsWithOwnedPorts = new Set<number>();
   for (const port of after.ports) {
     if (!beforePorts.has(port.port)) {
-      const belongsToEscaped = escapedSet.has(port.pid);
+      // `escapedSet` 的键是 **pgid**，所以这里要拿的也是 pgid —— 原来写的是 `port.pid`
+      // （lsof 报的监听者 pid），两者只在「监听进程恰好是组长」时相等，而真实形态恰恰
+      // 相反：bash 工具起的是 detached 进程组，组长是那个 shell，监听的是它的孩子。
+      // 于是这一档在真机上恒 false，`ports/owned` 是条死分支（#1336 / #780 M1）。
+      // 缺席回落 pid：旧日志里的快照没有这一格，回落之后它们的行为逐字节不变
+      const groupId = port.pgid ?? port.pid;
+      const belongsToEscaped = escapedSet.has(groupId);
       const confidence = belongsToEscaped ? "owned" : "suspected";
       const cleanupHint =
         confidence === "owned"
-          ? `kill 进程组 ${port.pid}`
+          ? `kill 进程组 ${groupId}`
           : "仅展示，不提供清理";
       const item: ResidueItem = {
         detector: "ports",
@@ -166,12 +178,12 @@ export function diffResidue(
         cleanupHint,
         // 只有 owned 端口才有可清理的进程组（suspected 那档写死"仅展示"，
         // 给它 pgid 反而像在暗示可以杀）——review C1f
-        ...(belongsToEscaped ? { pgid: port.pid } : {}),
+        ...(belongsToEscaped ? { pgid: groupId } : {}),
       };
       items.push(item);
       // 规则 4：记录有 owned 端口的 pgid，用于后续去重
       if (belongsToEscaped) {
-        pgidsWithOwnedPorts.add(port.pid);
+        pgidsWithOwnedPorts.add(groupId);
       }
     }
   }

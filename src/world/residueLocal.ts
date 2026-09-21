@@ -84,6 +84,21 @@ function parseLsof(output: string): PortSnapshot[] {
   return out;
 }
 
+/** `ps -Ao pid=,pgid=` 的输出剥成 pid → pgid。两列都是空白补齐的十进制数，
+    `=` 让 ps 不打表头。认不出的行跳过（比如这台机器的 ps 换了实现） */
+function parsePsPgid(output: string): Map<number, number> {
+  const out = new Map<number, number>();
+  for (const line of output.split("\n")) {
+    const cols = line.trim().split(/\s+/);
+    if (cols.length < 2) continue;
+    const pid = Number(cols[0]);
+    const pgid = Number(cols[1]);
+    if (!Number.isFinite(pid) || !Number.isFinite(pgid)) continue;
+    out.set(pid, pgid);
+  }
+  return out;
+}
+
 /** 条目 → 可清理的进程组 id（issue #759 review C1f）。三级取值，优先级从高到低：
     1. `item.pgid` —— diffResidue 现在直接带上的结构化字段，唯一可靠的一档
     2. cleanupHint 里那句中文 `kill 进程组 12345` —— **只作 fallback**：旧日志
@@ -139,7 +154,21 @@ export function createLocalResidue(
       const ports = await (async () => {
         try {
           const out = await runCmd("lsof -iTCP -sTCP:LISTEN -P -n");
-          return parseLsof(out);
+          const listening = parseLsof(out);
+          // lsof 只报监听者的 pid，而「这个端口是不是本 agent 起的」问的是它在哪个
+          // 进程组里（#1336 / #780 M1）。ps 单独 try/catch、单独一趟：它挂了只是
+          // 少一格（回落到今天的行为），不该把整份端口清单拖成空——同上面那条
+          // 「一个探测器挂了不拖垮另一个」的纪律。一个端口都没有时不白起这趟子进程
+          if (listening.length === 0) return listening;
+          try {
+            const pgids = parsePsPgid(await runCmd("ps -Ao pid=,pgid="));
+            return listening.map((p) => {
+              const pgid = pgids.get(p.pid);
+              return pgid === undefined ? p : { ...p, pgid };
+            });
+          } catch {
+            return listening;
+          }
         } catch {
           return [];
         }
