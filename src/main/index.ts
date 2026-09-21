@@ -235,6 +235,7 @@ import {
 } from "./accountScope.js";
 import { loadMotionSettings, normaliseMotionSettings, saveMotionSettings } from "./motionSettingsStore.js";
 import { applyMotionPref, type MotionOverrideHost } from "./motionOverride.js";
+import { rewindBranch } from "./checkpointRewind.js";
 import { createTaskSessionSync } from "./taskSessionSync.js";
 import { createSupabaseTaskSessionsApi } from "./supabaseTaskSessionsApi.js";
 import { loadTaskSyncFile, saveTaskSyncFile } from "./taskSyncStore.js";
@@ -2873,10 +2874,11 @@ void app.whenReady().then(() => {
     return info;
   });
 
-  // 回到检查点（issue #395 / ADR-0090）：对话侧 fork（零拷贝，ADR-0084）+
-  // 文件侧 restore（影子 git reset）成对发生。顺序是安全设计：先分叉后动文件，
-  // fork 抛错时磁盘一个字节没动。返回新分支会话 id，切视图由渲染层随后
-  // 走 resumeSession（注册/重建复用唯一入口，不再造第二条装配路）
+  // 回到检查点（issue #395 / ADR-0090）：对话侧分叉 + 文件侧 restore（影子 git reset）
+  // 成对发生。顺序是安全设计：先分叉后动文件，分叉抛错时磁盘一个字节没动。
+  // 分叉怎么落由 rewindBranch 决定（项目会话零拷贝、任务会话复制式，ADR-0311）。
+  // 返回新分支会话 id，切视图由渲染层随后走 resumeSession（注册/重建复用唯一入口，
+  // 不再造第二条装配路）
   ipcMain.handle(
     CHANNELS.rewindToCheckpoint,
     async (_e, sessionId: string, checkpointSeq: number): Promise<string> => {
@@ -2894,7 +2896,7 @@ void app.whenReady().then(() => {
       const boundary = log.filter((e) => e.seq < checkpointSeq && e.type === "turn_ended").at(-1);
       if (boundary) {
         newId = newSessionId();
-        store.fork(sessionId, boundary.seq, newId, Date.now());
+        rewindBranch(store, sessionId, boundary.seq, newId, Date.now());
       } else {
         // 检查点落在第一个 turn 之前：没有可分叉的收口点 = 「回到对话开始」，
         // 建同工作区的全新会话（startSession 同款装配 + 注册）
