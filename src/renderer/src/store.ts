@@ -1199,6 +1199,12 @@ interface ChatState {
       测试能不经 IPC 直接喂（同 absorbEvent 的纪律） */
   voiceOnEvent(event: SessionEvent): void;
   voiceOnDelta(delta: CloudSessionDelta): void;
+  /** 内部：云会话的连接状态变了，语音跟着收口（#1289）。**gone 不是通话结束**——它会
+      自愈（runtime 回来 → connecting → ready，页面横幅写的就是「正在自动重连…」），
+      所以停麦、清掉扣着的那句，但通话保留、恢复后把麦开回来；denied 是终态（主进程
+      markDenied 主动断连），整段收掉。公开成 action 同 voiceOnEvent 的理由（接线在
+      onCloudSessionStatus 里，测试不经 IPC 直接喂） */
+  voiceOnCloudState(sessionId: string, next: CloudSessionState["state"]): void;
   /** 读一个工作区此刻的路由（控制房 RPC，协议 8，#991；#1102 摘掉仓库之后只剩
       这一格）。透传 FriendsResult，错误由「文件」tab 自己画——不落
       workspaceGroupsError 那一格（那格是整页共用的，设置页刚打开那一刻可能还
@@ -1467,6 +1473,12 @@ let micPaused = false;
 // 组件读它），是一段正在进行的对话的簿记——同 voiceFeed / voicePlayer 住在这里的理由
 let hold: HoldState = HOLD_IDLE;
 let holdTimer: ReturnType<typeof setTimeout> | null = null;
+/** 云端连接断了那一刻，麦是开着的吗（#1289）。`gone` 会自愈（runtime 回来 → connecting
+    → ready，页面横幅写的就是「正在自动重连…」），所以断线期间停的麦要有人开回来——
+    没有这一格的话，一次 daemon 重启会让通话哑掉，而界面上没有任何东西解释为什么。
+    只在 gone 时置位，用掉即清；人自己碰过麦克风开关、或整段离开语音，一律清掉
+    （他表达过意志，压过这条自动恢复） */
+let micWantedAfterReconnect = false;
 function startMic(hints: string[]): void {
   micStarted = true;
   micPaused = false;
@@ -1522,6 +1534,22 @@ function flushHeld(get: () => ChatState): void {
   hold = flushed.state;
   for (const fx of flushed.effects) if (fx.type === "send") void get().cloudSay(fx.text, [], [], true);
 }
+/** 收口的**另一种**：会话在底下没了（gone / denied，#1289），扣着的那句清掉**不发**。
+    与 flushHeld 的分别只有一个前提——后者那句「人确实说了」的完整形式是「人确实说了，
+    **而且此刻还有地方可送**」（见 flushHeld 注释里「赶得上此刻还开着的房间」那一段）。
+    这里房间就是没了：主进程的 `requireReady()` 对 `status !== "ready"` 必拒，照 flush
+    发出去只能得到一次注定失败的发送，而 flushHeld 那一行 `void get().cloudSay(...)`
+    **不接 ack**——于是「发」在这条路上恰恰是把一个会说话的失败改成静默丢失。
+    所以清掉，并把丢掉的原文写进麦克风那一行：人该知道他刚说的那句没送到、说的是什么。 */
+function abandonHeld(set: StoreApi<ChatState>["setState"]): void {
+  if (holdTimer !== null) { clearTimeout(holdTimer); holdTimer = null; }
+  const step = holdStep(hold, { type: "abandon" }, Date.now(), { hold: false });
+  hold = step.state;
+  for (const fx of step.effects) {
+    if (fx.type !== "drop") continue;
+    set((s) => (s.voice ? { voice: { ...s.voice, mic: { ...s.voice.mic, error: `云端连接断了，这句话没送出去：「${fx.text}」` } } } : s));
+  }
+}
 function stopVoice(get: () => ChatState): void {
   // stopVoice 是所有"整段离开语音"路径唯一的交汇点——openCloudSession /
   // closeCloudSession / joinVoiceCall / leaveVoiceCall / voiceOnEvent 的挂断
@@ -1543,6 +1571,9 @@ function stopVoice(get: () => ChatState): void {
   stopMic();
   voicePlayer?.stop();
   voiceFeed = EMPTY_VOICE_FEED;
+  // 整段离开语音 = 那条自动恢复没有主语了（#1289）。不清的话，下一次进别的通话时
+  // 一条 gone→ready 会把麦开起来，而没有任何人要求过它
+  micWantedAfterReconnect = false;
 }
 /** 音色按 agentId 从团队名单派生（agentVoice.ts）：名单顺序解撞，同一只两台机器同一个声音 */
 function rosterIdsOf(s: ChatState, workspaceId: string): string[] {
@@ -2978,8 +3009,46 @@ export const useChat = create<ChatState>((set, get) => ({
     stopVoice(get);
     if (get().voice !== null) set({ voice: null });
   },
+  voiceOnCloudState(sessionId, next) {
+    const cs = get().cloudSession;
+    // 判据与 onCloudSessionStatus 里那句 set 的第一行逐字相同：别条会话的推送一个字
+    // 都不该碰这条的语音（那个回调在渲染层是全局的，会话换了它照样收推送）
+    if (cs === null || cs.sessionId !== sessionId) return;
+    if (cs.state === next) return; // pushStatus 会为别的事重复推同一个状态
+    const v = get().voice;
+    if (v === null || v.sessionId !== sessionId) return;
+    if (next === "denied") {
+      // 终态：markDenied 主动断开连接（「没有重试的意义」），通话没有回来的路。
+      // abandonHeld 排在 stopVoice 前面，于是 stopVoice 里那次 flushHeld 落在一个
+      // 已经空了的 hold 上——「发」这条路在这里是关着的，不是碰巧没走到
+      abandonHeld(set);
+      stopVoice(get);
+      set({ voice: null });
+      return;
+    }
+    if (next === "gone") {
+      // **不是**通话结束：gone 会自愈，页面横幅此刻正写着「正在自动重连…」。
+      // 清掉 voice 就是让一次 daemon 重启永久杀掉这场通话——而通话名单是日志事实
+      // （voice_call_changed），重连之后它还在，只有本机这一格回不来了。
+      // 播放器也不停：TTS 走的是 edge 网关，不经这条断掉的连接，队列里那几句是真的。
+      micWantedAfterReconnect = micStarted;
+      abandonHeld(set);
+      stopMic();
+      // mic 归 off 但**留着 error**：那一行刚写上「这句话没送出去」，是这一刻唯一
+      // 说得出「你刚说的那句没了」的地方
+      set((s) => (s.voice ? { voice: { ...s.voice, mic: { ...MIC_OFF, error: s.voice.mic.error } } } : s));
+      return;
+    }
+    if (next === "ready" && micWantedAfterReconnect) {
+      micWantedAfterReconnect = false;
+      set((s) => (s.voice ? { voice: { ...s.voice, mic: { ...MIC_OFF, status: "starting" } } } : s));
+      startMic(speechHints(get().workspaceGroups.find((w) => w.id === cs.workspaceId) ?? null));
+    }
+  },
   setVoiceMic(on) {
     if (get().voice === null) return;
+    // 人自己碰了这个开关 = 他表达过意志，压过 gone→ready 那条自动恢复（#1289）
+    micWantedAfterReconnect = false;
     if (on) {
       set((s) => (s.voice ? { voice: { ...s.voice, mic: { ...MIC_OFF, status: "starting" } } } : s));
       startMic(speechHints(get().workspaceGroups.find((w) => w.id === get().cloudSession?.workspaceId) ?? null));
@@ -3029,7 +3098,12 @@ export const useChat = create<ChatState>((set, get) => ({
       const step = holdStep(hold, e, Date.now(), { hold: endpointMode === "on" });
       hold = step.state;
       for (const fx of step.effects) {
+        // 穷举到 wake 为止，不留 else 兜底（#1289）：`drop` 进来之前这里是
+        // `else { ...fx.at... }`，而 drop 没有 at——兜底会把它当成一个 NaN 的定时器
+        // 静默排进去。走到这条路的 drop 今天不存在（abandon 只从 abandonHeld 发），
+        // 但那是「碰巧没有」，tsc 现在会替我们守着
         if (fx.type === "send") sendSpoken(fx.text);
+        else if (fx.type === "drop") continue; // 这条路上产生不了它（只有 abandon 会）
         else if (fx.type === "judge") {
           const asked = get().voice?.text ?? null;
           void window.otter.speechJudge(fx.text, asked).then(
@@ -3482,6 +3556,10 @@ export const useChat = create<ChatState>((set, get) => ({
       get().speechOnEvent(ev);
     });
     window.otter.onCloudSessionStatus((status) => {
+      // 语音跟着连接状态收口（#1289）。**排在 set 外面、之前**：副作用不写在 setState
+      // 的 updater 里（StrictMode 跑两遍，同 ADR-0264 那笔账），而且它读的 prev 正是
+      // 这次 set 即将覆盖掉的那个 cs.state
+      get().voiceOnCloudState(status.sessionId, status.state);
       set((s) => {
         if (!s.cloudSession || s.cloudSession.sessionId !== status.sessionId) return s;
         return {

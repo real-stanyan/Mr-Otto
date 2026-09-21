@@ -63,11 +63,15 @@ export type HoldEvent =
   | { type: "partial"; text: string }
   | { type: "final"; text: string }
   | { type: "tick" }
-  | { type: "reset" };
+  | { type: "reset" }
+  | { type: "abandon" };
 
 export type HoldEffect =
   | { type: "judge"; key: string; text: string }
   | { type: "send"; text: string }
+  /** 扣着的那句**丢掉了**（#1289）：`text` 是丢掉的原文，调用方拿它说人话。
+      不是 send 的变体——这一条一个字节都不出渲染层 */
+  | { type: "drop"; text: string }
   | { type: "wake"; at: number };
 
 type Step = { state: HoldState; effects: HoldEffect[] };
@@ -152,6 +156,20 @@ export function holdStep(s: HoldState, ev: HoldEvent, now: number, opts: { hold:
       // 关麦 / 换会话：扣着的、等着的都照样发出去——人确实说了
       const pending = joinSpoken(s.buffer, s.waiting?.text ?? "");
       return { state: HOLD_IDLE, effects: pending === "" ? [] : [{ type: "send", text: pending }] };
+    }
+    case "abandon": {
+      // 会话在底下没了（云会话 gone / denied，#1289）：扣着的、等着的都**清掉不发**。
+      //
+      // 上面那条「人确实说了」的完整形式是「人确实说了，**而且此刻还有地方可送**」
+      // ——`flushHeld` 自己的注释写着「这句话才赶得上此刻还开着的房间」。房间没了，
+      // 后半句结构性地不成立：主进程的 `requireReady()` 对 `status !== "ready"` 必拒，
+      // 照 reset 发出去只能得到一次注定失败的发送。
+      //
+      // 清掉**不等于**静默：回的是丢掉的原文，调用方把它写进麦克风那一行——人该知道
+      // 他刚说的那句没送到、说的是什么（本仓的纪律是「会说话的失败 > 静默」，而
+      // `flushHeld` 恰恰不接 ack，照 reset 发才是把一个会说话的失败改成静默的那条路）
+      const dropped = joinSpoken(s.buffer, s.waiting?.text ?? "");
+      return { state: HOLD_IDLE, effects: dropped === "" ? [] : [{ type: "drop", text: dropped }] };
     }
   }
 }

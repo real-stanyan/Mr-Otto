@@ -123,3 +123,26 @@ describe("reset（关麦 / 换会话）", () => {
     expect(r.state).toEqual(HOLD_IDLE);
   });
 });
+
+describe("abandon（会话在底下没了，#1289）", () => {
+  it("扣着的那句**不发**，回 drop 带上丢掉的原文", () => {
+    const held: HoldState = { ...HOLD_IDLE, buffer: "我想让你。", merges: 1, heldSince: 0, flushAt: 1800 };
+    const r = holdStep(held, { type: "abandon" }, 100, { hold: true });
+    expect(r.effects).toEqual([{ type: "drop", text: "我想让你。" }]);
+    expect(r.state).toEqual(HOLD_IDLE);
+  });
+  it("等着答案的那句一起丢，与 reset 同一个拼法", () => {
+    const held: HoldState = { ...HOLD_IDLE, buffer: "我想让你。", merges: 1, heldSince: 0, flushAt: 1800, waiting: { text: "帮我看一下", until: 300 } };
+    const r = holdStep(held, { type: "abandon" }, 100, { hold: true });
+    expect(r.effects).toEqual([{ type: "drop", text: "我想让你。帮我看一下" }]);
+  });
+  it("什么都没扣着 → 一个副作用都不回（没有「丢掉了空话」这回事）", () => {
+    const r = holdStep(HOLD_IDLE, { type: "abandon" }, 100, { hold: true });
+    expect(r.effects).toEqual([]);
+    expect(r.state).toEqual(HOLD_IDLE);
+  });
+  it("一个 send 都不产生——这正是它与 reset 的全部分别", () => {
+    const held: HoldState = { ...HOLD_IDLE, buffer: "我想让你。", merges: 1, heldSince: 0, flushAt: 1800 };
+    expect(run([[{ type: "abandon" }, 100]], true, held).sent).toEqual([]);
+  });
+});
