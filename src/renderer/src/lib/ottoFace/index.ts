@@ -1,0 +1,100 @@
+// ottoFace 的对外门面。
+//
+//   const face = createFace(el, { character: OTTO, state: "idle", scale: 2 })
+//   face.setState("waiting")
+//   face.destroy()
+//
+// 只有三个方法是有意的：这东西挂在花名册的每一行上，一屏可能十几个实例，
+// API 面越小越不容易在某一行忘了 destroy。
+
+import { composeFrame, layoutFor, type ComposeOptions } from "./compose.js";
+import type { FaceCharacter } from "./character.js";
+import { blitScaled, paintFrame } from "./paint.js";
+import type { FaceState } from "./states.js";
+
+export type { FaceCharacter, Box, EyePair, EyeShape, MouthShape, Tone } from "./character.js";
+export type { Frame, ComposeOptions } from "./compose.js";
+export type { FaceState, FaceStateDef, LookDriver } from "./states.js";
+export type { BadgeName } from "./badges.js";
+export type { FaceSourceInput, VoiceState } from "./adapter.js";
+export { deriveBrows, deriveEyes, deriveMouths } from "./character.js";
+export { composeFrame, layoutFor } from "./compose.js";
+export { ACCENT, FACE_STATES, FACE_STATE_LIST, isFaceState } from "./states.js";
+export { faceStateFor, SLEEP_AFTER_MS } from "./adapter.js";
+export { OTTO } from "./characters/otto.js";
+
+export interface FaceOptions {
+  readonly character: FaceCharacter;
+  readonly state?: FaceState;
+  /** 整数倍放大；小数会向下取整。1 = 原生网格（角色 38 格宽 ≈ 38px，花名册那个尺寸） */
+  readonly scale?: number;
+  /** 眼睛跟指针。一屏十几个实例时建议关掉——十几个 pointermove 订阅不划算 */
+  readonly followPointer?: boolean;
+}
+
+export interface FaceHandle {
+  setState(state: FaceState): void;
+  setCharacter(character: FaceCharacter): void;
+  readonly canvas: HTMLCanvasElement;
+  destroy(): void;
+}
+
+export function createFace(host: HTMLElement, options: FaceOptions): FaceHandle {
+  let character = options.character;
+  let state: FaceState = options.state ?? "idle";
+  const scale = Math.max(1, Math.floor(options.scale ?? 1));
+
+  const canvas = document.createElement("canvas");
+  canvas.style.imageRendering = "pixelated";
+  canvas.style.display = "block";
+  host.appendChild(canvas);
+  const ctx = canvas.getContext("2d");
+  const off = document.createElement("canvas");
+  const offCtx = off.getContext("2d");
+
+  let pointer: ComposeOptions = {};
+  const onPointer = (e: PointerEvent): void => {
+    const r = canvas.getBoundingClientRect();
+    if (r.width === 0 || r.height === 0) return;
+    pointer = {
+      pointerX: ((e.clientX - (r.left + r.width / 2)) / (r.width * 0.55)),
+      pointerY: ((e.clientY - (r.top + r.height * 0.5)) / (r.height * 0.6)),
+    };
+  };
+  if (options.followPointer === true) window.addEventListener("pointermove", onPointer);
+
+  const resize = (): void => {
+    const L = layoutFor(character);
+    off.width = L.gridW;
+    off.height = L.gridH;
+    canvas.width = L.gridW * scale;
+    canvas.height = L.gridH * scale;
+    canvas.style.width = `${L.gridW * scale}px`;
+    canvas.style.height = `${L.gridH * scale}px`;
+  };
+  resize();
+
+  let raf = 0;
+  let alive = true;
+  const tick = (now: number): void => {
+    if (!alive) return;
+    if (ctx !== null && offCtx !== null) {
+      paintFrame(offCtx, composeFrame(character, state, now, pointer));
+      blitScaled(ctx, off, off.width, off.height, scale);
+    }
+    raf = requestAnimationFrame(tick);
+  };
+  raf = requestAnimationFrame(tick);
+
+  return {
+    canvas,
+    setState(next) { state = next; },
+    setCharacter(next) { character = next; resize(); },
+    destroy() {
+      alive = false;
+      cancelAnimationFrame(raf);
+      if (options.followPointer === true) window.removeEventListener("pointermove", onPointer);
+      canvas.remove();
+    },
+  };
+}
