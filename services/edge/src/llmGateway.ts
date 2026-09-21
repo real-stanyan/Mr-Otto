@@ -523,38 +523,61 @@ export function createLlmGateway(deps: LlmGatewayDeps): (req: Request, caller: C
         return apiError(503, "额度服务暂时不可用，稍后再试", "upstream");
       }
       if (!held.ok) return holdRejected(held);
-      try {
-        let res: Response;
+      // #1303：**客户端超时中断的那一发，钱是真花了**——这不是漏修的 bug，是这条路的结论。
+      // 这里原先写着 `signal: req.signal`，意思是「客户端断开 → 上游 fetch 抛 → catch 里
+      // release」。真 workerd 上验过（wrangler dev，客户端 120ms 断开、上游 1.5s 才回）：
+      // 断开之后 `req.signal.aborted` 仍是 false、abort 事件一次没派、上游那一发照样跑完，
+      // 走的是 settle 那条路。生产上的观测对得上（#1303 正文：连发 5 发中断之后紧接着那一发
+      // **没有**被 too_many_inflight 拒，而 MAX_INFLIGHT 是 4 —— 真有 4 笔挂着的 hold 时它必然被拒）。
+      // 那行 signal 与「abort 走 release」因此是**够不着的路**，删掉。
+      //
+      // 删而不是把它修好：决策是一次前向、没有流式输出，中断它省不下上游那笔；而它一旦真
+      // 生效，行为就翻成「中断 = 免费」—— 正是 ADR-0203 决定 17 堵上的白嫖洞（连发再中断，
+      // 一分钱不付）。所以 `requestDecision` 的 timeoutMs 是**延迟**止损不是钱的止损闸，
+      // 那句话在 `src/shared/decision.ts` 的那一格上也写着。
+      //
+      // 整段交给 waitUntil：本地 workerd 是跑完的，但 Cloudflare 留着「客户端断开时取消请求
+      // 上下文」这条路 —— 真取消的话结算与释放都跑不完，那笔 hold 就挂到 HOLD_TTL_MS（10 分钟），
+      // 而 MAX_INFLIGHT 是 4：4 发中断能把这个账号的整扇网关堵十分钟。保险很便宜（流式那条路
+      // 本来就靠它活过响应），最坏的结局不该是「挂着」。`work` 按构造不会 reject —— 它自己的
+      // 外层 catch 一律回一个 Response，所以 waitUntil 收到的不会是一个没人接的 rejection。
+      // 已知天花板：客户端断在 hold 那一趟里时，DO 可能已经记下这笔 hold 而回执没走到我们手上——
+      // 那一段在 waitUntil 之前，只能等 TTL。
+      const work = (async (): Promise<Response> => {
         try {
-          res = await doFetch(`${route.baseUrl}${upstreamPathFor(route.kind)}`, {
-            method: "POST",
-            headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
-            body: decisionUpstreamBody(route.wireModel, parsed.req),
-            signal: req.signal,
-          });
-        } catch {
-          await deps.quota.release(caller.uid, requestId);
-          return apiError(502, `上游连不上：${route.platform}`, "upstream");
+          let res: Response;
+          try {
+            res = await doFetch(`${route.baseUrl}${upstreamPathFor(route.kind)}`, {
+              method: "POST",
+              headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
+              body: decisionUpstreamBody(route.wireModel, parsed.req),
+            });
+          } catch {
+            await deps.quota.release(caller.uid, requestId);
+            return apiError(502, `上游连不上：${route.platform}`, "upstream");
+          }
+          if (!res.ok) {
+            await deps.quota.release(caller.uid, requestId);
+            const snippet = (await res.text().catch(() => "")).slice(0, 300);
+            return apiError(502, `上游 ${res.status}：${snippet}`, "upstream", { upstreamStatus: res.status });
+          }
+          const reply = parseDecisionUpstreamReply(await res.text(), parsed.req);
+          const inputTokens = reply.ok ? reply.reply.inputTokens : reply.inputTokens;
+          const usage: UsageCounts = inputTokens === null ? estimate : { promptTokens: inputTokens, cachedTokens: 0, completionTokens: 0 };
+          const cost = costMicro(usage, route);
+          const settled = await deps.quota.settle(caller.uid, requestId, { caller, route, usage, costMicro: cost });
+          const headers = await headersFrom(settled, caller.uid);
+          if (!reply.ok) return apiError(502, reply.message, "upstream", {}, headers);
+          return json(200, {
+            model: reply.reply.model, answers: reply.reply.answers, usage: { input_tokens: usage.promptTokens },
+          }, { ...headers, [BILLING_HEADERS.cost]: String(cost) });
+        } catch (err) {
+          await deps.quota.release(caller.uid, requestId).catch(() => {});
+          return apiError(502, `处理请求时出错：${err instanceof Error ? err.message : String(err)}`, "upstream");
         }
-        if (!res.ok) {
-          await deps.quota.release(caller.uid, requestId);
-          const snippet = (await res.text().catch(() => "")).slice(0, 300);
-          return apiError(502, `上游 ${res.status}：${snippet}`, "upstream", { upstreamStatus: res.status });
-        }
-        const reply = parseDecisionUpstreamReply(await res.text(), parsed.req);
-        const inputTokens = reply.ok ? reply.reply.inputTokens : reply.inputTokens;
-        const usage: UsageCounts = inputTokens === null ? estimate : { promptTokens: inputTokens, cachedTokens: 0, completionTokens: 0 };
-        const cost = costMicro(usage, route);
-        const settled = await deps.quota.settle(caller.uid, requestId, { caller, route, usage, costMicro: cost });
-        const headers = await headersFrom(settled, caller.uid);
-        if (!reply.ok) return apiError(502, reply.message, "upstream", {}, headers);
-        return json(200, {
-          model: reply.reply.model, answers: reply.reply.answers, usage: { input_tokens: usage.promptTokens },
-        }, { ...headers, [BILLING_HEADERS.cost]: String(cost) });
-      } catch (err) {
-        await deps.quota.release(caller.uid, requestId).catch(() => {});
-        return apiError(502, `处理请求时出错：${err instanceof Error ? err.message : String(err)}`, "upstream");
-      }
+      })();
+      deps.waitUntil?.(work);
+      return await work;
     };
 
     const serve = async (route: RouteRow, key: string): Promise<Response | null> => {

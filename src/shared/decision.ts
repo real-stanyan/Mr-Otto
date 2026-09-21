@@ -116,7 +116,10 @@ export interface DecisionDeps {
   llmBase: string;
   /** 向网关证明身份的那几个头——桌面是用户的 JWT，runtime 是 x-runtime-secret + on-behalf */
   headers: Record<string, string>;
-  /** **必填**：每一处的延迟预算不一样（spec §8），给缺省值就是替它们做了同一个决定 */
+  /** **必填**：每一处的延迟预算不一样（spec §8），给缺省值就是替它们做了同一个决定。
+      **它是延迟止损，不是钱的止损闸**（#1303）：这里 abort 掉的只是本地这一次等待，网关
+      那侧那一发照样跑完、照样按实际用量结算 —— 客户端只是把买到的答案扔了。所以「超时了
+      就当没发生过」是错的读法，调一个更短的超时值省不下钱，只会更频繁地白买。 */
   timeoutMs: number;
   fetchImpl?: typeof fetch;
   log?: (msg: string) => void;
