@@ -345,12 +345,36 @@ const WindowedMessages: FC<{
   const firstNodeRef = useRef<Element | null>(null);
   const firstTopRef = useRef(0);
   const prevHiddenRef = useRef(hiddenCount);
+  // 补挂前视口停在哪儿(#1262)。**不能在补挂那一刻现读 scrollTop**:补偿的第一个动作是读
+  // `offsetTop`,那一下强制排版,Chromium 的原生滚动锚定就在那一刻把 scrollTop 往下挪了
+  // 整整一个 delta —— 再按"现读的 scrollTop + delta"算,就是双倍。
+  // 真机量到的那组数(#1262,tests/e2e/windowReveal.e2e.ts 跑的就是它):补挂前 4435.5、
+  // 净增高 13888、补偿读到的 scrollTop 已经是 18323.5(= 4435.5 + 13888)、于是目标算成
+  // 32211.5,被夹到底部。**同一组数还排除了另一个嫌疑人**:那一刻视口没贴底,而 aui 的
+  // autoScroll 若是凶手该把它拽到 19361(scrollHeight − clientHeight),不是 18323.5。
+  // 这一格由 scroll 事件维护:scroll 在"更新渲染"那一步派发,晚于本次提交的 layout effect,
+  // 所以锚定自己挪出来的那一下不会在补偿之前污染它。
+  // 改成绝对位置之后这道补偿是**幂等**的 —— 原生挪过(reveal 桥这条路)还是没挪过
+  // (哨兵那条路,锚点是哨兵自己、在插入点上方),落点都是同一个,不用先判断"它挪了没有"
+  const lastTopRef = useRef(0);
+  const windowed = hiddenCount > 0;
+  useEffect(() => {
+    if (!windowed) return undefined;
+    const viewport = sentinelRef.current?.closest('[data-slot="aui_thread-viewport"]');
+    if (!(viewport instanceof HTMLElement)) return undefined;
+    lastTopRef.current = viewport.scrollTop;
+    const onScroll = (): void => { lastTopRef.current = viewport.scrollTop; };
+    viewport.addEventListener("scroll", onScroll, { passive: true });
+    return () => viewport.removeEventListener("scroll", onScroll);
+  }, [windowed]);
 
   // 补挂的滚动补偿:prepend 会把视口里的内容往下顶,在 paint 之前把 scrollTop
-  // 顶回去,用户读的那一行不动。只用一层 —— Chromium 原生的 scroll anchoring
-  // (overflow-anchor 默认开,assistant-ui 与本仓的 CSS 都没关它)管的是
-  // content-visibility 消息的**延迟尺寸修正**;这里管的是 prepend 这个结构性
-  // 变化,量的对象不同,不叠两层。hiddenCount 归 0 之后窗口全开,不用再跟踪
+  // 顶回去,用户读的那一行不动。
+  // 原来这里写着"只用一层 —— 原生的 scroll anchoring 管的是延迟尺寸修正,这里管的是
+  // prepend,量的对象不同,不叠两层"。**那句话是错的**(#1262):真机量到原生锚定对 prepend
+  // 照样动手,而且挪的正好是同一个 delta。修法不是去判断"它动了没有",是把目标从相对量
+  // (现读的 scrollTop + delta)换成**绝对位置**(补挂前的 scrollTop + delta) —— 谁先动过
+  // 都落同一处,见上面 lastTopRef 那段。hiddenCount 归 0 之后窗口全开,不用再跟踪
   useLayoutEffect(() => {
     const prevHidden = prevHiddenRef.current;
     prevHiddenRef.current = hiddenCount;
@@ -363,7 +387,7 @@ const WindowedMessages: FC<{
           if (viewport instanceof HTMLElement) {
             // 视口上有 scroll-smooth,直接赋 scrollTop 会被它动画化
             // (补偿会变成一次看得见的漂移)——必须瞬时
-            viewport.scrollTo({ top: viewport.scrollTop + delta, behavior: "instant" });
+            viewport.scrollTo({ top: lastTopRef.current + delta, behavior: "instant" });
           }
         }
       }
