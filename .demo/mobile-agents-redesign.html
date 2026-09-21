@@ -19,7 +19,7 @@
   --secondary:#2c2c2e; --secondaryFg:#f5f5f7;
   --muted:#2c2c2e; --mutedFg:rgba(245,245,247,.56);
   --brand:#0a84ff; --border:rgba(245,245,247,.12); --input:rgba(245,245,247,.14);
-  --destructive:#ff453a; --ok:#30d158; --warn:#ff9f0a;
+  --destructive:#ff453a; --ok:#30d158; --warn:#ff9f0a; --voice:#2F94A6;
   --glass:rgba(20,20,22,.72); --glassEdge:rgba(245,245,247,.10);
   --scrim:rgba(0,0,0,.5);
 
@@ -41,7 +41,7 @@ html[data-theme="light"]{
   --secondary:#e5e1d3; --secondaryFg:#000;
   --muted:#e5e1d3; --mutedFg:rgba(0,0,0,.55);
   --brand:#4a70a9; --border:rgba(0,0,0,.12); --input:rgba(0,0,0,.12);
-  --destructive:#c92a2a; --ok:#2b8a3e; --warn:#e67700;
+  --destructive:#c92a2a; --ok:#2b8a3e; --warn:#e67700; --voice:#2F94A6;
   --glass:rgba(247,245,239,.72); --glassEdge:rgba(0,0,0,.06);
   --scrim:rgba(0,0,0,.28);
 }
@@ -396,6 +396,44 @@ textarea.input{height:auto;min-height:92px;padding:12px 14px;resize:none;line-he
 .ring .alert{position:absolute;top:-1px;right:-1px;width:8px;height:8px;border-radius:50%;background:var(--warn);
   box-shadow:0 0 0 2px var(--glass)}
 
+/* ══ 语音：一张浮在顶上的小卡，不是一整屏 ═══════════════════════════
+   维护者给的参照就是这个形状：左边一张脸、中间一条实时波形、右边在听的人；
+   底下一排四颗圆钮（设置 / 转文字 / 静音 / 挂断）。
+
+   为什么不做全屏：通话时人要**接着看对话**（它正在把活干完，正文还在长），
+   全屏把唯一要看的东西盖住了。这张卡浮在内容上方、可以拖走，与 iOS 的通话
+   药丸同一个思路 —— 状态常驻，注意力不被抢走。
+
+   卡挂在机身上（`#voice`）而不是挂在某一屏里：换屏、进设置、翻文件，通话都还在。 */
+#voice{position:absolute;left:0;right:0;top:0;z-index:300;pointer-events:none}
+.vcard{
+  /* 120 = 56 顶 + 62 聊天页导航行 + 2：压住导航条的话，回退键和「它在干嘛」那行
+     一起看不见了 —— 这张卡是浮在**内容**上的，不是浮在壳上的 */
+  pointer-events:auto;width:300px;margin:120px auto 0;padding:10px 10px 6px;border-radius:26px;
+  background:var(--glass);backdrop-filter:blur(30px) saturate(180%);-webkit-backdrop-filter:blur(30px) saturate(180%);
+  box-shadow:0 26px 60px -18px rgba(0,0,0,.7),inset 0 0 0 .5px var(--glassEdge);
+  transform:translateY(-14px) scale(.96);opacity:0;
+  transition:transform 260ms var(--ease-out),opacity 200ms var(--ease-out);
+}
+.vcard.in{transform:none;opacity:1}
+.vrow{display:flex;align-items:center;gap:10px;padding:2px 4px 10px}
+.vface{width:54px;height:54px;border-radius:50%;flex:none;display:grid;place-items:center;
+  background:color-mix(in srgb,var(--voice) 22%,transparent);overflow:hidden}
+.vface canvas{margin-top:2px}
+.wave{flex:1;min-width:0;height:34px;display:flex;align-items:center;justify-content:center;gap:2px}
+.wave i{width:3px;border-radius:2px;background:var(--voice);height:4px;
+  transition:height 90ms linear;flex:none}
+.vcard.muted .wave i{background:var(--mutedFg);opacity:.5}
+.vwho{width:38px;height:38px;border-radius:50%;flex:none;display:grid;place-items:center;
+  background:var(--secondary);color:var(--fg);font-size:13px;font-weight:650;letter-spacing:.3px}
+.vbtns{display:flex;gap:8px;justify-content:center;padding:0 2px 4px}
+.vb{width:52px;height:44px;border-radius:16px;border:0;cursor:pointer;font-family:inherit;
+  background:color-mix(in srgb,var(--fg) 10%,transparent);color:var(--fg);
+  display:grid;place-items:center;transition:transform 140ms var(--ease-out),background 140ms var(--ease-out)}
+.vb:active{transform:scale(.94)}
+.vb.on{background:color-mix(in srgb,var(--warn) 26%,transparent);color:var(--warn)}
+.vb.end{background:var(--destructive);color:#fff}
+.vgrab{width:70px;height:4px;border-radius:2px;background:var(--fg);opacity:.16;margin:2px auto 4px}
 /* ══ 全屏语音 ══════════════════════════════════════════════════════ */
 .call{position:absolute;inset:0;z-index:400;display:flex;flex-direction:column;overflow:hidden;background:var(--bg)}
 /* 通话与进门闸是这个 app 仅有的两个「时刻」屏，用同一块波场把它们连起来。
@@ -862,6 +900,7 @@ html[data-skin="grok"] .hero,html[data-skin="grok"] .hero::after{border-radius:1
       <div class="island"></div>
       <div class="statusbar"><span>9:41</span><span class="r"><svg width="18" height="12" viewBox="0 0 18 12" fill="currentColor"><rect x="0" y="8" width="3" height="4" rx="1"/><rect x="4.5" y="6" width="3" height="6" rx="1"/><rect x="9" y="3.5" width="3" height="8.5" rx="1"/><rect x="13.5" y="1" width="3" height="11" rx="1"/></svg><svg width="16" height="12" viewBox="0 0 16 12" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><path d="M1 4.2a10 10 0 0 1 14 0M3.6 6.9a6.4 6.4 0 0 1 8.8 0"/><circle cx="8" cy="9.9" r="1.1" fill="currentColor" stroke="none"/></svg><svg width="25" height="12" viewBox="0 0 25 12" fill="none"><rect x=".6" y=".6" width="21" height="10.8" rx="3.2" stroke="currentColor" stroke-opacity=".4"/><rect x="2.2" y="2.2" width="16" height="7.6" rx="2" fill="currentColor"/><path d="M23.2 4.2v3.6a2 2 0 0 0 0-3.6z" fill="currentColor" fill-opacity=".4"/></svg></span></div>
       <div id="scrim"></div>
+      <div id="voice"></div>
       <div id="sheets"></div>
       <div class="homebar"></div>
     </div>
@@ -1459,6 +1498,68 @@ function sessionRow(s,go,params){
   </div>`;
 }
 
+/* ── 语音小卡 ──────────────────────────────────────────────────────
+   形状照维护者给的参照：脸 / 波形 / 在听的人 + 四颗钮。三条判断：
+   · **波形画的是「此刻谁在出声」**，静音时它退成灰的低幅 —— 不是停住：
+     停住读作「坏了」，灰下去读作「你把自己关了」。
+   · 通话里那张脸走 `speaking` / `listening` 两档（ottoFace 原装），与时间线上
+     那一行、导航条上那张是同一个事实的三处投影。
+   · 卡**可以拖**（浮在正文上方，挡住哪一句由你决定），松手按速度方向吸回上或下 ——
+     这是全屏那版没有的自由度，也是不做全屏的理由本身：通话时人要接着看对话。 */
+const VOICE={on:false,muted:false,raf:0,drag:null};
+function voiceCard(ids){
+  const bars=Array.from({length:26}).map(()=>'<i></i>').join('');
+  const b=botOf(ids[0]);
+  return `<div class="vcard" data-el="vcard">
+    <div class="vrow">
+      <span class="vface">${faceOf(b.face,b.name[0],54,'speaking',true)}</span>
+      <div class="wave" data-el="wave">${bars}</div>
+      <span class="vwho" title="${DATA.me.name} 在听">${DATA.me.ini}Y</span>
+    </div>
+    <div class="vbtns">
+      <button class="vb" data-sheet="voiceSet" aria-label="通话设置">${I('gear',20,2)}</button>
+      <button class="vb" data-act="vtext" aria-label="转文字">${I('kbd',20,2)}</button>
+      <button class="vb" data-act="vmute" aria-label="静音">${I('mic',20,2)}</button>
+      <button class="vb end" data-act="vend" aria-label="挂断">${I('hang',20,2.2)}</button>
+    </div>
+    <div class="vgrab"></div>
+  </div>`;
+}
+function openVoice(ids){
+  if(VOICE.on) return;
+  const host=document.getElementById('voice');
+  host.innerHTML=voiceCard(ids); VOICE.on=true; VOICE.muted=false;
+  const card=host.querySelector('.vcard'), bars=[...host.querySelectorAll('.wave i')];
+  soon(()=>card.classList.add('in'));
+  let t0=performance.now();
+  const tick=()=>{ VOICE.raf=requestAnimationFrame(tick);
+    const t=(performance.now()-t0)/1000;
+    // 说话的包络：几条正弦叠出来的「有话在说」，静音时压到近乎一条线
+    bars.forEach((el,i)=>{
+      const n=Math.abs(Math.sin(t*6+i*0.55))*Math.abs(Math.sin(t*2.1+i*0.21))*Math.abs(Math.sin(t*0.9+i*0.07));
+      el.style.height=(VOICE.muted?3:4+n*26)+'px';
+    });
+  };
+  tick();
+  // 拖：1:1 跟手，松手弹回 —— 与抽屉共用那条曲线
+  let sy=0,base=0;
+  card.addEventListener('pointerdown',e=>{ if(e.target.closest('button'))return;
+    card.setPointerCapture(e.pointerId); sy=e.clientY; base=VOICE.dragY||0; card.style.transition='none'; });
+  card.addEventListener('pointermove',e=>{ if(!card.hasPointerCapture?.(e.pointerId))return;
+    VOICE.dragY=Math.max(-40,Math.min(430,base+(e.clientY-sy)));
+    card.style.transform=`translateY(${VOICE.dragY}px)`; });
+  card.addEventListener('pointerup',e=>{ if(!card.hasPointerCapture?.(e.pointerId))return;
+    card.releasePointerCapture(e.pointerId);
+    card.style.transition='transform 320ms cubic-bezier(.32,.72,0,1)'; });
+}
+function closeVoice(){
+  if(!VOICE.on) return;
+  const host=document.getElementById('voice'), card=host.querySelector('.vcard');
+  cancelAnimationFrame(VOICE.raf); VOICE.on=false; VOICE.dragY=0;
+  if(card){ card.style.transition='transform 220ms var(--ease-out),opacity 180ms var(--ease-out)';
+    card.classList.remove('in'); setTimeout(()=>{host.innerHTML=''},220); }
+  else host.innerHTML='';
+}
 /* 从底部升起的一整屏（语音模式、App 内浏览器）：同 iOS 的全屏模态，从底部来、也回底部去 —— 同一条路径 */
 function goUp(id,params){
   const el=renderScreen(id,params); if(!el) return;
@@ -1801,6 +1902,9 @@ function playRun(el,steps,{face='canvas[data-ch]',sub='[data-el="sub"]',onStep}=
     const s=steps[i%steps.length];
     cv.dataset.st=s.st; cv.dataset.anim='1'; mountFace(cv);
     if(live){ live.dataset.st=s.st; live.dataset.anim='1'; mountFace(live); }
+    // 通话卡上那张脸是同一个事实的第三处投影：在把正文推出来 = 在说话，其余 = 在听
+    const vf=document.querySelector('#voice canvas[data-ch]');
+    if(vf){ vf.dataset.st=s.st==='answering'?'speaking':'listening'; mountFace(vf); }
     if(lsub) lsub.textContent=s.st==='idle'?'':`· ${FACE_STATES[s.st].zh}`;
     if(sb&&s.sub!==undefined){ sb.textContent=s.sub; sb.classList.toggle('live',s.live!==false); }
     onStep&&onStep(s,el);
@@ -2092,9 +2196,11 @@ SCREENS.groupChat={label:'群聊',grp:'智能体',render:(p)=>{
    extra:`<div style="display:flex;gap:6px;padding:0 2px 8px"><button class="chip" data-sheet="mention" style="height:28px;font-size:12.5px">${I('people',13,2)} @ 谁</button></div>`})}`},
  /* 群里是一次接力：运维先干、收口之后开发接、最后设计。头上那一摞脸就是这张快照 ——
     一眼看得出此刻是谁在跑、谁在排队、谁闲着 */
- mount(el){ toBottom(el);
+ /* p 从 renderScreen 递进来（`def.mount(el, params)`）——名单要从这儿现取，
+    render 里那个 `g` 是另一个作用域的东西 */
+ mount(el,p){ toBottom(el);
    const typing=el.querySelector('.typing');
-   const M=g.members;
+   const M=(DATA.groups.find(x=>x.id===(p&&p.id||'g1'))||DATA.groups[0]).members;
    playRunMulti(el,[
      {members:M,states:['queued','working','idle'],     sub:'运维 执行中 · 开发 排队中', ms:2100},
      {members:M,states:['thinking','done','idle'],      sub:'运维 完成 · 开发 思考中',   ms:1900},
@@ -2365,98 +2471,9 @@ SCREENS.usage={label:'电脑 · 用量',grp:'它们的电脑',render:()=>`
  </div>`};
 
 /* ── 3 · 语音：一对一（任务 / 项目共用这一屏） ─────────────────────── */
-SCREENS.call={label:'语音 · 跟一只',grp:'语音',render:(p)=>`
- <div class="call">
-   <canvas class="ditherbg" data-el="dither"></canvas><div class="callScrim"></div>
-   <div class="callTop">
-     <div class="t1">${p.name||'开发'}</div>
-     <div class="t2"><span data-el="tmr">00:07</span> · 说完它接着干</div>
-   </div>
-   <div class="orbwrap">
-     <div class="bigorb">
-       <div class="l l1" data-el="l1"></div><div class="l l2" data-el="l2"></div><div class="l l3" data-el="l3"></div>
-       <div class="core" data-el="core"><img src="${IMG.otto}" alt=""></div>
-     </div>
-     <div style="position:absolute;bottom:8px;left:0;right:0;text-align:center">
-       <span class="pill brand" data-el="state">正在说</span>
-       <div class="levelbar" data-el="lvl">${Array.from({length:19}).map(()=>'<i></i>').join('')}</div>
-     </div>
-   </div>
-   <div class="callSub">
-     <div class="them" data-el="them">第三段我先说结论 —— 我们还没做的是「离开的成本」这一条。</div>
-     <div class="you" data-el="you">你：那这条要怎么补</div>
-   </div>
-   <div class="callCtl">
-     <button class="cbtn" data-act="mute">${I('mic',24,2)}<span class="cl">静音</span></button>
-     <button class="cbtn end" data-back>${I('hang',24,2)}<span class="cl" style="color:var(--mutedFg)">挂断</span></button>
-     <button class="cbtn" data-back>${I('kbd',24,2)}<span class="cl">键盘</span></button>
-   </div>
- </div>`,
- mount(el){
-   const q=s=>el.querySelector(`[data-el="${s}"]`);
-   const stopDither=ditherMount(q('dither'));
-   const core=q('core'),L=[q('l1'),q('l2'),q('l3')],bars=[...q('lvl').children];
-   const lines=[
-     ['正在说','第三段我先说结论 —— 我们还没做的是「离开的成本」这一条。','你：那这条要怎么补'],
-     ['在听','','你：那这条要怎么补，给我两个具体做法'],
-     ['在想','','你：那这条要怎么补，给我两个具体做法'],
-     ['正在说','两个做法：一是把历史留在产品里搬不走，二是让第二个人也进来。','你：那这条要怎么补，给我两个具体做法'],
-   ];
-   let i=0,t0=performance.now(),raf;
-   const apply=()=>{const [st,them,you]=lines[i];
-     q('state').textContent=st; q('state').className='pill '+(st==='正在说'?'brand':st==='在想'?'warn':'');
-     q('them').textContent=them||'…'; q('them').style.opacity=them?'1':'.35'; q('you').textContent=you;};
-   apply(); const cyc=setInterval(()=>{i=(i+1)%lines.length;apply()},3400);
-   const loop=(now)=>{
-     const t=(now-t0)/1000, spk=lines[i][0]==='正在说';
-     const amp=spk? .5+.5*Math.abs(Math.sin(t*3.1)+.6*Math.sin(t*7.7)) : .12+.08*Math.sin(t*1.4);
-     core.style.transform=`scale(${1+amp*.13})`;
-     L.forEach((l,k)=>{ const s=1+amp*(.22+k*.07);
-       l.style.transform=`rotate(${t*(9+k*7)}deg) scale(${s})`; });
-     const mic=lines[i][0]==='在听'? .35+.65*Math.abs(Math.sin(t*5.3+1)) : .05;
-     bars.forEach((b,k)=>{const d=Math.abs(k-9)/9; b.style.height=(4+mic*18*(1-d*.72)*(.6+.4*Math.abs(Math.sin(t*6+k))))+'px'});
-     const s=Math.floor((now-t0)/1000)+7; q('tmr').textContent='00:'+String(s%60).padStart(2,'0');
-     raf=requestAnimationFrame(loop);
-   };
-   raf=requestAnimationFrame(loop);
-   el._stop=()=>{cancelAnimationFrame(raf);clearInterval(cyc);stopDither()};
- }};
+/* 全屏语音那两屏删了 —— 维护者定的：语音只做顶上那张小卡（见 voiceCard）。
+   通话时人要接着看对话，一整屏把唯一要看的东西盖住了。 */
 
-/* ── 4 · 语音：团队群聊通话 ───────────────────────────────────────── */
-SCREENS.callGroup={label:'语音 · 一群',grp:'语音',render:()=>{
- const ag=[{n:'开发',s:'正在说'},{n:'运维',s:'在想'},{n:'设计',s:'在听'},{n:'我',s:'在听'}];
- return `<div class="call">
-   <canvas class="ditherbg" data-el="dither"></canvas><div class="callScrim"></div>
-   <div class="callTop"><div class="t1">发版组</div>
-     <div class="t2"><span data-el="tmr">02:41</span> · 三只 + 你</div></div>
-   <div class="grid" data-el="grid">
-     ${ag.map((a,i)=>`<div class="tile ${a.s==='正在说'?'speaking':''}" data-n="${a.n}">
-       ${faceOf(a.n,a.n[0],62,a.s==='正在说'?'speaking':a.s==='在想'?'thinking':'listening')}
-       <div class="nm">${a.n}</div><div class="st">${a.s}</div></div>`).join('')}
-   </div>
-   <div class="callSub"><div class="them" data-el="them">开发：changelog 写完了，等 edge 绿了我就发桌面版。</div>
-     <div class="you">你：edge 大概还要多久</div></div>
-   <div class="callCtl">
-     <button class="cbtn" data-act="mute">${I('mic',24,2)}<span class="cl">静音</span></button>
-     <button class="cbtn end" data-back>${I('hang',24,2)}<span class="cl" style="color:var(--mutedFg)">离开</span></button>
-     <button class="cbtn" data-back>${I('kbd',24,2)}<span class="cl">键盘</span></button>
-   </div></div>`},
- mount(el){
-   const stopDither=ditherMount(el.querySelector('[data-el="dither"]'));
-   const tiles=[...el.querySelectorAll('.tile')],them=el.querySelector('[data-el="them"]');
-   const script=[[0,'开发：changelog 写完了，等 edge 绿了我就发桌面版。'],
-                 [1,'运维：还差最后一步 —— 你那边登一下 Cloudflare，我就能推上去。'],
-                 [2,'设计：那句「修复若干问题」我删了，换成具体那三条。']];
-   let i=0; const step=()=>{ const [k,txt]=script[i];
-     tiles.forEach((t,j)=>{t.classList.toggle('speaking',j===k);
-       t.querySelector('.st').textContent=j===k?'正在说':'在听';
-       const cv=t.querySelector('canvas[data-ch]');     // 脸跟着换态，不然嘴永远停在上一句
-       if(cv) cv.dataset.st=j===k?'speaking':'listening';});
-     them.textContent=txt; i=(i+1)%script.length; };
-   step(); const id=setInterval(step,3200); el._stop=()=>{clearInterval(id);stopDither()};
- }};
-
-/* ── 5 · 项目栏 ───────────────────────────────────────────────────── */
 
 /* ═══════════════════════════════════════════════════════════════════════
    6 · 账号
@@ -2748,8 +2765,20 @@ const SHEETS={
 
 const ACTS={
  /* 语音从「电话」那个位置升起，也回那儿去 —— 同一条路径（空间一致性） */
+ /* 语音 = 顶上那张小卡，不再是一整屏。v 决定卡上画谁 */
  voice:(b)=>{ const v=b.dataset.v||'bot'; closeSheet();
-   if(v==='group') goUp('callGroup',{}); else goUp('call',{name:'开发'}); },
+   openVoice(v==='group'?DATA.groups[0].members:['dev']); },
+ vmute:(b)=>{ VOICE.muted=!VOICE.muted; b.classList.toggle('on',VOICE.muted);
+   b.closest('.vcard').classList.toggle('muted',VOICE.muted); },
+ vend:()=>closeVoice(),
+ /* 转文字：把它此刻在说的话贴进卡里。真机上这一行来自本机识别（ADR-0273） */
+ vtext:(b)=>{ const card=b.closest('.vcard'); const had=card.querySelector('[data-el="vcap"]');
+   if(had){ had.remove(); return; }
+   const cap=document.createElement('div');
+   cap.dataset.el='vcap'; cap.className='t-foot dim';
+   cap.style.cssText='padding:0 10px 8px;line-height:17px';
+   cap.textContent='门禁三段都过了，PR 我开好了，等你看一眼就能合。';
+   card.querySelector('.vbtns').before(cap); },
  send:(b)=>{ const box=b.closest('.composer').querySelector('.cmpBox');
    if(!box.classList.contains('filled')) return;      // 空的就是空的，不假装发出去了
    box.textContent=''; box.classList.remove('filled'); },
@@ -2760,7 +2789,7 @@ const ACTS={
    box.focus();
    const r=document.createRange(); r.selectNodeContents(box); r.collapse(false);
    const s=getSelection(); s.removeAllRanges(); s.addRange(r); },
- signin:()=>resetTo('bots'),
+ signin:()=>{ closeVoice(); resetTo('bots'); },
  gateMode:(b)=>{ const card=b.closest('.glasscard'), up=!card.classList.contains('up');
    card.classList.toggle('up',up);
    card.querySelectorAll('.fold').forEach(x=>x.inert=!up);
@@ -2843,6 +2872,7 @@ function buildRail(){
      <button data-r="skin">换皮：<b data-el="skin">Grok</b></button>
      <button data-r="theme">浅色 / 深色</button>
      <button data-r="run">跑一轮给我看</button>
+     <button data-r="voice">开语音</button>
      <button data-r="need">弹一次登录请求</button>
      <button data-r="mention">弹 @ 名册</button>
    </div>
@@ -2879,9 +2909,7 @@ function syncRail(){
 railEl.addEventListener('click',e=>{
   const a=e.target.closest('[data-jump]');
   if(a){ closeSheet(true); const id=a.dataset.jump, d=SCREENS[id];
-    if(id==='call'||id==='callGroup'){
-      resetTo('bots'); go(id==='call'?'botChat':'groupChat',{}); goUp(id,{name:'开发'});
-    } else if(d.via){ resetTo(d.via); go(id,{}); } else { resetTo(id); }
+    if(d.via){ resetTo(d.via); go(id,{}); } else { resetTo(id); }
     return; }
   const b=e.target.closest('[data-r]');
   if(!b) return;
@@ -2895,6 +2923,9 @@ railEl.addEventListener('click',e=>{
     SHEETS.mention();
   } else if(b.dataset.r==='run'){        // 私聊里那一轮活：排队 → 思考 → 检索 → 执行 → 作答 → 完成
     closeSheet(true); resetTo('bots'); go('botChat',{id:'dev'});
+  } else if(b.dataset.r==='voice'){      // 语音是顶上那张小卡，不是一整屏
+    if(stack[stack.length-1]?.id!=='botChat'){ closeSheet(true); resetTo('bots'); go('botChat',{id:'dev'}); }
+    soon(()=>openVoice(['dev']));
   } else if(b.dataset.r==='need'){
     if(stack[stack.length-1]?.id!=='botAuth'){ closeSheet(true); resetTo('bots'); go('botAuth',{}); }
     SHEETS.signinReq();
