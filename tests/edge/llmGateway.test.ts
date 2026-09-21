@@ -870,6 +870,54 @@ describe("决策那扇门（#1281）", () => {
     const out = await gw(upstream(jevOk()), quota)(decisionReq(DECISION_BODY), caller);
     expect(out.status).toBe(402);
   });
+
+  // #1303：客户端超时中断的那一发照样全价结算。判据是**上游那一发收到的 init 里没有 signal**，
+  // 不是「release 没被调」——后者在这个假上游下无论改不改都成立，钉不住这次改动的内容。
+  // 真 workerd 上的观测（客户端断开后 `req.signal.aborted` 仍是 false）钉不进单测：
+  // undici 的 Request 会老老实实 abort，而那正是生产上不会发生的事。所以这里钉的是我们
+  // 自己那一半——不把客户端的 signal 递给上游，于是「中断 = 免费」这条路由构造关死
+  const recording = (res: () => Response, onCall?: () => void) => {
+    const inits: (RequestInit | undefined)[] = [];
+    const seen: Request[] = [];
+    const fetchImpl = (async (input: RequestInfo | URL, init?: RequestInit) => {
+      inits.push(init);
+      seen.push(new Request(input, init));
+      onCall?.();
+      await Promise.resolve();
+      return res();
+    }) as typeof fetch;
+    return { inits, seen, fetchImpl };
+  };
+
+  it("客户端中途断开：signal 不往上游传，这一发照样跑完并结算（#1303）", async () => {
+    const { quota, calls } = quotaStub();
+    const c = new AbortController();
+    const up = recording(jevOk(120), () => c.abort()); // 上游在途时客户端走人
+    const req = new Request("https://edge/llm/v1/decision", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify(DECISION_BODY), signal: c.signal,
+    });
+    const out = await gw(up, quota)(req, caller);
+    expect(out.status).toBe(200);
+    expect(up.inits[0]?.signal).toBeUndefined();
+    expect(calls.settle).toHaveLength(1);
+    expect(calls.release).toHaveLength(0);
+  });
+
+  it("整段交给 waitUntil：请求上下文真被取消时，结算/释放也跑得完（#1303）", async () => {
+    const { quota } = quotaStub();
+    const waited: Promise<unknown>[] = [];
+    const g = createLlmGateway({
+      routes: async () => [jev], quota, upstreamKey: () => "k",
+      fetchImpl: upstream(jevOk()).fetchImpl, decisionUses: { dispatch: "on" },
+      waitUntil: (pr) => { waited.push(pr); },
+    });
+    const out = await g(decisionReq(DECISION_BODY), caller);
+    expect(out.status).toBe(200);
+    // 交出去的就是那一段活本身：它 resolve 出来的正是回给客户端的那个 Response
+    expect(waited).toHaveLength(1);
+    expect(((await waited[0]) as Response).status).toBe(200);
+  });
 });
 
 describe("额度快照随 hold / settle 回来，省掉那趟 remaining（#1304）", () => {
