@@ -16,7 +16,13 @@ import { HOLD_MS as RESUME_WINDOW_MS } from "../shared/utteranceTiming.js";
 import type { DecisionClient } from "./decisionClient.js";
 
 /** 投机问发生在人停嘴那一刻，helper 最早 700ms 之后才 final——900ms 内回不来的答案，
-    渲染层那侧再等 200ms 也就放弃了，这里不必等更久 */
+    渲染层那侧再等 200ms 也就放弃了，这里不必等更久。
+    **所以这一格是五格里唯一不该调大的**（ADR-0301 / #1300）：它的上界是人重新开口那个
+    窗口，不是上游的延迟；调大换不到任何东西，只换来一个「渲染层早就放弃之后才到、却
+    照样全价计费」的答案（#1303）。2026-09-21 真机（Mac/SYD）背靠背 p50 470ms / p90 594ms
+    塞得进 900，但按 ADR-0301 ② 那条闲置曲线推，**一次通话里的第一次停顿**落在闲置那
+    一侧（五分钟之后 1.3–1.4s）会超时 —— 这一句是推的不是量的，真机上没单独验过。
+    所以这一处的答案不是「等更久」，是「要么快到够用，要么这个能力在那一刻就用不了」 */
 export const ENDPOINT_DECISION_TIMEOUT_MS = 900;
 const SAID_MAX = 600;
 const ASKED_MAX = 300;
