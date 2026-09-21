@@ -40,6 +40,10 @@ describe("单一收口点：任何「离开语音」路径都绕不开 stopMic()
     const resets = src.match(/holdStep\(hold,\s*\{\s*type:\s*"reset"\s*\}/g) ?? [];
     expect(resets).toHaveLength(1);
   });
+  it("丢弃逻辑同样只有一份——abandon 只在 abandonHeld 内部出现一次（#1289）", () => {
+    const abandons = src.match(/holdStep\(hold,\s*\{\s*type:\s*"abandon"\s*\}/g) ?? [];
+    expect(abandons).toHaveLength(1);
+  });
   it("stopVoice 必须收 get 才能转发到 flushHeld；裸调用一处都不该有（漏传编译期已经会红，这里独立钉一遍）", () => {
     expect(src).toMatch(/function stopVoice\(get: \(\) => ChatState\): void \{/);
     expect(src.match(/\bstopVoice\(\s*\)/g)).toBeNull();
@@ -72,8 +76,14 @@ describe("单一收口点：任何「离开语音」路径都绕不开 stopMic()
     // 源码里没有这种写法；就算将来有，`window.otter.speechStop()` 全文件只在
     // stopMic() 内部这一处调用——真正要守住的关卡没有第二个入口，测试漏记一次
     // 调用不等于停麦本身失守。
+    //
+    // #1289：收口从此有**两种**——`flushHeld`（发出去：人确实说了，而且此刻还有地方
+    // 可送）与 `abandonHeld`（清掉并说出口：会话在底下没了，requireReady() 必拒）。
+    // 这条断言跟着放宽成「紧跟在**某一种**收口之后」，守的仍是同一句因果：停麦之前
+    // 必须先给扣着的那句一个去向。放宽的是**认几种形状**，不是「可以不收口」——
+    // 新写一条自己平铺 stopMic()、两种收口都不提的路径，照样让两个数不相等。
     const bareStopMicCalls = src.match(/\bstopMic\(\)(?!\s*:)/g) ?? [];
-    const guardedByFlush = src.match(/flushHeld\(get\);\s*\n\s*stopMic\(\)(?!\s*:)/g) ?? [];
+    const guardedByFlush = src.match(/(?:flushHeld\(get\)|abandonHeld\(set\));\s*\n\s*stopMic\(\)(?!\s*:)/g) ?? [];
     // 防呆：如果两条正则都失手匹配不到任何东西，0 === 0 会让上面那条 expect
     // 悄悄"通过"而实际什么都没钉住——先断言真的数到了东西
     expect(bareStopMicCalls.length).toBeGreaterThan(0);
@@ -81,5 +91,23 @@ describe("单一收口点：任何「离开语音」路径都绕不开 stopMic()
   });
   it("closeCloudSession：flush 必须排在 workspaceCloudLeave() 之前——leave() 在主进程里同步清空当前房间，晚一步发送会被拒", () => {
     expect(src).toMatch(/stopVoice\(get\);\s*\n\s*void window\.otter\.workspaceCloudLeave\(\);/);
+  });
+});
+
+// voiceOnCloudState 本身在 tests/renderer/voiceStore.test.ts 里**真跑**（停麦 / 通话
+// 保留 / 自动重开 / denied 收掉 / 丢掉的原文进 mic.error）。这里钉的是那份真跑够不着
+// 的一格：它到底有没有接在推送上，以及接在哪一侧。
+describe("voiceOnCloudState 的接线（#1289）", () => {
+  // 判顺序用 indexOf 不用「相隔至多 N 个字符」的正则：那种写法会被紧挨它的一段
+  // 注释变长撞红（假阳），而这里真正要说的只有「在回调里、在 set 前面」
+  const call = "get().voiceOnCloudState(status.sessionId, status.state);";
+  const cb = "onCloudSessionStatus((status) => {";
+  it("接在 onCloudSessionStatus 上——没有这一句，整个收口一次都不会发生，而且完全无声", () => {
+    expect(src.indexOf(cb)).toBeGreaterThan(0);
+    expect(src.indexOf(call)).toBeGreaterThan(src.indexOf(cb));
+  });
+  it("排在 set 之外、之前：副作用不写进 setState 的 updater（StrictMode 跑两遍），而且它读的 prev 正是这次 set 即将覆盖掉的那个 state", () => {
+    // 这一句与回调开头之间不许出现 `set(`——出现了就说明它掉进 updater 里去了
+    expect(src.slice(src.indexOf(cb), src.indexOf(call))).not.toMatch(/\bset\(/);
   });
 });
