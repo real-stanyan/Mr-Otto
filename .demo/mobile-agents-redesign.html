@@ -1177,203 +1177,98 @@ const HUE=['#0a84ff','#ff9f0a','#30d158','#bf5af2','#ff375f','#5ac8fa','#ffd60a'
    demo 是假数据，按名字钉死坑位就够 —— 要紧的是**画的是那批像素人像**，
    不是一个彩色首字母（那是「名册里查不到」时才有的兜底，ADR-0264/0286） */
 /* ═══════════════════════════════════════════════════════════════════════
-   ottoFace —— 会动的像素脸（#1307 / #1345 的形象，搬到手机端这份 demo 上）
+   ottoFace —— 智能体形象（#1307 的渲染层，#1345 要换上去的那一套）
 
-   今天仓里画智能体头像的是 13 张 128px 静态 PNG（assets/agent-avatars/01–13）。
-   #1345 要把它们换成会动的像素形象，而 #1307 定了三条法理，这份实现逐条照办：
+   **下面那一整段是 `claude/otto-face-e215a0` 分支上 `src/renderer/src/lib/ottoFace/`
+   esbuild 出来的原件**，不是照着做一个像的：同一份角色矩阵、同一张状态表、同一个
+   `composeFrame`。理由和这份 demo 里的 dither shader 一样 —— 动效是这东西的主体，
+   仿一版必然在某一格上漂，而「漂了」正是没法在截图里发现的那种差别。
 
-   ① **头部品牌锁死**：轮廓 / 脸型来自产品 logo（resources/icon.png）那张四色像素脸，
-      不变形。会动的只有**眉毛 / 眼睛 / 嘴**三层可替换的像素图案。
-   ② **位移只走整格**：像素画做亚像素平滑会立刻糊成模糊贴图。所以偏移一律是整数格，
-      `imageSmoothingEnabled=false`。
-   ③ **坑位数和顺序都不动，仍然是 13**（#1345 的建议做法）：`fnv1a(agentId) % 13`
-      是今天已经落库的派生，改 13 就是给所有没手动挑过头像的 agent 换一张脸。
-      所以这里是 13 个角色包，**一个坑位对一个角色**，01–13 的长相一一对上 ——
-      谁的脸都不换，只是从静态画变成会动的。
+   那一侧定的法理，这里一条都不改：
+   · 头部品牌锁死，会动的只有眉 / 眼 / 嘴 + 整格位移（亚像素平滑会把像素画糊掉）
+   · `waiting` 是唯一做水平摆动的（sessionOrb：「等你」必须压过「在跑」）
+   · `queued` 是唯一完全不动的（ADR-0250：一个 token 都还没跑，动起来就是撒谎的勾）
+   · `frozen` 是唯一改调色板的（它不会自己好，加个角标不够）
+   · 眼睛有 `pointer` / `scan` / `dart` / `fixed` / `still` 五种驱动，还有自动眨眼
 
-   另外两条是这份 demo 自己补的：
-   · 多一个 `plain` 态（不画角标、静止一帧）。名册那一栏**不知道**谁在跑（那张表里
-     没有这一格，#722 / #1282），画一个恒灰的「空闲」角标等于宣称一件我们查不到的事；
-     一墙脸同时呼吸也是噪音 —— 每天要扫几十遍的东西不该动。
-   · 盘底固定纸白（#f2f2f3），两个主题一样 —— 今天那 13 张 PNG 的底就是白的，而纯黑
-     头发压在纯黑底上会整个糊成一团（#1307 第三个待定项的答案：不靠描边，靠盘底）。
+   这份 demo 在它外面只加了两件事，都写在下面 `mountFace` 里：
+   ① **名册那一栏画 `idle` 的静止一帧**（不跑 rAF）。`idle` 恰好是那张表里唯一没有角标
+      的状态 —— 所以它不声称任何事，而名册那一栏本来就查不到谁在跑（#722 / #1282）。
+      一墙脸同时呼吸也是噪音：每天要扫几十遍的东西不该动。
+   ② **会话头部 / 通话格子跑真动效**，那两处本地就知道状态。与 #1345「要定的事」第 1 条
+      倾向一致（只有正在看的那只动）。
    ═══════════════════════════════════════════════════════════════════════ */
+var OttoFace=(()=>{var V=Object.defineProperty;var po=Object.getOwnPropertyDescriptor;var ho=Object.getOwnPropertyNames;var fo=Object.prototype.hasOwnProperty;var wo=(o,e)=>{for(var n in e)V(o,n,{get:e[n],enumerable:!0})},xo=(o,e,n,r)=>{if(e&&typeof e=="object"||typeof e=="function")for(let d of ho(e))!fo.call(o,d)&&d!==n&&V(o,d,{get:()=>e[d],enumerable:!(r=po(e,d))||r.enumerable});return o};var Fo=o=>xo(V({},"__esModule",{value:!0}),o);var Bo={};wo(Bo,{ACCENT:()=>y,BERET:()=>_,BOB:()=>H,CAP:()=>$,FACE_CHARACTERS:()=>B,FACE_STATES:()=>T,FACE_STATE_LIST:()=>ro,GRIN:()=>X,MANE:()=>Y,OTTO:()=>D,SAGE:()=>N,SCHOLAR:()=>j,SLEEP_AFTER_MS:()=>oo,SPECS:()=>I,STOIC:()=>W,SWEEP:()=>q,blitScaled:()=>z,composeFrame:()=>O,createFace:()=>To,deriveBrows:()=>Ao,deriveEyes:()=>c,deriveMouths:()=>m,faceCharacter:()=>uo,faceStateFor:()=>bo,isFaceState:()=>to,layoutFor:()=>v,paintFrame:()=>P,scaleForHeight:()=>go});var K={dots3:["","","","AA.AA.AA","AA.AA.AA"],bubble:[".AAAAAA.","A......A","A......A",".AAAAAA.","..A.....",".A......"],glass:[".AAAA...","A....A..","A....A..","A....A..",".AAAA...","...AA...","....AA..",".....AA."],wave:["....AA..","..AA....",".AA.....",".AA.....","..AA....","....AA.."],coil:[".AAAAA.","A.....A","A.AAA.A","A.A.A.A","A.A...A","A.AAAAA","A......"],bang:[".AAAA.",".AAAA.",".AAAA.",".AAAA.","......",".AAAA.",".AAAA."],check:[".......A","......AA","A....AA.","AA..AA..",".AAAA...","..AA...."],cross:["AA....AA",".AA..AA.","..AAAA..","...AA...","..AAAA..",".AA..AA.","AA....AA"],hourglass:["AAAAAA",".AAAA.","..AA..","..AA..",".AAAA.","AAAAAA"],snow:["A..A..A",".A.A.A.","..AAA..","AAAAAAA","..AAA..",".A.A.A.","A..A..A"],zzz:[".....AAA","......A.",".....A..",".....AAA","AAAA....","..A.....",".A......","AAAA...."]},U=[[".A.AA.A.",".AAAAAA.","AAA..AAA","AA....AA","AA....AA","AAA..AAA",".AAAAAA.",".A.AA.A."],["..AAAA..",".AAAAAA.","AAA..AAA","AA....AA","AA....AA","AAA..AAA",".AAAAAA.","..AAAA.."]];var y={busy:"#6C5CD4",attention:"#DE8A2E",ok:"#3E9A62",bad:"#CF4A42",voice:"#2F94A6",mute:"#8A8F98",dormant:"#636974"},T={idle:{zh:"\u7A7A\u95F2",origin:"sessionOrb.orbState \u2192 idle\uFF08\u4E5F\u627F\u63A5 OrbState.breathing\uFF09",eye:"open",mouth:"smile",look:"pointer",bobMs:2600,bobAmp:1,blinks:!0},sleep:{zh:"\u4F11\u7720",origin:"\u957F\u65F6 idle",eye:"sleep",mouth:"small",look:"still",bobMs:7e3,bobAmp:1,badge:"zzz",accent:y.mute,blinks:!1},queued:{zh:"\u6392\u961F\u4E2D",origin:'turnLedger.OpenTurn.state === "queued"',eye:"open",mouth:"flat",look:"fixed",fixedLook:[2,1],bobMs:0,bobAmp:0,badge:"dots3",accent:y.mute,blinks:!1},thinking:{zh:"\u601D\u8003\u4E2D",origin:"agentPhase() \u2192 composing",eye:"open",mouth:"purse",mouthDx:-1,look:"scan",browDy:-1,browAsym:-1,bobMs:4600,bobAmp:1,sway:"lean",badge:"bubble",accent:y.busy,blinks:!0},searching:{zh:"\u68C0\u7D22\u4E2D",origin:"agentPhase() \u2192 searching\uFF08read_file\uFF09",eye:"open",mouth:"flat",look:"dart",bobMs:2400,bobAmp:1,badge:"glass",accent:y.busy,blinks:!0},working:{zh:"\u6267\u884C\u4E2D",origin:"agentPhase() \u2192 working\uFF08bash / write_file\uFF09",eye:"open",mouth:"purse",look:"fixed",fixedLook:[0,1],browDy:1,bobMs:1700,bobAmp:1,badge:"gear",accent:y.busy,blinks:!0},answering:{zh:"\u4F5C\u7B54\u4E2D",origin:"agentPhase() \u2192 solving\uFF08\u6B63\u6587\u5728\u6D41\uFF09",eye:"open",mouth:"talk",look:"pointer",bobMs:1500,bobAmp:1,badge:"bars",accent:y.busy,blinks:!0},weaving:{zh:"\u538B\u7F29\u4E2D",origin:"agentPhase() \u2192 weaving",eye:"squint",mouth:"flat",look:"still",bobMs:5200,bobAmp:1,badge:"coil",accent:y.busy,blinks:!1},waiting:{zh:"\u7B49\u4F60\u5904\u7406",origin:"agentPhase() \u2192 listening\uFF1BsessionOrb \u2192 waiting\uFF08\u6700\u9AD8\u4F18\u5148\u7EA7\uFF09",eye:"wide",mouth:"small",look:"pointer",browDy:-2,bobMs:1300,bobAmp:1,sway:"urgent",badge:"bang",accent:y.attention,blinks:!0},listening:{zh:"\u5728\u542C",origin:"VoiceCallOverlay \u2192 listening",eye:"open",mouth:"flat",look:"fixed",fixedLook:[-2,0],bobMs:3400,bobAmp:1,badge:"wave",accent:y.voice,blinks:!0},speaking:{zh:"\u5728\u8BF4\u8BDD",origin:"VoiceCallOverlay \u2192 speaking",eye:"open",mouth:"talk",look:"still",bobMs:1200,bobAmp:1,badge:"bars",accent:y.voice,blinks:!0},done:{zh:"\u5B8C\u6210",origin:"turn_ended\uFF1BbackgroundRuns \u2192 ready",eye:"happy",mouth:"grin",look:"still",browDy:-1,bobMs:900,bobAmp:2,badge:"check",accent:y.ok,blinks:!1},failed:{zh:"\u51FA\u9519",origin:'errorClass === "fatal"\uFF1BbackgroundRuns \u2192 failed',eye:"squint",mouth:"wavy",look:"still",browDy:1,bobMs:2200,bobAmp:1,badge:"cross",accent:y.bad,blinks:!1},ratelimit:{zh:"\u9650\u6D41\u7B49\u5F85",origin:'errorClass === "rate-limit"',eye:"open",mouth:"flat",look:"fixed",fixedLook:[2,1],bobMs:6e3,bobAmp:1,badge:"hourglass",accent:y.attention,blinks:!0},frozen:{zh:"\u51BB\u7ED3 / \u79BB\u7EBF",origin:'taskSyncState.frozen\uFF1BMcpStatus === "failed"',eye:"dizzy",mouth:"flat",look:"still",bobMs:0,bobAmp:0,badge:"snow",accent:y.dormant,desaturate:!0,blinks:!1}},ro=["idle","sleep","queued","thinking","searching","working","answering","weaving","waiting","listening","speaking","done","failed","ratelimit","frozen"];function to(o){return Object.prototype.hasOwnProperty.call(T,o)}var Z=2,J=3,ko=3,So=8,no="R",Ro=So+2;function v(o){return{gridW:Z+o.w+Ro,gridH:J+o.h+ko,headX:Z,headY:J,badgeX:Z+o.w+2,badgeY:J}}function go(o,e){let n=v(o).gridH,r=Math.max(1,Math.floor(e/n));return Math.abs(r*n-e)<=Math.abs((r+1)*n-e)?r:r+1}var so=[[-2,-1,900],[0,-2,620],[2,-1,900],[0,0,520]],Q=so.reduce((o,e)=>o+e[2],0);function Co(o){let e=(o%Q+Q)%Q,n=0;for(let r of so)if(n+=r[2],e<n)return[r[0],r[1]];return[0,0]}function Eo(o){return o%4200<110||o%6700<110}function ao(o){return o<-1?-1:o>1?1:o}function lo(o){let e=/^#([0-9a-f]{6})$/i.exec(o);if(e?.[1]===void 0)return o;let n=Number.parseInt(e[1],16),r=i=>Math.round(i*.38+110*.62),d=r(n>>16&255),t=r(n>>8&255),a=r(n&255);return`#${(d<<16|t<<8|a).toString(16).padStart(6,"0")}`}function vo(o){let e={};for(let[n,r]of Object.entries(o))e[n]=lo(r);return e}function O(o,e,n,r){let d=T[e],t=v(o),a=new Array(t.gridW*t.gridH).fill("."),i=(g,A,b)=>{b==="."||g<0||g>=t.gridW||A<0||A>=t.gridH||(a[A*t.gridW+g]=b)},l=(g,A,b,C)=>{for(let S=0;S<g.length;S++){let R=g[S]??"";for(let F=0;F<R.length;F++)(R[F]??".")!=="."&&i(A+F,b+S,C)}},h=d.bobMs>0?Math.round(Math.sin(n/d.bobMs*Math.PI*2)*d.bobAmp):0,f=d.sway==="urgent"?Math.floor(n/260)%2===0?-1:1:d.sway==="lean"&&Math.sin(n/3700)>0?-1:0,s=0,w=0;if(d.look==="pointer")s=Math.round(ao(r?.pointerX??0)*2),w=Math.round(ao(r?.pointerY??0));else if(d.look==="scan"){let[g,A]=Co(n);s=g,w=A}else d.look==="dart"?s=Math.floor(n/190)%2===0?-2:2:d.look==="fixed"&&(s=d.fixedLook?.[0]??0,w=d.fixedLook?.[1]??0);let x=t.headX+f,k=t.headY+h;for(let g=0;g<o.h;g++){let A=o.base[g]??"";for(let b=0;b<o.w;b++)i(b+x,g+k,A[b]??".")}for(let[g,A,b,C,S]of o.erase){let R=S??o.skin;for(let F=g;F<=A;F++)for(let E=b;E<=C;E++)i(E+x,F+k,R)}let L=(d.browDy??0)+(w<0?-1:0);l(o.brows.L,o.anchors.browL[0]+x,o.anchors.browL[1]+k+L+(d.browAsym??0),o.ink),l(o.brows.R,o.anchors.browR[0]+x,o.anchors.browR[1]+k+L,o.ink);let u=d.blinks&&Eo(n)?"blink":d.eye,p=o.eyes[u];l(p.L,o.anchors.eyeL[0]+x+p.lx+s,o.anchors.eyeL[1]+k+p.ly+w,o.ink),l(p.R,o.anchors.eyeR[0]+x+p.rx+s,o.anchors.eyeR[1]+k+p.ry+w,o.ink);let yo=d.mouth==="talk"?io[Math.floor(n/130)%io.length]??"smile":d.mouth;if(l(o.mouths[yo],o.anchors.mouth[0]+x+(d.mouthDx??0),o.anchors.mouth[1]+k,o.ink),o.front!==void 0)for(let g=0;g<o.front.length;g++){let A=o.front[g]??"";for(let b=0;b<A.length;b++)i(b+x,g+k,A[b]??".")}if(r?.rim!==void 0){let g=[];for(let A=0;A<t.gridH;A++)for(let b=0;b<t.gridW;b++){if(a[A*t.gridW+b]!==".")continue;let C=!1;for(let S=-1;S<=1&&!C;S++)for(let R=-1;R<=1;R++){if(R===0&&S===0)continue;let F=b+R,E=A+S;if(!(F<0||F>=t.gridW||E<0||E>=t.gridH)&&a[E*t.gridW+F]!=="."){C=!0;break}}C&&g.push(A*t.gridW+b)}for(let A of g)a[A]=no}d.badge!==void 0&&Mo(d.badge,t,n,(g,A)=>i(g,A,"A"));let eo=[];for(let g=0;g<t.gridH;g++)eo.push(a.slice(g*t.gridW,(g+1)*t.gridW).join(""));let G={...d.desaturate===!0?o.dimPalette??vo(o.palette):o.palette};return d.accent!==void 0&&(G.A=d.accent),r?.rim!==void 0&&(G[no]=d.desaturate===!0?lo(r.rim):r.rim),{w:t.gridW,h:t.gridH,rows:eo,palette:G}}var io=["smile","o","flat","o"];function Mo(o,e,n,r){let d=(t,a,i)=>{for(let l=0;l<t.length;l++){let h=t[l]??"";for(let f=0;f<h.length;f++)(h[f]??".")!=="."&&r(e.badgeX+a+f,e.badgeY+i+l)}};if(o==="bars"){for(let t=0;t<3;t++){let a=2+Math.floor(Math.abs(Math.sin(n/170+t*1.1))*5);for(let i=0;i<a;i++)r(e.badgeX+t*3,e.badgeY+7-i),r(e.badgeX+t*3+1,e.badgeY+7-i)}return}if(o==="gear"){d(U[Math.floor(n/220)%U.length]??[],0,0);return}if(o==="bang"){n%760<520&&d(K.bang,1,0);return}if(d(K[o],0,0),o==="bubble")for(let t=0;t<3;t++)Math.floor(n/300)%4>t&&(r(e.badgeX+2+t*2,e.badgeY+1),r(e.badgeX+2+t*2,e.badgeY+2))}function P(o,e){let n=o.createImageData(e.w,e.h),r=n.data;for(let d=0;d<e.h;d++){let t=e.rows[d]??"";for(let a=0;a<e.w;a++){let i=e.palette[t[a]??"."],l=(d*e.w+a)*4;if(i===void 0){r[l+3]=0;continue}r[l]=Number.parseInt(i.slice(1,3),16),r[l+1]=Number.parseInt(i.slice(3,5),16),r[l+2]=Number.parseInt(i.slice(5,7),16),r[l+3]=255}}o.putImageData(n,0,0)}function z(o,e,n,r,d){let t=Math.max(1,Math.floor(d));o.clearRect(0,0,n*t,r*t),o.imageSmoothingEnabled=!1,o.drawImage(e,0,0,n*t,r*t)}function M(o,e){return Array.from({length:e},()=>"#".repeat(o))}function c(o){let{lw:e,lh:n,rw:r,rh:d}=o,t=s=>s+2,a=s=>-Math.floor((t(s)-s)/2),i=s=>{let w=Math.max(1,s-2);return[`.${"#".repeat(w)}.`,`#${".".repeat(w)}#`]},l=s=>["#".repeat(s+2),`.${"#".repeat(s)}.`],h=s=>[`#${".".repeat(s)}#`,`.${"#".repeat(s)}.`],f=s=>[`#${".".repeat(s)}#`,`.${"#".repeat(s)}.`,`.${"#".repeat(s)}.`,`#${".".repeat(s)}#`];return{open:{L:M(e,n),R:M(r,d),lx:0,ly:0,rx:0,ry:0},blink:{L:[`${"#".repeat(e+2)}`],R:[`${"#".repeat(r+2)}`],lx:a(e),ly:Math.floor(n/2),rx:a(r),ry:Math.floor(d/2)},happy:{L:i(e+2),R:i(r+2),lx:a(e),ly:1,rx:a(r),ry:1},wide:{L:M(e+2,n+1),R:M(r+2,d+1),lx:a(e),ly:-1,rx:a(r),ry:-1},squint:{L:l(e),R:l(r),lx:a(e),ly:1,rx:a(r),ry:1},sleep:{L:h(e),R:h(r),lx:a(e),ly:1,rx:a(r),ry:1},dizzy:{L:f(e),R:f(r),lx:a(e),ly:0,rx:a(r),ry:0}}}function m(o){let e=Math.max(5,o%2===0?o+1:o),n=Math.floor(e/2),r=i=>i.padEnd(e,".").slice(0,e),d=i=>{let l=Math.min(i,e),h=Math.floor((e-l)/2);return".".repeat(h)+"#".repeat(l)+".".repeat(e-h-l)},t=()=>`##${".".repeat(Math.max(0,e-4))}##`,a=".".repeat(e);return{smile:[t(),t(),`.${"#".repeat(e-2)}.`,d(Math.max(2,e-4))],grin:[d(e-2),d(e-2),d(e-2),d(e-4)],flat:[a,d(e-2),d(e-2),a],o:[d(3),d(5),d(5),d(3)],small:[a,d(3),d(3),a],purse:[a,r(`${".".repeat(Math.max(0,n-2))}####`),r(`${".".repeat(Math.max(0,n-2))}####`),a],wavy:[a,r(".##..##."),r("..##..##"),a]}}function Ao(o,e){return{L:M(o,2),R:M(e,2)}}function co(o){return o.hasApproval?{orb:"listening",label:"\u7B49\u5F85\u5BA1\u6279\u2026"}:o.waitingFor?{orb:"listening",label:o.waitingFor==="cloud"?"\u4E91\u7AEF\u6B63\u5728\u56DE\u590D\u2026":"\u53E6\u4E00\u53F0\u7535\u8111\u6B63\u5728\u56DE\u590D\u2026"}:o.compacting?{orb:"weaving",label:"\u538B\u7F29\u4E2D\u2026"}:o.tool?.name==="read_file"?{orb:"searching",label:"\u68C0\u7D22\u4E2D\u2026"}:o.tool?{orb:"working",label:"\u6267\u884C\u4E2D\u2026"}:o.streamingText?{orb:"solving",label:"\u4F5C\u7B54\u4E2D\u2026"}:{orb:"composing",label:"\u601D\u8003\u4E2D\u2026"}}function mo(o){return o.waiting?"waiting":o.running?"running":"idle"}var Lo={listening:"waiting",searching:"searching",working:"working",composing:"thinking",solving:"answering",weaving:"weaving",breathing:"idle"},oo=600*1e3;function bo(o){if(o.dormant===!0)return"frozen";if(o.errorClass==="fatal")return"failed";if(o.errorClass==="rate-limit")return"ratelimit";if(o.background==="failed")return"failed";if(o.background==="ready")return"done";if(o.voice==="speaking")return"speaking";if(o.voice==="listening")return"listening";if(o.voice==="thinking")return"thinking";if(o.openTurn?.state==="queued")return"queued";if(o.phase!==void 0&&(o.running||o.phase.hasApproval))return Lo[co(o.phase).orb];let e=mo({waiting:o.phase?.hasApproval===!0,running:o.running});return e==="waiting"?"waiting":e==="running"?"thinking":(o.idleMs??0)>=oo?"sleep":"idle"}var D={id:"otto",name:"Otto",w:55,h:48,ink:"#",skin:"o",palette:{"#":"#0A0A0B",d:"#3C3F44",o:"#FAFAFA"},base:[".......................................................",".................######################................",".................######################................",".................#######################...............","..............##########ddddddddd#########.............","..............##########ddddddddd#########.............","...........######ddd##ddddddddddd###ddd######..........","...........######dddd#ddddddddddd###ddd#######.........","...........######dddddddddddddddd###ddd#######.........","........#####ddddddddd##########################.......","........#####ddddddddd##########################.......",".....###dddddddddddddd##########################.......",".....###dddddddddddddd##########################.......",".....###dddddddddddddd##########################.......",".....###dddddddddd#####oooooooooooooooooo#########.....",".....###dddddddddd#####oooooooooooooooooo#########.....",".....###ddddd########oooooooooooooooooooooo#######.....",".....###ddddd########oooooooooooooooooooooo#######.....",".....###ddddd########oooooooooooooooooooooo#######.....",".....###ddd#######ooooooooooooooooooooooooo#######.....",".....###ddd#######ooooooooooooooooooooooooo#######.....",".....###########ooooo######oooooooooo###ooo#######.....",".....###########ooooo######oooooooooo####oo#######.....",".....###########ooooo######oooooooooo####oo#######.....",".....###########oooooooooooooooooooooooooooooo####.....",".....###########oooooooooooooooooooooooooooooo####.....",".....###ooooo###oooooooo###oooooooooo###oooooo###......",".....###ooooo###ooooooo####oooooooooo####ooooo##.......",".....###ooooo###ooooooo####oooooooooo####ooooo##.......",".....###ooooo###ooooooo####oooooooooo####ooooo##.......",".....###ooooo###ooooooo####oooooooooo####ooooo##.......",".....###oooooooooooooooooooooooooooooooooooooo##.......",".....###oooooooooooooooooooooooooooooooooooooo##.......",".....###oooooooooooooooooooooooooooooooooooooo##.......","........###ooooooooooooooooooooooooooooooooooo##.......","........###ooooooooooooooo##oooooooooooooooooo##.......","........#######ooooooooooo##ooooooo##ooooooooo##.......","........########oooooooooo##oooooo###ooooooooo##.......","........########oooooooooo###dddd####ooooooooo##.......",".............###ooooooooooo#########ooooooo###.........",".............###ooooooooooooooooooooooooooo###.........","...............###ooooooooooooooooooooooo###...........","................##ooooooooooooooooooooooo##............","................##ooooooooooooooooooooooo##............","..................#######################..............","..................#######################..............","..................#######################..............","......................................................."],erase:[[20,24,20,27],[20,24,36,41],[26,31,22,27],[26,31,36,41],[35,40,25,37]],anchors:{browL:[21,21],browR:[37,21],eyeL:[23,27],eyeR:[37,27],mouth:[26,36]},eyes:c({lw:4,lh:4,rw:4,rh:4}),brows:{L:["######","######","######"],R:["###.","####","####"]},mouths:{...m(11),smile:["##.......##","##......###","###########",".#########."]}};var _={id:"beret",name:"\u8D1D\u96F7\u5E3D",w:55,h:48,ink:"#",skin:"o",palette:{"#":"#0A0A0B",d:"#3C3F44",o:"#FAFAFA"},base:[".......................##############..................",".......................###############.................",".......................##################..............","....................########################...........","................############################...........","................###############################........",".............####################################......",".............####################################......","..........#######################################......","..........#######################################......","..........########################################.....","........##########################################.....",".......##############################dddddddd#####.....","......#########################dddddddddddddddd##......","......#########################dddddddddddddddd##......","......#####################ddddddddddddd####ddddd##....","....#######################dddddddddd##oooo###ddd##....","....####################ddddddddddddd##ooooo##ddddd##..","..##################ddddddddddddddd###ooooooo###ddd##..","..##################ddddddddddddddd##oooooooo###ddd##..","..################ddddddddddddddddooooooooooooo#ddd##..","..################ddddddddddd####ooooooooo###oo##dd##..","..#############ddddddddddddd#####ooooooooo###oo####....","...############dddddddddd####oooooooooooooooooo####....","....######ddddddddddddddd####oooooooooooooooooo####....","......####dddddddddddd###oooooooooooooooooooooo##......","......##ddddddddddddd####oooooooooooooooo####oo##......","......##dddd######dd##ooooooooooooooooooo####oo##......","......##dddd######dd##oooo######ooooooooo####oo##......",".....###dddd##oooodd##oooo#######oooooooo####oo##......",".....###dddd##oooo####ooooooooo##oooooooo####oo##......",".....##ddddd##oooo###oooooooooooooooooooooooooo##......",".....##ddddd##ooooooooooooooooooooooooooooooooo##......","..#####ddddd##ooooooooooooooooooooooooooooooooo##......","..####ddddddd###ooooooooooooooooooooooooooooooo##......","..##dddddddddd##ooooooooooooooooooooooooooooooo##......","..##dddddddddd#######ooooooooooo#oooooooooooooo##......","..##dddddddddd#######oooooooooooooooooo#ooooooo##......","....##ddddddddddddd##oooooooooooo#######ooooooo##......","....###dddddddddddd##oooooooooooo#######oooo#####......",".....###ddddddddddd##ooooooooooooooooooooooo###........",".....###ddddddddddd##ooooooooooooooooooooooo###........","........####ddddddd####oooooooooooooooooo###...........","........#######dddd####oooooooooooooooooo###...........","...........#####dd#####oooo###############.............","............#########...##################.............","...............######..................................","......................................................."],erase:[[20,24,41,45],[26,32,25,33],[25,32,40,45],[35,43,31,43]],anchors:{browL:[0,0],browR:[42,21],eyeL:[28,27],eyeR:[41,26],mouth:[32,36]},eyes:c({lw:3,lh:5,rw:4,rh:5}),brows:{L:[],R:["###","###"]},mouths:{...m(11),smile:["#..........",".......#...",".#######...",".#######...","...........","...........",".........##"]}};var I={id:"specs",name:"\u65B9\u6846\u773C\u955C",w:55,h:48,ink:"#",skin:"o",palette:{"#":"#0A0A0B",d:"#3C3F44",o:"#FAFAFA"},base:[".......................................................","................####################...................","................####################...................","................####################...................","..............##########dd##############...............",".............###########dd##############...............","...........#####dddddddd##################.............","..........######dddddddd##################.............",".......#######dddddddddddd##########dddd#####..........",".......#######dddddddddddd##########dddd#####..........",".......#####ddddddddoooooooooo########oooo###..........",".......#####ddddddddoooooooooo########oooo###..........","......###dddddddddooooooooooooooooooooooooo###.........",".....####dddddddddooooooooooooooooooooooooo###.........",".....####dddddddddooooooooooooooooooooooooo###.........",".....####dddddddddooooooooooooooooooooooooo###.........",".....###ddddddddddooooooooooooooooooooooooooo###.......",".....###ddddddddddooooooooooooooooooooooooooo###.......",".....###ddddddddddooooooooooooooooooooooooooo###.......",".....###ddddddddddooooooooooooooooooooooooooo###.......",".....###ddddddoooooooo########oooooooooo####o###.......",".....###ddddddoooooooo########oooooooooo####o###.......",".....###ddddddoooooooooooooooooooooooooooooooo##.......",".....###ddddddoooooooooooooooooooooooooooooooo##.......",".....#######ddooooo###############ooo##############....",".....#######ddooooo##ooooo########ooo#######oo#####....",".....################oooooo###oo##ooo##oo###oo##o##....","...###ooooo##########oooooo###oo#######oo###oo##o##....","...###ooooo###ooooo##oooooo###oo#######oo###oo##o##....","...###ooooo###ooooo##oooooo###oo##ooo##oo###oo##o##....","...###ooooo###ooooo##oooooo###oo##ooo##oo###oo##o##....","...###ooooooooooooo##ooooooooooo##ooo##ooooooo##o##....","...###ooooooooooooo##ooooooooooo##ooo##ooooooo#####....","...###ooooooooooooooo###########ooooooo##########......","...######oooooooooooo###########ooooooo##########......","...######oooooooooooooooooooooooooooooooooooo###.......",".......##ooooooooooooooooooooooooooooooooooooo##.......",".......#######oooooooooooooooooooooooooooooooo##.......",".......#######oooooooooooooooooooooooooooooooo##.......","..........####oooooooooooooooo#########oooooo###.......","...........###oooooooooooooooo#########oooo###.........","...........###oooooooooooooooo########ooooo###.........","............####ooooooooooooooooooooooooo#####.........",".............###ooooooooooooooooooooooooo###...........",".............###ooooooooooooooooooooooooo###...........","...............##########################..............","...............##########################..............","......................................................."],erase:[[18,22,21,30],[18,22,39,44],[38,42,28,39]],anchors:{browL:[22,20],browR:[40,20],eyeL:[26,25],eyeR:[41,25],mouth:[30,39]},eyes:c({lw:4,lh:5,rw:3,rh:5}),brows:{L:["########","########"],R:["####","####"]},mouths:{...m(9),smile:["#########","#########","########."]}};var j={id:"scholar",name:"\u5706\u6846\u773C\u955C",w:55,h:48,ink:"#",skin:"o",palette:{"#":"#0A0A0B",d:"#3C3F44",g:"#9AA0A8",o:"#FAFAFA"},base:["...........................##########..................","...........................##########..................","...........................##########..................",".................######################................",".................######################................","..............##############################...........","..............##############################...........","..........##################################...........","..........##################################...........","..........####################################.........","........############d#########################.........","........############d############################......","........###dddd####dd############oooooooo########......",".......####dddd##################oooooooo########......","....######ddddd########oooooooooooooooooo########......","....#####dddd##########oooooooooooooooooooo######......","....#####dddd##########oooooooooooooooooooo######......","....#####dddd##########oooooooooooooooooooo######......","....#####dddd########oooooooooooooooooooooo######......","....#####dd##########oooooooooooooooooo########........","....#####dd##########oooo######oooooooo########........","....#####dd#######ooooooo######oooooooooooo####........","....#####dd#######ooooooo####ooooooooo############g....","....#####dd#######ooooo###########oooo############g....","....##############oooo############oooo#oooooo#####g....","....##############oooo##ooooooooo#oooo#oo###o##o##g....","....##############oooo##oooo###oo######oo###o##o##d....","....####################oooo###oo######oo###o##o##d....","....####################oooo###oo#oooo#oo###o##o##d....","......#####oooo###oooo##oooo###oo#oooo#oo###o##o##d....","......#####oooo###oooo##oooo###oo#ooooooooooo#####d....","........###oooo###oooo##ooooooooooooooo#########.......","........###oooo###ooooo##########oooooo#########.......","........###oooooooooooo##########oooooooooooo##........","........###oooooooooooooooooooooooooooooooooo##........","........###oooooooooooooooooooooooooooooooooo##........","........#####oooooooooooooooooooooooooooooooo##........","........#####oooooooooooooooooooooo##oooooooo##........","...........#######oooooooooooooooo###oooooooo##........","...........#######oooooooooooooooo###ooooooo###........","..............####ooooooooooooooooo##ooooo###..........","..............####oooooooooooooooooooooooo###..........",".................###oooooooooooooooooooo###............",".................###oooooooooooooooooooo###............","...................#####################...............","....................####################...............","....................####################...............","......................................................."],erase:[[19,23,24,32],[36,41,33,38]],anchors:{browL:[25,20],browR:[0,0],eyeL:[29,26],eyeR:[42,25],mouth:[34,37]},eyes:c({lw:3,lh:5,rw:2,rh:5}),brows:{L:["######","######","####.."],R:[]},mouths:{...m(3),smile:[".##","###","###",".##"]}};var H={id:"bob",name:"\u9F50\u5218\u6D77",w:55,h:48,ink:"#",skin:"o",palette:{"#":"#0A0A0B",o:"#FAFAFA"},base:["...................###################.................","...................###################.................","...................###################.................",".............###############################...........",".............###############################...........",".............###############################...........","..........#####################################........","..........#####################################........","........#########################################......","........#########################################......","........##########################################.....",".....##############################################....",".....###############################################...",".....###############################################...",".....###############################################...",".....###############################################...",".....###############################################...",".....###############################################...",".....##########################o####################...",".....##########################o###########oo#######...",".....######################################oo#######...","...##################################oo#############...","...#######################ooo######oooooooo####o####...","...#####################oooooooooooooooooooooooo####...","...#####################oooooooooooooooooooooooo####...","...###################ooooooooo###ooooooooo###oo####...","...###################ooooooooo###ooooooooo###oo####...","...##################oooooooooo###ooooooooo###oo####...","#####################oooooooooo###ooooooooo###oo####...","#####################oooooooooo###ooooooooo###oo####...","#####################oooooooooo###ooooooooo###oo####...","#####################ooooooooooooooooooooooooooo#######","#####################ooooooooooooooooooooooooooo#######","#####################ooooooooooooooooooooooooooo#######","#####################ooooooooooooooooooooooooooo#######","#####################ooooooooooooooooooooooooooo#######","#####################ooooooooooooooooooooooooooo#######","#####################ooooooooooooo#oooooo#oooooo#######","#####################ooooooooooooo########oooooo#######","#####################oooooooooooooo######oooooo########","#####################oooooooooooooooooooooooooo########","...###################oooooooooooooooooooooooo#########","...####################ooooooooooooooooooooo########...",".....##################ooooooooooooooooooooo########...",".....###############################################...","..............##############################...........","..............##############################...........","..............###......................................"],erase:[[24,32,30,35],[24,32,42,46],[36,41,33,42]],anchors:{browL:[0,0],browR:[0,0],eyeL:[31,25],eyeR:[43,25],mouth:[34,37]},eyes:c({lw:3,lh:6,rw:3,rh:6}),brows:{L:[],R:[]},mouths:{...m(8),smile:["#......#","########",".######."]}};var N={id:"sage",name:"\u5927\u80E1\u5B50",w:55,h:48,ink:"#",skin:"o",palette:{"#":"#0A0A0B",d:"#3C3F44",g:"#797E86",o:"#FAFAFA"},base:[".......................................................",".....................#############.....................",".....................#############.....................","..................###ooooooooooooo###..................","..................###ooooooooooooo###..................","...............###ooooooooooooooooooo###...............","...............###ooooooooooooooooooo###...............",".............##ooooooooooooooooooooooooo##.............","............###ooooooooooooooooooooooooo###............","...........###ooooooooooooooooooooooooooo##............","...........##oooooooooooooooooooooooooooo##............","..........###ooooooooooooooooooooooooooooo###..........","..........##ooooooooooooooooooooooooooooooo##..........","..........##ooooooooooooooooooooooooooooooo##..........","..........##ooooooooooooooooooooooooooooooo##..........","..........##ooooooooooooooooooooooooooooooo##..........","..........##ooooooooooooooooooooooooooooooo##..........","..........##ooooooooooooooooooooooooooooooo##..........","..........##ooooooooooooo###ooooooooooooo####..........","..........##ooooooooooooo#######oooooo#######..........","..........##oooooooooooooooo####oooooo###oo##..........","..........#####ooooooooooooo###ooooooo###oo##..........",".......d#######ggooooooooooo###ooooooo###oo##..........",".......d##ooooogggoooooooooo###ooooooo###oo##..........",".......d##oooooggggooooooooo###ooooooo###oo##..........",".......d##oooooggggooooooooo###ooooooo###oo##..........",".......d##oooooggggoooooooooooooooooooooooo##..........",".......d##ooooogggggooooooooooooooooooooooo##..........",".......d####oooggggggoooooooooggggggggggooo####d.......",".......d####oooggggggooooooogggggggggggggoo####d.......","..........#######ggggggoooooggggggggggggggggg##d.......","..........#######ggggggooogggggg######ggggggg##d.......","..............###gggggggoogggg#########gggggg##d.......","..............###ggggggggggggg##ooooooogggggg##d.......","..............###gggggggggggggooooooooogggggg##d.......","...............###ggggggggggggoooggggoogggggg##d.......","...............###ggggggggggggggggggggggggggg##d.......","...............####gggggggggggggggggggggggg####d.......","...............######gggggggggggggggggggggg####d.......","...................####gggggggggggggggggggg##..........","...................####gggggggggggggggggggg##..........","......................####ggggggggggggggg####..........","......................####ggggggggggggggg###...........",".........................####gggggggggg###.............",".........................#################.............",".............................##########................",".............................dddddddddd................","......................................................."],erase:[[17,21,23,32],[17,21,37,43],[19,26,27,32],[19,26,37,42],[29,37,29,40,"g"]],anchors:{browL:[25,18],browR:[38,18],eyeL:[28,20],eyeR:[38,20],mouth:[30,30]},eyes:c({lw:4,lh:6,rw:3,rh:6}),brows:{L:["###....","#######","...####"],R:["...##","#####","###.."]},mouths:{...m(10),smile:["##########","##########","##########","##.......#",".........#","...####..#","##########"]}};var W={id:"stoic",name:"\u5E73\u5934",w:55,h:48,ink:"#",skin:"o",palette:{"#":"#0A0A0B",d:"#3C3F44",g:"#9AA0A8",o:"#FAFAFA"},base:[".......................................................","....................################...................","....................################...................","....................################...................","...............##########################..............","...............##########################..............","...............###########################.............",".............###############################...........",".............###############################...........","..........####################################.........","..........####################################.........","..........####################################.........",".......###ddd#####oooooooo#############ooooooo###......",".......###dddddd##oooooooo#############ooooooo###......",".......###ddddddd#oooooooooooooooooooooooooooo###g.....",".......###ddddddd#oooooooooooooooooooooooooooo###g.....",".......###dddddd##oooooooooooooooooooooooooooo###g.....",".......###dddddd##oooooooooooooooooooooooooooo###d.....",".......###dddddd##oooooooooooooooooooooooooooo###d.....",".......###ddddddoooooo######oooooooooooooooooo###d.....",".......###ddddddoooooo######oooooooooooooooooo###d.....",".......###ddddddoooooo#######ooooooooooooooooo###d.....",".......###ddddddooooooooooo###oooooooo######oo###d.....",".......######dddooooooooooo###oooooooo######oo###d.....",".......######dddoooooooo####oooooooooo####oooo####.....",".......######dddoooooooo####oooooooooo####oooo####.....","....####ooooodddoooooooo####oooooooooo####oooo####.....","....####ooooodddoooooooo####oooooooooo####oooo####.....","....####ooooodddoooooooo####oooooooooo####oooo####.....","....####oooooddooooooooo####oooooooooo####oooo####.....","....####ooooooooooooooooo###oooooooooo####oooo####.....","....####oooooooooooooooooooooooooooooooooooooo####.....","....####oooooooooooooooooooooooooooooooooooooo####.....","....####oooooooooooooooooooooooooooooooooooooo####.....","....####oooooooooooooooooooooooooooooooooooooo####.....","........###ooooooooooooooooooooooooooooooooooo####.....","........########oooooooooooooooooooooooooooooo####.....","........########ooooooooooo###########oooooooo####.....",".............###ooooooooooo###########ooooo###.........",".............###ooooooooooooooooooooooooooo###.........",".............#####ooooooooooooooooooooooo#####.........","...............###oooooooooooooooooooooo####...........","...............###oooooooooooooooooooooo####...........","..................#######################..............","..................#######################..............","..................#######################..............",".......................................................","......................................................."],erase:[[18,23,21,31],[20,25,37,45],[23,31,23,30],[23,31,37,44],[36,40,26,38]],anchors:{browL:[22,19],browR:[38,22],eyeL:[24,24],eyeR:[38,24],mouth:[27,37]},eyes:c({lw:4,lh:7,rw:4,rh:7}),brows:{L:["######..","######..","#######.",".....###"],R:["######","######","####.."]},mouths:{...m(11),smile:["###########","###########"]}};var $={id:"cap",name:"\u68D2\u7403\u5E3D",w:55,h:48,ink:"#",skin:"o",palette:{"#":"#0A0A0B",o:"#FAFAFA"},base:[".......................................................","........................###############................","........................###############................",".....................######################............",".....................######################............",".................#############################.........",".................#############################.........","..............####################################.....","..............####################################.....","..............####################################.....","..............####################################.....","............#########################################..","............#########################################..","............######################oooooooooo#########..","............######################oooooooooo#########..","............#########################################..","............#########################################..","............#########################################..","............###################oooooooooooooooo######..","............###################oooooooooooooooo######..","............############oooooooooooooooooooooooooo###..","............############oooooooooooooooooooo####oo###..","............###########ooooo#######ooooooooo####oo###..","...........############ooooo#######ooooooooo####oo###..",".........##############ooooooooooooooooooooooooooo###..",".......###############oooooooooooooooooooooooooooo###..","....#################ooooooooo####oooooooooo###ooo###..",".#############oooo###ooooooooo####oooooooooo###ooo###..",".#############oooo###ooooooooo####oooooooooo###ooo###..",".#############oooo###ooooooooo####oooooooooo###ooo###..",".#############oooo###ooooooooo####oooooooooo###ooo###..",".#############ooooo##ooooooooo####oooooooooo###ooo###..","....##########oooooooooooooooooooooooooooooooooooo###..","............##oooooooooooooooooooooooooooooooooooo###..","............##oooooooooooooooooooooooooooooooooooo###..","..............##oooooooooooooooooooooooooooooooooo###..","..............#######ooooooooooo##oooooooooooooooo###..","..............#######oooooooooo###oooooooooooooooo###..","..............#######oooooooooo###########oooooooo###..","..................###ooooooooooooo########oooooooo###..","..................###ooooooooooooo########ooooo###.....","...................####oooooooooooooooooooooooo###.....","....................###ooooooooooooooooooooo####.......","....................###ooooooooooooooooooooo####.......","......................#######################..........","......................######################...........","......................######################...........","......................................................."],erase:[[20,24,27,35],[20,24,42,48],[25,32,29,34],[25,32,42,47],[35,41,30,42]],anchors:{browL:[28,22],browR:[44,21],eyeL:[30,26],eyeR:[44,26],mouth:[31,36]},eyes:c({lw:4,lh:6,rw:3,rh:6}),brows:{L:["#######","#######"],R:["####","####","####"]},mouths:{...m(11),smile:[".##........","###........","###########","...########","...########"]}};var Y={id:"mane",name:"\u957F\u5377\u53D1",w:55,h:48,ink:"#",skin:"o",palette:{"#":"#0A0A0B",d:"#3C3F44",g:"#9AA0A8",o:"#FAFAFA"},base:[".......................................................",".................####################..................",".................####################..................",".................####################..................","............##############################.............","............##############################.............","............##############################.............","........######################################.........","........######################################.........","........######################################.........","........#########################################......","........#########################################......","......###################ooooooooooooooo#########......","......###################ooooooooooooooo###########....","......#################oooooooooooooooooo##########....","......#################ooooooooooooooooooo#########....","......################ooooooooooooooooooooo########....","....##################ooooooooooooooooooooo########....","....##################oo#####oooooooooo############....","....#########################oooooooooo############....","....#########################oooooooooo##############..","....####################ooooooooooooooooooooo########..","...###################ooooooooooooooooooooooo########..",".g####################ooooooooooooooooooooooo########..",".g###################oooo####oooooooooo###ooo####..##..",".g###################oooo####oooooooooo###ooo####..##..",".d##################ooo##ooo##ooooooo##oo##oo####..##..",".d##################ooo##ooo##ooooooo##oo##oo####..##..",".d##############o###ooooooooooooooooooooooooo#####.....",".d##############o###ooooooooooooooooooooooooo#####.....","....############o###ooooooooooooooooooooooooo#####.....","....############o###ooooooooooooooooooooooooo#####.....",".d##############o###oooo#################oooo######....",".d##############o###oooo#################oooo######....",".d##################oooo##ooooooooooo####oooo######....",".###################oooo##ooooooooooo####oooo######....",".###################oooo#################ooo#######....",".###################oooo################ooo########....",".###################oooooo############ooooo########....",".####################ooooo############ooo##########....",".#####################oooooooooooooooooo##########.....",".#####.###############ooooooooooooooooo######.####.....",".#####.######################################.####.....",".#####.######################################..###.....",".......###########...########################..###.....","........#########.......................#####..........","...........####.........................###............","......................................................."],erase:[[23,28,22,30],[23,28,36,43],[31,38,23,41]],anchors:{browL:[0,0],browR:[0,0],eyeL:[25,24],eyeR:[38,24],mouth:[24,32]},eyes:c({lw:4,lh:4,rw:4,rh:4}),brows:{L:[],R:[]},mouths:{...m(17),smile:["#################","#################","##...........####","##...........####","#################","################."]}};var q={id:"sweep",name:"\u504F\u5206",w:55,h:48,ink:"#",skin:"o",palette:{"#":"#0A0A0B",d:"#3C3F44",o:"#FAFAFA"},base:[".......................................................","................######################.................","................######################.................","................######################.................","................######################.................","............##############################.............","............##############################.............",".........#####################################.........",".........#####################################.........",".........#########d###########################.........",".........######d##############################.........","......#########d##############################.........","......########################################.........","......#################ooooooooooooooooooo#####........","......#################ooooooooooooooooooo#########....","......#################ooooooooooooooooooo#########....","......###############ooooooooooooooooooooo#########....","......###############ooooooooooooooooooooo#########....","......###############ooooooooooooooooooooooo#######....","......###############ooooooooooooooooooooooo#######....","......############ooooo######oooooooooo###oo#######....","......############ooooo######oooooooooo###oo#######....","......############oooooooooooooooooooooooooo#######....","......############oooooooooooooooooooooooooo#######....","......############oooooooo###oooooooooo###oo#######....","......############oooooooo###oooooooooo###oo###........",".....######oooo###oooooooo###oooooooooo###oo###........","...########oooo###oooooooo###oooooooooo###oo###........","...########oooo###oooooooo###oooooooooo###oo###........","...########oooo###oooooooo###oooooooooo###oo###........","...########oooo###oooooooo###oooooooooo###oo###........","...########ooooooooooooooooooooooooooooooooo###........","...########ooooooooooooooooooooooooooooooooo###........","...########ooooooooooooooooooooooooooooooooo###........","...########ooooooooooooooooooooooooooooooooo###........","...##########ooooooooooooooooooooooooooooooo###........","......############ooooooooo##ooooooooooooooo###........","......############ooooooooo###oooooo##oooooo###........","......############ooooooooooo#########oooooo###........","......############ooooooooooo########ooooo###..........",".........#########ooooooooooo########ooooo##...........",".........###########ooooooooooooooooooo#####...........","................####ooooooooooooooooooo###.............","................####ooooooooooooooooooo###.............","..................#####################................","..................#####################................","..................#####################................","......................................................."],erase:[[19,22,22,29],[19,22,38,42],[23,31,25,29],[23,31,38,42],[35,41,26,38]],anchors:{browL:[23,20],browR:[39,20],eyeL:[26,24],eyeR:[39,24],mouth:[27,36]},eyes:c({lw:3,lh:7,rw:3,rh:7}),brows:{L:["######","######"],R:["###","###"]},mouths:{...m(11),smile:["##.........","###......##","..#########","..########.","..########."]}};var X={id:"grin",name:"\u4E2D\u5206\u957F\u53D1",w:55,h:48,ink:"#",skin:"o",palette:{"#":"#0A0A0B",d:"#3C3F44",m:"#B6BBC2",o:"#FAFAFA"},base:["...............##########..############................","...............##########..############................","...............########################................","...............########################................","...........###############################.............","...........####d#d############dd######d###.............","........######################dddddddddd#####..........","........#####################dddddddddddd####..........","........##ddd################d#####dddddddd##..........","........##dddd#####################dddddddd##..........",".......###dddd#######################dddddddd##........",".......###ddd########################dddddddd##........",".......###ddd#######ooooooooooooooo###ddddddd##........",".......#dddddd######ooooooooooooooo###ddddddd##........",".....###dddddddd####ooooooooooooooo###ddddddd#####.....",".....###dddddddd####oooooooooooooooo###dddddd#####.....",".....###dddddddd##oooooooooooooooooooo##ddddd#####.....",".....###dddddd####oooooooooooooooooooo##ddddd#####.....",".....####ddddd####oooooooooooooooooooo##ddddd#####.....",".....#####dddd####o######oooooooooo#####dddd######.....",".....#####dddd##ooo######oooooooooo######ddd######.....",".....#####ddd###ooo######oooooooooo######ddd######.....",".....#####ddd###oooooooooooooooooooooo###dddd#####.....",".....#####ddd###oooooooooooooooooooooo####ddd#####.....",".....#####dd####ooooo####oooooooooo########dd#####.....",".....#####dd####ooooo####oooooooooo###o####d######.....",".....#####dd####ooooo####oooooooooo###ooo############..","..##############ooooo####oooooooooo###ooo############..","..#############oooooo####oooooooooo###ooooo##########..","..#############oooooo####oooooooooo###ooooo##########..","..#############oooooooooooooooooooooooooooo##########..","..############ooooooooooooooooooooooooooooo##########..","..##########ooooooooooooooooooooooooooooooo##########..","..##########ooooooooooooooooooooooooooooooo##########..","..##########ooooooooo###ooooooooo##oooooooo##########..","..###########oooooooo###ooooooooo###ooooooo##########..","...##########dooooooo###############ooooooo##########..","...###########ooooooo####m########ooooooooo##########..","...###########ooooooo###mmmmm#####ooooooo#########.....","...###########oooooooooommmmm#####ooooooo#########.....","......#########ooooooooo#######ooooooooo##########.....","......##########oooooooo#######ooooooo#########........","......##########oooooooooooooooooooooo#########........","......#########################################........","...........###############################.............","...........###############################.............","...........###############################.............","......................................................."],erase:[[18,22,18,25],[19,22,34,41],[23,31,20,25],[23,31,34,38],[33,42,20,36]],anchors:{browL:[19,19],browR:[35,20],eyeL:[21,24],eyeR:[35,24],mouth:[21,34]},eyes:c({lw:4,lh:6,rw:3,rh:6}),brows:{L:["######","######","######"],R:["######","######"]},mouths:{...m(15),smile:["###.........##.","###.........###","###############","#############..","#############..","...##########..","...#######.....","...#######....."]}};var B=[D,_,I,j,H,N,W,$,Y,q,X];function uo(o){return B.find(e=>e.id===o)}var Ce={w:B[0].w,h:B[0].h};function To(o,e){let n=e.character,r=e.state??"idle",d=Math.max(1,Math.floor(e.scale??1)),t=document.createElement("canvas");t.style.imageRendering="pixelated",t.style.display="block",o.appendChild(t);let a=t.getContext("2d"),i=document.createElement("canvas"),l=i.getContext("2d"),h=e.rim,f={},s=u=>{let p=t.getBoundingClientRect();p.width===0||p.height===0||(f={pointerX:(u.clientX-(p.left+p.width/2))/(p.width*.55),pointerY:(u.clientY-(p.top+p.height*.5))/(p.height*.6)})};e.followPointer===!0&&window.addEventListener("pointermove",s);let w=()=>{let u=v(n);i.width=u.gridW,i.height=u.gridH,t.width=u.gridW*d,t.height=u.gridH*d,t.style.width=`${u.gridW*d}px`,t.style.height=`${u.gridH*d}px`};w();let x=0,k=!0,L=u=>{k&&(a!==null&&l!==null&&(P(l,O(n,r,u,h===void 0?f:{...f,rim:h})),z(a,i,i.width,i.height,d)),x=requestAnimationFrame(L))};return x=requestAnimationFrame(L),{canvas:t,setState(u){r=u},setCharacter(u){n=u,w()},setRim(u){h=u},destroy(){k=!1,cancelAnimationFrame(x),e.followPointer===!0&&window.removeEventListener("pointermove",s),t.remove()}}}return Fo(Bo);})();
 
-const FC={I:'#101012',D:'#2f2f36',L:'#83838d',W:'#ffffff',P:'#f2f2f3'};
-const GW=20, GH=16;
 
-/* 蒙皮：一张光头。所有角色都长在它上面 —— 「头部不变形」就是这一句的意思。
-   脸内 cols 4..15 / rows 2..11；眼 6-7 与 12-13，眉 row4，嘴 rows 9-10 */
-const HEAD=[
- '.......######.......',
- '.....##WWWWWW##.....',
- '....#WWWWWWWWWW#....',
- '...#WWWWWWWWWWWW#...',
- '...#WWWWWWWWWWWW#...',
- '...#WWWWWWWWWWWW#...',
- '...#WWWWWWWWWWWW#...',
- '...#WWWWWWWWWWWW#...',
- '...#WWWWWWWWWWWW#...',
- '...#WWWWWWWWWWWW#...',
- '...#WWWWWWWWWWWW#...',
- '....#WWWWWWWWWW#....',
- '.....##WWWWWW##.....',
- '.......######.......',
- '....................',
- '....................',
-];
-const EYE_LX=6, EYE_RX=11, BROW_Y=4, EYE_Y=6, MOUTH_X=8, MOUTH_Y=10;
+/* ── 这份 demo 这一侧的挂载层 ──────────────────────────────────────── */
+const { composeFrame, paintFrame, blitScaled, layoutFor, FACE_CHARACTERS, faceCharacter,
+        FACE_STATES, FACE_STATE_LIST } = OttoFace;
 
-/* 13 个角色包 = 盖在光头上的头发 / 帽子 / 配件，逐张对着 01–13.png 描的，
-   顺序就是坑位号。`top` 盖住 rows 0..n（头发本来就是头顶那几行的轮廓），
-   `side` 是两侧的长发（给 row→[左列, 右列] 的对照表） */
-const CHARS=[
- /* 01 短平头 */   {top:['.......DDDDDD.......','.....#DDDDDDDD#.....','....#DDDDDDDDDD#....','...DD..........DD...']},
- /* 02 蘑菇头 */   {top:['.......LLLLLL.......','.....LLLLLLLLLL.....','....LLLLLLLLLLLL....','...LLL........LLL...'],side:{4:'LL',5:'L.'}},
- /* 03 刺猬头 */   {top:['....D.D.D.DD.D.D....','....DD.DDDDDD.DD....','....DDDDDDDDDDDD....','...DD..........DD...']},
- /* 04 背头 */     {top:['.......DDDDDD.......','.....DDDLLDDDDD.....','....#DDDDDDDDDD#....','...DD..........DD...']},
- /* 05 贝雷帽 */   {top:['....DDDDDDDDD.......','...DDDDDDDDDDDD.....','..DDDDDDDDDDDDDD....','...LL..........DD...'],nub:[4,0]},
- /* 06 眼镜平头 */ {top:['.......LLLLLL.......','.....#LLLLLLLL#.....','....#LLLLLLLLLL#....','...LL..........LL...'],specs:true},
- /* 07 眼镜分头 */ {top:['......DDDDDDD.......','....DDDDDDDDDDD.....','....#DDLDDDDDDD#....','...DD..........DD...'],specs:true},
- /* 08 波波头 */   {top:['.......DDDDDD.......','.....DDDDDDDDDD.....','....DDDDDDDDDDDD....','...DDD........DDD...'],side:{4:'DD',5:'DD',6:'DD',7:'DD',8:'D.'}},
- /* 09 光头胡子 */ {beard:true},
- /* 10 长直发 */   {top:['.......DDDDDD.......','.....DDDDDDDDDD.....','....DDDDDDDDDDDD....','...DDD........DDD...'],side:{4:'DD',5:'DD',6:'DD',7:'DD',8:'DD',9:'DD',10:'DD',11:'D.'}},
- /* 11 马尾发带 */ {top:['.......DDDDDD.......','.....DDDDDDDDDD.....','....LLLLLLLLLLLL....','...DD..........DD...'],tail:true},
- /* 12 卷发 */     {top:['....DD.DD..DD.DD....','...DDDDDDDDDDDDDD...','...DDDDDDDDDDDDDD...','...DDD........DDD...'],side:{4:'DD',5:'D.'}},
- /* 13 乱发胡茬 */ {top:['....D...DD..D.D.....','...DDDDDDDDDDDDD....','...#DDDDDDDDDD#.....','...DD..........DD...'],stubble:true},
-];
-
-/* 三层特征。眼 / 眉 / 嘴各是一小张图案，**只有这三层会换** */
-const EYES={
- open:  [[0,0],[1,0],[0,1],[1,1]],
- half:  [[0,1],[1,1]],
- shut:  [[0,1],[1,1]],
- left:  [[-1,0],[0,0],[-1,1],[0,1]],
- right: [[1,0],[2,0],[1,1],[2,1]],
- up:    [[0,0],[1,0]],
- cross: [[0,0],[1,1],[1,0],[0,1]],
-};
-const BROWS={ flat:[[0,0],[1,0]], up:[[0,-1],[1,-1]], knit:[[0,1],[1,0]], none:[] };
-const MOUTHS={
- smile: [[0,1],[1,1],[2,1],[-1,0],[3,0]],
- flat:  [[0,0],[1,0],[2,0]],
- small: [[1,0],[2,0]],
- oh:    [[1,0],[1,1]],
- talk:  [[0,0],[1,0],[2,0],[0,1],[1,1],[2,1]],
- frown: [[0,0],[1,0],[2,0],[-1,1],[3,1]],
- zig:   [[0,1],[1,0],[2,1]],
-};
-
-/* 15 个状态 + 一个 plain。两条硬规矩（#1307）：
-   · `waiting`（等你处理）是**唯一**做水平摆动的 —— 一墙静止头像里横向运动最抓眼，
-     而 sessionOrb.ts 早就定死「等你」必须压过「在跑」。
-   · `queued`（排队中）是**唯一完全不动的** —— ADR-0250 说它连打字指示器都不画，
-     头像不能看起来像在干活。 */
-const S=(o)=>({brow:'flat',eye:'open',mouth:'flat',badge:null,move:null,...o});
-const breathe=(ms)=>(t)=>[0,Math.floor(t/ms)%2];
-const FACE_STATES={
- plain:    S({mouth:'smile'}),                    // 名册那一墙脸一律静止一帧：每天扫几十遍的东西不该动
- idle:     S({mouth:'smile',badge:'mute',move:breathe(1500)}),
- queued:   S({mouth:'flat',badge:'mute'}),
- composing:S({brow:'up',eye:'up',mouth:'small',badge:'work',move:breathe(620)}),
- searching:S({eye:(t)=>Math.floor(t/420)%2?'left':'right',badge:'work'}),
- working:  S({brow:'knit',badge:'work',move:breathe(300)}),
- solving:  S({mouth:(t)=>['talk','oh','flat'][Math.floor(t/220)%3],badge:'work'}),
- weaving:  S({eye:'half',mouth:'small',badge:'work',move:breathe(820)}),
- waiting:  S({brow:'up',mouth:'oh',badge:'need',move:(t)=>[[-1,0,1,0][Math.floor(t/260)%4],0]}),
- listening:S({brow:'up',mouth:'small',badge:'voice',move:breathe(950)}),
- speaking: S({mouth:(t)=>['oh','talk','small','talk'][Math.floor(t/170)%4],badge:'voice'}),
- done:     S({eye:'half',mouth:'smile',badge:'ok',move:breathe(1500)}),
- failed:   S({brow:'knit',eye:'cross',mouth:'zig',badge:'bad'}),
- limited:  S({eye:'half',badge:'need',move:breathe(1700)}),
- frozen:   S({eye:'shut',badge:'mute'}),
- offline:  S({eye:'shut',badge:'mute',dim:true}),
-};
-const BADGE={work:'#0a84ff',need:'#ff9f0a',ok:'#30d158',bad:'#ff453a',voice:'#5ac8fa',mute:'#8e8e93'};
-
-/** 一帧。纯函数：给定角色 / 状态 / 时刻，画出来的东西完全确定 —— 所以静态帧和
-    动画共用同一段代码，不会出现「不动的那版长得不一样」 */
-function drawFace(cv,slot,state,t){
-  const ch=CHARS[((slot%CHARS.length)+CHARS.length)%CHARS.length];
-  const st=FACE_STATES[state]||FACE_STATES.plain;
-  // 头占 cols 3..16 / rows 0..13：把它的中心对准圆盘中心，边上留一圈盘底
-  const px=cv.width, cell=Math.max(1,px/15.8), ox=px/2-10*cell, oy=px/2-7*cell;
-  const g=cv.getContext('2d'); g.imageSmoothingEnabled=false; g.clearRect(0,0,px,px);
-  g.fillStyle=FC.P; g.beginPath(); g.arc(px/2,px/2,px/2,0,7); g.fill();
-  g.save(); g.beginPath(); g.arc(px/2,px/2,px/2,0,7); g.clip();
-  if(st.dim) g.globalAlpha=.45;
-  const [dx,dy]=st.move?st.move(t):[0,0];
-  const put=(x,y,c)=>{ if(!c||c==='.')return; g.fillStyle=FC[c]||c;
-    g.fillRect(Math.round(ox+(x+dx)*cell),Math.round(oy+(y+dy)*cell),Math.ceil(cell),Math.ceil(cell)); };
-  const layer=rows=>rows&&rows.forEach((r,i)=>[...r].forEach((c,x)=>put(x,i,c)));
-  layer(HEAD); layer(ch.top);
-  if(ch.side) for(const y in ch.side){ const [l,r]=[...ch.side[y]];
-    if(l!=='.'){ put(3,+y,l); put(4,+y,l); } if(r!=='.'){ put(15,+y,r); put(16,+y,r); } }
-  if(ch.nub) put(ch.nub[0],ch.nub[1],'D');
-  if(ch.tail) [[16,3],[16,4],[16,5],[16,6],[16,7],[15,7],[15,3]].forEach(([x,y])=>put(x,y,'D'));
-  if(ch.beard){ [[4,8],[15,8],[4,9],[15,9],[5,10],[14,10],[5,11],[14,11]].forEach(([x,y])=>put(x,y,'L'));
-    for(let x=6;x<14;x++) put(x,12,'L');                        // 下巴那一把
-    for(let x=7;x<12;x++) put(x,9,'L'); }                       // 上唇那一撇
-  if(ch.stubble) for(let x=5;x<15;x++) if((x+1)%2) put(x,12,'L');
-  const pick=v=>typeof v==='function'?v(t):v;
-  const brow=BROWS[pick(st.brow)]||[], eye=EYES[pick(st.eye)]||[], mouth=MOUTHS[pick(st.mouth)]||[];
-  brow.forEach(([x,y])=>{ put(EYE_LX+x,BROW_Y+y,'I'); put(EYE_RX+1-x,BROW_Y+y,'I'); });   // 右眉镜像
-  eye.forEach(([x,y])=>{ put(EYE_LX+x,EYE_Y+y,'I'); put(EYE_RX+x,EYE_Y+y,'I'); });
-  mouth.forEach(([x,y])=>put(MOUTH_X+x,MOUTH_Y+y,'I'));
-  if(ch.specs){ // 眼镜：两个墨框 + 一道鼻梁，套在眼睛外面
-    const lens=x0=>{ for(let j=5;j<9;j++){ put(x0,j,'I'); put(x0+3,j,'I'); }
-      put(x0+1,9,'I'); put(x0+2,9,'I'); };
-    lens(5); lens(10); put(9,6,'I');
-  }
-  g.restore();
-  // 角标：右下角，带一圈盘底做隔离。plain 不画（见文件头）
-  if(st.badge){ const r=Math.max(2.5,px*0.15);
-    g.fillStyle=FC.P; g.beginPath(); g.arc(px-r*1.05,px-r*1.05,r*1.42,0,7); g.fill();
-    g.fillStyle=BADGE[st.badge]; g.beginPath(); g.arc(px-r*1.05,px-r*1.05,r,0,7); g.fill(); }
+/** 一张脸画进一个 <canvas data-ch=角色id data-st=状态 data-sz=显示边长>。
+    网格是 55×48（全体角色共用一张画布，那一侧有断言钉着），所以放大倍数只能取整；
+    显示尺寸由 CSS 收到 `sz`，`image-rendering:pixelated` 保证收下去还是硬边 */
+const FACE_LIVE=new Set();
+function renderFaceOnce(cv,t){
+  const ch=faceCharacter(cv.dataset.ch)||FACE_CHARACTERS[0];
+  const st=FACE_STATES[cv.dataset.st]?cv.dataset.st:'idle';
+  const L=layoutFor(ch);
+  let off=cv._off;
+  if(!off){ off=cv._off=document.createElement('canvas'); off.width=L.gridW; off.height=L.gridH; }
+  const k=2;   // 画 2 倍图，CSS 再按吸过的尺寸收 —— 收的倍数一定是 1 或 1/2 或 2
+  if(cv.width!==L.gridW*k){ cv.width=L.gridW*k; cv.height=L.gridH*k; }
+  const octx=off.getContext('2d'), ctx=cv.getContext('2d');
+  if(!octx||!ctx) return;
+  // 深色底要描边：这批头像的头发是纯黑的，不描边整个脑袋糊成一团（那一侧的 setRim）
+  const rim=document.documentElement.dataset.theme==='dark'?'#f2f2f3':undefined;
+  paintFrame(octx,composeFrame(ch,st,t,rim===undefined?{}:{rim}));
+  blitScaled(ctx,off,L.gridW,L.gridH,k);
 }
-
-/* 挂载：一个观察者盯着整个机身，新冒出来的 <canvas data-ch> 就地画上。
-   为什么不放进 wireCommon —— 抽屉、动作里插的 HTML 不走那条路，
-   而「这一处忘了画」的失败形态是安静的（一个空白圆盘） */
-const ANIM=new Set();
-function paintFace(cv){
-  const dpr=Math.min(3,window.devicePixelRatio||1), css=+cv.dataset.sz||28;
-  if(cv.width!==Math.round(css*dpr)) cv.width=cv.height=Math.round(css*dpr);
-  drawFace(cv,+cv.dataset.ch||0,cv.dataset.st||'plain',performance.now());
-  if(cv.dataset.anim==='1') ANIM.add(cv); else ANIM.delete(cv);
+/** 显示高度只取 gridH 的整数倍或整数分之一（48 / 24 / 96）。**这不是洁癖** ——
+    那一侧的 paint.ts 写着「非整数倍会把硬边插值成糊，而硬边是像素画的全部身份」，
+    而 38px 这种尺寸就是 0.79 倍：真机上那一排头像会糊成一团噪点（这一版先画成 38，
+    放大看当场就看出来了）。所以调用点写多少都行，这里就近吸到那三档 */
+function snapFaceHeight(sz,gridH){
+  const opts=[Math.round(gridH/2),gridH,gridH*2];
+  return opts.reduce((a,b)=>Math.abs(b-sz)<Math.abs(a-sz)?b:a);
 }
-function paintFaces(root){ (root||document).querySelectorAll?.('canvas[data-ch]').forEach(paintFace); }
+function mountFace(cv){
+  cv.style.imageRendering='pixelated';
+  const L=layoutFor(faceCharacter(cv.dataset.ch)||FACE_CHARACTERS[0]);
+  const sz=snapFaceHeight(+cv.dataset.sz||40,L.gridH);
+  cv.style.height=sz+'px'; cv.style.width=Math.round(sz*L.gridW/L.gridH)+'px';
+  renderFaceOnce(cv,performance.now());
+  if(cv.dataset.anim==='1') FACE_LIVE.add(cv); else FACE_LIVE.delete(cv);
+}
+function mountFaces(root){ (root||document).querySelectorAll?.('canvas[data-ch]').forEach(mountFace); }
 (function faceLoop(){ requestAnimationFrame(faceLoop);
   const t=performance.now();
-  ANIM.forEach(cv=>{ if(!cv.isConnected){ANIM.delete(cv);return}
-    drawFace(cv,+cv.dataset.ch||0,cv.dataset.st||'plain',t); });
+  FACE_LIVE.forEach(cv=>{ if(!cv.isConnected){FACE_LIVE.delete(cv);return} renderFaceOnce(cv,t); });
 })();
 new MutationObserver(ms=>ms.forEach(m=>m.addedNodes.forEach(n=>{
   if(n.nodeType!==1) return;
-  if(n.matches?.('canvas[data-ch]')) paintFace(n); else paintFaces(n);
+  if(n.matches?.('canvas[data-ch]')) mountFace(n); else mountFaces(n);
 }))).observe(document.getElementById('stage'),{childList:true,subtree:true});
+/* 换主题要把**静止的那些**重画一遍：描边是按底色给的（深色底才给），而静止那一帧
+   画完就不再动了 —— 不重画的话，切到深色之后名册上那一排脸会整个糊在黑底里 */
+new MutationObserver(()=>mountFaces(document))
+  .observe(document.documentElement,{attributes:true,attributeFilter:['data-theme','data-skin']});
 
-/* 名字 → 坑位。真机上是 `fnv1a(agentId) % 13`（或用户手挑的 avatar_slot），
-   demo 是假数据，按名字钉死就够 —— 要紧的是**一个坑位对一个角色**这条不变 */
-const AGENT_SLOT={'管理员':3,'开发':5,'设计':4,'运维':0,'门店':10,'新':11};
-
-const faceOf=(k,txt,sz=20,st='plain')=>{
-  const slot=AGENT_SLOT[k];
-  // 智能体画会动的像素脸（#1307/#1345）。`st` 缺省是 plain —— 不画角标、只呼吸：
-  // 名册那一栏查不到谁在跑，画一个恒灰的「空闲」角标等于宣称一件我们不知道的事
-  if(slot!==undefined) return `<canvas class="face" data-ch="${slot}" data-st="${st}" data-sz="${sz}"`+
-    `${st!=='plain'&&st!=='queued'?' data-anim="1"':''} style="width:${sz}px;height:${sz}px;border-radius:50%"></canvas>`;
-  // 人的兜底是**中性**的一格首字母，不是哈希彩色：桌面 MentionAvatar 走 shadcn
-  // 的 AvatarFallback（bg-muted），彩色只会在这张列表里跟状态色抢话
+/* 名字 → 角色。真机那一侧是 `fnv1a(agentId) % 13` 的坑位（或用户手挑的 avatar_slot），
+   这份 demo 是假数据，直接点名。**13 个坑位怎么落到这 11 个角色上是 #1345 还没定的事**：
+   确定对得上的只有 05→beret / 06→specs / 07→scholar / 08→bob / 09→sage，
+   02 / 03 / 11 / 13 在 ottoFace 里没有对应的角色 —— 改坑位数就是给所有没手动挑过头像的
+   agent 换一张脸，所以那条 issue 的建议是坑位不动、缺的补出来。这里先按长相点名。 */
+const AGENT_SLOT={'管理员':'otto','开发':'specs','设计':'beret','运维':'stoic','门店':'mane','新':'grin'};
+const faceOf=(k,txt,sz=20,st='idle')=>{
+  const ch=AGENT_SLOT[k];
+  // 智能体画 ottoFace（#1307/#1345）。缺省 `idle` —— 它是那张状态表里唯一没有角标的
+  // 一格，所以不声称任何事；名册那一栏本来就查不到谁在跑（#722 / #1282），也不跑 rAF
+  if(ch!==undefined) return `<canvas class="face" data-ch="${ch}" data-st="${st}" data-sz="${sz}"`+
+    `${st!=='idle'?' data-anim="1"':''} style="height:${sz}px"></canvas>`;
+  // 人的兜底是**中性**的一格首字母，不是哈希彩色：彩色只会在这张列表里跟状态色抢话
   return `<span class="face" style="background:var(--secondary);color:var(--fg);width:${sz}px;height:${sz}px;font-size:${Math.round(sz*.42)}px;font-weight:600">${txt}</span>`;
 };
-/* ═══════════════════════════════════════════════════════════════════════
-   假数据。一条主线：Stan 有五只智能体，它们共用一台云端电脑（ADR-0232 的
-   「一容器一卷」），「开发」此刻在跑，「运维」卡在一次要人点的登录上。
-
-   ⚠ 这份 App 里**没有任务、没有项目、没有团队**。第一层的主语只有一个：
-   「我有哪几只智能体」。群聊是把其中几只放进同一条线，不是第四个概念。
-   ═══════════════════════════════════════════════════════════════════════ */
 const DATA={
  me:{name:'Stan',ini:'S',plan:'Max'},
  /* 名册的顺序**跟名册走、不跟最近活动走**（桌面 lib/agentRoster.ts 的 rosterRows）：
@@ -2410,7 +2305,7 @@ SCREENS.callGroup={label:'语音 · 一群',grp:'语音',render:()=>{
      <div class="t2"><span data-el="tmr">02:41</span> · 三只 + 你</div></div>
    <div class="grid" data-el="grid">
      ${ag.map((a,i)=>`<div class="tile ${a.s==='正在说'?'speaking':''}" data-n="${a.n}">
-       ${faceOf(a.n,a.n[0],62,a.s==='正在说'?'speaking':a.s==='在想'?'composing':'listening')}
+       ${faceOf(a.n,a.n[0],62,a.s==='正在说'?'speaking':a.s==='在想'?'thinking':'listening')}
        <div class="nm">${a.n}</div><div class="st">${a.s}</div></div>`).join('')}
    </div>
    <div class="callSub"><div class="them" data-el="them">开发：changelog 写完了，等 edge 绿了我就发桌面版。</div>
@@ -2564,51 +2459,45 @@ SCREENS.search={label:'搜索',grp:'账号',render:()=>`
 /* #1307 要求的那个「开文件即可看、可对外展示」的陈列馆，塞进机身里这一屏。
    上半是 13 个坑位**新旧并排** —— 要确认的正是「谁的脸都没换，只是会动了」；
    下半是一只角色走完 16 个态 */
-SCREENS.faces={label:'13 个坑位 + 16 个态',grp:'形象',render:()=>{
- const names=['短平头','蘑菇头','刺猬头','背头','贝雷帽','眼镜平头','眼镜分头','波波头',
-              '光头胡子','长直发','马尾发带','卷发','乱发胡茬'];
- const states=[['plain','名册上（不表态）'],['idle','空闲'],['queued','排队中'],['composing','思考中'],
-   ['searching','检索中'],['working','执行中'],['solving','作答中'],['weaving','压缩中'],
-   ['waiting','等你处理'],['listening','在听'],['speaking','在说话'],['done','完成'],
-   ['failed','出错'],['limited','限流等待'],['frozen','冻结'],['offline','离线']];
- return `${nav({title:'像素形象',large:true,sub:'13 个坑位 <s>·</s> 16 个态',back:'智能体'})}
+SCREENS.faces={label:'11 个角色 + 15 个态',grp:'形象',render:()=>`
+ ${nav({title:'像素形象',large:true,sub:'ottoFace <s>·</s> 11 个角色 <s>·</s> 15 个态',back:'智能体'})}
  <div class="body">${navPad(true)}
-   <div class="grouphdr">13 个坑位 · 左边是今天的 PNG，右边是会动的那版</div>
-   <div class="card" style="padding:12px 10px">
-     <div style="display:flex;flex-wrap:wrap;gap:10px 6px;justify-content:center">
-       ${names.map((n,i)=>`<div style="width:74px;text-align:center">
-         <div style="display:flex;gap:4px;justify-content:center;align-items:center">
-           <img src="${IMG.av[i]}" alt="" style="width:30px;height:30px;border-radius:50%;opacity:.55">
-           <canvas class="face" data-ch="${i}" data-st="plain" data-sz="34"
-             style="width:34px;height:34px;border-radius:50%"></canvas>
-         </div>
-         <div class="t-foot dim" style="margin-top:4px;font-size:10.5px">${String(i+1).padStart(2,'0')} ${n}</div>
+   <div class="grouphdr">11 个角色 · 花名册那一侧的顺序，Otto 排第一</div>
+   <div class="card" style="padding:14px 8px">
+     <div style="display:flex;flex-wrap:wrap;gap:12px 2px;justify-content:center">
+       ${FACE_CHARACTERS.map(c=>`<div style="width:76px;text-align:center">
+         <canvas class="face" data-ch="${c.id}" data-st="idle" data-sz="46" style="height:46px"></canvas>
+         <div class="t-foot dim" style="margin-top:4px;font-size:10.5px">${c.name}</div>
        </div>`).join('')}
      </div>
    </div>
-   <div class="grouphdr">16 个态 · 「等你处理」是唯一横着摆的，「排队中」是唯一一格都不动的</div>
-   <div class="card" style="padding:12px 10px">
-     <div style="display:flex;flex-wrap:wrap;gap:12px 4px;justify-content:center">
-       ${states.map(([id,lb])=>`<div style="width:78px;text-align:center">
-         <canvas class="face" data-ch="5" data-st="${id}" data-sz="44" data-anim="1"
-           style="width:44px;height:44px;border-radius:50%"></canvas>
-         <div class="t-foot dim" style="margin-top:5px;font-size:10.5px;line-height:13px">${lb}</div>
+   <div class="groupftr">13 个坑位怎么落到这 11 个角色上，是 #1345 还没定的事 ——
+     确定对得上的只有 05→beret / 06→specs / 07→scholar / 08→bob / 09→sage。</div>
+
+   <div class="grouphdr">15 个态 · 全是那一侧那张表原装的</div>
+   <div class="card" style="padding:14px 8px">
+     <div style="display:flex;flex-wrap:wrap;gap:14px 2px;justify-content:center">
+       ${FACE_STATE_LIST.map(id=>`<div style="width:76px;text-align:center">
+         <canvas class="face" data-ch="specs" data-st="${id}" data-sz="46" data-anim="1" style="height:46px"></canvas>
+         <div class="t-foot dim" style="margin-top:4px;font-size:10.5px;line-height:13px">${FACE_STATES[id].zh}</div>
        </div>`).join('')}
      </div>
    </div>
-   <div class="grouphdr">扫一眼够不够分得出来（40px 与 24px）</div>
+   <div class="groupftr">「等你处理」是唯一横着摆的（它必须压过「在跑」）；「排队中」是唯一一格都不动的
+     （一个 token 都还没跑，动起来就是撒谎的勾）；「冻结」是唯一整张脸灰下去的（它不会自己好）。</div>
+
+   <div class="grouphdr">扫一眼够不够分得出来（46 / 28 / 20px）</div>
    <div class="card" style="padding:14px 10px">
-     ${[40,24].map(sz=>`<div style="display:flex;gap:8px;justify-content:center;align-items:center;margin-bottom:10px">
-       ${['working','waiting','done','failed','speaking','queued'].map(st=>`
-         <canvas class="face" data-ch="5" data-st="${st}" data-sz="${sz}" data-anim="1"
-           style="width:${sz}px;height:${sz}px;border-radius:50%"></canvas>`).join('')}
+     ${[46,28,20].map(sz=>`<div style="display:flex;gap:10px;justify-content:center;align-items:center;margin-bottom:12px">
+       ${['working','waiting','done','failed','speaking','queued','frozen'].map(st=>`
+         <canvas class="face" data-ch="specs" data-st="${st}" data-sz="${sz}" data-anim="1" style="height:${sz}px"></canvas>`).join('')}
      </div>`).join('')}
-     <div class="t-foot dim" style="text-align:center">顺序：执行中 · 等你 · 完成 · 出错 · 在说话 · 排队中</div>
+     <div class="t-foot dim" style="text-align:center">顺序：执行中 · 等你 · 完成 · 出错 · 在说话 · 排队中 · 冻结</div>
    </div>
-   <div class="groupftr">角标的意思：蓝=在干活 · 琥珀=要你 · 绿=成了 · 红=崩了 · 青=语音 · 灰=静默。
-     名册上那一列**一个角标都不画** —— 那张表里查不到谁在跑。</div>
+   <div class="groupftr">名册那一栏画的是 <b>idle</b> 的静止一帧：它是这张表里唯一没有角标的一格，
+     所以不声称任何事 —— 那一栏本来就查不到谁在跑。会动的只有会话头部与通话格子。</div>
    <div style="height:34px"></div>
- </div>`}};
+ </div>`};
 
 /* ═══════════════════════════════════════════════════════════════════════
    抽屉 / 动作 / 索引栏
