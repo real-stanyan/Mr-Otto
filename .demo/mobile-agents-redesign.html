@@ -1241,8 +1241,15 @@ function mountFace(cv){
   if(cv.dataset.anim==='1') FACE_LIVE.add(cv); else FACE_LIVE.delete(cv);
 }
 function mountFaces(root){ (root||document).querySelectorAll?.('canvas[data-ch]').forEach(mountFace); }
+/* 一墙脸一起动的时候，**按 25fps 走而不是每一帧都重画**：这些位移全是整格的
+   （亚像素平滑会把像素画糊掉，所以那一侧本来就只走整格），60fps 里有一多半帧画出来
+   与上一帧逐像素相同 —— 那是白烧的 CPU。陈列馆那一屏同时有三十多张脸在动，这一档
+   收下去之后它们才都跟得上 */
+const FACE_FPS=25; let faceLast=0;
 (function faceLoop(){ requestAnimationFrame(faceLoop);
   const t=performance.now();
+  if(t-faceLast<1000/FACE_FPS) return;
+  faceLast=t;
   FACE_LIVE.forEach(cv=>{ if(!cv.isConnected){FACE_LIVE.delete(cv);return} renderFaceOnce(cv,t); });
 })();
 new MutationObserver(ms=>ms.forEach(m=>m.addedNodes.forEach(n=>{
@@ -1260,12 +1267,17 @@ new MutationObserver(()=>mountFaces(document))
    02 / 03 / 11 / 13 在 ottoFace 里没有对应的角色 —— 改坑位数就是给所有没手动挑过头像的
    agent 换一张脸，所以那条 issue 的建议是坑位不动、缺的补出来。这里先按长相点名。 */
 const AGENT_SLOT={'管理员':'otto','开发':'specs','设计':'beret','运维':'stoic','门店':'mane','新':'grin'};
-const faceOf=(k,txt,sz=20,st='idle')=>{
+const faceOf=(k,txt,sz=20,st='idle',anim)=>{
   const ch=AGENT_SLOT[k];
-  // 智能体画 ottoFace（#1307/#1345）。缺省 `idle` —— 它是那张状态表里唯一没有角标的
-  // 一格，所以不声称任何事；名册那一栏本来就查不到谁在跑（#722 / #1282），也不跑 rAF
+  /* 智能体画 ottoFace（#1307/#1345）。缺省 `idle` —— 它是那张状态表里唯一**没有角标**
+     的一格，所以画它不声称任何事：名册那一栏查不到谁在跑（#722 / #1282），能画的只有
+     一张活着的脸。所以这两件事要分开看 ——
+     · **角标 = 声称**（在干活 / 要你 / 崩了…）：查不到就不许画。
+     · **眨眼与呼吸 = 活着**：它不回答「此刻在干嘛」，只是让这张脸不像一张遗照。
+     动不动由调用点给：名册、群头上那一摞、开局卡那张大脸会动；时间线上那些说过话
+     的小脸不动（那是历史不是状态，一屏几十张一起眨就成了噪音）。 */
   if(ch!==undefined) return `<canvas class="face" data-ch="${ch}" data-st="${st}" data-sz="${sz}"`+
-    `${st!=='idle'?' data-anim="1"':''} style="height:${sz}px"></canvas>`;
+    `${(anim??st!=='idle')?' data-anim="1"':''} style="height:${sz}px"></canvas>`;
   // 人的兜底是**中性**的一格首字母，不是哈希彩色：彩色只会在这张列表里跟状态色抢话
   return `<span class="face" style="background:var(--secondary);color:var(--fg);width:${sz}px;height:${sz}px;font-size:${Math.round(sz*.42)}px;font-weight:600">${txt}</span>`;
 };
@@ -1802,13 +1814,13 @@ function playRunMulti(el,steps){
   step();
   const prev=el._stop; el._stop=()=>{ clearTimeout(timer); prev&&prev(); };
 }
-const stackFaces=(ids,sz=26)=>`<span class="stack">${ids.slice(0,3).map(i=>{const b=botOf(i);
-  return b?faceOf(b.face,b.name[0],sz):''}).join('')}</span>`;
+const stackFaces=(ids,sz=26,anim=false)=>`<span class="stack">${ids.slice(0,3).map(i=>{const b=botOf(i);
+  return b?faceOf(b.face,b.name[0],sz,'idle',anim):''}).join('')}</span>`;
 
 /** 名册一行。右边那一列只放**表里真有**的两样：时间、@ 我几次 */
 function botRow(b,fresh){
   return `<div class="row press brow" data-go="botChat" data-p='{"id":"${b.id}"}'${fresh?' data-fresh="1"':''}>
-    ${faceOf(b.face,b.name[0],38)}
+    ${faceOf(b.face,b.name[0],38,'idle',true)}
     <span class="grow">
       <div class="nm"><span class="n">${b.name}</span><span class="rl">${b.role}</span></div>
       <div class="ls">${b.last}</div>
@@ -1821,7 +1833,7 @@ function botRow(b,fresh){
 }
 function groupRow(g){
   return `<div class="row press brow" data-go="groupChat" data-p='{"id":"${g.id}"}'>
-    ${stackFaces(g.members,28)}
+    ${stackFaces(g.members,28,true)}
     <span class="grow">
       <div class="nm"><span class="n">${g.name}</span><span class="rl">${g.members.map(i=>botOf(i).name).join('、')}</span></div>
       <div class="ls">${g.last}</div>
@@ -2001,7 +2013,7 @@ SCREENS.botAuth={label:'私聊 · 要你登录一次',grp:'智能体',render:()=
    接力那一行是**群事实**（agent_relay），不是谁的发言 —— 所以居中、没有气泡 */
 SCREENS.groupChat={label:'群聊',grp:'智能体',render:(p)=>{
  const g=DATA.groups.find(x=>x.id===(p.id||'g1'))||DATA.groups[0];
- return `${chatNav({face:stackFaces(g.members,26),
+ return `${chatNav({face:stackFaces(g.members,26,true),
    name:g.name,sub:`${g.members.map(i=>botOf(i).name).join('、')}`,right:`
    <button class="navbtn icon" data-act="voice" data-v="group" aria-label="语音">${I('phone',20,2)}</button>
    <button class="navbtn icon" data-sheet="groupMenu">${I('dots',21,2.4)}</button>`})}
@@ -2056,7 +2068,7 @@ SCREENS.newBot={label:'建一只 · 跟管理员说',grp:'建与改',render:()=>
  <div class="body">${navPad(false)}
    <div class="tl">
      <div style="align-self:center;text-align:center;padding:14px 26px 4px">
-       ${faceOf('管理员','管',58)}
+       ${faceOf('管理员','管',58,'idle',true)}
        <h3 style="margin:12px 0 6px;font-size:19px;font-weight:650;letter-spacing:-.3px">要一只干什么的？</h3>
        <p style="margin:0;font-size:14px;line-height:20px;color:var(--mutedFg)">
          说一句就行。名字、提示词、给它哪几个应用，我来定，定完给你看一眼。</p>
@@ -2075,7 +2087,7 @@ SCREENS.newBot={label:'建一只 · 跟管理员说',grp:'建与改',render:()=>
 SCREENS.newBotForm={label:'建一只 · 直接填表',grp:'建与改',render:()=>`
  ${nav({title:'新的智能体',back:'管理员',right:`<button class="navbtn" style="font-weight:650" data-act="created">建</button>`})}
  <div class="body">${navPad(false)}
-   <div style="text-align:center;padding:4px 0 14px">${faceOf('新','新',66)}
+   <div style="text-align:center;padding:4px 0 14px">${faceOf('新','新',66,'idle',true)}
      <div class="t-foot dim" style="margin-top:8px">脸是按它的 id 派生的，建完就定了</div></div>
    <div class="field"><label>叫什么</label><input class="input" placeholder="比如：发票"></div>
    <div class="field"><label>干什么的（这一句它自己看得见）</label>
@@ -2105,7 +2117,7 @@ SCREENS.botSettings={label:'改一只',grp:'建与改',render:(p)=>{
  const b=botOf(p.id||'dev')||DATA.bots[1];
  return `${nav({title:b.name,back:'返回',right:`<button class="navbtn" style="font-weight:650" data-back>存</button>`})}
  <div class="body">${navPad(false)}
-   <div style="text-align:center;padding:4px 0 16px">${faceOf(b.face,b.name[0],66)}</div>
+   <div style="text-align:center;padding:4px 0 16px">${faceOf(b.face,b.name[0],66,'idle',true)}</div>
    <div class="field"><label>叫什么</label><input class="input" value="${b.name}"></div>
    <div class="field"><label>干什么的</label><input class="input" value="${b.role}"></div>
    <div class="field"><label>还有什么要交代的</label>
@@ -2781,6 +2793,7 @@ function buildRail(){
    <div class="railbtns">
      <button data-r="skin">换皮：<b data-el="skin">Grok</b></button>
      <button data-r="theme">浅色 / 深色</button>
+     <button data-r="run">跑一轮给我看</button>
      <button data-r="need">弹一次登录请求</button>
      <button data-r="mention">弹 @ 名册</button>
    </div>
@@ -2798,6 +2811,8 @@ function buildRail(){
      名册行上<b>不画「在跑没在跑」</b>：清单那张表里没有这一格，画出来是猜的。<br><br>
      私聊里<b>没有审批卡</b>（个人主场一律放行，ADR-0298）；会出现的是「要你登录一次」——
      那不是批准，是一件只有你做得了的事。<br><br>
+     脸上那一层：**角标 = 声称**（在干活 / 要你 / 崩了…），查不到就不画；
+     **眨眼与呼吸 = 活着**，它不回答「此刻在干嘛」。所以名册上那排脸会眨眼，但一个角标都没有。<br><br>
      动效一律临界阻尼（ζ=1），只有松手带动量的那一下给回弹（抽屉 ζ=0.82）。
    </div>`;
   syncSkinLabel();
@@ -2829,6 +2844,8 @@ railEl.addEventListener('click',e=>{
   } else if(b.dataset.r==='mention'){          // 真机上是在群聊输入框里打 @ 弹出来的
     if(stack[stack.length-1]?.id!=='groupChat'){ closeSheet(true); resetTo('bots'); go('groupChat',{id:'g1'}); }
     SHEETS.mention();
+  } else if(b.dataset.r==='run'){        // 私聊里那一轮活：排队 → 思考 → 检索 → 执行 → 作答 → 完成
+    closeSheet(true); resetTo('bots'); go('botChat',{id:'dev'});
   } else if(b.dataset.r==='need'){
     if(stack[stack.length-1]?.id!=='botAuth'){ closeSheet(true); resetTo('bots'); go('botAuth',{}); }
     SHEETS.signinReq();
