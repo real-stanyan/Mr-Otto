@@ -132,6 +132,50 @@ describe("openGroupChat（#1280）", () => {
   });
 });
 
+// #1301：`cloudSession.chat` 只随 welcome 到达，而那是十秒以上的窗口——在它到
+// 之前 null 被读成「团队会话」，主场里的聊天于是画成团队壳（一颗点了不生效的
+// 「免审批」开关 + 内部名「我的智能体」）。种子把这个窗口关掉
+describe("打开时先种 cloudSession.chat（#1301）", () => {
+  const GROUP = {
+    id: "g-1", title: "上线冲刺", publisherUid: "me", archived: false, updatedTs: 3,
+    participantUids: [], chatKind: "group" as const, agentIds: ["admin", "a_000000000001"],
+  };
+  const TEAM = {
+    id: "t-1", title: "周会", publisherUid: "me", archived: false, updatedTs: 2,
+    participantUids: [], chatKind: null, agentIds: [],
+  };
+
+  it("已有的聊天：join 之前那一格已经是「群聊」了，不等 welcome", async () => {
+    seed({ cloudSessionList: { home: [GROUP] } });
+    await useChat.getState().openGroupChat("g-1");
+    expect(useChat.getState().cloudSession?.chat).toEqual({
+      kind: "group", agentIds: ["admin", "a_000000000001"],
+    });
+  });
+
+  it("团队云会话：null（清单那一行说得清楚），团队壳照旧立刻画得出来", async () => {
+    seed({ cloudSessionList: { home: [TEAM] } });
+    await useChat.getState().openCloudSession("home", "t-1", undefined, "周会");
+    expect(useChat.getState().cloudSession?.chat).toBeNull();
+  });
+
+  it("清单里没有这一行：undefined = 还不知道，**不退成团队会话**", async () => {
+    seed({ cloudSessionList: { home: [] } });
+    await useChat.getState().openCloudSession("home", "不认识", undefined, undefined);
+    expect(useChat.getState().cloudSession?.chat).toBeUndefined();
+  });
+
+  it("刚建出来的那一条：按递进去的 spec 种，不指望它已经进了清单", async () => {
+    stubBridge({
+      workspaceCloudCreate: vi.fn(async () => ({ ok: true, value: { sessionId: "new-dm" } })),
+    });
+    seed();
+    await useChat.getState().openAgentChat("a_000000000001");
+    await useChat.getState().createCloudSessionFromDraft("home", "你好");
+    expect(useChat.getState().cloudSession?.chat).toEqual({ kind: "dm", agentIds: ["a_000000000001"] });
+  });
+});
+
 describe("聊天草稿不串台（#1280）", () => {
   it("团队那颗 ＋ 开的草稿不带 chat（团队一字不变）", async () => {
     useChat.getState().startCloudDraft("team-1");

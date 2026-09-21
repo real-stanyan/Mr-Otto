@@ -1784,14 +1784,43 @@ describe("welcome.chat 进状态推送（#1280）", () => {
     expect(h.statuses.at(-1)).toMatchObject({ chat: { kind: "dm", agentIds: ["a_0123456789ab"] } });
   });
 
-  it("不带 chat：状态里整格不出（团队会话）", async () => {
+  it("不带 chat：状态里是 null（welcome 到了，说这是团队会话）", async () => {
     const h = harness();
     await h.client.join("w1", "cloud-s1");
     const t = h.transports[0]!;
     t.emitPeer();
     await tick();
     t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: null, ownerUid: "u2", modelRoute: null });
-    expect(h.statuses.at(-1)).not.toHaveProperty("chat");
+    expect(h.statuses.at(-1)).toHaveProperty("chat", null);
+  });
+
+  // 下面这两条是 #1301 改的那一格：原来这个用例断言的是「团队会话 = 整格不出」，
+  // 而「welcome 还没到」也是整格不出——两者在渲染层同一个答案，于是聊天页在
+  // welcome 之前画成团队壳。三态之后「缺席」专表「还不知道」
+  it("welcome 之前：整格不出（还不知道，**不是**团队会话）", async () => {
+    const h = harness();
+    await h.client.join("w1", "cloud-s1");
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    expect(h.statuses.length).toBeGreaterThan(0);
+    for (const s of h.statuses) expect(s).not.toHaveProperty("chat");
+  });
+
+  it("welcome 到了之后每一次推送都带着结论，不会退回「还不知道」", async () => {
+    const h = harness();
+    await h.client.join("w1", "cloud-s1");
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({
+      t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: null,
+      ownerUid: "u2", modelRoute: null, chat: { kind: "group", agentIds: ["admin"] },
+    });
+    await tick();
+    t.emitDown({ t: "backlog", events: [], done: true });
+    await tick();
+    expect(h.statuses.at(-1)).toMatchObject({ chat: { kind: "group", agentIds: ["admin"] } });
   });
 });
 

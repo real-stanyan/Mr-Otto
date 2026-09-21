@@ -3,6 +3,7 @@ import type { ChatRosterChangedEvent, SessionEvent } from "../../src/session/eve
 import {
   applyChatRosterEvent,
   chatRosterDiff,
+  chatRosterNow,
   chatRosterOf,
   narrowRoster,
   normalizeChatAgentIds,
@@ -109,5 +110,34 @@ describe("normalizeChatAgentIds", () => {
     ],
   ])("形状不对一律 null：%j", (raw) => {
     expect(normalizeChatAgentIds(raw, 1)).toBeNull();
+  });
+});
+
+// #1302：头部那排名字原来读 welcome 那份快照，改完名单一直是旧的
+describe("chatRosterNow", () => {
+  it("日志里有名单事件就它说了算，不看 welcome 那份快照", () => {
+    const events = [chatter(), rosterEvent(["admin"]), chatter()];
+    expect(chatRosterNow(events, ["admin", "a_0123456789ab"])).toEqual(["admin"]);
+  });
+
+  it("最后一条胜出（一条聊天里改了两次名单）", () => {
+    const events = [rosterEvent(["admin", "a_0123456789ab"]), rosterEvent(["admin"]), rosterEvent(["admin", "a_0123456789ac"])];
+    expect(chatRosterNow(events, ["admin"])).toEqual(["admin", "a_0123456789ac"]);
+  });
+
+  it("这一页一条名单事件都没有：退回快照，**不是** null", () => {
+    // 进房只拉尾巴（A6），聊了半年的线上名单事件多半落在窗口外面。
+    // 退回 null 的话 narrowRoster 不收窄 = 把一条私聊画成团队会话
+    expect(chatRosterNow([chatter(), chatter()], ["a_0123456789ab"])).toEqual(["a_0123456789ab"]);
+  });
+
+  it("团队会话：两边都没有名单这回事 = null", () => {
+    expect(chatRosterNow([chatter()], null)).toBeNull();
+  });
+
+  it("移空之后是空名单，不被当成「没改过」退回快照", () => {
+    // `[] ?? fallback` 是 `[]`——这条用例钉的是这个区别：空群是合法终局（0037 的
+    // CHECK 写的是 cardinality 0..6），退回快照会让最后一只永远摘不掉
+    expect(chatRosterNow([rosterEvent([])], ["admin"])).toEqual([]);
   });
 });
