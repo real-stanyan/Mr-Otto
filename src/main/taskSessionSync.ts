@@ -20,7 +20,7 @@ import type { EventStore, NewSessionEvent } from "../session/store.js";
 import { newSessionId } from "../shared/sessionId.js";
 import { retargetForImport } from "../shared/sessionPackage.js";
 import {
-  attachmentRefsOf, divergence, holderKindOf, isTaskSessionCreated, PEN_RENEW_MS, PEN_TTL_S, PEN_VERDICTS, PULL_PAGE,
+  attachmentRefsOf, divergence, holderKindOf, isCloudTaskSession, PEN_RENEW_MS, PEN_TTL_S, PEN_VERDICTS, PULL_PAGE,
   sliceBatches, TASK_EVENT_MAX_BYTES, type ExecutorKind, type HolderKind,
 } from "../shared/taskSync.js";
 import type { TaskSyncState } from "../shared/taskSyncState.js";
@@ -160,18 +160,20 @@ export function createTaskSessionSync(deps: TaskSessionSyncDeps): TaskSessionSyn
   const isTask = (id: string): boolean => {
     const cached = taskCache.get(id);
     if (cached !== undefined) return cached;
-    // 引用式分支（「回到这一步」，store.fork 的零拷贝那种）不上云（#1223 终审 C2）：它自己的第一条
-    // 原始行是 session_created{forkedFrom, seq = endSeq+1}，而 load() 扁平化后前缀是父会话的
-    // 0..endSeq——推上去的流里于是有**两条** session_created（seq 0 与 endSeq+1），0036 的
+    // 引用式分支（store.fork 的零拷贝那种）不上云（#1223 终审 C2）：它自己的第一条原始行是
+    // session_created{forkedFrom, seq = endSeq+1}，而 load() 扁平化后前缀是父会话的 0..endSeq
+    // ——推上去的流里于是有**两条** session_created（seq 0 与 endSeq+1），0036 的
     // 「session_created only at seq 0」判它 P0012 → freeze(forbidden)，这条会话永久冻结。
-    // 判在 isTask 里 = touched / backfill / deleted 一律当它不是任务会话（代价：任务会话的
-    // 「回到这一步」分支只在本机，spec §7）
-    if (deps.store.forkOrigin(id) !== null) {
+    // 判在 isTask 里 = touched / backfill / deleted 一律当它不是任务会话。
+    // ADR-0311 之后任务会话的「回到这一步」改走复制式，所以这条路只剩两种来客：项目会话的
+    // 分叉（本来就不上云），与 ADR-0311 之前留在本机的存量分叉（补不回去，只能继续不推）。
+    const origin = deps.store.forkOrigin(id);
+    if (origin !== null) {
       taskCache.set(id, false);
       return false;
     }
     const first = deps.store.load(id, { untilSeq: 0 })[0];
-    const v = isTaskSessionCreated(first);
+    const v = isCloudTaskSession(first, origin);
     if (first !== undefined) taskCache.set(id, v);
     return v;
   };

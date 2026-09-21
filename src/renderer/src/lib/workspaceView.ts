@@ -5,8 +5,9 @@
 // 三条易错规则钉在这里，不散在组件里：
 // · cloudState：自己贡献的行按 hostedServerIds（escrowSync 的托管箱清单）分
 //   三档——"ready"（含这个 serverId）/"off"（清单里没有）/"unknown"
-//   （hostedServerIds === null，渲染层还没有能读到这份清单的 IPC，见
-//   ConnectorsTab 的 TODO(#811)）。**"unknown" 不能塌成 "off"**：本仓 px
+//   （hostedServerIds === null = 箱子不在云端、或这一侧还没同步过；#815 M4
+//   之后渲染层读得到这份清单了，走 proxyStatus 的 hostedServerIds 那一格 +
+//   onProxyChanged 推送）。**"unknown" 不能塌成 "off"**：本仓 px
 //   一节的措辞纪律是「拿不到清单 ≠ 不可用」（同 hostStatusLine 的
 //   "断线但箱在说云端可用不说没连上"），把"不知道"说成"不可用"是一句
 //   平白的假阴性，会让用户去做不必要的排查。别人贡献的行恒 "ready" ——

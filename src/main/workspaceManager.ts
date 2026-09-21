@@ -31,7 +31,7 @@ import { ADMIN_AGENT_ID, agentNameConflict, normalizeAgentName, normalizeSandbox
 import { parseCreateAgentArgs, scanCreateAgentThreat, validateAgentPatch } from "../shared/createAgentDraft.js";
 import type { AgentToolAllow } from "../shared/agentToolAllow.js";
 import type { ProxyStoreData } from "./proxyStore.js";
-import { removeWorkspaceGrant, setWorkspaceGrant, workspaceGrantFor } from "./proxyStore.js";
+import { danglingWorkspaceGrants, removeWorkspaceGrant, setWorkspaceGrant, workspaceGrantFor } from "./proxyStore.js";
 import type { FriendsResult } from "./proxyManager.js";
 
 const NOT_SIGNED_IN = "还没登录";
@@ -222,6 +222,23 @@ export function createWorkspaceManager(deps: WorkspaceManagerDeps): WorkspaceMan
     async list() {
       return withSession(async (client, uid) => {
         const rows = await deps.listWorkspaces(client);
+        // 悬空授权的自动对账（#815 M7）：团队被别人解散、或我被踢出去时，本机台账上
+        // 那条 workspaceGrant 没有任何人会来清 —— `remove`/`leave` 只管我自己动手的
+        // 那两条路，全仓再没有第二处碰它。后果不只是台账脏：`buildEscrowDoc` 的
+        // wanted 集合含 workspaceGrants，所以那台 server（连同它的 OAuth 凭证）会
+        // **一直留在 edge 的托管箱里**，而 ADR-0197「零授权 = DELETE 整箱」那条撤销
+        // 级联的后半永远不触发。闸照旧拒（云端每次调用现判在籍），但箱子不该留着。
+        //
+        // 判据是 `rows`（`listWorkspaces` 的返回）**不是** snapshots：那条查询整体失败
+        // 时走不到这一行，而某个团队的明细拉不下来只会降级成占位快照、它的 id 仍然在
+        // rows 里 —— 「拿不到」不许当「被清空」。
+        const dangling = danglingWorkspaceGrants(deps.loadStore(), rows.map((r) => r.id));
+        if (dangling.length > 0) {
+          let next = deps.loadStore();
+          for (const g of dangling) next = removeWorkspaceGrant(next, g.workspaceId);
+          deps.saveStore(next);
+          deps.resyncEscrow();
+        }
         // N 个小团队各拉一次 fetchWorkspace——v1 规模小(每人在籍团队数
         // 位数级),够用;真变大了再批量,见 Task 8 brief。
         // allSettled 不是 all（#843 ②）：一个群的快照挂了（那次是生产库缺

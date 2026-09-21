@@ -218,3 +218,19 @@ export function attachmentRefsOf(e: SessionEvent): string[] {
 export function isTaskSessionCreated(first: SessionEvent | undefined): boolean {
   return first?.type === "session_created" && first.workspaceKind === "default" && first.spawnedBy === undefined;
 }
+
+/** 完整的「这条会话上不上云」——`isTaskSessionCreated` **加上**「它不是引用式分叉」（ADR-0311）。
+    两处消费方读同一份：同步层的 `isTask`（决定推不推）与 `rewindBranch`（决定「回到这一步」
+    落成复制式还是引用式）。各写一遍迟早分家，而分家的形状正是这条判据存在的理由 ——
+    引用式分叉扁平化之后有**两条** `session_created`（seq 0 是父会话的，endSeq+1 是自己的），
+    0036 的「session_created only at seq 0」判 P0012 把整条会话永久冻结。
+
+    注意 `first` 必须由 `load(id, { untilSeq: 0 })` 取：`load` 会沿 fork 链扁平化，所以对一条
+    引用式分叉它给出的是**父会话**那条 session_created —— 单看它会把分叉判成任务会话。
+    `forkOrigin` 那一半不是冗余，是这个判据的另一半。 */
+export function isCloudTaskSession(
+  first: SessionEvent | undefined,
+  forkOrigin: { sessionId: string; endSeq: number } | null
+): boolean {
+  return forkOrigin === null && isTaskSessionCreated(first);
+}
