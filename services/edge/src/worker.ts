@@ -15,7 +15,7 @@ import {
   workspaceIdsOf,
   type EscrowDoc, type PxAudit,
 } from "./px.js";
-import { createLlmGateway, upstreamKeyOf, type QuotaPort, type RouteRow } from "./llmGateway.js";
+import { createLlmGateway, parseRemaining, upstreamKeyOf, type QuotaPort, type RouteRow } from "./llmGateway.js";
 import {
   addonExpiresAt, addonMicro, addonSinceOf, hold as quotaHold, rebuild, rebuildWindowSince, release as quotaRelease,
   remaining as quotaRemaining, roll, settle as quotaSettle, view as quotaView,
@@ -471,10 +471,15 @@ export class Quota extends DurableObject<Env> {
 
     if (op === "hold") {
       const { plan } = await this.plan();
-      const r = quotaHold(await this.state(plan), plan, String(b.requestId), Number(b.estimateMicro), now);
+      const before = await this.state(plan);
+      const r = quotaHold(before, plan, String(b.requestId), Number(b.estimateMicro), now);
       if (r.ok) await this.ctx.storage.put("state", r.state);
+      // **额度快照跟着回执一起回**（#1304）：网关原来在这之后还要单独打一趟 `remaining`
+      // 问同一个 DO 手里同一份状态，而一趟 DO 往返的代价取决于请求从哪个 colo 进来
+      // （HEL 那侧实测 3.65s / SYD 0.35s）。被拒那三支也带 —— 那条路照样要回额度头
+      const remaining = { ...quotaRemaining(r.ok ? r.state : before, plan, now), plan: plan?.planId ?? null };
       // 被拒的那三支形状就是 HoldOutcome（code/window/resetAt），原样回
-      return json(r.ok ? { ok: true, chargedTo: r.chargedTo } : r);
+      return json(r.ok ? { ok: true, chargedTo: r.chargedTo, remaining } : { ...r, remaining });
     }
 
     if (op === "settle") {
@@ -487,7 +492,11 @@ export class Quota extends DurableObject<Env> {
       await this.ctx.storage.put("state", r.state);
       // #863：这笔成本落进了哪扇 5h 窗——只有真有钱进窗时才带（addon 没溢出就是 null），
       // usage_event 记下它，冷启动重建按锚算窗，不再按事件链猜
-      return json({ ok: true, chargedTo: r.hold.chargedTo, windowOpenAt: r.windowMicro > 0 ? r.state.open5hAt : null });
+      return json({
+        ok: true, chargedTo: r.hold.chargedTo, windowOpenAt: r.windowMicro > 0 ? r.state.open5hAt : null,
+        // 同 hold：省掉网关紧接着那一趟 `remaining`（#1304）
+        remaining: { ...quotaRemaining(r.state, plan, now), plan: plan?.planId ?? null },
+      });
     }
 
     if (op === "release") {
@@ -579,15 +588,19 @@ function quotaPort(env: Env): QuotaPort {
   return {
     async hold(uid, requestId, estimateMicro) {
       const r = await quotaCall(env, uid, "hold", { requestId, estimateMicro });
-      if (r.ok === true) return { ok: true, chargedTo: r.chargedTo === "addon" ? "addon" : "window" };
+      const remaining = parseRemaining(r.remaining);
+      if (r.ok === true) return { ok: true, chargedTo: r.chargedTo === "addon" ? "addon" : "window", ...(remaining ? { remaining } : {}) };
       if (r.code === "quota_exhausted") {
-        return { ok: false, code: "quota_exhausted", window: r.window === "week" ? "week" : "5h", resetAt: Number(r.resetAt) };
+        return {
+          ok: false, code: "quota_exhausted", window: r.window === "week" ? "week" : "5h", resetAt: Number(r.resetAt),
+          ...(remaining ? { remaining } : {}),
+        };
       }
-      return { ok: false, code: r.code === "no_subscription" ? "no_subscription" : "too_many_inflight" };
+      return { ok: false, code: r.code === "no_subscription" ? "no_subscription" : "too_many_inflight", ...(remaining ? { remaining } : {}) };
     },
     async settle(uid, requestId, meta) {
       const r = await quotaCall(env, uid, "settle", { requestId, costMicro: meta.costMicro });
-      if (r.ok !== true) return; // 没有挂着的 hold（重复 settle / 已释放）：不记账，幂等
+      if (r.ok !== true) return null; // 没有挂着的 hold（重复 settle / 已释放）：不记账，幂等
       const chargedTo = r.chargedTo === "addon" ? "addon" : "window";
       const windowOpenAt = typeof r.windowOpenAt === "number" && Number.isFinite(r.windowOpenAt) ? r.windowOpenAt : null;
       try {
@@ -599,11 +612,12 @@ function quotaPort(env: Env): QuotaPort {
         // 少扣对用户有利，回滚才会把「已经给出去的内容」变成既没扣钱也没记录
         console.error(`usage_event 落库失败（${uid}/${requestId}）：${err instanceof Error ? err.message : String(err)}`);
       }
+      return parseRemaining(r.remaining);
     },
     async release(uid, requestId) { await quotaCall(env, uid, "release", { requestId }); },
     async remaining(uid) {
       const r = await quotaCall(env, uid, "remaining", {});
-      return { h5: Number(r.h5), week: Number(r.week), addon: Number(r.addon), plan: typeof r.plan === "string" ? r.plan : null };
+      return parseRemaining(r) ?? { h5: 0, week: 0, addon: 0, plan: null };
     },
   };
 }
