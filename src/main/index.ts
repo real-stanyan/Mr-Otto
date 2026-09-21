@@ -38,6 +38,7 @@ import { createSpeechBridge, type SpeechCommand } from "./speechBridge.js";
 import { resolveSpeechBinPath } from "./speechBinPath.js";
 import { createBrowserHub } from "./browserHub.js";
 import { createMcpHub } from "./mcpHub.js";
+import { createResidueQueries } from "./residueQueries.js";
 import { configDir } from "./configDir.js";
 import { trafficLightPosition } from "./trafficLights.js";
 import { defaultWindowSize } from "./windowSize.js";
@@ -73,8 +74,7 @@ import { loadUserHooks } from "./userHooksStore.js";
 import { buildUserToolHooks } from "./userToolHooks.js";
 import { createLocalWorld } from "../world/localWorld.js";
 import { LiveGroupRegistry } from "../world/liveGroups.js";
-import { commandMatches, diffResidue, mergeResidue, type ResidueItem, type CleanupResult } from "../shared/residue.js";
-import { pendingResidue } from "../session/residueProjection.js";
+import { commandMatches, diffResidue, type CleanupResult } from "../shared/residue.js";
 import { primeLoginShellPath } from "../world/loginShellEnv.js";
 import { findProjectInstructions } from "./projectInstructions.js";
 import { loadAutoCompact, saveAutoCompact } from "./autoCompactStore.js";
@@ -1895,41 +1895,18 @@ void app.whenReady().then(() => {
     return r.stdout.split("\n").some((line) => commandMatches(label, line));
   };
 
-  /** 上次退出时没清干净的残留（issue #759）：全部会话（归档的也算）的
-      residue_detected 减 residue_cleaned 差集，逐条探活后剩下的那些。
-      日志是唯一事实来源——"进程还活着吗"重放不出来，所以差集之后还要现探一次。
-      只探进程组（groupStillIs：存活 + 身份核对）；模拟器/端口原样留着:
-      现拍一次 simctl/lsof 是异步的,而 bootInfo 是同步的、被三处调用,为一行
-      可能陈旧的模拟器把整条 boot 链改成异步不划算——多显示一条让用户手动清掉
-      的行,比漏报强。
-      按类型取事件而不是 store.load 整份日志：残留事件天然稀疏,而
-      (session_id, type, seq) 上有索引；load 整份会把每个会话的全部 JSON 都
-      解一遍,开机路径上付不起 */
-  const pendingResidueNow = (): ResidueItem[] => {
-    const out: ResidueItem[] = [];
-    // **归档的会话也要扫**：残留是 app 级的（进程组/模拟器/端口都不属于哪个
-    // 会话），跟会话收没收起来无关。而且 ports/simulators 条目的**唯一**来源
-    // 就是归档那一刻的全量 diff——那条 residue_detected 恰恰写在刚归档的会话
-    // 上，滤掉归档会话等于这一类残留永远重放不出来，用户没当场处理就永久丢。
-    // **不走 `store.sessions()`**（#780 M4）：它只藏了一半——用户归档的那些照常返回、
-    // 带 archived 标志，而**系统**归档的（reason 缺席或 "system"，子会话收尾走的就是
-    // 这条）整个不出现在返回值里。按它遍历的话，那批会话上落的残留一条都重放不出来，
-    // 而失败是无声的：清单里少几条，看起来和「本来就没有」一模一样
-    for (const sessionId of store.sessionIdsWithEvent("residue_detected")) {
-      // 两类事件按 seq 归并回时间序：pendingResidue 是按顺序消费的
-      // （detected 落进表、cleaned 从表里删），顺序错了差集就错
-      const evs = [
-        ...store.eventsOfType(sessionId, "residue_detected"),
-        ...store.eventsOfType(sessionId, "residue_cleaned"),
-      ].sort((a, b) => a.seq - b.seq);
-      for (const item of pendingResidue(evs)) {
-        // 进程组要过身份核对：光看 pgid 还在会把回收给别人的号当成自己的残留
-        if (item.detector === "process_groups" && !groupStillIs(Number(item.id), item.label)) continue;
-        out.push(item);
-      }
-    }
-    return out;
-  };
+  /** 残留清单的四个查询（issue #759 / #780 I3-I5）：本体搬去 `main/residueQueries.ts`，
+      这里只剩接线。搬家的理由写在那个文件的头注——留在这个装配根里，它们唯一可能的
+      执行覆盖是读源码的断言，而这一族坏掉的样子都是无声的（少扫几个会话 = 清单里
+      少几条，和「本来就没有」长得一样）。
+      `residueCapOf` 递的是**这个会话自己**那份能力，不是下面 `residueCapFor` 那条
+      app 级退路：基线是会话级的，拿 A 的基线减 B 的现场得到的不是任何人的残留 */
+  const { pendingResidueNow, residueListNow, residueCleanPool } = createResidueQueries({
+    store,
+    groupStillIs,
+    residueCapOf: (sessionId) => agents.get(sessionId)?.world.residue,
+    escapedGroups: () => liveGroups.escaped().map((g) => ({ pgid: g.pgid, cmd: g.cmd })),
+  });
 
   /** 残留清理能力是 **app 级**的（createLocalResidue 只吃那一份全局
       liveGroups 登记表，跟哪个会话无关），但它挂在每个会话的 world 上。
@@ -1939,56 +1916,6 @@ void app.whenReady().then(() => {
   const residueCapFor = (sessionId: string): ResidueCapability | undefined =>
     agents.get(sessionId)?.world.residue ??
     [...agents.values()].map((a) => a.world.residue).find((c) => c !== undefined);
-
-  /** 「这个会话此刻的现场 diff」：baseline 快照 vs 此刻快照 + 还在出走的进程组。
-      **没有 baseline 就不做**（review I5）：原来兜底成 `{ts:0,simulators:[],ports:[]}`
-      的空快照，等于宣称"这台机器开机时一个端口一个模拟器都没有"——整机的
-      LISTEN 端口和 booted 模拟器全被算成本会话新增的残留，进了一个默认勾选、
-      一按就清的清单。归档路径（archiveSession）本来就有这道守卫，这里补齐 */
-  const currentResidueDiff = async (sessionId: string): Promise<ResidueItem[]> => {
-    const residueCap = agents.get(sessionId)?.world.residue;
-    if (!residueCap) return [];
-    const baseline = store.lastOfType(sessionId, "residue_baseline");
-    if (baseline?.type !== "residue_baseline") return [];
-    const now = await residueCap.snapshot();
-    return diffResidue(
-      baseline.snapshot,
-      now,
-      liveGroups.escaped().map((g) => ({ pgid: g.pgid, cmd: g.cmd }))
-    );
-  };
-
-  /** residueList 的"此刻可见清单"（issue #759）：现查（baseline diff 现拍现算）
-      与日志重放（pendingResidue）合并，现查优先（mergeResidue，issue #759
-      Task 7）——重放条目是落盘那一刻的旧快照，现查是这一刻的真实现场，两边
-      打架时以看得见的那份为准。
-      world 无 residue 能力或会话未激活 → 空数组，同 liveBackgroundTasks 语义 */
-  const residueListNow = async (sessionId: string): Promise<ResidueItem[]> => {
-    if (!agents.get(sessionId)?.world.residue) return [];
-    const current = await currentResidueDiff(sessionId);
-    // 只看这一个会话的 detected/cleaned（本方法是"这个会话此刻的清单"，
-    // 不是 pendingResidueNow 那种 app 级全量扫描）
-    const evs = [
-      ...store.eventsOfType(sessionId, "residue_detected"),
-      ...store.eventsOfType(sessionId, "residue_cleaned"),
-    ].sort((a, b) => a.seq - b.seq);
-    const replayed = pendingResidue(evs).filter(
-      (item) => item.detector !== "process_groups" || groupStillIs(Number(item.id), item.label)
-    );
-    return mergeResidue(current, replayed);
-  };
-
-  /** residueClean 的匹配池（review I3）：**app 级**，与 pendingResidueNow 同源。
-      为什么不能复用 residueListNow：那份只重放**这一个会话**的
-      detected/cleaned，而弹窗里的条目是 app 级的（归档会话落的那批、别的
-      会话落的那批都在里面）——按会话级清单去匹配，跨会话的 id 一条都对不上，
-      targets 是空数组、循环一圈不做事，UI 那边 `res.every(...)` 对空数组恒真
-      于是报"清理成功"。现查那部分仍然只能问当前会话（baseline 是会话级的），
-      合并时现查优先，同 mergeResidue 的语义 */
-  const residueCleanPool = async (sessionId: string): Promise<ResidueItem[]> => {
-    const current = await currentResidueDiff(sessionId);
-    return mergeResidue(current, pendingResidueNow());
-  };
 
   // 「上次退出没清的残留」只报一次（issue #759）：bootInfo() 有三个调用方
   // （boot / startSession / resumeSession），而这个字段的语义是**上次**退出
