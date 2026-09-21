@@ -43,7 +43,7 @@ import { trafficLightPosition } from "./trafficLights.js";
 import { defaultWindowSize } from "./windowSize.js";
 import { connectMcpClient, createOAuthProvider, authorizeMcpServer } from "./mcpClient.js";
 import { loadMcpConfig, saveMcpConfig } from "./mcpConfig.js";
-import { readMcpAuth, writeMcpAuth, clearMcpAuth, dropMcpAuthClientRegistration } from "./mcpAuthStore.js";
+import { readMcpAuth, writeMcpAuth, clearMcpAuth, dropMcpAuthClientRegistration, setMcpManualClient } from "./mcpAuthStore.js";
 import { searchMcpRegistry } from "./mcpRegistry.js";
 import { createWebContentsViewHandle } from "./webContentsViewFactory.js";
 import { EventStore, type SessionSummary } from "../session/store.js";
@@ -1546,7 +1546,16 @@ void app.whenReady().then(() => {
   // 桥上四个读写方法共用同一份快照形状:server 清单 + 这份配置文件解析阶段
   // 的人话错误(review finding 4——一份 mcp.json 坏了不该连原因都传不到
   // 设置页,即便 Task 8/9 那张表本次没开工,这份走出去的形状也不该是错的)
-  const mcpSnapshot = (): McpServersSnapshot => ({ servers: mcpHub.list(), errors: mcpHub.configErrors() });
+  // `oauthClient` 在这里挂，不进 hub（#697）：hub 刻意不认识凭据这一层——它手上只有
+  // `clearAuth` 一个口子，别的一概不知道。这一格又只是**一个布尔**（配没配），
+  // client_id / client_secret 留在 mcp-auth.json 里不过桥（ADR-0121）
+  const mcpSnapshot = (): McpServersSnapshot => ({
+    servers: mcpHub.list().map((s) => ({
+      ...s,
+      oauthClient: readMcpAuth(mcpAuthPath, s.id).manualClient !== undefined,
+    })),
+    errors: mcpHub.configErrors(),
+  });
   // hub 状态变了就推一次全量快照(设置页/斜杠面板都靠这个通道刷新)
   /** 把活跃会话此刻的工具声明推给渲染层（issue #141）。agent.toolDefs 是活 getter，
       BootInfo 里那份是 boot/resume 那一刻的快照——建出第一个子智能体（task 从
@@ -3189,6 +3198,26 @@ void app.whenReady().then(() => {
     await mcpHub.authorize(id);
     return mcpSnapshot();
   });
+  // 手填的那对 OAuth 客户端凭据（#697）。**写完不自动跑授权**：填凭据与「现在就去
+  // 授权」是两件事（用户可能先把两台都填好再挨个点授权），而授权会开浏览器——
+  // 一个会开浏览器的副作用不该搭在保存按钮上
+  ipcMain.handle(
+    CHANNELS.setMcpOAuthClient,
+    (_e, id: string, client: { clientId: string; clientSecret: string } | null): McpServersSnapshot => {
+      const trimmed = client === null ? null : { id: client.clientId.trim(), secret: client.clientSecret.trim() };
+      setMcpManualClient(
+        mcpAuthPath,
+        id,
+        trimmed === null || trimmed.id === ""
+          // client_id 留空 = 清掉：一对只有 secret 的凭据没有任何用处，而把空串存进去
+          // 会让 SDK 拿着它去要 token，换回一句 invalid_client
+          ? null
+          : { client_id: trimmed.id, ...(trimmed.secret === "" ? {} : { client_secret: trimmed.secret }) }
+      );
+      escrowResync?.();
+      return mcpSnapshot();
+    }
+  );
   ipcMain.handle(CHANNELS.listMcpPrompts, () =>
     mcpHub.servers().filter((s) => s.live).flatMap((s) => s.prompts.map((p) => ({ ...p, server: s.name })))
   );

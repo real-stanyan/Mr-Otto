@@ -814,6 +814,15 @@ export interface ShellBridge {
       URL 由主进程从这台 server 的配置推出来，渲染层递不进任意外链
       （同 updaterOpenReleasePage 的规矩）。失败原样 reject，设置页显示原因 */
   authorizeMcpServer(id: string): Promise<McpServersSnapshot>;
+  /** 手填一台 server 的 OAuth 客户端凭据（#697）：授权服务器不提供动态客户端注册
+      （Slack / Asana / Figma 这一类）时，用户在服务商后台注册一个应用，把拿到的
+      client_id / client_secret 填进来。`null` 或空 client_id = 清掉。
+      **只进不出**：这两个值落在 mcp-auth.json（0600，ADR-0121），回来的快照里
+      只有 `McpServerStatus.oauthClient` 这个布尔。写完不自动开浏览器授权 */
+  setMcpOAuthClient(
+    id: string,
+    client: { clientId: string; clientSecret: string } | null
+  ): Promise<McpServersSnapshot>;
   /** 所有连上的 server 的 prompt 合起来（composer 的斜杠面用） */
   listMcpPrompts(): Promise<(McpPromptInfo & { server: string })[]>;
   /** 把一个 MCP prompt 按参数展开成文本，落进输入框。
@@ -1625,6 +1634,7 @@ export const CHANNELS = {
   removeMcpServer: "otter:removeMcpServer",
   reconnectMcpServer: "otter:reconnectMcpServer",
   authorizeMcpServer: "otter:authorizeMcpServer",
+  setMcpOAuthClient: "otter:setMcpOAuthClient",
   listMcpPrompts: "otter:listMcpPrompts",
   expandMcpPrompt: "otter:expandMcpPrompt",
   mcpChanged: "otter:mcpChanged",

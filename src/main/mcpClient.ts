@@ -287,9 +287,16 @@ export interface McpOAuthDeps {
     RFC 8252 §7.3 只是 SHOULD 允许 loopback 变端口——精确匹配的授权服务器
     （相当一部分企业 IdP）会直接 invalid_redirect_uri。老记录没存过
     redirectUri 的一律当过期：重注册的代价是多一次请求，误判"还能用"的
-    代价是用户永远授不动、还没有界面能清。 */
+    代价是用户永远授不动、还没有界面能清。
+
+    **手填的那对不在射程里**（#697）：它不是一次注册的产物，服务商后台里的
+    redirect_uri 由用户自己填（多半是 `http://127.0.0.1` 这种允许变端口的写法，
+    或者干脆由用户登记了具体的几个），我们既不知道也改不了。丢掉它等于让用户去
+    服务商后台重抄一遍，而重注册这条出路对它压根不存在。 */
 export const needsFreshRegistration = (rec: McpAuthRecord, redirectUri: string): boolean =>
-  rec.clientInformation !== undefined && rec.redirectUri !== redirectUri;
+  rec.manualClient === undefined &&
+  rec.clientInformation !== undefined &&
+  rec.redirectUri !== redirectUri;
 
 /** SDK 的 OAuthClientProvider 适配器 —— 本仓这一侧只负责"存哪、怎么开浏览器"。
     协议本身（元数据发现、动态客户端注册、PKCE、code 换 token、refresh 续期）
@@ -323,7 +330,16 @@ export function createOAuthProvider(
     get redirectUrl() { return opts.redirectUri; },
     get clientMetadata() { return metadata; },
     state: () => opts.state,
-    clientInformation: () => opts.read().clientInformation as OAuthClientInformation | undefined,
+    // 手填的那对**优先**（#697）：SDK 只在这里返回 undefined 时才去跑动态客户端注册，
+    // 所以这一格就是「要不要 DCR」的开关。顺序是手填在前——用户会走到手填这条路，
+    // 前提就是那台服务器的 DCR 走不通（或者注册出来的客户端权限不对）；他填完之后
+    // 还去用盘上那份旧注册，等于把他刚做的事当没看见。
+    // （`setMcpManualClient` 存的时候已经把旧的 clientInformation 丢了，这里的顺序
+    //   是第二道：手编过 mcp-auth.json 的人也能落到同一个结局）
+    clientInformation: () => {
+      const rec = opts.read();
+      return (rec.manualClient ?? rec.clientInformation) as OAuthClientInformation | undefined;
+    },
     saveClientInformation: (info) => {
       if (persistFlow) opts.write({ clientInformation: info as Record<string, unknown> });
     },

@@ -227,6 +227,8 @@ export function McpServerEditor({
           </div>
         )}
 
+        {cfg.kind === "http" && <OAuthClientSection server={server} />}
+
         <div className="flex items-center justify-between gap-3">
           <div className="flex flex-col gap-0.5">
             <span className="text-[13px] font-medium">启用</span>
@@ -322,6 +324,95 @@ export function McpServerEditor({
       </div>
   );
 }
+/** 手填的 OAuth 客户端凭据（#697）。多数 server 用不到这一段——它们的授权服务器
+    支持动态客户端注册（DCR），Otto 自己注册一个客户端就走通了。Slack / Asana /
+    Figma 这一类不支持，用户得去服务商后台注册一个应用、把那对凭据抄进来。
+    所以**默认收起**：一段大多数人不需要、而需要的人非填不可的东西，摆在外面是噪音，
+    藏起来是撒谎——折叠是这两者之间那个答案。
+    **值只进不出**：填完就没了（落进主进程的 mcp-auth.json，0600），这一屏只从
+    `server.oauthClient` 这个布尔知道「配没配」。所以输入框永远是空的，
+    已配置时那句话要**说出口**，否则用户会以为自己上次没填成。 */
+function OAuthClientSection({ server }: { server: McpServerStatus }): React.ReactElement {
+  const setMcpOAuthClient = useChat((s) => s.setMcpOAuthClient);
+  const configured = server.oauthClient === true;
+  const [open, setOpen] = useState(false);
+  const [clientId, setClientId] = useState("");
+  const [clientSecret, setClientSecret] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  const run = async (client: { clientId: string; clientSecret: string } | null): Promise<void> => {
+    setBusy(true);
+    setErr(null);
+    try {
+      await setMcpOAuthClient(server.id, client);
+      setClientId("");
+      setClientSecret("");
+      if (client === null) setOpen(false);
+    } catch (e) {
+      setErr(bridgeErrorMessage(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="flex flex-col gap-[6px]">
+      <div className="flex items-center justify-between gap-3">
+        <div className="flex flex-col gap-0.5">
+          <span className="text-[13px] font-medium">OAuth 客户端凭据</span>
+          <p className={HINT}>
+            {configured
+              ? "已填过一对（值不回显）。这台服务器不支持自动注册时才需要它"
+              : "多数服务不需要填——只有不支持自动注册的（Slack、Asana、Figma 这类）才要你去它的后台建一个应用"}
+          </p>
+        </div>
+        <Button size="sm" variant="ghost" onClick={() => setOpen((v) => !v)}>
+          {open ? "收起" : configured ? "换一对" : "手填"}
+        </Button>
+      </div>
+      {open && (
+        <div className="flex flex-col gap-[6px]">
+          <Input
+            value={clientId}
+            onChange={(e) => setClientId(e.target.value)}
+            placeholder="client_id"
+            className="font-mono text-[12.5px]"
+          />
+          <Input
+            // 密码框：这一格是凭据，肩膀后面站着人的时候不该是明文
+            type="password"
+            value={clientSecret}
+            onChange={(e) => setClientSecret(e.target.value)}
+            placeholder="client_secret（公开客户端可以留空）"
+            className="font-mono text-[12.5px]"
+          />
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="secondary"
+              disabled={busy || clientId.trim() === ""}
+              onClick={() => void run({ clientId, clientSecret })}
+            >
+              保存
+            </Button>
+            {configured && (
+              <Button size="sm" variant="ghost" disabled={busy} onClick={() => void run(null)}>
+                清除
+              </Button>
+            )}
+            {err && <p className={ERR_TXT}>{err}</p>}
+          </div>
+          <p className={HINT}>
+            存完不会自动去授权——填凭据和「现在就去授权」是两件事，授权那一步在上面那颗按钮上。
+            服务商后台要你填回调地址的话，写 http://127.0.0.1（端口每次授权都不一样）
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function KeyValueEditor({
   label,
   rows,

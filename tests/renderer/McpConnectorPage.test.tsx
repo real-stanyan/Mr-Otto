@@ -10,6 +10,7 @@
 // ② 管理面里那颗授权按钮和那条错误红字（#764 —— 同一个判据没接第二处）
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render as rtlRender, screen } from "@testing-library/react";
+import { userEvent } from "@testing-library/user-event";
 import "@testing-library/jest-dom/vitest";
 
 import { McpConnectorPage } from "../../src/renderer/src/components/McpConnectorPage.js";
@@ -66,6 +67,7 @@ function draw(it: DirectoryItem, server?: McpServerStatus) {
     removeMcpServer: vi.fn(() => Promise.resolve({ servers: [], errors: [] })),
     reconnectMcpServer: vi.fn(() => Promise.resolve({ servers: [], errors: [] })),
     authorizeMcpServer: vi.fn(() => Promise.resolve({ servers: [], errors: [] })),
+    setMcpOAuthClient: vi.fn(() => Promise.resolve({ servers: [], errors: [] })),
   } as unknown as ShellBridge;
   return render(
     <McpConnectorPage
@@ -79,6 +81,50 @@ function draw(it: DirectoryItem, server?: McpServerStatus) {
     />
   );
 }
+
+// #697：手填的那对 OAuth 客户端凭据。值**只进不出**（落在主进程的 mcp-auth.json，
+// ADR-0121），所以输入框永远是空的——「配过了」这件事只能靠说出口，而那正是这三条钉的：
+// 说没说、说的时候按钮换不换词、保存那一下递出去的是不是用户刚打的两个值
+describe("McpServerEditor 的 OAuth 客户端凭据一段（#697）", () => {
+  it("没配过：那句话劝人别填，按钮写「手填」", () => {
+    draw(item({ installed: "connected" }), installed("connected"));
+    expect(screen.getByText(/多数服务不需要填/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "手填" })).toBeInTheDocument();
+  });
+
+  it("配过了：说出口（值不回显），按钮变成「换一对」", () => {
+    draw(item({ installed: "connected" }), { ...installed("connected"), oauthClient: true });
+    expect(screen.getByText(/已填过一对（值不回显）/)).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "换一对" })).toBeInTheDocument();
+  });
+
+  it("展开、填、保存：递出去的是刚打的两个值，输入框随后清空", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    draw(item({ installed: "connected" }), installed("connected"));
+    await user.click(screen.getByRole("button", { name: "手填" }));
+
+    const id = screen.getByPlaceholderText("client_id");
+    const secret = screen.getByPlaceholderText(/client_secret/);
+    await user.type(id, "cid-1");
+    await user.type(secret, "sec-1");
+    await user.click(screen.getByRole("button", { name: "保存" }));
+
+    expect(window.otter.setMcpOAuthClient).toHaveBeenCalledWith("acme", {
+      clientId: "cid-1",
+      clientSecret: "sec-1",
+    });
+    // 值回不来，所以这两格清空——留着上一次打的字会让人以为它是「当前的值」
+    expect(id).toHaveValue("");
+    expect(secret).toHaveValue("");
+  });
+
+  it("client_id 空着时保存按不动——只有 secret 的一对没有任何用处", async () => {
+    const user = userEvent.setup({ pointerEventsCheck: 0 });
+    draw(item({ installed: "connected" }), installed("connected"));
+    await user.click(screen.getByRole("button", { name: "手填" }));
+    expect(screen.getByRole("button", { name: "保存" })).toBeDisabled();
+  });
+});
 
 describe("McpConnectorPage", () => {
   it("没标 blocked 的：该有的动作都在", () => {

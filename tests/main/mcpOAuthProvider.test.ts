@@ -28,6 +28,33 @@ describe("createOAuthProvider", () => {
     expect(provider.clientMetadata.token_endpoint_auth_method).toBe("none");
   });
 
+  // #697：这一格就是「要不要跑动态客户端注册」的开关——SDK 只在它返回 undefined 时
+  // 才去注册。手填在前：用户会走到手填这条路，前提正是那台服务器的 DCR 走不通
+  it("手填的那对优先于盘上的 DCR 记录——用户刚填完，不该还用旧注册", () => {
+    const { provider } = harness({
+      clientInformation: { client_id: "dcr-老的" },
+      manualClient: { client_id: "手填的", client_secret: "sec" },
+    });
+    expect(provider.clientInformation()).toEqual({ client_id: "手填的", client_secret: "sec" });
+  });
+
+  it("只有手填的那对时也认——这条路存在的全部意义就是让 SDK 跳过注册", () => {
+    const { provider } = harness({ manualClient: { client_id: "手填的" } });
+    expect(provider.clientInformation()).toEqual({ client_id: "手填的" });
+  });
+
+  it("两格都没有 → undefined，SDK 照旧去跑动态注册（多数 server 走的还是这条）", () => {
+    const { provider } = harness();
+    expect(provider.clientInformation()).toBeUndefined();
+  });
+
+  it("DCR 回调照旧写进 clientInformation，不碰手填那一格", () => {
+    const { provider, current } = harness({ manualClient: { client_id: "手填的" } });
+    provider.saveClientInformation?.({ client_id: "dcr-新的" });
+    expect(current().manualClient).toEqual({ client_id: "手填的" });
+    expect(current().clientInformation).toEqual({ client_id: "dcr-新的" });
+  });
+
   it("state() 返回 loopback 那一串——两端必须是同一个", () => {
     const { provider } = harness();
     expect(provider.state?.()).toBe("state-abc");

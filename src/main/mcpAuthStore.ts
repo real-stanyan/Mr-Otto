@@ -18,6 +18,16 @@ import { dirname } from "node:path";
     适配就是 mcpClient 那一处结构性赋值。 */
 export interface McpAuthRecord {
   clientInformation?: Record<string, unknown>;
+  /** 用户**手填**的一对 OAuth 客户端凭据（#697）。与上面那格分开存，不是洁癖——
+      `clientInformation` 的语义是「动态客户端注册（DCR）那一次的产物」，仓里有两处
+      逻辑按这个语义行事：`needsFreshRegistration` 会在 redirect_uri 变了时把它丢掉重注册
+      （而手填的那对丢了就再也回不来，用户得去服务商后台重抄一遍），SDK 的
+      `saveClientInformation` 回调也会覆盖它。混在一格里，这两处都会把用户手打的东西当成
+      可再生的缓存。
+      **落点与权限照 ADR-0121**（就是这个文件，0600），不进 mcp.json（那份用户手编、
+      要与 Claude Code 的格式兼容）、不进事件日志、不回流渲染层——渲染层只问得到
+      「配没配」这一个布尔（`McpServerStatus.oauthClient`）。 */
+  manualClient?: { client_id: string; client_secret?: string };
   tokens?: Record<string, unknown>;
   codeVerifier?: string;
   /** 上一次授权用的 redirect_uri（#471）。动态客户端注册把它写死进服务端的
@@ -60,6 +70,35 @@ export function readMcpAuth(path: string, id: string): McpAuthRecord {
 export function writeMcpAuth(path: string, id: string, patch: Partial<McpAuthRecord>): void {
   const all = loadMcpAuth(path);
   all[id] = { ...all[id], ...patch };
+  persist(path, all);
+}
+
+/** 存 / 清一台 server 手填的那对 OAuth 客户端凭据（#697）。
+    `null` = 清掉（用户点「清除」，或把 client_id 留空保存）。
+
+    **存的时候顺手丢掉 DCR 那一份与 codeVerifier**：手填这对的唯一理由就是那台服务器
+    走不通动态注册，盘上若还留着上一次注册的产物，`clientInformation()` 的取值顺序、
+    `needsFreshRegistration` 的判断、以及一次半途而废的授权留下的 verifier，三样都会
+    在后面某一步冒出来——而那时的症状是一句 `invalid_client`，没人会想到是这里。
+    **tokens 不动**：换客户端凭据不该把一份还能 refresh 的授权也作废；真不能用了，
+    SDK 拿它去 refresh 会失败，那条路本来就会退回重新授权。 */
+export function setMcpManualClient(
+  path: string,
+  id: string,
+  client: { client_id: string; client_secret?: string } | null
+): void {
+  const all = loadMcpAuth(path);
+  const rec = all[id] ?? {};
+  if (client === null) {
+    delete rec.manualClient;
+  } else {
+    rec.manualClient = client.client_secret === undefined || client.client_secret === ""
+      ? { client_id: client.client_id }
+      : { client_id: client.client_id, client_secret: client.client_secret };
+    delete rec.clientInformation;
+    delete rec.codeVerifier;
+  }
+  all[id] = rec;
   persist(path, all);
 }
 

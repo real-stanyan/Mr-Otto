@@ -742,6 +742,10 @@ interface ChatState {
   /** 跑一次 OAuth 授权(needs-auth 的那台,用户点完系统浏览器的同意页后自动重连)。
       失败原样抛出——组件自己 catch 显示原因,不在这一层吞掉 */
   authorizeMcpServer(id: string): Promise<void>;
+  /** 手填一台 server 的 OAuth 客户端凭据(#697)。`null` 或空 client_id = 清掉。
+      **值只进不出**:落在主进程的 mcp-auth.json(0600),回来的快照里只有
+      `McpServerStatus.oauthClient` 这个布尔,组件据它画"已配置" */
+  setMcpOAuthClient(id: string, client: { clientId: string; clientSecret: string } | null): Promise<void>;
   /** 重拉一份连上的 server 的 prompt 清单(composer `/` 菜单用)。boot 冷启动拉一次,
       此后跟着 onMcpChanged 的推送自动补拉——一台 server 掉线/重连会改变这份清单,
       不能只在打开菜单那一刻现问一次 */
@@ -1885,6 +1889,10 @@ export const useChat = create<ChatState>((set, get) => ({
 
   async authorizeMcpServer(id) {
     set({ mcpServers: await window.otter.authorizeMcpServer(id) });
+  },
+
+  async setMcpOAuthClient(id, client) {
+    set({ mcpServers: await window.otter.setMcpOAuthClient(id, client) });
   },
 
   async refreshMcpPrompts() {
