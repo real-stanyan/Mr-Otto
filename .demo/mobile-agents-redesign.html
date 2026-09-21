@@ -1176,10 +1176,193 @@ const HUE=['#0a84ff','#ff9f0a','#30d158','#bf5af2','#ff375f','#5ac8fa','#ffd60a'
 /* 名册里的水獭画哪张脸。桌面按 agentId 哈希从 13 张里派生（lib/agentAvatar.ts），
    demo 是假数据，按名字钉死坑位就够 —— 要紧的是**画的是那批像素人像**，
    不是一个彩色首字母（那是「名册里查不到」时才有的兜底，ADR-0264/0286） */
-const AGENT_SLOT={'管理员':0,'开发':1,'设计':2,'运维':3,'门店':4,'新':5};
-const faceOf=(k,txt,sz=20)=>{
+/* ═══════════════════════════════════════════════════════════════════════
+   ottoFace —— 会动的像素脸（#1307 / #1345 的形象，搬到手机端这份 demo 上）
+
+   今天仓里画智能体头像的是 13 张 128px 静态 PNG（assets/agent-avatars/01–13）。
+   #1345 要把它们换成会动的像素形象，而 #1307 定了三条法理，这份实现逐条照办：
+
+   ① **头部品牌锁死**：轮廓 / 脸型来自产品 logo（resources/icon.png）那张四色像素脸，
+      不变形。会动的只有**眉毛 / 眼睛 / 嘴**三层可替换的像素图案。
+   ② **位移只走整格**：像素画做亚像素平滑会立刻糊成模糊贴图。所以偏移一律是整数格，
+      `imageSmoothingEnabled=false`。
+   ③ **坑位数和顺序都不动，仍然是 13**（#1345 的建议做法）：`fnv1a(agentId) % 13`
+      是今天已经落库的派生，改 13 就是给所有没手动挑过头像的 agent 换一张脸。
+      所以这里是 13 个角色包，**一个坑位对一个角色**，01–13 的长相一一对上 ——
+      谁的脸都不换，只是从静态画变成会动的。
+
+   另外两条是这份 demo 自己补的：
+   · 多一个 `plain` 态（不画角标、静止一帧）。名册那一栏**不知道**谁在跑（那张表里
+     没有这一格，#722 / #1282），画一个恒灰的「空闲」角标等于宣称一件我们查不到的事；
+     一墙脸同时呼吸也是噪音 —— 每天要扫几十遍的东西不该动。
+   · 盘底固定纸白（#f2f2f3），两个主题一样 —— 今天那 13 张 PNG 的底就是白的，而纯黑
+     头发压在纯黑底上会整个糊成一团（#1307 第三个待定项的答案：不靠描边，靠盘底）。
+   ═══════════════════════════════════════════════════════════════════════ */
+
+const FC={I:'#101012',D:'#2f2f36',L:'#83838d',W:'#ffffff',P:'#f2f2f3'};
+const GW=20, GH=16;
+
+/* 蒙皮：一张光头。所有角色都长在它上面 —— 「头部不变形」就是这一句的意思。
+   脸内 cols 4..15 / rows 2..11；眼 6-7 与 12-13，眉 row4，嘴 rows 9-10 */
+const HEAD=[
+ '.......######.......',
+ '.....##WWWWWW##.....',
+ '....#WWWWWWWWWW#....',
+ '...#WWWWWWWWWWWW#...',
+ '...#WWWWWWWWWWWW#...',
+ '...#WWWWWWWWWWWW#...',
+ '...#WWWWWWWWWWWW#...',
+ '...#WWWWWWWWWWWW#...',
+ '...#WWWWWWWWWWWW#...',
+ '...#WWWWWWWWWWWW#...',
+ '...#WWWWWWWWWWWW#...',
+ '....#WWWWWWWWWW#....',
+ '.....##WWWWWW##.....',
+ '.......######.......',
+ '....................',
+ '....................',
+];
+const EYE_LX=6, EYE_RX=11, BROW_Y=4, EYE_Y=6, MOUTH_X=8, MOUTH_Y=10;
+
+/* 13 个角色包 = 盖在光头上的头发 / 帽子 / 配件，逐张对着 01–13.png 描的，
+   顺序就是坑位号。`top` 盖住 rows 0..n（头发本来就是头顶那几行的轮廓），
+   `side` 是两侧的长发（给 row→[左列, 右列] 的对照表） */
+const CHARS=[
+ /* 01 短平头 */   {top:['.......DDDDDD.......','.....#DDDDDDDD#.....','....#DDDDDDDDDD#....','...DD..........DD...']},
+ /* 02 蘑菇头 */   {top:['.......LLLLLL.......','.....LLLLLLLLLL.....','....LLLLLLLLLLLL....','...LLL........LLL...'],side:{4:'LL',5:'L.'}},
+ /* 03 刺猬头 */   {top:['....D.D.D.DD.D.D....','....DD.DDDDDD.DD....','....DDDDDDDDDDDD....','...DD..........DD...']},
+ /* 04 背头 */     {top:['.......DDDDDD.......','.....DDDLLDDDDD.....','....#DDDDDDDDDD#....','...DD..........DD...']},
+ /* 05 贝雷帽 */   {top:['....DDDDDDDDD.......','...DDDDDDDDDDDD.....','..DDDDDDDDDDDDDD....','...LL..........DD...'],nub:[4,0]},
+ /* 06 眼镜平头 */ {top:['.......LLLLLL.......','.....#LLLLLLLL#.....','....#LLLLLLLLLL#....','...LL..........LL...'],specs:true},
+ /* 07 眼镜分头 */ {top:['......DDDDDDD.......','....DDDDDDDDDDD.....','....#DDLDDDDDDD#....','...DD..........DD...'],specs:true},
+ /* 08 波波头 */   {top:['.......DDDDDD.......','.....DDDDDDDDDD.....','....DDDDDDDDDDDD....','...DDD........DDD...'],side:{4:'DD',5:'DD',6:'DD',7:'DD',8:'D.'}},
+ /* 09 光头胡子 */ {beard:true},
+ /* 10 长直发 */   {top:['.......DDDDDD.......','.....DDDDDDDDDD.....','....DDDDDDDDDDDD....','...DDD........DDD...'],side:{4:'DD',5:'DD',6:'DD',7:'DD',8:'DD',9:'DD',10:'DD',11:'D.'}},
+ /* 11 马尾发带 */ {top:['.......DDDDDD.......','.....DDDDDDDDDD.....','....LLLLLLLLLLLL....','...DD..........DD...'],tail:true},
+ /* 12 卷发 */     {top:['....DD.DD..DD.DD....','...DDDDDDDDDDDDDD...','...DDDDDDDDDDDDDD...','...DDD........DDD...'],side:{4:'DD',5:'D.'}},
+ /* 13 乱发胡茬 */ {top:['....D...DD..D.D.....','...DDDDDDDDDDDDD....','...#DDDDDDDDDD#.....','...DD..........DD...'],stubble:true},
+];
+
+/* 三层特征。眼 / 眉 / 嘴各是一小张图案，**只有这三层会换** */
+const EYES={
+ open:  [[0,0],[1,0],[0,1],[1,1]],
+ half:  [[0,1],[1,1]],
+ shut:  [[0,1],[1,1]],
+ left:  [[-1,0],[0,0],[-1,1],[0,1]],
+ right: [[1,0],[2,0],[1,1],[2,1]],
+ up:    [[0,0],[1,0]],
+ cross: [[0,0],[1,1],[1,0],[0,1]],
+};
+const BROWS={ flat:[[0,0],[1,0]], up:[[0,-1],[1,-1]], knit:[[0,1],[1,0]], none:[] };
+const MOUTHS={
+ smile: [[0,1],[1,1],[2,1],[-1,0],[3,0]],
+ flat:  [[0,0],[1,0],[2,0]],
+ small: [[1,0],[2,0]],
+ oh:    [[1,0],[1,1]],
+ talk:  [[0,0],[1,0],[2,0],[0,1],[1,1],[2,1]],
+ frown: [[0,0],[1,0],[2,0],[-1,1],[3,1]],
+ zig:   [[0,1],[1,0],[2,1]],
+};
+
+/* 15 个状态 + 一个 plain。两条硬规矩（#1307）：
+   · `waiting`（等你处理）是**唯一**做水平摆动的 —— 一墙静止头像里横向运动最抓眼，
+     而 sessionOrb.ts 早就定死「等你」必须压过「在跑」。
+   · `queued`（排队中）是**唯一完全不动的** —— ADR-0250 说它连打字指示器都不画，
+     头像不能看起来像在干活。 */
+const S=(o)=>({brow:'flat',eye:'open',mouth:'flat',badge:null,move:null,...o});
+const breathe=(ms)=>(t)=>[0,Math.floor(t/ms)%2];
+const FACE_STATES={
+ plain:    S({mouth:'smile'}),                    // 名册那一墙脸一律静止一帧：每天扫几十遍的东西不该动
+ idle:     S({mouth:'smile',badge:'mute',move:breathe(1500)}),
+ queued:   S({mouth:'flat',badge:'mute'}),
+ composing:S({brow:'up',eye:'up',mouth:'small',badge:'work',move:breathe(620)}),
+ searching:S({eye:(t)=>Math.floor(t/420)%2?'left':'right',badge:'work'}),
+ working:  S({brow:'knit',badge:'work',move:breathe(300)}),
+ solving:  S({mouth:(t)=>['talk','oh','flat'][Math.floor(t/220)%3],badge:'work'}),
+ weaving:  S({eye:'half',mouth:'small',badge:'work',move:breathe(820)}),
+ waiting:  S({brow:'up',mouth:'oh',badge:'need',move:(t)=>[[-1,0,1,0][Math.floor(t/260)%4],0]}),
+ listening:S({brow:'up',mouth:'small',badge:'voice',move:breathe(950)}),
+ speaking: S({mouth:(t)=>['oh','talk','small','talk'][Math.floor(t/170)%4],badge:'voice'}),
+ done:     S({eye:'half',mouth:'smile',badge:'ok',move:breathe(1500)}),
+ failed:   S({brow:'knit',eye:'cross',mouth:'zig',badge:'bad'}),
+ limited:  S({eye:'half',badge:'need',move:breathe(1700)}),
+ frozen:   S({eye:'shut',badge:'mute'}),
+ offline:  S({eye:'shut',badge:'mute',dim:true}),
+};
+const BADGE={work:'#0a84ff',need:'#ff9f0a',ok:'#30d158',bad:'#ff453a',voice:'#5ac8fa',mute:'#8e8e93'};
+
+/** 一帧。纯函数：给定角色 / 状态 / 时刻，画出来的东西完全确定 —— 所以静态帧和
+    动画共用同一段代码，不会出现「不动的那版长得不一样」 */
+function drawFace(cv,slot,state,t){
+  const ch=CHARS[((slot%CHARS.length)+CHARS.length)%CHARS.length];
+  const st=FACE_STATES[state]||FACE_STATES.plain;
+  // 头占 cols 3..16 / rows 0..13：把它的中心对准圆盘中心，边上留一圈盘底
+  const px=cv.width, cell=Math.max(1,px/15.8), ox=px/2-10*cell, oy=px/2-7*cell;
+  const g=cv.getContext('2d'); g.imageSmoothingEnabled=false; g.clearRect(0,0,px,px);
+  g.fillStyle=FC.P; g.beginPath(); g.arc(px/2,px/2,px/2,0,7); g.fill();
+  g.save(); g.beginPath(); g.arc(px/2,px/2,px/2,0,7); g.clip();
+  if(st.dim) g.globalAlpha=.45;
+  const [dx,dy]=st.move?st.move(t):[0,0];
+  const put=(x,y,c)=>{ if(!c||c==='.')return; g.fillStyle=FC[c]||c;
+    g.fillRect(Math.round(ox+(x+dx)*cell),Math.round(oy+(y+dy)*cell),Math.ceil(cell),Math.ceil(cell)); };
+  const layer=rows=>rows&&rows.forEach((r,i)=>[...r].forEach((c,x)=>put(x,i,c)));
+  layer(HEAD); layer(ch.top);
+  if(ch.side) for(const y in ch.side){ const [l,r]=[...ch.side[y]];
+    if(l!=='.'){ put(3,+y,l); put(4,+y,l); } if(r!=='.'){ put(15,+y,r); put(16,+y,r); } }
+  if(ch.nub) put(ch.nub[0],ch.nub[1],'D');
+  if(ch.tail) [[16,3],[16,4],[16,5],[16,6],[16,7],[15,7],[15,3]].forEach(([x,y])=>put(x,y,'D'));
+  if(ch.beard){ [[4,8],[15,8],[4,9],[15,9],[5,10],[14,10],[5,11],[14,11]].forEach(([x,y])=>put(x,y,'L'));
+    for(let x=6;x<14;x++) put(x,12,'L');                        // 下巴那一把
+    for(let x=7;x<12;x++) put(x,9,'L'); }                       // 上唇那一撇
+  if(ch.stubble) for(let x=5;x<15;x++) if((x+1)%2) put(x,12,'L');
+  const pick=v=>typeof v==='function'?v(t):v;
+  const brow=BROWS[pick(st.brow)]||[], eye=EYES[pick(st.eye)]||[], mouth=MOUTHS[pick(st.mouth)]||[];
+  brow.forEach(([x,y])=>{ put(EYE_LX+x,BROW_Y+y,'I'); put(EYE_RX+1-x,BROW_Y+y,'I'); });   // 右眉镜像
+  eye.forEach(([x,y])=>{ put(EYE_LX+x,EYE_Y+y,'I'); put(EYE_RX+x,EYE_Y+y,'I'); });
+  mouth.forEach(([x,y])=>put(MOUTH_X+x,MOUTH_Y+y,'I'));
+  if(ch.specs){ // 眼镜：两个墨框 + 一道鼻梁，套在眼睛外面
+    const lens=x0=>{ for(let j=5;j<9;j++){ put(x0,j,'I'); put(x0+3,j,'I'); }
+      put(x0+1,9,'I'); put(x0+2,9,'I'); };
+    lens(5); lens(10); put(9,6,'I');
+  }
+  g.restore();
+  // 角标：右下角，带一圈盘底做隔离。plain 不画（见文件头）
+  if(st.badge){ const r=Math.max(2.5,px*0.15);
+    g.fillStyle=FC.P; g.beginPath(); g.arc(px-r*1.05,px-r*1.05,r*1.42,0,7); g.fill();
+    g.fillStyle=BADGE[st.badge]; g.beginPath(); g.arc(px-r*1.05,px-r*1.05,r,0,7); g.fill(); }
+}
+
+/* 挂载：一个观察者盯着整个机身，新冒出来的 <canvas data-ch> 就地画上。
+   为什么不放进 wireCommon —— 抽屉、动作里插的 HTML 不走那条路，
+   而「这一处忘了画」的失败形态是安静的（一个空白圆盘） */
+const ANIM=new Set();
+function paintFace(cv){
+  const dpr=Math.min(3,window.devicePixelRatio||1), css=+cv.dataset.sz||28;
+  if(cv.width!==Math.round(css*dpr)) cv.width=cv.height=Math.round(css*dpr);
+  drawFace(cv,+cv.dataset.ch||0,cv.dataset.st||'plain',performance.now());
+  if(cv.dataset.anim==='1') ANIM.add(cv); else ANIM.delete(cv);
+}
+function paintFaces(root){ (root||document).querySelectorAll?.('canvas[data-ch]').forEach(paintFace); }
+(function faceLoop(){ requestAnimationFrame(faceLoop);
+  const t=performance.now();
+  ANIM.forEach(cv=>{ if(!cv.isConnected){ANIM.delete(cv);return}
+    drawFace(cv,+cv.dataset.ch||0,cv.dataset.st||'plain',t); });
+})();
+new MutationObserver(ms=>ms.forEach(m=>m.addedNodes.forEach(n=>{
+  if(n.nodeType!==1) return;
+  if(n.matches?.('canvas[data-ch]')) paintFace(n); else paintFaces(n);
+}))).observe(document.getElementById('stage'),{childList:true,subtree:true});
+
+/* 名字 → 坑位。真机上是 `fnv1a(agentId) % 13`（或用户手挑的 avatar_slot），
+   demo 是假数据，按名字钉死就够 —— 要紧的是**一个坑位对一个角色**这条不变 */
+const AGENT_SLOT={'管理员':3,'开发':5,'设计':4,'运维':0,'门店':10,'新':11};
+
+const faceOf=(k,txt,sz=20,st='plain')=>{
   const slot=AGENT_SLOT[k];
-  if(slot!==undefined) return `<img class="face" src="${IMG.av[slot]}" alt="" style="width:${sz}px;height:${sz}px;border-radius:50%">`;
+  // 智能体画会动的像素脸（#1307/#1345）。`st` 缺省是 plain —— 不画角标、只呼吸：
+  // 名册那一栏查不到谁在跑，画一个恒灰的「空闲」角标等于宣称一件我们不知道的事
+  if(slot!==undefined) return `<canvas class="face" data-ch="${slot}" data-st="${st}" data-sz="${sz}"`+
+    `${st!=='plain'&&st!=='queued'?' data-anim="1"':''} style="width:${sz}px;height:${sz}px;border-radius:50%"></canvas>`;
   // 人的兜底是**中性**的一格首字母，不是哈希彩色：桌面 MentionAvatar 走 shadcn
   // 的 AvatarFallback（bg-muted），彩色只会在这张列表里跟状态色抢话
   return `<span class="face" style="background:var(--secondary);color:var(--fg);width:${sz}px;height:${sz}px;font-size:${Math.round(sz*.42)}px;font-weight:600">${txt}</span>`;
@@ -1784,7 +1967,7 @@ SCREENS.botsEmpty={label:'名册 · 一只都还没有',grp:'智能体',render:(
    所以时间线上唯一的分段是**一天一条**的日期，不是「新会话」 */
 SCREENS.botChat={label:'私聊 · 在干活',grp:'智能体',render:(p)=>{
  const b=botOf(p.id||'dev')||DATA.bots[1];
- return `${chatNav({face:faceOf(b.face,b.name[0],32),name:b.name,sub:'正在跑 · 4 分钟',live:true,right:`
+ return `${chatNav({face:faceOf(b.face,b.name[0],32,'working'),name:b.name,sub:'正在跑 · 4 分钟',live:true,right:`
    <button class="navbtn icon" data-act="voice" data-v="bot" aria-label="语音">${I('phone',20,2)}</button>
    <button class="navbtn icon" data-sheet="botMenu">${I('dots',21,2.4)}</button>`})}
  <div class="body">${navPad(false)}
@@ -1835,7 +2018,7 @@ SCREENS.botChat={label:'私聊 · 在干活',grp:'智能体',render:(p)=>{
    登完之后凭据留在那台机器上，它自己用，不再回来问你第二次 */
 SCREENS.botAuth={label:'私聊 · 要你登录一次',grp:'智能体',render:()=>{
  const b=botOf('ops');
- return `${chatNav({face:faceOf(b.face,b.name[0],32),name:b.name,sub:'在等你 · 昨天 21:04',right:`
+ return `${chatNav({face:faceOf(b.face,b.name[0],32,'waiting'),name:b.name,sub:'在等你 · 昨天 21:04',right:`
    <button class="navbtn icon" data-act="voice" data-v="bot">${I('phone',20,2)}</button>
    <button class="navbtn icon" data-sheet="botMenu">${I('dots',21,2.4)}</button>`})}
  <div class="body">${navPad(false)}
@@ -2227,7 +2410,8 @@ SCREENS.callGroup={label:'语音 · 一群',grp:'语音',render:()=>{
      <div class="t2"><span data-el="tmr">02:41</span> · 三只 + 你</div></div>
    <div class="grid" data-el="grid">
      ${ag.map((a,i)=>`<div class="tile ${a.s==='正在说'?'speaking':''}" data-n="${a.n}">
-       ${faceOf(a.n,a.n[0],62)}<div class="nm">${a.n}</div><div class="st">${a.s}</div></div>`).join('')}
+       ${faceOf(a.n,a.n[0],62,a.s==='正在说'?'speaking':a.s==='在想'?'composing':'listening')}
+       <div class="nm">${a.n}</div><div class="st">${a.s}</div></div>`).join('')}
    </div>
    <div class="callSub"><div class="them" data-el="them">开发：changelog 写完了，等 edge 绿了我就发桌面版。</div>
      <div class="you">你：edge 大概还要多久</div></div>
@@ -2244,7 +2428,9 @@ SCREENS.callGroup={label:'语音 · 一群',grp:'语音',render:()=>{
                  [2,'设计：那句「修复若干问题」我删了，换成具体那三条。']];
    let i=0; const step=()=>{ const [k,txt]=script[i];
      tiles.forEach((t,j)=>{t.classList.toggle('speaking',j===k);
-       t.querySelector('.st').textContent=j===k?'正在说':(j===3?'在听':'在听')});
+       t.querySelector('.st').textContent=j===k?'正在说':'在听';
+       const cv=t.querySelector('canvas[data-ch]');     // 脸跟着换态，不然嘴永远停在上一句
+       if(cv) cv.dataset.st=j===k?'speaking':'listening';});
      them.textContent=txt; i=(i+1)%script.length; };
    step(); const id=setInterval(step,3200); el._stop=()=>{clearInterval(id);stopDither()};
  }};
@@ -2370,6 +2556,59 @@ SCREENS.search={label:'搜索',grp:'账号',render:()=>`
      const hit=DATA.bots.filter(b=>!v||b.name.includes(v)||b.role.includes(v)||b.last.includes(v));
      res.innerHTML=hit.length?hit.map(b=>botRow(b)).join('')
        :'<div style="padding:22px;text-align:center" class="t-foot dim">没有命中</div>'; }); }};
+
+
+/* ═══════════════════════════════════════════════════════════════════════
+   7 · 形象陈列馆（demo 专用，不属于 App）
+   ═══════════════════════════════════════════════════════════════════════ */
+/* #1307 要求的那个「开文件即可看、可对外展示」的陈列馆，塞进机身里这一屏。
+   上半是 13 个坑位**新旧并排** —— 要确认的正是「谁的脸都没换，只是会动了」；
+   下半是一只角色走完 16 个态 */
+SCREENS.faces={label:'13 个坑位 + 16 个态',grp:'形象',render:()=>{
+ const names=['短平头','蘑菇头','刺猬头','背头','贝雷帽','眼镜平头','眼镜分头','波波头',
+              '光头胡子','长直发','马尾发带','卷发','乱发胡茬'];
+ const states=[['plain','名册上（不表态）'],['idle','空闲'],['queued','排队中'],['composing','思考中'],
+   ['searching','检索中'],['working','执行中'],['solving','作答中'],['weaving','压缩中'],
+   ['waiting','等你处理'],['listening','在听'],['speaking','在说话'],['done','完成'],
+   ['failed','出错'],['limited','限流等待'],['frozen','冻结'],['offline','离线']];
+ return `${nav({title:'像素形象',large:true,sub:'13 个坑位 <s>·</s> 16 个态',back:'智能体'})}
+ <div class="body">${navPad(true)}
+   <div class="grouphdr">13 个坑位 · 左边是今天的 PNG，右边是会动的那版</div>
+   <div class="card" style="padding:12px 10px">
+     <div style="display:flex;flex-wrap:wrap;gap:10px 6px;justify-content:center">
+       ${names.map((n,i)=>`<div style="width:74px;text-align:center">
+         <div style="display:flex;gap:4px;justify-content:center;align-items:center">
+           <img src="${IMG.av[i]}" alt="" style="width:30px;height:30px;border-radius:50%;opacity:.55">
+           <canvas class="face" data-ch="${i}" data-st="plain" data-sz="34"
+             style="width:34px;height:34px;border-radius:50%"></canvas>
+         </div>
+         <div class="t-foot dim" style="margin-top:4px;font-size:10.5px">${String(i+1).padStart(2,'0')} ${n}</div>
+       </div>`).join('')}
+     </div>
+   </div>
+   <div class="grouphdr">16 个态 · 「等你处理」是唯一横着摆的，「排队中」是唯一一格都不动的</div>
+   <div class="card" style="padding:12px 10px">
+     <div style="display:flex;flex-wrap:wrap;gap:12px 4px;justify-content:center">
+       ${states.map(([id,lb])=>`<div style="width:78px;text-align:center">
+         <canvas class="face" data-ch="5" data-st="${id}" data-sz="44" data-anim="1"
+           style="width:44px;height:44px;border-radius:50%"></canvas>
+         <div class="t-foot dim" style="margin-top:5px;font-size:10.5px;line-height:13px">${lb}</div>
+       </div>`).join('')}
+     </div>
+   </div>
+   <div class="grouphdr">扫一眼够不够分得出来（40px 与 24px）</div>
+   <div class="card" style="padding:14px 10px">
+     ${[40,24].map(sz=>`<div style="display:flex;gap:8px;justify-content:center;align-items:center;margin-bottom:10px">
+       ${['working','waiting','done','failed','speaking','queued'].map(st=>`
+         <canvas class="face" data-ch="5" data-st="${st}" data-sz="${sz}" data-anim="1"
+           style="width:${sz}px;height:${sz}px;border-radius:50%"></canvas>`).join('')}
+     </div>`).join('')}
+     <div class="t-foot dim" style="text-align:center">顺序：执行中 · 等你 · 完成 · 出错 · 在说话 · 排队中</div>
+   </div>
+   <div class="groupftr">角标的意思：蓝=在干活 · 琥珀=要你 · 绿=成了 · 红=崩了 · 青=语音 · 灰=静默。
+     名册上那一列**一个角标都不画** —— 那张表里查不到谁在跑。</div>
+   <div style="height:34px"></div>
+ </div>`}};
 
 /* ═══════════════════════════════════════════════════════════════════════
    抽屉 / 动作 / 索引栏
