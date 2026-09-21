@@ -2,7 +2,7 @@
 // （坐标加了两次偏移量，泡跑到网格外三列被裁掉），而那种错不会抛异常。
 
 import { describe, expect, it } from "vitest";
-import { BADGE_SIZE, composeFrame, layoutFor, PAD_L, scaleForHeight } from "@/lib/ottoFace/compose.js";
+import { BADGE_SIZE, composeFrame, layoutFor, RIM, scaleForHeight } from "@/lib/ottoFace/compose.js";
 import { FACE_STATE_LIST } from "@/lib/ottoFace/states.js";
 import { FACE_CHARACTERS } from "@/lib/ottoFace/characters/index.js";
 import { OTTO } from "@/lib/ottoFace/characters/otto.js";
@@ -12,6 +12,36 @@ const L = layoutFor(OTTO);
 function cellAt(rows: readonly string[], x: number, y: number): string {
   return rows[y]?.[x] ?? ".";
 }
+
+
+/** 扫出第一格「贴着网格边界的角色像素」。断言写成「先扫后判」而不是每格一次 expect：
+ *  八个角色 × 四个状态 × 十九个时刻 × 三千格 × 八邻域，每格一次 expect 要跑一分半 */
+function firstNakedEdge(f: { w: number; h: number; rows: readonly string[] }): string | null {
+  for (let y = 0; y < f.h; y++) {
+    for (let x = 0; x < f.w; x++) {
+      const c = cellAt(f.rows, x, y);
+      if (c === "." || c === RIM || c === "A") continue;
+      for (const [dx, dy] of NEIGHBOURS) {
+        const nx = x + dx, ny = y + dy;
+        if (nx < 0 || nx >= f.w || ny < 0 || ny >= f.h) return `(${x},${y}) 贴边`;
+        if (cellAt(f.rows, nx, ny) === ".") return `(${nx},${ny}) 该被描上`;
+      }
+    }
+  }
+  return null;
+}
+
+function firstStrayInBadgeSlot(f: { h: number; rows: readonly string[] }, badgeX: number): string | null {
+  for (let y = 0; y < f.h; y++) {
+    for (let x = badgeX; x < badgeX + BADGE_SIZE; x++) {
+      const c = cellAt(f.rows, x, y);
+      if (c !== "." && c !== "A") return `(${x},${y}) = ${c}`;
+    }
+  }
+  return null;
+}
+
+const NEIGHBOURS = [[-1, -1], [0, -1], [1, -1], [-1, 0], [1, 0], [-1, 1], [0, 1], [1, 1]] as const;
 
 describe("composeFrame", () => {
   it("帧尺寸由角色算出，不是写死的常量", () => {
@@ -34,13 +64,7 @@ describe("composeFrame", () => {
     // 现在槽整个在角色右侧之外，这条断言钉住那个布局前提
     for (const s of FACE_STATE_LIST) {
       for (let t = 0; t < 4000; t += 137) {
-        const f = composeFrame(OTTO, s, t);
-        for (let y = 0; y < f.h; y++) {
-          for (let x = L.badgeX; x < L.badgeX + BADGE_SIZE; x++) {
-            const c = cellAt(f.rows, x, y);
-            expect(c === "." || c === "A", `${s}@${t} (${x},${y}) = ${c}`).toBe(true);
-          }
-        }
+        expect(firstStrayInBadgeSlot(composeFrame(OTTO, s, t), L.badgeX), `${s}@${t}`).toBeNull();
       }
     }
   });
@@ -49,15 +73,16 @@ describe("composeFrame", () => {
     expect(L.badgeX + BADGE_SIZE).toBeLessThanOrEqual(L.gridW);
   });
 
-  it("角色画得下，左右摆动也不会被裁", () => {
-    // waiting 会整体左右各摆一格；PAD_L 少一格就会在摆到左边时切掉一列
-    expect(PAD_L).toBeGreaterThanOrEqual(1);
-    for (const s of ["idle", "waiting", "thinking"] as const) {
-      for (let t = 0; t < 3000; t += 83) {
-        const f = composeFrame(OTTO, s, t);
-        for (let y = 0; y < f.h; y++) {
-          // 最左一列只可能是透明：角色本体从 PAD_L 起画，摆到最左也只占到第 0 列之后
-          expect(cellAt(f.rows, 0, y) === "." || PAD_L > 1).toBe(true);
+  it("摆到极限、浮到极限，四周都还留得下描边那一格", () => {
+    // 原来这条只断言「最左一列是空的」，靠的是 PAD_L=1 恰好卡死。加描边之后留白变了，
+    // 那种写法会变成一句空话。这里改成断言真正的不变量：**每一格角色像素的八邻域
+    // 都还在网格里，而且要么是角色要么是描边** —— 有一格贴到边界就说明被裁了，
+    // 而被裁是静默的（put() 直接丢掉越界的格子，不抛）
+    for (const ch of FACE_CHARACTERS) {
+      for (const s of ["idle", "waiting", "thinking", "sleep"] as const) {
+        for (let t = 0; t < 3000; t += 163) {
+          const f = composeFrame(ch, s, t, { rim: "#FFFFFF", pointerX: 1, pointerY: 1 });
+          expect(firstNakedEdge(f), `${ch.id}/${s}@${t}`).toBeNull();
         }
       }
     }
@@ -120,5 +145,46 @@ describe("scaleForHeight", () => {
     // 同一个 scale 摆一排 Otto 会小掉四成。断言最高最矮不超过 1.35 倍
     const hs = FACE_CHARACTERS.map((ch) => layoutFor(ch).gridH * scaleForHeight(ch, 120));
     expect(Math.max(...hs) / Math.min(...hs)).toBeLessThan(1.35);
+  });
+});
+
+describe("描边", () => {
+  it("不给就一格也不画", () => {
+    const f = composeFrame(OTTO, "idle", 0);
+    expect(f.rows.join("")).not.toContain(RIM);
+    expect(f.palette[RIM]).toBeUndefined();
+  });
+
+  it("给了就有，颜色按给的来", () => {
+    const f = composeFrame(OTTO, "idle", 0, { rim: "#FFFFFF" });
+    expect(f.rows.join("")).toContain(RIM);
+    expect(f.palette[RIM]).toBe("#FFFFFF");
+  });
+
+  it("frozen 时描边跟着降饱和，不会剩一圈雪白", () => {
+    // 冻住的那一格本来就该最不抢眼。描边不跟着降的话，一墙头像里最亮的反而是它
+    const f = composeFrame(OTTO, "frozen", 0, { rim: "#FFFFFF" });
+    expect(f.palette[RIM]).not.toBe("#FFFFFF");
+  });
+
+  it("描边一格也进不了角标槽", () => {
+    // 角色摆到最右时描边会再外扩一格，间隙留 1 格的话正好压在角标第一列上
+    for (const ch of FACE_CHARACTERS) {
+      const L = layoutFor(ch);
+      for (const s of FACE_STATE_LIST) {
+        for (let t = 0; t < 2000; t += 311) {
+          const f = composeFrame(ch, s, t, { rim: "#FFFFFF" });
+          expect(firstStrayInBadgeSlot(f, L.badgeX), `${ch.id}/${s}@${t}`).toBeNull();
+        }
+      }
+    }
+  });
+
+  it("没有角色占用 R / A 这两个字母", () => {
+    // 占了的话描边或角标会把脸上的某一色整片顶掉，而那是一大片纯色，改完第一眼看不出
+    for (const ch of FACE_CHARACTERS) {
+      expect(Object.keys(ch.palette)).not.toContain(RIM);
+      expect(Object.keys(ch.palette)).not.toContain("A");
+    }
   });
 });

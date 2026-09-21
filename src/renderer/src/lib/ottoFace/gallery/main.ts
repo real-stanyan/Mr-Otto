@@ -22,8 +22,15 @@ function el<K extends keyof HTMLElementTagNameMap>(tag: K, cls?: string, text?: 
   return n;
 }
 
+/** 深色主题下沿轮廓描一格白边。浅色底不描——那只会多一道白圈 */
+function rimNow(): string | undefined {
+  return document.documentElement.dataset["theme"] === "dark" ? "#FFFFFF" : undefined;
+}
+
 function mount(host: HTMLElement, state: FaceState, s: number, pointer: boolean, who: FaceCharacter = character): void {
-  live.push(createFace(host, { character: who, state, scale: s, followPointer: pointer }));
+  const h = createFace(host, { character: who, state, scale: s, followPointer: pointer });
+  h.setRim(rimNow());
+  live.push(h);
 }
 
 function render(): void {
@@ -106,6 +113,7 @@ function boot(): void {
     const next = document.documentElement.dataset["theme"] === "dark" ? "light" : "dark";
     document.documentElement.dataset["theme"] = next;
     theme.textContent = next === "dark" ? "☀ 亮色" : "☾ 暗色";
+    for (const h of live) h.setRim(rimNow()); // 不重建，实例还在跑，只换描边
   });
 
   render();

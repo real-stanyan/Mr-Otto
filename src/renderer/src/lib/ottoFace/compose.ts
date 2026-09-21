@@ -16,12 +16,18 @@ import { BADGES, GEAR_FRAMES, type BadgeName } from "./badges.js";
 import type { EyeShape, FaceCharacter, MouthShape, Tone } from "./character.js";
 import { FACE_STATES, type FaceState } from "./states.js";
 
-/** 角色四周的留白。左右各 1 是给摆动的，右侧 9 = 1 格间隙 + 8 格角标槽 */
-export const PAD_L = 1;
-export const PAD_T = 2;
-export const PAD_B = 2;
+/** 角色四周的留白 = 摆动幅度 + 描边那一格。
+ *
+ *  左右摆 ±1、上下浮 ±2（`bobAmp` 最大 2），描边再往外扩一格——所以左 2、上下各 3。
+ *  右侧 10 = 2 格间隙 + 8 格角标槽：间隙也得容得下描边，只留 1 格的话角色摆到右边时
+ *  描边会正好落在角标槽第一列上。 */
+export const PAD_L = 2;
+export const PAD_T = 3;
+export const PAD_B = 3;
 export const BADGE_SIZE = 8;
-const PAD_R = BADGE_SIZE + 1;
+/** 描边色调。角色自己的色板不许用这个字母（有测试钉着），否则描边会把脸上的某一色顶掉 */
+export const RIM: Tone = "R";
+const PAD_R = BADGE_SIZE + 2;
 
 export interface Layout {
   readonly gridW: number;
@@ -38,7 +44,7 @@ export function layoutFor(ch: FaceCharacter): Layout {
     gridH: PAD_T + ch.h + PAD_B,
     headX: PAD_L,
     headY: PAD_T,
-    badgeX: PAD_L + ch.w + 1,
+    badgeX: PAD_L + ch.w + 2,
     badgeY: PAD_T,
   };
 }
@@ -70,6 +76,11 @@ export interface ComposeOptions {
   /** 指针相对脸心的横纵偏移，各自 -1..1。只有 `look: "pointer"` 的状态读它 */
   readonly pointerX?: number;
   readonly pointerY?: number;
+  /** 描边颜色。给了就沿角色轮廓外扩一格画上，不给就不画。
+   *
+   *  为什么是可选而不是角色自带：需不需要描边取决于**背后是什么颜色**，不取决于角色。
+   *  这批头像的头发是纯黑的，浅色底上轮廓自明，深色底上整个脑袋糊成一团。 */
+  readonly rim?: string;
 }
 
 /** 思考时的扫视时间线：左上 → 正上 → 右上 → 回正。
@@ -98,17 +109,20 @@ function clampUnit(v: number): number {
   return v < -1 ? -1 : v > 1 ? 1 : v;
 }
 
-/** 缺省的降饱和：往中灰收 62%。角色可以自带 `dimPalette` 覆盖它 */
+/** 往中灰收 62% */
+function dimHex(hex: string): string {
+  const m = /^#([0-9a-f]{6})$/i.exec(hex);
+  if (m?.[1] === undefined) return hex;
+  const n = Number.parseInt(m[1], 16);
+  const mix = (c: number): number => Math.round(c * 0.38 + 0x6e * 0.62);
+  const r = mix((n >> 16) & 0xff), g = mix((n >> 8) & 0xff), b = mix(n & 0xff);
+  return `#${((r << 16) | (g << 8) | b).toString(16).padStart(6, "0")}`;
+}
+
+/** 缺省的降饱和。角色可以自带 `dimPalette` 覆盖它 */
 function dim(palette: Readonly<Record<string, string>>): Record<string, string> {
   const out: Record<string, string> = {};
-  for (const [tone, hex] of Object.entries(palette)) {
-    const m = /^#([0-9a-f]{6})$/i.exec(hex);
-    if (m?.[1] === undefined) { out[tone] = hex; continue; }
-    const n = Number.parseInt(m[1], 16);
-    const mix = (c: number): number => Math.round(c * 0.38 + 0x6e * 0.62);
-    const r = mix((n >> 16) & 0xff), g = mix((n >> 8) & 0xff), b = mix(n & 0xff);
-    out[tone] = `#${((r << 16) | (g << 8) | b).toString(16).padStart(6, "0")}`;
-  }
+  for (const [tone, hex] of Object.entries(palette)) out[tone] = dimHex(hex);
   return out;
 }
 
@@ -195,6 +209,30 @@ export function composeFrame(
     }
   }
 
+  // ---- 描边。必须在角标之前：角标是自带强调色的，描它一圈只会更花 ----
+  //
+  // 八邻域而不是四邻域。像素轮廓是阶梯状的，四邻域在每一级拐角都会漏一格，
+  // 连不成一条闭合的线——放大看是一串虚线。
+  if (opts?.rim !== undefined) {
+    const lit: number[] = [];
+    for (let y = 0; y < L.gridH; y++) {
+      for (let x = 0; x < L.gridW; x++) {
+        if (cells[y * L.gridW + x] !== ".") continue;
+        let touches = false;
+        for (let dy = -1; dy <= 1 && !touches; dy++) {
+          for (let dx = -1; dx <= 1; dx++) {
+            if (dx === 0 && dy === 0) continue;
+            const nx = x + dx, ny = y + dy;
+            if (nx < 0 || nx >= L.gridW || ny < 0 || ny >= L.gridH) continue;
+            if (cells[ny * L.gridW + nx] !== ".") { touches = true; break; }
+          }
+        }
+        if (touches) lit.push(y * L.gridW + x);
+      }
+    }
+    for (const k of lit) cells[k] = RIM;
+  }
+
   // ---- 角标。整个槽在角色右侧之外，所以不可能压到头发 ----
   if (def.badge !== undefined) drawBadge(def.badge, L, timeMs, (x, y) => put(x, y, "A"));
 
@@ -204,6 +242,8 @@ export function composeFrame(
   const tones = def.desaturate === true ? (ch.dimPalette ?? dim(ch.palette)) : ch.palette;
   const palette: Record<string, string> = { ...tones };
   if (def.accent !== undefined) palette["A"] = def.accent;
+  // 描边跟着一起降饱和：frozen 的脸是灰的，边却雪白的话，冻住的反而更抢眼
+  if (opts?.rim !== undefined) palette[RIM] = def.desaturate === true ? dimHex(opts.rim) : opts.rim;
 
   return { w: L.gridW, h: L.gridH, rows, palette };
 }

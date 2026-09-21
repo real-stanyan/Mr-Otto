@@ -30,11 +30,16 @@ export interface FaceOptions {
   readonly scale?: number;
   /** 眼睛跟指针。一屏十几个实例时建议关掉——十几个 pointermove 订阅不划算 */
   readonly followPointer?: boolean;
+  /** 描边颜色。深色底上必须给：这批头像的头发是纯黑的，不描边整个脑袋糊成一团。
+   *  浅色底上给了反而多一道白边，所以这是宿主按背景决定的，不是角色自带的 */
+  readonly rim?: string;
 }
 
 export interface FaceHandle {
   setState(state: FaceState): void;
   setCharacter(character: FaceCharacter): void;
+  /** 跟着主题切换调。传 undefined 关掉描边 */
+  setRim(rim: string | undefined): void;
   readonly canvas: HTMLCanvasElement;
   destroy(): void;
 }
@@ -52,6 +57,7 @@ export function createFace(host: HTMLElement, options: FaceOptions): FaceHandle 
   const off = document.createElement("canvas");
   const offCtx = off.getContext("2d");
 
+  let rim = options.rim;
   let pointer: ComposeOptions = {};
   const onPointer = (e: PointerEvent): void => {
     const r = canvas.getBoundingClientRect();
@@ -79,7 +85,7 @@ export function createFace(host: HTMLElement, options: FaceOptions): FaceHandle 
   const tick = (now: number): void => {
     if (!alive) return;
     if (ctx !== null && offCtx !== null) {
-      paintFrame(offCtx, composeFrame(character, state, now, pointer));
+      paintFrame(offCtx, composeFrame(character, state, now, rim === undefined ? pointer : { ...pointer, rim }));
       blitScaled(ctx, off, off.width, off.height, scale);
     }
     raf = requestAnimationFrame(tick);
@@ -90,6 +96,7 @@ export function createFace(host: HTMLElement, options: FaceOptions): FaceHandle 
     canvas,
     setState(next) { state = next; },
     setCharacter(next) { character = next; resize(); },
+    setRim(next) { rim = next; },
     destroy() {
       alive = false;
       cancelAnimationFrame(raf);
