@@ -772,7 +772,8 @@ html[data-skin="grok"] .hero,html[data-skin="grok"] .hero::after{border-radius:1
 
 /* 聊天页的头：一张脸 + 名字 + 职责。**不走 .navrow .mid** —— 那一格是
    「滚上去之后才出现」的 iOS 行为，对一条聊天不成立：你得一直知道在跟谁说话 */
-.chatid{flex:1;min-width:0;display:flex;align-items:center;gap:9px;margin-left:-2px}
+.nav.chatnav .navrow{height:62px}
+.chatid{flex:1;min-width:0;display:flex;align-items:center;gap:10px;margin-left:-2px}
 .chatid .nm{font-size:16px;font-weight:650;letter-spacing:-.2px;line-height:19px;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .chatid .st{font-size:11.5px;color:var(--mutedFg);line-height:15px;
@@ -787,7 +788,7 @@ html[data-skin="grok"] .hero,html[data-skin="grok"] .hero::after{border-radius:1
 /* 名册那一行。左边一张脸，右边一列「时间 / 未读」。
    **行上不画在跑没在跑**：清单那张表里没有这一格，画出来就是猜的（#722 / #1282）。
    能画的只有真在表里的两样 —— 最后一句、和 @ 了我几次（ADR-0256 那张表） */
-.brow .face{width:38px;height:38px;font-size:15px}
+.brow .face{width:54px;height:54px;font-size:19px}   /* 54 = ottoFace 的原生格高，1:1 才不糊 */
 .brow .nm{font-size:16px;font-weight:600;letter-spacing:-.15px;line-height:20px;
   display:flex;align-items:baseline;min-width:0}
 .brow .nm>span.n{white-space:nowrap;flex:none}
@@ -1508,6 +1509,7 @@ function composer({ph='说点什么…',ctx=.34,tone='',model='Auto',alert=false
     </div>
   </div>`;
 }
+const chatPad='<div style="height:118px;flex:none"></div>';   // 56 顶 + 62 行
 const cmpPad='<div style="height:150px;flex:none"></div>';
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -1763,7 +1765,8 @@ function openConfirm(scr,email){
 
 /** 聊天页的头。一条私聊画一张脸，一个群画一摞脸 —— 一眼就分得出这是谁 */
 function chatNav({face,name,sub,live,right=''}){
-  return `<div class="nav">
+  // 比普通导航条高一档：这一行要装一张 54 的脸（ottoFace 的原生格高，1:1 才不糊）
+  return `<div class="nav chatnav">
     <div class="navrow">
       <button class="navbtn" data-back style="min-width:30px;padding:0 4px">${I('back',22,2)}</button>
       <div class="chatid">${face}
@@ -1817,10 +1820,21 @@ function playRunMulti(el,steps){
 const stackFaces=(ids,sz=26,anim=false)=>`<span class="stack">${ids.slice(0,3).map(i=>{const b=botOf(i);
   return b?faceOf(b.face,b.name[0],sz,'idle',anim):''}).join('')}</span>`;
 
+/** 群那一行的头像：四格里塞两到三张小脸，整块和单只的 54 一样大。
+    **不是把单只缩小**，也不是把三张排成一条 —— 前者会让群聊行看起来比私聊行次一等，
+    后者在 54 的宽度里塞不下三张 27 还带重叠。两行两列是微信/Grok 都在用的那个形状：
+    一眼读作「一群」，而不是「一个人」 */
+function faceCluster(ids){
+  const f=ids.slice(0,4).map(i=>{const b=botOf(i);return b?faceOf(b.face,b.name[0],27,'idle',true):''});
+  // 宽 68 不是 54：这批脸的格子是 67×54，**宽比高大** —— 按 54 收的话一行塞不下两张，
+  // 四格会退化成竖着的一条。单只的脸在 54 高时也正好是 67 宽，所以两者看起来一样大
+  return `<span style="width:68px;height:54px;flex:none;display:flex;flex-wrap:wrap;
+    align-content:center;justify-content:center;gap:0;overflow:hidden">${f.join('')}</span>`;
+}
 /** 名册一行。右边那一列只放**表里真有**的两样：时间、@ 我几次 */
 function botRow(b,fresh){
   return `<div class="row press brow" data-go="botChat" data-p='{"id":"${b.id}"}'${fresh?' data-fresh="1"':''}>
-    ${faceOf(b.face,b.name[0],38,'idle',true)}
+    ${faceOf(b.face,b.name[0],54,'idle',true)}
     <span class="grow">
       <div class="nm"><span class="n">${b.name}</span><span class="rl">${b.role}</span></div>
       <div class="ls">${b.last}</div>
@@ -1833,7 +1847,7 @@ function botRow(b,fresh){
 }
 function groupRow(g){
   return `<div class="row press brow" data-go="groupChat" data-p='{"id":"${g.id}"}'>
-    ${stackFaces(g.members,28,true)}
+    ${faceCluster(g.members)}
     <span class="grow">
       <div class="nm"><span class="n">${g.name}</span><span class="rl">${g.members.map(i=>botOf(i).name).join('、')}</span></div>
       <div class="ls">${g.last}</div>
@@ -1912,10 +1926,10 @@ SCREENS.botsEmpty={label:'名册 · 一只都还没有',grp:'智能体',render:(
    所以时间线上唯一的分段是**一天一条**的日期，不是「新会话」 */
 SCREENS.botChat={label:'私聊 · 在干活',grp:'智能体',render:(p)=>{
  const b=botOf(p.id||'dev')||DATA.bots[1];
- return `${chatNav({face:faceOf(b.face,b.name[0],32,'working'),name:b.name,sub:'正在跑 · 4 分钟',live:true,right:`
+ return `${chatNav({face:faceOf(b.face,b.name[0],54,'working'),name:b.name,sub:'正在跑 · 4 分钟',live:true,right:`
    <button class="navbtn icon" data-act="voice" data-v="bot" aria-label="语音">${I('phone',20,2)}</button>
    <button class="navbtn icon" data-sheet="botMenu">${I('dots',21,2.4)}</button>`})}
- <div class="body">${navPad(false)}
+ <div class="body">${chatPad}
    <div class="tl">
      ${dayline('昨天')}
      ${meLine('17:20')}
@@ -1977,10 +1991,10 @@ SCREENS.botChat={label:'私聊 · 在干活',grp:'智能体',render:(p)=>{
    登完之后凭据留在那台机器上，它自己用，不再回来问你第二次 */
 SCREENS.botAuth={label:'私聊 · 要你登录一次',grp:'智能体',render:()=>{
  const b=botOf('ops');
- return `${chatNav({face:faceOf(b.face,b.name[0],32,'waiting'),name:b.name,sub:'在等你 · 昨天 21:04',right:`
+ return `${chatNav({face:faceOf(b.face,b.name[0],54,'waiting'),name:b.name,sub:'在等你 · 昨天 21:04',right:`
    <button class="navbtn icon" data-act="voice" data-v="bot">${I('phone',20,2)}</button>
    <button class="navbtn icon" data-sheet="botMenu">${I('dots',21,2.4)}</button>`})}
- <div class="body">${navPad(false)}
+ <div class="body">${chatPad}
    <div class="tl">
      ${dayline('昨天')}
      ${meLine('21:02')}
@@ -2013,11 +2027,11 @@ SCREENS.botAuth={label:'私聊 · 要你登录一次',grp:'智能体',render:()=
    接力那一行是**群事实**（agent_relay），不是谁的发言 —— 所以居中、没有气泡 */
 SCREENS.groupChat={label:'群聊',grp:'智能体',render:(p)=>{
  const g=DATA.groups.find(x=>x.id===(p.id||'g1'))||DATA.groups[0];
- return `${chatNav({face:stackFaces(g.members,26,true),
+ return `${chatNav({face:faceCluster(g.members),
    name:g.name,sub:`${g.members.map(i=>botOf(i).name).join('、')}`,right:`
    <button class="navbtn icon" data-act="voice" data-v="group" aria-label="语音">${I('phone',20,2)}</button>
    <button class="navbtn icon" data-sheet="groupMenu">${I('dots',21,2.4)}</button>`})}
- <div class="body">${navPad(false)}
+ <div class="body">${chatPad}
    <div class="tl">
      ${dayline('今天')}
      ${meLine('09:30')}
@@ -2063,12 +2077,12 @@ SCREENS.groupChat={label:'群聊',grp:'智能体',render:(p)=>{
    建一只智能体本来就是跟它说一句话。表单留着，但它是第二条路不是第一条 */
 SCREENS.newBot={label:'建一只 · 跟管理员说',grp:'建与改',render:()=>{
  const b=botOf('admin');
- return `${chatNav({face:faceOf(b.face,b.name[0],32),name:b.name,sub:'派活、建新的智能体',right:`
+ return `${chatNav({face:faceOf(b.face,b.name[0],54),name:b.name,sub:'派活、建新的智能体',right:`
    <button class="navbtn" data-go="newBotForm" style="font-size:15px">填表</button>`})}
- <div class="body">${navPad(false)}
+ <div class="body">${chatPad}
    <div class="tl">
      <div style="align-self:center;text-align:center;padding:14px 26px 4px">
-       ${faceOf('管理员','管',58,'idle',true)}
+       ${faceOf('管理员','管',108,'idle',true)}
        <h3 style="margin:12px 0 6px;font-size:19px;font-weight:650;letter-spacing:-.3px">要一只干什么的？</h3>
        <p style="margin:0;font-size:14px;line-height:20px;color:var(--mutedFg)">
          说一句就行。名字、提示词、给它哪几个应用，我来定，定完给你看一眼。</p>
@@ -2087,7 +2101,7 @@ SCREENS.newBot={label:'建一只 · 跟管理员说',grp:'建与改',render:()=>
 SCREENS.newBotForm={label:'建一只 · 直接填表',grp:'建与改',render:()=>`
  ${nav({title:'新的智能体',back:'管理员',right:`<button class="navbtn" style="font-weight:650" data-act="created">建</button>`})}
  <div class="body">${navPad(false)}
-   <div style="text-align:center;padding:4px 0 14px">${faceOf('新','新',66,'idle',true)}
+   <div style="text-align:center;padding:6px 0 16px">${faceOf('新','新',108,'idle',true)}
      <div class="t-foot dim" style="margin-top:8px">脸是按它的 id 派生的，建完就定了</div></div>
    <div class="field"><label>叫什么</label><input class="input" placeholder="比如：发票"></div>
    <div class="field"><label>干什么的（这一句它自己看得见）</label>
@@ -2117,7 +2131,7 @@ SCREENS.botSettings={label:'改一只',grp:'建与改',render:(p)=>{
  const b=botOf(p.id||'dev')||DATA.bots[1];
  return `${nav({title:b.name,back:'返回',right:`<button class="navbtn" style="font-weight:650" data-back>存</button>`})}
  <div class="body">${navPad(false)}
-   <div style="text-align:center;padding:4px 0 16px">${faceOf(b.face,b.name[0],66,'idle',true)}</div>
+   <div style="text-align:center;padding:6px 0 18px">${faceOf(b.face,b.name[0],108,'idle',true)}</div>
    <div class="field"><label>叫什么</label><input class="input" value="${b.name}"></div>
    <div class="field"><label>干什么的</label><input class="input" value="${b.role}"></div>
    <div class="field"><label>还有什么要交代的</label>
