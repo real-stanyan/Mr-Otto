@@ -496,6 +496,14 @@ export interface ProxyHostView {
 export interface ProxyStatusSnapshot {
   borrows: ProxyBorrowView[];
   hosts: ProxyHostView[];
+  /** 上一次成功 PUT 进托管箱的 serverId 清单（escrowSync.hostedServerIds，#815 M4）。
+      **三档不能压成两档**：`null` = 箱子不在云端 / 这一侧还没同步过 = 「拿不到」，
+      不是「箱子里没有这台」。团队连接器行上那枚点按它分 ready/off/unknown
+      （判据在 workspaceView 的 `cloudStateOf`），把 null 读成 off 就是一句平白的
+      假阴性，会让用户去排查一个不存在的故障。
+      团队连接器与好友授权共用同一只箱（`buildEscrowDoc` 的 wanted 集合含
+      workspaceGrants），所以这一份清单对两边都是权威的。 */
+  hostedServerIds: readonly string[] | null;
 }
 
 /** 云会话里"这一下点击到底生效了没有"的三态回执（复审 C2-I4）。

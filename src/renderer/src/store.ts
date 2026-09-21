@@ -603,6 +603,10 @@ interface ChatState {
       同一条推送带来的另一半——白名单内是全自动的，这是「有人正在用我的凭证」
       在界面上唯一的实况来源 */
   proxyHosts: ProxyHostView[];
+  /** 上一次成功 PUT 进托管箱的 serverId 清单（#815 M4）。**三档的中间那档就是 null**：
+      「拿不到这份清单」≠「箱子里没有这台」，判据在 workspaceView 的 cloudStateOf。
+      同一条 onProxyChanged 推送带来的第三格，另有 loadProxyHosted 拉一次 */
+  proxyHostedServerIds: readonly string[] | null;
   /** 当前正在看的那份代理审计账(按好友过滤或全部)。新→旧 */
   proxyAudits: { ts: number; friendUid: string; serverId: string; tool: string; argsSummary: string; decision: string; outcome: string; detail?: string }[];
   /** 工作区协作组(issue #811, ADR-0198)：我在籍的那些工作区快照。没有推送通道
@@ -1008,6 +1012,11 @@ interface ChatState {
   loadProxyAudits(friendUid?: string): Promise<void>;
   /** 拉一次代理全景（借进来的 + 借出去的）。推送之外的那扇查询窗口，重载后补齐用 */
   refreshProxyStatus(): Promise<void>;
+  /** 只取托管箱那一格（#815 M4）。与 refreshProxyStatus 分开是因为**失败的处置相反**：
+      那个把错误写进 friendError（好友页上有地方显示它），而这一格的消费方是团队设置页上
+      一枚三档的点——它自己就能把「拿不到」说出口，写 friendError 只会让一句话跑到另一页去。
+      所以这里失败一律落回 null = unknown，不碰任何错误字段 */
+  loadProxyHosted(): Promise<void>;
   /** A 侧：改一个已有好友的白名单，不重发邀请码。回是否成功 */
   updateProxyGrant(
     friendUid: string,
@@ -1696,6 +1705,7 @@ export const useChat = create<ChatState>((set, get) => ({
   proxyAudits: [],
   proxyBorrows: [],
   proxyHosts: [],
+  proxyHostedServerIds: null,
   workspaceGroups: [],
   workspaceMentions: [],
   workspaceGroupsError: null,
@@ -2531,7 +2541,14 @@ export const useChat = create<ChatState>((set, get) => ({
       set({ friendError: r.message });
       return;
     }
-    set({ proxyBorrows: r.value.borrows, proxyHosts: r.value.hosts, friendError: null });
+    set({ proxyBorrows: r.value.borrows, proxyHosts: r.value.hosts, proxyHostedServerIds: r.value.hostedServerIds, friendError: null });
+  },
+
+  async loadProxyHosted() {
+    // 抛了也落 null：这条挂在 effect 上，不接住就是一条未处理的 rejection 飘在控制台里，
+    // 而那种噪音正是下一个真失败的藏身处。落 null = 「拿不到」，本来就是这一格的三档之一
+    const r = await window.otter.proxyStatus().catch(() => ({ ok: false as const }));
+    set({ proxyHostedServerIds: r.ok ? r.value.hostedServerIds : null });
   },
 
   async updateProxyGrant(friendUid, allow) {
@@ -3469,8 +3486,8 @@ export const useChat = create<ChatState>((set, get) => ({
     window.otter.onToolDefsChanged(({ sessionId, toolDefs }) => {
       if (get().sessionId === sessionId) set({ toolDefs });
     });
-    window.otter.onProxyChanged(({ borrows, hosts }) => {
-      set({ proxyBorrows: borrows, proxyHosts: hosts });
+    window.otter.onProxyChanged(({ borrows, hosts, hostedServerIds }) => {
+      set({ proxyBorrows: borrows, proxyHosts: hosts, proxyHostedServerIds: hostedServerIds });
     });
     // 云会话（Task 13，ADR-0199）：两条推送只在"当前 join 着的正是这条"时才
     // 生效——异步期间可能已经 leave()/切到另一条，旧连接的迟到推送不该

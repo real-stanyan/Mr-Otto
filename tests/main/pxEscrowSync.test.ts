@@ -161,3 +161,75 @@ describe("pxEscrowSync 的 hostedServerIds 与 purge（issue #799 / ADR-0197 切
     expect(h.calls.length).toBe(0);
   });
 });
+
+describe("pxEscrowSync：箱内清单的推送（#815 M4）", () => {
+  it("清单变了响一次、没变不响；回调里读到的已经是新值", async () => {
+    // 这枚回调唯一的消费方是团队连接器行上那枚三档的点。只拉不推的话，贡献 / 撤回一台
+    // 连接器之后那枚点还写着上一次的答案——而那正是这一页上最常做的动作
+    const seen: (readonly string[] | null)[] = [];
+    let services = [{ serverId: "square", url: "https://x.example/mcp", toolDefs: [] }];
+    let token = "tok";
+    const sync = createEscrowSync({
+      baseUrl: () => "https://edge.test",
+      accessToken: async () => "jwt",
+      buildDoc: (): EscrowDoc => ({
+        v: 1, hostUid: "a-uid",
+        services: services.map((s) => ({ ...s, oauth: { tokens: { access_token: token } } })),
+        grants: [{ friendUid: "b-uid", allow: [{ serverId: "square", tools: [] }] }],
+        updatedTs: 1,
+      }),
+      everHosted: () => true,
+      fetchImpl: (async () => ({ ok: true, status: 200 }) as Response) as unknown as typeof fetch,
+      debounceMs: 1,
+      retryMs: 5,
+      onHostedChanged: () => seen.push(sync.hostedServerIds()),
+    });
+
+    expect(await sync.syncNow()).toBe("put");
+    expect(seen).toEqual([["square"]]); // 先赋值后通知：回调当场读得到新值
+
+    // 箱子内容变了（token 刷新）但 serverId 清单没变 —— 真打了一次 PUT，但**不响**
+    token = "tok2";
+    expect(await sync.syncNow()).toBe("put");
+    expect(seen).toHaveLength(1);
+
+    // 清单真变了才响
+    services = [
+      { serverId: "square", url: "https://x.example/mcp", toolDefs: [] },
+      { serverId: "shopify", url: "https://y.example/mcp", toolDefs: [] },
+    ];
+    expect(await sync.syncNow()).toBe("put");
+    expect(seen).toEqual([["square"], ["square", "shopify"]]);
+    sync.dispose();
+  });
+
+  it("零授权 DELETE 与登出清箱都把清单落回 null（= 不知道，不是空箱）", async () => {
+    const seen: (readonly string[] | null)[] = [];
+    let hasGrants = true;
+    const sync = createEscrowSync({
+      baseUrl: () => "https://edge.test",
+      accessToken: async () => "jwt",
+      buildDoc: (): EscrowDoc | null =>
+        hasGrants
+          ? { v: 1, hostUid: "a-uid", services: [{ serverId: "square", url: "https://x.example/mcp", toolDefs: [] }], grants: [], updatedTs: 1 }
+          : null,
+      everHosted: () => true,
+      fetchImpl: (async () => ({ ok: true, status: 200 }) as Response) as unknown as typeof fetch,
+      debounceMs: 1,
+      retryMs: 5,
+      onHostedChanged: () => seen.push(sync.hostedServerIds()),
+    });
+    expect(await sync.syncNow()).toBe("put");
+    hasGrants = false;
+    expect(await sync.syncNow()).toBe("deleted");
+    expect(seen).toEqual([["square"], null]);
+    expect(sync.hostedServerIds()).toBeNull();
+
+    // 登出清箱走另一条路（不看 digest），同样要响
+    hasGrants = true;
+    expect(await sync.syncNow()).toBe("put");
+    expect(await sync.purge()).toBe(true);
+    expect(seen).toEqual([["square"], null, ["square"], null]);
+    sync.dispose();
+  });
+});

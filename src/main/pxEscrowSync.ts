@@ -32,6 +32,12 @@ export interface EscrowSyncDeps {
   /** 有没有托管过的迹象（grants 或 channels 非空）。false + doc 为 null =
       从没碰过代理的账号，连 DELETE 都不必发 */
   everHosted: () => boolean;
+  /** 箱内清单**变了**的时候响一次（#815 M4）。`hostedServerIds()` 是拉取式的，而它的
+      消费方（连接器行上那枚三档的点）在别处：不给它一条推送，一次成功的 PUT 之后界面
+      仍然写着上一次的答案，而这一页上最常见的动作恰恰是贡献/撤回一台连接器 —— 那正是
+      会让箱子内容变的那一步。只在真变了时响：同一份清单重复 PUT（token 刷新那种）
+      不该把整条推送链吵一遍 */
+  onHostedChanged?: () => void;
   fetchImpl?: typeof fetch;
   /** 防抖窗口（默认 800ms）与失败重试间隔（默认 30s）。测试注小值 */
   debounceMs?: number;
@@ -72,6 +78,15 @@ export function createEscrowSync(deps: EscrowSyncDeps): EscrowSync {
   let lastSent: string | null = null;
   /** 上一次成功 PUT 的箱内 serverId 清单。null = 箱子不在云端（见接口注释） */
   let hosted: readonly string[] | null = null;
+  /** 全仓写 `hosted` 的唯一出口：变了才通知。顺序是 **先赋值后通知** —— 回调多半会当场
+      调 `hostedServerIds()`，反过来它读到的是上一次那份 */
+  const setHosted = (next: readonly string[] | null): void => {
+    const same = next === null
+      ? hosted === null
+      : hosted !== null && hosted.length === next.length && hosted.every((id, i) => id === next[i]);
+    hosted = next;
+    if (!same) deps.onHostedChanged?.();
+  };
   /** 串行化：同步进行中又被触发 → 记一笔，跑完再来一轮 */
   let inflight: Promise<EscrowSyncOutcome> | null = null;
   let rerun = false;
@@ -100,7 +115,7 @@ export function createEscrowSync(deps: EscrowSyncDeps): EscrowSync {
         return "failed";
       }
       lastSent = digest;
-      hosted = doc ? doc.services.map((s) => s.serverId) : null;
+      setHosted(doc ? doc.services.map((s) => s.serverId) : null);
       log(doc ? `托管已上传：${doc.services.length} 台服务 / ${doc.grants.length} 条授权` : "托管已从云端删除");
       return doc ? "put" : "deleted";
     } catch (e) {
@@ -155,7 +170,7 @@ export function createEscrowSync(deps: EscrowSyncDeps): EscrowSync {
           return false;
         }
         lastSent = null;
-        hosted = null;
+        setHosted(null);
         log("登出：托管已从云端删除");
         return true;
       } catch (e) {

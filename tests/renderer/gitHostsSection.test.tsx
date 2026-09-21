@@ -46,6 +46,9 @@ const WS: WorkspaceSnapshot = {
 // 而那种噪音正好是**下一个真失败**的藏身处。桩成空清单，这一组不看它
 const OTTER_STUB = {
   workspaceCloudList: async () => ({ ok: true, value: [] }),
+  // 同上：「连接器」tab 挂载时会去拉托管箱清单（#815 M4）。桩成「箱子不在云端」，
+  // 这一组不看那枚点
+  proxyStatus: async () => ({ ok: true, value: { borrows: [], hosts: [], hostedServerIds: null } }),
 } as unknown as Window["otter"];
 
 function seed(opts: {
