@@ -8,9 +8,10 @@
 // 名册与各种选人弹层传 `plain`，于是它们**由构造**就是静止的一帧 —— 不靠每个调用点
 // 记得传 `animate={false}`。会动的只有「此刻正在看的那只」：聊天头部与通话里那几格。
 //
-// `prefers-reduced-motion` 下一律退回静止一帧（不是「慢一点」）。读的时机是 effect
-// 跑的那一下，不订阅变化 —— 中途改系统设置要下一次重绘才跟上，与 ui/nav-stack.tsx
-// 的取舍一致。
+// `prefers-reduced-motion` 下一律退回静止一帧（不是「慢一点」）。它与 `devicePixelRatio`
+// 都是 effect 跑的那一下读的，不订阅变化 —— 中途改系统设置要下一次重绘才跟上（与
+// ui/nav-stack.tsx 的取舍一致）；dpr 那条的表现更明显：把窗口从 Retina 拖到外接屏时
+// 后备分辨率还停在旧的那一档，**像素画会糊**，等这一格因为别的原因重绘才恢复。
 
 import { useEffect, useRef, type ComponentProps } from "react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar.js";
