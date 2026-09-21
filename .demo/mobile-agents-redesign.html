@@ -434,6 +434,98 @@ textarea.input{height:auto;min-height:92px;padding:12px 14px;resize:none;line-he
 .vb.on{background:color-mix(in srgb,var(--warn) 26%,transparent);color:var(--warn)}
 .vb.end{background:var(--destructive);color:#fff}
 .vgrab{width:70px;height:4px;border-radius:2px;background:var(--fg);opacity:.16;margin:2px auto 4px}
+/* 它说的话是一张卡，不是裸字（参照图里就是这个形状）。裸字那版在这一屏上
+   与工具卡、通话卡混在一起时分不出「这是它在说话」还是「这是一条记录」 */
+.bub.ot{align-self:flex-start;max-width:90%;padding:11px 15px;border-radius:20px;
+  background:var(--card);font-size:16px;line-height:23px;letter-spacing:-.1px}
+.bub.ot + .bub.ot{margin-top:-5px}
+.callpanel .bub.me{background:color-mix(in srgb,var(--fg) 14%,transparent);color:var(--fg)}
+/* ══ 聊天页：悬浮药丸头 / 输入区 / 电话模式 / 通话折成的那张卡 ═══════════
+   形状照维护者给的两张参照。几条判断写在各自旁边。 */
+
+/* 头不再是一整条导航栏，是三个浮在内容上的元件：回退 / 名字药丸 / 右边那颗。
+   正文从它们底下滚过去 —— 一条实心横栏会在这一屏上占掉 62px，而这一屏唯一要看的
+   就是对话本身 */
+.pillnav{position:absolute;top:0;left:0;right:0;z-index:80;padding:52px 12px 0;
+  display:flex;align-items:center;gap:10px;pointer-events:none}
+.pillnav>*{pointer-events:auto}
+.rbtn{width:44px;height:44px;border-radius:50%;border:0;flex:none;cursor:pointer;
+  display:grid;place-items:center;color:var(--fg);font-family:inherit;
+  background:color-mix(in srgb,var(--fg) 10%,var(--glass));
+  backdrop-filter:blur(24px) saturate(180%);-webkit-backdrop-filter:blur(24px) saturate(180%);
+  transition:transform 140ms var(--ease-out),background 140ms var(--ease-out)}
+.rbtn:active{transform:scale(.93)}
+.namepill{display:flex;align-items:center;gap:9px;height:46px;padding:0 18px 0 5px;border-radius:999px;
+  margin:0 auto;max-width:62%;cursor:pointer;
+  background:color-mix(in srgb,var(--fg) 10%,var(--glass));
+  backdrop-filter:blur(24px) saturate(180%);-webkit-backdrop-filter:blur(24px) saturate(180%);
+  box-shadow:0 10px 30px -12px rgba(0,0,0,.6);
+  transition:transform 140ms var(--ease-out)}
+.namepill:active{transform:scale(.97)}
+.namepill .nm{font-size:16.5px;font-weight:650;letter-spacing:-.2px;white-space:nowrap;
+  overflow:hidden;text-overflow:ellipsis}
+
+/* 输入区：＋ / 药丸 / 右边那颗圆钮。药丸里那支麦是「说给它听」（听写），
+   右边那颗才是电话 —— 两件事不同：一个是把话变成字，一个是真的通上话 */
+.cmpTop{display:flex;gap:9px;align-items:flex-end}
+.cmpCard{flex:1;min-width:0;display:flex;align-items:flex-end;gap:6px;
+  background:color-mix(in srgb,var(--fg) 7%,var(--card));
+  border:1px solid var(--input);border-radius:24px;padding:11px 6px 11px 16px}
+.cmpBox{flex:1}
+.micin{width:34px;height:34px;border-radius:50%;border:0;background:transparent;color:var(--mutedFg);
+  cursor:pointer;display:grid;place-items:center;flex:none;transition:transform 140ms var(--ease-out)}
+.micin:active{transform:scale(.9)}
+.callbtn{width:48px;height:48px;border-radius:50%;border:0;flex:none;cursor:pointer;position:relative;
+  background:var(--primary);color:var(--primaryFg);display:grid;place-items:center;
+  transition:transform 150ms var(--ease-out)}
+.callbtn:active{transform:scale(.93)}
+.callbtn .wv,.callbtn .up{grid-area:1/1;display:grid;place-items:center;
+  transition:opacity 160ms var(--ease-out),transform 160ms var(--ease-out)}
+.callbtn .up{opacity:0;transform:scale(.7)}
+/* 打了字就从「开电话」换成「发出去」：这两件事同一时刻只可能想做一件 */
+.composer:has(.cmpBox.filled) .callbtn .wv{opacity:0;transform:scale(.7)}
+.composer:has(.cmpBox.filled) .callbtn .up{opacity:1;transform:none}
+
+/* 电话模式：**替换输入框**，不是浮在上面。通话时那一格本来就不打字，
+   把输入框留在下面只会让人以为还能打 */
+.voicebar{display:flex;flex-direction:column;gap:10px}
+.vline{display:flex;align-items:center;gap:12px;padding:2px 6px 0}
+.vface{width:46px;height:46px;border-radius:50%;flex:none;display:grid;place-items:center;
+  background:color-mix(in srgb,var(--voice) 22%,transparent);overflow:hidden}
+.wave{flex:1;min-width:0;height:30px;display:flex;align-items:center;justify-content:center;gap:2px}
+.wave i{width:3px;border-radius:2px;background:var(--voice);height:4px;transition:height 90ms linear;flex:none}
+.voicebar.muted .wave i{background:var(--mutedFg);opacity:.5}
+.vtime{font-size:14px;font-weight:600;font-variant-numeric:tabular-nums;color:var(--mutedFg);flex:none}
+.vbtns{display:flex;gap:9px;justify-content:center;padding-bottom:2px}
+.vb{width:62px;height:46px;border-radius:18px;border:0;cursor:pointer;font-family:inherit;
+  background:color-mix(in srgb,var(--fg) 10%,transparent);color:var(--fg);
+  display:grid;place-items:center;transition:transform 140ms var(--ease-out),background 140ms var(--ease-out)}
+.vb:active{transform:scale(.94)}
+.vb.on{background:color-mix(in srgb,var(--warn) 26%,transparent);color:var(--warn)}
+.vb.end{background:var(--destructive);color:#fff;width:76px}
+
+/* 通话结束折成的那张卡。**不是把转写贴进时间线**（ADR-0288 给云会话判过同一条：
+   一场 12 句的通话能把前后的正经对话挤到看不见）—— 收起时只报「多久」和「聊的什么」，
+   点开才是全文 */
+.callcard{align-self:stretch;background:var(--card);border-radius:18px;padding:13px 15px;cursor:pointer;
+  transition:transform 150ms var(--ease-out),background 140ms var(--ease-out)}
+.callcard:active{transform:scale(.985)}
+.callcard .hd{display:flex;align-items:center;gap:8px}
+.callcard .t{font-size:16px;font-weight:600;letter-spacing:-.15px}
+.callcard .d{font-size:14px;color:var(--mutedFg);font-variant-numeric:tabular-nums}
+.callcard .s{font-size:14.5px;color:var(--mutedFg);margin-top:3px}
+
+/* 点开那一下是一扇从底下滑上来的窗 —— 盖住对话但不盖住头上那颗药丸：
+   人要知道自己还在这条线里，关掉就回到原处 */
+.callpanel{position:absolute;left:0;right:0;top:104px;bottom:0;z-index:200;
+  background:var(--bg);border-radius:26px 26px 0 0;box-shadow:0 -20px 50px -20px rgba(0,0,0,.6);
+  display:flex;flex-direction:column;transform:translateY(100%);
+  transition:transform 380ms var(--ease-drawer)}
+.callpanel.in{transform:none}
+.callpanel .ph{display:flex;align-items:center;gap:12px;padding:16px 16px 10px;flex:none}
+.callpanel .ph .t{font-size:17px;font-weight:650;letter-spacing:-.2px}
+.callpanel .pb{flex:1;overflow-y:auto;padding:4px 16px 26px;display:flex;flex-direction:column;gap:10px}
+.callpanel .pb::-webkit-scrollbar{width:0}
 /* ══ 全屏语音 ══════════════════════════════════════════════════════ */
 .call{position:absolute;inset:0;z-index:400;display:flex;flex-direction:column;overflow:hidden;background:var(--bg)}
 /* 通话与进门闸是这个 app 仅有的两个「时刻」屏，用同一块波场把它们连起来。
@@ -1261,14 +1353,20 @@ function renderFaceOnce(cv,t){
   const L=layoutFor(ch);
   let off=cv._off;
   if(!off){ off=cv._off=document.createElement('canvas'); off.width=L.gridW; off.height=L.gridH; }
-  const k=2;   // 画 2 倍图，CSS 再按吸过的尺寸收 —— 收的倍数一定是 1 或 1/2 或 2
-  if(cv.width!==L.gridW*k){ cv.width=L.gridW*k; cv.height=L.gridH*k; }
+  /* 画 2 倍图，CSS 再按吸过的尺寸收 —— 收的倍数一定是 1 或 1/2 或 2。
+     **四周各留一格**（PAD）：呼吸与摆动都是整格位移，而这批角色的头几乎填满网格，
+     贴着画布边的那一帧会被切掉一条 —— 动起来看着就是「周围有一道黑边在啃」。
+     留一格之后位移永远落在画布里面。留白是透明的，所以视觉尺寸不变 */
+  const k=2, PAD=1;
+  const cw=(L.gridW+PAD*2)*k, chh=(L.gridH+PAD*2)*k;
+  if(cv.width!==cw){ cv.width=cw; cv.height=chh; }
   const octx=off.getContext('2d'), ctx=cv.getContext('2d');
   if(!octx||!ctx) return;
   // 深色底要描边：这批头像的头发是纯黑的，不描边整个脑袋糊成一团（那一侧的 setRim）
   const rim=document.documentElement.dataset.theme==='dark'?'#f2f2f3':undefined;
   paintFrame(octx,composeFrame(ch,st,t,rim===undefined?{}:{rim}));
-  blitScaled(ctx,off,L.gridW,L.gridH,k);
+  ctx.clearRect(0,0,cw,chh); ctx.imageSmoothingEnabled=false;
+  ctx.drawImage(off,PAD*k,PAD*k,L.gridW*k,L.gridH*k);
 }
 /** 显示高度只取 gridH 的整数倍或整数分之一（48 / 24 / 96）。**这不是洁癖** ——
     那一侧的 paint.ts 写着「非整数倍会把硬边插值成糊，而硬边是像素画的全部身份」，
@@ -1282,7 +1380,11 @@ function mountFace(cv){
   cv.style.imageRendering='pixelated';
   const L=layoutFor(faceCharacter(cv.dataset.ch)||FACE_CHARACTERS[0]);
   const sz=snapFaceHeight(+cv.dataset.sz||40,L.gridH);
-  cv.style.height=sz+'px'; cv.style.width=Math.round(sz*L.gridW/L.gridH)+'px';
+  // 四周各留一格（见 renderFaceOnce 的 PAD）：显示尺寸把那两格算进去，
+  // 脸本身还是 sz 那么大，多出来的是透明留白
+  const grow=(L.gridH+2)/L.gridH;
+  cv.style.height=Math.round(sz*grow)+'px';
+  cv.style.width=Math.round(sz*grow*L.gridW/L.gridH)+'px';
   renderFaceOnce(cv,performance.now());
   if(cv.dataset.anim==='1') FACE_LIVE.add(cv); else FACE_LIVE.delete(cv);
 }
@@ -1498,67 +1600,96 @@ function sessionRow(s,go,params){
   </div>`;
 }
 
-/* ── 语音小卡 ──────────────────────────────────────────────────────
-   形状照维护者给的参照：脸 / 波形 / 在听的人 + 四颗钮。三条判断：
-   · **波形画的是「此刻谁在出声」**，静音时它退成灰的低幅 —— 不是停住：
-     停住读作「坏了」，灰下去读作「你把自己关了」。
-   · 通话里那张脸走 `speaking` / `listening` 两档（ottoFace 原装），与时间线上
-     那一行、导航条上那张是同一个事实的三处投影。
-   · 卡**可以拖**（浮在正文上方，挡住哪一句由你决定），松手按速度方向吸回上或下 ——
-     这是全屏那版没有的自由度，也是不做全屏的理由本身：通话时人要接着看对话。 */
-const VOICE={on:false,muted:false,raf:0,drag:null};
-function voiceCard(ids){
-  const bars=Array.from({length:26}).map(()=>'<i></i>').join('');
-  const b=botOf(ids[0]);
-  return `<div class="vcard" data-el="vcard">
-    <div class="vrow">
-      <span class="vface">${faceOf(b.face,b.name[0],54,'speaking',true)}</span>
+/* ── 电话模式 ──────────────────────────────────────────────────────
+   维护者定的三件事：① 语音**替换输入框**（不是浮在上面、更不是一整屏）；
+   ② 挂断之后换回输入框；③ 这一通结束折成一张卡，点开是一扇滑窗放全文。
+
+   ① 的理由：通话时那一格本来就不打字，把输入框留在下面只会让人以为还能打；
+   而正文要接着看（它正在把活干完），所以也不做全屏。
+   ③ 的理由与 ADR-0288 给云会话判过的那条同源：把转写整段贴进时间线，一场十几句的
+   通话会把前后的正经对话挤到看不见。收起时只报「多久 + 聊的什么」，点开才是全文。 */
+const VOICE={on:false,muted:false,raf:0,t0:0,composer:null,who:'dev'};
+function voiceBar(ids){
+  const b=botOf(ids[0])||DATA.bots[0];
+  const bars=Array.from({length:22}).map(()=>'<i></i>').join('');
+  return `<div class="voicebar" data-el="vbar">
+    <div class="vline">
+      <span class="vface">${faceOf(b.face,b.name[0],46,'speaking',true)}</span>
       <div class="wave" data-el="wave">${bars}</div>
-      <span class="vwho" title="${DATA.me.name} 在听">${DATA.me.ini}Y</span>
+      <span class="vtime" data-el="vtime">00:00</span>
     </div>
     <div class="vbtns">
-      <button class="vb" data-sheet="voiceSet" aria-label="通话设置">${I('gear',20,2)}</button>
       <button class="vb" data-act="vtext" aria-label="转文字">${I('kbd',20,2)}</button>
       <button class="vb" data-act="vmute" aria-label="静音">${I('mic',20,2)}</button>
       <button class="vb end" data-act="vend" aria-label="挂断">${I('hang',20,2.2)}</button>
     </div>
-    <div class="vgrab"></div>
   </div>`;
 }
 function openVoice(ids){
-  if(VOICE.on) return;
-  const host=document.getElementById('voice');
-  host.innerHTML=voiceCard(ids); VOICE.on=true; VOICE.muted=false;
-  const card=host.querySelector('.vcard'), bars=[...host.querySelectorAll('.wave i')];
-  soon(()=>card.classList.add('in'));
-  let t0=performance.now();
+  const scr=stack[stack.length-1]?.el, cmp=scr&&scr.querySelector('.composer');
+  if(!cmp||VOICE.on) return;
+  VOICE.on=true; VOICE.muted=false; VOICE.who=ids[0]; VOICE.t0=Date.now();
+  VOICE.composer=cmp.innerHTML;                    // 挂断之后原样换回来
+  cmp.innerHTML=voiceBar(ids);
+  const bars=[...cmp.querySelectorAll('.wave i')], tm=cmp.querySelector('[data-el="vtime"]');
   const tick=()=>{ VOICE.raf=requestAnimationFrame(tick);
-    const t=(performance.now()-t0)/1000;
-    // 说话的包络：几条正弦叠出来的「有话在说」，静音时压到近乎一条线
+    const t=(Date.now()-VOICE.t0)/1000;
+    // 说话的包络：几条正弦叠出「有话在说」。静音时压到近乎一条线 ——
+    // **不是停住**：停住读作「坏了」，灰下去读作「你把自己关了」
     bars.forEach((el,i)=>{
-      const n=Math.abs(Math.sin(t*6+i*0.55))*Math.abs(Math.sin(t*2.1+i*0.21))*Math.abs(Math.sin(t*0.9+i*0.07));
-      el.style.height=(VOICE.muted?3:4+n*26)+'px';
+      const n=Math.abs(Math.sin(t*6+i*.55))*Math.abs(Math.sin(t*2.1+i*.21))*Math.abs(Math.sin(t*.9+i*.07));
+      el.style.height=(VOICE.muted?3:4+n*22)+'px';
     });
+    if(tm) tm.textContent=`${String(Math.floor(t/60)).padStart(2,'0')}:${String(Math.floor(t%60)).padStart(2,'0')}`;
   };
   tick();
-  // 拖：1:1 跟手，松手弹回 —— 与抽屉共用那条曲线
-  let sy=0,base=0;
-  card.addEventListener('pointerdown',e=>{ if(e.target.closest('button'))return;
-    card.setPointerCapture(e.pointerId); sy=e.clientY; base=VOICE.dragY||0; card.style.transition='none'; });
-  card.addEventListener('pointermove',e=>{ if(!card.hasPointerCapture?.(e.pointerId))return;
-    VOICE.dragY=Math.max(-40,Math.min(430,base+(e.clientY-sy)));
-    card.style.transform=`translateY(${VOICE.dragY}px)`; });
-  card.addEventListener('pointerup',e=>{ if(!card.hasPointerCapture?.(e.pointerId))return;
-    card.releasePointerCapture(e.pointerId);
-    card.style.transition='transform 320ms cubic-bezier(.32,.72,0,1)'; });
 }
-function closeVoice(){
+function closeVoice({card=true}={}){
   if(!VOICE.on) return;
-  const host=document.getElementById('voice'), card=host.querySelector('.vcard');
-  cancelAnimationFrame(VOICE.raf); VOICE.on=false; VOICE.dragY=0;
-  if(card){ card.style.transition='transform 220ms var(--ease-out),opacity 180ms var(--ease-out)';
-    card.classList.remove('in'); setTimeout(()=>{host.innerHTML=''},220); }
-  else host.innerHTML='';
+  cancelAnimationFrame(VOICE.raf);
+  const secs=Math.max(1,Math.round((Date.now()-VOICE.t0)/1000));
+  const scr=stack[stack.length-1]?.el, cmp=scr&&scr.querySelector('.composer');
+  VOICE.on=false;
+  if(cmp&&VOICE.composer!==null) cmp.innerHTML=VOICE.composer;
+  VOICE.composer=null;
+  if(card&&scr){ const tl=scr.querySelector('.tl');
+    if(tl){ tl.insertAdjacentHTML('beforeend',callCard(secs));
+      const body=scr.querySelector('.body'); if(body) soon(()=>{body.scrollTop=body.scrollHeight}); } }
+}
+const mmss=s=>`${String(Math.floor(s/60)).padStart(2,'0')}:${String(s%60).padStart(2,'0')}`;
+/** 收起来的那张卡：只报「多久」和「聊的什么」。
+    **不报「几句话」** —— 那是干活的量，读者据此做不了任何事（同 ADR-0250 撤掉
+    云会话那行「N 步 · M 次工具调用」的理由） */
+function callCard(secs){
+  return `<div class="callcard" data-act="callOpen" data-s="${secs}">
+    <div class="hd">${I('wave',17,2.2)}<span class="t">语音聊天</span>
+      <span style="flex:1"></span><span class="d">${mmss(secs)}</span></div>
+    <div class="s">定价文案与门禁</div>
+  </div>`;
+}
+/** 点开那一下：一扇从底下滑上来的窗，盖住对话但**不盖住头上那颗药丸** ——
+    人要知道自己还在这条线里，关掉就回到原处 */
+function openCallPanel(secs){
+  const wrap=document.querySelector('.screenwrap');
+  const talk=[
+    ['me','好了吗？门禁那三段过了没有。'],
+    ['ot','三段都过了。PR 我开好了，等你看一眼就能合。'],
+    ['me','第二档那句文案你改了吗'],
+    ['ot','改了，收成一句：「够两个人一起用」。要我现在合吗？'],
+    ['me','先别合，我看一眼'],
+    ['ot','好，我盯着 CI，有动静第一时间跟你说。'],
+  ];
+  const el=document.createElement('div');
+  el.className='callpanel';
+  el.innerHTML=`<div class="ph">
+      <button class="rbtn" data-act="callClose" aria-label="关掉">${I('x',20,2.4)}</button>
+      <span class="t">语音聊天 · ${mmss(secs)}</span></div>
+    <div class="pb">${talk.map(([w,t])=>`<div class="bub ${w==='me'?'me':'ot'}">${t}</div>`).join('')}</div>`;
+  wrap.appendChild(el); soon(()=>el.classList.add('in'));
+}
+function closeCallPanel(){
+  const el=document.querySelector('.callpanel'); if(!el) return;
+  el.classList.remove('in'); setTimeout(()=>el.remove(),380);
 }
 /* 从底部升起的一整屏（语音模式、App 内浏览器）：同 iOS 的全屏模态，从底部来、也回底部去 —— 同一条路径 */
 function goUp(id,params){
@@ -1597,22 +1728,29 @@ function ringSvg(pct,tone){
    <circle cx="13" cy="13" r="${r}" fill="none" stroke="${col}" stroke-width="3" stroke-linecap="round"
     stroke-dasharray="${c}" stroke-dashoffset="${c*(1-pct)}"/></svg>`;
 }
-function composer({ph='说点什么…',ctx=.34,tone='',model='Auto',alert=false,extra=''}={}){
+/** 输入区。三件东西：＋ / 一条药丸 / 右边那颗圆钮。
+
+    **没有型号选择器**（维护者定的口径）：挑哪一款由我们按这一轮的活自己判，
+    用户这一侧不提供 —— 桌面那套 Auto（ADR-0237：先用最便宜那款判一手难度）就是
+    这条口径的实现，手机端只是不再把那个开关摆出来。少一个控件不是少一个功能。
+
+    **也没有上下文环**：这一栏的上下文由它自己管（压缩、闲置压缩都在后台跑），
+    界面一个字都不提 —— 摆一个环出来就是把一件用户无法据此行动的事变成一个常驻问号。
+
+    右边那颗圆钮**一物两用**：空着时是「开电话」，打了字就是「发出去」。两颗并排的话
+    输入框右边永远有一颗按不下去的钮，而这两件事在同一时刻只可能想做一件。 */
+function composer({ph='说点什么…',extra=''}={}){
   return `<div class="composer">
     ${extra}
     <div class="cmpTop">
+      <button class="rbtn" data-sheet="attach" aria-label="加点东西">${I('plus',22,2.1)}</button>
       <div class="cmpCard">
         <div class="cmpBox" contenteditable="plaintext-only" role="textbox" aria-multiline="true" aria-label="${ph}" data-ph="${ph}"></div>
-        <div class="cmpBar">
-          ${model===false?'':`<button class="mini" data-sheet="model">${I('spark',13,2)}${textPillLabel()}</button>`}
-          <button class="mini ic" data-sheet="attach" aria-label="附件">${I('paperclip',16,2)}</button>
-          <span style="flex:1"></span>
-          <button class="ring" data-sheet="ctx" style="border:0;background:transparent;padding:0;cursor:pointer">
-            ${ringSvg(ctx,tone)}${alert?'<span class="alert"></span>':''}
-          </button>
-          <button class="sendsm" data-act="send" aria-label="发送">${I('up',18,2.6)}</button>
-        </div>
+        <button class="micin" data-act="dictate" aria-label="说给它听">${I('mic',19,2)}</button>
       </div>
+      <button class="callbtn" data-act="voice" aria-label="打电话 / 发送">
+        <span class="wv">${I('wave',22,2.2)}</span><span class="up">${I('up',22,2.6)}</span>
+      </button>
     </div>
   </div>`;
 }
@@ -1871,19 +2009,17 @@ function openConfirm(scr,email){
    ═══════════════════════════════════════════════════════════════════════ */
 
 /** 聊天页的头。一条私聊画一张脸，一个群画一摞脸 —— 一眼就分得出这是谁 */
-function chatNav({face,name,sub,live,right=''}){
-  // 比普通导航条高一档：这一行要装一张 54 的脸（ottoFace 的原生格高，1:1 才不糊）
-  return `<div class="nav chatnav">
-    <div class="navrow">
-      <button class="navbtn" data-back style="min-width:30px;padding:0 4px">${I('back',22,2)}</button>
-      <div class="chatid">${face}
-        <div style="min-width:0">
-          <div class="nm">${name}</div>
-          <div class="st${live?' live':''}" data-el="sub">${sub}</div>
-        </div>
-      </div>
-      <div style="display:flex;gap:2px;flex:none">${right}</div>
-    </div>
+/** 聊天页的头。**不是一条导航栏，是三个浮在内容上的元件**：回退 / 名字药丸 /
+    右边那颗。正文从它们底下滚过去 —— 一条实心横栏要占掉 62px，而这一屏唯一要看的
+    就是对话本身（维护者给的参照就是这个形状）。
+
+    药丸里只有脸和名字，**没有状态文字**：状态由那张脸自己说（角标 + 眼神），
+    而「它此刻在干嘛」的正文在时间线最底下那一行 —— 人的眼睛本来就在那儿。 */
+function chatNav({face,name,right=''}){
+  return `<div class="pillnav">
+    <button class="rbtn" data-back aria-label="返回">${I('back',22,2.2)}</button>
+    <div class="namepill" data-el="pill">${face}<span class="nm">${name}</span></div>
+    ${right||'<span style="width:44px;flex:none"></span>'}
   </div>`;
 }
 /** 一轮活跑起来是什么样：按剧本换 `data-st` + 那行小字。**换态是瞬时的，不做过渡** ——
@@ -2024,10 +2160,20 @@ const meLine=t=>`<div class="who mine">${faceOf('Stan','S')}<span>我 · ${t}</s
    账号在右上角那张脸后面，那台电脑是名册顶上的一行。
    Grok Bot 那侧也是这个形状：一列 bot，点进去是一条线 */
 SCREENS.bots={label:'名册',grp:'智能体',render:()=>`
- ${nav({title:'智能体',large:true,sub:`<b>5 只</b> <s>·</s> 共用一台电脑`,right:`
-   <button class="navbtn icon" data-go="search">${I('search',21,2)}</button>
-   <button class="navbtn icon" data-go="newBot">${I('plus',23,2.1)}</button>${avatarBtn}`})}
- <div class="body">${navPad(true,true)}
+ <div class="pillnav">
+   <button class="rbtn" data-go="account" aria-label="账号">
+     <span class="orb" style="width:44px;height:44px;font-size:15px;background:transparent;color:var(--fg)"><span>${DATA.me.ini}Y</span></span>
+   </button>
+   <span style="flex:1"></span>
+   <button class="rbtn" data-go="search" aria-label="搜索">${I('search',21,2.1)}</button>
+   <button class="rbtn" data-go="newBot" aria-label="新的智能体">${I('plus',23,2.2)}</button>
+ </div>
+ <div class="body">
+   <div style="height:104px;flex:none"></div>
+   <div style="padding:2px 20px 14px">
+     <div class="t-large">智能体</div>
+     <div class="largesub"><b>5 只</b> <s>·</s> 共用一台电脑</div>
+   </div>
    ${machineCard()}
    <div class="list">${DATA.bots.map(b=>botRow(b)).join('')}</div>
    <div class="grouphdr">群聊</div>
@@ -2065,9 +2211,8 @@ SCREENS.botsEmpty={label:'名册 · 一只都还没有',grp:'智能体',render:(
    所以时间线上唯一的分段是**一天一条**的日期，不是「新会话」 */
 SCREENS.botChat={label:'私聊 · 在干活',grp:'智能体',render:(p)=>{
  const b=botOf(p.id||'dev')||DATA.bots[1];
- return `${chatNav({face:faceOf(b.face,b.name[0],54,'working'),name:b.name,sub:'正在跑 · 4 分钟',live:true,right:`
-   <button class="navbtn icon" data-act="voice" data-v="bot" aria-label="语音">${I('phone',20,2)}</button>
-   <button class="navbtn icon" data-sheet="botMenu">${I('dots',21,2.4)}</button>`})}
+ return `${chatNav({face:faceOf(b.face,b.name[0],54,'working'),name:b.name,
+   right:`<button class="rbtn" data-sheet="botMenu" aria-label="更多">${I('dots',21,2.4)}</button>`})}
  <div class="body">${chatPad}
    <div class="tl">
      ${dayline('昨天')}
@@ -2130,9 +2275,8 @@ SCREENS.botChat={label:'私聊 · 在干活',grp:'智能体',render:(p)=>{
    登完之后凭据留在那台机器上，它自己用，不再回来问你第二次 */
 SCREENS.botAuth={label:'私聊 · 要你登录一次',grp:'智能体',render:()=>{
  const b=botOf('ops');
- return `${chatNav({face:faceOf(b.face,b.name[0],54,'waiting'),name:b.name,sub:'在等你 · 昨天 21:04',right:`
-   <button class="navbtn icon" data-act="voice" data-v="bot">${I('phone',20,2)}</button>
-   <button class="navbtn icon" data-sheet="botMenu">${I('dots',21,2.4)}</button>`})}
+ return `${chatNav({face:faceOf(b.face,b.name[0],54,'waiting'),name:b.name,
+   right:`<button class="rbtn" data-sheet="botMenu" aria-label="更多">${I('dots',21,2.4)}</button>`})}
  <div class="body">${chatPad}
    <div class="tl">
      ${dayline('昨天')}
@@ -2166,10 +2310,8 @@ SCREENS.botAuth={label:'私聊 · 要你登录一次',grp:'智能体',render:()=
    接力那一行是**群事实**（agent_relay），不是谁的发言 —— 所以居中、没有气泡 */
 SCREENS.groupChat={label:'群聊',grp:'智能体',render:(p)=>{
  const g=DATA.groups.find(x=>x.id===(p.id||'g1'))||DATA.groups[0];
- return `${chatNav({face:faceCluster(g.members),
-   name:g.name,sub:`${g.members.map(i=>botOf(i).name).join('、')}`,right:`
-   <button class="navbtn icon" data-act="voice" data-v="group" aria-label="语音">${I('phone',20,2)}</button>
-   <button class="navbtn icon" data-sheet="groupMenu">${I('dots',21,2.4)}</button>`})}
+ return `${chatNav({face:faceCluster(g.members),name:g.name,
+   right:`<button class="rbtn" data-sheet="groupMenu" aria-label="更多">${I('dots',21,2.4)}</button>`})}
  <div class="body">${chatPad}
    <div class="tl">
      ${dayline('今天')}
@@ -2218,8 +2360,8 @@ SCREENS.groupChat={label:'群聊',grp:'智能体',render:(p)=>{
    建一只智能体本来就是跟它说一句话。表单留着，但它是第二条路不是第一条 */
 SCREENS.newBot={label:'建一只 · 跟管理员说',grp:'建与改',render:()=>{
  const b=botOf('admin');
- return `${chatNav({face:faceOf(b.face,b.name[0],54),name:b.name,sub:'派活、建新的智能体',right:`
-   <button class="navbtn" data-go="newBotForm" style="font-size:15px">填表</button>`})}
+ return `${chatNav({face:faceOf(b.face,b.name[0],54),name:b.name,
+   right:`<button class="rbtn" data-go="newBotForm" style="font-size:13.5px;font-weight:600">填表</button>`})}
  <div class="body">${chatPad}
    <div class="tl">
      <div style="align-self:center;text-align:center;padding:14px 26px 4px">
@@ -2765,30 +2907,23 @@ const SHEETS={
 
 const ACTS={
  /* 语音从「电话」那个位置升起，也回那儿去 —— 同一条路径（空间一致性） */
- /* 语音 = 顶上那张小卡，不再是一整屏。v 决定卡上画谁 */
+ /* 电话模式：替换输入框。挂断换回来、并在时间线上留下那张卡 */
  voice:(b)=>{ const v=b.dataset.v||'bot'; closeSheet();
    openVoice(v==='group'?DATA.groups[0].members:['dev']); },
  vmute:(b)=>{ VOICE.muted=!VOICE.muted; b.classList.toggle('on',VOICE.muted);
-   b.closest('.vcard').classList.toggle('muted',VOICE.muted); },
+   b.closest('.voicebar').classList.toggle('muted',VOICE.muted); },
  vend:()=>closeVoice(),
- /* 转文字：把它此刻在说的话贴进卡里。真机上这一行来自本机识别（ADR-0273） */
- vtext:(b)=>{ const card=b.closest('.vcard'); const had=card.querySelector('[data-el="vcap"]');
+ /* 转文字：把它此刻在说的话贴进这一栏。真机上这一行来自本机识别（ADR-0273） */
+ vtext:(b)=>{ const bar=b.closest('.voicebar'); const had=bar.querySelector('[data-el="vcap"]');
    if(had){ had.remove(); return; }
    const cap=document.createElement('div');
    cap.dataset.el='vcap'; cap.className='t-foot dim';
-   cap.style.cssText='padding:0 10px 8px;line-height:17px';
+   cap.style.cssText='padding:0 8px;line-height:17px';
    cap.textContent='门禁三段都过了，PR 我开好了，等你看一眼就能合。';
-   card.querySelector('.vbtns').before(cap); },
- send:(b)=>{ const box=b.closest('.composer').querySelector('.cmpBox');
-   if(!box.classList.contains('filled')) return;      // 空的就是空的，不假装发出去了
-   box.textContent=''; box.classList.remove('filled'); },
- /* 现成职责那一排：**只填进输入框，不替你发出去** */
- preset:(b)=>{ const scr=b.closest('.scr'), box=scr.querySelector('.cmpBox'); if(!box) return;
-   box.textContent=b.dataset.t; box.classList.add('filled');
-   scr.querySelectorAll('.chip').forEach(c=>c.classList.toggle('on',c===b));
-   box.focus();
-   const r=document.createRange(); r.selectNodeContents(box); r.collapse(false);
-   const s=getSelection(); s.removeAllRanges(); s.addRange(r); },
+   bar.querySelector('.vbtns').before(cap); },
+ dictate:(b)=>{ b.classList.toggle('on'); },
+ callOpen:(b)=>openCallPanel(+b.dataset.s||31),
+ callClose:()=>closeCallPanel(),
  signin:()=>{ closeVoice(); resetTo('bots'); },
  gateMode:(b)=>{ const card=b.closest('.glasscard'), up=!card.classList.contains('up');
    card.classList.toggle('up',up);
