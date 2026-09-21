@@ -172,33 +172,47 @@ export async function addMember(
   );
 }
 
-/** 踢人：owner 删别人的行(RLS wsm_delete 那条踢人分支) */
+/** 踢人：owner 删别人的行(RLS wsm_delete 那条踢人分支)。`.select("uid")` 是唯一的行数
+    证据——**RLS 把这一刀过滤成 0 行时 PostgREST 不报错**，不看行数就会把「一行都没踢掉」
+    报成成功，而界面上那个人还在名册里（#815 Low，同 deleteSessionRow / deleteAgentRow） */
 export async function removeMember(
   client: SupabaseClient,
   workspaceId: string,
   uid: string,
 ): Promise<void> {
-  unwrap(
+  const rows = unwrap(
     await client.from("workspace_members")
-      .delete().eq("workspace_id", workspaceId).eq("uid", uid),
+      .delete().eq("workspace_id", workspaceId).eq("uid", uid).select("uid"),
   );
+  if (!Array.isArray(rows) || rows.length === 0) {
+    throw new Error("行不存在或无权踢人");
+  }
 }
 
-/** 退群：删自己的行。owner 不许退 —— RLS 那条分支本身会拒，这里不重复判断 */
+/** 退群：删自己的行。owner 不许退 —— RLS 那条分支本身会拒，这里不重复判断，
+    但**要把「被拒了」说出口**：不看行数的话 owner 点「退出团队」会拿到一句成功，
+    而他仍然在群里（#815 Low） */
 export async function leave(
   client: SupabaseClient,
   workspaceId: string,
   selfUid: string,
 ): Promise<void> {
-  unwrap(
+  const rows = unwrap(
     await client.from("workspace_members")
-      .delete().eq("workspace_id", workspaceId).eq("uid", selfUid),
+      .delete().eq("workspace_id", workspaceId).eq("uid", selfUid).select("uid"),
   );
+  if (!Array.isArray(rows) || rows.length === 0) {
+    throw new Error("行不存在或无权退出（owner 只能解散团队，不能退群）");
+  }
 }
 
-/** 删群(只有 owner 能删,级联带走成员/连接器/会话) */
+/** 删群(只有 owner 能删,级联带走成员/连接器/会话)。同上：`.select("id")` 是行数证据，
+    非 owner 那一刀被 RLS 过滤成 0 行时不许报成功（#815 Low） */
 export async function deleteWorkspace(client: SupabaseClient, workspaceId: string): Promise<void> {
-  unwrap(await client.from("workspaces").delete().eq("id", workspaceId));
+  const rows = unwrap(await client.from("workspaces").delete().eq("id", workspaceId).select("id"));
+  if (!Array.isArray(rows) || rows.length === 0) {
+    throw new Error("行不存在或无权解散（只有 owner 能解散团队）");
+  }
 }
 
 /** host 本人 upsert 自己的连接器行(新增或改标签/权限清单) */
@@ -219,6 +233,11 @@ export async function upsertConnectorRow(
 }
 
 /** host 撤销接入,或 owner 踢掉 host 的服务 */
+/** **故意没有行数断言**（#815 Low 那一轮逐个判过）：它和上面那三刀形状相同、结局不同。
+    `withdrawConnector` 先写本地 store + resyncEscrow、再删这一行，所以 0 行有一种
+    **正当**含义——那一行本来就不在了（在另一台设备上撤过），此刻本地与线上已经一致。
+    对这种情形抛错等于反过来撒谎：界面报失败，用户再点一次还是失败，而真实状态是对的。
+    上面那三刀没有这个分叉（它们是线上那一行本身的唯一写者），所以它们抛、这一刀不抛。 */
 export async function deleteConnectorRow(
   client: SupabaseClient,
   workspaceId: string,
