@@ -42,7 +42,8 @@ export function GroupSettingsDrawer() {
   const groups = useChat((s) => s.workspaceGroups);
   const home = useMemo(() => homeOf(groups), [groups]);
   const chats = useChat((s) => (home === null ? undefined : s.cloudSessionList[home.id])) ?? EMPTY_CLOUD_SESSIONS;
-  // 群名与名单都从清单那一行来（同头部）；这个群被解散掉之后它自己就查不到了，
+  // 群名与名单都从清单那一行来（**头部不是**：名单那一半从日志推导，ADR-0302）；
+  // 这个群被解散掉之后它自己就查不到了，
   // 抽屉跟着关，不用另写一条善后（同 AgentSettingsDrawer 的纪律）
   const row = useMemo(
     () => (home === null ? undefined : groupRows(home, chats).find((g) => g.sessionId === sessionId)),
