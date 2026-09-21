@@ -30,8 +30,14 @@ export const DISPATCH_NONE_BELOW = 0.3;
 export const DISPATCH_PICK_AT = 0.6;
 /** 没人对得上时，P(在要求做事) 到它才敢归给 fallback 那一只；不到就交给 LLM */
 export const DISPATCH_ACT_AT = 0.7;
-/** 厂商自报 70–500ms，经 OpenRouter 与 edge 各多一跳。上游回 5xx / 429 是立刻回落，
-    只有「挂住不回」才付满这一格，付完才开始今天那条 5 秒的 LLM 路 */
+/** 上游回 5xx / 429 是立刻回落，只有「挂住不回」才付满这一格，付完才开始今天那条 5 秒的 LLM 路。
+    **这个 1200 今天是个已知不对的数，留着是因为改成别的数更不对**（ADR-0301 / #1300）：
+    2026-09-21 真机量出来，派活真正跑的那条路（runtime 在 VPS 上，Cloudflare 的 HEL colo）
+    是 3.8–15s —— 在那里 1200 不是偏紧，是 100% 超时，而调到 2000 / 3000 / 5000 一样是
+    100%。病根不在这个数（不碰上游的 `/billing/v1/me` 在那条路上就要 3.65s，在维护者的
+    Mac 上只要 0.35s），在 #1304。顺带 #1303：超时中断的那一发**照样全价计费**，所以这
+    不是「白等 1.2 秒」，是「全价买一个必然被扔掉的答案」。
+    **别照原来那句「厂商自报 70–500ms」调参**——那句话已经被真机证伪，所以删了 */
 export const DISPATCH_DECISION_TIMEOUT_MS = 1200;
 
 export function dispatchQuestions(input: DispatchInput): { state: Record<string, unknown>; questions: Record<string, DecisionQuestion> } {

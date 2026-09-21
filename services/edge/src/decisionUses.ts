@@ -17,4 +17,9 @@ import type { DecisionUses } from "../../../src/shared/decision.js";
 // 翻成 shadow 而不是 on：这一档的语义是「今天那条 LLM 路说了算，决策模型并行问一次、
 // **不等它**，回来只记一行 `[decision]` 对照日志」——真实派活的判决一个字都不变。
 // 真实流量要等 runtime 也部署了才会流经 dispatchVia（daemon.ts 的注入点），那是下一步。
+// 2026-09-21：**在 #1304 解掉之前，这张表里一格都不许翻成 `on`**（ADR-0301）。真机量出来，
+// runtime 那条路（VPS，Cloudflare 的 HEL colo）上一发决策调用要 3.8–15s，而五个超时里最
+// 宽的一个是 1500ms —— 翻成 `on` 等于让那一处每次都先白等满超时再走今天那条路，而 #1303
+// 说那一发**照样全价计费**。`shadow` 不受影响：legacy 说了算、不等决策那一发，超时只是让
+// `[decision]` 日志少一行对照数据，所以门继续开着。
 export const DECISION_USES: DecisionUses = { dispatch: "shadow" };
