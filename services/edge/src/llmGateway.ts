@@ -77,10 +77,29 @@ export interface UsageCounts {
   completionTokens: number;
 }
 
+/** 一次问答就能回答的「还剩多少」。DO 每次 hold / settle 之后手里本来就有这份数，
+    所以它随回执一起回来 —— 见 QuotaPort 上那段为什么 */
+export interface QuotaRemaining { h5: number; week: number; addon: number; plan: string | null }
+
+/** DO 顺带回的额度快照 → 强类型；**三个数缺一不可**（#1304）。少一格就回 null 让调用方
+    单独问一趟 —— 拿 0 冒充会让客户端读到「额度用完了」，而那是这条链路上最响的一句假话 */
+export function parseRemaining(v: unknown): QuotaRemaining | null {
+  if (v === null || typeof v !== "object") return null;
+  const r = v as Record<string, unknown>;
+  const n = (x: unknown): number | null => (typeof x === "number" && Number.isFinite(x) ? x : null);
+  const [h5, week, addon] = [n(r.h5), n(r.week), n(r.addon)];
+  if (h5 === null || week === null || addon === null) return null;
+  return { h5, week, addon, plan: typeof r.plan === "string" ? r.plan : null };
+}
+
+/** 这个函数**住在这里不住在 worker.ts**：那个文件进不了 vitest（一 import 就要 DO 运行时），
+    留在那边等于「缺一格回 null 还是回 0」这个判断零执行覆盖 —— 同 usageAttribution 的教训 */
+/** `remaining` 是**可选**的：它由 DO 顺带回，而桩件（测试）与老实现可以不给。
+    缺席时调用方回落到单独问一趟 `quota.remaining()` —— 行为一样，只是多一趟 */
 export type HoldOutcome =
-  | { ok: true; chargedTo: "window" | "addon" }
-  | { ok: false; code: "no_subscription" | "too_many_inflight" }
-  | { ok: false; code: "quota_exhausted"; window: "5h" | "week"; resetAt: number };
+  | { ok: true; chargedTo: "window" | "addon"; remaining?: QuotaRemaining }
+  | { ok: false; code: "no_subscription" | "too_many_inflight"; remaining?: QuotaRemaining }
+  | { ok: false; code: "quota_exhausted"; window: "5h" | "week"; resetAt: number; remaining?: QuotaRemaining };
 
 export interface SettleMeta {
   caller: Caller;
@@ -89,11 +108,20 @@ export interface SettleMeta {
   costMicro: number;
 }
 
+/** **每多一个方法调用就是多一趟 Durable Object 往返**，而 DO 只在一个地方（落点由它
+    第一次被创建时的 colo 决定），所以这趟往返的代价取决于**请求从哪个 colo 进来**：
+    2026-09-21 实测同一个账号同一份请求，SYD 那侧 `/billing/v1/me`（一趟 DO）0.35s，
+    HEL 那侧 3.65s（#1304）。一次成功的调用原来要打三趟（hold → settle → remaining），
+    而后两趟问的是同一个 DO 手里同一份状态。
+    所以 `hold` 与 `settle` **顺带把额度快照回来**，`remaining()` 退成兜底：
+    settle 撞上 `no_hold`（幂等重入）时没有快照可言，那时才单独问一趟。 */
 export interface QuotaPort {
   hold(uid: string, requestId: string, estimateMicro: number): Promise<HoldOutcome>;
-  settle(uid: string, requestId: string, meta: SettleMeta): Promise<void>;
+  /** 回这一笔结算之后的额度快照；`null` = 没有挂着的 hold（重复 settle / 已释放），
+      那时调用方自己去问 `remaining()` */
+  settle(uid: string, requestId: string, meta: SettleMeta): Promise<QuotaRemaining | null>;
   release(uid: string, requestId: string): Promise<void>;
-  remaining(uid: string): Promise<{ h5: number; week: number; addon: number; plan: string | null }>;
+  remaining(uid: string): Promise<QuotaRemaining>;
 }
 
 /** 平台 → 它那把上游 key 在 Worker env 里的名字。
@@ -340,15 +368,21 @@ export function createLlmGateway(deps: LlmGatewayDeps): (req: Request, caller: C
   const doFetch = deps.fetchImpl ?? fetch;
   const newId = deps.newRequestId ?? (() => crypto.randomUUID());
 
+  const headersOf = (r: QuotaRemaining): Record<string, string> => ({
+    [BILLING_HEADERS.h5]: String(r.h5),
+    [BILLING_HEADERS.week]: String(r.week),
+    [BILLING_HEADERS.addon]: String(r.addon),
+    ...(r.plan ? { [BILLING_HEADERS.plan]: r.plan } : {}),
+  });
+
+  /** 兜底：手里没有快照时才走这条，它是**一整趟 DO 往返**（见 QuotaPort 上那段） */
   async function remainingHeaders(uid: string): Promise<Record<string, string>> {
-    const r = await deps.quota.remaining(uid);
-    return {
-      [BILLING_HEADERS.h5]: String(r.h5),
-      [BILLING_HEADERS.week]: String(r.week),
-      [BILLING_HEADERS.addon]: String(r.addon),
-      ...(r.plan ? { [BILLING_HEADERS.plan]: r.plan } : {}),
-    };
+    return headersOf(await deps.quota.remaining(uid));
   }
+
+  /** 手里有快照就用，没有才去问。三扇门共用 */
+  const headersFrom = (r: QuotaRemaining | null | undefined, uid: string): Promise<Record<string, string>> =>
+    r ? Promise.resolve(headersOf(r)) : remainingHeaders(uid);
 
   return async function handle(req: Request, caller: Caller): Promise<Response> {
     const raw = await req.text();
@@ -385,7 +419,7 @@ export function createLlmGateway(deps: LlmGatewayDeps): (req: Request, caller: C
         先判 quota_exhausted：它是唯一带 window/resetAt 字段的分支，先摘出来才能让
         tsc 把剩下那支缩窄成 { code: "no_subscription" | "too_many_inflight" } */
     const holdRejected = async (held: Exclude<HoldOutcome, { ok: true }>): Promise<Response> => {
-      const billingHeaders = await remainingHeaders(caller.uid).catch(() => ({}));
+      const billingHeaders = await headersFrom(held.remaining, caller.uid).catch(() => ({}));
       if (held.code === "quota_exhausted") {
         return apiError(429, held.window === "5h" ? "5 小时额度已用完" : "本周额度已用完", "quota_exhausted", {
           window: held.window, resetAt: held.resetAt,
@@ -441,8 +475,8 @@ export function createLlmGateway(deps: LlmGatewayDeps): (req: Request, caller: C
         }
         const usage: UsageCounts = { promptTokens: 0, cachedTokens: 0, completionTokens: reply.usageChars ?? units };
         const cost = costMicro(usage, route);
-        await deps.quota.settle(caller.uid, requestId, { caller, route, usage, costMicro: cost });
-        const headers = await remainingHeaders(caller.uid);
+        const settled = await deps.quota.settle(caller.uid, requestId, { caller, route, usage, costMicro: cost });
+        const headers = await headersFrom(settled, caller.uid);
         // Node 的 lib 只把 ArrayBuffer 当 BodyInit（Uint8Array<ArrayBufferLike> 过不了 tsc）；
         // 按 byteOffset/byteLength 切一份，不假设这个视图从 0 开始
         const audio = reply.audio.buffer.slice(reply.audio.byteOffset, reply.audio.byteOffset + reply.audio.byteLength) as ArrayBuffer;
@@ -511,8 +545,8 @@ export function createLlmGateway(deps: LlmGatewayDeps): (req: Request, caller: C
         const inputTokens = reply.ok ? reply.reply.inputTokens : reply.inputTokens;
         const usage: UsageCounts = inputTokens === null ? estimate : { promptTokens: inputTokens, cachedTokens: 0, completionTokens: 0 };
         const cost = costMicro(usage, route);
-        await deps.quota.settle(caller.uid, requestId, { caller, route, usage, costMicro: cost });
-        const headers = await remainingHeaders(caller.uid);
+        const settled = await deps.quota.settle(caller.uid, requestId, { caller, route, usage, costMicro: cost });
+        const headers = await headersFrom(settled, caller.uid);
         if (!reply.ok) return apiError(502, reply.message, "upstream", {}, headers);
         return json(200, {
           model: reply.reply.model, answers: reply.reply.answers, usage: { input_tokens: usage.promptTokens },
@@ -590,7 +624,9 @@ export function createLlmGateway(deps: LlmGatewayDeps): (req: Request, caller: C
         const settleAt = (usage: UsageCounts) =>
           deps.quota.settle(caller.uid, requestId, { caller, route, usage, costMicro: costMicro(usage, route) });
 
-        const headers = await remainingHeaders(caller.uid);
+        // 这一格取在 settle **之前**（流式的 settle 发生在流末尾），所以拿的是 hold
+        // 之后的快照 —— 与改动前单独问那一趟问到的是同一个时刻的同一份状态
+        const headers = await headersFrom(held.remaining, caller.uid);
 
         if (stream && res.body) {
           // 旁路挑 usage，字节原样透传。settle 在流结束那一刻发生——
