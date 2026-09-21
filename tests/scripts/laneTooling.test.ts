@@ -10,7 +10,7 @@
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, rm, writeFile, readdir } from "node:fs/promises";
+import { mkdtemp, rm, writeFile, readdir, mkdir, chmod } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -100,7 +100,9 @@ describe("lane:prune：收工清理（issue #623）", () => {
     }).trim();
     git(dir, "config", "user.email", "t@example.com");
     git(dir, "config", "user.name", "t");
-    execFileSync("bash", ["-c", `echo x > ${dir}/b.txt`]);
+    // 文件名跟着 lane 名走：同一条用例里造两条 lane 时，写同一个文件同样的内容
+    // 会让第二条 `git commit` 因为「没有东西可提交」而失败（#1279 的两条用例要两条 lane）
+    execFileSync("bash", ["-c", `echo x > ${dir}/${name}.txt`]);
     git(dir, "add", "-A");
     git(dir, "commit", "-q", "-m", "work");
     const branch = git(dir, "branch", "--show-current");
@@ -154,6 +156,85 @@ describe("lane:prune：收工清理（issue #623）", () => {
     const r = node(work, PRUNE, "--apply");
     expect(r.out).toContain("有未提交改动");
     expect(git(work, "worktree", "list")).toContain(dir);
+  });
+
+  // ── 一步失败不拖垮整轮（issue #1279）──────────────────────────────────
+  //
+  // 那次真机上的形态是「worktree 删了、分支一条没删」，输出末尾只有一个裸 Node 栈 +
+  // 一个 `{ status: 1, stdout: '', stderr: null }`。失败本身多半不是意外：`branch -d`
+  // 对「未合并」「被别的 worktree 占着」都回 status 1，而那正是这个脚本刻意不绕过的
+  // 第二道保险。要钉的是它**被拒之后怎么说话**，所以失败得由外面注入——PATH 最前面
+  // 放一个假 git，除点名的那条子命令外原样转发给真 git，脚本一行不改地跑。
+
+  /** 造一个只对某一条 git 子命令说不的假 git，返回它所在目录 */
+  async function fakeGit(refuse: { args: string[]; message: string }): Promise<string> {
+    const bin = join(root, "bin");
+    await mkdir(bin, { recursive: true });
+    const real = execFileSync("bash", ["-c", "command -v git"], { encoding: "utf8" }).trim();
+    const match = refuse.args.map((a, i) => `[ "$${i + 1}" = ${JSON.stringify(a)} ]`).join(" && ");
+    await writeFile(
+      join(bin, "git"),
+      `#!/bin/sh\nif ${match}; then\n  echo ${JSON.stringify(refuse.message)} >&2\n  exit 1\nfi\nexec ${real} "$@"\n`
+    );
+    await chmod(join(bin, "git"), 0o755);
+    return bin;
+  }
+
+  function pruneWithFakeGit(bin: string): { ok: boolean; out: string } {
+    try {
+      const out = execFileSync(process.execPath, [PRUNE, "--apply"], {
+        cwd: work,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+        env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}` },
+      });
+      return { ok: true, out };
+    } catch (e) {
+      const err = e as { stdout?: string; stderr?: string };
+      return { ok: false, out: String(err.stdout ?? "") + String(err.stderr ?? "") };
+    }
+  }
+
+  it("--apply：一条分支删不掉不拖垮整轮——其余照做，末尾说清哪条没做成、git 原话是什么", async () => {
+    const stuck = mergedLane("stuck-branch");
+    const fine = mergedLane("fine-branch");
+    const bin = await fakeGit({
+      args: ["branch", "-d", stuck.branch],
+      message: `error: the branch '${stuck.branch}' is not fully merged`,
+    });
+    const r = pruneWithFakeGit(bin);
+
+    // ① 没做成的事要在退出码上说出来（收工那一步的人只扫最后两行）
+    expect(r.ok).toBe(false);
+    // ② git 自己那句话带回来了，而不是一个 stderr: null 的对象
+    expect(r.out).toContain("not fully merged");
+    expect(r.out).toContain(`删除分支 ${stuck.branch}`);
+    // ③ 剩下的照跑完：另一条分支删掉了，两个 worktree 也都清了
+    const branches = git(work, "branch", "--format=%(refname:short)");
+    expect(branches).toContain(stuck.branch);
+    expect(branches).not.toContain(fine.branch);
+    expect(git(work, "worktree", "list")).not.toContain(fine.dir);
+    // ④ 回执：做成了几件 / 没做成几件
+    expect(r.out).toContain("回执：");
+    expect(r.out).toContain("1 件没做成");
+  });
+
+  it("--apply：worktree 没删成时，占着它的那条分支跳过并说清，不去打一条注定失败的命令", async () => {
+    const lane = mergedLane("wedged-lane");
+    // 只认到子命令为止，不比路径：macOS 上 /var 是 /private/var 的软链，脚本手里那份
+    // （worktree list --porcelain 给的）和用例手里那份（ls -d 给的）不是同一个字符串
+    const bin = await fakeGit({
+      args: ["worktree", "remove"],
+      message: "fatal: 假装这个 worktree 删不掉",
+    });
+    const r = pruneWithFakeGit(bin);
+
+    expect(r.ok).toBe(false);
+    expect(r.out).toContain("假装这个 worktree 删不掉");
+    expect(r.out).toContain(`跳过分支 ${lane.branch}`);
+    // 两样都还在——跳过不是「悄悄当成功」
+    expect(git(work, "worktree", "list")).toContain(lane.dir);
+    expect(git(work, "branch", "--format=%(refname:short)")).toContain(lane.branch);
   });
 });
 
