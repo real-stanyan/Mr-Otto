@@ -14,7 +14,7 @@
 // 换成"过桥的快照"和"一次会话的完整日志"。
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -137,5 +137,19 @@ describe("spec §7：OAuth token 既不过桥，也不进事件日志", () => {
 
     store.close();
     await hub.closeAll();
+  });
+
+  // #697 给这条不变量加了**第二种凭据**：手填的 client_id / client_secret。
+  // 它过桥的那一步在 index.ts 的 mcpSnapshot 里（那个文件一 import 就要拉起
+  // Electron，进不了 vitest），所以这一条读源码。判据是「挂上去的是一个布尔」——
+  // 哪天有人图省事把整条记录展开进快照，secret 就跟着到了渲染层，而那一步
+  // 不会有任何东西变红（同这份文件头讲的「结构性保证会被一次无心的字段扩充推翻」）
+  it("手填的 client_secret 同样不过桥：快照里挂的是布尔，不是那条记录（#697）", () => {
+    const src = readFileSync(join(__dirname, "../../src/main/index.ts"), "utf8");
+    const at = src.indexOf("const mcpSnapshot");
+    expect(at).toBeGreaterThan(-1);
+    const snap = src.slice(at, at + 600);
+    expect(snap).toContain("oauthClient: readMcpAuth(mcpAuthPath, s.id).manualClient !== undefined");
+    expect(snap).not.toMatch(/\.\.\.readMcpAuth|manualClient:|client_secret/);
   });
 });

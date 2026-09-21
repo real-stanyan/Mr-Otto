@@ -3,6 +3,7 @@ import { statSync, writeFileSync, existsSync, chmodSync } from "node:fs";
 import { join } from "node:path";
 import {
   loadMcpAuth, readMcpAuth, writeMcpAuth, clearMcpAuth, dropMcpAuthClientRegistration,
+  setMcpManualClient,
 } from "../../src/main/mcpAuthStore.js";
 // 走本仓的 tempDir（#474）：清理挂在 setupFiles 上，不用每个文件自己记得删
 import { tempDir } from "../helpers/tempDir.js";
@@ -97,6 +98,53 @@ describe("mcpAuthStore", () => {
       tokens: { access_token: "a1" },
       redirectUri: "http://127.0.0.1:1111/callback",
     });
+  });
+
+  // ── 手填的那对 OAuth 客户端凭据（#697）────────────────────────────────
+  //
+  // 存进**另一格**（manualClient）而不是复用 clientInformation：后者的语义是
+  // 「DCR 那一次的产物」，仓里有两处逻辑按这个语义行事（needsFreshRegistration 会
+  // 丢掉它重注册、SDK 的 saveClientInformation 会覆盖它）。手打的东西丢了就得去
+  // 服务商后台重抄一遍，不是可再生的缓存。
+
+  it("存一对：落进 manualClient，client_secret 带着", () => {
+    setMcpManualClient(path, "slack", { client_id: "cid-1", client_secret: "sec-1" });
+    expect(readMcpAuth(path, "slack").manualClient).toEqual({ client_id: "cid-1", client_secret: "sec-1" });
+  });
+
+  it("空 secret 不落一个空串——公开客户端就是没有 secret，而空串会被 SDK 当成「有」", () => {
+    setMcpManualClient(path, "slack", { client_id: "cid-1", client_secret: "" });
+    expect(readMcpAuth(path, "slack").manualClient).toEqual({ client_id: "cid-1" });
+  });
+
+  it("存的时候丢掉 DCR 那一份与 codeVerifier，但**不动 tokens**", () => {
+    writeMcpAuth(path, "slack", {
+      clientInformation: { client_id: "dcr-老的" },
+      codeVerifier: "verifier-老的",
+      tokens: { access_token: "a1" },
+      redirectUri: "http://127.0.0.1:1111/callback",
+    });
+    setMcpManualClient(path, "slack", { client_id: "cid-1" });
+    const rec = readMcpAuth(path, "slack");
+    expect(rec.clientInformation).toBeUndefined();
+    expect(rec.codeVerifier).toBeUndefined();
+    // 换客户端凭据不该把一份还能 refresh 的授权也作废
+    expect(rec.tokens).toEqual({ access_token: "a1" });
+    expect(rec.manualClient).toEqual({ client_id: "cid-1" });
+  });
+
+  it("null = 清掉，只清这一格", () => {
+    setMcpManualClient(path, "slack", { client_id: "cid-1", client_secret: "sec-1" });
+    writeMcpAuth(path, "slack", { tokens: { access_token: "a1" } });
+    setMcpManualClient(path, "slack", null);
+    expect(readMcpAuth(path, "slack")).toEqual({ tokens: { access_token: "a1" } });
+  });
+
+  it("清一台从没填过的是 no-op，不误伤同伴", () => {
+    setMcpManualClient(path, "slack", { client_id: "cid-1" });
+    setMcpManualClient(path, "figma", null);
+    expect(readMcpAuth(path, "slack").manualClient).toEqual({ client_id: "cid-1" });
+    expect(readMcpAuth(path, "figma")).toEqual({});
   });
 
   it("丢一台不存在的注册是 no-op，不误伤同伴", () => {
