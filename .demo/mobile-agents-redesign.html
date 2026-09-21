@@ -774,6 +774,12 @@ html[data-skin="grok"] .hero,html[data-skin="grok"] .hero::after{border-radius:1
    「滚上去之后才出现」的 iOS 行为，对一条聊天不成立：你得一直知道在跟谁说话 */
 .nav.chatnav .navrow{height:62px}
 .chatid{flex:1;min-width:0;display:flex;align-items:center;gap:10px;margin-left:-2px}
+/* 像素脸是 canvas，**不套 `.face` 那个圆**：那条 `border-radius:50%` + `overflow:clip`
+   会把这批 67x54 的画面裁成椭圆 —— 静止时啃掉头顶两角，一动起来（呼吸 / 摆动都是
+   整格位移）露出去的那一格当场被切掉，看起来就是「周围有遮挡」。
+   这批脸自己带轮廓与描边，不需要外面再给一个形状；首字母那张兜底仍然走 `.face` */
+.pxface{border-radius:0;background:none;overflow:visible;box-shadow:none;display:block}
+.stack .pxface{box-shadow:none}
 .chatid .nm{font-size:16px;font-weight:650;letter-spacing:-.2px;line-height:19px;
   white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .chatid .st{font-size:11.5px;color:var(--mutedFg);line-height:15px;
@@ -788,7 +794,7 @@ html[data-skin="grok"] .hero,html[data-skin="grok"] .hero::after{border-radius:1
 /* 名册那一行。左边一张脸，右边一列「时间 / 未读」。
    **行上不画在跑没在跑**：清单那张表里没有这一格，画出来就是猜的（#722 / #1282）。
    能画的只有真在表里的两样 —— 最后一句、和 @ 了我几次（ADR-0256 那张表） */
-.brow .face{width:54px;height:54px;font-size:19px}   /* 54 = ottoFace 的原生格高，1:1 才不糊 */
+.brow .face:not(.pxface){width:54px;height:54px;font-size:19px}   /* 首字母那张兜底；像素脸的宽高由挂载层按格子算 */
 .brow .nm{font-size:16px;font-weight:600;letter-spacing:-.15px;line-height:20px;
   display:flex;align-items:baseline;min-width:0}
 .brow .nm>span.n{white-space:nowrap;flex:none}
@@ -1277,7 +1283,7 @@ const faceOf=(k,txt,sz=20,st='idle',anim)=>{
      · **眨眼与呼吸 = 活着**：它不回答「此刻在干嘛」，只是让这张脸不像一张遗照。
      动不动由调用点给：名册、群头上那一摞、开局卡那张大脸会动；时间线上那些说过话
      的小脸不动（那是历史不是状态，一屏几十张一起眨就成了噪音）。 */
-  if(ch!==undefined) return `<canvas class="face" data-ch="${ch}" data-st="${st}" data-sz="${sz}"`+
+  if(ch!==undefined) return `<canvas class="face pxface" data-ch="${ch}" data-st="${st}" data-sz="${sz}"`+
     `${(anim??st!=='idle')?' data-anim="1"':''} style="height:${sz}px"></canvas>`;
   // 人的兜底是**中性**的一格首字母，不是哈希彩色：彩色只会在这张列表里跟状态色抢话
   return `<span class="face" style="background:var(--secondary);color:var(--fg);width:${sz}px;height:${sz}px;font-size:${Math.round(sz*.42)}px;font-weight:600">${txt}</span>`;
@@ -1789,10 +1795,13 @@ function chatNav({face,name,sub,live,right=''}){
 function playRun(el,steps,{face='canvas[data-ch]',sub='[data-el="sub"]',onStep}={}){
   const cv=el.querySelector(face), sb=el.querySelector(sub);
   if(!cv) return;
+  const live=el.querySelector('canvas[data-live="1"]'), lsub=el.querySelector('[data-el="livesub"]');
   let i=0,timer=0;
   const step=()=>{
     const s=steps[i%steps.length];
     cv.dataset.st=s.st; cv.dataset.anim='1'; mountFace(cv);
+    if(live){ live.dataset.st=s.st; live.dataset.anim='1'; mountFace(live); }
+    if(lsub) lsub.textContent=s.st==='idle'?'':`· ${FACE_STATES[s.st].zh}`;
     if(sb&&s.sub!==undefined){ sb.textContent=s.sub; sb.classList.toggle('live',s.live!==false); }
     onStep&&onStep(s,el);
     i++; timer=setTimeout(step,s.ms);
@@ -1803,15 +1812,31 @@ function playRun(el,steps,{face='canvas[data-ch]',sub='[data-el="sub"]',onStep}=
 }
 /** 群聊头上那一摞脸各走各的态。同一份剧本里写全三只，不是三个定时器各跑各的 ——
     三只的状态是**同一时刻的一张快照**（谁接的活、谁在等），分开跑必然错位 */
-function playRunMulti(el,steps){
+function playRunMulti(el,steps,{onStep}={}){
   const faces=[...el.querySelectorAll('.chatid canvas[data-ch]')], sb=el.querySelector('[data-el="sub"]');
   if(faces.length===0) return;
+  const live=el.querySelector('canvas[data-live="1"]'), lsub=el.querySelector('[data-el="livesub"]');
+  const lname=el.querySelector('[data-el="livename"]');
+  /* 群里最底下那一行跟着**此刻在跑的那一只**换人：谁在说排第一、其次是在想的。
+     一行只画一只 —— 三只同时在跑时那一行会变成一张花名册，而它要答的是
+     「这一刻在等谁」 */
+  const PRI=['answering','speaking','working','searching','thinking','queued','listening'];
   let i=0,timer=0;
   const step=()=>{
     const s=steps[i%steps.length];
     faces.forEach((cv,n)=>{ const st=s.states[n]||'idle';
       cv.dataset.st=st; cv.dataset.anim=st==='idle'?'0':'1'; mountFace(cv); });
     if(sb){ sb.textContent=s.sub; sb.classList.toggle('live',s.live!==false); }
+    if(live){
+      let pick=-1;
+      for(const want of PRI){ const n=s.states.indexOf(want); if(n>=0){ pick=n; break; } }
+      const b=pick>=0?botOf(s.members[pick]):null;
+      if(b){ live.dataset.ch=AGENT_SLOT[b.face]; live.dataset.st=s.states[pick]; live.dataset.anim='1'; mountFace(live);
+        if(lname) lname.textContent=`${b.name} · 刚刚`;
+        if(lsub) lsub.textContent=`· ${FACE_STATES[s.states[pick]].zh}`; }
+      else if(lsub) lsub.textContent='';
+    }
+    onStep&&onStep(s,el);
     i++; timer=setTimeout(step,s.ms);
   };
   step();
@@ -1876,6 +1901,16 @@ const toBottom=el=>soon(()=>{const b=el.querySelector('.body');
   if(b) b.scrollTop=b.scrollHeight;});   // mount 跑在 appendChild 之前，这时候量不到高度
 const dayline=t=>`<div class="dayline">${t}</div>`;
 const whoLine=(b,t)=>`<div class="who">${faceOf(b.face,b.name[0])}<span>${b.name} · ${t}</span></div>`;
+/** 时间线**最底下**那一行：它不是历史，是此刻正在跑的那一轮。所以这张脸跟着状态走
+    （头上那张也是同一个事实的另一处投影），后面那个词跟着换 —— 人眼睛落在最后一条
+    消息上，让他在那儿就看得见「它在干嘛」，不用抬头去看导航条。
+    打字那三个点**只在作答中**出现：它说的是「正文正在推出来」，不是「在忙」
+    （ADR-0250 给 queued 定的那条同源：一个 token 都还没跑就画指示器 = 撒谎的勾） */
+function whoLineLive(b,t){
+  return `<div class="who">${faceOf(b.face,b.name[0],27,'idle',true).replace('<canvas','<canvas data-live="1"')}
+    <span data-el="livename">${b.name} · ${t}</span>
+    <span data-el="livesub" style="opacity:.75"></span></div>`;
+}
 const meLine=t=>`<div class="who mine">${faceOf('Stan','S')}<span>我 · ${t}</span></div>`;
 
 /* ═══════════════════════════════════════════════════════════════════════
@@ -1964,7 +1999,7 @@ SCREENS.botChat={label:'私聊 · 在干活',grp:'智能体',render:(p)=>{
        ${I('brain',13,2)} 开发 更新了记忆「写代码的规矩」</div>
      ${meLine('12:41')}
      <div class="bub me">开，标题写「定价文案收短」</div>
-     ${whoLine(b,'12:41')}
+     ${whoLineLive(b,'12:41')}
      <div class="typing"><i></i><i></i><i></i></div>
    </div>
    ${cmpPad}
@@ -2048,7 +2083,7 @@ SCREENS.groupChat={label:'群聊',grp:'智能体',render:(p)=>{
      ${whoLine(botOf('design'),'09:41')}
      <div class="bub ot">看了。「修复若干问题」那句删掉 —— 谁都不知道修了什么，写具体那三条。</div>
      <div class="sysline">${I('phone',13,2.2)} ${faces(g.members)}${faceOf('Stan','S',16)} 正在通话 · 02:41</div>
-     ${whoLine(botOf('ops'),'09:44')}
+     ${whoLineLive(botOf('ops'),'09:44')}
      <div class="typing"><i></i><i></i><i></i></div>
    </div>
    ${cmpPad}
@@ -2059,15 +2094,15 @@ SCREENS.groupChat={label:'群聊',grp:'智能体',render:(p)=>{
     一眼看得出此刻是谁在跑、谁在排队、谁闲着 */
  mount(el){ toBottom(el);
    const typing=el.querySelector('.typing');
+   const M=g.members;
    playRunMulti(el,[
-     {states:['queued','working','idle'],     sub:'运维 执行中 · 开发 排队中', ms:2100},
-     {states:['thinking','done','idle'],      sub:'运维 完成 · 开发 思考中',   ms:1900},
-     {states:['answering','idle','listening'],sub:'开发 作答中',              ms:2200},
-     {states:['idle','idle','thinking'],      sub:'设计 思考中',              ms:1800},
-     {states:['idle','idle','answering'],     sub:'设计 作答中',              ms:2100},
-     {states:['idle','idle','idle'],          sub:'开发、运维、设计', ms:2200, live:false},
-   ]);
-   if(typing) typing.style.visibility='visible';
+     {members:M,states:['queued','working','idle'],     sub:'运维 执行中 · 开发 排队中', ms:2100},
+     {members:M,states:['thinking','done','idle'],      sub:'运维 完成 · 开发 思考中',   ms:1900},
+     {members:M,states:['answering','idle','listening'],sub:'开发 作答中',              ms:2200, typing:true},
+     {members:M,states:['idle','idle','thinking'],      sub:'设计 思考中',              ms:1800},
+     {members:M,states:['idle','idle','answering'],     sub:'设计 作答中',              ms:2100, typing:true},
+     {members:M,states:['idle','idle','idle'],          sub:'开发、运维、设计', ms:2200, live:false},
+   ],{onStep:(st)=>{ if(typing) typing.style.visibility=st.typing?'visible':'hidden'; }});
  }};
 
 /* ═══════════════════════════════════════════════════════════════════════
