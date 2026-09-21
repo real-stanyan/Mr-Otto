@@ -14,7 +14,7 @@ import { parseMemberMentions } from "../../../shared/remote/agentMention.js";
 import { useChat } from "../store.js";
 import { CloudSessionPage } from "./CloudSessionPage.js";
 import type { ChatView } from "./AgentChatHeader.js";
-import { agentNameOf } from "../lib/workspaceView.js";
+import { chatViewOf } from "../lib/agentRoster.js";
 
 export function CloudSessionMain({ onManage }: { onManage: (workspaceId: string) => void }) {
   const cs = useChat((s) => s.cloudSession);
@@ -92,20 +92,27 @@ export function CloudSessionMain({ onManage }: { onManage: (workspaceId: string)
     );
   }
 
-  // 这一页画的是不是一条聊天（#1280）。名单与现存名册求交集——删一只智能体是三步、
-  // 不原子，那一列里可能留着一个已经不存在的 id（同 groupRows 的兜底）。
-  // 私聊的标题取那只的名字（清单那一行的 title 恒空），群聊取群名，没起名时用成员名
-  const chat: ChatView | undefined = (() => {
-    if (cs.chat === null) return undefined;
-    const agentIds = ws.agents.map((a) => a.agentId).filter((id) => cs.chat!.agentIds.includes(id));
-    const names = agentIds.map((id) => agentNameOf(ws, id));
-    if (cs.chat.kind === "dm") {
-      // 名单里那只被删掉了：退回团队会话的画法，不画一张没有主人的脸
-      if (agentIds[0] === undefined) return undefined;
-      return { kind: "dm", agentIds, title: names[0]! };
-    }
-    return { kind: "group", agentIds, title: chatTitle.trim() !== "" ? chatTitle : names.join("、") };
-  })();
+  // 这一页画的是不是一条聊天（#1280）。`cs.chat` 是三态（#1301），这里原样保留：
+  // `undefined` = 还不知道、`null` = 团队会话、值 = 一条聊天。名单从日志推导（#1302），
+  // 私聊的标题取那只的名字（清单那一行的 title 恒空），群聊取群名
+  const chat: ChatView | null | undefined =
+    cs.chat === undefined || cs.chat === null ? cs.chat : chatViewOf(ws, cs.chat, cs.events, chatTitle);
+
+  if (chat === undefined) {
+    // **两种壳都不画**（#1301）。团队壳在这里是一句猜测，而猜错的代价不对称：
+    // 主场的聊天被画成团队壳时，输入框那一行会露出一颗「免审批」开关——它在主场里
+    // 点了不产生任何效果（ADR-0298 明写主场一次都不查 `sandbox_approval`），正是
+    // #722 那颗撒谎的勾；头部还会把个人主场的**内部名字**「我的智能体」写出来。
+    // 少画一屏几百毫秒没人损失什么，画错一屏会让人按下一颗什么都不做的开关。
+    //
+    // 走到这里的前提是「清单里没有这一行、也不是我们刚要建的」——种子覆盖了
+    // 其余每一条路，所以这一屏在正常使用中不出现
+    return (
+      <div className="flex-1 min-w-0 h-full flex items-center justify-center text-[13px] text-muted-foreground">
+        正在进入这条会话…
+      </div>
+    );
+  }
 
   return (
     // 这一层**不滚**（#987）：滚动区在 CloudSessionPage 里面、只包时间线，输入框钉在
@@ -124,7 +131,8 @@ export function CloudSessionMain({ onManage }: { onManage: (workspaceId: string)
           selfUid={selfUid}
           onSettings={() => onManage(ws.id)}
           onAgentSettings={openAgentSettings}
-          {...(chat === undefined ? {} : { chat })}
+          {/* `chat === null` = 团队会话：不传这一格，CloudSessionPage 照旧画团队壳。
+              `undefined`（还不知道）在上面就已经早退了，到不了这里 */ ...(chat === null ? {} : { chat })}
           {...(chat?.kind === "dm" && chat.agentIds[0] !== undefined
             // 「拉人」**不改这条私聊**，是带着这一只另起一个群（微信同款）：私聊的
             // 名单是库里那条唯一索引钉死的一只，改得了的话它就不再是「和它的那条线」

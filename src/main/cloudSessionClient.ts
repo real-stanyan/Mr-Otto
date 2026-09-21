@@ -305,9 +305,14 @@ interface ActiveSession {
       在 "connecting" 早期状态下不必当真，welcome 一到就会补一次真值 */
   initiatorUid: string | null;
   ownerUid: string;
-  /** welcome 说的「这条会话是哪一种聊天、名单是谁」（#1280）。null = 团队会话，
-      或者 welcome 还没到 */
-  chat: CsChatInfo | null;
+  /** welcome 说的「这条会话是哪一种聊天、名单是谁」（#1280）。**三态**（#1301）：
+      `undefined` = welcome 还没到（**还不知道**）/ `null` = welcome 到了、说这是
+      团队会话 / 值 = 一条聊天。原来这一格只有两态，于是「还没问到」与「问到了、
+      是团队」在渲染层同一个答案——聊天页在 welcome 之前画成团队壳（真机上十秒以上），
+      露出一颗在主场里点了不生效的「免审批」开关。同 `workspaceAccess` 的 `unknown`
+      （ADR-0217）、`sandboxApproval` 的 `null`（ADR-0243）、`planBadge` 的 `null`
+      （ADR-0240）——这个仓库第四次在同一条纪律上立规矩 */
+  chat: CsChatInfo | null | undefined;
   /** 岛上那一行写什么（#1280）。join 的调用方递，null = 团队会话（照旧写「云会话」） */
   title: string | null;
   /** 已经转发给渲染层的事件 seq。backlog 与直播可能重叠，靠它去重（拉全量
@@ -455,7 +460,10 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
       ownerUid: session.ownerUid,
       selfUid: deps.selfUid() ?? "",
       modelRoute: session.modelRoute,
-      ...(session.chat === null ? {} : { chat: session.chat }),
+      // 三态照原样带过去（#1301）：**缺席 = welcome 还没到**，`null` = 团队会话。
+      // 原来写的是 `chat === null ? {} : {...}`，把「还不知道」与「是团队」压成
+      // 同一个缺席——渲染层于是在 welcome 之前就替这条会话下了「团队」的结论
+      ...(session.chat === undefined ? {} : { chat: session.chat }),
       ...(notice === undefined ? {} : { notice }),
       // 持久（issue #957 C-I7）：与上面那条一次性的 notice 相反，只要这一份
       // 历史还缺着，**每一次**推送都带上它——渲染层因此不需要自己记着
@@ -1000,7 +1008,7 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
       status: "connecting",
       initiatorUid: null,
       ownerUid: "",
-      chat: null,
+      chat: undefined, // #1301：还没 welcome = 还不知道，**不是**「团队会话」
       seenSeqs: new Set(),
       liveBuffer: [],
       lastSeq: null,

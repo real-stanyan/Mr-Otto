@@ -70,3 +70,22 @@ export function normalizeChatAgentIds(raw: unknown, min: 0 | 1): string[] | null
   }
   return out.length >= min && out.length <= CHAT_GROUP_MAX ? out : null;
 }
+
+/** 此刻的名单：**日志里最后一条 `chat_roster_changed` 胜出**，一条都没有时退回
+    `fallback`（welcome 那份快照）。
+
+    两个来源缺一不可，各自补上对方的盲区：
+
+    - **日志赢**，因为它是事实（ADR-0297）。welcome 那份是进房那一刻的快照，之后
+      每一次改名单只以一条事件的形式到达——只认快照的话，改完名单头部就一直是旧的
+      （#1302：新群名配旧名单，「添加智能体」还按不动并说「名册里的智能体都在群里了」）。
+    - **退回快照**，因为进房只拉尾巴（#1280 A6）：一条聊了半年的线，名单事件多半
+      落在窗口外面，`chatRosterOf` 一条都数不到。那时 `null` 的意思是「这一段历史里
+      没人改过名单」，不是「这条聊天不收窄」——照 `null` 画就是把一条私聊当成团队会话。
+      快照由服务端从**整份**日志算出（`rosterNow`），正是这一段的答案。
+
+    往前翻页 prepend 的是更早的事件，折叠取最后一条，所以翻页不会把名单翻回去
+    ——前提是 `events` 按 seq 升序（store 那侧是二分插进去的）。 */
+export function chatRosterNow(events: readonly SessionEvent[], fallback: ChatRoster): ChatRoster {
+  return chatRosterOf(events) ?? fallback;
+}
