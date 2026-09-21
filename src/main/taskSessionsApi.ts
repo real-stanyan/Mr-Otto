@@ -16,6 +16,7 @@ export interface TaskSessionRow {
 export type TaskSyncErrorCode =
   | "seq_conflict" // P0010：expected_seq 不等于 last_seq+1
   | "pen_required" // P0011：executor 类事件而笔不在我手上
+  | "pen_busy" // P0014：人的动作，但笔在别人手上（他正在跑一轮）——留着待会儿再推，别去抢笔
   | "no_session" // P0013：expected_seq > 0 但行不存在（别的设备删了）
   | "forbidden" // P0012 / 42501：不是我的会话、形状非法
   | "missing_schema" // PGRST202 / 42883 / 42P01 / PGRST205：0036 还没在真库跑

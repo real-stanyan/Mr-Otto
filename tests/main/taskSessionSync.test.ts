@@ -7,7 +7,7 @@ import type { SessionEvent } from "../../src/session/events.js";
 import { createTaskSessionSync, type TaskSessionSync, type TaskSessionSyncDeps } from "../../src/main/taskSessionSync.js";
 import { TaskSyncError, type TaskSessionRow, type TaskSessionsApi, type TaskSyncErrorCode } from "../../src/main/taskSessionsApi.js";
 import type { TaskSyncFile } from "../../src/main/taskSyncStore.js";
-import { HUMAN_EVENT_TYPES, PEN_RENEW_MS, TASK_EVENT_MAX_BYTES, TASK_TEXT_MAX_BYTES } from "../../src/shared/taskSync.js";
+import { PEN_BUSY_EXEMPT, HUMAN_EVENT_TYPES, PEN_RENEW_MS, TASK_EVENT_MAX_BYTES, TASK_TEXT_MAX_BYTES } from "../../src/shared/taskSync.js";
 import { tempDir } from "../helpers/tempDir.js";
 
 const utf8bytes = (s: string): number => new TextEncoder().encode(s).length;
@@ -37,6 +37,8 @@ export function fakeCloud(uid = "u1"): FakeCloud {
   const failOnce = new Map<string, { code: TaskSyncErrorCode; message: string }>();
   const net = () => { if (offline) throw new TaskSyncError("network", "fetch failed"); };
   const penLive = (r: TaskSessionRow, holder: string) => r.pen_holder === holder && r.pen_until !== null && Date.parse(r.pen_until) > now.t;
+  const penHeldByOther = (r: TaskSessionRow, holder: string) =>
+    r.pen_holder !== null && r.pen_holder !== holder && r.pen_until !== null && Date.parse(r.pen_until) > now.t;
   const api: TaskSessionsApi = {
     async listChanged(_u, since) { net(); calls.push("list"); return [...rows.values()].map((x) => x.row).filter((r) => since === null || r.updated_at > since); },
     async getSession(_u, id) { net(); return rows.get(id)?.row ?? null; },
@@ -79,6 +81,11 @@ export function fakeCloud(uid = "u1"): FakeCloud {
           throw new TaskSyncError("forbidden", "bad_request: user_message too large");
         }
         if (!HUMAN_EVENT_TYPES.has(e.type) && !penLive(entry.row, holder)) throw new TaskSyncError("pen_required", "pen_required");
+        // ④ 0039：人的动作**也要看笔**（#1258）——笔活着且在别人手上 = 他正在跑一轮，
+        //    这一条现在落不进去。`session_created` 例外（建行那一刻行和笔都还不存在）
+        if (HUMAN_EVENT_TYPES.has(e.type) && !PEN_BUSY_EXEMPT.has(e.type) && penHeldByOther(entry.row, holder)) {
+          throw new TaskSyncError("pen_busy", "pen_busy");
+        }
         seq++;
       }
       if (isNewRow) rows.set(id, entry);
@@ -197,7 +204,10 @@ describe("taskSessionSync：推（#1223）", () => {
     await h.sync.flushNow();
     expect(h.cloud.rows.get("s1")!.events).toHaveLength(2);
   });
-  it("人话免笔：别人握着笔也照推", async () => {
+  // 这一条原来断言的是「人话免笔：别人握着笔也照推」（#1223 的设计），而那正是 #1258 那个洞：
+  // 人话插进别人正在跑的那一轮中间，收口后对账把**他刚跑完的一整轮**判成分叉流放。
+  // 契约因此翻面（ADR-0310）：笔活着时这条会话只有一个写者，别人的人话留着待会儿推
+  it("人话也要看笔（#1258）：别人握着笔时留着不推，笔放了才落——落在那一轮之后", async () => {
     const h = harness();
     h.store.append(created("s1"));
     await h.sync.flushNow();
@@ -205,7 +215,24 @@ describe("taskSessionSync：推（#1223）", () => {
     await h.cloud.api.acquirePen("s1", "cloud", 30);
     h.store.append({ sessionId: "s1", ts: 2, type: "user_message", content: "还在吗" });
     await h.sync.flushNow();
+    // 没上去——但也没丢、没冻结、本地日志一个字没动
+    expect(h.cloud.rows.get("s1")!.events).toHaveLength(1);
+    expect(h.fileRef().sessions["s1"]!.frozen).toBeUndefined();
+    expect(h.store.load("s1")).toHaveLength(2);
+    // 笔一放就正常落
+    await h.cloud.api.releasePen("s1", "cloud");
+    await h.sync.flushNow();
     expect(h.cloud.rows.get("s1")!.events).toHaveLength(2);
+  });
+
+  it("人话看的是「别人的笔」：自己握着笔时照落（同一台机器上 turn 跑着也要能记下用户刚说的话）", async () => {
+    const h = harness({ running: () => true });
+    h.store.append(created("s1"));
+    h.store.append({ sessionId: "s1", ts: 2, type: "assistant_message", content: "在跑", model: "m" });
+    await h.sync.flushNow();
+    h.store.append({ sessionId: "s1", ts: 3, type: "user_message", content: "顺便" });
+    await h.sync.flushNow();
+    expect(h.cloud.rows.get("s1")!.events).toHaveLength(3);
   });
   it("离线：状态 error、脏集合留着；回网 flushNow 推出去", async () => {
     const h = harness();
