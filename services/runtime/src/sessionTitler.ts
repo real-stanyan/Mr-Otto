@@ -87,6 +87,15 @@ export function titlePrompt(input: TitleInput): string {
     取高不取低：判错成 KEEP 的代价是标题晚改一轮（5 句人话之后还会再判），
     判错成「要改」的代价只是多打一次今天本来就会打的 LLM——而它自己仍然可以回 KEEP */
 export const TITLE_KEEP_AT = 0.8;
+/** 重命名只跑在 runtime 上（`requestTitleAsOwner`），而 runtime 在那台 VPS 上
+    （Cloudflare 的 HEL colo），所以它与派活同病：2026-09-21 真机量出来那条路上一发决策
+    调用 3.5–7.3s，**1500 是 100% 超时**，调到 3000 / 5000 一样是 100%（病根是 #1304
+    不是这个数，见 ADR-0301 / #1300）。
+    但它与另外四格有一处不同，记在这里给「#1304 解掉之后一次定齐」那一班：**没有任何
+    人在等它** —— `maintainTitle` 是 fire-and-forget（`void (async () => …)()`，`say()`
+    的回执不等这次网关往返），所以超时在这一格上不花任何用户可见的时间，唯一的代价是
+    #1303 那笔「全价买一个必然被扔掉的答案」。于是这一格该取得比其余几格慷慨得多 ——
+    慷慨到多少要等那条路的真实分布，现在不定（ADR-0301 决定 1） */
 export const TITLE_DECISION_TIMEOUT_MS = 1500;
 
 /** 决策模型写不了标题，所以它只回答那一步里**不用生成文字**的那一半：还用不用改。

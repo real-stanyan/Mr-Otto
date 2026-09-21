@@ -16,7 +16,14 @@ import { tierFact } from "./memoryStore.js";
 export type JudgedTier = "user" | "memory" | "project";
 /** 回的那一档 ≠ target 且 confidence 到它才劝。**初值**，由影子期那几条命中人读一遍之后改 */
 export const TIER_MISMATCH_AT = 0.85;
-/** 此刻一把锁都没拿（落点在文件锁之前），900ms 的等待不占任何东西 */
+/** 落点在文件锁之前，所以这一等**不占任何锁** —— 但原来那句「不占任何东西」是错的，
+    错两处（ADR-0301 / #1300）：这一等坐在一次工具调用里面，付满它就是让模型这一轮干等
+    900ms；而 #1303 说付满的那一发照样全价计费，所以它也不是「白等」而是「买一个必然被
+    扔掉的答案」。
+    这一格只跑在桌面（`src/main/memoryTierJudge.ts`，runtime 不用它），而写记忆本来就是
+    稀疏动作 —— 按 ADR-0301 ② 那条闲置曲线，它命中的几乎总是闲置那一侧（五分钟之后
+    1.3–1.4s），于是 **900 这个数几乎从不成功**。改成多少要等 #1304 解掉之后按真实分布
+    定；现在一个字不改（ADR-0301 决定 1） */
 export const TIER_DECISION_TIMEOUT_MS = 900;
 const ENTRY_MAX = 800;
 

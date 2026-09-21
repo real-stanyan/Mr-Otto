@@ -86,7 +86,14 @@ export function modelForDifficulty(d: Difficulty, models: readonly string[]): st
 /** P(需要强模型) ≤ 它才走便宜那款；其余一律 hard。**初值**，由影子期的校准数据改。
     取 0.2 不取 0.5：判错往便宜了走是一整轮白跑，往贵了走只是这一轮多花点钱 */
 export const AUTO_SIMPLE_BELOW = 0.2;
-/** 调用方拼 `ask` 时用的超时。只有「挂住不回」才付满它，付完才开始 LLM 那条路 */
+/** 调用方拼 `ask` 时用的超时。**五格超时里只有这一格被两条路共用**：桌面主进程
+    （`src/main/agent.ts`）与云 runtime（`services/runtime/src/autoModel.ts`）import 的是
+    同一个常量，而 2026-09-21 真机量出来这两条路差一个数量级（Mac/SYD 背靠背 p50 470ms、
+    闲置五分钟之后 1.3–1.4s；VPS/HEL 3.5–7.3s）—— 所以**一个数不可能对两条路都成立**，
+    ADR-0301 说的「一次定齐五处」实际是六格。
+    原来这里写的「只有『挂住不回』才付满它」也已被证伪：云那一侧每一发都付满，桌面那
+    一侧只要闲置过五分钟就付满，而 #1303 说付满的那一发照样全价计费。病根是 #1304 不是
+    这个数；现在一个字不改（ADR-0301 决定 1 / #1300） */
 export const AUTO_DECISION_TIMEOUT_MS = 1200;
 /** LLM 那条路的超时。**这是一个有意的行为改动**（#1281 探查时发现的旧账）：原来这里没有
     AbortController，一次挂住的网关调用会把 turn 的起跑永久卡住——派活（5s）与重命名（6s）
