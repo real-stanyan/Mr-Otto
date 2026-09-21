@@ -372,6 +372,16 @@ export function createTaskSessionSync(deps: TaskSessionSyncDeps): TaskSessionSyn
             borrowedPen = true;
             continue; // i 不动：同一批重来一次，成败照样过上面那套分类
           }
+          if (err.code === "pen_busy") {
+            // 人的动作，而笔在别人手上：他正在跑一轮（#1258，ADR-0310）。**留着待会儿再推**，
+            // 与上面 `needsPen` 那条拿不到笔的处置逐字相同——realtime 推来「笔放了」或 30s
+            // 重试到时再来。三件不做的事各有理由：不去 acquirePen（那是 pen_required 的出路，
+            // 在这儿就是从正在跑的那一方手里抢笔）、不 reconcile（云端没有我们看不见的分歧，
+            // 就是我们这一条还没上去）、不 freeze（这是个会自己过去的状态，冻了要人手动解）
+            dirty.add(id);
+            scheduleRetry();
+            return;
+          }
           if (err.code === "no_session") {
             st.detached = true;
             save();

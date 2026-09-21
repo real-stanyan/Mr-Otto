@@ -15,7 +15,16 @@ export const TASK_SQLSTATE = {
   pen_required: "P0011",
   forbidden: "P0012",
   no_session: "P0013",
+  /** 笔在别人手上，而这是一条**人的动作**（#1258，ADR-0310）。与 pen_required 分开一个码：
+      那个说的是「你要落 executor 事件但没有笔」，出路是去拿笔；这个说的是「笔是别人的、
+      他正在跑一轮，等他放」，出路是**留着待会儿再推**——两条出路相反，合成一个码的客户端
+      会在别人跑 turn 的时候去抢笔 */
+  pen_busy: "P0014",
 } as const;
+
+/** 笔活着时仍然随时可落的人的动作。只有一条：建行那一批的 `session_created`——那一刻行还
+    不存在、笔也还不存在（RPC 建行时才把笔发给创建者），拦它等于让任务会话根本建不出来 */
+export const PEN_BUSY_EXEMPT: ReadonlySet<string> = new Set(["session_created"]);
 
 /** 追加这类事件要不要握笔。`human` = 人的动作（改名 / 归档 / 换型号 / 人话…），任何设备随时可落；
     `executor` = 跑 turn 的一方留下的痕迹，必须握着笔。手机从不握笔，天然只发得出人话；
