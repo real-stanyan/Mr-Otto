@@ -9,6 +9,7 @@ import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button.js";
 import { InsetEmpty, InsetGroup, InsetLabel, InsetNote, InsetRow } from "@/components/ui/inset-list.js";
 import { useChat } from "../store.js";
+import { AgentFace } from "./AgentFace.js";
 import {
   usageEmptyText, usageHeadline, usageRows, usageScale, usageScaleNote, usageWindowText,
 } from "../lib/workspaceUsageView.js";
@@ -90,8 +91,8 @@ export function WorkspaceUsageTab({ ws }: { ws: WorkspaceSnapshot }) {
               <InsetRow
                 key={r.agentId}
                 leading={
-                  r.avatarSrc !== null ? (
-                    <img src={r.avatarSrc} alt="" aria-hidden className="size-[27px] shrink-0 rounded-full" />
+                  r.avatar !== null ? (
+                    <AgentFace slot={r.avatar.slot} size={27} />
                   ) : (
                     // 名单里查不到的那两档（已删除 / 未归因）：对齐同一列，但**不给脸**
                     <span

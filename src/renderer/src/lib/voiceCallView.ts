@@ -6,7 +6,7 @@
 // 别的成员有没有点「加入」这台机器不知道，不画——画一个可能根本没在听的人是撒谎的勾（#722）。
 // 发起人就是自己时只画一次。
 
-import { agentAvatarSrc } from "./agentAvatar.js";
+import { agentFace, imageAvatar, type AvatarRef } from "./agentAvatar.js";
 import { agentNameOf, labelOf, memberAvatarOf } from "./workspaceView.js";
 import type { VoiceListenState } from "../store.js";
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
@@ -22,7 +22,9 @@ export interface CallTile {
   key: string;
   kind: "agent" | "human";
   name: string;
-  avatarSrc: string;
+  /** 这一格画什么。agent 永远有脸（派生对陌生 id 也有定义——通话名单里那只此刻
+      还在通话里）；人是 `profiles.avatar_url`，没设过就是 `null`、退回首字母 */
+  avatar: AvatarRef;
   self: boolean;
   state: TileState;
   /** 0..1 画外圈：自己按麦克风能量；agent 在说时 1；其余 0 */
@@ -49,7 +51,7 @@ function agentTile(i: CallViewInput, p: { agentId: string; name: string }): Call
     key: p.agentId,
     kind: "agent",
     name: known ? agentNameOf(i.ws, p.agentId) : p.name,
-    avatarSrc: agentAvatarSrc(i.ws, p.agentId),
+    avatar: agentFace(i.ws, p.agentId),
     self: false,
     state,
     level: speaking ? 1 : 0,
@@ -72,7 +74,7 @@ function humanTile(i: CallViewInput, uid: string): CallTile {
       state = "idle";
     }
   }
-  return { key: uid, kind: "human", name: labelOf(i.ws, uid), avatarSrc: memberAvatarOf(i.ws, uid), self, state, level };
+  return { key: uid, kind: "human", name: labelOf(i.ws, uid), avatar: imageAvatar(memberAvatarOf(i.ws, uid)), self, state, level };
 }
 
 /** 通话里的每一格：agent 按名单顺序在前，人在后（发起人、自己） */

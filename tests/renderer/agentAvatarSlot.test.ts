@@ -1,12 +1,12 @@
 // agentAvatarSlot 纯逻辑：稳定（同 id 同脸）、管理员固定、撞脸顺延、超员回天然坑位、
-// 不在名单的也有脸（#971，ADR-0229）。另一条断言钉住图片清单长度与坑位数一致——
-// 少放一张 png，坑位 12 会 undefined 而不是报错。
+// 不在名单的也有脸（#971，ADR-0229）。另一条断言钉住角色包个数与坑位数一致——
+// 少一个角色，坑位 12 会落到别人身上而不是报错（#1345 之后是角色包，不再是 png）。
 
 import { describe, expect, it } from "vitest";
 import {
   ADMIN_AVATAR_SLOT, AGENT_AVATAR_COUNT, agentAvatarSlot, agentAvatarSlots,
 } from "../../src/renderer/src/lib/agentAvatarSlot.js";
-import { AGENT_AVATARS } from "../../src/renderer/src/lib/agentAvatar.js";
+import { FACE_CHARACTERS } from "../../src/renderer/src/lib/ottoFace/index.js";
 import { ADMIN_AGENT_ID } from "../../src/shared/workspaceAgents.js";
 
 describe("agentAvatarSlots", () => {
@@ -62,9 +62,8 @@ describe("agentAvatarSlot", () => {
   });
 });
 
-describe("AGENT_AVATARS", () => {
-  it("图片张数与坑位数一致", () => {
-    expect(AGENT_AVATARS).toHaveLength(AGENT_AVATAR_COUNT);
-    for (const src of AGENT_AVATARS) expect(typeof src).toBe("string");
+describe("FACE_CHARACTERS", () => {
+  it("角色包个数与坑位数一致——一个坑位对一个角色（#1345）", () => {
+    expect(FACE_CHARACTERS).toHaveLength(AGENT_AVATAR_COUNT);
   });
 });

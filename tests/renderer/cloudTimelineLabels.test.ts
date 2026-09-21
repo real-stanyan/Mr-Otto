@@ -378,22 +378,22 @@ describe("voiceCallLineParts", () => {
     expect(parts.some((p) => p.kind === "text" && p.text === "、")).toBe(true);
   });
 
-  it("有头像就带 src：agent 取内置像素图，成员取 profiles.avatar_url", () => {
+  it("有头像就带得出来：agent 取内置像素脸的坑位，成员取 profiles.avatar_url", () => {
     const withFace: WorkspaceSnapshot = {
       ...ws, members: [{ uid: "u1", role: "owner", label: "Stan", avatarUrl: "https://example.test/stan.png" }],
     };
     const ps = parties(voiceCallLineParts(null, ev(1, ["a_1"]), withFace));
-    expect(ps[0]).toMatchObject({ name: "Stan", avatarSrc: "https://example.test/stan.png" });
-    expect(ps[1]!.avatarSrc).toContain("agent-avatars");
+    expect(ps[0]).toMatchObject({ name: "Stan", avatar: { kind: "image", src: "https://example.test/stan.png" } });
+    expect(ps[1]!.avatar).toMatchObject({ kind: "face" });
   });
 
-  it("名册里查不到的不给脸（空串，渲染层退回首字母）——画上去等于宣称它还在名册里", () => {
+  it("名册里查不到的不给脸（null，渲染层退回首字母）——画上去等于宣称它还在名册里", () => {
     // ① 已经被删掉的那只（名字只剩事件里的快照）② 已退群 / 没设过头像的人
     const ps = parties(voiceCallLineParts(null, ev(1, ["a_x"]), ws));
-    expect(ps.map((p) => [p.name, p.avatarSrc])).toEqual([["Stan", ""], ["快照a_x", ""]]);
+    expect(ps.map((p) => [p.name, p.avatar])).toEqual([["Stan", null], ["快照a_x", null]]);
     // agent 自己拉人时同理：事件上只有 id，没有快照可退
     const byGhost = parties(voiceCallLineParts(ev(1, ["a_1"]), ev(2, ["a_1", "a_2"], { byAgentId: "a_ghost" }), ws));
-    expect(byGhost[0]!.avatarSrc).toBe("");
+    expect(byGhost[0]!.avatar).toBeNull();
   });
 });
 

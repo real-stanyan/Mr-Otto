@@ -26,14 +26,14 @@
 import { useEffect, useMemo, useRef } from "react";
 import { Plus, Settings2 } from "lucide-react";
 import { useChat } from "../store.js";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar.js";
 import { Button } from "@/components/ui/button.js";
 import { Skeleton } from "@/components/ui/skeleton.js";
 import {
   SidebarGroup, SidebarGroupAction, SidebarGroupContent, SidebarGroupLabel,
   SidebarMenu, SidebarMenuButton, SidebarMenuItem,
 } from "@/components/ui/sidebar.js";
-import { agentAvatarSrc } from "../lib/agentAvatar.js";
+import { AgentFace } from "./AgentFace.js";
+import { agentFaceSlot } from "../lib/agentAvatar.js";
 import { groupRows, homeOf, rosterGate, rosterRows, teamsOf } from "../lib/agentRoster.js";
 import type { AgentRosterRow, GroupChatRow } from "../lib/agentRoster.js";
 import { workspaceAccess } from "../lib/workspaceAccess.js";
@@ -256,7 +256,7 @@ function RosterBody({
               <AgentRow
                 key={row.agentId}
                 row={row}
-                avatar={agentAvatarSrc(home, row.agentId)}
+                slot={agentFaceSlot(home, row.agentId)}
                 now={now}
                 fresh={fresh.has(row.agentId)}
                 active={
@@ -309,20 +309,24 @@ function RosterBody({
 }
 
 /** 一只智能体一行：30px 头像 + 名字/时间 + 职责。
+    脸一律画 `plain` 那一档 —— **名册这一栏查不到谁在跑**（那张表里没有这一格，#1282），
+    画一个恒灰的「空闲」角标等于宣称一件我们查不到的事（#722 那颗撒谎的勾）；
+    `plain` 顺带也是静止的，而一墙脸同时呼吸本身就是噪音。
     **只给高亮不给缩放**：切行是每天几十次的动作，缩一下会让这一列的基线跟着跳
     （同 ADR-0249 撤掉「一行两层」的那条理由）。
     `fresh` = 这一次渲染才多出来的那一只（#1280 A5）：入场动效在 app.css 里按
     `[data-fresh="true"]` 挂，只放一次。 */
 function AgentRow({
   row,
-  avatar,
+  slot,
   now,
   active,
   fresh,
   onOpen,
 }: {
   row: AgentRosterRow;
-  avatar: string;
+  /** 内置像素脸的坑位（0..12，agentAvatar.ts） */
+  slot: number;
   now: number;
   active: boolean;
   fresh: boolean;
@@ -336,10 +340,7 @@ function AgentRow({
         onClick={onOpen}
         title={row.description === "" ? row.name : `${row.name} · ${row.description}`}
       >
-        <Avatar className="size-[30px] shrink-0 rounded-[7px]">
-          <AvatarImage src={avatar} alt="" className="[image-rendering:pixelated]" />
-          <AvatarFallback className="rounded-[7px] text-[11px]">{row.name.slice(0, 1)}</AvatarFallback>
-        </Avatar>
+        <AgentFace slot={slot} size={30} className="rounded-[7px]" />
         <span className="min-w-0 flex-1 flex flex-col gap-[1px]">
           <span className="flex items-baseline gap-1">
             <span className="min-w-0 flex-1 truncate text-[13px]">{row.name}</span>
@@ -385,12 +386,12 @@ function GroupRow({
         <span className="shrink-0 flex items-center">
           {/* 最多三张：侧栏 16rem，名字才是这一行的主语（同 ParticipantStack 的取舍） */}
           {row.agentIds.slice(0, 3).map((id) => (
-            <Avatar key={id} className="size-6 -ml-[7px] first:ml-0 rounded-[6px] ring-[1.5px] ring-sidebar">
-              <AvatarImage src={agentAvatarSrc(home, id)} alt="" className="[image-rendering:pixelated]" />
-              <AvatarFallback className="rounded-[6px] text-[9px]">
-                {(home.agents.find((a) => a.agentId === id)?.name ?? id).slice(0, 1)}
-              </AvatarFallback>
-            </Avatar>
+            <AgentFace
+              key={id}
+              slot={agentFaceSlot(home, id)}
+              size={24}
+              className="-ml-[7px] first:ml-0 rounded-[6px] ring-[1.5px] ring-sidebar"
+            />
           ))}
         </span>
         <span className="min-w-0 flex-1 flex flex-col gap-[1px]">

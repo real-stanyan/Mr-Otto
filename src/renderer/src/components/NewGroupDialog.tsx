@@ -20,14 +20,14 @@
 
 import { useState } from "react";
 import { Users } from "lucide-react";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar.js";
 import { Button } from "@/components/ui/button.js";
 import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog.js";
 import { Input } from "@/components/ui/input.js";
 import { useChat } from "../store.js";
-import { agentAvatarSrc } from "../lib/agentAvatar.js";
+import { AgentFace } from "./AgentFace.js";
+import { agentFaceSlot } from "../lib/agentAvatar.js";
 import { homeOf } from "../lib/agentRoster.js";
 import { CHAT_GROUP_CREATE_MIN, CHAT_GROUP_MAX, CHAT_NAME_MAX } from "../../../shared/chatRoster.js";
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
@@ -143,10 +143,7 @@ function NewGroupForm({ home, preset, onNewTeam, onCancel }: {
                 className="size-[13px] shrink-0 accent-[var(--brand)]"
                 aria-label={a.name}
               />
-              <Avatar className="size-[22px] shrink-0 rounded-[5px]">
-                <AvatarImage src={agentAvatarSrc(home, a.agentId)} alt="" className="[image-rendering:pixelated]" />
-                <AvatarFallback className="rounded-[5px] text-[10px]">{a.name.slice(0, 1)}</AvatarFallback>
-              </Avatar>
+              <AgentFace slot={agentFaceSlot(home, a.agentId)} size={22} className="rounded-[5px]" />
               <span className="min-w-0 flex-1 flex flex-col gap-[1px]">
                 <span className="min-w-0 truncate text-[12.5px]">{a.name}</span>
                 {a.description !== "" && (

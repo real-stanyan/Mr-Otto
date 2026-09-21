@@ -62,7 +62,9 @@ import { AddAgentPopover } from "./AddAgentPopover.js";
 import { AgentChatHeader, type ChatView } from "./AgentChatHeader.js";
 import { withDaySeparators } from "../lib/dayLabel.js";
 import { growHidden, initialHidden, nextOlderAction, visibleCloudRows } from "../lib/cloudWindow.js";
-import { agentAvatarSrc } from "../lib/agentAvatar.js";
+import { AgentFace, PartyAvatar } from "./AgentFace.js";
+import { dmFaceState } from "../lib/ottoFace/index.js";
+import { agentFace, agentFaceIfKnown, agentFaceSlot, imageAvatar } from "../lib/agentAvatar.js";
 import { applyAgentMention, mentionQueryAt, pickerEmptyState, resolveSendMentions } from "../lib/agentMentionInput.js";
 import { filterMentionRows, mentionRows, MENTION_KIND_LABEL, type MentionRow } from "../lib/workspaceMentionItems.js";
 import {
@@ -315,6 +317,10 @@ export function CloudSessionPage({
   const [callOpen, setCallOpen] = useState(false);
   const fullscreen = useChat((s) => s.fullscreen);
   const trafficInset = isMac() && !fullscreen;
+  // 私聊头部那张脸的表情（#1345）。`openTurns` 已经在 callView 里算了一遍，但那份只
+  // 留下了 agentId 的集合；这里要的是「排队中还是在跑」，所以单算一次
+  const pendingTurns = useMemo(() => openTurns(events), [events]);
+  const streamingPreview = useChat((s) => s.cloudStreaming);
   const callView = useMemo(
     () => ({ selfUid, starterUid: call ? callStarterUid(events, call) : null, openAgentIds: new Set(openTurns(events).map((t) => t.agentId)) }),
     [events, call, selfUid]
@@ -947,6 +953,9 @@ export function CloudSessionPage({
             return chatSettings === undefined ? {} : { onSettings: chatSettings };
           })()}
           voiceSlot={voiceSlot}
+          {...(chat.kind === "dm" && chat.agentIds[0] !== undefined
+            ? { faceState: dmFaceState(pendingTurns, streamingPreview, chat.agentIds[0]) }
+            : {})}
         />
       ) : (
         // 头部钉在顶上（#993）：与 footer 对称——#987 那次只钉了输入框，头部还
@@ -1160,7 +1169,7 @@ export function CloudSessionPage({
                   <CreatedAgentRow
                     key={e.seq}
                     name={created.name}
-                    avatar={agentAvatarSrc(ws, created.agentId)}
+                    slot={agentFaceSlot(ws, created.agentId)}
                     onOpen={() => void openAgentChat(created.agentId)}
                   />
                 );
@@ -1677,17 +1686,14 @@ function initialOf(name: string): string {
 }
 
 /** agent 头像：内置像素图（agentAvatar.ts）。agentId 缺席（旧日志/单 agent
-    会话）时没有脸可查，退回首字母。**不开** image-rendering: pixelated：128px
-    的像素画缩到 24px 时一格像素只剩一个多屏幕像素，最近邻会整行整列地丢掉
-    （眼睛可能直接没了），平滑缩放反而认得出是谁 */
+    会话）时没有脸可查，退回首字母。
+
+    #1345 之后这张脸是现画的像素而不是一张 128px 的 png，所以原来那条「不开
+    image-rendering: pixelated，缩下来会整行整列丢像素」的注意事项没了——网格
+    按尺寸现算，24px 与 80px 画的是同一张脸的不同分辨率，不是同一张图的两次缩放 */
 function AgentAvatar({ ws, agentId, name }: { ws: WorkspaceSnapshot; agentId: string | undefined; name: string }) {
   return (
-    <Avatar size="sm">
-      {agentId !== undefined && (
-        <AvatarImage src={agentAvatarSrc(ws, agentId)} alt={name} />
-      )}
-      <AvatarFallback>{initialOf(name)}</AvatarFallback>
-    </Avatar>
+    <PartyAvatar avatar={agentId === undefined ? null : agentFace(ws, agentId)} name={name} size={24} label={name} />
   );
 }
 
@@ -1750,12 +1756,10 @@ export function MentionOptionRow({
 }
 
 function MentionAvatar({ ws, row }: { ws: WorkspaceSnapshot; row: MentionRow }) {
-  const src = row.kind === "agent" && row.agentId !== null ? agentAvatarSrc(ws, row.agentId) : row.avatarUrl;
+  const avatar =
+    row.kind === "agent" && row.agentId !== null ? agentFace(ws, row.agentId) : imageAvatar(row.avatarUrl);
   return (
-    <Avatar className="size-5 shrink-0">
-      {src !== "" && <AvatarImage src={src} alt={row.name} />}
-      <AvatarFallback className="text-[10px]">{initialOf(row.name)}</AvatarFallback>
-    </Avatar>
+    <PartyAvatar avatar={avatar} name={row.name} size={20} className="shrink-0" label={row.name} />
   );
 }
 
@@ -1887,8 +1891,8 @@ function AgentRelayRow({ event, ws }: { event: AgentRelayEvent; ws: WorkspaceSna
     也一样：这一条说的是**整个群此刻的状态**（从现在起多一只/少一只在听、在接力），
     不是机器的内务，所以与旁边那几行靠左的旁白（就位 / 接力线 / 系统旁白）故意分家。
 
-    **名册里查不到的不给脸**（`agentAvatarSrc` 对陌生 id 会按哈希派生一张，画上去
-    等于宣称它还在名册里）：被移出的那只常常正是刚被删掉的那只。脸与名字包在同一个
+    **名册里查不到的不给脸**（派生对陌生 id 也算得出一张脸，画上去等于宣称它还在
+    名册里）：被移出的那只常常正是刚被删掉的那只。脸与名字包在同一个
     `whitespace-nowrap` 里——断在中间就是一张没有主人的脸；整行走 inline 不排成
     flex，名字多了必然换行，而 flex 换行之后 `text-center` 管不到（同 VoiceCallRow）。 */
 export function ChatRosterRow({ parts, ws }: { parts: readonly RosterLinePart[]; ws: WorkspaceSnapshot }) {
@@ -1896,14 +1900,14 @@ export function ChatRosterRow({ parts, ws }: { parts: readonly RosterLinePart[];
     <p className="self-center max-w-[85%] px-1 text-center text-[11px] text-muted-foreground">
       {parts.map((p, i) => {
         if (p.agentId === undefined) return <span key={i}>{p.text}</span>;
-        const known = ws.agents.some((a) => a.agentId === p.agentId);
+        const face = agentFaceIfKnown(ws, p.agentId);
         return (
           <span key={i} className="whitespace-nowrap">
-            {known && (
-              <img
-                src={agentAvatarSrc(ws, p.agentId)}
-                alt=""
-                className="mr-[3px] inline-block size-[14px] rounded-[3px] align-[-2px] [image-rendering:pixelated]"
+            {face !== null && (
+              <AgentFace
+                slot={face.slot}
+                size={14}
+                className="mr-[3px] inline-block rounded-[3px] align-[-2px]"
               />
             )}
             {p.text}
@@ -1924,15 +1928,11 @@ export function ChatRosterRow({ parts, ws }: { parts: readonly RosterLinePart[];
 
     名字画在钮上不画在旁白里：一句「已经建好了」读完还要人自己去找，而这颗钮
     读完就是下一步。 */
-function CreatedAgentRow({ name, avatar, onOpen }: { name: string; avatar: string; onOpen: () => void }) {
+function CreatedAgentRow({ name, slot, onOpen }: { name: string; slot: number; onOpen: () => void }) {
   return (
     <div className="self-center px-1 py-[2px]">
       <Button variant="outline" size="xs" className="rounded-full font-normal" onClick={onOpen}>
-        <img
-          src={avatar}
-          alt=""
-          className="mr-[1px] size-4 shrink-0 rounded-[4px] [image-rendering:pixelated]"
-        />
+        <AgentFace slot={slot} size={16} className="mr-[1px] rounded-[4px]" />
         去和「{name}」聊
       </Button>
     </div>
@@ -2021,10 +2021,13 @@ export function VoiceCallCardRow({
                   <span className="inline-flex shrink-0">
                     {card.parties.map((party, i) => (
                       // 下标当 key：parties 是同一段日志的确定投影，既不重排也不增删
-                      <Avatar key={i} className={cn("size-[18px] ring-2 ring-card", i > 0 && "-ms-1.5")}>
-                        {party.avatarSrc !== "" && <AvatarImage src={party.avatarSrc} alt="" />}
-                        <AvatarFallback className="text-[9px]">{initialOf(party.name)}</AvatarFallback>
-                      </Avatar>
+                      <PartyAvatar
+                        key={i}
+                        avatar={party.avatar}
+                        name={initialOf(party.name)}
+                        size={18}
+                        className={cn("ring-2 ring-card", i > 0 && "-ms-1.5")}
+                      />
                     ))}
                   </span>
                   <span className="truncate">{names}</span>
@@ -2048,10 +2051,13 @@ export function VoiceCallCardRow({
             <DialogDescription className="flex flex-wrap items-center gap-1.5">
               <span className="inline-flex shrink-0">
                 {card.parties.map((party, i) => (
-                  <Avatar key={i} className={cn("size-5 ring-2 ring-card", i > 0 && "-ms-1.5")}>
-                    {party.avatarSrc !== "" && <AvatarImage src={party.avatarSrc} alt="" />}
-                    <AvatarFallback className="text-[9px]">{initialOf(party.name)}</AvatarFallback>
-                  </Avatar>
+                  <PartyAvatar
+                    key={i}
+                    avatar={party.avatar}
+                    name={initialOf(party.name)}
+                    size={20}
+                    className={cn("ring-2 ring-card", i > 0 && "-ms-1.5")}
+                  />
                 ))}
               </span>
               <span>{names}</span>
@@ -2103,10 +2109,14 @@ function CallTranscript({ card }: { card: VoiceCallCard }) {
                   <span key={i}>{part.text}</span>
                 ) : (
                   <span key={i} className="whitespace-nowrap">
-                    <Avatar className="me-1 inline-flex size-4 align-middle">
-                      {part.avatarSrc !== "" && <AvatarImage src={part.avatarSrc} alt="" />}
-                      <AvatarFallback className="text-[8px] not-italic">{initialOf(part.name)}</AvatarFallback>
-                    </Avatar>
+                    <PartyAvatar
+                      avatar={part.avatar}
+                      name={initialOf(part.name)}
+                      size={16}
+                      className="me-1 inline-flex align-middle"
+                      faceClassName="inline-block align-middle"
+                      fallbackClassName="not-italic"
+                    />
                     {part.text}
                   </span>
                 )
@@ -2116,10 +2126,12 @@ function CallTranscript({ card }: { card: VoiceCallCard }) {
           </p>
         ) : (
           <div key={line.seq} className="grid grid-cols-[20px_1fr] gap-x-2 gap-y-px">
-            <Avatar className="col-start-1 row-start-1 mt-px size-5">
-              {line.avatarSrc !== "" && <AvatarImage src={line.avatarSrc} alt="" />}
-              <AvatarFallback className="text-[9px]">{initialOf(line.label)}</AvatarFallback>
-            </Avatar>
+            <PartyAvatar
+              avatar={line.avatar}
+              name={initialOf(line.label)}
+              size={20}
+              className="col-start-1 row-start-1 mt-px"
+            />
             <span className="col-start-2 flex items-baseline gap-1.5 text-[10.5px] text-muted-foreground">
               <b className="font-medium text-foreground/80">{line.label}</b>
               <span className="tabular-nums opacity-70">{callOffsetText(line.offsetMs)}</span>

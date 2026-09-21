@@ -1,0 +1,417 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Otto 像素脸</title>
+<style>
+  :root { color-scheme: light; }
+  body { margin: 0; padding: 24px 28px 64px; font: 13px/1.6 -apple-system, "PingFang SC", sans-serif;
+         background: #fbfbfc; color: #101012; }
+  body.dark { background: #101012; color: #f2f2f3; }
+  h1 { font-size: 17px; margin: 0 0 4px; }
+  h2 { font-size: 13px; margin: 28px 0 4px; opacity: .55; font-weight: 600; letter-spacing: .04em; }
+  p  { margin: 0 0 12px; opacity: .5; max-width: 60ch; }
+  .grid { display: flex; flex-wrap: wrap; gap: 14px; }
+  .grid.wall { gap: 6px; }
+  .cell { display: flex; flex-direction: column; align-items: center; gap: 4px; width: 128px; }
+  .cell span { font-size: 11px; opacity: .7; }
+  .cell i { font-size: 10px; opacity: .4; font-style: normal; }
+  button { position: fixed; top: 16px; right: 20px; font: inherit; padding: 4px 10px;
+           border-radius: 8px; border: 1px solid currentColor; background: transparent; color: inherit; cursor: pointer; }
+</style>
+<h1>Otto 像素脸 <span style="opacity:.4;font-weight:400">#1345 · lib/ottoFace/</span></h1>
+<p>圆盘底色两个主题一样（纸白 #f2f2f3）—— 纯黑头发压在纯黑底上会糊成一团，所以不靠描边、靠盘底。点右上角换主题看边缘。</p>
+<button id="theme">换主题</button>
+<script>(() => {
+  // src/renderer/src/lib/ottoFace/sprites.ts
+  var FACE_COLORS = {
+    /** 墨黑：眉 / 眼 / 嘴 / 眼镜框 */
+    I: "#101012",
+    /** 深灰：头发、帽子 */
+    D: "#2f2f36",
+    /** 浅灰：浅色头发、胡子、发带 */
+    L: "#83838d",
+    /** 纯白：脸 */
+    W: "#ffffff",
+    /** 纸白：圆盘底色。**两个主题一样** —— 纯黑头发压在纯黑底上会整个糊成一团，
+        而盘底把这件事解决在脸自己这一层，不用宿主按背景传一个描边色进来 */
+    P: "#f2f2f3",
+    /** 轮廓（原型里的 `#`），见上 */
+    O: "#83838d"
+  };
+  var DISC_CELLS = 15.8;
+  var FACE_ORIGIN_X = 10;
+  var FACE_ORIGIN_Y = 7;
+  var HEAD = [
+    ".......OOOOOO.......",
+    ".....OOWWWWWWOO.....",
+    "....OWWWWWWWWWWO....",
+    "...OWWWWWWWWWWWWO...",
+    "...OWWWWWWWWWWWWO...",
+    "...OWWWWWWWWWWWWO...",
+    "...OWWWWWWWWWWWWO...",
+    "...OWWWWWWWWWWWWO...",
+    "...OWWWWWWWWWWWWO...",
+    "...OWWWWWWWWWWWWO...",
+    "...OWWWWWWWWWWWWO...",
+    "....OWWWWWWWWWWO....",
+    ".....OOWWWWWWOO.....",
+    ".......OOOOOO.......",
+    "....................",
+    "...................."
+  ];
+  var EYE_LX = 6;
+  var EYE_RX = 11;
+  var BROW_Y = 4;
+  var EYE_Y = 6;
+  var MOUTH_X = 8;
+  var MOUTH_Y = 10;
+  var FACE_CHARACTERS = [
+    /* 01 短平头 */
+    { top: [".......DDDDDD.......", ".....ODDDDDDDDO.....", "....ODDDDDDDDDDO....", "...DD..........DD..."] },
+    /* 02 蘑菇头 */
+    {
+      top: [".......LLLLLL.......", ".....LLLLLLLLLL.....", "....LLLLLLLLLLLL....", "...LLL........LLL..."],
+      side: { 4: "LL", 5: "L." }
+    },
+    /* 03 刺猬头 */
+    { top: ["....D.D.D.DD.D.D....", "....DD.DDDDDD.DD....", "....DDDDDDDDDDDD....", "...DD..........DD..."] },
+    /* 04 背头 */
+    { top: [".......DDDDDD.......", ".....DDDLLDDDDD.....", "....ODDDDDDDDDDO....", "...DD..........DD..."] },
+    /* 05 贝雷帽 */
+    {
+      top: ["....DDDDDDDDD.......", "...DDDDDDDDDDDD.....", "..DDDDDDDDDDDDDD....", "...LL..........DD..."],
+      nub: [4, 0]
+    },
+    /* 06 眼镜平头 */
+    {
+      top: [".......LLLLLL.......", ".....OLLLLLLLLO.....", "....OLLLLLLLLLLO....", "...LL..........LL..."],
+      specs: true
+    },
+    /* 07 眼镜分头 */
+    {
+      top: ["......DDDDDDD.......", "....DDDDDDDDDDD.....", "....ODDLDDDDDDDO....", "...DD..........DD..."],
+      specs: true
+    },
+    /* 08 波波头 */
+    {
+      top: [".......DDDDDD.......", ".....DDDDDDDDDD.....", "....DDDDDDDDDDDD....", "...DDD........DDD..."],
+      side: { 4: "DD", 5: "DD", 6: "DD", 7: "DD", 8: "D." }
+    },
+    /* 09 光头胡子 */
+    { beard: true },
+    /* 10 长直发 */
+    {
+      top: [".......DDDDDD.......", ".....DDDDDDDDDD.....", "....DDDDDDDDDDDD....", "...DDD........DDD..."],
+      side: { 4: "DD", 5: "DD", 6: "DD", 7: "DD", 8: "DD", 9: "DD", 10: "DD", 11: "D." }
+    },
+    /* 11 马尾发带 */
+    {
+      top: [".......DDDDDD.......", ".....DDDDDDDDDD.....", "....LLLLLLLLLLLL....", "...DD..........DD..."],
+      tail: true
+    },
+    /* 12 卷发 */
+    {
+      top: ["....DD.DD..DD.DD....", "...DDDDDDDDDDDDDD...", "...DDDDDDDDDDDDDD...", "...DDD........DDD..."],
+      side: { 4: "DD", 5: "D." }
+    },
+    /* 13 乱发胡茬 */
+    {
+      top: ["....D...DD..D.D.....", "...DDDDDDDDDDDDD....", "...ODDDDDDDDDDO.....", "...DD..........DD..."],
+      stubble: true
+    }
+  ];
+  var TAIL_CELLS = [
+    [16, 3],
+    [16, 4],
+    [16, 5],
+    [16, 6],
+    [16, 7],
+    [15, 7],
+    [15, 3]
+  ];
+  var BEARD_CHEEK_CELLS = [
+    [4, 8],
+    [15, 8],
+    [4, 9],
+    [15, 9],
+    [5, 10],
+    [14, 10],
+    [5, 11],
+    [14, 11]
+  ];
+  var EYES = {
+    open: [[0, 0], [1, 0], [0, 1], [1, 1]],
+    half: [[0, 1], [1, 1]],
+    shut: [[0, 1], [1, 1]],
+    left: [[-1, 0], [0, 0], [-1, 1], [0, 1]],
+    right: [[1, 0], [2, 0], [1, 1], [2, 1]],
+    up: [[0, 0], [1, 0]],
+    cross: [[0, 0], [1, 1], [1, 0], [0, 1]]
+  };
+  var BROWS = {
+    flat: [[0, 0], [1, 0]],
+    up: [[0, -1], [1, -1]],
+    knit: [[0, 1], [1, 0]],
+    none: []
+  };
+  var MOUTHS = {
+    smile: [[0, 1], [1, 1], [2, 1], [-1, 0], [3, 0]],
+    flat: [[0, 0], [1, 0], [2, 0]],
+    small: [[1, 0], [2, 0]],
+    oh: [[1, 0], [1, 1]],
+    talk: [[0, 0], [1, 0], [2, 0], [0, 1], [1, 1], [2, 1]],
+    frown: [[0, 0], [1, 0], [2, 0], [-1, 1], [3, 1]],
+    zig: [[0, 1], [1, 0], [2, 1]]
+  };
+
+  // src/renderer/src/lib/ottoFace/states.ts
+  var BADGE_COLORS = {
+    work: "#0a84ff",
+    need: "#ff9f0a",
+    ok: "#30d158",
+    bad: "#ff453a",
+    voice: "#5ac8fa",
+    mute: "#8e8e93"
+  };
+  function spec(o) {
+    return { brow: "flat", eye: "open", mouth: "flat", badge: null, move: null, dim: false, ...o };
+  }
+  function breathe(ms) {
+    return (t) => [0, Math.floor(t / ms) % 2];
+  }
+  function cycle(frames, ms) {
+    return (t) => frames[Math.floor(t / ms) % frames.length];
+  }
+  var FACE_STATES = {
+    // 不画角标、不动。见文件头
+    plain: spec({ mouth: "smile" }),
+    idle: spec({ mouth: "smile", badge: "mute", move: breathe(1500) }),
+    // 唯一完全不动的那一档
+    queued: spec({ mouth: "flat", badge: "mute" }),
+    composing: spec({ brow: "up", eye: "up", mouth: "small", badge: "work", move: breathe(620) }),
+    searching: spec({ eye: cycle(["right", "left"], 420), badge: "work" }),
+    working: spec({ brow: "knit", badge: "work", move: breathe(300) }),
+    solving: spec({ mouth: cycle(["talk", "oh", "flat"], 220), badge: "work" }),
+    weaving: spec({ eye: "half", mouth: "small", badge: "work", move: breathe(820) }),
+    // 唯一做水平摆动的那一档
+    waiting: spec({
+      brow: "up",
+      mouth: "oh",
+      badge: "need",
+      move: cycle([[-1, 0], [0, 0], [1, 0], [0, 0]], 260)
+    }),
+    listening: spec({ brow: "up", mouth: "small", badge: "voice", move: breathe(950) }),
+    speaking: spec({ mouth: cycle(["oh", "talk", "small", "talk"], 170), badge: "voice" }),
+    done: spec({ eye: "half", mouth: "smile", badge: "ok", move: breathe(1500) }),
+    failed: spec({ brow: "knit", eye: "cross", mouth: "zig", badge: "bad" }),
+    limited: spec({ eye: "half", badge: "need", move: breathe(1700) }),
+    frozen: spec({ eye: "shut", badge: "mute" }),
+    offline: spec({ eye: "shut", badge: "mute", dim: true })
+  };
+  function faceAnimates(state) {
+    const s = FACE_STATES[state];
+    return s.move !== null || typeof s.brow === "function" || typeof s.eye === "function" || typeof s.mouth === "function";
+  }
+
+  // src/renderer/src/lib/ottoFace/frame.ts
+  function resolve(v, t) {
+    return typeof v === "function" ? v(t) : v;
+  }
+  function faceCharacterAt(slot) {
+    const n = FACE_CHARACTERS.length;
+    return (Math.trunc(slot) % n + n) % n;
+  }
+  function composeFrame(slot, state, t) {
+    const ch = FACE_CHARACTERS[faceCharacterAt(slot)];
+    const st = FACE_STATES[state];
+    const [dx, dy] = st.move !== null ? st.move(t) : [0, 0];
+    const cells = [];
+    const put = (x, y, key) => {
+      if (key === "" || key === ".") return;
+      cells.push({ x: x + dx, y: y + dy, key });
+    };
+    const layer = (rows) => {
+      if (rows === void 0) return;
+      rows.forEach((row, y) => [...row].forEach((key, x) => put(x, y, key)));
+    };
+    layer(HEAD);
+    layer(ch.top);
+    if (ch.side !== void 0) {
+      for (const [row, pair] of Object.entries(ch.side)) {
+        const y = Number(row);
+        const left = pair[0] ?? ".";
+        const right = pair[1] ?? ".";
+        if (left !== ".") {
+          put(3, y, left);
+          put(4, y, left);
+        }
+        if (right !== ".") {
+          put(15, y, right);
+          put(16, y, right);
+        }
+      }
+    }
+    if (ch.nub !== void 0) put(ch.nub[0], ch.nub[1], "D");
+    if (ch.tail === true) for (const [x, y] of TAIL_CELLS) put(x, y, "D");
+    if (ch.beard === true) {
+      for (const [x, y] of BEARD_CHEEK_CELLS) put(x, y, "L");
+      for (let x = 6; x < 14; x++) put(x, 12, "L");
+      for (let x = 7; x < 12; x++) put(x, 9, "L");
+    }
+    if (ch.stubble === true) {
+      for (let x = 5; x < 15; x++) if ((x + 1) % 2 !== 0) put(x, 12, "L");
+    }
+    const brow = BROWS[resolve(st.brow, t)] ?? [];
+    const eye = EYES[resolve(st.eye, t)] ?? [];
+    const mouth = MOUTHS[resolve(st.mouth, t)] ?? [];
+    for (const [x, y] of brow) {
+      put(EYE_LX + x, BROW_Y + y, "I");
+      put(EYE_RX + 1 - x, BROW_Y + y, "I");
+    }
+    for (const [x, y] of eye) {
+      put(EYE_LX + x, EYE_Y + y, "I");
+      put(EYE_RX + x, EYE_Y + y, "I");
+    }
+    for (const [x, y] of mouth) put(MOUTH_X + x, MOUTH_Y + y, "I");
+    if (ch.specs === true) {
+      const lens = (x0, temple) => {
+        for (let i = 0; i < 4; i++) put(x0 + i, 8, "I");
+        put(temple, 6, "I");
+        put(temple, 7, "I");
+      };
+      lens(5, 4);
+      lens(10, 14);
+      put(9, 6, "I");
+    }
+    return { cells, badge: st.badge === null ? null : BADGE_COLORS[st.badge], dim: st.dim };
+  }
+
+  // src/renderer/src/lib/ottoFace/paint.ts
+  var DIM_ALPHA = 0.45;
+  var BADGE_R = 0.15;
+  var BADGE_INSET = 1.05;
+  var BADGE_RING = 1.42;
+  function paintFace(canvas, slot, state, t) {
+    const g = canvas.getContext("2d");
+    if (g === null) return;
+    const px = canvas.width;
+    if (px <= 0) return;
+    const frame = composeFrame(slot, state, t);
+    g.imageSmoothingEnabled = false;
+    g.clearRect(0, 0, px, px);
+    const disc = () => {
+      g.beginPath();
+      g.arc(px / 2, px / 2, px / 2, 0, Math.PI * 2);
+      g.fill();
+    };
+    g.fillStyle = FACE_COLORS["P"];
+    disc();
+    g.save();
+    g.beginPath();
+    g.arc(px / 2, px / 2, px / 2, 0, Math.PI * 2);
+    g.clip();
+    if (frame.dim) g.globalAlpha = DIM_ALPHA;
+    const cell2 = Math.max(1, px / DISC_CELLS);
+    const ox = px / 2 - FACE_ORIGIN_X * cell2;
+    const oy = px / 2 - FACE_ORIGIN_Y * cell2;
+    for (const c of frame.cells) {
+      g.fillStyle = FACE_COLORS[c.key] ?? FACE_COLORS["I"];
+      g.fillRect(Math.round(ox + c.x * cell2), Math.round(oy + c.y * cell2), Math.ceil(cell2), Math.ceil(cell2));
+    }
+    g.restore();
+    if (frame.badge !== null) {
+      const r = Math.max(2.5, px * BADGE_R);
+      const cx = px - r * BADGE_INSET;
+      g.fillStyle = FACE_COLORS["P"];
+      g.beginPath();
+      g.arc(cx, cx, r * BADGE_RING, 0, Math.PI * 2);
+      g.fill();
+      g.fillStyle = frame.badge;
+      g.beginPath();
+      g.arc(cx, cx, r, 0, Math.PI * 2);
+      g.fill();
+    }
+  }
+  function sizeFaceCanvas(canvas, cssSize, dpr) {
+    const want = Math.max(1, Math.round(cssSize * Math.min(3, Math.max(1, dpr))));
+    if (canvas.width !== want || canvas.height !== want) {
+      canvas.width = want;
+      canvas.height = want;
+    }
+  }
+
+  // <stdin>
+  var STATES = Object.keys(FACE_STATES);
+  var SIZES = [24, 40, 80];
+  var live = [];
+  function face(slot, state, size) {
+    const cv = document.createElement("canvas");
+    cv.style.width = size + "px";
+    cv.style.height = size + "px";
+    cv.style.borderRadius = "50%";
+    cv.style.imageRendering = "pixelated";
+    sizeFaceCanvas(cv, size, window.devicePixelRatio || 1);
+    paintFace(cv, slot, state, 0);
+    if (faceAnimates(state)) live.push([cv, slot, state]);
+    return cv;
+  }
+  function cell(label, node, sub) {
+    const d = document.createElement("div");
+    d.className = "cell";
+    d.appendChild(node);
+    const t = document.createElement("span");
+    t.textContent = label;
+    d.appendChild(t);
+    if (sub) {
+      const s = document.createElement("i");
+      s.textContent = sub;
+      d.appendChild(s);
+    }
+    return d;
+  }
+  function section(title, hint) {
+    const h = document.createElement("h2");
+    h.textContent = title;
+    document.body.appendChild(h);
+    if (hint) {
+      const p = document.createElement("p");
+      p.textContent = hint;
+      document.body.appendChild(p);
+    }
+    const g = document.createElement("div");
+    g.className = "grid";
+    document.body.appendChild(g);
+    return g;
+  }
+  {
+    const g = section("13 \u4E2A\u5751\u4F4D", "\u987A\u5E8F\u5373\u5751\u4F4D\uFF1A01 \u2192 0 \u2026 13 \u2192 12\u3002\u90FD\u753B plain\uFF08\u4E0D\u753B\u89D2\u6807\u3001\u9759\u6B62\u4E00\u5E27\uFF09\u3002");
+    for (let slot = 0; slot < FACE_CHARACTERS.length; slot++) {
+      g.appendChild(cell("\u5751\u4F4D " + slot, face(slot, "plain", 120), "= \u65E7 " + String(slot + 1).padStart(2, "0") + ".png"));
+    }
+  }
+  {
+    const g = section("16 \u4E2A\u8868\u60C5", "\u4F1A\u52A8\u7684\u90A3\u51E0\u6863\u8FD9\u91CC\u771F\u7684\u5728\u52A8\u3002queued \u4E0E plain \u4E00\u52A8\u4E0D\u52A8\uFF0Cwaiting \u662F\u552F\u4E00\u6A2A\u7740\u6446\u7684\u3002");
+    for (const state of STATES) {
+      g.appendChild(cell(state, face(4, state, 80), faceAnimates(state) ? "\u4F1A\u52A8" : "\u9759\u6B62"));
+    }
+  }
+  {
+    const g = section("\u5C3A\u5BF8", "\u540D\u518C 24\u201334px / \u901A\u8BDD\u680F 24px / \u5168\u5C4F\u901A\u8BDD 80px\u300240px \u4E0B\u9760\u89D2\u6807\u8BA4\u72B6\u6001\u3002");
+    for (const size of SIZES) {
+      for (const state of ["plain", "working", "waiting", "speaking", "failed", "offline"]) {
+        g.appendChild(cell(state + " \xB7 " + size, face(6, state, size)));
+      }
+    }
+  }
+  {
+    const g = section("\u4E00\u5899\u8138\uFF08\u540D\u518C\uFF09", "\u540D\u518C\u4E00\u5F8B plain \u2014\u2014 \u8FD9\u4E00\u680F\u67E5\u4E0D\u5230\u8C01\u5728\u8DD1\uFF0C\u753B\u4E00\u679A\u6052\u7070\u7684\u300C\u7A7A\u95F2\u300D\u89D2\u6807\u662F\u6492\u8C0E\u7684\u52FE\uFF08#1282\uFF09\u3002");
+    g.classList.add("wall");
+    for (let i = 0; i < 26; i++) g.appendChild(face(i % FACE_CHARACTERS.length, "plain", 30));
+  }
+  (function loop() {
+    requestAnimationFrame(loop);
+    const t = performance.now();
+    for (const [cv, slot, state] of live) paintFace(cv, slot, state, t);
+  })();
+  document.getElementById("theme").onclick = () => document.body.classList.toggle("dark");
+})();
+</script>

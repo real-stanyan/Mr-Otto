@@ -1,7 +1,7 @@
-// agentAvatarSlot —— 团队 agent 用哪张内置头像（#971）。纯逻辑零 IO，图片本身在
-// lib/agentAvatar.ts 里 import，这里只算「第几张」。
+// agentAvatarSlot —— 团队 agent 用哪个内置头像坑位（#971）。纯逻辑零 IO，像素形象
+// 本身在 lib/ottoFace/ 里，这里只算「第几个坑位」。
 //
-// 为什么不给 workspace_agents 加一列：头像是纯展示，13 张内置像素头像够一个团队
+// 为什么不给 workspace_agents 加一列：头像是纯展示，13 个内置像素形象够一个团队
 // 用（每团队上限 32 只，ADR-0225；真到那个量级重复也无伤——头像是辅助辨认，
 // 名字才是身份）。加列意味着一次要在 Supabase SQL editor 手动执行的 migration
 // （0025 到现在还没跑完，#970）+ 建/改 agent 的表单多一格 + runtime 的 create_agent
@@ -17,8 +17,8 @@
 import { ADMIN_AGENT_ID } from "../../../shared/workspaceAgents.js";
 import { fnv1a } from "../../../shared/fnv1a.js";
 
-/** 内置头像张数。与 assets/agent-avatars/ 里的文件数一致，agentAvatar.ts 的
-    数组长度由测试钉住 */
+/** 内置头像的坑位数。与 `lib/ottoFace/sprites.ts` 的 `FACE_CHARACTERS` 个数一致
+    （一个坑位对一个角色，#1345），由测试钉住 */
 export const AGENT_AVATAR_COUNT = 13;
 
 /** 种子管理员固定用这一张（0 起）：每个团队都有它，固定一张脸让「管理员」
