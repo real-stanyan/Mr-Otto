@@ -697,3 +697,76 @@ describe("deleteAgent 的三步（#1280）", () => {
     expect(h.calls).not.toContain("deleteAgentRow");
   });
 });
+
+describe("workspaceManager.list：悬空授权自动对账（#815 M7）", () => {
+  /** 在籍一个团队、本机台账上却挂着两条授权（一条是它的、一条是早就没了的） */
+  function seeded() {
+    const h = harness();
+    h.rows.push({ id: "ws-live", name: "活着的", owner_uid: "me" } as never);
+    h.snapshots.push({
+      id: "ws-live", name: "活着的", ownerUid: "me",
+      members: [], connectors: [], sessions: [], agents: [],
+      sandboxApproval: "ask", kind: null,
+    } as never);
+    h.setStore({
+      ...emptyProxyStore(),
+      workspaceGrants: [
+        { workspaceId: "ws-live", allow: [{ serverId: "s1", tools: [] }] },
+        { workspaceId: "ws-gone", allow: [{ serverId: "s2", tools: [] }] },
+      ],
+    });
+    return h;
+  }
+
+  it("别人解散了群 / 我被踢：那条授权当场清掉并 resync，在籍那条一格不动", async () => {
+    // remove/leave 只管我自己动手的那两条路，全仓再没有第二处碰 workspaceGrants——
+    // 不在这儿对账的话，那台 server 连同它的 OAuth 凭证会一直留在 edge 的托管箱里
+    // （buildEscrowDoc 的 wanted 含 workspaceGrants），而「零授权 = DELETE 整箱」
+    // 那条撤销级联的后半永远不触发
+    const h = seeded();
+    const res = await h.manager.list();
+    expect(res.ok).toBe(true);
+
+    expect(h.getStore().workspaceGrants.map((g) => g.workspaceId)).toEqual(["ws-live"]);
+    expect(h.calls).toContain("resyncEscrow");
+  });
+
+  it("没有悬空的时候一个字节都不写：不 saveStore、不 resync", async () => {
+    // 这条不是省事，是防抖：list() 挂在每一次刷新上，无脑写盘 + resync 等于让
+    // 「打开侧栏」变成一次托管上传
+    const h = seeded();
+    h.setStore({
+      ...emptyProxyStore(),
+      workspaceGrants: [{ workspaceId: "ws-live", allow: [{ serverId: "s1", tools: [] }] }],
+    });
+    await h.manager.list();
+    expect(h.calls).not.toContain("saveStore");
+    expect(h.calls).not.toContain("resyncEscrow");
+  });
+
+  it("某个团队的明细拉不下来：它仍然在籍，授权一格不动（「拿不到」≠「被清空」）", async () => {
+    // #843 的占位快照那条路：fetchWorkspace 抛了，列表行还在 rows 里。
+    // 拿 snapshots 当判据的话这里会把一条活着的授权删掉，而且完全无声
+    const h = seeded();
+    h.snapshots.length = 0; // fetchWorkspace 对 ws-live 会抛 not found
+    const res = await h.manager.list();
+    expect(res.ok).toBe(true);
+    expect(h.getStore().workspaceGrants.map((g) => g.workspaceId)).toContain("ws-live");
+  });
+
+  it("在籍名单整体拉不下来：一条都不清", async () => {
+    // listWorkspaces 抛 → withSession 回 {ok:false}，压根走不到对账。
+    // 这条守的是「网络抖一下不等于我退了所有群」
+    const h = harness({
+      listWorkspaces: async () => { throw new Error("网络错了"); },
+    });
+    h.setStore({
+      ...emptyProxyStore(),
+      workspaceGrants: [{ workspaceId: "ws-a", allow: [{ serverId: "s", tools: [] }] }],
+    });
+    const res = await h.manager.list();
+    expect(res.ok).toBe(false);
+    expect(h.getStore().workspaceGrants.map((g) => g.workspaceId)).toEqual(["ws-a"]);
+    expect(h.calls).not.toContain("resyncEscrow");
+  });
+});
