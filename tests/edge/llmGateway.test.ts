@@ -444,8 +444,8 @@ describe("createLlmGateway", () => {
     expect(estimates).toEqual([expectedCorrect]);
   });
 
-  it("有 waitUntil 时，流式路径正好把 settle 的 promise 扔给它一次（I3）", async () => {
-    const { quota } = quotaStub();
+  it("有 waitUntil 时，流式路径的 settle 交给它、没有浮着（I3）", async () => {
+    const { quota, calls } = quotaStub();
     const up = upstream(() => new Response(sse([
       'data: {"usage":{"prompt_tokens":10,"completion_tokens":1}}\n\ndata: [DONE]\n\n',
     ]), { status: 200, headers: { "content-type": "text/event-stream" } }));
@@ -457,7 +457,35 @@ describe("createLlmGateway", () => {
     const res = await gw(chatReq({ model: "deepseek-flash", messages: [], stream: true }), caller);
     await res.text();
     await Promise.all(seen);
-    expect(seen).toHaveLength(1);
+    // #1329 之后这里是**两条**：外面那一圈（hold 之后的整段活，resolve 出流式那个 Response）
+    // 加上流收尾那一刻的 settle。原来只有后者，所以这条曾经断言「正好一次」——
+    // 改成两条不是放宽，I3 要钉的那件事（settle 没有被浮着、而是交了出去）由下面那句钉着
+    expect(seen).toHaveLength(2);
+    expect((await Promise.all(seen)).some((v) => v instanceof Response)).toBe(true);
+    expect(calls.settle).toHaveLength(1);
+  });
+
+  it("非流式那条也整段交给 waitUntil，而 signal 照旧往上游传（#1329）", async () => {
+    const { quota, calls } = quotaStub();
+    const inits: (RequestInit | undefined)[] = [];
+    const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      inits.push(init);
+      return Response.json({ choices: [], usage: { prompt_tokens: 3, completion_tokens: 4 } });
+    }) as typeof fetch;
+    const waited: Promise<unknown>[] = [];
+    const gw = createLlmGateway({
+      routes: async () => [flash], quota, upstreamKey: () => "k", fetchImpl,
+      waitUntil: (p) => { waited.push(p); },
+    });
+    const res = await gw(chatReq({ model: "deepseek-flash", messages: [] }), caller);
+    expect(res.status).toBe(200);
+    expect(calls.settle).toHaveLength(1);
+    expect(waited).toHaveLength(1);
+    expect(((await waited[0]) as Response).status).toBe(200);
+    // 与决策 / 语音那两条**故意不同**：chat 会把上游的字节一路流给客户端，客户端走了之后
+    // 中止上游能真省下还没生成的那部分；那两条是一次前向，中止省不下任何东西（ADR-0307 决策 1）。
+    // 这一条钉住这个不对称，免得下一个人把三条路「统一」成同一种处置
+    expect(inits[0]?.signal).toBeDefined();
   });
 
   it("max_tokens 不合法（负数 / 非有限数）→ 估算按 route 默认值走（I4）", async () => {
@@ -761,6 +789,37 @@ describe("语音那扇门（#1163）：kind=tts 打 /t2a_v2，按字符数预扣
     const res = await handle(speechReq({ model: "speech-2.8-turbo", text: "hi", voice_id: "v" }), caller);
     expect(res.status).toBe(429);
     expect(((await res.json()) as { error: { code: string } }).error.code).toBe("quota_exhausted");
+  });
+
+  // #1329：与决策那条（#1303 / ADR-0307）同一条理由 —— 语音也是非流式，客户端的 signal
+  // 不往上游传（传了就是一条「中断 = 免费」的路，而 MiniMax 的钱在请求发出那一刻就花了），
+  // 整段交给 waitUntil（请求上下文真被取消时，最坏的结局不该是 hold 挂满十分钟）
+  it("客户端的 signal 不往上游传，整段交给 waitUntil（#1329）", async () => {
+    const { quota, calls } = quotaStub();
+    const inits: (RequestInit | undefined)[] = [];
+    const c = new AbortController();
+    const fetchImpl = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      inits.push(init);
+      c.abort(); // 上游在途时客户端走人
+      await Promise.resolve();
+      return mmOk()();
+    }) as typeof fetch;
+    const waited: Promise<unknown>[] = [];
+    const handle = createLlmGateway({
+      routes: async () => [tts], quota, upstreamKey: () => "k", fetchImpl,
+      waitUntil: (p) => { waited.push(p); },
+    });
+    const res = await handle(new Request("https://edge/llm/v1/speech", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model: "speech-2.8-turbo", text: SPEECH_TEXT, voice_id: "v" }),
+      signal: c.signal,
+    }), caller);
+    expect(res.status).toBe(200);
+    expect(inits[0]?.signal).toBeUndefined();
+    expect(calls.settle).toHaveLength(1);
+    expect(calls.release).toHaveLength(0);
+    expect(waited).toHaveLength(1);
+    expect(((await waited[0]) as Response).status).toBe(200);
   });
 });
 
