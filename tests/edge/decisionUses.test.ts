@@ -1,7 +1,37 @@
 import { describe, expect, it } from "vitest";
 
 import { DECISION_USES } from "../../services/edge/src/decisionUses.js";
-import { isDecisionMode, isDecisionUse } from "../../src/shared/decision.js";
+import { DISPATCH_DECISION_TIMEOUT_MS } from "../../services/runtime/src/dispatchDecision.js";
+import { TITLE_DECISION_TIMEOUT_MS } from "../../services/runtime/src/sessionTitler.js";
+import { ENDPOINT_DECISION_TIMEOUT_MS } from "../../src/main/endpointJudge.js";
+import { AUTO_DECISION_TIMEOUT_MS } from "../../src/shared/autoModel.js";
+import { isDecisionMode, isDecisionUse, type DecisionUse } from "../../src/shared/decision.js";
+import { TIER_DECISION_TIMEOUT_MS } from "../../src/shared/memoryTierJudge.js";
+
+/** 五处此刻各是多少。**穷举 Record**：加第六处 use 时 tsc 直接红，而漏一格的失败模式
+    是下面那条断言安静地少检一处（同 `PRIVACY_VERDICTS` 的形状） */
+const TIMEOUT_MS: Record<DecisionUse, number> = {
+  dispatch: DISPATCH_DECISION_TIMEOUT_MS,
+  auto: AUTO_DECISION_TIMEOUT_MS,
+  title: TITLE_DECISION_TIMEOUT_MS,
+  endpoint: ENDPOINT_DECISION_TIMEOUT_MS,
+  memory: TIER_DECISION_TIMEOUT_MS,
+};
+
+/** `on` 档下每一格的上限，**由「谁在等」得出，不由上游延迟得出**（ADR-0301 补记一 ②）。
+    `null` = 没有人在等，所以没有上限。这张表是那一节分析的可执行版 */
+const ON_BUDGET_MS: Record<DecisionUse, number | null> = {
+  // 人在等自己那句话出现在群里（ADR-0270：今天 0.3–1s，`DISPATCH_TIMEOUT_MS` 5s 封顶）
+  dispatch: 2_000,
+  // turn 起跑之前，人已经按下回车在等第一个字
+  auto: 2_000,
+  // `maintainTitle` 是 fire-and-forget（`say()` 的回执不等它）——没有人在等
+  title: null,
+  // 上界是人重新开口那个窗口：渲染层再等 200ms 就放弃，等更久换不到任何东西
+  endpoint: 900,
+  // 坐在一次工具调用里面，模型这一轮干等
+  memory: 2_000,
+};
 
 // ADR-0301 决定 2 —— 「在 #1304 解掉之前不许往 `on` 翻」。那条决定自己写着它的弱点：
 // 「翻它只要改一行，而那一行没有任何机制拦着」。这个文件就是那个机制（#1300）。
@@ -39,4 +69,23 @@ describe("DECISION_USES（真的那张表，不是测试注进去的）", () => 
       expect(isDecisionMode(mode), `不认识的档位：${use}=${String(mode)}`).toBe(true);
     }
   });
+});
+
+// 这一条今天由构造跑不到（上面那条已经拦掉了所有 `on`）——**它存在的全部理由就是活过
+// 那一次删除**：#1304 解掉那天，翻开关的人删的是上面那条 `it`，而这一条正好在那一刻
+// 接上。它拦的是这次改动引入的那个坑：`DISPATCH_DECISION_TIMEOUT_MS` 现在是 20 秒，
+// 那是**影子期的测量窗口**（shadow 档下没人在等那一发），而在 `on` 档下人是真的在等
+// —— 忘了重挑这个数就是每条消息先干等 20 秒再走今天那条 5 秒的 LLM 路，而界面上一个
+// 字都不会说。天花板：两条一起删掉它就失效，那时至少读过两段写着为什么的话。
+it("翻成 on 的那一格，超时要落回「谁在等」的预算里（ADR-0301 补记一 ②）", () => {
+  for (const [use, mode] of Object.entries(DECISION_USES)) {
+    if (mode !== "on" || !isDecisionUse(use)) continue;
+    const cap = ON_BUDGET_MS[use];
+    if (cap === null) continue;
+    expect(
+      TIMEOUT_MS[use],
+      `${use} 翻成了 on，但它的超时是 ${TIMEOUT_MS[use]}ms、超过「谁在等」给的 ${cap}ms 预算。` +
+        `on 档里人是真的在等这一发：先付满超时，再走今天那条路。重新挑一个数，别照影子期那个。`,
+    ).toBeLessThanOrEqual(cap);
+  }
 });
