@@ -294,3 +294,62 @@ describe("updateGroupChat / dissolveGroupChat（#1280 A4）", () => {
     expect(useChat.getState().groupSettingsFor).toBe("g-1");
   });
 });
+
+// #1311：主区那棵树里开局卡排在云会话之前（App.tsx，为的是「开着云会话时点 ＋ 要
+// 看到新卡」），所以开局卡开着时点一条云会话，必须由这一侧把那一格清掉。不清的话
+// 会话真的进去了、侧栏那一行也亮着，而主区还画着开局卡——看起来像「点了没反应」，
+// 人会再点几下，每一下都是一次真的进房。
+describe("开局卡开着时点云会话（#1311）", () => {
+  const GROUP = {
+    id: "g-1", title: "上线冲刺", publisherUid: "me", archived: false, updatedTs: 3,
+    participantUids: [], chatKind: "group" as const, agentIds: ["admin", "a_000000000001"],
+  };
+
+  it("点进那条群聊：开局卡让位，两格一起清", async () => {
+    seed({ cloudSessionList: { home: [GROUP] } });
+    // 点一只没聊过的 = 开局卡（什么都不建）
+    await useChat.getState().openAgentChat("a_000000000001");
+    expect(useChat.getState()).toMatchObject({
+      cloudDraftWorkspaceId: "home",
+      cloudDraftChat: { kind: "dm", agentId: "a_000000000001" },
+    });
+
+    await useChat.getState().openGroupChat("g-1");
+    expect(useChat.getState()).toMatchObject({ cloudDraftWorkspaceId: null, cloudDraftChat: null });
+    expect(useChat.getState().cloudSession?.sessionId).toBe("g-1");
+  });
+
+  it("团队云会话也一样（同一个入口，不分聊天还是团队）", async () => {
+    seed();
+    useChat.getState().startChatDraft("home", { kind: "dm", agentId: "a_000000000001" });
+    await useChat.getState().openCloudSession("team-1", "t-9", undefined, "周会");
+    expect(useChat.getState()).toMatchObject({ cloudDraftWorkspaceId: null, cloudDraftChat: null });
+  });
+
+  it("建失败时开局卡留着：不把人扔到一块空白地皮上", async () => {
+    // 清理落在占位那一次 set 里，而建失败在它**之前**就早退了——这条钉的正是
+    // 那个位置。人打的那句话还在开局卡上，重试一次就好
+    stubBridge({ workspaceCloudCreate: vi.fn(async () => ({ ok: false, message: "云端无响应" })) });
+    seed();
+    useChat.getState().startChatDraft("home", { kind: "dm", agentId: "a_000000000001" });
+    await useChat.getState().openCloudSession("home", null, { kind: "dm", agentId: "a_000000000001" });
+    expect(useChat.getState()).toMatchObject({
+      cloudDraftWorkspaceId: "home",
+      cloudDraftChat: { kind: "dm", agentId: "a_000000000001" },
+      cloudSession: null,
+      workspaceGroupsError: "云端无响应",
+    });
+  });
+
+  it("第一句话那条路不受影响：它本来就先清再调，这里是空操作", async () => {
+    seed();
+    await useChat.getState().openAgentChat("a_000000000001");
+    await useChat.getState().createCloudSessionFromDraft("home", "你好");
+    expect(useChat.getState()).toMatchObject({ cloudDraftWorkspaceId: null, cloudDraftChat: null });
+    expect(useChat.getState().cloudSession?.sessionId).toBe("new-dm");
+    // 建的时候仍然带着 spec（清理排在 create 之后，没把它提前抹掉）
+    expect(calls.find((c) => c[0] === "workspaceCloudCreate")).toEqual([
+      "workspaceCloudCreate", "home", { kind: "dm", agentId: "a_000000000001" },
+    ]);
+  });
+});
