@@ -7,6 +7,7 @@ import type { SessionEvent } from "../../src/session/events.js";
 import { createTaskSessionSync, type TaskSessionSync, type TaskSessionSyncDeps } from "../../src/main/taskSessionSync.js";
 import { TaskSyncError, type TaskSessionRow, type TaskSessionsApi, type TaskSyncErrorCode } from "../../src/main/taskSessionsApi.js";
 import type { TaskSyncFile } from "../../src/main/taskSyncStore.js";
+import { rewindBranch } from "../../src/main/checkpointRewind.js";
 import { PEN_BUSY_EXEMPT, HUMAN_EVENT_TYPES, PEN_RENEW_MS, TASK_EVENT_MAX_BYTES, TASK_TEXT_MAX_BYTES } from "../../src/shared/taskSync.js";
 import { tempDir } from "../helpers/tempDir.js";
 
@@ -384,10 +385,36 @@ describe("taskSessionSync：推（#1223）", () => {
     expect(h2.sync.holdsPen("s3")).toBe(true);
     expect(h2.cloud.rows.get("s3")!.row.pen_holder).toBe("desktop:A");
   });
-  it("引用式分支（「回到这一步」）不上云：它的流里有两条 session_created，RPC 会判 forbidden 冻死它（终审 C2）", async () => {
+  it("任务会话的「回到这一步」走复制式，那条分支照常上云（#1252 / ADR-0311）", async () => {
+    // 上一条用例守的是「引用式分叉别推上去」，这一条守的是它的另一半：任务会话根本不该再落出
+    // 引用式分叉。两条合起来 = 用户在任务会话里回到某一步之后接着聊的那段，手机 / 另一台电脑看得见
+    const h = harness();
+    h.store.append(created("s1"));
+    h.store.append({ sessionId: "s1", ts: 2, type: "user_message", content: "第一句" });
+    h.store.append({ sessionId: "s1", ts: 3, type: "assistant_message", content: "答", model: "m" });
+    h.store.append({ sessionId: "s1", ts: 4, type: "turn_ended", outcome: "completed" });
+    await h.sync.flushNow();
+    const brId = "s1br";
+    rewindBranch(h.store, "s1", 3, brId, 20); // seq 3 = turn_ended，唯一合法的分叉点
+    h.store.append({ sessionId: brId, ts: 21, type: "user_message", content: "换个方向" });
+    await h.sync.flushNow();
+    const row = h.cloud.rows.get(brId);
+    expect(row).toBeDefined();
+    // 0036 的硬约束：session_created 只许在 seq 0。建行那一批含 turn 痕迹也过（RPC 发笔）
+    expect(row!.events.filter((e) => e.type === "session_created").map((e) => e.seq)).toEqual([0]);
+    expect(row!.events.map((e) => e.type)).toEqual([
+      "session_created", "user_message", "assistant_message", "turn_ended", "session_renamed", "user_message",
+    ]);
+    expect(h.sync.state().kind).not.toBe("frozen");
+    // 父会话一格没少，也没被记上一个引用式分支
+    expect(h.cloud.rows.get("s1")!.events.map((e) => e.seq)).toEqual([0, 1, 2, 3]);
+    expect(h.store.forkOrigin(brId)).toBeNull();
+  });
+  it("引用式分支（ADR-0311 之前的存量）不上云：它的流里有两条 session_created，RPC 会判 forbidden 冻死它（终审 C2）", async () => {
     // store.fork 是零拷贝的：分支自己的第一条原始行是 session_created{forkedFrom, seq = endSeq+1}，
     // 而 load() 扁平化后前缀是父会话的 0..endSeq——推上去就是 seq 0 与 seq endSeq+1 两条
-    // session_created，0036 的「session_created only at seq 0」判 P0012 → 整条会话永久冻结
+    // session_created，0036 的「session_created only at seq 0」判 P0012 → 整条会话永久冻结。
+    // ADR-0311 之后任务会话不再落出这种分叉，但存量补不回去，这道闸继续守着它们
     const h = harness();
     h.store.append(created("s1"));
     h.store.append({ sessionId: "s1", ts: 2, type: "user_message", content: "第一句" });
