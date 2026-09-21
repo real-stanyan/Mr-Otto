@@ -19,7 +19,10 @@ const TIMEOUT_MS: Record<DecisionUse, number> = {
 };
 
 /** `on` 档下每一格的上限，**由「谁在等」得出，不由上游延迟得出**（ADR-0301 补记一 ②）。
-    `null` = 没有人在等，所以没有上限。这张表是那一节分析的可执行版 */
+    `null` = 没有人在等，所以没有上限。这张表是那一节分析的可执行版。
+    **这是「人能忍多久」不是「那条路做得到」**：#1304 的打点量出 HEL 上单趟 DO 往返
+    ~344ms，而决策调用走 hold + settle 两趟，所以光地板就 ~700ms —— 一格的预算要是
+    盖不住「地板 + 上游」，那一处就不该在那条路上翻成 `on`，而不是把预算改大 */
 const ON_BUDGET_MS: Record<DecisionUse, number | null> = {
   // 人在等自己那句话出现在群里（ADR-0270：今天 0.3–1s，`DISPATCH_TIMEOUT_MS` 5s 封顶）
   dispatch: 2_000,
