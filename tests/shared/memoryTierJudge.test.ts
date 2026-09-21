@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { TIER_MISMATCH_AT, tierMismatches, tierQuestions } from "../../src/shared/memoryTierJudge.js";
+import { TIER_MISMATCH_AT, tierMismatchMessage, tierMismatches, tierQuestions } from "../../src/shared/memoryTierJudge.js";
 import { tierFact } from "../../src/shared/memoryStore.js";
 import type { DecisionReply } from "../../src/shared/decision.js";
 
@@ -26,5 +26,62 @@ describe("tierMismatches", () => {
   });
   it("多条里只报对不上的那几条，带下标", () => {
     expect(tierMismatches(reply([["memory", 0.9], ["project", 0.95]]), "memory", 2).map((m) => m.index)).toEqual([1]);
+  });
+});
+
+describe("tierMismatchMessage（#1290）：那句劝告要指得出是哪一条", () => {
+  const pending = (...rows: [number, string][]): { at: number; content: string }[] => rows.map(([at, content]) => ({ at, content }));
+  const hit = (index: number, suggested: "user" | "memory" | "project", confidence = 0.93): { index: number; suggested: "user" | "memory" | "project"; confidence: number } =>
+    ({ index, suggested, confidence });
+
+  it("下标报 operations 里的那个，不是 pending 里的", () => {
+    // operations[0] 是 remove（不进 pending），所以 pending[0] 其实是 operations[1]
+    const msg = tierMismatchMessage([hit(0, "project")], pending([1, "门禁前要先装手机端依赖"]), 3, "memory");
+    expect(msg).toContain("operations[1]");
+    expect(msg).not.toContain("operations[0]");
+    expect(msg).toContain("「门禁前要先装手机端依赖」");
+    expect(msg).toContain("93%");
+  });
+
+  it("命中几条就列几条", () => {
+    const msg = tierMismatchMessage(
+      [hit(0, "project", 0.93), hit(2, "project", 0.88)],
+      pending([0, "甲"], [1, "乙"], [2, "丙"]), 3, "memory",
+    );
+    expect(msg).toContain("有 2 条");
+    expect(msg).toContain("「甲」");
+    expect(msg).toContain("「丙」");
+    expect(msg).not.toContain("「乙」");
+  });
+
+  it("只有一部分命中：不说「改 target」——整次调用一个 target，改它会把没命中的一起搬走", () => {
+    const msg = tierMismatchMessage([hit(0, "project")], pending([0, "甲"], [1, "乙"]), 2, "memory");
+    expect(msg).not.toContain("整次调用改写");
+    expect(msg).toContain("单独发一次");
+    expect(msg).toContain("原样再提交一次会放行");
+  });
+
+  it("命中的几条指向不同的档：同样不说「改 target」", () => {
+    const msg = tierMismatchMessage([hit(0, "project"), hit(1, "user")], pending([0, "甲"], [1, "乙"]), 2, "memory");
+    expect(msg).not.toContain("整次调用改写");
+  });
+
+  it("整次调用每一条都命中、且都指向同一档：这时才说改 target", () => {
+    const msg = tierMismatchMessage([hit(0, "project"), hit(1, "project")], pending([0, "甲"], [1, "乙"]), 2, "memory");
+    expect(msg).toContain('整次调用改写 target: "project"');
+  });
+
+  it("单条调用不报下标（只有一条，下标是噪音）", () => {
+    const msg = tierMismatchMessage([hit(0, "project")], pending([0, "甲"]), 1, "memory");
+    expect(msg).not.toContain("operations[");
+    expect(msg).toContain("「甲」");
+  });
+
+  it("内容折成一行再截断：记忆条目是多行 markdown，原样贴进去会把这句话撑散", () => {
+    const long = "一".repeat(60);
+    const msg = tierMismatchMessage([hit(0, "project"), hit(1, "project")], pending([0, "第一行\n第二行"], [1, long]), 3, "memory");
+    expect(msg).toContain("「第一行 第二行」");
+    expect(msg).toContain(`「${"一".repeat(48)}…」`);
+    expect(msg).not.toContain(long);
   });
 });
