@@ -18,7 +18,7 @@ import {
   MAX_TOPICS, TOPICS_DIR, isTopicSlug, renderTopicIndex, slugsFromFileNames, withSeedTopics,
 } from "../shared/memoryTopics.js";
 import { scanThreat } from "../shared/threatPatterns.js";
-import type { JudgedTier, MemoryTierJudge } from "../shared/memoryTierJudge.js";
+import { tierMismatchMessage, type JudgedTier, type MemoryTierJudge, type PendingEntry } from "../shared/memoryTierJudge.js";
 
 export { parseMemoryResult } from "../shared/memoryStore.js";
 
@@ -118,7 +118,8 @@ export function createMemoryTool(
   },
 ): Tool {
   let consecutiveFailures = 0;
-  // 这是卫生劝告不是安全闸：决策模型判错一次不该把一条真事实永久挡在外面。封顶 64 条
+  // 这是卫生劝告不是安全闸：决策模型判错一次不该把一条真事实永久挡在外面。封顶 64 条，
+  // 到了是整份 clear() 不是按序淘汰——最多让还在手上的那几条多被劝一轮，逃生门不会因此关上
   const insisted = deps?.insisted ?? new Set<string>();
 
   async function execute(args: unknown, world: ExecutionWorld): Promise<string> {
@@ -170,21 +171,22 @@ export function createMemoryTool(
     // 「项目事实落进全局档」，没有项目档时那个选项不存在；topic 要连桶一起挑，不在范围里
     if (deps?.judgeTier && project && (target === "user" || target === "memory" || target === "project")) {
       const tier: JudgedTier = target;
+      // 键不含 old_text：一次 replace 如果新内容与之前被劝过的某条逐字相同，会继承那个
+      // 「已经劝过」的记号——失败方向是漏劝，对一个卫生劝告来说方向是对的
       const key = (c: string): string => `${tier}\n${c}`;
-      const pending = ops.flatMap((op) => (op.action === "remove" || insisted.has(key(op.content)) ? [] : [op.content]));
+      // 带着 operations 里的原始下标走（#1290）：pending 滤掉了 remove 与已坚持过的那些，
+      // 拿 pending 的下标去报「是哪一条」会在有滤掉项时指错行
+      const pending = ops.flatMap((op, at): PendingEntry[] =>
+        op.action === "remove" || insisted.has(key(op.content)) ? [] : [{ at, content: op.content }]);
       if (pending.length > 0) {
         const label = project.root.split(/[\\/]/).filter(Boolean).pop() ?? project.root;
-        const hits = await deps.judgeTier(pending, tier, label).catch(() => null);
+        const hits = await deps.judgeTier(pending.map((p) => p.content), tier, label).catch(() => null);
         if (hits && hits.length > 0) {
-          for (const c of pending) {
+          for (const p of pending) {
             if (insisted.size >= 64) insisted.clear();
-            insisted.add(key(c));
+            insisted.add(key(p.content));
           }
-          const h = hits[0]!;
-          throw new Error(
-            `这条内容更像 ${h.suggested} 档的事（把握 ${Math.round(h.confidence * 100)}%）——改写 target: "${h.suggested}"。` +
-            `判据一句话：换个项目还成立吗。确认就是 ${tier} 档的话，原样再提交一次会放行。`,
-          );
+          throw new Error(tierMismatchMessage(hits, pending, ops.length, tier));
         }
       }
     }
