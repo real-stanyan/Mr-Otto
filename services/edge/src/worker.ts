@@ -26,7 +26,7 @@ import { handleWebhookEvent } from "./webhookHandler.js";
 import {
   grantsQuery, meFromParts, modelsForMe, pageAll, parseGrantRows, parsePlanRows, parseRouteRows, parseSubscriptionRows,
   parseUsageEventRows, planSnapshotOf, plansQuery, routesQuery, subscriptionQuery, usageEventInsert, usageEventsQuery,
-  type SubscriptionRow,
+  type PlanRow, type SubscriptionRow,
 } from "./billingQueries.js";
 import { DECISION_USES } from "./decisionUses.js";
 import { attachQuotaTiming, parseTiming, type QuotaSample } from "./quotaTiming.js";
@@ -688,6 +688,30 @@ async function routesOf(env: Env): Promise<RouteRow[]> {
   return v;
 }
 
+/** plan 的 60s 缓存，**只给 `/me`**（#1322）。缓存语义与上面那把逐字相同（isolate 级、
+    best-effort、边缘上很多 isolate，不是"全局一份"），理由也相同：两张表的内容都是
+    维护者手动改一次的配置，陈旧风险同级，而 `model_route` 已经接受了这个代价。
+
+    起因是 ADR-0305 那把尺子第一次用就量出来的：`/me` 里 `routesOf` 常常约等于 0，而
+    同一行的 `plansQuery()` 每次都真打一次 Supabase —— HEL 上 290–326ms，与一整趟跨洲
+    DO 往返同价；SYD 上 115–353ms，而那边 DO 往返只要 8–10ms。`/me` 由 hostedProbe 每
+    60 秒刷一次，是条高频路径。
+
+    **`checkout` 那处故意不改**（`tests/edge/billingQueries.test.ts` 有断言钉着它仍然
+    直查）：那是**开单**路径——拿一份最多陈旧 60 秒的价目去开一张 Stripe checkout，
+    等于按旧价收一次钱。`/me` 是展示路径，客户端那侧本来就 60 秒刷一次，多陈旧一分钟
+    没有任何人能据此做出不同的动作。`webhookHandler` 同理（它走自己的 `deps.db`，
+    本来就够不到这一格）。
+
+    DO 里那份 `planCache` 是**另一件事**：不同的机器、不同的失效时机，别合成一个 */
+let plansCache: { v: PlanRow[]; exp: number } | null = null;
+async function plansOf(env: Env): Promise<PlanRow[]> {
+  if (plansCache && plansCache.exp > Date.now()) return plansCache.v;
+  const v = parsePlanRows(await supa(env).get(plansQuery()));
+  plansCache = { v, exp: Date.now() + 60_000 };
+  return v;
+}
+
 /** 计费面（spec 2026-09-02 第 3 节）：Stripe 是订阅状态的事实来源，
     subscription 表是投影，Quota DO 是投影的投影。写库顺序永远是
     「先落事实（表），再通知投影（DO）」—— 反过来的话通知成功、落库失败，
@@ -715,11 +739,11 @@ function billingPort(env: Env, sink: QuotaSample[]): BillingPort {
         windows: { h5: WindowState; week: WindowState } | null;
         addon: { remainingMicro: number; expiresAt: number | null };
       }>(env, uid, "view", {}, sink);
-      // #1304：`/me` 不止一趟 DO —— 这两条是 **Worker 侧**打 Supabase 的（routes 有
-      // isolate 级 60s 缓存所以常常约等于 0，plans 每次都真查）。不单量它，这一段时间
-      // 会在「客户端总时长 − DO 那趟」的残差里，被读成往返的一部分
+      // #1304：`/me` 不止一趟 DO —— 这两条是 **Worker 侧**打 Supabase 的。两把缓存都是
+      // isolate 级 60s，所以稳态下这一格常常约等于 0；冷 isolate 的第一发仍然是两次真查。
+      // 不单量它，这一段时间会在「客户端总时长 − DO 那趟」的残差里，被读成往返的一部分
       const dbAt = Date.now();
-      const [routes, plans] = await Promise.all([routesOf(env), db.get(plansQuery()).then(parsePlanRows)]);
+      const [routes, plans] = await Promise.all([routesOf(env), plansOf(env)]);
       sink.push({ label: "me:db", outerMs: Date.now() - dbAt, inner: null });
       // 型号清单 + 型号→平台（#1011）**都在 chatModelsOf 里**，因为这个文件不进 vitest：
       // 出图行要不要滤掉、同款多路由取哪条平台，这两个判断留在这里就零执行覆盖（#1081）
