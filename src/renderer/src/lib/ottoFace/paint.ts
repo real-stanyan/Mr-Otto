@@ -1,4 +1,4 @@
-// ottoFace/paint —— 把一帧画到 canvas 上（#1345，ADR-0314）。
+// ottoFace/paint —— 把一帧画到 canvas 上（#1345，ADR-0316）。
 //
 // 这一层**一个判断都不做**：网格坐标 → 像素，就这些。所有「画什么」的判断都在
 // `frame.ts`（纯函数，进得了 vitest）。这么分的理由不是洁癖 —— jsdom 没有

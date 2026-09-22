@@ -1,4 +1,4 @@
-// AgentFace / PartyAvatar —— 头像那一格的两个组件（#1345，ADR-0314）。
+// AgentFace / PartyAvatar —— 头像那一格的两个组件（#1345，ADR-0316）。
 //
 // `AgentFace` 只画内置的像素脸；`PartyAvatar` 是三选一的那一格（脸 / 真图 / 首字母），
 // 绝大多数调用点用后者 —— 「这一格画什么」的判断在 `lib/agentAvatar.ts` 算好，
