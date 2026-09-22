@@ -2169,11 +2169,9 @@ SCREENS.bots={label:'名册',grp:'智能体',render:()=>`
    <button class="rbtn" data-go="newBot" aria-label="新的智能体">${I('plus',23,2.2)}</button>
  </div>
  <div class="body">
-   <div style="height:104px;flex:none"></div>
-   <div style="padding:2px 20px 14px">
-     <div class="t-large">智能体</div>
-     <div class="largesub"><b>5 只</b> <s>·</s> 共用一台电脑</div>
-   </div>
+   <!-- 没有大标题：这一屏是什么，三颗钮 + 一列脸自己说了；
+        「共用一台电脑」下面那张卡里逐字写着，标题里再说一遍是同一件事说两遍 -->
+   <div style="height:112px;flex:none"></div>
    ${machineCard()}
    <div class="list">${DATA.bots.map(b=>botRow(b)).join('')}</div>
    <div class="grouphdr">群聊</div>
@@ -2191,8 +2189,17 @@ SCREENS.bots={label:'名册',grp:'智能体',render:()=>`
 /* 一只都还没有。Grok 那页的「Meet your first Bot」—— 不给空列表 + 一个加号，
    给六句现成的话。点一下**只是填进输入框**，多数人想改两个字再发 */
 SCREENS.botsEmpty={label:'名册 · 一只都还没有',grp:'智能体',render:()=>`
- ${nav({title:'智能体',large:true,sub:'还一只都没有',right:avatarBtn})}
- <div class="body">${navPad(true,true)}
+ <div class="pillnav">
+   <button class="rbtn" data-go="account" aria-label="账号">
+     <span class="orb" style="width:44px;height:44px;font-size:15px;background:transparent;color:var(--fg)"><span>${DATA.me.ini}Y</span></span>
+   </button>
+   <span style="flex:1"></span>
+   <!-- 一只都没有时不画搜索：这一屏上没有任何可搜的东西，摆一颗点了什么都搜不到的钮
+        和撒谎的勾是同一类（#722）。＋ 留着，它就是这一屏唯一要做的事 -->
+   <button class="rbtn" data-go="newBot" aria-label="新的智能体">${I('plus',23,2.2)}</button>
+ </div>
+ <div class="body">
+   <div style="height:104px;flex:none"></div>
    <div class="empty" style="padding:22px 24px 8px">
      <img src="${IMG.otto}" alt="" style="width:76px;height:76px;border-radius:20px;margin-bottom:16px">
      <h3>先建一只</h3>
