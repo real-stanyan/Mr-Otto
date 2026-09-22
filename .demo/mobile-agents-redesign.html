@@ -601,10 +601,12 @@ html[data-theme="light"] .tile:not(.speaking){border-color:rgba(0,0,0,.06)}  /* 
 .sheet .sh{padding:0 20px 10px;font-size:17px;font-weight:650;letter-spacing:-.2px;flex:none}
 .sheet .sbody{overflow-y:auto;padding-bottom:4px}
 .sheet .sbody::-webkit-scrollbar{width:0}
-/* 建一只那张表（走抽屉，从下面上来）。X 在左、标题挨着它 —— 这一层不是一页，
-   没有「返回」，只有「不建了」 */
-.newbot .thead{display:flex;align-items:center;gap:12px;padding:2px 14px 4px;flex:none}
-.newbot .thead .ttl{font-size:17px;font-weight:650;letter-spacing:-.2px}
+/* 建一只那张表（走抽屉，从下面上来）。X 在左 —— 这一层不是一页，没有「返回」，只有「不建了」。
+   标题**绝对定位居中**，不是靠 flex 在 X 旁边排：靠排的话它会被 X 的宽度推偏，
+   居中的是「剩下那段」而不是这一栏；`pointer-events:none` 免得它盖住 X 的右半边 */
+.newbot .thead{position:relative;display:flex;align-items:center;padding:2px 14px 4px;flex:none}
+.newbot .thead .ttl{position:absolute;left:0;right:0;text-align:center;pointer-events:none;
+  font-size:17px;font-weight:650;letter-spacing:-.2px}
 .newbot .tfoot{padding:12px 16px 0;flex:none}
 /* 中段吃掉定高多出来的那一截并**上下居中**：多出来的空当给那张大脸，
    而不是把底下那三行脸拉散（那几行是一张表，行距一散就不像一组了） */
@@ -618,9 +620,24 @@ html[data-theme="light"] .tile:not(.speaking){border-color:rgba(0,0,0,.06)}  /* 
 .newbot .fpick{padding:4px 5px;border-radius:14px;border:0;background:transparent;
   font:inherit;color:inherit;cursor:pointer;display:grid;justify-items:center;
   transition:background 120ms var(--ease-out)}
-/* 选中是**一圈边 + 一块底**，不是把它放大：一格放大会把整行的基线顶歪 */
+/* 选中是**一圈边 + 一块底**，**停下来之后**不放大：一格常驻放大会把整行的基线顶歪。
+   放大只发生在按下去那一下（pickPop，320ms 就回到原位）—— 这是对动作的回应，不是状态。
+   真正把「选中的是这一只」说出口的是**那张脸活了**：整列里只有它眨眼、只有它在呼吸
+   （`data-anim`，见 ACTS.pickFace）。这一格一个角标都不画 —— 角标是声称，
+   而这里没有任何状态可声称（#722 那条），能画的只有「活着」 */
 .newbot .fpick[data-on]{background:color-mix(in srgb,var(--brand) 13%,transparent);
-  box-shadow:inset 0 0 0 1.5px var(--brand)}
+  box-shadow:inset 0 0 0 1.5px var(--brand);animation:pickPop 340ms var(--ease-out)}
+@keyframes pickPop{
+  0%{transform:scale(1)} 38%{transform:scale(1.12)} 72%{transform:scale(.98)} 100%{transform:scale(1)}}
+/* 上面那张大脸跟着换一次：不是淡入淡出（两张脸在中间那几帧会同时出现），
+   是缩一下再回来 —— 同一个位置上同一张脸换了个人 */
+.newbot .prev.swap canvas{animation:prevSwap 300ms var(--ease-out)}
+@keyframes prevSwap{
+  0%{transform:scale(.88);opacity:.35} 60%{transform:scale(1.04);opacity:1} 100%{transform:scale(1)}}
+@media(prefers-reduced-motion:reduce){
+  .newbot .fpick[data-on]{animation:none}
+  .newbot .prev.swap canvas{animation:prevSwapReduced 200ms linear}
+  @keyframes prevSwapReduced{from{opacity:.4}to{opacity:1}}}
 .opt{display:flex;align-items:center;gap:12px;padding:12px 20px;cursor:pointer;transition:background 120ms var(--ease-out)}
 .opt:active{background:rgba(128,128,128,.16)}
 .opt .ck{color:var(--brand);opacity:0;font-size:16px}
@@ -1424,7 +1441,30 @@ function mountFace(cv){
   cv.style.height=Math.round(sz*grow)+'px';
   cv.style.width=Math.round(sz*grow*L.gridW/L.gridH)+'px';
   renderFaceOnce(cv,performance.now());
+  if(cv.dataset.center==='ink') centerInk(cv);
   if(cv.dataset.anim==='1') FACE_LIVE.add(cv); else FACE_LIVE.delete(cv);
+}
+/** 把**画出来的那颗头**摆到格子正中间，而不是把画布摆正中间。
+    这 11 个角色的头在 67×54 的网格里一律偏左约 4 格 —— 右边那块是留给角标的
+    （`badge` 画在右上），所以画布居中 = 头看起来靠左，套上选中框之后一眼就看得出来。
+    只给点名要的那几张（`data-center="ink"`）：名册那一栏的脸是**按画布对齐成一列**的，
+    按头对齐反而会让那一列的左边缘参差。
+    量一次按角色缓存（眨眼不改变左右边界），落点走 `left` 不走 `transform` ——
+    后者要留给换脸那一下的动画，两边抢同一个属性的话动画一跑偏移就没了。
+    取整到半个 CSS 像素：在 DPR2 上正好是整数个设备像素，不会把像素画糊掉 */
+const INK_DX=new Map();
+function centerInk(cv){
+  const ch=cv.dataset.ch; let dx=INK_DX.get(ch);
+  if(dx===undefined){
+    const w=cv.width,h=cv.height,d=cv.getContext('2d').getImageData(0,0,w,h).data;
+    let x0=w,x1=-1;
+    for(let y=0;y<h;y++)for(let x=0;x<w;x++) if(d[(y*w+x)*4+3]>8){ if(x<x0)x0=x; if(x>x1)x1=x; }
+    dx=x1<0?0:(w/2-(x0+x1+1)/2);           // 设备像素
+    INK_DX.set(ch,dx);
+  }
+  const perDev=parseFloat(cv.style.width)/cv.width;
+  cv.style.position='relative';
+  cv.style.left=(Math.round(dx*perDev*2)/2)+'px';
 }
 function mountFaces(root){ (root||document).querySelectorAll?.('canvas[data-ch]').forEach(mountFace); }
 /* 一墙脸一起动的时候，**按 25fps 走而不是每一帧都重画**：这些位移全是整格的
@@ -2885,16 +2925,16 @@ const SHEETS={
        <span class="ttl">新建智能体</span>
      </div>
      <div class="sbody">
-       <div class="prev">${faceOf(pick,'',108,'idle',true).replace('<canvas','<canvas data-el="prev"')}</div>
+       <div class="prev">${faceOf(pick,'',108,'idle',true).replace('<canvas','<canvas data-el="prev" data-center="ink"')}</div>
        <div class="faces">${FACE_CHARACTERS.map(c=>`
          <button class="fpick" data-act="pickFace" data-ch="${c.id}" aria-label="${c.name}"${c.id===pick?' data-on=""':''}>
-           ${faceOf(c.id,'',54)}
+           ${faceOf(c.id,'',54,'idle',c.id===pick).replace('<canvas','<canvas data-center="ink"')}
          </button>`).join('')}
        </div>
        <!-- 这里原来有一句「不用取名字…」的说明，维护者撤掉了：一屏上没有名字这一格，
             就没有「不用取名字」这件事要交代；解释一件屏幕上不存在的事，反而让人回头找它在哪 -->
      </div>
-     <div class="tfoot"><button class="btn" data-act="createBot">建它</button></div>`,{height:'70%'});
+     <div class="tfoot"><button class="btn" data-act="createBot">创建</button></div>`,{height:'70%'});
    el.classList.add('newbot');
    return el;
  },
@@ -3040,10 +3080,19 @@ const ACTS={
  /* 换形象**只改那张大脸的 data-ch 再重画**，不重渲染这一屏：重渲染会把已经打了一半的
     名字冲掉，还会让每一格的脸重新挂一次（它们是活着的 canvas，不是图片） */
  pickFace:(b)=>{
-   b.parentElement.querySelectorAll('.fpick').forEach(x=>x.removeAttribute('data-on'));
+   /* 只动 data-ch 再重画，不重渲染这一屏：这些是活着的 canvas 不是图片，
+      重渲染会把它们全部重挂一次（还会打断正在放的那一下） */
+   b.parentElement.querySelectorAll('.fpick').forEach(x=>{
+     x.removeAttribute('data-on');
+     const c=x.querySelector('canvas'); if(c){ delete c.dataset.anim; mountFace(c); }
+   });
    b.setAttribute('data-on','');
-   const prev=b.closest('.newbot').querySelector('[data-el="prev"]');
+   const mine=b.querySelector('canvas'); if(mine){ mine.dataset.anim='1'; mountFace(mine); }
+   const box=b.closest('.newbot'), prev=box.querySelector('[data-el="prev"]');
    prev.dataset.ch=b.dataset.ch; mountFace(prev);
+   /* 重放那一下：动画挂在类上，要先摘掉、强制回流、再挂回去，否则同一个类第二次不会再放 */
+   const wrap=box.querySelector('.prev');
+   wrap.classList.remove('swap'); void wrap.offsetWidth; wrap.classList.add('swap');
  },
  /* 建完**回名册**，新的那一行排在最上面并带一段入场（`.brow[data-fresh]`）：
     人要看见自己刚做的那件事落在哪儿了。那一行的两句先写实话 ——
