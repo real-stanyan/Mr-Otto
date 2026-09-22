@@ -601,6 +601,21 @@ html[data-theme="light"] .tile:not(.speaking){border-color:rgba(0,0,0,.06)}  /* 
 .sheet .sh{padding:0 20px 10px;font-size:17px;font-weight:650;letter-spacing:-.2px;flex:none}
 .sheet .sbody{overflow-y:auto;padding-bottom:4px}
 .sheet .sbody::-webkit-scrollbar{width:0}
+/* 建一只那张表（走抽屉，从下面上来）。X 在左、标题挨着它 —— 这一层不是一页，
+   没有「返回」，只有「不建了」 */
+.newbot .thead{display:flex;align-items:center;gap:12px;padding:2px 14px 4px;flex:none}
+.newbot .thead .ttl{font-size:17px;font-weight:650;letter-spacing:-.2px}
+.newbot .tfoot{padding:12px 16px 0;flex:none}
+.newbot .prev{display:grid;place-items:center;padding:10px 0 4px;min-height:120px}
+.newbot .faces{display:flex;flex-wrap:wrap;justify-content:center;gap:6px 2px;padding:4px 10px 0}
+.newbot .fpick{width:74px;padding:5px 0 4px;border-radius:14px;border:0;background:transparent;
+  font:inherit;color:inherit;cursor:pointer;display:grid;justify-items:center;gap:2px;
+  transition:background 120ms var(--ease-out)}
+.newbot .fpick .lb{font-size:10.5px;color:var(--mutedFg);line-height:13px}
+/* 选中是**一圈边 + 一块底**，不是把它放大：一格放大会把整行的基线顶歪 */
+.newbot .fpick[data-on]{background:color-mix(in srgb,var(--brand) 13%,transparent);
+  box-shadow:inset 0 0 0 1.5px var(--brand)}
+.newbot .fpick[data-on] .lb{color:var(--brand)}
 .opt{display:flex;align-items:center;gap:12px;padding:12px 20px;cursor:pointer;transition:background 120ms var(--ease-out)}
 .opt:active{background:rgba(128,128,128,.16)}
 .opt .ck{color:var(--brand);opacity:0;font-size:16px}
@@ -686,13 +701,17 @@ html[data-theme="light"] .ditherTop{background:linear-gradient(rgba(255,255,255,
   transition:opacity 180ms var(--ease-out),transform 240ms var(--ease-out)}
 .dlg.in{opacity:1;transform:translate(-50%,-50%) scale(1)}
 .dlg.out{opacity:0;transform:translate(-50%,-50%) scale(.98);transition-duration:140ms}
-/* 「＋」那张选一个的弹窗。宽一点（348）因为每行左边有一张 68px 的脸 —— 320 里正文只剩 200，
-   那句「它们互相接力」会折成三行。两个选项的左栏**一样大**（单只 54 高正好 67 宽，群那一摞
-   68×54）：这一问是「两件同类的东西选一件」，左栏不一样大会读成一主一次 */
+/* 「＋」那张选一个的弹窗。宽一点（348）因为每行左边要放得下三只并排。
+   左栏**定宽**（96）而不是各自多宽算多宽：两行的正文必须从同一条竖线起，
+   差几个像素在这种两行并列的卡上一眼就看得出来 */
 .dlg.wide{width:min(348px,calc(100% - 40px))}
 .pickdlg{padding:20px 0 16px}
 .pickdlg h2{margin:0 0 10px;text-align:center;font-size:19px;line-height:25px;font-weight:700;letter-spacing:-.3px}
-.pickdlg .pick{display:flex;align-items:center;gap:12px;width:100%;padding:10px 16px;border:0;
+/* 两行的图都**靠左顶着**同一条竖线，不各自居中：一张 50px 的方图和三只并排的脸
+   宽窄本来就差一截，两个都居中的话它们的左边缘差着二十来像素，而眼睛跟的是左边缘 */
+.pickdlg .lft{width:100px;flex:none;display:flex;align-items:center;justify-content:flex-start}
+.pickdlg .lft img{width:50px;height:50px;border-radius:13px;display:block}
+.pickdlg .pick{display:flex;align-items:center;gap:10px;width:100%;padding:10px 14px;border:0;
   background:transparent;font:inherit;color:inherit;text-align:left;cursor:pointer;
   transition:background 120ms var(--ease-out)}
 .pickdlg .pick:active{background:rgba(128,128,128,.16)}
@@ -1428,9 +1447,12 @@ new MutationObserver(()=>mountFaces(document))
    确定对得上的只有 05→beret / 06→specs / 07→scholar / 08→bob / 09→sage，
    02 / 03 / 11 / 13 在 ottoFace 里没有对应的角色 —— 改坑位数就是给所有没手动挑过头像的
    agent 换一张脸，所以那条 issue 的建议是坑位不动、缺的补出来。这里先按长相点名。 */
+/** 刚建出来的那一只：只为让名册上那一行放一次入场动效，放完就清掉 */
+let FRESH_BOT=null;
 const AGENT_SLOT={'管理员':'otto','开发':'specs','设计':'beret','运维':'stoic','门店':'mane','新':'grin'};
 const faceOf=(k,txt,sz=20,st='idle',anim)=>{
-  const ch=AGENT_SLOT[k];
+  // 名字 → 坑位；挑形象那一屏给的就是角色 id 本身，所以也认它
+  const ch=AGENT_SLOT[k] ?? (faceCharacter(k)?k:undefined);
   /* 智能体画 ottoFace（#1307/#1345）。缺省 `idle` —— 它是那张状态表里唯一**没有角标**
      的一格，所以画它不声称任何事：名册那一栏查不到谁在跑（#722 / #1282），能画的只有
      一张活着的脸。所以这两件事要分开看 ——
@@ -2112,12 +2134,27 @@ function faceCluster(ids){
   return `<span style="width:68px;height:54px;flex:none;display:flex;flex-wrap:wrap;
     align-content:center;justify-content:center;gap:0;overflow:hidden">${f.join('')}</span>`;
 }
+/** 几只并排，**横着排不叠成田字**（维护者定的）。田字那版（faceCluster）要凑够四格
+    才匀称，三只时右下角空着、读成「少了一只」；横排在 1~4 只下都成立。
+    互相压一点（-5）是为了让三只收在 96px 的左栏里：完全不叠要 105，正文就得再往右让。
+    名册那一栏仍然是田字 —— 那里的群头像要跟单只那张 67×54 对齐成一列，横排会又宽又矮。 */
+function faceRow(ids){
+  return `<span style="display:inline-flex;align-items:center">${
+    ids.slice(0,4).map((id,n)=>{const b=botOf(id); if(!b) return '';
+      return `<span style="display:inline-flex;margin-left:${n?-5:0}px">${faceOf(b.face,b.name[0],27,'idle',true)}</span>`;
+    }).join('')}</span>`;
+}
 /** 名册一行。右边那一列只放**表里真有**的两样：时间、@ 我几次 */
 function botRow(b,fresh){
+  /* 还没人跟它说过要干什么的那一只：主行写的是**这个事实**，不是替它编一个称呼。
+     「新智能体」那种占位名比空着更糟 —— 它看起来像个名字，于是没人再去填真的那一行 */
+  const head=b.name||b.role
+    ? `<span class="n">${b.name}</span><span class="rl">${b.role}</span>`
+    : `<span class="n" style="color:var(--mutedFg);font-weight:500">还没说要干什么</span>`;
   return `<div class="row press brow" data-go="botChat" data-p='{"id":"${b.id}"}'${fresh?' data-fresh="1"':''}>
-    ${faceOf(b.face,b.name[0],54,'idle',true)}
+    ${faceOf(b.face,b.name[0]||'',54,'idle',true)}
     <span class="grow">
-      <div class="nm"><span class="n">${b.name}</span><span class="rl">${b.role}</span></div>
+      <div class="nm">${head}</div>
       <div class="ls">${b.last}</div>
     </span>
     <span class="rt">
@@ -2198,7 +2235,7 @@ SCREENS.bots={label:'名册',grp:'智能体',render:()=>`
         也没有那台机器的卡（它搬去账号页了，见 machineRow）。
         机器上真有事要你办时，左上角那颗钮右上角亮一枚点 —— 主页保留的只有这一位 -->
    <div style="height:112px;flex:none"></div>
-   <div class="list">${DATA.bots.map(b=>botRow(b)).join('')}</div>
+   <div class="list">${DATA.bots.map(b=>botRow(b,b.id===FRESH_BOT)).join('')}</div>
    <!-- 这一段末尾原来还有一行「把几只放进同一条线」。＋ 那张弹窗里已经有同一件事了，
         留两个入口只会让人以为它们是两样东西（同 ADR-0217 撤掉页脚那枚图标）；
         那句解释没丢，搬进了弹窗里那一行的第二行 -->
@@ -2823,15 +2860,49 @@ const SHEETS={
     不锁：点一下外面就退出去（按错了不该被关在里面）。
     两行左边画的都是**这一选会生出来的东西** —— 一张脸 / 一摞脸，
     比两枚抽象图标更快答完「这两样有什么不同」。 */
+ /* 「新建智能体」是**从下面升起来的一张表**（维护者定的；照的是 Grok 那张「创建新 Bot」，
+    但方向按他的口径改成了和这份 demo 里其余抽屉一致的从下往上）：
+    挑一个形象 + 取个名字。两件事都在这一屏上，改一下形象立刻在上面那张大脸上看见结果 ——
+    这就是它值一整屏的理由（换成一行「形象 ›」再推一页，人得来回跳着比）。
+    **没有颜色那一排**：ottoFace 的头是锁死的（#1307 那条「只换眉眼嘴」），
+    摆一排色卡等于给一个改不动的东西配一个控件，点下去什么都不会变。
+    **也不取名字**（维护者定的）：这一栏里的「开发」「门店」本来就不是名字是**职责** ——
+    让人先编一个名字，等于在他还不知道要它干什么之前先逼他给它起个称呼。
+    建完进去说第一句，它是干什么的就是它在名册上的那一行。
+    所以这一屏只剩一件事：挑一张脸。 */
+ newAgent:()=>{
+   const pick=FACE_CHARACTERS[0].id;
+   const el=sheet(`<div class="grab"></div>
+     <div class="thead">
+       <button class="rbtn" data-close aria-label="不建了">${I('x',20,2.3)}</button>
+       <span class="ttl">新建智能体</span>
+     </div>
+     <div class="sbody">
+       <div class="prev">${faceOf(pick,'',108,'idle',true).replace('<canvas','<canvas data-el="prev"')}</div>
+       <div class="faces">${FACE_CHARACTERS.map(c=>`
+         <button class="fpick" data-act="pickFace" data-ch="${c.id}"${c.id===pick?' data-on=""':''}>
+           ${faceOf(c.id,'',27)}<span class="lb">${c.name}</span>
+         </button>`).join('')}
+       </div>
+       <div class="groupftr" style="padding:14px 24px 2px;text-align:center">
+         不用取名字。建好之后进去说一句它是干什么的 —— 那句话就是它在名册上的那一行。</div>
+     </div>
+     <div class="tfoot"><button class="btn" data-act="createBot">建它</button></div>`);
+   el.classList.add('newbot');
+   return el;
+ },
  newThing:()=>alertDialog(`<div class="pickdlg">
    <h2>新建</h2>
-   <button class="pick" data-act="newPick" data-to="newBot">
-     ${faceOf('新','新',54,'idle',true)}
+   <button class="pick" data-act="newAgent">
+     <!-- 这一格画的是 **app 自己那张脸**（IMG.otto，同进门闸与冷启动那张），不是某一只的头像：
+          这一选建出来的是「一只」这个东西本身，此刻还没有谁；随手挑一张现成的脸会让人
+          以为那就是将要建出来的那只长什么样 -->
+     <span class="lft"><img src="${IMG.otto}" alt=""></span>
      <span class="grow"><div class="t">一只智能体</div>
        <div class="s">说一句它是干什么的就行。它有自己的一台电脑。</div></span>
    </button>
    <button class="pick" data-act="newPick" data-to="newGroup">
-     ${faceCluster(['dev','design','ops'])}
+     <span class="lft">${faceRow(['dev','design','ops'])}</span>
      <span class="grow"><div class="t">一个群聊</div>
        <div class="s">把几只放进同一条线，它们在里头互相接力。</div></span>
    </button>
@@ -2958,6 +3029,25 @@ const ACTS={
  /* 选完先 closeSheet 再 go：`go()` 不碰弹窗（它只管屏），不收的话新屏会推到一张
     还开着的弹窗底下。两件事分开是对的 —— 别的地方也有「开着弹窗跳屏」的用法 */
  newPick:(b)=>{ closeSheet(); go(b.dataset.to); },
+ newAgent:()=>SHEETS.newAgent(),      // sheet() 自己会先收掉上一层（那张弹窗），不用手动关
+ /* 换形象**只改那张大脸的 data-ch 再重画**，不重渲染这一屏：重渲染会把已经打了一半的
+    名字冲掉，还会让每一格的脸重新挂一次（它们是活着的 canvas，不是图片） */
+ pickFace:(b)=>{
+   b.parentElement.querySelectorAll('.fpick').forEach(x=>x.removeAttribute('data-on'));
+   b.setAttribute('data-on','');
+   const prev=b.closest('.newbot').querySelector('[data-el="prev"]');
+   prev.dataset.ch=b.dataset.ch; mountFace(prev);
+ },
+ /* 建完**回名册**，新的那一行排在最上面并带一段入场（`.brow[data-fresh]`）：
+    人要看见自己刚做的那件事落在哪儿了。那一行的两句先写实话 ——
+    还没人跟它说过要干什么，所以副标题写的是下一步而不是编一句它的职责 */
+ createBot:(b)=>{
+   const box=b.closest('.newbot');
+   const ch=box.querySelector('.fpick[data-on]')?.dataset.ch||FACE_CHARACTERS[0].id;
+   const id='new'+Date.now();
+   DATA.bots.unshift({id,face:ch,name:'',role:'',last:'点进去跟它说第一句',at:'刚刚'});
+   FRESH_BOT=id; closeSheet(); resetTo('bots'); soon(()=>{FRESH_BOT=null});
+ },
  /* 语音从「电话」那个位置升起，也回那儿去 —— 同一条路径（空间一致性） */
  /* 电话模式：替换输入框。挂断换回来、并在时间线上留下那张卡 */
  voice:(b)=>{ const v=b.dataset.v||'bot'; closeSheet();
