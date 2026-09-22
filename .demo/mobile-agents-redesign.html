@@ -607,7 +607,7 @@ html[data-theme="light"] .tile:not(.speaking){border-color:rgba(0,0,0,.06)}  /* 
 .newbot .thead .ttl{font-size:17px;font-weight:650;letter-spacing:-.2px}
 .newbot .tfoot{padding:12px 16px 0;flex:none}
 .newbot .prev{display:grid;place-items:center;padding:10px 0 4px;min-height:120px}
-.newbot .faces{display:flex;flex-wrap:wrap;justify-content:center;gap:6px 2px;padding:4px 10px 0}
+.newbot .faces{display:flex;flex-wrap:wrap;justify-content:center;gap:6px 2px;padding:4px 10px 10px}
 .newbot .fpick{width:74px;padding:5px 0 4px;border-radius:14px;border:0;background:transparent;
   font:inherit;color:inherit;cursor:pointer;display:grid;justify-items:center;gap:2px;
   transition:background 120ms var(--ease-out)}
@@ -2884,8 +2884,8 @@ const SHEETS={
            ${faceOf(c.id,'',27)}<span class="lb">${c.name}</span>
          </button>`).join('')}
        </div>
-       <div class="groupftr" style="padding:14px 24px 2px;text-align:center">
-         不用取名字。建好之后进去说一句它是干什么的 —— 那句话就是它在名册上的那一行。</div>
+       <!-- 这里原来有一句「不用取名字…」的说明，维护者撤掉了：一屏上没有名字这一格，
+            就没有「不用取名字」这件事要交代；解释一件屏幕上不存在的事，反而让人回头找它在哪 -->
      </div>
      <div class="tfoot"><button class="btn" data-act="createBot">建它</button></div>`);
    el.classList.add('newbot');
