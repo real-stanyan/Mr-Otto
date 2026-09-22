@@ -44,7 +44,7 @@ export interface MentionRow {
   /** agent 才有；成员是 null。发送时 `mentions` 只收非 null 的这一格 */
   readonly agentId: string | null;
   /** 成员才有：profiles.avatar_url，空串 = 没设过（渲染层退回首字母）。
-      agent 的脸由 agentAvatarSrc 从 agentId 算，不经这一格 */
+      agent 的脸由 agentFace 从 agentId 算，不经这一格 */
   readonly avatarUrl: string;
   /** 中间那格灰字。三种来源，优先级见 buildDetail 的注释 */
   readonly detail: string;

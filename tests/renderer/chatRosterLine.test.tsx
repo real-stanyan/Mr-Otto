@@ -7,8 +7,11 @@
 // ① 居中（`self-center`）——这一条说的是整个群此刻的状态，不是机器的内务，所以
 //    与旁边那几行靠左的旁白故意分家（ADR-0286 给通话那一行定的结论）
 // ② 每个名字左边一张脸
-// ③ **名册里查不到的不给脸**：agentAvatarSrc 对陌生 id 会按哈希派生一张，画上去
-//    等于宣称它还在名册里——而被移出的那只常常正是刚被删掉的那只
+// ③ **名册里查不到的不给脸**：派生对陌生 id 也算得出一张脸，画上去等于宣称它还在
+//    名册里——而被移出的那只常常正是刚被删掉的那只
+//
+// #1345 之后脸是一张 `<canvas data-face>`（会动的像素形象）而不是 `<img>`；三条
+// 判据一个字没改，只是「一张脸」在 DOM 里换了个形状。
 
 import { afterEach, beforeAll, describe, expect, it } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
@@ -51,18 +54,18 @@ describe("ChatRosterRow（#1280）", () => {
     const { container } = render(
       <ChatRosterRow ws={WS} parts={parts({ text: "你把" }, { text: "「投放」", agentId: "a_1" }, { text: "拉进了群聊" })} />
     );
-    const img = container.querySelector("img");
-    expect(img).not.toBeNull();
+    const face = container.querySelector("canvas[data-face]");
+    expect(face).not.toBeNull();
     // 脸与名字包在同一个 whitespace-nowrap 里：断在中间就是一张没有主人的脸
-    expect(img!.parentElement!.className).toContain("whitespace-nowrap");
-    expect(img!.parentElement!.textContent).toBe("「投放」");
+    expect(face!.parentElement!.className).toContain("whitespace-nowrap");
+    expect(face!.parentElement!.textContent).toBe("「投放」");
   });
 
   it("名册里查不到的那只不给脸（多半是刚被删掉的那只）", () => {
     const { container } = render(
       <ChatRosterRow ws={WS} parts={parts({ text: "你把" }, { text: "「已删的那只」", agentId: "a_9" }, { text: "移出了群聊" })} />
     );
-    expect(container.querySelector("img")).toBeNull();
+    expect(container.querySelector("canvas[data-face]")).toBeNull();
     // 话照说——没有脸不等于没有这件事
     expect(container.textContent).toBe("你把「已删的那只」移出了群聊");
   });

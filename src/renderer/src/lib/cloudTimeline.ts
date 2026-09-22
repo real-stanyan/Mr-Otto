@@ -5,7 +5,7 @@
 // （src/renderer/src/lib/workspaceView.ts 同款），纯函数零 React 也方便
 // 单独写测试（tests/renderer/cloudTimelineLabels.test.ts）。
 
-import { agentAvatarSrc } from "./agentAvatar.js";
+import { agentFaceIfKnown, imageAvatar, type AvatarRef } from "./agentAvatar.js";
 import { agentNameOf, labelOf, memberAvatarOf } from "./workspaceView.js";
 import { isSystemNote, systemNoteBody } from "./systemNote.js";
 import type {
@@ -351,12 +351,12 @@ export function cloudEmptyState(
 /** 通话那一行里的一格（#1228）。`text` 是它在句子里的**字面**——整串 part 的 text 一路
     拼起来就是这句话本身（文案用例正是这么钉的），所以「这句话怎么说」不会因为多了一层
     结构而分成两份判据。`party` 那一档额外带着画脸要的两样：`name` 是裸名（渲染层拿它
-    取首字母兜底），`avatarSrc` 空串 = **名册里查不到，不给脸**——`agentAvatarSrc` 对
-    陌生 id 会按哈希派生一张，画上去等于宣称它还在名册里（同 ADR-0264 用量表那条纪律）。
-    人那一侧的空串来自 `memberAvatarOf`（没设过头像 / 已退群），退回首字母是同一条路 */
+    取首字母兜底），`avatar` 为 `null` = **名册里查不到，不给脸**——派生对陌生 id 也
+    算得出一张脸，画上去等于宣称它还在名册里（同 ADR-0264 用量表那条纪律）。
+    人那一侧的 `null` 来自 `memberAvatarOf` 的空串（没设过头像 / 已退群），同一条路 */
 export type VoiceCallPart =
   | { kind: "text"; text: string }
-  | { kind: "party"; text: string; name: string; avatarSrc: string };
+  | { kind: "party"; text: string; name: string; avatar: AvatarRef };
 
 /** 语音通话名单那一行旁白（#1163）：判据是**前后两条名单的差集**，不是事件上的一个
     「动作」字段——事件只记事实（此刻谁在通话里），动作是投影出来的：
@@ -376,7 +376,7 @@ export function voiceCallLineParts(
   const agentParty = (p: { agentId: string; name: string }): VoiceCallPart => {
     const known = ws.agents.some((a) => a.agentId === p.agentId);
     const name = known ? agentNameOf(ws, p.agentId) : p.name;
-    return { kind: "party", text: name, name, avatarSrc: known ? agentAvatarSrc(ws, p.agentId) : "" };
+    return { kind: "party", text: name, name, avatar: agentFaceIfKnown(ws, p.agentId) };
   };
   // 人名后空一格、书名号后不空：「Stan 开始了」与「「运营」把」——中文排版里括号自己就是间隔
   const byAgentId = e.byAgentId;
@@ -387,10 +387,10 @@ export function voiceCallLineParts(
           text: `「${agentNameOf(ws, byAgentId)}」`,
           name: agentNameOf(ws, byAgentId),
           // 拉人的那只自己没有快照可退（事件上只有 id），名册里查不到就不给脸
-          avatarSrc: ws.agents.some((a) => a.agentId === byAgentId) ? agentAvatarSrc(ws, byAgentId) : "",
+          avatar: agentFaceIfKnown(ws, byAgentId),
         }]
       : [
-          { kind: "party", text: labelOf(ws, e.byUid), name: labelOf(ws, e.byUid), avatarSrc: memberAvatarOf(ws, e.byUid) },
+          { kind: "party", text: labelOf(ws, e.byUid), name: labelOf(ws, e.byUid), avatar: imageAvatar(memberAvatarOf(ws, e.byUid)) },
           t(" "),
         ];
   const before = new Set((prev?.participants ?? []).map((p) => p.agentId));
@@ -416,8 +416,8 @@ export interface VoiceCallCardLine {
   parts: readonly VoiceCallPart[] | null;
   /** 说话人显示名。名单变更那行不用（parts 自带名字） */
   label: string;
-  /** 空串 = 没有脸可画，退回首字母（同 `VoiceCallPart` 那条纪律） */
-  avatarSrc: string;
+  /** `null` = 没有脸可画，退回首字母（同 `VoiceCallPart` 那条纪律） */
+  avatar: AvatarRef;
   /** 相对通话开始的毫秒。画成 mm:ss —— 通话里的时间是「第几分几秒说的」，
       墙上时间在这张卡里没有意义（整场通常只跨几分钟） */
   offsetMs: number;
@@ -439,7 +439,7 @@ export interface VoiceCallCard {
   utterances: number;
   /** 整场出现过的人与 agent（并集，不是此刻的名单）：中途被移出的那只照旧算
       参与过这场通话，收起时那一排脸报的是「这场通话里有谁」 */
-  parties: readonly { name: string; avatarSrc: string }[];
+  parties: readonly { name: string; avatar: AvatarRef }[];
   lines: readonly VoiceCallCardLine[];
 }
 
@@ -492,11 +492,11 @@ export function voiceCallCards(
   /** `snapshot` = 事件里那份名字快照（`voice_call_changed.participants[].name`）。
       名册里查得到就现查（改名不断账：脸与名字都跟着当前名册走），查不到退回快照，
       快照也没有才落回裸 id —— 三级兜底与 `voiceCallLineParts` 逐字同一条 */
-  const partyOfAgent = (agentId: string, snapshot?: string): { name: string; avatarSrc: string } => {
+  const partyOfAgent = (agentId: string, snapshot?: string): { name: string; avatar: AvatarRef } => {
     const known = ws.agents.some((a) => a.agentId === agentId);
     return {
       name: known ? agentNameOf(ws, agentId) : (snapshot ?? agentId),
-      avatarSrc: known ? agentAvatarSrc(ws, agentId) : "",
+      avatar: agentFaceIfKnown(ws, agentId),
     };
   };
 
@@ -510,18 +510,18 @@ export function voiceCallCards(
       // agent 排在人前面：一排脸里先看到会说话的那几只（同 @ 选人名单的顺序）
       parties: [
         ...[...draft.agents].map(([agentId, snapshot]) => partyOfAgent(agentId, snapshot)),
-        ...[...draft.uids].map((uid) => ({ name: labelOf(ws, uid), avatarSrc: memberAvatarOf(ws, uid) })),
+        ...[...draft.uids].map((uid) => ({ name: labelOf(ws, uid), avatar: imageAvatar(memberAvatarOf(ws, uid)) })),
       ],
       lines: draft.lines,
     });
     draft = null;
   };
 
-  const say = (e: { seq: number; ts: number }, label: string, avatarSrc: string, text: string, mine: boolean): void => {
+  const say = (e: { seq: number; ts: number }, label: string, avatar: AvatarRef, text: string, mine: boolean): void => {
     if (draft === null) return;
     folded.add(e.seq);
     draft.utterances += 1;
-    draft.lines.push({ seq: e.seq, parts: null, label, avatarSrc, offsetMs: Math.max(0, e.ts - draft.sinceTs), text, mine });
+    draft.lines.push({ seq: e.seq, parts: null, label, avatar, offsetMs: Math.max(0, e.ts - draft.sinceTs), text, mine });
   };
 
   for (const e of events) {
@@ -536,7 +536,7 @@ export function voiceCallCards(
         folded.add(e.seq);
         draft.lines.push({
           seq: e.seq, parts: voiceCallLineParts(prevCall, e, ws),
-          label: "", avatarSrc: "", offsetMs: Math.max(0, e.ts - draft.sinceTs), text: "", mine: false,
+          label: "", avatar: null, offsetMs: Math.max(0, e.ts - draft.sinceTs), text: "", mine: false,
         });
         // `set` 不是 `has` 守卫：名字快照取**最后一次**看到的那份（中途改过名的话，
         // 卡上那一排该显示他后来叫什么）
@@ -555,13 +555,13 @@ export function voiceCallCards(
       if (e.voice !== true || hiddenFromCloudTimeline(e)) continue;
       const id = userRowIdentity(e, ws, selfUid);
       if (id.uid !== null) draft.uids.add(id.uid);
-      say(e, id.label ?? "?", id.uid !== null ? memberAvatarOf(ws, id.uid) : "", id.text, id.mine);
+      say(e, id.label ?? "?", id.uid !== null ? imageAvatar(memberAvatarOf(ws, id.uid)) : null, id.text, id.mine);
       continue;
     }
     if (e.type === "chat_message") {
       if (e.voice !== true) continue;
       draft.uids.add(e.fromUid);
-      say(e, e.label, memberAvatarOf(ws, e.fromUid), e.content, e.fromUid === selfUid);
+      say(e, e.label, imageAvatar(memberAvatarOf(ws, e.fromUid)), e.content, e.fromUid === selfUid);
       continue;
     }
     if (e.type === "assistant_message") {
@@ -569,7 +569,7 @@ export function voiceCallCards(
       if (isAgentStep(e) || e.agentId === undefined || !roster.has(e.agentId)) continue;
       // 名单里必有它（上面 roster.has 那道闸），所以快照一定查得到
       const party = partyOfAgent(e.agentId, draft.agents.get(e.agentId));
-      say(e, party.name, party.avatarSrc, e.content, false);
+      say(e, party.name, party.avatar, e.content, false);
       continue;
     }
   }

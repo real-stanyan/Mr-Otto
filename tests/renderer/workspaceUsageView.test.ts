@@ -47,9 +47,9 @@ describe("usageRows", () => {
 
   it("名单里查不到就没有脸：派生一张出来等于宣称它还在名册里", () => {
     const rows = usageRows(ws, usage);
-    expect(rows[0]!.avatarSrc).toBeTypeOf("string");   // 在名单里
-    expect(rows[1]!.avatarSrc).toBeNull();             // 已删除
-    expect(rows[2]!.avatarSrc).toBeNull();             // 未归因
+    expect(rows[0]!.avatar).toMatchObject({ kind: "face" });  // 在名单里
+    expect(rows[1]!.avatar).toBeNull();                      // 已删除
+    expect(rows[2]!.avatar).toBeNull();                      // 未归因
   });
 
   it("token 列不把 cached 数第二遍（它是 prompt 的子集）", () => {

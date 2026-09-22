@@ -15,7 +15,6 @@
 //    要把这句话说全，同时说清「里面的智能体都还在」——人最怕的是删群连带删人。
 
 import { useMemo, useState } from "react";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar.js";
 import { Button } from "@/components/ui/button.js";
 import { Drawer, DrawerContent, DrawerHeader, DrawerTitle } from "@/components/ui/drawer.js";
 import { InsetGroup, InsetNote, InsetRow } from "@/components/ui/inset-list.js";
@@ -24,7 +23,8 @@ import { NavStack } from "@/components/ui/nav-stack.js";
 import { SidebarProvider } from "@/components/ui/sidebar.js";
 import { useConfirm } from "@/components/ui/confirm-dialog.js";
 import { useChat } from "../store.js";
-import { agentAvatarSrc } from "../lib/agentAvatar.js";
+import { AgentFace } from "./AgentFace.js";
+import { agentFaceSlot } from "../lib/agentAvatar.js";
 import { groupRows, homeOf } from "../lib/agentRoster.js";
 import { CHAT_NAME_MAX } from "../../../shared/chatRoster.js";
 import type { GroupChatRow } from "../lib/agentRoster.js";
@@ -111,10 +111,7 @@ function GroupSettingsRoot({ home, row }: { home: WorkspaceSnapshot; row: GroupC
               <InsetRow
                 key={id}
                 leading={
-                  <Avatar className="size-[26px] shrink-0 rounded-[6px]">
-                    <AvatarImage src={agentAvatarSrc(home, id)} alt="" className="[image-rendering:pixelated]" />
-                    <AvatarFallback className="rounded-[6px] text-[10px]">{name.slice(0, 1)}</AvatarFallback>
-                  </Avatar>
+                  <AgentFace slot={agentFaceSlot(home, id)} size={26} className="rounded-[6px]" />
                 }
                 title={name}
                 trailing={

@@ -23,16 +23,16 @@ import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 import type { WorkspaceUsage } from "../../../shared/billing.js";
 import type { CsModelRoute } from "../../../shared/remote/cloudSession.js";
 import { fmtUsedPercent } from "./billingView.js";
-import { agentAvatarSrc } from "./agentAvatar.js";
+import { agentFaceIfKnown, type FaceAvatar } from "./agentAvatar.js";
 import { agentNameOf } from "./workspaceView.js";
 
 export interface UsageRowView {
   agentId: string;
   name: string;
   /** 这只 agent 在这个团队里画的那张脸。**名单里查不到就没有脸**（已删除的 agent、
-      未归因那一档）：`agentAvatarSrc` 对陌生 id 会按哈希派生一张，画上去等于宣称它
-      还在名册里，而这一行的名字恰恰是「查不到，只剩 id」 */
-  avatarSrc: string | null;
+      未归因那一档）：派生对陌生 id 也会算出一张脸，画上去等于宣称它还在名册里，
+      而这一行的名字恰恰是「查不到，只剩 id」 */
+  avatar: FaceAvatar | null;
   /** 「3.7%」。分母见 `usageScale` */
   percent: string;
   /** 条的长度 0..1 —— 这一行在**本团队合计**里的比重，各行加起来正好是 1。
@@ -81,7 +81,7 @@ export function usageRows(ws: WorkspaceSnapshot, usage: WorkspaceUsage): UsageRo
   return usage.rows.map((r) => ({
     agentId: r.agentId,
     name: r.agentId === "" ? "未归因" : agentNameOf(ws, r.agentId),
-    avatarSrc: ws.agents.some((a) => a.agentId === r.agentId) ? agentAvatarSrc(ws, r.agentId) : null,
+    avatar: agentFaceIfKnown(ws, r.agentId),
     percent: fmtUsedPercent(r.costMicro, denominator(scale)),
     share: total > 0 ? r.costMicro / total : 0,
     calls: r.calls,

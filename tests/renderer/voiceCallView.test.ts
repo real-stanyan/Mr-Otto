@@ -32,7 +32,7 @@ describe("callTiles", () => {
     expect(tiles.map((t) => [t.kind, t.key, t.name, t.self])).toEqual([
       ["agent", "a_1", "运营", false], ["agent", "admin", "管理员", false], ["human", "u2", "Mia", false], ["human", "u1", "Stan", true],
     ]);
-    expect(tiles[3]!.avatarSrc).toBe("https://x/stan.png");
+    expect(tiles[3]!.avatar).toEqual({ kind: "image", src: "https://x/stan.png" });
     const solo = callTiles({ ws, call, selfUid: "u1", starterUid: "u1", voice: listening(), openAgentIds: new Set() });
     expect(solo.filter((t) => t.kind === "human").map((t) => t.key)).toEqual(["u1"]);
   });

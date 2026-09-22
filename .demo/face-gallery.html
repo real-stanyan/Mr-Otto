@@ -1,0 +1,1423 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Otto 像素脸</title>
+<style>
+  :root { color-scheme: light; }
+  body { margin: 0; padding: 24px 28px 64px; font: 13px/1.6 -apple-system, "PingFang SC", sans-serif;
+         background: #fbfbfc; color: #101012; }
+  body.dark { background: #101012; color: #f2f2f3; }
+  h1 { font-size: 17px; margin: 0 0 4px; }
+  h2 { font-size: 13px; margin: 28px 0 4px; opacity: .55; font-weight: 600; letter-spacing: .04em; }
+  p  { margin: 0 0 12px; opacity: .5; max-width: 60ch; }
+  .grid { display: flex; flex-wrap: wrap; gap: 14px; }
+  .grid.wall { gap: 6px; }
+  .cell { display: flex; flex-direction: column; align-items: center; gap: 4px; width: 128px; }
+  .cell span { font-size: 11px; opacity: .7; }
+  .cell i { font-size: 10px; opacity: .4; font-style: normal; }
+  button { position: fixed; top: 16px; right: 20px; font: inherit; padding: 4px 10px;
+           border-radius: 8px; border: 1px solid currentColor; background: transparent; color: inherit; cursor: pointer; }
+</style>
+<h1>Otto 像素脸 <span style="opacity:.4;font-weight:400">#1345 · lib/ottoFace/</span></h1>
+<p>圆盘底色两个主题一样（纸白 #f2f2f3）—— 纯黑头发压在纯黑底上会糊成一团，所以不靠描边、靠盘底。点右上角换主题看边缘。</p>
+<button id="theme">换主题</button>
+<script>(() => {
+  // src/renderer/src/lib/ottoFace/character.ts
+  function bar(w, h) {
+    return Array.from({ length: h }, () => "#".repeat(w));
+  }
+  function deriveEyes(spec2) {
+    const { lw, lh, rw, rh } = spec2;
+    const wide = (w) => w + 2;
+    const pad = (w) => -Math.floor((wide(w) - w) / 2);
+    const arc = (w) => {
+      const inner = Math.max(1, w - 2);
+      return [`.${"#".repeat(inner)}.`, `#${".".repeat(inner)}#`];
+    };
+    const lid = (w) => ["#".repeat(w + 2), `.${"#".repeat(w)}.`];
+    const shut = (w) => [`#${".".repeat(w)}#`, `.${"#".repeat(w)}.`];
+    const x = (w) => [`#${".".repeat(w)}#`, `.${"#".repeat(w)}.`, `.${"#".repeat(w)}.`, `#${".".repeat(w)}#`];
+    return {
+      open: { L: bar(lw, lh), R: bar(rw, rh), lx: 0, ly: 0, rx: 0, ry: 0 },
+      blink: { L: [`${"#".repeat(lw + 2)}`], R: [`${"#".repeat(rw + 2)}`], lx: pad(lw), ly: Math.floor(lh / 2), rx: pad(rw), ry: Math.floor(rh / 2) },
+      happy: { L: arc(lw + 2), R: arc(rw + 2), lx: pad(lw), ly: 1, rx: pad(rw), ry: 1 },
+      wide: { L: bar(lw + 2, lh + 1), R: bar(rw + 2, rh + 1), lx: pad(lw), ly: -1, rx: pad(rw), ry: -1 },
+      squint: { L: lid(lw), R: lid(rw), lx: pad(lw), ly: 1, rx: pad(rw), ry: 1 },
+      sleep: { L: shut(lw), R: shut(rw), lx: pad(lw), ly: 1, rx: pad(rw), ry: 1 },
+      dizzy: { L: x(lw), R: x(rw), lx: pad(lw), ly: 0, rx: pad(rw), ry: 0 }
+    };
+  }
+  function deriveMouths(width) {
+    const w = Math.max(5, width % 2 === 0 ? width + 1 : width);
+    const mid = Math.floor(w / 2);
+    const row = (fill) => fill.padEnd(w, ".").slice(0, w);
+    const centred = (n) => {
+      const k = Math.min(n, w);
+      const left = Math.floor((w - k) / 2);
+      return ".".repeat(left) + "#".repeat(k) + ".".repeat(w - left - k);
+    };
+    const corners = () => `##${".".repeat(Math.max(0, w - 4))}##`;
+    const blank = ".".repeat(w);
+    return {
+      // 原装微笑：两个上扬的嘴角 + 下面一条横杠。这是这批头像共同的嘴
+      smile: [corners(), corners(), `.${"#".repeat(w - 2)}.`, centred(Math.max(2, w - 4))],
+      grin: [centred(w - 2), centred(w - 2), centred(w - 2), centred(w - 4)],
+      flat: [blank, centred(w - 2), centred(w - 2), blank],
+      o: [centred(3), centred(5), centred(5), centred(3)],
+      small: [blank, centred(3), centred(3), blank],
+      purse: [blank, row(`${".".repeat(Math.max(0, mid - 2))}####`), row(`${".".repeat(Math.max(0, mid - 2))}####`), blank],
+      wavy: [blank, row(".##..##."), row("..##..##"), blank]
+    };
+  }
+
+  // src/renderer/src/lib/ottoFace/characters/otto.ts
+  var OTTO = {
+    id: "otto",
+    name: "Otto",
+    w: 55,
+    h: 48,
+    ink: "#",
+    skin: "o",
+    palette: { "#": "#0A0A0B", "d": "#3C3F44", "o": "#FAFAFA" },
+    base: [
+      ".......................................................",
+      ".................######################................",
+      ".................######################................",
+      ".................#######################...............",
+      "..............##########ddddddddd#########.............",
+      "..............##########ddddddddd#########.............",
+      "...........######ddd##ddddddddddd###ddd######..........",
+      "...........######dddd#ddddddddddd###ddd#######.........",
+      "...........######dddddddddddddddd###ddd#######.........",
+      "........#####ddddddddd##########################.......",
+      "........#####ddddddddd##########################.......",
+      ".....###dddddddddddddd##########################.......",
+      ".....###dddddddddddddd##########################.......",
+      ".....###dddddddddddddd##########################.......",
+      ".....###dddddddddd#####oooooooooooooooooo#########.....",
+      ".....###dddddddddd#####oooooooooooooooooo#########.....",
+      ".....###ddddd########oooooooooooooooooooooo#######.....",
+      ".....###ddddd########oooooooooooooooooooooo#######.....",
+      ".....###ddddd########oooooooooooooooooooooo#######.....",
+      ".....###ddd#######ooooooooooooooooooooooooo#######.....",
+      ".....###ddd#######ooooooooooooooooooooooooo#######.....",
+      ".....###########ooooo######oooooooooo###ooo#######.....",
+      ".....###########ooooo######oooooooooo####oo#######.....",
+      ".....###########ooooo######oooooooooo####oo#######.....",
+      ".....###########oooooooooooooooooooooooooooooo####.....",
+      ".....###########oooooooooooooooooooooooooooooo####.....",
+      ".....###ooooo###oooooooo###oooooooooo###oooooo###......",
+      ".....###ooooo###ooooooo####oooooooooo####ooooo##.......",
+      ".....###ooooo###ooooooo####oooooooooo####ooooo##.......",
+      ".....###ooooo###ooooooo####oooooooooo####ooooo##.......",
+      ".....###ooooo###ooooooo####oooooooooo####ooooo##.......",
+      ".....###oooooooooooooooooooooooooooooooooooooo##.......",
+      ".....###oooooooooooooooooooooooooooooooooooooo##.......",
+      ".....###oooooooooooooooooooooooooooooooooooooo##.......",
+      "........###ooooooooooooooooooooooooooooooooooo##.......",
+      "........###ooooooooooooooo##oooooooooooooooooo##.......",
+      "........#######ooooooooooo##ooooooo##ooooooooo##.......",
+      "........########oooooooooo##oooooo###ooooooooo##.......",
+      "........########oooooooooo###dddd####ooooooooo##.......",
+      ".............###ooooooooooo#########ooooooo###.........",
+      ".............###ooooooooooooooooooooooooooo###.........",
+      "...............###ooooooooooooooooooooooo###...........",
+      "................##ooooooooooooooooooooooo##............",
+      "................##ooooooooooooooooooooooo##............",
+      "..................#######################..............",
+      "..................#######################..............",
+      "..................#######################..............",
+      "......................................................."
+    ],
+    erase: [
+      [20, 24, 20, 27],
+      // 左眉
+      [20, 24, 36, 41],
+      // 右眉
+      [26, 31, 22, 27],
+      // 左眼
+      [26, 31, 36, 41],
+      // 右眼
+      [35, 40, 25, 37]
+      // 嘴
+    ],
+    anchors: {
+      browL: [21, 21],
+      browR: [37, 21],
+      eyeL: [23, 27],
+      eyeR: [37, 27],
+      mouth: [26, 36]
+    },
+    eyes: deriveEyes({ lw: 4, lh: 4, rw: 4, rh: 4 }),
+    // 眉毛直接用原图那两条，不再 deriveBrows——搬家的比例不是整数，
+    // 乘完取整会让两条眉毛差一格，而那一格肉眼一秒看得出来
+    brows: { L: ["######", "######", "######"], R: ["###.", "####", "####"] },
+    mouths: {
+      ...deriveMouths(11),
+      // 原图那张嘴，从矩阵里读出来的
+      smile: ["##.......##", "##......###", "###########", ".#########."]
+    }
+  };
+
+  // src/renderer/src/lib/ottoFace/characters/beret.ts
+  var BERET = {
+    id: "beret",
+    name: "\u8D1D\u96F7\u5E3D",
+    w: 55,
+    h: 48,
+    ink: "#",
+    skin: "o",
+    palette: { "#": "#0A0A0B", "d": "#3C3F44", "o": "#FAFAFA" },
+    base: [
+      ".......................##############..................",
+      ".......................###############.................",
+      ".......................##################..............",
+      "....................########################...........",
+      "................############################...........",
+      "................###############################........",
+      ".............####################################......",
+      ".............####################################......",
+      "..........#######################################......",
+      "..........#######################################......",
+      "..........########################################.....",
+      "........##########################################.....",
+      ".......##############################dddddddd#####.....",
+      "......#########################dddddddddddddddd##......",
+      "......#########################dddddddddddddddd##......",
+      "......#####################ddddddddddddd####ddddd##....",
+      "....#######################dddddddddd##oooo###ddd##....",
+      "....####################ddddddddddddd##ooooo##ddddd##..",
+      "..##################ddddddddddddddd###ooooooo###ddd##..",
+      "..##################ddddddddddddddd##oooooooo###ddd##..",
+      "..################ddddddddddddddddooooooooooooo#ddd##..",
+      "..################ddddddddddd####ooooooooo###oo##dd##..",
+      "..#############ddddddddddddd#####ooooooooo###oo####....",
+      "...############dddddddddd####oooooooooooooooooo####....",
+      "....######ddddddddddddddd####oooooooooooooooooo####....",
+      "......####dddddddddddd###oooooooooooooooooooooo##......",
+      "......##ddddddddddddd####oooooooooooooooo####oo##......",
+      "......##dddd######dd##ooooooooooooooooooo####oo##......",
+      "......##dddd######dd##oooo######ooooooooo####oo##......",
+      ".....###dddd##oooodd##oooo#######oooooooo####oo##......",
+      ".....###dddd##oooo####ooooooooo##oooooooo####oo##......",
+      ".....##ddddd##oooo###oooooooooooooooooooooooooo##......",
+      ".....##ddddd##ooooooooooooooooooooooooooooooooo##......",
+      "..#####ddddd##ooooooooooooooooooooooooooooooooo##......",
+      "..####ddddddd###ooooooooooooooooooooooooooooooo##......",
+      "..##dddddddddd##ooooooooooooooooooooooooooooooo##......",
+      "..##dddddddddd#######ooooooooooo#oooooooooooooo##......",
+      "..##dddddddddd#######oooooooooooooooooo#ooooooo##......",
+      "....##ddddddddddddd##oooooooooooo#######ooooooo##......",
+      "....###dddddddddddd##oooooooooooo#######oooo#####......",
+      ".....###ddddddddddd##ooooooooooooooooooooooo###........",
+      ".....###ddddddddddd##ooooooooooooooooooooooo###........",
+      "........####ddddddd####oooooooooooooooooo###...........",
+      "........#######dddd####oooooooooooooooooo###...........",
+      "...........#####dd#####oooo###############.............",
+      "............#########...##################.............",
+      "...............######..................................",
+      "......................................................."
+    ],
+    erase: [
+      [20, 24, 41, 45],
+      // 右眉
+      [26, 32, 25, 33],
+      // 左眼（原图是个眨眼，抹平了重画）
+      [25, 32, 40, 45],
+      // 右眼
+      [35, 43, 31, 43]
+      // 嘴
+    ],
+    anchors: {
+      browL: [0, 0],
+      browR: [42, 21],
+      eyeL: [28, 27],
+      eyeR: [41, 26],
+      mouth: [32, 36]
+    },
+    // 左眼原图画的是眨眼——一道七格宽的斜杠。照搬当睁眼是一条粗眯缝，
+    // 所以这一处不取矩阵里那团墨的尺寸，按右眼收窄
+    eyes: deriveEyes({ lw: 3, lh: 5, rw: 4, rh: 5 }),
+    // 眉毛直接用原图那两条，不再 deriveBrows——搬家的比例不是整数，
+    // 乘完取整会让两条眉毛差一格，而那一格肉眼一秒看得出来
+    brows: { L: [], R: ["###", "###"] },
+    mouths: {
+      ...deriveMouths(11),
+      // 原图那张嘴，从矩阵里读出来的
+      smile: ["#..........", ".......#...", ".#######...", ".#######...", "...........", "...........", ".........##"]
+    }
+  };
+
+  // src/renderer/src/lib/ottoFace/characters/specs.ts
+  var SPECS = {
+    id: "specs",
+    name: "\u65B9\u6846\u773C\u955C",
+    w: 55,
+    h: 48,
+    ink: "#",
+    skin: "o",
+    palette: { "#": "#0A0A0B", "d": "#3C3F44", "o": "#FAFAFA" },
+    base: [
+      ".......................................................",
+      "................####################...................",
+      "................####################...................",
+      "................####################...................",
+      "..............##########dd##############...............",
+      ".............###########dd##############...............",
+      "...........#####dddddddd##################.............",
+      "..........######dddddddd##################.............",
+      ".......#######dddddddddddd##########dddd#####..........",
+      ".......#######dddddddddddd##########dddd#####..........",
+      ".......#####ddddddddoooooooooo########oooo###..........",
+      ".......#####ddddddddoooooooooo########oooo###..........",
+      "......###dddddddddooooooooooooooooooooooooo###.........",
+      ".....####dddddddddooooooooooooooooooooooooo###.........",
+      ".....####dddddddddooooooooooooooooooooooooo###.........",
+      ".....####dddddddddooooooooooooooooooooooooo###.........",
+      ".....###ddddddddddooooooooooooooooooooooooooo###.......",
+      ".....###ddddddddddooooooooooooooooooooooooooo###.......",
+      ".....###ddddddddddooooooooooooooooooooooooooo###.......",
+      ".....###ddddddddddooooooooooooooooooooooooooo###.......",
+      ".....###ddddddoooooooo########oooooooooo####o###.......",
+      ".....###ddddddoooooooo########oooooooooo####o###.......",
+      ".....###ddddddoooooooooooooooooooooooooooooooo##.......",
+      ".....###ddddddoooooooooooooooooooooooooooooooo##.......",
+      ".....#######ddooooo###############ooo##############....",
+      ".....#######ddooooo##ooooo########ooo#######oo#####....",
+      ".....################oooooo###oo##ooo##oo###oo##o##....",
+      "...###ooooo##########oooooo###oo#######oo###oo##o##....",
+      "...###ooooo###ooooo##oooooo###oo#######oo###oo##o##....",
+      "...###ooooo###ooooo##oooooo###oo##ooo##oo###oo##o##....",
+      "...###ooooo###ooooo##oooooo###oo##ooo##oo###oo##o##....",
+      "...###ooooooooooooo##ooooooooooo##ooo##ooooooo##o##....",
+      "...###ooooooooooooo##ooooooooooo##ooo##ooooooo#####....",
+      "...###ooooooooooooooo###########ooooooo##########......",
+      "...######oooooooooooo###########ooooooo##########......",
+      "...######oooooooooooooooooooooooooooooooooooo###.......",
+      ".......##ooooooooooooooooooooooooooooooooooooo##.......",
+      ".......#######oooooooooooooooooooooooooooooooo##.......",
+      ".......#######oooooooooooooooooooooooooooooooo##.......",
+      "..........####oooooooooooooooo#########oooooo###.......",
+      "...........###oooooooooooooooo#########oooo###.........",
+      "...........###oooooooooooooooo########ooooo###.........",
+      "............####ooooooooooooooooooooooooo#####.........",
+      ".............###ooooooooooooooooooooooooo###...........",
+      ".............###ooooooooooooooooooooooooo###...........",
+      "...............##########################..............",
+      "...............##########################..............",
+      "......................................................."
+    ],
+    erase: [
+      [18, 22, 21, 30],
+      // 左眉
+      [18, 22, 39, 44],
+      // 右眉
+      [38, 42, 28, 39]
+      // 嘴
+    ],
+    anchors: {
+      browL: [22, 20],
+      browR: [40, 20],
+      eyeL: [26, 25],
+      eyeR: [41, 25],
+      mouth: [30, 39]
+    },
+    eyes: deriveEyes({ lw: 4, lh: 5, rw: 3, rh: 5 }),
+    // 眉毛直接用原图那两条，不再 deriveBrows——搬家的比例不是整数，
+    // 乘完取整会让两条眉毛差一格，而那一格肉眼一秒看得出来
+    brows: { L: ["########", "########"], R: ["####", "####"] },
+    mouths: {
+      ...deriveMouths(9),
+      // 原图那张嘴，从矩阵里读出来的
+      smile: ["#########", "#########", "########."]
+    }
+  };
+
+  // src/renderer/src/lib/ottoFace/characters/scholar.ts
+  var SCHOLAR = {
+    id: "scholar",
+    name: "\u5706\u6846\u773C\u955C",
+    w: 55,
+    h: 48,
+    ink: "#",
+    skin: "o",
+    palette: { "#": "#0A0A0B", "d": "#3C3F44", "g": "#9AA0A8", "o": "#FAFAFA" },
+    base: [
+      "...........................##########..................",
+      "...........................##########..................",
+      "...........................##########..................",
+      ".................######################................",
+      ".................######################................",
+      "..............##############################...........",
+      "..............##############################...........",
+      "..........##################################...........",
+      "..........##################################...........",
+      "..........####################################.........",
+      "........############d#########################.........",
+      "........############d############################......",
+      "........###dddd####dd############oooooooo########......",
+      ".......####dddd##################oooooooo########......",
+      "....######ddddd########oooooooooooooooooo########......",
+      "....#####dddd##########oooooooooooooooooooo######......",
+      "....#####dddd##########oooooooooooooooooooo######......",
+      "....#####dddd##########oooooooooooooooooooo######......",
+      "....#####dddd########oooooooooooooooooooooo######......",
+      "....#####dd##########oooooooooooooooooo########........",
+      "....#####dd##########oooo######oooooooo########........",
+      "....#####dd#######ooooooo######oooooooooooo####........",
+      "....#####dd#######ooooooo####ooooooooo############g....",
+      "....#####dd#######ooooo###########oooo############g....",
+      "....##############oooo############oooo#oooooo#####g....",
+      "....##############oooo##ooooooooo#oooo#oo###o##o##g....",
+      "....##############oooo##oooo###oo######oo###o##o##d....",
+      "....####################oooo###oo######oo###o##o##d....",
+      "....####################oooo###oo#oooo#oo###o##o##d....",
+      "......#####oooo###oooo##oooo###oo#oooo#oo###o##o##d....",
+      "......#####oooo###oooo##oooo###oo#ooooooooooo#####d....",
+      "........###oooo###oooo##ooooooooooooooo#########.......",
+      "........###oooo###ooooo##########oooooo#########.......",
+      "........###oooooooooooo##########oooooooooooo##........",
+      "........###oooooooooooooooooooooooooooooooooo##........",
+      "........###oooooooooooooooooooooooooooooooooo##........",
+      "........#####oooooooooooooooooooooooooooooooo##........",
+      "........#####oooooooooooooooooooooo##oooooooo##........",
+      "...........#######oooooooooooooooo###oooooooo##........",
+      "...........#######oooooooooooooooo###ooooooo###........",
+      "..............####ooooooooooooooooo##ooooo###..........",
+      "..............####oooooooooooooooooooooooo###..........",
+      ".................###oooooooooooooooooooo###............",
+      ".................###oooooooooooooooooooo###............",
+      "...................#####################...............",
+      "....................####################...............",
+      "....................####################...............",
+      "......................................................."
+    ],
+    erase: [
+      [19, 23, 24, 32],
+      // 左眉
+      [36, 41, 33, 38]
+      // 嘴
+    ],
+    anchors: {
+      browL: [25, 20],
+      browR: [0, 0],
+      eyeL: [29, 26],
+      eyeR: [42, 25],
+      mouth: [34, 37]
+    },
+    eyes: deriveEyes({ lw: 3, lh: 5, rw: 2, rh: 5 }),
+    // 眉毛直接用原图那两条，不再 deriveBrows——搬家的比例不是整数，
+    // 乘完取整会让两条眉毛差一格，而那一格肉眼一秒看得出来
+    brows: { L: ["######", "######", "####.."], R: [] },
+    mouths: {
+      ...deriveMouths(3),
+      // 原图那张嘴，从矩阵里读出来的
+      smile: [".##", "###", "###", ".##"]
+    }
+  };
+
+  // src/renderer/src/lib/ottoFace/characters/bob.ts
+  var BOB = {
+    id: "bob",
+    name: "\u9F50\u5218\u6D77",
+    w: 55,
+    h: 48,
+    ink: "#",
+    skin: "o",
+    palette: { "#": "#0A0A0B", "o": "#FAFAFA" },
+    base: [
+      "...................###################.................",
+      "...................###################.................",
+      "...................###################.................",
+      ".............###############################...........",
+      ".............###############################...........",
+      ".............###############################...........",
+      "..........#####################################........",
+      "..........#####################################........",
+      "........#########################################......",
+      "........#########################################......",
+      "........##########################################.....",
+      ".....##############################################....",
+      ".....###############################################...",
+      ".....###############################################...",
+      ".....###############################################...",
+      ".....###############################################...",
+      ".....###############################################...",
+      ".....###############################################...",
+      ".....##########################o####################...",
+      ".....##########################o###########oo#######...",
+      ".....######################################oo#######...",
+      "...##################################oo#############...",
+      "...#######################ooo######oooooooo####o####...",
+      "...#####################oooooooooooooooooooooooo####...",
+      "...#####################oooooooooooooooooooooooo####...",
+      "...###################ooooooooo###ooooooooo###oo####...",
+      "...###################ooooooooo###ooooooooo###oo####...",
+      "...##################oooooooooo###ooooooooo###oo####...",
+      "#####################oooooooooo###ooooooooo###oo####...",
+      "#####################oooooooooo###ooooooooo###oo####...",
+      "#####################oooooooooo###ooooooooo###oo####...",
+      "#####################ooooooooooooooooooooooooooo#######",
+      "#####################ooooooooooooooooooooooooooo#######",
+      "#####################ooooooooooooooooooooooooooo#######",
+      "#####################ooooooooooooooooooooooooooo#######",
+      "#####################ooooooooooooooooooooooooooo#######",
+      "#####################ooooooooooooooooooooooooooo#######",
+      "#####################ooooooooooooo#oooooo#oooooo#######",
+      "#####################ooooooooooooo########oooooo#######",
+      "#####################oooooooooooooo######oooooo########",
+      "#####################oooooooooooooooooooooooooo########",
+      "...###################oooooooooooooooooooooooo#########",
+      "...####################ooooooooooooooooooooo########...",
+      ".....##################ooooooooooooooooooooo########...",
+      ".....###############################################...",
+      "..............##############################...........",
+      "..............##############################...........",
+      "..............###......................................"
+    ],
+    erase: [
+      [24, 32, 30, 35],
+      // 左眼
+      [24, 32, 42, 46],
+      // 右眼
+      [36, 41, 33, 42]
+      // 嘴
+    ],
+    anchors: {
+      browL: [0, 0],
+      browR: [0, 0],
+      eyeL: [31, 25],
+      eyeR: [43, 25],
+      mouth: [34, 37]
+    },
+    eyes: deriveEyes({ lw: 3, lh: 6, rw: 3, rh: 6 }),
+    // 眉毛直接用原图那两条，不再 deriveBrows——搬家的比例不是整数，
+    // 乘完取整会让两条眉毛差一格，而那一格肉眼一秒看得出来
+    brows: { L: [], R: [] },
+    mouths: {
+      ...deriveMouths(8),
+      // 原图那张嘴，从矩阵里读出来的
+      smile: ["#......#", "########", ".######."]
+    }
+  };
+
+  // src/renderer/src/lib/ottoFace/characters/sage.ts
+  var SAGE = {
+    id: "sage",
+    name: "\u5927\u80E1\u5B50",
+    w: 55,
+    h: 48,
+    ink: "#",
+    skin: "o",
+    palette: { "#": "#0A0A0B", "d": "#3C3F44", "g": "#797E86", "o": "#FAFAFA" },
+    base: [
+      ".......................................................",
+      ".....................#############.....................",
+      ".....................#############.....................",
+      "..................###ooooooooooooo###..................",
+      "..................###ooooooooooooo###..................",
+      "...............###ooooooooooooooooooo###...............",
+      "...............###ooooooooooooooooooo###...............",
+      ".............##ooooooooooooooooooooooooo##.............",
+      "............###ooooooooooooooooooooooooo###............",
+      "...........###ooooooooooooooooooooooooooo##............",
+      "...........##oooooooooooooooooooooooooooo##............",
+      "..........###ooooooooooooooooooooooooooooo###..........",
+      "..........##ooooooooooooooooooooooooooooooo##..........",
+      "..........##ooooooooooooooooooooooooooooooo##..........",
+      "..........##ooooooooooooooooooooooooooooooo##..........",
+      "..........##ooooooooooooooooooooooooooooooo##..........",
+      "..........##ooooooooooooooooooooooooooooooo##..........",
+      "..........##ooooooooooooooooooooooooooooooo##..........",
+      "..........##ooooooooooooo###ooooooooooooo####..........",
+      "..........##ooooooooooooo#######oooooo#######..........",
+      "..........##oooooooooooooooo####oooooo###oo##..........",
+      "..........#####ooooooooooooo###ooooooo###oo##..........",
+      ".......d#######ggooooooooooo###ooooooo###oo##..........",
+      ".......d##ooooogggoooooooooo###ooooooo###oo##..........",
+      ".......d##oooooggggooooooooo###ooooooo###oo##..........",
+      ".......d##oooooggggooooooooo###ooooooo###oo##..........",
+      ".......d##oooooggggoooooooooooooooooooooooo##..........",
+      ".......d##ooooogggggooooooooooooooooooooooo##..........",
+      ".......d####oooggggggoooooooooggggggggggooo####d.......",
+      ".......d####oooggggggooooooogggggggggggggoo####d.......",
+      "..........#######ggggggoooooggggggggggggggggg##d.......",
+      "..........#######ggggggooogggggg######ggggggg##d.......",
+      "..............###gggggggoogggg#########gggggg##d.......",
+      "..............###ggggggggggggg##ooooooogggggg##d.......",
+      "..............###gggggggggggggooooooooogggggg##d.......",
+      "...............###ggggggggggggoooggggoogggggg##d.......",
+      "...............###ggggggggggggggggggggggggggg##d.......",
+      "...............####gggggggggggggggggggggggg####d.......",
+      "...............######gggggggggggggggggggggg####d.......",
+      "...................####gggggggggggggggggggg##..........",
+      "...................####gggggggggggggggggggg##..........",
+      "......................####ggggggggggggggg####..........",
+      "......................####ggggggggggggggg###...........",
+      ".........................####gggggggggg###.............",
+      ".........................#################.............",
+      ".............................##########................",
+      ".............................dddddddddd................",
+      "......................................................."
+    ],
+    erase: [
+      [17, 21, 23, 32],
+      // 左眉
+      [17, 21, 37, 43],
+      // 右眉——到 37 为止，38 起是脸的轮廓
+      [19, 26, 27, 32],
+      // 左眼
+      [19, 26, 37, 42],
+      // 右眼
+      [29, 37, 29, 40, "g"]
+      // 嘴：长在胡子上，填胡子色
+    ],
+    anchors: {
+      browL: [25, 18],
+      browR: [38, 18],
+      eyeL: [28, 20],
+      eyeR: [38, 20],
+      mouth: [30, 30]
+    },
+    eyes: deriveEyes({ lw: 4, lh: 6, rw: 3, rh: 6 }),
+    // 眉毛直接用原图那两条，不再 deriveBrows——搬家的比例不是整数，
+    // 乘完取整会让两条眉毛差一格，而那一格肉眼一秒看得出来
+    brows: { L: ["###....", "#######", "...####"], R: ["...##", "#####", "###.."] },
+    mouths: {
+      ...deriveMouths(10),
+      // 原图那张嘴，从矩阵里读出来的
+      smile: ["##########", "##########", "##########", "##.......#", ".........#", "...####..#", "##########"]
+    }
+  };
+
+  // src/renderer/src/lib/ottoFace/characters/stoic.ts
+  var STOIC = {
+    id: "stoic",
+    name: "\u5E73\u5934",
+    w: 55,
+    h: 48,
+    ink: "#",
+    skin: "o",
+    palette: { "#": "#0A0A0B", "d": "#3C3F44", "g": "#9AA0A8", "o": "#FAFAFA" },
+    base: [
+      ".......................................................",
+      "....................################...................",
+      "....................################...................",
+      "....................################...................",
+      "...............##########################..............",
+      "...............##########################..............",
+      "...............###########################.............",
+      ".............###############################...........",
+      ".............###############################...........",
+      "..........####################################.........",
+      "..........####################################.........",
+      "..........####################################.........",
+      ".......###ddd#####oooooooo#############ooooooo###......",
+      ".......###dddddd##oooooooo#############ooooooo###......",
+      ".......###ddddddd#oooooooooooooooooooooooooooo###g.....",
+      ".......###ddddddd#oooooooooooooooooooooooooooo###g.....",
+      ".......###dddddd##oooooooooooooooooooooooooooo###g.....",
+      ".......###dddddd##oooooooooooooooooooooooooooo###d.....",
+      ".......###dddddd##oooooooooooooooooooooooooooo###d.....",
+      ".......###ddddddoooooo######oooooooooooooooooo###d.....",
+      ".......###ddddddoooooo######oooooooooooooooooo###d.....",
+      ".......###ddddddoooooo#######ooooooooooooooooo###d.....",
+      ".......###ddddddooooooooooo###oooooooo######oo###d.....",
+      ".......######dddooooooooooo###oooooooo######oo###d.....",
+      ".......######dddoooooooo####oooooooooo####oooo####.....",
+      ".......######dddoooooooo####oooooooooo####oooo####.....",
+      "....####ooooodddoooooooo####oooooooooo####oooo####.....",
+      "....####ooooodddoooooooo####oooooooooo####oooo####.....",
+      "....####ooooodddoooooooo####oooooooooo####oooo####.....",
+      "....####oooooddooooooooo####oooooooooo####oooo####.....",
+      "....####ooooooooooooooooo###oooooooooo####oooo####.....",
+      "....####oooooooooooooooooooooooooooooooooooooo####.....",
+      "....####oooooooooooooooooooooooooooooooooooooo####.....",
+      "....####oooooooooooooooooooooooooooooooooooooo####.....",
+      "....####oooooooooooooooooooooooooooooooooooooo####.....",
+      "........###ooooooooooooooooooooooooooooooooooo####.....",
+      "........########oooooooooooooooooooooooooooooo####.....",
+      "........########ooooooooooo###########oooooooo####.....",
+      ".............###ooooooooooo###########ooooo###.........",
+      ".............###ooooooooooooooooooooooooooo###.........",
+      ".............#####ooooooooooooooooooooooo#####.........",
+      "...............###oooooooooooooooooooooo####...........",
+      "...............###oooooooooooooooooooooo####...........",
+      "..................#######################..............",
+      "..................#######################..............",
+      "..................#######################..............",
+      ".......................................................",
+      "......................................................."
+    ],
+    erase: [
+      [18, 23, 21, 31],
+      // 左眉
+      [20, 25, 37, 45],
+      // 右眉
+      [23, 31, 23, 30],
+      // 左眼
+      [23, 31, 37, 44],
+      // 右眼
+      [36, 40, 26, 38]
+      // 嘴
+    ],
+    anchors: {
+      browL: [22, 19],
+      browR: [38, 22],
+      eyeL: [24, 24],
+      eyeR: [38, 24],
+      mouth: [27, 37]
+    },
+    eyes: deriveEyes({ lw: 4, lh: 7, rw: 4, rh: 7 }),
+    // 眉毛直接用原图那两条，不再 deriveBrows——搬家的比例不是整数，
+    // 乘完取整会让两条眉毛差一格，而那一格肉眼一秒看得出来
+    brows: { L: ["######..", "######..", "#######.", ".....###"], R: ["######", "######", "####.."] },
+    mouths: {
+      ...deriveMouths(11),
+      // 原图那张嘴，从矩阵里读出来的
+      smile: ["###########", "###########"]
+    }
+  };
+
+  // src/renderer/src/lib/ottoFace/characters/cap.ts
+  var CAP = {
+    id: "cap",
+    name: "\u68D2\u7403\u5E3D",
+    w: 55,
+    h: 48,
+    ink: "#",
+    skin: "o",
+    palette: { "#": "#0A0A0B", "o": "#FAFAFA" },
+    base: [
+      ".......................................................",
+      "........................###############................",
+      "........................###############................",
+      ".....................######################............",
+      ".....................######################............",
+      ".................#############################.........",
+      ".................#############################.........",
+      "..............####################################.....",
+      "..............####################################.....",
+      "..............####################################.....",
+      "..............####################################.....",
+      "............#########################################..",
+      "............#########################################..",
+      "............######################oooooooooo#########..",
+      "............######################oooooooooo#########..",
+      "............#########################################..",
+      "............#########################################..",
+      "............#########################################..",
+      "............###################oooooooooooooooo######..",
+      "............###################oooooooooooooooo######..",
+      "............############oooooooooooooooooooooooooo###..",
+      "............############oooooooooooooooooooo####oo###..",
+      "............###########ooooo#######ooooooooo####oo###..",
+      "...........############ooooo#######ooooooooo####oo###..",
+      ".........##############ooooooooooooooooooooooooooo###..",
+      ".......###############oooooooooooooooooooooooooooo###..",
+      "....#################ooooooooo####oooooooooo###ooo###..",
+      ".#############oooo###ooooooooo####oooooooooo###ooo###..",
+      ".#############oooo###ooooooooo####oooooooooo###ooo###..",
+      ".#############oooo###ooooooooo####oooooooooo###ooo###..",
+      ".#############oooo###ooooooooo####oooooooooo###ooo###..",
+      ".#############ooooo##ooooooooo####oooooooooo###ooo###..",
+      "....##########oooooooooooooooooooooooooooooooooooo###..",
+      "............##oooooooooooooooooooooooooooooooooooo###..",
+      "............##oooooooooooooooooooooooooooooooooooo###..",
+      "..............##oooooooooooooooooooooooooooooooooo###..",
+      "..............#######ooooooooooo##oooooooooooooooo###..",
+      "..............#######oooooooooo###oooooooooooooooo###..",
+      "..............#######oooooooooo###########oooooooo###..",
+      "..................###ooooooooooooo########oooooooo###..",
+      "..................###ooooooooooooo########ooooo###.....",
+      "...................####oooooooooooooooooooooooo###.....",
+      "....................###ooooooooooooooooooooo####.......",
+      "....................###ooooooooooooooooooooo####.......",
+      "......................#######################..........",
+      "......................######################...........",
+      "......................######################...........",
+      "......................................................."
+    ],
+    erase: [
+      [20, 24, 27, 35],
+      // 左眉
+      [20, 24, 42, 48],
+      // 右眉
+      [25, 32, 29, 34],
+      // 左眼
+      [25, 32, 42, 47],
+      // 右眼
+      [35, 41, 30, 42]
+      // 嘴
+    ],
+    anchors: {
+      browL: [28, 22],
+      browR: [44, 21],
+      eyeL: [30, 26],
+      eyeR: [44, 26],
+      mouth: [31, 36]
+    },
+    eyes: deriveEyes({ lw: 4, lh: 6, rw: 3, rh: 6 }),
+    // 眉毛直接用原图那两条，不再 deriveBrows——搬家的比例不是整数，
+    // 乘完取整会让两条眉毛差一格，而那一格肉眼一秒看得出来
+    brows: { L: ["#######", "#######"], R: ["####", "####", "####"] },
+    mouths: {
+      ...deriveMouths(11),
+      // 原图那张嘴，从矩阵里读出来的
+      smile: [".##........", "###........", "###########", "...########", "...########"]
+    }
+  };
+
+  // src/renderer/src/lib/ottoFace/characters/mane.ts
+  var MANE = {
+    id: "mane",
+    name: "\u957F\u5377\u53D1",
+    w: 55,
+    h: 48,
+    ink: "#",
+    skin: "o",
+    palette: { "#": "#0A0A0B", "d": "#3C3F44", "g": "#9AA0A8", "o": "#FAFAFA" },
+    base: [
+      ".......................................................",
+      ".................####################..................",
+      ".................####################..................",
+      ".................####################..................",
+      "............##############################.............",
+      "............##############################.............",
+      "............##############################.............",
+      "........######################################.........",
+      "........######################################.........",
+      "........######################################.........",
+      "........#########################################......",
+      "........#########################################......",
+      "......###################ooooooooooooooo#########......",
+      "......###################ooooooooooooooo###########....",
+      "......#################oooooooooooooooooo##########....",
+      "......#################ooooooooooooooooooo#########....",
+      "......################ooooooooooooooooooooo########....",
+      "....##################ooooooooooooooooooooo########....",
+      "....##################oo#####oooooooooo############....",
+      "....#########################oooooooooo############....",
+      "....#########################oooooooooo##############..",
+      "....####################ooooooooooooooooooooo########..",
+      "...###################ooooooooooooooooooooooo########..",
+      ".g####################ooooooooooooooooooooooo########..",
+      ".g###################oooo####oooooooooo###ooo####..##..",
+      ".g###################oooo####oooooooooo###ooo####..##..",
+      ".d##################ooo##ooo##ooooooo##oo##oo####..##..",
+      ".d##################ooo##ooo##ooooooo##oo##oo####..##..",
+      ".d##############o###ooooooooooooooooooooooooo#####.....",
+      ".d##############o###ooooooooooooooooooooooooo#####.....",
+      "....############o###ooooooooooooooooooooooooo#####.....",
+      "....############o###ooooooooooooooooooooooooo#####.....",
+      ".d##############o###oooo#################oooo######....",
+      ".d##############o###oooo#################oooo######....",
+      ".d##################oooo##ooooooooooo####oooo######....",
+      ".###################oooo##ooooooooooo####oooo######....",
+      ".###################oooo#################ooo#######....",
+      ".###################oooo################ooo########....",
+      ".###################oooooo############ooooo########....",
+      ".####################ooooo############ooo##########....",
+      ".#####################oooooooooooooooooo##########.....",
+      ".#####.###############ooooooooooooooooo######.####.....",
+      ".#####.######################################.####.....",
+      ".#####.######################################..###.....",
+      ".......###########...########################..###.....",
+      "........#########.......................#####..........",
+      "...........####.........................###............",
+      "......................................................."
+    ],
+    erase: [
+      [23, 28, 22, 30],
+      // 左眼
+      [23, 28, 36, 43],
+      // 右眼
+      [31, 38, 23, 41]
+      // 嘴
+    ],
+    anchors: {
+      browL: [0, 0],
+      browR: [0, 0],
+      eyeL: [25, 24],
+      eyeR: [38, 24],
+      mouth: [24, 32]
+    },
+    // 原图两只眼睛是笑成的弧线，外框七格宽；照搬成睁眼就是一副墨镜，所以收窄
+    eyes: deriveEyes({ lw: 4, lh: 4, rw: 4, rh: 4 }),
+    // 眉毛直接用原图那两条，不再 deriveBrows——搬家的比例不是整数，
+    // 乘完取整会让两条眉毛差一格，而那一格肉眼一秒看得出来
+    brows: { L: [], R: [] },
+    mouths: {
+      ...deriveMouths(17),
+      // 原图那张嘴，从矩阵里读出来的
+      smile: ["#################", "#################", "##...........####", "##...........####", "#################", "################."]
+    }
+  };
+
+  // src/renderer/src/lib/ottoFace/characters/sweep.ts
+  var SWEEP = {
+    id: "sweep",
+    name: "\u504F\u5206",
+    w: 55,
+    h: 48,
+    ink: "#",
+    skin: "o",
+    palette: { "#": "#0A0A0B", "d": "#3C3F44", "o": "#FAFAFA" },
+    base: [
+      ".......................................................",
+      "................######################.................",
+      "................######################.................",
+      "................######################.................",
+      "................######################.................",
+      "............##############################.............",
+      "............##############################.............",
+      ".........#####################################.........",
+      ".........#####################################.........",
+      ".........#########d###########################.........",
+      ".........######d##############################.........",
+      "......#########d##############################.........",
+      "......########################################.........",
+      "......#################ooooooooooooooooooo#####........",
+      "......#################ooooooooooooooooooo#########....",
+      "......#################ooooooooooooooooooo#########....",
+      "......###############ooooooooooooooooooooo#########....",
+      "......###############ooooooooooooooooooooo#########....",
+      "......###############ooooooooooooooooooooooo#######....",
+      "......###############ooooooooooooooooooooooo#######....",
+      "......############ooooo######oooooooooo###oo#######....",
+      "......############ooooo######oooooooooo###oo#######....",
+      "......############oooooooooooooooooooooooooo#######....",
+      "......############oooooooooooooooooooooooooo#######....",
+      "......############oooooooo###oooooooooo###oo#######....",
+      "......############oooooooo###oooooooooo###oo###........",
+      ".....######oooo###oooooooo###oooooooooo###oo###........",
+      "...########oooo###oooooooo###oooooooooo###oo###........",
+      "...########oooo###oooooooo###oooooooooo###oo###........",
+      "...########oooo###oooooooo###oooooooooo###oo###........",
+      "...########oooo###oooooooo###oooooooooo###oo###........",
+      "...########ooooooooooooooooooooooooooooooooo###........",
+      "...########ooooooooooooooooooooooooooooooooo###........",
+      "...########ooooooooooooooooooooooooooooooooo###........",
+      "...########ooooooooooooooooooooooooooooooooo###........",
+      "...##########ooooooooooooooooooooooooooooooo###........",
+      "......############ooooooooo##ooooooooooooooo###........",
+      "......############ooooooooo###oooooo##oooooo###........",
+      "......############ooooooooooo#########oooooo###........",
+      "......############ooooooooooo########ooooo###..........",
+      ".........#########ooooooooooo########ooooo##...........",
+      ".........###########ooooooooooooooooooo#####...........",
+      "................####ooooooooooooooooooo###.............",
+      "................####ooooooooooooooooooo###.............",
+      "..................#####################................",
+      "..................#####################................",
+      "..................#####################................",
+      "......................................................."
+    ],
+    erase: [
+      [19, 22, 22, 29],
+      // 左眉
+      [19, 22, 38, 42],
+      // 右眉
+      [23, 31, 25, 29],
+      // 左眼
+      [23, 31, 38, 42],
+      // 右眼
+      [35, 41, 26, 38]
+      // 嘴
+    ],
+    anchors: {
+      browL: [23, 20],
+      browR: [39, 20],
+      eyeL: [26, 24],
+      eyeR: [39, 24],
+      mouth: [27, 36]
+    },
+    eyes: deriveEyes({ lw: 3, lh: 7, rw: 3, rh: 7 }),
+    // 眉毛直接用原图那两条，不再 deriveBrows——搬家的比例不是整数，
+    // 乘完取整会让两条眉毛差一格，而那一格肉眼一秒看得出来
+    brows: { L: ["######", "######"], R: ["###", "###"] },
+    mouths: {
+      ...deriveMouths(11),
+      // 原图那张嘴，从矩阵里读出来的
+      smile: ["##.........", "###......##", "..#########", "..########.", "..########."]
+    }
+  };
+
+  // src/renderer/src/lib/ottoFace/characters/grin.ts
+  var GRIN = {
+    id: "grin",
+    name: "\u4E2D\u5206\u957F\u53D1",
+    w: 55,
+    h: 48,
+    ink: "#",
+    skin: "o",
+    palette: { "#": "#0A0A0B", "d": "#3C3F44", "m": "#B6BBC2", "o": "#FAFAFA" },
+    base: [
+      "...............##########..############................",
+      "...............##########..############................",
+      "...............########################................",
+      "...............########################................",
+      "...........###############################.............",
+      "...........####d#d############dd######d###.............",
+      "........######################dddddddddd#####..........",
+      "........#####################dddddddddddd####..........",
+      "........##ddd################d#####dddddddd##..........",
+      "........##dddd#####################dddddddd##..........",
+      ".......###dddd#######################dddddddd##........",
+      ".......###ddd########################dddddddd##........",
+      ".......###ddd#######ooooooooooooooo###ddddddd##........",
+      ".......#dddddd######ooooooooooooooo###ddddddd##........",
+      ".....###dddddddd####ooooooooooooooo###ddddddd#####.....",
+      ".....###dddddddd####oooooooooooooooo###dddddd#####.....",
+      ".....###dddddddd##oooooooooooooooooooo##ddddd#####.....",
+      ".....###dddddd####oooooooooooooooooooo##ddddd#####.....",
+      ".....####ddddd####oooooooooooooooooooo##ddddd#####.....",
+      ".....#####dddd####o######oooooooooo#####dddd######.....",
+      ".....#####dddd##ooo######oooooooooo######ddd######.....",
+      ".....#####ddd###ooo######oooooooooo######ddd######.....",
+      ".....#####ddd###oooooooooooooooooooooo###dddd#####.....",
+      ".....#####ddd###oooooooooooooooooooooo####ddd#####.....",
+      ".....#####dd####ooooo####oooooooooo########dd#####.....",
+      ".....#####dd####ooooo####oooooooooo###o####d######.....",
+      ".....#####dd####ooooo####oooooooooo###ooo############..",
+      "..##############ooooo####oooooooooo###ooo############..",
+      "..#############oooooo####oooooooooo###ooooo##########..",
+      "..#############oooooo####oooooooooo###ooooo##########..",
+      "..#############oooooooooooooooooooooooooooo##########..",
+      "..############ooooooooooooooooooooooooooooo##########..",
+      "..##########ooooooooooooooooooooooooooooooo##########..",
+      "..##########ooooooooooooooooooooooooooooooo##########..",
+      "..##########ooooooooo###ooooooooo##oooooooo##########..",
+      "..###########oooooooo###ooooooooo###ooooooo##########..",
+      "...##########dooooooo###############ooooooo##########..",
+      "...###########ooooooo####m########ooooooooo##########..",
+      "...###########ooooooo###mmmmm#####ooooooo#########.....",
+      "...###########oooooooooommmmm#####ooooooo#########.....",
+      "......#########ooooooooo#######ooooooooo##########.....",
+      "......##########oooooooo#######ooooooo#########........",
+      "......##########oooooooooooooooooooooo#########........",
+      "......#########################################........",
+      "...........###############################.............",
+      "...........###############################.............",
+      "...........###############################.............",
+      "......................................................."
+    ],
+    erase: [
+      [18, 22, 18, 25],
+      // 左眉
+      [19, 22, 34, 41],
+      // 右眉——上下各只抹到眉毛本身，再往外是头发内沿
+      [23, 31, 20, 25],
+      // 左眼
+      [23, 31, 34, 38],
+      // 右眼
+      [33, 42, 20, 36]
+      // 嘴
+    ],
+    anchors: {
+      browL: [19, 19],
+      browR: [35, 20],
+      eyeL: [21, 24],
+      eyeR: [35, 24],
+      mouth: [21, 34]
+    },
+    eyes: deriveEyes({ lw: 4, lh: 6, rw: 3, rh: 6 }),
+    // 眉毛直接用原图那两条，不再 deriveBrows——搬家的比例不是整数，
+    // 乘完取整会让两条眉毛差一格，而那一格肉眼一秒看得出来
+    brows: { L: ["######", "######", "######"], R: ["######", "######"] },
+    mouths: {
+      ...deriveMouths(15),
+      // 原图那张嘴，从矩阵里读出来的
+      smile: ["###.........##.", "###.........###", "###############", "#############..", "#############..", "...##########..", "...#######.....", "...#######....."]
+    }
+  };
+
+  // src/renderer/src/lib/ottoFace/characters/index.ts
+  var FACE_PACKS = [
+    OTTO,
+    BERET,
+    SPECS,
+    SCHOLAR,
+    BOB,
+    SAGE,
+    STOIC,
+    CAP,
+    MANE,
+    SWEEP,
+    GRIN
+  ];
+  var FACE_CANVAS = { w: FACE_PACKS[0].w, h: FACE_PACKS[0].h };
+
+  // src/renderer/src/lib/ottoFace/sprites.ts
+  var FACE_PAD = 2;
+  var GRID_W = FACE_CANVAS.w + FACE_PAD * 2;
+  var GRID_H = FACE_CANVAS.h + FACE_PAD * 2;
+  var DISC_CELLS = GRID_W * 1.16;
+  var FACE_ORIGIN_X = GRID_W / 2;
+  var FACE_ORIGIN_Y = GRID_H / 2;
+  var DISC_COLOR = "#f2f2f3";
+  var SLOT_TO_ID = [
+    "stoic",
+    //  0 ← 旧 01.png 短发平脸
+    "sweep",
+    //  1 ← 旧 02.png 灰蘑菇头（没有对应，暂借）
+    "cap",
+    //  2 ← 旧 03.png 刺猬头（没有对应，暂借）
+    "sweep",
+    //  3 ← 旧 04.png 短发微笑
+    "beret",
+    //  4 ← 旧 05.png 贝雷帽
+    "specs",
+    //  5 ← 旧 06.png 方框眼镜
+    "scholar",
+    //  6 ← 旧 07.png 圆框眼镜（种子管理员固定这一格，ADMIN_AVATAR_SLOT）
+    "bob",
+    //  7 ← 旧 08.png 齐刘海
+    "sage",
+    //  8 ← 旧 09.png 大胡子
+    "grin",
+    //  9 ← 旧 10.png 中分长发
+    "mane",
+    // 10 ← 旧 11.png 马尾＋发带（没有对应，暂借）
+    "otto",
+    // 11 ← 旧 12.png 短发微笑
+    "mane"
+    // 12 ← 旧 13.png 长卷发
+  ];
+  var FACE_CHARACTERS = SLOT_TO_ID.map(
+    (id) => FACE_PACKS.find((c) => c.id === id) ?? FACE_PACKS[0]
+  );
+  function faceCharacterAt(slot) {
+    if (!Number.isInteger(slot) || slot < 0 || slot >= FACE_CHARACTERS.length) return FACE_CHARACTERS[0];
+    return FACE_CHARACTERS[slot];
+  }
+
+  // src/renderer/src/lib/ottoFace/states.ts
+  var BADGE_COLORS = {
+    work: "#0a84ff",
+    need: "#ff9f0a",
+    ok: "#30d158",
+    bad: "#ff453a",
+    voice: "#5ac8fa",
+    mute: "#8e8e93"
+  };
+  function spec(o) {
+    return {
+      zh: "",
+      eye: "open",
+      mouth: "smile",
+      look: "still",
+      bobMs: 0,
+      bobAmp: 0,
+      badge: null,
+      blinks: true,
+      ...o
+    };
+  }
+  var FACE_STATES = {
+    // 不画角标、不动、不眨眼。见文件头
+    plain: spec({ zh: "\u5F62\u8C61", blinks: false }),
+    idle: spec({ zh: "\u7A7A\u95F2", look: "pointer", bobMs: 2600, bobAmp: 1, badge: "mute" }),
+    // 唯一完全不动的那一档
+    queued: spec({ zh: "\u6392\u961F\u4E2D", mouth: "flat", badge: "mute", blinks: false }),
+    composing: spec({ zh: "\u601D\u8003\u4E2D", mouth: "small", look: "scan", browDy: -1, bobMs: 2100, bobAmp: 1, badge: "work" }),
+    searching: spec({ zh: "\u68C0\u7D22\u4E2D", mouth: "flat", look: "dart", bobMs: 1500, bobAmp: 1, badge: "work" }),
+    working: spec({
+      zh: "\u6267\u884C\u4E2D",
+      eye: "squint",
+      mouth: "flat",
+      look: "fixed",
+      fixedLook: [0, 1],
+      browDy: 1,
+      bobMs: 900,
+      bobAmp: 1,
+      badge: "work"
+    }),
+    solving: spec({ zh: "\u4F5C\u7B54\u4E2D", mouth: "talk", bobMs: 1200, bobAmp: 1, badge: "work" }),
+    weaving: spec({ zh: "\u538B\u7F29\u4E2D", eye: "squint", mouth: "purse", bobMs: 3e3, bobAmp: 1, badge: "work" }),
+    // 唯一做水平摆动的那一档
+    waiting: spec({
+      zh: "\u7B49\u4F60\u5904\u7406",
+      eye: "wide",
+      mouth: "o",
+      look: "pointer",
+      browDy: -2,
+      bobMs: 700,
+      bobAmp: 1,
+      sway: "urgent",
+      badge: "need"
+    }),
+    listening: spec({ zh: "\u5728\u542C", mouth: "small", look: "pointer", bobMs: 1800, bobAmp: 1, badge: "voice" }),
+    speaking: spec({ zh: "\u5728\u8BF4\u8BDD", eye: "happy", mouth: "talk", bobMs: 1e3, bobAmp: 1, badge: "voice" }),
+    done: spec({ zh: "\u5B8C\u6210", eye: "happy", mouth: "grin", bobMs: 2600, bobAmp: 1, badge: "ok" }),
+    failed: spec({ zh: "\u51FA\u9519", eye: "dizzy", mouth: "wavy", browAsym: 1, badge: "bad", blinks: false }),
+    limited: spec({ zh: "\u9650\u6D41\u7B49\u5F85", eye: "squint", mouth: "flat", bobMs: 3400, bobAmp: 1, badge: "need" }),
+    // 唯一降饱和的那一档
+    frozen: spec({ zh: "\u51BB\u7ED3", eye: "sleep", mouth: "flat", badge: "mute", desaturate: true, blinks: false }),
+    offline: spec({ zh: "\u79BB\u7EBF", eye: "sleep", mouth: "flat", badge: "mute", dim: true, blinks: false })
+  };
+  var FACE_STATE_LIST = Object.keys(FACE_STATES);
+  function faceAnimates(state) {
+    const s = FACE_STATES[state];
+    return s.blinks || s.bobMs > 0 && s.bobAmp > 0 || s.sway !== void 0 || s.mouth === "talk" || s.look === "scan" || s.look === "dart" || s.look === "pointer";
+  }
+
+  // src/renderer/src/lib/ottoFace/frame.ts
+  var SCAN = [
+    [-2, -1, 900],
+    [0, -2, 620],
+    [2, -1, 900],
+    [0, 0, 520]
+  ];
+  var SCAN_TOTAL = SCAN.reduce((a, s) => a + s[2], 0);
+  function scanAt(t) {
+    const u = (t % SCAN_TOTAL + SCAN_TOTAL) % SCAN_TOTAL;
+    let acc = 0;
+    for (const step of SCAN) {
+      acc += step[2];
+      if (u < acc) return [step[0], step[1]];
+    }
+    return [0, 0];
+  }
+  function blinkingAt(t) {
+    return t % 4200 < 110 || t % 6700 < 110;
+  }
+  var TALK_CYCLE = ["smile", "o", "flat", "o"];
+  function clampUnit(v) {
+    return v < -1 ? -1 : v > 1 ? 1 : v;
+  }
+  function dimHex(hex) {
+    const m = /^#([0-9a-f]{6})$/i.exec(hex);
+    if (m?.[1] === void 0) return hex;
+    const n = Number.parseInt(m[1], 16);
+    const mix = (c) => Math.round(c * 0.38 + 110 * 0.62);
+    const r = mix(n >> 16 & 255), g = mix(n >> 8 & 255), b = mix(n & 255);
+    return `#${(r << 16 | g << 8 | b).toString(16).padStart(6, "0")}`;
+  }
+  function desaturated(palette) {
+    const out = {};
+    for (const [tone, hex] of Object.entries(palette)) out[tone] = dimHex(hex);
+    return out;
+  }
+  function composeFrame(slot, state, t, opts) {
+    const ch = faceCharacterAt(slot);
+    const def = FACE_STATES[state];
+    const bob = def.bobMs > 0 ? Math.round(Math.sin(t / def.bobMs * Math.PI * 2) * def.bobAmp) : 0;
+    const sway = def.sway === "urgent" ? Math.floor(t / 260) % 2 === 0 ? -1 : 1 : def.sway === "lean" ? Math.sin(t / 3700) > 0 ? -1 : 0 : 0;
+    let lookX = 0;
+    let lookY = 0;
+    if (def.look === "pointer") {
+      lookX = Math.round(clampUnit(opts?.pointerX ?? 0) * 2);
+      lookY = Math.round(clampUnit(opts?.pointerY ?? 0));
+    } else if (def.look === "scan") {
+      const [sx, sy] = scanAt(t);
+      lookX = sx;
+      lookY = sy;
+    } else if (def.look === "dart") {
+      lookX = Math.floor(t / 190) % 2 === 0 ? -2 : 2;
+    } else if (def.look === "fixed") {
+      lookX = def.fixedLook?.[0] ?? 0;
+      lookY = def.fixedLook?.[1] ?? 0;
+    }
+    const grid = new Array(ch.w * ch.h).fill(".");
+    const put = (x, y, tone) => {
+      if (tone === "." || x < 0 || x >= ch.w || y < 0 || y >= ch.h) return;
+      grid[y * ch.w + x] = tone;
+    };
+    const stamp = (sprite, x0, y0, tone) => {
+      for (let j = 0; j < sprite.length; j++) {
+        const row = sprite[j] ?? "";
+        for (let i = 0; i < row.length; i++) if ((row[i] ?? ".") !== ".") put(x0 + i, y0 + j, tone);
+      }
+    };
+    for (let j = 0; j < ch.h; j++) {
+      const row = ch.base[j] ?? "";
+      for (let i = 0; i < ch.w; i++) put(i, j, row[i] ?? ".");
+    }
+    for (const [r0, r1, c0, c1, fill] of ch.erase) {
+      const tone = fill ?? ch.skin;
+      for (let y = r0; y <= r1; y++) for (let x = c0; x <= c1; x++) put(x, y, tone);
+    }
+    const browDy = (def.browDy ?? 0) + (lookY < 0 ? -1 : 0);
+    stamp(ch.brows.L, ch.anchors.browL[0], ch.anchors.browL[1] + browDy + (def.browAsym ?? 0), ch.ink);
+    stamp(ch.brows.R, ch.anchors.browR[0], ch.anchors.browR[1] + browDy, ch.ink);
+    const eyeShape = def.blinks && blinkingAt(t) ? "blink" : def.eye;
+    const eye = ch.eyes[eyeShape];
+    stamp(eye.L, ch.anchors.eyeL[0] + eye.lx + lookX, ch.anchors.eyeL[1] + eye.ly + lookY, ch.ink);
+    stamp(eye.R, ch.anchors.eyeR[0] + eye.rx + lookX, ch.anchors.eyeR[1] + eye.ry + lookY, ch.ink);
+    const mouthShape = def.mouth === "talk" ? TALK_CYCLE[Math.floor(t / 130) % TALK_CYCLE.length] ?? "smile" : def.mouth;
+    stamp(ch.mouths[mouthShape], ch.anchors.mouth[0] + (def.mouthDx ?? 0), ch.anchors.mouth[1], ch.ink);
+    if (ch.front !== void 0) {
+      for (let j = 0; j < ch.front.length; j++) {
+        const row = ch.front[j] ?? "";
+        for (let i = 0; i < row.length; i++) put(i, j, row[i] ?? ".");
+      }
+    }
+    const cells = [];
+    for (let y = 0; y < ch.h; y++) {
+      for (let x = 0; x < ch.w; x++) {
+        const tone = grid[y * ch.w + x];
+        if (tone !== ".") cells.push({ x: x + FACE_PAD + sway, y: y + FACE_PAD + bob, key: tone });
+      }
+    }
+    const palette = def.desaturate === true ? ch.dimPalette ?? desaturated(ch.palette) : ch.palette;
+    return {
+      cells,
+      palette,
+      badge: def.badge === null ? null : BADGE_COLORS[def.badge],
+      dim: def.dim === true
+    };
+  }
+
+  // src/renderer/src/lib/ottoFace/paint.ts
+  var DIM_ALPHA = 0.45;
+  var BADGE_R = 0.15;
+  var BADGE_INSET = 1.05;
+  var BADGE_RING = 1.42;
+  var scratch = null;
+  function renderGrid(frame) {
+    if (scratch === null) {
+      if (typeof document === "undefined") return null;
+      scratch = document.createElement("canvas");
+    }
+    scratch.width = GRID_W;
+    scratch.height = GRID_H;
+    const g = scratch.getContext("2d");
+    if (g === null) return null;
+    g.clearRect(0, 0, GRID_W, GRID_H);
+    for (const c of frame.cells) {
+      const hex = frame.palette[c.key];
+      if (hex === void 0) continue;
+      g.fillStyle = hex;
+      g.fillRect(c.x, c.y, 1, 1);
+    }
+    return scratch;
+  }
+  function paintFace(canvas, slot, state, t) {
+    const g = canvas.getContext("2d");
+    if (g === null) return;
+    const px = canvas.width;
+    if (px <= 0) return;
+    const frame = composeFrame(slot, state, t);
+    g.clearRect(0, 0, px, px);
+    const disc = () => {
+      g.beginPath();
+      g.arc(px / 2, px / 2, px / 2, 0, Math.PI * 2);
+      g.fill();
+    };
+    g.fillStyle = DISC_COLOR;
+    disc();
+    const sheet = renderGrid(frame);
+    if (sheet !== null) {
+      g.save();
+      g.beginPath();
+      g.arc(px / 2, px / 2, px / 2, 0, Math.PI * 2);
+      g.clip();
+      if (frame.dim) g.globalAlpha = DIM_ALPHA;
+      const cell2 = px / DISC_CELLS;
+      g.imageSmoothingEnabled = cell2 < 1;
+      g.drawImage(
+        sheet,
+        px / 2 - FACE_ORIGIN_X * cell2,
+        px / 2 - FACE_ORIGIN_Y * cell2,
+        GRID_W * cell2,
+        GRID_H * cell2
+      );
+      g.restore();
+    }
+    if (frame.badge !== null) {
+      const r = Math.max(2.5, px * BADGE_R);
+      const cx = px - r * BADGE_INSET;
+      g.fillStyle = DISC_COLOR;
+      g.beginPath();
+      g.arc(cx, cx, r * BADGE_RING, 0, Math.PI * 2);
+      g.fill();
+      g.fillStyle = frame.badge;
+      g.beginPath();
+      g.arc(cx, cx, r, 0, Math.PI * 2);
+      g.fill();
+    }
+  }
+  function sizeFaceCanvas(canvas, cssSize, dpr) {
+    const want = Math.max(1, Math.round(cssSize * Math.min(3, Math.max(1, dpr))));
+    if (canvas.width !== want || canvas.height !== want) {
+      canvas.width = want;
+      canvas.height = want;
+    }
+  }
+
+  // <stdin>
+  var STATES = Object.keys(FACE_STATES);
+  var SIZES = [24, 40, 80];
+  var live = [];
+  function face(slot, state, size) {
+    const cv = document.createElement("canvas");
+    cv.style.width = size + "px";
+    cv.style.height = size + "px";
+    cv.style.borderRadius = "50%";
+    cv.style.imageRendering = "pixelated";
+    sizeFaceCanvas(cv, size, window.devicePixelRatio || 1);
+    paintFace(cv, slot, state, 0);
+    if (faceAnimates(state)) live.push([cv, slot, state]);
+    return cv;
+  }
+  function cell(label, node, sub) {
+    const d = document.createElement("div");
+    d.className = "cell";
+    d.appendChild(node);
+    const t = document.createElement("span");
+    t.textContent = label;
+    d.appendChild(t);
+    if (sub) {
+      const s = document.createElement("i");
+      s.textContent = sub;
+      d.appendChild(s);
+    }
+    return d;
+  }
+  function section(title, hint) {
+    const h = document.createElement("h2");
+    h.textContent = title;
+    document.body.appendChild(h);
+    if (hint) {
+      const p = document.createElement("p");
+      p.textContent = hint;
+      document.body.appendChild(p);
+    }
+    const g = document.createElement("div");
+    g.className = "grid";
+    document.body.appendChild(g);
+    return g;
+  }
+  {
+    const g = section("13 \u4E2A\u5751\u4F4D", "\u987A\u5E8F\u5373\u5751\u4F4D\uFF1A01 \u2192 0 \u2026 13 \u2192 12\u3002\u90FD\u753B plain\uFF08\u4E0D\u753B\u89D2\u6807\u3001\u9759\u6B62\u4E00\u5E27\uFF09\u3002");
+    for (let slot = 0; slot < FACE_CHARACTERS.length; slot++) {
+      g.appendChild(cell("\u5751\u4F4D " + slot, face(slot, "plain", 120), "= \u65E7 " + String(slot + 1).padStart(2, "0") + ".png"));
+    }
+  }
+  {
+    const g = section("16 \u4E2A\u8868\u60C5", "\u4F1A\u52A8\u7684\u90A3\u51E0\u6863\u8FD9\u91CC\u771F\u7684\u5728\u52A8\u3002queued \u4E0E plain \u4E00\u52A8\u4E0D\u52A8\uFF0Cwaiting \u662F\u552F\u4E00\u6A2A\u7740\u6446\u7684\u3002");
+    for (const state of STATES) {
+      g.appendChild(cell(state, face(4, state, 80), faceAnimates(state) ? "\u4F1A\u52A8" : "\u9759\u6B62"));
+    }
+  }
+  {
+    const g = section("\u5C3A\u5BF8", "\u540D\u518C 24\u201334px / \u901A\u8BDD\u680F 24px / \u5168\u5C4F\u901A\u8BDD 80px\u300240px \u4E0B\u9760\u89D2\u6807\u8BA4\u72B6\u6001\u3002");
+    for (const size of SIZES) {
+      for (const state of ["plain", "working", "waiting", "speaking", "failed", "offline"]) {
+        g.appendChild(cell(state + " \xB7 " + size, face(6, state, size)));
+      }
+    }
+  }
+  {
+    const g = section("\u4E00\u5899\u8138\uFF08\u540D\u518C\uFF09", "\u540D\u518C\u4E00\u5F8B plain \u2014\u2014 \u8FD9\u4E00\u680F\u67E5\u4E0D\u5230\u8C01\u5728\u8DD1\uFF0C\u753B\u4E00\u679A\u6052\u7070\u7684\u300C\u7A7A\u95F2\u300D\u89D2\u6807\u662F\u6492\u8C0E\u7684\u52FE\uFF08#1282\uFF09\u3002");
+    g.classList.add("wall");
+    for (let i = 0; i < 26; i++) g.appendChild(face(i % FACE_CHARACTERS.length, "plain", 30));
+  }
+  (function loop() {
+    requestAnimationFrame(loop);
+    const t = performance.now();
+    for (const [cv, slot, state] of live) paintFace(cv, slot, state, t);
+  })();
+  document.getElementById("theme").onclick = () => document.body.classList.toggle("dark");
+})();
+</script>
