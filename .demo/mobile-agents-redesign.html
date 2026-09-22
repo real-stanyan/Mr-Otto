@@ -607,15 +607,17 @@ html[data-theme="light"] .tile:not(.speaking){border-color:rgba(0,0,0,.06)}  /* 
 .newbot .thead .ttl{font-size:17px;font-weight:650;letter-spacing:-.2px}
 .newbot .tfoot{padding:12px 16px 0;flex:none}
 .newbot .prev{display:grid;place-items:center;padding:10px 0 4px;min-height:120px}
-.newbot .faces{display:flex;flex-wrap:wrap;justify-content:center;gap:6px 2px;padding:4px 10px 10px}
-.newbot .fpick{width:74px;padding:5px 0 4px;border-radius:14px;border:0;background:transparent;
-  font:inherit;color:inherit;cursor:pointer;display:grid;justify-items:center;gap:2px;
+/* 一格只有一张脸，**底下不写名字**（维护者定的）：挑的是长相，而「贝雷帽」「方框眼镜」
+   只是在用字重复那张脸已经说完的事；十一个词排成三行，眼睛还得先读完字才回去看脸。
+   名字没丢，进了 aria-label —— 读屏的人拿不到那张脸。
+   字撤掉之后脸可以放大一档（27 → 54，正好是原生 1:1），一格里认得出谁是谁才是这一屏的活 */
+.newbot .faces{display:flex;flex-wrap:wrap;justify-content:center;gap:4px 2px;padding:4px 10px 12px}
+.newbot .fpick{padding:4px 5px;border-radius:14px;border:0;background:transparent;
+  font:inherit;color:inherit;cursor:pointer;display:grid;justify-items:center;
   transition:background 120ms var(--ease-out)}
-.newbot .fpick .lb{font-size:10.5px;color:var(--mutedFg);line-height:13px}
 /* 选中是**一圈边 + 一块底**，不是把它放大：一格放大会把整行的基线顶歪 */
 .newbot .fpick[data-on]{background:color-mix(in srgb,var(--brand) 13%,transparent);
   box-shadow:inset 0 0 0 1.5px var(--brand)}
-.newbot .fpick[data-on] .lb{color:var(--brand)}
 .opt{display:flex;align-items:center;gap:12px;padding:12px 20px;cursor:pointer;transition:background 120ms var(--ease-out)}
 .opt:active{background:rgba(128,128,128,.16)}
 .opt .ck{color:var(--brand);opacity:0;font-size:16px}
@@ -2880,8 +2882,8 @@ const SHEETS={
      <div class="sbody">
        <div class="prev">${faceOf(pick,'',108,'idle',true).replace('<canvas','<canvas data-el="prev"')}</div>
        <div class="faces">${FACE_CHARACTERS.map(c=>`
-         <button class="fpick" data-act="pickFace" data-ch="${c.id}"${c.id===pick?' data-on=""':''}>
-           ${faceOf(c.id,'',27)}<span class="lb">${c.name}</span>
+         <button class="fpick" data-act="pickFace" data-ch="${c.id}" aria-label="${c.name}"${c.id===pick?' data-on=""':''}>
+           ${faceOf(c.id,'',54)}
          </button>`).join('')}
        </div>
        <!-- 这里原来有一句「不用取名字…」的说明，维护者撤掉了：一屏上没有名字这一格，
