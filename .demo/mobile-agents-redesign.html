@@ -686,6 +686,20 @@ html[data-theme="light"] .ditherTop{background:linear-gradient(rgba(255,255,255,
   transition:opacity 180ms var(--ease-out),transform 240ms var(--ease-out)}
 .dlg.in{opacity:1;transform:translate(-50%,-50%) scale(1)}
 .dlg.out{opacity:0;transform:translate(-50%,-50%) scale(.98);transition-duration:140ms}
+/* 「＋」那张选一个的弹窗。宽一点（348）因为每行左边有一张 68px 的脸 —— 320 里正文只剩 200，
+   那句「它们互相接力」会折成三行。两个选项的左栏**一样大**（单只 54 高正好 67 宽，群那一摞
+   68×54）：这一问是「两件同类的东西选一件」，左栏不一样大会读成一主一次 */
+.dlg.wide{width:min(348px,calc(100% - 40px))}
+.pickdlg{padding:20px 0 16px}
+.pickdlg h2{margin:0 0 10px;text-align:center;font-size:19px;line-height:25px;font-weight:700;letter-spacing:-.3px}
+.pickdlg .pick{display:flex;align-items:center;gap:12px;width:100%;padding:10px 16px;border:0;
+  background:transparent;font:inherit;color:inherit;text-align:left;cursor:pointer;
+  transition:background 120ms var(--ease-out)}
+.pickdlg .pick:active{background:rgba(128,128,128,.16)}
+.pickdlg .pick .t{font-size:16px;font-weight:600;letter-spacing:-.1px}
+.pickdlg .pick .s{font-size:12.5px;line-height:17px;color:var(--mutedFg);margin-top:2px;text-wrap:pretty}
+.pickdlg .dfoot{padding:12px 16px 0}
+.pickdlg .dfoot .btn{width:100%;height:44px;font-size:16px}
 .gdlg{padding:24px 0 20px}
 .gdlg .gbody{padding:0 20px}
 .gdlg h2{margin:0 0 8px;text-align:center;font-size:22px;line-height:28px;font-weight:700;letter-spacing:-.35px}
@@ -1864,12 +1878,14 @@ SCREENS.confirmMail={label:'注册 · 等确认邮件',grp:'进门',render:()=>g
 
 /* 居中弹窗（同桌面 AlertDialog）。和抽屉共用一个坑位（openSheet）：同一时刻只有一层，
    左栏跳屏、再开一层都走同一个 closeSheet。锁住：点遮罩不关，出口只有里面的按钮 */
-function alertDialog(html){
+function alertDialog(html,{locked=true,wide=false}={}){
   closeSheet(true);
-  const el=document.createElement('div'); el.className='dlg';
+  const el=document.createElement('div'); el.className='dlg'+(wide?' wide':'');
   el.setAttribute('role','alertdialog'); el.setAttribute('aria-modal','true');
   el.innerHTML=html; sheetHost.appendChild(el); wireCommon(el);
-  openSheet={el,s:null,h:0,locked:true,modal:true}; scrim.classList.add('on');
+  /* locked 默认真（进门那几张是流程，出口只有里面的按钮）。**问「建什么」那张要给假**：
+     它不是一步流程，是一个岔路口，而「我按错了」必须点一下外面就能退出去 */
+  openSheet={el,s:null,h:0,locked,modal:true}; scrim.classList.add('on');
   el.offsetWidth; el.classList.add('in');            // 先让初值落地一次再翻终值，才有得过渡
   return el;
 }
@@ -2173,7 +2189,9 @@ SCREENS.bots={label:'名册',grp:'智能体',render:()=>`
    </button>
    <span style="flex:1"></span>
    <button class="rbtn" data-go="search" aria-label="搜索">${I('search',21,2.1)}</button>
-   <button class="rbtn" data-go="newBot" aria-label="新的智能体">${I('plus',23,2.2)}</button>
+   <!-- 这颗钮背后是**两件事**（建一只 / 建一个群），所以它不直接跳，先问一句。
+        一颗钮通向两个地方而不问，等于替人选了一个 —— 选错的那次要退回来重走 -->
+   <button class="rbtn" data-sheet="newThing" aria-label="新建">${I('plus',23,2.2)}</button>
  </div>
  <div class="body">
    <!-- 这一屏只剩「我有哪几只、它们在干什么」：没有大标题（三颗钮 + 一列脸自己说了），
@@ -2181,14 +2199,11 @@ SCREENS.bots={label:'名册',grp:'智能体',render:()=>`
         机器上真有事要你办时，左上角那颗钮右上角亮一枚点 —— 主页保留的只有这一位 -->
    <div style="height:112px;flex:none"></div>
    <div class="list">${DATA.bots.map(b=>botRow(b)).join('')}</div>
+   <!-- 这一段末尾原来还有一行「把几只放进同一条线」。＋ 那张弹窗里已经有同一件事了，
+        留两个入口只会让人以为它们是两样东西（同 ADR-0217 撤掉页脚那枚图标）；
+        那句解释没丢，搬进了弹窗里那一行的第二行 -->
    <div class="grouphdr">群聊</div>
-   <div class="list">
-     ${DATA.groups.map(g=>groupRow(g)).join('')}
-     <div class="row press" data-go="newGroup">
-       <span class="ico">${I('plus',15,2.2)}</span>
-       <span class="grow"><div class="ttl" style="color:var(--brand)">把几只放进同一条线</div></span>
-     </div>
-   </div>
+   <div class="list">${DATA.groups.map(g=>groupRow(g)).join('')}</div>
    <div class="groupftr">群里它们互相 @ 着把活接下去，你在旁边看着，不用一步一批。</div>
    <div style="height:34px"></div>
  </div>`};
@@ -2801,6 +2816,27 @@ SCREENS.faces={label:'11 个角色 + 15 个态',grp:'形象',render:()=>`
    抽屉 / 动作 / 索引栏
    ═══════════════════════════════════════════════════════════════════════ */
 const SHEETS={
+ /* 右上角那颗 ＋ 点下去先问一句：建一只，还是建一个群（维护者定的）。
+    形状选的是**居中弹窗**不是底部抽屉 —— 抽屉在这份 demo 里是「菜单 / 选项」
+    （加点东西、更多、挑型号），而这一下是一条新流程的**岔路口**，
+    与忘记密码那张同一族；同一个形状在两种场合下说两件事，人得先分清它是哪一种。
+    不锁：点一下外面就退出去（按错了不该被关在里面）。
+    两行左边画的都是**这一选会生出来的东西** —— 一张脸 / 一摞脸，
+    比两枚抽象图标更快答完「这两样有什么不同」。 */
+ newThing:()=>alertDialog(`<div class="pickdlg">
+   <h2>新建</h2>
+   <button class="pick" data-act="newPick" data-to="newBot">
+     ${faceOf('新','新',54,'idle',true)}
+     <span class="grow"><div class="t">一只智能体</div>
+       <div class="s">说一句它是干什么的就行。它有自己的一台电脑。</div></span>
+   </button>
+   <button class="pick" data-act="newPick" data-to="newGroup">
+     ${faceCluster(['dev','design','ops'])}
+     <span class="grow"><div class="t">一个群聊</div>
+       <div class="s">把几只放进同一条线，它们在里头互相接力。</div></span>
+   </button>
+   <div class="dfoot"><button class="btn sec" data-close>取消</button></div>
+ </div>`,{locked:false,wide:true}),
  /* 模型选单（ADR-0244 / 0248 / 0249）。「文字 / 图像」那枚开关摆在滚动列表**外面**：
     列表可滚，开关跟着滚走的话翻到底下就不知道自己在哪一格了。
     **每次打开都回到「文字」那一格** —— 触发器上写的是文字模型 */
@@ -2919,6 +2955,9 @@ const SHEETS={
 };
 
 const ACTS={
+ /* 选完先 closeSheet 再 go：`go()` 不碰弹窗（它只管屏），不收的话新屏会推到一张
+    还开着的弹窗底下。两件事分开是对的 —— 别的地方也有「开着弹窗跳屏」的用法 */
+ newPick:(b)=>{ closeSheet(); go(b.dataset.to); },
  /* 语音从「电话」那个位置升起，也回那儿去 —— 同一条路径（空间一致性） */
  /* 电话模式：替换输入框。挂断换回来、并在时间线上留下那张卡 */
  voice:(b)=>{ const v=b.dataset.v||'bot'; closeSheet();
