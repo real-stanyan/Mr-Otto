@@ -606,7 +606,10 @@ html[data-theme="light"] .tile:not(.speaking){border-color:rgba(0,0,0,.06)}  /* 
 .newbot .thead{display:flex;align-items:center;gap:12px;padding:2px 14px 4px;flex:none}
 .newbot .thead .ttl{font-size:17px;font-weight:650;letter-spacing:-.2px}
 .newbot .tfoot{padding:12px 16px 0;flex:none}
-.newbot .prev{display:grid;place-items:center;padding:10px 0 4px;min-height:120px}
+/* 中段吃掉定高多出来的那一截并**上下居中**：多出来的空当给那张大脸，
+   而不是把底下那三行脸拉散（那几行是一张表，行距一散就不像一组了） */
+.newbot .sbody{flex:1;min-height:0;display:flex;flex-direction:column;justify-content:center}
+.newbot .prev{display:grid;place-items:center;padding:4px 0 10px;min-height:120px}
 /* 一格只有一张脸，**底下不写名字**（维护者定的）：挑的是长相，而「贝雷帽」「方框眼镜」
    只是在用字重复那张脸已经说完的事；十一个词排成三行，眼睛还得先读完字才回去看脸。
    名字没丢，进了 aria-label —— 读屏的人拿不到那张脸。
@@ -2874,6 +2877,8 @@ const SHEETS={
     所以这一屏只剩一件事：挑一张脸。 */
  newAgent:()=>{
    const pick=FACE_CHARACTERS[0].id;
+   /* 定高 70%：这张表只有三样东西，按内容收的话它只占到六成、看着像没展开。
+      高度定死之后多出来的那段留给上面那张大脸（.sbody 居中撑开），不是把脸那几行拉散 */
    const el=sheet(`<div class="grab"></div>
      <div class="thead">
        <button class="rbtn" data-close aria-label="不建了">${I('x',20,2.3)}</button>
@@ -2889,7 +2894,7 @@ const SHEETS={
        <!-- 这里原来有一句「不用取名字…」的说明，维护者撤掉了：一屏上没有名字这一格，
             就没有「不用取名字」这件事要交代；解释一件屏幕上不存在的事，反而让人回头找它在哪 -->
      </div>
-     <div class="tfoot"><button class="btn" data-act="createBot">建它</button></div>`);
+     <div class="tfoot"><button class="btn" data-act="createBot">建它</button></div>`,{height:'70%'});
    el.classList.add('newbot');
    return el;
  },
