@@ -220,6 +220,7 @@ html[data-theme="light"] .screenwrap::after{opacity:.07;mix-blend-mode:multiply}
 .row .chev{opacity:.28;font-size:15px;flex:none}
 .row .ttl{font-size:16px;letter-spacing:-.1px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .row .sub{font-size:13px;color:var(--mutedFg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:1px}
+.row .sub .w{color:var(--warn);font-weight:600}
 .list.flat{background:transparent;border-radius:0;margin:0 0 6px;overflow:visible}
 .list.flat .row{padding:10px 20px;min-height:0}
 .list.flat .row+.row::before{left:20px;right:20px}
@@ -449,12 +450,19 @@ textarea.input{height:auto;min-height:92px;padding:12px 14px;resize:none;line-he
 .pillnav{position:absolute;top:0;left:0;right:0;z-index:80;padding:52px 12px 0;
   display:flex;align-items:center;gap:10px;pointer-events:none}
 .pillnav>*{pointer-events:auto}
-.rbtn{width:44px;height:44px;border-radius:50%;border:0;flex:none;cursor:pointer;
+.rbtn{width:44px;height:44px;border-radius:50%;border:0;flex:none;cursor:pointer;position:relative;
   display:grid;place-items:center;color:var(--fg);font-family:inherit;
   background:color-mix(in srgb,var(--fg) 10%,var(--glass));
   backdrop-filter:blur(24px) saturate(180%);-webkit-backdrop-filter:blur(24px) saturate(180%);
   transition:transform 140ms var(--ease-out),background 140ms var(--ease-out)}
 .rbtn:active{transform:scale(.93)}
+/* 账号那颗钮右上角那枚点：主页上唯一还在替「它们的电脑」说话的东西。
+   那张卡搬去账号页之后，「1 个等你」（有个应用要你去登一次）在主页上就没有出口了 ——
+   而「等你处理」按仓里的法理必须压过「在跑」（sessionOrb / FACE_STATES.waiting）。
+   **画点不画数**（同 ADR-0255）：这一格只回答「有没有事要你办」，几件、哪一件在里头。
+   色取 --warn 不取 --brand：这不是「有新消息」，是「有件事卡着」 */
+.rbtn .dot{position:absolute;top:1px;right:1px;width:9px;height:9px;border-radius:50%;
+  background:var(--warn);box-shadow:0 0 0 2.5px var(--bg)}
 .namepill{display:flex;align-items:center;gap:9px;height:46px;padding:0 18px 0 5px;border-radius:999px;
   margin:0 auto;max-width:62%;cursor:pointer;
   background:color-mix(in srgb,var(--fg) 10%,var(--glass));
@@ -936,14 +944,6 @@ html[data-skin="grok"] .hero,html[data-skin="grok"] .hero::after{border-radius:1
 
 /* 那台共用的电脑。它是这一屏唯一一张有底的卡 —— 名册是一列裸行，
    所以这张卡不用再喊，靠「只有它有底」就已经站出来了 */
-.mach{margin:0 16px 8px;padding:13px 14px;border-radius:var(--r-card);background:var(--card);
-  display:flex;align-items:center;gap:12px;cursor:pointer;position:relative;overflow:hidden}
-.mach .ic{width:38px;height:38px;border-radius:11px;background:var(--secondary);display:grid;place-items:center}
-.mach .t{font-size:15px;font-weight:600;letter-spacing:-.15px}
-.mach .s{font-size:12.5px;color:var(--mutedFg);margin-top:2px;
-  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.mach .s .w{color:var(--warn);font-weight:600}
-
 /* 一天一条的分隔（判自然日不判 24 小时，同 lib/dayLabel.ts） */
 .dayline{align-self:center;font-size:11.5px;color:var(--mutedFg);opacity:.7;padding:6px 0 2px;letter-spacing:.2px}
 
@@ -2125,14 +2125,20 @@ function groupRow(g){
   </div>`;
 }
 /** 那台共用的电脑。数字全是**查得到**的：几个应用登进去了、几个等你、多少文件 */
-function machineCard(){
-  const need=DATA.machine.apps.filter(a=>a.state==='needsAuth').length;
+const needsAuthCount=()=>DATA.machine.apps.filter(a=>a.state==='needsAuth').length;
+/** 「它们共用的一台电脑」——**住在账号页，不住在主页**（维护者定的）。
+    主页那一屏回答的是「我有哪几只、它们在干什么」；那台机器是账号底下的一件家当
+    （跟订阅、用量、设置同一族），和今天要跟谁说话无关。
+    形状跟着落点走：在账号页里它就该是清单里的一行，不是一张自成一体的卡 ——
+    一张卡混在一列行中间会读成「这一条比别的重要」，而它并不是。 */
+function machineRow(){
+  const need=needsAuthCount();
   const live=DATA.machine.apps.filter(a=>a.state==='live').length;
-  return `<div class="mach press" data-go="machine">
-    <span class="ic">${I('cloud',20,1.9)}</span>
+  return `<div class="row press" data-go="machine">
+    <span class="ico">${I('cloud',15,2)}</span>
     <span class="grow">
-      <div class="t">它们共用的一台电脑</div>
-      <div class="s">${live} 个应用已登录${need?` <span class="w">· ${need} 个等你</span>`:''} · ${DATA.machine.files} 个文件</div>
+      <div class="ttl">它们共用的一台电脑</div>
+      <div class="sub">${live} 个应用已登录${need?` <span class="w">· ${need} 个等你</span>`:''} · ${DATA.machine.files} 个文件</div>
     </span>${I('chev',15,2.4)}</div>`;
 }
 /** 一条聊天打开就停在最新那一条上。不加这一句的话，人每次点进来看到的是最早那几句 ——
@@ -2161,18 +2167,19 @@ const meLine=t=>`<div class="who mine">${faceOf('Stan','S')}<span>我 · ${t}</s
    Grok Bot 那侧也是这个形状：一列 bot，点进去是一条线 */
 SCREENS.bots={label:'名册',grp:'智能体',render:()=>`
  <div class="pillnav">
-   <button class="rbtn" data-go="account" aria-label="账号">
+   <button class="rbtn" data-go="account" aria-label="账号${needsAuthCount()?'（有 '+needsAuthCount()+' 件事等你）':''}">
      <span class="orb" style="width:44px;height:44px;font-size:15px;background:transparent;color:var(--fg)"><span>${DATA.me.ini}Y</span></span>
+     ${needsAuthCount()?'<span class="dot"></span>':''}
    </button>
    <span style="flex:1"></span>
    <button class="rbtn" data-go="search" aria-label="搜索">${I('search',21,2.1)}</button>
    <button class="rbtn" data-go="newBot" aria-label="新的智能体">${I('plus',23,2.2)}</button>
  </div>
  <div class="body">
-   <!-- 没有大标题：这一屏是什么，三颗钮 + 一列脸自己说了；
-        「共用一台电脑」下面那张卡里逐字写着，标题里再说一遍是同一件事说两遍 -->
+   <!-- 这一屏只剩「我有哪几只、它们在干什么」：没有大标题（三颗钮 + 一列脸自己说了），
+        也没有那台机器的卡（它搬去账号页了，见 machineRow）。
+        机器上真有事要你办时，左上角那颗钮右上角亮一枚点 —— 主页保留的只有这一位 -->
    <div style="height:112px;flex:none"></div>
-   ${machineCard()}
    <div class="list">${DATA.bots.map(b=>botRow(b)).join('')}</div>
    <div class="grouphdr">群聊</div>
    <div class="list">
@@ -2655,8 +2662,7 @@ SCREENS.account={label:'账号',grp:'账号',render:()=>`
        <span class="grow"><div class="ttl">订阅</div></span><span class="t-foot dim">Max</span>${I('chev',15,2.4)}</div>
      <div class="row press" data-go="usage"><span class="ico">${I('chart',15,2)}</span>
        <span class="grow"><div class="ttl">这周用了多少</div></span>${I('chev',15,2.4)}</div>
-     <div class="row press" data-go="machine"><span class="ico">${I('cloud',15,2)}</span>
-       <span class="grow"><div class="ttl">它们的电脑</div></span>${I('chev',15,2.4)}</div>
+     ${machineRow()}
    </div>
    <div class="list">
      <div class="row press" data-go="settings"><span class="ico">${I('gear',15,2)}</span>
