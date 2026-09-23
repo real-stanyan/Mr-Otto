@@ -1013,6 +1013,13 @@ html[data-skin="grok"] .hero,html[data-skin="grok"] .hero::after{border-radius:1
 
 /* 那台共用的电脑。它是这一屏唯一一张有底的卡 —— 名册是一列裸行，
    所以这张卡不用再喊，靠「只有它有底」就已经站出来了 */
+/* 设置页上那张可点的脸。**不给它圆底不给它边框**（同通话那一行的教训）：
+   能点这件事由底下那行小字说，不靠在脸外面套一个框 —— 套了就得裁像素画 */
+.faceEdit{display:grid;justify-items:center;gap:8px;width:100%;padding:6px 0 16px;
+  border:0;background:transparent;font:inherit;color:inherit;cursor:pointer}
+.faceEdit .lb{display:flex;align-items:center;gap:5px;font-size:13px;color:var(--brand)}
+.faceEdit:active{opacity:.6}
+
 /* 一天一条的分隔（判自然日不判 24 小时，同 lib/dayLabel.ts） */
 .dayline{align-self:center;font-size:11.5px;color:var(--mutedFg);opacity:.7;padding:6px 0 2px;letter-spacing:.2px}
 
@@ -2215,6 +2222,18 @@ const stackFaces=(ids,sz=26,anim=false)=>`<span class="stack">${ids.slice(0,3).m
     后一张压前一张（`z-index` 递增）—— 叠的方向要一致，混着叠会让人以为前后有含义。
     脸本身是透明底的像素画、自带黑描边，所以不额外加一圈底色描边：
     那圈东西要么把脸切成圆的（#1345 那条：别裁像素画），要么在深色皮上变成一道白边。 */
+/** 大脸那一格。两处共用（建一只 / 换个形象）。**不按头居中**（格子居中就行）：
+    它要跑完整套态，而角标画在格子右上 —— 按头居中等于把头往角标那边推，
+    两者中间那道缝更显眼；按格子居中时「头 + 角标」是一整块，摆正的是这一块 */
+const facePreview=ch=>`<div class="prev">${
+  faceOf(ch,'',108,'idle',true).replace('<canvas','<canvas data-el="prev"')}</div>`;
+/** 11 个角色那一墙。两处共用：抄第二份的那天，两边会在「哪几个角色可选」上分家。
+    只有选中的那张是活的（其余静止），底下那一格按头居中（那儿没有角标） */
+const faceWall=pick=>`<div class="faces">${FACE_CHARACTERS.map(c=>`
+  <button class="fpick" data-act="pickFace" data-ch="${c.id}" aria-label="${c.name}"${c.id===pick?' data-on=""':''}>
+    ${faceOf(c.id,'',54,'idle',c.id===pick).replace('<canvas','<canvas data-center="ink"')}
+  </button>`).join('')}</div>`;
+
 function faceCluster(ids,h=54){
   const f=ids.slice(0,4).map(i=>botOf(i)).filter(Boolean);
   const W=67, one=35;                       // 27 高的那一档实测 35 宽（67×54 的格子按高收）
@@ -2626,11 +2645,18 @@ SCREENS.newBotForm={label:'建一只 · 直接填表',grp:'建与改',render:()=
 
 SCREENS.botSettings={label:'改一只',grp:'建与改',render:(p)=>{
  const b=botOf(p.id||'dev')||DATA.bots[1];
- return `${nav({title:b.name,back:'返回',right:`<button class="navbtn" style="font-weight:650" data-back>存</button>`})}
- <div class="body">${navPad(false)}
-   <div style="text-align:center;padding:6px 0 18px">${faceOf(b.face,b.name[0],108,'idle',true)}</div>
-   <div class="field"><label>叫什么</label><input class="input" value="${b.name}"></div>
-   <div class="field"><label>干什么的</label><input class="input" value="${b.role}"></div>
+ /* 这一页管的是**它是谁**：形象、名字、干什么的 —— 三样并排，不藏在三层里。
+    形象那一格点下去开的是**建它时那张一样的脸墙**（同一份 faceWall）：
+    抄第二份的那天，两处会在「哪几个角色可选」上分家 */
+ return `${nav({title:b.name||'改这一只',back:'返回',
+   right:`<button class="navbtn" style="font-weight:650" data-act="saveBot" data-id="${b.id}">存</button>`})}
+ <div class="body" data-el="botset" data-bot="${b.id}">${navPad(false)}
+   <button class="faceEdit" data-sheet="faceEdit" data-id="${b.id}">
+     ${faceOf(b.face,b.name[0],108,'idle',true)}
+     <span class="lb">${I('gear',13,2)} 换个形象</span>
+   </button>
+   <div class="field"><label>叫什么</label><input class="input" data-f="name" value="${b.name}" placeholder="不填也行"></div>
+   <div class="field"><label>干什么的</label><input class="input" data-f="role" value="${b.role}" placeholder="比如：收发票、对账、月底出一张表"></div>
    <div class="field"><label>还有什么要交代的</label>
      <textarea class="input">提交信息写为什么不写做了什么。推之前先跑门禁。不许推 main。</textarea></div>
    <div class="grouphdr">这一只</div>
@@ -3035,20 +3061,33 @@ const SHEETS={
        <span class="ttl">新建智能体</span>
      </div>
      <div class="sbody">
-       <!-- 这张大脸**不按头居中**（格子居中就行），和底下那一格相反：它要跑完整套态，
-            而角标画在格子右上 —— 按头居中等于把头往角标那边推，两者中间那道缝更显眼；
-            按格子居中时「头 + 角标」是一整块，摆正的是这一块 -->
-       <div class="prev">${faceOf(pick,'',108,'idle',true).replace('<canvas','<canvas data-el="prev"')}</div>
+       ${facePreview(pick)}
        <div class="nmrow"><input class="input" data-el="nm" placeholder="给它取个名字" maxlength="12"></div>
-       <div class="faces">${FACE_CHARACTERS.map(c=>`
-         <button class="fpick" data-act="pickFace" data-ch="${c.id}" aria-label="${c.name}"${c.id===pick?' data-on=""':''}>
-           ${faceOf(c.id,'',54,'idle',c.id===pick).replace('<canvas','<canvas data-center="ink"')}
-         </button>`).join('')}
-       </div>
+       ${faceWall(pick)}
        <!-- 这里原来有一句「不用取名字…」的说明，维护者撤掉了：一屏上没有名字这一格，
             就没有「不用取名字」这件事要交代；解释一件屏幕上不存在的事，反而让人回头找它在哪 -->
      </div>
      <div class="tfoot"><button class="btn" data-act="createBot">创建</button></div>`,{height:'70%'});
+   el.classList.add('newbot');
+   soon(()=>previewTour(el));
+   return el;
+ },
+ /* 「换个形象」：和建它那张走**同一副骨架**（同一个 .newbot 壳，所以那套排版、
+    选中那一下的弹入、大脸走一遍状态，一行都不用再写一遍），差别只有标题与那颗钮。
+    开着的时候那张大脸从**它现在这张**起跑 —— 人要先看见「现在是这个」才好比。
+    名册里那五只的 face 存的是名字（'开发'），新建的存的是角色 id（'specs'），
+    所以这儿要过一次 AGENT_SLOT 才拿得到角色 */
+ faceEdit:(b)=>{
+   const bot=botOf(b&&b.dataset.id)||DATA.bots[0];
+   const ch=faceCharacter(bot.face)?bot.face:(AGENT_SLOT[bot.face]||FACE_CHARACTERS[0].id);
+   const el=sheet(`<div class="grab"></div>
+     <div class="thead">
+       <button class="rbtn" data-close aria-label="不换了">${I('x',20,2.3)}</button>
+       <span class="ttl">换个形象</span>
+     </div>
+     <div class="sbody">${facePreview(ch)}${faceWall(ch)}</div>
+     <div class="tfoot"><button class="btn" data-act="useFace" data-id="${bot.id}">用这张</button></div>`,
+     {height:'70%'});
    el.classList.add('newbot');
    soon(()=>previewTour(el));
    return el;
@@ -3227,7 +3266,26 @@ const ACTS={
      bot.last=REPLY; refreshScreen('bots');
    },700);
  },
- newAgent:()=>SHEETS.newAgent(),      // sheet() 自己会先收掉上一层（那张弹窗），不用手动关
+ newAgent:()=>SHEETS.newAgent(),
+ /* 换完脸：数据先改，再把**两屏**一起重画 —— 设置页那张大脸，和底下压着的那份名册。
+    不重画名册的话，退回去看到的还是旧脸（同 refreshScreen 那条注释） */
+ useFace:(b)=>{
+   const bot=botOf(b.dataset.id); if(!bot) return;
+   const sh=b.closest('.newbot');
+   const ch=sh&&sh.querySelector('.fpick[data-on]')&&sh.querySelector('.fpick[data-on]').dataset.ch;
+   if(ch) bot.face=ch;
+   closeSheet(); refreshScreen('botSettings'); refreshScreen('bots');
+ },
+ /* 「存」：名字与职责真写回去（demo 里也写，不然这一页点下去什么都不会发生 ——
+    那是 #722 那颗撒谎的勾的一般形式）。写完退回上一屏，名册跟着改 */
+ saveBot:(b)=>{
+   const scr=b.closest('.scr');
+   const host=scr&&scr.querySelector('[data-el="botset"]');
+   const bot=botOf(b.dataset.id); if(!host||!bot) return back();
+   bot.name=(host.querySelector('[data-f="name"]').value||'').trim();
+   bot.role=(host.querySelector('[data-f="role"]').value||'').trim();
+   refreshScreen('bots'); back();
+ },      // sheet() 自己会先收掉上一层（那张弹窗），不用手动关
  /* 换形象**只改那张大脸的 data-ch 再重画**，不重渲染这一屏：重渲染会把已经打了一半的
     名字冲掉，还会让每一格的脸重新挂一次（它们是活着的 canvas，不是图片） */
  pickFace:(b)=>{
