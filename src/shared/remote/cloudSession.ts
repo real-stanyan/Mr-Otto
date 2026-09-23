@@ -129,7 +129,7 @@ export const CS_WORK_FILE_MAX_BYTES = 64 * 1024;
     服务端两条路各产出一条这样的帧——backlog 分片时的
     `frameHandler.chunkBacklogFrames`（skip 分支）与直播扇出时的
     `daemon.globalSend`（编码失败的占位）——客户端
-    （`main/cloudSessionClient.ts`）靠 `msg.includes(...)` 认出它、据此挂历史
+    （`shared/remote/cloudSessionClient.ts`）靠 `msg.includes(...)` 认出它、据此挂历史
     缺口横幅。**判据不是整句相等**：文案要带上 type/seq 才对排查有用，所以只能
     子串匹配；而子串两端各写一份字面量的话，改一个字这道判断就静默失效——
     而它修的正是「失败无声」（同 daemon 看门狗不认日志文案那条纪律）。

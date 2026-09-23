@@ -63,10 +63,10 @@
 // `cloudSessionFleetRow` 是这个洞的补丁：纯函数，把 activeSummary() 的结果
 // 转成一条虚拟 SessionSummary，index.ts 的 pushFleet 把它并进真实会话列表
 // 一起喂给 flattenFleet。只在 status:"ready" 时给出结果——connecting 还没有
-// 可展示的事实，denied/gone 没有活连接，虚拟行随之消失。
+// 可展示的事实，denied/gone 没有活连接，虚拟行随之消失。那个函数住在
+// `src/main/cloudSessionFleet.ts`（#1356：客户端挪进 shared，这一行是桌面专属）。
 
-import type { RemoteTransport } from "../shared/remote/transport.js";
-import type { SessionSummary } from "../session/store.js";
+import type { RemoteTransport } from "./transport.js";
 import {
   BACKLOG_SKIP_MARKER,
   BACKLOG_TAIL_DEFAULT,
@@ -75,7 +75,6 @@ import {
   csChannel,
   encodeCs,
   decodeCsDown,
-  validateRepoUrl,
   type CsDeniedCode,
   type CsGitHost,
   type CsChatInfo,
@@ -86,15 +85,11 @@ import {
   type CsWikiWriteReq,
   type CsWorkHit,
   type CsWorkNode,
-} from "../shared/remote/cloudSession.js";
-import { normalizeWorkPath } from "../shared/remote/workPath.js";
-// 合成这串前缀的是这里，识别它的是岛的分档（shared/islandTabs.ts）——
-// 两边共用一个常量：各写一份字面量的话，改了这半而没改那半不会报错，
-// 只会让所有云会话安静地掉回「项目」档，还顶着一个 UUID 当组名
-import { CLOUD_WORKSPACE_PREFIX } from "../shared/islandTabs.js";
-import type { ApprovalDecisionEvent, SessionEvent } from "../session/events.js";
-import type { ApprovalRequest, CloudAck, CloudSessionStatus, CloudWorkspaceState } from "../shared/shellBridge.js";
-import type { FriendsResult } from "./proxyManager.js";
+} from "./cloudSession.js";
+import { normalizeWorkPath } from "./workPath.js";
+import type { ApprovalDecisionEvent, SessionEvent } from "../../session/events.js";
+import type { ApprovalRequest, CloudAck, CloudSessionStatus, CloudWorkspaceState } from "../shellBridge.js";
+import type { FriendsResult } from "../friends.js";
 
 /** 控制房 create 的等待上限：runtime 一直没接上/没回应时，别把调用方永远悬在
     半空——一个「稍后重试」的失败远好过一个永不 resolve 的 Promise。 */
@@ -185,36 +180,6 @@ export interface CloudSessionSummary {
       这两个名字都在渲染层的快照里，主进程为一行标题再查一次库不值。缺席 = 团队会话，
       照旧写「云会话」 */
   title?: string;
-}
-
-/** CloudSessionSummary → 喂给 flattenFleet 的那一条虚拟 SessionSummary
-    （复审 P0 的落地处，纯函数、独立可测）。null = 没有可展示的：没 join 过，
-    或者还没 ready（connecting/denied/gone 都没有"此刻活着"的事实可以摆上
-    fleet）。workspace 字段是合成路径不是真目录：真实 lens
-    （main/workspaceLens.ts → projectRoot.ts 的 resolveWorkspaceOrigin）会顺着
-    它一路向上找 .git，找到文件系统根都找不到就回落到"就地当根"，即
-    projectRoot = 这串字符串本身——自成一路，不会撞上任何真实项目分组。
-    必须是**绝对路径**：相对片段会被 path.resolve 拼上 process.cwd()，在
-    dev checkout 这样的环境里可能意外爬进真实项目的 .git，把云会话错误地
-    并进某个本地项目组。lastTs 用 summary.lastEventTs（真实事件时间线），
-    不现取 Date.now()——orderedVisibleSessions 按组内最新 lastTs 倒序排组，
-    现取会让这条云会话只要 ready 就永远压过所有本地项目组。*/
-export function cloudSessionFleetRow(summary: CloudSessionSummary | null): SessionSummary | null {
-  if (!summary || summary.status !== "ready") return null;
-  return {
-    sessionId: summary.sessionId,
-    events: 0,
-    startedTs: 0,
-    lastTs: summary.lastEventTs,
-    workspace: `${CLOUD_WORKSPACE_PREFIX}${summary.workspaceId}`,
-    title: summary.title ?? "云会话",
-    spawnedFrom: null,
-    archived: false,
-    sharedWith: [],
-    topic: null,
-    projectRoot: null,
-    workspaceKind: null, // 云会话不是任务会话（它的 workspace 是合成路径，ADR-0289）
-  };
 }
 
 export interface CloudSessionClient {

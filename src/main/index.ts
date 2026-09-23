@@ -203,7 +203,8 @@ import type { SandboxApproval } from "../shared/workspaceAgents.js";
 import {
   publishSessionToWorkspace, unpublishSession, importWorkspaceSession,
 } from "./workspaceSessionShare.js";
-import { createCloudSessionClient, cloudSessionFleetRow } from "./cloudSessionClient.js";
+import { createCloudSessionClient } from "../shared/remote/cloudSessionClient.js";
+import { cloudSessionFleetRow } from "./cloudSessionFleet.js";
 import { resolveIslandBinPath } from "./islandBinPath.js"; // Task 7 提供正式实现;本任务先内联占位
 import { FriendsManager } from "./friends.js";
 import { createSupabaseFriendsApi } from "./supabaseFriendsApi.js";
