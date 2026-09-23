@@ -464,8 +464,8 @@ textarea.input{height:auto;min-height:92px;padding:12px 14px;resize:none;line-he
 .rbtn .dot{position:absolute;top:1px;right:1px;width:9px;height:9px;border-radius:50%;
   background:var(--warn);box-shadow:0 0 0 2.5px var(--bg)}
 /* 名字那一格空着时（刚建出来、还没有职责）药丸收成一颗圆 —— 不留一段没有内容的右内边距 */
-.namepill:has(.nm:empty){padding:0 5px;gap:0}
-.namepill{display:flex;align-items:center;gap:9px;height:46px;padding:0 18px 0 5px;border-radius:999px;
+.namepill:has(.nm:empty){padding:0 9px;gap:0}
+.namepill{display:flex;align-items:center;gap:8px;height:46px;padding:0 16px 0 9px;border-radius:999px;
   margin:0 auto;max-width:62%;cursor:pointer;
   background:color-mix(in srgb,var(--fg) 10%,var(--glass));
   backdrop-filter:blur(24px) saturate(180%);-webkit-backdrop-filter:blur(24px) saturate(180%);
@@ -2120,6 +2120,9 @@ function openConfirm(scr,email){
 
     药丸里只有脸和名字，**没有状态文字**：状态由那张脸自己说（角标 + 眼神），
     而「它此刻在干嘛」的正文在时间线最底下那一行 —— 人的眼睛本来就在那儿。 */
+/** 聊天页头上那颗药丸。脸在这里走 **27** 那一档（显示 28px）而不是名册那档 54：
+    药丸自己只有 46 高，54 的脸显示出来是 56 —— 比药丸还高，于是它看着不是「装在里面」
+    而是「顶出来了」。收到 28 之后上下各余 9，左边也留出来一点。 */
 function chatNav({face,name,right=''}){
   return `<div class="pillnav">
     <button class="rbtn" data-back aria-label="返回">${I('back',22,2.2)}</button>
@@ -2202,12 +2205,15 @@ const stackFaces=(ids,sz=26,anim=false)=>`<span class="stack">${ids.slice(0,3).m
     后一张压前一张（`z-index` 递增）—— 叠的方向要一致，混着叠会让人以为前后有含义。
     脸本身是透明底的像素画、自带黑描边，所以不额外加一圈底色描边：
     那圈东西要么把脸切成圆的（#1345 那条：别裁像素画），要么在深色皮上变成一道白边。 */
-function faceCluster(ids){
+function faceCluster(ids,h=54){
   const f=ids.slice(0,4).map(i=>botOf(i)).filter(Boolean);
   const W=67, one=35;                       // 27 高的那一档实测 35 宽（67×54 的格子按高收）
   const step=f.length>1?Math.min(one,(W-one)/(f.length-1)):0;
-  return `<span style="width:${W}px;height:54px;flex:none;position:relative;display:block">${
-    f.map((b,n)=>`<span style="position:absolute;left:${Math.round(n*step)}px;top:13px;z-index:${n}">${
+  // h 只改**盒子**不改脸：脸这一侧只有 27/54/108 三档，而 54 在药丸里装不下（药丸才 46 高），
+  // 所以那两处共用同一批 27 的脸，区别只是外面这只盒子多高、脸在里面怎么居中
+  const top=Math.round((h-28)/2);
+  return `<span style="width:${W}px;height:${h}px;flex:none;position:relative;display:block">${
+    f.map((b,n)=>`<span style="position:absolute;left:${Math.round(n*step)}px;top:${top}px;z-index:${n}">${
       faceOf(b.face,b.name[0]||'',27,'idle',true)}</span>`).join('')}</span>`;
 }
 /** 大脸上那一遍「它干活时长什么样」。一格一个态，走完从头来。
@@ -2390,7 +2396,7 @@ SCREENS.botsEmpty={label:'名册 · 一只都还没有',grp:'智能体',render:(
    所以时间线上唯一的分段是**一天一条**的日期，不是「新会话」 */
 SCREENS.botChat={label:'私聊 · 在干活',grp:'智能体',render:(p)=>{
  const b=botOf(p.id||'dev')||DATA.bots[1];
- return `${chatNav({face:faceOf(b.face,b.name[0],54,'working'),name:b.name,
+ return `${chatNav({face:faceOf(b.face,b.name[0],27,'working'),name:b.name,
    right:`<button class="rbtn" data-sheet="botMenu" aria-label="更多">${I('dots',21,2.4)}</button>`})}
  <div class="body">${chatPad}
    <div class="tl">
@@ -2454,7 +2460,7 @@ SCREENS.botChat={label:'私聊 · 在干活',grp:'智能体',render:(p)=>{
    登完之后凭据留在那台机器上，它自己用，不再回来问你第二次 */
 SCREENS.botAuth={label:'私聊 · 要你登录一次',grp:'智能体',render:()=>{
  const b=botOf('ops');
- return `${chatNav({face:faceOf(b.face,b.name[0],54,'waiting'),name:b.name,
+ return `${chatNav({face:faceOf(b.face,b.name[0],27,'waiting'),name:b.name,
    right:`<button class="rbtn" data-sheet="botMenu" aria-label="更多">${I('dots',21,2.4)}</button>`})}
  <div class="body">${chatPad}
    <div class="tl">
@@ -2489,7 +2495,7 @@ SCREENS.botAuth={label:'私聊 · 要你登录一次',grp:'智能体',render:()=
    接力那一行是**群事实**（agent_relay），不是谁的发言 —— 所以居中、没有气泡 */
 SCREENS.groupChat={label:'群聊',grp:'智能体',render:(p)=>{
  const g=DATA.groups.find(x=>x.id===(p.id||'g1'))||DATA.groups[0];
- return `${chatNav({face:faceCluster(g.members),name:g.name,
+ return `${chatNav({face:faceCluster(g.members,28),name:g.name,
    right:`<button class="rbtn" data-sheet="groupMenu" aria-label="更多">${I('dots',21,2.4)}</button>`})}
  <div class="body">${chatPad}
    <div class="tl">
@@ -2539,7 +2545,7 @@ SCREENS.groupChat={label:'群聊',grp:'智能体',render:(p)=>{
    建一只智能体本来就是跟它说一句话。表单留着，但它是第二条路不是第一条 */
 SCREENS.newBot={label:'建一只 · 跟管理员说',grp:'建与改',render:()=>{
  const b=botOf('admin');
- return `${chatNav({face:faceOf(b.face,b.name[0],54),name:b.name,
+ return `${chatNav({face:faceOf(b.face,b.name[0],27),name:b.name,
    right:`<button class="rbtn" data-go="newBotForm" style="font-size:13.5px;font-weight:600">填表</button>`})}
  <div class="body">${chatPad}
    <div class="tl">
@@ -2566,7 +2572,7 @@ SCREENS.newBot={label:'建一只 · 跟管理员说',grp:'建与改',render:()=>
    一颗点了就不可撤销的钮，人多半想先改两个字）。 */
 SCREENS.botNew={label:'建完 · 它先开口',grp:'建与改',render:(p)=>{
  const b=botOf(p&&p.id)||DATA.bots[0];
- return `${chatNav({face:faceOf(b.face,'',54,'idle',true),name:b.name||''})}
+ return `${chatNav({face:faceOf(b.face,'',27,'idle',true),name:b.name||''})}
  <div class="body" data-el="newchat" data-bot="${b.id}">${chatPad}
    <div class="tl">
      <!-- 没取名字的那一只这一行只有脸和时间：它还没有职责，而职责就是它的那一行 -->
