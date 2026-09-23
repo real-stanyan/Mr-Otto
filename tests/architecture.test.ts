@@ -19,7 +19,7 @@
 // 这里挡的是"顺手"犯的错,不是刻意绕过。
 
 import { readdirSync, readFileSync, statSync } from "node:fs";
-import { join, relative } from "node:path";
+import { dirname, join, relative, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 
 const ROOT = join(__dirname, "..", "src");
@@ -55,6 +55,15 @@ const NODE_FS_OR_PROC = (s: string) =>
 const NODE_BUILTIN = (s: string) =>
   s.startsWith("node:") ||
   /^(fs|path|os|child_process|crypto|net|http|https|stream|util|events|electron)(\/|$)/.test(s);
+
+// store.ts(better-sqlite3)与 attachments.ts(node:fs)是**桌面专属**,不在复用面内。
+// 其余的投影函数手机端要跑 —— 名单写死在这里,新增文件想进复用面要显式加进来,
+// 而不是"碰巧还没碰 Node 就算数"
+const MOBILE_SAFE = [
+  "events.ts", "deriveMessages.ts", "deriveTodos.ts",
+  "deriveUsage.ts", "barrenTurns.ts", "activeSkills.ts", "microCompact.ts",
+  "modelContextScan.ts", "persistencePolicy.ts",
+];
 
 describe("Hard rules(AGENTS.md)是门禁的一部分", () => {
   it("src/tools 不直接 import fs / child_process —— 工具只依赖 ExecutionWorld", () => {
@@ -146,6 +155,53 @@ describe("Hard rules(AGENTS.md)是门禁的一部分", () => {
     ).toEqual([]);
   });
 
+  it("src/shared 不 import src/main / src/renderer —— 这一层手机端也要跑（#1356）", () => {
+    const bad = walk(join(ROOT, "shared"))
+      .filter((f) =>
+        imports(f).some((s) => {
+          if (!s.startsWith(".")) return false;
+          return /^(main|renderer)(\/|$)/.test(relative(ROOT, resolve(dirname(f), s)));
+        })
+      )
+      .map((f) => relative(ROOT, f));
+    expect(
+      bad,
+      `这些 shared 文件反指了桌面那两层:\n  ${bad.join("\n  ")}\n` +
+        "修法:src/shared 是三端共用的纯层,手机端会直接 import 同一份——它指向 src/main 或 src/renderer," +
+        "手机端就得连带类型检查整棵桌面树(better-sqlite3、DOM、zustand)。" +
+        "要的只是一个类型就把类型挪进 shared;要的是一个能力就做成注入的依赖(同 cloudSessionClient 的 deps)"
+    ).toEqual([]);
+  });
+
+  it("mobile/ 在自身之外只 import src/shared/**（加上 MOBILE_SAFE 那几份 session 投影）（#1356）", () => {
+    const REPO = join(__dirname, "..");
+    const MOBILE = join(REPO, "mobile");
+    const files = [...walk(join(MOBILE, "src")), join(MOBILE, "App.tsx"), join(MOBILE, "index.ts")];
+    const safeSession = new Set(MOBILE_SAFE.map((f) => `src/session/${f.replace(/\.ts$/, "")}`));
+    const bad: string[] = [];
+    for (const f of files) {
+      for (const s of imports(f)) {
+        if (s.startsWith("@/")) {
+          bad.push(`${relative(REPO, f)} → ${s}`);
+          continue;
+        }
+        if (!s.startsWith(".")) continue; // 包名
+        const target = relative(REPO, resolve(dirname(f), s)).replace(/\.(js|ts|tsx|json)$/, "");
+        if (target.startsWith("mobile/")) continue;
+        if (target.startsWith("src/shared/")) continue;
+        if (safeSession.has(target)) continue;
+        bad.push(`${relative(REPO, f)} → ${s}`);
+      }
+    }
+    expect(
+      bad,
+      `手机端 import 了 shared 以外的桌面代码:\n  ${bad.join("\n  ")}\n` +
+        "修法:把要用的纯逻辑挪进 src/shared/(测试挪进 tests/shared/),桌面改 import 它——" +
+        "不要跨目录 import 渲染层或主进程(spec 2026-09-23 §3.2;2026-09-11 spec §9 已否决过这条路)。" +
+        "src/session 里只有 MOBILE_SAFE 名单上的文件可以用"
+    ).toEqual([]);
+  });
+
   // spec §7 的头两条安全不变量：OAuth token 不进事件日志（append-only，
   // 进去 = 永久泄漏）、不过 ShellBridge 回渲染层。它们目前靠**结构性保证**
   // 成立——McpAuthRecord 这个类型在 src/session/ 和 shellBridge.ts 里根本
@@ -193,14 +249,6 @@ describe("Hard rules(AGENTS.md)是门禁的一部分", () => {
   });
 
   it("移动端复用的那批 src/session 文件不 import node builtin", () => {
-    // store.ts(better-sqlite3)与 attachments.ts(node:fs)是**桌面专属**,不在复用面内。
-    // 其余的投影函数手机端要跑 —— 名单写死在这里,新增文件想进复用面要显式加进来,
-    // 而不是"碰巧还没碰 Node 就算数"
-    const MOBILE_SAFE = [
-      "events.ts", "deriveMessages.ts", "deriveTodos.ts",
-      "deriveUsage.ts", "barrenTurns.ts", "activeSkills.ts", "microCompact.ts",
-      "modelContextScan.ts", "persistencePolicy.ts",
-    ];
     const bad = MOBILE_SAFE.filter((f) =>
       imports(join(ROOT, "session", f)).some(NODE_BUILTIN)
     );
