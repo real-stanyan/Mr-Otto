@@ -345,6 +345,13 @@ textarea.input{height:auto;min-height:92px;padding:12px 14px;resize:none;line-he
    两处同时说，人只会看那个更吵的 */
 .who.live{gap:9px;margin:8px 0 -2px 2px}
 .who.live .txt{display:flex;align-items:center;gap:5px;min-width:0}
+/* 「停一下」住在**正在跑的那一行**上，不住在二级菜单里：它说的是对这一轮的处置，
+   而这一轮就在这儿。停完它自己消失 —— 没有在跑的东西时，这颗钮什么都停不了 */
+.who.live .stopbtn{margin-left:auto;flex:none;border:0;cursor:pointer;font:inherit;font-size:12px;
+  padding:5px 11px;border-radius:999px;color:var(--fg);
+  background:color-mix(in srgb,var(--fg) 9%,transparent);
+  transition:transform 130ms var(--ease-out),opacity 160ms var(--ease-out)}
+.who.live .stopbtn:active{transform:scale(.94)}
 .who.mine{align-self:flex-end;margin-right:4px}
 .face{width:20px;height:20px;border-radius:50%;display:grid;place-items:center;font-size:9.5px;font-weight:700;color:#fff;flex:none}
 .sysline{align-self:center;display:flex;align-items:center;gap:7px;font-size:12px;color:var(--mutedFg);
@@ -2364,7 +2371,8 @@ const whoLine=(b,t)=>`<div class="who">${faceOf(b.face,b.name[0])}<span>${b.name
 function whoLineLive(b,t){
   return `<div class="who live">${faceOf(b.face,b.name[0],54,'idle',true).replace('<canvas','<canvas data-live="1"')}
     <span class="txt"><span data-el="livename">${b.name} · ${t}</span>
-    <span data-el="livesub" style="opacity:.75"></span></span></div>`;
+    <span data-el="livesub" style="opacity:.75"></span></span>
+    <button class="stopbtn" data-act="stopTurn">停一下</button></div>`;
 }
 const meLine=t=>`<div class="who mine">${faceOf('Stan','S')}<span>我 · ${t}</span></div>`;
 /** 用户打的字要进 HTML，转义一次。这份 demo 里只有这一处收真实输入 —— 少了它，
@@ -2442,7 +2450,7 @@ SCREENS.botsEmpty={label:'名册 · 一只都还没有',grp:'智能体',render:(
 SCREENS.botChat={label:'私聊 · 在干活',grp:'智能体',render:(p)=>{
  const b=botOf(p.id||'dev')||DATA.bots[1];
  return `${chatNav({face:faceOf(b.face,b.name[0],27,'working'),name:b.name,
-   right:`<button class="rbtn" data-sheet="botMenu" aria-label="更多">${I('dots',21,2.4)}</button>`})}
+   right:`<button class="rbtn" data-go="botSettings" data-p='{"id":"${b.id}"}' aria-label="设置">${I('dots',21,2.4)}</button>`})}
  <div class="body">${chatPad}
    <div class="tl">
      ${dayline('昨天')}
@@ -2504,7 +2512,7 @@ SCREENS.botChat={label:'私聊 · 在干活',grp:'智能体',render:(p)=>{
 SCREENS.botAuth={label:'私聊 · 要你登录一次',grp:'智能体',render:()=>{
  const b=botOf('ops');
  return `${chatNav({face:faceOf(b.face,b.name[0],27,'waiting'),name:b.name,
-   right:`<button class="rbtn" data-sheet="botMenu" aria-label="更多">${I('dots',21,2.4)}</button>`})}
+   right:`<button class="rbtn" data-go="botSettings" data-p='{"id":"${b.id}"}' aria-label="设置">${I('dots',21,2.4)}</button>`})}
  <div class="body">${chatPad}
    <div class="tl">
      ${dayline('昨天')}
@@ -2539,7 +2547,7 @@ SCREENS.botAuth={label:'私聊 · 要你登录一次',grp:'智能体',render:()=
 SCREENS.groupChat={label:'群聊',grp:'智能体',render:(p)=>{
  const g=DATA.groups.find(x=>x.id===(p.id||'g1'))||DATA.groups[0];
  return `${chatNav({face:faceCluster(g.members,28),name:g.name,
-   right:`<button class="rbtn" data-sheet="groupMenu" aria-label="更多">${I('dots',21,2.4)}</button>`})}
+   right:`<button class="rbtn" data-go="groupSettings" data-p='{"id":"${g.id}"}' aria-label="设置">${I('dots',21,2.4)}</button>`})}
  <div class="body">${chatPad}
    <div class="tl">
      ${dayline('今天')}
@@ -3194,23 +3202,13 @@ const SHEETS={
    ${DATA.bots.map(b=>`<div class="opt" data-close>${faceOf(b.face,b.name[0],26)}
      <span class="grow"><div class="ttl">${b.name}</div><div class="sub">${b.role}</div></span></div>`).join('')}
    <div class="groupftr" style="padding:12px 20px 4px">不 @ 谁 = 它们自己认领：读一遍名册和最近几句，挑对口的那只。</div></div>`),
- botMenu:()=>sheet(`<div class="grab"></div><div class="sbody">
-   <!-- 「它记下来的东西」从这儿撤了：记忆是后台的事（见 botSettings 那段注释） -->
-   ${[['gear','改这一只','botSettings'],['people','把它拉进一个群','newGroup'],
-      ['cloud','它在电脑上留下的文件','files']].map(([ic,t,go])=>
-     `<div class="opt" data-close data-go="${go}"><span class="ico">${I(ic,15,2)}</span>
-       <span class="grow"><div class="ttl">${t}</div></span></div>`).join('')}
-   <div style="height:6px"></div>
-   <div class="opt" data-close><span class="ico">${I('stop',15,2.2)}</span>
-     <span class="grow"><div class="ttl">让它先停手</div><div class="sub">只停这一轮，排着的活还在</div></span></div>
-   </div>`),
- groupMenu:()=>sheet(`<div class="grab"></div><div class="sbody">
-   ${[['gear','群设置','groupSettings'],['people','加一只',''],['phone','开语音','']].map(([ic,t,go])=>
-     `<div class="opt" data-close ${go?`data-go="${go}"`:''}><span class="ico">${I(ic,15,2)}</span>
-       <span class="grow"><div class="ttl">${t}</div></span></div>`).join('')}
-   <div style="height:6px"></div>
-   <div class="opt" data-close data-act="disband"><span class="ico" style="color:var(--destructive)">${I('x',15,2.2)}</span>
-     <span class="grow"><div class="ttl" style="color:var(--destructive)">解散这个群</div></span></div></div>`),
+ /* 原来这儿有两张菜单（botMenu / groupMenu）。维护者定：右上角那颗**直接跳设置**，
+    不再先弹一层。于是那两张没有消费方了，删掉 —— 留着跑不到的代码，
+    下一个人会以为它还在被谁读。里面那几项各自回到该在的地方：
+    · 「把它拉进一个群」→ ＋ 那张弹窗里的「一个群聊」（本来就在）；
+    · 「它在电脑上留下的文件」→ 账号页那一行「它们共用的一台电脑」（本来就在）；
+    · 「让它先停手」→ 搬到最底下那一行上（`whoLineLive` 里那颗小钮）——
+      它是对**正在跑的这一轮**说的话，本来就不该住在一个二级菜单里。 */
  /* 登录这一下必须是人。**不在这个手机里填密码** —— 开的是那台机器上的浏览器，
     你在它那边登，凭据落在那台机器上（这也是为什么这张卡不是「审批」） */
  signinReq:()=>sheet(`<div class="grab"></div>
@@ -3298,6 +3296,16 @@ const ACTS={
  newAgent:()=>SHEETS.newAgent(),
  /* 换完脸：数据先改，再把**两屏**一起重画 —— 设置页那张大脸，和底下压着的那份名册。
     不重画名册的话，退回去看到的还是旧脸（同 refreshScreen 那条注释） */
+ /* 只停这一轮：把这一屏的循环收掉，脸落回 idle，那行小字说清楚。
+    排着的活还在 —— 所以说的是「停一下」不是「停掉」 */
+ stopTurn:(b)=>{
+   const scr=b.closest('.scr'); if(scr&&scr._stop){ scr._stop(); scr._stop=null; }
+   const cv=scr&&scr.querySelector('canvas[data-live="1"]');
+   if(cv){ cv.dataset.st='idle'; cv.dataset.anim='1'; mountFace(cv); }
+   const sub=scr&&scr.querySelector('[data-el="livesub"]');
+   if(sub) sub.textContent='· 停下了，排着的活还在';
+   b.remove();
+ },
  pickVoice:(b)=>{
    const bot=botOf(b.dataset.id); if(bot) bot.voice=b.dataset.v;
    closeSheet(); refreshScreen('botSettings');
