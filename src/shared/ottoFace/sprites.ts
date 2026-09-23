@@ -86,3 +86,15 @@ export function faceCharacterAt(slot: number): FaceCharacter {
   if (!Number.isInteger(slot) || slot < 0 || slot >= FACE_CHARACTERS.length) return FACE_CHARACTERS[0]!;
   return FACE_CHARACTERS[slot]!;
 }
+
+/**
+ * 一个角色的**第一个**坑位；认不出的 id 回 null。
+ *
+ * 挑头像的那一墙按角色列（11 张脸），库里存的是坑位（13 格，`avatar_slot`）。sweep 占了 1 与 3、
+ * mane 占了 10 与 12——挑中 sweep 存 1、挑中 mane 存 10（spec §10 第 13 条）。
+ * 回 null 而不是 0：0 是 stoic 的坑位，拿它兜底等于替人挑了一张他没挑过的脸。
+ */
+export function firstSlotOf(characterId: string): number | null {
+  const i = SLOT_TO_ID.indexOf(characterId);
+  return i < 0 ? null : i;
+}

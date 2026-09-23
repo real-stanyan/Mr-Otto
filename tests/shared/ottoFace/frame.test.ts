@@ -4,6 +4,7 @@
 import { describe, expect, it } from "vitest";
 import {
   composeFrame,
+  composeFrameAt,
   faceCharacterAt,
   FACE_CANVAS,
   FACE_CHARACTERS,
@@ -11,8 +12,11 @@ import {
   FACE_STATE_LIST,
   FACE_STATES,
   faceAnimates,
+  firstSlotOf,
+  frameMotion,
   GRID_H,
   GRID_W,
+  motionKey,
 } from "../../../src/shared/ottoFace/index.js";
 import { AGENT_AVATAR_COUNT } from "../../../src/renderer/src/lib/agentAvatarSlot.js";
 
@@ -160,6 +164,51 @@ describe("composeFrame", () => {
   });
 });
 
+describe("frameMotion / composeFrameAt", () => {
+  it("composeFrame 就是 composeFrameAt(frameMotion(...))", () => {
+    for (let slot = 0; slot < FACE_CHARACTERS.length; slot += 3) {
+      for (const s of FACE_STATE_LIST) {
+        for (let t = 0; t < 9000; t += 1373) {
+          expect(composeFrame(slot, s, t)).toEqual(composeFrameAt(slot, s, frameMotion(s, t)));
+        }
+      }
+    }
+  });
+
+  it("同一个 motion 键画出来的帧逐格相同——手机端据此做帧去重", () => {
+    for (const s of ["alive", "idle", "composing", "searching", "working", "solving", "waiting"] as const) {
+      const byKey = new Map<string, string>();
+      for (let t = 0; t < 20000; t += 37) {
+        const key = motionKey(frameMotion(s, t));
+        const cells = JSON.stringify(composeFrame(5, s, t).cells);
+        const seen = byKey.get(key);
+        if (seen === undefined) byKey.set(key, cells);
+        else expect(cells, `${s} @ ${t}`).toBe(seen);
+      }
+    }
+  });
+
+  it("motion 键不把 -0 与 0 拆成两个键", () => {
+    const base = { bob: 0, sway: 0, lookX: 0, lookY: 0, eye: "open", mouth: "smile" } as const;
+    expect(motionKey({ ...base, bob: -0 })).toBe(motionKey(base));
+  });
+});
+
+describe("firstSlotOf", () => {
+  it("每个角色都有坑位，回的是那个角色的第一个坑位", () => {
+    for (const p of FACE_PACKS) {
+      const slot = firstSlotOf(p.id);
+      expect(slot, p.id).not.toBeNull();
+      expect(FACE_CHARACTERS[slot!]!.id).toBe(p.id);
+      for (let i = 0; i < slot!; i++) expect(FACE_CHARACTERS[i]!.id, `${p.id} 更早出现在 ${i}`).not.toBe(p.id);
+    }
+  });
+
+  it("认不出的 id 回 null，不回一个看起来像挑过的坑位", () => {
+    expect(firstSlotOf("no-such-face")).toBeNull();
+  });
+});
+
 describe("状态表", () => {
   it("plain 不画角标也不动", () => {
     // 「我们不知道它在干嘛」不是「它闲着」——画一个恒灰的勾等于宣称一件查不到的事
@@ -187,11 +236,23 @@ describe("状态表", () => {
     expect(dimmed).toEqual(["frozen"]);
   });
 
-  it("会动的那几档都画了角标", () => {
-    // 脸负责近看、角标负责扫一眼：会动却没角标的那一档在 24px 下只是「抖了一下」
-    for (const s of FACE_STATE_LIST) {
-      if (s === "plain") continue;
-      expect(FACE_STATES[s].badge, `${s} 缺角标`).not.toBeNull();
-    }
+  it("会动的那几档都画了角标——唯一的例外是 alive", () => {
+    // 脸负责近看、角标负责扫一眼：会动却没角标的那一档在 24px 下只是「抖了一下」。
+    // alive 是故意的例外（#1356）：名册那一墙查不到谁在跑，角标 = 声称，而眨眼与呼吸只是「活着」
+    const noBadge = FACE_STATE_LIST.filter((s) => FACE_STATES[s].badge === null);
+    expect(noBadge).toEqual(["plain", "alive"]);
+  });
+
+  it("alive：会动，但不画角标、不跟指针、不摆动、不压色", () => {
+    const a = FACE_STATES.alive;
+    expect(a.badge).toBeNull();
+    expect(faceAnimates("alive")).toBe(true);
+    expect(a.look).toBe("still");
+    expect(a.sway).toBeUndefined();
+    expect(a.desaturate).toBeUndefined();
+    expect(a.dim).toBeUndefined();
+    const frames = new Set<string>();
+    for (let t = 0; t < 8000; t += 10) frames.add(JSON.stringify(composeFrame(0, "alive", t).cells));
+    expect(frames.size).toBeGreaterThan(1);
   });
 });

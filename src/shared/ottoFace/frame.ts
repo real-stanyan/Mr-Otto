@@ -87,10 +87,20 @@ export interface FrameOptions {
 }
 
 /**
- * 一帧。`t` 是毫秒时刻（`performance.now()`），静态帧传 0。
+ * 一帧里**随时刻变**的那几样：整格位移、视线、眼形、嘴形。其余（角色、色板、角标）只看
+ * 坑位与状态。**同一个 (坑位, 状态, motion) 画出来的帧逐格相同**——手机端据此做帧去重：
+ * 每拍只算这几个数，键没变就不重画（`art.ts`）。
  */
-export function composeFrame(slot: number, state: FaceState, t: number, opts?: FrameOptions): FaceFrame {
-  const ch: FaceCharacter = faceCharacterAt(slot);
+export interface FaceMotion {
+  readonly bob: number;
+  readonly sway: number;
+  readonly lookX: number;
+  readonly lookY: number;
+  readonly eye: EyeShape;
+  readonly mouth: MouthShape;
+}
+
+export function frameMotion(state: FaceState, t: number, opts?: FrameOptions): FaceMotion {
   const def = FACE_STATES[state];
 
   // ---- 位移。全部整数格：像素画做亚像素平滑会立刻糊 ----
@@ -114,6 +124,29 @@ export function composeFrame(slot: number, state: FaceState, t: number, opts?: F
     lookX = def.fixedLook?.[0] ?? 0;
     lookY = def.fixedLook?.[1] ?? 0;
   }
+
+  const eye: EyeShape = def.blinks && blinkingAt(t) ? "blink" : def.eye;
+  const mouth: MouthShape =
+    def.mouth === "talk" ? (TALK_CYCLE[Math.floor(t / 130) % TALK_CYCLE.length] ?? "smile") : def.mouth;
+  return { bob, sway, lookX, lookY, eye, mouth };
+}
+
+/** motion 的稳定键。`-0` 在模板串里写成 "0"，不会把同一帧拆成两个键 */
+export function motionKey(m: FaceMotion): string {
+  return `${m.bob}|${m.sway}|${m.lookX}|${m.lookY}|${m.eye}|${m.mouth}`;
+}
+
+/**
+ * 一帧。`t` 是毫秒时刻（`performance.now()` / `Date.now()`），静态帧传 0。
+ */
+export function composeFrame(slot: number, state: FaceState, t: number, opts?: FrameOptions): FaceFrame {
+  return composeFrameAt(slot, state, frameMotion(state, t, opts));
+}
+
+/** 按一个已经算好的 motion 叠一帧（`art.ts` 的缓存用它，免得同一拍算两遍 motion） */
+export function composeFrameAt(slot: number, state: FaceState, m: FaceMotion): FaceFrame {
+  const ch: FaceCharacter = faceCharacterAt(slot);
+  const def = FACE_STATES[state];
 
   const grid: Tone[] = new Array<Tone>(ch.w * ch.h).fill(".");
   const put = (x: number, y: number, tone: Tone): void => {
@@ -139,18 +172,15 @@ export function composeFrame(slot: number, state: FaceState, t: number, opts?: F
   }
 
   // ---- 五官 ----
-  const browDy = (def.browDy ?? 0) + (lookY < 0 ? -1 : 0);
+  const browDy = (def.browDy ?? 0) + (m.lookY < 0 ? -1 : 0);
   stamp(ch.brows.L, ch.anchors.browL[0], ch.anchors.browL[1] + browDy + (def.browAsym ?? 0), ch.ink);
   stamp(ch.brows.R, ch.anchors.browR[0], ch.anchors.browR[1] + browDy, ch.ink);
 
-  const eyeShape: EyeShape = def.blinks && blinkingAt(t) ? "blink" : def.eye;
-  const eye = ch.eyes[eyeShape];
-  stamp(eye.L, ch.anchors.eyeL[0] + eye.lx + lookX, ch.anchors.eyeL[1] + eye.ly + lookY, ch.ink);
-  stamp(eye.R, ch.anchors.eyeR[0] + eye.rx + lookX, ch.anchors.eyeR[1] + eye.ry + lookY, ch.ink);
+  const eye = ch.eyes[m.eye];
+  stamp(eye.L, ch.anchors.eyeL[0] + eye.lx + m.lookX, ch.anchors.eyeL[1] + eye.ly + m.lookY, ch.ink);
+  stamp(eye.R, ch.anchors.eyeR[0] + eye.rx + m.lookX, ch.anchors.eyeR[1] + eye.ry + m.lookY, ch.ink);
 
-  const mouthShape: MouthShape =
-    def.mouth === "talk" ? (TALK_CYCLE[Math.floor(t / 130) % TALK_CYCLE.length] ?? "smile") : def.mouth;
-  stamp(ch.mouths[mouthShape], ch.anchors.mouth[0] + (def.mouthDx ?? 0), ch.anchors.mouth[1], ch.ink);
+  stamp(ch.mouths[m.mouth], ch.anchors.mouth[0] + (def.mouthDx ?? 0), ch.anchors.mouth[1], ch.ink);
 
   // ---- 覆盖层（镜框、压脸的发丝）画在五官之上 ----
   if (ch.front !== undefined) {
@@ -164,7 +194,7 @@ export function composeFrame(slot: number, state: FaceState, t: number, opts?: F
   for (let y = 0; y < ch.h; y++) {
     for (let x = 0; x < ch.w; x++) {
       const tone = grid[y * ch.w + x]!;
-      if (tone !== ".") cells.push({ x: x + FACE_PAD + sway, y: y + FACE_PAD + bob, key: tone });
+      if (tone !== ".") cells.push({ x: x + FACE_PAD + m.sway, y: y + FACE_PAD + m.bob, key: tone });
     }
   }
 

@@ -22,7 +22,17 @@ export {
   type Tone,
 } from "./character.js";
 export { faceCharacter, FACE_PACKS } from "./characters/index.js";
-export { composeFrame, faceCharacterAt, type FaceCell, type FaceFrame, type FrameOptions } from "./frame.js";
+export {
+  composeFrame,
+  composeFrameAt,
+  faceCharacterAt,
+  frameMotion,
+  motionKey,
+  type FaceCell,
+  type FaceFrame,
+  type FaceMotion,
+  type FrameOptions,
+} from "./frame.js";
 export {
   BADGE_COLORS,
   FACE_STATE_LIST,
@@ -38,6 +48,7 @@ export {
   DISC_COLOR,
   FACE_CANVAS,
   FACE_CHARACTERS,
+  firstSlotOf,
   GRID_H,
   GRID_W,
   type FaceCharacter,

@@ -25,6 +25,7 @@ import type { EyeShape, MouthShape } from "./character.js";
 
 export type FaceState =
   | "plain"
+  | "alive"
   | "idle"
   | "queued"
   | "composing"
@@ -103,6 +104,10 @@ function spec(o: Partial<FaceStateSpec>): FaceStateSpec {
 export const FACE_STATES: Readonly<Record<FaceState, FaceStateSpec>> = {
   // 不画角标、不动、不眨眼。见文件头
   plain: spec({ zh: "形象", blinks: false }),
+  // 名册那一墙（手机端，#1356）：眨眼 + 呼吸 = 活着，**不画角标、不跟指针**。它不回答
+  // 「此刻在干嘛」——名册查不到谁在跑（#722 / #1282），角标在这套东西里是「声称」。
+  // 这是「会动的那几档都画了角标」唯一的例外，理由在 ADR（#1356 A0）
+  alive: spec({ zh: "活着", bobMs: 2600, bobAmp: 1 }),
   idle: spec({ zh: "空闲", look: "pointer", bobMs: 2600, bobAmp: 1, badge: "mute" }),
   // 唯一完全不动的那一档
   queued: spec({ zh: "排队中", mouth: "flat", badge: "mute", blinks: false }),
