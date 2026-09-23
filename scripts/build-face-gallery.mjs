@@ -4,14 +4,14 @@
 // 会动的只有正开着的那条私聊头部与通话里那几格，而一个表情要凑齐条件才出得来
 // （限流 / 冻结 / 出错各要一次真事故）。没有这一页，改一格眉毛只能靠想象。
 //
-// 产物是**一个自包含的 html**：把真的 `lib/ottoFace/` 用 esbuild 内联进去，
+// 产物是**一个自包含的 html**：把真的 `src/shared/ottoFace/` 用 esbuild 内联进去，
 // 开文件就能看，也发得出去给人挑。inline 而不是引一份 bundle，是因为这页的
 // 用法就是「丢给维护者点开」（同 docs/replay-demo.html 的形态）。
 //
 //   node scripts/build-face-gallery.mjs [输出路径]
 //
 // 默认写 .demo/face-gallery.html。**它不进门禁**：这一页的判据在
-// tests/renderer/ottoFace/，这里只是让人看一眼。
+// tests/shared/ottoFace/，这里只是让人看一眼。
 
 import { build } from "esbuild";
 import { mkdir, writeFile } from "node:fs/promises";
@@ -21,8 +21,8 @@ const root = join(import.meta.dirname, "..");
 const out = resolve(process.argv[2] ?? join(root, ".demo/face-gallery.html"));
 
 const entry = `
-import { FACE_CHARACTERS } from "${join(root, "src/renderer/src/lib/ottoFace/sprites.ts")}";
-import { FACE_STATES, faceAnimates } from "${join(root, "src/renderer/src/lib/ottoFace/states.ts")}";
+import { FACE_CHARACTERS } from "${join(root, "src/shared/ottoFace/sprites.ts")}";
+import { FACE_STATES, faceAnimates } from "${join(root, "src/shared/ottoFace/states.ts")}";
 import { paintFace, sizeFaceCanvas } from "${join(root, "src/renderer/src/lib/ottoFace/paint.ts")}";
 
 const STATES = Object.keys(FACE_STATES);
@@ -133,7 +133,7 @@ const html = `<!doctype html>
   button { position: fixed; top: 16px; right: 20px; font: inherit; padding: 4px 10px;
            border-radius: 8px; border: 1px solid currentColor; background: transparent; color: inherit; cursor: pointer; }
 </style>
-<h1>Otto 像素脸 <span style="opacity:.4;font-weight:400">#1345 · lib/ottoFace/</span></h1>
+<h1>Otto 像素脸 <span style="opacity:.4;font-weight:400">#1345 · src/shared/ottoFace/</span></h1>
 <p>圆盘底色两个主题一样（纸白 #f2f2f3）—— 纯黑头发压在纯黑底上会糊成一团，所以不靠描边、靠盘底。点右上角换主题看边缘。</p>
 <button id="theme">换主题</button>
 <script>${js}</script>

@@ -10,8 +10,8 @@
 
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 import type { AgentToolAllow } from "../../../shared/agentToolAllow.js";
-import { buildAllow, isServerOn, type ProxySelection } from "./proxyShare.js";
-import { labelOf } from "./workspaceView.js";
+import { buildAllow, isServerOn, type ProxySelection } from "../../../shared/proxyShare.js";
+import { labelOf } from "../../../shared/workspaceView.js";
 
 export type ToolsMode = "all" | "some";
 

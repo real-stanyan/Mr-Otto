@@ -24,7 +24,7 @@ import { Textarea } from "@/components/ui/textarea.js";
 import { Button } from "@/components/ui/button.js";
 import { useChat } from "../store.js";
 import { AgentFace } from "./AgentFace.js";
-import { agentFaceSlot } from "../lib/agentAvatar.js";
+import { agentFaceSlot } from "../../../shared/agentAvatar.js";
 import { ADMIN_AGENT_ID } from "../../../shared/workspaceAgents.js";
 
 /** 三枚提示 chip（#1280 A5）。点了**只把那句话填进输入框、不发送**——人多半想改两个字，

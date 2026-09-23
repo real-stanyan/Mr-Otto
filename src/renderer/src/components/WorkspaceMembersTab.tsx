@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button.js";
 import { useConfirm } from "@/components/ui/confirm-dialog.js";
 import { InsetEmpty, InsetGroup, InsetLabel, InsetNote, InsetRow } from "@/components/ui/inset-list.js";
 import { useChat } from "../store.js";
-import { memberRows } from "../lib/workspaceView.js";
+import { memberRows } from "../../../shared/workspaceView.js";
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 
 /** 名字首字的圆片。**不是头像**——成员没有内置头像那套坑位（那是 agent 的），

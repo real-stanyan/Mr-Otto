@@ -16,7 +16,7 @@ import { Input } from "@/components/ui/input.js";
 import { InsetEmpty, InsetGroup, InsetIcon, InsetLabel, InsetNote, InsetRow } from "@/components/ui/inset-list.js";
 import { useNav } from "@/components/ui/nav-stack.js";
 import { useChat } from "../store.js";
-import { connectorRows, type ConnectorCloudState } from "../lib/workspaceView.js";
+import { connectorRows, type ConnectorCloudState } from "../../../shared/workspaceView.js";
 import { gitHostRows, gitHostsNotice } from "../lib/gitHostsView.js";
 import { validateGitHost } from "../../../shared/remote/gitHost.js";
 import { ContributeConnectorDialog } from "./ContributeConnectorDialog.js";

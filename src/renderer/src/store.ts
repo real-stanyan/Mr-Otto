@@ -99,9 +99,9 @@ import type { OlderState } from "./lib/cloudWindow.js";
 import { mergeResidue, residueSettled, type ResidueItem } from "../../shared/residue.js";
 import { PROXY_SHARE_INVITE_TTL_MS } from "../../shared/remote/proxyInvite.js";
 import { runtimePatch } from "./lib/runtimeHydration.js";
-import { createAgentLanded } from "./lib/cloudTimeline.js";
+import { createAgentLanded } from "../../shared/cloudTimeline.js";
 import { humanSpeakerOf } from "../../shared/sessionParticipants.js";
-import { applyCloudDelta, clearCloudStreamingOn } from "./lib/cloudStreaming.js";
+import { applyCloudDelta, clearCloudStreamingOn } from "../../shared/cloudStreaming.js";
 import { EMPTY_VOICE_FEED, feedDelta, feedEvent, markInterrupted, type VoiceFeedState } from "./lib/voiceCall.js";
 import { applySpeechEvent, bargeInOn, MIC_OFF, micShouldPause, SPEECH_LOCALE, speechHints, type MicState } from "./lib/voiceMic.js";
 import { defaultCreateAudio, VoicePlayer } from "./lib/voicePlayer.js";
@@ -129,13 +129,13 @@ import type { AgentToolAllow } from "../../shared/agentToolAllow.js";
 import type {
   CloudAck, NotificationTarget, ProviderBalance, ProxyBorrowView, ProxyHostView, WorkspaceSettingsInfo,
 } from "../../shared/shellBridge.js";
-import type { CloudSessionListRow } from "./lib/workspaceView.js";
+import type { CloudSessionListRow } from "../../shared/workspaceView.js";
 import { DEFAULT_USAGE_DAYS, type UsageSnapshot } from "../../shared/usageStats.js";
 import type { ModelShareWindow } from "../../shared/modelShare.js";
 import { laneOf, type ModelLane } from "../../shared/modelLane.js";
 import { autoModelOf } from "../../shared/autoModel.js";
-import { isSubscribed } from "./lib/billingView.js";
-import { chatSeedOf, groupRows, homeOf, rosterRows } from "./lib/agentRoster.js";
+import { isSubscribed } from "../../shared/billingView.js";
+import { chatSeedOf, groupRows, homeOf, rosterRows } from "../../shared/agentRoster.js";
 import { settingsSectionVisible } from "./settingsShell.js";
 import type { MyProfile, ProfilePatch } from "../../shared/profile.js";
 import {
@@ -627,12 +627,12 @@ interface ChatState {
       realtime 推上来的单行、进会话时本地先落的已读 */
   workspaceMentions: readonly WorkspaceMentionRow[];
   /** 云会话（Task 13，ADR-0199）：当前 join 着的那一条，没有 = null。全局单条——
-      同 main/cloudSessionClient.ts 的"同时只保留一条连接"，join 新的自动顶掉旧的。
+      同 shared/remote/cloudSessionClient.ts 的"同时只保留一条连接"，join 新的自动顶掉旧的。
       events 按 seq 去重后 append-only；state/deniedCode/initiatorUid/ownerUid 由
       onCloudSessionStatus 推送刷新，selfUid 推送首次给出后不再变 */
   cloudSession: CloudSessionState | null;
   /** 云会话的流式缓冲（#1107，协议 16）：agentId → 这一轮到此刻的正文预览。
-      纯逻辑在 lib/cloudStreaming.ts——累计快照整槽替换，终态事件清槽；
+      纯逻辑在 src/shared/cloudStreaming.ts——累计快照整槽替换，终态事件清槽；
       不落任何持久层（临时预览不是事实） */
   cloudStreaming: Record<string, string>;
   /** 语音通话里「我在听」（#1163）。null = 没在听（没加入 / 通话结束 / 换了会话） */
@@ -1105,7 +1105,7 @@ interface ChatState {
   refreshCloudSessions(workspaceId: string): Promise<void>;
   /** sessionId = null → 先 workspaceCloudCreate 拿到新 id 再 join；
       非 null → 直接 join 这一条（同时只保留一条连接，join 先顶掉旧的，
-      语义与 main/cloudSessionClient.ts 的 join() 完全对齐）。
+      语义与 shared/remote/cloudSessionClient.ts 的 join() 完全对齐）。
       失败（含 create 阶段）落 workspaceGroupsError，cloudSession 保持/回落 null */
   openCloudSession(
     workspaceId: string,
@@ -2812,7 +2812,7 @@ export const useChat = create<ChatState>((set, get) => ({
       }
       sid = created.value.sessionId;
     }
-    // 乐观占位：join() 的 pushStatus 是同步调用（main/cloudSessionClient.ts
+    // 乐观占位：join() 的 pushStatus 是同步调用（shared/remote/cloudSessionClient.ts
     // join() 里没有 await 就到 pushStatus），但那一推是另一条 IPC 通道，
     // 谁先到渲染层不该是这段代码依赖的东西——先给一个"连接中"的壳，真状态
     // 由随后的 onCloudSessionStatus 推送纠正/补齐（同 SessionRuntime 的
@@ -3497,7 +3497,7 @@ export const useChat = create<ChatState>((set, get) => ({
       set((s) => {
         if (!s.cloudSession || s.cloudSession.sessionId !== event.sessionId) return s;
         // 按 seq 去重：:gone → host 回来重连会把 backlog 全量再推一遍
-        // （main/cloudSessionClient.ts 文件头「:gone」段），重复送达在这里
+        // （shared/remote/cloudSessionClient.ts 文件头「:gone」段），重复送达在这里
         // 无害地被过滤掉，不会在时间线上出现两条一样的事件
         if (s.cloudSession.events.some((e) => e.seq === event.seq)) return s;
         // 流式缓冲清槽（#1107）：终态 assistant_message 整份覆盖预览；

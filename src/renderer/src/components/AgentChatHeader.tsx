@@ -10,18 +10,10 @@
 import { Settings2, UserPlus } from "lucide-react";
 import { Button } from "@/components/ui/button.js";
 import { AgentFace } from "./AgentFace.js";
-import { agentFaceSlot } from "../lib/agentAvatar.js";
+import { agentFaceSlot } from "../../../shared/agentAvatar.js";
 import type { FaceState } from "../lib/ottoFace/index.js";
+import type { ChatView } from "../../../shared/agentRoster.js";
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
-
-/** 这一页此刻画的是哪一种聊天（#1280）。`agentIds` 已经与现存名册求过交集
-    （`groupRows` / `CloudSessionMain`），所以这里每个 id 都查得到名字 */
-export interface ChatView {
-  kind: "dm" | "group";
-  agentIds: string[];
-  /** 私聊 = 那只智能体的名字；群聊 = 群名（没起名时是成员名拼起来的） */
-  title: string;
-}
 
 /** 群头像最多叠几张。头部比侧栏宽，但名字仍是这一行的主语 */
 const STACK_MAX = 3;

@@ -281,7 +281,7 @@ const targetCols = Number(opt("cols", "48"));
 const toneSet = TONE_SETS[opt("tones", "4")] ?? TONE_SETS[4];
 const TONES = toneSet.tones;
 const TONE_HEX = toneSet.hex;
-const outPath = opt("out", `src/renderer/src/lib/ottoFace/characters/${id}.ts`);
+const outPath = opt("out", `src/shared/ottoFace/characters/${id}.ts`);
 const previewPath = opt("preview", `/tmp/face-${id}.preview.png`);
 
 const png = decodePng(readFileSync(src));

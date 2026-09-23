@@ -14,10 +14,10 @@ import {
   Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle,
 } from "@/components/ui/dialog.js";
 import { useChat } from "../store.js";
-import { connectorBatchErrorText } from "../lib/workspaceView.js";
+import { connectorBatchErrorText } from "../../../shared/workspaceView.js";
 import {
   buildAllow, isServerOn, isToolOn, selectionFromAllow, toggleServer, toggleTool, type ProxySelection,
-} from "../lib/proxyShare.js";
+} from "../../../shared/proxyShare.js";
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 
 const ROW = "flex items-center gap-2 px-2 py-[6px] rounded-md text-xs";

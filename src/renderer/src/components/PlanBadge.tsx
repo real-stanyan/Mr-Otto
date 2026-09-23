@@ -5,7 +5,7 @@
 // 色表的话，改一处忘一处的结果是同一个账号在两块屏幕上是两个档，而这种不一致
 // 不会报错、只会让人以为自己看错了（同 ADR-0209「同一扇窗两个界面不能给出两个数」）。
 import { cn } from "@/lib/utils.js";
-import { PLAN_BADGE_LABEL, type PlanBadgeId } from "../lib/billingView.js";
+import { PLAN_BADGE_LABEL, type PlanBadgeId } from "../../../shared/billingView.js";
 
 /** 维护者定的四色。四个都取现成的语义色 token —— 它们两套主题都已经调过，
     自造四组十六进制等于把亮/暗两版对比度重新赌一次。

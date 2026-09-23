@@ -29,7 +29,7 @@ import { ContextRingTrigger } from "./ContextRingTrigger.js";
 import { CTX_ROW, CTX_VALUE, CtxBreakdownSection, CtxCard } from "./CtxBreakdownSection.js";
 import { PlanQuotaSection } from "./PlanQuotaSection.js";
 import { ModelFootnote } from "./ModelFootnote.js";
-import { agentNameOf } from "../lib/workspaceView.js";
+import { agentNameOf } from "../../../shared/workspaceView.js";
 import {
   bindingContextRow,
   cloudContextRows,

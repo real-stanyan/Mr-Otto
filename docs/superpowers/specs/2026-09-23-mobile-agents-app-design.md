@@ -1,0 +1,266 @@
+# 手机端「智能体」单栏 —— 设计
+
+- 日期：2026-09-23
+- Task issue：#1356（上游 #1321：demo 已过，维护者 2026-09-23 逐屏点过）
+- 状态：维护者 2026-09-23 拍了四处（§11）；本 spec 待过目；ADR / migration 编号合并时认领（项目 ADR-0074）
+- Demo：`.demo/mobile-agents-redesign.html`，在分支 `claude/auto-mobile-app-redesign-0a1e2f` 上（27 条 commit，每条写了那一处的理由）。**实现以 demo 为准**，与 demo 不同的地方集中在 §10
+- 需求原话（维护者，#1321）：「重新设计 Auto 的手机 App。手机 App 里面取消之前所有设定，不需要任务、项目和团队。手机 App 模仿 Grokbot，只需要实现桌面端的智能体功能」
+- **取代**：`2026-09-11-mobile-app-redesign-design.md` 的信息架构（任务 / 项目 / 团队三栏）与 `2026-09-12-mobile-m2-tasks-design.md`（任务栏）。前者的 §3 设计语言与 §5 四条降级原样沿用，本文件只写差异
+
+## 0. 位置：一个客户端，挂在桌面已经有的那一半后面
+
+这份 spec 管手机端界面层 + 为它必须补的两处后端。数据层几乎全是现成的：
+
+| 数据层 | 状态 | 手机怎么用 |
+|---|---|---|
+| 个人主场 + 账号级智能体 + 聊天 = 云会话（#1280，ADR-0297 / 0298 / 0300 / 0302，migration 0037） | 已合，桌面在用 | 手机做第二个客户端 |
+| 云会话 cs 协议 20（ADR-0199 起） | 已上线 | 桌面那份客户端挪进 `src/shared/`，两端共用（§3.2） |
+| `workspace_agents`（0021 / 0025 / 0027） | 已上线 | 直连 Supabase 建改删（RLS：成员可建、建的人或所有者可改删） |
+| 订阅计费 edge（ADR-0203） | 已上线 | `GET /billing/v1/me` 判「建不建得了主场」 |
+| ottoFace（#1345 / #1350，ADR-0316） | 已合（桌面） | 纯层挪进 `src/shared/`，手机端自己画（§3.1） |
+
+要补的后端只有两处：名册的「最后一句 + 最近动静」投影（§7.1，A1）、新建的智能体先开口（§7.2，A2）。
+
+## 1. 已验前提
+
+读代码、读 migration、跑脚本验出来的。**demo 只在浏览器里跑过，一次没上过真机**。
+
+| 事实 | 出处 |
+|---|---|
+| 桌面云会话客户端 `src/main/cloudSessionClient.ts`（1247 行）**运行时**只 import `src/shared/remote/*` 与 `src/shared/islandTabs.ts`；传输 / 令牌 / 推送全是注入的依赖（`createCloudSessionClient({accessToken, selfUid, createTransport, sendEvent, sendStatus, sendDelta, …})`，装配在 `src/main/index.ts:1693-1737`） | 该文件 68-97 行 |
+| 挪进 shared 的三处绊脚：`SessionSummary`（来自 better-sqlite3 那个文件）、`FriendsResult`（`src/shared/friends.ts:46` 有同形的一份）、`cloudSessionFleetRow`（桌面会话列表 / 灵动岛专用） | 同上 |
+| 每个房间一条 WebSocket：`${edge}/rl/v1/connect?role=guest&channel=<房>`。控制房 `cs-ctl` 每个请求开一条、收到回执就关；会话房 `cs-<workspaceId>-<sessionId>` 一条长连。**role 必须是 `guest`**（runtime 在 cs 房里是 host，中继只配对 host↔guest）。JWT 两处：子协议 `["mrotto.v1", jwt]`（edge 验）+ `hello{v:20, jwt}`（runtime 验） | `wsTransport.ts:76-78,164`、`cloudSession.ts:239-267`、`relay.ts:59-63`、`frameHandler.ts:223-253` |
+| `wsTransport.ts` 不碰 Node / Electron，手机端已经在用它（配对那条中继，role `mobile`） | `mobile/src/session.ts:60-65` |
+| 聊天走尾巴模式（`welcome.chat` 在场 ⇒ `backlog{tail, limit:200}`，往前翻 `beforeSeq`）；事件线上只浅校验 base 四格（type / seq / sessionId / ts） | `cloudSessionClient.ts:658-669`、`cloudSession.ts:629-641` |
+| `supabaseWorkspacesApi.ts` 只依赖 supabase-js 的类型 + `src/shared/*`；聊天清单是它的三条查询（`workspace_sessions`，`kind='cloud'`）；主场 = `findHomeWorkspace` + `createWorkspace(…,"home")`（select + insert，唯一索引兜并发） | `supabaseWorkspacesApi.ts:5-12,52-76,146-149,421-537`、`workspaceManager.ts:264-280` |
+| `workspace_sessions` **没有**「最后一句」这一格；`updated_at` 只在插入时写（没有触发器，runtime 的补丁也不带它）⇒ **今天按它排就是按创建时间排** | `0015_workspaces.sql:40-46`、`services/runtime/src/cloudSessionMeta.ts:67` |
+| `workspace_agents.name` 库里强制 1–32 字、团队内唯一、不许换行；「职责」就是 `description` 列（≤200 字、不许换行）；**没有音色列**（音色按 agent_id 派生，12 个 MiniMax 音色，管理员固定一个） | `0021:9-24`、`0025:44-46`、`src/shared/agentVoice.ts:28-83` |
+| 每个 workspace（含主场）的管理员由触发器种下（`admin`，职责「帮你建智能体，接没人对口的活」，头像坑位 6 = scholar）；**主场的名册里永远至少有它** | `0021:81-100`、`0037:49-58`、`agentAvatarSlot.ts:26` |
+| 建主场要 `can_create_workspace()`（Pro / Max 且订阅活跃）；桌面按七态进门（`rosterGate`） | `0028:35-50`、`src/renderer/src/lib/agentRoster.ts:86-132` |
+| 删一只智能体四步（删它的私聊 → 从各群摘掉 → 删那一行 → 删它自己那页 wiki），`admin` 删不掉 | `workspaceManager.ts:404-434` |
+| 手机端只 import `src/shared/**`（37 个模块），门禁已跑手机 tsc（ADR-0294）；**没有任何断言扫 `mobile/` 的 import** | `mobile/` 全目录、`tests/architecture.test.ts:138-147` |
+| 手机端有浅 / 深两套令牌、跟随系统；居中弹窗点遮罩不关；**没有** reanimated / gesture-handler / 底部抽屉（ADR-0293：跟第一个抽屉一起进） | `mobile/src/theme.ts`、`mobile/src/dialog.tsx`、ADR-0293 决定 3 |
+| Expo Go SDK 57 自带 reanimated 4.5、gesture-handler 2.32、keyboard-controller、expo-audio、expo-speech；**不带语音识别**（STT 要 dev build） | 2026-09-11 spec §1 |
+| 形象：main 上的纯层 `composeFrame(slot, state, t)` → 格子坐标 + 调色板 + 角标色；网格 59×52（角色 55×48 + 四周各 2 格）。实测每帧 118–252 段横向行程、3–4 种颜色；10 秒 25fps 里画面变化次数：idle 22、working 51、solving 102、queued 1 | `src/renderer/src/lib/ottoFace/frame.ts`、`sprites.ts`；本 spec 起草时跑的脚本 |
+| 13 个坑位、11 个角色（坑 1 与 3 都是 sweep、10 与 12 都是 mane）；桌面挑头像是按坑位列 13 格、不去重 | `sprites.ts:57-71`、`WorkspaceAgentsTab.tsx:364-378` |
+
+## 2. 边界
+
+做（本轮 = A0–A3，§8）：
+- demo 的名册、私聊、智能体设置、建一只、群聊（建 / 聊 / 设置）落成 RN。
+- 两端共用的纯逻辑**挪进 `src/shared/`**，不抄第二份。
+- 删掉手机端用不到的旧代码（§11 第 2 条）。
+- §7 的两处后端。
+
+设计写在这里、另开 plan（不在本轮）：A4 语音、A5 账号与那台电脑（含搜索记忆、那枚「等你登录」的点）。
+
+不做：
+- 团队（别人拉我进的团队、成员、连接器贡献）——需求原话「不需要团队」。
+- 任务会话、项目投影、好友、扫码配对。
+- Android 专门适配、iPad 布局、上架（IAP 问题同 2026-09-11 spec §8 第 1 条）。
+
+## 3. 三块未知的答案
+
+### 3.1 ottoFace 在 RN 上怎么画：react-native-svg，每种颜色一条 Path
+
+**选型**：`react-native-svg`（ADR-0293 已引入，不加依赖、不碰 L1）。同一帧里同色、同一行、连着的格子合成一段，每种颜色一条 `<Path>`（`M x y h n v 1 h -n z` 串起来）（react-native-svg 15.15 没有 `shapeRendering` 这一属性——硬边靠每格落在整数个物理像素上：m / l 档在 @2x / @3x 屏上成立，s 档在 @3x 上是每格 1.5 个物理像素，边缘可能混色，见 §12 第 5 条），`viewBox` 就是网格本身，缩放交给 SVG。
+
+**纯层挪进 `src/shared/ottoFace/`**：`character.ts`、`characters/*`、`sprites.ts`、`states.ts`、`frame.ts`、`adapt.ts`（`dmFaceState`）。渲染层的 `lib/ottoFace/` 只剩 `paint.ts`（canvas）+ 一个把 shared 那份原样转出去的 `index.ts`，桌面十几个调用点的 import 一个字不改。
+
+**shared 里新增的纯函数**（都进 vitest）：
+- `frameMotion(state, t, opts?)`：把 `composeFrame` 里那一段「这一刻的位移 / 眼形 / 嘴形」拆出来，`composeFrame` 改成调它。手机端据此做帧去重：同一个 motion 键画出来的帧逐格相同，键没变就不重画。
+- `faceLayers(frame)` / `runsPath(runs)`（`runs.ts`）：帧 → 每种颜色一串行程 → SVG 的 `d` 串；拼法不留在 RN 组件里（那一侧进不了 vitest）。`createFaceArtCache()`（`art.ts`）按 (坑位, 状态, motion) 记住算好的几层，键就是那个稳定的键。
+- `faceRim(frame)`：轮廓外一圈（四邻域里空着的格子）。深色底上画成 `DISC_COLOR`——这批脸的头发是纯黑的，贴在 `#000` 上整颗头会糊成一团；桌面靠圆盘解决，手机不画圆盘（demo「不许裁」），所以靠描边（demo 同款）。
+
+**新增一档状态 `alive`**：眨眼 + 呼吸（2600ms / 1 格）、眼睛不动、**没有角标**。名册那一墙要「活着但不声称任何事」（demo 的 a09641d3：「名册会眨眼，但一个角标都没有」），而 main 的表里没有这一档——`plain` 完全静止，`idle` 带一枚灰角标（那是在声称「空闲」，而名册查不到谁在跑，#722 / #1282）。桌面暂无消费方（陈列馆脚本多画一格）。
+
+**手机端组件 `mobile/src/face/Face.tsx`**：
+- props：`slot`、`state`（缺省 `plain`）、`tier`（`"s" | "m" | "l"` = 每格 0.5 / 1 / 2 点，盒子 29.5×26 / 59×52 / 118×104）、`phase`（毫秒偏移，名册按 agentId 派生，免得一墙脸同时眨眼）、`label`。
+- **盒子按脸的真实尺寸给**：宽高就是网格乘档位，不裁、不加圆底（demo 被裁过三次）。demo 的「27 / 54 / 108 档」是 e215a0 那份 54 高网格的尺寸，对到 main 的 52 高网格就是 s / m / l。
+- **角标**：画成网格右上角的一个圆点（外圈一道背景色的环），色取 `BADGE_COLORS`。main 的桌面版画在圆盘右下；手机没有圆盘，右上是 demo 的位置。
+- **一口钟**：模块级 25fps 定时器，有订阅者才跑、App 进后台停；每张会动的脸每拍算一次 `frameMotion`，键没变就不 setState。`faceAnimates(state)` 为假的直接画 t=0 一帧、不订阅；系统「减弱动态效果」开着时一律静止一帧。
+- 选中框、群头像横叠、药丸里的脸都在盒子**外面**做（不改脸本身）。
+
+**否决**：skia（新原生依赖，SVG 已经够用）；expo-gl（名册一墙脸 = 十几个 GL 上下文；`dither.tsx` 注释说 App Store 版 Expo Go 真机缺它）；按 11 角色 × 16 态预渲染 PNG 序列（丢掉与桌面同一份源，状态表一改就过期，还要放弃整格位移那条纪律的一部分）。
+
+### 3.2 手机端的云会话客户端：桌面那份挪进 shared，两端各接各的线
+
+- `src/main/cloudSessionClient.ts` → `src/shared/remote/cloudSessionClient.ts`。三处绊脚：`FriendsResult` 改 import `src/shared/friends.ts` 那份；`cloudSessionFleetRow` / `CloudSessionSummary`（及其对 `SessionSummary`、`CLOUD_WORKSPACE_PREFIX` 的依赖）拆到 `src/main/cloudSessionFleet.ts` 留在桌面；`validateRepoUrl` 那行没人用的 import 删掉。测试跟着拆：纯客户端那 120 多条进 `tests/shared/remote/`，岛 / 会话列表那几条留 `tests/main/`。
+- `src/main/supabaseWorkspacesApi.ts` → `src/shared/supabaseWorkspacesApi.ts`；主场那 13 行（`ensureHome`）拆成 `ensureHomeWorkspace(deps, client, uid)`，落在独立的 `src/shared/homeWorkspace.ts`（不在这份 API 文件里），桌面 `workspaceManager` 改成调它。
+- 删智能体那四步从 `workspaceManager` 拆出一个注入式的纯编排（删私聊 / 摘群 / 删行 / 删页各是一个依赖），两端共用；桌面那份只剩接线。**归 A1**：它的第一个手机端消费方是智能体设置里的「删掉」。
+- 手机端接线 `mobile/src/cloud/`：`createTransport = channel => createWsTransport({baseUrl: RELAY_BASE, role: "guest", channel, authToken})`、`accessToken` 取 supabase 的 session、推送进一个外部 store（`useSyncExternalStore`，不引 zustand）；App 回前台对当前会话房 `reconnectNow`。个人主场里没有审批卡（ADR-0298），`onApprovalRequest` 接空。
+- 把时间线要的那批渲染层纯函数挪进 shared（§9 列了清单）；桌面改 import。代价：桌面云会话这一面要回归一遍（§12）。
+
+**否决**：手机端抄一份客户端（1247 行的协议状态机——缓冲合并、按 seq 去重、ACK 超时三态——抄两份必然分家）；手机跨目录 import 渲染层（`src/renderer` 用 `@/` 别名、会碰 DOM 与 zustand，那层规矩不该两边守）。
+
+### 3.3 名字：必填（维护者拍板，§11 第 1 条）
+
+库里 `name` 强制 1–32 字、团队内唯一，runtime 五处按名字认人（发言人标签、就位花名册、派活名单、通话名单、接力线）。维护者选了「名字必填」：建一只那张表的名字格变必填，校验走 shared 的 `validateAgentName` + `agentNameConflict`（同桌面编辑器），零后端改动。这是与 demo 的一处偏差（§10 第 1 条）。
+
+## 4. 设计语言
+
+沿用 2026-09-11 spec §3（令牌逐值取自 `mobile/src/theme.ts`、字阶、弹簧口径、按压反馈、触感四处、文案不出现「水獭」）。**默认走 apple 那套皮**（`theme.ts`）；grok 那套当配色实验留在 demo 里。这一版多出来的几样，尺寸逐值取自 demo：
+
+- **浮在内容上的圆钮与药丸**：圆钮 44（毛玻璃：`expo-blur` + 前景色 10% 叠一层），药丸 46 高、左 9 右 16 内边距、最大宽 62%、居中；页面内容从它们底下滚过去，没有实心导航条。
+- **名册那一行**：脸 m 档 | 名字（16.5 / 650）+ 职责（小字、弱色）/ 最后一句（一行截断）| 时间（脚注、弱色）。**不画「在跑没在跑」**（#722 / #1282）。
+- **底部抽屉**：从下往上、定高 70%、下拽可关（带动量、速度过阈值即关，同 demo 的 `sheet()`）；X 在左、标题绝对居中。第一个消费方是智能体设置里的「换个形象」（A1），A2 的「新建智能体」复用同一副骨架。按 ADR-0293 决定 3，`react-native-reanimated` 与 `react-native-gesture-handler` 跟它一起进依赖（都在 Expo Go 里）。
+- **居中弹窗**：沿用 `mobile/src/dialog.tsx`，加一个 `dismissible` 开关——「新建」那张岔路弹窗要点外面能退（demo：「按错了不该被关在里面」），表单 / 确认类照旧点遮罩不关。
+- **确认类（删掉一只、解散群）用居中弹窗**，不用 demo 里的抽屉（手机端既有规矩，2026-09-11 spec §10 第 1 条）。
+
+## 5. 屏幕清单与数据来源
+
+「源」：**SB** = 直连 Supabase（用户 JWT + RLS）、**CS** = cs 帧经中继到 VPS runtime、**E** = edge HTTP、**L** = 本机。
+
+### 5.1 进门（不变）
+M1 那套（冷启动 / 登录 / 注册 / 找回密码 / 确认信）原样。登录后落在名册。boot 不再等配对身份（`openStore()` 随配对一起删）。
+
+### 5.2 名册（根，A1）
+- **头**：三颗圆钮。左 = 账号（我的名字首字；A5 之前进一页只有邮箱 + 退出登录的精简账号页）；右 = 搜索、＋。**没有大标题**。
+- **进门七态**（照搬桌面 `rosterGate` 的判据，挪进 shared）：还没查到 / 正在建主场 → 骨架（**不劝订阅**）；没订阅 → 一句实话「订阅 Pro 或 Max 之后才建得了智能体」（A5 之前手机上办不了订阅，不画一颗点了没去处的钮）；档位不带 → 同理；建失败 → 原因 + 重试钮（不自动重试）；**有主场就进得去、不再看档位**（降了档的人的聊天记录还在）。源：E（`/billing/v1/me`）+ SB。
+- **一列**：主场的智能体 + 主场的群，**混在一起按最近一次动静降序**（demo 定的；桌面是「单只按名册顺序、群按活动」，两端这一处故意不同）。动静 = 那条聊天的 `last_ts`（§7.1）→ 缺席退回那一行的 `updated_at`（这张表没有 `created_at`，而 `updated_at` 从没被补丁碰过，今天就等于创建时间）→ 没聊过的智能体退回它自己的 `created_at`；同分按名册顺序。
+- **单只那一行**：脸（`alive`，m 档，相位按 agentId 派生）| 名字 + 职责 / 最后一句 | 时间（刚刚 / 12:41 / 昨天 / 周二 / 9 月 3 日，判自然日）。没聊过的写「点进去跟它说第一句」。
+- **群那一行**：几张脸横着叠（s 档，总宽钉死 59 = m 档单只的宽，这一列的左边缘是一条直线；步长 `(59 − 29.5) / (n − 1)`，后一张压前一张）| 群名 + 成员名 / 「名字：最后一句」| 时间。
+- 点单只 → 私聊：有私聊就进；没有就先开一页**草稿**（同一张聊天页，还没有会话），第一句话发出去那一刻才 `create{chat:{kind:"dm"}}` 再发——同桌面 `startChatDraft` / `createCloudSessionFromDraft`。当场就建会让「点进去看一眼」也把它顶到名册最上面（新建的那一行会成为它最近一次动静）。runtime 对私聊幂等（`findDmSession` + 唯一索引）。点群 → 群聊。
+- **刷新**：进前台、从聊天页退回来、建 / 删之后各拉一次；不轮询。源：SB。
+- **搜索**（A1 做名册那一半）：按名字 / 职责 / 最后一句本机过滤，结果行与名册同款；记忆那一半归 A5。
+
+### 5.3 私聊（A1）
+- **头**：回退 | 药丸（脸 s 档 + 名字）| 右边那颗**直接进设置**（中间没有菜单）。药丸里那张脸 = `dmFaceState(openTurns, streaming, agentId)`（与桌面私聊头部同一份判据：plain / queued / working / solving）。
+- **时间线**：一条永久线（ADR-0297），唯一的分段是一天一条的日期。我说的话 = 右侧实色气泡；它说的话 = 不套气泡的正文，按空行拆成几段（`splitBubbles`，同桌面 ADR-0266），段前一行「脸 + 名字 · 时间」。藏哪些事件与桌面同一份判据（`hiddenFromCloudTimeline`：内务事件、工具步骤、开场白都不画，ADR-0235 / 0250）。流式碎片（`delta`）画成它正在写的那一段。往上翻到顶取更早一页（尾巴模式，`beforeSeq`），失败给一颗要人点的钮。
+- **最底下那一行 =「此刻」**：只在这只有没收口的一轮时出现（`openTurns`）。脸 m 档，跟着 `dmFaceState` 走；文字「名字 · 时间 · 排队中 / 执行中 / 作答中」；**没有打字的三个点**；**「停一下」在这一行上**，只在它真在跑时出现（`stopButtonRows`：每只只认 seq 最小那行），点了发 `stop{seq}`，停完这一行随事件消失。
+- **输入框**：一张药丸卡 + 右边一颗 48 的圆钮。打了字 = 发出去；空着时是一颗灰的发送钮（A4 起空着变「开电话」，一物两用）。**没有型号选择器、没有上下文环**。回执三态照 ADR-0228：`unknown` 时清输入框、另画一行「不确定有没有发出去」+「重新发送」。源：CS。
+
+### 5.4 智能体设置（A1）
+- 头：回退 + 右上「存」。**只有这几样**：形象（一张 l 档大脸 +「换个形象」→ §4 的抽屉：上面大脸走一遍它干活的样子、下面 11 张脸，只有选中那张是活的）/ 名字（必填，校验同 §3.3）/ 职责（≤200 字、不许换行）/ 还有什么要交代的（标签写明「它自己看得见这一段」；≤4000 字）/ 删掉「X」。
+- **撤掉的三样照 demo 与 issue**：模型（ADR-0237 的 Auto 替用户判）、能用哪几个应用（那台电脑上的登录态，账号底下的事）、它记下来的东西（ADR-0282 的 wiki，后台的事）。**说话的声音那一格 A4 才出现**（没有后端时画一格点了不生效是撒谎的勾）。
+- 头像写回：自己的坑位（`pickSlotOf`，sweep 存 3、mane 存 12）不是第一个出现的坑位——三个暂借格（1/2/10，见 sprites.ts 法理③）不许被存进去，补齐旧 02/03/11 那天存过的人不能被悄悄换脸。cap 只借住在坑 2、没有自己的坑位，**这面墙因此只有 10 张脸能选，不是 demo 的 11 张**，cap 要等旧 03 补齐才进这面墙——这条待 A1 与维护者确认。没换就不写。管理员没有「删掉」那一行。
+- 删掉：居中确认弹窗，文案照实说「它的私聊一起删掉；群里会被摘出去；它自己那页记忆一起删掉，它改过的共用页面留着」→ 共用编排四步（§3.2）→ 退回名册。源：SB + CS。
+
+### 5.5 建一只（A2）
+- **＋ 先问一句**：居中弹窗（可点外面退），两行：「一只智能体」（左边画 app 自己那张脸，`otto.png`）/「一个群聊」（左边三张脸横排）+ 取消。
+- **一只 → 70% 抽屉**：X（不建了）+ 标题「新建智能体」；上面一张 l 档大脸**走一遍它干活的样子**（排队 → 思考 → 检索 → 执行 → 作答 → 完成 → 活着，循环；换一张脸从头走），**不写状态词**；名字输入（必填，不自动聚焦——键盘会盖住下面那墙脸）；11 张脸（m 档、底下不写名字，选中 = 一圈边 + 一块底 + 一次弹入，只有它是活的）；「创建」（名字不合法时按不动）。
+- **创建**：插一行 `workspace_agents`（`agent_id` 客户端铸 `a_` + 12 位十六进制，职责 / 提示词空、模型空 = Auto、应用空 = 全给，**`onboarding = 'greet'`**，§7.2）→ 当场 `create{chat:{kind:"dm"}}`（这里不走草稿：它要先开口，得先有那条线）→ 收抽屉 → 名册刷新（新的那一行在最上面，带一段入场，首次渲染不算新来的）→ 推入它那条线。
+- **它先开口**（§7.2 runtime）：runtime 建这条私聊时看到 `onboarding = 'greet'`，替我落一条带记号的开场白，它的第一轮问「你想让我干什么」。
+- **六句现成的话**：只在它 `onboarding = 'role'`（等着我说它是干什么的）时画在它第一句话底下；点一下**只填进输入框不发出去**，焦点还给输入框、光标落在末尾。
+- **答完那句话就是它的职责**（§7.2 runtime 写回 `description`）；退回名册那一行的职责跟着变。源：SB + CS。
+
+### 5.6 群聊（A3）
+- **建群**：从＋弹窗的「一个群聊」推入。群名（可空，空着按名册顺序用成员名拼）+ 名册列表（勾选；**上下限当场按不动**：满 6 只时没勾的锁住、勾上的照样点得动；少于 2 只「建」按不动）+ 组尾「一只的群就是私聊，所以至少两只；最多六只」→ `create{chat:{kind:"group"}}` → 推入群聊。
+- **群聊页**：药丸里是几张横叠的 s 档脸 + 群名，右边那颗直接进群设置。时间线：接力线居中（`relayLineText`）、名单变更那一行居中带脸（`chatRosterLineParts`）、派活那一句（我没 @ 谁、runtime 挑了谁：「没 @ 谁 —— 运维接了」，从 `user_message.dispatch` 投影，手机端先画）。最底下那一行一次只画一只：作答 > 执行 > 排队，同档取 seq 最小。
+- **@ 谁**：输入框上方一颗「@ 谁」→ 底部抽屉（只列这个群里的智能体）→ 插一个 `@名字 `；发送前解析走 shared 的 `resolveSendMentions`（与桌面同一份）。
+- **群设置**：群名（改了按「存」走 `chat_update{name}`）/ 里面有谁（每行「移出」，可以移到空群，ADR-0297 的 0..6）/ 加一只（抽屉，满 6 只锁住）/ 解散这个群（居中确认：「只删这条线，里面那几只都还在」→ `delete`）。源：CS。
+
+### 5.7 语音（A4，另开 plan）
+电话模式**替换输入框**（脸 m 档在说 / 在听、声浪、计时、转文字 / 静音 / 挂断）；挂断折成一张卡（「多久 + 聊的什么」，同 ADR-0288），点开是从下面滑上来的一扇窗、不盖住头上那颗药丸。依赖：`call` 帧与 `voice_call_changed`（已有）、TTS 走 edge `/llm/v1/speech` + `expo-audio` 放音、识别要 dev build（Expo Go 不带 STT）、音色可选 = `workspace_agents` 加一列 + ADR（demo 六档对到 12 个 MiniMax 音色里挑哪六个，届时定）。
+
+### 5.8 账号与那台电脑（A5，另开 plan）
+账号页（额度两扇窗报「还剩百分之几」、订阅、这周用了多少、它们共用的一台电脑、设置、退出）；那台电脑（文件 / 应用 / 记忆 / 用量）；搜索的记忆那一半；账号那颗钮右上角那枚 `--warn` 的点（有应用等你登录时亮——**数据源要先查清**，查不到就不画）。
+
+## 6. 状态与降级
+
+沿用 2026-09-11 spec §5 四条（还没查到 ≠ 没有 / 读不到 ≠ 空 / 说不清就不画钮 / 离线）。这一版多两条：
+- **会话房的四态**（connecting / ready / gone / denied）：gone 时输入框上方一行「正在重连…」、输入框照常可打但发送钮灰；denied 是终态，说清是哪一种（`deniedMessage`）并给「回名册」。
+- **聊天身份三态**（ADR-0302）：进一条聊天先按清单那一行种 `chat`，welcome 覆盖；还不知道时不画任何壳。
+
+## 7. 后端改动
+
+### 7.1 名册的「最后一句 + 最近动静」（A1）
+- **migration**（编号合并时认领）：`workspace_sessions` 加 `last_ts timestamptz`（可空）、`last_excerpt text not null default ''`、`last_from text not null default ''`（`agent:<id>` / `human:<uid>`）。不回填：缺席时各端按 §5.2 的退路排。
+- **runtime**：`CloudSessionMeta` 加 `setLast({ts, excerpt, from})`，在 `notify` 里逐条推进（同 title / participants 的形状，ADR-0283）；每条会话**尾沿节流**（3 秒内最多写一次、最后一条一定写到）。算入：人的 `user_message`（不含接力 / 招呼开场白）、带正文的 `assistant_message`、人的 `chat_message`。摘录：第一段非空文字、折叠空白、≤120 字。判据是 shared 的纯函数，runtime 只管 IO；写失败只记一行日志（同 `cloudSessionMeta` 的纪律）。
+- **读**：手机端单独一条容错查询（这条 migration 没跑时 PostgREST 回 42703 → 走 §5.2 的退路，同 ADR-0223 部署顺序那条教训）。桌面暂不读（它的群按 `updated_at` 排其实是按创建时间排——另开 issue）。
+- **部署顺序**：migration 先、runtime 后（runtime 在列不存在时只记日志不崩）。
+
+### 7.2 新建的智能体先开口，第一句回话写进职责（A2）
+- **判据是一格显式状态，不是推断**：migration（编号合并时认领）给 `workspace_agents` 加 `onboarding text`（可空，`check (onboarding in ('greet','role'))`）。
+  - 为什么不按「新私聊 + 职责为空」推断：桌面建智能体时职责也是可选的（`createAgentDraft.ts` 缺省 `""`），而桌面私聊是「第一句发出去那一刻才建」——照推断判，桌面上一条职责为空的智能体第一次被私聊时，runtime 会先替它问一句「你想让我干什么」、紧接着它再答我刚发的那句（双答），还会把那句随口的话写成它的职责。两个失败都是安静的。显式状态只由手机的「建一只」写，桌面的行为一个字不变。
+- **状态机**（三步，shared 纯函数，runtime 只管 IO）：
+  1. 手机建一只：插入时 `onboarding = 'greet'`（RLS 的 insert 策略不管这一列）。
+  2. runtime 建这只的**新**私聊行（不是找回已有的那条）且看到 `'greet'`：替建的人落一条 `user_message{greeting:"new_agent", mentions:[agentId]}` 并入队——与 ADR-0272 语音招呼同一条路（先落盘再入队，重启补跑 / 排队灯全部免费）——然后把这一格改成 `'role'`。开场白正文（出厂提示词）是 shared 里的一个函数：「你刚被建出来，还没人告诉你要干什么；用一两句话问用户想让你干什么，可以举一个例子；别列清单」。
+  3. 私聊里人的第一条 `user_message`（不含开场白）到达、且这一格是 `'role'`：`description` 还是空的就写成那句话的第一行（折叠空白、去换行、≤200 字），不管写没写都把这一格清成 `null`，并让这只的名册缓存失效（下一轮 brief 带上它）。之后改职责走设置页。
+- `greeting` 的取值加一个 `"new_agent"`（`src/session/events.ts`，可选字段加字面量，旧日志照常重放）。
+- **不进协议位**：事件线上只浅校验 base 四格，旧桌面收到新取值照收，两端时间线都按「`greeting` 在场就不画」藏起它；表里加的列不是协议。
+- **ADR**（合并时认领）：「新建的智能体先开口，第一句回话就是它的职责」——含否决的三条：按「职责为空」推断（上面那两个安静的失败）、客户端写职责（桌面答的话就不写）、`create` 帧加显式 `greet`（要进协议位 ⇒ 桌面必须与 runtime 同时发版）。
+- 部署：migration 先、runtime 后（runtime 读不到这一列时当 `null`，行为退回今天）。
+
+## 8. 子项目与顺序
+
+| # | 子项目 | 依赖 | 交付 |
+|---|---|---|---|
+| A0 | 基座：ottoFace 纯层 + cs 客户端 + workspaces API + 时间线纯函数挪进 shared（桌面改 import）；手机端 `<Face>`；单栈导航骨架（名册占位），删掉三栏 / 项目投影 / 配对 / 好友；新断言「`mobile/` 只 import `src/shared/**`」 | — | 一个 PR |
+| A1 | 名册 + 私聊 + 智能体设置 + 名册搜索；底部抽屉（reanimated + gesture-handler）；§7.1 | A0 | 一个 PR（含 migration，合并后跑库 + 部署 runtime） |
+| A2 | ＋ 岔路弹窗、建一只抽屉、六句现成话；§7.2 | A1 | 一个 PR（含 migration，合并后跑库 + 部署 runtime） |
+| A3 | 建群、群聊页、@ 谁、群设置 | A1 | 一个 PR |
+| A4 | 语音 | A1；dev build | 另开 plan |
+| A5 | 账号与那台电脑 | A1 | 另开 plan |
+
+每片一份 plan，**写一片、做一片**（后一片的 plan 在前一片合并后写，免得计划照着一份已经变了的代码写）。手机端没有发布渠道（Expo Go / 自签），中间态只有维护者看得到：A0 合进 main 时名册是一句「下一步做」的空态可以接受——空态写实话，不画假数据。
+
+## 9. 挪进 `src/shared/` 的清单（A0，桌面改 import）
+
+| 从 | 到 | 备注 |
+|---|---|---|
+| `src/renderer/src/lib/ottoFace/{character,characters/*,sprites,states,frame,adapt}.ts` | `src/shared/ottoFace/` | `paint.ts` 留渲染层；渲染层 `index.ts` 原样转出 |
+| `src/main/cloudSessionClient.ts` | `src/shared/remote/cloudSessionClient.ts` | 会话列表 / 岛那几个导出拆到 `src/main/cloudSessionFleet.ts` |
+| `src/main/supabaseWorkspacesApi.ts` | `src/shared/supabaseWorkspacesApi.ts` | `ensureHomeWorkspace` 落在独立的 `src/shared/homeWorkspace.ts`，不在这份里 |
+| `src/renderer/src/lib/{agentAvatarSlot,agentAvatar}.ts` | `src/shared/` | 坑位派生 + `agentFaceIfKnown` |
+| `src/renderer/src/lib/{chatBubbles,cloudStreaming,dayLabel,systemNote}.ts` | `src/shared/` | 零或只有 shared 依赖 |
+| `src/renderer/src/lib/{cloudTimeline,workspaceView,proxyShare,billingView}.ts` | `src/shared/` | **整份挪，不拆**：`cloudTimeline` 的渲染层依赖只有 `agentAvatar` / `workspaceView`（→ `proxyShare`，零 import）/ `systemNote` / `billingView.countdown`，这一串挪完它自己就是纯 shared；拆一半等于同一个文件的判据住两处。`billingView` A5 的账号页也要 |
+| `src/renderer/src/lib/{agentRoster,workspaceAccess}.ts` | `src/shared/` | `ChatView` 类型从 `AgentChatHeader.tsx` 挪进 `agentRoster.ts`，组件反过来 import 它 |
+| `src/renderer/src/lib/agentMentionInput.ts` | `src/shared/` | 只依赖 shared 的 `agentMention`；A3 用 |
+
+**桌面改 import，不留转发壳**（ottoFace 那个 barrel 除外，它还要带着 `paint.ts`）：两条路径指向同一份代码，下一个人分不清哪条是正路。约 30 个渲染层文件的 import 行要改，全是机械替换。
+
+测试跟着挪（`tests/renderer/lib/…` → `tests/shared/…`），**只挪不改断言**；挪完门禁照旧全绿是这一步的唯一判据。
+
+## 10. 与 demo 不同的地方（实现以这里为准）
+
+1. **名字必填**（§11 第 1 条）。demo 名册行的「没名字时职责当主行」那一支不做。
+2. **形象用 main 那份**（§11 第 4 条）：角标是圆点不是 e215a0 的像素小图标；状态名是 main 的（`composing` / `solving` 替 demo 里的 `thinking` / `answering`）；网格 59×52，所以尺寸档是 26 / 52 / 104 不是 27 / 54 / 108，群头像总宽 59 不是 67。
+3. **名册那一墙用新加的 `alive`**（§3.1），并按 agentId 错开相位——demo 里所有脸共用同一个时刻，一墙同时眨眼。
+4. **「此刻」那一行只在有没收口的一轮时出现，只有排队 / 执行 / 作答三档**：demo 剧本里的思考 / 检索 / 完成是演示，真数据分不出来（与桌面 `dmFaceState` 同一份判据）。
+5. **工具痕迹不画**：demo 里「在它的电脑上动了 3 个文件」那张卡与「更新了记忆」那一行不做——桌面云会话已经判过把干活的痕迹收成一枚指示器（ADR-0250），两端同一条判据；要画就两端一起改。
+6. **名册没有「@ 我几次」与通话图标**：主场里只有你一个人，agent 的 @ 不通知人（ADR-0256）；通话状态不在清单表里（A4 再判）。
+7. **名册没有「一只都还没有」的空态**：管理员由触发器种下，主场的名册里永远至少有它。
+8. **输入框（A1–A3）没有 ＋ 与听写麦**：cs 的 `say` 只收文字，＋ 那四样都发不出去；听写要 STT（A4）。右边那颗圆钮空着时是灰的发送钮，A4 才变成电话。
+9. **时间与「最后一句」来自新加的投影**（§7.1）：跑库 + 部署之前，名册按创建时间排、第二行写职责。
+10. **确认类用居中弹窗**（删掉一只、解散群）。
+11. **声音那一格 A4 才出现**。
+12. **删掉的确认文案改成照实说**：demo 写「它写的记忆留着」，而桌面删一只会连它自己那页 wiki 一起删（`workspaceManager.ts:431`）。
+13. **头像写回它自己的坑位，不是第一个出现的坑位**（`pickSlotOf`：sweep 存 3、mane 存 12；三个暂借格 1/2/10 不许被存进去，见 sprites.ts 法理③）：demo 存的是角色 id，库里存的是坑位。**cap 只借住在坑 2、没有自己的坑位——挑头像那面墙目前只有 10 张脸能选，不是 demo 的 11 张**，cap 要等旧 03 补齐才进这面墙；待 A1 与维护者确认。
+14. **群那一行的最后一句写「名字：摘录」**：demo 的「开发 → 运维：…」是接力线的写法，清单表里没有这一格。
+15. **A0 没删手机端依赖**：worktree 的 `mobile/node_modules` 是指向主 checkout 的软链，在那里装卸会改到所有 lane 共用的那一份；没用上的依赖另开 issue 清（ADR-0317 后果第 2 条）。
+16. **开发构建里多一屏形象陈列馆**：A1 之前没有任何一屏画真智能体的脸，这是在模拟器上核画法的唯一入口；生产构建里没有（`__DEV__`）。
+17. **`ui.tsx` 只摘了两个专属组件**（配对安全码、项目文件夹图标）：其余通用组件留着给 A1 用。
+18. **没有 `shapeRendering="crispEdges"`**：react-native-svg 15.15 不认这个属性（spec §3.1 原先那句写错了，已改）；硬边靠整数物理像素对齐，s 档在 @3x 上的半像素混色留给真机 / 模拟器看过再定。
+19. **`CloudSessionSummary` 留在客户端模块里**，不是整批挪走：只有 `cloudSessionFleetRow` 拆到了 `src/main/cloudSessionFleet.ts`（要 `SessionSummary` 那层 better-sqlite3 类型，本就是桌面专属），`CloudSessionSummary` 本身与 `src/shared/remote/cloudSessionClient.ts` 一起留在 shared。
+20. **A0 的账号页多一组「连接」诊断信息**（中继地址 + app 版本），不只有邮箱与登出——终审加的一格，方便真机排查连不上的问题。
+21. **`t = 0` 是睁着眼的中性静止帧**（眨眼窗口挪到每个周期的末尾，不是开头）：这个改动顺带修好了桌面「减弱动态效果」那条路——它原来在 `t = 0` 画出来的是闭着眼的脸（#1356 终审）。
+
+（写 plan / 实现期间的偏离追加在这里。）
+
+## 11. 维护者拍板（2026-09-23）
+
+1. 名字**必填**（不放开空名字）。
+2. 新架构用不到的旧功能（三栏壳、项目投影、扫码配对、好友、账号页里的电脑统计）**删掉手机端代码**；`src/shared/remote` 的协议与桌面侧不动，桌面「配对手机」入口另开 issue 判。
+3. 这一轮做 **A0 到 A3**。
+4. 形象用 **main 那份**引擎（与桌面同源）。
+
+## 12. 已知代价
+
+1. **桌面回归面**：cs 客户端、workspaces API、ottoFace 纯层、一批时间线纯函数搬家；靠「只挪不改断言」+ 门禁兜。
+2. **桌面「配对手机」从此没有对端**（手机投影删了），另开 issue。
+3. **手机上没有好友了**。
+4. **「最后一句 / 按动静排」与「它先开口 / 写回职责」各要跑一次库 + 部署一次 runtime 才有**（生产库动作等维护者明说）。
+5. **真机一次没跑过**；每片收尾在 iOS 模拟器（Expo Go）上对着 demo 逐屏过一遍，真机手验另列清单（毛玻璃、弹簧手感、键盘推起输入框、触感）。
+6. **不开 IAP**：A5 之前手机上办不了订阅，没订阅的人在手机上只能看到一句实话。
+7. **手机端与桌面的名册排序故意不同**（混排按动静 vs 单只按名册顺序 + 群按活动），两端各自有理由（§5.2）。
+
+## 13. 否决的候选
+
+- **skia / expo-gl / PNG 序列**画形象（§3.1）。
+- **手机端抄一份 cs 客户端**、**手机跨目录 import 渲染层**（§3.2）。
+- **放开空名字**：维护者选了必填（§11）。
+- **客户端写职责**：桌面那侧回的第一句话就写不进去，而这件事的判据只能有一份。
+- **按「新私聊 + 职责为空」推断要不要先开口**：桌面上会双答、会把随口一句写成职责（§7.2）。
+- **`create` 帧加显式 `greet`**：要进协议位，桌面就得与 runtime 同时发版；一格表里的状态做得到同一件事且不牵扯发版。
+- **名册继续用桌面的排法**：demo 定了混排按动静（手机上每一行都写着时间，两种排序压在同一屏里要换一次心智）。

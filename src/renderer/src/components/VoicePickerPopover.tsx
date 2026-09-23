@@ -15,7 +15,7 @@ import { cn } from "@/lib/utils.js";
 import { Button } from "@/components/ui/button.js";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover.js";
 import { AgentFace } from "./AgentFace.js";
-import { agentFaceSlot } from "../lib/agentAvatar.js";
+import { agentFaceSlot } from "../../../shared/agentAvatar.js";
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 import type { CloudAck } from "../../../shared/shellBridge.js";
 

@@ -174,7 +174,7 @@ function cloudSessionText(cloud: CloudSessionFacts): string {
     噼里啪啦一大堆专业术语」）。所以这一段改成说**怎么像人**，四句各对一条病：
     ① 像同事在群里聊天：口语、短句、先说结论——对「术语堆砌」；
     ② 别一次把细节全倒出来——对「五百字一口气」；
-    ③ 空行 = 下一条消息——界面按空行拆气泡（renderer/lib/chatBubbles.ts），
+    ③ 空行 = 下一条消息——界面按空行拆气泡（src/shared/chatBubbles.ts），
        两边说的必须是同一件事，这句话不能只在一边；
     ④ 气泡是纯文字，Markdown 记号会原样露出来——对「**3. 小标题**」那种星号
        满屏。

@@ -9,7 +9,7 @@
 // （cloudSessionClient 的 join 先断旧的），所以「它此刻在不在跑」这件事，对着没开
 // 的那几条根本无从知道——画一个恒灰的点就是 #722 那颗撒谎的勾的一般形式。
 //
-// **顺序固定、不按最近活动排**（判据在 `lib/agentRoster.ts` 的 `rosterRows`）：
+// **顺序固定、不按最近活动排**（判据在 `src/shared/agentRoster.ts` 的 `rosterRows`）：
 // 这是通讯录不是会话列表。群那一段反过来按最近活动降序——群是会话。
 //
 // 三条接线上的纪律：
@@ -33,11 +33,11 @@ import {
   SidebarMenu, SidebarMenuButton, SidebarMenuItem,
 } from "@/components/ui/sidebar.js";
 import { AgentFace } from "./AgentFace.js";
-import { agentFaceSlot } from "../lib/agentAvatar.js";
-import { groupRows, homeOf, rosterGate, rosterRows, teamsOf } from "../lib/agentRoster.js";
-import type { AgentRosterRow, GroupChatRow } from "../lib/agentRoster.js";
-import { workspaceAccess } from "../lib/workspaceAccess.js";
-import type { CloudSessionListRow } from "../lib/workspaceView.js";
+import { agentFaceSlot } from "../../../shared/agentAvatar.js";
+import { groupRows, homeOf, rosterGate, rosterRows, teamsOf } from "../../../shared/agentRoster.js";
+import type { AgentRosterRow, GroupChatRow } from "../../../shared/agentRoster.js";
+import { workspaceAccess } from "../../../shared/workspaceAccess.js";
+import type { CloudSessionListRow } from "../../../shared/workspaceView.js";
 import { WorkspacesSidebarSection } from "./WorkspacesSidebarSection.js";
 
 // 没拉过时的兜底：模块级常量而非每次渲染 `?? []`，保证 selector 每次返回同一引用

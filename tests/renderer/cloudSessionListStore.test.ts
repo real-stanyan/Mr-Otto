@@ -20,7 +20,7 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { useChat, type CloudSessionState } from "../../src/renderer/src/store.js";
 import type { SessionEvent } from "../../src/session/events.js";
 import type { CloudSessionStatus } from "../../src/shared/shellBridge.js";
-import type { CloudSessionListRow } from "../../src/renderer/src/lib/workspaceView.js";
+import type { CloudSessionListRow } from "../../src/shared/workspaceView.js";
 
 let cloudEventHandler: ((e: SessionEvent) => void) | null = null;
 let cloudStatusHandler: ((s: CloudSessionStatus) => void) | null = null;

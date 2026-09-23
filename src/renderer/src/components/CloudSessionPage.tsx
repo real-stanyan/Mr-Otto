@@ -43,7 +43,7 @@ import { ArrowLeft, AtSign, ChevronRight, Download, Phone, Settings2 } from "luc
 import { cn, isMac } from "@/lib/utils.js";
 import { Button } from "@/components/ui/button.js";
 import { Bubble, BubbleContent } from "@/components/ui/bubble.js";
-import { splitBubbles } from "@/lib/chatBubbles.js";
+import { splitBubbles } from "../../../shared/chatBubbles.js";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar.js";
 import { Textarea } from "@/components/ui/textarea.js";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip.js";
@@ -56,23 +56,24 @@ import { useChat, type CloudSessionState } from "../store.js";
 import { EventRow, TimelineProjectionContext } from "./Timeline.js";
 import { buildToolIndex } from "../lib/toolIndex.js";
 import { groupSubagentSpawns } from "../lib/subagentTimeline.js";
-import { formatProxyTime } from "../lib/proxyShare.js";
-import { agentNameOf, labelOf, memberAvatarOf } from "../lib/workspaceView.js";
+import { formatProxyTime } from "../../../shared/proxyShare.js";
+import { agentNameOf, labelOf, memberAvatarOf } from "../../../shared/workspaceView.js";
 import { AddAgentPopover } from "./AddAgentPopover.js";
-import { AgentChatHeader, type ChatView } from "./AgentChatHeader.js";
-import { withDaySeparators } from "../lib/dayLabel.js";
+import { AgentChatHeader } from "./AgentChatHeader.js";
+import type { ChatView } from "../../../shared/agentRoster.js";
+import { withDaySeparators } from "../../../shared/dayLabel.js";
 import { growHidden, initialHidden, nextOlderAction, visibleCloudRows } from "../lib/cloudWindow.js";
 import { AgentFace, PartyAvatar } from "./AgentFace.js";
 import { dmFaceState } from "../lib/ottoFace/index.js";
-import { agentFace, agentFaceIfKnown, agentFaceSlot, imageAvatar } from "../lib/agentAvatar.js";
-import { applyAgentMention, mentionQueryAt, pickerEmptyState, resolveSendMentions } from "../lib/agentMentionInput.js";
+import { agentFace, agentFaceIfKnown, agentFaceSlot, imageAvatar } from "../../../shared/agentAvatar.js";
+import { applyAgentMention, mentionQueryAt, pickerEmptyState, resolveSendMentions } from "../../../shared/agentMentionInput.js";
 import { filterMentionRows, mentionRows, MENTION_KIND_LABEL, type MentionRow } from "../lib/workspaceMentionItems.js";
 import {
   approvalCardTitle, assistantLabel, callDurationText, callOffsetText, canStopTurn, chatRosterLineParts, cloudEmptyState,
   createdAgentNames, hiddenFromCloudTimeline, relayLineText, stopButtonRows, systemNoteText, turnEndedLineText, userRowIdentity,
   voiceCallCards, type RosterLinePart, type VoiceCallCard,
-} from "../lib/cloudTimeline.js";
-import { systemNoteDetail } from "../lib/systemNote.js";
+} from "../../../shared/cloudTimeline.js";
+import { systemNoteDetail } from "../../../shared/systemNote.js";
 import { cloudConversationEntries, scrollToTurn } from "../lib/conversationMap.js";
 import { ConversationMapRail } from "./ConversationMapRail.js";
 import { TurnErrorState } from "./TurnErrorState.js";
@@ -114,7 +115,7 @@ const EMPTY_EVENTS: SessionEvent[] = [];
 const EMPTY_SEQS: number[] = [];
 
 /** join() 之后持续状态的 deniedCode → 人话（渲染层自己的翻译）。
-    main/cloudSessionClient.ts 的 deniedMessage() 只服务 create() 那一次性
+    shared/remote/cloudSessionClient.ts 的 deniedMessage() 只服务 create() 那一次性
     RPC 失败，该函数注释原话："这里不重复造一份会跟渲染层文案走岔的翻译"——
     持续状态（join 之后经 onCloudSessionStatus 推来的 deniedCode）由这一份
     负责。五个码逐一给人话，version_mismatch 特别提示升级；认不出的码原样
@@ -126,7 +127,7 @@ function cloudDeniedMessage(code: string | undefined, serverVersion?: number): s
     case "not_member":
       return "你不是这个团队的成员";
     case "version_mismatch":
-      // 方向说得出来才有用（复审 C2-I6，与 main/cloudSessionClient.ts 的
+      // 方向说得出来才有用（复审 C2-I6，与 shared/remote/cloudSessionClient.ts 的
       // deniedMessage 同一判据）：「更新 Mr Otto」对「云端还没部署」的那半是
       // 错的指引——照做也连不上，且再没有别的线索
       if (serverVersion !== undefined && serverVersion < CS_PROTOCOL_VERSION) {
@@ -144,7 +145,7 @@ function cloudDeniedMessage(code: string | undefined, serverVersion?: number): s
 
 /** 状态条文案（口径同 T4「云端状态三态化」：拿不到状态说"未知"不说"不可用"）。
     connecting/gone 都不是"连不上"的断言，只是"这一刻还没有可展示的事实"——
-    gone 时 wsTransport 会自动重连，不代表这次云会话失败（main/cloudSessionClient.ts
+    gone 时 wsTransport 会自动重连，不代表这次云会话失败（shared/remote/cloudSessionClient.ts
     文件头注释）。ready 没有横幅：一切正常不值得占一行——**除非这份历史缺了
     东西**（issue #957 C-I7）。那一行画在这里而不是 actionError 那格，正是因为
     这里不会被别的操作擦掉——`actionError`（`workspaceGroupsError`）是一格共享
@@ -2280,7 +2281,7 @@ function StopTurnButton({ seq }: { seq: number }) {
 /** 未决审批卡(贴着输入区,不是时间线上的一行)。selfUid ∈ {initiatorUid,ownerUid}
     才有按钮——这个人要么是触发这次审批的那个操作的发起人,要么是这条云会话
     的 owner(据此复审别人的操作);其余成员只读一句"等待谁审批",不能替别人
-    按下批准/拒绝(main/cloudSessionClient.ts deliverEvent 的资格判断在推送
+    按下批准/拒绝(shared/remote/cloudSessionClient.ts deliverEvent 的资格判断在推送
     那一层就已经把卡只发给够格的人,这里的 canDecide 是同一条判据在渲染层
     的镜像——群聊场景大家共读同一份 events,不是每个人各收各的)。
     点下去的反馈(#957 C-I2/#927 桌面侧)：`submitting` 按这张卡自己记(卡本身

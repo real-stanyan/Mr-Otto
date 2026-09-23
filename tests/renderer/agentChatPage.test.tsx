@@ -15,7 +15,7 @@ import "@testing-library/jest-dom/vitest";
 import { Tooltip as TooltipPrimitive } from "radix-ui";
 
 import { CloudSessionPage } from "../../src/renderer/src/components/CloudSessionPage.js";
-import type { ChatView } from "../../src/renderer/src/components/AgentChatHeader.js";
+import type { ChatView } from "../../src/shared/agentRoster.js";
 import { ConfirmProvider } from "../../src/renderer/src/components/ui/confirm-dialog.js";
 import { useChat } from "../../src/renderer/src/store.js";
 import type { SessionEvent } from "../../src/session/events.js";

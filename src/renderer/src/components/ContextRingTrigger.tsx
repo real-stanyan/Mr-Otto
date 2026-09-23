@@ -12,7 +12,7 @@
 //
 // 三条实现判据：
 //
-// ① 判据一律走 `quotaAlert`（lib/billingView.ts）—— `null`（还没查到）不画、
+// ① 判据一律走 `quotaAlert`（src/shared/billingView.ts）—— `null`（还没查到）不画、
 //    没订阅不画、色档与浮层那两只表共用同一组阈值。理由写在那个函数头上。
 // ② **点是装饰，话挂在钮的 aria-label 上**。给点自己加 title 的话，原生气泡会
 //    跟这枚钮的富浮层抢同一次悬停（那正是这枚钮当初不给 title 的理由）。
@@ -28,7 +28,7 @@
 
 import { useChat } from "../store.js";
 import { useNow } from "../lib/useNow.js";
-import { quotaAlert } from "../lib/billingView.js";
+import { quotaAlert } from "../../../shared/billingView.js";
 import {
   ContextDisplayTrigger,
   ContextDisplayRingVisual,

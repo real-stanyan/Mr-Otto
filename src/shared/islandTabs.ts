@@ -10,7 +10,7 @@ import { isDefaultWorkspace } from "./defaultWorkspace.js";
 
 export type IslandTab = "task" | "project" | "team";
 
-/** 云会话那条虚拟行的 workspace 前缀（`main/cloudSessionClient.ts` 的
+/** 云会话那条虚拟行的 workspace 前缀（`main/cloudSessionFleet.ts` 的
     `cloudSessionFleetRow` 合成它）。**两处共用这一个常量**：一边合成、一边
     识别，各写一份字面量的话，改了合成那半而没改识别那半不会报错——只会让
     所有云会话安静地掉回「项目」档，还顶着一个 UUID 当组名。 */

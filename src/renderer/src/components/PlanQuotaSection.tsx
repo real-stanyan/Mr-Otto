@@ -30,7 +30,7 @@ import {
   WINDOW_LABELS, addonLine, countdown, fmtRemainingPercent, liveWindow, planBadge,
   quotaTone, remainingPercent, usageTitle, windowPercent,
   type LiveWindow,
-} from "../lib/billingView.js";
+} from "../../../shared/billingView.js";
 import { PlanBadge } from "./PlanBadge.js";
 import { cn } from "@/lib/utils.js";
 

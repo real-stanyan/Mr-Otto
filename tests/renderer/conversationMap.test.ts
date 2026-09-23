@@ -21,7 +21,7 @@ import {
   turnOwners,
   type ConversationMapEntry,
 } from "../../src/renderer/src/lib/conversationMap.js";
-import { voiceCallCards } from "../../src/renderer/src/lib/cloudTimeline.js";
+import { voiceCallCards } from "../../src/shared/cloudTimeline.js";
 import { SYSTEM_SPEAKER_UID } from "../../src/shared/promptSafe.js";
 import type { SessionEvent } from "../../src/session/events.js";
 import type { WorkspaceSnapshot } from "../../src/shared/workspaces.js";
