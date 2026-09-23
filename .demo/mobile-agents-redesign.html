@@ -1535,23 +1535,25 @@ const DATA={
  /* 名册的顺序**跟名册走、不跟最近活动走**（桌面 lib/agentRoster.ts 的 rosterRows）：
     这是通讯录不是会话列表。群那一段反过来按最近活动降序 —— 群是会话 */
  bots:[
+  /* `ts` = 多少分钟前，**只用来排序**，界面上写的还是「刚刚 / 12:41 / 昨天」那一列人话。
+     两样分开是因为排序要的是一个数，而人要读的是一个说法 */
   {id:'admin',name:'管理员',role:'派活、建新的智能体',face:'管理员',
-   last:'「门店」建好了，它现在读得到排班表。要我把进货也交给它吗？',at:'刚刚',state:'idle'},
+   last:'「门店」建好了，它现在读得到排班表。要我把进货也交给它吗？',at:'刚刚',ts:2,state:'idle'},
   {id:'dev',name:'开发',role:'写代码、跑门禁、推分支',face:'开发',model:'Claude Opus 5',
-   last:'门禁绿了，推到 claude/pricing-copy，没动 main。',at:'12:41',state:'running'},
+   last:'门禁绿了，推到 claude/pricing-copy，没动 main。',at:'12:41',ts:47,state:'running'},
   {id:'design',name:'设计',role:'界面与文案',face:'设计',
-   last:'第二版把「工作区」那格删了 —— 三档卡片挤不下第四行。',at:'11:02',state:'idle'},
+   last:'第二版把「工作区」那格删了 —— 三档卡片挤不下第四行。',at:'11:02',ts:146,state:'idle'},
   {id:'ops',name:'运维',role:'部署与监控',face:'运维',
-   last:'要你去登录一次 Cloudflare，我才发得了 edge。',at:'昨天',state:'needsAuth'},
+   last:'要你去登录一次 Cloudflare，我才发得了 edge。',at:'昨天',ts:1500,state:'needsAuth'},
   {id:'store',name:'门店',role:'排班与进货',face:'门店',
-   last:'国庆三个人两班倒，草表放在 文件/排班.md。',at:'周二',state:'idle'},
+   last:'国庆三个人两班倒，草表放在 文件/排班.md。',at:'周二',ts:4300,state:'idle'},
  ],
  /* 群：2～6 只（0037 那条 CHECK）。一只的「群」就是私聊，所以下限是 2 */
  groups:[
   {id:'g1',name:'发版组',members:['dev','ops','design'],
-   last:'开发 → 运维：edge 部完了叫我，我再发桌面版',at:'刚刚',call:true,unread:2},
+   last:'开发 → 运维：edge 部完了叫我，我再发桌面版',at:'刚刚',ts:1,call:true,unread:2},
   {id:'g2',name:'奶茶店',members:['store','admin'],
-   last:'门店：这周进货比上周少 12%，我按上个国庆的量排的',at:'周二'},
+   last:'门店：这周进货比上周少 12%，我按上个国庆的量排的',at:'周二',ts:4200},
  ],
  /* 它们共用的那台电脑（主场 = workspaces.kind='home'）。
     连接器三态：live / needsAuth / off —— 「待登录」不是失败，是在等你点一下 */
@@ -2192,12 +2194,21 @@ const stackFaces=(ids,sz=26,anim=false)=>`<span class="stack">${ids.slice(0,3).m
     **不是把单只缩小**，也不是把三张排成一条 —— 前者会让群聊行看起来比私聊行次一等，
     后者在 54 的宽度里塞不下三张 27 还带重叠。两行两列是微信/Grok 都在用的那个形状：
     一眼读作「一群」，而不是「一个人」 */
+/** 群那一行左边：几只**横着排、一个叠一个**（维护者定的，取代原来的田字）。
+    田字要凑够四格才匀称，三只时右下角空着、读成「少了一只」；叠排在 2~4 只下都成立。
+    总宽钉死 67 —— 单只的脸在 54 高时正好 67 宽，**这一列的左边缘因此是一条直线**
+    （避免换成横排之后群那几行的正文比单只那几行往右挪了几个像素）。
+    步长由只数现算：`(67 − 35) / (n − 1)`，所以两只时松、四只时紧，永远不出格。
+    后一张压前一张（`z-index` 递增）—— 叠的方向要一致，混着叠会让人以为前后有含义。
+    脸本身是透明底的像素画、自带黑描边，所以不额外加一圈底色描边：
+    那圈东西要么把脸切成圆的（#1345 那条：别裁像素画），要么在深色皮上变成一道白边。 */
 function faceCluster(ids){
-  const f=ids.slice(0,4).map(i=>{const b=botOf(i);return b?faceOf(b.face,b.name[0],27,'idle',true):''});
-  // 宽 68 不是 54：这批脸的格子是 67×54，**宽比高大** —— 按 54 收的话一行塞不下两张，
-  // 四格会退化成竖着的一条。单只的脸在 54 高时也正好是 67 宽，所以两者看起来一样大
-  return `<span style="width:68px;height:54px;flex:none;display:flex;flex-wrap:wrap;
-    align-content:center;justify-content:center;gap:0;overflow:hidden">${f.join('')}</span>`;
+  const f=ids.slice(0,4).map(i=>botOf(i)).filter(Boolean);
+  const W=67, one=35;                       // 27 高的那一档实测 35 宽（67×54 的格子按高收）
+  const step=f.length>1?Math.min(one,(W-one)/(f.length-1)):0;
+  return `<span style="width:${W}px;height:54px;flex:none;position:relative;display:block">${
+    f.map((b,n)=>`<span style="position:absolute;left:${Math.round(n*step)}px;top:13px;z-index:${n}">${
+      faceOf(b.face,b.name[0]||'',27,'idle',true)}</span>`).join('')}</span>`;
 }
 /** 大脸上那一遍「它干活时长什么样」。一格一个态，走完从头来。
     **自己停**：抽屉一收，画布就从文档里摘掉了，`isConnected` 转假这一趟就不再排下一次 ——
@@ -2332,13 +2343,18 @@ SCREENS.bots={label:'名册',grp:'智能体',render:()=>`
         也没有那台机器的卡（它搬去账号页了，见 machineRow）。
         机器上真有事要你办时，左上角那颗钮右上角亮一枚点 —— 主页保留的只有这一位 -->
    <div style="height:112px;flex:none"></div>
-   <div class="list">${DATA.bots.map(b=>botRow(b,b.id===FRESH_BOT)).join('')}</div>
-   <!-- 这一段末尾原来还有一行「把几只放进同一条线」。＋ 那张弹窗里已经有同一件事了，
-        留两个入口只会让人以为它们是两样东西（同 ADR-0217 撤掉页脚那枚图标）；
-        那句解释没丢，搬进了弹窗里那一行的第二行 -->
-   <div class="grouphdr">群聊</div>
-   <div class="list">${DATA.groups.map(g=>groupRow(g)).join('')}</div>
-   <div class="groupftr">群里它们互相 @ 着把活接下去，你在旁边看着，不用一步一批。</div>
+   <!-- **群和单只混在同一列**（维护者定的），按最近一次动静排。
+        原来是「上面一列单只（按名册顺序）+ 下面一段群（按活动）」—— 那是桌面那一侧的分法
+        （ADR-0297：通讯录不是会话列表）。手机上这一屏每一行都写着时间，两种排序压在
+        同一屏里，人读第二段时得换一次心智。合成一列之后只剩一条规矩：**谁刚说过话谁在上面**。
+        排序键是 ts 那个数，不是那一列人话（「昨天」和「周二」比不出先后）。
+        建出来的那只 ts=0，所以它一定在最上面 —— 人刚做完的事该在他眼睛落点上。
+        群那一行末尾原来还有一行「把几只放进同一条线」，＋ 那张弹窗里已经有同一件事，
+        留两个入口只会让人以为它们是两样东西（同 ADR-0217 撤掉页脚那枚图标） -->
+   <div class="list">${
+     [...DATA.bots.map(b=>({k:'bot',v:b})),...DATA.groups.map(g=>({k:'grp',v:g}))]
+       .sort((a,b)=>(a.v.ts??9e9)-(b.v.ts??9e9))
+       .map(x=>x.k==='bot'?botRow(x.v,x.v.id===FRESH_BOT):groupRow(x.v)).join('')}</div>
    <div style="height:34px"></div>
  </div>`};
 
@@ -3226,7 +3242,7 @@ const ACTS={
    const ch=box.querySelector('.fpick[data-on]')?.dataset.ch||FACE_CHARACTERS[0].id;
    const name=(box.querySelector('[data-el="nm"]')?.value||'').trim();
    const id='new'+Date.now();
-   DATA.bots.unshift({id,face:ch,name,role:'',last:'点进去跟它说第一句',at:'刚刚'});
+   DATA.bots.unshift({id,face:ch,name,role:'',last:'点进去跟它说第一句',at:'刚刚',ts:0});
    /* 先把名册重画一遍（那一行带入场），再推它的那条线：
       这样退回去看到的是**有它**的名册。只 go 不重画的话，名册那一屏还是建之前那份，
       人退回去会发现自己刚建的东西不在里面 */
