@@ -27,7 +27,7 @@ import {
   type ShareReceiveDeps,
   type ShareReceiveResult,
 } from "./sessionShareReceive.js";
-import * as WorkspacesApi from "./supabaseWorkspacesApi.js";
+import * as WorkspacesApi from "../shared/supabaseWorkspacesApi.js";
 import { deletePackage } from "./sessionShareApi.js";
 
 /** 发布端要的外部能力：整份复用 sessionShare.ts 的 ShareSendDeps（load 事件/读附件/

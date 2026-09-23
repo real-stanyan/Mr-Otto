@@ -6,10 +6,10 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import {
   assembleSnapshot,
   type MemberProfile, type WorkspaceKind, type WorkspaceSnapshot,
-} from "../shared/workspaces.js";
-import { normalizeSandboxApproval, type SandboxApproval } from "../shared/workspaceAgents.js";
-import type { AgentToolAllow } from "../shared/agentToolAllow.js";
-import type { WorkspaceMentionRow } from "../shared/workspaceMentions.js";
+} from "./workspaces.js";
+import { normalizeSandboxApproval, type SandboxApproval } from "./workspaceAgents.js";
+import type { AgentToolAllow } from "./agentToolAllow.js";
+import type { WorkspaceMentionRow } from "./workspaceMentions.js";
 
 /** supabase-js 的 {data,error} 归一:error 转 throw(带 pg code,上层认 23505 等) */
 function unwrap<T>(res: { data: T; error: { message: string; code?: string } | null }): T {

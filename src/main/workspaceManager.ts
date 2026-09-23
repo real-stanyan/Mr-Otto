@@ -22,7 +22,7 @@
 
 import { randomBytes } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type * as WorkspacesApi from "./supabaseWorkspacesApi.js";
+import type * as WorkspacesApi from "../shared/supabaseWorkspacesApi.js";
 import { HOME_WORKSPACE_NAME, normalizeAvatarSlot } from "../shared/workspaces.js";
 import type { WorkspaceSnapshot } from "../shared/workspaces.js";
 import type { WorkspaceMentionRow } from "../shared/workspaceMentions.js";

@@ -23,7 +23,7 @@
 
 import { describe, it, expect } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { listCloudSessions } from "../../src/main/supabaseWorkspacesApi.js";
+import { listCloudSessions } from "../../src/shared/supabaseWorkspacesApi.js";
 
 type Canned = { data?: unknown; error?: { message: string; code?: string } | null };
 

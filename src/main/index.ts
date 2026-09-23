@@ -198,7 +198,7 @@ import {
   deleteWorkspace, upsertConnectorRow, deleteConnectorRow, insertSessionRow, listCloudSessions,
   insertAgentRow, updateAgentRow, deleteAgentRow, listAgentNames,
   updateSandboxApproval, listMentions, markMentionsRead,
-} from "./supabaseWorkspacesApi.js";
+} from "../shared/supabaseWorkspacesApi.js";
 import type { SandboxApproval } from "../shared/workspaceAgents.js";
 import {
   publishSessionToWorkspace, unpublishSession, importWorkspaceSession,

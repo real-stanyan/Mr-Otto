@@ -12,7 +12,7 @@
 
 import { describe, it, expect } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { removeMember, leave, deleteWorkspace } from "../../src/main/supabaseWorkspacesApi.js";
+import { removeMember, leave, deleteWorkspace } from "../../src/shared/supabaseWorkspacesApi.js";
 
 type Canned = { data?: unknown; error?: { message: string; code?: string } | null };
 

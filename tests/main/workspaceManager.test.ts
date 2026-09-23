@@ -3,7 +3,7 @@ import { createWorkspaceManager, type WorkspaceManagerDeps } from "../../src/mai
 import type { ProxyStoreData } from "../../src/main/proxyStore.js";
 import { emptyProxyStore } from "../../src/main/proxyStore.js";
 import type { WorkspaceSnapshot } from "../../src/shared/workspaces.js";
-import type { WorkspaceListRow } from "../../src/main/supabaseWorkspacesApi.js";
+import type { WorkspaceListRow } from "../../src/shared/supabaseWorkspacesApi.js";
 
 // workspaceManager 编排测试（Task 8，ADR-0198 切片 2）：api/client 全假货，
 // 只钉编排顺序与本地台账的合并/清理语义——真查询逻辑已经在 supabaseWorkspacesApi
