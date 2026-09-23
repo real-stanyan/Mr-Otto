@@ -2179,6 +2179,30 @@ function faceCluster(ids){
   return `<span style="width:68px;height:54px;flex:none;display:flex;flex-wrap:wrap;
     align-content:center;justify-content:center;gap:0;overflow:hidden">${f.join('')}</span>`;
 }
+/** 大脸上那一遍「它干活时长什么样」。一格一个态，走完从头来。
+    **自己停**：抽屉一收，画布就从文档里摘掉了，`isConnected` 转假这一趟就不再排下一次 ——
+    不这么写的话，每开一次这张表就多留一个对着已经删掉的画布打点的定时器。
+    顺序抄的是一轮真活的形状（ADR-0250 那串态在仓里就是这个次序）：
+    排队 → 思考 → 检索 → 执行 → 作答 → 完成 → 空闲。
+    `queued` 只给 900ms：它是**完全不动**的那一格（那张表里唯一连呼吸都没有的），
+    停久了看着像坏了。 */
+const FACE_TOUR=[
+  {st:'queued',ms:900},{st:'thinking',ms:1500},{st:'searching',ms:1400},
+  {st:'working',ms:1600},{st:'answering',ms:1800},{st:'done',ms:1200},{st:'idle',ms:1500},
+];
+function previewTour(box){
+  const cv=box.querySelector('[data-el="prev"]');
+  if(!cv) return;
+  clearTimeout(box._tour);
+  let i=0;
+  const step=()=>{
+    if(!cv.isConnected) return;
+    const s=FACE_TOUR[i%FACE_TOUR.length];
+    cv.dataset.st=s.st; cv.dataset.anim='1'; mountFace(cv);
+    i++; box._tour=setTimeout(step,s.ms);
+  };
+  step();
+}
 /** 几只并排，**横着排不叠成田字**（维护者定的）。田字那版（faceCluster）要凑够四格
     才匀称，三只时右下角空着、读成「少了一只」；横排在 1~4 只下都成立。
     互相压一点（-5）是为了让三只收在 96px 的左栏里：完全不叠要 105，正文就得再往右让。
@@ -2919,13 +2943,22 @@ const SHEETS={
    const pick=FACE_CHARACTERS[0].id;
    /* 定高 70%：这张表只有三样东西，按内容收的话它只占到六成、看着像没展开。
       高度定死之后多出来的那段留给上面那张大脸（.sbody 居中撑开），不是把脸那几行拉散 */
+   /* 上面那张大脸**走一遍它干活时的样子**（维护者要的）：排队 → 思考 → 检索 → 执行 →
+      作答 → 完成 → 空闲，走完再从头来。挑哪一只就看哪一只跑。
+      **不写状态词**（维护者定的）。留的那句话在这里：这些态带角标（放大镜、齿轮、进度条…），
+      而角标在这套东西里一向是「声称」（#722）——只是这一格谁都看得出还没有智能体在跑，
+      它是个样品柜不是状态栏，所以那条纪律在这一处不成立。真要出事的是名册与时间线那两处，
+      那边的角标仍然只画查得到的事。 */
    const el=sheet(`<div class="grab"></div>
      <div class="thead">
        <button class="rbtn" data-close aria-label="不建了">${I('x',20,2.3)}</button>
        <span class="ttl">新建智能体</span>
      </div>
      <div class="sbody">
-       <div class="prev">${faceOf(pick,'',108,'idle',true).replace('<canvas','<canvas data-el="prev" data-center="ink"')}</div>
+       <!-- 这张大脸**不按头居中**（格子居中就行），和底下那一格相反：它要跑完整套态，
+            而角标画在格子右上 —— 按头居中等于把头往角标那边推，两者中间那道缝更显眼；
+            按格子居中时「头 + 角标」是一整块，摆正的是这一块 -->
+       <div class="prev">${faceOf(pick,'',108,'idle',true).replace('<canvas','<canvas data-el="prev"')}</div>
        <div class="faces">${FACE_CHARACTERS.map(c=>`
          <button class="fpick" data-act="pickFace" data-ch="${c.id}" aria-label="${c.name}"${c.id===pick?' data-on=""':''}>
            ${faceOf(c.id,'',54,'idle',c.id===pick).replace('<canvas','<canvas data-center="ink"')}
@@ -2936,6 +2969,7 @@ const SHEETS={
      </div>
      <div class="tfoot"><button class="btn" data-act="createBot">创建</button></div>`,{height:'70%'});
    el.classList.add('newbot');
+   soon(()=>previewTour(el));
    return el;
  },
  newThing:()=>alertDialog(`<div class="pickdlg">
@@ -3093,6 +3127,7 @@ const ACTS={
    /* 重放那一下：动画挂在类上，要先摘掉、强制回流、再挂回去，否则同一个类第二次不会再放 */
    const wrap=box.querySelector('.prev');
    wrap.classList.remove('swap'); void wrap.offsetWidth; wrap.classList.add('swap');
+   previewTour(box);   // 换了一只就从头走一遍，不是接着上一只走到一半的地方
  },
  /* 建完**回名册**，新的那一行排在最上面并带一段入场（`.brow[data-fresh]`）：
     人要看见自己刚做的那件事落在哪儿了。那一行的两句先写实话 ——
