@@ -7,7 +7,7 @@
 // **改这里 = 所有消费方一起改**（岛的页脚 / 账号页 / 上下文浮层）。
 //
 // 这里只放「一扇窗的数字长什么样」。「这个账号在哪一档」「价目卡怎么画」
-// 那类要读 BillingSnapshotView / PlanInfo 的判断留在 renderer/lib/billingView.ts。
+// 那类要读 BillingSnapshotView / PlanInfo 的判断留在 src/shared/billingView.ts。
 import { creditOf, fmtCredit, type BillingMe, type PlanId, type WindowState } from "./billing.js";
 
 /** 一扇窗在「此刻」的样子。`rolled` = 它已经过了 resetAt。

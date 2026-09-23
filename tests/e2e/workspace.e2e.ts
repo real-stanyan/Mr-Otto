@@ -10,7 +10,7 @@
 // 生命周期里都是 false。
 //
 // 于是这一屏必然停在 `workspaceAccess` 的 signed_out 那一档（见
-// src/renderer/src/lib/workspaceAccess.ts）：工作区栏里一条工作区都没有，
+// src/shared/workspaceAccess.ts）：工作区栏里一条工作区都没有，
 // 「新工作区」照常在——它是那一栏常驻的发现入口，点开告诉你为什么现在不行、
 // 并给一条出去的路。这两件事正是这条用例能诚实断言的全部；建群 → 改名 →
 // 贡献连接器 → 撤回的完整链路需要两个真实登录的账号，走

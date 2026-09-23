@@ -18,7 +18,9 @@ import { subscribeFaceClock } from "./clock.js";
 
 const artOf = createFaceArtCache();
 
-/** 角标半径（格）、它离右上角的系数、外环倍数——比例口径同桌面 paint.ts（BADGE_R / INSET / RING） */
+/** 角标半径（格）、它离右上角的系数、外环倍数——**方案**同桌面 paint.ts（半径取盒子的一个分数、
+    外环 1.42×），但数值是给这批矩形网格另调的，不是同一组数字（桌面 BADGE_R / INSET 是
+    0.15 / 1.05，这里 0.14 / 1.1） */
 const BADGE_R = GRID_H * 0.14;
 const BADGE_INSET = 1.1;
 const BADGE_RING = 1.42;

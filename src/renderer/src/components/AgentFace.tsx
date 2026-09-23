@@ -1,7 +1,7 @@
 // AgentFace / PartyAvatar —— 头像那一格的两个组件（#1345，ADR-0316）。
 //
 // `AgentFace` 只画内置的像素脸；`PartyAvatar` 是三选一的那一格（脸 / 真图 / 首字母），
-// 绝大多数调用点用后者 —— 「这一格画什么」的判断在 `lib/agentAvatar.ts` 算好，
+// 绝大多数调用点用后者 —— 「这一格画什么」的判断在 `src/shared/agentAvatar.ts` 算好，
 // 这里只负责把它画出来。
 //
 // **动不动由状态自己说，不另给一个开关**（`faceAnimates`，states.ts 的头注）：
@@ -26,7 +26,7 @@ function prefersReducedMotion(): boolean {
 /** 剩下的原样落到 canvas 上（调用点要挂的 `data-*` / `title` 走这里）。
     自己算的那几格（尺寸 / 无障碍 / data-face）排在 `{...rest}` 后面，改不掉 */
 type FaceOwnProps = {
-  /** 0..12，见 lib/agentAvatar.ts */
+  /** 0..12，见 src/shared/agentAvatar.ts */
   slot: number;
   /** 缺省 `plain` = **我们不知道它此刻在干嘛**（不是「空闲」），不画角标也不动 */
   state?: FaceState;
@@ -90,7 +90,7 @@ export function AgentFace({
 /**
  * 一格头像：内置像素脸 / 一张真图 / 什么都查不到时的首字母。
  *
- * 三条路各自的理由在 `lib/agentAvatar.ts` 的 `AvatarRef`。这里唯一要说的是
+ * 三条路各自的理由在 `src/shared/agentAvatar.ts` 的 `AvatarRef`。这里唯一要说的是
  * **`null` 画的是首字母不是一张空图**：画空图那一格会塌成一个白圈，看起来像加载失败。
  */
 export function PartyAvatar({

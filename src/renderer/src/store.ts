@@ -632,7 +632,7 @@ interface ChatState {
       onCloudSessionStatus 推送刷新，selfUid 推送首次给出后不再变 */
   cloudSession: CloudSessionState | null;
   /** 云会话的流式缓冲（#1107，协议 16）：agentId → 这一轮到此刻的正文预览。
-      纯逻辑在 lib/cloudStreaming.ts——累计快照整槽替换，终态事件清槽；
+      纯逻辑在 src/shared/cloudStreaming.ts——累计快照整槽替换，终态事件清槽；
       不落任何持久层（临时预览不是事实） */
   cloudStreaming: Record<string, string>;
   /** 语音通话里「我在听」（#1163）。null = 没在听（没加入 / 通话结束 / 换了会话） */

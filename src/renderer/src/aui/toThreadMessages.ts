@@ -254,7 +254,7 @@ function projectRange(
       // 护栏 / 后台任务回注（#957 C-I5，#936）：engine 自己注的话，不是人打
       // 的——画成系统旁白（EventRow 接住，见 Timeline.tsx 里 isSystemNote
       // 那段 switch 之外的早退分支），不再冒充一条 role:"user" 气泡。判据
-      // 与云时间线共用（lib/systemNote.ts），本机没有工作区名册，agent 名
+      // 与云时间线共用（src/shared/systemNote.ts），本机没有工作区名册，agent 名
       // 的解析留给 Timeline.tsx 那一侧（这里只决定"算不算审计事件"）。
       // 沿用既有的 turn 边界重置（原本任何 user_message 都会重置）——这条
       // 分支只换目标消息的角色，不改动计时投影的既有行为

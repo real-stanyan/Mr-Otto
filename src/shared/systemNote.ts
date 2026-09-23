@@ -3,7 +3,7 @@
 // 这两条都是 engine 自己往日志里注的 user_message（loop_guard 检测到
 // 退化循环时提醒模型、background 是后台任务结果回注，见 events.ts
 // UserMessageEvent.origin 的字段注释），不是人打的话。云时间线
-// （lib/cloudTimeline.ts）与本机时间线（components/Timeline.tsx 的
+// （src/shared/cloudTimeline.ts）与本机时间线（components/Timeline.tsx 的
 // EventRow）在此之前各自按"这是一条普通 user_message"处理，前者画成
 // 一条没有署名的群聊气泡（I5：读起来像"有个不知道是谁的人在教训水獭"），
 // 后者画成一条本地 user 气泡——都在冒充"这是人说的话"。

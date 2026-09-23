@@ -202,16 +202,16 @@ export function connectorBatchErrorText(
 
 // ─── 云会话列表（Task 13，ADR-0199） ────────────────────────────────────
 
-/** ShellBridge.workspaceCloudList 一行的形状。不从 main/supabaseWorkspacesApi.ts
-    的同名 CloudSessionRow 引入——渲染层不能 import 主进程模块（架构硬边界，
-    tests/architecture.test.ts），形状凑巧相同也只能各自留一份 */
+/** ShellBridge.workspaceCloudList 一行的形状。与 src/shared/supabaseWorkspacesApi.ts
+    的同名 CloudSessionRow 形状凑巧相同，但没有去重——两边各留一份。去重留给 A1：
+    那一片要往两边都加 last_* 那几列，届时顺手并掉这份重复 */
 export interface CloudSessionListRow {
   id: string;
   title: string;
   publisherUid: string;
   archived: boolean;
   updatedTs: number;
-  /** 见 main/supabaseWorkspacesApi.ts 的同名字段（形状凑巧相同、各留一份） */
+  /** 见 src/shared/supabaseWorkspacesApi.ts 的同名字段（形状凑巧相同、各留一份，去重留给 A1） */
   participantUids: string[];
   /** 这一行是不是一条聊天，是哪一种（#1280）。`null` = 团队会话 / 这一格读不到 */
   chatKind: "dm" | "group" | null;

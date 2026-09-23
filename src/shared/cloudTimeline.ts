@@ -2,7 +2,7 @@
 //
 // 从 CloudSessionPage.tsx 搬出来的纯逻辑（parseUserMessageLabel 原样搬 +
 // 两个新的署名/归属函数）：组件旁边放一个 lib 是本仓的既有惯例
-// （src/renderer/src/lib/workspaceView.ts 同款），纯函数零 React 也方便
+// （src/shared/workspaceView.ts 同款），纯函数零 React 也方便
 // 单独写测试（tests/renderer/cloudTimelineLabels.test.ts）。
 
 import { agentFaceIfKnown, imageAvatar, type AvatarRef } from "./agentAvatar.js";
@@ -229,7 +229,7 @@ export function createdAgentNames(events: readonly SessionEvent[]): Map<number, 
     已经把 engine 落这两类事件时改成 `env()`（带 agentId）而不是 `envBase()`
     （见 engine.ts loop_guard/background 两处落盘的注释），查不到/缺席
     才落"某只智能体"这句兜底话（同 assistantLabel 等函数的纪律：不装作
-    答得出这个问题）。正文本身与本机时间线共用一份（lib/systemNote.ts 的
+    答得出这个问题）。正文本身与本机时间线共用一份（src/shared/systemNote.ts 的
     systemNoteBody）——名字从哪查是两端唯一的差异，文案不让两处各写一遍。
     只回摘要那一行：后台任务那一档还有一份可展开的全文，走同一个文件的
     systemNoteDetail（第四批 C2-I1），调用方两处各自去取——把两样塞进这个

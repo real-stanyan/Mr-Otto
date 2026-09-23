@@ -14,6 +14,7 @@ import { agentNameOf, type CloudSessionListRow } from "./workspaceView.js";
     而这个文件两端共用（#1356）——从组件拿类型等于让手机端连带类型检查一个 React DOM 组件 */
 export interface ChatView {
   kind: "dm" | "group";
+  /** 已经与现存名册求过交集（`chatViewOf` / `groupRows`），所以这里每个 id 都查得到名字 */
   agentIds: string[];
   /** 私聊 = 那只智能体的名字；群聊 = 群名（没起名时是成员名拼起来的） */
   title: string;

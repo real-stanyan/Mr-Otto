@@ -18,7 +18,7 @@ A0 只立了基座（名册是占位，真数据在 A1）；进度见 spec `docs
 - `App.tsx`：开屏 → 进门 → 名册（单栏，#1356）；此刻画哪一屏由 `src/shared/mobileGate.ts` 的 `gateView` 说了算
 - `src/nav/`：根栈——名册（无头，自己画浮在内容上的圆钮）/ 账号 / 开发构建里的形象陈列馆；没有底栏、没有第二个根
 - `src/gate/`：开屏、登录 / 注册卡、等确认信、忘记密码三步
-- `src/roster/`：名册屏（栈底，A0 是占位，真数据在 A1）+ 右上账号入口
+- `src/roster/`：名册屏（栈底，A0 是占位，真数据在 A1）+ 左上账号入口
 - `src/account/`：账号页（A0 精简版；额度 / 订阅 / 这周用了多少 / 设置在 A5）
 - `src/face/`、`src/dev/`：像素脸（react-native-svg + 共用的 25fps 钟）+ 只在开发构建里出现的形象陈列馆
 - `src/ui.tsx`、`src/dialog.tsx`、`src/chrome/`：组件层与共享状态
@@ -31,7 +31,9 @@ npm --prefix mobile install
 npm --prefix mobile start        # 扫码用 Expo Go 打开
 ```
 
-**Expo Go 就能跑。** 加密走纯 JS 的 `@noble/*`（ADR-0101），没有 native module。
+**Expo Go 就能跑，没有 native module。** 配对那套 `@noble/*` 已经随 #1356 删了——加密只剩
+supabase-js 的 PKCE 要的 `crypto.getRandomValues`，走 `expo-crypto`（Expo 模块，Expo Go 里
+就有，ADR-0101，见 `src/polyfills.ts`）。
 
 装到真机（或用 `mrotto://` 那条回跳）才需要 prebuild：
 
@@ -59,7 +61,7 @@ deep link：那个地址早就在 Supabase 的 Redirect URLs 白名单里、桌�
 ## 和桌面共用的那一份代码
 
 `src/shared/remote/` 里的东西手机端**直接 import 同一份文件**，不是抄一份：
-帧的编解码、握手、密封流、base64url，以及云会话客户端本体
+帧的编解码、base64url，以及云会话客户端本体
 `src/shared/remote/cloudSessionClient.ts`——手机是它的第二个客户端（ADR-0317 决定 5）；
 会话列表那一行要 better-sqlite3 那层的 `SessionSummary`，留在桌面 `src/main/cloudSessionFleet.ts`。
 `src/shared/supabaseWorkspacesApi.ts`、`src/shared/homeWorkspace.ts` 与时间线那批纯函数同理。

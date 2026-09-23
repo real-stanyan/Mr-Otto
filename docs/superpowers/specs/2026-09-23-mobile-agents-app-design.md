@@ -63,12 +63,12 @@
 
 ### 3.1 ottoFace 在 RN 上怎么画：react-native-svg，每种颜色一条 Path
 
-**选型**：`react-native-svg`（ADR-0293 已引入，不加依赖、不碰 L1）。同一帧里同色、同一行、连着的格子合成一段，每种颜色一条 `<Path>`（`M x y h n v 1 h -n z` 串起来）；（react-native-svg 15.15 没有 `shapeRendering` 这一属性——硬边靠每格落在整数个物理像素上：m / l 档在 @2x / @3x 屏上成立，s 档在 @3x 上是每格 1.5 个物理像素，边缘可能混色，见 §12 第 5 条），`viewBox` 就是网格本身，缩放交给 SVG。
+**选型**：`react-native-svg`（ADR-0293 已引入，不加依赖、不碰 L1）。同一帧里同色、同一行、连着的格子合成一段，每种颜色一条 `<Path>`（`M x y h n v 1 h -n z` 串起来）（react-native-svg 15.15 没有 `shapeRendering` 这一属性——硬边靠每格落在整数个物理像素上：m / l 档在 @2x / @3x 屏上成立，s 档在 @3x 上是每格 1.5 个物理像素，边缘可能混色，见 §12 第 5 条），`viewBox` 就是网格本身，缩放交给 SVG。
 
 **纯层挪进 `src/shared/ottoFace/`**：`character.ts`、`characters/*`、`sprites.ts`、`states.ts`、`frame.ts`、`adapt.ts`（`dmFaceState`）。渲染层的 `lib/ottoFace/` 只剩 `paint.ts`（canvas）+ 一个把 shared 那份原样转出去的 `index.ts`，桌面十几个调用点的 import 一个字不改。
 
 **shared 里新增的纯函数**（都进 vitest）：
-- `frameMotion(slot, state, t)`：把 `composeFrame` 里那一段「这一刻的位移 / 眼形 / 嘴形」拆出来，`composeFrame` 改成调它。手机端据此做帧去重：同一个 motion 键画出来的帧逐格相同，键没变就不重画。
+- `frameMotion(state, t, opts?)`：把 `composeFrame` 里那一段「这一刻的位移 / 眼形 / 嘴形」拆出来，`composeFrame` 改成调它。手机端据此做帧去重：同一个 motion 键画出来的帧逐格相同，键没变就不重画。
 - `faceLayers(frame)` / `runsPath(runs)`（`runs.ts`）：帧 → 每种颜色一串行程 → SVG 的 `d` 串；拼法不留在 RN 组件里（那一侧进不了 vitest）。`createFaceArtCache()`（`art.ts`）按 (坑位, 状态, motion) 记住算好的几层，键就是那个稳定的键。
 - `faceRim(frame)`：轮廓外一圈（四邻域里空着的格子）。深色底上画成 `DISC_COLOR`——这批脸的头发是纯黑的，贴在 `#000` 上整颗头会糊成一团；桌面靠圆盘解决，手机不画圆盘（demo「不许裁」），所以靠描边（demo 同款）。
 
@@ -86,7 +86,7 @@
 ### 3.2 手机端的云会话客户端：桌面那份挪进 shared，两端各接各的线
 
 - `src/main/cloudSessionClient.ts` → `src/shared/remote/cloudSessionClient.ts`。三处绊脚：`FriendsResult` 改 import `src/shared/friends.ts` 那份；`cloudSessionFleetRow` / `CloudSessionSummary`（及其对 `SessionSummary`、`CLOUD_WORKSPACE_PREFIX` 的依赖）拆到 `src/main/cloudSessionFleet.ts` 留在桌面；`validateRepoUrl` 那行没人用的 import 删掉。测试跟着拆：纯客户端那 120 多条进 `tests/shared/remote/`，岛 / 会话列表那几条留 `tests/main/`。
-- `src/main/supabaseWorkspacesApi.ts` → `src/shared/supabaseWorkspacesApi.ts`；主场那 13 行（`ensureHome`）拆成 `ensureHomeWorkspace(client, uid)` 一起过去，桌面 `workspaceManager` 改成调它。
+- `src/main/supabaseWorkspacesApi.ts` → `src/shared/supabaseWorkspacesApi.ts`；主场那 13 行（`ensureHome`）拆成 `ensureHomeWorkspace(deps, client, uid)`，落在独立的 `src/shared/homeWorkspace.ts`（不在这份 API 文件里），桌面 `workspaceManager` 改成调它。
 - 删智能体那四步从 `workspaceManager` 拆出一个注入式的纯编排（删私聊 / 摘群 / 删行 / 删页各是一个依赖），两端共用；桌面那份只剩接线。**归 A1**：它的第一个手机端消费方是智能体设置里的「删掉」。
 - 手机端接线 `mobile/src/cloud/`：`createTransport = channel => createWsTransport({baseUrl: RELAY_BASE, role: "guest", channel, authToken})`、`accessToken` 取 supabase 的 session、推送进一个外部 store（`useSyncExternalStore`，不引 zustand）；App 回前台对当前会话房 `reconnectNow`。个人主场里没有审批卡（ADR-0298），`onApprovalRequest` 接空。
 - 把时间线要的那批渲染层纯函数挪进 shared（§9 列了清单）；桌面改 import。代价：桌面云会话这一面要回归一遍（§12）。
@@ -133,7 +133,7 @@ M1 那套（冷启动 / 登录 / 注册 / 找回密码 / 确认信）原样。�
 ### 5.4 智能体设置（A1）
 - 头：回退 + 右上「存」。**只有这几样**：形象（一张 l 档大脸 +「换个形象」→ §4 的抽屉：上面大脸走一遍它干活的样子、下面 11 张脸，只有选中那张是活的）/ 名字（必填，校验同 §3.3）/ 职责（≤200 字、不许换行）/ 还有什么要交代的（标签写明「它自己看得见这一段」；≤4000 字）/ 删掉「X」。
 - **撤掉的三样照 demo 与 issue**：模型（ADR-0237 的 Auto 替用户判）、能用哪几个应用（那台电脑上的登录态，账号底下的事）、它记下来的东西（ADR-0282 的 wiki，后台的事）。**说话的声音那一格 A4 才出现**（没有后端时画一格点了不生效是撒谎的勾）。
-- 头像写回：11 张脸里挑一张 → 存成该角色的**第一个坑位**（sweep 存 1、mane 存 10）；没换就不写。管理员没有「删掉」那一行。
+- 头像写回：自己的坑位（`pickSlotOf`，sweep 存 3、mane 存 12）不是第一个出现的坑位——三个暂借格（1/2/10，见 sprites.ts 法理③）不许被存进去，补齐旧 02/03/11 那天存过的人不能被悄悄换脸。cap 只借住在坑 2、没有自己的坑位，**这面墙因此只有 10 张脸能选，不是 demo 的 11 张**，cap 要等旧 03 补齐才进这面墙——这条待 A1 与维护者确认。没换就不写。管理员没有「删掉」那一行。
 - 删掉：居中确认弹窗，文案照实说「它的私聊一起删掉；群里会被摘出去；它自己那页记忆一起删掉，它改过的共用页面留着」→ 共用编排四步（§3.2）→ 退回名册。源：SB + CS。
 
 ### 5.5 建一只（A2）
@@ -201,7 +201,7 @@ M1 那套（冷启动 / 登录 / 注册 / 找回密码 / 确认信）原样。�
 |---|---|---|
 | `src/renderer/src/lib/ottoFace/{character,characters/*,sprites,states,frame,adapt}.ts` | `src/shared/ottoFace/` | `paint.ts` 留渲染层；渲染层 `index.ts` 原样转出 |
 | `src/main/cloudSessionClient.ts` | `src/shared/remote/cloudSessionClient.ts` | 会话列表 / 岛那几个导出拆到 `src/main/cloudSessionFleet.ts` |
-| `src/main/supabaseWorkspacesApi.ts` | `src/shared/supabaseWorkspacesApi.ts` | 带上 `ensureHomeWorkspace` |
+| `src/main/supabaseWorkspacesApi.ts` | `src/shared/supabaseWorkspacesApi.ts` | `ensureHomeWorkspace` 落在独立的 `src/shared/homeWorkspace.ts`，不在这份里 |
 | `src/renderer/src/lib/{agentAvatarSlot,agentAvatar}.ts` | `src/shared/` | 坑位派生 + `agentFaceIfKnown` |
 | `src/renderer/src/lib/{chatBubbles,cloudStreaming,dayLabel,systemNote}.ts` | `src/shared/` | 零或只有 shared 依赖 |
 | `src/renderer/src/lib/{cloudTimeline,workspaceView,proxyShare,billingView}.ts` | `src/shared/` | **整份挪，不拆**：`cloudTimeline` 的渲染层依赖只有 `agentAvatar` / `workspaceView`（→ `proxyShare`，零 import）/ `systemNote` / `billingView.countdown`，这一串挪完它自己就是纯 shared；拆一半等于同一个文件的判据住两处。`billingView` A5 的账号页也要 |
@@ -226,12 +226,15 @@ M1 那套（冷启动 / 登录 / 注册 / 找回密码 / 确认信）原样。�
 10. **确认类用居中弹窗**（删掉一只、解散群）。
 11. **声音那一格 A4 才出现**。
 12. **删掉的确认文案改成照实说**：demo 写「它写的记忆留着」，而桌面删一只会连它自己那页 wiki 一起删（`workspaceManager.ts:431`）。
-13. **头像写回第一个坑位**（sweep 存 1、mane 存 10）：demo 存的是角色 id，库里存的是坑位。
+13. **头像写回它自己的坑位，不是第一个出现的坑位**（`pickSlotOf`：sweep 存 3、mane 存 12；三个暂借格 1/2/10 不许被存进去，见 sprites.ts 法理③）：demo 存的是角色 id，库里存的是坑位。**cap 只借住在坑 2、没有自己的坑位——挑头像那面墙目前只有 10 张脸能选，不是 demo 的 11 张**，cap 要等旧 03 补齐才进这面墙；待 A1 与维护者确认。
 14. **群那一行的最后一句写「名字：摘录」**：demo 的「开发 → 运维：…」是接力线的写法，清单表里没有这一格。
 15. **A0 没删手机端依赖**：worktree 的 `mobile/node_modules` 是指向主 checkout 的软链，在那里装卸会改到所有 lane 共用的那一份；没用上的依赖另开 issue 清（ADR-0317 后果第 2 条）。
 16. **开发构建里多一屏形象陈列馆**：A1 之前没有任何一屏画真智能体的脸，这是在模拟器上核画法的唯一入口；生产构建里没有（`__DEV__`）。
 17. **`ui.tsx` 只摘了两个专属组件**（配对安全码、项目文件夹图标）：其余通用组件留着给 A1 用。
 18. **没有 `shapeRendering="crispEdges"`**：react-native-svg 15.15 不认这个属性（spec §3.1 原先那句写错了，已改）；硬边靠整数物理像素对齐，s 档在 @3x 上的半像素混色留给真机 / 模拟器看过再定。
+19. **`CloudSessionSummary` 留在客户端模块里**，不是整批挪走：只有 `cloudSessionFleetRow` 拆到了 `src/main/cloudSessionFleet.ts`（要 `SessionSummary` 那层 better-sqlite3 类型，本就是桌面专属），`CloudSessionSummary` 本身与 `src/shared/remote/cloudSessionClient.ts` 一起留在 shared。
+20. **A0 的账号页多一组「连接」诊断信息**（中继地址 + app 版本），不只有邮箱与登出——终审加的一格，方便真机排查连不上的问题。
+21. **`t = 0` 是睁着眼的中性静止帧**（眨眼窗口挪到每个周期的末尾，不是开头）：这个改动顺带修好了桌面「减弱动态效果」那条路——它原来在 `t = 0` 画出来的是闭着眼的脸（#1356 终审）。
 
 （写 plan / 实现期间的偏离追加在这里。）
 

@@ -427,7 +427,7 @@ export const EventRow = memo(function EventRow({ event, isLast = false }: { even
   // 同一件事（isAuditEvent 决定"要不要投成审计消息"，user_message 走的是
   // 另一条完全独立的判据），硬凑同一个 case 只是伪造对称。本机没有工作区
   // 名册，agent 名解析不了，agentName 恒传 null——云时间线那份带真名字的
-  // 版本在 lib/cloudTimeline.ts 的 systemNoteText，两处共用同一份文案
+  // 版本在 src/shared/cloudTimeline.ts 的 systemNoteText，两处共用同一份文案
   // （systemNoteBody），只有"名字从哪查"不同
   // 后台任务那一档还带一份可展开的详情（第四批 C2-I1）：摘要行只说命令与
   // 退出码，stdout/stderr 全文折在 <details> 里，默认收着——旁白是一行淡字，
