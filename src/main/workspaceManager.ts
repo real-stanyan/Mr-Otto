@@ -23,8 +23,9 @@
 import { randomBytes } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type * as WorkspacesApi from "../shared/supabaseWorkspacesApi.js";
-import { HOME_WORKSPACE_NAME, normalizeAvatarSlot } from "../shared/workspaces.js";
+import { normalizeAvatarSlot } from "../shared/workspaces.js";
 import type { WorkspaceSnapshot } from "../shared/workspaces.js";
+import { ensureHomeWorkspace } from "../shared/homeWorkspace.js";
 import type { WorkspaceMentionRow } from "../shared/workspaceMentions.js";
 import { humanizeWorkspaceError } from "../shared/workspaceError.js";
 import { ADMIN_AGENT_ID, agentNameConflict, normalizeAgentName, normalizeSandboxApproval, type SandboxApproval } from "../shared/workspaceAgents.js";
@@ -262,21 +263,8 @@ export function createWorkspaceManager(deps: WorkspaceManagerDeps): WorkspaceMan
     },
 
     async ensureHome() {
-      return withSession(async (client, uid) => {
-        const found = await deps.findHomeWorkspace(client, uid);
-        if (found !== null) return { id: found };
-        try {
-          return { id: (await deps.createWorkspace(client, HOME_WORKSPACE_NAME, uid, "home")).id };
-        } catch (err) {
-          // 两台设备同时建：后到的那台撞 workspaces_one_home_per_owner。**不看错误码**
-          // ——PostgREST 的 code 在不同版本里挂的位置不一样（#1213 的 23505 那次就踩过），
-          // 而这里有一个比错误码更硬的判据：回头重查。查得到就是抢输了（对用户来说
-          // 什么都没发生），查不到才是真失败，原错误优先
-          const raced = await deps.findHomeWorkspace(client, uid).catch(() => null);
-          if (raced !== null) return { id: raced };
-          throw err;
-        }
-      });
+      // 判据与竞态处理住在 src/shared/homeWorkspace.ts（#1356：手机端的名册共用这一段）
+      return withSession((client, uid) => ensureHomeWorkspace(deps, client, uid));
     },
 
     async remove(id) {
