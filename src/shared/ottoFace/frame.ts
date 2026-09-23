@@ -53,9 +53,11 @@ function scanAt(t: number): readonly [number, number] {
   return [0, 0];
 }
 
-/** 两个互质周期叠出来的眨眼：看着不规律，但同一个 t 永远给同一个答案 */
+/** 两个互质周期叠出来的眨眼：看着不规律，但同一个 t 永远给同一个答案。
+    眨眼窗口放在每个周期的**末尾**而不是开头：t = 0 是「静止一帧」（减弱动态效果、还没等到第一拍都画它），
+    窗口放在开头的话静止的脸永远闭着眼（#1356 终审） */
 function blinkingAt(t: number): boolean {
-  return t % 4200 < 110 || t % 6700 < 110;
+  return t % 4200 >= 4200 - 110 || t % 6700 >= 6700 - 110;
 }
 
 const TALK_CYCLE: readonly MouthShape[] = ["smile", "o", "flat", "o"];

@@ -1,7 +1,7 @@
 // AGENTS.md 的 Hard rules 从"写在文档里"变成"跑在门禁里"(Harness Engineering:
 // 架构约束要变成可执行检查,错误信息要带修法,不只是指出违规)。
 //
-// 七条边界。前两条是 AGENTS.md 的 Hard rules 原文,其余五条是各自 ADR 落下来的分层约束:
+// 八条边界。前两条是 AGENTS.md 的 Hard rules 原文,其余五条是各自 ADR 落下来的分层约束:
 //   1. 工具实现只依赖 ExecutionWorld 接口,禁止直接 import fs / child_process;
 //      连带一条同源的:src/tools 也不 import src/main —— 装配留给 main(ADR-0299,#1281)
 //   2. 渲染进程只通过 ShellBridge 与后端通信,禁止直接触碰 Node API
@@ -11,6 +11,8 @@
 //   5. src/shared 不碰 node builtin / electron —— 这一层手机端(Expo/RN)会直接 import
 //      同一份源码,碰了 Node 就断了那条路
 //   6. 移动端复用名单里的那批 src/session 投影文件,同样不碰 node builtin
+//   7. src/shared 不 import src/main / src/renderer(含 `@/` 别名)
+//   8. mobile/ 在自身之外只 import src/shared/** 与 MOBILE_SAFE 那几份 src/session 文件
 //
 // 5 和 6 的意义和前四条略有不同:它们把"src/shared 目前碰巧是纯的"这个**事实**,
 // 变成一条会红的**规则**。名单写死在用例里 —— 想把新文件放进复用面得显式加进来。
@@ -58,7 +60,9 @@ const NODE_BUILTIN = (s: string) =>
 
 // store.ts(better-sqlite3)与 attachments.ts(node:fs)是**桌面专属**,不在复用面内。
 // 其余的投影函数手机端要跑 —— 名单写死在这里,新增文件想进复用面要显式加进来,
-// 而不是"碰巧还没碰 Node 就算数"
+// 而不是"碰巧还没碰 Node 就算数"。这份名单现在背着两条规则:上面这条(这几份文件
+// 自己不碰 node builtin)与下面「mobile/ 在自身之外只 import…」那条(手机端的
+// src/session 白名单就是这份名单)——两条各查各的,但都读同一份 MOBILE_SAFE。
 const MOBILE_SAFE = [
   "events.ts", "deriveMessages.ts", "deriveTodos.ts",
   "deriveUsage.ts", "barrenTurns.ts", "activeSkills.ts", "microCompact.ts",
@@ -159,6 +163,7 @@ describe("Hard rules(AGENTS.md)是门禁的一部分", () => {
     const bad = walk(join(ROOT, "shared"))
       .filter((f) =>
         imports(f).some((s) => {
+          if (s.startsWith("@/")) return true; // 渲染层的路径别名（根 tsconfig 的 @/* → src/renderer/src/*）
           if (!s.startsWith(".")) return false;
           return /^(main|renderer)(\/|$)/.test(relative(ROOT, resolve(dirname(f), s)));
         })

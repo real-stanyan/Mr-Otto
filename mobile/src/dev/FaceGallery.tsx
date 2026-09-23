@@ -3,10 +3,10 @@
 // （切系统外观看描边）。同桌面 scripts/build-face-gallery.mjs 的用途，不是产品的一部分。
 import { ScrollView, Text, View } from "react-native";
 import {
+  displaySlotOf,
   FACE_PACKS,
   FACE_STATE_LIST,
   FACE_STATES,
-  firstSlotOf,
 } from "../../../src/shared/ottoFace/index.js";
 import { facePhase } from "../../../src/shared/ottoFace/art.js";
 import { space, type as t, usePalette } from "../theme.js";
@@ -30,12 +30,12 @@ function Caption({ children }: { children: string }) {
 }
 
 export function FaceGallery() {
-  const specs = firstSlotOf("specs") ?? 0;
+  const specs = displaySlotOf("specs") ?? 0;
   return (
     <ScrollView contentInsetAdjustmentBehavior="automatic" contentContainerStyle={{ padding: space.lg, gap: space.lg }}>
       <Section title="11 个角色 · alive · m 档（错开相位，不该一起眨眼）">
         {FACE_PACKS.map((p) => (
-          <Face key={p.id} slot={firstSlotOf(p.id) ?? 0} state="alive" tier="m" phase={facePhase(p.id)} label={p.name} />
+          <Face key={p.id} slot={displaySlotOf(p.id) ?? 0} state="alive" tier="m" phase={facePhase(p.id)} label={p.name} />
         ))}
       </Section>
       <Section title="全部表情 · specs · m 档">

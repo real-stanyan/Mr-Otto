@@ -87,14 +87,25 @@ export function faceCharacterAt(slot: number): FaceCharacter {
   return FACE_CHARACTERS[slot]!;
 }
 
-/**
- * 一个角色的**第一个**坑位；认不出的 id 回 null。
- *
- * 挑头像的那一墙按角色列（11 张脸），库里存的是坑位（13 格，`avatar_slot`）。sweep 占了 1 与 3、
- * mane 占了 10 与 12——挑中 sweep 存 1、挑中 mane 存 10（spec §10 第 13 条）。
- * 回 null 而不是 0：0 是 stoic 的坑位，拿它兜底等于替人挑了一张他没挑过的脸。
- */
-export function firstSlotOf(characterId: string): number | null {
+/** 暂借的坑位：旧 02 / 03 / 11 在这批形象里没有对应的人，各借一个长相最近的顶上（见 SLOT_TO_ID）。
+    补齐之后这三格会换成真角色——**挑头像时不许把选择存进这三格**，否则到时候那个人的脸会被悄悄换掉
+    （ADR-0316 法理 ③；#1356 终审）。 */
+const BORROWED_SLOTS: ReadonlySet<number> = new Set([1, 2, 10]);
+
+/** 画这个角色用哪个坑位（陈列馆这类只看不存的地方）：第一个出现的坑位，暂借的也算。认不出的 id 回 null */
+export function displaySlotOf(characterId: string): number | null {
   const i = SLOT_TO_ID.indexOf(characterId);
   return i < 0 ? null : i;
+}
+
+/**
+ * 挑中这个角色时存哪个坑位：它**自己的**坑位，跳过暂借的三格。sweep → 3、mane → 12。
+ * cap 只借住在坑 2、没有自己的坑位 → null：补齐旧 03 之前它不进挑头像那一墙（spec §10 第 13 条）。
+ * 认不出的 id 也回 null——不拿 0 兜底（0 是 stoic 的坑位，那等于替人挑了一张他没挑过的脸）。
+ */
+export function pickSlotOf(characterId: string): number | null {
+  for (let i = 0; i < SLOT_TO_ID.length; i++) {
+    if (SLOT_TO_ID[i] === characterId && !BORROWED_SLOTS.has(i)) return i;
+  }
+  return null;
 }

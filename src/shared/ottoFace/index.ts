@@ -46,10 +46,11 @@ export {
 } from "./states.js";
 export {
   DISC_COLOR,
+  displaySlotOf,
   FACE_CANVAS,
   FACE_CHARACTERS,
-  firstSlotOf,
   GRID_H,
   GRID_W,
+  pickSlotOf,
   type FaceCharacter,
 } from "./sprites.js";

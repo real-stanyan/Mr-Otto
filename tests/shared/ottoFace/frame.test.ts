@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   composeFrame,
   composeFrameAt,
+  displaySlotOf,
   faceCharacterAt,
   FACE_CANVAS,
   FACE_CHARACTERS,
@@ -12,11 +13,11 @@ import {
   FACE_STATE_LIST,
   FACE_STATES,
   faceAnimates,
-  firstSlotOf,
   frameMotion,
   GRID_H,
   GRID_W,
   motionKey,
+  pickSlotOf,
 } from "../../../src/shared/ottoFace/index.js";
 import { AGENT_AVATAR_COUNT } from "../../../src/shared/agentAvatarSlot.js";
 
@@ -192,12 +193,16 @@ describe("frameMotion / composeFrameAt", () => {
     const base = { bob: 0, sway: 0, lookX: 0, lookY: 0, eye: "open", mouth: "smile" } as const;
     expect(motionKey({ ...base, bob: -0 })).toBe(motionKey(base));
   });
+
+  it("t = 0 是睁着眼的静止一帧——减弱动态效果与第一拍之前画的就是它（#1356 终审）", () => {
+    for (const s of FACE_STATE_LIST) expect(frameMotion(s, 0).eye, s).toBe(FACE_STATES[s].eye);
+  });
 });
 
-describe("firstSlotOf", () => {
-  it("每个角色都有坑位，回的是那个角色的第一个坑位", () => {
+describe("displaySlotOf", () => {
+  it("每个角色都有坑位，回的是那个角色第一个出现的坑位（暂借的也算）", () => {
     for (const p of FACE_PACKS) {
-      const slot = firstSlotOf(p.id);
+      const slot = displaySlotOf(p.id);
       expect(slot, p.id).not.toBeNull();
       expect(FACE_CHARACTERS[slot!]!.id).toBe(p.id);
       for (let i = 0; i < slot!; i++) expect(FACE_CHARACTERS[i]!.id, `${p.id} 更早出现在 ${i}`).not.toBe(p.id);
@@ -205,7 +210,32 @@ describe("firstSlotOf", () => {
   });
 
   it("认不出的 id 回 null，不回一个看起来像挑过的坑位", () => {
-    expect(firstSlotOf("no-such-face")).toBeNull();
+    expect(displaySlotOf("no-such-face")).toBeNull();
+  });
+});
+
+describe("pickSlotOf", () => {
+  it("sweep 与 mane 存进自己的坑位，不是暂借的那格", () => {
+    expect(pickSlotOf("sweep")).toBe(3);
+    expect(pickSlotOf("mane")).toBe(12);
+  });
+
+  it("cap 只借住在暂借的坑位，没有自己的坑位可存——补齐旧 03 之前它不进挑头像那一墙", () => {
+    expect(pickSlotOf("cap")).toBeNull();
+  });
+
+  it("除 cap 外每个角色都回自己的坑位，且永远不是暂借的 1 / 2 / 10", () => {
+    for (const p of FACE_PACKS) {
+      if (p.id === "cap") continue;
+      const slot = pickSlotOf(p.id);
+      expect(slot, p.id).not.toBeNull();
+      expect(FACE_CHARACTERS[slot!]!.id).toBe(p.id);
+      expect([1, 2, 10], `${p.id} 存进了暂借的坑位 ${slot}`).not.toContain(slot);
+    }
+  });
+
+  it("认不出的 id 回 null，不拿 0 兜底", () => {
+    expect(pickSlotOf("no-such-face")).toBeNull();
   });
 });
 
