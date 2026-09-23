@@ -1554,15 +1554,15 @@ const DATA={
   /* `ts` = 多少分钟前，**只用来排序**，界面上写的还是「刚刚 / 12:41 / 昨天」那一列人话。
      两样分开是因为排序要的是一个数，而人要读的是一个说法 */
   {id:'admin',name:'管理员',role:'派活、建新的智能体',face:'管理员',
-   last:'「门店」建好了，它现在读得到排班表。要我把进货也交给它吗？',at:'刚刚',ts:2,state:'idle'},
+   last:'「门店」建好了，它现在读得到排班表。要我把进货也交给它吗？',at:'刚刚',ts:2,voice:'wen',state:'idle'},
   {id:'dev',name:'开发',role:'写代码、跑门禁、推分支',face:'开发',model:'Claude Opus 5',
-   last:'门禁绿了，推到 claude/pricing-copy，没动 main。',at:'12:41',ts:47,state:'running'},
+   last:'门禁绿了，推到 claude/pricing-copy，没动 main。',at:'12:41',ts:47,voice:'gan',state:'running'},
   {id:'design',name:'设计',role:'界面与文案',face:'设计',
-   last:'第二版把「工作区」那格删了 —— 三档卡片挤不下第四行。',at:'11:02',ts:146,state:'idle'},
+   last:'第二版把「工作区」那格删了 —— 三档卡片挤不下第四行。',at:'11:02',ts:146,voice:'qing',state:'idle'},
   {id:'ops',name:'运维',role:'部署与监控',face:'运维',
-   last:'要你去登录一次 Cloudflare，我才发得了 edge。',at:'昨天',ts:1500,state:'needsAuth'},
+   last:'要你去登录一次 Cloudflare，我才发得了 edge。',at:'昨天',ts:1500,voice:'chen',state:'needsAuth'},
   {id:'store',name:'门店',role:'排班与进货',face:'门店',
-   last:'国庆三个人两班倒，草表放在 文件/排班.md。',at:'周二',ts:4300,state:'idle'},
+   last:'国庆三个人两班倒，草表放在 文件/排班.md。',at:'周二',ts:4300,voice:'shao',state:'idle'},
  ],
  /* 群：2～6 只（0037 那条 CHECK）。一只的「群」就是私聊，所以下限是 2 */
  groups:[
@@ -1570,6 +1570,16 @@ const DATA={
    last:'开发 → 运维：edge 部完了叫我，我再发桌面版',at:'刚刚',ts:1,call:true,unread:2},
   {id:'g2',name:'奶茶店',members:['store','admin'],
    last:'门店：这周进货比上周少 12%，我按上个国庆的量排的',at:'周二',ts:4200},
+ ],
+ /* 说话的声音。真机那侧走 MiniMax（ADR-0271），音色原来是**按 agent_id 派生**的 ——
+    这一版让用户自己挑，所以每只身上多存一格。名字只描述音色，不冒充某个人 */
+ voices:[
+  ['qing','清亮','语速偏快，句尾上扬'],
+  ['wen','温和','慢一点，话尾收得稳'],
+  ['chen','沉稳','低音多，适合长段汇报'],
+  ['gan','干脆','短句、不拖音'],
+  ['shao','少年','偏亮偏年轻'],
+  ['bo','播音','字正腔圆，念数字清楚'],
  ],
  /* 它们共用的那台电脑（主场 = workspaces.kind='home'）。
     连接器三态：live / needsAuth / off —— 「待登录」不是失败，是在等你点一下 */
@@ -2234,6 +2244,12 @@ const faceWall=pick=>`<div class="faces">${FACE_CHARACTERS.map(c=>`
     ${faceOf(c.id,'',54,'idle',c.id===pick).replace('<canvas','<canvas data-center="ink"')}
   </button>`).join('')}</div>`;
 
+/** 这一只此刻用哪把嗓子。查不到就退回表里第一档 —— 不编一个表里没有的名字 */
+const voiceOf=b=>{
+  const row=DATA.voices.find(v=>v[0]===(b&&b.voice))||DATA.voices[0];
+  return {id:row[0],name:row[1],hint:row[2]};
+};
+
 function faceCluster(ids,h=54){
   const f=ids.slice(0,4).map(i=>botOf(i)).filter(Boolean);
   const W=67, one=35;                       // 27 高的那一档实测 35 宽（67×54 的格子按高收）
@@ -2657,19 +2673,19 @@ SCREENS.botSettings={label:'改一只',grp:'建与改',render:(p)=>{
    </button>
    <div class="field"><label>叫什么</label><input class="input" data-f="name" value="${b.name}" placeholder="不填也行"></div>
    <div class="field"><label>干什么的</label><input class="input" data-f="role" value="${b.role}" placeholder="比如：收发票、对账、月底出一张表"></div>
-   <div class="field"><label>还有什么要交代的</label>
-     <textarea class="input">提交信息写为什么不写做了什么。推之前先跑门禁。不许推 main。</textarea></div>
-   <div class="grouphdr">这一只</div>
+   <div class="field"><label>还有什么要交代的（它自己看得见这一段）</label>
+     <textarea class="input" data-f="prompt">提交信息写为什么不写做了什么。推之前先跑门禁。不许推 main。</textarea></div>
+   <!-- 这一页**只有五样**：形象、名字、职责、提示词、说话的声音（维护者对着 Grok 那页定的）。
+        原来还有「模型」「能用哪几个应用」「它记下来的东西」三行，撤掉 ——
+        · **模型**由我们按这一轮的活自己判（ADR-0237 的 Auto），用户这侧不提供；
+        · **应用**是那台电脑上的登录态，是账号底下的事，不是这一只的属性；
+        · **记忆**是它自己写给自己看的（ADR-0282 的 wiki），属于后台，摆出来只会让人
+          以为那是一份要他维护的东西。那几屏还在（左栏点得到），只是不从这儿进。 -->
    <div class="list">
-     <div class="row press" data-sheet="model"><span class="ico">${I('spark',15,2)}</span>
-       <span class="grow"><div class="ttl">模型</div></span>
-       <span class="t-foot dim">${b.model||'Auto'}</span>${I('chev',15,2.4)}</div>
-     <div class="row press" data-go="connectors"><span class="ico">${I('plug',15,2)}</span>
-       <span class="grow"><div class="ttl">能用哪几个应用</div></span>
-       <span class="t-foot dim">3 个</span>${I('chev',15,2.4)}</div>
-     <div class="row press" data-go="wiki"><span class="ico">${I('brain',15,2)}</span>
-       <span class="grow"><div class="ttl">它记下来的东西</div></span>
-       <span class="t-foot dim">1 页</span>${I('chev',15,2.4)}</div>
+     <div class="row press" data-sheet="voicePick" data-id="${b.id}"><span class="ico">${I('wave',15,2)}</span>
+       <span class="grow"><div class="ttl">说话的声音</div>
+         <div class="sub">开语音时它用这把嗓子</div></span>
+       <span class="t-foot dim">${voiceOf(b).name}</span>${I('chev',15,2.4)}</div>
    </div>
    <div class="list">
      <div class="row press" data-act="delBot"><span class="ico" style="color:var(--destructive)">${I('x',15,2.2)}</span>
@@ -3092,6 +3108,18 @@ const SHEETS={
    soon(()=>previewTour(el));
    return el;
  },
+ /* 挑嗓子。**不做试听**：这份 demo 里放不出真声音，画一颗点了不出声的播放钮
+    就是那颗撒谎的勾；真机上这儿该是点一下念一句它自己的话 */
+ voicePick:(b)=>{
+   const bot=botOf(b&&b.dataset.id)||DATA.bots[0], cur=voiceOf(bot).id;
+   return sheet(`<div class="grab"></div><div class="sh">说话的声音</div>
+     <div class="sbody">${DATA.voices.map(([id,name,hint])=>`
+       <div class="opt" data-act="pickVoice" data-id="${bot.id}" data-v="${id}">
+         <span class="ico">${I('wave',15,2)}</span>
+         <span class="grow"><div class="ttl">${name}</div><div class="sub">${hint}</div></span>
+         <span class="ck" style="color:var(--brand);opacity:${id===cur?1:0}">${I('check',17,2.6)}</span>
+       </div>`).join('')}</div>`);
+ },
  newThing:()=>alertDialog(`<div class="pickdlg">
    <h2>新建</h2>
    <button class="pick" data-act="newAgent">
@@ -3167,8 +3195,9 @@ const SHEETS={
      <span class="grow"><div class="ttl">${b.name}</div><div class="sub">${b.role}</div></span></div>`).join('')}
    <div class="groupftr" style="padding:12px 20px 4px">不 @ 谁 = 它们自己认领：读一遍名册和最近几句，挑对口的那只。</div></div>`),
  botMenu:()=>sheet(`<div class="grab"></div><div class="sbody">
+   <!-- 「它记下来的东西」从这儿撤了：记忆是后台的事（见 botSettings 那段注释） -->
    ${[['gear','改这一只','botSettings'],['people','把它拉进一个群','newGroup'],
-      ['brain','它记下来的东西','wiki'],['cloud','它在电脑上留下的文件','files']].map(([ic,t,go])=>
+      ['cloud','它在电脑上留下的文件','files']].map(([ic,t,go])=>
      `<div class="opt" data-close data-go="${go}"><span class="ico">${I(ic,15,2)}</span>
        <span class="grow"><div class="ttl">${t}</div></span></div>`).join('')}
    <div style="height:6px"></div>
@@ -3269,6 +3298,10 @@ const ACTS={
  newAgent:()=>SHEETS.newAgent(),
  /* 换完脸：数据先改，再把**两屏**一起重画 —— 设置页那张大脸，和底下压着的那份名册。
     不重画名册的话，退回去看到的还是旧脸（同 refreshScreen 那条注释） */
+ pickVoice:(b)=>{
+   const bot=botOf(b.dataset.id); if(bot) bot.voice=b.dataset.v;
+   closeSheet(); refreshScreen('botSettings');
+ },
  useFace:(b)=>{
    const bot=botOf(b.dataset.id); if(!bot) return;
    const sh=b.closest('.newbot');
