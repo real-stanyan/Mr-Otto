@@ -5,7 +5,7 @@ import { useNavigation } from "@react-navigation/native";
 import { View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { space, usePalette } from "../theme.js";
-import { Card, Headline, Hint } from "../ui.js";
+import { Button, Card, Headline, Hint } from "../ui.js";
 import { AccountButton } from "./AccountButton.js";
 
 export function RosterScreen() {
@@ -23,6 +23,9 @@ export function RosterScreen() {
           <Headline>智能体名册</Headline>
           <Hint>下一步在这里接上真数据：你的智能体和群聊，按最近一次动静排。</Hint>
         </Card>
+        {__DEV__ ? (
+          <Button variant="quiet" label="形象陈列馆（开发用）" onPress={() => navigation.navigate("FaceGallery")} />
+        ) : null}
       </View>
     </View>
   );

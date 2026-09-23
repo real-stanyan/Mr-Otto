@@ -3,6 +3,7 @@
 export type RootStackParams = {
   Roster: undefined;
   Account: undefined;
+  FaceGallery: undefined;
 };
 
 // 让不带泛型的 useNavigation() 也认得这些屏

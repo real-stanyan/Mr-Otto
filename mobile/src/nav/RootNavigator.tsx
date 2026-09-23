@@ -6,6 +6,7 @@ import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { usePalette } from "../theme.js";
 import { RosterScreen } from "../roster/RosterScreen.js";
 import { AccountScreen } from "../account/AccountScreen.js";
+import { FaceGallery } from "../dev/FaceGallery.js";
 import type { RootStackParams } from "./types.js";
 
 const Root = createNativeStackNavigator<RootStackParams>();
@@ -32,6 +33,10 @@ export function RootNavigator() {
         {/* 名册自己画浮在内容上的圆钮（demo 的 .pillnav），不要原生导航条 */}
         <Root.Screen name="Roster" component={RosterScreen} options={{ headerShown: false }} />
         <Root.Screen name="Account" component={AccountScreen} options={{ title: "账号", headerBackTitle: "返回" }} />
+        {/* 形象陈列馆：只在开发构建里有（#1356 A0，见 dev/FaceGallery.tsx 头注） */}
+        {__DEV__ ? (
+          <Root.Screen name="FaceGallery" component={FaceGallery} options={{ title: "形象陈列馆", headerBackTitle: "返回" }} />
+        ) : null}
       </Root.Navigator>
     </NavigationContainer>
   );
