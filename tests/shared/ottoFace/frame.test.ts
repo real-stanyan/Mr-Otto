@@ -13,7 +13,7 @@ import {
   faceAnimates,
   GRID_H,
   GRID_W,
-} from "../../../src/renderer/src/lib/ottoFace/index.js";
+} from "../../../src/shared/ottoFace/index.js";
 import { AGENT_AVATAR_COUNT } from "../../../src/renderer/src/lib/agentAvatarSlot.js";
 
 describe("坑位表", () => {

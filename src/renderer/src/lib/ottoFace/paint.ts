@@ -20,9 +20,9 @@
 //   而面积平均出来的小图恰恰就是旧那 13 张 128px PNG 被浏览器缩到 24px 的样子。
 //   换句话说这不是新引入的妥协，是回到原来的做法。
 
-import { composeFrame, type FaceFrame } from "./frame.js";
-import { DISC_CELLS, DISC_COLOR, FACE_ORIGIN_X, FACE_ORIGIN_Y, GRID_H, GRID_W } from "./sprites.js";
-import type { FaceState } from "./states.js";
+import { composeFrame, type FaceFrame } from "../../../../shared/ottoFace/frame.js";
+import { DISC_CELLS, DISC_COLOR, FACE_ORIGIN_X, FACE_ORIGIN_Y, GRID_H, GRID_W } from "../../../../shared/ottoFace/sprites.js";
+import type { FaceState } from "../../../../shared/ottoFace/states.js";
 
 /** 离线那一档整张脸压到这个透明度 */
 const DIM_ALPHA = 0.45;

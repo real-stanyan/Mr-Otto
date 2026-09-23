@@ -7,7 +7,7 @@
 // 是「我们查不到」这个事实本身，#1282）；通话那几格的映射在 `VoiceCallOverlay`
 // 的 `TILE_FACE` —— 它吃的是 `CallTile["state"]`，而那是个渲染层自己的枚举。
 
-import type { OpenTurn } from "../../../../shared/turnLedger.js";
+import type { OpenTurn } from "../turnLedger.js";
 import type { FaceState } from "./states.js";
 
 /**

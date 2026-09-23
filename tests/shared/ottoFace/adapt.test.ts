@@ -4,7 +4,7 @@
 // 停在别的表情上，不报错、不塌。
 
 import { describe, expect, it } from "vitest";
-import { dmFaceState } from "../../../src/renderer/src/lib/ottoFace/adapt.js";
+import { dmFaceState } from "../../../src/shared/ottoFace/adapt.js";
 import type { OpenTurn } from "../../../src/shared/turnLedger.js";
 
 const turn = (seq: number, agentId: string, state: OpenTurn["state"]): OpenTurn =>
