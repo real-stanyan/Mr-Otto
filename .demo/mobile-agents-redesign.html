@@ -463,6 +463,8 @@ textarea.input{height:auto;min-height:92px;padding:12px 14px;resize:none;line-he
    色取 --warn 不取 --brand：这不是「有新消息」，是「有件事卡着」 */
 .rbtn .dot{position:absolute;top:1px;right:1px;width:9px;height:9px;border-radius:50%;
   background:var(--warn);box-shadow:0 0 0 2.5px var(--bg)}
+/* 名字那一格空着时（刚建出来、还没有职责）药丸收成一颗圆 —— 不留一段没有内容的右内边距 */
+.namepill:has(.nm:empty){padding:0 5px;gap:0}
 .namepill{display:flex;align-items:center;gap:9px;height:46px;padding:0 18px 0 5px;border-radius:999px;
   margin:0 auto;max-width:62%;cursor:pointer;
   background:color-mix(in srgb,var(--fg) 10%,var(--glass));
@@ -1194,6 +1196,21 @@ function resetTo(id,tab){                  // 换栏 / 跳屏：不做动画（�
   const el=renderScreen(id,{}); stackEl.appendChild(el); setX(el,0);
   stack.push({id,el,spring:new SpringVal(0),params:{},prev:null});
   syncRail();
+}
+
+/** 栈里某一屏的数据变了，**原地重画它**：`back()` 只是把上面那层滑走，
+    底下那屏是建它的时候就渲好挂在那儿的一份 DOM —— 不重画的话，退回名册看到的
+    还是「还没说要干什么」，而人刚刚亲口说完它是干什么的（真机那侧是 store 推着重渲，
+    这份 demo 的屏是一次性的字符串，所以要自己补这一下）。
+    位置与 `below` 原样搬过去：这一屏此刻正被上面那层压着，重画不该让它跳回原位。 */
+function refreshScreen(id){
+  stack.forEach(r=>{
+    if(r.id!==id) return;
+    const el=renderScreen(id,r.params); if(!el) return;
+    el.style.transform=r.el.style.transform;
+    if(r.el.classList.contains('below')) el.classList.add('below');
+    r.el.replaceWith(el); r.el=el;
+  });
 }
 
 /* 左缘右划返回：1:1 跟手 → 松手按**速度方向**决定回还是走（不看位置） */
@@ -2217,9 +2234,14 @@ function faceRow(ids){
 function botRow(b,fresh){
   /* 还没人跟它说过要干什么的那一只：主行写的是**这个事实**，不是替它编一个称呼。
      「新智能体」那种占位名比空着更糟 —— 它看起来像个名字，于是没人再去填真的那一行 */
-  const head=b.name||b.role
+  /* 主行写什么：有名字就是名字（职责跟在后面的小字里）；**没名字时职责就是主行** ——
+     不是把它塞进那行小字，那会让整行的第一眼是一句灰色小字，看着像副标题没有标题。
+     两样都没有的那一只（刚建出来）照实说，不替它编一个称呼 */
+  const head=b.name
     ? `<span class="n">${b.name}</span><span class="rl">${b.role}</span>`
-    : `<span class="n" style="color:var(--mutedFg);font-weight:500">还没说要干什么</span>`;
+    : b.role
+      ? `<span class="n">${b.role}</span>`
+      : `<span class="n" style="color:var(--mutedFg);font-weight:500">还没说要干什么</span>`;
   return `<div class="row press brow" data-go="botChat" data-p='{"id":"${b.id}"}'${fresh?' data-fresh="1"':''}>
     ${faceOf(b.face,b.name[0]||'',54,'idle',true)}
     <span class="grow">
@@ -2280,6 +2302,9 @@ function whoLineLive(b,t){
     <span data-el="livesub" style="opacity:.75"></span></div>`;
 }
 const meLine=t=>`<div class="who mine">${faceOf('Stan','S')}<span>我 · ${t}</span></div>`;
+/** 用户打的字要进 HTML，转义一次。这份 demo 里只有这一处收真实输入 —— 少了它，
+    一句带尖括号的话会被当标签吃掉（真机那侧走的是 React，天生不会有这个问题） */
+const esc=t=>t.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 
 /* ═══════════════════════════════════════════════════════════════════════
    1 · 名册 —— 这个 App 的第一层，也是唯一一层
@@ -2513,6 +2538,29 @@ SCREENS.newBot={label:'建一只 · 跟管理员说',grp:'建与改',render:()=>
    ${cmpPad}
  </div>
  ${composer({ph:'帮我建一只…',ctx:.06,model:false})}`}};
+
+/* 建完落在**它自己的那条线**上（维护者定的），不是回名册。
+   开口的是它不是我们：那段开场白由出厂提示词驱动 —— 一只刚建出来的智能体
+   手上只有一张脸，它要的正是这句「你想让我干什么」。
+   所以这一屏没有表单、没有「下一步」：**它问，你答**，答完的那句话就是它的职责。
+   底下那排是**给第一次的人**的现成句子，点一下**只填进输入框不发出去**（同 A5 那条纪律：
+   一颗点了就不可撤销的钮，人多半想先改两个字）。 */
+SCREENS.botNew={label:'建完 · 它先开口',grp:'建与改',render:(p)=>{
+ const b=botOf(p&&p.id)||DATA.bots[0];
+ return `${chatNav({face:faceOf(b.face,'',54,'idle',true),name:''})}
+ <div class="body" data-el="newchat" data-bot="${b.id}">${chatPad}
+   <div class="tl">
+     <!-- 这一行没有名字可写，只有脸和时间 —— 它还没有职责，而职责就是它的那一行 -->
+     <div class="who">${faceOf(b.face,'',27)}<span>刚刚</span></div>
+     <div class="bub ot">我是新来的。你想让我干什么？</div>
+     <div class="bub ot">说一句就行，比如「每天早上把昨天的订单汇总发我」。说完我就照着办，有不清楚的我再问你。</div>
+     <div class="chips" style="padding:12px 6px 2px">
+       ${DATA.presets.map(([t,say])=>`<button class="chip" data-act="preset" data-t="${say}">${t}</button>`).join('')}
+     </div>
+   </div>
+   ${cmpPad}
+ </div>
+ ${composer({ph:'说一句它是干什么的…'})}`}};
 
 /* 表单那条路。**和管理员那条走同一个编辑器** —— 抄第二份的那天，
    「型号那一格怎么映射回网关那条有序清单」就有了两个答案 */
@@ -3110,6 +3158,42 @@ const ACTS={
  /* 选完先 closeSheet 再 go：`go()` 不碰弹窗（它只管屏），不收的话新屏会推到一张
     还开着的弹窗底下。两件事分开是对的 —— 别的地方也有「开着弹窗跳屏」的用法 */
  newPick:(b)=>{ closeSheet(); go(b.dataset.to); },
+ /* 点一下**只填进输入框**，不发出去（这颗 chip 在三处都这么用）。填完把焦点还给输入框，
+    光标落在末尾 —— 人接着要改的多半是最后那几个字 */
+ preset:(b)=>{
+   const box=b.closest('.scr')?.querySelector('.cmpBox'); if(!box) return;
+   box.textContent=b.dataset.t; box.classList.add('filled');
+   box.focus();
+   const r=document.createRange(); r.selectNodeContents(box); r.collapse(false);
+   const sel=getSelection(); sel.removeAllRanges(); sel.addRange(r);
+ },
+ /* 发出去。这一版的圆钮是**一物两用**（空着开电话、有字发出去），所以 send 由 voice 转进来，
+    回车那条路也走这里。发完**不收键盘**（不抢焦点），人接着打下一句 */
+ send:(b)=>{
+   const cmp=b.closest('.composer'), box=cmp.querySelector('.cmpBox');
+   const text=box.textContent.trim(); if(!text) return;
+   const REPLY='好，记下了。我先去把手上这台电脑认认门，有不清楚的再问你。';
+   const scr=b.closest('.scr'), tl=scr.querySelector('.tl'); if(!tl) return;
+   box.textContent=''; box.classList.remove('filled');
+   tl.insertAdjacentHTML('beforeend',`${meLine('刚刚')}<div class="bub me">${esc(text)}</div>`);
+   const body=scr.querySelector('.body'); body.scrollTop=body.scrollHeight;
+   /* 刚建出来那条线上，第一句话是**它的职责**：名册上那一行跟着这句改。
+      demo 里答一句就够了 —— 真机上这一轮才是它第一次跑 */
+   const host=scr.querySelector('[data-el="newchat"]'); if(!host) return;
+   const bot=botOf(host.dataset.bot); if(!bot) return;
+   bot.role=text.length>12?text.slice(0,12)+'…':text; bot.last=text; bot.at='刚刚';
+   refreshScreen('bots');          // 底下压着的那份名册跟着改，退回去才是刚说完的那句
+   scr.querySelectorAll('.chips').forEach(c=>c.remove());
+   setTimeout(()=>{
+     if(!tl.isConnected) return;
+     tl.insertAdjacentHTML('beforeend',`<div class="who">${faceOf(bot.face,'',27)}<span>刚刚</span></div>
+       <div class="bub ot">${REPLY}</div>`);
+     mountFaces(tl); body.scrollTop=body.scrollHeight;
+     // 名册那一行的第二行是「最后一句话」，所以它该是**它的回话**不是我刚说的那句 ——
+     // 否则那一行会把同一句话写两遍（主行是职责，副行还是它）
+     bot.last=REPLY; refreshScreen('bots');
+   },700);
+ },
  newAgent:()=>SHEETS.newAgent(),      // sheet() 自己会先收掉上一层（那张弹窗），不用手动关
  /* 换形象**只改那张大脸的 data-ch 再重画**，不重渲染这一屏：重渲染会把已经打了一半的
     名字冲掉，还会让每一格的脸重新挂一次（它们是活着的 canvas，不是图片） */
@@ -3137,11 +3221,17 @@ const ACTS={
    const ch=box.querySelector('.fpick[data-on]')?.dataset.ch||FACE_CHARACTERS[0].id;
    const id='new'+Date.now();
    DATA.bots.unshift({id,face:ch,name:'',role:'',last:'点进去跟它说第一句',at:'刚刚'});
-   FRESH_BOT=id; closeSheet(); resetTo('bots'); soon(()=>{FRESH_BOT=null});
+   /* 先把名册重画一遍（那一行带入场），再推它的那条线：
+      这样退回去看到的是**有它**的名册。只 go 不重画的话，名册那一屏还是建之前那份，
+      人退回去会发现自己刚建的东西不在里面 */
+   FRESH_BOT=id; closeSheet(); resetTo('bots'); go('botNew',{id}); soon(()=>{FRESH_BOT=null});
  },
  /* 语音从「电话」那个位置升起，也回那儿去 —— 同一条路径（空间一致性） */
  /* 电话模式：替换输入框。挂断换回来、并在时间线上留下那张卡 */
- voice:(b)=>{ const v=b.dataset.v||'bot'; closeSheet();
+ voice:(b)=>{
+   // 有字的时候这颗钮写的是「发出去」（.callbtn 的两枚图标按 .filled 换），那就真发出去
+   if(b.closest('.composer')?.querySelector('.cmpBox.filled')) return ACTS.send(b);
+   const v=b.dataset.v||'bot'; closeSheet();
    openVoice(v==='group'?DATA.groups[0].members:['dev']); },
  vmute:(b)=>{ VOICE.muted=!VOICE.muted; b.classList.toggle('on',VOICE.muted);
    b.closest('.voicebar').classList.toggle('muted',VOICE.muted); },
@@ -3214,7 +3304,9 @@ document.addEventListener('input',e=>{ const box=e.target.closest?.('.cmpBox'); 
   box.classList.toggle('filled',box.textContent.trim()!==''); });
 document.addEventListener('keydown',e=>{ const box=e.target.closest?.('.cmpBox');
   if(!box||e.key!=='Enter'||e.shiftKey||e.isComposing||e.keyCode===229) return;
-  e.preventDefault(); ACTS.send(box.closest('.composer').querySelector('.sendsm')); });
+  // 这一版的发送钮是 .callbtn（一物两用），`.sendsm` 是上一版留下的名字 —— 按它找是 null，
+  // 回车会当场抛 TypeError 而界面一个字都不说
+  e.preventDefault(); ACTS.send(box.closest('.composer').querySelector('.callbtn')); });
 document.addEventListener('mousedown',e=>{ if(e.target.closest?.('.sendsm')) e.preventDefault(); });
 
 /* 这一版没有底栏 —— 第一层只有一个主语。留一个空壳只为接住老的 data-tab */
