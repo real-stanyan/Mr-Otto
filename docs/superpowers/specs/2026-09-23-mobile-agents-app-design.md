@@ -69,7 +69,7 @@
 
 **shared 里新增的纯函数**（都进 vitest）：
 - `frameMotion(slot, state, t)`：把 `composeFrame` 里那一段「这一刻的位移 / 眼形 / 嘴形」拆出来，`composeFrame` 改成调它。手机端据此做帧去重：同一个 motion 键画出来的帧逐格相同，键没变就不重画。
-- `faceRuns(frame)`：帧 → 每种颜色一串行程（`{color, runs:[x,y,len][]}`）+ 一个稳定的键。SVG 的 `d` 串由它拼；拼法不留在 RN 组件里（那一侧进不了 vitest）。
+- `faceLayers(frame)` / `runsPath(runs)`（`runs.ts`）：帧 → 每种颜色一串行程 → SVG 的 `d` 串；拼法不留在 RN 组件里（那一侧进不了 vitest）。`createFaceArtCache()`（`art.ts`）按 (坑位, 状态, motion) 记住算好的几层，键就是那个稳定的键。
 - `faceRim(frame)`：轮廓外一圈（四邻域里空着的格子）。深色底上画成 `DISC_COLOR`——这批脸的头发是纯黑的，贴在 `#000` 上整颗头会糊成一团；桌面靠圆盘解决，手机不画圆盘（demo「不许裁」），所以靠描边（demo 同款）。
 
 **新增一档状态 `alive`**：眨眼 + 呼吸（2600ms / 1 格）、眼睛不动、**没有角标**。名册那一墙要「活着但不声称任何事」（demo 的 a09641d3：「名册会眨眼，但一个角标都没有」），而 main 的表里没有这一档——`plain` 完全静止，`idle` 带一枚灰角标（那是在声称「空闲」，而名册查不到谁在跑，#722 / #1282）。桌面暂无消费方（陈列馆脚本多画一格）。
@@ -87,7 +87,7 @@
 
 - `src/main/cloudSessionClient.ts` → `src/shared/remote/cloudSessionClient.ts`。三处绊脚：`FriendsResult` 改 import `src/shared/friends.ts` 那份；`cloudSessionFleetRow` / `CloudSessionSummary`（及其对 `SessionSummary`、`CLOUD_WORKSPACE_PREFIX` 的依赖）拆到 `src/main/cloudSessionFleet.ts` 留在桌面；`validateRepoUrl` 那行没人用的 import 删掉。测试跟着拆：纯客户端那 120 多条进 `tests/shared/remote/`，岛 / 会话列表那几条留 `tests/main/`。
 - `src/main/supabaseWorkspacesApi.ts` → `src/shared/supabaseWorkspacesApi.ts`；主场那 13 行（`ensureHome`）拆成 `ensureHomeWorkspace(client, uid)` 一起过去，桌面 `workspaceManager` 改成调它。
-- 删智能体那四步从 `workspaceManager` 拆出一个注入式的纯编排（删私聊 / 摘群 / 删行 / 删页各是一个依赖），两端共用；桌面那份只剩接线。
+- 删智能体那四步从 `workspaceManager` 拆出一个注入式的纯编排（删私聊 / 摘群 / 删行 / 删页各是一个依赖），两端共用；桌面那份只剩接线。**归 A1**：它的第一个手机端消费方是智能体设置里的「删掉」。
 - 手机端接线 `mobile/src/cloud/`：`createTransport = channel => createWsTransport({baseUrl: RELAY_BASE, role: "guest", channel, authToken})`、`accessToken` 取 supabase 的 session、推送进一个外部 store（`useSyncExternalStore`，不引 zustand）；App 回前台对当前会话房 `reconnectNow`。个人主场里没有审批卡（ADR-0298），`onApprovalRequest` 接空。
 - 把时间线要的那批渲染层纯函数挪进 shared（§9 列了清单）；桌面改 import。代价：桌面云会话这一面要回归一遍（§12）。
 
