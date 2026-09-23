@@ -63,7 +63,7 @@
 
 ### 3.1 ottoFace 在 RN 上怎么画：react-native-svg，每种颜色一条 Path
 
-**选型**：`react-native-svg`（ADR-0293 已引入，不加依赖、不碰 L1）。同一帧里同色、同一行、连着的格子合成一段，每种颜色一条 `<Path>`（`M x y h n v 1 h -n z` 串起来）；`shapeRendering="crispEdges"`，`viewBox` 就是网格本身，缩放交给 SVG。
+**选型**：`react-native-svg`（ADR-0293 已引入，不加依赖、不碰 L1）。同一帧里同色、同一行、连着的格子合成一段，每种颜色一条 `<Path>`（`M x y h n v 1 h -n z` 串起来）；（react-native-svg 15.15 没有 `shapeRendering` 这一属性——硬边靠每格落在整数个物理像素上：m / l 档在 @2x / @3x 屏上成立，s 档在 @3x 上是每格 1.5 个物理像素，边缘可能混色，见 §12 第 5 条），`viewBox` 就是网格本身，缩放交给 SVG。
 
 **纯层挪进 `src/shared/ottoFace/`**：`character.ts`、`characters/*`、`sprites.ts`、`states.ts`、`frame.ts`、`adapt.ts`（`dmFaceState`）。渲染层的 `lib/ottoFace/` 只剩 `paint.ts`（canvas）+ 一个把 shared 那份原样转出去的 `index.ts`，桌面十几个调用点的 import 一个字不改。
 
@@ -228,6 +228,10 @@ M1 那套（冷启动 / 登录 / 注册 / 找回密码 / 确认信）原样。�
 12. **删掉的确认文案改成照实说**：demo 写「它写的记忆留着」，而桌面删一只会连它自己那页 wiki 一起删（`workspaceManager.ts:431`）。
 13. **头像写回第一个坑位**（sweep 存 1、mane 存 10）：demo 存的是角色 id，库里存的是坑位。
 14. **群那一行的最后一句写「名字：摘录」**：demo 的「开发 → 运维：…」是接力线的写法，清单表里没有这一格。
+15. **A0 没删手机端依赖**：worktree 的 `mobile/node_modules` 是指向主 checkout 的软链，在那里装卸会改到所有 lane 共用的那一份；没用上的依赖另开 issue 清（ADR-0317 后果第 2 条）。
+16. **开发构建里多一屏形象陈列馆**：A1 之前没有任何一屏画真智能体的脸，这是在模拟器上核画法的唯一入口；生产构建里没有（`__DEV__`）。
+17. **`ui.tsx` 只摘了两个专属组件**（配对安全码、项目文件夹图标）：其余通用组件留着给 A1 用。
+18. **没有 `shapeRendering="crispEdges"`**：react-native-svg 15.15 不认这个属性（spec §3.1 原先那句写错了，已改）；硬边靠整数物理像素对齐，s 档在 @3x 上的半像素混色留给真机 / 模拟器看过再定。
 
 （写 plan / 实现期间的偏离追加在这里。）
 
