@@ -1,33 +1,29 @@
-// 手机端的入口：开屏 → 进门 → 三栏（任务 / 项目 / 团队）。
+// 手机端的入口：开屏 → 进门 → 名册（单栏，#1356）。
 //
 // 此刻画哪一屏由 shared/mobileGate.ts 的 gateView 说了算：冷启动没做完画开屏，没有 session 画闸门，
 // 其余进三栏。登录 / 登出 / session 过期一律跟着 onAuthStateChange 走，不在各个按钮里分别切屏。
-// 三栏的导航在 src/nav/（ADR-0293）；视觉语言全部来自 src/theme.ts（逐值抄自桌面 app.css）。
+// 导航在 src/nav/（一个原生栈，#1356）；视觉语言全部来自 src/theme.ts（逐值抄自桌面 app.css）。
 
 import { useCallback, useEffect, useState } from "react";
 import { View } from "react-native";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
-import type { PinnedPeerStore } from "../src/shared/remote/devices.js";
 import { gateView, resetHoldSurvives } from "../src/shared/mobileGate.js";
 import { splashProgress } from "../src/shared/splashProgress.js";
 import { DitherBackground } from "./src/dither.js";
-import { openStore } from "./src/session.js";
 import { supabase } from "./src/supabase.js";
 import { usePalette, space } from "./src/theme.js";
 import { useStatusBarStyle } from "./src/statusBarStyle.js";
 import { Note } from "./src/ui.js";
-import { LinkProvider } from "./src/link.js";
 import { RootNavigator } from "./src/nav/RootNavigator.js";
 import { GateScreen } from "./src/gate/GateScreen.js";
 import { Splash } from "./src/gate/Splash.js";
 import { readResetHold, writeResetHold } from "./src/gate/resetHold.js";
 import { hasStoredSessionSync } from "./src/gate/storedSession.js";
 
-/** 冷启动的步数：身份库、读 session。进度条的「真实」那一半按它数 */
-const BOOT_STEPS = 2;
+/** 冷启动的步数：读 session。进度条的「真实」那一半按它数（配对身份那一步随投影一起删了，#1356） */
+const BOOT_STEPS = 1;
 
 export default function App() {
-  const [store, setStore] = useState<PinnedPeerStore | null>(null);
   const [hasSession, setHasSession] = useState(false);
   const [resetHold, setResetHold] = useState(false);
   const [done, setDone] = useState(0);
@@ -37,8 +33,6 @@ export default function App() {
 
   useEffect(() => {
     void (async () => {
-      setStore(await openStore());
-      setDone((n) => n + 1);
       // 闸门问的是**盘上有没有一份登录记录**，不是「此刻拿不拿得到一个活 session」：
       // 断网 + access token 已过期时 getSession() 回 null，而盘上那份一个字节都没少
       // （supabase 只在**非**网络类错误且 token 真过期时才删它）。照它判就是把人锁在自己的 app 外面——
@@ -68,7 +62,7 @@ export default function App() {
     return () => sub.subscription.unsubscribe();
   }, []);
 
-  // 状态栏字色:开屏 / 闸门 / 三栏都归这一处管(为什么要补发第二次,见 statusBarStyle.ts,#1270)
+  // 状态栏字色:开屏 / 闸门 / 名册都归这一处管(为什么要补发第二次,见 statusBarStyle.ts,#1270)
   useStatusBarStyle(usePalette().isDark);
 
   const progress = splashProgress({ done, total: BOOT_STEPS, elapsedMs: now - t0 });
@@ -90,7 +84,7 @@ export default function App() {
   }, []);
 
   const view = gateView({
-    booted: store !== null && done >= BOOT_STEPS,
+    booted: done >= BOOT_STEPS,
     splashDone: progress >= 1,
     hasSession,
     resetHold,
@@ -104,12 +98,10 @@ export default function App() {
     );
   }
 
-  if (view === "app" && store) {
+  if (view === "app") {
     return (
       <SafeAreaProvider>
-        <LinkProvider store={store}>
-          <RootNavigator />
-        </LinkProvider>
+        <RootNavigator />
       </SafeAreaProvider>
     );
   }
