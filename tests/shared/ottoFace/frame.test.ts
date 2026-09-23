@@ -18,7 +18,7 @@ import {
   GRID_W,
   motionKey,
 } from "../../../src/shared/ottoFace/index.js";
-import { AGENT_AVATAR_COUNT } from "../../../src/renderer/src/lib/agentAvatarSlot.js";
+import { AGENT_AVATAR_COUNT } from "../../../src/shared/agentAvatarSlot.js";
 
 describe("坑位表", () => {
   it("坑位数与派生的模数一致", () => {

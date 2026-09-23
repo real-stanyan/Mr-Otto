@@ -8,8 +8,8 @@
 // 那一槽作废——「不完整就不是消息」，与本机 absorbEvent 清 streamingBySession
 // 是同一条纪律。
 
-import type { SessionEvent } from "../../../session/events.js";
-import type { CloudSessionDelta } from "../../../shared/shellBridge.js";
+import type { SessionEvent } from "../session/events.js";
+import type { CloudSessionDelta } from "./shellBridge.js";
 
 /** agentId → 这一轮到此刻为止攒下的正文预览 */
 export type CloudStreaming = Record<string, string>;

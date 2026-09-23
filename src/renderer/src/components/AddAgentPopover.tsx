@@ -18,7 +18,7 @@ import { UserPlus } from "lucide-react";
 import { Button } from "@/components/ui/button.js";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover.js";
 import { AgentFace } from "./AgentFace.js";
-import { agentFaceSlot } from "../lib/agentAvatar.js";
+import { agentFaceSlot } from "../../../shared/agentAvatar.js";
 import { CHAT_GROUP_MAX } from "../../../shared/chatRoster.js";
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 

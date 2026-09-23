@@ -6,7 +6,7 @@
 // canKick（owner 且不是自己）、toolsSummary（[] → 全部工具）。
 
 import { describe, expect, it } from "vitest";
-import { connectorBatchErrorText, connectorRows, memberRows, sessionRows, cloudSessionRows } from "../../src/renderer/src/lib/workspaceView.js";
+import { connectorBatchErrorText, connectorRows, memberRows, sessionRows, cloudSessionRows } from "../../src/shared/workspaceView.js";
 import type { WorkspaceSnapshot } from "../../src/shared/workspaces.js";
 
 const WS: WorkspaceSnapshot = {

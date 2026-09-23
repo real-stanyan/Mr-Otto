@@ -1,7 +1,7 @@
 // cloudStreaming（云会话流式缓冲，#1107）的纯逻辑测试。两条契约：
 // ① 快照语义——整槽替换不是拼接；② 终态事件清槽——预览作废由事实覆盖
 import { describe, it, expect } from "vitest";
-import { applyCloudDelta, clearCloudStreamingOn } from "../../src/renderer/src/lib/cloudStreaming.js";
+import { applyCloudDelta, clearCloudStreamingOn } from "../../src/shared/cloudStreaming.js";
 import type { SessionEvent } from "../../src/session/events.js";
 
 const base = { sessionId: "s", ts: 0 } as const;

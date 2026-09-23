@@ -20,7 +20,7 @@ import { Drawer, DrawerContent, DrawerHeader, DrawerTitle } from "@/components/u
 import { SidebarProvider } from "@/components/ui/sidebar.js";
 import { useMemo } from "react";
 import { useChat } from "../store.js";
-import { homeOf } from "../lib/agentRoster.js";
+import { homeOf } from "../../../shared/agentRoster.js";
 import { AgentEditorScreen } from "./WorkspaceAgentsTab.js";
 
 export function NewAgentDrawer() {

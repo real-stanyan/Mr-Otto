@@ -17,7 +17,7 @@ import type { ToolCallRequest } from "../../../session/events.js";
 import type { SessionEvent } from "../../../session/events.js";
 import type { ToolIndex } from "../lib/toolIndex.js";
 import { sourcePartsFor, type Part } from "./toolArtifacts.js";
-import { isSystemNote } from "../lib/systemNote.js";
+import { isSystemNote } from "../../../shared/systemNote.js";
 
 /** 流式直播缓冲(store.streamingBySession 的一项)。事件未落盘前的预览 */
 export interface LiveBuffer {

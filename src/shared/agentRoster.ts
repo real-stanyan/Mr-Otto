@@ -2,14 +2,22 @@
 // 进得去，全在这里判；组件只管画。判据都挂在快照与云会话清单这两份**已经在手**的
 // 数据上，不为画一行多打一次网络。
 
-import { chatRosterNow, narrowRoster } from "../../../shared/chatRoster.js";
-import type { SessionEvent } from "../../../session/events.js";
-import type { CsChatInfo, CsChatSpec } from "../../../shared/remote/cloudSession.js";
-import { ADMIN_AGENT_ID } from "../../../shared/workspaceAgents.js";
-import { isHomeWorkspace, type WorkspaceSnapshot } from "../../../shared/workspaces.js";
-import type { ChatView } from "../components/AgentChatHeader.js";
+import { chatRosterNow, narrowRoster } from "./chatRoster.js";
+import type { SessionEvent } from "../session/events.js";
+import type { CsChatInfo, CsChatSpec } from "./remote/cloudSession.js";
+import { ADMIN_AGENT_ID } from "./workspaceAgents.js";
+import { isHomeWorkspace, type WorkspaceSnapshot } from "./workspaces.js";
 import type { WorkspaceAccess } from "./workspaceAccess.js";
 import { agentNameOf, type CloudSessionListRow } from "./workspaceView.js";
+
+/** 聊天页头上那一行要的三样（#1280）。住在这里而不是组件里：`chatViewOf` 产出它，
+    而这个文件两端共用（#1356）——从组件拿类型等于让手机端连带类型检查一个 React DOM 组件 */
+export interface ChatView {
+  kind: "dm" | "group";
+  agentIds: string[];
+  /** 私聊 = 那只智能体的名字；群聊 = 群名（没起名时是成员名拼起来的） */
+  title: string;
+}
 
 export function homeOf(groups: readonly WorkspaceSnapshot[]): WorkspaceSnapshot | null {
   return groups.find(isHomeWorkspace) ?? null;

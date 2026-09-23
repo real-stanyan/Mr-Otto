@@ -5,7 +5,7 @@
 // 一次真实调用走上自己的 key。
 
 import { describe, expect, it } from "vitest";
-import { isSubscribed } from "../../src/renderer/src/lib/billingView.js";
+import { isSubscribed } from "../../src/shared/billingView.js";
 import { settingsSectionVisible, settingsSections } from "../../src/renderer/src/settingsShell.js";
 import { visionModelFor } from "../../src/shared/visionModel.js";
 import { helperModelFor } from "../../src/shared/helperModel.js";

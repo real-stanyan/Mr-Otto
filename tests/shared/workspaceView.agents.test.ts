@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { agentNameOf, agentRows } from "../../src/renderer/src/lib/workspaceView.js";
+import { agentNameOf, agentRows } from "../../src/shared/workspaceView.js";
 import type { WorkspaceSnapshot } from "../../src/shared/workspaces.js";
 
 const ws: WorkspaceSnapshot = {

@@ -26,7 +26,7 @@ import {
   auditLine, borrowStatusLine, buildAllow, describeAllow, hostStatusLine,
   isServerOn, isToolOn, selectionFromAllow, toggleServer, toggleTool,
   type ProxySelection, type ProxyStatusLine,
-} from "../lib/proxyShare.js";
+} from "../../../shared/proxyShare.js";
 
 const ROW = "flex items-center gap-2 px-2 py-[6px] rounded-md text-xs";
 

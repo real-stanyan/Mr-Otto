@@ -5,7 +5,7 @@
 // 与"这句话最后点了谁"是两个问题。边界判据抄 parseMentions 的口径（@ 前是
 // 行首或非构词字符），不然邮箱地址会弹出选人。
 
-import { mentionTokens, parseMentions, type MentionCandidate } from "../../../shared/remote/agentMention.js";
+import { mentionTokens, parseMentions, type MentionCandidate } from "./remote/agentMention.js";
 
 const WORD = /[\p{L}\p{N}_]/u;
 

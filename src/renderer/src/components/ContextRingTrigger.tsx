@@ -28,7 +28,7 @@
 
 import { useChat } from "../store.js";
 import { useNow } from "../lib/useNow.js";
-import { quotaAlert } from "../lib/billingView.js";
+import { quotaAlert } from "../../../shared/billingView.js";
 import {
   ContextDisplayTrigger,
   ContextDisplayRingVisual,

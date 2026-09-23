@@ -44,7 +44,7 @@ import {
 } from "../../../shared/thinking.js";
 import { cn } from "@/lib/utils.js";
 import { AUTO_MODEL } from "../../../shared/autoModel.js";
-import { hostedModels, isSubscribed } from "../lib/billingView.js";
+import { hostedModels, isSubscribed } from "../../../shared/billingView.js";
 import { AUTO_MIN_MODELS, modelMenuGroups, type ModelMenuItem } from "../lib/modelMenu.js";
 import { useChat } from "../store.js";
 import { ImageVendorMark, ProviderMark } from "./ProviderMark.js";

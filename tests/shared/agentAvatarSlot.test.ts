@@ -5,8 +5,8 @@
 import { describe, expect, it } from "vitest";
 import {
   ADMIN_AVATAR_SLOT, AGENT_AVATAR_COUNT, agentAvatarSlot, agentAvatarSlots,
-} from "../../src/renderer/src/lib/agentAvatarSlot.js";
-import { FACE_CHARACTERS } from "../../src/renderer/src/lib/ottoFace/index.js";
+} from "../../src/shared/agentAvatarSlot.js";
+import { FACE_CHARACTERS } from "../../src/shared/ottoFace/index.js";
 import { ADMIN_AGENT_ID } from "../../src/shared/workspaceAgents.js";
 
 describe("agentAvatarSlots", () => {

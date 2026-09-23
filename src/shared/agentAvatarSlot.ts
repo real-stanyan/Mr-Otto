@@ -14,8 +14,8 @@
 // 代价写明：一只被删之后，曾经因为撞上它而挪过位的那只会挪回原坑（换一次脸）；
 // 接受——只在撞过的那对之间发生，且删 agent 本来就是罕见操作。
 
-import { ADMIN_AGENT_ID } from "../../../shared/workspaceAgents.js";
-import { fnv1a } from "../../../shared/fnv1a.js";
+import { ADMIN_AGENT_ID } from "./workspaceAgents.js";
+import { fnv1a } from "./fnv1a.js";
 
 /** 内置头像的坑位数。与 `lib/ottoFace/sprites.ts` 的 `FACE_CHARACTERS` 个数一致
     （一个坑位对一个角色，#1345），由测试钉住 */

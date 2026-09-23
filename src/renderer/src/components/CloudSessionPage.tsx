@@ -43,7 +43,7 @@ import { ArrowLeft, AtSign, ChevronRight, Download, Phone, Settings2 } from "luc
 import { cn, isMac } from "@/lib/utils.js";
 import { Button } from "@/components/ui/button.js";
 import { Bubble, BubbleContent } from "@/components/ui/bubble.js";
-import { splitBubbles } from "@/lib/chatBubbles.js";
+import { splitBubbles } from "../../../shared/chatBubbles.js";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar.js";
 import { Textarea } from "@/components/ui/textarea.js";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip.js";
@@ -56,23 +56,24 @@ import { useChat, type CloudSessionState } from "../store.js";
 import { EventRow, TimelineProjectionContext } from "./Timeline.js";
 import { buildToolIndex } from "../lib/toolIndex.js";
 import { groupSubagentSpawns } from "../lib/subagentTimeline.js";
-import { formatProxyTime } from "../lib/proxyShare.js";
-import { agentNameOf, labelOf, memberAvatarOf } from "../lib/workspaceView.js";
+import { formatProxyTime } from "../../../shared/proxyShare.js";
+import { agentNameOf, labelOf, memberAvatarOf } from "../../../shared/workspaceView.js";
 import { AddAgentPopover } from "./AddAgentPopover.js";
-import { AgentChatHeader, type ChatView } from "./AgentChatHeader.js";
-import { withDaySeparators } from "../lib/dayLabel.js";
+import { AgentChatHeader } from "./AgentChatHeader.js";
+import type { ChatView } from "../../../shared/agentRoster.js";
+import { withDaySeparators } from "../../../shared/dayLabel.js";
 import { growHidden, initialHidden, nextOlderAction, visibleCloudRows } from "../lib/cloudWindow.js";
 import { AgentFace, PartyAvatar } from "./AgentFace.js";
 import { dmFaceState } from "../lib/ottoFace/index.js";
-import { agentFace, agentFaceIfKnown, agentFaceSlot, imageAvatar } from "../lib/agentAvatar.js";
-import { applyAgentMention, mentionQueryAt, pickerEmptyState, resolveSendMentions } from "../lib/agentMentionInput.js";
+import { agentFace, agentFaceIfKnown, agentFaceSlot, imageAvatar } from "../../../shared/agentAvatar.js";
+import { applyAgentMention, mentionQueryAt, pickerEmptyState, resolveSendMentions } from "../../../shared/agentMentionInput.js";
 import { filterMentionRows, mentionRows, MENTION_KIND_LABEL, type MentionRow } from "../lib/workspaceMentionItems.js";
 import {
   approvalCardTitle, assistantLabel, callDurationText, callOffsetText, canStopTurn, chatRosterLineParts, cloudEmptyState,
   createdAgentNames, hiddenFromCloudTimeline, relayLineText, stopButtonRows, systemNoteText, turnEndedLineText, userRowIdentity,
   voiceCallCards, type RosterLinePart, type VoiceCallCard,
-} from "../lib/cloudTimeline.js";
-import { systemNoteDetail } from "../lib/systemNote.js";
+} from "../../../shared/cloudTimeline.js";
+import { systemNoteDetail } from "../../../shared/systemNote.js";
 import { cloudConversationEntries, scrollToTurn } from "../lib/conversationMap.js";
 import { ConversationMapRail } from "./ConversationMapRail.js";
 import { TurnErrorState } from "./TurnErrorState.js";

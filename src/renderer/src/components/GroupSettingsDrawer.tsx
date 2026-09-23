@@ -24,11 +24,11 @@ import { SidebarProvider } from "@/components/ui/sidebar.js";
 import { useConfirm } from "@/components/ui/confirm-dialog.js";
 import { useChat } from "../store.js";
 import { AgentFace } from "./AgentFace.js";
-import { agentFaceSlot } from "../lib/agentAvatar.js";
-import { groupRows, homeOf } from "../lib/agentRoster.js";
+import { agentFaceSlot } from "../../../shared/agentAvatar.js";
+import { groupRows, homeOf } from "../../../shared/agentRoster.js";
 import { CHAT_NAME_MAX } from "../../../shared/chatRoster.js";
-import type { GroupChatRow } from "../lib/agentRoster.js";
-import type { CloudSessionListRow } from "../lib/workspaceView.js";
+import type { GroupChatRow } from "../../../shared/agentRoster.js";
+import type { CloudSessionListRow } from "../../../shared/workspaceView.js";
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 
 /** selector 里的 `?? []` 会每次造一个新数组 → zustand 走 `useSyncExternalStore`，

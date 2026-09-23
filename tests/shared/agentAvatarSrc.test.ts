@@ -1,8 +1,8 @@
 // #1345 之后返回的是**坑位号**不是图片 URL（13 张静态 png 换成 13 个像素角色包）。
 // 每一条判据一个字没改 —— 变的只是「这一格的答案长什么样」。
 import { describe, expect, it } from "vitest";
-import { agentFaceSlot, avatarPreviewSlot } from "../../src/renderer/src/lib/agentAvatar.js";
-import { AGENT_AVATAR_COUNT, agentAvatarSlot } from "../../src/renderer/src/lib/agentAvatarSlot.js";
+import { agentFaceSlot, avatarPreviewSlot } from "../../src/shared/agentAvatar.js";
+import { AGENT_AVATAR_COUNT, agentAvatarSlot } from "../../src/shared/agentAvatarSlot.js";
 import type { WorkspaceSnapshot, WorkspaceAgentRow } from "../../src/shared/workspaces.js";
 
 function agent(agentId: string, avatarSlot: number | null): WorkspaceAgentRow {

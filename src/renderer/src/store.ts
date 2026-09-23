@@ -99,9 +99,9 @@ import type { OlderState } from "./lib/cloudWindow.js";
 import { mergeResidue, residueSettled, type ResidueItem } from "../../shared/residue.js";
 import { PROXY_SHARE_INVITE_TTL_MS } from "../../shared/remote/proxyInvite.js";
 import { runtimePatch } from "./lib/runtimeHydration.js";
-import { createAgentLanded } from "./lib/cloudTimeline.js";
+import { createAgentLanded } from "../../shared/cloudTimeline.js";
 import { humanSpeakerOf } from "../../shared/sessionParticipants.js";
-import { applyCloudDelta, clearCloudStreamingOn } from "./lib/cloudStreaming.js";
+import { applyCloudDelta, clearCloudStreamingOn } from "../../shared/cloudStreaming.js";
 import { EMPTY_VOICE_FEED, feedDelta, feedEvent, markInterrupted, type VoiceFeedState } from "./lib/voiceCall.js";
 import { applySpeechEvent, bargeInOn, MIC_OFF, micShouldPause, SPEECH_LOCALE, speechHints, type MicState } from "./lib/voiceMic.js";
 import { defaultCreateAudio, VoicePlayer } from "./lib/voicePlayer.js";
@@ -129,13 +129,13 @@ import type { AgentToolAllow } from "../../shared/agentToolAllow.js";
 import type {
   CloudAck, NotificationTarget, ProviderBalance, ProxyBorrowView, ProxyHostView, WorkspaceSettingsInfo,
 } from "../../shared/shellBridge.js";
-import type { CloudSessionListRow } from "./lib/workspaceView.js";
+import type { CloudSessionListRow } from "../../shared/workspaceView.js";
 import { DEFAULT_USAGE_DAYS, type UsageSnapshot } from "../../shared/usageStats.js";
 import type { ModelShareWindow } from "../../shared/modelShare.js";
 import { laneOf, type ModelLane } from "../../shared/modelLane.js";
 import { autoModelOf } from "../../shared/autoModel.js";
-import { isSubscribed } from "./lib/billingView.js";
-import { chatSeedOf, groupRows, homeOf, rosterRows } from "./lib/agentRoster.js";
+import { isSubscribed } from "../../shared/billingView.js";
+import { chatSeedOf, groupRows, homeOf, rosterRows } from "../../shared/agentRoster.js";
 import { settingsSectionVisible } from "./settingsShell.js";
 import type { MyProfile, ProfilePatch } from "../../shared/profile.js";
 import {

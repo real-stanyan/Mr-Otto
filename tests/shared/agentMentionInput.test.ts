@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { applyAgentMention, mentionQueryAt, pickerEmptyState, resolveSendMentions } from "../../src/renderer/src/lib/agentMentionInput.js";
+import { applyAgentMention, mentionQueryAt, pickerEmptyState, resolveSendMentions } from "../../src/shared/agentMentionInput.js";
 
 describe("mentionQueryAt", () => {
   it("刚打了 @ / 打了一半 / 中文标点后 —— 都算正在打", () => {

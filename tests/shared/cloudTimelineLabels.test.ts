@@ -3,9 +3,9 @@ import {
   approvalCardTitle, assistantLabel, canStopTurn, cloudEmptyState, createAgentLanded, createdAgentNames, decisionLineText,
   hiddenFromCloudTimeline, isAgentStep, relayLineText, routeChangedText, stopButtonRows, systemNoteText, turnEndedLineText, voiceCallLineParts,
   userRowIdentity, type VoiceCallPart,
-} from "../../src/renderer/src/lib/cloudTimeline.js";
+} from "../../src/shared/cloudTimeline.js";
 import type { WorkspaceSnapshot } from "../../src/shared/workspaces.js";
-import { countdown } from "../../src/renderer/src/lib/billingView.js";
+import { countdown } from "../../src/shared/billingView.js";
 import type { OpenTurn } from "../../src/shared/turnLedger.js";
 import type { AssistantMessageEvent } from "../../src/session/events.js";
 

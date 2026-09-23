@@ -4,7 +4,7 @@
 // 拆成独立文件是这个任务自己的 Test 交付物，不与 Task 12 的用例混在一起。
 
 import { describe, expect, it } from "vitest";
-import { cloudSessionRows, type CloudSessionListRow } from "../../src/renderer/src/lib/workspaceView.js";
+import { cloudSessionRows, type CloudSessionListRow } from "../../src/shared/workspaceView.js";
 import type { WorkspaceSnapshot } from "../../src/shared/workspaces.js";
 
 const WS: WorkspaceSnapshot = {

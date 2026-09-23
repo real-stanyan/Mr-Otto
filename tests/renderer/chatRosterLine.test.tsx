@@ -18,7 +18,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 
 import { ChatRosterRow } from "../../src/renderer/src/components/CloudSessionPage.js";
-import type { RosterLinePart } from "../../src/renderer/src/lib/cloudTimeline.js";
+import type { RosterLinePart } from "../../src/shared/cloudTimeline.js";
 import type { WorkspaceSnapshot } from "../../src/shared/workspaces.js";
 
 beforeAll(() => {

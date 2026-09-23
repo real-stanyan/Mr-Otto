@@ -19,11 +19,11 @@
 //   UI 上得说成「全部工具」而不是「0 个工具」）；AgentRowView.toolsSummary 说的是这只
 //   agent 的连接器白名单（[] = 整池放行，说成「全部连接器」），两者不可互换阅读。
 
-import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
-import { displaySessionTitle } from "../../../shared/sessionTitle.js";
-import { ADMIN_AGENT_ID } from "../../../shared/workspaceAgents.js";
-import { modelLabel } from "../../../shared/modelCatalog.js";
-import type { AgentToolAllow } from "../../../shared/agentToolAllow.js";
+import type { WorkspaceSnapshot } from "./workspaces.js";
+import { displaySessionTitle } from "./sessionTitle.js";
+import { ADMIN_AGENT_ID } from "./workspaceAgents.js";
+import { modelLabel } from "./modelCatalog.js";
+import type { AgentToolAllow } from "./agentToolAllow.js";
 import { describeAllow } from "./proxyShare.js";
 
 export type ConnectorCloudState = "ready" | "unknown" | "off";

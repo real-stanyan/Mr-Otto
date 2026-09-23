@@ -28,7 +28,7 @@ import {
   WINDOW_LABELS,
   addonLine, countdown, fmtRemainingPercent, liveWindow, periodLine, planBadge, planCards,
   planCardsOrNull, quotaTone, remainingPercent, upgradeCards, usageTitle, windowPercent,
-} from "../lib/billingView.js";
+} from "../../../shared/billingView.js";
 import { PlanBadge } from "./PlanBadge.js";
 import { useNow } from "../lib/useNow.js";
 import { useChat } from "../store.js";

@@ -17,7 +17,7 @@
 // **坑位数和顺序都不动，仍然是 13**：`fnv1a(agentId) % 13` 是已经落库的派生，改 13
 // 就是给所有没手动挑过头像的 agent 换一张脸（见 ottoFace/sprites.ts 法理 ③）。
 
-import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
+import type { WorkspaceSnapshot } from "./workspaces.js";
 import { AGENT_AVATAR_COUNT, agentAvatarSlot } from "./agentAvatarSlot.js";
 
 /** 内置像素脸的那一档，单独一个名字：`agentFace` / `agentFaceIfKnown` 回它而不是

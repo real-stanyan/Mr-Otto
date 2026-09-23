@@ -3,7 +3,7 @@ import {
   auditLine, borrowStatusLine, buildAllow, describeAllow, hostStatusLine,
   isServerOn, isToolOn, selectionFromAllow, toggleServer, toggleTool,
   type ProxySelection,
-} from "../../src/renderer/src/lib/proxyShare.js";
+} from "../../src/shared/proxyShare.js";
 
 const TOOLS = ["get_orders", "create_order", "refund"];
 

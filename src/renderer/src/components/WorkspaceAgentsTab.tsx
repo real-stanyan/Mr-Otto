@@ -27,10 +27,10 @@ import { Textarea } from "@/components/ui/textarea.js";
 import { InsetEmpty, InsetGroup, InsetNote, InsetRow } from "@/components/ui/inset-list.js";
 import { useNav } from "@/components/ui/nav-stack.js";
 import { useChat } from "../store.js";
-import { agentRows } from "../lib/workspaceView.js";
+import { agentRows } from "../../../shared/workspaceView.js";
 import { AgentFace } from "./AgentFace.js";
-import { AGENT_AVATAR_COUNT } from "../lib/agentAvatarSlot.js";
-import { agentFaceSlot, avatarPreviewSlot } from "../lib/agentAvatar.js";
+import { AGENT_AVATAR_COUNT } from "../../../shared/agentAvatarSlot.js";
+import { agentFaceSlot, avatarPreviewSlot } from "../../../shared/agentAvatar.js";
 import {
   AUTO_MODEL, agentModelOptions, chainWarning, modelsFromSelection, selectedModelValue,
 } from "../lib/agentModelChoice.js";
@@ -42,7 +42,7 @@ import {
 } from "../lib/agentToolsForm.js";
 import {
   isServerOn, isToolOn, selectionFromAllow, toggleServer, toggleTool, type ProxySelection,
-} from "../lib/proxyShare.js";
+} from "../../../shared/proxyShare.js";
 import { validateAgentName } from "../../../shared/workspaceAgents.js";
 import { sameAgentTools } from "../../../shared/agentToolAllow.js";
 import type { WorkspaceSnapshot, WorkspaceAgentRow } from "../../../shared/workspaces.js";

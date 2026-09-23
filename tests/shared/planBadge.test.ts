@@ -5,7 +5,7 @@
 // 同 ADR-0217 的 workspaceAccess 为什么必须有 `unknown` 一态。
 
 import { describe, it, expect } from "vitest";
-import { planBadge } from "../../src/renderer/src/lib/billingView.js";
+import { planBadge } from "../../src/shared/billingView.js";
 import type { BillingMe, PlanId, SubscriptionStatus } from "../../src/shared/billing.js";
 
 function me(over: { plan?: PlanId | null; status?: SubscriptionStatus }): BillingMe {

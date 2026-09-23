@@ -33,11 +33,11 @@ import {
   SidebarMenu, SidebarMenuButton, SidebarMenuItem,
 } from "@/components/ui/sidebar.js";
 import { AgentFace } from "./AgentFace.js";
-import { agentFaceSlot } from "../lib/agentAvatar.js";
-import { groupRows, homeOf, rosterGate, rosterRows, teamsOf } from "../lib/agentRoster.js";
-import type { AgentRosterRow, GroupChatRow } from "../lib/agentRoster.js";
-import { workspaceAccess } from "../lib/workspaceAccess.js";
-import type { CloudSessionListRow } from "../lib/workspaceView.js";
+import { agentFaceSlot } from "../../../shared/agentAvatar.js";
+import { groupRows, homeOf, rosterGate, rosterRows, teamsOf } from "../../../shared/agentRoster.js";
+import type { AgentRosterRow, GroupChatRow } from "../../../shared/agentRoster.js";
+import { workspaceAccess } from "../../../shared/workspaceAccess.js";
+import type { CloudSessionListRow } from "../../../shared/workspaceView.js";
 import { WorkspacesSidebarSection } from "./WorkspacesSidebarSection.js";
 
 // 没拉过时的兜底：模块级常量而非每次渲染 `?? []`，保证 selector 每次返回同一引用

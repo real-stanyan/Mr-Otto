@@ -23,7 +23,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 
 import { VoiceCallCardRow } from "../../src/renderer/src/components/CloudSessionPage.js";
-import { voiceCallCards } from "../../src/renderer/src/lib/cloudTimeline.js";
+import { voiceCallCards } from "../../src/shared/cloudTimeline.js";
 import type { WorkspaceSnapshot } from "../../src/shared/workspaces.js";
 import type { SessionEvent } from "../../src/session/events.js";
 

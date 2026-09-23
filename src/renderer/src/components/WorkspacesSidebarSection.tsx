@@ -38,11 +38,11 @@ import {
 } from "@/components/ui/dropdown-menu.js";
 import { useConfirm } from "@/components/ui/confirm-dialog.js";
 import { useChat } from "../store.js";
-import { cloudSessionRows, labelOf } from "../lib/workspaceView.js";
-import type { CloudSessionListRow } from "../lib/workspaceView.js";
+import { cloudSessionRows, labelOf } from "../../../shared/workspaceView.js";
+import type { CloudSessionListRow } from "../../../shared/workspaceView.js";
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 import { unreadMentionCounts } from "../../../shared/workspaceMentions.js";
-import { teamsOf } from "../lib/agentRoster.js";
+import { teamsOf } from "../../../shared/agentRoster.js";
 import { PARTICIPANT_WINDOW_MS } from "../../../shared/sessionParticipants.js";
 import {
   SidebarGroup, SidebarGroupAction, SidebarGroupContent, SidebarGroupLabel, SidebarMenuAction,

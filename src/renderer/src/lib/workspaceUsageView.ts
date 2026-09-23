@@ -22,9 +22,9 @@
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 import type { WorkspaceUsage } from "../../../shared/billing.js";
 import type { CsModelRoute } from "../../../shared/remote/cloudSession.js";
-import { fmtUsedPercent } from "./billingView.js";
-import { agentFaceIfKnown, type FaceAvatar } from "./agentAvatar.js";
-import { agentNameOf } from "./workspaceView.js";
+import { fmtUsedPercent } from "../../../shared/billingView.js";
+import { agentFaceIfKnown, type FaceAvatar } from "../../../shared/agentAvatar.js";
+import { agentNameOf } from "../../../shared/workspaceView.js";
 
 export interface UsageRowView {
   agentId: string;

@@ -3,7 +3,7 @@
 // 定死（首行 `[后台任务 bg-N 完成] <cmd>`、第二行 `exit code: N`、其余是
 // 输出），这里的用例照它造。
 import { describe, it, expect } from "vitest";
-import { isSystemNote, systemNoteBody, systemNoteDetail } from "../../src/renderer/src/lib/systemNote.js";
+import { isSystemNote, systemNoteBody, systemNoteDetail } from "../../src/shared/systemNote.js";
 import type { SessionEvent, UserMessageEvent } from "../../src/session/events.js";
 
 const base = { sessionId: "s", ts: 0, seq: 1 } as const;

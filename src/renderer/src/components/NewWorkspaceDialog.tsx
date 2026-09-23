@@ -30,8 +30,8 @@ import {
 } from "@/components/ui/dialog.js";
 import { Input } from "@/components/ui/input.js";
 import { useChat } from "../store.js";
-import { plansWithWorkspace, workspaceAccess } from "../lib/workspaceAccess.js";
-import { PLAN_BADGE_LABEL } from "../lib/billingView.js";
+import { plansWithWorkspace, workspaceAccess } from "../../../shared/workspaceAccess.js";
+import { PLAN_BADGE_LABEL } from "../../../shared/billingView.js";
 
 export function NewWorkspaceDialog({
   open,

@@ -13,7 +13,7 @@ import {
   usageTitle,
   usedPercentOf,
   windowPercent,
-} from "../../src/renderer/src/lib/billingView.js";
+} from "../../src/shared/billingView.js";
 
 /** 用 credit 写，免得把 micro 的换算抄进每一条用例（MICRO_PER_CREDIT 是 shared 的事实） */
 const w = (usedCredit: number, limitCredit: number) => ({

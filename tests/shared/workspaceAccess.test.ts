@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { plansWithWorkspace, workspaceAccess } from "../../src/renderer/src/lib/workspaceAccess.js";
+import { plansWithWorkspace, workspaceAccess } from "../../src/shared/workspaceAccess.js";
 import type { BillingSnapshotView } from "../../src/shared/shellBridge.js";
 import type { BillingMe, PlanId, SubscriptionStatus } from "../../src/shared/billing.js";
 

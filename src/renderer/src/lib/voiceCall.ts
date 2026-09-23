@@ -16,7 +16,7 @@
 //
 // 播放器（voicePlayer.ts）与 store 的接线不在这里：这个文件零 DOM、零 IPC。
 
-import { splitBubbles } from "./chatBubbles.js";
+import { splitBubbles } from "../../../shared/chatBubbles.js";
 import type { BillingSnapshotView } from "../../../shared/shellBridge.js";
 import type { SessionEvent } from "../../../session/events.js";
 

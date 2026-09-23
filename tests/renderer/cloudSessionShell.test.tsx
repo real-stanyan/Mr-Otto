@@ -20,7 +20,7 @@ import { ConfirmProvider } from "../../src/renderer/src/components/ui/confirm-di
 import { useChat, type CloudSessionState } from "../../src/renderer/src/store.js";
 import type { SessionEvent } from "../../src/session/events.js";
 import type { WorkspaceSnapshot } from "../../src/shared/workspaces.js";
-import type { CloudSessionListRow } from "../../src/renderer/src/lib/workspaceView.js";
+import type { CloudSessionListRow } from "../../src/shared/workspaceView.js";
 
 beforeAll(() => {
   class NoopResizeObserver {

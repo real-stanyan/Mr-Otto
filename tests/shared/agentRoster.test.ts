@@ -10,10 +10,10 @@ import {
   rosterGate,
   rosterRows,
   teamsOf,
-} from "../../src/renderer/src/lib/agentRoster.js";
+} from "../../src/shared/agentRoster.js";
 import type { SessionEvent } from "../../src/session/events.js";
 import type { WorkspaceSnapshot } from "../../src/shared/workspaces.js";
-import type { CloudSessionListRow } from "../../src/renderer/src/lib/workspaceView.js";
+import type { CloudSessionListRow } from "../../src/shared/workspaceView.js";
 
 const agent = (agentId: string, name: string) => ({
   agentId, name, description: `${name}的职责`, instructions: "", models: [], tools: [],

@@ -6,8 +6,8 @@
 // 别的成员有没有点「加入」这台机器不知道，不画——画一个可能根本没在听的人是撒谎的勾（#722）。
 // 发起人就是自己时只画一次。
 
-import { agentFace, imageAvatar, type AvatarRef } from "./agentAvatar.js";
-import { agentNameOf, labelOf, memberAvatarOf } from "./workspaceView.js";
+import { agentFace, imageAvatar, type AvatarRef } from "../../../shared/agentAvatar.js";
+import { agentNameOf, labelOf, memberAvatarOf } from "../../../shared/workspaceView.js";
 import type { VoiceListenState } from "../store.js";
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 import type { VoiceCallState } from "../../../shared/voiceCall.js";

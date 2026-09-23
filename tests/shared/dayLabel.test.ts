@@ -2,7 +2,7 @@
 // 没有分隔条时上周和今天的话粘在一起，人翻不出「那天说的」在哪儿。
 
 import { describe, expect, it } from "vitest";
-import { dayLabelOf, withDaySeparators } from "../../src/renderer/src/lib/dayLabel.js";
+import { dayLabelOf, withDaySeparators } from "../../src/shared/dayLabel.js";
 
 const at = (y: number, m: number, d: number, h = 12): number => new Date(y, m - 1, d, h).getTime();
 const NOW = at(2026, 9, 20, 15); // 2026-09-20 是周日

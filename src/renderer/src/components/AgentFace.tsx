@@ -17,7 +17,7 @@ import { useEffect, useRef, type ComponentProps } from "react";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar.js";
 import { cn } from "@/lib/utils.js";
 import { faceAnimates, paintFace, sizeFaceCanvas, type FaceState } from "../lib/ottoFace/index.js";
-import type { AvatarRef } from "../lib/agentAvatar.js";
+import type { AvatarRef } from "../../../shared/agentAvatar.js";
 
 function prefersReducedMotion(): boolean {
   return typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;

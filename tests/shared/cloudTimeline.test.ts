@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { chatRosterLineParts, hiddenFromCloudTimeline, type RosterLinePart } from "../../src/renderer/src/lib/cloudTimeline.js";
+import { chatRosterLineParts, hiddenFromCloudTimeline, type RosterLinePart } from "../../src/shared/cloudTimeline.js";
 import type { ChatRosterChangedEvent, SessionEvent } from "../../src/session/events.js";
 
 describe("hiddenFromCloudTimeline 第 ⑧ 条（#1213）", () => {

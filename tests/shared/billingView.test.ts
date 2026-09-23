@@ -2,9 +2,9 @@ import { describe, expect, it } from "vitest";
 import {
   addonLine, bindingWindow, countdown, liveWindow, planCards, planCardsOrNull, planName, quotaAlert,
   quotaTone, upgradeCards, usageLine, windowPercent, hostedModels,
-} from "../../../src/renderer/src/lib/billingView.js";
-import type { BillingMe, PlanInfo } from "../../../src/shared/billing.js";
-import type { BillingSnapshotView } from "../../../src/shared/shellBridge.js";
+} from "../../src/shared/billingView.js";
+import type { BillingMe, PlanInfo } from "../../src/shared/billing.js";
+import type { BillingSnapshotView } from "../../src/shared/shellBridge.js";
 
 const plans: PlanInfo[] = [
   { id: "lite", priceUsdCents: 1900, capabilities: { image: false, video: false, workspace: false } },

@@ -11,12 +11,12 @@ import { isSystemNote, systemNoteBody } from "./systemNote.js";
 import type {
   AgentRelayEvent, ApprovalDecisionEvent, ApprovalRequestEvent, AssistantMessageEvent, ChatRosterChangedEvent, RouteChangedEvent, SessionEvent, TurnEndedEvent,
   UserMessageEvent, VoiceCallChangedEvent,
-} from "../../../session/events.js";
-import { chatRosterDiff } from "../../../shared/chatRoster.js";
-import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
-import { CREATE_AGENT_TOOL_NAME } from "../../../shared/createAgentDraft.js";
+} from "../session/events.js";
+import { chatRosterDiff } from "./chatRoster.js";
+import type { WorkspaceSnapshot } from "./workspaces.js";
+import { CREATE_AGENT_TOOL_NAME } from "./createAgentDraft.js";
 import { countdown } from "./billingView.js";
-import type { OpenTurn } from "../../../shared/turnLedger.js";
+import type { OpenTurn } from "./turnLedger.js";
 
 /** sessionService.ts 的 say() 点火一个 turn 时拼的前缀:`\`[${label}]: ${text}\``。
     协议没有给 user_message 配独立的 fromUid/label 字段（这个事件本来就是

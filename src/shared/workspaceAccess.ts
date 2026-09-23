@@ -14,8 +14,8 @@
 // 可能已经付过的钱。这一类「拿不到 ≠ 是空的」在本仓已经踩过（proxy grants
 // 查询失败保留旧缓存、residue 没有 baseline 就不出清单）。
 
-import type { BillingMe, PlanId } from "../../../shared/billing.js";
-import type { BillingSnapshotView } from "../../../shared/shellBridge.js";
+import type { BillingMe, PlanId } from "./billing.js";
+import type { BillingSnapshotView } from "./shellBridge.js";
 
 export type WorkspaceAccess =
   /** 档位带工作区，可以建 */

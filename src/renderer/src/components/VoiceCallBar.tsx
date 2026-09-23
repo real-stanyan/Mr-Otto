@@ -20,8 +20,8 @@ import { Maximize2, Mic, MicOff, Phone, PhoneOff, UserPlus, Volume2, VolumeX } f
 import { cn } from "@/lib/utils.js";
 import { Button } from "@/components/ui/button.js";
 import { AgentFace } from "./AgentFace.js";
-import { agentFaceSlot } from "../lib/agentAvatar.js";
-import { agentNameOf } from "../lib/workspaceView.js";
+import { agentFaceSlot } from "../../../shared/agentAvatar.js";
+import { agentNameOf } from "../../../shared/workspaceView.js";
 import { VoicePickerPopover } from "./VoicePickerPopover.js";
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 import type { VoiceCallState } from "../../../shared/voiceCall.js";

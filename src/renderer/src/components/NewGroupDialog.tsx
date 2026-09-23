@@ -27,8 +27,8 @@ import {
 import { Input } from "@/components/ui/input.js";
 import { useChat } from "../store.js";
 import { AgentFace } from "./AgentFace.js";
-import { agentFaceSlot } from "../lib/agentAvatar.js";
-import { homeOf } from "../lib/agentRoster.js";
+import { agentFaceSlot } from "../../../shared/agentAvatar.js";
+import { homeOf } from "../../../shared/agentRoster.js";
 import { CHAT_GROUP_CREATE_MIN, CHAT_GROUP_MAX, CHAT_NAME_MAX } from "../../../shared/chatRoster.js";
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 

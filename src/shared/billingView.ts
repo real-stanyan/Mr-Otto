@@ -1,6 +1,6 @@
 // 订阅页的纯逻辑（数字 → 文案），组件只负责画。credit 换算在 shared/billing.ts。
-import { fmtCredit, type BillingMe, type PlanId, type PlanInfo } from "../../../shared/billing.js";
-import type { BillingSnapshotView } from "../../../shared/shellBridge.js";
+import { fmtCredit, type BillingMe, type PlanId, type PlanInfo } from "./billing.js";
+import type { BillingSnapshotView } from "./shellBridge.js";
 
 /** 价目卡的静态骨架：名字与一句话。价格是服务端下发的（plan 表是事实，
     改价不发版——ADR-0203 偏差 (a) 以前这张表连价格也抄死在这里，改价那天
@@ -13,7 +13,7 @@ export const PLAN_CARDS: ReadonlyArray<{ id: PlanId; name: string; blurb: string
 
 import {
   WINDOW_LABELS, bindingWindow, fmtRemainingPercent, quotaTone, remainingPercent,
-} from "../../../shared/quotaView.js";
+} from "./quotaView.js";
 
 /* ── 窗口数学搬去了 `src/shared/quotaView.ts`（#1229：主进程要用它算岛的页脚，
       而主进程不该 import 渲染层）。这里原样再导出，既有 import 点一个都不用改，
@@ -35,7 +35,7 @@ export {
   windowPercent,
   type LiveWindow,
   type PlanBadgeId,
-} from "../../../shared/quotaView.js";
+} from "./quotaView.js";
 
 /** 骨架 × 服务端价目 → 卡片。**价格缺了的档位整张不画**（宁可少一张卡，
     也不拿一个猜的数去贴订阅按钮——真正收钱的是 Stripe Checkout，画错了

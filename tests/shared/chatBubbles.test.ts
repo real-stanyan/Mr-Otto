@@ -3,7 +3,7 @@
 // tests/renderer/CloudAssistantBubbles.test.tsx 与 CloudPendingTurnLines.test.tsx。
 
 import { describe, expect, it } from "vitest";
-import { splitBubbles } from "../../src/renderer/src/lib/chatBubbles.js";
+import { splitBubbles } from "../../src/shared/chatBubbles.js";
 
 describe("splitBubbles（#1132）——空行 = 下一条消息", () => {
   it("空行分段，每段一个气泡；首尾空白与多余空行不生出空气泡", () => {

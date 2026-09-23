@@ -17,7 +17,7 @@
 // 活着（护栏是 engine 级、无条件的，不是云会话专属），本机没有团队/名册
 // 概念，agentId 缺席是本机的常态，不能拿它当判据。
 
-import type { SessionEvent, UserMessageEvent } from "../../../session/events.js";
+import type { SessionEvent, UserMessageEvent } from "../session/events.js";
 
 export type SystemNoteEvent = UserMessageEvent & { origin: "background" | "loop_guard" };
 

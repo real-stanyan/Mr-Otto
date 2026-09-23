@@ -10,7 +10,7 @@
 
 import { describe, expect, it } from "vitest";
 
-import { callDurationText, callOffsetText, voiceCallCards } from "../../src/renderer/src/lib/cloudTimeline.js";
+import { callDurationText, callOffsetText, voiceCallCards } from "../../src/shared/cloudTimeline.js";
 import type { SessionEvent } from "../../src/session/events.js";
 import type { WorkspaceSnapshot } from "../../src/shared/workspaces.js";
 
