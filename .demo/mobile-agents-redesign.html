@@ -618,6 +618,9 @@ html[data-theme="light"] .tile:not(.speaking){border-color:rgba(0,0,0,.06)}  /* 
    只是在用字重复那张脸已经说完的事；十一个词排成三行，眼睛还得先读完字才回去看脸。
    名字没丢，进了 aria-label —— 读屏的人拿不到那张脸。
    字撤掉之后脸可以放大一档（27 → 54，正好是原生 1:1），一格里认得出谁是谁才是这一屏的活 */
+/* 名字那一格在大脸与脸墙之间：先看见它长什么样，再决定叫它什么 */
+.newbot .nmrow{padding:2px 16px 10px}
+.newbot .nmrow .input{height:44px;text-align:center;font-size:16px}
 .newbot .faces{display:flex;flex-wrap:wrap;justify-content:center;gap:4px 2px;padding:4px 10px 12px}
 .newbot .fpick{padding:4px 5px;border-radius:14px;border:0;background:transparent;
   font:inherit;color:inherit;cursor:pointer;display:grid;justify-items:center;
@@ -2547,11 +2550,11 @@ SCREENS.newBot={label:'建一只 · 跟管理员说',grp:'建与改',render:()=>
    一颗点了就不可撤销的钮，人多半想先改两个字）。 */
 SCREENS.botNew={label:'建完 · 它先开口',grp:'建与改',render:(p)=>{
  const b=botOf(p&&p.id)||DATA.bots[0];
- return `${chatNav({face:faceOf(b.face,'',54,'idle',true),name:''})}
+ return `${chatNav({face:faceOf(b.face,'',54,'idle',true),name:b.name||''})}
  <div class="body" data-el="newchat" data-bot="${b.id}">${chatPad}
    <div class="tl">
-     <!-- 这一行没有名字可写，只有脸和时间 —— 它还没有职责，而职责就是它的那一行 -->
-     <div class="who">${faceOf(b.face,'',27)}<span>刚刚</span></div>
+     <!-- 没取名字的那一只这一行只有脸和时间：它还没有职责，而职责就是它的那一行 -->
+     <div class="who">${faceOf(b.face,'',27)}<span>${b.name?b.name+' · ':''}刚刚</span></div>
      <div class="bub ot">我是新来的。你想让我干什么？</div>
      <div class="bub ot">说一句就行，比如「每天早上把昨天的订单汇总发我」。说完我就照着办，有不清楚的我再问你。</div>
      <div class="chips" style="padding:12px 6px 2px">
@@ -2983,10 +2986,11 @@ const SHEETS={
     这就是它值一整屏的理由（换成一行「形象 ›」再推一页，人得来回跳着比）。
     **没有颜色那一排**：ottoFace 的头是锁死的（#1307 那条「只换眉眼嘴」），
     摆一排色卡等于给一个改不动的东西配一个控件，点下去什么都不会变。
-    **也不取名字**（维护者定的）：这一栏里的「开发」「门店」本来就不是名字是**职责** ——
-    让人先编一个名字，等于在他还不知道要它干什么之前先逼他给它起个称呼。
-    建完进去说第一句，它是干什么的就是它在名册上的那一行。
-    所以这一屏只剩一件事：挑一张脸。 */
+    名字那一格**可填可不填**（维护者要的那个输入框回来了，但不挡路）：
+    填了就按名字叫它，空着就按它干什么的那一行认它 —— 两条路在名册、药丸、@ 那几处
+    都走得通（`botRow` 的主行三分支就是为这个留的）。**不要求先填**：这一刻人往往
+    还不知道要它干什么，一个必填的名字会让他停在这儿编一个称呼。
+    **不自动聚焦**：键盘一弹上来就把下面那 11 张脸盖住了，而挑脸才是这一屏的主事。 */
  newAgent:()=>{
    const pick=FACE_CHARACTERS[0].id;
    /* 定高 70%：这张表只有三样东西，按内容收的话它只占到六成、看着像没展开。
@@ -3007,6 +3011,7 @@ const SHEETS={
             而角标画在格子右上 —— 按头居中等于把头往角标那边推，两者中间那道缝更显眼；
             按格子居中时「头 + 角标」是一整块，摆正的是这一块 -->
        <div class="prev">${faceOf(pick,'',108,'idle',true).replace('<canvas','<canvas data-el="prev"')}</div>
+       <div class="nmrow"><input class="input" data-el="nm" placeholder="给它取个名字" maxlength="12"></div>
        <div class="faces">${FACE_CHARACTERS.map(c=>`
          <button class="fpick" data-act="pickFace" data-ch="${c.id}" aria-label="${c.name}"${c.id===pick?' data-on=""':''}>
            ${faceOf(c.id,'',54,'idle',c.id===pick).replace('<canvas','<canvas data-center="ink"')}
@@ -3219,8 +3224,9 @@ const ACTS={
  createBot:(b)=>{
    const box=b.closest('.newbot');
    const ch=box.querySelector('.fpick[data-on]')?.dataset.ch||FACE_CHARACTERS[0].id;
+   const name=(box.querySelector('[data-el="nm"]')?.value||'').trim();
    const id='new'+Date.now();
-   DATA.bots.unshift({id,face:ch,name:'',role:'',last:'点进去跟它说第一句',at:'刚刚'});
+   DATA.bots.unshift({id,face:ch,name,role:'',last:'点进去跟它说第一句',at:'刚刚'});
    /* 先把名册重画一遍（那一行带入场），再推它的那条线：
       这样退回去看到的是**有它**的名册。只 go 不重画的话，名册那一屏还是建之前那份，
       人退回去会发现自己刚建的东西不在里面 */
