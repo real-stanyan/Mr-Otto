@@ -11,16 +11,16 @@
     // 声明」判兼容，两份物理上不同的 .d.ts 天生判不兼容：把 mobile 建出来的客户端递给
     // 这些函数就报 TS2345。
     //
-    // 指到 mobile 那份、不指根：手机上真正跑的客户端实例是 mobile/src/supabase.ts 建的
-    // （那个文件在 mobile/ 里，解出来的是 mobile 这份），shared 那几个函数调的正是它的
-    // 方法——tsc 该拿这份去核 shared 的调用。指根的话，根单独升一次 supabase-js、mobile
-    // 没跟着升，mobile tsc 照样绿，而手机上那个客户端可能没有 shared 新用到的方法。
+    // 指到 mobile 那份、不指根：手机上真正跑的客户端实例是 mobile/src/supabase.ts 建的，
+    // shared 那几个函数调的正是它的方法——tsc 该拿这份去核 shared 的调用。指根的话，根单独
+    // 升一次 supabase-js、mobile 没跟着升，mobile tsc 照样绿，而手机上那个客户端可能没有
+    // shared 新用到的方法。
     //
-    // 别拿 metro.config.js 的 nodeModulesPaths 当理由：Metro 先从发起 import 的那个文件
-    // 所在目录逐级往上找 node_modules，nodeModulesPaths 只是找不到时的后备——src/shared/
-    // 里的文件若真在运行时 import 这个包，打进手机包的会是根那份。今天没有这种 import
-    // （上面三处都是 import type，打包时整行抹掉）；哪天有了，这条重定向就不再和打包的
-    // 结果一致，得重新判。只影响类型解析，Metro 不读 tsconfig 的 paths。
+    // 这条不只管类型：`expo start` 起的 Metro 默认也读这里的 paths（app.json 的
+    // experiments.tsconfigPaths 缺省为开；相对路径与 node_modules 里发起的 import 不走它；
+    // metro.config.js 那个自定义解析把裸包名交给 context.resolveRequest，走的正是这条链），
+    // 所以 src/shared/ 哪天在运行时 import 这个包，打进手机包的也是 mobile 那份——类型与
+    // 打包对的是同一份。关掉那个开关、或者换一个不读 tsconfig 的打包器，这条要重新判。
     "paths": {
       "@supabase/supabase-js": ["./node_modules/@supabase/supabase-js"]
     }

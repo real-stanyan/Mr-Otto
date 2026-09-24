@@ -5,7 +5,7 @@
 // 接口注入给 sessionService，Supabase 实现只在 daemon 装配；测试与冒烟用内存版
 // （分层同 mentionInbox / workspaceMemory / agentWriter）。
 //
-// **两个方法都不抛**：这句话由 `write()` 内部的 try/catch 保证成立，不是靠调用方
+// **三个 set 方法都不抛**：这句话由 `write()` 内部的 try/catch 保证成立，不是靠调用方
 // 记得 `.catch`（复审 Critical 2）——原来只接住了「请求成功、Supabase 回了个 {error}
 // 信封」那一半，网络层本身的 reject（断网/超时）完全没人接，会变成一次带走整个
 // daemon 进程的 unhandledRejection（同 `daemon.ts:465-471` 那条先例，同一类问题）。
@@ -54,7 +54,7 @@ export function createInMemoryCloudSessionMeta(): CloudSessionMeta & {
   };
 }
 
-/** 真库实现。0035 还没跑的库上，两个方法都会拿到 PostgREST 的 42703（列不存在）
+/** 真库实现。0035 还没跑的库上 setTitle / setParticipants、0040 还没跑的库上 setLast，都会拿到 PostgREST 的 42703（列不存在）
     ——那正好是「只记一行日志不抛」要接住的形态：功能降级成改动前的样子，
     而不是每一句话都失败 */
 export function createSupabaseCloudSessionMeta(
