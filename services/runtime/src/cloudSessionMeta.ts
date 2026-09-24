@@ -1,11 +1,11 @@
-// cloudSessionMeta —— `workspace_sessions` 那三格（title / participants /
-// participants_window）的写入口（#1213）。这一侧只有 IO，判据在
+// cloudSessionMeta —— `workspace_sessions` 那几格（title / participants /
+// participants_window / last_ts / last_excerpt / last_from）的写入口（#1213）。这一侧只有 IO，判据在
 // `src/shared/sessionParticipants.ts` 与 `sessionTitler.ts`。
 //
 // 接口注入给 sessionService，Supabase 实现只在 daemon 装配；测试与冒烟用内存版
 // （分层同 mentionInbox / workspaceMemory / agentWriter）。
 //
-// **两个方法都不抛**：这句话由 `write()` 内部的 try/catch 保证成立，不是靠调用方
+// **三个 set 方法都不抛**：这句话由 `write()` 内部的 try/catch 保证成立，不是靠调用方
 // 记得 `.catch`（复审 Critical 2）——原来只接住了「请求成功、Supabase 回了个 {error}
 // 信封」那一半，网络层本身的 reject（断网/超时）完全没人接，会变成一次带走整个
 // daemon 进程的 unhandledRejection（同 `daemon.ts:465-471` 那条先例，同一类问题）。
@@ -22,32 +22,39 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { ParticipantWindow } from "../../../src/shared/sessionParticipants.js";
+import type { SessionLast } from "../../../src/shared/sessionLast.js";
 
 export interface CloudSessionMeta {
   /** 侧栏那一行显示的名字。空串不该走到这里（调用方自己判） */
   setTitle(title: string): Promise<void>;
   /** 最近有过对话的那个窗，以及窗里的人 */
   setParticipants(w: ParticipantWindow): Promise<void>;
+  /** 名册那一行的「最后一句 + 最近动静」（#1356 A1，spec §7.1）。节流在调用方（lastWriter） */
+  setLast(l: SessionLast): Promise<void>;
 }
 
 /** 记在内存里的假件（测试 / 冒烟）。两格直接给断言读 */
 export function createInMemoryCloudSessionMeta(): CloudSessionMeta & {
   title: string | null;
   participants: ParticipantWindow | null;
+  last: SessionLast | null;
 } {
-  const state: { title: string | null; participants: ParticipantWindow | null } = {
+  const state: { title: string | null; participants: ParticipantWindow | null; last: SessionLast | null } = {
     title: null,
     participants: null,
+    last: null,
   };
   return {
     get title() { return state.title; },
     get participants() { return state.participants; },
+    get last() { return state.last; },
     async setTitle(title) { state.title = title; },
     async setParticipants(w) { state.participants = { window: w.window, uids: [...w.uids] }; },
+    async setLast(l) { state.last = { ...l }; },
   };
 }
 
-/** 真库实现。0035 还没跑的库上，两个方法都会拿到 PostgREST 的 42703（列不存在）
+/** 真库实现。0035 还没跑的库上 setTitle / setParticipants、0040 还没跑的库上 setLast，都会拿到 PostgREST 的 42703（列不存在）
     ——那正好是「只记一行日志不抛」要接住的形态：功能降级成改动前的样子，
     而不是每一句话都失败 */
 export function createSupabaseCloudSessionMeta(
@@ -74,6 +81,9 @@ export function createSupabaseCloudSessionMeta(
     async setTitle(title) { await write({ title }, "会话标题"); },
     async setParticipants(w) {
       await write({ participants: [...w.uids], participants_window: w.window }, "会话参与者");
+    },
+    async setLast(l) {
+      await write({ last_ts: new Date(l.ts).toISOString(), last_excerpt: l.excerpt, last_from: l.from }, "最后一句");
     },
   };
 }

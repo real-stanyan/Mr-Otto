@@ -1,5 +1,5 @@
 // agentAvatarSlot —— 团队 agent 用哪个内置头像坑位（#971）。纯逻辑零 IO，像素形象
-// 本身在 lib/ottoFace/ 里，这里只算「第几个坑位」。
+// 本身在 src/shared/ottoFace/ 里，这里只算「第几个坑位」。
 //
 // 为什么不给 workspace_agents 加一列：头像是纯展示，13 个内置像素形象够一个团队
 // 用（每团队上限 32 只，ADR-0225；真到那个量级重复也无伤——头像是辅助辨认，
@@ -17,7 +17,7 @@
 import { ADMIN_AGENT_ID } from "./workspaceAgents.js";
 import { fnv1a } from "./fnv1a.js";
 
-/** 内置头像的坑位数。与 `lib/ottoFace/sprites.ts` 的 `FACE_CHARACTERS` 个数一致
+/** 内置头像的坑位数。与 `src/shared/ottoFace/sprites.ts` 的 `FACE_CHARACTERS` 个数一致
     （一个坑位对一个角色，#1345），由测试钉住 */
 export const AGENT_AVATAR_COUNT = 13;
 

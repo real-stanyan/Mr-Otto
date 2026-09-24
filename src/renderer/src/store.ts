@@ -102,6 +102,7 @@ import { runtimePatch } from "./lib/runtimeHydration.js";
 import { createAgentLanded } from "../../shared/cloudTimeline.js";
 import { humanSpeakerOf } from "../../shared/sessionParticipants.js";
 import { applyCloudDelta, clearCloudStreamingOn } from "../../shared/cloudStreaming.js";
+import { applyCloudStatus, insertCloudEvent } from "../../shared/cloudSessionState.js";
 import { EMPTY_VOICE_FEED, feedDelta, feedEvent, markInterrupted, type VoiceFeedState } from "./lib/voiceCall.js";
 import { applySpeechEvent, bargeInOn, MIC_OFF, micShouldPause, SPEECH_LOCALE, speechHints, type MicState } from "./lib/voiceMic.js";
 import { defaultCreateAudio, VoicePlayer } from "./lib/voicePlayer.js";
@@ -3496,34 +3497,14 @@ export const useChat = create<ChatState>((set, get) => ({
     window.otter.onCloudSessionEvent((event) => {
       set((s) => {
         if (!s.cloudSession || s.cloudSession.sessionId !== event.sessionId) return s;
-        // 按 seq 去重：:gone → host 回来重连会把 backlog 全量再推一遍
-        // （shared/remote/cloudSessionClient.ts 文件头「:gone」段），重复送达在这里
-        // 无害地被过滤掉，不会在时间线上出现两条一样的事件
-        if (s.cloudSession.events.some((e) => e.seq === event.seq)) return s;
+        // 按 seq 去重 + 插到对的位置（往前翻的那一页落在前面）——规则在
+        // shared/cloudSessionState.ts 的 insertCloudEvent，手机端用同一份
+        const events = insertCloudEvent(s.cloudSession.events, event);
+        if (events === null) return s;
         // 流式缓冲清槽（#1107）：终态 assistant_message 整份覆盖预览；
         // turn_ended（aborted/error）= 预览作废——「不完整就不是消息」，
         // 与本机 absorbEvent 清 streamingBySession 同一条纪律
         const cloudStreaming = clearCloudStreamingOn(s.cloudStreaming, event);
-        // 这一格原来是无条件追加（#1280 之前只有直播与一次全量，seq 天然递增）。
-        // 往前翻的那一页落在**前面**，所以要插对位置：不插的话时间线上会出现
-        // 「今天的消息底下跟着三个月前的」，而且一行都不报错。
-        // **不每条都全量排序**：那一页 200 条，逐条排就是 200 次 O(n log n)；
-        // 也**不能**只判「比头还小」——同一页是按 seq 升序到达的，第二条就不再
-        // 比新的头小了，会被甩到末尾。快路径（追加）之外走一次二分
-        const prev = s.cloudSession.events;
-        let events: SessionEvent[];
-        if (prev.length === 0 || event.seq > prev[prev.length - 1]!.seq) {
-          events = [...prev, event];
-        } else {
-          let lo = 0;
-          let hi = prev.length;
-          while (lo < hi) {
-            const mid = (lo + hi) >> 1;
-            if (prev[mid]!.seq < event.seq) lo = mid + 1;
-            else hi = mid;
-          }
-          events = [...prev.slice(0, lo), event, ...prev.slice(lo)];
-        }
         return {
           cloudSession: { ...s.cloudSession, events },
           ...(cloudStreaming !== s.cloudStreaming ? { cloudStreaming } : {}),
@@ -3602,34 +3583,9 @@ export const useChat = create<ChatState>((set, get) => ({
           // 落进这一页已有的那格"人话"里——CloudSessionPage 的 actionError
           // 就在 footer 上方。不进 cloudSession：它是一次性的，不是状态
           ...(status.notice === undefined ? {} : { workspaceGroupsError: status.notice }),
-          cloudSession: {
-            ...s.cloudSession,
-            state: status.state,
-            initiatorUid: status.initiatorUid,
-            ownerUid: status.ownerUid,
-            selfUid: status.selfUid,
-            modelRoute: status.modelRoute,
-            // issue #957 C-I7：照抄推送（缺席 → null）。**不能**学下面
-            // deniedCode 那样"没带就留着旧的"：缺口补齐时主进程正是靠不带
-            // 这一格来说"补齐了"
-            gapNote: status.gapNote ?? null,
-            // #1301：这一格**不照抄**——缺席 = welcome 还没到，留着打开时种的
-            // 那一份（`chatSeedOf`）。与上面 gapNote/hasOlder 的纪律相反而理由
-            // 对称：那两格每次推送重算，缺席就是最新结论；这一格 welcome 每条
-            // 连接只说一次，把缺席读成「团队会话」正是 #1301
-            ...(status.chat === undefined ? {} : { chat: status.chat }),
-            // #1280：同上。**不能**「没带就留着旧的」——翻到头那一次主进程正是
-            // 靠不带这一格来说「到头了」，留着旧值就是顶上那个哨兵永远挂着
-            hasOlder: status.hasOlder ?? false,
-            // exactOptionalPropertyTypes：deniedCode 是 string|undefined，
-            // 目标字段是可选的 string——只在真有值时才落这个键，不能把
-            // undefined 原样赋进去（那等于显式声明"这个键存在但是 undefined"，
-            // 与"这个键不存在"是两码事，见 tsconfig 的 exactOptionalPropertyTypes）
-            ...(status.deniedCode !== undefined ? { deniedCode: status.deniedCode } : {}),
-            ...(status.deniedServerVersion !== undefined
-              ? { deniedServerVersion: status.deniedServerVersion }
-              : {}),
-          },
+          // 哪几格照抄、哪几格缺席就留着（gapNote/hasOlder 缺席即结论，chat 缺席留种子，
+          // #1301 / #957 C-I7）——规则与理由在 shared/cloudSessionState.ts 的 applyCloudStatus
+          cloudSession: { ...s.cloudSession, ...applyCloudStatus(s.cloudSession, status) },
         };
       });
     });

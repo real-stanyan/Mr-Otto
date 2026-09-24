@@ -87,7 +87,7 @@ import type {
 } from "../../../session/events.js";
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 import type { CloudAck } from "../../../shared/shellBridge.js";
-import { CS_PROTOCOL_VERSION } from "../../../shared/remote/cloudSession.js";
+import { cloudDeniedText, unknownSendNote } from "../../../shared/cloudSessionState.js";
 import { modelStatusText } from "../lib/cloudModelStatus.js";
 import { buildCloudLogExport } from "../lib/cloudExport.js";
 import { downloadText } from "../lib/downloadText.js";
@@ -114,35 +114,6 @@ const EMPTY_EVENTS: SessionEvent[] = [];
 // 团队会话不窗口化：模块级常量保证每次渲染同一个引用（`?? []` 会让下游 memo 每次都失效）
 const EMPTY_SEQS: number[] = [];
 
-/** join() 之后持续状态的 deniedCode → 人话（渲染层自己的翻译）。
-    shared/remote/cloudSessionClient.ts 的 deniedMessage() 只服务 create() 那一次性
-    RPC 失败，该函数注释原话："这里不重复造一份会跟渲染层文案走岔的翻译"——
-    持续状态（join 之后经 onCloudSessionStatus 推来的 deniedCode）由这一份
-    负责。五个码逐一给人话，version_mismatch 特别提示升级；认不出的码原样
-    带出来兜底，不装死 */
-function cloudDeniedMessage(code: string | undefined, serverVersion?: number): string {
-  switch (code) {
-    case "bad_jwt":
-      return "登录状态已过期，请重新登录后再试";
-    case "not_member":
-      return "你不是这个团队的成员";
-    case "version_mismatch":
-      // 方向说得出来才有用（复审 C2-I6，与 shared/remote/cloudSessionClient.ts 的
-      // deniedMessage 同一判据）：「更新 Mr Otto」对「云端还没部署」的那半是
-      // 错的指引——照做也连不上，且再没有别的线索
-      if (serverVersion !== undefined && serverVersion < CS_PROTOCOL_VERSION) {
-        return `云端协议版本（${serverVersion}）低于本客户端（${CS_PROTOCOL_VERSION}），云端还没升级，联系维护者`;
-      }
-      return "客户端版本与云端不匹配，请更新 Mr Otto 后再试";
-    case "no_session":
-      return "云会话不存在或已归档";
-    case "not_authorized":
-      return "没有权限执行此操作";
-    default:
-      return code ? `无法加入云会话（${code}）` : "无法加入云会话";
-  }
-}
-
 /** 状态条文案（口径同 T4「云端状态三态化」：拿不到状态说"未知"不说"不可用"）。
     connecting/gone 都不是"连不上"的断言，只是"这一刻还没有可展示的事实"——
     gone 时 wsTransport 会自动重连，不代表这次云会话失败（shared/remote/cloudSessionClient.ts
@@ -161,7 +132,7 @@ function statusBanner(cs: CloudSessionState): { tone: "muted" | "warn" | "err"; 
     case "gone":
       return { tone: "muted", text: "云端连接已断开，正在自动重连…" };
     case "denied":
-      return { tone: "err", text: cloudDeniedMessage(cs.deniedCode, cs.deniedServerVersion) };
+      return { tone: "err", text: cloudDeniedText(cs.deniedCode, cs.deniedServerVersion) };
     case "ready":
       // warn 不是 muted（终审 minor）：muted 那一档在这张页面上说的是「稍等，
       // 还在连」——数据完整性警告穿它的衣服，就成了一句会被当作过场的灰字，
@@ -185,12 +156,6 @@ type UnsentLine = {
   memberMentions: string[];
   note: string;
 };
-
-/** 那一行的初始措辞。正文只回显前 40 字——这一行是「哪一句话」的提示，
-    不是那句话本身（它还完整地存在 `UnsentLine.text` 里，重发发的是全文） */
-function unknownNote(text: string): string {
-  return `没有收到回执，不确定有没有发出去：${text.slice(0, 40)}${text.length > 40 ? "…" : ""}`;
-}
 
 export function CloudSessionPage({
   ws,
@@ -478,7 +443,7 @@ export function CloudSessionPage({
         text: seed.text,
         mentions: undefined,
         memberMentions: parseMemberMentions(seed.text, candidates, memberCandidates),
-        note: unknownNote(seed.text),
+        note: unknownSendNote(seed.text),
       });
       return;
     }
@@ -836,7 +801,7 @@ export function CloudSessionPage({
       // resolveSendMentions 只在**这几个 @ 全点在人类成员上**时才给出它（#1059）
       mentions: plan.mentions,
       memberMentions: sendMemberMentions,
-      note: unknownNote(text),
+      note: unknownSendNote(text),
     };
     const r = await sendOnce(payload);
     // 会话对不上就什么都不写（终审 Finding 4）：await 期间人可能已经切到同团队的

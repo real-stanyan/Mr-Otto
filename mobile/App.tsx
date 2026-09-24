@@ -6,6 +6,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { View } from "react-native";
+import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { SafeAreaProvider, SafeAreaView } from "react-native-safe-area-context";
 import { gateView, resetHoldSurvives } from "../src/shared/mobileGate.js";
 import { splashProgress } from "../src/shared/splashProgress.js";
@@ -100,9 +101,12 @@ export default function App() {
 
   if (view === "app") {
     return (
-      <SafeAreaProvider>
-        <RootNavigator />
-      </SafeAreaProvider>
+      // 手势库要求根上有它（抽屉的手势在它自己的 Modal 里另包一层，那是 Modal 另起一棵原生视图树的缘故）
+      <GestureHandlerRootView style={{ flex: 1 }}>
+        <SafeAreaProvider>
+          <RootNavigator />
+        </SafeAreaProvider>
+      </GestureHandlerRootView>
     );
   }
 

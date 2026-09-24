@@ -1,7 +1,7 @@
 // AGENTS.md 的 Hard rules 从"写在文档里"变成"跑在门禁里"(Harness Engineering:
 // 架构约束要变成可执行检查,错误信息要带修法,不只是指出违规)。
 //
-// 八条边界。前两条是 AGENTS.md 的 Hard rules 原文,其余五条是各自 ADR 落下来的分层约束:
+// 八条边界。前两条是 AGENTS.md 的 Hard rules 原文,其余六条是各自 ADR 落下来的分层约束:
 //   1. 工具实现只依赖 ExecutionWorld 接口,禁止直接 import fs / child_process;
 //      连带一条同源的:src/tools 也不 import src/main —— 装配留给 main(ADR-0299,#1281)
 //   2. 渲染进程只通过 ShellBridge 与后端通信,禁止直接触碰 Node API

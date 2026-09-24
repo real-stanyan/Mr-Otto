@@ -25,6 +25,7 @@ import { ADMIN_AGENT_ID } from "./workspaceAgents.js";
 import { modelLabel } from "./modelCatalog.js";
 import type { AgentToolAllow } from "./agentToolAllow.js";
 import { describeAllow } from "./proxyShare.js";
+import type { CloudSessionRow } from "./supabaseWorkspacesApi.js";
 
 export type ConnectorCloudState = "ready" | "unknown" | "off";
 
@@ -202,22 +203,10 @@ export function connectorBatchErrorText(
 
 // ─── 云会话列表（Task 13，ADR-0199） ────────────────────────────────────
 
-/** ShellBridge.workspaceCloudList 一行的形状。与 src/shared/supabaseWorkspacesApi.ts
-    的同名 CloudSessionRow 形状凑巧相同，但没有去重——两边各留一份。去重留给 A1：
-    那一片要往两边都加 last_* 那几列，届时顺手并掉这份重复 */
-export interface CloudSessionListRow {
-  id: string;
-  title: string;
-  publisherUid: string;
-  archived: boolean;
-  updatedTs: number;
-  /** 见 src/shared/supabaseWorkspacesApi.ts 的同名字段（形状凑巧相同、各留一份，去重留给 A1） */
-  participantUids: string[];
-  /** 这一行是不是一条聊天，是哪一种（#1280）。`null` = 团队会话 / 这一格读不到 */
-  chatKind: "dm" | "group" | null;
-  /** 聊天的名单投影（#1280）。权威在日志，这一列是给「没开着这条聊天」的桌面看的 */
-  agentIds: string[];
-}
+/** ShellBridge.workspaceCloudList 一行的形状。**就是** `supabaseWorkspacesApi` 的
+    `CloudSessionRow`——原来两边各留一份、形状逐字相同，A0 注明「去重留给 A1」，
+    这里并成一个别名（#1356 A1）。改字段只改那一份 */
+export type CloudSessionListRow = CloudSessionRow;
 
 export interface CloudSessionRowView {
   id: string;

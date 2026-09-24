@@ -20,7 +20,7 @@ import { GRIN } from "./grin.js";
 
 export { OTTO, BERET, SPECS, SCHOLAR, BOB, SAGE, STOIC, CAP, MANE, SWEEP, GRIN };
 
-/** 互不相同的角色本身。**坑位表在 sprites.ts** —— 那边是 13 格、这边是 10 个角色，
+/** 互不相同的角色本身。**坑位表在 sprites.ts** —— 那边是 13 格、这边是 11 个角色，
  *  两者不是一回事，共用一个名字迟早有人把坑位当角色索引 */
 export const FACE_PACKS: readonly FaceCharacter[] = [
   OTTO, BERET, SPECS, SCHOLAR, BOB, SAGE, STOIC, CAP, MANE, SWEEP, GRIN,
