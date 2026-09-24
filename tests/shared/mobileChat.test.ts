@@ -2,7 +2,7 @@
 // hiddenFromCloudTimeline，这里只钉「留下来的那些画成哪一种行」。
 
 import { describe, expect, it } from "vitest";
-import { chatRows, clockLabel, liveRows, nowRowOf, resolveChatTarget } from "../../src/shared/mobileChat.js";
+import { chatCentre, chatRows, clockLabel, liveRows, nowRowOf, resolveChatTarget } from "../../src/shared/mobileChat.js";
 import type { SessionEvent } from "../../src/session/events.js";
 import type { CloudSessionRow } from "../../src/shared/supabaseWorkspacesApi.js";
 import type { WorkspaceAgentRow, WorkspaceSnapshot } from "../../src/shared/workspaces.js";
@@ -146,5 +146,24 @@ describe("clockLabel", () => {
   it("24 小时制、补零", () => {
     expect(clockLabel(new Date(2026, 8, 23, 9, 5).getTime())).toBe("09:05");
     expect(clockLabel(new Date(2026, 8, 23, 21, 40).getTime())).toBe("21:40");
+  });
+});
+
+describe("chatCentre", () => {
+  it.each<[string, Parameters<typeof chatCentre>[0], ReturnType<typeof chatCentre>]>([
+    ["没有会话 + 私聊草稿 → 邀请开口", { session: null, draft: true, openFailed: false, rowCount: 0 }, "hello"],
+    ["没有会话 + 进房失败（原因在底下那行）→ 什么都不画", { session: null, draft: false, openFailed: true, rowCount: 0 }, "blank"],
+    ["没有会话、两样都没有 → 转圈", { session: null, draft: false, openFailed: false, rowCount: 0 }, "loading"],
+    ["connecting、零事件 → 转圈", { session: { state: "connecting", eventCount: 0 }, draft: false, openFailed: false, rowCount: 0 }, "loading"],
+    ["gone、零事件 → 转圈（还没拉到过就断了）", { session: { state: "gone", eventCount: 0 }, draft: false, openFailed: false, rowCount: 0 }, "loading"],
+    ["ready、零事件、零行 → 邀请开口", { session: { state: "ready", eventCount: 0 }, draft: false, openFailed: false, rowCount: 0 }, "hello"],
+    ["ready、有事件但全是藏起来的内务、零行 → 邀请开口", { session: { state: "ready", eventCount: 2 }, draft: false, openFailed: false, rowCount: 0 }, "hello"],
+    ["ready、有画得出来的行 → 时间线", { session: { state: "ready", eventCount: 3 }, draft: false, openFailed: false, rowCount: 3 }, "timeline"],
+    ["gone 但旧历史还在 → 时间线", { session: { state: "gone", eventCount: 3 }, draft: false, openFailed: false, rowCount: 3 }, "timeline"],
+    ["denied、零事件 → 终态，中间不邀请开口", { session: { state: "denied", eventCount: 0 }, draft: false, openFailed: false, rowCount: 0 }, "blank"],
+    ["denied、有内务事件但零行 → 仍是终态", { session: { state: "denied", eventCount: 2 }, draft: false, openFailed: false, rowCount: 0 }, "blank"],
+    ["denied 但已有画得出来的历史 → 时间线", { session: { state: "denied", eventCount: 3 }, draft: false, openFailed: false, rowCount: 3 }, "timeline"],
+  ])("%s", (_label, input, want) => {
+    expect(chatCentre(input)).toBe(want);
   });
 });

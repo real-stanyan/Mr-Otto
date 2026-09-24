@@ -8,7 +8,7 @@ import type { SessionEvent } from "../session/events.js";
 import { groupRows, rosterRows } from "./agentRoster.js";
 import { splitBubbles } from "./chatBubbles.js";
 import {
-  assistantLabel, hiddenFromCloudTimeline, relayLineText, stopButtonRows, systemNoteText, turnEndedLineText, userRowIdentity,
+  assistantLabel, cloudEmptyState, hiddenFromCloudTimeline, relayLineText, stopButtonRows, systemNoteText, turnEndedLineText, userRowIdentity,
 } from "./cloudTimeline.js";
 import { withDaySeparators } from "./dayLabel.js";
 import { dmFaceState, type FaceState } from "./ottoFace/index.js";
@@ -193,4 +193,23 @@ const pad2 = (n: number): string => String(n).padStart(2, "0");
 export function clockLabel(ts: number): string {
   const d = new Date(ts);
   return `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+}
+
+/** 聊天页中间那一块画什么（#1356 A1，spec §5.3 / §6）：
+    · 没有会话：私聊草稿 → 邀请开口；进房失败（原因在底下那行）→ 什么都不画；否则 → 转圈；
+    · 有会话：还在连 / 重连且一条都没有 → 转圈（同桌面 cloudEmptyState 的 skeleton）；
+      有画得出来的行 → 时间线；一行都画不出来（新聊天里只有藏起来的内务）→ 邀请开口，
+      **被拒除外**——那是终态，底下那行说清是哪一种、给「回名册」，中间不邀请人开口 */
+export type ChatCentre = "loading" | "hello" | "blank" | "timeline";
+
+export function chatCentre(o: {
+  session: { state: "connecting" | "ready" | "denied" | "gone"; eventCount: number } | null;
+  draft: boolean;
+  openFailed: boolean;
+  rowCount: number;
+}): ChatCentre {
+  if (o.session === null) return o.draft ? "hello" : o.openFailed ? "blank" : "loading";
+  if (cloudEmptyState(o.session.state, o.session.eventCount) === "skeleton") return "loading";
+  if (o.rowCount > 0) return "timeline";
+  return o.session.state === "denied" ? "blank" : "hello";
 }

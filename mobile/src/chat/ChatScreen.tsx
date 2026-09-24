@@ -17,8 +17,7 @@ import { agentFaceSlot } from "../../../src/shared/agentAvatar.js";
 import { resolveSendMentions } from "../../../src/shared/agentMentionInput.js";
 import { chatViewOf } from "../../../src/shared/agentRoster.js";
 import { cloudDeniedText } from "../../../src/shared/cloudSessionState.js";
-import { cloudEmptyState } from "../../../src/shared/cloudTimeline.js";
-import { chatRows, liveRows, nowRowOf, resolveChatTarget, type ChatRow, type NowRow } from "../../../src/shared/mobileChat.js";
+import { chatCentre, chatRows, liveRows, nowRowOf, resolveChatTarget, type ChatRow, type NowRow } from "../../../src/shared/mobileChat.js";
 import { facePhase } from "../../../src/shared/ottoFace/art.js";
 import { dmFaceState } from "../../../src/shared/ottoFace/index.js";
 import { parseMentions } from "../../../src/shared/remote/agentMention.js";
@@ -160,7 +159,7 @@ export function ChatScreen({ route, navigation }: Props) {
   const resolved = useMemo(() => (ws !== null ? resolveChatTarget(ws, home.chats, target) : null), [ws, home.chats, target]);
   const sessionId = resolved?.sessionId ?? null;
   /** 这一页自己的一句（点名打错了、建私聊失败、停不下来） */
-  const [pageNote, setPageNote] = useState<string | null>(null);
+  const [pageNote, setPageNote] = useState<{ text: string; tone: "muted" | "error" } | null>(null);
   const [stopping, setStopping] = useState(false);
 
   // 这条线已经存在就进房；草稿什么都不做，第一句发出去才建
@@ -200,14 +199,14 @@ export function ChatScreen({ route, navigation }: Props) {
     const candidates = agentIds.map((id) => ({ agentId: id, name: agentNameOf(ws, id) }));
     const plan = resolveSendMentions({ text, parsed: parseMentions(text, candidates), refreshFailed: false, freshCandidates: candidates });
     if (plan.kind === "block") {
-      setPageNote(plan.error);
+      setPageNote({ text: plan.error, tone: "error" });
       return false;
     }
     setPageNote(null);
     if (draft && dmAgent !== null) {
       const r = await startDm(ws.id, dmAgent, text, plan.mentions);
       if (!r.ok) {
-        setPageNote(r.message);
+        setPageNote({ text: r.message, tone: "error" });
         return false;
       }
       // 名册那一行要认出这条新私聊（下次点进来直接进房，不再是草稿）
@@ -222,16 +221,17 @@ export function ChatScreen({ route, navigation }: Props) {
     setStopping(true);
     const r = await stopTurn(seq);
     setStopping(false);
-    if (!r.ok) setPageNote(r.unknown ? "没有收到回执，不确定停下来没有" : r.message);
+    if (!r.ok) setPageNote(r.unknown ? { text: "没有收到回执，不确定停下来没有", tone: "muted" } : { text: r.message, tone: "error" });
   };
 
   const headerTop = insets.top + 8;
   const headerSpace = headerTop + ROUND_BUTTON_SIZE + 12;
-  const empty: "loading" | "hello" | null =
-    session === null
-      ? draft ? "hello" : "loading"
-      : cloudEmptyState(session.state, events.length) === "skeleton" ? "loading"
-        : items.length === 0 ? "hello" : null;
+  const centre = chatCentre({
+    session: session === null ? null : { state: session.state, eventCount: events.length },
+    draft,
+    openFailed: chat.error !== null,
+    rowCount: items.length,
+  });
 
   const headFaces: ReactNode =
     ws === null ? null
@@ -249,14 +249,16 @@ export function ChatScreen({ route, navigation }: Props) {
             <Centered top={headerSpace}>
               {home.loaded ? <Text style={{ ...t.callout, color: c.mutedForeground }}>这条聊天已经不在了。</Text> : <Spinner />}
             </Centered>
-          ) : ws === null || empty === "loading" ? (
+          ) : ws === null || centre === "loading" ? (
             <Centered top={headerSpace}>
               <Spinner />
             </Centered>
-          ) : empty === "hello" ? (
+          ) : centre === "hello" ? (
             <Centered top={headerSpace}>
               <Hello ws={ws} kind={kind} agentIds={agentIds} title={title} />
             </Centered>
+          ) : centre === "blank" ? (
+            <View style={{ flex: 1 }} />
           ) : (
             <FlatList
               inverted
@@ -294,7 +296,7 @@ export function ChatScreen({ route, navigation }: Props) {
           {chat.notice ? <Line tone="muted">{chat.notice}</Line> : null}
           {chat.error ? <Line tone="error">{chat.error}</Line> : null}
           {chat.sendError ? <Line tone="error">{chat.sendError}</Line> : null}
-          {pageNote ? <Line tone="error">{pageNote}</Line> : null}
+          {pageNote ? <Line tone={pageNote.tone}>{pageNote.text}</Line> : null}
           {chat.unsent !== null && chat.unsent.sessionId === session?.sessionId ? (
             // 中性灰不是红色：它不是一次失败，是这一层消除不了的不确定。两颗钮把决定交回给人
             <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 4 }}>
