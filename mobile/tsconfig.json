@@ -2,28 +2,25 @@
   "extends": "expo/tsconfig.base",
   "compilerOptions": {
     "strict": true,
-    // Task 9（#1356 A1）：mobile/ 有自己独立安装的 @supabase/supabase-js（不是软链，
-    // 见 AGENTS.md「这个 worktree 的 mobile/node_modules 已经是本地安装」）。
-    // src/shared/supabaseWorkspacesApi.ts / homeWorkspace.ts（在 mobile/ 之外）只
-    // `import type { SupabaseClient }`，Node 的类型解析从它们自己的目录往上找，兜到
-    // 根 node_modules 那份声明；mobile/src/supabase.ts 的 createClient() 解出来的是
-    // mobile 自己那份声明。SupabaseClient 带 protected 的 supabaseUrl——TS 对带
-    // private/protected 成员的类按「是不是同一处声明」判兼容，两份物理上不同的
-    // .d.ts 天生判不兼容：homeStore.ts 把 mobile 建出来的客户端传给那几个函数会报
-    // TS2345（Task 9 首次触发，此前没有 mobile 文件把 supabase 实例递给 src/shared
-    // 里带这个类型的函数）。
+    // #1356 A1：mobile/ 有自己的 package.json 与 node_modules（AGENTS.md 门禁一节），
+    // @supabase/supabase-js 在它那里与仓库根各装了一份。src/shared/ 里的
+    // supabaseWorkspacesApi.ts / homeWorkspace.ts / agentAdmin.ts 只写
+    // `import type { SupabaseClient }`，TS 从它们自己的目录往上找，解到根那份声明；
+    // mobile/src/supabase.ts 的 createClient() 解到的是 mobile 那份。SupabaseClient
+    // 带 protected 的 supabaseUrl——TS 对带 private/protected 成员的类按「是不是同一处
+    // 声明」判兼容，两份物理上不同的 .d.ts 天生判不兼容：把 mobile 建出来的客户端递给
+    // 这些函数就报 TS2345。
     //
-    // 重定向指到 mobile 自己那份，不指向根：metro.config.js 的
-    // resolver.nodeModulesPaths 把 mobile/node_modules 排在仓库根前面，shared 代码
-    // 虽然物理上不在 mobile/ 里，但打进手机包时也是从这份解出来的——真正跑在手机上
-    // 的就是它。tsc 检查 shared 代码时该对着「这份会在手机上跑的版本」核，不是对着
-    // 桌面那份：指向根的话，根单独升一次 supabase-js、mobile 这边没跟着升，mobile
-    // tsc 照样绿灯——而手机包里装着的其实是旧版客户端，shared 代码新用到的方法它
-    // 可能没有。这正是这条 paths 该拦住的那类问题，指向根等于拆了这道闸。
+    // 指到 mobile 那份、不指根：手机上真正跑的客户端实例是 mobile/src/supabase.ts 建的
+    // （那个文件在 mobile/ 里，解出来的是 mobile 这份），shared 那几个函数调的正是它的
+    // 方法——tsc 该拿这份去核 shared 的调用。指根的话，根单独升一次 supabase-js、mobile
+    // 没跟着升，mobile tsc 照样绿，而手机上那个客户端可能没有 shared 新用到的方法。
     //
-    // 只重定向**类型解析**（上面两个文件只有 `import type`，不落进真实调用），不影响
-    // Metro 的运行时打包——那边照旧用自己的物理 node_modules 解析，不读 tsconfig 的
-    // paths。
+    // 别拿 metro.config.js 的 nodeModulesPaths 当理由：Metro 先从发起 import 的那个文件
+    // 所在目录逐级往上找 node_modules，nodeModulesPaths 只是找不到时的后备——src/shared/
+    // 里的文件若真在运行时 import 这个包，打进手机包的会是根那份。今天没有这种 import
+    // （上面三处都是 import type，打包时整行抹掉）；哪天有了，这条重定向就不再和打包的
+    // 结果一致，得重新判。只影响类型解析，Metro 不读 tsconfig 的 paths。
     "paths": {
       "@supabase/supabase-js": ["./node_modules/@supabase/supabase-js"]
     }
