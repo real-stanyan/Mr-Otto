@@ -1,6 +1,21 @@
 {
   "extends": "expo/tsconfig.base",
   "compilerOptions": {
-    "strict": true
+    "strict": true,
+    // Task 9（#1356 A1）：mobile/ 有自己独立安装的 @supabase/supabase-js（不是软链，
+    // 见 AGENTS.md「这个 worktree 的 mobile/node_modules 已经是本地安装」）。
+    // src/shared/supabaseWorkspacesApi.ts / homeWorkspace.ts 里的 SupabaseClient
+    // 类型是从**根** node_modules 解出来的（那些文件在 mobile/ 之外，Node 解析
+    // 从它们自己的目录往上找）。两份 @supabase/supabase-js 各自的 SupabaseClient
+    // 都带 protected 的 supabaseUrl——TS 对带 private/protected 成员的类按
+    // 「是不是同一处声明」判兼容，两份物理上不同的 .d.ts 天生判不兼容：把
+    // mobile/src/supabase.ts 建出来的客户端传给这些函数会报 TS2345（Task 9 首次
+    // 触发，此前没有 mobile 文件把 supabase 实例递给 src/shared 里带这个类型的函数）。
+    // 这里只重定向**类型解析**（不影响 Metro 的运行时打包——那边走自己的物理
+    // node_modules 解析，不读 tsconfig 的 paths），把 mobile 这份 program 里对
+    // 这个包的类型解析统一指到根那份——两边版本只差一个 patch 号（2.112.3/2.112.4）。
+    "paths": {
+      "@supabase/supabase-js": ["../node_modules/@supabase/supabase-js"]
+    }
   }
 }
