@@ -10,6 +10,7 @@ import {
 import { normalizeSandboxApproval, type SandboxApproval } from "./workspaceAgents.js";
 import type { AgentToolAllow } from "./agentToolAllow.js";
 import type { WorkspaceMentionRow } from "./workspaceMentions.js";
+import type { SessionLast } from "./sessionLast.js";
 
 /** supabase-js 的 {data,error} 归一:error 转 throw(带 pg code,上层认 23505 等) */
 function unwrap<T>(res: { data: T; error: { message: string; code?: string } | null }): T {
@@ -500,6 +501,38 @@ async function fetchCloudChats(
     if (r.chat_kind !== "dm" && r.chat_kind !== "group") continue;
     const ids = Array.isArray(r.agent_ids) && r.agent_ids.every((x) => typeof x === "string") ? (r.agent_ids as string[]) : [];
     map.set(r.id, { chatKind: r.chat_kind, agentIds: ids });
+  }
+  return map;
+}
+
+/** `workspace_sessions.last_ts / last_excerpt / last_from` 那三列（#1356 A1，spec §7.1），
+    **单独一条、容错**——理由与 `fetchCloudChats` / `fetchCloudParticipants` 逐字相同：
+    0040 落地前合进主 select 的话，PostgREST 对不存在的列回 42703，这个团队一条云会话
+    都读不出来。**不要把这三列「顺手」合回主 select**。读不到回空 Map：名册按
+    `updated_at` 排（spec §5.2 的退路）、那一行不写最后一句。
+    `last_ts` 为 null（这条会话还没人说过一句算数的话）或解析不出的行不进 Map——
+    「没有」与「读不到」在名册上是同一个画法，不必分 */
+export async function fetchCloudLasts(
+  client: SupabaseClient,
+  workspaceId: string,
+): Promise<Map<string, SessionLast>> {
+  const res = await client
+    .from("workspace_sessions")
+    .select("id,last_ts,last_excerpt,last_from")
+    .eq("workspace_id", workspaceId)
+    .eq("kind", "cloud");
+  const map = new Map<string, SessionLast>();
+  if (res.error) return map;
+  const rows = (res.data ?? []) as { id: string; last_ts: unknown; last_excerpt: unknown; last_from: unknown }[];
+  for (const r of rows) {
+    if (typeof r.last_ts !== "string") continue;
+    const ts = Date.parse(r.last_ts);
+    if (Number.isNaN(ts)) continue;
+    map.set(r.id, {
+      ts,
+      excerpt: typeof r.last_excerpt === "string" ? r.last_excerpt : "",
+      from: typeof r.last_from === "string" ? r.last_from : "",
+    });
   }
   return map;
 }
