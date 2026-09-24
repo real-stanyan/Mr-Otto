@@ -125,6 +125,21 @@ describe("assembleSnapshot", () => {
     expect(slotOf("3")).toBeNull();
   });
 
+  it("agents：created_at → createdTs（ms）；列缺席（旧 select / 旧夹具）就不带这一格，不补 0", () => {
+    const row = {
+      agent_id: "a1", name: "运营", description: "", instructions: "",
+      models: [], tools: [], created_by: "u2", updated_at: "2026-09-02T00:00:00.000Z",
+    };
+    const withCreated = assembleSnapshot(WS, [], [], [], [{ ...row, created_at: "2026-09-01T08:00:00.000Z" }], () => null);
+    expect(withCreated.agents[0]!.createdTs).toBe(Date.parse("2026-09-01T08:00:00.000Z"));
+    // 0 会被名册排序读成「1970 年建的」，排到最底下——缺席就是缺席
+    const without = assembleSnapshot(WS, [], [], [], [row], () => null);
+    expect("createdTs" in without.agents[0]!).toBe(false);
+    // 解析不出来的时间同样不带（与 updated_at 的 toEpochMs 回 0 不同：这一格只用来排序，0 会撒谎）
+    const bad = assembleSnapshot(WS, [], [], [], [{ ...row, created_at: "garbage" }], () => null);
+    expect("createdTs" in bad.agents[0]!).toBe(false);
+  });
+
   // 形状归一（脏值 → ask）从这里搬去了 fetchSandboxApproval，判据也跟着分了家（#1029）：
   // **null 是「读不到」不是「关着」**，assembleSnapshot 原样透传，界面才画得出第三态。
   // 脏值那一半的断言搬进了下面的 normalizeSandboxApproval 用例，没有被删掉

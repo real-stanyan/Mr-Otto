@@ -117,12 +117,12 @@ export async function fetchWorkspace(
   }[];
   const agents = (unwrap(
     await client.from("workspace_agents")
-      .select("agent_id,name,description,instructions,models,tools,created_by,updated_at,avatar_slot")
+      .select("agent_id,name,description,instructions,models,tools,created_by,created_at,updated_at,avatar_slot")
       .eq("workspace_id", id)
       .order("created_at", { ascending: true }),
   ) ?? []) as {
     agent_id: string; name: string; description: string; instructions: string; models: unknown;
-    tools: unknown; created_by: string; updated_at: string; avatar_slot?: unknown;
+    tools: unknown; created_by: string; created_at?: string; updated_at: string; avatar_slot?: unknown;
   }[];
   const profiles = await fetchProfiles(client, members.map((m) => m.uid));
   return assembleSnapshot({ ...ws, sandbox_approval: sandboxApproval, kind }, members, connectors, sessions, agents, (uid) => profiles.get(uid) ?? null);

@@ -1,6 +1,6 @@
 // agentAvatar —— 「这一格头像画什么」（#971 / #1007 / #1345）。
 //
-// 坑位算法在 agentAvatarSlot.ts（纯逻辑），像素脸在 lib/ottoFace/（纯数据 + 一层 canvas）。
+// 坑位算法在 agentAvatarSlot.ts（纯逻辑），像素脸的纯层在 src/shared/ottoFace/，canvas 那层在渲染层的 lib/ottoFace/paint.ts。
 // 这个文件只回答一个问题：**给定一只 agent（或一个人），这一格画什么**。
 //
 // 原来它回答的是「哪一张 png 的 URL」（13 张 128px 静态图）。#1345 把那 13 张换成
