@@ -28,19 +28,25 @@ export function Composer({ placeholder, canSend, sessionId, onSend }: {
   const pressTo = (v: number): void => {
     if (!reduce) Animated.spring(sendScale, { toValue: v, useNativeDriver: true, ...PRESS_SPRING }).start();
   };
-  // 确定没发出去的那句（草稿里那第一句）摆回输入框
+  // 确定没发出去的那句（草稿里那第一句）摆回输入框——**只在输入框是空的时候摆**（桌面
+  // CloudSessionPage 同一条）：人已经在打字了就别覆盖他；不取走，它就还留在 store 里，
+  // 等输入框空了再摆回来
   useEffect(() => {
-    if (sessionId === null) return;
+    if (sessionId === null || draft !== "") return;
     const text = takeDraftSeed(sessionId);
     if (text !== null) setDraft(text);
-  }, [seed, sessionId]);
+  }, [seed, sessionId, draft]);
   const live = draft.trim() !== "" && canSend && !sending;
   const submit = async (): Promise<void> => {
     const text = draft.trim();
     if (!live) return;
     setSending(true);
-    const clear = await onSend(text);
-    setSending(false);
+    let clear = false;
+    try {
+      clear = await onSend(text);
+    } finally {
+      setSending(false);
+    }
     if (clear) setDraft("");
   };
   return (
