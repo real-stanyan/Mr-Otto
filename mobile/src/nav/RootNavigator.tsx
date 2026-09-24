@@ -5,6 +5,7 @@ import { DarkTheme, DefaultTheme, NavigationContainer, type Theme } from "@react
 import { createNativeStackNavigator } from "@react-navigation/native-stack";
 import { usePalette } from "../theme.js";
 import { RosterScreen } from "../roster/RosterScreen.js";
+import { ChatScreen } from "../chat/ChatScreen.js";
 import { AccountScreen } from "../account/AccountScreen.js";
 import { AgentSettingsScreen } from "../agent/AgentSettingsScreen.js";
 import { FaceGallery } from "../dev/FaceGallery.js";
@@ -33,6 +34,7 @@ export function RootNavigator() {
       <Root.Navigator>
         {/* 名册自己画浮在内容上的圆钮（demo 的 .pillnav），不要原生导航条 */}
         <Root.Screen name="Roster" component={RosterScreen} options={{ headerShown: false }} />
+        <Root.Screen name="Chat" component={ChatScreen} options={{ headerShown: false }} />
         <Root.Screen name="Account" component={AccountScreen} options={{ title: "账号", headerBackTitle: "返回" }} />
         <Root.Screen
           name="AgentSettings"
