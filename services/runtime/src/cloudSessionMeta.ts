@@ -1,5 +1,5 @@
-// cloudSessionMeta —— `workspace_sessions` 那三格（title / participants /
-// participants_window）的写入口（#1213）。这一侧只有 IO，判据在
+// cloudSessionMeta —— `workspace_sessions` 那几格（title / participants /
+// participants_window / last_ts / last_excerpt / last_from）的写入口（#1213）。这一侧只有 IO，判据在
 // `src/shared/sessionParticipants.ts` 与 `sessionTitler.ts`。
 //
 // 接口注入给 sessionService，Supabase 实现只在 daemon 装配；测试与冒烟用内存版
@@ -22,28 +22,35 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { ParticipantWindow } from "../../../src/shared/sessionParticipants.js";
+import type { SessionLast } from "../../../src/shared/sessionLast.js";
 
 export interface CloudSessionMeta {
   /** 侧栏那一行显示的名字。空串不该走到这里（调用方自己判） */
   setTitle(title: string): Promise<void>;
   /** 最近有过对话的那个窗，以及窗里的人 */
   setParticipants(w: ParticipantWindow): Promise<void>;
+  /** 名册那一行的「最后一句 + 最近动静」（#1356 A1，spec §7.1）。节流在调用方（lastWriter） */
+  setLast(l: SessionLast): Promise<void>;
 }
 
 /** 记在内存里的假件（测试 / 冒烟）。两格直接给断言读 */
 export function createInMemoryCloudSessionMeta(): CloudSessionMeta & {
   title: string | null;
   participants: ParticipantWindow | null;
+  last: SessionLast | null;
 } {
-  const state: { title: string | null; participants: ParticipantWindow | null } = {
+  const state: { title: string | null; participants: ParticipantWindow | null; last: SessionLast | null } = {
     title: null,
     participants: null,
+    last: null,
   };
   return {
     get title() { return state.title; },
     get participants() { return state.participants; },
+    get last() { return state.last; },
     async setTitle(title) { state.title = title; },
     async setParticipants(w) { state.participants = { window: w.window, uids: [...w.uids] }; },
+    async setLast(l) { state.last = { ...l }; },
   };
 }
 
@@ -74,6 +81,9 @@ export function createSupabaseCloudSessionMeta(
     async setTitle(title) { await write({ title }, "会话标题"); },
     async setParticipants(w) {
       await write({ participants: [...w.uids], participants_window: w.window }, "会话参与者");
+    },
+    async setLast(l) {
+      await write({ last_ts: new Date(l.ts).toISOString(), last_excerpt: l.excerpt, last_from: l.from }, "最后一句");
     },
   };
 }

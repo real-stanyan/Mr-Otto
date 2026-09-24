@@ -13,6 +13,13 @@ describe("createInMemoryCloudSessionMeta", () => {
     expect(meta.title).toBe("奶茶店选址");
     expect(meta.participants).toEqual({ window: 3, uids: ["u1", "u2"] });
   });
+
+  it("记下最后一次写进去的「最后一句」（#1356 A1）", async () => {
+    const meta = createInMemoryCloudSessionMeta();
+    expect(meta.last).toBeNull();
+    await meta.setLast({ ts: 42, excerpt: "门禁绿了", from: "agent:a_000000000001" });
+    expect(meta.last).toEqual({ ts: 42, excerpt: "门禁绿了", from: "agent:a_000000000001" });
+  });
 });
 
 describe("createSupabaseCloudSessionMeta", () => {
@@ -60,5 +67,19 @@ describe("createSupabaseCloudSessionMeta", () => {
     ).resolves.toBeUndefined();
     expect(log).toHaveBeenCalledTimes(1);
     expect(String(log.mock.calls[0]![0])).toContain("fetch failed");
+  });
+
+  it("最后一句三列一起写，时间写成 ISO（#1356 A1）", async () => {
+    const f = fakeClient({ error: null });
+    await createSupabaseCloudSessionMeta(f.client, "sess-1", () => {}).setLast({ ts: Date.parse("2026-09-23T10:00:00.000Z"), excerpt: "你好", from: "human:u1" });
+    expect(f.update).toHaveBeenCalledWith({ last_ts: "2026-09-23T10:00:00.000Z", last_excerpt: "你好", last_from: "human:u1" });
+    expect(f.eq).toHaveBeenCalledWith("id", "sess-1");
+  });
+
+  it("最后一句写失败（0040 没跑，列不存在）只记一行日志不抛", async () => {
+    const log = vi.fn();
+    const f = fakeClient({ error: { message: "column last_ts does not exist" } });
+    await expect(createSupabaseCloudSessionMeta(f.client, "s", log).setLast({ ts: 1, excerpt: "x", from: "human:u1" })).resolves.toBeUndefined();
+    expect(log).toHaveBeenCalledTimes(1);
   });
 });

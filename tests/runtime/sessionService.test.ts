@@ -6626,3 +6626,30 @@ describe("聊天名单收窄（#1280）", () => {
     store.close();
   });
 });
+
+// ── 名册「最后一句」（#1356 A1，spec §7.1）─────────────────────────────
+describe("最后一句写进 workspace_sessions（#1356 A1）", () => {
+  it("人说一句 → 写人那句；agent 答完 → 写 agent 的答案（throttle 0，当场写）", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    const meta = createInMemoryCloudSessionMeta();
+    const setLast = vi.spyOn(meta, "setLast");
+    const session = createCloudSession({ ...baseOpts(store, events), wiki: testWiki(), sessionMeta: meta, lastThrottleMs: 0 });
+    await session.say("u1", "张三", "@default 帮我看下排班", true, ["default"], undefined, undefined);
+    await session.settled();
+    const froms = setLast.mock.calls.map((c) => c[0].from);
+    expect(froms[0]).toBe("human:u1");
+    expect(meta.last).toMatchObject({ excerpt: "好", from: "agent:default" });
+  });
+
+  it("系统旁白（没派出去那种 chat_message）不写", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    const meta = createInMemoryCloudSessionMeta();
+    const session = createCloudSession({ ...baseOpts(store, events), wiki: testWiki(), sessionMeta: meta, lastThrottleMs: 0 });
+    await session.say("u1", "张三", "@不存在的人 你好", false, ["查无此人"], undefined, undefined);
+    await session.settled();
+    // 人那句算，系统那句「没找到」不算——最后一句仍是人说的
+    expect(meta.last).toMatchObject({ from: "human:u1" });
+  });
+});

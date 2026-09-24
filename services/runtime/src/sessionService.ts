@@ -229,6 +229,8 @@ import {
   lastActiveWindowParticipants,
   type ParticipantWindow,
 } from "../../../src/shared/sessionParticipants.js";
+import { LAST_THROTTLE_MS, lastOf } from "../../../src/shared/sessionLast.js";
+import { createLastWriter } from "./lastWriter.js";
 
 /** 派活分类器读日志尾段多少条事件（#1153）。一轮 turn 十几条事件是常态，200 条
     足够捞出最近 8 句说出口的话；不读全量是因为 say() 的回执等着这一步 */
@@ -362,6 +364,9 @@ export interface CloudSessionOpts {
       谁在里面说过话」的会话——那正是这条 issue 要拆掉的东西，失败模式本来就是无声的。
       写的是日志的投影，所以它失败只记一行日志、不把一句已经发出去的话翻成失败 */
   sessionMeta: CloudSessionMeta;
+  /** 名册「最后一句」写库的节流间隔（#1356 A1，spec §7.1）。**可选**：缺席 = LAST_THROTTLE_MS
+      （3 秒）。只有测试传 0（每条都当场写，断言不用等定时器） */
+  lastThrottleMs?: number;
   /** 会话命名（#1213）：拿最便宜那款读「当前标题 + 最近几句」，回新标题 + 起名的
       那个型号，或 null（不改）。**要带型号**：`session_autotitled.model` 那一格是
       溯源用的，写一个我们自己编的常量进去就是句假话。
@@ -672,6 +677,12 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       日志长。`lastActiveWindowParticipants` 自己是倒扫、越过窗起点就停的，所以
       这次播种也只读了尾巴 */
   let participants: ParticipantWindow | null = lastActiveWindowParticipants(seed);
+  /** 名册那一行的「最后一句」（#1356 A1）。**不播种、不回填**（spec §7.1）：重启后下一句
+      算数的话来了才写——库里那一格在重启前后都是对的，没必要为它读一遍日志 */
+  const lastWriter = createLastWriter({
+    write: (l) => opts.sessionMeta.setLast(l),
+    throttleMs: opts.lastThrottleMs ?? LAST_THROTTLE_MS,
+  });
   /** 这条会话累计有多少条人类发言（标题的档位判据）。同上：播种一次、之后逐条推进 */
   let humanSaid = countHumanMessages(seed);
   /** 此刻的标题。空串 = 还没有。日志里最后一条 session_autotitled 胜出（同本机
@@ -916,6 +927,11 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       void opts.sessionMeta.setParticipants(nextParticipants).catch(() => undefined);
     }
     if (humanSpeakerOf(e) !== null) humanSaid += 1;
+    // 名册「最后一句」（#1356 A1）：判据在 shared/sessionLast.ts，节流在 lastWriter。
+    // 同 advanceParticipants 的推理：daemon.ts 绕过 notify 直接 append 的那几类里只有
+    // fromUid=system 的 chat_message 与这一格相关，而 lastOf 本来就不认它
+    const last = lastOf(e);
+    if (last !== null) lastWriter.push(last);
     opts.onEvent(e);
     // 终态事件落盘之后清掉这只 agent 的流式累计（#1107）：delta 帧走的是
     // 累计快照语义，不清的话它下一轮的预览会从上一次的残句开头。缺席
