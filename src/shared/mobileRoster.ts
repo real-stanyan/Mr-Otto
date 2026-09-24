@@ -107,7 +107,7 @@ export function rosterItems(o: {
         line2: r.sessionId === null ? FIRST_WORD_HINT : lastText ?? (r.description !== "" ? r.description : null),
         lastText,
         activityTs,
-        timeTs: r.sessionId === null ? null : activityTs,
+        timeTs: r.sessionId === null ? null : (last?.ts ?? null),
       },
     });
   });
@@ -130,7 +130,7 @@ export function rosterItems(o: {
         line2: lastText,
         lastText,
         activityTs,
-        timeTs: activityTs,
+        timeTs: last?.ts ?? null,
       },
     });
   });
@@ -177,4 +177,11 @@ export function groupFaceOffsets(n: number): number[] {
   if (n === 1) return [(GROUP_FACES_WIDTH - w) / 2];
   const step = (GROUP_FACES_WIDTH - w) / (n - 1);
   return Array.from({ length: n }, (_, i) => i * step);
+}
+
+/** 读屏念的那一句（#1356 A1）：名字 + 小字 + 第二行 + 时间。看得见的人每一行都读得到这几样；
+    读屏只念名字的话，听不出谁刚说过话，两个没起名、成员又相同的群也分不开 */
+export function rosterRowLabel(item: RosterItem, now: number): string {
+  const time = item.timeTs === null ? "" : rosterTimeLabel(item.timeTs, now);
+  return [item.name, item.sub, item.line2 ?? "", time].filter((p) => p !== "").join("，");
 }

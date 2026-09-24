@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from "vitest";
 import {
-  FIRST_WORD_HINT, GROUP_FACES_WIDTH, filterRosterItems, groupFaceOffsets, rosterItems, rosterTimeLabel,
+  FIRST_WORD_HINT, GROUP_FACES_WIDTH, filterRosterItems, groupFaceOffsets, rosterItems, rosterRowLabel, rosterTimeLabel,
 } from "../../src/shared/mobileRoster.js";
 import type { CloudSessionRow } from "../../src/shared/supabaseWorkspacesApi.js";
 import type { SessionLast } from "../../src/shared/sessionLast.js";
@@ -64,9 +64,9 @@ describe("rosterItems", () => {
     });
     expect(items.find((i) => i.key === "agent:admin")).toMatchObject({ isAdmin: true });
   });
-  it("聊过但读不到最后一句（0040 没跑 / 没部署）：职责挪到第二行、第一行不重复写（spec §10 第 9 条），时间退回 updated_at", () => {
+  it("聊过但读不到最后一句（0040 没跑 / 没部署）：职责挪到第二行、第一行不重复写（spec §10 第 9 条），时间不画（读不到就不报一个假的动静时刻），排序照旧退回 updated_at", () => {
     const dev = rosterItems({ home: HOME, chats, lasts: new Map(), selfUid: "me" }).find((i) => i.key === "agent:a_000000000001")!;
-    expect(dev).toMatchObject({ sub: "", line2: "写代码", lastText: null, timeTs: 3000 });
+    expect(dev).toMatchObject({ sub: "", line2: "写代码", lastText: null, timeTs: null });
     const bare = { ...HOME, agents: HOME.agents.map((a) => ({ ...a, description: "" })) };
     expect(rosterItems({ home: bare, chats, lasts: new Map(), selfUid: "me" }).find((i) => i.key === "agent:a_000000000001"))
       .toMatchObject({ sub: "", line2: null });
@@ -86,6 +86,7 @@ describe("rosterItems", () => {
     const g = rosterItems({ home: HOME, chats, lasts: new Map(), selfUid: "me" }).find((i) => i.key === "group:g1")!;
     expect(g.kind === "group" && g.agentIds).toEqual(["a_000000000001", "a_000000000002"]);
     expect(g.kind === "group" && g.slots[0]).toBe(5); // 开发挑过坑位 5
+    expect(g.timeTs).toBeNull();
   });
 });
 
@@ -143,5 +144,28 @@ describe("groupFaceOffsets", () => {
     const six = groupFaceOffsets(6);
     expect(six[0]).toBe(0);
     expect(six[5]).toBeCloseTo(29.5);
+  });
+});
+
+describe("rosterRowLabel", () => {
+  const now = new Date(2026, 8, 23, 15, 30).getTime();
+  const chats = [
+    row("dm-dev", { chatKind: "dm", agentIds: ["a_000000000001"], updatedTs: 3000 }),
+    row("g1", { chatKind: "group", agentIds: ["a_000000000002", "a_000000000001"], title: "发版组", updatedTs: 100 }),
+  ];
+  it("聊过的智能体：名字，职责，最后一句，时间", () => {
+    const lasts = new Map([["dm-dev", last(now - 30_000, "门禁绿了", "agent:a_000000000001")]]);
+    const dev = rosterItems({ home: HOME, chats, lasts, selfUid: "me" }).find((i) => i.key === "agent:a_000000000001")!;
+    expect(rosterRowLabel(dev, now)).toBe(["开发", "写代码", "门禁绿了", "刚刚"].join("，"));
+  });
+  it("没聊过的智能体：名字，职责，提示语，不画时间", () => {
+    const items = rosterItems({ home: HOME, chats, lasts: new Map(), selfUid: "me" });
+    const ops = items.find((i) => i.key === "agent:a_000000000002")!;
+    expect(rosterRowLabel(ops, now)).toBe(["运维", "部署与监控", FIRST_WORD_HINT].join("，"));
+  });
+  it("群：群名，成员名，「名字：摘录」，时间", () => {
+    const lasts = new Map([["g1", last(now - 30_000, "edge 部完了", "agent:a_000000000002")]]);
+    const g = rosterItems({ home: HOME, chats, lasts, selfUid: "me" }).find((i) => i.key === "group:g1")!;
+    expect(rosterRowLabel(g, now)).toBe(["发版组", "开发、运维", "运维：edge 部完了", "刚刚"].join("，"));
   });
 });

@@ -3,7 +3,7 @@
 // 不画「在跑没在跑」、不画未读（#722 / #1282）：名册查不到谁在跑，画一个恒灰的点就是撒谎的勾。
 // 按下整行变色（列表行的语汇），不缩放。
 import { Pressable, Text, View } from "react-native";
-import { rosterTimeLabel, type RosterItem } from "../../../src/shared/mobileRoster.js";
+import { rosterRowLabel, rosterTimeLabel, type RosterItem } from "../../../src/shared/mobileRoster.js";
 import { facePhase } from "../../../src/shared/ottoFace/art.js";
 import { Face } from "../face/Face.js";
 import { GroupFaces } from "../face/GroupFaces.js";
@@ -14,7 +14,7 @@ export function RosterRow({ item, now, onPress }: { item: RosterItem; now: numbe
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={item.name}
+      accessibilityLabel={rosterRowLabel(item, now)}
       onPress={onPress}
       style={({ pressed }) => [
         { flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 20, paddingVertical: 10 },
