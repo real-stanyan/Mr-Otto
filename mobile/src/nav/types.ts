@@ -3,6 +3,7 @@
 export type RootStackParams = {
   Roster: undefined;
   Account: undefined;
+  AgentSettings: { agentId: string };
   FaceGallery: undefined;
 };
 
