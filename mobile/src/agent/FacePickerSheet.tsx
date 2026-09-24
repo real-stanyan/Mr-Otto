@@ -16,10 +16,7 @@ import { useReduceMotion } from "../ui.js";
 function FaceTour({ slot, ring }: { slot: number; ring: string }) {
   const reduce = useReduceMotion();
   const [i, setI] = useState(0);
-  // 换一张脸从头走
-  useEffect(() => {
-    setI(0);
-  }, [slot]);
+  // 换一张脸从头走：调用方用 key={current} 让这个组件整个重新挂载，i 的初值天然回到 0，不用这里另起一个 effect 去拨
   useEffect(() => {
     if (reduce) return;
     const step = FACE_TOUR[i % FACE_TOUR.length]!;
@@ -44,7 +41,7 @@ export function FacePickerSheet({ visible, current, onPick, onClose, onExited }:
   return (
     <BottomSheet visible={visible} title="换个形象" onClose={onClose} {...(onExited === undefined ? {} : { onExited })}>
       <ScrollView contentContainerStyle={{ alignItems: "center", paddingTop: 8, paddingBottom: 24 }}>
-        <FaceTour slot={current} ring={c.card} />
+        <FaceTour key={current} slot={current} ring={c.card} />
         <View style={{ flexDirection: "row", flexWrap: "wrap", justifyContent: "center", gap: 12, paddingHorizontal: 16, marginTop: 20 }}>
           {faces.map((f) => {
             const on = f.id === currentId;

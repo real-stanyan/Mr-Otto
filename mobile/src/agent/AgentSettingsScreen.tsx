@@ -126,6 +126,7 @@ export function AgentSettingsScreen({ route, navigation }: Props) {
           disabled={!canSave}
           hitSlop={10}
           onPress={() => void saveRef.current()}
+          style={({ pressed }) => [pressed && { opacity: 0.6 }]}
         >
           <Text style={{ ...t.headline, color: canSave ? c.brand : c.mutedForeground }}>{busy ? "正在存…" : "存"}</Text>
         </Pressable>

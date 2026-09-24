@@ -80,7 +80,12 @@ function NoteRow({ text, tone, detail }: { text: string; tone: "muted" | "error"
   );
   if (detail === null) return body;
   return (
-    <Pressable accessibilityRole="button" accessibilityLabel={open ? "收起详情" : "展开详情"} onPress={() => setOpen((v) => !v)}>
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={open ? "收起详情" : "展开详情"}
+      onPress={() => setOpen((v) => !v)}
+      style={({ pressed }) => [pressed && { opacity: 0.6 }]}
+    >
       {body}
     </Pressable>
   );

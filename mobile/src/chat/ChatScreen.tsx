@@ -64,7 +64,12 @@ function OlderRow({ top, hasOlder, older }: { top: number; hasOlder: boolean; ol
     <View style={{ paddingTop: top, paddingBottom: 8, alignItems: "center" }}>
       {!hasOlder ? null : older === "failed" ? (
         // 上一页的内容留在原地不清屏；重试是一颗要人点的钮
-        <Pressable accessibilityRole="button" hitSlop={8} onPress={() => void loadOlder()}>
+        <Pressable
+          accessibilityRole="button"
+          hitSlop={8}
+          onPress={() => void loadOlder()}
+          style={({ pressed }) => [pressed && { opacity: 0.6 }]}
+        >
           <Text style={{ ...t.footnote, color: c.mutedForeground }}>
             没读到更早的消息 · <Text style={{ color: c.brand }}>重试</Text>
           </Text>

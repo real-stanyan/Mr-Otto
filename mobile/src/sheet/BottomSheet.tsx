@@ -122,7 +122,7 @@ export function BottomSheet({ visible, title, onClose, onExited, children }: {
                 <View style={{ width: 36, height: 5, borderRadius: 3, backgroundColor: c.foreground, opacity: 0.18 }} />
               </View>
               <View style={{ height: 52, justifyContent: "center", paddingHorizontal: 60 }}>
-                <Text style={{ ...t.headline, color: c.foreground, textAlign: "center" }} numberOfLines={1}>{title}</Text>
+                <Text accessibilityRole="header" style={{ ...t.headline, color: c.foreground, textAlign: "center" }} numberOfLines={1}>{title}</Text>
               </View>
               <Pressable
                 accessibilityRole="button" accessibilityLabel="关闭" hitSlop={10} onPress={onClose}

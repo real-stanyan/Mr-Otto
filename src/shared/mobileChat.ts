@@ -48,6 +48,7 @@ export function resolveChatTarget(
   }
   const g = groupRows(home, chats).find((x) => x.sessionId === target.sessionId);
   if (g === undefined) return null;
+  // seed 不走 chatSeedOf：这里的 agentIds 已经与现存名册求过交集（群里被删的智能体不进来），chatSeedOf 读的是清单那一行的原值
   return { kind: "group", sessionId: g.sessionId, agentIds: g.agentIds, title: g.name, seed: { kind: "group", agentIds: [...g.agentIds] } };
 }
 
