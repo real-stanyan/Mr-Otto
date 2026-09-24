@@ -17,7 +17,7 @@
 - 依赖：本片**只**新增 `react-native-reanimated@4.5.1`、`react-native-gesture-handler@~2.32.0`、`react-native-worklets@0.10.1`（版本取 `mobile/node_modules/expo/bundledNativeModules.json`，ADR-0293 决定 3：跟第一个底部抽屉一起进）。不加别的依赖。
 - 设计令牌逐值取自 `mobile/src/theme.ts`；尺寸逐值取自 spec §4 / demo。界面文案不出现「水獭」。
 - 名字必填：校验走 shared 的 `validateAgentName` + `agentNameConflict`（spec §3.3）。职责 ≤200 字、不许换行；「还有什么要交代的」≤4000 字（spec §5.4，常量 `AGENT_DESCRIPTION_MAX` / `AGENT_INSTRUCTIONS_MAX`）。
-- 头像写回用 `pickSlotOf`：暂借格 1 / 2 / 10 不许存；挑头像那面墙只放 10 张（cap 没有自己的坑位，spec §5.4——**这一条待维护者确认**，确认前照 10 张做）。没换就不写。管理员没有「删掉」那一行。
+- 头像写回用 `pickSlotOf`：暂借格 1 / 2 / 10 不许存；挑头像那面墙只放 10 张（cap 没有自己的坑位，spec §5.4；**维护者 2026-09-24 确认**）。没换就不写。管理员没有「删掉」那一行。
 - 名册**不画**「在跑没在跑」、不画未读（#722 / #1282）。进门七态照搬 `rosterGate`；还没查到 / 正在建主场画骨架、**不劝订阅**；没订阅 / 档位不带只写一句实话、不画钮（A5 之前手机上办不了订阅）；建失败 = 原因 + 重试钮、不自动重试。
 - 状态与降级（spec §6）：还没查到 ≠ 没有 / 读不到 ≠ 空 / 说不清就不画钮。会话房四态：gone 时输入框上方一行「正在重连…」、输入框照常可打但发送钮灰；denied 是终态，说清是哪一种并给「回名册」。聊天身份三态照 ADR-0302（先按清单那一行种，welcome 覆盖；还不知道时不画壳）。
 - 回执三态照 ADR-0228：`ok` / 确定失败（原文留在输入框、画原因）/ `unknown`（**清输入框**、另画一行「不确定有没有发出去」+「重新发送」「放弃」）。
@@ -68,7 +68,7 @@
 
 任务顺序：1–3 是桌面侧的小修与抽取（先让 shared 有东西），4–5 是后端（判据 + migration + 读查询 / runtime 写入），6–7 是手机要的纯逻辑，8 装依赖 + 抽屉，9 数据层，10–12 三屏（设置 → 聊天 → 名册：后者要导航到前两者），13 收尾。
 
-**开工前（controller 做，不是某个任务）**：`git fetch origin && git merge --ff-only origin/main`——A0 合并后 main 上多了一个 merge commit，先快进过来再开 A1，免得 PR 里夹一段历史。**Task 8 要从 npm 下载三个包，派发之前必须已经拿到维护者的同意。**
+**开工前（controller 做，不是某个任务）**：`git fetch origin && git merge --ff-only origin/main`——A0 合并后 main 上多了一个 merge commit，先快进过来再开 A1，免得 PR 里夹一段历史。Task 8 要从 npm 下载三个包——**维护者 2026-09-24 已同意**。
 
 ---
 ### Task 1: A0 留下的三处注释 + 智能体补一格 `createdTs` + 两份列表行类型并成一份
@@ -2593,7 +2593,7 @@ export interface PickableFace {
 
 /** 挑头像那面墙。按 FACE_PACKS 的顺序；**cap 没有自己的坑位，不进这面墙**——它只借住在
     坑 2，存进暂借格的人会在补齐旧 03 那天被悄悄换脸（ADR-0316 法理③），所以这面墙是
-    10 张不是 demo 的 11 张（spec §5.4，待维护者确认） */
+    10 张不是 demo 的 11 张（spec §5.4，维护者 2026-09-24 确认） */
 export function pickableFaces(): PickableFace[] {
   const out: PickableFace[] = [];
   for (const p of FACE_PACKS) {
@@ -2647,7 +2647,7 @@ EOF
 
 底部抽屉的第一个消费方是智能体设置里的「换个形象」（Task 10），A2 的「新建智能体」复用同一副骨架。按 ADR-0293 决定 3，`react-native-reanimated` 与 `react-native-gesture-handler` 跟第一个抽屉一起进（两者都在 Expo Go 57 里，reanimated 4 还要 `react-native-worklets`）。图标沿用手机端既有做法——用 View 画，不为几个形状引图标库。
 
-> **执行前提**：这一步要从 npm 下载三个包（registry.npmjs.org：`react-native-reanimated-4.5.1.tgz` 解包约 4.4 MB、`react-native-gesture-handler-2.32.0.tgz` 约 3.3 MB、`react-native-worklets-0.10.1.tgz` 约 1.0 MB，外加少量传递依赖）。**controller 派发这个任务之前要已经拿到维护者的同意**；没拿到就停在这里。
+> **执行前提**：这一步要从 npm 下载三个包（registry.npmjs.org：`react-native-reanimated-4.5.1.tgz` 解包约 4.4 MB、`react-native-gesture-handler-2.32.0.tgz` 约 3.3 MB、`react-native-worklets-0.10.1.tgz` 约 1.0 MB，外加少量传递依赖）。**维护者 2026-09-24 已同意下载**。
 
 **Files:**
 - Modify: `mobile/package.json`、`mobile/package-lock.json`
@@ -3563,7 +3563,7 @@ Create `mobile/src/agent/FacePickerSheet.tsx`：
 ```tsx
 // 「换个形象」（#1356 A1，spec §5.4）：上面一张 l 档大脸走一遍它干活的样子（排队 → 思考 →
 // 检索 → 执行 → 作答 → 完成 → 活着，循环；换一张脸从头走），下面那面墙只有选中那张是活的。
-// 墙上是 pickableFaces()：十张，cap 没有自己的坑位不进来（spec §5.4，待维护者确认）。
+// 墙上是 pickableFaces()：十张，cap 没有自己的坑位不进来（spec §5.4，维护者 2026-09-24 确认）。
 // 点一张只改表单里的那一格；真正写库在设置页按「存」的时候（没换就不写）。
 import { useEffect, useMemo, useState } from "react";
 import { Pressable, ScrollView, View } from "react-native";
@@ -4833,7 +4833,7 @@ Create `docs/adr/0318-手机名册按最近一次动静排-workspace_sessions加
 - 桌面云会话 store 的两条状态规则（事件按 seq 插位、状态推送哪几格照抄哪几格留着）与两句文案挪进 `src/shared/cloudSessionState.ts`；改 / 删智能体的编排挪进 `src/shared/agentAdmin.ts`。桌面改成调用、行为不变——spec §2「不抄第二份」、§3.2。
 - 底部抽屉引入 `react-native-reanimated@4.5.1` / `react-native-gesture-handler@~2.32.0` / `react-native-worklets@0.10.1`（ADR-0293 决定 3；版本取 Expo SDK 57 的 bundledNativeModules，与 Expo Go 自带的原生那一半一致）。
 - A1 的聊天页私聊、群聊通用：名册把群一起列出来，点进去先是基础版；群设置、@ 谁、名单变更那一行在 A3。
-- 挑头像那面墙十张：cap 只借住在坑 2、没有自己的坑位，存进暂借格的人会在补齐旧 03 那天被悄悄换脸（ADR-0316 法理③）——待维护者确认。
+- 挑头像那面墙十张：cap 只借住在坑 2、没有自己的坑位，存进暂借格的人会在补齐旧 03 那天被悄悄换脸（ADR-0316 法理③）——维护者 2026-09-24 确认。
 ```
 
 - [ ] **Step 2: AGENTS.md 索引加一条**
@@ -4841,7 +4841,7 @@ Create `docs/adr/0318-手机名册按最近一次动静排-workspace_sessions加
 在 `AGENTS.md` 的「Where to find things」里、`src/shared/ottoFace/` 那一条之后加一条（L2：只动索引）：
 
 ```markdown
-- `mobile/src/roster/` / `mobile/src/chat/` / `mobile/src/agent/` / `mobile/src/home/homeStore.ts` / `mobile/src/cloud/chatStore.ts` / `src/shared/mobileRoster.ts` / `src/shared/mobileChat.ts` / `src/shared/agentSettingsForm.ts` / `src/shared/sessionLast.ts` / `services/runtime/src/lastWriter.ts` — **手机端「智能体」单栏 A1：名册 + 聊天 + 智能体设置**（#1356，ADR-0318）。判据全在 shared（进 vitest），手机端只画与接线：名册把主场的智能体与群混排、按最近一次动静降序（与桌面「单只按名册、群按活动」**故意不同**，spec §5.2），动静来自 runtime 投影进 `workspace_sessions` 的三列（`last_ts` / `last_excerpt` / `last_from`，判据 `lastOf`，首尾两沿 3 秒节流写，**先跑 0040 再部署 runtime**）；读是单独一条容错查询 `fetchCloudLasts`，没跑库时退回 `updated_at` 排、第二行写职责。聊天页藏哪些事件**不另立判据**（走桌面同一份 `hiddenFromCloudTimeline`），「此刻」那一行作答 > 执行 > 排队、同档取 seq 最小，私聊还没建时是草稿、第一句发出去才建。桌面云会话 store 的两条状态规则（`src/shared/cloudSessionState.ts`）与改 / 删智能体的编排（`src/shared/agentAdmin.ts`）为此从桌面抽进 shared，桌面改成调用、行为不变。底部抽屉（`mobile/src/sheet/BottomSheet.tsx`）引入 reanimated / gesture-handler / worklets（ADR-0293 决定 3，版本逐字取 Expo SDK 57 的 bundledNativeModules——不一致真机上一打开就红屏）。挑头像墙十张（cap 没有自己的坑位，待维护者确认）。真机登录后的流程一次没跑过（agent 不能替人输密码）
+- `mobile/src/roster/` / `mobile/src/chat/` / `mobile/src/agent/` / `mobile/src/home/homeStore.ts` / `mobile/src/cloud/chatStore.ts` / `src/shared/mobileRoster.ts` / `src/shared/mobileChat.ts` / `src/shared/agentSettingsForm.ts` / `src/shared/sessionLast.ts` / `services/runtime/src/lastWriter.ts` — **手机端「智能体」单栏 A1：名册 + 聊天 + 智能体设置**（#1356，ADR-0318）。判据全在 shared（进 vitest），手机端只画与接线：名册把主场的智能体与群混排、按最近一次动静降序（与桌面「单只按名册、群按活动」**故意不同**，spec §5.2），动静来自 runtime 投影进 `workspace_sessions` 的三列（`last_ts` / `last_excerpt` / `last_from`，判据 `lastOf`，首尾两沿 3 秒节流写，**先跑 0040 再部署 runtime**）；读是单独一条容错查询 `fetchCloudLasts`，没跑库时退回 `updated_at` 排、第二行写职责。聊天页藏哪些事件**不另立判据**（走桌面同一份 `hiddenFromCloudTimeline`），「此刻」那一行作答 > 执行 > 排队、同档取 seq 最小，私聊还没建时是草稿、第一句发出去才建。桌面云会话 store 的两条状态规则（`src/shared/cloudSessionState.ts`）与改 / 删智能体的编排（`src/shared/agentAdmin.ts`）为此从桌面抽进 shared，桌面改成调用、行为不变。底部抽屉（`mobile/src/sheet/BottomSheet.tsx`）引入 reanimated / gesture-handler / worklets（ADR-0293 决定 3，版本逐字取 Expo SDK 57 的 bundledNativeModules——不一致真机上一打开就红屏）。挑头像墙十张（cap 没有自己的坑位，维护者 2026-09-24 确认）。真机登录后的流程一次没跑过（agent 不能替人输密码）
 ```
 
 - [ ] **Step 3: 手机 README**
@@ -4879,6 +4879,12 @@ Create `docs/adr/0318-手机名册按最近一次动静排-workspace_sessions加
 25. **runtime 写库是首尾两沿节流**（§7.1 原文只写了「尾沿」）：首沿当场写，人刚发完一句退回名册，那一行立刻顶上去。理由见 ADR-0318。
 26. **名册搜索是头上那一条输入框**，不是另推一页：结果就是名册本身被过滤，行与名册同款（§5.2）。
 27. **聊过但读不到最后一句时，职责挪到第二行、第一行不重复写**（落实第 9 条）；没聊过的照旧写「点进去跟它说第一句」。
+```
+
+同一次改动里再改两处（维护者 2026-09-24 拍板）：§5.4 那句「这条待 A1 与维护者确认」改成「维护者 2026-09-24 确认」；§11 末尾追加一条：
+
+```markdown
+5. 挑头像那面墙 **10 张**、cap 先不进（2026-09-24）：补齐旧 03 的画之前，谁都不该被存进暂借格。
 ```
 
 - [ ] **Step 5: 全量门禁**
@@ -4936,7 +4942,7 @@ git push -u origin claude/elated-bohr-d2f4de
 gh pr create --base main --title "feat(mobile): 智能体单栏 A1——名册 + 私聊 + 智能体设置（#1356）" --body-file <正文文件>
 ```
 
-PR 正文（写进一个临时文件再 `--body-file`）要有：Task issue #1356（A1，**不关 issue**）；spec / plan / ADR-0318；做了什么（按任务分组）；测试变动（新增的测试文件；桌面那两处抽取是行为不变的重构，现有集成测试一条没改）；**部署顺序**（合并后维护者：先在生产库跑 0040，再部署 runtime；手机端 Expo Go 重新载入；桌面下次发版带上两处重构）；验证（门禁两行 + GATE_EXIT、冒烟逐项结果、没跑的那几项）；需要维护者确认的判断（挑头像墙十张）。末尾：
+PR 正文（写进一个临时文件再 `--body-file`）要有：Task issue #1356（A1，**不关 issue**）；spec / plan / ADR-0318；做了什么（按任务分组）；测试变动（新增的测试文件；桌面那两处抽取是行为不变的重构，现有集成测试一条没改）；**部署顺序**（合并后维护者：先在生产库跑 0040，再部署 runtime；手机端 Expo Go 重新载入；桌面下次发版带上两处重构）；验证（门禁两行 + GATE_EXIT、冒烟逐项结果、没跑的那几项）。末尾：
 
 ```
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
@@ -4944,4 +4950,4 @@ PR 正文（写进一个临时文件再 `--body-file`）要有：Task issue #135
 
 CI 由 controller 盯（按 sha 等 `gate` 跑完，CI 绿之前不合并——本仓没有 required check，`mergeStateStatus` 为 CLEAN 不代表 CI 过了）。绿了用 merge commit 合并：`gh pr merge <PR号> --merge --match-head-commit <sha>`。合并后：
 - `git fetch origin` 再核一次 ADR 与 migration 编号（带 `-c core.quotePath=false`），撞了就开改号 PR。
-- 在 #1356 上评论：A1 已合（PR 号、ADR 号、merge commit）、**维护者要做的两步**（跑 0040 → 部署 runtime）、登录后要点的那几项、挑头像墙十张待确认、下一步是 A2 的 plan。
+- 在 #1356 上评论：A1 已合（PR 号、ADR 号、merge commit）、**维护者要做的两步**（跑 0040 → 部署 runtime）、登录后要点的那几项、下一步是 A2 的 plan。
