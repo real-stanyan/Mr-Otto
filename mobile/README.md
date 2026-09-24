@@ -2,7 +2,7 @@
 
 手机端是「智能体」单栏（#1321 / #1356，ADR-0317）：第一层只回答「我有哪几只智能体」——一个原生栈，名册是栈底。
 每只智能体一条永久的私聊线，几只可以拉成一个群；它们跑在你账号的云端电脑上（个人主场），手机和桌面是同一个云会话的两个客户端。
-A0 只立了基座（名册是占位，真数据在 A1）；进度见 spec `docs/superpowers/specs/2026-09-23-mobile-agents-app-design.md` §8。
+A0 立了基座，A1 接上了名册（主场的智能体与群混排、按最近一次动静排、可搜索）、聊天页与智能体设置；进度见 spec `docs/superpowers/specs/2026-09-23-mobile-agents-app-design.md` §8。
 
 纯逻辑一律住 `src/shared/`、测试在 `tests/shared/`；手机端在自身之外只 import `src/shared/**`（`tests/architecture.test.ts` 有断言）。
 `mobile/` 的类型检查在根门禁里（ADR-0294）：跑门禁前先 `npm --prefix mobile ci` 一次。
@@ -16,9 +16,13 @@ A0 只立了基座（名册是占位，真数据在 A1）；进度见 spec `docs
 ## 结构
 
 - `App.tsx`：开屏 → 进门 → 名册（单栏，#1356）；此刻画哪一屏由 `src/shared/mobileGate.ts` 的 `gateView` 说了算
-- `src/nav/`：根栈——名册（无头，自己画浮在内容上的圆钮）/ 账号 / 开发构建里的形象陈列馆；没有底栏、没有第二个根
+- `src/nav/`：根栈——名册（无头，自己画浮在内容上的圆钮）/ 聊天（同上）/ 智能体设置 / 账号 / 开发构建里的形象陈列馆；没有底栏、没有第二个根
 - `src/gate/`：开屏、登录 / 注册卡、等确认信、忘记密码三步
-- `src/roster/`：名册屏（栈底，A0 是占位，真数据在 A1）+ 左上账号入口
+- `src/roster/`：名册屏（栈底：进门七态 + 混排一列 + 搜索）+ 左上账号入口
+- `src/chat/`：聊天页（头部药丸 / 时间线 / 此刻 / 输入框 / 草稿）
+- `src/agent/`：智能体设置 +「换个形象」抽屉
+- `src/home/`、`src/cloud/`：数据层——主场名册与订阅快照（直连 Supabase / edge）、云会话客户端与当前聊天（外部 store，`useSyncExternalStore`）
+- `src/sheet/`：底部抽屉（reanimated + gesture-handler，ADR-0293 决定 3）
 - `src/account/`：账号页（A0 精简版；额度 / 订阅 / 这周用了多少 / 设置在 A5）
 - `src/face/`、`src/dev/`：像素脸（react-native-svg + 共用的 25fps 钟）+ 只在开发构建里出现的形象陈列馆
 - `src/ui.tsx`、`src/dialog.tsx`、`src/chrome/`：组件层与共享状态
@@ -31,7 +35,9 @@ npm --prefix mobile install
 npm --prefix mobile start        # 扫码用 Expo Go 打开
 ```
 
-**Expo Go 就能跑，没有 native module。** 配对那套 `@noble/*` 已经随 #1356 删了——加密只剩
+**Expo Go 就能跑。** 用到的原生模块（react-native-svg / reanimated / gesture-handler / worklets / expo-blur……）Expo Go 57 里都自带，
+版本逐字取 `node_modules/expo/bundledNativeModules.json`——与 Expo Go 自带的那一半不一致时，真机一打开就红屏。
+配对那套 `@noble/*` 已经随 #1356 删了——加密只剩
 supabase-js 的 PKCE 要的 `crypto.getRandomValues`，走 `expo-crypto`（Expo 模块，Expo Go 里
 就有，ADR-0101，见 `src/polyfills.ts`）。
 
