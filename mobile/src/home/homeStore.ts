@@ -36,10 +36,12 @@ export interface HomeState {
   refreshing: boolean;
 }
 
-const store = createStore<HomeState>({
+const INITIAL: HomeState = {
   selfUid: null, home: null, chats: [], lasts: new Map(), billing: null,
   ensure: "idle", ensureError: null, loadError: null, loaded: false, refreshing: false,
-});
+};
+
+const store = createStore<HomeState>(INITIAL);
 
 export function useHome(): HomeState {
   return useSyncExternalStore(store.subscribe, store.get);
@@ -51,29 +53,58 @@ async function currentUid(): Promise<string | null> {
 
 let inflight: Promise<void> | null = null;
 
+/** 这份名册属于哪个账号（`undefined` = 还没听到第一声 auth 事件）。换号——登出、换一个人
+    登录——就整份清掉：否则下一个人一进来，看到的是上一个人的智能体、职责与最后一句，点进
+    设置还读得到交代全文（同 ADR-0187 / 0188：本机数据跟着账号走）。第一声事件只是「知道了
+    是谁」，不算换号：冷启动时名册可能已经凭存下的 session 开跑了第一次刷新，那一刻清掉会把
+    它的结果扔了、名册停在骨架上 */
+let owner: string | null | undefined;
+/** 每换一次号加一；刷新 / 建主场开跑时记下，写回之前比一比——换过号就扔掉，不写 */
+let epoch = 0;
+
+supabase.auth.onAuthStateChange((_event, session) => {
+  const next = session?.user.id ?? null;
+  if (owner === undefined) {
+    owner = next;
+    return;
+  }
+  if (next === owner) return;
+  owner = next;
+  epoch += 1;
+  inflight = null;
+  store.set(INITIAL);
+});
+
 /** 拉一遍名册。同时来的几次（进前台 + 回到名册 + 刚建完）合成一次 */
 export function refreshHome(): Promise<void> {
   if (inflight !== null) return inflight;
-  inflight = (async () => {
+  const mine = epoch;
+  const live = (): boolean => mine === epoch;
+  let run: Promise<void>;
+  const task = async (): Promise<void> => {
     store.set({ refreshing: true });
     try {
       const uid = await currentUid();
+      if (!live()) return;
       if (uid === null) {
         store.set({ selfUid: null, home: null, chats: [], lasts: new Map(), loaded: true });
         return;
       }
       const homeId = await findHomeWorkspace(supabase, uid);
+      if (!live()) return;
       if (homeId !== null) {
         const [home, chats, lasts] = await Promise.all([
           fetchWorkspace(supabase, homeId),
           listCloudSessions(supabase, homeId),
           fetchCloudLasts(supabase, homeId),
         ]);
+        if (!live()) return;
         store.set({ selfUid: uid, home, chats, lasts, loadError: null, loaded: true });
         return;
       }
       // 还没有主场：要知道「能不能建」，才问订阅（有主场就进得去、不再看档位）
       const billing = await fetchBilling();
+      if (!live()) return;
       store.set((s) => ({
         selfUid: uid,
         home: null,
@@ -84,30 +115,40 @@ export function refreshHome(): Promise<void> {
         loaded: true,
       }));
     } catch (e) {
-      store.set({ loadError: humanizeWorkspaceError(e), loaded: true });
+      if (live()) store.set({ loadError: humanizeWorkspaceError(e), loaded: true });
     } finally {
-      store.set({ refreshing: false });
-      inflight = null;
+      if (live()) store.set({ refreshing: false });
+      if (inflight === run) inflight = null;
     }
-  })();
-  return inflight;
+  };
+  run = task();
+  inflight = run;
+  return run;
 }
 
 /** 建个人主场（档位带、主场还没有时名册自己叫，rosterGate 的 ensuring 一态）。
     正在建的时候再叫是空操作：这个动作挂在 effect 上，不挡的话一次冷启动能打出好几条建主场请求 */
 export async function ensureHome(): Promise<void> {
   if (store.get().ensure === "ensuring") return;
+  const mine = epoch;
   store.set({ ensure: "ensuring", ensureError: null });
   try {
     const uid = await currentUid();
     if (uid === null) throw new Error("还没登录");
     await ensureHomeWorkspace({ findHomeWorkspace, createWorkspace }, supabase, uid);
-    // 建之前开跑的那次刷新看不见新主场：等它收尾，再拉一次新的——否则名册会以为
-    // 「还是没有主场」，effect 又叫一次 ensureHome，来回打转
+    if (mine !== epoch) return;
+    // 建之前开跑的那次刷新看不见新主场：等它收尾，再拉一次新的
     if (inflight !== null) await inflight;
     await refreshHome();
+    if (mine !== epoch) return;
+    // 建好了却没读回来（刷新失败）：停在 failed、要人点重试。不停下的话 rosterGate 仍是
+    // ensuring，effect 看见 idle 又叫一次，一直建下去
+    if (store.get().home === null) {
+      store.set({ ensure: "failed", ensureError: store.get().loadError ?? "智能体空间建好了，但还没读回来。" });
+      return;
+    }
     store.set({ ensure: "idle" });
   } catch (e) {
-    store.set({ ensure: "failed", ensureError: humanizeWorkspaceError(e) });
+    if (mine === epoch) store.set({ ensure: "failed", ensureError: humanizeWorkspaceError(e) });
   }
 }
