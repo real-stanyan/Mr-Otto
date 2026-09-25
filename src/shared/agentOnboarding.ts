@@ -21,11 +21,6 @@ import { collapseWhitespace } from "./workspaceAgents.js";
 
 export type AgentOnboarding = "greet" | "role";
 
-/** 库里那一格读回来。认不出（null / 脏值 / 列还不存在时的 undefined）一律 null = 不在建它的流程里 */
-export function parseOnboarding(raw: unknown): AgentOnboarding | null {
-  return raw === "greet" || raw === "role" ? raw : null;
-}
-
 /**
  * 开场白正文（模型直接读的那一条 user_message）。形状同 `voiceCallGreetingText`：`[系统]` 开头、
  * 名字过 `promptSafe`（成员可写字段，`]` 与换行都能撑破 `[系统] …` 这个结构）。

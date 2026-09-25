@@ -3,7 +3,7 @@
 
 import { describe, expect, it } from "vitest";
 import {
-  ROLE_PRESETS, advanceRoleWait, newAgentGreetingText, parseOnboarding, roleChipsAnchor, roleFromReply, roleWaitOf,
+  ROLE_PRESETS, advanceRoleWait, newAgentGreetingText, roleChipsAnchor, roleFromReply, roleWaitOf,
   settledRole,
 } from "../../src/shared/agentOnboarding.js";
 import type { SessionEvent } from "../../src/session/events.js";
@@ -19,14 +19,6 @@ const toolStep = (agentId = A): SessionEvent =>
   e({ type: "assistant_message", content: "", model: "m", agentId, toolCalls: [{ id: "c1", name: "bash", args: {} }] });
 const turnEnded = (outcome: "completed" | "error" | "aborted" | "interrupted", agentId = A): SessionEvent =>
   e({ type: "turn_ended", outcome, agentId });
-
-describe("parseOnboarding", () => {
-  it("只认 greet / role；别的一律 null（列还不存在时读回来的 undefined 也是 null）", () => {
-    expect(parseOnboarding("greet")).toBe("greet");
-    expect(parseOnboarding("role")).toBe("role");
-    for (const v of [null, undefined, "", "GREET", 1, {}]) expect(parseOnboarding(v)).toBeNull();
-  });
-});
 
 describe("newAgentGreetingText", () => {
   it("[系统] 开头、带名字、说清要它做什么", () => {
