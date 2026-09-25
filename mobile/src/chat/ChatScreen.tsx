@@ -10,10 +10,11 @@
 // · 状态（spec §6）：gone 一行「正在重连…」、发送钮灰；denied 是终态，说清是哪一种 +「回名册」。
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { BlurView } from "expo-blur";
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { FlatList, KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { agentFaceSlot } from "../../../src/shared/agentAvatar.js";
+import { roleChipsAnchor } from "../../../src/shared/agentOnboarding.js";
 import { resolveSendMentions } from "../../../src/shared/agentMentionInput.js";
 import { chatViewOf } from "../../../src/shared/agentRoster.js";
 import { cloudDeniedText } from "../../../src/shared/cloudSessionState.js";
@@ -32,15 +33,16 @@ import {
 } from "../cloud/chatStore.js";
 import { Face } from "../face/Face.js";
 import { GroupFaces } from "../face/GroupFaces.js";
-import { refreshHome, useHome } from "../home/homeStore.js";
+import { refreshHomeAfterWrite, useHome } from "../home/homeStore.js";
 import type { RootStackParams } from "../nav/types.js";
 import { space, type as t, usePalette, withAlpha } from "../theme.js";
 import { Button, Spinner } from "../ui.js";
 import { ChatRowView, NowRowView } from "./ChatRows.js";
-import { Composer } from "./Composer.js";
+import { Composer, type ComposerHandle } from "./Composer.js";
+import { RoleChips } from "./RoleChips.js";
 
 const EMPTY_EVENTS: SessionEvent[] = [];
-type Item = { kind: "row"; row: ChatRow } | { kind: "now"; now: NowRow };
+type Item = { kind: "row"; row: ChatRow } | { kind: "now"; now: NowRow } | { kind: "roles" };
 type Props = NativeStackScreenProps<RootStackParams, "Chat">;
 
 function Gap() {
@@ -189,11 +191,19 @@ export function ChatScreen({ route, navigation }: Props) {
   const rows = useMemo(() => (ws !== null ? chatRows({ events, ws, selfUid, now: Date.now() }) : []), [ws, events, selfUid]);
   const live = useMemo(() => (ws !== null ? liveRows({ streaming: chat.streaming, ws, now: Date.now() }) : []), [ws, chat.streaming]);
   const nowRow = useMemo(() => (ws !== null ? nowRowOf({ events, streaming: chat.streaming, ws }) : null), [ws, events, chat.streaming]);
+  // 六句现成话挂在它答开场白的那一条底下（spec §5.5）：从日志推——开场白在、它答过、我还没说话。
+  // 我一发出第一句，日志里多一条人的 user_message，这一排随之消失，不等 runtime 那边清库
+  const roleAnchor = useMemo(() => roleChipsAnchor(events), [events]);
+  const composer = useRef<ComposerHandle>(null);
   const items = useMemo<Item[]>(() => {
-    const list: Item[] = [...rows, ...live].map((row) => ({ kind: "row" as const, row }));
+    const list: Item[] = [];
+    for (const row of [...rows, ...live]) {
+      list.push({ kind: "row", row });
+      if (roleAnchor !== null && row.key === `e${roleAnchor}`) list.push({ kind: "roles" });
+    }
     if (nowRow !== null) list.push({ kind: "now", now: nowRow });
     return list.reverse(); // 倒置列表：data[0] 画在最底下
-  }, [rows, live, nowRow]);
+  }, [rows, live, nowRow, roleAnchor]);
 
   const ready = session?.state === "ready";
   const canSend = draft || ready;
@@ -215,7 +225,7 @@ export function ChatScreen({ route, navigation }: Props) {
         return false;
       }
       // 名册那一行要认出这条新私聊（下次点进来直接进房，不再是草稿）
-      void refreshHome();
+      void refreshHomeAfterWrite();
       return true;
     }
     const r = await sendText(text, plan.mentions);
@@ -268,12 +278,14 @@ export function ChatScreen({ route, navigation }: Props) {
             <FlatList
               inverted
               data={items}
-              keyExtractor={(it) => (it.kind === "row" ? it.row.key : it.now.key)}
+              keyExtractor={(it) => (it.kind === "row" ? it.row.key : it.kind === "now" ? it.now.key : "roles")}
               renderItem={({ item }) =>
                 item.kind === "row" ? (
                   <ChatRowView row={item.row} ws={ws} />
-                ) : (
+                ) : item.kind === "now" ? (
                   <NowRowView now={item.now} ws={ws} ready={ready} stopping={stopping} onStop={() => void stop(item.now.seq)} />
+                ) : (
+                  <RoleChips onPick={(text) => composer.current?.fill(text)} />
                 )
               }
               ItemSeparatorComponent={Gap}
@@ -313,7 +325,8 @@ export function ChatScreen({ route, navigation }: Props) {
         </View>
 
         <Composer
-          placeholder={kind === "dm" ? `跟「${title}」说…` : "说点什么…"}
+          ref={composer}
+          placeholder={roleAnchor !== null ? "说一句它是干什么的…" : kind === "dm" ? `跟「${title}」说…` : "说点什么…"}
           canSend={canSend}
           sessionId={session?.sessionId ?? null}
           onSend={onSend}
