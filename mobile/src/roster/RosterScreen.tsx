@@ -5,9 +5,10 @@
 //   一句实话、不画钮（A5 之前手机上办不了订阅）；建失败 → 原因 + 重试钮、不自动重试；
 //   **有主场就进得去、不再看档位**（降了档的人的聊天记录还在）。
 // · 一列：主场的智能体 + 群混排、按最近一次动静降序（判据在 shared/mobileRoster.ts）。
-// · ＋ 先问一句（居中弹窗、点外面能退）→「一只智能体」→ 70% 抽屉建一只 → 建成：名册刷新（新的
-//   那一行放一段入场，首次渲染不算新来的）、抽屉退场放完再推它那条线（spec §5.5）。两个 Modal
-//   不叠着出场：弹窗退场放完（onExited）才升抽屉。
+// · ＋ 先问一句（居中弹窗、点外面能退）→「一只智能体」→ 70% 抽屉建一只 → 建成：**先收抽屉**、
+//   退场放完再刷新名册（新的那一行放一段入场，首次渲染不算新来的），刷新完、且这一屏还在焦点上
+//   才推它那条线（spec §5.5 的顺序是 关 → 刷新 → 推；网络慢时不该把抽屉锁死在「正在建…」）。
+//   两个 Modal 不叠着出场：弹窗退场放完（onExited）才升抽屉。
 // · 刷新：进前台、从聊天页退回来（focus）、建 / 删之后（那几处自己调）。不轮询。
 import { useFocusEffect, useNavigation } from "@react-navigation/native";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -100,6 +101,9 @@ export function RosterScreen() {
   const [sheet, setSheet] = useState<{ key: number; visible: boolean } | null>(null);
   /** 建成的那一只：等抽屉退场放完再推它那条线 */
   const created = useRef<string | null>(null);
+  /** 建成那一刻起跑的名册刷新——onSheetExited 等它收尾再推（spec §5.5 的顺序：关 → 刷新 → 推），
+      不在 onCreated 里等：网络慢时不该把抽屉锁死在「正在建…」，而这一刻行与私聊都已经落了 */
+  const refreshAfterCreate = useRef<Promise<void> | null>(null);
 
   useFocusEffect(
     useCallback(() => {
@@ -154,17 +158,24 @@ export function RosterScreen() {
     setSheet((s) => (s === null ? s : { ...s, visible: false }));
     void refreshHomeAfterWrite();
   };
-  /** 建成了：先把名册刷新（新的那一行带入场），再收抽屉；推它那条线等退场放完（onSheetExited） */
+  /** 建成了：记下是谁、起跑名册刷新但**不等它**，当场收抽屉——退场放完（onSheetExited）再等
+      刷新收尾、推它那条线（spec §5.5：关 → 刷新 → 推；不等的话，慢网络会把抽屉锁死在「正在建…」，
+      而行与私聊这一刻都已经落了，没有再等的必要） */
   const onCreated = async (agentId: string): Promise<void> => {
-    await refreshHomeAfterWrite();
     created.current = agentId;
+    refreshAfterCreate.current = refreshHomeAfterWrite();
     setSheet((s) => (s === null ? s : { ...s, visible: false }));
   };
-  const onSheetExited = (): void => {
+  const onSheetExited = async (): Promise<void> => {
     setSheet(null);
     const agentId = created.current;
+    const refreshing = refreshAfterCreate.current;
     created.current = null;
+    refreshAfterCreate.current = null;
     if (agentId === null) return;
+    if (refreshing !== null) await refreshing;
+    // 这几秒里人可能已经离开了这一屏（切到别处）——不隔着别的屏硬推一条聊天页
+    if (!navigation.isFocused()) return;
     const h = homeSnapshot();
     const target: ChatTarget = { kind: "agent", agentId };
     // 名册没读回来（刷新失败）就不推：推进去是一页「这条聊天已经不在了」，而它明明在——
