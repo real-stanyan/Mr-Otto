@@ -24,7 +24,9 @@ begin
   end if;
 
   if not exists (
-    select 1 from pg_constraint where conname = 'workspace_agents_onboarding_check'
+    select 1 from pg_constraint
+     where conname = 'workspace_agents_onboarding_check'
+       and conrelid = 'public.workspace_agents'::regclass
   ) then
     alter table public.workspace_agents
       add constraint workspace_agents_onboarding_check check (onboarding in ('greet', 'role'));
