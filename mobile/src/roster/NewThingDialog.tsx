@@ -66,7 +66,7 @@ export function NewThingDialog({ visible, groupFaces, onAgent, onDismiss, onExit
       <PickRow
         left={<Image source={require("../../assets/otto.png")} style={{ width: 50, height: 50, borderRadius: 13 }} />}
         title="一只智能体"
-        sub="说一句它是干什么的就行。它有自己的一台电脑。"
+        sub="说一句它是干什么的就行。它和别的智能体共用一台电脑。"
         onPress={onAgent}
       />
       <PickRow
