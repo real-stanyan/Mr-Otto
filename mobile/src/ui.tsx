@@ -574,6 +574,8 @@ export function Field(props: {
   onSubmitEditing?: () => void;
   /** 「下一项」要把焦点交过来的那一格：把它的 ref 递进来 */
   inputRef?: React.Ref<TextInput>;
+  /** 字居中（「新建智能体」那一格：它坐在大脸与脸墙之间，是一个名字不是一段话，demo 的 .nmrow） */
+  align?: "left" | "center";
 }) {
   const { c } = usePalette();
   const [focused, setFocused] = useState(false);
@@ -609,6 +611,7 @@ export function Field(props: {
         color: c.foreground,
         paddingHorizontal: 14,
         fontSize: 16,
+        ...(props.align === "center" ? { textAlign: "center" as const } : {}),
       }}
     />
   );
