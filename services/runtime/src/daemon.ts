@@ -229,6 +229,14 @@ async function main(): Promise<void> {
       agentsCache.invalidate(workspaceId);
       return r;
     },
+    claimGreeting: (w, a) => rawAgentWriter.claimGreeting(w, a),
+    async settleRole(workspaceId, agentId, role) {
+      const wrote = await rawAgentWriter.settleRole(workspaceId, agentId, role);
+      // 职责写进去了：它进的是别的智能体的花名册（brief 的 roster）与派活的名册——名单快照作废，
+      // 下一轮现读（同 create 那一格）。没写成就没有什么变了
+      if (wrote) agentsCache.invalidate(workspaceId);
+      return wrote;
+    },
   };
   /** 每个团队一把容器锁（#979 第 2 条，ADR-0232）：一容器一卷，多条会话共用 */
   const workspaceLocks = createWorkspaceLocks();
