@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { readFile } from "node:fs/promises";
 import { createCloudSession, kickedNoteText, SANDBOX_PROBE_FAIL_TEXT, SayRejectedError, speakerLabelOf, TAIL_FLOOR_MAX_EXTRA, type CloudSession, type CloudSessionOpts } from "../../services/runtime/src/sessionService.js";
 import { CHAT_CONTEXT_BUDGET_TOKENS, CHAT_IDLE_COMPACT_MIN_TOKENS, CHAT_IDLE_COMPACT_MS } from "../../src/shared/autoCompact.js";
+import { newAgentGreetingText } from "../../src/shared/agentOnboarding.js";
 import { createWikiService, type WikiService } from "../../services/runtime/src/wikiService.js";
 import { createMemoryWikiFs } from "../../services/runtime/src/wikiFs.js";
 import { createInMemoryWikiJournal } from "../../services/runtime/src/wikiJournal.js";
@@ -6651,5 +6652,130 @@ describe("最后一句写进 workspace_sessions（#1356 A1）", () => {
     await session.settled();
     // 人那句算，系统那句「没找到」不算——最后一句仍是人说的
     expect(meta.last).toMatchObject({ from: "human:u1" });
+  });
+});
+
+describe("新建的智能体先开口，第一句回话写进职责（#1356 A2，spec §7.2）", () => {
+  const NEW = { agentId: "a_000000000001", name: "发票", description: "", instructions: "", models: ["m-new"], tools: [] as AgentToolAllow[] };
+
+  /** 主场里的一条私聊：session_created（chat=dm, home）与名单那一条先落，再装配——名单与
+      「谁在等它的职责」都是从 seed 折叠出来的。`fresh:false` = 同一份日志重新装配（重启） */
+  function newAgentDm(
+    store: EventStore,
+    o: { writer?: ReturnType<typeof createInMemoryAgentWriter>; seen?: string[]; fresh?: boolean } = {},
+  ): { session: CloudSession; writer: ReturnType<typeof createInMemoryAgentWriter> } {
+    if (o.fresh !== false) {
+      store.append({ sessionId: "s1", ts: 1, type: "session_created", workspace: "/work", cloud: { workspaceId: "w1", chat: { kind: "dm" }, home: true } });
+      store.append({ sessionId: "s1", ts: 2, type: "chat_roster_changed", ignorable: true, agents: [{ agentId: NEW.agentId, name: NEW.name }] });
+    }
+    const writer = o.writer ?? createInMemoryAgentWriter();
+    const session = createCloudSession({
+      ...baseOpts(store, []),
+      wiki: testWiki(),
+      approveAll: true,
+      agents: async () => [NEW],
+      adapterFor: (a) => ({
+        model: a.models[0]!,
+        async chat() {
+          o.seen?.push(a.agentId);
+          return { content: "我是新来的。你想让我干什么？" };
+        },
+      }),
+      agentWriter: writer,
+    });
+    return { session, writer };
+  }
+  const userMessages = (store: EventStore): UserMessageEvent[] =>
+    store.load("s1").filter((e): e is UserMessageEvent => e.type === "user_message");
+
+  it("greetNewAgent：替建的人落一条带 greeting:new_agent 的开场白（点它自己）并起一轮", async () => {
+    const store = newStore();
+    const seen: string[] = [];
+    const { session } = newAgentDm(store, { seen });
+    session.greetNewAgent(NEW.agentId, NEW.name, "owner");
+    await session.settled();
+    expect(userMessages(store)).toEqual([
+      expect.objectContaining({ fromUid: "owner", mentions: [NEW.agentId], greeting: "new_agent", content: newAgentGreetingText("发票") }),
+    ]);
+    expect(seen).toEqual([NEW.agentId]);
+    expect(store.load("s1").some((e) => e.type === "assistant_message" && e.agentId === NEW.agentId)).toBe(true);
+  });
+
+  it("开口之后人的第一句话：结算职责（写成那句话的第一行）；第二句不再结算", async () => {
+    const store = newStore();
+    const { session, writer } = newAgentDm(store);
+    const settle = vi.spyOn(writer, "settleRole");
+    session.greetNewAgent(NEW.agentId, NEW.name, "owner");
+    await session.settled();
+    await session.say("owner", "Stan", "帮我收发票、对账\n别的以后再说", false, [], undefined, undefined);
+    expect(settle).toHaveBeenCalledTimes(1);
+    expect(settle).toHaveBeenCalledWith("w1", NEW.agentId, "帮我收发票、对账");
+    await session.settled();
+    await session.say("owner", "Stan", "今天先对上个月的", false, [], undefined, undefined);
+    await session.settled();
+    expect(settle).toHaveBeenCalledTimes(1);
+  });
+
+  it("say 等结算写完才回执（职责进名单快照，这一轮起跑前写好）", async () => {
+    const store = newStore();
+    const { session, writer } = newAgentDm(store);
+    let release = (): void => {};
+    vi.spyOn(writer, "settleRole").mockImplementation(() => new Promise<boolean>((r) => { release = () => r(true); }));
+    session.greetNewAgent(NEW.agentId, NEW.name, "owner");
+    await session.settled();
+    let done = false;
+    const said = session.say("owner", "Stan", "帮我对账", false, [], undefined, undefined).then(() => { done = true; });
+    await new Promise((r) => setTimeout(r, 10));
+    expect(done).toBe(false);
+    release();
+    await said;
+    expect(done).toBe(true);
+    await session.settled();
+  });
+
+  it("没有开场白的私聊（桌面建的 / 老智能体）：人说话不结算", async () => {
+    const store = newStore();
+    const { session, writer } = newAgentDm(store);
+    const settle = vi.spyOn(writer, "settleRole");
+    await session.say("owner", "Stan", "你好", false, [], undefined, undefined);
+    await session.settled();
+    expect(settle).not.toHaveBeenCalled();
+  });
+
+  it("重启之后照样认得：日志里有开场白、人还没说话 → 下一句结算", async () => {
+    const store = newStore();
+    const first = newAgentDm(store);
+    first.session.greetNewAgent(NEW.agentId, NEW.name, "owner");
+    await first.session.settled();
+    const second = newAgentDm(store, { fresh: false });
+    const settle = vi.spyOn(second.writer, "settleRole");
+    await second.session.say("owner", "Stan", "帮我对账", false, [], undefined, undefined);
+    expect(settle).toHaveBeenCalledWith("w1", NEW.agentId, "帮我对账");
+    await second.session.settled();
+  });
+
+  it("结算失败（库抖了）不连累这句话：say 照常收下、那一轮照常跑、只记一行", async () => {
+    const store = newStore();
+    const seen: string[] = [];
+    const { session, writer } = newAgentDm(store, { seen });
+    vi.spyOn(writer, "settleRole").mockRejectedValue(new Error("boom"));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    session.greetNewAgent(NEW.agentId, NEW.name, "owner");
+    await session.settled();
+    await expect(session.say("owner", "Stan", "帮我对账", false, [], undefined, undefined)).resolves.toBeUndefined();
+    await session.settled();
+    expect(userMessages(store).at(-1)).toMatchObject({ content: "[Stan]: 帮我对账" });
+    expect(seen).toEqual([NEW.agentId, NEW.agentId]);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+
+  it("归档之后 greetNewAgent 什么都不落", async () => {
+    const store = newStore();
+    const { session } = newAgentDm(store);
+    session.archive("Stan");
+    session.greetNewAgent(NEW.agentId, NEW.name, "owner");
+    await session.settled();
+    expect(userMessages(store)).toEqual([]);
   });
 });
