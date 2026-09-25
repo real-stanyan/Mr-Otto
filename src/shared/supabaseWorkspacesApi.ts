@@ -277,13 +277,16 @@ export async function deleteSessionRow(client: SupabaseClient, id: string): Prom
 
 /** 任何成员建一只新 agent（0021 的 wsa_insert_member：created_by 必须是自己）。
     name 的人话校验（1–32 字符/不含 @/不含换行）在 src/shared/workspaceAgents.ts
-    先做一遍，这里只管落库——重名靠 unique index 的 23505 回来，调用方翻译 */
+    先做一遍，这里只管落库——重名靠 unique index 的 23505 回来，调用方翻译。
+    `onboarding` 只有手机「建一只」带（#1356 A2，migration 0041）：缺席就**不带这个键**——
+    桌面与 create_agent 两条路插入的行一个字节不变，0041 没跑的库上也照样插得进去 */
 export async function insertAgentRow(
   client: SupabaseClient,
   row: {
     workspaceId: string; agentId: string; name: string; description: string;
     instructions: string; models: string[]; tools: AgentToolAllow[]; createdBy: string;
     avatarSlot?: number | null;
+    onboarding?: "greet";
   },
 ): Promise<void> {
   unwrap(
@@ -298,8 +301,23 @@ export async function insertAgentRow(
       created_by: row.createdBy,
       // undefined = 这条路没挑头像（create_agent 工具那条就是），落 null 走派生
       avatar_slot: row.avatarSlot ?? null,
+      ...(row.onboarding === undefined ? {} : { onboarding: row.onboarding }),
     }),
   );
+}
+
+/** 手机「建一只」落了行、私聊却没建成，人又不建了：把「先开口」那一格清回 null（#1356 A2，
+    spec §7.2）。不清的话，他之后从草稿发第一句时 runtime 建私聊会先替他问一句、再答他那句（双答）。
+    **只清 'greet'**：runtime 已经抢到（'role'）就说明私聊其实建成了、开场白已经落了，那一格该由
+    人的第一句话去收。建的人才改得动（wsa_update_owner_or_creator）。出错不抛——这是一次尽力而为
+    的收尾，列不存在（0041 没跑）时本来也没有什么可清 */
+export async function clearAgentOnboarding(client: SupabaseClient, workspaceId: string, agentId: string): Promise<void> {
+  await client
+    .from("workspace_agents")
+    .update({ onboarding: null })
+    .eq("workspace_id", workspaceId)
+    .eq("agent_id", agentId)
+    .eq("onboarding", "greet");
 }
 
 /** 落库前查一次这个团队已有的 agent 名字（#957 B-I2）：同名靠 DB 唯一索引拦得住，

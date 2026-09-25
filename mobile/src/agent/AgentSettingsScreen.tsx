@@ -20,7 +20,7 @@ import { ADMIN_AGENT_ID, AGENT_NAME_MAX } from "../../../src/shared/workspaceAge
 import { cloudClient } from "../cloud/cloudClient.js";
 import { Dialog, DialogFooter, DialogLead, DialogTitle } from "../dialog.js";
 import { Face } from "../face/Face.js";
-import { refreshHome, useHome } from "../home/homeStore.js";
+import { refreshHomeAfterWrite, useHome } from "../home/homeStore.js";
 import type { RootStackParams } from "../nav/types.js";
 import { supabase } from "../supabase.js";
 import { radius, space, type as t, usePalette } from "../theme.js";
@@ -84,7 +84,7 @@ export function AgentSettingsScreen({ route, navigation }: Props) {
     setError(null);
     try {
       await updateAgentChecked(updateDeps, supabase, ws.id, agentId, patch);
-      await refreshHome();
+      await refreshHomeAfterWrite();
       navigation.goBack();
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -100,7 +100,7 @@ export function AgentSettingsScreen({ route, navigation }: Props) {
     try {
       await deleteAgentEverywhere(deleteDeps, supabase, ws.id, agentId);
       setConfirming(false);
-      await refreshHome();
+      await refreshHomeAfterWrite();
       // 回名册：它的私聊已经没了，退回那一页只会看见一条连不上的线
       navigation.popToTop();
     } catch (e) {

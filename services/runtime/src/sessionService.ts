@@ -231,6 +231,7 @@ import {
 } from "../../../src/shared/sessionParticipants.js";
 import { LAST_THROTTLE_MS, lastOf } from "../../../src/shared/sessionLast.js";
 import { createLastWriter } from "./lastWriter.js";
+import { advanceRoleWait, newAgentGreetingText, roleWaitOf, settledRole, type RoleWait } from "../../../src/shared/agentOnboarding.js";
 
 /** 派活分类器读日志尾段多少条事件（#1153）。一轮 turn 十几条事件是常态，200 条
     足够捞出最近 8 句说出口的话；不读全量是因为 say() 的回执等着这一步 */
@@ -568,6 +569,12 @@ export interface CloudSession {
       那一列是投影，归 daemon 写（同 archive 的分工）。对着**团队**名单核对，不是收窄后的那份——
       要拉进来的那只此刻当然不在聊天名单里。空名单合法：删智能体那三步会把最后一只摘掉。 */
   updateChatRoster(byUid: string, agentIds: string[]): Promise<ChatUpdateOutcome>;
+  /** 新建的智能体先开口（#1356 A2，spec §7.2 第 2 步）：替建这条私聊的人落一条带
+      `greeting: "new_agent"` 的开场白（点它自己）并入队——同 greetNewcomers 那条路（先落盘
+      再入队，重启补跑与「排队中」那盏灯全部免费拿到）。只由 daemon 在**新**建出一条私聊、且抢到了
+      库里那一格之后调（newAgentGreeting.ts 的 greetOnCreate）。不问价：一只一生只会走一次
+      （新私聊只建一次、那一格只抢得到一次），建私聊那一帧已经过了 create 桶。归档之后是空操作 */
+  greetNewAgent(agentId: string, name: string, byUid: string): void;
 }
 
 export type ChatUpdateOutcome =
@@ -685,6 +692,13 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   });
   /** 这条会话累计有多少条人类发言（标题的档位判据）。同上：播种一次、之后逐条推进 */
   let humanSaid = countHumanMessages(seed);
+  /** 哪一只在等人说它是干什么的，处在哪个阶段（#1356 A2，spec §7.2 第 3 步；F1 补的 `failed`
+      阶段见 ADR-0319 决定 4）：`asking` —— 带 `greeting: "new_agent"` 的开场白落了、它还没答；
+      `asked` —— 它答过了；`failed` —— 它那一轮收口了却一句话都没答出来（出错 / 被人停了 / 只跑了
+      工具），它没问过，人的下一句就不是回答。装配时播种、之后在 `notify` 里逐条推进（同 voiceCall /
+      participants 的形状）。它只决定「这一句要不要去结算职责、结算成什么」——只有那一句会碰库，
+      别的每一句零额外查询；真正的闸是库里那一格（settleRole 的条件更新） */
+  let roleWait: RoleWait | null = roleWaitOf(seed);
   /** 此刻的标题。空串 = 还没有。日志里最后一条 session_autotitled 胜出（同本机
       store.ts 的标题投影），首行兜底那次也会更新它——它是重判时递给模型的那一格 */
   let title = "";
@@ -908,6 +922,9 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // append 里没有这一种，这条事件只从 logVoiceCall 出门
     if (e.type === "voice_call_changed") voiceCall = applyVoiceCallEvent(voiceCall, e);
     if (e.type === "chat_roster_changed") chatRoster = applyChatRosterEvent(chatRoster, e);
+    // 谁在等它的职责（#1356 A2）：同 voiceCall 的推理——daemon.ts 绕过 notify 直接 append 的那几类
+    // 里没有 user_message，漏不掉
+    roleWait = advanceRoleWait(roleWait, e);
     // 最近谁说过话（#1163 那条的邻居，#1213）：同 advanceRelayBounds 的推理——
     // daemon.ts 绕过 notify 直接 append 的那四类里有 chat_message，但那几条的
     // fromUid 是 "system"，`humanSpeakerOf` 本来就不认；漏掉一条的后果也只是
@@ -1381,6 +1398,18 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // 同 say()：只有此刻没在排空时才起一条；invite_to_call 那条路上 drain 正跑着，
     // 入队回的是 queued，不再起第二条
     if (decisions.includes("start_turn")) startDrain();
+  }
+
+  /** spec §7.2 第 3 步：那只开口之后人的第一句话 → 职责（`settledRole`：`failed` 阶段不写
+      ——它没问过，这句就不是回答；`asking` / `asked` 走 `roleFromReply`：第一行、折空白、
+      ≤200，撞了威胁扫描就不写），那一格清掉。失败只记一行：职责是日志之外的一格投影，
+      不该把一句已经收下的话翻成失败 */
+  async function settleRoleFor(wait: RoleWait, text: string): Promise<void> {
+    try {
+      await opts.agentWriter.settleRole(opts.workspaceId, wait.agentId, settledRole(wait, text));
+    } catch (err) {
+      console.warn(`[otto-runtime] 职责写回失败（session=${sessionId} agent=${wait.agentId}）`, err);
+    }
   }
 
   /** `voice` 只有 `say()` 里「人说了话但没人接」那条出口会带（#1233）：这个函数
@@ -2266,6 +2295,9 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
           );
         }
       }
+      // 这一句是不是那只新建的智能体开口之后、人的第一句话（#1356 A2，spec §7.2 第 3 步）。
+      // **先记下**：下面 notify(opening) 会把 roleWait 推进成 null
+      const settleFor = roleWait;
       // 先落盘再排队（#932 坑 ②）：收下了 = 记下了。1a 是"起 turn 那一刻由
       // engine 落 user_message"，于是排队中的话在日志里一个字节都没有——群里
       // 其他人看不见它，daemon 一重启它就真的没发生过。排队仍然纯内存、重启
@@ -2303,6 +2335,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // 「这一行到底落没落」（fire-and-forget 那版在进程收摊时还会丢）
       await recordMemberMentions(opening.seq);
       maintainTitle(text);
+      // 结算职责排在**起跑之前、回执之前**（同 recordMemberMentions：写完再回 ok）：职责进的是
+      // 别的智能体的花名册与派活的名册，这一轮起跑前写好、快照作废。这只自己的 brief 里本来就
+      // 没有它自己的职责——它从对话里就知道
+      if (settleFor !== null) await settleRoleFor(settleFor, text);
       if (!decisions.includes("start_turn")) return;
       // **不等排空**（issue #937）：frameHandler 按 cid 把同一条连接的帧串成一条
       // 链（#915），等在这里意味着发起人自己的下一帧排在这个 await 后面——包括
@@ -2409,6 +2445,22 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         }),
       );
       return { kind: "ok", agentIds: next, changed: true };
+    },
+
+    greetNewAgent(agentId, name, byUid) {
+      if (archived) return;
+      const opening = store.append({
+        sessionId,
+        ts: Date.now(),
+        type: "user_message",
+        content: newAgentGreetingText(name),
+        fromUid: byUid,
+        mentions: [agentId],
+        greeting: "new_agent",
+      }) as UserMessageEvent; // append 回的是 union；这一条我们刚亲手写的就是 user_message
+      notify(opening);
+      // 同 say()：只有此刻没在排空时才起一条
+      if (coordinator.enqueue({ agentId, fromUid: byUid, opening }) === "start_turn") startDrain();
     },
 
     async setVoiceCall(byUid, _byLabel, participants, budget) {

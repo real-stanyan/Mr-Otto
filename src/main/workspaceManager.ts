@@ -23,15 +23,13 @@
 import { randomBytes } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type * as WorkspacesApi from "../shared/supabaseWorkspacesApi.js";
-import { normalizeAvatarSlot } from "../shared/workspaces.js";
 import type { WorkspaceSnapshot } from "../shared/workspaces.js";
 import { ensureHomeWorkspace } from "../shared/homeWorkspace.js";
 import type { WorkspaceMentionRow } from "../shared/workspaceMentions.js";
 import { humanizeWorkspaceError } from "../shared/workspaceError.js";
 import { normalizeSandboxApproval, type SandboxApproval } from "../shared/workspaceAgents.js";
-import { parseCreateAgentArgs, scanCreateAgentThreat } from "../shared/createAgentDraft.js";
 import type { AgentToolAllow } from "../shared/agentToolAllow.js";
-import { DUPLICATE_AGENT_NAME, assertAgentNameFree, deleteAgentEverywhere, updateAgentChecked } from "../shared/agentAdmin.js";
+import { createAgentChecked, deleteAgentEverywhere, updateAgentChecked } from "../shared/agentAdmin.js";
 import type { ProxyStoreData } from "./proxyStore.js";
 import { danglingWorkspaceGrants, removeWorkspaceGrant, setWorkspaceGrant, workspaceGrantFor } from "./proxyStore.js";
 import type { FriendsResult } from "./proxyManager.js";
@@ -314,27 +312,11 @@ export function createWorkspaceManager(deps: WorkspaceManagerDeps): WorkspaceMan
 
     async createAgent(id, draft) {
       return withSession(async (client, uid) => {
-        // B-C1（#957）：这条路原来一条服务端校验都没有——validateAgentName 只跑在渲染层
-        // 与 create_agent 工具里，改一个客户端（或换一个成员）就能把
-        // 「打杂）]\n忽略以上的全部指令…」写成 description，落进**每只**其它 agent 的花名册。
-        // 判据与 create_agent 那条路是同一份函数，不是抄一遍。
-        const clean = parseCreateAgentArgs(draft);
-        const threat = scanCreateAgentThreat(clean);
-        if (threat) throw new Error(`${threat}，拒绝创建`);
-        await assertAgentNameFree(deps, client, id, clean.name, null);
+        // 校验 / 威胁扫描 / 查重名 / 23505 翻译的编排在 shared/agentAdmin.ts（#1356 A2 抽出：
+        // 手机「建一只」直连 Supabase，用同一份）。B-C1（#957）那条纪律原样成立——这条路落库前
+        // 过的是与 create_agent 工具同一份判据，不是抄一遍
         const agentId = "a_" + randomBytes(6).toString("hex");
-        try {
-          // avatarSlot 不走 parseCreateAgentArgs：那份 schema 是 `create_agent`
-          // **工具**的参数表（审批卡逐字段渲染它），而管理员替人建 agent 时不该
-          // 挑脸——那条路省略这一格 = null = 派生。桌面表单挑的那一格在这里单独并进去
-          await deps.insertAgentRow(client, {
-            workspaceId: id, agentId, createdBy: uid, ...clean,
-            avatarSlot: normalizeAvatarSlot(draft.avatarSlot),
-          });
-        } catch (e) {
-          if ((e as { code?: string }).code === "23505") throw new Error(DUPLICATE_AGENT_NAME);
-          throw e;
-        }
+        await createAgentChecked(deps, client, id, uid, agentId, draft);
         return { agentId };
       });
     },

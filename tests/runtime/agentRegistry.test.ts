@@ -132,3 +132,116 @@ describe("createSupabaseAgentWriter", () => {
       .rejects.toThrow("workspace_agents 写入失败：relation missing");
   });
 });
+
+// 「先开口」那一格（#1356 A2，spec §7.2）。runtime 对它只有两件事：建新私聊时抢（'greet' → 'role'），
+// 人的第一句话到了结算（职责还空着就写、那一格清掉）。都是条件更新——内存实现与库里的语义逐条对齐
+describe("先开口那一格：内存实现（#1356 A2）", () => {
+  const blank = { ...draft, description: "" };
+  it("claimGreeting：'greet' 抢一次得 true、再抢得 false；没那一格得 false", async () => {
+    const w = createInMemoryAgentWriter();
+    const { agentId } = await w.create("w1", blank, "u1");
+    expect(await w.claimGreeting("w1", agentId)).toBe(false);
+    w.seedOnboarding("w1", agentId, "greet");
+    expect(await w.claimGreeting("w1", agentId)).toBe(true);
+    expect(w.onboardingOf("w1", agentId)).toBe("role");
+    expect(await w.claimGreeting("w1", agentId)).toBe(false);
+  });
+  it("settleRole：'role' 且职责空着 → 写职责、清那一格、回 true", async () => {
+    const w = createInMemoryAgentWriter();
+    const { agentId } = await w.create("w1", blank, "u1");
+    w.seedOnboarding("w1", agentId, "role");
+    expect(await w.settleRole("w1", agentId, "帮我对账")).toBe(true);
+    expect(w.rows()[0]!.description).toBe("帮我对账");
+    expect(w.onboardingOf("w1", agentId)).toBeNull();
+  });
+  it("settleRole：职责已经有了（设置页先改了）→ 不覆盖、只清；不在 'role' → 什么都不动", async () => {
+    const w = createInMemoryAgentWriter();
+    const { agentId } = await w.create("w1", draft, "u1"); // draft.description = "管投放"
+    w.seedOnboarding("w1", agentId, "role");
+    expect(await w.settleRole("w1", agentId, "帮我对账")).toBe(false);
+    expect(w.rows()[0]!.description).toBe("管投放");
+    expect(w.onboardingOf("w1", agentId)).toBeNull();
+    expect(await w.settleRole("w1", agentId, "再来一次")).toBe(false);
+    expect(w.rows()[0]!.description).toBe("管投放");
+  });
+  it("settleRole(role=null)：不写职责，照样清那一格", async () => {
+    const w = createInMemoryAgentWriter();
+    const { agentId } = await w.create("w1", blank, "u1");
+    w.seedOnboarding("w1", agentId, "role");
+    expect(await w.settleRole("w1", agentId, null)).toBe(false);
+    expect(w.rows()[0]!.description).toBe("");
+    expect(w.onboardingOf("w1", agentId)).toBeNull();
+  });
+});
+
+type UpdateCall = { table: string; row: Record<string, unknown>; eq: string[]; select: string | null };
+
+/** update().eq()…[.select()] 这一条链：每次 update 记一笔，按调用次序回 results 里的那一份 */
+function updateClient(
+  results: { data?: unknown; error?: { message: string; code?: string } | null }[],
+  calls: UpdateCall[],
+): SupabaseClient {
+  return {
+    from: (table: string) => ({
+      update: (row: Record<string, unknown>) => {
+        const call: UpdateCall = { table, row, eq: [], select: null };
+        calls.push(call);
+        const r = results[calls.length - 1] ?? {};
+        const builder = {
+          eq: (col: string, v: unknown) => { call.eq.push(`${col}=${String(v)}`); return builder; },
+          select: (cols: string) => { call.select = cols; return builder; },
+          then: (res: (v: unknown) => void, rej: (e: unknown) => void) =>
+            Promise.resolve({ data: r.data ?? null, error: r.error ?? null }).then(res, rej),
+        };
+        return builder;
+      },
+    }),
+  } as unknown as SupabaseClient;
+}
+
+describe("先开口那一格：Supabase 实现（#1356 A2）", () => {
+  it("claimGreeting：一条条件更新 greet → role，回了一行才算抢到", async () => {
+    const calls: UpdateCall[] = [];
+    const w = createSupabaseAgentWriter(updateClient([{ data: [{ agent_id: "a_000000000001" }] }, { data: [] }], calls));
+    expect(await w.claimGreeting("w1", "a_000000000001")).toBe(true);
+    expect(await w.claimGreeting("w1", "a_000000000001")).toBe(false);
+    expect(calls[0]).toEqual({
+      table: "workspace_agents", row: { onboarding: "role" },
+      eq: ["workspace_id=w1", "agent_id=a_000000000001", "onboarding=greet"], select: "agent_id",
+    });
+  });
+  it("claimGreeting：出错（0041 没跑 = 列不存在）往上抛——当没抢到是调用方的决定", async () => {
+    const w = createSupabaseAgentWriter(updateClient([{ error: { message: "column workspace_agents.onboarding does not exist", code: "42703" } }], []));
+    await expect(w.claimGreeting("w1", "a_000000000001")).rejects.toThrow("workspace_agents 更新失败");
+  });
+  it("settleRole：职责还空着 → 一条条件更新写职责 + 清那一格，回 true", async () => {
+    const calls: UpdateCall[] = [];
+    const w = createSupabaseAgentWriter(updateClient([{ data: [{ agent_id: "a_000000000001" }] }], calls));
+    expect(await w.settleRole("w1", "a_000000000001", "帮我对账")).toBe(true);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.row).toMatchObject({ description: "帮我对账", onboarding: null });
+    expect(typeof calls[0]!.row["updated_at"]).toBe("string");
+    expect(calls[0]!.eq).toEqual(["workspace_id=w1", "agent_id=a_000000000001", "onboarding=role", "description="]);
+    expect(calls[0]!.select).toBe("agent_id");
+  });
+  it("settleRole：职责已经有了 → 第一条落空，第二条只清那一格，回 false", async () => {
+    const calls: UpdateCall[] = [];
+    const w = createSupabaseAgentWriter(updateClient([{ data: [] }, { data: null }], calls));
+    expect(await w.settleRole("w1", "a_000000000001", "帮我对账")).toBe(false);
+    expect(calls).toHaveLength(2);
+    expect(calls[1]).toEqual({
+      table: "workspace_agents", row: { onboarding: null },
+      eq: ["workspace_id=w1", "agent_id=a_000000000001", "onboarding=role"], select: null,
+    });
+  });
+  it("settleRole(role=null)：不写职责，只清那一格", async () => {
+    const calls: UpdateCall[] = [];
+    const w = createSupabaseAgentWriter(updateClient([{ data: null }], calls));
+    expect(await w.settleRole("w1", "a_000000000001", null)).toBe(false);
+    expect(calls.map((c) => c.row)).toEqual([{ onboarding: null }]);
+  });
+  it("settleRole：出错往上抛（调用方只记一行）", async () => {
+    const w = createSupabaseAgentWriter(updateClient([{ error: { message: "boom" } }], []));
+    await expect(w.settleRole("w1", "a_000000000001", "帮我对账")).rejects.toThrow("workspace_agents 更新失败：boom");
+  });
+});

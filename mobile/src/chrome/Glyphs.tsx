@@ -1,4 +1,4 @@
-// 用 View 画的几个小图标（#1356 A1）：返回 / 关闭 / 设置 / 搜索 / 发送。沿用 ui.tsx 里
+// 用 View 画的几个小图标（#1356 A1 / A2）：返回 / 关闭 / 新建 / 设置 / 搜索 / 发送。沿用 ui.tsx 里
 // Chevron 的做法——不为几个形状引一个图标依赖。颜色一律由调用方给（前景色 / 弱色 / 反白）。
 import { View } from "react-native";
 
@@ -19,6 +19,17 @@ export function CloseGlyph({ color, size = 14 }: { color: string; size?: number 
     <View style={{ width: size, height: size, alignItems: "center", justifyContent: "center" }}>
       <View style={[bar, { transform: [{ rotate: "45deg" }] }]} />
       <View style={[bar, { transform: [{ rotate: "-45deg" }] }]} />
+    </View>
+  );
+}
+
+/** ＋ 新建：一横一竖两根细条（CloseGlyph 不转 45°，粗细同 BackGlyph 的 2.2） */
+export function PlusGlyph({ color, size = 16 }: { color: string; size?: number }) {
+  const bar = { position: "absolute" as const, borderRadius: 1.1, backgroundColor: color };
+  return (
+    <View style={{ width: size, height: size, alignItems: "center", justifyContent: "center" }}>
+      <View style={[bar, { width: size, height: 2.2 }]} />
+      <View style={[bar, { width: 2.2, height: size }]} />
     </View>
   );
 }

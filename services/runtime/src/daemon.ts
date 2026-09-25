@@ -27,6 +27,7 @@ import { createWorkspaceLocks } from "./workspaceLock.js";
 import { createFrameRateLimiter } from "./rateLimit.js";
 import { createCloudSession, type CloudSession, type AgentSpec } from "./sessionService.js";
 import { ChatCreateError, planChatCreate } from "./chatCreate.js";
+import { greetOnCreate } from "./newAgentGreeting.js";
 import { createSupabaseLegacyMemoryReader } from "./workspaceMemory.js";
 import { createSupabaseWikiJournal } from "./wikiJournal.js";
 import { createContainerWikiFs } from "./wikiFs.js";
@@ -228,6 +229,14 @@ async function main(): Promise<void> {
       const r = await rawAgentWriter.create(workspaceId, draft, createdBy);
       agentsCache.invalidate(workspaceId);
       return r;
+    },
+    claimGreeting: (w, a) => rawAgentWriter.claimGreeting(w, a),
+    async settleRole(workspaceId, agentId, role) {
+      const wrote = await rawAgentWriter.settleRole(workspaceId, agentId, role);
+      // 职责写进去了：它进的是别的智能体的花名册（brief 的 roster）与派活的名册——名单快照作废，
+      // 下一轮现读（同 create 那一格）。没写成就没有什么变了
+      if (wrote) agentsCache.invalidate(workspaceId);
+      return wrote;
     },
   };
   /** 每个团队一把容器锁（#979 第 2 条，ADR-0232）：一容器一卷，多条会话共用 */
@@ -917,7 +926,23 @@ async function main(): Promise<void> {
             ignorable: true,
           });
         }
-        openSessionRoom(workspaceId, sessionId, owner, byUid, home);
+        const session = openSessionRoom(workspaceId, sessionId, owner, byUid, home);
+        // 新建的智能体先开口（#1356 A2，spec §7.2 第 2 步）：只在**新**建出来的私聊上问——上面
+        // 找回现成那条的两条路都已经 return 了（那只要么早开过口，要么是桌面那侧的老智能体）。
+        // 抢那一格、抢到才落开场白的判断在 newAgentGreeting.ts（这个文件进不了 vitest）；
+        // 出错（0041 没跑 = 列不存在、Supabase 抖了）一律当没抢到，行为退回今天
+        const dmAgent = plan?.ok && plan.chatKind === "dm" ? plan.entries[0] : undefined;
+        if (dmAgent !== undefined) {
+          await greetOnCreate(
+            {
+              claimGreeting: (w, a) => agentWriter.claimGreeting(w, a),
+              log: (m) => console.warn(`[otto-runtime] ${m}`),
+            },
+            workspaceId,
+            dmAgent.agentId,
+            () => session.greetNewAgent(dmAgent.agentId, dmAgent.name, byUid),
+          );
+        }
         return { sessionId };
       },
       ownerOf,

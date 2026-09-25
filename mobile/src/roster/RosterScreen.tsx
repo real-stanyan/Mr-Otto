@@ -1,25 +1,32 @@
-// 名册（根，#1356 A1，spec §5.2）。
+// 名册（根，#1356 A1 / A2，spec §5.2 / §5.5）。
 //
-// · 头：左 = 账号；右 = 搜索（＋ 在 A2——点了什么都不发生的钮是撒谎的勾，#722）。没有大标题，
-//   圆钮浮在内容上，列表从底下滚过去（spec §4）。
+// · 头：左 = 账号；右 = 搜索、＋。没有大标题，圆钮浮在内容上，列表从底下滚过去（spec §4）。
 // · 进门七态照搬 rosterGate：还没查到 / 正在建主场 → 骨架、**不劝订阅**；没订阅 / 档位不带 →
 //   一句实话、不画钮（A5 之前手机上办不了订阅）；建失败 → 原因 + 重试钮、不自动重试；
 //   **有主场就进得去、不再看档位**（降了档的人的聊天记录还在）。
 // · 一列：主场的智能体 + 群混排、按最近一次动静降序（判据在 shared/mobileRoster.ts）。
+// · ＋ 先问一句（居中弹窗、点外面能退）→「一只智能体」→ 70% 抽屉建一只 → 建成：**先收抽屉**、
+//   退场放完再刷新名册（新的那一行放一段入场，首次渲染不算新来的），刷新完、且这一屏还在焦点上
+//   才推它那条线（spec §5.5 的顺序是 关 → 刷新 → 推；网络慢时不该把抽屉锁死在「正在建…」）。
+//   两个 Modal 不叠着出场：弹窗退场放完（onExited）才升抽屉。
 // · 刷新：进前台、从聊天页退回来（focus）、建 / 删之后（那几处自己调）。不轮询。
 import { useFocusEffect, useNavigation } from "@react-navigation/native";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppState, FlatList, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { agentFaceSlot } from "../../../src/shared/agentAvatar.js";
 import { rosterGate, type RosterGate } from "../../../src/shared/agentRoster.js";
-import { filterRosterItems, rosterItems, type RosterItem } from "../../../src/shared/mobileRoster.js";
+import { resolveChatTarget, type ChatTarget } from "../../../src/shared/mobileChat.js";
+import { filterRosterItems, freshRosterKeys, rosterItems, type RosterItem } from "../../../src/shared/mobileRoster.js";
 import { workspaceAccess } from "../../../src/shared/workspaceAccess.js";
-import { SearchGlyph } from "../chrome/Glyphs.js";
+import { NewAgentSheet } from "../agent/NewAgentSheet.js";
+import { PlusGlyph, SearchGlyph } from "../chrome/Glyphs.js";
 import { ROUND_BUTTON_SIZE, RoundButton } from "../chrome/RoundButton.js";
-import { ensureHome, refreshHome, useHome } from "../home/homeStore.js";
+import { ensureHome, homeSnapshot, refreshHome, refreshHomeAfterWrite, useHome } from "../home/homeStore.js";
 import { space, type as t, usePalette, withAlpha } from "../theme.js";
 import { Button, Field, Note } from "../ui.js";
 import { AccountButton } from "./AccountButton.js";
+import { NewThingDialog } from "./NewThingDialog.js";
 import { RosterRow } from "./RosterRow.js";
 
 /** 还没查到 / 正在建时的骨架：四行灰块，形状与真行一致（脸 59×52 + 两行字） */
@@ -85,6 +92,18 @@ export function RosterScreen() {
   const home = useHome();
   const [searching, setSearching] = useState(false);
   const [query, setQuery] = useState("");
+  /** ＋ 那张岔路弹窗开着没有 */
+  const [fork, setFork] = useState(false);
+  /** 弹窗退场放完之后要不要升抽屉（点的是「一只智能体」，不是取消 / 点外面） */
+  const sheetAfterFork = useRef(false);
+  /** 建一只那张抽屉。有值才画：每开一次换一个 key（= 重挂一次 = 新铸一个 id）；关的时候 visible
+      先翻 false，退场放完（onExited）再卸 */
+  const [sheet, setSheet] = useState<{ key: number; visible: boolean } | null>(null);
+  /** 建成的那一只：等抽屉退场放完再推它那条线 */
+  const created = useRef<string | null>(null);
+  /** 建成那一刻起跑的名册刷新——onSheetExited 等它收尾再推（spec §5.5 的顺序：关 → 刷新 → 推），
+      不在 onCreated 里等：网络慢时不该把抽屉锁死在「正在建…」，而这一刻行与私聊都已经落了 */
+  const refreshAfterCreate = useRef<Promise<void> | null>(null);
 
   useFocusEffect(
     useCallback(() => {
@@ -111,6 +130,18 @@ export function RosterScreen() {
       : []),
     [home.home, home.chats, home.lasts, home.selfUid],
   );
+  // 新来的那几行（放一段入场）：跟上一次画过的**整份**名单比（不是过滤后的——搜索框清空时重新露出来
+  // 的那几行不是新来的）。上一次的名单在 effect 里推进、不在渲染里改 ref：StrictMode 下渲染跑两遍，
+  // 边渲染边改的话第二遍就看不到差集，动效在 dev 里一次都不放（同桌面 A5 那条注释）
+  const seenRows = useRef<{ homeId: string; keys: string[] } | null>(null);
+  const homeId = home.home?.id ?? null;
+  const fresh = useMemo(
+    () => (homeId === null ? new Set<string>() : freshRosterKeys(seenRows.current, { homeId, keys: items.map((i) => i.key) })),
+    [homeId, items],
+  );
+  useEffect(() => {
+    seenRows.current = homeId === null ? null : { homeId, keys: items.map((i) => i.key) };
+  }, [homeId, items]);
   const shown = useMemo(() => filterRosterItems(items, query), [items, query]);
   const now = Date.now();
   const headerSpace = insets.top + 8 + ROUND_BUTTON_SIZE + 8;
@@ -122,6 +153,39 @@ export function RosterScreen() {
     setSearching(false);
     setQuery("");
   };
+  /** 抽屉里那个「不建了」：可能已经落了一行（私聊没建成、人又不建了）——名册要看得见它 */
+  const closeSheet = (): void => {
+    setSheet((s) => (s === null ? s : { ...s, visible: false }));
+    void refreshHomeAfterWrite();
+  };
+  /** 建成了：记下是谁、起跑名册刷新但**不等它**，当场收抽屉——退场放完（onSheetExited）再等
+      刷新收尾、推它那条线（spec §5.5：关 → 刷新 → 推；不等的话，慢网络会把抽屉锁死在「正在建…」，
+      而行与私聊这一刻都已经落了，没有再等的必要） */
+  const onCreated = async (agentId: string): Promise<void> => {
+    created.current = agentId;
+    refreshAfterCreate.current = refreshHomeAfterWrite();
+    setSheet((s) => (s === null ? s : { ...s, visible: false }));
+  };
+  const onSheetExited = async (): Promise<void> => {
+    setSheet(null);
+    const agentId = created.current;
+    const refreshing = refreshAfterCreate.current;
+    created.current = null;
+    refreshAfterCreate.current = null;
+    if (agentId === null) return;
+    if (refreshing !== null) await refreshing;
+    // 这几秒里人可能已经离开了这一屏（切到别处）——不隔着别的屏硬推一条聊天页
+    if (!navigation.isFocused()) return;
+    const h = homeSnapshot();
+    const target: ChatTarget = { kind: "agent", agentId };
+    // 名册没读回来（刷新失败）就不推：推进去是一页「这条聊天已经不在了」，而它明明在——
+    // 名册顶上那句读不到的话 + 重试钮才是实话
+    if (h.home === null || resolveChatTarget(h.home, h.chats, target) === null) return;
+    navigation.navigate("Chat", target);
+  };
+  const ws = home.home;
+  /** 「一个群聊」那一行左边那几张：名册里的前三只——这一选会生出来的，就是它们凑成的一条线 */
+  const groupFaces = ws === null ? [] : ws.agents.slice(0, 3).map((a) => ({ id: a.agentId, slot: agentFaceSlot(ws, a.agentId) }));
 
   return (
     <View style={{ flex: 1, backgroundColor: c.background }}>
@@ -129,7 +193,7 @@ export function RosterScreen() {
         <FlatList
           data={shown}
           keyExtractor={(it) => it.key}
-          renderItem={({ item }) => <RosterRow item={item} now={now} onPress={() => open(item)} />}
+          renderItem={({ item }) => <RosterRow item={item} now={now} fresh={fresh.has(item.key)} onPress={() => open(item)} />}
           contentContainerStyle={{ paddingTop: headerSpace, paddingBottom: insets.bottom + space.xl }}
           ListHeaderComponent={
             home.loadError !== null ? (
@@ -180,13 +244,44 @@ export function RosterScreen() {
             <AccountButton onPress={() => navigation.navigate("Account")} />
             <View style={{ flex: 1 }} />
             {gate === "ready" ? (
-              <RoundButton label="搜索" onPress={() => setSearching(true)}>
-                <SearchGlyph color={c.foreground} />
-              </RoundButton>
+              <>
+                <RoundButton label="搜索" onPress={() => setSearching(true)}>
+                  <SearchGlyph color={c.foreground} />
+                </RoundButton>
+                <RoundButton label="新建" onPress={() => setFork(true)}>
+                  <PlusGlyph color={c.foreground} />
+                </RoundButton>
+              </>
             ) : null}
           </>
         )}
       </View>
+
+      <NewThingDialog
+        visible={fork}
+        groupFaces={groupFaces}
+        onAgent={() => {
+          sheetAfterFork.current = true;
+          setFork(false);
+        }}
+        onDismiss={() => setFork(false)}
+        onExited={() => {
+          if (!sheetAfterFork.current) return;
+          sheetAfterFork.current = false;
+          setSheet({ key: Date.now(), visible: true });
+        }}
+      />
+      {sheet !== null && ws !== null && home.selfUid !== null ? (
+        <NewAgentSheet
+          key={sheet.key}
+          visible={sheet.visible}
+          ws={ws}
+          selfUid={home.selfUid}
+          onClose={closeSheet}
+          onCreated={onCreated}
+          onExited={onSheetExited}
+        />
+      ) : null}
     </View>
   );
 }

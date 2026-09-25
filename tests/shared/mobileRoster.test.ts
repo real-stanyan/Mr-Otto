@@ -2,7 +2,7 @@
 
 import { describe, expect, it } from "vitest";
 import {
-  FIRST_WORD_HINT, GROUP_FACES_WIDTH, filterRosterItems, groupFaceOffsets, rosterItems, rosterRowLabel, rosterTimeLabel,
+  FIRST_WORD_HINT, GROUP_FACES_WIDTH, filterRosterItems, freshRosterKeys, groupFaceOffsets, rosterItems, rosterRowLabel, rosterTimeLabel,
 } from "../../src/shared/mobileRoster.js";
 import type { CloudSessionRow } from "../../src/shared/supabaseWorkspacesApi.js";
 import type { SessionLast } from "../../src/shared/sessionLast.js";
@@ -167,5 +167,22 @@ describe("rosterRowLabel", () => {
     const lasts = new Map([["g1", last(now - 30_000, "edge 部完了", "agent:a_000000000002")]]);
     const g = rosterItems({ home: HOME, chats, lasts, selfUid: "me" }).find((i) => i.key === "group:g1")!;
     expect(rosterRowLabel(g, now)).toBe(["发版组", "开发、运维", "运维：edge 部完了", "刚刚"].join("，"));
+  });
+});
+
+describe("freshRosterKeys（#1356 A2）", () => {
+  it("同一个主场里、上一次画过的名单里没有的那几行", () => {
+    const fresh = freshRosterKeys({ homeId: "h1", keys: ["agent:admin", "agent:a1"] }, { homeId: "h1", keys: ["agent:a2", "agent:admin", "agent:a1"] });
+    expect([...fresh]).toEqual(["agent:a2"]);
+  });
+  it("第一次画（上一次没有）不算新来的——否则每次进名册整列都闪一遍", () => {
+    expect(freshRosterKeys(null, { homeId: "h1", keys: ["agent:admin", "agent:a1"] }).size).toBe(0);
+  });
+  it("换了主场（换号）不算新来的", () => {
+    expect(freshRosterKeys({ homeId: "h1", keys: ["agent:admin"] }, { homeId: "h2", keys: ["agent:admin", "agent:b1"] }).size).toBe(0);
+  });
+  it("少了的不算（删掉一只不放入场）；顺序变了不算", () => {
+    expect(freshRosterKeys({ homeId: "h1", keys: ["agent:a1", "agent:a2"] }, { homeId: "h1", keys: ["agent:a2"] }).size).toBe(0);
+    expect(freshRosterKeys({ homeId: "h1", keys: ["agent:a1", "agent:a2"] }, { homeId: "h1", keys: ["agent:a2", "agent:a1"] }).size).toBe(0);
   });
 });

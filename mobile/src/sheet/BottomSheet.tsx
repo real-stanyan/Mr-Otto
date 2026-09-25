@@ -11,6 +11,8 @@
 //   （Apple 的越界手感）。
 // · 进场是临界阻尼的弹簧（可打断：半路又拽回去时速度接得上），退场 220ms 缓出；
 //   关了动效就直接到位（瞬切，不是「快一点」）。
+// · `locked`（A2）：正在建的那几秒里拖不走、X 与暗幕与返回键都不理——半路关掉的话，行可能落了、
+//   私聊可能建了，而人以为什么都没发生。
 // · 「有值才画」的调用方同 dialog.tsx：先让 visible 变 false，在 onExited 里再卸。
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import { Modal, Pressable, StyleSheet, Text, View, useWindowDimensions } from "react-native";
@@ -37,13 +39,17 @@ const EXIT_MS = 220;
 const OPEN_SPRING = spring(0.35);
 const RADIUS = 22;
 
-export function BottomSheet({ visible, title, onClose, onExited, children }: {
+export function BottomSheet({ visible, title, onClose, onExited, closeLabel = "关闭", locked = false, children }: {
   visible: boolean;
   title: string;
   /** 人要关：点 X / 点暗幕 / 下拽过阈值或一甩。调用方把 visible 置 false */
   onClose: () => void;
   /** 退场放完之后调一次 */
   onExited?: () => void;
+  /** 左上那颗 X 念什么（读屏）。缺省「关闭」；「新建智能体」那张写「不建了」（demo） */
+  closeLabel?: string;
+  /** 锁住：拖不走、X / 暗幕 / 返回键都不理（见头注） */
+  locked?: boolean;
   children: ReactNode;
 }) {
   const { c } = usePalette();
@@ -78,7 +84,12 @@ export function BottomSheet({ visible, title, onClose, onExited, children }: {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [visible]);
 
+  const requestClose = (): void => {
+    if (!locked) onClose();
+  };
+
   const pan = Gesture.Pan()
+    .enabled(!locked)
     .runOnJS(true)
     .onUpdate((e) => {
       y.value = e.translationY >= 0 ? e.translationY : rubberband(e.translationY, RUBBER_MAX, RUBBER_SLOPE);
@@ -100,10 +111,10 @@ export function BottomSheet({ visible, title, onClose, onExited, children }: {
 
   if (!mounted) return null;
   return (
-    <Modal transparent visible animationType="none" statusBarTranslucent onRequestClose={onClose}>
+    <Modal transparent visible animationType="none" statusBarTranslucent onRequestClose={requestClose}>
       <GestureHandlerRootView style={{ flex: 1 }}>
         <Animated.View style={[StyleSheet.absoluteFill, { backgroundColor: c.scrim }, scrimStyle]}>
-          <Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityRole="button" accessibilityLabel="关闭" />
+          <Pressable style={StyleSheet.absoluteFill} onPress={requestClose} accessibilityRole="button" accessibilityLabel="关闭" />
         </Animated.View>
         <Animated.View
           accessibilityViewIsModal
@@ -125,13 +136,15 @@ export function BottomSheet({ visible, title, onClose, onExited, children }: {
                 <Text accessibilityRole="header" style={{ ...t.headline, color: c.foreground, textAlign: "center" }} numberOfLines={1}>{title}</Text>
               </View>
               <Pressable
-                accessibilityRole="button" accessibilityLabel="关闭" hitSlop={10} onPress={onClose}
+                accessibilityRole="button" accessibilityLabel={closeLabel} accessibilityState={{ disabled: locked }}
+                disabled={locked} hitSlop={10} onPress={onClose}
                 style={({ pressed }) => [
                   {
                     position: "absolute", left: 12, top: 21, width: 36, height: 36, borderRadius: 18,
                     alignItems: "center", justifyContent: "center", backgroundColor: withAlpha(c.foreground, 0.07),
                   },
                   pressed && { opacity: 0.6 },
+                  locked && { opacity: 0.4 },
                 ]}
               >
                 <CloseGlyph color={c.foreground} size={13} />

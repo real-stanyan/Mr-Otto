@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { humanizeWorkspaceError, SCHEMA_BEHIND } from "../../src/shared/workspaceError.js";
+import { humanizeWorkspaceError, isSchemaBehind, SCHEMA_BEHIND } from "../../src/shared/workspaceError.js";
 
 const withCode = (message: string, code: string): Error => Object.assign(new Error(message), { code });
 
@@ -29,5 +29,20 @@ describe("humanizeWorkspaceError（#843 ③）", () => {
   it("网络 / 登录过期各一句", () => {
     expect(humanizeWorkspaceError(new Error("TypeError: fetch failed"))).toBe("连不上服务器——网络不通");
     expect(humanizeWorkspaceError(new Error("JWT expired"))).toBe("登录已过期，重新登录再试");
+  });
+});
+
+describe("isSchemaBehind（#1356 A2）", () => {
+  it("缺列 / 缺表 / schema cache 里没这一列：三个 code 与两句文案都认", () => {
+    expect(isSchemaBehind(Object.assign(new Error("x"), { code: "PGRST204" }))).toBe(true);
+    expect(isSchemaBehind(Object.assign(new Error("x"), { code: "42703" }))).toBe(true);
+    expect(isSchemaBehind({ message: "relation \"public.x\" does not exist", code: "42P01" })).toBe(true);
+    expect(isSchemaBehind(new Error("Could not find the 'onboarding' column of 'workspace_agents' in the schema cache"))).toBe(true);
+    expect(isSchemaBehind(new Error("column workspace_agents.onboarding does not exist"))).toBe(true);
+  });
+  it("别的错误不认（唯一索引、权限、网络）", () => {
+    expect(isSchemaBehind(Object.assign(new Error("duplicate key"), { code: "23505" }))).toBe(false);
+    expect(isSchemaBehind(Object.assign(new Error("new row violates row-level security policy"), { code: "42501" }))).toBe(false);
+    expect(isSchemaBehind(new Error("fetch failed"))).toBe(false);
   });
 });

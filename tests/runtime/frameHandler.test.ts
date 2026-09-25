@@ -20,6 +20,8 @@ import { mentionTokens } from "../../src/shared/remote/agentMention.js";
 function fakeSession(overrides: Partial<CloudSession> = {}): CloudSession {
   return {
     say: async () => {},
+    // #1356 A2：默认不落——绝大多数用例不关心"新建的智能体先开口"这条路
+    greetNewAgent: () => {},
     // #937：say() 不再等 turn 跑完，等待点搬进了 settled()。这一层不消费它
     settled: async () => {},
     approve: () => "ok",

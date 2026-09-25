@@ -1,6 +1,8 @@
 // 居中弹窗（demo 的 .dlg，同桌面 AlertDialog）：表单与确认一律用它，不用底部抽屉（spec §3.2）。
 //
-// 只受控：没有「点遮罩关」，出口只有里面的按钮——一个正在收信的人手一抖就得从头再来。
+// 默认只受控：没有「点遮罩关」，出口只有里面的按钮——一个正在收信的人手一抖就得从头再来。
+// 例外是岔路口那一类（`dismissible`，spec §4）：「新建」那张问一句「建什么」的弹窗，按错了不该被关
+// 在里面，点外面 / 安卓返回键就退。
 // 进场从 .96 放到 1 + 淡入（不从 0 起：现实里没有东西从「没有」里长出来），退场更快：
 // .98 + 淡出 140ms。关了动效就只淡入淡出。
 // 「有值才画」的弹窗（{x ? <X/> : null}）不能在按钮里直接把自己卸掉——整棵子树当场消失，
@@ -9,18 +11,25 @@
 // 没有 ui.tsx 里 useKeyboardInset 说的那个「相对父级」的坑。
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
-  Animated, Easing, KeyboardAvoidingView, Modal, Platform, StyleSheet, Text, View, useWindowDimensions,
+  Animated, Easing, KeyboardAvoidingView, Modal, Platform, Pressable, StyleSheet, Text, View, useWindowDimensions,
 } from "react-native";
 import { spring, type as t, usePalette } from "./theme.js";
 import { Button, useReduceMotion } from "./ui.js";
 
 const WIDTH = 320;
+/** 宽一档（demo 的 .dlg.wide：min(348, 屏宽 − 40)）：两行并列、左边带图的选择卡用 */
+const WIDE_WIDTH = 348;
 const RADIUS = 22;
 
-export function Dialog({ visible, onExited, children }: {
+export function Dialog({ visible, onExited, dismissible = false, onDismiss, wide = false, children }: {
   visible: boolean;
   /** 退场放完、Modal 收起之后调一次：「有值才画」的调用方在这里才真的把自己卸掉 */
   onExited?: () => void;
+  /** 点暗幕 / 安卓返回键能退（岔路口那一类，spec §4）。表单 / 确认类不给 */
+  dismissible?: boolean;
+  /** 人点了暗幕 / 返回键：调用方把 visible 置 false。只在 dismissible 时会被调 */
+  onDismiss?: () => void;
+  wide?: boolean;
   children: ReactNode;
 }) {
   const { c } = usePalette();
@@ -61,8 +70,11 @@ export function Dialog({ visible, onExited, children }: {
 
   if (!mounted) return null;
   const scale = reduce ? 1 : k.interpolate({ inputRange: [0, 1], outputRange: [visible ? 0.96 : 0.98, 1] });
+  const dismiss = (): void => {
+    if (dismissible) onDismiss?.();
+  };
   return (
-    <Modal transparent visible animationType="none" statusBarTranslucent onRequestClose={() => {}}>
+    <Modal transparent visible animationType="none" statusBarTranslucent onRequestClose={dismiss}>
       <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, { backgroundColor: c.scrim, opacity: k }]} />
       {/* 退场途中不接手指：已经在关的弹窗再被点一下「发送」，就是一次谁都看不见的请求 */}
       <KeyboardAvoidingView
@@ -70,10 +82,16 @@ export function Dialog({ visible, onExited, children }: {
         behavior={Platform.OS === "ios" ? "padding" : undefined}
         style={{ flex: 1, alignItems: "center", justifyContent: "center" }}
       >
+        {dismissible ? (
+          // 暗幕那一层接不了手指（上面那层是 pointerEvents="none" 的动画层）：点外面退出挂在这里，
+          // 排在卡的前面——卡是后画的兄弟，点在卡上落不到这一层
+          <Pressable style={StyleSheet.absoluteFill} onPress={dismiss} accessibilityRole="button" accessibilityLabel="关闭" />
+        ) : null}
         <Animated.View
           accessibilityViewIsModal
           style={{
-            width: Math.min(WIDTH, width - 48), borderRadius: RADIUS, backgroundColor: c.card,
+            width: wide ? Math.min(WIDE_WIDTH, width - 40) : Math.min(WIDTH, width - 48),
+            borderRadius: RADIUS, backgroundColor: c.card,
             borderWidth: StyleSheet.hairlineWidth, borderColor: c.border, paddingTop: 24, paddingBottom: 20,
             shadowColor: "#000", shadowOpacity: 0.55, shadowRadius: 25, shadowOffset: { width: 0, height: 25 },
             opacity: k, transform: [{ scale }],
