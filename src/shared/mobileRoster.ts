@@ -185,3 +185,18 @@ export function rosterRowLabel(item: RosterItem, now: number): string {
   const time = item.timeTs === null ? "" : rosterTimeLabel(item.timeTs, now);
   return [item.name, item.sub, item.line2 ?? "", time].filter((p) => p !== "").join("，");
 }
+
+/**
+ * 名册上哪几行是「新来的」（放一段入场，spec §5.5——建一只是稀有事件，才配得上动效）：同一个
+ * 主场里、上一次画过的名单里没有的那几行。上一次还没画过（首次渲染）或换了主场（换号）一律不算，
+ * 否则每次进名册 / 换号整列都闪一遍。调用方比的是**没过滤的整份名单**：搜索框清空时重新露出来
+ * 的那几行不是新来的。
+ */
+export function freshRosterKeys(
+  prev: { homeId: string; keys: readonly string[] } | null,
+  next: { homeId: string; keys: readonly string[] },
+): Set<string> {
+  if (prev === null || prev.homeId !== next.homeId) return new Set();
+  const seen = new Set(prev.keys);
+  return new Set(next.keys.filter((k) => !seen.has(k)));
+}
