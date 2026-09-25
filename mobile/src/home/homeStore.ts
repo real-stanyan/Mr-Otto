@@ -152,3 +152,16 @@ export async function ensureHome(): Promise<void> {
     if (mine === epoch) store.set({ ensure: "failed", ensureError: humanizeWorkspaceError(e) });
   }
 }
+
+/** 名册此刻的样子（给异步回调读：hook 那一份在闭包里可能是旧的） */
+export function homeSnapshot(): HomeState {
+  return store.get();
+}
+
+/** 写完之后拉一遍名册。正在跑的那次刷新可能是写之前开跑的、看不见刚写的东西——`refreshHome()`
+    会把它原样交回来。等它收尾，再拉一次新的（同 ensureHome 里那一句）。建一只、设置页的存 / 删、
+    草稿里建成私聊之后都走这里 */
+export async function refreshHomeAfterWrite(): Promise<void> {
+  if (inflight !== null) await inflight;
+  await refreshHome();
+}
