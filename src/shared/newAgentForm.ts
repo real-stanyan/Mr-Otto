@@ -16,6 +16,10 @@ import type { WorkspaceSnapshot } from "./workspaces.js";
  * 那道还会现查一次，这里拦不住的并发同名由它与 23505 兜。
  */
 export function newAgentNameError(raw: string, existing: readonly string[]): string | null {
+  // 落库前那道闸的 noNewline（createAgentDraft.ts）在 trim 之前就检查真换行；
+  // normalizeAgentName 的 trim 会把首尾换行悄悄吃掉，这里要抢在归一化之前单独挡一遍，
+  // 否则「发票」后面跟一个换行会在这儿判成合法、点得动「创建」，落库那道闸却会抛错。
+  if (/[\r\n]/.test(raw)) return "名字不能换行";
   const name = normalizeAgentName(raw);
   const invalid = validateAgentName(name);
   if (invalid !== null) return invalid;
@@ -78,7 +82,14 @@ export function createNewAgentFlow(ports: NewAgentPorts): NewAgentFlow {
       }
       step = "linking";
     }
-    const r = await ports.openDm();
+    // openDm 也可能直接抛（不只是回 {ok:false}）：这里要接住，不然 submit() 会拒绝，
+    // 破坏它自己声明的 Promise<{ok:true…}|{ok:false…}> 契约——调用方只 await 不 catch。
+    let r: FriendsResult<{ sessionId: string }>;
+    try {
+      r = await ports.openDm();
+    } catch (e) {
+      return { ok: false, message: `它建好了，但还没接上线：${humanizeWorkspaceError(e)}` };
+    }
     if (!r.ok) return { ok: false, message: `它建好了，但还没接上线：${r.message}` };
     step = "done";
     sessionId = r.value.sessionId;

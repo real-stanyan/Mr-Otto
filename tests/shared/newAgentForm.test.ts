@@ -6,6 +6,7 @@ import { pickableFaces } from "../../src/shared/agentSettingsForm.js";
 import type { FriendsResult } from "../../src/shared/friends.js";
 import { createNewAgentFlow, defaultPickFor, newAgentNameError, type NewAgentPorts } from "../../src/shared/newAgentForm.js";
 import { faceCharacterAt } from "../../src/shared/ottoFace/index.js";
+import { validateAgentName } from "../../src/shared/workspaceAgents.js";
 import type { WorkspaceAgentRow, WorkspaceSnapshot } from "../../src/shared/workspaces.js";
 
 const agent = (agentId: string, name: string): WorkspaceAgentRow => ({
@@ -22,6 +23,11 @@ describe("newAgentNameError", () => {
     expect(newAgentNameError("", [])).toBe("名字不能为空");
     expect(newAgentNameError("收 发票", [])).toBe("名字里不能有空白");
     expect(newAgentNameError("发票@", [])).toContain("@");
+  });
+  it("raw 里带真换行：抢在 trim 之前挡住（落库那道闸的 noNewline 也是 trim 之前先查），首尾都拦；文案取自 validateAgentName 自己，两处文案不会各说各的", () => {
+    const want = validateAgentName("发\n票");
+    expect(newAgentNameError("发票\n", [])).toBe(want);
+    expect(newAgentNameError("\n发票", [])).toBe(want);
   });
   it("按归一化之后的名字校验：全角 ＠ 归一化就是 @（落库前那道就是这么判的）", () => {
     expect(newAgentNameError("发票\uFF20", [])).toContain("@");
@@ -87,6 +93,20 @@ describe("createNewAgentFlow", () => {
     fail = false;
     expect(await flow.submit(INPUT)).toEqual({ ok: true, sessionId: "s9" });
     expect(calls).toEqual(["insert", "dm", "dm"]);
+  });
+  it("私聊那步直接抛（不是回 {ok:false}）：submit 照样 resolve 出 {ok:false}，不把异常甩给调用方——它自己声明的类型是 Promise<{ok}>；再试一次成功，insert 总共只落了一次", async () => {
+    let throwOnce = true;
+    const { p, calls } = ports({
+      dm: async () => {
+        if (throwOnce) { throwOnce = false; throw new Error("fetch failed"); }
+        return { ok: true, value: { sessionId: "s9" } };
+      },
+    });
+    const flow = createNewAgentFlow(p);
+    expect(await flow.submit(INPUT)).toEqual({ ok: false, message: "它建好了，但还没接上线：连不上服务器——网络不通" });
+    expect(flow.step()).toBe("linking");
+    expect(await flow.submit(INPUT)).toEqual({ ok: true, sessionId: "s9" });
+    expect(calls.filter((c) => c === "insert")).toHaveLength(1);
   });
   it("行没落成：回人话（同名 / 缺 migration 的原文都照翻）、下次点还是从落行开始", async () => {
     let n = 0;
