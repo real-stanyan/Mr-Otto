@@ -7,7 +7,8 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { AgentToolAllow } from "./agentToolAllow.js";
-import { scanCreateAgentThreat, validateAgentPatch } from "./createAgentDraft.js";
+import { parseCreateAgentArgs, scanCreateAgentThreat, validateAgentPatch } from "./createAgentDraft.js";
+import { isSchemaBehind } from "./workspaceError.js";
 import type { FriendsResult } from "./friends.js";
 import { ADMIN_AGENT_ID, agentNameConflict, normalizeAgentName } from "./workspaceAgents.js";
 import { normalizeAvatarSlot } from "./workspaces.js";
@@ -41,6 +42,30 @@ export interface AgentUpdateDeps extends AgentNameDeps {
     patch: {
       name?: string; description?: string; instructions?: string; models?: string[];
       tools?: AgentToolAllow[]; avatarSlot?: number | null;
+    },
+  ): Promise<void>;
+}
+
+/** 建一只时调用方递进来的草稿。`avatarSlot` 同 AgentPatchInput，不过 `parseCreateAgentArgs`
+    （那份 schema 是 create_agent **工具**的参数表），在这里单独归一；`onboarding` 只有手机
+    「建一只」带（#1356 A2，spec §7.2）：插入时写 'greet'，runtime 建它的**新**私聊时替建的人
+    先问一句「你想让我干什么」 */
+export interface AgentCreateInput {
+  name: string;
+  description: string;
+  instructions: string;
+  models: string[];
+  tools: AgentToolAllow[];
+  avatarSlot?: number | null;
+  onboarding?: "greet";
+}
+
+export interface AgentCreateDeps extends AgentNameDeps {
+  insertAgentRow(
+    client: SupabaseClient,
+    row: {
+      workspaceId: string; agentId: string; name: string; description: string; instructions: string;
+      models: string[]; tools: AgentToolAllow[]; createdBy: string; avatarSlot?: number | null; onboarding?: "greet";
     },
   ): Promise<void>;
 }
@@ -84,6 +109,52 @@ export async function assertAgentNameFree(
   if (others.includes(name)) throw new Error(DUPLICATE_AGENT_NAME);
   const conflict = agentNameConflict(name, others);
   if (conflict !== null) throw new Error(conflict);
+}
+
+/** `a_` + 12 位十六进制（0025 的 check 钉着这个形状）。桌面主进程 / runtime / 手机三处都铸 id，
+    长得必须一样；熵向各自的平台要（node:crypto / expo-crypto），这里只管拼 */
+export function agentIdFromBytes(bytes: Uint8Array): string {
+  if (bytes.length !== 6) throw new Error(`agentIdFromBytes 要 6 个字节（收到 ${bytes.length}）`);
+  return `a_${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`;
+}
+
+/**
+ * 建一只智能体（#1356 A2 从桌面 workspaceManager.createAgent 原样抽出——手机端直连 Supabase，
+ * 中间没有主进程那一层，照抄一份就是两条写入路给同一件事两种说法）。顺序：校验与归一
+ * （`parseCreateAgentArgs`，与 create_agent 工具同一份）→ 威胁扫描 → 现查名单判同名 / 前缀
+ * （B-I2）→ 落行；23505（查名单与插入之间有人抢先建了同名）翻成人话。
+ * `agentId` 由调用方铸（`agentIdFromBytes`）：手机要在抽屉一打开就知道它，好按它派生默认那张脸。
+ * 带 `onboarding` 插入而库里还没有这一列（0041 没跑，PostgREST 回 PGRST204）：**不带它再插一次**——
+ * 这只就是一只普通的智能体（不先开口），与改动前逐字相同；别的错误原样往上抛。
+ */
+export async function createAgentChecked(
+  deps: AgentCreateDeps,
+  client: SupabaseClient,
+  workspaceId: string,
+  createdBy: string,
+  agentId: string,
+  input: AgentCreateInput,
+): Promise<void> {
+  const clean = parseCreateAgentArgs(input);
+  const threat = scanCreateAgentThreat(clean);
+  if (threat) throw new Error(`${threat}，拒绝创建`);
+  await assertAgentNameFree(deps, client, workspaceId, clean.name, null);
+  const row = { workspaceId, agentId, createdBy, ...clean, avatarSlot: normalizeAvatarSlot(input.avatarSlot) };
+  try {
+    if (input.onboarding === undefined) {
+      await deps.insertAgentRow(client, row);
+      return;
+    }
+    try {
+      await deps.insertAgentRow(client, { ...row, onboarding: input.onboarding });
+    } catch (e) {
+      if (!isSchemaBehind(e)) throw e;
+      await deps.insertAgentRow(client, row);
+    }
+  } catch (e) {
+    if ((e as { code?: string }).code === "23505") throw new Error(DUPLICATE_AGENT_NAME);
+    throw e;
+  }
 }
 
 /** 改一只智能体。改名与新建走同一道闸（B-I2）：改名是绕开建时校验最省事的一条路 */
