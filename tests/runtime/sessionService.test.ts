@@ -6662,13 +6662,15 @@ describe("新建的智能体先开口，第一句回话写进职责（#1356 A2�
       「谁在等它的职责」都是从 seed 折叠出来的。`fresh:false` = 同一份日志重新装配（重启） */
   function newAgentDm(
     store: EventStore,
-    o: { writer?: ReturnType<typeof createInMemoryAgentWriter>; seen?: string[]; fresh?: boolean } = {},
+    o: { writer?: ReturnType<typeof createInMemoryAgentWriter>; seen?: string[]; fresh?: boolean; failFirst?: boolean } = {},
   ): { session: CloudSession; writer: ReturnType<typeof createInMemoryAgentWriter> } {
     if (o.fresh !== false) {
       store.append({ sessionId: "s1", ts: 1, type: "session_created", workspace: "/work", cloud: { workspaceId: "w1", chat: { kind: "dm" }, home: true } });
       store.append({ sessionId: "s1", ts: 2, type: "chat_roster_changed", ignorable: true, agents: [{ agentId: NEW.agentId, name: NEW.name }] });
     }
     const writer = o.writer ?? createInMemoryAgentWriter();
+    // F1（#1356 final-fix）：第一次 chat() 就抛——开场白那一轮一句话都没答出来就收口（outcome:"error"）
+    let failedOnce = false;
     const session = createCloudSession({
       ...baseOpts(store, []),
       wiki: testWiki(),
@@ -6678,6 +6680,10 @@ describe("新建的智能体先开口，第一句回话写进职责（#1356 A2�
         model: a.models[0]!,
         async chat() {
           o.seen?.push(a.agentId);
+          if (o.failFirst && !failedOnce) {
+            failedOnce = true;
+            throw new Error("boom");
+          }
           return { content: "我是新来的。你想让我干什么？" };
         },
       }),
@@ -6699,6 +6705,18 @@ describe("新建的智能体先开口，第一句回话写进职责（#1356 A2�
     ]);
     expect(seen).toEqual([NEW.agentId]);
     expect(store.load("s1").some((e) => e.type === "assistant_message" && e.agentId === NEW.agentId)).toBe(true);
+  });
+
+  it("开场白那一轮一句话都没答出来就收口（出错）：人的下一句不当职责，只清那一格（#1356 F1）", async () => {
+    const store = newStore();
+    const { session, writer } = newAgentDm(store, { failFirst: true });
+    const settle = vi.spyOn(writer, "settleRole");
+    session.greetNewAgent(NEW.agentId, NEW.name, "owner");
+    await session.settled();
+    await session.say("owner", "Stan", "你好", false, [], undefined, undefined);
+    expect(settle).toHaveBeenCalledTimes(1);
+    expect(settle).toHaveBeenCalledWith("w1", NEW.agentId, null);
+    await session.settled();
   });
 
   it("开口之后人的第一句话：结算职责（写成那句话的第一行）；第二句不再结算", async () => {

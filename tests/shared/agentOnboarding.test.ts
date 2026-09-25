@@ -4,6 +4,7 @@
 import { describe, expect, it } from "vitest";
 import {
   ROLE_PRESETS, advanceRoleWait, newAgentGreetingText, parseOnboarding, roleChipsAnchor, roleFromReply, roleWaitOf,
+  settledRole,
 } from "../../src/shared/agentOnboarding.js";
 import type { SessionEvent } from "../../src/session/events.js";
 
@@ -16,6 +17,8 @@ const human = (text: string): SessionEvent => e({ type: "user_message", content:
 const answer = (content: string, agentId = A): SessionEvent => e({ type: "assistant_message", content, model: "m", agentId });
 const toolStep = (agentId = A): SessionEvent =>
   e({ type: "assistant_message", content: "", model: "m", agentId, toolCalls: [{ id: "c1", name: "bash", args: {} }] });
+const turnEnded = (outcome: "completed" | "error" | "aborted" | "interrupted", agentId = A): SessionEvent =>
+  e({ type: "turn_ended", outcome, agentId });
 
 describe("parseOnboarding", () => {
   it("只认 greet / role；别的一律 null（列还不存在时读回来的 undefined 也是 null）", () => {
@@ -72,10 +75,38 @@ describe("roleFromReply", () => {
 });
 
 describe("advanceRoleWait / roleWaitOf", () => {
-  it("开场白之后它在等；人说了一句就等完了", () => {
+  it("开场白之后它在等（asking）；人说了一句就等完了", () => {
     seq = 0;
-    expect(roleWaitOf([greeting()])).toBe(A);
+    expect(roleWaitOf([greeting()])).toMatchObject({ agentId: A, phase: "asking" });
     expect(roleWaitOf([greeting(), answer("你想让我干什么？"), human("帮我对账")])).toBeNull();
+  });
+  it("它答出一句有正文的回话（不是中间步骤）→ asked，anchor 是那条回话的 seq", () => {
+    seq = 0;
+    const events = [greeting(), answer("你想让我干什么？")];
+    expect(roleWaitOf(events)).toEqual({ agentId: A, phase: "asked", anchor: 1 });
+  });
+  it("它那一轮收口了却一句话都没答出来（出错 / 被人停了 / 只跑了工具）→ failed", () => {
+    for (const outcome of ["error", "aborted", "completed"] as const) {
+      seq = 0;
+      expect(roleWaitOf([greeting(), turnEnded(outcome)])).toEqual({ agentId: A, phase: "failed", anchor: null });
+    }
+  });
+  it("outcome:interrupted 不算收口（重启补跑前的记号，ADR-0296）：还在 asking，之后答了照样变 asked", () => {
+    seq = 0;
+    expect(roleWaitOf([greeting(), turnEnded("interrupted")])).toMatchObject({ agentId: A, phase: "asking" });
+    seq = 0;
+    const events = [greeting(), turnEnded("interrupted"), answer("你想让我干什么？")];
+    expect(roleWaitOf(events)).toEqual({ agentId: A, phase: "asked", anchor: 2 });
+  });
+  it("答过之后再来一条 turn_ended：还是 asked（早就翻篇了，不会退回 failed）", () => {
+    seq = 0;
+    const events = [greeting(), answer("你想让我干什么？"), turnEnded("completed")];
+    expect(roleWaitOf(events)).toEqual({ agentId: A, phase: "asked", anchor: 1 });
+  });
+  it("别的智能体的 turn_ended 不算：这只还在 asking", () => {
+    seq = 0;
+    const events = [greeting(), turnEnded("error", "other-agent")];
+    expect(roleWaitOf(events)).toMatchObject({ agentId: A, phase: "asking" });
   });
   it("engine 注的旁白、接力开场白、群聊发言都不算人的那一句", () => {
     seq = 0;
@@ -85,7 +116,7 @@ describe("advanceRoleWait / roleWaitOf", () => {
       e({ type: "user_message", content: "[系统] 接力", fromUid: "u1", mentions: [A], relay: { fromAgentId: "admin", depth: 1 } }),
       e({ type: "chat_message", fromUid: "u1", label: "Stan", content: "随便说一句", mention: false }),
     ];
-    expect(roleWaitOf(events)).toBe(A);
+    expect(roleWaitOf(events)).toMatchObject({ agentId: A, phase: "asking" });
   });
   it("没有开场白：人说话也不会让谁开始等", () => {
     seq = 0;
@@ -119,5 +150,19 @@ describe("roleChipsAnchor", () => {
   it("没有开场白 → null", () => {
     seq = 0;
     expect(roleChipsAnchor([answer("你好")])).toBeNull();
+  });
+  it("它那一轮没答出来就收口（failed）→ null", () => {
+    seq = 0;
+    expect(roleChipsAnchor([greeting(), turnEnded("error")])).toBeNull();
+  });
+});
+
+describe("settledRole", () => {
+  it("failed → null（它没问过，人这句就不是回答）", () => {
+    expect(settledRole({ agentId: A, phase: "failed", anchor: null }, "随便说点什么")).toBeNull();
+  });
+  it("asking（人抢在它前面先说了）/ asked → roleFromReply(那句话)", () => {
+    expect(settledRole({ agentId: A, phase: "asking", anchor: null }, "帮我对账\n别的")).toBe("帮我对账");
+    expect(settledRole({ agentId: A, phase: "asked", anchor: 1 }, "帮我对账\n别的")).toBe("帮我对账");
   });
 });

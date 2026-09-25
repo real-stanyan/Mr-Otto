@@ -70,44 +70,73 @@ export function roleFromReply(text: string): string | null {
 }
 
 /**
- * 这一条事件之后，哪一只在等人说它是干什么的（null = 谁都没在等）。runtime（这句话要不要去
- * 结算职责）与手机（六句现成话画不画）共用这一份：
- * - 带 `greeting: "new_agent"` 的开场白 → 它点的那一只开始等；
- * - 人的一句 `user_message`（判据同 `humanSpeakerOf`：不含接力 / 招呼开场白、不含 engine 旁白）→ 等完了；
- * - 其余事件不改（群聊发言 `chat_message` 不起 turn，也不算「答了它那一问」）。
+ * 「它在等人说它是干什么的」那一段（null = 谁都没在等）。
+ * asking —— 开场白落了、它还没答；asked —— 它答过了（anchor = 那一条回话的 seq，六句现成话挂在它
+ * 底下）；failed —— 它那一轮收口了却一句话都没答出来（出错 / 被人停了 / 只跑了工具）：它没问过，
+ * 人的下一句就不是回答。
  */
-export function advanceRoleWait(wait: string | null, e: SessionEvent): string | null {
-  if (e.type !== "user_message") return wait;
-  if (e.greeting === "new_agent") return e.mentions?.[0] ?? null;
-  return humanSpeakerOf(e) === null ? wait : null;
+export interface RoleWait {
+  agentId: string;
+  phase: "asking" | "asked" | "failed";
+  anchor: number | null;
+}
+
+/**
+ * 这一条事件之后，「它在等人说它是干什么的」那一段处于哪个阶段。runtime（这句话要不要去结算
+ * 职责）与手机（六句现成话画不画）共用这一份：
+ * - 带 `greeting: "new_agent"` 的开场白 → 它点的那一只进入 `asking`（没点谁 → null）；
+ * - 人的一句 `user_message`（判据同 `humanSpeakerOf`：不含接力 / 招呼开场白、不含 engine 旁白）→
+ *   等完了（null）；
+ * - 只在 `asking` 阶段才看接下来两种事件：它答出一句有正文的回话（不是工具中间步骤的
+ *   `assistant_message`）→ `asked`（`anchor` 记那一条回话的 seq）；它那一轮收口了
+ *   （`turn_ended`，`agentId` 是它、`outcome` 不是 `"interrupted"`）却还没进 `asked` → `failed`。
+ *   **`"interrupted"` 不算收口**：那是重启补跑前写的记号（见 `TurnEndedEvent` 的文档注释与
+ *   ADR-0296「interrupted = 还没人答」），一条正要被重跑的招呼不该被判成失败；
+ * - 其余事件不改（群聊发言 `chat_message` 不起 turn，也不算「答了它那一问」；别的智能体的
+ *   `assistant_message` / `turn_ended` 不算——开场白点的是谁就等谁）。
+ */
+export function advanceRoleWait(wait: RoleWait | null, e: SessionEvent): RoleWait | null {
+  if (e.type === "user_message") {
+    if (e.greeting === "new_agent") {
+      const agentId = e.mentions?.[0];
+      return agentId === undefined ? null : { agentId, phase: "asking", anchor: null };
+    }
+    return humanSpeakerOf(e) === null ? wait : null;
+  }
+  if (wait === null || wait.phase !== "asking") return wait;
+  if (e.type === "assistant_message" && e.agentId === wait.agentId && !isAgentStep(e)) {
+    return { agentId: wait.agentId, phase: "asked", anchor: e.seq };
+  }
+  if (e.type === "turn_ended" && e.agentId === wait.agentId && e.outcome !== "interrupted") {
+    return { agentId: wait.agentId, phase: "failed", anchor: null };
+  }
+  return wait;
 }
 
 /** 整份日志折叠一次（runtime 装配时播种、手机进一条聊天时现算） */
-export function roleWaitOf(events: readonly SessionEvent[]): string | null {
-  let wait: string | null = null;
+export function roleWaitOf(events: readonly SessionEvent[]): RoleWait | null {
+  let wait: RoleWait | null = null;
   for (const e of events) wait = advanceRoleWait(wait, e);
   return wait;
 }
 
 /**
  * 六句现成的话挂在哪一行底下：它答那句开场白的**第一条**回话（有正文、不是中间步骤的
- * `assistant_message`）的 seq。还没答（排队中 / 正在写）、或人已经说过话了 → null（不画）。
- * 判据从日志推，不另查库里那一格：那一格与这条开场白是 runtime 在同一刻写的（抢到 'role' 才落
- * 开场白），人的第一句话一到两边一起翻篇——去读库就得在「它答完」之后再拉一次。
+ * `assistant_message`）的 seq。还没答（排队中 / 正在写）、人已经说过话了、或它那一轮没答出来就
+ * 收口了（failed）→ null（不画）。判据从日志推，不另查库里那一格：那一格与这条开场白是 runtime
+ * 在同一刻写的（抢到 'role' 才落开场白），人的第一句话一到两边一起翻篇——去读库就得在「它答完」
+ * 之后再拉一次。
  */
 export function roleChipsAnchor(events: readonly SessionEvent[]): number | null {
-  let wait: string | null = null;
-  let anchor: number | null = null;
-  for (const e of events) {
-    const next = advanceRoleWait(wait, e);
-    if (next !== wait) {
-      wait = next;
-      anchor = null;
-      continue;
-    }
-    if (wait !== null && anchor === null && e.type === "assistant_message" && e.agentId === wait && !isAgentStep(e)) {
-      anchor = e.seq;
-    }
-  }
-  return wait === null ? null : anchor;
+  const w = roleWaitOf(events);
+  return w !== null && w.phase === "asked" ? w.anchor : null;
+}
+
+/**
+ * 人的第一句话到了，要写成职责的是什么（null = 不写、只清那一格）：它那一轮没答出一句话就收口了
+ * （failed）→ 不写；还在等它答（asking，人抢在它前面先说了）或它答过了（asked）→
+ * `roleFromReply`(那句话)。
+ */
+export function settledRole(wait: RoleWait, reply: string): string | null {
+  return wait.phase === "failed" ? null : roleFromReply(reply);
 }

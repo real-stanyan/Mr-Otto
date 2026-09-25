@@ -231,7 +231,7 @@ import {
 } from "../../../src/shared/sessionParticipants.js";
 import { LAST_THROTTLE_MS, lastOf } from "../../../src/shared/sessionLast.js";
 import { createLastWriter } from "./lastWriter.js";
-import { advanceRoleWait, newAgentGreetingText, roleFromReply, roleWaitOf } from "../../../src/shared/agentOnboarding.js";
+import { advanceRoleWait, newAgentGreetingText, roleWaitOf, settledRole, type RoleWait } from "../../../src/shared/agentOnboarding.js";
 
 /** 派活分类器读日志尾段多少条事件（#1153）。一轮 turn 十几条事件是常态，200 条
     足够捞出最近 8 句说出口的话；不读全量是因为 say() 的回执等着这一步 */
@@ -692,11 +692,13 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   });
   /** 这条会话累计有多少条人类发言（标题的档位判据）。同上：播种一次、之后逐条推进 */
   let humanSaid = countHumanMessages(seed);
-  /** 哪一只在等人说它是干什么的（#1356 A2，spec §7.2 第 3 步）：带 `greeting: "new_agent"` 的
-      开场白之后、人的第一句话之前。装配时播种、之后在 `notify` 里逐条推进（同 voiceCall /
-      participants 的形状）。它只决定「这一句要不要去结算职责」——只有那一句会碰库，别的每一句
-      零额外查询；真正的闸是库里那一格（settleRole 的条件更新） */
-  let roleWait: string | null = roleWaitOf(seed);
+  /** 哪一只在等人说它是干什么的，处在哪个阶段（#1356 A2，spec §7.2 第 3 步；F1 补的 `failed`
+      阶段见 ADR-0319 决定 4）：`asking` —— 带 `greeting: "new_agent"` 的开场白落了、它还没答；
+      `asked` —— 它答过了；`failed` —— 它那一轮收口了却一句话都没答出来（出错 / 被人停了 / 只跑了
+      工具），它没问过，人的下一句就不是回答。装配时播种、之后在 `notify` 里逐条推进（同 voiceCall /
+      participants 的形状）。它只决定「这一句要不要去结算职责、结算成什么」——只有那一句会碰库，
+      别的每一句零额外查询；真正的闸是库里那一格（settleRole 的条件更新） */
+  let roleWait: RoleWait | null = roleWaitOf(seed);
   /** 此刻的标题。空串 = 还没有。日志里最后一条 session_autotitled 胜出（同本机
       store.ts 的标题投影），首行兜底那次也会更新它——它是重判时递给模型的那一格 */
   let title = "";
@@ -1398,14 +1400,15 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     if (decisions.includes("start_turn")) startDrain();
   }
 
-  /** spec §7.2 第 3 步：那只开口之后人的第一句话 → 职责（`roleFromReply`：第一行、折空白、
-      ≤200；撞了威胁扫描就不写），那一格清掉。失败只记一行：职责是日志之外的一格投影，
+  /** spec §7.2 第 3 步：那只开口之后人的第一句话 → 职责（`settledRole`：`failed` 阶段不写
+      ——它没问过，这句就不是回答；`asking` / `asked` 走 `roleFromReply`：第一行、折空白、
+      ≤200，撞了威胁扫描就不写），那一格清掉。失败只记一行：职责是日志之外的一格投影，
       不该把一句已经收下的话翻成失败 */
-  async function settleRoleFor(agentId: string, text: string): Promise<void> {
+  async function settleRoleFor(wait: RoleWait, text: string): Promise<void> {
     try {
-      await opts.agentWriter.settleRole(opts.workspaceId, agentId, roleFromReply(text));
+      await opts.agentWriter.settleRole(opts.workspaceId, wait.agentId, settledRole(wait, text));
     } catch (err) {
-      console.warn(`[otto-runtime] 职责写回失败（session=${sessionId} agent=${agentId}）`, err);
+      console.warn(`[otto-runtime] 职责写回失败（session=${sessionId} agent=${wait.agentId}）`, err);
     }
   }
 
