@@ -166,17 +166,18 @@ final class Recognizer {
 
   private func beginAudio() {
     guard !running else { return }
+    // 正在放它的话（开麦要等两道授权，它已经开口了）：先把手上那段收掉、停引擎——回声消除只能在停着的引擎上开，
+    // 在跑着的引擎上开会抛（退回半双工）或者引发一次「配置变了」，把刚开的麦又关掉
+    // 放在激活会话之前：cut() 报的 played 会走 deactivateIfIdle()，把会话交还系统；先收再激活，顺序才对
+    if engine.isRunning {
+      playback.cut()
+      engine.stop()
+    }
     do {
       try activateSession()
     } catch {
       emit(Event(type: "error", message: "麦克风打不开：\(error.localizedDescription)"))
       return
-    }
-    // 正在放它的话（开麦要等两道授权，它已经开口了）：先把手上那段收掉、停引擎——回声消除只能在停着的引擎上开，
-    // 在跑着的引擎上开会抛（退回半双工）或者引发一次「配置变了」，把刚开的麦又关掉
-    if engine.isRunning {
-      playback.cut()
-      engine.stop()
     }
     let input = engine.inputNode
     // 系统回声消除（ADR-0277）。开不了不算错——status.aec=false，JS 退回半双工
