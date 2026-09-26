@@ -8,6 +8,8 @@ export type RootStackParams = {
   Chat: ChatTarget;
   Account: undefined;
   AgentSettings: { agentId: string };
+  /** 建群（A3）：从 ＋ 那张岔路弹窗的「一个群聊」推进来 */
+  NewGroup: undefined;
   FaceGallery: undefined;
 };
 

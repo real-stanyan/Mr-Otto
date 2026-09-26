@@ -9,6 +9,7 @@
 //   退场放完再刷新名册（新的那一行放一段入场，首次渲染不算新来的），刷新完、且这一屏还在焦点上
 //   才推它那条线（spec §5.5 的顺序是 关 → 刷新 → 推；网络慢时不该把抽屉锁死在「正在建…」）。
 //   两个 Modal 不叠着出场：弹窗退场放完（onExited）才升抽屉。
+// · ＋ →「一个群聊」（A3）→ 弹窗退场放完推建群页（Modal 还在的时候推进来的页会压在它底下）。
 // · 刷新：进前台、从聊天页退回来（focus）、建 / 删之后（那几处自己调）。不轮询。
 import { useFocusEffect, useNavigation } from "@react-navigation/native";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -16,6 +17,7 @@ import { AppState, FlatList, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { agentFaceSlot } from "../../../src/shared/agentAvatar.js";
 import { rosterGate, type RosterGate } from "../../../src/shared/agentRoster.js";
+import { CHAT_GROUP_CREATE_MIN } from "../../../src/shared/chatRoster.js";
 import { resolveChatTarget, type ChatTarget } from "../../../src/shared/mobileChat.js";
 import { filterRosterItems, freshRosterKeys, rosterItems, type RosterItem } from "../../../src/shared/mobileRoster.js";
 import { workspaceAccess } from "../../../src/shared/workspaceAccess.js";
@@ -94,8 +96,9 @@ export function RosterScreen() {
   const [query, setQuery] = useState("");
   /** ＋ 那张岔路弹窗开着没有 */
   const [fork, setFork] = useState(false);
-  /** 弹窗退场放完之后要不要升抽屉（点的是「一只智能体」，不是取消 / 点外面） */
-  const sheetAfterFork = useRef(false);
+  /** 弹窗退场放完之后做什么：升「新建智能体」抽屉 / 推建群页 / 什么都不做（点的是取消 / 点外面）。
+      两个 Modal 不叠着出场；推页也等弹窗收起 */
+  const afterFork = useRef<"agent" | "group" | null>(null);
   /** 建一只那张抽屉。有值才画：每开一次换一个 key（= 重挂一次 = 新铸一个 id）；关的时候 visible
       先翻 false，退场放完（onExited）再卸 */
   const [sheet, setSheet] = useState<{ key: number; visible: boolean } | null>(null);
@@ -260,15 +263,21 @@ export function RosterScreen() {
       <NewThingDialog
         visible={fork}
         groupFaces={groupFaces}
+        groupReady={ws !== null && ws.agents.length >= CHAT_GROUP_CREATE_MIN}
         onAgent={() => {
-          sheetAfterFork.current = true;
+          afterFork.current = "agent";
+          setFork(false);
+        }}
+        onGroup={() => {
+          afterFork.current = "group";
           setFork(false);
         }}
         onDismiss={() => setFork(false)}
         onExited={() => {
-          if (!sheetAfterFork.current) return;
-          sheetAfterFork.current = false;
-          setSheet({ key: Date.now(), visible: true });
+          const next = afterFork.current;
+          afterFork.current = null;
+          if (next === "agent") setSheet({ key: Date.now(), visible: true });
+          else if (next === "group") navigation.navigate("NewGroup");
         }}
       />
       {sheet !== null && ws !== null && home.selfUid !== null ? (
