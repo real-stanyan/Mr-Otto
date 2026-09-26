@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { BillingMe } from "../../src/shared/billing.js";
 import type { VoiceCallCard, VoiceCallCardLine } from "../../src/shared/cloudTimeline.js";
 import {
-  CALL_TOPIC_MAX, callBarMode, callFace, callTopicText, joinBlockedText, phoneOffered, waveBarHeight, waveMode,
+  CALL_TOPIC_MAX, callBarMode, callFace, callTopicText, joinBlockedText, phoneOffered, waveAmplitude, waveMode,
 } from "../../src/shared/mobileCall.js";
 import type { OpenTurn } from "../../src/shared/turnLedger.js";
 import type { VoiceCallState } from "../../src/shared/voiceCall.js";
@@ -62,19 +62,14 @@ describe("声浪", () => {
     expect(waveMode({ micOn: true, micActive: true, agentSpeaking: false })).toBe("me");
     expect(waveMode({ micOn: true, micActive: false, agentSpeaking: false })).toBe("quiet");
   });
-  it("waveBarHeight：off 恒为 3；其余落在 4–26（那一格 30 高）；能量为 0 / NaN 时人在说那档贴底", () => {
-    expect(waveBarHeight("off", 1, 3, 5)).toBe(3);
-    for (const mode of ["me", "agent", "quiet"] as const) {
-      for (let i = 0; i < 22; i++) {
-        for (const t of [0, 0.37, 1.2, 9.9]) {
-          const h = waveBarHeight(mode, 1.7, t, i);
-          expect(h).toBeGreaterThanOrEqual(4);
-          expect(h).toBeLessThanOrEqual(26);
-        }
-      }
-    }
-    expect(waveBarHeight("me", 0, 1.2, 4)).toBe(4);
-    expect(waveBarHeight("me", Number.NaN, 1.2, 4)).toBe(4);
+  it("waveAmplitude：off 为 0（一条灰线）、quiet 一口轻气、agent 满、me 按能量钳到 0..1（读不出来当 0）", () => {
+    expect(waveAmplitude("off", 1)).toBe(0);
+    expect(waveAmplitude("quiet", 1)).toBe(0.12);
+    expect(waveAmplitude("agent", 0)).toBe(1);
+    expect(waveAmplitude("me", 0.4)).toBe(0.4);
+    expect(waveAmplitude("me", 1.7)).toBe(1);
+    expect(waveAmplitude("me", -2)).toBe(0);
+    expect(waveAmplitude("me", Number.NaN)).toBe(0);
   });
 });
 

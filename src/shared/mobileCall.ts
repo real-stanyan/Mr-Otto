@@ -49,15 +49,14 @@ export function waveMode(o: { micOn: boolean; micActive: boolean; agentSpeaking:
   return o.micActive ? "me" : "quiet";
 }
 
-/** 声浪第 i 根此刻多高（点，那一格 30 高，上限 26）。它在说那档是 demo 那条三正弦包络——这边量不到它的
-    音量，画的是「有话在说」不是音量；人在说按麦克风能量缩放同一条包络；关着麦恒为 3 */
-export function waveBarHeight(mode: WaveMode, level: number, t: number, i: number): number {
-  if (mode === "off") return 3;
-  const n = Math.abs(Math.sin(t * 6 + i * 0.55)) * Math.abs(Math.sin(t * 2.1 + i * 0.21)) * Math.abs(Math.sin(t * 0.9 + i * 0.07));
-  if (mode === "agent") return 4 + n * 22;
-  if (mode === "quiet") return 4 + n * 3;
-  const l = Number.isFinite(level) ? Math.max(0, Math.min(1, level)) : 0;
-  return 4 + l * 22 * (0.45 + 0.55 * n);
+/** 声浪此刻有多响（0..1）：关着麦 = 0（一条灰线）；都没说 = 一口轻气（0.12——不是停住，停住读作坏了）；
+    它在说 = 1（这边量不到它的音量，画的是「有话在说」不是音量）；人在说 = 麦克风能量（钳到 0..1，读不出来当 0）。
+    每根条自己的起伏在界面那侧（原生驱动的循环，mobile/src/voice/CallBar.tsx），这里只给整体的响度 */
+export function waveAmplitude(mode: WaveMode, level: number): number {
+  if (mode === "off") return 0;
+  if (mode === "agent") return 1;
+  if (mode === "quiet") return 0.12;
+  return Number.isFinite(level) ? Math.max(0, Math.min(1, level)) : 0;
 }
 
 /** 通话卡第二行「聊的什么」最多几个字 */
