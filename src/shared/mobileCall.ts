@@ -31,7 +31,9 @@ export function callBarMode(o: { call: VoiceCallState | null; listeningHere: boo
 /** 电话那一格的麦克风算不算开着（声浪画不画、那颗钮写「静音」还是「取消静音」）。`mic` = 这台在听时的麦克风
     状态，null = 这台还没在听——正在开电话（`starting`，那一格已经是 live）时算开着，否则算关着。
     **没权限算关着**：没权限那句话叫人「点一下麦克风」，算开着的话那颗钮写着「静音」、一点就是关麦，而关麦
-    会把那句话一起抹掉。识别出错（`error`）仍算开着：原生会自己重试，开麦失败最后会落成 listening 关 */
+    会把那句话一起抹掉。识别出错（`error`）仍算开着：识别中断那一族原生会自己重试。**已知缺口**：开麦本身失败
+    （会话起不来 / 没有麦克风 / 格式不支持 / 引擎起不来）时原生只报 error、不补 listening 关，那颗钮因此仍写
+    「静音」，第一下点下去是关麦（#1369） */
 export function callMicOn(o: { mic: MicStatus | null; starting: boolean }): boolean {
   if (o.mic === null) return o.starting;
   return o.mic !== "off" && o.mic !== "denied";
