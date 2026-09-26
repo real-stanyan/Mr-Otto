@@ -2,7 +2,18 @@
 // （开着 / 暂停 / 没权限 / 出错 / 实时字幕），final 交给调用方发出去；半双工的判据
 // （agent 在说或排着要说 → 闭麦）。零 DOM、零 IPC。
 import { describe, expect, it } from "vitest";
-import { applySpeechEvent, bargeInOn, isSelfEcho, MIC_OFF, micShouldPause, SPEECH_HINTS_MAX, speechHints, type MicState } from "../../src/shared/voiceMic.js";
+import {
+  applySpeechEvent,
+  bargeInOn,
+  IOS_PERMISSION_HELP,
+  isSelfEcho,
+  MAC_PERMISSION_HELP,
+  MIC_OFF,
+  micShouldPause,
+  SPEECH_HINTS_MAX,
+  speechHints,
+  type MicState,
+} from "../../src/shared/voiceMic.js";
 import type { WorkspaceSnapshot } from "../../src/shared/workspaces.js";
 
 const starting: MicState = { ...MIC_OFF, status: "starting" };
@@ -143,5 +154,20 @@ describe("speechHints：喂给识别器的上下文词表（#1196）", () => {
   });
   it("没有团队快照：只剩开发常用词", () => {
     expect(speechHints(null)).toContain("GitHub");
+  });
+});
+
+describe("applySpeechEvent：没权限那句按平台说（#1356 A4）", () => {
+  const denied = { type: "status", speech: "authorized", mic: "denied", onDevice: true, locale: "zh-CN", aec: null } as const;
+  it("缺省是桌面那句（macOS 的系统设置 → 隐私与安全性）", () => {
+    expect(applySpeechEvent(MIC_OFF, denied).state.error).toBe(MAC_PERMISSION_HELP("麦克风"));
+    expect(MAC_PERMISSION_HELP("麦克风")).toContain("隐私与安全性");
+  });
+  it("手机给 IOS_PERMISSION_HELP：指 iPhone 的「设置」→ Mr Otto，不提 Electron", () => {
+    const r = applySpeechEvent(MIC_OFF, denied, IOS_PERMISSION_HELP);
+    expect(r.state.status).toBe("denied");
+    expect(r.state.error).toBe(IOS_PERMISSION_HELP("麦克风"));
+    expect(r.state.error).toContain("iPhone");
+    expect(r.state.error).not.toContain("Electron");
   });
 });

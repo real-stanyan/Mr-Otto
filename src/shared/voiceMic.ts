@@ -40,19 +40,25 @@ export const MIC_OFF: MicState = { status: "off", transcript: "", error: null, o
 /** 识别语言。先钉 zh-CN（维护者与团队都说中文）；换语言是设置项那一层的事 */
 export const SPEECH_LOCALE = "zh-CN";
 
-function permissionHelp(which: "麦克风" | "语音识别"): string {
-  return `没有「${which}」权限：系统设置 → 隐私与安全性 → ${which}，勾上 Mr Otto（开发时是 Electron / MrOttoSpeech），然后重新开麦。`;
-}
+/** 没权限那句话怎么说：去哪儿打开因平台而异（#1356 A4）。判据（哪一道没过、之后的 error 不盖掉它）只有一份 */
+export type PermissionHelp = (which: "麦克风" | "语音识别") => string;
 
-/** 一条 helper 事件进来。`final` 在场 = 这一句说完了，调用方拿去发；空串不交出 */
-export function applySpeechEvent(state: MicState, ev: SpeechEvent): { state: MicState; final?: string } {
+export const MAC_PERMISSION_HELP: PermissionHelp = (which) =>
+  `没有「${which}」权限：系统设置 → 隐私与安全性 → ${which}，勾上 Mr Otto（开发时是 Electron / MrOttoSpeech），然后重新开麦。`;
+
+export const IOS_PERMISSION_HELP: PermissionHelp = (which) =>
+  `没有「${which}」权限：打开 iPhone 的「设置」→ Mr Otto，把「${which}」打开，然后点一下麦克风。`;
+
+/** 一条 helper 事件进来。`final` 在场 = 这一句说完了，调用方拿去发；空串不交出。
+    `help` 缺省是桌面那句（macOS 的系统设置），手机给 IOS_PERMISSION_HELP */
+export function applySpeechEvent(state: MicState, ev: SpeechEvent, help: PermissionHelp = MAC_PERMISSION_HELP): { state: MicState; final?: string } {
   switch (ev.type) {
     case "status": {
       const denied =
         ev.speech === "denied" || ev.speech === "restricted" ? "语音识别"
         : ev.mic === "denied" || ev.mic === "restricted" ? "麦克风"
         : null;
-      if (denied !== null) return { state: { ...state, status: "denied", error: permissionHelp(denied), onDevice: ev.onDevice, aec: ev.aec } };
+      if (denied !== null) return { state: { ...state, status: "denied", error: help(denied), onDevice: ev.onDevice, aec: ev.aec } };
       return { state: { ...state, onDevice: ev.onDevice, aec: ev.aec } };
     }
     case "listening":
