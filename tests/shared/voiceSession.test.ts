@@ -77,6 +77,14 @@ describe("voiceSession", () => {
     expect(h.changes.at(-1)?.mic.status).toBe("listening");
   });
 
+  it("join 一条此刻没开着的会话：什么都不做（不开麦、不进入在听）", () => {
+    const h = harness();
+    h.v.join("other");
+    expect(h.v.state()).toBeNull();
+    expect(h.mic).toEqual([]);
+    expect(h.changes).toEqual([]);
+  });
+
   it("加入之后通话里那只的回复读出来，音色按 agentId 派生；加入之前的不读；通话外的不读", async () => {
     const h = harness({ events: [callOn(1, ["a"]), reply(2, "a", "旧话。")] });
     h.v.join(S);

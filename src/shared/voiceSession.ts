@@ -3,10 +3,12 @@
 // 手机端的 mobile/src/voice/voiceStore.ts 只接线（原生模块、TTS 网关、聊天那条连接）。
 //
 // 判据全是桌面同一份（voiceFeed / voiceMic / voicePlayer / voiceCall / agentVoice）；这里是把它们串起来
-// 的那一层，语义逐条照桌面 store 的语音那一段（#1163 / #1176 / #1184 / #1289），差别三处：
+// 的那一层，语义逐条照桌面 store 的语音那一段（#1163 / #1176 / #1184 / #1289），差别四处：
 // ① 没有「扣住 / 合并」那扇窗（#1281 的决策模型断句，走主进程的 IPC，桌面专属）——一句说完就发；
 // ② 没有「静音 = 本机不播」：手机上那颗静音是关麦（spec §5.7 / demo），这一层只有 setMic；
-// ③ 放音走哪条路由注入的 createAudio 决定（手机一律交给原生模块自己的音频引擎，ADR-0280），这一层不知道。
+// ③ 放音走哪条路由注入的 createAudio 决定（手机一律交给原生模块自己的音频引擎，ADR-0280），这一层不知道；
+// ④ `say()` 那个 promise 多接了一次 rejection（桌面 sendSpoken 没接）：发不出去落进 mic.error，
+//    不是一条未处理的 rejection——纯加法，不改前三条的判据。
 // 桌面 store 的语音编排还没改用这一份（多一扇 ① 那扇窗，源码里还钉着 utteranceHoldWiring 那几条断言），
 // 两份编排并存是已知代价，见 ADR-0320。
 
@@ -145,8 +147,9 @@ export function createVoiceSession(deps: VoiceSessionDeps): VoiceSession {
     state: () => listen,
 
     join(sessionId) {
+      const events = deps.events(sessionId);
+      if (events === null) return;
       stopAll();
-      const events = deps.events(sessionId) ?? [];
       const last = events.at(-1);
       set({
         sessionId, sinceSeq: last === undefined ? -1 : last.seq,
