@@ -83,9 +83,9 @@ const nativeAudio: HelperAudioBridge = {
     try {
       if (!audioDir.exists) audioDir.create({ idempotent: true, intermediates: true });
       const f = new File(audioDir, `${id}.mp3`);
+      files.set(id, f);
       f.create({ overwrite: true });
       f.write(bytes);
-      files.set(id, f);
       await OttoSpeech.play(id, f.uri);
       return { id };
     } catch (err) {
