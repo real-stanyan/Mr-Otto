@@ -57,6 +57,10 @@ final class Recognizer {
   private var timer: DispatchSourceTimer?
   private var running = false
   private var paused = false
+  /// 开麦的号（终审 Important 2）：开麦要等两道授权（第一次会弹窗），等的时候来了 stop（切后台 / 离开 /
+  /// 挂断），授权回来时不该再开——JS 那边早当它关了，不会再发 stop，麦就开着没人管（橙点亮着、识别在跑）。
+  /// start 与 stop 各推一格，授权回调只认自己那一格
+  private var startToken = 0
   private var generation = 0
   private var requestStartedAt: Double = 0
   private var locale = "zh-CN"
@@ -110,6 +114,8 @@ final class Recognizer {
       emit(Event(type: "listening", on: true))
       return
     }
+    startToken += 1
+    let token = startToken
     self.locale = locale
     self.hints = hints
     endpointer = Endpointer()
@@ -120,10 +126,11 @@ final class Recognizer {
     }
     recognizer = r
     // 两道授权按顺序问：先语音识别再麦克风；任何一道没过都把 status 发出去，JS 据它说人话（去哪儿打开）。
-    // 两个回调都在系统挑的线程上来，hop 回 speechQueue
+    // 两个回调都在系统挑的线程上来，hop 回 speechQueue；这次 start 等的时候被 stop（或新的 start）顶掉了，
+    // 就什么都不说、不开麦（startToken）
     SFSpeechRecognizer.requestAuthorization { [weak self] s in
       speechQueue.async {
-        guard let self else { return }
+        guard let self, token == self.startToken else { return }
         guard s == .authorized else {
           self.emit(self.status())
           self.emit(Event(type: "error", message: "没有「语音识别」权限"))
@@ -131,6 +138,7 @@ final class Recognizer {
         }
         AVCaptureDevice.requestAccess(for: .audio) { ok in
           speechQueue.async {
+            guard token == self.startToken else { return }
             guard ok else {
               self.emit(self.status())
               self.emit(Event(type: "error", message: "没有「麦克风」权限"))
@@ -339,6 +347,9 @@ final class Recognizer {
   }
 
   func stop() {
+    // 先推一格：还在等授权的那次 start 作废。它不算开过，所以不报 listening 关——JS 早当它关了，多报一条
+    // 只会落进「关了之后迟到的事件」那道缝里
+    startToken += 1
     guard running else { return }
     running = false
     paused = false
