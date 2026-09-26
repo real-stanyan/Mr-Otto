@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { BillingMe } from "../../src/shared/billing.js";
 import type { VoiceCallCard, VoiceCallCardLine } from "../../src/shared/cloudTimeline.js";
 import {
-  CALL_TOPIC_MAX, callBarMode, callFace, callTopicText, joinBlockedText, phoneOffered, waveAmplitude, waveMode,
+  CALL_TOPIC_MAX, callBarMode, callCardDurationText, callFace, callTopicText, joinBlockedText, phoneOffered, waveAmplitude, waveMode,
 } from "../../src/shared/mobileCall.js";
 import type { OpenTurn } from "../../src/shared/turnLedger.js";
 import type { VoiceCallState } from "../../src/shared/voiceCall.js";
@@ -93,6 +93,14 @@ describe("callTopicText：通话卡第二行「聊的什么」", () => {
     expect([...(out ?? "")]).toHaveLength(CALL_TOPIC_MAX + 1);
     expect(out?.endsWith("…")).toBe(true);
     expect(out?.startsWith("\u{1F600}")).toBe(true);
+  });
+});
+
+describe("callCardDurationText：通话卡上的时长", () => {
+  it("还开着写「通话中」；结束了按桌面那份报（不足一分钟报秒）", () => {
+    expect(callCardDurationText(card([]))).toBe("通话中");
+    expect(callCardDurationText({ ...card([]), sinceTs: 1000, endedTs: 1000 + 48_000 })).toBe("48 秒");
+    expect(callCardDurationText({ ...card([]), sinceTs: 0, endedTs: 372_000 })).toBe("6 分 12 秒");
   });
 });
 

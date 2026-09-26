@@ -1,6 +1,6 @@
 // mobileCall —— 手机聊天页「电话」那一格的判据（#1356 A4，spec §5.7）。纯逻辑，ChatScreen / CallBar 只画。
 
-import type { VoiceCallCard } from "./cloudTimeline.js";
+import { callDurationText, type VoiceCallCard } from "./cloudTimeline.js";
 import type { BillingSnapshotView } from "./shellBridge.js";
 import type { OpenTurn } from "./turnLedger.js";
 import { ttsBlocked, ttsHostedOf } from "./ttsRoute.js";
@@ -72,6 +72,12 @@ export function callTopicText(card: VoiceCallCard): string | null {
   const one = firstLine.replace(/\s+/g, " ").trim();
   const chars = [...one];
   return chars.length <= CALL_TOPIC_MAX ? one : `${chars.slice(0, CALL_TOPIC_MAX).join("")}…`;
+}
+
+/** 通话卡上写的时长：还开着写「通话中」（不走表——电话那一格已经有一只表），结束了写 callDurationText
+    （桌面同一份：不足一分钟报秒、一小时以上报「小时 + 分」） */
+export function callCardDurationText(card: VoiceCallCard): string {
+  return card.endedTs === null ? "通话中" : callDurationText(card.endedTs - card.sinceTs);
 }
 
 /** 这台此刻为什么接不了（「通话还开着」那一格里「接着听」换成这一句）。null = 接得了。

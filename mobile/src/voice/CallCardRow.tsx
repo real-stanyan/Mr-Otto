@@ -3,14 +3,11 @@
 // 不走表——电话那一格已经有一只表。
 import { useRef } from "react";
 import { Animated, Pressable, Text, View } from "react-native";
-import { callDurationText, type VoiceCallCard } from "../../../src/shared/cloudTimeline.js";
+import type { VoiceCallCard } from "../../../src/shared/cloudTimeline.js";
+import { callCardDurationText } from "../../../src/shared/mobileCall.js";
 import { WaveGlyph } from "../chrome/VoiceGlyphs.js";
 import { PRESS_SPRING, usePalette } from "../theme.js";
 import { useReduceMotion } from "../ui.js";
-
-export function callCardDuration(card: VoiceCallCard): string {
-  return card.endedTs === null ? "通话中" : callDurationText(card.endedTs - card.sinceTs);
-}
 
 export function CallCardRow({ card, topic, onPress }: { card: VoiceCallCard; topic: string | null; onPress: () => void }) {
   const { c } = usePalette();
@@ -19,7 +16,7 @@ export function CallCardRow({ card, topic, onPress }: { card: VoiceCallCard; top
   const to = (v: number): void => {
     if (!reduce) Animated.spring(scale, { toValue: v, useNativeDriver: true, ...PRESS_SPRING }).start();
   };
-  const duration = callCardDuration(card);
+  const duration = callCardDurationText(card);
   return (
     <View style={{ paddingHorizontal: 16 }}>
       <Pressable

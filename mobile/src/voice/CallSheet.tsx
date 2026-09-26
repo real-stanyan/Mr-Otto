@@ -3,9 +3,9 @@
 // 名单变更那几行居中只写字（不带脸）。抽屉底色是 card，所以它说的那句用 background 做底才分得开。
 import { ScrollView, Text, View } from "react-native";
 import { callOffsetText, type VoiceCallCard, type VoiceCallCardLine } from "../../../src/shared/cloudTimeline.js";
+import { callCardDurationText } from "../../../src/shared/mobileCall.js";
 import { BottomSheet } from "../sheet/BottomSheet.js";
 import { space, type as t, usePalette, withAlpha } from "../theme.js";
-import { callCardDuration } from "./CallCardRow.js";
 
 function CallLine({ line }: { line: VoiceCallCardLine }) {
   const { c } = usePalette();
@@ -41,7 +41,7 @@ export function CallSheet({ visible, card, onClose, onExited }: {
   onExited: () => void;
 }) {
   const { c } = usePalette();
-  const title = card === null ? "语音聊天" : `语音聊天 · ${callCardDuration(card)}`;
+  const title = card === null ? "语音聊天" : `语音聊天 · ${callCardDurationText(card)}`;
   return (
     <BottomSheet visible={visible} title={title} onClose={onClose} onExited={onExited}>
       <ScrollView contentContainerStyle={{ padding: space.md, gap: 10 }}>
