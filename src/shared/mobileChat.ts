@@ -4,11 +4,12 @@
 // 步骤、开场白都不画，ADR-0235 / 0250）。这里只回答「留下来的那些画成哪一种行」，以及
 // 最底下「此刻」那一行挑哪一只。
 
-import type { SessionEvent } from "../session/events.js";
+import type { ChatRosterChangedEvent, SessionEvent } from "../session/events.js";
 import { groupRows, rosterRows } from "./agentRoster.js";
 import { splitBubbles } from "./chatBubbles.js";
 import {
-  assistantLabel, cloudEmptyState, hiddenFromCloudTimeline, relayLineText, stopButtonRows, systemNoteText, turnEndedLineText, userRowIdentity,
+  assistantLabel, chatRosterLineParts, cloudEmptyState, dispatchLineText, hiddenFromCloudTimeline, relayLineText, stopButtonRows,
+  systemNoteText, turnEndedLineText, userRowIdentity, type RosterLinePart,
 } from "./cloudTimeline.js";
 import { withDaySeparators } from "./dayLabel.js";
 import { dmFaceState, type FaceState } from "./ottoFace/index.js";
@@ -60,8 +61,10 @@ export type ChatRow =
   | { kind: "human"; key: string; ts: number; name: string; text: string }
   /** 它说的：不套气泡的正文，按空行拆成几段（splitBubbles，ADR-0266） */
   | { kind: "agent"; key: string; ts: number; agentId: string; name: string; paragraphs: string[] }
-  /** 旁白（系统说的一句、engine 注的后台任务 / 护栏、接力线）与出错 */
-  | { kind: "note"; key: string; ts: number; text: string; tone: "muted" | "error"; detail: string | null };
+  /** 旁白（系统说的一句、engine 注的后台任务 / 护栏、接力线、派活那一句）与出错 */
+  | { kind: "note"; key: string; ts: number; text: string; tone: "muted" | "error"; detail: string | null }
+  /** 群的名单变了那一行（A3）：居中，名字那几格带 agentId（左边画脸）；几格拼起来就是那句话本身 */
+  | { kind: "roster"; key: string; ts: number; parts: RosterLinePart[] };
 
 type ItemRow = Exclude<ChatRow, { kind: "day" }>;
 
@@ -96,18 +99,38 @@ function rowOf(e: SessionEvent, ws: WorkspaceSnapshot, selfUid: string): ItemRow
     case "session_archived":
       return { kind: "note", key, ts: e.ts, text: "这条聊天已归档", tone: "muted", detail: null };
     default:
-      // 名单变更那一行（chat_roster_changed，要看前一条）、通话卡（A4）、压缩与其余内务：
-      // 手机端这一片不画——压缩是上下文系统自己的事（聊天里那条线不断），群的名单行在 A3
+      // 名单变更那一行（chat_roster_changed）要看前一条，在 chatRows 的循环里判，不在这里；
+      // 通话卡（A4）、压缩与其余内务：手机端不画——压缩是上下文系统自己的事（聊天里那条线不断）
       return null;
   }
 }
 
-/** 时间线：日志顺序 + 每个自然日前一条分隔条（`now` 由调用方递，纯函数才测得动） */
+/** 一条事件画成几行：通常一行；人说的那句被 runtime 派了活（没 @ 谁、它按职责挑了谁接）时，
+    那句话底下再跟一行「没 @ 谁 —— 运维接了」（spec §5.6） */
+function rowsOf(e: SessionEvent, ws: WorkspaceSnapshot, selfUid: string): ItemRow[] {
+  const row = rowOf(e, ws, selfUid);
+  if (row === null) return [];
+  const dispatched = e.type === "user_message" && (row.kind === "mine" || row.kind === "human") ? dispatchLineText(e, ws) : null;
+  if (dispatched === null) return [row];
+  return [row, { kind: "note", key: `dispatch-${e.seq}`, ts: e.ts, text: dispatched, tone: "muted", detail: null }];
+}
+
+/** 时间线：日志顺序 + 每个自然日前一条分隔条（`now` 由调用方递，纯函数才测得动）。
+    名单变了那一行（A3）要看**前一条**名单事件——建聊天那一条与「名单没变」都不画——判据跨事件，
+    所以在这个循环里判、不进逐事件的 rowOf（同桌面 CloudSessionPage 的 rosterLines）。
+    窗口里最早那条名单事件（尾巴模式，往前还有没拉下来的）没有前一条可比，当建聊天那一条不画
+    （说不清就不画）；往前翻一页之后它自己会出现 */
 export function chatRows(o: { events: readonly SessionEvent[]; ws: WorkspaceSnapshot; selfUid: string; now: number }): ChatRow[] {
   const items: ItemRow[] = [];
+  let prevRoster: ChatRosterChangedEvent | null = null;
   for (const e of o.events) {
-    const r = rowOf(e, o.ws, o.selfUid);
-    if (r !== null) items.push(r);
+    if (e.type === "chat_roster_changed") {
+      const parts = chatRosterLineParts(prevRoster, e, o.selfUid);
+      prevRoster = e;
+      if (parts !== null) items.push({ kind: "roster", key: `e${e.seq}`, ts: e.ts, parts });
+      continue;
+    }
+    items.push(...rowsOf(e, o.ws, o.selfUid));
   }
   return withDaySeparators(items, o.now).map((d): ChatRow =>
     d.kind === "day" ? { kind: "day", key: d.key, label: d.label } : d.item,

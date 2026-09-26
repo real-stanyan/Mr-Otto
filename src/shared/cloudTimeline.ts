@@ -72,6 +72,15 @@ export function relayLineText(e: AgentRelayEvent, ws: WorkspaceSnapshot): string
   return `${agentNameOf(ws, e.fromAgentId)} → ${agentNameOf(ws, e.toAgentId)} · 接力第 ${e.depth} 棒`;
 }
 
+/** 派活那一句（#1356 A3，spec §5.6）：人没 @ 谁、runtime 按职责挑了谁接（ADR-0270）——
+    「没 @ 谁 —— 运维接了」，排在那句话底下。从 `user_message.dispatch` 投影；只在真的派出去了
+    （`mentions` 非空）时说。名字现查（被删的那只回 id，同 relayLineText 的纪律：旧的一行上还得有个
+    把手）。手机端先画，桌面那侧还没接 */
+export function dispatchLineText(e: UserMessageEvent, ws: WorkspaceSnapshot): string | null {
+  if (e.dispatch !== "auto" || e.mentions === undefined || e.mentions.length === 0) return null;
+  return `没 @ 谁 —— ${e.mentions.map((id) => agentNameOf(ws, id)).join("、")}接了`;
+}
+
 /** 这条事件在云会话时间线上要不要**藏起来**（#950；#993 扩了四类，#1055 又添一类）。
     群聊时间线的读者是团队里各行各业的人，不是在读一份审计日志——本地会话
     那套 AUDIT 小灰字（会话已创建 / 请求信封已更新 / 由谁批准）在这里是纯噪音：

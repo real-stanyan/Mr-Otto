@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { chatRosterLineParts, hiddenFromCloudTimeline, type RosterLinePart } from "../../src/shared/cloudTimeline.js";
-import type { ChatRosterChangedEvent, SessionEvent } from "../../src/session/events.js";
+import { chatRosterLineParts, dispatchLineText, hiddenFromCloudTimeline, type RosterLinePart } from "../../src/shared/cloudTimeline.js";
+import type { ChatRosterChangedEvent, SessionEvent, UserMessageEvent } from "../../src/session/events.js";
+import type { WorkspaceSnapshot } from "../../src/shared/workspaces.js";
 
 describe("hiddenFromCloudTimeline 第 ⑧ 条（#1213）", () => {
   it("自动命名藏起来——「会话被起了个名字」人不能据此行动，是机器的内务", () => {
@@ -72,5 +73,33 @@ describe("chatRosterLineParts（#1280）", () => {
   // 否则时间线上永远没有这一行——而且是安静地没有
   it("不在 hiddenFromCloudTimeline 里", () => {
     expect(hiddenFromCloudTimeline(ev(2, [["admin", "管理员"]], "me"))).toBe(false);
+  });
+});
+
+// 派活那一句（#1356 A3，spec §5.6）：人没 @ 谁、runtime 按职责挑了谁接（ADR-0270），从 user_message.dispatch 投影
+describe("dispatchLineText（#1356 A3）", () => {
+  const agent = (agentId: string, name: string) => ({
+    agentId, name, description: "", instructions: "", models: [], tools: [], createdBy: "me", updatedTs: 0, avatarSlot: null,
+  });
+  const WS = {
+    id: "home1", name: "我的智能体", ownerUid: "me", kind: "home", sandboxApproval: "ask",
+    members: [], connectors: [], sessions: [],
+    agents: [agent("admin", "管理员"), agent("a_000000000002", "运维"), agent("a_000000000003", "设计")],
+  } as unknown as WorkspaceSnapshot;
+  const um = (o: Record<string, unknown>) =>
+    ({ seq: 1, sessionId: "s", ts: 0, type: "user_message", content: "[Stan]: 这版谁先发", fromUid: "me", ...o }) as UserMessageEvent;
+
+  it("派出去了：「没 @ 谁 —— 运维接了」；几只一起接就顿号连起来", () => {
+    expect(dispatchLineText(um({ mentions: ["a_000000000002"], dispatch: "auto" }), WS)).toBe("没 @ 谁 —— 运维接了");
+    expect(dispatchLineText(um({ mentions: ["a_000000000002", "a_000000000003"], dispatch: "auto" }), WS))
+      .toBe("没 @ 谁 —— 运维、设计接了");
+  });
+  it("人亲手 @ 的 / 没派出去（名单空）/ 旧日志没有这一格：不画", () => {
+    expect(dispatchLineText(um({ mentions: ["a_000000000002"] }), WS)).toBeNull();
+    expect(dispatchLineText(um({ mentions: [], dispatch: "auto" }), WS)).toBeNull();
+    expect(dispatchLineText(um({}), WS)).toBeNull();
+  });
+  it("那只已经被删了：回 id（旧的一行上还得有个把手，同接力线）", () => {
+    expect(dispatchLineText(um({ mentions: ["a_999999999999"], dispatch: "auto" }), WS)).toBe("没 @ 谁 —— a_999999999999接了");
   });
 });
