@@ -1,5 +1,8 @@
 import { describe, it, expect } from "vitest";
-import { applyAgentMention, mentionQueryAt, pickerEmptyState, resolveSendMentions } from "../../src/shared/agentMentionInput.js";
+import {
+  applyAgentMention, insertAgentMention, mentionQueryAt, pickerEmptyState, resolveSendMentions,
+} from "../../src/shared/agentMentionInput.js";
+import { parseMentions } from "../../src/shared/remote/agentMention.js";
 
 describe("mentionQueryAt", () => {
   it("刚打了 @ / 打了一半 / 中文标点后 —— 都算正在打", () => {
@@ -135,5 +138,29 @@ describe("resolveSendMentions", () => {
         resolveSendMentions({ text: "@张三 看下", parsed: [], refreshFailed: true, freshCandidates: roster, memberCandidates: members })
       ).toEqual({ kind: "send", mentions: undefined, notice: "名单读不出来，这句话的 @ 由云端按名字解析" });
     });
+  });
+});
+
+describe("insertAgentMention（#1356 A3：手机「@ 谁」那颗钮）", () => {
+  const C = [{ agentId: "a_000000000002", name: "运维" }];
+  it("空输入框：插在开头", () => {
+    expect(insertAgentMention("", 0, "运维")).toEqual({ text: "@运维 ", caret: 4 });
+  });
+  it("光标前面贴着字：补一个空格——贴上去的「看下@运维」parseMentions 认不出", () => {
+    const r = insertAgentMention("帮我看下", 4, "运维");
+    expect(r).toEqual({ text: "帮我看下 @运维 ", caret: 9 });
+    expect(parseMentions(r.text, C)).toEqual(["a_000000000002"]);
+  });
+  it("光标前面是中文标点：不补（标点本来就是边界）", () => {
+    expect(insertAgentMention("你好，", 3, "运维")).toEqual({ text: "你好，@运维 ", caret: 7 });
+  });
+  it("光标停在一个没打完的 @ 后面：替换那一截，不再补一个 @", () => {
+    expect(insertAgentMention("@运", 2, "运维")).toEqual({ text: "@运维 ", caret: 4 });
+  });
+  it("插在句子中间：前后都不多出空格", () => {
+    expect(insertAgentMention("看下 明天", 2, "运维")).toEqual({ text: "看下 @运维 明天", caret: 6 });
+  });
+  it("光标越界（输入框刚被清空、选区还是旧的）：夹回末尾", () => {
+    expect(insertAgentMention("", 7, "运维")).toEqual({ text: "@运维 ", caret: 4 });
   });
 });

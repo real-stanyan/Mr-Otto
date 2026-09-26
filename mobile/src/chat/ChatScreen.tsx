@@ -8,6 +8,8 @@
 // · 草稿：私聊还没建时是同一张页、还没有会话，第一句发出去那一刻才建（spec §5.2）。当场就建
 //   会让「点进去看一眼」也把它顶到名册最上面。
 // · 状态（spec §6）：gone 一行「正在重连…」、发送钮灰；denied 是终态，说清是哪一种 +「回名册」。
+// · 群聊（A3，spec §5.6）：输入框上方一颗「@ 谁」→ 抽屉挑一只 → 抽屉退场放完插进 `@名字 `；空群（最后一只
+//   被移出了）输入框上方一行实话、不画「@ 谁」；占位字「说给这一组听…」。
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { BlurView } from "expo-blur";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -39,9 +41,12 @@ import { space, type as t, usePalette, withAlpha } from "../theme.js";
 import { Button, Spinner } from "../ui.js";
 import { ChatRowView, NowRowView } from "./ChatRows.js";
 import { Composer, type ComposerHandle } from "./Composer.js";
+import { MentionChip, MentionSheet } from "./MentionSheet.js";
 import { RoleChips } from "./RoleChips.js";
 
 const EMPTY_EVENTS: SessionEvent[] = [];
+/** 空群（A3：最后一只也移得走）的那句实话：没有人在，说的话没人接，出路在群设置 */
+const EMPTY_GROUP_TEXT = "这个群里没有智能体了，说的话没人接。去群设置里加一只。";
 type Item = { kind: "row"; row: ChatRow } | { kind: "now"; now: NowRow } | { kind: "roles" };
 type Props = NativeStackScreenProps<RootStackParams, "Chat">;
 
@@ -99,6 +104,10 @@ function Hello({ ws, kind, agentIds, title }: { ws: WorkspaceSnapshot; kind: "dm
         <Text style={{ ...t.footnote, color: c.mutedForeground }}>说第一句话就开始了。</Text>
       </View>
     );
+  }
+  if (agentIds.length === 0) {
+    // 空群：没有谁「都在」
+    return <Text style={{ ...t.footnote, color: c.mutedForeground, textAlign: "center" }}>{EMPTY_GROUP_TEXT}</Text>;
   }
   return (
     <View style={{ alignItems: "center", gap: 8 }}>
@@ -168,6 +177,9 @@ export function ChatScreen({ route, navigation }: Props) {
   /** 这一页自己的一句（点名打错了、建私聊失败、停不下来） */
   const [pageNote, setPageNote] = useState<{ text: string; tone: "muted" | "error" } | null>(null);
   const [stopping, setStopping] = useState(false);
+  /** 「@ 谁」那张抽屉开着没有；挑中的名字等抽屉退场放完再插（Modal 还在时输入框拿不到焦点） */
+  const [mentioning, setMentioning] = useState(false);
+  const pendingMention = useRef<string | null>(null);
 
   // 这条线已经存在就进房；草稿什么都不做，第一句发出去才建
   useEffect(() => {
@@ -262,6 +274,9 @@ export function ChatScreen({ route, navigation }: Props) {
       : kind === "group" && sessionId !== null ? () => navigation.navigate("GroupSettings", { sessionId })
         : undefined;
 
+  const emptyGroup = kind === "group" && session !== null && agentIds.length === 0;
+  const canMention = kind === "group" && session !== null && agentIds.length > 0;
+
   return (
     <View style={{ flex: 1, backgroundColor: c.background }}>
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
@@ -328,11 +343,18 @@ export function ChatScreen({ route, navigation }: Props) {
               <Button size="auto" variant="plain" label="放弃" onPress={dropUnsent} />
             </View>
           ) : null}
+          {emptyGroup && centre !== "hello" ? <Line tone="muted">{EMPTY_GROUP_TEXT}</Line> : null}
         </View>
+
+        {canMention ? (
+          <View style={{ flexDirection: "row", paddingHorizontal: 16, paddingTop: 8 }}>
+            <MentionChip onPress={() => setMentioning(true)} />
+          </View>
+        ) : null}
 
         <Composer
           ref={composer}
-          placeholder={roleAnchor !== null ? "说一句它是干什么的…" : kind === "dm" ? `跟「${title}」说…` : "说点什么…"}
+          placeholder={roleAnchor !== null ? "说一句它是干什么的…" : kind === "dm" ? `跟「${title}」说…` : "说给这一组听…"}
           canSend={canSend}
           sessionId={session?.sessionId ?? null}
           onSend={onSend}
@@ -346,6 +368,24 @@ export function ChatScreen({ route, navigation }: Props) {
         onBack={() => navigation.goBack()}
         {...(onSettings === undefined ? {} : { onSettings })}
       />
+
+      {ws !== null ? (
+        <MentionSheet
+          visible={mentioning}
+          ws={ws}
+          agentIds={agentIds}
+          onPick={(agentId) => {
+            pendingMention.current = agentNameOf(ws, agentId);
+            setMentioning(false);
+          }}
+          onClose={() => setMentioning(false)}
+          onExited={() => {
+            const name = pendingMention.current;
+            pendingMention.current = null;
+            if (name !== null) composer.current?.mention(name);
+          }}
+        />
+      ) : null}
     </View>
   );
 }
