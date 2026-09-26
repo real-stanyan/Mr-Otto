@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import {
   modelsForMe, grantByPaymentIntentQuery, grantInsertBody, grantsQuery, meFromParts, pageAll, pagedQuery, parseGrantRow,
@@ -336,5 +337,44 @@ describe("决策模型那一格（#1281）", () => {
       .toEqual({ models: ["jev-1.13"], uses: { dispatch: "shadow" } });
     expect(meFromParts(null, null, addon, ["flash"], [], {}, [], [], { models: [], uses: { dispatch: "on" } }).decision)
       .toEqual({ models: [], uses: {} });
+  });
+});
+
+// ── plans 的 isolate 级缓存（#1322）──────────────────────────────────────
+// `/me` 里 `routesOf(env)` 有 60s 缓存，而**同一行**的 `plansQuery()` 没有，于是每一发
+// `/me` 都真打一次 Supabase：HEL 上 290–326ms（与一整趟跨洲 DO 往返同价），SYD 上
+// 115–353ms（那边 DO 往返只要 8–10ms，贵一个数量级）——数是 ADR-0305 那把尺子量出来的，
+// 在 #1304 的评论里。而 `/me` 由 hostedProbe 每 60 秒刷一次、账号页与额度那两扇窗全靠它，
+// 是条高频路径。
+//
+// worker.ts 进不了 vitest（一 import 就要 `cloudflare:workers` 的运行时），判据只好落在
+// 源码上，同 tests/edge/quotaTiming.test.ts 那组接线断言。
+describe("worker.ts：plans 的 60s isolate 缓存，只给 /me（#1322）", () => {
+  const read = async (): Promise<string> =>
+    readFile(new URL("../../services/edge/src/worker.ts", import.meta.url), "utf8");
+
+  it("与 routesCache 同款：isolate 级模块变量 + 60s，不是 globalThis 也不是 DO", async () => {
+    const src = await read();
+    expect(src).toMatch(/^let plansCache: \{ v: PlanRow\[\]; exp: number \} \| null = null;$/m);
+    expect(src).toContain("plansCache = { v, exp: Date.now() + 60_000 }");
+    // 过期才重查——这一格写反（`<` 而不是 `>`）会让缓存**从不命中**，而线上唯一的症状
+    // 是这条 issue 本身：一切照常，只是每一发都慢 300ms
+    expect(src).toContain("if (plansCache && plansCache.exp > Date.now()) return plansCache.v;");
+  });
+
+  it("/me 那一行走缓存，不再直查", async () => {
+    const src = await read();
+    expect(src).toContain("Promise.all([routesOf(env), plansOf(env)])");
+  });
+
+  it("checkout 仍然直查——它是**开单**路径，拿一份最多陈旧 60 秒的价目去开 Stripe checkout 等于按旧价收一次钱", async () => {
+    const src = await read();
+    const from = src.indexOf("async checkout(uid");
+    const to = src.indexOf("async portal(uid");
+    expect(from).toBeGreaterThan(0);
+    expect(to).toBeGreaterThan(from);
+    const body = src.slice(from, to);
+    expect(body).toContain("db.get(plansQuery())");
+    expect(body).not.toContain("plansOf(");
   });
 });

@@ -36,7 +36,7 @@ import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 import { safeSpeakerLabel, SYSTEM_SPEAKER_UID } from "../../../shared/promptSafe.js";
 import {
   assistantLabel, hiddenFromCloudTimeline, systemNoteText, userRowIdentity, type VoiceCallCard,
-} from "./cloudTimeline.js";
+} from "../../../shared/cloudTimeline.js";
 
 export interface ConversationMapEntry {
   id: string;

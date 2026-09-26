@@ -7,7 +7,8 @@ import type { SessionEvent } from "../../src/session/events.js";
 import { createTaskSessionSync, type TaskSessionSync, type TaskSessionSyncDeps } from "../../src/main/taskSessionSync.js";
 import { TaskSyncError, type TaskSessionRow, type TaskSessionsApi, type TaskSyncErrorCode } from "../../src/main/taskSessionsApi.js";
 import type { TaskSyncFile } from "../../src/main/taskSyncStore.js";
-import { HUMAN_EVENT_TYPES, PEN_RENEW_MS, TASK_EVENT_MAX_BYTES, TASK_TEXT_MAX_BYTES } from "../../src/shared/taskSync.js";
+import { rewindBranch } from "../../src/main/checkpointRewind.js";
+import { PEN_BUSY_EXEMPT, HUMAN_EVENT_TYPES, PEN_RENEW_MS, TASK_EVENT_MAX_BYTES, TASK_TEXT_MAX_BYTES } from "../../src/shared/taskSync.js";
 import { tempDir } from "../helpers/tempDir.js";
 
 const utf8bytes = (s: string): number => new TextEncoder().encode(s).length;
@@ -37,6 +38,8 @@ export function fakeCloud(uid = "u1"): FakeCloud {
   const failOnce = new Map<string, { code: TaskSyncErrorCode; message: string }>();
   const net = () => { if (offline) throw new TaskSyncError("network", "fetch failed"); };
   const penLive = (r: TaskSessionRow, holder: string) => r.pen_holder === holder && r.pen_until !== null && Date.parse(r.pen_until) > now.t;
+  const penHeldByOther = (r: TaskSessionRow, holder: string) =>
+    r.pen_holder !== null && r.pen_holder !== holder && r.pen_until !== null && Date.parse(r.pen_until) > now.t;
   const api: TaskSessionsApi = {
     async listChanged(_u, since) { net(); calls.push("list"); return [...rows.values()].map((x) => x.row).filter((r) => since === null || r.updated_at > since); },
     async getSession(_u, id) { net(); return rows.get(id)?.row ?? null; },
@@ -79,6 +82,11 @@ export function fakeCloud(uid = "u1"): FakeCloud {
           throw new TaskSyncError("forbidden", "bad_request: user_message too large");
         }
         if (!HUMAN_EVENT_TYPES.has(e.type) && !penLive(entry.row, holder)) throw new TaskSyncError("pen_required", "pen_required");
+        // ④ 0039：人的动作**也要看笔**（#1258）——笔活着且在别人手上 = 他正在跑一轮，
+        //    这一条现在落不进去。`session_created` 例外（建行那一刻行和笔都还不存在）
+        if (HUMAN_EVENT_TYPES.has(e.type) && !PEN_BUSY_EXEMPT.has(e.type) && penHeldByOther(entry.row, holder)) {
+          throw new TaskSyncError("pen_busy", "pen_busy");
+        }
         seq++;
       }
       if (isNewRow) rows.set(id, entry);
@@ -197,7 +205,10 @@ describe("taskSessionSync：推（#1223）", () => {
     await h.sync.flushNow();
     expect(h.cloud.rows.get("s1")!.events).toHaveLength(2);
   });
-  it("人话免笔：别人握着笔也照推", async () => {
+  // 这一条原来断言的是「人话免笔：别人握着笔也照推」（#1223 的设计），而那正是 #1258 那个洞：
+  // 人话插进别人正在跑的那一轮中间，收口后对账把**他刚跑完的一整轮**判成分叉流放。
+  // 契约因此翻面（ADR-0310）：笔活着时这条会话只有一个写者，别人的人话留着待会儿推
+  it("人话也要看笔（#1258）：别人握着笔时留着不推，笔放了才落——落在那一轮之后", async () => {
     const h = harness();
     h.store.append(created("s1"));
     await h.sync.flushNow();
@@ -205,7 +216,24 @@ describe("taskSessionSync：推（#1223）", () => {
     await h.cloud.api.acquirePen("s1", "cloud", 30);
     h.store.append({ sessionId: "s1", ts: 2, type: "user_message", content: "还在吗" });
     await h.sync.flushNow();
+    // 没上去——但也没丢、没冻结、本地日志一个字没动
+    expect(h.cloud.rows.get("s1")!.events).toHaveLength(1);
+    expect(h.fileRef().sessions["s1"]!.frozen).toBeUndefined();
+    expect(h.store.load("s1")).toHaveLength(2);
+    // 笔一放就正常落
+    await h.cloud.api.releasePen("s1", "cloud");
+    await h.sync.flushNow();
     expect(h.cloud.rows.get("s1")!.events).toHaveLength(2);
+  });
+
+  it("人话看的是「别人的笔」：自己握着笔时照落（同一台机器上 turn 跑着也要能记下用户刚说的话）", async () => {
+    const h = harness({ running: () => true });
+    h.store.append(created("s1"));
+    h.store.append({ sessionId: "s1", ts: 2, type: "assistant_message", content: "在跑", model: "m" });
+    await h.sync.flushNow();
+    h.store.append({ sessionId: "s1", ts: 3, type: "user_message", content: "顺便" });
+    await h.sync.flushNow();
+    expect(h.cloud.rows.get("s1")!.events).toHaveLength(3);
   });
   it("离线：状态 error、脏集合留着；回网 flushNow 推出去", async () => {
     const h = harness();
@@ -357,10 +385,36 @@ describe("taskSessionSync：推（#1223）", () => {
     expect(h2.sync.holdsPen("s3")).toBe(true);
     expect(h2.cloud.rows.get("s3")!.row.pen_holder).toBe("desktop:A");
   });
-  it("引用式分支（「回到这一步」）不上云：它的流里有两条 session_created，RPC 会判 forbidden 冻死它（终审 C2）", async () => {
+  it("任务会话的「回到这一步」走复制式，那条分支照常上云（#1252 / ADR-0311）", async () => {
+    // 上一条用例守的是「引用式分叉别推上去」，这一条守的是它的另一半：任务会话根本不该再落出
+    // 引用式分叉。两条合起来 = 用户在任务会话里回到某一步之后接着聊的那段，手机 / 另一台电脑看得见
+    const h = harness();
+    h.store.append(created("s1"));
+    h.store.append({ sessionId: "s1", ts: 2, type: "user_message", content: "第一句" });
+    h.store.append({ sessionId: "s1", ts: 3, type: "assistant_message", content: "答", model: "m" });
+    h.store.append({ sessionId: "s1", ts: 4, type: "turn_ended", outcome: "completed" });
+    await h.sync.flushNow();
+    const brId = "s1br";
+    rewindBranch(h.store, "s1", 3, brId, 20); // seq 3 = turn_ended，唯一合法的分叉点
+    h.store.append({ sessionId: brId, ts: 21, type: "user_message", content: "换个方向" });
+    await h.sync.flushNow();
+    const row = h.cloud.rows.get(brId);
+    expect(row).toBeDefined();
+    // 0036 的硬约束：session_created 只许在 seq 0。建行那一批含 turn 痕迹也过（RPC 发笔）
+    expect(row!.events.filter((e) => e.type === "session_created").map((e) => e.seq)).toEqual([0]);
+    expect(row!.events.map((e) => e.type)).toEqual([
+      "session_created", "user_message", "assistant_message", "turn_ended", "session_renamed", "user_message",
+    ]);
+    expect(h.sync.state().kind).not.toBe("frozen");
+    // 父会话一格没少，也没被记上一个引用式分支
+    expect(h.cloud.rows.get("s1")!.events.map((e) => e.seq)).toEqual([0, 1, 2, 3]);
+    expect(h.store.forkOrigin(brId)).toBeNull();
+  });
+  it("引用式分支（ADR-0311 之前的存量）不上云：它的流里有两条 session_created，RPC 会判 forbidden 冻死它（终审 C2）", async () => {
     // store.fork 是零拷贝的：分支自己的第一条原始行是 session_created{forkedFrom, seq = endSeq+1}，
     // 而 load() 扁平化后前缀是父会话的 0..endSeq——推上去就是 seq 0 与 seq endSeq+1 两条
-    // session_created，0036 的「session_created only at seq 0」判 P0012 → 整条会话永久冻结
+    // session_created，0036 的「session_created only at seq 0」判 P0012 → 整条会话永久冻结。
+    // ADR-0311 之后任务会话不再落出这种分叉，但存量补不回去，这道闸继续守着它们
     const h = harness();
     h.store.append(created("s1"));
     h.store.append({ sessionId: "s1", ts: 2, type: "user_message", content: "第一句" });

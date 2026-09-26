@@ -38,11 +38,11 @@ import {
 } from "@/components/ui/dropdown-menu.js";
 import { useConfirm } from "@/components/ui/confirm-dialog.js";
 import { useChat } from "../store.js";
-import { cloudSessionRows, labelOf } from "../lib/workspaceView.js";
-import type { CloudSessionListRow } from "../lib/workspaceView.js";
+import { cloudSessionRows, labelOf } from "../../../shared/workspaceView.js";
+import type { CloudSessionListRow } from "../../../shared/workspaceView.js";
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 import { unreadMentionCounts } from "../../../shared/workspaceMentions.js";
-import { teamsOf } from "../lib/agentRoster.js";
+import { teamsOf } from "../../../shared/agentRoster.js";
 import { PARTICIPANT_WINDOW_MS } from "../../../shared/sessionParticipants.js";
 import {
   SidebarGroup, SidebarGroupAction, SidebarGroupContent, SidebarGroupLabel, SidebarMenuAction,
@@ -71,7 +71,7 @@ export function WorkspacesSidebarSection({
 }) {
   const allGroups = useChat((s) => s.workspaceGroups);
   // 主场那一行归花名册那一节画（#1280）。**`kind` 读不到的留在这里**——读不到
-  // 不许当成主场藏起来，那等于让一个团队凭空消失（判据在 lib/agentRoster.ts）
+  // 不许当成主场藏起来，那等于让一个团队凭空消失（判据在 src/shared/agentRoster.ts）
   const groups = useMemo(() => teamsOf(allGroups), [allGroups]);
   const error = useChat((s) => s.workspaceGroupsError);
   const refreshCloud = useChat((s) => s.refreshCloudSessions);

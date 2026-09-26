@@ -153,7 +153,8 @@ for (const line of (mergedOut || "").split("\n")) {
   }
   const why = zeroWorkReason(b, tip, baseTip);
   if (why) keptBranches.push({ branch: b, why });
-  else deletable.push(b);
+  // wtPath 一起带着走：它占着的那个 worktree 万一没删成，这条分支就必然也删不动（#1279）
+  else deletable.push({ branch: b, wtPath: wtPath || null });
 }
 
 // ── 报告 + 执行 ────────────────────────────────────────────────────────────
@@ -172,7 +173,7 @@ section(
   "保留的 worktree：",
   keptWorktrees.map((w) => `${w.path} — ${w.why}`),
 );
-section(`可删除的本地分支（已并回 ${base}）：`, deletable);
+section(`可删除的本地分支（已并回 ${base}）：`, deletable.map((d) => d.branch));
 section("保留的分支：", keptBranches.map((b) => `${b.branch} — ${b.why}`));
 
 if (!apply) {
@@ -180,14 +181,90 @@ if (!apply) {
   exit(0);
 }
 
+// ── 执行 ───────────────────────────────────────────────────────────────────
+//
+// 每一步各自成败、各自说话（issue #1279）。原来这三段是裸的 `git(...)`：任何一步抛出来
+// 就是一个 Node 栈加一个 `{ status: 1, stdout: '', stderr: null }` 的对象，而**前面那几步
+// 已经生效了**——真机上那次的形态是「worktree 删了、分支一条没删」，读的人不知道是哪一步、
+// 为什么失败、做到哪儿了。同一条纪律本仓写过好几遍（`CleanupResult.kind` 是事实不是线索，
+// ADR-0193；「读不到」不许说成「里面是空的」，ADR-0243）。
+//
+// 失败的多数**不是意外，是第二道保险按设计开火**：`git branch -d` 对「未合并」和「被别的
+// worktree 占着」都回 **status 1**（两条都实测过），而那正是文件头硬约束里刻意不绕过的东西。
+// 一条被拒的删除不该把剩下的活全停掉——它们之间本来就没有依赖。
+//
+// 顺带记一条**验过是错的**猜测（#1279 正文里那条「cwd 落在刚被删掉的 worktree 里」）：
+// 那种情形产生的是 **status 128** + `fatal: Unable to read current working directory`，不是
+// 观测到的 1；而且它结构上到不了——`thisWorktree` 取自 `rev-parse --show-toplevel`，那是
+// **从 cwd 算出来的**，所以「cwd 所在的那个 worktree」永远等于 thisWorktree、永远在上面
+// 那句 `wt.path === thisWorktree` 上被跳过。所以这里没有加那道 cwd 闸。
+
+/** 跑一步 git，失败不抛：把 git 自己那句话原样带回来。
+    stderr 从 `inherit` 改成 `pipe` 才拿得到——原来那句话直接印在终端上，脚本自己
+    读不到，也就没法说出「是哪一步、因为什么」 */
+function stepGit(args) {
+  try {
+    execFileSync("git", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    return null;
+  } catch (e) {
+    const said = String(e.stderr ?? "").trim() || String(e.stdout ?? "").trim() || String(e.message ?? "");
+    return { status: typeof e.status === "number" ? e.status : null, said };
+  }
+}
+
+const failures = [];
+const failedWorktrees = new Set();
+let removedWorktrees = 0;
+let deletedBranches = 0;
+
+function reportFailure(what, err) {
+  failures.push({ what, ...err });
+  const detail = err.said.split("\n").join("\n    ");
+  stdout.write(`✗ ${what}${err.status === null ? "" : `（git 退出码 ${err.status}）`}\n    ${detail}\n`);
+}
+
 for (const wt of removable) {
-  git(["worktree", "remove", wt.path], { stdio: ["ignore", "pipe", "inherit"] });
+  const err = stepGit(["worktree", "remove", wt.path]);
+  if (err) {
+    failedWorktrees.add(wt.path);
+    reportFailure(`移除 worktree ${wt.path}`, err);
+    continue;
+  }
+  removedWorktrees += 1;
   stdout.write(`✓ 移除 worktree ${wt.path}\n`);
 }
-for (const b of deletable) {
+for (const { branch, wtPath } of deletable) {
+  // 它占着的那个 worktree 刚才没删成 → `branch -d` 必然被拒（"cannot delete branch used by
+  // worktree"）。跳过并说清，比再打一条注定失败的命令、再吐一句吓人的 git 错误诚实
+  if (wtPath && failedWorktrees.has(wtPath)) {
+    failures.push({ what: `删除分支 ${branch}`, status: null, said: `跳过：它占着的 worktree ${wtPath} 这一轮没删成` });
+    stdout.write(`· 跳过分支 ${branch} —— 它占着的 worktree ${wtPath} 这一轮没删成\n`);
+    continue;
+  }
   // -d 是 safe delete：万一竞态让它变成未合并，git 自己会大声拒绝
-  git(["branch", "-d", b], { stdio: ["ignore", "pipe", "inherit"] });
-  stdout.write(`✓ 删除分支 ${b}\n`);
+  const err = stepGit(["branch", "-d", branch]);
+  if (err) {
+    reportFailure(`删除分支 ${branch}`, err);
+    continue;
+  }
+  deletedBranches += 1;
+  stdout.write(`✓ 删除分支 ${branch}\n`);
 }
-git(["fetch", "--prune", "origin"], { stdio: ["ignore", "pipe", "inherit"] });
-stdout.write("✓ git fetch --prune 完成\n\n");
+const fetchErr = stepGit(["fetch", "--prune", "origin"]);
+if (fetchErr) reportFailure("git fetch --prune origin", fetchErr);
+else stdout.write("✓ git fetch --prune 完成\n");
+
+// 回执：做成了几件、剩下哪几件没做成。没有它，「半完成」和「全做完」在退出码之外
+// 没有任何区别，而收工那一步的人多半只扫最后两行
+stdout.write(
+  `\n回执：移除 worktree ${removedWorktrees}/${removable.length}，` +
+    `删除分支 ${deletedBranches}/${deletable.length}，` +
+    `fetch --prune ${fetchErr ? "✗" : "✓"}\n`
+);
+if (failures.length > 0) {
+  stdout.write(`\n有 ${failures.length} 件没做成（其余已经跑完，再跑一次 --apply 会从这几条继续）：\n`);
+  for (const f of failures) stdout.write(`  ✗ ${f.what} —— ${f.said.split("\n")[0]}\n`);
+  stdout.write("\n");
+  exit(1);
+}
+stdout.write("\n");

@@ -392,6 +392,33 @@ describe("分档核对（#1281）：更像另一档的事，劝一次", () => {
     await expect(tool.run({ target: "project", action: "add", content: "brew 装在 /opt/homebrew" }, fakeWorld().world)).rejects.toThrow(/target: "memory"/);
   });
 
+  it("批量：下标报 operations 里的那个，内容前缀指得出是哪一条（#1290）", async () => {
+    // pending 滤掉了 remove，所以 pending[1] 是 operations[2]——报 pending 的下标会指错行
+    const tool = createMemoryTool(proj, { judgeTier: async () => [{ index: 1, suggested: "project" as const, confidence: 0.93 }] });
+    const batch = {
+      target: "memory",
+      operations: [
+        { action: "remove", old_text: "旧条目" },
+        { action: "add", content: "brew 装在 /opt/homebrew" },
+        { action: "add", content: "门禁前要先装手机端依赖" },
+      ],
+    };
+    const { world, store } = fakeWorld();
+    await expect(tool.run(batch, world)).rejects.toThrow(/operations\[2\]「门禁前要先装手机端依赖」/);
+    expect(store.get("memories/MEMORY.md")).toBeUndefined();
+  });
+
+  it("批量的逃生门仍是整批：被劝之后原样再交一次，整批都过", async () => {
+    let asked = 0;
+    const tool = createMemoryTool(proj, { judgeTier: async () => { asked++; return [{ index: 1, suggested: "project" as const, confidence: 0.93 }]; } });
+    const batch = { target: "memory", operations: [{ action: "add", content: "甲" }, { action: "add", content: "乙" }] };
+    const { world, store } = fakeWorld();
+    await expect(tool.run(batch, world)).rejects.toThrow(/更像别的档/);
+    await tool.run(batch, world);
+    expect(store.get("memories/MEMORY.md")).toBe("甲\n§\n乙");
+    expect(asked).toBe(1);
+  });
+
   it("insisted 由调用方持有：换一个工具实例（agent.ts 每轮重建）照样记得被劝过", async () => {
     const insisted = new Set<string>();
     const judgeTier = async () => [{ index: 0, suggested: "project" as const, confidence: 0.93 }];

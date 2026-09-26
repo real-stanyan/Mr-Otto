@@ -16,7 +16,14 @@ import { tierFact } from "./memoryStore.js";
 export type JudgedTier = "user" | "memory" | "project";
 /** 回的那一档 ≠ target 且 confidence 到它才劝。**初值**，由影子期那几条命中人读一遍之后改 */
 export const TIER_MISMATCH_AT = 0.85;
-/** 此刻一把锁都没拿（落点在文件锁之前），900ms 的等待不占任何东西 */
+/** 落点在文件锁之前，所以这一等**不占任何锁** —— 但原来那句「不占任何东西」是错的，
+    错两处（ADR-0301 / #1300）：这一等坐在一次工具调用里面，付满它就是让模型这一轮干等
+    900ms；而 #1303 说付满的那一发照样全价计费，所以它也不是「白等」而是「买一个必然被
+    扔掉的答案」。
+    这一格只跑在桌面（`src/main/memoryTierJudge.ts`，runtime 不用它），而写记忆本来就是
+    稀疏动作 —— 按 ADR-0301 ② 那条闲置曲线，它命中的几乎总是闲置那一侧（五分钟之后
+    1.3–1.4s），于是 **900 这个数几乎从不成功**。改成多少要等 #1304 解掉之后按真实分布
+    定；现在一个字不改（ADR-0301 决定 1） */
 export const TIER_DECISION_TIMEOUT_MS = 900;
 const ENTRY_MAX = 800;
 
@@ -45,4 +52,43 @@ export function tierMismatches(reply: DecisionReply, target: JudgedTier, count: 
     if (a.choice !== target && a.confidence >= TIER_MISMATCH_AT) out.push({ index: i, suggested: a.choice, confidence: a.confidence });
   }
   return out;
+}
+
+/** pending 的一条：`at` 是它在 operations 里的下标，`content` 是内容原文。
+    `TierMismatch.index` 指的是 pending 里的下标，而 pending 滤掉了 remove 与已坚持过的那些，
+    两者在有滤掉项时不相等 —— 所以原始下标要一路带着走 */
+export interface PendingEntry { at: number; content: string }
+
+const PREVIEW_MAX = 48;
+const preview = (c: string): string => {
+  const flat = c.replace(/\s+/g, " ").trim();
+  return flat.length <= PREVIEW_MAX ? flat : `${flat.slice(0, PREVIEW_MAX)}…`;
+};
+
+/** 那句劝告的文案（#1290）。单条时旧文案已经可执行；批量时它只报 `hits[0]`、不带下标也不带
+    内容，三个候选里是哪一条模型无从知道，于是最便宜的回应就是原样再交一次 —— 逃生门会放行，
+    但它什么都没学到，而这个劝告存在的全部理由就是让它学到。
+    两条判据：**下标报 operations 里的那个**（报 pending 里的下标会在有 remove / 已坚持过的
+    条目在前时指错行，而一个指错行的下标比不给下标更坏）；**只有整次调用每一条都命中、且都指
+    向同一档时才说「改 target」**（target 是整次调用一个值，批量里只有一部分命中时改它会把没
+    命中的那几条一起搬走）。 */
+export function tierMismatchMessage(
+  hits: readonly TierMismatch[],
+  pending: readonly PendingEntry[],
+  opCount: number,
+  tier: JudgedTier,
+): string {
+  const rows = hits.map((h) => {
+    const p = pending[h.index];
+    const where = opCount > 1 && p ? `operations[${p.at}]` : "";
+    const quote = p ? `「${preview(p.content)}」` : "某一条";
+    return `· ${where}${quote} → ${h.suggested} 档（把握 ${Math.round(h.confidence * 100)}%）`;
+  });
+  const first = hits[0]!.suggested;
+  const whole = hits.length === opCount && hits.every((h) => h.suggested === first);
+  const how = whole
+    ? `整次调用改写 target: "${first}"。`
+    : `把这几条挑出来、用那一档的 target 单独发一次，其余的留在 ${tier} 档。`;
+  return `这次写入有 ${hits.length} 条更像别的档（判据一句话：换个项目还成立吗）：\n${rows.join("\n")}\n` +
+    `${how}确认确实是 ${tier} 档的话，把这次调用原样再提交一次会放行。`;
 }

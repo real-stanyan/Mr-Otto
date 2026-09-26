@@ -496,6 +496,14 @@ export interface ProxyHostView {
 export interface ProxyStatusSnapshot {
   borrows: ProxyBorrowView[];
   hosts: ProxyHostView[];
+  /** 上一次成功 PUT 进托管箱的 serverId 清单（escrowSync.hostedServerIds，#815 M4）。
+      **三档不能压成两档**：`null` = 箱子不在云端 / 这一侧还没同步过 = 「拿不到」，
+      不是「箱子里没有这台」。团队连接器行上那枚点按它分 ready/off/unknown
+      （判据在 workspaceView 的 `cloudStateOf`），把 null 读成 off 就是一句平白的
+      假阴性，会让用户去排查一个不存在的故障。
+      团队连接器与好友授权共用同一只箱（`buildEscrowDoc` 的 wanted 集合含
+      workspaceGrants），所以这一份清单对两边都是权威的。 */
+  hostedServerIds: readonly string[] | null;
 }
 
 /** 云会话里"这一下点击到底生效了没有"的三态回执（复审 C2-I4）。
@@ -814,6 +822,15 @@ export interface ShellBridge {
       URL 由主进程从这台 server 的配置推出来，渲染层递不进任意外链
       （同 updaterOpenReleasePage 的规矩）。失败原样 reject，设置页显示原因 */
   authorizeMcpServer(id: string): Promise<McpServersSnapshot>;
+  /** 手填一台 server 的 OAuth 客户端凭据（#697）：授权服务器不提供动态客户端注册
+      （Slack / Asana / Figma 这一类）时，用户在服务商后台注册一个应用，把拿到的
+      client_id / client_secret 填进来。`null` 或空 client_id = 清掉。
+      **只进不出**：这两个值落在 mcp-auth.json（0600，ADR-0121），回来的快照里
+      只有 `McpServerStatus.oauthClient` 这个布尔。写完不自动开浏览器授权 */
+  setMcpOAuthClient(
+    id: string,
+    client: { clientId: string; clientSecret: string } | null
+  ): Promise<McpServersSnapshot>;
   /** 所有连上的 server 的 prompt 合起来（composer 的斜杠面用） */
   listMcpPrompts(): Promise<(McpPromptInfo & { server: string })[]>;
   /** 把一个 MCP prompt 按参数展开成文本，落进输入框。
@@ -1625,6 +1642,7 @@ export const CHANNELS = {
   removeMcpServer: "otter:removeMcpServer",
   reconnectMcpServer: "otter:reconnectMcpServer",
   authorizeMcpServer: "otter:authorizeMcpServer",
+  setMcpOAuthClient: "otter:setMcpOAuthClient",
   listMcpPrompts: "otter:listMcpPrompts",
   expandMcpPrompt: "otter:expandMcpPrompt",
   mcpChanged: "otter:mcpChanged",

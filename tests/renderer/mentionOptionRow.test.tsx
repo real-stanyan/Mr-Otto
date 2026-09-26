@@ -79,11 +79,13 @@ describe("MentionOptionRow", () => {
     expect(within(row).getByText("运营")).toBeInTheDocument();
     expect(within(row).getByText("管店铺")).toBeInTheDocument();
     expect(within(row).getByText("智能体")).toBeInTheDocument();
-    // 脸来自 assets/agent-avatars/（agentAvatarSrc 按 avatarSlot / agentId 哈希取），
-    // **不是** members 里那些 URL —— 两族画法不同才认得出谁是谁
-    const img = within(row).getByRole("img");
-    expect(img).toHaveAttribute("alt", "运营");
-    expect(img.getAttribute("src")).toContain("agent-avatars");
+    // 脸是内置的像素形象（`agentFaceSlot` 按 avatarSlot / agentId 哈希取坑位，
+    // #1345 起画在 canvas 上），**不是** members 里那些 URL —— 两族画法不同才
+    // 认得出谁是谁
+    const face = within(row).getByRole("img");
+    expect(face.tagName).toBe("CANVAS");
+    expect(face).toHaveAttribute("aria-label", "运营");
+    expect(Number(face.getAttribute("data-face"))).toBeGreaterThanOrEqual(0);
   });
 
   it("成员那一行：profiles.avatar_url + 名字 + 「成员」，中间那格空着", () => {
@@ -91,12 +93,13 @@ describe("MentionOptionRow", () => {
     expect(within(row).getByText("Stan")).toBeInTheDocument();
     expect(within(row).getByText("成员")).toBeInTheDocument();
     const img = within(row).getByRole("img");
+    expect(img.tagName).toBe("IMG");
     expect(img).toHaveAttribute("src", "https://example.test/stan.png");
     // 职责那一格是 agent 的东西，成员这一行不该凭空多出一格灰字
     expect(within(row).queryByText("管店铺")).not.toBeInTheDocument();
   });
 
-  it("没设过头像的成员：退回首字母，不画一张空 <img>", () => {
+  it("没设过头像的成员：退回首字母，不画一张空 <img>、也不画一张凭空的脸", () => {
     const row = renderRow("member:u2-abcdefgh");
     expect(within(row).queryByRole("img")).not.toBeInTheDocument();
     expect(within(row).getByText("无")).toBeInTheDocument();

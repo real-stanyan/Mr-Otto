@@ -8,19 +8,12 @@
 // 就是一个可以单独渲染的东西，也不会因为多一个 selector 而多一次重渲。
 
 import { Settings2, UserPlus } from "lucide-react";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar.js";
 import { Button } from "@/components/ui/button.js";
-import { agentAvatarSrc } from "../lib/agentAvatar.js";
+import { AgentFace } from "./AgentFace.js";
+import { agentFaceSlot } from "../../../shared/agentAvatar.js";
+import type { FaceState } from "../lib/ottoFace/index.js";
+import type { ChatView } from "../../../shared/agentRoster.js";
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
-
-/** 这一页此刻画的是哪一种聊天（#1280）。`agentIds` 已经与现存名册求过交集
-    （`groupRows` / `CloudSessionMain`），所以这里每个 id 都查得到名字 */
-export interface ChatView {
-  kind: "dm" | "group";
-  agentIds: string[];
-  /** 私聊 = 那只智能体的名字；群聊 = 群名（没起名时是成员名拼起来的） */
-  title: string;
-}
 
 /** 群头像最多叠几张。头部比侧栏宽，但名字仍是这一行的主语 */
 const STACK_MAX = 3;
@@ -32,6 +25,7 @@ export function AgentChatHeader({
   addAgentSlot,
   onSettings,
   voiceSlot,
+  faceState,
 }: {
   ws: WorkspaceSnapshot;
   chat: ChatView;
@@ -45,6 +39,11 @@ export function AgentChatHeader({
   /** 语音那颗钮（#1163）。整块由调用方递进来：判据（没订阅 / 网关不供语音不画）
       与弹层都留在 CloudSessionPage，这一层只管摆在哪儿 */
   voiceSlot?: React.ReactNode;
+  /** 私聊那张脸此刻的表情（#1345）。**由调用方算**——这一层不读 store，而「它在不在跑」
+      的事实在 `openTurns` + 流式那一格上，只有 CloudSessionPage 手里有。
+      缺席 = `plain` = **我们不知道它在干嘛**，不画角标也不动（states.ts 的头注）。
+      群聊那一摞**一律 plain**：那里同时有好几只，一枚角标答不了「谁在忙」 */
+  faceState?: FaceState;
 }) {
   const names = chat.agentIds.map((id) => ws.agents.find((a) => a.agentId === id)?.name ?? id);
   const dm = chat.kind === "dm";
@@ -58,16 +57,20 @@ export function AgentChatHeader({
     <div className="flex shrink-0 items-center gap-2.5 border-b border-border/60 px-4 py-2">
       <span className="shrink-0 flex items-center">
         {dm ? (
-          <Avatar className="size-[30px] rounded-[7px]">
-            <AvatarImage src={agentAvatarSrc(ws, chat.agentIds[0] ?? "")} alt="" className="[image-rendering:pixelated]" />
-            <AvatarFallback className="rounded-[7px] text-[11px]">{chat.title.slice(0, 1)}</AvatarFallback>
-          </Avatar>
+          <AgentFace
+            slot={agentFaceSlot(ws, chat.agentIds[0] ?? "")}
+            state={faceState ?? "plain"}
+            size={30}
+            className="rounded-[7px]"
+          />
         ) : (
-          chat.agentIds.slice(0, STACK_MAX).map((id, i) => (
-            <Avatar key={id} className="size-[26px] -ml-[7px] first:ml-0 rounded-[6px] ring-[1.5px] ring-background">
-              <AvatarImage src={agentAvatarSrc(ws, id)} alt="" className="[image-rendering:pixelated]" />
-              <AvatarFallback className="rounded-[6px] text-[10px]">{(names[i] ?? id).slice(0, 1)}</AvatarFallback>
-            </Avatar>
+          chat.agentIds.slice(0, STACK_MAX).map((id) => (
+            <AgentFace
+              key={id}
+              slot={agentFaceSlot(ws, id)}
+              size={26}
+              className="-ml-[7px] first:ml-0 rounded-[6px] ring-[1.5px] ring-background"
+            />
           ))
         )}
       </span>

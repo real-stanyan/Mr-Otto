@@ -317,6 +317,24 @@ export function workspaceGrantFor(data: ProxyStoreData, workspaceId: string): Wo
   return data.workspaceGrants.find((g) => g.workspaceId === workspaceId) ?? null;
 }
 
+/** 悬空的工作区授权（#815 M7）：本机台账上还挂着、而我此刻已经不在籍的那些。
+    团队被别人解散、或者我被踢出去时会长出来 —— 自发的那两条路（`remove` / `leave`）
+    本来就清，它们不经过这里。
+
+    **`memberOf` 必须是一份整体成功的在籍名单**，不是「拉得下来的那几个」：调用方
+    （`workspaceManager.list()`）拿的是 `listWorkspaces` 的返回，那条查询整体失败时
+    `withSession` 直接回 `{ok:false}`、压根走不到这里；而某个团队的**明细**拉不下来
+    （#843 的 `loadError` 占位）不影响它 —— 那种行仍然在名单里，说明我还在籍。
+    「拿不到」不许当「被清空」（同 ADR-0197 grants 缓存那条纪律），这是这个函数唯一
+    容易出错的地方：喂一份残缺的名单进来，它会把还活着的授权判成悬空。 */
+export function danglingWorkspaceGrants(
+  data: ProxyStoreData,
+  memberOf: readonly string[]
+): readonly WorkspaceGrant[] {
+  const live = new Set(memberOf);
+  return data.workspaceGrants.filter((g) => !live.has(g.workspaceId));
+}
+
 /** 读 userData 下的代理台账文件。不存在/坏 JSON 回空台账 */
 export function readProxyStore(path: string): ProxyStoreData {
   try {

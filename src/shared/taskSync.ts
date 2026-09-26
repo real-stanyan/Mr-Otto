@@ -15,7 +15,16 @@ export const TASK_SQLSTATE = {
   pen_required: "P0011",
   forbidden: "P0012",
   no_session: "P0013",
+  /** 笔在别人手上，而这是一条**人的动作**（#1258，ADR-0310）。与 pen_required 分开一个码：
+      那个说的是「你要落 executor 事件但没有笔」，出路是去拿笔；这个说的是「笔是别人的、
+      他正在跑一轮，等他放」，出路是**留着待会儿再推**——两条出路相反，合成一个码的客户端
+      会在别人跑 turn 的时候去抢笔 */
+  pen_busy: "P0014",
 } as const;
+
+/** 笔活着时仍然随时可落的人的动作。只有一条：建行那一批的 `session_created`——那一刻行还
+    不存在、笔也还不存在（RPC 建行时才把笔发给创建者），拦它等于让任务会话根本建不出来 */
+export const PEN_BUSY_EXEMPT: ReadonlySet<string> = new Set(["session_created"]);
 
 /** 追加这类事件要不要握笔。`human` = 人的动作（改名 / 归档 / 换型号 / 人话…），任何设备随时可落；
     `executor` = 跑 turn 的一方留下的痕迹，必须握着笔。手机从不握笔，天然只发得出人话；
@@ -208,4 +217,20 @@ export function attachmentRefsOf(e: SessionEvent): string[] {
 /** 上不上云的判据：日志第 0 条说它是内置 Default 的主会话（ADR-0206 的 workspaceKind），且不是派出去的子会话 */
 export function isTaskSessionCreated(first: SessionEvent | undefined): boolean {
   return first?.type === "session_created" && first.workspaceKind === "default" && first.spawnedBy === undefined;
+}
+
+/** 完整的「这条会话上不上云」——`isTaskSessionCreated` **加上**「它不是引用式分叉」（ADR-0311）。
+    两处消费方读同一份：同步层的 `isTask`（决定推不推）与 `rewindBranch`（决定「回到这一步」
+    落成复制式还是引用式）。各写一遍迟早分家，而分家的形状正是这条判据存在的理由 ——
+    引用式分叉扁平化之后有**两条** `session_created`（seq 0 是父会话的，endSeq+1 是自己的），
+    0036 的「session_created only at seq 0」判 P0012 把整条会话永久冻结。
+
+    注意 `first` 必须由 `load(id, { untilSeq: 0 })` 取：`load` 会沿 fork 链扁平化，所以对一条
+    引用式分叉它给出的是**父会话**那条 session_created —— 单看它会把分叉判成任务会话。
+    `forkOrigin` 那一半不是冗余，是这个判据的另一半。 */
+export function isCloudTaskSession(
+  first: SessionEvent | undefined,
+  forkOrigin: { sessionId: string; endSeq: number } | null
+): boolean {
+  return forkOrigin === null && isTaskSessionCreated(first);
 }

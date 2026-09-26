@@ -9,7 +9,9 @@
 // 够不到的四件事：
 // ① 卡**居中**（VoiceCallCard 的值里没有「对齐」这个概念）
 // ② 收起时**只报多久 / 多少句**，且**不带最新一句**（维护者拍板）
-// ③ 名字左边**真有一张脸**（avatarSrc 是对的，不代表 <img> 挂上去了）
+// ③ 名字左边**真有一张脸**（`avatar` 的值是对的，不代表它被挂进 DOM 了）。
+//    #1345 之后 agent 那一档是 `<canvas data-face>`（会动的像素形象），人那一档
+//    仍旧是 Radix 的 `<img>`
 // ④ 点一下**真打开弹窗**，通话里说过的每一句在里面
 //
 // Radix 的 Avatar.Image 要等图片真的加载完才挂 <img>，而 jsdom 从不真的取图 ——
@@ -21,7 +23,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 
 import { VoiceCallCardRow } from "../../src/renderer/src/components/CloudSessionPage.js";
-import { voiceCallCards } from "../../src/renderer/src/lib/cloudTimeline.js";
+import { voiceCallCards } from "../../src/shared/cloudTimeline.js";
 import type { WorkspaceSnapshot } from "../../src/shared/workspaces.js";
 import type { SessionEvent } from "../../src/session/events.js";
 
@@ -109,11 +111,15 @@ describe("通话卡收起时（#1233）", () => {
     expect(screen.getByText("运营、广告、Stan")).toBeInTheDocument();
   });
 
-  it("每个参与者一张脸：agent 画内置像素图、人画成员表里那张", () => {
-    const srcs = [...renderCard(ENDED).querySelectorAll("img")].map((i) => i.getAttribute("src"));
-    expect(srcs).toHaveLength(3);
-    expect(srcs.filter((s) => s?.includes("agent-avatars"))).toHaveLength(2);
-    expect(srcs).toContain("https://example.test/stan.png");
+  it("每个参与者一张脸：agent 画内置像素形象、人画成员表里那张图", () => {
+    const card = renderCard(ENDED);
+    // 两只 agent 各一张像素脸（data-face 是坑位号，0..12）
+    const faces = [...card.querySelectorAll("canvas[data-face]")];
+    expect(faces).toHaveLength(2);
+    for (const f of faces) expect(Number(f.getAttribute("data-face"))).toBeGreaterThanOrEqual(0);
+    // 人那一档还是一张真图
+    const srcs = [...card.querySelectorAll("img")].map((i) => i.getAttribute("src"));
+    expect(srcs).toEqual(["https://example.test/stan.png"]);
   });
 
   it("还开着的那场画「通话中」不画「语音通话」", () => {
@@ -122,9 +128,10 @@ describe("通话卡收起时（#1233）", () => {
     expect(screen.queryByText("语音通话")).toBeNull();
   });
 
-  it("名册里查不到的不画空 <img>，退回首字母（同 ADR-0286 那条纪律）", () => {
-    renderCard([callChanged(1, 0, ["a_x"]), callChanged(2, 1_000, [])]);
+  it("名册里查不到的不画一张空脸，退回首字母（同 ADR-0286 那条纪律）", () => {
+    const card = renderCard([callChanged(1, 0, ["a_x"]), callChanged(2, 1_000, [])]);
     expect(screen.queryAllByRole("img")).toHaveLength(0);
+    expect(card.querySelectorAll("canvas[data-face]")).toHaveLength(0);
     expect(screen.getByText("快")).toBeInTheDocument(); // 快照a_x 的首字
   });
 });

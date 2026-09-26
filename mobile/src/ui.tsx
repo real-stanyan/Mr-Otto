@@ -13,7 +13,6 @@ import {
   type StyleProp, type TextInputProps, type TextStyle, type ViewStyle,
 } from "react-native";
 import { MONO, PRESS_SPRING, radius, space, type, usePalette, withAlpha, type Palette } from "./theme.js";
-import { useTabInset } from "./chrome.js";
 
 /** 系统的「减弱动态效果」。缩放这种位移类反馈要让位,但反馈本身不能消失 */
 export function useReduceMotion(): boolean {
@@ -112,34 +111,6 @@ export function StatusLine({ tone, children }: { tone: "ok" | "warn" | "busy" | 
 }
 
 /**
- * 6 位安全码。**拆成一格一格**是有理由的:这串数字的唯一用途是跟另一块屏幕
- * 逐位比对(ADR-0095),一整条 "097162" 比 "097 162" 难对得多。3+3 分组,
- * 等宽字,格子给足高度——这是这一屏的主角。
- */
-export function CodeTiles({ code }: { code: string }) {
-  const { c } = usePalette();
-  const digits = [...code];
-  return (
-    <View style={{ flexDirection: "row", justifyContent: "center", gap: space.xs }}>
-      {digits.map((d, i) => (
-        <View
-          key={i}
-          style={[
-            { backgroundColor: c.background, borderRadius: radius.tile,
-              borderWidth: StyleSheet.hairlineWidth, borderColor: c.border,
-              minWidth: 40, paddingVertical: space.sm, alignItems: "center" },
-            // 3+3 之间多一口气,眼睛才会自动分成两组
-            i === Math.floor(digits.length / 2) && { marginLeft: space.sm },
-          ]}
-        >
-          <Text style={{ fontSize: 26, lineHeight: 32, fontFamily: MONO, color: c.foreground }}>{d}</Text>
-        </View>
-      ))}
-    </View>
-  );
-}
-
-/**
  * 元信息。**等宽 + 暗**是桌面那侧最认得出的一条:`1 步 · 120 tokens`、
  * `elapsed 13ms tok/s 8000`、模型名,全走这个样式。跟着它,手机端才读成同一个产品。
  */
@@ -160,55 +131,6 @@ export function Tile({ children }: { children: React.ReactNode }) {
       alignItems: "center", justifyContent: "center",
     }}>
       {children}
-    </View>
-  );
-}
-
-/* ── 文件夹 ────────────────────────────────────────────
-   团队组头左边那个东西。原来是一个 ▸/▾ 三角 —— 三角只说"这里能展开",
-   而这一行说的是"下面这些属于同一个团队",文件夹把后半句也说了。
-
-   **几块板一律相接、绝不相叠。** 图标色是 mutedForeground,而它是半透明的
-   (rgba(…, 0.55));两块同色的板叠在一起,叠上的那条会明显更深 —— 画出来是一道
-   谁也没想画的深色缝。所以每块板的 top 正好等于上一块的底,靠拼接成形,
-   不靠覆盖。这也顺带免掉了"拿底色去盖"那种做法(那要求图标知道自己坐在什么颜色上,
-   换个容器就露馅)。
-
-   合起来 = 标签 + 一整块;打开 = 上半截立着、下半截向右倾出去。倾斜用 skewX。 */
-
-export function FolderIcon({ open, color }: { open: boolean; color: string }) {
-  // 标签那一小截。两个状态共用 —— 它是文件夹的身份,不该跟着开合动
-  const tab = (
-    <View style={{
-      position: "absolute", left: 0, top: 0, width: 7, height: 4,
-      backgroundColor: color, borderTopLeftRadius: 2, borderTopRightRadius: 2,
-    }} />
-  );
-  if (!open) {
-    return (
-      <View style={{ width: 16, height: 14 }}>
-        {tab}
-        <View style={{
-          position: "absolute", left: 0, top: 4, width: 16, height: 10,
-          backgroundColor: color, borderRadius: 2, borderTopLeftRadius: 0,
-        }} />
-      </View>
-    );
-  }
-  return (
-    <View style={{ width: 16, height: 14 }}>
-      {tab}
-      {/* 后板只剩左边一条脊:右边整片被翻出来的前板挡住了,挡住的部分本来就不该画 */}
-      <View style={{
-        position: "absolute", left: 0, top: 4, width: 5, height: 10,
-        backgroundColor: color, borderBottomLeftRadius: 2,
-      }} />
-      {/* 前板向右倾出去。斜边是"开着"的唯一线索,所以角度给足(-18°,8pt 高
-          换来约 2.6pt 的错位);再小就只剩一块方块,跟合起来那张分不出来 */}
-      <View style={{
-        position: "absolute", left: 5, top: 6, width: 11, height: 8,
-        backgroundColor: color, borderRadius: 2, transform: [{ skewX: "-18deg" }],
-      }} />
     </View>
   );
 }
@@ -478,15 +400,13 @@ export function Spinner() {
 /** 每一屏的滚动容器。标题和正文之间留一口气,列表项之间留小的。
     grow = 内容不足一屏时把容器撑满,好让里面自己去配平上下 */
 export function Page({ children, grow }: { children: React.ReactNode; grow?: boolean }) {
-  // 页签栏是浮在内容上的毛玻璃:最后一行要让出它那么高,否则压在它底下(根栈里的屏拿到 0)
-  const tabInset = useTabInset();
   return (
     <ScrollView
       // 原生导航栏(尤其页签根那条透明的大标题栏)靠这一格把内容推到栏下面,
       // 大标题往上滚时的收放也靠它跟手;不在导航里的屏(进门)这一格什么都不做
       contentInsetAdjustmentBehavior="automatic"
       contentContainerStyle={[
-        { padding: space.lg, paddingBottom: space.xl + tabInset, gap: space.md },
+        { padding: space.lg, paddingBottom: space.xl, gap: space.md },
         grow && { flexGrow: 1 },
       ]}
       keyboardShouldPersistTaps="handled"
@@ -654,6 +574,8 @@ export function Field(props: {
   onSubmitEditing?: () => void;
   /** 「下一项」要把焦点交过来的那一格：把它的 ref 递进来 */
   inputRef?: React.Ref<TextInput>;
+  /** 字居中（「新建智能体」那一格：它坐在大脸与脸墙之间，是一个名字不是一段话，demo 的 .nmrow） */
+  align?: "left" | "center";
 }) {
   const { c } = usePalette();
   const [focused, setFocused] = useState(false);
@@ -689,6 +611,7 @@ export function Field(props: {
         color: c.foreground,
         paddingHorizontal: 14,
         fontSize: 16,
+        ...(props.align === "center" ? { textAlign: "center" as const } : {}),
       }}
     />
   );

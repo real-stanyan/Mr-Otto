@@ -13,8 +13,7 @@ import { useEffect } from "react";
 import { parseMemberMentions } from "../../../shared/remote/agentMention.js";
 import { useChat } from "../store.js";
 import { CloudSessionPage } from "./CloudSessionPage.js";
-import type { ChatView } from "./AgentChatHeader.js";
-import { chatViewOf } from "../lib/agentRoster.js";
+import { chatViewOf, type ChatView } from "../../../shared/agentRoster.js";
 
 export function CloudSessionMain({ onManage }: { onManage: (workspaceId: string) => void }) {
   const cs = useChat((s) => s.cloudSession);

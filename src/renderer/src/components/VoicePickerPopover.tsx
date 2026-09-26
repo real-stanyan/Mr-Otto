@@ -14,8 +14,8 @@ import { Check } from "lucide-react";
 import { cn } from "@/lib/utils.js";
 import { Button } from "@/components/ui/button.js";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover.js";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar.js";
-import { agentAvatarSrc } from "../lib/agentAvatar.js";
+import { AgentFace } from "./AgentFace.js";
+import { agentFaceSlot } from "../../../shared/agentAvatar.js";
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 import type { CloudAck } from "../../../shared/shellBridge.js";
 
@@ -91,10 +91,7 @@ export function VoicePickerPopover({
                   !on && "text-muted-foreground"
                 )}
               >
-                <Avatar className="size-5">
-                  <AvatarImage src={agentAvatarSrc(ws, a.agentId)} alt="" />
-                  <AvatarFallback className="text-[9px]">{a.name.slice(0, 1)}</AvatarFallback>
-                </Avatar>
+                <AgentFace slot={agentFaceSlot(ws, a.agentId)} size={20} />
                 <span className="min-w-0 flex-1 truncate">{a.name}</span>
                 <Check className={cn("size-3.5", on ? "opacity-100" : "opacity-0")} aria-hidden />
               </button>

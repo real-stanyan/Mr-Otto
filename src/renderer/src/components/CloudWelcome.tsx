@@ -23,8 +23,8 @@ import { ComposerBar, ComposerSend } from "@/components/elements/composer.js";
 import { Textarea } from "@/components/ui/textarea.js";
 import { Button } from "@/components/ui/button.js";
 import { useChat } from "../store.js";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar.js";
-import { agentAvatarSrc } from "../lib/agentAvatar.js";
+import { AgentFace } from "./AgentFace.js";
+import { agentFaceSlot } from "../../../shared/agentAvatar.js";
 import { ADMIN_AGENT_ID } from "../../../shared/workspaceAgents.js";
 
 /** 三枚提示 chip（#1280 A5）。点了**只把那句话填进输入框、不发送**——人多半想改两个字，
@@ -76,10 +76,7 @@ export function CloudWelcome({ workspaceId }: { workspaceId: string }) {
         {dmAgent !== null ? (
           <>
             {/* 56px：比侧栏那一行的 30px 大一圈——这一屏只有它一个主语 */}
-            <Avatar className="size-14 rounded-[12px] mb-1">
-              <AvatarImage src={agentAvatarSrc(ws!, dmAgent.agentId)} alt="" className="[image-rendering:pixelated]" />
-              <AvatarFallback className="rounded-[12px] text-lg">{dmAgent.name.slice(0, 1)}</AvatarFallback>
-            </Avatar>
+            <AgentFace slot={agentFaceSlot(ws!, dmAgent.agentId)} size={56} className="rounded-[12px] mb-1" />
             {isAdminDraft ? (
               <>
                 <p className="text-[19px] font-[600] tracking-[-0.01em]">

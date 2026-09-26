@@ -19,9 +19,9 @@ import { useEffect, useState } from "react";
 import { Maximize2, Mic, MicOff, Phone, PhoneOff, UserPlus, Volume2, VolumeX } from "lucide-react";
 import { cn } from "@/lib/utils.js";
 import { Button } from "@/components/ui/button.js";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar.js";
-import { agentAvatarSrc } from "../lib/agentAvatar.js";
-import { agentNameOf } from "../lib/workspaceView.js";
+import { AgentFace } from "./AgentFace.js";
+import { agentFaceSlot } from "../../../shared/agentAvatar.js";
+import { agentNameOf } from "../../../shared/workspaceView.js";
 import { VoicePickerPopover } from "./VoicePickerPopover.js";
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 import type { VoiceCallState } from "../../../shared/voiceCall.js";
@@ -120,19 +120,20 @@ export function VoiceCallBar({
             const speaking = voice?.speaking === p.agentId;
             const name = nameOf(p);
             return (
-              <Avatar
+              // 通话栏是「此刻正在看的那一处」之一（#1345）：这几格真的动。
+              // 在说的那只读嘴，其余在听 —— 两档都带青色的语音角标
+              <AgentFace
                 key={p.agentId}
-                aria-label={name}
-                title={name}
+                slot={agentFaceSlot(ws, p.agentId)}
+                state={speaking ? "speaking" : "listening"}
+                size={24}
+                label={name}
                 data-speaking={speaking ? "true" : "false"}
                 className={cn(
-                  "size-6 ring-2 ring-transparent transition-[box-shadow] duration-150",
-                  speaking && "ring-[var(--brand)] animate-pulse"
+                  "ring-2 ring-transparent transition-[box-shadow] duration-150",
+                  speaking && "ring-[var(--brand)]"
                 )}
-              >
-                <AvatarImage src={agentAvatarSrc(ws, p.agentId)} alt="" />
-                <AvatarFallback className="text-[9px]">{name.slice(0, 1)}</AvatarFallback>
-              </Avatar>
+              />
             );
           })}
         </span>

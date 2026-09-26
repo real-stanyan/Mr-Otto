@@ -119,7 +119,7 @@ import { McpPromptCard } from "./components/McpPromptCard.js";
 import { FolderIcon } from "./components/FileTypeIcon.js";
 import { AUTO_MODEL } from "../../shared/autoModel.js";
 import { currentImageModel, isImageAuto } from "../../shared/imageModel.js";
-import { hostedImageModels, isSubscribed } from "./lib/billingView.js";
+import { hostedImageModels, isSubscribed } from "../../shared/billingView.js";
 import { DEFAULT_MODEL, describeModel } from "../../shared/modelCatalog.js";
 import type { ModelLane } from "../../shared/modelLane.js";
 import { clampThinking, thinkingLabel, type ThinkingMode } from "../../shared/thinking.js";
@@ -230,7 +230,7 @@ import { OttoRuntimeProvider } from "./aui/OttoRuntimeProvider.js";
 import { OttoThread } from "./aui/OttoThread.js";
 import { SendErrorBanner } from "./components/SendErrorBanner.js";
 import { PlanBadge } from "./components/PlanBadge.js";
-import { planBadge } from "./lib/billingView.js";
+import { planBadge } from "../../shared/billingView.js";
 import { SelectionQuote } from "./components/SelectionQuote.js";
 
 /* ─── Tailwind 迁移(ADR-0010)的共享 className 组合 ───

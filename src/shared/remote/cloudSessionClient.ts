@@ -1,0 +1,1212 @@
+// cloudSessionClient —— 桌面主进程的云会话客户端（Task 12，ADR-0199）。
+//
+// 桌面是**显示器**：真正跑 turn 的是 VPS 上的 runtime（services/runtime/src/daemon.ts），
+// 桌面只是订阅它的事件流、把审批/发言转发过去。runtime 在每个 cs 房间里都以
+// role="host" 常驻（daemon.ts openSessionRoom / ctlTransport），relay 的配对模型
+// 只认「同一对里的异角色互发」（services/edge/src/relay.ts 的 otherRole）——
+// 所以桌面必须以 role="guest" 加入，desktop/mobile 那一对与这里无关（那是自远程）。
+// 见 docs/superpowers/plans/2026-08-31-workspace-phase2.md Task 12 节：
+// 「runtime role = "host"，成员 role = "guest"」。
+//
+// 两个房间：
+//   - 控制房（csCtlChannel()，固定房名 "cs-ctl"）：只用来 create 一个新会话，
+//     拿到 created/denied 就关——「按需起，拿到 created 即断」（brief 原话）。
+//   - 会话房（csChannel(workspaceId, sessionId)）：join() 之后长期持有，
+//     直播事件 + 收发审批都走这一条。同时只保留一条（join 先断旧的——
+//     桌面是显示器，多开留后续）。
+//
+// 去重 + 保序：welcome 之后无条件 backlog(afterSeq: -1) 拉全量（**不是** 0——
+// EventStore 的 seq 从 0 开始，字面传 0 会漏掉 seq:0 那第一条，-1 才是"什么都
+// 没见过"的正确哨兵，T11 冒烟已验证同一件事）。backlog 在飞的时候直播 event
+// 帧可能先到（复审 High 实测复现：welcome(lastSeq=7)→直播 event(seq=5)→
+// backlog([0..7]) 时，即发即转会产出 [5,0,1,2,3,4,6,7] 这种非 seq 升序的转发
+// 顺序——渲染层是纯 append，乱序会让工具调用与对话先后错位）。做法：还没
+// ready 之前收到的直播事件全部先进 liveBuffer，不经过 deliverEvent；backlog
+// 落定时把它与 liveBuffer 合并、按 seq 升序排序后统一喂给 deliverEvent（去重
+// 表保证同一条不会转发两次），这之后才切回直发。seenSeqs 只在**同一条连接
+// 存续期间**有效——见下面 :gone 那段。
+//
+// 审批复用现有 fleet 卡（不新造一套 UI 通道）：收到 approval_request 事件且
+// selfUid ∈ {initiatorUid, ownerUid} 时，构造一张 ApprovalRequest 交给
+// deps.onApprovalRequest —— 装配方（index.ts）把它塞进 pendingApprovals +
+// send(CHANNELS.approvalRequest) + feedIsland，手机端因此**零改动**：fleet
+// 下行本来就带 pendingApproval，手机 approve 帧回来经 handleRemoteCommand →
+// handleDecideApproval，那里再加一条分流打到 cloudClient.approve。局限：
+// 发起人桌面不在线时手机收不到云审批卡（fleet 是桌面投影），spec 已接受。
+// 收到 approval_decision 事件 → 交给 deps.onApprovalDecision，装配方清
+// pendingApprovals + feedIsland({kind:"event", event})——这一步必须真的把
+// SessionEvent 转给 feedIsland，因为 reduceIsland 清 pendingApproval 靠的
+// 正是 event.type==="approval_decision" 那个分支（src/main/islandProjection.ts），
+// 云事件走的是 otter:cloudSessionEvent 通道，不会自动流进本地 push.event 那条
+// 已经接好的 feedIsland 管线，所以这里必须显式转一次。
+//
+// :gone（runtime 离场，daemon 重启/掉线）→ status "gone"，**清 seenSeqs/
+// liveBuffer**（复审 Medium）：host 回来后 welcome→backlog(-1) 会把同一批
+// 事件再拉一遍，这次不去重、原样再转发一轮——渲染层（T13）自己也按 seq 去重
+// （append 进 cloudSession.events 那一步），重复送达对它无害；换来的是
+// approval_request 命中 self 可批时会**重新**跑一遍 deliverEvent 的资格判断，
+// 从而重新调 deps.onApprovalRequest 把 pendingApprovals 填回去——这正是下一条
+// 要接住的东西。**pendingApprovals 的清理**：status 变 gone、或者这条会话被
+// leave()/被下一次 join() 顶掉（teardown）时，一律经 deps.onSessionInactive
+// 通知装配方去清 pendingApprovals + island（同本地 turn 收尾那条无条件清理
+// 纪律对齐，见 index.ts 的 finally 块）——gone 期间那条连接够不到任何人，
+// 一张按不动的审批卡比没有卡更糟；等 host 真回来，上一段说的"重新
+// deliverEvent"会把它公平地重新挂回去。渲染层自己的 cloudSession.events 数组
+// 不清，那是 T13 的地盘。断线重连本身由 wsTransport 内置（退避），这里不重复
+// 实现。
+//
+// 上岛（复审 P0）：云会话从不 store.append，天生不在 index.ts 的
+// fleetSessions()（store.sessions() 的投影）里；flattenFleet 只遍历它拿到的
+// sessions 参数、不会反向遍历 islandStates 的 key——approval_request 命中
+// self 可批时算出来的那份 IslandState（含 pendingApproval）因此永远不可达
+// 原生岛/手机 fleet，失败模式是静默的：不报错，只是那条审批横幅永远不出现。
+// `cloudSessionFleetRow` 是这个洞的补丁：纯函数，把 activeSummary() 的结果
+// 转成一条虚拟 SessionSummary，index.ts 的 pushFleet 把它并进真实会话列表
+// 一起喂给 flattenFleet。只在 status:"ready" 时给出结果——connecting 还没有
+// 可展示的事实，denied/gone 没有活连接，虚拟行随之消失。那个函数住在
+// `src/main/cloudSessionFleet.ts`（#1356：客户端挪进 shared，这一行是桌面专属）。
+
+import type { RemoteTransport } from "./transport.js";
+import {
+  BACKLOG_SKIP_MARKER,
+  BACKLOG_TAIL_DEFAULT,
+  CS_PROTOCOL_VERSION,
+  csCtlChannel,
+  csChannel,
+  encodeCs,
+  decodeCsDown,
+  type CsDeniedCode,
+  type CsGitHost,
+  type CsChatInfo,
+  type CsChatSpec,
+  type CsModelRoute,
+  type CsDown,
+  type CsUp,
+  type CsWikiWriteReq,
+  type CsWorkHit,
+  type CsWorkNode,
+} from "./cloudSession.js";
+import { normalizeWorkPath } from "./workPath.js";
+import type { ApprovalDecisionEvent, SessionEvent } from "../../session/events.js";
+import type { ApprovalRequest, CloudAck, CloudSessionStatus, CloudWorkspaceState } from "../shellBridge.js";
+import type { FriendsResult } from "../friends.js";
+
+/** 控制房 create 的等待上限：runtime 一直没接上/没回应时，别把调用方永远悬在
+    半空——一个「稍后重试」的失败远好过一个永不 resolve 的 Promise。 */
+const CS_CREATE_TIMEOUT_MS = 15_000; // 控制房五条 RPC 共用（create / workspace / config / archive / delete）
+
+const NOT_SIGNED_IN = { ok: false as const, message: "还没登录" };
+
+/** denied 码 → 人话。只用在 create() 的直接 RPC 回复上；join() 之后持续状态的
+    deniedCode 原样透传给渲染层（T13 UI 自己按 code 给人话，同 T4「云端状态
+    三态化」纪律：这里不重复造一份会跟渲染层文案走岔的翻译） */
+export function deniedMessage(code: CsDeniedCode, serverVersion?: number): string {
+  switch (code) {
+    case "bad_jwt":
+      return "登录状态已过期，请重新登录后再试";
+    case "not_member":
+      return "你不是这个团队的成员";
+    case "version_mismatch":
+      // 方向说得出来才有用（复审 C2-I6）：严格相等判出的不匹配有两个方向，
+      // 而「更新 Mr Otto」这句话对「云端还没部署」的那半是错的指引——用户
+      // 更新到最新版之后照样连不上，且再也没有别的线索。服务端带了 v 且比
+      // 本端低 = 云端旧了；缺席（老服务端）或比本端高 = 退回通用那句
+      if (serverVersion !== undefined && serverVersion < CS_PROTOCOL_VERSION) {
+        return `云端协议版本（${serverVersion}）低于本客户端（${CS_PROTOCOL_VERSION}），云端还没升级，联系维护者`;
+      }
+      return "客户端版本与云端不匹配，请更新 Mr Otto 后再试";
+    case "no_session":
+      return "云会话不存在或已归档";
+    case "not_authorized":
+      return "没有权限执行此操作";
+    case "rate_limited":
+      return "操作太频繁了，稍等一会儿再试";
+  }
+}
+
+export interface CloudSessionClientDeps {
+  /** 当前登录者的 Supabase access token；未登录回 null。每次要发 hello 前
+      现取一次——令牌会过期，缓存一份等于把"过期"变成一次静默失联
+      （同 wsTransport.ts 的 authToken 那条注释） */
+  accessToken: () => Promise<string | null>;
+  /** 当前登录者的 uid；未登录回 null */
+  selfUid: () => string | null;
+  /** 建一条按 cid 寻址的传输，role 固定 "guest"（由调用方在闭包里决定，
+      本模块不关心 baseUrl/token 怎么拼——同 proxyManager 的 openWireTransport
+      注入方式）。测试用假货直接顶替，生产装配传 createWsTransport 的薄封装 */
+  createTransport: (channel: string) => RemoteTransport;
+  /** 去重之后的事件转给渲染层（otter:cloudSessionEvent） */
+  sendEvent: (event: SessionEvent) => void;
+  /** 流式碎片转给渲染层（otter:cloudSessionDelta，协议 16，#1107）。
+      **绕开 liveBuffer/seenSeqs 那套 seq 机器**：碎片没有 seq、不进 backlog、
+      不去重，拿到就直转；text 是**累计快照**（见协议文件那条帧的注释），
+      渲染层整槽替换不拼接。终态 assistant_message 走 event 那条路照常到达，
+      渲染层据此清缓冲。sessionId 由本层从 ActiveSession 补上——帧里没有
+      （房间本身已经是会话粒度的信道），渲染层那道「是不是当前这条」的
+      守卫与 cloudSessionEvent 同款 */
+  sendDelta: (delta: { sessionId: string; agentId: string; kind: "content" | "reasoning"; text: string }) => void;
+  /** 状态变化转给渲染层（otter:cloudSessionStatus） */
+  sendStatus: (status: CloudSessionStatus) => void;
+  /** approval_request 命中 self 可批 → 装配方接进 pendingApprovals/推送/岛 */
+  onApprovalRequest: (req: ApprovalRequest) => void;
+  /** approval_decision → 装配方清 pendingApprovals + 转给 feedIsland 清岛上的卡 */
+  onApprovalDecision: (event: ApprovalDecisionEvent) => void;
+  /** 这条云会话不再是"可能还有东西挂着"的状态了（status 变 gone，或者
+      leave()/被下一次 join() 顶掉）——装配方据此清 pendingApprovals + island
+      里这个 sessionId 的残留（复审 Medium，同本地 turn 收尾 finally 块里
+      pendingApprovals.delete 的无条件清理纪律对齐） */
+  onSessionInactive: (sessionId: string) => void;
+  /** 日志钩子。**禁止在这里打印 payload/jwt 原文**——只记帧类型/错误文本 */
+  log?: (m: string) => void;
+}
+
+/** pushFleet 合成虚拟 fleet 行要的最小信息（复审 P0：云会话从不 store.append，
+    天生不在 fleetSessions() 里，flattenFleet 只遍历 sessions 参数、不会反向
+    遍历 islandStates 的 key——不补一行虚拟 SessionSummary，审批卡对原生岛/
+    手机 fleet 永远不可达）。只在 status:"ready" 时才有意义（装配方按此过滤：
+    connecting 还没有可显示的事实，denied/gone 没有活连接） */
+export interface CloudSessionSummary {
+  workspaceId: string;
+  sessionId: string;
+  status: "connecting" | "ready" | "denied" | "gone";
+  /** 这条会话已知最新一条事件的 ts；还没收到任何事件时退回 activeSummary()
+      被调用那一刻的 Date.now()（这是唯一允许现取"此刻"的地方——一旦见过
+      一条真事件，就永远用真事件的 ts，不会再被"此刻"覆盖，见 ActiveSession
+      的 lastEventTs 字段注释）。喂给 cloudSessionFleetRow 当 lastTs——不是
+      每次都现取 Date.now()（复审 fix round 2 Minor：那样会让 ready 的云
+      会话永远排在 fleet 最上面，压过所有本地项目组，不管本地会话多新） */
+  lastEventTs: number;
+  /** 岛上那一行写什么（#1280）。**由 `join()` 的调用方递**：私聊写智能体名、群聊写群名——
+      这两个名字都在渲染层的快照里，主进程为一行标题再查一次库不值。缺席 = 团队会话，
+      照旧写「云会话」 */
+  title?: string;
+}
+
+export interface CloudSessionClient {
+  /** 当前已 join 的云会话 id；没有 = null。handleDecideApproval 拿它判断一个
+      sessionId 是不是该走云端分流，不碰本地 agents */
+  currentSessionId(): string | null;
+  /** 当前云会话的概览，没有 join 过 = null（pushFleet 拿它合成虚拟行） */
+  activeSummary(): CloudSessionSummary | null;
+  /** `chat` 在场 = 建一条聊天（#1280）：私聊 / 群聊。缺席 = 团队会话，一个字不变 */
+  create(workspaceId: string, chat?: CsChatSpec): Promise<FriendsResult<{ sessionId: string }>>;
+  /** `title` 只喂岛上那一行（#1280）；缺席照旧写「云会话」 */
+  join(workspaceId: string, sessionId: string, title?: string): Promise<FriendsResult<null>>;
+  /** 断当前云会话连接（不管在什么状态：connecting/ready/denied/gone 都能断） */
+  leave(): Promise<FriendsResult<null>>;
+  /** mentions 缺席 = 老语义（mention 那个 boolean 说了算）；给了（含 []）=
+      以它为准，帧里带 mentions 字段（#932 切片 1b） */
+  /** `memberMentions` = 这句话点到的**人类成员 uid**（协议 13，#1064）。与
+      `mentions` 分开带：那一族起 turn（花钱），这一族只让被 @ 的人收到提醒 */
+  /** `voice: true` = 这句话是在语音通话里**说出来的**（协议 19，#1233）：只往下传，
+      落进 `user_message.voice` / `chat_message.voice`，云会话时间线据它把一场通话
+      折成一张卡（ADR-0288）。只有麦克风那条路会带（`store.speechOnEvent`）——
+      「这句是不是说出来的」在正文里看不出来，麦克风那一侧是唯一知道的人 */
+  say(text: string, mention: boolean, mentions?: string[], memberMentions?: string[], voice?: true): Promise<CloudAck>;
+  approve(callId: string, decision: "approved" | "denied"): Promise<CloudAck>;
+  /** 收尾一条云会话（控制房 RPC，协议 9，#993）：不依赖「正开着它」——归档
+      入口在侧栏那条会话行的 ⋮ 里，同本地会话。resolve 的是 `archive_result` */
+  archive(workspaceId: string, sessionId: string): Promise<FriendsResult<null>>;
+  /** 彻底删除一条云会话（控制房 RPC，协议 10，#1044）：整段事件日志从 VPS 上
+      抹掉，不可逆。归档的会话同样能删（不依赖房间还开着）。谁能删由服务端判，
+      判据与归档同一条 */
+  remove(workspaceId: string, sessionId: string): Promise<FriendsResult<null>>;
+  /** 改一条聊天的名字 / 名单（控制房 RPC，协议 20，#1280）：同样不依赖「正开着它」——
+      删一只智能体时要把它从它在的每个群里摘掉，而那几个群一条都没开着。
+      两格各自可选、至少带一样；`agentIds` 是**变动之后的完整名单**不是「摘掉谁」
+      （只改群名时不带它，否则等于替用户声明「那一格我也确认是这个值」，两个人
+      同时改一条群聊时后发的那份会把先发的名单覆盖回去）。
+      名单真变了的话房里还会广播一条 `chat_roster_changed`——那条是事实，回执只答收没收下 */
+  chatUpdate(
+    workspaceId: string,
+    sessionId: string,
+    patch: { name?: string; agentIds?: string[] },
+  ): Promise<FriendsResult<null>>;
+  /** 停掉当前正在跑的这一轮 turn（#957 第三批）。谁能停由服务端判（发起人
+      或 owner，与 approve 同一判据）——resolve 的是 `stop_result` 那条回执，
+      不是「帧交给 socket 了」 */
+  stop(seq?: number): Promise<CloudAck>;
+  /** 改语音通话名单（协议 17，#1163）：空 = 结束。任何在籍成员都能改（服务端复核名单里
+      的 id）——resolve 的是 `call_result` 那条回执，不是「帧交给 socket 了」；通话栏画的是
+      随后广播回来的 `voice_call_changed`，不是这个回执 */
+  call(participants: string[]): Promise<CloudAck>;
+  /** 往前翻一页历史（协议 20，#1280）。只有聊天有这条路：团队会话进房就是全量，
+      没有「更早」可言，这时它不打网络、直接回 `hasOlder: false` */
+  backlogPage(): Promise<FriendsResult<{ hasOlder: boolean }>>;
+  /** 读一个团队的仓库状态 + 路由（控制房 RPC，协议 8，#991）。不依赖任何
+      一条会话——团队设置页从侧栏 ⚙ 进来时手上未必开着这个团队的云会话 */
+  workspaceState(workspaceId: string): Promise<FriendsResult<WorkspaceCloudState>>;
+  /** 读一格工作文件夹（控制房 RPC，协议 11，#1056）。`path` 相对工作文件夹，
+      `""` = 它本身。任何在籍成员都能读——卷是整个团队共用的一份 */
+  workspaceFiles(workspaceId: string, path: string): Promise<FriendsResult<CsWorkNode>>;
+  /** 搜工作文件夹（控制房 RPC，协议 12，#1066）。`content` = 搜正文还是只按
+      文件名过滤，判据与本机 Files 面板的 `?` 前缀同一条 */
+  workspaceFilesSearch(workspaceId: string, query: string, content: boolean): Promise<FriendsResult<CsWorkHit[]>>;
+  /** 存 / 删一台主机的 Git 凭据（控制房 RPC，协议 15，#1103）。owner 才过，服务端判；
+      `token: ""` = 删。成功回服务端此刻的清单 */
+  workspaceGitCredential(workspaceId: string, host: string, token: string): Promise<FriendsResult<CsGitHost[] | null>>;
+  /** 改一页 wiki（控制房 RPC，协议 18，#1140）：write 整页替换 / remove 删页。服务端走
+      与 wiki 工具同一条写入路径，预算 / 保留页 / 可疑指令那几句拒绝原样回来 */
+  workspaceWikiWrite(workspaceId: string, req: CsWikiWriteReq): Promise<FriendsResult<null>>;
+}
+
+/** `workspace_state` 带回来的那一格（协议 8；#1102 摘掉 repo 之后只剩它）——与 shellBridge
+    那份同一个类型，渲染层拿到的就是这份 */
+export type WorkspaceCloudState = CloudWorkspaceState;
+
+interface ActiveSession {
+  workspaceId: string;
+  sessionId: string;
+  transport: RemoteTransport;
+  /** runtime（host）这一次连接的 cid，从 onPeer 拿到。null = 还没等到，或者
+      对端刚走（gone/close），发帧没有收件人可用 */
+  hostCid: string | null;
+  status: "connecting" | "ready" | "denied" | "gone";
+  deniedCode?: CsDeniedCode;
+  /** denied 帧带回来的服务端协议号（复审 C2-I6）。只有 version_mismatch 带得到；
+      缺席 = 老服务端不带。渲染层靠它才分得清是本端旧还是云端旧 */
+  deniedServerVersion?: number;
+  /** welcome 给的事实，去 hello 之前都是占位（null/""）——渲染层这两个字段
+      在 "connecting" 早期状态下不必当真，welcome 一到就会补一次真值 */
+  initiatorUid: string | null;
+  ownerUid: string;
+  /** welcome 说的「这条会话是哪一种聊天、名单是谁」（#1280）。**三态**（#1301）：
+      `undefined` = welcome 还没到（**还不知道**）/ `null` = welcome 到了、说这是
+      团队会话 / 值 = 一条聊天。原来这一格只有两态，于是「还没问到」与「问到了、
+      是团队」在渲染层同一个答案——聊天页在 welcome 之前画成团队壳（真机上十秒以上），
+      露出一颗在主场里点了不生效的「免审批」开关。同 `workspaceAccess` 的 `unknown`
+      （ADR-0217）、`sandboxApproval` 的 `null`（ADR-0243）、`planBadge` 的 `null`
+      （ADR-0240）——这个仓库第四次在同一条纪律上立规矩 */
+  chat: CsChatInfo | null | undefined;
+  /** 岛上那一行写什么（#1280）。join 的调用方递，null = 团队会话（照旧写「云会话」） */
+  title: string | null;
+  /** 已经转发给渲染层的事件 seq。backlog 与直播可能重叠，靠它去重（拉全量
+      每次都是 -1，不靠"上次读到哪条"——那样反而在 gone→重连之间产生缺口）。
+      gone 时清空——见文件头「:gone」那段 */
+  seenSeqs: Set<number>;
+  /** 还没 ready（welcome 之后、backlog done:true 之前）收到的直播 event，
+      暂存在这里不经过 deliverEvent；backlog 落定时与它合并排序后统一转发，
+      保证转发给渲染层的顺序是 seq 升序（复审 High） */
+  liveBuffer: SessionEvent[];
+  /** welcome 说的「日志末条 seq」（issue #957 C-I7）。协议一直把这个完整性
+      凭据递到手上，而在这条修复之前一个字都没用过。null = 还没 welcome。
+      **不是**「我读到哪条了」——backlog 永远拉全量（afterSeq:-1） */
+  lastSeq: number | null;
+  /** 这一份历史缺了东西（issue #957 C-I7）。null = 完整。**持久事实**，不是
+      notice 那样的一次性：`pushStatus` 每一次都带上它。「我看到的就是全部」
+      和「我看到的少了一条」需要的动作完全不同（后者该去问别人、别照着这段
+      历史下判断），而在这条修复之前两者只差一行会被下一次成功操作擦掉的灰字
+      （当时 cloudSay 成功就 `workspaceGroupsError: null`；那三条如今原样透传
+      `CloudAck`、不再碰那格共享状态，见第四批 C2-I4）。
+      每一轮 backlog 落定时**重算**：补齐了就跟着消失——它是这一份历史的属性，
+      不是一枚一旦挂上就摘不掉的勋章 */
+  gapNote: string | null;
+  /** 这一轮 backlog 期间收到过一条「已跳过」的 error 帧（frameHandler 的
+      chunkBacklogFrames 对单条超限的事件产出的那条）。被跳掉的如果不是末尾
+      那几条，`maxSeen < lastSeq` 是看不出来的——这个旗子就是为那种缺口留的。
+      done:true 结账后清零：它属于那一轮，不属于这条连接 */
+  backlogSkipped: boolean;
+  /** 已知最新一条事件的 ts；null = 还没见过任何真实事件。**不能**用
+      Date.now() 占位再 Math.max——那样 join() 那一刻的"此刻"会变成一个不该
+      存在的下限，历史事件（ts 早于打开这个会话的那一刻，比如重新打开一个
+      沉寂多日的云会话）永远抬不动它，云会话会显得比实际更"新鲜"，跟复审
+      当初要修的那个 bug 是同一类问题（这条本身就是当初那次修复自己引入的
+      回归，被本轮新增的用例抓到）。deliverEvent 第一条真事件直接赋值，
+      之后每条用 event.ts 取 max（防一条 ts 更早的事件把它往回拨）。
+      activeSummary() 只在仍是 null（真的一条事件都没见过）时才退回
+      Date.now() 当占位——cloudSessionFleetRow 的 lastTs 最终用的是
+      activeSummary() 那一份 */
+  lastEventTs: number | null;
+  /** welcome 给的路由判定（issue #945）。null = runtime 探不到
+      （edge 抖了 / 还没 welcome）——「拿不到」≠「起不了」，这一层原样透传不加工 */
+  modelRoute: CsModelRoute | null;
+  /** 还没等到 `say_result` 的那一句（#957 第三批，#964）。协议 6 之前
+      `say()` 在帧交给 socket 那一刻就 resolve `{ok:true}`，服务端的限速/
+      不在籍/抛错要过一会儿才以一条 `error` 帧到达——渲染层早就把草稿清了，
+      那句话在界面上"发出去了"，实际一个字都没进日志。
+      **不排队**：已经挂着一句时第二次 say 直接回失败。回执不带请求 id，
+      两次并发在客户端这一侧无法区分谁是谁的（回执不带请求 id） */
+  pendingSay: CsPending | null;
+  /** 还没等到 `approve_result` 的那几次审批，按 callId 分（#957 第三批）。
+      与 say 不同，审批**可以并发**——一个 turn 里同时挂着两张卡是常态，
+      而 `approve_result` 带 callId，对得上号 */
+  pendingApprove: Map<string, CsPending>;
+  /** 还没等到 `stop_result` 的那一次停（#957 第三批） */
+  pendingStop: CsPending | null;
+  /** 还没等到 `call_result` 的那一次改名单（#1163） */
+  pendingCall: CsPending | null;
+  /** 这条是不是**聊天**（#1280）：聊天进房只拉末尾一屏，团队会话照旧全量。
+      welcome 那一刻定死（`msg.chat !== undefined`）——一条会话的身份一生不变 */
+  tail: boolean;
+  /** 已经转发给渲染层的**最小** seq。null = 还没转发过任何事件。
+      尾巴模式下它就是「这一页的上沿」：往前翻从它之前接着拉，`missingCount`
+      的下界也跟着它走——没加载的那一段不是「缺口」 */
+  oldestSeq: number | null;
+  /** 云端说这一页之前还有更早的（最后一片 backlog 的 `hasMore`）。
+      缺省 false = 没有更早的 / 团队会话（那边一次全量，天然没有「更早」） */
+  hasOlder: boolean;
+  /** 还没回来的那一次往前翻（#1280）。**不排队**：翻页进行中再叫一次回同一个
+      promise——这条路上真正常见的是滚动哨兵在同一屏里连触两次 */
+  paging: { settle: (r: FriendsResult<{ hasOlder: boolean }>) => void; promise: Promise<FriendsResult<{ hasOlder: boolean }>>; timer: ReturnType<typeof setTimeout> } | null;
+}
+
+/** 一次「等服务端回执」的挂起态：resolve 用的 settle + 超时定时器。
+    config/say/approve/stop 四条路同一个形状 */
+interface CsPending {
+  settle: (r: CloudAck) => void;
+  timer: ReturnType<typeof setTimeout>;
+}
+
+/** config 那一条的挂起态。形状与 CsPending 一模一样，只有回执类型不同——
+    `workspaceCloudConfig` 仍走 `FriendsResult<null>`（复审 C2-I4 说的是
+    say/approve/stop 那三条「点完就不再看」的路，改配置这条本来就停在页面上
+    等回执）。共用一个类型就得把 config 的返回值也一起换掉，超出这次的范围 */
+/** 「历史缺了一块」这句人话（issue #957 C-I7）。数得出缺几条就说几条——
+    「N 条」是用户判断「要不要去问别人」的唯一量纲；数不出来（还没 welcome、
+    lastSeq 为负）时不许编一个数字，退回不带数量的那句。 */
+function gapNoteText(missing: number | null): string {
+  return missing !== null && missing > 0
+    ? `这条会话有 ${missing} 条历史事件没能下发（服务端跳过了过大的事件）——你看到的不是全部`
+    : "这条会话有历史事件没能下发（服务端跳过了过大的事件）——你看到的不是全部";
+}
+
+/** 这一份历史缺了几条：[0, lastSeq] 里没转发给渲染层的那些。null = 数不出来
+    （还没 welcome / 空会话）。
+    **不是** `lastSeq - maxSeen`：那只数得出末尾的缺口，中间被跳掉的一条
+    （maxSeen 仍然等于 lastSeq）会被算成 0。
+    **假设 seq 从 0 起**（EventStore 的第一条就是 0，见 session/eventLog.ts）——
+    从别处 fork 出来、seq 不从 0 开始的日志会被它整段算成缺口。云会话不 fork
+    （runtime 每条会话各自一个 EventStore），所以这条假设此刻成立；哪天真有了
+    fork，判据要换成「welcome 也带上首条 seq」而不是在这里猜。
+    数不出来时调用方退回不带计数的那句文案（gapNoteText 的 0/null 分支）——
+    「少了东西」这件事本身才是要说的，条数只是锦上添花。 */
+function missingCount(session: ActiveSession): number | null {
+  const last = session.lastSeq;
+  if (last === null || last < 0) return null;
+  // 尾巴模式下「缺口」只数**已加载范围之内**没到的那些（#1280）：没加载的那一段
+  // 不是缺口，是还没翻到。不收这个下界的话，每条长聊天一进房就顶着一句
+  // 「这条会话有 3000 条历史事件没能下发」——而那三千条好好地躺在服务端
+  const from = session.tail ? session.oldestSeq ?? 0 : 0;
+  let n = 0;
+  for (let seq = from; seq <= last; seq++) if (!session.seenSeqs.has(seq)) n += 1;
+  return n;
+}
+
+/** 等 say/approve/stop 回执的上限（#957 第三批）。与控制房 RPC 同一个量纲、
+    同一条理由：超时不是"失败"而是"不知道"——服务端完全可能已经处理了，
+    只是回执没回来。所以文案不说"发送失败"（那会诱导用户再发一遍，
+    而重发一句话不像重存一份配置那样等价），而是把人指回唯一的事实来源。 */
+const ACK_TIMEOUT_MS = 15_000;
+const ACK_TIMEOUT_MESSAGE = "没有收到回执，不确定有没有生效——看时间线";
+/** 超时/断线这两条路结出来的失败带 `unknown: true`（复审 C2-I4）：帧已经
+    交给 socket 了，服务端很可能已经跑起来——两态的 `ok:false` 逼着渲染层
+    按「没发出去」处理，于是把正文塞回输入框、用户再发一遍，同一句话执行
+    两次。带上这个记号，文案与重发的决定权才交得回给人 */
+const ACK_UNKNOWN = { unknown: true as const };
+/** 第二句话在上一句的回执到达之前被按下（#957 第三批）。不排队是刻意的：
+    排起来就得回答"排到第几了、要不要撤"这一串问题，而这条路上真正常见的
+    是手滑连点两下 */
+const SAY_BUSY_MESSAGE = "上一句还没有回执，稍等";
+
+export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSessionClient {
+  let active: ActiveSession | null = null;
+
+  /** notice（issue #819）：runtime 对**这条连接**说的一句话，随下一次状态
+      推送捎给渲染层显示。一次性——只有传了才带，不进 ActiveSession，所以
+      不会在后续每次推送里重复出现 */
+  function pushStatus(session: ActiveSession, notice?: string): void {
+    deps.sendStatus({
+      workspaceId: session.workspaceId,
+      sessionId: session.sessionId,
+      state: session.status,
+      ...(session.deniedCode ? { deniedCode: session.deniedCode } : {}),
+      ...(session.deniedServerVersion === undefined ? {} : { deniedServerVersion: session.deniedServerVersion }),
+      initiatorUid: session.initiatorUid,
+      ownerUid: session.ownerUid,
+      selfUid: deps.selfUid() ?? "",
+      modelRoute: session.modelRoute,
+      // 三态照原样带过去（#1301）：**缺席 = welcome 还没到**，`null` = 团队会话。
+      // 原来写的是 `chat === null ? {} : {...}`，把「还不知道」与「是团队」压成
+      // 同一个缺席——渲染层于是在 welcome 之前就替这条会话下了「团队」的结论
+      ...(session.chat === undefined ? {} : { chat: session.chat }),
+      ...(notice === undefined ? {} : { notice }),
+      // 持久（issue #957 C-I7）：与上面那条一次性的 notice 相反，只要这一份
+      // 历史还缺着，**每一次**推送都带上它——渲染层因此不需要自己记着
+      ...(session.gapNote === null ? {} : { gapNote: session.gapNote }),
+      // 顶上那个哨兵画不画（#1280）。缺席 = 没有更早的 / 团队会话
+      ...(session.hasOlder ? { hasOlder: true as const } : {}),
+    });
+  }
+
+  /** say/stop 各自那一个挂起态的收口（#957 第三批）。形状同原来的 settleConfig——
+      调用点也同样是三类：回执到达、超时、连接进终态 */
+  function settleSay(session: ActiveSession, result: CloudAck): void {
+    const pending = session.pendingSay;
+    if (!pending) return;
+    session.pendingSay = null;
+    clearTimeout(pending.timer);
+    pending.settle(result);
+  }
+
+  function settleStop(session: ActiveSession, result: CloudAck): void {
+    const pending = session.pendingStop;
+    if (!pending) return;
+    session.pendingStop = null;
+    clearTimeout(pending.timer);
+    pending.settle(result);
+  }
+
+  function settleCall(session: ActiveSession, result: CloudAck): void {
+    const pending = session.pendingCall;
+    if (!pending) return;
+    session.pendingCall = null;
+    clearTimeout(pending.timer);
+    pending.settle(result);
+  }
+
+  /** 按 callId 收口一次审批（#957 第三批）。callId 缺席 = 收口全部——
+      连接进终态时没有哪一张卡还有机会等到回执 */
+  function settleApprove(session: ActiveSession, callId: string | null, result: CloudAck): void {
+    const ids = callId === null ? [...session.pendingApprove.keys()] : [callId];
+    for (const id of ids) {
+      const pending = session.pendingApprove.get(id);
+      if (!pending) continue;
+      session.pendingApprove.delete(id);
+      clearTimeout(pending.timer);
+      pending.settle(result);
+    }
+  }
+
+  /** 往前翻那一次的收口（#1280）。三类调用点同 settleSay：回执到达、超时、连接进终态 */
+  function settlePaging(session: ActiveSession, result: FriendsResult<{ hasOlder: boolean }>): void {
+    const pending = session.paging;
+    if (!pending) return;
+    session.paging = null;
+    clearTimeout(pending.timer);
+    pending.settle(result);
+  }
+
+  /** 连接进终态时把 say/approve/stop 三类挂起态一并结掉（#957 第三批）。
+      三条终态路径（markGone / markDenied /
+      teardown）每一条都要连它一起调，漏哪条就是那条路径上的
+      "发送中…/审批中…"永远转下去（#834 在 config 上踩过一模一样的坑） */
+  function settleWaiters(session: ActiveSession, result: CloudAck): void {
+    settleSay(session, result);
+    settleStop(session, result);
+    settleCall(session, result);
+    settleApprove(session, null, result);
+    // 翻页那一条也在这儿收口，理由同上面三条：漏了就是顶上那行「读取中…」
+    // 永远转下去。它回的是 FriendsResult 不是 CloudAck——「没读到更早的消息」
+    // 没有「不确定有没有生效」那一档，重试是安全的
+    settlePaging(session, { ok: false, message: result.ok ? "云端连接中断，请稍后重试" : result.message });
+  }
+
+  function markGone(session: ActiveSession): void {
+    // denied 是终态：runtime 掉线不该把"你没有权限"覆盖成"离线了"，反过来
+    // 也不该把已经 gone 的会话重复推送（onGone/onClose 可能各触发一次）
+    if (session.status === "gone" || session.status === "denied") return;
+    session.status = "gone";
+    settleWaiters(session, { ok: false, message: "云会话断开了，这一下不确定有没有生效——看时间线。", ...ACK_UNKNOWN });
+    // 这条连接够不到任何人了：清 pendingApprovals/island（onSessionInactive），
+    // 顺带清 seenSeqs/liveBuffer——host 回来时 welcome→backlog(-1) 会把同一批
+    // 事件原样再拉一遍，这次不去重、重新跑一遍 deliverEvent，approval_request
+    // 若仍命中 self 可批会重新把 pendingApprovals 填回去（文件头「:gone」段）
+    session.seenSeqs = new Set();
+    session.liveBuffer = [];
+    // 重连会重新走一遍 welcome→拉尾巴，这两格跟着从头来（#1280）。
+    // 渲染层靠 seenSeqs 清空后的重放去重，同既有行为
+    session.oldestSeq = null;
+    session.hasOlder = false;
+    // 这一轮 backlog 的账在这里作废（issue #957 C-I7）：host 回来会重来一遍
+    // 完整的 welcome→backlog，那一轮自己重新记。gapNote **不清**——屏幕上
+    // 摆着的仍然是那一份缺了东西的历史，下一轮 done:true 补齐了自然会消失
+    session.backlogSkipped = false;
+    deps.onSessionInactive(session.sessionId);
+    pushStatus(session);
+  }
+
+  function markDenied(session: ActiveSession, code: CsDeniedCode, serverVersion?: number): void {
+    session.status = "denied";
+    session.deniedCode = code;
+    // exactOptionalPropertyTypes：缺席要真的删掉这个键，赋 undefined 编译不过；
+    // 而删掉正是想要的语义——上一次 denied 留下的版本号不能糊到这一次身上
+    if (serverVersion === undefined) delete session.deniedServerVersion;
+    else session.deniedServerVersion = serverVersion;
+    settleWaiters(session, { ok: false, message: "这条云会话被拒绝了，这一下没有生效。" });
+    pushStatus(session);
+    // denied 没有重试的意义（版本不对/不是成员/会话没了，都不会因为再连一次
+    // 而自愈），主动断开，别留一条注定失败的连接空转
+    try {
+      session.transport.close();
+    } catch {
+      /* 已经在关了 */
+    }
+  }
+
+  function teardown(): void {
+    if (!active) return;
+    const sessionId = active.sessionId;
+    // 挂着的 say/stop 就地结掉：leave()/被下一次 join() 顶掉都会走到这里，
+    // 而这条连接之后再也不会有回执回来。markGone/markDenied 各自也有一条：
+    // 三条终态路径一条都不能漏，漏哪条就是那条路径上的等待永远转下去
+    settleWaiters(active, { ok: false, message: "云会话已经关闭，这一下不确定有没有生效——看时间线。", ...ACK_UNKNOWN });
+    try {
+      active.transport.close();
+    } catch {
+      /* 已经在关了 */
+    }
+    // 必须先置 null 再通知（复审 fix round 2 Medium）：onSessionInactive 的
+    // 装配方实现会调 pushFleet()，那会重入 activeSummary()——如果这时候
+    // active 还没置 null，activeSummary() 照样报回这条会话（还是 ready），
+    // cloudSessionFleetRow 会照样合成一条虚拟行，"即时清行"就白做了，
+    // 幽灵行要等下一次不相干事件路过才会消失。markGone() 的顺序是对的
+    // （先把 status 改成 gone 再通知）——这里跟它对齐：先让 activeSummary()
+    // 读不到这条会话，再通知装配方去清 pendingApprovals/island。
+    //
+    // leave() 或者被下一次 join() 顶掉：这条会话彻底不再追踪了（不是"暂时
+    // 联系不上"的 gone，是"以后也不会再有人问起它"），残留的 pendingApprovals/
+    // island 一并清掉。真要再 join 回同一个 sessionId 也是全新的 ActiveSession
+    // （seenSeqs 从空开始），backlog 会把还没决定的 approval_request 原样
+    // 重放一遍，不会永久丢失
+    active = null;
+    deps.onSessionInactive(sessionId);
+  }
+
+  function deliverEvent(session: ActiveSession, event: SessionEvent): void {
+    if (session.seenSeqs.has(event.seq)) return;
+    session.seenSeqs.add(event.seq);
+    // 这一页的上沿（#1280）：往前翻从它之前接着拉，missingCount 的下界也看它
+    session.oldestSeq = session.oldestSeq === null ? event.seq : Math.min(session.oldestSeq, event.seq);
+    session.lastEventTs = session.lastEventTs === null
+      ? event.ts
+      : Math.max(session.lastEventTs, event.ts);
+    deps.sendEvent(event);
+
+    if (event.type === "approval_request") {
+      const uid = deps.selfUid();
+      if (uid && (uid === event.initiatorUid || uid === session.ownerUid)) {
+        deps.onApprovalRequest({
+          sessionId: event.sessionId,
+          call: { id: event.callId, name: event.toolName, args: { summary: event.argsSummary } },
+          // 协议里没有独立的"工具自我介绍"字段（那是本机 tool.def.description，
+          // 云端调用方没有理由知道我们的工具注册表长什么样）——argsSummary
+          // 本来就是"给人看的预览文本"（ApprovalRequestEvent 的文档注释），
+          // 拿它顶上比留空更有信息量
+          toolDescription: event.argsSummary,
+          // 协议只认 approved/denied（CsUp 的 approve 变体没有 grant 字段，
+          // 云端也没有"永久授权"这个概念）——不给 approve_session/approve_always/
+          // abort，避免渲染层画出点了也没有对应效果的按钮
+          availableDecisions: ["approve", "deny"],
+        });
+      }
+    } else if (event.type === "approval_decision") {
+      deps.onApprovalDecision(event);
+    }
+  }
+
+  function handleSessionFrame(session: ActiveSession, payload: string): void {
+    const msg = decodeCsDown(payload);
+    if (!msg) return; // 解不开的帧一律静默丢——线上字节永远可能是垃圾
+
+    switch (msg.t) {
+      case "welcome": {
+        session.lastSeq = msg.lastSeq; // issue #957 C-I7：backlog 落定时拿它对账
+        session.initiatorUid = msg.initiatorUid;
+        session.ownerUid = msg.ownerUid;
+        session.chat = msg.chat ?? null; // #1280：缺席 = 团队会话
+        // issue #945：runtime 用 turn 同一份 decideRuntimeRoute 算好的路由。
+        // 桌面是显示器不是执行者——这一格照收不重算
+        session.modelRoute = msg.modelRoute;
+        // 仍是 connecting，但占位的 initiatorUid/ownerUid 已经补上真值——
+        // 渲染层立刻能显示"谁发起的/谁是 owner"，不用等 backlog 跑完
+        pushStatus(session);
+        // 聊天进房只拉末尾一屏（#1280）：一只一条永久线，全量拉迟早是十几秒。
+        // 团队会话照旧 afterSeq:-1——那边的上下文环与通话折卡都靠「把整份日志
+        // 读一遍」，改成分页会让它们静默算错
+        session.tail = msg.chat !== undefined;
+        try {
+          session.transport.send(
+            encodeCs(session.tail ? { t: "backlog", tail: true, limit: BACKLOG_TAIL_DEFAULT } : { t: "backlog", afterSeq: -1 }),
+            session.hostCid!,
+          );
+        } catch (e) {
+          deps.log?.(`云会话:backlog 请求编码失败:${e instanceof Error ? e.message : String(e)}`);
+        }
+        return;
+      }
+      case "workspace_state":
+      case "archive_result":
+        // 协议 8/9 起这两条只在控制房出现（#991 / #993），会话房里当噪音忽略
+        return;
+      // ── say/approve/stop 的回执（#957 第三批，#964）────────────────────
+      // 在这之前这三条路都是"帧交给 socket 就算成功"，服务端的拒绝要过一会儿
+      // 才以一条 error 帧到达——而那时草稿早清了、审批卡早收起了。回执不复用
+      // error（同 config_result 的理由）：那条帧还承载 backlog 跳过之类不相干
+      // 的消息，await 它会被无关 error 提前唤醒
+      case "say_result":
+        settleSay(session, msg.ok ? { ok: true } : { ok: false, message: msg.message ?? "这句话没能送出去" });
+        return;
+      case "approve_result":
+        settleApprove(
+          session,
+          msg.callId,
+          msg.ok ? { ok: true } : { ok: false, message: msg.message ?? "这次审批没有生效" },
+        );
+        return;
+      case "stop_result":
+        settleStop(session, msg.ok ? { ok: true } : { ok: false, message: msg.message ?? "没能停下这一轮" });
+        return;
+      case "call_result":
+        settleCall(session, msg.ok ? { ok: true } : { ok: false, message: msg.message ?? "通话名单没有改上" });
+        return;
+      case "denied":
+        markDenied(session, msg.code, msg.v);
+        return;
+      case "event":
+        // 还没 ready：backlog 没落定之前不能让直播事件抢跑，先攒着（复审
+        // High，文件头有完整推演）。ready 之后是正常的直发路径
+        if (session.status !== "ready") {
+          session.liveBuffer.push(msg.event);
+        } else {
+          deliverEvent(session, msg.event);
+        }
+        return;
+      case "delta":
+        // 流式碎片（协议 16，#1107）：不过 seq 机器（没有 seq、不去重、不进
+        // liveBuffer），拿到就直转渲染层。connecting 期间到的碎片也照转——
+        // 渲染层那行「正在回复」要等 backlog 落定才画得出，但缓冲是按
+        // agentId 攒的，行一出现文字就在，不需要在这里排队等 ready
+        deps.sendDelta({ sessionId: session.sessionId, agentId: msg.agentId, kind: msg.kind, text: msg.text });
+        return;
+      case "backlog": {
+        // liveBuffer 只在**最后一片**（done:true）才参与合并 flush（复审
+        // fix round 2 High）：backlog 可能分片下发，如果每一片都无条件把
+        // liveBuffer 整个合并进来再清空，中间那些 done:false 的分片会把
+        // liveBuffer 里 seq 落在"这一片和下一片之间"的直播事件提前放出去——
+        // 实测复现：welcome(lastSeq=7)→直播 event(seq:5)→
+        // backlog([0,1,2,3],done:false)→backlog([4,5,6,7],done:true) 时，
+        // 旧写法在第一片就把 liveBuffer 的 5 混进 [0,1,2,3] 一起排序转发，
+        // 产出 [0,1,2,3,5,4,6,7]——非 seq 升序。现在的服务端总是一次
+        // done:true 下发全量，所以这条路径生产不可达，但客户端不该依赖这个
+        // 假设。
+        if (msg.done) {
+          // 最后一片：与攒了一路的 liveBuffer 合并、按 seq 升序排序后统一
+          // 转发（去重表保证同一条不会转发两次），这之后才清空 liveBuffer
+          const merged = [...msg.events, ...session.liveBuffer].sort((a, b) => a.seq - b.seq);
+          session.liveBuffer = [];
+          for (const e of merged) deliverEvent(session, e);
+          // 对账（issue #957 C-I7）：welcome 说日志到 lastSeq，这一轮真正转发
+          // 出去的最大 seq 却更小 = 末尾缺了几条；中间被跳掉的靠那条「已跳过」
+          // 的 error 帧发现（maxSeen 那条判据看不出来）。两条判据缺一不可。
+          // **每一轮都重算**：补齐了就写回 null，让它跟着消失
+          let maxSeen = -1;
+          for (const seq of session.seenSeqs) if (seq > maxSeen) maxSeen = seq;
+          // 这一页之前还有没有（#1280）。**只有最后一片带得到**，中间分片缺席
+          // 时不许当成 false——那会让哨兵在一次分片下发之后凭空消失
+          const hadOlder = session.hasOlder;
+          if (msg.hasMore !== undefined) session.hasOlder = msg.hasMore;
+          settlePaging(session, { ok: true, value: { hasOlder: session.hasOlder } });
+          // 对账的下界跟着已加载范围走（#1280）：尾巴模式下 maxSeen 仍然该等于
+          // lastSeq（第一页就是末尾那一屏），所以这条判据原样成立
+          const gapped = session.backlogSkipped || (session.lastSeq !== null && maxSeen < session.lastSeq);
+          const before = session.gapNote;
+          session.gapNote = gapped ? gapNoteText(missingCount(session)) : null;
+          session.backlogSkipped = false; // 这一轮的账结了
+          if (session.status !== "ready") {
+            session.status = "ready";
+            pushStatus(session);
+          } else if (session.gapNote !== before || session.hasOlder !== hadOlder) {
+            // 状态没变但缺口的事实变了（重连补齐/新缺口）——这一格也得推。
+            // `hasOlder` 同理（#1280）：翻到头那一次状态一个字没变，不推的话
+            // 顶上那个哨兵就永远挂着，点它每次都空手而回
+            pushStatus(session);
+          }
+        } else {
+          // 中间分片：只转发这一片自己的事件，liveBuffer 原样留着不动
+          const chunk = [...msg.events].sort((a, b) => a.seq - b.seq);
+          for (const e of chunk) deliverEvent(session, e);
+        }
+        return;
+      }
+      case "error":
+        // 只记文本（server 生成的固定提示语，如"审批未生效：…"），不是帧原文
+        deps.log?.(`云会话:runtime 回错:${msg.msg}`);
+        // 还要给人看（issue #819）：这条帧是**定向发给这条连接**的，说的
+        // 就是"你刚才那一下没生效"。只进日志的话，被限速的人看到的是
+        // 消息凭空消失——和"网断了"长得一模一样，而两者该做的事相反
+        //
+        // 「已跳过」那一类还要再记一笔（issue #957 C-I7）：它说的是「你的历史
+        // 缺了一条」，而 notice 是一次性的——下一次成功操作就把它擦掉了
+        // （渲染层的 workspaceGroupsError）。判据取服务端那句话里的「已跳过」
+        // 而不是整句相等：文案改一个字这道判断就静默失效，而这条修的正是
+        // 「失败无声」（同 daemon 看门狗不认日志文案那条纪律）
+        if (msg.msg.includes(BACKLOG_SKIP_MARKER)) {
+          session.backlogSkipped = true;
+          // ready 之后到的那条是**直播**扇出的占位（daemon.globalSend 对单条
+          // 超过 MAX_FRAME_BYTES 的事件回的那一条）：这一轮 backlog 早就结账
+          // 了，backlogSkipped 要等下一轮 backlog done 才被读到——而云会话可能
+          // 几小时不重连一次。当场落 gapNote，否则这个洞在界面上只剩一行会被
+          // 下一次成功操作擦掉的 notice 灰字（终审 I3）。
+          // missingCount 数的是 [0, lastSeq]，而被跳掉的这条 seq 在 lastSeq
+          // 之外——数出来是 0，文案自然退回不带计数的那一句
+          if (session.status === "ready") session.gapNote = gapNoteText(missingCount(session));
+        }
+        pushStatus(session, msg.msg);
+        return;
+      case "created":
+        return; // 控制房专用帧，出现在会话房里是协议错位，忽略
+    }
+  }
+
+  async function sendHello(session: ActiveSession): Promise<void> {
+    const token = await deps.accessToken();
+    // 这段 await 期间可能已经 leave() 或重新 join() 了——不是当前这份就别再动它
+    if (active !== session || !session.hostCid) return;
+    if (!token) {
+      deps.log?.("云会话:没有可用的登录凭证，hello 没发出去");
+      return;
+    }
+    try {
+      const sent = session.transport.send(
+        encodeCs({ t: "hello", v: CS_PROTOCOL_VERSION, jwt: token }),
+        session.hostCid,
+      );
+      // 丢了不是死局（issue #829）：重连后中继会重发 `:peer`，那条信号会
+      // 再触发一次 sendHello。但它必须留下痕迹——"一直停在 connecting"
+      // 只看日志的话，有这一行和没这一行是两种排查难度
+      if (!sent) deps.log?.("云会话:hello 没发出去（连接没开），等下一轮 :peer 重试");
+    } catch (e) {
+      deps.log?.(`云会话:hello 编码失败:${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+
+  function requireReady(): { ok: true; session: ActiveSession } | { ok: false; message: string } {
+    if (!active) return { ok: false, message: "没有已连接的云会话" };
+    if (active.status !== "ready" || !active.hostCid) {
+      return { ok: false, message: "云会话未就绪" };
+    }
+    return { ok: true, session: active };
+  }
+
+  /** say/approve/archive/config 共用：编码失败（say.text 超 64KiB / 整帧超
+      MAX_FRAME_BYTES）在这里落地成失败结果，不让 encodeCs 的异常原样往外抛。
+
+      transport.send 的返回值也在这里落地（issue #829）：它有四条不抛异常的
+      丢帧路径，其中一条正是"正在自动重连"这个完全正常的窗口。回 true 只
+      证明帧已经交给本机的 socket——**不是送达确认**（那件事由 config 的
+      `config_result` 回执负责），但至少把"压根没发出去"这一半从"成功"里
+      择了出来。 */
+  function sendFrame(session: ActiveSession, msg: CsUp): FriendsResult<null> {
+    let payload: string;
+    try {
+      payload = encodeCs(msg);
+    } catch (e) {
+      return { ok: false, message: e instanceof Error ? e.message : String(e) };
+    }
+    if (!session.transport.send(payload, session.hostCid!)) {
+      return { ok: false, message: "连接不通，这一帧没发出去——稍后重试。" };
+    }
+    return { ok: true, value: null };
+  }
+
+  /** 控制房 RPC 的公共骨架（协议 8 起：create / workspace / config；协议 9 加 archive）：
+      开一条控制房连接 → 第一个 host 通告到就发 hello + 请求帧 → 等一条对得上的
+      答复或 denied → 关连接。每次一条新连接：控制房是无状态的问答，不值得
+      为它维护一条常驻连接（daemon 那侧按 cid 验籍，连接一断籍就没了）。
+      `match` 认答复：认得出就回它转换出的结果，认不出（别的帧）就继续等。 */
+  async function ctlRequest<T>(
+    frame: CsUp,
+    match: (msg: CsDown) => FriendsResult<T> | null,
+  ): Promise<FriendsResult<T>> {
+    const token = await deps.accessToken();
+    if (!token) return NOT_SIGNED_IN;
+
+    return new Promise((resolve) => {
+      const transport = deps.createTransport(csCtlChannel());
+      let hostCid: string | null = null;
+      let settled = false;
+
+      const finish = (result: FriendsResult<T>): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        try {
+          transport.close();
+        } catch {
+          /* 已经在关了 */
+        }
+        resolve(result);
+      };
+
+      const timer = setTimeout(() => {
+        finish({ ok: false, message: "云端无响应，请稍后重试" });
+      }, CS_CREATE_TIMEOUT_MS);
+
+      transport.onPeer((cid) => {
+        // 终审 C1：JWT 不发给还没被确认为权威的 peer——只发给第一个 host
+        // 通告。控制房没有 ready 概念可用来把关（不像 join() 的会话房），
+        // 这个局部变量本身就是"是否已经认定过一个 host"的哨兵：配合
+        // edge.ts 的角色收口（role=host 只认平台身份），第一个到场的就
+        // 必然是真 runtime，后到的一律忽略，不再把 hello 里的 jwt 发给它。
+        if (hostCid !== null) return;
+        hostCid = cid;
+        try {
+          // 控制房没有「welcome」概念——hello 成功是静默的，下一步直接发
+          // 请求帧，回执是对应的答复帧（frameHandler.ts 的注释原话）
+          const helloSent = transport.send(encodeCs({ t: "hello", v: CS_PROTOCOL_VERSION, jwt: token }), cid);
+          const reqSent = helloSent && transport.send(encodeCs(frame), cid);
+          // 没发出去就当场收工（issue #829）：原来这里会白等满
+          // CS_CREATE_TIMEOUT_MS 才回一句"云端无响应"——把"我们没发出去"
+          // 说成"对面没回话"，方向反了，人会去查 VPS
+          if (!reqSent) finish({ ok: false, message: "连接不通，请求没发出去——稍后重试" });
+        } catch (e) {
+          finish({ ok: false, message: e instanceof Error ? e.message : String(e) });
+        }
+      });
+
+      transport.onMessage((payload, from) => {
+        if (hostCid && from !== hostCid) return;
+        const msg = decodeCsDown(payload);
+        if (!msg) return;
+        if (msg.t === "denied") {
+          finish({ ok: false, message: deniedMessage(msg.code, msg.v) });
+          return;
+        }
+        const matched = match(msg);
+        if (matched) finish(matched);
+        // welcome/event/backlog/error 不该出现在控制房，忽略
+      });
+
+      transport.onGone(() => {
+        finish({ ok: false, message: "云端连接中断，请稍后重试" });
+      });
+      transport.onClose(() => {
+        finish({ ok: false, message: "云端连接中断，请稍后重试" });
+      });
+    });
+  }
+
+  function create(workspaceId: string, chat?: CsChatSpec): Promise<FriendsResult<{ sessionId: string }>> {
+    return ctlRequest({ t: "create", workspaceId, ...(chat === undefined ? {} : { chat }) }, (msg) => {
+      if (msg.t === "created" && msg.workspaceId === workspaceId) return { ok: true, value: { sessionId: msg.sessionId } };
+      // 业务失败当场回那句人话（协议 20，ADR-0297 决定 ④）：控制房原来只认 created /
+      // denied，抛错就是让人白等满超时、再把「群聊至少要两只」说成「云端无响应」
+      if (msg.t === "create_failed" && msg.workspaceId === workspaceId) return { ok: false, message: msg.message };
+      return null;
+    });
+  }
+
+  function workspaceFiles(workspaceId: string, path: string): Promise<FriendsResult<CsWorkNode>> {
+    // 本地先归一化一次省一次明知会被拒的往返；服务端仍然自己归一化一次
+    // （主进程不是安全边界，同 validateRepoUrl 注释里那条理由）
+    const normalized = normalizeWorkPath(path);
+    if (normalized === null) return Promise.resolve({ ok: false, message: "这条路径不合法。" });
+    return ctlRequest({ t: "files", workspaceId, path: normalized }, (msg) => {
+      if (msg.t !== "files_result" || msg.workspaceId !== workspaceId) return null;
+      if (!msg.ok) return { ok: false, message: msg.message ?? "读工作文件夹失败" };
+      // ok 却没有 node = 服务端与客户端对不上号（解码降级过），当失败处理而
+      // 不是兜底成空目录——「读不到」不许说成「里面是空的」
+      if (!msg.node) return { ok: false, message: "读到的结果看不懂，可能是云端版本对不上。" };
+      return { ok: true, value: msg.node };
+    });
+  }
+
+  function workspaceFilesSearch(
+    workspaceId: string,
+    query: string,
+    content: boolean,
+  ): Promise<FriendsResult<CsWorkHit[]>> {
+    return ctlRequest({ t: "files_search", workspaceId, query, content }, (msg) => {
+      if (msg.t !== "files_search_result" || msg.workspaceId !== workspaceId) return null;
+      if (!msg.ok) return { ok: false, message: msg.message ?? "搜索失败" };
+      // ok 却没有 hits = 两端对不上号（解码降级过）。**不兜底成空数组**：
+      // 「搜过了没有」与「没搜成」在界面上长得一样，而两者该做的动作相反
+      if (!msg.hits) return { ok: false, message: "搜到的结果看不懂，可能是云端版本对不上。" };
+      return { ok: true, value: msg.hits };
+    });
+  }
+
+  function workspaceWikiWrite(workspaceId: string, req: CsWikiWriteReq): Promise<FriendsResult<null>> {
+    return ctlRequest({ t: "wiki_write", workspaceId, ...req }, (msg) => {
+      if (msg.t !== "wiki_write_result" || msg.workspaceId !== workspaceId || msg.path !== req.path) return null;
+      if (!msg.ok) return { ok: false, message: msg.message ?? "改不了这一页" };
+      return { ok: true, value: null };
+    });
+  }
+
+  function workspaceState(workspaceId: string): Promise<FriendsResult<WorkspaceCloudState>> {
+    return ctlRequest({ t: "workspace", workspaceId }, (msg) =>
+      // 答复带 workspaceId：一条连接只问一个，但认一下比赌顺序便宜
+      msg.t === "workspace_state" && msg.workspaceId === workspaceId
+        ? { ok: true, value: { modelRoute: msg.modelRoute, gitHosts: msg.gitHosts } }
+        : null
+    );
+  }
+
+  /** 存 / 删一台主机的 Git 凭据（协议 15，#1103）。resolve 的是服务端的
+      `git_credential_result`——「已保存」必须等服务端说话（#834 的纪律原样成立）。
+      **本地不预校验主机名**：那份判据两端共用（`validateGitHost`），渲染层在输入
+      框旁边即时用它说人话，而这一层是 IPC 转发，多判一次只会让同一句话有两个出处。 */
+  function workspaceGitCredential(
+    workspaceId: string,
+    host: string,
+    token: string,
+  ): Promise<FriendsResult<CsGitHost[] | null>> {
+    return ctlRequest({ t: "git_credential", workspaceId, host, token }, (msg) => {
+      if (msg.t !== "git_credential_result" || msg.workspaceId !== workspaceId) return null;
+      return msg.ok ? { ok: true, value: msg.gitHosts } : { ok: false, message: msg.message ?? "保存被拒绝" };
+    });
+  }
+
+  async function join(workspaceId: string, sessionId: string, title?: string): Promise<FriendsResult<null>> {
+    if (!deps.selfUid()) return NOT_SIGNED_IN;
+
+    teardown(); // 同时只保持一条云会话连接——join 先断旧的
+
+    const transport = deps.createTransport(csChannel(workspaceId, sessionId));
+    const session: ActiveSession = {
+      workspaceId,
+      sessionId,
+      title: title ?? null,
+      transport,
+      hostCid: null,
+      status: "connecting",
+      initiatorUid: null,
+      ownerUid: "",
+      chat: undefined, // #1301：还没 welcome = 还不知道，**不是**「团队会话」
+      seenSeqs: new Set(),
+      liveBuffer: [],
+      lastSeq: null,
+      gapNote: null,
+      backlogSkipped: false,
+      // null = 还没有任何事件事实（不能用 Date.now() 占位，见 ActiveSession
+      // 的字段注释——那样会给历史事件的 ts 强加一个不该有的下限）
+      lastEventTs: null,
+      modelRoute: null,
+      pendingSay: null,
+      pendingApprove: new Map(),
+      pendingStop: null,
+      pendingCall: null,
+      // welcome 之前一律按团队会话的老路算：那一刻还不知道这是不是一条聊天
+      tail: false,
+      oldestSeq: null,
+      hasOlder: false,
+      paging: null,
+    };
+    active = session;
+    pushStatus(session);
+
+    transport.onPeer((cid) => {
+      if (active !== session) return; // 陈旧回调：这份会话已经被 leave/重新 join 顶掉了
+      // 终审 C1：ready 之后不再重绑 hostCid。edge.ts 已经把 cs-* 房间的
+      // role=host 收口给平台身份专用，正常情况下 ready 之后不会再有第二个
+      // host 通告——真出现，要么是陈旧的重复 :peer（该忽略），要么是有人
+      // 绕过收口抢到了 host 角色（更该忽略，不能把它当成新的权威）。不重绑
+      // 也就不会把 hello/JWT 发给这个未经确认的 peer（sendHello 发的地址
+      // 正是 session.hostCid）。
+      if (session.status === "ready") {
+        deps.log?.(`云会话:ready 后收到新的 peer 通告(cid=${cid})，忽略`);
+        return;
+      }
+      session.hostCid = cid;
+      // gone 之后 runtime 回来了：状态先弹回 connecting（而不是等 welcome 才动），
+      // UI 立刻能看出"正在重连"而不是干等在"离线"
+      if (session.status === "gone") {
+        session.status = "connecting";
+        pushStatus(session);
+      }
+      void sendHello(session);
+    });
+    transport.onMessage((payload, from) => {
+      if (active !== session) return;
+      if (session.hostCid && from !== session.hostCid) return; // 只认当前这个 host
+      handleSessionFrame(session, payload);
+    });
+    transport.onGone((cid) => {
+      if (active !== session) return;
+      if (session.hostCid !== cid) return;
+      session.hostCid = null;
+      markGone(session);
+    });
+    transport.onClose(() => {
+      if (active !== session) return;
+      session.hostCid = null;
+      markGone(session);
+    });
+
+    return { ok: true, value: null };
+  }
+
+  async function leave(): Promise<FriendsResult<null>> {
+    teardown();
+    return { ok: true, value: null };
+  }
+
+  /** #957 第三批（#964）：等 `say_result` 才算这句话说出去了。
+      在这之前 resolve `{ok:true}` 只证明帧交给了本机 socket——服务端的限速 /
+      不在籍 / 抛错要过一会儿才以一条 error 帧到达，而渲染层"发送成功就清草稿"
+      早就把话从输入框里抹掉了：界面上它发出去了，日志里一个字都没有。 */
+  async function say(
+    text: string, mention: boolean, mentions?: string[], memberMentions?: string[], voice?: true
+  ): Promise<CloudAck> {
+    const r = requireReady();
+    if (!r.ok) return r;
+    const session = r.session;
+    // 不排队（同 pendingConfig）：回执不带请求 id，两句话并发在客户端这一侧
+    // 分不出谁是谁的
+    if (session.pendingSay) return { ok: false, message: SAY_BUSY_MESSAGE };
+    // mentions 缺席不进帧（老语义，runtime 按 undefined 走 mention 那个
+    // boolean）；给了（含 []）才带上，runtime 视其为权威（#932 切片 1b）
+    const frame: Extract<CsUp, { t: "say" }> = { t: "say", text, mention };
+    if (mentions !== undefined) frame.mentions = mentions;
+    // 空数组不进帧（#1064）：`memberMentions: []` 与缺席在服务端是同一个动作
+    // （一行都不写），少一格就少一格
+    if (memberMentions !== undefined && memberMentions.length > 0) frame.memberMentions = memberMentions;
+    // 只有 true 才进帧（#1233）：这一格是记号不是布尔，`false` 与缺席是同一件事
+    if (voice === true) frame.voice = true;
+    const sent = sendFrame(session, frame);
+    // 压根没发出去就别挂 15 秒（#829 的四条丢帧路径 + encode 抛错）
+    if (!sent.ok) return sent;
+    return new Promise<CloudAck>((resolve) => {
+      const timer = setTimeout(() => {
+        settleSay(session, { ok: false, message: ACK_TIMEOUT_MESSAGE, ...ACK_UNKNOWN });
+      }, ACK_TIMEOUT_MS);
+      session.pendingSay = { settle: resolve, timer };
+    });
+  }
+
+  /** 同 say——等 `approve_result`（#957 第三批）。审批是"用户点完就不再看"
+      的那一类：乐观收卡之后服务端说"这条请求已失效"，人是看不见的。
+      与 say 不同这里**允许并发**：一个 turn 里同时挂两张卡是常态，回执带
+      callId 对得上号；同一个 callId 重复按下才拒绝（那是手滑连点）。 */
+  async function approve(callId: string, decision: "approved" | "denied"): Promise<CloudAck> {
+    const r = requireReady();
+    if (!r.ok) return r;
+    const session = r.session;
+    if (session.pendingApprove.has(callId)) return { ok: false, message: "这一条的回执还没到，稍等" };
+    const sent = sendFrame(session, { t: "approve", callId, decision });
+    if (!sent.ok) return sent;
+    return new Promise<CloudAck>((resolve) => {
+      const timer = setTimeout(() => {
+        settleApprove(session, callId, { ok: false, message: ACK_TIMEOUT_MESSAGE, ...ACK_UNKNOWN });
+      }, ACK_TIMEOUT_MS);
+      session.pendingApprove.set(callId, { settle: resolve, timer });
+    });
+  }
+
+  /** 停掉当前正在跑的这一轮 turn（#957 第三批）。权限判在服务端（发起人或
+      owner，与 approve 同一判据）——客户端不自己判一遍：那份判据要跟着
+      initiatorUid/ownerUid 走，两处各写一份迟早分家，而这里回的又不是
+      安全边界。ok:false 的两种常见理由（没有在跑的 turn / 无权）由回执
+      带文案上来。 */
+  async function stop(seq?: number): Promise<CloudAck> {
+    const r = requireReady();
+    if (!r.ok) return r;
+    const session = r.session;
+    if (session.pendingStop) return { ok: false, message: "上一次停止还没有回执，稍等" };
+    // seq 缺席不进帧（旧语义：停当前那一轮）；给了才带上，服务端拿它与这一轮
+    // 的采样边界比（复审 C2-I3）。停止按钮按**行**画，不带 seq 的话按第二行
+    // 那颗停掉的是第一行——两件事在界面上长得一模一样，而结果相反
+    const sent = sendFrame(session, seq === undefined ? { t: "stop" } : { t: "stop", seq });
+    if (!sent.ok) return sent;
+    return new Promise<CloudAck>((resolve) => {
+      const timer = setTimeout(() => {
+        settleStop(session, { ok: false, message: ACK_TIMEOUT_MESSAGE, ...ACK_UNKNOWN });
+      }, ACK_TIMEOUT_MS);
+      session.pendingStop = { settle: resolve, timer };
+    });
+  }
+
+  async function call(participants: string[]): Promise<CloudAck> {
+    const r = requireReady();
+    if (!r.ok) return r;
+    const session = r.session;
+    // 不叠发：上一次的回执还没到就再发，两条 call_result 分不清是谁的（同 stop / say）
+    if (session.pendingCall) return { ok: false, message: "上一次改名单还没有回执，稍等" };
+    const sent = sendFrame(session, { t: "call", participants });
+    if (!sent.ok) return sent;
+    return new Promise<CloudAck>((resolve) => {
+      const timer = setTimeout(() => {
+        settleCall(session, { ok: false, message: ACK_TIMEOUT_MESSAGE, ...ACK_UNKNOWN });
+      }, ACK_TIMEOUT_MS);
+      session.pendingCall = { settle: resolve, timer };
+    });
+  }
+
+  /** 往前翻一页（#1280）。只有聊天有这条路——团队会话一次全量，没有「更早」可言。
+      回的是 `FriendsResult`（不是 `CloudAck`）：读一页历史没有「不确定有没有生效」
+      那一档，超时就是没读到，重试是安全的。 */
+  async function backlogPage(): Promise<FriendsResult<{ hasOlder: boolean }>> {
+    const r = requireReady();
+    if (!r.ok) return r;
+    const session = r.session;
+    // 到头了 / 团队会话：不打网络，照实回。**不回错误**——「没有更早的」不是失败
+    if (!session.tail || !session.hasOlder) return { ok: true, value: { hasOlder: false } };
+    // 正在翻就交回同一个 promise（同 mcpHub 的 inflight）：滚动哨兵在同一屏里
+    // 连触两次是常态，发第二帧只会让同一页下来两遍
+    if (session.paging) return session.paging.promise;
+    const sent = sendFrame(session, {
+      t: "backlog",
+      tail: true,
+      limit: BACKLOG_TAIL_DEFAULT,
+      // 上沿之前接着拉。null 只可能出现在「一条事件都没转发过」，那时
+      // hasOlder 必然是 false、上面已经回过了
+      ...(session.oldestSeq === null ? {} : { beforeSeq: session.oldestSeq }),
+    });
+    if (!sent.ok) return sent;
+    let settle!: (x: FriendsResult<{ hasOlder: boolean }>) => void;
+    const promise = new Promise<FriendsResult<{ hasOlder: boolean }>>((resolve) => { settle = resolve; });
+    const timer = setTimeout(() => {
+      // hasOlder **保持为真**：这一页没读到不等于没有更早的，下次还能再试
+      settlePaging(session, { ok: false, message: "没读到更早的消息" });
+    }, ACK_TIMEOUT_MS);
+    session.paging = { settle, promise, timer };
+    return promise;
+  }
+
+  function archive(workspaceId: string, sessionId: string): Promise<FriendsResult<null>> {
+    return ctlRequest({ t: "archive", workspaceId, sessionId }, (msg) => {
+      if (msg.t !== "archive_result" || msg.sessionId !== sessionId) return null;
+      return msg.ok ? { ok: true, value: null } : { ok: false, message: msg.message ?? "归档没有生效" };
+    });
+  }
+
+  function remove(workspaceId: string, sessionId: string): Promise<FriendsResult<null>> {
+    return ctlRequest({ t: "delete", workspaceId, sessionId }, (msg) => {
+      if (msg.t !== "delete_result" || msg.sessionId !== sessionId) return null;
+      return msg.ok ? { ok: true, value: null } : { ok: false, message: msg.message ?? "删除没有生效" };
+    });
+  }
+
+  function chatUpdate(
+    workspaceId: string,
+    sessionId: string,
+    patch: { name?: string; agentIds?: string[] },
+  ): Promise<FriendsResult<null>> {
+    // patch 摊平进帧：没带的那一格在帧上就是缺席，不补 undefined（编码时会被丢掉，
+    // 但显式展开让「只改名那条帧上没有名单」这件事在源码里看得见）
+    return ctlRequest({ t: "chat_update", workspaceId, sessionId, ...patch }, (msg) => {
+      if (msg.t !== "chat_update_result" || msg.sessionId !== sessionId) return null;
+      return msg.ok ? { ok: true, value: null } : { ok: false, message: msg.message ?? "没有改成" };
+    });
+  }
+
+  function currentSessionId(): string | null {
+    return active ? active.sessionId : null;
+  }
+
+  function activeSummary(): CloudSessionSummary | null {
+    if (!active) return null;
+    return {
+      workspaceId: active.workspaceId,
+      sessionId: active.sessionId,
+      status: active.status,
+      // 只在真的一条事件都没见过时才退回"此刻"当占位——一旦有真实事件，
+      // active.lastEventTs 就不再是 null，这里不会再碰 Date.now()
+      lastEventTs: active.lastEventTs ?? Date.now(),
+      ...(active.title === null ? {} : { title: active.title }),
+    };
+  }
+
+  return { currentSessionId, activeSummary, create, join, leave, say, approve, archive, remove, chatUpdate, stop, call, backlogPage, workspaceState, workspaceGitCredential, workspaceFiles, workspaceFilesSearch, workspaceWikiWrite };
+}

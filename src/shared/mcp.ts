@@ -61,6 +61,11 @@ export interface McpServerStatus {
   /** 连不上时的人话原因；连上了 = undefined */
   error?: string;
   config: McpServerConfig;
+  /** 这台配没配「手填的 OAuth 客户端凭据」（#697）。**只有这一个布尔过桥**——
+      client_id / client_secret 本身留在 mcp-auth.json（0600，ADR-0121），
+      同这份文件里 env/headers 那条「凭据永不过桥」的规矩。
+      缺席 = 主进程那一侧还没接线（旧快照），按「没配」画 */
+  oauthClient?: boolean;
   tools: McpToolInfo[];
   resources: McpResourceInfo[];
   prompts: McpPromptInfo[];

@@ -94,8 +94,12 @@ export interface UserMessageEvent extends SessionEventBase {
       那条路上点火的人）。缺席 = 人说的 / 接力 / 派活 / 旧日志。**只是记号**：起 turn、
       排队、护栏、接力链首（`isHumanOpening`）都把它当普通的人话点火——它与人亲手 @ 的
       那条走同一条路；云会话时间线据它不画正文（`voice_call_changed` 那行已经说了
-      「拉进了通话」）。模型投影不读它 */
-  greeting?: "voice_call";
+      「拉进了通话」）。模型投影不读它。
+      `"new_agent"`（#1356 A2，spec §7.2）：手机刚建出来的那只，runtime 在建它的**新**私聊时
+      替建的人落的「问问他要你干什么」开场白（`mentions` 是它自己，`fromUid` 是建的人）。
+      同样只是记号，同样不画；这一格加取值**不进协议位**——事件在线上只浅校验 base 四格，
+      旧客户端照收，时间线按「`greeting` 在场就不画」一样藏起它 */
+  greeting?: "voice_call" | "new_agent";
   /** 这句话是**在语音通话里说出来的**（#1233）。缺席 = 打字打的 / 旧日志。
       **只是记号**：起 turn、排队、护栏、接力链首、派活全都不看它，模型投影
       （deriveMessages）读都不读——对模型来说这就是一条普通的用户消息，和从前

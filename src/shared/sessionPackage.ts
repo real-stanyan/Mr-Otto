@@ -83,6 +83,21 @@ export interface SessionPackage {
       checkpoint_created / session_shared：接收方机器上没有这份桶索引（甚至
       桶已经被 A 删了），留着的 slug 在 B 那边没有意义，也不该暴露 A 把这段
       对话归进了哪个私人分类。
+    - residue_baseline / residue_detected / residue_cleaned（#780 M3）：**主机指纹**。
+      基线是开工那一刻**整台机器**的照片——所有 LISTEN 端口、监听进程的命令行、
+      所有 booted 模拟器，其中绝大多数与这段对话毫无关系（`diffResidue` 拿它当
+      「本来就有」的底片，正是因为它照的是别人的东西）。后两条里的条目同源：
+      `owned` 那档确实是本会话 agent 自己起的命令，但那份事实 tool_result 里
+      已经有了；而 `suspected` 那档是**会话期间机器上新冒出来的任何端口/模拟器，
+      不论是谁开的**——A 自己另开一个 app 也会进这张清单，发出去等于顺手汇报
+      A 在这段时间里还干了什么别的。
+      剥掉的代价是零：这三条在接收方那边**一个消费方都没有**——时间线不画它们
+      （`isAuditEvent` 与 `EventRow` 两份名单里都没有），残留面板只吃主进程的
+      **直播**推送（`applyResidueEvent` 挂在 `CHANNELS.event` 上，不从重放来），
+      而重放侧那几个查询要么先问 `world.residue`（导入的会话在 B 机器上没有基线，
+      「没有 baseline 就不做」那道守卫直接回空），要么本来就只扫本机。
+      **没碰的另一条通道**：任务会话的日志上云（`taskSync` 的 PEN_VERDICTS）仍然
+      带着它们——那是用户自己的账号、自己的库，不是给别人的副本，与本条无关。
 
     注意「剥」不等于「删改历史」——这是导出时刻的投影裁剪，源会话的 append-only
     日志一个字节不动。硬规则（append-only 是唯一事实来源）管的是源日志，不管
@@ -130,9 +145,6 @@ export const PRIVACY_VERDICTS: Record<SessionEvent["type"], PrivacyVerdict> = {
   agent_relay: "keep",
   background_task_started: "keep",
   background_task_completed: "keep",
-  residue_baseline: "keep",
-  residue_detected: "keep",
-  residue_cleaned: "keep",
   share_grant_note: "keep",
   chat_message: "keep",
   // ── 发送方的机器 / 这个人的私事：理由见上面那段注释 ──
@@ -143,6 +155,10 @@ export const PRIVACY_VERDICTS: Record<SessionEvent["type"], PrivacyVerdict> = {
   voice_call_changed: "strip", // 语音通话名单是那个团队会话的控制面状态，不是这段对话的内容（#1163）
   chat_roster_changed: "strip", // 聊天名单是那条聊天的控制面状态，不是这段对话的内容（#1280，同 voice_call_changed）
   executor_changed: "strip", // 哪台设备在跑是发送方这个人的私事，不是这段对话（#1223）
+  // 残留审计三兄弟（#780 M3）：说的全是发送方那台机器此刻在跑什么，见上面那段注释
+  residue_baseline: "strip",
+  residue_detected: "strip",
+  residue_cleaned: "strip",
   memory_user_edit: "strip",
   memory_nudge: "strip",
   checkpoint_created: "strip",

@@ -27,8 +27,10 @@ import { Textarea } from "@/components/ui/textarea.js";
 import { InsetEmpty, InsetGroup, InsetNote, InsetRow } from "@/components/ui/inset-list.js";
 import { useNav } from "@/components/ui/nav-stack.js";
 import { useChat } from "../store.js";
-import { agentRows } from "../lib/workspaceView.js";
-import { AGENT_AVATARS, agentAvatarSrc, avatarPreviewSrc } from "../lib/agentAvatar.js";
+import { agentRows } from "../../../shared/workspaceView.js";
+import { AgentFace } from "./AgentFace.js";
+import { AGENT_AVATAR_COUNT } from "../../../shared/agentAvatarSlot.js";
+import { agentFaceSlot, avatarPreviewSlot } from "../../../shared/agentAvatar.js";
 import {
   AUTO_MODEL, agentModelOptions, chainWarning, modelsFromSelection, selectedModelValue,
 } from "../lib/agentModelChoice.js";
@@ -40,7 +42,7 @@ import {
 } from "../lib/agentToolsForm.js";
 import {
   isServerOn, isToolOn, selectionFromAllow, toggleServer, toggleTool, type ProxySelection,
-} from "../lib/proxyShare.js";
+} from "../../../shared/proxyShare.js";
 import { validateAgentName } from "../../../shared/workspaceAgents.js";
 import { sameAgentTools } from "../../../shared/agentToolAllow.js";
 import type { WorkspaceSnapshot, WorkspaceAgentRow } from "../../../shared/workspaces.js";
@@ -120,7 +122,7 @@ export function WorkspaceAgentsTab({ ws, selfUid }: { ws: WorkspaceSnapshot; sel
           rows.map((row) => (
             <InsetRow
               key={row.agentId}
-              leading={<img src={agentAvatarSrc(ws, row.agentId)} alt="" aria-hidden className="size-[34px] shrink-0 rounded-full" />}
+              leading={<AgentFace slot={agentFaceSlot(ws, row.agentId)} size={34} />}
               title={
                 <span className="inline-flex items-center gap-1">
                   <b className="font-medium">{row.name}</b>
@@ -241,8 +243,8 @@ export function AgentEditorScreen({
   const modelOptions = agentModelOptions(availableModels, currentModels, modelPlatforms);
   const chainNote = chainWarning(currentModels);
   // 头像那一格画什么：挑过就画挑的，没挑过画派生的；新建且没挑回 null
-  // （agentId 还没铸出来，见 avatarPreviewSrc 的头注）
-  const avatarPreview = avatarPreviewSrc(ws, edit?.agentId ?? null, avatarSlot);
+  // （agentId 还没铸出来，见 avatarPreviewSlot 的头注）
+  const avatarPreview = avatarPreviewSlot(ws, edit?.agentId ?? null, avatarSlot);
 
   const nameError = validateAgentName(name);
   const toolsError = toolsDraftError(toolsMode, toolsSel);
@@ -327,7 +329,7 @@ export function AgentEditorScreen({
                     )}
                   >
                     {avatarPreview !== null ? (
-                      <img src={avatarPreview} alt="" aria-hidden className="size-full object-cover" />
+                      <AgentFace slot={avatarPreview} size={128} fill className="rounded-xl" />
                     ) : (
                       /* 新建且没挑：派生用的 agentId 是主进程落库那一刻才铸的，
                          表单里无从得知将来分到哪张脸。随便挑一张顶上是撒谎——
@@ -355,7 +357,11 @@ export function AgentEditorScreen({
                     >
                       自动
                     </button>
-                    {AGENT_AVATARS.map((src, i) => (
+                    {/* 13 格**一律静止一帧**（#1345）：这是一张挑脸的表，不是一墙
+                        在干活的智能体；十三个 rAF 同时跑只是噪音 + 白花电。
+                        `plain` 那一档本身就不动（states.ts 的头注），所以这条由
+                        构造成立，不靠这里记得关 */}
+                    {Array.from({ length: AGENT_AVATAR_COUNT }, (_, i) => (
                       <button
                         key={i}
                         type="button"
@@ -363,11 +369,11 @@ export function AgentEditorScreen({
                         aria-pressed={avatarSlot === i}
                         onClick={() => { setAvatarSlot(i); setAvatarPickerOpen(false); }}
                         className={cn(
-                          "rounded-full border-2 bg-transparent p-0 transition-colors",
+                          "aspect-square rounded-full border-2 bg-transparent p-0 transition-colors",
                           avatarSlot === i ? "border-[var(--brand)]" : "border-transparent hover:border-border"
                         )}
                       >
-                        <img src={src} alt="" aria-hidden className="size-full rounded-full" />
+                        <AgentFace slot={i} size={48} fill />
                       </button>
                     ))}
                   </div>

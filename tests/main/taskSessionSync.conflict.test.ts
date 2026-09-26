@@ -73,6 +73,59 @@ describe("taskSessionSync：冲突", () => {
     expect(h.store.load("s1")).toHaveLength(6); // 云端 5 条 + 重放回来的那次改名
     expect(seen).toEqual([6]); // 通知发出去那一刻，改名已经在日志里
   });
+  // ── #1258 / ADR-0310：持笔方 turn 跑着时，别的设备落人话 ──────────────────
+  //
+  // 原来的形状（读代码推出来的，没真跑过，但这条用例把它跑出来了）：免笔白名单不看笔 →
+  // B 那条人话插进 A 正在跑的那一轮中间 → A 推同号的 executor 事件撞 seq_conflict →
+  // 收口后对账判 `has_executor` → **A 刚跑完的一整轮被流放进「（本机未同步的分支）」**，
+  // 主会话换成云端那份（B 的话、没人答），随后再被答一遍。
+  //
+  // 现在：B 那条在云端被 pen_busy 挡住（笔在 A 手上），等 A 放笔之后才落 —— 落在那一轮
+  // **之后**，也就是它本该在的位置：那一轮没看见它，`lastUnanswered` 于是找得到它。
+  it("A 跑着 turn 时 B 落人话：挡在云端，A 那一轮不被流放；A 放笔后 B 那条落在它之后", async () => {
+    let running = true;
+    const h = harness({ running: () => running });
+    h.store.append(created("s1"));
+    h.store.append({ sessionId: "s1", ts: 2, type: "user_message", content: "第一句" });
+    await h.sync.flushNow(); // 建行那一批把笔发给 A，turn 在跑所以不放
+
+    // A 这一轮的痕迹（还没推上去——真机上是 200ms 防抖 + 一次 RPC 往返的那个窗口）
+    h.store.append({ sessionId: "s1", ts: 3, type: "assistant_message", content: "A 答", model: "m" });
+
+    // B 这时候在云端落一条人话：被挡住
+    await expect(
+      // 云端此刻的尾巴是 seq 1（A 那条 assistant_message 还没推上去）——这正是 #1258 说的
+      // 那个窗口：B 落的号，恰好是 A 手上那条还没出门的事件的号
+      h.cloud.api.append("s1", 2, "desktop:B", [
+        { seq: 2, sessionId: "s1", ts: 4, type: "user_message", content: "B 插话" },
+      ])
+    ).rejects.toMatchObject({ code: "pen_busy" });
+
+    // A 照常把这一轮推完
+    h.store.append({ sessionId: "s1", ts: 5, type: "turn_ended", outcome: "completed" });
+    await h.sync.flushNow();
+    running = false;
+    await h.sync.releasePen("s1");
+    // 收口之后那一次推 / 对账 —— **这一步是必须的**：#1258 的流放恰恰发生在这里
+    // （turn 在跑时 reconcile 不动本地日志，收口后才处置）。少了它这条用例只验到「B 被挡住」
+    await h.sync.flushNow();
+
+    // 一条都没被流放，云端就是 A 那一轮
+    expect(h.store.sessions().filter((x) => x.title?.includes("分支"))).toHaveLength(0);
+    expect(h.replaced).toEqual([]);
+    expect(h.cloud.rows.get("s1")!.events.map((e) => e.type)).toEqual([
+      "session_created", "user_message", "assistant_message", "turn_ended",
+    ]);
+
+    // 笔放了，B 那条现在落得进去——在那一轮之后
+    await h.cloud.api.append("s1", 4, "desktop:B", [
+      { seq: 4, sessionId: "s1", ts: 6, type: "user_message", content: "B 插话" },
+    ]);
+    expect(h.cloud.rows.get("s1")!.events.map((e) => e.type)).toEqual([
+      "session_created", "user_message", "assistant_message", "turn_ended", "user_message",
+    ]);
+  });
+
   it("本地离线跑了一轮（has_executor）：分叉出「（本机未同步的分支）」，原 id 换成云端那份，分叉自己上云", async () => {
     const h = await seeded();
     await bWrites(h, 2);

@@ -31,19 +31,25 @@ function pick(e: unknown): { message: string; code: string | undefined } {
 export const SCHEMA_BEHIND =
   "这个版本的 Mr Otto 比服务端数据库新（缺一次 migration），要等服务端更新，别重试";
 
-export function humanizeWorkspaceError(e: unknown): string {
+/** 客户端比库新：缺列 / 缺表 / PostgREST 的 schema cache 里没这一列（42703 undefined_column /
+    42P01 undefined_table / PGRST204；code 缺席时看文案）。`humanizeWorkspaceError` 的第一档，
+    也给「带新列插入、列还不存在就不带它再插一次」那类退路用（#1356 A2 的 onboarding） */
+export function isSchemaBehind(e: unknown): boolean {
   const { message, code } = pick(e);
   const t = message.trim();
-  // 42703 undefined_column / 42P01 undefined_table / PGRST204 schema cache 里没这列
-  if (
+  return (
     code === "42703" ||
     code === "42P01" ||
     code === "PGRST204" ||
     /\b(column|relation) .+ does not exist\b/i.test(t) ||
     /Could not find the .+ column/i.test(t)
-  ) {
-    return `${SCHEMA_BEHIND}。原文：${t}`;
-  }
+  );
+}
+
+export function humanizeWorkspaceError(e: unknown): string {
+  const { message, code } = pick(e);
+  const t = message.trim();
+  if (isSchemaBehind(e)) return `${SCHEMA_BEHIND}。原文：${t}`;
   if (code === "23505" || /duplicate key value/i.test(t)) return "已经有同名的了";
   if (code === "42501" || /row-level security/i.test(t)) {
     return "没有权限做这件事——你已不是这个团队的成员，或者这一步只有 owner 能做";

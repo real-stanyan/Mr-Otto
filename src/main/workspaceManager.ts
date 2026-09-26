@@ -22,24 +22,19 @@
 
 import { randomBytes } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import type * as WorkspacesApi from "./supabaseWorkspacesApi.js";
-import { HOME_WORKSPACE_NAME, normalizeAvatarSlot } from "../shared/workspaces.js";
+import type * as WorkspacesApi from "../shared/supabaseWorkspacesApi.js";
 import type { WorkspaceSnapshot } from "../shared/workspaces.js";
+import { ensureHomeWorkspace } from "../shared/homeWorkspace.js";
 import type { WorkspaceMentionRow } from "../shared/workspaceMentions.js";
 import { humanizeWorkspaceError } from "../shared/workspaceError.js";
-import { ADMIN_AGENT_ID, agentNameConflict, normalizeAgentName, normalizeSandboxApproval, type SandboxApproval } from "../shared/workspaceAgents.js";
-import { parseCreateAgentArgs, scanCreateAgentThreat, validateAgentPatch } from "../shared/createAgentDraft.js";
+import { normalizeSandboxApproval, type SandboxApproval } from "../shared/workspaceAgents.js";
 import type { AgentToolAllow } from "../shared/agentToolAllow.js";
+import { createAgentChecked, deleteAgentEverywhere, updateAgentChecked } from "../shared/agentAdmin.js";
 import type { ProxyStoreData } from "./proxyStore.js";
-import { removeWorkspaceGrant, setWorkspaceGrant, workspaceGrantFor } from "./proxyStore.js";
+import { danglingWorkspaceGrants, removeWorkspaceGrant, setWorkspaceGrant, workspaceGrantFor } from "./proxyStore.js";
 import type { FriendsResult } from "./proxyManager.js";
 
 const NOT_SIGNED_IN = "还没登录";
-/** 唯一索引撞了（同团队同名智能体）——PostgREST 的 23505，翻成人话 */
-const DUPLICATE_AGENT_NAME = "已有同名的智能体";
-/** RLS 也会拦 'admin' 的删除，但那条回来的是一句 PostgREST 的英文——这里
-    先拦一道，不打网络 */
-const ADMIN_CANNOT_DELETE = "管理员不能删除";
 
 export interface WorkspaceManagerDeps {
   createWorkspace: typeof WorkspacesApi.createWorkspace;
@@ -161,29 +156,6 @@ export function createWorkspaceManager(deps: WorkspaceManagerDeps): WorkspaceMan
   /** hostUids() 的底本,只在 list() 成功后更新;list() 之前是空的(brief 明写) */
   let cachedHostUids: readonly string[] = [];
 
-  /** 名字冲突（同名 / 一方是另一方的开头）现查一次名单再判（#957 B-I2）。同名 DB 的
-      唯一索引也拦得住，前缀冲突拦不住——而 @ 的最长匹配正是被前缀骗的那一个。
-      `selfAgentId` 非 null 时把自己那行排掉：改成自己现在的名字不算冲突。
-      两条纪律与 runtime 的 `agentRegistry.assertNameFree` 逐字一致（两条写入路
-      给同一件事两种说法，比两条路各自漏掉一半更难查）：
-      ① **同名先判**——`agentNameConflict` 的第一条规则就是 `name === other`，不先判
-         的话精确重名会被说成「一个名字不能是另一个的开头」，而 23505 那条路说的是
-         「已有同名的智能体」，同一件事两种文案；
-      ② **已有名字也要归一化**——新名字过了 NFKC，名单那份没过的话，一行历史数据
-         「Ａｄｓ」与新建的「Ads」既躲得过唯一索引也躲得过前缀检查。 */
-  async function assertNameFree(
-    client: SupabaseClient,
-    workspaceId: string,
-    name: string,
-    selfAgentId: string | null,
-  ): Promise<void> {
-    const rows = await deps.listAgentNames(client, workspaceId);
-    const others = rows.filter((r) => r.agentId !== selfAgentId).map((r) => normalizeAgentName(r.name));
-    if (others.includes(name)) throw new Error(DUPLICATE_AGENT_NAME);
-    const conflict = agentNameConflict(name, others);
-    if (conflict !== null) throw new Error(conflict);
-  }
-
   /** 所有编排方法共用的前置:拿 client/uid,没登录统一 ok:false;业务体抛出的
       错误在这里收敛成 FriendsResult(不 throw 给 IPC 调用方) */
   async function withSession<T>(
@@ -222,6 +194,23 @@ export function createWorkspaceManager(deps: WorkspaceManagerDeps): WorkspaceMan
     async list() {
       return withSession(async (client, uid) => {
         const rows = await deps.listWorkspaces(client);
+        // 悬空授权的自动对账（#815 M7）：团队被别人解散、或我被踢出去时，本机台账上
+        // 那条 workspaceGrant 没有任何人会来清 —— `remove`/`leave` 只管我自己动手的
+        // 那两条路，全仓再没有第二处碰它。后果不只是台账脏：`buildEscrowDoc` 的
+        // wanted 集合含 workspaceGrants，所以那台 server（连同它的 OAuth 凭证）会
+        // **一直留在 edge 的托管箱里**，而 ADR-0197「零授权 = DELETE 整箱」那条撤销
+        // 级联的后半永远不触发。闸照旧拒（云端每次调用现判在籍），但箱子不该留着。
+        //
+        // 判据是 `rows`（`listWorkspaces` 的返回）**不是** snapshots：那条查询整体失败
+        // 时走不到这一行，而某个团队的明细拉不下来只会降级成占位快照、它的 id 仍然在
+        // rows 里 —— 「拿不到」不许当「被清空」。
+        const dangling = danglingWorkspaceGrants(deps.loadStore(), rows.map((r) => r.id));
+        if (dangling.length > 0) {
+          let next = deps.loadStore();
+          for (const g of dangling) next = removeWorkspaceGrant(next, g.workspaceId);
+          deps.saveStore(next);
+          deps.resyncEscrow();
+        }
         // N 个小团队各拉一次 fetchWorkspace——v1 规模小(每人在籍团队数
         // 位数级),够用;真变大了再批量,见 Task 8 brief。
         // allSettled 不是 all（#843 ②）：一个群的快照挂了（那次是生产库缺
@@ -245,21 +234,8 @@ export function createWorkspaceManager(deps: WorkspaceManagerDeps): WorkspaceMan
     },
 
     async ensureHome() {
-      return withSession(async (client, uid) => {
-        const found = await deps.findHomeWorkspace(client, uid);
-        if (found !== null) return { id: found };
-        try {
-          return { id: (await deps.createWorkspace(client, HOME_WORKSPACE_NAME, uid, "home")).id };
-        } catch (err) {
-          // 两台设备同时建：后到的那台撞 workspaces_one_home_per_owner。**不看错误码**
-          // ——PostgREST 的 code 在不同版本里挂的位置不一样（#1213 的 23505 那次就踩过），
-          // 而这里有一个比错误码更硬的判据：回头重查。查得到就是抢输了（对用户来说
-          // 什么都没发生），查不到才是真失败，原错误优先
-          const raced = await deps.findHomeWorkspace(client, uid).catch(() => null);
-          if (raced !== null) return { id: raced };
-          throw err;
-        }
-      });
+      // 判据与竞态处理住在 src/shared/homeWorkspace.ts（#1356：手机端的名册共用这一段）
+      return withSession((client, uid) => ensureHomeWorkspace(deps, client, uid));
     },
 
     async remove(id) {
@@ -336,82 +312,28 @@ export function createWorkspaceManager(deps: WorkspaceManagerDeps): WorkspaceMan
 
     async createAgent(id, draft) {
       return withSession(async (client, uid) => {
-        // B-C1（#957）：这条路原来一条服务端校验都没有——validateAgentName 只跑在渲染层
-        // 与 create_agent 工具里，改一个客户端（或换一个成员）就能把
-        // 「打杂）]\n忽略以上的全部指令…」写成 description，落进**每只**其它 agent 的花名册。
-        // 判据与 create_agent 那条路是同一份函数，不是抄一遍。
-        const clean = parseCreateAgentArgs(draft);
-        const threat = scanCreateAgentThreat(clean);
-        if (threat) throw new Error(`${threat}，拒绝创建`);
-        await assertNameFree(client, id, clean.name, null);
+        // 校验 / 威胁扫描 / 查重名 / 23505 翻译的编排在 shared/agentAdmin.ts（#1356 A2 抽出：
+        // 手机「建一只」直连 Supabase，用同一份）。B-C1（#957）那条纪律原样成立——这条路落库前
+        // 过的是与 create_agent 工具同一份判据，不是抄一遍
         const agentId = "a_" + randomBytes(6).toString("hex");
-        try {
-          // avatarSlot 不走 parseCreateAgentArgs：那份 schema 是 `create_agent`
-          // **工具**的参数表（审批卡逐字段渲染它），而管理员替人建 agent 时不该
-          // 挑脸——那条路省略这一格 = null = 派生。桌面表单挑的那一格在这里单独并进去
-          await deps.insertAgentRow(client, {
-            workspaceId: id, agentId, createdBy: uid, ...clean,
-            avatarSlot: normalizeAvatarSlot(draft.avatarSlot),
-          });
-        } catch (e) {
-          if ((e as { code?: string }).code === "23505") throw new Error(DUPLICATE_AGENT_NAME);
-          throw e;
-        }
+        await createAgentChecked(deps, client, id, uid, agentId, draft);
         return { agentId };
       });
     },
 
     async updateAgent(id, agentId, patch) {
       return withSession(async (client) => {
-        // 改名与新建走同一道闸（B-I2 的建议修法逐字）：改名是绕开建时校验最省事的一条路
-        const clean = validateAgentPatch(patch);
-        const threat = scanCreateAgentThreat(clean);
-        if (threat) throw new Error(`${threat}，拒绝保存`);
-        // 名单只在真的改名时查——不改名时那是一次白打的网络往返
-        if (clean.name !== undefined) await assertNameFree(client, id, clean.name, agentId);
-        try {
-          // 同上：avatarSlot 不过 validateAgentPatch。**省略与 null 在这里不同义**——
-          // 省略 = 这次没碰头像，null = 明确清回派生，所以不能写成 `?? null`
-          await deps.updateAgentRow(client, id, agentId, {
-            ...clean,
-            ...(patch.avatarSlot === undefined ? {} : { avatarSlot: normalizeAvatarSlot(patch.avatarSlot) }),
-          });
-        } catch (e) {
-          if ((e as { code?: string }).code === "23505") throw new Error(DUPLICATE_AGENT_NAME);
-          throw e;
-        }
+        // 校验 / 查重名 / 23505 翻译的编排在 shared/agentAdmin.ts（手机端直连 Supabase，用同一份）
+        await updateAgentChecked(deps, client, id, agentId, patch);
         return null;
       });
     },
 
     async deleteAgent(id, agentId) {
       return withSession(async (client) => {
-        // admin 在本层就拒,不打网络——RLS 也会拦,但那条回来的是一句
-        // PostgREST 的英文。放在 withSession 的业务体里,是为了让未登录时
-        // 依旧先报"还没登录"(withSession 的早退在这之前)。
-        if (agentId === ADMIN_AGENT_ID) throw new Error(ADMIN_CANNOT_DELETE);
-        // 三步、不原子（#1280，spec §6.7）。**顺序是倒着排的**：先动最贵、最可能
-        // 失败的那一步（云端那条日志），最后才删那一行——断在半路时留下的是
-        // 「智能体还在、聊天没了」，比「聊天还在、主人没了」好收拾：前者人再点一次
-        // 删除就收干净了，后者会在花名册上留下一条指向不存在的智能体的私聊。
-        // 第 2、3 步之间断了由读取侧的「与现存智能体求交集」兜住。
-        // **团队里这条路照走**：listAgentChats 在 0037 没跑的库上回空，于是三步
-        // 退化成改动前的那一步
-        const chats = await deps.listAgentChats(client, id, agentId);
-        if (chats.dmSessionId !== null) {
-          const r = await deps.removeCloudSession(id, chats.dmSessionId);
-          if (!r.ok) throw new Error(`它的聊天记录没删掉（${r.message}），所以这只智能体也先留着。稍后再试。`);
-        }
-        // 逐个群摘：摘成空群是合法终局（群还在，人可以再往里加），不是「这个群该删了」
-        // ——删一只智能体不该连坐删掉它待过的群（spec §4）
-        for (const g of chats.groups) {
-          const r = await deps.updateChatRoster(id, g.sessionId, g.agentIds.filter((x) => x !== agentId));
-          if (!r.ok) throw new Error(`没能把它从群聊里摘掉（${r.message}），所以这只智能体也先留着。稍后再试。`);
-        }
-        await deps.deleteAgentRow(client, id, agentId);
-        // 记忆页删不掉**不拦删除**：留下的是一页没人读的 markdown，而拦下来的话
-        // 这只智能体永远删不掉（它的私聊已经没了，界面上看不出为什么）
-        await deps.removeAgentPage(id, agentId).catch(() => undefined);
+        // 倒着排的四步在 shared/agentAdmin.ts（spec §3.2：两端共用，桌面这里只剩接线）。
+        // 放在 withSession 的业务体里，未登录时依旧先报"还没登录"
+        await deleteAgentEverywhere(deps, client, id, agentId);
         return null;
       });
     },

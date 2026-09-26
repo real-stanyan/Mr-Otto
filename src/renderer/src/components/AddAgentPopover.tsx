@@ -15,10 +15,10 @@
 
 import { useState } from "react";
 import { UserPlus } from "lucide-react";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar.js";
 import { Button } from "@/components/ui/button.js";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover.js";
-import { agentAvatarSrc } from "../lib/agentAvatar.js";
+import { AgentFace } from "./AgentFace.js";
+import { agentFaceSlot } from "../../../shared/agentAvatar.js";
 import { CHAT_GROUP_MAX } from "../../../shared/chatRoster.js";
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 
@@ -91,10 +91,7 @@ export function AddAgentPopover({ ws, current, onConfirm }: {
                   className="size-[13px] shrink-0 accent-[var(--brand)]"
                   aria-label={a.name}
                 />
-                <Avatar className="size-[20px] shrink-0 rounded-[5px]">
-                  <AvatarImage src={agentAvatarSrc(ws, a.agentId)} alt="" className="[image-rendering:pixelated]" />
-                  <AvatarFallback className="rounded-[5px] text-[10px]">{a.name.slice(0, 1)}</AvatarFallback>
-                </Avatar>
+                <AgentFace slot={agentFaceSlot(ws, a.agentId)} size={20} className="rounded-[5px]" />
                 <span className="min-w-0 truncate text-[12px]">{a.name}</span>
               </label>
             );

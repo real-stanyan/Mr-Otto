@@ -43,7 +43,7 @@ import { ArrowLeft, AtSign, ChevronRight, Download, Phone, Settings2 } from "luc
 import { cn, isMac } from "@/lib/utils.js";
 import { Button } from "@/components/ui/button.js";
 import { Bubble, BubbleContent } from "@/components/ui/bubble.js";
-import { splitBubbles } from "@/lib/chatBubbles.js";
+import { splitBubbles } from "../../../shared/chatBubbles.js";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar.js";
 import { Textarea } from "@/components/ui/textarea.js";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip.js";
@@ -56,21 +56,24 @@ import { useChat, type CloudSessionState } from "../store.js";
 import { EventRow, TimelineProjectionContext } from "./Timeline.js";
 import { buildToolIndex } from "../lib/toolIndex.js";
 import { groupSubagentSpawns } from "../lib/subagentTimeline.js";
-import { formatProxyTime } from "../lib/proxyShare.js";
-import { agentNameOf, labelOf, memberAvatarOf } from "../lib/workspaceView.js";
+import { formatProxyTime } from "../../../shared/proxyShare.js";
+import { agentNameOf, labelOf, memberAvatarOf } from "../../../shared/workspaceView.js";
 import { AddAgentPopover } from "./AddAgentPopover.js";
-import { AgentChatHeader, type ChatView } from "./AgentChatHeader.js";
-import { withDaySeparators } from "../lib/dayLabel.js";
+import { AgentChatHeader } from "./AgentChatHeader.js";
+import type { ChatView } from "../../../shared/agentRoster.js";
+import { withDaySeparators } from "../../../shared/dayLabel.js";
 import { growHidden, initialHidden, nextOlderAction, visibleCloudRows } from "../lib/cloudWindow.js";
-import { agentAvatarSrc } from "../lib/agentAvatar.js";
-import { applyAgentMention, mentionQueryAt, pickerEmptyState, resolveSendMentions } from "../lib/agentMentionInput.js";
+import { AgentFace, PartyAvatar } from "./AgentFace.js";
+import { dmFaceState } from "../lib/ottoFace/index.js";
+import { agentFace, agentFaceIfKnown, agentFaceSlot, imageAvatar } from "../../../shared/agentAvatar.js";
+import { applyAgentMention, mentionQueryAt, pickerEmptyState, resolveSendMentions } from "../../../shared/agentMentionInput.js";
 import { filterMentionRows, mentionRows, MENTION_KIND_LABEL, type MentionRow } from "../lib/workspaceMentionItems.js";
 import {
   approvalCardTitle, assistantLabel, callDurationText, callOffsetText, canStopTurn, chatRosterLineParts, cloudEmptyState,
   createdAgentNames, hiddenFromCloudTimeline, relayLineText, stopButtonRows, systemNoteText, turnEndedLineText, userRowIdentity,
   voiceCallCards, type RosterLinePart, type VoiceCallCard,
-} from "../lib/cloudTimeline.js";
-import { systemNoteDetail } from "../lib/systemNote.js";
+} from "../../../shared/cloudTimeline.js";
+import { systemNoteDetail } from "../../../shared/systemNote.js";
 import { cloudConversationEntries, scrollToTurn } from "../lib/conversationMap.js";
 import { ConversationMapRail } from "./ConversationMapRail.js";
 import { TurnErrorState } from "./TurnErrorState.js";
@@ -84,7 +87,7 @@ import type {
 } from "../../../session/events.js";
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 import type { CloudAck } from "../../../shared/shellBridge.js";
-import { CS_PROTOCOL_VERSION } from "../../../shared/remote/cloudSession.js";
+import { cloudDeniedText, unknownSendNote } from "../../../shared/cloudSessionState.js";
 import { modelStatusText } from "../lib/cloudModelStatus.js";
 import { buildCloudLogExport } from "../lib/cloudExport.js";
 import { downloadText } from "../lib/downloadText.js";
@@ -111,38 +114,9 @@ const EMPTY_EVENTS: SessionEvent[] = [];
 // 团队会话不窗口化：模块级常量保证每次渲染同一个引用（`?? []` 会让下游 memo 每次都失效）
 const EMPTY_SEQS: number[] = [];
 
-/** join() 之后持续状态的 deniedCode → 人话（渲染层自己的翻译）。
-    main/cloudSessionClient.ts 的 deniedMessage() 只服务 create() 那一次性
-    RPC 失败，该函数注释原话："这里不重复造一份会跟渲染层文案走岔的翻译"——
-    持续状态（join 之后经 onCloudSessionStatus 推来的 deniedCode）由这一份
-    负责。五个码逐一给人话，version_mismatch 特别提示升级；认不出的码原样
-    带出来兜底，不装死 */
-function cloudDeniedMessage(code: string | undefined, serverVersion?: number): string {
-  switch (code) {
-    case "bad_jwt":
-      return "登录状态已过期，请重新登录后再试";
-    case "not_member":
-      return "你不是这个团队的成员";
-    case "version_mismatch":
-      // 方向说得出来才有用（复审 C2-I6，与 main/cloudSessionClient.ts 的
-      // deniedMessage 同一判据）：「更新 Mr Otto」对「云端还没部署」的那半是
-      // 错的指引——照做也连不上，且再没有别的线索
-      if (serverVersion !== undefined && serverVersion < CS_PROTOCOL_VERSION) {
-        return `云端协议版本（${serverVersion}）低于本客户端（${CS_PROTOCOL_VERSION}），云端还没升级，联系维护者`;
-      }
-      return "客户端版本与云端不匹配，请更新 Mr Otto 后再试";
-    case "no_session":
-      return "云会话不存在或已归档";
-    case "not_authorized":
-      return "没有权限执行此操作";
-    default:
-      return code ? `无法加入云会话（${code}）` : "无法加入云会话";
-  }
-}
-
 /** 状态条文案（口径同 T4「云端状态三态化」：拿不到状态说"未知"不说"不可用"）。
     connecting/gone 都不是"连不上"的断言，只是"这一刻还没有可展示的事实"——
-    gone 时 wsTransport 会自动重连，不代表这次云会话失败（main/cloudSessionClient.ts
+    gone 时 wsTransport 会自动重连，不代表这次云会话失败（shared/remote/cloudSessionClient.ts
     文件头注释）。ready 没有横幅：一切正常不值得占一行——**除非这份历史缺了
     东西**（issue #957 C-I7）。那一行画在这里而不是 actionError 那格，正是因为
     这里不会被别的操作擦掉——`actionError`（`workspaceGroupsError`）是一格共享
@@ -158,7 +132,7 @@ function statusBanner(cs: CloudSessionState): { tone: "muted" | "warn" | "err"; 
     case "gone":
       return { tone: "muted", text: "云端连接已断开，正在自动重连…" };
     case "denied":
-      return { tone: "err", text: cloudDeniedMessage(cs.deniedCode, cs.deniedServerVersion) };
+      return { tone: "err", text: cloudDeniedText(cs.deniedCode, cs.deniedServerVersion) };
     case "ready":
       // warn 不是 muted（终审 minor）：muted 那一档在这张页面上说的是「稍等，
       // 还在连」——数据完整性警告穿它的衣服，就成了一句会被当作过场的灰字，
@@ -182,12 +156,6 @@ type UnsentLine = {
   memberMentions: string[];
   note: string;
 };
-
-/** 那一行的初始措辞。正文只回显前 40 字——这一行是「哪一句话」的提示，
-    不是那句话本身（它还完整地存在 `UnsentLine.text` 里，重发发的是全文） */
-function unknownNote(text: string): string {
-  return `没有收到回执，不确定有没有发出去：${text.slice(0, 40)}${text.length > 40 ? "…" : ""}`;
-}
 
 export function CloudSessionPage({
   ws,
@@ -315,6 +283,10 @@ export function CloudSessionPage({
   const [callOpen, setCallOpen] = useState(false);
   const fullscreen = useChat((s) => s.fullscreen);
   const trafficInset = isMac() && !fullscreen;
+  // 私聊头部那张脸的表情（#1345）。`openTurns` 已经在 callView 里算了一遍，但那份只
+  // 留下了 agentId 的集合；这里要的是「排队中还是在跑」，所以单算一次
+  const pendingTurns = useMemo(() => openTurns(events), [events]);
+  const streamingPreview = useChat((s) => s.cloudStreaming);
   const callView = useMemo(
     () => ({ selfUid, starterUid: call ? callStarterUid(events, call) : null, openAgentIds: new Set(openTurns(events).map((t) => t.agentId)) }),
     [events, call, selfUid]
@@ -471,7 +443,7 @@ export function CloudSessionPage({
         text: seed.text,
         mentions: undefined,
         memberMentions: parseMemberMentions(seed.text, candidates, memberCandidates),
-        note: unknownNote(seed.text),
+        note: unknownSendNote(seed.text),
       });
       return;
     }
@@ -829,7 +801,7 @@ export function CloudSessionPage({
       // resolveSendMentions 只在**这几个 @ 全点在人类成员上**时才给出它（#1059）
       mentions: plan.mentions,
       memberMentions: sendMemberMentions,
-      note: unknownNote(text),
+      note: unknownSendNote(text),
     };
     const r = await sendOnce(payload);
     // 会话对不上就什么都不写（终审 Finding 4）：await 期间人可能已经切到同团队的
@@ -947,6 +919,9 @@ export function CloudSessionPage({
             return chatSettings === undefined ? {} : { onSettings: chatSettings };
           })()}
           voiceSlot={voiceSlot}
+          {...(chat.kind === "dm" && chat.agentIds[0] !== undefined
+            ? { faceState: dmFaceState(pendingTurns, streamingPreview, chat.agentIds[0]) }
+            : {})}
         />
       ) : (
         // 头部钉在顶上（#993）：与 footer 对称——#987 那次只钉了输入框，头部还
@@ -1160,7 +1135,7 @@ export function CloudSessionPage({
                   <CreatedAgentRow
                     key={e.seq}
                     name={created.name}
-                    avatar={agentAvatarSrc(ws, created.agentId)}
+                    slot={agentFaceSlot(ws, created.agentId)}
                     onOpen={() => void openAgentChat(created.agentId)}
                   />
                 );
@@ -1677,17 +1652,14 @@ function initialOf(name: string): string {
 }
 
 /** agent 头像：内置像素图（agentAvatar.ts）。agentId 缺席（旧日志/单 agent
-    会话）时没有脸可查，退回首字母。**不开** image-rendering: pixelated：128px
-    的像素画缩到 24px 时一格像素只剩一个多屏幕像素，最近邻会整行整列地丢掉
-    （眼睛可能直接没了），平滑缩放反而认得出是谁 */
+    会话）时没有脸可查，退回首字母。
+
+    #1345 之后这张脸是现画的像素而不是一张 128px 的 png，所以原来那条「不开
+    image-rendering: pixelated，缩下来会整行整列丢像素」的注意事项没了——网格
+    按尺寸现算，24px 与 80px 画的是同一张脸的不同分辨率，不是同一张图的两次缩放 */
 function AgentAvatar({ ws, agentId, name }: { ws: WorkspaceSnapshot; agentId: string | undefined; name: string }) {
   return (
-    <Avatar size="sm">
-      {agentId !== undefined && (
-        <AvatarImage src={agentAvatarSrc(ws, agentId)} alt={name} />
-      )}
-      <AvatarFallback>{initialOf(name)}</AvatarFallback>
-    </Avatar>
+    <PartyAvatar avatar={agentId === undefined ? null : agentFace(ws, agentId)} name={name} size={24} label={name} />
   );
 }
 
@@ -1750,12 +1722,10 @@ export function MentionOptionRow({
 }
 
 function MentionAvatar({ ws, row }: { ws: WorkspaceSnapshot; row: MentionRow }) {
-  const src = row.kind === "agent" && row.agentId !== null ? agentAvatarSrc(ws, row.agentId) : row.avatarUrl;
+  const avatar =
+    row.kind === "agent" && row.agentId !== null ? agentFace(ws, row.agentId) : imageAvatar(row.avatarUrl);
   return (
-    <Avatar className="size-5 shrink-0">
-      {src !== "" && <AvatarImage src={src} alt={row.name} />}
-      <AvatarFallback className="text-[10px]">{initialOf(row.name)}</AvatarFallback>
-    </Avatar>
+    <PartyAvatar avatar={avatar} name={row.name} size={20} className="shrink-0" label={row.name} />
   );
 }
 
@@ -1887,8 +1857,8 @@ function AgentRelayRow({ event, ws }: { event: AgentRelayEvent; ws: WorkspaceSna
     也一样：这一条说的是**整个群此刻的状态**（从现在起多一只/少一只在听、在接力），
     不是机器的内务，所以与旁边那几行靠左的旁白（就位 / 接力线 / 系统旁白）故意分家。
 
-    **名册里查不到的不给脸**（`agentAvatarSrc` 对陌生 id 会按哈希派生一张，画上去
-    等于宣称它还在名册里）：被移出的那只常常正是刚被删掉的那只。脸与名字包在同一个
+    **名册里查不到的不给脸**（派生对陌生 id 也算得出一张脸，画上去等于宣称它还在
+    名册里）：被移出的那只常常正是刚被删掉的那只。脸与名字包在同一个
     `whitespace-nowrap` 里——断在中间就是一张没有主人的脸；整行走 inline 不排成
     flex，名字多了必然换行，而 flex 换行之后 `text-center` 管不到（同 VoiceCallRow）。 */
 export function ChatRosterRow({ parts, ws }: { parts: readonly RosterLinePart[]; ws: WorkspaceSnapshot }) {
@@ -1896,14 +1866,14 @@ export function ChatRosterRow({ parts, ws }: { parts: readonly RosterLinePart[];
     <p className="self-center max-w-[85%] px-1 text-center text-[11px] text-muted-foreground">
       {parts.map((p, i) => {
         if (p.agentId === undefined) return <span key={i}>{p.text}</span>;
-        const known = ws.agents.some((a) => a.agentId === p.agentId);
+        const face = agentFaceIfKnown(ws, p.agentId);
         return (
           <span key={i} className="whitespace-nowrap">
-            {known && (
-              <img
-                src={agentAvatarSrc(ws, p.agentId)}
-                alt=""
-                className="mr-[3px] inline-block size-[14px] rounded-[3px] align-[-2px] [image-rendering:pixelated]"
+            {face !== null && (
+              <AgentFace
+                slot={face.slot}
+                size={14}
+                className="mr-[3px] inline-block rounded-[3px] align-[-2px]"
               />
             )}
             {p.text}
@@ -1924,15 +1894,11 @@ export function ChatRosterRow({ parts, ws }: { parts: readonly RosterLinePart[];
 
     名字画在钮上不画在旁白里：一句「已经建好了」读完还要人自己去找，而这颗钮
     读完就是下一步。 */
-function CreatedAgentRow({ name, avatar, onOpen }: { name: string; avatar: string; onOpen: () => void }) {
+function CreatedAgentRow({ name, slot, onOpen }: { name: string; slot: number; onOpen: () => void }) {
   return (
     <div className="self-center px-1 py-[2px]">
       <Button variant="outline" size="xs" className="rounded-full font-normal" onClick={onOpen}>
-        <img
-          src={avatar}
-          alt=""
-          className="mr-[1px] size-4 shrink-0 rounded-[4px] [image-rendering:pixelated]"
-        />
+        <AgentFace slot={slot} size={16} className="mr-[1px] rounded-[4px]" />
         去和「{name}」聊
       </Button>
     </div>
@@ -2021,10 +1987,13 @@ export function VoiceCallCardRow({
                   <span className="inline-flex shrink-0">
                     {card.parties.map((party, i) => (
                       // 下标当 key：parties 是同一段日志的确定投影，既不重排也不增删
-                      <Avatar key={i} className={cn("size-[18px] ring-2 ring-card", i > 0 && "-ms-1.5")}>
-                        {party.avatarSrc !== "" && <AvatarImage src={party.avatarSrc} alt="" />}
-                        <AvatarFallback className="text-[9px]">{initialOf(party.name)}</AvatarFallback>
-                      </Avatar>
+                      <PartyAvatar
+                        key={i}
+                        avatar={party.avatar}
+                        name={initialOf(party.name)}
+                        size={18}
+                        className={cn("ring-2 ring-card", i > 0 && "-ms-1.5")}
+                      />
                     ))}
                   </span>
                   <span className="truncate">{names}</span>
@@ -2048,10 +2017,13 @@ export function VoiceCallCardRow({
             <DialogDescription className="flex flex-wrap items-center gap-1.5">
               <span className="inline-flex shrink-0">
                 {card.parties.map((party, i) => (
-                  <Avatar key={i} className={cn("size-5 ring-2 ring-card", i > 0 && "-ms-1.5")}>
-                    {party.avatarSrc !== "" && <AvatarImage src={party.avatarSrc} alt="" />}
-                    <AvatarFallback className="text-[9px]">{initialOf(party.name)}</AvatarFallback>
-                  </Avatar>
+                  <PartyAvatar
+                    key={i}
+                    avatar={party.avatar}
+                    name={initialOf(party.name)}
+                    size={20}
+                    className={cn("ring-2 ring-card", i > 0 && "-ms-1.5")}
+                  />
                 ))}
               </span>
               <span>{names}</span>
@@ -2103,10 +2075,14 @@ function CallTranscript({ card }: { card: VoiceCallCard }) {
                   <span key={i}>{part.text}</span>
                 ) : (
                   <span key={i} className="whitespace-nowrap">
-                    <Avatar className="me-1 inline-flex size-4 align-middle">
-                      {part.avatarSrc !== "" && <AvatarImage src={part.avatarSrc} alt="" />}
-                      <AvatarFallback className="text-[8px] not-italic">{initialOf(part.name)}</AvatarFallback>
-                    </Avatar>
+                    <PartyAvatar
+                      avatar={part.avatar}
+                      name={initialOf(part.name)}
+                      size={16}
+                      className="me-1 inline-flex align-middle"
+                      faceClassName="inline-block align-middle"
+                      fallbackClassName="not-italic"
+                    />
                     {part.text}
                   </span>
                 )
@@ -2116,10 +2092,12 @@ function CallTranscript({ card }: { card: VoiceCallCard }) {
           </p>
         ) : (
           <div key={line.seq} className="grid grid-cols-[20px_1fr] gap-x-2 gap-y-px">
-            <Avatar className="col-start-1 row-start-1 mt-px size-5">
-              {line.avatarSrc !== "" && <AvatarImage src={line.avatarSrc} alt="" />}
-              <AvatarFallback className="text-[9px]">{initialOf(line.label)}</AvatarFallback>
-            </Avatar>
+            <PartyAvatar
+              avatar={line.avatar}
+              name={initialOf(line.label)}
+              size={20}
+              className="col-start-1 row-start-1 mt-px"
+            />
             <span className="col-start-2 flex items-baseline gap-1.5 text-[10.5px] text-muted-foreground">
               <b className="font-medium text-foreground/80">{line.label}</b>
               <span className="tabular-nums opacity-70">{callOffsetText(line.offsetMs)}</span>
@@ -2268,7 +2246,7 @@ function StopTurnButton({ seq }: { seq: number }) {
 /** 未决审批卡(贴着输入区,不是时间线上的一行)。selfUid ∈ {initiatorUid,ownerUid}
     才有按钮——这个人要么是触发这次审批的那个操作的发起人,要么是这条云会话
     的 owner(据此复审别人的操作);其余成员只读一句"等待谁审批",不能替别人
-    按下批准/拒绝(main/cloudSessionClient.ts deliverEvent 的资格判断在推送
+    按下批准/拒绝(shared/remote/cloudSessionClient.ts deliverEvent 的资格判断在推送
     那一层就已经把卡只发给够格的人,这里的 canDecide 是同一条判据在渲染层
     的镜像——群聊场景大家共读同一份 events,不是每个人各收各的)。
     点下去的反馈(#957 C-I2/#927 桌面侧)：`submitting` 按这张卡自己记(卡本身

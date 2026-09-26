@@ -450,50 +450,58 @@ export function createLlmGateway(deps: LlmGatewayDeps): (req: Request, caller: C
         return apiError(503, "额度服务暂时不可用，稍后再试", "upstream");
       }
       if (!held.ok) return holdRejected(held);
-      try {
-        let res: Response;
+      // #1329：与决策那条（ADR-0307）逐字同一条理由。语音也是非流式：客户端断开时
+      // `req.signal` 在真 workerd 上根本不响，而它一旦响，行为就翻成「中断 = 免费」——
+      // 而 MiniMax 按**提交的字符数**收钱，那笔在请求发出去那一刻就花掉了，中止省不下它。
+      // 整段交给 waitUntil 的理由也一样：请求上下文真被取消时，最坏的结局不该是这笔 hold
+      // 挂满 HOLD_TTL_MS（10 分钟）—— MAX_INFLIGHT 是 4，四发中断就能堵住这个账号的整扇门。
+      const work = (async (): Promise<Response> => {
         try {
-          res = await doFetch(`${route.baseUrl}${upstreamPathFor(route.kind)}`, {
-            method: "POST",
-            headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
-            body: ttsUpstreamBody(route.wireModel, parsed.req),
-            signal: req.signal,
+          let res: Response;
+          try {
+            res = await doFetch(`${route.baseUrl}${upstreamPathFor(route.kind)}`, {
+              method: "POST",
+              headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
+              body: ttsUpstreamBody(route.wireModel, parsed.req),
+            });
+          } catch {
+            await deps.quota.release(caller.uid, requestId);
+            return apiError(502, `上游连不上：${route.platform}`, "upstream");
+          }
+          if (!res.ok) {
+            await deps.quota.release(caller.uid, requestId);
+            const snippet = (await res.text().catch(() => "")).slice(0, 300);
+            return apiError(502, `上游 ${res.status}：${snippet}`, "upstream", { upstreamStatus: res.status });
+          }
+          const reply = parseTtsReply(await res.text());
+          if (!reply.ok) {
+            await deps.quota.release(caller.uid, requestId);
+            return apiError(502, reply.message, "upstream");
+          }
+          const usage: UsageCounts = { promptTokens: 0, cachedTokens: 0, completionTokens: reply.usageChars ?? units };
+          const cost = costMicro(usage, route);
+          const settled = await deps.quota.settle(caller.uid, requestId, { caller, route, usage, costMicro: cost });
+          const headers = await headersFrom(settled, caller.uid);
+          // Node 的 lib 只把 ArrayBuffer 当 BodyInit（Uint8Array<ArrayBufferLike> 过不了 tsc）；
+          // 按 byteOffset/byteLength 切一份，不假设这个视图从 0 开始
+          const audio = reply.audio.buffer.slice(reply.audio.byteOffset, reply.audio.byteOffset + reply.audio.byteLength) as ArrayBuffer;
+          return new Response(audio, {
+            status: 200,
+            headers: {
+              "content-type": "audio/mpeg",
+              ...headers,
+              [BILLING_HEADERS.cost]: String(cost),
+              [TTS_HEADERS.chars]: String(usage.completionTokens),
+              ...(reply.audioMs !== null ? { [TTS_HEADERS.audioMs]: String(reply.audioMs) } : {}),
+            },
           });
-        } catch {
-          await deps.quota.release(caller.uid, requestId);
-          return apiError(502, `上游连不上：${route.platform}`, "upstream");
+        } catch (err) {
+          await deps.quota.release(caller.uid, requestId).catch(() => {});
+          return apiError(502, `处理请求时出错：${err instanceof Error ? err.message : String(err)}`, "upstream");
         }
-        if (!res.ok) {
-          await deps.quota.release(caller.uid, requestId);
-          const snippet = (await res.text().catch(() => "")).slice(0, 300);
-          return apiError(502, `上游 ${res.status}：${snippet}`, "upstream", { upstreamStatus: res.status });
-        }
-        const reply = parseTtsReply(await res.text());
-        if (!reply.ok) {
-          await deps.quota.release(caller.uid, requestId);
-          return apiError(502, reply.message, "upstream");
-        }
-        const usage: UsageCounts = { promptTokens: 0, cachedTokens: 0, completionTokens: reply.usageChars ?? units };
-        const cost = costMicro(usage, route);
-        const settled = await deps.quota.settle(caller.uid, requestId, { caller, route, usage, costMicro: cost });
-        const headers = await headersFrom(settled, caller.uid);
-        // Node 的 lib 只把 ArrayBuffer 当 BodyInit（Uint8Array<ArrayBufferLike> 过不了 tsc）；
-        // 按 byteOffset/byteLength 切一份，不假设这个视图从 0 开始
-        const audio = reply.audio.buffer.slice(reply.audio.byteOffset, reply.audio.byteOffset + reply.audio.byteLength) as ArrayBuffer;
-        return new Response(audio, {
-          status: 200,
-          headers: {
-            "content-type": "audio/mpeg",
-            ...headers,
-            [BILLING_HEADERS.cost]: String(cost),
-            [TTS_HEADERS.chars]: String(usage.completionTokens),
-            ...(reply.audioMs !== null ? { [TTS_HEADERS.audioMs]: String(reply.audioMs) } : {}),
-          },
-        });
-      } catch (err) {
-        await deps.quota.release(caller.uid, requestId).catch(() => {});
-        return apiError(502, `处理请求时出错：${err instanceof Error ? err.message : String(err)}`, "upstream");
-      }
+      })();
+      deps.waitUntil?.(work);
+      return await work;
     };
 
     // 决策那扇门（#1281）：与 tts 同一副骨架，差四处——
@@ -523,38 +531,61 @@ export function createLlmGateway(deps: LlmGatewayDeps): (req: Request, caller: C
         return apiError(503, "额度服务暂时不可用，稍后再试", "upstream");
       }
       if (!held.ok) return holdRejected(held);
-      try {
-        let res: Response;
+      // #1303：**客户端超时中断的那一发，钱是真花了**——这不是漏修的 bug，是这条路的结论。
+      // 这里原先写着 `signal: req.signal`，意思是「客户端断开 → 上游 fetch 抛 → catch 里
+      // release」。真 workerd 上验过（wrangler dev，客户端 120ms 断开、上游 1.5s 才回）：
+      // 断开之后 `req.signal.aborted` 仍是 false、abort 事件一次没派、上游那一发照样跑完，
+      // 走的是 settle 那条路。生产上的观测对得上（#1303 正文：连发 5 发中断之后紧接着那一发
+      // **没有**被 too_many_inflight 拒，而 MAX_INFLIGHT 是 4 —— 真有 4 笔挂着的 hold 时它必然被拒）。
+      // 那行 signal 与「abort 走 release」因此是**够不着的路**，删掉。
+      //
+      // 删而不是把它修好：决策是一次前向、没有流式输出，中断它省不下上游那笔；而它一旦真
+      // 生效，行为就翻成「中断 = 免费」—— 正是 ADR-0203 决定 17 堵上的白嫖洞（连发再中断，
+      // 一分钱不付）。所以 `requestDecision` 的 timeoutMs 是**延迟**止损不是钱的止损闸，
+      // 那句话在 `src/shared/decision.ts` 的那一格上也写着。
+      //
+      // 整段交给 waitUntil：本地 workerd 是跑完的，但 Cloudflare 留着「客户端断开时取消请求
+      // 上下文」这条路 —— 真取消的话结算与释放都跑不完，那笔 hold 就挂到 HOLD_TTL_MS（10 分钟），
+      // 而 MAX_INFLIGHT 是 4：4 发中断能把这个账号的整扇网关堵十分钟。保险很便宜（流式那条路
+      // 本来就靠它活过响应），最坏的结局不该是「挂着」。`work` 按构造不会 reject —— 它自己的
+      // 外层 catch 一律回一个 Response，所以 waitUntil 收到的不会是一个没人接的 rejection。
+      // 已知天花板：客户端断在 hold 那一趟里时，DO 可能已经记下这笔 hold 而回执没走到我们手上——
+      // 那一段在 waitUntil 之前，只能等 TTL。
+      const work = (async (): Promise<Response> => {
         try {
-          res = await doFetch(`${route.baseUrl}${upstreamPathFor(route.kind)}`, {
-            method: "POST",
-            headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
-            body: decisionUpstreamBody(route.wireModel, parsed.req),
-            signal: req.signal,
-          });
-        } catch {
-          await deps.quota.release(caller.uid, requestId);
-          return apiError(502, `上游连不上：${route.platform}`, "upstream");
+          let res: Response;
+          try {
+            res = await doFetch(`${route.baseUrl}${upstreamPathFor(route.kind)}`, {
+              method: "POST",
+              headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
+              body: decisionUpstreamBody(route.wireModel, parsed.req),
+            });
+          } catch {
+            await deps.quota.release(caller.uid, requestId);
+            return apiError(502, `上游连不上：${route.platform}`, "upstream");
+          }
+          if (!res.ok) {
+            await deps.quota.release(caller.uid, requestId);
+            const snippet = (await res.text().catch(() => "")).slice(0, 300);
+            return apiError(502, `上游 ${res.status}：${snippet}`, "upstream", { upstreamStatus: res.status });
+          }
+          const reply = parseDecisionUpstreamReply(await res.text(), parsed.req);
+          const inputTokens = reply.ok ? reply.reply.inputTokens : reply.inputTokens;
+          const usage: UsageCounts = inputTokens === null ? estimate : { promptTokens: inputTokens, cachedTokens: 0, completionTokens: 0 };
+          const cost = costMicro(usage, route);
+          const settled = await deps.quota.settle(caller.uid, requestId, { caller, route, usage, costMicro: cost });
+          const headers = await headersFrom(settled, caller.uid);
+          if (!reply.ok) return apiError(502, reply.message, "upstream", {}, headers);
+          return json(200, {
+            model: reply.reply.model, answers: reply.reply.answers, usage: { input_tokens: usage.promptTokens },
+          }, { ...headers, [BILLING_HEADERS.cost]: String(cost) });
+        } catch (err) {
+          await deps.quota.release(caller.uid, requestId).catch(() => {});
+          return apiError(502, `处理请求时出错：${err instanceof Error ? err.message : String(err)}`, "upstream");
         }
-        if (!res.ok) {
-          await deps.quota.release(caller.uid, requestId);
-          const snippet = (await res.text().catch(() => "")).slice(0, 300);
-          return apiError(502, `上游 ${res.status}：${snippet}`, "upstream", { upstreamStatus: res.status });
-        }
-        const reply = parseDecisionUpstreamReply(await res.text(), parsed.req);
-        const inputTokens = reply.ok ? reply.reply.inputTokens : reply.inputTokens;
-        const usage: UsageCounts = inputTokens === null ? estimate : { promptTokens: inputTokens, cachedTokens: 0, completionTokens: 0 };
-        const cost = costMicro(usage, route);
-        const settled = await deps.quota.settle(caller.uid, requestId, { caller, route, usage, costMicro: cost });
-        const headers = await headersFrom(settled, caller.uid);
-        if (!reply.ok) return apiError(502, reply.message, "upstream", {}, headers);
-        return json(200, {
-          model: reply.reply.model, answers: reply.reply.answers, usage: { input_tokens: usage.promptTokens },
-        }, { ...headers, [BILLING_HEADERS.cost]: String(cost) });
-      } catch (err) {
-        await deps.quota.release(caller.uid, requestId).catch(() => {});
-        return apiError(502, `处理请求时出错：${err instanceof Error ? err.message : String(err)}`, "upstream");
-      }
+      })();
+      deps.waitUntil?.(work);
+      return await work;
     };
 
     const serve = async (route: RouteRow, key: string): Promise<Response | null> => {
@@ -586,101 +617,114 @@ export function createLlmGateway(deps: LlmGatewayDeps): (req: Request, caller: C
       // 剩余额度/非流式读正文）任何一步再炸，都不能让这笔 hold 变成永远没人认领的孤儿。
       // doFetch 失败和上游非 2xx 这两条已经各自处理并 return，不会走到外层 catch；
       // 外层 catch 兜的是 quota.remaining 挂了、res.text() 读炸了这类没被内层捕获的异常。
-      try {
-        const upstreamBody = JSON.stringify({
-          ...body,
-          model: route.wireModel,
-          // M9：stream 只在上面判一次，转发给上游的这份显式写回同一个布尔值——
-          // 客户端传 "yes"/1 这类非布尔值时，我们已经按 false 处理了，上游也得看到同一个决定，
-          // 不能让上游收到一个跟我们内部判断不一致的原始值。
-          stream,
-          ...(stream ? { stream_options: { include_usage: true } } : {}),
-        });
-
-        let res: Response;
+      //
+      // #1329：整段交给 waitUntil，与决策那条（ADR-0307 决策 2）同一层保险 —— 请求上下文真被
+      // 取消时，非流式那条的 settle 跑不完，那笔 hold 就挂满 HOLD_TTL_MS（10 分钟），而
+      // MAX_INFLIGHT 是 4。**流式那条早就有这层保险**（下面 tapSseUsage 回调里的 I3），这里补的
+      // 是它外面那一圈。`work` 按构造不 reject：它自己的外层 catch 一律回一个 Response。
+      //
+      // **但 `signal: req.signal` 在这条路上留着，与决策那条的处置故意不同**：chat 会把上游的字节
+      // 一路流给客户端，客户端走了之后中止上游能真的省下还没生成的那部分；决策/语音是一次前向，
+      // 中止省不下任何东西，留着反而是一条「中断 = 免费」的路（ADR-0307 决策 1）。
+      const work = (async (): Promise<Response | null> => {
         try {
-          res = await doFetch(`${route.baseUrl}${upstreamPathFor(route.kind)}`, {
-            method: "POST",
-            headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
-            body: upstreamBody,
-            signal: req.signal,
+          const upstreamBody = JSON.stringify({
+            ...body,
+            model: route.wireModel,
+            // M9：stream 只在上面判一次，转发给上游的这份显式写回同一个布尔值——
+            // 客户端传 "yes"/1 这类非布尔值时，我们已经按 false 处理了，上游也得看到同一个决定，
+            // 不能让上游收到一个跟我们内部判断不一致的原始值。
+            stream,
+            ...(stream ? { stream_options: { include_usage: true } } : {}),
           });
-        } catch {
-          // 连不上 = failover（ADR-0175 第 3 节第 4 步）。hold 已释放，换下一条候选；
-          // 没有候选了由外层回 502
-          await deps.quota.release(caller.uid, requestId);
-          return null;
-        }
 
-        if (!res.ok) {
-          await deps.quota.release(caller.uid, requestId);
-          // 5xx / 429 = 上游这一站病了，换；4xx 是我们和上游之间的事（key 错、账户欠费），
-          // 换一条 route 不会变好——直接回 502，别拿同一笔 hold 去烧下一家
-          if (res.status >= 500 || res.status === 429) return null;
-          const snippet = (await res.text().catch(() => "")).slice(0, 300);
-          return apiError(502, `上游 ${res.status}：${snippet}`, "upstream", { upstreamStatus: res.status });
-        }
-
-        const settleAt = (usage: UsageCounts) =>
-          deps.quota.settle(caller.uid, requestId, { caller, route, usage, costMicro: costMicro(usage, route) });
-
-        // 这一格取在 settle **之前**（流式的 settle 发生在流末尾），所以拿的是 hold
-        // 之后的快照 —— 与改动前单独问那一趟问到的是同一个时刻的同一份状态
-        const headers = await headersFrom(held.remaining, caller.uid);
-
-        if (stream && res.body) {
-          // 旁路挑 usage，字节原样透传。settle 在流结束那一刻发生——
-          // 客户端此时已经拿到全部内容，晚一拍记账不影响它。
-          // C1：结束不只有「正常关闭」一条路——中途出错/客户端断线都要走到这个回调，
-          // 不然那笔 hold 就死死卡在「预扣了但没人来结算也没人来释放」的状态。
-          // 走到这个回调之后**记账还是释放**，由回调里那三行判断（见文件头）。
-          // I3：有 waitUntil（真 Worker 环境）就把这个后台 promise 交给它，让 Worker
-          // 知道响应发出去之后还有活没干完；没有（比如这次测试）就照旧 void + catch 记日志，
-          // 不能让 rejection 逃逸成 unhandledRejection。
-          const tapped = tapSseUsage(res.body, (u, info) => {
-            // C1：中断 ≠ 没花钱——内容已经送出去了、上游已经收了我们的钱；按预扣结算是
-            // 保守的上限。只有「一个字节都没转发出去」才是真的没花钱，那条才 release。
-            // 结算用的 usage 与 hold 用的估算同源（estimateUsage），所以这一笔正好等于
-            // 预扣的那一笔，窗口账上不会多出也不会少掉一分。
-            const finish =
-              u ? settleAt(u)
-              : info.bytes > 0 ? settleAt(estimateUsage(bodyBytes, maxTokens))
-              : deps.quota.release(caller.uid, requestId);
-            const settled = finish.catch((err: unknown) => {
-              console.error("llmGateway: settle 失败", err);
+          let res: Response;
+          try {
+            res = await doFetch(`${route.baseUrl}${upstreamPathFor(route.kind)}`, {
+              method: "POST",
+              headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
+              body: upstreamBody,
+              signal: req.signal,
             });
-            if (deps.waitUntil) deps.waitUntil(settled);
-            else void settled;
-          }, req.signal, (u) => `\n${SSE_COST_COMMENT}${costMicro(u ?? estimateUsage(bodyBytes, maxTokens), route)}\n\n`);
-          return new Response(tapped, {
-            status: 200,
-            headers: { "content-type": res.headers.get("content-type") ?? "text/event-stream", ...headers },
-          });
-        }
+          } catch {
+            // 连不上 = failover（ADR-0175 第 3 节第 4 步）。hold 已释放，换下一条候选；
+            // 没有候选了由外层回 502
+            await deps.quota.release(caller.uid, requestId);
+            return null;
+          }
 
-        const text = await res.text();
-        let usage: UsageCounts | null = null;
-        try {
-          const parsed: unknown = JSON.parse(text);
-          usage = isObj(parsed) ? parseUsage(parsed.usage) : null;
-        } catch { /* 上游回了非 JSON 的 200：按没 usage 处理 */ }
-        // #855：挑不出 usage 也按预扣结算，与流式那条同一规则——200 = 上游收了钱，
-        // 正文马上就出门；release 会把这笔成本送掉
-        const finalUsage = usage ?? estimateUsage(bodyBytes, maxTokens);
-        await settleAt(finalUsage);
-        // #857：本次花了多少。非流式走响应头；流式放不进头（settle 要等流收尾，
-        // 那一刻响应头早发出去了），改成流末尾一行 SSE 注释，见 tapSseUsage 的 trailer
-        const costHeader = { [BILLING_HEADERS.cost]: String(costMicro(finalUsage, route)) };
-        return new Response(text, {
-          status: 200,
-          headers: { "content-type": res.headers.get("content-type") ?? "application/json", ...headers, ...costHeader },
-        });
-      } catch (err) {
-        // 兜底：release 本身不能再抛——这已经是最后一道防线，它要是也失败就没人能救这笔 hold 了，
-        // 但至少不能让这个 catch 块自己再抛出去、把已经在处理的错误响应也搭进去。
-        await deps.quota.release(caller.uid, requestId).catch(() => {});
-        return apiError(502, `处理请求时出错：${err instanceof Error ? err.message : String(err)}`, "upstream");
-      }
+          if (!res.ok) {
+            await deps.quota.release(caller.uid, requestId);
+            // 5xx / 429 = 上游这一站病了，换；4xx 是我们和上游之间的事（key 错、账户欠费），
+            // 换一条 route 不会变好——直接回 502，别拿同一笔 hold 去烧下一家
+            if (res.status >= 500 || res.status === 429) return null;
+            const snippet = (await res.text().catch(() => "")).slice(0, 300);
+            return apiError(502, `上游 ${res.status}：${snippet}`, "upstream", { upstreamStatus: res.status });
+          }
+
+          const settleAt = (usage: UsageCounts) =>
+            deps.quota.settle(caller.uid, requestId, { caller, route, usage, costMicro: costMicro(usage, route) });
+
+          // 这一格取在 settle **之前**（流式的 settle 发生在流末尾），所以拿的是 hold
+          // 之后的快照 —— 与改动前单独问那一趟问到的是同一个时刻的同一份状态
+          const headers = await headersFrom(held.remaining, caller.uid);
+
+          if (stream && res.body) {
+            // 旁路挑 usage，字节原样透传。settle 在流结束那一刻发生——
+            // 客户端此时已经拿到全部内容，晚一拍记账不影响它。
+            // C1：结束不只有「正常关闭」一条路——中途出错/客户端断线都要走到这个回调，
+            // 不然那笔 hold 就死死卡在「预扣了但没人来结算也没人来释放」的状态。
+            // 走到这个回调之后**记账还是释放**，由回调里那三行判断（见文件头）。
+            // I3：有 waitUntil（真 Worker 环境）就把这个后台 promise 交给它，让 Worker
+            // 知道响应发出去之后还有活没干完；没有（比如这次测试）就照旧 void + catch 记日志，
+            // 不能让 rejection 逃逸成 unhandledRejection。
+            const tapped = tapSseUsage(res.body, (u, info) => {
+              // C1：中断 ≠ 没花钱——内容已经送出去了、上游已经收了我们的钱；按预扣结算是
+              // 保守的上限。只有「一个字节都没转发出去」才是真的没花钱，那条才 release。
+              // 结算用的 usage 与 hold 用的估算同源（estimateUsage），所以这一笔正好等于
+              // 预扣的那一笔，窗口账上不会多出也不会少掉一分。
+              const finish =
+                u ? settleAt(u)
+                : info.bytes > 0 ? settleAt(estimateUsage(bodyBytes, maxTokens))
+                : deps.quota.release(caller.uid, requestId);
+              const settled = finish.catch((err: unknown) => {
+                console.error("llmGateway: settle 失败", err);
+              });
+              if (deps.waitUntil) deps.waitUntil(settled);
+              else void settled;
+            }, req.signal, (u) => `\n${SSE_COST_COMMENT}${costMicro(u ?? estimateUsage(bodyBytes, maxTokens), route)}\n\n`);
+            return new Response(tapped, {
+              status: 200,
+              headers: { "content-type": res.headers.get("content-type") ?? "text/event-stream", ...headers },
+            });
+          }
+
+          const text = await res.text();
+          let usage: UsageCounts | null = null;
+          try {
+            const parsed: unknown = JSON.parse(text);
+            usage = isObj(parsed) ? parseUsage(parsed.usage) : null;
+          } catch { /* 上游回了非 JSON 的 200：按没 usage 处理 */ }
+          // #855：挑不出 usage 也按预扣结算，与流式那条同一规则——200 = 上游收了钱，
+          // 正文马上就出门；release 会把这笔成本送掉
+          const finalUsage = usage ?? estimateUsage(bodyBytes, maxTokens);
+          await settleAt(finalUsage);
+          // #857：本次花了多少。非流式走响应头；流式放不进头（settle 要等流收尾，
+          // 那一刻响应头早发出去了），改成流末尾一行 SSE 注释，见 tapSseUsage 的 trailer
+          const costHeader = { [BILLING_HEADERS.cost]: String(costMicro(finalUsage, route)) };
+          return new Response(text, {
+            status: 200,
+            headers: { "content-type": res.headers.get("content-type") ?? "application/json", ...headers, ...costHeader },
+          });
+        } catch (err) {
+          // 兜底：release 本身不能再抛——这已经是最后一道防线，它要是也失败就没人能救这笔 hold 了，
+          // 但至少不能让这个 catch 块自己再抛出去、把已经在处理的错误响应也搭进去。
+          await deps.quota.release(caller.uid, requestId).catch(() => {});
+          return apiError(502, `处理请求时出错：${err instanceof Error ? err.message : String(err)}`, "upstream");
+        }
+      })();
+      deps.waitUntil?.(work);
+      return await work;
     };
 
     // 多模态门禁（ADR-0175 §3 配套的 plan.capabilities）：这个档没开的能力，请求里带了

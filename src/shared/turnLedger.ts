@@ -21,7 +21,7 @@
 // 一样：同一只 agent 的两行都读成 running，而「停止」按钮点下去停的是**此刻
 // 在跑的那一轮**，画在晚的那行上就是停错人。修法不在这一层加字段，是两道闸——
 // 界面只把钮画在每只 agent seq 最小的那行 running 上
-// （renderer/lib/cloudTimeline.ts 的 stopButtonRows），服务端再拿帧里带的 seq
+// （src/shared/cloudTimeline.ts 的 stopButtonRows），服务端再拿帧里带的 seq
 // 与当前 turn 的采样边界核对一次，对不上回 not_current（第四批 C2-I3）。
 // 除此之外两个状态照旧同命（都进重启补跑、界面上都是一行「还欠着回答」），
 // 所以仍然不为它往事件里加 turn id。

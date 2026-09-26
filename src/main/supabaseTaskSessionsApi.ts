@@ -20,6 +20,7 @@ export function codeOf(err: { code?: string; message: string }): TaskSyncErrorCo
   switch (err.code) {
     case TASK_SQLSTATE.seq_conflict: return "seq_conflict";
     case TASK_SQLSTATE.pen_required: return "pen_required";
+    case TASK_SQLSTATE.pen_busy: return "pen_busy";
     case TASK_SQLSTATE.no_session: return "no_session";
     case TASK_SQLSTATE.forbidden:
     case "42501": return "forbidden";

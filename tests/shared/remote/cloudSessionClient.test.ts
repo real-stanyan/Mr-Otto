@@ -1,0 +1,1819 @@
+import { describe, expect, it, vi } from "vitest";
+import {
+  createCloudSessionClient, deniedMessage,
+  type CloudSessionClient, type CloudSessionClientDeps, type CloudSessionSummary,
+} from "../../../src/shared/remote/cloudSessionClient.js";
+import { BACKLOG_SKIP_MARKER, decodeCsUp, encodeCs, type CsDown, type CsUp, CS_PROTOCOL_VERSION } from "../../../src/shared/remote/cloudSession.js";
+import type { RemoteTransport } from "../../../src/shared/remote/transport.js";
+import type { ApprovalDecisionEvent, ApprovalRequestEvent, ChatMessageEvent, SessionEvent } from "../../../src/session/events.js";
+import type { ApprovalRequest, CloudSessionStatus } from "../../../src/shared/shellBridge.js";
+
+const HOST_CID = "host-cid-1";
+
+/** 一次跳过当前微任务队列——sendHello 里 `await deps.accessToken()` 之后才真的
+    调 transport.send，测试触发 emitPeer() 之后要等这一跳才能断言发出去的帧 */
+const tick = (): Promise<void> => new Promise((resolve) => setTimeout(resolve, 0));
+
+/** 按 cid 寻址的假传输，同 tests/main/remoteBridge.test.ts 的 fakeTransport 同一套写法 */
+function fakeTransport() {
+  const sent: { payload: string; to: string }[] = [];
+  let onMsg: (p: string, from: string) => void = () => {};
+  let onPeerCb: (cid: string) => void = () => {};
+  let onGoneCb: (cid: string) => void = () => {};
+  let onCloseCb: () => void = () => {};
+  const closeSpy = vi.fn();
+  // issue #829：真 wsTransport 的 send 有四条不抛异常的丢帧路径（连接关了 /
+  // 没有收件人 / socket 还没 open，含正在自动重连的窗口 / sock.send 抛错）。
+  // 假传输默认"发得出去"，测试用 dropFrames() 切到那一侧
+  let sendOk = true;
+  return {
+    sent,
+    send(p: string, to: string) {
+      if (!sendOk) return false; // 丢帧路径不记进 sent：真传输那几条也是发都没发
+      sent.push({ payload: p, to });
+      return true;
+    },
+    /** 之后的每一次 send 都丢帧并回 false */
+    dropFrames() {
+      sendOk = false;
+    },
+    onMessage(cb: (p: string, from: string) => void) {
+      onMsg = cb;
+    },
+    onPeer(cb: (cid: string) => void) {
+      onPeerCb = cb;
+    },
+    onGone(cb: (cid: string) => void) {
+      onGoneCb = cb;
+    },
+    onClose(cb: () => void) {
+      onCloseCb = cb;
+    },
+    reconnectNow() {},
+    close: closeSpy,
+    emitPeer(cid = HOST_CID) {
+      onPeerCb(cid);
+    },
+    emitGone(cid = HOST_CID) {
+      onGoneCb(cid);
+    },
+    emitClose() {
+      onCloseCb();
+    },
+    /** 喂一条 CsDown 帧，默认来自 host */
+    emitDown(msg: CsDown, from = HOST_CID) {
+      onMsg(encodeCs(msg), from);
+    },
+    /** 已发出的帧按顺序解回 CsUp，方便断言形状而不是比较 base64 字符串 */
+    decoded(): (CsUp | null)[] {
+      return sent.map((s) => decodeCsUp(s.payload));
+    },
+  };
+}
+
+type FakeTransport = ReturnType<typeof fakeTransport>;
+
+function harness(overrides: Partial<CloudSessionClientDeps> = {}) {
+  const transports: FakeTransport[] = [];
+  const events: SessionEvent[] = [];
+  const deltas: { sessionId: string; agentId: string; kind: "content" | "reasoning"; text: string }[] = [];
+  const statuses: CloudSessionStatus[] = [];
+  const approvalRequests: ApprovalRequest[] = [];
+  const approvalDecisions: ApprovalDecisionEvent[] = [];
+  const inactiveSessionIds: string[] = [];
+  const state = { uid: "self-uid" as string | null, token: "token-abc" as string | null };
+
+  const deps: CloudSessionClientDeps = {
+    accessToken: async () => state.token,
+    selfUid: () => state.uid,
+    createTransport: (_channel: string) => {
+      const t = fakeTransport();
+      transports.push(t);
+      return t as unknown as RemoteTransport;
+    },
+    sendEvent: (e) => events.push(e),
+    sendDelta: (d) => deltas.push(d),
+    sendStatus: (s) => statuses.push(s),
+    onApprovalRequest: (r) => approvalRequests.push(r),
+    onApprovalDecision: (e) => approvalDecisions.push(e),
+    onSessionInactive: (id) => inactiveSessionIds.push(id),
+    ...overrides,
+  };
+
+  const client = createCloudSessionClient(deps);
+  return {
+    client, transports, events, deltas, statuses, approvalRequests, approvalDecisions, inactiveSessionIds, state,
+  };
+}
+
+function chatMsg(seq: number, sessionId = "cloud-s1"): ChatMessageEvent {
+  return { type: "chat_message", sessionId, seq, ts: 1000 + seq, fromUid: "u9", label: "Bob", content: `msg ${seq}`, mention: false };
+}
+
+function approvalRequestEvent(seq: number, sessionId = "cloud-s1"): ApprovalRequestEvent {
+  return {
+    type: "approval_request", sessionId, seq, ts: 1000 + seq,
+    callId: `call-${seq}`, toolName: "bash", argsSummary: "ls -la",
+    initiatorUid: "initiator-uid", expiresTs: 9999,
+  };
+}
+
+describe("createCloudSessionClient — join / welcome / backlog 去重", () => {
+  it("join 之后立即推一次 connecting 状态", async () => {
+    const h = harness();
+    const r = await h.client.join("w1", "cloud-s1");
+    expect(r).toEqual({ ok: true, value: null });
+    expect(h.statuses).toHaveLength(1);
+    expect(h.statuses[0]).toMatchObject({
+      workspaceId: "w1", sessionId: "cloud-s1", state: "connecting",
+      initiatorUid: null, ownerUid: "", selfUid: "self-uid",
+    });
+    expect(h.client.currentSessionId()).toBe("cloud-s1");
+  });
+
+  it("onPeer 之后发 hello，帧发给 host 的 cid", async () => {
+    const h = harness();
+    await h.client.join("w1", "cloud-s1");
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    expect(t.sent).toHaveLength(1);
+    expect(t.sent[0]!.to).toBe(HOST_CID);
+    expect(t.decoded()[0]).toEqual({ t: "hello", v: CS_PROTOCOL_VERSION, jwt: "token-abc" });
+  });
+
+  it("welcome 到达后：状态补真值 + 自动发 backlog(-1)（不是 0）", async () => {
+    const h = harness();
+    await h.client.join("w1", "cloud-s1");
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+
+    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: 5, initiatorUid: "u1", ownerUid: "u2" ,  modelRoute: null });
+
+    expect(t.decoded()[1]).toEqual({ t: "backlog", afterSeq: -1 });
+    const last = h.statuses[h.statuses.length - 1]!;
+    expect(last).toMatchObject({ state: "connecting", initiatorUid: "u1", ownerUid: "u2" });
+    // issue #945：runtime 探不到就下发 null，主进程原样透传——不许在这一层
+    // 拿别的字段替它下结论
+    expect(last).toMatchObject({ modelRoute: null });
+  });
+
+  it("welcome 带的 modelRoute 原样进 status 推送（issue #945）", async () => {
+    const h = harness();
+    await h.client.join("w1", "cloud-s1");
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+
+    t.emitDown({
+      t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: null,
+      ownerUid: "u2",  modelRoute: { kind: "blocked" },
+    });
+
+    expect(h.statuses.at(-1)?.modelRoute).toEqual({ kind: "blocked" });
+  });
+
+  it("还没 ready 时收到的直播事件先缓冲，不立即转发", async () => {
+    const h = harness();
+    await h.client.join("w1", "cloud-s1");
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: 7, initiatorUid: "u1", ownerUid: "u2" ,  modelRoute: null });
+
+    t.emitDown({ t: "event", event: chatMsg(5) });
+
+    // 还没 ready：不立即转发，攒着
+    expect(h.events).toHaveLength(0);
+  });
+
+  // ── 流式帧（协议 16，#1107）──────────────────────────────────────────
+  it("delta 帧不过 seq 机器：拿到就直转 sendDelta，补上 sessionId，connecting 期间也转", async () => {
+    const h = harness();
+    await h.client.join("w1", "cloud-s1");
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: 7, initiatorUid: "u1", ownerUid: "u2" , modelRoute: null });
+
+    // 还在 connecting（backlog 没落定）：delta 不等 ready——渲染层那行
+    // 「正在回复」要等 backlog 才画得出，但缓冲按 agentId 攒，行一出现文字就在
+    t.emitDown({ t: "delta", agentId: "admin", kind: "content", text: "半句" });
+    expect(h.deltas).toEqual([{ sessionId: "cloud-s1", agentId: "admin", kind: "content", text: "半句" }]);
+    // 不碰事件通道：events 仍为空，backlog 落定后也不该因为这条 delta 多转什么
+    expect(h.events).toHaveLength(0);
+
+    t.emitDown({ t: "backlog", events: [0, 1, 2, 3, 4, 5, 6, 7].map((n) => chatMsg(n)), done: true });
+    t.emitDown({ t: "delta", agentId: "admin", kind: "reasoning", text: "想" });
+    expect(h.deltas).toHaveLength(2);
+    expect(h.deltas[1]).toMatchObject({ kind: "reasoning", text: "想" });
+  });
+
+  it("直播 event 抢跑在 backlog 之前到达（非 0 的 seq）：backlog 落定后按 seq 升序转发，不是到达顺序", async () => {
+    // 复审 High 的原始复现：welcome(lastSeq=7) → 直播 event(seq=5) →
+    // backlog([0..7])。旧实现即发即转会产出 [5,0,1,2,3,4,6,7]（非升序）；
+    // 用 seq:0 测过去测不出这个 bug（它恰好是唯一不会逆序的边界值）
+    const h = harness();
+    await h.client.join("w1", "cloud-s1");
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: 7, initiatorUid: "u1", ownerUid: "u2" ,  modelRoute: null });
+
+    t.emitDown({ t: "event", event: chatMsg(5) });
+    expect(h.events).toHaveLength(0); // 还在缓冲区
+
+    // backlog 落定：0..7 全量（含服务端已经广播过的 seq:5）
+    const backlogEvents = [0, 1, 2, 3, 4, 5, 6, 7].map((n) => chatMsg(n));
+    t.emitDown({ t: "backlog", events: backlogEvents, done: true });
+
+    expect(h.events).toHaveLength(8); // 去重：不是 9
+    expect(h.events.map((e) => e.seq)).toEqual([0, 1, 2, 3, 4, 5, 6, 7]); // 严格升序
+    expect(h.statuses[h.statuses.length - 1]!.state).toBe("ready");
+  });
+
+  it("直播事件的 seq 比 backlog 本身携带的更新（backlog 没包含它）：合并排序后追加在最后", async () => {
+    const h = harness();
+    await h.client.join("w1", "cloud-s1");
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: 6, initiatorUid: "u1", ownerUid: "u2" ,  modelRoute: null });
+
+    // backlog 请求飞在路上时,一条全新的事件(seq:7)先被直播广播到
+    t.emitDown({ t: "event", event: chatMsg(7) });
+    // backlog 只带回它落地时读到的 0..6(不含 7——服务端处理 backlog 请求那一刻 7 还没提交)
+    t.emitDown({ t: "backlog", events: [0, 1, 2, 3, 4, 5, 6].map((n) => chatMsg(n)), done: true });
+
+    expect(h.events.map((e) => e.seq)).toEqual([0, 1, 2, 3, 4, 5, 6, 7]);
+  });
+
+  it("ready 之后收到的直播事件直接转发，不再经过缓冲", async () => {
+    const h = harness();
+    await h.client.join("w1", "cloud-s1");
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: null, ownerUid: "u2" ,  modelRoute: null });
+    t.emitDown({ t: "backlog", events: [], done: true });
+    expect(h.statuses[h.statuses.length - 1]!.state).toBe("ready");
+
+    t.emitDown({ t: "event", event: chatMsg(0) });
+    expect(h.events).toHaveLength(1); // 立即到账，不用等下一次 backlog
+  });
+
+  it("backlog done:false 不置 ready", async () => {
+    const h = harness();
+    await h.client.join("w1", "cloud-s1");
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: null, ownerUid: "u2" ,  modelRoute: null });
+    t.emitDown({ t: "backlog", events: [], done: false });
+    expect(h.statuses.some((s) => s.state === "ready")).toBe(false);
+  });
+
+  it("分片 backlog：中间分片（done:false）不会提前 flush liveBuffer，最后一片（done:true）才合并，转发严格 seq 升序（复审 fix round 2 High）", async () => {
+    // 原始复现：welcome(lastSeq=7) → 直播 event(seq:5) →
+    // backlog chunk1([0,1,2,3], done:false) → chunk2([4,5,6,7], done:true)。
+    // 旧写法对每一条 backlog 消息都无条件合并 liveBuffer 再清空，chunk1 会把
+    // liveBuffer 里的 5 提前和 [0,1,2,3] 一起排序转发，产出
+    // [0,1,2,3,5,4,6,7]——这正是 fix round 1 那个 bug 的直接变体，当前服务端
+    // 总是一次 done:true 下发所以生产不可达，但客户端不该依赖这个假设。
+    const h = harness();
+    await h.client.join("w1", "cloud-s1");
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: 7, initiatorUid: "u1", ownerUid: "u2" ,  modelRoute: null });
+
+    t.emitDown({ t: "event", event: chatMsg(5) }); // 还没 ready：进 liveBuffer
+    expect(h.events).toHaveLength(0);
+
+    t.emitDown({ t: "backlog", events: [0, 1, 2, 3].map((n) => chatMsg(n)), done: false });
+    // 中间分片自己的事件正常转发，但还没 ready（liveBuffer 里的 5 原封不动）
+    expect(h.events.map((e) => e.seq)).toEqual([0, 1, 2, 3]);
+    expect(h.statuses.some((s) => s.state === "ready")).toBe(false);
+
+    t.emitDown({ t: "backlog", events: [4, 5, 6, 7].map((n) => chatMsg(n)), done: true });
+
+    expect(h.events).toHaveLength(8); // 去重：不是 9（chunk2 自带的 5 与 liveBuffer 的 5 只算一条）
+    expect(h.events.map((e) => e.seq)).toEqual([0, 1, 2, 3, 4, 5, 6, 7]); // 严格升序
+    expect(h.statuses[h.statuses.length - 1]!.state).toBe("ready");
+  });
+});
+
+// 终审 C1：ready 之后收到的新 peer 通告（后到的 host，可能是真的重连，也
+// 可能是绕过 edge.ts 角色收口的攻击者）不该重绑 hostCid——重绑意味着后续
+// 帧（包括含 JWT 的 hello）会发给这个未经确认的 peer。
+describe("createCloudSessionClient — 终审 C1：ready 后不重绑 hostCid", () => {
+  it("ready 之后收到新的 peer 通告：忽略，不重发 hello，后续帧仍然发给原来的 host cid", async () => {
+    const h = harness();
+    await h.client.join("w1", "cloud-s1");
+    const t = h.transports[0]!;
+    t.emitPeer(); // HOST_CID
+    await tick();
+    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: "u1", ownerUid: "u2" ,  modelRoute: null });
+    t.emitDown({ t: "backlog", events: [], done: true }); // 推进到 ready
+    expect(h.statuses[h.statuses.length - 1]!.state).toBe("ready");
+
+    const sentBefore = t.sent.length;
+    t.emitPeer("attacker-cid"); // 后到的 peer 通告
+    await tick();
+
+    // 没有因为新 peer 到场而多发一帧（旧代码会在这里重发一次 hello，把 jwt
+    // 发给 attacker-cid）
+    expect(t.sent.length).toBe(sentBefore);
+    expect(h.statuses[h.statuses.length - 1]!.state).toBe("ready"); // 状态没有被打回 connecting
+
+    const pending = h.client.say("hi", false);
+    expect(t.sent[t.sent.length - 1]!.to).toBe(HOST_CID); // 仍然发给原来的 host，不是 attacker-cid
+    t.emitDown({ t: "say_result", ok: true }); // #957 第三批：say 现在等回执
+    expect(await pending).toEqual({ ok: true });
+  });
+});
+
+describe("createCloudSessionClient — approval_request / approval_decision", () => {
+  async function readyHarness(selfUid: string) {
+    const h = harness();
+    h.state.uid = selfUid;
+    await h.client.join("w1", "cloud-s1");
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: "initiator-uid", ownerUid: "owner-uid" ,  modelRoute: null });
+    t.emitDown({ t: "backlog", events: [], done: true }); // 推进到 ready，事件才走直发路径
+    return { h, t };
+  }
+
+  it("selfUid === initiatorUid → 进 onApprovalRequest 回调，形状齐全", async () => {
+    const { h, t } = await readyHarness("initiator-uid");
+    t.emitDown({ t: "event", event: approvalRequestEvent(1) });
+    expect(h.approvalRequests).toHaveLength(1);
+    const req = h.approvalRequests[0]!;
+    expect(req.sessionId).toBe("cloud-s1");
+    expect(req.call).toEqual({ id: "call-1", name: "bash", args: { summary: "ls -la" } });
+    expect(req.availableDecisions).toEqual(["approve", "deny"]);
+    // 原始事件依然照常转发给渲染层（approval 特殊处理是"额外"不是"代替"）
+    expect(h.events).toHaveLength(1);
+  });
+
+  it("selfUid === ownerUid（不是发起人）→ 也进 onApprovalRequest 回调", async () => {
+    const { h, t } = await readyHarness("owner-uid");
+    t.emitDown({ t: "event", event: approvalRequestEvent(1) });
+    expect(h.approvalRequests).toHaveLength(1);
+  });
+
+  it("selfUid 既不是 initiator 也不是 owner → 不进 onApprovalRequest（但事件仍转发）", async () => {
+    const { h, t } = await readyHarness("bystander-uid");
+    t.emitDown({ t: "event", event: approvalRequestEvent(1) });
+    expect(h.approvalRequests).toHaveLength(0);
+    expect(h.events).toHaveLength(1);
+  });
+
+  it("approval_decision 事件 → 进 onApprovalDecision 回调", async () => {
+    const { h, t } = await readyHarness("bystander-uid");
+    const decision: ApprovalDecisionEvent = {
+      type: "approval_decision", sessionId: "cloud-s1", seq: 1, ts: 2, toolCallId: "call-1", decision: "approved",
+    };
+    t.emitDown({ t: "event", event: decision });
+    expect(h.approvalDecisions).toHaveLength(1);
+    expect(h.approvalDecisions[0]).toEqual(decision);
+  });
+});
+
+describe("createCloudSessionClient — denied 状态透传", () => {
+  it("hello 被拒 → 推 denied 状态 + 原始 code，关闭连接", async () => {
+    const h = harness();
+    await h.client.join("w1", "cloud-s1");
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+
+    t.emitDown({ t: "denied", code: "not_member" });
+
+    const last = h.statuses[h.statuses.length - 1]!;
+    expect(last.state).toBe("denied");
+    expect(last.deniedCode).toBe("not_member");
+    expect(t.close).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("createCloudSessionClient — :gone / 重连 / pendingApprovals 清理", () => {
+  it(":gone → 状态 gone，不影响 currentSessionId（不清会话本身），但会通知装配方清 pendingApprovals", async () => {
+    const h = harness();
+    await h.client.join("w1", "cloud-s1");
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: null, ownerUid: "u2" ,  modelRoute: null });
+    t.emitDown({ t: "backlog", events: [], done: true });
+
+    t.emitGone();
+
+    const last = h.statuses[h.statuses.length - 1]!;
+    expect(last.state).toBe("gone");
+    expect(h.client.currentSessionId()).toBe("cloud-s1"); // 复审 P0 修复后：这条会话还在，只是不再产出虚拟 fleet 行
+    expect(h.inactiveSessionIds).toEqual(["cloud-s1"]); // 复审 Medium
+  });
+
+  it("gone 时清空 pendingApprovals 之后，重连成功且该 approval_request 仍在 backlog 里 → 重新进 onApprovalRequest（重新挂回去）", async () => {
+    const h = harness();
+    h.state.uid = "initiator-uid";
+    await h.client.join("w1", "cloud-s1");
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: "initiator-uid", ownerUid: "owner-uid" ,  modelRoute: null });
+    t.emitDown({ t: "backlog", events: [approvalRequestEvent(0)], done: true });
+    expect(h.approvalRequests).toHaveLength(1);
+
+    t.emitGone();
+    expect(h.inactiveSessionIds).toEqual(["cloud-s1"]);
+
+    // host 回来，同一个 approval_request（还没被任何人决定）原样再拉一遍
+    t.emitPeer("host-cid-2");
+    await tick();
+    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: "initiator-uid", ownerUid: "owner-uid" ,  modelRoute: null }, "host-cid-2");
+    t.emitDown({ t: "backlog", events: [approvalRequestEvent(0)], done: true }, "host-cid-2");
+
+    expect(h.approvalRequests).toHaveLength(2); // 重新挂回去了，不是永久消失
+  });
+
+  it("gone 之后 host 回来：重新走 hello→welcome，seenSeqs 已清空，同一批事件原样再转发一次（渲染层自己按 seq 去重，重复无害）", async () => {
+    const h = harness();
+    await h.client.join("w1", "cloud-s1");
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: null, ownerUid: "u2" ,  modelRoute: null });
+    t.emitDown({ t: "backlog", events: [chatMsg(0)], done: true });
+    expect(h.events).toHaveLength(1);
+
+    t.emitGone();
+    expect(h.statuses[h.statuses.length - 1]!.state).toBe("gone");
+
+    // host 回来了：新一轮 hello
+    t.emitPeer("host-cid-2");
+    await tick();
+    expect(h.statuses[h.statuses.length - 1]!.state).toBe("connecting");
+    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: null, ownerUid: "u2" ,  modelRoute: null }, "host-cid-2");
+    t.emitDown({ t: "backlog", events: [chatMsg(0)], done: true }, "host-cid-2");
+
+    expect(h.events).toHaveLength(2); // seenSeqs 已被 gone 清空，这次原样再送一次
+    expect(h.statuses[h.statuses.length - 1]!.state).toBe("ready");
+  });
+});
+
+describe("createCloudSessionClient — join 互斥 / leave", () => {
+  it("再次 join 先断旧连接，并通知装配方清旧会话的 pendingApprovals", async () => {
+    const h = harness();
+    await h.client.join("w1", "s-old");
+    const oldTransport = h.transports[0]!;
+
+    await h.client.join("w1", "s-new");
+
+    expect(oldTransport.close).toHaveBeenCalledTimes(1);
+    expect(h.client.currentSessionId()).toBe("s-new");
+    expect(h.transports).toHaveLength(2);
+    expect(h.inactiveSessionIds).toEqual(["s-old"]); // 复审 Medium："切会话"路径
+  });
+
+  it("旧连接收到的迟到帧不再影响状态（陈旧回调防御）", async () => {
+    const h = harness();
+    await h.client.join("w1", "s-old");
+    const oldTransport = h.transports[0]!;
+    await h.client.join("w1", "s-new");
+    h.statuses.length = 0; // 只看接下来这一步
+
+    oldTransport.emitPeer(); // 旧连接的对端在场信号迟到
+    await tick();
+
+    expect(h.statuses).toHaveLength(0); // 没有为旧会话产生新的状态推送
+    expect(h.client.currentSessionId()).toBe("s-new");
+  });
+
+  it("leave 关闭连接、清空 currentSessionId，并通知装配方清 pendingApprovals", async () => {
+    const h = harness();
+    await h.client.join("w1", "s1");
+    const t = h.transports[0]!;
+
+    const r = await h.client.leave();
+
+    expect(r).toEqual({ ok: true, value: null });
+    expect(t.close).toHaveBeenCalledTimes(1);
+    expect(h.client.currentSessionId()).toBeNull();
+    expect(h.inactiveSessionIds).toEqual(["s1"]); // 复审 Medium
+  });
+
+  it("没有登录时 join 直接回 NOT_SIGNED_IN，不开连接", async () => {
+    const h = harness();
+    h.state.uid = null;
+    const r = await h.client.join("w1", "s1");
+    expect(r).toEqual({ ok: false, message: "还没登录" });
+    expect(h.transports).toHaveLength(0);
+  });
+});
+
+describe("createCloudSessionClient — say/approve/archive 就绪闸", () => {
+  async function ready() {
+    const h = harness();
+    await h.client.join("w1", "cloud-s1");
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: "u1", ownerUid: "u2" ,  modelRoute: null });
+    t.emitDown({ t: "backlog", events: [], done: true });
+    return { h, t };
+  }
+
+  it("没有 join 过：say/approve 一律失败（archive 走控制房，不看会话状态）", async () => {
+    const h = harness();
+    expect(await h.client.say("hi", false)).toEqual({ ok: false, message: "没有已连接的云会话" });
+    expect(await h.client.approve("c1", "approved")).toEqual({ ok: false, message: "没有已连接的云会话" });
+  });
+
+  it("还在 connecting（welcome 之前）：一律未就绪失败", async () => {
+    const h = harness();
+    await h.client.join("w1", "cloud-s1");
+    const r = await h.client.say("hi", false);
+    expect(r).toEqual({ ok: false, message: "云会话未就绪" });
+  });
+
+  it("ready 之后：say 发出去的帧形状正确，地址是 host cid", async () => {
+    const { h, t } = await ready();
+    const pending = h.client.say("@Agent 干活", true);
+    const last = t.decoded()[t.decoded().length - 1];
+    expect(last).toEqual({ t: "say", text: "@Agent 干活", mention: true });
+    expect(t.sent[t.sent.length - 1]!.to).toBe(HOST_CID);
+    t.emitDown({ t: "say_result", ok: true });
+    expect(await pending).toEqual({ ok: true });
+  });
+
+  it("ready 之后：say 带 mentions 时帧里带 mentions；不带时帧里没有这个字段（#932）", async () => {
+    const { h, t } = await ready();
+    const first = h.client.say("@运营 看", true, ["ops"]);
+    const withMentions = t.decoded()[t.decoded().length - 1];
+    expect(withMentions).toEqual({ t: "say", text: "@运营 看", mention: true, mentions: ["ops"] });
+    t.emitDown({ t: "say_result", ok: true });
+    await first;
+
+    const second = h.client.say("x", false);
+    const withoutMentions = t.decoded()[t.decoded().length - 1] as Record<string, unknown>;
+    expect(withoutMentions).toEqual({ t: "say", text: "x", mention: false });
+    expect("mentions" in withoutMentions).toBe(false);
+    t.emitDown({ t: "say_result", ok: true });
+    await second;
+  });
+
+  it("ready 之后：approve 发出去的帧带 callId + decision", async () => {
+    const { h, t } = await ready();
+    const pending = h.client.approve("call-9", "denied");
+    const last = t.decoded()[t.decoded().length - 1];
+    expect(last).toEqual({ t: "approve", callId: "call-9", decision: "denied" });
+    t.emitDown({ t: "approve_result", callId: "call-9", ok: true });
+    expect(await pending).toEqual({ ok: true });
+  });
+
+
+  // ── issue #829：transport.send 的丢帧要说出口 ─────────────────────────
+  // 回执（#834）只覆盖 config 一条路：say/approve/archive 依然是"发出去就
+  // 算成功"。而 send 有四条不抛异常的丢帧路径，其中一条正是自动重连的窗口。
+
+  it("say：帧没发出去就不能回 ok —— 聊天丢一条人看得出，但别在这撒谎", async () => {
+    const { h, t } = await ready();
+    t.dropFrames();
+    const r = await h.client.say("在吗", true);
+    expect(r.ok).toBe(false);
+  });
+
+  it("approve：同上——审批是「用户点完就不再看」的那一类", async () => {
+    const { h, t } = await ready();
+    t.dropFrames();
+    const r = await h.client.approve("call-1", "approved");
+    expect(r.ok).toBe(false);
+  });
+
+  it("say.text 超 64KiB：encodeCs 抛错被 client 接住，回 ok:false 而不是抛出", async () => {
+    const { h } = await ready();
+    const r = await h.client.say("x".repeat(65 * 1024), false);
+    expect(r.ok).toBe(false);
+  });
+});
+
+describe("createCloudSessionClient — create", () => {
+  it("created 帧到达 → resolve sessionId，并关闭控制房连接", async () => {
+    const h = harness();
+    const promise = h.client.create("w1");
+    // create() 顶部先 await accessToken，等它落地再拿 transport
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+
+    expect(t.decoded()).toEqual([
+      { t: "hello", v: CS_PROTOCOL_VERSION, jwt: "token-abc" },
+      { t: "create", workspaceId: "w1" },
+    ]);
+
+    t.emitDown({ t: "created", workspaceId: "w1", sessionId: "new-session-id", channel: "cs-w1-new-session-id" });
+    const r = await promise;
+    expect(r).toEqual({ ok: true, value: { sessionId: "new-session-id" } });
+    expect(t.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("denied 帧到达 → resolve ok:false", async () => {
+    const h = harness();
+    const promise = h.client.create("w1");
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({ t: "denied", code: "not_member" });
+    const r = await promise;
+    expect(r.ok).toBe(false);
+    expect(t.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("没有登录时直接回 NOT_SIGNED_IN，不开连接", async () => {
+    const h = harness();
+    h.state.token = null;
+    const r = await h.client.create("w1");
+    expect(r).toEqual({ ok: false, message: "还没登录" });
+    expect(h.transports).toHaveLength(0);
+  });
+
+  // issue #829：hello/create 掉在丢帧路径上时，原来要白等满
+  // CS_CREATE_TIMEOUT_MS 才回一句"云端无响应"——把"我们没发出去"说成
+  // "对面没回话"，人会去查 VPS
+  it("hello/create 没发出去 → 当场失败，不等超时，也不说成「云端无响应」", async () => {
+    const h = harness();
+    const promise = h.client.create("w1");
+    await tick();
+    const t = h.transports[0]!;
+    t.dropFrames();
+    t.emitPeer();
+    await tick();
+    const r = await promise;
+    expect(r).toEqual({ ok: false, message: "连接不通，请求没发出去——稍后重试" });
+    expect(t.close).toHaveBeenCalledTimes(1);
+  });
+
+  // 终审 C1：控制房没有 ready 概念可以把关（不像 join() 的会话房），
+  // hostCid 这个局部变量本身就是"是否已经认定过一个 host"的哨兵——
+  // 第二个 peer 通告不该再收到 hello（里面带着 JWT）
+  it("onPeer 触发多次（多个 host 通告）：hello/create 只发给第一个 cid，忽略后续", async () => {
+    const h = harness();
+    const promise = h.client.create("w1");
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer("first-cid");
+    await tick();
+    t.emitPeer("second-cid"); // 后到的通告——不该收到 hello/jwt
+    await tick();
+
+    expect(t.sent.every((s) => s.to === "first-cid")).toBe(true);
+    expect(t.decoded()).toEqual([
+      { t: "hello", v: CS_PROTOCOL_VERSION, jwt: "token-abc" },
+      { t: "create", workspaceId: "w1" },
+    ]);
+
+    t.emitDown(
+      { t: "created", workspaceId: "w1", sessionId: "new-session-id", channel: "cs-w1-new-session-id" },
+      "first-cid"
+    );
+    const r = await promise;
+    expect(r).toEqual({ ok: true, value: { sessionId: "new-session-id" } });
+  });
+});
+
+describe("createCloudSessionClient — activeSummary()", () => {
+  it("没有 join 过 = null；join 之后带上 workspaceId/sessionId/status/lastEventTs", async () => {
+    const h = harness();
+    expect(h.client.activeSummary()).toBeNull();
+    await h.client.join("w1", "cloud-s1");
+    expect(h.client.activeSummary()).toEqual({
+      workspaceId: "w1", sessionId: "cloud-s1", status: "connecting",
+      lastEventTs: expect.any(Number), // join() 时占位成 Date.now()，非确定值
+    });
+  });
+
+  it("leave 之后回到 null", async () => {
+    const h = harness();
+    await h.client.join("w1", "cloud-s1");
+    await h.client.leave();
+    expect(h.client.activeSummary()).toBeNull();
+  });
+
+  it("lastEventTs 跟着已知最新事件的 ts 走，不是每次现取 Date.now()（复审 fix round 2 Minor）", async () => {
+    const h = harness();
+    await h.client.join("w1", "cloud-s1");
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: "u1", ownerUid: "u2" ,  modelRoute: null });
+    // ts:5000 是一个"很久以前"的历史事件（远小于当下的 Date.now()）——这条
+    // 用例专门钉住第一版 fix 的一个回归：那版用 Date.now() 占位再 Math.max，
+    // join() 那一刻的"此刻"会变成一个历史事件抬不动的下限，5000 会被吞掉，
+    // 云会话看起来比实际更"新鲜"，跟复审当初要修的 bug 是同一类问题
+    t.emitDown({ t: "backlog", events: [{ ...chatMsg(0), ts: 5000 }], done: true });
+
+    expect(h.client.activeSummary()!.lastEventTs).toBe(5000);
+
+    // 再来一条 ts 更晚的事件：往前推
+    t.emitDown({ t: "event", event: { ...chatMsg(1), ts: 9000 } });
+    expect(h.client.activeSummary()!.lastEventTs).toBe(9000);
+
+    // 一条 ts 更早的事件不会把它往回拨（取 max）
+    t.emitDown({ t: "event", event: { ...chatMsg(2), ts: 3000 } });
+    expect(h.client.activeSummary()!.lastEventTs).toBe(9000);
+  });
+
+  it("从没见过任何事件时（比如刚 ready、backlog 是空的）：lastEventTs 退回一个接近当下的值，不是 0 或者别的冻结值", async () => {
+    const h = harness();
+    await h.client.join("w1", "cloud-s1");
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: "u1", ownerUid: "u2" ,  modelRoute: null });
+    t.emitDown({ t: "backlog", events: [], done: true }); // 空 backlog：一条事件都没有
+
+    const before = Date.now();
+    expect(h.client.activeSummary()!.lastEventTs).toBeGreaterThanOrEqual(before - 5000);
+    expect(h.client.activeSummary()!.lastEventTs).toBeLessThanOrEqual(before + 5000);
+  });
+
+  it("teardown（leave/切会话）：onSessionInactive 触发时 activeSummary() 已经是 null，不是重入读到旧会话的 ready（复审 fix round 2 Medium）", async () => {
+    // 这是关键的接缝：onSessionInactive 的真实装配方（index.ts）会在回调里
+    // 调 pushFleet() → cloudFleetSession() → cloudClient.activeSummary()——
+    // 必须真的重入 client.activeSummary() 才能测出"先置 null 再通知"这件事，
+    // 只 push 一个 sessionId 的旧假货测不出这条时序 bug
+    let client: CloudSessionClient | undefined;
+    const readBack: (CloudSessionSummary | null)[] = [];
+    const h = harness({
+      onSessionInactive: () => {
+        readBack.push(client!.activeSummary());
+      },
+    });
+    client = h.client;
+
+    await h.client.join("w1", "cloud-s1");
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: "u1", ownerUid: "u2" ,  modelRoute: null });
+    t.emitDown({ t: "backlog", events: [], done: true }); // ready
+
+    await h.client.leave();
+
+    expect(readBack).toEqual([null]);
+  });
+
+  it("同一条接缝也适用于 join() 切会话（旧会话被顶掉时的 teardown）", async () => {
+    let client: CloudSessionClient | undefined;
+    const readBack: (CloudSessionSummary | null)[] = [];
+    const h = harness({
+      onSessionInactive: () => {
+        readBack.push(client!.activeSummary());
+      },
+    });
+    client = h.client;
+
+    await h.client.join("w1", "s-old");
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({ t: "welcome", v: 1, sessionId: "s-old", lastSeq: -1, initiatorUid: null, ownerUid: "u2" ,  modelRoute: null });
+    t.emitDown({ t: "backlog", events: [], done: true });
+
+    await h.client.join("w1", "s-new");
+
+    // teardown() 是 join() 的第一步，在旧会话被摘掉、新会话还没被造出来
+    // 之前执行——onSessionInactive 触发那一刻两边都够不着：既不是旧会话的
+    // ready（已经清空），也还不是新会话（要等 teardown() 返回后 join() 才
+    // 往下走）。activeSummary() 读到 null，跟 leave() 触发时是同一个结论——
+    // 这正是"先置 null 再通知"这条纪律该保证的：不管 teardown 因为什么原因
+    // 被调用，通知那一刻都读不到任何一条"还活着"的云会话。
+    expect(readBack).toEqual([null]);
+    // join() 继续往下走，新会话最终确实就位了——只是不在 onSessionInactive
+    // 触发的那一瞬间
+    expect(h.client.currentSessionId()).toBe("s-new");
+  });
+});
+
+/** 历史缺口（issue #957 C-I7）：welcome.lastSeq 是协议递到手上的完整性凭据。
+    服务端**真的会跳事件**（frameHandler.chunkBacklogFrames 对单条超限的事件
+    产出一条 error 帧后继续），而在这条修复之前 lastSeq 一个字都没用过：
+    「我看到的就是全部」和「我看到的少了一条」在界面上只差一行会被下一次成功
+    操作擦掉的灰字。gapNote 是**持久事实**——每次 pushStatus 都带，不是 notice
+    那样的一次性。 */
+describe("createCloudSessionClient — 历史缺口 gapNote（issue #957 C-I7）", () => {
+  async function joined(lastSeq: number): Promise<{ h: ReturnType<typeof harness>; t: FakeTransport }> {
+    const h = harness();
+    await h.client.join("w1", "cloud-s1");
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({
+      t: "welcome", v: CS_PROTOCOL_VERSION, sessionId: "cloud-s1",
+      lastSeq, initiatorUid: "u1", ownerUid: "u2",  modelRoute: null,
+    });
+    return { h, t };
+  }
+
+  it("welcome 说到 7、backlog 只到 5 → status 带 gapNote，数得出缺了 2 条", async () => {
+    const { h, t } = await joined(7);
+    t.emitDown({ t: "backlog", events: [0, 1, 2, 3, 4, 5].map((n) => chatMsg(n)), done: true });
+
+    const last = h.statuses.at(-1)!;
+    expect(last.state).toBe("ready");
+    expect(last.gapNote).toBe("这条会话有 2 条历史事件没能下发（服务端跳过了过大的事件）——你看到的不是全部");
+  });
+
+  it("gapNote 是持久的：之后每一次状态推送都还带着它（notice 是一次性的，它不是）", async () => {
+    const { h, t } = await joined(7);
+    t.emitDown({ t: "backlog", events: [0, 1, 2, 3, 4, 5].map((n) => chatMsg(n)), done: true });
+    // 随便一件会触发 pushStatus 的事：runtime 又说了一句一次性的话
+    t.emitDown({ t: "error", msg: "审批未生效：已经有人批过了" });
+
+    const last = h.statuses.at(-1)!;
+    expect(last.notice).toBe("审批未生效：已经有人批过了");
+    expect(last.gapNote).toContain("2 条历史事件没能下发");
+  });
+
+  it("backlog 完整 → 没有 gapNote（不许无条件挂一行「你可能少看了什么」）", async () => {
+    const { h, t } = await joined(5);
+    t.emitDown({ t: "backlog", events: [0, 1, 2, 3, 4, 5].map((n) => chatMsg(n)), done: true });
+
+    const last = h.statuses.at(-1)!;
+    expect(last.state).toBe("ready");
+    expect(last.gapNote).toBeUndefined();
+  });
+
+  it("空会话（lastSeq=-1，backlog 空）→ 没有 gapNote", async () => {
+    const { h, t } = await joined(-1);
+    t.emitDown({ t: "backlog", events: [], done: true });
+    expect(h.statuses.at(-1)!.gapNote).toBeUndefined();
+  });
+
+  it("中间那条被跳过（error 帧含「已跳过」，lastSeq 与末条对得上）→ 照样出 gapNote，数得出缺 1 条", async () => {
+    // maxSeen === lastSeq，光比末条比不出来——判据里那条 error 帧就是为这种缺口留的
+    const { h, t } = await joined(5);
+    t.emitDown({ t: "error", msg: `一条历史事件过大${BACKLOG_SKIP_MARKER}(type=tool_result, seq=3):单条超过下发上限` });
+    t.emitDown({ t: "backlog", events: [0, 1, 2, 4, 5].map((n) => chatMsg(n)), done: true });
+
+    expect(h.statuses.at(-1)!.gapNote).toBe(
+      "这条会话有 1 条历史事件没能下发（服务端跳过了过大的事件）——你看到的不是全部"
+    );
+  });
+
+  /** I3（终审）：daemon 的直播扇出对单条超限的事件也回一条同款占位帧
+      （daemon.ts globalSend 的 `msg.t === "event"` 分支），但那时 backlog
+      早就结账了——backlogSkipped 要等下一轮 backlog done 才被读到，而云会话
+      可能几小时不重连一次。这个洞在界面上此前一个字都没有：那条 notice 灰字
+      被下一次成功操作就擦掉了。missingCount 对超出 lastSeq 的 seq 数不出来
+      （它只数 [0, lastSeq]），所以文案退回不带计数的那一句——「少了东西」这件事
+      本身才是要说的 */
+  it("ready 之后一条实时事件被跳过 → 当场挂 gapNote，并且后续每次推送都还带着（终审 I3）", async () => {
+    const { h, t } = await joined(5);
+    t.emitDown({ t: "backlog", events: [0, 1, 2, 3, 4, 5].map((n) => chatMsg(n)), done: true });
+    expect(h.statuses.at(-1)!.gapNote).toBeUndefined();
+
+    t.emitDown({
+      t: "error",
+      msg: `一条实时事件过大${BACKLOG_SKIP_MARKER}（type=tool_result, seq=9）：单条超过下发上限，重新进入会话可看到同样的占位`,
+    });
+    const note = "这条会话有历史事件没能下发（服务端跳过了过大的事件）——你看到的不是全部";
+    expect(h.statuses.at(-1)!.gapNote).toBe(note);
+
+    // 持久：随便一件会触发 pushStatus 的事之后，它还在
+    t.emitDown({ t: "error", msg: "审批未生效：已经有人批过了" });
+    expect(h.statuses.at(-1)!.gapNote).toBe(note);
+  });
+
+  it("重连后 backlog 补齐了 → gapNote 跟着消失（它是这一份历史的属性，不是一枚永久勋章）", async () => {
+    const { h, t } = await joined(7);
+    t.emitDown({ t: "backlog", events: [0, 1, 2, 3, 4, 5].map((n) => chatMsg(n)), done: true });
+    expect(h.statuses.at(-1)!.gapNote).toBeDefined();
+
+    // host 走了又回来：seenSeqs 清空，welcome→backlog 全量重来一遍
+    t.emitGone();
+    t.emitPeer("host-cid-2");
+    await tick();
+    t.emitDown({
+      t: "welcome", v: CS_PROTOCOL_VERSION, sessionId: "cloud-s1",
+      lastSeq: 7, initiatorUid: "u1", ownerUid: "u2",  modelRoute: null,
+    }, "host-cid-2");
+    t.emitDown({ t: "backlog", events: [0, 1, 2, 3, 4, 5, 6, 7].map((n) => chatMsg(n)), done: true }, "host-cid-2");
+
+    expect(h.statuses.at(-1)!.gapNote).toBeUndefined();
+  });
+});
+
+// ── #957 第三批（#964）：say/approve/stop 等真回执 ──────────────────────
+// 在这之前这三条路都是"帧交给 socket 就算成功"：服务端的限速 / 不在籍 /
+// 无权要过一会儿才以一条 error 帧到达，而渲染层"发送成功就清草稿"、
+// "点了批就收卡"早就把它当成生效了。回执不复用 error（同 config_result
+// 的理由）：那条帧还承载 backlog 跳过之类不相干的消息。
+describe("createCloudSessionClient — say/approve/stop 的回执（#957 第三批）", () => {
+  async function ready(): Promise<{ h: ReturnType<typeof harness>; t: FakeTransport }> {
+    const h = harness();
+    await h.client.join("w1", "cloud-s1");
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({
+      t: "welcome", v: CS_PROTOCOL_VERSION, sessionId: "cloud-s1",
+      lastSeq: -1, initiatorUid: "self-uid", ownerUid: "u2",  modelRoute: null,
+    });
+    t.emitDown({ t: "backlog", events: [], done: true });
+    return { h, t };
+  }
+
+  it("say：回执到达之前不 resolve——「发出去了」必须等服务端说话", async () => {
+    const { h } = await ready();
+    let settled = false;
+    void h.client.say("在吗", false).then(() => {
+      settled = true;
+    });
+    await tick();
+    expect(settled).toBe(false);
+  });
+
+  it("say：say_result{ok:true} 到达 → resolve 成功", async () => {
+    const { h, t } = await ready();
+    const pending = h.client.say("在吗", false);
+    t.emitDown({ t: "say_result", ok: true });
+    expect(await pending).toEqual({ ok: true });
+  });
+
+  it("say：ok:false 带着服务端的理由失败——限速那句原样透出来", async () => {
+    const { h, t } = await ready();
+    const pending = h.client.say("在吗", false);
+    t.emitDown({ t: "say_result", ok: false, message: "说话太快了，缓一缓再发" });
+    expect(await pending).toEqual({ ok: false, message: "说话太快了，缓一缓再发" });
+  });
+
+  it("say：15 秒没回执 → 说「不确定」并把人指回时间线，不谎称失败", async () => {
+    const { h } = await ready();
+    vi.useFakeTimers();
+    try {
+      const pending = h.client.say("在吗", false);
+      await vi.advanceTimersByTimeAsync(15_000);
+      const r = await pending;
+      expect(r.ok).toBe(false);
+      expect(r.ok === false && r.message).toBe("没有收到回执，不确定有没有生效——看时间线");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("say：上一句还挂着时第二句直接被拒——不排队（回执不带请求 id，分不出谁是谁的）", async () => {
+    const { h, t } = await ready();
+    const first = h.client.say("第一句", false);
+    const sentAfterFirst = t.sent.length;
+    const second = await h.client.say("第二句", false);
+    expect(second).toEqual({ ok: false, message: "上一句还没有回执，稍等" });
+    expect(t.sent.length).toBe(sentAfterFirst); // 第二句一帧都没发出去
+    t.emitDown({ t: "say_result", ok: true });
+    expect(await first).toEqual({ ok: true });
+  });
+
+  it("say：回执到了之后又能发下一句（pendingSay 真的清掉了）", async () => {
+    const { h, t } = await ready();
+    const first = h.client.say("第一句", false);
+    t.emitDown({ t: "say_result", ok: true });
+    await first;
+    const second = h.client.say("第二句", false);
+    t.emitDown({ t: "say_result", ok: true });
+    expect(await second).toEqual({ ok: true });
+  });
+
+  it("say：等回执期间断线 → 就地结掉，不让「发送中…」永远转下去", async () => {
+    const { h, t } = await ready();
+    const pending = h.client.say("在吗", false);
+    t.emitGone();
+    const r = await pending;
+    expect(r.ok).toBe(false);
+    expect(r.ok === false && r.message).toContain("不确定");
+  });
+
+  it("say：等回执期间被 denied → 就地结掉", async () => {
+    const { h, t } = await ready();
+    const pending = h.client.say("在吗", false);
+    t.emitDown({ t: "denied", code: "not_member" });
+    const r = await pending;
+    expect(r.ok).toBe(false);
+  });
+
+  it("say：等回执期间 leave() 顶掉 → 就地结掉", async () => {
+    const { h } = await ready();
+    const pending = h.client.say("在吗", false);
+    await h.client.leave();
+    const r = await pending;
+    expect(r.ok).toBe(false);
+  });
+
+  it("approve：两条并发按 callId 各自 resolve，不互相串台", async () => {
+    const { h, t } = await ready();
+    const a = h.client.approve("call-a", "approved");
+    const b = h.client.approve("call-b", "denied");
+    // 后到的先回：配对靠 callId，不靠先后顺序
+    t.emitDown({ t: "approve_result", callId: "call-b", ok: false, message: "这条审批请求已经失效了" });
+    expect(await b).toEqual({ ok: false, message: "这条审批请求已经失效了" });
+    t.emitDown({ t: "approve_result", callId: "call-a", ok: true });
+    expect(await a).toEqual({ ok: true });
+  });
+
+  it("approve：认不出的 callId 回执不误伤别人的挂起态", async () => {
+    const { h, t } = await ready();
+    const a = h.client.approve("call-a", "approved");
+    let settled = false;
+    void a.then(() => {
+      settled = true;
+    });
+    t.emitDown({ t: "approve_result", callId: "call-陌生", ok: true });
+    await tick();
+    expect(settled).toBe(false);
+    t.emitDown({ t: "approve_result", callId: "call-a", ok: true });
+    expect(await a).toEqual({ ok: true });
+  });
+
+  it("approve：15 秒没回执 → 同一句「不确定」", async () => {
+    const { h } = await ready();
+    vi.useFakeTimers();
+    try {
+      const pending = h.client.approve("call-a", "approved");
+      await vi.advanceTimersByTimeAsync(15_000);
+      const r = await pending;
+      expect(r.ok === false && r.message).toBe("没有收到回执，不确定有没有生效——看时间线");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("approve：断线时挂着的每一条都结掉", async () => {
+    const { h, t } = await ready();
+    const a = h.client.approve("call-a", "approved");
+    const b = h.client.approve("call-b", "approved");
+    t.emitGone();
+    expect((await a).ok).toBe(false);
+    expect((await b).ok).toBe(false);
+  });
+
+  it("stop：发出一个 stop 帧，stop_result{ok:true} 到达才 resolve", async () => {
+    const { h, t } = await ready();
+    const pending = h.client.stop();
+    expect(t.decoded()[t.decoded().length - 1]).toEqual({ t: "stop" });
+    expect(t.sent[t.sent.length - 1]!.to).toBe(HOST_CID);
+    t.emitDown({ t: "stop_result", ok: true });
+    expect(await pending).toEqual({ ok: true });
+  });
+
+  it("stop：没有在跑的 turn / 无权 → 服务端的理由原样透出来", async () => {
+    const { h, t } = await ready();
+    const idle = h.client.stop();
+    t.emitDown({ t: "stop_result", ok: false, message: "此刻没有正在跑的 turn" });
+    expect(await idle).toEqual({ ok: false, message: "此刻没有正在跑的 turn" });
+
+    const denied = h.client.stop();
+    t.emitDown({ t: "stop_result", ok: false, message: "只有发起人或 owner 能停" });
+    expect(await denied).toEqual({ ok: false, message: "只有发起人或 owner 能停" });
+  });
+
+  it("stop：15 秒没回执 → 同一句「不确定」；断线也就地结掉", async () => {
+    const { h } = await ready();
+    vi.useFakeTimers();
+    try {
+      const pending = h.client.stop();
+      await vi.advanceTimersByTimeAsync(15_000);
+      const r = await pending;
+      expect(r.ok === false && r.message).toBe("没有收到回执，不确定有没有生效——看时间线");
+    } finally {
+      vi.useRealTimers();
+    }
+
+    const { h: h2, t: t2 } = await ready();
+    const pending2 = h2.client.stop();
+    t2.emitGone();
+    expect((await pending2).ok).toBe(false);
+  });
+
+  it("stop：没 join 过 / 还没 ready 一律失败，不挂 15 秒", async () => {
+    const h = harness();
+    expect(await h.client.stop()).toEqual({ ok: false, message: "没有已连接的云会话" });
+    await h.client.join("w1", "cloud-s1");
+    expect(await h.client.stop()).toEqual({ ok: false, message: "云会话未就绪" });
+  });
+
+  it("stop：帧压根没发出去 → 立刻回失败，不是挂着等 15 秒回执超时", async () => {
+    const { h, t } = await ready();
+    t.dropFrames();
+    const r = await h.client.stop();
+    expect(r).toEqual({ ok: false, message: "连接不通，这一帧没发出去——稍后重试。" });
+  });
+
+  // 协议 5→6 是精确相等的握手（frameHandler 的 version_mismatch）：旧 runtime ×
+  // 新桌面、新 runtime × 旧桌面都在 hello 那一步被明确拒绝，不做双版本兼容。
+  // 这一批**没有改**那句人话——改了的话，一次版本不匹配在界面上就换了个说法，
+  // 而这条路本来就只有那一句话可看
+  it("version_mismatch：文案照旧（协议 5→6 不改这句人话）", async () => {
+    const h = harness();
+    const promise = h.client.create("w1");
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({ t: "denied", code: "version_mismatch" });
+    expect(await promise).toEqual({ ok: false, message: "客户端版本与云端不匹配，请更新 Mr Otto 后再试" });
+  });
+});
+
+// ── 第二轮复审 C2-I4 / C2-I3 / C2-I6 ───────────────────────────────────────
+// C2-I4：`FriendsResult` 只有成 / 败两态，而这条路上真实存在第三种结局——
+// 帧发出去了、回执没回来。两态逼着渲染层按「没发出去」处理，于是把正文塞回
+// 输入框、用户再发一遍，同一句话执行两次。`unknown: true` 是给它的名字。
+describe("createCloudSessionClient — CloudAck 三态 / stop(seq) / denied 方向（第二轮复审）", () => {
+  async function ready(): Promise<{ h: ReturnType<typeof harness>; t: FakeTransport }> {
+    const h = harness();
+    await h.client.join("w1", "cloud-s1");
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({
+      t: "welcome", v: CS_PROTOCOL_VERSION, sessionId: "cloud-s1",
+      lastSeq: -1, initiatorUid: "self-uid", ownerUid: "u2",  modelRoute: null,
+    });
+    t.emitDown({ t: "backlog", events: [], done: true });
+    return { h, t };
+  }
+
+  it("say：15 秒没回执 = 「不知道」，带 unknown:true", async () => {
+    const { h } = await ready();
+    vi.useFakeTimers();
+    try {
+      const pending = h.client.say("在吗", false);
+      await vi.advanceTimersByTimeAsync(15_000);
+      expect(await pending).toEqual({
+        ok: false,
+        message: "没有收到回执，不确定有没有生效——看时间线",
+        unknown: true,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("say：上一句还挂着 = 确定失败，**不带** unknown（这一帧一个字节都没发出去）", async () => {
+    const { h, t } = await ready();
+    const first = h.client.say("第一句", false);
+    const second = await h.client.say("第二句", false);
+    expect(second).toEqual({ ok: false, message: "上一句还没有回执，稍等" });
+    expect("unknown" in second).toBe(false);
+    t.emitDown({ t: "say_result", ok: true });
+    await first;
+  });
+
+  it("gone：断线时挂着的那几个一律「不知道」——服务端很可能已经跑起来了", async () => {
+    const { h, t } = await ready();
+    const say = h.client.say("在吗", false);
+    const approve = h.client.approve("call-a", "approved");
+    const stop = h.client.stop();
+    t.emitGone();
+    for (const r of [await say, await approve, await stop]) {
+      expect(r.ok).toBe(false);
+      expect(r.ok === false && r.unknown).toBe(true);
+    }
+  });
+
+  it("denied：被拒是**确定**没生效，不带 unknown（重发一次也一样被拒）", async () => {
+    const { h, t } = await ready();
+    const say = h.client.say("在吗", false);
+    t.emitDown({ t: "denied", code: "not_member" });
+    const r = await say;
+    expect(r.ok).toBe(false);
+    expect(r.ok === false && r.unknown).toBeUndefined();
+  });
+
+  it("stop(7)：seq 进帧；缺席时帧里干净没有 seq（旧语义 = 停当前那一轮）", async () => {
+    const { h, t } = await ready();
+    const withSeq = h.client.stop(7);
+    expect(t.decoded().at(-1)).toEqual({ t: "stop", seq: 7 });
+    t.emitDown({ t: "stop_result", ok: true });
+    await withSeq;
+
+    const without = h.client.stop();
+    expect(t.decoded().at(-1)).toEqual({ t: "stop" });
+    t.emitDown({ t: "stop_result", ok: true });
+    await without;
+  });
+
+  // C2-I6：version_mismatch 是严格相等判出来的，两个方向该做的动作相反——
+  // 「更新 Mr Otto」对「云端还没部署」的那半是错的指引
+  it("deniedMessage：服务端版本比本端低 → 说云端还没升级", () => {
+    const msg = deniedMessage("version_mismatch", CS_PROTOCOL_VERSION - 1);
+    expect(msg).toContain("云端还没升级");
+    expect(msg).toContain(String(CS_PROTOCOL_VERSION - 1));
+    expect(msg).not.toContain("更新 Mr Otto");
+  });
+
+  it("deniedMessage：没带版本号（老服务端）→ 退回通用那句", () => {
+    expect(deniedMessage("version_mismatch")).toContain("更新 Mr Otto");
+  });
+
+  it("deniedMessage：服务端版本不比本端低 → 也退回通用那句（方向指不出来就别乱指）", () => {
+    expect(deniedMessage("version_mismatch", CS_PROTOCOL_VERSION + 1)).toContain("更新 Mr Otto");
+  });
+
+  it("denied{v} 进状态推送：渲染层拿得到 deniedServerVersion", async () => {
+    const { h, t } = await ready();
+    t.emitDown({ t: "denied", code: "version_mismatch", v: 3 });
+    const last = h.statuses.at(-1)!;
+    expect(last.state).toBe("denied");
+    expect(last.deniedCode).toBe("version_mismatch");
+    expect(last.deniedServerVersion).toBe(3);
+  });
+
+  it("create()：控制房那次一次性 RPC 也带方向", async () => {
+    const h = harness();
+    const promise = h.client.create("w1");
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({ t: "denied", code: "version_mismatch", v: CS_PROTOCOL_VERSION - 1 });
+    const r = await promise;
+    expect(r.ok).toBe(false);
+    expect(r.ok === false && r.message).toContain("云端还没升级");
+  });
+});
+
+// 协议 8（#991，ADR-0234）：仓库配置走控制房 RPC，与 create 共用同一副骨架
+describe("createCloudSessionClient — workspaceState（控制房）", () => {
+  it("archive：控制房 RPC，不依赖开着会话；archive_result ok → 成功", async () => {
+    const h = harness();
+    const promise = h.client.archive("w1", "s1");
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    expect(t.decoded()).toEqual([
+      { t: "hello", v: CS_PROTOCOL_VERSION, jwt: "token-abc" },
+      { t: "archive", workspaceId: "w1", sessionId: "s1" },
+    ]);
+    t.emitDown({ t: "archive_result", workspaceId: "w1", sessionId: "s1", ok: true });
+    expect(await promise).toEqual({ ok: true, value: null });
+    expect(t.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("archive：archive_result ok:false → 带着服务端的理由失败", async () => {
+    const h = harness();
+    const promise = h.client.archive("w1", "s1");
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({ t: "archive_result", workspaceId: "w1", sessionId: "s1", ok: false, message: "这条会话可能已经归档了。" });
+    expect(await promise).toEqual({ ok: false, message: "这条会话可能已经归档了。" });
+  });
+
+  it("archive：别的会话的回执不认（一条连接只问一个，但认一下比赌顺序便宜）", async () => {
+    const h = harness();
+    const promise = h.client.archive("w1", "s1");
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({ t: "archive_result", workspaceId: "w1", sessionId: "别的会话", ok: true });
+    let settled = false;
+    void promise.then(() => { settled = true; });
+    await tick();
+    expect(settled).toBe(false);
+    t.emitDown({ t: "archive_result", workspaceId: "w1", sessionId: "s1", ok: true });
+    expect(await promise).toEqual({ ok: true, value: null });
+  });
+
+  // 协议 10（#1044）：删除与归档共用同一副控制房骨架，同样不依赖开着会话——
+  // 归档掉的那批根本没有房间可开，而它们才是最常删的
+  it("delete：控制房 RPC，delete_result ok → 成功", async () => {
+    const h = harness();
+    const promise = h.client.remove("w1", "s1");
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    expect(t.decoded()).toEqual([
+      { t: "hello", v: CS_PROTOCOL_VERSION, jwt: "token-abc" },
+      { t: "delete", workspaceId: "w1", sessionId: "s1" },
+    ]);
+    t.emitDown({ t: "delete_result", workspaceId: "w1", sessionId: "s1", ok: true });
+    expect(await promise).toEqual({ ok: true, value: null });
+    expect(t.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("delete：delete_result ok:false → 带着服务端那三种理由中的一条失败", async () => {
+    const h = harness();
+    const promise = h.client.remove("w1", "s1");
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({
+      t: "delete_result", workspaceId: "w1", sessionId: "s1", ok: false,
+      message: "这一刻读不到这条会话的信息，什么都没删。稍后再试。",
+    });
+    expect(await promise).toEqual({ ok: false, message: "这一刻读不到这条会话的信息，什么都没删。稍后再试。" });
+  });
+
+  it("delete：别的会话的回执不认（同 archive）", async () => {
+    const h = harness();
+    const promise = h.client.remove("w1", "s1");
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({ t: "delete_result", workspaceId: "w1", sessionId: "别的会话", ok: true });
+    let settled = false;
+    void promise.then(() => { settled = true; });
+    await tick();
+    expect(settled).toBe(false);
+    t.emitDown({ t: "delete_result", workspaceId: "w1", sessionId: "s1", ok: true });
+    expect(await promise).toEqual({ ok: true, value: null });
+  });
+
+  // 协议 20（#1280）：改一条聊天的名字 / 名单，同样走控制房——改名单不该以「你此刻
+  // 正开着这条聊天」为前提（判据与归档 / 删除逐字相同，ADR-0234）
+  it("chatUpdate：只改名时帧上不带名单", async () => {
+    const h = harness();
+    const promise = h.client.chatUpdate("w1", "s1", { name: "上线冲刺" });
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    expect(t.decoded()).toEqual([
+      { t: "hello", v: CS_PROTOCOL_VERSION, jwt: "token-abc" },
+      { t: "chat_update", workspaceId: "w1", sessionId: "s1", name: "上线冲刺" },
+    ]);
+    t.emitDown({ t: "chat_update_result", workspaceId: "w1", sessionId: "s1", ok: true });
+    expect(await promise).toEqual({ ok: true, value: null });
+    expect(t.close).toHaveBeenCalledTimes(1);
+  });
+
+  // 名单是「变动之后的完整名单」不是「摘掉谁」，所以移出最后一只 = 发一个空数组。
+  // 库里那条 CHECK 与下行的 CsChatInfo 都允许空群（0037：group 的 cardinality 0..6）
+  it("chatUpdate：空名单发得出去——移出最后一只，群还在", async () => {
+    const h = harness();
+    const promise = h.client.chatUpdate("w1", "s1", { agentIds: [] });
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    expect(t.decoded()[1]).toEqual({ t: "chat_update", workspaceId: "w1", sessionId: "s1", agentIds: [] });
+    t.emitDown({ t: "chat_update_result", workspaceId: "w1", sessionId: "s1", ok: true });
+    expect(await promise).toEqual({ ok: true, value: null });
+  });
+
+  it("chatUpdate：ok:false → 服务端那句话原样带回", async () => {
+    const h = harness();
+    const promise = h.client.chatUpdate("w1", "s1", { agentIds: ["admin"] });
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({
+      t: "chat_update_result", workspaceId: "w1", sessionId: "s1", ok: false,
+      message: "有 1 只智能体已经不在了（名单可能刚变过，刷新再试）",
+    });
+    expect(await promise).toEqual({ ok: false, message: "有 1 只智能体已经不在了（名单可能刚变过，刷新再试）" });
+  });
+
+  it("chatUpdate：别的会话的回执不认（同 archive）", async () => {
+    const h = harness();
+    const promise = h.client.chatUpdate("w1", "s1", { name: "新名字" });
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({ t: "chat_update_result", workspaceId: "w1", sessionId: "别的聊天", ok: true });
+    let settled = false;
+    void promise.then(() => { settled = true; });
+    await tick();
+    expect(settled).toBe(false);
+    t.emitDown({ t: "chat_update_result", workspaceId: "w1", sessionId: "s1", ok: true });
+    expect(await promise).toEqual({ ok: true, value: null });
+  });
+
+  it("workspaceState：hello + workspace 发给第一个 host，workspace_state 回来就 resolve 并关连接", async () => {
+    const h = harness();
+    const promise = h.client.workspaceState("w1");
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    expect(t.decoded()).toEqual([
+      { t: "hello", v: CS_PROTOCOL_VERSION, jwt: "token-abc" },
+      { t: "workspace", workspaceId: "w1" },
+    ]);
+    t.emitDown({ t: "workspace_state", workspaceId: "w1", modelRoute: { kind: "hosted", model: "m" }, gitHosts: [] });
+    expect(await promise).toEqual({ ok: true, value: { modelRoute: { kind: "hosted", model: "m" }, gitHosts: [] } });
+    expect(t.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("workspaceFiles：帧带归一化之后的 path；files_result 回来就 resolve 并关连接", async () => {
+    const h = harness();
+    const promise = h.client.workspaceFiles("w1", "src//lib/./");
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    expect(t.decoded()).toEqual([
+      { t: "hello", v: CS_PROTOCOL_VERSION, jwt: "token-abc" },
+      { t: "files", workspaceId: "w1", path: "src/lib" },
+    ]);
+    const node = { kind: "dir" as const, entries: [{ name: "a.md", kind: "file" as const, size: 3, mtimeMs: 1 }], truncated: false };
+    t.emitDown({ t: "files_result", workspaceId: "w1", path: "src/lib", ok: true, node });
+    expect(await promise).toEqual({ ok: true, value: node });
+    expect(t.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("workspaceFilesSearch：帧带 content 标志；hits 原样回来", async () => {
+    const h = harness();
+    const promise = h.client.workspaceFilesSearch("w1", "hello", true);
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    expect(t.decoded().at(-1)).toEqual({ t: "files_search", workspaceId: "w1", query: "hello", content: true });
+    const hits = [{ rel: "a.md", line: 3, text: "hello" }];
+    t.emitDown({ t: "files_search_result", workspaceId: "w1", query: "hello", ok: true, hits });
+    expect(await promise).toEqual({ ok: true, value: hits });
+  });
+
+  it("workspaceFilesSearch：ok=true 却没有 hits → 当失败，**不兜底成空数组**", async () => {
+    // 「搜过了没有」与「没搜成」在界面上长得一样，而两者该做的动作相反
+    const h = harness();
+    const promise = h.client.workspaceFilesSearch("w1", "x", false);
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({ t: "files_search_result", workspaceId: "w1", query: "x", ok: true });
+    expect((await promise).ok).toBe(false);
+  });
+
+  it("workspaceFiles：路径本地就判死的不开连接（`..` 一律拒）", async () => {
+    const h = harness();
+    const r = await h.client.workspaceFiles("w1", "../etc");
+    expect(r).toEqual({ ok: false, message: "这条路径不合法。" });
+    expect(h.transports).toHaveLength(0);
+  });
+
+  it("workspaceFiles：ok=true 却没有 node → 当失败，**不兜底成空目录**", async () => {
+    // 「读不到」不许说成「里面是空的」——这一路只可能是两端版本对不上（解码降级）
+    const h = harness();
+    const promise = h.client.workspaceFiles("w1", "");
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({ t: "files_result", workspaceId: "w1", path: "", ok: true });
+    const r = await promise;
+    expect(r.ok).toBe(false);
+  });
+
+  it("workspaceFiles：别的工作区的回执不认（一条连接只问一个，但认一下比赌顺序便宜）", async () => {
+    const h = harness();
+    const promise = h.client.workspaceFiles("w1", "");
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    let settled = false;
+    void promise.then(() => { settled = true; });
+    t.emitDown({ t: "files_result", workspaceId: "w-other", path: "", ok: true, node: { kind: "absent" } });
+    await tick();
+    expect(settled).toBe(false);
+    t.emitDown({ t: "files_result", workspaceId: "w1", path: "", ok: true, node: { kind: "absent" } });
+    expect(await promise).toEqual({ ok: true, value: { kind: "absent" } });
+  });
+
+
+
+
+  it("workspaceWikiWrite：write 帧带整页字段；wiki_write_result 按 path 认领后 resolve", async () => {
+    const h = harness();
+    const req = { op: "write" as const, path: "customers/acme.md", title: "Acme", summary: "华东最大客户", pinned: false, body: "月结 60 天" };
+    const promise = h.client.workspaceWikiWrite("w1", req);
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    expect(t.decoded()).toEqual([
+      { t: "hello", v: CS_PROTOCOL_VERSION, jwt: "token-abc" },
+      { t: "wiki_write", workspaceId: "w1", ...req },
+    ]);
+    t.emitDown({ t: "wiki_write_result", workspaceId: "w1", path: "customers/acme.md", ok: true });
+    expect(await promise).toEqual({ ok: true, value: null });
+    expect(t.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("workspaceWikiWrite：wiki_write_result ok:false → 带着服务端那句拒绝理由失败", async () => {
+    const h = harness();
+    const promise = h.client.workspaceWikiWrite("w1", { op: "remove", path: "customers/acme.md" });
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({ t: "wiki_write_result", workspaceId: "w1", path: "customers/acme.md", ok: false, message: "常驻页合计 2300 字，超过预算 2200" });
+    expect(await promise).toEqual({ ok: false, message: "常驻页合计 2300 字，超过预算 2200" });
+  });
+
+  it("workspaceWikiWrite：别的路径的回执不认（一条连接只问一个，但认一下比赌顺序便宜）", async () => {
+    const h = harness();
+    const promise = h.client.workspaceWikiWrite("w1", { op: "remove", path: "customers/acme.md" });
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    let settled = false;
+    void promise.then(() => { settled = true; });
+    t.emitDown({ t: "wiki_write_result", workspaceId: "w1", path: "别的页.md", ok: true });
+    await tick();
+    expect(settled).toBe(false);
+    t.emitDown({ t: "wiki_write_result", workspaceId: "w1", path: "customers/acme.md", ok: true });
+    expect(await promise).toEqual({ ok: true, value: null });
+  });
+
+
+
+
+  it("控制房 denied → 失败并关连接", async () => {
+    const h = harness();
+    const promise = h.client.workspaceState("w1");
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({ t: "denied", code: "not_authorized" });
+    const r = await promise;
+    expect(r.ok).toBe(false);
+    expect(t.close).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ── #1163：语音通话名单的桌面半边 ──────────────────────────────────────
+describe("createCloudSessionClient — call 帧与 call_result 回执（#1163）", () => {
+  async function ready(): Promise<{ h: ReturnType<typeof harness>; t: FakeTransport }> {
+    const h = harness();
+    await h.client.join("w1", "cloud-s1");
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({
+      t: "welcome", v: CS_PROTOCOL_VERSION, sessionId: "cloud-s1",
+      lastSeq: -1, initiatorUid: "self-uid", ownerUid: "u2", modelRoute: null,
+    });
+    t.emitDown({ t: "backlog", events: [], done: true });
+    return { h, t };
+  }
+
+  it("call：发一个 call 帧，call_result{ok:true} 到达才 resolve", async () => {
+    const { h, t } = await ready();
+    const pending = h.client.call(["admin", "a_1"]);
+    expect(t.decoded()[t.decoded().length - 1]).toEqual({ t: "call", participants: ["admin", "a_1"] });
+    expect(t.sent[t.sent.length - 1]!.to).toBe(HOST_CID);
+    t.emitDown({ t: "call_result", ok: true });
+    expect(await pending).toEqual({ ok: true });
+  });
+
+  it("call：服务端拒绝的理由原样透出来", async () => {
+    const { h, t } = await ready();
+    const denied = h.client.call(["ghost"]);
+    t.emitDown({ t: "call_result", ok: false, message: "有 1 个智能体不在名单里" });
+    expect(await denied).toEqual({ ok: false, message: "有 1 个智能体不在名单里" });
+  });
+
+  it("call：15 秒没回执 → 「不确定」；断线也就地结掉；上一次没回执时不叠发", async () => {
+    const { h } = await ready();
+    vi.useFakeTimers();
+    try {
+      const pending = h.client.call([]);
+      expect(await h.client.call(["x"])).toMatchObject({ ok: false });
+      await vi.advanceTimersByTimeAsync(15_000);
+      const r = await pending;
+      expect(r.ok === false && r.unknown).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+    const { h: h2, t: t2 } = await ready();
+    const pending2 = h2.client.call([]);
+    t2.emitGone();
+    expect((await pending2).ok).toBe(false);
+  });
+
+  it("call：没 join / 没 ready 一律失败，不挂 15 秒", async () => {
+    const h = harness();
+    expect(await h.client.call([])).toEqual({ ok: false, message: "没有已连接的云会话" });
+    await h.client.join("w1", "cloud-s1");
+    expect(await h.client.call([])).toEqual({ ok: false, message: "云会话未就绪" });
+  });
+});
+
+describe("createCloudSessionClient — create 带聊天（#1280）", () => {
+  it("chat 原样进 create 帧；created 照旧", async () => {
+    const h = harness();
+    const promise = h.client.create("w1", { kind: "dm", agentId: "a_0123456789ab" });
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    expect(t.decoded()).toEqual([
+      { t: "hello", v: CS_PROTOCOL_VERSION, jwt: "token-abc" },
+      { t: "create", workspaceId: "w1", chat: { kind: "dm", agentId: "a_0123456789ab" } },
+    ]);
+    t.emitDown({ t: "created", workspaceId: "w1", sessionId: "s9", channel: "cs-x" });
+    expect(await promise).toEqual({ ok: true, value: { sessionId: "s9" } });
+  });
+
+  it("不带 chat 时帧里没有这一格（团队会话逐字节不变）", async () => {
+    const h = harness();
+    const promise = h.client.create("w1");
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    expect(t.decoded()[1]).toEqual({ t: "create", workspaceId: "w1" });
+    t.emitDown({ t: "created", workspaceId: "w1", sessionId: "s1", channel: "cs-x" });
+    await promise;
+  });
+
+  // create_failed 是协议 20 新开的一条（ADR-0297 决定 ④）：控制房原来只认 created / denied，
+  // 业务失败会让桌面白等满超时，再把「群聊至少要两只」说成「云端无响应」
+  it("create_failed 把那句人话带回来，不等超时", async () => {
+    const h = harness();
+    const promise = h.client.create("w1", { kind: "group", name: "群", agentIds: ["admin"] });
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({ t: "create_failed", workspaceId: "w1", message: "群聊至少要两只智能体" });
+    expect(await promise).toEqual({ ok: false, message: "群聊至少要两只智能体" });
+    expect(t.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("别的团队的 create_failed 不认（控制房是全平台一个房）", async () => {
+    const h = harness();
+    const promise = h.client.create("w1", { kind: "dm", agentId: "a_0123456789ab" });
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({ t: "create_failed", workspaceId: "other", message: "别人的失败" });
+    await tick();
+    t.emitDown({ t: "created", workspaceId: "w1", sessionId: "s9", channel: "cs-x" });
+    expect(await promise).toEqual({ ok: true, value: { sessionId: "s9" } });
+  });
+});
+
+describe("welcome.chat 进状态推送（#1280）", () => {
+  it("带 chat：原样进 CloudSessionStatus", async () => {
+    const h = harness();
+    await h.client.join("w1", "cloud-s1");
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({
+      t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: null,
+      ownerUid: "u2", modelRoute: null, chat: { kind: "dm", agentIds: ["a_0123456789ab"] },
+    });
+    expect(h.statuses.at(-1)).toMatchObject({ chat: { kind: "dm", agentIds: ["a_0123456789ab"] } });
+  });
+
+  it("不带 chat：状态里是 null（welcome 到了，说这是团队会话）", async () => {
+    const h = harness();
+    await h.client.join("w1", "cloud-s1");
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({ t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: null, ownerUid: "u2", modelRoute: null });
+    expect(h.statuses.at(-1)).toHaveProperty("chat", null);
+  });
+
+  // 下面这两条是 #1301 改的那一格：原来这个用例断言的是「团队会话 = 整格不出」，
+  // 而「welcome 还没到」也是整格不出——两者在渲染层同一个答案，于是聊天页在
+  // welcome 之前画成团队壳。三态之后「缺席」专表「还不知道」
+  it("welcome 之前：整格不出（还不知道，**不是**团队会话）", async () => {
+    const h = harness();
+    await h.client.join("w1", "cloud-s1");
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    expect(h.statuses.length).toBeGreaterThan(0);
+    for (const s of h.statuses) expect(s).not.toHaveProperty("chat");
+  });
+
+  it("welcome 到了之后每一次推送都带着结论，不会退回「还不知道」", async () => {
+    const h = harness();
+    await h.client.join("w1", "cloud-s1");
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({
+      t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: null,
+      ownerUid: "u2", modelRoute: null, chat: { kind: "group", agentIds: ["admin"] },
+    });
+    await tick();
+    t.emitDown({ t: "backlog", events: [], done: true });
+    await tick();
+    expect(h.statuses.at(-1)).toMatchObject({ chat: { kind: "group", agentIds: ["admin"] } });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 尾巴分页（协议 20，#1280）。聊天是一只一条永久线，进房全量拉迟早是十几秒。
+// 六条各盯一个具体的失败：拉法分叉、哨兵的判据、往前翻、不叠发、超时之后还能再试、
+// 断线重来。
+// ─────────────────────────────────────────────────────────────────────────────
+describe("createCloudSessionClient — 聊天只拉尾巴（#1280）", () => {
+  const CHAT = { kind: "dm" as const, agentIds: ["ops"], name: "" };
+
+  async function joined(chat?: typeof CHAT) {
+    const h = harness();
+    await h.client.join("w1", "cloud-s1");
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    t.emitDown({
+      t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: 99, initiatorUid: "u1", ownerUid: "u2",
+      modelRoute: null, ...(chat ? { chat } : {}),
+    });
+    return { h, t };
+  }
+
+  it("welcome 带 chat：发的是尾巴帧；不带 chat 的团队会话照旧 afterSeq:-1", async () => {
+    const chat = await joined(CHAT);
+    expect(chat.t.decoded()[1]).toEqual({ t: "backlog", tail: true, limit: 200 });
+
+    const team = await joined();
+    expect(team.t.decoded()[1]).toEqual({ t: "backlog", afterSeq: -1 });
+  });
+
+  it("尾巴落定且 hasMore：状态推送带 hasOlder，且 gapNote 是 null——没加载的那一段不是「缺口」", async () => {
+    const { h, t } = await joined(CHAT);
+    t.emitDown({ t: "backlog", events: [98, 99].map((n) => chatMsg(n)), done: true, hasMore: true });
+    const last = h.statuses.at(-1)!;
+    expect(last.state).toBe("ready");
+    expect(last.hasOlder).toBe(true);
+    expect(last.gapNote).toBeUndefined();
+  });
+
+  it("往前翻：帧带已加载的最小 seq；翻到头之后 hasOlder 从状态里消失", async () => {
+    const { h, t } = await joined(CHAT);
+    t.emitDown({ t: "backlog", events: [98, 99].map((n) => chatMsg(n)), done: true, hasMore: true });
+    t.sent.length = 0;
+
+    const page = h.client.backlogPage();
+    expect(t.decoded()[0]).toEqual({ t: "backlog", tail: true, limit: 200, beforeSeq: 98 });
+
+    t.emitDown({ t: "backlog", events: [96, 97].map((n) => chatMsg(n)), done: true, hasMore: false });
+    expect(await page).toEqual({ ok: true, value: { hasOlder: false } });
+    expect(h.events.map((e) => e.seq)).toEqual([98, 99, 96, 97]);
+    expect(h.statuses.at(-1)!.hasOlder).toBeUndefined();
+  });
+
+  it("翻页进行中再叫一次：回同一个 promise，不发第二帧", async () => {
+    const { h, t } = await joined(CHAT);
+    t.emitDown({ t: "backlog", events: [99].map((n) => chatMsg(n)), done: true, hasMore: true });
+    t.sent.length = 0;
+
+    const a = h.client.backlogPage();
+    const b = h.client.backlogPage();
+    expect(t.sent).toHaveLength(1);
+    t.emitDown({ t: "backlog", events: [98].map((n) => chatMsg(n)), done: true, hasMore: false });
+    expect(await a).toEqual(await b);
+  });
+
+  it("团队会话 / 已经到头：不打网络，直接回 hasOlder:false——「没有更早的」不是失败", async () => {
+    const team = await joined();
+    team.t.emitDown({ t: "backlog", events: [chatMsg(99)], done: true });
+    team.t.sent.length = 0;
+    expect(await team.h.client.backlogPage()).toEqual({ ok: true, value: { hasOlder: false } });
+    expect(team.t.sent).toHaveLength(0);
+
+    const chat = await joined(CHAT);
+    chat.t.emitDown({ t: "backlog", events: [chatMsg(99)], done: true, hasMore: false });
+    chat.t.sent.length = 0;
+    expect(await chat.h.client.backlogPage()).toEqual({ ok: true, value: { hasOlder: false } });
+    expect(chat.t.sent).toHaveLength(0);
+  });
+
+  it("断线：hasOlder 与上沿一起归零，挂着的那次翻页被结掉——不留一行永远转着的「读取中」", async () => {
+    const { h, t } = await joined(CHAT);
+    t.emitDown({ t: "backlog", events: [99].map((n) => chatMsg(n)), done: true, hasMore: true });
+    const page = h.client.backlogPage();
+    t.emitGone();
+    expect(await page).toMatchObject({ ok: false });
+    expect(h.statuses.at(-1)!.hasOlder).toBeUndefined();
+  });
+});

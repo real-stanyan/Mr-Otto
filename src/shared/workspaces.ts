@@ -50,6 +50,10 @@ export interface WorkspaceAgentRow {
   tools: AgentToolAllow[];
   createdBy: string;
   updatedTs: number;
+  /** `workspace_agents.created_at`（ms）。手机名册排序的最后一档退路（没聊过的智能体
+      按它排，spec §5.2）。**缺席只为存量测试夹具与解析不出的脏值留的**：0 会被排序读成
+      「1970 年建的」、安静地沉到最底下，所以宁可不带这一格，也不补 0 */
+  createdTs?: number;
   /** 内置头像坑位（0 起）。**null = 没挑过，按 agentId 哈希派生**（agentAvatarSlot.ts，
       ADR-0229）——0027 迁移加这一列时故意不回填，存量 agent 的脸一张都不变。
       越界的值（旧客户端读到新版才有的坑位）由渲染层兜底，DB 约束只管 >= 0（#1007） */
@@ -138,7 +142,7 @@ export function assembleSnapshot(
   }[],
   agents: readonly {
     agent_id: string; name: string; description: string; instructions: string; models: unknown;
-    tools: unknown; created_by: string; updated_at: string; avatar_slot?: unknown;
+    tools: unknown; created_by: string; created_at?: string; updated_at: string; avatar_slot?: unknown;
   }[],
   profileOf: (uid: string) => MemberProfile | null,
 ): WorkspaceSnapshot {
@@ -170,17 +174,21 @@ export function assembleSnapshot(
       title: s.title,
       updatedTs: toEpochMs(s.updated_at),
     })),
-    agents: agents.map((a) => ({
-      agentId: a.agent_id,
-      name: a.name,
-      description: a.description,
-      instructions: a.instructions,
-      models: normalizeStringArray(a.models),
-      tools: normalizeAgentTools(a.tools),
-      createdBy: a.created_by,
-      updatedTs: toEpochMs(a.updated_at),
-      avatarSlot: normalizeAvatarSlot(a.avatar_slot),
-    })),
+    agents: agents.map((a) => {
+      const created = a.created_at === undefined ? Number.NaN : Date.parse(a.created_at);
+      return {
+        agentId: a.agent_id,
+        name: a.name,
+        description: a.description,
+        instructions: a.instructions,
+        models: normalizeStringArray(a.models),
+        tools: normalizeAgentTools(a.tools),
+        createdBy: a.created_by,
+        updatedTs: toEpochMs(a.updated_at),
+        avatarSlot: normalizeAvatarSlot(a.avatar_slot),
+        ...(Number.isNaN(created) ? {} : { createdTs: created }),
+      };
+    }),
     sandboxApproval: ws.sandbox_approval,
     kind: ws.kind,
   };

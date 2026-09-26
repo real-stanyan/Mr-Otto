@@ -12,7 +12,8 @@ import * as DialogPrimitive from "@radix-ui/react-dialog";
 import { ChevronDown, Mic, MicOff, Phone, PhoneOff, UserPlus, Volume2, VolumeX } from "lucide-react";
 import { cn } from "@/lib/utils.js";
 import { Button } from "@/components/ui/button.js";
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar.js";
+import { PartyAvatar } from "./AgentFace.js";
+import type { FaceState } from "../lib/ottoFace/index.js";
 import { VoicePickerPopover } from "./VoicePickerPopover.js";
 import { callStatusText, callTiles, type CallTile, type CallViewInput } from "../lib/voiceCallView.js";
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
@@ -24,6 +25,17 @@ function fmtElapsed(ms: number): string {
   const s = Math.max(0, Math.floor(ms / 1000));
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
+
+/** 这一格的状态换成脸上的表情（#1345）。穷举 `Record`：`TileState` 加一档而这里没表态，
+    tsc 当场红 —— 漏一档的形态是一张脸停在别的表情上，安静且不报错。
+    人那几格用不上（`PartyAvatar` 只对脸那一档认状态），列全是为了这张表自己穷尽 */
+const TILE_FACE: Record<CallTile["state"], FaceState> = {
+  speaking: "speaking",
+  thinking: "composing",
+  listening: "listening",
+  // 「没在听」只发生在自己那一格（人没有脸），真落到脸上就是「我们不知道」
+  idle: "plain",
+};
 
 const STATE_WORD: Record<CallTile["state"], string> = {
   speaking: "在说话",
@@ -49,10 +61,14 @@ function Tile({ t }: { t: CallTile }) {
         className={cn("rounded-full transition-[box-shadow] duration-150", speaking && t.kind === "agent" && "animate-pulse")}
         style={glow > 0 ? { boxShadow: `0 0 0 ${glow}px color-mix(in srgb, var(--brand) 35%, transparent)` } : undefined}
       >
-        <Avatar className={cn("size-20 ring-2", speaking ? "ring-[var(--brand)]" : t.state === "thinking" ? "ring-white/40" : "ring-white/10", t.state === "idle" && "opacity-50")}>
-          {t.avatarSrc !== "" && <AvatarImage src={t.avatarSrc} alt="" />}
-          <AvatarFallback className="bg-white/10 text-lg text-white">{t.name.slice(0, 1)}</AvatarFallback>
-        </Avatar>
+        <PartyAvatar
+          avatar={t.avatar}
+          name={t.name}
+          size={80}
+          state={TILE_FACE[t.state]}
+          className={cn("size-20 ring-2", speaking ? "ring-[var(--brand)]" : t.state === "thinking" ? "ring-white/40" : "ring-white/10", t.state === "idle" && "opacity-50")}
+          fallbackClassName="bg-white/10 text-lg text-white"
+        />
       </div>
       <figcaption className="flex flex-col items-center leading-tight">
         <span className="max-w-28 truncate text-[13px] font-medium">{t.name}{t.self ? "（你）" : ""}</span>

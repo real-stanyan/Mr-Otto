@@ -9,7 +9,7 @@
 //   1. **邀请码等于钥匙**：谁拿到谁就能以你的身份调你圈的那些工具，只发给本人。
 //   2. 圈定的是「工具」不是「一次调用」——白名单内是全自动的，没有逐次审批。
 //
-// 勾选表 ↔ 线上白名单的换算全在 lib/proxyShare.ts（`tools: []` = 整服务放行
+// 勾选表 ↔ 线上白名单的换算全在 src/shared/proxyShare.ts（`tools: []` = 整服务放行
 // 这条约定很容易踩反，钉在那层的纯函数与测试里）。状态走 store，不直接摸 window.otter。
 
 import { useEffect, useMemo, useState } from "react";
@@ -26,7 +26,7 @@ import {
   auditLine, borrowStatusLine, buildAllow, describeAllow, hostStatusLine,
   isServerOn, isToolOn, selectionFromAllow, toggleServer, toggleTool,
   type ProxySelection, type ProxyStatusLine,
-} from "../lib/proxyShare.js";
+} from "../../../shared/proxyShare.js";
 
 const ROW = "flex items-center gap-2 px-2 py-[6px] rounded-md text-xs";
 

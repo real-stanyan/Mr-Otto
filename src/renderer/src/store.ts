@@ -99,9 +99,10 @@ import type { OlderState } from "./lib/cloudWindow.js";
 import { mergeResidue, residueSettled, type ResidueItem } from "../../shared/residue.js";
 import { PROXY_SHARE_INVITE_TTL_MS } from "../../shared/remote/proxyInvite.js";
 import { runtimePatch } from "./lib/runtimeHydration.js";
-import { createAgentLanded } from "./lib/cloudTimeline.js";
+import { createAgentLanded } from "../../shared/cloudTimeline.js";
 import { humanSpeakerOf } from "../../shared/sessionParticipants.js";
-import { applyCloudDelta, clearCloudStreamingOn } from "./lib/cloudStreaming.js";
+import { applyCloudDelta, clearCloudStreamingOn } from "../../shared/cloudStreaming.js";
+import { applyCloudStatus, insertCloudEvent } from "../../shared/cloudSessionState.js";
 import { EMPTY_VOICE_FEED, feedDelta, feedEvent, markInterrupted, type VoiceFeedState } from "./lib/voiceCall.js";
 import { applySpeechEvent, bargeInOn, MIC_OFF, micShouldPause, SPEECH_LOCALE, speechHints, type MicState } from "./lib/voiceMic.js";
 import { defaultCreateAudio, VoicePlayer } from "./lib/voicePlayer.js";
@@ -129,13 +130,13 @@ import type { AgentToolAllow } from "../../shared/agentToolAllow.js";
 import type {
   CloudAck, NotificationTarget, ProviderBalance, ProxyBorrowView, ProxyHostView, WorkspaceSettingsInfo,
 } from "../../shared/shellBridge.js";
-import type { CloudSessionListRow } from "./lib/workspaceView.js";
+import type { CloudSessionListRow } from "../../shared/workspaceView.js";
 import { DEFAULT_USAGE_DAYS, type UsageSnapshot } from "../../shared/usageStats.js";
 import type { ModelShareWindow } from "../../shared/modelShare.js";
 import { laneOf, type ModelLane } from "../../shared/modelLane.js";
 import { autoModelOf } from "../../shared/autoModel.js";
-import { isSubscribed } from "./lib/billingView.js";
-import { chatSeedOf, groupRows, homeOf, rosterRows } from "./lib/agentRoster.js";
+import { isSubscribed } from "../../shared/billingView.js";
+import { chatSeedOf, groupRows, homeOf, rosterRows } from "../../shared/agentRoster.js";
 import { settingsSectionVisible } from "./settingsShell.js";
 import type { MyProfile, ProfilePatch } from "../../shared/profile.js";
 import {
@@ -603,6 +604,10 @@ interface ChatState {
       同一条推送带来的另一半——白名单内是全自动的，这是「有人正在用我的凭证」
       在界面上唯一的实况来源 */
   proxyHosts: ProxyHostView[];
+  /** 上一次成功 PUT 进托管箱的 serverId 清单（#815 M4）。**三档的中间那档就是 null**：
+      「拿不到这份清单」≠「箱子里没有这台」，判据在 workspaceView 的 cloudStateOf。
+      同一条 onProxyChanged 推送带来的第三格，另有 loadProxyHosted 拉一次 */
+  proxyHostedServerIds: readonly string[] | null;
   /** 当前正在看的那份代理审计账(按好友过滤或全部)。新→旧 */
   proxyAudits: { ts: number; friendUid: string; serverId: string; tool: string; argsSummary: string; decision: string; outcome: string; detail?: string }[];
   /** 工作区协作组(issue #811, ADR-0198)：我在籍的那些工作区快照。没有推送通道
@@ -623,12 +628,12 @@ interface ChatState {
       realtime 推上来的单行、进会话时本地先落的已读 */
   workspaceMentions: readonly WorkspaceMentionRow[];
   /** 云会话（Task 13，ADR-0199）：当前 join 着的那一条，没有 = null。全局单条——
-      同 main/cloudSessionClient.ts 的"同时只保留一条连接"，join 新的自动顶掉旧的。
+      同 shared/remote/cloudSessionClient.ts 的"同时只保留一条连接"，join 新的自动顶掉旧的。
       events 按 seq 去重后 append-only；state/deniedCode/initiatorUid/ownerUid 由
       onCloudSessionStatus 推送刷新，selfUid 推送首次给出后不再变 */
   cloudSession: CloudSessionState | null;
   /** 云会话的流式缓冲（#1107，协议 16）：agentId → 这一轮到此刻的正文预览。
-      纯逻辑在 lib/cloudStreaming.ts——累计快照整槽替换，终态事件清槽；
+      纯逻辑在 src/shared/cloudStreaming.ts——累计快照整槽替换，终态事件清槽；
       不落任何持久层（临时预览不是事实） */
   cloudStreaming: Record<string, string>;
   /** 语音通话里「我在听」（#1163）。null = 没在听（没加入 / 通话结束 / 换了会话） */
@@ -742,6 +747,10 @@ interface ChatState {
   /** 跑一次 OAuth 授权(needs-auth 的那台,用户点完系统浏览器的同意页后自动重连)。
       失败原样抛出——组件自己 catch 显示原因,不在这一层吞掉 */
   authorizeMcpServer(id: string): Promise<void>;
+  /** 手填一台 server 的 OAuth 客户端凭据(#697)。`null` 或空 client_id = 清掉。
+      **值只进不出**:落在主进程的 mcp-auth.json(0600),回来的快照里只有
+      `McpServerStatus.oauthClient` 这个布尔,组件据它画"已配置" */
+  setMcpOAuthClient(id: string, client: { clientId: string; clientSecret: string } | null): Promise<void>;
   /** 重拉一份连上的 server 的 prompt 清单(composer `/` 菜单用)。boot 冷启动拉一次,
       此后跟着 onMcpChanged 的推送自动补拉——一台 server 掉线/重连会改变这份清单,
       不能只在打开菜单那一刻现问一次 */
@@ -1004,6 +1013,11 @@ interface ChatState {
   loadProxyAudits(friendUid?: string): Promise<void>;
   /** 拉一次代理全景（借进来的 + 借出去的）。推送之外的那扇查询窗口，重载后补齐用 */
   refreshProxyStatus(): Promise<void>;
+  /** 只取托管箱那一格（#815 M4）。与 refreshProxyStatus 分开是因为**失败的处置相反**：
+      那个把错误写进 friendError（好友页上有地方显示它），而这一格的消费方是团队设置页上
+      一枚三档的点——它自己就能把「拿不到」说出口，写 friendError 只会让一句话跑到另一页去。
+      所以这里失败一律落回 null = unknown，不碰任何错误字段 */
+  loadProxyHosted(): Promise<void>;
   /** A 侧：改一个已有好友的白名单，不重发邀请码。回是否成功 */
   updateProxyGrant(
     friendUid: string,
@@ -1092,7 +1106,7 @@ interface ChatState {
   refreshCloudSessions(workspaceId: string): Promise<void>;
   /** sessionId = null → 先 workspaceCloudCreate 拿到新 id 再 join；
       非 null → 直接 join 这一条（同时只保留一条连接，join 先顶掉旧的，
-      语义与 main/cloudSessionClient.ts 的 join() 完全对齐）。
+      语义与 shared/remote/cloudSessionClient.ts 的 join() 完全对齐）。
       失败（含 create 阶段）落 workspaceGroupsError，cloudSession 保持/回落 null */
   openCloudSession(
     workspaceId: string,
@@ -1199,6 +1213,12 @@ interface ChatState {
       测试能不经 IPC 直接喂（同 absorbEvent 的纪律） */
   voiceOnEvent(event: SessionEvent): void;
   voiceOnDelta(delta: CloudSessionDelta): void;
+  /** 内部：云会话的连接状态变了，语音跟着收口（#1289）。**gone 不是通话结束**——它会
+      自愈（runtime 回来 → connecting → ready，页面横幅写的就是「正在自动重连…」），
+      所以停麦、清掉扣着的那句，但通话保留、恢复后把麦开回来；denied 是终态（主进程
+      markDenied 主动断连），整段收掉。公开成 action 同 voiceOnEvent 的理由（接线在
+      onCloudSessionStatus 里，测试不经 IPC 直接喂） */
+  voiceOnCloudState(sessionId: string, next: CloudSessionState["state"]): void;
   /** 读一个工作区此刻的路由（控制房 RPC，协议 8，#991；#1102 摘掉仓库之后只剩
       这一格）。透传 FriendsResult，错误由「文件」tab 自己画——不落
       workspaceGroupsError 那一格（那格是整页共用的，设置页刚打开那一刻可能还
@@ -1394,7 +1414,13 @@ export const enterChat = (
   info: BootInfo,
   /** 上次这个会话开着哪块右侧面板(store 的 panelBySession)。切会话不带这份记忆
       就是每次回来都从"槽位空着"重新开始——面板是干活的姿势,不是弹窗 */
-  remembered: Readonly<Record<string, PanelKey | null>> = {}
+  remembered: Readonly<Record<string, PanelKey | null>> = {},
+  /** 此刻手上那份「上次残留」清单（store 的 bootResidue）。**必须带上**，否则用户
+      没处理的那批会在下一次切会话时被悄悄抹掉（#780 M6）：主进程的
+      `residueReported` 闸让 pendingResidue 只在**第一份** BootInfo 上出现一次，
+      之后每一份都没有这一格。缺省 `[]` 是为了让不关心这一格的用例照旧两参数调用，
+      真实调用点三处都传（有断言钉着） */
+  prevBootResidue: readonly ResidueItem[] = []
 ) => ({
   phase: "chat" as const,
   sessionId: info.sessionId,
@@ -1408,13 +1434,17 @@ export const enterChat = (
   approvalMode: info.approvalMode,
   thinking: info.thinking,
   replayCursor: null, // 换会话 = 换时间线，旧游标作废
-  // 「上次残留」一次性 latch(issue #759)：只在这次 boot 真带了才落位,
-  // 空/没有时给空表——ResiduePanel 空 items 不渲染,不用另判「有没有 boot 过」。
+  // 「上次残留」一次性 latch(issue #759)：只在这次 boot 真带了才**换**成新的一份,
+  // 没带就**留着手上那份**——主进程的 residueReported 闸让 pendingResidue 只出现在
+  // 第一份 BootInfo 上，所以「没带」的含义是「这一次没有新消息」，不是「清空了」。
+  // 原来这里写的是 `?? []`，于是用户没处理完就切一次会话，那张清单本次运行内
+  // 再也回不来（#780 M6）——而它的内容多半是端口/模拟器那类只在归档那一刻算得出
+  // 的条目，丢了就只能等下次重启。
   // bootResidueOpen 跟着这次 boot 是否真带了残留走(而不是像 bootResidue 那样
   // 只增不减)——每次进这个会话都该按"这次 boot 有没有"重新判一遍要不要弹。
   // liveResidue 换会话必清:它是"这个会话活着时收到的直播",不是这个会话的
   // 历史事实(历史那份已经在上面这行 bootResidue 里了);liveResidueOpen 同理归零
-  bootResidue: info.pendingResidue ?? [],
+  bootResidue: info.pendingResidue ?? [...prevBootResidue],
   bootResidueOpen: (info.pendingResidue?.length ?? 0) > 0,
   liveResidue: [],
   liveResidueOpen: false,
@@ -1467,6 +1497,12 @@ let micPaused = false;
 // 组件读它），是一段正在进行的对话的簿记——同 voiceFeed / voicePlayer 住在这里的理由
 let hold: HoldState = HOLD_IDLE;
 let holdTimer: ReturnType<typeof setTimeout> | null = null;
+/** 云端连接断了那一刻，麦是开着的吗（#1289）。`gone` 会自愈（runtime 回来 → connecting
+    → ready，页面横幅写的就是「正在自动重连…」），所以断线期间停的麦要有人开回来——
+    没有这一格的话，一次 daemon 重启会让通话哑掉，而界面上没有任何东西解释为什么。
+    只在 gone 时置位，用掉即清；人自己碰过麦克风开关、或整段离开语音，一律清掉
+    （他表达过意志，压过这条自动恢复） */
+let micWantedAfterReconnect = false;
 function startMic(hints: string[]): void {
   micStarted = true;
   micPaused = false;
@@ -1522,6 +1558,22 @@ function flushHeld(get: () => ChatState): void {
   hold = flushed.state;
   for (const fx of flushed.effects) if (fx.type === "send") void get().cloudSay(fx.text, [], [], true);
 }
+/** 收口的**另一种**：会话在底下没了（gone / denied，#1289），扣着的那句清掉**不发**。
+    与 flushHeld 的分别只有一个前提——后者那句「人确实说了」的完整形式是「人确实说了，
+    **而且此刻还有地方可送**」（见 flushHeld 注释里「赶得上此刻还开着的房间」那一段）。
+    这里房间就是没了：主进程的 `requireReady()` 对 `status !== "ready"` 必拒，照 flush
+    发出去只能得到一次注定失败的发送，而 flushHeld 那一行 `void get().cloudSay(...)`
+    **不接 ack**——于是「发」在这条路上恰恰是把一个会说话的失败改成静默丢失。
+    所以清掉，并把丢掉的原文写进麦克风那一行：人该知道他刚说的那句没送到、说的是什么。 */
+function abandonHeld(set: StoreApi<ChatState>["setState"]): void {
+  if (holdTimer !== null) { clearTimeout(holdTimer); holdTimer = null; }
+  const step = holdStep(hold, { type: "abandon" }, Date.now(), { hold: false });
+  hold = step.state;
+  for (const fx of step.effects) {
+    if (fx.type !== "drop") continue;
+    set((s) => (s.voice ? { voice: { ...s.voice, mic: { ...s.voice.mic, error: `云端连接断了，这句话没送出去：「${fx.text}」` } } } : s));
+  }
+}
 function stopVoice(get: () => ChatState): void {
   // stopVoice 是所有"整段离开语音"路径唯一的交汇点——openCloudSession /
   // closeCloudSession / joinVoiceCall / leaveVoiceCall / voiceOnEvent 的挂断
@@ -1543,6 +1595,9 @@ function stopVoice(get: () => ChatState): void {
   stopMic();
   voicePlayer?.stop();
   voiceFeed = EMPTY_VOICE_FEED;
+  // 整段离开语音 = 那条自动恢复没有主语了（#1289）。不清的话，下一次进别的通话时
+  // 一条 gone→ready 会把麦开起来，而没有任何人要求过它
+  micWantedAfterReconnect = false;
 }
 /** 音色按 agentId 从团队名单派生（agentVoice.ts）：名单顺序解撞，同一只两台机器同一个声音 */
 function rosterIdsOf(s: ChatState, workspaceId: string): string[] {
@@ -1651,6 +1706,7 @@ export const useChat = create<ChatState>((set, get) => ({
   proxyAudits: [],
   proxyBorrows: [],
   proxyHosts: [],
+  proxyHostedServerIds: null,
   workspaceGroups: [],
   workspaceMentions: [],
   workspaceGroupsError: null,
@@ -1844,6 +1900,10 @@ export const useChat = create<ChatState>((set, get) => ({
 
   async authorizeMcpServer(id) {
     set({ mcpServers: await window.otter.authorizeMcpServer(id) });
+  },
+
+  async setMcpOAuthClient(id, client) {
+    set({ mcpServers: await window.otter.setMcpOAuthClient(id, client) });
   },
 
   async refreshMcpPrompts() {
@@ -2482,7 +2542,14 @@ export const useChat = create<ChatState>((set, get) => ({
       set({ friendError: r.message });
       return;
     }
-    set({ proxyBorrows: r.value.borrows, proxyHosts: r.value.hosts, friendError: null });
+    set({ proxyBorrows: r.value.borrows, proxyHosts: r.value.hosts, proxyHostedServerIds: r.value.hostedServerIds, friendError: null });
+  },
+
+  async loadProxyHosted() {
+    // 抛了也落 null：这条挂在 effect 上，不接住就是一条未处理的 rejection 飘在控制台里，
+    // 而那种噪音正是下一个真失败的藏身处。落 null = 「拿不到」，本来就是这一格的三档之一
+    const r = await window.otter.proxyStatus().catch(() => ({ ok: false as const }));
+    set({ proxyHostedServerIds: r.ok ? r.value.hostedServerIds : null });
   },
 
   async updateProxyGrant(friendUid, allow) {
@@ -2746,7 +2813,7 @@ export const useChat = create<ChatState>((set, get) => ({
       }
       sid = created.value.sessionId;
     }
-    // 乐观占位：join() 的 pushStatus 是同步调用（main/cloudSessionClient.ts
+    // 乐观占位：join() 的 pushStatus 是同步调用（shared/remote/cloudSessionClient.ts
     // join() 里没有 await 就到 pushStatus），但那一推是另一条 IPC 通道，
     // 谁先到渲染层不该是这段代码依赖的东西——先给一个"连接中"的壳，真状态
     // 由随后的 onCloudSessionStatus 推送纠正/补齐（同 SessionRuntime 的
@@ -2978,8 +3045,46 @@ export const useChat = create<ChatState>((set, get) => ({
     stopVoice(get);
     if (get().voice !== null) set({ voice: null });
   },
+  voiceOnCloudState(sessionId, next) {
+    const cs = get().cloudSession;
+    // 判据与 onCloudSessionStatus 里那句 set 的第一行逐字相同：别条会话的推送一个字
+    // 都不该碰这条的语音（那个回调在渲染层是全局的，会话换了它照样收推送）
+    if (cs === null || cs.sessionId !== sessionId) return;
+    if (cs.state === next) return; // pushStatus 会为别的事重复推同一个状态
+    const v = get().voice;
+    if (v === null || v.sessionId !== sessionId) return;
+    if (next === "denied") {
+      // 终态：markDenied 主动断开连接（「没有重试的意义」），通话没有回来的路。
+      // abandonHeld 排在 stopVoice 前面，于是 stopVoice 里那次 flushHeld 落在一个
+      // 已经空了的 hold 上——「发」这条路在这里是关着的，不是碰巧没走到
+      abandonHeld(set);
+      stopVoice(get);
+      set({ voice: null });
+      return;
+    }
+    if (next === "gone") {
+      // **不是**通话结束：gone 会自愈，页面横幅此刻正写着「正在自动重连…」。
+      // 清掉 voice 就是让一次 daemon 重启永久杀掉这场通话——而通话名单是日志事实
+      // （voice_call_changed），重连之后它还在，只有本机这一格回不来了。
+      // 播放器也不停：TTS 走的是 edge 网关，不经这条断掉的连接，队列里那几句是真的。
+      micWantedAfterReconnect = micStarted;
+      abandonHeld(set);
+      stopMic();
+      // mic 归 off 但**留着 error**：那一行刚写上「这句话没送出去」，是这一刻唯一
+      // 说得出「你刚说的那句没了」的地方
+      set((s) => (s.voice ? { voice: { ...s.voice, mic: { ...MIC_OFF, error: s.voice.mic.error } } } : s));
+      return;
+    }
+    if (next === "ready" && micWantedAfterReconnect) {
+      micWantedAfterReconnect = false;
+      set((s) => (s.voice ? { voice: { ...s.voice, mic: { ...MIC_OFF, status: "starting" } } } : s));
+      startMic(speechHints(get().workspaceGroups.find((w) => w.id === cs.workspaceId) ?? null));
+    }
+  },
   setVoiceMic(on) {
     if (get().voice === null) return;
+    // 人自己碰了这个开关 = 他表达过意志，压过 gone→ready 那条自动恢复（#1289）
+    micWantedAfterReconnect = false;
     if (on) {
       set((s) => (s.voice ? { voice: { ...s.voice, mic: { ...MIC_OFF, status: "starting" } } } : s));
       startMic(speechHints(get().workspaceGroups.find((w) => w.id === get().cloudSession?.workspaceId) ?? null));
@@ -3029,7 +3134,12 @@ export const useChat = create<ChatState>((set, get) => ({
       const step = holdStep(hold, e, Date.now(), { hold: endpointMode === "on" });
       hold = step.state;
       for (const fx of step.effects) {
+        // 穷举到 wake 为止，不留 else 兜底（#1289）：`drop` 进来之前这里是
+        // `else { ...fx.at... }`，而 drop 没有 at——兜底会把它当成一个 NaN 的定时器
+        // 静默排进去。走到这条路的 drop 今天不存在（abandon 只从 abandonHeld 发），
+        // 但那是「碰巧没有」，tsc 现在会替我们守着
         if (fx.type === "send") sendSpoken(fx.text);
+        else if (fx.type === "drop") continue; // 这条路上产生不了它（只有 abandon 会）
         else if (fx.type === "judge") {
           const asked = get().voice?.text ?? null;
           void window.otter.speechJudge(fx.text, asked).then(
@@ -3377,8 +3487,8 @@ export const useChat = create<ChatState>((set, get) => ({
     window.otter.onToolDefsChanged(({ sessionId, toolDefs }) => {
       if (get().sessionId === sessionId) set({ toolDefs });
     });
-    window.otter.onProxyChanged(({ borrows, hosts }) => {
-      set({ proxyBorrows: borrows, proxyHosts: hosts });
+    window.otter.onProxyChanged(({ borrows, hosts, hostedServerIds }) => {
+      set({ proxyBorrows: borrows, proxyHosts: hosts, proxyHostedServerIds: hostedServerIds });
     });
     // 云会话（Task 13，ADR-0199）：两条推送只在"当前 join 着的正是这条"时才
     // 生效——异步期间可能已经 leave()/切到另一条，旧连接的迟到推送不该
@@ -3387,34 +3497,14 @@ export const useChat = create<ChatState>((set, get) => ({
     window.otter.onCloudSessionEvent((event) => {
       set((s) => {
         if (!s.cloudSession || s.cloudSession.sessionId !== event.sessionId) return s;
-        // 按 seq 去重：:gone → host 回来重连会把 backlog 全量再推一遍
-        // （main/cloudSessionClient.ts 文件头「:gone」段），重复送达在这里
-        // 无害地被过滤掉，不会在时间线上出现两条一样的事件
-        if (s.cloudSession.events.some((e) => e.seq === event.seq)) return s;
+        // 按 seq 去重 + 插到对的位置（往前翻的那一页落在前面）——规则在
+        // shared/cloudSessionState.ts 的 insertCloudEvent，手机端用同一份
+        const events = insertCloudEvent(s.cloudSession.events, event);
+        if (events === null) return s;
         // 流式缓冲清槽（#1107）：终态 assistant_message 整份覆盖预览；
         // turn_ended（aborted/error）= 预览作废——「不完整就不是消息」，
         // 与本机 absorbEvent 清 streamingBySession 同一条纪律
         const cloudStreaming = clearCloudStreamingOn(s.cloudStreaming, event);
-        // 这一格原来是无条件追加（#1280 之前只有直播与一次全量，seq 天然递增）。
-        // 往前翻的那一页落在**前面**，所以要插对位置：不插的话时间线上会出现
-        // 「今天的消息底下跟着三个月前的」，而且一行都不报错。
-        // **不每条都全量排序**：那一页 200 条，逐条排就是 200 次 O(n log n)；
-        // 也**不能**只判「比头还小」——同一页是按 seq 升序到达的，第二条就不再
-        // 比新的头小了，会被甩到末尾。快路径（追加）之外走一次二分
-        const prev = s.cloudSession.events;
-        let events: SessionEvent[];
-        if (prev.length === 0 || event.seq > prev[prev.length - 1]!.seq) {
-          events = [...prev, event];
-        } else {
-          let lo = 0;
-          let hi = prev.length;
-          while (lo < hi) {
-            const mid = (lo + hi) >> 1;
-            if (prev[mid]!.seq < event.seq) lo = mid + 1;
-            else hi = mid;
-          }
-          events = [...prev.slice(0, lo), event, ...prev.slice(lo)];
-        }
         return {
           cloudSession: { ...s.cloudSession, events },
           ...(cloudStreaming !== s.cloudStreaming ? { cloudStreaming } : {}),
@@ -3482,6 +3572,10 @@ export const useChat = create<ChatState>((set, get) => ({
       get().speechOnEvent(ev);
     });
     window.otter.onCloudSessionStatus((status) => {
+      // 语音跟着连接状态收口（#1289）。**排在 set 外面、之前**：副作用不写在 setState
+      // 的 updater 里（StrictMode 跑两遍，同 ADR-0264 那笔账），而且它读的 prev 正是
+      // 这次 set 即将覆盖掉的那个 cs.state
+      get().voiceOnCloudState(status.sessionId, status.state);
       set((s) => {
         if (!s.cloudSession || s.cloudSession.sessionId !== status.sessionId) return s;
         return {
@@ -3489,34 +3583,9 @@ export const useChat = create<ChatState>((set, get) => ({
           // 落进这一页已有的那格"人话"里——CloudSessionPage 的 actionError
           // 就在 footer 上方。不进 cloudSession：它是一次性的，不是状态
           ...(status.notice === undefined ? {} : { workspaceGroupsError: status.notice }),
-          cloudSession: {
-            ...s.cloudSession,
-            state: status.state,
-            initiatorUid: status.initiatorUid,
-            ownerUid: status.ownerUid,
-            selfUid: status.selfUid,
-            modelRoute: status.modelRoute,
-            // issue #957 C-I7：照抄推送（缺席 → null）。**不能**学下面
-            // deniedCode 那样"没带就留着旧的"：缺口补齐时主进程正是靠不带
-            // 这一格来说"补齐了"
-            gapNote: status.gapNote ?? null,
-            // #1301：这一格**不照抄**——缺席 = welcome 还没到，留着打开时种的
-            // 那一份（`chatSeedOf`）。与上面 gapNote/hasOlder 的纪律相反而理由
-            // 对称：那两格每次推送重算，缺席就是最新结论；这一格 welcome 每条
-            // 连接只说一次，把缺席读成「团队会话」正是 #1301
-            ...(status.chat === undefined ? {} : { chat: status.chat }),
-            // #1280：同上。**不能**「没带就留着旧的」——翻到头那一次主进程正是
-            // 靠不带这一格来说「到头了」，留着旧值就是顶上那个哨兵永远挂着
-            hasOlder: status.hasOlder ?? false,
-            // exactOptionalPropertyTypes：deniedCode 是 string|undefined，
-            // 目标字段是可选的 string——只在真有值时才落这个键，不能把
-            // undefined 原样赋进去（那等于显式声明"这个键存在但是 undefined"，
-            // 与"这个键不存在"是两码事，见 tsconfig 的 exactOptionalPropertyTypes）
-            ...(status.deniedCode !== undefined ? { deniedCode: status.deniedCode } : {}),
-            ...(status.deniedServerVersion !== undefined
-              ? { deniedServerVersion: status.deniedServerVersion }
-              : {}),
-          },
+          // 哪几格照抄、哪几格缺席就留着（gapNote/hasOlder 缺席即结论，chat 缺席留种子，
+          // #1301 / #957 C-I7）——规则与理由在 shared/cloudSessionState.ts 的 applyCloudStatus
+          cloudSession: { ...s.cloudSession, ...applyCloudStatus(s.cloudSession, status) },
         };
       });
     });
@@ -3792,7 +3861,7 @@ export const useChat = create<ChatState>((set, get) => ({
     ]);
     set(
       info
-        ? { ...enterChat(info, get().panelBySession), sessions, skills, mcpPrompts, account, authRecord, configRoot, keyStatus, fullscreen }
+        ? { ...enterChat(info, get().panelBySession, get().bootResidue), sessions, skills, mcpPrompts, account, authRecord, configRoot, keyStatus, fullscreen }
         : { phase: "welcome", sessions, skills, mcpPrompts, account, authRecord, configRoot, keyStatus, fullscreen }
     );
     // 冷启动补一次:用户很可能在浏览器点完重置链接、app 这才被深链唤起
@@ -3864,7 +3933,7 @@ export const useChat = create<ChatState>((set, get) => ({
   async startSession(opts) {
     try {
       const info = await window.otter.startSession(opts);
-      set((s) => enterChat(info, s.panelBySession));
+      set((s) => enterChat(info, s.panelBySession, s.bootResidue));
       set({ sessions: await window.otter.listSessions() }); // 新会话进侧栏
     } catch (e) {
       set({ error: e instanceof Error ? e.message : String(e) });
@@ -3889,7 +3958,7 @@ export const useChat = create<ChatState>((set, get) => ({
     set({ cloudDraftWorkspaceId: null });
     try {
       const info = await window.otter.resumeSession(sessionId);
-      set((s) => enterChat(info, s.panelBySession));
+      set((s) => enterChat(info, s.panelBySession, s.bootResidue));
       // 切进来的这条可能正跑着（另一条会话的 turn 不会因为没人看就停）——
       // 同 boot 的理由（issue #548）
       void get().hydrateRuntime(sessionId);

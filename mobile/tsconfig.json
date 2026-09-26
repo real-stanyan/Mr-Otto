@@ -1,6 +1,28 @@
 {
   "extends": "expo/tsconfig.base",
   "compilerOptions": {
-    "strict": true
+    "strict": true,
+    // #1356 A1：mobile/ 有自己的 package.json 与 node_modules（AGENTS.md 门禁一节），
+    // @supabase/supabase-js 在它那里与仓库根各装了一份。src/shared/ 里的
+    // supabaseWorkspacesApi.ts / homeWorkspace.ts / agentAdmin.ts 只写
+    // `import type { SupabaseClient }`，TS 从它们自己的目录往上找，解到根那份声明；
+    // mobile/src/supabase.ts 的 createClient() 解到的是 mobile 那份。SupabaseClient
+    // 带 protected 的 supabaseUrl——TS 对带 private/protected 成员的类按「是不是同一处
+    // 声明」判兼容，两份物理上不同的 .d.ts 天生判不兼容：把 mobile 建出来的客户端递给
+    // 这些函数就报 TS2345。
+    //
+    // 指到 mobile 那份、不指根：手机上真正跑的客户端实例是 mobile/src/supabase.ts 建的，
+    // shared 那几个函数调的正是它的方法——tsc 该拿这份去核 shared 的调用。指根的话，根单独
+    // 升一次 supabase-js、mobile 没跟着升，mobile tsc 照样绿，而手机上那个客户端可能没有
+    // shared 新用到的方法。
+    //
+    // 这条不只管类型：`expo start` 起的 Metro 默认也读这里的 paths（app.json 的
+    // experiments.tsconfigPaths 缺省为开；相对路径与 node_modules 里发起的 import 不走它；
+    // metro.config.js 那个自定义解析把裸包名交给 context.resolveRequest，走的正是这条链），
+    // 所以 src/shared/ 哪天在运行时 import 这个包，打进手机包的也是 mobile 那份——类型与
+    // 打包对的是同一份。关掉那个开关、或者换一个不读 tsconfig 的打包器，这条要重新判。
+    "paths": {
+      "@supabase/supabase-js": ["./node_modules/@supabase/supabase-js"]
+    }
   }
 }

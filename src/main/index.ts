@@ -38,12 +38,13 @@ import { createSpeechBridge, type SpeechCommand } from "./speechBridge.js";
 import { resolveSpeechBinPath } from "./speechBinPath.js";
 import { createBrowserHub } from "./browserHub.js";
 import { createMcpHub } from "./mcpHub.js";
+import { createResidueQueries } from "./residueQueries.js";
 import { configDir } from "./configDir.js";
 import { trafficLightPosition } from "./trafficLights.js";
 import { defaultWindowSize } from "./windowSize.js";
 import { connectMcpClient, createOAuthProvider, authorizeMcpServer } from "./mcpClient.js";
 import { loadMcpConfig, saveMcpConfig } from "./mcpConfig.js";
-import { readMcpAuth, writeMcpAuth, clearMcpAuth, dropMcpAuthClientRegistration } from "./mcpAuthStore.js";
+import { readMcpAuth, writeMcpAuth, clearMcpAuth, dropMcpAuthClientRegistration, setMcpManualClient } from "./mcpAuthStore.js";
 import { searchMcpRegistry } from "./mcpRegistry.js";
 import { createWebContentsViewHandle } from "./webContentsViewFactory.js";
 import { EventStore, type SessionSummary } from "../session/store.js";
@@ -73,8 +74,7 @@ import { loadUserHooks } from "./userHooksStore.js";
 import { buildUserToolHooks } from "./userToolHooks.js";
 import { createLocalWorld } from "../world/localWorld.js";
 import { LiveGroupRegistry } from "../world/liveGroups.js";
-import { commandMatches, diffResidue, mergeResidue, type ResidueItem, type CleanupResult } from "../shared/residue.js";
-import { pendingResidue } from "../session/residueProjection.js";
+import { commandMatches, diffResidue, type CleanupResult } from "../shared/residue.js";
 import { primeLoginShellPath } from "../world/loginShellEnv.js";
 import { findProjectInstructions } from "./projectInstructions.js";
 import { loadAutoCompact, saveAutoCompact } from "./autoCompactStore.js";
@@ -85,6 +85,7 @@ import type { MotionSettings, UpdaterState,
   PermissionsSnapshot,
   ProxyBorrowView,
   ProxyHostView,
+  ProxyStatusSnapshot,
   WorkspaceSettingsInfo,
 } from "../shared/shellBridge.js";
 import type { FilesSearchOpts } from "../shared/files.js";
@@ -197,12 +198,13 @@ import {
   deleteWorkspace, upsertConnectorRow, deleteConnectorRow, insertSessionRow, listCloudSessions,
   insertAgentRow, updateAgentRow, deleteAgentRow, listAgentNames,
   updateSandboxApproval, listMentions, markMentionsRead,
-} from "./supabaseWorkspacesApi.js";
+} from "../shared/supabaseWorkspacesApi.js";
 import type { SandboxApproval } from "../shared/workspaceAgents.js";
 import {
   publishSessionToWorkspace, unpublishSession, importWorkspaceSession,
 } from "./workspaceSessionShare.js";
-import { createCloudSessionClient, cloudSessionFleetRow } from "./cloudSessionClient.js";
+import { createCloudSessionClient } from "../shared/remote/cloudSessionClient.js";
+import { cloudSessionFleetRow } from "./cloudSessionFleet.js";
 import { resolveIslandBinPath } from "./islandBinPath.js"; // Task 7 提供正式实现;本任务先内联占位
 import { FriendsManager } from "./friends.js";
 import { createSupabaseFriendsApi } from "./supabaseFriendsApi.js";
@@ -235,6 +237,7 @@ import {
 } from "./accountScope.js";
 import { loadMotionSettings, normaliseMotionSettings, saveMotionSettings } from "./motionSettingsStore.js";
 import { applyMotionPref, type MotionOverrideHost } from "./motionOverride.js";
+import { rewindBranch } from "./checkpointRewind.js";
 import { createTaskSessionSync } from "./taskSessionSync.js";
 import { createSupabaseTaskSessionsApi } from "./supabaseTaskSessionsApi.js";
 import { loadTaskSyncFile, saveTaskSyncFile } from "./taskSyncStore.js";
@@ -1546,7 +1549,16 @@ void app.whenReady().then(() => {
   // 桥上四个读写方法共用同一份快照形状:server 清单 + 这份配置文件解析阶段
   // 的人话错误(review finding 4——一份 mcp.json 坏了不该连原因都传不到
   // 设置页,即便 Task 8/9 那张表本次没开工,这份走出去的形状也不该是错的)
-  const mcpSnapshot = (): McpServersSnapshot => ({ servers: mcpHub.list(), errors: mcpHub.configErrors() });
+  // `oauthClient` 在这里挂，不进 hub（#697）：hub 刻意不认识凭据这一层——它手上只有
+  // `clearAuth` 一个口子，别的一概不知道。这一格又只是**一个布尔**（配没配），
+  // client_id / client_secret 留在 mcp-auth.json 里不过桥（ADR-0121）
+  const mcpSnapshot = (): McpServersSnapshot => ({
+    servers: mcpHub.list().map((s) => ({
+      ...s,
+      oauthClient: readMcpAuth(mcpAuthPath, s.id).manualClient !== undefined,
+    })),
+    errors: mcpHub.configErrors(),
+  });
   // hub 状态变了就推一次全量快照(设置页/斜杠面板都靠这个通道刷新)
   /** 把活跃会话此刻的工具声明推给渲染层（issue #141）。agent.toolDefs 是活 getter，
       BootInfo 里那份是 boot/resume 那一刻的快照——建出第一个子智能体（task 从
@@ -1805,6 +1817,10 @@ void app.whenReady().then(() => {
           const s = readProxyStore(proxyStorePath);
           return s.grants.length > 0 || s.channels.length > 0 || s.workspaceGrants.length > 0;
         },
+        // 箱内清单变了 = proxySnapshot 的一格变了，走它本来那条推送（#815 M4）。
+        // 不另开一条通道：两条推送各带一半快照，渲染层就得自己拼，而拼错的那一次
+        // 长得和「清单没变」一模一样
+        onHostedChanged: () => send(CHANNELS.proxyChanged, proxySnapshot()),
         log: (m) => console.warn(`[escrow] ${m}`),
       })
     : null;
@@ -1840,9 +1856,13 @@ void app.whenReady().then(() => {
   // 工具表里，模型调了才报错——账号都换了，那些刀不该还在
   proxyCloseNow = proxy ? () => proxy.closeAll() : null;
   /** 代理全景（借进来的 + 借出去的）。推送与拉取共用一份，免得两边算得不一样 */
-  const proxySnapshot = (): { borrows: ProxyBorrowView[]; hosts: ProxyHostView[] } => ({
+  const proxySnapshot = (): ProxyStatusSnapshot => ({
     borrows: proxy ? [...proxy.borrowStatus()] : [],
     hosts: proxy ? [...proxy.hostStatus()] : [],
+    // #815 M4：团队连接器行上那枚三档的点的数据源。escrowSync 造得比这个函数晚，
+    // 但它是函数、晚绑定——被问到时它早已就位（同 cloudHostedServerIds 那条）。
+    // 拿不到一律 null = 「不知道」，不是「箱子里没有」
+    hostedServerIds: escrowSync?.hostedServerIds() ?? null,
   });
 
   /**
@@ -1876,37 +1896,18 @@ void app.whenReady().then(() => {
     return r.stdout.split("\n").some((line) => commandMatches(label, line));
   };
 
-  /** 上次退出时没清干净的残留（issue #759）：全部会话（归档的也算）的
-      residue_detected 减 residue_cleaned 差集，逐条探活后剩下的那些。
-      日志是唯一事实来源——"进程还活着吗"重放不出来，所以差集之后还要现探一次。
-      只探进程组（groupStillIs：存活 + 身份核对）；模拟器/端口原样留着:
-      现拍一次 simctl/lsof 是异步的,而 bootInfo 是同步的、被三处调用,为一行
-      可能陈旧的模拟器把整条 boot 链改成异步不划算——多显示一条让用户手动清掉
-      的行,比漏报强。
-      按类型取事件而不是 store.load 整份日志：残留事件天然稀疏,而
-      (session_id, type, seq) 上有索引；load 整份会把每个会话的全部 JSON 都
-      解一遍,开机路径上付不起 */
-  const pendingResidueNow = (): ResidueItem[] => {
-    const out: ResidueItem[] = [];
-    // **归档的会话也要扫**：残留是 app 级的（进程组/模拟器/端口都不属于哪个
-    // 会话），跟会话收没收起来无关。而且 ports/simulators 条目的**唯一**来源
-    // 就是归档那一刻的全量 diff——那条 residue_detected 恰恰写在刚归档的会话
-    // 上，滤掉归档会话等于这一类残留永远重放不出来，用户没当场处理就永久丢
-    for (const s of store.sessions()) {
-      // 两类事件按 seq 归并回时间序：pendingResidue 是按顺序消费的
-      // （detected 落进表、cleaned 从表里删），顺序错了差集就错
-      const evs = [
-        ...store.eventsOfType(s.sessionId, "residue_detected"),
-        ...store.eventsOfType(s.sessionId, "residue_cleaned"),
-      ].sort((a, b) => a.seq - b.seq);
-      for (const item of pendingResidue(evs)) {
-        // 进程组要过身份核对：光看 pgid 还在会把回收给别人的号当成自己的残留
-        if (item.detector === "process_groups" && !groupStillIs(Number(item.id), item.label)) continue;
-        out.push(item);
-      }
-    }
-    return out;
-  };
+  /** 残留清单的四个查询（issue #759 / #780 I3-I5）：本体搬去 `main/residueQueries.ts`，
+      这里只剩接线。搬家的理由写在那个文件的头注——留在这个装配根里，它们唯一可能的
+      执行覆盖是读源码的断言，而这一族坏掉的样子都是无声的（少扫几个会话 = 清单里
+      少几条，和「本来就没有」长得一样）。
+      `residueCapOf` 递的是**这个会话自己**那份能力，不是下面 `residueCapFor` 那条
+      app 级退路：基线是会话级的，拿 A 的基线减 B 的现场得到的不是任何人的残留 */
+  const { pendingResidueNow, residueListNow, residueCleanPool } = createResidueQueries({
+    store,
+    groupStillIs,
+    residueCapOf: (sessionId) => agents.get(sessionId)?.world.residue,
+    escapedGroups: () => liveGroups.escaped().map((g) => ({ pgid: g.pgid, cmd: g.cmd })),
+  });
 
   /** 残留清理能力是 **app 级**的（createLocalResidue 只吃那一份全局
       liveGroups 登记表，跟哪个会话无关），但它挂在每个会话的 world 上。
@@ -1916,56 +1917,6 @@ void app.whenReady().then(() => {
   const residueCapFor = (sessionId: string): ResidueCapability | undefined =>
     agents.get(sessionId)?.world.residue ??
     [...agents.values()].map((a) => a.world.residue).find((c) => c !== undefined);
-
-  /** 「这个会话此刻的现场 diff」：baseline 快照 vs 此刻快照 + 还在出走的进程组。
-      **没有 baseline 就不做**（review I5）：原来兜底成 `{ts:0,simulators:[],ports:[]}`
-      的空快照，等于宣称"这台机器开机时一个端口一个模拟器都没有"——整机的
-      LISTEN 端口和 booted 模拟器全被算成本会话新增的残留，进了一个默认勾选、
-      一按就清的清单。归档路径（archiveSession）本来就有这道守卫，这里补齐 */
-  const currentResidueDiff = async (sessionId: string): Promise<ResidueItem[]> => {
-    const residueCap = agents.get(sessionId)?.world.residue;
-    if (!residueCap) return [];
-    const baseline = store.lastOfType(sessionId, "residue_baseline");
-    if (baseline?.type !== "residue_baseline") return [];
-    const now = await residueCap.snapshot();
-    return diffResidue(
-      baseline.snapshot,
-      now,
-      liveGroups.escaped().map((g) => ({ pgid: g.pgid, cmd: g.cmd }))
-    );
-  };
-
-  /** residueList 的"此刻可见清单"（issue #759）：现查（baseline diff 现拍现算）
-      与日志重放（pendingResidue）合并，现查优先（mergeResidue，issue #759
-      Task 7）——重放条目是落盘那一刻的旧快照，现查是这一刻的真实现场，两边
-      打架时以看得见的那份为准。
-      world 无 residue 能力或会话未激活 → 空数组，同 liveBackgroundTasks 语义 */
-  const residueListNow = async (sessionId: string): Promise<ResidueItem[]> => {
-    if (!agents.get(sessionId)?.world.residue) return [];
-    const current = await currentResidueDiff(sessionId);
-    // 只看这一个会话的 detected/cleaned（本方法是"这个会话此刻的清单"，
-    // 不是 pendingResidueNow 那种 app 级全量扫描）
-    const evs = [
-      ...store.eventsOfType(sessionId, "residue_detected"),
-      ...store.eventsOfType(sessionId, "residue_cleaned"),
-    ].sort((a, b) => a.seq - b.seq);
-    const replayed = pendingResidue(evs).filter(
-      (item) => item.detector !== "process_groups" || groupStillIs(Number(item.id), item.label)
-    );
-    return mergeResidue(current, replayed);
-  };
-
-  /** residueClean 的匹配池（review I3）：**app 级**，与 pendingResidueNow 同源。
-      为什么不能复用 residueListNow：那份只重放**这一个会话**的
-      detected/cleaned，而弹窗里的条目是 app 级的（归档会话落的那批、别的
-      会话落的那批都在里面）——按会话级清单去匹配，跨会话的 id 一条都对不上，
-      targets 是空数组、循环一圈不做事，UI 那边 `res.every(...)` 对空数组恒真
-      于是报"清理成功"。现查那部分仍然只能问当前会话（baseline 是会话级的），
-      合并时现查优先，同 mergeResidue 的语义 */
-  const residueCleanPool = async (sessionId: string): Promise<ResidueItem[]> => {
-    const current = await currentResidueDiff(sessionId);
-    return mergeResidue(current, pendingResidueNow());
-  };
 
   // 「上次退出没清的残留」只报一次（issue #759）：bootInfo() 有三个调用方
   // （boot / startSession / resumeSession），而这个字段的语义是**上次**退出
@@ -2860,10 +2811,11 @@ void app.whenReady().then(() => {
     return info;
   });
 
-  // 回到检查点（issue #395 / ADR-0090）：对话侧 fork（零拷贝，ADR-0084）+
-  // 文件侧 restore（影子 git reset）成对发生。顺序是安全设计：先分叉后动文件，
-  // fork 抛错时磁盘一个字节没动。返回新分支会话 id，切视图由渲染层随后
-  // 走 resumeSession（注册/重建复用唯一入口，不再造第二条装配路）
+  // 回到检查点（issue #395 / ADR-0090）：对话侧分叉 + 文件侧 restore（影子 git reset）
+  // 成对发生。顺序是安全设计：先分叉后动文件，分叉抛错时磁盘一个字节没动。
+  // 分叉怎么落由 rewindBranch 决定（项目会话零拷贝、任务会话复制式，ADR-0311）。
+  // 返回新分支会话 id，切视图由渲染层随后走 resumeSession（注册/重建复用唯一入口，
+  // 不再造第二条装配路）
   ipcMain.handle(
     CHANNELS.rewindToCheckpoint,
     async (_e, sessionId: string, checkpointSeq: number): Promise<string> => {
@@ -2881,7 +2833,7 @@ void app.whenReady().then(() => {
       const boundary = log.filter((e) => e.seq < checkpointSeq && e.type === "turn_ended").at(-1);
       if (boundary) {
         newId = newSessionId();
-        store.fork(sessionId, boundary.seq, newId, Date.now());
+        rewindBranch(store, sessionId, boundary.seq, newId, Date.now());
       } else {
         // 检查点落在第一个 turn 之前：没有可分叉的收口点 = 「回到对话开始」，
         // 建同工作区的全新会话（startSession 同款装配 + 注册）
@@ -3185,6 +3137,26 @@ void app.whenReady().then(() => {
     await mcpHub.authorize(id);
     return mcpSnapshot();
   });
+  // 手填的那对 OAuth 客户端凭据（#697）。**写完不自动跑授权**：填凭据与「现在就去
+  // 授权」是两件事（用户可能先把两台都填好再挨个点授权），而授权会开浏览器——
+  // 一个会开浏览器的副作用不该搭在保存按钮上
+  ipcMain.handle(
+    CHANNELS.setMcpOAuthClient,
+    (_e, id: string, client: { clientId: string; clientSecret: string } | null): McpServersSnapshot => {
+      const trimmed = client === null ? null : { id: client.clientId.trim(), secret: client.clientSecret.trim() };
+      setMcpManualClient(
+        mcpAuthPath,
+        id,
+        trimmed === null || trimmed.id === ""
+          // client_id 留空 = 清掉：一对只有 secret 的凭据没有任何用处，而把空串存进去
+          // 会让 SDK 拿着它去要 token，换回一句 invalid_client
+          ? null
+          : { client_id: trimmed.id, ...(trimmed.secret === "" ? {} : { client_secret: trimmed.secret }) }
+      );
+      escrowResync?.();
+      return mcpSnapshot();
+    }
+  );
   ipcMain.handle(CHANNELS.listMcpPrompts, () =>
     mcpHub.servers().filter((s) => s.live).flatMap((s) => s.prompts.map((p) => ({ ...p, server: s.name })))
   );

@@ -28,8 +28,8 @@ import { Button } from "@/components/ui/button.js";
 import { useConfirm } from "@/components/ui/confirm-dialog.js";
 import { InsetEmpty, InsetGroup, InsetLabel, InsetNote, InsetRow } from "@/components/ui/inset-list.js";
 import { useChat } from "../store.js";
-import { cloudSessionRows, sessionRows } from "../lib/workspaceView.js";
-import { formatProxyTime } from "../lib/proxyShare.js";
+import { cloudSessionRows, sessionRows } from "../../../shared/workspaceView.js";
+import { formatProxyTime } from "../../../shared/proxyShare.js";
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 
 export function WorkspaceSessionsTab({ ws, selfUid }: { ws: WorkspaceSnapshot; selfUid: string }) {

@@ -102,6 +102,22 @@ describe("scrubOAuthError —— 只重写带服务端文本的 OAuthError，其
 describe("needsFreshRegistration（#471：二次授权的 redirect_uri 不匹配）", () => {
   const uri = "http://127.0.0.1:2222/callback";
 
+  // #697：手填的那对不是「一次注册的产物」——服务商后台里的 redirect_uri 由用户自己
+  // 填，我们既不知道也改不了；丢掉它等于让用户回后台重抄一遍，而"重注册"这条出路
+  // 对它压根不存在
+  it("手填的那对：端口变了也不丢——它不是注册出来的，丢了没有重来的路", () => {
+    expect(
+      needsFreshRegistration(
+        {
+          manualClient: { client_id: "手填的" },
+          clientInformation: { client_id: "dcr-老的" },
+          redirectUri: "http://127.0.0.1:1111/callback",
+        },
+        uri
+      )
+    ).toBe(false);
+  });
+
   it("盘上有注册且绑的是另一个端口 → 要丢掉重注册", () => {
     expect(
       needsFreshRegistration(
