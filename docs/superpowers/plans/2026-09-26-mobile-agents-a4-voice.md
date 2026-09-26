@@ -2844,14 +2844,57 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 
 样子逐值取自 demo：电话那一格 `.voicebar`（一行：脸 69×56 盒子 | 22 根 3 宽的声浪、间隔 2、那一格 30 高 | 计时 14/600 等宽数字弱色；底下一排：62×46 圆角 18 的钮，挂断 76 宽实底红）；通话卡 `.callcard`（卡底、圆角 18、上下 13 左右 15；一行「声浪图标 17 + 语音聊天 16/600 + 右边时长 14 弱色」，第二行 14.5 弱色）；点开是 A1 那副 70% 的底部抽屉（不盖住头上那颗药丸）。
 
+**动效的三条判断**（执行前按 emil-design-eng 过了一遍，改掉原稿里的两处）：
+- **声浪走原生驱动**：每根条是一个满格 26 高的条，用 `transform: scaleY` 缩（不碰布局），缩放 = 共用的「响度」× 这根条自己的一条起伏循环，全部 `useNativeDriver: true`。原稿是 `setInterval(90ms)` + `setState` 改 `height`——通话时 JS 线程正忙着收流式碎片、合成语音，按帧改布局的声浪恰好在它开口的时候卡。所以 shared 里的 `waveBarHeight`（按时间算每根条高度，只有 JS 驱动才用得上）换成 `waveAmplitude`（只给整体响度，Step 0）。减弱动态效果：条不起伏不缩放，响度改用透明度说。
+- **电话那一格出现时淡入并上移 10 点**（220ms ease-out；减弱动态效果时只淡入）：输入框一下子换成高出一截的另一块会读作「坏了」。live ⇄ idle 在同一个组件里换，不重放。
+- **「转文字」那一行出现 / 收起用 `LayoutAnimation` 160ms 接住**（它会把上面的时间线推一下；减弱动态效果时不接，直接换）。
+- 其余照原稿：「开电话」⇄「发出去」那一下（160ms ease-out、从 .7 放大，demo 定的）、按下 .94 / .985（demo 定的）、70% 抽屉（A1 那副）。
+
 **Files:**
+- Modify: `src/shared/mobileCall.ts`、`tests/shared/mobileCall.test.ts`（`waveBarHeight` → `waveAmplitude`，Step 0）
 - Modify: `mobile/src/theme.ts`（令牌 `voice`）
 - Create: `mobile/src/chrome/VoiceGlyphs.tsx`、`mobile/src/voice/CallBar.tsx`、`mobile/src/voice/CallCardRow.tsx`、`mobile/src/voice/CallSheet.tsx`
 - Modify: `mobile/src/chat/Composer.tsx`、`mobile/src/chat/ChatRows.tsx`、`mobile/src/chat/ChatScreen.tsx`
 
 **Interfaces:**
-- Consumes：`mobileCall` 的 `callBarMode` / `callFace` / `joinBlockedText` / `phoneOffered` / `waveMode` / `waveBarHeight` / `WaveMode`（Task 4）；`mobileChat` 的 `call` 行与 `liveRows({ hide })`（Task 4）；`voiceStore` 的 `useVoice` / `voiceUsable` / `nativeSpeech` / `refreshVoiceBilling` / `startCall` / `hangUp` / `joinCall` / `setMic`（Task 6）；`callDurationText` / `callOffsetText` / `VoiceCallCard` / `VoiceCallCardLine`（`src/shared/cloudTimeline.ts`，已有）；`voiceCallOf`（`src/shared/voiceCall.ts`）；`openTurns`（`src/shared/turnLedger.ts`）。
+- Consumes：`mobileCall` 的 `callBarMode` / `callFace` / `joinBlockedText` / `phoneOffered` / `waveMode` / `WaveMode`（Task 4）与 `waveAmplitude(mode: WaveMode, level: number): number`（本任务 Step 0 新加，替掉 `waveBarHeight`）；`mobileChat` 的 `call` 行与 `liveRows({ hide })`（Task 4）；`voiceStore` 的 `useVoice` / `voiceUsable` / `nativeSpeech` / `refreshVoiceBilling` / `startCall` / `hangUp` / `joinCall` / `setMic`（Task 6）；`callDurationText` / `callOffsetText` / `VoiceCallCard` / `VoiceCallCardLine`（`src/shared/cloudTimeline.ts`，已有）；`voiceCallOf`（`src/shared/voiceCall.ts`）；`openTurns`（`src/shared/turnLedger.ts`）。
 - Produces：`CallBar(props: CallBarProps)`、`CallCardRow({ card, topic, onPress })`、`CallSheet({ visible, card, onClose, onExited })`、`WaveGlyph` / `MicGlyph` / `KeyboardGlyph` / `HangUpGlyph`；`Composer` 多一个可选 prop `phone?: { onCall: () => void; busy: boolean }`；`ChatRowView` 多一个可选 prop `onOpenCall?: (seq: number) => void`。
+
+- [ ] **Step 0: shared 的声浪响度（`waveBarHeight` → `waveAmplitude`）**
+
+`tests/shared/mobileCall.test.ts`：顶上那条 import 的名字表里把 `waveBarHeight` 换成 `waveAmplitude`；`describe("声浪", …)` 里那条 `it("waveBarHeight：off 恒为 3；……", …)` 整条换成：
+
+```ts
+  it("waveAmplitude：off 为 0（一条灰线）、quiet 一口轻气、agent 满、me 按能量钳到 0..1（读不出来当 0）", () => {
+    expect(waveAmplitude("off", 1)).toBe(0);
+    expect(waveAmplitude("quiet", 1)).toBe(0.12);
+    expect(waveAmplitude("agent", 0)).toBe(1);
+    expect(waveAmplitude("me", 0.4)).toBe(0.4);
+    expect(waveAmplitude("me", 1.7)).toBe(1);
+    expect(waveAmplitude("me", -2)).toBe(0);
+    expect(waveAmplitude("me", Number.NaN)).toBe(0);
+  });
+```
+
+Run: `cd /Users/stanyan/Github/Mr_Otto/.claude/worktrees/mobile-a4-voice-d174e6 && npx vitest run tests/shared/mobileCall.test.ts`
+Expected: FAIL（`waveAmplitude` 不存在）
+
+`src/shared/mobileCall.ts`：把 `waveBarHeight` 整个函数（连同它上面那段文档注释）换成：
+
+```ts
+/** 声浪此刻有多响（0..1）：关着麦 = 0（一条灰线）；都没说 = 一口轻气（0.12——不是停住，停住读作坏了）；
+    它在说 = 1（这边量不到它的音量，画的是「有话在说」不是音量）；人在说 = 麦克风能量（钳到 0..1，读不出来当 0）。
+    每根条自己的起伏在界面那侧（原生驱动的循环，mobile/src/voice/CallBar.tsx），这里只给整体的响度 */
+export function waveAmplitude(mode: WaveMode, level: number): number {
+  if (mode === "off") return 0;
+  if (mode === "agent") return 1;
+  if (mode === "quiet") return 0.12;
+  return Number.isFinite(level) ? Math.max(0, Math.min(1, level)) : 0;
+}
+```
+
+Run: `cd /Users/stanyan/Github/Mr_Otto/.claude/worktrees/mobile-a4-voice-d174e6 && npx vitest run tests/shared/mobileCall.test.ts`
+Expected: PASS（删掉的那条用例对着的是删掉的函数——产品代码同一个提交里一起换，见提交说明）。
 
 - [ ] **Step 1: 令牌与图标**
 
@@ -2920,16 +2963,22 @@ Create `mobile/src/voice/CallBar.tsx`：
 // · live（这台在听）：脸 | 声浪 | 计时；底下三颗：转文字 / 静音（= 关麦）/ 挂断。
 // · idle（通话还开着、这台没在听——锁过屏、从名册回来）：「通话还开着」| 计时；底下两颗：
 //   接着听（这台听不了时换成一句为什么）/ 挂断。
-import { useEffect, useRef, useState, type ReactNode } from "react";
-import { Animated, Pressable, Text, View } from "react-native";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Animated, Easing, Pressable, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { callOffsetText } from "../../../src/shared/cloudTimeline.js";
-import { waveBarHeight, type WaveMode } from "../../../src/shared/mobileCall.js";
+import { waveAmplitude, type WaveMode } from "../../../src/shared/mobileCall.js";
 import { HangUpGlyph, KeyboardGlyph, MicGlyph } from "../chrome/VoiceGlyphs.js";
 import { PRESS_SPRING, type as t, usePalette, withAlpha } from "../theme.js";
 import { useReduceMotion } from "../ui.js";
 
 const BARS = 22;
+/** 条满格 26 点（那一格 30 高）；最低 3 点（关着麦 / 没声时剩的那一截） */
+const BAR_MAX = 26;
+const BAR_MIN = 3;
+/** 每根条自己的一口气：半个周期 130–320ms、起步错开，按下标派生（稳定；不整齐才像声音） */
+const halfPeriod = (i: number): number => 130 + ((i * 7) % 11) * 19;
+const startDelay = (i: number): number => ((i * 53) % 17) * 12;
 
 export interface CallBarProps {
   mode: "live" | "idle";
@@ -2969,19 +3018,44 @@ function CallTimer({ sinceTs }: { sinceTs: number }) {
   );
 }
 
-/** 声浪：22 根竖条，90ms 一跳（demo 的 transition 90ms linear）。关着麦是一条灰线；
-    减弱动态效果时不走包络（t 钉在 0）、只跟能量 */
+/** 声浪：22 根竖条，全部走原生驱动——transform 的 scaleY 与透明度，不碰布局、不占 JS 线程（通话时 JS 线程
+    正忙着收流式碎片、合成语音，按帧 setState 的声浪恰好在它开口的时候卡）。缩放 = 共用的响度（waveAmplitude，
+    每次变了 90ms 线性跟过去，demo 的 transition 90ms linear）× 这根条自己的起伏循环。关着麦时响度为 0，
+    剩一条灰线。减弱动态效果：不起伏不缩放，每根条一个静止的高度，响度改用透明度说（减弱不是取消） */
 function Wave({ mode, level }: { mode: WaveMode; level: number }) {
   const { c } = usePalette();
   const reduce = useReduceMotion();
-  const born = useRef(Date.now()).current;
-  const [, setTick] = useState(0);
+  const amp = useRef(new Animated.Value(waveAmplitude(mode, level))).current;
+  const swell = useRef(Array.from({ length: BARS }, () => new Animated.Value(0.35))).current;
   useEffect(() => {
-    if (mode === "off" || reduce) return;
-    const id = setInterval(() => setTick((n) => n + 1), 90);
-    return () => clearInterval(id);
-  }, [mode, reduce]);
-  const time = reduce ? 0 : (Date.now() - born) / 1000;
+    Animated.timing(amp, { toValue: waveAmplitude(mode, level), duration: 90, easing: Easing.linear, useNativeDriver: true }).start();
+  }, [amp, mode, level]);
+  useEffect(() => {
+    if (reduce) return;
+    const loops = swell.map((v, i) =>
+      Animated.loop(
+        Animated.sequence([
+          Animated.delay(startDelay(i)),
+          Animated.timing(v, { toValue: 1, duration: halfPeriod(i), easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+          Animated.timing(v, { toValue: 0.35, duration: halfPeriod(i), easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+        ]),
+      ),
+    );
+    for (const l of loops) l.start();
+    return () => {
+      for (const l of loops) l.stop();
+    };
+  }, [swell, reduce]);
+  // 动画节点只建一次：响度一秒来十次，每次重建 22 条节点链是白干
+  const bars = useMemo(
+    () =>
+      swell.map((v, i) =>
+        reduce
+          ? { opacity: Animated.add(0.35, Animated.multiply(0.65, amp)), transform: [{ scaleY: 0.3 + 0.5 * Math.abs(Math.sin(i * 0.55)) }] }
+          : { transform: [{ scaleY: Animated.add(BAR_MIN / BAR_MAX, Animated.multiply((BAR_MAX - BAR_MIN) / BAR_MAX, Animated.multiply(amp, v))) }] },
+      ),
+    [swell, amp, reduce],
+  );
   const color = mode === "off" ? withAlpha(c.mutedForeground, 0.5) : c.voice;
   return (
     <View
@@ -2989,8 +3063,8 @@ function Wave({ mode, level }: { mode: WaveMode; level: number }) {
       importantForAccessibility="no-hide-descendants"
       style={{ flex: 1, minWidth: 0, height: 30, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 2 }}
     >
-      {Array.from({ length: BARS }, (_, i) => (
-        <View key={i} style={{ width: 3, borderRadius: 2, height: waveBarHeight(mode, level, time, i), backgroundColor: color }} />
+      {bars.map((style, i) => (
+        <Animated.View key={i} style={[{ width: 3, height: BAR_MAX, borderRadius: 1.5, backgroundColor: color }, style]} />
       ))}
     </View>
   );
@@ -3045,12 +3119,22 @@ function Captions({ agent, me }: { agent: string | null; me: string | null }) {
 export function CallBar(p: CallBarProps) {
   const { c } = usePalette();
   const insets = useSafeAreaInsets();
-  const frame = { gap: 10, paddingHorizontal: 12, paddingTop: 9, paddingBottom: Math.max(insets.bottom, 12) };
+  const reduce = useReduceMotion();
+  // 出现那一下：淡入并上移 10 点（220ms ease-out；减弱动态效果时只淡入）。输入框一下子换成高出一截的另一块
+  // 会读作「坏了」。live ⇄ idle 在同一个组件里换，不重放
+  const enter = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    Animated.timing(enter, { toValue: 1, duration: 220, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
+  }, [enter]);
+  const frame = [
+    { gap: 10, paddingHorizontal: 12, paddingTop: 9, paddingBottom: Math.max(insets.bottom, 12) },
+    { opacity: enter, transform: reduce ? [] : [{ translateY: enter.interpolate({ inputRange: [0, 1], outputRange: [10, 0] }) }] },
+  ];
   // 脸那一格按脸的真实尺寸给盒子（69×56，demo：不给底、不裁、不圈边）
   const faceBox = p.face === null ? null : <View style={{ width: 69, height: 56, alignItems: "center", justifyContent: "center" }}>{p.face}</View>;
   if (p.mode === "idle") {
     return (
-      <View style={frame}>
+      <Animated.View style={frame}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 6 }}>
           {faceBox}
           <Text style={{ ...t.callout, color: c.foreground, flex: 1 }}>通话还开着</Text>
@@ -3067,11 +3151,11 @@ export function CallBar(p: CallBarProps) {
             <HangUpGlyph color={c.destructiveForeground} />
           </CallButton>
         </View>
-      </View>
+      </Animated.View>
     );
   }
   return (
-    <View style={frame}>
+    <Animated.View style={frame}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: 12, paddingHorizontal: 6 }}>
         {faceBox}
         <Wave mode={p.wave} level={p.level} />
@@ -3089,7 +3173,7 @@ export function CallBar(p: CallBarProps) {
           <HangUpGlyph color={c.destructiveForeground} />
         </CallButton>
       </View>
-    </View>
+    </Animated.View>
   );
 }
 ```
@@ -3335,9 +3419,12 @@ import { CallSheet } from "../voice/CallSheet.js";
 import { hangUp, joinCall, nativeSpeech, refreshVoiceBilling, setMic, startCall, useVoice, voiceUsable } from "../voice/voiceStore.js";
 ```
 
+另外：`react-native` 那条 import 的名字表里补上 `LayoutAnimation`；`import { Button, Spinner } from "../ui.js";` 换成 `import { Button, Spinner, useReduceMotion } from "../ui.js";`。
+
 3. 在 `const pendingMention = useRef<string | null>(null);` 之后加：
 
 ```tsx
+  const reduce = useReduceMotion();
   const voice = useVoice();
   /** 开电话 / 挂断正在路上 */
   const [callBusy, setCallBusy] = useState(false);
@@ -3438,7 +3525,11 @@ import { hangUp, joinCall, nativeSpeech, refreshVoiceBilling, setMic, startCall,
                 captions={{ agent: listen?.text ?? null, me: listen !== null && listen.mic.transcript !== "" ? listen.mic.transcript : null }}
                 joinBlocked={joinBlockedText({ native: nativeSpeech, ready, billing: voice.billing })}
                 busy={callBusy}
-                onToggleCaptions={() => setCaptionsOn((v) => !v)}
+                onToggleCaptions={() => {
+                  // 那一行出现 / 收起会把上面的时间线推一下：160ms 接住它；减弱动态效果时直接换
+                  if (!reduce) LayoutAnimation.configureNext(LayoutAnimation.create(160, LayoutAnimation.Types.easeOut, LayoutAnimation.Properties.opacity));
+                  setCaptionsOn((v) => !v);
+                }}
                 onToggleMic={() => setMic(!micOn)}
                 onHangUp={() => void onHangUp()}
                 onJoin={() => joinCall(session.sessionId)}
@@ -3485,7 +3576,7 @@ Expected: `GATE_EXIT=0`。
 - [ ] **Step 8: 提交**
 
 ```bash
-cd /Users/stanyan/Github/Mr_Otto/.claude/worktrees/mobile-a4-voice-d174e6 && git add mobile/src/theme.ts mobile/src/chrome/VoiceGlyphs.tsx mobile/src/voice/CallBar.tsx mobile/src/voice/CallCardRow.tsx mobile/src/voice/CallSheet.tsx mobile/src/chat/Composer.tsx mobile/src/chat/ChatRows.tsx mobile/src/chat/ChatScreen.tsx
+cd /Users/stanyan/Github/Mr_Otto/.claude/worktrees/mobile-a4-voice-d174e6 && git add src/shared/mobileCall.ts tests/shared/mobileCall.test.ts mobile/src/theme.ts mobile/src/chrome/VoiceGlyphs.tsx mobile/src/voice/CallBar.tsx mobile/src/voice/CallCardRow.tsx mobile/src/voice/CallSheet.tsx mobile/src/chat/Composer.tsx mobile/src/chat/ChatRows.tsx mobile/src/chat/ChatScreen.tsx
 cd /Users/stanyan/Github/Mr_Otto/.claude/worktrees/mobile-a4-voice-d174e6 && git commit -F .superpowers/commit-msg.txt
 ```
 
@@ -3501,6 +3592,11 @@ feat(mobile): 电话模式替换输入框、通话折成卡（#1356 A4）
 挂断不二次确认：主场里只有你一个人。一通电话在时间线上折成一张卡（多久 + 我说的第一句），
 点开是 A1 那副底部抽屉放全文；通话开着时通话里那几只正在写的那一段不画——落下来就折进卡里。
 样子逐值取自 demo（.voicebar / .vb / .callcard / .callpanel），加一个令牌 voice。
+
+声浪全部走原生驱动（scaleY + 透明度，不碰布局、不占 JS 线程——通话时 JS 线程正忙着收碎片与合成语音），
+所以 shared 的 waveBarHeight（按时间算每根条的高度，只有 JS 驱动才用得上）换成 waveAmplitude（整体响度），
+它那条用例随函数一起换掉（产品代码同一个提交里换，不是为了变绿删测试）。电话那一格出现时淡入上移、
+「转文字」那一行用 LayoutAnimation 接住；减弱动态效果时退成透明度 / 直接换。
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 ```
@@ -3581,7 +3677,7 @@ Create `docs/adr/0320-手机端语音通话-自写Expo原生模块照搬MrOttoSp
 66. **通话开着时，通话里那几只正在写的那一段不画进时间线**（落下来就折进通话卡，画了会一闪而过）；它在说的话看电话那一格的「转文字」。
 67. **通话卡**：收起时写「语音聊天」+ 时长（桌面同一份 `callDurationText`，不是 demo 的 mm:ss；还开着写「通话中」、不走表——电话那一格已经有一只表）+ 第二行「聊的什么」= 我说的第一句（我一句没说就是它说的第一句，≤24 字；demo 那行是写死的话题，真数据里没有话题这一格）。点开是 70% 的底部抽屉（A1 那副骨架），一句一行：我说的靠右、它说的靠左带「名字 · 第几分几秒」，名单变更那几行居中只写字（不带脸）。
 68. **电话那一格的脸**：谁在说画谁（在说）、没人说时画欠着回答的那只（在想 / 排队）、都没有画通话里第一只（在听）；不另写状态词。
-69. **声浪**：它在说是一段合成的包络（这边量不到它的音量，画的是「有话在说」）、人在说按麦克风能量、关着麦是一条灰线；它在说排第一（没有回声消除时它的声音会漏进麦克风）。
+69. **声浪**：它在说是满响度、每根条自己起伏（这边量不到它的音量，画的是「有话在说」）、人在说按麦克风能量、关着麦是一条灰线；它在说排第一（没有回声消除时它的声音会漏进麦克风）。全部原生驱动（scaleY + 透明度），不是 demo 那种每 90ms 改一次高度——通话时 JS 线程正忙，按帧改布局的声浪会在它开口的时候卡。
 70. **「转文字」那一行**：它此刻在说的那句 + 「你：…」你正在说的那句；都没有写「这会儿没人说话。」。
 71. **说完一句就发出去**：没有桌面那扇「扣住 / 合并」的窗（#1281 的决策模型断句，走主进程 IPC，桌面专属）。
 72. **这台听不了时「接着听」换成一句为什么**（开发版 / 连接 / 订阅 / 网关不供语音）；没订阅那句说「订阅 Pro 或 Max 之后才打得了电话。」（桌面那句指「设置 → 订阅」，手机上没有那一页）。
