@@ -4,9 +4,11 @@
 //
 // · 原生模块只在开发版里有（Expo Go 里 OttoSpeech 为 null）：没有它就没有电话钮，别的照常。
 // · 放音：一段字节先落成缓存目录里的一个文件（原生放音器只收路径），交给原生模块用识别那同一个
-//   音频引擎放（ADR-0280：不被回声消除压低、是回声参考）；放完 / 放不了 / 停掉就删。
+//   音频引擎放（ADR-0280：不被回声消除压低、是回声参考）；放完 / 放不了 / 停掉就删。起来先把那个目录
+//   整个扫掉：崩掉、开发时重载、一段等不到 played，留下的文件没人再删。
 // · 订阅快照：电话钮画不画要知道「订阅活跃 + 网关供语音」。进聊天页拉一次，拉失败留着上一次的
-//   （拿不到 ≠ 没订阅）；还没拉到时不画钮（说不清就不画）。
+//   （拿不到 ≠ 没订阅）；还没拉到时不画钮（说不清就不画）。一次都没拉到的话，回到前台再拉一次——
+//   一次失败不该把电话钮藏到重开这一页；拉到过就不再每次回前台都拉。
 // · 切到后台 = 这台停听（停麦停放音），通话本身还在——回来那一格写「通话还开着」+「接着听」
 //   （维护者 2026-09-26）。只认 background：下拉控制中心 / 来一条通知横幅是 inactive，那不是人离开了。
 import { Directory, File, Paths } from "expo-file-system";
@@ -64,6 +66,14 @@ const tts = createTtsClient({
 const audioDir = new Directory(Paths.cache, "otto-voice");
 const files = new Map<string, File>();
 let audioSeq = 0;
+
+// 上一次留下的先扫掉（见文件头）。这一刻这一份 JS 还一段都没交出去；开发时重载那种原生还在放上一份的
+// 最后一段——iOS 上删掉一个正打开着的文件，读的那一方照样读得完。删不掉就算了：它在缓存目录里，系统也会清
+try {
+  if (audioDir.exists) audioDir.delete();
+} catch {
+  // 见上
+}
 
 function dropFile(id: string): void {
   const f = files.get(id);
@@ -137,6 +147,8 @@ setChatActivity({
 
 AppState.addEventListener("change", (s) => {
   if (s === "background") session.leave();
+  // 订阅快照一次都没拉到（见文件头）：回到前台再拉一次
+  else if (s === "active" && store.get().billing === null) void refreshVoiceBilling();
 });
 
 /** 进聊天页拉一次订阅快照。拉失败留着上一次的（拿不到 ≠ 没订阅） */
