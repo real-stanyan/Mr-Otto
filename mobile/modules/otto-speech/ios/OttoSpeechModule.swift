@@ -14,6 +14,21 @@ import ExpoModulesCore
 /// 事件从这条队列上发出去没问题：sendEvent 自己排进 JS 线程（expo-modules-core 的 runtime.schedule）。
 let speechQueue = DispatchQueue(label: "mrotto.speech", qos: .userInitiated)
 
+/// 拒一条命令的 promise，JS 那边 Error.message 就是 `text` 原话。expo 把拒绝交给 JS 时 message 取的是
+/// debugDescription（默认是「类名: 原因 (at Swift 源文件:行)」），这里改成只有原话。
+/// `@unchecked Sendable` 是 Exception 那一格要子类重述的（expo 自己的异常类也这么写）；唯一的存储是一个 let
+final class SpeechRejection: Exception, @unchecked Sendable {
+  private let text: String
+
+  init(_ text: String) {
+    self.text = text
+    super.init()
+  }
+
+  override var reason: String { text }
+  override var debugDescription: String { text }
+}
+
 public class OttoSpeechModule: Module {
   private var recognizerInstance: Recognizer?
   /// 第一次用到才建（没开过电话的 app 不该多一个 AVAudioEngine 和两条通知订阅）
@@ -51,8 +66,16 @@ public class OttoSpeechModule: Module {
       self.recognizer.emitStatus()
     }.runOnQueue(speechQueue)
 
-    AsyncFunction("play") { (id: String, uri: String) in
-      self.recognizer.play(id: id, uri: uri)
+    // 起不来（解不开 / 引擎起不来）时拒 promise，不发 playError（Playback.swift 的 PlaybackFailure）。
+    // 自己拿 promise 拒，不是直接从这里抛：直接抛的话 expo 会给 JS 那边的 message 包一层（「Calling the
+    // 'play' function has failed」+ 类名 + Swift 源文件行号），而这句话要原样落到界面上
+    AsyncFunction("play") { (id: String, uri: String, promise: Promise) in
+      do {
+        try self.recognizer.play(id: id, uri: uri)
+        promise.resolve()
+      } catch {
+        promise.reject(SpeechRejection(error.localizedDescription))
+      }
     }.runOnQueue(speechQueue)
 
     AsyncFunction("stopPlay") {

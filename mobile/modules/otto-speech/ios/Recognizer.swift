@@ -369,8 +369,15 @@ final class Recognizer {
     deactivateIfIdle()
   }
 
-  func play(id: String, uri: String) {
-    playback.play(id: id, uri: uri) { try self.ensurePlaybackEngine() }
+  /// 放一段。起不来抛 PlaybackFailure，交给 play 那条命令去拒 promise（不发 playError，见 Playback.swift）
+  func play(id: String, uri: String) throws {
+    do {
+      try playback.play(id: id, uri: uri) { try self.ensurePlaybackEngine() }
+    } catch {
+      // 原来走 playError 那条路时顺手做的收尾：会话可能激活了一半、引擎停着——没人在用就交还
+      deactivateIfIdle()
+      throw error
+    }
   }
 
   func stopPlay() {

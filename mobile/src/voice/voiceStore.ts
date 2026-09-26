@@ -99,6 +99,8 @@ const nativeAudio: HelperAudioBridge = {
       await OttoSpeech.play(id, f.uri);
       return { id };
     } catch (err) {
+      // 落盘失败，或原生起不来（解不开 / 引擎起不来——那条 promise 被拒，message 是原话）：文件删掉，
+      // 那句话交给放音队列（「播放失败：…」），它接着放下一段
       dropFile(id);
       return { error: err instanceof Error ? err.message : String(err) };
     }
