@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   usageEmptyText, usageHeadline, usageRows, usageScale, usageScaleNote, usageWindowText, workspaceTotalMicro,
-} from "../../src/renderer/src/lib/workspaceUsageView.js";
+} from "../../src/shared/workspaceUsageView.js";
 import type { WorkspaceSnapshot, WorkspaceAgentRow } from "../../src/shared/workspaces.js";
 import type { WorkspaceUsage } from "../../src/shared/billing.js";
 

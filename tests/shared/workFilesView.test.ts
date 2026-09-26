@@ -5,7 +5,7 @@ import {
   formatWorkTime,
   workFileNotice,
   workFolderNotice,
-} from "../../src/renderer/src/lib/workFilesView.js";
+} from "../../src/shared/workFilesView.js";
 
 const NOW = new Date("2026-09-07T12:00:00Z").getTime();
 

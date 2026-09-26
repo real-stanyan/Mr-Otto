@@ -61,7 +61,7 @@ import { statusSignature, type GitStatusResult } from "../../shared/gitStatus.js
 import type { IsolatedMergeResult, BillingSnapshotView } from "../../shared/shellBridge.js";
 import type { PlanId, WorkspaceUsage } from "../../shared/billing.js";
 import { bridgeErrorMessage } from "./lib/bridgeError.js";
-import { humanizeBillingError } from "./lib/billingError.js";
+import { humanizeBillingError } from "../../shared/billingError.js";
 
 /** 「发过重置邮件、还没设新密码」这笔记号。放 localStorage 而不是内存:
     用户是在**浏览器**里点的链接,回到 app 中间可能隔着一次冷启动(issue #739) */

@@ -2,7 +2,7 @@
 //
 // 判据留在这里而不是组件的 `useMemo`：留在那儿就没有保鲜期（同 ADR-0244 那条）。
 
-import { formatWorkTime } from "./workFilesView.js";
+import { formatWorkTime } from "../../../shared/workFilesView.js";
 import type { CsGitHost } from "../../../shared/remote/cloudSession.js";
 import type { WorkspaceMemberRow } from "../../../shared/workspaces.js";
 

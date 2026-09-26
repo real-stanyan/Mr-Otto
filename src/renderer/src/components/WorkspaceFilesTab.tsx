@@ -29,7 +29,7 @@ import { Button } from "@/components/ui/button.js";
 import { Input } from "@/components/ui/input.js";
 import { useChat } from "../store.js";
 import { modelStatusText } from "../lib/cloudModelStatus.js";
-import { entryMeta, workFileNotice, workFolderNotice } from "../lib/workFilesView.js";
+import { entryMeta, workFileNotice, workFolderNotice } from "../../../shared/workFilesView.js";
 import { joinWorkPath } from "../../../shared/remote/workPath.js";
 import { FileTypeIcon, FolderIcon } from "./FileTypeIcon.js";
 import { previewLang } from "../lib/previewLang.js";

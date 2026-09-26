@@ -1,9 +1,9 @@
-// workFilesView —— 团队设置页「文件」tab 的纯逻辑（#1056）。
+// workFilesView —— 团队设置页「文件」tab 的纯逻辑（#1056；#1356 A5 从渲染层挪进 shared，手机端的文件那一页用同一份尺寸 / 时间的写法）。
 //
 // 这一页答的是「水獭在哪儿干活、那儿有什么」。判据全在这里而不是组件的
 // `useMemo` 里，理由同 ADR-0244 那条：留在组件里就没有保鲜期。
 
-import type { CsWorkEntry, CsWorkNode } from "../../../shared/remote/cloudSession.js";
+import type { CsWorkEntry, CsWorkNode } from "./remote/cloudSession.js";
 
 /** 字节数写成人话。目录不显示大小（`size` 恒为 0，调用方自己判 kind） */
 export function formatWorkSize(bytes: number): string {
