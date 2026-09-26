@@ -8,7 +8,11 @@
     "userInterfaceStyle": "automatic",
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.stanyan.mrotto.mobile"
+      "bundleIdentifier": "com.stanyan.mrotto.mobile",
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "语音通话时要用麦克风听你说话。",
+        "NSSpeechRecognitionUsageDescription": "语音通话时把你说的话转成文字，发给智能体。"
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -29,7 +33,8 @@
       [
         "expo-camera",
         {
-          "cameraPermissionText": "扫描电脑上的配对二维码时要用一下相机。"
+          "cameraPermissionText": "扫描电脑上的配对二维码时要用一下相机。",
+          "microphonePermission": "语音通话时要用麦克风听你说话。"
         }
       ],
       "expo-font"

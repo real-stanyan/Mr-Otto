@@ -1,0 +1,369 @@
+import AVFoundation
+import Foundation
+import Speech
+
+// 识别会话（#1356 A4，ADR-0320）：桌面 native/MrOttoSpeech/Sources/MrOttoSpeech/Recognizer.swift 的 iOS 版。
+// 逐段对应桌面那份（理由写在那份的头注与 ADR-0273 / 0277 / 0280：AVAudioEngine 的输入 tap 喂识别 request、
+// 每句收口换新 request、没人说话 50 秒换一次、能量门喂断句、半双工 pause/resume 不停引擎、回声消除开得了
+// 就不半双工、放音挂在同一个引擎上）。iOS 多出来的五处：
+// ① 起引擎之前配 AVAudioSession（playAndRecord、默认走扬声器、允许蓝牙 A2DP 放音）并激活；听与放都停了
+//    再交还（notifyOthersOnDeactivation：别的 app 的音乐接着放）；
+// ② 来电 / Siri 打断、耳机插拔（引擎配置变了）会让引擎停下而不回调：当成一次中断说出口——停听、手上那段
+//    放音报 playError（不报的话 JS 那边的放音队列会一直等一个永远不来的 played）。起引擎（尤其刚开完回声
+//    消除）自己也可能触发一次「配置变了」，起来之后 1 秒内的那一条不算；
+// ③ 回声消除的 ducking 配置是 iOS 17 起才有的 API；
+// ④ 放音收 expo-file-system 给的 file:// URI（Playback.swift）；
+// ⑤ 起完引擎再报一次 status：aec 要开完回声消除才知道（桌面那份只在开引擎之前报，第一次开麦时 aec 还是 nil）。
+// **所有状态都在主线程上动**（识别回调与音频 tap 各在自己的线程上，一律 hop 到 main）。
+
+private func speechAuthName(_ s: SFSpeechRecognizerAuthorizationStatus) -> String {
+  switch s {
+  case .authorized: return "authorized"
+  case .denied: return "denied"
+  case .restricted: return "restricted"
+  case .notDetermined: return "notDetermined"
+  @unknown default: return "notDetermined"
+  }
+}
+
+private func micAuthName(_ s: AVAuthorizationStatus) -> String {
+  switch s {
+  case .authorized: return "authorized"
+  case .denied: return "denied"
+  case .restricted: return "restricted"
+  case .notDetermined: return "notDetermined"
+  @unknown default: return "notDetermined"
+  }
+}
+
+private func nowMs() -> Double { Date().timeIntervalSince1970 * 1000 }
+
+final class Recognizer {
+  private let emit: (Event) -> Void
+  private let engine = AVAudioEngine()
+  /// 放音（与识别共用 engine：不被回声消除压低，还是回声参考，ADR-0280）
+  private lazy var playback = Playback(engine: engine) { [weak self] e in
+    self?.emit(e)
+    if e.type == "played" || e.type == "playError" { self?.deactivateIfIdle() }
+  }
+  private var recognizer: SFSpeechRecognizer?
+  private var request: SFSpeechAudioBufferRecognitionRequest?
+  private var task: SFSpeechRecognitionTask?
+  private var endpointer = Endpointer()
+  private var gate = LevelGate()
+  private var timer: Timer?
+  private var running = false
+  private var paused = false
+  private var generation = 0
+  private var requestStartedAt: Double = 0
+  private var locale = "zh-CN"
+  /// 上下文词表（start 给的），每个 request 都带
+  private var hints: [String] = []
+  /// 回声消除开没开；nil = 还没开过麦
+  private var aec: Bool? = nil
+  private var lastLevelEmitAt: Double = 0
+  /// level 事件的节流（毫秒）：音频块几十块一秒，界面画声浪 10 帧一秒够了
+  private let levelEveryMs: Double = 100
+  /// 没人说话时多久换一次 request（毫秒）：攒着的音频有上限
+  private let idleRestartMs: Double = 50_000
+  /// 引擎最近一次起来的时刻，与「配置变了」那条通知对账（头注 ②）
+  private var engineStartedAt: Double = 0
+  private let settleMs: Double = 1000
+  private var observers: [NSObjectProtocol] = []
+
+  init(emit: @escaping (Event) -> Void) {
+    self.emit = emit
+    let center = NotificationCenter.default
+    observers.append(center.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] note in
+      guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
+            AVAudioSession.InterruptionType(rawValue: raw) == .began else { return }
+      self?.interrupted("被系统打断了（来电 / Siri），点一下麦克风再开")
+    })
+    observers.append(center.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
+      guard let self, nowMs() - self.engineStartedAt > self.settleMs else { return }
+      self.interrupted("声音设备变了（耳机 / 蓝牙），点一下麦克风再开")
+    })
+  }
+
+  func status() -> Event {
+    Event(
+      type: "status",
+      speech: speechAuthName(SFSpeechRecognizer.authorizationStatus()),
+      mic: micAuthName(AVCaptureDevice.authorizationStatus(for: .audio)),
+      onDevice: recognizer?.supportsOnDeviceRecognition,
+      locale: locale,
+      aec: aec)
+  }
+
+  func emitStatus() {
+    emit(status())
+  }
+
+  func start(locale: String, hints: [String]) {
+    if running {
+      emit(Event(type: "listening", on: true))
+      return
+    }
+    self.locale = locale
+    self.hints = hints
+    endpointer = Endpointer()
+    gate = LevelGate()
+    guard let r = SFSpeechRecognizer(locale: Locale(identifier: locale)) else {
+      emit(Event(type: "error", message: "这台设备不支持识别「\(locale)」"))
+      return
+    }
+    recognizer = r
+    // 两道授权按顺序问：先语音识别再麦克风；任何一道没过都把 status 发出去，JS 据它说人话（去哪儿打开）
+    SFSpeechRecognizer.requestAuthorization { [weak self] s in
+      DispatchQueue.main.async {
+        guard let self else { return }
+        guard s == .authorized else {
+          self.emit(self.status())
+          self.emit(Event(type: "error", message: "没有「语音识别」权限"))
+          return
+        }
+        AVCaptureDevice.requestAccess(for: .audio) { ok in
+          DispatchQueue.main.async {
+            guard ok else {
+              self.emit(self.status())
+              self.emit(Event(type: "error", message: "没有「麦克风」权限"))
+              return
+            }
+            self.emit(self.status())
+            self.beginAudio()
+          }
+        }
+      }
+    }
+  }
+
+  private func activateSession() throws {
+    let session = AVAudioSession.sharedInstance()
+    try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetoothA2DP])
+    try session.setActive(true)
+  }
+
+  /// 听与放都停了：停引擎、把音频交还给系统（别的 app 的音乐接着放）
+  private func deactivateIfIdle() {
+    guard !running, !playback.isPlaying else { return }
+    if engine.isRunning { engine.stop() }
+    try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+  }
+
+  private func ensureEngine() throws {
+    guard !engine.isRunning else { return }
+    engine.prepare()
+    try engine.start()
+    engineStartedAt = nowMs()
+  }
+
+  private func ensurePlaybackEngine() throws {
+    guard !engine.isRunning else { return }
+    try activateSession()
+    try ensureEngine()
+  }
+
+  private func beginAudio() {
+    guard !running else { return }
+    do {
+      try activateSession()
+    } catch {
+      emit(Event(type: "error", message: "麦克风打不开：\(error.localizedDescription)"))
+      return
+    }
+    let input = engine.inputNode
+    // 系统回声消除（ADR-0277）。开不了不算错——status.aec=false，JS 退回半双工
+    do {
+      if !input.isVoiceProcessingEnabled { try input.setVoiceProcessingEnabled(true) }
+      aec = true
+    } catch {
+      aec = false
+    }
+    if aec == true, #available(iOS 17.0, *) {
+      input.voiceProcessingOtherAudioDuckingConfiguration = AVAudioVoiceProcessingOtherAudioDuckingConfiguration(enableAdvancedDucking: false, duckingLevel: .min)
+    }
+    let format = input.outputFormat(forBus: 0)
+    guard format.sampleRate > 0, format.channelCount > 0 else {
+      emit(Event(type: "error", message: "没有可用的麦克风"))
+      deactivateIfIdle()
+      return
+    }
+    // 开着回声消除时输出格式可能是多声道，识别器吃不下：只取第 0 声道折成 mono（桌面同一条）
+    guard let mono = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: format.sampleRate, channels: 1, interleaved: false) else {
+      emit(Event(type: "error", message: "麦克风格式不支持（\(format.sampleRate) Hz）"))
+      deactivateIfIdle()
+      return
+    }
+    input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
+      // 音频线程。paused / request 是主线程改的，这里只读——最坏多喂一两块，无害
+      guard let self, let src = buffer.floatChannelData else { return }
+      let n = Int(buffer.frameLength)
+      guard n > 0 else { return }
+      // 能量：第 0 声道的 RMS。paused 时也算——声浪照画，只是不喂识别器
+      var sum: Float = 0
+      for i in 0..<n { sum += src[0][i] * src[0][i] }
+      let rms = (sum / Float(n)).squareRoot()
+      DispatchQueue.main.async { self.onLevel(rms: rms) }
+      guard !self.paused, let req = self.request else { return }
+      if buffer.format.channelCount > 1, let out = AVAudioPCMBuffer(pcmFormat: mono, frameCapacity: buffer.frameLength) {
+        out.frameLength = buffer.frameLength
+        memcpy(out.floatChannelData![0], src[0], n * MemoryLayout<Float>.size)
+        req.append(out)
+      } else {
+        req.append(buffer)
+      }
+    }
+    do {
+      try ensureEngine()
+    } catch {
+      input.removeTap(onBus: 0)
+      emit(Event(type: "error", message: "麦克风打不开：\(error.localizedDescription)"))
+      deactivateIfIdle()
+      return
+    }
+    running = true
+    paused = false
+    emit(Event(type: "listening", on: true))
+    // 头注 ⑤：aec 这时才知道
+    emit(status())
+    newRequest()
+    // 100ms 一跳：断句的粒度——completeMs 700 之上再加的等待不该超过一跳
+    let t = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in self?.tick() }
+    RunLoop.main.add(t, forMode: .common)
+    timer = t
+  }
+
+  /// 换一个新的识别 request（旧 task 作废：generation 前进，迟到的回调认不了账）
+  private func newRequest() {
+    guard running, !paused, let recognizer else { return }
+    generation += 1
+    let gen = generation
+    task?.cancel()
+    request?.endAudio()
+    let req = SFSpeechAudioBufferRecognitionRequest()
+    req.shouldReportPartialResults = true
+    req.taskHint = .dictation
+    req.requiresOnDeviceRecognition = recognizer.supportsOnDeviceRecognition
+    req.addsPunctuation = true
+    if !hints.isEmpty { req.contextualStrings = hints }
+    request = req
+    requestStartedAt = nowMs()
+    task = recognizer.recognitionTask(with: req) { [weak self] result, error in
+      DispatchQueue.main.async { self?.handle(gen: gen, result: result, error: error) }
+    }
+  }
+
+  private func handle(gen: Int, result: SFSpeechRecognitionResult?, error: Error?) {
+    guard gen == generation, running, !paused else { return }
+    if let result {
+      if endpointer.feed(result.bestTranscription.formattedString, now: nowMs()) {
+        emit(Event(type: "partial", text: endpointer.text))
+      }
+      if result.isFinal {
+        if let text = endpointer.flush() { emit(Event(type: "final", text: text)) }
+        newRequest()
+      }
+      return
+    }
+    if let error {
+      // 识别器自己断了（服务端模式的 1 分钟上限、内部错误…）：手上那半句先收口，稍后重开——
+      // 不把一次抖动翻成「识别坏了」。cancel 自己引起的错误走不到这里（generation 已经前进）
+      if let text = endpointer.flush() { emit(Event(type: "final", text: text)) }
+      emit(Event(type: "error", message: "识别中断：\(error.localizedDescription)，正在重试"))
+      DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+        guard let self, self.generation == gen else { return }
+        self.newRequest()
+      }
+    }
+  }
+
+  /// 一块音频的能量到了（主线程）：过门 → 喂断句 → 节流着发给界面
+  private func onLevel(rms: Float) {
+    guard running else { return }
+    let now = nowMs()
+    let r = gate.feed(rms: rms, now: now)
+    if !paused { endpointer.feedLevel(active: r.active, now: now) }
+    if now - lastLevelEmitAt >= levelEveryMs {
+      lastLevelEmitAt = now
+      emit(Event(type: "level", value: (r.level * 100).rounded() / 100, active: r.active))
+    }
+  }
+
+  private func tick() {
+    guard running, !paused else { return }
+    let now = nowMs()
+    if let text = endpointer.tick(now: now) {
+      emit(Event(type: "final", text: text))
+      newRequest()
+      return
+    }
+    if endpointer.text.isEmpty, now - requestStartedAt > idleRestartMs {
+      newRequest()
+    }
+  }
+
+  func pause() {
+    guard running, !paused else { return }
+    paused = true
+    generation += 1
+    task?.cancel()
+    request?.endAudio()
+    task = nil
+    request = nil
+    if let text = endpointer.flush() { emit(Event(type: "final", text: text)) }
+    emit(Event(type: "paused"))
+  }
+
+  func resume() {
+    guard running, paused else { return }
+    paused = false
+    newRequest()
+    emit(Event(type: "resumed"))
+  }
+
+  func stop() {
+    guard running else { return }
+    running = false
+    paused = false
+    timer?.invalidate()
+    timer = nil
+    generation += 1
+    task?.cancel()
+    request?.endAudio()
+    task = nil
+    request = nil
+    endpointer = Endpointer()  // 手上那半句作废（离开 / 挂断）
+    engine.inputNode.removeTap(onBus: 0)
+    emit(Event(type: "listening", on: false))
+    // 正在放它的话就先不停引擎（放音也挂在它上面），放完那一刻再停
+    deactivateIfIdle()
+  }
+
+  func play(id: String, uri: String) {
+    playback.play(id: id, uri: uri) { try self.ensurePlaybackEngine() }
+  }
+
+  func stopPlay() {
+    playback.stop()
+    deactivateIfIdle()
+  }
+
+  /// 系统把声音拿走了（头注 ②）：手上那段放音报 playError；在听的话先说一句为什么、再停听
+  private func interrupted(_ message: String) {
+    playback.interrupt(message: message)
+    guard running else {
+      deactivateIfIdle()
+      return
+    }
+    emit(Event(type: "error", message: message))
+    stop()
+  }
+
+  /// 模块被销毁（JS 那侧重载）：停听、停放、退订通知
+  func shutdown() {
+    stop()
+    stopPlay()
+    for o in observers { NotificationCenter.default.removeObserver(o) }
+    observers = []
+  }
+}
