@@ -63,6 +63,9 @@ export function ChatRowView({ row, ws }: { row: ChatRow; ws: WorkspaceSnapshot }
       return <NoteRow text={row.text} tone={row.tone} detail={row.detail} />;
     case "roster":
       return <RosterLineView parts={row.parts} ws={ws} />;
+    case "call":
+      // A4 Task 7 画这张卡（CallCardRow）；这一格先占位，穷尽检查才不红
+      return null;
     default: {
       // 新加一种行而这里没接上时编译不过——这个组件没写返回类型，漏接的那一种原来会安静地什么都不画
       const unhandled: never = row;
