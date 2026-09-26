@@ -28,7 +28,7 @@ export function callBarMode(o: { call: VoiceCallState | null; listeningHere: boo
   return o.listeningHere || o.starting ? "live" : "idle";
 }
 
-/** 电话那一格的麦克风算不算开着（声浪画不画、那颗钮写「静音」还是「开麦」）。`mic` = 这台在听时的麦克风
+/** 电话那一格的麦克风算不算开着（声浪画不画、那颗钮写「静音」还是「取消静音」）。`mic` = 这台在听时的麦克风
     状态，null = 这台还没在听——正在开电话（`starting`，那一格已经是 live）时算开着，否则算关着。
     **没权限算关着**：没权限那句话叫人「点一下麦克风」，算开着的话那颗钮写着「静音」、一点就是关麦，而关麦
     会把那句话一起抹掉。识别出错（`error`）仍算开着：原生会自己重试，开麦失败最后会落成 listening 关 */
