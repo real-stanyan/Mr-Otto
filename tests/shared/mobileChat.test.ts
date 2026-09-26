@@ -167,3 +167,53 @@ describe("chatCentre", () => {
     expect(chatCentre(input)).toBe(want);
   });
 });
+
+describe("群聊的两种行（#1356 A3，spec §5.6）", () => {
+  const roster = (ids: [string, string][], byUid?: string): SessionEvent =>
+    e({
+      type: "chat_roster_changed", ignorable: true,
+      agents: ids.map(([agentId, name]) => ({ agentId, name })),
+      ...(byUid === undefined ? {} : { byUid }),
+    });
+
+  it("名单变了那一行：建群那一条不画，之后谁进谁出画成一行（名字那几格带 agentId，好画脸）", () => {
+    seq = 0;
+    const rows = chatRows({
+      events: [
+        roster([["a_000000000001", "开发"], ["a_000000000002", "运维"]]),
+        roster([["a_000000000001", "开发"]], "me"),
+      ],
+      ws: WS, selfUid: "me", now: DAY,
+    });
+    expect(rows.map((r) => r.kind)).toEqual(["day", "roster"]);
+    expect(rows[1]).toEqual({
+      kind: "roster", key: "e1", ts: DAY,
+      parts: [{ text: "你把" }, { text: "「运维」", agentId: "a_000000000002" }, { text: "移出了群聊" }],
+    });
+  });
+
+  it("名单没变的那一条不画", () => {
+    seq = 0;
+    const rows = chatRows({
+      events: [roster([["a_000000000001", "开发"]]), roster([["a_000000000001", "开发"]], "me")],
+      ws: WS, selfUid: "me", now: DAY,
+    });
+    expect(rows).toEqual([]);
+  });
+
+  it("派活那一句排在那句话底下；人亲手 @ 的不画", () => {
+    seq = 0;
+    const rows = chatRows({
+      events: [
+        e({ type: "user_message", content: "[Stan]: 这版谁先发", fromUid: "me", mentions: ["a_000000000002"], dispatch: "auto" }),
+        e({ type: "user_message", content: "[Stan]: @开发 看下", fromUid: "me", mentions: ["a_000000000001"] }),
+      ],
+      ws: WS, selfUid: "me", now: DAY,
+    });
+    expect(rows.slice(1)).toEqual([
+      { kind: "mine", key: "e0", ts: DAY, text: "这版谁先发" },
+      { kind: "note", key: "dispatch-0", ts: DAY, text: "没 @ 谁 —— 运维接了", tone: "muted", detail: null },
+      { kind: "mine", key: "e1", ts: DAY, text: "@开发 看下" },
+    ]);
+  });
+});

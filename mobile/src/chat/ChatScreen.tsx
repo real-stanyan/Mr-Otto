@@ -1,6 +1,6 @@
-// 聊天页（#1356 A1，spec §5.3 / §6）。私聊为主；群聊先是基础版（群设置、@ 谁、名单变更那一行在 A3）。
+// 聊天页（#1356 A1 / A3，spec §5.3 / §5.6 / §6）。私聊与群聊同一张页；群聊的设置入口、@ 谁、名单变更那一行是 A3 加的。
 //
-// · 头：回退 | 药丸（脸 + 名字）| 私聊右边那颗直接进设置（中间没有菜单）。浮在内容上，页面内容
+// · 头：回退 | 药丸（脸 + 名字）| 右边那颗直接进设置——私聊进智能体设置、群聊进群设置（中间没有菜单）。浮在内容上，页面内容
 //   从底下滚过去（spec §4）。药丸里那张脸 = dmFaceState（与桌面私聊头部同一份判据）。名单与
 //   名字从日志推导（chatViewOf，ADR-0302 / #1302），还没开房时用清单那一行。
 // · 时间线：倒置的 FlatList（最新一条贴底）；往上翻到顶取更早一页（尾巴模式），失败给一颗
@@ -8,6 +8,8 @@
 // · 草稿：私聊还没建时是同一张页、还没有会话，第一句发出去那一刻才建（spec §5.2）。当场就建
 //   会让「点进去看一眼」也把它顶到名册最上面。
 // · 状态（spec §6）：gone 一行「正在重连…」、发送钮灰；denied 是终态，说清是哪一种 +「回名册」。
+// · 群聊（A3，spec §5.6）：输入框上方一颗「@ 谁」→ 抽屉挑一只 → 抽屉退场放完插进 `@名字 `；空群（最后一只
+//   被移出了）输入框上方一行实话、不画「@ 谁」；占位字「说给这一组听…」。
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { BlurView } from "expo-blur";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -39,9 +41,12 @@ import { space, type as t, usePalette, withAlpha } from "../theme.js";
 import { Button, Spinner } from "../ui.js";
 import { ChatRowView, NowRowView } from "./ChatRows.js";
 import { Composer, type ComposerHandle } from "./Composer.js";
+import { MentionChip, MentionSheet } from "./MentionSheet.js";
 import { RoleChips } from "./RoleChips.js";
 
 const EMPTY_EVENTS: SessionEvent[] = [];
+/** 空群（A3：最后一只也移得走）的那句实话：没有人在，说的话没人接，出路在群设置 */
+const EMPTY_GROUP_TEXT = "这个群里没有智能体了，说的话没人接。去群设置里加一只。";
 type Item = { kind: "row"; row: ChatRow } | { kind: "now"; now: NowRow } | { kind: "roles" };
 type Props = NativeStackScreenProps<RootStackParams, "Chat">;
 
@@ -100,6 +105,10 @@ function Hello({ ws, kind, agentIds, title }: { ws: WorkspaceSnapshot; kind: "dm
       </View>
     );
   }
+  if (agentIds.length === 0) {
+    // 空群：没有谁「都在」
+    return <Text style={{ ...t.footnote, color: c.mutedForeground, textAlign: "center" }}>{EMPTY_GROUP_TEXT}</Text>;
+  }
   return (
     <View style={{ alignItems: "center", gap: 8 }}>
       <GroupFaces agentIds={agentIds} slots={agentIds.map((id) => agentFaceSlot(ws, id))} />
@@ -149,7 +158,7 @@ function ChatHeader({ top, title, faces, onBack, onSettings }: {
           <MoreGlyph color={c.foreground} />
         </RoundButton>
       ) : (
-        // 群设置在 A3：这一片不画一颗点了没去处的钮（#722），用同宽的空位让药丸居中
+        // 还不知道是哪一条（群还没解析出来）时不画一颗点了没去处的钮（#722），用同宽的空位让药丸居中
         <View style={{ width: ROUND_BUTTON_SIZE }} />
       )}
     </View>
@@ -168,6 +177,9 @@ export function ChatScreen({ route, navigation }: Props) {
   /** 这一页自己的一句（点名打错了、建私聊失败、停不下来） */
   const [pageNote, setPageNote] = useState<{ text: string; tone: "muted" | "error" } | null>(null);
   const [stopping, setStopping] = useState(false);
+  /** 「@ 谁」那张抽屉开着没有；挑中的名字等抽屉退场放完再插（Modal 还在时输入框拿不到焦点） */
+  const [mentioning, setMentioning] = useState(false);
+  const pendingMention = useRef<string | null>(null);
 
   // 这条线已经存在就进房；草稿什么都不做，第一句发出去才建
   useEffect(() => {
@@ -256,6 +268,16 @@ export function ChatScreen({ route, navigation }: Props) {
         <GroupFaces agentIds={agentIds} slots={agentIds.map((id) => agentFaceSlot(ws, id))} state="plain" />
       );
 
+  // 右边那颗：私聊进智能体设置，群聊进群设置（spec §5.3 / §5.6）
+  const onSettings =
+    dmAgent !== null ? () => navigation.navigate("AgentSettings", { agentId: dmAgent })
+      : kind === "group" && sessionId !== null ? () => navigation.navigate("GroupSettings", { sessionId })
+        : undefined;
+
+  const emptyGroup = kind === "group" && session !== null && agentIds.length === 0;
+  // 被拒是终态（底下那行说清是哪一种、给「回名册」）：不再画一颗往发不出去的输入框里插字的钮
+  const canMention = kind === "group" && session !== null && session.state !== "denied" && agentIds.length > 0;
+
   return (
     <View style={{ flex: 1, backgroundColor: c.background }}>
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
@@ -322,11 +344,18 @@ export function ChatScreen({ route, navigation }: Props) {
               <Button size="auto" variant="plain" label="放弃" onPress={dropUnsent} />
             </View>
           ) : null}
+          {emptyGroup && centre !== "hello" ? <Line tone="muted">{EMPTY_GROUP_TEXT}</Line> : null}
         </View>
+
+        {canMention ? (
+          <View style={{ flexDirection: "row", paddingHorizontal: 16, paddingTop: 8 }}>
+            <MentionChip onPress={() => setMentioning(true)} />
+          </View>
+        ) : null}
 
         <Composer
           ref={composer}
-          placeholder={roleAnchor !== null ? "说一句它是干什么的…" : kind === "dm" ? `跟「${title}」说…` : "说点什么…"}
+          placeholder={roleAnchor !== null ? "说一句它是干什么的…" : kind === "dm" ? `跟「${title}」说…` : "说给这一组听…"}
           canSend={canSend}
           sessionId={session?.sessionId ?? null}
           onSend={onSend}
@@ -338,8 +367,28 @@ export function ChatScreen({ route, navigation }: Props) {
         title={title}
         faces={headFaces}
         onBack={() => navigation.goBack()}
-        {...(dmAgent !== null ? { onSettings: () => navigation.navigate("AgentSettings", { agentId: dmAgent }) } : {})}
+        {...(onSettings === undefined ? {} : { onSettings })}
       />
+
+      {ws !== null ? (
+        <MentionSheet
+          visible={mentioning}
+          ws={ws}
+          agentIds={agentIds}
+          onPick={(agentId) => {
+            pendingMention.current = agentNameOf(ws, agentId);
+            setMentioning(false);
+          }}
+          onClose={() => setMentioning(false)}
+          onExited={() => {
+            const name = pendingMention.current;
+            pendingMention.current = null;
+            // 抽屉的 onExited 与它的 setMounted(false) 在同一拍里调用，而那次卸载是批处理的——Modal 要等这一拍提交
+            // 之后才真的收起。等一帧再插：Modal 还在的时候输入框拿不到焦点，键盘弹不上来
+            if (name !== null) requestAnimationFrame(() => composer.current?.mention(name));
+          }}
+        />
+      ) : null}
     </View>
   );
 }

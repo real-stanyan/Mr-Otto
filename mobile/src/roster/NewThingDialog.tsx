@@ -5,8 +5,9 @@
 // 两行左边画的都是**这一选会生出来的东西**：app 自己那张脸（此刻还没有谁——随手挑一张现成的脸
 // 会让人以为那就是将要建出来的那只长什么样）/ 你的几只横排。左栏定宽 100、图一律靠左：两行正文
 // 要从同一条竖线起，差几个点在并列的两行上一眼就看得出来（demo 的 .pickdlg）。
-// 「一个群聊」要到 A3 才接上：这一片画出来但按不动、副标题照实说——不画一颗点了没去处的钮（#722），
-// 也不把它藏起来让这张弹窗只剩一条路（spec §10 第 29 条）。
+// 「一个群聊」（A3）：点了收起弹窗、退场放完推建群页。名册不到两只时按不动、副标题照实说为什么——
+// 一只的「群」就是私聊，点进去是一页永远按不动「建」的表（#722）；名册里永远有管理员，所以这只在
+// 「只有它一只」时发生。
 import type { ReactNode } from "react";
 import { Image, Pressable, Text, View } from "react-native";
 import { Dialog } from "../dialog.js";
@@ -44,12 +45,16 @@ function PickRow({ left, title, sub, disabled = false, onPress }: {
   );
 }
 
-export function NewThingDialog({ visible, groupFaces, onAgent, onDismiss, onExited }: {
+export function NewThingDialog({ visible, groupFaces, groupReady, onAgent, onGroup, onDismiss, onExited }: {
   visible: boolean;
   /** 「一个群聊」那一行左边那几张（名册里的前三只） */
   groupFaces: { id: string; slot: number }[];
+  /** 名册里够两只：「一个群聊」按得动 */
+  groupReady: boolean;
   /** 点了「一只智能体」：调用方收起弹窗，退场放完（onExited）再升抽屉 */
   onAgent: () => void;
+  /** 点了「一个群聊」：调用方收起弹窗，退场放完再推建群页 */
+  onGroup: () => void;
   /** 取消 / 点外面 / 返回键 */
   onDismiss: () => void;
   onExited: () => void;
@@ -81,9 +86,9 @@ export function NewThingDialog({ visible, groupFaces, onAgent, onDismiss, onExit
           </View>
         }
         title="一个群聊"
-        sub="还没做好，下一步就有。"
-        disabled
-        onPress={() => {}}
+        sub={groupReady ? "把几只放进同一条线，它们在里头互相接力。" : "至少要两只智能体才凑得成一个群。"}
+        disabled={!groupReady}
+        onPress={onGroup}
       />
       <View style={{ paddingHorizontal: 16, paddingTop: 12 }}>
         <Button size="dialog" variant="secondary" label="取消" onPress={onDismiss} />

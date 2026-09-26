@@ -4,9 +4,12 @@
 // 有字才亮：空框旁边一颗常亮的发送钮是在说「点我就发」，而点了什么都不会发生。
 // `ref` 上的 `fill(text)`（A2）：六句现成话点一下只填进来、不发出去——盖掉原来那几个字（点 chip 就是
 // 要这一句，demo 同款），焦点还给输入框、光标落在末尾。
+// `mention(name)`（A3）：「@ 谁」那张抽屉挑了一只——在光标处插一个 `@名字 `（插在哪由 shared 的
+// insertAgentMention 判），焦点还给输入框、光标落在插进去那一段后面。要知道光标在哪，所以记着最近一次的选区。
 import { useEffect, useImperativeHandle, useRef, useState, type Ref } from "react";
 import { Animated, Pressable, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { insertAgentMention } from "../../../src/shared/agentMentionInput.js";
 import { SendGlyph } from "../chrome/Glyphs.js";
 import { takeDraftSeed, useChatStore } from "../cloud/chatStore.js";
 import { PRESS_SPRING, usePalette, withAlpha } from "../theme.js";
@@ -15,6 +18,8 @@ import { useReduceMotion } from "../ui.js";
 export interface ComposerHandle {
   /** 把一句话填进输入框（不发出去），焦点还给它、光标落在末尾 */
   fill(text: string): void;
+  /** 在光标处插一个 `@名字 `（A3），焦点还给它、光标落在插进去那一段后面 */
+  mention(name: string): void;
 }
 
 export function Composer({ placeholder, canSend, sessionId, onSend, ref }: {
@@ -34,22 +39,40 @@ export function Composer({ placeholder, canSend, sessionId, onSend, ref }: {
   const seed = useChatStore().draftSeed;
   const reduce = useReduceMotion();
   const input = useRef<TextInput>(null);
+  /** 最近一次的选区与正文：句柄是一次建好的（useImperativeHandle 的依赖是 []），读 state 会读到旧值 */
+  const selection = useRef({ start: 0, end: 0 });
+  const draftNow = useRef("");
+  useEffect(() => {
+    draftNow.current = draft;
+  }, [draft]);
   const sendScale = useRef(new Animated.Value(1)).current;
   const pressTo = (v: number): void => {
     if (!reduce) Animated.spring(sendScale, { toValue: v, useNativeDriver: true, ...PRESS_SPRING }).start();
   };
   useImperativeHandle(
     ref,
-    () => ({
-      fill(text: string) {
+    () => {
+      /** 把一句话摆进输入框、光标落在 `caret`，焦点还给它 */
+      const put = (text: string, caret: number): void => {
         setDraft(text);
+        draftNow.current = text;
+        selection.current = { start: caret, end: caret };
         const el = input.current;
         if (el === null) return;
         el.focus();
-        // 值要等这一拍渲染落到原生那侧才在；下一帧再把光标挪到末尾（刚聚焦时光标可能落在任何地方）
-        requestAnimationFrame(() => el.setSelection(text.length, text.length));
-      },
-    }),
+        // 值要等这一拍渲染落到原生那侧才在；下一帧再挪光标（刚聚焦时光标可能落在任何地方）
+        requestAnimationFrame(() => el.setSelection(caret, caret));
+      };
+      return {
+        fill(text: string) {
+          put(text, text.length);
+        },
+        mention(name: string) {
+          const next = insertAgentMention(draftNow.current, selection.current.end, name);
+          put(next.text, next.caret);
+        },
+      };
+    },
     [],
   );
   // 确定没发出去的那句（草稿里那第一句）摆回输入框——**只在输入框是空的时候摆**（桌面
@@ -84,6 +107,9 @@ export function Composer({ placeholder, canSend, sessionId, onSend, ref }: {
           multiline
           value={draft}
           onChangeText={setDraft}
+          onSelectionChange={(e) => {
+            selection.current = e.nativeEvent.selection;
+          }}
           placeholder={placeholder}
           placeholderTextColor={c.mutedForeground}
           style={{ fontSize: 16, lineHeight: 22, maxHeight: 110, color: c.foreground, padding: 0 }}

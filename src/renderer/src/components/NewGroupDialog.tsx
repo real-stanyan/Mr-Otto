@@ -12,7 +12,9 @@
 //    「建群」按下去拿一句服务端拒绝——那颗钮此刻看着是好的，这就是撒谎的勾（#722）。
 //    已经勾上的那几只照样点得动，否则满员之后名单就再也改不了。
 // ③ **群名留空用成员名顶上**：侧栏那一行不能是一格空白（同 sessionTitle.ts 的兜底），
-//    而拼名字**按名册顺序不按勾选顺序**——同一份名单在两台设备上不该拼出两个名字。
+//    而拼名字**按名册顺序不按勾选顺序**——同一份名单在两台设备上不该拼出两个名字；拼出来
+//    超过 60 字就截断（协议的群名要 1–60 字，超长的 create 帧整帧被拒、白等 15 秒）。
+//    三条判据都在 shared/groupEdit.ts，与手机建群页同一份（#1356 A3）。
 //
 // 「要和别人一起用？建一个团队」是这一栏唯一通向团队的路：这扇窗建不出团队，而
 // 「几个人一起用」是一个人站在这儿时真会有的念头，不给出路就是死胡同（同
@@ -29,7 +31,8 @@ import { useChat } from "../store.js";
 import { AgentFace } from "./AgentFace.js";
 import { agentFaceSlot } from "../../../shared/agentAvatar.js";
 import { homeOf } from "../../../shared/agentRoster.js";
-import { CHAT_GROUP_CREATE_MIN, CHAT_GROUP_MAX, CHAT_NAME_MAX } from "../../../shared/chatRoster.js";
+import { CHAT_GROUP_CREATE_MIN, CHAT_NAME_MAX } from "../../../shared/chatRoster.js";
+import { groupNameFor, groupPick, pickLocked, togglePick } from "../../../shared/groupEdit.js";
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 
 export function NewGroupDialog({ onNewTeam }: {
@@ -87,10 +90,8 @@ function NewGroupForm({ home, preset, onNewTeam, onCancel }: {
 
   // 名单**按名册顺序**算，不按勾选顺序：同一份名单在两台设备上要拼出同一个名字，
   // 也要让服务端那侧的「名单第一只」是同一只（narrowRoster 的规矩）
-  const ids = home.agents.map((a) => a.agentId).filter((id) => picked.includes(id));
-  const full = ids.length >= CHAT_GROUP_MAX;
-  const enough = ids.length >= CHAT_GROUP_CREATE_MIN;
-  const trimmed = name.trim();
+  const pick = groupPick(home, picked);
+  const { ids, full, enough } = pick;
   const status = !enough ? `至少选${CHAT_GROUP_CREATE_MIN === 2 ? "两" : CHAT_GROUP_CREATE_MIN}只`
     : full ? "最多六只"
     : `已选 ${ids.length} 只`;
@@ -99,8 +100,8 @@ function NewGroupForm({ home, preset, onNewTeam, onCancel }: {
     if (!enough || busy) return;
     setBusy(true);
     setError(null);
-    // 留空用成员名顶上（同 groupRows 的兜底，两处拼法一致）
-    const r = await createGroupChat(trimmed !== "" ? trimmed : nameOf(home, ids), ids);
+    // 留空用成员名顶上（同 groupRows 的兜底，两处拼法一致；超长截断，见头注 ③）
+    const r = await createGroupChat(groupNameFor(home, ids, name), ids);
     setBusy(false);
     // 成功的话 createGroupChat 已经把这扇窗关掉了；失败那句话留在这儿，窗不关——
     // 关掉就等于把「没建成」说成「建成了」，人会去侧栏找一个不存在的群
@@ -127,7 +128,7 @@ function NewGroupForm({ home, preset, onNewTeam, onCancel }: {
         {home.agents.map((a) => {
           const on = picked.includes(a.agentId);
           // 满员之后只有「取消勾选」还开着：全锁死的话名单就再也改不了
-          const locked = busy || (full && !on);
+          const locked = busy || pickLocked(pick, a.agentId);
           return (
             <label
               key={a.agentId}
@@ -139,7 +140,7 @@ function NewGroupForm({ home, preset, onNewTeam, onCancel }: {
                 type="checkbox"
                 checked={on}
                 disabled={locked}
-                onChange={() => setPicked((p) => (on ? p.filter((x) => x !== a.agentId) : [...p, a.agentId]))}
+                onChange={() => setPicked((p) => togglePick(home, p, a.agentId))}
                 className="size-[13px] shrink-0 accent-[var(--brand)]"
                 aria-label={a.name}
               />
@@ -179,10 +180,4 @@ function NewGroupForm({ home, preset, onNewTeam, onCancel }: {
       </div>
     </form>
   );
-}
-
-/** 没起名字时的群名：成员名顿号拼起来（与 `groupRows` 那份兜底同一个拼法）。
-    两处各写一遍的话，起过名的群和没起过名的群会在侧栏和头部拼出两个样子 */
-function nameOf(home: WorkspaceSnapshot, ids: readonly string[]): string {
-  return ids.map((id) => home.agents.find((a) => a.agentId === id)?.name ?? id).join("、");
 }

@@ -19,7 +19,7 @@ import { Button } from "@/components/ui/button.js";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover.js";
 import { AgentFace } from "./AgentFace.js";
 import { agentFaceSlot } from "../../../shared/agentAvatar.js";
-import { CHAT_GROUP_MAX } from "../../../shared/chatRoster.js";
+import { addChoice, rosterOrder } from "../../../shared/groupEdit.js";
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 
 export function AddAgentPopover({ ws, current, onConfirm }: {
@@ -33,16 +33,14 @@ export function AddAgentPopover({ ws, current, onConfirm }: {
   const [picked, setPicked] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
 
-  const candidates = ws.agents.filter((a) => !current.includes(a.agentId));
-  const room = CHAT_GROUP_MAX - current.length;
   // 满员、或者名册里一只都不剩——两种情形下这颗钮都没有事可做，但话不一样：
-  // 满员是「这个群装不下了」，没人可加是「你只有这几只」
-  const reason = room <= 0 ? "群里已经有六只了" : candidates.length === 0 ? "名册里的智能体都在群里了" : null;
+  // 满员是「这个群装不下了」，没人可加是「你只有这几只」（判据在 shared/groupEdit.ts，与手机群设置同一份）
+  const { candidates, room, reason } = addChoice(ws, current);
 
   const confirm = async (): Promise<void> => {
     if (picked.length === 0 || busy) return;
     setBusy(true);
-    const next = ws.agents.map((a) => a.agentId).filter((id) => current.includes(id) || picked.includes(id));
+    const next = rosterOrder(ws, [...current, ...picked]);
     await onConfirm(next);
     setBusy(false);
     setPicked([]);

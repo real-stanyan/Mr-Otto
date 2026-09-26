@@ -90,6 +90,28 @@ describe("NewGroupDialog（#1280）", () => {
     expect(createGroupChat).toHaveBeenCalledWith("上线冲刺", ["admin", "a_000000000001"]);
   });
 
+  it("群名留空、成员名拼起来超过 60 字：截到 60 字以内（超长的 create 帧会被整帧拒掉、白等 15 秒）", async () => {
+    const createGroupChat = vi.fn(async (_name: string, _ids: string[]) => ({ ok: true as const }));
+    const long = {
+      ...HOME,
+      agents: [
+        agent("a_000000000001", "负责对账的财务专员一号", ""), agent("a_000000000002", "负责对账的财务专员二号", ""),
+        agent("a_000000000003", "负责对账的财务专员三号", ""), agent("a_000000000004", "负责对账的财务专员四号", ""),
+        agent("a_000000000005", "负责对账的财务专员五号", ""), agent("a_000000000006", "负责对账的财务专员六号", ""),
+      ],
+    } as unknown as WorkspaceSnapshot;
+    seed({
+      workspaceGroups: [long],
+      createGroupChat,
+      newGroupPreset: ["a_000000000001", "a_000000000002", "a_000000000003", "a_000000000004", "a_000000000005", "a_000000000006"],
+    });
+    render(<NewGroupDialog onNewTeam={() => {}} />);
+    await userEvent.click(screen.getByRole("button", { name: "建群" }));
+    const name = createGroupChat.mock.calls[0]![0];
+    expect(name.length).toBeLessThanOrEqual(60);
+    expect(name.endsWith("…")).toBe(true);
+  });
+
   it("建失败：那句话留在弹窗里，弹窗不关", async () => {
     const closeNewGroup = vi.fn();
     seed({

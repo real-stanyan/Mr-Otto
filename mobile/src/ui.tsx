@@ -146,10 +146,11 @@ export function Tile({ children }: { children: React.ReactNode }) {
  *   plain    纯文字 + 点缀色——"刷新""用邮箱密码登录"这种读成链接的
  *   quiet    纯文字 + 暗色——"拒绝"这种和主动作并排、要让位的
  *   destructive 透明底 + 红字红边——不实底,因为它不是主动作
+ *   danger   实底红——只给确认弹窗里那颗真的会删东西的钮（#1362）：在那一刻它就是主动作
  */
-export type ButtonVariant = "primary" | "secondary" | "outline" | "plain" | "quiet" | "destructive";
+export type ButtonVariant = "primary" | "secondary" | "outline" | "plain" | "quiet" | "destructive" | "danger";
 
-/** 四档尺寸。高度照 demo：通栏 50、弹窗 46、进门闸 42、小胶囊 44。minHeight 按 border-box 算（含边框），
+/** 五档尺寸。高度照 demo：通栏 50、弹窗 46、进门闸 42、小胶囊 44、行尾小胶囊 30。minHeight 按 border-box 算（含边框），
     所以上下内边距 + 行高（字号 + 5）+ 两道 1pt 边不能超过它——通栏原来是 15 + 22 + 15 = 52，
     改成 13 之后有边没边都正好 50 */
 const BUTTON_SIZE = {
@@ -157,6 +158,8 @@ const BUTTON_SIZE = {
   dialog: { box: { borderRadius: radius.control, paddingVertical: 12, paddingHorizontal: space.md, minHeight: 46 }, font: 16 },
   compact: { box: { borderRadius: radius.control, paddingVertical: 10, paddingHorizontal: space.md, minHeight: 42 }, font: 15 },
   auto: { box: { borderRadius: radius.pill, paddingVertical: 11, paddingHorizontal: space.lg, minHeight: 44 }, font: 17 },
+  // 行尾的小胶囊（群设置每一行的「移出」，demo 的 .btn.sm）：30 高 = 5 + 18 + 5 + 两道 1pt 边
+  sm: { box: { borderRadius: radius.pill, paddingVertical: 5, paddingHorizontal: 12, minHeight: 30 }, font: 13 },
 } as const;
 
 export function Button(props: {
@@ -172,8 +175,8 @@ export function Button(props: {
   grow?: boolean;
   /** auto = 自己多宽算多宽的小胶囊,右对齐成一行。桌面 permission-grant 的动作行
       就是这个形状:安静、不抢卡片的主体。整屏的主按钮才用默认的通栏。
-      dialog = 弹窗底下那排（46 高）；compact = 进门闸那张卡上（42 高） */
-  size?: "full" | "auto" | "dialog" | "compact";
+      dialog = 弹窗底下那排（46 高）；compact = 进门闸那张卡上（42 高）；sm = 一行末尾的小胶囊（30 高） */
+  size?: "full" | "auto" | "dialog" | "compact" | "sm";
 }) {
   const { c } = usePalette();
   const reduce = useReduceMotion();
@@ -198,12 +201,14 @@ export function Button(props: {
     // 透明按钮压上去时边界随着波一起闪,按钮读成了背景的一部分
     : v === "outline" ? { backgroundColor: c.card, ...line, borderColor: c.border }
     : v === "destructive" ? { backgroundColor: "transparent", ...line, borderColor: c.destructive }
+    : v === "danger" ? { backgroundColor: c.destructive }
     : { backgroundColor: "transparent" };
 
   const fg =
     v === "primary" ? c.primaryForeground
     : v === "secondary" ? c.secondaryForeground
     : v === "destructive" ? c.destructive
+    : v === "danger" ? c.destructiveForeground
     : v === "outline" ? c.foreground
     : v === "quiet" ? c.mutedForeground
     : c.brand; // plain = 纯文字按钮,用点缀色让它读成"可点",而不是一段说明
@@ -316,12 +321,13 @@ export function Row(props: {
   chevron?: boolean;
   /** 单独成组、居中的动作行(iOS 的「退出登录」就是这个形状) */
   align?: "split" | "center";
-  tone?: "default" | "destructive";
+  /** accent = 读成「一个动作」的那一行（群设置的「加一只」，demo 里那一行的字是点缀色） */
+  tone?: "default" | "destructive" | "accent";
 }) {
   const { c } = usePalette();
   const hi = useRef(new Animated.Value(0)).current;
   const center = props.align === "center";
-  const fg = props.tone === "destructive" ? c.destructive : c.foreground;
+  const fg = props.tone === "destructive" ? c.destructive : props.tone === "accent" ? c.brand : c.foreground;
 
   // **按下那一帧就变色**(setValue,不是动画);松手才淡出。
   // 反过来做——按下淡入——延迟会直接吃掉"直接操纵"的感觉
@@ -576,6 +582,8 @@ export function Field(props: {
   inputRef?: React.Ref<TextInput>;
   /** 字居中（「新建智能体」那一格：它坐在大脸与脸墙之间，是一个名字不是一段话，demo 的 .nmrow） */
   align?: "left" | "center";
+  /** false = 打不进字（正在建 / 正在存的那几秒：表单锁住，同抽屉的 locked）。缺席 = 能打 */
+  editable?: boolean;
 }) {
   const { c } = usePalette();
   const [focused, setFocused] = useState(false);
@@ -585,6 +593,7 @@ export function Field(props: {
     <TextInput
       ref={props.inputRef}
       value={props.value}
+      editable={props.editable}
       onChangeText={props.onChangeText}
       placeholder={props.placeholder}
       placeholderTextColor={c.mutedForeground}

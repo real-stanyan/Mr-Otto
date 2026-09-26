@@ -8,6 +8,8 @@ import { RosterScreen } from "../roster/RosterScreen.js";
 import { ChatScreen } from "../chat/ChatScreen.js";
 import { AccountScreen } from "../account/AccountScreen.js";
 import { AgentSettingsScreen } from "../agent/AgentSettingsScreen.js";
+import { NewGroupScreen } from "../group/NewGroupScreen.js";
+import { GroupSettingsScreen } from "../group/GroupSettingsScreen.js";
 import { FaceGallery } from "../dev/FaceGallery.js";
 import type { RootStackParams } from "./types.js";
 
@@ -39,6 +41,17 @@ export function RootNavigator() {
         <Root.Screen
           name="AgentSettings"
           component={AgentSettingsScreen}
+          options={{ title: "", headerBackTitle: "返回", headerShadowVisible: false }}
+        />
+        <Root.Screen
+          name="NewGroup"
+          component={NewGroupScreen}
+          options={{ title: "新的群聊", headerBackTitle: "返回", headerShadowVisible: false }}
+        />
+        {/* 标题由这一页自己按群名 setOptions（改了名回来就跟着变） */}
+        <Root.Screen
+          name="GroupSettings"
+          component={GroupSettingsScreen}
           options={{ title: "", headerBackTitle: "返回", headerShadowVisible: false }}
         />
         {/* 形象陈列馆：只在开发构建里有（#1356 A0，见 dev/FaceGallery.tsx 头注） */}

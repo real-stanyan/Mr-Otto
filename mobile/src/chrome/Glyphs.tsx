@@ -1,4 +1,4 @@
-// 用 View 画的几个小图标（#1356 A1 / A2）：返回 / 关闭 / 新建 / 设置 / 搜索 / 发送。沿用 ui.tsx 里
+// 用 View 画的几个小图标（#1356 A1 / A2）：返回 / 关闭 / 新建 / 设置 / 搜索 / 发送 / 勾。沿用 ui.tsx 里
 // Chevron 的做法——不为几个形状引一个图标依赖。颜色一律由调用方给（前景色 / 弱色 / 反白）。
 import { View } from "react-native";
 
@@ -73,5 +73,15 @@ export function SendGlyph({ color }: { color: string }) {
       }} />
       <View style={{ position: "absolute", top: 2.5, width: 2.2, height: 13, borderRadius: 1.1, backgroundColor: color }} />
     </View>
+  );
+}
+
+/** ✓ 勾：左、下两道边转 -45°（建群那一列勾上的那几只） */
+export function CheckGlyph({ color, size = 14 }: { color: string; size?: number }) {
+  return (
+    <View style={{
+      width: size, height: size * 0.55, borderLeftWidth: 2.2, borderBottomWidth: 2.2, borderColor: color,
+      transform: [{ rotate: "-45deg" }], marginTop: -size * 0.2,
+    }} />
   );
 }

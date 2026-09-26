@@ -37,6 +37,21 @@ export function applyAgentMention(text: string, at: number, caret: number, name:
   return { text: text.slice(0, at) + inserted + text.slice(caret), caret: at + inserted.length };
 }
 
+// #1356 A3：手机「@ 谁」那颗钮——人先挑一只、再把名字插进光标处（桌面是打 @ 弹选人层，两条路插出来的
+// 一样）。光标正停在一个没打完的 @ 后面（人自己先打了「@运」）时替换那一截，不再补一个 @；光标前面贴着
+// 构词字符（「看下|」）时先补一个空格——parseMentions 要 @ 前是行首或非构词字符，贴上去的「看下@运维」
+// 一个都认不出，而 resolveSendMentions 会把它当成打错的名字整句拦下。`caret` 越界（输入框刚被清空、
+// 选区还是旧的）夹回末尾。
+export function insertAgentMention(text: string, caret: number, name: string): { text: string; caret: number } {
+  const pos = Math.max(0, Math.min(caret, text.length));
+  const typing = mentionQueryAt(text, pos);
+  if (typing !== null) return applyAgentMention(text, typing.at, pos, name);
+  if (pos > 0 && WORD.test(text[pos - 1]!)) {
+    return applyAgentMention(`${text.slice(0, pos)} ${text.slice(pos)}`, pos + 1, pos + 1, name);
+  }
+  return applyAgentMention(text, pos, pos, name);
+}
+
 // #935 / #957 C-I4：选人弹层的空态判据——纯函数,不碰任何 store/IPC。
 // 非 null 只有一种情形:用户确实停在一个 @ 后面(picking 非空)、已经打了至少
 // 一个字(query 非空——刚打完 @ 还没打字时不该报"没有叫「」的成员或智能体"，那是
