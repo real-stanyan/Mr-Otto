@@ -9,8 +9,11 @@ import Speech
 // ① 起引擎之前配 AVAudioSession（playAndRecord、默认走扬声器、允许蓝牙 A2DP 放音）并激活；听与放都停了
 //    再交还（notifyOthersOnDeactivation：别的 app 的音乐接着放）；
 // ② 来电 / Siri 打断、耳机插拔（引擎配置变了）会让引擎停下而不回调：当成一次中断说出口——停听、手上那段
-//    放音报 playError（不报的话 JS 那边的放音队列会一直等一个永远不来的 played）。起引擎（尤其刚开完回声
-//    消除）自己也可能触发一次「配置变了」，起来之后 1 秒内的那一条不算；
+//    放音报 playError（不报的话 JS 那边的放音队列会一直等一个永远不来的 played）。「配置变了」按引擎此刻
+//    停没停判，不按时间判：系统是先停引擎再发这条通知的（AVAudioEngine.h）；我们自己在起引擎之前开回声
+//    消除也会引出一条，它 hop 到 speechQueue 时起引擎那一步已经做完——引擎还在跑 = 就是那一条，不算。
+//    原来按「起来之后 1 秒内的不算」判，会把起来之后真停掉的那一次也吞掉（显示在听、什么都识别不到、
+//    一个字不说）。不自动重起（维护者裁定），要人再点一下麦克风；
 // ③ 回声消除的 ducking 配置是 iOS 17 起才有的 API；
 // ④ 放音收 expo-file-system 给的 file:// URI（Playback.swift）；
 // ⑤ 起完引擎再报一次 status：aec 要开完回声消除才知道（桌面那份只在开引擎之前报，第一次开麦时 aec 还是 nil）。
@@ -73,9 +76,6 @@ final class Recognizer {
   private let levelEveryMs: Double = 100
   /// 没人说话时多久换一次 request（毫秒）：攒着的音频有上限
   private let idleRestartMs: Double = 50_000
-  /// 引擎最近一次起来的时刻，与「配置变了」那条通知对账（头注 ②）
-  private var engineStartedAt: Double = 0
-  private let settleMs: Double = 1000
   private var observers: [NSObjectProtocol] = []
 
   init(emit: @escaping (Event) -> Void) {
@@ -89,7 +89,8 @@ final class Recognizer {
     })
     observers.append(center.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil) { [weak self] _ in
       speechQueue.async {
-        guard let self, nowMs() - self.engineStartedAt > self.settleMs else { return }
+        // 按引擎此刻停没停判（头注 ②）：还在跑 = 起引擎之前开回声消除引出的那一条
+        guard let self, !self.engine.isRunning else { return }
         self.interrupted("声音设备变了（耳机 / 蓝牙），点一下麦克风再开")
       }
     })
@@ -169,7 +170,6 @@ final class Recognizer {
     guard !engine.isRunning else { return }
     engine.prepare()
     try engine.start()
-    engineStartedAt = nowMs()
   }
 
   private func ensurePlaybackEngine() throws {
@@ -194,11 +194,13 @@ final class Recognizer {
       return
     }
     let input = engine.inputNode
-    // 系统回声消除（ADR-0277）。开不了不算错——status.aec=false，JS 退回半双工
+    // 系统回声消除（ADR-0277）。开不了不算错——status.aec=false，JS 退回半双工，界面上不说；但真机上
+    // 要查「为什么没开成」，留一行系统日志
     do {
       if !input.isVoiceProcessingEnabled { try input.setVoiceProcessingEnabled(true) }
       aec = true
     } catch {
+      NSLog("[OttoSpeech] voice processing unavailable: %@", String(describing: error))
       aec = false
     }
     if aec == true, #available(iOS 17.0, *) {
