@@ -1712,12 +1712,13 @@ const read = (p: string): string => readFileSync(join(ROOT, p), "utf8");
 const DESKTOP = "native/MrOttoSpeech/Sources/MrOttoSpeech";
 const MOBILE = "mobile/modules/otto-speech";
 
-/** `struct Event` 那一块里声明的字段名（排序后） */
+/** `struct Event` 那一块里声明的字段名（排序后）。只认两格缩进的成员声明：手机那份 `dictionary`
+    里的局部 `var d` 是四格，不是字段；`dictionary` 本身是算出来的属性，也不算 */
 function eventFields(src: string): string[] {
   const start = src.indexOf("struct Event");
   const end = src.indexOf("\n}", start);
   const block = src.slice(start, end);
-  return [...block.matchAll(/^\s*(?:let|var) (\w+):/gm)].map((m) => m[1]!).filter((n) => n !== "dictionary").sort();
+  return [...block.matchAll(/^ {2}(?:let|var) (\w+):/gm)].map((m) => m[1]!).filter((n) => n !== "dictionary").sort();
 }
 
 describe("otto-speech 原生模块与桌面 MrOttoSpeech 对拍", () => {
