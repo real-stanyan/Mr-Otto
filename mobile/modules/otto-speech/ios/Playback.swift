@@ -4,9 +4,10 @@ import Foundation
 // 放音（#1356 A4，ADR-0320）：桌面 native/MrOttoSpeech/Sources/MrOttoSpeech/Playback.swift 的 iOS 版——
 // agent 的 TTS 字节由 JS 落成缓存目录里的一个文件，这里用识别那**同一个** AVAudioEngine 的 AVAudioPlayerNode
 // 放：不被回声消除压低，还是回声消除的远端参考信号（ADR-0280）。
-// 与桌面的差别三处：路径收 expo-file-system 给的 file:// URI；多一个 interrupt——系统把声音拿走（来电 /
+// 与桌面的差别四处：路径收 expo-file-system 给的 file:// URI；多一个 interrupt——系统把声音拿走（来电 /
 // 耳机拔了）时节点停了、完成回调不会来，手上那段要报 playError，不然 JS 那边的放音队列会一直等下去；
-// 起不来（解不开 / 引擎起不来）是抛出去，不发 playError（见 PlaybackFailure）。
+// 多一个 cut——开麦要先停引擎再开回声消除时，手上那段当放完收掉（Recognizer 头注 ⑥）；起不来（解不开 /
+// 引擎起不来）是抛出去，不发 playError（见 PlaybackFailure）。
 // 一次只放一段（JS 那边的队列本来就串行）；每段换格式就重连一次节点（mp3 的采样率不定）。stop 之后迟到的
 // 完成回调用 generation 认账。所有状态在 speechQueue 上动（不用主线程的理由见 OttoSpeechModule.swift）；
 // 完成回调在系统的线程上来，hop 过去。
