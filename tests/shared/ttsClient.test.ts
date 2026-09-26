@@ -1,8 +1,8 @@
-// teamVoice（#1163）：主进程替渲染层合成一段语音——拿 JWT 打网关的 /llm/v1/speech，
+// ttsClient（#1163；#1356 A4 挪进 shared）：替调用方合成一段语音——拿 JWT 打网关的 /llm/v1/speech，
 // 回字节 + 这一笔的 credit，额度头照记进 hostedQuota（同 chat 那条路的 noteHeaders）。
 // 判据挂在 routeTts 上：没订阅 / 额度用完 / 网关不供语音一个字节都不发。
 import { describe, expect, it, vi } from "vitest";
-import { createTeamVoice } from "../../src/main/teamVoice.js";
+import { createTtsClient } from "../../src/shared/ttsClient.js";
 import { BILLING_HEADERS } from "../../src/shared/billing.js";
 import { TTS_HEADERS } from "../../src/shared/tts.js";
 
@@ -10,7 +10,7 @@ function make(res: () => Response, over: Partial<{ subscribed: boolean; ttsModel
   const noted: Headers[] = [];
   const exhausted: unknown[] = [];
   const fetchImpl = vi.fn(async () => res()) as unknown as typeof fetch;
-  const voice = createTeamVoice({
+  const voice = createTtsClient({
     quota: {
       ttsInput: () => ({ subscribed: over.subscribed ?? true, exhausted: false, ttsModels: over.ttsModels ?? ["speech-2.8-turbo"] }),
       noteHeaders: (h) => { noted.push(h); },
