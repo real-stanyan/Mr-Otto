@@ -1,9 +1,9 @@
-// 渲染层语音引擎的纯逻辑（#1163）：语音钮画不画、一段文字读出来之前剥什么、
+// 语音引擎的纯逻辑（#1163；#1356 A4 挪进 shared）：语音钮画不画、一段文字读出来之前剥什么、
 // 流式预览里哪几段已经完成可以合成、终态落下来时还有哪几段没读。
 import { describe, expect, it } from "vitest";
 import {
   EMPTY_VOICE_FEED, feedDelta, feedEvent, markInterrupted, splitSpoken, spokenText, voiceCallAvailable, type VoiceFeedState,
-} from "../../src/renderer/src/lib/voiceCall.js";
+} from "../../src/shared/voiceFeed.js";
 import type { BillingMe } from "../../src/shared/billing.js";
 import type { SessionEvent } from "../../src/session/events.js";
 

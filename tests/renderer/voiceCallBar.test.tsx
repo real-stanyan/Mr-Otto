@@ -12,7 +12,7 @@ import { VoiceCallBar } from "../../src/renderer/src/components/VoiceCallBar.js"
 import type { WorkspaceSnapshot } from "../../src/shared/workspaces.js";
 import type { VoiceCallState } from "../../src/shared/voiceCall.js";
 import type { VoiceListenState } from "../../src/renderer/src/store.js";
-import { MIC_OFF } from "../../src/renderer/src/lib/voiceMic.js";
+import { MIC_OFF } from "../../src/shared/voiceMic.js";
 
 afterEach(() => cleanup());
 

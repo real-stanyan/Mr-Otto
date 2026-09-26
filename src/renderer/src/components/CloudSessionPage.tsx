@@ -98,7 +98,7 @@ import { VoiceCallBar } from "./VoiceCallBar.js";
 import { VoiceCallOverlay } from "./VoiceCallOverlay.js";
 import { callStarterUid } from "../lib/voiceCallView.js";
 import { VoicePickerPopover } from "./VoicePickerPopover.js";
-import { voiceCallAvailable } from "../lib/voiceCall.js";
+import { voiceCallAvailable } from "../../../shared/voiceFeed.js";
 import { voiceCallOf } from "../../../shared/voiceCall.js";
 import { useConfirm } from "@/components/ui/confirm-dialog.js";
 

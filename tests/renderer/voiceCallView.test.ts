@@ -2,7 +2,7 @@
 // （在说 / 在想 / 在听）、顶上那句状态话。零 DOM。
 import { describe, expect, it } from "vitest";
 import { callStarterUid, callStatusText, callTiles } from "../../src/renderer/src/lib/voiceCallView.js";
-import { MIC_OFF } from "../../src/renderer/src/lib/voiceMic.js";
+import { MIC_OFF } from "../../src/shared/voiceMic.js";
 import type { VoiceListenState } from "../../src/renderer/src/store.js";
 import type { WorkspaceSnapshot } from "../../src/shared/workspaces.js";
 import type { VoiceCallState } from "../../src/shared/voiceCall.js";

@@ -10,6 +10,8 @@
 //   确定失败 = sendError（输入框里的原文由调用方留着；草稿第一句那种则经 draftSeed 摆回输入框）。
 // · **代数**：人在异步途中离开了这一页（closeChat），晚到的 open / create 结果不该再把一条
 //   会话接回来。
+// · **给语音那一层的钩子**（A4）：事件落进来、流式碎片、房间状态翻转、离开这一页——语音的编排
+//   （shared 的 voiceSession）要知道这四件事；这里不认识语音，只在 store 改完之后通知一声。
 import { useSyncExternalStore } from "react";
 import { applyCloudStatus, insertCloudEvent, unknownSendNote, type CloudSessionCore } from "../../../src/shared/cloudSessionState.js";
 import { applyCloudDelta, clearCloudStreamingOn, type CloudStreaming } from "../../../src/shared/cloudStreaming.js";
@@ -50,6 +52,26 @@ const EMPTY: ChatStoreState = {
   session: null, streaming: {}, pendingFirst: null, unsent: null, draftSeed: null, sendError: null, notice: null, error: null,
 };
 const store = createStore<ChatStoreState>(EMPTY);
+
+/** 语音那一层要知道的四件事（A4）。只在 store 改完之后调（它会回头读 chatEvents） */
+export interface ChatActivity {
+  event(e: SessionEvent): void;
+  delta(d: CloudSessionDelta): void;
+  room(sessionId: string, prev: ChatSession["state"], next: ChatSession["state"]): void;
+  closed(): void;
+}
+let activity: ChatActivity | null = null;
+
+export function setChatActivity(a: ChatActivity | null): void {
+  activity = a;
+}
+
+/** 语音那一层读日志用（非 hook）：不是这一条就当没有 */
+export function chatEvents(sessionId: string): readonly SessionEvent[] | null {
+  const s = store.get().session;
+  return s !== null && s.sessionId === sessionId ? s.events : null;
+}
+
 /** 每次 closeChat 加一：异步回来时比一比，变了就说明人已经离开了这一页 */
 let gen = 0;
 
@@ -64,6 +86,7 @@ function onEvent(event: SessionEvent): void {
   if (events === null) return;
   const streaming = clearCloudStreamingOn(s.streaming, event);
   store.set({ session: { ...s.session, events }, ...(streaming !== s.streaming ? { streaming } : {}) });
+  activity?.event(event);
 }
 
 function onDelta(d: CloudSessionDelta): void {
@@ -71,13 +94,16 @@ function onDelta(d: CloudSessionDelta): void {
   if (s.session === null || s.session.sessionId !== d.sessionId) return;
   const streaming = applyCloudDelta(s.streaming, d);
   if (streaming !== s.streaming) store.set({ streaming });
+  activity?.delta(d);
 }
 
 function onStatus(status: CloudSessionStatus): void {
   const s = store.get();
   if (s.session === null || s.session.sessionId !== status.sessionId) return;
+  const prev = s.session.state;
   const session: ChatSession = { ...s.session, ...applyCloudStatus(s.session, status) };
   store.set({ session, ...(status.notice === undefined ? {} : { notice: status.notice }) });
+  if (prev !== session.state) activity?.room(session.sessionId, prev, session.state);
   if (session.state === "ready") void flushPendingFirst(session.sessionId);
 }
 
@@ -183,6 +209,17 @@ export function dropUnsent(): void {
   store.set({ unsent: null });
 }
 
+/** 通话里说完的一句（A4）：不 @（走派活）、带 voice 记号——转写出来的正文与手打的一个字节都不差，
+    「这句是说出来的」只有麦克风这一侧知道（协议 19，#1233），时间线据它把一通电话折成一张卡 */
+export function sayVoice(text: string): Promise<CloudAck> {
+  return cloudClient.say(text, false, [], [], true);
+}
+
+/** 改这条聊天的通话名单（A4）：空 = 挂断。回执只答「收没收下」，通话栏画的是随后落下来的那条事件 */
+export function setVoiceCall(agentIds: string[]): Promise<CloudAck> {
+  return cloudClient.call(agentIds);
+}
+
 export function stopTurn(seq: number): Promise<CloudAck> {
   return cloudClient.stop(seq);
 }
@@ -209,8 +246,9 @@ export function takeDraftSeed(sessionId: string): string | null {
   return seed.text;
 }
 
-/** 离开这一页：断连接、清状态 */
+/** 离开这一页：先让语音那一层收口（停麦停放音——通话本身还在），再断连接、清状态 */
 export function closeChat(): void {
+  activity?.closed();
   gen += 1;
   void cloudClient.leave();
   store.set(EMPTY);

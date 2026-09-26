@@ -27,6 +27,7 @@ A0 立了基座，A1 接上了名册（主场的智能体与群混排、按最�
 - `src/account/`：账号页（A0 精简版；额度 / 订阅 / 这周用了多少 / 设置在 A5）
 - `src/face/`、`src/dev/`：像素脸（react-native-svg + 共用的 25fps 钟）+ 只在开发构建里出现的形象陈列馆
 - `src/ui.tsx`、`src/dialog.tsx`、`src/chrome/`：组件层与共享状态
+- `modules/otto-speech/` —— 语音原生模块（识别 + 断句 + 回声消除 + 放音，Swift）。
 - 能测的判断一律住 `src/shared/`（跟着根门禁跑），这里只放装配与画法
 
 ## 跑起来
@@ -49,6 +50,18 @@ npm --prefix mobile run ios        # 走 mobile/ios/，需要 Apple 开发者账
 ```
 
 `mobile/ios/`、`mobile/android/` 是 prebuild 产物，进了 `.gitignore`。
+
+### 语音通话要开发版（A4）
+
+语音识别不在 Expo Go 里，通话用的是本仓自己的原生模块 `modules/otto-speech/`（Swift，照搬桌面 `native/MrOttoSpeech`，ADR-0320）。
+**Expo Go 里 app 照常跑，只是没有电话钮**；要打电话得装开发版：
+
+    cd mobile
+    npx expo run:ios            # 第一次：prebuild 出 ios/ + pod install + 编译，十几分钟
+
+`ios/` 是生成的（`.gitignore` 里），不提交；改了 `modules/otto-speech/ios/` 下的 Swift 要重跑这一句。
+真机要在 Xcode 里给 `ios/MrOtto.xcworkspace` 配上自己的签名。模拟器用 Mac 的麦克风（第一次会问 macOS 的麦克风权限），
+模拟器上回声消除多半开不了，会退回半双工（它说话时闭麦）——插嘴只能在真机上验。
 
 ## 登录（Google / GitHub）
 

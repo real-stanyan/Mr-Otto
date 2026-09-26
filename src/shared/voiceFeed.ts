@@ -1,4 +1,4 @@
-// voiceCall（渲染层）—— 语音通话的纯逻辑（#1163）：语音钮画不画、一段文字读出来之前
+// voiceFeed —— 语音通话的纯逻辑（#1163；#1356 A4 从渲染层挪进 shared，桌面与手机 import 同一份）：语音钮画不画、一段文字读出来之前
 // 剥什么、流式预览里哪几段已经完成可以合成、终态落下来时还有哪几段没读。
 //
 // 「一段写完就出声」（维护者拍板 ③）靠的是 delta 帧的**累计快照**语义（协议 16，#1107）：
@@ -16,9 +16,9 @@
 //
 // 播放器（voicePlayer.ts）与 store 的接线不在这里：这个文件零 DOM、零 IPC。
 
-import { splitBubbles } from "../../../shared/chatBubbles.js";
-import type { BillingSnapshotView } from "../../../shared/shellBridge.js";
-import type { SessionEvent } from "../../../session/events.js";
+import { splitBubbles } from "./chatBubbles.js";
+import type { BillingSnapshotView } from "./shellBridge.js";
+import type { SessionEvent } from "../session/events.js";
 
 /** 语音钮画不画：订阅活跃且网关供语音。`null`（还没查到）与没订阅给**同一个答案：不画**
     ——同 modelMenu 对 hosted 的处置（ADR-0244）：按「能用」画会给一个没订阅的人一颗点了

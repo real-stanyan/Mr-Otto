@@ -217,3 +217,48 @@ describe("群聊的两种行（#1356 A3，spec §5.6）", () => {
     ]);
   });
 });
+
+describe("通话卡（#1356 A4，spec §5.7 / ADR-0288）", () => {
+  const A = "a_000000000001";
+  it("一场通话折成一张卡：卡在开场那条的位置，通话里说的话与它的回复不单独成行；第二行是我说的第一句", () => {
+    seq = 0;
+    const rows = chatRows({
+      events: [
+        e({ type: "user_message", content: "[Stan]: 开电话之前", fromUid: "me", mentions: [] }),
+        e({ type: "voice_call_changed", participants: [{ agentId: A, name: "开发" }], byUid: "me", ignorable: true }),
+        e({ type: "user_message", content: "[Stan]: 帮我查下部署", fromUid: "me", voice: true }),
+        e({ type: "assistant_message", content: "查好了，都是绿的。", model: "m", agentId: A }),
+        e({ type: "voice_call_changed", participants: [], byUid: "me", ignorable: true }),
+        e({ type: "user_message", content: "[Stan]: 挂了之后打的字", fromUid: "me", mentions: [] }),
+      ],
+      ws: WS, selfUid: "me", now: DAY,
+    });
+    expect(rows.map((r) => r.kind)).toEqual(["day", "mine", "call", "mine"]);
+    const call = rows[2];
+    expect(call).toMatchObject({ kind: "call", key: "call-1", topic: "帮我查下部署" });
+    if (call?.kind !== "call") return;
+    expect(call.card.utterances).toBe(2);
+    expect(call.card.endedTs).toBe(DAY);
+  });
+
+  it("还开着的通话：卡照样画在开场的位置、endedTs 为 null", () => {
+    seq = 0;
+    const rows = chatRows({
+      events: [
+        e({ type: "voice_call_changed", participants: [{ agentId: A, name: "开发" }], byUid: "me", ignorable: true }),
+        e({ type: "assistant_message", content: "你好，我是开发。", model: "m", agentId: A }),
+      ],
+      ws: WS, selfUid: "me", now: DAY,
+    });
+    expect(rows.map((r) => r.kind)).toEqual(["day", "call"]);
+    const call = rows[1];
+    if (call?.kind !== "call") throw new Error("第二行应是通话卡");
+    expect(call.card.endedTs).toBeNull();
+    expect(call.topic).toBe("你好，我是开发。");
+  });
+
+  it("通话开着时，通话里那几只正在写的那一段不画（hide）——落下来就折进卡里，画了会一闪而过", () => {
+    const rows = liveRows({ streaming: { a_000000000001: "正在说", a_000000000002: "别的" }, ws: WS, now: DAY, hide: new Set(["a_000000000001"]) });
+    expect(rows.map((r) => r.key)).toEqual(["live-a_000000000002"]);
+  });
+});

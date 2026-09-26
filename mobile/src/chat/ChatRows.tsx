@@ -3,6 +3,7 @@
 // 脸只画名册里查得到的那只（agentFaceIfKnown）：派生对陌生 id 也算得出一张脸，画上去等于
 // 宣称它还在名册里。
 // A3：群的名单变了那一行（`roster`）居中、名字左边一张 s 档的脸；派活那一句是一条普通的旁白。
+// A4：一场语音通话折成的那张卡（`call`），点开由调用方开抽屉（onOpenCall）。
 import { useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { agentFaceIfKnown } from "../../../src/shared/agentAvatar.js";
@@ -11,10 +12,11 @@ import type { RosterLinePart } from "../../../src/shared/cloudTimeline.js";
 import { facePhase } from "../../../src/shared/ottoFace/art.js";
 import type { WorkspaceSnapshot } from "../../../src/shared/workspaces.js";
 import { Face } from "../face/Face.js";
+import { CallCardRow } from "../voice/CallCardRow.js";
 import { type as t, usePalette } from "../theme.js";
 import { Button } from "../ui.js";
 
-export function ChatRowView({ row, ws }: { row: ChatRow; ws: WorkspaceSnapshot }) {
+export function ChatRowView({ row, ws, onOpenCall }: { row: ChatRow; ws: WorkspaceSnapshot; onOpenCall?: (seq: number) => void }) {
   const { c } = usePalette();
   switch (row.kind) {
     case "day":
@@ -63,6 +65,8 @@ export function ChatRowView({ row, ws }: { row: ChatRow; ws: WorkspaceSnapshot }
       return <NoteRow text={row.text} tone={row.tone} detail={row.detail} />;
     case "roster":
       return <RosterLineView parts={row.parts} ws={ws} />;
+    case "call":
+      return <CallCardRow card={row.card} topic={row.topic} onPress={() => onOpenCall?.(row.card.seq)} />;
     default: {
       // 新加一种行而这里没接上时编译不过——这个组件没写返回类型，漏接的那一种原来会安静地什么都不画
       const unhandled: never = row;

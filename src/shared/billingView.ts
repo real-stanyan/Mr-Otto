@@ -187,3 +187,9 @@ export function hostedImageModels(billing: BillingSnapshotView | null): readonly
     组件无限重渲染（`Maximum update depth exceeded`，写这条注释的那一版真的这样了，
     被 tests/renderer/ModelPicker.test.tsx 当场抓住）。冻起来是为了别有人往里 push */
 const NO_HOSTED_MODELS: readonly string[] = Object.freeze([]);
+
+/** 额度窗口几点恢复，按本地时间报「HH:MM」（#1356 A4 从主进程 modelRoute 的 fmtReset 挪来：
+    模型路由 / 出图 / 语音三句 blocked 共用，语音那句手机端也要） */
+export function resetClockText(ms: number): string {
+  return new Date(ms).toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" });
+}
