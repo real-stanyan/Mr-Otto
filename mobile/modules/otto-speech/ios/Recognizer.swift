@@ -14,6 +14,7 @@ import Speech
 // ③ 回声消除的 ducking 配置是 iOS 17 起才有的 API；
 // ④ 放音收 expo-file-system 给的 file:// URI（Playback.swift）；
 // ⑤ 起完引擎再报一次 status：aec 要开完回声消除才知道（桌面那份只在开引擎之前报，第一次开麦时 aec 还是 nil）。
+// ⑥ 开麦时引擎若已经因为放音在跑（第一次开麦要等授权），先把手上那段当放完收掉、停引擎，再开回声消除。
 // **所有状态都在主线程上动**（识别回调与音频 tap 各在自己的线程上，一律 hop 到 main）。
 
 private func speechAuthName(_ s: SFSpeechRecognizerAuthorizationStatus) -> String {
@@ -170,6 +171,12 @@ final class Recognizer {
     } catch {
       emit(Event(type: "error", message: "麦克风打不开：\(error.localizedDescription)"))
       return
+    }
+    // 正在放它的话（开麦要等两道授权，它已经开口了）：先把手上那段收掉、停引擎——回声消除只能在停着的引擎上开，
+    // 在跑着的引擎上开会抛（退回半双工）或者引发一次「配置变了」，把刚开的麦又关掉
+    if engine.isRunning {
+      playback.cut()
+      engine.stop()
     }
     let input = engine.inputNode
     // 系统回声消除（ADR-0277）。开不了不算错——status.aec=false，JS 退回半双工

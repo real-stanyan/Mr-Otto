@@ -80,4 +80,14 @@ final class Playback {
     node.stop()
     emit(Event(type: "playError", message: message, id: id))
   }
+
+  /// 麦克风要开回声消除（得先停引擎）时手上那段放不完了：当它放完了报 played，JS 的放音队列接着往下走
+  /// （这一段不补读）。不报 playError：这不是出错，界面上不该冒一行红字
+  func cut() {
+    guard let id = currentId else { return }
+    generation += 1
+    currentId = nil
+    node.stop()
+    emit(Event(type: "played", id: id))
+  }
 }

@@ -5,8 +5,15 @@ import ExpoModulesCore
 // 命令是 AsyncFunction（一律在主线程上跑——Recognizer 的状态只在主线程上动），事件一律走 onSpeech
 // （不是请求-响应：识别结果是自己冒出来的，没有哪一条命令在等它）。
 public class OttoSpeechModule: Module {
-  private lazy var recognizer: Recognizer = Recognizer { [weak self] event in
-    self?.sendEvent("onSpeech", event.dictionary)
+  private var recognizerInstance: Recognizer?
+  /// 第一次用到才建（没开过电话的 app 不该多一个 AVAudioEngine 和两条通知订阅）
+  private var recognizer: Recognizer {
+    if let r = recognizerInstance { return r }
+    let r = Recognizer { [weak self] event in
+      self?.sendEvent("onSpeech", event.dictionary)
+    }
+    recognizerInstance = r
+    return r
   }
 
   public func definition() -> ModuleDefinition {
@@ -43,7 +50,7 @@ public class OttoSpeechModule: Module {
     }.runOnQueue(.main)
 
     OnDestroy {
-      let recognizer = self.recognizer
+      guard let recognizer = self.recognizerInstance else { return }
       DispatchQueue.main.async { recognizer.shutdown() }
     }
   }
