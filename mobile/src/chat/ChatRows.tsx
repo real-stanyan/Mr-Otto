@@ -63,6 +63,11 @@ export function ChatRowView({ row, ws }: { row: ChatRow; ws: WorkspaceSnapshot }
       return <NoteRow text={row.text} tone={row.tone} detail={row.detail} />;
     case "roster":
       return <RosterLineView parts={row.parts} ws={ws} />;
+    default: {
+      // 新加一种行而这里没接上时编译不过——这个组件没写返回类型，漏接的那一种原来会安静地什么都不画
+      const unhandled: never = row;
+      return unhandled;
+    }
   }
 }
 

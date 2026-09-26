@@ -275,7 +275,8 @@ export function ChatScreen({ route, navigation }: Props) {
         : undefined;
 
   const emptyGroup = kind === "group" && session !== null && agentIds.length === 0;
-  const canMention = kind === "group" && session !== null && agentIds.length > 0;
+  // 被拒是终态（底下那行说清是哪一种、给「回名册」）：不再画一颗往发不出去的输入框里插字的钮
+  const canMention = kind === "group" && session !== null && session.state !== "denied" && agentIds.length > 0;
 
   return (
     <View style={{ flex: 1, backgroundColor: c.background }}>
