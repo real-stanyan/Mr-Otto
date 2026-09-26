@@ -158,6 +158,67 @@ describe("voiceSession", () => {
     expect(texts.at(-1)).toBe("新一轮。");
   });
 
+  // 半双工的开关要跟原生那边对得上（#1356 A4 终审 Important 3）：原生开麦时是没闭着的，而开麦要等授权——
+  // 那之前发的 pause 被原生丢掉了。对不上的后果是它自己的话被录进麦克风、当成人说的发出去（#1176 的自激）
+  it("没有回声消除、它正说到一半时开麦：命令只有 start；listening 一到立刻闭麦，不等这一段说完", async () => {
+    const h = harness();
+    h.v.join(S);
+    h.v.onSpeech(status(false));
+    h.v.onSpeech(listening);
+    h.push(reply(2, "a", "第一句。第二句。"));
+    await flush();
+    expect(h.v.state()?.speaking).toBe("a");
+    expect(h.v.state()?.queued).toBeGreaterThan(0);
+    h.v.setMic(false);
+    h.v.setMic(true);
+    expect(h.mic).toEqual(["start:开发", "pause", "stop", "start:开发"]);
+    h.v.onSpeech(listening);
+    expect(h.mic).toEqual(["start:开发", "pause", "stop", "start:开发", "pause"]);
+  });
+
+  it("第一次加入：它已经开口，闭麦的命令先于 listening 发出（原生还没开麦、丢掉了）→ listening 一到再发一次", async () => {
+    const h = harness();
+    h.v.join(S);
+    h.push(reply(2, "a", "你好。"));
+    await flush();
+    expect(h.mic).toEqual(["start:开发", "pause"]);
+    // 原生的顺序：授权过了先报一条 status（aec 还不知道）→ listening → 开完回声消除再报一条 status
+    h.v.onSpeech(status(null));
+    h.v.onSpeech(listening);
+    h.v.onSpeech(status(false));
+    expect(h.mic).toEqual(["start:开发", "pause", "pause"]);
+  });
+
+  it("回声消除开着这件事记得住：关麦再开、离开再加入，开麦那一刻 aec 仍是 true；它说话时不闭麦", async () => {
+    const h = harness();
+    h.v.join(S);
+    h.v.onSpeech(status(true));
+    h.v.onSpeech(listening);
+    h.v.setMic(false);
+    h.v.setMic(true);
+    expect(h.v.state()?.mic.aec).toBe(true);
+    h.push(reply(2, "a", "你好。"));
+    await flush();
+    h.v.onSpeech(listening);
+    expect(h.v.state()?.speaking).toBe("a");
+    expect(h.mic).toEqual(["start:开发", "stop", "start:开发"]);
+    h.v.leave();
+    h.v.join(S);
+    expect(h.v.state()?.mic.aec).toBe(true);
+  });
+
+  it("status 把 aec 从 true 翻成 false（它正在说）→ 当场闭麦", async () => {
+    const h = harness();
+    h.v.join(S);
+    h.v.onSpeech(status(true));
+    h.v.onSpeech(listening);
+    h.push(reply(2, "a", "你好。"));
+    await flush();
+    expect(h.mic).toEqual(["start:开发"]);
+    h.v.onSpeech(status(false));
+    expect(h.mic).toEqual(["start:开发", "pause"]);
+  });
+
   it("一句说完（final）→ 发出去；发不出去那句话写进 mic.error", async () => {
     const h = harness({ say: () => ({ ok: false, message: "说得太快了，歇一下" }) });
     h.v.join(S);

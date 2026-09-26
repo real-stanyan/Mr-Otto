@@ -9,6 +9,8 @@
 // ③ 放音走哪条路由注入的 createAudio 决定（手机一律交给原生模块自己的音频引擎，ADR-0280），这一层不知道；
 // ④ `say()` 那个 promise 多接了一次 rejection（桌面 sendSpoken 没接）：发不出去落进 mic.error，
 //    不是一条未处理的 rejection——纯加法，不改前三条的判据。
+// 另有一处不是设计上的差别，是这一份补上、桌面 store 还缺的缺口（#1356 A4 终审）：半双工在原生报
+// `listening` 开 / `status` 时重新对一遍（见 onSpeech），回声消除开没开跨过重新开麦记着（lastAec）。
 // 桌面 store 的语音编排还没改用这一份（多一扇 ① 那扇窗，源码里还钉着 utteranceHoldWiring 那几条断言），
 // 两份编排并存是已知代价，见 ADR-0320。
 
@@ -80,6 +82,11 @@ export function createVoiceSession(deps: VoiceSessionDeps): VoiceSession {
   /** 云端断了那一刻麦是开着的吗（#1289）：gone 会自愈，断线期间停的麦要有人开回来；
       人自己碰过麦克风开关、或整段离开语音，一律清掉（他表达过意志，压过自动恢复） */
   let micWantedAfterReconnect = false;
+  /** 原生最近一次报的回声消除开没开（status 事件）。重新开麦时带上它，不退回 null：null 按半双工算，
+      有回声消除时退回 null 会把刚开的麦闭上一段、插嘴失灵。这是这台设备的事实，跨过离开再加入也成立
+      （原生那边的 aec 同样一直留着） */
+  let lastAec: boolean | null = null;
+  const micStarting = (): MicState => ({ ...MIC_OFF, status: "starting", aec: lastAec });
 
   const set = (next: VoiceListen | null): void => {
     listen = next;
@@ -100,7 +107,9 @@ export function createVoiceSession(deps: VoiceSessionDeps): VoiceSession {
     micPaused = false;
     deps.mic.stop();
   };
-  /** 半双工：放音队列每动一次来问一遍该不该闭麦，只在跨过那条线时发命令。回声消除开着永远不闭 */
+  /** 半双工：该不该闭麦，只在跨过那条线时发命令。回声消除开着永远不闭。三处来问：放音队列每动一次、
+      原生报开麦（listening）、原生报 status（回声消除开没开可能变了）——只挂在放音队列上的话，开麦那一刻
+      它正说到一半，麦要开到这一段说完（#1356 A4 终审） */
   const micSync = (): void => {
     if (!micStarted || listen === null) return;
     const want = micShouldPause({ speaking: listen.speaking, queued: listen.queued, aec: listen.mic.aec });
@@ -154,7 +163,7 @@ export function createVoiceSession(deps: VoiceSessionDeps): VoiceSession {
       set({
         sessionId, sinceSeq: last === undefined ? -1 : last.seq,
         speaking: null, queued: 0, text: null, error: null,
-        mic: { ...MIC_OFF, status: "starting" },
+        mic: micStarting(),
       });
       // 常开麦（#1176）：进通话就开
       startMic();
@@ -169,7 +178,7 @@ export function createVoiceSession(deps: VoiceSessionDeps): VoiceSession {
       if (listen === null) return;
       micWantedAfterReconnect = false;
       if (on) {
-        patch({ mic: { ...MIC_OFF, status: "starting" } });
+        patch({ mic: micStarting() });
         startMic();
       } else {
         stopMic();
@@ -208,6 +217,14 @@ export function createVoiceSession(deps: VoiceSessionDeps): VoiceSession {
       if (v === null || v.mic.status === "off") return;
       const r = applySpeechEvent(v.mic, ev, deps.permissionHelp);
       if (r.state !== v.mic) patch({ mic: r.state });
+      if (ev.type === "status") {
+        lastAec = ev.aec;
+        micSync(); // 回声消除开没开可能变了（开完回声消除才知道 / 这次没开成）
+      } else if (ev.type === "listening" && ev.on) {
+        // 原生开麦时是没闭着的；开麦前发的 pause 它丢掉了（还没开、没得闭）——按此刻该不该闭重新对一遍
+        micPaused = false;
+        micSync();
+      }
       // 插嘴（#1184）：它在说 / 排着要说时人开口够长 → 停放音，这几只这一轮剩下的话不读
       if (ev.type === "partial" && (v.speaking !== null || v.queued > 0)) {
         if (bargeInOn(ev.text, { speaking: v.speaking, queued: v.queued }, player.state().text ?? "", v.mic.active)) {
@@ -245,7 +262,7 @@ export function createVoiceSession(deps: VoiceSessionDeps): VoiceSession {
       }
       if (next === "ready" && micWantedAfterReconnect) {
         micWantedAfterReconnect = false;
-        patch({ mic: { ...MIC_OFF, status: "starting" } });
+        patch({ mic: micStarting() });
         startMic();
       }
     },
