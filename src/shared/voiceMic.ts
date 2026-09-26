@@ -1,4 +1,4 @@
-// voiceMic —— 群语音里「人说话」那一半的渲染层纯逻辑（#1176，ADR-0273）：helper 的事件
+// voiceMic —— 群语音里「人说话」那一半的纯逻辑（#1176，ADR-0273；#1356 A4 从渲染层挪进 shared，手机端用同一份）：helper 的事件
 // → 麦克风状态（开着 / 半双工暂停 / 没权限 / 出错 / 实时字幕），final 交给调用方发出去
 // （不 @ = 走 ADR-0270 的派活）。零 DOM、零 IPC；store 的接线不在这里。
 //
@@ -14,8 +14,8 @@
 // 打断的门槛两道：够长（≥ 3 个 token，咳嗽 / 应声不算）+ 不像它自己的话被录回来（与正在读的那段
 // token 重叠 < 70%，AEC 的兜底——同 dryrun 的 echoFilter）。
 
-import type { SpeechEvent } from "../../../shared/shellBridge.js";
-import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
+import type { SpeechEvent } from "./shellBridge.js";
+import type { WorkspaceSnapshot } from "./workspaces.js";
 
 export type MicStatus = "off" | "starting" | "listening" | "paused" | "denied" | "error";
 

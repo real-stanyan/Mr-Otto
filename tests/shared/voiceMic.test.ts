@@ -2,7 +2,7 @@
 // （开着 / 暂停 / 没权限 / 出错 / 实时字幕），final 交给调用方发出去；半双工的判据
 // （agent 在说或排着要说 → 闭麦）。零 DOM、零 IPC。
 import { describe, expect, it } from "vitest";
-import { applySpeechEvent, bargeInOn, isSelfEcho, MIC_OFF, micShouldPause, SPEECH_HINTS_MAX, speechHints, type MicState } from "../../src/renderer/src/lib/voiceMic.js";
+import { applySpeechEvent, bargeInOn, isSelfEcho, MIC_OFF, micShouldPause, SPEECH_HINTS_MAX, speechHints, type MicState } from "../../src/shared/voiceMic.js";
 import type { WorkspaceSnapshot } from "../../src/shared/workspaces.js";
 
 const starting: MicState = { ...MIC_OFF, status: "starting" };

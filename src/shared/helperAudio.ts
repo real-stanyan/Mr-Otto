@@ -1,4 +1,4 @@
-// helperAudio —— 一段 TTS 字节交给语音 helper 播（#1201）。
+// helperAudio —— 一段 TTS 字节交给「别人的音频引擎」播（#1201；#1356 A4 挪进 shared：桌面是语音 helper，手机是原生模块）。
 //
 // 回声消除开着时（ADR-0277）macOS 的 VPIO 会压低别的 app 的音频（ducking），`duckingLevel: .min`
 // 只是最低档不是零——而 agent 的语音正是 Electron（别的 app）放的，真机上就是「听不清」。
@@ -7,10 +7,10 @@
 // 拿到 id 就算起播；播完 / 播不了由 helper 的 played / playError 事件回来（store 的
 // speechOnEvent 转到 helperAudioEvent），pause() = speechStopPlay。
 //
-// 零 DOM；IPC 经 window.otter（硬规则：渲染层只走 ShellBridge）。
+// 零 DOM、零 IPC：真正交出去的那一下在注入的 bridge 里（桌面经 window.otter，手机经原生模块）。
 
 import type { PlayerAudio } from "./voicePlayer.js";
-import type { SpeechEvent } from "../../../shared/shellBridge.js";
+import type { SpeechEvent } from "./shellBridge.js";
 
 export interface HelperAudioBridge {
   play(bytes: Uint8Array): Promise<{ id: string } | { error: string }>;
