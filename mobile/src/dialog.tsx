@@ -137,17 +137,27 @@ interface DialogAction {
   label: string;
   onPress: () => void;
   disabled?: boolean;
+  /** 右边那颗真的会删东西（删掉一只 / 解散群）：画成实底红（#1362）——触发它的那一行是红字，
+      弹窗里真正按下去就删的那颗反而是品牌蓝，是一句反话 */
+  tone?: "destructive";
 }
 
 /**
- * 底下那排（同桌面 AlertDialogFooter）：左边「不做这件事」、右边「做」，两颗等宽。
+ * 底下那排（同桌面 AlertDialogFooter）：左边「不做这件事」、右边「做」，两颗等宽；「做」是删东西时右边那颗实底红。
  * 换步只换字不换位置——手指停在原地就能接着按。
  */
 export function DialogFooter({ left, right }: { left: DialogAction; right: DialogAction }) {
   return (
     <View style={{ flexDirection: "row", gap: 8, paddingHorizontal: 20, paddingTop: 20 }}>
       <Button grow size="dialog" variant="secondary" label={left.label} onPress={left.onPress} disabled={left.disabled} />
-      <Button grow size="dialog" label={right.label} onPress={right.onPress} disabled={right.disabled} />
+      <Button
+        grow
+        size="dialog"
+        variant={right.tone === "destructive" ? "danger" : "primary"}
+        label={right.label}
+        onPress={right.onPress}
+        disabled={right.disabled}
+      />
     </View>
   );
 }

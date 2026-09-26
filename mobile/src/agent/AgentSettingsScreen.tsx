@@ -4,7 +4,7 @@
 // 「存」挂在原生导航条右边：什么都没改 / 有一格不合法 / 正在存时按不动。
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { ScrollView, Text, TextInput, View } from "react-native";
 import {
   deleteAgentEverywhere, updateAgentChecked, type AgentDeleteDeps, type AgentUpdateDeps,
 } from "../../../src/shared/agentAdmin.js";
@@ -17,6 +17,7 @@ import { facePhase } from "../../../src/shared/ottoFace/art.js";
 import { deleteAgentRow, listAgentChats, listAgentNames, updateAgentRow } from "../../../src/shared/supabaseWorkspacesApi.js";
 import { agentPagePath } from "../../../src/shared/wiki.js";
 import { ADMIN_AGENT_ID, AGENT_NAME_MAX } from "../../../src/shared/workspaceAgents.js";
+import { HeaderTextButton } from "../chrome/HeaderTextButton.js";
 import { cloudClient } from "../cloud/cloudClient.js";
 import { Dialog, DialogFooter, DialogLead, DialogTitle } from "../dialog.js";
 import { Face } from "../face/Face.js";
@@ -120,19 +121,10 @@ export function AgentSettingsScreen({ route, navigation }: Props) {
   useLayoutEffect(() => {
     navigation.setOptions({
       headerRight: () => (
-        <Pressable
-          accessibilityRole="button"
-          accessibilityState={{ disabled: !canSave }}
-          disabled={!canSave}
-          hitSlop={10}
-          onPress={() => void saveRef.current()}
-          style={({ pressed }) => [pressed && { opacity: 0.6 }]}
-        >
-          <Text style={{ ...t.headline, color: canSave ? c.brand : c.mutedForeground }}>{busy ? "正在存…" : "存"}</Text>
-        </Pressable>
+        <HeaderTextButton label={busy ? "正在存…" : "存"} disabled={!canSave} onPress={() => void saveRef.current()} />
       ),
     });
-  }, [navigation, canSave, busy, c.brand, c.mutedForeground]);
+  }, [navigation, canSave, busy]);
 
   if (!ws || !agent || !form || !errors) {
     return (
@@ -232,7 +224,7 @@ export function AgentSettingsScreen({ route, navigation }: Props) {
         ) : null}
         <DialogFooter
           left={{ label: "取消", onPress: () => setConfirming(false), disabled: busy }}
-          right={{ label: busy ? "正在删…" : "删掉", onPress: () => void remove(), disabled: busy }}
+          right={{ label: busy ? "正在删…" : "删掉", onPress: () => void remove(), disabled: busy, tone: "destructive" }}
         />
       </Dialog>
     </View>
