@@ -3,8 +3,9 @@ import { describe, expect, it } from "vitest";
 import type { BillingMe } from "../../src/shared/billing.js";
 import type { VoiceCallCard, VoiceCallCardLine } from "../../src/shared/cloudTimeline.js";
 import {
-  CALL_TOPIC_MAX, callBarMode, callCardDurationText, callFace, callTopicText, joinBlockedText, phoneOffered, waveAmplitude, waveMode,
+  CALL_TOPIC_MAX, callBarMode, callCardDurationText, callFace, callMicOn, callTopicText, joinBlockedText, phoneOffered, waveAmplitude, waveMode,
 } from "../../src/shared/mobileCall.js";
+import type { VoiceRoomState } from "../../src/shared/voiceSession.js";
 import type { OpenTurn } from "../../src/shared/turnLedger.js";
 import type { VoiceCallState } from "../../src/shared/voiceCall.js";
 
@@ -34,9 +35,29 @@ describe("phoneOffered：输入框空着时那颗是不是「开电话」", () =
 
 describe("callBarMode", () => {
   it("没有通话 = 输入框；这台在听 = live；通话开着而这台没在听 = idle", () => {
-    expect(callBarMode({ call: null, listeningHere: true })).toBe("none");
-    expect(callBarMode({ call: CALL, listeningHere: true })).toBe("live");
-    expect(callBarMode({ call: CALL, listeningHere: false })).toBe("idle");
+    expect(callBarMode({ call: null, listeningHere: true, starting: false })).toBe("none");
+    expect(callBarMode({ call: CALL, listeningHere: true, starting: false })).toBe("live");
+    expect(callBarMode({ call: CALL, listeningHere: false, starting: false })).toBe("idle");
+  });
+  it("这台刚开电话、还没开始听（名单先落下来、回执晚一拍）→ 已经是 live，不先闪一下「通话还开着」", () => {
+    expect(callBarMode({ call: CALL, listeningHere: false, starting: true })).toBe("live");
+    expect(callBarMode({ call: null, listeningHere: false, starting: true })).toBe("none");
+  });
+});
+
+describe("callMicOn：电话那一格的麦克风算不算开着", () => {
+  it("这台还没在听：正在开电话算开着（那一格已经是 live），否则算关着", () => {
+    expect(callMicOn({ mic: null, starting: true })).toBe(true);
+    expect(callMicOn({ mic: null, starting: false })).toBe(false);
+  });
+  it("关着、没权限算关着；开着 / 半双工闭着 / 识别出错（原生自己在重试）算开着", () => {
+    expect(callMicOn({ mic: "off", starting: false })).toBe(false);
+    // 没权限那句话叫人「点一下麦克风」：算开着的话那颗钮写着「静音」，一点就把那句话抹掉
+    expect(callMicOn({ mic: "denied", starting: false })).toBe(false);
+    expect(callMicOn({ mic: "denied", starting: true })).toBe(false);
+    for (const mic of ["starting", "listening", "paused", "error"] as const) {
+      expect(callMicOn({ mic, starting: false })).toBe(true);
+    }
   });
 });
 
@@ -105,18 +126,26 @@ describe("callCardDurationText：通话卡上的时长", () => {
 });
 
 describe("joinBlockedText：这台为什么接不了", () => {
-  const ok = { native: true, ready: true, billing: snap(me()) };
+  const ok = { native: true, room: "ready" as VoiceRoomState, billing: snap(me()) };
   it("接得了 → null", () => {
     expect(joinBlockedText(ok)).toBeNull();
   });
   it("没有原生模块（Expo Go）→ 说要开发版", () => {
     expect(joinBlockedText({ ...ok, native: false })).toContain("开发版");
   });
-  it("房间没 ready / 订阅还没查到 → 说在等（不说没订阅）", () => {
-    expect(joinBlockedText({ ...ok, ready: false })).toContain("连上");
+  it("房间：在连说在连、断了说在重连、被拒说连不上了（终态，不说「正在」）", () => {
+    expect(joinBlockedText({ ...ok, room: "connecting" })).toBe("正在连上这条聊天…");
+    expect(joinBlockedText({ ...ok, room: "gone" })).toBe("正在重连这条聊天…");
+    expect(joinBlockedText({ ...ok, room: "denied" })).toBe("这条聊天连不上了，接不了电话。");
+  });
+  it("订阅还没查到 → 说在查（不说没订阅）", () => {
     const pending = joinBlockedText({ ...ok, billing: null });
-    expect(pending).toContain("查订阅");
+    expect(pending).toBe("正在查订阅…");
     expect(pending).not.toContain("订阅 Pro");
+  });
+  it("扣款没成功（past_due）→ 说扣款没成功，不劝去订阅（ADR-0240：past_due 不是没订阅）", () => {
+    const text = joinBlockedText({ ...ok, billing: snap(me({ status: "past_due" })) });
+    expect(text).toBe("这个账号的订阅扣款没成功，续上之后才打得了电话。");
   });
   it("没订阅 → 手机那句（不指「设置 → 订阅」，手机上没有那一页）；网关不供语音 → 说不供", () => {
     const none = joinBlockedText({ ...ok, billing: snap(me({ status: "none", plan: null })) });

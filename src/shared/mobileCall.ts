@@ -5,6 +5,8 @@ import type { BillingSnapshotView } from "./shellBridge.js";
 import type { OpenTurn } from "./turnLedger.js";
 import { ttsBlocked, ttsHostedOf } from "./ttsRoute.js";
 import type { VoiceCallState } from "./voiceCall.js";
+import type { MicStatus } from "./voiceMic.js";
+import type { VoiceRoomState } from "./voiceSession.js";
 
 /** 输入框空着时右边那颗是不是「开电话」（spec §5.3 一物两用）：这台打得了电话、房间 ready、这条聊天里
     有智能体、还没有通话。任何一条不成立都退回那颗灰的发送钮——说不清就不画（#722）。私聊草稿（第一句还
@@ -17,10 +19,22 @@ export type CallBarMode = "none" | "live" | "idle";
 
 /** 输入框那一格此刻画什么：没有通话 = 输入框；通话开着且这台在听 = 电话那一格（live）；通话开着而这台
     没在听（锁过屏、从名册回来、通话是另一台设备开的）= 「通话还开着」那一格（idle）。判据是日志里的
-    通话名单（voiceCallOf），不是「我刚按了」 */
-export function callBarMode(o: { call: VoiceCallState | null; listeningHere: boolean }): CallBarMode {
+    通话名单（voiceCallOf），不是「我刚按了」。
+    `starting` = 这台正在开电话（按了、回执还没回来）：runtime 先广播名单再回执，名单落下来的那一拍这台还没
+    开始听——照「没在听」画就会先闪一下「通话还开着」。只认开电话这一个动作：从 idle 那一格挂断时不能把它
+    翻成 live */
+export function callBarMode(o: { call: VoiceCallState | null; listeningHere: boolean; starting: boolean }): CallBarMode {
   if (o.call === null) return "none";
-  return o.listeningHere ? "live" : "idle";
+  return o.listeningHere || o.starting ? "live" : "idle";
+}
+
+/** 电话那一格的麦克风算不算开着（声浪画不画、那颗钮写「静音」还是「开麦」）。`mic` = 这台在听时的麦克风
+    状态，null = 这台还没在听——正在开电话（`starting`，那一格已经是 live）时算开着，否则算关着。
+    **没权限算关着**：没权限那句话叫人「点一下麦克风」，算开着的话那颗钮写着「静音」、一点就是关麦，而关麦
+    会把那句话一起抹掉。识别出错（`error`）仍算开着：原生会自己重试，开麦失败最后会落成 listening 关 */
+export function callMicOn(o: { mic: MicStatus | null; starting: boolean }): boolean {
+  if (o.mic === null) return o.starting;
+  return o.mic !== "off" && o.mic !== "denied";
 }
 
 export interface CallFace {
@@ -81,12 +95,17 @@ export function callCardDurationText(card: VoiceCallCard): string {
 }
 
 /** 这台此刻为什么接不了（「通话还开着」那一格里「接着听」换成这一句）。null = 接得了。
-    没订阅那句不照抄桌面（桌面那句指「设置 → 订阅」，手机上 A5 之前没有那一页）；额度用完 / 网关不供语音
-    两句照 ttsBlocked 说 */
-export function joinBlockedText(o: { native: boolean; ready: boolean; billing: BillingSnapshotView | null }): string | null {
+    房间三种没 ready 各说各的：被拒是终态，不说「正在」——那会让人一直等。
+    扣款没成功（past_due）单独一句：它不是没订阅（ADR-0240），劝人去订阅是指错了路；手机上 A5 之前没有
+    账号页，所以不指去哪儿续。没订阅那句不照抄桌面（桌面那句指「设置 → 订阅」，手机上没有那一页）；
+    额度用完 / 网关不供语音两句照 ttsBlocked 说 */
+export function joinBlockedText(o: { native: boolean; room: VoiceRoomState; billing: BillingSnapshotView | null }): string | null {
   if (!o.native) return "这个版本的 app 听不了电话：要装带语音的开发版（Expo Go 不带语音识别）。";
-  if (!o.ready) return "正在连上这条聊天…";
+  if (o.room === "denied") return "这条聊天连不上了，接不了电话。";
+  if (o.room === "gone") return "正在重连这条聊天…";
+  if (o.room === "connecting") return "正在连上这条聊天…";
   if (o.billing === null) return "正在查订阅…";
+  if (o.billing.me?.status === "past_due") return "这个账号的订阅扣款没成功，续上之后才打得了电话。";
   const hosted = ttsHostedOf(o.billing);
   if (hosted === undefined || !hosted.subscribed) return "订阅 Pro 或 Max 之后才打得了电话。";
   return ttsBlocked(hosted);

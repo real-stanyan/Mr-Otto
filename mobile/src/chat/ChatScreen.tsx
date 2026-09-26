@@ -24,7 +24,7 @@ import { roleChipsAnchor } from "../../../src/shared/agentOnboarding.js";
 import { resolveSendMentions } from "../../../src/shared/agentMentionInput.js";
 import { chatViewOf } from "../../../src/shared/agentRoster.js";
 import { cloudDeniedText } from "../../../src/shared/cloudSessionState.js";
-import { callBarMode, callFace, joinBlockedText, phoneOffered, waveMode } from "../../../src/shared/mobileCall.js";
+import { callBarMode, callFace, callMicOn, joinBlockedText, phoneOffered, waveMode } from "../../../src/shared/mobileCall.js";
 import { chatCentre, chatRows, liveRows, nowRowOf, resolveChatTarget, type ChatRow, type NowRow } from "../../../src/shared/mobileChat.js";
 import { facePhase } from "../../../src/shared/ottoFace/art.js";
 import { dmFaceState } from "../../../src/shared/ottoFace/index.js";
@@ -191,8 +191,8 @@ export function ChatScreen({ route, navigation }: Props) {
   const pendingMention = useRef<string | null>(null);
   const reduce = useReduceMotion();
   const voice = useVoice();
-  /** 开电话 / 挂断正在路上 */
-  const [callBusy, setCallBusy] = useState(false);
+  /** 正在路上的那个动作：开电话 / 挂断（按不动看它在不在；开电话时那一格先画成 live，见 callBarMode） */
+  const [callOp, setCallOp] = useState<"start" | "hangup" | null>(null);
   /** 「转文字」那一行开着没有（这一页自己的事，不进 store） */
   const [captionsOn, setCaptionsOn] = useState(false);
   /** 点开的那张通话卡（按开场那条的 seq 认）与抽屉开没开；退场放完才清 seq，正文不会在退场时空掉 */
@@ -281,21 +281,22 @@ export function ChatScreen({ route, navigation }: Props) {
 
   const usable = voiceUsable(voice);
   const listen = voice.listen !== null && session !== null && voice.listen.sessionId === session.sessionId ? voice.listen : null;
-  const barMode = callBarMode({ call, listeningHere: listen !== null });
+  const starting = callOp === "start";
+  const barMode = callBarMode({ call, listeningHere: listen !== null, starting });
   const offerPhone = phoneOffered({ voiceUsable: usable, ready, agentIds, call });
 
   const onStartCall = async (): Promise<void> => {
     if (session === null || agentIds.length === 0) return;
-    setCallBusy(true);
+    setCallOp("start");
     // 私聊拉那一只；群拉整个群（spec §5.7；通话中不增减人）
     const r = await startCall(session.sessionId, dmAgent !== null ? [dmAgent] : agentIds);
-    setCallBusy(false);
+    setCallOp(null);
     if (!r.ok) setPageNote(r.unknown ? { text: "没有收到回执，不确定电话打出去没有", tone: "muted" } : { text: r.message, tone: "error" });
   };
   const onHangUp = async (): Promise<void> => {
-    setCallBusy(true);
+    setCallOp("hangup");
     const r = await hangUp();
-    setCallBusy(false);
+    setCallOp(null);
     if (!r.ok) setPageNote(r.unknown ? { text: "没有收到回执，不确定挂断没有", tone: "muted" } : { text: r.message, tone: "error" });
   };
 
@@ -413,7 +414,7 @@ export function ChatScreen({ route, navigation }: Props) {
         {barMode !== "none" && call !== null && ws !== null && session !== null ? (
           (() => {
             const face = callFace({ call, speaking: listen?.speaking ?? null, open: openTurns(events) });
-            const micOn = listen !== null && listen.mic.status !== "off";
+            const micOn = callMicOn({ mic: listen?.mic.status ?? null, starting });
             return (
               <CallBar
                 mode={barMode}
@@ -424,8 +425,8 @@ export function ChatScreen({ route, navigation }: Props) {
                 micOn={micOn}
                 captionsOn={captionsOn}
                 captions={{ agent: listen?.text ?? null, me: listen !== null && listen.mic.transcript !== "" ? listen.mic.transcript : null }}
-                joinBlocked={joinBlockedText({ native: nativeSpeech, ready, billing: voice.billing })}
-                busy={callBusy}
+                joinBlocked={joinBlockedText({ native: nativeSpeech, room: session.state, billing: voice.billing })}
+                busy={callOp !== null}
                 onToggleCaptions={() => {
                   // 那一行出现 / 收起会把上面的时间线推一下：160ms 接住它；减弱动态效果时直接换
                   if (!reduce) LayoutAnimation.configureNext(LayoutAnimation.create(160, LayoutAnimation.Types.easeOut, LayoutAnimation.Properties.opacity));
@@ -450,7 +451,7 @@ export function ChatScreen({ route, navigation }: Props) {
               canSend={canSend}
               sessionId={session?.sessionId ?? null}
               onSend={onSend}
-              {...(offerPhone ? { phone: { onCall: () => void onStartCall(), busy: callBusy } } : {})}
+              {...(offerPhone ? { phone: { onCall: () => void onStartCall(), busy: callOp !== null } } : {})}
             />
           </>
         )}
