@@ -2246,7 +2246,11 @@ const facePreview=ch=>`<div class="prev">${
   faceOf(ch,'',108,'idle',true).replace('<canvas','<canvas data-el="prev"')}</div>`;
 /** 11 个角色那一墙。两处共用：抄第二份的那天，两边会在「哪几个角色可选」上分家。
     只有选中的那张是活的（其余静止），底下那一格按头居中（那儿没有角标） */
-const faceWall=pick=>`<div class="faces">${FACE_CHARACTERS.map(c=>`
+/** 暂时不进这面墙的角色。维护者 2026-09-24 拍板（#1356 的 spec §11 第 5 条）：
+    `cap` 占的是旧 03 那个坑位，而 03 的画还没补齐 —— 补齐之前谁都不该被存进一个暂借格，
+    否则那一批人的脸会在补画那天集体变样。库里仍然是 11 个角色，少的只是**这面墙**。 */
+const WALL_HIDDEN=new Set(['cap']);
+const faceWall=pick=>`<div class="faces">${FACE_CHARACTERS.filter(c=>!WALL_HIDDEN.has(c.id)).map(c=>`
   <button class="fpick" data-act="pickFace" data-ch="${c.id}" aria-label="${c.name}"${c.id===pick?' data-on=""':''}>
     ${faceOf(c.id,'',54,'idle',c.id===pick).replace('<canvas','<canvas data-center="ink"')}
   </button>`).join('')}</div>`;
@@ -2306,14 +2310,11 @@ function faceRow(ids){
 function botRow(b,fresh){
   /* 还没人跟它说过要干什么的那一只：主行写的是**这个事实**，不是替它编一个称呼。
      「新智能体」那种占位名比空着更糟 —— 它看起来像个名字，于是没人再去填真的那一行 */
-  /* 主行写什么：有名字就是名字（职责跟在后面的小字里）；**没名字时职责就是主行** ——
-     不是把它塞进那行小字，那会让整行的第一眼是一句灰色小字，看着像副标题没有标题。
-     两样都没有的那一只（刚建出来）照实说，不替它编一个称呼 */
-  const head=b.name
-    ? `<span class="n">${b.name}</span><span class="rl">${b.role}</span>`
-    : b.role
-      ? `<span class="n">${b.role}</span>`
-      : `<span class="n" style="color:var(--mutedFg);font-weight:500">还没说要干什么</span>`;
+  /* 主行是名字，职责跟在后面的小字里。**名字必填之后这儿只剩一支** ——
+     原来还有「没名字时职责当主行」「两样都没有时照实说」两支，维护者拍了必填（spec §11 第 1 条），
+     那两支再也跑不到了，删掉：留着跑不到的代码，下一个人会以为它还在被谁读。
+     刚建出来那只的 role 是空的，所以第一眼是名字 + 一行「点进去跟它说第一句」 */
+  const head=`<span class="n">${b.name}</span><span class="rl">${b.role}</span>`;
   return `<div class="row press brow" data-go="botChat" data-p='{"id":"${b.id}"}'${fresh?' data-fresh="1"':''}>
     ${faceOf(b.face,b.name[0]||'',54,'idle',true)}
     <span class="grow">
@@ -2434,7 +2435,10 @@ SCREENS.botsEmpty={label:'名册 · 一只都还没有',grp:'智能体',render:(
    <div class="empty" style="padding:22px 24px 8px">
      <img src="${IMG.otto}" alt="" style="width:76px;height:76px;border-radius:20px;margin-bottom:16px">
      <h3>先建一只</h3>
-     <p>说一句它是干什么的就行。它有自己的一台电脑，<br>能登进你的应用，像同事一样把活做完。</p>
+     <!-- 「它有自己的一台电脑」是假的：那台机器是**整个账号共用**的一台（主场，ADR-0232 一容器一卷），
+          这份 demo 自己在名册与账号页里也是这么写的。实现那侧 A2 终审把同一句话挑出来改过一次
+          （#1356 的 F3），这儿跟上 —— demo 是给人看的参照物，参照物里留着一句假话最贵 -->
+     <p>说一句它是干什么的就行。它和别的几只<br>共用一台电脑，能登进你的应用，像同事一样把活做完。</p>
    </div>
    <div class="chips">${DATA.presets.map(([t])=>`<button class="chip" data-act="preset" data-t="${t}">${t}</button>`).join('')}</div>
    <div class="field"><button class="btn" data-go="newBot">建第一只</button></div>
@@ -2679,7 +2683,7 @@ SCREENS.botSettings={label:'改一只',grp:'建与改',render:(p)=>{
      ${faceOf(b.face,b.name[0],108,'idle',true)}
      <span class="lb">${I('gear',13,2)} 换个形象</span>
    </button>
-   <div class="field"><label>叫什么</label><input class="input" data-f="name" value="${b.name}" placeholder="不填也行"></div>
+   <div class="field"><label>叫什么</label><input class="input" data-f="name" value="${b.name}" placeholder="必填"></div>
    <div class="field"><label>干什么的</label><input class="input" data-f="role" value="${b.role}" placeholder="比如：收发票、对账、月底出一张表"></div>
    <div class="field"><label>还有什么要交代的（它自己看得见这一段）</label>
      <textarea class="input" data-f="prompt">提交信息写为什么不写做了什么。推之前先跑门禁。不许推 main。</textarea></div>
@@ -3091,8 +3095,14 @@ const SHEETS={
        <!-- 这里原来有一句「不用取名字…」的说明，维护者撤掉了：一屏上没有名字这一格，
             就没有「不用取名字」这件事要交代；解释一件屏幕上不存在的事，反而让人回头找它在哪 -->
      </div>
-     <div class="tfoot"><button class="btn" data-act="createBot">创建</button></div>`,{height:'70%'});
+     <div class="tfoot"><button class="btn" data-act="createBot" disabled>创建</button></div>`,{height:'70%'});
    el.classList.add('newbot');
+   /* 名字**必填**（维护者拍板，#1356 的 spec §11 第 1 条，推翻了这份 demo 原来的「可填可不填」）。
+      空着时那颗钮是灰的且点不动（`.btn[disabled]`），不是点下去弹一句「请填名字」——
+      一颗点了只会挨训的钮和一颗撒谎的勾是同一类。
+      **仍然不自动聚焦**：键盘一弹上来就把下面那十张脸盖住了，而挑脸是这一屏的主事 */
+   const nm=el.querySelector('[data-el="nm"]'), btn=el.querySelector('[data-act="createBot"]');
+   nm.addEventListener('input',()=>{ btn.disabled=!nm.value.trim(); });
    soon(()=>previewTour(el));
    return el;
  },
@@ -3136,7 +3146,7 @@ const SHEETS={
           以为那就是将要建出来的那只长什么样 -->
      <span class="lft"><img src="${IMG.otto}" alt=""></span>
      <span class="grow"><div class="t">一只智能体</div>
-       <div class="s">说一句它是干什么的就行。它有自己的一台电脑。</div></span>
+       <div class="s">说一句它是干什么的就行。它和别的几只共用一台电脑。</div></span>
    </button>
    <button class="pick" data-act="newPick" data-to="newGroup">
      <span class="lft">${faceRow(['dev','design','ops'])}</span>
@@ -3351,7 +3361,7 @@ const ACTS={
  createBot:(b)=>{
    const box=b.closest('.newbot');
    const ch=box.querySelector('.fpick[data-on]')?.dataset.ch||FACE_CHARACTERS[0].id;
-   const name=(box.querySelector('[data-el="nm"]')?.value||'').trim();
+   const name=(box.querySelector('[data-el="nm"]')?.value||'').trim(); if(!name) return;
    const id='new'+Date.now();
    DATA.bots.unshift({id,face:ch,name,role:'',last:'点进去跟它说第一句',at:'刚刚',ts:0});
    /* 先把名册重画一遍（那一行带入场），再推它的那条线：
