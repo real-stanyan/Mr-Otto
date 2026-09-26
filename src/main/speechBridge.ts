@@ -10,7 +10,8 @@
 // 崩溃**要说出口**：helper 一死麦就掉了，而渲染层上一次听到的还是 listening:true——
 // 不补一条事件，通话栏会一直画着「开麦」而没人在听（同 #913「失败无声」的教训）。
 
-import type { SpeechAuth, SpeechEvent } from "../shared/shellBridge.js";
+import type { SpeechEvent } from "../shared/shellBridge.js";
+import { speechEventOf } from "../shared/speechEvent.js";
 
 export type SpeechCommand =
   /** `hints`（#1196）：上下文词表——agent 名 / 成员名 / 开发常用英文词，helper 喂给识别器的 contextualStrings */
@@ -45,10 +46,8 @@ export function encodeSpeechCommand(c: SpeechCommand): string {
   return JSON.stringify(wire) + "\n";
 }
 
-const AUTH: ReadonlySet<string> = new Set<SpeechAuth>(["authorized", "denied", "restricted", "notDetermined"]);
-const isAuth = (v: unknown): v is SpeechAuth => typeof v === "string" && AUTH.has(v);
-
-/** helper 吐的一行 → 事件；形状不对一律 null（stderr 不走这条管子，坏行只可能是协议漂了） */
+/** helper 吐的一行 → 事件；形状不对一律 null（stderr 不走这条管子，坏行只可能是协议漂了）。
+    验形那半在 shared（speechEventOf，手机原生模块递来的对象走同一份） */
 export function decodeSpeechEvent(line: string): SpeechEvent | null {
   let o: unknown;
   try {
@@ -56,41 +55,7 @@ export function decodeSpeechEvent(line: string): SpeechEvent | null {
   } catch {
     return null;
   }
-  if (!o || typeof o !== "object") return null;
-  const e = o as Record<string, unknown>;
-  switch (e.type) {
-    case "status":
-      if (!isAuth(e.speech) || !isAuth(e.mic)) return null;
-      return {
-        type: "status",
-        speech: e.speech,
-        mic: e.mic,
-        onDevice: typeof e.onDevice === "boolean" ? e.onDevice : null,
-        locale: typeof e.locale === "string" ? e.locale : null,
-        aec: typeof e.aec === "boolean" ? e.aec : null,
-      };
-    case "listening":
-      return typeof e.on === "boolean" ? { type: "listening", on: e.on } : null;
-    case "paused":
-      return { type: "paused" };
-    case "resumed":
-      return { type: "resumed" };
-    case "partial":
-    case "final":
-      return typeof e.text === "string" ? { type: e.type, text: e.text } : null;
-    case "level":
-      return typeof e.value === "number" && Number.isFinite(e.value)
-        ? { type: "level", value: e.value, active: e.active === true }
-        : null;
-    case "played":
-      return typeof e.id === "string" ? { type: "played", id: e.id } : null;
-    case "playError":
-      return typeof e.id === "string" && typeof e.message === "string" ? { type: "playError", id: e.id, message: e.message } : null;
-    case "error":
-      return typeof e.message === "string" ? { type: "error", message: e.message } : null;
-    default:
-      return null;
-  }
+  return speechEventOf(o);
 }
 
 export interface SpeechBridge {

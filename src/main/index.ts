@@ -188,7 +188,7 @@ import { createPxCloudClient } from "./pxCloudClient.js";
 import { createHostedQuota, parseCheckoutTarget, type HostedQuota } from "./hostedQuota.js";
 import { createDecisionClient } from "./decisionClient.js";
 import { createEndpointJudge, type EndpointJudge } from "./endpointJudge.js";
-import { createTeamVoice } from "./teamVoice.js";
+import { createTtsClient } from "../shared/ttsClient.js";
 import type { WorkspaceUsage } from "../shared/billing.js";
 import { islandRail } from "../shared/islandRail.js";
 import type { BilledRow } from "../shared/usageStats.js";
@@ -1625,7 +1625,7 @@ void app.whenReady().then(() => {
   endpointJudge = createEndpointJudge({ decision: decisionClient, log: (l) => console.warn(l) });
   // 团队语音通话（#1163）：渲染层每段文字经这里合成——拿 JWT 打网关，钱记在听的人
   // 自己的额度上，额度头与 chat 那条路同一份纪律（noteHeaders / noteExhausted）
-  const teamVoice = createTeamVoice(hostedDeps);
+  const teamVoice = createTtsClient(hostedDeps);
 
   // ── 「不是这条会话主模型」的那几次调用（#1051）─────────────────────────────
   // 代读员（vision-bridge）与后台小模型（跟进建议·自动命名 / 微压缩）原来各走各的

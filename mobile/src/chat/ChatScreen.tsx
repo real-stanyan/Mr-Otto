@@ -10,21 +10,27 @@
 // · 状态（spec §6）：gone 一行「正在重连…」、发送钮灰；denied 是终态，说清是哪一种 +「回名册」。
 // · 群聊（A3，spec §5.6）：输入框上方一颗「@ 谁」→ 抽屉挑一只 → 抽屉退场放完插进 `@名字 `；空群（最后一只
 //   被移出了）输入框上方一行实话、不画「@ 谁」；占位字「说给这一组听…」。
+// · 语音（A4，spec §5.7）：输入框空着时右边那颗变「开电话」（这台打得了电话、房间 ready、有智能体、还没通话）；
+//   通话开着时输入框换成电话那一格（CallBar：这台在听 = live，没在听 = 「通话还开着」+「接着听」）；
+//   挂断之后这一通在时间线上折成一张卡，点开是一扇底部抽屉放全文。通话开着时通话里那几只正在写的那一段
+//   不画（落下来就折进卡里）。私聊拉那一只、群拉整个群；挂断不二次确认（主场里只有你一个人）。
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { BlurView } from "expo-blur";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { FlatList, KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, View, useWindowDimensions } from "react-native";
+import { FlatList, KeyboardAvoidingView, LayoutAnimation, Platform, Pressable, StyleSheet, Text, View, useWindowDimensions } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { agentFaceSlot } from "../../../src/shared/agentAvatar.js";
 import { roleChipsAnchor } from "../../../src/shared/agentOnboarding.js";
 import { resolveSendMentions } from "../../../src/shared/agentMentionInput.js";
 import { chatViewOf } from "../../../src/shared/agentRoster.js";
 import { cloudDeniedText } from "../../../src/shared/cloudSessionState.js";
+import { callBarMode, callFace, callMicOn, joinBlockedText, phoneOffered, waveMode } from "../../../src/shared/mobileCall.js";
 import { chatCentre, chatRows, liveRows, nowRowOf, resolveChatTarget, type ChatRow, type NowRow } from "../../../src/shared/mobileChat.js";
 import { facePhase } from "../../../src/shared/ottoFace/art.js";
 import { dmFaceState } from "../../../src/shared/ottoFace/index.js";
 import { parseMentions } from "../../../src/shared/remote/agentMention.js";
 import { openTurns } from "../../../src/shared/turnLedger.js";
+import { voiceCallOf } from "../../../src/shared/voiceCall.js";
 import { agentNameOf } from "../../../src/shared/workspaceView.js";
 import type { WorkspaceSnapshot } from "../../../src/shared/workspaces.js";
 import type { SessionEvent } from "../../../src/session/events.js";
@@ -38,7 +44,10 @@ import { GroupFaces } from "../face/GroupFaces.js";
 import { refreshHomeAfterWrite, useHome } from "../home/homeStore.js";
 import type { RootStackParams } from "../nav/types.js";
 import { space, type as t, usePalette, withAlpha } from "../theme.js";
-import { Button, Spinner } from "../ui.js";
+import { Button, Spinner, useReduceMotion } from "../ui.js";
+import { CallBar } from "../voice/CallBar.js";
+import { CallSheet } from "../voice/CallSheet.js";
+import { hangUp, joinCall, nativeSpeech, refreshVoiceBilling, setMic, startCall, useVoice, voiceUsable } from "../voice/voiceStore.js";
 import { ChatRowView, NowRowView } from "./ChatRows.js";
 import { Composer, type ComposerHandle } from "./Composer.js";
 import { MentionChip, MentionSheet } from "./MentionSheet.js";
@@ -180,6 +189,19 @@ export function ChatScreen({ route, navigation }: Props) {
   /** 「@ 谁」那张抽屉开着没有；挑中的名字等抽屉退场放完再插（Modal 还在时输入框拿不到焦点） */
   const [mentioning, setMentioning] = useState(false);
   const pendingMention = useRef<string | null>(null);
+  const reduce = useReduceMotion();
+  const voice = useVoice();
+  /** 正在路上的那个动作：开电话 / 挂断（按不动看它在不在；开电话时那一格先画成 live，见 callBarMode） */
+  const [callOp, setCallOp] = useState<"start" | "hangup" | null>(null);
+  /** 「转文字」那一行开着没有（这一页自己的事，不进 store） */
+  const [captionsOn, setCaptionsOn] = useState(false);
+  /** 点开的那张通话卡（按开场那条的 seq 认）与抽屉开没开；退场放完才清 seq，正文不会在退场时空掉 */
+  const [openCallSeq, setOpenCallSeq] = useState<number | null>(null);
+  const [callSheetOpen, setCallSheetOpen] = useState(false);
+  // 电话钮要知道订阅活跃 + 网关供语音：进这一页拉一次（拉失败留着上一次的）
+  useEffect(() => {
+    void refreshVoiceBilling();
+  }, []);
 
   // 这条线已经存在就进房；草稿什么都不做，第一句发出去才建
   useEffect(() => {
@@ -200,8 +222,14 @@ export function ChatScreen({ route, navigation }: Props) {
   const title = view?.title ?? resolved?.title ?? "";
   const dmAgent = kind === "dm" ? (agentIds[0] ?? null) : null;
 
+  const call = useMemo(() => voiceCallOf(events), [events]);
+  /** 通话开着时通话里那几只（它们正在写的那一段不画） */
+  const inCall = useMemo(() => (call === null ? null : new Set(call.participants.map((p) => p.agentId))), [call]);
   const rows = useMemo(() => (ws !== null ? chatRows({ events, ws, selfUid, now: Date.now() }) : []), [ws, events, selfUid]);
-  const live = useMemo(() => (ws !== null ? liveRows({ streaming: chat.streaming, ws, now: Date.now() }) : []), [ws, chat.streaming]);
+  const live = useMemo(
+    () => (ws !== null ? liveRows({ streaming: chat.streaming, ws, now: Date.now(), ...(inCall === null ? {} : { hide: inCall }) }) : []),
+    [ws, chat.streaming, inCall],
+  );
   const nowRow = useMemo(() => (ws !== null ? nowRowOf({ events, streaming: chat.streaming, ws }) : null), [ws, events, chat.streaming]);
   // 六句现成话挂在它答开场白的那一条底下（spec §5.5）：从日志推——开场白在、它答过、我还没说话。
   // 我一发出第一句，日志里多一条人的 user_message，这一排随之消失，不等 runtime 那边清库
@@ -250,6 +278,33 @@ export function ChatScreen({ route, navigation }: Props) {
     setStopping(false);
     if (!r.ok) setPageNote(r.unknown ? { text: "没有收到回执，不确定停下来没有", tone: "muted" } : { text: r.message, tone: "error" });
   };
+
+  const usable = voiceUsable(voice);
+  const listen = voice.listen !== null && session !== null && voice.listen.sessionId === session.sessionId ? voice.listen : null;
+  const starting = callOp === "start";
+  const barMode = callBarMode({ call, listeningHere: listen !== null, starting });
+  const offerPhone = phoneOffered({ voiceUsable: usable, ready, agentIds, call });
+
+  const onStartCall = async (): Promise<void> => {
+    if (session === null || agentIds.length === 0) return;
+    setCallOp("start");
+    // 私聊拉那一只；群拉整个群（spec §5.7；通话中不增减人）
+    const r = await startCall(session.sessionId, dmAgent !== null ? [dmAgent] : agentIds);
+    setCallOp(null);
+    if (!r.ok) setPageNote(r.unknown ? { text: "没有收到回执，不确定电话打出去没有", tone: "muted" } : { text: r.message, tone: "error" });
+  };
+  const onHangUp = async (): Promise<void> => {
+    setCallOp("hangup");
+    const r = await hangUp();
+    setCallOp(null);
+    if (!r.ok) setPageNote(r.unknown ? { text: "没有收到回执，不确定挂断没有", tone: "muted" } : { text: r.message, tone: "error" });
+  };
+
+  const openCallCard = useMemo(() => {
+    if (openCallSeq === null) return null;
+    for (const r of rows) if (r.kind === "call" && r.card.seq === openCallSeq) return r.card;
+    return null;
+  }, [rows, openCallSeq]);
 
   const headerTop = insets.top + 8;
   const headerSpace = headerTop + ROUND_BUTTON_SIZE + 12;
@@ -303,7 +358,14 @@ export function ChatScreen({ route, navigation }: Props) {
               keyExtractor={(it) => (it.kind === "row" ? it.row.key : it.kind === "now" ? it.now.key : "roles")}
               renderItem={({ item }) =>
                 item.kind === "row" ? (
-                  <ChatRowView row={item.row} ws={ws} />
+                  <ChatRowView
+                    row={item.row}
+                    ws={ws}
+                    onOpenCall={(seq) => {
+                      setOpenCallSeq(seq);
+                      setCallSheetOpen(true);
+                    }}
+                  />
                 ) : item.kind === "now" ? (
                   <NowRowView now={item.now} ws={ws} ready={ready} stopping={stopping} onStop={() => void stop(item.now.seq)} />
                 ) : (
@@ -336,6 +398,8 @@ export function ChatScreen({ route, navigation }: Props) {
           {chat.error ? <Line tone="error">{chat.error}</Line> : null}
           {chat.sendError ? <Line tone="error">{chat.sendError}</Line> : null}
           {pageNote ? <Line tone={pageNote.tone}>{pageNote.text}</Line> : null}
+          {listen?.error ? <Line tone="error">{listen.error}</Line> : null}
+          {listen?.mic.error ? <Line tone="error">{listen.mic.error}</Line> : null}
           {chat.unsent !== null && chat.unsent.sessionId === session?.sessionId ? (
             // 中性灰不是红色：它不是一次失败，是这一层消除不了的不确定。两颗钮把决定交回给人
             <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 4 }}>
@@ -347,19 +411,50 @@ export function ChatScreen({ route, navigation }: Props) {
           {emptyGroup && centre !== "hello" ? <Line tone="muted">{EMPTY_GROUP_TEXT}</Line> : null}
         </View>
 
-        {canMention ? (
-          <View style={{ flexDirection: "row", paddingHorizontal: 16, paddingTop: 8 }}>
-            <MentionChip onPress={() => setMentioning(true)} />
-          </View>
-        ) : null}
-
-        <Composer
-          ref={composer}
-          placeholder={roleAnchor !== null ? "说一句它是干什么的…" : kind === "dm" ? `跟「${title}」说…` : "说给这一组听…"}
-          canSend={canSend}
-          sessionId={session?.sessionId ?? null}
-          onSend={onSend}
-        />
+        {barMode !== "none" && call !== null && ws !== null && session !== null ? (
+          (() => {
+            const face = callFace({ call, speaking: listen?.speaking ?? null, open: openTurns(events) });
+            const micOn = callMicOn({ mic: listen?.mic.status ?? null, starting });
+            return (
+              <CallBar
+                mode={barMode}
+                face={face === null ? null : <Face slot={agentFaceSlot(ws, face.agentId)} tier="m" state={face.state} phase={facePhase(face.agentId)} />}
+                sinceTs={call.sinceTs}
+                wave={waveMode({ micOn, micActive: listen?.mic.active ?? false, agentSpeaking: listen !== null && listen.speaking !== null })}
+                level={listen?.mic.level ?? 0}
+                micOn={micOn}
+                captionsOn={captionsOn}
+                captions={{ agent: listen?.text ?? null, me: listen !== null && listen.mic.transcript !== "" ? listen.mic.transcript : null }}
+                joinBlocked={joinBlockedText({ native: nativeSpeech, room: session.state, billing: voice.billing })}
+                busy={callOp !== null}
+                onToggleCaptions={() => {
+                  // 那一行出现 / 收起会把上面的时间线推一下：160ms 接住它；减弱动态效果时直接换
+                  if (!reduce) LayoutAnimation.configureNext(LayoutAnimation.create(160, LayoutAnimation.Types.easeOut, LayoutAnimation.Properties.opacity));
+                  setCaptionsOn((v) => !v);
+                }}
+                onToggleMic={() => setMic(!micOn)}
+                onHangUp={() => void onHangUp()}
+                onJoin={() => joinCall(session.sessionId)}
+              />
+            );
+          })()
+        ) : (
+          <>
+            {canMention ? (
+              <View style={{ flexDirection: "row", paddingHorizontal: 16, paddingTop: 8 }}>
+                <MentionChip onPress={() => setMentioning(true)} />
+              </View>
+            ) : null}
+            <Composer
+              ref={composer}
+              placeholder={roleAnchor !== null ? "说一句它是干什么的…" : kind === "dm" ? `跟「${title}」说…` : "说给这一组听…"}
+              canSend={canSend}
+              sessionId={session?.sessionId ?? null}
+              onSend={onSend}
+              {...(offerPhone ? { phone: { onCall: () => void onStartCall(), busy: callOp !== null } } : {})}
+            />
+          </>
+        )}
       </KeyboardAvoidingView>
 
       <ChatHeader
@@ -389,6 +484,13 @@ export function ChatScreen({ route, navigation }: Props) {
           }}
         />
       ) : null}
+
+      <CallSheet
+        visible={callSheetOpen}
+        card={openCallCard}
+        onClose={() => setCallSheetOpen(false)}
+        onExited={() => setOpenCallSeq(null)}
+      />
     </View>
   );
 }

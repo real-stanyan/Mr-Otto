@@ -36,6 +36,8 @@ export interface Palette {
   warn: string;
   /** 弹窗底下那层暗幕（demo 的 --scrim）。深色压得更重——底本来就暗，压轻了分不出层 */
   scrim: string;
+  /** 通话那一格的声浪色（demo 的 --voice；两套配色同一个值——它是通话的记号，不跟深浅走） */
+  voice: string;
 }
 
 /** 浅色 = app.css 的裸 `:root` */
@@ -58,6 +60,7 @@ const light: Palette = {
   ok: "#2b8a3e",
   warn: "#e67700",
   scrim: "rgba(0, 0, 0, 0.28)",
+  voice: "#2F94A6",
 };
 
 /** 深色 = app.css 的 `.dark` */
@@ -80,6 +83,7 @@ const dark: Palette = {
   ok: "#30d158",
   warn: "#ff9f0a",
   scrim: "rgba(0, 0, 0, 0.5)",
+  voice: "#2F94A6",
 };
 
 export function usePalette(): { c: Palette; isDark: boolean } {

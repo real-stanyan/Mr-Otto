@@ -1,28 +1,33 @@
-// teamVoice —— 团队语音通话的主进程半边（#1163）：替渲染层合成一段语音。
+// ttsClient —— 合成一段语音（#1163 桌面主进程那一半；#1356 A4 挪进 shared，手机端用同一份）。
 //
-// 路是「桌面主进程 → edge 网关 `/llm/v1/speech` → MiniMax」（同 generate_image 那条路，
-// ADR-0257）：官方 key 只在 Worker secret 里，客户端一个字节都拿不到；钱走**听的人**
-// 自己的订阅额度（自己的 JWT），所以 hold/settle/usage_event 整套现成。渲染层只经
-// IPC 拿到字节（硬规则：渲染层只走 ShellBridge），放进 <audio> 播。
+// 路是「客户端 → edge 网关 `/llm/v1/speech` → MiniMax」（同 generate_image 那条路，ADR-0257）：
+// 官方 key 只在 Worker secret 里，客户端一个字节都拿不到；钱走**听的人**自己的订阅额度（自己的 JWT），
+// 所以 hold/settle/usage_event 整套现成。
 //
-// 判据全挂在 routeTts 上（modelRoute.ts）：没订阅 / 额度用完 / 网关不供语音 / 拿不到
-// JWT —— 这四种一个字节都不发，各自一句人话。额度头与 chat 那条路同一份纪律：成功
-// 就 noteHeaders，429 quota_exhausted 就 noteExhausted，界面上那枚环跟着动。
+// 判据全挂在 routeTts 上（ttsRoute.ts）：没订阅 / 额度用完 / 网关不供语音 / 拿不到 JWT —— 这四种一个
+// 字节都不发，各自一句人话。额度头与 chat 那条路同一份纪律：成功就 noteHeaders，429 quota_exhausted
+// 就 noteExhausted——桌面接 hostedQuota（界面上那枚环跟着动），手机没有那份账，两个口接空。
 
-import { BILLING_HEADERS, parseBillingError } from "../shared/billing.js";
-import { TTS_HEADERS } from "../shared/tts.js";
-import type { VoiceSpeakResult } from "../shared/shellBridge.js";
-import type { HostedQuota } from "./hostedQuota.js";
-import { routeTts } from "./modelRoute.js";
+import { BILLING_HEADERS, parseBillingError } from "./billing.js";
+import type { VoiceSpeakResult } from "./shellBridge.js";
+import { TTS_HEADERS } from "./tts.js";
+import { routeTts, type TtsRouteInput } from "./ttsRoute.js";
 
-export interface TeamVoiceDeps {
-  quota: Pick<HostedQuota, "ttsInput" | "noteHeaders" | "noteExhausted">;
+/** 额度那三个口：桌面是 hostedQuota（结构上就是它），手机是一份订阅快照 + 两个空口 */
+export interface TtsQuotaPort {
+  ttsInput(): TtsRouteInput["hosted"];
+  noteHeaders(h: Headers): void;
+  noteExhausted(info: { window?: "5h" | "week"; resetAt?: number }): void;
+}
+
+export interface TtsClientDeps {
+  quota: TtsQuotaPort;
   edgeBaseUrl: () => string;
   accessToken: () => Promise<string | null>;
   fetchImpl?: typeof fetch;
 }
 
-export interface TeamVoice {
+export interface TtsClient {
   speak(text: string, voiceId: string): Promise<VoiceSpeakResult>;
 }
 
@@ -33,13 +38,14 @@ const numberHeader = (h: Headers, name: string): number | null => {
   return Number.isFinite(n) ? n : null;
 };
 
-export function createTeamVoice(deps: TeamVoiceDeps): TeamVoice {
+export function createTtsClient(deps: TtsClientDeps): TtsClient {
   const doFetch = deps.fetchImpl ?? fetch;
   return {
     async speak(text, voiceId) {
       const token = await deps.accessToken();
+      const hosted = deps.quota.ttsInput();
       const route = routeTts({
-        hosted: deps.quota.ttsInput(),
+        ...(hosted === undefined ? {} : { hosted }),
         hostedBaseUrl: `${deps.edgeBaseUrl()}/llm/v1`,
         ...(token ? { hostedToken: token } : {}),
       });

@@ -9,9 +9,10 @@ import { groupRows, rosterRows } from "./agentRoster.js";
 import { splitBubbles } from "./chatBubbles.js";
 import {
   assistantLabel, chatRosterLineParts, cloudEmptyState, dispatchLineText, hiddenFromCloudTimeline, relayLineText, stopButtonRows,
-  systemNoteText, turnEndedLineText, userRowIdentity, type RosterLinePart,
+  systemNoteText, turnEndedLineText, userRowIdentity, voiceCallCards, type RosterLinePart, type VoiceCallCard,
 } from "./cloudTimeline.js";
 import { withDaySeparators } from "./dayLabel.js";
+import { callTopicText } from "./mobileCall.js";
 import { dmFaceState, type FaceState } from "./ottoFace/index.js";
 import type { CsChatInfo } from "./remote/cloudSession.js";
 import type { CloudSessionRow } from "./supabaseWorkspacesApi.js";
@@ -64,7 +65,10 @@ export type ChatRow =
   /** 旁白（系统说的一句、engine 注的后台任务 / 护栏、接力线、派活那一句）与出错 */
   | { kind: "note"; key: string; ts: number; text: string; tone: "muted" | "error"; detail: string | null }
   /** 群的名单变了那一行（A3）：居中，名字那几格带 agentId（左边画脸）；几格拼起来就是那句话本身 */
-  | { kind: "roster"; key: string; ts: number; parts: RosterLinePart[] };
+  | { kind: "roster"; key: string; ts: number; parts: RosterLinePart[] }
+  /** 一场语音通话折成的那张卡（A4，ADR-0288）：卡在开场那条名单事件的位置；通话里说的话与通话里那几只的回复
+      都折进卡里，不单独成行。`topic` = 卡的第二行「聊的什么」，null = 不画那一行 */
+  | { kind: "call"; key: string; ts: number; card: VoiceCallCard; topic: string | null };
 
 type ItemRow = Exclude<ChatRow, { kind: "day" }>;
 
@@ -100,7 +104,7 @@ function rowOf(e: SessionEvent, ws: WorkspaceSnapshot, selfUid: string): ItemRow
       return { kind: "note", key, ts: e.ts, text: "这条聊天已归档", tone: "muted", detail: null };
     default:
       // 名单变更那一行（chat_roster_changed）要看前一条，在 chatRows 的循环里判，不在这里；
-      // 通话卡（A4）、压缩与其余内务：手机端不画——压缩是上下文系统自己的事（聊天里那条线不断）
+      // 压缩与其余内务：手机端不画——压缩是上下文系统自己的事（聊天里那条线不断）。通话卡（A4）要跨事件，在 chatRows 的循环里判
       return null;
   }
 }
@@ -123,7 +127,15 @@ function rowsOf(e: SessionEvent, ws: WorkspaceSnapshot, selfUid: string): ItemRo
 export function chatRows(o: { events: readonly SessionEvent[]; ws: WorkspaceSnapshot; selfUid: string; now: number }): ChatRow[] {
   const items: ItemRow[] = [];
   let prevRoster: ChatRosterChangedEvent | null = null;
+  // 通话卡（A4）：哪几条折进卡里要跨事件才答得出（voiceCallCards，桌面同一份），同名单那一行一样在循环外算
+  const calls = voiceCallCards(o.events, o.ws, o.selfUid);
   for (const e of o.events) {
+    const card = calls.cards.get(e.seq);
+    if (card !== undefined) {
+      items.push({ kind: "call", key: `call-${e.seq}`, ts: e.ts, card, topic: callTopicText(card) });
+      continue;
+    }
+    if (calls.folded.has(e.seq)) continue;
     if (e.type === "chat_roster_changed") {
       const parts = chatRosterLineParts(prevRoster, e, o.selfUid);
       prevRoster = e;
@@ -138,10 +150,12 @@ export function chatRows(o: { events: readonly SessionEvent[]; ws: WorkspaceSnap
 }
 
 /** 正在写的那一段（流式碎片，协议 16）：累计快照按空行拆，画成它的一行。终态落盘时
-    store 清槽，这一行随之换成真的那条 */
-export function liveRows(o: { streaming: Readonly<Record<string, string>>; ws: WorkspaceSnapshot; now: number }): ChatRow[] {
+    store 清槽，这一行随之换成真的那条。`hide` = 此刻通话里的那几只（A4）。 */
+export function liveRows(o: { streaming: Readonly<Record<string, string>>; ws: WorkspaceSnapshot; now: number; hide?: ReadonlySet<string> }): ChatRow[] {
   const out: ChatRow[] = [];
   for (const [agentId, text] of Object.entries(o.streaming)) {
+    // 通话开着时通话里那几只的那一段不画（A4）：落下来就折进通话卡，画了会一闪而过；它在说的话看电话那一格的「转文字」
+    if (o.hide?.has(agentId) === true) continue;
     const paragraphs = splitBubbles(text);
     if (paragraphs.length === 0) continue;
     out.push({ kind: "agent", key: `live-${agentId}`, ts: o.now, agentId, name: agentNameOf(o.ws, agentId), paragraphs });

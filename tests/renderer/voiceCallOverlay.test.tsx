@@ -8,7 +8,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import "@testing-library/jest-dom/vitest";
 
 import { VoiceCallOverlay } from "../../src/renderer/src/components/VoiceCallOverlay.js";
-import { MIC_OFF } from "../../src/renderer/src/lib/voiceMic.js";
+import { MIC_OFF } from "../../src/shared/voiceMic.js";
 import type { VoiceListenState } from "../../src/renderer/src/store.js";
 import type { WorkspaceSnapshot } from "../../src/shared/workspaces.js";
 import type { VoiceCallState } from "../../src/shared/voiceCall.js";
