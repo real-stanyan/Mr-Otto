@@ -382,7 +382,9 @@ export function ChatScreen({ route, navigation }: Props) {
           onExited={() => {
             const name = pendingMention.current;
             pendingMention.current = null;
-            if (name !== null) composer.current?.mention(name);
+            // 抽屉的 onExited 与它的 setMounted(false) 在同一拍里调用，而那次卸载是批处理的——Modal 要等这一拍提交
+            // 之后才真的收起。等一帧再插：Modal 还在的时候输入框拿不到焦点，键盘弹不上来
+            if (name !== null) requestAnimationFrame(() => composer.current?.mention(name));
           }}
         />
       ) : null}
