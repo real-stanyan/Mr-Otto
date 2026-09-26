@@ -7,7 +7,8 @@ import Foundation
 // 与桌面的差别两处：路径收 expo-file-system 给的 file:// URI；多一个 interrupt——系统把声音拿走（来电 /
 // 耳机拔了）时节点停了、完成回调不会来，手上那段要报 playError，不然 JS 那边的放音队列会一直等下去。
 // 一次只放一段（JS 那边的队列本来就串行）；每段换格式就重连一次节点（mp3 的采样率不定）。stop 之后迟到的
-// 完成回调用 generation 认账。所有状态在主线程上动。
+// 完成回调用 generation 认账。所有状态在 speechQueue 上动（不用主线程的理由见 OttoSpeechModule.swift）；
+// 完成回调在系统的线程上来，hop 过去。
 final class Playback {
   private let engine: AVAudioEngine
   private let node = AVAudioPlayerNode()
@@ -55,7 +56,7 @@ final class Playback {
     let gen = generation
     currentId = id
     node.scheduleFile(file, at: nil, completionCallbackType: .dataPlayedBack) { [weak self] _ in
-      DispatchQueue.main.async {
+      speechQueue.async {
         guard let self, self.generation == gen else { return }
         self.currentId = nil
         self.emit(Event(type: "played", id: id))

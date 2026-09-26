@@ -5,7 +5,7 @@ import Speech
 // 识别会话（#1356 A4，ADR-0320）：桌面 native/MrOttoSpeech/Sources/MrOttoSpeech/Recognizer.swift 的 iOS 版。
 // 逐段对应桌面那份（理由写在那份的头注与 ADR-0273 / 0277 / 0280：AVAudioEngine 的输入 tap 喂识别 request、
 // 每句收口换新 request、没人说话 50 秒换一次、能量门喂断句、半双工 pause/resume 不停引擎、回声消除开得了
-// 就不半双工、放音挂在同一个引擎上）。iOS 多出来的五处：
+// 就不半双工、放音挂在同一个引擎上）。iOS 多出来的六处：
 // ① 起引擎之前配 AVAudioSession（playAndRecord、默认走扬声器、允许蓝牙 A2DP 放音）并激活；听与放都停了
 //    再交还（notifyOthersOnDeactivation：别的 app 的音乐接着放）；
 // ② 来电 / Siri 打断、耳机插拔（引擎配置变了）会让引擎停下而不回调：当成一次中断说出口——停听、手上那段
@@ -15,7 +15,9 @@ import Speech
 // ④ 放音收 expo-file-system 给的 file:// URI（Playback.swift）；
 // ⑤ 起完引擎再报一次 status：aec 要开完回声消除才知道（桌面那份只在开引擎之前报，第一次开麦时 aec 还是 nil）。
 // ⑥ 开麦时引擎若已经因为放音在跑（第一次开麦要等授权），先把手上那段当放完收掉、停引擎，再开回声消除。
-// **所有状态都在主线程上动**（识别回调与音频 tap 各在自己的线程上，一律 hop 到 main）。
+// **所有状态都在 speechQueue 上动**（OttoSpeechModule.swift；不用主线程的理由写在那里：iOS 的主线程是
+// 界面线程，而 setActive 是同步阻塞的）。命令本来就在它上面跑；音频 tap、识别回调、两道授权回调、两条通知
+// 各在系统挑的线程上，一律 hop 过去；定时器也挂在它上面。
 
 private func speechAuthName(_ s: SFSpeechRecognizerAuthorizationStatus) -> String {
   switch s {
@@ -52,7 +54,7 @@ final class Recognizer {
   private var task: SFSpeechRecognitionTask?
   private var endpointer = Endpointer()
   private var gate = LevelGate()
-  private var timer: Timer?
+  private var timer: DispatchSourceTimer?
   private var running = false
   private var paused = false
   private var generation = 0
@@ -75,14 +77,17 @@ final class Recognizer {
   init(emit: @escaping (Event) -> Void) {
     self.emit = emit
     let center = NotificationCenter.default
-    observers.append(center.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: .main) { [weak self] note in
+    // queue: nil = 在发通知的那条线程上同步跑（引擎那条是它内部的队列）：只读 userInfo，然后 hop 到 speechQueue
+    observers.append(center.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: nil) { [weak self] note in
       guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
             AVAudioSession.InterruptionType(rawValue: raw) == .began else { return }
-      self?.interrupted("被系统打断了（来电 / Siri），点一下麦克风再开")
+      speechQueue.async { self?.interrupted("被系统打断了（来电 / Siri），点一下麦克风再开") }
     })
-    observers.append(center.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: .main) { [weak self] _ in
-      guard let self, nowMs() - self.engineStartedAt > self.settleMs else { return }
-      self.interrupted("声音设备变了（耳机 / 蓝牙），点一下麦克风再开")
+    observers.append(center.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil) { [weak self] _ in
+      speechQueue.async {
+        guard let self, nowMs() - self.engineStartedAt > self.settleMs else { return }
+        self.interrupted("声音设备变了（耳机 / 蓝牙），点一下麦克风再开")
+      }
     })
   }
 
@@ -114,9 +119,10 @@ final class Recognizer {
       return
     }
     recognizer = r
-    // 两道授权按顺序问：先语音识别再麦克风；任何一道没过都把 status 发出去，JS 据它说人话（去哪儿打开）
+    // 两道授权按顺序问：先语音识别再麦克风；任何一道没过都把 status 发出去，JS 据它说人话（去哪儿打开）。
+    // 两个回调都在系统挑的线程上来，hop 回 speechQueue
     SFSpeechRecognizer.requestAuthorization { [weak self] s in
-      DispatchQueue.main.async {
+      speechQueue.async {
         guard let self else { return }
         guard s == .authorized else {
           self.emit(self.status())
@@ -124,7 +130,7 @@ final class Recognizer {
           return
         }
         AVCaptureDevice.requestAccess(for: .audio) { ok in
-          DispatchQueue.main.async {
+          speechQueue.async {
             guard ok else {
               self.emit(self.status())
               self.emit(Event(type: "error", message: "没有「麦克风」权限"))
@@ -203,7 +209,7 @@ final class Recognizer {
       return
     }
     input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
-      // 音频线程。paused / request 是主线程改的，这里只读——最坏多喂一两块，无害
+      // 音频线程。paused / request 是 speechQueue 上改的，这里只读——最坏多喂一两块，无害
       guard let self, let src = buffer.floatChannelData else { return }
       let n = Int(buffer.frameLength)
       guard n > 0 else { return }
@@ -211,7 +217,7 @@ final class Recognizer {
       var sum: Float = 0
       for i in 0..<n { sum += src[0][i] * src[0][i] }
       let rms = (sum / Float(n)).squareRoot()
-      DispatchQueue.main.async { self.onLevel(rms: rms) }
+      speechQueue.async { self.onLevel(rms: rms) }
       guard !self.paused, let req = self.request else { return }
       if buffer.format.channelCount > 1, let out = AVAudioPCMBuffer(pcmFormat: mono, frameCapacity: buffer.frameLength) {
         out.frameLength = buffer.frameLength
@@ -235,9 +241,12 @@ final class Recognizer {
     // 头注 ⑤：aec 这时才知道
     emit(status())
     newRequest()
-    // 100ms 一跳：断句的粒度——completeMs 700 之上再加的等待不该超过一跳
-    let t = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in self?.tick() }
-    RunLoop.main.add(t, forMode: .common)
+    // 100ms 一跳：断句的粒度——completeMs 700 之上再加的等待不该超过一跳。挂在 speechQueue 上，tick 与
+    // 别的状态改动排在同一条队列里
+    let t = DispatchSource.makeTimerSource(queue: speechQueue)
+    t.schedule(deadline: .now() + .milliseconds(100), repeating: .milliseconds(100), leeway: .milliseconds(10))
+    t.setEventHandler { [weak self] in self?.tick() }
+    t.resume()
     timer = t
   }
 
@@ -257,7 +266,7 @@ final class Recognizer {
     request = req
     requestStartedAt = nowMs()
     task = recognizer.recognitionTask(with: req) { [weak self] result, error in
-      DispatchQueue.main.async { self?.handle(gen: gen, result: result, error: error) }
+      speechQueue.async { self?.handle(gen: gen, result: result, error: error) }
     }
   }
 
@@ -278,14 +287,14 @@ final class Recognizer {
       // 不把一次抖动翻成「识别坏了」。cancel 自己引起的错误走不到这里（generation 已经前进）
       if let text = endpointer.flush() { emit(Event(type: "final", text: text)) }
       emit(Event(type: "error", message: "识别中断：\(error.localizedDescription)，正在重试"))
-      DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { [weak self] in
+      speechQueue.asyncAfter(deadline: .now() + 0.4) { [weak self] in
         guard let self, self.generation == gen else { return }
         self.newRequest()
       }
     }
   }
 
-  /// 一块音频的能量到了（主线程）：过门 → 喂断句 → 节流着发给界面
+  /// 一块音频的能量到了（speechQueue 上）：过门 → 喂断句 → 节流着发给界面
   private func onLevel(rms: Float) {
     guard running else { return }
     let now = nowMs()
@@ -333,7 +342,7 @@ final class Recognizer {
     guard running else { return }
     running = false
     paused = false
-    timer?.invalidate()
+    timer?.cancel()
     timer = nil
     generation += 1
     task?.cancel()
