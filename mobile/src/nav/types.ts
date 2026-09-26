@@ -10,6 +10,8 @@ export type RootStackParams = {
   AgentSettings: { agentId: string };
   /** 建群（A3）：从 ＋ 那张岔路弹窗的「一个群聊」推进来 */
   NewGroup: undefined;
+  /** 群设置（A3）：从群聊头部右边那颗进来 */
+  GroupSettings: { sessionId: string };
   FaceGallery: undefined;
 };
 

@@ -1,6 +1,6 @@
-// 聊天页（#1356 A1，spec §5.3 / §6）。私聊为主；群聊先是基础版（群设置、@ 谁、名单变更那一行在 A3）。
+// 聊天页（#1356 A1 / A3，spec §5.3 / §5.6 / §6）。私聊与群聊同一张页；群聊的设置入口、@ 谁、名单变更那一行是 A3 加的。
 //
-// · 头：回退 | 药丸（脸 + 名字）| 私聊右边那颗直接进设置（中间没有菜单）。浮在内容上，页面内容
+// · 头：回退 | 药丸（脸 + 名字）| 右边那颗直接进设置——私聊进智能体设置、群聊进群设置（中间没有菜单）。浮在内容上，页面内容
 //   从底下滚过去（spec §4）。药丸里那张脸 = dmFaceState（与桌面私聊头部同一份判据）。名单与
 //   名字从日志推导（chatViewOf，ADR-0302 / #1302），还没开房时用清单那一行。
 // · 时间线：倒置的 FlatList（最新一条贴底）；往上翻到顶取更早一页（尾巴模式），失败给一颗
@@ -149,7 +149,7 @@ function ChatHeader({ top, title, faces, onBack, onSettings }: {
           <MoreGlyph color={c.foreground} />
         </RoundButton>
       ) : (
-        // 群设置在 A3：这一片不画一颗点了没去处的钮（#722），用同宽的空位让药丸居中
+        // 还不知道是哪一条（群还没解析出来）时不画一颗点了没去处的钮（#722），用同宽的空位让药丸居中
         <View style={{ width: ROUND_BUTTON_SIZE }} />
       )}
     </View>
@@ -256,6 +256,12 @@ export function ChatScreen({ route, navigation }: Props) {
         <GroupFaces agentIds={agentIds} slots={agentIds.map((id) => agentFaceSlot(ws, id))} state="plain" />
       );
 
+  // 右边那颗：私聊进智能体设置，群聊进群设置（spec §5.3 / §5.6）
+  const onSettings =
+    dmAgent !== null ? () => navigation.navigate("AgentSettings", { agentId: dmAgent })
+      : kind === "group" && sessionId !== null ? () => navigation.navigate("GroupSettings", { sessionId })
+        : undefined;
+
   return (
     <View style={{ flex: 1, backgroundColor: c.background }}>
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
@@ -338,7 +344,7 @@ export function ChatScreen({ route, navigation }: Props) {
         title={title}
         faces={headFaces}
         onBack={() => navigation.goBack()}
-        {...(dmAgent !== null ? { onSettings: () => navigation.navigate("AgentSettings", { agentId: dmAgent }) } : {})}
+        {...(onSettings === undefined ? {} : { onSettings })}
       />
     </View>
   );
