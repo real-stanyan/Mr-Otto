@@ -7,6 +7,7 @@ import { usePalette } from "../theme.js";
 import { RosterScreen } from "../roster/RosterScreen.js";
 import { ChatScreen } from "../chat/ChatScreen.js";
 import { AccountScreen } from "../account/AccountScreen.js";
+import { SubscriptionScreen } from "../account/SubscriptionScreen.js";
 import { AgentSettingsScreen } from "../agent/AgentSettingsScreen.js";
 import { NewGroupScreen } from "../group/NewGroupScreen.js";
 import { GroupSettingsScreen } from "../group/GroupSettingsScreen.js";
@@ -38,6 +39,7 @@ export function RootNavigator() {
         <Root.Screen name="Roster" component={RosterScreen} options={{ headerShown: false }} />
         <Root.Screen name="Chat" component={ChatScreen} options={{ headerShown: false }} />
         <Root.Screen name="Account" component={AccountScreen} options={{ title: "账号", headerBackTitle: "返回" }} />
+        <Root.Screen name="Subscription" component={SubscriptionScreen} options={{ title: "订阅", headerBackTitle: "返回" }} />
         <Root.Screen
           name="AgentSettings"
           component={AgentSettingsScreen}

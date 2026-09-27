@@ -2,7 +2,7 @@
 //
 // · 头：左 = 账号；右 = 搜索、＋。没有大标题，圆钮浮在内容上，列表从底下滚过去（spec §4）。
 // · 进门七态照搬 rosterGate：还没查到 / 正在建主场 → 骨架、**不劝订阅**；没订阅 / 档位不带 →
-//   一句实话、不画钮（A5 之前手机上办不了订阅）；建失败 → 原因 + 重试钮、不自动重试；
+//   一句实话 + 一颗去「订阅」的钮（A5 起手机上办得了订阅）；建失败 → 原因 + 重试钮、不自动重试；
 //   **有主场就进得去、不再看档位**（降了档的人的聊天记录还在）。
 // · 一列：主场的智能体 + 群混排、按最近一次动静降序（判据在 shared/mobileRoster.ts）。
 // · ＋ 先问一句（居中弹窗、点外面能退）→「一只智能体」→ 70% 抽屉建一只 → 建成：**先收抽屉**、
@@ -51,19 +51,24 @@ function Skeleton() {
 }
 
 /** 名册之外的那几态。只说实话：该给钮的地方给钮，给不出有去处的钮就不画 */
-function GateView({ gate, ensureError, loadError }: { gate: RosterGate; ensureError: string | null; loadError: string | null }) {
+function GateView({ gate, ensureError, loadError, onSubscribe }: { gate: RosterGate; ensureError: string | null; loadError: string | null; onSubscribe: () => void }) {
   const { c } = usePalette();
-  const say = (lead: string, hint: string) => (
-    <View style={{ paddingHorizontal: space.lg, gap: space.xs }}>
-      <Text style={{ ...t.headline, color: c.foreground }}>{lead}</Text>
-      <Text style={{ ...t.callout, color: c.mutedForeground }}>{hint}</Text>
+  const say = (lead: string, hint: string, action: string) => (
+    <View style={{ paddingHorizontal: space.lg, gap: space.sm }}>
+      <View style={{ gap: space.xs }}>
+        <Text style={{ ...t.headline, color: c.foreground }}>{lead}</Text>
+        <Text style={{ ...t.callout, color: c.mutedForeground }}>{hint}</Text>
+      </View>
+      <View style={{ alignItems: "flex-start" }}>
+        <Button size="auto" label={action} onPress={onSubscribe} />
+      </View>
     </View>
   );
   switch (gate) {
     case "no_subscription":
-      return say("订阅 Pro 或 Max 之后才建得了智能体。", "订阅在电脑上的 Mr Otto 里办，办好回来就能用。");
+      return say("订阅 Pro 或 Max 之后才建得了智能体。", "在「订阅」里挑一档，订好回来就能用。", "去订阅");
     case "plan_too_low":
-      return say("你现在的订阅档位建不了智能体，Pro 或 Max 才行。", "换档在电脑上的 Mr Otto 里办。");
+      return say("你现在的订阅档位建不了智能体，Pro 或 Max 才行。", "在「订阅」里换到 Pro 或 Max。", "去换档");
     case "failed":
       return (
         <View style={{ paddingHorizontal: space.lg, gap: space.md }}>
@@ -226,7 +231,7 @@ export function RosterScreen() {
         />
       ) : (
         <View style={{ paddingTop: headerSpace }}>
-          <GateView gate={gate} ensureError={home.ensureError} loadError={home.loadError} />
+          <GateView gate={gate} ensureError={home.ensureError} loadError={home.loadError} onSubscribe={() => navigation.navigate("Subscription")} />
         </View>
       )}
 

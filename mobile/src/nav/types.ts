@@ -7,6 +7,8 @@ export type RootStackParams = {
   /** 私聊按 agentId 进（还没聊过就是草稿），群按 sessionId 进 */
   Chat: ChatTarget;
   Account: undefined;
+  /** 订阅（A5）：账号页「订阅」那一行、名册进门「没订阅 / 档位不带」那颗钮进来 */
+  Subscription: undefined;
   AgentSettings: { agentId: string };
   /** 建群（A3）：从 ＋ 那张岔路弹窗的「一个群聊」推进来 */
   NewGroup: undefined;
