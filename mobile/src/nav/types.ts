@@ -9,6 +9,10 @@ export type RootStackParams = {
   Account: undefined;
   /** 订阅（A5）：账号页「订阅」那一行、名册进门「没订阅 / 档位不带」那颗钮进来 */
   Subscription: undefined;
+  /** 那台电脑上的一层文件夹（A5）；path 相对 /work，"" = 最外层。点子目录压一页同名屏 */
+  Files: { path: string };
+  /** 一个文件（A5）：只读，开头 64 KB */
+  FilePreview: { path: string };
   AgentSettings: { agentId: string };
   /** 建群（A3）：从 ＋ 那张岔路弹窗的「一个群聊」推进来 */
   NewGroup: undefined;

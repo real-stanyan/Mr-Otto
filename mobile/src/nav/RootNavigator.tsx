@@ -9,6 +9,8 @@ import { ChatScreen } from "../chat/ChatScreen.js";
 import { AccountScreen } from "../account/AccountScreen.js";
 import { SubscriptionScreen } from "../account/SubscriptionScreen.js";
 import { AgentSettingsScreen } from "../agent/AgentSettingsScreen.js";
+import { FilesScreen } from "../machine/FilesScreen.js";
+import { FilePreviewScreen } from "../machine/FilePreviewScreen.js";
 import { NewGroupScreen } from "../group/NewGroupScreen.js";
 import { GroupSettingsScreen } from "../group/GroupSettingsScreen.js";
 import { FaceGallery } from "../dev/FaceGallery.js";
@@ -40,6 +42,9 @@ export function RootNavigator() {
         <Root.Screen name="Chat" component={ChatScreen} options={{ headerShown: false }} />
         <Root.Screen name="Account" component={AccountScreen} options={{ title: "账号", headerBackTitle: "返回" }} />
         <Root.Screen name="Subscription" component={SubscriptionScreen} options={{ title: "订阅", headerBackTitle: "返回" }} />
+        {/* 标题由这两页自己按路径 setOptions（最外层写「文件」，其余写那一段的名字） */}
+        <Root.Screen name="Files" component={FilesScreen} options={{ title: "文件", headerBackTitle: "返回" }} />
+        <Root.Screen name="FilePreview" component={FilePreviewScreen} options={{ title: "", headerBackTitle: "返回" }} />
         <Root.Screen
           name="AgentSettings"
           component={AgentSettingsScreen}
