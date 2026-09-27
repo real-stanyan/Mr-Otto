@@ -15,7 +15,7 @@
 // 两份编排并存是已知代价，见 ADR-0320。
 
 import type { SessionEvent } from "../session/events.js";
-import { agentVoiceId } from "./agentVoice.js";
+import { agentVoiceId, type VoiceRoster } from "./agentVoice.js";
 import type { CloudAck, CloudSessionDelta, SpeechEvent, VoiceSpeakResult } from "./shellBridge.js";
 import { voiceCallOf } from "./voiceCall.js";
 import { EMPTY_VOICE_FEED, feedDelta, feedEvent, markInterrupted, type Utterance, type VoiceFeedState } from "./voiceFeed.js";
@@ -55,8 +55,8 @@ export interface VoiceSessionDeps {
   say(text: string): Promise<CloudAck>;
   /** 那条会话此刻的日志（按 seq 升序）；不是此刻开着的那一条就回 null */
   events(sessionId: string): readonly SessionEvent[] | null;
-  /** 名册顺序：音色派生要它解撞（同一只两台设备同一个声音） */
-  roster(): readonly string[];
+  /** 名册（顺序 + 各自挑过的那一格）：音色派生要它解撞、挑过的先占（#1372；同一只两台设备同一个声音） */
+  roster(): VoiceRoster;
   /** 开麦时喂给识别器的词表 */
   hints(): string[];
   permissionHelp: PermissionHelp;

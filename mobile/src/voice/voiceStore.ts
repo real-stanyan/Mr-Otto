@@ -124,8 +124,8 @@ const session = createVoiceSession({
   mic,
   say: (text) => sayVoice(text),
   events: (sessionId) => chatEvents(sessionId),
-  // 音色按名册顺序解撞（agentVoiceIds）：同一只在桌面与手机上是同一个声音
-  roster: () => homeSnapshot().home?.agents.map((a) => a.agentId) ?? [],
+  // 音色按名册顺序解撞、挑过的先占（agentVoiceIds，#1372）：同一只在桌面与手机上是同一个声音
+  roster: () => homeSnapshot().home?.agents ?? [],
   hints: () => speechHints(homeSnapshot().home),
   permissionHelp: IOS_PERMISSION_HELP,
   onChange: (listen) => store.set({ listen }),
