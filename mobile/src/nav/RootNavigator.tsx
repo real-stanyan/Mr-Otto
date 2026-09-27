@@ -14,6 +14,9 @@ import { FilePreviewScreen } from "../machine/FilePreviewScreen.js";
 import { WikiScreen } from "../machine/WikiScreen.js";
 import { WikiPageScreen } from "../machine/WikiPageScreen.js";
 import { WikiEditScreen } from "../machine/WikiEditScreen.js";
+import { UsageScreen } from "../machine/UsageScreen.js";
+import { MachineScreen } from "../machine/MachineScreen.js";
+import { AppsScreen } from "../machine/AppsScreen.js";
 import { NewGroupScreen } from "../group/NewGroupScreen.js";
 import { GroupSettingsScreen } from "../group/GroupSettingsScreen.js";
 import { FaceGallery } from "../dev/FaceGallery.js";
@@ -51,6 +54,9 @@ export function RootNavigator() {
         <Root.Screen name="Wiki" component={WikiScreen} options={{ title: "记忆", headerBackTitle: "返回" }} />
         <Root.Screen name="WikiPage" component={WikiPageScreen} options={{ title: "", headerBackTitle: "返回", headerShadowVisible: false }} />
         <Root.Screen name="WikiEdit" component={WikiEditScreen} options={{ title: "改这一页", headerBackTitle: "返回", headerShadowVisible: false }} />
+        <Root.Screen name="Usage" component={UsageScreen} options={{ title: "这周用了多少", headerBackTitle: "返回" }} />
+        <Root.Screen name="Machine" component={MachineScreen} options={{ title: "它们的电脑", headerBackTitle: "返回" }} />
+        <Root.Screen name="Apps" component={AppsScreen} options={{ title: "应用", headerBackTitle: "返回" }} />
         <Root.Screen
           name="AgentSettings"
           component={AgentSettingsScreen}

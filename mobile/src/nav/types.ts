@@ -19,6 +19,12 @@ export type RootStackParams = {
   WikiPage: { path: string };
   /** 改记忆里的一页（A5） */
   WikiEdit: { path: string };
+  /** 这周用了多少（A5）：每只智能体占你周额度的百分之几 */
+  Usage: undefined;
+  /** 它们的电脑（A5）：文件 / 应用 / 记忆 / 用量 */
+  Machine: undefined;
+  /** 应用（A5）：接着的那几个，只列 */
+  Apps: undefined;
   AgentSettings: { agentId: string };
   /** 建群（A3）：从 ＋ 那张岔路弹窗的「一个群聊」推进来 */
   NewGroup: undefined;
