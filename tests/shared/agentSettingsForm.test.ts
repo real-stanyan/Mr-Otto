@@ -45,6 +45,15 @@ describe("agentFormPatch", () => {
     expect(agentFormPatch(A, { ...agentFormOf(A), avatarSlot: 3 })).toEqual({ avatarSlot: 3 });
     expect(agentFormPatch({ ...A, avatarSlot: 3 }, { ...agentFormOf({ ...A, avatarSlot: 3 }) })).toBeNull();
   });
+
+  it("声音（#1372）：换了才写；换回「自动」写 null；没挑过的表单里是 null", () => {
+    expect(agentFormOf(A).voice).toBeNull();
+    expect(agentFormPatch(A, { ...agentFormOf(A), voice: "gan" })).toEqual({ voice: "gan" });
+    const B: WorkspaceAgentRow = { ...A, voice: "gan" };
+    expect(agentFormOf(B).voice).toBe("gan");
+    expect(agentFormPatch(B, agentFormOf(B))).toBeNull();
+    expect(agentFormPatch(B, { ...agentFormOf(B), voice: null })).toEqual({ voice: null });
+  });
 });
 
 describe("pickableFaces", () => {

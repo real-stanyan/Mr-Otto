@@ -12,11 +12,18 @@ import { isSchemaBehind } from "./workspaceError.js";
 import type { FriendsResult } from "./friends.js";
 import { ADMIN_AGENT_ID, agentNameConflict, normalizeAgentName } from "./workspaceAgents.js";
 import { normalizeAvatarSlot } from "./workspaces.js";
+import { voiceChoiceOf } from "./agentVoice.js";
 
 /** 唯一索引撞了（同团队同名智能体）——PostgREST 的 23505，翻成人话 */
 export const DUPLICATE_AGENT_NAME = "已有同名的智能体";
 /** RLS 也会拦 'admin' 的删除，但那条回来的是一句 PostgREST 的英文——这里先拦一道，不打网络 */
 export const ADMIN_CANNOT_DELETE = "管理员不能删除";
+
+/** 挑了一个这一版不认得的声音（客户端不该发得出来——表里只有那六档） */
+export const UNKNOWN_VOICE = "没有这个声音";
+
+/** 库还没跑 0042 时带着声音按「存」：说清是服务端的事、怎么先把别的存下来（spec §10 第 99 条） */
+export const VOICE_NOT_READY = "说话的声音还存不进去：服务端还没升级。把声音换回原来的，别的改动就能存了。";
 
 /** 改一只智能体时调用方递进来的 patch。`avatarSlot` 不过 `validateAgentPatch`（那份
     schema 是 create_agent **工具**的参数表），在这里单独归一：**省略与 null 不同义**——
@@ -28,6 +35,9 @@ export interface AgentPatchInput {
   models?: string[];
   tools?: AgentToolAllow[];
   avatarSlot?: number | null;
+  /** 说话的声音（#1372）：`AGENT_VOICE_CHOICES` 的一个键，null = 清回按 agentId 派生，省略 = 这次没碰。
+      同 avatarSlot 不过 `validateAgentPatch`，在 updateAgentChecked 里单独认 */
+  voice?: string | null;
 }
 
 export interface AgentNameDeps {
@@ -41,7 +51,7 @@ export interface AgentUpdateDeps extends AgentNameDeps {
     agentId: string,
     patch: {
       name?: string; description?: string; instructions?: string; models?: string[];
-      tools?: AgentToolAllow[]; avatarSlot?: number | null;
+      tools?: AgentToolAllow[]; avatarSlot?: number | null; voice?: string | null;
     },
   ): Promise<void>;
 }
@@ -168,15 +178,22 @@ export async function updateAgentChecked(
   const clean = validateAgentPatch(patch);
   const threat = scanCreateAgentThreat(clean);
   if (threat) throw new Error(`${threat}，拒绝保存`);
+  // 声音在打网络之前认：认不出的键当场拒（表里只有那六档，发得出来就是客户端错了）
+  if (patch.voice !== undefined && patch.voice !== null && voiceChoiceOf(patch.voice) === null) {
+    throw new Error(UNKNOWN_VOICE);
+  }
   // 名单只在真的改名时查——不改名时那是一次白打的网络往返
   if (clean.name !== undefined) await assertAgentNameFree(deps, client, workspaceId, clean.name, agentId);
   try {
     await deps.updateAgentRow(client, workspaceId, agentId, {
       ...clean,
       ...(patch.avatarSlot === undefined ? {} : { avatarSlot: normalizeAvatarSlot(patch.avatarSlot) }),
+      ...(patch.voice === undefined ? {} : { voice: patch.voice }),
     });
   } catch (e) {
     if ((e as { code?: string }).code === "23505") throw new Error(DUPLICATE_AGENT_NAME);
+    // 只在这次带了声音时这么说：没带声音也撞上缺列，那是别的列的事，原样抛
+    if (patch.voice !== undefined && isSchemaBehind(e)) throw new Error(VOICE_NOT_READY);
     throw e;
   }
 }

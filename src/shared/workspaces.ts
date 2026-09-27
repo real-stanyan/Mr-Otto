@@ -12,6 +12,7 @@
 // 本文件手机端也会 import 同一份源码，纯类型 + 纯函数，零 IO。
 
 import { normalizeAgentTools, type AgentToolAllow } from "./agentToolAllow.js";
+import { VOICE_KEY_RE } from "./agentVoice.js";
 import type { SandboxApproval } from "./workspaceAgents.js";
 
 export interface WorkspaceMemberRow {
@@ -58,6 +59,11 @@ export interface WorkspaceAgentRow {
       ADR-0229）——0027 迁移加这一列时故意不回填，存量 agent 的脸一张都不变。
       越界的值（旧客户端读到新版才有的坑位）由渲染层兜底，DB 约束只管 >= 0（#1007） */
   avatarSlot: number | null;
+  /** 说话的声音（`workspace_agents.voice`，#1372）：`AGENT_VOICE_CHOICES` 的一个键。**缺席 = 没挑过**
+      = 按 agentId 派生——这一列读不到（0042 还没跑）、脏值、没挑过三者处置相同，所以不像 avatarSlot
+      那样必填 null（必填要改几十处测试夹具，换不来任何行为差别）。形状合格的陌生键（新版才有的档）
+      原样留着，派生那一侧（voiceChoiceOf）再当没挑过 */
+  voice?: string;
 }
 
 /** 团队还是个人主场（#1280，ADR-0297）。`kind` 由 0037 的触发器钉成**不可变** */
@@ -143,6 +149,7 @@ export function assembleSnapshot(
   agents: readonly {
     agent_id: string; name: string; description: string; instructions: string; models: unknown;
     tools: unknown; created_by: string; created_at?: string; updated_at: string; avatar_slot?: unknown;
+    voice?: unknown;
   }[],
   profileOf: (uid: string) => MemberProfile | null,
 ): WorkspaceSnapshot {
@@ -176,6 +183,7 @@ export function assembleSnapshot(
     })),
     agents: agents.map((a) => {
       const created = a.created_at === undefined ? Number.NaN : Date.parse(a.created_at);
+      const voice = normalizeVoiceKey(a.voice);
       return {
         agentId: a.agent_id,
         name: a.name,
@@ -187,6 +195,7 @@ export function assembleSnapshot(
         updatedTs: toEpochMs(a.updated_at),
         avatarSlot: normalizeAvatarSlot(a.avatar_slot),
         ...(Number.isNaN(created) ? {} : { createdTs: created }),
+        ...(voice === null ? {} : { voice }),
       };
     }),
     sandboxApproval: ws.sandbox_approval,
@@ -201,4 +210,11 @@ export function assembleSnapshot(
     `fetchSandboxApproval` 对 0026 的处理）。非整数、负数一律当没挑过。 */
 export function normalizeAvatarSlot(v: unknown): number | null {
   return typeof v === "number" && Number.isInteger(v) && v >= 0 ? v : null;
+}
+
+/** `voice` 那一格 → 键或 null。**列不存在（0042 还没跑）与「没挑过」在这里同义**：都回 null，都走派生
+    （同 normalizeAvatarSlot）。只认 0042 约束的形状；认不认得这个键不在这里判——新版才有的档由派生
+    那一侧（voiceChoiceOf）当没挑过，快照里原样留着，免得旧客户端存一次就把它冲掉 */
+export function normalizeVoiceKey(v: unknown): string | null {
+  return typeof v === "string" && VOICE_KEY_RE.test(v) ? v : null;
 }

@@ -15,10 +15,12 @@ export interface AgentForm {
   instructions: string;
   /** 表单此刻的头像选择；null = 没挑过（按 agentId 派生） */
   avatarSlot: number | null;
+  /** 表单此刻的声音选择（`AGENT_VOICE_CHOICES` 的键）；null = 自动（按 agentId 派生） */
+  voice: string | null;
 }
 
 export function agentFormOf(a: WorkspaceAgentRow): AgentForm {
-  return { name: a.name, description: a.description, instructions: a.instructions, avatarSlot: a.avatarSlot };
+  return { name: a.name, description: a.description, instructions: a.instructions, avatarSlot: a.avatarSlot, voice: a.voice ?? null };
 }
 
 export interface AgentFormErrors {
@@ -45,10 +47,10 @@ export function agentFormValid(e: AgentFormErrors): boolean {
   return e.name === null && e.description === null && e.instructions === null;
 }
 
-export type AgentFormPatch = { name?: string; description?: string; instructions?: string; avatarSlot?: number | null };
+export type AgentFormPatch = { name?: string; description?: string; instructions?: string; avatarSlot?: number | null; voice?: string | null };
 
 /** 只带改了的那几格；什么都没改 → null（「存」按不动）。文字按 trim 之后比；头像**换了才写**
-    （spec §5.4「没换就不写」：写一格等于替用户确认「我挑的就是它」） */
+    （spec §5.4「没换就不写」：写一格等于替用户确认「我挑的就是它」）。声音同理，换了才写 */
 export function agentFormPatch(a: WorkspaceAgentRow, f: AgentForm): AgentFormPatch | null {
   const p: AgentFormPatch = {};
   const name = f.name.trim();
@@ -58,6 +60,7 @@ export function agentFormPatch(a: WorkspaceAgentRow, f: AgentForm): AgentFormPat
   const instructions = f.instructions.trim();
   if (instructions !== a.instructions) p.instructions = instructions;
   if (f.avatarSlot !== a.avatarSlot) p.avatarSlot = f.avatarSlot;
+  if (f.voice !== (a.voice ?? null)) p.voice = f.voice;
   return Object.keys(p).length === 0 ? null : p;
 }
 
