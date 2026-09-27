@@ -90,31 +90,18 @@ describe("liveWindow（过了 resetAt 就是清零的新窗）", () => {
   });
 });
 
-describe("bindingWindow（先把人拦住的那扇当主）", () => {
-  const windows = (used5h: number, usedWeek: number) => ({
-    h5: w(used5h, 10_000, T + 3_600_000),
-    week: w(usedWeek, 100_000, T + 86_400_000),
-  });
-
-  it("周窗打满而 5h 窗空着 → 主数字是周窗：只报 5h 等于报喜不报忧", () => {
-    const b = bindingWindow(windows(1_000, 95_000), T);
+describe("bindingWindow（#1392 之后只剩周窗）", () => {
+  it("主数字就是周窗", () => {
+    const b = bindingWindow({ week: w(95_000, 100_000, T + 86_400_000) }, T);
     expect(b.key).toBe("week");
     expect(b.label).toBe("本周");
     expect(b.percent).toBe(95);
   });
 
-  it("5h 窗更紧 → 主数字是 5h 窗", () => {
-    expect(bindingWindow(windows(8_000, 10_000), T).key).toBe("h5");
-  });
-
-  it("并列时取 5h：预算小烧得快，同样百分比下先满的一定是它", () => {
-    expect(bindingWindow(windows(5_000, 50_000), T).key).toBe("h5");
-  });
-
-  it("主数字也吃 liveWindow 那一刀：过了 resetAt 的窗不当主", () => {
-    const b = bindingWindow({ h5: w(9_500, 10_000, T), week: w(30_000, 100_000, T + 86_400_000) }, T);
-    expect(b.key).toBe("week"); // 5h 窗已清零 = 0%，不再是吃紧的那个
-    expect(b.percent).toBe(30);
+  it("主数字也吃 liveWindow 那一刀：过了 resetAt 的周窗按清零算", () => {
+    const b = bindingWindow({ week: w(95_000, 100_000, T) }, T);
+    expect(b.percent).toBe(0);
+    expect(b.w.rolled).toBe(true);
   });
 });
 
@@ -179,15 +166,15 @@ describe("quotaAlert（#1073：触发器那枚点画不画）", () => {
   const win = (used: number, limit: number, resetAt = NOW + HOUR) =>
     ({ usedMicro: used, limitMicro: limit, resetAt });
 
-  const me = (h5: [number, number], week: [number, number], resetH5 = NOW + HOUR): BillingMe =>
+  const me = (week: [number, number], resetWeek = NOW + 96 * HOUR): BillingMe =>
     ({
       plan: "pro", status: "active", plans: [], models: [], modelPlatforms: {},
-      windows: { h5: win(h5[0], h5[1], resetH5), week: win(week[0], week[1], NOW + 96 * HOUR) },
+      windows: { week: win(week[0], week[1], resetWeek) },
       addon: { remainingMicro: 0, expiresAt: null }, periodEnd: null,
     }) as unknown as BillingMe;
 
   const snap = (over: Partial<BillingSnapshotView> = {}): BillingSnapshotView =>
-    ({ me: me([100, 1000], [100, 1000]), fetchedAt: NOW, exhausted: null, ...over }) as BillingSnapshotView;
+    ({ me: me([100, 1000]), fetchedAt: NOW, exhausted: null, ...over }) as BillingSnapshotView;
 
   it("**billing 还没查到就一个像素都不画** —— 冷启动那一瞬间「不知道」不许画成「没事」也不许画成「告警」", () => {
     expect(quotaAlert(null, NOW)).toBeNull();
@@ -198,41 +185,37 @@ describe("quotaAlert（#1073：触发器那枚点画不画）", () => {
   });
 
   it("没订阅（windows=null）不画 —— 他没有额度可言，那不是「额度充足」", () => {
-    expect(quotaAlert(snap({ me: { ...me([100, 1000], [100, 1000]), windows: null } }), NOW)).toBeNull();
+    expect(quotaAlert(snap({ me: { ...me([100, 1000]), windows: null } }), NOW)).toBeNull();
   });
 
-  it("两扇窗都宽裕就不画：颜色在这里只用来说「出事了」", () => {
+  it("宽裕就不画：颜色在这里只用来说「出事了」", () => {
     expect(quotaAlert(snap(), NOW)).toBeNull();
   });
 
-  it("刚过 75% 那条线 → 橙点，且说得出是哪一扇窗、还剩多少", () => {
-    expect(quotaAlert(snap({ me: me([820, 1000], [100, 1000]) }), NOW)).toEqual({
-      tone: "warn", label: "额度：5h 仅剩 18.0%",
-    });
+  it("刚过 75% 那条线 → 橙点，且说得出还剩多少", () => {
+    expect(quotaAlert(snap({ me: me([820, 1000]) }), NOW)).toEqual({ tone: "warn", label: "额度：本周 仅剩 18.0%" });
   });
 
-  it("周窗先拦住人时报的是周窗（判据与浮层那两只表共用 bindingWindow）", () => {
-    expect(quotaAlert(snap({ me: me([100, 1000], [940, 1000]) }), NOW)).toEqual({
-      tone: "deny", label: "额度：本周 仅剩 6.0%",
-    });
+  it("过了 90% → 红点", () => {
+    expect(quotaAlert(snap({ me: me([940, 1000]) }), NOW)).toEqual({ tone: "deny", label: "额度：本周 仅剩 6.0%" });
   });
 
   it("正好用光 → 说「已用完」不说「仅剩 0.0%」", () => {
-    expect(quotaAlert(snap({ me: me([1000, 1000], [100, 1000]) }), NOW)?.label).toBe("额度：5h 已用完");
+    expect(quotaAlert(snap({ me: me([1000, 1000]) }), NOW)?.label).toBe("额度：本周 已用完");
   });
 
   it("**exhausted 排在百分比前面**：网关亲口说的「拦住你了」，窗口数还停在上一次也照报", () => {
     // 只走 429 那条路时 hostedQuota 不更新 windows —— 光看百分比会漏掉本条 issue
     // 标题说的那一刻（额度用完，界面一个字都不说）
-    const v = quotaAlert(snap({ exhausted: { window: "5h", resetAt: NOW + HOUR } }), NOW);
-    expect(v).toEqual({ tone: "deny", label: "额度：5h 已用完" });
+    const v = quotaAlert(snap({ exhausted: { resetAt: NOW + HOUR } }), NOW);
+    expect(v).toEqual({ tone: "deny", label: "额度：本周 已用完" });
   });
 
   it("过了 resetAt 的 exhausted 记号不算数 —— 渲染层这份快照不会自己过期，得现算", () => {
-    expect(quotaAlert(snap({ exhausted: { window: "week", resetAt: NOW - 1 } }), NOW)).toBeNull();
+    expect(quotaAlert(snap({ exhausted: { resetAt: NOW - 1 } }), NOW)).toBeNull();
   });
 
   it("过了 resetAt 的窗按清零算：睡一觉回来不该对着一个早就恢复了的红点", () => {
-    expect(quotaAlert(snap({ me: me([1000, 1000], [100, 1000], NOW - 1) }), NOW)).toBeNull();
+    expect(quotaAlert(snap({ me: me([1000, 1000], NOW - 1) }), NOW)).toBeNull();
   });
 });

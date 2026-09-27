@@ -1,6 +1,6 @@
 // 订阅与额度（#1386，spec §5.9，demo 的 mePage("quota")）：只画本周一格——还剩百分之几、一根按剩余填的条、
-// 什么时候刷新。颜色只说「出事了」：充足时是弱色（ADR-0239）。5 小时那扇窗此刻比本周更紧且告急时，底下一句实话
-// （真规矩没动，shared 的 weekQuota）。下面当前档位 + 订阅 / 换档（A5 那一页）。
+// 什么时候刷新。颜色只说「出事了」：充足时是弱色（ADR-0239）。额度只按周算（#1392，ADR-0324，shared 的
+// weekQuota）。下面当前档位 + 订阅 / 换档（A5 那一页）。
 import { useFocusEffect, useNavigation } from "@react-navigation/native";
 import { useCallback } from "react";
 import { Text, View } from "react-native";
@@ -47,7 +47,6 @@ export function QuotaScreen() {
           </Text>
           <Meter fill={q.week.fill} color={toneColor(c, q.week.tone)} />
           <Text style={{ fontSize: 12, color: c.faint }}>{q.week.refresh}</Text>
-          {q.h5Note !== null ? <Text style={{ fontSize: 13, lineHeight: 19, color: c.warn }}>{q.h5Note}</Text> : null}
         </View>
       )}
       <Group>

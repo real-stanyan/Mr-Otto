@@ -63,14 +63,17 @@ describe("agentRelay 纯逻辑（#950，spec §8）", () => {
     expect(degraded({ depth: 6 })).toEqual({ kind: "cap_depth", depth: 7, max: 6 });
   });
 
-  it("decideRelay 钱闸：花掉剩余的一半就停；分母是**剩余**不是 limit（#1017）", () => {
-    expect(RELAY_BUDGET_FRACTION_OF_REMAINING).toBe(0.5);
-    expect(relayBudgetMicroOf(1000)).toBe(500);
+  it("decideRelay 钱闸：花掉周窗剩余的十分之一就停；分母是**剩余**不是 limit（#1017 / #1392）", () => {
+    // 0.1 不是拍的：原来是「5h 窗剩余的一半」，5h 窗上限 = 周窗 × 0.2，满额度时刹车点 = 周窗的 10%。
+    // 5h 窗没了之后照原来的量级折算，满额度时一次点火能花的钱与改动前逐字相同（ADR-0324）
+    expect(RELAY_BUDGET_FRACTION_OF_REMAINING).toBe(0.1);
+    expect(RELAY_BUDGET_FRACTION_OF_REMAINING).toBe(0.5 * 0.2);
+    expect(relayBudgetMicroOf(1000)).toBe(100);
     // 窗口透支（负数）夹到 0 —— 预算 0 = 下一棒立刻停
     expect(relayBudgetMicroOf(-5)).toBe(0);
-    expect(funded({ remainingMicro: 1000, spentMicro: 499 })).toMatchObject({ kind: "relay", depth: 1 });
-    expect(funded({ remainingMicro: 1000, spentMicro: 500 }))
-      .toEqual({ kind: "cap_budget", spentMicro: 500, budgetMicro: 500, remainingMicro: 1000 });
+    expect(funded({ remainingMicro: 1000, spentMicro: 99 })).toMatchObject({ kind: "relay", depth: 1 });
+    expect(funded({ remainingMicro: 1000, spentMicro: 100 }))
+      .toEqual({ kind: "cap_budget", spentMicro: 100, budgetMicro: 100, remainingMicro: 1000 });
     // 窗口见底：剩 0 → 预算 0 → 已花 0 也算到顶
     expect(funded({ remainingMicro: 0, spentMicro: 0 })).toMatchObject({ kind: "cap_budget", budgetMicro: 0 });
     // 同一笔花费，窗口剩得越少越早刹 —— 取 limit 当分母就没有这个性质
@@ -198,6 +201,7 @@ describe("agentRelay 纯逻辑（#950，spec §8）", () => {
     expect(b).not.toContain("广告」");
     expect(b).toContain("至少已经花掉 12.3 credit");
     expect(b).toContain("剩余 50.0 credit");
+    expect(b).toContain("十分之一");
     expect(b).toContain("单次委托的上限");
     expect(b).toContain("报表还差一半");
     expect(b).toContain("@ 谁就从头开始新一条接力");

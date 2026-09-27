@@ -48,7 +48,6 @@ const usage = (over: Partial<WorkspaceUsage> = {}): WorkspaceUsage => ({
 const billingMe = (): BillingMe => ({
   plan: "pro", status: "active", plans: [],
   windows: {
-    h5: { usedMicro: 0, limitMicro: 1_000_000, resetAt: NOW + 60_000 },
     week: { usedMicro: 83_000, limitMicro: 1_000_000, resetAt: NOW + 86_400_000 },
   },
   addon: { remainingMicro: 0, expiresAt: null }, periodEnd: null, models: [], imageModels: [], ttsModels: [], modelPlatforms: {},

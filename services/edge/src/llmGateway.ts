@@ -79,17 +79,17 @@ export interface UsageCounts {
 
 /** 一次问答就能回答的「还剩多少」。DO 每次 hold / settle 之后手里本来就有这份数，
     所以它随回执一起回来 —— 见 QuotaPort 上那段为什么 */
-export interface QuotaRemaining { h5: number; week: number; addon: number; plan: string | null }
+export interface QuotaRemaining { week: number; addon: number; plan: string | null }
 
-/** DO 顺带回的额度快照 → 强类型；**三个数缺一不可**（#1304）。少一格就回 null 让调用方
+/** DO 顺带回的额度快照 → 强类型；**两个数缺一不可**（#1304；#1392 之后没有 h5 那一格了）。少一格就回 null 让调用方
     单独问一趟 —— 拿 0 冒充会让客户端读到「额度用完了」，而那是这条链路上最响的一句假话 */
 export function parseRemaining(v: unknown): QuotaRemaining | null {
   if (v === null || typeof v !== "object") return null;
   const r = v as Record<string, unknown>;
   const n = (x: unknown): number | null => (typeof x === "number" && Number.isFinite(x) ? x : null);
-  const [h5, week, addon] = [n(r.h5), n(r.week), n(r.addon)];
-  if (h5 === null || week === null || addon === null) return null;
-  return { h5, week, addon, plan: typeof r.plan === "string" ? r.plan : null };
+  const [week, addon] = [n(r.week), n(r.addon)];
+  if (week === null || addon === null) return null;
+  return { week, addon, plan: typeof r.plan === "string" ? r.plan : null };
 }
 
 /** 这个函数**住在这里不住在 worker.ts**：那个文件进不了 vitest（一 import 就要 DO 运行时），
@@ -99,7 +99,7 @@ export function parseRemaining(v: unknown): QuotaRemaining | null {
 export type HoldOutcome =
   | { ok: true; chargedTo: "window" | "addon"; remaining?: QuotaRemaining }
   | { ok: false; code: "no_subscription" | "too_many_inflight"; remaining?: QuotaRemaining }
-  | { ok: false; code: "quota_exhausted"; window: "5h" | "week"; resetAt: number; remaining?: QuotaRemaining };
+  | { ok: false; code: "quota_exhausted"; window: "week"; resetAt: number; remaining?: QuotaRemaining };
 
 export interface SettleMeta {
   caller: Caller;
@@ -369,7 +369,6 @@ export function createLlmGateway(deps: LlmGatewayDeps): (req: Request, caller: C
   const newId = deps.newRequestId ?? (() => crypto.randomUUID());
 
   const headersOf = (r: QuotaRemaining): Record<string, string> => ({
-    [BILLING_HEADERS.h5]: String(r.h5),
     [BILLING_HEADERS.week]: String(r.week),
     [BILLING_HEADERS.addon]: String(r.addon),
     ...(r.plan ? { [BILLING_HEADERS.plan]: r.plan } : {}),
@@ -421,7 +420,7 @@ export function createLlmGateway(deps: LlmGatewayDeps): (req: Request, caller: C
     const holdRejected = async (held: Exclude<HoldOutcome, { ok: true }>): Promise<Response> => {
       const billingHeaders = await headersFrom(held.remaining, caller.uid).catch(() => ({}));
       if (held.code === "quota_exhausted") {
-        return apiError(429, held.window === "5h" ? "5 小时额度已用完" : "本周额度已用完", "quota_exhausted", {
+        return apiError(429, "本周额度已用完", "quota_exhausted", {
           window: held.window, resetAt: held.resetAt,
         }, billingHeaders);
       }

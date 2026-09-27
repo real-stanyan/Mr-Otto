@@ -64,9 +64,9 @@ describe("decisionClient.decide", () => {
   it("429 quota_exhausted：记 noteExhausted（界面上那枚环跟着动），回 null", async () => {
     const r = rig({
       me: ME({ auto: "on" }),
-      res: () => new Response(JSON.stringify({ error: { message: "5 小时额度已用完", type: "otto_edge", code: "quota_exhausted", window: "5h", resetAt: 123 } }), { status: 429 }),
+      res: () => new Response(JSON.stringify({ error: { message: "本周额度已用完", type: "otto_edge", code: "quota_exhausted", window: "week", resetAt: 123 } }), { status: 429 }),
     });
     expect(await r.client.decide("auto", "x", Q, 100)).toBeNull();
-    expect(r.noted.exhausted).toEqual([{ window: "5h", resetAt: 123 }]);
+    expect(r.noted.exhausted).toEqual([{ resetAt: 123 }]);
   });
 });

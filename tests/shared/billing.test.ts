@@ -13,9 +13,13 @@ describe("billing 约定", () => {
 
   it("parseBillingError 只认 otto_edge 信封；quota_exhausted 带 window/resetAt", () => {
     const e = parseBillingError(429, {
-      error: { type: "otto_edge", code: "quota_exhausted", message: "x", window: "5h", resetAt: 1000 },
+      error: { type: "otto_edge", code: "quota_exhausted", message: "x", window: "week", resetAt: 1000 },
     });
-    expect(e).toEqual({ code: "quota_exhausted", message: "x", window: "5h", resetAt: 1000 });
+    expect(e).toEqual({ code: "quota_exhausted", message: "x", window: "week", resetAt: 1000 });
+    // 旧网关还会说 "5h"（#1392）：认不出的窗名当缺席，其余照收——界面照「额度用完了」说
+    expect(parseBillingError(429, {
+      error: { type: "otto_edge", code: "quota_exhausted", message: "x", window: "5h", resetAt: 1000 },
+    })).toEqual({ code: "quota_exhausted", message: "x", resetAt: 1000 });
     expect(parseBillingError(429, { error: { message: "rate limited" } })).toBeNull();
     expect(parseBillingError(500, "boom")).toBeNull();
   });
@@ -39,6 +43,15 @@ describe("billing 约定", () => {
     expect(e).toEqual({ code: "payload_too_large", message: "webhook 正文过大" });
   });
 
+  it("parseBillingMe：只认周窗；网关为旧客户端补发的 h5 不读、缺了也不影响（#1392）", () => {
+    const base = { plan: "pro", status: "active", addon: { remainingMicro: 0, expiresAt: null }, periodEnd: null, models: [] };
+    const week = { usedMicro: 1, limitMicro: 10, resetAt: 99 };
+    expect(parseBillingMe({ ...base, windows: { week } })?.windows).toEqual({ week });
+    expect(parseBillingMe({ ...base, windows: { week, h5: { usedMicro: 0, limitMicro: 10, resetAt: 99 } } })?.windows).toEqual({ week });
+    // 周窗缺席 = 形状不对（与改动前「两扇缺一不可」同一条纪律，只是少了一扇）
+    expect(parseBillingMe({ ...base, windows: { h5: week } })).toBeNull();
+  });
+
   it("parseBillingMe：无订阅时 windows=null、plan=null；形状不对回 null", () => {
     const me = parseBillingMe({
       plan: null, status: "none", windows: null,
@@ -49,8 +62,10 @@ describe("billing 约定", () => {
   });
 
   it("remainingFromHeaders：缺的头不出现在结果里，不是 0", () => {
-    const h = new Headers({ [BILLING_HEADERS.h5]: "5000", [BILLING_HEADERS.plan]: "pro" });
-    expect(remainingFromHeaders(h)).toEqual({ h5: 5000, plan: "pro" });
+    const h = new Headers({ [BILLING_HEADERS.week]: "5000", [BILLING_HEADERS.plan]: "pro" });
+    expect(remainingFromHeaders(h)).toEqual({ week: 5000, plan: "pro" });
+    // 旧网关的 5h 头不读（#1392）
+    expect(remainingFromHeaders(new Headers({ "x-otto-window-5h-remaining": "0" }))).toEqual({});
     expect(remainingFromHeaders(new Headers({ [BILLING_HEADERS.week]: "abc" }))).toEqual({});
   });
 });

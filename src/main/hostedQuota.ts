@@ -18,7 +18,8 @@ export interface HostedQuotaDeps {
 export interface HostedSnapshot {
   me: BillingMe | null;
   fetchedAt: number;
-  exhausted: { window: "5h" | "week"; resetAt: number } | null;
+  /** 网关说额度用完了、到 resetAt 为止。只剩周窗之后（#1392）不再记是哪一扇 */
+  exhausted: { resetAt: number } | null;
 }
 
 export type CheckoutTarget = { planId: PlanId } | { addon: true; quantity: number };
@@ -176,21 +177,19 @@ export function createHostedQuota(deps: HostedQuotaDeps): HostedQuota {
       const me = snap.me;
       if (!me || !me.windows) return;
       const windows = {
-        h5: r.h5 === undefined ? me.windows.h5 : { ...me.windows.h5, usedMicro: Math.max(0, me.windows.h5.limitMicro - r.h5) },
         week: r.week === undefined ? me.windows.week : { ...me.windows.week, usedMicro: Math.max(0, me.windows.week.limitMicro - r.week) },
       };
       const addon = r.addon === undefined ? me.addon : { ...me.addon, remainingMicro: r.addon };
       let exhausted = liveExhausted();
-      if (r.h5 === 0 && (r.addon ?? addon.remainingMicro) === 0) exhausted = { window: "5h", resetAt: windows.h5.resetAt };
-      else if (r.week === 0 && (r.addon ?? addon.remainingMicro) === 0) exhausted = { window: "week", resetAt: windows.week.resetAt };
+      if (r.week === 0 && (r.addon ?? addon.remainingMicro) === 0) exhausted = { resetAt: windows.week.resetAt };
       snap = { ...snap, me: { ...me, windows, addon }, exhausted };
       emit();
     },
 
     noteExhausted(info) {
-      const window = info.window ?? "5h";
-      const fallback = snap.me?.windows ? (window === "5h" ? snap.me.windows.h5.resetAt : snap.me.windows.week.resetAt) : now() + 5 * 60_000;
-      snap = { ...snap, exhausted: { window, resetAt: info.resetAt ?? fallback } };
+      // 网关没说几点恢复时（旧网关 / 形状不对）退回周窗的刷新时刻；连快照都没有就先挡 5 分钟再问
+      const fallback = snap.me?.windows ? snap.me.windows.week.resetAt : now() + 5 * 60_000;
+      snap = { ...snap, exhausted: { resetAt: info.resetAt ?? fallback } };
       emit();
     },
 

@@ -1,4 +1,5 @@
-// 订阅那一族的**纯显示层**：两扇窗的数学（占比 / 剩余 / 色档 / 倒计时 / 悬停精确数）
+// 订阅那一族的**纯显示层**：额度窗的数学（占比 / 剩余 / 色档 / 倒计时 / 悬停精确数）。
+// #1392（ADR-0324）之后只剩一扇周窗
 // 加上「这个账号在哪一档」那枚徽章。
 //
 // 为什么住在 shared 而不是 renderer/lib（#1229）：灵动岛的额度页脚由**主进程**
@@ -14,7 +15,7 @@ import { creditOf, fmtCredit, type BillingMe, type PlanId, type WindowState } fr
     为什么要算这一层：客户端这份快照是**上一次网关响应**留下的，而窗口到点会自己清零。
     睡一觉回来再照着旧数画，就是对着一个额度早已回满的人说「你用了 62%」——设置页那两条
     因为进页会 refresh 一次而躲开了，常驻在浮层里的这份躲不开。
-    清零之后没有倒计时可言：5h 窗要等下一次调用才重新开窗，此刻不存在「几点恢复」，
+    清零之后没有倒计时可言（下一个周段的刷新时刻要等网关下一次回话才知道），
     所以 resetAt 原样留着但调用方该照 rolled 决定说不说那句话。 */
 export interface LiveWindow {
   usedMicro: number;
@@ -28,27 +29,20 @@ export function liveWindow(w: WindowState, now: number): LiveWindow {
   return { usedMicro: rolled ? 0 : w.usedMicro, limitMicro: w.limitMicro, resetAt: w.resetAt, rolled };
 }
 
-/** 两扇窗的名字。**三处界面共用这一份**（灵动岛页脚 / 账号页 / 上下文浮层）——
+/** 窗的名字。**三处界面共用这一份**（灵动岛页脚 / 账号页 / 上下文浮层）——
     同一扇窗在两块屏幕上不能有两种叫法（同 ADR-0209「同一扇窗两个界面不能给出
-    两个数」）。`h5` 从「5 小时窗」缩成「5h」是 #1229：岛的页脚一行里要塞下
-    档位徽章 + 窗名 + 百分比 + 条 + 倒计时，而「5 小时窗」四个全角字等于两个
-    半角字符能说完的事。 */
-export const WINDOW_LABELS = { h5: "5h", week: "本周" } as const;
+    两个数」）。原来还有一扇「5h」（#1229 从「5 小时窗」缩的），#1392 去掉了 */
+export const WINDOW_LABELS = { week: "本周" } as const;
 
-/** 两扇窗里**先把人拦住**的那扇：占比高的那个。
-    并列时取 5h —— 它的预算小、烧得快，同样的百分比下先满的一定是它。
-    主数字画这一扇：周窗打满而 5h 窗空着的时候只报 5h，等于报喜不报忧，
-    而用户问这个数就是想知道「我还能干多久」。两扇窗照旧都列出来，主次只影响强调。 */
+/** 先把人拦住的那扇窗。#1392（ADR-0324）之后只剩周窗，这个函数只是把它包成
+    主数字那一格要的形状——**留着这一层**是因为岛、浮层、告警点、设置页都从这里取
+    「主数字画哪扇、叫什么、百分之几」，哪天再多一扇窗，改的只是这一个函数 */
 export function bindingWindow(
-  windows: { h5: WindowState; week: WindowState },
+  windows: { week: WindowState },
   now: number
-): { key: "h5" | "week"; label: string; w: LiveWindow; percent: number } {
-  const h5 = liveWindow(windows.h5, now);
+): { key: "week"; label: string; w: LiveWindow; percent: number } {
   const week = liveWindow(windows.week, now);
-  const p5 = windowPercent(h5), pw = windowPercent(week);
-  return pw > p5
-    ? { key: "week", label: WINDOW_LABELS.week, w: week, percent: pw }
-    : { key: "h5", label: WINDOW_LABELS.h5, w: h5, percent: p5 };
+  return { key: "week", label: WINDOW_LABELS.week, w: week, percent: windowPercent(week) };
 }
 
 /** 「4.1 / 6.7 credit」——单位只写一次。两边都套 fmtCredit 会写成

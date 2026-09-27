@@ -1,4 +1,12 @@
-// 双固定窗计量的纯逻辑（ADR-0174 第 2/3/4/5/9 条）。跑在 Quota DO 里，也跑在根门禁里。
+// 周窗计量的纯逻辑（ADR-0174 第 2/3/4/5/9 条；#1392 / ADR-0324 去掉了 5 小时那扇窗，只剩一扇周窗）。
+// 跑在 Quota DO 里，也跑在根门禁里。
+//
+// **5 小时窗为什么整个拿掉而不是把上限调大**（#1392）：维护者要的是规矩本身只剩一条（「只分本周
+// 就行，简单一点」）。调大上限等于留着一扇永远不拦人的窗——它照样要在状态里记、在重建里回放、
+// 在响应头里报，而每一处都是「这扇窗到底还算不算数」的一次误读机会。旧 DO 落在 storage 里的
+// `open5hAt` / `used5hMicro` 两格照原样留着不读（多两个没人读的字段不会让任何判断变错，
+// 为它们写一段迁移反倒是一次改钱的状态的机会）；旧客户端要的那扇 h5 由 /me 那一层单独补
+// （billingQueries 的 `legacyWindows`），不回到这里。
 //
 // 为什么是累计数不是环形桶：ADR-0174 第 7 条写的「环形桶」是滑动窗的数据结构；
 // 第 3 条又定了窗口是**固定**的、到点整窗清零。固定窗一个累计数就够
@@ -23,15 +31,12 @@
 // settle/release，它的成本就一定有地方落（这才是「钱永远有地方落」的完整保证，不是
 // 靠 roll 本身）。
 //
-// 为什么 settle 还要在充费那一步做「窗口已关就地重开」（fix round 1，C1/I3）：hold 发生时
-// 窗口是开着的，但流式响应可能跑很久——真正 settle 落地时，原来那扇窗可能早就过了 5 小时
-// 关掉了（这是上面那次 roll 对剩余 state 的正常推进结果）。不重开的话，成本会记进一扇
-// 名存实亡的窗（open5hAt 是过去的时间戳，对外的 resetAt 已经算错）。就地开一扇新窗把这笔
-// 成本记进去——两条机制合起来，钱才真的永远有地方落。
+// 周窗跨段那一刻落地的 settle：roll 先把周用量清零、推到新周段，这笔成本记进新周段——
+// 钱永远有地方落（原来 5h 窗那条「窗口已关就地重开」的规矩随 5h 窗一起没了，周窗是按
+// 订阅锚点连续切段的，不存在「没开着的周窗」）。
 
 import { MAX_INFLIGHT } from "../../../src/shared/billing.js";
 
-export const WINDOW_5H_MS = 5 * 3_600_000;
 export const WEEK_MS = 7 * 86_400_000;
 /** 一个 hold 最多挂多久：流式响应最长也就几分钟，10 分钟没 settle = 那次调用没回来（只释放并发槽位，不影响它日后被 settle） */
 export const HOLD_TTL_MS = 10 * 60_000;
@@ -43,7 +48,6 @@ export { MAX_INFLIGHT };
 export interface PlanSnapshot {
   planId: string;
   status: "active" | "past_due" | "canceled";
-  window5hLimitMicro: number;
   weekLimitMicro: number;
   /** 周窗锚定日：subscription.current_period_start */
   periodStartMs: number;
@@ -63,9 +67,6 @@ export interface AddonGrant {
 }
 
 export interface QuotaState {
-  /** 本 5h 窗第一次 hold 的时刻；null = 没开着的窗 */
-  open5hAt: number | null;
-  used5hMicro: number;
   /** 当前周段起点（periodStart + n × 7d）；null = 还没算过 */
   weekStartAt: number | null;
   usedWeekMicro: number;
@@ -84,13 +85,10 @@ export type HoldResult =
   | { ok: true; state: QuotaState; chargedTo: "window" | "addon" }
   | { ok: false; code: "no_subscription" }
   | { ok: false; code: "too_many_inflight" }
-  | { ok: false; code: "quota_exhausted"; window: "5h" | "week"; resetAt: number };
+  | { ok: false; code: "quota_exhausted"; window: "week"; resetAt: number };
 
 export function emptyState(): QuotaState {
-  return {
-    open5hAt: null, used5hMicro: 0, weekStartAt: null, usedWeekMicro: 0,
-    holds: {}, grants: [],
-  };
+  return { weekStartAt: null, usedWeekMicro: 0, holds: {}, grants: [] };
 }
 
 /** I4：把 NaN / 负数消毒成 0 —— 不然 NaN 参与的比较全是 false，闸门形同虚设 */
@@ -104,12 +102,9 @@ export function weekStartFor(now: number, periodStartMs: number): number {
   return periodStartMs + n * WEEK_MS;
 }
 
-/** 惰性推进：过期 5h 窗清零、周窗跨段清零、过期 hold 释放、过期的那几笔加购单独清零（不影响未过期的） */
+/** 惰性推进：周窗跨段清零、过期 hold 释放、过期的那几笔加购单独清零（不影响未过期的） */
 export function roll(state: QuotaState, now: number, plan: PlanSnapshot | null): QuotaState {
   let s = state;
-  if (s.open5hAt !== null && now >= s.open5hAt + WINDOW_5H_MS) {
-    s = { ...s, open5hAt: null, used5hMicro: 0 };
-  }
   if (plan) {
     const ws = weekStartFor(now, plan.periodStartMs);
     if (s.weekStartAt !== ws) s = { ...s, weekStartAt: ws, usedWeekMicro: 0 };
@@ -161,10 +156,6 @@ function deductAddon(grants: AddonGrant[], amount: number): { grants: AddonGrant
   return { grants: next, remainder: remaining };
 }
 
-function reset5hAt(state: QuotaState, now: number): number {
-  return state.open5hAt === null ? now : state.open5hAt + WINDOW_5H_MS;
-}
-
 function resetWeekAt(state: QuotaState, plan: PlanSnapshot, now: number): number {
   return (state.weekStartAt ?? weekStartFor(now, plan.periodStartMs)) + WEEK_MS;
 }
@@ -184,35 +175,29 @@ export function hold(
 
   const estimate = safe(estimateMicro); // I4
   const heldW = heldMicro(s, "window");
-  const over5h = s.used5hMicro + heldW + estimate > plan.window5hLimitMicro;
-  const overWk = s.usedWeekMicro + heldW + estimate > plan.weekLimitMicro;
-  if (!over5h && !overWk) {
-    const open5hAt = s.open5hAt ?? now;
+  if (s.usedWeekMicro + heldW + estimate <= plan.weekLimitMicro) {
     return {
       ok: true, chargedTo: "window",
-      state: { ...s, open5hAt, holds: { ...s.holds, [requestId]: { micro: estimate, at: now, chargedTo: "window" } } },
+      state: { ...s, holds: { ...s.holds, [requestId]: { micro: estimate, at: now, chargedTo: "window" } } },
     };
   }
-  // 窗口不够 → 加购垫底（不进窗）。加购也不够 → 说清是哪个窗、何时恢复
+  // 周窗不够 → 加购垫底（不进窗）。加购也不够 → 说清何时恢复
   if (addonMicro(s) - heldMicro(s, "addon") >= estimate) {
     return {
       ok: true, chargedTo: "addon",
       state: { ...s, holds: { ...s.holds, [requestId]: { micro: estimate, at: now, chargedTo: "addon" } } },
     };
   }
-  return over5h
-    ? { ok: false, code: "quota_exhausted", window: "5h", resetAt: reset5hAt(s, now) }
-    : { ok: false, code: "quota_exhausted", window: "week", resetAt: resetWeekAt(s, plan, now) };
+  return { ok: false, code: "quota_exhausted", window: "week", resetAt: resetWeekAt(s, plan, now) };
 }
 
 /** 结算：按实际成本记账，退掉 hold。null = 这个 requestId 没有挂着的 hold（已结算/已释放，幂等）——
     调用方据此不写 usage_event。
     fix round 2：hold 先从**原始** state.holds 里查（不是先 roll 再查）——否则一个超过
     HOLD_TTL_MS 还没结算的 hold 会在 roll 那一步就被当成过期释放，查到的就是 undefined，
-    这笔成本从此没人记账。摘掉这个 hold 之后，再对剩下的 state 调用 roll 推进窗口/周段/
+    这笔成本从此没人记账。摘掉这个 hold 之后，再对剩下的 state 调用 roll 推进周段/
     其它 hold 的 TTL/加购到期，最后才计费。
-    C1/I3：充费时如果窗口已经关了（roll 的正常结果），就地开一扇新窗，不让成本落空。
-    I2：addon 结算按实际成本扣 grants，扣不完的差额（成本超过整个加购余额）落进窗口用量，
+    I2：addon 结算按实际成本扣 grants，扣不完的差额（成本超过整个加购余额）落进周窗用量，
     不再用 Math.max(0, …) 把超出部分直接抹掉。 */
 export function settle(
   state: QuotaState, requestId: string, costMicro: number, now: number, plan: PlanSnapshot | null
@@ -226,24 +211,11 @@ export function settle(
   if (h.chargedTo === "addon") {
     const { grants, remainder } = deductAddon(base.grants, cost);
     if (remainder <= 0) return { state: { ...base, grants }, hold: h, windowMicro: 0 };
-    const open5hAt = base.open5hAt ?? now; // I2：超出加购余额的部分落进窗口，窗口若已关就地重开
-    return {
-      state: {
-        ...base, grants, open5hAt,
-        used5hMicro: base.used5hMicro + remainder,
-        usedWeekMicro: base.usedWeekMicro + remainder,
-      },
-      hold: h,
-      windowMicro: remainder,
-    };
+    // I2：超出加购余额的部分落进周窗
+    return { state: { ...base, grants, usedWeekMicro: base.usedWeekMicro + remainder }, hold: h, windowMicro: remainder };
   }
 
-  const open5hAt = base.open5hAt ?? now; // C1/I3：窗口已关就地重开，成本永远有地方落
-  return {
-    state: { ...base, open5hAt, used5hMicro: base.used5hMicro + cost, usedWeekMicro: base.usedWeekMicro + cost },
-    hold: h,
-    windowMicro: cost,
-  };
+  return { state: { ...base, usedWeekMicro: base.usedWeekMicro + cost }, hold: h, windowMicro: cost };
 }
 
 export function release(state: QuotaState, requestId: string): QuotaState {
@@ -252,24 +224,20 @@ export function release(state: QuotaState, requestId: string): QuotaState {
   return { ...state, holds };
 }
 
-export function view(state: QuotaState, plan: PlanSnapshot | null, now: number): { h5: WindowState; week: WindowState } | null {
+export function view(state: QuotaState, plan: PlanSnapshot | null, now: number): { week: WindowState } | null {
   if (!plan) return null;
   const s = roll(state, now, plan);
-  return {
-    h5: { usedMicro: s.used5hMicro, limitMicro: plan.window5hLimitMicro, resetAt: reset5hAt(s, now) },
-    week: { usedMicro: s.usedWeekMicro, limitMicro: plan.weekLimitMicro, resetAt: resetWeekAt(s, plan, now) },
-  };
+  return { week: { usedMicro: s.usedWeekMicro, limitMicro: plan.weekLimitMicro, resetAt: resetWeekAt(s, plan, now) } };
 }
 
 /** 响应头用：扣掉未结算 hold 之后还剩多少。fix round 2：没有订阅或订阅非 active 时整份
-    恒为 0（不只是 addon）——hold 本来就会在这种状态下拒绝，报出满额度的 h5/week 会
+    恒为 0（不只是 addon）——hold 本来就会在这种状态下拒绝，报出满额度的周窗会
     误导调用方以为还能打请求。 */
-export function remaining(state: QuotaState, plan: PlanSnapshot | null, now: number): { h5: number; week: number; addon: number } {
-  if (!plan || plan.status !== "active") return { h5: 0, week: 0, addon: 0 };
+export function remaining(state: QuotaState, plan: PlanSnapshot | null, now: number): { week: number; addon: number } {
+  if (!plan || plan.status !== "active") return { week: 0, addon: 0 };
   const s = roll(state, now, plan);
   const heldW = heldMicro(s, "window");
   return {
-    h5: Math.max(0, plan.window5hLimitMicro - s.used5hMicro - heldW),
     week: Math.max(0, plan.weekLimitMicro - s.usedWeekMicro - heldW),
     addon: Math.max(0, addonMicro(s) - heldMicro(s, "addon")),
   };
@@ -279,9 +247,6 @@ export interface RebuildEvent {
   at: number;
   costMicro: number;
   chargedTo: "window" | "addon";
-  /** 这笔成本落进了哪扇 5h 窗（settle 那一刻的 `open5hAt`，写进 usage_event.window_open_at，#863）。
-      window 事件总带；addon 事件只在溢出到窗口时带；0018 之前的旧行是 null → 退回按事件链回放 */
-  windowOpenAt?: number | null;
 }
 
 export interface RebuildGrant {
@@ -301,11 +266,10 @@ export interface RebuildInput {
   grants: RebuildGrant[];
 }
 
-/** 冷启动重建该从哪一刻起拉 window 事件：本周段起点与「此刻往前 5h」取早的那个。
-    周窗归零不关 5h 窗（roll 只清 usedWeek），一扇跨周边界还开着的窗，锚在它上面的
-    事件可能早于周段起点——只拉周段内的行会把它截成半扇（#863 第二条）。 */
+/** 冷启动重建该从哪一刻起拉 window 事件：本周段起点。原来要和「此刻往前 5h」取早的那个
+    （一扇跨周边界还开着的 5h 窗不能截成半扇，#863），5h 窗没了之后只剩周段这一条（#1392） */
 export function rebuildWindowSince(plan: PlanSnapshot, now: number): number {
-  return Math.min(weekStartFor(now, plan.periodStartMs), now - WINDOW_5H_MS);
+  return weekStartFor(now, plan.periodStartMs);
 }
 
 /** 冷启动重建该从哪一刻起拉 addon 事件：最早那笔**还活着**的 grant 的进账时刻；
@@ -318,16 +282,12 @@ export function addonSinceOf(grants: RebuildGrant[], now: number): number | null
 }
 
 /** DO 冷启动 / 对不上时从事实重建投影。
-    **5h 窗按锚不按链**（#863）：每条 usage_event 记着它落进的那扇窗的 `open5hAt`
-    （settle 那一刻的值）。最后一条带锚的事件说的就是「此刻这扇窗几点开的」；它还活着
-    （now < 锚 + 5h）就把同一锚上的成本加起来，否则窗已关。以前那套「从周段起点按事件
-    链回放固定窗」只在链头恰好是一扇新窗时才对：链在周段边界、在任何一次拉取起点都可能
-    被截成半扇，而窗是跨周连续的（roll 只清周用量）。旧行（0018 之前、锚为 null）退回
-    链回放——那是它们唯一能给的信息。
     **加购逐笔重放**（#863）：按时间把 addon 事件从「那一刻已进账且未过期」的 grant 里
     先到期先扣（与 settle 的 deductAddon 同一规则），过期 grant 的历史消费落在它自己头上，
-    不再拿一个全时段总消耗去扣此刻还活着的 grant。扣不完的差额是当时落进窗口的那份
-    （settle 的 I2），有锚就照锚进 5h 窗，周段内的进周用量。
+    不再拿一个全时段总消耗去扣此刻还活着的 grant。扣不完的差额是当时落进周窗的那份
+    （settle 的 I2），周段内的进周用量。
+    **周窗只看周段内的事件**（#1392 去掉 5h 窗之后这一半只剩求和；原来那套按锚 / 按事件链
+    回放 5h 窗的逻辑整段删了，usage_event.window_open_at 从此不再写、也不再读）。
     fix round 2：单条事件的 costMicro 也过 safe()——事实来源里混进一条 NaN，不该把整份
     累计数一起污染成 NaN。 */
 export function rebuild(input: RebuildInput, plan: PlanSnapshot | null, now: number): QuotaState {
@@ -339,8 +299,8 @@ export function rebuild(input: RebuildInput, plan: PlanSnapshot | null, now: num
   const pool = [...input.grants]
     .sort((a, b) => a.createdAt - b.createdAt)
     .map((g) => ({ micro: safe(g.micro), expiresAt: g.expiresAt, createdAt: g.createdAt }));
-  /** addon 事件溢出到窗口的那份：[at, remainder, windowOpenAt] */
-  const overflow: { at: number; micro: number; windowOpenAt: number | null }[] = [];
+  /** addon 事件溢出到周窗的那份：[at, remainder] */
+  const overflow: { at: number; micro: number }[] = [];
   for (const e of events) {
     if (e.chargedTo !== "addon") continue;
     let remaining = safe(e.costMicro);
@@ -351,47 +311,17 @@ export function rebuild(input: RebuildInput, plan: PlanSnapshot | null, now: num
       g.micro -= take;
       remaining -= take;
     }
-    if (remaining > 0) overflow.push({ at: e.at, micro: remaining, windowOpenAt: e.windowOpenAt ?? null });
+    if (remaining > 0) overflow.push({ at: e.at, micro: remaining });
   }
   const grants: AddonGrant[] = pool
     .filter((g) => g.expiresAt > now && g.micro > 0)
     .map((g) => ({ micro: g.micro, expiresAt: g.expiresAt }));
 
   if (plan && ws !== null) {
-    const windowEvents = events.filter((e) => e.chargedTo === "window");
     let usedWeek = 0;
-    for (const e of windowEvents) if (e.at >= ws) usedWeek += safe(e.costMicro);
+    for (const e of events) if (e.chargedTo === "window" && e.at >= ws) usedWeek += safe(e.costMicro);
     for (const o of overflow) if (o.at >= ws) usedWeek += o.micro;
-
-    let open5hAt: number | null = null;
-    let used5h = 0;
-    const anchored = [...windowEvents, ...overflow].filter((e) => typeof e.windowOpenAt === "number");
-    const last = anchored.length ? anchored[anchored.length - 1]! : null;
-    if (last && windowEvents.every((e) => typeof e.windowOpenAt === "number")) {
-      // 全部带锚：最后一条的锚就是此刻这扇窗
-      const anchor = last.windowOpenAt as number;
-      if (now < anchor + WINDOW_5H_MS) {
-        open5hAt = anchor;
-        for (const e of windowEvents) if (e.windowOpenAt === anchor) used5h += safe(e.costMicro);
-        for (const o of overflow) if (o.windowOpenAt === anchor) used5h += o.micro;
-      }
-    } else {
-      // 有旧行（无锚）：按事件链回放固定窗边界（C3），最后再核一次以 now 而论窗是否已到寿命
-      for (const e of windowEvents) {
-        const cost = safe(e.costMicro);
-        if (open5hAt === null || e.at >= open5hAt + WINDOW_5H_MS) {
-          open5hAt = e.at;
-          used5h = 0;
-        }
-        used5h += cost;
-      }
-      for (const o of overflow) if (open5hAt !== null && o.at >= open5hAt) used5h += o.micro;
-      if (open5hAt !== null && now >= open5hAt + WINDOW_5H_MS) {
-        open5hAt = null;
-        used5h = 0;
-      }
-    }
-    st = { ...st, weekStartAt: ws, usedWeekMicro: usedWeek, open5hAt, used5hMicro: used5h };
+    st = { ...st, weekStartAt: ws, usedWeekMicro: usedWeek };
   }
   return { ...st, grants };
 }

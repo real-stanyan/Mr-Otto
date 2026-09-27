@@ -17,7 +17,7 @@ import { routeTts, type TtsRouteInput } from "./ttsRoute.js";
 export interface TtsQuotaPort {
   ttsInput(): TtsRouteInput["hosted"];
   noteHeaders(h: Headers): void;
-  noteExhausted(info: { window?: "5h" | "week"; resetAt?: number }): void;
+  noteExhausted(info: { resetAt?: number }): void;
 }
 
 export interface TtsClientDeps {
@@ -64,7 +64,7 @@ export function createTtsClient(deps: TtsClientDeps): TtsClient {
         const payload: unknown = await res.json().catch(() => null);
         const e = parseBillingError(res.status, payload);
         if (e?.code === "quota_exhausted") {
-          deps.quota.noteExhausted({ ...(e.window ? { window: e.window } : {}), ...(e.resetAt !== undefined ? { resetAt: e.resetAt } : {}) });
+          deps.quota.noteExhausted(e.resetAt !== undefined ? { resetAt: e.resetAt } : {});
         }
         return { ok: false, message: e?.message ?? `语音合成失败（HTTP ${res.status}）` };
       }

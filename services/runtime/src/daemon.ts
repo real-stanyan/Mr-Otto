@@ -747,7 +747,7 @@ async function main(): Promise<void> {
           return { status: res.status, json };
         },
       },
-      // 接力预算的分母：所有者那扇 5h 窗**还剩**多少（#1017）。走的是与路由同一只
+      // 接力预算的分母：所有者那扇周窗**还剩**多少（#1017；#1392 之后只剩周窗）。走的是与路由同一只
       // 探针（60s/uid 缓存），所以这不是每条会接力的 turn 各打一次网络。
       // **三种「没有数」一律回 null 不回 0**：探针不可达、没有活跃订阅、旧 edge 不发
       // windows 这一格——它们的共同点是「这一刻问不出剩余额度」，而 0 会被读成
@@ -756,11 +756,7 @@ async function main(): Promise<void> {
       relayRemainingMicro: async () => {
         const me = await hostedProbe.me(ownerUid);
         if (me === "unreachable" || me === null || me.windows === null) return null;
-        // **两扇窗取更吃紧的那扇**（同 billingView 的 `bindingWindow`，ADR-0209）：
-        // 网关的 hold 同时压 5h 与周窗，只看 5h 的话周窗快见底时刹车完全无感，
-        // 而那正是这道闸最该响的时候
-        const left = (w: { limitMicro: number; usedMicro: number }): number => w.limitMicro - w.usedMicro;
-        return Math.min(left(me.windows.h5), left(me.windows.week));
+        return me.windows.week.limitMicro - me.windows.week.usedMicro;
       },
       // 查不到就问人（#977）：0026 没跑、Supabase 抖了，都往严的一边倒——一次抖动
       // 把「要批」翻成「免批」是最不该有的默认。

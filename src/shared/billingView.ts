@@ -63,7 +63,7 @@ export function planCardsOrNull(me: BillingMe | null): Array<{ id: PlanId; name:
 
 /** 静息界面上那枚**额度告警点**画不画、画成什么色（#1073）。
  *
- * 为什么要有这一层：额度那两扇窗只画在上下文浮层里，**不悬停就看不见**
+ * 为什么要有这一层：额度只画在上下文浮层里，**不悬停就看不见**
  * （ADR-0209 把这条记成已知代价，#1071 重做那张卡时也没动它）。而额度是唯一
  * 会真正把人拦住的那一个 —— 上下文满了还能压缩，额度用完那一刻只能等。
  *
@@ -95,7 +95,7 @@ export function quotaAlert(billing: BillingSnapshotView | null, now: number): Qu
   if (!billing) return null;
   const ex = billing.exhausted;
   if (ex && ex.resetAt > now) {
-    return { tone: "deny", label: `额度：${ex.window === "5h" ? WINDOW_LABELS.h5 : WINDOW_LABELS.week} 已用完` };
+    return { tone: "deny", label: `额度：${WINDOW_LABELS.week} 已用完` };
   }
   const me = billing.me;
   if (!me?.windows) return null;

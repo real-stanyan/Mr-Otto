@@ -17,7 +17,7 @@ const me = (over: Partial<BillingMe> = {}): BillingMe => ({
   plan: "pro",
   status: "active",
   plans: [],
-  windows: { h5: win(10, 100, 2 * 3_600_000), week: win(100, 2000, 4 * 86_400_000) },
+  windows: { week: win(200, 2000, 2 * 3_600_000) },
   addon: { remainingMicro: 0, expiresAt: null },
   periodEnd: null,
   models: [],
@@ -56,12 +56,12 @@ describe("islandRail —— 灵动岛额度页脚的纯投影（#1229）", () =>
       kind: "quota",
       plan: "pro",
       pastDue: false,
-      windowLabel: "5h", // 5h 已用 10% > 周窗 5%，bindingWindow 取它
+      windowLabel: "本周", // #1392 之后只剩周窗
       remainPercent: 90,
       remainLabel: "90.0%",
       exhausted: false,
       countdown: "2h 0m 后刷新",
-      title: "已用 10 / 100 credit",
+      title: "已用 200 / 2000 credit",
     });
   });
 
@@ -72,16 +72,14 @@ describe("islandRail —— 灵动岛额度页脚的纯投影（#1229）", () =>
   });
 
   it("色档按**已用**判：>75 警、>90 危", () => {
-    const warn = snap({ me: me({ windows: { h5: win(80, 100, 60_000), week: win(10, 2000, 86_400_000) } }) });
-    const deny = snap({ me: me({ windows: { h5: win(95, 100, 60_000), week: win(10, 2000, 86_400_000) } }) });
+    const warn = snap({ me: me({ windows: { week: win(1600, 2000, 60_000) } }) });
+    const deny = snap({ me: me({ windows: { week: win(1900, 2000, 60_000) } }) });
     expect(islandRail({ billing: warn, billed: [], now: NOW })).toMatchObject({ tone: "warn", remainLabel: "20.0%" });
     expect(islandRail({ billing: deny, billed: [], now: NOW })).toMatchObject({ tone: "deny", remainLabel: "5.0%" });
   });
 
   it("窗已经清零：不画倒计时（「100.0% 可用」和「已刷新」是同一句话说两遍）", () => {
-    // 周窗也得是零 —— h5 一清零，两扇窗并列，bindingWindow 才仍然取 h5（它预算小、
-    // 烧得快）。周窗留着占比的话当主那扇会换成周窗，这条用例就测不到它想测的东西
-    const rolled = snap({ me: me({ windows: { h5: win(80, 100, -1), week: win(0, 2000, 86_400_000) } }) });
+    const rolled = snap({ me: me({ windows: { week: win(1600, 2000, -1) } }) });
     const r = islandRail({ billing: rolled, billed: [], now: NOW });
     expect(r).toMatchObject({ remainLabel: "100.0%", countdown: null, tone: "neutral" });
   });
@@ -89,7 +87,7 @@ describe("islandRail —— 灵动岛额度页脚的纯投影（#1229）", () =>
   it("exhausted 排在百分比前面：网关亲口说的拦住了，胜过从响应头换算的推论", () => {
     // 只走 429 那条路时窗口数还停在上一次的值——光看百分比会漏掉这一刻
     const r = islandRail({
-      billing: snap({ exhausted: { window: "5h", resetAt: NOW + 600_000 } }),
+      billing: snap({ exhausted: { resetAt: NOW + 600_000 } }),
       billed: [],
       now: NOW,
     });
@@ -98,7 +96,7 @@ describe("islandRail —— 灵动岛额度页脚的纯投影（#1229）", () =>
 
   it("过期的 exhausted 记号不算数——这份快照是 push 来的，不会自己到点过期", () => {
     const r = islandRail({
-      billing: snap({ exhausted: { window: "5h", resetAt: NOW - 1 } }),
+      billing: snap({ exhausted: { resetAt: NOW - 1 } }),
       billed: [],
       now: NOW,
     });

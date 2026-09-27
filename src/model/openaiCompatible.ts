@@ -471,7 +471,7 @@ export function createOpenAICompatibleAdapter(opts: OpenAICompatibleOptions): Mo
         try { parsed = JSON.parse(errBody); } catch { /* 非 JSON：不是 edge 信封 */ }
         const billing = parseBillingError(res.status, parsed);
         if (billing?.code === "quota_exhausted") {
-          const info: RerouteInfo = { ...(billing.window ? { window: billing.window } : {}), ...(billing.resetAt !== undefined ? { resetAt: billing.resetAt } : {}) };
+          const info: RerouteInfo = billing.resetAt !== undefined ? { resetAt: billing.resetAt } : {};
           opts.onReroute?.(info);
           throw markRetryable(markReroute(markErrorClass(new Error(`model API 429: ${billing.message}`), "reroute"), info));
         }

@@ -65,7 +65,7 @@ export function createDecisionClient(deps: DecisionClientDeps): DecisionClient {
             if (res.ok) return deps.quota.noteHeaders(res.headers);
             const e = parseBillingError(res.status, await res.json().catch(() => null));
             if (e?.code === "quota_exhausted") {
-              deps.quota.noteExhausted({ ...(e.window ? { window: e.window } : {}), ...(e.resetAt !== undefined ? { resetAt: e.resetAt } : {}) });
+              deps.quota.noteExhausted(e.resetAt !== undefined ? { resetAt: e.resetAt } : {});
             }
           },
         },

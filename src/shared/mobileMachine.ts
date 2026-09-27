@@ -315,7 +315,7 @@ export function usageHeroText(usage: WorkspaceUsage, billing: BillingSnapshotVie
   return parts.join(" · ");
 }
 
-/** 大数字那根条的色档：分母在时按已用判（与账号页两扇窗同一组阈值），不在时不画条也就无所谓色档——一律 neutral */
+/** 大数字那根条的色档：分母在时按已用判（与额度那扇窗同一组阈值），不在时不画条也就无所谓色档——一律 neutral */
 export function usageTone(usage: WorkspaceUsage): QuotaToneView {
   if (usage.weekLimitMicro === null) return "neutral";
   return quotaToneView(usedPercentOf(workspaceTotalMicro(usage), usage.weekLimitMicro));

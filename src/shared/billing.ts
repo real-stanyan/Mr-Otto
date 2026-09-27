@@ -36,8 +36,10 @@ export interface BillingMe {
   /** 全部档位的服务端价目。订阅卡片渲染这里的数（ADR-0203 偏差 (a)：
       渲染层那份写死的 PLAN_CARDS 价格曾经在改价那天与结账页对不上） */
   plans: PlanInfo[];
-  /** null = 没有活跃订阅（没窗口可言） */
-  windows: { h5: WindowState; week: WindowState } | null;
+  /** null = 没有活跃订阅（没窗口可言）。**只有一扇周窗**（#1392，ADR-0324 去掉了 5 小时那扇）。
+      网关照旧会多下发一格 `h5`（给已经装在用户机器上的旧桌面版解析用，见 edge 的 `legacyWindows`），
+      这里不读它 */
+  windows: { week: WindowState } | null;
   addon: { remainingMicro: number; expiresAt: number | null };
   periodEnd: number | null;
   /** 网关此刻供的逻辑型号 id（model_route 里 enabled 的）。
@@ -70,7 +72,6 @@ export interface BillingMe {
 }
 
 export const BILLING_HEADERS = {
-  h5: "x-otto-window-5h-remaining",
   week: "x-otto-window-week-remaining",
   addon: "x-otto-addon-remaining",
   plan: "x-otto-plan",
@@ -135,7 +136,8 @@ export type BillingErrorCode =
 export interface BillingError {
   code: BillingErrorCode;
   message: string;
-  window?: "5h" | "week";
+  /** 只剩周窗（#1392）。旧网关还会说 "5h"——认不出的一律当缺席，界面照「额度用完了」说 */
+  window?: "week";
   resetAt?: number;
 }
 
@@ -156,7 +158,7 @@ export function parseBillingError(status: number, payload: unknown): BillingErro
     code: e.code as BillingErrorCode,
     message: typeof e.message === "string" ? e.message : "",
   };
-  if (e.window === "5h" || e.window === "week") out.window = e.window;
+  if (e.window === "week") out.window = e.window;
   if (typeof e.resetAt === "number") out.resetAt = e.resetAt;
   return out;
 }
@@ -176,10 +178,10 @@ export function parseBillingMe(payload: unknown): BillingMe | null {
   let windows: BillingMe["windows"] = null;
   if (payload.windows !== null) {
     if (!isObj(payload.windows)) return null;
-    const h5 = parseWindow(payload.windows.h5);
+    // 只认周窗（#1392）：新网关为旧客户端补发的那格 h5、旧网关真在用的那格 h5，这里都不读
     const week = parseWindow(payload.windows.week);
-    if (!h5 || !week) return null;
-    windows = { h5, week };
+    if (!week) return null;
+    windows = { week };
   }
   if (!isObj(payload.addon) || typeof payload.addon.remainingMicro !== "number") return null;
   const expiresAt = typeof payload.addon.expiresAt === "number" ? payload.addon.expiresAt : null;
@@ -248,19 +250,17 @@ export function fmtCredit(micro: number): string {
 }
 
 /** 响应头里的剩余额度。缺的头不进结果——「没报」≠「剩 0」 */
-export function remainingFromHeaders(h: Headers): { h5?: number; week?: number; addon?: number; plan?: string } {
-  const out: { h5?: number; week?: number; addon?: number; plan?: string } = {};
+export function remainingFromHeaders(h: Headers): { week?: number; addon?: number; plan?: string } {
+  const out: { week?: number; addon?: number; plan?: string } = {};
   const num = (name: string): number | undefined => {
     const raw = h.get(name);
     if (raw === null) return undefined;
     const n = Number(raw);
     return Number.isFinite(n) ? n : undefined;
   };
-  const h5 = num(BILLING_HEADERS.h5);
   const week = num(BILLING_HEADERS.week);
   const addon = num(BILLING_HEADERS.addon);
   const plan = h.get(BILLING_HEADERS.plan);
-  if (h5 !== undefined) out.h5 = h5;
   if (week !== undefined) out.week = week;
   if (addon !== undefined) out.addon = addon;
   if (plan) out.plan = plan;

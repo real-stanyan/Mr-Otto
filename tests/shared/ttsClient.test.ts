@@ -28,7 +28,7 @@ describe("teamVoice.speak", () => {
     const { voice, fetchImpl, noted } = make(
       () => new Response(new Uint8Array([1, 2]), {
         status: 200,
-        headers: { "content-type": "audio/mpeg", [BILLING_HEADERS.cost]: "1139", [TTS_HEADERS.audioMs]: "5508", [BILLING_HEADERS.h5]: "99" },
+        headers: { "content-type": "audio/mpeg", [BILLING_HEADERS.cost]: "1139", [TTS_HEADERS.audioMs]: "5508", [BILLING_HEADERS.week]: "99" },
       })
     );
     const r = await voice.speak("你好", "male-qn-jingying");
@@ -63,10 +63,10 @@ describe("teamVoice.speak", () => {
 
   it("429 quota_exhausted：记 exhausted，文案原样透出", async () => {
     const { voice, exhausted } = make(
-      () => Response.json({ error: { type: "otto_edge", code: "quota_exhausted", message: "5 小时额度已用完", window: "5h", resetAt: 5 } }, { status: 429 })
+      () => Response.json({ error: { type: "otto_edge", code: "quota_exhausted", message: "本周额度已用完", window: "week", resetAt: 5 } }, { status: 429 })
     );
-    expect(await voice.speak("x", "v")).toEqual({ ok: false, message: "5 小时额度已用完" });
-    expect(exhausted).toEqual([{ window: "5h", resetAt: 5 }]);
+    expect(await voice.speak("x", "v")).toEqual({ ok: false, message: "本周额度已用完" });
+    expect(exhausted).toEqual([{ resetAt: 5 }]);
   });
 
   it("上游 502 / 非信封错误：带状态码的一句人话", async () => {

@@ -3,7 +3,7 @@ import { createOpenAICompatibleAdapter, type ResolvedEndpoint } from "../../src/
 import { billingErrorOf, errorClassOf, rerouteInfoOf } from "../../src/model/errorClass.js";
 import { BILLING_HEADERS, SSE_COST_COMMENT } from "../../src/shared/billing.js";
 
-const quotaBody = JSON.stringify({ error: { type: "otto_edge", code: "quota_exhausted", message: "5 小时额度已用完", window: "5h", resetAt: 123 } });
+const quotaBody = JSON.stringify({ error: { type: "otto_edge", code: "quota_exhausted", message: "本周额度已用完", window: "week", resetAt: 123 } });
 const okBody = JSON.stringify({ choices: [{ message: { content: "hi" } }], usage: { prompt_tokens: 1, completion_tokens: 1 } });
 
 function adapter(endpoints: ResolvedEndpoint[], hooks: { onResponse?: (i: unknown) => void; onReroute?: (i: unknown) => void } = {}) {
@@ -17,7 +17,7 @@ function adapter(endpoints: ResolvedEndpoint[], hooks: { onResponse?: (i: unknow
 }
 
 describe("托管路由的 adapter 行为", () => {
-  it("quota_exhausted → 标 reroute 类 + 带 window/resetAt + 调 onReroute，然后立刻重解析端点重来", async () => {
+  it("quota_exhausted → 标 reroute 类 + 带 resetAt + 调 onReroute，然后立刻重解析端点重来", async () => {
     const fetchMock = vi.spyOn(globalThis, "fetch")
       .mockResolvedValueOnce(new Response(quotaBody, { status: 429 }))
       .mockResolvedValueOnce(new Response(okBody, { status: 200 }));
@@ -26,7 +26,7 @@ describe("托管路由的 adapter 行为", () => {
     const reply = await a.chat([{ role: "user", content: "hi" }]);
     expect(reply.content).toBe("hi");
     expect(reply.route).toBe("direct");
-    expect(onReroute).toHaveBeenCalledWith({ window: "5h", resetAt: 123 });
+    expect(onReroute).toHaveBeenCalledWith({ resetAt: 123 });
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect((fetchMock.mock.calls[1]![0] as string)).toContain("https://up/v1");
     fetchMock.mockRestore();
@@ -38,20 +38,20 @@ describe("托管路由的 adapter 行为", () => {
       .mockImplementation(async () => new Response(quotaBody, { status: 429 }));
     const a = adapter([{ baseUrl: "https://edge/llm/v1", apiKey: "jwt", route: "hosted" }]);
     await expect(a.chat([{ role: "user", content: "hi" }])).rejects.toSatisfy((e: unknown) =>
-      errorClassOf(e) === "reroute" && rerouteInfoOf(e)?.window === "5h");
+      errorClassOf(e) === "reroute" && rerouteInfoOf(e)?.resetAt === 123);
     expect(fetchMock).toHaveBeenCalledTimes(2);
     fetchMock.mockRestore();
   });
 
   it("2xx 时 onResponse 拿到 route 与响应头（剩余额度从这儿刷）", async () => {
-    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(okBody, { status: 200, headers: { [BILLING_HEADERS.h5]: "9" } }));
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(okBody, { status: 200, headers: { [BILLING_HEADERS.week]: "9" } }));
     const onResponse = vi.fn();
     const a = adapter([{ baseUrl: "https://edge/llm/v1", apiKey: "jwt", route: "hosted" }], { onResponse });
     const reply = await a.chat([{ role: "user", content: "hi" }]);
     expect(reply.route).toBe("hosted");
     expect(onResponse).toHaveBeenCalledTimes(1);
     expect(onResponse.mock.calls[0]![0].route).toBe("hosted");
-    expect(onResponse.mock.calls[0]![0].headers.get(BILLING_HEADERS.h5)).toBe("9");
+    expect(onResponse.mock.calls[0]![0].headers.get(BILLING_HEADERS.week)).toBe("9");
     fetchMock.mockRestore();
   });
 
