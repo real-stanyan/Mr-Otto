@@ -137,7 +137,7 @@ export function VoicePickerSheet(p: {
               key={row.key}
               accessibilityRole="button"
               accessibilityState={{ selected: row.checked, busy: phase !== null }}
-              accessibilityLabel={`${row.label}，${err ?? row.hint}`}
+              accessibilityLabel={`${row.label}，${err ?? row.hint}${err === null && row.also !== null ? `，${row.also}` : ""}`}
               onPress={() => {
                 if (!p.visible) return; // 收起动画那一小段里行还点得到：那时不改表单也不念
                 p.onPick(row.key === VOICE_AUTO ? null : row.key);

@@ -71,6 +71,32 @@ describe("voicePickerRows", () => {
     const rows = voicePickerRows({ agentId: "a_new", picked: null, agents });
     expect(rows[0]!.voiceId).toBe(agentVoiceId("a_new", [...agents, { agentId: "a_new" }]));
   });
+
+  it("派生到某一档的智能体不算「也是这个声音」：这一只一挑那一档，它就让开了", () => {
+    // 找一只按 id 派到的声音恰好是六档之一的（名单：它在前、运维在后，运维没挑）
+    const id = Array.from({ length: 500 }, (_, i) => `x_${i}`).find((x) =>
+      AGENT_VOICE_CHOICES.some((c) => c.voiceId === agentVoiceId(x, [x, "a_ops"])))!;
+    const natural = AGENT_VOICE_CHOICES.find((c) => c.voiceId === agentVoiceId(id, [id, "a_ops"]))!;
+    const rows = voicePickerRows({
+      agentId: "a_ops",
+      picked: null,
+      agents: [{ agentId: id, name: "派生" }, { agentId: "a_ops", name: "运维" }],
+    });
+    expect(rows.find((r) => r.key === natural.key)!.also).toBeNull();
+  });
+
+  it("两只以上挑了同一档：名字挨着写", () => {
+    const rows = voicePickerRows({
+      agentId: "a_ops",
+      picked: null,
+      agents: [
+        { agentId: "a_dev", name: "开发", voice: "gan" },
+        { agentId: "a_ux", name: "设计", voice: "gan" },
+        { agentId: "a_ops", name: "运维" },
+      ],
+    });
+    expect(rows.find((r) => r.key === "gan")!.also).toBe("「开发」「设计」也是这个声音");
+  });
 });
 
 describe("voicePreviewText", () => {

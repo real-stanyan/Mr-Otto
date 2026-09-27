@@ -3,6 +3,7 @@
 // 这里的校验只负责「当场说出口、按不动」，与服务端那道同口径（长度按 UTF-16 长度算，
 // 同 validateAgentPatch 的 optionalText——否则表单放行的东西落库时被拒）。
 
+import { voiceChoiceOf } from "./agentVoice.js";
 import { AGENT_DESCRIPTION_MAX, AGENT_INSTRUCTIONS_MAX } from "./createAgentDraft.js";
 import { FACE_PACKS, pickSlotOf, type FaceState } from "./ottoFace/index.js";
 import { validateAgentName } from "./workspaceAgents.js";
@@ -60,7 +61,10 @@ export function agentFormPatch(a: WorkspaceAgentRow, f: AgentForm): AgentFormPat
   const instructions = f.instructions.trim();
   if (instructions !== a.instructions) p.instructions = instructions;
   if (f.avatarSlot !== a.avatarSlot) p.avatarSlot = f.avatarSlot;
-  if (f.voice !== (a.voice ?? null)) p.voice = f.voice;
+  // 声音比的是「认得的那一档」：认不出的键（新版才有的档）与 null 都是「自动」。只是在表里点一下
+  // 「自动」听一听，不该把新版客户端挑的那一档冲掉（workspaces.ts 的 normalizeVoiceKey 留着它正是为此）
+  const voiceOf = (v: string | null): string | null => voiceChoiceOf(v)?.key ?? null;
+  if (voiceOf(f.voice) !== voiceOf(a.voice ?? null)) p.voice = voiceOf(f.voice);
   return Object.keys(p).length === 0 ? null : p;
 }
 

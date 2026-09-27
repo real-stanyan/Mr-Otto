@@ -99,9 +99,9 @@ describe("voiceSession", () => {
     const pick = AGENT_VOICE_CHOICES.find((c) => c.voiceId !== agentVoiceId("a", ["a", "b"]))!;
     const h = harness({ events: [callOn(1, ["a"])], roster: [{ agentId: "a", voice: pick.key }, "b"] });
     h.v.join(S);
-    h.push(reply(2, "a", "我挑了播音。"));
+    h.push(reply(2, "a", "我挑了这一档。"));
     await flush();
-    expect(h.spoke).toEqual([{ text: "我挑了播音。", voiceId: pick.voiceId }]);
+    expect(h.spoke).toEqual([{ text: "我挑了这一档。", voiceId: pick.voiceId }]);
   });
 
   it("流式：写完的句先出声，终态只补没读过的", async () => {

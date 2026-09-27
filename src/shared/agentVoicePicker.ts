@@ -27,7 +27,7 @@ export interface VoicePickerRow {
   checked: boolean;
   /** 试听这一行念的音色：一档就是它自己的；「自动」是这一只没挑时会派到的那一个 */
   voiceId: string;
-  /** 「「开发」也是这个声音」；没有别的智能体是这个声音 → null（「自动」那一行恒为 null） */
+  /** 「「开发」也是这个声音」：这一只挑了这一档之后仍和它同声的别的智能体；没有 → null（「自动」那一行恒为 null） */
   also: string | null;
 }
 
@@ -37,9 +37,9 @@ export function voiceRowValue(voice: string | null): string {
 }
 
 /**
- * 表的七行。`agents` 是名册（顺序 = 派生解撞的顺序），带各自**存下来**的那一格；这一只按表单此刻的
- * `picked` 算（还没存），所以「谁也是这个声音」说的是「照你此刻的选择，存下去之后」的样子。
- * 名册里还没有这一只（快照没刷回来）也答得出：它排在最后。
+ * 表的七行。`agents` 是名册（顺序 = 派生解撞的顺序），带各自**存下来**的那一格；
+ * 每一档那一行底下「谁也是这个声音」按「这一只挑了这一档、存下去之后」算：挑过的先占、派生的让开，
+ * 所以写出来的只会是同样挑了这一档的。名册里还没有这一只（快照没刷回来）也答得出：它排在最后。
  */
 export function voicePickerRows(o: {
   agentId: string;
@@ -53,10 +53,13 @@ export function voicePickerRows(o: {
     return o.agents.some((a) => a.agentId === o.agentId) ? rest : [...rest, entryOf(o.agentId, voice)];
   };
   const chosen = voiceChoiceOf(o.picked);
-  const now = agentVoiceIds(rosterWith(chosen === null ? null : chosen.key));
   const others = o.agents.filter((a) => a.agentId !== o.agentId);
-  const alsoOf = (voiceId: string): string | null => {
-    const names = others.filter((a) => now.get(a.agentId) === voiceId).map((a) => `「${a.name}」`);
+  // 「这一只挑了这一档、存下去之后」会和谁同声：按那一档**自己**算——挑过的先占、派生的让开，
+  // 所以写得出来的只有同样挑了这一档的（或者池子满了让不开的）。拿此刻的选择去算别的行会说假话：
+  // 一只派生到这个声音的智能体会被写成「也是这个声音」，而你一挑它就让开了
+  const alsoOf = (key: string, voiceId: string): string | null => {
+    const ids = agentVoiceIds(rosterWith(key));
+    const names = others.filter((a) => ids.get(a.agentId) === voiceId).map((a) => `「${a.name}」`);
     return names.length === 0 ? null : `${names.join("")}也是这个声音`;
   };
   return [
@@ -74,7 +77,7 @@ export function voicePickerRows(o: {
       hint: c.hint,
       checked: chosen?.key === c.key,
       voiceId: c.voiceId,
-      also: alsoOf(c.voiceId),
+      also: alsoOf(c.key, c.voiceId),
     })),
   ];
 }

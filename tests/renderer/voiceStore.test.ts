@@ -82,7 +82,7 @@ describe("store 的语音接线（#1163）", () => {
     useChat.setState({ workspaceGroups: [{ ...ws, agents: [ws.agents[0]!, { ...ws.agents[1]!, voice: pick.key }] }] });
     const st = useChat.getState();
     st.joinVoiceCall();
-    st.voiceOnEvent(said("a_1", 2, "我挑了播音"));
+    st.voiceOnEvent(said("a_1", 2, "我挑了这一档"));
     await flush();
     expect(spoken[0]!.voiceId).toBe(pick.voiceId);
   });

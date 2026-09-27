@@ -54,6 +54,13 @@ describe("agentFormPatch", () => {
     expect(agentFormPatch(B, agentFormOf(B))).toBeNull();
     expect(agentFormPatch(B, { ...agentFormOf(B), voice: null })).toEqual({ voice: null });
   });
+
+  it("认不出的键（新版客户端挑的）当「自动」比：表里点一下「自动」不会把它冲掉", () => {
+    const N: WorkspaceAgentRow = { ...A, voice: "newkey" };
+    expect(agentFormOf(N).voice).toBe("newkey");
+    expect(agentFormPatch(N, { ...agentFormOf(N), voice: null })).toBeNull();
+    expect(agentFormPatch(N, { ...agentFormOf(N), voice: "gan" })).toEqual({ voice: "gan" });
+  });
 });
 
 describe("pickableFaces", () => {

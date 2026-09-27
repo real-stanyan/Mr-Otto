@@ -1,5 +1,5 @@
-// 每只 agent 用哪个 MiniMax 音色（#1163）。派生不落库（拍板：音色自动派生），
-// 算法逐字照 agentAvatarSlot：管理员固定、其余按 agent_id 哈希、按名单顺序解撞——
+// 每只 agent 用哪个 MiniMax 音色（#1163）：缺省按 agent_id 派生（管理员固定、其余哈希、按名单顺序解撞）；
+// #1372 起可以挑（workspace_agents.voice 存六档之一的键），挑过的先占、派生的让开——
 // 群语音里靠声音分人，同一只在两台机器、两次刷新上必须是同一个声音。
 import { describe, expect, it } from "vitest";
 import {
@@ -101,6 +101,15 @@ describe("agentVoiceIds：挑过的先占（#1372）", () => {
     expect(ids.get("y_1")).toBe(natural.voiceId);
     expect(ids.get(id)).not.toBe(natural.voiceId);
     expect(AGENT_VOICES.some((v) => v.id === ids.get(id))).toBe(true);
+  });
+
+  it("挑过的排在名单后面也先占：先建的那只派生时照样让开", () => {
+    const id = Array.from({ length: 500 }, (_, i) => `x_${i}`).find((x) =>
+      AGENT_VOICE_CHOICES.some((c) => c.voiceId === agentVoiceId(x, [x])))!;
+    const natural = AGENT_VOICE_CHOICES.find((c) => c.voiceId === agentVoiceId(id, [id]))!;
+    const ids = agentVoiceIds([id, { agentId: "y_1", voice: natural.key }]);
+    expect(ids.get("y_1")).toBe(natural.voiceId);
+    expect(ids.get(id)).not.toBe(natural.voiceId);
   });
 
   it("两只挑了同一档：两只都照挑的（人自己负责）", () => {
