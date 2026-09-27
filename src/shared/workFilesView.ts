@@ -63,3 +63,11 @@ export function entryMeta(entry: CsWorkEntry, now: number): string {
   const size = formatWorkSize(entry.size);
   return [size, time].filter((s) => s !== "").join(" · ");
 }
+
+/** 搜索框里打的字 → 按名找还是按内容找。`?` 开头 = 按内容（#1066 起桌面文件页的约定，#1356 A5 抬进 shared，
+    手机那一页同一份）。去掉 `?` 之后只剩空白 = 还没开始搜（null）；词本身原样交出去（桌面原来就不 trim） */
+export function parseFileQuery(query: string): { term: string; content: boolean } | null {
+  const content = query.startsWith("?");
+  const term = content ? query.slice(1) : query;
+  return term.trim() === "" ? null : { term, content };
+}

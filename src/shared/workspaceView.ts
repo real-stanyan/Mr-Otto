@@ -52,7 +52,8 @@ export function memberAvatarOf(ws: WorkspaceSnapshot, uid: string): string {
   return ws.members.find((m) => m.uid === uid)?.avatarUrl ?? "";
 }
 
-function toolsSummary(tools: readonly string[]): string {
+/** 连接器那一行的第二格：「全部工具」/「3 个工具」。手机的应用清单用同一句（#1356 A5） */
+export function toolsSummary(tools: readonly string[]): string {
   return tools.length === 0 ? "全部工具" : `${tools.length} 个工具`;
 }
 

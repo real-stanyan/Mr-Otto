@@ -29,7 +29,7 @@ import { Button } from "@/components/ui/button.js";
 import { Input } from "@/components/ui/input.js";
 import { useChat } from "../store.js";
 import { modelStatusText } from "../lib/cloudModelStatus.js";
-import { entryMeta, workFileNotice, workFolderNotice } from "../../../shared/workFilesView.js";
+import { entryMeta, parseFileQuery, workFileNotice, workFolderNotice } from "../../../shared/workFilesView.js";
 import { joinWorkPath } from "../../../shared/remote/workPath.js";
 import { FileTypeIcon, FolderIcon } from "./FileTypeIcon.js";
 import { previewLang } from "../lib/previewLang.js";
@@ -155,12 +155,13 @@ function WorkFolder({ workspaceId }: { workspaceId: string }) {
       setNotice("");
       return undefined;
     }
-    const content = query.startsWith("?");
-    const term = content ? query.slice(1) : query;
-    if (term.trim() === "") {
+    // `?` 开头 = 按内容搜（判据在 shared，手机那一页同一份，#1356 A5）
+    const parsed = parseFileQuery(query);
+    if (parsed === null) {
       setHits(null);
       return undefined;
     }
+    const { term, content } = parsed;
     const timer = setTimeout(() => {
       void (async () => {
         setBusy(true);
