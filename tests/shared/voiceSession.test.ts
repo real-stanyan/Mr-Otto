@@ -1,7 +1,7 @@
 // voiceSession（#1356 A4）：一台设备上的语音编排。语义逐条照桌面 store 的语音那一段
 // （tests/renderer/voiceStore.test.ts 钉的是桌面那一份），这里用假端口钉手机用的这一份。
 import { describe, expect, it } from "vitest";
-import { agentVoiceId, voiceChoiceOf, type VoiceRoster } from "../../src/shared/agentVoice.js";
+import { AGENT_VOICE_CHOICES, agentVoiceId, type VoiceRoster } from "../../src/shared/agentVoice.js";
 import type { CloudAck, SpeechEvent, VoiceSpeakResult } from "../../src/shared/shellBridge.js";
 import { IOS_PERMISSION_HELP } from "../../src/shared/voiceMic.js";
 import type { PlayerAudio } from "../../src/shared/voicePlayer.js";
@@ -95,11 +95,13 @@ describe("voiceSession", () => {
   });
 
   it("挑过声音的（#1372）照它挑的那一档读", async () => {
-    const h = harness({ events: [callOn(1, ["a"])], roster: [{ agentId: "a", voice: "bo" }, "b"] });
+    // 挑一档和它按 id 派出来的不同的——同一个音色的话，接线没接上这条也会绿
+    const pick = AGENT_VOICE_CHOICES.find((c) => c.voiceId !== agentVoiceId("a", ["a", "b"]))!;
+    const h = harness({ events: [callOn(1, ["a"])], roster: [{ agentId: "a", voice: pick.key }, "b"] });
     h.v.join(S);
     h.push(reply(2, "a", "我挑了播音。"));
     await flush();
-    expect(h.spoke).toEqual([{ text: "我挑了播音。", voiceId: voiceChoiceOf("bo")!.voiceId }]);
+    expect(h.spoke).toEqual([{ text: "我挑了播音。", voiceId: pick.voiceId }]);
   });
 
   it("流式：写完的句先出声，终态只补没读过的", async () => {
