@@ -853,6 +853,7 @@ button.row:active { background: var(--press); }
 .detail h2 { margin: 0 0 2px; font-size: 20px; font-weight: 600; }
 .detail .lead-p { margin: 0; color: var(--fg-2); font-size: 13px; line-height: 1.6; }
 .quota { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+.quota.one { grid-template-columns: 1fr; }
 .quota .cell { background: var(--surface); border-radius: 12px; padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; }
 .quota .k { font-size: 12px; color: var(--fg-2); }
 .quota .v { font-size: 24px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
@@ -1591,6 +1592,7 @@ const NEW_THINGS = [
   ["手机端的团队与朋友", "今天手机上一个都没有"],
   ["按住说话", "手机端：说完转成文字发出去（通话那套识别已经在，缺一个按住的模式）"],
   ["表情", "只是往输入框里插 emoji，不是贴图"],
+  ["额度只按周算", "去掉「5 小时」那扇窗（维护者 2026-09-27）；这次只改设计，真规矩不动，落地时网关、价目表、接力刹车都要跟着改"],
 ];
 
 const REMOVED_THINGS = [
@@ -2069,8 +2071,8 @@ const REMOVED_THINGS = [
         html = `<h2>订阅</h2><p class="lead-p">Free 能加朋友、进别人拉你的团队。要有自己的智能体，订 Pro 或 Max。</p>
         <div class="inset"><div class="row"><span class="t">Pro<span class="sub">私聊、群聊、语音通话，一个订阅打通多家模型</span></span><button class="btn primary" style="height:30px">订阅</button></div><div class="row"><span class="t">Max<span class="sub">额度更多，还能建团队</span></span><button class="btn soft" style="height:30px">订阅</button></div></div>`;
       } else {
-        html = `<h2>订阅与额度</h2><p class="lead-p">额度两扇窗：每 5 小时一扇、每周一扇。先用完哪扇，就等哪扇刷新。</p>
-        <div class="quota"><div class="cell"><span class="k">5 小时</span><span class="v">64%<small>还剩</small></span><div class="meter"><i style="width:64%"></i></div><span class="r">1h 38m 后刷新</span></div><div class="cell"><span class="k">本周</span><span class="v">81%<small>还剩</small></span><div class="meter"><i style="width:81%"></i></div><span class="r">周一 00:00 刷新</span></div></div>
+        html = `<h2>订阅与额度</h2><p class="lead-p">额度按周算，每周一 00:00 刷新。</p>
+        <div class="quota one"><div class="cell"><span class="k">本周</span><span class="v">81%<small>还剩</small></span><div class="meter"><i style="width:81%"></i></div><span class="r">周一 00:00 刷新</span></div></div>
         <div class="inset"><div class="row"><span class="t">当前档位</span><span class="val"><span class="plan">Pro</span></span></div><button class="row"><span class="t">换档或取消</span><span class="chev">${ic("chevron-right", 16)}</span></button></div>`;
       }
     }
