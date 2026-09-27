@@ -12,6 +12,7 @@ import {
   Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View,
   type StyleProp, type TextInputProps, type TextStyle, type ViewStyle,
 } from "react-native";
+import { CheckGlyph } from "./chrome/Glyphs.js";
 import { MONO, PRESS_SPRING, radius, space, type, usePalette, withAlpha, type Palette } from "./theme.js";
 
 /** 系统的「减弱动态效果」。缩放这种位移类反馈要让位,但反馈本身不能消失 */
@@ -24,6 +25,17 @@ export function useReduceMotion(): boolean {
     return () => { alive = false; sub.remove(); };
   }, []);
   return on;
+}
+
+/** 此刻（毫秒），每 periodMs 刷新一次：倒计时、「刚刚 / 12:41」这种按分钟变的字用它，不在渲染里裸读 Date.now()
+    （裸读的话只在别的东西触发重画时才变，放着不动的一页会一直写「1h 38m 后刷新」） */
+export function useNow(periodMs: number): number {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const id = setInterval(() => setNow(Date.now()), periodMs);
+    return () => clearInterval(id);
+  }, [periodMs]);
+  return now;
 }
 
 /* ── 文字 ─────────────────────────────────────────────── */
@@ -308,6 +320,8 @@ function Chevron({ color }: { color: string }) {
 
 export function Row(props: {
   label: string;
+  /** 第二行小字（demo 的 `.sub`）：这一行「里面有什么」。给了它，左边那一块改成可收缩的两行、右边收成自然宽 */
+  detail?: string;
   /** 右边的值。只读信息走这里,不要做成按钮 */
   value?: string;
   /** 值是机器数据(中继地址、设备 id):等宽 + 小一号,和 Meta 同一条规矩。
@@ -319,6 +333,8 @@ export function Row(props: {
   disabled?: boolean;
   /** 有下一层可去。只在真的会推进一屏时给 —— 它是个承诺 */
   chevron?: boolean;
+  /** 单选清单里被选中的那一行：右边一枚点缀色的勾（iOS 设置的单选语汇，外观那一组用） */
+  checked?: boolean;
   /** 单独成组、居中的动作行(iOS 的「退出登录」就是这个形状) */
   align?: "split" | "center";
   /** accent = 读成「一个动作」的那一行（群设置的「加一只」，demo 里那一行的字是点缀色） */
@@ -327,6 +343,7 @@ export function Row(props: {
   const { c } = usePalette();
   const hi = useRef(new Animated.Value(0)).current;
   const center = props.align === "center";
+  const two = props.detail !== undefined;
   const fg = props.tone === "destructive" ? c.destructive : props.tone === "accent" ? c.brand : c.foreground;
 
   // **按下那一帧就变色**(setValue,不是动画);松手才淡出。
@@ -341,20 +358,29 @@ export function Row(props: {
   const body = (
     <View style={{
       flexDirection: "row", alignItems: "center", gap: space.sm,
-      paddingHorizontal: space.md, paddingVertical: 12,
-      minHeight: 44, // HIG 的最小可点高度
+      paddingHorizontal: space.md, paddingVertical: two ? 10 : 12,
+      minHeight: two ? 52 : 44, // HIG 的最小可点高度；带第二行时照 demo 的 .row（52）
       justifyContent: center ? "center" : "space-between",
     }}>
-      {/* 左边不收缩、右边收缩:要截也该截机器数据那一串,不是"中继"这两个字 */}
-      <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm, flexShrink: 0 }}>
+      {/* 单行：左边不收缩、右边收缩（要截也该截机器数据那一串，不是"中继"这两个字）。
+          两行：反过来——左边那两行是主角、可以截断，右边是「Max」「3 页」这种短值 */}
+      <View style={two
+        ? { flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", gap: space.sm }
+        : { flexDirection: "row", alignItems: "center", gap: space.sm, flexShrink: 0 }}>
         {props.leading}
-        <Text style={{ ...type.body, color: fg }} numberOfLines={1}>{props.label}</Text>
+        {two ? (
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={{ ...type.body, color: fg }} numberOfLines={1}>{props.label}</Text>
+            <Text style={{ ...type.footnote, color: c.mutedForeground, marginTop: 1 }} numberOfLines={1}>{props.detail}</Text>
+          </View>
+        ) : (
+          <Text style={{ ...type.body, color: fg }} numberOfLines={1}>{props.label}</Text>
+        )}
       </View>
       {center ? null : (
-        <View style={{
-          flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center",
-          justifyContent: "flex-end", gap: space.xs,
-        }}>
+        <View style={two
+          ? { flexShrink: 0, flexDirection: "row", alignItems: "center", gap: space.xs }
+          : { flex: 1, minWidth: 0, flexDirection: "row", alignItems: "center", justifyContent: "flex-end", gap: space.xs }}>
           {props.value === undefined ? null : (
             <Text
               style={props.mono
@@ -368,6 +394,7 @@ export function Row(props: {
               {props.value}
             </Text>
           )}
+          {props.checked ? <CheckGlyph color={c.brand} size={14} /> : null}
           {props.chevron ? <Chevron color={c.mutedForeground} /> : null}
         </View>
       )}
@@ -623,5 +650,21 @@ export function Field(props: {
         ...(props.align === "center" ? { textAlign: "center" as const } : {}),
       }}
     />
+  );
+}
+
+/** 表单里一格：上面一行小字标签（可带一句提示）、下面是输入框、再下面是这一格的错误（#1356 A1 起智能体设置在用，
+    A5 改记忆那一页也用，挪进组件层） */
+export function Labeled({ label, hint, error, children }: { label: string; hint?: string; error: string | null; children: React.ReactNode }) {
+  const { c } = usePalette();
+  return (
+    <View style={{ gap: space.xs }}>
+      <Text style={{ ...type.footnote, color: c.mutedForeground, paddingHorizontal: 4 }}>
+        {label}
+        {hint ? ` · ${hint}` : ""}
+      </Text>
+      {children}
+      {error ? <Text style={{ ...type.footnote, color: c.destructive, paddingHorizontal: 4 }}>{error}</Text> : null}
+    </View>
   );
 }

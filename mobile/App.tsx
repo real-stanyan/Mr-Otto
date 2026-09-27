@@ -20,6 +20,10 @@ import { GateScreen } from "./src/gate/GateScreen.js";
 import { Splash } from "./src/gate/Splash.js";
 import { readResetHold, writeResetHold } from "./src/gate/resetHold.js";
 import { hasStoredSessionSync } from "./src/gate/storedSession.js";
+import { loadThemePref } from "./src/themePref.js";
+
+// 外观偏好冷启动时读一次（A5）：读回来之前那几帧跟随系统——冷启动有 Splash 挡着，看不见那一下切换
+void loadThemePref();
 
 /** 冷启动的步数：读 session。进度条的「真实」那一半按它数（配对身份那一步随投影一起删了，#1356） */
 const BOOT_STEPS = 1;

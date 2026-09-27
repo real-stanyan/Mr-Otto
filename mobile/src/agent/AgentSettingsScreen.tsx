@@ -3,8 +3,8 @@
 // 删一只的倒序四步（agentAdmin.ts，与桌面同一份编排）。这里只画与接线。
 // 「存」挂在原生导航条右边：什么都没改 / 有一格不合法 / 正在存时按不动。
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
-import { ScrollView, Text, TextInput, View } from "react-native";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { ScrollView, TextInput, View } from "react-native";
 import {
   deleteAgentEverywhere, updateAgentChecked, type AgentDeleteDeps, type AgentUpdateDeps,
 } from "../../../src/shared/agentAdmin.js";
@@ -24,8 +24,8 @@ import { Face } from "../face/Face.js";
 import { refreshHomeAfterWrite, useHome } from "../home/homeStore.js";
 import type { RootStackParams } from "../nav/types.js";
 import { supabase } from "../supabase.js";
-import { radius, space, type as t, usePalette } from "../theme.js";
-import { Button, Field, Group, Note, Row } from "../ui.js";
+import { radius, space, usePalette } from "../theme.js";
+import { Button, Field, Group, Labeled, Note, Row } from "../ui.js";
 import { FacePickerSheet } from "./FacePickerSheet.js";
 
 const updateDeps: AgentUpdateDeps = { listAgentNames, updateAgentRow };
@@ -40,20 +40,6 @@ const deleteDeps: AgentDeleteDeps = {
 
 /** 「删掉」的说明——弹窗与那一组的注脚说同一句话（spec §5.4 原文） */
 const DELETE_LEAD = "它的私聊一起删掉；群里会被摘出去；它自己那页记忆一起删掉，它改过的共用页面留着。";
-
-function Labeled({ label, hint, error, children }: { label: string; hint?: string; error: string | null; children: ReactNode }) {
-  const { c } = usePalette();
-  return (
-    <View style={{ gap: space.xs }}>
-      <Text style={{ ...t.footnote, color: c.mutedForeground, paddingHorizontal: 4 }}>
-        {label}
-        {hint ? ` · ${hint}` : ""}
-      </Text>
-      {children}
-      {error ? <Text style={{ ...t.footnote, color: c.destructive, paddingHorizontal: 4 }}>{error}</Text> : null}
-    </View>
-  );
-}
 
 type Props = NativeStackScreenProps<RootStackParams, "AgentSettings">;
 
