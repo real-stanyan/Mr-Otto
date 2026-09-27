@@ -433,6 +433,32 @@ function timelineHTML(c, opts = {}) {
   return out;
 }
 
+/* 通讯录里「智能体」「朋友」两段各自能折叠（维护者 2026-09-27：分得清楚一点）。
+   折叠状态记在这台机器上；搜索时一律展开，免得搜到的那一行被折叠藏起来。 */
+const Fold = (() => {
+  let state = {};
+  try { state = JSON.parse(localStorage.getItem("otto-wx-fold") || "{}"); } catch {}
+  const save = () => { try { localStorage.setItem("otto-wx-fold", JSON.stringify(state)); } catch {} };
+  function html(key, label, count, action, body, forceOpen) {
+    const open = forceOpen || !state[key];
+    return `<section class="fold-sec"><div class="fold-row"><button class="fold-head" data-fold="${key}" aria-expanded="${open}" aria-controls="fold-${key}">${ic("chevron-down", 14, 2.2)}<span class="fold-t">${label}</span><span class="fold-n">${count}</span></button>${action || ""}</div><div class="fold-body${open ? "" : " closed"}" id="fold-${key}"${open ? "" : " inert"}><div class="fold-inner">${body}</div></div></section>`;
+  }
+  /* 只切 class，不重画：重画会把高度那一下过渡吃掉 */
+  function bind(root) {
+    root.querySelectorAll("[data-fold]").forEach((b) => b.addEventListener("click", () => {
+      const key = b.dataset.fold;
+      const body = root.querySelector("#fold-" + key);
+      const open = b.getAttribute("aria-expanded") !== "true";
+      b.setAttribute("aria-expanded", String(open));
+      body.classList.toggle("closed", !open);
+      body.inert = !open;
+      state[key] = !open;
+      save();
+    }));
+  }
+  return { html, bind };
+})();
+
 const ROLE_CHIPS = ["回客人的私信", "写小红书笔记", "每天盯订单", "整理报销单", "做每周的周报", "查同行的价格"];
 
 /* ── 聊天引擎 ─────────────────────────────────────────────────────────── */

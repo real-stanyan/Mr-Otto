@@ -194,6 +194,12 @@ body { background: var(--side); overflow: hidden; }
 .mgate p { margin: 0; font-size: 14px; color: var(--fg-2); line-height: 1.55; }
 .mgate .btn { align-self: flex-start; height: 36px; }
 
+/* 通讯录的折叠段头：手机上字大一号，按下给反馈，不做悬停 */
+.screen .fold-row { padding: 14px 8px 6px; }
+.screen .fold-head { font-size: 14px; font-weight: 500; height: 32px; letter-spacing: 0; }
+.screen .fold-head:hover { background: transparent; color: var(--fg-2); }
+.screen .fold-head:active { background: var(--press); }
+
 /* 底部三格 */
 .tabbar {
   position: absolute;
@@ -924,12 +930,18 @@ body { background: var(--side); overflow: hidden; }
         const entry = (k, i, l, right) => `<button class="mrow small" data-entry="${k}"><span class="tile">${ic(i, 21)}</span><span class="meta"><span class="nm">${l}</span></span>${right || ""}</button>`;
         const groups = Object.values(CHATS).filter((c) => c.kind === "group" && visibleChat(c));
         let html = `<div class="msearch"><label>${ic("search", 17)}<input placeholder="搜索" id="cq" value="${esc(M.q)}" autocomplete="off"></label></div><div class="list">${entry("requests", "user-round-plus", "新的朋友", FRIEND_REQUESTS.length ? `<span class="badge" style="position:static;box-shadow:none">${FRIEND_REQUESTS.length}</span>` : "")}${entry("groups", "users-round", "群聊", `<span class="tm">${groups.length}</span>`)}${entry("teams", "briefcase", "团队", `<span class="tm">${Object.keys(TEAMS).length}</span>`)}</div>`;
-        html += `<div class="sect" style="display:flex;justify-content:space-between;align-items:center"><span>智能体</span>${M.sub === "free" ? "" : `<button class="nbtn text" data-act="new-agent" style="height:24px;font-size:14px">新建</button>`}</div>`;
-        if (M.sub === "free") html += `<div class="mgate" style="margin-top:0"><div class="h">智能体要 Pro 或 Max</div><p>订阅之后，这里就是你的同事：一只一个职责，像通讯录里的人一样找到它们。</p><button class="btn primary" data-act="subscribe">看看订阅</button></div>`;
-        else html += `<div class="list">${MY_AGENTS.filter((id) => AGENTS[id] && (!M.q || AGENTS[id].name.includes(M.q))).map((id) => `<button class="mrow small" data-agent="${id}"><span class="av-wrap">${avatar(id, 40)}</span><span class="meta" style="gap:2px"><span class="nm">${esc(AGENTS[id].name)}</span><span class="role">${esc(AGENTS[id].role)}</span></span></button>`).join("")}</div>`;
-        html += `<div class="sect">朋友</div><div class="list">${MY_FRIENDS.filter((id) => FRIENDS[id] && (!M.q || FRIENDS[id].name.includes(M.q))).map((id) => `<button class="mrow small" data-friend="${id}"><span class="av-wrap">${avatar(id, 40)}</span><span class="meta" style="gap:2px"><span class="nm">${esc(FRIENDS[id].name)}</span><span class="role">${esc(FRIENDS[id].note)}</span></span></button>`).join("")}</div><div class="foot-note" style="text-align:center;padding:16px">${MY_AGENTS.length} 只智能体 · ${MY_FRIENDS.length} 位朋友</div>`;
+        const agentIds = MY_AGENTS.filter((id) => AGENTS[id] && (!M.q || AGENTS[id].name.includes(M.q)));
+        const friendIds = MY_FRIENDS.filter((id) => FRIENDS[id] && (!M.q || FRIENDS[id].name.includes(M.q)));
+        const agentBody = M.sub === "free"
+          ? `<div class="mgate" style="margin-top:0"><div class="h">智能体要 Pro 或 Max</div><p>订阅之后，这里就是你的同事：一只一个职责，像通讯录里的人一样找到它们。</p><button class="btn primary" data-act="subscribe">看看订阅</button></div>`
+          : `<div class="list">${agentIds.map((id) => `<button class="mrow small" data-agent="${id}"><span class="av-wrap">${avatar(id, 40)}</span><span class="meta" style="gap:2px"><span class="nm">${esc(AGENTS[id].name)}</span><span class="role">${esc(AGENTS[id].role)}</span></span></button>`).join("")}</div>`;
+        const newAgent = M.sub === "free" ? "" : `<button class="nbtn text" data-act="new-agent" style="height:30px;font-size:15px">新建</button>`;
+        html += Fold.html("agents", "智能体", M.sub === "free" ? 0 : agentIds.length, newAgent, agentBody, !!M.q);
+        html += Fold.html("friends", "朋友", friendIds.length, "", `<div class="list">${friendIds.map((id) => `<button class="mrow small" data-friend="${id}"><span class="av-wrap">${avatar(id, 40)}</span><span class="meta" style="gap:2px"><span class="nm">${esc(FRIENDS[id].name)}</span><span class="role">${esc(FRIENDS[id].note)}</span></span></button>`).join("")}</div>`, !!M.q);
+        html += `<div class="foot-note" style="text-align:center;padding:16px">${MY_AGENTS.length} 只智能体 · ${MY_FRIENDS.length} 位朋友</div>`;
         page.el.innerHTML = navHTML({ title: "通讯录", right: `<button class="nbtn" data-act="add-friend" title="添加朋友">${ic("user-round-plus", 23, 1.7)}</button>` }) + `<div class="content scroll pad-tab">${html}</div>`;
         Face.hydrate(page.el);
+        Fold.bind(page.el);
         $$("[data-entry]", page.el).forEach((b) => b.addEventListener("click", () => push(({ requests: requestsPage, groups: groupsPage, teams: teamsPage })[b.dataset.entry]())));
         $$("[data-agent]", page.el).forEach((b) => b.addEventListener("click", () => push(agentPage(b.dataset.agent))));
         $$("[data-friend]", page.el).forEach((b) => b.addEventListener("click", () => push(friendPage(b.dataset.friend))));

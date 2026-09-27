@@ -456,6 +456,33 @@ input, textarea { font: inherit; color: inherit; }
 @keyframes shimmer { from { background-position: 100% 0; } to { background-position: -150% 0; } }
 @media (prefers-reduced-motion: reduce) { .shimmer { animation: none; color: var(--fg-2); background: none; } }
 
+/* 能折叠的一段（通讯录的「智能体」「朋友」）：高度走 grid 0fr↔1fr，箭头转 90° */
+.fold-row { display: flex; align-items: center; gap: 4px; padding: 10px 8px 4px; }
+.fold-head {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--fg-2);
+  text-align: left;
+  transition: background-color 120ms var(--ease), color 120ms var(--ease);
+}
+.fold-head:hover { background: var(--hover); color: var(--fg); }
+.fold-head .ic { color: var(--fg-3); transition: transform 200ms var(--ease); }
+.fold-head[aria-expanded="false"] .ic { transform: rotate(-90deg); }
+.fold-n { color: var(--fg-3); font-weight: 500; font-variant-numeric: tabular-nums; }
+.fold-body { display: grid; grid-template-rows: 1fr; transition: grid-template-rows 220ms var(--ease); }
+.fold-body.closed { grid-template-rows: 0fr; }
+.fold-inner { min-height: 0; overflow: hidden; }
+@media (prefers-reduced-motion: reduce) { .fold-body, .fold-head .ic { transition: none; } }
+
 /* 分组卡（设置式） */
 .group-label { font-size: 11px; font-weight: 600; letter-spacing: 0.06em; color: var(--fg-2); padding: 0 16px 6px; }
 .inset { background: var(--surface); border-radius: 12px; overflow: hidden; }
@@ -1435,6 +1462,32 @@ function timelineHTML(c, opts = {}) {
   return out;
 }
 
+/* 通讯录里「智能体」「朋友」两段各自能折叠（维护者 2026-09-27：分得清楚一点）。
+   折叠状态记在这台机器上；搜索时一律展开，免得搜到的那一行被折叠藏起来。 */
+const Fold = (() => {
+  let state = {};
+  try { state = JSON.parse(localStorage.getItem("otto-wx-fold") || "{}"); } catch {}
+  const save = () => { try { localStorage.setItem("otto-wx-fold", JSON.stringify(state)); } catch {} };
+  function html(key, label, count, action, body, forceOpen) {
+    const open = forceOpen || !state[key];
+    return `<section class="fold-sec"><div class="fold-row"><button class="fold-head" data-fold="${key}" aria-expanded="${open}" aria-controls="fold-${key}">${ic("chevron-down", 14, 2.2)}<span class="fold-t">${label}</span><span class="fold-n">${count}</span></button>${action || ""}</div><div class="fold-body${open ? "" : " closed"}" id="fold-${key}"${open ? "" : " inert"}><div class="fold-inner">${body}</div></div></section>`;
+  }
+  /* 只切 class，不重画：重画会把高度那一下过渡吃掉 */
+  function bind(root) {
+    root.querySelectorAll("[data-fold]").forEach((b) => b.addEventListener("click", () => {
+      const key = b.dataset.fold;
+      const body = root.querySelector("#fold-" + key);
+      const open = b.getAttribute("aria-expanded") !== "true";
+      b.setAttribute("aria-expanded", String(open));
+      body.classList.toggle("closed", !open);
+      body.inert = !open;
+      state[key] = !open;
+      save();
+    }));
+  }
+  return { html, bind };
+})();
+
 const ROLE_CHIPS = ["回客人的私信", "写小红书笔记", "每天盯订单", "整理报销单", "做每周的周报", "查同行的价格"];
 
 /* ── 聊天引擎 ─────────────────────────────────────────────────────────── */
@@ -1730,21 +1783,14 @@ const REMOVED_THINGS = [
     out += entry("groups", "users-round", "群聊", `<span class="count">${groups.length}</span>`);
     out += entry("teams", "briefcase", "团队", `<span class="count">${Object.keys(TEAMS).length}</span>`);
     const agents = MY_AGENTS.filter((id) => AGENTS[id]).filter((id) => matchQ(AGENTS[id].name + AGENTS[id].role));
-    out += `<div class="list-label"><span>智能体 · ${S.sub === "free" ? 0 : agents.length}</span>${S.sub === "free" ? "" : `<button class="icon-btn" data-act="new-agent" title="新建智能体">${ic("plus", 15, 2)}</button>`}</div>`;
-    if (S.sub === "free") {
-      out += `<div class="gate-card"><div class="h">智能体要 Pro 或 Max</div><p>订阅之后，这里就是你的同事：一只一个职责，像通讯录里的人一样找到它们。</p><button class="btn primary" data-act="subscribe">看看订阅</button></div>`;
-    } else {
-      for (const id of agents) {
-        const a = AGENTS[id];
-        out += `<button class="crow" data-contact-agent="${id}" aria-current="${S.contact && S.contact.id === id ? "true" : "false"}"><span class="av-wrap">${avatar(id, 38)}</span><span class="meta"><span class="nm">${esc(a.name)}</span><span class="sub-role">${esc(a.role)}</span></span></button>`;
-      }
-    }
+    const agentBody = S.sub === "free"
+      ? `<div class="gate-card"><div class="h">智能体要 Pro 或 Max</div><p>订阅之后，这里就是你的同事：一只一个职责，像通讯录里的人一样找到它们。</p><button class="btn primary" data-act="subscribe">看看订阅</button></div>`
+      : agents.map((id) => { const a = AGENTS[id]; return `<button class="crow" data-contact-agent="${id}" aria-current="${S.contact && S.contact.id === id ? "true" : "false"}"><span class="av-wrap">${avatar(id, 38)}</span><span class="meta"><span class="nm">${esc(a.name)}</span><span class="sub-role">${esc(a.role)}</span></span></button>`; }).join("");
+    const newAgent = S.sub === "free" ? "" : `<button class="icon-btn" data-act="new-agent" title="新建智能体" style="width:26px;height:26px">${ic("plus", 15, 2)}</button>`;
+    out += Fold.html("agents", "智能体", S.sub === "free" ? 0 : agents.length, newAgent, agentBody, !!S.q);
     const friends = MY_FRIENDS.filter((id) => FRIENDS[id]).filter((id) => matchQ(FRIENDS[id].name + FRIENDS[id].note));
-    out += `<div class="list-label"><span>朋友 · ${friends.length}</span></div>`;
-    for (const id of friends) {
-      const f = FRIENDS[id];
-      out += `<button class="crow" data-contact-friend="${id}" aria-current="${S.contact && S.contact.id === id ? "true" : "false"}"><span class="av-wrap">${avatar(id, 38)}</span><span class="meta"><span class="nm">${esc(f.name)}</span><span class="sub-role">${esc(f.note)}</span></span></button>`;
-    }
+    const friendBody = friends.map((id) => { const f = FRIENDS[id]; return `<button class="crow" data-contact-friend="${id}" aria-current="${S.contact && S.contact.id === id ? "true" : "false"}"><span class="av-wrap">${avatar(id, 38)}</span><span class="meta"><span class="nm">${esc(f.name)}</span><span class="sub-role">${esc(f.note)}</span></span></button>`; }).join("");
+    out += Fold.html("friends", "朋友", friends.length, "", friendBody, !!S.q);
     return out;
   }
 
@@ -1765,6 +1811,7 @@ const REMOVED_THINGS = [
   }
 
   function bindCol() {
+    Fold.bind(colEl);
     $$("[data-chat]", colEl).forEach((b) => b.addEventListener("click", () => openChat(b.dataset.chat)));
     $$("[data-team]", colEl).forEach((b) => b.addEventListener("click", () => { S.teamOpen = b.dataset.team; renderCol(); }));
     $$("[data-contact-agent]", colEl).forEach((b) => b.addEventListener("click", () => { S.contact = { type: "agent", id: b.dataset.contactAgent }; renderCol(); renderPane(); }));

@@ -456,6 +456,33 @@ input, textarea { font: inherit; color: inherit; }
 @keyframes shimmer { from { background-position: 100% 0; } to { background-position: -150% 0; } }
 @media (prefers-reduced-motion: reduce) { .shimmer { animation: none; color: var(--fg-2); background: none; } }
 
+/* 能折叠的一段（通讯录的「智能体」「朋友」）：高度走 grid 0fr↔1fr，箭头转 90° */
+.fold-row { display: flex; align-items: center; gap: 4px; padding: 10px 8px 4px; }
+.fold-head {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--fg-2);
+  text-align: left;
+  transition: background-color 120ms var(--ease), color 120ms var(--ease);
+}
+.fold-head:hover { background: var(--hover); color: var(--fg); }
+.fold-head .ic { color: var(--fg-3); transition: transform 200ms var(--ease); }
+.fold-head[aria-expanded="false"] .ic { transform: rotate(-90deg); }
+.fold-n { color: var(--fg-3); font-weight: 500; font-variant-numeric: tabular-nums; }
+.fold-body { display: grid; grid-template-rows: 1fr; transition: grid-template-rows 220ms var(--ease); }
+.fold-body.closed { grid-template-rows: 0fr; }
+.fold-inner { min-height: 0; overflow: hidden; }
+@media (prefers-reduced-motion: reduce) { .fold-body, .fold-head .ic { transition: none; } }
+
 /* 分组卡（设置式） */
 .group-label { font-size: 11px; font-weight: 600; letter-spacing: 0.06em; color: var(--fg-2); padding: 0 16px 6px; }
 .inset { background: var(--surface); border-radius: 12px; overflow: hidden; }
@@ -832,6 +859,12 @@ body { background: var(--side); overflow: hidden; }
 .mgate .h { font-size: 16px; font-weight: 600; }
 .mgate p { margin: 0; font-size: 14px; color: var(--fg-2); line-height: 1.55; }
 .mgate .btn { align-self: flex-start; height: 36px; }
+
+/* 通讯录的折叠段头：手机上字大一号，按下给反馈，不做悬停 */
+.screen .fold-row { padding: 14px 8px 6px; }
+.screen .fold-head { font-size: 14px; font-weight: 500; height: 32px; letter-spacing: 0; }
+.screen .fold-head:hover { background: transparent; color: var(--fg-2); }
+.screen .fold-head:active { background: var(--press); }
 
 /* 底部三格 */
 .tabbar {
@@ -1544,6 +1577,32 @@ function timelineHTML(c, opts = {}) {
   return out;
 }
 
+/* 通讯录里「智能体」「朋友」两段各自能折叠（维护者 2026-09-27：分得清楚一点）。
+   折叠状态记在这台机器上；搜索时一律展开，免得搜到的那一行被折叠藏起来。 */
+const Fold = (() => {
+  let state = {};
+  try { state = JSON.parse(localStorage.getItem("otto-wx-fold") || "{}"); } catch {}
+  const save = () => { try { localStorage.setItem("otto-wx-fold", JSON.stringify(state)); } catch {} };
+  function html(key, label, count, action, body, forceOpen) {
+    const open = forceOpen || !state[key];
+    return `<section class="fold-sec"><div class="fold-row"><button class="fold-head" data-fold="${key}" aria-expanded="${open}" aria-controls="fold-${key}">${ic("chevron-down", 14, 2.2)}<span class="fold-t">${label}</span><span class="fold-n">${count}</span></button>${action || ""}</div><div class="fold-body${open ? "" : " closed"}" id="fold-${key}"${open ? "" : " inert"}><div class="fold-inner">${body}</div></div></section>`;
+  }
+  /* 只切 class，不重画：重画会把高度那一下过渡吃掉 */
+  function bind(root) {
+    root.querySelectorAll("[data-fold]").forEach((b) => b.addEventListener("click", () => {
+      const key = b.dataset.fold;
+      const body = root.querySelector("#fold-" + key);
+      const open = b.getAttribute("aria-expanded") !== "true";
+      b.setAttribute("aria-expanded", String(open));
+      body.classList.toggle("closed", !open);
+      body.inert = !open;
+      state[key] = !open;
+      save();
+    }));
+  }
+  return { html, bind };
+})();
+
 const ROLE_CHIPS = ["回客人的私信", "写小红书笔记", "每天盯订单", "整理报销单", "做每周的周报", "查同行的价格"];
 
 /* ── 聊天引擎 ─────────────────────────────────────────────────────────── */
@@ -2166,12 +2225,18 @@ const REMOVED_THINGS = [
         const entry = (k, i, l, right) => `<button class="mrow small" data-entry="${k}"><span class="tile">${ic(i, 21)}</span><span class="meta"><span class="nm">${l}</span></span>${right || ""}</button>`;
         const groups = Object.values(CHATS).filter((c) => c.kind === "group" && visibleChat(c));
         let html = `<div class="msearch"><label>${ic("search", 17)}<input placeholder="搜索" id="cq" value="${esc(M.q)}" autocomplete="off"></label></div><div class="list">${entry("requests", "user-round-plus", "新的朋友", FRIEND_REQUESTS.length ? `<span class="badge" style="position:static;box-shadow:none">${FRIEND_REQUESTS.length}</span>` : "")}${entry("groups", "users-round", "群聊", `<span class="tm">${groups.length}</span>`)}${entry("teams", "briefcase", "团队", `<span class="tm">${Object.keys(TEAMS).length}</span>`)}</div>`;
-        html += `<div class="sect" style="display:flex;justify-content:space-between;align-items:center"><span>智能体</span>${M.sub === "free" ? "" : `<button class="nbtn text" data-act="new-agent" style="height:24px;font-size:14px">新建</button>`}</div>`;
-        if (M.sub === "free") html += `<div class="mgate" style="margin-top:0"><div class="h">智能体要 Pro 或 Max</div><p>订阅之后，这里就是你的同事：一只一个职责，像通讯录里的人一样找到它们。</p><button class="btn primary" data-act="subscribe">看看订阅</button></div>`;
-        else html += `<div class="list">${MY_AGENTS.filter((id) => AGENTS[id] && (!M.q || AGENTS[id].name.includes(M.q))).map((id) => `<button class="mrow small" data-agent="${id}"><span class="av-wrap">${avatar(id, 40)}</span><span class="meta" style="gap:2px"><span class="nm">${esc(AGENTS[id].name)}</span><span class="role">${esc(AGENTS[id].role)}</span></span></button>`).join("")}</div>`;
-        html += `<div class="sect">朋友</div><div class="list">${MY_FRIENDS.filter((id) => FRIENDS[id] && (!M.q || FRIENDS[id].name.includes(M.q))).map((id) => `<button class="mrow small" data-friend="${id}"><span class="av-wrap">${avatar(id, 40)}</span><span class="meta" style="gap:2px"><span class="nm">${esc(FRIENDS[id].name)}</span><span class="role">${esc(FRIENDS[id].note)}</span></span></button>`).join("")}</div><div class="foot-note" style="text-align:center;padding:16px">${MY_AGENTS.length} 只智能体 · ${MY_FRIENDS.length} 位朋友</div>`;
+        const agentIds = MY_AGENTS.filter((id) => AGENTS[id] && (!M.q || AGENTS[id].name.includes(M.q)));
+        const friendIds = MY_FRIENDS.filter((id) => FRIENDS[id] && (!M.q || FRIENDS[id].name.includes(M.q)));
+        const agentBody = M.sub === "free"
+          ? `<div class="mgate" style="margin-top:0"><div class="h">智能体要 Pro 或 Max</div><p>订阅之后，这里就是你的同事：一只一个职责，像通讯录里的人一样找到它们。</p><button class="btn primary" data-act="subscribe">看看订阅</button></div>`
+          : `<div class="list">${agentIds.map((id) => `<button class="mrow small" data-agent="${id}"><span class="av-wrap">${avatar(id, 40)}</span><span class="meta" style="gap:2px"><span class="nm">${esc(AGENTS[id].name)}</span><span class="role">${esc(AGENTS[id].role)}</span></span></button>`).join("")}</div>`;
+        const newAgent = M.sub === "free" ? "" : `<button class="nbtn text" data-act="new-agent" style="height:30px;font-size:15px">新建</button>`;
+        html += Fold.html("agents", "智能体", M.sub === "free" ? 0 : agentIds.length, newAgent, agentBody, !!M.q);
+        html += Fold.html("friends", "朋友", friendIds.length, "", `<div class="list">${friendIds.map((id) => `<button class="mrow small" data-friend="${id}"><span class="av-wrap">${avatar(id, 40)}</span><span class="meta" style="gap:2px"><span class="nm">${esc(FRIENDS[id].name)}</span><span class="role">${esc(FRIENDS[id].note)}</span></span></button>`).join("")}</div>`, !!M.q);
+        html += `<div class="foot-note" style="text-align:center;padding:16px">${MY_AGENTS.length} 只智能体 · ${MY_FRIENDS.length} 位朋友</div>`;
         page.el.innerHTML = navHTML({ title: "通讯录", right: `<button class="nbtn" data-act="add-friend" title="添加朋友">${ic("user-round-plus", 23, 1.7)}</button>` }) + `<div class="content scroll pad-tab">${html}</div>`;
         Face.hydrate(page.el);
+        Fold.bind(page.el);
         $$("[data-entry]", page.el).forEach((b) => b.addEventListener("click", () => push(({ requests: requestsPage, groups: groupsPage, teams: teamsPage })[b.dataset.entry]())));
         $$("[data-agent]", page.el).forEach((b) => b.addEventListener("click", () => push(agentPage(b.dataset.agent))));
         $$("[data-friend]", page.el).forEach((b) => b.addEventListener("click", () => push(friendPage(b.dataset.friend))));

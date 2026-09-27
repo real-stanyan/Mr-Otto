@@ -450,6 +450,33 @@ input, textarea { font: inherit; color: inherit; }
 @keyframes shimmer { from { background-position: 100% 0; } to { background-position: -150% 0; } }
 @media (prefers-reduced-motion: reduce) { .shimmer { animation: none; color: var(--fg-2); background: none; } }
 
+/* 能折叠的一段（通讯录的「智能体」「朋友」）：高度走 grid 0fr↔1fr，箭头转 90° */
+.fold-row { display: flex; align-items: center; gap: 4px; padding: 10px 8px 4px; }
+.fold-head {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 8px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--fg-2);
+  text-align: left;
+  transition: background-color 120ms var(--ease), color 120ms var(--ease);
+}
+.fold-head:hover { background: var(--hover); color: var(--fg); }
+.fold-head .ic { color: var(--fg-3); transition: transform 200ms var(--ease); }
+.fold-head[aria-expanded="false"] .ic { transform: rotate(-90deg); }
+.fold-n { color: var(--fg-3); font-weight: 500; font-variant-numeric: tabular-nums; }
+.fold-body { display: grid; grid-template-rows: 1fr; transition: grid-template-rows 220ms var(--ease); }
+.fold-body.closed { grid-template-rows: 0fr; }
+.fold-inner { min-height: 0; overflow: hidden; }
+@media (prefers-reduced-motion: reduce) { .fold-body, .fold-head .ic { transition: none; } }
+
 /* 分组卡（设置式） */
 .group-label { font-size: 11px; font-weight: 600; letter-spacing: 0.06em; color: var(--fg-2); padding: 0 16px 6px; }
 .inset { background: var(--surface); border-radius: 12px; overflow: hidden; }
