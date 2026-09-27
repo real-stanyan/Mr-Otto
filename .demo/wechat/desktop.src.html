@@ -821,7 +821,7 @@
     if (k === "quota") {
       if (S.sub === "free") {
         html = `<h2>订阅</h2><p class="lead-p">Free 能加朋友、进别人拉你的团队。要有自己的智能体，订 Pro 或 Max。</p>
-        <div class="inset"><div class="row"><span class="t">Pro<span class="sub">私聊、群聊、语音通话，一个订阅打通多家模型</span></span><button class="btn primary" style="height:30px">订阅</button></div><div class="row"><span class="t">Max<span class="sub">额度更多，还能建团队</span></span><button class="btn soft" style="height:30px">订阅</button></div></div>`;
+        <div class="inset"><div class="row"><span class="t">Pro<span class="sub">私聊、群聊、语音通话，一个订阅打通多家模型</span></span><button class="btn primary" style="height:30px">订阅</button></div><div class="row"><span class="t">Max<span class="sub">额度更多</span></span><button class="btn soft" style="height:30px">订阅</button></div></div>`;
       } else {
         html = `<h2>订阅与额度</h2><p class="lead-p">额度按周算，每周一 00:00 刷新。</p>
         <div class="quota one"><div class="cell"><span class="k">本周</span><span class="v">81%<small>还剩</small></span><div class="meter"><i style="width:81%"></i></div><span class="r">周一 00:00 刷新</span></div></div>
@@ -1070,7 +1070,7 @@
   }
   function newTeamDialog(preset) {
     const sel = new Set(preset);
-    showDialog(`<h3>新建团队</h3><p class="desc">团队是一群人加一套智能体，大家在同一个地方干活，用你的额度。要 Max。</p><input class="field" id="tn" placeholder="团队名，比如「山茶小铺」" maxlength="20"><div class="group-label" style="padding:14px 4px 6px">拉谁进来</div><div class="inset" style="background:var(--ground)">${MY_FRIENDS.map((id) => `<button class="row" data-pk="${id}" style="--inset:52px">${avatar(id, 30)}<span class="t">${esc(FRIENDS[id].name)}</span><span class="chk" style="color:var(--brand);opacity:${sel.has(id) ? 1 : 0}">${ic("check", 16, 2.2)}</span></button>`).join("")}</div><div class="actions"><button class="btn soft" data-close>取消</button><button class="btn primary" id="ok" disabled>建团队</button></div>`, (d) => {
+    showDialog(`<h3>新建团队</h3><p class="desc">团队是一群人加一套智能体，大家在同一个地方干活，用你的额度。要 Pro 或 Max。</p><input class="field" id="tn" placeholder="团队名，比如「山茶小铺」" maxlength="20"><div class="group-label" style="padding:14px 4px 6px">拉谁进来</div><div class="inset" style="background:var(--ground)">${MY_FRIENDS.map((id) => `<button class="row" data-pk="${id}" style="--inset:52px">${avatar(id, 30)}<span class="t">${esc(FRIENDS[id].name)}</span><span class="chk" style="color:var(--brand);opacity:${sel.has(id) ? 1 : 0}">${ic("check", 16, 2.2)}</span></button>`).join("")}</div><div class="actions"><button class="btn soft" data-close>取消</button><button class="btn primary" id="ok" disabled>建团队</button></div>`, (d) => {
       const tn = d.querySelector("#tn"), ok = d.querySelector("#ok");
       tn.addEventListener("input", () => (ok.disabled = !tn.value.trim()));
       $$("[data-pk]", d).forEach((b) => b.addEventListener("click", () => { sel.has(b.dataset.pk) ? sel.delete(b.dataset.pk) : sel.add(b.dataset.pk); b.querySelector(".chk").style.opacity = sel.has(b.dataset.pk) ? 1 : 0; }));
@@ -1094,7 +1094,7 @@
     });
   }
   function subscribeDialog() {
-    showDialog(`<h3>订阅</h3><p class="desc">Pro：自己的智能体，私聊、群聊、语音通话。Max：额度更多，还能建团队。</p><div class="inset" style="background:var(--ground)"><div class="row"><span class="t">Pro</span><button class="btn primary" style="height:30px" id="pro">订 Pro</button></div><div class="row"><span class="t">Max</span><button class="btn soft" style="height:30px" id="max">订 Max</button></div></div><div class="actions"><button class="btn soft" data-close>以后再说</button></div>`, (d) => {
+    showDialog(`<h3>订阅</h3><p class="desc">Pro：自己的智能体，私聊、群聊、语音通话。Max：额度更多。两档都能建团队。</p><div class="inset" style="background:var(--ground)"><div class="row"><span class="t">Pro</span><button class="btn primary" style="height:30px" id="pro">订 Pro</button></div><div class="row"><span class="t">Max</span><button class="btn soft" style="height:30px" id="max">订 Max</button></div></div><div class="actions"><button class="btn soft" data-close>以后再说</button></div>`, (d) => {
       const done = () => { closeDialog(); S.sub = "pro"; renderAll(); renderDemo(); toast("demo：当作已经订上了"); };
       d.querySelector("#pro").addEventListener("click", done);
       d.querySelector("#max").addEventListener("click", done);
