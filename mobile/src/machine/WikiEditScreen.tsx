@@ -77,7 +77,8 @@ export function WikiEditScreen({ route, navigation }: Props) {
     navigation.goBack();
   };
 
-  // 「存」挂法照 AgentSettingsScreen：按下去调 ref 里最新的 save；setOptions 只在「按不按得动 / 正在存」变了时重设
+  // 「存」挂在原生导航条右边：按下去调 ref 里最新的 save；setOptions 只在「按不按得动 / 正在存」变了时重设
+  // （原来照的是智能体设置页那一副，那一页 #1386 并进了资料页、每行改了就存）
   const saveRef = useRef(save);
   useEffect(() => {
     saveRef.current = save;

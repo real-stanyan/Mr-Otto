@@ -16,7 +16,7 @@ import { useSyncExternalStore } from "react";
 import { AppState } from "react-native";
 import { edgeBaseUrl } from "../../../src/shared/edgeConfig.js";
 import { createHelperAudio, helperAudioEvent, type HelperAudioBridge } from "../../../src/shared/helperAudio.js";
-import type { BillingSnapshotView, CloudAck } from "../../../src/shared/shellBridge.js";
+import type { BillingSnapshotView, CloudAck, VoiceSpeakResult } from "../../../src/shared/shellBridge.js";
 import { speechEventOf } from "../../../src/shared/speechEvent.js";
 import { createTtsClient } from "../../../src/shared/ttsClient.js";
 import { ttsHostedOf } from "../../../src/shared/ttsRoute.js";
@@ -106,8 +106,10 @@ const nativeAudio: HelperAudioBridge = {
     }
   },
   async stop() {
+    // 只收这一刻已经交出去的那几段：停的回执回来之前又交出去的那一段（下一句试听 / 电话的下一段）不归这一次停
+    const ids = [...files.keys()];
     await OttoSpeech?.stopPlay();
-    for (const id of [...files.keys()]) dropFile(id);
+    for (const id of ids) dropFile(id);
   },
 };
 
@@ -124,8 +126,8 @@ const session = createVoiceSession({
   mic,
   say: (text) => sayVoice(text),
   events: (sessionId) => chatEvents(sessionId),
-  // 音色按名册顺序解撞（agentVoiceIds）：同一只在桌面与手机上是同一个声音
-  roster: () => homeSnapshot().home?.agents.map((a) => a.agentId) ?? [],
+  // 音色按名册顺序解撞、挑过的先占（agentVoiceIds，#1372）：同一只在桌面与手机上是同一个声音
+  roster: () => homeSnapshot().home?.agents ?? [],
   hints: () => speechHints(homeSnapshot().home),
   permissionHelp: IOS_PERMISSION_HELP,
   onChange: (listen) => store.set({ listen }),
@@ -263,4 +265,40 @@ export function joinCall(sessionId: string): void {
 /** 静音 = 关麦（spec §5.7 / demo）；再点一下开回来 */
 export function setMic(on: boolean): void {
   session.setMic(on);
+}
+
+/** 挑声音那张表的试听（#1372，spec §10 第 97 条）：合成走电话那同一个 TTS 客户端（同一笔额度、同一套
+    报错），放音走同一个原生放音器；不经过通话那一套（它不在任何一场电话里）。这台正在听电话时表那边
+    不调它（同一个音频引擎，voicePreviewState 的 inCall） */
+export function speakPreview(text: string, voiceId: string): Promise<VoiceSpeakResult> {
+  return tts.speak(text, voiceId);
+}
+
+/** 放一段试听，回一个「停」。一次只放一段：调用方换一行之前先调上一段的「停」。这台正在听电话时不放——
+    同一个音频引擎，试听会把电话那一段掐掉，这里兜住「点的时候还没在听、合成回来时已经在听了」那个窗口。
+    起播的回执还没回来时 pause() 够不着原生那一段，这里补一次；起播之后 pause() 自己会停原生那边，
+    不重复调——两处都调就是把「停」发两遍 */
+export function playPreview(bytes: Uint8Array, on: { start(): void; end(): void; fail(message: string): void }): () => void {
+  // 这台正在听电话：同一个音频引擎，试听会把电话那一段掐掉。表那边点的时候已经挡了，这里兜住
+  // 「点的时候还没在听、合成回来时已经在听了」
+  if (store.get().listen !== null) {
+    on.fail("正在听电话，挂了再试听");
+    return () => {};
+  }
+  const audio = createHelperAudio(bytes, nativeAudio);
+  let started = false;
+  audio.onended = () => on.end();
+  audio.onerror = (message) => on.fail(message ?? "放不出来");
+  audio.play().then(
+    () => {
+      started = true;
+      on.start();
+    },
+    (err: unknown) => on.fail(err instanceof Error ? err.message : String(err)),
+  );
+  // 停一次就够：起播之后 pause() 自己会停原生那边；起播的回执还没回来时 pause() 够不着，这里补那一次
+  return () => {
+    if (!started) void nativeAudio.stop();
+    audio.pause();
+  };
 }

@@ -326,7 +326,7 @@ export function Row(props: {
   leading?: React.ReactNode;
   onPress?: () => void;
   disabled?: boolean;
-  /** 有下一层可去。只在真的会推进一屏时给 —— 它是个承诺 */
+  /** 有下一层可去：推进一屏，或者拉起一张选择表（「说话的声音」那一行）。只在真的有下一层时给 —— 它是个承诺 */
   chevron?: boolean;
   /** 单选清单里被选中的那一行：右边一枚点缀色的勾（iOS 设置的单选语汇，外观那一组用） */
   checked?: boolean;

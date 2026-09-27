@@ -125,7 +125,7 @@ import type {
 // friends.js 里"我+好友各自在哪个仓库哪个分支"的在场快照，issue #167）是两个不相干的概念，
 // 撞名是历史遗留（Task 11 report 已确认 IPC channel 不冲突）——本文件里凡是这个协作工作区
 // 的状态字段/action 一律加 workspaceGroup 前缀，不用裸的 "workspace"/"workspaces"
-import type { WorkspaceSnapshot } from "../../shared/workspaces.js";
+import type { WorkspaceAgentRow, WorkspaceSnapshot } from "../../shared/workspaces.js";
 import { markSessionRead, mergeMentionRow, type WorkspaceMentionRow } from "../../shared/workspaceMentions.js";
 import type { AgentToolAllow } from "../../shared/agentToolAllow.js";
 import type {
@@ -1600,9 +1600,9 @@ function stopVoice(get: () => ChatState): void {
   // 一条 gone→ready 会把麦开起来，而没有任何人要求过它
   micWantedAfterReconnect = false;
 }
-/** 音色按 agentId 从团队名单派生（agentVoice.ts）：名单顺序解撞，同一只两台机器同一个声音 */
-function rosterIdsOf(s: ChatState, workspaceId: string): string[] {
-  return s.workspaceGroups.find((w) => w.id === workspaceId)?.agents.map((a) => a.agentId) ?? [];
+/** 这个团队的名册（顺序 + 各自挑过的声音，#1372）：音色派生按它解撞、挑过的先占 */
+function rosterOf(s: ChatState, workspaceId: string): readonly WorkspaceAgentRow[] {
+  return s.workspaceGroups.find((w) => w.id === workspaceId)?.agents ?? [];
 }
 
 export const useChat = create<ChatState>((set, get) => ({
@@ -3185,7 +3185,7 @@ export const useChat = create<ChatState>((set, get) => ({
     const r = feedEvent(voiceFeed, participants, v.sinceSeq, event);
     voiceFeed = r.state; // 静音时也推进：取消静音不补读静音期间的话
     if (v.muted) return;
-    const roster = rosterIdsOf(s, cs.workspaceId);
+    const roster = rosterOf(s, cs.workspaceId);
     const player = voicePlayerFor(set, get);
     for (const u of r.out) player.enqueue({ ...u, voiceId: agentVoiceId(u.agentId, roster) });
   },
@@ -3200,7 +3200,7 @@ export const useChat = create<ChatState>((set, get) => ({
     const r = feedDelta(voiceFeed, participants, delta.agentId, delta.text);
     voiceFeed = r.state;
     if (v.muted) return;
-    const roster = rosterIdsOf(s, cs.workspaceId);
+    const roster = rosterOf(s, cs.workspaceId);
     const player = voicePlayerFor(set, get);
     for (const u of r.out) player.enqueue({ ...u, voiceId: agentVoiceId(u.agentId, roster) });
   },
