@@ -19,14 +19,17 @@ import { agentFaceSlot } from "../../../src/shared/agentAvatar.js";
 import { rosterGate, type RosterGate } from "../../../src/shared/agentRoster.js";
 import { CHAT_GROUP_CREATE_MIN } from "../../../src/shared/chatRoster.js";
 import { resolveChatTarget, type ChatTarget } from "../../../src/shared/mobileChat.js";
+import { wikiGroupsOf, wikiMatches } from "../../../src/shared/mobileMachine.js";
 import { filterRosterItems, freshRosterKeys, rosterItems, type RosterItem } from "../../../src/shared/mobileRoster.js";
 import { workspaceAccess } from "../../../src/shared/workspaceAccess.js";
 import { NewAgentSheet } from "../agent/NewAgentSheet.js";
 import { PlusGlyph, SearchGlyph } from "../chrome/Glyphs.js";
 import { ROUND_BUTTON_SIZE, RoundButton } from "../chrome/RoundButton.js";
+import { RowGlyph } from "../chrome/RowGlyphs.js";
 import { ensureHome, homeSnapshot, refreshHome, refreshHomeAfterWrite, useHome } from "../home/homeStore.js";
+import { refreshWiki, useMachine } from "../machine/machineStore.js";
 import { space, type as t, usePalette, withAlpha } from "../theme.js";
-import { Button, Field, Note } from "../ui.js";
+import { Button, Field, Group, Note, Row } from "../ui.js";
 import { AccountButton } from "./AccountButton.js";
 import { NewThingDialog } from "./NewThingDialog.js";
 import { RosterRow } from "./RosterRow.js";
@@ -151,6 +154,16 @@ export function RosterScreen() {
     seenRows.current = homeId === null ? null : { homeId, keys: items.map((i) => i.key) };
   }, [homeId, items]);
   const shown = useMemo(() => filterRosterItems(items, query), [items, query]);
+  // 搜索的记忆那一半（spec §5.2 / §5.8）：打开搜索时读一次记忆的索引，有字时名册结果底下多一组「记忆」
+  const machine = useMachine();
+  useEffect(() => {
+    if (searching && homeId !== null) void refreshWiki(homeId);
+  }, [searching, homeId]);
+  const memoryHits = useMemo(
+    () => (searching ? wikiMatches(wikiGroupsOf(machine.wiki) ?? [], query) : []),
+    [searching, machine.wiki, query],
+  );
+  const hasQuery = query.trim() !== "";
   const now = Date.now();
   const headerSpace = insets.top + 8 + ROUND_BUTTON_SIZE + 8;
 
@@ -204,23 +217,44 @@ export function RosterScreen() {
           renderItem={({ item }) => <RosterRow item={item} now={now} fresh={fresh.has(item.key)} onPress={() => open(item)} />}
           contentContainerStyle={{ paddingTop: headerSpace, paddingBottom: insets.bottom + space.xl }}
           ListHeaderComponent={
-            home.loadError !== null ? (
-              // 读不到 ≠ 空：旧的名册照画，失败那句挂在上面
-              <View style={{ paddingHorizontal: space.lg, paddingBottom: space.sm, gap: space.sm }}>
-                <Note tone="warn">{home.loadError}</Note>
-                <Button size="auto" variant="outline" label="重试" onPress={() => void refreshHome()} />
-              </View>
-            ) : null
+            <>
+              {home.loadError !== null ? (
+                // 读不到 ≠ 空：旧的名册照画，失败那句挂在上面
+                <View style={{ paddingHorizontal: space.lg, paddingBottom: space.sm, gap: space.sm }}>
+                  <Note tone="warn">{home.loadError}</Note>
+                  <Button size="auto" variant="outline" label="重试" onPress={() => void refreshHome()} />
+                </View>
+              ) : null}
+              {hasQuery && shown.length > 0 && memoryHits.length > 0 ? <SectionLabel text="智能体" /> : null}
+            </>
           }
           ListEmptyComponent={
-            query.trim() !== "" ? (
+            hasQuery && memoryHits.length === 0 ? (
               <Text style={{ ...t.callout, color: c.mutedForeground, textAlign: "center", marginTop: space.xl }}>
                 {`没有找到「${query.trim()}」`}
               </Text>
             ) : null
           }
           ListFooterComponent={
-            __DEV__ ? (
+            hasQuery && memoryHits.length > 0 ? (
+              <View style={{ paddingTop: space.md }}>
+                <SectionLabel text="记忆" />
+                <View style={{ paddingHorizontal: space.lg }}>
+                  <Group>
+                    {memoryHits.map((e) => (
+                      <Row
+                        key={e.path}
+                        leading={<RowGlyph name="book" />}
+                        label={e.title}
+                        detail={e.summary === "" ? e.path : e.summary}
+                        chevron
+                        onPress={() => navigation.navigate("WikiPage", { path: e.path })}
+                      />
+                    ))}
+                  </Group>
+                </View>
+              </View>
+            ) : __DEV__ && !searching ? (
               <View style={{ padding: space.lg }}>
                 <Button variant="quiet" label="形象陈列馆（开发用）" onPress={() => navigation.navigate("FaceGallery")} />
               </View>
@@ -243,7 +277,7 @@ export function RosterScreen() {
         {searching ? (
           <>
             <View style={{ flex: 1 }}>
-              <Field value={query} onChangeText={setQuery} placeholder="搜名字、职责、最后一句" autoFocus returnKeyType="search" />
+              <Field value={query} onChangeText={setQuery} placeholder="搜名字、职责、最后一句、记忆" autoFocus returnKeyType="search" />
             </View>
             <Button size="auto" variant="plain" label="取消" onPress={closeSearch} />
           </>
@@ -298,4 +332,10 @@ export function RosterScreen() {
       ) : null}
     </View>
   );
+}
+
+/** 搜索结果里的组头（demo 的 .grouphdr）：小字弱色，左边与名册那一行的文字对齐 */
+function SectionLabel({ text }: { text: string }) {
+  const { c } = usePalette();
+  return <Text style={{ ...t.footnote, color: c.mutedForeground, paddingHorizontal: 20, paddingBottom: space.xs }}>{text}</Text>;
 }

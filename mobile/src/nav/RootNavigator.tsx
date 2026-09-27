@@ -11,6 +11,9 @@ import { SubscriptionScreen } from "../account/SubscriptionScreen.js";
 import { AgentSettingsScreen } from "../agent/AgentSettingsScreen.js";
 import { FilesScreen } from "../machine/FilesScreen.js";
 import { FilePreviewScreen } from "../machine/FilePreviewScreen.js";
+import { WikiScreen } from "../machine/WikiScreen.js";
+import { WikiPageScreen } from "../machine/WikiPageScreen.js";
+import { WikiEditScreen } from "../machine/WikiEditScreen.js";
 import { NewGroupScreen } from "../group/NewGroupScreen.js";
 import { GroupSettingsScreen } from "../group/GroupSettingsScreen.js";
 import { FaceGallery } from "../dev/FaceGallery.js";
@@ -45,6 +48,9 @@ export function RootNavigator() {
         {/* 标题由这两页自己按路径 setOptions（最外层写「文件」，其余写那一段的名字） */}
         <Root.Screen name="Files" component={FilesScreen} options={{ title: "文件", headerBackTitle: "返回" }} />
         <Root.Screen name="FilePreview" component={FilePreviewScreen} options={{ title: "", headerBackTitle: "返回" }} />
+        <Root.Screen name="Wiki" component={WikiScreen} options={{ title: "记忆", headerBackTitle: "返回" }} />
+        <Root.Screen name="WikiPage" component={WikiPageScreen} options={{ title: "", headerBackTitle: "返回", headerShadowVisible: false }} />
+        <Root.Screen name="WikiEdit" component={WikiEditScreen} options={{ title: "改这一页", headerBackTitle: "返回", headerShadowVisible: false }} />
         <Root.Screen
           name="AgentSettings"
           component={AgentSettingsScreen}

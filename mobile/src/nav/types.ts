@@ -13,6 +13,12 @@ export type RootStackParams = {
   Files: { path: string };
   /** 一个文件（A5）：只读，开头 64 KB */
   FilePreview: { path: string };
+  /** 记忆清单（A5）：它们自己维护的 wiki */
+  Wiki: undefined;
+  /** 记忆里的一页（A5）；path 是 wiki/ 底下的相对路径，如 customers/acme.md */
+  WikiPage: { path: string };
+  /** 改记忆里的一页（A5） */
+  WikiEdit: { path: string };
   AgentSettings: { agentId: string };
   /** 建群（A3）：从 ＋ 那张岔路弹窗的「一个群聊」推进来 */
   NewGroup: undefined;
