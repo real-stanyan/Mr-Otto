@@ -1,0 +1,17 @@
+{
+  "detector": {
+    "ignoreRules": [],
+    "ignoreFiles": [],
+    "ignoreValues": [
+      {
+        "rule": "gradient-text",
+        "value": "*",
+        "files": [
+          ".demo/wechat/shared.css"
+        ],
+        "createdAt": "2026-09-27T07:11:40.717Z",
+        "reason": "sanctioned exception: DESIGN.md documents Shimmer (状态文案表面有一道光带扫过，标示正在发生的直播态) as the live-status treatment; in this demo it is only on the 正在输入/正在干活 status line, reduced-motion falls back to solid text"
+      }
+    ]
+  }
+}
