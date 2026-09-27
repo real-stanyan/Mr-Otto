@@ -2,7 +2,7 @@
 
 手机端是「智能体」单栏（#1321 / #1356，ADR-0317）：第一层只回答「我有哪几只智能体」——一个原生栈，名册是栈底。
 每只智能体一条永久的私聊线，几只可以拉成一个群；它们跑在你账号的云端电脑上（个人主场），手机和桌面是同一个云会话的两个客户端。
-A0 立了基座，A1 接上了名册（主场的智能体与群混排、按最近一次动静排、可搜索）、聊天页与智能体设置，A2 加上了名册右上的 ＋：建一只智能体，它先开口问你要它干什么，你答的那句就是它的职责；A3 接上了群聊（建群、群设置、输入框上方的「@ 谁」、时间线上名单变了那一行与派活那一句）；进度见 spec `docs/superpowers/specs/2026-09-23-mobile-agents-app-design.md` §8。
+A0 立了基座，A1 接上了名册（主场的智能体与群混排、按最近一次动静排、可搜索）、聊天页与智能体设置，A2 加上了名册右上的 ＋：建一只智能体，它先开口问你要它干什么，你答的那句就是它的职责；A3 接上了群聊（建群、群设置、输入框上方的「@ 谁」、时间线上名单变了那一行与派活那一句）；A4 接上了语音通话（要开发版）；A5 做全了账号页（额度两扇窗、订阅、这周用了多少、它们共用的一台电脑、设置）与名册搜索的记忆那一半；进度见 spec `docs/superpowers/specs/2026-09-23-mobile-agents-app-design.md` §8。
 
 纯逻辑一律住 `src/shared/`、测试在 `tests/shared/`；手机端在自身之外只 import `src/shared/**`（`tests/architecture.test.ts` 有断言）。
 `mobile/` 的类型检查在根门禁里（ADR-0294）：跑门禁前先 `npm --prefix mobile ci` 一次。
@@ -24,7 +24,8 @@ A0 立了基座，A1 接上了名册（主场的智能体与群混排、按最�
 - `src/group/`：建群页、群设置、「加一只进来」抽屉，与它们共用的「一只智能体占一行」
 - `src/home/`、`src/cloud/`：数据层——主场名册与订阅快照（直连 Supabase / edge）、云会话客户端与当前聊天（外部 store，`useSyncExternalStore`）
 - `src/sheet/`：底部抽屉（reanimated + gesture-handler，ADR-0293 决定 3）
-- `src/account/`：账号页（A0 精简版；额度 / 订阅 / 这周用了多少 / 设置在 A5）
+- `src/account/` —— 账号页、订阅页、设置、订阅快照（A5）
+- `src/machine/` —— 它们的电脑：文件、应用、记忆、这周用量（A5）
 - `src/face/`、`src/dev/`：像素脸（react-native-svg + 共用的 25fps 钟）+ 只在开发构建里出现的形象陈列馆
 - `src/ui.tsx`、`src/dialog.tsx`、`src/chrome/`：组件层与共享状态
 - `modules/otto-speech/` —— 语音原生模块（识别 + 断句 + 回声消除 + 放音，Swift）。
