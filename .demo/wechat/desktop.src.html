@@ -101,6 +101,11 @@
 .crow.entry { height: 56px; }
 .crow .tile { width: 36px; height: 36px; border-radius: 6px; background: var(--raised); color: var(--fg-2); display: grid; place-items: center; flex: none; }
 .crow .count { font-size: 12px; color: var(--fg-3); font-variant-numeric: tabular-nums; }
+.crow.me-top { height: auto; padding: 12px 14px; gap: 12px; }
+.me-card { display: flex; align-items: center; gap: 18px; background: var(--surface); border-radius: 12px; padding: 18px; }
+.me-card .acts { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; }
+.me-card .link { font-size: 12.5px; color: var(--fg-2); padding: 4px 2px; }
+.me-card .link:hover { color: var(--fg); }
 .crow .pill-badge { position: static; box-shadow: none; }
 
 .gate-card { margin: 4px 12px 10px; padding: 14px; border-radius: 12px; background: var(--surface); display: flex; flex-direction: column; gap: 8px; }
@@ -470,7 +475,7 @@
   function meListHTML() {
     const plan = S.sub === "free" ? `<span class="plan free">Free</span>` : `<span class="plan">Pro</span>`;
     const r = (key, icon, label, val) => `<button class="crow entry" data-me="${key}" aria-current="${S.me === key ? "true" : "false"}"><span class="tile">${ic(icon, 18)}</span><span class="meta"><span class="nm">${label}</span></span>${val ? `<span class="count">${val}</span>` : ""}</button>`;
-    let out = `<div style="display:flex;align-items:center;gap:12px;padding:10px 16px 18px">${avatar("me", 52)}<div style="min-width:0"><div style="font-size:16px;font-weight:600;display:flex;align-items:center;gap:6px">${ME.name} ${plan}</div><div style="font-size:12px;color:var(--fg-2)">${ME.email}</div></div></div>`;
+    let out = `<button class="crow me-top" data-me="profile" aria-current="${S.me === "profile" ? "true" : "false"}" title="个人信息">${avatar("me", 52)}<span class="meta"><span class="nm" style="font-size:16px;font-weight:600;display:flex;align-items:center;gap:6px">${esc(ME.name)} ${plan}</span><span class="sub-role">${ME.email}</span></span><span style="color:var(--fg-3)">${ic("chevron-right", 16)}</span></button><div style="height:8px"></div>`;
     out += r("quota", "gauge", S.sub === "free" ? "订阅" : "订阅与额度", S.sub === "free" ? "" : "还剩 81%");
     out += `<div class="list-label"><span>它们共用的一台电脑</span></div>`;
     out += r("files", "folder", "文件");
@@ -771,6 +776,16 @@
     const k = S.me;
     if (!k) return emptyPane();
     let html = "";
+    if (k === "profile") {
+      html = `<h2>个人信息</h2>
+        <div class="me-card">${avatar("me", 88).replace('style="--s:88px"', 'style="--s:88px;border-radius:14px"')}<div class="acts"><button class="btn soft" data-act="avatar">${ic("camera", 15, 2)}换头像</button>${ME.avatar ? `<button class="link" data-act="avatar-reset">换回名字的首字</button>` : `<span class="link" style="cursor:default">从相册挑一张，会裁成正方形</span>`}</div></div>
+        <div class="inset">
+          <button class="row" data-act="name"><span class="t">名字</span><span class="val">${esc(ME.name)}</span><span class="chev">${ic("chevron-right", 16)}</span></button>
+          <div class="row"><span class="t">邮箱</span><span class="val">${ME.email}</span></div>
+          <button class="row" data-act="password"><span class="t">密码</span><span class="val">改密码</span><span class="chev">${ic("chevron-right", 16)}</span></button>
+        </div>
+        <p class="lead-p" style="font-size:12px">邮箱是登录用的，这里改不了。名字和头像朋友、群里的人都看得到。</p>`;
+    }
     if (k === "quota") {
       if (S.sub === "free") {
         html = `<h2>订阅</h2><p class="lead-p">Free 能加朋友、进朋友拉你的群。要有自己的智能体，订 Pro 或 Max。</p>
@@ -801,6 +816,13 @@
     paneEl.innerHTML = `<header class="pane-head bare">${backBtn()}<span class="spacer"></span></header><div class="scroll" style="flex:1"><div class="detail">${html}</div></div>`;
     Face.hydrate(paneEl);
     bindBack();
+    if (k === "profile") {
+      const on = (sel, fn) => { const el = paneEl.querySelector(sel); if (el) el.addEventListener("click", fn); };
+      on('[data-act="avatar"]', () => pickAvatarFile((url) => { ME.avatar = url; renderAll(); toast("头像换好了"); }));
+      on('[data-act="avatar-reset"]', () => { ME.avatar = null; renderAll(); });
+      on('[data-act="name"]', () => editDialog("名字", ME.name, false, (v) => { ME.name = v; renderAll(); }, "朋友和群里的人看到的就是这个名字。"));
+      on('[data-act="password"]', passwordDialog);
+    }
   }
 
   /* ── 「聊天信息」抽屉 ─────────────────────────────────────────────── */
@@ -910,14 +932,31 @@
   function confirmDialog(title, desc, ok, fn, danger) {
     showDialog(`<h3>${esc(title)}</h3><p class="desc">${esc(desc)}</p><div class="actions"><button class="btn soft" data-close>取消</button><button class="btn ${danger ? "danger-solid" : "primary"}" id="ok">${esc(ok)}</button></div>`, (d) => d.querySelector("#ok").addEventListener("click", () => { closeDialog(); fn(); }));
   }
-  function editDialog(label, value, multi, fn) {
-    const field = multi ? `<textarea class="field" id="ed" style="height:96px;padding:8px 12px;resize:none;line-height:1.55">${esc(value)}</textarea>` : `<input class="field" id="ed" value="${esc(value)}">`;
-    showDialog(`<h3>${esc(label)}</h3><p class="desc">改完下一句话就生效。</p>${field}<div class="actions"><button class="btn soft" data-close>取消</button><button class="btn primary" id="ok">保存</button></div>`, (d) => {
+  function editDialog(label, value, multi, fn, desc = "改完下一句话就生效。") {
+    const field = multi ? `<textarea class="field" id="ed" style="height:96px;padding:8px 12px;resize:none;line-height:1.55">${esc(value)}</textarea>` : `<input class="field" id="ed" value="${esc(value)}" maxlength="30">`;
+    showDialog(`<h3>${esc(label)}</h3><p class="desc">${esc(desc)}</p>${field}<div class="actions"><button class="btn soft" data-close>取消</button><button class="btn primary" id="ok">保存</button></div>`, (d) => {
       const ed = d.querySelector("#ed"), ok = d.querySelector("#ok");
       const sync = () => (ok.disabled = !ed.value.trim());
       ed.addEventListener("input", sync);
       sync();
       ok.addEventListener("click", () => { closeDialog(); fn(ed.value.trim()); });
+    });
+  }
+  /* 改密码：三格，边打边说哪里不对；忘了现在的密码走邮箱验证码（今天的找回密码那条路，ADR-0194） */
+  function passwordDialog() {
+    showDialog(`<h3>改密码</h3><p class="desc">新密码至少 8 位。</p>
+      <input class="field" id="p0" type="password" autocomplete="current-password" placeholder="现在的密码">
+      <input class="field" id="p1" type="password" autocomplete="new-password" placeholder="新密码" style="margin-top:10px">
+      <input class="field" id="p2" type="password" autocomplete="new-password" placeholder="再输一遍新密码" style="margin-top:10px">
+      <div id="perr" role="alert" style="font-size:12px;color:var(--danger);min-height:18px;margin-top:8px"></div>
+      <button class="link-btn" id="forgot" style="font-size:12.5px;color:var(--brand)">忘了现在的密码？用邮箱验证码重设</button>
+      <div class="actions"><button class="btn soft" data-close>取消</button><button class="btn primary" id="ok" disabled>保存</button></div>`, (d) => {
+      const [p0, p1, p2] = ["#p0", "#p1", "#p2"].map((x) => d.querySelector(x));
+      const ok = d.querySelector("#ok"), err = d.querySelector("#perr");
+      const check = () => { err.textContent = passwordProblem(p0.value, p1.value, p2.value); ok.disabled = !passwordReady(p0.value, p1.value, p2.value); };
+      [p0, p1, p2].forEach((i) => i.addEventListener("input", check));
+      ok.addEventListener("click", () => { closeDialog(); toast("demo：密码改好了（没有真改）"); });
+      d.querySelector("#forgot").addEventListener("click", () => { closeDialog(); toast(`demo：这里会往 ${ME.email} 发一个 8 位验证码`); });
     });
   }
   const WALL = [0, 1, 4, 5, 6, 7, 8, 9, 10, 11];

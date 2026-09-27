@@ -119,7 +119,9 @@ function sepTime(ts) {
 }
 
 /* ── 数据 ─────────────────────────────────────────────────────────────── */
-const ME = { id: "me", name: "Stan", initial: "S", email: "stan@example.com" };
+const ME = { id: "me", name: "Stan", email: "stan@example.com", avatar: null };
+/* 没设头像就用名字的第一个字（拉丁字母大写） */
+function meInitial() { return (ME.name.trim()[0] || "?").toUpperCase(); }
 
 const AGENTS = {
   a_admin: { id: "a_admin", name: "管理员", slot: 6, role: "帮你建新同事、派活", admin: true, voice: "沉稳男声", usage: 4 },
@@ -144,7 +146,7 @@ const FRIEND_REQUESTS = [{ id: "r1", name: "林小满", initial: "林", text: "�
 
 
 function who(id) {
-  if (id === "me") return { kind: "me", name: "我", initial: ME.initial };
+  if (id === "me") return { kind: "me", name: "我", initial: meInitial() };
   if (AGENTS[id]) return { kind: "agent", ...AGENTS[id] };
   if (FRIENDS[id]) return { kind: "human", ...FRIENDS[id] };
   return { kind: "human", name: id, initial: id.slice(0, 1) };
@@ -315,7 +317,9 @@ function totalUnread() {
 
 /* ── 头像 HTML ────────────────────────────────────────────────────────── */
 function avatar(id, size = 40, state = "plain") {
-  if (id === "me") return `<span class="av human me-av" style="--s:${size}px">${ME.initial}</span>`;
+  if (id === "me") return ME.avatar
+    ? `<span class="av" style="--s:${size}px"><img src="${ME.avatar}" alt=""></span>`
+    : `<span class="av human me-av" style="--s:${size}px">${esc(meInitial())}</span>`;
   const a = AGENTS[id];
   if (a) return `<span class="av" style="--s:${size}px" data-face="${a.slot}" data-state="${state}" data-size="${size}" data-agent="${id}"></span>`;
   const f = FRIENDS[id] || { initial: id.slice(0, 1) };
@@ -429,6 +433,44 @@ const Fold = (() => {
   }
   return { html, bind };
 })();
+
+/* 换头像：从相册挑一张，居中裁成正方形、缩到 256px。demo 里只留在这一页的内存里，不上传 */
+function pickAvatarFile(onDone) {
+  const input = document.createElement("input");
+  input.type = "file";
+  input.accept = "image/*";
+  input.style.display = "none";
+  document.body.appendChild(input);
+  input.addEventListener("change", () => {
+    const f = input.files && input.files[0];
+    input.remove();
+    if (!f) return;
+    const url = URL.createObjectURL(f);
+    const img = new Image();
+    img.onload = () => {
+      const side = Math.min(img.naturalWidth, img.naturalHeight);
+      const cv = document.createElement("canvas");
+      cv.width = cv.height = 256;
+      const g = cv.getContext("2d");
+      g.imageSmoothingQuality = "high";
+      g.drawImage(img, (img.naturalWidth - side) / 2, (img.naturalHeight - side) / 2, side, side, 0, 0, 256, 256);
+      URL.revokeObjectURL(url);
+      onDone(cv.toDataURL("image/jpeg", 0.88));
+    };
+    img.onerror = () => URL.revokeObjectURL(url);
+    img.src = url;
+  });
+  input.click();
+}
+
+/* 改密码那张卡的判据：两个 demo 共用，免得两边提示说法不一样 */
+function passwordProblem(cur, next, again) {
+  if (next && next.length < 8) return "新密码至少 8 位";
+  if (again && next !== again) return "两次输的新密码不一样";
+  if (next && cur && next === cur) return "新密码和现在的一样";
+  return "";
+}
+function passwordReady(cur, next, again) { return !!cur && next.length >= 8 && next === again && next !== cur; }
 
 const ROLE_CHIPS = ["回客人的私信", "写小红书笔记", "每天盯订单", "整理报销单", "做每周的周报", "查同行的价格"];
 

@@ -347,7 +347,8 @@ body { background: var(--side); overflow: hidden; }
 .mq .v { font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
 .mq .v small { font-size: 13px; color: var(--fg-2); font-weight: 400; margin-left: 4px; }
 .mq .r { font-size: 12px; color: var(--fg-3); }
-.me-head { background: var(--surface); padding: 22px 20px 26px; display: flex; align-items: center; gap: 16px; }
+.me-head { background: var(--surface); padding: 22px 20px 26px; display: flex; align-items: center; gap: 16px; width: 100%; text-align: left; transition: background-color 80ms linear; }
+.me-head:active { background: var(--press); }
 .me-head .n { font-size: 22px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
 .me-head .e { font-size: 14px; color: var(--fg-2); margin-top: 4px; }
 .usage-m { display: grid; grid-template-columns: 30px 52px 1fr 40px; align-items: center; gap: 10px; padding: 11px 16px; background: var(--surface); position: relative; }
@@ -1027,7 +1028,7 @@ body { background: var(--side); overflow: hidden; }
         const plan = M.sub === "free" ? `<span class="plan free">Free</span>` : `<span class="plan">Pro</span>`;
         const r = (k, i, l, v) => `<button class="mrow plain iconed" data-me="${k}"><span class="icon-lead">${ic(i, 21, 1.7)}</span><span class="meta"><span class="nm">${l}</span></span>${v ? `<span class="val">${v}</span>` : ""}<span class="chev">${ic("chevron-right", 18)}</span></button>`;
         page.el.innerHTML = `<div style="height:var(--sb)"></div><div class="content scroll pad-tab">
-          <div class="me-head">${avatar("me", 64).replace('style="--s:64px"', 'style="--s:64px;border-radius:12px"')}<div style="flex:1;min-width:0"><div class="n">${ME.name} ${plan}</div><div class="e">${ME.email}</div></div><span style="color:var(--fg-3)">${ic("chevron-right", 18)}</span></div>
+          <button class="me-head" data-me="profile" title="个人信息">${avatar("me", 64).replace('style="--s:64px"', 'style="--s:64px;border-radius:12px"')}<div style="flex:1;min-width:0"><div class="n">${esc(ME.name)} ${plan}</div><div class="e">${ME.email}</div></div><span style="color:var(--fg-3)">${ic("chevron-right", 18)}</span></button>
           <div class="gap"></div><div class="list">${r("quota", "gauge", M.sub === "free" ? "订阅" : "订阅与额度", M.sub === "free" ? "" : "还剩 81%")}</div>
           <div class="sect">它们共用的一台电脑</div><div class="list">${r("files", "folder", "文件")}${r("apps", "blocks", "应用", "4 个")}${r("memory", "book-open", "记忆")}${r("usage", "chart-column", "这周谁用得多")}</div>
           <div class="gap"></div><div class="list">${r("settings", "settings", "设置")}</div></div>`;
@@ -1039,7 +1040,58 @@ body { background: var(--side); overflow: hidden; }
     };
     return page;
   }
+  /* 个人信息：头像 / 名字 / 邮箱（只看）/ 改密码。照微信「我 → 个人信息」 */
+  function profilePage() {
+    const page = {
+      key: "profile",
+      render() {
+        page.el.innerHTML = navHTML({ left: backBtn(), title: "个人信息" }) + `<div class="content scroll"><div class="gap"></div><div class="list">
+          <button class="mrow plain" data-act="avatar" style="min-height:88px"><span class="meta"><span class="nm">头像</span></span>${avatar("me", 60).replace('style="--s:60px"', 'style="--s:60px;border-radius:10px"')}<span class="chev">${ic("chevron-right", 18)}</span></button>
+          <button class="mrow plain" data-act="name"><span class="meta"><span class="nm">名字</span></span><span class="val">${esc(ME.name)}</span><span class="chev">${ic("chevron-right", 18)}</span></button>
+          <div class="mrow plain"><span class="meta"><span class="nm">邮箱</span></span><span class="val">${ME.email}</span></div>
+        </div><div class="gap"></div><div class="list">
+          <button class="mrow plain" data-act="password"><span class="meta"><span class="nm">改密码</span></span><span class="chev">${ic("chevron-right", 18)}</span></button>
+        </div><div class="foot-note">邮箱是登录用的，这里改不了。名字和头像朋友、群里的人都看得到。</div><div style="height:40px"></div></div>`;
+        bindBack(page.el);
+        const on = (sel, fn) => { const el = page.el.querySelector(sel); if (el) el.addEventListener("click", fn); };
+        on('[data-act="avatar"]', () => avatarSheet(() => { page.render(); Sim.emit(); }));
+        on('[data-act="name"]', () => editDialog("名字", ME.name, false, (v) => { ME.name = v; page.render(); Sim.emit(); }, "朋友和群里的人看到的就是这个名字。"));
+        on('[data-act="password"]', passwordDialog);
+      },
+      onBack() { page.render(); },
+    };
+    return page;
+  }
+  /* 换头像是在几样里挑一样 → 底部抽屉（选择器照今天的规矩）；改密码是表单 → 居中弹窗 */
+  function avatarSheet(after) {
+    const rows = [["pick", "从相册选一张"]];
+    if (ME.avatar) rows.push(["reset", "换回名字的首字"]);
+    sheet.innerHTML = `<div class="grab"></div><div class="sh-t">换头像</div><div class="list">${rows.map(([k, l]) => `<button class="mrow plain" data-av="${k}" style="justify-content:center"><span style="font-size:17px">${l}</span></button>`).join("")}</div><div class="gap"></div><div class="list"><button class="mrow plain" data-av="cancel" style="justify-content:center"><span style="font-size:17px;color:var(--fg-2)">取消</span></button></div>`;
+    openSheet();
+    $$("[data-av]", sheet).forEach((b) => b.addEventListener("click", () => {
+      closeSheet();
+      if (b.dataset.av === "pick") pickAvatarFile((url) => { ME.avatar = url; after(); toast("头像换好了"); });
+      if (b.dataset.av === "reset") { ME.avatar = null; after(); }
+    }));
+  }
+  function passwordDialog() {
+    showDialog(`<h3>改密码</h3><p class="desc">新密码至少 8 位。</p>
+      <input class="field" id="p0" type="password" autocomplete="current-password" placeholder="现在的密码">
+      <input class="field" id="p1" type="password" autocomplete="new-password" placeholder="新密码" style="margin-top:10px">
+      <input class="field" id="p2" type="password" autocomplete="new-password" placeholder="再输一遍新密码" style="margin-top:10px">
+      <div id="perr" role="alert" style="font-size:13px;color:var(--danger);min-height:20px;margin-top:8px;text-align:center"></div>
+      <button id="forgot" style="display:block;margin:0 auto;font-size:14px;color:var(--brand)">忘了现在的密码？用邮箱验证码重设</button>
+      <div class="actions"><button class="btn soft" data-close>取消</button><button class="btn primary" id="ok" disabled>保存</button></div>`, (d) => {
+      const [p0, p1, p2] = ["#p0", "#p1", "#p2"].map((x) => d.querySelector(x));
+      const ok = d.querySelector("#ok"), err = d.querySelector("#perr");
+      const check = () => { err.textContent = passwordProblem(p0.value, p1.value, p2.value); ok.disabled = !passwordReady(p0.value, p1.value, p2.value); };
+      [p0, p1, p2].forEach((i) => i.addEventListener("input", check));
+      ok.addEventListener("click", () => { closeDialog(); toast("demo：密码改好了（没有真改）"); });
+      d.querySelector("#forgot").addEventListener("click", () => { closeDialog(); toast(`demo：这里会往 ${ME.email} 发一个 8 位验证码`); });
+    });
+  }
   function mePage(k) {
+    if (k === "profile") return profilePage();
     if (k === "quota") return simplePage("quota", M.sub === "free" ? "订阅" : "订阅与额度", () => M.sub === "free"
       ? `<div class="foot-note" style="padding:16px">Free 能加朋友、进朋友拉你的群。要有自己的智能体，订 Pro 或 Max。</div><div class="list"><div class="mrow plain"><span class="meta"><span class="nm">Pro</span><span class="pv">私聊、群聊、语音通话</span></span><button class="btn primary" style="height:32px" data-act="sub">订阅</button></div><div class="mrow plain"><span class="meta"><span class="nm">Max</span><span class="pv">额度更多</span></span><button class="btn soft" style="height:32px" data-act="sub">订阅</button></div></div>`
       : `<div class="foot-note" style="padding:14px 16px 12px">额度按周算，每周一 00:00 刷新。</div><div class="mq one"><div class="cell"><span class="k">本周</span><span class="v">81%<small>还剩</small></span><div class="meter"><i style="width:81%"></i></div><span class="r">周一 00:00 刷新</span></div></div><div class="gap"></div><div class="list"><div class="mrow plain"><span class="meta"><span class="nm">当前档位</span></span><span class="val"><span class="plan">Pro</span></span></div><button class="mrow plain"><span class="meta"><span class="nm">换档或取消</span></span><span class="chev">${ic("chevron-right", 18)}</span></button></div>`, (page) => $$('[data-act="sub"]', page.el).forEach((b) => b.addEventListener("click", () => { M.sub = "pro"; renderSide(); rerootAll(); toast("demo：当作已经订上了"); })));
@@ -1077,9 +1129,9 @@ body { background: var(--side); overflow: hidden; }
   function confirmDialog(title, desc, ok, fn, danger) {
     showDialog(`<h3>${esc(title)}</h3><p class="desc">${esc(desc)}</p><div class="actions"><button class="btn soft" data-close>取消</button><button class="btn ${danger ? "danger-solid" : "primary"}" id="ok">${esc(ok)}</button></div>`, (d) => d.querySelector("#ok").addEventListener("click", () => { closeDialog(); fn(); }));
   }
-  function editDialog(label, value, multi, fn) {
-    const field = multi ? `<textarea class="field" id="ed" style="height:110px;padding:10px 12px;resize:none;line-height:1.5">${esc(value)}</textarea>` : `<input class="field" id="ed" value="${esc(value)}">`;
-    showDialog(`<h3>${esc(label)}</h3><p class="desc">改完下一句话就生效。</p>${field}<div class="actions"><button class="btn soft" data-close>取消</button><button class="btn primary" id="ok">保存</button></div>`, (d) => {
+  function editDialog(label, value, multi, fn, desc = "改完下一句话就生效。") {
+    const field = multi ? `<textarea class="field" id="ed" style="height:110px;padding:10px 12px;resize:none;line-height:1.5">${esc(value)}</textarea>` : `<input class="field" id="ed" value="${esc(value)}" maxlength="30">`;
+    showDialog(`<h3>${esc(label)}</h3><p class="desc">${esc(desc)}</p>${field}<div class="actions"><button class="btn soft" data-close>取消</button><button class="btn primary" id="ok">保存</button></div>`, (d) => {
       const ed = d.querySelector("#ed"), ok = d.querySelector("#ok");
       ed.addEventListener("input", () => (ok.disabled = !ed.value.trim()));
       ok.addEventListener("click", () => { closeDialog(); fn(ed.value.trim()); });
@@ -1307,6 +1359,7 @@ body { background: var(--side); overflow: hidden; }
     ["智能体资料", () => { switchTabForce("contacts"); push(agentPage("a_kefu")); }],
     ["我", () => switchTabForce("me")],
     ["额度", () => { switchTabForce("me"); push(mePage("quota")); }],
+    ["个人信息", () => { switchTabForce("me"); push(profilePage()); }],
     ["新建智能体", () => { switchTabForce("chats"); newAgentDialog(); }],
     ["语音通话", () => { switchTabForce("chats"); openChat("c_wenan"); setTimeout(() => startCall(CHATS.c_wenan), 450); }],
   ];
