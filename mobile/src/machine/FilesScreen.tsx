@@ -56,15 +56,19 @@ export function FilesScreen({ route, navigation }: Props) {
   const term = q?.term ?? null;
   const content = q?.content ?? false;
   useEffect(() => {
+    let alive = true;
     if (term === null || homeId === null) {
       setHits(null);
       setSearchNote(null);
+      setSearching(false);
       return undefined;
     }
+    setSearching(true);
     const timer = setTimeout(() => {
       void (async () => {
-        setSearching(true);
         const r = await cloudClient.workspaceFilesSearch(homeId, term, content);
+        // 词又变了：这一次的结果作废，不许盖掉新那一次的（慢的旧请求可能后到）
+        if (!alive) return;
         setSearching(false);
         if (r.ok) {
           setHits(r.value);
@@ -76,7 +80,10 @@ export function FilesScreen({ route, navigation }: Props) {
         setSearchNote(r.message);
       })();
     }, 250);
-    return () => clearTimeout(timer);
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
   }, [term, content, homeId]);
 
   if (homeId === null) {
@@ -95,13 +102,14 @@ export function FilesScreen({ route, navigation }: Props) {
         {path === "" ? (
           <Field value={query} onChangeText={setQuery} placeholder={FILES_SEARCH_PLACEHOLDER} returnKeyType="search" />
         ) : null}
-        {hits !== null ? (
+        {term !== null ? (
           <View style={{ gap: space.sm }}>
+            {searching ? <Hint>正在找…</Hint> : null}
             {searchNote !== null ? <Note tone="warn">{searchNote}</Note> : null}
-            {hits.length === 0 && searchNote === null && !searching ? (
+            {!searching && hits !== null && hits.length === 0 && searchNote === null ? (
               <Hint>{`没有找到「${(term ?? "").trim()}」`}</Hint>
             ) : null}
-            {hits.length > 0 ? (
+            {hits !== null && hits.length > 0 ? (
               <Group>
                 {workHitRows(hits).map((h) => (
                   <Row key={h.key} leading={<RowGlyph name={h.icon} />} label={h.title} detail={h.detail} chevron onPress={() => openFile(h.path)} />
