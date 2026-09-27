@@ -1,8 +1,10 @@
 # mobile —— Mr Otto 的手机端（Expo / React Native）
 
-手机端是「智能体」单栏（#1321 / #1356，ADR-0317）：第一层只回答「我有哪几只智能体」——一个原生栈，名册是栈底。
+手机端是微信式布局（#1386，ADR-0322）：底部三格「聊天 / 通讯录 / 我」，智能体、朋友、群排在同一列里。
 每只智能体一条永久的私聊线，几只可以拉成一个群；它们跑在你账号的云端电脑上（个人主场），手机和桌面是同一个云会话的两个客户端。
-A0 立了基座，A1 接上了名册（主场的智能体与群混排、按最近一次动静排、可搜索）、聊天页与智能体设置，A2 加上了名册右上的 ＋：建一只智能体，它先开口问你要它干什么，你答的那句就是它的职责；A3 接上了群聊（建群、群设置、输入框上方的「@ 谁」、时间线上名单变了那一行与派活那一句）；A4 接上了语音通话（要开发版）；A5 做全了账号页（额度两扇窗、订阅、这周用了多少、它们共用的一台电脑、设置）与名册搜索的记忆那一半；进度见 spec `docs/superpowers/specs/2026-09-23-mobile-agents-app-design.md` §8。
+朋友私聊走 `friendships` / `messages` 两张表；团队的每一条云会话在手机上就是一个有真人的群聊（界面上不分团队群与主场群）。
+在它之前是「智能体」单栏（#1356，ADR-0317，A0–A5：名册、聊天、新建的那只先开口、群聊、语音通话、账号与那台电脑）——
+那一版的判据（谁排前面、藏哪些事件、派活线、先开口、语音编排）原样留着，换的是外壳。设计见 spec `docs/superpowers/specs/2026-09-27-wechat-mobile-design.md`。
 
 纯逻辑一律住 `src/shared/`、测试在 `tests/shared/`；手机端在自身之外只 import `src/shared/**`（`tests/architecture.test.ts` 有断言）。
 `mobile/` 的类型检查在根门禁里（ADR-0294）：跑门禁前先 `npm --prefix mobile ci` 一次。
@@ -15,19 +17,24 @@ A0 立了基座，A1 接上了名册（主场的智能体与群混排、按最�
 
 ## 结构
 
-- `App.tsx`：开屏 → 进门 → 名册（单栏，#1356）；此刻画哪一屏由 `src/shared/mobileGate.ts` 的 `gateView` 说了算
-- `src/nav/`：根栈——名册（无头，自己画浮在内容上的圆钮）/ 聊天（同上）/ 智能体设置 / 建群 / 群设置 / 账号 / 开发构建里的形象陈列馆；没有底栏、没有第二个根
+- `App.tsx`：开屏 → 进门 → 底部三格；此刻画哪一屏由 `src/shared/mobileGate.ts` 的 `gateView` 说了算
+- `src/nav/`：根栈——栈底是底部三格，推进来的页（聊天、聊天信息、智能体资料、朋友、新的朋友、群聊、个人信息、订阅与额度、那台电脑的几页、设置、开发构建里的形象陈列馆）盖住底栏
+- `src/tabs/`：三个页签（聊天列表、通讯录、我）+ 自己画的底栏
 - `src/gate/`：开屏、登录 / 注册卡、等确认信、忘记密码三步
-- `src/roster/`：名册屏（栈底：进门七态 + 混排一列 + 搜索 + 右上 ＋）+ 左上账号入口 + ＋ 那张岔路弹窗
-- `src/chat/`：聊天页（头部药丸 / 时间线 / 此刻 / 输入框 / 草稿 / 新建的那只开口之后的六句现成话 / 群聊的「@ 谁」）
-- `src/agent/`：智能体设置 +「换个形象」与「新建智能体」两张抽屉（共用 `FaceWall.tsx` 那面脸墙）
-- `src/group/`：建群页、群设置、「加一只进来」抽屉，与它们共用的「一只智能体占一行」
+- `src/chat/`：聊天页（气泡、隔 5 分钟一条的时间、审批卡、「此刻」那一行与「停」、输入栏的表情 / ⊕ 面板与按住说话、群里的「@ 谁」、新建的那只开口之后的六句现成话）+ 聊天信息
+- `src/agent/`：智能体资料页、新建智能体（居中弹窗）、「换个形象」抽屉（共用 `FaceWall.tsx` 那面脸墙）
+- `src/group/`：建群 / 拉人那张居中弹窗
+- `src/friends/`：朋友私聊、朋友资料、新的朋友、添加朋友、群聊一览 + 查询层与数据（realtime 两条通道，哑了降级成轮询）
+- `src/inbox/`：这台手机上的已读游标与草稿、团队清单、拼会话列表的那一个 hook
+- `src/me/`：个人信息（头像 / 名字 / 改密码）、订阅与额度
 - `src/home/`、`src/cloud/`：数据层——主场名册与订阅快照（直连 Supabase / edge）、云会话客户端与当前聊天（外部 store，`useSyncExternalStore`）
+- `src/voice/`：通话整屏、通话全文抽屉、语音的装配
 - `src/sheet/`：底部抽屉（reanimated + gesture-handler，ADR-0293 决定 3）
-- `src/account/` —— 账号页、订阅页、设置、订阅快照（A5）
+- `src/account/` —— 订阅页、设置、订阅快照
 - `src/machine/` —— 它们的电脑：文件、应用、记忆、这周用量（A5）
-- `src/face/`、`src/dev/`：像素脸（react-native-svg + 共用的 25fps 钟）+ 只在开发构建里出现的形象陈列馆
-- `src/ui.tsx`、`src/dialog.tsx`、`src/chrome/`：组件层与共享状态
+- `src/wx/`：微信式的零件（头像、角标、页签页头、搜索条、可折叠的段、⊕ 菜单、底部动作单、轻提示、图标）；`iconNodes.ts` 是 `scripts/gen-icons.mjs` 的生成物
+- `src/face/`、`src/dev/`：像素脸（react-native-svg + 共用的 25fps 钟）+ 只在开发构建里出现的形象陈列馆（入口在设置页底下）
+- `src/ui.tsx`、`src/dialog.tsx`、`src/chrome/`：组件层（通栏的 `Group` / `Row`）与共享状态
 - `modules/otto-speech/` —— 语音原生模块（识别 + 断句 + 回声消除 + 放音，Swift）。
 - 能测的判断一律住 `src/shared/`（跟着根门禁跑），这里只放装配与画法
 
@@ -55,7 +62,7 @@ npm --prefix mobile run ios        # 走 mobile/ios/，需要 Apple 开发者账
 ### 语音通话要开发版（A4）
 
 语音识别不在 Expo Go 里，通话用的是本仓自己的原生模块 `modules/otto-speech/`（Swift，照搬桌面 `native/MrOttoSpeech`，ADR-0320）。
-**Expo Go 里 app 照常跑，只是没有电话钮**；要打电话得装开发版：
+**Expo Go 里 app 照常跑，只是没有电话钮、输入栏左边也没有「按住说话」**（两样用的是同一个原生模块）；要用得装开发版：
 
     cd mobile
     npx expo run:ios            # 第一次：prebuild 出 ios/ + pod install + 编译，十几分钟

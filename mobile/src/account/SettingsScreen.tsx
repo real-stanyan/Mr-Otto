@@ -2,6 +2,7 @@
 // 连接诊断（中继 + 版本）、退出登录。demo 里「有人 @ 我时通知」「智能体回话时通知」两行不画：手机没有推送凭据那一层
 // （ADR-0256 的已知代价），画出来就是点了不生效的开关（#722）。
 // 外观是单选清单（iOS 设置的语汇）不是分段控件：RN 没有原生分段控件，不为它加依赖。
+import { useNavigation } from "@react-navigation/native";
 import { useState } from "react";
 import { authNoticeOf, type AuthNotice } from "../../../src/shared/authError.js";
 import { ACCOUNT_FOOTER, THEME_PREFS } from "../../../src/shared/mobileAccount.js";
@@ -15,6 +16,7 @@ import { Group, Inset, ListPage, Row } from "../ui.js";
 import appJson from "../../app.json";
 
 export function SettingsScreen() {
+  const navigation = useNavigation();
   const pref = useThemePref();
   const [confirm, setConfirm] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -49,6 +51,12 @@ export function SettingsScreen() {
         <Row label="中继" value={RELAY_BASE} mono />
         <Row label="版本" value={appJson.expo.version} mono />
       </Group>
+      {/* 形象陈列馆只在开发构建里有（dev/FaceGallery.tsx 头注）；入口原来在名册右上，名册换成聊天列表之后挪到这里 */}
+      {__DEV__ ? (
+        <Group header="开发">
+          <Row label="形象陈列馆" chevron onPress={() => navigation.navigate("FaceGallery")} />
+        </Group>
+      ) : null}
       <Group footer={ACCOUNT_FOOTER}>
         <Row label="退出登录" align="center" tone="destructive" onPress={() => setConfirm(true)} />
       </Group>
