@@ -16,7 +16,7 @@ import { useSyncExternalStore } from "react";
 import { AppState } from "react-native";
 import { edgeBaseUrl } from "../../../src/shared/edgeConfig.js";
 import { createHelperAudio, helperAudioEvent, type HelperAudioBridge } from "../../../src/shared/helperAudio.js";
-import type { BillingSnapshotView, CloudAck } from "../../../src/shared/shellBridge.js";
+import type { BillingSnapshotView, CloudAck, VoiceSpeakResult } from "../../../src/shared/shellBridge.js";
 import { speechEventOf } from "../../../src/shared/speechEvent.js";
 import { createTtsClient } from "../../../src/shared/ttsClient.js";
 import { ttsHostedOf } from "../../../src/shared/ttsRoute.js";
@@ -180,4 +180,27 @@ export function joinCall(sessionId: string): void {
 /** 静音 = 关麦（spec §5.7 / demo）；再点一下开回来 */
 export function setMic(on: boolean): void {
   session.setMic(on);
+}
+
+/** 挑声音那张表的试听（#1372，spec §10 第 97 条）：合成走电话那同一个 TTS 客户端（同一笔额度、同一套
+    报错），放音走同一个原生放音器；不经过通话那一套（它不在任何一场电话里）。这台正在听电话时表那边
+    不调它（同一个音频引擎，voicePreviewState 的 inCall） */
+export function speakPreview(text: string, voiceId: string): Promise<VoiceSpeakResult> {
+  return tts.speak(text, voiceId);
+}
+
+/** 放一段试听，回一个「停」。一次只放一段：调用方换一行之前先调上一段的「停」。
+    停的时候连原生那边一起停：起播的回执还没回来时 createHelperAudio 的 pause() 够不着原生那一段 */
+export function playPreview(bytes: Uint8Array, on: { start(): void; end(): void; fail(message: string): void }): () => void {
+  const audio = createHelperAudio(bytes, nativeAudio);
+  audio.onended = () => on.end();
+  audio.onerror = (message) => on.fail(message ?? "放不出来");
+  audio.play().then(
+    () => on.start(),
+    (err: unknown) => on.fail(err instanceof Error ? err.message : String(err)),
+  );
+  return () => {
+    audio.pause();
+    void nativeAudio.stop();
+  };
 }

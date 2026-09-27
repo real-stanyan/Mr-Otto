@@ -4,7 +4,7 @@ import { View } from "react-native";
 import Svg, { Path } from "react-native-svg";
 import { usePalette } from "../theme.js";
 
-export type RowGlyphName = "spark" | "chart" | "cloud" | "gear" | "folder" | "file" | "image" | "plug" | "book";
+export type RowGlyphName = "spark" | "chart" | "cloud" | "gear" | "folder" | "file" | "image" | "plug" | "book" | "wave";
 
 const PATHS: Record<RowGlyphName, string> = {
   spark: "M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9zM19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z",
@@ -16,6 +16,7 @@ const PATHS: Record<RowGlyphName, string> = {
   image: "M3 5h18v14H3zM8.5 11a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3zM21 15l-5-5-9 9",
   plug: "M9 2v6M15 2v6M6 8h12v3a6 6 0 0 1-12 0zM12 17v5",
   book: "M4 19.5A2.5 2.5 0 0 1 6.5 17H20M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z",
+  wave: "M2 12h3l2-7 3 14 3-10 2 5h7",
 };
 
 export function RowGlyph({ name, color }: { name: RowGlyphName; color?: string }) {
