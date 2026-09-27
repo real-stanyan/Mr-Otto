@@ -19,7 +19,7 @@ import { agentFaceSlot } from "../../../src/shared/agentAvatar.js";
 import { rosterGate, type RosterGate } from "../../../src/shared/agentRoster.js";
 import { CHAT_GROUP_CREATE_MIN } from "../../../src/shared/chatRoster.js";
 import { resolveChatTarget, type ChatTarget } from "../../../src/shared/mobileChat.js";
-import { wikiGroupsOf, wikiMatches } from "../../../src/shared/mobileMachine.js";
+import { searchMemoryNote, wikiGroupsOf, wikiMatches } from "../../../src/shared/mobileMachine.js";
 import { filterRosterItems, freshRosterKeys, rosterItems, type RosterItem } from "../../../src/shared/mobileRoster.js";
 import { workspaceAccess } from "../../../src/shared/workspaceAccess.js";
 import { NewAgentSheet } from "../agent/NewAgentSheet.js";
@@ -164,6 +164,7 @@ export function RosterScreen() {
     [searching, machine.wiki, query],
   );
   const hasQuery = query.trim() !== "";
+  const memoryNote = searching && hasQuery ? searchMemoryNote(machine.wiki) : null;
   const now = Date.now();
   const headerSpace = insets.top + 8 + ROUND_BUTTON_SIZE + 8;
 
@@ -229,14 +230,19 @@ export function RosterScreen() {
             </>
           }
           ListEmptyComponent={
-            hasQuery && memoryHits.length === 0 ? (
+            hasQuery && memoryHits.length === 0 && machine.wiki.kind !== "loading" ? (
               <Text style={{ ...t.callout, color: c.mutedForeground, textAlign: "center", marginTop: space.xl }}>
                 {`没有找到「${query.trim()}」`}
               </Text>
             ) : null
           }
           ListFooterComponent={
-            hasQuery && memoryHits.length > 0 ? (
+            memoryNote !== null ? (
+              <View style={{ paddingTop: space.md }}>
+                <SectionLabel text="记忆" />
+                <Text style={{ ...t.footnote, color: c.mutedForeground, paddingHorizontal: 20 }}>{memoryNote}</Text>
+              </View>
+            ) : hasQuery && memoryHits.length > 0 ? (
               <View style={{ paddingTop: space.md }}>
                 <SectionLabel text="记忆" />
                 <View style={{ paddingHorizontal: space.lg }}>

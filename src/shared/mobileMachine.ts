@@ -162,6 +162,14 @@ export function wikiMatches(groups: readonly WikiIndexGroup[], query: string, li
   return out;
 }
 
+/** 名册搜索里记忆那一半此刻说什么：索引还在读 = 「正在读记忆…」；读不到而且手上没有上一份 = 说清这一次只搜了智能体
+    （读不到 ≠ 空：不许把「没去找」画成「没找到」）；其余（读到了 / 电脑还没开过 / 读不到但有上一份）= null，照常过滤 */
+export function searchMemoryNote(wiki: WikiIndexState): string | null {
+  if (wiki.kind === "loading") return "正在读记忆…";
+  if (wiki.kind === "error" && wiki.groups === null) return "记忆这一刻读不到，这次只搜了智能体。";
+  return null;
+}
+
 const FIELD_NAMES: Record<string, string> = { title: "标题", summary: "摘要", sources: "来源" };
 
 /** 改一页之前过一道页头校验（与 wiki 工具、桌面同一份 validateWikiFields）；null = 可以存。

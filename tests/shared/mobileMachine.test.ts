@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { BillingMe, WorkspaceUsage } from "../../src/shared/billing.js";
 import {
   APPS_EMPTY, APPS_FOOTER, FILES_FOOTER, FILES_SEARCH_PLACEHOLDER, MACHINE_FOOTER, USAGE_EMPTY, WIKI_ABSENT, WIKI_EMPTY, WIKI_FOOTER,
-  appRows, baseName, machineRows, machineShareText, usageAfterError, usageErrorText, usageHeroText, usageNote, usageTone,
+  appRows, baseName, machineRows, machineShareText, searchMemoryNote, usageAfterError, usageErrorText, usageHeroText, usageNote, usageTone,
   wikiEditError, wikiGroupTitle, wikiGroupsOf, wikiIndexAfterError, wikiIndexFrom, wikiLinkRows, wikiMatches, wikiMetaLine,
   wikiPageCount, wikiPageFrom, workEntryRows, workFileText, workFolderText, workFolderTruncated, workHitRows, workIcon,
   type UsageLoad, type WikiIndexState,
@@ -139,6 +139,13 @@ describe("记忆", () => {
     expect(WIKI_FOOTER).toBe("你也能改——存了之后，它们下一次开口就按新的来。");
     expect(WIKI_EMPTY).toBe("它们还没记下什么。干活时记下的口径、习惯会出现在这里。");
     expect(WIKI_ABSENT).toBe("它们的电脑还没开过——第一次让它们干活时才会建，记忆也在那时候生成。");
+  });
+  it("名册搜索的记忆那一半：还在读 / 读不到（没有上一份）要说出来，别的照常过滤", () => {
+    expect(searchMemoryNote({ kind: "loading" })).toBe("正在读记忆…");
+    expect(searchMemoryNote({ kind: "error", message: "断了", groups: null })).toBe("记忆这一刻读不到，这次只搜了智能体。");
+    expect(searchMemoryNote({ kind: "error", message: "断了", groups: GROUPS })).toBeNull();
+    expect(searchMemoryNote({ kind: "ok", groups: GROUPS })).toBeNull();
+    expect(searchMemoryNote({ kind: "absent" })).toBeNull();
   });
 });
 
