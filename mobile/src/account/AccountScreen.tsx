@@ -24,7 +24,7 @@ export function AccountScreen() {
   const { c } = usePalette();
   const navigation = useNavigation();
   const ws = useHome().home;
-  const { billing, loadError } = useBilling();
+  const { billing, loaded, loadError } = useBilling();
   const now = useNow(60_000);
   const [who, setWho] = useState<{ name: string; email: string | null } | null>(null);
 
@@ -56,7 +56,8 @@ export function AccountScreen() {
       setBusy(true);
       setSignOutNotice(null);
       try {
-        const { error } = await supabase.auth.signOut();
+        // 只登出这台手机：supabase 缺省是 global，会把电脑上的 Mr Otto 一起登出（spec §10 第 88 条）
+        const { error } = await supabase.auth.signOut({ scope: "local" });
         if (error) setSignOutNotice(authNoticeOf(error.message));
       } catch (e: unknown) {
         setSignOutNotice(authNoticeOf(e instanceof Error ? e.message : String(e)));
@@ -86,7 +87,7 @@ export function AccountScreen() {
         </View>
 
         {loadError !== null ? <Note tone="warn">{loadError}</Note> : null}
-        <QuotaCard quota={accountQuota(billing, now)} />
+        <QuotaCard quota={accountQuota(billing, now, loaded && loadError !== null)} />
 
         <Group>
           <Row

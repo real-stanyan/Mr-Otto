@@ -11,7 +11,7 @@ import {
 import { CheckGlyph } from "../chrome/Glyphs.js";
 import { type as t, space, usePalette, withAlpha } from "../theme.js";
 import { Button, Card, Hint, Note, Page, Spinner, StatusLine } from "../ui.js";
-import { openBillingLink, refreshBilling, useBilling, type BillingLinkTarget } from "./billingStore.js";
+import { clearBillingLinkError, openBillingLink, refreshBilling, useBilling, type BillingLinkTarget } from "./billingStore.js";
 
 export function SubscriptionScreen() {
   const { c } = usePalette();
@@ -19,6 +19,7 @@ export function SubscriptionScreen() {
 
   useFocusEffect(
     useCallback(() => {
+      clearBillingLinkError();
       void refreshBilling();
     }, []),
   );
@@ -102,10 +103,10 @@ function PlanCard({ offer, opening, disabled, onAction }: {
   onAction: (a: PlanOfferAction) => void;
 }) {
   const { c } = usePalette();
-  const frame = offer.current
-    ? { borderWidth: 1.5, borderColor: c.brand }
-    : offer.free
-      ? { borderStyle: "dashed" as const, borderWidth: 1, borderColor: c.border, backgroundColor: "transparent" }
+  const frame = offer.free
+    ? { borderStyle: "dashed" as const, borderWidth: 1, borderColor: c.border, backgroundColor: "transparent" }
+    : offer.current
+      ? { borderWidth: 1.5, borderColor: c.brand }
       : null;
   const action = offer.action;
   return (
@@ -113,8 +114,11 @@ function PlanCard({ offer, opening, disabled, onAction }: {
       <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
         <Text style={{ fontSize: 18, lineHeight: 23, fontWeight: "600", letterSpacing: -0.3, color: c.foreground }}>{offer.name}</Text>
         {offer.current ? (
-          <View style={{ height: 22, paddingHorizontal: 9, borderRadius: 999, justifyContent: "center", backgroundColor: withAlpha(c.brand, 0.18) }}>
-            <Text style={{ fontSize: 12, fontWeight: "600", color: c.brand }}>你在这一档</Text>
+          <View style={{
+            height: 22, paddingHorizontal: 9, borderRadius: 999, justifyContent: "center",
+            backgroundColor: offer.free ? c.secondary : withAlpha(c.brand, 0.18),
+          }}>
+            <Text style={{ fontSize: 12, fontWeight: "600", color: offer.free ? c.mutedForeground : c.brand }}>你在这一档</Text>
           </View>
         ) : null}
         <View style={{ flex: 1 }} />

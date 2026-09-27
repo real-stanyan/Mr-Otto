@@ -7,10 +7,11 @@ import { APPS_EMPTY, APPS_FOOTER, appRows } from "../../../src/shared/mobileMach
 import { RowGlyph } from "../chrome/RowGlyphs.js";
 import { refreshHome, useHome } from "../home/homeStore.js";
 import { space } from "../theme.js";
-import { Group, Hint, Page, Row } from "../ui.js";
+import { Group, Hint, Note, Page, Row } from "../ui.js";
 
 export function AppsScreen() {
-  const ws = useHome().home;
+  const home = useHome();
+  const ws = home.home;
   // 清单跟着名册那份快照走（connectors 就在里面）；进这一页拉一次新的
   useFocusEffect(
     useCallback(() => {
@@ -23,18 +24,21 @@ export function AppsScreen() {
   const rows = appRows(ws);
   return (
     <Page>
-      {rows.length === 0 ? (
-        <View style={{ gap: space.sm }}>
-          <Hint>{APPS_EMPTY}</Hint>
-          <Hint>{APPS_FOOTER}</Hint>
-        </View>
-      ) : (
-        <Group footer={APPS_FOOTER}>
-          {rows.map((r) => (
-            <Row key={r.key} leading={<RowGlyph name="plug" />} label={r.title} detail={r.detail} />
-          ))}
-        </Group>
-      )}
+      <View style={{ gap: space.md }}>
+        {home.loadError !== null ? <Note tone="warn">{home.loadError}</Note> : null}
+        {rows.length === 0 ? (
+          <View style={{ gap: space.sm }}>
+            <Hint>{APPS_EMPTY}</Hint>
+            <Hint>{APPS_FOOTER}</Hint>
+          </View>
+        ) : (
+          <Group footer={APPS_FOOTER}>
+            {rows.map((r) => (
+              <Row key={r.key} leading={<RowGlyph name="plug" />} label={r.title} detail={r.detail} />
+            ))}
+          </Group>
+        )}
+      </View>
     </Page>
   );
 }

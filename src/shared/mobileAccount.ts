@@ -66,9 +66,10 @@ export type AccountQuota =
   | { kind: "none"; text: string }
   | { kind: "windows"; windows: readonly [QuotaWindowView, QuotaWindowView] };
 
-export function accountQuota(billing: BillingSnapshotView | null, now: number): AccountQuota {
+/** readFailed = 这一次刷新失败而手上一份都没有：写「读不到」，不写「正在查」（那句已经不成立） */
+export function accountQuota(billing: BillingSnapshotView | null, now: number, readFailed = false): AccountQuota {
   const me = billing?.me ?? null;
-  if (me === null) return { kind: "loading" };
+  if (me === null) return readFailed ? { kind: "none", text: "这一刻读不到额度。" } : { kind: "loading" };
   if (me.windows === null) return { kind: "none", text: noQuotaText(me) };
   return { kind: "windows", windows: [windowView("h5", me.windows.h5, now), windowView("week", me.windows.week, now)] };
 }
@@ -213,6 +214,12 @@ export function billingLinkError(status: number, payload: unknown): string {
 /** 请求本身没发出去 / 浏览器没开起来（RN 的 fetch 断网时抛 "Network request failed"） */
 export function billingLinkThrown(message: string): string {
   return humanizeBillingError(message);
+}
+
+/** 开支付页回了「已有订阅」：手上的快照比服务端旧（刚在别处订了 / webhook 比人点「完成」还慢）。重拉一次，页面才会把
+    「订阅 X」换成「换到 X」、把「管理订阅 · 发票」画出来——否则那句话指着一颗此刻不在页面上的钮 */
+export function billingLinkStale(status: number, payload: unknown): boolean {
+  return parseBillingError(status, payload)?.code === "already_subscribed";
 }
 
 // ── 账号页的固定话 ──

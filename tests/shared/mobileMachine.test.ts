@@ -3,8 +3,9 @@ import { describe, expect, it } from "vitest";
 import type { BillingMe, WorkspaceUsage } from "../../src/shared/billing.js";
 import {
   APPS_EMPTY, APPS_FOOTER, FILES_FOOTER, FILES_SEARCH_PLACEHOLDER, MACHINE_FOOTER, USAGE_EMPTY, WIKI_ABSENT, WIKI_EMPTY, WIKI_FOOTER,
-  appRows, baseName, machineRows, machineShareText, searchMemoryNote, usageAfterError, usageErrorText, usageHeroText, usageNote, usageTone,
-  wikiEditError, wikiGroupTitle, wikiGroupsOf, wikiIndexAfterError, wikiIndexFrom, wikiLinkRows, wikiMatches, wikiMetaLine,
+  WIKI_INDEX_MAX_AGE_MS, WIKI_TRUNCATED,
+  appRows, baseName, machineRows, machineShareText, phoneFileQuery, searchMemoryNote, usageAfterError, usageErrorText, usageHeroText, usageNote, usageTone,
+  wikiEditError, wikiGroupTitle, wikiGroupsOf, wikiIndexAfterError, wikiIndexFrom, wikiIndexStale, wikiLinkRows, wikiMatches, wikiMetaLine,
   wikiPageCount, wikiPageFrom, workEntryRows, workFileText, workFolderText, workFolderTruncated, workHitRows, workIcon,
   type UsageLoad, type WikiIndexState,
 } from "../../src/shared/mobileMachine.js";
@@ -110,9 +111,15 @@ describe("记忆", () => {
     const p = page();
     const ok = wikiPageFrom("team.md", { kind: "file", text: serializeWikiPage(p), truncated: false, size: 100 });
     expect(ok.ok && ok.page.front.title).toBe("团队口径");
+    expect(ok.ok && ok.truncated).toBe(false);
+    const long = wikiPageFrom("team.md", { kind: "file", text: serializeWikiPage(p), truncated: true, size: 70_000 });
+    expect(long.ok && long.truncated).toBe(true);
     expect(wikiPageFrom("x.md", { kind: "missing" })).toEqual({ ok: false, message: "这一页不在了，可能刚被删掉或改名了。" });
     expect(wikiPageFrom("x.md", { kind: "absent" })).toEqual({ ok: false, message: WIKI_ABSENT });
     expect(wikiPageFrom("x.md", { kind: "binary", size: 1 })).toEqual({ ok: false, message: "这一页读不出来（不是文本）。" });
+  });
+  it("一页太长时手机不给改，那句话的原文", () => {
+    expect(WIKI_TRUNCATED).toBe("这一页太长，手机上只读得到开头一段——要改得去电脑上改（整页改会把后面那半截丢掉）。");
   });
   it("页头那一行：谁写的 · 什么时候 · 常驻；读不出时间就不写那一段", () => {
     expect(wikiMetaLine(page(), NOW)).toBe("开发 · 刚刚");
@@ -147,15 +154,21 @@ describe("记忆", () => {
     expect(searchMemoryNote({ kind: "ok", groups: GROUPS })).toBeNull();
     expect(searchMemoryNote({ kind: "absent" })).toBeNull();
   });
+  it("wikiIndexStale：十分钟内读过就不算陈旧", () => {
+    expect(wikiIndexStale(null, NOW)).toBe(true);
+    expect(wikiIndexStale(NOW - 9 * 60_000, NOW)).toBe(false);
+    expect(wikiIndexStale(NOW - 10 * 60_000, NOW)).toBe(true);
+    expect(WIKI_INDEX_MAX_AGE_MS).toBe(600_000);
+  });
 });
 
 describe("文件", () => {
   const e = (name: string, kind: CsWorkEntry["kind"], size = 0): CsWorkEntry => ({ name, kind, size, mtimeMs: NOW - 86_400_000 });
-  it("一层 → 行：目录在前、再按名字；路径拼好；other 点不开", () => {
-    const rows = workEntryRows("docs", [e("b.md", "file", 2048), e("z-dir", "dir"), e("a.png", "file", 10), e("link", "other"), e("a-dir", "dir")], NOW);
-    expect(rows.map((r) => r.name)).toEqual(["a-dir", "z-dir", "a.png", "b.md", "link"]);
+  it("一层 → 行：顺序照 runtime 给的（不再排一次）；路径拼好；other 点不开", () => {
+    const rows = workEntryRows("docs", [e("a-dir", "dir"), e("Z-dir", "dir"), e("B.md", "file", 2048), e("a.png", "file", 10), e("link", "other")], NOW);
+    expect(rows.map((r) => r.name)).toEqual(["a-dir", "Z-dir", "B.md", "a.png", "link"]);
     expect(rows[0]).toEqual({ key: "docs/a-dir", path: "docs/a-dir", name: "a-dir", icon: "folder", meta: entryMeta(e("a-dir", "dir"), NOW), opens: "dir" });
-    expect(rows[2]).toMatchObject({ icon: "image", opens: "file" });
+    expect(rows[3]).toMatchObject({ icon: "image", opens: "file" });
     expect(rows[4]).toMatchObject({ icon: "file", opens: null });
     expect(workEntryRows("", [e("x.txt", "file")], NOW)[0]?.path).toBe("x.txt");
   });
@@ -191,6 +204,13 @@ describe("文件", () => {
   it("两句固定话", () => {
     expect(FILES_FOOTER).toBe("文件在云端那台电脑上，下不到手机上；要看哪一份就点开，或者让它们在聊天里念给你。");
     expect(FILES_SEARCH_PLACEHOLDER).toBe("找文件；打 ? 搜内容");
+  });
+  it("phoneFileQuery：开头的全角「？」也算按内容找", () => {
+    expect(phoneFileQuery("？TODO")).toEqual({ term: "TODO", content: true });
+    expect(phoneFileQuery("?x")).toEqual({ term: "x", content: true });
+    expect(phoneFileQuery("abc")).toEqual({ term: "abc", content: false });
+    expect(phoneFileQuery("？")).toBeNull();
+    expect(phoneFileQuery("a？b")).toEqual({ term: "a？b", content: false });
   });
 });
 

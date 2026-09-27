@@ -19,7 +19,7 @@ import { agentFaceSlot } from "../../../src/shared/agentAvatar.js";
 import { rosterGate, type RosterGate } from "../../../src/shared/agentRoster.js";
 import { CHAT_GROUP_CREATE_MIN } from "../../../src/shared/chatRoster.js";
 import { resolveChatTarget, type ChatTarget } from "../../../src/shared/mobileChat.js";
-import { searchMemoryNote, wikiGroupsOf, wikiMatches } from "../../../src/shared/mobileMachine.js";
+import { searchMemoryNote, wikiGroupsOf, wikiIndexStale, wikiMatches } from "../../../src/shared/mobileMachine.js";
 import { filterRosterItems, freshRosterKeys, rosterItems, type RosterItem } from "../../../src/shared/mobileRoster.js";
 import { workspaceAccess } from "../../../src/shared/workspaceAccess.js";
 import { NewAgentSheet } from "../agent/NewAgentSheet.js";
@@ -27,7 +27,7 @@ import { PlusGlyph, SearchGlyph } from "../chrome/Glyphs.js";
 import { ROUND_BUTTON_SIZE, RoundButton } from "../chrome/RoundButton.js";
 import { RowGlyph } from "../chrome/RowGlyphs.js";
 import { ensureHome, homeSnapshot, refreshHome, refreshHomeAfterWrite, useHome } from "../home/homeStore.js";
-import { refreshWiki, useMachine } from "../machine/machineStore.js";
+import { machineSnapshot, refreshWiki, useMachine } from "../machine/machineStore.js";
 import { space, type as t, usePalette, withAlpha } from "../theme.js";
 import { Button, Field, Group, Note, Row } from "../ui.js";
 import { AccountButton } from "./AccountButton.js";
@@ -157,7 +157,7 @@ export function RosterScreen() {
   // 搜索的记忆那一半（spec §5.2 / §5.8）：打开搜索时读一次记忆的索引，有字时名册结果底下多一组「记忆」
   const machine = useMachine();
   useEffect(() => {
-    if (searching && homeId !== null) void refreshWiki(homeId);
+    if (searching && homeId !== null && wikiIndexStale(machineSnapshot().wikiFetchedAt, Date.now())) void refreshWiki(homeId);
   }, [searching, homeId]);
   const memoryHits = useMemo(
     () => (searching ? wikiMatches(wikiGroupsOf(machine.wiki) ?? [], query) : []),

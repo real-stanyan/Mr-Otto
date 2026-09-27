@@ -16,13 +16,19 @@ export interface MachineState {
   homeId: string | null;
   wiki: WikiIndexState;
   usage: UsageLoad;
+  /** 最近一次读到记忆索引的时刻；null = 还没读到过 */
+  wikiFetchedAt: number | null;
 }
 
-const INITIAL: MachineState = { homeId: null, wiki: { kind: "loading" }, usage: { kind: "loading" } };
+const INITIAL: MachineState = { homeId: null, wiki: { kind: "loading" }, usage: { kind: "loading" }, wikiFetchedAt: null };
 const store = createStore<MachineState>(INITIAL);
 
 export function useMachine(): MachineState {
   return useSyncExternalStore(store.subscribe, store.get);
+}
+
+export function machineSnapshot(): MachineState {
+  return store.get();
 }
 
 let wikiInflight: Promise<void> | null = null;
@@ -64,7 +70,7 @@ export function refreshWiki(homeId: string): Promise<void> {
       await ensureUid();
       const r = await cloudClient.workspaceFiles(homeId, `${WIKI_DIR}/${WIKI_INDEX_PATH}`);
       if (mine !== epoch) return;
-      store.set((s) => ({ wiki: r.ok ? wikiIndexFrom(r.value) : wikiIndexAfterError(s.wiki, r.message) }));
+      store.set((s) => (r.ok ? { wiki: wikiIndexFrom(r.value), wikiFetchedAt: Date.now() } : { wiki: wikiIndexAfterError(s.wiki, r.message) }));
     } catch (e) {
       if (mine === epoch) store.set((s) => ({ wiki: wikiIndexAfterError(s.wiki, e instanceof Error ? e.message : String(e)) }));
     } finally {

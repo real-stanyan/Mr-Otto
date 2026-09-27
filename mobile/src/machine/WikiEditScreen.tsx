@@ -4,7 +4,7 @@
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ScrollView, Switch, Text, TextInput, View } from "react-native";
-import { wikiEditError, wikiPageFrom } from "../../../src/shared/mobileMachine.js";
+import { WIKI_TRUNCATED, wikiEditError, wikiPageFrom } from "../../../src/shared/mobileMachine.js";
 import { WIKI_DIR, WIKI_SUMMARY_MAX, WIKI_TITLE_MAX, type WikiPage } from "../../../src/shared/wiki.js";
 import { HeaderTextButton } from "../chrome/HeaderTextButton.js";
 import { cloudClient, ensureUid } from "../cloud/cloudClient.js";
@@ -37,6 +37,11 @@ export function WikiEditScreen({ route, navigation }: Props) {
       const got = r.ok ? wikiPageFrom(path, r.value) : { ok: false as const, message: r.message };
       if (!got.ok) {
         setLoadError(got.message);
+        return;
+      }
+      if (got.truncated) {
+        // 只读到开头一段：整页替换会把后面那半截丢掉，这一页手机上不改
+        setLoadError(WIKI_TRUNCATED);
         return;
       }
       setPage(got.page);
@@ -92,7 +97,7 @@ export function WikiEditScreen({ route, navigation }: Props) {
       keyboardShouldPersistTaps="handled"
       contentContainerStyle={{ padding: space.lg, gap: space.lg, paddingBottom: space.xl }}
     >
-      {loadError !== null ? <Note tone="warn">{`读不到这一页：${loadError}`}</Note> : null}
+      {loadError !== null ? <Note tone="warn">{loadError === WIKI_TRUNCATED ? loadError : `读不到这一页：${loadError}`}</Note> : null}
       {page === null && loadError === null ? <Spinner /> : null}
       {page !== null ? (
         <>

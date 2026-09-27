@@ -405,7 +405,7 @@ export function Row(props: {
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityState={{ disabled: !!props.disabled }}
+      accessibilityState={{ disabled: !!props.disabled, selected: !!props.checked }}
       onPressIn={() => press(true)}
       onPressOut={() => press(false)}
       onPress={props.onPress}

@@ -6,10 +6,9 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useCallback, useEffect, useLayoutEffect, useState } from "react";
 import { View } from "react-native";
 import {
-  FILES_FOOTER, FILES_SEARCH_PLACEHOLDER, baseName, workEntryRows, workFolderText, workFolderTruncated, workHitRows,
+  FILES_FOOTER, FILES_SEARCH_PLACEHOLDER, baseName, phoneFileQuery, workEntryRows, workFolderText, workFolderTruncated, workHitRows,
 } from "../../../src/shared/mobileMachine.js";
 import type { CsWorkHit, CsWorkNode } from "../../../src/shared/remote/cloudSession.js";
-import { parseFileQuery } from "../../../src/shared/workFilesView.js";
 import { RowGlyph } from "../chrome/RowGlyphs.js";
 import { cloudClient, ensureUid } from "../cloud/cloudClient.js";
 import { useHome } from "../home/homeStore.js";
@@ -52,7 +51,7 @@ export function FilesScreen({ route, navigation }: Props) {
   );
 
   // 搜索只在最外层那一页（files_search 本来就搜整个文件夹）。去抖 250ms；空的 = 回到清单
-  const q = path === "" ? parseFileQuery(query) : null;
+  const q = path === "" ? phoneFileQuery(query) : null;
   const term = q?.term ?? null;
   const content = q?.content ?? false;
   useEffect(() => {

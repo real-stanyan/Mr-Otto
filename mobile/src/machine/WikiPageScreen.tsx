@@ -5,7 +5,7 @@ import { useFocusEffect } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useCallback, useLayoutEffect, useState } from "react";
 import { ScrollView, Text, View } from "react-native";
-import { wikiGroupsOf, wikiLinkRows, wikiMetaLine, wikiPageFrom } from "../../../src/shared/mobileMachine.js";
+import { WIKI_TRUNCATED, wikiGroupsOf, wikiLinkRows, wikiMetaLine, wikiPageFrom } from "../../../src/shared/mobileMachine.js";
 import { WIKI_DIR, type WikiPage } from "../../../src/shared/wiki.js";
 import { HeaderTextButton } from "../chrome/HeaderTextButton.js";
 import { RowGlyph } from "../chrome/RowGlyphs.js";
@@ -13,7 +13,7 @@ import { cloudClient, ensureUid } from "../cloud/cloudClient.js";
 import { useHome } from "../home/homeStore.js";
 import type { RootStackParams } from "../nav/types.js";
 import { type as t, space, usePalette } from "../theme.js";
-import { Card, Group, Note, Row, Spinner, useNow } from "../ui.js";
+import { Card, Group, Hint, Note, Row, Spinner, useNow } from "../ui.js";
 import { refreshWiki, useMachine } from "./machineStore.js";
 
 type Props = NativeStackScreenProps<RootStackParams, "WikiPage">;
@@ -25,6 +25,7 @@ export function WikiPageScreen({ route, navigation }: Props) {
   const { wiki } = useMachine();
   const now = useNow(60_000);
   const [page, setPage] = useState<WikiPage | null>(null);
+  const [truncated, setTruncated] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   const load = useCallback(async (): Promise<void> => {
@@ -38,6 +39,7 @@ export function WikiPageScreen({ route, navigation }: Props) {
     }
     setError(null);
     setPage(got.page);
+    setTruncated(got.truncated);
   }, [homeId, path]);
   // 改完回来要看见新的；索引没读过（从名册搜索直接点进来）就顺手读一次，「它提到的」要靠它认标题
   useFocusEffect(
@@ -50,9 +52,9 @@ export function WikiPageScreen({ route, navigation }: Props) {
   const loaded = page !== null;
   useLayoutEffect(() => {
     navigation.setOptions({
-      headerRight: () => (loaded ? <HeaderTextButton label="改" disabled={false} onPress={() => navigation.navigate("WikiEdit", { path })} /> : null),
+      headerRight: () => (loaded && !truncated ? <HeaderTextButton label="改" disabled={false} onPress={() => navigation.navigate("WikiEdit", { path })} /> : null),
     });
-  }, [navigation, loaded, path]);
+  }, [navigation, loaded, truncated, path]);
 
   const links = page === null ? [] : wikiLinkRows(page, wikiGroupsOf(wiki) ?? []);
   return (
@@ -69,6 +71,7 @@ export function WikiPageScreen({ route, navigation }: Props) {
             <Text style={{ ...t.footnote, color: c.mutedForeground }}>{wikiMetaLine(page, now)}</Text>
             {page.front.summary !== "" ? <Text style={{ ...t.callout, color: c.foreground }}>{page.front.summary}</Text> : null}
           </View>
+          {truncated ? <Hint>{WIKI_TRUNCATED}</Hint> : null}
           <Card>
             <Text selectable style={{ ...t.callout, lineHeight: 23, color: page.body.trim() === "" ? c.mutedForeground : c.foreground }}>
               {page.body.trim() === "" ? "这一页还没有正文。" : page.body.trim()}

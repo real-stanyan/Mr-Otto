@@ -20,7 +20,7 @@ import {
   extractWikiLinks, parseIndex, parseWikiPage, validateWikiFields, WIKI_AGENTS_DIR,
   type WikiIndexEntry, type WikiIndexGroup, type WikiPage,
 } from "./wiki.js";
-import { entryMeta, formatWorkSize } from "./workFilesView.js";
+import { entryMeta, formatWorkSize, parseFileQuery } from "./workFilesView.js";
 import { usageHeadline, usageWindowText, workspaceTotalMicro, type UsageScale } from "./workspaceUsageView.js";
 import { toolsSummary } from "./workspaceView.js";
 import type { WorkspaceSnapshot } from "./workspaces.js";
@@ -83,6 +83,10 @@ export const WIKI_FOOTER = "你也能改——存了之后，它们下一次开�
 export const WIKI_EMPTY = "它们还没记下什么。干活时记下的口径、习惯会出现在这里。";
 export const WIKI_ABSENT = "它们的电脑还没开过——第一次让它们干活时才会建，记忆也在那时候生成。";
 
+/** 一页超过 files 帧的上限（64 KB）时手机只读得到开头一段：照看、写明，**不给改**——改是整页替换，会把后面那半截丢掉
+    （checkWiki 为同一个结局设过闸：「那会让备份变成半页」） */
+export const WIKI_TRUNCATED = "这一页太长，手机上只读得到开头一段——要改得去电脑上改（整页改会把后面那半截丢掉）。";
+
 /** 读 wiki/index.md 那一格的结局 → 记忆清单的状态。`absent`（电脑还没建起来）与「索引不在」是两回事：后者 =
     建起来了、一页都还没记（桌面 WorkspaceWikiTab 同一个读法）。**只有真读到了才回 ok** */
 export function wikiIndexFrom(node: CsWorkNode): WikiIndexState {
@@ -111,10 +115,10 @@ export function wikiGroupTitle(name: string): string {
   return name === WIKI_AGENTS_DIR ? "各只自己那一页" : name;
 }
 
-export type WikiPageLoad = { ok: true; page: WikiPage } | { ok: false; message: string };
+export type WikiPageLoad = { ok: true; page: WikiPage; truncated: boolean } | { ok: false; message: string };
 
 export function wikiPageFrom(path: string, node: CsWorkNode): WikiPageLoad {
-  if (node.kind === "file") return { ok: true, page: parseWikiPage(path, node.text) };
+  if (node.kind === "file") return { ok: true, page: parseWikiPage(path, node.text), truncated: node.truncated };
   if (node.kind === "missing") return { ok: false, message: "这一页不在了，可能刚被删掉或改名了。" };
   if (node.kind === "absent") return { ok: false, message: WIKI_ABSENT };
   return { ok: false, message: "这一页读不出来（不是文本）。" };
@@ -170,6 +174,14 @@ export function searchMemoryNote(wiki: WikiIndexState): string | null {
   return null;
 }
 
+/** 名册搜索多久内不重读记忆索引。读 wiki 要经过那台电脑（sandbox.readWork 会把停着的容器起起来、重置空闲计时）——
+    随手搜一下名册不该把它叫醒；进「记忆」那一页照旧每次都读 */
+export const WIKI_INDEX_MAX_AGE_MS = 10 * 60_000;
+
+export function wikiIndexStale(fetchedAt: number | null, now: number): boolean {
+  return fetchedAt === null || now - fetchedAt >= WIKI_INDEX_MAX_AGE_MS;
+}
+
 const FIELD_NAMES: Record<string, string> = { title: "标题", summary: "摘要", sources: "来源" };
 
 /** 改一页之前过一道页头校验（与 wiki 工具、桌面同一份 validateWikiFields）；null = 可以存。
@@ -183,6 +195,11 @@ export function wikiEditError(f: { title: string; summary: string; pinned: boole
 
 export const FILES_FOOTER = "文件在云端那台电脑上，下不到手机上；要看哪一份就点开，或者让它们在聊天里念给你。";
 export const FILES_SEARCH_PLACEHOLDER = "找文件；打 ? 搜内容";
+
+/** 手机上的搜索框：iOS 中文键盘打出来的问号是全角的「？」，开头那一个也当「按内容找」（桌面 parseFileQuery 不动） */
+export function phoneFileQuery(query: string): { term: string; content: boolean } | null {
+  return parseFileQuery(query.startsWith("？") ? `?${query.slice(1)}` : query);
+}
 
 export type WorkIcon = "folder" | "image" | "file";
 
@@ -204,20 +221,16 @@ export interface WorkEntryRowView {
   opens: "dir" | "file" | null;
 }
 
-/** 一层目录 → 行：目录在前，再按名字（码点序）；路径拼好（joinWorkPath，两端同一个拼法） */
+/** 一层目录 → 行。顺序照 runtime 给的（目录在前、名字 localeCompare，services/runtime/src/workFiles.ts 的 compareEntries）——
+    手机不再排一次，免得与桌面的顺序分家；路径拼好（joinWorkPath，两端同一个拼法） */
 export function workEntryRows(dir: string, entries: readonly CsWorkEntry[], now: number): WorkEntryRowView[] {
-  return [...entries]
-    .sort((a, b) => {
-      if ((a.kind === "dir") !== (b.kind === "dir")) return a.kind === "dir" ? -1 : 1;
-      return a.name < b.name ? -1 : a.name > b.name ? 1 : 0;
-    })
-    .map((e) => {
-      const path = joinWorkPath(dir, e.name);
-      return {
-        key: path, path, name: e.name, icon: workIcon(e.name, e.kind), meta: entryMeta(e, now),
-        opens: e.kind === "dir" ? "dir" : e.kind === "file" ? "file" : null,
-      };
-    });
+  return entries.map((e) => {
+    const path = joinWorkPath(dir, e.name);
+    return {
+      key: path, path, name: e.name, icon: workIcon(e.name, e.kind), meta: entryMeta(e, now),
+      opens: e.kind === "dir" ? "dir" : e.kind === "file" ? "file" : null,
+    };
+  });
 }
 
 /** 一个文件夹里什么都画不出来时说哪句。**三种「空」不许合成一句**（桌面 workFolderNotice 同一条判据）：电脑还没

@@ -9,7 +9,7 @@
 import * as WebBrowser from "expo-web-browser";
 import { useSyncExternalStore } from "react";
 import type { BillingMe, PlanId } from "../../../src/shared/billing.js";
-import { billingChanged, billingLinkError, billingLinkThrown, billingLinkUrl } from "../../../src/shared/mobileAccount.js";
+import { billingChanged, billingLinkError, billingLinkStale, billingLinkThrown, billingLinkUrl } from "../../../src/shared/mobileAccount.js";
 import type { BillingSnapshotView } from "../../../src/shared/shellBridge.js";
 import { EDGE_BASE, edgeToken } from "../edge.js";
 import { createStore } from "../externalStore.js";
@@ -91,7 +91,10 @@ async function postLink(target: BillingLinkTarget): Promise<{ url: string } | { 
     body: JSON.stringify(body),
   });
   const payload: unknown = await res.json().catch(() => null);
-  if (!res.ok) return { error: billingLinkError(res.status, payload) };
+  if (!res.ok) {
+    if (billingLinkStale(res.status, payload)) void refreshBilling();
+    return { error: billingLinkError(res.status, payload) };
+  }
   const url = billingLinkUrl(payload);
   return url === null ? { error: "服务端没给支付页的地址。" } : { url };
 }
@@ -138,4 +141,9 @@ export async function openBillingLink(target: BillingLinkTarget, key: string): P
     }
   }
   if (mine === epoch) store.set({ link: { kind: "idle" } });
+}
+
+/** 上一次开支付页失败的那句话：离开再回来就收起（它说的是那一次，不是此刻） */
+export function clearBillingLinkError(): void {
+  if (store.get().link.kind === "error") store.set({ link: { kind: "idle" } });
 }

@@ -4,7 +4,7 @@ import type { BillingMe } from "../../src/shared/billing.js";
 import { periodLine } from "../../src/shared/billingView.js";
 import {
   ACCOUNT_FOOTER, SUBSCRIPTION_FOOTER, THEME_PREFS, accountBadge, accountInitial, accountName, accountQuota,
-  billingChanged, billingLinkError, billingLinkThrown, billingLinkUrl, colorSchemeOf, holdsSubscription,
+  billingChanged, billingLinkError, billingLinkStale, billingLinkThrown, billingLinkUrl, colorSchemeOf, holdsSubscription,
   parseThemePref, planOffers, quotaToneView, subscriptionNotes, subscriptionValue,
 } from "../../src/shared/mobileAccount.js";
 import type { BillingSnapshotView } from "../../src/shared/shellBridge.js";
@@ -66,6 +66,12 @@ describe("accountQuota", () => {
   it("还没查到 = loading", () => {
     expect(accountQuota(null, NOW)).toEqual({ kind: "loading" });
     expect(accountQuota(snap(null), NOW)).toEqual({ kind: "loading" });
+  });
+  it("读失败且手上没有数据时写「读不到」，不写「正在查」（那句已经不成立）", () => {
+    expect(accountQuota(null, NOW, true)).toEqual({ kind: "none", text: "这一刻读不到额度。" });
+    expect(accountQuota(snap(null), NOW, true)).toEqual({ kind: "none", text: "这一刻读不到额度。" });
+    expect(accountQuota(null, NOW)).toEqual({ kind: "loading" });
+    expect(accountQuota(snap(me()), NOW, true).kind).toBe("windows");
   });
   it("两扇窗：还剩百分之几、按剩余填、窗名与倒计时用桌面那一份", () => {
     const q = accountQuota(snap(me()), NOW);
@@ -196,6 +202,14 @@ describe("billingLinkUrl / billingLinkError / billingLinkThrown", () => {
   });
   it("请求没发出去（RN 断网时的原话）说成连不上", () => {
     expect(billingLinkThrown("Network request failed")).toMatch(/连不上支付服务/);
+  });
+});
+
+describe("billingLinkStale", () => {
+  it("409 且错误码是 already_subscribed 才算快照旧了", () => {
+    expect(billingLinkStale(409, { error: { type: "otto_edge", code: "already_subscribed", message: "x" } })).toBe(true);
+    expect(billingLinkStale(502, { error: { type: "otto_edge", code: "upstream", message: "x" } })).toBe(false);
+    expect(billingLinkStale(409, null)).toBe(false);
   });
 });
 
