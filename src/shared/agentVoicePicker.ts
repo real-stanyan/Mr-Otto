@@ -136,3 +136,7 @@ export function voicePreviewError(message: string): string {
   const m = trimEnd(message);
   return m === "" ? "念不出来。挑了照样存。" : `念不出来：${m}。挑了照样存。`;
 }
+
+/** 试听那一句合成最多等多久：真机上一般一两秒就回；网在半截断掉时可能一直不回，那一行不能一直闪着等 */
+export const PREVIEW_TIMEOUT_MS = 15_000;
+export const PREVIEW_TIMEOUT_MESSAGE = "等太久没回应";

@@ -7,8 +7,10 @@
 import { useEffect, useRef, useState } from "react";
 import { Animated, Easing, Pressable, ScrollView, Text, View } from "react-native";
 import {
-  VOICE_AUTO, voicePickerFooter, voicePickerRows, voicePreviewError, voicePreviewState, voicePreviewText,
+  PREVIEW_TIMEOUT_MESSAGE, PREVIEW_TIMEOUT_MS, VOICE_AUTO, voicePickerFooter, voicePickerRows, voicePreviewError,
+  voicePreviewState, voicePreviewText,
 } from "../../../src/shared/agentVoicePicker.js";
+import type { VoiceSpeakResult } from "../../../src/shared/shellBridge.js";
 import { CheckGlyph } from "../chrome/Glyphs.js";
 import { RowGlyph } from "../chrome/RowGlyphs.js";
 import { BottomSheet } from "../sheet/BottomSheet.js";
@@ -32,12 +34,13 @@ export function VoicePickerSheet(p: {
   onClose: () => void;
 }) {
   const { c } = usePalette();
+  const reduce = useReduceMotion();
   const voice = useVoice();
   const state = voicePreviewState({ native: nativeSpeech, inCall: voice.listen !== null, billing: voice.billing });
   const rows = voicePickerRows({ agentId: p.agentId, picked: p.picked, agents: p.agents });
   const [now, setNow] = useState<{ key: string; phase: Phase } | null>(null);
   const [failed, setFailed] = useState<{ key: string; text: string } | null>(null);
-  const cache = useRef(new Map<string, Uint8Array>());
+  const cache = useRef(new Map<string, Promise<VoiceSpeakResult>>());
   const stopPlay = useRef<(() => void) | null>(null);
   const turn = useRef(0);
 
@@ -69,6 +72,18 @@ export function VoicePickerSheet(p: {
     [],
   );
 
+  // 同一句只合成一次：连「还在路上」的那一次也算（点 A、再点 B、再回 A 不会给 A 付第二次钱）；
+  // 抛出来的错折成 { ok: false }，失败的那一次从缓存里扔掉，下次点重来
+  const synth = (k: string, text: string, voiceId: string): Promise<VoiceSpeakResult> => {
+    const hit = cache.current.get(k);
+    if (hit !== undefined) return hit;
+    const pending = speakPreview(text, voiceId).catch(
+      (err: unknown): VoiceSpeakResult => ({ ok: false, message: err instanceof Error ? err.message : String(err) }),
+    );
+    cache.current.set(k, pending);
+    return pending;
+  };
+
   const preview = async (key: string, voiceId: string): Promise<void> => {
     const again = now?.key === key;
     stop();
@@ -78,19 +93,22 @@ export function VoicePickerSheet(p: {
     setNow({ key, phase: "wait" });
     const text = voicePreviewText(p.name, p.description);
     const k = `${voiceId}\n${text}`;
-    let audio = cache.current.get(k);
-    if (audio === undefined) {
-      const r = await speakPreview(text, voiceId);
-      if (mine !== turn.current) return;
-      if (!r.ok) {
-        setNow(null);
-        setFailed({ key, text: voicePreviewError(r.message) });
-        return;
-      }
-      audio = r.audio;
-      cache.current.set(k, audio);
+    const pending = synth(k, text, voiceId);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const late = new Promise<VoiceSpeakResult>((resolve) => {
+      timer = setTimeout(() => resolve({ ok: false, message: PREVIEW_TIMEOUT_MESSAGE }), PREVIEW_TIMEOUT_MS);
+    });
+    const r = await Promise.race([pending, late]);
+    clearTimeout(timer);
+    // 失败或等超时的那一次扔掉（只扔自己放进去的那一个），下次点重新合成
+    if (!r.ok && cache.current.get(k) === pending) cache.current.delete(k);
+    if (mine !== turn.current) return;
+    if (!r.ok) {
+      setNow(null);
+      setFailed({ key, text: voicePreviewError(r.message) });
+      return;
     }
-    stopPlay.current = playPreview(audio, {
+    stopPlay.current = playPreview(r.audio, {
       start: () => {
         if (mine === turn.current) setNow({ key, phase: "play" });
       },
@@ -118,9 +136,10 @@ export function VoicePickerSheet(p: {
             <Pressable
               key={row.key}
               accessibilityRole="button"
-              accessibilityState={{ selected: row.checked }}
-              accessibilityLabel={`${row.label}，${row.hint}`}
+              accessibilityState={{ selected: row.checked, busy: phase !== null }}
+              accessibilityLabel={`${row.label}，${err ?? row.hint}`}
               onPress={() => {
+                if (!p.visible) return; // 收起动画那一小段里行还点得到：那时不改表单也不念
                 p.onPick(row.key === VOICE_AUTO ? null : row.key);
                 void preview(row.key, row.voiceId);
               }}
@@ -134,7 +153,7 @@ export function VoicePickerSheet(p: {
                 backgroundColor: pressed ? c.muted : "transparent",
               })}
             >
-              <VoiceRowIcon phase={phase} />
+              <VoiceRowIcon phase={phase} reduce={reduce} />
               <View style={{ flex: 1, minWidth: 0 }}>
                 <Text style={{ fontSize: 16, color: c.foreground }}>{row.label}</Text>
                 <Text
@@ -163,15 +182,15 @@ export function VoicePickerSheet(p: {
 }
 
 /** 行首那一格：平时是一枚声浪；等合成时一明一暗；在念时换成三根跳动的条（通话青）。
-    「减弱动态效果」时不闪不跳——停在静止的那一帧 */
-function VoiceRowIcon({ phase }: { phase: Phase | null }) {
+    「减弱动态效果」时不闪不跳：等合成停在调暗的那一枚声浪，在念停在三根不跳的条——
+    两档各自停在自己那一帧，不与「空闲」的满亮共用一帧 */
+function VoiceRowIcon({ phase, reduce }: { phase: Phase | null; reduce: boolean }) {
   const { c } = usePalette();
-  const reduce = useReduceMotion();
   const pulse = useRef(new Animated.Value(1)).current;
   const bars = useRef([0, 1, 2].map(() => new Animated.Value(0))).current;
 
   useEffect(() => {
-    pulse.setValue(1);
+    pulse.setValue(reduce && phase === "wait" ? 0.5 : 1); // 减弱动态效果：等合成时停在调暗的一帧，不闪——但也不能和空闲时一模一样
     bars.forEach((b) => b.setValue(reduce ? 0.5 : 0));
     if (reduce || phase === null) return;
     const ease = Easing.inOut(Easing.ease);

@@ -3,8 +3,8 @@
 import { describe, expect, it } from "vitest";
 import { ADMIN_VOICE_ID, AGENT_VOICE_CHOICES, agentVoiceId, voiceChoiceOf } from "../../src/shared/agentVoice.js";
 import {
-  VOICE_AUTO, VOICE_PICKER_NOTE, VOICE_PICKER_NOTE_QUIET, voicePickerFooter, voicePickerRows, voicePreviewError,
-  voicePreviewState, voicePreviewText, voiceRowValue,
+  PREVIEW_TIMEOUT_MESSAGE, PREVIEW_TIMEOUT_MS, VOICE_AUTO, VOICE_PICKER_NOTE, VOICE_PICKER_NOTE_QUIET,
+  voicePickerFooter, voicePickerRows, voicePreviewError, voicePreviewState, voicePreviewText, voiceRowValue,
 } from "../../src/shared/agentVoicePicker.js";
 import type { BillingMe } from "../../src/shared/billing.js";
 import type { BillingSnapshotView } from "../../src/shared/shellBridge.js";
@@ -130,5 +130,10 @@ describe("voicePreviewError", () => {
   it("念不出来：原因原样带上、去掉句尾标点，后面说「挑了照样存」", () => {
     expect(voicePreviewError("网关超时。")).toBe("念不出来：网关超时。挑了照样存。");
     expect(voicePreviewError("  ")).toBe("念不出来。挑了照样存。");
+  });
+
+  it("合成等太久（PREVIEW_TIMEOUT_MS）：那一行说「等太久没回应」", () => {
+    expect(PREVIEW_TIMEOUT_MS).toBe(15_000);
+    expect(voicePreviewError(PREVIEW_TIMEOUT_MESSAGE)).toBe("念不出来：等太久没回应。挑了照样存。");
   });
 });

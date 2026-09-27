@@ -106,8 +106,10 @@ const nativeAudio: HelperAudioBridge = {
     }
   },
   async stop() {
+    // 只收这一刻已经交出去的那几段：停的回执回来之前又交出去的那一段（下一句试听 / 电话的下一段）不归这一次停
+    const ids = [...files.keys()];
     await OttoSpeech?.stopPlay();
-    for (const id of [...files.keys()]) dropFile(id);
+    for (const id of ids) dropFile(id);
   },
 };
 
@@ -189,18 +191,31 @@ export function speakPreview(text: string, voiceId: string): Promise<VoiceSpeakR
   return tts.speak(text, voiceId);
 }
 
-/** 放一段试听，回一个「停」。一次只放一段：调用方换一行之前先调上一段的「停」。
-    停的时候连原生那边一起停：起播的回执还没回来时 createHelperAudio 的 pause() 够不着原生那一段 */
+/** 放一段试听，回一个「停」。一次只放一段：调用方换一行之前先调上一段的「停」。这台正在听电话时不放——
+    同一个音频引擎，试听会把电话那一段掐掉，这里兜住「点的时候还没在听、合成回来时已经在听了」那个窗口。
+    起播的回执还没回来时 pause() 够不着原生那一段，这里补一次；起播之后 pause() 自己会停原生那边，
+    不重复调——两处都调就是把「停」发两遍 */
 export function playPreview(bytes: Uint8Array, on: { start(): void; end(): void; fail(message: string): void }): () => void {
+  // 这台正在听电话：同一个音频引擎，试听会把电话那一段掐掉。表那边点的时候已经挡了，这里兜住
+  // 「点的时候还没在听、合成回来时已经在听了」
+  if (store.get().listen !== null) {
+    on.fail("正在听电话，挂了再试听");
+    return () => {};
+  }
   const audio = createHelperAudio(bytes, nativeAudio);
+  let started = false;
   audio.onended = () => on.end();
   audio.onerror = (message) => on.fail(message ?? "放不出来");
   audio.play().then(
-    () => on.start(),
+    () => {
+      started = true;
+      on.start();
+    },
     (err: unknown) => on.fail(err instanceof Error ? err.message : String(err)),
   );
+  // 停一次就够：起播之后 pause() 自己会停原生那边；起播的回执还没回来时 pause() 够不着，这里补那一次
   return () => {
+    if (!started) void nativeAudio.stop();
     audio.pause();
-    void nativeAudio.stop();
   };
 }
