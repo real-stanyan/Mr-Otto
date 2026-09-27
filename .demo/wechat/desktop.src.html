@@ -51,6 +51,7 @@
 .col-head { height: 58px; flex: none; display: flex; align-items: center; gap: 8px; padding: 0 12px; }
 .search {
   flex: 1;
+  min-width: 0;
   height: 28px;
   border-radius: 6px;
   background: var(--field);
@@ -285,22 +286,54 @@
 .demo .ctl { display: grid; grid-template-columns: 44px 1fr; align-items: center; gap: 8px 10px; font-size: 12.5px; color: var(--fg-2); }
 .demo a { color: var(--brand); }
 
-/* 窄屏：退成一栏 */
+.pane-head .back { display: none; }
+.pane-head.bare { display: none; }
+
+/* 窄一点的窗口：三栏照旧，只收窄列表（微信 Mac 版拖窄了也是这样） */
+@media (max-width: 1000px) { .win { grid-template-columns: 60px 240px minmax(0, 1fr); } }
 @media (max-width: 760px) {
-  .win { grid-template-columns: 56px minmax(0, 1fr); }
+  .win { grid-template-columns: 60px 216px minmax(0, 1fr); }
+  .lights { left: 10px; gap: 6px; }
+  .crow { padding: 0 10px; gap: 9px; }
+  .pane-head { padding-left: 16px; }
+  .pane-body { padding: 14px 16px 18px; }
+  .composer { padding-left: 16px; }
+}
+/* 真到手机那么窄才退成一栏：列表和聊天轮流占满，头部有返回 */
+@media (max-width: 560px) {
+  .win { grid-template-columns: 52px minmax(0, 1fr); }
   .win .pane { display: none; }
   .win.pane-open .col { display: none; }
   .win.pane-open .pane { display: flex; }
   .rail { padding-top: 16px; }
   .lights { display: none; }
   .pane-head .back { display: grid; }
+  .pane-head.bare { display: flex; border-bottom: 0; }
   .drawer { width: 100%; }
   .demo { left: 8px; right: 8px; width: auto; }
   .call { right: 12px; left: 12px; width: auto; }
 }
-.pane-head .back { display: none; }
-.pane-head.bare { display: none; }
-@media (max-width: 760px) { .pane-head.bare { display: flex; border-bottom: 0; } }
+
+/* 第一次打开时一句提示，指着左下角那颗说明钮；不挡任何东西 */
+.hint-tip {
+  position: fixed;
+  left: 66px;
+  bottom: 20px;
+  background: var(--menu);
+  color: var(--menu-fg);
+  font-size: 12px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  box-shadow: var(--shadow-float);
+  z-index: 44;
+  white-space: nowrap;
+  opacity: 0;
+  transform: translateX(-4px);
+  pointer-events: none;
+  transition: opacity 180ms var(--ease), transform 220ms var(--ease);
+}
+.hint-tip::before { content: ""; position: absolute; left: -4px; top: 50%; width: 8px; height: 8px; margin-top: -4px; background: inherit; transform: rotate(45deg); border-radius: 1px; }
+.hint-tip.on { opacity: 1; transform: none; }
 </style>
 
 <div class="win" id="win">
@@ -321,6 +354,7 @@
 <div class="menu" id="menu" role="menu"></div>
 <div class="call call-shell" id="call" role="dialog" aria-label="语音通话"></div>
 <div class="demo" id="demo"></div>
+<div class="hint-tip" id="hint" role="status">demo 的说明和开关在这里</div>
 
 <script>/*@@OTTOFACE@@*/</script>
 <script>/*@@ICONS@@*/</script>
@@ -359,6 +393,8 @@
   $$(".rail [data-nav]").forEach((b) => b.addEventListener("click", () => go(b.dataset.nav)));
   function go(view) {
     closeDrawer();
+    /* 窄到一栏时，再点一次「聊天」= 回到列表 */
+    if (view === "chats" && S.view === "chats" && matchMedia("(max-width: 560px)").matches) { S.open = null; Sim.setOpen(null); }
     S.view = view;
     if (view !== "chats") Sim.setOpen(null);
     else if (S.open) Sim.setOpen(S.open);
@@ -1199,10 +1235,22 @@
     }
   });
   applyPref();
-  S.open = "c_wenan";
-  Sim.setOpen("c_wenan");
+  /* 宽屏一打开就是一条聊天（照微信 Mac 版）；窄到一栏时先给列表 */
+  if (!matchMedia("(max-width: 560px)").matches) {
+    S.open = "c_wenan";
+    Sim.setOpen("c_wenan");
+  }
   renderAll();
   renderDemo();
-  if (!pref.seen) { demo.classList.add("on"); pref.seen = 1; savePref(); }
+  /* 不自动弹面板（它会盖住会话列表），只在第一次打开时指一下那颗钮 */
+  if (!pref.seen) {
+    const hint = $("#hint");
+    setTimeout(() => hint.classList.add("on"), 600);
+    const off = () => { hint.classList.remove("on"); document.removeEventListener("pointerdown", off); };
+    setTimeout(off, 7000);
+    document.addEventListener("pointerdown", off);
+    pref.seen = 1;
+    savePref();
+  }
 })();
 </script>

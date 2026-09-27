@@ -706,7 +706,12 @@ body { background: var(--side); overflow: hidden; }
 .statusbar .icons { display: flex; gap: 6px; align-items: center; }
 .home-ind { position: absolute; bottom: 8px; left: 50%; width: 136px; height: 5px; margin-left: -68px; border-radius: 3px; background: var(--fg); opacity: 0.85; z-index: 85; pointer-events: none; }
 
-@media (max-width: 720px) {
+@media (max-width: 759px) {
+  .side-panel { display: none; }
+  .demo-fab { display: grid !important; }
+}
+/* 真是手机：不画机身，app 占满 */
+@media (max-width: 439px) {
   body { background: var(--ground); }
   .stage { padding: 0; }
   .side-panel { display: none; }
@@ -1716,8 +1721,9 @@ const REMOVED_THINGS = [
   /* ── 缩放：宽屏上手机按窗口高度缩 ─────────────────────────────────── */
   function fit() {
     const wrap = $("#wrap");
-    if (innerWidth <= 720) { wrap.style.transform = ""; return; }
-    const s = Math.min(1, (innerHeight - 32) / 844, (innerWidth - 380) / 390);
+    if (innerWidth < 440) { wrap.style.transform = ""; wrap.style.margin = ""; return; }
+    const side = innerWidth >= 760 ? 380 : 32; // 窄了就不放说明栏，说明挪进右下角那颗钮
+    const s = Math.min(1, (innerHeight - 32) / 844, (innerWidth - side) / 390);
     wrap.style.transform = `scale(${Math.max(0.55, s)})`;
     wrap.style.margin = `${(844 * (s - 1)) / 2}px ${(390 * (s - 1)) / 2}px`;
   }
