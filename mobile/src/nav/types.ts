@@ -7,6 +7,26 @@ export type RootStackParams = {
   /** 私聊按 agentId 进（还没聊过就是草稿），群按 sessionId 进 */
   Chat: ChatTarget;
   Account: undefined;
+  /** 订阅（A5）：账号页「订阅」那一行、名册进门「没订阅 / 档位不带」那颗钮进来 */
+  Subscription: undefined;
+  /** 那台电脑上的一层文件夹（A5）；path 相对 /work，"" = 最外层。点子目录压一页同名屏 */
+  Files: { path: string };
+  /** 一个文件（A5）：只读，开头 64 KB */
+  FilePreview: { path: string };
+  /** 记忆清单（A5）：它们自己维护的 wiki */
+  Wiki: undefined;
+  /** 记忆里的一页（A5）；path 是 wiki/ 底下的相对路径，如 customers/acme.md */
+  WikiPage: { path: string };
+  /** 改记忆里的一页（A5） */
+  WikiEdit: { path: string };
+  /** 这周用了多少（A5）：每只智能体占你周额度的百分之几 */
+  Usage: undefined;
+  /** 它们的电脑（A5）：文件 / 应用 / 记忆 / 用量 */
+  Machine: undefined;
+  /** 应用（A5）：接着的那几个，只列 */
+  Apps: undefined;
+  /** 设置（A5）：外观 + 连接诊断 */
+  Settings: undefined;
   AgentSettings: { agentId: string };
   /** 建群（A3）：从 ＋ 那张岔路弹窗的「一个群聊」推进来 */
   NewGroup: undefined;

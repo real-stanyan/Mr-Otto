@@ -7,7 +7,17 @@ import { usePalette } from "../theme.js";
 import { RosterScreen } from "../roster/RosterScreen.js";
 import { ChatScreen } from "../chat/ChatScreen.js";
 import { AccountScreen } from "../account/AccountScreen.js";
+import { SubscriptionScreen } from "../account/SubscriptionScreen.js";
 import { AgentSettingsScreen } from "../agent/AgentSettingsScreen.js";
+import { FilesScreen } from "../machine/FilesScreen.js";
+import { FilePreviewScreen } from "../machine/FilePreviewScreen.js";
+import { WikiScreen } from "../machine/WikiScreen.js";
+import { WikiPageScreen } from "../machine/WikiPageScreen.js";
+import { WikiEditScreen } from "../machine/WikiEditScreen.js";
+import { UsageScreen } from "../machine/UsageScreen.js";
+import { MachineScreen } from "../machine/MachineScreen.js";
+import { AppsScreen } from "../machine/AppsScreen.js";
+import { SettingsScreen } from "../account/SettingsScreen.js";
 import { NewGroupScreen } from "../group/NewGroupScreen.js";
 import { GroupSettingsScreen } from "../group/GroupSettingsScreen.js";
 import { FaceGallery } from "../dev/FaceGallery.js";
@@ -38,6 +48,17 @@ export function RootNavigator() {
         <Root.Screen name="Roster" component={RosterScreen} options={{ headerShown: false }} />
         <Root.Screen name="Chat" component={ChatScreen} options={{ headerShown: false }} />
         <Root.Screen name="Account" component={AccountScreen} options={{ title: "账号", headerBackTitle: "返回" }} />
+        <Root.Screen name="Subscription" component={SubscriptionScreen} options={{ title: "订阅", headerBackTitle: "返回" }} />
+        {/* 标题由这两页自己按路径 setOptions（最外层写「文件」，其余写那一段的名字） */}
+        <Root.Screen name="Files" component={FilesScreen} options={{ title: "文件", headerBackTitle: "返回" }} />
+        <Root.Screen name="FilePreview" component={FilePreviewScreen} options={{ title: "", headerBackTitle: "返回" }} />
+        <Root.Screen name="Wiki" component={WikiScreen} options={{ title: "记忆", headerBackTitle: "返回" }} />
+        <Root.Screen name="WikiPage" component={WikiPageScreen} options={{ title: "", headerBackTitle: "返回", headerShadowVisible: false }} />
+        <Root.Screen name="WikiEdit" component={WikiEditScreen} options={{ title: "改这一页", headerBackTitle: "返回", headerShadowVisible: false }} />
+        <Root.Screen name="Usage" component={UsageScreen} options={{ title: "这周用了多少", headerBackTitle: "返回" }} />
+        <Root.Screen name="Machine" component={MachineScreen} options={{ title: "它们的电脑", headerBackTitle: "返回" }} />
+        <Root.Screen name="Apps" component={AppsScreen} options={{ title: "应用", headerBackTitle: "返回" }} />
+        <Root.Screen name="Settings" component={SettingsScreen} options={{ title: "设置", headerBackTitle: "返回" }} />
         <Root.Screen
           name="AgentSettings"
           component={AgentSettingsScreen}

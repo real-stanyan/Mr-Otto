@@ -1,9 +1,9 @@
-// workFilesView —— 团队设置页「文件」tab 的纯逻辑（#1056）。
+// workFilesView —— 团队设置页「文件」tab 的纯逻辑（#1056；#1356 A5 从渲染层挪进 shared，手机端的文件那一页用同一份尺寸 / 时间的写法）。
 //
 // 这一页答的是「水獭在哪儿干活、那儿有什么」。判据全在这里而不是组件的
 // `useMemo` 里，理由同 ADR-0244 那条：留在组件里就没有保鲜期。
 
-import type { CsWorkEntry, CsWorkNode } from "../../../shared/remote/cloudSession.js";
+import type { CsWorkEntry, CsWorkNode } from "./remote/cloudSession.js";
 
 /** 字节数写成人话。目录不显示大小（`size` 恒为 0，调用方自己判 kind） */
 export function formatWorkSize(bytes: number): string {
@@ -62,4 +62,12 @@ export function entryMeta(entry: CsWorkEntry, now: number): string {
   if (entry.kind === "dir") return time;
   const size = formatWorkSize(entry.size);
   return [size, time].filter((s) => s !== "").join(" · ");
+}
+
+/** 搜索框里打的字 → 按名找还是按内容找。`?` 开头 = 按内容（#1066 起桌面文件页的约定，#1356 A5 抬进 shared，
+    手机那一页同一份）。去掉 `?` 之后只剩空白 = 还没开始搜（null）；词本身原样交出去（桌面原来就不 trim） */
+export function parseFileQuery(query: string): { term: string; content: boolean } | null {
+  const content = query.startsWith("?");
+  const term = content ? query.slice(1) : query;
+  return term.trim() === "" ? null : { term, content };
 }

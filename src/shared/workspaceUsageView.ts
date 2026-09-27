@@ -1,4 +1,4 @@
-// workspaceUsageView —— 设置页「用量」页的纯逻辑（#946，spec §7；#1120 换掉了单位）。
+// workspaceUsageView —— 设置页「用量」页的纯逻辑（#946，spec §7；#1120 换掉了单位；#1356 A5 从渲染层挪进 shared，手机端的用量页用同一份）。
 // 展示落团队设置页不挤上下文浮层卡（那张 300px 的卡已经满了，ADR-0209）。
 // 名字**现查名单**：usage_event 记的是 agent_id（改名不断账），被删的 agent 只剩 id——
 // 同 agentNameOf「查不到回 id」的纪律；空串是桌面直连 / 0022 之前的旧行，叫「未归因」。
@@ -19,12 +19,12 @@
 // 换**（`usageScaleNote`），因为两个分母算出来的是两个意思完全不同的数；**不许回落到
 // credit**：那正是这次要拆掉的东西。
 
-import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
-import type { WorkspaceUsage } from "../../../shared/billing.js";
-import type { CsModelRoute } from "../../../shared/remote/cloudSession.js";
-import { fmtUsedPercent } from "../../../shared/billingView.js";
-import { agentFaceIfKnown, type FaceAvatar } from "../../../shared/agentAvatar.js";
-import { agentNameOf } from "../../../shared/workspaceView.js";
+import type { WorkspaceSnapshot } from "./workspaces.js";
+import type { WorkspaceUsage } from "./billing.js";
+import type { CsModelRoute } from "./remote/cloudSession.js";
+import { fmtUsedPercent } from "./billingView.js";
+import { agentFaceIfKnown, type FaceAvatar } from "./agentAvatar.js";
+import { agentNameOf } from "./workspaceView.js";
 
 export interface UsageRowView {
   agentId: string;

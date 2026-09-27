@@ -5,7 +5,7 @@
 // 真正的原因就再也到不了任何人眼前了。
 
 import { describe, it, expect } from "vitest";
-import { humanizeBillingError } from "../../src/renderer/src/lib/billingError.js";
+import { humanizeBillingError } from "../../src/shared/billingError.js";
 
 /** 真机上原样抄下来的那一整段（#910 的现场，Stripe test 模式） */
 const REAL_TAX_CODE_ERROR =

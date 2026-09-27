@@ -3,7 +3,7 @@
 // （loadWorkspaceUsage），不进 store——这张表只在看的时候有意义，缓存一份等于多一处会
 // 陈旧的额度数。「拿不到」≠「没花」：请求失败画错误行，不画一张全零的表。
 //
-// **整页一个 credit 都不出现**，为什么见 `lib/workspaceUsageView.ts` 头注。
+// **整页一个 credit 都不出现**，为什么见 `shared/workspaceUsageView.ts` 头注。
 
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button.js";
@@ -12,7 +12,7 @@ import { useChat } from "../store.js";
 import { AgentFace } from "./AgentFace.js";
 import {
   usageEmptyText, usageHeadline, usageRows, usageScale, usageScaleNote, usageWindowText,
-} from "../lib/workspaceUsageView.js";
+} from "../../../shared/workspaceUsageView.js";
 import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 import type { WorkspaceUsage } from "../../../shared/billing.js";
 

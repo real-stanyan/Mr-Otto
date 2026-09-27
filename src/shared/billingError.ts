@@ -1,4 +1,4 @@
-// 订阅/加购/Portal 那几条路上的报错说给人听（issue #910）。
+// 订阅/加购/Portal 那几条路上的报错说给人听（issue #910；#1356 A5 从渲染层挪进 shared，手机端开支付页失败时用同一份）。
 //
 // 起因：真机上点「订阅」，账号页底下铺开一整段 Stripe 的英文原文——
 // "Invalid line_items[0]: the product tax code is missing… you can pass

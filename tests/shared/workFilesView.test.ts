@@ -3,9 +3,10 @@ import {
   entryMeta,
   formatWorkSize,
   formatWorkTime,
+  parseFileQuery,
   workFileNotice,
   workFolderNotice,
-} from "../../src/renderer/src/lib/workFilesView.js";
+} from "../../src/shared/workFilesView.js";
 
 const NOW = new Date("2026-09-07T12:00:00Z").getTime();
 
@@ -63,5 +64,19 @@ describe("大小与时间", () => {
     const t = new Date("2026-03-04T00:00:00").getTime();
     expect(entryMeta({ name: "src", kind: "dir", size: 0, mtimeMs: t }, NOW)).toBe("3/4");
     expect(entryMeta({ name: "a.md", kind: "file", size: 1536, mtimeMs: t }, NOW)).toBe("1.5 KB · 3/4");
+  });
+});
+
+describe("parseFileQuery（#1356 A5：桌面文件页与手机文件页同一个约定）", () => {
+  it("空的 / 只有问号 / 只有空白 = 还没开始搜", () => {
+    expect(parseFileQuery("")).toBeNull();
+    expect(parseFileQuery("?")).toBeNull();
+    expect(parseFileQuery("?   ")).toBeNull();
+    expect(parseFileQuery("   ")).toBeNull();
+  });
+  it("? 开头按内容搜，其余按名找；词本身原样交出去（桌面原来就不 trim）", () => {
+    expect(parseFileQuery("readme")).toEqual({ term: "readme", content: false });
+    expect(parseFileQuery("?TODO")).toEqual({ term: "TODO", content: true });
+    expect(parseFileQuery(" a")).toEqual({ term: " a", content: false });
   });
 });

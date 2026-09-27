@@ -98,8 +98,8 @@ export function callCardDurationText(card: VoiceCallCard): string {
 
 /** 这台此刻为什么接不了（「通话还开着」那一格里「接着听」换成这一句）。null = 接得了。
     房间三种没 ready 各说各的：被拒是终态，不说「正在」——那会让人一直等。
-    扣款没成功（past_due）单独一句：它不是没订阅（ADR-0240），劝人去订阅是指错了路；手机上 A5 之前没有
-    账号页，所以不指去哪儿续。没订阅那句不照抄桌面（桌面那句指「设置 → 订阅」，手机上没有那一页）；
+    扣款没成功（past_due）单独一句：它不是没订阅（ADR-0240），劝人去订阅是指错了路；A5 起手机上有了订阅页，
+    两句都指去「账号 → 订阅」（桌面那句指「设置 → 订阅」，手机上的路不一样）；
     额度用完 / 网关不供语音两句照 ttsBlocked 说 */
 export function joinBlockedText(o: { native: boolean; room: VoiceRoomState; billing: BillingSnapshotView | null }): string | null {
   if (!o.native) return "这个版本的 app 听不了电话：要装带语音的开发版（Expo Go 不带语音识别）。";
@@ -107,8 +107,8 @@ export function joinBlockedText(o: { native: boolean; room: VoiceRoomState; bill
   if (o.room === "gone") return "正在重连这条聊天…";
   if (o.room === "connecting") return "正在连上这条聊天…";
   if (o.billing === null) return "正在查订阅…";
-  if (o.billing.me?.status === "past_due") return "这个账号的订阅扣款没成功，续上之后才打得了电话。";
+  if (o.billing.me?.status === "past_due") return "这个账号的订阅扣款没成功：去「账号 → 订阅」更新付款方式，续上之后才打得了电话。";
   const hosted = ttsHostedOf(o.billing);
-  if (hosted === undefined || !hosted.subscribed) return "订阅 Pro 或 Max 之后才打得了电话。";
+  if (hosted === undefined || !hosted.subscribed) return "订阅 Pro 或 Max 之后才打得了电话（「账号 → 订阅」）。";
   return ttsBlocked(hosted);
 }

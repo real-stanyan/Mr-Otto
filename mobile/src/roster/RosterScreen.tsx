@@ -2,7 +2,7 @@
 //
 // · 头：左 = 账号；右 = 搜索、＋。没有大标题，圆钮浮在内容上，列表从底下滚过去（spec §4）。
 // · 进门七态照搬 rosterGate：还没查到 / 正在建主场 → 骨架、**不劝订阅**；没订阅 / 档位不带 →
-//   一句实话、不画钮（A5 之前手机上办不了订阅）；建失败 → 原因 + 重试钮、不自动重试；
+//   一句实话 + 一颗去「订阅」的钮（A5 起手机上办得了订阅）；建失败 → 原因 + 重试钮、不自动重试；
 //   **有主场就进得去、不再看档位**（降了档的人的聊天记录还在）。
 // · 一列：主场的智能体 + 群混排、按最近一次动静降序（判据在 shared/mobileRoster.ts）。
 // · ＋ 先问一句（居中弹窗、点外面能退）→「一只智能体」→ 70% 抽屉建一只 → 建成：**先收抽屉**、
@@ -19,14 +19,17 @@ import { agentFaceSlot } from "../../../src/shared/agentAvatar.js";
 import { rosterGate, type RosterGate } from "../../../src/shared/agentRoster.js";
 import { CHAT_GROUP_CREATE_MIN } from "../../../src/shared/chatRoster.js";
 import { resolveChatTarget, type ChatTarget } from "../../../src/shared/mobileChat.js";
+import { searchMemoryNote, wikiGroupsOf, wikiIndexStale, wikiMatches } from "../../../src/shared/mobileMachine.js";
 import { filterRosterItems, freshRosterKeys, rosterItems, type RosterItem } from "../../../src/shared/mobileRoster.js";
 import { workspaceAccess } from "../../../src/shared/workspaceAccess.js";
 import { NewAgentSheet } from "../agent/NewAgentSheet.js";
 import { PlusGlyph, SearchGlyph } from "../chrome/Glyphs.js";
 import { ROUND_BUTTON_SIZE, RoundButton } from "../chrome/RoundButton.js";
+import { RowGlyph } from "../chrome/RowGlyphs.js";
 import { ensureHome, homeSnapshot, refreshHome, refreshHomeAfterWrite, useHome } from "../home/homeStore.js";
+import { machineSnapshot, refreshWiki, useMachine } from "../machine/machineStore.js";
 import { space, type as t, usePalette, withAlpha } from "../theme.js";
-import { Button, Field, Note } from "../ui.js";
+import { Button, Field, Group, Note, Row } from "../ui.js";
 import { AccountButton } from "./AccountButton.js";
 import { NewThingDialog } from "./NewThingDialog.js";
 import { RosterRow } from "./RosterRow.js";
@@ -51,19 +54,24 @@ function Skeleton() {
 }
 
 /** 名册之外的那几态。只说实话：该给钮的地方给钮，给不出有去处的钮就不画 */
-function GateView({ gate, ensureError, loadError }: { gate: RosterGate; ensureError: string | null; loadError: string | null }) {
+function GateView({ gate, ensureError, loadError, onSubscribe }: { gate: RosterGate; ensureError: string | null; loadError: string | null; onSubscribe: () => void }) {
   const { c } = usePalette();
-  const say = (lead: string, hint: string) => (
-    <View style={{ paddingHorizontal: space.lg, gap: space.xs }}>
-      <Text style={{ ...t.headline, color: c.foreground }}>{lead}</Text>
-      <Text style={{ ...t.callout, color: c.mutedForeground }}>{hint}</Text>
+  const say = (lead: string, hint: string, action: string) => (
+    <View style={{ paddingHorizontal: space.lg, gap: space.sm }}>
+      <View style={{ gap: space.xs }}>
+        <Text style={{ ...t.headline, color: c.foreground }}>{lead}</Text>
+        <Text style={{ ...t.callout, color: c.mutedForeground }}>{hint}</Text>
+      </View>
+      <View style={{ alignItems: "flex-start" }}>
+        <Button size="auto" label={action} onPress={onSubscribe} />
+      </View>
     </View>
   );
   switch (gate) {
     case "no_subscription":
-      return say("订阅 Pro 或 Max 之后才建得了智能体。", "订阅在电脑上的 Mr Otto 里办，办好回来就能用。");
+      return say("订阅 Pro 或 Max 之后才建得了智能体。", "在「订阅」里挑一档，订好回来就能用。", "去订阅");
     case "plan_too_low":
-      return say("你现在的订阅档位建不了智能体，Pro 或 Max 才行。", "换档在电脑上的 Mr Otto 里办。");
+      return say("你现在的订阅档位建不了智能体，Pro 或 Max 才行。", "在「订阅」里换到 Pro 或 Max。", "去换档");
     case "failed":
       return (
         <View style={{ paddingHorizontal: space.lg, gap: space.md }}>
@@ -146,6 +154,17 @@ export function RosterScreen() {
     seenRows.current = homeId === null ? null : { homeId, keys: items.map((i) => i.key) };
   }, [homeId, items]);
   const shown = useMemo(() => filterRosterItems(items, query), [items, query]);
+  // 搜索的记忆那一半（spec §5.2 / §5.8）：打开搜索时读一次记忆的索引，有字时名册结果底下多一组「记忆」
+  const machine = useMachine();
+  useEffect(() => {
+    if (searching && homeId !== null && wikiIndexStale(machineSnapshot().wikiFetchedAt, Date.now())) void refreshWiki(homeId);
+  }, [searching, homeId]);
+  const memoryHits = useMemo(
+    () => (searching ? wikiMatches(wikiGroupsOf(machine.wiki) ?? [], query) : []),
+    [searching, machine.wiki, query],
+  );
+  const hasQuery = query.trim() !== "";
+  const memoryNote = searching && hasQuery ? searchMemoryNote(machine.wiki) : null;
   const now = Date.now();
   const headerSpace = insets.top + 8 + ROUND_BUTTON_SIZE + 8;
 
@@ -199,23 +218,49 @@ export function RosterScreen() {
           renderItem={({ item }) => <RosterRow item={item} now={now} fresh={fresh.has(item.key)} onPress={() => open(item)} />}
           contentContainerStyle={{ paddingTop: headerSpace, paddingBottom: insets.bottom + space.xl }}
           ListHeaderComponent={
-            home.loadError !== null ? (
-              // 读不到 ≠ 空：旧的名册照画，失败那句挂在上面
-              <View style={{ paddingHorizontal: space.lg, paddingBottom: space.sm, gap: space.sm }}>
-                <Note tone="warn">{home.loadError}</Note>
-                <Button size="auto" variant="outline" label="重试" onPress={() => void refreshHome()} />
-              </View>
-            ) : null
+            <>
+              {home.loadError !== null ? (
+                // 读不到 ≠ 空：旧的名册照画，失败那句挂在上面
+                <View style={{ paddingHorizontal: space.lg, paddingBottom: space.sm, gap: space.sm }}>
+                  <Note tone="warn">{home.loadError}</Note>
+                  <Button size="auto" variant="outline" label="重试" onPress={() => void refreshHome()} />
+                </View>
+              ) : null}
+              {hasQuery && shown.length > 0 && memoryHits.length > 0 ? <SectionLabel text="智能体" /> : null}
+            </>
           }
           ListEmptyComponent={
-            query.trim() !== "" ? (
+            hasQuery && memoryHits.length === 0 && machine.wiki.kind !== "loading" ? (
               <Text style={{ ...t.callout, color: c.mutedForeground, textAlign: "center", marginTop: space.xl }}>
                 {`没有找到「${query.trim()}」`}
               </Text>
             ) : null
           }
           ListFooterComponent={
-            __DEV__ ? (
+            memoryNote !== null ? (
+              <View style={{ paddingTop: space.md }}>
+                <SectionLabel text="记忆" />
+                <Text style={{ ...t.footnote, color: c.mutedForeground, paddingHorizontal: 20 }}>{memoryNote}</Text>
+              </View>
+            ) : hasQuery && memoryHits.length > 0 ? (
+              <View style={{ paddingTop: space.md }}>
+                <SectionLabel text="记忆" />
+                <View style={{ paddingHorizontal: space.lg }}>
+                  <Group>
+                    {memoryHits.map((e) => (
+                      <Row
+                        key={e.path}
+                        leading={<RowGlyph name="book" />}
+                        label={e.title}
+                        detail={e.summary === "" ? e.path : e.summary}
+                        chevron
+                        onPress={() => navigation.navigate("WikiPage", { path: e.path })}
+                      />
+                    ))}
+                  </Group>
+                </View>
+              </View>
+            ) : __DEV__ && !searching ? (
               <View style={{ padding: space.lg }}>
                 <Button variant="quiet" label="形象陈列馆（开发用）" onPress={() => navigation.navigate("FaceGallery")} />
               </View>
@@ -226,7 +271,7 @@ export function RosterScreen() {
         />
       ) : (
         <View style={{ paddingTop: headerSpace }}>
-          <GateView gate={gate} ensureError={home.ensureError} loadError={home.loadError} />
+          <GateView gate={gate} ensureError={home.ensureError} loadError={home.loadError} onSubscribe={() => navigation.navigate("Subscription")} />
         </View>
       )}
 
@@ -238,7 +283,7 @@ export function RosterScreen() {
         {searching ? (
           <>
             <View style={{ flex: 1 }}>
-              <Field value={query} onChangeText={setQuery} placeholder="搜名字、职责、最后一句" autoFocus returnKeyType="search" />
+              <Field value={query} onChangeText={setQuery} placeholder="搜名字、职责、最后一句、记忆" autoFocus returnKeyType="search" />
             </View>
             <Button size="auto" variant="plain" label="取消" onPress={closeSearch} />
           </>
@@ -293,4 +338,10 @@ export function RosterScreen() {
       ) : null}
     </View>
   );
+}
+
+/** 搜索结果里的组头（demo 的 .grouphdr）：小字弱色，左边与名册那一行的文字对齐 */
+function SectionLabel({ text }: { text: string }) {
+  const { c } = usePalette();
+  return <Text style={{ ...t.footnote, color: c.mutedForeground, paddingHorizontal: 20, paddingBottom: space.xs }}>{text}</Text>;
 }
