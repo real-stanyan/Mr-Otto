@@ -20,15 +20,16 @@
 //
 //   ① `RELAY_MAX_HOPS_PER_IGNITION`（24）**无条件**，绝对天花板，与档位/型号/价目全部无关
 //      ——这是三者里唯一不会因为 owner 换档就改变群聊行为的量，ADR-0231 那条决定原样成立。
-//   ② 预算闸：这次点火已经花掉的钱 >= 所有者订阅窗口**剩余**的一半 → 停。它只可能比 ① 更早
+//   ② 预算闸：这次点火已经花掉的钱 >= 所有者订阅窗口**剩余**的十分之一 → 停（原来是 5h 窗剩余的一半，
+//      #1392 去掉 5h 窗之后换成周窗、份额按原来的量级折算，见 `RELAY_BUDGET_FRACTION_OF_REMAINING`）。它只可能比 ① 更早
 //      命中，永远不会让链跑得比 ① 更长。分母取**剩余**不取 limit（`limitMicro - usedMicro`，
 //      同一次探针就带着这一格）：取 limit 的话，窗口用掉 95% 时拿到的预算与全空时逐字节
 //      相同，刹车对「快没额度了」完全无感，而窗口触底之后 `hold()` 会退到用户真金白银买的
 //      加购桶（quota.ts），于是这条没被刹住的链接着吃加购额度——正是 ADR-0237 点名不许的
 //      「安静地走更贵那条路」。取剩余还顺带收敛了「人说 10 句就授权 10 份预算」：份额随窗口
-//      变小而变小。**哪扇窗由调用方决定**（daemon 递的是 5h 与周窗里更吃紧的那扇，同
-//      billingView 的 `bindingWindow`，ADR-0209）：这一层只知道「还剩这么多」，不知道
-//      也不该知道它是从几扇窗里挑出来的——多一扇窗时这个纯函数一个字都不用改。
+//      变小而变小。**哪扇窗由调用方决定**（daemon 递的是周窗；#1392 之前是 5h 与周窗里更吃紧的
+//      那扇）：这一层只知道「还剩这么多」，不知道也不该知道它是从几扇窗里挑出来的——
+//      窗的数目变了（#1392 就是一次）这个纯函数一个字都不用改，改的只是份额那一个数。
 //   ③ 周期护栏（`detectToolLoop`）：`repeats >= RELAY_GUARD.minRepeats` 注一条话**不停**
 //      （ADR-0212），`repeats >= RELAY_SPIN_STOP_REPEATS` 硬停。加硬停的理由与 engine 的
 //      `loopGuardMaxNudges`（ADR-0225）逐字相同：ADR-0212 的「只注话不停」成立**是因为人
@@ -70,12 +71,16 @@ export const RELAY_GUARD = { maxPeriod: 8, minRepeats: 2 } as const;
 export const RELAY_SPIN_STOP_REPEATS = 3;
 /** 一次点火最多花掉所有者订阅窗口**剩余**的多大一份。
 
-    取「剩余的一半」而不是「上限的 10%」，三个理由：① 分母跟着窗口缩，所以人说十句
-    就授权十份预算这件事自己收敛；② 半数是一个不需要按档位调的数——「这一件委托吃掉
-    你剩下的一半」在每个档位上是同一句话，而「上限的 10%」在 lite 上是 6.65 credit、
-    在 max 上是 31.15，配同一款贵模型时一个够一棒、一个够四棒；③ 正常干活永远碰不到
-    它——要触发就得让一件事吃掉半个窗口，那时候停下来告诉人恰恰是对的。 */
-export const RELAY_BUDGET_FRACTION_OF_REMAINING = 0.5;
+    取「剩余的一份」而不是「上限的 10%」，三个理由：① 分母跟着窗口缩，所以人说十句
+    就授权十份预算这件事自己收敛；② 份额是一个不需要按档位调的数——「这一件委托最多吃掉
+    你剩下的 X」在每个档位上是同一句话，而「上限的 10%」在 lite 上是 6.65 credit、
+    在 max 上是 31.15，配同一款贵模型时一个够一棒、一个够四棒；③ 正常干活永远碰不到它。
+
+    **为什么是 0.1**（#1392，ADR-0324）：原来是「5h 窗剩余的一半」，而 5h 窗的上限是周窗的
+    0.2（`plan.window5hLimitMicro = week × 0.2`，0017）——满额度时的刹车点 = 周窗的 10%。
+    5h 窗没了之后分母换成周窗，份额照原来的量级折算成 0.1，于是满额度时一次点火能花的钱
+    与改动前逐字相同；照搬 0.5 的话同一件事能吃掉半周的额度，刹车等于松了五倍。 */
+export const RELAY_BUDGET_FRACTION_OF_REMAINING = 0.1;
 /** 一次人话点火之后，整条接力**总共**最多几棒（#977 第 3 条，ADR-0225 D8 的账）。
     `relay_max_depth` 封的是一条**分支**的长度：一轮 @ 了 N 只就分叉出 N 条各自
     独立计数的链，最坏 N^maxDepth 条 turn——默认 6 棒、每轮 @ 两只就是 64 条，而
@@ -172,9 +177,9 @@ export function relayChain(events: readonly SessionEvent[]): AgentRelayEvent[] {
   return relayStateSince(events).chain;
 }
 
-/** 这次点火的钱闸开在哪儿：所有者订阅窗口**剩余**的一半。
-    `remainingMicro` 由调用方算好递进来（daemon 取 5h 与周窗里更吃紧的那扇，各自
-    `limitMicro - usedMicro`，都在同一次探针里）。负数（hold 让 used 短暂越过 limit）
+/** 这次点火的钱闸开在哪儿：所有者订阅窗口**剩余**的十分之一。
+    `remainingMicro` 由调用方算好递进来（daemon 取周窗的 `limitMicro - usedMicro`，
+    在同一次探针里）。负数（hold 让 used 短暂越过 limit）
     夹到 0——预算 0 = 下一棒立刻停，而那正是对的 */
 export function relayBudgetMicroOf(remainingMicro: number): number {
   return Math.max(0, remainingMicro) * RELAY_BUDGET_FRACTION_OF_REMAINING;
@@ -194,7 +199,7 @@ export type RelayDecision =
   /** 分支太长。**只在降级路上出得来**（问不出所有者剩多少额度）——正常路上这道闸
       让位给了预算，因为「第几棒」跟钱和进展都不成比例（见文件头注） */
   | { kind: "cap_depth"; depth: number; max: number }
-  /** 这次点火已经吃掉所有者订阅窗口剩余的一半（#1017）。与 `cap_hops` 分开一种：
+  /** 这次点火已经吃掉所有者订阅窗口剩余的那一份（#1017；份额见 RELAY_BUDGET_FRACTION_OF_REMAINING）。与 `cap_hops` 分开一种：
       「太贵了」与「棒数太多」对人的意义完全不同，前者说得出该看哪里 */
   | { kind: "cap_budget"; spentMicro: number; budgetMicro: number; remainingMicro: number }
   /** 这次点火之后总棒数到顶（#977）：与另外两种分开，文案要说清停的是
@@ -208,7 +213,7 @@ export function decideRelay(args: {
   chain: readonly AgentRelayEvent[];
   /** 这次点火已经花掉多少（`relayStateSince` 算的下界） */
   spend: RelaySpend;
-  /** 所有者订阅窗口还剩多少 micro-USD（调用方已在两扇窗里取过更吃紧的那扇）；
+  /** 所有者订阅窗口还剩多少 micro-USD（调用方递的是周窗的剩余，#1392）；
       **`null` = 这一刻问不出来** → 走降级：
       预算闸用不了，补回 `DEFAULT_RELAY_MAX_DEPTH` 那道分支闸，于是降级路径与
       #1017 改动之前逐字相同。缺这一句的话，读不到钱的那条路反而比今天松 */
@@ -365,7 +370,7 @@ function creditText(micro: number): string {
 
 /** 预算到顶那句（#1017）。与另外两条 cap 文案同一形状（名字过闸、交回给人、说清
     怎么重新开始），差别在原因说的是**钱**：花了多少、所有者那扇窗还剩多少、
-    这一件事的上限是剩余的一半。
+    这一件事的上限是剩余的十分之一。
 
     「至少」两个字是认真的：`spentMicro` 是下界（见 `relayStateSince` 头注），
     写成确数就是一句会被账单打脸的话 */
@@ -381,7 +386,7 @@ export function relayBudgetCapText(
   const left = Math.max(0, remainingMicro);
   return (
     `[系统] 这一轮接力至少已经花掉 ${creditText(spentMicro)} credit，` +
-    `到了单次委托的上限（所有者订阅额度剩余 ${creditText(left)} credit 的一半）：` +
+    `到了单次委托的上限（所有者本周额度剩余 ${creditText(left)} credit 的十分之一）：` +
     `${from} 想 @ ${to}，我停在这儿，交回给人。` +
     `还没做完的请人来定——回复里 @ 谁就从头开始新一条接力。${tail}`
   );

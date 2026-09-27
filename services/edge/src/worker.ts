@@ -451,7 +451,7 @@ export class Quota extends DurableObject<Env> {
       try {
         // #858：三条都分页翻到底，翻到上限抛错（→ 503），不静默截断。
         // #863：grant 先拉（全部，含过期），addon 事件的起点由它算——没有活着的 grant 就一行都不拉；
-        // window 事件从「周段起点 / now−5h」较早者起拉，跨周边界还开着的 5h 窗才不会被截半。
+        // window 事件从周段起点起拉（#1392 之后没有 5h 窗，不必再往前多拉那 5 小时）。
         const grants = parseGrantRows(await pageAll(db.get, grantsQuery(uid)));
         const addonSince = addonSinceOf(grants, now);
         const [win, add] = await Promise.all([
@@ -533,10 +533,8 @@ export class Quota extends DurableObject<Env> {
       const r = quotaSettle(await this.state(led, plan), String(b.requestId), Number(b.costMicro), now, plan);
       if (!r) return json({ ok: false, reason: "no_hold" }); // 已结算/已释放：幂等，调用方据此不写 usage_event
       await this.ctx.storage.put("state", r.state);
-      // #863：这笔成本落进了哪扇 5h 窗——只有真有钱进窗时才带（addon 没溢出就是 null），
-      // usage_event 记下它，冷启动重建按锚算窗，不再按事件链猜
       return json({
-        ok: true, chargedTo: r.hold.chargedTo, windowOpenAt: r.windowMicro > 0 ? r.state.open5hAt : null,
+        ok: true, chargedTo: r.hold.chargedTo,
         // 同 hold：省掉网关紧接着那一趟 `remaining`（#1304）
         remaining: { ...quotaRemaining(r.state, plan, now), plan: plan?.planId ?? null },
       });
@@ -648,7 +646,7 @@ function quotaPort(env: Env, sink: QuotaSample[]): QuotaPort {
       if (r.ok === true) return { ok: true, chargedTo: r.chargedTo === "addon" ? "addon" : "window", ...(remaining ? { remaining } : {}) };
       if (r.code === "quota_exhausted") {
         return {
-          ok: false, code: "quota_exhausted", window: r.window === "week" ? "week" : "5h", resetAt: Number(r.resetAt),
+          ok: false, code: "quota_exhausted", window: "week", resetAt: Number(r.resetAt),
           ...(remaining ? { remaining } : {}),
         };
       }
@@ -658,9 +656,8 @@ function quotaPort(env: Env, sink: QuotaSample[]): QuotaPort {
       const r = await quotaCall(env, uid, "settle", { requestId, costMicro: meta.costMicro }, sink);
       if (r.ok !== true) return null; // 没有挂着的 hold（重复 settle / 已释放）：不记账，幂等
       const chargedTo = r.chargedTo === "addon" ? "addon" : "window";
-      const windowOpenAt = typeof r.windowOpenAt === "number" && Number.isFinite(r.windowOpenAt) ? r.windowOpenAt : null;
       try {
-        await db.insert("usage_event", usageEventInsert(requestId, meta, chargedTo, windowOpenAt), {
+        await db.insert("usage_event", usageEventInsert(requestId, meta, chargedTo), {
           ignoreDuplicates: true, onConflict: "request_id", // 主键是 identity，幂等键是这一列（I4）
         });
       } catch (err) {
@@ -673,7 +670,7 @@ function quotaPort(env: Env, sink: QuotaSample[]): QuotaPort {
     async release(uid, requestId) { await quotaCall(env, uid, "release", { requestId }, sink); },
     async remaining(uid) {
       const r = await quotaCall(env, uid, "remaining", {}, sink);
-      return parseRemaining(r) ?? { h5: 0, week: 0, addon: 0, plan: null };
+      return parseRemaining(r) ?? { week: 0, addon: 0, plan: null };
     },
   };
 }
@@ -736,7 +733,7 @@ function billingPort(env: Env, sink: QuotaSample[]): BillingPort {
     async me(uid) {
       const v = await quotaCall<{
         sub: SubscriptionRow | null;
-        windows: { h5: WindowState; week: WindowState } | null;
+        windows: { week: WindowState } | null;
         addon: { remainingMicro: number; expiresAt: number | null };
       }>(env, uid, "view", {}, sink);
       // #1304：`/me` 不止一趟 DO —— 这两条是 **Worker 侧**打 Supabase 的。两把缓存都是

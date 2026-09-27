@@ -23,19 +23,16 @@ import type { BillingMe } from "../../src/shared/billing.js";
 const NOW = Date.now();
 const HOUR = 3_600_000;
 
-const me = (h5Used: number): BillingMe =>
+const me = (weekUsed: number): BillingMe =>
   ({
     plan: "pro", status: "active", plans: [], models: [], modelPlatforms: {},
-    windows: {
-      h5: { usedMicro: h5Used, limitMicro: 1000, resetAt: NOW + HOUR },
-      week: { usedMicro: 100, limitMicro: 1000, resetAt: NOW + 96 * HOUR },
-    },
+    windows: { week: { usedMicro: weekUsed, limitMicro: 1000, resetAt: NOW + HOUR } },
     addon: { remainingMicro: 0, expiresAt: null }, periodEnd: null,
   }) as unknown as BillingMe;
 
-function seed(h5Used: number | null) {
+function seed(weekUsed: number | null) {
   useChat.setState({
-    billing: h5Used === null ? null : { me: me(h5Used), fetchedAt: NOW, exhausted: null },
+    billing: weekUsed === null ? null : { me: me(weekUsed), fetchedAt: NOW, exhausted: null },
   });
 }
 
@@ -97,7 +94,7 @@ describe("ContextRingTrigger", () => {
   it("话挂在钮的 aria-label 上，**点自己不带 title**（原生气泡会跟富浮层抢同一次悬停）", () => {
     seed(820);
     draw();
-    expect(screen.getByRole("button")).toHaveAccessibleName("上下文用量详情 · 额度：5h 仅剩 18.0%");
+    expect(screen.getByRole("button")).toHaveAccessibleName("上下文用量详情 · 额度：本周 仅剩 18.0%");
     expect(dot()).not.toHaveAttribute("title");
     expect(screen.getByRole("button")).not.toHaveAttribute("title");
   });

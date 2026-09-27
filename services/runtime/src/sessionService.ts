@@ -374,10 +374,9 @@ export interface CloudSessionOpts {
       daemon 给——它才有 hostedProbe 与 edge 凭据（同 dispatch / pickAutoModel）。
       **可选**：缺席 = 只有第一条人类发言那次首行兜底，一次网关都不打 */
   retitle?: (input: TitleInput) => Promise<TitleVerdict | null>;
-  /** 所有者订阅窗口**还剩**多少 micro-USD，接力预算的分母（#1017）。取 5h 与周窗
-      里**更吃紧的那扇**（`min`，同 billingView 的 `bindingWindow`，ADR-0209）：网关
-      的 hold 同时压两扇窗，只看 5h 的话周窗快见底时刹车完全无感，而窗口触底之后
-      `hold()` 会退到用户真金白银买的加购桶。
+  /** 所有者订阅窗口**还剩**多少 micro-USD，接力预算的分母（#1017）。#1392 之后只剩
+      周窗（原来取 5h 与周窗里更吃紧的那扇）：窗口触底之后 `hold()` 会退到用户真金白银
+      买的加购桶，所以分母必须是会拦人的那扇窗。
       **`null` = 这一刻问不出来**（探针不可达 / 没有活跃订阅），不是 0——`decideRelay`
       见到 null 就走降级：预算闸用不了，补回 `DEFAULT_RELAY_MAX_DEPTH` 那道分支闸，
       于是降级路径与 #1017 改动前逐字相同。
@@ -1666,7 +1665,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         logChat("system", "系统", relayCapText(nameOf(spec.agentId), nameOf(to), d.depth, d.max, lastWords), false);
         continue;
       }
-      // 钱到顶（#1017）：这一轮已经吃掉所有者 5h 额度剩余的一半
+      // 钱到顶（#1017）：这一轮已经吃掉所有者本周额度剩余的那一份（#1392 之后是十分之一）
       if (d.kind === "cap_budget") {
         logChat("system", "系统", relayBudgetCapText(nameOf(spec.agentId), nameOf(to), d.spentMicro, d.remainingMicro, lastWords), false);
         continue;

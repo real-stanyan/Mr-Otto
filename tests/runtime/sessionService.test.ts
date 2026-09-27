@@ -1974,13 +1974,13 @@ describe("agent 互相 @ 接力（#950 切片 5）", () => {
     store.close();
   });
 
-  it("钱闸端到端（#1017）：adapter 报的 credit 落进 assistant_message，攒够剩余的一半就停", async () => {
+  it("钱闸端到端（#1017）：adapter 报的 credit 落进 assistant_message，攒够剩余的十分之一就停（#1392）", async () => {
     // 这一条走的是完整链路 —— adapter 的 creditCostMicro → engine 落进
     // assistant_message → relayStateSince 求和 → decideRelay 的 cap_budget。
     // 上面那条「额度剩 0」只证明了闸在，这条证明**求和这一半**真的接上了
     const store = newStore();
     const events: SessionEvent[] = [];
-    // 剩余 1000 → 预算 500。每轮报 300：第一轮 300 < 500 放行，第二轮累计 600 >= 500 停
+    // 剩余 5000 → 预算 500（十分之一）。每轮报 300：第一轮 300 < 500 放行，第二轮累计 600 >= 500 停
     const session = createCloudSession({
       diskUsage: () => null, approveAll: false,
       sessionMeta: createInMemoryCloudSessionMeta(),
@@ -1990,7 +1990,7 @@ describe("agent 互相 @ 接力（#950 切片 5）", () => {
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
-      relayRemainingMicro: async () => 1000,
+      relayRemainingMicro: async () => 5000,
       agents: async () => AGENTS,
       adapterFor: (a) => ({
         model: a.models[0]!,

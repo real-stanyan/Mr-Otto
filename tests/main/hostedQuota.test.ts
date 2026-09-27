@@ -5,7 +5,7 @@ import { BILLING_HEADERS, type BillingMe } from "../../src/shared/billing.js";
 const T0 = 1_800_000_000_000;
 const me: BillingMe = {
   plan: "pro", status: "active", plans: [],
-  windows: { h5: { usedMicro: 0, limitMicro: 100, resetAt: T0 + 5000 }, week: { usedMicro: 0, limitMicro: 1000, resetAt: T0 + 9000 } },
+  windows: { week: { usedMicro: 0, limitMicro: 1000, resetAt: T0 + 9000 } },
   addon: { remainingMicro: 0, expiresAt: null }, periodEnd: T0 + 99_999, models: ["deepseek-flash"], imageModels: ["gemini-3.1-flash-image"], ttsModels: ["speech-2.8-turbo"], modelPlatforms: {},
   // parseBillingMe 总是填这一格（#1281），response 走 JSON 往返后经它解析——补上让 toEqual(me) 与实际返回值一致
   decision: { models: [], uses: {} },
@@ -29,6 +29,12 @@ describe("hostedQuota", () => {
     expect(q.routeInput("gpt-9").supportsModel).toBe(false);
   });
 
+  it("新网关为旧客户端补发的那扇 h5（#1392）这里不读：快照里只有周窗", async () => {
+    const wire = { ...me, windows: { ...me.windows, h5: { usedMicro: 0, limitMicro: 1000, resetAt: T0 + 9000 } } };
+    const { q } = make([() => Response.json(wire)]);
+    expect((await q.refresh())?.windows).toEqual(me.windows);
+  });
+
   it("没登录 → me=null、subscribed=false，不打网络", async () => {
     const { q, fetchImpl } = make([], null);
     expect(await q.refresh()).toBeNull();
@@ -46,11 +52,11 @@ describe("hostedQuota", () => {
   it("noteExhausted → exhausted 直到 resetAt；过点自动恢复；refresh 成功也清掉", async () => {
     const { q, tick } = make([() => Response.json(me), () => Response.json(me)]);
     await q.refresh();
-    q.noteExhausted({ window: "5h", resetAt: T0 + 5000 });
+    q.noteExhausted({ resetAt: T0 + 5000 });
     expect(q.routeInput("deepseek-flash")).toMatchObject({ exhausted: true, resetAt: T0 + 5000 });
     tick(5001);
     expect(q.routeInput("deepseek-flash").exhausted).toBe(false);
-    q.noteExhausted({ window: "week", resetAt: T0 + 9000 });
+    q.noteExhausted({ resetAt: T0 + 9000 });
     await q.refresh();
     expect(q.routeInput("deepseek-flash").exhausted).toBe(false);
   });
@@ -58,8 +64,8 @@ describe("hostedQuota", () => {
   it("noteHeaders：剩余为 0 视为耗尽（resetAt 取快照里那个窗），非 0 更新 used", async () => {
     const { q } = make([() => Response.json(me)]);
     await q.refresh();
-    q.noteHeaders(new Headers({ [BILLING_HEADERS.h5]: "40" }));
-    expect(q.snapshot().me?.windows?.h5.usedMicro).toBe(60);
+    q.noteHeaders(new Headers({ [BILLING_HEADERS.week]: "400" }));
+    expect(q.snapshot().me?.windows?.week.usedMicro).toBe(600);
     q.noteHeaders(new Headers({ [BILLING_HEADERS.week]: "0" }));
     expect(q.routeInput("deepseek-flash")).toMatchObject({ exhausted: true, resetAt: T0 + 9000 });
   });
@@ -68,7 +74,7 @@ describe("hostedQuota", () => {
     const { q, tick } = make([() => Response.json(me)]);
     await q.refresh();
     expect(q.imageInput()).toEqual({ subscribed: true, exhausted: false, imageModels: ["gemini-3.1-flash-image"] });
-    q.noteExhausted({ window: "5h", resetAt: T0 + 5000 });
+    q.noteExhausted({ resetAt: T0 + 5000 });
     // 耗尽这一格必须和 routeInput 说同一句话：两处各判一遍的话，会出现
     // 「聊天说额度用完了、出图却照跑」这种自相矛盾的状态
     expect(q.imageInput()).toMatchObject({ exhausted: true, resetAt: T0 + 5000 });
@@ -95,8 +101,8 @@ describe("hostedQuota", () => {
     const cb = vi.fn();
     q.onChange(cb);
     await q.refresh();
-    q.noteExhausted({ window: "5h", resetAt: T0 + 1 });
-    q.noteHeaders(new Headers({ [BILLING_HEADERS.h5]: "1" }));
+    q.noteExhausted({ resetAt: T0 + 1 });
+    q.noteHeaders(new Headers({ [BILLING_HEADERS.week]: "1" }));
     expect(cb).toHaveBeenCalledTimes(3);
   });
 
@@ -197,7 +203,7 @@ describe("hostedQuota.ttsInput（#1163）", () => {
     const { q, tick } = make([() => Response.json(me)]);
     await q.refresh();
     expect(q.ttsInput()).toEqual({ subscribed: true, exhausted: false, ttsModels: ["speech-2.8-turbo"] });
-    q.noteExhausted({ window: "5h", resetAt: T0 + 5000 });
+    q.noteExhausted({ resetAt: T0 + 5000 });
     expect(q.ttsInput()).toMatchObject({ exhausted: true, resetAt: T0 + 5000 });
     tick(5001);
     expect(q.ttsInput().exhausted).toBe(false);

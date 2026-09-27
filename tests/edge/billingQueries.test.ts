@@ -4,12 +4,12 @@ import {
   modelsForMe, grantByPaymentIntentQuery, grantInsertBody, grantsQuery, meFromParts, pageAll, pagedQuery, parseGrantRow,
   parseGrantRows, parsePlanRows, parseRouteRows, parseSubscriptionOwner, parseSubscriptionRows, parseUsageEventRows,
   planIdForPrice, planSnapshotOf, plansQuery, REBUILD_PAGE_SIZE, routesQuery, subscriptionByStripeIdQuery,
-  subscriptionQuery, subscriptionUpsertBody, usageEventInsert, usageEventsQuery,
+  subscriptionQuery, subscriptionUpsertBody, usageEventInsert, usageEventsQuery, legacyWindows,
 } from "../../services/edge/src/billingQueries.js";
 
 const plans = [
-  { id: "lite", week_limit_micro: 3_325_000, window5h_limit_micro: 665_000, addon_unit_micro: 0, stripe_price_id: "price_lite", price_usd_cents: 1900, capabilities: { image: false, video: false, workspace: false } },
-  { id: "addon", week_limit_micro: 0, window5h_limit_micro: 0, addon_unit_micro: 7_000_000, stripe_price_id: "price_addon", price_usd_cents: 1000, capabilities: { image: false, video: false, workspace: false } },
+  { id: "lite", week_limit_micro: 3_325_000, addon_unit_micro: 0, stripe_price_id: "price_lite", price_usd_cents: 1900, capabilities: { image: false, video: false, workspace: false } },
+  { id: "addon", week_limit_micro: 0, addon_unit_micro: 7_000_000, stripe_price_id: "price_addon", price_usd_cents: 1000, capabilities: { image: false, video: false, workspace: false } },
 ];
 const sub = {
   user_id: "u1", plan_id: "lite", status: "active", stripe_customer_id: "cus_1", stripe_subscription_id: "sub_1",
@@ -51,11 +51,11 @@ describe("查询串", () => {
     expect(q).toContain("order=created_at.asc,id.asc");
     expect(q).not.toContain("limit="); // limit/offset 由 pageAll 追加
   });
-  it("usageEventsQuery：按类别 + since，带 window_open_at 锚，稳定全序，不钉 limit", () => {
+  it("usageEventsQuery：按类别 + since，稳定全序，不钉 limit；不再拉 window_open_at（#1392 没有 5h 窗了）", () => {
     const q = usageEventsQuery("u1", "window", Date.UTC(2026, 8, 1));
     expect(q).toContain("charged_to=eq.window");
     expect(q).toContain("created_at=gte.2026-09-01T00:00:00.000Z");
-    expect(q).toContain("select=created_at,cost_micro,charged_to,window_open_at");
+    expect(q).toContain("select=created_at,cost_micro,charged_to&");
     expect(q).toContain("order=created_at.asc,id.asc");
     expect(q).not.toContain("limit=");
     expect(q).not.toContain("sum"); // 不用聚合（文件头）
@@ -142,12 +142,13 @@ describe("行解析", () => {
   });
   it("planSnapshotOf：订阅 + 档位 → 快照（period 转毫秒）；缺任一回 null", () => {
     const s = planSnapshotOf(sub as never, plans)!;
-    expect(s).toMatchObject({ planId: "lite", status: "active", window5hLimitMicro: 665_000, weekLimitMicro: 3_325_000 });
+    expect(s).toMatchObject({ planId: "lite", status: "active", weekLimitMicro: 3_325_000 });
+    expect(s).not.toHaveProperty("window5hLimitMicro");
     expect(s.periodStartMs).toBe(Date.UTC(2026, 8, 1));
     expect(planSnapshotOf(null, plans)).toBeNull();
     expect(planSnapshotOf({ ...sub, plan_id: "gone" } as never, plans)).toBeNull();
   });
-  it("parseUsageEventRows：锚有就转毫秒，null 留 null（旧行退回链回放）；形状不对的行跳过", () => {
+  it("parseUsageEventRows：只取时刻 / 成本 / 类别（旧行里的 window_open_at 不读）；形状不对的行跳过", () => {
     const r = parseUsageEventRows([
       { created_at: "2026-09-01T01:00:00Z", cost_micro: 5, charged_to: "window", window_open_at: "2026-09-01T00:30:00Z" },
       { created_at: "2026-09-01T02:00:00Z", cost_micro: 7, charged_to: "addon", window_open_at: null },
@@ -155,8 +156,8 @@ describe("行解析", () => {
       { created_at: "2026-09-01T02:00:00Z", cost_micro: 7, charged_to: "elsewhere" },
     ]);
     expect(r).toEqual([
-      { at: Date.UTC(2026, 8, 1, 1), costMicro: 5, chargedTo: "window", windowOpenAt: Date.UTC(2026, 8, 1, 0, 30) },
-      { at: Date.UTC(2026, 8, 1, 2), costMicro: 7, chargedTo: "addon", windowOpenAt: null },
+      { at: Date.UTC(2026, 8, 1, 1), costMicro: 5, chargedTo: "window" },
+      { at: Date.UTC(2026, 8, 1, 2), costMicro: 7, chargedTo: "addon" },
     ]);
     expect(parseUsageEventRows(null)).toEqual([]);
   });
@@ -174,17 +175,17 @@ describe("行解析", () => {
 });
 
 describe("写入体", () => {
-  it("usageEventInsert 列名与 0017/0018 一致；锚 null 落 null、有就转 ISO", () => {
+  it("usageEventInsert 列名与 0017 一致；window_open_at 不再写（#1392）", () => {
     const meta = {
       caller: { uid: "u1", source: "runtime" as const, workspaceId: "w", sessionId: "s", agentId: "a_1" },
       route: { id: "r", logicalModel: "m", platform: "p", baseUrl: "", wireModel: "", priceInMicroPerM: 0, priceCacheMicroPerM: 0, priceOutMicroPerM: 0, defaultMaxTokens: 0, kind: "chat" as const },
       usage: { promptTokens: 10, cachedTokens: 2, completionTokens: 3 }, costMicro: 42,
     };
-    expect(usageEventInsert("rid", meta, "addon", null)).toEqual({
+    expect(usageEventInsert("rid", meta, "addon")).toEqual({
       user_id: "u1", request_id: "rid", source: "runtime", workspace_id: "w", session_id: "s", agent_id: "a_1", logical_model: "m", route_id: "r",
-      prompt_tokens: 10, cached_tokens: 2, completion_tokens: 3, cost_micro: 42, charged_to: "addon", window_open_at: null,
+      prompt_tokens: 10, cached_tokens: 2, completion_tokens: 3, cost_micro: 42, charged_to: "addon",
     });
-    expect(usageEventInsert("rid", meta, "window", Date.UTC(2026, 8, 1)).window_open_at).toBe("2026-09-01T00:00:00.000Z");
+    expect(usageEventInsert("rid", meta, "window")).not.toHaveProperty("window_open_at");
   });
   it("subscriptionUpsertBody：period 毫秒转 ISO；planIdForPrice 反查档位；last_event_at 落 eventCreated", () => {
     expect(planIdForPrice(plans, "price_lite")).toBe("lite");
@@ -221,16 +222,30 @@ describe("meFromParts", () => {
     expect(me.modelPlatforms).toEqual({ "glm-5.3": "zhipu" });
   });
   it("订阅非 active：窗口不下发（hold 此时一律拒，报满额度是谎话）", () => {
-    const windows = { h5: { usedMicro: 1, limitMicro: 2, resetAt: 3 }, week: { usedMicro: 1, limitMicro: 2, resetAt: 3 } };
+    const windows = { week: { usedMicro: 1, limitMicro: 2, resetAt: 3 } };
     const me = meFromParts({ ...sub, status: "past_due" } as never, windows, { remainingMicro: 0, expiresAt: null }, [], plans);
     expect(me.status).toBe("past_due");
     expect(me.windows).toBeNull();
     expect(me.periodEnd).toBe(Date.UTC(2026, 9, 1));
   });
-  it("active：窗口原样带出，plan 只认三个档位", () => {
-    const windows = { h5: { usedMicro: 1, limitMicro: 2, resetAt: 3 }, week: { usedMicro: 4, limitMicro: 5, resetAt: 6 } };
-    expect(meFromParts(sub as never, windows, { remainingMicro: 0, expiresAt: null }, [], plans).windows).toEqual(windows);
+  it("active：周窗原样带出，另补一扇永远不拦人的 h5 给旧客户端解析（#1392）；plan 只认三个档位", () => {
+    const windows = { week: { usedMicro: 4, limitMicro: 5, resetAt: 6 } };
+    expect(meFromParts(sub as never, windows, { remainingMicro: 0, expiresAt: null }, [], plans).windows).toEqual({
+      week: { usedMicro: 4, limitMicro: 5, resetAt: 6 },
+      h5: { usedMicro: 0, limitMicro: 5, resetAt: 6 },
+    });
     expect(meFromParts({ ...sub, plan_id: "addon" } as never, windows, { remainingMicro: 0, expiresAt: null }, [], plans).plan).toBeNull();
+  });
+  it("legacyWindows：已经装在用户机器上的旧桌面版拿到 /me 照旧解析得出，而且那扇 h5 永远不是更吃紧的那扇", () => {
+    const w = legacyWindows({ usedMicro: 1, limitMicro: 100, resetAt: 9 });
+    // 旧版 parseBillingMe 的判据：两扇窗都得是 {usedMicro,limitMicro,resetAt} 三个数
+    for (const k of ["week", "h5"] as const) {
+      expect(typeof w[k].usedMicro).toBe("number");
+      expect(typeof w[k].limitMicro).toBe("number");
+      expect(typeof w[k].resetAt).toBe("number");
+    }
+    // 旧版取「占比更高那扇」当主数字：h5 用了 0，周窗一有用量就轮到周窗
+    expect(w.h5.usedMicro / w.h5.limitMicro).toBeLessThan(w.week.usedMicro / w.week.limitMicro);
   });
 });
 

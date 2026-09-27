@@ -587,7 +587,7 @@ export interface CloudWorkspaceState {
 export interface BillingSnapshotView {
   me: BillingMe | null;
   fetchedAt: number;
-  exhausted: { window: "5h" | "week"; resetAt: number } | null;
+  exhausted: { resetAt: number } | null;
 }
 
 export interface ShellBridge {

@@ -18,7 +18,8 @@ export type ModelErrorClass = "rate-limit" | "retryable" | "fatal" | "reroute";
 
 /** 网关说额度用完了（429 quota_exhausted）。种类单列：它既不该退避（等上游没用，等的是窗口）
     也不是致命（配了自己的 key 换条路就能走）——adapter 收到立刻重解析端点重来一次 */
-export interface RerouteInfo { window?: "5h" | "week"; resetAt?: number }
+/** 只剩周窗之后（#1392）只带几点恢复 */
+export interface RerouteInfo { resetAt?: number }
 
 export function markReroute<T extends Error>(err: T, info: RerouteInfo): T {
   (err as T & { reroute?: RerouteInfo }).reroute = info;

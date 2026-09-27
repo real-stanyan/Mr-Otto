@@ -32,9 +32,9 @@ describe("markErrorClass / errorClassOf", () => {
   });
 
   it("markReroute / rerouteInfoOf：info 贴在错误上，跨 try 边界原样上抛", () => {
-    const e = markReroute(markErrorClass(new Error("x"), "reroute"), { window: "week", resetAt: 5 });
+    const e = markReroute(markErrorClass(new Error("x"), "reroute"), { resetAt: 5 });
     expect(errorClassOf(e)).toBe("reroute");
-    expect(rerouteInfoOf(e)).toEqual({ window: "week", resetAt: 5 });
+    expect(rerouteInfoOf(e)).toEqual({ resetAt: 5 });
     expect(rerouteInfoOf(new Error("plain"))).toBeUndefined();
   });
 });

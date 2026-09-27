@@ -42,14 +42,11 @@ const reply = (agentId: string, model: string, prompt: number): SessionEvent =>
 
 const NOW = Date.now();
 const HOUR = 3_600_000;
-/** 5h 窗已用 82% —— 本地那枚环在这份账下会亮橙点（同 ContextRingTrigger.test） */
+/** 周窗已用 82% —— 本地那枚环在这份账下会亮橙点（同 ContextRingTrigger.test） */
 const tight = (): BillingMe =>
   ({
     plan: "pro", status: "active", plans: [], models: [], modelPlatforms: {},
-    windows: {
-      h5: { usedMicro: 820, limitMicro: 1000, resetAt: NOW + HOUR },
-      week: { usedMicro: 100, limitMicro: 1000, resetAt: NOW + 96 * HOUR },
-    },
+    windows: { week: { usedMicro: 820, limitMicro: 1000, resetAt: NOW + HOUR } },
     addon: { remainingMicro: 0, expiresAt: null }, periodEnd: null,
   }) as unknown as BillingMe;
 

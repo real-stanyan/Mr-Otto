@@ -23,7 +23,7 @@ function quotaStub(outcome: HoldOutcome = { ok: true, chargedTo: "window" }) {
     hold: async (_uid, rid) => { calls.hold.push(rid); return outcome; },
     settle: async (_uid, _rid, meta) => { calls.settle.push(meta); return null; },
     release: async (_uid, rid) => { calls.release.push(rid); },
-    remaining: async () => ({ h5: 100, week: 200, addon: 0, plan: "lite" }),
+    remaining: async () => ({ week: 200, addon: 0, plan: "lite" }),
   };
   return { quota, calls };
 }
@@ -190,7 +190,8 @@ describe("createLlmGateway", () => {
     const gw = createLlmGateway({ routes: async () => [flash], quota, upstreamKey: (p) => (p === "deepseek" ? "sk-up" : undefined), fetchImpl: up.fetchImpl, newRequestId: () => "rid-1" });
     const res = await gw(chatReq({ model: "deepseek-flash", messages: [{ role: "user", content: "hi" }], stream: true }), caller);
     expect(res.status).toBe(200);
-    expect(res.headers.get(BILLING_HEADERS.h5)).toBe("100");
+    expect(res.headers.get(BILLING_HEADERS.week)).toBe("200");
+    expect(res.headers.get("x-otto-window-5h-remaining")).toBeNull(); // #1392：没有 5h 窗了，不再报这个头
     expect(res.headers.get(BILLING_HEADERS.plan)).toBe("lite");
     const sent = up.seen[0]!;
     expect(sent.url).toBe("https://up/v1/chat/completions");
@@ -429,7 +430,7 @@ describe("createLlmGateway", () => {
     const estimates: number[] = [];
     const quota: QuotaPort = {
       hold: async (_uid, _rid, est) => { estimates.push(est); return { ok: true, chargedTo: "window" }; },
-      settle: async () => null, release: async () => {}, remaining: async () => ({ h5: 100, week: 200, addon: 0, plan: "lite" }),
+      settle: async () => null, release: async () => {}, remaining: async () => ({ week: 200, addon: 0, plan: "lite" }),
     };
     const up = upstream(() => Response.json({ choices: [], usage: null }));
     const gw = createLlmGateway({ routes: async () => [flash], quota, upstreamKey: () => "k", fetchImpl: up.fetchImpl });
@@ -494,7 +495,7 @@ describe("createLlmGateway", () => {
     const estimates: number[] = [];
     const quota: QuotaPort = {
       hold: async (_uid, _rid, est) => { estimates.push(est); return { ok: true, chargedTo: "window" }; },
-      settle: async () => null, release: async () => {}, remaining: async () => ({ h5: 100, week: 200, addon: 0, plan: "lite" }),
+      settle: async () => null, release: async () => {}, remaining: async () => ({ week: 200, addon: 0, plan: "lite" }),
     };
     const up = upstream(() => Response.json({ choices: [], usage: null }));
     const gw = createLlmGateway({ routes: async () => [flash], quota, upstreamKey: () => "k", fetchImpl: up.fetchImpl });
@@ -529,7 +530,7 @@ describe("createLlmGateway", () => {
     const mk = (o: HoldOutcome) =>
       createLlmGateway({ routes: async () => [flash], quota: quotaStub(o).quota, upstreamKey: () => "k" });
     const r1 = await mk({ ok: false, code: "quota_exhausted", window: "week", resetAt: 42 })(chatReq({ model: "deepseek-flash", messages: [] }), caller);
-    expect(r1.headers.get(BILLING_HEADERS.h5)).toBe("100");
+    expect(r1.headers.get(BILLING_HEADERS.week)).toBe("200");
     expect(r1.headers.get(BILLING_HEADERS.plan)).toBe("lite");
     const r2 = await mk({ ok: false, code: "no_subscription" })(chatReq({ model: "deepseek-flash", messages: [] }), caller);
     expect(r2.headers.get(BILLING_HEADERS.week)).toBe("200");
@@ -547,7 +548,7 @@ describe("createLlmGateway", () => {
     const gw = createLlmGateway({ routes: async () => [flash], quota, upstreamKey: () => "k" });
     const res = await gw(chatReq({ model: "deepseek-flash", messages: [] }), caller);
     expect(res.status).toBe(402);
-    expect(res.headers.get(BILLING_HEADERS.h5)).toBeNull();
+    expect(res.headers.get(BILLING_HEADERS.week)).toBeNull();
   });
 
   it("routes 抛（Supabase 抖）→ 503 upstream 信封，不是裸 500（C1）", async () => {
@@ -570,7 +571,7 @@ describe("createLlmGateway", () => {
       hold: async () => { throw new Error("quota hold 503"); },
       settle: async () => { calls.settle += 1; return null; },
       release: async (_uid, rid) => { calls.release.push(rid); },
-      remaining: async () => ({ h5: 1, week: 1, addon: 0, plan: "lite" }),
+      remaining: async () => ({ week: 1, addon: 0, plan: "lite" }),
     };
     const up = upstream(() => Response.json({ choices: [] }));
     const gw = createLlmGateway({ routes: async () => [flash], quota, upstreamKey: () => "k", fetchImpl: up.fetchImpl });
@@ -735,7 +736,7 @@ describe("语音那扇门（#1163）：kind=tts 打 /t2a_v2，按字符数预扣
     expect(res.headers.get(BILLING_HEADERS.cost)).toBe(String(calls.settle[0]!.costMicro));
     expect(res.headers.get(TTS_HEADERS.audioMs)).toBe("5508");
     expect(res.headers.get(TTS_HEADERS.chars)).toBe("41");
-    expect(res.headers.get(BILLING_HEADERS.h5)).toBe("100"); // 额度头照带
+    expect(res.headers.get(BILLING_HEADERS.week)).toBe("200"); // 额度头照带
     expect(res.headers.get("x-otto-route-id")).toBe(tts.id);
     const sent = up.seen[0]!;
     expect(sent.url).toBe("https://mm/v1/t2a_v2");
@@ -784,7 +785,7 @@ describe("语音那扇门（#1163）：kind=tts 打 /t2a_v2，按字符数预扣
   });
 
   it("额度用完：429 quota_exhausted，与 chat 那条路同一个信封", async () => {
-    const { quota } = quotaStub({ ok: false, code: "quota_exhausted", window: "5h", resetAt: 1 });
+    const { quota } = quotaStub({ ok: false, code: "quota_exhausted", window: "week", resetAt: 1 });
     const handle = createLlmGateway({ routes: async () => [tts], quota, upstreamKey: () => "k", fetchImpl: upstream(mmOk()).fetchImpl });
     const res = await handle(speechReq({ model: "speech-2.8-turbo", text: "hi", voice_id: "v" }), caller);
     expect(res.status).toBe(429);
@@ -868,7 +869,7 @@ describe("决策那扇门（#1281）", () => {
     expect(calls.settle[0]!.usage).toEqual({ promptTokens: 120, cachedTokens: 0, completionTokens: 0 });
     expect(calls.settle[0]!.costMicro).toBe(Math.ceil((120 * 42_000) / 1_000_000));
     expect(res.headers.get(BILLING_HEADERS.cost)).toBe(String(calls.settle[0]!.costMicro));
-    expect(res.headers.get(BILLING_HEADERS.h5)).toBe("100");
+    expect(res.headers.get(BILLING_HEADERS.week)).toBe("200");
     const sent = up.seen[0]!;
     expect(sent.url).toBe("https://or/api/alpha/decisions");
     expect(sent.headers.get("authorization")).toBe("Bearer k");
@@ -983,7 +984,7 @@ describe("额度快照随 hold / settle 回来，省掉那趟 remaining（#1304�
   // 一趟 Durable Object 往返的代价取决于请求从哪个 colo 进来（HEL 实测 3.65s / SYD 0.35s），
   // 所以「少打一趟」本身就是这组用例要钉住的东西——**判据是 remaining 被调了几次**，
   // 不是响应头长什么样（后者两条路给的数一样，钉它钉不住有没有多走一趟）
-  const snap = { h5: 42, week: 43, addon: 7, plan: "max" as const };
+  const snap = { week: 43, addon: 7, plan: "max" as const };
   function countingStub(opts: { holdSnap?: boolean; settleSnap?: boolean; outcome?: HoldOutcome }) {
     let remainingCalls = 0;
     const outcome = opts.outcome ?? ({ ok: true, chargedTo: "window" } as HoldOutcome);
@@ -991,7 +992,7 @@ describe("额度快照随 hold / settle 回来，省掉那趟 remaining（#1304�
       hold: async () => (opts.holdSnap ? { ...outcome, remaining: snap } : outcome),
       settle: async () => (opts.settleSnap ? snap : null),
       release: async () => {},
-      remaining: async () => { remainingCalls += 1; return { h5: 1, week: 2, addon: 3, plan: "lite" }; },
+      remaining: async () => { remainingCalls += 1; return { week: 2, addon: 3, plan: "lite" }; },
     };
     return { quota, calls: () => remainingCalls };
   }
@@ -1003,7 +1004,7 @@ describe("额度快照随 hold / settle 回来，省掉那趟 remaining（#1304�
     const res = await gw(chatReq({ model: "deepseek-flash", messages: [] }), caller);
     expect(res.status).toBe(200);
     expect(calls()).toBe(0);
-    expect(res.headers.get(BILLING_HEADERS.h5)).toBe("42");
+    expect(res.headers.get(BILLING_HEADERS.week)).toBe("43");
     expect(res.headers.get(BILLING_HEADERS.plan)).toBe("max");
   });
 
@@ -1013,7 +1014,7 @@ describe("额度快照随 hold / settle 回来，省掉那趟 remaining（#1304�
     const gw = createLlmGateway({ routes: async () => [flash], quota, upstreamKey: () => "k", fetchImpl: up.fetchImpl });
     const res = await gw(chatReq({ model: "deepseek-flash", messages: [] }), caller);
     expect(calls()).toBe(1);
-    expect(res.headers.get(BILLING_HEADERS.h5)).toBe("1");
+    expect(res.headers.get(BILLING_HEADERS.week)).toBe("2");
   });
 
   it("hold 被拒时也用它自己带回来的快照，不再问一趟", async () => {
@@ -1027,14 +1028,15 @@ describe("额度快照随 hold / settle 回来，省掉那趟 remaining（#1304�
 });
 
 describe("parseRemaining：缺一格就回 null，不拿 0 冒充（#1304）", () => {
-  it("三个数齐了才收", () => {
-    expect(parseRemaining({ h5: 1, week: 2, addon: 3, plan: "max" })).toEqual({ h5: 1, week: 2, addon: 3, plan: "max" });
-    expect(parseRemaining({ h5: 1, week: 2, addon: 3 })).toEqual({ h5: 1, week: 2, addon: 3, plan: null });
+  it("两个数齐了才收（#1392 之后没有 h5；带着它也照收，只是不读）", () => {
+    expect(parseRemaining({ week: 2, addon: 3, plan: "max" })).toEqual({ week: 2, addon: 3, plan: "max" });
+    expect(parseRemaining({ week: 2, addon: 3 })).toEqual({ week: 2, addon: 3, plan: null });
+    expect(parseRemaining({ h5: 1, week: 2, addon: 3 })).toEqual({ week: 2, addon: 3, plan: null });
   });
   it("少一格 / 不是数 / 不是对象一律 null —— 回 0 会让客户端读成「额度用完了」", () => {
-    expect(parseRemaining({ h5: 1, week: 2 })).toBeNull();
-    expect(parseRemaining({ h5: 1, week: 2, addon: "3" })).toBeNull();
-    expect(parseRemaining({ h5: Number.NaN, week: 2, addon: 3 })).toBeNull();
+    expect(parseRemaining({ week: 2 })).toBeNull();
+    expect(parseRemaining({ week: 2, addon: "3" })).toBeNull();
+    expect(parseRemaining({ week: Number.NaN, addon: 3 })).toBeNull();
     expect(parseRemaining(undefined)).toBeNull();
     expect(parseRemaining(null)).toBeNull();
   });

@@ -22,7 +22,7 @@ const str = (v: unknown): string | null => (typeof v === "string" ? v : null);
 const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
 
 export interface PlanRow {
-  id: string; week_limit_micro: number; window5h_limit_micro: number; addon_unit_micro: number; stripe_price_id: string;
+  id: string; week_limit_micro: number; addon_unit_micro: number; stripe_price_id: string;
   /** 月费（美元分）。/billing/v1/me 要把它下发给客户端——价目卡渲染这个数，改价不发版 */
   price_usd_cents: number;
   /** 档位能力（`{"image":false,"video":false,"workspace":true}`）。读不到一律按关——
@@ -72,18 +72,19 @@ export function parseSubscriptionOwner(v: unknown): { userId: string; lastEventA
 }
 
 export function plansQuery(): string {
-  return "plan?select=id,week_limit_micro,window5h_limit_micro,addon_unit_micro,stripe_price_id,price_usd_cents,capabilities";
+  // window5h_limit_micro 那一列还在库里（0017），#1392 之后没人读——额度只剩周窗（ADR-0324）
+  return "plan?select=id,week_limit_micro,addon_unit_micro,stripe_price_id,price_usd_cents,capabilities";
 }
 export function parsePlanRows(v: unknown): PlanRow[] {
   if (!Array.isArray(v)) return [];
   const out: PlanRow[] = [];
   for (const r of v) {
     if (!isObj(r)) continue;
-    const id = str(r.id), w = num(r.week_limit_micro), h = num(r.window5h_limit_micro), a = num(r.addon_unit_micro);
-    if (id === null || w === null || h === null || a === null) continue;
+    const id = str(r.id), w = num(r.week_limit_micro), a = num(r.addon_unit_micro);
+    if (id === null || w === null || a === null) continue;
     const caps = isObj(r.capabilities) ? r.capabilities : {};
     out.push({
-      id, week_limit_micro: w, window5h_limit_micro: h, addon_unit_micro: a,
+      id, week_limit_micro: w, addon_unit_micro: a,
       stripe_price_id: str(r.stripe_price_id) ?? "", price_usd_cents: num(r.price_usd_cents) ?? 0,
       capabilities: {
         image: caps.image === true,
@@ -99,7 +100,7 @@ export function planSnapshotOf(sub: SubscriptionRow | null, plans: PlanRow[]): P
   const p = plans.find((x) => x.id === sub.plan_id);
   if (!p) return null;
   return {
-    planId: p.id, status: sub.status, window5hLimitMicro: p.window5h_limit_micro, weekLimitMicro: p.week_limit_micro,
+    planId: p.id, status: sub.status, weekLimitMicro: p.week_limit_micro,
     periodStartMs: Date.parse(sub.current_period_start), periodEndMs: Date.parse(sub.current_period_end),
   };
 }
@@ -174,17 +175,15 @@ export function modelsForMe(routes: RouteRow[]): {
   };
 }
 
-export function usageEventInsert(
-  requestId: string, meta: SettleMeta, chargedTo: "window" | "addon", windowOpenAtMs: number | null
-): Record<string, unknown> {
+export function usageEventInsert(requestId: string, meta: SettleMeta, chargedTo: "window" | "addon"): Record<string, unknown> {
   return {
     user_id: meta.caller.uid, request_id: requestId, source: meta.caller.source,
     workspace_id: meta.caller.workspaceId, session_id: meta.caller.sessionId, agent_id: meta.caller.agentId,
     logical_model: meta.route.logicalModel, route_id: meta.route.id,
     prompt_tokens: meta.usage.promptTokens, cached_tokens: meta.usage.cachedTokens, completion_tokens: meta.usage.completionTokens,
     cost_micro: meta.costMicro, charged_to: chargedTo,
-    // #863：这笔成本落进了哪扇 5h 窗。窗是跨周连续的，重建靠这个锚而不是靠事件链回放
-    window_open_at: windowOpenAtMs === null ? null : new Date(windowOpenAtMs).toISOString(),
+    // window_open_at（#863 那扇 5h 窗的锚）#1392 之后不再写：5h 窗没了，重建只按周段求和（ADR-0324）。
+    // 列还在库里、旧行里的值原样留着，缺席 = null
   };
 }
 
@@ -197,7 +196,7 @@ export function grantsQuery(uid: string): string {
     rebuildWindowSince / addonSinceOf 算，这里只负责拼串 */
 export function usageEventsQuery(uid: string, chargedTo: "window" | "addon", sinceMs: number): string {
   const since = new Date(sinceMs).toISOString();
-  return `usage_event?user_id=eq.${encodeURIComponent(uid)}&charged_to=eq.${chargedTo}&created_at=gte.${since}&select=created_at,cost_micro,charged_to,window_open_at&order=created_at.asc,id.asc`;
+  return `usage_event?user_id=eq.${encodeURIComponent(uid)}&charged_to=eq.${chargedTo}&created_at=gte.${since}&select=created_at,cost_micro,charged_to&order=created_at.asc,id.asc`;
 }
 
 export const REBUILD_PAGE_SIZE = 1000;
@@ -245,8 +244,7 @@ export function parseUsageEventRows(v: unknown): RebuildEvent[] {
     if (!isObj(r)) continue;
     const at = str(r.created_at), c = num(r.cost_micro);
     if (!at || c === null || (r.charged_to !== "window" && r.charged_to !== "addon")) continue;
-    const w = str(r.window_open_at);
-    out.push({ at: Date.parse(at), costMicro: c, chargedTo: r.charged_to, windowOpenAt: w ? Date.parse(w) : null });
+    out.push({ at: Date.parse(at), costMicro: c, chargedTo: r.charged_to });
   }
   return out;
 }
@@ -282,9 +280,18 @@ export function parseGrantRow(v: unknown): { microUsd: number; expiresAt: string
   return { microUsd, expiresAt };
 }
 
+/** 旧客户端要的那扇 h5（#1392，ADR-0324）。已经装在用户机器上的桌面版解析 /me 时**两扇窗缺一不可**
+    （缺一扇整份快照解析成 null = 拿不到订阅状态 = 托管那条路走不通），所以网关照旧下发一扇 h5——
+    一扇**永远不拦人**的窗：用了 0、上限与周窗相同、刷新时刻跟周窗走。旧版据此多画一只满格的表，
+    「最吃紧那扇」一有用量就轮到周窗，告警与倒计时都跟着周窗走——行为上就是只按周。
+    新客户端不读它（`parseBillingMe` 只认 week）。旧版都升级了之后这一格可以删 */
+export function legacyWindows(week: WindowState): { week: WindowState; h5: WindowState } {
+  return { week, h5: { usedMicro: 0, limitMicro: week.limitMicro, resetAt: week.resetAt } };
+}
+
 export function meFromParts(
   sub: SubscriptionRow | null,
-  windows: { h5: WindowState; week: WindowState } | null,
+  windows: { week: WindowState } | null,
   addon: { remainingMicro: number; expiresAt: number | null },
   models: string[],
   plans: PlanRow[],
@@ -309,7 +316,7 @@ export function meFromParts(
     plans: plans
       .filter((p): p is PlanRow & { id: "lite" | "pro" | "max" } => p.id === "lite" || p.id === "pro" || p.id === "max")
       .map((p) => ({ id: p.id, priceUsdCents: p.price_usd_cents, capabilities: p.capabilities })),
-    windows: sub && sub.status === "active" ? windows : null,
+    windows: sub && sub.status === "active" && windows ? legacyWindows(windows.week) : null,
     addon, periodEnd: sub ? Date.parse(sub.current_period_end) : null, models, imageModels, ttsModels, modelPlatforms,
     // 没有型号时 uses 一律清空：开关开着、路由行却不在（migration 没跑 / 那一行被停用），
     // 下发一张「开着」的表只会让三端去敲一扇必然 400 的门

@@ -6,7 +6,7 @@
 // 摆在 keys 页会让人以为它是某一家 key 的开关,而它恰恰是"不用自己配 key"的那条路;
 // 额度也是全账号的,和账号页其余东西(名字/邮箱/会话热力图)同类。
 //
-// **两扇窗报百分比不报 credit**（#1022）：大字是「还剩百分之几」，条按**剩余**填充。
+// **额度窗报百分比不报 credit**（#1022）：大字是「还剩百分之几」，条按**剩余**填充。
 // 三条判据都不是审美：
 //   · 报剩余 —— 用户问这个数就是想知道「我还能干多久」，`0.1 / 311.5` 要人做减法；
 //   · 条按剩余填 —— 原来那条填了 0.03%，在屏幕上和「组件坏了」长得一模一样，
@@ -333,14 +333,8 @@ export function BillingSettings() {
           />
         )}
 
-        {me.windows && (
-          <div className="grid grid-cols-2 gap-[22px]">
-            <WindowRow label={WINDOW_LABELS.h5} w={me.windows.h5} now={now} />
-            <div className="border-l border-border pl-[22px]">
-              <WindowRow label={WINDOW_LABELS.week} w={me.windows.week} now={now} />
-            </div>
-          </div>
-        )}
+        {/* 只剩本周一扇窗（#1392，ADR-0324；原来是 5h + 本周左右两格） */}
+        {me.windows && <WindowRow label={WINDOW_LABELS.week} w={me.windows.week} now={now} />}
 
         <div className="h-px bg-border" />
 

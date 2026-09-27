@@ -1,11 +1,11 @@
 // mobileAccount —— 手机账号页 / 订阅页 / 外观那几格的判据（#1356 A5，spec §5.8）。纯逻辑，屏只画。
 //
 // 三条纪律（spec §6）：
-// · 还没查到 ≠ 没有：billing 为 null 时徽章、两扇窗、订阅那一格一个结论都不下（ADR-0240）；
+// · 还没查到 ≠ 没有：billing 为 null 时徽章、额度、订阅那一格一个结论都不下（ADR-0240）；
 // · 说不清就不画钮：订阅页每一颗钮都有真去处——没订阅走 checkout，订着的人换档只走 Portal
 //   （ADR-0203 决定 18：已有订阅的人再开一张 checkout = 第二条订阅、两笔一起扣，网关回 409）；
-// · 窗名与倒计时用桌面那一份（WINDOW_LABELS「5h / 本周」、countdown「1h 38m 后刷新」）：同一扇窗在几块
-//   屏幕上不能有两种叫法（#1229），所以不照 demo 的「5 小时窗 / 1 小时 38 分后刷新」。
+// · 窗名与倒计时用桌面那一份（WINDOW_LABELS「本周」、countdown「4d 后刷新」）：同一扇窗在几块
+//   屏幕上不能有两种叫法（#1229）。额度只剩本周一扇窗（#1392，ADR-0324）。
 // 文案不出现「水獭」：桌面价目卡那句 blurb（PLAN_CARDS）手机上不用，档位卡上的话从服务端下发的能力推。
 
 import { parseBillingError, type BillingMe, type PlanId, type WindowState } from "./billing.js";
@@ -39,7 +39,7 @@ export function accountBadge(billing: BillingSnapshotView | null): { id: PlanBad
   return id === null ? null : { id, label: PLAN_BADGE_LABEL[id] };
 }
 
-// ── 两扇窗 ──
+// ── 额度（只按周，#1392）──
 
 export type QuotaToneView = "neutral" | "warn" | "deny";
 
@@ -50,7 +50,7 @@ export function quotaToneView(usedPercent: number): QuotaToneView {
 }
 
 export interface QuotaWindowView {
-  key: "h5" | "week";
+  key: "week";
   label: string;
   /** 「63.2%」——还剩百分之几（一位小数、向下取整，ADR-0239）；「可用」两个字由界面配 */
   remaining: string;
@@ -61,25 +61,28 @@ export interface QuotaWindowView {
   refresh: string;
 }
 
-export type AccountQuota =
+export type WeekQuota =
   | { kind: "loading" }
   | { kind: "none"; text: string }
-  | { kind: "windows"; windows: readonly [QuotaWindowView, QuotaWindowView] };
+  | { kind: "week"; week: QuotaWindowView };
 
-/** readFailed = 这一次刷新失败而手上一份都没有：写「读不到」，不写「正在查」（那句已经不成立） */
-export function accountQuota(billing: BillingSnapshotView | null, now: number, readFailed = false): AccountQuota {
+/**
+ * 「订阅与额度」那一页与「我」那一行画的本周额度（#1386 的设计，#1392 起也是真规矩：额度只按周）。
+ * readFailed = 这一次刷新失败而手上一份都没有：写「读不到」，不写「正在查」（那句已经不成立）。
+ * 过了 resetAt 的窗按清零画：这份快照不会自己到点过期（同桌面 liveWindow 的纪律）。
+ */
+export function weekQuota(billing: BillingSnapshotView | null, now: number, readFailed = false): WeekQuota {
   const me = billing?.me ?? null;
   if (me === null) return readFailed ? { kind: "none", text: "这一刻读不到额度。" } : { kind: "loading" };
   if (me.windows === null) return { kind: "none", text: noQuotaText(me) };
-  return { kind: "windows", windows: [windowView("h5", me.windows.h5, now), windowView("week", me.windows.week, now)] };
+  return { kind: "week", week: windowView(me.windows.week, now) };
 }
 
-function windowView(key: "h5" | "week", w: WindowState, now: number): QuotaWindowView {
-  // 过了 resetAt 的窗按清零画：这份快照不会自己到点过期（同桌面 liveWindow 的纪律）
+function windowView(w: WindowState, now: number): QuotaWindowView {
   const live = liveWindow(w, now);
   return {
-    key,
-    label: WINDOW_LABELS[key],
+    key: "week",
+    label: WINDOW_LABELS.week,
     remaining: fmtRemainingPercent(live),
     fill: Math.min(1, Math.max(0, remainingPercent(live) / 100)),
     tone: quotaToneView(windowPercent(live)),
@@ -87,42 +90,7 @@ function windowView(key: "h5" | "week", w: WindowState, now: number): QuotaWindo
   };
 }
 
-// ── 只按周画（#1386）──
-
-export type WeekQuota =
-  | { kind: "loading" }
-  | { kind: "none"; text: string }
-  | {
-    kind: "week";
-    week: QuotaWindowView;
-    /** 5 小时那扇窗此刻比本周更紧、且已经到了要提醒的程度（告急 / 用完）时的那一句；否则 null */
-    h5Note: string | null;
-  };
-
-/**
- * 「订阅与额度」那一页只画本周一格（demo，维护者 2026-09-27「额度只按周算」）。**真规矩没动**
- * （「先只改设计」），5 小时那扇窗还在网关里拦人——只画本周的话，人会对着「本周还剩 81%」
- * 被拦住而不知道为什么。所以它比本周更紧、且告急或用完时，底下多一句实话；平时一个字都不提。
- * 判据与账号页那两扇窗同一份（accountQuota：过了 resetAt 按清零、色档按已用）。
- */
-export function weekQuota(billing: BillingSnapshotView | null, now: number, readFailed = false): WeekQuota {
-  const q = accountQuota(billing, now, readFailed);
-  if (q.kind !== "windows") return q;
-  const [h5, week] = q.windows;
-  const me = billing!.me!;
-  const w = me.windows!;
-  const h5Left = remainingPercent(liveWindow(w.h5, now));
-  const weekLeft = remainingPercent(liveWindow(w.week, now));
-  let h5Note: string | null = null;
-  if (h5Left < weekLeft && h5.tone !== "neutral") {
-    h5Note = h5Left <= 0
-      ? `这 5 小时的额度用完了，${h5.refresh}。本周的还在。`
-      : `这 5 小时用得快，只剩 ${h5.remaining}，${h5.refresh}。`;
-  }
-  return { kind: "week", week, h5Note };
-}
-
-/** 两扇窗画不出来时那一句。窗只在订阅活跃时才下发——扣款没成功与没订阅都没有窗，但两句话该做的事相反：
+/** 额度画不出来时那一句。窗只在订阅活跃时才下发——扣款没成功与没订阅都没有窗，但两句话该做的事相反：
     前者去更新付款方式，后者去挑一档（ADR-0240：past_due 不是没订阅） */
 function noQuotaText(me: BillingMe): string {
   if (me.status === "past_due") return "这个账号的订阅扣款没成功，额度先停了。去「订阅」里更新付款方式就恢复。";
@@ -220,7 +188,7 @@ export function subscriptionNotes(me: BillingMe): SubscriptionNotes {
   };
 }
 
-export const SUBSCRIPTION_FOOTER = "降档之后，已经建好的智能体都还在。几档的区别在额度：越往上，5h 与本周那两扇窗越宽。";
+export const SUBSCRIPTION_FOOTER = "降档之后，已经建好的智能体都还在。几档的区别在额度：越往上，每周的额度越多。";
 
 /** 从 Stripe 回来之后，订阅变了没有。人点「完成」那一刻 webhook 可能还没落库——没变就再等一会儿再拉（几次封顶） */
 export function billingChanged(before: BillingMe | null, after: BillingMe | null): boolean {
