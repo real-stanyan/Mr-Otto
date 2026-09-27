@@ -2,6 +2,7 @@
 // 判据全在 shared：表单校验与 patch（agentSettingsForm.ts）、落库前的校验 + 查重名 + 23505 翻译、
 // 删一只的倒序四步（agentAdmin.ts，与桌面同一份编排）。这里只画与接线。
 // 「存」挂在原生导航条右边：什么都没改 / 有一格不合法 / 正在存时按不动。
+// 「说话的声音」那一行（#1372，A4b）拉起一张表，点一行只改表单那一格，同「换个形象」按「存」才落库。
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ScrollView, TextInput, View } from "react-native";
@@ -12,12 +13,14 @@ import { avatarPreviewSlot } from "../../../src/shared/agentAvatar.js";
 import {
   agentFormErrors, agentFormOf, agentFormPatch, agentFormValid, type AgentForm,
 } from "../../../src/shared/agentSettingsForm.js";
+import { voiceRowValue } from "../../../src/shared/agentVoicePicker.js";
 import { AGENT_DESCRIPTION_MAX, AGENT_INSTRUCTIONS_MAX } from "../../../src/shared/createAgentDraft.js";
 import { facePhase } from "../../../src/shared/ottoFace/art.js";
 import { deleteAgentRow, listAgentChats, listAgentNames, updateAgentRow } from "../../../src/shared/supabaseWorkspacesApi.js";
 import { agentPagePath } from "../../../src/shared/wiki.js";
 import { ADMIN_AGENT_ID, AGENT_NAME_MAX } from "../../../src/shared/workspaceAgents.js";
 import { HeaderTextButton } from "../chrome/HeaderTextButton.js";
+import { RowGlyph } from "../chrome/RowGlyphs.js";
 import { cloudClient } from "../cloud/cloudClient.js";
 import { Dialog, DialogFooter, DialogLead, DialogTitle } from "../dialog.js";
 import { Face } from "../face/Face.js";
@@ -27,6 +30,7 @@ import { supabase } from "../supabase.js";
 import { radius, space, usePalette } from "../theme.js";
 import { Button, Field, Group, Labeled, Note, Row } from "../ui.js";
 import { FacePickerSheet } from "./FacePickerSheet.js";
+import { VoicePickerSheet } from "./VoicePickerSheet.js";
 
 const updateDeps: AgentUpdateDeps = { listAgentNames, updateAgentRow };
 const deleteDeps: AgentDeleteDeps = {
@@ -53,6 +57,7 @@ export function AgentSettingsScreen({ route, navigation }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [picking, setPicking] = useState(false);
+  const [pickingVoice, setPickingVoice] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
 
@@ -173,6 +178,17 @@ export function AgentSettingsScreen({ route, navigation }: Props) {
           />
         </Labeled>
 
+        <Group>
+          <Row
+            leading={<RowGlyph name="wave" />}
+            label="说话的声音"
+            detail="开语音时它用这把嗓子"
+            value={voiceRowValue(form.voice)}
+            chevron
+            onPress={() => setPickingVoice(true)}
+          />
+        </Group>
+
         {error ? <Note tone="error">{error}</Note> : null}
 
         {/* 管理员没有这一行（RLS 也删不掉它，画一颗必然失败的钮是撒谎） */}
@@ -197,6 +213,17 @@ export function AgentSettingsScreen({ route, navigation }: Props) {
         current={previewSlot}
         onPick={(slot) => setForm({ ...form, avatarSlot: slot })}
         onClose={() => setPicking(false)}
+      />
+
+      <VoicePickerSheet
+        visible={pickingVoice}
+        agentId={agentId}
+        name={form.name}
+        description={form.description}
+        picked={form.voice}
+        agents={ws.agents}
+        onPick={(voice) => setForm({ ...form, voice })}
+        onClose={() => setPickingVoice(false)}
       />
 
       {/* 确认类用居中弹窗，不用抽屉（手机端既有规矩，spec §4） */}

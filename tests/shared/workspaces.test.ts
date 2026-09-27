@@ -3,7 +3,7 @@
 // avatar_slot 归一、sandbox_approval 原样透传）。
 
 import { describe, expect, it } from "vitest";
-import { assembleSnapshot, isHomeWorkspace } from "../../src/shared/workspaces.js";
+import { assembleSnapshot, isHomeWorkspace, normalizeVoiceKey } from "../../src/shared/workspaces.js";
 import { normalizeSandboxApproval } from "../../src/shared/workspaceAgents.js";
 
 const WS = { id: "ws-1", name: "测试工作区", owner_uid: "owner-uid-12345678", sandbox_approval: "ask" as const, kind: "team" as const };
@@ -125,6 +125,21 @@ describe("assembleSnapshot", () => {
     expect(slotOf("3")).toBeNull();
   });
 
+  it("voice（#1372）：形状合格的键原样带出（认不出的新键也留着，派生那一侧再当没挑过）；缺席 / null / 脏值就不带这一格", () => {
+    const agentRow = (voice: unknown) => ({
+      agent_id: "a1", name: "运营", description: "", instructions: "",
+      models: [], tools: [], created_by: "u2", updated_at: "1970-01-01T00:00:00.000Z",
+      voice,
+    });
+    const agentOf = (v: unknown) => assembleSnapshot(WS, [], [], [], [agentRow(v)], () => null).agents[0]!;
+    expect(agentOf("gan").voice).toBe("gan");
+    expect(agentOf("newkey").voice).toBe("newkey");
+    expect("voice" in agentOf(undefined)).toBe(false);   // 0042 还没跑：列读不到与「没挑过」同义
+    expect("voice" in agentOf(null)).toBe(false);
+    expect("voice" in agentOf("GAN")).toBe(false);
+    expect("voice" in agentOf(3)).toBe(false);
+  });
+
   it("agents：created_at → createdTs（ms）；列缺席（旧 select / 旧夹具）就不带这一格，不补 0", () => {
     const row = {
       agent_id: "a1", name: "运营", description: "", instructions: "",
@@ -171,5 +186,15 @@ describe("kind（#1280）", () => {
     expect(isHomeWorkspace({ kind: "team" })).toBe(false);
     expect(isHomeWorkspace({ kind: null })).toBe(false);
     expect(isHomeWorkspace({})).toBe(false);
+  });
+});
+
+describe("normalizeVoiceKey（#1372）", () => {
+  it("只收 0042 那条约束认的形状：小写字母 1–16 个", () => {
+    expect(normalizeVoiceKey("bo")).toBe("bo");
+    expect(normalizeVoiceKey("")).toBeNull();
+    expect(normalizeVoiceKey("a".repeat(17))).toBeNull();
+    expect(normalizeVoiceKey("b o")).toBeNull();
+    expect(normalizeVoiceKey(null)).toBeNull();
   });
 });

@@ -5,7 +5,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import {
-  ADMIN_CANNOT_DELETE, DUPLICATE_AGENT_NAME, agentIdFromBytes, assertAgentNameFree, createAgentChecked, deleteAgentEverywhere,
+  ADMIN_CANNOT_DELETE, DUPLICATE_AGENT_NAME, UNKNOWN_VOICE, VOICE_NOT_READY, agentIdFromBytes, assertAgentNameFree, createAgentChecked, deleteAgentEverywhere,
   updateAgentChecked, type AgentCreateDeps, type AgentDeleteDeps, type AgentUpdateDeps,
 } from "../../src/shared/agentAdmin.js";
 
@@ -71,6 +71,27 @@ describe("updateAgentChecked", () => {
     await expect(updateAgentChecked(deps, client, "w", "a1", { name: "运营" })).rejects.toThrow(DUPLICATE_AGENT_NAME);
     deps.updateAgentRow.mockRejectedValueOnce(new Error("行不存在或无权修改"));
     await expect(updateAgentChecked(deps, client, "w", "a1", { description: "x" })).rejects.toThrow("行不存在或无权修改");
+  });
+
+  it("声音（#1372）：认得的键 / null 原样递下去；认不出的键当场拒、不打网络", async () => {
+    const deps = updateDeps([]);
+    await updateAgentChecked(deps, client, "w", "a1", { voice: "gan" });
+    expect(deps.updateAgentRow).toHaveBeenLastCalledWith(client, "w", "a1", { voice: "gan" });
+    await updateAgentChecked(deps, client, "w", "a1", { voice: null });
+    expect(deps.updateAgentRow).toHaveBeenLastCalledWith(client, "w", "a1", { voice: null });
+    const deps2 = updateDeps([]);
+    await expect(updateAgentChecked(deps2, client, "w", "a1", { voice: "zzz" })).rejects.toThrow(UNKNOWN_VOICE);
+    expect(deps2.updateAgentRow).not.toHaveBeenCalled();
+    expect(deps2.listAgentNames).not.toHaveBeenCalled();
+  });
+
+  it("库还没跑 0042（42703）且这次带了声音：说「服务端还没升级」；没带声音的同一个错误原样抛", async () => {
+    const behind = Object.assign(new Error('column "voice" of relation "workspace_agents" does not exist'), { code: "42703" });
+    const deps = updateDeps([]);
+    deps.updateAgentRow.mockRejectedValueOnce(behind);
+    await expect(updateAgentChecked(deps, client, "w", "a1", { voice: "gan" })).rejects.toThrow(VOICE_NOT_READY);
+    deps.updateAgentRow.mockRejectedValueOnce(behind);
+    await expect(updateAgentChecked(deps, client, "w", "a1", { description: "管店铺" })).rejects.toBe(behind);
   });
 });
 

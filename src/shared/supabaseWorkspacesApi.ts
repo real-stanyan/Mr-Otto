@@ -125,8 +125,14 @@ export async function fetchWorkspace(
     agent_id: string; name: string; description: string; instructions: string; models: unknown;
     tools: unknown; created_by: string; created_at?: string; updated_at: string; avatar_slot?: unknown;
   }[];
+  const voices = await fetchAgentVoices(client, id);
   const profiles = await fetchProfiles(client, members.map((m) => m.uid));
-  return assembleSnapshot({ ...ws, sandbox_approval: sandboxApproval, kind }, members, connectors, sessions, agents, (uid) => profiles.get(uid) ?? null);
+  return assembleSnapshot(
+    { ...ws, sandbox_approval: sandboxApproval, kind },
+    members, connectors, sessions,
+    agents.map((a) => (voices.has(a.agent_id) ? { ...a, voice: voices.get(a.agent_id) } : a)),
+    (uid) => profiles.get(uid) ?? null,
+  );
 }
 
 /** `workspaces.kind` 那一格（#1280）。**单独一条、容错**，理由与 `fetchSandboxApproval`
@@ -139,6 +145,19 @@ async function fetchWorkspaceKind(client: SupabaseClient, id: string): Promise<W
   if (res.error || res.data === null) return null;
   const k = (res.data as { kind?: unknown }).kind;
   return k === "home" || k === "team" ? k : null;
+}
+
+/** 每只挑过的「说话的声音」（`workspace_agents.voice`，#1372）。**单独一条、容错**，理由与
+    `fetchWorkspaceKind` 逐字相同：拼进主 select 的话，0042 没跑时 PostgREST 对不存在的列回 42703，
+    整个名册一个字都读不出来。读不到回空表——全部按 agent_id 派生，那正是没挑过的样子 */
+export async function fetchAgentVoices(client: SupabaseClient, workspaceId: string): Promise<Map<string, string>> {
+  const res = await client.from("workspace_agents").select("agent_id,voice").eq("workspace_id", workspaceId);
+  const out = new Map<string, string>();
+  if (res.error || !Array.isArray(res.data)) return out;
+  for (const r of res.data as { agent_id?: unknown; voice?: unknown }[]) {
+    if (typeof r.agent_id === "string" && typeof r.voice === "string") out.set(r.agent_id, r.voice);
+  }
+  return out;
 }
 
 /** 这个账号的个人主场（#1280），没有回 null。库里那条唯一索引
@@ -344,11 +363,12 @@ export async function updateAgentRow(
   agentId: string,
   patch: {
     name?: string; description?: string; instructions?: string; models?: string[];
-    tools?: AgentToolAllow[]; avatarSlot?: number | null;
+    tools?: AgentToolAllow[]; avatarSlot?: number | null; voice?: string | null;
   },
 ): Promise<void> {
   // avatarSlot 是驼峰、列名是下划线，跟其余字段不同名——省略 = 不动这一格，
   // 显式给 null = 清回「按 agent_id 派生」（两者不是一回事，同 config 帧那份三态）
+  // voice 与列同名，原样跟着 rest 进去：省略 = 不动这一格，null = 清回派生（#1372）
   const { avatarSlot, ...rest } = patch;
   const rows = unwrap(
     await client.from("workspace_agents")

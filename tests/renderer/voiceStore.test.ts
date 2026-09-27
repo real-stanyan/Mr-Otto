@@ -6,7 +6,7 @@
 // 把每段当播放失败跳到下一段——这条测试断言的是**送去合成的是什么**。
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useChat } from "../../src/renderer/src/store.js";
-import { agentVoiceId } from "../../src/shared/agentVoice.js";
+import { AGENT_VOICE_CHOICES, agentVoiceId } from "../../src/shared/agentVoice.js";
 import type { SessionEvent } from "../../src/session/events.js";
 import type { WorkspaceSnapshot } from "../../src/shared/workspaces.js";
 
@@ -74,6 +74,17 @@ describe("store 的语音接线（#1163）", () => {
     await flush();
     expect(spoken.map((s) => s.text)).toEqual(["第一段", "第二段"]);
     expect(spoken[0]!.voiceId).toBe(agentVoiceId("a_1", ["admin", "a_1"]));
+  });
+
+  it("挑过声音的那只（#1372）照它挑的那一档读", async () => {
+    // 挑一档和它按 id 派出来的不同的——同一个音色的话，接线没接上这条也会绿
+    const pick = AGENT_VOICE_CHOICES.find((c) => c.voiceId !== agentVoiceId("a_1", ["admin", "a_1"]))!;
+    useChat.setState({ workspaceGroups: [{ ...ws, agents: [ws.agents[0]!, { ...ws.agents[1]!, voice: pick.key }] }] });
+    const st = useChat.getState();
+    st.joinVoiceCall();
+    st.voiceOnEvent(said("a_1", 2, "我挑了这一档"));
+    await flush();
+    expect(spoken[0]!.voiceId).toBe(pick.voiceId);
   });
 
   it("流式快照：完成的段先出声，终态只补没读过的", async () => {
