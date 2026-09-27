@@ -1,6 +1,5 @@
 // 生成物：node mobile/scripts/gen-icons.mjs（#1386）。别手改——加图标去改脚本里的 NAMES。
 // 形状来自 lucide-react v1.31.0（ISC），与桌面、demo 同一套。
-/* eslint-disable */
 export type IconTag = "path" | "circle" | "rect" | "line" | "polyline" | "ellipse";
 export type IconNode = readonly [IconTag, Readonly<Record<string, string | number>>];
 

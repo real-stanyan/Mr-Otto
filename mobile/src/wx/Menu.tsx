@@ -1,8 +1,9 @@
 // 右上角那颗 ⊕ 点开的菜单（#1386，demo 的 plusMenu）：从那颗钮下面长出来（缩放原点在右上角，不是正中），
 // 点外面收起。几样东西的岔路口，不是表单——所以是一张小卡，不是居中弹窗。
-// 进场 150ms 缓出、从 .96 放大；关了动效只淡入。选了一样：先收菜单，收完再做（两个浮层不叠着出场）。
+// 进场 150ms 缓出、从 .96 放大；关了动效只淡入。选了一样：先收菜单，等 Modal 真的退掉（onDismiss）再做——
+// 下一样多半是另一个 Modal（新建智能体的弹窗），iOS 不许在一个正在退场的 Modal 上再叠一个。
 import { useEffect, useRef, useState } from "react";
-import { Animated, Easing, Modal, Pressable, StyleSheet, Text, View } from "react-native";
+import { Animated, Easing, Modal, Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { usePalette } from "../theme.js";
 import { useReduceMotion } from "../ui.js";
@@ -28,6 +29,15 @@ export function PlusMenu({ visible, items, onPick, onClose }: {
   const [mounted, setMounted] = useState(visible);
   const k = useRef(new Animated.Value(0)).current;
   const picked = useRef<string | null>(null);
+  const pick = useRef(onPick);
+  useEffect(() => {
+    pick.current = onPick;
+  }, [onPick]);
+  const fire = (): void => {
+    const key = picked.current;
+    picked.current = null;
+    if (key !== null) pick.current(key);
+  };
   useEffect(() => {
     if (visible) {
       setMounted(true);
@@ -37,15 +47,14 @@ export function PlusMenu({ visible, items, onPick, onClose }: {
     Animated.timing(k, { toValue: 0, duration: 110, easing: Easing.out(Easing.quad), useNativeDriver: true }).start(({ finished }) => {
       if (!finished) return;
       setMounted(false);
-      const key = picked.current;
-      picked.current = null;
-      if (key !== null) onPick(key);
+      if (Platform.OS !== "ios") setTimeout(fire, 50);
     });
-  }, [visible, k, onPick]);
-  if (!mounted) return null;
+    // fire 只读 ref，不进依赖
+  }, [visible, k]);
+  if (!mounted && picked.current === null) return null;
   const scale = reduce ? 1 : k.interpolate({ inputRange: [0, 1], outputRange: [0.96, 1] });
   return (
-    <Modal transparent visible animationType="none" statusBarTranslucent onRequestClose={onClose}>
+    <Modal transparent visible={mounted} animationType="none" statusBarTranslucent onRequestClose={onClose} onDismiss={fire}>
       <Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityRole="button" accessibilityLabel="收起菜单" />
       <Animated.View
         accessibilityViewIsModal

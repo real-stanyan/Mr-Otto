@@ -8,7 +8,7 @@
 //   中间那块提示（声浪 + 听到的字 + 松开发送 / 上划取消）由调用方画在屏幕正中：它要盖在时间线上面，这一栏画不到那里。
 // · 草稿跟着这条线走（seenStore，内存里）：离开时存、回来时摆回去；列表那一行写「[草稿]」。
 import { useEffect, useImperativeHandle, useRef, useState, type Ref } from "react";
-import { Animated, Easing, Keyboard, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
+import { Animated, Easing, Keyboard, Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { insertAgentMention, justOpenedMention } from "../../../src/shared/agentMentionInput.js";
 import { takeDraftSeed, useChatStore } from "../cloud/chatStore.js";
@@ -58,6 +58,16 @@ export function WxComposer({ placeholder, canSend, sessionId, draftKey, onSend, 
   const [sending, setSending] = useState(false);
   const [mode, setMode] = useState<"text" | "voice">("text");
   const [panel, setPanel] = useState<"plus" | "emoji" | null>(null);
+  // 键盘起着的时候底下不再让出 home 条那一截（键盘本身已经盖过它了），否则输入栏和键盘之间空一道
+  const [keyboard, setKeyboard] = useState(false);
+  useEffect(() => {
+    const show = Keyboard.addListener(Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow", () => setKeyboard(true));
+    const hide = Keyboard.addListener(Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide", () => setKeyboard(false));
+    return () => {
+      show.remove();
+      hide.remove();
+    };
+  }, []);
   const seed = useChatStore().draftSeed;
   const input = useRef<TextInput>(null);
   const selection = useRef({ start: draft.length, end: draft.length });
@@ -149,7 +159,7 @@ export function WxComposer({ placeholder, canSend, sessionId, draftKey, onSend, 
       <View
         style={{
           flexDirection: "row", alignItems: "flex-end", gap: 6, paddingHorizontal: 8, paddingTop: 8,
-          paddingBottom: panel !== null ? 8 : Math.max(insets.bottom, 8),
+          paddingBottom: panel !== null || keyboard ? 8 : Math.max(insets.bottom, 8),
           borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: c.border,
         }}
       >

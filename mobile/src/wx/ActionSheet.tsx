@@ -1,9 +1,10 @@
 // 从底下升起来的几个选项（#1386，demo 的 avatarSheet：换头像）：在几样里挑一样是选择器，按规矩走底部
 // （维护者：表单 / 确认用居中弹窗，选择器照旧）。几行选项一组、隔一道地面、底下单独一行「取消」（iOS 的动作单）。
-// 进场 260ms 缓出、从下往上；关了动效只淡入。点暗幕、点取消都是不选。选了一样：先收起，收完再做
-// （选完多半要开系统相册——Modal 还在的时候开，相册会被压在它底下）。
+// 进场 260ms 缓出、从下往上；关了动效只淡入。点暗幕、点取消都是不选。选了一样：先收起，**等 Modal 真的
+// 退掉（onDismiss）再做**——选完多半要开系统相册，而 iOS 不许在一个正在退场的 Modal 上再叠一个系统界面：
+// 动画放完就调的话相册悄悄不出来（模拟器上撞见过，一个字的报错都没有）。
 import { useEffect, useRef, useState } from "react";
-import { Animated, Easing, Modal, Pressable, StyleSheet, Text, View } from "react-native";
+import { Animated, Easing, Modal, Platform, Pressable, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { usePalette } from "../theme.js";
 import { useReduceMotion } from "../ui.js";
@@ -28,6 +29,16 @@ export function ActionSheet({ visible, title, options, onPick, onClose }: {
   const [mounted, setMounted] = useState(visible);
   const k = useRef(new Animated.Value(0)).current;
   const picked = useRef<string | null>(null);
+  const pick = useRef(onPick);
+  useEffect(() => {
+    pick.current = onPick;
+  }, [onPick]);
+  /** Modal 真的退掉之后才做选中的那一样（见文件头）；安卓没有 onDismiss，退场放完隔一拍再做 */
+  const fire = (): void => {
+    const key = picked.current;
+    picked.current = null;
+    if (key !== null) pick.current(key);
+  };
   useEffect(() => {
     if (visible) {
       setMounted(true);
@@ -37,12 +48,11 @@ export function ActionSheet({ visible, title, options, onPick, onClose }: {
     Animated.timing(k, { toValue: 0, duration: 200, easing: Easing.out(Easing.quad), useNativeDriver: true }).start(({ finished }) => {
       if (!finished) return;
       setMounted(false);
-      const key = picked.current;
-      picked.current = null;
-      if (key !== null) onPick(key);
+      if (Platform.OS !== "ios") setTimeout(fire, 50);
     });
-  }, [visible, k, onPick]);
-  if (!mounted) return null;
+    // fire 只读 ref，不进依赖
+  }, [visible, k]);
+  if (!mounted && picked.current === null) return null;
   const shift = reduce ? 0 : k.interpolate({ inputRange: [0, 1], outputRange: [320, 0] });
   const row = (label: string, onPress: () => void, color: string, key: string, first: boolean) => (
     <View key={key}>
@@ -57,7 +67,7 @@ export function ActionSheet({ visible, title, options, onPick, onClose }: {
     </View>
   );
   return (
-    <Modal transparent visible animationType="none" statusBarTranslucent onRequestClose={onClose}>
+    <Modal transparent visible={mounted} animationType="none" statusBarTranslucent onRequestClose={onClose} onDismiss={fire}>
       <Animated.View pointerEvents="none" style={[StyleSheet.absoluteFill, { backgroundColor: c.scrim, opacity: k }]} />
       <Pressable style={StyleSheet.absoluteFill} onPress={onClose} accessibilityRole="button" accessibilityLabel="取消" />
       <Animated.View

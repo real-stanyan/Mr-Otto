@@ -5,13 +5,16 @@ import { Text, View } from "react-native";
 import { badgeText } from "../../../src/shared/wechatInbox.js";
 import { usePalette } from "../theme.js";
 
+/** 外面那圈环有多宽。盒子是 content-box（环画在外面），所以圆角要连环一起算：只给内容那一半会画成圆角方块 */
+const RING = 2;
+
 export function CountBadge({ n, ring }: { n: number; ring?: string }) {
   const { c } = usePalette();
   return (
     <View
       style={{
-        minWidth: 18, height: 18, paddingHorizontal: 5, borderRadius: 9, alignItems: "center", justifyContent: "center",
-        backgroundColor: c.brand, borderWidth: ring === undefined ? 0 : 2, borderColor: ring ?? "transparent",
+        minWidth: 18, height: 18, paddingHorizontal: 5, borderRadius: 9 + (ring === undefined ? 0 : RING), alignItems: "center", justifyContent: "center",
+        backgroundColor: c.brand, borderWidth: ring === undefined ? 0 : RING, borderColor: ring ?? "transparent",
         boxSizing: "content-box",
       }}
     >
@@ -25,8 +28,8 @@ export function DotBadge({ ring, size = 10 }: { ring?: string; size?: number }) 
   return (
     <View
       style={{
-        width: size, height: size, borderRadius: size / 2, backgroundColor: c.brand,
-        borderWidth: ring === undefined ? 0 : 2, borderColor: ring ?? "transparent", boxSizing: "content-box",
+        width: size, height: size, borderRadius: size / 2 + (ring === undefined ? 0 : RING), backgroundColor: c.brand,
+        borderWidth: ring === undefined ? 0 : RING, borderColor: ring ?? "transparent", boxSizing: "content-box",
       }}
     />
   );

@@ -186,7 +186,7 @@ export function FriendChatScreen({ route, navigation }: Props) {
           ) : null}
         </View>
         {note !== null || thread?.error ? (
-          <Text style={{ fontSize: 13, color: c.destructive, paddingHorizontal: 16, paddingBottom: 6 }}>{note ?? thread?.error}</Text>
+          <Text style={{ fontSize: 13, color: c.destructive, paddingHorizontal: 16, paddingBottom: 6 }}>{note ?? `没拉到最新的消息（${thread?.error ?? ""}）`}</Text>
         ) : null}
         {friend ? (
           <WxComposer

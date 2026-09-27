@@ -216,7 +216,6 @@ export function ChatScreen({ route, navigation }: Props) {
     if (ws === null || resolved === null || sessionId === null) return;
     void openChat(ws.id, sessionId, resolved.seed, resolved.title);
     // 只跟「是哪一条」走：resolved 每次刷新都是新对象
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ws?.id, sessionId]);
   useEffect(() => () => closeChat(), []);
 
@@ -389,7 +388,6 @@ export function ChatScreen({ route, navigation }: Props) {
     autoCalled.current = true;
     void onStartCall();
     // onStartCall 每次渲染都是新的；这里只跟「打得了没有」走
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [route.params.autoCall, offerPhone]);
 
   const plus: PlusItem[] = [];

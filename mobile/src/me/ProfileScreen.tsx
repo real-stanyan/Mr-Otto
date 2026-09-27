@@ -62,7 +62,7 @@ export function ProfileScreen() {
   return (
     <View style={{ flex: 1, backgroundColor: c.background }}>
       <ListPage>
-        <Group footer="邮箱是登录用的，这里改不了。名字和头像朋友、群里的人都看得到。">
+        <Group>
           <Row
             label="头像"
             minHeight={88}
@@ -73,7 +73,7 @@ export function ProfileScreen() {
           <Row label="名字" value={me.name} chevron onPress={() => show("name")} />
           <Row label="邮箱" value={me.email} />
         </Group>
-        <Group>
+        <Group footer="邮箱是登录用的，这里改不了。名字和头像朋友、群里的人都看得到。">
           <Row label="改密码" chevron onPress={() => show("password")} />
         </Group>
       </ListPage>
