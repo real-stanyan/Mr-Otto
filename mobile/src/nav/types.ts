@@ -25,6 +25,8 @@ export type RootStackParams = {
   Machine: undefined;
   /** 应用（A5）：接着的那几个，只列 */
   Apps: undefined;
+  /** 设置（A5）：外观 + 连接诊断 */
+  Settings: undefined;
   AgentSettings: { agentId: string };
   /** 建群（A3）：从 ＋ 那张岔路弹窗的「一个群聊」推进来 */
   NewGroup: undefined;

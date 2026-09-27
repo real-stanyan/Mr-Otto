@@ -1,8 +1,10 @@
 // 名册左上角那颗：进账号。demo 里它是一颗毛玻璃圆钮、里面是名字的首字（前景色，不是彩色头像）。
-// 名字先取 OAuth 带来的 user_metadata，没有就用邮箱（原 nav/AvatarButton.tsx 的取法）。
-// 右上角那枚「有应用等你登录」的点在 A5（spec §5.8）——数据源查清之前不画。
+// 名字与首字走 shared 的 accountName / accountInitial（账号页同一份）。
+// 右上角那枚「有应用等你登录」的点**不画**：A5 查过数据源——应用要不要重新登录只活在桌面进程里（McpHub 的
+// needs-auth），托管箱还把不 live 的整台滤掉，手机从哪条路都问不出来（spec §10 第 80 条；补数据源另开 issue）。
 import { useEffect, useState } from "react";
 import { Text } from "react-native";
+import { accountInitial, accountName } from "../../../src/shared/mobileAccount.js";
 import { supabase } from "../supabase.js";
 import { usePalette } from "../theme.js";
 import { RoundButton } from "../chrome/RoundButton.js";
@@ -12,15 +14,13 @@ export function AccountButton({ onPress }: { onPress: () => void }) {
   const [name, setName] = useState("");
   useEffect(() => {
     void supabase.auth.getSession().then(({ data }) => {
-      const u = data.session?.user;
-      const meta = (u?.user_metadata ?? {}) as { name?: string; full_name?: string };
-      setName(meta.name ?? meta.full_name ?? u?.email ?? "");
+      setName(accountName(data.session?.user));
     });
   }, []);
   return (
     <RoundButton label="账号" onPress={onPress}>
       <Text style={{ fontSize: 15, fontWeight: "600", color: c.foreground }}>
-        {(name.trim() || "·").slice(0, 1).toUpperCase()}
+        {accountInitial(name)}
       </Text>
     </RoundButton>
   );

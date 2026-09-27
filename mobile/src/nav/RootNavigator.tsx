@@ -17,6 +17,7 @@ import { WikiEditScreen } from "../machine/WikiEditScreen.js";
 import { UsageScreen } from "../machine/UsageScreen.js";
 import { MachineScreen } from "../machine/MachineScreen.js";
 import { AppsScreen } from "../machine/AppsScreen.js";
+import { SettingsScreen } from "../account/SettingsScreen.js";
 import { NewGroupScreen } from "../group/NewGroupScreen.js";
 import { GroupSettingsScreen } from "../group/GroupSettingsScreen.js";
 import { FaceGallery } from "../dev/FaceGallery.js";
@@ -57,6 +58,7 @@ export function RootNavigator() {
         <Root.Screen name="Usage" component={UsageScreen} options={{ title: "这周用了多少", headerBackTitle: "返回" }} />
         <Root.Screen name="Machine" component={MachineScreen} options={{ title: "它们的电脑", headerBackTitle: "返回" }} />
         <Root.Screen name="Apps" component={AppsScreen} options={{ title: "应用", headerBackTitle: "返回" }} />
+        <Root.Screen name="Settings" component={SettingsScreen} options={{ title: "设置", headerBackTitle: "返回" }} />
         <Root.Screen
           name="AgentSettings"
           component={AgentSettingsScreen}
