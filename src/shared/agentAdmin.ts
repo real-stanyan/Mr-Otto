@@ -23,7 +23,8 @@ export const ADMIN_CANNOT_DELETE = "管理员不能删除";
 export const UNKNOWN_VOICE = "没有这个声音";
 
 /** 库还没跑 0042 时带着声音按「存」：说清是服务端的事、怎么先把别的存下来（spec §10 第 99 条） */
-export const VOICE_NOT_READY = "说话的声音还存不进去：服务端还没升级。把声音换回原来的，别的改动就能存了。";
+// 手机上声音是单独存的（资料页那一行，表收起时存，#1386）——不再有「别的改动」跟它一起存，这句话不说那半句
+export const VOICE_NOT_READY = "说话的声音还存不进去：服务端还没升级。先照旧用它原来的声音。";
 
 /** 改一只智能体时调用方递进来的 patch。`avatarSlot` 不过 `validateAgentPatch`（那份
     schema 是 create_agent **工具**的参数表），在这里单独归一：**省略与 null 不同义**——

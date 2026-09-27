@@ -8,7 +8,7 @@ import { WIKI_ABSENT, WIKI_EMPTY, WIKI_FOOTER, wikiGroupsOf, wikiGroupTitle } fr
 import { RowGlyph } from "../chrome/RowGlyphs.js";
 import { useHome } from "../home/homeStore.js";
 import { space } from "../theme.js";
-import { Button, Group, Hint, Note, Page, Row, Spinner } from "../ui.js";
+import { Button, Group, Hint, Inset, ListPage, Note, Row, Spinner } from "../ui.js";
 import { refreshWiki, useMachine } from "./machineStore.js";
 
 export function WikiScreen() {
@@ -24,25 +24,25 @@ export function WikiScreen() {
   );
 
   if (homeId === null) {
-    return <Page><Hint>还没有智能体，也就还没有记忆。</Hint></Page>;
+    return <ListPage><Inset><Hint>还没有智能体，也就还没有记忆。</Hint></Inset></ListPage>;
   }
   const groups = wikiGroupsOf(wiki);
   return (
-    <Page>
-      <View style={{ gap: space.lg }}>
+    <ListPage>
+      <View style={{ gap: space.sm }}>
         {wiki.kind === "error" ? (
-          <View style={{ gap: space.sm }}>
+          <Inset>
             <Note tone="warn">{groups === null ? `这一刻读不到记忆：${wiki.message}` : `这一刻读不到最新的（${wiki.message}），下面是上一次的。`}</Note>
             <View style={{ alignItems: "flex-start" }}>
               <Button size="auto" variant="outline" label="重试" onPress={() => void refreshWiki(homeId)} />
             </View>
-          </View>
+          </Inset>
         ) : null}
-        {wiki.kind === "loading" ? <Spinner /> : null}
-        {wiki.kind === "absent" ? <Hint>{WIKI_ABSENT}</Hint> : null}
-        {groups !== null && groups.length === 0 ? <Hint>{WIKI_EMPTY}</Hint> : null}
+        {wiki.kind === "loading" ? <Inset><Spinner /></Inset> : null}
+        {wiki.kind === "absent" ? <Inset><Hint>{WIKI_ABSENT}</Hint></Inset> : null}
+        {groups !== null && groups.length === 0 ? <Inset><Hint>{WIKI_EMPTY}</Hint></Inset> : null}
         {(groups ?? []).map((g) => (
-          <Group key={g.name} header={wikiGroupTitle(g.name)}>
+          <Group key={g.name} header={wikiGroupTitle(g.name)} inset={52}>
             {g.entries.map((e) => (
               <Row
                 key={e.path}
@@ -55,8 +55,8 @@ export function WikiScreen() {
             ))}
           </Group>
         ))}
-        {groups !== null && groups.length > 0 ? <Hint>{WIKI_FOOTER}</Hint> : null}
+        {groups !== null && groups.length > 0 ? <Inset><Hint>{WIKI_FOOTER}</Hint></Inset> : null}
       </View>
-    </Page>
+    </ListPage>
   );
 }

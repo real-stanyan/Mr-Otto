@@ -1,37 +1,54 @@
-// 导航的路由表（#1356）：一个原生栈。第一层只有一个主语——我有哪几只智能体——名册是栈底，
-// 其余一律推进来。
+// 导航的路由表（#1386，微信式布局）：一个原生栈，栈底是一个页签屏（聊天 / 通讯录 / 我），其余一律推进来，
+// 推进来的页盖住底栏（照 iOS 微信）。原生栈与左缘右划原样（ADR-0293 决定 2）。
+import type { NavigatorScreenParams } from "@react-navigation/native";
 import type { ChatTarget } from "../../../src/shared/mobileChat.js";
 
+export type HomeTabParams = {
+  Chats: undefined;
+  Contacts: undefined;
+  Me: undefined;
+};
+
+/** 一条云会话线：主场的私聊（按 agentId，还没聊过是草稿）/ 主场的群 / 团队里的一条会话（= 有真人的群） */
+export type ChatRoute = ChatTarget | { kind: "team"; workspaceId: string; sessionId: string };
+
+/** 聊天信息页：云会话那三种 + 朋友私聊 */
+export type InfoRoute = ChatRoute | { kind: "friend"; uid: string };
+
 export type RootStackParams = {
-  Roster: undefined;
-  /** 私聊按 agentId 进（还没聊过就是草稿），群按 sessionId 进 */
-  Chat: ChatTarget;
-  Account: undefined;
-  /** 订阅（A5）：账号页「订阅」那一行、名册进门「没订阅 / 档位不带」那颗钮进来 */
+  Home: NavigatorScreenParams<HomeTabParams> | undefined;
+  /** autoCall：从智能体资料点「语音通话」进来——房间一 ready 就把电话打出去（一次） */
+  Chat: ChatRoute & { autoCall?: boolean };
+  /** 朋友私聊（messages 表，不是云会话） */
+  FriendChat: { uid: string };
+  ChatInfo: InfoRoute;
+  /** 智能体资料。workspaceId 缺席 = 我主场里的（能改）；给了 = 团队里的（别人的，只看） */
+  Agent: { agentId: string; workspaceId?: string };
+  Friend: { uid: string };
+  /** 新的朋友：别人加我的 / 我加别人的 */
+  Requests: undefined;
+  /** 群聊：所有群一列 */
+  Groups: undefined;
+  /** 个人信息：头像 / 名字 / 邮箱 / 改密码 */
+  Profile: undefined;
+  /** 订阅与额度 */
+  Quota: undefined;
+  /** 订阅（A5）：挑一档 / 换档 */
   Subscription: undefined;
   /** 那台电脑上的一层文件夹（A5）；path 相对 /work，"" = 最外层。点子目录压一页同名屏 */
   Files: { path: string };
   /** 一个文件（A5）：只读，开头 64 KB */
   FilePreview: { path: string };
-  /** 记忆清单（A5）：它们自己维护的 wiki */
+  /** 记忆清单（A5） */
   Wiki: undefined;
-  /** 记忆里的一页（A5）；path 是 wiki/ 底下的相对路径，如 customers/acme.md */
   WikiPage: { path: string };
-  /** 改记忆里的一页（A5） */
   WikiEdit: { path: string };
-  /** 这周用了多少（A5）：每只智能体占你周额度的百分之几 */
+  /** 这周谁用得多（A5） */
   Usage: undefined;
-  /** 它们的电脑（A5）：文件 / 应用 / 记忆 / 用量 */
-  Machine: undefined;
   /** 应用（A5）：接着的那几个，只列 */
   Apps: undefined;
-  /** 设置（A5）：外观 + 连接诊断 */
+  /** 设置：外观 / 连接诊断 / 版本 / 退出登录 */
   Settings: undefined;
-  AgentSettings: { agentId: string };
-  /** 建群（A3）：从 ＋ 那张岔路弹窗的「一个群聊」推进来 */
-  NewGroup: undefined;
-  /** 群设置（A3）：从群聊头部右边那颗进来 */
-  GroupSettings: { sessionId: string };
   FaceGallery: undefined;
 };
 

@@ -26,6 +26,17 @@ export function mentionQueryAt(text: string, caret: number): { at: number; query
   return { at, query };
 }
 
+// #1386：手机输入框里「刚打了一个 @」就弹选人抽屉（demo：群里输入 @ 点名）。判据是**这一次编辑恰好
+// 多了一个字、那个字是 @（或全角 ＠）、而且它开了一个空的 @**——边界沿用 mentionQueryAt（@ 前是行首或
+// 非构词字符），所以打邮箱不会弹；粘贴一整段、删字、在已有的 @ 后面接着打，都不弹（那不是「刚打了一个 @」）。
+export function justOpenedMention(prev: string, next: string, caret: number): boolean {
+  if (next.length !== prev.length + 1 || caret < 1 || caret > next.length) return false;
+  const ch = next[caret - 1];
+  if (ch !== "@" && ch !== "＠") return false;
+  if (next.slice(0, caret - 1) + next.slice(caret) !== prev) return false;
+  return mentionQueryAt(next, caret)?.query === "";
+}
+
 // #935 / #957 C-I4：下一个字符已经是空白（用户在句子中间插入 @，后面本来就
 // 跟着一个空格或换行）时不再补一个——原来无条件加空格，插在两个词中间就是
 // 一句话里冒出双空格。只在真的没有空白（含光标已在行尾）时才补一个，好让

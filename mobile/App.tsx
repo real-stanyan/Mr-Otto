@@ -1,8 +1,8 @@
-// 手机端的入口：开屏 → 进门 → 名册（单栏，#1356）。
+// 手机端的入口：开屏 → 进门 → 底部三格（聊天 / 通讯录 / 我，#1386 微信式布局；原来的名册单栏见 #1356）。
 //
 // 此刻画哪一屏由 shared/mobileGate.ts 的 gateView 说了算：冷启动没做完画开屏，没有 session 画闸门，
-// 其余进名册（单栈）。登录 / 登出 / session 过期一律跟着 onAuthStateChange 走，不在各个按钮里分别切屏。
-// 导航在 src/nav/（一个原生栈，#1356）；视觉语言全部来自 src/theme.ts（逐值抄自桌面 app.css）。
+// 其余进 app（一个原生栈，栈底是页签屏）。登录 / 登出 / session 过期一律跟着 onAuthStateChange 走，不在各个按钮里分别切屏。
+// 导航在 src/nav/（一个原生栈 + 栈底的页签屏，#1386）；视觉语言全部来自 src/theme.ts（逐值抄自桌面 app.css）。
 
 import { useCallback, useEffect, useState } from "react";
 import { View } from "react-native";
@@ -67,7 +67,7 @@ export default function App() {
     return () => sub.subscription.unsubscribe();
   }, []);
 
-  // 状态栏字色:开屏 / 闸门 / 名册都归这一处管(为什么要补发第二次,见 statusBarStyle.ts,#1270)
+  // 状态栏字色:开屏 / 闸门 / app 都归这一处管(为什么要补发第二次,见 statusBarStyle.ts,#1270)
   useStatusBarStyle(usePalette().isDark);
 
   const progress = splashProgress({ done, total: BOOT_STEPS, elapsedMs: now - t0 });

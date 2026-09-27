@@ -4,21 +4,21 @@
 // 步骤、开场白都不画，ADR-0235 / 0250）。这里只回答「留下来的那些画成哪一种行」，以及
 // 最底下「此刻」那一行挑哪一只。
 
-import type { ChatRosterChangedEvent, SessionEvent } from "../session/events.js";
+import type { ApprovalRequestEvent, ChatRosterChangedEvent, SessionEvent } from "../session/events.js";
 import { groupRows, rosterRows } from "./agentRoster.js";
 import { splitBubbles } from "./chatBubbles.js";
 import {
-  assistantLabel, chatRosterLineParts, cloudEmptyState, dispatchLineText, hiddenFromCloudTimeline, relayLineText, stopButtonRows,
-  systemNoteText, turnEndedLineText, userRowIdentity, voiceCallCards, type RosterLinePart, type VoiceCallCard,
+  approvalCardTitle, assistantLabel, chatRosterLineParts, cloudEmptyState, decisionLineText, dispatchLineText, hiddenFromCloudTimeline,
+  relayLineText, stopButtonRows, systemNoteText, turnEndedLineText, userRowIdentity, voiceCallCards, type RosterLinePart, type VoiceCallCard,
 } from "./cloudTimeline.js";
-import { withDaySeparators } from "./dayLabel.js";
 import { callTopicText } from "./mobileCall.js";
 import { dmFaceState, type FaceState } from "./ottoFace/index.js";
 import type { CsChatInfo } from "./remote/cloudSession.js";
 import type { CloudSessionRow } from "./supabaseWorkspacesApi.js";
 import { systemNoteDetail } from "./systemNote.js";
 import { openTurns, type OpenTurn } from "./turnLedger.js";
-import { agentNameOf } from "./workspaceView.js";
+import { needsTimeRow, timelineTimeLabel } from "./wechatInbox.js";
+import { agentNameOf, labelOf } from "./workspaceView.js";
 import type { WorkspaceSnapshot } from "./workspaces.js";
 
 /** 从名册点进来的是谁：单只（按 agentId 找它那条私聊）或一个群（按 sessionId） */
@@ -55,12 +55,13 @@ export function resolveChatTarget(
 }
 
 export type ChatRow =
-  | { kind: "day"; key: string; label: string }
-  /** 我说的：右侧实色气泡 */
+  /** 居中的一条时刻（#1386：照微信，相邻两句隔 5 分钟以上才插，今天只写钟点） */
+  | { kind: "time"; key: string; label: string }
+  /** 我说的：右侧气泡 */
   | { kind: "mine"; key: string; ts: number; text: string }
-  /** 别的人说的（主场里不会有，群聊将来会有）：左侧带名字 */
-  | { kind: "human"; key: string; ts: number; name: string; text: string }
-  /** 它说的：不套气泡的正文，按空行拆成几段（splitBubbles，ADR-0266） */
+  /** 别的人说的（团队群里的成员）：左侧带头像与名字。uid 缺席（旧日志）时头像退回首字 */
+  | { kind: "human"; key: string; ts: number; uid: string | null; name: string; text: string }
+  /** 它说的：按空行拆成几个气泡（splitBubbles，ADR-0266） */
   | { kind: "agent"; key: string; ts: number; agentId: string; name: string; paragraphs: string[] }
   /** 旁白（系统说的一句、engine 注的后台任务 / 护栏、接力线、派活那一句）与出错 */
   | { kind: "note"; key: string; ts: number; text: string; tone: "muted" | "error"; detail: string | null }
@@ -68,9 +69,15 @@ export type ChatRow =
   | { kind: "roster"; key: string; ts: number; parts: RosterLinePart[] }
   /** 一场语音通话折成的那张卡（A4，ADR-0288）：卡在开场那条名单事件的位置；通话里说的话与通话里那几只的回复
       都折进卡里，不单独成行。`topic` = 卡的第二行「聊的什么」，null = 不画那一行 */
-  | { kind: "call"; key: string; ts: number; card: VoiceCallCard; topic: string | null };
+  | { kind: "call"; key: string; ts: number; card: VoiceCallCard; topic: string | null }
+  /** 还没人批的一张审批卡（#1386：团队群里有审批，ADR-0231）。`canDecide` = 我是发起这一轮的人或群主
+      （同 cloudSessionClient 转给审批层的那道判据）；否则只写「等 X 批」 */
+  | {
+    kind: "approval"; key: string; ts: number; callId: string; title: string;
+    fields: { label: string; value: string }[]; summary: string; canDecide: boolean; waitingFor: string;
+  };
 
-type ItemRow = Exclude<ChatRow, { kind: "day" }>;
+type ItemRow = Exclude<ChatRow, { kind: "time" }>;
 
 function rowOf(e: SessionEvent, ws: WorkspaceSnapshot, selfUid: string): ItemRow | null {
   if (hiddenFromCloudTimeline(e)) return null;
@@ -82,13 +89,13 @@ function rowOf(e: SessionEvent, ws: WorkspaceSnapshot, selfUid: string): ItemRow
       const id = userRowIdentity(e, ws, selfUid);
       return id.mine
         ? { kind: "mine", key, ts: e.ts, text: id.text }
-        : { kind: "human", key, ts: e.ts, name: id.label ?? "成员", text: id.text };
+        : { kind: "human", key, ts: e.ts, uid: id.uid, name: id.label ?? (id.uid !== null ? labelOf(ws, id.uid) : "成员"), text: id.text };
     }
     case "chat_message":
       if (e.fromUid === "system") return { kind: "note", key, ts: e.ts, text: e.content, tone: "muted", detail: null };
       return e.fromUid === selfUid
         ? { kind: "mine", key, ts: e.ts, text: e.content }
-        : { kind: "human", key, ts: e.ts, name: e.label, text: e.content };
+        : { kind: "human", key, ts: e.ts, uid: e.fromUid, name: e.label, text: e.content };
     case "assistant_message": {
       const paragraphs = splitBubbles(e.content);
       if (paragraphs.length === 0) return null;
@@ -119,16 +126,31 @@ function rowsOf(e: SessionEvent, ws: WorkspaceSnapshot, selfUid: string): ItemRo
   return [row, { kind: "note", key: `dispatch-${e.seq}`, ts: e.ts, text: dispatched, tone: "muted", detail: null }];
 }
 
-/** 时间线：日志顺序 + 每个自然日前一条分隔条（`now` 由调用方递，纯函数才测得动）。
+/** 时间线：日志顺序 + 隔 5 分钟以上插一条时刻（#1386，照微信；`now` 由调用方递，纯函数才测得动）。
     名单变了那一行（A3）要看**前一条**名单事件——建聊天那一条与「名单没变」都不画——判据跨事件，
     所以在这个循环里判、不进逐事件的 rowOf（同桌面 CloudSessionPage 的 rosterLines）。
     窗口里最早那条名单事件（尾巴模式，往前还有没拉下来的）没有前一条可比，当建聊天那一条不画
-    （说不清就不画）；往前翻一页之后它自己会出现 */
-export function chatRows(o: { events: readonly SessionEvent[]; ws: WorkspaceSnapshot; selfUid: string; now: number }): ChatRow[] {
+    （说不清就不画）；往前翻一页之后它自己会出现。
+    审批（#1386）也要跨事件：一张请求有没有人批过，要往后看有没有同一个 callId 的决定。批过的不画
+    （放行不是对话事实，ADR-0235 ⑤）；拒了的画在「决定」那一条的位置；没人批、过了期的收成一行小字 */
+export function chatRows(o: {
+  events: readonly SessionEvent[];
+  ws: WorkspaceSnapshot;
+  selfUid: string;
+  now: number;
+  /** 这条会话的主人（群主）。缺席 = 不知道，那就只有发起这一轮的人批得了 */
+  ownerUid?: string;
+}): ChatRow[] {
   const items: ItemRow[] = [];
   let prevRoster: ChatRosterChangedEvent | null = null;
   // 通话卡（A4）：哪几条折进卡里要跨事件才答得出（voiceCallCards，桌面同一份），同名单那一行一样在循环外算
   const calls = voiceCallCards(o.events, o.ws, o.selfUid);
+  const requests = new Map<string, ApprovalRequestEvent>();
+  const decided = new Set<string>();
+  for (const e of o.events) {
+    if (e.type === "approval_request") requests.set(e.callId, e);
+    else if (e.type === "approval_decision") decided.add(e.toolCallId);
+  }
   for (const e of o.events) {
     const card = calls.cards.get(e.seq);
     if (card !== undefined) {
@@ -142,11 +164,40 @@ export function chatRows(o: { events: readonly SessionEvent[]; ws: WorkspaceSnap
       if (parts !== null) items.push({ kind: "roster", key: `e${e.seq}`, ts: e.ts, parts });
       continue;
     }
+    if (e.type === "approval_request") {
+      if (decided.has(e.callId)) continue;
+      const title = approvalCardTitle(e, o.ws);
+      if (o.now > e.expiresTs) {
+        items.push({ kind: "note", key: `e${e.seq}`, ts: e.ts, text: `${title}：没人批，已经过期`, tone: "muted", detail: null });
+        continue;
+      }
+      const canDecide = e.initiatorUid === o.selfUid || (o.ownerUid !== undefined && o.ownerUid !== "" && o.ownerUid === o.selfUid);
+      items.push({
+        kind: "approval", key: `e${e.seq}`, ts: e.ts, callId: e.callId, title,
+        fields: e.argsFields ?? [], summary: e.argsSummary, canDecide,
+        waitingFor: e.initiatorUid === o.selfUid ? "我" : labelOf(o.ws, e.initiatorUid),
+      });
+      continue;
+    }
+    if (e.type === "approval_decision") {
+      // 批准了的 hiddenFromCloudTimeline 已经藏了；这里只剩拒绝
+      if (hiddenFromCloudTimeline(e)) continue;
+      const req = requests.get(e.toolCallId);
+      const what = req !== undefined ? approvalCardTitle(req, o.ws) : "这一步";
+      const who = decisionLineText(e);
+      items.push({ kind: "note", key: `e${e.seq}`, ts: e.ts, text: `${what}：${who ?? "拒绝了"}`, tone: "muted", detail: e.reason ?? null });
+      continue;
+    }
     items.push(...rowsOf(e, o.ws, o.selfUid));
   }
-  return withDaySeparators(items, o.now).map((d): ChatRow =>
-    d.kind === "day" ? { kind: "day", key: d.key, label: d.label } : d.item,
-  );
+  const out: ChatRow[] = [];
+  let prevTs: number | null = null;
+  for (const item of items) {
+    if (needsTimeRow(prevTs, item.ts)) out.push({ kind: "time", key: `time-${item.key}`, label: timelineTimeLabel(item.ts, o.now) });
+    prevTs = item.ts;
+    out.push(item);
+  }
+  return out;
 }
 
 /** 正在写的那一段（流式碎片，协议 16）：累计快照按空行拆，画成它的一行。终态落盘时

@@ -133,12 +133,95 @@ const session = createVoiceSession({
   onChange: (listen) => store.set({ listen }),
 });
 
+// ── 按住说话（#1386，spec §3.5）──
+// 同一个原生模块：按下开麦、松手先 pause（原生那一侧会把手上那半句收成一条 final 再报 paused，Recognizer.swift）
+// 再 stop——拿得到整句，**不改 Swift**（改了要重编开发版、要人重新点授权）。按住的这几秒麦克风的事件归它，
+// 不进通话那一层（通话在听的时候这颗钮本来就不画，两者不会同时开麦）。说出来的话发成普通一句话，
+// 不带 voice 记号（那个记号的意思是「通话里说的」，带上会被折进通话卡，ADR-0288）。
+interface Dictation {
+  finals: string[];
+  latest: string;
+  onText: (text: string) => void;
+  onError: (message: string) => void;
+  done: ((text: string) => void) | null;
+}
+let dictation: Dictation | null = null;
+
+function dictationText(d: Dictation): string {
+  return [...d.finals, d.latest].map((t) => t.trim()).filter((t) => t !== "").join(" ");
+}
+
+/** 这台此刻能不能按住说话：有原生模块，且没在听电话 */
+export function dictationUsable(s: VoiceStoreState): boolean {
+  return nativeSpeech && s.listen === null;
+}
+
+/** 按下：开麦开始听。onText = 听到的字（一边说一边来）；onError = 权限没给 / 麦克风打不开 */
+export function startDictation(onText: (text: string) => void, onError: (message: string) => void): void {
+  if (OttoSpeech === null || store.get().listen !== null || dictation !== null) return;
+  dictation = { finals: [], latest: "", onText, onError, done: null };
+  void OttoSpeech.start(SPEECH_LOCALE, speechHints(homeSnapshot().home));
+}
+
+/** 松手：send = 要这句话（回整句）；否则（上划取消）直接关麦、回空串。等原生那一侧收尾最多 1.5 秒 */
+export async function stopDictation(send: boolean): Promise<string> {
+  const d = dictation;
+  const speech = OttoSpeech;
+  if (d === null || speech === null) return "";
+  if (!send) {
+    dictation = null;
+    await speech.stop();
+    return "";
+  }
+  const text = await new Promise<string>((resolve) => {
+    const timer = setTimeout(() => resolve(dictationText(d)), 1500);
+    d.done = (t) => {
+      clearTimeout(timer);
+      resolve(t);
+    };
+    void speech.pause();
+  });
+  dictation = null;
+  await speech.stop();
+  return text;
+}
+
+function onDictationEvent(d: Dictation, ev: NonNullable<ReturnType<typeof speechEventOf>>): void {
+  switch (ev.type) {
+    case "partial":
+      d.latest = ev.text;
+      d.onText(dictationText(d));
+      return;
+    case "final":
+      d.finals.push(ev.text);
+      d.latest = "";
+      d.onText(dictationText(d));
+      return;
+    case "paused":
+      d.done?.(dictationText(d));
+      return;
+    case "listening":
+      if (!ev.on) d.done?.(dictationText(d));
+      return;
+    case "error":
+      d.onError(ev.message);
+      return;
+    default:
+      return;
+  }
+}
+
 OttoSpeech?.addListener("onSpeech", (raw) => {
   const ev = speechEventOf(raw);
   if (ev === null) return;
   // 放音的回执：先删文件，再叫醒那一段（helperAudio 的登记）；这两种不是麦克风的事
   if (ev.type === "played" || ev.type === "playError") dropFile(ev.id);
   if (helperAudioEvent(ev)) return;
+  // 按住说话的那几秒，麦克风的事件归它
+  if (dictation !== null) {
+    onDictationEvent(dictation, ev);
+    return;
+  }
   session.onSpeech(ev);
 });
 

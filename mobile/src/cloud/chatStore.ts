@@ -109,10 +109,11 @@ function onStatus(status: CloudSessionStatus): void {
 
 setCloudSinks({ event: onEvent, status: onStatus, delta: onDelta });
 
-function say(text: string, mentions: string[] | undefined): Promise<CloudAck> {
-  // 布尔与数组同源（同桌面 store.cloudSay）：mentions 缺席 = 老语义，由 mention 那个布尔说了算
+function say(text: string, mentions: string[] | undefined, memberMentions: string[] = []): Promise<CloudAck> {
+  // 布尔与数组同源（同桌面 store.cloudSay）：mentions 缺席 = 老语义，由 mention 那个布尔说了算。
+  // memberMentions（#1386 团队群）= 点到的人类成员：不起 turn，只发提醒（ADR-0256），所以不进那个布尔
   const mention = mentions === undefined ? true : mentions.length > 0;
-  return cloudClient.say(text, mention, mentions, []);
+  return cloudClient.say(text, mention, mentions, memberMentions);
 }
 
 async function flushPendingFirst(sessionId: string): Promise<void> {
@@ -183,9 +184,9 @@ export async function startDm(
 
 /** 发一句话。回执三态落在 store 里；返回原样的回执，调用方据此决定清不清输入框
     （ok 与 unknown 都清：unknown 时那句话很可能已经落地，原文去了「不确定」那一行） */
-export async function sendText(text: string, mentions: string[] | undefined): Promise<CloudAck> {
+export async function sendText(text: string, mentions: string[] | undefined, memberMentions: string[] = []): Promise<CloudAck> {
   const sid = store.get().session?.sessionId ?? null;
-  const r = await say(text, mentions);
+  const r = await say(text, mentions, memberMentions);
   if (sid === null || store.get().session?.sessionId !== sid) return r;
   if (r.ok) store.set({ unsent: null, sendError: null });
   else if (r.unknown) store.set({ unsent: { sessionId: sid, text, mentions, note: unknownSendNote(text) }, sendError: null });

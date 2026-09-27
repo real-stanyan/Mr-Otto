@@ -1,0 +1,1412 @@
+<title>Otto 微信式手机</title>
+<style>
+/*@@SHARED_CSS@@*/
+
+/* ── 舞台：宽屏上画一台手机 + 左边的说明；手机上直接全屏 ─────────────── */
+body { background: var(--side); overflow: hidden; }
+.stage { height: 100%; display: flex; align-items: center; justify-content: center; gap: 40px; padding: 16px; }
+.side-panel {
+  width: 300px;
+  max-height: calc(100dvh - 32px);
+  overflow: auto;
+  background: var(--surface);
+  border-radius: 14px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  flex: none;
+}
+.side-panel .h b { font-size: 14px; }
+.side-panel .ctl { display: grid; grid-template-columns: 40px 1fr; align-items: center; gap: 8px 10px; color: var(--fg-2); }
+.jump { display: flex; flex-wrap: wrap; gap: 6px; }
+.jump button { font-size: 12px; padding: 4px 9px; border-radius: 999px; background: var(--field); transition: background-color 150ms var(--ease), transform 120ms var(--ease); }
+.jump button:hover { background: var(--press); }
+.jump button:active { transform: scale(0.96); }
+.side-panel a { color: var(--brand); }
+.device-wrap { flex: none; width: 390px; height: 844px; transform-origin: center; }
+.device {
+  width: 390px;
+  height: 844px;
+  border-radius: 56px;
+  padding: 11px;
+  background: #0b0b0c;
+  box-shadow: 0 0 0 1.5px #2a2a2c, 0 30px 80px rgba(0, 0, 0, 0.28);
+  position: relative;
+}
+.screen {
+  --sb: 47px;
+  --home: 34px;
+  position: relative;
+  width: 100%;
+  height: 100%;
+  border-radius: 45px;
+  overflow: hidden;
+  background: var(--ground);
+  font-size: 16px;
+  isolation: isolate;
+}
+.island { position: absolute; top: 11px; left: 50%; width: 120px; height: 34px; margin-left: -60px; border-radius: 20px; background: #000; z-index: 90; pointer-events: none; }
+.statusbar {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: var(--sb);
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 4px 30px 0 34px;
+  font-size: 16px;
+  font-weight: 600;
+  z-index: 80;
+  pointer-events: none;
+  color: var(--fg);
+}
+.statusbar.light { color: #fff; }
+.statusbar .icons { display: flex; gap: 6px; align-items: center; }
+.home-ind { position: absolute; bottom: 8px; left: 50%; width: 136px; height: 5px; margin-left: -68px; border-radius: 3px; background: var(--fg); opacity: 0.85; z-index: 85; pointer-events: none; }
+
+@media (max-width: 759px) {
+  .side-panel { display: none; }
+  .demo-fab { display: grid !important; }
+}
+/* 真是手机：不画机身，app 占满 */
+@media (max-width: 439px) {
+  body { background: var(--ground); }
+  .stage { padding: 0; }
+  .side-panel { display: none; }
+  .device-wrap, .device { width: 100%; height: 100%; }
+  .device { border-radius: 0; padding: 0; box-shadow: none; background: none; }
+  .screen { border-radius: 0; --sb: 0px; --home: 0px; }
+  .island, .statusbar, .home-ind { display: none; }
+  .demo-fab { display: grid !important; }
+}
+
+/* ── 页面栈 ──────────────────────────────────────────────────────────── */
+.stack { position: absolute; inset: 0; }
+.page {
+  position: absolute;
+  inset: 0;
+  background: var(--ground);
+  display: flex;
+  flex-direction: column;
+  will-change: transform;
+  touch-action: pan-y;
+}
+.screen .scroll { scrollbar-width: none; }
+.screen .scroll::-webkit-scrollbar { display: none; }
+.page.dimmed::after { content: ""; position: absolute; inset: 0; background: rgba(0, 0, 0, 0.1); pointer-events: none; }
+.page.anim { transition: transform 420ms var(--ease-ios); }
+.nav {
+  flex: none;
+  padding-top: var(--sb);
+  height: calc(var(--sb) + 44px);
+  display: grid;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: center;
+  padding-left: 8px;
+  padding-right: 8px;
+  background: var(--ground);
+  position: relative;
+  z-index: 2;
+}
+.nav .l { justify-self: start; display: flex; align-items: center; }
+.nav .r { justify-self: end; display: flex; align-items: center; gap: 2px; }
+.nav .c { text-align: center; min-width: 0; max-width: 220px; }
+.nav .c .t { font-size: 17px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; letter-spacing: -0.01em; }
+.nav .c .s { font-size: 11.5px; color: var(--fg-2); margin-top: -1px; white-space: nowrap; }
+.nav.hair { box-shadow: 0 0.5px 0 var(--line); }
+.nbtn {
+  height: 40px;
+  min-width: 40px;
+  padding: 0 8px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  border-radius: 10px;
+  color: var(--fg);
+  transition: opacity 120ms linear;
+}
+.nbtn:active { opacity: 0.45; }
+.nbtn .cnt {
+  font-size: 13px;
+  font-weight: 600;
+  background: var(--field);
+  border-radius: 10px;
+  padding: 1px 8px;
+  margin-left: -2px;
+  font-variant-numeric: tabular-nums;
+}
+.nbtn.text { font-size: 16px; color: var(--brand); font-weight: 500; }
+.nbtn.text:disabled { color: var(--fg-3); }
+.content { flex: 1; min-height: 0; position: relative; }
+.content.pad-tab { padding-bottom: calc(49px + var(--home)); }
+
+/* 搜索条 */
+.msearch { padding: 2px 12px 10px; background: var(--ground); }
+.msearch label { height: 36px; border-radius: 9px; background: var(--input-bg); display: flex; align-items: center; justify-content: center; gap: 6px; color: var(--fg-3); font-size: 16px; padding: 0 10px; }
+.msearch label:focus-within { justify-content: flex-start; }
+.msearch input { border: 0; background: transparent; font-size: 16px; color: var(--fg); width: 3.2em; padding: 0; transition: width 200ms var(--ease); }
+.msearch label:focus-within input, .msearch input:not(:placeholder-shown) { width: 100%; }
+
+/* 列表（照微信：整行铺满、分隔线从头像右边开始） */
+.list { background: var(--surface); }
+.mrow {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  min-height: 72px;
+  padding: 0 16px;
+  text-align: left;
+  background: var(--surface);
+  transition: background-color 80ms linear;
+}
+.mrow:active { background: var(--press); }
+.mrow + .mrow::before { content: ""; position: absolute; top: 0; right: 0; left: var(--sep, 76px); height: 0.5px; background: var(--line); }
+.mrow .meta { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; padding: 12px 0; }
+.mrow .top { display: flex; align-items: baseline; gap: 8px; }
+.mrow .nm { flex: 1; min-width: 0; font-size: 17px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mrow .tm { font-size: 12px; color: var(--fg-3); font-variant-numeric: tabular-nums; }
+.mrow .pv { font-size: 14px; color: var(--fg-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mrow .pv b { font-weight: 500; color: var(--fg); }
+.mrow .pv .at { color: var(--brand); }
+:root[data-skin="green"] .mrow .pv .at { color: #fa5151; }
+.mrow .av-wrap .badge { box-shadow: 0 0 0 2px var(--surface); }
+.mrow.small { min-height: 56px; --sep: 68px; }
+.mrow .tile { width: 40px; height: 40px; border-radius: 7px; background: var(--raised); color: var(--fg-2); display: grid; place-items: center; flex: none; }
+.mrow .role { font-size: 13px; color: var(--fg-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mrow .chev { color: var(--fg-3); }
+.mrow .val { color: var(--fg-2); font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 55%; }
+.mrow .icon-lead { color: var(--fg-2); width: 24px; display: grid; place-items: center; flex: none; }
+.mrow.plain { min-height: 54px; --sep: 16px; }
+.mrow.plain.iconed { --sep: 52px; }
+.mrow.center { justify-content: center; color: var(--brand); font-size: 17px; font-weight: 500; }
+.mrow.danger { justify-content: center; color: var(--danger); font-size: 17px; }
+.sect { font-size: 13px; color: var(--fg-2); padding: 18px 16px 8px; }
+.gap { height: 8px; }
+.foot-note { font-size: 13px; color: var(--fg-2); padding: 8px 16px 0; line-height: 1.5; }
+.mgate { margin: 8px 12px 12px; padding: 16px; border-radius: 14px; background: var(--surface); display: flex; flex-direction: column; gap: 8px; }
+.mgate .h { font-size: 16px; font-weight: 600; }
+.mgate p { margin: 0; font-size: 14px; color: var(--fg-2); line-height: 1.55; }
+.mgate .btn { align-self: flex-start; height: 36px; }
+
+/* 通讯录的折叠段头：手机上字大一号，按下给反馈，不做悬停 */
+.screen .fold-row { padding: 14px 8px 6px; }
+.screen .fold-head { font-size: 14px; font-weight: 500; height: 32px; letter-spacing: 0; }
+.screen .fold-head:hover { background: transparent; color: var(--fg-2); }
+.screen .fold-head:active { background: var(--press); }
+
+/* 底部三格 */
+.tabbar {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: calc(49px + var(--home));
+  padding-bottom: var(--home);
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  background: color-mix(in srgb, var(--side) 86%, transparent);
+  backdrop-filter: blur(20px) saturate(170%);
+  -webkit-backdrop-filter: blur(20px) saturate(170%);
+  box-shadow: 0 -0.5px 0 var(--line);
+  z-index: 40;
+  transition: transform 420ms var(--ease-ios);
+}
+.tabbar.hidden { transform: translateX(-30%); pointer-events: none; }
+.tabbar.gone { transform: translateY(110%); }
+.tabbar button { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; color: var(--fg-2); font-size: 10.5px; font-weight: 500; position: relative; }
+.tabbar button[aria-current="page"] { color: var(--tab-active); }
+.tabbar .ti { position: relative; }
+.tabbar .badge { top: -3px; right: -10px; box-shadow: 0 0 0 2px var(--side); }
+
+/* ── 聊天页 ──────────────────────────────────────────────────────────── */
+.chat-tl { flex: 1; min-height: 0; padding: 14px 12px 16px; }
+.chat-tl .timeline { gap: 16px; }
+.chat-tl .bubble { font-size: 16px; line-height: 1.5; padding: 9px 12px; }
+.chat-tl .msg .body { max-width: 76%; }
+.chat-tl .msg .name { font-size: 12px; }
+.chat-tl .role-chips { padding-left: 50px; }
+.chat-tl .chip { font-size: 14px; padding: 6px 12px; }
+.cbar {
+  flex: none;
+  background: var(--side);
+  box-shadow: 0 -0.5px 0 var(--line);
+  padding: 8px 8px calc(8px + var(--home));
+  display: flex;
+  align-items: flex-end;
+  gap: 6px;
+  position: relative;
+  z-index: 3;
+}
+.cbar.open { padding-bottom: 8px; }
+.cbar .cb { width: 36px; height: 36px; border-radius: 50%; display: grid; place-items: center; color: var(--fg); flex: none; transition: transform 120ms var(--ease), opacity 120ms linear; }
+.cbar .cb:active { transform: scale(0.92); opacity: 0.6; }
+.cbar .input {
+  flex: 1;
+  min-height: 38px;
+  max-height: 110px;
+  border-radius: 8px;
+  background: var(--input-bg);
+  border: 0;
+  padding: 8px 10px;
+  font-size: 16px;
+  line-height: 22px;
+  resize: none;
+  color: var(--fg);
+  overflow-y: auto;
+}
+.cbar .hold {
+  flex: 1;
+  height: 38px;
+  border-radius: 8px;
+  background: var(--input-bg);
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--fg);
+  user-select: none;
+  -webkit-user-select: none;
+  touch-action: none;
+  transition: background-color 100ms linear;
+}
+.cbar .hold.down { background: var(--press); }
+.cbar .send-btn { height: 34px; padding: 0 14px; border-radius: 8px; background: var(--primary); color: var(--on-primary); font-size: 15px; font-weight: 600; margin-bottom: 2px; flex: none; transition: transform 120ms var(--ease); }
+.cbar .send-btn:active { transform: scale(0.95); }
+.panel {
+  flex: none;
+  height: 0;
+  overflow: hidden;
+  background: var(--side);
+  transition: height 300ms var(--ease-ios);
+}
+.panel.on { height: calc(236px + var(--home)); }
+.panel .inner { padding: 18px 20px calc(10px + var(--home)); }
+.plus-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 18px 12px; }
+.plus-item { display: flex; flex-direction: column; align-items: center; gap: 7px; font-size: 12px; color: var(--fg-2); }
+.plus-item .sq { width: 60px; height: 60px; border-radius: 14px; background: var(--surface); color: var(--fg); display: grid; place-items: center; transition: transform 120ms var(--ease); }
+.plus-item:active .sq { transform: scale(0.94); }
+.panel .emoji-grid button { height: 40px; font-size: 26px; line-height: 40px; }
+
+/* 按住说话的浮层 */
+.talk {
+  position: absolute;
+  left: 50%;
+  top: 42%;
+  width: 168px;
+  height: 168px;
+  margin: -84px 0 0 -84px;
+  border-radius: 20px;
+  background: rgba(20, 20, 22, 0.86);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  color: #fff;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 14px;
+  z-index: 70;
+  opacity: 0;
+  transform: scale(0.94);
+  pointer-events: none;
+  transition: opacity 140ms var(--ease), transform 180ms var(--ease);
+}
+.talk.on { opacity: 1; transform: none; }
+.talk .wave { display: flex; gap: 4px; align-items: center; height: 44px; }
+.talk .wave i { width: 4px; border-radius: 2px; background: #5ac8fa; height: 10px; animation: wave 900ms ease-in-out infinite; }
+.talk .wave i:nth-child(2) { animation-delay: 120ms; }
+.talk .wave i:nth-child(3) { animation-delay: 240ms; }
+.talk .wave i:nth-child(4) { animation-delay: 360ms; }
+.talk .wave i:nth-child(5) { animation-delay: 480ms; }
+.talk .wave i:nth-child(6) { animation-delay: 600ms; }
+.talk .wave i:nth-child(7) { animation-delay: 720ms; }
+@keyframes wave { 0%, 100% { height: 8px; } 50% { height: 38px; } }
+.talk .tip { font-size: 13px; padding: 3px 8px; border-radius: 6px; }
+.talk.cancel .tip { background: #ff453a; }
+.talk.cancel .wave i { background: rgba(255, 255, 255, 0.4); animation-play-state: paused; }
+
+/* 资料页 */
+.card-head { background: var(--surface); padding: 22px 20px 24px; display: flex; gap: 16px; align-items: flex-start; }
+.card-head .who { flex: 1; min-width: 0; padding-top: 2px; }
+.card-head h2 { margin: 0; font-size: 22px; font-weight: 600; display: flex; align-items: center; gap: 8px; letter-spacing: -0.01em; }
+.card-head .role { margin-top: 6px; font-size: 14px; color: var(--fg-2); line-height: 1.5; }
+.card-head .sub { margin-top: 4px; font-size: 14px; color: var(--fg-2); }
+.kind-tag { font-size: 11px; font-weight: 500; color: var(--fg-2); background: var(--field); border-radius: 5px; padding: 1px 6px; }
+.mmembers { background: var(--surface); padding: 16px 14px 6px; display: grid; grid-template-columns: repeat(5, 1fr); gap: 14px 4px; }
+.mmember { display: flex; flex-direction: column; align-items: center; gap: 5px; min-width: 0; }
+.mmember .n { font-size: 12px; color: var(--fg-2); max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mmember .add { width: 52px; height: 52px; border-radius: 9px; border: 1.5px dashed var(--line); display: grid; place-items: center; color: var(--fg-2); }
+.mq { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 0 12px; }
+.mq.one { grid-template-columns: 1fr; }
+.mq .cell { background: var(--surface); border-radius: 14px; padding: 14px; display: flex; flex-direction: column; gap: 8px; }
+.mq .k { font-size: 13px; color: var(--fg-2); }
+.mq .v { font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+.mq .v small { font-size: 13px; color: var(--fg-2); font-weight: 400; margin-left: 4px; }
+.mq .r { font-size: 12px; color: var(--fg-3); }
+.me-head { background: var(--surface); padding: 22px 20px 26px; display: flex; align-items: center; gap: 16px; width: 100%; text-align: left; transition: background-color 80ms linear; }
+.me-head:active { background: var(--press); }
+.me-head .n { font-size: 22px; font-weight: 600; display: flex; align-items: center; gap: 8px; }
+.me-head .e { font-size: 14px; color: var(--fg-2); margin-top: 4px; }
+.usage-m { display: grid; grid-template-columns: 30px 52px 1fr 40px; align-items: center; gap: 10px; padding: 11px 16px; background: var(--surface); position: relative; }
+.usage-m + .usage-m::before { content: ""; position: absolute; top: 0; right: 0; left: 16px; height: 0.5px; background: var(--line); }
+.usage-m .p { font-size: 13px; color: var(--fg-2); text-align: right; font-variant-numeric: tabular-nums; }
+.app-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); flex: none; }
+.app-dot.off { background: var(--fg-3); }
+
+/* 弹层都关在屏幕里面 */
+.screen .scrim, .screen .dialog, .screen .menu { position: absolute; }
+.screen .dialog { width: calc(100% - 48px); max-height: calc(100% - 140px); padding: 20px; border-radius: 14px; }
+.screen .dialog h3 { font-size: 17px; text-align: center; }
+.screen .dialog .desc { text-align: center; font-size: 14px; }
+.screen .dialog .actions { justify-content: stretch; }
+.screen .dialog .actions .btn { flex: 1; height: 42px; font-size: 16px; }
+.screen .dialog .field { height: 42px; font-size: 16px; }
+.screen .menu { min-width: 150px; }
+.screen .menu button { height: 44px; font-size: 16px; gap: 12px; }
+.sheet {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: var(--surface);
+  border-radius: 14px 14px 0 0;
+  padding: 8px 0 calc(8px + var(--home));
+  z-index: 55;
+  transform: translateY(105%);
+  transition: transform 380ms var(--ease-ios);
+  max-height: 70%;
+  display: flex;
+  flex-direction: column;
+}
+.sheet.on { transform: none; }
+.sheet .grab { width: 36px; height: 5px; border-radius: 3px; background: var(--line); margin: 0 auto 8px; flex: none; }
+.sheet .sh-t { text-align: center; font-weight: 600; font-size: 16px; padding: 4px 0 10px; }
+.sheet .scroll { flex: 1; min-height: 0; }
+.sheet .mrow { min-height: 58px; }
+
+/* 通话：整屏，从下往上 */
+.mcall {
+  position: absolute;
+  inset: 0;
+  z-index: 75;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: calc(var(--sb) + 18px) 24px calc(var(--home) + 40px);
+  transform: translateY(100%);
+  transition: transform 420ms var(--ease-ios);
+}
+.mcall.on { transform: none; }
+.mcall .top { align-self: stretch; display: flex; justify-content: space-between; align-items: center; color: var(--call-fg-2); font-size: 14px; }
+.mcall .face-area { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; }
+.mcall .nm { font-size: 26px; font-weight: 600; margin-top: 6px; }
+.mcall .st { font-size: 15px; color: var(--call-fg-2); }
+.mcall .call-sub { font-size: 17px; min-height: 5.2em; }
+.mcall .ctrls { display: flex; gap: 34px; }
+.mcall .call-btn { width: 72px; height: 72px; }
+.mcall .call-label { font-size: 13px; }
+
+.call-pill {
+  position: absolute;
+  top: calc(var(--sb) + 50px);
+  right: 12px;
+  height: 34px;
+  padding: 0 12px 0 10px;
+  border-radius: 17px;
+  background: var(--voice);
+  color: #fff;
+  display: none;
+  align-items: center;
+  gap: 6px;
+  font-size: 14px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  z-index: 74;
+  box-shadow: var(--shadow-float);
+}
+.call-pill.on { display: inline-flex; }
+.demo-fab {
+  display: none;
+  position: fixed;
+  right: 12px;
+  bottom: 96px;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  place-items: center;
+  background: var(--surface);
+  box-shadow: var(--shadow-float);
+  z-index: 95;
+  color: var(--fg-2);
+}
+.demo-sheet { position: fixed; inset: auto 8px 8px 8px; max-height: 70dvh; overflow: auto; background: var(--surface); border-radius: 14px; box-shadow: var(--shadow-float); padding: 16px; z-index: 96; display: none; flex-direction: column; gap: 12px; }
+.demo-sheet.on { display: flex; }
+@media (prefers-reduced-motion: reduce) {
+  .page.anim, .tabbar, .panel, .sheet, .mcall { transition-duration: 1ms; }
+}
+</style>
+
+<div class="stage">
+  <aside class="side-panel demo-panel" id="side"></aside>
+  <div class="device-wrap" id="wrap">
+    <div class="device">
+      <div class="screen" id="screen">
+        <div class="island" aria-hidden="true"></div>
+        <div class="statusbar" id="sbar"><span id="clock">9:41</span><span class="icons"><svg width="18" height="12" viewBox="0 0 18 12" fill="currentColor" aria-hidden="true"><rect x="0" y="8" width="3" height="4" rx="1"/><rect x="5" y="5.5" width="3" height="6.5" rx="1"/><rect x="10" y="3" width="3" height="9" rx="1"/><rect x="15" y="0" width="3" height="12" rx="1"/></svg><svg width="16" height="12" viewBox="0 0 16 12" fill="currentColor" aria-hidden="true"><path d="M8 2.2c2.3 0 4.4.9 6 2.4l1.3-1.3A10.3 10.3 0 0 0 8 .4 10.3 10.3 0 0 0 .7 3.3L2 4.6a8.5 8.5 0 0 1 6-2.4Zm0 3.6c1.3 0 2.5.5 3.4 1.3l1.3-1.3A6.7 6.7 0 0 0 8 4a6.7 6.7 0 0 0-4.7 1.8l1.3 1.3A4.9 4.9 0 0 1 8 5.8Zm0 3.5-2.2 2.2L8 13.7l2.2-2.2L8 9.3Z" transform="translate(0 -1.7)"/></svg><svg width="27" height="13" viewBox="0 0 27 13" aria-hidden="true"><rect x="0.5" y="0.5" width="23" height="12" rx="3.5" fill="none" stroke="currentColor" opacity="0.4"/><rect x="2" y="2" width="16" height="9" rx="2" fill="currentColor"/><path d="M25 4.5v4a2 2 0 0 0 0-4Z" fill="currentColor" opacity="0.45"/></svg></span></div>
+        <div class="stack" id="stack"></div>
+        <div class="scrim" id="scrim"></div>
+        <div class="dialog" id="dialog" role="dialog" aria-modal="true"></div>
+        <div class="menu" id="menu" role="menu"></div>
+        <div class="sheet" id="sheet"></div>
+        <div class="talk" id="talk"><div class="wave"><i></i><i></i><i></i><i></i><i></i><i></i><i></i></div><div class="tip" id="talk-tip">松开 发送 · 上划 取消</div></div>
+        <div class="mcall call-shell" id="mcall" role="dialog" aria-label="语音通话"></div>
+        <button class="call-pill" id="cpill" title="回到通话"></button>
+        <div class="home-ind" aria-hidden="true"></div>
+      </div>
+    </div>
+  </div>
+</div>
+<button class="demo-fab" id="fab" title="Demo 说明"></button>
+<div class="demo-sheet demo-panel" id="demo-sheet"></div>
+
+<script>/*@@OTTOFACE@@*/</script>
+<script>/*@@ICONS@@*/</script>
+<script>/*@@SHARED_JS@@*/</script>
+<script>
+(() => {
+  const $ = (s, r = document) => r.querySelector(s);
+  const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+  const screen = $("#screen"), stackEl = $("#stack"), scrim = $("#scrim"), dialog = $("#dialog"), menu = $("#menu"), sheet = $("#sheet"), mcall = $("#mcall"), talk = $("#talk");
+
+  const M = { tab: "chats", sub: "pro", q: "", call: null };
+  const stack = []; // [{key, el, onSim?}]
+
+  /* ── 缩放：宽屏上手机按窗口高度缩 ─────────────────────────────────── */
+  function fit() {
+    const wrap = $("#wrap");
+    if (innerWidth < 440) { wrap.style.transform = ""; wrap.style.margin = ""; return; }
+    const side = innerWidth >= 760 ? 380 : 32; // 窄了就不放说明栏，说明挪进右下角那颗钮
+    const s = Math.min(1, (innerHeight - 32) / 844, (innerWidth - side) / 390);
+    wrap.style.transform = `scale(${Math.max(0.55, s)})`;
+    wrap.style.margin = `${(844 * (s - 1)) / 2}px ${(390 * (s - 1)) / 2}px`;
+  }
+  addEventListener("resize", fit);
+  fit();
+  const scaleOf = () => screen.getBoundingClientRect().width / screen.offsetWidth || 1;
+
+  /* ── 页面栈与转场 ─────────────────────────────────────────────────── */
+  function mount(page) {
+    const el = document.createElement("section");
+    el.className = "page";
+    el.dataset.key = page.key;
+    page.el = el;
+    stackEl.appendChild(el);
+    page.render();
+    Face.hydrate(el);
+    return page;
+  }
+  /* 栈底那一页每次重画都会把三格冲掉，画完补回来 */
+  function afterRootRender(page) { if (stack[0] === page || stack.length === 0) renderTabbar(); }
+  function setRoot(page) {
+    while (stack.length) stack.pop().el.remove();
+    stack.push(mount(page));
+    syncTabbar(false);
+  }
+  function push(page) {
+    const prev = stack[stack.length - 1];
+    mount(page);
+    stack.push(page);
+    const el = page.el;
+    el.style.transform = "translateX(100%)";
+    el.getBoundingClientRect();
+    el.classList.add("anim");
+    prev.el.classList.add("anim");
+    requestAnimationFrame(() => {
+      el.style.transform = "translateX(0)";
+      prev.el.style.transform = "translateX(-30%)";
+      prev.el.classList.add("dimmed");
+    });
+    syncTabbar(true);
+    return page;
+  }
+  function pop(instant) {
+    if (stack.length < 2) return;
+    const top = stack.pop();
+    const prev = stack[stack.length - 1];
+    top.leave && top.leave();
+    [top.el, prev.el].forEach((e) => e.classList.toggle("anim", !instant));
+    top.el.style.transform = "translateX(100%)";
+    prev.el.style.transform = "translateX(0)";
+    prev.el.classList.remove("dimmed");
+    prev.onBack && prev.onBack();
+    setTimeout(() => top.el.remove(), instant ? 0 : 430);
+    syncTabbar(true);
+  }
+  function popToRoot() { while (stack.length > 1) { const p = stack.pop(); p.leave && p.leave(); p.el.remove(); } stack[0].el.style.transform = ""; stack[0].el.classList.remove("dimmed"); stack[0].onBack && stack[0].onBack(); syncTabbar(false); }
+  function syncTabbar() { renderTabbar(); }
+
+  /* 左缘右划返回：跟手，松手看位移和速度 */
+  (() => {
+    let drag = null;
+    stackEl.addEventListener("pointerdown", (e) => {
+      if (stack.length < 2) return;
+      const r = screen.getBoundingClientRect();
+      const x = (e.clientX - r.left) / scaleOf();
+      if (x > 24) return;
+      const top = stack[stack.length - 1], prev = stack[stack.length - 2];
+      drag = { id: e.pointerId, x0: e.clientX, top, prev, w: screen.offsetWidth, hist: [[e.clientX, performance.now()]], moved: false };
+    });
+    stackEl.addEventListener("pointermove", (e) => {
+      if (!drag || e.pointerId !== drag.id) return;
+      const dx = Math.max(0, (e.clientX - drag.x0) / scaleOf());
+      if (!drag.moved) {
+        if (dx < 8) return; // 先过迟滞再拿指针，否则点返回会被吞（#1137 同一个坑）
+        drag.moved = true;
+        stackEl.setPointerCapture(e.pointerId);
+        drag.top.el.classList.remove("anim");
+        drag.prev.el.classList.remove("anim");
+      }
+      drag.hist.push([e.clientX, performance.now()]);
+      if (drag.hist.length > 5) drag.hist.shift();
+      drag.top.el.style.transform = `translateX(${dx}px)`;
+      drag.prev.el.style.transform = `translateX(${-30 + (30 * dx) / drag.w}%)`;
+    });
+    const end = (e) => {
+      if (!drag || e.pointerId !== drag.id) return;
+      const d = drag;
+      drag = null;
+      if (!d.moved) return;
+      const dx = Math.max(0, (e.clientX - d.x0) / scaleOf());
+      const [a, b] = [d.hist[0], d.hist[d.hist.length - 1]];
+      const v = (b[0] - a[0]) / Math.max(1, b[1] - a[1]) / scaleOf();
+      if (dx > d.w * 0.4 || v > 0.45) pop();
+      else {
+        d.top.el.classList.add("anim");
+        d.prev.el.classList.add("anim");
+        d.top.el.style.transform = "translateX(0)";
+        d.prev.el.style.transform = "translateX(-30%)";
+      }
+    };
+    stackEl.addEventListener("pointerup", end);
+    stackEl.addEventListener("pointercancel", end);
+  })();
+
+  /* ── 底部三格 ─────────────────────────────────────────────────────── */
+  /* 底部三格长在栈底那一页里：推进来的页盖住它，返回时它跟着那一页一起滑回来（照 iOS） */
+  function renderTabbar() {
+    const root = stack[0];
+    if (!root) return;
+    let tabbar = root.el.querySelector(".tabbar");
+    if (!tabbar) { tabbar = document.createElement("nav"); tabbar.className = "tabbar"; tabbar.setAttribute("aria-label", "主导航"); root.el.appendChild(tabbar); }
+    const unread = visibleUnread();
+    const t = (key, icon, label, badge) => `<button data-tab="${key}" aria-current="${M.tab === key ? "page" : "false"}"><span class="ti">${ic(icon, 25, M.tab === key ? 2 : 1.6)}${badge || ""}</span><span>${label}</span></button>`;
+    tabbar.innerHTML = t("chats", "message-circle", "聊天", unread ? `<span class="badge">${unread > 99 ? "99+" : unread}</span>` : "") + t("contacts", "contact-round", "通讯录", FRIEND_REQUESTS.length ? `<span class="badge">${FRIEND_REQUESTS.length}</span>` : "") + t("me", "user-round", "我");
+    $$("[data-tab]", tabbar).forEach((b) => b.addEventListener("click", () => switchTab(b.dataset.tab)));
+  }
+  function switchTab(tab) {
+    if (M.tab === tab && stack.length === 1) { const sc = stack[0].el.querySelector(".scroll"); if (sc) sc.scrollTo({ top: 0, behavior: "smooth" }); return; }
+    M.tab = tab;
+    M.q = "";
+    setRoot(tab === "chats" ? chatsRoot() : tab === "contacts" ? contactsRoot() : meRoot());
+  }
+  function visibleChat(c) {
+    if (M.sub !== "free") return true;
+    if (c.kind === "dm") return false;
+    if (c.kind === "group" && c.owner === "me") return false; // 自己建的群里是自己的智能体
+    return true;
+  }
+  function visibleUnread() { return Object.values(CHATS).filter(visibleChat).reduce((n, c) => n + c.unread, 0); }
+
+  const navHTML = ({ left = "", title = "", sub = "", right = "", hair = false }) => `<header class="nav${hair ? " hair" : ""}"><div class="l">${left}</div><div class="c"><div class="t">${title}</div>${sub ? `<div class="s">${sub}</div>` : ""}</div><div class="r">${right}</div></header>`;
+  const backBtn = (count) => `<button class="nbtn" data-back title="返回">${ic("chevron-left", 26, 2)}${count ? `<span class="cnt">${count}</span>` : ""}</button>`;
+  function bindBack(el) { $$("[data-back]", el).forEach((b) => b.addEventListener("click", () => pop())); }
+  function badgeHTML(n) { return n ? `<span class="badge">${n > 99 ? "99+" : n}</span>` : ""; }
+
+  /* ── 聊天 tab ─────────────────────────────────────────────────────── */
+  function chatsRoot() {
+    const page = {
+      key: "chats",
+      render() {
+        const n = visibleUnread();
+        const scrollTop = page.el.querySelector(".scroll") ? page.el.querySelector(".scroll").scrollTop : 0;
+        let rows = "";
+        if (M.sub === "free") rows += `<div class="mgate"><div class="h">订阅 Pro，就能有自己的智能体</div><p>它们有名字、有职责，能私聊、拉群、打电话。朋友拉你进的群照样能聊，群里的智能体走群主的额度。</p><button class="btn primary" data-act="subscribe">看看订阅</button></div>`;
+        let list = "";
+        for (const r of listRows()) {
+          const c = r.chat;
+          if (!visibleChat(c)) continue;
+          if (M.q && !(chatTitle(c) + previewOf(c).text).includes(M.q)) continue;
+          const pv = previewOf(c);
+          const at = c.mention && c.unread ? `<span class="at">[有人@我]</span> ` : "";
+          list += `<button class="mrow" data-chat="${c.id}"><span class="av-wrap">${chatAvatar(c, 48)}${badgeHTML(c.unread)}</span><span class="meta"><span class="top"><span class="nm">${esc(chatTitle(c))}</span><span class="tm">${listTime(chatUpdated(c))}</span></span><span class="pv">${pv.draft ? `<b>[草稿]</b> ` : at}${esc(pv.text)}</span></span></button>`;
+        }
+        page.el.innerHTML = navHTML({ title: `聊天${n ? `(${n})` : ""}`, right: `<button class="nbtn" id="plus" title="新建">${ic("circle-plus", 25, 1.6)}</button>` }) + `<div class="content scroll pad-tab"><div class="msearch"><label>${ic("search", 17)}<input id="q" placeholder="搜索" value="${esc(M.q)}" autocomplete="off"></label></div>${rows}<div class="list">${list}</div></div>`;
+        page.el.querySelector(".scroll").scrollTop = scrollTop;
+        Face.hydrate(page.el);
+        $$("[data-chat]", page.el).forEach((b) => b.addEventListener("click", () => openChat(b.dataset.chat)));
+        $("#plus", page.el).addEventListener("click", (e) => plusMenu(e.currentTarget));
+        const q = $("#q", page.el);
+        q.addEventListener("input", () => { M.q = q.value; const p = q.selectionStart; page.render(); const nq = $("#q", page.el); nq.focus(); nq.setSelectionRange(p, p); });
+        $$('[data-act="subscribe"]', page.el).forEach((b) => b.addEventListener("click", subscribeDialog));
+        afterRootRender(page);
+      },
+      onSim() { if (document.activeElement && document.activeElement.id === "q") return; page.render(); },
+      onBack() { page.render(); },
+    };
+    return page;
+  }
+
+  /* ── 聊天页 ─────────────────────────────────────────────────────────── */
+  function openChat(id) {
+    Sim.setOpen(id);
+    push(chatPage(id));
+  }
+  function chatPage(id) {
+    const c = CHATS[id];
+    const multi = c.kind === "group";
+    let mode = "text"; // text | voice
+    let panel = null; // null | plus | emoji
+    const page = {
+      key: "chat",
+      render() {
+        page.el.innerHTML = `<div id="nav"></div><div class="chat-tl scroll" id="tl"></div>
+          <div class="cbar" id="cbar"></div>
+          <div class="panel" id="panel"><div class="inner" id="panel-inner"></div></div>`;
+        page.head();
+        page.bar();
+        page.tl(true);
+      },
+      head() {
+        const others = visibleUnread() - 0;
+        let sub = "";
+        if (c.pending) sub = `<span class="shimmer">${c.pending.phase === "typing" ? "正在输入…" : "正在干活…"}</span>`;
+        const cnt = chatHeadcount(c);
+        $("#nav", page.el).innerHTML = navHTML({ left: backBtn(others || ""), title: `${esc(chatTitle(c))}${cnt ? `(${cnt})` : ""}`, sub, right: `<button class="nbtn" data-act="info" title="聊天信息">${ic("ellipsis", 24, 2)}</button>`, hair: true });
+        bindBack(page.el);
+        $('[data-act="info"]', page.el).addEventListener("click", () => push(infoPage(c)));
+      },
+      tl(toBottom) {
+        const tl = $("#tl", page.el);
+        const near = tl.scrollHeight - tl.scrollTop - tl.clientHeight < 140;
+        tl.innerHTML = `<div class="timeline">${timelineHTML(c, { fresh: Sim.fresh, avatar: 40 })}</div>`;
+        Face.hydrate(tl);
+        $$("[data-call]", tl).forEach((b) => b.addEventListener("click", () => transcriptDialog(c, b.dataset.call)));
+        $$("[data-chip]", tl).forEach((b) => b.addEventListener("click", () => { mode = "text"; page.bar(); const ta = $("#ta", page.el); ta.value = b.dataset.chip; autosize(ta); page.bar(true); ta.focus(); }));
+        $$(".msg.them .av[data-agent]", tl).forEach((av) => av.addEventListener("click", () => push(agentPage(av.dataset.agent))));
+        if (toBottom || near) tl.scrollTop = tl.scrollHeight;
+      },
+      bar(keep) {
+        const cbar = $("#cbar", page.el);
+        const prev = $("#ta", page.el);
+        const text = prev ? prev.value : c.draft || "";
+        const hasText = !!text.trim();
+        const left = `<button class="cb" data-act="mode" title="${mode === "text" ? "按住说话" : "打字"}">${ic(mode === "text" ? "audio-lines" : "keyboard", 24, 1.7)}</button>`;
+        const mid = mode === "text" ? `<textarea class="input" id="ta" rows="1" placeholder="${multi ? "说点什么，输入 @ 点名" : ""}" enterkeyhint="send">${esc(text)}</textarea>` : `<button class="hold" id="hold">按住 说话</button>`;
+        const right = `<button class="cb" data-act="emoji" title="表情">${ic("smile", 24, 1.7)}</button>` + (hasText && mode === "text" ? `<button class="send-btn" data-act="send">发送</button>` : `<button class="cb" data-act="plus" title="更多">${ic("circle-plus", 25, 1.6)}</button>`);
+        cbar.innerHTML = left + mid + right;
+        cbar.classList.toggle("open", !!panel);
+        const ta = $("#ta", page.el);
+        if (ta) {
+          autosize(ta);
+          ta.addEventListener("input", () => {
+            c.draft = ta.value;
+            autosize(ta);
+            const has = !!ta.value.trim();
+            if (has !== !!cbar.querySelector('[data-act="send"]')) { const pos = ta.selectionStart; page.bar(); const t2 = $("#ta", page.el); t2.focus(); t2.setSelectionRange(pos, pos); }
+            const before = ta.value.slice(0, ta.selectionStart);
+            if (multi && /(^|\s)@$/.test(before)) mentionSheet(c, (name) => { ta.value = before + name + " " + ta.value.slice(ta.selectionStart); c.draft = ta.value; page.bar(); $("#ta", page.el).focus(); });
+          });
+          ta.addEventListener("keydown", (e) => { if (e.key === "Enter" && !e.shiftKey && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); send(); } });
+          ta.addEventListener("focus", () => { if (panel) { panel = null; page.panel(); } });
+          if (keep) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
+        }
+        $$('[data-act]', cbar).forEach((b) => b.addEventListener("click", () => {
+          const a = b.dataset.act;
+          if (a === "mode") { mode = mode === "text" ? "voice" : "text"; panel = null; page.panel(); page.bar(mode === "text"); }
+          if (a === "send") send();
+          if (a === "plus" || a === "emoji") { panel = panel === a ? null : a; page.panel(); cbar.classList.toggle("open", !!panel); if (panel && document.activeElement) document.activeElement.blur(); }
+        }));
+        const hold = $("#hold", page.el);
+        if (hold) bindHold(hold, c);
+      },
+      panel() {
+        const p = $("#panel", page.el), inner = $("#panel-inner", page.el);
+        if (panel === "plus") {
+          const items = [];
+          if (M.sub !== "free" && c.kind !== "friend") items.push(["call", "phone", "语音通话"]);
+          if (c.kind === "dm") items.push(["group", "users-round", "拉人建群"]);
+          if (c.kind === "friend") items.push(["fgroup", "users-round", "拉人建群"]);
+          if (c.kind === "group") items.push(["add", "user-round-plus", "拉人"]);
+          if (multi) items.push(["at", "at-sign", "@ 谁"]);
+          inner.innerHTML = `<div class="plus-grid">${items.map(([k, i, l]) => `<button class="plus-item" data-pl="${k}"><span class="sq">${ic(i, 26, 1.6)}</span>${l}</button>`).join("")}</div>`;
+          $$("[data-pl]", inner).forEach((b) => b.addEventListener("click", () => {
+            const k = b.dataset.pl;
+            panel = null; page.panel(); $("#cbar", page.el).classList.remove("open");
+            if (k === "call") startCall(c);
+            if (k === "group") newGroupDialog({ agents: [c.agent] });
+            if (k === "fgroup") newGroupDialog({ friends: [c.friend] });
+            if (k === "add") addMembers(c);
+            if (k === "at") mentionSheet(c, (name) => { mode = "text"; const ta0 = $("#ta", page.el); const v = (ta0 ? ta0.value : "") + "@" + name + " "; c.draft = v; page.bar(); const ta = $("#ta", page.el); ta.value = v; ta.focus(); page.bar(true); });
+          }));
+        } else if (panel === "emoji") {
+          inner.innerHTML = `<div class="emoji-grid">${EMOJI.map((e) => `<button data-emoji="${e}">${e}</button>`).join("")}</div>`;
+          $$("[data-emoji]", inner).forEach((b) => b.addEventListener("click", () => { mode = "text"; const ta0 = $("#ta", page.el); c.draft = (ta0 ? ta0.value : c.draft || "") + b.dataset.emoji; page.bar(); $("#ta", page.el).value = c.draft; page.bar(); }));
+        }
+        p.classList.toggle("on", !!panel);
+        const tl = $("#tl", page.el);
+        setTimeout(() => (tl.scrollTop = tl.scrollHeight), 320);
+      },
+      onSim(cid) { if (cid && cid !== c.id) { page.head(); return; } page.head(); page.tl(false); },
+      leave() { const ta = $("#ta", page.el); if (ta) c.draft = ta.value; Sim.setOpen(null); },
+      onBack() { Sim.setOpen(c.id); page.head(); page.tl(false); },
+    };
+    function send() {
+      const ta = $("#ta", page.el);
+      if (!ta || !ta.value.trim()) return;
+      const v = ta.value;
+      ta.value = "";
+      c.draft = "";
+      page.bar(true);
+      Sim.send(c, v);
+    }
+    return page;
+  }
+  function autosize(ta) { ta.style.height = "auto"; ta.style.height = Math.min(110, ta.scrollHeight) + "px"; }
+
+  /* 按住说话：说完转成文字发出去（demo 里是写好的一句） */
+  const SPOKEN = {
+    c_wenan: "短的那版再改改，别用感叹号",
+    c_shangxin: "周三晚上八点开卖，大家按这个准备",
+  };
+  function bindHold(hold, c) {
+    let y0 = 0, cancel = false, down = false;
+    const tip = $("#talk-tip");
+    hold.addEventListener("pointerdown", (e) => {
+      down = true; cancel = false; y0 = e.clientY;
+      hold.setPointerCapture(e.pointerId);
+      hold.classList.add("down");
+      hold.textContent = "松开 发送";
+      talk.classList.add("on");
+      talk.classList.remove("cancel");
+      tip.textContent = "松开 发送 · 上划 取消";
+    });
+    hold.addEventListener("pointermove", (e) => {
+      if (!down) return;
+      const up = (y0 - e.clientY) / scaleOf();
+      const c2 = up > 60;
+      if (c2 !== cancel) {
+        cancel = c2;
+        talk.classList.toggle("cancel", cancel);
+        tip.textContent = cancel ? "松开手指，取消发送" : "松开 发送 · 上划 取消";
+        hold.textContent = cancel ? "松开 取消" : "松开 发送";
+      }
+    });
+    const up = () => {
+      if (!down) return;
+      down = false;
+      hold.classList.remove("down");
+      hold.textContent = "按住 说话";
+      talk.classList.remove("on");
+      if (!cancel) Sim.send(c, SPOKEN[c.id] || "帮我看一下今天有什么要处理的", { voice: true });
+    };
+    hold.addEventListener("pointerup", up);
+    hold.addEventListener("pointercancel", () => { cancel = true; up(); });
+  }
+
+  /* @ 名单：选人用底部抽屉（选择器照今天的规矩） */
+  function mentionSheet(c, fn) {
+    const ids = [...c.agents, ...(c.humans || [])];
+    sheet.innerHTML = `<div class="grab"></div><div class="sh-t">选择要 @ 的</div><div class="scroll"><div class="list">${ids.map((id) => `<button class="mrow small" data-pk="${id}"><span class="av-wrap">${avatar(id, 36)}</span><span class="meta"><span class="nm">${esc(who(id).name)}</span></span><span class="role">${AGENTS[id] ? "智能体" : "朋友"}</span></button>`).join("")}</div></div>`;
+    Face.hydrate(sheet);
+    openSheet();
+    $$("[data-pk]", sheet).forEach((b) => b.addEventListener("click", () => { closeSheet(); fn(who(b.dataset.pk).name); }));
+  }
+  function openSheet() { sheet.classList.add("on"); scrim.classList.add("on"); scrim.onclick = closeSheet; }
+  function closeSheet() { sheet.classList.remove("on"); scrim.classList.remove("on"); scrim.onclick = null; }
+
+  /* ── 聊天信息 ───────────────────────────────────────────────────────── */
+  function infoPage(c) {
+    const page = {
+      key: "info",
+      render() {
+        let body = "";
+        if (c.kind === "dm") {
+          const a = AGENTS[c.agent];
+          body = `<div class="mmembers"><div class="mmember">${avatar(a.id, 52)}<span class="n">${esc(a.name)}</span></div><div class="mmember"><button class="add" data-act="to-group">${ic("plus", 22)}</button><span class="n">建群</span></div></div>
+            <div class="gap"></div><div class="list">${agentRows(a)}</div><div class="gap"></div>
+            ${a.admin ? `<div class="foot-note">管理员删不掉：新建智能体、派活都靠它。</div>` : `<div class="list"><button class="mrow plain danger" data-act="del">删除这只智能体</button></div>`}`;
+        }
+        if (c.kind === "group") {
+          const mineG = c.owner === "me";
+          const tile = (id) => AGENTS[id] ? `<button class="mmember" data-agent="${id}">${avatar(id, 52)}<span class="n">${esc(who(id).name)}</span></button>` : `<div class="mmember">${avatar(id, 52)}<span class="n">${esc(id === "me" ? ME.name : who(id).name)}</span></div>`;
+          body = `<div class="mmembers">${["me", ...(c.humans || []), ...c.agents].map(tile).join("")}<div class="mmember"><button class="add" data-act="add">${ic("plus", 22)}</button><span class="n">拉人</span></div>${mineG ? `<div class="mmember"><button class="add" data-act="rm">${ic("x", 20)}</button><span class="n">移出</span></div>` : ""}</div>
+            <div class="gap"></div><div class="list"><button class="mrow plain" data-act="rename"><span class="meta"><span class="nm">群聊名称</span></span><span class="val">${esc(chatTitle(c))}</span><span class="chev">${ic("chevron-right", 18)}</span></button><div class="mrow plain"><span class="meta"><span class="nm">群主</span></span><span class="val">${mineG ? "我" : esc(who(c.owner).name)}</span></div><div class="mrow plain"><span class="meta"><span class="nm">没 @ 谁的时候</span></span><span class="val">${c.agents.length ? "智能体按职责自己接" : "等人回"}</span></div></div>
+            <div class="foot-note">群里的智能体归群主管，干活走群主的额度。</div>
+            <div class="gap"></div><div class="list"><button class="mrow plain danger" data-act="${mineG ? "disband" : "leave"}">${mineG ? "解散群聊" : "退出群聊"}</button></div>`;
+        }
+        if (c.kind === "friend") {
+          const f = FRIENDS[c.friend];
+          body = `<div class="mmembers"><div class="mmember">${avatar(f.id, 52)}<span class="n">${esc(f.name)}</span></div><div class="mmember"><button class="add" data-act="fgroup">${ic("plus", 22)}</button><span class="n">建群</span></div></div><div class="gap"></div><div class="list"><div class="mrow plain"><span class="meta"><span class="nm">备注</span></span><span class="val">${esc(f.note)}</span></div></div>`;
+        }
+        page.el.innerHTML = navHTML({ left: backBtn(), title: "聊天信息", hair: false }) + `<div class="content scroll">${body}<div style="height:40px"></div></div>`;
+        Face.hydrate(page.el);
+        bindBack(page.el);
+        if (c.kind === "dm") bindAgentRows(AGENTS[c.agent], page);
+        const on = (sel, fn) => { const el = page.el.querySelector(sel); if (el) el.addEventListener("click", fn); };
+        on('[data-act="to-group"]', () => newGroupDialog({ agents: [c.agent] }));
+        on('[data-act="fgroup"]', () => newGroupDialog({ friends: [c.friend] }));
+        on('[data-act="del"]', () => confirmDialog(`删掉「${AGENTS[c.agent].name}」？`, "它的私聊一起删掉；它待过的群还在，只是少了它。删了找不回来。", "删除", () => {
+          const aid = c.agent;
+          delete CHATS[c.id];
+          MY_AGENTS.splice(MY_AGENTS.indexOf(aid), 1);
+          for (const g of Object.values(CHATS)) if (g.kind === "group" && g.agents.includes(aid)) g.agents = g.agents.filter((x) => x !== aid);
+          Sim.setOpen(null);
+          popToRoot();
+        }, true));
+        on('[data-act="add"]', () => addMembers(c, () => page.render()));
+        on('[data-act="rm"]', () => pickMembers({ title: "移出群聊", agents: c.agents.slice(), friends: (c.humans || []).slice(), maxAgents: 99, min: 1, okLabel: "移出" }, ({ agents, friends }) => {
+          c.agents = c.agents.filter((x) => !agents.includes(x));
+          c.humans = (c.humans || []).filter((x) => !friends.includes(x));
+          Sim.push(c, "sys", "你把这几位移出了群聊：", "rosterchg", { ids: [...friends, ...agents] });
+          page.render();
+        }));
+        on('[data-act="rename"]', () => editDialog("群聊名称", chatTitle(c), false, (v) => { c.name = v; page.render(); Sim.emit(c.id); }));
+        on('[data-act="disband"]', () => confirmDialog(`解散「${chatTitle(c)}」？`, "聊天记录一起删掉。里面的智能体都还在，通讯录里照样找得到。", "解散", () => { delete CHATS[c.id]; Sim.setOpen(null); popToRoot(); }, true));
+        on('[data-act="leave"]', () => confirmDialog(`退出「${chatTitle(c)}」？`, "退出后收不到这个群的消息。群还在，里面的人和智能体都还在。", "退出", () => { delete CHATS[c.id]; Sim.setOpen(null); popToRoot(); }, true));
+        $$("[data-agent]", page.el).forEach((b) => b.addEventListener("click", () => push(agentPage(b.dataset.agent))));
+      },
+      onBack() { page.render(); },
+    };
+    return page;
+  }
+
+  function agentRows(a) {
+    const row = (k, label, val) => `<button class="mrow plain" data-edit="${k}"><span class="meta"><span class="nm">${label}</span></span><span class="val">${val}</span><span class="chev">${ic("chevron-right", 18)}</span></button>`;
+    return row("face", "形象", `<span class="av" style="--s:28px;vertical-align:middle" data-face="${a.slot}" data-size="28"></span>`) + row("name", "名字", esc(a.name)) + row("role", "职责", esc(a.role)) + row("prompt", "还有什么要交代的", esc(a.prompt || "没写")) + row("voice", "说话的声音", esc(a.voice || "默认")) + `<div class="mrow plain"><span class="meta"><span class="nm">本周用了额度的</span></span><span class="val">${a.usage || 0}%</span></div>`;
+  }
+  function bindAgentRows(a, page) {
+    $$("[data-edit]", page.el).forEach((b) => b.addEventListener("click", () => {
+      const k = b.dataset.edit;
+      if (k === "face") return faceDialog(a, () => page.render());
+      if (k === "voice") return voiceSheet(a, () => page.render());
+      editDialog({ name: "名字", role: "职责", prompt: "还有什么要交代的" }[k], a[k] || "", k !== "name", (v) => { a[k] = v; page.render(); Sim.emit(); });
+    }));
+  }
+
+  /* ── 通讯录 tab ─────────────────────────────────────────────────────── */
+  function contactsRoot() {
+    const page = {
+      key: "contacts",
+      render() {
+        const entry = (k, i, l, right) => `<button class="mrow small" data-entry="${k}"><span class="tile">${ic(i, 21)}</span><span class="meta"><span class="nm">${l}</span></span>${right || ""}</button>`;
+        const groups = Object.values(CHATS).filter((c) => c.kind === "group" && visibleChat(c));
+        let html = `<div class="msearch"><label>${ic("search", 17)}<input placeholder="搜索" id="cq" value="${esc(M.q)}" autocomplete="off"></label></div><div class="list">${entry("requests", "user-round-plus", "新的朋友", FRIEND_REQUESTS.length ? `<span class="badge" style="position:static;box-shadow:none">${FRIEND_REQUESTS.length}</span>` : "")}${entry("groups", "users-round", "群聊", `<span class="tm">${groups.length}</span>`)}</div>`;
+        const agentIds = MY_AGENTS.filter((id) => AGENTS[id] && (!M.q || AGENTS[id].name.includes(M.q)));
+        const friendIds = MY_FRIENDS.filter((id) => FRIENDS[id] && (!M.q || FRIENDS[id].name.includes(M.q)));
+        const agentBody = M.sub === "free"
+          ? `<div class="mgate" style="margin-top:0"><div class="h">智能体要 Pro 或 Max</div><p>订阅之后，这里就是你的同事：一只一个职责，像通讯录里的人一样找到它们。</p><button class="btn primary" data-act="subscribe">看看订阅</button></div>`
+          : `<div class="list">${agentIds.map((id) => `<button class="mrow small" data-agent="${id}"><span class="av-wrap">${avatar(id, 40)}</span><span class="meta" style="gap:2px"><span class="nm">${esc(AGENTS[id].name)}</span><span class="role">${esc(AGENTS[id].role)}</span></span></button>`).join("")}</div>`;
+        const newAgent = M.sub === "free" ? "" : `<button class="nbtn text" data-act="new-agent" style="height:30px;font-size:15px">新建</button>`;
+        html += Fold.html("agents", "智能体", M.sub === "free" ? 0 : agentIds.length, newAgent, agentBody, !!M.q);
+        html += Fold.html("friends", "朋友", friendIds.length, "", `<div class="list">${friendIds.map((id) => `<button class="mrow small" data-friend="${id}"><span class="av-wrap">${avatar(id, 40)}</span><span class="meta" style="gap:2px"><span class="nm">${esc(FRIENDS[id].name)}</span><span class="role">${esc(FRIENDS[id].note)}</span></span></button>`).join("")}</div>`, !!M.q);
+        html += `<div class="foot-note" style="text-align:center;padding:16px">${MY_AGENTS.length} 只智能体 · ${MY_FRIENDS.length} 位朋友</div>`;
+        page.el.innerHTML = navHTML({ title: "通讯录", right: `<button class="nbtn" data-act="add-friend" title="添加朋友">${ic("user-round-plus", 23, 1.7)}</button>` }) + `<div class="content scroll pad-tab">${html}</div>`;
+        Face.hydrate(page.el);
+        Fold.bind(page.el);
+        $$("[data-entry]", page.el).forEach((b) => b.addEventListener("click", () => push(({ requests: requestsPage, groups: groupsPage })[b.dataset.entry]())));
+        $$("[data-agent]", page.el).forEach((b) => b.addEventListener("click", () => push(agentPage(b.dataset.agent))));
+        $$("[data-friend]", page.el).forEach((b) => b.addEventListener("click", () => push(friendPage(b.dataset.friend))));
+        $('[data-act="add-friend"]', page.el).addEventListener("click", addFriendDialog);
+        const na = $('[data-act="new-agent"]', page.el);
+        if (na) na.addEventListener("click", newAgentDialog);
+        $$('[data-act="subscribe"]', page.el).forEach((b) => b.addEventListener("click", subscribeDialog));
+        const cq = $("#cq", page.el);
+        cq.addEventListener("input", () => { M.q = cq.value; const p = cq.selectionStart; page.render(); const n = $("#cq", page.el); n.focus(); n.setSelectionRange(p, p); });
+        afterRootRender(page);
+      },
+      onSim() { page.render(); },
+      onBack() { page.render(); },
+    };
+    return page;
+  }
+  function agentPage(id) {
+    const a = AGENTS[id];
+    const page = {
+      key: "agent",
+      render() {
+        /* 别人的智能体（朋友拉进群的）：能看、能在群里 @，改不了、也私聊不了 */
+        const mine = !a.owner || a.owner === "me";
+        const inGroups = Object.values(CHATS).filter((c) => c.kind === "group" && c.agents.includes(id)).map((c) => esc(chatTitle(c))).join("、") || "没有";
+        page.el.innerHTML = navHTML({ left: backBtn() }) + `<div class="content scroll">
+          <div class="card-head"><span class="av" style="--s:68px;border-radius:12px" data-face="${a.slot}" data-state="alive" data-size="68"></span><div class="who"><h2>${esc(a.name)}<span class="kind-tag">${mine ? "智能体" : esc(who(a.owner).name) + "的智能体"}</span></h2><div class="role">${esc(a.role)}</div></div></div>
+          <div class="gap"></div>${mine ? `<div class="list">${agentRows(a)}</div><div class="gap"></div>` : `<div class="list"><div class="mrow plain"><span class="meta"><span class="nm">在的群</span></span><span class="val">${inGroups}</span></div></div><div class="foot-note">它是${esc(who(a.owner).name)}的智能体：在群里 @ 它就行，干活走${esc(who(a.owner).name)}的额度。</div><div class="gap"></div>`}
+          <div class="list">${mine ? `<button class="mrow plain center" data-act="msg">${ic("message-circle", 20, 1.8)}&nbsp;发消息</button><button class="mrow plain center" data-act="call">${ic("phone", 20, 1.8)}&nbsp;语音通话</button>` : ""}</div><div style="height:40px"></div></div>`;
+        Face.hydrate(page.el);
+        bindBack(page.el);
+        bindAgentRows(a, page);
+        const msg = $('[data-act="msg"]', page.el);
+        if (msg) msg.addEventListener("click", () => openChat(dmOf(id).id));
+        const call = $('[data-act="call"]', page.el);
+        if (call) call.addEventListener("click", () => startCall(dmOf(id)));
+      },
+      onBack() { page.render(); },
+    };
+    return page;
+  }
+  function dmOf(aid) {
+    let c = Object.values(CHATS).find((x) => x.kind === "dm" && x.agent === aid);
+    if (!c) { const id = "c_" + aid; c = CHATS[id] = { id, kind: "dm", agent: aid, unread: 0, msgs: [] }; }
+    return c;
+  }
+  function friendChatOf(fid) {
+    let c = Object.values(CHATS).find((x) => x.kind === "friend" && x.friend === fid);
+    if (!c) { const id = "c_" + fid; c = CHATS[id] = { id, kind: "friend", friend: fid, unread: 0, msgs: [] }; }
+    return c;
+  }
+  function friendPage(id) {
+    const f = FRIENDS[id];
+    const page = {
+      key: "friend",
+      render() {
+        page.el.innerHTML = navHTML({ left: backBtn() }) + `<div class="content scroll">
+          <div class="card-head">${avatar(id, 68).replace('style="--s:68px"', 'style="--s:68px;border-radius:12px"')}<div class="who"><h2>${esc(f.name)}<span class="kind-tag">朋友</span></h2><div class="role">${esc(f.note)}</div></div></div>
+          <div class="gap"></div><div class="list"><div class="mrow plain"><span class="meta"><span class="nm">一起在的群</span></span><span class="val">${Object.values(CHATS).filter((c) => c.kind === "group" && (c.humans || []).includes(id)).map((c) => esc(chatTitle(c))).join("、") || "没有"}</span></div><button class="mrow plain" data-act="lend"><span class="meta"><span class="nm">借给 TA 用的应用</span></span><span class="val">Shopify</span><span class="chev">${ic("chevron-right", 18)}</span></button></div>
+          <div class="gap"></div><div class="list"><button class="mrow plain center" data-act="msg">${ic("message-circle", 20, 1.8)}&nbsp;发消息</button><button class="mrow plain center" data-act="to-group">${ic("users-round", 20, 1.8)}&nbsp;拉进群聊</button></div></div>`;
+        bindBack(page.el);
+        $('[data-act="msg"]', page.el).addEventListener("click", () => openChat(friendChatOf(id).id));
+        $('[data-act="to-group"]', page.el).addEventListener("click", () => newGroupDialog({ friends: [id] }));
+        $('[data-act="lend"]', page.el).addEventListener("click", () => toast("借应用那一页照今天的，demo 里不展开"));
+      },
+    };
+    return page;
+  }
+  function simplePage(key, title, body, bind, right = "") {
+    const page = {
+      key,
+      render() {
+        page.el.innerHTML = navHTML({ left: backBtn(), title, right }) + `<div class="content scroll">${typeof body === "function" ? body() : body}<div style="height:40px"></div></div>`;
+        Face.hydrate(page.el);
+        bindBack(page.el);
+        bind && bind(page);
+      },
+      onBack() { page.render(); },
+    };
+    return page;
+  }
+  function requestsPage() {
+    return simplePage("requests", "新的朋友", () => FRIEND_REQUESTS.length ? `<div class="gap"></div><div class="list">${FRIEND_REQUESTS.map((r) => `<div class="mrow"><span class="av human" style="--s:48px">${r.initial}</span><span class="meta"><span class="nm">${esc(r.name)}</span><span class="pv">${esc(r.text)}</span></span><button class="btn primary" data-acc="${r.id}" style="height:32px;padding:0 14px">接受</button></div>`).join("")}</div>` : `<div class="foot-note" style="padding:24px 16px">没有新的申请。</div>`, (page) => {
+      $$("[data-acc]", page.el).forEach((b) => b.addEventListener("click", () => {
+        const r = FRIEND_REQUESTS.splice(FRIEND_REQUESTS.findIndex((x) => x.id === b.dataset.acc), 1)[0];
+        const id = "f_" + r.id;
+        FRIENDS[id] = { id, name: r.name, initial: r.initial, note: r.text };
+        MY_FRIENDS.push(id);
+        Sim.push(friendChatOf(id), "sys", "你们已经是朋友了");
+        page.render();
+        renderTabbar();
+      }));
+    }, `<button class="nbtn" data-act="add" title="添加朋友">${ic("user-round-plus", 23, 1.7)}</button>`);
+  }
+  function groupsPage() {
+    return simplePage("groups", "群聊", () => {
+      const gs = Object.values(CHATS).filter((c) => c.kind === "group" && visibleChat(c));
+      return `<div class="gap"></div>${gs.length ? `<div class="list">${gs.map((c) => `<button class="mrow small" data-open="${c.id}"><span class="av-wrap">${chatAvatar(c, 40)}</span><span class="meta" style="gap:2px"><span class="nm">${esc(chatTitle(c))}</span><span class="role">${groupMembers(c).map((x) => who(x).name).join("、")}</span></span></button>`).join("")}</div>` : ""}<div class="foot-note">群里可以有智能体，也可以有朋友。群里的智能体归群主管，干活走群主的额度。</div>`;
+    }, (page) => {
+      $$("[data-open]", page.el).forEach((b) => b.addEventListener("click", () => openChat(b.dataset.open)));
+      const n = $('[data-act="new"]', page.el);
+      if (n) n.addEventListener("click", () => newGroupDialog());
+    }, M.sub === "free" ? "" : `<button class="nbtn" data-act="new" title="发起群聊">${ic("plus", 24, 1.8)}</button>`);
+  }
+  /* ── 我 tab ─────────────────────────────────────────────────────────── */
+  function meRoot() {
+    const page = {
+      key: "me",
+      render() {
+        const plan = M.sub === "free" ? `<span class="plan free">Free</span>` : `<span class="plan">Pro</span>`;
+        const r = (k, i, l, v) => `<button class="mrow plain iconed" data-me="${k}"><span class="icon-lead">${ic(i, 21, 1.7)}</span><span class="meta"><span class="nm">${l}</span></span>${v ? `<span class="val">${v}</span>` : ""}<span class="chev">${ic("chevron-right", 18)}</span></button>`;
+        page.el.innerHTML = `<div style="height:var(--sb)"></div><div class="content scroll pad-tab">
+          <button class="me-head" data-me="profile" title="个人信息">${avatar("me", 64).replace('style="--s:64px"', 'style="--s:64px;border-radius:12px"')}<div style="flex:1;min-width:0"><div class="n">${esc(ME.name)} ${plan}</div><div class="e">${ME.email}</div></div><span style="color:var(--fg-3)">${ic("chevron-right", 18)}</span></button>
+          <div class="gap"></div><div class="list">${r("quota", "gauge", M.sub === "free" ? "订阅" : "订阅与额度", M.sub === "free" ? "" : "还剩 81%")}</div>
+          <div class="sect">它们共用的一台电脑</div><div class="list">${r("files", "folder", "文件")}${r("apps", "blocks", "应用", "4 个")}${r("memory", "book-open", "记忆")}${r("usage", "chart-column", "这周谁用得多")}</div>
+          <div class="gap"></div><div class="list">${r("settings", "settings", "设置")}</div></div>`;
+        Face.hydrate(page.el);
+        $$("[data-me]", page.el).forEach((b) => b.addEventListener("click", () => push(mePage(b.dataset.me))));
+        afterRootRender(page);
+      },
+      onBack() { page.render(); },
+    };
+    return page;
+  }
+  /* 个人信息：头像 / 名字 / 邮箱（只看）/ 改密码。照微信「我 → 个人信息」 */
+  function profilePage() {
+    const page = {
+      key: "profile",
+      render() {
+        page.el.innerHTML = navHTML({ left: backBtn(), title: "个人信息" }) + `<div class="content scroll"><div class="gap"></div><div class="list">
+          <button class="mrow plain" data-act="avatar" style="min-height:88px"><span class="meta"><span class="nm">头像</span></span>${avatar("me", 60).replace('style="--s:60px"', 'style="--s:60px;border-radius:10px"')}<span class="chev">${ic("chevron-right", 18)}</span></button>
+          <button class="mrow plain" data-act="name"><span class="meta"><span class="nm">名字</span></span><span class="val">${esc(ME.name)}</span><span class="chev">${ic("chevron-right", 18)}</span></button>
+          <div class="mrow plain"><span class="meta"><span class="nm">邮箱</span></span><span class="val">${ME.email}</span></div>
+        </div><div class="gap"></div><div class="list">
+          <button class="mrow plain" data-act="password"><span class="meta"><span class="nm">改密码</span></span><span class="chev">${ic("chevron-right", 18)}</span></button>
+        </div><div class="foot-note">邮箱是登录用的，这里改不了。名字和头像朋友、群里的人都看得到。</div><div style="height:40px"></div></div>`;
+        bindBack(page.el);
+        const on = (sel, fn) => { const el = page.el.querySelector(sel); if (el) el.addEventListener("click", fn); };
+        on('[data-act="avatar"]', () => avatarSheet(() => { page.render(); Sim.emit(); }));
+        on('[data-act="name"]', () => editDialog("名字", ME.name, false, (v) => { ME.name = v; page.render(); Sim.emit(); }, "朋友和群里的人看到的就是这个名字。"));
+        on('[data-act="password"]', passwordDialog);
+      },
+      onBack() { page.render(); },
+    };
+    return page;
+  }
+  /* 换头像是在几样里挑一样 → 底部抽屉（选择器照今天的规矩）；改密码是表单 → 居中弹窗 */
+  function avatarSheet(after) {
+    const rows = [["pick", "从相册选一张"]];
+    if (ME.avatar) rows.push(["reset", "换回名字的首字"]);
+    sheet.innerHTML = `<div class="grab"></div><div class="sh-t">换头像</div><div class="list">${rows.map(([k, l]) => `<button class="mrow plain" data-av="${k}" style="justify-content:center"><span style="font-size:17px">${l}</span></button>`).join("")}</div><div class="gap"></div><div class="list"><button class="mrow plain" data-av="cancel" style="justify-content:center"><span style="font-size:17px;color:var(--fg-2)">取消</span></button></div>`;
+    openSheet();
+    $$("[data-av]", sheet).forEach((b) => b.addEventListener("click", () => {
+      closeSheet();
+      if (b.dataset.av === "pick") pickAvatarFile((url) => { ME.avatar = url; after(); toast("头像换好了"); });
+      if (b.dataset.av === "reset") { ME.avatar = null; after(); }
+    }));
+  }
+  function passwordDialog() {
+    showDialog(`<h3>改密码</h3><p class="desc">新密码至少 8 位。</p>
+      <input class="field" id="p0" type="password" autocomplete="current-password" placeholder="现在的密码">
+      <input class="field" id="p1" type="password" autocomplete="new-password" placeholder="新密码" style="margin-top:10px">
+      <input class="field" id="p2" type="password" autocomplete="new-password" placeholder="再输一遍新密码" style="margin-top:10px">
+      <div id="perr" role="alert" style="font-size:13px;color:var(--danger);min-height:20px;margin-top:8px;text-align:center"></div>
+      <button id="forgot" style="display:block;margin:0 auto;font-size:14px;color:var(--brand)">忘了现在的密码？用邮箱验证码重设</button>
+      <div class="actions"><button class="btn soft" data-close>取消</button><button class="btn primary" id="ok" disabled>保存</button></div>`, (d) => {
+      const [p0, p1, p2] = ["#p0", "#p1", "#p2"].map((x) => d.querySelector(x));
+      const ok = d.querySelector("#ok"), err = d.querySelector("#perr");
+      const check = () => { err.textContent = passwordProblem(p0.value, p1.value, p2.value); ok.disabled = !passwordReady(p0.value, p1.value, p2.value); };
+      [p0, p1, p2].forEach((i) => i.addEventListener("input", check));
+      ok.addEventListener("click", () => { closeDialog(); toast("demo：密码改好了（没有真改）"); });
+      d.querySelector("#forgot").addEventListener("click", () => { closeDialog(); toast(`demo：这里会往 ${ME.email} 发一个 8 位验证码`); });
+    });
+  }
+  function mePage(k) {
+    if (k === "profile") return profilePage();
+    if (k === "quota") return simplePage("quota", M.sub === "free" ? "订阅" : "订阅与额度", () => M.sub === "free"
+      ? `<div class="foot-note" style="padding:16px">Free 能加朋友、进朋友拉你的群。要有自己的智能体，订 Pro 或 Max。</div><div class="list"><div class="mrow plain"><span class="meta"><span class="nm">Pro</span><span class="pv">私聊、群聊、语音通话</span></span><button class="btn primary" style="height:32px" data-act="sub">订阅</button></div><div class="mrow plain"><span class="meta"><span class="nm">Max</span><span class="pv">额度更多</span></span><button class="btn soft" style="height:32px" data-act="sub">订阅</button></div></div>`
+      : `<div class="foot-note" style="padding:14px 16px 12px">额度按周算，每周一 00:00 刷新。</div><div class="mq one"><div class="cell"><span class="k">本周</span><span class="v">81%<small>还剩</small></span><div class="meter"><i style="width:81%"></i></div><span class="r">周一 00:00 刷新</span></div></div><div class="gap"></div><div class="list"><div class="mrow plain"><span class="meta"><span class="nm">当前档位</span></span><span class="val"><span class="plan">Pro</span></span></div><button class="mrow plain"><span class="meta"><span class="nm">换档或取消</span></span><span class="chev">${ic("chevron-right", 18)}</span></button></div>`, (page) => $$('[data-act="sub"]', page.el).forEach((b) => b.addEventListener("click", () => { M.sub = "pro"; renderSide(); rerootAll(); toast("demo：当作已经订上了"); })));
+    if (k === "files") return simplePage("files", "文件", `<div class="foot-note" style="padding:14px 16px 10px">智能体干活的那台电脑，你的几只共用一个文件夹。</div><div class="list">${[["folder", "文案", "4 个"], ["folder", "周报", "12 个"], ["folder", "报销", "2 个"], ["file-text", "差评回复.md", "2 KB"], ["file-text", "订单导出-九月.csv", "86 KB"]].map(([i, n, s]) => `<button class="mrow plain iconed"><span class="icon-lead">${ic(i, 20, 1.7)}</span><span class="meta"><span class="nm">${n}</span></span><span class="val">${s}</span></button>`).join("")}</div>`);
+    if (k === "apps") return simplePage("apps", "应用", `<div class="foot-note" style="padding:14px 16px 10px">智能体能替你用的外部账号。授权一次，几只共用。</div><div class="list">${[["Shopify", true], ["Google Ads", true], ["Gmail", true], ["Notion", false]].map(([n, ok]) => `<div class="mrow plain iconed"><span class="icon-lead">${ic("app-window", 20, 1.7)}</span><span class="meta"><span class="nm">${n}</span></span><span class="app-dot ${ok ? "" : "off"}"></span><span class="val">${ok ? "已接通" : "要你登录"}</span></div>`).join("")}</div><div class="foot-note">接新应用、登录授权要在电脑上做。</div>`);
+    if (k === "memory") return simplePage("memory", "记忆", `<div class="foot-note" style="padding:14px 16px 10px">它们一起记着的事，一页一页的。你也能改。</div><div class="list">${[["关于我", "称呼、口味、不许做的事"], ["山茶小铺", "卖什么、在哪卖、价格底线"], ["客服 的页", "常见问题怎么回"], ["文案 的页", "语气、不用的词"]].map(([n, s]) => `<button class="mrow plain iconed"><span class="icon-lead">${ic("book-open", 20, 1.7)}</span><span class="meta" style="gap:2px"><span class="nm">${n}</span><span class="pv" style="font-size:13px">${s}</span></span><span class="chev">${ic("chevron-right", 18)}</span></button>`).join("")}</div>`);
+    if (k === "usage") return simplePage("usage", "这周谁用得多", () => `<div class="foot-note" style="padding:14px 16px 10px">占你本周额度的百分之几。</div>${MY_AGENTS.map((id) => AGENTS[id]).sort((a, b) => b.usage - a.usage).map((a) => `<div class="usage-m">${avatar(a.id, 30)}<span>${esc(a.name)}</span><div class="meter"><i style="width:${a.usage * 2.4}%"></i></div><span class="p">${a.usage}%</span></div>`).join("")}`);
+    if (k === "settings") return simplePage("settings", "设置", `<div class="gap"></div><div class="list"><div class="mrow plain"><span class="meta"><span class="nm">外观</span></span><span class="val">跟随系统</span></div><div class="mrow plain"><span class="meta"><span class="nm">有人 @ 我时通知</span></span><span class="val">开</span></div><div class="mrow plain"><span class="meta"><span class="nm">智能体回话时通知</span></span><span class="val">开</span></div></div><div class="gap"></div><div class="list"><div class="mrow plain"><span class="meta"><span class="nm">版本</span></span><span class="val">1.4.0（demo）</span></div></div><div class="gap"></div><div class="list"><button class="mrow plain danger" data-act="out">退出登录</button></div>`, (page) => $('[data-act="out"]', page.el).addEventListener("click", () => confirmDialog("退出登录？", "只退出这台手机。智能体和聊天记录都在云上，下次登录还在。", "退出", () => toast("demo 里不真的退出"))));
+  }
+
+  /* ── 菜单与弹窗 ─────────────────────────────────────────────────────── */
+  function plusMenu(btn) {
+    const sr = screen.getBoundingClientRect(), br = btn.getBoundingClientRect(), s = scaleOf();
+    const items = [["new-agent", "sparkles", "新建智能体", M.sub !== "free"], ["new-group", "users-round", "发起群聊", M.sub !== "free"], ["add-friend", "user-round-plus", "添加朋友", true]].filter((x) => x[3]);
+    menu.innerHTML = items.map(([k, i, l]) => `<button data-m="${k}">${ic(i, 19, 1.8)}${l}</button>`).join("");
+    menu.style.right = `${(sr.right - br.right) / s + 4}px`;
+    menu.style.left = "auto";
+    menu.style.top = `${(br.bottom - sr.top) / s + 4}px`;
+    menu.style.transformOrigin = "top right";
+    menu.classList.add("on");
+    $$("[data-m]", menu).forEach((b) => b.addEventListener("click", () => { menu.classList.remove("on"); ({ "new-agent": newAgentDialog, "new-group": () => newGroupDialog(), "add-friend": addFriendDialog })[b.dataset.m](); }));
+  }
+  document.addEventListener("pointerdown", (e) => { if (menu.classList.contains("on") && !menu.contains(e.target) && !e.target.closest("#plus")) menu.classList.remove("on"); });
+
+  function showDialog(html, bind) {
+    dialog.innerHTML = html;
+    Face.hydrate(dialog);
+    dialog.classList.add("on");
+    scrim.classList.add("on");
+    scrim.onclick = null; // 居中弹窗点遮罩不关（和桌面的 AlertDialog 一样）
+    bind && bind(dialog);
+  }
+  function closeDialog() { dialog.classList.remove("on"); scrim.classList.remove("on"); }
+  dialog.addEventListener("click", (e) => { if (e.target.closest("[data-close]")) closeDialog(); });
+  function confirmDialog(title, desc, ok, fn, danger) {
+    showDialog(`<h3>${esc(title)}</h3><p class="desc">${esc(desc)}</p><div class="actions"><button class="btn soft" data-close>取消</button><button class="btn ${danger ? "danger-solid" : "primary"}" id="ok">${esc(ok)}</button></div>`, (d) => d.querySelector("#ok").addEventListener("click", () => { closeDialog(); fn(); }));
+  }
+  function editDialog(label, value, multi, fn, desc = "改完下一句话就生效。") {
+    const field = multi ? `<textarea class="field" id="ed" style="height:110px;padding:10px 12px;resize:none;line-height:1.5">${esc(value)}</textarea>` : `<input class="field" id="ed" value="${esc(value)}" maxlength="30">`;
+    showDialog(`<h3>${esc(label)}</h3><p class="desc">${esc(desc)}</p>${field}<div class="actions"><button class="btn soft" data-close>取消</button><button class="btn primary" id="ok">保存</button></div>`, (d) => {
+      const ed = d.querySelector("#ed"), ok = d.querySelector("#ok");
+      ed.addEventListener("input", () => (ok.disabled = !ed.value.trim()));
+      ok.addEventListener("click", () => { closeDialog(); fn(ed.value.trim()); });
+    });
+  }
+  const WALL = [0, 1, 4, 5, 6, 7, 8, 9, 10, 11];
+  const faceWall = (sel) => `<div class="face-wall">${WALL.map((s) => `<button class="face-pick" data-slot="${s}" aria-pressed="${s === sel}"><span class="av" style="--s:48px" data-face="${s}" data-size="48"></span></button>`).join("")}</div>`;
+  function faceDialog(a, after) {
+    let sel = a.slot;
+    showDialog(`<h3>换个形象</h3><p class="desc">脸是它在通讯录里的样子。</p>${faceWall(sel)}<div class="actions"><button class="btn soft" data-close>取消</button><button class="btn primary" id="ok">保存</button></div>`, (d) => {
+      $$(".face-pick", d).forEach((b) => b.addEventListener("click", () => { sel = +b.dataset.slot; $$(".face-pick", d).forEach((x) => x.setAttribute("aria-pressed", String(+x.dataset.slot === sel))); }));
+      d.querySelector("#ok").addEventListener("click", () => { a.slot = sel; closeDialog(); after && after(); Sim.emit(); });
+    });
+  }
+  function voiceSheet(a, after) {
+    const vs = ["清亮女声", "温柔女声", "沉稳男声", "干脆男声"];
+    sheet.innerHTML = `<div class="grab"></div><div class="sh-t">说话的声音</div><div class="list">${vs.map((v) => `<button class="mrow plain" data-v="${v}"><span class="meta"><span class="nm">${v}</span></span><span style="color:var(--brand);opacity:${v === a.voice ? 1 : 0}">${ic("check", 20, 2.2)}</span></button>`).join("")}</div>`;
+    openSheet();
+    $$("[data-v]", sheet).forEach((b) => b.addEventListener("click", () => { a.voice = b.dataset.v; closeSheet(); after && after(); }));
+  }
+  function newAgentDialog() {
+    let sel = 9;
+    showDialog(`<h3>新建智能体</h3><p class="desc">起个名字、挑张脸。建好它先跟你打招呼，你回的第一句话就是它的职责。</p>
+      <div style="display:flex;justify-content:center;margin:0 0 12px"><span class="av" id="prev" style="--s:76px;border-radius:14px" data-face="${sel}" data-state="alive" data-size="76"></span></div>
+      <input class="field" id="nm" placeholder="名字，比如「客服」「小周」" maxlength="12" style="margin-bottom:12px">${faceWall(sel)}
+      <div class="actions"><button class="btn soft" data-close>取消</button><button class="btn primary" id="ok" disabled>创建</button></div>`, (d) => {
+      const nm = d.querySelector("#nm"), ok = d.querySelector("#ok");
+      nm.addEventListener("input", () => (ok.disabled = !nm.value.trim()));
+      $$(".face-pick", d).forEach((b) => b.addEventListener("click", () => {
+        sel = +b.dataset.slot;
+        $$(".face-pick", d).forEach((x) => x.setAttribute("aria-pressed", String(+x.dataset.slot === sel)));
+        const prev = d.querySelector("#prev"); prev.removeAttribute("data-hyd"); prev.innerHTML = ""; prev.dataset.face = sel; Face.hydrate(d);
+      }));
+      ok.addEventListener("click", () => {
+        const name = nm.value.trim();
+        const id = "a_" + Math.random().toString(36).slice(2, 8);
+        AGENTS[id] = { id, name, slot: sel, role: "还没定", voice: "清亮女声", usage: 0 };
+        MY_AGENTS.push(id);
+        const cid = "c_" + id;
+        CHATS[cid] = { id: cid, kind: "dm", agent: id, unread: 0, msgs: [] };
+        closeDialog();
+        if (M.tab !== "chats") switchTab("chats"); else popToRoot();
+        openChat(cid);
+        greet(CHATS[cid]);
+      });
+    });
+  }
+  async function greet(c) {
+    const a = AGENTS[c.agent];
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    await wait(500);
+    c.pending = { agent: a.id, phase: "typing" };
+    Sim.emit(c.id);
+    await wait(1100);
+    c.pending = null;
+    Sim.push(c, a.id, `你好，我是${a.name}。你想让我帮你干点什么？`);
+    await wait(650);
+    c.onboarding = true;
+    Sim.push(c, a.id, "说一句就行，这句话就是我以后的职责，写错了随时能改。");
+  }
+  /* 挑人：智能体和朋友分两段，一个群里两样都可以有（维护者 2026-09-27：不分团队和群聊） */
+  function pickMembers(o, fn) {
+    const selA = new Set((o.preset && o.preset.agents) || []), selF = new Set((o.preset && o.preset.friends) || []);
+    const chk = `<span class="chk" style="color:var(--brand)">${ic("check", 20, 2.2)}</span>`;
+    const rowA = (id) => `<button class="mrow small" data-pa="${id}" style="background:transparent;--sep:68px">${avatar(id, 36)}<span class="meta"><span class="nm">${esc(AGENTS[id].name)}</span></span>${chk}</button>`;
+    const rowF = (id) => `<button class="mrow small" data-pf="${id}" style="background:transparent;--sep:68px">${avatar(id, 36)}<span class="meta"><span class="nm">${esc(FRIENDS[id].name)}</span></span>${chk}</button>`;
+    const sec = (label, ids, row) => ids.length ? `<div class="sect" style="padding:12px 20px 4px">${label}</div><div class="list" style="background:transparent">${ids.map(row).join("")}</div>` : "";
+    showDialog(`<h3>${esc(o.title)}</h3>${o.desc ? `<p class="desc">${esc(o.desc)}</p>` : ""}${o.withName ? `<input class="field" id="gn" maxlength="30">` : ""}<div id="cnt" style="text-align:right;font-size:12px;color:var(--fg-3);margin:8px 2px 0"></div><div style="max-height:340px;overflow:auto;margin:4px -20px 0">${sec("智能体", o.agents, rowA)}${sec("朋友", o.friends, rowF)}</div><div class="actions"><button class="btn soft" data-close>取消</button><button class="btn primary" id="ok">${esc(o.okLabel || "确定")}</button></div>`, (d) => {
+      const draw = () => {
+        $$("[data-pa]", d).forEach((b) => { const on = selA.has(b.dataset.pa); b.querySelector(".chk").style.opacity = on ? 1 : 0; b.disabled = !on && selA.size >= o.maxAgents; b.style.opacity = b.disabled ? 0.4 : 1; });
+        $$("[data-pf]", d).forEach((b) => { b.querySelector(".chk").style.opacity = selF.has(b.dataset.pf) ? 1 : 0; });
+        const n = selA.size + selF.size;
+        d.querySelector("#ok").disabled = n < (o.min || 1);
+        d.querySelector("#cnt").textContent = `已选 ${selA.size} 只智能体 · ${selF.size} 位朋友`;
+        const gn = d.querySelector("#gn");
+        if (gn) gn.placeholder = n ? [...o.friends.filter((i) => selF.has(i)).map((i) => FRIENDS[i].name), ...o.agents.filter((i) => selA.has(i)).map((i) => AGENTS[i].name)].join("、") : "群名（不填就用成员名）";
+      };
+      $$("[data-pa]", d).forEach((b) => b.addEventListener("click", () => { selA.has(b.dataset.pa) ? selA.delete(b.dataset.pa) : selA.add(b.dataset.pa); draw(); }));
+      $$("[data-pf]", d).forEach((b) => b.addEventListener("click", () => { selF.has(b.dataset.pf) ? selF.delete(b.dataset.pf) : selF.add(b.dataset.pf); draw(); }));
+      d.querySelector("#ok").addEventListener("click", () => {
+        const gn = d.querySelector("#gn");
+        closeDialog();
+        fn({ agents: o.agents.filter((i) => selA.has(i)), friends: o.friends.filter((i) => selF.has(i)), name: gn ? gn.value.trim() : "" });
+      });
+      draw();
+    });
+  }
+  function addMembers(c, after) {
+    pickMembers({
+      title: "拉人进群",
+      desc: c.owner === "me" ? "" : "你能拉朋友进来；智能体归群主管，只有群主能拉。",
+      agents: c.owner === "me" ? MY_AGENTS.filter((x) => !c.agents.includes(x)) : [],
+      friends: MY_FRIENDS.filter((x) => !(c.humans || []).includes(x)),
+      maxAgents: 6 - c.agents.length,
+      min: 1,
+      okLabel: "拉进来",
+    }, ({ agents, friends }) => {
+      c.agents.push(...agents);
+      c.humans = [...(c.humans || []), ...friends];
+      Sim.push(c, "sys", "你拉进了群聊：", "rosterchg", { ids: [...friends, ...agents] });
+      after && after();
+    });
+  }
+  function newGroupDialog(preset = {}) {
+    pickMembers({ title: "发起群聊", desc: "拉几只智能体、几个朋友，凑够 2 个就能建。", agents: MY_AGENTS.slice(), friends: MY_FRIENDS.slice(), maxAgents: 6, min: 2, okLabel: "建群", withName: true, preset }, ({ agents, friends, name }) => {
+      const nm = name || [...friends.map((i) => FRIENDS[i].name), ...agents.map((i) => AGENTS[i].name)].join("、").slice(0, 30);
+      const id = "g_" + Math.random().toString(36).slice(2, 7);
+      CHATS[id] = { id, kind: "group", name: nm, owner: "me", humans: friends, agents, unread: 0, msgs: [] };
+      if (M.tab !== "chats") switchTab("chats"); else popToRoot();
+      openChat(id);
+      Sim.push(CHATS[id], "sys", `你建了群聊「${nm}」`, "roster", { added: [...friends, ...agents] });
+    });
+  }
+  function addFriendDialog() {
+    showDialog(`<h3>添加朋友</h3><p class="desc">填对方的邮箱或用户名。加了朋友，才能拉 TA 进群、把你的应用借给 TA。</p><input class="field" id="fe" placeholder="邮箱或用户名"><div class="actions"><button class="btn soft" data-close>取消</button><button class="btn primary" id="ok" disabled>发送申请</button></div>`, (d) => {
+      const fe = d.querySelector("#fe"), ok = d.querySelector("#ok");
+      fe.addEventListener("input", () => (ok.disabled = !fe.value.trim()));
+      ok.addEventListener("click", () => { closeDialog(); toast("申请已发出，对方同意了会出现在朋友里"); });
+    });
+  }
+  function subscribeDialog() {
+    showDialog(`<h3>订阅</h3><p class="desc">Pro：自己的智能体，私聊、拉群、语音通话。Max：额度更多。</p><div class="actions" style="flex-direction:column"><button class="btn primary" id="pro">订 Pro</button><button class="btn soft" id="max">订 Max</button><button class="btn soft" data-close>以后再说</button></div>`, (d) => {
+      const done = () => { closeDialog(); M.sub = "pro"; renderSide(); rerootAll(); toast("demo：当作已经订上了"); };
+      d.querySelector("#pro").addEventListener("click", done);
+      d.querySelector("#max").addEventListener("click", done);
+    });
+  }
+  function transcriptDialog(c, mid) {
+    const m = c.msgs.find((x) => x.id === mid);
+    if (!m) return;
+    showDialog(`<h3>语音通话 · ${esc(m.meta.dur)}</h3><p class="desc">${esc(sepTime(m.t))} · ${m.meta.lines.length} 句</p><div style="display:flex;flex-direction:column;gap:10px;font-size:15px;line-height:1.55">${m.meta.lines.map(([w, s, at]) => `<div style="display:grid;grid-template-columns:44px 1fr;gap:8px"><span style="color:var(--fg-3);font-size:12px;padding-top:3px;font-variant-numeric:tabular-nums">${at}</span><span><b style="font-weight:600">${esc(who(w).name)}</b>　${esc(s)}</span></div>`).join("")}</div><div class="actions"><button class="btn soft" data-close>关闭</button></div>`);
+  }
+  function toast(text) {
+    const t = document.createElement("div");
+    t.textContent = text;
+    t.style.cssText = "position:absolute;left:50%;bottom:120px;transform:translateX(-50%);background:var(--menu);color:var(--menu-fg);padding:10px 14px;border-radius:12px;font-size:14px;box-shadow:var(--shadow-float);z-index:99;transition:opacity 200ms var(--ease);width:max-content;max-width:calc(100% - 48px);text-align:center";
+    screen.appendChild(t);
+    setTimeout(() => (t.style.opacity = "0"), 2200);
+    setTimeout(() => t.remove(), 2500);
+  }
+
+  /* ── 通话 ─────────────────────────────────────────────────────────── */
+  function startCall(c) {
+    if (M.call) return;
+    const agentId = c.kind === "dm" ? c.agent : chatParticipants(c).find((x) => AGENTS[x]);
+    const script = callScript(agentId);
+    const started = Date.now();
+    const lines = [];
+    const call = (M.call = { c, started, lines, stop: false, muted: false });
+    const face = c.kind === "dm" ? `<span class="call-face" id="cface" style="width:168px;height:168px"><span class="av" style="--s:168px;border-radius:28%" data-face="${AGENTS[agentId].slot}" data-state="listening" data-size="168"></span></span><div class="nm">${esc(AGENTS[agentId].name)}</div>` : `<div style="display:flex;gap:16px;flex-wrap:wrap;justify-content:center">${chatParticipants(c).filter((x) => AGENTS[x]).slice(0, 4).map((id) => `<span class="call-face" ${id === agentId ? 'id="cface"' : ""} style="width:92px;height:92px"><span class="av" style="--s:92px;border-radius:28%" data-face="${AGENTS[id].slot}" data-state="listening" data-size="92"></span></span>`).join("")}</div><div class="nm">${esc(chatTitle(c))}</div>`;
+    mcall.innerHTML = `<div class="top"><button class="nbtn" id="c-min" style="color:#fff" title="收起">${ic("chevron-down", 26, 2)}</button><span class="timer" id="ctime" style="font-variant-numeric:tabular-nums">00:00</span><span style="width:40px"></span></div>
+      <div class="face-area">${face}<div class="st" id="cst">在听</div></div>
+      <div class="call-sub" id="csub"></div>
+      <div class="ctrls"><div><button class="call-btn" id="c-mute">${ic("mic", 28)}</button><div class="call-label">静音</div></div><div><button class="call-btn hang" id="c-end">${ic("phone-off", 30)}</button><div class="call-label">挂断</div></div><div><button class="call-btn on" id="c-sub">${ic("type", 28)}</button><div class="call-label">转文字</div></div></div>`;
+    Face.hydrate(mcall);
+    mcall.classList.add("on");
+    $("#sbar").classList.add("light");
+    call.timer = setInterval(() => {
+      const s = Math.floor((Date.now() - started) / 1000);
+      const t = `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
+      $("#ctime").textContent = t;
+      $("#cpill").innerHTML = `${ic("phone", 15, 2.2)}${t}`;
+    }, 500);
+    $("#c-end").addEventListener("click", endCall);
+    /* 收起 = 通话照旧，屏幕回到聊天，右上角留一颗「通话中」（点它回来） */
+    $("#c-min").addEventListener("click", () => { mcall.classList.remove("on"); $("#sbar").classList.remove("light"); $("#cpill").classList.add("on"); });
+    $("#c-mute").addEventListener("click", (e) => { call.muted = !call.muted; e.currentTarget.classList.toggle("on", call.muted); e.currentTarget.innerHTML = ic(call.muted ? "mic-off" : "mic", 28); });
+    $("#c-sub").addEventListener("click", (e) => { e.currentTarget.classList.toggle("on"); const s = $("#csub"); s.style.visibility = s.style.visibility === "hidden" ? "visible" : "hidden"; });
+    (async () => {
+      const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+      const fe = () => mcall.querySelector("#cface .av"), fw = () => mcall.querySelector("#cface");
+      await wait(1100);
+      for (const [w, text] of script) {
+        if (call.stop) return;
+        const agent = w !== "me";
+        Face.setState(fe(), agent ? "speaking" : "listening");
+        fw().classList.toggle("talking", agent);
+        $("#cst").textContent = agent ? "正在说" : "在听";
+        for (let i = 1; i <= text.length; i++) {
+          if (call.stop) return;
+          $("#csub").innerHTML = `<span class="who">${agent ? esc(AGENTS[agentId].name) : "你"}：</span>${esc(text.slice(0, i))}`;
+          await wait(agent ? 70 : 55);
+        }
+        const s = Math.floor((Date.now() - started) / 1000);
+        lines.push([w, text, `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`]);
+        await wait(900);
+      }
+      if (call.stop) return;
+      Face.setState(fe(), "listening");
+      fw().classList.remove("talking");
+      $("#cst").textContent = "在听";
+    })();
+  }
+  function endCall() {
+    const call = M.call;
+    if (!call) return;
+    call.stop = true;
+    clearInterval(call.timer);
+    mcall.classList.remove("on");
+    $("#cpill").classList.remove("on");
+    $("#sbar").classList.remove("light");
+    const s = Math.max(1, Math.floor((Date.now() - call.started) / 1000));
+    Sim.push(call.c, "me", "", "call", { dur: `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`, lines: call.lines });
+    M.call = null;
+  }
+
+  /* ── 说明面板 + 跳转 ─────────────────────────────────────────────── */
+  const pref = (() => { try { return JSON.parse(localStorage.getItem("otto-wx-demo") || "{}"); } catch { return {}; } })();
+  const savePref = () => { try { localStorage.setItem("otto-wx-demo", JSON.stringify(pref)); } catch {} };
+  function applyPref() {
+    const r = document.documentElement;
+    if (pref.theme === "light" || pref.theme === "dark") r.dataset.theme = pref.theme; else delete r.dataset.theme;
+    if (pref.skin === "green") r.dataset.skin = "green"; else delete r.dataset.skin;
+  }
+  function rerootAll() { switchTabForce(M.tab); }
+  function switchTabForce(tab) { M.tab = tab; setRoot(tab === "chats" ? chatsRoot() : tab === "contacts" ? contactsRoot() : meRoot()); }
+  const JUMPS = [
+    ["聊天列表", () => switchTabForce("chats")],
+    ["私聊 · 文案", () => { switchTabForce("chats"); openChat("c_wenan"); }],
+    ["群聊 · 上新小队", () => { switchTabForce("chats"); openChat("c_shangxin"); }],
+    ["有朋友的群 · 山茶小铺", () => { switchTabForce("chats"); openChat("s_shiji"); }],
+    ["朋友 · 小红", () => { switchTabForce("chats"); openChat("c_xh"); }],
+    ["聊天信息", () => { switchTabForce("chats"); openChat("c_shangxin"); setTimeout(() => push(infoPage(CHATS.c_shangxin)), 450); }],
+    ["通讯录", () => switchTabForce("contacts")],
+    ["智能体资料", () => { switchTabForce("contacts"); push(agentPage("a_kefu")); }],
+    ["我", () => switchTabForce("me")],
+    ["额度", () => { switchTabForce("me"); push(mePage("quota")); }],
+    ["个人信息", () => { switchTabForce("me"); push(profilePage()); }],
+    ["新建智能体", () => { switchTabForce("chats"); newAgentDialog(); }],
+    ["语音通话", () => { switchTabForce("chats"); openChat("c_wenan"); setTimeout(() => startCall(CHATS.c_wenan), 450); }],
+  ];
+  function panelHTML() {
+    const seg = (key, opts, cur) => `<span class="seg">${opts.map(([v, l]) => `<button data-k="${key}" data-v="${v}" aria-pressed="${cur === v}">${l}</button>`).join("")}</span>`;
+    return `<div class="h"><b>微信式布局 · 手机 demo</b></div>
+      <div class="ctl"><span>主题</span>${seg("theme", [["auto", "跟随"], ["light", "浅色"], ["dark", "深色"]], pref.theme || "auto")}
+      <span>配色</span>${seg("skin", [["otto", "Otto"], ["green", "绿色气泡"]], pref.skin || "otto")}
+      <span>订阅</span>${seg("sub", [["pro", "Pro"], ["free", "没订阅"]], M.sub)}</div>
+      <div><h4>跳到</h4><div class="jump">${JUMPS.map(([l], i) => `<button data-j="${i}">${l}</button>`).join("")}</div></div>
+      <p style="margin:0;color:var(--fg-2)">左缘往右划能返回；输入框左边那颗切「按住说话」（按住、上划取消）；右边 + 里是通话和拉群。数据全是编的。<a href="wechat-desktop.html">桌面 demo →</a></p>
+      <div><h4>demo 里有、今天还没有的</h4><ul>${NEW_THINGS.map(([a, b]) => `<li><b>${a}</b>：${b}</li>`).join("")}</ul></div>
+      <div><h4>和现在的手机端比，换掉的</h4><ul><li>名册单栏（Grok 式）→ 底部三格：聊天 / 通讯录 / 我</li><li>页头三颗圆钮 → 标题栏 + 右上角 ⊕</li><li>聊天页的药丸头 → 标准导航栏，返回键带未读数</li><li>「开电话」那颗大钮 → 左边按住说话，右边 + 里打电话</li><li>判据（谁排前面、藏哪些事件、派活线）照旧，换的是外壳</li></ul></div>`;
+  }
+  function bindPanel(root) {
+    $$("[data-k]", root).forEach((b) => b.addEventListener("click", () => {
+      const k = b.dataset.k, v = b.dataset.v;
+      if (k === "sub") { M.sub = v; rerootAll(); }
+      else { pref[k] = v; savePref(); applyPref(); }
+      renderSide();
+    }));
+    $$("[data-j]", root).forEach((b) => b.addEventListener("click", () => { closeDialog(); closeSheet(); if (M.call) endCall(); JUMPS[+b.dataset.j][1](); $("#demo-sheet").classList.remove("on"); }));
+  }
+  function renderSide() {
+    const side = $("#side");
+    side.innerHTML = panelHTML();
+    bindPanel(side);
+    const ds = $("#demo-sheet");
+    ds.innerHTML = panelHTML() + `<button class="btn soft" id="ds-x">关闭</button>`;
+    bindPanel(ds);
+    $("#ds-x").addEventListener("click", () => ds.classList.remove("on"));
+  }
+  $("#fab").innerHTML = ic("info", 20);
+  $("#cpill").addEventListener("click", () => { $("#cpill").classList.remove("on"); mcall.classList.add("on"); $("#sbar").classList.add("light"); });
+  $("#fab").addEventListener("click", () => $("#demo-sheet").classList.toggle("on"));
+
+  /* ── 装配 ─────────────────────────────────────────────────────────── */
+  Sim.on((id) => {
+    renderTabbar();
+    for (const p of stack) p.onSim && p.onSim(id);
+    // 通话收尾落下的那条记录：开着那条聊天就刷一下
+  });
+  applyPref();
+  renderSide();
+  switchTabForce("chats");
+  const tick = () => ($("#clock").textContent = hhmm(Date.now()));
+  tick();
+  setInterval(tick, 15000);
+})();
+</script>

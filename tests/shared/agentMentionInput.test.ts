@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  applyAgentMention, insertAgentMention, mentionQueryAt, pickerEmptyState, resolveSendMentions,
+  applyAgentMention, insertAgentMention, justOpenedMention, mentionQueryAt, pickerEmptyState, resolveSendMentions,
 } from "../../src/shared/agentMentionInput.js";
 import { parseMentions } from "../../src/shared/remote/agentMention.js";
 
@@ -162,5 +162,21 @@ describe("insertAgentMention（#1356 A3：手机「@ 谁」那颗钮）", () => 
   });
   it("光标越界（输入框刚被清空、选区还是旧的）：夹回末尾", () => {
     expect(insertAgentMention("", 7, "运维")).toEqual({ text: "@运维 ", caret: 4 });
+  });
+});
+
+describe("justOpenedMention（#1386：刚打了一个 @ 就弹选人）", () => {
+  it("句首 / 空格后 / 中文里打一个 @（或全角 ＠）：弹", () => {
+    expect(justOpenedMention("", "@", 1)).toBe(true);
+    expect(justOpenedMention("看下 ", "看下 @", 4)).toBe(true);
+    expect(justOpenedMention("你好，", "你好，＠", 4)).toBe(true);
+    expect(justOpenedMention("ab", "@ab", 1)).toBe(true); // 句中插在前面
+  });
+  it("邮箱里的 @、粘贴一整段、删字、在已有的 @ 后面接着打：都不弹", () => {
+    expect(justOpenedMention("rick", "rick@", 5)).toBe(false);
+    expect(justOpenedMention("", "@运维 你看下", 1)).toBe(false);
+    expect(justOpenedMention("@运", "@", 1)).toBe(false);
+    expect(justOpenedMention("@", "@运", 2)).toBe(false);
+    expect(justOpenedMention("看下", "看下@", 3)).toBe(false); // 贴着构词字符：parseMentions 也不认
   });
 });
