@@ -24,3 +24,34 @@ mobile/android/
 # runtime-deploy.mjs 现生成的瘦身依赖清单（版本从根 package.json 现读，
 # 是构建产物不是源码，见 scripts/runtime-deploy.mjs，ADR-0199 task-11）
 services/runtime/deploy-package.json
+
+# Impeccable 设计技能的工作文件（#1375）。下面这一段逐字取自上游 README，
+# start/end 标记留着是为了以后照上游刷新；共享产物（config.json、design.json、
+# surfaces/*.md、critique/*.md）故意不忽略。
+# impeccable-ignore-start
+# Ephemeral output, runtime state, and per-dev overrides.
+# The **/ prefix covers .impeccable at the repo root or in a nested workspace.
+# Shared artifacts stay tracked: config.json, live/config.json,
+# design.json, surfaces/*.md, critique/*.md.
+**/.impeccable/config.local.json
+**/.impeccable/hook.cache.json
+**/.impeccable/hook.pending.json
+**/.impeccable/*.png
+**/.impeccable/review/
+**/.impeccable/questions/
+**/.impeccable/live/server.json
+**/.impeccable/live/sessions/
+**/.impeccable/live/previews/
+**/.impeccable/live/annotations/
+**/.impeccable/live/cache/
+**/.impeccable/live/manual-edit-apply-transaction.json
+**/.impeccable/live/manual-edit-events.jsonl
+**/.impeccable/live/manual-edit-evidence/
+**/.impeccable/live/pending-manual-edits.json
+**/.impeccable/live/deferred-svelte-component-accepts.json
+**/.impeccable/live/*.png
+# impeccable-ignore-end
+
+# 安装器会把本机平台的引擎二进制（darwin-arm64，约 12MB）放进技能目录。它是平台
+# 专属的、不该进仓库；没有它时启动器会自己下到 ~/.impeccable/bin/ 并校验 sha256。
+.claude/skills/impeccable/scripts/bin/
