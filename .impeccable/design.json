@@ -1,0 +1,780 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-09-27T02:36:56.404Z",
+  "title": "Design System: Mr Otto",
+  "extensions": {
+    "colorMeta": {
+      "background": {
+        "role": "neutral",
+        "displayName": "地面（浅色）",
+        "canonical": "#efece3",
+        "tonalRamp": [
+          "oklch(15.0% 0.012 91.5)",
+          "oklch(26.4% 0.012 91.5)",
+          "oklch(37.9% 0.012 91.5)",
+          "oklch(49.3% 0.012 91.5)",
+          "oklch(60.7% 0.012 91.5)",
+          "oklch(72.1% 0.012 91.5)",
+          "oklch(83.6% 0.012 91.5)",
+          "oklch(95.0% 0.012 91.5)"
+        ]
+      },
+      "background-dark": {
+        "role": "neutral",
+        "displayName": "地面（深色）",
+        "canonical": "#000000",
+        "tonalRamp": [
+          "oklch(15.0% 0.000 0.0)",
+          "oklch(26.4% 0.000 0.0)",
+          "oklch(37.9% 0.000 0.0)",
+          "oklch(49.3% 0.000 0.0)",
+          "oklch(60.7% 0.000 0.0)",
+          "oklch(72.1% 0.000 0.0)",
+          "oklch(83.6% 0.000 0.0)",
+          "oklch(95.0% 0.000 0.0)"
+        ]
+      },
+      "card": {
+        "role": "neutral",
+        "displayName": "浮起的表面（浅色）",
+        "canonical": "#f7f5ef",
+        "tonalRamp": [
+          "oklch(15.0% 0.008 91.5)",
+          "oklch(26.4% 0.008 91.5)",
+          "oklch(37.9% 0.008 91.5)",
+          "oklch(49.3% 0.008 91.5)",
+          "oklch(60.7% 0.008 91.5)",
+          "oklch(72.1% 0.008 91.5)",
+          "oklch(83.6% 0.008 91.5)",
+          "oklch(95.0% 0.008 91.5)"
+        ]
+      },
+      "card-dark": {
+        "role": "neutral",
+        "displayName": "浮起的表面（深色）",
+        "canonical": "#1d1d1f",
+        "tonalRamp": [
+          "oklch(15.0% 0.004 286.1)",
+          "oklch(26.4% 0.004 286.1)",
+          "oklch(37.9% 0.004 286.1)",
+          "oklch(49.3% 0.004 286.1)",
+          "oklch(60.7% 0.004 286.1)",
+          "oklch(72.1% 0.004 286.1)",
+          "oklch(83.6% 0.004 286.1)",
+          "oklch(95.0% 0.004 286.1)"
+        ]
+      },
+      "sidebar": {
+        "role": "neutral",
+        "displayName": "侧栏（浅色）",
+        "canonical": "#e9e5d8",
+        "tonalRamp": [
+          "oklch(15.0% 0.018 92.7)",
+          "oklch(26.4% 0.018 92.7)",
+          "oklch(37.9% 0.018 92.7)",
+          "oklch(49.3% 0.018 92.7)",
+          "oklch(60.7% 0.018 92.7)",
+          "oklch(72.1% 0.018 92.7)",
+          "oklch(83.6% 0.018 92.7)",
+          "oklch(95.0% 0.018 92.7)"
+        ]
+      },
+      "sidebar-dark": {
+        "role": "neutral",
+        "displayName": "侧栏（深色）",
+        "canonical": "#1d1d1f",
+        "tonalRamp": [
+          "oklch(15.0% 0.004 286.1)",
+          "oklch(26.4% 0.004 286.1)",
+          "oklch(37.9% 0.004 286.1)",
+          "oklch(49.3% 0.004 286.1)",
+          "oklch(60.7% 0.004 286.1)",
+          "oklch(72.1% 0.004 286.1)",
+          "oklch(83.6% 0.004 286.1)",
+          "oklch(95.0% 0.004 286.1)"
+        ]
+      },
+      "muted": {
+        "role": "neutral",
+        "displayName": "抬一级的中性面（浅色）",
+        "canonical": "#e5e1d3",
+        "tonalRamp": [
+          "oklch(15.0% 0.019 93.7)",
+          "oklch(26.4% 0.019 93.7)",
+          "oklch(37.9% 0.019 93.7)",
+          "oklch(49.3% 0.019 93.7)",
+          "oklch(60.7% 0.019 93.7)",
+          "oklch(72.1% 0.019 93.7)",
+          "oklch(83.6% 0.019 93.7)",
+          "oklch(95.0% 0.019 93.7)"
+        ]
+      },
+      "muted-dark": {
+        "role": "neutral",
+        "displayName": "抬一级的中性面（深色）",
+        "canonical": "#2c2c2e",
+        "tonalRamp": [
+          "oklch(15.0% 0.004 286.2)",
+          "oklch(26.4% 0.004 286.2)",
+          "oklch(37.9% 0.004 286.2)",
+          "oklch(49.3% 0.004 286.2)",
+          "oklch(60.7% 0.004 286.2)",
+          "oklch(72.1% 0.004 286.2)",
+          "oklch(83.6% 0.004 286.2)",
+          "oklch(95.0% 0.004 286.2)"
+        ]
+      },
+      "secondary": {
+        "role": "secondary",
+        "displayName": "浅蓝实底（浅色）",
+        "canonical": "#8fabd4",
+        "tonalRamp": [
+          "oklch(15.0% 0.067 257.8)",
+          "oklch(26.4% 0.067 257.8)",
+          "oklch(37.9% 0.067 257.8)",
+          "oklch(49.3% 0.067 257.8)",
+          "oklch(60.7% 0.067 257.8)",
+          "oklch(72.1% 0.067 257.8)",
+          "oklch(83.6% 0.067 257.8)",
+          "oklch(95.0% 0.067 257.8)"
+        ]
+      },
+      "secondary-dark": {
+        "role": "secondary",
+        "displayName": "浅蓝实底（深色）",
+        "canonical": "#2c2c2e",
+        "tonalRamp": [
+          "oklch(15.0% 0.004 286.2)",
+          "oklch(26.4% 0.004 286.2)",
+          "oklch(37.9% 0.004 286.2)",
+          "oklch(49.3% 0.004 286.2)",
+          "oklch(60.7% 0.004 286.2)",
+          "oklch(72.1% 0.004 286.2)",
+          "oklch(83.6% 0.004 286.2)",
+          "oklch(95.0% 0.004 286.2)"
+        ]
+      },
+      "accent": {
+        "role": "neutral",
+        "displayName": "悬停底（浅色）",
+        "canonical": "#dce6f2",
+        "tonalRamp": [
+          "oklch(15.0% 0.020 252.9)",
+          "oklch(26.4% 0.020 252.9)",
+          "oklch(37.9% 0.020 252.9)",
+          "oklch(49.3% 0.020 252.9)",
+          "oklch(60.7% 0.020 252.9)",
+          "oklch(72.1% 0.020 252.9)",
+          "oklch(83.6% 0.020 252.9)",
+          "oklch(95.0% 0.020 252.9)"
+        ]
+      },
+      "accent-dark": {
+        "role": "neutral",
+        "displayName": "悬停底（深色）",
+        "canonical": "#2c2c2e",
+        "tonalRamp": [
+          "oklch(15.0% 0.004 286.2)",
+          "oklch(26.4% 0.004 286.2)",
+          "oklch(37.9% 0.004 286.2)",
+          "oklch(49.3% 0.004 286.2)",
+          "oklch(60.7% 0.004 286.2)",
+          "oklch(72.1% 0.004 286.2)",
+          "oklch(83.6% 0.004 286.2)",
+          "oklch(95.0% 0.004 286.2)"
+        ]
+      },
+      "foreground": {
+        "role": "neutral",
+        "displayName": "正文（浅色）",
+        "canonical": "#000000",
+        "tonalRamp": [
+          "oklch(15.0% 0.000 0.0)",
+          "oklch(26.4% 0.000 0.0)",
+          "oklch(37.9% 0.000 0.0)",
+          "oklch(49.3% 0.000 0.0)",
+          "oklch(60.7% 0.000 0.0)",
+          "oklch(72.1% 0.000 0.0)",
+          "oklch(83.6% 0.000 0.0)",
+          "oklch(95.0% 0.000 0.0)"
+        ]
+      },
+      "foreground-dark": {
+        "role": "neutral",
+        "displayName": "正文（深色）",
+        "canonical": "#f5f5f7",
+        "tonalRamp": [
+          "oklch(15.0% 0.003 286.4)",
+          "oklch(26.4% 0.003 286.4)",
+          "oklch(37.9% 0.003 286.4)",
+          "oklch(49.3% 0.003 286.4)",
+          "oklch(60.7% 0.003 286.4)",
+          "oklch(72.1% 0.003 286.4)",
+          "oklch(83.6% 0.003 286.4)",
+          "oklch(95.0% 0.003 286.4)"
+        ]
+      },
+      "muted-foreground": {
+        "role": "neutral",
+        "displayName": "次要文字（浅色）",
+        "canonical": "rgba(0, 0, 0, 0.55)",
+        "tonalRamp": [
+          "oklch(15.0% 0.000 0.0)",
+          "oklch(26.4% 0.000 0.0)",
+          "oklch(37.9% 0.000 0.0)",
+          "oklch(49.3% 0.000 0.0)",
+          "oklch(60.7% 0.000 0.0)",
+          "oklch(72.1% 0.000 0.0)",
+          "oklch(83.6% 0.000 0.0)",
+          "oklch(95.0% 0.000 0.0)"
+        ]
+      },
+      "muted-foreground-dark": {
+        "role": "neutral",
+        "displayName": "次要文字（深色）",
+        "canonical": "rgba(245, 245, 247, 0.56)",
+        "tonalRamp": [
+          "oklch(15.0% 0.003 286.4)",
+          "oklch(26.4% 0.003 286.4)",
+          "oklch(37.9% 0.003 286.4)",
+          "oklch(49.3% 0.003 286.4)",
+          "oklch(60.7% 0.003 286.4)",
+          "oklch(72.1% 0.003 286.4)",
+          "oklch(83.6% 0.003 286.4)",
+          "oklch(95.0% 0.003 286.4)"
+        ]
+      },
+      "primary": {
+        "role": "primary",
+        "displayName": "点缀蓝（浅色）",
+        "canonical": "#4a70a9",
+        "tonalRamp": [
+          "oklch(15.0% 0.100 258.3)",
+          "oklch(26.4% 0.100 258.3)",
+          "oklch(37.9% 0.100 258.3)",
+          "oklch(49.3% 0.100 258.3)",
+          "oklch(60.7% 0.100 258.3)",
+          "oklch(72.1% 0.100 258.3)",
+          "oklch(83.6% 0.100 258.3)",
+          "oklch(95.0% 0.100 258.3)"
+        ]
+      },
+      "primary-dark": {
+        "role": "primary",
+        "displayName": "点缀蓝（深色）",
+        "canonical": "#0071e3",
+        "tonalRamp": [
+          "oklch(15.0% 0.193 256.2)",
+          "oklch(26.4% 0.193 256.2)",
+          "oklch(37.9% 0.193 256.2)",
+          "oklch(49.3% 0.193 256.2)",
+          "oklch(60.7% 0.193 256.2)",
+          "oklch(72.1% 0.193 256.2)",
+          "oklch(83.6% 0.193 256.2)",
+          "oklch(95.0% 0.193 256.2)"
+        ]
+      },
+      "primary-foreground": {
+        "role": "neutral",
+        "displayName": "主按钮文字",
+        "canonical": "#ffffff",
+        "tonalRamp": [
+          "oklch(15.0% 0.000 0.0)",
+          "oklch(26.4% 0.000 0.0)",
+          "oklch(37.9% 0.000 0.0)",
+          "oklch(49.3% 0.000 0.0)",
+          "oklch(60.7% 0.000 0.0)",
+          "oklch(72.1% 0.000 0.0)",
+          "oklch(83.6% 0.000 0.0)",
+          "oklch(95.0% 0.000 0.0)"
+        ]
+      },
+      "brand": {
+        "role": "primary",
+        "displayName": "点缀蓝·细线档（浅色）",
+        "canonical": "#4a70a9",
+        "tonalRamp": [
+          "oklch(15.0% 0.100 258.3)",
+          "oklch(26.4% 0.100 258.3)",
+          "oklch(37.9% 0.100 258.3)",
+          "oklch(49.3% 0.100 258.3)",
+          "oklch(60.7% 0.100 258.3)",
+          "oklch(72.1% 0.100 258.3)",
+          "oklch(83.6% 0.100 258.3)",
+          "oklch(95.0% 0.100 258.3)"
+        ]
+      },
+      "brand-dark": {
+        "role": "primary",
+        "displayName": "点缀蓝·细线档（深色）",
+        "canonical": "#0a84ff",
+        "tonalRamp": [
+          "oklch(15.0% 0.206 255.5)",
+          "oklch(26.4% 0.206 255.5)",
+          "oklch(37.9% 0.206 255.5)",
+          "oklch(49.3% 0.206 255.5)",
+          "oklch(60.7% 0.206 255.5)",
+          "oklch(72.1% 0.206 255.5)",
+          "oklch(83.6% 0.206 255.5)",
+          "oklch(95.0% 0.206 255.5)"
+        ]
+      },
+      "border": {
+        "role": "neutral",
+        "displayName": "细线（浅色）",
+        "canonical": "rgba(0, 0, 0, 0.12)",
+        "tonalRamp": [
+          "oklch(15.0% 0.000 0.0)",
+          "oklch(26.4% 0.000 0.0)",
+          "oklch(37.9% 0.000 0.0)",
+          "oklch(49.3% 0.000 0.0)",
+          "oklch(60.7% 0.000 0.0)",
+          "oklch(72.1% 0.000 0.0)",
+          "oklch(83.6% 0.000 0.0)",
+          "oklch(95.0% 0.000 0.0)"
+        ]
+      },
+      "border-dark": {
+        "role": "neutral",
+        "displayName": "细线（深色）",
+        "canonical": "rgba(245, 245, 247, 0.12)",
+        "tonalRamp": [
+          "oklch(15.0% 0.003 286.4)",
+          "oklch(26.4% 0.003 286.4)",
+          "oklch(37.9% 0.003 286.4)",
+          "oklch(49.3% 0.003 286.4)",
+          "oklch(60.7% 0.003 286.4)",
+          "oklch(72.1% 0.003 286.4)",
+          "oklch(83.6% 0.003 286.4)",
+          "oklch(95.0% 0.003 286.4)"
+        ]
+      },
+      "input": {
+        "role": "neutral",
+        "displayName": "输入框描边（浅色）",
+        "canonical": "rgba(0, 0, 0, 0.12)",
+        "tonalRamp": [
+          "oklch(15.0% 0.000 0.0)",
+          "oklch(26.4% 0.000 0.0)",
+          "oklch(37.9% 0.000 0.0)",
+          "oklch(49.3% 0.000 0.0)",
+          "oklch(60.7% 0.000 0.0)",
+          "oklch(72.1% 0.000 0.0)",
+          "oklch(83.6% 0.000 0.0)",
+          "oklch(95.0% 0.000 0.0)"
+        ]
+      },
+      "input-dark": {
+        "role": "neutral",
+        "displayName": "输入框描边（深色）",
+        "canonical": "rgba(245, 245, 247, 0.14)",
+        "tonalRamp": [
+          "oklch(15.0% 0.003 286.4)",
+          "oklch(26.4% 0.003 286.4)",
+          "oklch(37.9% 0.003 286.4)",
+          "oklch(49.3% 0.003 286.4)",
+          "oklch(60.7% 0.003 286.4)",
+          "oklch(72.1% 0.003 286.4)",
+          "oklch(83.6% 0.003 286.4)",
+          "oklch(95.0% 0.003 286.4)"
+        ]
+      },
+      "self-bubble": {
+        "role": "primary",
+        "displayName": "自己的气泡（浅色）",
+        "canonical": "color-mix(in srgb, #4a70a9 18%, #f7f5ef)",
+        "tonalRamp": [
+          "oklch(15.0% 0.009 248.7)",
+          "oklch(26.4% 0.009 248.7)",
+          "oklch(37.9% 0.009 248.7)",
+          "oklch(49.3% 0.009 248.7)",
+          "oklch(60.7% 0.009 248.7)",
+          "oklch(72.1% 0.009 248.7)",
+          "oklch(83.6% 0.009 248.7)",
+          "oklch(95.0% 0.009 248.7)"
+        ]
+      },
+      "self-bubble-dark": {
+        "role": "primary",
+        "displayName": "自己的气泡（深色）",
+        "canonical": "color-mix(in srgb, #0a84ff 18%, #1d1d1f)",
+        "tonalRamp": [
+          "oklch(15.0% 0.052 251.6)",
+          "oklch(26.4% 0.052 251.6)",
+          "oklch(37.9% 0.052 251.6)",
+          "oklch(49.3% 0.052 251.6)",
+          "oklch(60.7% 0.052 251.6)",
+          "oklch(72.1% 0.052 251.6)",
+          "oklch(83.6% 0.052 251.6)",
+          "oklch(95.0% 0.052 251.6)"
+        ]
+      },
+      "ok": {
+        "role": "status",
+        "displayName": "成功绿（浅色）",
+        "canonical": "#2b8a3e",
+        "tonalRamp": [
+          "oklch(15.0% 0.143 146.9)",
+          "oklch(26.4% 0.143 146.9)",
+          "oklch(37.9% 0.143 146.9)",
+          "oklch(49.3% 0.143 146.9)",
+          "oklch(60.7% 0.143 146.9)",
+          "oklch(72.1% 0.143 146.9)",
+          "oklch(83.6% 0.143 146.9)",
+          "oklch(95.0% 0.143 146.9)"
+        ]
+      },
+      "ok-dark": {
+        "role": "status",
+        "displayName": "成功绿（深色）",
+        "canonical": "#30d158",
+        "tonalRamp": [
+          "oklch(15.0% 0.208 147.0)",
+          "oklch(26.4% 0.208 147.0)",
+          "oklch(37.9% 0.208 147.0)",
+          "oklch(49.3% 0.208 147.0)",
+          "oklch(60.7% 0.208 147.0)",
+          "oklch(72.1% 0.208 147.0)",
+          "oklch(83.6% 0.208 147.0)",
+          "oklch(95.0% 0.208 147.0)"
+        ]
+      },
+      "warn": {
+        "role": "status",
+        "displayName": "警告橙（浅色）",
+        "canonical": "#e67700",
+        "tonalRamp": [
+          "oklch(15.0% 0.169 55.0)",
+          "oklch(26.4% 0.169 55.0)",
+          "oklch(37.9% 0.169 55.0)",
+          "oklch(49.3% 0.169 55.0)",
+          "oklch(60.7% 0.169 55.0)",
+          "oklch(72.1% 0.169 55.0)",
+          "oklch(83.6% 0.169 55.0)",
+          "oklch(95.0% 0.169 55.0)"
+        ]
+      },
+      "warn-dark": {
+        "role": "status",
+        "displayName": "警告橙（深色）",
+        "canonical": "#ff9f0a",
+        "tonalRamp": [
+          "oklch(15.0% 0.171 67.2)",
+          "oklch(26.4% 0.171 67.2)",
+          "oklch(37.9% 0.171 67.2)",
+          "oklch(49.3% 0.171 67.2)",
+          "oklch(60.7% 0.171 67.2)",
+          "oklch(72.1% 0.171 67.2)",
+          "oklch(83.6% 0.171 67.2)",
+          "oklch(95.0% 0.171 67.2)"
+        ]
+      },
+      "destructive": {
+        "role": "status",
+        "displayName": "危险红（浅色）",
+        "canonical": "#c92a2a",
+        "tonalRamp": [
+          "oklch(15.0% 0.195 26.6)",
+          "oklch(26.4% 0.195 26.6)",
+          "oklch(37.9% 0.195 26.6)",
+          "oklch(49.3% 0.195 26.6)",
+          "oklch(60.7% 0.195 26.6)",
+          "oklch(72.1% 0.195 26.6)",
+          "oklch(83.6% 0.195 26.6)",
+          "oklch(95.0% 0.195 26.6)"
+        ]
+      },
+      "destructive-dark": {
+        "role": "status",
+        "displayName": "危险红（深色）",
+        "canonical": "#ff453a",
+        "tonalRamp": [
+          "oklch(15.0% 0.224 28.3)",
+          "oklch(26.4% 0.224 28.3)",
+          "oklch(37.9% 0.224 28.3)",
+          "oklch(49.3% 0.224 28.3)",
+          "oklch(60.7% 0.224 28.3)",
+          "oklch(72.1% 0.224 28.3)",
+          "oklch(83.6% 0.224 28.3)",
+          "oklch(95.0% 0.224 28.3)"
+        ]
+      },
+      "err": {
+        "role": "status",
+        "displayName": "错误橙红（浅色）",
+        "canonical": "#d9480f",
+        "tonalRamp": [
+          "oklch(15.0% 0.190 37.9)",
+          "oklch(26.4% 0.190 37.9)",
+          "oklch(37.9% 0.190 37.9)",
+          "oklch(49.3% 0.190 37.9)",
+          "oklch(60.7% 0.190 37.9)",
+          "oklch(72.1% 0.190 37.9)",
+          "oklch(83.6% 0.190 37.9)",
+          "oklch(95.0% 0.190 37.9)"
+        ]
+      },
+      "err-dark": {
+        "role": "status",
+        "displayName": "错误橙红（深色）",
+        "canonical": "#ff453a",
+        "tonalRamp": [
+          "oklch(15.0% 0.224 28.3)",
+          "oklch(26.4% 0.224 28.3)",
+          "oklch(37.9% 0.224 28.3)",
+          "oklch(49.3% 0.224 28.3)",
+          "oklch(60.7% 0.224 28.3)",
+          "oklch(72.1% 0.224 28.3)",
+          "oklch(83.6% 0.224 28.3)",
+          "oklch(95.0% 0.224 28.3)"
+        ]
+      },
+      "face-disc": {
+        "role": "neutral",
+        "displayName": "像素脸盘底",
+        "canonical": "#f2f2f3",
+        "tonalRamp": [
+          "oklch(15.0% 0.001 286.4)",
+          "oklch(26.4% 0.001 286.4)",
+          "oklch(37.9% 0.001 286.4)",
+          "oklch(49.3% 0.001 286.4)",
+          "oklch(60.7% 0.001 286.4)",
+          "oklch(72.1% 0.001 286.4)",
+          "oklch(83.6% 0.001 286.4)",
+          "oklch(95.0% 0.001 286.4)"
+        ]
+      },
+      "voice": {
+        "role": "status",
+        "displayName": "通话青",
+        "canonical": "#2F94A6",
+        "tonalRamp": [
+          "oklch(15.0% 0.094 212.0)",
+          "oklch(26.4% 0.094 212.0)",
+          "oklch(37.9% 0.094 212.0)",
+          "oklch(49.3% 0.094 212.0)",
+          "oklch(60.7% 0.094 212.0)",
+          "oklch(72.1% 0.094 212.0)",
+          "oklch(83.6% 0.094 212.0)",
+          "oklch(95.0% 0.094 212.0)"
+        ]
+      }
+    },
+    "typographyMeta": {
+      "wordmark": {
+        "displayName": "字标",
+        "purpose": "只用于进门页那行「Mr Otto」，Poppins SemiBold Italic。"
+      },
+      "headline": {
+        "displayName": "Headline",
+        "purpose": "模型输出正文里的一级标题。"
+      },
+      "title": {
+        "displayName": "Title",
+        "purpose": "二、三级标题；卡片与弹窗标题用 semibold。"
+      },
+      "body": {
+        "displayName": "Body",
+        "purpose": "全部正文，窗口的基准字号。"
+      },
+      "control": {
+        "displayName": "Control",
+        "purpose": "按钮、分段控件、菜单项。"
+      },
+      "label": {
+        "displayName": "Label",
+        "purpose": "分组卡的组头、侧栏分节标题。"
+      },
+      "caption": {
+        "displayName": "Caption",
+        "purpose": "组尾解释与元信息。"
+      },
+      "mono": {
+        "displayName": "Mono",
+        "purpose": "行内代码与代码块。"
+      }
+    },
+    "shadows": [
+      {
+        "name": "focus-ring",
+        "value": "0 0 0 3px color-mix(in srgb, var(--ring) 30%, transparent)",
+        "purpose": "只在 :focus-visible 出现；shadcn 组件用 ring-ring/50 的同形版本。"
+      },
+      {
+        "name": "dialog",
+        "value": "0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1)",
+        "purpose": "居中弹窗（Tailwind shadow-lg），下压 45% 黑色遮罩。"
+      },
+      {
+        "name": "liquid-glass",
+        "value": "inset 0 0 0 1px color-mix(in srgb, var(--foreground) 8%, transparent), inset 0 1px 0 0 color-mix(in srgb, #fff 55%, transparent), inset 0 -1px 0 0 color-mix(in srgb, #fff 14%, transparent), 0 8px 24px color-mix(in srgb, var(--foreground) 10%, transparent)",
+        "purpose": "浅色液态玻璃：外轮廓 + 顶部高光 + 底部回光 + 环境投影。"
+      },
+      {
+        "name": "liquid-glass-dark",
+        "value": "inset 0 0 0 1px color-mix(in srgb, #fff 10%, transparent), inset 0 1px 0 0 color-mix(in srgb, #fff 22%, transparent), inset 0 -1px 0 0 color-mix(in srgb, #fff 6%, transparent), 0 8px 24px rgb(0 0 0 / 0.35)",
+        "purpose": "深色液态玻璃，白色高光收紧。"
+      }
+    ],
+    "motion": [
+      {
+        "name": "ease-strong",
+        "value": "cubic-bezier(0.23, 1, 0.32, 1)",
+        "purpose": "全部 UI 过渡的缓动：快起步的强 ease-out。"
+      },
+      {
+        "name": "enter",
+        "value": "200ms",
+        "purpose": "弹窗、折叠面板、内容出现。"
+      },
+      {
+        "name": "exit",
+        "value": "140ms",
+        "purpose": "弹窗离场；浮层 120ms，菜单 100ms。"
+      },
+      {
+        "name": "control",
+        "value": "150ms",
+        "purpose": "按钮、输入框的颜色与阴影过渡。"
+      },
+      {
+        "name": "press",
+        "value": "120ms scale(0.97) / scale(0.985)",
+        "purpose": "按下反馈：press-scale / press-card。"
+      },
+      {
+        "name": "dialog-scale",
+        "value": "scale(0.96) → 1",
+        "purpose": "弹窗从 0.96 放大，不从 0 长出来。"
+      },
+      {
+        "name": "shimmer",
+        "value": "2.4s linear infinite",
+        "purpose": "「正在发生」的状态文案光带。"
+      }
+    ],
+    "breakpoints": [
+      {
+        "name": "sm",
+        "value": "640px"
+      }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "主动作。一屏里通常只有一颗；按下缩到 0.97。",
+      "html": "<button class=\"ds-btn-primary\">发送</button>",
+      "css": ".ds-btn-primary { background: var(--primary, #4a70a9); color: var(--primary-foreground, #ffffff); height: 36px; padding: 0 16px; border: none; border-radius: 6px; font: 500 14px/1 -apple-system, \"PingFang SC\", sans-serif; cursor: pointer; transition: background-color 150ms cubic-bezier(0.23, 1, 0.32, 1), transform 150ms cubic-bezier(0.23, 1, 0.32, 1), box-shadow 150ms cubic-bezier(0.23, 1, 0.32, 1); } .ds-btn-primary:hover { background: color-mix(in srgb, var(--primary, #4a70a9) 90%, transparent); } .ds-btn-primary:active { transform: scale(0.97); } .ds-btn-primary:focus-visible { outline: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--ring, #4a70a9) 50%, transparent); }"
+    },
+    {
+      "name": "Ghost Button",
+      "kind": "button",
+      "refersTo": "button-ghost",
+      "description": "次要动作和工具栏按钮。静止时透明，悬停时上悬停底。",
+      "html": "<button class=\"ds-btn-ghost\">取消</button>",
+      "css": ".ds-btn-ghost { background: transparent; color: var(--foreground, #000000); height: 36px; padding: 0 16px; border: none; border-radius: 6px; font: 500 14px/1 -apple-system, \"PingFang SC\", sans-serif; cursor: pointer; transition: background-color 150ms cubic-bezier(0.23, 1, 0.32, 1), transform 150ms cubic-bezier(0.23, 1, 0.32, 1), box-shadow 150ms cubic-bezier(0.23, 1, 0.32, 1); } .ds-btn-ghost:hover { background: var(--accent, #dce6f2); } .ds-btn-ghost:active { transform: scale(0.97); } .ds-btn-ghost:focus-visible { outline: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--ring, #4a70a9) 50%, transparent); }"
+    },
+    {
+      "name": "Text Input",
+      "kind": "input",
+      "refersTo": "input",
+      "description": "单行输入。描边比普通细线亮半档，好让人先看见它在哪。",
+      "html": "<input class=\"ds-input\" placeholder=\"给智能体起个名字\" />",
+      "css": ".ds-input { height: 36px; padding: 4px 12px; border: 1px solid var(--input, rgba(0, 0, 0, 0.12)); border-radius: 6px; background: transparent; color: var(--foreground, #000000); font: 400 14px/1.6 -apple-system, \"PingFang SC\", sans-serif; transition: border-color 150ms cubic-bezier(0.23, 1, 0.32, 1), box-shadow 150ms cubic-bezier(0.23, 1, 0.32, 1); } .ds-input::placeholder { color: var(--muted-foreground, rgba(0, 0, 0, 0.55)); } .ds-input:focus-visible { outline: none; border-color: var(--ring, #4a70a9); box-shadow: 0 0 0 3px color-mix(in srgb, var(--ring, #4a70a9) 50%, transparent); }"
+    },
+    {
+      "name": "Inset Group",
+      "kind": "card",
+      "refersTo": "inset-group",
+      "description": "设置面的分组卡：组头、圆角卡、内缩分隔线、组尾解释。",
+      "html": "<div class=\"ds-inset\"><div class=\"ds-inset-label\">连接器</div><div class=\"ds-inset-group\"><div class=\"ds-inset-row\">Shopify</div><div class=\"ds-inset-row\">Google Ads</div></div><div class=\"ds-inset-note\">授权过的服务，智能体用你的身份调用。</div></div>",
+      "css": ".ds-inset { width: 320px; font-family: -apple-system, \"PingFang SC\", sans-serif; } .ds-inset-label { padding: 16px 4px 7px; font-size: 11px; font-weight: 600; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted-foreground, rgba(0, 0, 0, 0.55)); } .ds-inset-group { overflow: hidden; border-radius: 12px; background: var(--card, #f7f5ef); } .ds-inset-row { position: relative; padding: 10px 13px; font-size: 14px; color: var(--foreground, #000000); } .ds-inset-row + .ds-inset-row::before { content: \"\"; position: absolute; top: 0; right: 0; left: 13px; height: 1px; background: var(--border, rgba(0, 0, 0, 0.12)); } .ds-inset-row:hover { background: var(--accent, #dce6f2); } .ds-inset-note { padding: 7px 4px 0; font-size: 11.5px; line-height: 1.5; color: var(--muted-foreground, rgba(0, 0, 0, 0.55)); }"
+    },
+    {
+      "name": "Chat Bubbles",
+      "kind": "custom",
+      "refersTo": "bubble-agent",
+      "description": "智能体的气泡靠左、用中性面；自己的靠右、点缀蓝以 18% 混进表面。",
+      "html": "<div class=\"ds-chat\"><div class=\"ds-bubble ds-bubble-agent\">收到，我先把上周的订单拉出来。</div><div class=\"ds-bubble ds-bubble-self\">顺便看看退款多不多</div></div>",
+      "css": ".ds-chat { display: flex; flex-direction: column; gap: 8px; width: 320px; font: 400 14px/1.625 -apple-system, \"PingFang SC\", sans-serif; } .ds-bubble { max-width: 80%; padding: 8px 12px; border-radius: 12px; color: var(--foreground, #000000); } .ds-bubble-agent { align-self: flex-start; background: var(--muted, #e5e1d3); } .ds-bubble-self { align-self: flex-end; background: color-mix(in srgb, var(--brand, #4a70a9) 18%, var(--card, #f7f5ef)); }"
+    },
+    {
+      "name": "Plan Badge",
+      "kind": "chip",
+      "refersTo": "brand",
+      "description": "套餐徽章。字用那个颜色本身，底色是它的 18% 透明；Pro 用点缀蓝。",
+      "html": "<span class=\"ds-badge-pro\">Pro</span>",
+      "css": ".ds-badge-pro { display: inline-block; padding: 4px 8px; border-radius: 7px; font: 650 11.5px/1 -apple-system, \"PingFang SC\", sans-serif; white-space: nowrap; color: var(--brand, #4a70a9); background: color-mix(in srgb, var(--brand, #4a70a9) 18%, transparent); }"
+    },
+    {
+      "name": "Sidebar Segmented Tabs",
+      "kind": "nav",
+      "refersTo": "muted",
+      "description": "侧栏顶部的三档分段控件（任务 / 项目 / 智能体），三档等宽，选中那档是一枚滑块。",
+      "html": "<div class=\"ds-seg\" role=\"tablist\"><button class=\"ds-seg-tab\" aria-selected=\"true\">任务</button><button class=\"ds-seg-tab\">项目</button><button class=\"ds-seg-tab\">智能体</button></div>",
+      "css": ".ds-seg { display: flex; width: 234px; height: 36px; padding: 3px; border-radius: 8px; background: var(--muted, #e5e1d3); } .ds-seg-tab { flex: 1; border: 1px solid transparent; border-radius: 6px; background: transparent; color: color-mix(in srgb, var(--foreground, #000000) 60%, transparent); font: 500 14px/1 -apple-system, \"PingFang SC\", sans-serif; cursor: pointer; transition: color 150ms cubic-bezier(0.23, 1, 0.32, 1), background-color 150ms cubic-bezier(0.23, 1, 0.32, 1); } .ds-seg-tab:hover { color: var(--foreground, #000000); } .ds-seg-tab[aria-selected=\"true\"] { background: var(--background, #efece3); color: var(--foreground, #000000); box-shadow: 0 1px 2px rgb(0 0 0 / 0.08); } .ds-seg-tab:focus-visible { outline: none; box-shadow: 0 0 0 3px color-mix(in srgb, var(--ring, #4a70a9) 50%, transparent); }"
+    }
+  ],
+  "narrative": {
+    "northStar": "像素同事",
+    "overview": "身份只有一种语言：黑白像素。app 图标是一张像素脸（`resources/icon.png`），每只智能体有一张会眨眼、会呼吸、说话时嘴会动的像素脸，进门页铺的是同一种 1-bit 的黑白抖动背景（dither）。脸让智能体读起来像一个同事，而不是一个功能入口。\n\n其余一切都退到系统级的安静里：中性的底色、精确的对齐、设置式的分组卡。颜色只在出事的时候出现，界面不和活儿抢注意力。手感来自按下时那一下回弹、跟手的推入导航和快起步的缓动，而不是装饰。\n\n两套主题都是品牌，跟随系统切换，改任何一套都按品牌改动来判：浅色是暖纸——燕麦色的地面、更亮一档的纸面、墨黑正文、低饱和的点缀蓝；深色是维护者 2026-08-19 指定的 Apple 四色底盘（地面 `#000000` / 浮起的表面 `#1d1d1f` / 正文 `#f5f5f7` / 点缀 `#0071e3`），中性档只从前两者往上抬一级得到，不另引入色相。",
+    "keyCharacteristics": [
+      "像素脸是唯一带个性的视觉元素；其余界面中性、克制。",
+      "颜色只说「出事了」：正常和充足一律中性灰，红橙绿只报告状态。",
+      "扁平、靠色阶分层：静止的东西不投影，层级靠底色深浅。",
+      "设置式分组：圆角卡 + 内缩分隔线 + 组尾小字，不给每行各画一圈框。",
+      "动效快起步、强 ease-out，进场 150–200ms、离场 100–140ms；减动效时减弱，不取消。",
+      "中文优先的系统字体排版，14px 正文、11px 组头，密度中等偏紧。"
+    ],
+    "rules": [
+      {
+        "name": "The Color Means Trouble Rule",
+        "body": "颜色只用来说「出事了」。充足、正常、空闲一律中性灰，不上品牌蓝——一根几乎满格的蓝条会把「一切正常」画得比「快没了」还响（ADR-0209 / 0239 / 0264）。",
+        "section": "colors"
+      },
+      {
+        "name": "The One Blue Rule",
+        "body": "蓝色只给可以点的主动作、焦点、选中和正在发生的事。它是界面框架里唯一的非状态色（代码高亮、第三方 logo 这类内容不算），所以不拿它做装饰或区分分类。",
+        "section": "colors"
+      },
+      {
+        "name": "The Paired Theme Rule",
+        "body": "新加一个颜色，必须同时给出浅色值和深色值，而且说得清它从哪一级抬出来；两端（桌面 `app.css`、手机 `theme.ts`）同名同值。",
+        "section": "colors"
+      },
+      {
+        "name": "The System Type Rule",
+        "body": "界面文字一律走系统字体栈，不引入网络字体：这是桌面 app，离线也得能开，CSP 也不放行外域字体。要新字体就随包分发、按需子集化，像字标那样。",
+        "section": "typography"
+      },
+      {
+        "name": "The Flat At Rest Rule",
+        "body": "静止的表面不投影。要表现「这一块在上面」，先换底色，再考虑阴影；阴影只留给会盖住别的内容的浮层。",
+        "section": "elevation"
+      }
+    ],
+    "dos": [
+      "**Do** 用中性灰表达「正常 / 充足 / 空闲」，把颜色留给真正需要人注意的状态。",
+      "**Do** 给每只智能体画它的像素脸；名册里查不到的不给脸，退回首字母。",
+      "**Do** 用分组卡组织设置和清单：12px 圆角卡、内缩分隔线、组尾小字。",
+      "**Do** 给可按的东西按下反馈：`press-scale`（0.97）或 `press-card`（0.985）。",
+      "**Do** 动效走 `--ease-strong`（`cubic-bezier(0.23, 1, 0.32, 1)`）：进场 150–200ms，离场 100–140ms；弹窗从 0.96 放大，不从 0 长出来。",
+      "**Do** 减动效时去掉位移和缩放、留下淡入淡出：减弱，不是取消。",
+      "**Do** 数字按同一把尺子报：token 用 K（`865.5K`）；额度报「还剩百分之几」，一位小数向下取整。",
+      "**Do** 手机端的表单、确认、多步小流程用居中弹窗，和桌面的 AlertDialog 一样，点遮罩不关；模型选单、@ 名册这类选择器保持底部抽屉（维护者 2026-09-11）。",
+      "**Do** 过渡只列要动的属性。"
+    ],
+    "donts": [
+      "**Don't** 做成 SaaS 模板风：紫蓝渐变、卡片套卡片、每个标题上面一个彩色图标方块（维护者 2026-09-27）。",
+      "**Don't** 给图标加彩色底座（Apple 设置那种每行一个彩色方块）；图标底座一律中性（ADR-0264，维护者 2026-09-27）。",
+      "**Don't** 把智能体做成一个大聊天框：它们是有名字、有脸、有职责的同事，按人来排——花名册、私聊、群聊（维护者 2026-09-27）。",
+      "**Don't** 拿红、橙、绿做装饰或区分分类；它们只报告状态（维护者 2026-09-27）。",
+      "**Don't** 给静止的卡片加阴影表现层级。",
+      "**Don't** 引入网络字体或外链资源。",
+      "**Don't** 写 `transition: all`（`ui/tabs.tsx` 里 shadcn 默认的 `transition-all` 是存量）。"
+    ]
+  }
+}
