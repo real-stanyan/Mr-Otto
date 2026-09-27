@@ -369,7 +369,6 @@
   const S = {
     view: "chats",       // chats | contacts | me
     open: null,          // 开着的聊天 id
-    teamOpen: null,      // 列表里点开的团队（折叠行）
     contact: null,       // 通讯录里选中的：{type, id}
     me: "quota",         // 「我」里选中的那一格
     sub: "pro",          // pro | free
@@ -404,7 +403,9 @@
 
   /* ── 可见性（没订阅时，自己的智能体那一半不在） ─────────────────────── */
   function visibleChat(c) {
-    if (S.sub === "free" && (c.kind === "dm" || c.kind === "group")) return false;
+    if (S.sub !== "free") return true;
+    if (c.kind === "dm") return false;
+    if (c.kind === "group" && c.owner === "me") return false; // 自己建的群里是自己的智能体
     return true;
   }
   function matchQ(text) { return !S.q || text.toLowerCase().includes(S.q.toLowerCase()); }
@@ -414,7 +415,6 @@
     return `<header class="col-head"><label class="search">${ic("search", 15)}<input id="q" placeholder="${placeholder}" value="${esc(S.q)}" autocomplete="off"></label><button class="icon-btn" id="plus" title="新建" aria-haspopup="menu">${ic("plus", 17, 2)}</button></header>`;
   }
   function renderCol() {
-    if (S.view === "chats" && S.teamOpen) return renderTeamList();
     let body = "";
     if (S.view === "chats") body = chatListHTML();
     if (S.view === "contacts") body = contactListHTML();
@@ -435,49 +435,18 @@
   function chatListHTML() {
     let out = "";
     if (S.sub === "free") {
-      out += `<div class="gate-card"><div class="h">订阅 Pro，就能有自己的智能体</div><p>它们有名字、有职责，能私聊、拉群、打电话。团队里别人的智能体照样能用，走团队主人的额度。</p><button class="btn primary" data-act="subscribe">看看订阅</button></div>`;
+      out += `<div class="gate-card"><div class="h">订阅 Pro，就能有自己的智能体</div><p>它们有名字、有职责，能私聊、拉群、打电话。朋友拉你进的群照样能聊，群里的智能体走群主的额度。</p><button class="btn primary" data-act="subscribe">看看订阅</button></div>`;
     }
     for (const r of listRows()) {
-      if (r.type === "chat") {
-        const c = r.chat;
-        if (!visibleChat(c)) continue;
-        if (!matchQ(chatTitle(c) + " " + previewOf(c).text)) continue;
-        const pv = previewOf(c);
-        const pvHTML = pv.draft ? `<b>[草稿]</b> ${esc(pv.text)}` : esc(pv.text);
-        const cnt = chatHeadcount(c);
-        out += rowHTML({ id: c.id, attr: "data-chat", current: S.open === c.id, avatarHTML: chatAvatar(c, 42), badge: badgeHTML(c.unread), name: esc(chatTitle(c)) + (cnt ? `` : ""), time: listTime(chatUpdated(c)), preview: pvHTML });
-      } else {
-        const t = r.team;
-        if (!matchQ(t.name + " " + t.sessions.map((s) => CHATS[s].name).join(" "))) continue;
-        const n = r.newest;
-        const pv = previewOf(n);
-        const at = teamMention(t) ? `<span class="at">[有人@我]</span> ` : "";
-        out += rowHTML({ id: t.id, attr: "data-team", current: false, avatarHTML: teamAvatar(t, 42), badge: badgeHTML(teamUnread(t)), name: esc(t.name), time: listTime(r.ts), preview: `${at}${esc(n.name)} · ${esc(pv.text)}` });
-      }
+      const c = r.chat;
+      if (!visibleChat(c)) continue;
+      if (!matchQ(chatTitle(c) + " " + previewOf(c).text)) continue;
+      const pv = previewOf(c);
+      const at = c.mention && c.unread ? `<span class="at">[有人@我]</span> ` : "";
+      const pvHTML = pv.draft ? `<b>[草稿]</b> ${esc(pv.text)}` : at + esc(pv.text);
+      out += rowHTML({ id: c.id, attr: "data-chat", current: S.open === c.id, avatarHTML: chatAvatar(c, 42), badge: badgeHTML(c.unread), name: esc(chatTitle(c)), time: listTime(chatUpdated(c)), preview: pvHTML });
     }
     return out;
-  }
-
-  function renderTeamList() {
-    const t = TEAMS[S.teamOpen];
-    const rows = t.sessions.map((s) => CHATS[s]).sort((a, b) => chatUpdated(b) - chatUpdated(a));
-    colEl.innerHTML = `<header class="sub-head"><button class="icon-btn" id="team-back" title="返回">${ic("chevron-left", 20)}</button><span class="t">${esc(t.name)}</span><button class="icon-btn" id="team-new" title="在团队里开一条新会话">${ic("square-pen", 17)}</button></header><div class="col-body scroll">${rows
-      .map((c) => {
-        const pv = previewOf(c);
-        const at = c.mention && c.unread ? `<span class="at">[有人@我]</span> ` : "";
-        return rowHTML({ id: c.id, attr: "data-chat", current: S.open === c.id, avatarHTML: teamAvatar(t, 42), badge: badgeHTML(c.unread), name: esc(c.name), time: listTime(chatUpdated(c)), preview: at + esc(pv.text) });
-      })
-      .join("")}</div>`;
-    $("#team-back").addEventListener("click", () => { S.teamOpen = null; renderCol(); });
-    $("#team-new").addEventListener("click", () => {
-      const id = "s_" + Math.random().toString(36).slice(2, 7);
-      CHATS[id] = { id, kind: "team", team: t.id, name: "新会话", unread: 0, msgs: [] };
-      t.sessions.push(id);
-      openChat(id);
-      Sim.push(CHATS[id], "sys", "你开了一条新会话");
-    });
-    bindCol();
-    Face.hydrate(colEl);
   }
 
   function contactListHTML() {
@@ -486,7 +455,6 @@
     out += entry("requests", "user-round-plus", "新的朋友", FRIEND_REQUESTS.length ? `<span class="badge pill-badge">${FRIEND_REQUESTS.length}</span>` : "");
     const groups = Object.values(CHATS).filter((c) => c.kind === "group" && visibleChat(c));
     out += entry("groups", "users-round", "群聊", `<span class="count">${groups.length}</span>`);
-    out += entry("teams", "briefcase", "团队", `<span class="count">${Object.keys(TEAMS).length}</span>`);
     const agents = MY_AGENTS.filter((id) => AGENTS[id]).filter((id) => matchQ(AGENTS[id].name + AGENTS[id].role));
     const agentBody = S.sub === "free"
       ? `<div class="gate-card"><div class="h">智能体要 Pro 或 Max</div><p>订阅之后，这里就是你的同事：一只一个职责，像通讯录里的人一样找到它们。</p><button class="btn primary" data-act="subscribe">看看订阅</button></div>`
@@ -518,7 +486,6 @@
   function bindCol() {
     Fold.bind(colEl);
     $$("[data-chat]", colEl).forEach((b) => b.addEventListener("click", () => openChat(b.dataset.chat)));
-    $$("[data-team]", colEl).forEach((b) => b.addEventListener("click", () => { S.teamOpen = b.dataset.team; renderCol(); }));
     $$("[data-contact-agent]", colEl).forEach((b) => b.addEventListener("click", () => { S.contact = { type: "agent", id: b.dataset.contactAgent }; renderCol(); renderPane(); }));
     $$("[data-contact-friend]", colEl).forEach((b) => b.addEventListener("click", () => { S.contact = { type: "friend", id: b.dataset.contactFriend }; renderCol(); renderPane(); }));
     $$("[data-entry]", colEl).forEach((b) => b.addEventListener("click", () => { S.contact = { type: b.dataset.entry }; renderCol(); renderPane(); }));
@@ -566,9 +533,9 @@
     const cnt = chatHeadcount(c);
     let status = "";
     if (c.pending) status = `<span class="status shimmer">${c.pending.phase === "typing" ? "正在输入…" : "正在干活…"}</span>`;
-    if (c.kind === "team") status = status || `<span class="status">${esc(TEAMS[c.team].name)}</span>`;
-    /* 电话：智能体的私聊、群、团队会话都能打；和朋友之间今天没有通话 */
-    const callable = c.kind === "team" || ((c.kind === "dm" || c.kind === "group") && S.sub !== "free");
+    /* 电话：和智能体的私聊、群聊都能打（读出来的那一路走听的人的额度，没订阅就没有）；
+       和朋友之间今天没有通话 */
+    const callable = (c.kind === "dm" || c.kind === "group") && S.sub !== "free";
     const canCall = callable ? `<button class="icon-btn" data-act="call" title="语音通话">${ic("phone", 18)}</button>` : "";
     head.innerHTML = `${backBtn()}<span class="title">${esc(chatTitle(c))}${cnt ? `<span class="cnt">(${cnt})</span>` : ""}</span>${status}<span class="spacer"></span>${canCall}<button class="icon-btn" data-act="info" title="聊天信息">${ic("ellipsis", 18)}</button>`;
     head.querySelector('[data-act="info"]').addEventListener("click", () => openInfo(c));
@@ -591,8 +558,8 @@
   }
 
   function composerHTML(c) {
-    const ph = c.kind === "group" || c.kind === "team" ? "说点什么，输入 @ 点名…" : c.onboarding ? `回一句话，它就知道自己该干什么了` : `跟${chatTitle(c)}说点什么`;
-    const at = c.kind === "group" || c.kind === "team" ? `<button class="icon-btn" data-act="at" title="@ 谁">${ic("at-sign", 18)}</button>` : "";
+    const ph = c.kind === "group" ? "说点什么，输入 @ 点名…" : c.onboarding ? `回一句话，它就知道自己该干什么了` : `跟${chatTitle(c)}说点什么`;
+    const at = c.kind === "group" ? `<button class="icon-btn" data-act="at" title="@ 谁">${ic("at-sign", 18)}</button>` : "";
     return `<div class="composer" id="composer">
       <textarea id="ta" placeholder="${esc(ph)}" aria-label="输入消息" enterkeyhint="send">${esc(c.draft || "")}</textarea>
       <div class="bar">
@@ -614,7 +581,7 @@
       c.draft = ta.value;
       const before = ta.value.slice(0, ta.selectionStart);
       const m = before.match(/(^|[\s，。])@([^\s@]*)$/);
-      if ((c.kind === "group" || c.kind === "team") && m) showAt(m[2]); else hidePop(atPop);
+      if (c.kind === "group" && m) showAt(m[2]); else hidePop(atPop);
     });
     ta.addEventListener("keydown", (e) => {
       if (atPop.classList.contains("on")) {
@@ -636,9 +603,7 @@
       Sim.send(c, text);
     }
     function membersOf() {
-      if (c.kind === "group") return c.agents.map((id) => ({ id, name: AGENTS[id].name, r: "智能体" }));
-      const t = TEAMS[c.team];
-      return [...t.agents.map((id) => ({ id, name: AGENTS[id].name, r: "智能体" })), ...t.humans.filter((h) => h !== "me").map((id) => ({ id, name: FRIENDS[id].name, r: "成员" }))];
+      return [...c.agents.map((id) => ({ id, name: AGENTS[id].name, r: "智能体" })), ...(c.humans || []).map((id) => ({ id, name: FRIENDS[id].name, r: "朋友" }))];
     }
     function showAt(q) {
       atItems = membersOf().filter((m) => m.name.includes(q));
@@ -695,7 +660,6 @@
     if (prev && ta) prev.draft = ta.value;
     S.view = "chats";
     S.open = id;
-    if (c.kind === "team") S.teamOpen = c.team;
     Sim.setOpen(id);
     closeDrawer();
     renderAll();
@@ -709,7 +673,6 @@
     if (k.type === "friend") return friendProfile(k.id);
     if (k.type === "requests") return requestsPage();
     if (k.type === "groups") return groupsPage();
-    if (k.type === "teams") return teamsPage();
   }
   function dmOf(agentId) {
     let c = Object.values(CHATS).find((x) => x.kind === "dm" && x.agent === agentId);
@@ -724,15 +687,21 @@
   function agentProfile(id) {
     const a = AGENTS[id];
     if (!a) return emptyPane();
+    /* 别人的智能体（朋友拉进群的）：能看、能在群里 @，改不了、也私聊不了 */
+    const mine = !a.owner || a.owner === "me";
+    const inGroups = Object.values(CHATS).filter((c) => c.kind === "group" && c.agents.includes(id)).map((c) => esc(chatTitle(c))).join("、") || "没有";
+    const rows = mine ? agentRows(a) : `<div class="row"><span class="t">职责</span><span class="val">${esc(a.role)}</span></div><div class="row"><span class="t">在的群</span><span class="val">${inGroups}</span></div>`;
     paneEl.innerHTML = `<header class="pane-head bare">${backBtn()}<span class="spacer"></span></header><div class="scroll" style="flex:1"><div class="profile">
-      <div class="head"><div class="who"><h2>${esc(a.name)}<span class="kind-tag">智能体</span></h2><div class="role">${esc(a.role)}</div></div><span class="av" style="--s:84px;border-radius:14px" data-face="${a.slot}" data-state="alive" data-size="84"></span></div>
-      <div class="inset">${agentRows(a)}</div>
-      <div class="actions"><button class="btn primary" data-act="msg">${ic("message-circle", 16, 2)}发消息</button><button class="btn soft" data-act="call">${ic("phone", 16, 2)}语音通话</button></div>
+      <div class="head"><div class="who"><h2>${esc(a.name)}<span class="kind-tag">${mine ? "智能体" : esc(who(a.owner).name) + "的智能体"}</span></h2><div class="role">${esc(a.role)}</div></div><span class="av" style="--s:84px;border-radius:14px" data-face="${a.slot}" data-state="alive" data-size="84"></span></div>
+      <div class="inset">${rows}</div>
+      ${mine ? `<div class="actions"><button class="btn primary" data-act="msg">${ic("message-circle", 16, 2)}发消息</button><button class="btn soft" data-act="call">${ic("phone", 16, 2)}语音通话</button></div>` : `<p class="lead-p" style="font-size:12px">它是${esc(who(a.owner).name)}的智能体：在群里 @ 它就行，干活走${esc(who(a.owner).name)}的额度。</p>`}
     </div></div>`;
     Face.hydrate(paneEl);
-    bindAgentRows(a, paneEl);
-    paneEl.querySelector('[data-act="msg"]').addEventListener("click", () => openChat(dmOf(id).id));
-    paneEl.querySelector('[data-act="call"]').addEventListener("click", () => { openChat(dmOf(id).id); startCall(dmOf(id)); });
+    if (mine) {
+      bindAgentRows(a, paneEl);
+      paneEl.querySelector('[data-act="msg"]').addEventListener("click", () => openChat(dmOf(id).id));
+      paneEl.querySelector('[data-act="call"]').addEventListener("click", () => { openChat(dmOf(id).id); startCall(dmOf(id)); });
+    }
     bindBack();
   }
   function agentRows(a) {
@@ -753,13 +722,13 @@
     paneEl.innerHTML = `<header class="pane-head bare">${backBtn()}<span class="spacer"></span></header><div class="scroll" style="flex:1"><div class="profile">
       <div class="head"><div class="who"><h2>${esc(f.name)}<span class="kind-tag">朋友</span></h2><div class="role">${esc(f.note)}</div></div>${avatar(id, 84).replace('class="av human"', 'class="av human" style="--s:84px;border-radius:14px"')}</div>
       <div class="inset">
-        <div class="row"><span class="t">一起在的团队</span><span class="val">${Object.values(TEAMS).filter((t) => t.humans.includes(id)).map((t) => esc(t.name)).join("、") || "没有"}</span></div>
+        <div class="row"><span class="t">一起在的群</span><span class="val">${Object.values(CHATS).filter((c) => c.kind === "group" && (c.humans || []).includes(id)).map((c) => esc(chatTitle(c))).join("、") || "没有"}</span></div>
         <button class="row" data-act="lend"><span class="t">借给 TA 用的应用<span class="sub">TA 的智能体能替你用这些，凭证不离开你的账号</span></span><span class="val">Shopify</span><span class="chev">${ic("chevron-right", 16)}</span></button>
       </div>
-      <div class="actions"><button class="btn primary" data-act="msg">${ic("message-circle", 16, 2)}发消息</button><button class="btn soft" data-act="team">${ic("briefcase", 16, 2)}拉进团队</button></div>
+      <div class="actions"><button class="btn primary" data-act="msg">${ic("message-circle", 16, 2)}发消息</button><button class="btn soft" data-act="to-group">${ic("users-round", 16, 2)}拉进群聊</button></div>
     </div></div>`;
     paneEl.querySelector('[data-act="msg"]').addEventListener("click", () => openChat(friendChatOf(id).id));
-    paneEl.querySelector('[data-act="team"]').addEventListener("click", () => newTeamDialog([id]));
+    paneEl.querySelector('[data-act="to-group"]').addEventListener("click", () => newGroupDialog({ friends: [id] }));
     paneEl.querySelector('[data-act="lend"]').addEventListener("click", () => toast("借应用那一页照今天的（ADR-0169），demo 里不展开"));
     bindBack();
   }
@@ -783,29 +752,13 @@
   function groupsPage() {
     const groups = Object.values(CHATS).filter((c) => c.kind === "group" && visibleChat(c));
     paneEl.innerHTML = `<header class="pane-head">${backBtn()}<span class="title">群聊</span><span class="spacer"></span>${S.sub === "free" ? "" : `<button class="btn soft" data-act="new-group" style="height:30px">${ic("plus", 15, 2)}发起群聊</button>`}</header><div class="scroll" style="flex:1"><div class="detail">
-      ${groups.length ? `<div class="inset">${groups.map((c) => `<button class="row" data-open="${c.id}" style="--inset:62px">${chatAvatar(c, 40)}<span class="t">${esc(chatTitle(c))}<span class="sub">${c.agents.map((a) => AGENTS[a].name).join("、")}</span></span><span class="chev">${ic("chevron-right", 16)}</span></button>`).join("")}</div>` : `<p class="lead-p">还没有群聊。${S.sub === "free" ? "群聊里的是你自己的智能体，要先订阅。" : ""}</p>`}
-      <p class="lead-p" style="font-size:12px">群里是你自己的智能体（2 到 6 只）。有别的人一起的，在「团队」里。</p>
+      ${groups.length ? `<div class="inset">${groups.map((c) => `<button class="row" data-open="${c.id}" style="--inset:62px">${chatAvatar(c, 40)}<span class="t">${esc(chatTitle(c))}<span class="sub">${groupMembers(c).map((m) => who(m).name).join("、")}</span></span><span class="chev">${ic("chevron-right", 16)}</span></button>`).join("")}</div>` : `<p class="lead-p">还没有群聊。</p>`}
+      <p class="lead-p" style="font-size:12px">群里可以有智能体，也可以有朋友。群里的智能体归群主管，干活走群主的额度。</p>
     </div></div>`;
     Face.hydrate(paneEl);
     $$("[data-open]", paneEl).forEach((b) => b.addEventListener("click", () => openChat(b.dataset.open)));
     const ng = paneEl.querySelector('[data-act="new-group"]');
     if (ng) ng.addEventListener("click", () => newGroupDialog());
-    bindBack();
-  }
-  function teamsPage() {
-    const t = TEAMS.tm_shancha;
-    const ts = Object.values(TEAMS);
-    paneEl.innerHTML = `<header class="pane-head">${backBtn()}<span class="title">团队</span><span class="spacer"></span><button class="btn soft" data-act="new-team" style="height:30px">${ic("plus", 15, 2)}新建团队</button></header><div class="scroll" style="flex:1"><div class="detail">
-      ${ts.map((t) => `<div><div class="group-label">${esc(t.name)} · ${t.humans.length} 人 · ${t.agents.length} 只智能体</div><div class="inset">
-        <div class="row" style="flex-wrap:wrap;gap:10px;padding:12px 14px">${[...t.humans, ...t.agents].map((m) => `<span style="display:flex;flex-direction:column;align-items:center;gap:4px;width:48px">${avatar(m, 36)}<span style="font-size:11px;color:var(--fg-2);white-space:nowrap">${esc(who(m).name)}</span></span>`).join("")}</div>
-        ${t.sessions.map((s) => `<button class="row" data-open="${s}"><span class="lead">${ic("message-circle", 16)}</span><span class="t">${esc(CHATS[s].name)}<span class="sub">${esc(previewOf(CHATS[s]).text)}</span></span><span class="chev">${ic("chevron-right", 16)}</span></button>`).join("")}
-        <button class="row" data-act="team-settings"><span class="lead">${ic("settings", 16)}</span><span class="t">团队设置<span class="sub">成员 · 智能体 · 连接器 · 文件 · 用量 · 记忆</span></span><span class="chev">${ic("chevron-right", 16)}</span></button>
-      </div><div class="group-foot" style="font-size:11.5px;color:var(--fg-2);padding:6px 16px 0">团队的智能体走主人（${esc(who(t.owner).name)}）的额度。</div></div>`).join("")}
-    </div></div>`;
-    Face.hydrate(paneEl);
-    $$("[data-open]", paneEl).forEach((b) => b.addEventListener("click", () => openChat(b.dataset.open)));
-    paneEl.querySelector('[data-act="new-team"]').addEventListener("click", () => newTeamDialog([]));
-    $$('[data-act="team-settings"]', paneEl).forEach((b) => b.addEventListener("click", () => toast("团队设置沿用今天那几页（ADR-0264），demo 里不展开")));
     bindBack();
   }
   function bindBack() {
@@ -820,7 +773,7 @@
     let html = "";
     if (k === "quota") {
       if (S.sub === "free") {
-        html = `<h2>订阅</h2><p class="lead-p">Free 能加朋友、进别人拉你的团队。要有自己的智能体，订 Pro 或 Max。</p>
+        html = `<h2>订阅</h2><p class="lead-p">Free 能加朋友、进朋友拉你的群。要有自己的智能体，订 Pro 或 Max。</p>
         <div class="inset"><div class="row"><span class="t">Pro<span class="sub">私聊、群聊、语音通话，一个订阅打通多家模型</span></span><button class="btn primary" style="height:30px">订阅</button></div><div class="row"><span class="t">Max<span class="sub">额度更多</span></span><button class="btn soft" style="height:30px">订阅</button></div></div>`;
       } else {
         html = `<h2>订阅与额度</h2><p class="lead-p">额度按周算，每周一 00:00 刷新。</p>
@@ -855,24 +808,21 @@
     let body = "";
     if (c.kind === "dm") {
       const a = AGENTS[c.agent];
-      body = `<div class="members"><div class="member">${avatar(a.id, 46)}<span class="n">${esc(a.name)}</span></div><div class="member"><button class="add" data-act="to-group" title="拉几只进来，建个群">${ic("plus", 18)}</button><span class="n">建群</span></div></div>
+      body = `<div class="members"><div class="member">${avatar(a.id, 46)}<span class="n">${esc(a.name)}</span></div><div class="member"><button class="add" data-act="to-group" title="拉几位进来，建个群">${ic("plus", 18)}</button><span class="n">建群</span></div></div>
         <div class="inset">${agentRows(a)}</div>
         ${a.admin ? `<p class="lead-p" style="font-size:12px;color:var(--fg-2);margin:0 4px">管理员删不掉：新建智能体、派活都靠它。</p>` : `<div class="inset"><button class="row danger" data-act="del-agent">删除这只智能体</button></div>`}`;
     }
     if (c.kind === "group") {
-      body = `<div class="members">${c.agents.map((id) => `<div class="member">${avatar(id, 46)}<span class="n">${esc(AGENTS[id].name)}</span></div>`).join("")}${c.agents.length < 6 ? `<div class="member"><button class="add" data-act="add-member" title="加一只">${ic("plus", 18)}</button><span class="n">加一只</span></div>` : ""}<div class="member"><button class="add" data-act="rm-member" title="移出">${ic("x", 18)}</button><span class="n">移出</span></div></div>
-        <div class="inset"><button class="row" data-act="rename"><span class="t">群聊名称</span><span class="val">${esc(chatTitle(c))}</span><span class="chev">${ic("chevron-right", 16)}</span></button><div class="row"><span class="t">没 @ 谁的时候</span><span class="val">按职责自己接</span></div></div>
-        <div class="inset"><button class="row danger" data-act="disband">解散群聊</button></div>`;
-    }
-    if (c.kind === "team") {
-      const t = TEAMS[c.team];
-      body = `<div class="members">${[...t.humans, ...t.agents].map((id) => `<div class="member">${avatar(id, 46)}<span class="n">${esc(who(id).name)}</span></div>`).join("")}</div>
-        <div class="inset"><div class="row"><span class="t">会话名称</span><span class="val">${esc(c.name)}</span></div><button class="row" data-act="team-page"><span class="t">团队</span><span class="val">${esc(t.name)}</span><span class="chev">${ic("chevron-right", 16)}</span></button><div class="row"><span class="t">沙箱里的操作</span><span class="val">要人批（主人设的）</span></div></div>
-        <div class="inset"><button class="row danger" data-act="archive">归档这条会话</button></div>`;
+      const mineG = c.owner === "me";
+      const tile = (id) => `<div class="member">${avatar(id, 46)}<span class="n">${esc(id === "me" ? ME.name : who(id).name)}</span></div>`;
+      body = `<div class="members">${["me", ...(c.humans || []), ...c.agents].map(tile).join("")}<div class="member"><button class="add" data-act="add-member" title="拉人进群">${ic("plus", 18)}</button><span class="n">拉人</span></div>${mineG ? `<div class="member"><button class="add" data-act="rm-member" title="移出">${ic("x", 18)}</button><span class="n">移出</span></div>` : ""}</div>
+        <div class="inset"><button class="row" data-act="rename"><span class="t">群聊名称</span><span class="val">${esc(chatTitle(c))}</span><span class="chev">${ic("chevron-right", 16)}</span></button><div class="row"><span class="t">群主</span><span class="val">${mineG ? "我" : esc(who(c.owner).name)}</span></div><div class="row"><span class="t">没 @ 谁的时候</span><span class="val">${c.agents.length ? "智能体按职责自己接" : "等人回"}</span></div></div>
+        <p class="lead-p" style="font-size:12px;color:var(--fg-2);margin:-8px 4px 0">群里的智能体归群主管，干活走群主的额度。</p>
+        <div class="inset"><button class="row danger" data-act="${mineG ? "disband" : "leave"}">${mineG ? "解散群聊" : "退出群聊"}</button></div>`;
     }
     if (c.kind === "friend") {
       const f = FRIENDS[c.friend];
-      body = `<div class="members"><div class="member">${avatar(f.id, 46)}<span class="n">${esc(f.name)}</span></div><div class="member"><button class="add" data-act="to-team" title="拉进团队">${ic("plus", 18)}</button><span class="n">拉进团队</span></div></div>
+      body = `<div class="members"><div class="member">${avatar(f.id, 46)}<span class="n">${esc(f.name)}</span></div><div class="member"><button class="add" data-act="friend-group" title="拉几位进来，建个群">${ic("plus", 18)}</button><span class="n">建群</span></div></div>
         <div class="inset"><div class="row"><span class="t">备注</span><span class="val">${esc(f.note)}</span></div></div>`;
     }
     drawer.innerHTML = `<header class="drawer-head">聊天信息<span class="spacer"></span><button class="icon-btn" data-act="close" title="关闭">${ic("x", 18)}</button></header><div class="drawer-body scroll">${body}</div>`;
@@ -881,7 +831,8 @@
     const on = (sel, fn) => { const el = drawer.querySelector(sel); if (el) el.addEventListener("click", fn); };
     on('[data-act="close"]', closeDrawer);
     if (c.kind === "dm") bindAgentRows(AGENTS[c.agent], drawer);
-    on('[data-act="to-group"]', () => newGroupDialog([c.agent]));
+    on('[data-act="to-group"]', () => newGroupDialog({ agents: [c.agent] }));
+    on('[data-act="friend-group"]', () => newGroupDialog({ friends: [c.friend] }));
     on('[data-act="del-agent"]', () => confirmDialog(`删掉「${AGENTS[c.agent].name}」？`, "它的私聊一起删掉；它待过的群还在，只是少了它。删了找不回来。", "删除", () => {
       const id = c.agent;
       delete CHATS[c.id];
@@ -889,13 +840,24 @@
       for (const g of Object.values(CHATS)) if (g.kind === "group" && g.agents.includes(id)) { g.agents = g.agents.filter((x) => x !== id); Sim.push(g, "sys", "", "rosterchg", { ids: [id] }); g.msgs[g.msgs.length - 1].text = "你把这只移出了群聊："; }
       S.open = null; closeDrawer(); renderAll();
     }, true));
-    on('[data-act="add-member"]', () => pickAgentsDialog("加进群里", MY_AGENTS.filter((id) => !c.agents.includes(id)), 6 - c.agents.length, (ids) => { c.agents.push(...ids); Sim.push(c, "sys", "你把这几只拉进了群聊：", "rosterchg", { ids }); openInfo(c); }));
-    on('[data-act="rm-member"]', () => pickAgentsDialog("移出群聊", c.agents, c.agents.length, (ids) => { c.agents = c.agents.filter((x) => !ids.includes(x)); Sim.push(c, "sys", "你把这几只移出了群聊：", "rosterchg", { ids }); openInfo(c); }));
+    on('[data-act="add-member"]', () => pickMembersDialog({
+      title: "拉人进群",
+      desc: c.owner === "me" ? "" : "你能拉朋友进来；智能体归群主管，只有群主能拉。",
+      agents: c.owner === "me" ? MY_AGENTS.filter((id) => !c.agents.includes(id)) : [],
+      friends: MY_FRIENDS.filter((id) => !(c.humans || []).includes(id)),
+      maxAgents: 6 - c.agents.length,
+      min: 1,
+      okLabel: "拉进来",
+    }, ({ agents, friends }) => { c.agents.push(...agents); c.humans = [...(c.humans || []), ...friends]; Sim.push(c, "sys", "你拉进了群聊：", "rosterchg", { ids: [...friends, ...agents] }); openInfo(c); }));
+    on('[data-act="rm-member"]', () => pickMembersDialog({ title: "移出群聊", agents: c.agents.slice(), friends: (c.humans || []).slice(), maxAgents: 99, min: 1, okLabel: "移出" }, ({ agents, friends }) => {
+      c.agents = c.agents.filter((x) => !agents.includes(x));
+      c.humans = (c.humans || []).filter((x) => !friends.includes(x));
+      Sim.push(c, "sys", "你把这几位移出了群聊：", "rosterchg", { ids: [...friends, ...agents] });
+      openInfo(c);
+    }));
     on('[data-act="rename"]', () => editDialog("群聊名称", chatTitle(c), false, (v) => { c.name = v; renderAll(); openInfo(c); }));
     on('[data-act="disband"]', () => confirmDialog(`解散「${chatTitle(c)}」？`, "聊天记录一起删掉。里面的智能体都还在，通讯录里照样找得到。", "解散", () => { delete CHATS[c.id]; S.open = null; closeDrawer(); renderAll(); }, true));
-    on('[data-act="team-page"]', () => { S.view = "contacts"; S.contact = { type: "teams" }; closeDrawer(); renderAll(); });
-    on('[data-act="archive"]', () => confirmDialog(`归档「${c.name}」？`, "团队里的人都看不到它了，要找去团队设置的「会话」那一页。", "归档", () => { const t = TEAMS[c.team]; t.sessions = t.sessions.filter((s) => s !== c.id); delete CHATS[c.id]; S.open = null; closeDrawer(); renderAll(); }));
-    on('[data-act="to-team"]', () => newTeamDialog([c.friend]));
+    on('[data-act="leave"]', () => confirmDialog(`退出「${chatTitle(c)}」？`, "退出后收不到这个群的消息。群还在，里面的人和智能体都还在。", "退出", () => { delete CHATS[c.id]; S.open = null; closeDrawer(); renderAll(); }, true));
   }
   function closeDrawer() { drawer.classList.remove("on"); }
   /* 点抽屉外面就收起（弹窗、菜单开着的时候除外：那是抽屉自己叫出来的） */
@@ -912,7 +874,6 @@
     const items = [
       ["new-agent", "sparkles", "新建智能体", S.sub !== "free"],
       ["new-group", "users-round", "发起群聊", S.sub !== "free"],
-      ["new-team", "briefcase", "新建团队", true],
       ["add-friend", "user-round-plus", "添加朋友", true],
     ].filter((x) => x[3]);
     menu.innerHTML = items.map(([k, i, l]) => `<button data-m="${k}" role="menuitem">${ic(i, 16)}${l}</button>`).join("");
@@ -922,7 +883,7 @@
     menu.classList.add("on");
     $$("[data-m]", menu).forEach((b) => b.addEventListener("click", () => {
       menu.classList.remove("on");
-      ({ "new-agent": newAgentDialog, "new-group": () => newGroupDialog(), "new-team": () => newTeamDialog([]), "add-friend": addFriendDialog })[b.dataset.m]();
+      ({ "new-agent": newAgentDialog, "new-group": () => newGroupDialog(), "add-friend": addFriendDialog })[b.dataset.m]();
     }));
   }
   document.addEventListener("mousedown", (e) => { if (!menu.contains(e.target) && !e.target.closest("#plus")) menu.classList.remove("on"); });
@@ -1021,80 +982,62 @@
     Sim.push(c, a.id, "说一句就行，这句话就是我以后的职责，写错了随时能改。");
   }
 
-  function pickAgentsDialog(title, ids, max, fn, preset = []) {
-    const sel = new Set(preset);
-    const draw = (d) => {
-      $$("[data-pk]", d).forEach((b) => {
-        const on = sel.has(b.dataset.pk);
-        b.querySelector(".chk").style.opacity = on ? 1 : 0;
-        b.disabled = !on && sel.size >= max;
-        b.style.opacity = b.disabled ? 0.45 : 1;
+  /* 挑人：智能体和朋友分两段，一个群里两样都可以有（维护者 2026-09-27：不分团队和群聊） */
+  function pickMembersDialog(o, fn) {
+    const selA = new Set((o.preset && o.preset.agents) || []), selF = new Set((o.preset && o.preset.friends) || []);
+    const chk = `<span class="chk" style="color:var(--brand)">${ic("check", 16, 2.2)}</span>`;
+    const rowA = (id) => `<button class="row" data-pa="${id}" style="--inset:52px">${avatar(id, 30)}<span class="t">${esc(AGENTS[id].name)}<span class="sub">${esc(AGENTS[id].role)}</span></span>${chk}</button>`;
+    const rowF = (id) => `<button class="row" data-pf="${id}" style="--inset:52px">${avatar(id, 30)}<span class="t">${esc(FRIENDS[id].name)}<span class="sub">${esc(FRIENDS[id].note)}</span></span>${chk}</button>`;
+    const sec = (label, ids, row) => ids.length ? `<div class="group-label" style="padding:12px 4px 6px">${label}</div><div class="inset" style="background:var(--ground)">${ids.map(row).join("")}</div>` : "";
+    showDialog(`<h3>${esc(o.title)}</h3>${o.desc ? `<p class="desc">${esc(o.desc)}</p>` : ""}${o.withName ? `<input class="field" id="gn" maxlength="30">` : ""}<div id="cnt" style="text-align:right;font-size:11.5px;color:var(--fg-3);margin:8px 4px 0"></div><div class="scroll" style="max-height:min(52vh, 440px);margin:0 -6px;padding:0 6px">${sec("智能体", o.agents, rowA)}${sec("朋友", o.friends, rowF)}</div><div class="actions"><button class="btn soft" data-close>取消</button><button class="btn primary" id="ok">${esc(o.okLabel || "确定")}</button></div>`, (d) => {
+      const draw = () => {
+        $$("[data-pa]", d).forEach((b) => { const on = selA.has(b.dataset.pa); b.querySelector(".chk").style.opacity = on ? 1 : 0; b.disabled = !on && selA.size >= o.maxAgents; b.style.opacity = b.disabled ? 0.45 : 1; });
+        $$("[data-pf]", d).forEach((b) => { b.querySelector(".chk").style.opacity = selF.has(b.dataset.pf) ? 1 : 0; });
+        const n = selA.size + selF.size;
+        d.querySelector("#ok").disabled = n < (o.min || 1);
+        d.querySelector("#cnt").textContent = `已选 ${selA.size} 只智能体 · ${selF.size} 位朋友`;
+        const gn = d.querySelector("#gn");
+        if (gn) gn.placeholder = n ? [...o.friends.filter((i) => selF.has(i)).map((i) => FRIENDS[i].name), ...o.agents.filter((i) => selA.has(i)).map((i) => AGENTS[i].name)].join("、") : "群名（不填就用成员名）";
+      };
+      $$("[data-pa]", d).forEach((b) => b.addEventListener("click", () => { selA.has(b.dataset.pa) ? selA.delete(b.dataset.pa) : selA.add(b.dataset.pa); draw(); }));
+      $$("[data-pf]", d).forEach((b) => b.addEventListener("click", () => { selF.has(b.dataset.pf) ? selF.delete(b.dataset.pf) : selF.add(b.dataset.pf); draw(); }));
+      d.querySelector("#ok").addEventListener("click", () => {
+        const gn = d.querySelector("#gn");
+        closeDialog();
+        fn({ agents: o.agents.filter((i) => selA.has(i)), friends: o.friends.filter((i) => selF.has(i)), name: gn ? gn.value.trim() : "" });
       });
-      d.querySelector("#ok").disabled = sel.size === 0;
-    };
-    showDialog(`<h3>${esc(title)}</h3><div class="inset" style="background:var(--ground);margin-top:12px">${ids.map((id) => `<button class="row" data-pk="${id}" style="--inset:52px">${avatar(id, 30)}<span class="t">${esc(AGENTS[id].name)}<span class="sub">${esc(AGENTS[id].role)}</span></span><span class="chk" style="color:var(--brand)">${ic("check", 16, 2.2)}</span></button>`).join("")}</div><div class="actions"><button class="btn soft" data-close>取消</button><button class="btn primary" id="ok">确定</button></div>`, (d) => {
-      $$("[data-pk]", d).forEach((b) => b.addEventListener("click", () => { sel.has(b.dataset.pk) ? sel.delete(b.dataset.pk) : sel.add(b.dataset.pk); draw(d); }));
-      d.querySelector("#ok").addEventListener("click", () => { closeDialog(); fn([...sel]); });
-      draw(d);
+      draw();
     });
   }
 
-  function newGroupDialog(preset = []) {
-    const sel = new Set(preset);
-    const ids = MY_AGENTS.slice();
-    const draw = (d) => {
-      $$("[data-pk]", d).forEach((b) => {
-        const on = sel.has(b.dataset.pk);
-        b.querySelector(".chk").style.opacity = on ? 1 : 0;
-        b.disabled = !on && sel.size >= 6;
-        b.style.opacity = b.disabled ? 0.45 : 1;
-      });
-      const nm = d.querySelector("#gn");
-      nm.placeholder = sel.size ? ids.filter((i) => sel.has(i)).map((i) => AGENTS[i].name).join("、") : "群名（不填就用成员名）";
-      d.querySelector("#ok").disabled = sel.size < 2;
-      d.querySelector("#cnt").textContent = `已选 ${sel.size} / 6`;
-    };
-    showDialog(`<h3>发起群聊</h3><p class="desc">挑 2 到 6 只。群里没 @ 谁的话，按职责自己接活。</p><input class="field" id="gn" maxlength="30"><div style="display:flex;justify-content:flex-end;font-size:11.5px;color:var(--fg-3);margin:10px 4px 6px" id="cnt"></div><div class="inset" style="background:var(--ground)">${ids.map((id) => `<button class="row" data-pk="${id}" style="--inset:52px">${avatar(id, 30)}<span class="t">${esc(AGENTS[id].name)}<span class="sub">${esc(AGENTS[id].role)}</span></span><span class="chk" style="color:var(--brand)">${ic("check", 16, 2.2)}</span></button>`).join("")}</div><div class="actions"><button class="btn soft" data-close>取消</button><button class="btn primary" id="ok">建群</button></div>`, (d) => {
-      $$("[data-pk]", d).forEach((b) => b.addEventListener("click", () => { sel.has(b.dataset.pk) ? sel.delete(b.dataset.pk) : sel.add(b.dataset.pk); draw(d); }));
-      d.querySelector("#ok").addEventListener("click", () => {
-        const agents = ids.filter((i) => sel.has(i));
-        const name = d.querySelector("#gn").value.trim() || agents.map((i) => AGENTS[i].name).join("、").slice(0, 30);
-        const id = "g_" + Math.random().toString(36).slice(2, 7);
-        CHATS[id] = { id, kind: "group", name, agents, unread: 0, msgs: [] };
-        Sim.push(CHATS[id], "sys", `你建了群聊「${name}」`, "roster", { added: agents });
-        closeDialog();
-        openChat(id);
-      });
-      draw(d);
-    });
-  }
-  function newTeamDialog(preset) {
-    const sel = new Set(preset);
-    showDialog(`<h3>新建团队</h3><p class="desc">团队是一群人加一套智能体，大家在同一个地方干活，用你的额度。要 Pro 或 Max。</p><input class="field" id="tn" placeholder="团队名，比如「山茶小铺」" maxlength="20"><div class="group-label" style="padding:14px 4px 6px">拉谁进来</div><div class="inset" style="background:var(--ground)">${MY_FRIENDS.map((id) => `<button class="row" data-pk="${id}" style="--inset:52px">${avatar(id, 30)}<span class="t">${esc(FRIENDS[id].name)}</span><span class="chk" style="color:var(--brand);opacity:${sel.has(id) ? 1 : 0}">${ic("check", 16, 2.2)}</span></button>`).join("")}</div><div class="actions"><button class="btn soft" data-close>取消</button><button class="btn primary" id="ok" disabled>建团队</button></div>`, (d) => {
-      const tn = d.querySelector("#tn"), ok = d.querySelector("#ok");
-      tn.addEventListener("input", () => (ok.disabled = !tn.value.trim()));
-      $$("[data-pk]", d).forEach((b) => b.addEventListener("click", () => { sel.has(b.dataset.pk) ? sel.delete(b.dataset.pk) : sel.add(b.dataset.pk); b.querySelector(".chk").style.opacity = sel.has(b.dataset.pk) ? 1 : 0; }));
-      ok.addEventListener("click", () => {
-        const tid = "tm_" + Math.random().toString(36).slice(2, 7), sid = "s_" + Math.random().toString(36).slice(2, 7);
-        const aid = "ta_" + tid;
-        AGENTS[aid] = { id: aid, name: "管理员", slot: 6, role: "帮团队建新同事、派活", admin: true, team: tid };
-        TEAMS[tid] = { id: tid, name: tn.value.trim(), owner: "me", humans: ["me", ...sel], agents: [aid], sessions: [sid] };
-        CHATS[sid] = { id: sid, kind: "team", team: tid, name: "大家好", unread: 0, msgs: [] };
-        closeDialog();
-        openChat(sid);
-        Sim.push(CHATS[sid], "sys", `你建了团队「${tn.value.trim()}」`);
-      });
+  function newGroupDialog(preset = {}) {
+    pickMembersDialog({
+      title: "发起群聊",
+      desc: "拉几只智能体、几个朋友，凑够 2 个就能建。没 @ 谁的话，智能体按职责自己接活。",
+      agents: MY_AGENTS.slice(),
+      friends: MY_FRIENDS.slice(),
+      maxAgents: 6,
+      min: 2,
+      okLabel: "建群",
+      withName: true,
+      preset,
+    }, ({ agents, friends, name }) => {
+      const nm = name || [...friends.map((i) => FRIENDS[i].name), ...agents.map((i) => AGENTS[i].name)].join("、").slice(0, 30);
+      const id = "g_" + Math.random().toString(36).slice(2, 7);
+      CHATS[id] = { id, kind: "group", name: nm, owner: "me", humans: friends, agents, unread: 0, msgs: [] };
+      openChat(id);
+      Sim.push(CHATS[id], "sys", `你建了群聊「${nm}」`, "roster", { added: [...friends, ...agents] });
     });
   }
   function addFriendDialog() {
-    showDialog(`<h3>添加朋友</h3><p class="desc">填对方的邮箱或用户名。加了朋友，才能拉 TA 进团队、把你的应用借给 TA。</p><input class="field" id="fe" placeholder="邮箱或用户名"><div class="actions"><button class="btn soft" data-close>取消</button><button class="btn primary" id="ok" disabled>发送申请</button></div>`, (d) => {
+    showDialog(`<h3>添加朋友</h3><p class="desc">填对方的邮箱或用户名。加了朋友，才能拉 TA 进群、把你的应用借给 TA。</p><input class="field" id="fe" placeholder="邮箱或用户名"><div class="actions"><button class="btn soft" data-close>取消</button><button class="btn primary" id="ok" disabled>发送申请</button></div>`, (d) => {
       const fe = d.querySelector("#fe"), ok = d.querySelector("#ok");
       fe.addEventListener("input", () => (ok.disabled = !fe.value.trim()));
       ok.addEventListener("click", () => { closeDialog(); toast(`申请已发给 ${fe.value.trim()}，对方同意了会出现在朋友里`); });
     });
   }
   function subscribeDialog() {
-    showDialog(`<h3>订阅</h3><p class="desc">Pro：自己的智能体，私聊、群聊、语音通话。Max：额度更多。两档都能建团队。</p><div class="inset" style="background:var(--ground)"><div class="row"><span class="t">Pro</span><button class="btn primary" style="height:30px" id="pro">订 Pro</button></div><div class="row"><span class="t">Max</span><button class="btn soft" style="height:30px" id="max">订 Max</button></div></div><div class="actions"><button class="btn soft" data-close>以后再说</button></div>`, (d) => {
+    showDialog(`<h3>订阅</h3><p class="desc">Pro：自己的智能体，私聊、拉群、语音通话。Max：额度更多。</p><div class="inset" style="background:var(--ground)"><div class="row"><span class="t">Pro</span><button class="btn primary" style="height:30px" id="pro">订 Pro</button></div><div class="row"><span class="t">Max</span><button class="btn soft" style="height:30px" id="max">订 Max</button></div></div><div class="actions"><button class="btn soft" data-close>以后再说</button></div>`, (d) => {
       const done = () => { closeDialog(); S.sub = "pro"; renderAll(); renderDemo(); toast("demo：当作已经订上了"); };
       d.querySelector("#pro").addEventListener("click", done);
       d.querySelector("#max").addEventListener("click", done);

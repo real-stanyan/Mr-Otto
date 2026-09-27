@@ -129,9 +129,8 @@ const AGENTS = {
   a_shuju: { id: "a_shuju", name: "数据", slot: 5, role: "每周一出周报：订单、复购、客单价", voice: "沉稳男声", usage: 12 },
   a_jizhang: { id: "a_jizhang", name: "记账", slot: 8, role: "对流水、整理报销单", voice: "温柔女声", usage: 6 },
   a_xuanpin: { id: "a_xuanpin", name: "选品", slot: 10, role: "盯同行的上新和价格", voice: "清亮女声", usage: 5 },
-  /* 团队「山茶小铺」自己的两只（团队的智能体和我的不是同一批） */
-  t_admin: { id: "t_admin", name: "管理员", slot: 6, role: "帮团队建新同事、派活", admin: true, team: "tm_shancha" },
-  t_zhiban: { id: "t_zhiban", name: "值班", slot: 0, role: "盯店里的杂事：备货、摊位、差评", team: "tm_shancha" },
+  /* 小红的智能体：她建的群里有它，干活走她的额度（群主的） */
+  t_zhiban: { id: "t_zhiban", name: "值班", slot: 0, role: "盯店里的杂事：备货、摊位、差评", owner: "f_xh" },
 };
 const MY_AGENTS = ["a_admin", "a_kefu", "a_wenan", "a_toufang", "a_shuju", "a_jizhang", "a_xuanpin"];
 
@@ -143,16 +142,6 @@ const FRIENDS = {
 const MY_FRIENDS = ["f_xh", "f_aj", "f_lw"];
 const FRIEND_REQUESTS = [{ id: "r1", name: "林小满", initial: "林", text: "我是做干花的，想和你们一起摆摊" }];
 
-const TEAMS = {
-  tm_shancha: {
-    id: "tm_shancha",
-    name: "山茶小铺",
-    owner: "f_xh",
-    humans: ["me", "f_xh", "f_aj"],
-    agents: ["t_admin", "t_zhiban"],
-    sessions: ["s_shiji", "s_chaping"],
-  },
-};
 
 function who(id) {
   if (id === "me") return { kind: "me", name: "我", initial: ME.initial };
@@ -180,7 +169,7 @@ const CHATS = {
     ]),
   },
   c_shangxin: {
-    id: "c_shangxin", kind: "group", name: "上新小队", agents: ["a_wenan", "a_xuanpin", "a_toufang"], unread: 3,
+    id: "c_shangxin", kind: "group", name: "上新小队", owner: "me", humans: [], agents: ["a_wenan", "a_xuanpin", "a_toufang"], unread: 3,
     msgs: seed([
       [1010, "sys", "你建了群聊「上新小队」", "roster", { added: ["a_wenan", "a_xuanpin", "a_toufang"] }],
       [1008, "me", "雪松下周三上新，你们仨对一下节奏"],
@@ -197,9 +186,9 @@ const CHATS = {
     ]),
   },
   s_shiji: {
-    id: "s_shiji", kind: "team", team: "tm_shancha", name: "周末市集", unread: 3, mention: true,
+    id: "s_shiji", kind: "group", name: "山茶小铺", owner: "f_xh", humans: ["f_xh", "f_aj"], agents: ["t_zhiban"], unread: 3, mention: true,
     msgs: seed([
-      [300, "sys", "小红 开了会话「周末市集」"],
+      [300, "sys", "小红 建了群聊「山茶小铺」，拉进了你、阿杰和她的智能体「值班」"],
       [290, "f_xh", "@值班 帮我把周六市集的摊位清单列一下"],
       [289, "t_zhiban", "列好了：\n1. 桌布、价签、收款码\n2. 雪松、白茶、无花果各 20 罐\n3. 试香纸两盒、纸袋 50 个"],
       [289, "t_zhiban", "周六下午有阵雨，要不要带把大伞？"],
@@ -209,7 +198,7 @@ const CHATS = {
     ]),
   },
   s_chaping: {
-    id: "s_chaping", kind: "team", team: "tm_shancha", name: "差评处理", unread: 0,
+    id: "s_chaping", kind: "group", name: "差评处理", owner: "f_xh", humans: ["f_xh"], agents: ["t_zhiban"], unread: 0,
     msgs: seed([
       [2910, "t_zhiban", "淘宝那条说「味道太淡」的差评，我拟了个回复，放在「差评回复.md」里，你们看一眼再发。"],
       [2890, "f_xh", "可以，发吧"],
@@ -242,7 +231,7 @@ const CHATS = {
     ]),
   },
   c_zhoubao: {
-    id: "c_zhoubao", kind: "group", name: "周报", agents: ["a_shuju", "a_jizhang"], unread: 0,
+    id: "c_zhoubao", kind: "group", name: "周报", owner: "me", humans: [], agents: ["a_shuju", "a_jizhang"], unread: 0,
     msgs: seed([
       [4400, "sys", "你建了群聊「周报」", "roster", { added: ["a_shuju", "a_jizhang"] }],
       [2900, "a_jizhang", "本周流水对完了，和后台差 ¥36，是一笔退款还没到账。"],
@@ -279,24 +268,20 @@ const CHATS = {
   },
 };
 
-/* 会话列表里的一行 = 一条聊天，或者一个团队（点进去是它的几条会话，照微信的「服务号」那种折叠行） */
+/* 群聊不分有没有真人（维护者 2026-09-27）：一个群 = 你 + 几只智能体 + 几个朋友，谁都可以没有。
+   群主是建群的那个人；群里的智能体归群主管，干活走群主的额度（今天团队的规矩原样搬过来）。 */
+function groupMembers(c) { return [...(c.humans || []), ...c.agents]; }
 function chatTitle(c) {
   if (c.kind === "dm") return AGENTS[c.agent].name;
   if (c.kind === "friend") return FRIENDS[c.friend].name;
-  if (c.kind === "group") return c.name || c.agents.map((a) => AGENTS[a].name).join("、");
-  if (c.kind === "team") return c.name;
+  if (c.kind === "group") return c.name || groupMembers(c).map((id) => who(id).name).join("、");
   return "";
 }
-function chatHeadcount(c) {
-  if (c.kind === "group") return c.agents.length + 1;
-  if (c.kind === "team") { const t = TEAMS[c.team]; return t.humans.length + t.agents.length; }
-  return 0;
-}
+function chatHeadcount(c) { return c.kind === "group" ? groupMembers(c).length + 1 : 0; }
 function chatParticipants(c) {
   if (c.kind === "dm") return [c.agent];
   if (c.kind === "friend") return [c.friend];
-  if (c.kind === "group") return c.agents;
-  if (c.kind === "team") { const t = TEAMS[c.team]; return [...t.humans.filter((h) => h !== "me"), ...t.agents]; }
+  if (c.kind === "group") return groupMembers(c);
   return [];
 }
 function lastMsg(c) {
@@ -313,27 +298,15 @@ function previewOf(c) {
   if (m.kind === "sys") return { text: m.text };
   if (m.kind === "roster") return { text: m.text };
   if (m.kind === "dispatch") return { text: `没 @ 谁，${AGENTS[m.meta.to].name}接了` };
-  const multi = c.kind === "group" || c.kind === "team";
+  const multi = c.kind === "group";
   const name = m.from === "me" ? "" : multi ? who(m.from).name + ": " : "";
   return { text: name + m.text.replace(/\n+/g, " ") };
 }
 
-/* 列表：聊天与团队混排，按最近一条排 */
+/* 列表：私聊、群聊、朋友混排，按最近一条排 */
 function listRows() {
-  const rows = [];
-  for (const c of Object.values(CHATS)) {
-    if (c.kind === "team") continue;
-    rows.push({ type: "chat", id: c.id, ts: chatUpdated(c), chat: c });
-  }
-  for (const t of Object.values(TEAMS)) {
-    const ss = t.sessions.map((s) => CHATS[s]);
-    const newest = ss.slice().sort((a, b) => chatUpdated(b) - chatUpdated(a))[0];
-    rows.push({ type: "team", id: t.id, ts: chatUpdated(newest), team: t, newest });
-  }
-  return rows.sort((a, b) => b.ts - a.ts);
+  return Object.values(CHATS).map((c) => ({ type: "chat", id: c.id, ts: chatUpdated(c), chat: c })).sort((a, b) => b.ts - a.ts);
 }
-function teamUnread(t) { return t.sessions.reduce((n, s) => n + CHATS[s].unread, 0); }
-function teamMention(t) { return t.sessions.some((s) => CHATS[s].mention && CHATS[s].unread > 0); }
 function totalUnread() {
   let n = 0;
   for (const c of Object.values(CHATS)) n += c.unread;
@@ -380,11 +353,9 @@ function groupAvatar(ids, size = 40) {
 function chatAvatar(c, size = 40) {
   if (c.kind === "dm") return avatar(c.agent, size);
   if (c.kind === "friend") return avatar(c.friend, size);
-  if (c.kind === "group") return groupAvatar(c.agents, size);
-  if (c.kind === "team") return groupAvatar(chatParticipants(c), size);
+  if (c.kind === "group") return groupAvatar(groupMembers(c).length ? groupMembers(c) : ["me"], size);
   return "";
 }
-function teamAvatar(t, size = 40) { return groupAvatar([...t.humans.filter((h) => h !== "me"), ...t.agents], size); }
 
 function esc(s) { return String(s).replace(/[&<>"]/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[ch]); }
 function richText(s) {
@@ -393,10 +364,10 @@ function richText(s) {
 
 /* ── 时间线 ───────────────────────────────────────────────────────────── */
 function namesLine(ids) {
-  return ids.map((id) => `<span class="who">${AGENTS[id] ? avatar(id, 14) : ""}${esc(who(id).name)}</span>`).join("<span>、</span>");
+  return ids.map((id) => `<span class="who">${avatar(id, 14)}${esc(who(id).name)}</span>`).join("<span>、</span>");
 }
 function timelineHTML(c, opts = {}) {
-  const multi = c.kind === "group" || c.kind === "team";
+  const multi = c.kind === "group";
   const av = opts.avatar || 36;
   let out = "";
   let prevT = 0;
@@ -495,10 +466,6 @@ const Sim = (() => {
     emit(c.id);
   }
 
-  function mentioned(c, text) {
-    const ids = c.kind === "group" ? c.agents : c.kind === "team" ? TEAMS[c.team].agents : [];
-    return ids.filter((id) => text.includes("@" + AGENTS[id].name));
-  }
 
   function pickByRole(ids, text) {
     const hit = ids.find((id) => (KEYWORDS[id] || []).some((k) => text.includes(k)));
@@ -523,14 +490,24 @@ const Sim = (() => {
       push(c, c.friend, FRIEND_REPLIES[c.friend] || "好");
       return;
     }
-    const ids = c.kind === "group" ? c.agents : TEAMS[c.team].agents;
-    let targets = mentioned(c, text);
-    if (targets.length === 0) {
-      const t = pickByRole(ids, text);
-      push(c, "sys", "", "dispatch", { to: t });
-      targets = [t];
+    /* 群：@ 了谁谁接；只 @ 了人就只有人回，不起任何一只智能体（ADR-0252）；
+       谁都没 @ 时智能体按职责自己接（ADR-0270），群里没有智能体就等朋友回 */
+    const humans = c.humans || [];
+    const atAgents = c.agents.filter((id) => text.includes("@" + AGENTS[id].name));
+    const atHumans = humans.filter((id) => text.includes("@" + FRIENDS[id].name));
+    if (!atAgents.length && !atHumans.length) {
+      if (c.agents.length) {
+        const t = pickByRole(c.agents, text);
+        push(c, "sys", "", "dispatch", { to: t });
+        await reply(c, t, replyFor(t, text));
+      } else if (humans.length) {
+        await later(2600);
+        push(c, humans[0], FRIEND_REPLIES[humans[0]] || "好");
+      }
+      return;
     }
-    for (const t of targets) await reply(c, t, replyFor(t, text));
+    for (const t of atAgents) await reply(c, t, replyFor(t, text));
+    for (const h of atHumans) { await later(2200); push(c, h, FRIEND_REPLIES[h] || "好"); }
   }
 
   return {
@@ -609,11 +586,11 @@ const EMOJI = "😀😄😂🥹😊😉😍🥰😘😋😎🤔🤨😐😴😷�
 
 /* 「今天没有的」那张单子：demo 里出现、app 里还不存在的东西 */
 const NEW_THINGS = [
-  ["每条聊天的未读数", "今天只有团队的 @ 和好友私聊有；智能体聊天要 runtime 多投影一格消息计数 + 每人一份已读游标（#1282）"],
+  ["每条聊天的未读数", "今天只有有人 @ 你、和好友私聊有；智能体聊天要 runtime 多投影一格消息计数 + 每人一份已读游标（#1282）"],
   ["桌面列表的最后一句", "手机端已经在读 last_ts / last_excerpt；桌面还没接"],
   ["头部「正在输入 / 正在干活」", "按有没有流式碎片分两档；今天只有那枚输入指示器"],
-  ["团队折成一行", "点进去是它的几条会话，照微信「服务号」那种折叠行"],
-  ["手机端的团队与朋友", "今天手机上一个都没有"],
+  ["群聊不分有没有真人", "团队和群聊合成一个（维护者 2026-09-27）。今天团队自带一批智能体、你的智能体进不了团队，一个团队下还有好几条会话；落地要改后端：智能体跟着群主进群、额度记在群主头上、旧团队的每条会话变成一个群"],
+  ["手机端的朋友，和有真人的群", "今天手机上一个都没有"],
   ["按住说话", "手机端：说完转成文字发出去（通话那套识别已经在，缺一个按住的模式）"],
   ["表情", "只是往输入框里插 emoji，不是贴图"],
   ["额度只按周算", "去掉「5 小时」那扇窗（维护者 2026-09-27）；这次只改设计，真规矩不动，落地时网关、价目表、接力刹车都要跟着改"],
