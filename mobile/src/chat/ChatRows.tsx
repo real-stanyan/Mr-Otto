@@ -19,7 +19,7 @@ import { Button } from "../ui.js";
 export function ChatRowView({ row, ws, onOpenCall }: { row: ChatRow; ws: WorkspaceSnapshot; onOpenCall?: (seq: number) => void }) {
   const { c } = usePalette();
   switch (row.kind) {
-    case "day":
+    case "time":
       return (
         <Text style={{ alignSelf: "center", fontSize: 11.5, letterSpacing: 0.2, color: c.mutedForeground, opacity: 0.7, paddingTop: 6 }}>
           {row.label}
@@ -67,6 +67,9 @@ export function ChatRowView({ row, ws, onOpenCall }: { row: ChatRow; ws: Workspa
       return <RosterLineView parts={row.parts} ws={ws} />;
     case "call":
       return <CallCardRow card={row.card} topic={row.topic} onPress={() => onOpenCall?.(row.card.seq)} />;
+    case "approval":
+      // 团队群里的审批卡（#1386）：这一版的聊天页还开不了团队群，微信式那一页里才画真卡
+      return <NoteRow text={`${row.title}：等 ${row.waitingFor} 批`} tone="muted" detail={row.summary} />;
     default: {
       // 新加一种行而这里没接上时编译不过——这个组件没写返回类型，漏接的那一种原来会安静地什么都不画
       const unhandled: never = row;

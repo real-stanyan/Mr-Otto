@@ -5,7 +5,7 @@ import { periodLine } from "../../src/shared/billingView.js";
 import {
   ACCOUNT_FOOTER, SUBSCRIPTION_FOOTER, THEME_PREFS, accountBadge, accountInitial, accountName, accountQuota,
   billingChanged, billingLinkError, billingLinkStale, billingLinkThrown, billingLinkUrl, colorSchemeOf, holdsSubscription,
-  parseThemePref, planOffers, quotaToneView, subscriptionNotes, subscriptionValue,
+  parseThemePref, planOffers, quotaToneView, subscriptionNotes, subscriptionValue, weekQuota,
 } from "../../src/shared/mobileAccount.js";
 import type { BillingSnapshotView } from "../../src/shared/shellBridge.js";
 
@@ -232,5 +232,34 @@ describe("外观偏好", () => {
       { key: "light", label: "浅色" },
       { key: "dark", label: "深色" },
     ]);
+  });
+});
+
+describe("weekQuota（#1386：只画本周一格）", () => {
+  it("平时只报本周、5 小时一个字不提", () => {
+    const q = weekQuota(snap(me()), NOW);
+    expect(q).toMatchObject({ kind: "week", week: { key: "week", remaining: "91.7%" }, h5Note: null });
+  });
+  it("5 小时那扇窗比本周紧且告急：底下一句实话（剩多少、什么时候恢复）", () => {
+    const tight = me({ windows: { h5: { usedMicro: 950_000, limitMicro: 1_000_000, resetAt: NOW + 98 * 60_000 }, week: me().windows!.week } });
+    const q = weekQuota(snap(tight), NOW);
+    expect(q.kind === "week" ? q.h5Note : "").toBe("这 5 小时用得快，只剩 5.0%，1h 38m 后刷新。");
+  });
+  it("5 小时用完了：说用完了、本周的还在", () => {
+    const out = me({ windows: { h5: { usedMicro: 1_000_000, limitMicro: 1_000_000, resetAt: NOW + 38 * 60_000 }, week: me().windows!.week } });
+    const q = weekQuota(snap(out), NOW);
+    expect(q.kind === "week" ? q.h5Note : "").toBe("这 5 小时的额度用完了，38m 后刷新。本周的还在。");
+  });
+  it("5 小时的窗过了刷新时刻按清零算：不提", () => {
+    const rolled = me({ windows: { h5: { usedMicro: 1_000_000, limitMicro: 1_000_000, resetAt: NOW - 1 }, week: me().windows!.week } });
+    expect(weekQuota(snap(rolled), NOW)).toMatchObject({ kind: "week", h5Note: null });
+  });
+  it("本周比 5 小时更紧：不提 5 小时（本周那一格自己会变色）", () => {
+    const weekTight = me({ windows: { h5: { usedMicro: 900_000, limitMicro: 1_000_000, resetAt: NOW + 60_000 }, week: { usedMicro: 950_000, limitMicro: 1_000_000, resetAt: NOW + 86_400_000 } } });
+    expect(weekQuota(snap(weekTight), NOW)).toMatchObject({ kind: "week", h5Note: null });
+  });
+  it("还没查到 / 没有窗：与账号页同一句（不下结论）", () => {
+    expect(weekQuota(null, NOW)).toEqual({ kind: "loading" });
+    expect(weekQuota(snap(me({ windows: null, status: "canceled", plan: null })), NOW).kind).toBe("none");
   });
 });

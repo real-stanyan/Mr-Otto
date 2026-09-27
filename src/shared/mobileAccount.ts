@@ -87,6 +87,41 @@ function windowView(key: "h5" | "week", w: WindowState, now: number): QuotaWindo
   };
 }
 
+// ── 只按周画（#1386）──
+
+export type WeekQuota =
+  | { kind: "loading" }
+  | { kind: "none"; text: string }
+  | {
+    kind: "week";
+    week: QuotaWindowView;
+    /** 5 小时那扇窗此刻比本周更紧、且已经到了要提醒的程度（告急 / 用完）时的那一句；否则 null */
+    h5Note: string | null;
+  };
+
+/**
+ * 「订阅与额度」那一页只画本周一格（demo，维护者 2026-09-27「额度只按周算」）。**真规矩没动**
+ * （「先只改设计」），5 小时那扇窗还在网关里拦人——只画本周的话，人会对着「本周还剩 81%」
+ * 被拦住而不知道为什么。所以它比本周更紧、且告急或用完时，底下多一句实话；平时一个字都不提。
+ * 判据与账号页那两扇窗同一份（accountQuota：过了 resetAt 按清零、色档按已用）。
+ */
+export function weekQuota(billing: BillingSnapshotView | null, now: number, readFailed = false): WeekQuota {
+  const q = accountQuota(billing, now, readFailed);
+  if (q.kind !== "windows") return q;
+  const [h5, week] = q.windows;
+  const me = billing!.me!;
+  const w = me.windows!;
+  const h5Left = remainingPercent(liveWindow(w.h5, now));
+  const weekLeft = remainingPercent(liveWindow(w.week, now));
+  let h5Note: string | null = null;
+  if (h5Left < weekLeft && h5.tone !== "neutral") {
+    h5Note = h5Left <= 0
+      ? `这 5 小时的额度用完了，${h5.refresh}。本周的还在。`
+      : `这 5 小时用得快，只剩 ${h5.remaining}，${h5.refresh}。`;
+  }
+  return { kind: "week", week, h5Note };
+}
+
 /** 两扇窗画不出来时那一句。窗只在订阅活跃时才下发——扣款没成功与没订阅都没有窗，但两句话该做的事相反：
     前者去更新付款方式，后者去挑一档（ADR-0240：past_due 不是没订阅） */
 function noQuotaText(me: BillingMe): string {

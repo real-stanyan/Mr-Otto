@@ -20,7 +20,7 @@ let seq = 0;
 const e = (o: Record<string, unknown>): SessionEvent => ({ seq: seq++, sessionId: "s1", ts: DAY, ...o }) as unknown as SessionEvent;
 
 describe("chatRows", () => {
-  it("我说的 / 它说的（按空行拆段）/ 日期分隔条", () => {
+  it("我说的 / 它说的（按空行拆段）/ 第一句上面一条时刻（#1386）", () => {
     seq = 0;
     const rows = chatRows({
       events: [
@@ -30,8 +30,8 @@ describe("chatRows", () => {
       ],
       ws: WS, selfUid: "me", now: DAY,
     });
-    expect(rows.map((r) => r.kind)).toEqual(["day", "mine", "agent"]);
-    expect(rows[0]).toMatchObject({ kind: "day", label: "今天" });
+    expect(rows.map((r) => r.kind)).toEqual(["time", "mine", "agent"]);
+    expect(rows[0]).toMatchObject({ kind: "time", label: "10:00" });
     expect(rows[1]).toMatchObject({ kind: "mine", text: "帮我看下排班", ts: DAY });
     expect(rows[2]).toMatchObject({ kind: "agent", agentId: "a_000000000001", name: "开发", paragraphs: ["国庆三个人两班倒。", "草表在 文件/排班.md"] });
   });
@@ -69,19 +69,51 @@ describe("chatRows", () => {
       events: [e({ type: "chat_message", fromUid: "u2", label: "小红", content: "我也看看", mention: false })],
       ws: WS, selfUid: "me", now: DAY,
     });
-    expect(rows[1]).toMatchObject({ kind: "human", name: "小红", text: "我也看看" });
+    expect(rows[1]).toMatchObject({ kind: "human", uid: "u2", name: "小红", text: "我也看看" });
   });
-  it("跨天插分隔条，顺序跟日志走", () => {
+  it("隔 5 分钟以上才插一条时刻；跨天带日子（#1386，照微信）", () => {
     seq = 0;
     const yesterday = DAY - 24 * 3600 * 1000;
     const rows = chatRows({
       events: [
         e({ type: "user_message", content: "[Stan]: 昨天那句", fromUid: "me", ts: yesterday }),
         e({ type: "user_message", content: "[Stan]: 今天这句", fromUid: "me" }),
+        e({ type: "user_message", content: "[Stan]: 紧跟着一句", fromUid: "me", ts: DAY + 60_000 }),
+        e({ type: "user_message", content: "[Stan]: 过了一会儿", fromUid: "me", ts: DAY + 7 * 60_000 }),
       ],
+      ws: WS, selfUid: "me", now: DAY + 8 * 60_000,
+    });
+    expect(rows.map((r) => (r.kind === "time" ? r.label : r.kind))).toEqual(["昨天 10:00", "mine", "10:00", "mine", "mine", "10:07", "mine"]);
+  });
+});
+
+describe("chatRows 的审批（#1386 团队群）", () => {
+  const req = (o: Record<string, unknown>) =>
+    e({ type: "approval_request", callId: "c1", toolName: "bash", argsSummary: "ls -la", argsFields: [{ label: "命令", value: "ls -la" }], initiatorUid: "me", expiresTs: DAY + 600_000, agentId: "a_000000000002", ...o });
+  it("没人批的请求画成一张卡；我发起的这一轮我能批", () => {
+    seq = 0;
+    const rows = chatRows({ events: [req({})], ws: WS, selfUid: "me", now: DAY });
+    expect(rows[1]).toMatchObject({ kind: "approval", callId: "c1", title: "「运维」请求 bash", canDecide: true, waitingFor: "我", fields: [{ label: "命令", value: "ls -la" }] });
+  });
+  it("别人发起的：不是群主就批不了，写等谁批；是群主就批得了", () => {
+    seq = 0;
+    const events = [req({ initiatorUid: "u2" })];
+    expect(chatRows({ events, ws: WS, selfUid: "me", now: DAY })[1]).toMatchObject({ kind: "approval", canDecide: false, waitingFor: "u2" });
+    expect(chatRows({ events, ws: WS, selfUid: "me", now: DAY, ownerUid: "me" })[1]).toMatchObject({ kind: "approval", canDecide: true });
+  });
+  it("批过的不画；拒了的画在决定那一条的位置；过了期的收成一行小字", () => {
+    seq = 0;
+    const approved = chatRows({ events: [req({}), e({ type: "approval_decision", toolCallId: "c1", decision: "approved" })], ws: WS, selfUid: "me", now: DAY });
+    expect(approved).toEqual([]);
+    seq = 0;
+    const denied = chatRows({
+      events: [req({}), e({ type: "approval_decision", toolCallId: "c1", decision: "denied", reason: "别动线上", decidedBy: { uid: "me", label: "Stan" } })],
       ws: WS, selfUid: "me", now: DAY,
     });
-    expect(rows.map((r) => (r.kind === "day" ? r.label : r.kind))).toEqual(["昨天", "mine", "今天", "mine"]);
+    expect(denied.slice(1)).toEqual([{ kind: "note", key: "e1", ts: DAY, text: "「运维」请求 bash：由 Stan 拒绝", tone: "muted", detail: "别动线上" }]);
+    seq = 0;
+    const expired = chatRows({ events: [req({ expiresTs: DAY - 1 })], ws: WS, selfUid: "me", now: DAY });
+    expect(expired[1]).toMatchObject({ kind: "note", text: "「运维」请求 bash：没人批，已经过期" });
   });
 });
 
@@ -185,7 +217,7 @@ describe("群聊的两种行（#1356 A3，spec §5.6）", () => {
       ],
       ws: WS, selfUid: "me", now: DAY,
     });
-    expect(rows.map((r) => r.kind)).toEqual(["day", "roster"]);
+    expect(rows.map((r) => r.kind)).toEqual(["time", "roster"]);
     expect(rows[1]).toEqual({
       kind: "roster", key: "e1", ts: DAY,
       parts: [{ text: "你把" }, { text: "「运维」", agentId: "a_000000000002" }, { text: "移出了群聊" }],
@@ -233,7 +265,7 @@ describe("通话卡（#1356 A4，spec §5.7 / ADR-0288）", () => {
       ],
       ws: WS, selfUid: "me", now: DAY,
     });
-    expect(rows.map((r) => r.kind)).toEqual(["day", "mine", "call", "mine"]);
+    expect(rows.map((r) => r.kind)).toEqual(["time", "mine", "call", "mine"]);
     const call = rows[2];
     expect(call).toMatchObject({ kind: "call", key: "call-1", topic: "帮我查下部署" });
     if (call?.kind !== "call") return;
@@ -250,7 +282,7 @@ describe("通话卡（#1356 A4，spec §5.7 / ADR-0288）", () => {
       ],
       ws: WS, selfUid: "me", now: DAY,
     });
-    expect(rows.map((r) => r.kind)).toEqual(["day", "call"]);
+    expect(rows.map((r) => r.kind)).toEqual(["time", "call"]);
     const call = rows[1];
     if (call?.kind !== "call") throw new Error("第二行应是通话卡");
     expect(call.card.endedTs).toBeNull();
