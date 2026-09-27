@@ -7,7 +7,7 @@ import { APPS_EMPTY, APPS_FOOTER, appRows } from "../../../src/shared/mobileMach
 import { RowGlyph } from "../chrome/RowGlyphs.js";
 import { refreshHome, useHome } from "../home/homeStore.js";
 import { space } from "../theme.js";
-import { Group, Hint, Note, Page, Row } from "../ui.js";
+import { Group, Hint, Inset, ListPage, Note, Row } from "../ui.js";
 
 export function AppsScreen() {
   const home = useHome();
@@ -19,26 +19,26 @@ export function AppsScreen() {
     }, []),
   );
   if (ws === null) {
-    return <Page><Hint>还没有智能体。</Hint></Page>;
+    return <ListPage><Inset><Hint>还没有智能体。</Hint></Inset></ListPage>;
   }
   const rows = appRows(ws);
   return (
-    <Page>
-      <View style={{ gap: space.md }}>
-        {home.loadError !== null ? <Note tone="warn">{home.loadError}</Note> : null}
+    <ListPage>
+      <View style={{ gap: space.sm }}>
+        {home.loadError !== null ? <Inset><Note tone="warn">{home.loadError}</Note></Inset> : null}
         {rows.length === 0 ? (
-          <View style={{ gap: space.sm }}>
+          <Inset>
             <Hint>{APPS_EMPTY}</Hint>
             <Hint>{APPS_FOOTER}</Hint>
-          </View>
+          </Inset>
         ) : (
-          <Group footer={APPS_FOOTER}>
+          <Group footer={APPS_FOOTER} inset={52}>
             {rows.map((r) => (
               <Row key={r.key} leading={<RowGlyph name="plug" />} label={r.title} detail={r.detail} />
             ))}
           </Group>
         )}
       </View>
-    </Page>
+    </ListPage>
   );
 }

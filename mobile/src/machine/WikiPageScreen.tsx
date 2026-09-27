@@ -13,7 +13,7 @@ import { cloudClient, ensureUid } from "../cloud/cloudClient.js";
 import { useHome } from "../home/homeStore.js";
 import type { RootStackParams } from "../nav/types.js";
 import { type as t, space, usePalette } from "../theme.js";
-import { Card, Group, Hint, Note, Row, Spinner, useNow } from "../ui.js";
+import { Card, Group, Hint, Inset, Note, Row, Spinner, useNow } from "../ui.js";
 import { refreshWiki, useMachine } from "./machineStore.js";
 
 type Props = NativeStackScreenProps<RootStackParams, "WikiPage">;
@@ -60,25 +60,25 @@ export function WikiPageScreen({ route, navigation }: Props) {
   return (
     <ScrollView
       contentInsetAdjustmentBehavior="automatic"
-      contentContainerStyle={{ padding: space.lg, paddingBottom: space.xl, gap: space.md }}
+      contentContainerStyle={{ paddingTop: space.md, paddingBottom: space.xl, gap: space.md }}
     >
-      {error !== null ? <Note tone="warn">{page === null ? error : `这一刻读不到最新的（${error}），下面是上一次的。`}</Note> : null}
-      {page === null && error === null ? <Spinner /> : null}
+      {error !== null ? <Inset><Note tone="warn">{page === null ? error : `这一刻读不到最新的（${error}），下面是上一次的。`}</Note></Inset> : null}
+      {page === null && error === null ? <Inset><Spinner /></Inset> : null}
       {page !== null ? (
         <>
-          <View style={{ gap: 6 }}>
+          <View style={{ gap: 6, paddingHorizontal: space.md }}>
             <Text style={{ ...t.title, color: c.foreground }}>{page.front.title}</Text>
             <Text style={{ ...t.footnote, color: c.mutedForeground }}>{wikiMetaLine(page, now)}</Text>
             {page.front.summary !== "" ? <Text style={{ ...t.callout, color: c.foreground }}>{page.front.summary}</Text> : null}
           </View>
-          {truncated ? <Hint>{WIKI_TRUNCATED}</Hint> : null}
-          <Card>
+          {truncated ? <Inset><Hint>{WIKI_TRUNCATED}</Hint></Inset> : null}
+          <Card style={{ marginHorizontal: 12, borderRadius: 14 }}>
             <Text selectable style={{ ...t.callout, lineHeight: 23, color: page.body.trim() === "" ? c.mutedForeground : c.foreground }}>
               {page.body.trim() === "" ? "这一页还没有正文。" : page.body.trim()}
             </Text>
           </Card>
           {links.length > 0 ? (
-            <Group header="它提到的">
+            <Group header="它提到的" inset={52}>
               {links.map((e) => (
                 <Row key={e.path} leading={<RowGlyph name="book" />} label={e.title} chevron onPress={() => navigation.push("WikiPage", { path: e.path })} />
               ))}

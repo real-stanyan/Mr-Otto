@@ -14,7 +14,7 @@ import { cloudClient, ensureUid } from "../cloud/cloudClient.js";
 import { useHome } from "../home/homeStore.js";
 import type { RootStackParams } from "../nav/types.js";
 import { space } from "../theme.js";
-import { Button, Field, Group, Hint, Note, Page, Row, Spinner, useNow } from "../ui.js";
+import { Button, Field, Group, Hint, Inset, ListPage, Note, Row, Spinner, useNow } from "../ui.js";
 
 type Props = NativeStackScreenProps<RootStackParams, "Files">;
 
@@ -86,7 +86,7 @@ export function FilesScreen({ route, navigation }: Props) {
   }, [term, content, homeId]);
 
   if (homeId === null) {
-    return <Page><Hint>还没有智能体，也就还没有这台电脑。</Hint></Page>;
+    return <ListPage><Inset><Hint>还没有智能体，也就还没有这台电脑。</Hint></Inset></ListPage>;
   }
 
   const openDir = (p: string): void => navigation.push("Files", { path: p });
@@ -96,20 +96,20 @@ export function FilesScreen({ route, navigation }: Props) {
   const rows = node !== null && node.kind === "dir" ? workEntryRows(path, node.entries, now) : [];
 
   return (
-    <Page>
-      <View style={{ gap: space.md }}>
+    <ListPage>
+      <View style={{ gap: space.sm }}>
         {path === "" ? (
-          <Field value={query} onChangeText={setQuery} placeholder={FILES_SEARCH_PLACEHOLDER} returnKeyType="search" />
+          <Inset><Field value={query} onChangeText={setQuery} placeholder={FILES_SEARCH_PLACEHOLDER} returnKeyType="search" /></Inset>
         ) : null}
         {term !== null ? (
           <View style={{ gap: space.sm }}>
-            {searching ? <Hint>正在找…</Hint> : null}
-            {searchNote !== null ? <Note tone="warn">{searchNote}</Note> : null}
+            {searching ? <Inset><Hint>正在找…</Hint></Inset> : null}
+            {searchNote !== null ? <Inset><Note tone="warn">{searchNote}</Note></Inset> : null}
             {!searching && hits !== null && hits.length === 0 && searchNote === null ? (
-              <Hint>{`没有找到「${(term ?? "").trim()}」`}</Hint>
+              <Inset><Hint>{`没有找到「${(term ?? "").trim()}」`}</Hint></Inset>
             ) : null}
             {hits !== null && hits.length > 0 ? (
-              <Group>
+              <Group inset={52}>
                 {workHitRows(hits).map((h) => (
                   <Row key={h.key} leading={<RowGlyph name={h.icon} />} label={h.title} detail={h.detail} chevron onPress={() => openFile(h.path)} />
                 ))}
@@ -119,17 +119,17 @@ export function FilesScreen({ route, navigation }: Props) {
         ) : (
           <View style={{ gap: space.sm }}>
             {error !== null ? (
-              <View style={{ gap: space.sm }}>
+              <Inset>
                 <Note tone="warn">{node === null ? `读不到这个文件夹：${error}` : `这一刻读不到（${error}），下面是上一次的。`}</Note>
                 <View style={{ alignItems: "flex-start" }}>
                   <Button size="auto" variant="outline" label="重试" onPress={() => void load()} />
                 </View>
-              </View>
+              </Inset>
             ) : null}
-            {node === null && error === null ? <Spinner /> : null}
-            {notice !== null ? <Hint>{notice}</Hint> : null}
+            {node === null && error === null ? <Inset><Spinner /></Inset> : null}
+            {notice !== null ? <Inset><Hint>{notice}</Hint></Inset> : null}
             {rows.length > 0 ? (
-              <Group {...(truncated === null ? {} : { footer: truncated })}>
+              <Group inset={52} {...(truncated === null ? {} : { footer: truncated })}>
                 {rows.map((r) => (
                   <Row
                     key={r.key}
@@ -141,10 +141,10 @@ export function FilesScreen({ route, navigation }: Props) {
                 ))}
               </Group>
             ) : null}
-            {path === "" ? <Hint>{FILES_FOOTER}</Hint> : null}
+            {path === "" ? <Inset><Hint>{FILES_FOOTER}</Hint></Inset> : null}
           </View>
         )}
       </View>
-    </Page>
+    </ListPage>
   );
 }

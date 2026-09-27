@@ -264,46 +264,41 @@ export function Button(props: {
 }
 
 /* ── 分组列表 ──────────────────────────────────────────
-   设置屏的语汇是 iOS 的 inset grouped list,不是一摞表单卡片:
-   **同一类的事挤进一块板,靠细线分行**,板上一句小标题、板下一句解释。
-   区别不在好看 —— 一摞 Card 里每一张都在喊"我是独立的一件事",
-   而设置里绝大多数行是同一件事的几个面(账号的邮箱和退出是一组)。
+   #1386 换成微信的语汇：**通栏**——整行铺满、没有圆角卡片、分隔线从文字（或行首图标右边）
+   开始，段头一行小字在板上、段尾一句解释在板下，段与段之间留一道 8pt 的地面。
+   原来是 iOS 的 inset grouped（圆角板 + 内缩），demo 过了之后整套换掉：一个 app 里两种列表
+   是两个产品。
 
-   行的反馈也和按钮不同:iOS 的列表行**整行变色**,不缩放。缩放是
-   "这是个按钮"的语汇,整行高亮是"我选中了这一行"。 */
+   行的反馈也和按钮不同:列表行**整行变色**,不缩放。缩放是"这是个按钮"的语汇,
+   整行高亮是"我选中了这一行"。 */
 
-/** 一组行。header 在板上、footer 在板下,都用小字暗色,左边和行内文字对齐 */
-export function Group({ header, footer, children }: {
+/** 一组行。header 在板上、footer 在板下,都用小字暗色,左边和行内文字对齐。
+    `inset` = 分隔线从哪儿开始（缺省 16 = 和文字对齐；行首带图标的那组给 52） */
+export function Group({ header, footer, children, inset = space.md }: {
   header?: string;
   footer?: React.ReactNode;
   children: React.ReactNode;
+  inset?: number;
 }) {
   const { c } = usePalette();
   // 条件渲染出来的 null 会占一个位置,不滤掉就会多画一条分隔线
   const rows = Children.toArray(children).filter(Boolean);
   const side = { ...type.footnote, color: c.mutedForeground, paddingHorizontal: space.md };
   return (
-    <View style={{ gap: space.xs }}>
-      {header ? <Text style={side}>{header}</Text> : null}
-      <View style={{
-        backgroundColor: c.card, borderRadius: radius.card,
-        borderWidth: StyleSheet.hairlineWidth, borderColor: c.border,
-        // 行的高亮铺满整行,不裁的话会从圆角里溢出去
-        overflow: "hidden",
-      }}>
+    <View>
+      {header ? <Text style={[side, { paddingTop: 10, paddingBottom: 8 }]}>{header}</Text> : null}
+      <View style={{ backgroundColor: c.card }}>
         {rows.map((row, i) => (
           <Fragment key={i}>
             {/* 分隔线左边缩进到和文字对齐 —— 通到底的线会把一组切成两组 */}
             {i > 0 ? (
-              <View style={{
-                height: StyleSheet.hairlineWidth, backgroundColor: c.border, marginLeft: space.md,
-              }} />
+              <View style={{ height: StyleSheet.hairlineWidth, backgroundColor: c.border, marginLeft: inset }} />
             ) : null}
             {row}
           </Fragment>
         ))}
       </View>
-      {footer ? <Text style={side}>{footer}</Text> : null}
+      {footer ? <Text style={[side, { paddingTop: 8, lineHeight: 19 }]}>{footer}</Text> : null}
     </View>
   );
 }
@@ -339,6 +334,10 @@ export function Row(props: {
   align?: "split" | "center";
   /** accent = 读成「一个动作」的那一行（群设置的「加一只」，demo 里那一行的字是点缀色） */
   tone?: "default" | "destructive" | "accent";
+  /** 右边、箭头前面的一样东西（个人信息里那张头像、智能体资料里那张脸）。与 value 二选一 */
+  trailing?: React.ReactNode;
+  /** 行高（缺省按单行 / 两行给）：头像那一行要 88 */
+  minHeight?: number;
 }) {
   const { c } = usePalette();
   const hi = useRef(new Animated.Value(0)).current;
@@ -357,9 +356,9 @@ export function Row(props: {
 
   const body = (
     <View style={{
-      flexDirection: "row", alignItems: "center", gap: space.sm,
+      flexDirection: "row", alignItems: "center", gap: 12,
       paddingHorizontal: space.md, paddingVertical: two ? 10 : 12,
-      minHeight: two ? 52 : 44, // HIG 的最小可点高度；带第二行时照 demo 的 .row（52）
+      minHeight: props.minHeight ?? (two ? 62 : 54), // 微信式通栏的行高（demo 的 .mrow.plain 54；带第二行 62）
       justifyContent: center ? "center" : "space-between",
     }}>
       {/* 单行：左边不收缩、右边收缩（要截也该截机器数据那一串，不是"中继"这两个字）。
@@ -370,11 +369,11 @@ export function Row(props: {
         {props.leading}
         {two ? (
           <View style={{ flex: 1, minWidth: 0 }}>
-            <Text style={{ ...type.body, color: fg }} numberOfLines={1}>{props.label}</Text>
-            <Text style={{ ...type.footnote, color: c.mutedForeground, marginTop: 1 }} numberOfLines={1}>{props.detail}</Text>
+            <Text style={{ ...type.body, fontSize: 17, color: fg }} numberOfLines={1}>{props.label}</Text>
+            <Text style={{ ...type.footnote, color: c.mutedForeground, marginTop: 2 }} numberOfLines={1}>{props.detail}</Text>
           </View>
         ) : (
-          <Text style={{ ...type.body, color: fg }} numberOfLines={1}>{props.label}</Text>
+          <Text style={{ ...type.body, fontSize: 17, color: fg }} numberOfLines={1}>{props.label}</Text>
         )}
       </View>
       {center ? null : (
@@ -385,7 +384,7 @@ export function Row(props: {
             <Text
               style={props.mono
                 ? { ...type.footnote, fontFamily: MONO, color: c.mutedForeground }
-                : { ...type.body, color: c.mutedForeground }}
+                : { ...type.callout, color: c.mutedForeground }}
               numberOfLines={1}
               ellipsizeMode={props.mono ? "middle" : "tail"}
               // 长按能拷走。手机上没有别的办法把这串东西送进工单里
@@ -394,8 +393,9 @@ export function Row(props: {
               {props.value}
             </Text>
           )}
+          {props.trailing}
           {props.checked ? <CheckGlyph color={c.brand} size={14} /> : null}
-          {props.chevron ? <Chevron color={c.mutedForeground} /> : null}
+          {props.chevron ? <Chevron color={c.faint} /> : null}
         </View>
       )}
     </View>
@@ -414,7 +414,7 @@ export function Row(props: {
     >
       <Animated.View
         pointerEvents="none"
-        style={[StyleSheet.absoluteFill, { backgroundColor: c.muted, opacity: hi }]}
+        style={[StyleSheet.absoluteFill, { backgroundColor: c.press, opacity: hi }]}
       />
       {body}
     </Pressable>
@@ -447,6 +447,25 @@ export function Page({ children, grow }: { children: React.ReactNode; grow?: boo
       {children}
     </ScrollView>
   );
+}
+
+/** 微信式通栏列表那一类屏的滚动容器（#1386）：左右不留边（组自己铺满），段与段之间 8pt 地面。
+    不是列表的东西（一句提示、一张卡、一颗钮）包一层 Inset 留出左右各 16 */
+export function ListPage({ children, grow }: { children: React.ReactNode; grow?: boolean }) {
+  return (
+    <ScrollView
+      contentInsetAdjustmentBehavior="automatic"
+      contentContainerStyle={[{ paddingTop: space.sm, paddingBottom: space.xl + space.sm, gap: space.sm }, grow && { flexGrow: 1 }]}
+      keyboardShouldPersistTaps="handled"
+    >
+      {children}
+    </ScrollView>
+  );
+}
+
+/** 通栏屏里不是列表的那一块：左右各留 16，与行内文字对齐 */
+export function Inset({ children, gap = space.sm }: { children: React.ReactNode; gap?: number }) {
+  return <View style={{ paddingHorizontal: space.md, gap }}>{children}</View>;
 }
 
 /** 头像。没有图就退成首字母 —— 一个灰色空圆和"这个人没头像"长得一样,

@@ -1,92 +1,113 @@
-// 聊天页（#1356 A1 / A3，spec §5.3 / §5.6 / §6）。私聊与群聊同一张页；群聊的设置入口、@ 谁、名单变更那一行是 A3 加的。
+// 聊天页（#1386，spec §5.2，demo 的 chatPage）。私聊、主场群、团队群（= 有真人的群）同一张页；朋友私聊是另一张
+// （FriendChatScreen：messages 表，不是云会话）。
 //
-// · 头：回退 | 药丸（脸 + 名字）| 右边那颗直接进设置——私聊进智能体设置、群聊进群设置（中间没有菜单）。浮在内容上，页面内容
-//   从底下滚过去（spec §4）。药丸里那张脸 = dmFaceState（与桌面私聊头部同一份判据）。名单与
-//   名字从日志推导（chatViewOf，ADR-0302 / #1302），还没开房时用清单那一行。
-// · 时间线：倒置的 FlatList（最新一条贴底）；往上翻到顶取更早一页（尾巴模式），失败给一颗
-//   要人点的钮——哨兵自己重试的话，一条连不上的线会在人往上滚时反复打网络。
-// · 草稿：私聊还没建时是同一张页、还没有会话，第一句发出去那一刻才建（spec §5.2）。当场就建
-//   会让「点进去看一眼」也把它顶到名册最上面。
-// · 状态（spec §6）：gone 一行「正在重连…」、发送钮灰；denied 是终态，说清是哪一种 +「回名册」。
-// · 群聊（A3，spec §5.6）：输入框上方一颗「@ 谁」→ 抽屉挑一只 → 抽屉退场放完插进 `@名字 `；空群（最后一只
-//   被移出了）输入框上方一行实话、不画「@ 谁」；占位字「说给这一组听…」。
-// · 语音（A4，spec §5.7）：输入框空着时右边那颗变「开电话」（这台打得了电话、房间 ready、有智能体、还没通话）；
-//   通话开着时输入框换成电话那一格（CallBar：这台在听 = live，没在听 = 「通话还开着」+「接着听」）；
-//   挂断之后这一通在时间线上折成一张卡，点开是一扇底部抽屉放全文。通话开着时通话里那几只正在写的那一段
-//   不画（落下来就折进卡里）。私聊拉那一只、群拉整个群；挂断不二次确认（主场里只有你一个人）。
+// · 原生导航条（照微信）：标题（群带人数）+ 第二行状态（正在输入 / 正在干活 / 排队中 / 正在重连，nowRowOf 推）；
+//   右边「···」进聊天信息；返回键后面带别的聊天的未读数。
+// · 时间线：倒置列表（最新一条贴底）；往上翻到顶取更早一页（尾巴模式），失败给一颗要人点的钮（A1 原样）。
+//   气泡、时刻、旁白见 Bubbles.tsx；「此刻」那一行是它那边一个打字的气泡 + 一颗「停」。
+// · 草稿：私聊还没建时是同一张页、还没有会话，第一句发出去那一刻才建（A1 原样）。
+// · 输入栏（WxComposer）：按住说话 ⇄ 键盘、表情、⊕（语音通话 / 拉人建群 / 拉人 / @ 谁）；群里打一个 @ 就弹选人。
+// · 团队群：有审批（卡在时间线里，发起人或群主批）；@ 到的人发提醒（memberMentions，ADR-0256）；进来 = 那里面 @ 我的都看过了。
+// · 通话：点「语音通话」整屏升起（CallOverlay）；收起回到这里、头部下面一颗胶囊（点它回去）；离开这一页 = 这台停听、
+//   通话还在（A4 原样）。
+// · 已读：这一页开着时列表不给它画未读；离开时游标推到此刻（seenStore）。
+import { useFocusEffect } from "@react-navigation/native";
+import { useHeaderHeight } from "@react-navigation/elements";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { BlurView } from "expo-blur";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { FlatList, KeyboardAvoidingView, LayoutAnimation, Platform, Pressable, StyleSheet, Text, View, useWindowDimensions } from "react-native";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { FlatList, KeyboardAvoidingView, Platform, Pressable, Text, View } from "react-native";
 import { agentFaceSlot } from "../../../src/shared/agentAvatar.js";
 import { roleChipsAnchor } from "../../../src/shared/agentOnboarding.js";
 import { resolveSendMentions } from "../../../src/shared/agentMentionInput.js";
 import { chatViewOf } from "../../../src/shared/agentRoster.js";
+import { CHAT_GROUP_CREATE_MIN, CHAT_GROUP_MAX, narrowRoster } from "../../../src/shared/chatRoster.js";
 import { cloudDeniedText } from "../../../src/shared/cloudSessionState.js";
+import { groupNameFor, withAgent } from "../../../src/shared/groupEdit.js";
 import { callBarMode, callFace, callMicOn, joinBlockedText, phoneOffered, waveMode } from "../../../src/shared/mobileCall.js";
 import { chatCentre, chatRows, liveRows, nowRowOf, resolveChatTarget, type ChatRow, type NowRow } from "../../../src/shared/mobileChat.js";
 import { facePhase } from "../../../src/shared/ottoFace/art.js";
-import { dmFaceState } from "../../../src/shared/ottoFace/index.js";
-import { parseMentions } from "../../../src/shared/remote/agentMention.js";
+import type { CsChatInfo } from "../../../src/shared/remote/cloudSession.js";
+import { parseMemberMentions, parseMentions } from "../../../src/shared/remote/agentMention.js";
 import { openTurns } from "../../../src/shared/turnLedger.js";
 import { voiceCallOf } from "../../../src/shared/voiceCall.js";
+import { teamChatTitle } from "../../../src/shared/wechatInbox.js";
 import { agentNameOf } from "../../../src/shared/workspaceView.js";
 import type { WorkspaceSnapshot } from "../../../src/shared/workspaces.js";
 import type { SessionEvent } from "../../../src/session/events.js";
-import { BackGlyph, MoreGlyph } from "../chrome/Glyphs.js";
-import { ROUND_BUTTON_SIZE, RoundButton } from "../chrome/RoundButton.js";
+import { cloudClient } from "../cloud/cloudClient.js";
 import {
   closeChat, dropUnsent, loadOlder, openChat, resendUnsent, sendText, startDm, stopTurn, useChatStore,
 } from "../cloud/chatStore.js";
-import { Face } from "../face/Face.js";
-import { GroupFaces } from "../face/GroupFaces.js";
+import { PickAgentsDialog } from "../group/PickAgentsDialog.js";
 import { refreshHomeAfterWrite, useHome } from "../home/homeStore.js";
+import { markSeen, setOpenKey } from "../inbox/seenStore.js";
+import { readTeamMentions, useTeams } from "../inbox/teamsStore.js";
+import { useInbox } from "../inbox/useInbox.js";
 import type { RootStackParams } from "../nav/types.js";
-import { space, type as t, usePalette, withAlpha } from "../theme.js";
-import { Button, Spinner, useReduceMotion } from "../ui.js";
-import { CallBar } from "../voice/CallBar.js";
+import { useMyName } from "../tabs/MeScreen.js";
+import { usePalette, withAlpha } from "../theme.js";
+import { Button, Spinner } from "../ui.js";
+import { CallOverlay, CallPill } from "../voice/CallOverlay.js";
 import { CallSheet } from "../voice/CallSheet.js";
-import { hangUp, joinCall, nativeSpeech, refreshVoiceBilling, setMic, startCall, useVoice, voiceUsable } from "../voice/voiceStore.js";
-import { ChatRowView, NowRowView } from "./ChatRows.js";
-import { Composer, type ComposerHandle } from "./Composer.js";
-import { MentionChip, MentionSheet } from "./MentionSheet.js";
+import {
+  dictationUsable, hangUp, joinCall, refreshVoiceBilling, setMic, startCall, startDictation, stopDictation, useVoice, voiceUsable,
+} from "../voice/voiceStore.js";
+import { FaceTile, GridTile } from "../wx/Avatar.js";
+import { Icon } from "../wx/Icon.js";
+import { HeaderIconButton } from "../wx/TabHeader.js";
+import { toast } from "../wx/toast.js";
+import { ChatRowView, TypingRow } from "./Bubbles.js";
+import { MentionSheet } from "./MentionSheet.js";
 import { RoleChips } from "./RoleChips.js";
+import { WxComposer, type ComposerHandle, type HoldState, type PlusItem } from "./WxComposer.js";
 
 const EMPTY_EVENTS: SessionEvent[] = [];
-/** 空群（A3：最后一只也移得走）的那句实话：没有人在，说的话没人接，出路在群设置 */
-const EMPTY_GROUP_TEXT = "这个群里没有智能体了，说的话没人接。去群设置里加一只。";
+const EMPTY_GROUP_TEXT = "这个群里没有智能体了，说的话没人接。去聊天信息里拉一只进来。";
+const PHASE_STATUS: Record<NowRow["phase"], string> = { solving: "正在输入…", working: "正在干活…", queued: "排队中…" };
 type Item = { kind: "row"; row: ChatRow } | { kind: "now"; now: NowRow } | { kind: "roles" };
 type Props = NativeStackScreenProps<RootStackParams, "Chat">;
 
+interface Resolved {
+  kind: "dm" | "group";
+  sessionId: string | null;
+  agentIds: string[];
+  title: string;
+  /** 打开这条线时给 `chat` 种的那一格；团队会话是 null（ADR-0302：null = 不是聊天） */
+  seed: CsChatInfo | null;
+}
+
 function Gap() {
-  return <View style={{ height: 12 }} />;
+  return <View style={{ height: 16 }} />;
 }
 
 function Line({ tone, children }: { tone: "muted" | "warn" | "error"; children: ReactNode }) {
   const { c } = usePalette();
   const color = tone === "error" ? c.destructive : tone === "warn" ? c.warn : c.mutedForeground;
-  return <Text style={{ ...t.footnote, color, flexShrink: 1 }}>{children}</Text>;
+  return <Text style={{ fontSize: 13, lineHeight: 18, color, flexShrink: 1 }}>{children}</Text>;
 }
 
-function Centered({ top, children }: { top: number; children: ReactNode }) {
-  return <View style={{ flex: 1, alignItems: "center", justifyContent: "center", paddingTop: top, paddingHorizontal: space.lg }}>{children}</View>;
-}
-
-/** 顶上那一格（倒置列表里 ListFooterComponent 画在最上面）：给浮在上面的头留出位置，外加翻页的三态 */
-function OlderRow({ top, hasOlder, older }: { top: number; hasOlder: boolean; older: "idle" | "loading" | "failed" }) {
+/** 导航条正中那两行：名字（群带人数）+ 此刻在干什么 */
+function ChatTitle({ title, count, status }: { title: string; count: number; status: string }) {
   const { c } = usePalette();
   return (
-    <View style={{ paddingTop: top, paddingBottom: 8, alignItems: "center" }}>
+    <View accessible accessibilityRole="header" accessibilityLabel={`${title}${count > 0 ? `，${count} 人` : ""}${status !== "" ? `，${status}` : ""}`} style={{ alignItems: "center", maxWidth: 220 }}>
+      <Text numberOfLines={1} style={{ fontSize: 17, fontWeight: "600", letterSpacing: -0.2, color: c.foreground }}>
+        {title}
+        {count > 0 ? `(${count})` : ""}
+      </Text>
+      {status !== "" ? <Text numberOfLines={1} style={{ fontSize: 11.5, color: c.mutedForeground, marginTop: -1 }}>{status}</Text> : null}
+    </View>
+  );
+}
+
+/** 顶上那一格（倒置列表里 ListFooterComponent 画在最上面）：翻页的三态 */
+function OlderRow({ hasOlder, older }: { hasOlder: boolean; older: "idle" | "loading" | "failed" }) {
+  const { c } = usePalette();
+  return (
+    <View style={{ paddingTop: 12, paddingBottom: 4, alignItems: "center" }}>
       {!hasOlder ? null : older === "failed" ? (
-        // 上一页的内容留在原地不清屏；重试是一颗要人点的钮
-        <Pressable
-          accessibilityRole="button"
-          hitSlop={8}
-          onPress={() => void loadOlder()}
-          style={({ pressed }) => [pressed && { opacity: 0.6 }]}
-        >
-          <Text style={{ ...t.footnote, color: c.mutedForeground }}>
+        <Pressable accessibilityRole="button" hitSlop={8} onPress={() => void loadOlder()} style={({ pressed }) => [pressed && { opacity: 0.6 }]}>
+          <Text style={{ fontSize: 13, color: c.mutedForeground }}>
             没读到更早的消息 · <Text style={{ color: c.brand }}>重试</Text>
           </Text>
         </Pressable>
@@ -97,79 +118,45 @@ function OlderRow({ top, hasOlder, older }: { top: number; hasOlder: boolean; ol
   );
 }
 
-/** 刚进来、一句都还没说（或只有看不见的内务事件）时的那一屏 */
+/** 刚进来、一句都还没说时的那一屏 */
 function Hello({ ws, kind, agentIds, title }: { ws: WorkspaceSnapshot; kind: "dm" | "group"; agentIds: string[]; title: string }) {
   const { c } = usePalette();
   const first = agentIds[0];
   if (kind === "dm" && first !== undefined) {
     const a = ws.agents.find((x) => x.agentId === first);
     return (
-      <View style={{ alignItems: "center", gap: 8 }}>
-        <Face slot={agentFaceSlot(ws, first)} tier="m" state="alive" phase={facePhase(first)} />
-        <Text style={{ ...t.headline, color: c.foreground }}>{title}</Text>
-        {a !== undefined && a.description !== "" ? (
-          <Text style={{ ...t.footnote, color: c.mutedForeground, textAlign: "center" }}>{a.description}</Text>
-        ) : null}
-        <Text style={{ ...t.footnote, color: c.mutedForeground }}>说第一句话就开始了。</Text>
+      <View style={{ alignItems: "center", gap: 8, paddingHorizontal: 32 }}>
+        <FaceTile slot={agentFaceSlot(ws, first)} size={72} state="alive" phase={facePhase(first)} />
+        <Text style={{ fontSize: 17, fontWeight: "600", color: c.foreground }}>{title}</Text>
+        {a !== undefined && a.description !== "" ? <Text style={{ fontSize: 14, lineHeight: 20, color: c.mutedForeground, textAlign: "center" }}>{a.description}</Text> : null}
+        <Text style={{ fontSize: 13, color: c.faint }}>说第一句话就开始了。</Text>
       </View>
     );
   }
-  if (agentIds.length === 0) {
-    // 空群：没有谁「都在」
-    return <Text style={{ ...t.footnote, color: c.mutedForeground, textAlign: "center" }}>{EMPTY_GROUP_TEXT}</Text>;
-  }
+  if (agentIds.length === 0) return <Text style={{ fontSize: 14, color: c.mutedForeground, textAlign: "center", paddingHorizontal: 32 }}>{EMPTY_GROUP_TEXT}</Text>;
   return (
-    <View style={{ alignItems: "center", gap: 8 }}>
-      <GroupFaces agentIds={agentIds} slots={agentIds.map((id) => agentFaceSlot(ws, id))} />
-      <Text style={{ ...t.footnote, color: c.mutedForeground, textAlign: "center" }}>
+    <View style={{ alignItems: "center", gap: 10, paddingHorizontal: 32 }}>
+      <GridTile cells={agentIds.slice(0, 9).map((id) => ({ kind: "face" as const, id, slot: agentFaceSlot(ws, id) }))} size={72} />
+      <Text style={{ fontSize: 14, lineHeight: 20, color: c.mutedForeground, textAlign: "center" }}>
         {`${agentIds.map((id) => agentNameOf(ws, id)).join("、")}都在。说第一句话就开始了。`}
       </Text>
     </View>
   );
 }
 
-function ChatHeader({ top, title, faces, onBack, onSettings }: {
-  top: number;
-  title: string;
-  faces: ReactNode;
-  onBack: () => void;
-  onSettings?: () => void;
-}) {
-  const { c, isDark } = usePalette();
-  const { width } = useWindowDimensions();
+/** 按住说话时屏幕正中那一块（demo 的 .talk）：听到的字 + 松开发送 / 上划取消 */
+function HoldOverlay({ state, text }: { state: HoldState; text: string }) {
+  const { c } = usePalette();
+  if (state.phase !== "down") return null;
   return (
-    <View
-      pointerEvents="box-none"
-      style={{ position: "absolute", top: 0, left: 0, right: 0, paddingTop: top, paddingHorizontal: 12, flexDirection: "row", alignItems: "center", gap: 10 }}
-    >
-      <RoundButton label="返回" onPress={onBack}>
-        <BackGlyph color={c.foreground} />
-      </RoundButton>
-      <View pointerEvents="box-none" style={{ flex: 1, alignItems: "center" }}>
-        {/* 药丸：46 高、左 9 右 16、最大宽 62%、毛玻璃（spec §4） */}
-        <View
-          accessible
-          accessibilityRole="header"
-          accessibilityLabel={title}
-          style={{
-            height: 46, maxWidth: width * 0.62, borderRadius: 23, overflow: "hidden",
-            flexDirection: "row", alignItems: "center", gap: 8, paddingLeft: 9, paddingRight: 16,
-          }}
-        >
-          <BlurView intensity={40} tint={isDark ? "dark" : "light"} style={StyleSheet.absoluteFill} />
-          <View style={[StyleSheet.absoluteFill, { backgroundColor: withAlpha(c.foreground, 0.1) }]} />
-          {faces}
-          <Text numberOfLines={1} style={{ ...t.headline, color: c.foreground, flexShrink: 1 }}>{title}</Text>
+    <View pointerEvents="none" style={{ position: "absolute", left: 0, right: 0, top: "30%", alignItems: "center" }}>
+      <View style={{ width: 188, minHeight: 168, borderRadius: 20, padding: 16, backgroundColor: "rgba(20, 20, 22, 0.88)", alignItems: "center", justifyContent: "center", gap: 12 }}>
+        <Icon name="mic" size={40} stroke={1.6} color={state.cancel ? "rgba(255,255,255,0.4)" : "#5ac8fa"} />
+        <Text numberOfLines={4} style={{ fontSize: 14, lineHeight: 20, color: "#ffffff", textAlign: "center" }}>{text === "" ? "在听…" : text}</Text>
+        <View style={{ paddingVertical: 3, paddingHorizontal: 8, borderRadius: 6, backgroundColor: state.cancel ? c.destructive : "transparent" }}>
+          <Text style={{ fontSize: 13, color: "#ffffff" }}>{state.cancel ? "松开手指，取消发送" : "松开 发送 · 上划 取消"}</Text>
         </View>
       </View>
-      {onSettings !== undefined ? (
-        <RoundButton label="设置" onPress={onSettings}>
-          <MoreGlyph color={c.foreground} />
-        </RoundButton>
-      ) : (
-        // 还不知道是哪一条（群还没解析出来）时不画一颗点了没去处的钮（#722），用同宽的空位让药丸居中
-        <View style={{ width: ROUND_BUTTON_SIZE }} />
-      )}
     </View>
   );
 }
@@ -177,28 +164,49 @@ function ChatHeader({ top, title, faces, onBack, onSettings }: {
 export function ChatScreen({ route, navigation }: Props) {
   const target = route.params;
   const { c } = usePalette();
-  const insets = useSafeAreaInsets();
   const home = useHome();
+  const teams = useTeams();
   const chat = useChatStore();
-  const ws = home.home;
-  const resolved = useMemo(() => (ws !== null ? resolveChatTarget(ws, home.chats, target) : null), [ws, home.chats, target]);
+  const inbox = useInbox();
+  const me = useMyName();
+  const headerHeight = useHeaderHeight();
+  const isTeam = target.kind === "team";
+  const team = target.kind === "team" ? (teams.teams.find((t) => t.ws.id === target.workspaceId) ?? null) : null;
+  const ws: WorkspaceSnapshot | null = isTeam ? (team?.ws ?? null) : home.home;
+  const loaded = isTeam ? teams.loaded : home.loaded;
+
+  const resolved = useMemo<Resolved | null>(() => {
+    if (target.kind === "team") {
+      if (team === null) return null;
+      const s = team.sessions.find((x) => x.id === target.sessionId);
+      if (s === undefined) return null;
+      const agentIds = narrowRoster(team.ws.agents, s.chatKind === null ? null : s.agentIds).map((a) => a.agentId);
+      return { kind: "group", sessionId: s.id, agentIds, title: teamChatTitle(team.ws, s), seed: null };
+    }
+    if (ws === null) return null;
+    return resolveChatTarget(ws, home.chats, target);
+  }, [target, team, ws, home.chats]);
   const sessionId = resolved?.sessionId ?? null;
-  /** 这一页自己的一句（点名打错了、建私聊失败、停不下来） */
+  const key = target.kind === "agent" ? `a:${target.agentId}` : target.kind === "group" ? `g:${target.sessionId}` : `t:${target.sessionId}`;
+
   const [pageNote, setPageNote] = useState<{ text: string; tone: "muted" | "error" } | null>(null);
   const [stopping, setStopping] = useState(false);
-  /** 「@ 谁」那张抽屉开着没有；挑中的名字等抽屉退场放完再插（Modal 还在时输入框拿不到焦点） */
+  const [deciding, setDeciding] = useState<string | null>(null);
   const [mentioning, setMentioning] = useState(false);
   const pendingMention = useRef<string | null>(null);
-  const reduce = useReduceMotion();
   const voice = useVoice();
-  /** 正在路上的那个动作：开电话 / 挂断（按不动看它在不在；开电话时那一格先画成 live，见 callBarMode） */
   const [callOp, setCallOp] = useState<"start" | "hangup" | null>(null);
-  /** 「转文字」那一行开着没有（这一页自己的事，不进 store） */
-  const [captionsOn, setCaptionsOn] = useState(false);
-  /** 点开的那张通话卡（按开场那条的 seq 认）与抽屉开没开；退场放完才清 seq，正文不会在退场时空掉 */
+  const [callOpen, setCallOpen] = useState(false);
+  const [captionsOn, setCaptionsOn] = useState(true);
   const [openCallSeq, setOpenCallSeq] = useState<number | null>(null);
   const [callSheetOpen, setCallSheetOpen] = useState(false);
-  // 电话钮要知道订阅活跃 + 网关供语音：进这一页拉一次（拉失败留着上一次的）
+  const [holdState, setHoldState] = useState<HoldState>({ phase: "idle" });
+  const [holdText, setHoldText] = useState("");
+  const [picker, setPicker] = useState<{ kind: "group" | "add"; key: number; visible: boolean } | null>(null);
+  const [pickBusy, setPickBusy] = useState(false);
+  const [pickError, setPickError] = useState<string | null>(null);
+  const composer = useRef<ComposerHandle>(null);
+
   useEffect(() => {
     void refreshVoiceBilling();
   }, []);
@@ -207,42 +215,67 @@ export function ChatScreen({ route, navigation }: Props) {
   useEffect(() => {
     if (ws === null || resolved === null || sessionId === null) return;
     void openChat(ws.id, sessionId, resolved.seed, resolved.title);
-    // 只跟「是哪一条」走：resolved 每次刷新名册都是新对象
+    // 只跟「是哪一条」走：resolved 每次刷新都是新对象
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ws?.id, sessionId]);
   useEffect(() => () => closeChat(), []);
 
   const session = chat.session;
   const events = session?.events ?? EMPTY_EVENTS;
-  const selfUid = session?.selfUid || home.selfUid || "";
+  const selfUid = session?.selfUid || inbox.selfUid || "";
   const draft = resolved !== null && resolved.sessionId === null && session === null;
   const view = ws !== null && session !== null && session.chat ? chatViewOf(ws, session.chat, events, resolved?.title ?? "") : null;
   const kind = view?.kind ?? resolved?.kind ?? "dm";
   const agentIds = view?.agentIds ?? resolved?.agentIds ?? [];
   const title = view?.title ?? resolved?.title ?? "";
   const dmAgent = kind === "dm" ? (agentIds[0] ?? null) : null;
+  const group = kind === "group";
+  const humans = useMemo(
+    () => (isTeam && ws !== null ? ws.members.filter((m) => m.uid !== selfUid).map((m) => ({ uid: m.uid, name: m.label, url: m.avatarUrl })) : []),
+    [isTeam, ws, selfUid],
+  );
+
+  // 已读：开着的这一条列表不画未读；离开 / 失焦时游标推到此刻。团队群里 @ 我的，进来就算看过了
+  useFocusEffect(
+    useCallback(() => {
+      setOpenKey(key);
+      return () => {
+        setOpenKey(null);
+        markSeen(key, Date.now());
+      };
+    }, [key]),
+  );
+  const lastTs = events.length > 0 ? events[events.length - 1]!.ts : 0;
+  useEffect(() => {
+    if (lastTs > 0) markSeen(key, lastTs);
+  }, [key, lastTs]);
+  useEffect(() => {
+    if (isTeam && sessionId !== null) void readTeamMentions(sessionId);
+  }, [isTeam, sessionId, lastTs]);
 
   const call = useMemo(() => voiceCallOf(events), [events]);
-  /** 通话开着时通话里那几只（它们正在写的那一段不画） */
   const inCall = useMemo(() => (call === null ? null : new Set(call.participants.map((p) => p.agentId))), [call]);
-  const rows = useMemo(() => (ws !== null ? chatRows({ events, ws, selfUid, now: Date.now() }) : []), [ws, events, selfUid]);
+  const rows = useMemo(
+    () => (ws !== null ? chatRows({ events, ws, selfUid, now: Date.now(), ...(session?.ownerUid ? { ownerUid: session.ownerUid } : {}) }) : []),
+    [ws, events, selfUid, session?.ownerUid],
+  );
   const live = useMemo(
     () => (ws !== null ? liveRows({ streaming: chat.streaming, ws, now: Date.now(), ...(inCall === null ? {} : { hide: inCall }) }) : []),
     [ws, chat.streaming, inCall],
   );
   const nowRow = useMemo(() => (ws !== null ? nowRowOf({ events, streaming: chat.streaming, ws }) : null), [ws, events, chat.streaming]);
-  // 六句现成话挂在它答开场白的那一条底下（spec §5.5）：从日志推——开场白在、它答过、我还没说话。
-  // 我一发出第一句，日志里多一条人的 user_message，这一排随之消失，不等 runtime 那边清库
   const roleAnchor = useMemo(() => roleChipsAnchor(events), [events]);
-  const composer = useRef<ComposerHandle>(null);
   const items = useMemo<Item[]>(() => {
     const list: Item[] = [];
     for (const row of [...rows, ...live]) {
       list.push({ kind: "row", row });
       if (roleAnchor !== null && row.key === `e${roleAnchor}`) list.push({ kind: "roles" });
     }
-    if (nowRow !== null) list.push({ kind: "now", now: nowRow });
-    return list.reverse(); // 倒置列表：data[0] 画在最底下
+    // 它已经在往外写字了（流式那一段画出来了）就不再画三个点
+    if (nowRow !== null && !(nowRow.phase === "solving" && live.some((r) => r.kind === "agent" && r.agentId === nowRow.agentId))) {
+      list.push({ kind: "now", now: nowRow });
+    }
+    return list.reverse();
   }, [rows, live, nowRow, roleAnchor]);
 
   const ready = session?.state === "ready";
@@ -250,9 +283,9 @@ export function ChatScreen({ route, navigation }: Props) {
 
   const onSend = async (text: string): Promise<boolean> => {
     if (ws === null || resolved === null) return false;
-    // 点名解析与桌面同一份（resolveSendMentions）：私聊里名单只有那一只
     const candidates = agentIds.map((id) => ({ agentId: id, name: agentNameOf(ws, id) }));
-    const plan = resolveSendMentions({ text, parsed: parseMentions(text, candidates), refreshFailed: false, freshCandidates: candidates });
+    const memberCandidates = isTeam ? ws.members.map((m) => ({ agentId: m.uid, name: m.label })) : [];
+    const plan = resolveSendMentions({ text, parsed: parseMentions(text, candidates), refreshFailed: false, freshCandidates: candidates, memberCandidates });
     if (plan.kind === "block") {
       setPageNote({ text: plan.error, tone: "error" });
       return false;
@@ -264,11 +297,11 @@ export function ChatScreen({ route, navigation }: Props) {
         setPageNote({ text: r.message, tone: "error" });
         return false;
       }
-      // 名册那一行要认出这条新私聊（下次点进来直接进房，不再是草稿）
       void refreshHomeAfterWrite();
       return true;
     }
-    const r = await sendText(text, plan.mentions);
+    const memberMentions = isTeam ? parseMemberMentions(text, candidates, memberCandidates).filter((uid) => uid !== selfUid) : [];
+    const r = await sendText(text, plan.mentions, memberMentions);
     return r.ok || r.unknown === true;
   };
 
@@ -279,19 +312,34 @@ export function ChatScreen({ route, navigation }: Props) {
     if (!r.ok) setPageNote(r.unknown ? { text: "没有收到回执，不确定停下来没有", tone: "muted" } : { text: r.message, tone: "error" });
   };
 
+  const decide = async (callId: string, decision: "approved" | "denied"): Promise<void> => {
+    setDeciding(callId);
+    const r = await cloudClient.approve(callId, decision);
+    setDeciding(null);
+    if (!r.ok) setPageNote(r.unknown ? { text: "没有收到回执，不确定批下去没有", tone: "muted" } : { text: r.message, tone: "error" });
+  };
+
+  // ── 通话 ──
   const usable = voiceUsable(voice);
   const listen = voice.listen !== null && session !== null && voice.listen.sessionId === session.sessionId ? voice.listen : null;
   const starting = callOp === "start";
   const barMode = callBarMode({ call, listeningHere: listen !== null, starting });
   const offerPhone = phoneOffered({ voiceUsable: usable, ready, agentIds, call });
-
+  useEffect(() => {
+    if (call === null) setCallOpen(false);
+  }, [call]);
+  // 从智能体资料点「语音通话」进来：房间一 ready、打得了电话就打出去（只打一次，挂断之后不再自己拨）
+  const autoCalled = useRef(false);
   const onStartCall = async (): Promise<void> => {
     if (session === null || agentIds.length === 0) return;
     setCallOp("start");
-    // 私聊拉那一只；群拉整个群（spec §5.7；通话中不增减人）
+    setCallOpen(true);
     const r = await startCall(session.sessionId, dmAgent !== null ? [dmAgent] : agentIds);
     setCallOp(null);
-    if (!r.ok) setPageNote(r.unknown ? { text: "没有收到回执，不确定电话打出去没有", tone: "muted" } : { text: r.message, tone: "error" });
+    if (!r.ok) {
+      setCallOpen(false);
+      setPageNote(r.unknown ? { text: "没有收到回执，不确定电话打出去没有", tone: "muted" } : { text: r.message, tone: "error" });
+    }
   };
   const onHangUp = async (): Promise<void> => {
     setCallOp("hangup");
@@ -299,56 +347,104 @@ export function ChatScreen({ route, navigation }: Props) {
     setCallOp(null);
     if (!r.ok) setPageNote(r.unknown ? { text: "没有收到回执，不确定挂断没有", tone: "muted" } : { text: r.message, tone: "error" });
   };
-
   const openCallCard = useMemo(() => {
     if (openCallSeq === null) return null;
     for (const r of rows) if (r.kind === "call" && r.card.seq === openCallSeq) return r.card;
     return null;
   }, [rows, openCallSeq]);
 
-  const headerTop = insets.top + 8;
-  const headerSpace = headerTop + ROUND_BUTTON_SIZE + 12;
+  // ── 拉人建群 / 拉人（主场里的智能体；团队群的成员在电脑上管，spec §2） ──
+  const closePicker = (): void => setPicker((p) => (p === null ? p : { ...p, visible: false }));
+  const afterPick = useRef<string | null>(null);
+  const onPickOk = async (picked: string[], name: string): Promise<void> => {
+    if (ws === null || picker === null) return;
+    setPickBusy(true);
+    setPickError(null);
+    if (picker.kind === "group") {
+      const r = await cloudClient.create(ws.id, { kind: "group", name: groupNameFor(ws, picked, name), agentIds: picked });
+      if (!r.ok) {
+        setPickBusy(false);
+        setPickError(r.message);
+        return;
+      }
+      await refreshHomeAfterWrite();
+      afterPick.current = r.value.sessionId;
+    } else if (sessionId !== null) {
+      let next = agentIds;
+      for (const id of picked) next = withAgent(ws, next, id);
+      const r = await cloudClient.chatUpdate(ws.id, sessionId, { agentIds: next });
+      if (!r.ok) {
+        setPickBusy(false);
+        setPickError(r.message);
+        return;
+      }
+      void refreshHomeAfterWrite();
+    }
+    setPickBusy(false);
+    closePicker();
+  };
+
+  useEffect(() => {
+    if (route.params.autoCall !== true || autoCalled.current || !offerPhone) return;
+    autoCalled.current = true;
+    void onStartCall();
+    // onStartCall 每次渲染都是新的；这里只跟「打得了没有」走
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [route.params.autoCall, offerPhone]);
+
+  const plus: PlusItem[] = [];
+  if (offerPhone) plus.push({ key: "call", icon: "phone", label: "语音通话", onPress: () => void onStartCall() });
+  if (!isTeam && dmAgent !== null && ws !== null && ws.agents.length >= CHAT_GROUP_CREATE_MIN && session !== null) {
+    plus.push({ key: "group", icon: "users-round", label: "拉人建群", onPress: () => { setPickError(null); setPicker({ kind: "group", key: Date.now(), visible: true }); } });
+  }
+  if (!isTeam && group && session !== null && ws !== null && agentIds.length < CHAT_GROUP_MAX && ws.agents.some((a) => !agentIds.includes(a.agentId))) {
+    plus.push({ key: "add", icon: "user-round-plus", label: "拉人", onPress: () => { setPickError(null); setPicker({ kind: "add", key: Date.now(), visible: true }); } });
+  }
+  if (group && session !== null && session.state !== "denied" && (agentIds.length > 0 || humans.length > 0)) {
+    plus.push({ key: "at", icon: "at-sign", label: "@ 谁", onPress: () => setMentioning(true) });
+  }
+
+  // ── 头部 ──
+  const count = !group ? 0 : isTeam && ws !== null ? ws.members.length + agentIds.length : agentIds.length + 1;
+  const status = session?.state === "gone" ? "正在重连…" : nowRow !== null ? PHASE_STATUS[nowRow.phase] : "";
+  const others = inbox.unreadChats;
+  const infoOk = resolved !== null && (sessionId !== null || dmAgent !== null);
+  useLayoutEffect(() => {
+    navigation.setOptions({
+      headerTitle: () => <ChatTitle title={title} count={count} status={status} />,
+      headerRight: () =>
+        infoOk ? (
+          <HeaderIconButton label="聊天信息" onPress={() => navigation.navigate("ChatInfo", target)}>
+            <Icon name="ellipsis" size={24} stroke={2} color={c.foreground} />
+          </HeaderIconButton>
+        ) : null,
+      ...(others > 0 ? { headerBackTitle: String(others), headerBackButtonDisplayMode: "default" as const } : { headerBackButtonDisplayMode: "minimal" as const }),
+    });
+  }, [navigation, title, count, status, others, infoOk, target, c.foreground]);
+
   const centre = chatCentre({
     session: session === null ? null : { state: session.state, eventCount: events.length },
     draft,
     openFailed: chat.error !== null,
     rowCount: items.length,
   });
-
-  const headFaces: ReactNode =
-    ws === null ? null
-      : dmAgent !== null ? (
-        <Face slot={agentFaceSlot(ws, dmAgent)} tier="s" state={dmFaceState(openTurns(events), chat.streaming, dmAgent)} phase={facePhase(dmAgent)} ringColor={c.card} />
-      ) : (
-        <GroupFaces agentIds={agentIds} slots={agentIds.map((id) => agentFaceSlot(ws, id))} state="plain" />
-      );
-
-  // 右边那颗：私聊进智能体设置，群聊进群设置（spec §5.3 / §5.6）
-  const onSettings =
-    dmAgent !== null ? () => navigation.navigate("AgentSettings", { agentId: dmAgent })
-      : kind === "group" && sessionId !== null ? () => navigation.navigate("GroupSettings", { sessionId })
-        : undefined;
-
-  const emptyGroup = kind === "group" && session !== null && agentIds.length === 0;
-  // 被拒是终态（底下那行说清是哪一种、给「回名册」）：不再画一颗往发不出去的输入框里插字的钮
-  const canMention = kind === "group" && session !== null && session.state !== "denied" && agentIds.length > 0;
+  const emptyGroup = group && session !== null && agentIds.length === 0 && humans.length === 0;
+  const holdOk = dictationUsable(voice) && canSend;
 
   return (
     <View style={{ flex: 1, backgroundColor: c.background }}>
-      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined}>
+      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined} keyboardVerticalOffset={headerHeight}>
         <View style={{ flex: 1 }}>
           {ws !== null && resolved === null ? (
-            <Centered top={headerSpace}>
-              {home.loaded ? <Text style={{ ...t.callout, color: c.mutedForeground }}>这条聊天已经不在了。</Text> : <Spinner />}
-            </Centered>
+            <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
+              {loaded ? <Text style={{ fontSize: 15, color: c.mutedForeground }}>这条聊天已经不在了。</Text> : <Spinner />}
+            </View>
           ) : ws === null || centre === "loading" ? (
-            <Centered top={headerSpace}>
-              <Spinner />
-            </Centered>
+            <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}><Spinner /></View>
           ) : centre === "hello" ? (
-            <Centered top={headerSpace}>
+            <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
               <Hello ws={ws} kind={kind} agentIds={agentIds} title={title} />
-            </Centered>
+            </View>
           ) : centre === "blank" ? (
             <View style={{ flex: 1 }} />
           ) : (
@@ -361,15 +457,33 @@ export function ChatScreen({ route, navigation }: Props) {
                   <ChatRowView
                     row={item.row}
                     ws={ws}
+                    selfUid={selfUid}
+                    selfName={me.name}
+                    selfAvatar={me.avatar}
+                    group={group}
+                    deciding={deciding}
+                    onDecide={(id, d) => void decide(id, d)}
+                    onAgent={(agentId) => navigation.navigate("Agent", isTeam ? { agentId, workspaceId: ws.id } : { agentId })}
                     onOpenCall={(seq) => {
                       setOpenCallSeq(seq);
                       setCallSheetOpen(true);
                     }}
                   />
                 ) : item.kind === "now" ? (
-                  <NowRowView now={item.now} ws={ws} ready={ready} stopping={stopping} onStop={() => void stop(item.now.seq)} />
+                  <TypingRow
+                    ws={ws}
+                    agentId={item.now.agentId}
+                    name={item.now.name}
+                    face={item.now.face}
+                    group={group}
+                    canStop={item.now.canStop && ready}
+                    stopping={stopping}
+                    onStop={() => void stop(item.now.seq)}
+                  />
                 ) : (
-                  <RoleChips onPick={(text) => composer.current?.fill(text)} />
+                  <View style={{ paddingLeft: 62, paddingRight: 12 }}>
+                    <RoleChips onPick={(text) => composer.current?.fill(text)} />
+                  </View>
                 )
               }
               ItemSeparatorComponent={Gap}
@@ -377,20 +491,21 @@ export function ChatScreen({ route, navigation }: Props) {
                 if (session?.hasOlder && session.older === "idle") void loadOlder();
               }}
               onEndReachedThreshold={0.5}
-              ListHeaderComponent={<View style={{ height: 10 }} />}
-              ListFooterComponent={<OlderRow top={headerSpace} hasOlder={session?.hasOlder ?? false} older={session?.older ?? "idle"} />}
+              ListHeaderComponent={<View style={{ height: 14 }} />}
+              ListFooterComponent={<OlderRow hasOlder={session?.hasOlder ?? false} older={session?.older ?? "idle"} />}
               keyboardShouldPersistTaps="handled"
               keyboardDismissMode="interactive"
             />
           )}
+          {call !== null && !callOpen && session !== null ? <CallPill sinceTs={call.sinceTs} onPress={() => setCallOpen(true)} /> : null}
+          <HoldOverlay state={holdState} text={holdText} />
         </View>
 
-        <View style={{ gap: 6, paddingHorizontal: 16 }}>
-          {session?.state === "gone" ? <Line tone="muted">正在重连…</Line> : null}
+        <View style={{ gap: 6, paddingHorizontal: 16, paddingBottom: 6 }}>
           {session?.state === "denied" ? (
             <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
               <Line tone="error">{cloudDeniedText(session.deniedCode, session.deniedServerVersion)}</Line>
-              <Button size="auto" variant="plain" label="回名册" onPress={() => navigation.popToTop()} />
+              <Button size="auto" variant="plain" label="回列表" onPress={() => navigation.popToTop()} />
             </View>
           ) : null}
           {session?.gapNote ? <Line tone="warn">{session.gapNote}</Line> : null}
@@ -399,9 +514,7 @@ export function ChatScreen({ route, navigation }: Props) {
           {chat.sendError ? <Line tone="error">{chat.sendError}</Line> : null}
           {pageNote ? <Line tone={pageNote.tone}>{pageNote.text}</Line> : null}
           {listen?.error ? <Line tone="error">{listen.error}</Line> : null}
-          {listen?.mic.error ? <Line tone="error">{listen.mic.error}</Line> : null}
           {chat.unsent !== null && chat.unsent.sessionId === session?.sessionId ? (
-            // 中性灰不是红色：它不是一次失败，是这一层消除不了的不确定。两颗钮把决定交回给人
             <View style={{ flexDirection: "row", alignItems: "center", flexWrap: "wrap", gap: 4 }}>
               <Line tone="muted">{chat.unsent.note}</Line>
               <Button size="auto" variant="plain" label="重新发送" disabled={!ready} onPress={() => void resendUnsent()} />
@@ -411,86 +524,132 @@ export function ChatScreen({ route, navigation }: Props) {
           {emptyGroup && centre !== "hello" ? <Line tone="muted">{EMPTY_GROUP_TEXT}</Line> : null}
         </View>
 
-        {barMode !== "none" && call !== null && ws !== null && session !== null ? (
-          (() => {
-            const face = callFace({ call, speaking: listen?.speaking ?? null, open: openTurns(events) });
-            const micOn = callMicOn({ mic: listen?.mic.status ?? null, starting });
-            return (
-              <CallBar
-                mode={barMode}
-                face={face === null ? null : <Face slot={agentFaceSlot(ws, face.agentId)} tier="m" state={face.state} phase={facePhase(face.agentId)} />}
-                sinceTs={call.sinceTs}
-                wave={waveMode({ micOn, micActive: listen?.mic.active ?? false, agentSpeaking: listen !== null && listen.speaking !== null })}
-                level={listen?.mic.level ?? 0}
-                micOn={micOn}
-                captionsOn={captionsOn}
-                captions={{ agent: listen?.text ?? null, me: listen !== null && listen.mic.transcript !== "" ? listen.mic.transcript : null }}
-                joinBlocked={joinBlockedText({ native: nativeSpeech, room: session.state, billing: voice.billing })}
-                busy={callOp !== null}
-                onToggleCaptions={() => {
-                  // 那一行出现 / 收起会把上面的时间线推一下：160ms 接住它；减弱动态效果时直接换
-                  if (!reduce) LayoutAnimation.configureNext(LayoutAnimation.create(160, LayoutAnimation.Types.easeOut, LayoutAnimation.Properties.opacity));
-                  setCaptionsOn((v) => !v);
-                }}
-                onToggleMic={() => setMic(!micOn)}
-                onHangUp={() => void onHangUp()}
-                onJoin={() => joinCall(session.sessionId)}
-              />
-            );
-          })()
-        ) : (
-          <>
-            {canMention ? (
-              <View style={{ flexDirection: "row", paddingHorizontal: 16, paddingTop: 8 }}>
-                <MentionChip onPress={() => setMentioning(true)} />
-              </View>
-            ) : null}
-            <Composer
-              ref={composer}
-              placeholder={roleAnchor !== null ? "说一句它是干什么的…" : kind === "dm" ? `跟「${title}」说…` : "说给这一组听…"}
-              canSend={canSend}
-              sessionId={session?.sessionId ?? null}
-              onSend={onSend}
-              {...(offerPhone ? { phone: { onCall: () => void onStartCall(), busy: callOp !== null } } : {})}
-            />
-          </>
-        )}
+        <WxComposer
+          ref={composer}
+          draftKey={key}
+          placeholder={roleAnchor !== null ? "说一句它是干什么的…" : group ? "说点什么，输入 @ 点名" : ""}
+          canSend={canSend}
+          sessionId={session?.sessionId ?? null}
+          onSend={onSend}
+          {...(group ? { onAt: () => setMentioning(true) } : {})}
+          plus={plus}
+          {...(holdOk
+            ? {
+              hold: {
+                onDown: () => {
+                  setHoldText("");
+                  startDictation(setHoldText, (m) => setPageNote({ text: m, tone: "error" }));
+                },
+                onChange: setHoldState,
+                onUp: (send: boolean) => {
+                  void (async () => {
+                    const text = await stopDictation(send);
+                    setHoldText("");
+                    if (!send) return;
+                    if (text.trim() === "") {
+                      toast("没听清，按住再说一遍");
+                      return;
+                    }
+                    await onSend(text.trim());
+                  })();
+                },
+              },
+            }
+            : {})}
+        />
       </KeyboardAvoidingView>
-
-      <ChatHeader
-        top={headerTop}
-        title={title}
-        faces={headFaces}
-        onBack={() => navigation.goBack()}
-        {...(onSettings === undefined ? {} : { onSettings })}
-      />
 
       {ws !== null ? (
         <MentionSheet
           visible={mentioning}
           ws={ws}
           agentIds={agentIds}
-          onPick={(agentId) => {
-            pendingMention.current = agentNameOf(ws, agentId);
+          humans={humans}
+          onPick={(name) => {
+            pendingMention.current = name;
             setMentioning(false);
           }}
           onClose={() => setMentioning(false)}
           onExited={() => {
             const name = pendingMention.current;
             pendingMention.current = null;
-            // 抽屉的 onExited 与它的 setMounted(false) 在同一拍里调用，而那次卸载是批处理的——Modal 要等这一拍提交
-            // 之后才真的收起。等一帧再插：Modal 还在的时候输入框拿不到焦点，键盘弹不上来
+            // 抽屉的 Modal 要等这一拍提交之后才真的收起：等一帧再插，不然输入框拿不到焦点
             if (name !== null) requestAnimationFrame(() => composer.current?.mention(name));
           }}
         />
       ) : null}
 
-      <CallSheet
-        visible={callSheetOpen}
-        card={openCallCard}
-        onClose={() => setCallSheetOpen(false)}
-        onExited={() => setOpenCallSeq(null)}
-      />
+      <CallSheet visible={callSheetOpen} card={openCallCard} onClose={() => setCallSheetOpen(false)} onExited={() => setOpenCallSeq(null)} />
+
+      {call !== null && ws !== null && session !== null ? (
+        (() => {
+          const face = callFace({ call, speaking: listen?.speaking ?? null, open: openTurns(events) });
+          const micOn = callMicOn({ mic: listen?.mic.status ?? null, starting });
+          const ids = call.participants.map((p) => p.agentId);
+          const faces = dmAgent !== null || ids.length <= 1 ? (
+            <FaceTile slot={agentFaceSlot(ws, face?.agentId ?? ids[0] ?? "")} size={168} radius={46} state={face?.state ?? "listening"} phase={facePhase(face?.agentId ?? "")} />
+          ) : (
+            <View style={{ flexDirection: "row", flexWrap: "wrap", justifyContent: "center", gap: 16, maxWidth: 220 }}>
+              {ids.slice(0, 4).map((id) => (
+                <FaceTile key={id} slot={agentFaceSlot(ws, id)} size={92} radius={26} state={face?.agentId === id ? face.state : "listening"} phase={facePhase(id)} />
+              ))}
+            </View>
+          );
+          const speaking = listen?.speaking ?? null;
+          return (
+            <CallOverlay
+              visible={callOpen}
+              mode={barMode === "idle" ? "idle" : "live"}
+              title={title}
+              faces={faces}
+              status={barMode === "idle" ? "通话还开着" : speaking !== null ? `${agentNameOf(ws, speaking)} 正在说` : face?.state === "composing" || face?.state === "queued" ? "在想" : "在听"}
+              sinceTs={call.sinceTs}
+              wave={waveMode({ micOn, micActive: listen?.mic.active ?? false, agentSpeaking: listen !== null && listen.speaking !== null })}
+              level={listen?.mic.level ?? 0}
+              micOn={micOn}
+              captionsOn={captionsOn}
+              captions={{ agent: listen?.text ?? null, me: listen !== null && listen.mic.transcript !== "" ? listen.mic.transcript : null }}
+              joinBlocked={joinBlockedText({ native: true, room: session.state, billing: voice.billing })}
+              busy={callOp !== null}
+              onMinimize={() => setCallOpen(false)}
+              onToggleCaptions={() => setCaptionsOn((v) => !v)}
+              onToggleMic={() => setMic(!micOn)}
+              onHangUp={() => void onHangUp()}
+              onJoin={() => joinCall(session.sessionId)}
+            />
+          );
+        })()
+      ) : null}
+
+      {picker !== null && ws !== null ? (
+        <PickAgentsDialog
+          key={picker.key}
+          visible={picker.visible}
+          ws={ws}
+          title={picker.kind === "group" ? "拉人建群" : "拉人进群"}
+          lead={picker.kind === "group" ? "带上它，再拉几只，凑够 2 只就能建。" : `这个群最多 ${CHAT_GROUP_MAX} 只。`}
+          options={picker.kind === "group" ? ws.agents.map((a) => a.agentId) : ws.agents.map((a) => a.agentId).filter((id) => !agentIds.includes(id))}
+          preset={picker.kind === "group" && dmAgent !== null ? [dmAgent] : []}
+          min={picker.kind === "group" ? CHAT_GROUP_CREATE_MIN : 1}
+          max={picker.kind === "group" ? CHAT_GROUP_MAX : CHAT_GROUP_MAX - agentIds.length}
+          okLabel={picker.kind === "group" ? "建群" : "拉进来"}
+          withName={picker.kind === "group"}
+          busy={pickBusy}
+          error={pickError}
+          onOk={(picked, name) => void onPickOk(picked, name)}
+          onClose={closePicker}
+          onExited={() => {
+            setPicker(null);
+            const sid = afterPick.current;
+            afterPick.current = null;
+            // 从私聊拉人建群：换成那个新群（返回回到列表，不回到这条私聊）
+            if (sid !== null && navigation.isFocused()) navigation.replace("Chat", { kind: "group", sessionId: sid });
+          }}
+        />
+      ) : null}
+
+      {/* 深色模式下给导航条一道细线的底色：原生那条在深色底上几乎看不见 */}
+      <View pointerEvents="none" style={{ position: "absolute", top: 0, left: 0, right: 0, height: 0.5, backgroundColor: withAlpha(c.foreground, 0.08) }} />
     </View>
   );
 }

@@ -7,12 +7,12 @@ import { Text, View } from "react-native";
 import { USAGE_EMPTY, usageHeroText, usageNote, usageTone } from "../../../src/shared/mobileMachine.js";
 import { usageHeadline, usageRows, usageScale, type UsageRowView } from "../../../src/shared/workspaceUsageView.js";
 import { refreshBilling, useBilling } from "../account/billingStore.js";
-import { toneColor } from "../account/QuotaCard.js";
+import { toneColor } from "../account/tone.js";
 import { Meter } from "../chrome/Meter.js";
-import { Face } from "../face/Face.js";
+import { FaceTile, PersonTile } from "../wx/Avatar.js";
 import { useHome } from "../home/homeStore.js";
 import { type as t, space, usePalette } from "../theme.js";
-import { Avatar, Button, Card, Group, Hint, Note, Page, Spinner, useNow } from "../ui.js";
+import { Button, Card, Group, Hint, Inset, ListPage, Note, Spinner, useNow } from "../ui.js";
 import { refreshUsage, useMachine } from "./machineStore.js";
 
 export function UsageScreen() {
@@ -31,34 +31,34 @@ export function UsageScreen() {
   );
 
   if (ws === null) {
-    return <Page><Hint>还没有智能体，也就还没有用量。</Hint></Page>;
+    return <ListPage><Inset><Hint>还没有智能体，也就还没有用量。</Hint></Inset></ListPage>;
   }
   const usage = load.kind === "ok" ? load.usage : load.kind === "error" ? load.usage : null;
   const error = load.kind === "error" ? load.message : null;
   if (usage === null) {
     return (
-      <Page>
+      <ListPage>
         {error !== null ? (
-          <View style={{ gap: space.sm }}>
+          <Inset>
             <Note tone="warn">{`读不到用量：${error}`}</Note>
             <View style={{ alignItems: "flex-start" }}>
               <Button size="auto" variant="outline" label="重试" onPress={() => void refreshUsage(ws.id)} />
             </View>
-          </View>
+          </Inset>
         ) : (
-          <Spinner />
+          <Inset><Spinner /></Inset>
         )}
-      </Page>
+      </ListPage>
     );
   }
 
   const head = usageHeadline(usage);
   const rows = usageRows(ws, usage);
   return (
-    <Page>
-      <View style={{ gap: space.lg }}>
-        {error !== null ? <Note tone="warn">{`这一刻读不到最新的用量（${error}），下面是上一次的。`}</Note> : null}
-        <Card style={{ alignItems: "center", paddingVertical: 20 }}>
+    <ListPage>
+      <View style={{ gap: space.sm }}>
+        {error !== null ? <Inset><Note tone="warn">{`这一刻读不到最新的用量（${error}），下面是上一次的。`}</Note></Inset> : null}
+        <Card style={{ alignItems: "center", paddingVertical: 20, marginHorizontal: 12, borderRadius: 14 }}>
           <Text style={{ fontSize: 38, lineHeight: 44, fontWeight: "700", letterSpacing: -1, color: c.foreground }}>
             {head.percent ?? `${head.calls} 次`}
           </Text>
@@ -68,14 +68,14 @@ export function UsageScreen() {
           ) : null}
         </Card>
         {rows.length === 0 ? (
-          <Hint>{USAGE_EMPTY}</Hint>
+          <Inset><Hint>{USAGE_EMPTY}</Hint></Inset>
         ) : (
           <Group header="谁用掉的" footer={usageNote(usageScale(usage))}>
             {rows.map((r) => <UsageRow key={r.agentId === "" ? "_unattributed" : r.agentId} row={r} />)}
           </Group>
         )}
       </View>
-    </Page>
+    </ListPage>
   );
 }
 
@@ -86,7 +86,7 @@ function UsageRow({ row }: { row: UsageRowView }) {
   return (
     <View style={{ paddingHorizontal: space.md, paddingVertical: 11, gap: 6 }}>
       <View style={{ flexDirection: "row", alignItems: "center", gap: space.sm }}>
-        {row.avatar !== null ? <Face slot={row.avatar.slot} tier="s" label={row.name} /> : <Avatar name={row.name} size={26} />}
+        {row.avatar !== null ? <FaceTile slot={row.avatar.slot} size={30} label={row.name} /> : <PersonTile name={row.name} url="" size={30} />}
         <Text style={{ ...t.body, fontSize: 15, color: c.foreground, flex: 1, minWidth: 0 }} numberOfLines={1}>{row.name}</Text>
         <Text style={{ ...t.footnote, color: c.mutedForeground }}>{row.percent}</Text>
       </View>

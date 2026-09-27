@@ -12,6 +12,7 @@
 // 标题「聊天(n)」数的是**有新消息的聊天有几条**。
 
 import type { DirectMessage, FriendProfile } from "./friends.js";
+import { decodeEnvelope } from "./sessionPackageCodec.js";
 import { agentFaceSlot } from "./agentAvatar.js";
 import { groupRows, rosterRows } from "./agentRoster.js";
 import { narrowRoster } from "./chatRoster.js";
@@ -283,7 +284,7 @@ export function inboxRows(o: {
       title: name,
       avatar: { kind: "person", name, url: f.profile.avatarUrl },
       ts: Date.parse(f.last.createdAt) || 0,
-      preview: f.last.body.replace(/\s+/g, " ").trim(),
+      preview: dmPreview(f.last.body),
       mention: false,
       unread: key !== o.openKey && f.unread > 0 ? { kind: "count", n: f.unread } : null,
       hay: [name, f.profile.email, f.last.body].join("\n"),
@@ -384,10 +385,13 @@ export function markSeen(s: SeenState, key: string, ts: number): SeenState {
 
 // ── 通讯录 ───────────────────────────────────────────────────────────
 
+/** 群的那两种去处（主场群 / 团队群） */
+export type GroupTarget = Extract<InboxTarget, { kind: "group" } | { kind: "team" }>;
+
 /** 「群聊」那一页的一行：主场的群 + 团队群 */
 export interface GroupListRow {
   key: string;
-  target: InboxTarget;
+  target: GroupTarget;
   title: string;
   avatar: AvatarSpec;
   /** 成员名（`、` 分隔） */
@@ -428,6 +432,14 @@ export function groupList(o: { selfUid: string; home: HomeInput | null; teams: r
     }
   }
   return out;
+}
+
+/** 朋友私聊那一行的第二行：普通话压平空白；桌面发来的「分享会话」信封（整条 body 是一段 JSON）
+    写成「[会话分享] 标题」——摊开来是一坨 JSON，里面还有一次性的邀请码（shareCard.ts 那条纪律） */
+export function dmPreview(body: string): string {
+  const env = decodeEnvelope(body);
+  if (env !== null) return env.title !== null && env.title.trim() !== "" ? `[会话分享] ${env.title.trim()}` : "[会话分享]";
+  return body.replace(/\s+/g, " ").trim();
 }
 
 /** 通讯录里的朋友：按名字排（中文按拼音序，localeCompare 的 zh 规则） */

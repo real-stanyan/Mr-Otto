@@ -6,7 +6,7 @@ import type { DirectMessage, FriendProfile } from "../../src/shared/friends.js";
 import type { SessionLast } from "../../src/shared/sessionLast.js";
 import type { CloudSessionRow } from "../../src/shared/supabaseWorkspacesApi.js";
 import {
-  badgeText, cloudUnread, filterInbox, friendName, friendThreads, gridLayout, groupList, inboxRows, inboxUnreadChats,
+  badgeText, cloudUnread, dmPreview, filterInbox, friendName, friendThreads, gridLayout, groupList, inboxRows, inboxUnreadChats,
   initialOf, listTimeLabel, markSeen, needsTimeRow, parseSeen, serializeSeen, sortFriends, teamChatTitle, timelineTimeLabel,
   type SeenState,
 } from "../../src/shared/wechatInbox.js";
@@ -213,6 +213,12 @@ describe("朋友", () => {
       seen: SEEN,
     });
     expect(threads.map((t) => [t.profile.id, t.last?.id ?? null, t.unread])).toEqual([["u_aj", 4, 1], ["u_lw", null, 0]]);
+  });
+  it("第二行：普通话压平空白；分享会话的信封写成「[会话分享] 标题」，不摊开 JSON（里面有邀请码）", () => {
+    expect(dmPreview("周末\n 我来")).toBe("周末 我来");
+    const env = JSON.stringify({ otto: "otto.session-share", v: 1, bucket: "b", prefix: "p", message: "", title: "排班", eventCount: 3, invite: "otto-proxy:SECRET" });
+    expect(dmPreview(env)).toBe("[会话分享] 排班");
+    expect(dmPreview(env)).not.toContain("SECRET");
   });
   it("按名字排", () => {
     const list = sortFriends([{ profile: profile("b", "王") }, { profile: profile("a", "阿杰") }]);

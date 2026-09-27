@@ -1,67 +1,53 @@
-// 「@ 谁」（#1356 A3，spec §5.6）：群聊输入框上方那颗钮 + 点开的底部抽屉。抽屉只列这个群里的智能体，
-// 点一只就收；`@名字 ` 等抽屉退场放完再插进输入框（调用方在 onExited 之后再等一帧插——抽屉的 Modal 还在的时候
-// 输入框拿不到焦点）。插在哪由 shared 的 insertAgentMention 判；发出去时点了谁仍由 resolveSendMentions
-// 说了算（与桌面同一份）。私聊里不画这颗钮（名单里只有它一只）；空群也不画（没有谁可点）。
-import { useRef } from "react";
-import { Animated, Pressable, ScrollView, Text } from "react-native";
+// 「@ 谁」（#1386，demo 的 mentionSheet）：群里打一个 @、或 ⊕ 里点「@ 谁」，从底下升起一张单子——群里的智能体，
+// 团队群里还有别的人。点一个就收；`@名字 ` 等抽屉退场放完再插进输入框（调用方在 onExited 之后再等一帧：
+// Modal 还在的时候输入框拿不到焦点）。发出去时点了谁仍由 resolveSendMentions 说了算（与桌面同一份）。
+// 选人是挑东西，按规矩走底部抽屉。
+import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { agentFaceSlot } from "../../../src/shared/agentAvatar.js";
+import { agentNameOf } from "../../../src/shared/workspaceView.js";
 import type { WorkspaceSnapshot } from "../../../src/shared/workspaces.js";
-import { AgentPickRow } from "../group/AgentPickRow.js";
 import { BottomSheet } from "../sheet/BottomSheet.js";
-import { PRESS_SPRING, space, usePalette } from "../theme.js";
-import { Group, useReduceMotion } from "../ui.js";
+import { usePalette } from "../theme.js";
+import { FaceTile, PersonTile } from "../wx/Avatar.js";
 
-/** 抽屉底下那一句：不 @ 谁时谁接（ADR-0270 的派活）。demo 那句后面补了「都不对口就没人接」——
-    群里闲聊没人接是那边定的口径，不说的话人会一直等 */
+/** 抽屉底下那一句：不 @ 谁时谁接（ADR-0270 的派活） */
 export const MENTION_FOOTER = "不 @ 谁 = 它们自己认领：读一遍名册和最近几句，挑职责对口的那只；都不对口就没人接。";
 
-/** 输入框上方那颗「@ 谁」：按下缩到 .96（同 RoleChips 的 chip），关了动效退成变暗 */
-export function MentionChip({ onPress }: { onPress: () => void }) {
-  const { c } = usePalette();
-  const reduce = useReduceMotion();
-  const scale = useRef(new Animated.Value(1)).current;
-  const to = (v: number): void => {
-    if (!reduce) Animated.spring(scale, { toValue: v, useNativeDriver: true, ...PRESS_SPRING }).start();
-  };
-  return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel="@ 谁"
-      accessibilityHint="挑一只智能体接这一句，它的名字会插进输入框"
-      hitSlop={6}
-      onPressIn={() => to(0.96)}
-      onPressOut={() => to(1)}
-      onPress={onPress}
-      style={({ pressed }) => [reduce && pressed && { opacity: 0.7 }]}
-    >
-      <Animated.View
-        style={{
-          height: 30, paddingHorizontal: 12, borderRadius: 15, justifyContent: "center",
-          backgroundColor: c.secondary, transform: [{ scale }],
-        }}
-      >
-        <Text style={{ fontSize: 13.5, color: c.foreground }}>@ 谁</Text>
-      </Animated.View>
-    </Pressable>
-  );
-}
-
-export function MentionSheet({ visible, ws, agentIds, onPick, onClose, onExited }: {
+export function MentionSheet({ visible, ws, agentIds, humans, onPick, onClose, onExited }: {
   visible: boolean;
   ws: WorkspaceSnapshot;
-  /** 这个群此刻的名单（已与现存名册求过交集、名册顺序） */
-  agentIds: string[];
-  onPick: (agentId: string) => void;
+  agentIds: readonly string[];
+  /** 团队群里别的人（名字 + 头像）；主场群里没有 */
+  humans: readonly { uid: string; name: string; url: string }[];
+  /** 挑中的那个名字 */
+  onPick: (name: string) => void;
   onClose: () => void;
   onExited?: () => void;
 }) {
+  const { c } = usePalette();
+  const row = (key: string, avatar: React.ReactNode, name: string, tag: string, first: boolean) => (
+    <View key={key}>
+      {first ? null : <View style={{ height: StyleSheet.hairlineWidth, backgroundColor: c.border, marginLeft: 64 }} />}
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`@${name}，${tag}`}
+        onPress={() => onPick(name)}
+        style={({ pressed }) => [{ flexDirection: "row", alignItems: "center", gap: 12, height: 58, paddingHorizontal: 16 }, pressed && { backgroundColor: c.press }]}
+      >
+        {avatar}
+        <Text numberOfLines={1} style={{ flex: 1, fontSize: 17, color: c.foreground }}>{name}</Text>
+        <Text style={{ fontSize: 13, color: c.mutedForeground }}>{tag}</Text>
+      </Pressable>
+    </View>
+  );
   return (
-    <BottomSheet visible={visible} title="点谁接这一句" onClose={onClose} {...(onExited === undefined ? {} : { onExited })}>
-      <ScrollView contentContainerStyle={{ padding: space.md }}>
-        <Group footer={MENTION_FOOTER}>
-          {agentIds.map((id) => (
-            <AgentPickRow key={id} ws={ws} agentId={id} onPress={() => onPick(id)} />
-          ))}
-        </Group>
+    <BottomSheet visible={visible} title="选择要 @ 的" onClose={onClose} {...(onExited === undefined ? {} : { onExited })}>
+      <ScrollView contentContainerStyle={{ paddingBottom: 12 }}>
+        <View style={{ backgroundColor: c.card }}>
+          {agentIds.map((id, i) => row(`a:${id}`, <FaceTile slot={agentFaceSlot(ws, id)} size={36} />, agentNameOf(ws, id), "智能体", i === 0))}
+          {humans.map((h, i) => row(`h:${h.uid}`, <PersonTile name={h.name} url={h.url} size={36} />, h.name, "成员", agentIds.length === 0 && i === 0))}
+        </View>
+        {agentIds.length > 0 ? <Text style={{ fontSize: 13, lineHeight: 19, color: c.mutedForeground, padding: 16 }}>{MENTION_FOOTER}</Text> : null}
       </ScrollView>
     </BottomSheet>
   );

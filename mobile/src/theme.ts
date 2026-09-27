@@ -38,6 +38,21 @@ export interface Palette {
   scrim: string;
   /** 通话那一格的声浪色（demo 的 --voice；两套配色同一个值——它是通话的记号，不跟深浅走） */
   voice: string;
+  // ── 微信式布局（#1386，demo 的 .demo/wechat/shared.css）──
+  /** 侧面那一层：底栏、输入栏、面板的底（demo 的 --side） */
+  side: string;
+  /** 第三级的字：列表右边那格时间、段尾的弱提示（demo 的 --fg-3） */
+  faint: string;
+  /** 行被按下那一帧的底（demo 的 --press） */
+  press: string;
+  /** 一块浅浅的底：返回键旁的未读数、次按钮（demo 的 --field） */
+  field: string;
+  /** 输入框的底（demo 的 --input-bg：深色下它得比输入栏亮一档，否则框就看不见了） */
+  inputBg: string;
+  /** 我说的那个气泡（点缀色 18% 调进纸面，不是整块蓝——蓝色一屏只给一个主动作） */
+  bubbleMe: string;
+  /** 别人 / 它说的那个气泡 */
+  bubbleThem: string;
 }
 
 /** 浅色 = app.css 的裸 `:root` */
@@ -61,6 +76,14 @@ const light: Palette = {
   warn: "#e67700",
   scrim: "rgba(0, 0, 0, 0.28)",
   voice: "#2F94A6",
+  side: "#e9e5d8",
+  faint: "rgba(0, 0, 0, 0.4)",
+  press: "rgba(0, 0, 0, 0.08)",
+  field: "rgba(0, 0, 0, 0.055)",
+  inputBg: "#f7f5ef",
+  // color-mix(in srgb, #4a70a9 18%, #f7f5ef)
+  bubbleMe: "#d8dde2",
+  bubbleThem: "#e5e1d3",
 };
 
 /** 深色 = app.css 的 `.dark` */
@@ -84,6 +107,14 @@ const dark: Palette = {
   warn: "#ff9f0a",
   scrim: "rgba(0, 0, 0, 0.5)",
   voice: "#2F94A6",
+  side: "#1d1d1f",
+  faint: "rgba(245, 245, 247, 0.38)",
+  press: "rgba(245, 245, 247, 0.09)",
+  field: "rgba(245, 245, 247, 0.08)",
+  inputBg: "#2c2c2e",
+  // color-mix(in srgb, #0a84ff 18%, #1d1d1f)
+  bubbleMe: "#1a3047",
+  bubbleThem: "#2c2c2e",
 };
 
 export function usePalette(): { c: Palette; isDark: boolean } {

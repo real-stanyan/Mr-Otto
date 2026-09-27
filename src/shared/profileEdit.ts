@@ -9,6 +9,7 @@
 
 import { AVATAR_MAX_CHARS, NAME_MAX } from "./profile.js";
 import type { MyProfile, ProfilePatch, ProfileResult } from "./profile.js";
+import { MIN_PASSWORD } from "./signInForm.js";
 
 /** profiles 表里本人那一行的原始形状(snake_case 保持与 DB 一致) */
 export interface MyProfileRow {
@@ -84,16 +85,14 @@ export function buildColumnPatch(patch: ProfilePatch, nowIso: string): ProfileRe
 
 // ── 改密码（#1386，demo 的 passwordDialog） ──
 
-/** 新密码的下限。Supabase 项目的 minimum password length 是 8（与注册那张卡同一个数） */
-export const PASSWORD_MIN = 8;
-
 /**
  * 改密码那张弹窗此刻要说的那一句（空串 = 没什么要说的）。**一边输一边判**，所以还没输到
  * 那一格时不喊：新密码一个字都没打就说「至少 8 位」，等于在人动手之前先骂他一句。
  * 顺序就是人填的顺序：新的够不够长 → 两次一不一样 → 和现在的是不是同一个。
  */
 export function passwordProblem(current: string, next: string, again: string): string {
-  if (next !== "" && next.length < PASSWORD_MIN) return `新密码至少 ${PASSWORD_MIN} 位`;
+  // 下限与注册、找回密码同一个数（signInForm.MIN_PASSWORD）——demo 写的「8 位」比真规矩严，照它来就是两处说法
+  if (next !== "" && next.length < MIN_PASSWORD) return `新密码至少 ${MIN_PASSWORD} 位`;
   if (again !== "" && next !== again) return "两次输的新密码不一样";
   if (next !== "" && current !== "" && next === current) return "新密码和现在的一样";
   return "";
@@ -101,5 +100,18 @@ export function passwordProblem(current: string, next: string, again: string): s
 
 /** 「保存」按不按得动：三格都填了、而且一句毛病都没有 */
 export function passwordReady(current: string, next: string, again: string): boolean {
-  return current !== "" && next.length >= PASSWORD_MIN && next === again && next !== current;
+  return current !== "" && next.length >= MIN_PASSWORD && next === again && next !== current;
+}
+
+// ── 换头像（#1386） ──
+
+/** 头像落库前缩到多大（像素，正方形）。256：列表里最大画 64pt，@3x 也才 192 像素；再大只是让每一次
+    好友刷新更重（头像跟着好友列表一起查，AVATAR_MAX_CHARS 那条注释） */
+export const AVATAR_PX = 256;
+
+/** 一张图的正中那一块正方形（照片多半不是方的；拉伸会把人脸压扁）。宽高 ≤ 0 回 null */
+export function centerSquare(w: number, h: number): { originX: number; originY: number; width: number; height: number } | null {
+  if (!(w > 0) || !(h > 0)) return null;
+  const side = Math.floor(Math.min(w, h));
+  return { originX: Math.floor((w - side) / 2), originY: Math.floor((h - side) / 2), width: side, height: side };
 }
