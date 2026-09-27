@@ -145,11 +145,11 @@ describe("joinBlockedText：这台为什么接不了", () => {
   });
   it("扣款没成功（past_due）→ 说扣款没成功，不劝去订阅（ADR-0240：past_due 不是没订阅）", () => {
     const text = joinBlockedText({ ...ok, billing: snap(me({ status: "past_due" })) });
-    expect(text).toBe("这个账号的订阅扣款没成功，续上之后才打得了电话。");
+    expect(text).toBe("这个账号的订阅扣款没成功：去「账号 → 订阅」更新付款方式，续上之后才打得了电话。");
   });
   it("没订阅 → 手机那句（不指「设置 → 订阅」，手机上没有那一页）；网关不供语音 → 说不供", () => {
     const none = joinBlockedText({ ...ok, billing: snap(me({ status: "none", plan: null })) });
-    expect(none).toBe("订阅 Pro 或 Max 之后才打得了电话。");
+    expect(none).toBe("订阅 Pro 或 Max 之后才打得了电话（「账号 → 订阅」）。");
     const noTts = joinBlockedText({ ...ok, billing: snap(me({ ttsModels: [] })) });
     expect(noTts).toContain("语音");
     expect(noTts).not.toContain("订阅 Pro");
