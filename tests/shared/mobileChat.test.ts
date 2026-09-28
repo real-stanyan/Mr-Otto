@@ -115,6 +115,20 @@ describe("chatRows 的审批（#1386 团队群）", () => {
     const expired = chatRows({ events: [req({ expiresTs: DAY - 1 })], ws: WS, selfUid: "me", now: DAY });
     expect(expired[1]).toMatchObject({ kind: "note", text: "「运维」请求 bash：没人批，已经过期" });
   });
+  // #1393：主场的群里可以有群主的朋友。客人点起的那一轮动的是群主的东西——客人批不了自己的请求（runtime 同一条）
+  it("主场的群（ownerOnly）：客人发起的这一轮客人批不了，卡上写等群主批；群主批得了", () => {
+    seq = 0;
+    const withGuest: WorkspaceSnapshot = { ...WS, members: [...WS.members, { uid: "u_guest", role: "member", label: "小红", avatarUrl: "" }] };
+    const events = [req({ initiatorUid: "u_guest" })];
+    expect(chatRows({ events, ws: withGuest, selfUid: "u_guest", now: DAY, ownerUid: "me", ownerOnly: true })[1]).toMatchObject({
+      kind: "approval", canDecide: false, waitingFor: "Stan",
+    });
+    expect(chatRows({ events, ws: withGuest, selfUid: "me", now: DAY, ownerUid: "me", ownerOnly: true })[1]).toMatchObject({
+      kind: "approval", canDecide: true,
+    });
+    // 不带 ownerOnly = 团队那条规矩：发起的人自己批得了（一字不变）
+    expect(chatRows({ events, ws: withGuest, selfUid: "u_guest", now: DAY, ownerUid: "me" })[1]).toMatchObject({ kind: "approval", canDecide: true });
+  });
 });
 
 describe("liveRows", () => {
@@ -158,19 +172,30 @@ describe("resolveChatTarget", () => {
   ];
   it("单只：有私聊给 sessionId，没有给 null（草稿）", () => {
     expect(resolveChatTarget(WS, chats, { kind: "agent", agentId: "a_000000000001" })).toEqual({
-      kind: "dm", sessionId: "dm-dev", agentIds: ["a_000000000001"], title: "开发", seed: { kind: "dm", agentIds: ["a_000000000001"] },
+      kind: "dm", sessionId: "dm-dev", agentIds: ["a_000000000001"], title: "开发", seed: { kind: "dm", agentIds: ["a_000000000001"], humans: [] },
     });
     expect(resolveChatTarget(WS, chats, { kind: "agent", agentId: "a_000000000002" })).toMatchObject({ kind: "dm", sessionId: null, title: "运维" });
   });
   it("群：名单与现存名册求交集、顺序跟名册；没起名用成员名拼", () => {
     expect(resolveChatTarget(WS, chats, { kind: "group", sessionId: "g1" })).toEqual({
       kind: "group", sessionId: "g1", agentIds: ["a_000000000001", "a_000000000002"], title: "开发、运维",
-      seed: { kind: "group", agentIds: ["a_000000000001", "a_000000000002"] },
+      seed: { kind: "group", agentIds: ["a_000000000001", "a_000000000002"], humans: [] },
     });
   });
   it("找不到（被删了）→ null", () => {
     expect(resolveChatTarget(WS, chats, { kind: "agent", agentId: "a_nope00000000" })).toBeNull();
     expect(resolveChatTarget(WS, chats, { kind: "group", sessionId: "nope" })).toBeNull();
+  });
+  // #1393：群里我拉进来的朋友随种子一起种下去——welcome 之前人数、拼图、@ 选人就画得出来
+  it("有朋友的群：种子里带上清单那一行的人（名字快照），只有朋友没有智能体时标题用人名拼", () => {
+    const withPeople: CloudSessionRow[] = [
+      { id: "g2", title: "", publisherUid: "me", archived: false, updatedTs: 1, participantUids: [], chatKind: "group", agentIds: [],
+        humans: [{ uid: "u_1", name: "小红", avatarUrl: "data:x" }, { uid: "u_2", name: "小明", avatarUrl: "" }] },
+    ];
+    expect(resolveChatTarget(WS, withPeople, { kind: "group", sessionId: "g2" })).toEqual({
+      kind: "group", sessionId: "g2", agentIds: [], title: "小红、小明",
+      seed: { kind: "group", agentIds: [], humans: [{ uid: "u_1", name: "小红" }, { uid: "u_2", name: "小明" }] },
+    });
   });
 });
 

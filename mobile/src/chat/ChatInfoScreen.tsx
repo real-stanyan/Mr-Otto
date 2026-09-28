@@ -1,6 +1,9 @@
 // 聊天信息（#1386，spec §5.3，demo 的 infoPage）：聊天页右上「···」进来。四种：
 // · 智能体私聊：它的头像 +「建群」；它的那几行（AgentRows，点开改一格）；删掉这只（管理员没有：新建与派活都靠它）。
-// · 主场群：成员格（我 + 智能体）+ 拉人 + 移出；群聊名称（改）；群主（我）；没 @ 谁的时候；解散（= 删除，不可恢复）。
+// · 主场群：成员格（我 + 我拉进来的朋友 + 智能体，#1393）+ 拉人（智能体或朋友）+ 移出；群聊名称（改）；群主（我）；
+//   没 @ 谁的时候；解散（= 删除，不可恢复）。
+// · 别人拉我进去的群（#1393）：成员格（群主 + 群里的人 + 智能体）+ 拉朋友（只拉得了我自己的朋友）；群聊名称、群主（只看）；
+//   退出群聊（群主可以再把我拉回来）。
 // · 团队群（有真人的群）：成员格（人 + 智能体，只看）；群聊名称、群主（只看）；注脚说清成员由群主在电脑上管
 //   （拉一个人进来其实是拉进整个团队，spec §2）。
 // · 朋友私聊：朋友的头像；邮箱；删除朋友。
@@ -11,8 +14,9 @@ import { Pressable, ScrollView, Text, View } from "react-native";
 import { deleteAgentEverywhere, type AgentDeleteDeps } from "../../../src/shared/agentAdmin.js";
 import { agentFaceSlot } from "../../../src/shared/agentAvatar.js";
 import { chatViewOf, groupRows } from "../../../src/shared/agentRoster.js";
-import { CHAT_GROUP_MAX, CHAT_NAME_MAX, narrowRoster } from "../../../src/shared/chatRoster.js";
-import { clampChatName, groupNameFor, withAgent, withoutAgent } from "../../../src/shared/groupEdit.js";
+import { mixedGroupName, withGuests, type ChatPerson } from "../../../src/shared/chatGuests.js";
+import { CHAT_GROUP_MAX, CHAT_HUMANS_MAX, CHAT_NAME_MAX, chatHumansNow, narrowRoster } from "../../../src/shared/chatRoster.js";
+import { clampChatName, withAgent, withoutAgent } from "../../../src/shared/groupEdit.js";
 import { deleteAgentRow, listAgentChats } from "../../../src/shared/supabaseWorkspacesApi.js";
 import { friendName, teamChatTitle } from "../../../src/shared/wechatInbox.js";
 import { agentPagePath } from "../../../src/shared/wiki.js";
@@ -25,8 +29,9 @@ import { useChatStore } from "../cloud/chatStore.js";
 import { Dialog, DialogFooter, DialogLead, DialogTitle } from "../dialog.js";
 import { drop, useFriends } from "../friends/friendsStore.js";
 import { PickAgentsDialog } from "../group/PickAgentsDialog.js";
+import { friendPeople } from "../group/people.js";
 import { refreshHomeAfterWrite, useHome } from "../home/homeStore.js";
-import { useTeams } from "../inbox/teamsStore.js";
+import { refreshTeams, useTeams } from "../inbox/teamsStore.js";
 import { supabase } from "../supabase.js";
 import type { RootStackParams } from "../nav/types.js";
 import { useMyName } from "../tabs/MeScreen.js";
@@ -118,7 +123,7 @@ export function ChatInfoScreen({ route, navigation }: Props) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<{ key: number; visible: boolean } | null>(null);
-  const [picker, setPicker] = useState<{ kind: "add" | "remove" | "group"; key: number; visible: boolean } | null>(null);
+  const [picker, setPicker] = useState<{ kind: "add" | "remove" | "group" | "invite"; key: number; visible: boolean } | null>(null);
   const [pickBusy, setPickBusy] = useState(false);
   const [pickError, setPickError] = useState<string | null>(null);
   /** 删 / 解散成了：确认弹窗退场放完再回列表（弹窗还在的时候跳页，它会压在滑走的那一页上） */
@@ -194,6 +199,106 @@ export function ChatInfoScreen({ route, navigation }: Props) {
     );
   }
 
+  // ── 别人拉我进去的群（#1393） ──
+  if (target.kind === "guest") {
+    const g = teams.guests.find((x) => x.ws.id === target.workspaceId && x.session.id === target.sessionId) ?? null;
+    if (g === null) return <View style={{ flex: 1, backgroundColor: c.background }} />;
+    const selfUid = chat.session?.selfUid || home.selfUid || "";
+    // 名单优先读底下那条聊天的日志（同主场群那条纪律），头像从清单那一行补
+    const open = chat.session !== null && chat.session.sessionId === g.session.id && chat.session.chat ? chat.session : null;
+    const dbPeople = g.session.humans ?? [];
+    const people: ChatPerson[] = open !== null && open.chat
+      ? chatHumansNow(open.events, open.chat.humans).map((h) => ({ uid: h.uid, name: h.name, avatarUrl: dbPeople.find((p) => p.uid === h.uid)?.avatarUrl ?? "" }))
+      : dbPeople;
+    const gws = withGuests(g.ws, people);
+    const live = open !== null && open.chat ? chatViewOf(gws, open.chat, open.events, g.session.title) : null;
+    const agentIds = live?.agentIds ?? g.session.agentIds;
+    const title = live?.title || g.session.title || [...agentIds.map((id) => agentNameOf(gws, id)), ...people.map((p) => p.name)].join("、");
+    const owner = gws.members.find((m) => m.uid === gws.ownerUid);
+    const invitable = friendPeople(friends.rows, new Set([selfUid, gws.ownerUid, ...people.map((p) => p.uid)]));
+    const canInvite = invitable.length > 0 && people.length < CHAT_HUMANS_MAX;
+    const leave = (): void => {
+      setBusy(true);
+      cloudClient
+        .chatUpdate(g.ws.id, g.session.id, { humans: people.map((p) => p.uid).filter((u) => u !== selfUid) })
+        .then(async (r) => {
+          if (!r.ok) throw new Error(r.message);
+          done.current = true;
+          setConfirm(false);
+        })
+        .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)))
+        .finally(() => setBusy(false));
+    };
+    return (
+      <View style={{ flex: 1, backgroundColor: c.background }}>
+        <ScrollView contentContainerStyle={{ gap: 8, paddingBottom: 40 }}>
+          <Members>
+            {owner !== undefined ? <Member avatar={<PersonTile name={owner.label} url={owner.avatarUrl} size={52} radius={9} />} name={owner.label} /> : null}
+            {people.map((p) => (
+              <Member key={p.uid} avatar={<PersonTile name={p.name} url={p.avatarUrl} size={52} radius={9} me={p.uid === selfUid} />} name={p.uid === selfUid ? me.name : p.name} />
+            ))}
+            {agentIds.map((id) => (
+              <Member key={id} avatar={<FaceTile slot={agentFaceSlot(gws, id)} size={52} radius={9} />} name={agentNameOf(gws, id)} onPress={() => navigation.navigate("Agent", { agentId: id, workspaceId: g.ws.id })} />
+            ))}
+            {canInvite ? <MemberAction icon="plus" label="拉朋友" onPress={() => { setPickError(null); setPicker({ kind: "invite", key: Date.now(), visible: true }); }} /> : null}
+          </Members>
+          <Group footer="群里的智能体归群主管，干活走群主的额度。你让它们动手（跑命令、写文件、用应用）要等群主批。">
+            <Row label="群聊名称" value={title} />
+            <Row label="群主" value={owner?.label ?? ""} />
+            <Row label="没 @ 谁的时候" value={agentIds.length > 0 ? "智能体按职责自己接" : "等人回"} />
+          </Group>
+          <DangerRow label="退出群聊" onPress={() => { setError(null); setConfirm(true); }} />
+        </ScrollView>
+        {picker !== null ? (
+          <PickAgentsDialog
+            key={picker.key}
+            visible={picker.visible}
+            ws={gws}
+            title="拉朋友进群"
+            lead="只能拉你自己的朋友。群里的智能体归群主管。"
+            options={[]}
+            min={1}
+            people={invitable}
+            maxPeople={CHAT_HUMANS_MAX - people.length}
+            okLabel="拉进来"
+            busy={pickBusy}
+            error={pickError}
+            onOk={(_picked, _name, pickedPeople) => {
+              setPickBusy(true);
+              setPickError(null);
+              cloudClient
+                .chatUpdate(g.ws.id, g.session.id, { humans: [...people.map((p) => p.uid), ...pickedPeople] })
+                .then(async (r) => {
+                  if (!r.ok) throw new Error(r.message);
+                  await refreshTeams();
+                  closePicker();
+                })
+                .catch((e: unknown) => setPickError(e instanceof Error ? e.message : String(e)))
+                .finally(() => setPickBusy(false));
+            }}
+            onClose={closePicker}
+            onExited={() => setPicker(null)}
+          />
+        ) : null}
+        <Confirm
+          visible={confirm}
+          title={`退出「${title}」？`}
+          lead="退出之后这个群就不在你的列表里了，里面的聊天也看不到了。群主可以再把你拉回来。"
+          ok="退出"
+          busy={busy}
+          error={error}
+          onCancel={() => setConfirm(false)}
+          onOk={leave}
+          onExited={() => {
+            if (!done.current) return;
+            navigation.popToTop();
+            void refreshTeams();
+          }}
+        />
+      </View>
+    );
+  }
+
   if (ws === null) return <View style={{ flex: 1, backgroundColor: c.background }} />;
 
   // ── 智能体私聊 ──
@@ -201,12 +306,14 @@ export function ChatInfoScreen({ route, navigation }: Props) {
     const agent = ws.agents.find((a) => a.agentId === target.agentId) ?? null;
     if (agent === null) return <View style={{ flex: 1, backgroundColor: c.background }} />;
     const isAdmin = agent.agentId === ADMIN_AGENT_ID;
+    // 建群时也能拉朋友（#1393）
+    const invitable = friendPeople(friends.rows, new Set([home.selfUid ?? ""]));
     return (
       <View style={{ flex: 1, backgroundColor: c.background }}>
         <ScrollView contentContainerStyle={{ gap: 8, paddingBottom: 40 }}>
           <Members>
             <Member avatar={<FaceTile slot={agentFaceSlot(ws, agent.agentId)} size={52} radius={9} />} name={agent.name} onPress={() => navigation.navigate("Agent", { agentId: agent.agentId })} />
-            {ws.agents.length >= 2 ? <MemberAction icon="plus" label="建群" onPress={() => { setPickError(null); setPicker({ kind: "group", key: Date.now(), visible: true }); }} /> : null}
+            {ws.agents.length >= 2 || invitable.length > 0 ? <MemberAction icon="plus" label="建群" onPress={() => { setPickError(null); setPicker({ kind: "group", key: Date.now(), visible: true }); }} /> : null}
           </Members>
           <AgentRows ws={ws} agent={agent} />
           {isAdmin ? (
@@ -239,19 +346,26 @@ export function ChatInfoScreen({ route, navigation }: Props) {
             visible={picker.visible}
             ws={ws}
             title="拉人建群"
-            lead="带上它，再拉几只，凑够 2 只就能建。"
+            lead="带上它，再拉几位（智能体或朋友），凑够 2 位就能建。"
             options={ws.agents.map((a) => a.agentId)}
             preset={[agent.agentId]}
             min={2}
+            people={invitable}
             okLabel="建群"
             withName
             busy={pickBusy}
             error={pickError}
-            onOk={(picked, name) => {
+            onOk={(picked, name, pickedPeople) => {
               setPickBusy(true);
               setPickError(null);
+              const people = invitable.filter((x) => pickedPeople.includes(x.uid)).map((x) => ({ name: x.name }));
               cloudClient
-                .create(ws.id, { kind: "group", name: groupNameFor(ws, picked, name), agentIds: picked })
+                .create(ws.id, {
+                  kind: "group",
+                  name: mixedGroupName(ws, picked, people, name),
+                  agentIds: picked,
+                  ...(pickedPeople.length > 0 ? { humans: pickedPeople } : {}),
+                })
                 .then(async (r) => {
                   if (!r.ok) throw new Error(r.message);
                   await refreshHomeAfterWrite();
@@ -285,15 +399,30 @@ export function ChatInfoScreen({ route, navigation }: Props) {
     ? chatViewOf(ws, chat.session.chat, chat.session.events, row.name)
     : null;
   const agentIds = live?.agentIds ?? row.agentIds;
-  const canAdd = agentIds.length < CHAT_GROUP_MAX && ws.agents.some((a) => !agentIds.includes(a.agentId));
-  const onPick = (picked: string[]): void => {
+  // 我拉进来的朋友（#1393）：日志里那份是事实（开着这条聊天时），否则读清单那一行的投影；头像从投影补
+  const dbPeople = home.chats.find((x) => x.id === row.sessionId)?.humans ?? [];
+  const openChat = chat.session !== null && chat.session.sessionId === row.sessionId && chat.session.chat ? chat.session : null;
+  const people: ChatPerson[] = openChat !== null && openChat.chat
+    ? chatHumansNow(openChat.events, openChat.chat.humans).map((h) => ({ uid: h.uid, name: h.name, avatarUrl: dbPeople.find((p) => p.uid === h.uid)?.avatarUrl ?? "" }))
+    : dbPeople;
+  const selfUid = home.selfUid ?? "";
+  const invitable = friendPeople(friends.rows, new Set([selfUid, ...people.map((p) => p.uid)]));
+  const canAdd = (agentIds.length < CHAT_GROUP_MAX && ws.agents.some((a) => !agentIds.includes(a.agentId))) || (invitable.length > 0 && people.length < CHAT_HUMANS_MAX);
+  const isFriend = (uid: string): boolean => friends.rows?.some((r) => r.status === "accepted" && r.profile.id === uid) === true;
+  const onPick = (picked: string[], pickedPeople: string[]): void => {
     if (picker === null) return;
     let next = agentIds;
     for (const id of picked) next = picker.kind === "add" ? withAgent(ws, next, id) : withoutAgent(ws, next, id);
+    const nextPeople = picker.kind === "add"
+      ? [...people.map((p) => p.uid), ...pickedPeople]
+      : people.map((p) => p.uid).filter((u) => !pickedPeople.includes(u));
     setPickBusy(true);
     setPickError(null);
     cloudClient
-      .chatUpdate(ws.id, row.sessionId, { agentIds: next })
+      .chatUpdate(ws.id, row.sessionId, {
+        ...(picked.length > 0 ? { agentIds: next } : {}),
+        ...(pickedPeople.length > 0 ? { humans: nextPeople } : {}),
+      })
       .then(async (r) => {
         if (!r.ok) throw new Error(r.message);
         await refreshHomeAfterWrite();
@@ -307,13 +436,21 @@ export function ChatInfoScreen({ route, navigation }: Props) {
       <ScrollView contentContainerStyle={{ gap: 8, paddingBottom: 40 }}>
         <Members>
           <Member avatar={<PersonTile name={me.name} url={me.avatar} size={52} radius={9} me />} name={me.name} />
+          {people.map((p) => (
+            <Member
+              key={p.uid}
+              avatar={<PersonTile name={p.name} url={p.avatarUrl} size={52} radius={9} />}
+              name={p.name}
+              {...(isFriend(p.uid) ? { onPress: () => navigation.navigate("Friend", { uid: p.uid }) } : {})}
+            />
+          ))}
           {agentIds.map((id) => (
             <Member key={id} avatar={<FaceTile slot={agentFaceSlot(ws, id)} size={52} radius={9} />} name={agentNameOf(ws, id)} onPress={() => navigation.navigate("Agent", { agentId: id })} />
           ))}
           <MemberAction icon="plus" label="拉人" disabled={!canAdd} onPress={() => { setPickError(null); setPicker({ kind: "add", key: Date.now(), visible: true }); }} />
-          {agentIds.length > 0 ? <MemberAction icon="x" label="移出" onPress={() => { setPickError(null); setPicker({ kind: "remove", key: Date.now(), visible: true }); }} /> : null}
+          {agentIds.length > 0 || people.length > 0 ? <MemberAction icon="x" label="移出" onPress={() => { setPickError(null); setPicker({ kind: "remove", key: Date.now(), visible: true }); }} /> : null}
         </Members>
-        <Group footer="群里的智能体归群主管，干活走群主的额度。">
+        <Group footer={people.length > 0 ? "群里的智能体归你管，干活走你的额度。朋友让它们动手（跑命令、写文件、用应用）要等你批。" : "群里的智能体归群主管，干活走群主的额度。"}>
           <Row label="群聊名称" value={row.name} chevron onPress={() => setRenaming({ key: Date.now(), visible: true })} />
           <Row label="群主" value="我" />
           <Row label="没 @ 谁的时候" value={agentIds.length > 0 ? "智能体按职责自己接" : "没人接"} />
@@ -345,14 +482,17 @@ export function ChatInfoScreen({ route, navigation }: Props) {
           visible={picker.visible}
           ws={ws}
           title={picker.kind === "add" ? "拉人进群" : "移出群聊"}
-          {...(picker.kind === "remove" ? { lead: "移出去的智能体还在，它们各自的私聊一个字不少。" } : {})}
+          lead={picker.kind === "remove" ? "移出去的智能体还在，它们各自的私聊一个字不少。" : "朋友进来之后，他们让智能体动手要等你批。"}
           options={picker.kind === "add" ? ws.agents.map((a) => a.agentId).filter((id) => !agentIds.includes(id)) : agentIds}
           min={1}
           max={picker.kind === "add" ? CHAT_GROUP_MAX - agentIds.length : agentIds.length}
+          people={picker.kind === "add" ? invitable : people.map((p) => ({ uid: p.uid, name: p.name, url: p.avatarUrl }))}
+          peopleLabel={picker.kind === "add" ? "朋友" : "群里的人"}
+          maxPeople={picker.kind === "add" ? CHAT_HUMANS_MAX - people.length : people.length}
           okLabel={picker.kind === "add" ? "拉进来" : "移出"}
           busy={pickBusy}
           error={pickError}
-          onOk={(picked) => onPick(picked)}
+          onOk={(picked, _name, pickedPeople) => onPick(picked, pickedPeople)}
           onClose={closePicker}
           onExited={() => setPicker(null)}
         />

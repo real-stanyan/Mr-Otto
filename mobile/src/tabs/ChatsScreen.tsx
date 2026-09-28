@@ -11,14 +11,15 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AppState, FlatList, StyleSheet, Text, View } from "react-native";
 import { rosterGate, type RosterGate } from "../../../src/shared/agentRoster.js";
 import { CHAT_GROUP_CREATE_MIN } from "../../../src/shared/chatRoster.js";
-import { groupNameFor } from "../../../src/shared/groupEdit.js";
+import { mixedGroupName } from "../../../src/shared/chatGuests.js";
 import { filterInbox, type InboxRow } from "../../../src/shared/wechatInbox.js";
 import { workspaceAccess } from "../../../src/shared/workspaceAccess.js";
 import { NewAgentDialog } from "../agent/NewAgentDialog.js";
 import { cloudClient } from "../cloud/cloudClient.js";
 import { AddFriendDialog } from "../friends/AddFriendDialog.js";
-import { refreshFriends } from "../friends/friendsStore.js";
+import { refreshFriends, useFriends } from "../friends/friendsStore.js";
 import { PickAgentsDialog } from "../group/PickAgentsDialog.js";
+import { friendPeople } from "../group/people.js";
 import { ensureHome, refreshHome, refreshHomeAfterWrite, useHome } from "../home/homeStore.js";
 import { useSeenStore } from "../inbox/seenStore.js";
 import { refreshTeams, useTeams } from "../inbox/teamsStore.js";
@@ -66,6 +67,7 @@ export function ChatsScreen() {
   const home = useHome();
   const teams = useTeams();
   const inbox = useInbox();
+  const friends = useFriends();
   const { drafts } = useSeenStore();
   const now = useNow(60_000);
   const [q, setQ] = useState("");
@@ -94,11 +96,13 @@ export function ChatsScreen() {
 
   const ws = home.home;
   const rows = useMemo(() => filterInbox(inbox.rows, q), [inbox.rows, q]);
+  /** 发起群聊时能拉的朋友（#1393）：你的智能体和朋友可以在同一个群里 */
+  const invitable = useMemo(() => friendPeople(friends.rows, new Set([home.selfUid ?? ""])), [friends.rows, home.selfUid]);
   const items: MenuItem[] = [
     ...(ws !== null
       ? [
         { key: "agent", icon: "sparkles", label: "新建智能体" } as MenuItem,
-        ...(ws.agents.length >= CHAT_GROUP_CREATE_MIN ? [{ key: "group", icon: "users-round", label: "发起群聊" } as MenuItem] : []),
+        ...(ws.agents.length + invitable.length >= CHAT_GROUP_CREATE_MIN ? [{ key: "group", icon: "users-round", label: "发起群聊" } as MenuItem] : []),
       ]
       : []),
     { key: "friend", icon: "user-round-plus", label: "添加朋友" },
@@ -121,11 +125,17 @@ export function ChatsScreen() {
     navigation.navigate("Chat", next.kind === "agent" ? { kind: "agent", agentId: next.agentId } : { kind: "group", sessionId: next.sessionId });
   };
 
-  const createGroup = async (picked: string[], name: string): Promise<void> => {
+  const createGroup = async (picked: string[], name: string, pickedPeople: string[]): Promise<void> => {
     if (ws === null) return;
     setGroupBusy(true);
     setGroupError(null);
-    const r = await cloudClient.create(ws.id, { kind: "group", name: groupNameFor(ws, picked, name), agentIds: picked });
+    const people = invitable.filter((p) => pickedPeople.includes(p.uid)).map((p) => ({ name: p.name }));
+    const r = await cloudClient.create(ws.id, {
+      kind: "group",
+      name: mixedGroupName(ws, picked, people, name),
+      agentIds: picked,
+      ...(pickedPeople.length > 0 ? { humans: pickedPeople } : {}),
+    });
     if (!r.ok) {
       setGroupBusy(false);
       setGroupError(r.message);
@@ -219,14 +229,15 @@ export function ChatsScreen() {
           visible={dialog.visible}
           ws={ws}
           title="发起群聊"
-          lead="拉几只智能体进来，凑够 2 只就能建。"
+          lead="拉几位进来（智能体或朋友），凑够 2 位就能建。朋友让智能体动手要等你批。"
           options={ws.agents.map((a) => a.agentId)}
           min={CHAT_GROUP_CREATE_MIN}
+          people={invitable}
           okLabel="建群"
           withName
           busy={groupBusy}
           error={groupError}
-          onOk={(picked, name) => void createGroup(picked, name)}
+          onOk={(picked, name, pickedPeople) => void createGroup(picked, name, pickedPeople)}
           onClose={closeDialog}
           onExited={() => void onDialogExited()}
         />

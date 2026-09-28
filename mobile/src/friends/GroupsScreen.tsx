@@ -1,13 +1,15 @@
-// 群聊（#1386，demo 的 groupsPage）：所有群一列——主场里你的智能体群 + 有真人的群（团队里的每条会话）；右上「+」发起群聊
-// （只挑智能体，spec §2）。点一行进那个群。
+// 群聊（#1386，demo 的 groupsPage）：所有群一列——主场里你的群 + 有真人的群（团队里的每条会话）+ 别人拉你进去的群（#1393）；
+// 右上「+」发起群聊（智能体和朋友都能拉，#1393）。点一行进那个群。
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ScrollView, Text, View } from "react-native";
 import { CHAT_GROUP_CREATE_MIN } from "../../../src/shared/chatRoster.js";
-import { groupNameFor } from "../../../src/shared/groupEdit.js";
+import { mixedGroupName } from "../../../src/shared/chatGuests.js";
 import { groupList } from "../../../src/shared/wechatInbox.js";
 import { cloudClient } from "../cloud/cloudClient.js";
 import { PickAgentsDialog } from "../group/PickAgentsDialog.js";
+import { friendPeople } from "../group/people.js";
+import { useFriends } from "./friendsStore.js";
 import { refreshHomeAfterWrite, useHome } from "../home/homeStore.js";
 import { useTeams } from "../inbox/teamsStore.js";
 import type { RootStackParams } from "../nav/types.js";
@@ -23,16 +25,18 @@ export function GroupsScreen({ navigation }: Props) {
   const { c } = usePalette();
   const home = useHome();
   const teams = useTeams();
+  const friends = useFriends();
   const ws = home.home;
+  const invitable = useMemo(() => friendPeople(friends.rows, new Set([home.selfUid ?? ""])), [friends.rows, home.selfUid]);
   const [picker, setPicker] = useState<{ key: number; visible: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const created = useRef<string | null>(null);
   const list = useMemo(
-    () => groupList({ selfUid: home.selfUid ?? "", home: ws === null ? null : { ws, chats: home.chats, lasts: home.lasts }, teams: teams.teams }),
-    [home.selfUid, ws, home.chats, home.lasts, teams.teams],
+    () => groupList({ selfUid: home.selfUid ?? "", home: ws === null ? null : { ws, chats: home.chats, lasts: home.lasts }, teams: teams.teams, guests: teams.guests }),
+    [home.selfUid, ws, home.chats, home.lasts, teams.teams, teams.guests],
   );
-  const canNew = ws !== null && ws.agents.length >= CHAT_GROUP_CREATE_MIN;
+  const canNew = ws !== null && ws.agents.length + invitable.length >= CHAT_GROUP_CREATE_MIN;
   useLayoutEffect(() => {
     navigation.setOptions({
       headerRight: () =>
@@ -67,18 +71,25 @@ export function GroupsScreen({ navigation }: Props) {
           visible={picker.visible}
           ws={ws}
           title="发起群聊"
-          lead="拉几只智能体进来，凑够 2 只就能建。"
+          lead="拉几位进来（智能体或朋友），凑够 2 位就能建。朋友让智能体动手要等你批。"
           options={ws.agents.map((a) => a.agentId)}
           min={CHAT_GROUP_CREATE_MIN}
+          people={invitable}
           okLabel="建群"
           withName
           busy={busy}
           error={error}
-          onOk={(picked, name) => {
+          onOk={(picked, name, pickedPeople) => {
             setBusy(true);
             setError(null);
+            const people = invitable.filter((p) => pickedPeople.includes(p.uid)).map((p) => ({ name: p.name }));
             cloudClient
-              .create(ws.id, { kind: "group", name: groupNameFor(ws, picked, name), agentIds: picked })
+              .create(ws.id, {
+                kind: "group",
+                name: mixedGroupName(ws, picked, people, name),
+                agentIds: picked,
+                ...(pickedPeople.length > 0 ? { humans: pickedPeople } : {}),
+              })
               .then(async (r) => {
                 if (!r.ok) throw new Error(r.message);
                 await refreshHomeAfterWrite();

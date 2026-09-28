@@ -5,13 +5,15 @@
 import { useFocusEffect } from "@react-navigation/native";
 import { useHeaderHeight } from "@react-navigation/elements";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { FlatList, KeyboardAvoidingView, Platform, Pressable, Text, View } from "react-native";
 import type { DirectMessage } from "../../../src/shared/friends.js";
 import { decodeEnvelope } from "../../../src/shared/sessionPackageCodec.js";
 import { shareCardView } from "../../../src/shared/shareCard.js";
 import { friendName, needsTimeRow, timelineTimeLabel } from "../../../src/shared/wechatInbox.js";
 import { WxComposer, type HoldState } from "../chat/WxComposer.js";
+import { NewGroupDialog } from "../group/NewGroupDialog.js";
+import { useHome } from "../home/homeStore.js";
 import { markSeen, setOpenKey } from "../inbox/seenStore.js";
 import { useInbox } from "../inbox/useInbox.js";
 import type { RootStackParams } from "../nav/types.js";
@@ -69,6 +71,9 @@ export function FriendChatScreen({ route, navigation }: Props) {
   const [note, setNote] = useState<string | null>(null);
   const [hold, setHold] = useState<HoldState>({ phase: "idle" });
   const [holdText, setHoldText] = useState("");
+  const home = useHome();
+  const [grouping, setGrouping] = useState<{ key: number; visible: boolean } | null>(null);
+  const createdGroup = useRef<string | null>(null);
   const row = friends.rows?.find((r) => r.profile.id === uid) ?? null;
   const name = row !== null ? friendName(row.profile) : "";
   const friend = row?.status === "accepted";
@@ -195,7 +200,12 @@ export function FriendChatScreen({ route, navigation }: Props) {
             canSend
             sessionId={null}
             onSend={send}
-            plus={[]}
+            plus={
+              // 拉人建群（#1393）：带上 TA，再拉几位——群建在我的主场里
+              home.home !== null
+                ? [{ key: "group", icon: "users-round", label: "拉人建群", onPress: () => setGrouping({ key: Date.now(), visible: true }) }]
+                : []
+            }
             {...(dictationUsable(voice)
               ? {
                 hold: {
@@ -228,6 +238,29 @@ export function FriendChatScreen({ route, navigation }: Props) {
           </View>
         )}
       </KeyboardAvoidingView>
+      {grouping !== null && home.home !== null ? (
+        <NewGroupDialog
+          key={grouping.key}
+          visible={grouping.visible}
+          ws={home.home}
+          selfUid={home.selfUid ?? ""}
+          title="拉人建群"
+          lead={`带上${name}，再拉几位（你的智能体或朋友），凑够 2 位就能建。朋友让智能体动手要等你批。`}
+          presetPeople={[uid]}
+          onClose={() => setGrouping((g) => (g === null ? g : { ...g, visible: false }))}
+          onCreated={(sid) => {
+            createdGroup.current = sid;
+            setGrouping((g) => (g === null ? g : { ...g, visible: false }));
+          }}
+          onExited={() => {
+            setGrouping(null);
+            const sid = createdGroup.current;
+            createdGroup.current = null;
+            // 换成那个新群（返回回到列表，不回到这条私聊），同智能体私聊里的「拉人建群」
+            if (sid !== null && navigation.isFocused()) navigation.replace("Chat", { kind: "group", sessionId: sid });
+          }}
+        />
+      ) : null}
     </View>
   );
 }

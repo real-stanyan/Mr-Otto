@@ -12,6 +12,7 @@ import {
 } from "../../src/shared/wechatInbox.js";
 import type { WorkspaceMentionRow } from "../../src/shared/workspaceMentions.js";
 import type { WorkspaceAgentRow, WorkspaceSnapshot } from "../../src/shared/workspaces.js";
+import { assembleGuestChat } from "../../src/shared/chatGuests.js";
 
 const NOW = new Date(2026, 8, 27, 15, 30).getTime(); // 周日
 const MIN = 60_000;
@@ -237,5 +238,83 @@ describe("groupList", () => {
       ["g:g1", "管理员、客服", "管理员、客服"],
       ["t:ts1", "摆摊", "小红、值班"],
     ]);
+  });
+});
+
+// ── #1393：你的智能体和朋友在同一个群里 ────────────────────────────────────────
+describe("有朋友的群（#1393）", () => {
+  // 我（me）是客人：小红（u_xh）主场里的一条群，里面还有阿杰（u_aj）和小红的一只智能体
+  const guest = assembleGuestChat({
+    row: {
+      id: "gs1", workspace_id: "home-of-xh", publisher_uid: "u_xh", title: "", archived: false, updated_at: new Date(NOW - 500 * MIN).toISOString(),
+      agent_ids: ["a_x1"], last_ts: new Date(NOW - 2 * MIN).toISOString(), last_excerpt: "明早八点出发", last_from: "human:u_aj",
+    },
+    agents: [agent("a_x1", "向导")],
+    humans: [{ uid: "me", name: "Stan", avatarUrl: "" }, { uid: "u_aj", name: "阿杰", avatarUrl: "data:aj" }],
+    owner: { uid: "u_xh", name: "小红", avatarUrl: "data:xh" },
+  });
+  // 我是群主：我主场里的一条群，拉了阿杰
+  const mine = row({
+    id: "grp2", chatKind: "group", agentIds: ["a_000000000001"], title: "周三开卖", updatedTs: NOW - 100 * MIN,
+    humans: [{ uid: "u_aj", name: "阿杰", avatarUrl: "data:aj" }],
+  });
+  const lasts = new Map([["grp2", last(NOW - 20 * MIN, "human:u_aj", "我来写文案")]]);
+  const base = {
+    selfUid: "me",
+    home: { ws: HOME, chats: [mine], lasts },
+    teams: [],
+    guests: [guest],
+    friends: [],
+    mentions: [] as WorkspaceMentionRow[],
+    seen: SEEN,
+    openKey: null,
+  };
+
+  it("别人拉我进去的群：`j:` 一行，去处带群主的主场；拼图是群主 + 别的客人 + 智能体（不含我）", () => {
+    const r = inboxRows(base).find((x) => x.key === "j:gs1")!;
+    expect(r.target).toEqual({ kind: "guest", workspaceId: "home-of-xh", sessionId: "gs1" });
+    expect(r.avatar).toEqual({
+      kind: "grid",
+      cells: [
+        { kind: "person", name: "小红", url: "data:xh" },
+        { kind: "person", name: "阿杰", url: "data:aj" },
+        { kind: "face", id: "a_x1", slot: expect.any(Number) },
+      ],
+    });
+    // 没起名：智能体的名字、再是人的名字（不含我）
+    expect(r.title).toBe("向导、小红、阿杰");
+    expect(r.preview).toBe("阿杰: 明早八点出发");
+    expect(r.unread).toEqual({ kind: "dot" });
+  });
+
+  it("我主场里的群：拉进来的朋友进拼图、「名字: 」认得他、搜得到他", () => {
+    const r = inboxRows(base).find((x) => x.key === "g:grp2")!;
+    expect(r.avatar).toEqual({
+      kind: "grid",
+      cells: [{ kind: "person", name: "阿杰", url: "data:aj" }, { kind: "face", id: "a_000000000001", slot: expect.any(Number) }],
+    });
+    expect(r.preview).toBe("阿杰: 我来写文案");
+    expect(filterInbox([r], "阿杰")).toHaveLength(1);
+  });
+
+  it("群里有人 @ 了我：客人那一侧照样亮标记；开着的那一条不亮", () => {
+    const mentions = [{ sessionId: "gs1", read: false } as WorkspaceMentionRow];
+    expect(inboxRows({ ...base, mentions }).find((x) => x.key === "j:gs1")!.mention).toBe(true);
+    expect(inboxRows({ ...base, mentions, openKey: "j:gs1" }).find((x) => x.key === "j:gs1")!.mention).toBe(false);
+  });
+
+  it("归档了的不列；群聊那一页也有它", () => {
+    const archived = { ...guest, session: { ...guest.session, archived: true } };
+    expect(inboxRows({ ...base, guests: [archived] }).some((x) => x.key === "j:gs1")).toBe(false);
+    const list = groupList({ selfUid: "me", home: { ws: HOME, chats: [mine], lasts }, teams: [], guests: [guest] });
+    expect(list.map((g) => [g.key, g.title, g.members])).toEqual([
+      ["g:grp2", "周三开卖", "文案、阿杰"],
+      ["j:gs1", "向导、小红、阿杰", "小红、阿杰、向导"],
+    ]);
+  });
+
+  it("不带 guests：列表与改动前逐条相同（缺席 = 没有）", () => {
+    const { guests: _g, ...rest } = base;
+    expect(inboxRows(rest).map((x) => x.key)).toEqual(["g:grp2"]);
   });
 });

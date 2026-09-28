@@ -8,6 +8,8 @@
 // · 草稿：私聊还没建时是同一张页、还没有会话，第一句发出去那一刻才建（A1 原样）。
 // · 输入栏（WxComposer）：按住说话 ⇄ 键盘、表情、⊕（语音通话 / 拉人建群 / 拉人 / @ 谁）；群里打一个 @ 就弹选人。
 // · 团队群：有审批（卡在时间线里，发起人或群主批）；@ 到的人发提醒（memberMentions，ADR-0256）；进来 = 那里面 @ 我的都看过了。
+// · 有朋友的群（#1393）：我主场里的群可以拉朋友进来；别人主场里拉我进去的群也是这一页（target.kind = "guest"）。
+//   客人点起的那一轮要动手时等群主批（审批卡上写「等 X 批」）；客人能拉自己的朋友，智能体归群主管。
 // · 通话：点「语音通话」整屏升起（CallOverlay）；收起回到这里、头部下面一颗胶囊（点它回去）；离开这一页 = 这台停听、
 //   通话还在（A4 原样）。
 // · 已读：这一页开着时列表不给它画未读；离开时游标推到此刻（seenStore）。
@@ -20,9 +22,10 @@ import { agentFaceSlot } from "../../../src/shared/agentAvatar.js";
 import { roleChipsAnchor } from "../../../src/shared/agentOnboarding.js";
 import { resolveSendMentions } from "../../../src/shared/agentMentionInput.js";
 import { chatViewOf } from "../../../src/shared/agentRoster.js";
-import { CHAT_GROUP_CREATE_MIN, CHAT_GROUP_MAX, narrowRoster } from "../../../src/shared/chatRoster.js";
+import { mixedGroupName, othersInGroup, withGuests, type ChatPerson } from "../../../src/shared/chatGuests.js";
+import { CHAT_GROUP_CREATE_MIN, CHAT_GROUP_MAX, CHAT_HUMANS_MAX, chatHumansNow, chatRosterNow, narrowRoster } from "../../../src/shared/chatRoster.js";
 import { cloudDeniedText } from "../../../src/shared/cloudSessionState.js";
-import { groupNameFor, withAgent } from "../../../src/shared/groupEdit.js";
+import { withAgent } from "../../../src/shared/groupEdit.js";
 import { callBarMode, callFace, callMicOn, joinBlockedText, phoneOffered, waveMode } from "../../../src/shared/mobileCall.js";
 import { chatCentre, chatRows, liveRows, nowRowOf, resolveChatTarget, type ChatRow, type NowRow } from "../../../src/shared/mobileChat.js";
 import { facePhase } from "../../../src/shared/ottoFace/art.js";
@@ -32,16 +35,18 @@ import { openTurns } from "../../../src/shared/turnLedger.js";
 import { voiceCallOf } from "../../../src/shared/voiceCall.js";
 import { teamChatTitle } from "../../../src/shared/wechatInbox.js";
 import { agentNameOf } from "../../../src/shared/workspaceView.js";
-import type { WorkspaceSnapshot } from "../../../src/shared/workspaces.js";
+import { isHomeWorkspace, type WorkspaceSnapshot } from "../../../src/shared/workspaces.js";
 import type { SessionEvent } from "../../../src/session/events.js";
 import { cloudClient } from "../cloud/cloudClient.js";
 import {
   closeChat, dropUnsent, loadOlder, openChat, resendUnsent, sendText, startDm, stopTurn, useChatStore,
 } from "../cloud/chatStore.js";
+import { useFriends } from "../friends/friendsStore.js";
 import { PickAgentsDialog } from "../group/PickAgentsDialog.js";
+import { friendPeople } from "../group/people.js";
 import { refreshHomeAfterWrite, useHome } from "../home/homeStore.js";
 import { markSeen, setOpenKey } from "../inbox/seenStore.js";
-import { readTeamMentions, useTeams } from "../inbox/teamsStore.js";
+import { readTeamMentions, refreshTeams, useTeams } from "../inbox/teamsStore.js";
 import { useInbox } from "../inbox/useInbox.js";
 import type { RootStackParams } from "../nav/types.js";
 import { useMyName } from "../tabs/MeScreen.js";
@@ -119,7 +124,7 @@ function OlderRow({ hasOlder, older }: { hasOlder: boolean; older: "idle" | "loa
 }
 
 /** 刚进来、一句都还没说时的那一屏 */
-function Hello({ ws, kind, agentIds, title }: { ws: WorkspaceSnapshot; kind: "dm" | "group"; agentIds: string[]; title: string }) {
+function Hello({ ws, kind, agentIds, title, people }: { ws: WorkspaceSnapshot; kind: "dm" | "group"; agentIds: string[]; title: string; people: readonly ChatPerson[] }) {
   const { c } = usePalette();
   const first = agentIds[0];
   if (kind === "dm" && first !== undefined) {
@@ -133,12 +138,18 @@ function Hello({ ws, kind, agentIds, title }: { ws: WorkspaceSnapshot; kind: "dm
       </View>
     );
   }
-  if (agentIds.length === 0) return <Text style={{ fontSize: 14, color: c.mutedForeground, textAlign: "center", paddingHorizontal: 32 }}>{EMPTY_GROUP_TEXT}</Text>;
+  if (agentIds.length === 0 && people.length === 0) return <Text style={{ fontSize: 14, color: c.mutedForeground, textAlign: "center", paddingHorizontal: 32 }}>{EMPTY_GROUP_TEXT}</Text>;
+  // 有朋友的群（#1393）：人在前、智能体在后，同列表里那张拼图
+  const cells = [
+    ...people.map((p) => ({ kind: "person" as const, name: p.name, url: p.avatarUrl })),
+    ...agentIds.map((id) => ({ kind: "face" as const, id, slot: agentFaceSlot(ws, id) })),
+  ].slice(0, 9);
+  const names = [...people.map((p) => p.name), ...agentIds.map((id) => agentNameOf(ws, id))];
   return (
     <View style={{ alignItems: "center", gap: 10, paddingHorizontal: 32 }}>
-      <GridTile cells={agentIds.slice(0, 9).map((id) => ({ kind: "face" as const, id, slot: agentFaceSlot(ws, id) }))} size={72} />
+      <GridTile cells={cells} size={72} />
       <Text style={{ fontSize: 14, lineHeight: 20, color: c.mutedForeground, textAlign: "center" }}>
-        {`${agentIds.map((id) => agentNameOf(ws, id)).join("、")}都在。说第一句话就开始了。`}
+        {`${names.join("、")}都在。说第一句话就开始了。`}
       </Text>
     </View>
   );
@@ -170,10 +181,14 @@ export function ChatScreen({ route, navigation }: Props) {
   const inbox = useInbox();
   const me = useMyName();
   const headerHeight = useHeaderHeight();
+  const friends = useFriends();
   const isTeam = target.kind === "team";
+  /** 别人主场里拉我进去的群（#1393）：快照只够这一条群用（成员 = 群主 + 客人，智能体 = 群里那几只） */
+  const isGuestChat = target.kind === "guest";
   const team = target.kind === "team" ? (teams.teams.find((t) => t.ws.id === target.workspaceId) ?? null) : null;
-  const ws: WorkspaceSnapshot | null = isTeam ? (team?.ws ?? null) : home.home;
-  const loaded = isTeam ? teams.loaded : home.loaded;
+  const guest = target.kind === "guest" ? (teams.guests.find((g) => g.ws.id === target.workspaceId && g.session.id === target.sessionId) ?? null) : null;
+  const baseWs: WorkspaceSnapshot | null = isTeam ? (team?.ws ?? null) : isGuestChat ? (guest?.ws ?? null) : home.home;
+  const loaded = isTeam || isGuestChat ? teams.loaded : home.loaded;
 
   const resolved = useMemo<Resolved | null>(() => {
     if (target.kind === "team") {
@@ -183,11 +198,26 @@ export function ChatScreen({ route, navigation }: Props) {
       const agentIds = narrowRoster(team.ws.agents, s.chatKind === null ? null : s.agentIds).map((a) => a.agentId);
       return { kind: "group", sessionId: s.id, agentIds, title: teamChatTitle(team.ws, s), seed: null };
     }
-    if (ws === null) return null;
-    return resolveChatTarget(ws, home.chats, target);
-  }, [target, team, ws, home.chats]);
+    if (target.kind === "guest") {
+      if (guest === null) return null;
+      const people = guest.session.humans ?? [];
+      const title = guest.session.title.trim() !== ""
+        ? guest.session.title
+        : [...guest.session.agentIds.map((id) => agentNameOf(guest.ws, id)), ...people.map((p) => p.name)].join("、");
+      return {
+        kind: "group", sessionId: guest.session.id, agentIds: guest.session.agentIds, title,
+        seed: { kind: "group", agentIds: [...guest.session.agentIds], humans: people.map((h) => ({ uid: h.uid, name: h.name })) },
+      };
+    }
+    if (baseWs === null) return null;
+    return resolveChatTarget(baseWs, home.chats, target);
+  }, [target, team, guest, baseWs, home.chats]);
   const sessionId = resolved?.sessionId ?? null;
-  const key = target.kind === "agent" ? `a:${target.agentId}` : target.kind === "group" ? `g:${target.sessionId}` : `t:${target.sessionId}`;
+  const key =
+    target.kind === "agent" ? `a:${target.agentId}`
+      : target.kind === "group" ? `g:${target.sessionId}`
+        : target.kind === "guest" ? `j:${target.sessionId}`
+          : `t:${target.sessionId}`;
 
   const [pageNote, setPageNote] = useState<{ text: string; tone: "muted" | "error" } | null>(null);
   const [stopping, setStopping] = useState(false);
@@ -202,7 +232,7 @@ export function ChatScreen({ route, navigation }: Props) {
   const [callSheetOpen, setCallSheetOpen] = useState(false);
   const [holdState, setHoldState] = useState<HoldState>({ phase: "idle" });
   const [holdText, setHoldText] = useState("");
-  const [picker, setPicker] = useState<{ kind: "group" | "add"; key: number; visible: boolean } | null>(null);
+  const [picker, setPicker] = useState<{ kind: "group" | "add" | "invite"; key: number; visible: boolean } | null>(null);
   const [pickBusy, setPickBusy] = useState(false);
   const [pickError, setPickError] = useState<string | null>(null);
   const composer = useRef<ComposerHandle>(null);
@@ -213,26 +243,52 @@ export function ChatScreen({ route, navigation }: Props) {
 
   // 这条线已经存在就进房；草稿什么都不做，第一句发出去才建
   useEffect(() => {
-    if (ws === null || resolved === null || sessionId === null) return;
-    void openChat(ws.id, sessionId, resolved.seed, resolved.title);
+    if (baseWs === null || resolved === null || sessionId === null) return;
+    void openChat(baseWs.id, sessionId, resolved.seed, resolved.title);
     // 只跟「是哪一条」走：resolved 每次刷新都是新对象
-  }, [ws?.id, sessionId]);
+  }, [baseWs?.id, sessionId]);
   useEffect(() => () => closeChat(), []);
 
   const session = chat.session;
   const events = session?.events ?? EMPTY_EVENTS;
   const selfUid = session?.selfUid || inbox.selfUid || "";
   const draft = resolved !== null && resolved.sessionId === null && session === null;
+  // 群里的真人（#1393）：welcome 之后日志里那份是事实；清单那一行的投影只补头像、以及 welcome 之前先画上
+  const dbPeople = useMemo<ChatPerson[]>(
+    () => (guest !== null ? (guest.session.humans ?? []) : target.kind === "group" ? (home.chats.find((x) => x.id === target.sessionId)?.humans ?? []) : []),
+    [guest, target, home.chats],
+  );
+  const chatInfo = session?.chat ?? null;
+  const people = useMemo<ChatPerson[]>(() => {
+    if (isTeam || chatInfo === null) return dbPeople;
+    return chatHumansNow(events, chatInfo.humans).map((h) => ({ uid: h.uid, name: h.name, avatarUrl: dbPeople.find((p) => p.uid === h.uid)?.avatarUrl ?? "" }));
+  }, [isTeam, chatInfo, events, dbPeople]);
+  // 名字、头像、「等 X 批」都按成员表查：把群里的人补进这一条群用的快照（团队群的成员表本来就全）
+  const ws = useMemo(() => (baseWs === null || isTeam ? baseWs : withGuests(baseWs, people)), [baseWs, isTeam, people]);
   const view = ws !== null && session !== null && session.chat ? chatViewOf(ws, session.chat, events, resolved?.title ?? "") : null;
   const kind = view?.kind ?? resolved?.kind ?? "dm";
   const agentIds = view?.agentIds ?? resolved?.agentIds ?? [];
-  const title = view?.title ?? resolved?.title ?? "";
   const dmAgent = kind === "dm" ? (agentIds[0] ?? null) : null;
   const group = kind === "group";
-  const humans = useMemo(
-    () => (isTeam && ws !== null ? ws.members.filter((m) => m.uid !== selfUid).map((m) => ({ uid: m.uid, name: m.label, url: m.avatarUrl })) : []),
-    [isTeam, ws, selfUid],
+  const title = (view?.title ?? resolved?.title ?? "") || (group ? people.map((p) => p.name).join("、") : "");
+  /** 群里除了我之外的人：团队群 = 别的成员；有朋友的群 = 群主那一侧的客人，或客人那一侧的群主 + 别的客人 */
+  const humans = useMemo(() => {
+    if (ws === null) return [];
+    if (isTeam) return ws.members.filter((m) => m.uid !== selfUid).map((m) => ({ uid: m.uid, name: m.label, url: m.avatarUrl }));
+    if (!group) return [];
+    return othersInGroup({ ws, humans: people, selfUid, guestView: isGuestChat }).map((p) => ({ uid: p.uid, name: p.name, url: p.avatarUrl }));
+  }, [isTeam, isGuestChat, group, ws, people, selfUid]);
+  /** 能拉进来的朋友：我的朋友里此刻不在群里的（群主也不算——他本来就在） */
+  const invitable = useMemo(
+    () => friendPeople(friends.rows, new Set([selfUid, baseWs?.ownerUid ?? "", ...people.map((p) => p.uid)])),
+    [friends.rows, selfUid, baseWs?.ownerUid, people],
   );
+  // 群主往群里拉了一只我这边还不认识的智能体（客人手上的快照只有当时那几只）：重拉一次，名字和脸才画得出来
+  const unknownAgent = isGuestChat && baseWs !== null && chatInfo !== null &&
+    (chatRosterNow(events, chatInfo.agentIds) ?? []).some((id) => !baseWs.agents.some((a) => a.agentId === id));
+  useEffect(() => {
+    if (unknownAgent) void refreshTeams();
+  }, [unknownAgent]);
 
   // 已读：开着的这一条列表不画未读；离开 / 失焦时游标推到此刻。团队群里 @ 我的，进来就算看过了
   useFocusEffect(
@@ -249,13 +305,13 @@ export function ChatScreen({ route, navigation }: Props) {
     if (lastTs > 0) markSeen(key, lastTs);
   }, [key, lastTs]);
   useEffect(() => {
-    if (isTeam && sessionId !== null) void readTeamMentions(sessionId);
-  }, [isTeam, sessionId, lastTs]);
+    if ((isTeam || group) && sessionId !== null) void readTeamMentions(sessionId);
+  }, [isTeam, group, sessionId, lastTs]);
 
   const call = useMemo(() => voiceCallOf(events), [events]);
   const inCall = useMemo(() => (call === null ? null : new Set(call.participants.map((p) => p.agentId))), [call]);
   const rows = useMemo(
-    () => (ws !== null ? chatRows({ events, ws, selfUid, now: Date.now(), ...(session?.ownerUid ? { ownerUid: session.ownerUid } : {}) }) : []),
+    () => (ws !== null ? chatRows({ events, ws, selfUid, now: Date.now(), ownerOnly: isHomeWorkspace(ws), ...(session?.ownerUid ? { ownerUid: session.ownerUid } : {}) }) : []),
     [ws, events, selfUid, session?.ownerUid],
   );
   const live = useMemo(
@@ -283,7 +339,8 @@ export function ChatScreen({ route, navigation }: Props) {
   const onSend = async (text: string): Promise<boolean> => {
     if (ws === null || resolved === null) return false;
     const candidates = agentIds.map((id) => ({ agentId: id, name: agentNameOf(ws, id) }));
-    const memberCandidates = isTeam ? ws.members.map((m) => ({ agentId: m.uid, name: m.label })) : [];
+    // 点得到的人：团队群 = 全体成员；有朋友的群（#1393）= 群里别的人。点到的人收到提醒（ADR-0256），不起 turn
+    const memberCandidates = isTeam ? ws.members.map((m) => ({ agentId: m.uid, name: m.label })) : humans.map((h) => ({ agentId: h.uid, name: h.name }));
     const plan = resolveSendMentions({ text, parsed: parseMentions(text, candidates), refreshFailed: false, freshCandidates: candidates, memberCandidates });
     if (plan.kind === "block") {
       setPageNote({ text: plan.error, tone: "error" });
@@ -299,7 +356,7 @@ export function ChatScreen({ route, navigation }: Props) {
       void refreshHomeAfterWrite();
       return true;
     }
-    const memberMentions = isTeam ? parseMemberMentions(text, candidates, memberCandidates).filter((uid) => uid !== selfUid) : [];
+    const memberMentions = memberCandidates.length > 0 ? parseMemberMentions(text, candidates, memberCandidates).filter((uid) => uid !== selfUid) : [];
     const r = await sendText(text, plan.mentions, memberMentions);
     return r.ok || r.unknown === true;
   };
@@ -352,15 +409,21 @@ export function ChatScreen({ route, navigation }: Props) {
     return null;
   }, [rows, openCallSeq]);
 
-  // ── 拉人建群 / 拉人（主场里的智能体；团队群的成员在电脑上管，spec §2） ──
+  // ── 拉人建群 / 拉人（主场里的智能体 + 我的朋友，#1393；客人只拉得了自己的朋友；团队群的成员在电脑上管，spec §2） ──
   const closePicker = (): void => setPicker((p) => (p === null ? p : { ...p, visible: false }));
   const afterPick = useRef<string | null>(null);
-  const onPickOk = async (picked: string[], name: string): Promise<void> => {
+  const onPickOk = async (picked: string[], name: string, pickedPeople: string[]): Promise<void> => {
     if (ws === null || picker === null) return;
     setPickBusy(true);
     setPickError(null);
     if (picker.kind === "group") {
-      const r = await cloudClient.create(ws.id, { kind: "group", name: groupNameFor(ws, picked, name), agentIds: picked });
+      const rowsPicked = invitable.filter((p) => pickedPeople.includes(p.uid)).map((p) => ({ name: p.name }));
+      const r = await cloudClient.create(ws.id, {
+        kind: "group",
+        name: mixedGroupName(ws, picked, rowsPicked, name),
+        agentIds: picked,
+        ...(pickedPeople.length > 0 ? { humans: pickedPeople } : {}),
+      });
       if (!r.ok) {
         setPickBusy(false);
         setPickError(r.message);
@@ -371,13 +434,16 @@ export function ChatScreen({ route, navigation }: Props) {
     } else if (sessionId !== null) {
       let next = agentIds;
       for (const id of picked) next = withAgent(ws, next, id);
-      const r = await cloudClient.chatUpdate(ws.id, sessionId, { agentIds: next });
+      const r = await cloudClient.chatUpdate(ws.id, sessionId, {
+        ...(picked.length > 0 ? { agentIds: next } : {}),
+        ...(pickedPeople.length > 0 ? { humans: [...people.map((p) => p.uid), ...pickedPeople] } : {}),
+      });
       if (!r.ok) {
         setPickBusy(false);
         setPickError(r.message);
         return;
       }
-      void refreshHomeAfterWrite();
+      void (isGuestChat ? refreshTeams() : refreshHomeAfterWrite());
     }
     setPickBusy(false);
     closePicker();
@@ -392,18 +458,28 @@ export function ChatScreen({ route, navigation }: Props) {
 
   const plus: PlusItem[] = [];
   if (offerPhone) plus.push({ key: "call", icon: "phone", label: "语音通话", onPress: () => void onStartCall() });
-  if (!isTeam && dmAgent !== null && ws !== null && ws.agents.length >= CHAT_GROUP_CREATE_MIN && session !== null) {
-    plus.push({ key: "group", icon: "users-round", label: "拉人建群", onPress: () => { setPickError(null); setPicker({ kind: "group", key: Date.now(), visible: true }); } });
+  const openPicker = (kind: "group" | "add" | "invite"): void => {
+    setPickError(null);
+    setPicker({ kind, key: Date.now(), visible: true });
+  };
+  if (!isTeam && !isGuestChat && dmAgent !== null && ws !== null && (ws.agents.length >= CHAT_GROUP_CREATE_MIN || invitable.length > 0) && session !== null) {
+    plus.push({ key: "group", icon: "users-round", label: "拉人建群", onPress: () => openPicker("group") });
   }
-  if (!isTeam && group && session !== null && ws !== null && agentIds.length < CHAT_GROUP_MAX && ws.agents.some((a) => !agentIds.includes(a.agentId))) {
-    plus.push({ key: "add", icon: "user-round-plus", label: "拉人", onPress: () => { setPickError(null); setPicker({ kind: "add", key: Date.now(), visible: true }); } });
+  const agentRoom = ws !== null && agentIds.length < CHAT_GROUP_MAX && ws.agents.some((a) => !agentIds.includes(a.agentId));
+  const peopleRoom = invitable.length > 0 && people.length < CHAT_HUMANS_MAX;
+  if (!isTeam && !isGuestChat && group && session !== null && ws !== null && (agentRoom || peopleRoom)) {
+    plus.push({ key: "add", icon: "user-round-plus", label: "拉人", onPress: () => openPicker("add") });
+  }
+  if (isGuestChat && group && session !== null && peopleRoom) {
+    plus.push({ key: "invite", icon: "user-round-plus", label: "拉朋友", onPress: () => openPicker("invite") });
   }
   if (group && session !== null && session.state !== "denied" && (agentIds.length > 0 || humans.length > 0)) {
     plus.push({ key: "at", icon: "at-sign", label: "@ 谁", onPress: () => setMentioning(true) });
   }
 
   // ── 头部 ──
-  const count = !group ? 0 : isTeam && ws !== null ? ws.members.length + agentIds.length : agentIds.length + 1;
+  // 人数：团队群 = 全体成员 + 智能体；别的群 = 我 + 群里别的人 + 智能体
+  const count = !group ? 0 : isTeam && ws !== null ? ws.members.length + agentIds.length : humans.length + 1 + agentIds.length;
   const status = session?.state === "gone" ? "正在重连…" : nowRow !== null ? PHASE_STATUS[nowRow.phase] : "";
   const others = inbox.unreadChats;
   const infoOk = resolved !== null && (sessionId !== null || dmAgent !== null);
@@ -441,7 +517,7 @@ export function ChatScreen({ route, navigation }: Props) {
             <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}><Spinner /></View>
           ) : centre === "hello" ? (
             <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
-              <Hello ws={ws} kind={kind} agentIds={agentIds} title={title} />
+              <Hello ws={ws} kind={kind} agentIds={agentIds} title={title} people={humans.map((h) => ({ uid: h.uid, name: h.name, avatarUrl: h.url }))} />
             </View>
           ) : centre === "blank" ? (
             <View style={{ flex: 1 }} />
@@ -461,7 +537,7 @@ export function ChatScreen({ route, navigation }: Props) {
                     group={group}
                     deciding={deciding}
                     onDecide={(id, d) => void decide(id, d)}
-                    onAgent={(agentId) => navigation.navigate("Agent", isTeam ? { agentId, workspaceId: ws.id } : { agentId })}
+                    onAgent={(agentId) => navigation.navigate("Agent", isTeam || isGuestChat ? { agentId, workspaceId: ws.id } : { agentId })}
                     onOpenCall={(seq) => {
                       setOpenCallSeq(seq);
                       setCallSheetOpen(true);
@@ -624,17 +700,27 @@ export function ChatScreen({ route, navigation }: Props) {
           key={picker.key}
           visible={picker.visible}
           ws={ws}
-          title={picker.kind === "group" ? "拉人建群" : "拉人进群"}
-          lead={picker.kind === "group" ? "带上它，再拉几只，凑够 2 只就能建。" : `这个群最多 ${CHAT_GROUP_MAX} 只。`}
-          options={picker.kind === "group" ? ws.agents.map((a) => a.agentId) : ws.agents.map((a) => a.agentId).filter((id) => !agentIds.includes(id))}
+          title={picker.kind === "group" ? "拉人建群" : picker.kind === "invite" ? "拉朋友进群" : "拉人进群"}
+          lead={
+            picker.kind === "group" ? "带上它，再拉几位（智能体或朋友），凑够 2 位就能建。"
+              : picker.kind === "invite" ? "只能拉你自己的朋友。群里的智能体归群主管。"
+                : `智能体最多 ${CHAT_GROUP_MAX} 只。朋友进来之后，他们让智能体动手要等你批。`
+          }
+          options={
+            picker.kind === "invite" ? []
+              : picker.kind === "group" ? ws.agents.map((a) => a.agentId)
+                : ws.agents.map((a) => a.agentId).filter((id) => !agentIds.includes(id))
+          }
           preset={picker.kind === "group" && dmAgent !== null ? [dmAgent] : []}
           min={picker.kind === "group" ? CHAT_GROUP_CREATE_MIN : 1}
           max={picker.kind === "group" ? CHAT_GROUP_MAX : CHAT_GROUP_MAX - agentIds.length}
+          people={invitable}
+          maxPeople={CHAT_HUMANS_MAX - (picker.kind === "group" ? 0 : people.length)}
           okLabel={picker.kind === "group" ? "建群" : "拉进来"}
           withName={picker.kind === "group"}
           busy={pickBusy}
           error={pickError}
-          onOk={(picked, name) => void onPickOk(picked, name)}
+          onOk={(picked, name, pickedPeople) => void onPickOk(picked, name, pickedPeople)}
           onClose={closePicker}
           onExited={() => {
             setPicker(null);
