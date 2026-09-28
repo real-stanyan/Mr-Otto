@@ -165,3 +165,16 @@ export async function refreshHomeAfterWrite(): Promise<void> {
   if (inflight !== null) await inflight;
   await refreshHome();
 }
+
+/** 实时推送带来的一句（#1282，spec §3.4）：这条是主场的聊天就当场补进 lasts，回 true；不是回 false。
+    只往前走：推送晚到、比手上那句还旧的不覆盖 */
+export function patchHomeLast(sessionId: string, last: SessionLast): boolean {
+  const s = store.get();
+  if (!s.chats.some((c) => c.id === sessionId)) return false;
+  const cur = s.lasts.get(sessionId);
+  if (cur !== undefined && cur.ts >= last.ts) return true;
+  const lasts = new Map(s.lasts);
+  lasts.set(sessionId, last);
+  store.set({ lasts });
+  return true;
+}

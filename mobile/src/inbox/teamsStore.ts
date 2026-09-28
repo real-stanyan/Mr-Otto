@@ -139,6 +139,31 @@ export function refreshTeams(): Promise<void> {
   return run;
 }
 
+/** 同 homeStore.patchHomeLast：团队群、别人拉我进的群。不在手上 = 回 false（节流重拉会接住它） */
+export function patchTeamLast(sessionId: string, last: SessionLast): boolean {
+  const s = store.get();
+  const ti = s.teams.findIndex((t) => t.sessions.some((x) => x.id === sessionId));
+  if (ti >= 0) {
+    const t = s.teams[ti]!;
+    const cur = t.lasts.get(sessionId);
+    if (cur !== undefined && cur.ts >= last.ts) return true;
+    const lasts = new Map(t.lasts);
+    lasts.set(sessionId, last);
+    const teams = s.teams.slice();
+    teams[ti] = { ...t, lasts };
+    store.set({ teams });
+    return true;
+  }
+  const gi = s.guests.findIndex((g) => g.session.id === sessionId);
+  if (gi < 0) return false;
+  const g = s.guests[gi]!;
+  if (g.last !== null && g.last.ts >= last.ts) return true;
+  const guests = s.guests.slice();
+  guests[gi] = { ...g, last };
+  store.set({ guests });
+  return true;
+}
+
 /** 进了这个群 = 这里面 @ 我的都看过了（照桌面：本地先灭再发，等回执再灭会让断网时一条读过的群永远顶着标记） */
 export async function readTeamMentions(sessionId: string): Promise<void> {
   const before = store.get().mentions;
