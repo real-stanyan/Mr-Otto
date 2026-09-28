@@ -30,8 +30,8 @@ daemon，装配现有 agent 核心 + DockerWorld，权威 EventStore 落 VPS 本
 | `APNS_KEY_FILE` / `APNS_KEY_ID` / `APNS_TEAM_ID`（可选，三个一组） | 回电的推送（#1411，ADR-0331）。Apple Developer → Certificates, Identifiers & Profiles → Keys → +，勾 Apple Push Notifications service (APNs)，下载 `.p8`（**只能下载一次**）、记下 Key ID；Team ID 是 `HV982TTRNP`。`.p8` 放到 VPS 上只给 daemon 读：`sudo install -d -m 0750 -o root -g otto /etc/otto-runtime && sudo install -m 0440 -o root -g otto AuthKey_XXXXXXXXXX.p8 /etc/otto-runtime/apns.p8`，`APNS_KEY_FILE` 填这个路径。三个要么全有要么全无：只填一部分，启动就报缺哪几个；全不填 = 推送关着，智能体没有 `call_user`。开没开看 journal 里「推送开着 / 推送关着」那一行 |
 | `APNS_BUNDLE_ID`（可选） | 推送的 topic，缺省 `com.stanyan.mrotto.mobile`（手机 App 的 bundle id） |
 
-**一共 6 个必需变量**（逐字数 `REQUIRED_KEYS` 得出，不是估的数），`DATA_DIR` 是唯一有默认值
-的可选项。
+**一共 6 个必需变量**（逐字数 `REQUIRED_KEYS` 得出，不是估的数）。可选的有两种：`DATA_DIR` 与 `APNS_BUNDLE_ID` 不填就用缺省值；
+`APNS_KEY_FILE` / `APNS_KEY_ID` / `APNS_TEAM_ID` 三个一组，要么全填要么全不填。
 
 **模型 key 不在这份清单里**（issue #844，推翻 ADR-0199 决策⑥）：它跟着工作区走，由每个
 工作区的所有者在客户端里配自己那把（云会话页右上角「配置模型 / 仓库…」），落在 VPS 的

@@ -42,7 +42,7 @@ create policy pd_select_self on public.push_devices for select to authenticated 
 -- 不给 insert / update / delete 策略：客户端只走下面两个 RPC
 ```
 
-- `register_push_device(p_token text, p_bundle text)`，security definer：先删掉这个令牌挂在**别人**名下的那一行，再按令牌 upsert 到 `auth.uid()` 名下（`apns_env` 置空）。同一台手机换了账号，令牌就归新账号。不这么做的话，上一个账号的来电会响在这台手机上，锁屏上还会显示对方那句话。
+- `register_push_device(p_token text, p_bundle text)`，security definer：先删掉这个令牌挂在**别人**名下的那一行，再按令牌 upsert 到 `auth.uid()` 名下（新插入的行 `apns_env` 为空；同一个人重复登记不清它——同一个令牌的环境不会变）。同一台手机换了账号，令牌就归新账号。不这么做的话，上一个账号的来电会响在这台手机上，锁屏上还会显示对方那句话。
 - `unregister_push_device(p_token text)`，security definer：只删 `auth.uid()` 名下的这一行。
 - runtime 用 service key 读写：按 `user_id` 取令牌、回写 `apns_env`、删掉失效的令牌。
 
@@ -64,9 +64,10 @@ create policy pd_select_self on public.push_devices for select to authenticated 
   { "aps": { "alert": { "title": "运维 来电", "body": "<它要说的那句话>" },
              "sound": "ringtone.caf", "interruption-level": "time-sensitive",
              "thread-id": "<sessionId>" },
-    "ring": { "ringId": "…", "workspaceId": "…", "sessionId": "…", "agentId": "…",
+    "ring": { "ringId": "…", "workspaceId": "…", "sessionId": "…", "agentId": "…", "agentName": "…", "reason": "…",
               "chat": "dm | group | team | guest", "expiresTs": 1234567890 } }
   ```
+  名字与那句话也带上：来电页要画，而 App 刚被点醒时手上未必有那个团队的快照。
   `chat` 让手机知道开哪一种聊天页：主场私聊 → `dm`；主场群，被叫的是群主 → `group`；主场群，被叫的是客人 → `guest`；团队 → `team`。
 - **环境**：
   - 从 Xcode 装的包走沙盒，TestFlight / App Store 走生产，手机自己判断不了是哪种。所以按令牌那一行的 `apns_env` 发。
@@ -91,8 +92,8 @@ create policy pd_select_self on public.push_devices for select to authenticated 
 以下几种情况，工具直接回一句话让它在聊天里说，日志里不落事件：
 
 1. 对方正开着这条聊天：这条会话房里有对方的连接。daemon 给 sessionService 注入 `isWatching(uid)`，frameHandler 为此加一个 `uidOf(cid)`。
-2. 这条会话正在通话（通话名单非空）。
-3. 同一只打给同一个人，10 分钟内已经打过。按会话在内存里记，重启清零。
+2. ~~这条会话正在通话~~ 并进第 1 条（计划阶段的补全，见 §9）
+3. 同一只打给同一个人，10 分钟内已经打过。从日志折叠，重启不清零。
 4. 对方一台能收推送的设备都没有。
 
 ### 2.3 一次响铃的生命周期
@@ -117,14 +118,15 @@ interface CallRingEvent extends SessionEventBase {
   - 送到了：工具回「已经打过去了。他接起来你会先开口；45 秒没接就算未接，他回来会在聊天里看到」。
 - **接听**：对方在手机上点「接听」→ 打开这条聊天 → 发现成的 `call` 帧，把这一只拉进通话。`setVoiceCall` 里，如果新拉进来的这只正在给这个 uid 响铃，就算接听：
   - 落 `answered`，撤掉定时器；
-  - 它的开场白换成回电版（新的 `greeting: "callback"`）：`[系统] 「运维」打给 Stan 的电话接通了。你打这个电话是为了：<reason>。先把这件事说清楚，说完问他还有没有要你做的。这句话会被读出来，别用列表和记号。`（名字过 `promptSafe`，同 `voiceCallGreetingText`）。
+  - 它的开场白换成回电版（新的 `greeting: "callback"`）：`[系统] 「运维」打给 Stan 的电话接通了。运维：你打这个电话是为了：<reason>。先把这件事说清楚，说完问他还有没有要你做的。这句话会被读出来，别用列表和记号。`（名字过 `promptSafe`，同 `voiceCallGreetingText`）。
+  - 过了响铃时限 30 秒内接起来的照样算（`RING_ANSWER_GRACE_MS`）；它本来就在一场没人挂断的通话里时，名单没变也认接听。
 - **未接**：45 秒到了还在响 → 落 `missed`。
 - **重启**：装配时把日志里还停在 `ringing` 的折出来。已过期的补一条 `missed`；没过期的重新挂定时器。
 - **归档**：还在响的一律落 `missed`。
 
 ### 2.4 提示词
 
-云会话 system 提示词里通话那一段加一句：「挂断之后事情办完了，或者要他拍板，可以用 `call_user` 回电。」改的是 `src/session/deriveMessages.ts`，**要重新部署 runtime 才生效**（#791）。
+云会话 system 提示词里通话那一段加一句：「挂断之后事情办完了，或者要他拍板，可以用 `call_user` 回电。」改的是 `src/session/deriveMessages.ts`，**要重新部署 runtime 才生效**（#791）。只在推送开着时说：`voice_call_changed` 带 `callback: true` 才说。
 
 ## 3. 手机
 
@@ -167,7 +169,7 @@ interface CallRingEvent extends SessionEventBase {
 - `deriveMessages`（不进模型视野）；
 - `toThreadMessages.isAuditEvent`（本机时间线不画）与 `Timeline.tsx` 的 `EventRow`（两份名单一致那条测试会查）；
 - `contextEstimate.pendingAfter`、`deriveUsage`；
-- `agentView.OTHER_AGENT_VERDICTS`（drop）；
+- `agentView.OTHER_AGENT_VERDICTS`（keep：没有 agentId，那张表轮不到它）；
 - `sessionPackage.PRIVACY_VERDICTS`（strip：它带着别人的 uid 与一句私人的话）；
 - `cloudTimeline.hiddenFromCloudTimeline`（桌面藏）。
 
@@ -210,4 +212,19 @@ interface CallRingEvent extends SessionEventBase {
 - **只有手机会响**，桌面不响也不画卡（等 #1403）。
 - **reason 会显示在锁屏上**。要隐藏预览，走 iOS 自己的「显示预览」设置。
 - **前台接听后铃声停不停，要真机验**。iOS 删掉那条通知是否会停掉它的声音，这一点没把握；停不掉的话改成 App 内自己放。
+- **切后台就断开会话房**：切出去再回来要重连一次。
 - **推翻前提**：如果 time-sensitive 通知在真机上被专注模式挡掉，或者铃声只响一声，就退一步：通知只负责叫醒 App，响铃交给 App 内来电页。
+
+## 9. 计划阶段的补全（2026-09-28）
+
+1. **§2.2 第 2 条「正在通话不打」并进第 1 条**。锁屏 = 这台停听、通话还在（ADR-0320），通话名单非空不等于人在通话里——照 spec 字面，挂了电话锁屏（最常见的回电场景）会因为那场没人挂断的通话永远打不出去。人真在通话里时他必然连着这条会话，第 1 条已经挡住。接听时通话本来就开着：名单没变也认接听（Task 5）。
+2. **手机切后台主动断开会话房**（Task 8）。iOS 挂起的 socket 在服务端看来还连着（中继自己应答心跳，runtime 看不见），`isWatching` 会恒真，同样是回电永远打不出去。
+3. **接听宽限 30 秒**：人在第 44 秒点了接听，落到服务端时已记未接，仍算接通（`RING_ANSWER_GRACE_MS`）。
+4. **冷却从日志折叠**，不只是内存：比 spec 更严（重启不清零），状态少一份。
+5. **通话块那一句只在推送开着时说**：`voice_call_changed` 加可选字段 `callback?: true`，runtime 推送开着时带上。spec §2.1 自己的理由（推送关着时工具不出现，不能让模型许诺一通打不出去的电话）同样适用于提示词。
+6. **`agentView.OTHER_AGENT_VERDICTS` 写 `keep` 不写 `drop`**：`call_ring` 没有 agentId，早退路径一律放行，那张表根本轮不到它；写 `drop` 是一句不成立的话（同 voice_call_changed / chat_roster_changed 的写法）。模型不可见由 deriveMessages 保证。
+7. **回电开场白加「运维：」点名**（同 `voiceCallGreetingText`）：群里每只都读得到这一条，「你打这个电话是为了」得说清是对谁说。
+8. **`register_push_device` 重复登记不清 `apns_env`**：同一个令牌的环境不会变，只有新插入的行是空。
+9. **推送里的 `ring` 多带 `agentName` 与 `reason`**：来电页要画，而 App 刚被点醒时手上未必有那个团队的快照。
+10. **聊天里的来电卡用电话图标代替 📞**：仓里一律用 `Icon`。
+11. **接听 / 点开过期来电都把导航重置成「首页 → 那条聊天」**：手机只有一份「当前聊天」store，聊天页叠聊天页会让下面那一页在返回时对着一份已关掉的 store。
