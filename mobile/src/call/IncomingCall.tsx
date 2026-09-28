@@ -8,7 +8,7 @@
 // 而撤掉一个正在 present 别人的 Modal 会连它上面那个一起撤掉。代价：进出场、状态栏字色、读屏焦点
 // （accessibilityViewIsModal）要自己管；App 里别的 Modal（底部抽屉之类）开着时这一层在它下面——铃声和震动照样在。
 import { useEffect, useRef, useState } from "react";
-import { Animated, Easing, StatusBar, Text, Vibration, View, useWindowDimensions } from "react-native";
+import { Animated, Easing, Keyboard, StatusBar, Text, Vibration, View, useWindowDimensions } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { agentFaceSlot } from "../../../src/shared/agentAvatar.js";
 import { agentAvatarSlot } from "../../../src/shared/agentAvatarSlot.js";
@@ -51,6 +51,7 @@ export function IncomingCall() {
   if (head !== null) last.current = head;
   const ring = last.current;
   const [mounted, setMounted] = useState(false);
+  const [entered, setEntered] = useState(false);
   const y = useRef(new Animated.Value(height)).current;
   const ringingId = connecting === null ? (head?.ringId ?? null) : null;
 
@@ -68,20 +69,30 @@ export function IncomingCall() {
   useEffect(() => {
     if (visible) {
       setMounted(true);
-      Animated.timing(y, { toValue: 0, duration: reduce ? 0 : 380, easing: EASE, useNativeDriver: true }).start();
+      Animated.timing(y, { toValue: 0, duration: reduce ? 0 : 380, easing: EASE, useNativeDriver: true }).start(({ finished }) => {
+        if (finished) setEntered(true);
+      });
       return;
     }
+    setEntered(false);
     Animated.timing(y, { toValue: height, duration: reduce ? 0 : 300, easing: EASE, useNativeDriver: true }).start(({ finished }) => {
       if (finished) setMounted(false);
     });
   }, [visible]);
 
-  // 深色一屏配浅色字；收起时还给主题的那一种（全 app 只有 statusBarStyle.ts 在管它，这里只是临时借一下）
+  // 不是 Modal：人正在别的聊天里打字时键盘不会自己收，会盖住下面的「挂断 / 接听」（Modal 会把输入框的焦点带走，
+  // 这一层不会）——进场就收掉
   useEffect(() => {
-    if (!visible) return;
+    if (visible) Keyboard.dismiss();
+  }, [visible]);
+
+  // 深色一屏配浅色字；收起时还给主题的那一种（全 app 只有 statusBarStyle.ts 在管它，这里只是临时借一下）。
+  // 时机跟着这一层的上沿走：进场时顶上那一条最后才被盖住，演完再换；退场时它最先让出来，一开始就还
+  useEffect(() => {
+    if (!visible || !entered) return;
     StatusBar.setBarStyle("light-content", true);
     return () => StatusBar.setBarStyle(barStyleFor(isDark), true);
-  }, [visible, isDark]);
+  }, [visible, entered, isDark]);
 
   // 一直震，直到接了（接通中不震）、挂了或过了时限
   useEffect(() => {

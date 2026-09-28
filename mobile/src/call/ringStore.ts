@@ -43,7 +43,11 @@ function ringOf(n: Notifications.Notification): RingPush | null {
 /** 那一通对应的系统通知（接听 / 挂断时撤掉它，铃声跟着停——停不停要真机验，见 spec §8） */
 const noticeOf = new Map<string, string>();
 
+/** 这台手机上已经接了 / 挂了的那几通。推送不保证只到一次：同一通再来，不再弹来电页、也不再响 */
+const handled = new Set<string>();
+
 function enqueue(ring: RingPush, noticeId: string): void {
+  if (handled.has(ring.ringId)) return;
   noticeOf.set(ring.ringId, noticeId);
   store.set((s) => ({ ...s, queue: queueRing(s.queue, ring, Date.now()) }));
 }
@@ -75,6 +79,7 @@ export function flushPendingNav(): void {
 let connectTimer: ReturnType<typeof setTimeout> | null = null;
 
 export function answerRing(ring: RingPush): void {
+  handled.add(ring.ringId);
   store.set((s) => ({ queue: dropRing(s.queue, ring.ringId, Date.now()), connecting: ring }));
   void dismissNotice(ring.ringId);
   openChatOf(ring, true);
@@ -102,6 +107,7 @@ export function settleAnswer(ringId: string, how: "call" | "note"): void {
 }
 
 export function declineRing(ring: RingPush): void {
+  handled.add(ring.ringId);
   store.set((s) => ({ ...s, queue: dropRing(s.queue, ring.ringId, Date.now()) }));
   void dismissNotice(ring.ringId);
 }
@@ -117,7 +123,9 @@ export function pruneRings(): void {
 function onResponse(r: Notifications.NotificationResponse): void {
   const ring = ringOf(r.notification);
   if (ring === null) return;
-  if (ring.expiresTs > Date.now()) enqueue(ring, r.notification.request.identifier);
+  // 这一通正在接通：已经在往那条聊天走了，别再重置一次导航
+  if (store.get().connecting?.ringId === ring.ringId) return;
+  if (ring.expiresTs > Date.now() && !handled.has(ring.ringId)) enqueue(ring, r.notification.request.identifier);
   else openChatOf(ring, false);
 }
 
@@ -125,6 +133,8 @@ Notifications.setNotificationHandler({
   handleNotification: async (n) => {
     const ring = ringOf(n);
     if (ring === null) return { shouldShowBanner: true, shouldShowList: true, shouldPlaySound: true, shouldSetBadge: false };
+    // 接了 / 挂了的那一通又投过来一次：不响、不弹
+    if (handled.has(ring.ringId)) return { shouldShowBanner: false, shouldShowList: false, shouldPlaySound: false, shouldSetBadge: false };
     // App 开着：来电页就是横幅，不再弹一条；铃声照响（通知里那 27 秒）
     enqueue(ring, n.request.identifier);
     return { shouldShowBanner: false, shouldShowList: true, shouldPlaySound: true, shouldSetBadge: false };
