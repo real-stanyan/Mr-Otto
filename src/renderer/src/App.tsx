@@ -106,6 +106,7 @@ import { ResiduePanel } from "./components/ResiduePanel.js";
 import { SignInCard } from "./components/SignInCard.js";
 import { SignInScreen } from "./components/SignInScreen.js";
 import { SetPasswordDialog } from "./components/SetPasswordDialog.js";
+import { WxApp } from "./wx/WxApp.js";
 import { WorkspaceSettings } from "./components/WorkspaceSettings.js";
 import { ModelSetupDialog } from "./components/ModelSetupDialog.js";
 import { ThinkingPicker } from "./components/ThinkingPicker.js";
@@ -3658,6 +3659,8 @@ export function App() {
   const authRecord = useChat((s) => s.authRecord);
   /** 闸门抬不抬还多一条：从闸门发起的重置，要在门外把新密码设完（issue #744） */
   const holdGateForPasswordReset = useChat((s) => s.holdGateForPasswordReset);
+  /** 画不画本机写代码那一半（#1386：维护者拍板「先藏起来」，环境变量 OTTO_CODING=1 才画） */
+  const codingUi = useChat((s) => s.codingUi);
   const sessionId = useChat((s) => s.sessionId);
   const workspace = useChat((s) => s.workspace);
   const events = useChat((s) => s.events);
@@ -3808,6 +3811,22 @@ export function App() {
   // 而下面那棵树（侧栏 / 会话 / ⌘K 搜索框 / 各种弹窗）一个都不挂 —— 没登录的人
   // 按 ⌘K 不该有东西浮在登录卡上面
   if (showsSignInScreen(account, authRecord, holdGateForPasswordReset)) return <SignInScreen />;
+
+  // 微信式布局（#1386 桌面那一半）：本机写代码那一半**入口全部藏起来、代码一行不删**（维护者在 #1391
+  // 拍板「先藏起来」）。`OTTO_CODING=1` 时往下走、旧界面原样回来——维护者自己还要用、e2e 还要跑。
+  // 挂在闸门**之后**：没登录的人照旧只看得到登录那一屏；首登引导与「设新密码」两张弹窗两套界面都要
+  if (!codingUi) {
+    return (
+      <ConfirmProvider>
+        <TooltipProvider delayDuration={400}>
+          <WxApp />
+          <ProfileSetupDialog />
+          <SetPasswordDialog />
+          {!isPackaged && <DevBadge />}
+        </TooltipProvider>
+      </ConfirmProvider>
+    );
+  }
 
   // 布局：侧栏常驻，主区按 settingsSection 分发（账号 / 模型配置 / 外观 / Skill 库 / 欢迎 / 聊天）。
   // Protocol/Git Graph/DM 不整页替换而是右侧叠加面板:默认半屏(会话还看得见),可展开全屏
