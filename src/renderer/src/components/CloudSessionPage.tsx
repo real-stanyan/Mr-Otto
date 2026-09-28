@@ -38,7 +38,7 @@
 // 效果的按钮。这里另起一张更薄的卡，可视觉语言（圆角边框、pill 按钮）不
 // 新造。
 
-import { Fragment, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createContext, Fragment, useCallback, useContext, useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type KeyboardEvent, type MouseEvent as ReactMouseEvent, type ReactNode, type SyntheticEvent } from "react";
 import { ArrowLeft, AtSign, ChevronRight, Download, Phone, Settings2 } from "lucide-react";
 import { cn, isMac } from "@/lib/utils.js";
 import { Button } from "@/components/ui/button.js";
@@ -85,7 +85,7 @@ import type {
   AgentBriefedEvent, AgentRelayEvent, ApprovalDecisionEvent, ApprovalRequestEvent, AssistantMessageEvent,
   ChatMessageEvent, ChatRosterChangedEvent, SessionEvent,
 } from "../../../session/events.js";
-import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
+import { isHomeWorkspace, type WorkspaceSnapshot } from "../../../shared/workspaces.js";
 import type { CloudAck } from "../../../shared/shellBridge.js";
 import { cloudDeniedText, unknownSendNote } from "../../../shared/cloudSessionState.js";
 import { modelStatusText } from "../lib/cloudModelStatus.js";
@@ -101,6 +101,9 @@ import { VoicePickerPopover } from "./VoicePickerPopover.js";
 import { voiceCallAvailable } from "../../../shared/voiceFeed.js";
 import { voiceCallOf } from "../../../shared/voiceCall.js";
 import { useConfirm } from "@/components/ui/confirm-dialog.js";
+import { needsTimeRow, timelineTimeLabel } from "../../../shared/wechatInbox.js";
+import { EmojiPicker } from "./EmojiPicker.js";
+import { DISC_COLOR } from "../../../shared/ottoFace/index.js";
 
 /** 会话地图的记号（ADR-0292）：云会话只给**一轮的头**打（人说的话、通话卡），
     记号值就是那一轮的 id。模块级，量位置那个 effect 按引用依赖它 */
@@ -113,6 +116,17 @@ const turnMarkId = (el: HTMLElement): string | undefined => el.dataset["turnId"]
 const EMPTY_EVENTS: SessionEvent[] = [];
 // 团队会话不窗口化：模块级常量保证每次渲染同一个引用（`?? []` 会让下游 memo 每次都失效）
 const EMPTY_SEQS: number[] = [];
+
+/** 桌面微信式布局那一套外观（#1386）。缺席 = 今天这一页逐像素不变 */
+export interface WxChrome {
+  /** 头部整个换掉：拿到语音那颗钮（判据与弹层原样，这一层不重判）自己摆 */
+  header: (voiceSlot: ReactNode) => ReactNode;
+}
+
+/** 气泡那几行要不要照微信画（#1386）：头像 36 的圆角方块、群里别人说的话上面只写名字、
+    私聊一个字都不写（时刻改成隔 5 分钟插一条居中的，在时间线那一层）。
+    走 context 不走 prop：这几行组件散在文件各处，逐个穿参等于改十几处签名 */
+const WxRowsContext = createContext<{ names: boolean } | null>(null);
 
 /** 状态条文案（口径同 T4「云端状态三态化」：拿不到状态说"未知"不说"不可用"）。
     connecting/gone 都不是"连不上"的断言，只是"这一刻还没有可展示的事实"——
@@ -167,6 +181,7 @@ export function CloudSessionPage({
   onChatRoster,
   onGroupSettings,
   onAgentSettings,
+  wx,
 }: {
   ws: WorkspaceSnapshot;
   selfUid: string;
@@ -191,6 +206,9 @@ export function CloudSessionPage({
   /** 私聊头部那颗 ⚙ 打开这只智能体的设置（#1280）。**Task 21 才接线**；
       缺席时私聊的 ⚙ 退回 `onSettings`（主场设置） */
   onAgentSettings?: (agentId: string) => void;
+  /** 桌面微信式布局（#1386）：头部 / 输入框 / 气泡旁的名字与时刻换成微信那一套，
+      会话地图不画（微信没有它，左缘那一列刻度在这里只是噪音）。缺席 = 逐像素不变 */
+  wx?: WxChrome;
 }) {
   const cs = useChat((s) => s.cloudSession);
   const cloudSay = useChat((s) => s.cloudSay);
@@ -350,9 +368,13 @@ export function CloudSessionPage({
   );
   const rows = useMemo(() => {
     const all = mentionRows(ws);
-    // 主场里没有别的人类成员，所以聊天里人类那一族整个不出（`kind === "agent"`）
-    return chatIds === undefined ? all : all.filter((r) => r.kind === "agent" && chatIds.includes(r.agentId ?? ""));
-  }, [ws, chatIds]);
+    if (chatIds === undefined) return all;
+    // 聊天里的人类（#1393）：群里有客人时（成员表里不止群主一个）他们也点得到——ADR-0252 那条
+    // 「群里的人 @ 得到」在有朋友的群里原样成立。没有客人的主场里人类那一族整个不出
+    // （只剩我自己一行是噪音）；私聊里只有它一只，本来就不弹层
+    const peopleToo = chat?.kind === "group" && ws.members.length > 1;
+    return all.filter((r) => (r.kind === "agent" ? chatIds.includes(r.agentId ?? "") : peopleToo));
+  }, [ws, chatIds, chat?.kind]);
   // 人类那一族的候选（uid 借 agentId 那一格，永远不会进 `mentions`）。#1064
   // 之后它有了第二个消费方：算出这句话点到了哪几个人，好让他们真收到提醒
   const memberCandidates = useMemo(
@@ -571,6 +593,24 @@ export function CloudSessionPage({
     return { marks, empty: visible.length === 0, seqs: visible.map((v) => v.seq) };
   }, [chat, events, voiceCards, chatNow, rosterLines, createdAgents]);
   const dayMarks = chatTimeline?.marks ?? null;
+  // 微信那一套时刻（#1386）：不分日子逐条写，隔 5 分钟以上插一条居中的（`needsTimeRow`，
+  // 手机同一份）。算的仍是**会真的画出来的那几条**——判据与上面 chatTimeline 逐字相同，
+  // 只是团队会话也要（微信里团队群也是群），而团队会话照旧画压缩那一行
+  const wxMarks = useMemo(() => {
+    if (wx === undefined) return null;
+    const out = new Map<number, string>();
+    let prev: number | null = null;
+    for (const e of events) {
+      const shown =
+        (createdAgents.has(e.seq) && !voiceCards.folded.has(e.seq)) ||
+        (!hiddenFromCloudTimeline(e) && !voiceCards.folded.has(e.seq) && (chat === undefined || e.type !== "context_compacted"));
+      if (!shown) continue;
+      if (e.type === "chat_roster_changed" && (rosterLines.get(e.seq) ?? null) === null) continue;
+      if (needsTimeRow(prev, e.ts)) out.set(e.seq, timelineTimeLabel(e.ts, chatNow));
+      prev = e.ts;
+    }
+    return out;
+  }, [wx, events, createdAgents, voiceCards, chat, rosterLines, chatNow]);
 
   // ── 窗口化挂载 + 往前翻（#1280）────────────────────────────────────────────
   // 一只一条永久线，聊半年就是几千行，首屏全挂上去与本机长会话一样贵（#1190）。
@@ -663,7 +703,9 @@ export function CloudSessionPage({
   // 后者在开会话的占位期间是空串（welcome 到了才真），照它判 owner 自己会先看到
   // 一拍「所有者可改」再跳变——所以这里喂进去的是快照不是 cs
   const sandbox = sandboxApprovalControl(ws, selfUid);
-  const sandboxBanner = sandboxApprovalBanner(sandbox);
+  // 聊天里（主场）不说这句（#1386）：主场一次都不查 sandbox_approval（ADR-0298 / 0325），
+  // 客人那一侧拼出来的快照这一格恒为 null，照判就是对客人说一句「读不到免审批」的假话
+  const sandboxBanner = chat === undefined ? sandboxApprovalBanner(sandbox) : null;
 
   /** 翻那颗开关。**不做乐观翻转**：值是快照的投影，写成功才 patch 那一格
       （store.setWorkspaceSandboxApproval），失败原样停在旧值 + 一行原因 */
@@ -895,11 +937,158 @@ export function CloudSessionPage({
     </>
   );
 
+  // 输入框那一格的手柄（#1386 抽出来）：旧版的圆角卡片与微信式的平面板共用这一份——
+  // 键盘那一套（选人时方向键 / Enter 选人不发送 / Escape 只关这一个 @ / 输入法组词跳过）
+  // 只能有一份，两个外观各写一遍迟早分家
+  const boxPlaceholder =
+    !ready
+      ? "还没连上，暂时发不了消息"
+      : chat === undefined
+        ? "输入 @ 点名智能体或成员；不 @ 的话，谁的活谁接"
+        : chat.kind === "dm"
+          ? `跟${chat.title}说点什么`
+          : "输入 @ 点名；不 @ 的话，谁的活谁接";
+  const boxProps = {
+    ref: boxRef,
+    disabled: !ready,
+    placeholder: boxPlaceholder,
+    value: draft,
+    onChange: (e: ChangeEvent<HTMLTextAreaElement>) => {
+      setDraft(e.target.value);
+      setCaret(e.target.selectionStart);
+    },
+    onSelect: (e: SyntheticEvent<HTMLTextAreaElement>) => setCaret(e.currentTarget.selectionStart),
+    onKeyUp: (e: KeyboardEvent<HTMLTextAreaElement>) => setCaret(e.currentTarget.selectionStart),
+    onClick: (e: ReactMouseEvent<HTMLTextAreaElement>) => setCaret(e.currentTarget.selectionStart),
+    // **故意没有 onBlur**：写进 dismissedAt 的是"这个 @ 不要了"这个
+    // 判断，而切窗口不是那个意思——alt-tab 出去再回来，光标一个字没动，
+    // 于是 picking 永远是 null，接着打字列表再也不出来。
+    // 该关的两条路都有人管了：指针点到外面走 onInteractOutside（Radix 的
+    // DismissableLayer 连 focus-outside 一起管），键盘则出不去（Tab /
+    // Shift+Tab 在下面被拦去选人了）。切窗口留着它开着没关系——回来时
+    // 那份候选依然是这句话此刻要的
+    onKeyDown: (e: KeyboardEvent<HTMLTextAreaElement>) => {
+      // 输入法组词途中的按键是"选词"不是命令（Enter 尤其——同
+      // FriendChatView 的既有约定），整段跳过
+      if (e.nativeEvent.isComposing) return;
+      if (picking !== null && options.length > 0) {
+        if (e.key === "ArrowDown") {
+          e.preventDefault();
+          setHi((h) => (h + 1) % options.length);
+          return;
+        }
+        if (e.key === "ArrowUp") {
+          e.preventDefault();
+          setHi((h) => (h - 1 + options.length) % options.length);
+          return;
+        }
+        // Enter 在弹层开着时**选人不发送**：正在挑人的那一下按回车，
+        // 意思一定是"就他"，不是"发出去"
+        if (e.key === "Enter" || e.key === "Tab") {
+          e.preventDefault();
+          pick(hi);
+          return;
+        }
+        if (e.key === "Escape") {
+          e.preventDefault();
+          setDismissedAt(picking.at);
+          return;
+        }
+      } else if (picking !== null && emptyState !== null && e.key === "Escape") {
+        // 空态那张卡没有候选可挑，方向键/Enter/Tab 都没有意义——
+        // 只接 Escape 关掉它，同有候选时的既有约定
+        e.preventDefault();
+        setDismissedAt(picking.at);
+        return;
+      }
+      // Enter 发送、Shift+Enter 换行
+      if (e.key === "Enter" && !e.shiftKey) {
+        e.preventDefault();
+        void submit();
+      }
+    },
+  };
+  const mentionOpen = picking !== null && (options.length > 0 || emptyState !== null);
+  const mentionList = (
+    <PopoverContent
+      side="top"
+      align="start"
+      role="listbox"
+      // 焦点一步都不许挪：这个列表是 textarea 的附属显示，人还在打字。
+      // Radix 默认开时把焦点吸进内容、关时还回触发器，两下都会打断输入
+      onOpenAutoFocus={(e) => e.preventDefault()}
+      onCloseAutoFocus={(e) => e.preventDefault()}
+      // 键盘那条路由 textarea 的 onKeyDown 管，这里只兜「焦点不在框里
+      // 时按了 Escape」；两边都设成同一个值，重复触发也无所谓
+      onEscapeKeyDown={() => setDismissedAt(rawPicking?.at ?? null)}
+      onInteractOutside={(e) => {
+        // 点回 textarea 不算「点到外面」——它是这个弹层的锚，同一个部件。
+        // 算成外面的话，点进 @ 查询词中间会把弹层关掉且**再也不开**
+        // （dismissedAt 撞上同一个下标），而人此刻明明还在挑
+        if (e.detail.originalEvent.target === boxRef.current) return;
+        setDismissedAt(rawPicking?.at ?? null);
+      }}
+      // 进出场在 app.css 的 [data-slot="popover-content"] 那段（手写 keyframes——
+      // 上游那串 animate-in/zoom-in-95 在本仓库是死类名，见 ui/dialog.tsx 顶部）
+      className="w-auto min-w-[200px] max-w-[320px] p-1"
+    >
+      {options.length === 0 && emptyState ? (
+        // 空态（#935 / #957 C-I4）：只读的一行说明 + 一颗刷新钮，不是
+        // 一个可选的选项——名单可能真的刚变过（别人改了名/新建了 agent），
+        // 也可能用户就是打错了字，这里不替他判断，只给出"再核实一次"的路
+        <div className="flex flex-col gap-1.5 px-2 py-1.5 text-[12.5px] text-muted-foreground">
+          <span>没有叫「{emptyState.query}」的成员或智能体（名单可能刚变过）</span>
+          <button
+            type="button"
+            // 同选项行的道理：mousedown + preventDefault 保住 textarea 的焦点
+            onMouseDown={(e) => e.preventDefault()}
+            onClick={() => void refreshWorkspaceGroups()}
+            className="press-scale self-start text-foreground underline decoration-dotted underline-offset-2 hover:no-underline"
+          >
+            刷新名单
+          </button>
+        </div>
+      ) : (
+        options.map((o, i) => (
+          <MentionOptionRow
+            key={o.key}
+            ws={ws}
+            row={o}
+            selected={i === hi}
+            onPick={() => pick(i)}
+            onHover={() => setHi(i)}
+          />
+        ))
+      )}
+    </PopoverContent>
+  );
+  /** 在光标处插一段字（表情面板，#1386）：同 insertAt 的写法，光标落在插进去的那段后面 */
+  const insertText = (text: string): void => {
+    const box = boxRef.current;
+    const start = box?.selectionStart ?? draft.length;
+    const end = box?.selectionEnd ?? start;
+    const c = start + text.length;
+    setDraft(draft.slice(0, start) + text + draft.slice(end));
+    setCaret(c);
+    requestAnimationFrame(() => {
+      const b = boxRef.current;
+      b?.focus();
+      b?.setSelectionRange(c, c);
+    });
+  };
+
+  // 气泡那几行照不照微信画（#1386）：私聊里一个名字都不写（对面只有它），群里（含团队群）别人说的话上面写名字
+  const wxRows = wx === undefined ? null : { names: chat?.kind !== "dm" };
+
   return (
+    <WxRowsContext.Provider value={wxRows}>
     <div className="flex flex-1 min-h-0 flex-col">
       {/* 聊天换一张脸（#1280）：团队会话的头部回答「我在哪个团队里」，聊天的
-          头部回答「我在跟谁说话」。**团队那一支逐像素不变**，整块原样留在下面 */}
-      {chat !== undefined ? (
+          头部回答「我在跟谁说话」。**团队那一支逐像素不变**，整块原样留在下面。
+          微信式布局（#1386）整个头部交给调用方：它知道这一行该写群名带人数还是名字 */}
+      {wx !== undefined ? (
+        wx.header(voiceSlot)
+      ) : chat !== undefined ? (
         <AgentChatHeader
           ws={ws}
           chat={chat}
@@ -1060,7 +1249,12 @@ export function CloudSessionPage({
           const el = e.currentTarget;
           stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 48;
         }}
-        className="flex flex-1 min-h-0 flex-col gap-3 overflow-y-auto scrollbar-stable px-4 pt-3 pb-14"
+        className={cn(
+          "flex flex-1 min-h-0 flex-col gap-3 overflow-y-auto scrollbar-stable",
+          // 微信式的输入框是一块平的面板（上沿一道线、没有渐隐压在滚动区上），
+          // 所以底部不用为那 40px 渐隐留 pb-14（#995 那笔账只属于下面那个 footer）
+          wx !== undefined ? "px-6 pt-5 pb-6" : "px-4 pt-3 pb-14",
+        )}
       >
       {banner && (
         <p
@@ -1079,7 +1273,7 @@ export function CloudSessionPage({
         <p className="text-xs text-warn">这个群里没有智能体了——说了也没人接。用上面那颗「添加智能体」把人请回来。</p>
       )}
 
-      <div className="flex flex-col gap-2">
+      <div className={cn("flex flex-col", wx !== undefined ? "gap-3.5" : "gap-2")}>
         <TimelineProjectionContext.Provider value={timelineProjection}>
           {chatTimeline?.empty === true && timelineEmpty !== "skeleton" ? (
             // 刚建好的聊天（#1280）：这一刻人需要知道的是「谁在这儿、接下来干什么」，
@@ -1227,11 +1421,20 @@ export function CloudSessionPage({
               return <EventRow key={e.seq} event={e} isLast={i === events.length - 1} />;
               })();
               if (node === null) return null;
-              const day = dayMarks?.get(e.seq);
+              const day = (wxMarks ?? dayMarks)?.get(e.seq);
               if (day === undefined) return node;
               return (
                 <Fragment key={`day-${e.seq}`}>
-                  <span className="self-center rounded-full bg-foreground/[0.06] px-2.5 py-0.5 text-[11px] text-muted-foreground">
+                  <span
+                    className={cn(
+                      "self-center",
+                      // 微信那一格是一行浅字，不是一枚药丸：它每隔几分钟就出现一次，
+                      // 画成药丸会把整条时间线切成一格一格的
+                      wxMarks !== null
+                        ? "py-0.5 text-[11.5px] text-foreground/40 tabular-nums"
+                        : "rounded-full bg-foreground/[0.06] px-2.5 py-0.5 text-[11px] text-muted-foreground",
+                    )}
+                  >
                     {day}
                   </span>
                   {node}
@@ -1255,8 +1458,11 @@ export function CloudSessionPage({
               key={req.callId}
               event={req}
               ws={ws}
-              waitingLabel={labelOf(ws, req.initiatorUid)}
-              canDecide={selfUid === req.initiatorUid || selfUid === cs.ownerUid}
+              // 主场里的群（#1393，ADR-0325 决定 7）：动的是群主的东西，**只有群主批得了**——
+              // 客人点起的那一轮客人自己批不了（runtime 的 initiatorMayDecide），画两颗
+              // 点了必然被拒的钮就是撒谎的勾；那一行写「等待 群主 审批」。团队会话照旧
+              waitingLabel={labelOf(ws, isHomeWorkspace(ws) ? cs.ownerUid || ws.ownerUid : req.initiatorUid)}
+              canDecide={selfUid === (cs.ownerUid || ws.ownerUid) || (selfUid === req.initiatorUid && !isHomeWorkspace(ws))}
               ready={ready}
               onApprove={() => cloudApprove(req.callId, "approved")}
               onDeny={() => cloudApprove(req.callId, "denied")}
@@ -1288,16 +1494,74 @@ export function CloudSessionPage({
       )}
 
       </div>
-      <ConversationMapRail
-        viewport={scrollEl}
-        entries={mapEntries}
-        owners={mapOwners}
-        markSelector={TURN_MARK}
-        markId={turnMarkId}
-        onSelect={jumpToTurn}
-      />
+      {wx === undefined && (
+        <ConversationMapRail
+          viewport={scrollEl}
+          entries={mapEntries}
+          owners={mapOwners}
+          markSelector={TURN_MARK}
+          markId={turnMarkId}
+          onSelect={jumpToTurn}
+        />
+      )}
       </div>
 
+      {wx !== undefined ? (
+        // 微信式输入框（#1386）：一块平的面板、上沿一道线；左下表情 / @（群里）/ 免审批（团队群，
+        // ADR-0243：刹车要在手边），右下「发送」。键盘那一套与旧版共用 boxProps；
+        // 「发给谁」那一行照旧（只读——正文才是事实，给它配一颗 × 就是第二个事实来源）
+        <footer className="group/composer relative flex h-[152px] shrink-0 flex-col border-t border-foreground/[0.07] pt-2.5 pr-4 pb-3 pl-6">
+          {sandboxBanner && <p className="mb-1 text-[11px] text-warn">{sandboxBanner}</p>}
+          {sandboxError && <p className="mb-1 text-[11px] text-err">{sandboxError}</p>}
+          {mentions.length > 0 && (
+            <div className="mb-1 flex flex-wrap items-center gap-1 text-[11px] text-muted-foreground">
+              <span>发给</span>
+              {mentions.map((id) => (
+                <span key={id} className="rounded-full border border-border px-2 py-[1px]">
+                  {agentNameOf(ws, id)}
+                </span>
+              ))}
+            </div>
+          )}
+          <Popover open={mentionOpen}>
+            <PopoverAnchor asChild>
+              <textarea
+                {...boxProps}
+                rows={1}
+                aria-label="输入消息"
+                className="min-h-0 w-full flex-1 resize-none border-0 bg-transparent py-0.5 text-[14px] leading-[1.6] text-foreground caret-brand outline-none placeholder:text-foreground/35 disabled:cursor-not-allowed disabled:opacity-60"
+              />
+            </PopoverAnchor>
+            {mentionList}
+          </Popover>
+          <div className="-ml-1.5 flex items-center gap-0.5">
+            <EmojiPicker disabled={!ready} onPick={insertText} />
+            {/* 私聊里不画（#1280）：名单里只有它一只，@ 谁都是它 */}
+            {chat?.kind !== "dm" && (
+              <button
+                type="button"
+                disabled={!ready}
+                onClick={insertAt}
+                title="@ 谁"
+                aria-label="@ 智能体或成员"
+                className="grid size-8 place-items-center rounded-md text-muted-foreground transition-[background-color,color,transform] duration-150 hover:bg-foreground/[0.05] hover:text-foreground active:scale-[0.94] disabled:pointer-events-none disabled:opacity-30"
+              >
+                <AtSign className="size-[18px]" aria-hidden />
+              </button>
+            )}
+            {/* 团队群才有这颗（聊天里主场恒全免，画一枚翻了没用的开关是撒谎的勾，ADR-0298） */}
+            {chat === undefined && (
+              <SandboxApprovalToggle control={sandbox} busy={sandboxBusy} onChange={(next) => void toggleSandbox(next)} />
+            )}
+            <span className="mr-2.5 ml-auto text-[11.5px] text-foreground/40 opacity-0 transition-opacity duration-150 group-focus-within/composer:opacity-100">
+              Enter 发送 · Shift + Enter 换行
+            </span>
+            <Button size="sm" className="h-[30px] px-[18px]" disabled={!canSend} onClick={() => void submit()}>
+              发送
+            </Button>
+          </div>
+        </footer>
+      ) : (
       <footer className="relative shrink-0 px-4 pt-[10px] pb-3">
         {/* 滚动缘渐隐，同 App.tsx 的 footer：正文淡进底色，不画 1px 分隔线 */}
         <div aria-hidden className="pointer-events-none absolute inset-x-0 -top-10 h-10 bg-gradient-to-b from-transparent to-background" />
@@ -1347,135 +1611,20 @@ export function CloudSessionPage({
               Radix 把内容 portal 到 body、位置不够时自己翻到下面——这正是那个裁切的修法。
               键盘**仍然全部**由下面的 textarea onKeyDown 管（方向键/Enter 不能交给 Radix，
               它会拿去做菜单导航）；焦点也一步都不许挪，靠两个 AutoFocus 的 preventDefault */}
-          <Popover open={picking !== null && (options.length > 0 || emptyState !== null)}>
+          <Popover open={mentionOpen}>
             <PopoverAnchor asChild>
               {/* 与本地的 ComposerTextarea 逐字同款：无边框、自动长高（Textarea 自带
                   field-sizing: content）、max-h 封顶出滚动条、度量走 COMPOSER_METRICS */}
               <Textarea
-                ref={boxRef}
+                {...boxProps}
                 rows={1}
-                disabled={!ready}
                 className={cn(
                   "relative border-none shadow-none min-h-0 bg-transparent dark:bg-transparent text-foreground resize-none max-h-[40vh] focus-visible:ring-0 placeholder:text-foreground/35 caret-foreground",
                   COMPOSER_METRICS
                 )}
-                placeholder={
-                  !ready
-                    ? "还没连上，暂时发不了消息"
-                    : chat === undefined
-                      ? "输入 @ 点名智能体或成员；不 @ 的话，谁的活谁接"
-                      : chat.kind === "dm"
-                        ? `跟${chat.title}说点什么`
-                        : "输入 @ 点名；不 @ 的话，谁的活谁接"
-                }
-                value={draft}
-                onChange={(e) => {
-                  setDraft(e.target.value);
-                  setCaret(e.target.selectionStart);
-                }}
-                onSelect={(e) => setCaret(e.currentTarget.selectionStart)}
-                onKeyUp={(e) => setCaret(e.currentTarget.selectionStart)}
-                onClick={(e) => setCaret(e.currentTarget.selectionStart)}
-                // **故意没有 onBlur**：写进 dismissedAt 的是"这个 @ 不要了"这个
-                // 判断，而切窗口不是那个意思——alt-tab 出去再回来，光标一个字没动，
-                // 于是 picking 永远是 null，接着打字列表再也不出来。
-                // 该关的两条路都有人管了：指针点到外面走 onInteractOutside（Radix 的
-                // DismissableLayer 连 focus-outside 一起管），键盘则出不去（Tab /
-                // Shift+Tab 在下面被拦去选人了）。切窗口留着它开着没关系——回来时
-                // 那份候选依然是这句话此刻要的
-                onKeyDown={(e) => {
-                  // 输入法组词途中的按键是"选词"不是命令（Enter 尤其——同
-                  // FriendChatView 的既有约定），整段跳过
-                  if (e.nativeEvent.isComposing) return;
-                  if (picking !== null && options.length > 0) {
-                    if (e.key === "ArrowDown") {
-                      e.preventDefault();
-                      setHi((h) => (h + 1) % options.length);
-                      return;
-                    }
-                    if (e.key === "ArrowUp") {
-                      e.preventDefault();
-                      setHi((h) => (h - 1 + options.length) % options.length);
-                      return;
-                    }
-                    // Enter 在弹层开着时**选人不发送**：正在挑人的那一下按回车，
-                    // 意思一定是"就他"，不是"发出去"
-                    if (e.key === "Enter" || e.key === "Tab") {
-                      e.preventDefault();
-                      pick(hi);
-                      return;
-                    }
-                    if (e.key === "Escape") {
-                      e.preventDefault();
-                      setDismissedAt(picking.at);
-                      return;
-                    }
-                  } else if (picking !== null && emptyState !== null && e.key === "Escape") {
-                    // 空态那张卡没有候选可挑，方向键/Enter/Tab 都没有意义——
-                    // 只接 Escape 关掉它，同有候选时的既有约定
-                    e.preventDefault();
-                    setDismissedAt(picking.at);
-                    return;
-                  }
-                  // Enter 发送、Shift+Enter 换行
-                  if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault();
-                    void submit();
-                  }
-                }}
               />
             </PopoverAnchor>
-            <PopoverContent
-              side="top"
-              align="start"
-              role="listbox"
-              // 焦点一步都不许挪：这个列表是 textarea 的附属显示，人还在打字。
-              // Radix 默认开时把焦点吸进内容、关时还回触发器，两下都会打断输入
-              onOpenAutoFocus={(e) => e.preventDefault()}
-              onCloseAutoFocus={(e) => e.preventDefault()}
-              // 键盘那条路由 textarea 的 onKeyDown 管，这里只兜「焦点不在框里
-              // 时按了 Escape」；两边都设成同一个值，重复触发也无所谓
-              onEscapeKeyDown={() => setDismissedAt(rawPicking?.at ?? null)}
-              onInteractOutside={(e) => {
-                // 点回 textarea 不算「点到外面」——它是这个弹层的锚，同一个部件。
-                // 算成外面的话，点进 @ 查询词中间会把弹层关掉且**再也不开**
-                // （dismissedAt 撞上同一个下标），而人此刻明明还在挑
-                if (e.detail.originalEvent.target === boxRef.current) return;
-                setDismissedAt(rawPicking?.at ?? null);
-              }}
-              // 进出场在 app.css 的 [data-slot="popover-content"] 那段（手写 keyframes——
-              // 上游那串 animate-in/zoom-in-95 在本仓库是死类名，见 ui/dialog.tsx 顶部）
-              className="w-auto min-w-[200px] max-w-[320px] p-1"
-            >
-              {options.length === 0 && emptyState ? (
-                // 空态（#935 / #957 C-I4）：只读的一行说明 + 一颗刷新钮，不是
-                // 一个可选的选项——名单可能真的刚变过（别人改了名/新建了 agent），
-                // 也可能用户就是打错了字，这里不替他判断，只给出"再核实一次"的路
-                <div className="flex flex-col gap-1.5 px-2 py-1.5 text-[12.5px] text-muted-foreground">
-                  <span>没有叫「{emptyState.query}」的成员或智能体（名单可能刚变过）</span>
-                  <button
-                    type="button"
-                    // 同选项行的道理：mousedown + preventDefault 保住 textarea 的焦点
-                    onMouseDown={(e) => e.preventDefault()}
-                    onClick={() => void refreshWorkspaceGroups()}
-                    className="press-scale self-start text-foreground underline decoration-dotted underline-offset-2 hover:no-underline"
-                  >
-                    刷新名单
-                  </button>
-                </div>
-              ) : (
-                options.map((o, i) => (
-                  <MentionOptionRow
-                    key={o.key}
-                    ws={ws}
-                    row={o}
-                    selected={i === hi}
-                    onPick={() => pick(i)}
-                    onHover={() => setHi(i)}
-                  />
-                ))
-              )}
-            </PopoverContent>
+            {mentionList}
           </Popover>
           {/* 工具条：本地那边左边是偏好栏、右边是发送/停止圆钮。这里左边只剩一颗 @
               （形状抄 ComposerAttachButton 的 ghost 圆钮，本地那颗「＋ 附件」的位置）；
@@ -1547,7 +1696,9 @@ export function CloudSessionPage({
           </ComposerToolbar>
         </ComposerBar>
       </footer>
+      )}
     </div>
+    </WxRowsContext.Provider>
   );
 }
 
@@ -1585,9 +1736,7 @@ function ChatMessageRow({
   const name = safeSpeakerLabel(event.label, event.fromUid);
   return (
     <SpeakerRow mine={mine} avatar={<PersonAvatar name={name} src={avatarUrl} />} turnId={turnId}>
-      <span className="px-1 text-[10.5px] text-muted-foreground">
-        {name} · {formatProxyTime(event.ts)}
-      </span>
+      <SpeakerLabel name={name} ts={event.ts} mine={mine} />
       <Bubble align={mine ? "end" : "start"} variant={mine ? "tinted" : "muted"}>
         <BubbleContent className="whitespace-pre-wrap break-words">{event.content}</BubbleContent>
       </Bubble>
@@ -1623,9 +1772,18 @@ function SpeakerRow({
   turnId?: string | undefined;
   children: ReactNode;
 }) {
+  const wx = useContext(WxRowsContext);
   return (
-    <div data-turn-id={turnId} className={cn("flex max-w-[85%] gap-2", mine ? "flex-row-reverse self-end" : "self-start")}>
-      <div className="shrink-0 pt-[3px]">{avatar}</div>
+    <div
+      data-turn-id={turnId}
+      className={cn(
+        "flex",
+        // 微信那一套（#1386）：头像与气泡**顶对齐**（没有标签行时气泡就是第一行），间距 10
+        wx !== null ? "max-w-[min(78%,680px)] gap-2.5" : "max-w-[85%] gap-2",
+        mine ? "flex-row-reverse self-end" : "self-start",
+      )}
+    >
+      <div className={cn("shrink-0", wx === null && "pt-[3px]")}>{avatar}</div>
       <div className={cn("flex min-w-0 flex-col gap-0.5", mine ? "items-end" : "items-start")}>
         {children}
       </div>
@@ -1633,14 +1791,33 @@ function SpeakerRow({
   );
 }
 
+/** 气泡上面那一行字。旧版一视同仁写「名字 · 时间」（#993）；微信那一套（#1386）只在群里、
+    只给别人写名字——自己的话从靠右认得出，时刻交给时间线上隔 5 分钟一条的那一行 */
+function SpeakerLabel({ name, ts, mine }: { name: string | null; ts: number; mine: boolean }) {
+  const wx = useContext(WxRowsContext);
+  if (wx !== null) {
+    if (!wx.names || mine || name === null || name === "") return null;
+    return <span className="px-0.5 text-[11.5px] text-muted-foreground">{name}</span>;
+  }
+  return (
+    <span className="px-1 text-[10.5px] text-muted-foreground">
+      {name ? `${name} · ` : ""}
+      {formatProxyTime(ts)}
+    </span>
+  );
+}
+
 /** 成员头像：profiles.avatar_url 有就画图，没有退回首字母（同 FriendChatView /
     identity.ts 的 initial 纪律——取首个码点不取 charAt，emoji 名字按 UTF-16
     切会得到半个代理对） */
 function PersonAvatar({ name, src }: { name: string; src: string }) {
+  const wx = useContext(WxRowsContext);
+  // 微信那一套（#1386）：36 的圆角方块。尺寸走 style 不走类名——Avatar 的 `data-[size=sm]:size-6`
+  // 是属性选择器，特异度比一个普通的 size-9 高，类名压不过它
   return (
-    <Avatar size="sm">
+    <Avatar size="sm" {...(wx !== null ? { className: "rounded-[6px]", style: { width: 36, height: 36 } } : {})}>
       {src !== "" && <AvatarImage src={src} alt={name} />}
-      <AvatarFallback>{initialOf(name)}</AvatarFallback>
+      <AvatarFallback {...(wx !== null ? { className: "rounded-[6px] text-[14px]" } : {})}>{initialOf(name)}</AvatarFallback>
     </Avatar>
   );
 }
@@ -1658,8 +1835,24 @@ function initialOf(name: string): string {
     image-rendering: pixelated，缩下来会整行整列丢像素」的注意事项没了——网格
     按尺寸现算，24px 与 80px 画的是同一张脸的不同分辨率，不是同一张图的两次缩放 */
 function AgentAvatar({ ws, agentId, name }: { ws: WorkspaceSnapshot; agentId: string | undefined; name: string }) {
+  const wx = useContext(WxRowsContext);
+  if (wx !== null && agentId !== undefined) {
+    // 微信那一套（#1386）：圆角方块。脸画在一枚纸白圆盘上，底下垫一块同色的方块（圆盘与方块同色，
+    // 看上去就是一张方形的脸；同 wx/WxAvatar 的 WxFace）
+    return (
+      <span className="grid size-9 shrink-0 place-items-center overflow-hidden rounded-[6px]" style={{ background: DISC_COLOR }}>
+        <AgentFace slot={agentFace(ws, agentId).slot} size={36} className="rounded-none" label={name} />
+      </span>
+    );
+  }
   return (
-    <PartyAvatar avatar={agentId === undefined ? null : agentFace(ws, agentId)} name={name} size={24} label={name} />
+    <PartyAvatar
+      avatar={agentId === undefined ? null : agentFace(ws, agentId)}
+      name={name}
+      size={wx !== null ? 36 : 24}
+      label={name}
+      {...(wx !== null ? { className: "rounded-[6px]", fallbackClassName: "rounded-[6px]" } : {})}
+    />
   );
 }
 
@@ -1754,10 +1947,7 @@ function UserMessageRow({
 }) {
   return (
     <SpeakerRow mine={mine} avatar={<PersonAvatar name={label ?? "?"} src={avatarUrl} />} turnId={turnId}>
-      <span className="px-1 text-[10.5px] text-muted-foreground">
-        {label ? `${label} · ` : ""}
-        {formatProxyTime(ts)}
-      </span>
+      <SpeakerLabel name={label} ts={ts} mine={mine} />
       <Bubble align={mine ? "end" : "start"} variant={mine ? "tinted" : "muted"}>
         <BubbleContent className="whitespace-pre-wrap break-words">{text}</BubbleContent>
       </Bubble>
@@ -1776,9 +1966,7 @@ export function AssistantMessageRow({ event, ws }: { event: AssistantMessageEven
   const name = assistantLabel(event, ws);
   return (
     <SpeakerRow mine={false} avatar={<AgentAvatar ws={ws} agentId={event.agentId} name={name} />}>
-      <span className="px-1 text-[10.5px] text-muted-foreground">
-        {name} · {formatProxyTime(event.ts)}
-      </span>
+      <SpeakerLabel name={name} ts={event.ts} mine={false} />
       <AgentBubbles text={event.content} />
     </SpeakerRow>
   );
@@ -2162,6 +2350,9 @@ export function PendingTurnLines({
   // ——晚的那行上那颗钮点下去停的是别人的轮次。stopButtonRows 把这条判据算成
   // 一份 key 集合，这里只查表；权限那一问仍旧归 canStopTurn，两者是且的关系
   const stoppable = useMemo(() => stopButtonRows(pending), [pending]);
+  // 微信那一套（#1386）：私聊里不写名字（对面只有它），群里照写
+  const wx = useContext(WxRowsContext);
+  const showName = wx === null || wx.names;
   if (pending.length === 0) return null;
   return (
     <>
@@ -2177,12 +2368,15 @@ export function PendingTurnLines({
           );
         }
         const streamed = streaming[t.agentId];
+        const stop = stoppable.has(key) && canStopTurn(t, selfUid, cs);
         return (
           <SpeakerRow key={key} mine={false} avatar={<AgentAvatar ws={ws} agentId={t.agentId} name={name} />}>
-            <span className="flex items-center gap-1 px-1 text-[10.5px] text-muted-foreground">
-              {name}
-              {stoppable.has(key) && canStopTurn(t, selfUid, cs) && <StopTurnButton seq={t.seq} />}
-            </span>
+            {(showName || stop) && (
+              <span className={cn("flex items-center gap-1 px-1 text-muted-foreground", wx !== null ? "text-[11.5px]" : "text-[10.5px]")}>
+                {showName && name}
+                {stop && <StopTurnButton seq={t.seq} />}
+              </span>
+            )}
             {/* 气泡与 AssistantMessageRow 那张逐字同款（muted / align start）：
                 答案落下来时人看到的是同一张气泡里点变成了字，不是一个东西消失、
                 另一个东西出现。有正文预览（#1107）就画正在长的文字，否则照旧

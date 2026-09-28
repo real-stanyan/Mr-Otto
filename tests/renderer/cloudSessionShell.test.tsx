@@ -78,14 +78,19 @@ const row = (over: Partial<CloudSessionListRow> = {}): CloudSessionListRow => ({
   ...over,
 });
 
-function renderMain(o: { chat: CloudSessionState["chat"]; events?: SessionEvent[]; rows?: CloudSessionListRow[] }): void {
+function renderMain(o: {
+  chat: CloudSessionState["chat"];
+  events?: SessionEvent[];
+  rows?: CloudSessionListRow[];
+  ws?: WorkspaceSnapshot;
+}): void {
   useChat.setState({
     cloudSession: {
       workspaceId: "home", sessionId: "cs1", state: "ready", initiatorUid: "u1", ownerUid: "u1", selfUid: "u1",
       modelRoute: null, gapNote: null, hasOlder: false, older: "idle", chat: o.chat,
       events: o.events ?? [created],
     },
-    workspaceGroups: [HOME],
+    workspaceGroups: [o.ws ?? HOME],
     cloudSessionList: { home: o.rows ?? [row()] },
     cloudPendingFirstMessage: null,
     billing: null,
@@ -158,5 +163,21 @@ describe("名单从日志推导（#1302）", () => {
       events: [created],
     });
     expect(screen.getByText("管理员 · 客服")).toBeInTheDocument();
+  });
+});
+
+describe("「读不到免审批」只对团队会话说（#1386）", () => {
+  // 客人那一侧拼出来的主场快照（`assembleGuestChat`）这一格恒为 null：主场一次都不查
+  // sandbox_approval（ADR-0298 / 0325），读不到是它的常态，不是一次故障
+  const UNREAD = { ...HOME, sandboxApproval: null } as WorkspaceSnapshot;
+
+  it("聊天里（主场）：一个字都不说", () => {
+    renderMain({ chat: { kind: "group", agentIds: ["admin"], humans: [] }, ws: UNREAD });
+    expect(screen.queryByText(/读不到这个团队的/)).toBeNull();
+  });
+
+  it("团队会话里读不到：照旧说出口（那一格可能正开着免审）", () => {
+    renderMain({ chat: null, ws: UNREAD });
+    expect(screen.getByText(/读不到这个团队的/)).toBeInTheDocument();
   });
 });
