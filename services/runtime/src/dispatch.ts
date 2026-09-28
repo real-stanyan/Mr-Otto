@@ -126,6 +126,14 @@ export const DISPATCH_TIMEOUT_MS = 5000;
     的对拍里这条路 17 句判不出来，每一句在文字群聊里都落成一条「没派出去」。给到 512：
     上限只决定网关那一笔预扣，结算按实际用量（放宽之后同样四句用了 39–80 个） */
 const DISPATCH_MAX_TOKENS = 512;
+/** 哪几家的便宜款收 `reasoning_effort: "low"`、而且真的因此少想（#1405）。上限放宽只治「简单
+    的那几句被截断」；**拿不准的那几句**（正是决策模型交过来的）它会推理 300–500 多个 token、
+    一发 14–16 秒，撞上 DISPATCH_TIMEOUT_MS 那 5 秒——群里还是一句「没派出去」。2026-09-28
+    真机：智谱 glm-5.3-flash 带上它之后推理 0–24 个 token、1–3 秒、六句全对；`thinking:
+    {type:"disabled"}` 被拒（「该模型始终思考，不支持关闭思考；请使用 low、high 或 max」）。
+    **名单按平台、逐家真接口验过才准进**（同 ADR-0274 的 REASONING_PASSBACK）：别家没验过，
+    而有的厂商对陌生字段回 400——那样派活会每一句都失败 */
+const LOW_REASONING_PLATFORMS: ReadonlySet<string> = new Set(["zhipu"]);
 
 /** 「没人对口的活归它」在名册那一行上的标记文案。只挂在 fallback 那一只上 */
 const FALLBACK_MARK = "（没人对口的活归它）";
@@ -279,7 +287,10 @@ export interface DispatchDeps {
 export async function requestDispatch(
   deps: DispatchDeps,
   input: DispatchInput,
-  models: readonly string[]
+  models: readonly string[],
+  /** 型号 → 平台（`/billing/v1/me` 的 `modelPlatforms`）。缺席 = 不知道是哪家 = 不带
+      `reasoning_effort`（LOW_REASONING_PLATFORMS 的纪律） */
+  modelPlatforms?: Readonly<Record<string, string>>,
 ): Promise<DispatchVerdict> {
   const failed = (reason: string): DispatchVerdict => {
     deps.log?.(`派活：${reason}`);
@@ -288,6 +299,8 @@ export async function requestDispatch(
   if (models.length === 0) return failed("网关没有可用的型号");
   if (input.roster.length === 0) return failed("智能体名单为空");
   const cheap = models[0]!;
+  const platform = modelPlatforms?.[cheap];
+  const lowReasoning = platform !== undefined && LOW_REASONING_PLATFORMS.has(platform);
   const doFetch = deps.fetchImpl ?? fetch;
   const timeoutMs = deps.timeoutMs ?? DISPATCH_TIMEOUT_MS;
   const controller = new AbortController();
@@ -304,6 +317,7 @@ export async function requestDispatch(
         ],
         max_tokens: DISPATCH_MAX_TOKENS,
         stream: false,
+        ...(lowReasoning ? { reasoning_effort: "low" } : {}),
       }),
       signal: controller.signal,
     });
@@ -347,7 +361,8 @@ export interface OwnerDispatchDeps {
 export async function requestDispatchAsOwner(
   deps: OwnerDispatchDeps,
   input: DispatchInput,
-  models: readonly string[]
+  models: readonly string[],
+  modelPlatforms?: Readonly<Record<string, string>>,
 ): Promise<DispatchVerdict> {
   return requestDispatch(
     {
@@ -363,6 +378,7 @@ export async function requestDispatchAsOwner(
       ...(deps.log ? { log: deps.log } : {}),
     },
     input,
-    models
+    models,
+    modelPlatforms,
   );
 }

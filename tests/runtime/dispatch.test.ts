@@ -275,6 +275,25 @@ describe("requestDispatch", () => {
     // 原来的 64 一半时间被截断（finish_reason=length、正文是空串），群里就多一句「没派出去」
     expect(body.max_tokens).toBeGreaterThanOrEqual(256);
   });
+
+  // #1405：拿不准的那几句（正是决策模型交过来的）它会推理 300–500 多个 token、一发 14–16 秒，
+  // 撞上 5 秒的超时。`reasoning_effort: "low"` 在智谱上真机验过（推理 0–24 个 token、1–3 秒、
+  // 六句全对）；别家没验过——同 ADR-0274 的规矩，没验过的厂商一个陌生字段都不发（有的会 400）
+  it("最便宜那款在验过的平台上（智谱）才带 reasoning_effort: low；别家、或不知道是哪家，一个字不带", async () => {
+    const bodyOf = async (platforms?: Record<string, string>): Promise<Record<string, unknown>> => {
+      let sent = "";
+      const f = (async (_url: string, init: RequestInit) => {
+        sent = init.body as string;
+        return new Response(JSON.stringify({ choices: [{ message: { content: "2" } }] }), { status: 200 });
+      }) as unknown as typeof fetch;
+      await requestDispatch(deps(f), input(), MODELS, platforms);
+      return JSON.parse(sent) as Record<string, unknown>;
+    };
+    expect((await bodyOf({ cheap: "zhipu", mid: "qwen" })).reasoning_effort).toBe("low");
+    expect(await bodyOf({ cheap: "qwen", mid: "zhipu" })).not.toHaveProperty("reasoning_effort");
+    expect(await bodyOf({ mid: "zhipu" })).not.toHaveProperty("reasoning_effort");
+    expect(await bodyOf()).not.toHaveProperty("reasoning_effort");
+  });
 });
 
 describe("dispatchFailedText", () => {

@@ -679,7 +679,7 @@ async function main(): Promise<void> {
           model: decisionModelOf(me),
           input,
           decide: (req) => requestDecisionAsOwner(owner, req, DISPATCH_DECISION_TIMEOUT_MS),
-          llm: () => requestDispatchAsOwner(owner, input, me.models),
+          llm: () => requestDispatchAsOwner(owner, input, me.models, me.modelPlatforms),
           log: owner.log,
         });
       },
