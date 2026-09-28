@@ -24,8 +24,8 @@ describe("cs_say 的 mentions（#928 切片 1a）", () => {
 });
 
 describe("cs 协议 6（#957 第三批：stop 帧与 say/approve/stop 回执）", () => {
-  it("CS_PROTOCOL_VERSION === 20（…；15 = #1103 Git 凭据；16 = #1107 流式 delta 帧；17 = #1163 语音通话 call 帧；18 = #1140 wiki_write 帧；19 = #1233 say.voice；20 = #1280 聊天）", () => {
-    expect(CS_PROTOCOL_VERSION).toBe(20);
+  it("CS_PROTOCOL_VERSION === 21（…；15 = #1103 Git 凭据；16 = #1107 流式 delta 帧；17 = #1163 语音通话 call 帧；18 = #1140 wiki_write 帧；19 = #1233 say.voice；20 = #1280 聊天；21 = #1393 群里的真人）", () => {
+    expect(CS_PROTOCOL_VERSION).toBe(21);
   });
 
   it("delta 下行往返（协议 16，#1107）", () => {
@@ -281,7 +281,7 @@ describe("协议 20：聊天（#1280）", () => {
       modelRoute: null,
     };
     expect(decodeCsDown(encodeCs(welcome))).toEqual(welcome);
-    const withChat = { ...welcome, chat: { kind: "group" as const, agentIds: ["admin", "a_0123456789ab"] } };
+    const withChat = { ...welcome, chat: { kind: "group" as const, agentIds: ["admin", "a_0123456789ab"], humans: [] } };
     expect(decodeCsDown(encodeCs(withChat))).toEqual(withChat);
     expect(decodeCsDown(b64({ ...welcome, chat: { kind: "dm", agentIds: "admin" } }))).toBeNull();
     expect(decodeCsDown(encodeCs({ t: "backlog", events: [], done: true }))).toEqual({
@@ -303,5 +303,66 @@ describe("协议 20：聊天（#1280）", () => {
     const f = { t: "create_failed" as const, workspaceId: WS, message: "群聊至少要两只智能体" };
     expect(decodeCsDown(encodeCs(f))).toEqual(f);
     expect(decodeCsDown(b64({ t: "create_failed", workspaceId: WS }))).toBeNull();
+  });
+});
+
+describe("协议 21：群里的真人（#1393）", () => {
+  const WS = "3fa85f64-5717-4562-b3fc-2c963f66afa6";
+  const SID = "8b1f0c1e-2d3a-4e5f-8a9b-0c1d2e3f4a5b";
+  const U1 = "00000000-0000-4000-8000-000000000001";
+  const U2 = "00000000-0000-4000-8000-000000000002";
+
+  it("create：group 带 humans 原样往返；只有朋友、一只智能体都不拉也行", () => {
+    const mixed = {
+      t: "create" as const,
+      workspaceId: WS,
+      chat: { kind: "group" as const, name: "周末", agentIds: ["admin"], humans: [U1] },
+    };
+    expect(decodeCsUp(encodeCs(mixed))).toEqual(mixed);
+    const friendsOnly = {
+      t: "create" as const,
+      workspaceId: WS,
+      chat: { kind: "group" as const, name: "周末", agentIds: [], humans: [U1, U2] },
+    };
+    expect(decodeCsUp(encodeCs(friendsOnly))).toEqual(friendsOnly);
+  });
+
+  it.each([
+    [{ kind: "group", name: "群", agentIds: [], humans: [] }], // 一个都没拉
+    [{ kind: "group", name: "群", agentIds: [] }], // 不带 humans 时智能体下限照旧是 1
+    [{ kind: "group", name: "群", agentIds: ["admin"], humans: ["小红"] }], // 不是 uid 形状
+    [{ kind: "group", name: "群", agentIds: ["admin"], humans: U1 }], // 不是数组
+  ])("create.chat.humans 形状不对整帧拒掉：%j", (chat) => {
+    expect(decodeCsUp(b64({ t: "create", workspaceId: WS, chat }))).toBeNull();
+  });
+
+  it("chat_update：只带 humans 也是一条有意义的帧；空名单合法（最后一位退出）；形状不对拒", () => {
+    const only = { t: "chat_update" as const, workspaceId: WS, sessionId: SID, humans: [U1] };
+    expect(decodeCsUp(encodeCs(only))).toEqual(only);
+    const empty = { t: "chat_update" as const, workspaceId: WS, sessionId: SID, humans: [] };
+    expect(decodeCsUp(encodeCs(empty))).toEqual(empty);
+    // 大写的 uid 收成小写：同一个人不该因为写法不同在名单里站两次
+    expect(decodeCsUp(b64({ t: "chat_update", workspaceId: WS, sessionId: SID, humans: [U1.toUpperCase(), U1] }))).toEqual(only);
+    expect(decodeCsUp(b64({ t: "chat_update", workspaceId: WS, sessionId: SID, humans: ["nope"] }))).toBeNull();
+  });
+
+  it("welcome.chat.humans：{uid,name} 往返；缺席按空（下行容错）；形状不对拒", () => {
+    const welcome = {
+      t: "welcome" as const,
+      v: CS_PROTOCOL_VERSION,
+      sessionId: SID,
+      lastSeq: 9,
+      initiatorUid: null,
+      ownerUid: "o",
+      modelRoute: null,
+    };
+    const withHumans = { ...welcome, chat: { kind: "group" as const, agentIds: ["admin"], humans: [{ uid: U1, name: "小红" }] } };
+    expect(decodeCsDown(encodeCs(withHumans))).toEqual(withHumans);
+    expect(decodeCsDown(b64({ ...welcome, chat: { kind: "group", agentIds: ["admin"] } }))).toEqual({
+      ...welcome,
+      chat: { kind: "group", agentIds: ["admin"], humans: [] },
+    });
+    expect(decodeCsDown(b64({ ...welcome, chat: { kind: "group", agentIds: [], humans: [{ uid: "x", name: "小红" }] } }))).toBeNull();
+    expect(decodeCsDown(b64({ ...welcome, chat: { kind: "group", agentIds: [], humans: [{ uid: U1 }] } }))).toBeNull();
   });
 });

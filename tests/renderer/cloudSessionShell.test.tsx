@@ -120,7 +120,7 @@ describe("welcome 之前那一格（#1301）", () => {
   });
 
   it("有值 = 一条聊天：聊天壳，免审开关与内部名都不在", () => {
-    renderMain({ chat: { kind: "group", agentIds: ["admin", "a_000000000001"] } });
+    renderMain({ chat: { kind: "group", agentIds: ["admin", "a_000000000001"], humans: [] } });
     expect(screen.getByText("上线冲刺")).toBeInTheDocument();
     expect(screen.getByText("管理员 · 客服")).toBeInTheDocument();
     expect(screen.queryByRole("switch")).toBeNull();
@@ -132,7 +132,7 @@ describe("名单从日志推导（#1302）", () => {
   it("改完名单：头部跟着变，**不是**新标题配旧名单", () => {
     renderMain({
       // welcome 那一刻的快照：两只都在
-      chat: { kind: "group", agentIds: ["admin", "a_000000000001"] },
+      chat: { kind: "group", agentIds: ["admin", "a_000000000001"], humans: [] },
       // 之后广播回来的事实：客服被移出去了
       events: [created, roster(1, ["admin", "a_000000000001"]), roster(2, ["admin"])],
       rows: [row({ title: "上线冲刺" })],
@@ -144,7 +144,7 @@ describe("名单从日志推导（#1302）", () => {
 
   it("「添加智能体」跟着松开，不再说「名册里的智能体都在群里了」那句假话", () => {
     renderMain({
-      chat: { kind: "group", agentIds: ["admin", "a_000000000001"] },
+      chat: { kind: "group", agentIds: ["admin", "a_000000000001"], humans: [] },
       events: [created, roster(1, ["admin", "a_000000000001"]), roster(2, ["admin"])],
     });
     const add = screen.getByRole("button", { name: "添加智能体" });
@@ -154,7 +154,7 @@ describe("名单从日志推导（#1302）", () => {
 
   it("名单一条事件都没加载到（尾巴分页）：退回 welcome 那份快照，不把群画空", () => {
     renderMain({
-      chat: { kind: "group", agentIds: ["admin", "a_000000000001"] },
+      chat: { kind: "group", agentIds: ["admin", "a_000000000001"], humans: [] },
       events: [created],
     });
     expect(screen.getByText("管理员 · 客服")).toBeInTheDocument();

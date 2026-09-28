@@ -1182,7 +1182,8 @@ describe("个人主场全免审批（#1280，ADR-0298）", () => {
       sandboxApproval: async () => { policyCalls++; return "ask"; },
       workspaceLock: createWorkspaceLock(),
     });
-    await session.say("u1", "alice", "看下目录", true);
+    // 主场里说话的是群主本人（主场的工作区成员只有他一个）；客人那一支见下面 runGuestTurn
+    await session.say("owner", "Owner", "看下目录", true);
     await session.settled();
     store.close();
     return { events, policyCalls };
@@ -1233,11 +1234,138 @@ describe("个人主场全免审批（#1280，ADR-0298）", () => {
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
     });
-    await session.say("u1", "alice", "@管理员 建一只财务", true, ["admin"]);
+    await session.say("owner", "Owner", "@管理员 建一只财务", true, ["admin"]);
     await session.settled();
     expect(events.filter((e) => e.type === "approval_request")).toHaveLength(0);
     expect(events.some((e) => e.type === "approval_decision" && (e as { reason?: string }).reason === "个人主场：全部免审批")).toBe(true);
     expect(events.some((e) => e.type === "turn_ended" && (e as { outcome: string }).outcome === "completed")).toBe(true);
+    store.close();
+  });
+
+  // ── 主场群里的客人（#1393，ADR-0325）────────────────────────────────────────
+  // 主场的群里可以有群主的朋友。朋友点起的那一轮动的是群主的东西：每一刀都问群主、客人批不了
+  // 自己的请求、也不看 sandbox_approval（那一列在主场里从来没有界面）；但叫停自己点起的那一轮可以
+  const GUEST = "00000000-0000-4000-8000-0000000000a1";
+  async function openHomeGroup(o: {
+    adapter: ModelAdapter;
+    events: SessionEvent[];
+    agentWriter?: ReturnType<typeof createInMemoryAgentWriter>;
+    agents?: CloudSessionOpts["agents"];
+    onEvent?: (e: SessionEvent, s: CloudSession) => void;
+    policy?: () => void;
+  }): Promise<{ session: CloudSession; store: EventStore }> {
+    const store = newStore();
+    store.append({ sessionId: "s1", ts: 1, type: "session_created", workspace: "/work", cloud: { workspaceId: "w1", chat: { kind: "group" }, home: true } });
+    store.append({
+      sessionId: "s1", ts: 2, type: "chat_roster_changed", ignorable: true,
+      // 两只都写上：名单与团队名单求交集，各条用例的团队名单只有其中一只
+      agents: [{ agentId: "default", name: "default" }, { agentId: "admin", name: "管理员" }],
+      humans: [{ uid: GUEST, name: "小红" }],
+    });
+    let session!: CloudSession;
+    session = createCloudSession({
+      diskUsage: () => null, approveAll: true,
+      sessionMeta: createInMemoryCloudSessionMeta(),
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "owner", store, world: fakeWorld,
+      agents: o.agents ?? (async () => [DEFAULT_AGENT]), adapterFor: () => o.adapter, px, hostUids: async () => ["owner"],
+      onEvent: (e) => {
+        o.events.push(e);
+        o.onEvent?.(e, session);
+      },
+      onUsage: () => {}, wiki: testWiki(), mentionInbox: createInMemoryMentionInbox(), agentWriter: o.agentWriter ?? createInMemoryAgentWriter(),
+      // 客人不是工作区成员：问 isMember 一律 false。在籍靠日志里的名单
+      isMember: async (uid) => uid === "owner",
+      contextWindowOf: () => undefined, relayRemainingMicro: async () => null,
+      sandboxApproval: async () => {
+        o.policy?.();
+        return "auto"; // 哪怕这一格是 auto，客人那一轮也不许借它放行
+      },
+      workspaceLock: createWorkspaceLock(),
+    });
+    return { session, store };
+  }
+
+  it("客人点起的那一轮：每一刀都等群主批，客人批不了自己的请求，也不看 sandbox_approval", async () => {
+    const events: SessionEvent[] = [];
+    let round = 0;
+    let policyCalls = 0;
+    const outcomes: string[] = [];
+    const adapter: ModelAdapter = {
+      model: "m",
+      async chat(): Promise<ModelReply> {
+        round++;
+        if (round === 1) return { content: "", toolCalls: [{ id: "cA", name: "bash", args: { cmd: "ls" } }] };
+        return { content: "跑完了" };
+      },
+    };
+    const { session, store } = await openHomeGroup({
+      adapter, events,
+      policy: () => policyCalls++,
+      onEvent: (e, s) => {
+        if (e.type !== "approval_request") return;
+        const callId = (e as ApprovalRequestEvent).callId;
+        outcomes.push(s.approve(callId, GUEST, "小红", "approved"));
+        outcomes.push(s.approve(callId, "owner", "Owner", "approved"));
+      },
+    });
+    expect(session.isGuest(GUEST)).toBe(true);
+    await session.say(GUEST, "小红", "看下目录", true);
+    await session.settled();
+    expect(events.filter((e) => e.type === "approval_request")).toHaveLength(1);
+    expect(outcomes).toEqual(["not_allowed", "ok"]);
+    const decision = events.find((e) => e.type === "approval_decision") as { decidedBy?: { uid: string } } | undefined;
+    expect(decision?.decidedBy?.uid).toBe("owner");
+    expect(policyCalls).toBe(0);
+    expect(events.some((e) => e.type === "turn_ended" && (e as { outcome: string }).outcome === "completed")).toBe(true);
+    store.close();
+  });
+
+  it("客人点起的 create_agent：要群主批，建出来的智能体记在群主名下", async () => {
+    const events: SessionEvent[] = [];
+    const writer = createInMemoryAgentWriter();
+    let round = 0;
+    const admin = { agentId: "admin", name: "管理员", description: "", instructions: "你管人", models: ["m"], tools: [] as AgentToolAllow[] };
+    const adapter: ModelAdapter = {
+      model: "m",
+      async chat(): Promise<ModelReply> {
+        round++;
+        if (round === 1) {
+          return { content: "", toolCalls: [{ id: "c1", name: "create_agent", args: { name: "财务", description: "管账", instructions: "你管账", models: [], tools: [] } }] };
+        }
+        return { content: "建好了" };
+      },
+    };
+    const { session, store } = await openHomeGroup({
+      adapter, events, agentWriter: writer, agents: async () => [admin],
+      onEvent: (e, s) => {
+        if (e.type === "approval_request") s.approve((e as ApprovalRequestEvent).callId, "owner", "Owner", "approved");
+      },
+    });
+    await session.say(GUEST, "小红", "@管理员 建一只财务", true, ["admin"]);
+    await session.settled();
+    expect(events.filter((e) => e.type === "approval_request")).toHaveLength(1);
+    expect(writer.rows().map((r) => r.createdBy)).toEqual(["owner"]);
+    store.close();
+  });
+
+  it("客人叫得停自己点起的那一轮（停止是刹车，与「批不了」分开判）", async () => {
+    const events: SessionEvent[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const adapter: ModelAdapter = {
+      model: "m",
+      async chat(): Promise<ModelReply> {
+        await gate;
+        return { content: "好" };
+      },
+    };
+    const { session, store } = await openHomeGroup({ adapter, events });
+    await session.say(GUEST, "小红", "写一篇长文", true);
+    for (let i = 0; i < 200 && !session.isRunning(); i++) await new Promise((r) => setTimeout(r, 5));
+    expect(session.stop("u-stranger", "路人")).toBe("not_allowed");
+    expect(session.stop(GUEST, "小红")).toBe("ok");
+    release();
+    await session.settled();
     store.close();
   });
 
@@ -6273,6 +6401,9 @@ describe("聊天名单收窄（#1280）", () => {
       seen?: string[];
       calls?: DispatchCall[];
       events?: SessionEvent[];
+      /** 群里的客人（#1393）：写进 seed 那条名单事件 */
+      humans?: { uid: string; name: string }[];
+      isMember?: CloudSessionOpts["isMember"];
     },
   ): CloudSession {
     store.append({
@@ -6289,6 +6420,7 @@ describe("聊天名单收窄（#1280）", () => {
         type: "chat_roster_changed",
         ignorable: true,
         agents: o.roster.map((id) => ({ agentId: id, name: TEAM.find((a) => a.agentId === id)!.name })),
+        ...(o.humans ? { humans: o.humans } : {}),
       });
     }
     return createCloudSession({
@@ -6315,7 +6447,7 @@ describe("聊天名单收窄（#1280）", () => {
       wiki: testWiki(),
       mentionInbox: createInMemoryMentionInbox(),
       agentWriter: createInMemoryAgentWriter(),
-      isMember: async () => true,
+      isMember: o.isMember ?? (async () => true),
       contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(),
@@ -6513,9 +6645,10 @@ describe("聊天名单收窄（#1280）", () => {
     const store = newStore();
     const calls: DispatchCall[] = [];
     const s = openChat(store, { roster: ["admin", "ops"], calls });
-    expect(await s.updateChatRoster("u1", ["ads", "admin", "ops"])).toEqual({
+    expect(await s.updateChatRoster("u1", { agentIds: ["ads", "admin", "ops"] })).toEqual({
       kind: "ok",
       agentIds: ["ops", "admin", "ads"],
+      humans: [],
       changed: true,
     });
     const last = store
@@ -6533,7 +6666,7 @@ describe("聊天名单收窄（#1280）", () => {
     await s.say("u1", "alice", "看下投放", false, [], undefined, []);
     await s.settled();
     expect(calls[0]!.roster.map((a) => a.agentId)).toEqual(["ops", "admin", "ads"]);
-    expect(s.chat()).toEqual({ kind: "group", agentIds: ["ops", "admin", "ads"] });
+    expect(s.chat()).toEqual({ kind: "group", agentIds: ["ops", "admin", "ads"], humans: [] });
     store.close();
   });
 
@@ -6544,9 +6677,10 @@ describe("聊天名单收窄（#1280）", () => {
     // 重新按团队序排过的——交回团队序会让写库与日志的顺序对不上，下次重启对账
     // 又按「日志赢」改回来，一格数据在两处来回翻。真实写入方（planChatCreate /
     // 下面那条 changed 的路）本来就按团队序落，只有这里手写的 seed 事件不是
-    expect(await s.updateChatRoster("u1", ["ops", "admin"])).toEqual({
+    expect(await s.updateChatRoster("u1", { agentIds: ["ops", "admin"] })).toEqual({
       kind: "ok",
       agentIds: ["admin", "ops"],
+      humans: [],
       changed: false,
     });
     expect(store.load("s1").filter((e) => e.type === "chat_roster_changed")).toHaveLength(1);
@@ -6555,25 +6689,113 @@ describe("聊天名单收窄（#1280）", () => {
 
   it("私聊和团队会话的名单改不了；团队名单里没有的那只拉不进来", async () => {
     const dm = newStore();
-    expect((await openChat(dm, { roster: ["ops"], kind: "dm" }).updateChatRoster("u1", ["ops", "ads"])).kind).toBe(
+    expect((await openChat(dm, { roster: ["ops"], kind: "dm" }).updateChatRoster("u1", { agentIds: ["ops", "ads"] })).kind).toBe(
       "not_group",
     );
     dm.close();
     const team = newStore();
-    expect((await openChat(team, {}).updateChatRoster("u1", ["ops"])).kind).toBe("not_group");
+    expect((await openChat(team, {}).updateChatRoster("u1", { agentIds: ["ops"] })).kind).toBe("not_group");
     team.close();
     const g = newStore();
-    expect(await openChat(g, { roster: ["admin", "ops"] }).updateChatRoster("u1", ["ops", "ghost"])).toEqual({
+    expect(await openChat(g, { roster: ["admin", "ops"] }).updateChatRoster("u1", { agentIds: ["ops", "ghost"] })).toEqual({
       kind: "unknown_agent",
       message: "有 1 只智能体已经不在了（名单可能刚变过，刷新再试）",
     });
     g.close();
   });
 
+  describe("群里的客人（#1393）", () => {
+    const G1 = "00000000-0000-4000-8000-000000000001";
+    const G2 = "00000000-0000-4000-8000-000000000002";
+
+    it("只改真人那一半：落一条带齐两份名单的事件（带 byName），isGuest / chat() 跟着变", async () => {
+      const store = newStore();
+      const s = openChat(store, { roster: ["admin", "ops"] });
+      expect(s.isGuest(G1)).toBe(false);
+      expect(await s.updateChatRoster("owner", { humans: [{ uid: G1, name: "小红" }] }, "群主")).toEqual({
+        kind: "ok",
+        agentIds: ["ops", "admin"],
+        humans: [{ uid: G1, name: "小红" }],
+        changed: true,
+      });
+      const last = store
+        .load("s1")
+        .filter((e) => e.type === "chat_roster_changed")
+        .at(-1) as Extract<SessionEvent, { type: "chat_roster_changed" }>;
+      expect(last).toMatchObject({
+        byUid: "owner",
+        byName: "群主",
+        agents: [
+          { agentId: "ops", name: "运营" },
+          { agentId: "admin", name: "管理员" },
+        ],
+        humans: [{ uid: G1, name: "小红" }],
+      });
+      expect(s.isGuest(G1)).toBe(true);
+      expect(s.chat()).toEqual({ kind: "group", agentIds: ["ops", "admin"], humans: [{ uid: G1, name: "小红" }] });
+      store.close();
+    });
+
+    it("同一份真人名单（顺序不同）不落第二条事件", async () => {
+      const store = newStore();
+      const s = openChat(store, { roster: ["admin"], humans: [{ uid: G1, name: "小红" }, { uid: G2, name: "小明" }] });
+      const r = await s.updateChatRoster("owner", { humans: [{ uid: G2, name: "小明" }, { uid: G1, name: "小红" }] });
+      expect(r).toMatchObject({ kind: "ok", changed: false });
+      expect(store.load("s1").filter((e) => e.type === "chat_roster_changed")).toHaveLength(1);
+      store.close();
+    });
+
+    it("移出去之后 isGuest 立刻变假；只改智能体那一半时真人原样留着", async () => {
+      const store = newStore();
+      const s = openChat(store, { roster: ["admin"], humans: [{ uid: G1, name: "小红" }] });
+      expect(s.isGuest(G1)).toBe(true);
+      await s.updateChatRoster("owner", { agentIds: ["admin", "ops"] });
+      expect(s.chat()?.humans).toEqual([{ uid: G1, name: "小红" }]);
+      await s.updateChatRoster("owner", { humans: [] });
+      expect(s.isGuest(G1)).toBe(false);
+      store.close();
+    });
+
+    it("客人发言：不是工作区成员也起得了 turn（在籍按日志里的名单算，起跑前那道复查认他）", async () => {
+      const store = newStore();
+      const seen: string[] = [];
+      const s = openChat(store, {
+        roster: ["admin", "ops"],
+        humans: [{ uid: G1, name: "小红" }],
+        seen,
+        isMember: async (uid) => uid === "owner",
+      });
+      await s.say(G1, "小红", "@运营 看下销量", true, ["ops"]);
+      await s.settled();
+      expect(seen).toEqual(["ops"]);
+      store.close();
+    });
+
+    it("移出群的客人：排着的那一条到起跑时不再算在籍", async () => {
+      const store = newStore();
+      const seen: string[] = [];
+      const events: SessionEvent[] = [];
+      const s = openChat(store, {
+        roster: ["admin", "ops"],
+        humans: [{ uid: G1, name: "小红" }],
+        seen,
+        events,
+        isMember: async (uid) => uid === "owner",
+      });
+      // 先把人移出去再让他那句话起跑：say() 落盘的那一刻他还在，runJob 起跑前复查时已经不在了
+      const said = s.say(G1, "小红", "@运营 看下销量", true, ["ops"]);
+      await s.updateChatRoster("owner", { humans: [] });
+      await said;
+      await s.settled();
+      expect(seen).toEqual([]);
+      store.close();
+    });
+  });
+
   it("最后一只被摘掉也行（删智能体那三步里会走到）：空名单是一份真名单", async () => {
     const store = newStore();
     const s = openChat(store, { roster: ["admin", "ops"] });
-    expect(await s.updateChatRoster("u1", [])).toEqual({ kind: "ok", agentIds: [], changed: true });
+    expect(await s.updateChatRoster("u1", { agentIds: [] })).toEqual({ kind: "ok", agentIds: [], humans: [], changed: true });
     store.close();
   });
 

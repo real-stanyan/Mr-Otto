@@ -132,13 +132,14 @@ describe("chatSeedOf", () => {
   const rows = [chat("dm-1", "dm", ["a_1"]), chat("g-1", "group", ["admin", "a_1"]), chat("team-1", null, [])];
 
   it("已有的私聊：从清单那一行种", () => {
-    expect(chatSeedOf({ spec: undefined, sessionId: "dm-1", chats: rows })).toEqual({ kind: "dm", agentIds: ["a_1"] });
+    expect(chatSeedOf({ spec: undefined, sessionId: "dm-1", chats: rows })).toEqual({ kind: "dm", agentIds: ["a_1"], humans: [] });
   });
 
   it("已有的群聊：连名单一起种", () => {
     expect(chatSeedOf({ spec: undefined, sessionId: "g-1", chats: rows })).toEqual({
       kind: "group",
       agentIds: ["admin", "a_1"],
+      humans: [],
     });
   });
 
@@ -155,10 +156,11 @@ describe("chatSeedOf", () => {
     expect(chatSeedOf({ spec: { kind: "dm", agentId: "a_1" }, sessionId: null, chats: [] })).toEqual({
       kind: "dm",
       agentIds: ["a_1"],
+      humans: [],
     });
     expect(
       chatSeedOf({ spec: { kind: "group", name: "上线冲刺", agentIds: ["admin", "a_1"] }, sessionId: null, chats: [] }),
-    ).toEqual({ kind: "group", agentIds: ["admin", "a_1"] });
+    ).toEqual({ kind: "group", agentIds: ["admin", "a_1"], humans: [] });
   });
 
   it("正在建一条团队云会话（spec 缺席）：null 而不是 undefined——那是我们自己要的", () => {
@@ -183,14 +185,14 @@ describe("chatViewOf", () => {
     }) as SessionEvent;
 
   it("日志里那条名单事件说了算，welcome 那份快照只是兜底", () => {
-    const view = chatViewOf(home, { kind: "group", agentIds: ["admin", "a_2"] }, [roster(["admin"])], "上线冲刺");
+    const view = chatViewOf(home, { kind: "group", agentIds: ["admin", "a_2"], humans: [] }, [roster(["admin"])], "上线冲刺");
     expect(view).toEqual({ kind: "group", agentIds: ["admin"], title: "上线冲刺" });
   });
 
   it("加回来也跟着对（移出去的那一只不必离开聊天再进来才加得回来）", () => {
     const view = chatViewOf(
       home,
-      { kind: "group", agentIds: ["admin", "a_2"] },
+      { kind: "group", agentIds: ["admin", "a_2"], humans: [] },
       [roster(["admin"]), roster(["admin", "a_2"])],
       "",
     );
@@ -198,32 +200,32 @@ describe("chatViewOf", () => {
   });
 
   it("一条名单事件都没加载到：退回快照（尾巴分页把它们留在了窗口外）", () => {
-    const view = chatViewOf(home, { kind: "group", agentIds: ["admin", "a_1"] }, [], "");
+    const view = chatViewOf(home, { kind: "group", agentIds: ["admin", "a_1"], humans: [] }, [], "");
     expect(view?.agentIds).toEqual(["admin", "a_1"]);
   });
 
   it("群名留空：按**名册顺序**拼成员名，不按名单里的写入顺序", () => {
-    const view = chatViewOf(home, { kind: "group", agentIds: [] }, [roster(["a_2", "admin"])], "   ");
+    const view = chatViewOf(home, { kind: "group", agentIds: [], humans: [] }, [roster(["a_2", "admin"])], "   ");
     expect(view?.title).toBe("管理员、客服");
   });
 
   it("名单里留着一个已经删掉的 id：求交集摘掉它（删智能体是三步、不原子）", () => {
-    const view = chatViewOf(home, { kind: "group", agentIds: [] }, [roster(["admin", "a_没了"])], "");
+    const view = chatViewOf(home, { kind: "group", agentIds: [], humans: [] }, [roster(["admin", "a_没了"])], "");
     expect(view?.agentIds).toEqual(["admin"]);
   });
 
   it("私聊：标题是那只的名字", () => {
-    expect(chatViewOf(home, { kind: "dm", agentIds: ["a_1"] }, [], "")).toEqual({
+    expect(chatViewOf(home, { kind: "dm", agentIds: ["a_1"], humans: [] }, [], "")).toEqual({
       kind: "dm", agentIds: ["a_1"], title: "运营",
     });
   });
 
   it("私聊里那只被删了：null = 退回团队壳，不画一张没有主人的脸", () => {
-    expect(chatViewOf(home, { kind: "dm", agentIds: ["a_没了"] }, [], "")).toBeNull();
+    expect(chatViewOf(home, { kind: "dm", agentIds: ["a_没了"], humans: [] }, [], "")).toBeNull();
   });
 
   it("空群是合法终局：名单空着，头部照画（群名顶上）", () => {
-    expect(chatViewOf(home, { kind: "group", agentIds: ["admin"] }, [roster([])], "空群")).toEqual({
+    expect(chatViewOf(home, { kind: "group", agentIds: ["admin"], humans: [] }, [roster([])], "空群")).toEqual({
       kind: "group", agentIds: [], title: "空群",
     });
   });

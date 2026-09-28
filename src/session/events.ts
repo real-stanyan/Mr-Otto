@@ -637,11 +637,17 @@ export interface VoiceCallChangedEvent extends SessionEventBase {
     快照（同 voice_call_changed：改名不改史）。最新一条胜出，投影在 src/shared/chatRoster.ts；
     一条都没有 = 这条会话没有名单这回事（团队会话 / 存量日志）= 整份团队名单都在。
     建聊天时紧跟 session_created 落第一条（不带 byUid），之后每次 chat_update 改了名单落一条。
-    模型不可见：名单经 agent_briefed.roster 到模型那里。`ignorable`：旧版本跳过它只少一行时间线 */
+    模型不可见：名单经 agent_briefed.roster 到模型那里。`ignorable`：旧版本跳过它只少一行时间线。
+    `humans`（#1393，ADR-0325）：群主之外的真人（群主的朋友），同样是变动之后的**完整**名单、名字是那一刻的
+    快照。**缺席 = 没有别人**——存量日志里本来就没有，而之后每一条都带齐两份名单（智能体 + 真人），
+    所以「缺席」从来不会被读成「没改」。`byName` 是动手那个人当时的名字（时间线上「小红把…拉进了群聊」
+    要说得出是谁；群主不在 `humans` 里，没有这一格就只能写「有人」） */
 export interface ChatRosterChangedEvent extends SessionEventBase {
   type: "chat_roster_changed";
   agents: { agentId: string; name: string }[];
+  humans?: { uid: string; name: string }[];
   byUid?: string;
+  byName?: string;
   ignorable: true;
 }
 

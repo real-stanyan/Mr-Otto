@@ -46,6 +46,23 @@ describe("planChatCreate（#1280）", () => {
     });
   });
 
+  it("拉了朋友（#1393）：下限按智能体 + 朋友合起来算，一只智能体都不拉也行", () => {
+    const U1 = "00000000-0000-4000-8000-000000000001";
+    const U2 = "00000000-0000-4000-8000-000000000002";
+    expect(planChatCreate({ kind: "group", name: "周末", agentIds: ["admin"], humans: [U1] }, TEAM)).toMatchObject({
+      ok: true,
+      agentIds: ["admin"],
+    });
+    expect(planChatCreate({ kind: "group", name: "周末", agentIds: [], humans: [U1, U2] }, TEAM)).toMatchObject({
+      ok: true,
+      agentIds: [],
+    });
+    expect(planChatCreate({ kind: "group", name: "周末", agentIds: [], humans: [U1] }, TEAM)).toEqual({
+      ok: false,
+      message: "群聊至少要拉两位进来（智能体或朋友）",
+    });
+  });
+
   it("团队名单读不出来时不建：拿一份降级名单去核对，等于核对了个寂寞", () => {
     expect(
       planChatCreate({ kind: "dm", agentId: "admin" }, [{ agentId: "admin", name: "管理员", degraded: true }]),

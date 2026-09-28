@@ -31,8 +31,9 @@ export function planChatCreate(chat: CsChatSpec, team: readonly TeamAgent[]): Ch
           : `有 ${missing} 只智能体已经不在了（名单可能刚变过，刷新再试）`,
     };
   }
-  if (chat.kind === "group" && members.length < CHAT_GROUP_CREATE_MIN) {
-    return { ok: false, message: "群聊至少要两只智能体" };
+  // 下限按「拉进来的」算（#1393）：智能体 + 群主的朋友合起来至少两位。只有智能体时这句话与改动前相同
+  if (chat.kind === "group" && members.length + (chat.humans?.length ?? 0) < CHAT_GROUP_CREATE_MIN) {
+    return { ok: false, message: (chat.humans?.length ?? 0) > 0 ? "群聊至少要拉两位进来（智能体或朋友）" : "群聊至少要两只智能体" };
   }
   return {
     ok: true,

@@ -2,6 +2,11 @@ import { describe, expect, it } from "vitest";
 import type { ChatRosterChangedEvent, SessionEvent } from "../../src/session/events.js";
 import {
   applyChatRosterEvent,
+  CHAT_HUMANS_MAX,
+  chatHumansNow,
+  chatHumansOf,
+  humanRosterChangeProblem,
+  normalizeChatHumanUids,
   chatRosterDiff,
   chatRosterNow,
   chatRosterOf,
@@ -139,5 +144,71 @@ describe("chatRosterNow", () => {
     // `[] ?? fallback` 是 `[]`——这条用例钉的是这个区别：空群是合法终局（0037 的
     // CHECK 写的是 cardinality 0..6），退回快照会让最后一只永远摘不掉
     expect(chatRosterNow([rosterEvent([])], ["admin"])).toEqual([]);
+  });
+});
+
+describe("群里的真人（#1393）", () => {
+  const U1 = "00000000-0000-4000-8000-000000000001";
+  const U2 = "00000000-0000-4000-8000-000000000002";
+  const OWNER = "00000000-0000-4000-8000-0000000000ff";
+  const withHumans = (humans?: { uid: string; name: string }[]): ChatRosterChangedEvent => ({
+    ...rosterEvent(["admin"]),
+    ...(humans ? { humans } : {}),
+  });
+
+  it("chatHumansOf：没有名单事件 = null；事件上缺席 = 没有别人；最新一条胜出", () => {
+    expect(chatHumansOf([chatter()])).toBeNull();
+    expect(chatHumansOf([withHumans()])).toEqual([]);
+    expect(chatHumansOf([withHumans([{ uid: U1, name: "小红" }]), withHumans([{ uid: U2, name: "小明" }])])).toEqual([
+      { uid: U2, name: "小明" },
+    ]);
+    // 「缺席」只有一个意思（没有别人），不是「这一条没改人」：之后每一条都带齐两份名单
+    expect(chatHumansOf([withHumans([{ uid: U1, name: "小红" }]), withHumans()])).toEqual([]);
+  });
+
+  it("chatHumansNow：日志里一条名单事件都没加载到时退回快照（尾巴分页）", () => {
+    expect(chatHumansNow([chatter()], [{ uid: U1, name: "小红" }])).toEqual([{ uid: U1, name: "小红" }]);
+    expect(chatHumansNow([withHumans([])], [{ uid: U1, name: "小红" }])).toEqual([]);
+  });
+
+  it("normalizeChatHumanUids：去重保序、收成小写；形状不对 / 超上限一律 null", () => {
+    expect(normalizeChatHumanUids([U1, U1.toUpperCase(), U2])).toEqual([U1, U2]);
+    expect(normalizeChatHumanUids([])).toEqual([]);
+    expect(normalizeChatHumanUids("x")).toBeNull();
+    expect(normalizeChatHumanUids([U1, "not-a-uid"])).toBeNull();
+    const many = Array.from({ length: CHAT_HUMANS_MAX + 1 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, "0")}`);
+    expect(normalizeChatHumanUids(many)).toBeNull();
+    expect(normalizeChatHumanUids(many.slice(0, CHAT_HUMANS_MAX))).toHaveLength(CHAT_HUMANS_MAX);
+  });
+
+  describe("humanRosterChangeProblem", () => {
+    const base = { ownerUid: OWNER, friendsOfActor: new Set([U1, U2]) };
+    it("群主：拉自己的朋友、移谁都行", () => {
+      expect(humanRosterChangeProblem({ ...base, actorUid: OWNER, actorIsOwner: true, before: [U1], after: [U2] })).toBeNull();
+    });
+    it("拉进来的必须是动手那个人的朋友", () => {
+      expect(
+        humanRosterChangeProblem({ ...base, friendsOfActor: new Set(), actorUid: OWNER, actorIsOwner: true, before: [], after: [U1] }),
+      ).toBe("只能拉你的朋友进群。");
+    });
+    it("群主不在客人名单里（他本来就在群里）", () => {
+      expect(humanRosterChangeProblem({ ...base, actorUid: OWNER, actorIsOwner: true, before: [], after: [OWNER] })).toBe(
+        "群主本来就在群里。",
+      );
+    });
+    it("客人：能拉自己的朋友、能退出，移不走别人", () => {
+      expect(
+        humanRosterChangeProblem({ ...base, friendsOfActor: new Set([U2]), actorUid: U1, actorIsOwner: false, before: [U1], after: [U1, U2] }),
+      ).toBeNull();
+      expect(humanRosterChangeProblem({ ...base, actorUid: U1, actorIsOwner: false, before: [U1], after: [] })).toBeNull();
+      expect(humanRosterChangeProblem({ ...base, actorUid: U1, actorIsOwner: false, before: [U1, U2], after: [U1] })).toBe(
+        "只有群主能把别人移出群聊。",
+      );
+    });
+    it("客人拉的人要是**他自己**的朋友（群主的朋友不算）", () => {
+      expect(
+        humanRosterChangeProblem({ ...base, friendsOfActor: new Set(), actorUid: U1, actorIsOwner: false, before: [U1], after: [U1, U2] }),
+      ).toBe("只能拉你的朋友进群。");
+    });
   });
 });

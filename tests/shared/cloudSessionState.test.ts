@@ -66,10 +66,10 @@ describe("applyCloudStatus", () => {
     expect(healed.hasOlder).toBe(false);
   });
   it("chat **缺席就留着种子**（#1301：welcome 每条连接只说一次），null / 值才覆盖", () => {
-    const seeded = core({ chat: { kind: "dm", agentIds: ["a_000000000001"] } });
-    expect(applyCloudStatus(seeded, status()).chat).toEqual({ kind: "dm", agentIds: ["a_000000000001"] });
+    const seeded = core({ chat: { kind: "dm", agentIds: ["a_000000000001"], humans: [] } });
+    expect(applyCloudStatus(seeded, status()).chat).toEqual({ kind: "dm", agentIds: ["a_000000000001"], humans: [] });
     expect(applyCloudStatus(seeded, status({ chat: null })).chat).toBeNull();
-    const group = { kind: "group" as const, agentIds: ["admin", "a_000000000001"] };
+    const group = { kind: "group" as const, agentIds: ["admin", "a_000000000001"], humans: [] };
     expect(applyCloudStatus(core(), status({ chat: group })).chat).toEqual(group);
   });
   it("deniedCode / deniedServerVersion 来了才覆盖、没来就留着", () => {

@@ -41,7 +41,9 @@ function fakeSession(overrides: Partial<CloudSession> = {}): CloudSession {
     setVoiceCall: async () => ({ kind: "ok" }),
     // #1280：默认团队会话——绝大多数用例不关心聊天身份
     chat: () => null,
-    updateChatRoster: async () => ({ kind: "ok", agentIds: [], changed: false }),
+    updateChatRoster: async () => ({ kind: "ok", agentIds: [], humans: [], changed: false }),
+    // #1393：默认没有客人——绝大多数用例里进房的人都是工作区成员
+    isGuest: () => false,
     ...overrides,
   };
 }
@@ -2011,11 +2013,11 @@ describe("create 带聊天（#1280）", () => {
 
   it("welcome 带上聊天身份", async () => {
     const { deps, sent } = makeDeps({
-      getSession: () => fakeSession({ chat: () => ({ kind: "dm", agentIds: ["admin"] }) }),
+      getSession: () => fakeSession({ chat: () => ({ kind: "dm", agentIds: ["admin"], humans: [] }) }),
     });
     const h = createFrameHandler(deps);
     await h.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
-    expect(sent.find((x) => x.msg.t === "welcome")!.msg).toMatchObject({ chat: { kind: "dm", agentIds: ["admin"] } });
+    expect(sent.find((x) => x.msg.t === "welcome")!.msg).toMatchObject({ chat: { kind: "dm", agentIds: ["admin"], humans: [] } });
   });
 
   it("团队会话的 welcome 上没有 chat 这一格", async () => {
@@ -2076,7 +2078,7 @@ describe("chat_update（#1280）", () => {
   it("聊天不能归档：回一句说清出路的话，sessions.archive 一次都不调（#1280）", async () => {
     let archived = 0;
     const { deps, sent } = makeDeps({
-      getSession: () => fakeSession({ chat: () => ({ kind: "group", agentIds: ["admin"] }) }),
+      getSession: () => fakeSession({ chat: () => ({ kind: "group", agentIds: ["admin"], humans: [] }) }),
       archiveSession: async () => {
         archived++;
         return true;
@@ -2102,5 +2104,117 @@ describe("chat_update（#1280）", () => {
     sent.length = 0;
     await h.onSessionFrame("w1", "s1", "c1", encodeCs(frame));
     expect(sent.at(-1)!.msg).toMatchObject({ t: "denied", code: "not_authorized" });
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 群里的客人（#1393，ADR-0325）：群主之外被拉进主场群聊的真人。他们**不是**工作区成员，
+// 在籍的判据是那条会话日志里的名单（session.isGuest）。会话房的每一道复查都要认他们；
+// 控制房只放一种帧——改那条群聊的客人名单（拉自己的朋友 / 退出）
+// ─────────────────────────────────────────────────────────────────────────────
+describe("群里的客人（#1393）", () => {
+  const guestSession = (extra: Partial<CloudSession> = {}) =>
+    fakeSession({ isGuest: (uid) => uid === "guest", ...extra });
+
+  it("进房：不是工作区成员也收到 welcome（在籍 = 工作区成员 ∪ 这条群聊的客人）", async () => {
+    const { deps, sent } = makeDeps({ getSession: () => guestSession(), isMember: async () => false });
+    const h = createFrameHandler(deps);
+    await h.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:guest"));
+    expect(sent.some((x) => x.msg.t === "welcome")).toBe(true);
+  });
+
+  it("不是客人也不是成员：照旧 not_member", async () => {
+    const { deps, sent } = makeDeps({ getSession: () => guestSession(), isMember: async () => false });
+    const h = createFrameHandler(deps);
+    await h.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:stranger"));
+    expect(sent.at(-1)!.msg).toMatchObject({ t: "denied", code: "not_member" });
+  });
+
+  it("客人发言：复查按会话名单认，不问一句 isMember 就放行", async () => {
+    const said: string[] = [];
+    let memberChecks = 0;
+    const { deps } = makeDeps({
+      getSession: () => guestSession({ say: async (uid) => void said.push(uid) }),
+      isMember: async () => {
+        memberChecks++;
+        return false;
+      },
+    });
+    const h = createFrameHandler(deps);
+    await h.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:guest"));
+    await h.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "say", text: "大家好", mention: false }));
+    expect(said).toEqual(["guest"]);
+    expect(memberChecks).toBe(0);
+  });
+
+  it("被移出去之后再发言：复查不认了（名单是此刻的名单）", async () => {
+    let inGroup = true;
+    const { deps, sent } = makeDeps({
+      getSession: () => fakeSession({ isGuest: (uid) => inGroup && uid === "guest" }),
+      isMember: async () => false,
+    });
+    const h = createFrameHandler(deps);
+    await h.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:guest"));
+    inGroup = false;
+    await h.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "say", text: "还在吗", mention: false }));
+    expect(sent.some((x) => x.msg.t === "denied" && (x.msg as { code: string }).code === "not_authorized")).toBe(true);
+  });
+
+  it("控制房：客人能改这条群聊的客人名单（拉朋友 / 退出），细判交给 updateChat", async () => {
+    const seen: unknown[] = [];
+    const { deps, sent } = makeDeps({
+      getSession: () => guestSession(),
+      isMember: async () => false,
+      ownerOf: async () => "owner",
+      creatorOf: async () => "owner",
+      updateChat: async (...a) => {
+        seen.push(a);
+        return { ok: true as const };
+      },
+    });
+    const h = createFrameHandler(deps);
+    await h.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, "jwt:guest"));
+    const U2 = "00000000-0000-4000-8000-000000000002";
+    await h.onCtlFrame("c1", encodeCs({ t: "chat_update", workspaceId: "w1", sessionId: "s1", humans: [U2] }));
+    expect(seen).toEqual([["w1", "s1", "guest", { humans: [U2] }]]);
+    expect(sent.at(-1)!.msg).toEqual({ t: "chat_update_result", workspaceId: "w1", sessionId: "s1", ok: true });
+  });
+
+  it("控制房：客人改不了群名、改不了智能体（智能体归群主管）", async () => {
+    let calls = 0;
+    const { deps, sent } = makeDeps({
+      getSession: () => guestSession(),
+      isMember: async () => false,
+      ownerOf: async () => "owner",
+      creatorOf: async () => "owner",
+      updateChat: async () => {
+        calls++;
+        return { ok: true as const };
+      },
+    });
+    const h = createFrameHandler(deps);
+    await h.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, "jwt:guest"));
+    await h.onCtlFrame("c1", encodeCs({ t: "chat_update", workspaceId: "w1", sessionId: "s1", name: "改名" }));
+    expect(sent.at(-1)!.msg).toMatchObject({ t: "denied", code: "not_authorized" });
+    expect(calls).toBe(0);
+  });
+
+  it("控制房：不是这条群聊的客人（也不是成员）碰不到它", async () => {
+    const { deps, sent } = makeDeps({ getSession: () => guestSession(), isMember: async () => false });
+    const h = createFrameHandler(deps);
+    await h.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, "jwt:stranger"));
+    await h.onCtlFrame(
+      "c1",
+      encodeCs({ t: "chat_update", workspaceId: "w1", sessionId: "s1", humans: ["00000000-0000-4000-8000-000000000002"] }),
+    );
+    expect(sent.at(-1)!.msg).toMatchObject({ t: "denied", code: "not_member" });
+  });
+
+  it("控制房：客人身份不外溢到别的帧（建会话 / 看文件仍然只认工作区成员）", async () => {
+    const { deps, sent } = makeDeps({ getSession: () => guestSession(), isMember: async () => false });
+    const h = createFrameHandler(deps);
+    await h.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, "jwt:guest"));
+    await h.onCtlFrame("c1", encodeCs({ t: "create", workspaceId: "w1" }));
+    expect(sent.at(-1)!.msg).toMatchObject({ t: "denied", code: "not_member" });
   });
 });

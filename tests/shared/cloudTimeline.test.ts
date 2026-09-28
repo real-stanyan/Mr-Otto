@@ -18,6 +18,54 @@ describe("hiddenFromCloudTimeline 第 ⑧ 条（#1213）", () => {
 // 名单那一行（#1280 A4）。这一条事件画不画**要看前一条**，所以它不在
 // hiddenFromCloudTimeline 里（那是逐事件的纯谓词）——同渲染循环里 prevVoiceCall
 // 那张表的手法。
+describe("chatRosterLineParts：群里的真人（#1393）", () => {
+  const U1 = "00000000-0000-4000-8000-000000000001";
+  const U2 = "00000000-0000-4000-8000-000000000002";
+  const ev = (seq: number, agents: [string, string][], humans: [string, string][], by?: { uid: string; name?: string }) =>
+    ({
+      sessionId: "s", seq, ts: seq, type: "chat_roster_changed", ignorable: true,
+      agents: agents.map(([agentId, name]) => ({ agentId, name })),
+      humans: humans.map(([uid, name]) => ({ uid, name })),
+      ...(by === undefined ? {} : { byUid: by.uid, ...(by.name === undefined ? {} : { byName: by.name }) }),
+    }) as ChatRosterChangedEvent;
+  const text = (parts: RosterLinePart[] | null) => parts?.map((p) => p.text).join("") ?? null;
+
+  it("群主把朋友拉进来：名字那一格带 uid（画人的头像）", () => {
+    const a = ev(1, [["admin", "管理员"]], []);
+    const parts = chatRosterLineParts(a, ev(2, [["admin", "管理员"]], [[U1, "小红"]], { uid: "me" }), "me")!;
+    expect(text(parts)).toBe("你把小红拉进了群聊");
+    expect(parts.find((p) => p.text === "小红")).toEqual({ text: "小红", uid: U1 });
+  });
+
+  it("智能体和人一起进来：之间一个顿号，人和人之间也是", () => {
+    const a = ev(1, [], []);
+    const b = ev(2, [["admin", "管理员"]], [[U1, "小红"], [U2, "小明"]], { uid: "me" });
+    expect(text(chatRosterLineParts(a, b, "me"))).toBe("你把「管理员」、小红、小明拉进了群聊");
+  });
+
+  it("别人动的手：有名字快照写名字，旧日志没有时写「有人」", () => {
+    const a = ev(1, [["admin", "管理员"]], [[U1, "小红"]]);
+    expect(text(chatRosterLineParts(a, ev(2, [["admin", "管理员"]], [[U1, "小红"], [U2, "小明"]], { uid: U1, name: "小红" }), "me"))).toBe(
+      "小红把小明拉进了群聊",
+    );
+    expect(text(chatRosterLineParts(a, ev(2, [["admin", "管理员"]], [[U1, "小红"], [U2, "小明"]], { uid: U1 }), "me"))).toBe(
+      "有人把小明拉进了群聊",
+    );
+  });
+
+  it("自己退出单独一句：不说「小红把小红移出了群聊」", () => {
+    const a = ev(1, [["admin", "管理员"]], [[U1, "小红"]]);
+    const b = ev(2, [["admin", "管理员"]], [], { uid: U1, name: "小红" });
+    expect(text(chatRosterLineParts(a, b, "me"))).toBe("小红退出了群聊");
+    expect(text(chatRosterLineParts(a, b, U1))).toBe("你退出了群聊");
+  });
+
+  it("群主把人移出去：照旧「谁把谁移出了群聊」", () => {
+    const a = ev(1, [["admin", "管理员"]], [[U1, "小红"]]);
+    expect(text(chatRosterLineParts(a, ev(2, [["admin", "管理员"]], [], { uid: "me" }), "me"))).toBe("你把小红移出了群聊");
+  });
+});
+
 describe("chatRosterLineParts（#1280）", () => {
   const ev = (seq: number, ids: [string, string][], byUid?: string) =>
     ({

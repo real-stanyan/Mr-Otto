@@ -1685,9 +1685,9 @@ describe("welcome.chat 进状态推送（#1280）", () => {
     await tick();
     t.emitDown({
       t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: null,
-      ownerUid: "u2", modelRoute: null, chat: { kind: "dm", agentIds: ["a_0123456789ab"] },
+      ownerUid: "u2", modelRoute: null, chat: { kind: "dm", agentIds: ["a_0123456789ab"], humans: [] },
     });
-    expect(h.statuses.at(-1)).toMatchObject({ chat: { kind: "dm", agentIds: ["a_0123456789ab"] } });
+    expect(h.statuses.at(-1)).toMatchObject({ chat: { kind: "dm", agentIds: ["a_0123456789ab"], humans: [] } });
   });
 
   it("不带 chat：状态里是 null（welcome 到了，说这是团队会话）", async () => {
@@ -1721,12 +1721,12 @@ describe("welcome.chat 进状态推送（#1280）", () => {
     await tick();
     t.emitDown({
       t: "welcome", v: 1, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: null,
-      ownerUid: "u2", modelRoute: null, chat: { kind: "group", agentIds: ["admin"] },
+      ownerUid: "u2", modelRoute: null, chat: { kind: "group", agentIds: ["admin"], humans: [] },
     });
     await tick();
     t.emitDown({ t: "backlog", events: [], done: true });
     await tick();
-    expect(h.statuses.at(-1)).toMatchObject({ chat: { kind: "group", agentIds: ["admin"] } });
+    expect(h.statuses.at(-1)).toMatchObject({ chat: { kind: "group", agentIds: ["admin"], humans: [] } });
   });
 });
 
@@ -1736,7 +1736,7 @@ describe("welcome.chat 进状态推送（#1280）", () => {
 // 断线重来。
 // ─────────────────────────────────────────────────────────────────────────────
 describe("createCloudSessionClient — 聊天只拉尾巴（#1280）", () => {
-  const CHAT = { kind: "dm" as const, agentIds: ["ops"], name: "" };
+  const CHAT = { kind: "dm" as const, agentIds: ["ops"], name: "", humans: [] };
 
   async function joined(chat?: typeof CHAT) {
     const h = harness();

@@ -70,6 +70,10 @@ export interface ApprovalRouterOpts {
       共享一次解析结果要么加一层按 callId 的旁路状态（decidedBy 那条教训），要么把两个
       钩子合成一个而牺牲「argsSummary 无条件生成」这条兼容承诺。 */
   summarizeFields?: (toolName: string, args: unknown) => { label: string; value: string }[] | null;
+  /** 发起这一轮的人能不能批这一轮的卡（#1393）。缺席 = 能（团队会话，改动前的行为）。
+      个人主场里回 false 给群主以外的人：群里的客人点起的那一轮动的是群主的东西，
+      让他批自己的请求等于没批。群主永远能批 */
+  initiatorMayDecide?: (initiatorUid: string) => boolean;
 }
 
 export interface ApprovalRouter extends Approver {
@@ -90,7 +94,12 @@ export interface ApprovalRouter extends Approver {
       settle 里发生），第二次调用连 entry 都查不到，早早短路返回 false——不存在
       "读到别人刚写的值"的窗口，因为压根没有共享的旁路状态可读 */
   resolve(callId: string, byUid: string, decision: "approved" | "denied", decidedBy?: { uid: string; label: string }): ApproveOutcome;
-  canDecide(uid: string): boolean; // uid === initiator || uid === owner
+  canDecide(uid: string): boolean; // uid === owner || (uid === initiator && initiatorMayDecide)
+  /** 能不能按停止（#1393）：发起人或 owner，**不看** `initiatorMayDecide`。停止是刹车——
+      主场群里的客人批不了自己点起的那一轮（动的是群主的东西），但叫停它只会让事情更安全，
+      「我让它做的我叫不停」是这条改动最不该带来的形状。团队会话里 initiatorMayDecide 恒真，
+      两个判据逐字相同，「能停别人 turn 的人 = 能替别人批的人」（#957 A-2）在那边原样成立 */
+  canStop(uid: string): boolean;
 }
 
 interface Pending {
@@ -116,11 +125,12 @@ export function createApprovalRouter(opts: ApprovalRouterOpts): ApprovalRouter {
   const pending = new Map<string, Pending>();
   let initiatorUid = "";
   let relayTurn = false;
+  const mayDecide = (uid: string): boolean => opts.initiatorMayDecide?.(uid) ?? true;
 
   function canDecide(uid: string): boolean {
     // 答的是「此 uid 此刻能不能当审批人」（用 live initiator），不是「能不能批某个具体 pending」
     // 具体归属判定以 resolve() 的快照为准
-    return uid === initiatorUid || uid === opts.ownerUid;
+    return uid === opts.ownerUid || (uid === initiatorUid && mayDecide(initiatorUid));
   }
 
   return {
@@ -133,6 +143,10 @@ export function createApprovalRouter(opts: ApprovalRouterOpts): ApprovalRouter {
     },
 
     canDecide,
+
+    canStop(uid: string): boolean {
+      return uid === opts.ownerUid || uid === initiatorUid;
+    },
 
     async decide(call: ToolCallRequest, tool: Tool, signal?: AbortSignal): Promise<ApprovalOutcome> {
       const callId = call.id;
@@ -211,7 +225,7 @@ export function createApprovalRouter(opts: ApprovalRouterOpts): ApprovalRouter {
     ): ApproveOutcome {
       const entry = pending.get(callId);
       if (!entry) return "no_pending";
-      if (byUid !== entry.initiatorUid && byUid !== opts.ownerUid) return "not_allowed";
+      if (byUid !== opts.ownerUid && !(byUid === entry.initiatorUid && mayDecide(entry.initiatorUid))) return "not_allowed";
       entry.settle({ decision, ...(decidedBy ? { decidedBy } : {}) });
       return "ok";
     },
