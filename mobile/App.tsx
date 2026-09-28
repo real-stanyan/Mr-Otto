@@ -21,6 +21,8 @@ import { Splash } from "./src/gate/Splash.js";
 import { readResetHold, writeResetHold } from "./src/gate/resetHold.js";
 import { hasStoredSessionSync } from "./src/gate/storedSession.js";
 import { loadThemePref } from "./src/themePref.js";
+// 回电（#1411）：推送登记要在第一条通知到之前挂上——模块一加载就挂
+import "./src/push/pushRegistration.js";
 
 // 外观偏好冷启动时读一次（A5）：读回来之前那几帧跟随系统——冷启动有 Splash 挡着，看不见那一下切换
 void loadThemePref();
