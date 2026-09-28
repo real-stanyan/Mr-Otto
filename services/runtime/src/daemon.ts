@@ -719,7 +719,7 @@ async function main(): Promise<void> {
       // authenticated 的 insert 策略（给了就是让任何在籍成员替别人伪造一条
       // 「有人 @ 了你」）
       mentionInbox: createSupabaseMentionInbox(supabase, (m) => console.warn(m)),
-      sessionMeta: createSupabaseCloudSessionMeta(supabase, sessionId, (m) => console.warn(m)),
+      sessionMeta: createSupabaseCloudSessionMeta(supabase, sessionId, (m) => console.warn(m), workspaceId),
       // 会话命名（#1213）：装配在这一层的理由同 dispatch —— 凭据与订阅探针都在这里。
       // **探不到与没订阅在这里给同一个答案：不改名**。这与 dispatch 那三种分说不同，
       // 因为命名失败不产生任何对用户说的话（侧栏那一格保持现状），没有需要区分措辞

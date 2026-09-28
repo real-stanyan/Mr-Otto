@@ -1,8 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import {
-  createInMemoryCloudSessionMeta,
-  createSupabaseCloudSessionMeta,
-} from "../../services/runtime/src/cloudSessionMeta.js";
+import { createInMemoryCloudSessionMeta, createSupabaseCloudSessionMeta, resetAgentActivity } from "../../services/runtime/src/cloudSessionMeta.js";
 
 describe("createInMemoryCloudSessionMeta", () => {
   it("记下最后一次写进去的标题与参与者，给断言读", async () => {
@@ -33,7 +30,7 @@ describe("createSupabaseCloudSessionMeta", () => {
 
   it("标题写 title 那一列，按 sessionId 定位", async () => {
     const f = fakeClient({ error: null });
-    await createSupabaseCloudSessionMeta(f.client, "sess-1", () => {}).setTitle("新名字");
+    await createSupabaseCloudSessionMeta(f.client, "sess-1", () => {}, "ws-1").setTitle("新名字");
     expect(f.from).toHaveBeenCalledWith("workspace_sessions");
     expect(f.update).toHaveBeenCalledWith({ title: "新名字" });
     expect(f.eq).toHaveBeenCalledWith("id", "sess-1");
@@ -41,14 +38,14 @@ describe("createSupabaseCloudSessionMeta", () => {
 
   it("参与者两列一起写", async () => {
     const f = fakeClient({ error: null });
-    await createSupabaseCloudSessionMeta(f.client, "sess-1", () => {}).setParticipants({ window: 7, uids: ["a"] });
+    await createSupabaseCloudSessionMeta(f.client, "sess-1", () => {}, "ws-1").setParticipants({ window: 7, uids: ["a"] });
     expect(f.update).toHaveBeenCalledWith({ participants: ["a"], participants_window: 7 });
   });
 
   it("写失败只记一行日志不抛——这是日志的投影，权威那份已经落盘了", async () => {
     const log = vi.fn();
     const f = fakeClient({ error: { message: "column does not exist" } });
-    await expect(createSupabaseCloudSessionMeta(f.client, "s", log).setTitle("x")).resolves.toBeUndefined();
+    await expect(createSupabaseCloudSessionMeta(f.client, "s", log, "ws-1").setTitle("x")).resolves.toBeUndefined();
     expect(log).toHaveBeenCalledTimes(1);
     expect(String(log.mock.calls[0]![0])).toContain("column does not exist");
   });
@@ -63,7 +60,7 @@ describe("createSupabaseCloudSessionMeta", () => {
     const from = vi.fn().mockReturnValue({ update });
     const client = { from } as never;
     await expect(
-      createSupabaseCloudSessionMeta(client, "s", log).setParticipants({ window: 1, uids: ["u1"] }),
+      createSupabaseCloudSessionMeta(client, "s", log, "ws-1").setParticipants({ window: 1, uids: ["u1"] }),
     ).resolves.toBeUndefined();
     expect(log).toHaveBeenCalledTimes(1);
     expect(String(log.mock.calls[0]![0])).toContain("fetch failed");
@@ -71,7 +68,7 @@ describe("createSupabaseCloudSessionMeta", () => {
 
   it("最后一句三列一起写，时间写成 ISO（#1356 A1）", async () => {
     const f = fakeClient({ error: null });
-    await createSupabaseCloudSessionMeta(f.client, "sess-1", () => {}).setLast({ ts: Date.parse("2026-09-23T10:00:00.000Z"), excerpt: "你好", from: "human:u1" });
+    await createSupabaseCloudSessionMeta(f.client, "sess-1", () => {}, "ws-1").setLast({ ts: Date.parse("2026-09-23T10:00:00.000Z"), excerpt: "你好", from: "human:u1" });
     expect(f.update).toHaveBeenCalledWith({ last_ts: "2026-09-23T10:00:00.000Z", last_excerpt: "你好", last_from: "human:u1" });
     expect(f.eq).toHaveBeenCalledWith("id", "sess-1");
   });
@@ -79,7 +76,80 @@ describe("createSupabaseCloudSessionMeta", () => {
   it("最后一句写失败（0040 没跑，列不存在）只记一行日志不抛", async () => {
     const log = vi.fn();
     const f = fakeClient({ error: { message: "column last_ts does not exist" } });
-    await expect(createSupabaseCloudSessionMeta(f.client, "s", log).setLast({ ts: 1, excerpt: "x", from: "human:u1" })).resolves.toBeUndefined();
+    await expect(createSupabaseCloudSessionMeta(f.client, "s", log, "ws-1").setLast({ ts: 1, excerpt: "x", from: "human:u1" })).resolves.toBeUndefined();
     expect(log).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("setActivity（#1282）", () => {
+  it("内存版记下每一批", async () => {
+    const meta = createInMemoryCloudSessionMeta();
+    await meta.setActivity([{ agentId: "ops", state: "working", since: 1, beat: 2 }]);
+    expect(meta.activity).toEqual([[{ agentId: "ops", state: "working", since: 1, beat: 2 }]]);
+  });
+
+  function upsertClient(result: { error: { message: string; code?: string } | null } | Error) {
+    const upsert = vi.fn(async () => {
+      if (result instanceof Error) throw result;
+      return result;
+    });
+    const from = vi.fn().mockReturnValue({ upsert });
+    return { client: { from } as never, from, upsert };
+  }
+
+  it("真库版：一批 upsert 进 agent_activity，按 (session_id, agent_id) 覆盖，时间写 ISO", async () => {
+    const f = upsertClient({ error: null });
+    await createSupabaseCloudSessionMeta(f.client, "sess-1", () => {}, "ws-1").setActivity([
+      { agentId: "ops", state: "working", since: Date.parse("2026-09-28T10:00:00.000Z"), beat: Date.parse("2026-09-28T10:01:00.000Z") },
+    ]);
+    expect(f.from).toHaveBeenCalledWith("agent_activity");
+    expect(f.upsert).toHaveBeenCalledWith(
+      [{ session_id: "sess-1", agent_id: "ops", workspace_id: "ws-1", state: "working", since: "2026-09-28T10:00:00.000Z", beat: "2026-09-28T10:01:00.000Z" }],
+      { onConflict: "session_id,agent_id" },
+    );
+  });
+
+  it("表还不在（0044 没跑：42P01 / PGRST205）：这条会话只记一行，不刷屏", async () => {
+    for (const code of ["42P01", "PGRST205"]) {
+      const log = vi.fn();
+      const f = upsertClient({ error: { message: "relation does not exist", code } });
+      const meta = createSupabaseCloudSessionMeta(f.client, "sess-1", log, "ws-1");
+      await meta.setActivity([{ agentId: "ops", state: "working", since: 1, beat: 1 }]);
+      await meta.setActivity([{ agentId: "ops", state: "idle", since: 2, beat: 2 }]);
+      expect(log).toHaveBeenCalledTimes(1);
+    }
+  });
+
+  it("别的错每次都记；网络层 reject 记日志不抛", async () => {
+    const log = vi.fn();
+    const f = upsertClient({ error: { message: "boom", code: "XX000" } });
+    const meta = createSupabaseCloudSessionMeta(f.client, "sess-1", log, "ws-1");
+    await meta.setActivity([{ agentId: "ops", state: "working", since: 1, beat: 1 }]);
+    await meta.setActivity([{ agentId: "ops", state: "idle", since: 2, beat: 2 }]);
+    expect(log).toHaveBeenCalledTimes(2);
+    const log2 = vi.fn();
+    const g = upsertClient(new Error("offline"));
+    await expect(
+      createSupabaseCloudSessionMeta(g.client, "sess-1", log2, "ws-1").setActivity([{ agentId: "ops", state: "working", since: 1, beat: 1 }]),
+    ).resolves.toBeUndefined();
+    expect(log2).toHaveBeenCalledWith(expect.stringContaining("offline"));
+  });
+});
+
+describe("resetAgentActivity（#1282）", () => {
+  it("上一个进程留下的非 idle 行全部写回 idle", async () => {
+    const neq = vi.fn(async () => ({ error: null }));
+    const update = vi.fn().mockReturnValue({ neq });
+    const from = vi.fn().mockReturnValue({ update });
+    await resetAgentActivity({ from } as never, () => {}, Date.parse("2026-09-28T10:00:00.000Z"));
+    expect(from).toHaveBeenCalledWith("agent_activity");
+    expect(update).toHaveBeenCalledWith({ state: "idle", since: "2026-09-28T10:00:00.000Z", beat: "2026-09-28T10:00:00.000Z" });
+    expect(neq).toHaveBeenCalledWith("state", "idle");
+  });
+  it("失败只记日志不抛", async () => {
+    const log = vi.fn();
+    const neq = vi.fn(async () => ({ error: { message: "boom" } }));
+    await resetAgentActivity({ from: () => ({ update: () => ({ neq }) }) } as never, log);
+    expect(log).toHaveBeenCalledWith(expect.stringContaining("boom"));
   });
 });
