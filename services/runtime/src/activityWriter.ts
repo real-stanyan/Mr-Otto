@@ -7,6 +7,9 @@
 //
 // 一只智能体第一次出现就是 idle 的不写：没有那一行 = 闲着（客户端两者画法相同），而 daemon 启动时
 // 已经把上一个进程留下的行全部写回了 idle（cloudSessionMeta.resetAgentActivity）。
+// 同一个 writer 的写排成一队、上一次落定了才发下一次：心跳不推进节流窗口，紧跟在心跳后面的一次变化
+// 会当场写，两次 upsert 同时在飞就可能倒着提交——表里留下旧状态配一个新 beat，而 writer 以为新状态
+// 已经写进去了、再也不会重写（出错 / 额度用完不心跳，倒着提交就永远丢了）。
 // 写的是日志的投影：失败只丢这一次（CloudSessionMeta 的实现自己记日志），下一次变化盖掉。
 // 时钟与定时器可注入，测试不必动 vi 的假定时器。
 
@@ -45,6 +48,8 @@ export function createActivityWriter(o: {
   let armed = false;
   let beating = false;
   let closed = false;
+  /** 上一次写的尾巴：下一次接在它后面（见文件头） */
+  let tail: Promise<void> = Promise.resolve();
 
   const send = (ids: Iterable<string>): void => {
     const at = now();
@@ -54,7 +59,8 @@ export function createActivityWriter(o: {
       if (c !== undefined) rows.push({ agentId: id, state: c.state, since: c.since, beat: at });
     }
     if (rows.length === 0) return;
-    void o.write(rows).catch(() => undefined);
+    // .catch 接住这一次的失败，链子不断：一次写失败不拦住后面的写
+    tail = tail.then(() => o.write(rows)).catch(() => undefined);
   };
 
   const liveIds = (): string[] => [...current].filter(([, c]) => LIVE_ACTIVITIES.has(c.state)).map(([id]) => id);

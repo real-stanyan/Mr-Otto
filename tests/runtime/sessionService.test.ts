@@ -7258,21 +7258,26 @@ describe("智能体状态（#1282）", () => {
     const session = createCloudSession({ ...baseOpts(store, events, adapter), sessionMeta: meta, wiki: testWiki(), activityThrottleMs: 0 });
     await session.say("u1", "alice", "看下 a.txt", true);
     await session.settled();
+    // writer 的写排在上一次后面、起跑落在微任务里：不押 settled() 恰好多等了几拍
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(meta.activity.flat().filter((r) => r.agentId === "default").map((r) => r.state)).toEqual([
       "queued", "composing", "searching", "composing", "idle",
     ]);
     store.close();
   });
 
-  it("装配时按日志写回：上一轮出错的那只写成出错；归档时写成 idle，之后不再写", () => {
+  it("装配时按日志写回：上一轮出错的那只写成出错；归档时写成 idle，之后不再写", async () => {
     const store = newStore();
     store.append({ sessionId: "s1", ts: 1, type: "user_message", content: "[alice]: 在吗", fromUid: "u1", mentions: ["default"] } as never);
     store.append({ sessionId: "s1", ts: 2, type: "request_envelope", agentId: "default" } as never);
     store.append({ sessionId: "s1", ts: 3, type: "turn_ended", outcome: "error", error: "boom", agentId: "default" } as never);
     const meta = createInMemoryCloudSessionMeta();
     const session = createCloudSession({ ...baseOpts(store, [], echoAdapter), sessionMeta: meta, wiki: testWiki(), activityThrottleMs: 0 });
+    // writer 的写一次一个、起跑落在微任务里（activityWriter.ts 文件头）：断言之前让它跑到头
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(meta.activity.flat().map((r) => `${r.agentId}:${r.state}`)).toEqual(["default:failed"]);
     expect(session.archive("alice")).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(meta.activity.flat().map((r) => `${r.agentId}:${r.state}`)).toEqual(["default:failed", "default:idle"]);
     store.close();
   });
