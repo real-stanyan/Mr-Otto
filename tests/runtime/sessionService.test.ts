@@ -7281,4 +7281,20 @@ describe("智能体状态（#1282）", () => {
     expect(meta.activity.flat().map((r) => `${r.agentId}:${r.state}`)).toEqual(["default:failed", "default:idle"]);
     store.close();
   });
+
+  it("#822 重新开出房间的已归档会话：装配时写回的状态随即收成 idle，不留一只在跑（否则它会一直心跳下去）", async () => {
+    const store = newStore();
+    // 点了名还没人答，然后归档了：装配时折叠出来是「排队中」，而这条会话不会再有人来答
+    store.append({ sessionId: "s1", ts: 1, type: "user_message", content: "[alice]: 在吗", fromUid: "u1", mentions: ["default"] } as never);
+    store.append({ sessionId: "s1", ts: 2, type: "session_archived", reason: "user" } as never);
+    const meta = createInMemoryCloudSessionMeta();
+    const session = createCloudSession({ ...baseOpts(store, [], echoAdapter), sessionMeta: meta, wiki: testWiki(), activityThrottleMs: 0 });
+    await session.settled();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const lastByAgent = new Map<string, string>();
+    for (const r of meta.activity.flat()) lastByAgent.set(r.agentId, r.state);
+    expect(meta.activity.flat().at(-1)).toMatchObject({ agentId: "default", state: "idle" });
+    expect([...lastByAgent]).toEqual([["default", "idle"]]);
+    store.close();
+  });
 });

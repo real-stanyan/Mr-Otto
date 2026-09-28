@@ -825,6 +825,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   // ADR-0087 的口径是"最后一条 archived/unarchived 说了算"，云会话没有恢复
   // 归档那一半，所以只看有没有 session_archived
   let archived = seed.some((e) => e.type === "session_archived");
+  // #822 那条路会把日志里已归档的会话重新开出房间；它不会再有人答，状态写回 idle、不再心跳
+  if (archived) activity.close();
   let cachedPxTools: Tool[] = [];
   const now = opts.now ?? (() => Date.now());
 
