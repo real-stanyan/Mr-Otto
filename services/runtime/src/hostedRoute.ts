@@ -85,7 +85,9 @@ export function createRouteMemo(): RouteMemo {
 
 export type RuntimeRoute =
   | { kind: "hosted"; endpoint: ResolvedEndpoint; model: string }
-  | { kind: "blocked"; reason: string };
+  /** `quota` = 已知额度用完（网关刚说过、窗口还没到）。只影响抛出去的那条错的分类：收口时
+      turn_ended.errorClass = reroute，状态表画「额度用完」不画「出错」（#1282）。措辞不因它变 */
+  | { kind: "blocked"; reason: string; quota?: true };
 
 /** 决策（spec 第 5 节，ADR-0233 收窄成两态）：
     1. 团队所有者有活跃订阅 + 网关供着一款模型 → hosted（endpoint 带平台身份 + on-behalf-of +
@@ -119,6 +121,7 @@ export function decideRuntimeRoute(o: {
       kind: "blocked",
       reason:
         "团队所有者的订阅额度用完了，这个 turn 起不了。等这扇额度窗口刷新，或所有者加购额度后再 @。",
+      quota: true,
     };
   }
   if (me && me.status === "active" && me.plan && me.models.length > 0) {
@@ -248,7 +251,10 @@ export function createHostedRuntimeAdapter(deps: HostedRuntimeAdapterDeps): Mode
       const route = prepared ?? (await decide());
       prepared = null;
       if (route.kind === "blocked") {
-        throw new Error(route.reason);
+        // 已知额度用完那一挡带 reroute 分类（同网关 429 那条，openaiCompatible.ts）：turn_ended.errorClass
+        // 从这里来，状态表据此画「额度用完」而不是「出错」（#1282）
+        const err = new Error(route.reason);
+        throw route.quota === true ? markErrorClass(err, "reroute") : err;
       }
       const adapter = createOpenAICompatibleAdapter({
         baseUrl: route.endpoint.baseUrl,
