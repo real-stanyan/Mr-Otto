@@ -73,7 +73,8 @@ runtime 其实比日志知道得更准（队列、正在跑的 job 都在它手�
 - **欠不欠它一轮、在不在跑**：语义与 `openTurns`（`src/shared/turnLedger.ts`）逐条相同。点了它的 `user_message`
   （含接力、招呼开场白）让它欠一轮；它之后的任何一条事件把「排队」翻成「在跑」；它的 `turn_ended` 在
   `readUpToSeq ≥` 那条开场白的 seq 时才收口。跑到一半才到的点名，这一轮没看见过，收口后照旧欠着。
-- **手上的工具**：`assistant_message.toolCalls` 记下 id → 工具名；`tool_execution_started` 置为在跑，配对的 `tool_result` 清掉。
+- **手上的工具**：它最近一条 `assistant_message` 要的工具里，还没等到 `tool_result` 的。下一条 `assistant_message` 或 `turn_ended` 清掉。
+  从「模型要了」那一刻算起，不等 `tool_execution_started`：中间那段它在等审批或等容器锁，干的就是这件事，不是在思考。
   工具分两类：`read_file`、`wiki_read` 是检索，其余都是执行。
 - **在不在吐字**：收到这只的正文碎片置位，它的 `assistant_message` 或 `turn_ended` 清掉。
   碎片不是事件，runtime 从 `onAssistantDelta` 喂，手机从 delta 帧喂（`applyCloudDelta` 那条路）。
@@ -154,14 +155,15 @@ alter publication supabase_realtime add table public.workspace_sessions; -- 同�
 - **`services/runtime/src/activityWriter.ts`**：每条会话一个，形状同 `lastWriter`。
   - `set(agentId, state)`：和上次写的一样就不动；变了就记下。
   - 首尾两沿合帧，窗口 1 秒，一次把这条会话里变了的几只一起 upsert。
-  - 每 60 秒给不在 `idle` 的那几只补一次心跳（只更新 `beat`）。
-  - 写失败只记日志、不抛（同 `cloudSessionMeta.write`）。表不存在（42P01）整个进程只记一行，免得 0044 没跑时刷屏。
+  - 每 60 秒给此刻在进行的几档（排队到等你处理）补一次心跳，只更新 `beat`。出错、额度用完不心跳（§3.3）。
+  - 一只智能体第一次出现就是 `idle` 的不写：没有那一行就是闲着，客户端两者画法相同。
+  - 写失败只记日志、不抛（同 `cloudSessionMeta.write`）。表不存在（42P01 / PGRST205）每条会话只记一行，免得 0044 没跑时刷屏。
+  - 写库走 `CloudSessionMeta` 上新加的 `setActivity`，不另加装配参数。它是接口方法，漏实现编译不过；测试里 106 处装配也不用各改一行。
 - **`sessionService.ts`**：
   - 装配时对整份日志折叠一次（就是重启补跑 `openTurns(seed)` 用的那份 `seed`），之后在 `notify()` 里逐条推进，同 `bounds` / `voiceCall` 的手法。
   - `onAssistantDelta` 顺手喂「在吐字」。
-  - 每次推进完，把这只的新状态交给 writer。
-  - 归档、删除收摊时把所有智能体写成 `idle` 并立刻写出去。
-  - writer 是必需依赖：漏接线编译不过，而不是安静地永远不写。
+  - 每次推进完，把各只的新状态交给 writer（没变的 writer 自己跳过）。
+  - 归档收摊时把所有智能体写成 `idle` 并立刻写出去。删除先走归档（ADR-0245），不另写。
 - **`daemon.ts`**：启动时在补开房间**之前**，把 `state <> 'idle'` 的行全写回 `idle`。只有一个 daemon，所以这些行都是上一个进程留下的。
   各房间装配时再按自己的日志写回真状态，重启补跑起来后状态跟着走。顺序反过来的话，这一步会盖掉刚写上的真状态。
   daemon.ts 进不了 vitest，这条顺序由一条读源码的断言钉住（同 `freeKib` / `approveAll` 那几条）。
@@ -169,8 +171,9 @@ alter publication supabase_realtime add table public.workspace_sessions; -- 同�
 
 ### 3.3 陈旧
 
-手机端一行 `state` 不是 `idle`、且 `beat` 早于此刻 3 分钟，就当「不知道」（画 `plain`，不画角标）。
+手机端一行是此刻在进行的几档（排队到等你处理）、且 `beat` 早于此刻 3 分钟，就当「不知道」（画 `plain`，不画角标）。
 心跳 60 秒一次，3 分钟 = 连着丢三次。手机上每 30 秒重判一次陈旧。daemon 崩了、没来得及写 `idle` 时，最多 3 分钟后列表回到静止。
+出错、额度用完说的是上一轮的结局，不是「此刻在干嘛」的声称，所以不过期、也不心跳。daemon 重启时它们先被归零，再由装配按日志写回来。
 
 ### 3.4 手机读
 
@@ -178,11 +181,13 @@ alter publication supabase_realtime add table public.workspace_sessions; -- 同�
   - 登录后、回前台时全量拉一次，RLS 已经把范围收在我能看的会话里。
   - 订 `agent_activity` 的 INSERT 和 UPDATE，**不订 DELETE**（同 §3.1 的理由）。
   - 按 `session_id:agent_id` 存。
-- **订 `workspace_sessions` 的 INSERT 和 UPDATE**：去抖 1 秒，重拉主场与团队的会话清单和最后一句，复用 `homeStore` / `teamsStore` 现成的拉取。
+- **订 `workspace_sessions` 的 INSERT 和 UPDATE**：
+  - UPDATE 带来的最后一句当场补进手上那份（`homeStore` / `teamsStore` 各加一个就地补的口），不重拉。agent 说话时这一列最快 3 秒写一次，每次都重拉整份清单太贵。
+  - INSERT / UPDATE 另外节流重拉一次清单，最多 10 秒一次，接住新会话、改名、归档这类结构变化。
 - **读不到时**（表不在、断网）：这一格为空，全部画 `plain`，也就是今天的样子。
 - **订阅健康不并进好友那一份**：理由同 ADR-0256，0044 没跑的那段时间里它一直报错，并进去等于让一次没跑的 migration 看起来像「好友连不上」。
 - **生命周期**同 `friendsApi`：换号、登出时移除频道。
-- **拼行**：`wechatInbox` 的 `inboxRows` 多收一份状态，每行多一格脸的状态与角标颜色；判据在 shared，手机只画。
+- **拼行**：`wechatInbox` 的 `inboxRows` 多收一个查状态的函数。九宫格里每一格脸带上自己的状态，每行多一格 `activity`（这一行最要紧的那个，角标颜色与读屏文字都从它来）。不传这个函数时输出与今天逐字相同。判据在 shared，手机只画。
 
 ## 4. 部署顺序
 
