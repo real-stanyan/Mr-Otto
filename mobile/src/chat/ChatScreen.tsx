@@ -38,6 +38,7 @@ import { teamChatTitle } from "../../../src/shared/wechatInbox.js";
 import { agentNameOf } from "../../../src/shared/workspaceView.js";
 import { isHomeWorkspace, type WorkspaceSnapshot } from "../../../src/shared/workspaces.js";
 import type { SessionEvent } from "../../../src/session/events.js";
+import { settleAnswer } from "../call/ringStore.js";
 import { cloudClient } from "../cloud/cloudClient.js";
 import {
   closeChat, dropUnsent, loadOlder, openChat, resendUnsent, sendText, startDm, stopTurn, useChatStore,
@@ -470,6 +471,50 @@ export function ChatScreen({ route, navigation }: Props) {
     void onStartCall();
     // onStartCall 每次渲染都是新的；这里只跟「打得了没有」走
   }, [route.params.autoCall, offerPhone]);
+
+  // 打给一只（#1411）：接回电、点聊天里那条来电 / 未接记录都走这里。通话本来就开着（锁屏没挂，ADR-0320）
+  // 时把它并进现在的名单——runtime 认的是「发的名单里有没有正在给他响铃的那只」，没在响的就是普通的拉人。
+  // 回 true = 这一帧有了回执、电话打出去了
+  const callAgent = async (agentId: string): Promise<boolean> => {
+    if (session === null) return false;
+    if (!usable) {
+      setPageNote({ text: "这台手机上打不了电话（要装开发版）", tone: "muted" });
+      return false;
+    }
+    const ids = call === null ? [agentId] : [...new Set([...call.participants.map((p) => p.agentId), agentId])];
+    setCallOp("start");
+    setCallOpen(true);
+    const r = await startCall(session.sessionId, ids);
+    setCallOp(null);
+    if (!r.ok) {
+      setCallOpen(false);
+      setPageNote(r.unknown ? { text: "没有收到回执，不确定接通了没有", tone: "muted" } : { text: r.message, tone: "error" });
+    }
+    return r.ok;
+  };
+
+  // 接回电（#1411）：从来电页点「接听」进来——房间一 ready 就把打电话的那只拉进通话（一次）。来电页还盖在
+  // 上面写着「正在接通…」（原地接通）：通话整屏真的出来了（日志里有了这场通话、而且它开着）才撤；打不了就当场撤，
+  // 页面上那一行说为什么
+  const answeredRing = useRef<string | null>(null);
+  const [answering, setAnswering] = useState<string | null>(null);
+  useEffect(() => {
+    const ar = route.params.answerRing;
+    if (ar === undefined || answeredRing.current === ar.ringId || !ready || session === null) return;
+    answeredRing.current = ar.ringId;
+    setAnswering(ar.ringId);
+    void callAgent(ar.agentId).then((ok) => {
+      if (ok) return;
+      setAnswering(null);
+      settleAnswer(ar.ringId, "note");
+    });
+    // 只跟「房间好了没有」走（同 autoCall）；callAgent 每次渲染都是新的
+  }, [route.params.answerRing, ready, session?.sessionId]);
+  useEffect(() => {
+    if (answering === null || call === null || !callOpen) return;
+    settleAnswer(answering, "call");
+    setAnswering(null);
+  }, [answering, call !== null, callOpen]);
 
   const plus: PlusItem[] = [];
   if (offerPhone) plus.push({ key: "call", icon: "phone", label: "语音通话", onPress: () => void onStartCall() });
