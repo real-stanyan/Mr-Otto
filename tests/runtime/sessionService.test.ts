@@ -7241,3 +7241,60 @@ describe("新建的智能体先开口，第一句回话写进职责（#1356 A2�
     expect(userMessages(store)).toEqual([]);
   });
 });
+
+describe("智能体状态（#1282）", () => {
+  it("一轮：排队 → 思考 → 检索 → 思考 → 闲着，逐次写进 agent_activity", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    let round = 0;
+    const adapter: ModelAdapter = {
+      model: "fake-model",
+      async chat(): Promise<ModelReply> {
+        round++;
+        return round === 1 ? { content: "", toolCalls: [{ id: "c1", name: "read_file", args: { path: "/a.txt" } }] } : { content: "看完了" };
+      },
+    };
+    const meta = createInMemoryCloudSessionMeta();
+    const session = createCloudSession({ ...baseOpts(store, events, adapter), sessionMeta: meta, wiki: testWiki(), activityThrottleMs: 0 });
+    await session.say("u1", "alice", "看下 a.txt", true);
+    await session.settled();
+    // writer 的写排在上一次后面、起跑落在微任务里：不押 settled() 恰好多等了几拍
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(meta.activity.flat().filter((r) => r.agentId === "default").map((r) => r.state)).toEqual([
+      "queued", "composing", "searching", "composing", "idle",
+    ]);
+    store.close();
+  });
+
+  it("装配时按日志写回：上一轮出错的那只写成出错；归档时写成 idle，之后不再写", async () => {
+    const store = newStore();
+    store.append({ sessionId: "s1", ts: 1, type: "user_message", content: "[alice]: 在吗", fromUid: "u1", mentions: ["default"] } as never);
+    store.append({ sessionId: "s1", ts: 2, type: "request_envelope", agentId: "default" } as never);
+    store.append({ sessionId: "s1", ts: 3, type: "turn_ended", outcome: "error", error: "boom", agentId: "default" } as never);
+    const meta = createInMemoryCloudSessionMeta();
+    const session = createCloudSession({ ...baseOpts(store, [], echoAdapter), sessionMeta: meta, wiki: testWiki(), activityThrottleMs: 0 });
+    // writer 的写一次一个、起跑落在微任务里（activityWriter.ts 文件头）：断言之前让它跑到头
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(meta.activity.flat().map((r) => `${r.agentId}:${r.state}`)).toEqual(["default:failed"]);
+    expect(session.archive("alice")).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(meta.activity.flat().map((r) => `${r.agentId}:${r.state}`)).toEqual(["default:failed", "default:idle"]);
+    store.close();
+  });
+
+  it("#822 重新开出房间的已归档会话：装配时写回的状态随即收成 idle，不留一只在跑（否则它会一直心跳下去）", async () => {
+    const store = newStore();
+    // 点了名还没人答，然后归档了：装配时折叠出来是「排队中」，而这条会话不会再有人来答
+    store.append({ sessionId: "s1", ts: 1, type: "user_message", content: "[alice]: 在吗", fromUid: "u1", mentions: ["default"] } as never);
+    store.append({ sessionId: "s1", ts: 2, type: "session_archived", reason: "user" } as never);
+    const meta = createInMemoryCloudSessionMeta();
+    const session = createCloudSession({ ...baseOpts(store, [], echoAdapter), sessionMeta: meta, wiki: testWiki(), activityThrottleMs: 0 });
+    await session.settled();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const lastByAgent = new Map<string, string>();
+    for (const r of meta.activity.flat()) lastByAgent.set(r.agentId, r.state);
+    expect(meta.activity.flat().at(-1)).toMatchObject({ agentId: "default", state: "idle" });
+    expect([...lastByAgent]).toEqual([["default", "idle"]]);
+    store.close();
+  });
+});

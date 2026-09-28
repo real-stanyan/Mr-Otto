@@ -34,7 +34,7 @@ import { createSupabaseWikiJournal } from "./wikiJournal.js";
 import { createContainerWikiFs } from "./wikiFs.js";
 import { createWikiService, type WikiService } from "./wikiService.js";
 import { createSupabaseMentionInbox } from "./mentionInbox.js";
-import { createSupabaseCloudSessionMeta } from "./cloudSessionMeta.js";
+import { createSupabaseCloudSessionMeta, resetAgentActivity } from "./cloudSessionMeta.js";
 import { requestTitleAsOwner } from "./sessionTitler.js";
 import { createSupabaseAgentWriter, type WorkspaceAgentWriter } from "./agentRegistry.js";
 import { normalizeAgentTools } from "../../../src/shared/agentToolAllow.js";
@@ -719,7 +719,7 @@ async function main(): Promise<void> {
       // authenticated 的 insert 策略（给了就是让任何在籍成员替别人伪造一条
       // 「有人 @ 了你」）
       mentionInbox: createSupabaseMentionInbox(supabase, (m) => console.warn(m)),
-      sessionMeta: createSupabaseCloudSessionMeta(supabase, sessionId, (m) => console.warn(m)),
+      sessionMeta: createSupabaseCloudSessionMeta(supabase, sessionId, (m) => console.warn(m), workspaceId),
       // 会话命名（#1213）：装配在这一层的理由同 dispatch —— 凭据与订阅探针都在这里。
       // **探不到与没订阅在这里给同一个答案：不改名**。这与 dispatch 那三种分说不同，
       // 因为命名失败不产生任何对用户说的话（侧栏那一格保持现状），没有需要区分措辞
@@ -1303,6 +1303,10 @@ async function main(): Promise<void> {
     dropCid(cid); // ctl 房的 cid 从不进 roomRosters，dropCid 里那半是无操作，安全
     frameHandler.onGone(cid);
   });
+
+  // 智能体状态表（#1282）：上一个进程留下的「在跑」全部写回 idle，**排在补开房间之前**——各房间装配时
+  // 按自己的日志把真状态写回来；顺序反过来，这一步会把刚写回的真状态盖成 idle。写不进去只记日志
+  await resetAgentActivity(supabase, (m) => console.warn(m));
 
   // ── 存量云会话补开房间：daemon 重启后，已经存在（且未归档）的 kind='cloud'
   // 会话不会自动有人监听它的 channel——desktop 的 join 会连上 relay 却什么

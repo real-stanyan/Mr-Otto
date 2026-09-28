@@ -4,8 +4,8 @@
 //   几何中心会让脸显得往上飘）。判断全在 src/shared/ottoFace/（art 那一层），这里只把几层 Path 摆进方块。
 // · 人 = 头像图（profiles.avatar_url，data URL 或 https），没有就名字的第一个字；我 = 同样，底色反过来。
 // · 群 = 九宫格拼图（不满的一行在最上面、居中，gridLayout），格子里是脸或首字。
-// 会不会动由状态说（faceAnimates）：列表里一律 plain（静止一帧，名册查不到谁在跑，#722 / #1282），
-// 只有此刻正在看的那一只（聊天页里打字的那张、通话那一张）才动。
+// 会不会动由状态说（faceAnimates）：状态由调用方给（#1282 起列表也按真状态画，判据 shared/agentActivity.ts）；
+// 不知道、闲着一律 plain（静止一帧）。九宫格里的小格只动脸、不画角标，角标由那一行统一挂一枚。
 import { memo, useEffect, useState } from "react";
 import { Image, Text, View } from "react-native";
 import Svg, { G, Path, Rect } from "react-native-svg";
@@ -119,7 +119,7 @@ export function GridTile({ cells, size, label }: { cells: readonly GridCell[]; s
           {Array.from({ length: n }, () => {
             const x = cells[k++]!;
             return x.kind === "face" ? (
-              <FaceTile key={`${ri}-${x.id}-${k}`} slot={x.slot} size={cell} radius={2} />
+              <FaceTile key={`${ri}-${x.id}-${k}`} slot={x.slot} size={cell} radius={2} state={x.state ?? "plain"} />
             ) : x.url !== "" ? (
               <Image key={`${ri}-${k}`} source={{ uri: x.url }} style={{ width: cell, height: cell, borderRadius: 2 }} />
             ) : (
@@ -139,7 +139,7 @@ export function GridTile({ cells, size, label }: { cells: readonly GridCell[]; s
 
 /** 按 shared 算好的头像说明画（会话列表、群聊列表用它） */
 export function SpecAvatar({ spec, size }: { spec: AvatarSpec; size: number }) {
-  if (spec.kind === "face") return <FaceTile slot={spec.slot} size={size} />;
+  if (spec.kind === "face") return <FaceTile slot={spec.slot} size={size} state={spec.state ?? "plain"} />;
   if (spec.kind === "person") return <PersonTile name={spec.name} url={spec.url} size={size} />;
   return <GridTile cells={spec.cells} size={size} />;
 }

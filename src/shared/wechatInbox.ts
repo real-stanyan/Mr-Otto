@@ -14,10 +14,12 @@
 
 import type { DirectMessage, FriendProfile } from "./friends.js";
 import { decodeEnvelope } from "./sessionPackageCodec.js";
+import { activityFace, mostUrgent, type AgentActivity } from "./agentActivity.js";
 import { agentFaceSlot } from "./agentAvatar.js";
 import { groupRows, rosterRows } from "./agentRoster.js";
 import { narrowRoster } from "./chatRoster.js";
 import { withGuests, type ChatPerson, type GuestChat } from "./chatGuests.js";
+import type { FaceState } from "./ottoFace/states.js";
 import { lastSpeakerOf, type SessionLast } from "./sessionLast.js";
 import type { CloudSessionRow } from "./supabaseWorkspacesApi.js";
 import type { WorkspaceMentionRow } from "./workspaceMentions.js";
@@ -79,6 +81,8 @@ export interface FaceCell {
   kind: "face";
   id: string;
   slot: number;
+  /** 此刻的状态（#1282）。只在不是 plain 时出现：不知道 / 闲着的脸与今天逐字相同 */
+  state?: FaceState;
 }
 export type GridCell = FaceCell | PersonAvatar;
 export type AvatarSpec = FaceCell | PersonAvatar | { kind: "grid"; cells: GridCell[] };
@@ -134,6 +138,8 @@ export interface InboxRow {
   /** 有人在这个群里 @ 了我、还没看（团队群才会有） */
   mention: boolean;
   unread: Unread;
+  /** 这一行最要紧的那个状态（#1282，角标颜色与读屏文字从它来）。闲着 / 不知道不出现 */
+  activity?: AgentActivity;
   /** 搜索的草堆：标题 + 最后一句 + 成员名 */
   hay: string;
 }
@@ -238,11 +244,28 @@ export function inboxRows(o: {
   seen: SeenState | null;
   /** 此刻开着的那一条（它不画未读：人正看着它） */
   openKey: string | null;
+  /** 查某条会话里某只此刻的状态（#1282）。null = 不知道。缺席 = 输出与改动前逐字相同 */
+  activity?: (sessionId: string, agentId: string) => AgentActivity | null;
 }): InboxRow[] {
   const rows: InboxRow[] = [];
   const mentioned = new Set(o.mentions.filter((m) => !m.read).map((m) => m.sessionId));
   const dot = (last: SessionLast | undefined, key: string): Unread =>
     o.seen !== null && key !== o.openKey && cloudUnread(last, key, o.seen, o.selfUid) ? { kind: "dot" } : null;
+  const look = o.activity;
+  /** 一格智能体的脸带上它在这条会话里的状态；不知道 / 闲着原样返回（与今天逐字相同） */
+  const stated = (cell: FaceCell, sessionId: string): FaceCell => {
+    const state = activityFace(look?.(sessionId, cell.id) ?? null);
+    return state === "plain" ? cell : { ...cell, state };
+  };
+  const statedCells = (cells: GridCell[], sessionId: string): GridCell[] =>
+    cells.map((c) => (c.kind === "face" ? stated(c, sessionId) : c));
+  /** 整个头像那一枚角标说谁：这条会话里几只里最要紧的那个（闲着 / 不知道 = 不带这一格） */
+  const rowActivity = (sessionId: string, agentIds: readonly string[]): { activity?: AgentActivity } => {
+    if (look === undefined) return {};
+    const known = agentIds.map((id) => look(sessionId, id)).filter((a): a is AgentActivity => a !== null);
+    const a = mostUrgent(known);
+    return a === null || a === "idle" ? {} : { activity: a };
+  };
 
   if (o.home !== null) {
     const { ws, chats, lasts } = o.home;
@@ -255,12 +278,13 @@ export function inboxRows(o: {
         key,
         target: { kind: "agent", agentId: r.agentId },
         title: r.name,
-        avatar: faceCell(ws, r.agentId),
+        avatar: stated(faceCell(ws, r.agentId), r.sessionId),
         ts: last?.ts ?? r.updatedTs,
         preview: last?.excerpt ?? "",
         mention: false,
         unread: dot(last, key),
         hay: [r.name, r.description, last?.excerpt ?? ""].join("\n"),
+        ...rowActivity(r.sessionId, [r.agentId]),
       });
     }
     for (const g of groupRows(ws, chats)) {
@@ -274,12 +298,13 @@ export function inboxRows(o: {
         key,
         target: { kind: "group", sessionId: g.sessionId },
         title,
-        avatar: { kind: "grid", cells: people.length > 0 ? mixedCells(ws, people, g.agentIds) : g.agentIds.slice(0, GRID_MAX).map((id) => faceCell(ws, id)) },
+        avatar: { kind: "grid", cells: statedCells(people.length > 0 ? mixedCells(ws, people, g.agentIds) : g.agentIds.slice(0, GRID_MAX).map((id) => faceCell(ws, id)), g.sessionId) },
         ts: last?.ts ?? g.updatedTs,
         preview: last === undefined ? "" : `${speakerPrefix(gws, last, o.selfUid)}${last.excerpt}`,
         mention: mentioned.has(g.sessionId),
         unread: dot(last, key),
         hay: [title, g.agentIds.map((id) => agentNameOf(ws, id)).join("、"), people.map((p) => p.name).join("、"), last?.excerpt ?? ""].join("\n"),
+        ...rowActivity(g.sessionId, g.agentIds),
       });
     }
   }
@@ -294,12 +319,13 @@ export function inboxRows(o: {
       key,
       target: { kind: "guest", workspaceId: g.ws.id, sessionId: g.session.id },
       title,
-      avatar: { kind: "grid", cells: mixedCells(g.ws, people, g.session.agentIds) },
+      avatar: { kind: "grid", cells: statedCells(mixedCells(g.ws, people, g.session.agentIds), g.session.id) },
       ts: last?.ts ?? g.session.updatedTs,
       preview: last === undefined ? "" : `${speakerPrefix(g.ws, last, o.selfUid)}${last.excerpt}`,
       mention: mentioned.has(g.session.id) && key !== o.openKey,
       unread: dot(last, key),
       hay: [title, people.map((p) => p.name).join("、"), g.session.agentIds.map((id) => agentNameOf(g.ws, id)).join("、"), last?.excerpt ?? ""].join("\n"),
+      ...rowActivity(g.session.id, g.session.agentIds),
     });
   }
 
@@ -315,12 +341,13 @@ export function inboxRows(o: {
         key,
         target: { kind: "team", workspaceId: t.ws.id, sessionId: s.id },
         title,
-        avatar: { kind: "grid", cells },
+        avatar: { kind: "grid", cells: statedCells(cells, s.id) },
         ts: last?.ts ?? s.updatedTs,
         preview: last === undefined ? "" : `${speakerPrefix(t.ws, last, o.selfUid)}${last.excerpt}`,
         mention: mentioned.has(s.id) && key !== o.openKey,
         unread: dot(last, key),
         hay: [title, t.ws.name, humans.map((h) => h.name).join("、"), agentIds.map((id) => agentNameOf(t.ws, id)).join("、"), last?.excerpt ?? ""].join("\n"),
+        ...rowActivity(s.id, agentIds),
       });
     }
   }

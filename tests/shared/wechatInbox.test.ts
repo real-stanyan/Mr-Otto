@@ -2,6 +2,7 @@
 // 钉的是：四种会话怎么混排、未读怎么判（点 / 条数 / 游标只往前走）、时间怎么写、九宫格怎么排。
 
 import { describe, expect, it } from "vitest";
+import type { AgentActivity } from "../../src/shared/agentActivity.js";
 import type { DirectMessage, FriendProfile } from "../../src/shared/friends.js";
 import type { SessionLast } from "../../src/shared/sessionLast.js";
 import type { CloudSessionRow } from "../../src/shared/supabaseWorkspacesApi.js";
@@ -168,6 +169,30 @@ describe("inboxRows", () => {
     expect(filterInbox(rows, "客服").map((r) => r.key)).toEqual(["g:grp1"]);
     expect(filterInbox(rows, "  ").length).toBe(rows.length);
     expect(filterInbox(rows, "U_AJ@X").map((r) => r.key)).toEqual(["f:u_aj"]);
+  });
+  it("状态（#1282）：私聊那格脸带状态、行带 activity；群里每格各带各的、行取最要紧；闲着 / 不知道不带", () => {
+    const look = (sid: string, aid: string): AgentActivity | null =>
+      sid === "dm1" && aid === "a_000000000001" ? "working"
+      : sid === "grp1" && aid === "admin" ? "idle"
+      : sid === "grp1" && aid === "a_000000000002" ? "waiting"
+      : null;
+    const rows = inboxRows({ ...base, activity: look });
+    const by = (k: string) => rows.find((r) => r.key === k)!;
+    expect(by("a:a_000000000001").avatar).toMatchObject({ kind: "face", id: "a_000000000001", state: "working" });
+    expect(by("a:a_000000000001").activity).toBe("working");
+    const grid = by("g:grp1").avatar;
+    expect(grid.kind === "grid" ? grid.cells.map((c) => (c.kind === "face" ? c.state ?? "plain" : c.name)) : []).toEqual(["plain", "waiting"]);
+    expect(by("g:grp1").activity).toBe("waiting");
+    expect(by("t:ts1").activity).toBeUndefined();
+    expect("activity" in by("f:u_aj")).toBe(false);
+  });
+  it("不给查状态的函数：输出与改动前逐字相同（脸上没有 state、行上没有 activity）", () => {
+    const rows = inboxRows(base);
+    expect(rows.some((r) => "activity" in r)).toBe(false);
+    for (const r of rows) {
+      const cells = r.avatar.kind === "grid" ? r.avatar.cells : [r.avatar];
+      expect(cells.some((c) => "state" in c)).toBe(false);
+    }
   });
 });
 

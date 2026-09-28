@@ -3,10 +3,11 @@
 // 分隔线从头像右边开始（照微信），由列表那一层画。
 import { memo } from "react";
 import { Pressable, Text, View } from "react-native";
+import { ACTIVITY_TEXT, activityBadge } from "../../../src/shared/agentActivity.js";
 import { listTimeLabel, type InboxRow } from "../../../src/shared/wechatInbox.js";
 import { usePalette } from "../theme.js";
 import { SpecAvatar } from "../wx/Avatar.js";
-import { CountBadge, DotBadge } from "../wx/Badge.js";
+import { CountBadge, DotBadge, StatusBadge } from "../wx/Badge.js";
 
 export const CHAT_ROW_AVATAR = 48;
 /** 分隔线从哪儿开始：左边距 16 + 头像 48 + 间距 12 */
@@ -21,10 +22,12 @@ export const ChatListRow = memo(function ChatListRow({ row, draft, now, onPress 
   const { c } = usePalette();
   const time = row.ts > 0 ? listTimeLabel(row.ts, now) : "";
   const unreadText = row.unread === null ? "" : row.unread.kind === "count" ? `，${row.unread.n} 条新消息` : "，有新消息";
+  const badge = activityBadge(row.activity ?? null);
+  const activityText = row.activity !== undefined ? `，${ACTIVITY_TEXT[row.activity]}` : "";
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={`${row.title}${unreadText}${row.mention ? "，有人@我" : ""}，${draft !== "" ? `草稿：${draft}` : row.preview}${time !== "" ? `，${time}` : ""}`}
+      accessibilityLabel={`${row.title}${activityText}${unreadText}${row.mention ? "，有人@我" : ""}，${draft !== "" ? `草稿：${draft}` : row.preview}${time !== "" ? `，${time}` : ""}`}
       onPress={onPress}
       style={({ pressed }) => [
         { flexDirection: "row", alignItems: "center", gap: 12, minHeight: 72, paddingHorizontal: 16, backgroundColor: c.card },
@@ -40,6 +43,11 @@ export const ChatListRow = memo(function ChatListRow({ row, draft, now, onPress 
         ) : row.unread?.kind === "dot" || row.mention ? (
           <View style={{ position: "absolute", top: -3, right: -3 }}>
             <DotBadge ring={c.card} />
+          </View>
+        ) : null}
+        {badge !== null ? (
+          <View style={{ position: "absolute", bottom: -3, right: -3 }}>
+            <StatusBadge badge={badge} ring={c.card} size={10} />
           </View>
         ) : null}
       </View>

@@ -6,18 +6,20 @@
 // 删一只在它私聊的「聊天信息」里（demo 同款），不在这里。
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { Pressable, ScrollView, Text, View } from "react-native";
+import { workspaceAgentActivity } from "../../../src/shared/agentActivityRows.js";
 import { agentFaceSlot } from "../../../src/shared/agentAvatar.js";
 import { facePhase } from "../../../src/shared/ottoFace/art.js";
 import { teamChatTitle } from "../../../src/shared/wechatInbox.js";
 import { labelOf } from "../../../src/shared/workspaceView.js";
 import type { WorkspaceAgentRow, WorkspaceSnapshot } from "../../../src/shared/workspaces.js";
+import { ActivityFace } from "../activity/ActivityFace.js";
+import { useActivity } from "../activity/activityStore.js";
 import { useHome } from "../home/homeStore.js";
 import { useTeams } from "../inbox/teamsStore.js";
 import type { RootStackParams } from "../nav/types.js";
 import { usePalette } from "../theme.js";
-import { Group, Row } from "../ui.js";
+import { Group, Row, useNow } from "../ui.js";
 import { useVoice, voiceUsable } from "../voice/voiceStore.js";
-import { FaceTile } from "../wx/Avatar.js";
 import { Icon, type IconName } from "../wx/Icon.js";
 import { AgentRows } from "./AgentRows.js";
 
@@ -59,11 +61,25 @@ export function CenterAction({ icon, label, onPress }: { icon: IconName; label: 
 }
 
 function TeamAgent({ ws, agent, groups }: { ws: WorkspaceSnapshot; agent: WorkspaceAgentRow; groups: string }) {
+  const { c } = usePalette();
+  const activity = useActivity();
+  const now = useNow(30_000);
   const owner = labelOf(ws, ws.ownerUid);
   return (
     <ScrollView contentContainerStyle={{ gap: 8, paddingBottom: 40 }}>
       <CardHead
-        avatar={<FaceTile slot={agentFaceSlot(ws, agent.agentId)} size={68} radius={12} state="alive" phase={facePhase(agent.agentId)} />}
+        avatar={
+          <ActivityFace
+            slot={agentFaceSlot(ws, agent.agentId)}
+            size={68}
+            radius={12}
+            idle="alive"
+            phase={facePhase(agent.agentId)}
+            activity={workspaceAgentActivity(activity.rows, ws.id, agent.agentId, now)}
+            ring={c.card}
+            badgeSize={13}
+          />
+        }
         name={agent.name}
         tag={`${owner}的智能体`}
         sub={agent.description}
@@ -78,6 +94,8 @@ function TeamAgent({ ws, agent, groups }: { ws: WorkspaceSnapshot; agent: Worksp
 export function AgentScreen({ route, navigation }: Props) {
   const { agentId, workspaceId } = route.params;
   const { c } = usePalette();
+  const activity = useActivity();
+  const now = useNow(30_000);
   const home = useHome();
   const teams = useTeams();
   const voice = useVoice();
@@ -110,7 +128,18 @@ export function AgentScreen({ route, navigation }: Props) {
     <View style={{ flex: 1, backgroundColor: c.background }}>
       <ScrollView contentContainerStyle={{ gap: 8, paddingBottom: 40 }}>
         <CardHead
-          avatar={<FaceTile slot={agentFaceSlot(ws, agentId)} size={68} radius={12} state="alive" phase={facePhase(agentId)} />}
+          avatar={
+            <ActivityFace
+              slot={agentFaceSlot(ws, agentId)}
+              size={68}
+              radius={12}
+              idle="alive"
+              phase={facePhase(agentId)}
+              activity={workspaceAgentActivity(activity.rows, ws.id, agentId, now)}
+              ring={c.card}
+              badgeSize={13}
+            />
+          }
           name={agent.name}
           tag="智能体"
           sub={agent.description}

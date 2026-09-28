@@ -19,10 +19,14 @@
 //
 // service key，绕过 RLS：这张表给 authenticated 的 update 策略钉在 kind='package'
 // 上，云会话行客户端本来就改不动（0016 / ADR-0245 那段前提）。
+//
+// #1282 起这里也是 agent_activity 那张表的写入口（`setActivity` / `resetAgentActivity`）：同是这条会话
+// 的日志投影、同是 service key、同是「失败只记日志不抛」，不另开一个装配参数。
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { ParticipantWindow } from "../../../src/shared/sessionParticipants.js";
 import type { SessionLast } from "../../../src/shared/sessionLast.js";
+import type { ActivityWrite } from "./activityWriter.js";
 
 export interface CloudSessionMeta {
   /** 侧栏那一行显示的名字。空串不该走到这里（调用方自己判） */
@@ -31,6 +35,9 @@ export interface CloudSessionMeta {
   setParticipants(w: ParticipantWindow): Promise<void>;
   /** 名册那一行的「最后一句 + 最近动静」（#1356 A1，spec §7.1）。节流在调用方（lastWriter） */
   setLast(l: SessionLast): Promise<void>;
+  /** agent_activity 那张表（#1282，spec §3.2）：这条会话里几只智能体的状态，一次写一批。节流与心跳在
+      调用方（activityWriter）。接口方法而不是可选依赖：漏实现编译不过，而不是安静地永远不写 */
+  setActivity(rows: ActivityWrite[]): Promise<void>;
 }
 
 /** 记在内存里的假件（测试 / 冒烟）。两格直接给断言读 */
@@ -38,19 +45,24 @@ export function createInMemoryCloudSessionMeta(): CloudSessionMeta & {
   title: string | null;
   participants: ParticipantWindow | null;
   last: SessionLast | null;
+  /** setActivity 收到的每一批，按先后 */
+  activity: ActivityWrite[][];
 } {
-  const state: { title: string | null; participants: ParticipantWindow | null; last: SessionLast | null } = {
+  const state: { title: string | null; participants: ParticipantWindow | null; last: SessionLast | null; activity: ActivityWrite[][] } = {
     title: null,
     participants: null,
     last: null,
+    activity: [],
   };
   return {
     get title() { return state.title; },
     get participants() { return state.participants; },
     get last() { return state.last; },
+    get activity() { return state.activity; },
     async setTitle(title) { state.title = title; },
     async setParticipants(w) { state.participants = { window: w.window, uids: [...w.uids] }; },
     async setLast(l) { state.last = { ...l }; },
+    async setActivity(rows) { state.activity.push(rows.map((r) => ({ ...r }))); },
   };
 }
 
@@ -60,7 +72,8 @@ export function createInMemoryCloudSessionMeta(): CloudSessionMeta & {
 export function createSupabaseCloudSessionMeta(
   client: SupabaseClient,
   sessionId: string,
-  log: (msg: string) => void
+  log: (msg: string) => void,
+  workspaceId: string,
 ): CloudSessionMeta {
   const write = async (patch: Record<string, unknown>, what: string): Promise<void> => {
     // try/catch 而不是只看 {error} 信封（复审 Critical 2）：supabase-js 的查询构造器
@@ -77,6 +90,10 @@ export function createSupabaseCloudSessionMeta(
       log(`[otto-runtime] ${what}写入抛出异常（session=${sessionId}）：${err instanceof Error ? err.message : String(err)}`);
     }
   };
+
+  /** 0044 还没跑时每一次写都撞「表不存在」（Postgres 42P01 / PostgREST PGRST205）：这条会话只说一次 */
+  let activityMissingSaid = false;
+
   return {
     async setTitle(title) { await write({ title }, "会话标题"); },
     async setParticipants(w) {
@@ -85,5 +102,41 @@ export function createSupabaseCloudSessionMeta(
     async setLast(l) {
       await write({ last_ts: new Date(l.ts).toISOString(), last_excerpt: l.excerpt, last_from: l.from }, "最后一句");
     },
+    async setActivity(rows) {
+      try {
+        const { error } = await client.from("agent_activity").upsert(
+          rows.map((r) => ({
+            session_id: sessionId,
+            agent_id: r.agentId,
+            workspace_id: workspaceId,
+            state: r.state,
+            since: new Date(r.since).toISOString(),
+            beat: new Date(r.beat).toISOString(),
+          })),
+          { onConflict: "session_id,agent_id" },
+        );
+        if (!error) return;
+        if (error.code === "42P01" || error.code === "PGRST205") {
+          if (activityMissingSaid) return;
+          activityMissingSaid = true;
+        }
+        log(`[otto-runtime] 智能体状态写入失败（session=${sessionId}）：${error.message}`);
+      } catch (err: unknown) {
+        log(`[otto-runtime] 智能体状态写入抛出异常（session=${sessionId}）：${err instanceof Error ? err.message : String(err)}`);
+      }
+    },
   };
+}
+
+/** daemon 启动时、补开房间**之前**调（spec §3.2）：上一个进程留下的非 idle 行全部写回 idle。
+    只有一个 daemon，所以这些行都是它自己上一次留下的。各房间装配时再按自己的日志把真状态写回来；
+    顺序反过来，这一步会把刚写回的真状态盖成 idle。不抛：写不进去只是列表多静止一会儿 */
+export async function resetAgentActivity(client: SupabaseClient, log: (msg: string) => void, now: number = Date.now()): Promise<void> {
+  const at = new Date(now).toISOString();
+  try {
+    const { error } = await client.from("agent_activity").update({ state: "idle", since: at, beat: at }).neq("state", "idle");
+    if (error) log(`[otto-runtime] 启动时把智能体状态归零失败：${error.message}`);
+  } catch (err: unknown) {
+    log(`[otto-runtime] 启动时把智能体状态归零抛出异常：${err instanceof Error ? err.message : String(err)}`);
+  }
 }

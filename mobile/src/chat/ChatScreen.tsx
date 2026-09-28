@@ -1,7 +1,7 @@
 // 聊天页（#1386，spec §5.2，demo 的 chatPage）。私聊、主场群、团队群（= 有真人的群）同一张页；朋友私聊是另一张
 // （FriendChatScreen：messages 表，不是云会话）。
 //
-// · 原生导航条（照微信）：标题（群带人数）+ 第二行状态（正在输入 / 正在干活 / 排队中 / 正在重连，nowRowOf 推）；
+// · 原生导航条（照微信）：标题（群带人数）+ 第二行状态（等你处理 / 正在输入 / 正在干活 / 正在查资料 / 正在想 / 排队中 / 正在重连，nowRowOf 推）；
 //   右边「···」进聊天信息；返回键后面带别的聊天的未读数。
 // · 时间线：倒置列表（最新一条贴底）；往上翻到顶取更早一页（尾巴模式），失败给一颗要人点的钮（A1 原样）。
 //   气泡、时刻、旁白见 Bubbles.tsx；「此刻」那一行是它那边一个打字的气泡 + 一颗「停」。
@@ -18,6 +18,7 @@ import { useHeaderHeight } from "@react-navigation/elements";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { FlatList, KeyboardAvoidingView, Platform, Pressable, Text, View } from "react-native";
+import { activityFoldOf } from "../../../src/shared/agentActivity.js";
 import { agentFaceSlot } from "../../../src/shared/agentAvatar.js";
 import { roleChipsAnchor } from "../../../src/shared/agentOnboarding.js";
 import { resolveSendMentions } from "../../../src/shared/agentMentionInput.js";
@@ -68,7 +69,14 @@ import { WxComposer, type ComposerHandle, type HoldState, type PlusItem } from "
 
 const EMPTY_EVENTS: SessionEvent[] = [];
 const EMPTY_GROUP_TEXT = "这个群里没有智能体了，说的话没人接。去聊天信息里拉一只进来。";
-const PHASE_STATUS: Record<NowRow["phase"], string> = { solving: "正在输入…", working: "正在干活…", queued: "排队中…" };
+const PHASE_STATUS: Record<NowRow["phase"], string> = {
+  waiting: "等你处理…",
+  solving: "正在输入…",
+  working: "正在干活…",
+  searching: "正在查资料…",
+  composing: "正在想…",
+  queued: "排队中…",
+};
 type Item = { kind: "row"; row: ChatRow } | { kind: "now"; now: NowRow } | { kind: "roles" };
 type Props = NativeStackScreenProps<RootStackParams, "Chat">;
 
@@ -318,7 +326,14 @@ export function ChatScreen({ route, navigation }: Props) {
     () => (ws !== null ? liveRows({ streaming: chat.streaming, ws, now: Date.now(), ...(inCall === null ? {} : { hide: inCall }) }) : []),
     [ws, chat.streaming, inCall],
   );
-  const nowRow = useMemo(() => (ws !== null ? nowRowOf({ events, streaming: chat.streaming, ws }) : null), [ws, events, chat.streaming]);
+  // 状态的折叠与欠着的几轮只跟 events 走：流式每来一片（每只最多 50 毫秒一片）只重算下面那一行，
+  // 不把整份日志再过两遍
+  const fold = useMemo(() => activityFoldOf(events), [events]);
+  const turns = useMemo(() => openTurns(events), [events]);
+  const nowRow = useMemo(
+    () => (ws !== null ? nowRowOf({ events, streaming: chat.streaming, ws, fold, turns }) : null),
+    [ws, events, chat.streaming, fold, turns],
+  );
   const roleAnchor = useMemo(() => roleChipsAnchor(events), [events]);
   const items = useMemo<Item[]>(() => {
     const list: Item[] = [];
@@ -657,7 +672,7 @@ export function ChatScreen({ route, navigation }: Props) {
 
       {call !== null && ws !== null && session !== null ? (
         (() => {
-          const face = callFace({ call, speaking: listen?.speaking ?? null, open: openTurns(events) });
+          const face = callFace({ call, speaking: listen?.speaking ?? null, open: turns });
           const micOn = callMicOn({ mic: listen?.mic.status ?? null, starting });
           const ids = call.participants.map((p) => p.agentId);
           const faces = dmAgent !== null || ids.length <= 1 ? (

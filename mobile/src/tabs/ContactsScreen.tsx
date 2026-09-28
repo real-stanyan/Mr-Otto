@@ -4,10 +4,13 @@
 import { useFocusEffect, useNavigation, useScrollToTop } from "@react-navigation/native";
 import { useCallback, useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
+import { workspaceAgentActivity } from "../../../src/shared/agentActivityRows.js";
 import { agentFaceSlot } from "../../../src/shared/agentAvatar.js";
 import { rosterGate, type RosterGate } from "../../../src/shared/agentRoster.js";
 import { friendName, groupList, sortFriends } from "../../../src/shared/wechatInbox.js";
 import { workspaceAccess } from "../../../src/shared/workspaceAccess.js";
+import { ActivityFace } from "../activity/ActivityFace.js";
+import { useActivity } from "../activity/activityStore.js";
 import { NewAgentDialog } from "../agent/NewAgentDialog.js";
 import { AddFriendDialog } from "../friends/AddFriendDialog.js";
 import { useFriends } from "../friends/friendsStore.js";
@@ -15,7 +18,8 @@ import { refreshHomeAfterWrite, useHome } from "../home/homeStore.js";
 import { useTeams } from "../inbox/teamsStore.js";
 import { useInbox } from "../inbox/useInbox.js";
 import { usePalette } from "../theme.js";
-import { FaceTile, PersonTile } from "../wx/Avatar.js";
+import { useNow } from "../ui.js";
+import { PersonTile } from "../wx/Avatar.js";
 import { CountBadge } from "../wx/Badge.js";
 import { Fold } from "../wx/Fold.js";
 import { Icon, type IconName } from "../wx/Icon.js";
@@ -64,6 +68,8 @@ function EntryTile({ icon }: { icon: IconName }) {
 
 export function ContactsScreen() {
   const { c } = usePalette();
+  const activity = useActivity();
+  const now = useNow(30_000);
   const navigation = useNavigation();
   const home = useHome();
   const teams = useTeams();
@@ -158,7 +164,15 @@ export function ContactsScreen() {
               <ContactRow
                 key={a.agentId}
                 first={i === 0}
-                avatar={<FaceTile slot={agentFaceSlot(ws, a.agentId)} size={40} />}
+                avatar={
+                  <ActivityFace
+                    slot={agentFaceSlot(ws, a.agentId)}
+                    size={40}
+                    activity={workspaceAgentActivity(activity.rows, ws.id, a.agentId, now)}
+                    ring={c.card}
+                    badgeSize={9}
+                  />
+                }
                 name={a.name}
                 sub={a.description}
                 onPress={() => navigation.navigate("Agent", { agentId: a.agentId })}

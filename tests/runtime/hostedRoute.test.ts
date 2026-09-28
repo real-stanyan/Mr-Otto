@@ -55,6 +55,10 @@ describe("decideRuntimeRoute（ADR-0233：只有 hosted / blocked 两态）", ()
     expect(r.kind === "blocked" && r.reason).toMatch(/额度用完/);
     expect(decideRuntimeRoute({ me, requestedModels: ["glm-5.3"], ...base }).kind).toBe("hosted");
   });
+  it("exhausted 那一挡带 quota 记号；没订阅那一挡不带（#1282）", () => {
+    expect(decideRuntimeRoute({ me, requestedModels: [], exhausted: true, ...base })).toMatchObject({ kind: "blocked", quota: true });
+    expect(decideRuntimeRoute({ me: null, requestedModels: [], ...base })).not.toHaveProperty("quota");
+  });
   it("给了 agentId → hosted 端点多带 x-otto-agent；不给不带（桌面直连的形状）", () => {
     const withAgent = decideRuntimeRoute({ me, requestedModels: [], ...base, agentId: "a_ops" });
     expect(withAgent.kind === "hosted" && withAgent.endpoint.headers).toMatchObject({ [AGENT_HEADER]: "a_ops" });
@@ -254,6 +258,19 @@ describe("createHostedRuntimeAdapter · 型号与额度窗口（#957 D1/D4，ADR
     }));
     await expect(adapter.chat([{ role: "user", content: "hi" }])).rejects.toThrow(/429/);
     expect(urls).toEqual(["https://edge/llm/v1/chat/completions", "https://edge/llm/v1/chat/completions"]);
+  });
+
+  it("已知额度用完那一挡抛的错带 reroute 分类（状态表画「额度用完」不画「出错」，#1282）；没订阅那一挡不带", async () => {
+    const memo = createRouteMemo();
+    memo.noteExhausted(10_000);
+    const exhausted = createHostedRuntimeAdapter({ ...adapterBase, routeMemo: memo, now: () => 0, probe: { me: async () => me } });
+    const err1 = await exhausted.chat([{ role: "user", content: "1" }]).catch((e: unknown) => e);
+    expect(err1).toBeInstanceOf(Error);
+    expect((err1 as Error).message).toMatch(/额度用完/);
+    expect(errorClassOf(err1)).toBe("reroute");
+    const none = createHostedRuntimeAdapter({ ...adapterBase, routeMemo: createRouteMemo(), probe: { me: async () => null } });
+    const err2 = await none.chat([{ role: "user", content: "1" }]).catch((e: unknown) => e);
+    expect(errorClassOf(err2)).toBeUndefined();
   });
 
   // #957 D4 复审 Minor 4：不记住窗口的话，重置之前每个 turn 都要先烧一次注定 429 的
