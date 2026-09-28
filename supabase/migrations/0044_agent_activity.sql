@@ -2,6 +2,10 @@
 -- 幂等，重跑不炸。与 0030 / 0040 同一约定：Supabase SQL editor / Management API 手动执行一次（那个端点
 -- 只回最后一条语句的结果，逐条发）。**部署顺序：先跑这份、再部署 runtime**——反过来 runtime 每条会话
 -- 记一行「表不存在」，列表照旧静止，不出别的事。
+-- 已于 2026-09-28 经维护者确认后在生产执行（Management API，逐条发，6 条）。执行后核过五条：
+--   ① 表在、0 行、RLS 开着；② 列 / 主键 / 两个外键（均 on delete cascade）与本文件逐字一致；
+--   ③ 策略只有 aa_select 一条（select），没有任何写策略；④ agent_activity 与 workspace_sessions
+--   都进了 supabase_realtime publication；⑤ 原样重跑一遍 6 条全过，策略数与 publication 不变。
 --
 -- 为什么要一张新表：聊天页外面拿不到「谁在跑」（手机同一时刻只连一条云会话），列表只能画静止的脸。
 -- 这张表是 runtime 手上那份日志的**投影**（判据 src/shared/agentActivity.ts，runtime 写库与手机聊天页
