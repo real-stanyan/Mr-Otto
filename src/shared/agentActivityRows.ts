@@ -1,5 +1,5 @@
 // agentActivityRows —— agent_activity 那张表在客户端这一侧（#1282，spec §3.3 / §3.4）：
-// 解析一行、判陈旧、按会话 / 按工作区取状态、全量拉、订实时推送。判据在 agentActivity.ts，
+// 解析一行、判陈旧、按会话 / 按工作区取状态、拉不在 idle 的行、快照与推送合并、订实时推送。判据在 agentActivity.ts，
 // 这里只管「表里那一行此刻说明什么」。手机现在用，桌面等 #1403 之后接同一份。
 
 import type { SupabaseClient } from "@supabase/supabase-js";
@@ -60,10 +60,12 @@ export function workspaceAgentActivity(rows: ActivityIndex, workspaceId: string,
   return mostUrgent(known);
 }
 
-/** 全量拉一次。RLS 已经把范围收在我能看的会话里。读不到回 null，不是空数组：读不到 ≠ 没有 */
+/** 拉一次。只拉不在 idle 的行：没有那一行就是闲着 / 不知道，画法相同——这张表只增不删，闲着的行
+    对客户端什么都没说，而 PostgREST 一次最多回 1000 行。RLS 已经把范围收在我能看的会话里。
+    读不到回 null，不是空数组：读不到 ≠ 没有 */
 export async function fetchAgentActivity(client: SupabaseClient): Promise<ActivityRow[] | null> {
   try {
-    const res = await client.from("agent_activity").select("session_id,agent_id,workspace_id,state,since,beat");
+    const res = await client.from("agent_activity").select("session_id,agent_id,workspace_id,state,since,beat").neq("state", "idle");
     if (res.error) return null;
     const out: ActivityRow[] = [];
     for (const raw of (res.data ?? []) as unknown[]) {
@@ -74,6 +76,25 @@ export async function fetchAgentActivity(client: SupabaseClient): Promise<Activi
   } catch {
     return null;
   }
+}
+
+/**
+ * 快照回来时手上那一份换成什么。以快照为准：快照里没有的行，快照说它此刻闲着（只拉不在 idle 的行），
+ * 手上那份丢掉。唯一的例外是拉取开始之后才推来的那几行（pushedDuringFetch）：推送比快照新，留着手上的，
+ * 快照里就算有它的旧版本也不盖。故意不比时间戳：beat 是 runtime 的钟，而「拉取开始之后才到」本身就说明它更新。
+ */
+export function mergeActivitySnapshot(
+  current: ActivityIndex,
+  fetched: readonly ActivityRow[],
+  pushedDuringFetch: ReadonlySet<string>,
+): Map<string, ActivityRow> {
+  const out = new Map<string, ActivityRow>();
+  for (const r of fetched) out.set(activityKey(r.sessionId, r.agentId), r);
+  for (const key of pushedDuringFetch) {
+    const r = current.get(key);
+    if (r !== undefined) out.set(key, r);
+  }
+  return out;
 }
 
 /** 实时推送里 workspace_sessions 那一行带来的最后一句（解析同 supabaseWorkspacesApi.fetchCloudLasts）。
@@ -97,12 +118,17 @@ export function sessionLastOfRow(raw: unknown): { sessionId: string; last: Sessi
 /**
  * 订 agent_activity 与 workspace_sessions 的 INSERT / UPDATE，一条频道。
  * **不订 DELETE**：Realtime 对 DELETE 不查 RLS，会把别人的主键推给所有订阅者（spec §3.1）。
+ * 频道状态交给 onStatus：第一次订上、断线后重新订上都会来一声 SUBSCRIBED，断着那段的推送丢了，调用方据此重拉。
  * 回退订函数。
  */
 export function subscribeAgentActivity(
   client: SupabaseClient,
   uid: string,
-  h: { onRow: (r: ActivityRow) => void; onSession: (raw: unknown, kind: "insert" | "update") => void },
+  h: {
+    onRow: (r: ActivityRow) => void;
+    onSession: (raw: unknown, kind: "insert" | "update") => void;
+    onStatus?: (status: string) => void;
+  },
 ): () => void {
   const row = (p: { new: unknown }): void => {
     const r = activityRowOf(p.new);
@@ -114,7 +140,7 @@ export function subscribeAgentActivity(
     .on("postgres_changes", { event: "UPDATE", schema: "public", table: "agent_activity" }, row)
     .on("postgres_changes", { event: "INSERT", schema: "public", table: "workspace_sessions" }, (p) => h.onSession(p.new, "insert"))
     .on("postgres_changes", { event: "UPDATE", schema: "public", table: "workspace_sessions" }, (p) => h.onSession(p.new, "update"))
-    .subscribe();
+    .subscribe((status) => h.onStatus?.(status));
   return () => {
     void client.removeChannel(ch);
   };

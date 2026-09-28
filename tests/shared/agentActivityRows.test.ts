@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { ACTIVITY_STALE_MS } from "../../src/shared/agentActivity.js";
 import {
-  activityKey, activityRowOf, fetchAgentActivity, liveActivity, sessionAgentActivity, sessionLastOfRow,
+  activityKey, activityRowOf, fetchAgentActivity, liveActivity, mergeActivitySnapshot, sessionAgentActivity, sessionLastOfRow,
   subscribeAgentActivity, workspaceAgentActivity, type ActivityRow,
 } from "../../src/shared/agentActivityRows.js";
 
@@ -80,13 +80,23 @@ describe("fetchAgentActivity", () => {
     ({
       from: (t: string) => {
         calls.push(`from:${t}`);
-        return { select: async (c: string) => { calls.push(`select:${c}`); return { data: res.data ?? null, error: res.error ?? null }; } };
+        return {
+          select: (c: string) => {
+            calls.push(`select:${c}`);
+            return {
+              neq: async (col: string, v: string) => {
+                calls.push(`neq:${col}:${v}`);
+                return { data: res.data ?? null, error: res.error ?? null };
+              },
+            };
+          },
+        };
       },
     }) as unknown as SupabaseClient;
-  it("一条查询全量拉，解析不了的行丢掉", async () => {
+  it("一条查询只拉不在 idle 的行（没有那一行 = 闲着 / 不知道，画法相同），解析不了的行丢掉", async () => {
     const calls: string[] = [];
     const rows = await fetchAgentActivity(client({ data: [raw(), { junk: true }] }, calls));
-    expect(calls).toEqual(["from:agent_activity", "select:session_id,agent_id,workspace_id,state,since,beat"]);
+    expect(calls).toEqual(["from:agent_activity", "select:session_id,agent_id,workspace_id,state,since,beat", "neq:state:idle"]);
     expect(rows).toEqual([rowOf()]);
   });
   it("读不到（表还不在 / 断网）→ null，不是空数组（读不到 ≠ 没有）", async () => {
@@ -137,5 +147,45 @@ describe("subscribeAgentActivity", () => {
     expect(onSession).toHaveBeenCalledWith({ id: "s1" }, "update");
     stop();
     expect(removeChannel).toHaveBeenCalledWith(channel);
+  });
+  it("订阅状态交给 onStatus：第一次订上、断线后重新订上都会来一声 SUBSCRIBED（调用方据此重拉）；不给 onStatus 也不炸", () => {
+    let status: ((s: string) => void) | undefined;
+    const channel = {
+      on: () => channel,
+      subscribe: (cb?: (s: string) => void) => {
+        status = cb;
+        return channel;
+      },
+    };
+    const client = { channel: () => channel, removeChannel: async () => "ok" } as unknown as SupabaseClient;
+    const onStatus = vi.fn();
+    subscribeAgentActivity(client, "me", { onRow: vi.fn(), onSession: vi.fn(), onStatus });
+    status?.("SUBSCRIBED");
+    status?.("CHANNEL_ERROR");
+    status?.("SUBSCRIBED");
+    expect(onStatus.mock.calls).toEqual([["SUBSCRIBED"], ["CHANNEL_ERROR"], ["SUBSCRIBED"]]);
+    subscribeAgentActivity(client, "me", { onRow: vi.fn(), onSession: vi.fn() });
+    expect(() => status?.("SUBSCRIBED")).not.toThrow();
+  });
+});
+
+describe("mergeActivitySnapshot（快照回来时，拉取期间到的推送比它新）", () => {
+  const ops = activityKey("s1", "ops");
+  it("以快照为准：快照里的行换掉手上的旧行", () => {
+    const merged = mergeActivitySnapshot(index(rowOf({ state: "queued" })), [rowOf({ state: "working" })], new Set());
+    expect([...merged.values()]).toEqual([rowOf({ state: "working" })]);
+  });
+  it("拉取开始之后推来的那几行留着手上的：快照里就算有它的旧版本也不盖，快照里没有也留着", () => {
+    const pushed = rowOf({ state: "solving", beat: "2026-09-28T10:00:05.000Z" });
+    const alsoPushed = rowOf({ session_id: "g9", state: "queued" });
+    const merged = mergeActivitySnapshot(index(pushed, alsoPushed), [rowOf({ state: "working" })], new Set([ops, activityKey("g9", "ops")]));
+    expect(merged.get(ops)).toEqual(pushed);
+    expect(merged.get(activityKey("g9", "ops"))).toEqual(alsoPushed);
+  });
+  it("快照里没有、拉取期间也没推来的丢掉：快照说它此刻闲着（只拉不在 idle 的行）", () => {
+    const current = index(rowOf({ session_id: "g1", state: "working" }), rowOf({ session_id: "g2", state: "failed" }));
+    const merged = mergeActivitySnapshot(current, [rowOf({ session_id: "g1", state: "composing" })], new Set());
+    expect([...merged.keys()]).toEqual([activityKey("g1", "ops")]);
+    expect(merged.get(activityKey("g1", "ops"))?.state).toBe("composing");
   });
 });
