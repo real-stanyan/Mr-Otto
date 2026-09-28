@@ -34,6 +34,9 @@ drop policy if exists aa_select on public.agent_activity;
 create policy aa_select on public.agent_activity for select to authenticated
   using (public.is_ws_member(workspace_id, auth.uid()) or public.is_session_guest(session_id::text, auth.uid()));
 
+-- 不设 replica identity full（与 0036 不同）：0036 的订阅带列过滤（uid=eq.X），所以要整行；
+-- 这里的订阅不带过滤、只靠 RLS 收范围，Realtime 查 RLS 与投递都用新行，
+-- 旧行这边用不到（开了 RLS 旧行也只剩主键）。
 -- Realtime：进 publication 才有 postgres_changes 可推（RLS 照常生效）。
 -- workspace_sessions 顺带进来：列表里的最后一句、排序要跟着脸一起实时变（spec §3.1）。
 -- 幂等：add table 对已在 publication 里的表会报 42710，用 exception 吞掉（同 0013 / 0030）
