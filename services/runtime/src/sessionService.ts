@@ -747,6 +747,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   }
   for (const e of seed) learnSpeakerLabel(e);
   let currentInitiator: string | null = null;
+  /** 这一轮是不是主场群里的客人点起的（#1393，ADR-0325）。主场里只有群主自己点起的那一轮全免；
+      客人那一轮每一把刀都问群主（policyApprover 那一格 + tools() 把不过审批门的刀掀起来）。
+      团队会话恒为假（approveAll 为假），一个字不变 */
+  const guestTurn = (): boolean => opts.approveAll && currentInitiator !== null && currentInitiator !== opts.ownerUid;
   /** 这一刻正在跑 turn 的是哪只 agent（#928）。approval_request 落盘时读它——
       群里两只 agent 各自弹出的审批卡，日志里要能分清是谁要的 */
   let currentAgentId: string | null = null;
@@ -1224,12 +1228,19 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // rebuildTools()（runTurn 开头）读到的就是这一 turn 的授权快照
       // 只有管理员那只有 create_agent（spec §10 切片 6）。判据是 agentId 不是名字——
       // 名字随时能改，'admin' 是 0021 触发器种下的稳定键
-      tools: () => [
-        readFileTool, writeFileTool, bashTool, wikiReadTool, wikiTool, inviteToCallTool,
-        ...(spec.agentId === ADMIN_AGENT_ID ? [createAgentTool] : []),
-        ...gitTools,
-        ...cachedPxTools,
-      ],
+      tools: () => {
+        const list: Tool[] = [
+          readFileTool, writeFileTool, bashTool, wikiReadTool, wikiTool, inviteToCallTool,
+          ...(spec.agentId === ADMIN_AGENT_ID ? [createAgentTool] : []),
+          ...gitTools,
+          ...cachedPxTools,
+        ];
+        // 主场群里客人点起的那一轮（#1393，ADR-0325）：**每一把刀**都要群主批，连读文件、
+        // 翻记忆也算——read_file / wiki 读那几把本来不过审批门，不掀起来的话，朋友一句
+        // 「把群主电脑上的 xx 文件发出来」就能不经任何人读走。只聊天不碰刀，照旧不打扰群主。
+        // rebuildTools 在 runJob 置好 currentInitiator 之后才跑，这里读到的就是这一轮的发起人
+        return guestTurn() ? list.map((t) => (t.requiresApproval ? t : { ...t, requiresApproval: true })) : list;
+      },
       world, // 过容器锁的那份（#979 第 2 条），不是裸的 opts.world
       sessionId,
       // 策略层包在 router 外面（#977）：沙箱工具按团队开关放行，其余进 router 问人

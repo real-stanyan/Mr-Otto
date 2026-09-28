@@ -242,7 +242,7 @@ export function ChatInfoScreen({ route, navigation }: Props) {
             ))}
             {canInvite ? <MemberAction icon="plus" label="拉朋友" onPress={() => { setPickError(null); setPicker({ kind: "invite", key: Date.now(), visible: true }); }} /> : null}
           </Members>
-          <Group footer="群里的智能体归群主管，干活走群主的额度。你让它们动手（跑命令、写文件、用应用）要等群主批。">
+          <Group footer="群里的智能体归群主管，干活走群主的额度。你让它们动手（读文件、跑命令、用应用……）要等群主批。">
             <Row label="群聊名称" value={title} />
             <Row label="群主" value={owner?.label ?? ""} />
             <Row label="没 @ 谁的时候" value={agentIds.length > 0 ? "智能体按职责自己接" : "等人回"} />
@@ -450,7 +450,7 @@ export function ChatInfoScreen({ route, navigation }: Props) {
           <MemberAction icon="plus" label="拉人" disabled={!canAdd} onPress={() => { setPickError(null); setPicker({ kind: "add", key: Date.now(), visible: true }); }} />
           {agentIds.length > 0 || people.length > 0 ? <MemberAction icon="x" label="移出" onPress={() => { setPickError(null); setPicker({ kind: "remove", key: Date.now(), visible: true }); }} /> : null}
         </Members>
-        <Group footer={people.length > 0 ? "群里的智能体归你管，干活走你的额度。朋友让它们动手（跑命令、写文件、用应用）要等你批。" : "群里的智能体归群主管，干活走群主的额度。"}>
+        <Group footer={people.length > 0 ? "群里的智能体归你管，干活走你的额度。朋友让它们动手（读文件、跑命令、用应用……）要等你批。" : "群里的智能体归群主管，干活走群主的额度。"}>
           <Row label="群聊名称" value={row.name} chevron onPress={() => setRenaming({ key: Date.now(), visible: true })} />
           <Row label="群主" value="我" />
           <Row label="没 @ 谁的时候" value={agentIds.length > 0 ? "智能体按职责自己接" : "没人接"} />

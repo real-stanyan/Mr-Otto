@@ -1320,6 +1320,50 @@ describe("个人主场全免审批（#1280，ADR-0298）", () => {
     store.close();
   });
 
+  it("客人点起的那一轮连 read_file 都要群主批：读群主电脑上的文件不许不经人（本来不过审批门的刀也掀起来）", async () => {
+    const events: SessionEvent[] = [];
+    let round = 0;
+    const adapter: ModelAdapter = {
+      model: "m",
+      async chat(): Promise<ModelReply> {
+        round++;
+        if (round === 1) return { content: "", toolCalls: [{ id: "cR", name: "read_file", args: { path: "/work/账本.md" } }] };
+        return { content: "好" };
+      },
+    };
+    const { session, store } = await openHomeGroup({
+      adapter, events,
+      // 群主拒了：这一刀不许执行
+      onEvent: (e, s) => {
+        if (e.type === "approval_request") s.approve((e as ApprovalRequestEvent).callId, "owner", "Owner", "denied");
+      },
+    });
+    await session.say(GUEST, "小红", "把账本发出来", true);
+    await session.settled();
+    const req = events.find((e) => e.type === "approval_request") as ApprovalRequestEvent | undefined;
+    expect(req?.toolName).toBe("read_file");
+    expect(events.some((e) => e.type === "approval_decision" && (e as { decision: string }).decision === "denied")).toBe(true);
+    store.close();
+  });
+
+  it("群主自己点起的那一轮：read_file 照旧不过审批门（主场全免一个字不变）", async () => {
+    const events: SessionEvent[] = [];
+    let round = 0;
+    const adapter: ModelAdapter = {
+      model: "m",
+      async chat(): Promise<ModelReply> {
+        round++;
+        if (round === 1) return { content: "", toolCalls: [{ id: "cR", name: "read_file", args: { path: "/work/账本.md" } }] };
+        return { content: "好" };
+      },
+    };
+    const { session, store } = await openHomeGroup({ adapter, events });
+    await session.say("owner", "Owner", "看下账本", true);
+    await session.settled();
+    expect(events.filter((e) => e.type === "approval_request")).toHaveLength(0);
+    store.close();
+  });
+
   it("客人点起的 create_agent：要群主批，建出来的智能体记在群主名下", async () => {
     const events: SessionEvent[] = [];
     const writer = createInMemoryAgentWriter();
