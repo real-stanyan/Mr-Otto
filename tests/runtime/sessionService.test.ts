@@ -7241,3 +7241,39 @@ describe("新建的智能体先开口，第一句回话写进职责（#1356 A2�
     expect(userMessages(store)).toEqual([]);
   });
 });
+
+describe("智能体状态（#1282）", () => {
+  it("一轮：排队 → 思考 → 检索 → 思考 → 闲着，逐次写进 agent_activity", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    let round = 0;
+    const adapter: ModelAdapter = {
+      model: "fake-model",
+      async chat(): Promise<ModelReply> {
+        round++;
+        return round === 1 ? { content: "", toolCalls: [{ id: "c1", name: "read_file", args: { path: "/a.txt" } }] } : { content: "看完了" };
+      },
+    };
+    const meta = createInMemoryCloudSessionMeta();
+    const session = createCloudSession({ ...baseOpts(store, events, adapter), sessionMeta: meta, wiki: testWiki(), activityThrottleMs: 0 });
+    await session.say("u1", "alice", "看下 a.txt", true);
+    await session.settled();
+    expect(meta.activity.flat().filter((r) => r.agentId === "default").map((r) => r.state)).toEqual([
+      "queued", "composing", "searching", "composing", "idle",
+    ]);
+    store.close();
+  });
+
+  it("装配时按日志写回：上一轮出错的那只写成出错；归档时写成 idle，之后不再写", () => {
+    const store = newStore();
+    store.append({ sessionId: "s1", ts: 1, type: "user_message", content: "[alice]: 在吗", fromUid: "u1", mentions: ["default"] } as never);
+    store.append({ sessionId: "s1", ts: 2, type: "request_envelope", agentId: "default" } as never);
+    store.append({ sessionId: "s1", ts: 3, type: "turn_ended", outcome: "error", error: "boom", agentId: "default" } as never);
+    const meta = createInMemoryCloudSessionMeta();
+    const session = createCloudSession({ ...baseOpts(store, [], echoAdapter), sessionMeta: meta, wiki: testWiki(), activityThrottleMs: 0 });
+    expect(meta.activity.flat().map((r) => `${r.agentId}:${r.state}`)).toEqual(["default:failed"]);
+    expect(session.archive("alice")).toBe(true);
+    expect(meta.activity.flat().map((r) => `${r.agentId}:${r.state}`)).toEqual(["default:failed", "default:idle"]);
+    store.close();
+  });
+});

@@ -235,6 +235,8 @@ import {
 } from "../../../src/shared/sessionParticipants.js";
 import { LAST_THROTTLE_MS, lastOf } from "../../../src/shared/sessionLast.js";
 import { createLastWriter } from "./lastWriter.js";
+import { ACTIVITY_BEAT_MS, ACTIVITY_THROTTLE_MS, activityFoldOf, activityOf, foldActivity, knownAgents } from "../../../src/shared/agentActivity.js";
+import { createActivityWriter } from "./activityWriter.js";
 import { advanceRoleWait, newAgentGreetingText, roleWaitOf, settledRole, type RoleWait } from "../../../src/shared/agentOnboarding.js";
 
 /** 派活分类器读日志尾段多少条事件（#1153）。一轮 turn 十几条事件是常态，200 条
@@ -372,6 +374,9 @@ export interface CloudSessionOpts {
   /** 名册「最后一句」写库的节流间隔（#1356 A1，spec §7.1）。**可选**：缺席 = LAST_THROTTLE_MS
       （3 秒）。只有测试传 0（每条都当场写，断言不用等定时器） */
   lastThrottleMs?: number;
+  /** agent_activity 写库的合帧窗口（#1282）。**可选**：缺席 = ACTIVITY_THROTTLE_MS（1 秒）。
+      只有测试传 0（每次变化都当场写，断言不用等定时器） */
+  activityThrottleMs?: number;
   /** 会话命名（#1213）：拿最便宜那款读「当前标题 + 最近几句」，回新标题 + 起名的
       那个型号，或 null（不改）。**要带型号**：`session_autotitled.model` 那一格是
       溯源用的，写一个我们自己编的常量进去就是句假话。
@@ -695,6 +700,21 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     write: (l) => opts.sessionMeta.setLast(l),
     throttleMs: opts.lastThrottleMs ?? LAST_THROTTLE_MS,
   });
+  /** 每只智能体此刻在干嘛（#1282，spec §3.2）。装配时整份折叠一次（就是下面重启补跑 `openTurns(seed)` 用的
+      那份 seed），之后在 notify 里逐条推进——同 bounds / voiceCall 的手法。流式正文不是事件，「在不在吐字」
+      另记一格，终态事件落盘时清掉（同 deltas.clearAgent）。判据在 shared/agentActivity.ts，与手机聊天页共用 */
+  const activityFold = activityFoldOf(seed);
+  const streamingNow = new Set<string>();
+  const activity = createActivityWriter({
+    write: (rows) => opts.sessionMeta.setActivity(rows),
+    throttleMs: opts.activityThrottleMs ?? ACTIVITY_THROTTLE_MS,
+    beatMs: ACTIVITY_BEAT_MS,
+  });
+  /** 各只的新状态交给 writer；没变的 writer 自己跳过 */
+  const pushActivity = (): void => {
+    for (const id of knownAgents(activityFold)) activity.set(id, activityOf(activityFold, id, streamingNow.has(id)));
+  };
+  pushActivity();
   /** 这条会话累计有多少条人类发言（标题的档位判据）。同上：播种一次、之后逐条推进 */
   let humanSaid = countHumanMessages(seed);
   /** 哪一只在等人说它是干什么的，处在哪个阶段（#1356 A2，spec §7.2 第 3 步；F1 补的 `failed`
@@ -961,6 +981,11 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // fromUid=system 的 chat_message 与这一格相关，而 lastOf 本来就不认它
     const last = lastOf(e);
     if (last !== null) lastWriter.push(last);
+    // 智能体状态（#1282）：同 advanceRelayBounds 的推理——daemon.ts 绕过 notify 直接 append 的那四类
+    // （chat_message / model_usage / route_changed / session_created）与状态无关，漏不掉
+    foldActivity(activityFold, e);
+    if ((e.type === "assistant_message" || e.type === "turn_ended") && e.agentId) streamingNow.delete(e.agentId);
+    pushActivity();
     opts.onEvent(e);
     // 终态事件落盘之后清掉这只 agent 的流式累计（#1107）：delta 帧走的是
     // 累计快照语义，不清的话它下一轮的预览会从上一次的残句开头。缺席
@@ -1245,7 +1270,13 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       ...(opts.onDelta
         ? {
             onAssistantDelta: (text: string, kind: DeltaKind) => {
-              if (kind === "content") deltas.push(spec.agentId, "content", text);
+              if (kind !== "content") return;
+              deltas.push(spec.agentId, "content", text);
+              // 这一步开始吐字 = 作答中（#1282）。只在第一片时推一次，后面几十片不必逐片过一遍 writer
+              if (!streamingNow.has(spec.agentId)) {
+                streamingNow.add(spec.agentId);
+                pushActivity();
+              }
             },
           }
         : {}),
@@ -2630,6 +2661,9 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // reason:"user" 而不是 "system"：这是人点的，日志里要能跟系统保留
       // 会话那种区分开（events.ts 的字段注释：user 仍可被跨会话召回）
       notify(store.append({ sessionId, ts: Date.now(), type: "session_archived", reason: "user" }));
+      // 收摊（#1282）：还挂着的状态全部写成 idle，之后不再写——归档的会话不会再有人来答它。
+      // 删除先走归档（ADR-0245），不另写
+      activity.close();
       return true;
     },
   };
