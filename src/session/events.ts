@@ -98,8 +98,10 @@ export interface UserMessageEvent extends SessionEventBase {
       `"new_agent"`（#1356 A2，spec §7.2）：手机刚建出来的那只，runtime 在建它的**新**私聊时
       替建的人落的「问问他要你干什么」开场白（`mentions` 是它自己，`fromUid` 是建的人）。
       同样只是记号，同样不画；这一格加取值**不进协议位**——事件在线上只浅校验 base 四格，
-      旧客户端照收，时间线按「`greeting` 在场就不画」一样藏起它 */
-  greeting?: "voice_call" | "new_agent";
+      旧客户端照收，时间线按「`greeting` 在场就不画」一样藏起它。
+      `"callback"`（#1411）：智能体打给这个人的电话接通了，runtime 替接听的人落的「把你打电话要说的事
+      说清楚」开场白（`mentions` 是打电话的那只，`fromUid` 是接的人）。同样只是记号、同样不画、同样不进协议位 */
+  greeting?: "voice_call" | "new_agent" | "callback";
   /** 这句话是**在语音通话里说出来的**（#1233）。缺席 = 打字打的 / 旧日志。
       **只是记号**：起 turn、排队、护栏、接力链首、派活全都不看它，模型投影
       （deriveMessages）读都不读——对模型来说这就是一条普通的用户消息，和从前
@@ -630,6 +632,28 @@ export interface VoiceCallChangedEvent extends SessionEventBase {
   participants: VoiceCallParticipant[];
   byUid: string;
   byAgentId?: string;
+  /** 这场通话里智能体能不能回电（#1411）：runtime 的推送开着时才带。缺席 = 不能 / 旧日志。
+      通话块（deriveMessages 的 renderVoiceCallPrompt）据它决定说不说「可以用 call_user 回电」——
+      推送关着时那把刀根本不在工具表里，提示词再说一句就是让模型许诺一通打不出去的电话（#1206 那个形状） */
+  callback?: true;
+  ignorable: true;
+}
+
+/** 智能体给人打的一通电话（#1411）。一次响铃是两到三条：`ringing` 开头，`answered` / `missed` 收尾
+    （接晚了的那一通是 ringing → missed → answered，见 src/shared/callRing.ts 的 RING_ANSWER_GRACE_MS）。
+    最后一条说了算，投影在 callRing.ts，runtime 与手机共用。
+    **叫 `fromAgentId` 不叫 `agentId`**：带 agentId 的事件会被 openTurns / foldActivity / agentView 当成
+    那只自己的动静——一通电话不是它的一轮。模型不可见（`ignorable`）：打没打通由 call_user 的
+    tool_result 告诉它，接通由回电开场白（`user_message.greeting: "callback"`）告诉它。
+    三个 phase 都带 reason / expiresTs：画卡不用回头找 */
+export interface CallRingEvent extends SessionEventBase {
+  type: "call_ring";
+  ringId: string;
+  phase: "ringing" | "answered" | "missed";
+  fromAgentId: string;
+  toUid: string;
+  reason: string;
+  expiresTs: number;
   ignorable: true;
 }
 
@@ -1143,6 +1167,7 @@ export type SessionEvent =
   | AgentBriefedEvent
   | AgentRelayEvent
   | VoiceCallChangedEvent
+  | CallRingEvent
   | ChatRosterChangedEvent
   | ExecutorChangedEvent
   | MemoryLoadedEvent
@@ -1207,6 +1232,7 @@ const KNOWN_EVENT_TYPES_MAP: Record<SessionEvent["type"], true> = {
   agent_briefed: true,
   agent_relay: true,
   voice_call_changed: true,
+  call_ring: true,
   chat_roster_changed: true,
   executor_changed: true,
   memory_loaded: true,

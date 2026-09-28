@@ -189,6 +189,9 @@ function pendingAfter(
       case "chat_roster_changed":
         // 云会话专属（#1280）：模型不可见，不占上下文
         break;
+      case "call_ring":
+        // 回电（#1411）：云会话专属、模型不可见，不占上下文
+        break;
       case "executor_changed":
         // 换执行器（#1223）：投影成 system 尾块，块的大小按最新状态计——本机圆环暂不计
         // （块最长 120 字，误差远小于 tool_result 的估算噪声）；要精确就按 renderExecutorPrompt 现算
