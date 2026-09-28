@@ -141,6 +141,29 @@ describe("withDecision：三态", () => {
     expect(await withDecision(base("on", async () => ({ escalate: true, scores: { act: 0.5 } })))).toBe("LLM");
     expect(await withDecision(base("on", async () => { throw new Error("x"); }))).toBe("LLM");
   });
+  // #1405：翻成 on 之后 shadow 那行对照就没了，交给 legacy 的那几次是唯一还看得到
+  // 「拿不准的时候 LLM 判成了什么、人多等了多久」的地方
+  it("on：落到 legacy 的那几次，日志里一并记下 legacy 的判决与它自己花的时间；有答案的那次不带这两格", async () => {
+    const logs: string[] = [];
+    let t = 0;
+    const now = (): number => t;
+    const r = await withDecision({
+      ...base("on", async () => { t = 700; return { escalate: true, scores: { act: 0.5 } }; }, logs),
+      viaLegacy: async () => { t = 2500; return "LLM"; },
+      now,
+    });
+    expect(r).toBe("LLM");
+    expect(logs).toHaveLength(1);
+    expect(JSON.parse(logs[0]!.replace("[decision] ", ""))).toMatchObject({
+      use: "dispatch", mode: "on", ms: 700, verdict: "escalate", legacy: "LLM", legacyMs: 1800,
+    });
+    const logs2: string[] = [];
+    await withDecision(base("on", async () => ({ value: "JEV" }), logs2));
+    const line2 = JSON.parse(logs2[0]!.replace("[decision] ", ""));
+    expect(line2).toMatchObject({ mode: "on", verdict: "JEV" });
+    expect(line2).not.toHaveProperty("legacy");
+    expect(line2).not.toHaveProperty("legacyMs");
+  });
   it("shadow：legacy 说了算且不等 viaDecision；回来之后记一行对照", async () => {
     const logs: string[] = [];
     let release!: (v: unknown) => void;

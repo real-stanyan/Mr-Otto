@@ -5378,7 +5378,7 @@ describe("不 @ 谁的话，谁的活谁接（#1153）", () => {
     { agentId: "admin", name: "管理员", description: "这个工作区的默认智能体", instructions: "", models: ["m-admin"], tools: [] as AgentToolAllow[] },
     AGENTS[1]!,
   ];
-  type Verdict = { kind: "picked"; agentIds: string[] } | { kind: "none" } | { kind: "failed"; reason: string };
+  type Verdict = { kind: "picked"; agentIds: string[] } | { kind: "none"; to?: "people" } | { kind: "failed"; reason: string };
   type DispatchCall = Parameters<NonNullable<Parameters<typeof createCloudSession>[0]["dispatch"]>>[0];
 
   function open(store: EventStore, opts: {
@@ -5388,12 +5388,13 @@ describe("不 @ 谁的话，谁的活谁接（#1153）", () => {
     events?: SessionEvent[];
     calls?: DispatchCall[];
     budget?: (n: number) => string | null;
+    hostUids?: () => Promise<string[]>;
   }): CloudSession {
     return createCloudSession({
       diskUsage: () => null, approveAll: false,
       sessionMeta: createInMemoryCloudSessionMeta(),
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
-      store, world: fakeWorld, px, hostUids: async () => ["u1", "u2"],
+      store, world: fakeWorld, px, hostUids: opts.hostUids ?? (async () => ["u1", "u2"]),
       agents: opts.agents ?? (async () => AGENTS),
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { opts.seen?.push(a.agentId); return { content: `${a.name}答` }; } }),
       onEvent: (e) => opts.events?.push(e), onUsage: () => {}, wiki: testWiki(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
@@ -5585,7 +5586,7 @@ describe("不 @ 谁的话，谁的活谁接（#1153）", () => {
     store.close(); store2.close();
   });
 
-  it("分类器读得到最近的对话（群里说出口的话，旧在前）", async () => {
+  it("分类器读得到最近的对话（群里说出口的话，旧在前，分得清是人还是智能体说的）", async () => {
     const store = newStore();
     const calls: DispatchCall[] = [];
     const session = open(store, { verdict: { kind: "none" }, calls });
@@ -5593,7 +5594,10 @@ describe("不 @ 谁的话，谁的活谁接（#1153）", () => {
     await session.settled();
     await session.say("u2", "bob", "那这个月呢", false, [], undefined, []);
     expect(calls).toHaveLength(1);
-    expect(calls[0]!.context).toEqual(["[alice]: @运营 上个月怎么样", "[运营]: 运营答"]);
+    expect(calls[0]!.context).toEqual([
+      { by: "alice", kind: "human", text: "@运营 上个月怎么样" },
+      { by: "运营", kind: "agent", text: "运营答" },
+    ]);
     store.close();
   });
 
@@ -5619,6 +5623,53 @@ describe("不 @ 谁的话，谁的活谁接（#1153）", () => {
     expect(seen).toEqual([]);
     expect(store.load("s1").map((e) => e.type)).toEqual(["chat_message"]);
     store.close();
+  });
+
+  // #1405：群里除了智能体还有别的人。分类器要知道——一句没 @ 谁的话可能是说给其中某个人的
+  describe("群里的其他人（#1405）", () => {
+    it("团队会话：其他成员都算，说过话的报名字、没说过的只计数，说话的人自己不算", async () => {
+      const store = newStore();
+      const calls: DispatchCall[] = [];
+      const session = open(store, { verdict: { kind: "none" }, calls, hostUids: async () => ["u1", "u2", "u3"] });
+      await session.say("u2", "bob", "我先下了", false, [], undefined, []);
+      await session.say("u1", "alice", "bob 你明天几点到？", false, [], undefined, []);
+      expect(calls[0]!.people).toEqual({ count: 2, names: [] });
+      expect(calls[1]!.people).toEqual({ count: 2, names: ["bob"] });
+      store.close();
+    });
+
+    it("只有自己一个成员：没有别人（分类器不会被问「是不是说给某个人的」）", async () => {
+      const store = newStore();
+      const calls: DispatchCall[] = [];
+      const session = open(store, { verdict: { kind: "none" }, calls, hostUids: async () => ["u1"] });
+      await session.say("u1", "alice", "帮我看下昨天的销量", false, [], undefined, []);
+      expect(calls[0]!.people).toEqual({ count: 0, names: [] });
+      store.close();
+    });
+
+    it("成员名单读不出来：退回「这条会话里说过话的别人」，不当成只有自己", async () => {
+      const store = newStore();
+      const calls: DispatchCall[] = [];
+      const session = open(store, {
+        verdict: { kind: "none" }, calls,
+        hostUids: async () => { throw new Error("supabase 抖了"); },
+      });
+      await session.say("u2", "bob", "我先下了", false, [], undefined, []);
+      await session.say("u1", "alice", "bob 你明天几点到？", false, [], undefined, []);
+      expect(calls[1]!.people).toEqual({ count: 1, names: ["bob"] });
+      store.close();
+    });
+
+    it("分类器说是说给人的（none + to:people）：文字群聊里与普通 none 一样，只落 chat_message", async () => {
+      const store = newStore();
+      const seen: string[] = [];
+      const session = open(store, { verdict: { kind: "none", to: "people" }, seen });
+      await session.say("u1", "alice", "bob 你明天几点到？", false, [], undefined, []);
+      await session.settled();
+      expect(seen).toEqual([]);
+      expect(store.load("s1").map((e) => e.type)).toEqual(["chat_message"]);
+      store.close();
+    });
   });
 });
 
@@ -6053,23 +6104,31 @@ describe("拉进通话先打招呼（#1174）", () => {
 
 describe("通话里必须有人应（#1183）", () => {
   type DispatchCall = Parameters<NonNullable<Parameters<typeof createCloudSession>[0]["dispatch"]>>[0];
-  type Verdict = { kind: "picked"; agentIds: string[] } | { kind: "none" } | { kind: "failed"; reason: string };
+  type Verdict = { kind: "picked"; agentIds: string[] } | { kind: "none"; to?: "people" } | { kind: "failed"; reason: string };
   const ROSTER3 = [
     ...AGENTS,
     { agentId: "admin", name: "管理员", description: "兜底", instructions: "", models: ["m-admin"], tools: [] as AgentToolAllow[] },
   ];
 
-  function open(store: EventStore, opts: { verdict: Verdict; calls?: DispatchCall[]; seen?: string[] }): CloudSession {
+  function open(store: EventStore, opts: {
+    verdict: Verdict | ((input: DispatchCall) => Verdict);
+    calls?: DispatchCall[];
+    seen?: string[];
+    hostUids?: () => Promise<string[]>;
+  }): CloudSession {
     return createCloudSession({
       diskUsage: () => null, approveAll: false,
       sessionMeta: createInMemoryCloudSessionMeta(),
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
-      store, world: fakeWorld, px, hostUids: async () => ["u1"], agents: async () => ROSTER3,
+      store, world: fakeWorld, px, hostUids: opts.hostUids ?? (async () => ["u1"]), agents: async () => ROSTER3,
       adapterFor: (a) => ({ model: a.models[0]!, async chat() { opts.seen?.push(a.agentId); return { content: `${a.name}答` }; } }),
       onEvent: () => {}, onUsage: () => {}, wiki: testWiki(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true, contextWindowOf: () => undefined, sandboxApproval: async () => "ask",
       workspaceLock: createWorkspaceLock(), relayRemainingMicro: async () => null,
-      dispatch: async (input: DispatchCall) => { opts.calls?.push(input); return opts.verdict; },
+      dispatch: async (input: DispatchCall) => {
+        opts.calls?.push(input);
+        return typeof opts.verdict === "function" ? opts.verdict(input) : opts.verdict;
+      },
     });
   }
 
@@ -6153,6 +6212,89 @@ describe("通话里必须有人应（#1183）", () => {
     expect(seen).toEqual([]);
     expect(store.load("s1").map((e) => e.type)).toEqual(["chat_message"]);
     store.close();
+  });
+
+  // #1405（维护者拍板）：通话里「必须有人应」有一个例外——另一个人这场通话里也用语音开过口，
+  // 而分类器很确定这句是说给他的。只有你一个人在通话里时一字不变（#1183 那次「你能听到吗」没人应的坑不回来）
+  describe("通话里人和人说话（#1405）", () => {
+    /** 像真的分类器：只有被告知群里有别人时才可能说「是说给人的」 */
+    const toPeopleWhenAsked = (input: DispatchCall): Verdict =>
+      input.people.count > 0 ? { kind: "none", to: "people" } : { kind: "none" };
+
+    it("另一个人这场通话里也开过口、分类器确定是说给他的：智能体都不接，只落 chat_message", async () => {
+      const store = newStore();
+      const calls: DispatchCall[] = [];
+      const seen: string[] = [];
+      const session = open(store, { verdict: toPeopleWhenAsked, calls, seen, hostUids: async () => ["u1", "u2"] });
+      await session.setVoiceCall("u1", "alice", ["ads", "ops"]);
+      await afterGreetings(store, session, seen);
+      // bob 先开口：此刻通话里还没有别人用语音说过话 → 没有「别人」可说给 → 照 #1183 有人应
+      await session.say("u2", "bob", "我进来了", false, [], undefined, [], true);
+      await session.settled();
+      expect(calls.at(-1)!.people).toEqual({ count: 0, names: [] });
+      expect(seen).toHaveLength(1);
+      seen.length = 0;
+      const from = store.load("s1").at(-1)!.seq;
+      await session.say("u1", "alice", "bob 你那边信号好吗", false, [], undefined, [], true);
+      await session.settled();
+      expect(calls.at(-1)!.people).toEqual({ count: 1, names: ["bob"] });
+      const log = store.load("s1", { afterSeq: from });
+      expect(log.filter((e) => e.type === "user_message")).toHaveLength(0);
+      expect(log.find((e) => e.type === "chat_message")).toMatchObject({ fromUid: "u1", voice: true });
+      expect(seen).toEqual([]);
+      store.close();
+    });
+
+    it("普通的 none（不像要做事，不是确定说给人的）：通话里照旧最近开口的那只接", async () => {
+      const store = newStore();
+      const seen: string[] = [];
+      const session = open(store, { verdict: { kind: "none" }, seen, hostUids: async () => ["u1", "u2"] });
+      await session.setVoiceCall("u1", "alice", ["ads", "ops"]);
+      await afterGreetings(store, session, seen);
+      await session.say("u2", "bob", "我进来了", false, [], undefined, [], true);
+      await session.settled();
+      seen.length = 0;
+      await session.say("u1", "alice", "哈哈好的", false, [], undefined, [], true);
+      await session.settled();
+      expect(seen).toEqual(["ops"]);
+      store.close();
+    });
+
+    it("另一个人只打字、没在通话里开过口：不算「通话里的别人」，照旧有人应", async () => {
+      const store = newStore();
+      const calls: DispatchCall[] = [];
+      const seen: string[] = [];
+      const session = open(store, { verdict: toPeopleWhenAsked, calls, seen, hostUids: async () => ["u1", "u2"] });
+      await session.setVoiceCall("u1", "alice", ["ads", "ops"]);
+      await afterGreetings(store, session, seen);
+      await session.say("u2", "bob", "我在外面，只能打字", false, [], undefined, []);
+      await session.settled();
+      seen.length = 0;
+      await session.say("u1", "alice", "bob 你那边信号好吗", false, [], undefined, [], true);
+      await session.settled();
+      expect(calls.at(-1)!.people).toEqual({ count: 0, names: [] });
+      expect(seen).toHaveLength(1);
+      store.close();
+    });
+
+    it("通话里只有一只、但另一个人也开过口：要问分类器，不再直接给它", async () => {
+      const store = newStore();
+      const calls: DispatchCall[] = [];
+      const seen: string[] = [];
+      const session = open(store, { verdict: toPeopleWhenAsked, calls, seen, hostUids: async () => ["u1", "u2"] });
+      await session.setVoiceCall("u1", "alice", ["ads"]);
+      await afterGreetings(store, session, seen);
+      await session.say("u2", "bob", "我进来了", false, [], undefined, [], true);
+      await session.settled();
+      expect(calls).toHaveLength(0); // 此刻还只有他一个人开过口：照旧直接给它
+      expect(seen).toEqual(["ads"]);
+      seen.length = 0;
+      await session.say("u1", "alice", "bob 你那边信号好吗", false, [], undefined, [], true);
+      await session.settled();
+      expect(calls).toHaveLength(1);
+      expect(seen).toEqual([]);
+      store.close();
+    });
   });
 });
 
@@ -6751,6 +6893,42 @@ describe("聊天名单收窄（#1280）", () => {
   describe("群里的客人（#1393）", () => {
     const G1 = "00000000-0000-4000-8000-000000000001";
     const G2 = "00000000-0000-4000-8000-000000000002";
+
+    // #1405：有客人的群里人和人会说话——只剩一只智能体时也不能把每句都直接交给它
+    it("只剩一只智能体的群里有客人：照样问分类器，分类器知道群里还有谁", async () => {
+      const store = newStore();
+      const calls: DispatchCall[] = [];
+      // openChat 的成员名单是 ["u1"]：u1 就是这个主场的群主
+      const s = openChat(store, { roster: ["ops"], kind: "group", humans: [{ uid: G1, name: "小红" }], calls });
+      await s.say("u1", "群主", "小红你到了吗", false, [], undefined, []);
+      expect(calls).toHaveLength(1);
+      expect(calls[0]!.people).toEqual({ count: 1, names: ["小红"] });
+      store.close();
+    });
+
+    it("客人开口时群主也是「别人」：说过话的报名字，别的客人报名单上的名字", async () => {
+      const store = newStore();
+      const calls: DispatchCall[] = [];
+      const s = openChat(store, {
+        roster: ["admin", "ops"], kind: "group", calls,
+        humans: [{ uid: G1, name: "小红" }, { uid: G2, name: "小明" }],
+      });
+      await s.say(G1, "小红", "明天几点开始？", false, [], undefined, []);
+      expect(calls[0]!.people).toEqual({ count: 2, names: ["小明"] });
+      await s.say("u1", "群主", "十点", false, [], undefined, []);
+      await s.say(G1, "小红", "好的", false, [], undefined, []);
+      expect(calls[2]!.people).toEqual({ count: 2, names: ["群主", "小明"] });
+      store.close();
+    });
+
+    it("没有客人的群（只有群主自己）：没有「别人」", async () => {
+      const store = newStore();
+      const calls: DispatchCall[] = [];
+      const s = openChat(store, { roster: ["admin", "ops"], kind: "group", calls });
+      await s.say("u1", "群主", "帮我写个周报", false, [], undefined, []);
+      expect(calls[0]!.people).toEqual({ count: 0, names: [] });
+      store.close();
+    });
 
     it("只改真人那一半：落一条带齐两份名单的事件（带 byName），isGuest / chat() 跟着变", async () => {
       const store = newStore();

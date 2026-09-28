@@ -180,6 +180,8 @@ export type DecisionOutcome<T> = { value: T; scores?: unknown } | { escalate: tr
  *
  * 日志是一行 `[decision] {json}`：影子期要回答的「一致率」与「校准」都从它 grep
  * （spec §7）。判决的**结果**已经在事件日志里，概率是调参用的诊断量，不落事件。
+ * `on` 档下落到 legacy 的那一行多两格 `legacy` / `legacyMs`（#1405）：翻成 on 之后，
+ * 那是唯一还看得到「拿不准时 LLM 判成了什么、人多等了多久」的地方。
  *
  * **抛错只接得住 `viaDecision()` 返回的 promise 被 reject，接不住这次调用本身的
  * 同步抛出**（那会直接从这个函数里抛出去）——调用点今天**全部**把 `viaDecision`
@@ -209,8 +211,23 @@ export async function withDecision<T>(o: {
   const decided = o.viaDecision().catch((): null => null);
   if (o.mode === "on") {
     const d = await decided;
-    line({ ms: now() - t0, ...describe(d) });
-    return d !== null && !("escalate" in d) ? d.value : o.viaLegacy();
+    const ms = now() - t0;
+    if (d !== null && !("escalate" in d)) {
+      line({ ms, ...describe(d) });
+      return d.value;
+    }
+    // 落到 legacy 的那几次，连它的判决与它自己花的时间一起记（#1405）：翻成 on 之后
+    // shadow 那行对照就没了，这里是唯一还看得到「拿不准的时候 LLM 判成了什么、人多等了
+    // 多久」的地方。legacy 抛了也记一行（legacy 为 null），再原样抛出去
+    let legacy: T;
+    try {
+      legacy = await o.viaLegacy();
+    } catch (err) {
+      line({ ms, ...describe(d), legacy: null, legacyMs: now() - t0 - ms });
+      throw err;
+    }
+    line({ ms, ...describe(d), legacy: o.show(legacy), legacyMs: now() - t0 - ms });
+    return legacy;
   }
   const legacy = await o.viaLegacy();
   void decided.then((d) => line({ ms: now() - t0, ...describe(d), legacy: o.show(legacy) }));
