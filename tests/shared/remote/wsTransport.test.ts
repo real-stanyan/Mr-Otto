@@ -319,6 +319,36 @@ describe("断线与重连", () => {
     t.close();
   });
 
+  // #1411：手机切后台主动断开。不然 iOS 挂起的 socket 在服务端看来还连着，runtime 以为人还开着这条聊天，
+  // 回电永远不打
+  it("pause：关掉当前连接、通知桥这一轮作废、之后不自己重连；reconnectNow 才接着连", async () => {
+    const { t } = make();
+    await settle();
+    last().open();
+    const old = last();
+    const closes: number[] = [];
+    t.onClose(() => closes.push(1));
+    t.pause("切到后台");
+    expect(old.closedWith?.code).toBe(1000);
+    expect(closes).toHaveLength(1);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(FakeWs.instances).toHaveLength(1);
+    t.reconnectNow("回到前台");
+    await settle();
+    expect(FakeWs.instances).toHaveLength(2);
+    t.close();
+  });
+
+  it("pause 碰上正在等令牌的那次建连：令牌回来之后不连", async () => {
+    let release!: (v: string) => void;
+    const { t } = make({ authToken: () => new Promise<string>((r) => { release = r; }) });
+    t.pause("切到后台");
+    release("jwt-abc");
+    await settle();
+    expect(FakeWs.instances).toHaveLength(0);
+    t.close();
+  });
+
   it("close() 之后不再重连", async () => {
     const { t } = make();
     await settle();

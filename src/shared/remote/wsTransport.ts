@@ -70,6 +70,11 @@ export function createWsTransport(opts: WsTransportOpts): RemoteTransport & {
       安静地变成 no-op，而这条 issue 修的正是"失败无声"。返回类型上加，
       于是只有真拿 WebSocket 那条路的调用方看得见它，且是编译期必有。 */
   isOpen(): boolean;
+  /** 暂停（#1411）：关掉当前连接、不排重连，直到下一次 reconnectNow。手机切后台用——后台的 app 收不了帧、
+      人也不在看，而 iOS 挂起的 socket 在服务端看来还连着（中继自己应答心跳，runtime 看不见），于是
+      runtime 以为人还开着这条聊天，回电就不打了。主动关掉，中继当场报 :gone。
+      同 isOpen 的理由不进 RemoteTransport 接口：那个接口有别的实现 */
+  pause(why: string): void;
 } {
   const WS = opts.wsImpl ?? WebSocket;
   const log = opts.log ?? (() => {});
@@ -85,6 +90,7 @@ export function createWsTransport(opts: WsTransportOpts): RemoteTransport & {
   let myCid = "";
 
   let closed = false;
+  let paused = false;
   let attempt = 0;
   let ws: WebSocket | null = null;
   let retryTimer: ReturnType<typeof setTimeout> | null = null;
@@ -122,7 +128,7 @@ export function createWsTransport(opts: WsTransportOpts): RemoteTransport & {
   }
 
   function scheduleReconnect(): void {
-    if (closed || retryTimer) return;
+    if (closed || paused || retryTimer) return;
     const wait = BACKOFF_MS[Math.min(attempt, BACKOFF_MS.length - 1)]!;
     attempt += 1;
     log(`远程传输:${wait}ms 后重连`);
@@ -147,9 +153,9 @@ export function createWsTransport(opts: WsTransportOpts): RemoteTransport & {
   }
 
   async function connect(): Promise<void> {
-    if (closed || ws) return;
+    if (closed || paused || ws) return;
     const token = await opts.authToken();
-    if (closed || ws) return;
+    if (closed || paused || ws) return;
     if (!token) {
       // 没登录不连,**也不重连** —— 退避重连一个必然失败的东西没有意义。
       // 出路是登录时由调用方叫 reconnectNow()
@@ -255,6 +261,7 @@ export function createWsTransport(opts: WsTransportOpts): RemoteTransport & {
      */
     reconnectNow(why: string) {
       if (closed) return;
+      paused = false;
       log(`远程传输:${why},立刻换一条连接`);
       if (retryTimer) {
         clearTimeout(retryTimer);
@@ -271,6 +278,24 @@ export function createWsTransport(opts: WsTransportOpts): RemoteTransport & {
       }
       attempt = 0; // 主动换,不是失败重试,退避从头算
       void connect();
+    },
+    pause(why: string) {
+      if (closed) return;
+      log(`远程传输:${why},先断开`);
+      paused = true;
+      if (retryTimer) {
+        clearTimeout(retryTimer);
+        retryTimer = null;
+      }
+      const dying = ws;
+      ws = null; // 先摘,免得 close 触发的 onclose 把它当"当前连接"再排一次重连
+      stopBeat();
+      openedAt = null;
+      myCid = "";
+      if (dying) {
+        try { dying.close(1000, "paused"); } catch { /* 已经在关了 */ }
+        onClose(); // 桥要知道这一轮作废了(密钥跟着连接走)
+      }
     },
     // 四条 return false 就是 issue #829 的全部内容:它们原来都只 log 一句
     // 就静默返回,于是"发了"和"没发"在调用方那里长得一模一样
