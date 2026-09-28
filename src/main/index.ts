@@ -197,8 +197,9 @@ import {
   createWorkspace, findHomeWorkspace, listAgentChats, listWorkspaces, fetchWorkspace, addMember, removeMember, leave,
   deleteWorkspace, upsertConnectorRow, deleteConnectorRow, insertSessionRow, listCloudSessions,
   insertAgentRow, updateAgentRow, deleteAgentRow, listAgentNames,
-  updateSandboxApproval, listMentions, markMentionsRead,
+  updateSandboxApproval, listMentions, markMentionsRead, fetchCloudLasts, listGuestChats, clearAgentOnboarding,
 } from "../shared/supabaseWorkspacesApi.js";
+import { codingUiFromEnv } from "./uiMode.js";
 import type { SandboxApproval } from "../shared/workspaceAgents.js";
 import {
   publishSessionToWorkspace, unpublishSession, importWorkspaceSession,
@@ -1655,7 +1656,7 @@ void app.whenReady().then(() => {
   const workspaceManager = createWorkspaceManager({
     createWorkspace, findHomeWorkspace, listWorkspaces, fetchWorkspace, addMember, removeMember, leave,
     deleteWorkspace, upsertConnectorRow, deleteConnectorRow,
-    insertAgentRow, updateAgentRow, deleteAgentRow, listAgentNames,
+    insertAgentRow, updateAgentRow, deleteAgentRow, listAgentNames, clearAgentOnboarding,
     updateSandboxApproval, listMentions, markMentionsRead, listAgentChats,
     // 删一只智能体的第 1、2、4 步（#1280）：都走 runtime，不直连 Supabase——
     // 0016 那条策略把客户端的 delete 钉死在 kind='package'
@@ -3340,6 +3341,8 @@ void app.whenReady().then(() => {
   // 界面上「去哪个目录手改」的那几处文案要说真话（ADR-0187）：抽屉名是 uid 的哈希，
   // 渲染层算不出来。开机取一次即可 —— 换号会重启，这个值在一个进程里恒定
   ipcMain.handle(CHANNELS.configRoot, () => accountConfig);
+  // 本机写代码那一半画不画（#1386，维护者拍板「先藏起来」）：开关是环境变量，一个进程里恒定
+  ipcMain.handle(CHANNELS.codingUi, () => codingUiFromEnv(process.env));
 
   // 设置页的用量图：SQL 只捞窗口内的计费行，投影成"每家每天多少 token"再过桥。
   // 两倍窗口是为了那个涨跌对比（前一个同长度窗口的合计），投影函数自己会切
@@ -3441,6 +3444,7 @@ void app.whenReady().then(() => {
     friends.sendMessage(friendId, body));
   ipcMain.handle(CHANNELS.friendsListMessages, (_e, friendId: string, beforeId?: number) =>
     friends.listMessages(friendId, beforeId));
+  ipcMain.handle(CHANNELS.friendsRecentMessages, () => friends.recentMessages());
 
   // 好友代理（issue #622 / #657）：同一套结构化回流。proxy 为 null = 系统封装不可用
   // （没有身份密钥就没有握手，见上面的装配）——回一句人话，别让渲染层拿到 undefined
@@ -3492,10 +3496,12 @@ void app.whenReady().then(() => {
       id: string,
       draft: {
         name: string; description: string; instructions: string; models: string[];
-        tools: AgentToolAllow[]; avatarSlot?: number | null;
+        tools: AgentToolAllow[]; avatarSlot?: number | null; onboarding?: "greet";
       },
     ) => workspaceManager.createAgent(id, draft),
   );
+  ipcMain.handle(CHANNELS.workspaceAgentClearOnboarding, (_e, id: string, agentId: string) =>
+    workspaceManager.clearAgentOnboarding(id, agentId));
   ipcMain.handle(
     CHANNELS.workspaceAgentUpdate,
     (
@@ -3593,6 +3599,25 @@ void app.whenReady().then(() => {
       return { ok: false as const, message: e instanceof Error ? e.message : String(e) };
     }
   });
+  // 「聊天」列表那两格（#1386 桌面那一半）：每条云会话的最后一句、别人拉我进的群。
+  // 两条都是容错查询——库里那几列 / 那张表没跑出来时回空，列表退回改动前的样子，不是错误
+  ipcMain.handle(CHANNELS.workspaceCloudLasts, async (_e, workspaceId: string) => {
+    if (!friends.currentUid()) return NOT_SIGNED_IN;
+    try {
+      return { ok: true as const, value: Object.fromEntries(await fetchCloudLasts(supabase.raw, workspaceId)) };
+    } catch (e) {
+      return { ok: false as const, message: e instanceof Error ? e.message : String(e) };
+    }
+  });
+  ipcMain.handle(CHANNELS.workspaceGuestChats, async () => {
+    const uid = friends.currentUid();
+    if (!uid) return NOT_SIGNED_IN;
+    try {
+      return { ok: true as const, value: await listGuestChats(supabase.raw, uid) };
+    } catch (e) {
+      return { ok: false as const, message: e instanceof Error ? e.message : String(e) };
+    }
+  });
   ipcMain.handle(CHANNELS.workspaceHomeEnsure, () => workspaceManager.ensureHome());
   ipcMain.handle(CHANNELS.workspaceCloudCreate, (_e, workspaceId: string, chat?: CsChatSpec) =>
     cloudClient.create(workspaceId, chat));
@@ -3612,7 +3637,7 @@ void app.whenReady().then(() => {
     cloudClient.remove(workspaceId, sessionId));
   ipcMain.handle(
     CHANNELS.workspaceCloudChatUpdate,
-    (_e, workspaceId: string, sessionId: string, patch: { name?: string; agentIds?: string[] }) =>
+    (_e, workspaceId: string, sessionId: string, patch: { name?: string; agentIds?: string[]; humans?: string[] }) =>
       cloudClient.chatUpdate(workspaceId, sessionId, patch));
   ipcMain.handle(CHANNELS.workspaceCloudStop, (_e, seq: number | null) =>
     cloudClient.stop(seq ?? undefined)

@@ -257,8 +257,10 @@ export async function launchOtto(opts: LaunchOptions = {}): Promise<Otto> {
     ...(opts.packaged ? { executablePath: PACKAGED_APP, args: [] } : { args: [ROOT] }),
     cwd: ROOT,
     // blankCredentials 排在 opts.env 之前：fakeModelEnv() 那类用例要自己塞
-    // 一把假 key + 假端点，它们的意志优先
-    env: { ...process.env, ...blankCredentials(), ...opts.env, HOME: home, OTTO_PROFILE: profile },
+    // 一把假 key + 假端点，它们的意志优先。
+    // OTTO_CODING=1（#1386）：默认界面换成了微信式的聊天，既有用例量的都是写代码那一半（任务 / 项目 /
+    // 本机会话），它们照旧站在旧界面里；要测新界面的用例自己在 opts.env 里给 OTTO_CODING: "0"
+    env: { ...process.env, OTTO_CODING: "1", ...blankCredentials(), ...opts.env, HOME: home, OTTO_PROFILE: profile },
   });
   // 主进程算出来的那份必须和上面算的一致 —— 不一致的话播种全落在空处，
   // 而症状是「用例莫名其妙看不到播进去的东西」，没有任何报错

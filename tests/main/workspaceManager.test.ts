@@ -94,6 +94,9 @@ function harness(over: Partial<WorkspaceManagerDeps> = {}) {
     updateSandboxApproval: async (_c, _ws, value) => {
       calls.push(`updateSandboxApproval:${value}`);
     },
+    clearAgentOnboarding: async (_c, ws, agentId) => {
+      calls.push(`clearAgentOnboarding:${ws}:${agentId}`);
+    },
     client: () => (signedIn ? fakeClient : null),
     selfUid: () => (signedIn ? "self-uid" : null),
     loadStore: () => store,
@@ -578,6 +581,21 @@ describe("workspace relay max depth（#950 Task 9）", () => {
       },
     });
     expect(await manager.setSandboxApproval("ws-1", "auto")).toEqual({ ok: false, message: "无权修改" });
+  });
+});
+
+describe("clearAgentOnboarding（#1386 桌面「新建智能体」：私聊没建成、人不建了）", () => {
+  it("透传给 clearAgentOnboarding", async () => {
+    const h = harness();
+    expect(await h.manager.clearAgentOnboarding("home-1", "a_x")).toEqual({ ok: true, value: null });
+    expect(h.calls).toContain("clearAgentOnboarding:home-1:a_x");
+  });
+
+  it("未登录：回 还没登录，不打网络", async () => {
+    const h = harness();
+    h.signOut();
+    expect(await h.manager.clearAgentOnboarding("home-1", "a_x")).toEqual({ ok: false, message: "还没登录" });
+    expect(h.calls).toEqual([]);
   });
 });
 

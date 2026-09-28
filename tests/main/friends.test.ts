@@ -60,6 +60,7 @@ function fakeApi(over: Partial<FriendsApi> = {}): FriendsApi {
     insertMessage: vi.fn(async (sender: string, recipient: string, body: string): Promise<MessageRow> =>
       ({ id: 1, sender, recipient, body, created_at: "t" })),
     listMessages: vi.fn(async () => []),
+    listRecentMessages: vi.fn(async () => []),
     latestInboxId: vi.fn(async () => 0),
     listInboxSince: vi.fn(async () => []),
     touchPresence: vi.fn(async () => {}),
@@ -188,6 +189,27 @@ describe("FriendsManager 关系链", () => {
       ok: true,
       value: [{ id: 7, sender: "u2", recipient: "me", body: "yo", createdAt: "2026-08-18T00:00:00Z" }],
     });
+  });
+
+  it("recentMessages（#1386）：不分好友的那一批同样归一成 DirectMessage；没登录不打网络", async () => {
+    const api = fakeApi({
+      listRecentMessages: vi.fn(async () => [
+        { id: 9, sender: "me", recipient: "u3", body: "在吗", created_at: "2026-09-28T01:00:00Z" },
+        { id: 8, sender: "u2", recipient: "me", body: "yo", created_at: "2026-09-28T00:00:00Z" },
+      ]),
+    });
+    const m = new FriendsManager({ api, push: noPush });
+    expect(await m.recentMessages()).toEqual({
+      ok: true,
+      value: [
+        { id: 9, sender: "me", recipient: "u3", body: "在吗", createdAt: "2026-09-28T01:00:00Z" },
+        { id: 8, sender: "u2", recipient: "me", body: "yo", createdAt: "2026-09-28T00:00:00Z" },
+      ],
+    });
+    const out = fakeApi({ getUserId: vi.fn(async () => null) });
+    const signedOut = new FriendsManager({ api: out, push: noPush });
+    expect((await signedOut.recentMessages()).ok).toBe(false);
+    expect(out.listRecentMessages).not.toHaveBeenCalled();
   });
 });
 
