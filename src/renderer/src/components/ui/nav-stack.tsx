@@ -84,7 +84,19 @@ interface Live {
   leaving: boolean;
 }
 
-export function NavStack({ root, className }: { root: NavScreen; className?: string }) {
+/** `dragBar`：每一页的导航条同时是拖窗口的那一条（`.drag-region`，里面的按钮照常点得动）。
+    抽屉里用不着——抽屉不贴窗口上沿；贴着上沿铺满主区时（微信式布局「我」那一栏，#1386）
+    不给的话，那一片 46px 就成了窗口顶上唯一拖不动的地方。
+    `contentClassName`：每一页正文外面包的那一层（比如收成居中的一列）。抽屉只有 420px 不用收；
+    铺满主区时不收的话，推进来的二级页（添加主机、记忆编辑）会把一个输入框拉到一千像素宽 */
+export function NavStack({
+  root, className, dragBar = false, contentClassName,
+}: {
+  root: NavScreen;
+  className?: string;
+  dragBar?: boolean;
+  contentClassName?: string;
+}) {
   const [stack, setStack] = useState<NavScreen[]>([root]);
   const [leaving, setLeaving] = useState<NavScreen[]>([]);
 
@@ -213,6 +225,8 @@ export function NavStack({ root, className }: { root: NavScreen; className?: str
             key={screen.key}
             screen={screen}
             isRoot={i === 0}
+            dragBar={dragBar}
+            {...(contentClassName === undefined ? {} : { contentClassName })}
             registerEl={(el) => {
               if (el) pageEls.current.set(screen.key, el);
               else pageEls.current.delete(screen.key);
@@ -239,10 +253,12 @@ interface GestureCtx {
 }
 
 function NavPage({
-  screen, isRoot, registerEl, onBack, gesture,
+  screen, isRoot, dragBar, contentClassName, registerEl, onBack, gesture,
 }: {
   screen: NavScreen;
   isRoot: boolean;
+  dragBar: boolean;
+  contentClassName?: string;
   registerEl: (el: HTMLElement | null) => void;
   onBack: () => void;
   gesture: GestureCtx | null;
@@ -335,6 +351,7 @@ function NavPage({
       <div
         className={cn(
           "relative z-10 flex h-[46px] shrink-0 items-center gap-[6px] px-[6px]",
+          dragBar && "drag-region",
           // 滚动边缘效果：不是一条 1px 的线，是内容压到玻璃底下
           "group-data-[scrolled=1]/navpage:bg-popover/80 group-data-[scrolled=1]/navpage:backdrop-blur-xl",
           "after:pointer-events-none after:absolute after:inset-x-0 after:top-full after:h-[22px]",
@@ -376,17 +393,19 @@ function NavPage({
         onScroll={onScroll}
         className="scrollbar-stable min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pb-10"
       >
-        {screen.largeTitle && (
-          <div className="px-[2px] pt-[2px] pb-[14px]">
-            <h1 className="text-[27px] leading-[1.1] font-[640] tracking-[-0.022em] break-words">
-              {screen.largeTitle.title}
-            </h1>
-            {screen.largeTitle.subtitle !== undefined && (
-              <div className="mt-1 text-[12.5px] text-muted-foreground">{screen.largeTitle.subtitle}</div>
-            )}
-          </div>
-        )}
-        {screen.render()}
+        <div className={contentClassName}>
+          {screen.largeTitle && (
+            <div className="px-[2px] pt-[2px] pb-[14px]">
+              <h1 className="text-[27px] leading-[1.1] font-[640] tracking-[-0.022em] break-words">
+                {screen.largeTitle.title}
+              </h1>
+              {screen.largeTitle.subtitle !== undefined && (
+                <div className="mt-1 text-[12.5px] text-muted-foreground">{screen.largeTitle.subtitle}</div>
+              )}
+            </div>
+          )}
+          {screen.render()}
+        </div>
       </div>
 
       {/* 被压在下面时的那层暗：不是装饰，它是「这一页此刻不是主角」的唯一信号 */}

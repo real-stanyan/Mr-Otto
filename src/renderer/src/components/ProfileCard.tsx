@@ -20,7 +20,9 @@ import { Button } from "@/components/ui/button.js";
 /** "已保存"在屏幕上停留的时间。够看见,不够碍事 */
 const SAVED_HINT_MS = 2000;
 
-export function ProfileCard() {
+/** `signOut: false`：那一页别处已经有「退出登录」（微信式布局「我」那一栏的最后一行，#1386），
+    这里再画一颗就是同一个动作两个入口 */
+export function ProfileCard({ signOut: showSignOut = true }: { signOut?: boolean } = {}) {
   const account = useChat((s) => s.account);
   const profile = useChat((s) => s.myProfile);
   const save = useChat((s) => s.saveMyProfile);
@@ -84,9 +86,11 @@ export function ProfileCard() {
           <span className="truncate text-[12px] text-muted-foreground">{identity.email}</span>
         }
         trailing={
-          <Button variant="ghost" size="sm" className="text-muted-foreground" onClick={() => void signOut()}>
-            退出登录
-          </Button>
+          showSignOut ? (
+            <Button variant="ghost" size="sm" className="text-muted-foreground" onClick={() => void signOut()}>
+              退出登录
+            </Button>
+          ) : undefined
         }
         actions={
           <>
