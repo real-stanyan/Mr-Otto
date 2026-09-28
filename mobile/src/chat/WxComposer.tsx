@@ -16,7 +16,7 @@ import { draftOf, setDraft } from "../inbox/seenStore.js";
 import { usePalette } from "../theme.js";
 import { useReduceMotion } from "../ui.js";
 import { Icon, type IconName } from "../wx/Icon.js";
-import { EMOJI } from "./emoji.js";
+import { EMOJI } from "../../../src/shared/emoji.js";
 
 export interface ComposerHandle {
   /** 把一句话填进输入框（不发出去），焦点还给它、光标落在末尾 */
