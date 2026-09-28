@@ -326,11 +326,13 @@ export function ChatScreen({ route, navigation }: Props) {
     () => (ws !== null ? liveRows({ streaming: chat.streaming, ws, now: Date.now(), ...(inCall === null ? {} : { hide: inCall }) }) : []),
     [ws, chat.streaming, inCall],
   );
-  // 状态的折叠只跟 events 走：流式每来一片（每只最多 50 毫秒一片）只重算下面那一行，不把整份日志重折一遍
+  // 状态的折叠与欠着的几轮只跟 events 走：流式每来一片（每只最多 50 毫秒一片）只重算下面那一行，
+  // 不把整份日志再过两遍
   const fold = useMemo(() => activityFoldOf(events), [events]);
+  const turns = useMemo(() => openTurns(events), [events]);
   const nowRow = useMemo(
-    () => (ws !== null ? nowRowOf({ events, streaming: chat.streaming, ws, fold }) : null),
-    [ws, events, chat.streaming, fold],
+    () => (ws !== null ? nowRowOf({ events, streaming: chat.streaming, ws, fold, turns }) : null),
+    [ws, events, chat.streaming, fold, turns],
   );
   const roleAnchor = useMemo(() => roleChipsAnchor(events), [events]);
   const items = useMemo<Item[]>(() => {
@@ -670,7 +672,7 @@ export function ChatScreen({ route, navigation }: Props) {
 
       {call !== null && ws !== null && session !== null ? (
         (() => {
-          const face = callFace({ call, speaking: listen?.speaking ?? null, open: openTurns(events) });
+          const face = callFace({ call, speaking: listen?.speaking ?? null, open: turns });
           const micOn = callMicOn({ mic: listen?.mic.status ?? null, starting });
           const ids = call.participants.map((p) => p.agentId);
           const faces = dmAgent !== null || ids.length <= 1 ? (

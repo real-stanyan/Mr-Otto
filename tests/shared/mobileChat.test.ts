@@ -4,6 +4,7 @@
 import { describe, expect, it } from "vitest";
 import { activityFoldOf } from "../../src/shared/agentActivity.js";
 import { chatCentre, chatRows, clockLabel, liveRows, NOW_PHASE_TEXT, nowRowOf, resolveChatTarget } from "../../src/shared/mobileChat.js";
+import { openTurns } from "../../src/shared/turnLedger.js";
 import type { SessionEvent } from "../../src/session/events.js";
 import type { CloudSessionRow } from "../../src/shared/supabaseWorkspacesApi.js";
 import type { WorkspaceAgentRow, WorkspaceSnapshot } from "../../src/shared/workspaces.js";
@@ -183,6 +184,17 @@ describe("nowRowOf", () => {
     // 真的用了传进来的那份：它折到了「已经要了刀」，画的就是执行中，而不是按 events 现折出来的排队
     const ahead = activityFoldOf([opening("a_000000000001", 3), step("a_000000000001", 4)]);
     expect(nowRowOf({ events: [opening("a_000000000001", 3)], streaming: {}, ws: WS, fold: ahead })).toMatchObject({ phase: "working" });
+  });
+  it("turns（openTurns 的结果）也能先算好递进来，与 fold 一起：结果与两样都现算一遍逐字相同", () => {
+    const approval = { seq: 7, sessionId: "s1", ts: DAY + 7, type: "approval_request", callId: "c", toolName: "bash", argsSummary: "", initiatorUid: "me", expiresTs: 0, agentId: "a_000000000002" } as unknown as SessionEvent;
+    const events = [opening("a_000000000001", 3), step("a_000000000001", 4), opening("a_000000000002", 5), step("a_000000000002", 6), approval];
+    const turns = openTurns(events);
+    const fold = activityFoldOf(events);
+    for (const streaming of [{}, { a_000000000001: "字" }]) {
+      expect(nowRowOf({ events, streaming, ws: WS, turns, fold })).toEqual(nowRowOf({ events, streaming, ws: WS }));
+    }
+    // 真的用了传进来的那份：一轮都不欠，就没有「此刻」那一行
+    expect(nowRowOf({ events, streaming: {}, ws: WS, turns: [], fold })).toBeNull();
   });
   it("NOW_PHASE_TEXT 与 agentActivity 的说法一致", () => {
     expect(NOW_PHASE_TEXT).toEqual({ waiting: "等你处理", solving: "作答中", working: "执行中", searching: "检索中", composing: "思考中", queued: "排队中" });

@@ -253,16 +253,17 @@ export interface NowRow {
  * 最底下那一行 =「此刻」（spec §5.3）：只在有没收口的一轮时出现，一次只画一只——
  * 等你处理 > 作答 > 执行 > 检索 > 思考 > 排队（ACTIVITY_ORDER），同档取 seq 最小（spec §5.6 定的顺序，私聊里只有一只，自然成立）。
  * 每只先取它自己 seq 最小的那条（turnLedger 认不出「动静属于哪一轮」，同 dmFaceState）。
- * `fold` = 调用方按这份 events 折好的那份（聊天页随 events 记一份）：流式每来一片都会重算这一行，
- * 不该每次把载进来的整份日志重折一遍。缺席就现折。
+ * `fold` / `turns` = 调用方按这份 events 算好的那两份（activityFoldOf / openTurns，聊天页随 events 各记一份）：
+ * 流式每来一片都会重算这一行，不该每次把载进来的整份日志再过两遍。缺席就现算。
  */
 export function nowRowOf(o: {
   events: readonly SessionEvent[];
   streaming: Readonly<Record<string, string>>;
   ws: WorkspaceSnapshot;
   fold?: ActivityFold;
+  turns?: readonly OpenTurn[];
 }): NowRow | null {
-  const turns = openTurns(o.events);
+  const turns = o.turns ?? openTurns(o.events);
   if (turns.length === 0) return null;
   const earliest = new Map<string, OpenTurn>();
   for (const t of turns) {
