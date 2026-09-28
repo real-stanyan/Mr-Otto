@@ -19,7 +19,8 @@ describe("0045_push_devices", () => {
     expect(code).not.toMatch(/on public\.push_devices for (insert|update|delete|all)/);
   });
   it("register：security definer；先删这个令牌挂在别人名下的那一行，再 upsert 到自己名下", () => {
-    const body = code.slice(code.indexOf("function public.register_push_device"));
+    const start = code.indexOf("function public.register_push_device");
+    const body = code.slice(start, code.indexOf("function public.unregister_push_device"));
     expect(body).toMatch(/security definer set search_path = public/);
     const del = body.indexOf("delete from push_devices where token = p_token and user_id <> auth.uid()");
     const ins = body.indexOf("insert into push_devices");
