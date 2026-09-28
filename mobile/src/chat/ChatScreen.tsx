@@ -18,6 +18,7 @@ import { useHeaderHeight } from "@react-navigation/elements";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { FlatList, KeyboardAvoidingView, Platform, Pressable, Text, View } from "react-native";
+import { activityFoldOf } from "../../../src/shared/agentActivity.js";
 import { agentFaceSlot } from "../../../src/shared/agentAvatar.js";
 import { roleChipsAnchor } from "../../../src/shared/agentOnboarding.js";
 import { resolveSendMentions } from "../../../src/shared/agentMentionInput.js";
@@ -325,7 +326,12 @@ export function ChatScreen({ route, navigation }: Props) {
     () => (ws !== null ? liveRows({ streaming: chat.streaming, ws, now: Date.now(), ...(inCall === null ? {} : { hide: inCall }) }) : []),
     [ws, chat.streaming, inCall],
   );
-  const nowRow = useMemo(() => (ws !== null ? nowRowOf({ events, streaming: chat.streaming, ws }) : null), [ws, events, chat.streaming]);
+  // 状态的折叠只跟 events 走：流式每来一片（每只最多 50 毫秒一片）只重算下面那一行，不把整份日志重折一遍
+  const fold = useMemo(() => activityFoldOf(events), [events]);
+  const nowRow = useMemo(
+    () => (ws !== null ? nowRowOf({ events, streaming: chat.streaming, ws, fold }) : null),
+    [ws, events, chat.streaming, fold],
+  );
   const roleAnchor = useMemo(() => roleChipsAnchor(events), [events]);
   const items = useMemo<Item[]>(() => {
     const list: Item[] = [];

@@ -5,7 +5,7 @@
 // 最底下「此刻」那一行挑哪一只。
 
 import type { ApprovalRequestEvent, ChatRosterChangedEvent, SessionEvent } from "../session/events.js";
-import { ACTIVITY_ORDER, ACTIVITY_TEXT, activityFace, activityFoldOf, activityOf, type AgentActivity } from "./agentActivity.js";
+import { ACTIVITY_ORDER, ACTIVITY_TEXT, activityFace, activityFoldOf, activityOf, type ActivityFold, type AgentActivity } from "./agentActivity.js";
 import { groupRows, rosterRows } from "./agentRoster.js";
 import { splitBubbles } from "./chatBubbles.js";
 import {
@@ -253,11 +253,14 @@ export interface NowRow {
  * 最底下那一行 =「此刻」（spec §5.3）：只在有没收口的一轮时出现，一次只画一只——
  * 等你处理 > 作答 > 执行 > 检索 > 思考 > 排队（ACTIVITY_ORDER），同档取 seq 最小（spec §5.6 定的顺序，私聊里只有一只，自然成立）。
  * 每只先取它自己 seq 最小的那条（turnLedger 认不出「动静属于哪一轮」，同 dmFaceState）。
+ * `fold` = 调用方按这份 events 折好的那份（聊天页随 events 记一份）：流式每来一片都会重算这一行，
+ * 不该每次把载进来的整份日志重折一遍。缺席就现折。
  */
 export function nowRowOf(o: {
   events: readonly SessionEvent[];
   streaming: Readonly<Record<string, string>>;
   ws: WorkspaceSnapshot;
+  fold?: ActivityFold;
 }): NowRow | null {
   const turns = openTurns(o.events);
   if (turns.length === 0) return null;
@@ -266,7 +269,7 @@ export function nowRowOf(o: {
     const cur = earliest.get(t.agentId);
     if (cur === undefined || t.seq < cur.seq) earliest.set(t.agentId, t);
   }
-  const fold = activityFoldOf(o.events);
+  const fold = o.fold ?? activityFoldOf(o.events);
   let best: { t: OpenTurn; phase: NowPhase } | null = null;
   for (const t of earliest.values()) {
     const a = activityOf(fold, t.agentId, (o.streaming[t.agentId] ?? "") !== "");
