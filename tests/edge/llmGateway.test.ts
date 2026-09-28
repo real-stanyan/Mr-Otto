@@ -481,8 +481,10 @@ describe("createLlmGateway", () => {
     const res = await gw(chatReq({ model: "deepseek-flash", messages: [] }), caller);
     expect(res.status).toBe(200);
     expect(calls.settle).toHaveLength(1);
-    expect(waited).toHaveLength(1);
+    // 两段：整段活（它 resolve 出回给客户端的那个 Response），和不再挡在响应前面的那次结算（#1398）
+    expect(waited).toHaveLength(2);
     expect(((await waited[0]) as Response).status).toBe(200);
+    await waited[1];
     // 与决策 / 语音那两条**故意不同**：chat 会把上游的字节一路流给客户端，客户端走了之后
     // 中止上游能真省下还没生成的那部分；那两条是一次前向，中止省不下任何东西（ADR-0307 决策 1）。
     // 这一条钉住这个不对称，免得下一个人把三条路「统一」成同一种处置
@@ -819,8 +821,10 @@ describe("语音那扇门（#1163）：kind=tts 打 /t2a_v2，按字符数预扣
     expect(inits[0]?.signal).toBeUndefined();
     expect(calls.settle).toHaveLength(1);
     expect(calls.release).toHaveLength(0);
-    expect(waited).toHaveLength(1);
+    // 整段活 + 后台那次结算（#1398）
+    expect(waited).toHaveLength(2);
     expect(((await waited[0]) as Response).status).toBe(200);
+    await waited[1];
   });
 });
 
@@ -974,9 +978,11 @@ describe("决策那扇门（#1281）", () => {
     });
     const out = await g(decisionReq(DECISION_BODY), caller);
     expect(out.status).toBe(200);
-    // 交出去的就是那一段活本身：它 resolve 出来的正是回给客户端的那个 Response
-    expect(waited).toHaveLength(1);
+    // 交出去的就是那一段活本身：它 resolve 出来的正是回给客户端的那个 Response；
+    // 第二段是不再挡在响应前面的那次结算（#1398）
+    expect(waited).toHaveLength(2);
     expect(((await waited[0]) as Response).status).toBe(200);
+    await waited[1];
   });
 });
 
@@ -1039,5 +1045,86 @@ describe("parseRemaining：缺一格就回 null，不拿 0 冒充（#1304）", (
     expect(parseRemaining({ week: Number.NaN, addon: 3 })).toBeNull();
     expect(parseRemaining(undefined)).toBeNull();
     expect(parseRemaining(null)).toBeNull();
+  });
+});
+
+describe("非流式不等 settle 那一趟再回响应（#1398）", () => {
+  // 远 colo 上一趟 Durable Object 往返约 330ms（2026-09-28 从 VPS 量：AMS 进 Cloudflare、DO 在悉尼附近）。
+  // settle 只是记账，响应里的每一个字节在它之前就定了（额度头取 hold 的快照，花费头本地算）——
+  // 所以判据是「settle 还挂着的时候响应已经回来了」，不是量时间。流式那条本来就是这样（I3）
+  const snap = { week: 43, addon: 7, plan: "max" as const };
+  function parkedSettle(settleImpl?: () => Promise<null>) {
+    let finish!: () => void;
+    const parked = new Promise<null>((r) => { finish = () => r(null); });
+    const calls = { hold: [] as string[], settle: [] as SettleMeta[], release: [] as string[] };
+    const quota: QuotaPort = {
+      hold: async (_u, rid) => { calls.hold.push(rid); return { ok: true, chargedTo: "window", remaining: snap }; },
+      settle: async (_u, _r, meta) => { calls.settle.push(meta); return settleImpl ? settleImpl() : parked; },
+      release: async (_u, rid) => { calls.release.push(rid); },
+      remaining: async () => ({ week: 2, addon: 3, plan: "lite" }),
+    };
+    const waited: Promise<unknown>[] = [];
+    return { quota, calls, finish: () => finish(), waited, waitUntil: (p: Promise<unknown>) => { waited.push(p); } };
+  }
+  /** 50ms 内没回来就算「还在等」——正确的实现里响应根本不碰那个挂着的 promise */
+  const within = <T>(p: Promise<T>) =>
+    Promise.race([p, new Promise<"still-waiting">((r) => setTimeout(() => r("still-waiting"), 50))]);
+
+  it("chat 非流式：settle 还挂着时响应已经回来；额度头取 hold 的快照，花费头照带；settle 交给 waitUntil", async () => {
+    const s = parkedSettle();
+    const up = upstream(() => Response.json({ choices: [{ message: { content: "ok" } }], usage: { prompt_tokens: 10, completion_tokens: 1 } }));
+    const gw = createLlmGateway({ routes: async () => [flash], quota: s.quota, upstreamKey: () => "k", fetchImpl: up.fetchImpl, waitUntil: s.waitUntil });
+    const res = await within(gw(chatReq({ model: "deepseek-flash", messages: [] }), caller));
+    if (res === "still-waiting") throw new Error("响应在等 settle");
+    expect(res.status).toBe(200);
+    expect((await res.json()).choices[0].message.content).toBe("ok");
+    expect(res.headers.get(BILLING_HEADERS.cost)).toBe("12");
+    expect(res.headers.get(BILLING_HEADERS.week)).toBe("43");
+    // settle 已经发出去了（记的是实际用量），而且交给了 waitUntil —— Worker 不会在响应之后把它收掉
+    expect(s.calls.settle).toHaveLength(1);
+    expect(s.calls.settle[0]!.costMicro).toBe(12);
+    expect(await within(Promise.all(s.waited))).toBe("still-waiting");
+    s.finish();
+    await Promise.all(s.waited);
+    expect(s.calls.release).toEqual([]);
+  });
+
+  it("决策：同上——settle 挂着时 200 已经回来，额度头取 hold 的快照", async () => {
+    const s = parkedSettle();
+    const gw = createLlmGateway({
+      routes: async () => [jev], quota: s.quota, upstreamKey: () => "k", fetchImpl: upstream(jevOk(120)).fetchImpl,
+      decisionUses: { dispatch: "on" }, waitUntil: s.waitUntil,
+    });
+    const res = await within(gw(decisionReq(DECISION_BODY), caller));
+    if (res === "still-waiting") throw new Error("响应在等 settle");
+    expect(res.status).toBe(200);
+    expect(res.headers.get(BILLING_HEADERS.cost)).toBe(String(Math.ceil((120 * 42_000) / 1_000_000)));
+    expect(res.headers.get(BILLING_HEADERS.week)).toBe("43");
+    expect(s.calls.settle).toHaveLength(1);
+    s.finish();
+    await Promise.all(s.waited);
+  });
+
+  it("语音：同上——settle 挂着时音频已经回来", async () => {
+    const s = parkedSettle();
+    const gw = createLlmGateway({ routes: async () => [tts], quota: s.quota, upstreamKey: () => "k", fetchImpl: upstream(mmOk()).fetchImpl, waitUntil: s.waitUntil });
+    const res = await within(gw(speechReq({ model: "speech-2.8-turbo", text: SPEECH_TEXT, voice_id: "v" }), caller));
+    if (res === "still-waiting") throw new Error("响应在等 settle");
+    expect(res.status).toBe(200);
+    expect(new Uint8Array(await res.arrayBuffer())).toEqual(new Uint8Array([0xff, 0xfb]));
+    expect(res.headers.get(BILLING_HEADERS.week)).toBe("43");
+    expect(s.calls.settle).toHaveLength(1);
+    s.finish();
+    await Promise.all(s.waited);
+  });
+
+  it("settle 在后台失败：照旧 release 那笔 hold（改动前是回 502 + release；内容已经交出去了，钱的结局不变）", async () => {
+    const s = parkedSettle(async () => { throw new Error("DO 不可用"); });
+    const up = upstream(() => Response.json({ choices: [{ message: { content: "ok" } }], usage: { prompt_tokens: 10, completion_tokens: 1 } }));
+    const gw = createLlmGateway({ routes: async () => [flash], quota: s.quota, upstreamKey: () => "k", fetchImpl: up.fetchImpl, waitUntil: s.waitUntil });
+    const res = await gw(chatReq({ model: "deepseek-flash", messages: [] }), caller);
+    expect(res.status).toBe(200);
+    await Promise.all(s.waited);
+    expect(s.calls.release).toEqual(s.calls.hold);
   });
 });

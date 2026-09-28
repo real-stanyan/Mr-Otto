@@ -258,7 +258,8 @@ describe("群聊的两种行（#1356 A3，spec §5.6）", () => {
     expect(rows).toEqual([]);
   });
 
-  it("派活那一句排在那句话底下；人亲手 @ 的不画", () => {
+  // #1396 撤了「没 @ 谁 —— 运维接了」那一行：是谁接的，回话那只的头像和名字已经说了
+  it("派活不另画一行：被派了活的那句话与人亲手 @ 的一样，只是一个气泡", () => {
     seq = 0;
     const rows = chatRows({
       events: [
@@ -269,7 +270,6 @@ describe("群聊的两种行（#1356 A3，spec §5.6）", () => {
     });
     expect(rows.slice(1)).toEqual([
       { kind: "mine", key: "e0", ts: DAY, text: "这版谁先发" },
-      { kind: "note", key: "dispatch-0", ts: DAY, text: "没 @ 谁 —— 运维接了", tone: "muted", detail: null },
       { kind: "mine", key: "e1", ts: DAY, text: "@开发 看下" },
     ]);
   });
