@@ -37,7 +37,8 @@
           "microphonePermission": "语音通话时要用麦克风听你说话。"
         }
       ],
-      "expo-font"
+      "expo-font",
+      "./plugins/withSceneLifecycle"
     ]
   }
 }
