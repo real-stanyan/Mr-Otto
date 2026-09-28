@@ -806,6 +806,7 @@ async function main(): Promise<void> {
       // 上一次量出来的卷用量（#836，ADR-0287）。纯读 sandbox 的内存缓存、不打
       // docker——量这一下发生在 sandbox.ensure() 里，这里只是把读数递过去
       diskUsage: () => sandbox.diskUsage(workspaceId),
+      callback: null, // 推送的接线在下一步（#1411）
     });
 
     activeSessions.set(sessionId, { session, workspaceId });
