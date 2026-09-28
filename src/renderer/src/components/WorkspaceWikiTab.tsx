@@ -63,7 +63,7 @@ export function WorkspaceWikiTab({ ws }: { ws: WorkspaceSnapshot }) {
 
   if (state.kind === "loading") return <InsetGroup><InsetEmpty title="正在读 wiki…" /></InsetGroup>;
   if (state.kind === "absent") {
-    return <InsetGroup><InsetEmpty title="这个团队的工作文件夹还没建起来" hint="第一次让智能体干活时会建；wiki 也在那时候生成。" /></InsetGroup>;
+    return <InsetGroup><InsetEmpty title="工作文件夹还没建起来" hint="第一次让智能体干活时会建；wiki 也在那时候生成。" /></InsetGroup>;
   }
   const groups = state.groups; // loading / absent 在上面已经 return，剩下的两态都带 groups
   return (
@@ -90,7 +90,7 @@ export function WorkspaceWikiTab({ ws }: { ws: WorkspaceSnapshot }) {
         </div>
       ))}
       <InsetNote>
-        wiki 住在团队工作文件夹的 <code>wiki/</code> 里，智能体每轮发言前会读索引 + 常驻页 + 它自己那页；其余页它按需读。
+        wiki 住在工作文件夹的 <code>wiki/</code> 里，智能体每轮发言前会读索引 + 常驻页 + 它自己那页；其余页它按需读。
         你在这里改的和智能体改的走同一条路（盖章、索引、日志、备份）。
       </InsetNote>
     </div>
