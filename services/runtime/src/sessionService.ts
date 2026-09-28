@@ -182,7 +182,7 @@ import { writeFileTool } from "../../../src/tools/writeFile.js";
 import { bashTool } from "../../../src/tools/bash.js";
 import { agentView } from "../../../src/session/agentView.js";
 import { parseMentions, mentionTokens } from "../../../src/shared/remote/agentMention.js";
-import { promptSafe, safeSpeakerLabel } from "../../../src/shared/promptSafe.js";
+import { promptSafe, safeSpeakerLabel, SYSTEM_SPEAKER_UID } from "../../../src/shared/promptSafe.js";
 import { openTurns } from "../../../src/shared/turnLedger.js";
 import { createTurnCoordinator, type TurnJob, type EnqueueDecision } from "./turnCoordinator.js";
 import { createApprovalRouter, RELAY_APPROVAL_TIMEOUT_MS, type ApproveOutcome } from "./approvalRouter.js";
@@ -199,7 +199,11 @@ import {
 import { createCreateAgentTool } from "./createAgentTool.js";
 import { createGitTools, type GitToolDeps } from "./gitTools.js";
 import type { WorkspaceAgentWriter } from "./agentRegistry.js";
-import { dispatchContext, dispatchFailedText, dispatchFallbackOf, lastSpeakerAmong, type DispatchInput, type DispatchVerdict } from "./dispatch.js";
+import {
+  dispatchContext, dispatchFailedText, dispatchFallbackOf, lastSpeakerAmong, renderDispatchLine,
+  type DispatchInput, type DispatchPeople, type DispatchVerdict,
+} from "./dispatch.js";
+import { labelFromPrefix } from "./speakerPrefix.js";
 import {
   CREATE_AGENT_TOOL_NAME, createAgentApprovalFields, createAgentApprovalSummary, parseCreateAgentArgs, scanCreateAgentThreat,
 } from "../../../src/shared/createAgentDraft.js";
@@ -625,18 +629,6 @@ export const SANDBOX_PROBE_FAIL_TEXT =
 export function speakerLabelOf(content: string | undefined, fromUid: string): string {
   const label = labelFromPrefix(content);
   return label !== null ? safeSpeakerLabel(label, fromUid) : fromUid.slice(0, 8);
-}
-
-/** 开场白正文那个 `[label]: ` 前缀里的名字；没有前缀回 `null`。
-    **单独抽出来只为了「这条日志到底带没带名字」有个说得出口的答案**（#959 复审
-    Medium 1）：`speakerLabelOf` 把「没带」翻译成 uid 前 8 位——那是取名字时正确
-    的退路，但拿来喂名字表就是把一个假名字记成事实。接力开场白正是没带的那一种
-    （`relayOpeningText` 的形状是 `[系统] …`，`]` 后面没有冒号），所以这个区分
-    不是理论上的。正则**只此一份**：两处各写一遍，改前缀那天会有一处安静地不认 */
-function labelFromPrefix(content: string | undefined): string | null {
-  const m = content ? /^\[([^\]]*)\]: /.exec(content) : null;
-  const label = m?.[1] ?? "";
-  return label.length > 0 ? label : null;
 }
 
 /** 被踢的发起人那句话已经在 append-only 的日志里了，删不掉——只能在它后面补
@@ -1505,7 +1497,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // 也不全量 load —— 那个成本是跟着日志长的。
       // `nameOf` 给 `(id) => id`：起标题只要对话的大意，而拿真名字要一次
       // `opts.agents()` 的 Supabase 往返，为一个侧栏上的名字多打一次网络不值
-      const context = dispatchContext(dispatchTail(), (id) => id);
+      const context = dispatchContext(dispatchTail(), (id) => id).map(renderDispatchLine);
       const next = await retitle({ currentTitle: title, context });
       if (next === null || next.title === title) return;
       title = next.title;
@@ -2104,13 +2096,56 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     return lastSpeakerAmong(dispatchTail(), callRoster.map((a) => a.agentId)) ?? dispatchFallbackOf(callRoster);
   }
 
-  async function dispatchVerdictFor(roster: AgentSpec[], candidates: AgentSpec[], fromUid: string, label: string, text: string): Promise<DispatchVerdict> {
+  /** 群里除了说这句话的人，还有谁（#1405）——一句没 @ 谁的话可能是说给其中某个人的。
+      三种会话三种名单：
+      - **通话里**：只算这场通话里也用语音开过口的人（维护者拍板）。人类「谁在听」不落盘
+        （ADR-0271 的已知代价），「用语音说过话」是日志里唯一证明他在通话里的东西；一个人都
+        没有 = 只有他自己在跟智能体打电话，「必须有人应」（ADR-0275）一字不变；
+      - **不在通话里**：成员（`hostUids`，与在籍判断同一份 60 秒缓存）+ 这条群的客人（#1393）
+        ——与点名提醒认「这条会话里有谁」的口径同一个。团队会话 = 其他成员；主场里成员只有
+        群主，所以私聊与没客人的群里没有别人。成员名单读不出来时退回「这条会话里说过话的
+        别人」——**不当成只有自己**：那会让「是不是说给人的」一题都不问。
+      名字取这条会话里真说过话的（`speakerLabels`）与名单上客人的名字；没说过话的成员只计数 */
+  async function peopleAround(fromUid: string): Promise<DispatchPeople> {
+    const nameOf = (uid: string): string | null => {
+      const spoken = speakerLabels.get(uid);
+      if (spoken !== undefined) return spoken;
+      const guest = chatHumans?.find((h) => h.uid === uid);
+      return guest !== undefined ? safeSpeakerLabel(guest.name, guest.uid) : null;
+    };
+    const tally = (uids: Iterable<string>): DispatchPeople => {
+      const others = [...new Set(uids)].filter((u) => u !== "" && u !== fromUid && u !== SYSTEM_SPEAKER_UID);
+      return { count: others.length, names: others.map(nameOf).filter((n): n is string => n !== null && n !== "") };
+    };
+    if (voiceCall !== null) {
+      const since = voiceCall.sinceSeq;
+      const spoke: string[] = [];
+      for (const e of dispatchTail()) {
+        if (e.seq < since || (e.type !== "user_message" && e.type !== "chat_message") || e.voice !== true) continue;
+        const uid = humanSpeakerOf(e);
+        if (uid !== null) spoke.push(uid);
+      }
+      return tally(spoke);
+    }
+    const guests = (chatHumans ?? []).map((h) => h.uid);
+    // 主场的成员只有群主一个（ADR-0297）：没有客人的聊天不用为一份注定只有他自己的名单打
+    // 网络——私聊的每一句都走到这里
+    if (chatKind !== null && guests.length === 0) return { count: 0, names: [] };
+    try {
+      return tally([...(await opts.hostUids()), ...guests]);
+    } catch {
+      return tally([...speakerLabels.keys(), ...guests]);
+    }
+  }
+
+  async function dispatchVerdictFor(roster: AgentSpec[], candidates: AgentSpec[], fromUid: string, label: string, text: string, people: DispatchPeople): Promise<DispatchVerdict> {
     const nameOf = (id: string): string => roster.find((a) => a.agentId === id)?.name ?? (id === "" ? "Agent" : id);
     const tail = dispatchTail();
     const input: DispatchInput = {
       roster: candidates.map((a) => ({ agentId: a.agentId, name: a.name, description: a.description })),
       fallbackAgentId: dispatchFallbackOf(candidates),
       context: dispatchContext(tail, nameOf),
+      people,
       fromLabel: safeSpeakerLabel(label, fromUid),
       text,
     };
@@ -2166,10 +2201,18 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         // = 人已经在指名，这句话有明确的收件人，分类器不该替他改主意。前者由
         // sayUnknown 那句系统话接手（「有 N 个点名找不到」），后者是说给人听的
         const humanAddressed = mentionTokens(text).length > 0 || (memberMentions?.length ?? 0) > 0;
+        // 群里还有谁（#1405）。只在用得上时算：下面「只剩一只」那两条捷径要它，分类器要它；
+        // 人已经在指名、或没接分类器时两处都用不上——团队会话那边的名单是一次（缓存的）网络
+        const chatSole = chatKind !== null && roster.length === 1 && roster[0]!.degraded !== true;
+        const people: DispatchPeople = chatSole || (opts.dispatch !== undefined && !humanAddressed)
+          ? await peopleAround(fromUid)
+          : { count: 0, names: [] };
         // 聊天里只有一只（#1280，spec §6.2）：这句话只可能是对它说的——不问分类器、不花那次调用，
         // 也不看正文里有没有 @（私聊里没有第二个人可以被指名）。同 ADR-0275 的通话单成员规则。
         // 只对聊天生效：团队会话只有一只时照旧走分类器（闲聊没人接是团队那边的既有口径）。
-        const sole = chatKind !== null && roster.length === 1 && roster[0]!.degraded !== true ? roster[0]! : null;
+        // **群里有别人时不走这条**（#1405）：有客人的群里人和人会说话，每句都直接交给它就是
+        // 替它插进别人的对话——照样问分类器，它知道群里还有谁
+        const sole = chatSole && people.count === 0 ? roster[0]! : null;
         if (sole !== null) {
           targets = [sole.agentId];
         } else if (opts.dispatch === undefined || humanAddressed) {
@@ -2186,11 +2229,13 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
           // 照问（活要派给对口的那只），但 none / failed 一律落到「最近开口的那只」
           // （callAnswerer）。名单降级时不算在通话里：占位名册上谁都不该应
           const inCall = voiceCall !== null && callRoster.length > 0 && !degraded;
+          // 通话里只有一只、也没有别人用语音开过口：直接给它（ADR-0275）。有别人时照问——
+          // 这句可能是说给那个人的（#1405）
           const verdict: DispatchVerdict = degraded
             ? { kind: "failed", reason: "智能体名单这会儿读不出来" }
-            : inCall && callRoster.length === 1
+            : inCall && callRoster.length === 1 && people.count === 0
               ? { kind: "picked", agentIds: [callRoster[0]!.agentId] }
-              : await dispatchVerdictFor(roster, callRoster, fromUid, label, text);
+              : await dispatchVerdictFor(roster, callRoster, fromUid, label, text, people);
           const answerInCall = (): void => {
             const id = callAnswerer(callRoster);
             if (id === null) return;
@@ -2220,8 +2265,11 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
             // 但**不出声**——那个团队一只 agent 都起不了 turn，头部那行 blocked 已经
             // 在说这件事，每句话再落一条「没派出去」是噪音（判据见 DispatchVerdict）
             targets = legacy;
-          } else if (inCall) {
-            // none：文字群聊里闲聊照旧是闲聊（targets 留空）；通话里由最近开口的那只应
+          } else if (inCall && !(verdict.to === "people" && people.count > 0)) {
+            // none：文字群聊里闲聊照旧是闲聊（targets 留空）；通话里由最近开口的那只应——
+            // **除非**分类器很确定这句是说给通话里另一个人的（#1405，维护者拍板）：那是人和人
+            // 在说，智能体插一句就是打断。`people.count > 0` 不是多余的：只有真有别人开过口，
+            // 「说给人的」才可能成立，任何别的来路的 `to` 都不许让一场只有他一个人的通话沉默
             answerInCall();
           }
         }

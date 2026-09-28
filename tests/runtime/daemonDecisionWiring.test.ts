@@ -17,6 +17,11 @@ describe("daemon.ts：三处决策前置都接上了（#1281）", () => {
   it("派活走 dispatchVia，且 LLM 那条路仍然是 requestDispatchAsOwner", () => {
     expect(src).toMatch(/dispatchVia\(\{[\s\S]*?llm:\s*\(\)\s*=>\s*requestDispatchAsOwner\(/);
   });
+  // #1405：漏传平台表的样子是「reasoning_effort 永远不带」——派活照样能用，只是拿不准的
+  // 那几句又回到一发 14 秒、撞上 5 秒超时，群里一句「没派出去」。安静，所以钉在源码上
+  it("LLM 那条路带上 /me 的型号平台表（决定带不带 reasoning_effort）", () => {
+    expect(src).toMatch(/requestDispatchAsOwner\(owner, input, me\.models, me\.modelPlatforms\)/);
+  });
 });
 
 it("sessionService.ts 不认识决策模型（只在 daemon 的注入点包一层，#1280 的约定）", () => {

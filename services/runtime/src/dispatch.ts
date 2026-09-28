@@ -23,6 +23,14 @@
 // 不是活**，分类器回 none，群里没人接——这一条与维护者拍板的口径逐字相同
 // （issue #1153）。
 //
+// ## 说给群里某个人的话，谁都不接
+//
+// 群里除了智能体还可能有别的人（团队的其他成员、主场群里的客人），一句没 @ 谁的话
+// 可能是说给其中某个人的（#1405，维护者：「群聊里也存在人类会互相聊天」）。那种话
+// 智能体都不接——**包括上面那只兜底**：「要做事、谁的职责都对不上」恰好是一句布置
+// 给人的活的样子（「小王，把合同发给客户」）。所以名册之外还给分类器一行「群里的
+// 其他人」（`DispatchPeople`），并且最近几句分得清是人说的还是智能体说的（`DispatchLine`）。
+//
 // ## 认不出来一律 failed，不是默认 none
 //
 // 同 autoModel 的 parseDifficulty：认不出说明这次分类没成功，该走回落（调用方
@@ -31,8 +39,9 @@
 
 import { ADMIN_AGENT_ID } from "../../../src/shared/workspaceAgents.js";
 import { ON_BEHALF_HEADER, SESSION_HEADER, WORKSPACE_HEADER } from "../../../src/shared/billing.js";
-import { promptSafe, promptSafeBody, safeSpeakerLabel } from "../../../src/shared/promptSafe.js";
+import { promptSafe, promptSafeBody, safeSpeakerLabel, SYSTEM_SPEAKER_UID } from "../../../src/shared/promptSafe.js";
 import type { SessionEvent } from "../../../src/session/events.js";
+import { splitSpeakerPrefix } from "./speakerPrefix.js";
 
 export interface DispatchCandidate {
   agentId: string;
@@ -41,13 +50,38 @@ export interface DispatchCandidate {
   description: string;
 }
 
+/** 群里说出口的一句话（dispatchContext 的产物，已过闸、已截断）。分得清是谁说的——
+    #1405：一句没 @ 谁的话可能是说给群里另一个人的，要认出「人和人在说」先得知道哪几句是人说的 */
+export interface DispatchLine {
+  /** 说话的是谁（显示名，已过 safeSpeakerLabel / promptSafe） */
+  by: string;
+  kind: "human" | "agent" | "system";
+  text: string;
+}
+
+/** LLM 那条路读的形状：`[名字]: 正文`（改动前逐字相同）。会话自动起名那条路也读它 */
+export function renderDispatchLine(l: DispatchLine): string {
+  return `[${l.by}]: ${l.text}`;
+}
+
+/** 群里除了说这句话的人，还有几个真人、叫什么（#1405）。`count` 数的是人，`names` 只列
+    叫得出名字的（这条会话里说过话的、名单上带名字的客人）——没说过话的成员只计数。
+    `count === 0` = 只有他自己和智能体（私聊、没客人的主场群、只有一个成员的团队）：
+    这时不问「是不是说给某个人的」，判据与改动前相同 */
+export interface DispatchPeople {
+  count: number;
+  names: readonly string[];
+}
+
 export interface DispatchInput {
   /** 候选名册，顺序即编号（1 起）。调用方给此刻的真名单（降级占位不该进来） */
   roster: readonly DispatchCandidate[];
   /** 「没人对口的活归它」那一只。`null` = 名册里一只都没有 */
   fallbackAgentId: string | null;
-  /** 最近几句群里说出口的话，旧在前，已是 `[名字]: 正文` 形状、已截断（dispatchContext 的产物） */
-  context: readonly string[];
+  /** 最近几句群里说出口的话，旧在前（dispatchContext 的产物） */
+  context: readonly DispatchLine[];
+  /** 群里的其他人（#1405）。必填：漏接线的那天该编译不过，而不是安静地当成「群里只有他」 */
+  people: DispatchPeople;
   /** 这句话是谁说的（显示名，已过 safeSpeakerLabel） */
   fromLabel: string;
   text: string;
@@ -56,8 +90,10 @@ export interface DispatchInput {
 export type DispatchVerdict =
   /** 该这几只接（按分类器给出的顺序，已去重、封顶） */
   | { kind: "picked"; agentIds: string[] }
-  /** 分类器明确说没人该接（闲聊/问候/确认） */
-  | { kind: "none" }
+  /** 分类器明确说没人该接（闲聊/问候/确认）。`to: "people"` = 决策模型**很确定**这句话是
+      说给群里另一个人的（#1405）——文字群聊里与普通 none 同一个处置，区别只在通话里：
+      「必须有人应」（ADR-0275）只让这一种闭嘴。只有决策模型会给这一格（LLM 那条路只回 none） */
+  | { kind: "none"; to?: "people" }
   /** 这次分类没成功（网关/超时/认不出）——调用方回落改动前的行为，且说一声 */
   | { kind: "failed"; reason: string }
   /** 派活这条路此刻走不了、且**不是临时的**（所有者没订阅 / 订阅不活跃）——调用方
@@ -73,31 +109,56 @@ export const DISPATCH_MAX_TARGETS = 3;
 /** 分类器读最近几句。判「这句是不是在回答某只刚才的提问」要有上文，
     但整份日志既贵又没必要——一句话该谁接，八句之内看得出来 */
 export const DISPATCH_CONTEXT_LINES = 8;
-/** 上下文每句截多长（含 `[名字]: ` 前缀） */
+/** 上下文每句的正文截多长（不含名字） */
 export const DISPATCH_LINE_MAX_CHARS = 240;
+/** 「群里的其他人」最多列几个名字（#1405）。再多的只报人数——判「是不是在叫某个人」
+    靠的是这句话里的名字对不对得上，一个五十人的团队不需要把五十个名字都念一遍 */
+export const DISPATCH_PEOPLE_MAX_NAMES = 12;
 /** 这句话本身截多长（同 autoModel 的 CLASSIFY_MAX_CHARS 的理由：判该谁接不需要
     读完整篇，截断同时封住注入面积） */
 export const DISPATCH_TEXT_MAX_CHARS = 1200;
 /** 分类超时。say() 的回执等这一次判定（消息在判完之后才落盘），所以它必须有
     上限——桌面那侧 15 秒没回执就算「不知道」（ADR-0228），这个数要远小于它 */
 export const DISPATCH_TIMEOUT_MS = 5000;
-/** 便宜档多是推理模型，思考 token 也算在 completion 里（ADR-0237 真机上 8 个
-    completion token 里 7 个是 reasoning）；这里要它回一串编号，给宽一点 */
-const DISPATCH_MAX_TOKENS = 64;
+/** 便宜档多是推理模型，思考 token 也算在 completion 里。原来是 64（ADR-0270：「这个数
+    要靠真机校」）；2026-09-28 真机校了（#1405）：最便宜那款 glm-5.3-flash 回一个编号之前
+    先推理 36–77 个 token，64 的时候四发里三发 `finish_reason=length`、正文是空串——36 句
+    的对拍里这条路 17 句判不出来，每一句在文字群聊里都落成一条「没派出去」。给到 512：
+    上限只决定网关那一笔预扣，结算按实际用量（放宽之后同样四句用了 39–80 个） */
+const DISPATCH_MAX_TOKENS = 512;
+/** 哪几家的便宜款收 `reasoning_effort: "low"`、而且真的因此少想（#1405）。上限放宽只治「简单
+    的那几句被截断」；**拿不准的那几句**（正是决策模型交过来的）它会推理 300–500 多个 token、
+    一发 14–16 秒，撞上 DISPATCH_TIMEOUT_MS 那 5 秒——群里还是一句「没派出去」。2026-09-28
+    真机：智谱 glm-5.3-flash 带上它之后推理 0–24 个 token、1–3 秒、六句全对；`thinking:
+    {type:"disabled"}` 被拒（「该模型始终思考，不支持关闭思考；请使用 low、high 或 max」）。
+    **名单按平台、逐家真接口验过才准进**（同 ADR-0274 的 REASONING_PASSBACK）：别家没验过，
+    而有的厂商对陌生字段回 400——那样派活会每一句都失败 */
+const LOW_REASONING_PLATFORMS: ReadonlySet<string> = new Set(["zhipu"]);
 
 /** 「没人对口的活归它」在名册那一行上的标记文案。只挂在 fallback 那一只上 */
 const FALLBACK_MARK = "（没人对口的活归它）";
 
 export const DISPATCH_SYSTEM = [
-  "你是一个团队群聊的派活分类器。群里有几只智能体，各管一摊。",
+  "你是一个团队群聊的派活分类器。群里有几只智能体，各管一摊；群里也可能还有别的人。",
   "一个人刚在群里说了一句话，没有 @ 任何人。判断这句话该由哪几只智能体接手。",
   "规则：",
   `- 只挑职责明确对得上的那几只，通常只有一只；最多 ${DISPATCH_MAX_TARGETS} 只。`,
   "- 这句话不是在要求做事（闲聊、问候、感谢、确认、感叹、对上一条回复的简单回应且不需要对方继续做事）→ 回 none。",
-  `- 是明确要做的事、但没有任何一只的职责对得上 → 回标着${FALLBACK_MARK}的那一只。`,
+  "- 这句话是在跟「群里的其他人」里的某个人说话（叫了他的名字、问他、回他刚说的话、人和人之间商量或闲聊）→ 回 none。",
+  `- 是明确要做的事、没有任何一只的职责对得上、而且不是说给群里某个人的 → 回标着${FALLBACK_MARK}的那一只。`,
   "- 最近的对话里某只智能体刚向人提了问题、这句话是在回答它 → 回那一只。",
   "只回编号（多个用逗号分隔）或 none，不要解释、不要标点。",
 ].join("\n");
+
+/** 「群里的其他人」那一行（#1405）。名字过 promptSafe（来自 profiles 与客人名单，成员可写），
+    列不完的与没说过话的合成一个人数——「另有 N 位」而不是编名字 */
+export function dispatchPeopleText(p: DispatchPeople): string {
+  if (p.count <= 0) return "没有（只有说这句话的人和智能体）";
+  const names = p.names.map((n) => promptSafe(n).trim()).filter((n) => n !== "").slice(0, DISPATCH_PEOPLE_MAX_NAMES);
+  if (names.length === 0) return `${p.count} 位（都没在这条会话里说过话）`;
+  const rest = p.count - names.length;
+  return rest > 0 ? `${names.join("、")}（另有 ${rest} 位）` : names.join("、");
+}
 
 /** user 那一条的正文：名册（编号）+ 最近的对话 + 这句话。名字/职责/发言人过
     promptSafe（它们来自成员可写的字段，`]` 与换行能撑破名册那一行），正文过
@@ -108,11 +169,13 @@ export function dispatchPrompt(input: DispatchInput): string {
     const mark = a.agentId === input.fallbackAgentId ? FALLBACK_MARK : "";
     return `${i + 1}. ${promptSafe(a.name)}${desc ? ` — ${desc}` : ""}${mark}`;
   });
-  const context = input.context.length > 0 ? input.context.join("\n") : "（没有更早的对话）";
+  const context = input.context.length > 0 ? input.context.map(renderDispatchLine).join("\n") : "（没有更早的对话）";
   const text = promptSafeBody(input.text.slice(0, DISPATCH_TEXT_MAX_CHARS));
   return [
     "智能体：",
     ...roster,
+    "",
+    `群里的其他人：${dispatchPeopleText(input.people)}`,
     "",
     "最近的对话：",
     context,
@@ -142,33 +205,39 @@ export function parseDispatchReply(raw: string, roster: readonly DispatchCandida
   return { kind: "failed", reason: "分类器没给出可识别的答案" };
 }
 
-/** 从日志尾段挑出「群里说出口的话」，旧在前、每句一行、截断。三类：
-    - chat_message：`[label]: 正文`（label 过 safeSpeakerLabel——它来自 profiles.name，
-      写入侧没有校验，同 deriveMessages 那一处的纪律）；
-    - 人的 user_message：正文本来就是 `[label]: text`（say() 拼的），原样；**接力
-      开场白（relay）与 engine 注的私话（origin）不算**——前者是写给模型的措辞，
-      后者是某只 agent 自己干活过程里的事，都不是群里发生的事（同 cloudTimeline
-      的 hiddenFromCloudTimeline 与 agentView 的口径）；
-    - 有正文的 assistant_message：`[agent 名]: 正文`；只要了工具没说话的那一轮跳过
-      （群里看不见它，分类器也不该看见）。
-    每句折成一行（promptSafeBody 之后再折叠空白——顺序不能反，前者要靠换行认
-    行首的 `[`），超长截到 DISPATCH_LINE_MAX_CHARS 加省略号 */
-export function dispatchContext(events: readonly SessionEvent[], agentName: (agentId: string) => string): string[] {
-  const lines: string[] = [];
+/** 从日志尾段挑出「群里说出口的话」，旧在前、每句一条、截断。三类：
+    - chat_message：说话的人（label 过 safeSpeakerLabel——它来自 profiles.name，写入侧
+      没有校验，同 deriveMessages 那一处的纪律）；署名系统的旁白记成 `system`，不当成人说的；
+    - 人的 user_message：正文是 `[label]: text`（say() 拼的），拆开记（前缀正则只此一份，
+      见 speakerPrefix.ts）；**接力开场白（relay）、拉进通话的招呼（greeting）与 engine 注
+      的私话（origin）不算**——前两种是写给模型的措辞（`fromUid` 是点火的那个人，不是他
+      说的话），后者是某只 agent 自己干活过程里的事，都不是群里发生的事（同 cloudTimeline
+      的 hiddenFromCloudTimeline、sessionParticipants 的 humanSpeakerOf 与 agentView 的口径）；
+    - 有正文的 assistant_message：agent 的名字；只要了工具没说话的那一轮跳过（群里看不见
+      它，分类器也不该看见）。
+    正文折成一行（promptSafeBody 之后再折叠空白——顺序不能反，前者要靠换行认行首的 `[`），
+    超长截到 DISPATCH_LINE_MAX_CHARS 加省略号 */
+export function dispatchContext(events: readonly SessionEvent[], agentName: (agentId: string) => string): DispatchLine[] {
+  const lines: DispatchLine[] = [];
   for (const e of events) {
-    let line: string | null = null;
+    let line: DispatchLine | null = null;
     if (e.type === "chat_message") {
-      line = `[${safeSpeakerLabel(e.label, e.fromUid)}]: ${promptSafeBody(e.content)}`;
+      const kind = e.fromUid === SYSTEM_SPEAKER_UID ? "system" : "human";
+      line = { by: safeSpeakerLabel(e.label, e.fromUid), kind, text: e.content };
     } else if (e.type === "user_message") {
-      if (e.relay !== undefined || e.origin !== undefined) continue;
-      line = promptSafeBody(e.content);
+      if (e.relay !== undefined || e.greeting !== undefined || e.origin !== undefined) continue;
+      const uid = e.fromUid ?? "";
+      const split = splitSpeakerPrefix(e.content);
+      line = split
+        ? { by: safeSpeakerLabel(split.label, uid), kind: "human", text: split.body }
+        : { by: safeSpeakerLabel("", uid), kind: "human", text: e.content };
     } else if (e.type === "assistant_message") {
       if (e.content.trim() === "") continue;
-      line = `[${promptSafe(agentName(e.agentId ?? ""))}]: ${promptSafeBody(e.content)}`;
+      line = { by: promptSafe(agentName(e.agentId ?? "")), kind: "agent", text: e.content };
     }
     if (line === null) continue;
-    const flat = line.replace(/\s+/g, " ").trim();
-    lines.push(flat.length > DISPATCH_LINE_MAX_CHARS ? `${flat.slice(0, DISPATCH_LINE_MAX_CHARS)}…` : flat);
+    const flat = promptSafeBody(line.text).replace(/\s+/g, " ").trim();
+    lines.push({ ...line, text: flat.length > DISPATCH_LINE_MAX_CHARS ? `${flat.slice(0, DISPATCH_LINE_MAX_CHARS)}…` : flat });
   }
   return lines.slice(-DISPATCH_CONTEXT_LINES);
 }
@@ -218,7 +287,10 @@ export interface DispatchDeps {
 export async function requestDispatch(
   deps: DispatchDeps,
   input: DispatchInput,
-  models: readonly string[]
+  models: readonly string[],
+  /** 型号 → 平台（`/billing/v1/me` 的 `modelPlatforms`）。缺席 = 不知道是哪家 = 不带
+      `reasoning_effort`（LOW_REASONING_PLATFORMS 的纪律） */
+  modelPlatforms?: Readonly<Record<string, string>>,
 ): Promise<DispatchVerdict> {
   const failed = (reason: string): DispatchVerdict => {
     deps.log?.(`派活：${reason}`);
@@ -227,6 +299,8 @@ export async function requestDispatch(
   if (models.length === 0) return failed("网关没有可用的型号");
   if (input.roster.length === 0) return failed("智能体名单为空");
   const cheap = models[0]!;
+  const platform = modelPlatforms?.[cheap];
+  const lowReasoning = platform !== undefined && LOW_REASONING_PLATFORMS.has(platform);
   const doFetch = deps.fetchImpl ?? fetch;
   const timeoutMs = deps.timeoutMs ?? DISPATCH_TIMEOUT_MS;
   const controller = new AbortController();
@@ -243,6 +317,7 @@ export async function requestDispatch(
         ],
         max_tokens: DISPATCH_MAX_TOKENS,
         stream: false,
+        ...(lowReasoning ? { reasoning_effort: "low" } : {}),
       }),
       signal: controller.signal,
     });
@@ -286,7 +361,8 @@ export interface OwnerDispatchDeps {
 export async function requestDispatchAsOwner(
   deps: OwnerDispatchDeps,
   input: DispatchInput,
-  models: readonly string[]
+  models: readonly string[],
+  modelPlatforms?: Readonly<Record<string, string>>,
 ): Promise<DispatchVerdict> {
   return requestDispatch(
     {
@@ -302,6 +378,7 @@ export async function requestDispatchAsOwner(
       ...(deps.log ? { log: deps.log } : {}),
     },
     input,
-    models
+    models,
+    modelPlatforms,
   );
 }
