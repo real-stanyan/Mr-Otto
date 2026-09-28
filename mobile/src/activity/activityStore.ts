@@ -2,10 +2,11 @@
 // 判据全在 shared（agentActivity / agentActivityRows），这里只管拉、订、换号清空。
 //
 // 四条纪律（前三条同 homeStore / friendsStore）：
-// · 读不到 ≠ 空：拉失败时手上那份照旧留着；一份都没有时全部画 plain（= 改动前的样子）；
+// · 读不到 ≠ 空：拉失败时手上那份照旧留着；一份都没有时全部当「不知道」画（= 改动前的样子）；
 // · 换号整份清掉、退订，旧号的推送不许落进新号那一份（epoch 核一遍）；
 // · 回前台重拉一次：切后台那段时间里推送可能断过；
-// · 先订阅再拉；每次（重新）订阅成功都拉一次；拉取期间收到的推送比快照新，不被快照盖掉。
+// · 先订阅再拉；每次（重新）订阅成功都拉一次；拉取期间收到的推送比快照新，不被快照盖掉；
+//   几次拉取叠在一起时只认最后发起的那一次。
 // 顺带订 workspace_sessions：UPDATE 带来的最后一句当场补进主场 / 团队那两份。另外每来一条推送
 // 都排一次节流重拉清单（最多 10 秒一次）：改名、归档、换成员这类结构变化从推送里分不出来，宁可
 // 多拉。代价是 agent 在说话时大约每 10 秒全量拉一次；不节流的话是最后一句那一列的写入节奏（3 秒）。
@@ -37,11 +38,12 @@ const LIST_REFRESH_MS = 10_000;
 let epoch = 0;
 let unsubscribe: (() => void) | null = null;
 let listTimer: ReturnType<typeof setTimeout> | null = null;
-/** 拉快照期间推来的那几行（key）。null = 此刻没在拉。几次拉取叠在一起时（回前台与频道重新订上几乎同时）
-    共用这一份、最后一次拉完才清：各记各的话，先回来的那次少了后来那段的推送，会把更新的行盖回它的旧快照 */
+/** 最后发起的那次拉取的号。几次拉取叠在一起时（回前台与频道重新订上几乎同时）只认最后发起的那一次：
+    先发起、后回来的那份快照更旧，落下去会把更新的行盖回去。换号时往前推一格，上一个号在飞的拉取落不下去 */
+let fetchSeq = 0;
+/** 最后发起、还没回来的那次拉取期间推来的行（key）；null = 没有在等的拉取。只有那一次落得下去，
+    所以只记它那一段：发起时换一份新的，回来时还归它就放掉（落不落都放） */
 let pushedDuringFetch: Set<string> | null = null;
-/** 此刻在飞的拉取有几次 */
-let fetching = 0;
 
 function upsert(r: ActivityRow): void {
   const key = activityKey(r.sessionId, r.agentId);
@@ -55,13 +57,13 @@ function upsert(r: ActivityRow): void {
 
 async function refreshActivity(): Promise<void> {
   const mine = epoch;
-  const pushed = (pushedDuringFetch ??= new Set<string>());
-  fetching += 1;
+  const mySeq = ++fetchSeq;
+  const pushed = new Set<string>();
+  pushedDuringFetch = pushed;
   const rows = await fetchAgentActivity(supabase).finally(() => {
-    fetching -= 1;
-    if (fetching === 0) pushedDuringFetch = null;
+    if (pushedDuringFetch === pushed) pushedDuringFetch = null;
   });
-  if (mine !== epoch || rows === null) return;
+  if (mine !== epoch || mySeq !== fetchSeq || rows === null) return;
   store.set((s) => ({ rows: mergeActivitySnapshot(s.rows, rows, pushed) }));
 }
 
@@ -79,6 +81,9 @@ function adopt(uid: string | null): void {
   if (uid === store.get().uid) return;
   epoch += 1;
   const mine = epoch;
+  // 上一个号还在飞的拉取：epoch 那道闸之外号也往前推一格，它落不下去；它那份推送簿记不带过来
+  fetchSeq += 1;
+  pushedDuringFetch = null;
   unsubscribe?.();
   unsubscribe = null;
   if (listTimer !== null) {
