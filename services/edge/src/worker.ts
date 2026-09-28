@@ -29,6 +29,7 @@ import {
   type PlanRow, type SubscriptionRow,
 } from "./billingQueries.js";
 import { DECISION_USES } from "./decisionUses.js";
+import { createPlanCache, type CachedPlan, type PlanCache } from "./planCache.js";
 import { attachQuotaTiming, parseTiming, type QuotaSample } from "./quotaTiming.js";
 import { fetchWorkspaceUsage } from "./usageAttribution.js";
 import type { BillingPort, CheckoutTarget } from "./edge.js";
@@ -395,29 +396,35 @@ interface Ledger {
 }
 
 export class Quota extends DurableObject<Env> {
-  private planCache: { v: PlanSnapshot | null; sub: SubscriptionRow | null; exp: number } | null = null;
-
   /** 这一份额度是谁的：**只认 DO 的实例名**。实例名是 edge 拿验过的 JWT sub 调
       getByName 时钉死的；请求体里可以写任何字，所以请求体里根本不带身份 */
   private uid(): string {
     return this.ctx.id.name ?? "";
   }
 
+  /** 档位缓存（#1398）：先拿手上那份答、后台去刷，并落 storage——DO 被驱逐之后从那份接着用。
+      为什么在钱上站得住、强制重读与后台刷新谁盖谁，见 planCache.ts 的文件头 */
+  private planCache: PlanCache | null = null;
+  private plans(): PlanCache {
+    return (this.planCache ??= createPlanCache({
+      load: async () => (await this.ctx.storage.get<CachedPlan>("plan")) ?? null,
+      save: (c) => this.ctx.storage.put("plan", c),
+      fetch: async () => {
+        const db = supa(this.env);
+        const [subRows, planRows] = await Promise.all([db.get(subscriptionQuery(this.uid())), db.get(plansQuery())]);
+        const sub = parseSubscriptionRows(subRows);
+        return { v: planSnapshotOf(sub, parsePlanRows(planRows)), sub };
+      },
+      onBackgroundError: (err) => {
+        console.error(`plan 后台刷新失败（${this.uid()}），先用手上那份：${err instanceof Error ? err.message : String(err)}`);
+      },
+    }));
+  }
+
   private async plan(led: Ledger, force = false): Promise<{ plan: PlanSnapshot | null; sub: SubscriptionRow | null }> {
-    if (!force && this.planCache && this.planCache.exp > Date.now()) {
-      return { plan: this.planCache.v, sub: this.planCache.sub };
-    }
-    // 缓存没命中 = 这一趟真打 Supabase。记号在查之前置，所以查炸了（→ 503）那条路
-    // 也报得出「它是冷的」—— 最慢的那几发恰恰是这一条（#1304）
-    led.planCold = true;
-    const at = Date.now();
-    const db = supa(this.env);
-    const [subRows, planRows] = await Promise.all([db.get(subscriptionQuery(this.uid())), db.get(plansQuery())]);
-    const sub = parseSubscriptionRows(subRows);
-    const v = planSnapshotOf(sub, parsePlanRows(planRows));
-    this.planCache = { v, sub, exp: Date.now() + 60_000 };
-    led.plan = Date.now() - at;
-    return { plan: v, sub };
+    // 同步查了才记 cold / plan（#1304 的计时头）；先用旧的、后台刷的那一发在这一趟上一毫秒都不花
+    const c = await this.plans().get(force, led);
+    return { plan: c.v, sub: c.sub };
   }
 
   private async state(led: Ledger, plan: PlanSnapshot | null): Promise<QuotaState> {
