@@ -103,6 +103,8 @@ export function relayLineText(e: AgentRelayEvent, ws: WorkspaceSnapshot): string
     ⑧ `session_autotitled`（#1213）——会话被自动命名了是机器的内务：人不能据此
        行动（ADR-0260 的判据），而侧栏那一行的字已经跟着换了，画出来是同一件事
        说两遍。**藏的是投影不是事实**：落盘/重放/隐私闸一个字不动。
+    ⑨ `call_ring`（#1411）——桌面这一版不画回电：手机上它是一张卡（mobileChat.chatRows 在调这个
+       函数**之前**先认出它），桌面等 #1403 的微信式布局合了再接。
 
     留在时间线上的因此只剩：人说的话、agent 的最终答案、接力线、名单变更、出错、归档。
 
@@ -118,7 +120,8 @@ export function hiddenFromCloudTimeline(e: SessionEvent): boolean {
     e.type === "session_created" ||
     e.type === "agent_briefed" ||
     e.type === "request_envelope" ||
-    e.type === "session_autotitled"
+    e.type === "session_autotitled" ||
+    e.type === "call_ring"
   );
 }
 

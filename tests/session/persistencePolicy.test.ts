@@ -44,6 +44,7 @@ const DURABLE = [
   "agent_briefed",
   "agent_relay",
   "voice_call_changed",
+  "call_ring",
   "chat_roster_changed",
   "executor_changed",
   "memory_loaded",

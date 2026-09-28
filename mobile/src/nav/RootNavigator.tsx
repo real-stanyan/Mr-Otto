@@ -9,6 +9,8 @@ import { usePalette } from "../theme.js";
 import { SubscriptionScreen } from "../account/SubscriptionScreen.js";
 import { SettingsScreen } from "../account/SettingsScreen.js";
 import { AgentScreen } from "../agent/AgentScreen.js";
+import { IncomingCall } from "../call/IncomingCall.js";
+import { flushPendingNav } from "../call/ringStore.js";
 import { ChatInfoScreen } from "../chat/ChatInfoScreen.js";
 import { ChatScreen } from "../chat/ChatScreen.js";
 import { FriendChatScreen } from "../friends/FriendChatScreen.js";
@@ -31,6 +33,7 @@ import { MeScreen } from "../tabs/MeScreen.js";
 import { TabBar } from "../tabs/TabBar.js";
 import { ToastHost } from "../wx/toast.js";
 import { FaceGallery } from "../dev/FaceGallery.js";
+import { navRef } from "./navRef.js";
 import type { HomeTabParams, RootStackParams } from "./types.js";
 
 const Root = createNativeStackNavigator<RootStackParams>();
@@ -67,7 +70,7 @@ export function RootNavigator() {
   const theme = useNavTheme();
   const { c } = usePalette();
   return (
-    <NavigationContainer theme={theme}>
+    <NavigationContainer ref={navRef} theme={theme} onReady={flushPendingNav}>
       <Root.Navigator
         screenOptions={{
           headerBackButtonDisplayMode: "minimal",
@@ -100,6 +103,7 @@ export function RootNavigator() {
         {/* 形象陈列馆：只在开发构建里有（#1356 A0，见 dev/FaceGallery.tsx 头注） */}
         {__DEV__ ? <Root.Screen name="FaceGallery" component={FaceGallery} options={{ title: "形象陈列馆" }} /> : null}
       </Root.Navigator>
+      <IncomingCall />
       <ToastHost />
     </NavigationContainer>
   );

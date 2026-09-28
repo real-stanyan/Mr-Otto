@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { deriveMessages, renderVoiceCallPrompt } from "../../src/session/deriveMessages.js";
 import type { SessionEvent } from "../../src/session/events.js";
 import { INVITE_TO_CALL_TOOL_NAME } from "../../src/shared/voiceCall.js";
+import { CALL_USER_TOOL_NAME } from "../../src/shared/callRing.js";
 
 const base = (seq: number) => ({ seq, sessionId: "s", ts: 0 });
 const created: SessionEvent = { ...base(0), type: "session_created", workspace: "/work", cloud: { workspaceId: "w" } };
@@ -67,6 +68,15 @@ describe("云会话 system 尾部的通话块（#1163）", () => {
     const text = renderVoiceCallPrompt([{ agentId: "a_dev", name: "开发" }], "管理员", [{ name: "开发", description: "写代码" }]);
     expect(text).toContain("通话里的成员：开发");
     expect(text).toContain("不在通话里的：管理员");
+  });
+
+  it("推送开着（名单事件带 callback）：通话块说一句可以用 call_user 回电；没带就不说（#1411）", () => {
+    const on: SessionEvent = {
+      ...base(2), type: "voice_call_changed", participants: [{ agentId: "admin", name: "管理员" }],
+      byUid: "u1", callback: true, ignorable: true,
+    };
+    expect(systemOf([created, brief, on, user])).toContain(`可以用 ${CALL_USER_TOOL_NAME} 回电`);
+    expect(systemOf([created, brief, call(2, [{ agentId: "admin", name: "管理员" }]), user])).not.toContain(CALL_USER_TOOL_NAME);
   });
 });
 

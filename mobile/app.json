@@ -12,6 +12,9 @@
       "infoPlist": {
         "NSMicrophoneUsageDescription": "语音通话时要用麦克风听你说话。",
         "NSSpeechRecognitionUsageDescription": "语音通话时把你说的话转成文字，发给智能体。"
+      },
+      "entitlements": {
+        "com.apple.developer.usernotifications.time-sensitive": true
       }
     },
     "android": {
@@ -38,6 +41,12 @@
         }
       ],
       "expo-font",
+      [
+        "expo-notifications",
+        {
+          "sounds": ["./assets/sounds/ringtone.caf"]
+        }
+      ],
       "./plugins/withSceneLifecycle"
     ]
   }

@@ -21,8 +21,9 @@ export type InfoRoute = ChatRoute | { kind: "friend"; uid: string };
 
 export type RootStackParams = {
   Home: NavigatorScreenParams<HomeTabParams> | undefined;
-  /** autoCall：从智能体资料点「语音通话」进来——房间一 ready 就把电话打出去（一次） */
-  Chat: ChatRoute & { autoCall?: boolean };
+  /** autoCall：从智能体资料点「语音通话」进来——房间一 ready 就把电话打出去（一次）。
+      answerRing：从来电页点「接听」进来（#1411）——房间一 ready 就把打电话的那只拉进通话（一次） */
+  Chat: ChatRoute & { autoCall?: boolean; answerRing?: { ringId: string; agentId: string } };
   /** 朋友私聊（messages 表，不是云会话） */
   FriendChat: { uid: string };
   ChatInfo: InfoRoute;

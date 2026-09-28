@@ -172,7 +172,10 @@ import { createInviteToCallTool } from "./inviteToCallTool.js";
 import type { VoiceCallParticipant } from "../../../src/session/events.js";
 import { LoopEngine } from "../../../src/loop/engine.js";
 import type { EventStore } from "../../../src/session/store.js";
-import type { SessionEvent, SessionCreatedEvent, UserMessageEvent, AssistantMessageEvent, AgentRelayEvent } from "../../../src/session/events.js";
+import type { SessionEvent, SessionCreatedEvent, UserMessageEvent, AssistantMessageEvent, AgentRelayEvent, CallRingEvent } from "../../../src/session/events.js";
+import { callbackGreetingText, ringChatKind, type RingPush } from "../../../src/shared/callRing.js";
+import { createRinger, type Ringer } from "./callRinger.js";
+import { createCallUserTool } from "./callUserTool.js";
 import type { DeltaKind, ModelAdapter } from "../../../src/model/adapter.js";
 import { createDeltaStream } from "./deltaStream.js";
 import type { ExecutionWorld } from "../../../src/world/executionWorld.js";
@@ -301,6 +304,17 @@ function resolveExplicitTargets(text: string, mentions: string[] | undefined, ro
     text,
     roster.map((a) => ({ agentId: a.agentId, name: a.name }))
   );
+}
+
+/** 智能体回电（#1411，spec §2）：推送开着时 daemon 给这一格，关着时给 null——回电工具不出现、通话块不提回电。
+    三个口都由 daemon 接：isWatching 读会话房的在场名单（frameHandler.uidOf），另两个接 APNs */
+export interface CloudCallback {
+  /** 这个人此刻开着这条会话吗（会话房里有他的连接）。开着就不打：直接在聊天里说 */
+  isWatching(uid: string): boolean;
+  /** 他登记了几台能收推送的设备。抛错 = 这一刻查不出来 */
+  deviceCount(uid: string): Promise<number>;
+  /** 给他的每台设备推一次来电，回送到了几台 */
+  push(uid: string, ring: RingPush): Promise<number>;
 }
 
 export interface CloudSessionOpts {
@@ -437,6 +451,11 @@ export interface CloudSessionOpts {
       「这里没有审批」那句话从日志那一格投影，审批门从这一格判，两处分家就是 #1206
       那个形状——模型照提示词说没有审批，门却在问人 */
   approveAll: boolean;
+  /** 智能体回电（#1411）。**必需**（同 approveAll / diskUsage 的纪律）：`null` = 推送关着（没配 APNS_*），
+      call_user 那把刀不挂、通话块不提回电；忘接线该编译不过，而不是安静地跑一套「永远打不出电话」的装配 */
+  callback: CloudCallback | null;
+  /** 回电响铃的定时器（只给测试拧，同 deltaTimers）。缺席 = setTimeout / clearTimeout */
+  ringTimers?: { setTimer?: (fn: () => void, ms: number) => unknown; clearTimer?: (h: unknown) => void };
   /** 这个团队的容器锁（#979 第 2 条，ADR-0232）。**必需**（同 memory / isMember
       的纪律）：忘接线该编译不过，而不是安静地跑成两条会话同时改同一个 `/work`。
       daemon 按 workspaceId 一把（createWorkspaceLocks）；测试各给一把新的，要验互斥
@@ -926,6 +945,31 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   // （#949）：改名之后下一 turn 的前缀就是新名字，不用重开会话
   const specNames = new Map<string, string>();
 
+  /** 回电（#1411）：推送开着才有。它自己从 seed 播种、之后只有它落 call_ring，所以状态它自己推进就是权威 */
+  const callback = opts.callback;
+  const ringer: Ringer | null =
+    callback === null
+      ? null
+      : createRinger({
+          sessionId,
+          workspaceId: opts.workspaceId,
+          seed,
+          append: (e) => {
+            const logged = store.append(e) as CallRingEvent;
+            notify(logged);
+            return logged;
+          },
+          isWatching: (uid) => callback.isWatching(uid),
+          deviceCount: (uid) => callback.deviceCount(uid),
+          push: (uid, ring) => callback.push(uid, ring),
+          // 手机开哪种聊天页：个人主场 = approveAll（ADR-0298 同一格），私聊 / 群看建会话时记下的 chat 标记
+          chatKindFor: (uid) => ringChatKind({ home: opts.approveAll, chatKind, toUid: uid, ownerUid: opts.ownerUid }),
+          now,
+          setTimer: opts.ringTimers?.setTimer ?? ((fn, ms) => setTimeout(fn, ms)),
+          clearTimer: opts.ringTimers?.clearTimer ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>)),
+          log: (m) => console.warn(m),
+        });
+
   /** 落盘 + 通知的唯一口——engine 自己 append 的、sessionService 直接 append
       的（chat_message / approval_request / agent_briefed / session_archived），
       都从这过一遍，lastSeq() 才对得上 */
@@ -1239,6 +1283,15 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         greetNewcomers([target], currentInitiator ?? "system");
       },
     });
+    // 回电那把刀（#1411）：推送开着才挂，每只都挂、不过审批门（客人点起的那一轮由下面 guestTurn 掀成要群主批）。
+    // 打给叫起这一轮的那个人；名字现取（改名后下一通来电写的是新名字）
+    const callUserTool =
+      ringer === null
+        ? null
+        : createCallUserTool({
+            initiator: () => currentInitiator,
+            ring: (toUid, reason) => ringer.call(spec.agentId, specNames.get(spec.agentId) ?? spec.name, toUid, reason),
+          });
     const engine = new LoopEngine({
       store: agentView(store, spec.agentId),
       adapter,
@@ -1250,6 +1303,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       tools: () => {
         const list: Tool[] = [
           readFileTool, writeFileTool, bashTool, wikiReadTool, wikiTool, inviteToCallTool,
+          ...(callUserTool !== null ? [callUserTool] : []),
           ...(spec.agentId === ADMIN_AGENT_ID ? [createAgentTool] : []),
           ...gitTools,
           ...cachedPxTools,
@@ -1424,6 +1478,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       participants,
       byUid,
       ...(byAgentId !== undefined ? { byAgentId } : {}),
+      // 推送开着时带上（#1411）：通话块据它说「挂断之后可以用 call_user 回电」
+      ...(opts.callback !== null && participants.length > 0 ? { callback: true as const } : {}),
       ignorable: true,
     });
     notify(logged);
@@ -1438,8 +1494,13 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       说清**——招呼不是人的动作，不该让一次限速把名单改动整个吞掉；但也不能安静地
       不打（同「派活失败群里说一声」的纪律）。三条进门的路只有两条经这里：人亲手 @ 了
       通话外的那条（say 里的自动拉进）不打——他那句话就是开场白，再问一句「打个招呼」
-      是同一只答两轮 */
-  function greetNewcomers(added: readonly VoiceCallParticipant[], byUid: string, budget?: (n: number) => string | null): void {
+      是同一只答两轮。`callback` 在场 = 回电接通（#1411）：那几只说回电版开场白 */
+  function greetNewcomers(
+    added: readonly VoiceCallParticipant[],
+    byUid: string,
+    budget?: (n: number) => string | null,
+    callback?: { byLabel: string; reasons: ReadonlyMap<string, string> },
+  ): void {
     if (added.length === 0) return;
     const veto = budget?.(added.length) ?? null;
     if (veto !== null) {
@@ -1447,14 +1508,19 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       return;
     }
     const decisions = added.map((p) => {
+      // 回电接通的那只说回电版开场白（#1411）：它得知道自己为什么打这个电话、接的是谁
+      const reason = callback?.reasons.get(p.agentId);
       const opening = store.append({
         sessionId,
         ts: Date.now(),
         type: "user_message",
-        content: voiceCallGreetingText(p.name),
+        content:
+          reason !== undefined && callback !== undefined
+            ? callbackGreetingText(p.name, callback.byLabel, reason)
+            : voiceCallGreetingText(p.name),
         fromUid: byUid,
         mentions: [p.agentId],
-        greeting: "voice_call",
+        greeting: reason !== undefined ? "callback" : "voice_call",
       }) as UserMessageEvent;
       notify(opening);
       return coordinator.enqueue({ agentId: p.agentId, fromUid: byUid, opening });
@@ -2595,7 +2661,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       if (coordinator.enqueue({ agentId, fromUid: byUid, opening }) === "start_turn") startDrain();
     },
 
-    async setVoiceCall(byUid, _byLabel, participants, budget) {
+    async setVoiceCall(byUid, byLabel, participants, budget) {
       if (archived) return { kind: "archived", message: "这条会话已经归档，没有通话可言" };
       // 人刚点了名单 → 要此刻的名单（同 say 的 fresh）：他在设置页刚建的那只要能立刻拉进来
       const roster = await rosterNow({ fresh: true });
@@ -2609,12 +2675,21 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       }
       const current = voiceCall?.participants.map((p) => p.agentId) ?? [];
       const same = current.length === ids.length && ids.every((id) => current.includes(id));
-      if (same) return { kind: "ok" };
       const next = ids.map((id) => ({ agentId: id, name: roster.find((a) => a.agentId === id)!.name }));
-      logVoiceCall(next, byUid);
-      // 先落名单再落招呼（#1174）：招呼那一轮跑起来时它已经在通话里（system 尾块读得到、
-      // 回复会被读出来）——与 say 里「先落并集名单再落开场白」同一个顺序
-      greetNewcomers(next.filter((p) => !current.includes(p.agentId)), byUid, budget);
+      if (!same) logVoiceCall(next, byUid);
+      // 回电接通（#1411）：发这一帧的人把正在给他响铃的那只带进了名单——新拉进来的，或者本来就在一场没人
+      // 挂断的通话里（锁屏 = 这台停听、通话还在，ADR-0320）。落在名单之后：接通那一刻它已经在通话里
+      const reasons = new Map<string, string>();
+      if (ringer !== null) {
+        for (const id of ids) {
+          const r = ringer.answer(id, byUid);
+          if (r !== null) reasons.set(id, r.reason);
+        }
+      }
+      // 先落名单再落招呼（#1174）：招呼那一轮跑起来时它已经在通话里（system 尾块读得到、回复会被读出来）——
+      // 与 say 里「先落并集名单再落开场白」同一个顺序。开口的是新拉进来的那几只，加上回电接通的那几只
+      // （它们打这个电话是有话要说的，哪怕本来就在通话里）
+      greetNewcomers(next.filter((p) => !current.includes(p.agentId) || reasons.has(p.agentId)), byUid, budget, { byLabel, reasons });
       return { kind: "ok" };
     },
 
@@ -2647,6 +2722,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // 这里再判一次会用 stop 的判据（发起人或 owner）去否决一个有权归档的人
       abortCurrent(byLabel);
       archived = true;
+      // 还在响的回电一律记未接（#1411）：归档之后没有人会来接，也没有房间可进
+      ringer?.missAll();
       // 先说一句人话再落状态事件：群里其他人只看到会话消失是很糟的体验，
       // 而 session_archived 自己没有"谁干的"这个字段（ADR-0087 的形状，
       // 单机时代不需要）。走 chat_message 与 clone 结果通报同一条路
@@ -2669,6 +2746,12 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       return true;
     },
   };
+
+  // 回电（#1411）：上一个进程里还在响的——过了时限的补一条未接，没过的接着计时；已归档的一律未接
+  if (ringer !== null) {
+    if (archived) ringer.missAll();
+    else ringer.resume();
+  }
 
   // 重启补跑（#932 坑 ②）：上一个 daemon 收下了话（user_message 已落盘）、还
   // 没跑到就死了——按同一份推导把它们重新排上。openTurns 里 running 的也重排：

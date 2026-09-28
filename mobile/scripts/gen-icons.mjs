@@ -15,6 +15,7 @@ const version = JSON.parse(readFileSync(join(root, "node_modules", "lucide-react
 const NAMES = [
   "message-circle", "contact-round", "user-round", "circle-plus", "search", "sparkles", "users-round", "user-round-plus",
   "chevron-right", "chevron-left", "chevron-down", "ellipsis", "audio-lines", "keyboard", "smile", "phone", "phone-off",
+  "phone-missed", "phone-incoming",
   "mic", "mic-off", "type", "at-sign", "plus", "x", "folder", "file-text", "blocks", "book-open", "chart-column",
   "settings", "gauge", "check", "app-window", "square", "user-round-minus", "log-out", "mail", "lock-keyhole", "image",
   "trash-2", "pencil", "info", "shield-check", "circle-alert",

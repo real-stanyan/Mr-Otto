@@ -1,6 +1,6 @@
 // 聊天页时间线的各行（#1386，照微信，demo 的 timelineHTML）：我在右、别人在左带头像（群里头像上方写名字）；
 // 时刻、旁白、名单变更、派活线、接力线是居中的一枚灰底小条；通话：私聊是一个「通话时长」气泡，群里是一行居中
-// 可点的小条，点开是全文。画哪一种由 shared/mobileChat.ts 的 ChatRow 决定，这里只管样子。
+// 可点的小条，点开是全文。回电（#1411）：私聊里是它那一侧的一个通话记录气泡，群里是居中灰条，接通的与那场通话合成一条。画哪一种由 shared/mobileChat.ts 的 ChatRow 决定，这里只管样子。
 //
 // · 它一次回复拆成的几段（ADR-0266）头像只画在第一段旁边，后面几段对齐缩进：读成一口气说的，不是几次；
 // · 脸只画名册里查得到的那只（agentFaceIfKnown）：派生对陌生 id 也算得出一张脸，画上去等于宣称它还在；
@@ -12,7 +12,7 @@ import { Animated, Easing, Pressable, Text, View } from "react-native";
 import { agentFaceIfKnown } from "../../../src/shared/agentAvatar.js";
 import type { RosterLinePart } from "../../../src/shared/cloudTimeline.js";
 import { callOffsetText } from "../../../src/shared/cloudTimeline.js";
-import type { ChatRow } from "../../../src/shared/mobileChat.js";
+import { ringRecordView, type ChatRow } from "../../../src/shared/mobileChat.js";
 import { facePhase } from "../../../src/shared/ottoFace/art.js";
 import type { FaceState } from "../../../src/shared/ottoFace/index.js";
 import { memberAvatarOf } from "../../../src/shared/workspaceView.js";
@@ -111,7 +111,7 @@ function RosterPill({ parts, ws }: { parts: readonly RosterLinePart[]; ws: Works
   );
 }
 
-export function ChatRowView({ row, ws, selfUid, selfName, selfAvatar, group, onOpenCall, onAgent, onDecide, deciding }: {
+export function ChatRowView({ row, ws, selfUid, selfName, selfAvatar, group, onOpenCall, onAgent, onCallAgent, onDecide, deciding }: {
   row: ChatRow;
   ws: WorkspaceSnapshot;
   selfUid: string;
@@ -121,6 +121,8 @@ export function ChatRowView({ row, ws, selfUid, selfName, selfAvatar, group, onO
   group: boolean;
   onOpenCall: (seq: number) => void;
   onAgent: (agentId: string) => void;
+  /** 点来电记录「接」或「回拨」：打给这一只（ChatScreen 的 callAgent） */
+  onCallAgent: (agentId: string) => void;
   onDecide: (callId: string, decision: "approved" | "denied") => void;
   /** 正在批 / 拒的那张卡 */
   deciding: string | null;
@@ -182,6 +184,8 @@ export function ChatRowView({ row, ws, selfUid, selfName, selfAvatar, group, onO
         </View>
       );
     }
+    case "ring":
+      return <RingRecord row={row} ws={ws} group={group} onOpenCall={onOpenCall} onCallAgent={onCallAgent} />;
     case "approval":
       return <ApprovalCard row={row} busy={deciding === row.callId} onDecide={onDecide} selfUid={selfUid} />;
     default: {
@@ -199,6 +203,65 @@ function NotePill({ text, tone, detail }: { text: string; tone: "muted" | "error
     <SysPill tone={tone} onPress={() => setOpen((v) => !v)}>
       {open ? `${text}\n${detail}` : `${text} ›`}
     </SysPill>
+  );
+}
+
+/** 它打来的一通电话（#1411，维护者看过 demo 选的微信式通话记录）：私聊里是它那一侧的一个气泡——图标 + 「未接来电」/
+    「来电 · 正在响」/「通话时长 00:12」，第二行是它要说的那句话；群里（或者打给的不是我）是居中灰条。点一下做什么
+    与每一行怎么说都在 ringRecordView */
+function RingRecord({ row, ws, group, onOpenCall, onCallAgent }: {
+  row: Extract<ChatRow, { kind: "ring" }>;
+  ws: WorkspaceSnapshot;
+  group: boolean;
+  onOpenCall: (seq: number) => void;
+  onCallAgent: (agentId: string) => void;
+}) {
+  const { c } = usePalette();
+  const v = ringRecordView(row, group);
+  const call = row.call;
+  const onPress = v.tap === null ? undefined : v.tap === "open" ? (call !== null ? () => onOpenCall(call.seq) : undefined) : () => onCallAgent(row.agentId);
+  const label = `${v.line}。${row.reason}`;
+  if (group || !row.toMe) {
+    const ink = v.tone === "missed" ? c.destructive : c.mutedForeground;
+    return (
+      <Pressable
+        accessibilityRole={onPress === undefined ? "text" : "button"}
+        accessibilityLabel={label}
+        disabled={onPress === undefined}
+        onPress={onPress}
+        style={({ pressed }) => [{ alignSelf: "center", maxWidth: "80%" }, pressed && { opacity: 0.6 }]}
+      >
+        <View style={{ alignItems: "center", paddingVertical: 3, paddingHorizontal: 10, borderRadius: 6, backgroundColor: withAlpha(c.foreground, 0.05) }}>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+            <Icon name={v.icon} size={12} stroke={2} color={ink} />
+            <Text style={{ fontSize: 12, lineHeight: 18, color: ink, textAlign: "center" }}>{v.line}</Text>
+          </View>
+          <Text numberOfLines={2} style={{ fontSize: 12, lineHeight: 18, color: c.mutedForeground, textAlign: "center" }}>{row.reason}</Text>
+        </View>
+      </Pressable>
+    );
+  }
+  const tint = v.tone === "missed" ? c.destructive : v.tone === "ringing" ? c.voice : c.foreground;
+  return (
+    <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 10, paddingHorizontal: 12 }}>
+      <AgentAvatar ws={ws} agentId={row.agentId} name={row.name} />
+      <Pressable
+        accessibilityRole={onPress === undefined ? "text" : "button"}
+        accessibilityLabel={label}
+        disabled={onPress === undefined}
+        onPress={onPress}
+        style={({ pressed }) => [
+          { flexShrink: 1, maxWidth: "76%", gap: 3, paddingVertical: 9, paddingHorizontal: 12, borderRadius: RADIUS, borderTopLeftRadius: 4, backgroundColor: c.bubbleThem },
+          pressed && { opacity: 0.8 },
+        ]}
+      >
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          <Icon name={v.icon} size={16} stroke={2} color={tint} />
+          <Text style={{ flexShrink: 1, fontSize: 16, lineHeight: 24, color: c.foreground }}>{v.line}</Text>
+        </View>
+        <Text style={{ fontSize: 14, lineHeight: 20, color: c.mutedForeground }}>{row.reason}</Text>
+      </Pressable>
+    </View>
   );
 }
 

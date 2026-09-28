@@ -107,6 +107,10 @@ const OTHER_AGENT_VERDICTS: Record<SessionEvent["type"], OtherAgentVerdict> = {
   chat_roster_changed: "keep",
   // 换执行器（#1223）：任务会话专属，团队会话里不会出现；穷举表要它表态，群事实 = keep
   executor_changed: "keep",
+  // 回电（#1411）：故意叫 fromAgentId 不叫 agentId，早退路径本来就放行，这里仍要表态（Record 是
+  // 穷尽表）。写 keep 不写 drop：这张表根本轮不到它，写 drop 是一句不成立的话。模型看不看得见
+  // 由 deriveMessages 决定（它不投影这条）
+  call_ring: "keep",
   background_task_started: "drop",
   background_task_completed: "drop",
   image_described: "drop",

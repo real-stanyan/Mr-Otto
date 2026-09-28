@@ -5,6 +5,16 @@
 // 纯核心（resolveConfig）+ 薄的 side-effecting 壳（loadConfig）分层：
 // 前者可以单测（给一份假 env，断言缺了哪些键），后者才碰 process.exit。
 
+/** 回电的推送（#1411，ADR-0331）。三个 APNS_* 全有才有这一份 */
+export interface ApnsSettings {
+  /** .p8 私钥在这台机器上的路径（daemon 启动时读一次，读不到就起不来） */
+  keyFile: string;
+  keyId: string;
+  teamId: string;
+  /** 推送的 topic = 手机 App 的 bundle id */
+  bundleId: string;
+}
+
 export interface RuntimeConfig {
   runtimeSecret: string;
   supabaseJwtSecret: string;
@@ -14,6 +24,8 @@ export interface RuntimeConfig {
   relayBase: string;
   /** 默认 /var/lib/otto-runtime——唯一有默认值的一个，其余全部必填 */
   dataDir: string;
+  /** 回电的推送（#1411）。null = 推送关着：call_user 那把刀不出现（不能让模型许诺一通打不出去的电话） */
+  apns: ApnsSettings | null;
 }
 
 const REQUIRED_KEYS = [
@@ -33,6 +45,11 @@ const REQUIRED_KEYS = [
 
 const DEFAULT_DATA_DIR = "/var/lib/otto-runtime";
 
+/** 回电推送的三个变量（#1411）：**要么全有要么全无**。全无 = 推送关着；只给一部分 = 配错了，同必需项
+    一样启动失败——带着半份推送配置跑起来，每一通电话都会安静地失败 */
+const APNS_KEYS = ["APNS_KEY_FILE", "APNS_KEY_ID", "APNS_TEAM_ID"] as const;
+const DEFAULT_APNS_BUNDLE_ID = "com.stanyan.mrotto.mobile";
+
 export class MissingConfigError extends Error {
   constructor(public readonly missing: readonly string[]) {
     super(`runtime 缺少环境变量：${missing.join(", ")}`);
@@ -43,7 +60,11 @@ export class MissingConfigError extends Error {
 /** 纯函数：给一份 env，装出配置或者报告缺了哪些必需键。不碰 process.exit——
     side effect 留给 loadConfig，这里可以直接喂假 env 单测 */
 export function resolveConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
-  const missing = REQUIRED_KEYS.filter((k) => !env[k]);
+  const apnsGiven = APNS_KEYS.some((k) => env[k]);
+  const missing = [
+    ...REQUIRED_KEYS.filter((k) => !env[k]),
+    ...(apnsGiven ? APNS_KEYS.filter((k) => !env[k]) : []),
+  ];
   if (missing.length > 0) {
     throw new MissingConfigError(missing);
   }
@@ -56,6 +77,14 @@ export function resolveConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
     edgeBase: env.EDGE_BASE!,
     relayBase: env.RELAY_BASE!,
     dataDir,
+    apns: apnsGiven
+      ? {
+          keyFile: env.APNS_KEY_FILE!,
+          keyId: env.APNS_KEY_ID!,
+          teamId: env.APNS_TEAM_ID!,
+          bundleId: env.APNS_BUNDLE_ID && env.APNS_BUNDLE_ID.length > 0 ? env.APNS_BUNDLE_ID : DEFAULT_APNS_BUNDLE_ID,
+        }
+      : null,
   };
 }
 

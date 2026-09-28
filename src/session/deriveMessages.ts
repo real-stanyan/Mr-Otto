@@ -5,6 +5,7 @@ import type { VoiceCallParticipant } from "./events.js";
 import { isolatedPromptText, type IsolatedWorkspace } from "../shared/sessionWorktree.js";
 import { promptSafe, promptSafeBody, safeSpeakerLabel } from "../shared/promptSafe.js";
 import { INVITE_TO_CALL_TOOL_NAME } from "../shared/voiceCall.js";
+import { CALL_USER_TOOL_NAME } from "../shared/callRing.js";
 import type { CloudSessionFacts, MemoryTopicSnapshot, SessionEvent, UserTextFile, WorkspaceMemoryLoadedEvent } from "./events.js";
 import { barrenEventIndexes } from "./barrenTurns.js";
 import { activeSkills } from "./activeSkills.js";
@@ -324,13 +325,15 @@ export function renderMemoryPrompt(
        能 @ 谁；② 活该由通话外的人做时**先问用户**，用户同意了再调 invite_to_call
        把 TA 拉进来（维护者拍板：口头同意就行，不弹审批卡）；③ 回复会被读出来——
        短句、口语、代码只放围栏。
+    ④ 推送开着时（`callback`）说一句挂断之后可以用 call_user 回电（#1411）。
     `selfName` 是这只 agent 自己（brief 的 name，roster 里没有它）；名单事件自带名字
     快照，不在 roster 里的名字照样列得出。拼进结构的每个名字都过 promptSafe（#957 B-C1：
     这一段是拼出来的，拼进去的是别人写的字） */
 export function renderVoiceCallPrompt(
   participants: readonly VoiceCallParticipant[],
   selfName: string | null,
-  roster: readonly { name: string; description: string }[]
+  roster: readonly { name: string; description: string }[],
+  callback = false
 ): string {
   const inCall = new Set(participants.map((p) => p.name));
   const everyone: { name: string; description: string }[] = [
@@ -349,7 +352,10 @@ export function renderVoiceCallPrompt(
     `谁在通话里以这一块的名单为准——聊天记录里更早的招呼、通话是上一场的，别据此认为谁在这一场里。` +
     `规则：只有通话里的成员参与这件事。如果这件事该由不在通话里的人做，先用一句话问用户要不要把 TA 拉进通话，` +
     `用户同意后再调用 ${INVITE_TO_CALL_TOOL_NAME} 把 TA 拉进来、然后 @ TA；用户没同意就别替 TA 做、也别 @ TA。` +
-    `你的回复会被读出来，像打电话：先说结论，一两句就停，对方要细节再展开；口语，代码只放围栏里。]`
+    `你的回复会被读出来，像打电话：先说结论，一两句就停，对方要细节再展开；口语，代码只放围栏里。` +
+    // 回电（#1411）：只在推送开着时说——那把刀不在工具表里时说这句，就是让它许诺一通打不出去的电话
+    (callback ? `挂断之后事情办完了，或者要他拍板，可以用 ${CALL_USER_TOOL_NAME} 回电。` : "") +
+    `]`
   );
 }
 
@@ -623,6 +629,8 @@ export function deriveMessages(
   // 语音通话名单（#1163）：同上，最新一条胜出、空名单 = 没有。只在云会话注入——
   // 通话是云会话的东西，本机日志里不会有这条事件，有也不该长出一块提示词
   let voiceCall: VoiceCallParticipant[] | null = null;
+  // 这场通话能不能回电（#1411）：跟着最新一条名单事件走，同 voiceCall
+  let voiceCallback = false;
   let isCloud = false;
   // 执行器（#1223）：最后一条 executor_changed 胜出，主循环结束后拼一次到 system 最尾。
   // everCloud / changedMachine 是折叠出来的两个事实：前者决定「回到电脑」那句要不要说，
@@ -943,6 +951,7 @@ export function deriveMessages(
         // 最新一条胜出、空名单 = 通话结束（#1163）。同 workspace_memory_loaded：记下来
         // 主循环结束后拼一次，不在这里 +=——两条名单叠在 system 里模型读到两套口径
         voiceCall = event.participants.length > 0 ? event.participants : null;
+        voiceCallback = event.callback === true;
         break;
 
       case "executor_changed": {
@@ -1060,6 +1069,9 @@ export function deriveMessages(
       case "approval_request":
       // 按人头计的 token 用量（issue #799）：计费审计凭据，不是对话内容
       case "model_usage":
+      // 回电（#1411）：打没打通由 call_user 的 tool_result 说，接通由回电开场白说；这条只是给
+      // 手机画卡、给 runtime 算冷却的事实
+      case "call_ring":
       // 接力棒本身不投影（#950，spec §8）：模型可见的那一面是配对的、带 relay
       // 字段的 user_message（照普通用户消息投影），这条事件只是给 UI/接力判据
       // 看的路标——谁传给了谁、第几棒，喂回模型等于让它读一句关于自己身份的元话
@@ -1092,7 +1104,7 @@ export function deriveMessages(
   if (systemMessage && workspaceWikiPrompt) systemMessage.content += workspaceWikiPrompt;
   // 通话块排在记忆与 wiki 之后（#1163）：它是此刻的状态，也是最会变的那一段——放最尾
   // 前缀缓存只从这里往下失效
-  if (systemMessage && isCloud && voiceCall) systemMessage.content += renderVoiceCallPrompt(voiceCall, briefName, briefRoster);
+  if (systemMessage && isCloud && voiceCall) systemMessage.content += renderVoiceCallPrompt(voiceCall, briefName, briefRoster, voiceCallback);
   // 执行器块排在最后（#1223）：它比通话名单更少变，但换执行器那一刻整段上下文都要重读，
   // 放最尾让 prefix cache 只从这儿失效。seen 为 false（旧日志 / 一直在桌面）一字不加
   if (systemMessage && executor.seen) systemMessage.content += renderExecutorPrompt(executor);

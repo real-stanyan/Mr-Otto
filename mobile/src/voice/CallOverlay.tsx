@@ -14,9 +14,9 @@ import { usePalette, withAlpha } from "../theme.js";
 import { useReduceMotion } from "../ui.js";
 import { Icon, type IconName } from "../wx/Icon.js";
 
-const SHELL = "#141416";
-const FG = "#ffffff";
-const FG2 = "rgba(255, 255, 255, 0.62)";
+export const SHELL = "#141416";
+export const FG = "#ffffff";
+export const FG2 = "rgba(255, 255, 255, 0.62)";
 const BARS = 22;
 const BAR_MAX = 30;
 const BAR_MIN = 3;
@@ -75,7 +75,7 @@ function Wave({ mode, level, color }: { mode: WaveMode; level: number; color: st
   );
 }
 
-function RoundControl({ icon, label, tone, onPress, disabled = false, selected }: {
+export function RoundControl({ icon, label, tone, onPress, disabled = false, selected }: {
   icon: IconName;
   label: string;
   tone: "plain" | "on" | "end" | "go";

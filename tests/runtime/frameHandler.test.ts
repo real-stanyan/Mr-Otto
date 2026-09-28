@@ -2218,3 +2218,15 @@ describe("群里的客人（#1393）", () => {
     expect(sent.at(-1)!.msg).toMatchObject({ t: "denied", code: "not_member" });
   });
 });
+
+describe("uidOf（#1411）", () => {
+  it("验过籍的连接回它的 uid；没验过、离场之后回 null", async () => {
+    const { deps } = makeDeps();
+    const handler = createFrameHandler(deps);
+    expect(handler.uidOf("c1")).toBeNull();
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    expect(handler.uidOf("c1")).toBe("u1");
+    handler.onGone("c1");
+    expect(handler.uidOf("c1")).toBeNull();
+  });
+});

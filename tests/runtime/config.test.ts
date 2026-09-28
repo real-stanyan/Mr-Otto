@@ -50,4 +50,26 @@ describe("resolveConfig", () => {
     // 哪天有人"顺手加回兜底"，这里会红，而不是等某个工作区默默烧了别人的钱
     expect(Object.keys(cfg).some((k) => k.toLowerCase().includes("model"))).toBe(false);
   });
+
+  // #1411：回电的推送，三个 APNS_* 要么全有要么全无
+  it("三个 APNS_* 全无 = 推送关着（apns 为 null）", () => {
+    expect(resolveConfig({ ...full }).apns).toBeNull();
+  });
+
+  it("三个全有 = 开着，APNS_BUNDLE_ID 缺省是手机那个 bundle", () => {
+    const cfg = resolveConfig({ ...full, APNS_KEY_FILE: "/etc/otto-runtime/apns.p8", APNS_KEY_ID: "ABC123DEFG", APNS_TEAM_ID: "HV982TTRNP" });
+    expect(cfg.apns).toEqual({ keyFile: "/etc/otto-runtime/apns.p8", keyId: "ABC123DEFG", teamId: "HV982TTRNP", bundleId: "com.stanyan.mrotto.mobile" });
+    const custom = resolveConfig({ ...full, APNS_KEY_FILE: "/k.p8", APNS_KEY_ID: "K", APNS_TEAM_ID: "T", APNS_BUNDLE_ID: "com.example.app" });
+    expect(custom.apns?.bundleId).toBe("com.example.app");
+  });
+
+  it("只给一部分 = 配错了：启动失败并报缺哪几个（带着半份推送配置跑起来，每一通电话都会安静地失败）", () => {
+    try {
+      resolveConfig({ ...full, APNS_KEY_ID: "K" });
+      throw new Error("应该抛 MissingConfigError");
+    } catch (err) {
+      expect(err).toBeInstanceOf(MissingConfigError);
+      expect((err as MissingConfigError).missing).toEqual(["APNS_KEY_FILE", "APNS_TEAM_ID"]);
+    }
+  });
 });

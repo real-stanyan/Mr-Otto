@@ -7,9 +7,10 @@
 import type { ApprovalRequestEvent, ChatRosterChangedEvent, SessionEvent } from "../session/events.js";
 import { ACTIVITY_ORDER, ACTIVITY_TEXT, activityFace, activityFoldOf, activityOf, type ActivityFold, type AgentActivity } from "./agentActivity.js";
 import { groupRows, rosterRows } from "./agentRoster.js";
+import { callRingFoldOf, RING_STATUS_TEXT, ringCardStatus, type RingCardStatus } from "./callRing.js";
 import { splitBubbles } from "./chatBubbles.js";
 import {
-  approvalCardTitle, assistantLabel, chatRosterLineParts, cloudEmptyState, decisionLineText, hiddenFromCloudTimeline,
+  approvalCardTitle, assistantLabel, callOffsetText, chatRosterLineParts, cloudEmptyState, decisionLineText, hiddenFromCloudTimeline,
   relayLineText, stopButtonRows, systemNoteText, turnEndedLineText, userRowIdentity, voiceCallCards, type RosterLinePart, type VoiceCallCard,
 } from "./cloudTimeline.js";
 import { callTopicText } from "./mobileCall.js";
@@ -77,6 +78,14 @@ export type ChatRow =
   /** 一场语音通话折成的那张卡（A4，ADR-0288）：卡在开场那条名单事件的位置；通话里说的话与通话里那几只的回复
       都折进卡里，不单独成行。`topic` = 卡的第二行「聊的什么」，null = 不画那一行 */
   | { kind: "call"; key: string; ts: number; card: VoiceCallCard; topic: string | null }
+  /** 它打来的一通电话（#1411；维护者看过 demo 选的微信式通话记录）：一次响铃一行，在打出去那一条的位置，状态取这一通
+      最后一条。`toMe` = 打给我的（能接 / 能回拨）；打给群里别人的写「X 打给 <toName>」——卡是日志投影，群里每个人都
+      看得到。`call` = 接通、而且这一接开出了一场新通话时的那张通话卡：两件事合成一条「通话时长」，那张卡自己不再单独
+      成行；接进一场本来就开着的通话（锁屏没挂，ADR-0320）时 null，通话卡照旧在它自己的位置 */
+  | {
+    kind: "ring"; key: string; ts: number; ringId: string; agentId: string; name: string; reason: string;
+    status: RingCardStatus; toMe: boolean; toName: string; call: VoiceCallCard | null;
+  }
   /** 还没人批的一张审批卡（#1386：团队群里有审批，ADR-0231）。`canDecide` = 我是发起这一轮的人或群主
       （同 cloudSessionClient 转给审批层的那道判据）；否则只写「等 X 批」。主场的群里（#1393）只有群主批得了：
       客人点起的那一轮动的是群主的东西 */
@@ -145,6 +154,19 @@ export function chatRows(o: {
   let prevRoster: ChatRosterChangedEvent | null = null;
   // 通话卡（A4）：哪几条折进卡里要跨事件才答得出（voiceCallCards，桌面同一份），同名单那一行一样在循环外算
   const calls = voiceCallCards(o.events, o.ws, o.selfUid);
+  // 回电（#1411）：状态要看这一通后面的事件，同审批那样在循环外先折一遍。接通那一条紧跟在它开出的那场通话的第一条
+  // 后面落（runtime 的 setVoiceCall 先落名单、再记接通，同一拍里），所以「接通那一条的前一条是一张通话卡的开头」
+  // = 这一接开出了那场通话：两件事合成一行。对不上（接进一场本来就开着的通话）就各画各的。
+  // `rings.has` 这道闸不是多余的：answered 在窗内 ≠ ringing 在窗内（尾巴模式把开头裁了，fold 对没有 ringing
+  // 开头的 ringId 不入账），没有它会把独立的通话卡压掉而 ring 行不落——那张卡就从时间线上凭空消失
+  const rings = callRingFoldOf(o.events);
+  const ringCall = new Map<string, VoiceCallCard>();
+  for (const e of o.events) {
+    if (e.type !== "call_ring" || e.phase !== "answered" || !rings.has(e.ringId)) continue;
+    const card = calls.cards.get(e.seq - 1);
+    if (card !== undefined) ringCall.set(e.ringId, card);
+  }
+  const mergedCalls = new Set([...ringCall.values()].map((c) => c.seq));
   const requests = new Map<string, ApprovalRequestEvent>();
   const decided = new Set<string>();
   for (const e of o.events) {
@@ -154,10 +176,24 @@ export function chatRows(o: {
   for (const e of o.events) {
     const card = calls.cards.get(e.seq);
     if (card !== undefined) {
-      items.push({ kind: "call", key: `call-${e.seq}`, ts: e.ts, card, topic: callTopicText(card) });
+      // 回电接通开出来的那一场已经合进来电那一行（上面 ringCall），这里不再单独画
+      if (!mergedCalls.has(card.seq)) items.push({ kind: "call", key: `call-${e.seq}`, ts: e.ts, card, topic: callTopicText(card) });
       continue;
     }
     if (calls.folded.has(e.seq)) continue;
+    // 要在 rowOf 之前认出来：rowOf 先问 hiddenFromCloudTimeline，而桌面把 call_ring 整条藏了
+    if (e.type === "call_ring") {
+      const r = rings.get(e.ringId);
+      if (e.phase === "ringing" && r !== undefined) {
+        const toMe = r.toUid === o.selfUid;
+        items.push({
+          kind: "ring", key: `ring-${e.ringId}`, ts: e.ts, ringId: e.ringId, agentId: r.fromAgentId,
+          name: agentNameOf(o.ws, r.fromAgentId), reason: r.reason, status: ringCardStatus(r, o.now),
+          toMe, toName: toMe ? "我" : labelOf(o.ws, r.toUid), call: ringCall.get(e.ringId) ?? null,
+        });
+      }
+      continue;
+    }
     if (e.type === "chat_roster_changed") {
       const parts = chatRosterLineParts(prevRoster, e, o.selfUid);
       prevRoster = e;
@@ -204,6 +240,41 @@ export function chatRows(o: {
     out.push(item);
   }
   return out;
+}
+
+/** 点一下来电记录做什么：看这通电话说了什么（接通过的）/ 接（还在响）/ 回拨（没接）。打给别人的只能看 */
+export type RingTap = "open" | "answer" | "callback";
+
+export interface RingRecordView {
+  icon: "phone" | "phone-missed" | "phone-incoming";
+  /** missed 画红；ringing 只在私聊气泡里画通话那个青色——群灰条与居中旁白一族都不上彩色，ringing 在那边照灰 */
+  tone: "missed" | "ringing" | "plain";
+  /** 私聊里气泡那一行 / 群里灰条的第一行（第二行是那句话，调用方画） */
+  line: string;
+  tap: RingTap | null;
+}
+
+/** 来电记录那一行怎么说（#1411，维护者看过 demo 选的微信式通话记录）。私聊里挂在它那一侧、只说状态（是谁，头像已经说了）；
+    群里是居中灰条，要带上是谁打给谁。能点的在句末说一声（「点一下接」「点一下回拨」）：微信不说，但回拨在这里是新加的，
+    不说就没人知道它能点 */
+export function ringRecordView(row: Extract<ChatRow, { kind: "ring" }>, group: boolean): RingRecordView {
+  const tap: RingTap | null = row.call !== null ? "open" : !row.toMe ? null : row.status === "ringing" ? "answer" : row.status === "missed" ? "callback" : null;
+  const tone: RingRecordView["tone"] = row.call !== null ? "plain" : row.status === "missed" ? "missed" : row.status === "ringing" ? "ringing" : "plain";
+  const icon: RingRecordView["icon"] = tone === "missed" ? "phone-missed" : tone === "ringing" ? "phone-incoming" : "phone";
+  const dur = row.call !== null && row.call.endedTs !== null ? callOffsetText(row.call.endedTs - row.call.sinceTs) : null;
+  const hint = tap === "answer" ? " · 点一下接" : tap === "callback" ? " · 点一下回拨" : "";
+  if (!group && row.toMe) {
+    const base = row.call !== null
+      ? (dur === null ? "通话中" : `通话时长 ${dur}`)
+      : row.status === "missed" ? "未接来电" : row.status === "ringing" ? "来电 · 正在响" : "已接通";
+    return { icon, tone, line: base + hint, tap };
+  }
+  const who = row.toMe ? `${row.name} 打来电话` : `${row.name} 打给 ${row.toName}`;
+  const talk = row.toMe ? `${row.name} 打来的语音通话` : `${row.name} 打给 ${row.toName} 的语音通话`;
+  const base = row.call === null
+    ? `${who} · ${RING_STATUS_TEXT[row.status]}`
+    : dur === null ? `${who} · 通话中` : `${talk} ${dur} · ${row.call.utterances} 句`;
+  return { icon, tone, line: base + hint, tap };
 }
 
 /** 正在写的那一段（流式碎片，协议 16）：累计快照按空行拆，画成它的一行。终态落盘时
