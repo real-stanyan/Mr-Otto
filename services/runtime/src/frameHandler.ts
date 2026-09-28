@@ -210,6 +210,8 @@ export interface FrameHandler {
   /** 会话房帧。房间身份 = (workspaceId, sessionId) 由 daemon 按 transport 归属传入 */
   onSessionFrame(workspaceId: string, sessionId: string, cid: string, raw: string): Promise<void>;
   onGone(cid: string): void;
+  /** 这条连接验过的 uid（#1411：runtime 要知道「他此刻开没开着这条会话」）。没验过 / 已离场回 null */
+  uidOf(cid: string): string | null;
 }
 
 interface CidEntry {
@@ -958,6 +960,9 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
     onGone(cid) {
       cids.delete(cid);
     },
+    uidOf(cid) {
+      return cids.get(cid)?.uid ?? null;
+    },
   };
 
   return {
@@ -969,5 +974,6 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
       // 链也要跟着走，否则这张表只增不减
       chains.delete(cid);
     },
+    uidOf: (cid) => inner.uidOf(cid),
   };
 }

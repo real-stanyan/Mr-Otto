@@ -12,6 +12,8 @@ import Docker from "dockerode";
 import { createClient } from "@supabase/supabase-js";
 
 import { loadConfig } from "./config.js";
+import { createApnsPusher } from "./apns.js";
+import { createSupabasePushDevices } from "./pushDevices.js";
 import { createGitCredentialStore } from "./gitCredentialStore.js";
 import { cloneWithSidecar, sanitizeCloneText } from "./sandbox.js";
 import { createFrameHandler, safeEncodeCs, type FrameHandlerDeps } from "./frameHandler.js";
@@ -143,6 +145,22 @@ async function main(): Promise<void> {
   mkdirSync(config.dataDir, { recursive: true });
 
   const supabase = createClient(config.supabaseUrl, config.supabaseServiceKey);
+  // 回电的推送（#1411，ADR-0331）：三个 APNS_* 全有才开（config.ts）；.p8 这里读一次——读不到就起不来，
+  // 同 loadConfig 的 fail fast：带着一把读不出来的钥匙跑起来，每一通电话都会安静地失败
+  const apnsCfg = config.apns;
+  const apns =
+    apnsCfg === null
+      ? null
+      : createApnsPusher({
+          key: { keyPem: readFileSync(apnsCfg.keyFile, "utf8"), keyId: apnsCfg.keyId, teamId: apnsCfg.teamId, bundleId: apnsCfg.bundleId },
+          devices: createSupabasePushDevices(supabase, apnsCfg.bundleId, (m) => console.warn(m)),
+          log: (m) => console.warn(m),
+        });
+  console.log(
+    apnsCfg === null
+      ? "[otto-runtime] 推送关着（没配 APNS_*）：智能体没有回电那把刀"
+      : `[otto-runtime] 推送开着（APNs，bundle ${apnsCfg.bundleId}）`
+  );
   const docker = new Docker();
 
   // sandbox 的构造挪到下面（activeSessions/storeFor/sessionBroadcast 定义
@@ -806,7 +824,16 @@ async function main(): Promise<void> {
       // 上一次量出来的卷用量（#836，ADR-0287）。纯读 sandbox 的内存缓存、不打
       // docker——量这一下发生在 sandbox.ensure() 里，这里只是把读数递过去
       diskUsage: () => sandbox.diskUsage(workspaceId),
-      callback: null, // 推送的接线在下一步（#1411）
+      // 回电（#1411）：推送关着 = null（刀不出现）。isWatching = 这个房间里有没有他的连接——手机切后台会
+      // 主动断开会话房（mobile/src/cloud/cloudClient.ts），所以「连着」就是「开着这条聊天」
+      callback:
+        apns === null
+          ? null
+          : {
+              isWatching: (uid) => [...roster].some((cid) => frameHandler.uidOf(cid) === uid),
+              deviceCount: (uid) => apns.deviceCount(uid),
+              push: (uid, ring) => apns.pushRing(uid, ring),
+            },
     });
 
     activeSessions.set(sessionId, { session, workspaceId });
