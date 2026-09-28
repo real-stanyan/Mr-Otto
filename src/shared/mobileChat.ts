@@ -8,7 +8,7 @@ import type { ApprovalRequestEvent, ChatRosterChangedEvent, SessionEvent } from 
 import { groupRows, rosterRows } from "./agentRoster.js";
 import { splitBubbles } from "./chatBubbles.js";
 import {
-  approvalCardTitle, assistantLabel, chatRosterLineParts, cloudEmptyState, decisionLineText, dispatchLineText, hiddenFromCloudTimeline,
+  approvalCardTitle, assistantLabel, chatRosterLineParts, cloudEmptyState, decisionLineText, hiddenFromCloudTimeline,
   relayLineText, stopButtonRows, systemNoteText, turnEndedLineText, userRowIdentity, voiceCallCards, type RosterLinePart, type VoiceCallCard,
 } from "./cloudTimeline.js";
 import { callTopicText } from "./mobileCall.js";
@@ -69,7 +69,7 @@ export type ChatRow =
   | { kind: "human"; key: string; ts: number; uid: string | null; name: string; text: string }
   /** 它说的：按空行拆成几个气泡（splitBubbles，ADR-0266） */
   | { kind: "agent"; key: string; ts: number; agentId: string; name: string; paragraphs: string[] }
-  /** 旁白（系统说的一句、engine 注的后台任务 / 护栏、接力线、派活那一句）与出错 */
+  /** 旁白（系统说的一句、engine 注的后台任务 / 护栏、接力线）与出错 */
   | { kind: "note"; key: string; ts: number; text: string; tone: "muted" | "error"; detail: string | null }
   /** 群的名单变了那一行（A3）：居中，名字那几格带 agentId（左边画脸）；几格拼起来就是那句话本身 */
   | { kind: "roster"; key: string; ts: number; parts: RosterLinePart[] }
@@ -121,16 +121,6 @@ function rowOf(e: SessionEvent, ws: WorkspaceSnapshot, selfUid: string): ItemRow
       // 压缩与其余内务：手机端不画——压缩是上下文系统自己的事（聊天里那条线不断）。通话卡（A4）要跨事件，在 chatRows 的循环里判
       return null;
   }
-}
-
-/** 一条事件画成几行：通常一行；人说的那句被 runtime 派了活（没 @ 谁、它按职责挑了谁接）时，
-    那句话底下再跟一行「没 @ 谁 —— 运维接了」（spec §5.6） */
-function rowsOf(e: SessionEvent, ws: WorkspaceSnapshot, selfUid: string): ItemRow[] {
-  const row = rowOf(e, ws, selfUid);
-  if (row === null) return [];
-  const dispatched = e.type === "user_message" && (row.kind === "mine" || row.kind === "human") ? dispatchLineText(e, ws) : null;
-  if (dispatched === null) return [row];
-  return [row, { kind: "note", key: `dispatch-${e.seq}`, ts: e.ts, text: dispatched, tone: "muted", detail: null }];
 }
 
 /** 时间线：日志顺序 + 隔 5 分钟以上插一条时刻（#1386，照微信；`now` 由调用方递，纯函数才测得动）。
@@ -200,7 +190,10 @@ export function chatRows(o: {
       items.push({ kind: "note", key: `e${e.seq}`, ts: e.ts, text: `${what}：${who ?? "拒绝了"}`, tone: "muted", detail: e.reason ?? null });
       continue;
     }
-    items.push(...rowsOf(e, o.ws, o.selfUid));
+    // 被 runtime 派了活的那句话（没 @ 谁、它按职责挑了谁接，ADR-0270）不再另跟一行「没 @ 谁 —— 运维接了」
+    // （#1396）：是谁接的，回话那只的头像和名字已经说了
+    const row = rowOf(e, o.ws, o.selfUid);
+    if (row !== null) items.push(row);
   }
   const out: ChatRow[] = [];
   let prevTs: number | null = null;
