@@ -5,9 +5,9 @@
 // · 读不到 ≠ 空：拉失败时手上那份照旧留着；一份都没有时全部画 plain（= 改动前的样子）；
 // · 换号整份清掉、退订，旧号的推送不许落进新号那一份（epoch 核一遍）；
 // · 回前台重拉一次：切后台那段时间里推送可能断过。
-// 顺带订 workspace_sessions：UPDATE 带来的最后一句当场补进主场 / 团队那两份，不重拉；结构变化
-// （新会话、改名、归档）另外节流重拉，最多 10 秒一次。agent 说话时最后一句最快 3 秒写一次，
-// 每次都重拉整份清单太贵。
+// 顺带订 workspace_sessions：UPDATE 带来的最后一句当场补进主场 / 团队那两份。另外每来一条推送
+// 都排一次节流重拉清单（最多 10 秒一次）：改名、归档、换成员这类结构变化从推送里分不出来，宁可
+// 多拉。代价是 agent 在说话时大约每 10 秒全量拉一次；不节流的话是最后一句那一列的写入节奏（3 秒）。
 import { useSyncExternalStore } from "react";
 import { AppState } from "react-native";
 import { activityKey, fetchAgentActivity, sessionLastOfRow, subscribeAgentActivity, type ActivityRow } from "../../../src/shared/agentActivityRows.js";
@@ -66,6 +66,10 @@ async function adopt(uid: string | null): Promise<void> {
   const mine = epoch;
   unsubscribe?.();
   unsubscribe = null;
+  if (listTimer !== null) {
+    clearTimeout(listTimer);
+    listTimer = null;
+  }
   store.set({ ...INITIAL, uid });
   if (uid === null) return;
   await refreshActivity();
