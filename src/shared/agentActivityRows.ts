@@ -46,13 +46,16 @@ export function sessionAgentActivity(rows: ActivityIndex, sessionId: string, age
   return r === undefined ? null : liveActivity(r, now);
 }
 
-/** 一只智能体在一个工作区所有会话里最要紧的那个（通讯录、资料页只有一张脸）。一行都不知道 = null */
+/** 一只智能体此刻在干嘛（通讯录、资料页只有一张脸，spec §1.4）：这个工作区所有会话里，此刻在进行的
+    几档取最要紧的；闲着照算。出错 / 额度用完不算：它们是某一条会话里上一轮的结局、不过期，留在那条
+    会话那一行上（sessionAgentActivity）。算进来的话，排着队被移出群的那只、额度窗早就刷新了的那只，
+    这张脸会永远红着 / 黄着。一行都不知道 = null */
 export function workspaceAgentActivity(rows: ActivityIndex, workspaceId: string, agentId: string, now: number): AgentActivity | null {
   const known: AgentActivity[] = [];
   for (const r of rows.values()) {
     if (r.workspaceId !== workspaceId || r.agentId !== agentId) continue;
     const a = liveActivity(r, now);
-    if (a !== null) known.push(a);
+    if (a !== null && (LIVE_ACTIVITIES.has(a) || a === "idle")) known.push(a);
   }
   return mostUrgent(known);
 }

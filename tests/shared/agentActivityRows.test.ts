@@ -54,12 +54,24 @@ describe("按会话 / 按工作区取", () => {
     expect(sessionAgentActivity(rows, "dm", "ops", T)).toBe("working");
     expect(sessionAgentActivity(rows, "dm", "nobody", T)).toBeNull();
   });
-  it("workspaceAgentActivity：只看这个工作区、取最要紧；一行都不知道 = null；过期的不算", () => {
+  it("workspaceAgentActivity：只看这个工作区、取最要紧；一行都不知道 = null；过期的与出错 / 额度用完都不算", () => {
     expect(workspaceAgentActivity(rows, "w1", "ops", T)).toBe("waiting");
     expect(workspaceAgentActivity(rows, "w2", "ops", T)).toBe("solving");
     expect(workspaceAgentActivity(rows, "w1", "ads", T)).toBe("idle");
     expect(workspaceAgentActivity(rows, "w1", "nobody", T)).toBeNull();
-    expect(workspaceAgentActivity(rows, "w1", "ops", T + ACTIVITY_STALE_MS + 1)).toBe("failed");
+    // 在进行的两行都过期了，剩下那行出错不上这张脸
+    expect(workspaceAgentActivity(rows, "w1", "ops", T + ACTIVITY_STALE_MS + 1)).toBeNull();
+  });
+  it("出错 / 额度用完是某一条会话里上一轮的结局：通讯录那张脸不认，那条会话那一行照认", () => {
+    const outcomes = index(
+      rowOf({ session_id: "g1", state: "failed" }),
+      rowOf({ session_id: "g2", state: "limited" }),
+    );
+    expect(workspaceAgentActivity(outcomes, "w1", "ops", T)).toBeNull();
+    expect(sessionAgentActivity(outcomes, "g1", "ops", T)).toBe("failed");
+    expect(sessionAgentActivity(outcomes, "g2", "ops", T)).toBe("limited");
+    // 闲着照算：别的会话里出过错，不盖过它此刻闲着
+    expect(workspaceAgentActivity(index(rowOf({ session_id: "g1", state: "failed" }), rowOf({ session_id: "dm", state: "idle" })), "w1", "ops", T)).toBe("idle");
   });
 });
 
