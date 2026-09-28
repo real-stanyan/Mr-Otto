@@ -2,7 +2,7 @@
 // hiddenFromCloudTimeline，这里只钉「留下来的那些画成哪一种行」。
 
 import { describe, expect, it } from "vitest";
-import { chatCentre, chatRows, clockLabel, liveRows, nowRowOf, resolveChatTarget } from "../../src/shared/mobileChat.js";
+import { chatCentre, chatRows, clockLabel, liveRows, NOW_PHASE_TEXT, nowRowOf, resolveChatTarget } from "../../src/shared/mobileChat.js";
 import type { SessionEvent } from "../../src/session/events.js";
 import type { CloudSessionRow } from "../../src/shared/supabaseWorkspacesApi.js";
 import type { WorkspaceAgentRow, WorkspaceSnapshot } from "../../src/shared/workspaces.js";
@@ -162,6 +162,18 @@ describe("nowRowOf", () => {
     expect(nowRowOf({ events, streaming: {}, ws: WS })).toMatchObject({ agentId: "a_000000000002", phase: "working" });
     const both = [opening("a_000000000001", 3), step("a_000000000001", 4), opening("a_000000000002", 5), step("a_000000000002", 6)];
     expect(nowRowOf({ events: both, streaming: {}, ws: WS })).toMatchObject({ agentId: "a_000000000001", phase: "working" });
+  });
+  it("完整六档（#1282）：没要刀 = 思考中；要了只读的刀 = 检索中；审批没批 = 等你处理，压过作答", () => {
+    const think = { seq: 4, sessionId: "s1", ts: DAY + 4, type: "request_envelope", agentId: "a_000000000001" } as unknown as SessionEvent;
+    expect(nowRowOf({ events: [opening("a_000000000001", 3), think], streaming: {}, ws: WS })).toMatchObject({ phase: "composing", face: "composing", canStop: true });
+    const read = { seq: 4, sessionId: "s1", ts: DAY + 4, type: "assistant_message", content: "", model: "m", agentId: "a_000000000001", toolCalls: [{ id: "r", name: "read_file", args: {} }] } as unknown as SessionEvent;
+    expect(nowRowOf({ events: [opening("a_000000000001", 3), read], streaming: {}, ws: WS })).toMatchObject({ phase: "searching", face: "searching" });
+    const approval = { seq: 7, sessionId: "s1", ts: DAY + 7, type: "approval_request", callId: "c", toolName: "bash", argsSummary: "", initiatorUid: "me", expiresTs: 0, agentId: "a_000000000002" } as unknown as SessionEvent;
+    const events = [opening("a_000000000001", 3), step("a_000000000001", 4), opening("a_000000000002", 5), step("a_000000000002", 6), approval];
+    expect(nowRowOf({ events, streaming: { a_000000000001: "字" }, ws: WS })).toMatchObject({ agentId: "a_000000000002", phase: "waiting", face: "waiting" });
+  });
+  it("NOW_PHASE_TEXT 与 agentActivity 的说法一致", () => {
+    expect(NOW_PHASE_TEXT).toEqual({ waiting: "等你处理", solving: "作答中", working: "执行中", searching: "检索中", composing: "思考中", queued: "排队中" });
   });
 });
 

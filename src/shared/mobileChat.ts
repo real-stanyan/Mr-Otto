@@ -5,6 +5,7 @@
 // 最底下「此刻」那一行挑哪一只。
 
 import type { ApprovalRequestEvent, ChatRosterChangedEvent, SessionEvent } from "../session/events.js";
+import { ACTIVITY_ORDER, ACTIVITY_TEXT, activityFace, activityFoldOf, activityOf, type AgentActivity } from "./agentActivity.js";
 import { groupRows, rosterRows } from "./agentRoster.js";
 import { splitBubbles } from "./chatBubbles.js";
 import {
@@ -12,7 +13,7 @@ import {
   relayLineText, stopButtonRows, systemNoteText, turnEndedLineText, userRowIdentity, voiceCallCards, type RosterLinePart, type VoiceCallCard,
 } from "./cloudTimeline.js";
 import { callTopicText } from "./mobileCall.js";
-import { dmFaceState, type FaceState } from "./ottoFace/index.js";
+import type { FaceState } from "./ottoFace/index.js";
 import type { CsChatInfo } from "./remote/cloudSession.js";
 import type { CloudSessionRow } from "./supabaseWorkspacesApi.js";
 import { systemNoteDetail } from "./systemNote.js";
@@ -219,9 +220,18 @@ export function liveRows(o: { streaming: Readonly<Record<string, string>>; ws: W
   return out;
 }
 
-export type NowPhase = "queued" | "working" | "solving";
-export const NOW_PHASE_TEXT: Record<NowPhase, string> = { queued: "排队中", working: "执行中", solving: "作答中" };
-const PHASE_RANK: Record<NowPhase, number> = { solving: 0, working: 1, queued: 2 };
+/** 「此刻」那一行的六档（#1282）：欠着一轮的那只，状态必然落在这六档里（出错 / 额度用完 / 闲着说的是没欠） */
+export type NowPhase = "waiting" | "solving" | "working" | "searching" | "composing" | "queued";
+const NOW_PHASES: ReadonlySet<AgentActivity> = new Set<AgentActivity>(["waiting", "solving", "working", "searching", "composing", "queued"]);
+const isNowPhase = (a: AgentActivity): a is NowPhase => NOW_PHASES.has(a);
+export const NOW_PHASE_TEXT: Record<NowPhase, string> = {
+  waiting: ACTIVITY_TEXT.waiting,
+  solving: ACTIVITY_TEXT.solving,
+  working: ACTIVITY_TEXT.working,
+  searching: ACTIVITY_TEXT.searching,
+  composing: ACTIVITY_TEXT.composing,
+  queued: ACTIVITY_TEXT.queued,
+};
 
 export interface NowRow {
   key: string;
@@ -232,7 +242,7 @@ export interface NowRow {
   /** 开场白那条的时刻 */
   ts: number;
   phase: NowPhase;
-  /** 那张脸的表情（与桌面私聊头部同一份判据 dmFaceState） */
+  /** 那张脸的表情（判据同 runtime 写库那一份：shared/agentActivity.ts） */
   face: FaceState;
   /** 「停一下」画不画：只在它真在跑时（排队的那一轮一个 token 都还没跑，没东西可停），
       且只认每只 seq 最小那行（stopButtonRows，否则会停错一轮） */
@@ -241,7 +251,7 @@ export interface NowRow {
 
 /**
  * 最底下那一行 =「此刻」（spec §5.3）：只在有没收口的一轮时出现，一次只画一只——
- * 作答 > 执行 > 排队，同档取 seq 最小（spec §5.6 定的顺序，私聊里只有一只，自然成立）。
+ * 等你处理 > 作答 > 执行 > 检索 > 思考 > 排队（ACTIVITY_ORDER），同档取 seq 最小（spec §5.6 定的顺序，私聊里只有一只，自然成立）。
  * 每只先取它自己 seq 最小的那条（turnLedger 认不出「动静属于哪一轮」，同 dmFaceState）。
  */
 export function nowRowOf(o: {
@@ -256,13 +266,16 @@ export function nowRowOf(o: {
     const cur = earliest.get(t.agentId);
     if (cur === undefined || t.seq < cur.seq) earliest.set(t.agentId, t);
   }
+  const fold = activityFoldOf(o.events);
   let best: { t: OpenTurn; phase: NowPhase } | null = null;
   for (const t of earliest.values()) {
-    const phase: NowPhase = t.state === "queued" ? "queued" : (o.streaming[t.agentId] ?? "") === "" ? "working" : "solving";
+    const a = activityOf(fold, t.agentId, (o.streaming[t.agentId] ?? "") !== "");
+    // 欠着一轮的那只必然落在六档里（与 openTurns 对拍过）；万一没有，按 openTurns 那一格兜底
+    const phase: NowPhase = isNowPhase(a) ? a : t.state === "queued" ? "queued" : "composing";
     if (
       best === null ||
-      PHASE_RANK[phase] < PHASE_RANK[best.phase] ||
-      (PHASE_RANK[phase] === PHASE_RANK[best.phase] && t.seq < best.t.seq)
+      ACTIVITY_ORDER.indexOf(phase) < ACTIVITY_ORDER.indexOf(best.phase) ||
+      (phase === best.phase && t.seq < best.t.seq)
     ) {
       best = { t, phase };
     }
@@ -276,7 +289,7 @@ export function nowRowOf(o: {
     name: agentNameOf(o.ws, t.agentId),
     ts: o.events.find((e) => e.seq === t.seq)?.ts ?? 0,
     phase,
-    face: dmFaceState(turns, o.streaming, t.agentId),
+    face: activityFace(phase),
     canStop: phase !== "queued" && stopButtonRows(turns).has(`${t.seq}:${t.agentId}`),
   };
 }
