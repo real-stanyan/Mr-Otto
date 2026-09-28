@@ -22,4 +22,11 @@ import type { DecisionUses } from "../../../src/shared/decision.js";
 // 宽的一个是 1500ms —— 翻成 `on` 等于让那一处每次都先白等满超时再走今天那条路，而 #1303
 // 说那一发**照样全价计费**。`shadow` 不受影响：legacy 说了算、不等决策那一发，超时只是让
 // `[decision]` 日志少一行对照数据，所以门继续开着。
-export const DECISION_USES: DecisionUses = { dispatch: "shadow" };
+// 2026-09-28：`dispatch` 翻到 on（#1405，ADR-0328）。上面那条的前提解开了：同一条路（runtime
+// 那台 VPS，这天从 AMS 进）九发 0.73–1.79s，超时定成 2s。影子数据一条都等不来（线上一周
+// 零条 `[decision]`：没人在群里不 @ 地说过话），所以用 36 句带标注的群聊场景离线对拍代替——
+// Jev 自己判了 32 句、全对，拿不准的 4 句交给 LLM；今天只走 LLM 的那条路是 19/36（错的全是
+// 推理 token 把 64 的上限吃光、交了白卷——同一个 PR 把上限放到 512、给智谱那款带上
+// `reasoning_effort: "low"`，合起来 36/36）。另外四处照旧不翻：它们的超时还没按各自那条路的
+// 真实分布定（#1300）。
+export const DECISION_USES: DecisionUses = { dispatch: "on" };
