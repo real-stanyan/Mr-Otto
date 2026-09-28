@@ -421,7 +421,11 @@ export function ChatScreen({ route, navigation }: Props) {
   };
   const openCallCard = useMemo(() => {
     if (openCallSeq === null) return null;
-    for (const r of rows) if (r.kind === "call" && r.card.seq === openCallSeq) return r.card;
+    for (const r of rows) {
+      if (r.kind === "call" && r.card.seq === openCallSeq) return r.card;
+      // 回电接通开出来的那一场合在来电记录里（#1411）
+      if (r.kind === "ring" && r.call !== null && r.call.seq === openCallSeq) return r.call;
+    }
     return null;
   }, [rows, openCallSeq]);
 
@@ -598,6 +602,9 @@ export function ChatScreen({ route, navigation }: Props) {
                     deciding={deciding}
                     onDecide={(id, d) => void decide(id, d)}
                     onAgent={(agentId) => navigation.navigate("Agent", isTeam || isGuestChat ? { agentId, workspaceId: ws.id } : { agentId })}
+                    onCallAgent={(agentId) => {
+                      if (ready) void callAgent(agentId);
+                    }}
                     onOpenCall={(seq) => {
                       setOpenCallSeq(seq);
                       setCallSheetOpen(true);

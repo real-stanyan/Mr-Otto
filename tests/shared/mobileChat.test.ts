@@ -3,7 +3,7 @@
 
 import { describe, expect, it } from "vitest";
 import { activityFoldOf } from "../../src/shared/agentActivity.js";
-import { chatCentre, chatRows, clockLabel, liveRows, NOW_PHASE_TEXT, nowRowOf, resolveChatTarget } from "../../src/shared/mobileChat.js";
+import { chatCentre, chatRows, clockLabel, liveRows, NOW_PHASE_TEXT, nowRowOf, resolveChatTarget, ringRecordView } from "../../src/shared/mobileChat.js";
 import { openTurns } from "../../src/shared/turnLedger.js";
 import type { SessionEvent } from "../../src/session/events.js";
 import type { CloudSessionRow } from "../../src/shared/supabaseWorkspacesApi.js";
@@ -353,5 +353,96 @@ describe("通话卡（#1356 A4，spec §5.7 / ADR-0288）", () => {
   it("通话开着时，通话里那几只正在写的那一段不画（hide）——落下来就折进卡里，画了会一闪而过", () => {
     const rows = liveRows({ streaming: { a_000000000001: "正在说", a_000000000002: "别的" }, ws: WS, now: DAY, hide: new Set(["a_000000000001"]) });
     expect(rows.map((r) => r.key)).toEqual(["live-a_000000000002"]);
+  });
+});
+
+describe("chatRows：回电的通话记录（#1411，维护者看过 demo 选的微信式）", () => {
+  const A = "a_000000000001";
+  const B = "a_000000000002";
+  it("接通、而且这一接开出了一场新通话：与那场通话合成一行，通话卡自己不再单独成行", () => {
+    seq = 0;
+    const rows = chatRows({
+      events: [
+        e({ type: "user_message", content: "[Stan]: 部署一下，办完打给我", fromUid: "me", mentions: [] }),
+        e({ type: "call_ring", ringId: "r1", phase: "ringing", fromAgentId: B, toUid: "me", reason: "部署完了", expiresTs: DAY + 45_000, ignorable: true }),
+        e({ type: "voice_call_changed", participants: [{ agentId: B, name: "运维" }], byUid: "me", ignorable: true }),
+        e({ type: "call_ring", ringId: "r1", phase: "answered", fromAgentId: B, toUid: "me", reason: "部署完了", expiresTs: DAY + 45_000, ignorable: true }),
+        e({ type: "assistant_message", content: "部署完了，要你看一眼首页。", model: "m", agentId: B }),
+        e({ type: "voice_call_changed", participants: [], byUid: "me", ignorable: true, ts: DAY + 12_000 }),
+      ],
+      ws: WS, selfUid: "me", now: DAY + 60_000,
+    });
+    expect(rows.map((r) => r.kind)).toEqual(["time", "mine", "ring"]);
+    const ring = rows[2];
+    if (ring?.kind !== "ring") throw new Error("第三行应是来电记录");
+    expect(ring).toMatchObject({ key: "ring-r1", ts: DAY, ringId: "r1", agentId: B, name: "运维", reason: "部署完了", status: "answered", toMe: true });
+    expect(ring.call?.seq).toBe(2);
+    expect(ringRecordView(ring, false)).toEqual({ icon: "phone", tone: "plain", line: "通话时长 00:12", tap: "open" });
+    expect(ringRecordView(ring, true)).toEqual({ icon: "phone", tone: "plain", line: "运维 打来的语音通话 00:12 · 1 句", tap: "open" });
+  });
+
+  it("窗口裁掉了 ringing（尾巴模式第一页下界是通话开场那一条）：不合并，通话卡照常单独成行", () => {
+    seq = 0;
+    const rows = chatRows({
+      events: [
+        e({ type: "voice_call_changed", participants: [{ agentId: B, name: "运维" }], byUid: "me", ignorable: true }),
+        e({ type: "call_ring", ringId: "r9", phase: "answered", fromAgentId: B, toUid: "me", reason: "部署完了", expiresTs: DAY + 45_000, ignorable: true }),
+        e({ type: "assistant_message", content: "部署完了。", model: "m", agentId: B }),
+        e({ type: "voice_call_changed", participants: [], byUid: "me", ignorable: true, ts: DAY + 12_000 }),
+      ],
+      ws: WS, selfUid: "me", now: DAY + 60_000,
+    });
+    // ringing 不在窗内：ring 行不落，那张通话卡也不许被「合并」吞掉
+    expect(rows.map((r) => r.kind)).toEqual(["time", "call"]);
+  });
+
+  it("接进一场本来就开着的通话（锁屏没挂，ADR-0320）：各画各的——通话卡在它自己的位置，来电那一行写已接通", () => {
+    seq = 0;
+    const rows = chatRows({
+      events: [
+        e({ type: "voice_call_changed", participants: [{ agentId: A, name: "开发" }], byUid: "me", ignorable: true }),
+        e({ type: "call_ring", ringId: "r2", phase: "ringing", fromAgentId: B, toUid: "me", reason: "要你拍板", expiresTs: DAY + 45_000, ignorable: true }),
+        e({ type: "voice_call_changed", participants: [{ agentId: A, name: "开发" }, { agentId: B, name: "运维" }], byUid: "me", ignorable: true }),
+        e({ type: "call_ring", ringId: "r2", phase: "answered", fromAgentId: B, toUid: "me", reason: "要你拍板", expiresTs: DAY + 45_000, ignorable: true }),
+      ],
+      ws: WS, selfUid: "me", now: DAY + 60_000,
+    });
+    expect(rows.map((r) => r.kind)).toEqual(["time", "call", "ring"]);
+    const ring = rows[2];
+    if (ring?.kind !== "ring") throw new Error("第三行应是来电记录");
+    expect(ring.call).toBeNull();
+    expect(ringRecordView(ring, false)).toEqual({ icon: "phone", tone: "plain", line: "已接通", tap: null });
+  });
+
+  it("还挂在响但过了时限（runtime 那一刻没在跑）：按未接画；打给我的点一下回拨", () => {
+    seq = 0;
+    const rows = chatRows({
+      events: [e({ type: "call_ring", ringId: "r3", phase: "ringing", fromAgentId: B, toUid: "me", reason: "要你拍板", expiresTs: DAY + 45_000, ignorable: true })],
+      ws: WS, selfUid: "me", now: DAY + 46_000,
+    });
+    const ring = rows.find((r) => r.kind === "ring");
+    if (ring?.kind !== "ring") throw new Error("应有来电记录");
+    expect(ring.status).toBe("missed");
+    expect(ringRecordView(ring, false)).toEqual({ icon: "phone-missed", tone: "missed", line: "未接来电 · 点一下回拨", tap: "callback" });
+    expect(ringRecordView(ring, true)).toEqual({ icon: "phone-missed", tone: "missed", line: "运维 打来电话 · 未接 · 点一下回拨", tap: "callback" });
+  });
+
+  it("正在响：打给我的点一下接；打给群里别人的写「X 打给 某某」、不能点", () => {
+    const WS2: WorkspaceSnapshot = { ...WS, members: [...WS.members, { uid: "u2", role: "member", label: "小红", avatarUrl: "" }] };
+    seq = 0;
+    const mine = chatRows({
+      events: [e({ type: "call_ring", ringId: "r4", phase: "ringing", fromAgentId: B, toUid: "me", reason: "要你拍板", expiresTs: DAY + 45_000, ignorable: true })],
+      ws: WS2, selfUid: "me", now: DAY + 1_000,
+    }).find((r) => r.kind === "ring");
+    if (mine?.kind !== "ring") throw new Error("应有来电记录");
+    expect(ringRecordView(mine, false)).toEqual({ icon: "phone-incoming", tone: "ringing", line: "来电 · 正在响 · 点一下接", tap: "answer" });
+    seq = 0;
+    const theirs = chatRows({
+      events: [e({ type: "call_ring", ringId: "r5", phase: "ringing", fromAgentId: B, toUid: "u2", reason: "要你拍板", expiresTs: DAY + 45_000, ignorable: true })],
+      ws: WS2, selfUid: "me", now: DAY + 1_000,
+    }).find((r) => r.kind === "ring");
+    if (theirs?.kind !== "ring") throw new Error("应有来电记录");
+    expect(theirs).toMatchObject({ toMe: false, toName: "小红" });
+    expect(ringRecordView(theirs, true)).toEqual({ icon: "phone-incoming", tone: "ringing", line: "运维 打给 小红 · 正在响", tap: null });
   });
 });
