@@ -38,12 +38,13 @@ export function useInbox(): Inbox {
         selfUid,
         home: home.home === null ? null : { ws: home.home, chats: home.chats, lasts: home.lasts },
         teams: teams.teams,
+        guests: teams.guests,
         friends: threads,
         mentions: teams.mentions,
         seen,
         openKey,
       }),
-    [selfUid, home.home, home.chats, home.lasts, teams.teams, teams.mentions, threads, seen, openKey],
+    [selfUid, home.home, home.chats, home.lasts, teams.teams, teams.guests, teams.mentions, threads, seen, openKey],
   );
   const incoming = (friends.rows ?? []).filter((r) => r.status === "pending" && r.direction === "incoming").length;
   return { selfUid, rows, unreadChats: inboxUnreadChats(rows), threads, incoming, loaded: home.loaded && teams.loaded };

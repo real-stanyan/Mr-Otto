@@ -168,10 +168,10 @@ describe("状态推送不许抹掉 chat 那一格（#1301）", () => {
 
   it("welcome 之前那几次推送不带 chat：种下去的那份原样留着", () => {
     useChat.setState({
-      cloudSession: makeCloudSession({ chat: { kind: "group", agentIds: ["admin"] } }),
+      cloudSession: makeCloudSession({ chat: { kind: "group", agentIds: ["admin"], humans: [] } }),
     });
     fireStatus(status());
-    expect(useChat.getState().cloudSession?.chat).toEqual({ kind: "group", agentIds: ["admin"] });
+    expect(useChat.getState().cloudSession?.chat).toEqual({ kind: "group", agentIds: ["admin"], humans: [] });
   });
 
   it("welcome 说是团队会话（null）：覆盖得掉，不会永远卡在「还不知道」", () => {
@@ -181,16 +181,16 @@ describe("状态推送不许抹掉 chat 那一格（#1301）", () => {
   });
 
   it("welcome 带着名单：覆盖种子（权威那份赢）", () => {
-    useChat.setState({ cloudSession: makeCloudSession({ chat: { kind: "group", agentIds: ["admin"] } }) });
-    fireStatus(status({ chat: { kind: "group", agentIds: ["admin", "a_000000000001"] } }));
+    useChat.setState({ cloudSession: makeCloudSession({ chat: { kind: "group", agentIds: ["admin"], humans: [] } }) });
+    fireStatus(status({ chat: { kind: "group", agentIds: ["admin", "a_000000000001"], humans: [] } }));
     expect(useChat.getState().cloudSession?.chat).toEqual({
-      kind: "group", agentIds: ["admin", "a_000000000001"],
+      kind: "group", agentIds: ["admin", "a_000000000001"], humans: [],
     });
   });
 
   it("别的会话的推送一个字都不动这一格", () => {
-    useChat.setState({ cloudSession: makeCloudSession({ chat: { kind: "dm", agentIds: ["a_000000000001"] } }) });
+    useChat.setState({ cloudSession: makeCloudSession({ chat: { kind: "dm", agentIds: ["a_000000000001"], humans: [] } }) });
     fireStatus(status({ sessionId: "别的", chat: null }));
-    expect(useChat.getState().cloudSession?.chat).toEqual({ kind: "dm", agentIds: ["a_000000000001"] });
+    expect(useChat.getState().cloudSession?.chat).toEqual({ kind: "dm", agentIds: ["a_000000000001"], humans: [] });
   });
 });

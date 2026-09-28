@@ -368,6 +368,9 @@ async function scenarioAssemblyResilience(): Promise<void> {
     async updateChatRoster() {
       return { kind: "not_group" as const, message: "不会被调用" };
     },
+    isGuest() {
+      return false;
+    },
     async settled() {
       /* 不会被调用 */
     },

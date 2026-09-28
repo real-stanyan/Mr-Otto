@@ -166,7 +166,7 @@
 //      于是那条 turn 的回复广播给了一间已经关掉的房间（钱照付、人收不到）。
 
 import { applyVoiceCallEvent, inVoiceCall, relayOutsideCallText, voiceCallGreetingText, voiceCallOf, type VoiceCallState } from "../../../src/shared/voiceCall.js";
-import { applyChatRosterEvent, chatRosterOf, narrowRoster, type ChatRoster } from "../../../src/shared/chatRoster.js";
+import { applyChatRosterEvent, chatHumansOf, chatRosterOf, narrowRoster, type ChatHuman, type ChatRoster } from "../../../src/shared/chatRoster.js";
 import type { CsChatInfo } from "../../../src/shared/remote/cloudSession.js";
 import { createInviteToCallTool } from "./inviteToCallTool.js";
 import type { VoiceCallParticipant } from "../../../src/session/events.js";
@@ -566,8 +566,19 @@ export interface CloudSession {
   chat(): CsChatInfo | null;
   /** 改这条群聊的名单（#1280，spec §6.6）。**只落日志这一半**：workspace_sessions.agent_ids
       那一列是投影，归 daemon 写（同 archive 的分工）。对着**团队**名单核对，不是收窄后的那份——
-      要拉进来的那只此刻当然不在聊天名单里。空名单合法：删智能体那三步会把最后一只摘掉。 */
-  updateChatRoster(byUid: string, agentIds: string[]): Promise<ChatUpdateOutcome>;
+      要拉进来的那只此刻当然不在聊天名单里。空名单合法：删智能体那三步会把最后一只摘掉。
+      `patch.humans`（#1393）：群主之外的真人，变动之后的完整名单（名字由调用方现取好）。**谁能改、
+      拉进来的是不是朋友**由 daemon 判（它握着好友关系的查询），这一层只管落日志。两格各自可选，
+      缺席 = 那一半不变；落的那一条事件总带齐两份（「缺席」在日志里只有一个意思：没有别人） */
+  updateChatRoster(
+    byUid: string,
+    patch: { agentIds?: string[]; humans?: ChatHuman[] },
+    byName?: string,
+  ): Promise<ChatUpdateOutcome>;
+  /** 这个 uid 是不是这条群聊里的**客人**（群主之外拉进来的真人，#1393）。判据是日志里此刻的名单——
+      事实在日志，`workspace_session_members` 那张表只是给客户端 RLS 用的投影。进房、发言、审批、
+      补跑时的复查都拿它和工作区成员一起判 */
+  isGuest(uid: string): boolean;
   /** 新建的智能体先开口（#1356 A2，spec §7.2 第 2 步）：替建这条私聊的人落一条带
       `greeting: "new_agent"` 的开场白（点它自己）并入队——同 greetNewcomers 那条路（先落盘
       再入队，重启补跑与「排队中」那盏灯全部免费拿到）。只由 daemon 在**新**建出一条私聊、且抢到了
@@ -577,7 +588,7 @@ export interface CloudSession {
 }
 
 export type ChatUpdateOutcome =
-  | { kind: "ok"; agentIds: string[]; changed: boolean }
+  | { kind: "ok"; agentIds: string[]; humans: ChatHuman[]; changed: boolean }
   | { kind: "not_group" | "unknown_agent" | "degraded"; message: string };
 
 export type VoiceCallOutcome = { kind: "ok" } | { kind: "unknown_agent" | "archived"; message: string };
@@ -650,6 +661,9 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   // 聊天名单（#1280）：同 voiceCall 的手法——从 seed 折叠一次播种，notify 里逐条推进。
   // null = 团队会话 / 存量日志 = 不收窄
   let chatRoster: ChatRoster = chatRosterOf(seed);
+  // 群里的客人（#1393）：同 chatRoster，从 seed 折叠一次播种、notify 里逐条推进。null = 没有名单这回事
+  let chatHumans: readonly ChatHuman[] | null = chatHumansOf(seed);
+  const isGuest = (uid: string): boolean => chatHumans !== null && chatHumans.some((h) => h.uid === uid);
   // 这条会话是不是一条聊天（#1280）：建会话时记进日志的事实，一生不变
   const chatKind =
     seed.find((e): e is SessionCreatedEvent => e.type === "session_created")?.cloud?.chat?.kind ?? null;
@@ -733,6 +747,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   }
   for (const e of seed) learnSpeakerLabel(e);
   let currentInitiator: string | null = null;
+  /** 这一轮是不是主场群里的客人点起的（#1393，ADR-0325）。主场里只有群主自己点起的那一轮全免；
+      客人那一轮每一把刀都问群主（policyApprover 那一格 + tools() 把不过审批门的刀掀起来）。
+      团队会话恒为假（approveAll 为假），一个字不变 */
+  const guestTurn = (): boolean => opts.approveAll && currentInitiator !== null && currentInitiator !== opts.ownerUid;
   /** 这一刻正在跑 turn 的是哪只 agent（#928）。approval_request 落盘时读它——
       群里两只 agent 各自弹出的审批卡，日志里要能分清是谁要的 */
   let currentAgentId: string | null = null;
@@ -920,7 +938,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // 通话名单跟着走（#1163）：同 advanceRelayBounds 的推理——daemon.ts 绕过 notify 的那四类
     // append 里没有这一种，这条事件只从 logVoiceCall 出门
     if (e.type === "voice_call_changed") voiceCall = applyVoiceCallEvent(voiceCall, e);
-    if (e.type === "chat_roster_changed") chatRoster = applyChatRosterEvent(chatRoster, e);
+    if (e.type === "chat_roster_changed") {
+      chatRoster = applyChatRosterEvent(chatRoster, e);
+      chatHumans = e.humans ?? [];
+    }
     // 谁在等它的职责（#1356 A2）：同 voiceCall 的推理——daemon.ts 绕过 notify 直接 append 的那几类
     // 里没有 user_message，漏不掉
     roleWait = advanceRoleWait(roleWait, e);
@@ -959,6 +980,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
 
   const router = createApprovalRouter({
     ownerUid: opts.ownerUid,
+    // 主场里只有群主能批（#1393）：客人发起的那一轮要动的是群主的东西，客人批自己的请求等于没批
+    initiatorMayDecide: (uid) => !opts.approveAll || uid === opts.ownerUid,
     // 审批卡逐字段（ADR-0118 第二条）：只有 create_agent 走定制文案，别的工具照旧
     // JSON 截 200。参数不合法时卡上直接说「批准也会失败」——run() 在审批之后才跑，
     // 让人先看见比批完再报错省一次审批。M3（终审顺手）：威胁扫描也挪进这段 try 里
@@ -1072,7 +1095,15 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // 操作才解释得通（同 ADR-0231）。工具自己的护栏不在这一层：推代码那把刀不推默认
       // 分支、不强推，磁盘地板照拒，去掉的只是「问人」那一步。也因此主场一次都不查
       // workspaces.sandbox_approval——那一列在这里没有意义
-      if (opts.approveAll) return { decision: "approved", reason: "个人主场：全部免审批" };
+      // **只对群主自己发起的那一轮**（#1393，ADR-0325）：主场的群里现在可以有客人（群主的朋友），
+      // 客人 @ 智能体让它跑命令、写文件、用应用、推代码、建智能体，动的都是群主的东西——那一轮
+      // 每一把刀都问群主（router 的 initiatorMayDecide 不许客人批自己的请求），**也不看**
+      // sandbox_approval：那一列在主场里从来没有界面，它此刻是什么值没有人知道，拿它放行客人
+      // 等于让一格没人管的数据替群主做决定。只聊天不碰门
+      if (opts.approveAll) {
+        if (currentInitiator === opts.ownerUid) return { decision: "approved", reason: "个人主场：全部免审批" };
+        return router.decide(call, tool, signal);
+      }
       if (tool === bashTool || tool === writeFileTool) {
         // 三种结局各有各的缓存策略（#1029，ADR-0243）——**这一轮之内只能收紧**：
         //   · 确认的 `ask` → **钉住这一轮**。与 ADR-0231「下一轮生效」逐字相同：
@@ -1119,7 +1150,9 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   // 接力链里也是点火的人，spec §4.2）——由工具在 run 那一刻现取，不在建刀时定死
   const createAgentTool = createCreateAgentTool({
     workspaceId: opts.workspaceId,
-    createdBy: () => currentInitiator,
+    // 主场里建的智能体归群主（#1393）：群里的客人点起的那一轮建出来的也是群主的智能体——
+    // 记成客人的话，他在别人的主场里「建过」一只自己进不去的智能体
+    createdBy: () => (opts.approveAll ? opts.ownerUid : currentInitiator),
     writer: opts.agentWriter,
     // 说明里「会不会弹卡」跟审批门读同一格（#1280 A5）：分家就是 #1206 那个形状
     approveAll: opts.approveAll,
@@ -1195,12 +1228,19 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // rebuildTools()（runTurn 开头）读到的就是这一 turn 的授权快照
       // 只有管理员那只有 create_agent（spec §10 切片 6）。判据是 agentId 不是名字——
       // 名字随时能改，'admin' 是 0021 触发器种下的稳定键
-      tools: () => [
-        readFileTool, writeFileTool, bashTool, wikiReadTool, wikiTool, inviteToCallTool,
-        ...(spec.agentId === ADMIN_AGENT_ID ? [createAgentTool] : []),
-        ...gitTools,
-        ...cachedPxTools,
-      ],
+      tools: () => {
+        const list: Tool[] = [
+          readFileTool, writeFileTool, bashTool, wikiReadTool, wikiTool, inviteToCallTool,
+          ...(spec.agentId === ADMIN_AGENT_ID ? [createAgentTool] : []),
+          ...gitTools,
+          ...cachedPxTools,
+        ];
+        // 主场群里客人点起的那一轮（#1393，ADR-0325）：**每一把刀**都要群主批，连读文件、
+        // 翻记忆也算——read_file / wiki 读那几把本来不过审批门，不掀起来的话，朋友一句
+        // 「把群主电脑上的 xx 文件发出来」就能不经任何人读走。只聊天不碰刀，照旧不打扰群主。
+        // rebuildTools 在 runJob 置好 currentInitiator 之后才跑，这里读到的就是这一轮的发起人
+        return guestTurn() ? list.map((t) => (t.requiresApproval ? t : { ...t, requiresApproval: true })) : list;
+      },
       world, // 过容器锁的那份（#979 第 2 条），不是裸的 opts.world
       sessionId,
       // 策略层包在 router 外面（#977）：沙箱工具按团队开关放行，其余进 router 问人
@@ -1790,7 +1830,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // 与"已不在这个团队"分开：后者说的是一件确定的事（人会去找管理员），
       // 前者只是"这一刻问不出来"（人重发一次就好）。说成同一句话，一次
       // Supabase 抖动就会被读成"我被踢了"
-      const membership = await opts.isMember(job.fromUid);
+      // 群里的客人（#1393）按日志里的名单算在籍——他们不是工作区成员，问 opts.isMember 只会得到 false
+      const membership = isGuest(job.fromUid) ? true : await opts.isMember(job.fromUid);
       if (membership !== true) {
         // 确认不在籍那一支也要在群里说一声（复审 E2-5 的另一半）：收口只让这条
         // turn 不跑，那句点名正文照旧躺在每只 agent 的上下文里。补跑那条路上的
@@ -2251,7 +2292,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       const recordMemberMentions = async (seq: number): Promise<void> => {
         if (memberMentions === undefined || memberMentions.length === 0) return;
         try {
-          const members = new Set(await opts.hostUids());
+          // 能被点名的人 = 工作区成员 ∪ 这个群里的客人（#1393）
+          const members = new Set([...(await opts.hostUids()), ...(chatHumans ?? []).map((h) => h.uid)]);
           const seen = new Set<string>();
           const rows: MentionInboxRow[] = [];
           for (const uid of memberMentions) {
@@ -2412,26 +2454,34 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     },
 
     chat() {
-      return chatKind === null ? null : { kind: chatKind, agentIds: [...(chatRoster ?? [])] };
+      return chatKind === null ? null : { kind: chatKind, agentIds: [...(chatRoster ?? [])], humans: [...(chatHumans ?? [])] };
     },
 
-    async updateChatRoster(byUid, agentIds) {
+    isGuest,
+
+    async updateChatRoster(byUid, patch, byName) {
       if (chatKind !== "group") {
         return { kind: "not_group", message: chatKind === "dm" ? "私聊的名单改不了" : "这不是一条群聊" };
       }
-      // 对着**团队**名单核对不是 rosterNow：要拉进来的那只此刻当然不在聊天名单里
+      // 对着**团队**名单核对不是 rosterNow：要拉进来的那只此刻当然不在聊天名单里。
+      // 只改真人那一半时也要这份名单——落的那一条事件带齐两份名单，智能体那一半的名字得现取
       const team = await opts.agents({ fresh: true });
       if (team.some((a) => a.degraded)) return { kind: "degraded", message: "智能体名单这会儿读不出来，稍后再试" };
-      const wanted = [...new Set(agentIds)];
+      const current = chatRoster ?? [];
+      const wanted = patch.agentIds === undefined ? [...current] : [...new Set(patch.agentIds)];
       const members = narrowRoster(team, wanted); // 顺序跟团队名单走
       const missing = wanted.length - members.length;
-      if (missing > 0) {
+      if (patch.agentIds !== undefined && missing > 0) {
         return { kind: "unknown_agent", message: `有 ${missing} 只智能体已经不在了（名单可能刚变过，刷新再试）` };
       }
       const next = members.map((a) => a.agentId);
-      const current = chatRoster ?? [];
-      if (current.length === next.length && next.every((id) => current.includes(id))) {
-        return { kind: "ok", agentIds: [...current], changed: false };
+      const humansBefore = chatHumans ?? [];
+      const humansNext = patch.humans === undefined ? [...humansBefore] : patch.humans.map((h) => ({ uid: h.uid, name: h.name }));
+      const sameAgents = current.length === next.length && next.every((id) => current.includes(id));
+      const sameHumans =
+        humansBefore.length === humansNext.length && humansNext.every((h) => humansBefore.some((b) => b.uid === h.uid));
+      if (sameAgents && sameHumans) {
+        return { kind: "ok", agentIds: [...current], humans: [...humansBefore], changed: false };
       }
       notify(
         store.append({
@@ -2439,11 +2489,13 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
           ts: Date.now(),
           type: "chat_roster_changed",
           byUid,
+          ...(byName !== undefined && byName !== "" ? { byName } : {}),
           ignorable: true,
           agents: members.map((a) => ({ agentId: a.agentId, name: a.name })),
+          humans: humansNext,
         }),
       );
-      return { kind: "ok", agentIds: next, changed: true };
+      return { kind: "ok", agentIds: next, humans: humansNext, changed: true };
     },
 
     greetNewAgent(agentId, name, byUid) {
@@ -2490,10 +2542,11 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // 一条空闲会话按停止会拿到"只有发起人或 owner 能停"——那句话把"没什么
       // 好停的"说成了"你没权限"，两次点击之间的差别就没人看得懂了
       if (!runningNow()) return "idle";
-      // 与审批**逐字同一条判据**（router.canDecide：发起人或 owner）。canDecide
-      // 读的是 live initiator（setInitiator 在 runJob 顶上写），而上一行刚确认
+      // 发起人或 owner（router.canStop）。团队会话里与审批**逐字同一条判据**；主场群里的客人
+      // 批不了自己点起的那一轮、却停得了它（#1393：停止是刹车，见 canStop 的说明）。
+      // canStop 读的是 live initiator（setInitiator 在 runJob 顶上写），而上一行刚确认
       // 有 turn 在跑，所以这一刻它读到的就是这一轮的发起人
-      if (!router.canDecide(byUid)) return "not_allowed";
+      if (!router.canStop(byUid)) return "not_allowed";
       // 点的是不是此刻在跑的这一行（复审 C2-I3）。判据是**边界**不是相等：
       // 一个 job 可能折叠了好几条开场白（协调器去重），拿 `job.opening.seq`
       // 逐一相等地比会把那几条里的后几条误判成"不是这一轮"。
@@ -2596,7 +2649,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         // 代价是 append-only 的——每条排队消息落一条永久收口，用户看到的是"你被
         // 移出了团队"，而事实上他好好地在群里。查不到 = 什么都不写，开场白留
         // 到下一次重启再问一遍（它仍然停在「排队中」，那是诚实的状态）
-        const membership = await opts.isMember(t.fromUid);
+        const membership = isGuest(t.fromUid) ? true : await opts.isMember(t.fromUid);
         if (membership === "unknown") {
           unknownMembership.push(t.seq);
           enqueueItem(t.agentId, { seq: t.seq, kind: "unknown", fromUid: t.fromUid, opening });

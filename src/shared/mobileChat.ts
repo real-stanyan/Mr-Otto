@@ -46,12 +46,18 @@ export function resolveChatTarget(
   if (target.kind === "agent") {
     const r = rosterRows(home, chats).find((x) => x.agentId === target.agentId);
     if (r === undefined) return null;
-    return { kind: "dm", sessionId: r.sessionId, agentIds: [r.agentId], title: r.name, seed: { kind: "dm", agentIds: [r.agentId] } };
+    return { kind: "dm", sessionId: r.sessionId, agentIds: [r.agentId], title: r.name, seed: { kind: "dm", agentIds: [r.agentId], humans: [] } };
   }
   const g = groupRows(home, chats).find((x) => x.sessionId === target.sessionId);
   if (g === undefined) return null;
+  // 群里我拉进来的朋友（#1393）：清单那一行的投影，名字是 profiles 此刻的样子；welcome 到了由日志接管
+  const people = chats.find((c) => c.id === g.sessionId)?.humans ?? [];
+  const title = g.name.trim() !== "" ? g.name : people.map((p) => p.name).join("、");
   // seed 不走 chatSeedOf：这里的 agentIds 已经与现存名册求过交集（群里被删的智能体不进来），chatSeedOf 读的是清单那一行的原值
-  return { kind: "group", sessionId: g.sessionId, agentIds: g.agentIds, title: g.name, seed: { kind: "group", agentIds: [...g.agentIds] } };
+  return {
+    kind: "group", sessionId: g.sessionId, agentIds: g.agentIds, title,
+    seed: { kind: "group", agentIds: [...g.agentIds], humans: people.map((p) => ({ uid: p.uid, name: p.name })) },
+  };
 }
 
 export type ChatRow =
@@ -71,7 +77,8 @@ export type ChatRow =
       都折进卡里，不单独成行。`topic` = 卡的第二行「聊的什么」，null = 不画那一行 */
   | { kind: "call"; key: string; ts: number; card: VoiceCallCard; topic: string | null }
   /** 还没人批的一张审批卡（#1386：团队群里有审批，ADR-0231）。`canDecide` = 我是发起这一轮的人或群主
-      （同 cloudSessionClient 转给审批层的那道判据）；否则只写「等 X 批」 */
+      （同 cloudSessionClient 转给审批层的那道判据）；否则只写「等 X 批」。主场的群里（#1393）只有群主批得了：
+      客人点起的那一轮动的是群主的东西 */
   | {
     kind: "approval"; key: string; ts: number; callId: string; title: string;
     fields: { label: string; value: string }[]; summary: string; canDecide: boolean; waitingFor: string;
@@ -140,6 +147,8 @@ export function chatRows(o: {
   now: number;
   /** 这条会话的主人（群主）。缺席 = 不知道，那就只有发起这一轮的人批得了 */
   ownerUid?: string;
+  /** 只有群主批得了（个人主场里的会话，#1393，同 runtime 的 initiatorMayDecide）。缺席 = 团队那条规矩 */
+  ownerOnly?: boolean;
 }): ChatRow[] {
   const items: ItemRow[] = [];
   let prevRoster: ChatRosterChangedEvent | null = null;
@@ -171,11 +180,14 @@ export function chatRows(o: {
         items.push({ kind: "note", key: `e${e.seq}`, ts: e.ts, text: `${title}：没人批，已经过期`, tone: "muted", detail: null });
         continue;
       }
-      const canDecide = e.initiatorUid === o.selfUid || (o.ownerUid !== undefined && o.ownerUid !== "" && o.ownerUid === o.selfUid);
+      const iAmOwner = o.ownerUid !== undefined && o.ownerUid !== "" && o.ownerUid === o.selfUid;
+      const canDecide = iAmOwner || (o.ownerOnly !== true && e.initiatorUid === o.selfUid);
+      // 等谁批：主场里等群主（客人批不了自己的请求），团队里等发起这一轮的人
+      const waitingUid = o.ownerOnly === true && o.ownerUid !== undefined && o.ownerUid !== "" ? o.ownerUid : e.initiatorUid;
       items.push({
         kind: "approval", key: `e${e.seq}`, ts: e.ts, callId: e.callId, title,
         fields: e.argsFields ?? [], summary: e.argsSummary, canDecide,
-        waitingFor: e.initiatorUid === o.selfUid ? "我" : labelOf(o.ws, e.initiatorUid),
+        waitingFor: waitingUid === o.selfUid ? "我" : labelOf(o.ws, waitingUid),
       });
       continue;
     }

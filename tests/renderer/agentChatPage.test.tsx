@@ -133,9 +133,14 @@ describe("CloudSessionPage 的 chat 属性（#1280）", () => {
 
   it("日期分隔条只在聊天里画", () => {
     const now = Date.now();
+    // 「昨天」按**自然日**造（#1373）：dayLabel 判的是自然日，`now - 26h` 在本地时间
+    // 00:00–01:59 之间落在前天，于是这条用例每天有两个小时必红（CI 跑在 UTC，那两个小时就是 UTC 的）
+    const yesterday = new Date(now);
+    yesterday.setDate(yesterday.getDate() - 1);
+    yesterday.setHours(12, 0, 0, 0);
     const events: SessionEvent[] = [
-      { ...base, seq: 0, ts: now - 26 * 3600_000, type: "session_created", workspace: "/work" },
-      chatMsg(1, now - 26 * 3600_000, "昨天说的"),
+      { ...base, seq: 0, ts: yesterday.getTime(), type: "session_created", workspace: "/work" },
+      chatMsg(1, yesterday.getTime(), "昨天说的"),
       chatMsg(2, now, "今天说的"),
     ];
     renderPage({ chat: DM, events });
@@ -147,11 +152,15 @@ describe("CloudSessionPage 的 chat 属性（#1280）", () => {
   });
 
   it("同一天的两条只插一条分隔条", () => {
-    const now = Date.now();
+    // 两条都放在今天中午（#1373）：`now - 1000` 在零点过后第一秒里会落到昨天。
+    // 比 now 晚也没关系——未来的时间戳按今天算（dayLabelOf 那一格）
+    const noon = new Date();
+    noon.setHours(12, 0, 0, 0);
+    const t = noon.getTime();
     const events: SessionEvent[] = [
-      { ...base, seq: 0, ts: now, type: "session_created", workspace: "/work" },
-      chatMsg(1, now - 1000, "一"),
-      chatMsg(2, now, "二"),
+      { ...base, seq: 0, ts: t, type: "session_created", workspace: "/work" },
+      chatMsg(1, t - 1000, "一"),
+      chatMsg(2, t, "二"),
     ];
     renderPage({ chat: DM, events });
     expect(screen.getAllByText("今天")).toHaveLength(1);

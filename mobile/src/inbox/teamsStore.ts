@@ -6,10 +6,12 @@
 // · 刷新时机由界面决定（进前台、回到列表），不轮询；同时来的几次合成一次；
 // · 换号整份清掉。
 // 点名收件箱（有人在群里 @ 我，ADR-0256）一起拉：列表那一行的「[有人@我]」读它；进房 = 已读（照桌面）。
+// 别人主场里拉我进去的群（#1393）也在这里一起拉：它们同是「有真人的群」，刷新时机一样。
 import { useSyncExternalStore } from "react";
+import type { GuestChat } from "../../../src/shared/chatGuests.js";
 import type { SessionLast } from "../../../src/shared/sessionLast.js";
 import {
-  fetchCloudLasts, fetchWorkspace, findHomeWorkspace, listCloudSessions, listMentions, listWorkspaces, markMentionsRead,
+  fetchCloudLasts, fetchWorkspace, findHomeWorkspace, listCloudSessions, listGuestChats, listMentions, listWorkspaces, markMentionsRead,
   type CloudSessionRow,
 } from "../../../src/shared/supabaseWorkspacesApi.js";
 import type { TeamInput } from "../../../src/shared/wechatInbox.js";
@@ -22,12 +24,14 @@ import { supabase } from "../supabase.js";
 
 export interface TeamsState {
   teams: TeamInput[];
+  /** 别人主场里拉我进去的群（#1393）。这一趟没读到时留着上一次的（「读不到」不许说成「被移出了所有群」） */
+  guests: GuestChat[];
   mentions: WorkspaceMentionRow[];
   loaded: boolean;
   loadError: string | null;
 }
 
-const INITIAL: TeamsState = { teams: [], mentions: [], loaded: false, loadError: null };
+const INITIAL: TeamsState = { teams: [], guests: [], mentions: [], loaded: false, loadError: null };
 const store = createStore<TeamsState>(INITIAL);
 
 export function useTeams(): TeamsState {
@@ -41,6 +45,11 @@ export function teamsSnapshot(): TeamsState {
 /** 这个团队的快照（团队群的聊天页 / 聊天信息 / 别人的智能体资料页用） */
 export function teamWorkspace(workspaceId: string): WorkspaceSnapshot | null {
   return store.get().teams.find((t) => t.ws.id === workspaceId)?.ws ?? null;
+}
+
+/** 拉我进去的那条群（#1393） */
+export function guestChat(workspaceId: string, sessionId: string): GuestChat | null {
+  return store.get().guests.find((g) => g.ws.id === workspaceId && g.session.id === sessionId) ?? null;
 }
 
 /** 这条团队会话在清单里的那一行 */
@@ -97,6 +106,7 @@ export function refreshTeams(): Promise<void> {
       const ids = rows.filter((r) => r.id !== homeId).map((r) => r.id);
       const settled = await Promise.allSettled(ids.map(loadTeam));
       const mentions = await listMentions(supabase, uid).catch(() => null);
+      const guests = await listGuestChats(supabase, uid).catch(() => null);
       if (!live()) return;
       const prev = new Map(store.get().teams.map((t) => [t.ws.id, t]));
       const teams: TeamInput[] = [];
@@ -113,6 +123,7 @@ export function refreshTeams(): Promise<void> {
       });
       store.set((s) => ({
         teams,
+        guests: guests ?? s.guests,
         mentions: mentions ?? s.mentions,
         loaded: true,
         loadError: failed > 0 ? `有 ${failed} 个团队这次没读到，先画上一次的。` : null,

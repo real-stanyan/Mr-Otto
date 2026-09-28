@@ -198,3 +198,32 @@ describe("接力棒上的审批超时（#959）", () => {
     vi.useRealTimers();
   });
 });
+
+describe("主场群里的客人（#1393）", () => {
+  const homeRouter = () =>
+    createApprovalRouter({ ownerUid: "owner", onRequest: () => {}, initiatorMayDecide: (uid) => uid === "owner" });
+
+  it("客人点起的那一轮：客人批不了自己的请求，群主批得了", async () => {
+    const r = homeRouter();
+    r.setInitiator("guest");
+    const p = r.decide(call, tool);
+    expect(r.canDecide("guest")).toBe(false);
+    expect(r.resolve("c1", "guest", "approved")).toBe("not_allowed");
+    expect(r.resolve("c1", "owner", "approved")).toBe("ok");
+    await expect(p).resolves.toMatchObject({ decision: "approved" });
+  });
+
+  it("停止与审批分开判：客人叫得停自己点起的那一轮，路人叫不停", () => {
+    const r = homeRouter();
+    r.setInitiator("guest");
+    expect(r.canStop("guest")).toBe(true);
+    expect(r.canStop("owner")).toBe(true);
+    expect(r.canStop("mallory")).toBe(false);
+  });
+
+  it("缺席 initiatorMayDecide = 团队会话：两个判据逐字相同（#957 A-2 原样成立）", () => {
+    const r = createApprovalRouter({ ownerUid: "owner", onRequest: () => {} });
+    r.setInitiator("alice");
+    for (const uid of ["alice", "owner", "mallory"]) expect(r.canStop(uid)).toBe(r.canDecide(uid));
+  });
+});

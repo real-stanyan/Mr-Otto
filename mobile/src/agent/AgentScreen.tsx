@@ -1,6 +1,7 @@
 // 智能体资料（#1386，demo 的 agentPage）：从通讯录、聊天里点它的头像进来。
 // · 我主场里的：大头像 + 名字 +「智能体」+ 职责；那几行（AgentRows，点开改一格）；「发消息」「语音通话」。
-// · 团队群里的（别人的）：只看——名字、「X 的智能体」、职责、在的群；注脚「在群里 @ 它就行，干活走 X 的额度」。
+// · 团队群里的 / 别人拉我进去的群里的（#1393，别人的）：只看——名字、「X 的智能体」、职责、在的群；
+//   注脚「在群里 @ 它就行，干活走 X 的额度」。
 //   改不了、也私聊不了（demo 同款：智能体归群主管）。
 // 删一只在它私聊的「聊天信息」里（demo 同款），不在这里。
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
@@ -82,8 +83,19 @@ export function AgentScreen({ route, navigation }: Props) {
   const voice = useVoice();
   if (workspaceId !== undefined) {
     const team = teams.teams.find((t) => t.ws.id === workspaceId) ?? null;
-    const agent = team?.ws.agents.find((a) => a.agentId === agentId) ?? null;
-    if (team === null || agent === null) {
+    // 别人主场里拉我进去的群（#1393）：它只在那几条群里，每条群的快照各带那几只
+    if (team === null) {
+      const mine = teams.guests.filter((g) => g.ws.id === workspaceId && g.ws.agents.some((a) => a.agentId === agentId));
+      const first = mine[0];
+      const agent = first?.ws.agents.find((a) => a.agentId === agentId) ?? null;
+      if (first === undefined || agent === null) {
+        return <View style={{ flex: 1, backgroundColor: c.background, padding: 24 }}><Text style={{ color: c.mutedForeground }}>{teams.loaded ? "这只智能体已经不在了。" : ""}</Text></View>;
+      }
+      const groups = mine.filter((g) => !g.session.archived).map((g) => g.session.title).filter((t) => t.trim() !== "").join("、");
+      return <View style={{ flex: 1, backgroundColor: c.background }}><TeamAgent ws={first.ws} agent={agent} groups={groups} /></View>;
+    }
+    const agent = team.ws.agents.find((a) => a.agentId === agentId) ?? null;
+    if (agent === null) {
       return <View style={{ flex: 1, backgroundColor: c.background, padding: 24 }}><Text style={{ color: c.mutedForeground }}>{teams.loaded ? "这只智能体已经不在了。" : ""}</Text></View>;
     }
     const groups = team.sessions.filter((s) => !s.archived).map((s) => teamChatTitle(team.ws, s)).join("、");

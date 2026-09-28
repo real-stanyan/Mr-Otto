@@ -133,8 +133,20 @@ export function hiddenFromCloudTimeline(e: SessionEvent): boolean {
 
 /** 名单那一行里的一格（#1280 A4）。`text` 是它在句子里的**字面**——整串拼起来就是
     这句话本身（文案用例正是这么钉的）；`agentId` 在场 = 这一格是个名字，头像画在它
-    左边。形状比 `VoiceCallPart` 简单一档：这一行的主语是「你」，一张「你」的脸是噪音。 */
-export type RosterLinePart = { text: string; agentId?: string };
+    左边。形状比 `VoiceCallPart` 简单一档：这一行的主语是「你」，一张「你」的脸是噪音。
+    `uid` 在场（#1393）= 这一格是群里的一个**人**（群主的朋友），画人的头像 */
+export type RosterLinePart = { text: string; agentId?: string; uid?: string };
+
+/** 名字之间的间隔：智能体的名字带书名号、自己就是间隔；人的名字没有，两个人挨着要一个顿号（中文排版） */
+function joinNames(list: RosterLinePart[]): RosterLinePart[] {
+  const out: RosterLinePart[] = [];
+  list.forEach((p, i) => {
+    const prev = list[i - 1];
+    if (prev !== undefined && (p.uid !== undefined || prev.uid !== undefined)) out.push({ text: "、" });
+    out.push(p);
+  });
+  return out;
+}
 
 /** 群名单变了那一行（#1280 A4）。判据是**前后两条名单的差集**（`chatRosterDiff`），
     不是事件上的一个「动作」字段——事件只记事实（此刻群里站着谁），「谁进谁出」是
@@ -154,18 +166,36 @@ export function chatRosterLineParts(
   selfUid: string,
 ): RosterLinePart[] | null {
   const { joined, left } = chatRosterDiff(prev?.agents ?? null, e.agents);
-  if (joined.length === 0 && left.length === 0) return null;
-  // 个人主场里只有一个人，所以「不是我」只可能是旧日志或一条不该存在的团队聊天。
-  // 这一层手上没有成员名单（`ws` 不在签名里，刻意的：主场的 members 本来就是空的），
-  // 「有人」是说不出是谁时的老实话——编一个名字出来更坏
-  const who = e.byUid !== undefined && e.byUid === selfUid ? "你" : "有人";
+  // 真人那一半（#1393）：同一条事件上的第二份名单，差集同一个做法
+  const humansJoined: { uid: string; name: string }[] = [];
+  const humansLeft: { uid: string; name: string }[] = [];
+  if (prev !== null) {
+    const before = new Map((prev.humans ?? []).map((h) => [h.uid, h] as const));
+    const after = new Map((e.humans ?? []).map((h) => [h.uid, h] as const));
+    for (const [uid, h] of after) if (!before.has(uid)) humansJoined.push(h);
+    for (const [uid, h] of before) if (!after.has(uid)) humansLeft.push(h);
+  }
+  if (joined.length === 0 && left.length === 0 && humansJoined.length === 0 && humansLeft.length === 0) return null;
+  const human = (h: { uid: string; name: string }): RosterLinePart => ({ text: h.name, uid: h.uid });
+  // 自己退出的那一条单独说（「小红退出了群聊」）：「小红把小红移出了群聊」读起来像出了错
+  if (
+    e.byUid !== undefined && joined.length === 0 && left.length === 0 && humansJoined.length === 0 &&
+    humansLeft.length === 1 && humansLeft[0]!.uid === e.byUid
+  ) {
+    return e.byUid === selfUid ? [{ text: "你退出了群聊" }] : [human(humansLeft[0]!), { text: "退出了群聊" }];
+  }
+  // 「谁」：我自己写「你」；别人有名字快照（byName，#1393）就写名字，旧日志没有这一格时写「有人」——
+  // 说不出是谁时的老实话，编一个名字出来更坏
+  const who = e.byUid !== undefined && e.byUid === selfUid ? "你" : e.byName !== undefined && e.byName !== "" ? e.byName : "有人";
   const names = (list: readonly { agentId: string; name: string }[]): RosterLinePart[] =>
     list.map((a) => ({ text: `「${a.name}」`, agentId: a.agentId }));
   const parts: RosterLinePart[] = [{ text: `${who}把` }];
-  if (joined.length > 0) parts.push(...names(joined), { text: "拉进了群聊" });
-  if (left.length > 0) {
-    if (joined.length > 0) parts.push({ text: "，把" });
-    parts.push(...names(left), { text: "移出了群聊" });
+  const inList = [...names(joined), ...humansJoined.map(human)];
+  const outList = [...names(left), ...humansLeft.map(human)];
+  if (inList.length > 0) parts.push(...joinNames(inList), { text: "拉进了群聊" });
+  if (outList.length > 0) {
+    if (inList.length > 0) parts.push({ text: "，把" });
+    parts.push(...joinNames(outList), { text: "移出了群聊" });
   }
   return parts;
 }

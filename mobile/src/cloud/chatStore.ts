@@ -174,7 +174,7 @@ export async function startDm(
   const sessionId = r.value.sessionId;
   // 排在进房之前：join 结束时状态随时可能翻成 ready，晚一步就错过那一次翻转
   store.set({ pendingFirst: { sessionId, text, mentions } });
-  await openChat(workspaceId, sessionId, { kind: "dm", agentIds: [agentId] });
+  await openChat(workspaceId, sessionId, { kind: "dm", agentIds: [agentId], humans: [] });
   if (store.get().session?.sessionId !== sessionId) {
     store.set({ pendingFirst: null });
     return { ok: false, message: store.get().error ?? "没连上这条聊天" };

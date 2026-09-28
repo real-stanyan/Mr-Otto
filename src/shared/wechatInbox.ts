@@ -1,8 +1,9 @@
 // wechatInbox —— 手机端微信式布局（#1386）「聊天」「通讯录」两个页签的纯逻辑。mobile/ 只画与接线。
 //
-// 「聊天」那一列把四种会话混在一起、按最近一句降序（demo 定的）：
-//   · 智能体私聊（个人主场里聊过的那几条）· 智能体群（主场里的群）
-//   · 有真人的群（团队里的每一条云会话 = 一个群，spec §0）· 朋友私聊（有过消息的）
+// 「聊天」那一列把五种会话混在一起、按最近一句降序（demo 定的）：
+//   · 智能体私聊（个人主场里聊过的那几条）· 智能体群（主场里的群，可能有我拉进来的朋友，#1393）
+//   · 有真人的群（团队里的每一条云会话 = 一个群，spec §0）· 别人拉我进去的群（他主场里的，#1393）
+//   · 朋友私聊（有过消息的）
 // 行的底层判据一律复用：哪条私聊算这只的、群名单与现存名册求交集（agentRoster 的
 // rosterRows / groupRows）、最后一句是谁说的（sessionLast）。这里只回答「拼成什么样、
 // 怎么排、角标怎么数」。
@@ -16,6 +17,7 @@ import { decodeEnvelope } from "./sessionPackageCodec.js";
 import { agentFaceSlot } from "./agentAvatar.js";
 import { groupRows, rosterRows } from "./agentRoster.js";
 import { narrowRoster } from "./chatRoster.js";
+import { withGuests, type ChatPerson, type GuestChat } from "./chatGuests.js";
 import { lastSpeakerOf, type SessionLast } from "./sessionLast.js";
 import type { CloudSessionRow } from "./supabaseWorkspacesApi.js";
 import type { WorkspaceMentionRow } from "./workspaceMentions.js";
@@ -113,12 +115,14 @@ export type InboxTarget =
   | { kind: "agent"; agentId: string }
   | { kind: "group"; sessionId: string }
   | { kind: "team"; workspaceId: string; sessionId: string }
+  /** 别人主场里拉我进去的群（#1393）：workspaceId 是群主的主场 */
+  | { kind: "guest"; workspaceId: string; sessionId: string }
   | { kind: "friend"; uid: string };
 
 export type Unread = { kind: "count"; n: number } | { kind: "dot" } | null;
 
 export interface InboxRow {
-  /** 列表键，也是草稿与已读游标的键：`a:` 智能体私聊 / `g:` 主场群 / `t:` 团队群 / `f:` 朋友私聊 */
+  /** 列表键，也是草稿与已读游标的键：`a:` 智能体私聊 / `g:` 主场群 / `t:` 团队群 / `j:` 别人拉我进的群 / `f:` 朋友私聊 */
   key: string;
   target: InboxTarget;
   title: string;
@@ -185,6 +189,28 @@ function faceCell(ws: WorkspaceSnapshot, agentId: string): FaceCell {
   return { kind: "face", id: agentId, slot: agentFaceSlot(ws, agentId) };
 }
 
+function personCell(p: ChatPerson): PersonAvatar {
+  return { kind: "person", name: p.name, url: p.avatarUrl };
+}
+
+/** 有真人的群的拼图：人在前、智能体在后（同团队群），最多九格 */
+function mixedCells(ws: WorkspaceSnapshot, people: readonly ChatPerson[], agentIds: readonly string[]): GridCell[] {
+  return [...people.map(personCell), ...agentIds.map((id) => faceCell(ws, id))].slice(0, GRID_MAX);
+}
+
+/** 群名空着时的兜底（#1393）：智能体的名字、再是人的名字。建群时群名总会拼出来，这一格只接旧行与脏数据 */
+function groupTitleOf(title: string, ws: WorkspaceSnapshot, agentIds: readonly string[], people: readonly ChatPerson[]): string {
+  if (title.trim() !== "") return title;
+  return [...agentIds.map((id) => agentNameOf(ws, id)), ...people.map((p) => p.name)].join("、");
+}
+
+/** 别人拉我进去的那条群里，除了我之外的人：群主 + 别的客人 */
+function guestOthers(g: GuestChat, selfUid: string): ChatPerson[] {
+  return g.ws.members
+    .filter((m) => m.uid !== selfUid)
+    .map((m) => ({ uid: m.uid, name: m.label, avatarUrl: m.avatarUrl }));
+}
+
 /** 团队群的成员：别的人 + 这条会话此刻能用的智能体（团队会话不收窄 = 团队全部，ADR-0297） */
 export function teamMembers(ws: WorkspaceSnapshot, session: CloudSessionRow, selfUid: string): { humans: PersonAvatar[]; agentIds: string[] } {
   const humans = ws.members
@@ -204,6 +230,8 @@ export function inboxRows(o: {
   selfUid: string;
   home: HomeInput | null;
   teams: readonly TeamInput[];
+  /** 别人主场里拉我进去的群（#1393）。缺席 = 没有 */
+  guests?: readonly GuestChat[];
   friends: readonly FriendThread[];
   mentions: readonly WorkspaceMentionRow[];
   /** null = 游标还没从这台手机上读出来：一律不画未读（说不清就不画） */
@@ -238,18 +266,41 @@ export function inboxRows(o: {
     for (const g of groupRows(ws, chats)) {
       const last = lasts.get(g.sessionId);
       const key = `g:${g.sessionId}`;
+      // 我拉进来的朋友（#1393）：拼图里有他们、「名字: 」认得他们、搜得到他们
+      const people = chats.find((c) => c.id === g.sessionId)?.humans ?? [];
+      const gws = withGuests(ws, people);
+      const title = groupTitleOf(g.name, ws, g.agentIds, people);
       rows.push({
         key,
         target: { kind: "group", sessionId: g.sessionId },
-        title: g.name,
-        avatar: { kind: "grid", cells: g.agentIds.slice(0, GRID_MAX).map((id) => faceCell(ws, id)) },
+        title,
+        avatar: { kind: "grid", cells: people.length > 0 ? mixedCells(ws, people, g.agentIds) : g.agentIds.slice(0, GRID_MAX).map((id) => faceCell(ws, id)) },
         ts: last?.ts ?? g.updatedTs,
-        preview: last === undefined ? "" : `${speakerPrefix(ws, last, o.selfUid)}${last.excerpt}`,
+        preview: last === undefined ? "" : `${speakerPrefix(gws, last, o.selfUid)}${last.excerpt}`,
         mention: mentioned.has(g.sessionId),
         unread: dot(last, key),
-        hay: [g.name, g.agentIds.map((id) => agentNameOf(ws, id)).join("、"), last?.excerpt ?? ""].join("\n"),
+        hay: [title, g.agentIds.map((id) => agentNameOf(ws, id)).join("、"), people.map((p) => p.name).join("、"), last?.excerpt ?? ""].join("\n"),
       });
     }
+  }
+
+  for (const g of o.guests ?? []) {
+    if (g.session.archived) continue;
+    const last = g.last ?? undefined;
+    const key = `j:${g.session.id}`;
+    const people = guestOthers(g, o.selfUid);
+    const title = groupTitleOf(g.session.title, g.ws, g.session.agentIds, people);
+    rows.push({
+      key,
+      target: { kind: "guest", workspaceId: g.ws.id, sessionId: g.session.id },
+      title,
+      avatar: { kind: "grid", cells: mixedCells(g.ws, people, g.session.agentIds) },
+      ts: last?.ts ?? g.session.updatedTs,
+      preview: last === undefined ? "" : `${speakerPrefix(g.ws, last, o.selfUid)}${last.excerpt}`,
+      mention: mentioned.has(g.session.id) && key !== o.openKey,
+      unread: dot(last, key),
+      hay: [title, people.map((p) => p.name).join("、"), g.session.agentIds.map((id) => agentNameOf(g.ws, id)).join("、"), last?.excerpt ?? ""].join("\n"),
+    });
   }
 
   for (const t of o.teams) {
@@ -385,8 +436,8 @@ export function markSeen(s: SeenState, key: string, ts: number): SeenState {
 
 // ── 通讯录 ───────────────────────────────────────────────────────────
 
-/** 群的那两种去处（主场群 / 团队群） */
-export type GroupTarget = Extract<InboxTarget, { kind: "group" } | { kind: "team" }>;
+/** 群的那三种去处（主场群 / 团队群 / 别人拉我进的群） */
+export type GroupTarget = Extract<InboxTarget, { kind: "group" } | { kind: "team" } | { kind: "guest" }>;
 
 /** 「群聊」那一页的一行：主场的群 + 团队群 */
 export interface GroupListRow {
@@ -399,21 +450,37 @@ export interface GroupListRow {
   hay: string;
 }
 
-export function groupList(o: { selfUid: string; home: HomeInput | null; teams: readonly TeamInput[] }): GroupListRow[] {
+export function groupList(o: { selfUid: string; home: HomeInput | null; teams: readonly TeamInput[]; guests?: readonly GuestChat[] }): GroupListRow[] {
   const out: GroupListRow[] = [];
   if (o.home !== null) {
     const { ws, chats } = o.home;
     for (const g of groupRows(ws, chats)) {
-      const members = g.agentIds.map((id) => agentNameOf(ws, id)).join("、");
+      const people = chats.find((c) => c.id === g.sessionId)?.humans ?? [];
+      const members = [...g.agentIds.map((id) => agentNameOf(ws, id)), ...people.map((p) => p.name)].join("、");
+      const title = groupTitleOf(g.name, ws, g.agentIds, people);
       out.push({
         key: `g:${g.sessionId}`,
         target: { kind: "group", sessionId: g.sessionId },
-        title: g.name,
-        avatar: { kind: "grid", cells: g.agentIds.slice(0, GRID_MAX).map((id) => faceCell(ws, id)) },
+        title,
+        avatar: { kind: "grid", cells: people.length > 0 ? mixedCells(ws, people, g.agentIds) : g.agentIds.slice(0, GRID_MAX).map((id) => faceCell(ws, id)) },
         members,
-        hay: `${g.name}\n${members}`,
+        hay: `${title}\n${members}`,
       });
     }
+  }
+  for (const g of o.guests ?? []) {
+    if (g.session.archived) continue;
+    const people = guestOthers(g, o.selfUid);
+    const members = [...people.map((p) => p.name), ...g.session.agentIds.map((id) => agentNameOf(g.ws, id))].join("、");
+    const title = groupTitleOf(g.session.title, g.ws, g.session.agentIds, people);
+    out.push({
+      key: `j:${g.session.id}`,
+      target: { kind: "guest", workspaceId: g.ws.id, sessionId: g.session.id },
+      title,
+      avatar: { kind: "grid", cells: mixedCells(g.ws, people, g.session.agentIds) },
+      members,
+      hay: `${title}\n${members}`,
+    });
   }
   for (const t of o.teams) {
     for (const s of t.sessions) {

@@ -135,7 +135,7 @@ export interface FrameHandlerDeps {
       workspaceId: string,
       sessionId: string,
       byUid: string,
-      patch: { name?: string; agentIds?: string[] },
+      patch: { name?: string; agentIds?: string[]; humans?: string[] },
     ): Promise<{ ok: true } | { ok: false; message: string }>;
     ownerOf(workspaceId: string): Promise<string>;
     /** 收尾一条云会话（issue #822）：落日志（CloudSession.archive）+ 写
@@ -306,14 +306,28 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
     workspaceId: string,
     cid: string,
     uid: string,
-    beforeDeny?: () => void
+    beforeDeny?: () => void,
+    session?: CloudSession | null,
   ): Promise<boolean> {
+    // 群里的客人（#1393）按那条会话日志里的名单算在籍：他们不是工作区成员
+    if (session?.isGuest(uid) === true) return true;
     if (await deps.isMember(workspaceId, uid)) return true;
     beforeDeny?.();
     deny(cid, "not_authorized");
     cids.delete(cid);
     deps.dropCid?.(cid);
     return false;
+  }
+
+  /** 会话房里的复查：带上那条会话，好让群里的客人（#1393）按它的名单算在籍 */
+  function requireStillMemberIn(
+    session: CloudSession,
+    workspaceId: string,
+    cid: string,
+    uid: string,
+    beforeDeny?: () => void,
+  ): Promise<boolean> {
+    return requireStillMember(workspaceId, cid, uid, beforeDeny, session);
   }
 
   /** 被踢时那三种回执共用的一句话：说"你已经不在这个团队了"，不说"失败了" */
@@ -425,7 +439,11 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
         return;
       }
 
-      if (!(await deps.isMember(msg.workspaceId, entry.uid))) {
+      // 群里的客人（#1393）不是工作区成员，但能改他在的那条群聊的客人名单（拉自己的朋友 / 退出）——
+      // 只放这一种帧，别的「关于整个工作区」的动作照旧只认工作区成员
+      const guestUpdate =
+        msg.t === "chat_update" && deps.sessions.get(msg.workspaceId, msg.sessionId)?.isGuest(entry.uid) === true;
+      if (!guestUpdate && !(await deps.isMember(msg.workspaceId, entry.uid))) {
         deny(cid, "not_member");
         return;
       }
@@ -536,7 +554,10 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
           deps.sessions.creatorOf(msg.workspaceId, msg.sessionId),
           deps.sessions.ownerOf(msg.workspaceId),
         ]);
-        if (entry.uid !== ownerUid && entry.uid !== creator) {
+        // 群主 / 建群的人什么都能改；群里的客人只能动客人名单（拉自己的朋友、把自己移出去，
+        // 细的判据在 daemon 的 planHumansChange——它握着好友关系的查询）
+        const onlyHumans = msg.humans !== undefined && msg.name === undefined && msg.agentIds === undefined;
+        if (entry.uid !== ownerUid && entry.uid !== creator && !(guestUpdate && onlyHumans)) {
           deny(cid, "not_authorized");
           return;
         }
@@ -687,11 +708,14 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
           deny(cid, result.denied);
           return;
         }
-        if (!(await deps.isMember(workspaceId, result.uid))) {
+        const session = deps.sessions.get(workspaceId, sessionId);
+        // 在籍 = 工作区成员 ∪ 这条群聊的客人（#1393）。先问会话：客人不是工作区成员，只问工作区会把他挡在门外。
+        // 会话不在时照旧先报 not_member（不在籍的人不该从回执里探出「这条会话存不存在」）
+        const guest = session?.isGuest(result.uid) === true;
+        if (!guest && !(await deps.isMember(workspaceId, result.uid))) {
           deny(cid, "not_member");
           return;
         }
-        const session = deps.sessions.get(workspaceId, sessionId);
         if (!session) {
           deny(cid, "no_session");
           return;
@@ -738,7 +762,7 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
             deps.send(cid, { t: "say_result", ok: false, message: throttleMessage("say") });
             return;
           }
-          if (!(await requireStillMember(workspaceId, cid, entry.uid, () =>
+          if (!(await requireStillMemberIn(session, workspaceId, cid, entry.uid, () =>
             deps.send(cid, { t: "say_result", ok: false, message: NOT_MEMBER_MESSAGE })
           ))) return;
           // **两只桶管两件不同的事**（#968 修正 #819 的"一帧只记一个桶"，
@@ -798,7 +822,7 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
         }
 
         case "backlog": {
-          if (!(await requireStillMember(workspaceId, cid, entry.uid))) return;
+          if (!(await requireStillMemberIn(session, workspaceId, cid, entry.uid))) return;
           // 尾巴分页（协议 20，#1280）。聊天进房只拉末尾一屏，往上滚再翻。
           // `hasMore` **只挂在最后一片（done:true）上**：中间那些分片不知道
           // 「这一页之前还有没有」，也不该说——渲染层拿它决定顶上那个哨兵画不画
@@ -819,7 +843,7 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
         }
 
         case "approve": {
-          if (!(await requireStillMember(workspaceId, cid, entry.uid, () =>
+          if (!(await requireStillMemberIn(session, workspaceId, cid, entry.uid, () =>
             deps.send(cid, { t: "approve_result", callId: msg.callId, ok: false, message: NOT_MEMBER_MESSAGE })
           ))) return;
           // 三态而不是布尔（#957 A-11/#927）：原来的 false 把"这条 pending 已经
@@ -849,7 +873,7 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
           // （发起人或 owner），由 CloudSession.stop 里的 router.canDecide 判——
           // 这一层不复制那条判断，复制就迟早分家。
           // 三态都有回执：一颗点下去没有任何反应的停止按钮，比没有按钮更糟
-          if (!(await requireStillMember(workspaceId, cid, entry.uid, () =>
+          if (!(await requireStillMemberIn(session, workspaceId, cid, entry.uid, () =>
             deps.send(cid, { t: "stop_result", ok: false, message: NOT_MEMBER_MESSAGE })
           ))) return;
           // 停止键也有桶（复审 Minor）：它不起模型调用、看着是免费的，但每一次
@@ -890,7 +914,7 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
           // 语音通话名单（#1163）。这一层不判名单合不合法（那要现取 roster，在
           // CloudSession.setVoiceCall 里）——只做在籍复查、令牌桶、把三态翻成 call_result，
           // 并把拒绝记一笔（拒绝是这一层唯一的失败出口，同 stop）
-          if (!(await requireStillMember(workspaceId, cid, entry.uid, () =>
+          if (!(await requireStillMemberIn(session, workspaceId, cid, entry.uid, () =>
             deps.send(cid, { t: "call_result", ok: false, message: NOT_MEMBER_MESSAGE })
           ))) return;
           if (!deps.rateLimit.allow("call", entry.uid)) {

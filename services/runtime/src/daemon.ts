@@ -27,6 +27,7 @@ import { createWorkspaceLocks } from "./workspaceLock.js";
 import { createFrameRateLimiter } from "./rateLimit.js";
 import { createCloudSession, type CloudSession, type AgentSpec } from "./sessionService.js";
 import { ChatCreateError, planChatCreate } from "./chatCreate.js";
+import { createHumansProblem, friendSetOf, friendshipFilter, planHumansChange } from "./chatHumans.js";
 import { greetOnCreate } from "./newAgentGreeting.js";
 import { createSupabaseLegacyMemoryReader } from "./workspaceMemory.js";
 import { createSupabaseWikiJournal } from "./wikiJournal.js";
@@ -249,6 +250,37 @@ async function main(): Promise<void> {
     // 才敢拼进 `[label]: ` 前缀（#957 复审 Important 2）。空名字退回 uid 前 8 位
     // 这条老行为收进它里面了，不再在这里判一次
     return safeSpeakerLabel(name ?? "", uid);
+  }
+
+  /** uid 与这几个人里哪几个是 accepted 好友（#1393）。查询失败原样抛：拉人进群的判据是「是不是朋友」，
+      「这一刻查不出来」不能读成「不是」也不能读成「是」——调用方把它说成「稍后再试」 */
+  async function acceptedFriendsOf(uid: string, candidates: readonly string[]): Promise<Set<string>> {
+    const filter = friendshipFilter(uid, candidates);
+    if (filter === null) return new Set();
+    const { data, error } = await supabase.from("friendships").select("requester,addressee").eq("status", "accepted").or(filter);
+    if (error) throw new Error(error.message);
+    return friendSetOf(uid, (data ?? []) as { requester: string; addressee: string }[]);
+  }
+
+  /** 客人名单的投影（#1393）：`workspace_session_members` 只给客户端 RLS 与「我在哪几个群」用，
+      事实在日志里。**先落日志再写这张表**（同 agent_ids 那一列），写失败只记一笔——日志赢，
+      下一次改名单时整份对齐（写的是差集，但删的那一半按「不在新名单里」全删，缺的那一半 upsert） */
+  async function syncGuestRows(sessionId: string, humans: readonly { uid: string }[], addedBy: string): Promise<void> {
+    const uids = humans.map((h) => h.uid);
+    try {
+      let del = supabase.from("workspace_session_members").delete().eq("session_id", sessionId);
+      if (uids.length > 0) del = del.not("uid", "in", `(${uids.join(",")})`);
+      const { error: delErr } = await del;
+      if (delErr) throw new Error(delErr.message);
+      if (uids.length > 0) {
+        const { error } = await supabase
+          .from("workspace_session_members")
+          .upsert(uids.map((uid) => ({ session_id: sessionId, uid, added_by: addedBy })), { onConflict: "session_id,uid", ignoreDuplicates: true });
+        if (error) throw new Error(error.message);
+      }
+    } catch (err) {
+      console.warn(`[otto-runtime] 客人名单写库失败（session=${sessionId}），等下一次改名单再对齐：${String(err)}`);
+    }
   }
 
   /** 这个 workspace 的两格事实：所有者与 kind（#1280）。**一次查询给出两个答案**——
@@ -864,6 +896,21 @@ async function main(): Promise<void> {
         // 建一条聊天（#1280）。`chat` 缺席 = 团队会话，下面一个字都不变
         const plan = chat ? planChatCreate(chat, await agentsCache.refresh(workspaceId)) : null;
         if (plan && !plan.ok) throw new ChatCreateError(plan.message);
+        // 群里的客人（#1393）：只在主场的群聊里收，必须都是建群人的朋友。名字现取一份快照进日志
+        const humanUids = chat?.kind === "group" ? chat.humans ?? [] : [];
+        let humans: { uid: string; name: string }[] = [];
+        if (humanUids.length > 0) {
+          let friends: Set<string>;
+          try {
+            friends = await acceptedFriendsOf(byUid, humanUids);
+          } catch (err) {
+            console.warn(`[otto-runtime] 建群时查好友失败（workspace=${workspaceId}）：${String(err)}`);
+            throw new ChatCreateError("这会儿查不到你的朋友名单，稍后再试");
+          }
+          const problem = createHumansProblem({ creatorUid: byUid, humans: humanUids, friendsOfCreator: friends, home });
+          if (problem !== null) throw new ChatCreateError(problem);
+          humans = await Promise.all(humanUids.map(async (uid) => ({ uid, name: await labelOf(uid) })));
+        }
         // 私聊幂等：那只已经有一条了就回现成的（两台设备同时发第一句话，落进同一条线）
         if (plan?.ok && plan.chatKind === "dm") {
           const existing = await findDmSession(workspaceId, plan.agentIds);
@@ -919,10 +966,14 @@ async function main(): Promise<void> {
             ts: Date.now(),
             type: "chat_roster_changed",
             agents: plan.entries,
+            // 主场的群聊总带这一格（#1393）：之后每一条名单事件都带齐两份，「缺席」只剩「没有别人」一个意思
+            ...(plan.chatKind === "group" && home ? { humans } : {}),
             ignorable: true,
           });
         }
         const session = openSessionRoom(workspaceId, sessionId, owner, byUid, home);
+        // 客人名单的投影（#1393）：房间开好之后写——客人那一侧靠这张表才找得到这个群
+        if (humans.length > 0) await syncGuestRows(sessionId, humans, byUid);
         // 新建的智能体先开口（#1356 A2，spec §7.2 第 2 步）：只在**新**建出来的私聊上问——上面
         // 找回现成那条的两条路都已经 return 了（那只要么早开过口，要么是桌面那侧的老智能体）。
         // 抢那一格、抢到才落开场白的判断在 newAgentGreeting.ts（这个文件进不了 vitest）；
@@ -948,20 +999,56 @@ async function main(): Promise<void> {
         const active = activeSessions.get(sessionId);
         if (!active || active.workspaceId !== workspaceId) return { ok: false, message: "这条聊天不存在" };
         const row: { agent_ids?: string[]; title?: string } = {};
-        if (patch.agentIds !== undefined) {
-          const out = await active.session.updateChatRoster(byUid, patch.agentIds);
+        // 客人那一半（#1393）：谁能改、拉进来的是不是朋友，在这里判（chatHumans.planHumansChange）
+        let humansNext: { uid: string; name: string }[] | undefined;
+        if (patch.humans !== undefined) {
+          if (active.session.chat()?.kind !== "group") return { ok: false, message: "只有群聊能拉人" };
+          const { ownerUid: owner, kind } = await workspaceFacts(workspaceId);
+          // 团队有自己的成员名单：往团队的群里另塞人是另一套权限（同 createHumansProblem）
+          if (kind !== "home") return { ok: false, message: "团队里的群聊拉人走团队成员。" };
+          const before = active.session.chat()?.humans ?? [];
+          const added = patch.humans.filter((u) => !before.some((h) => h.uid === u));
+          let friends: Set<string>;
+          try {
+            friends = await acceptedFriendsOf(byUid, added);
+          } catch (err) {
+            console.warn(`[otto-runtime] 改群名单时查好友失败（session=${sessionId}）：${String(err)}`);
+            return { ok: false, message: "这会儿查不到朋友名单，稍后再试" };
+          }
+          const names = new Map(await Promise.all(added.map(async (uid) => [uid, await labelOf(uid)] as const)));
+          const plan = planHumansChange({
+            actorUid: byUid,
+            actorIsOwner: byUid === owner,
+            ownerUid: owner,
+            before,
+            after: patch.humans,
+            friendsOfActor: friends,
+            nameOf: (uid) => names.get(uid) ?? uid.slice(0, 8),
+          });
+          if (!plan.ok) return { ok: false, message: plan.message };
+          humansNext = plan.next;
+        }
+        if (patch.agentIds !== undefined || humansNext !== undefined) {
+          const out = await active.session.updateChatRoster(
+            byUid,
+            { ...(patch.agentIds !== undefined ? { agentIds: patch.agentIds } : {}), ...(humansNext !== undefined ? { humans: humansNext } : {}) },
+            await labelOf(byUid),
+          );
           if (out.kind !== "ok") return { ok: false, message: out.message };
-          row.agent_ids = out.agentIds;
+          if (patch.agentIds !== undefined) row.agent_ids = out.agentIds;
+          if (humansNext !== undefined && out.changed) await syncGuestRows(sessionId, out.humans, byUid);
         }
         if (patch.name !== undefined) {
           if (active.session.chat()?.kind !== "group") return { ok: false, message: "只有群聊能改名" };
           row.title = patch.name;
         }
-        const { error } = await supabase.from("workspace_sessions").update(row).eq("id", sessionId);
-        if (error) {
-          console.warn(
-            `[otto-runtime] chat_update 写库失败（session=${sessionId}），那一列等下次对账：${error.message}`,
-          );
+        if (Object.keys(row).length > 0) {
+          const { error } = await supabase.from("workspace_sessions").update(row).eq("id", sessionId);
+          if (error) {
+            console.warn(
+              `[otto-runtime] chat_update 写库失败（session=${sessionId}），那一列等下次对账：${error.message}`,
+            );
+          }
         }
         return { ok: true };
       },
@@ -1284,6 +1371,8 @@ async function main(): Promise<void> {
             console.warn(`[otto-runtime] 补写 agent_ids 列失败（sessionId=${row.id}）：${fixErr.message}`);
           }
         }
+        // 客人名单对账（#1393）：同上，日志赢。只有主场的群会有客人；写失败只记一笔（syncGuestRows 自己兜）
+        if (want?.kind === "group" && facts.kind === "home") await syncGuestRows(row.id, want.humans, facts.ownerUid);
       } catch (err) {
         console.warn(
           `[otto-runtime] 恢复会话房失败（workspaceId=${row.workspace_id}, sessionId=${row.id}）：${err instanceof Error ? err.message : String(err)}`

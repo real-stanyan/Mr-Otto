@@ -9,8 +9,12 @@ export type HomeTabParams = {
   Me: undefined;
 };
 
-/** 一条云会话线：主场的私聊（按 agentId，还没聊过是草稿）/ 主场的群 / 团队里的一条会话（= 有真人的群） */
-export type ChatRoute = ChatTarget | { kind: "team"; workspaceId: string; sessionId: string };
+/** 一条云会话线：主场的私聊（按 agentId，还没聊过是草稿）/ 主场的群 / 团队里的一条会话（= 有真人的群）/
+    别人主场里拉我进去的群（#1393，workspaceId 是群主的主场） */
+export type ChatRoute =
+  | ChatTarget
+  | { kind: "team"; workspaceId: string; sessionId: string }
+  | { kind: "guest"; workspaceId: string; sessionId: string };
 
 /** 聊天信息页：云会话那三种 + 朋友私聊 */
 export type InfoRoute = ChatRoute | { kind: "friend"; uid: string };
@@ -22,7 +26,7 @@ export type RootStackParams = {
   /** 朋友私聊（messages 表，不是云会话） */
   FriendChat: { uid: string };
   ChatInfo: InfoRoute;
-  /** 智能体资料。workspaceId 缺席 = 我主场里的（能改）；给了 = 团队里的（别人的，只看） */
+  /** 智能体资料。workspaceId 缺席 = 我主场里的（能改）；给了 = 团队里的 / 别人群里的（别人的，只看） */
   Agent: { agentId: string; workspaceId?: string };
   Friend: { uid: string };
   /** 新的朋友：别人加我的 / 我加别人的 */

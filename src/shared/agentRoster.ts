@@ -149,13 +149,14 @@ export function chatSeedOf(o: {
 }): CsChatInfo | null | undefined {
   if (o.sessionId === null) {
     if (o.spec === undefined) return null;
+    // 客人的名字种子里没有（spec 只有 uid）：welcome 一到就由日志接管
     return o.spec.kind === "dm"
-      ? { kind: "dm", agentIds: [o.spec.agentId] }
-      : { kind: "group", agentIds: [...o.spec.agentIds] };
+      ? { kind: "dm", agentIds: [o.spec.agentId], humans: [] }
+      : { kind: "group", agentIds: [...o.spec.agentIds], humans: [] };
   }
   const row = o.chats.find((c) => c.id === o.sessionId);
   if (row === undefined) return undefined;
-  return row.chatKind === null ? null : { kind: row.chatKind, agentIds: [...row.agentIds] };
+  return row.chatKind === null ? null : { kind: row.chatKind, agentIds: [...row.agentIds], humans: [] };
 }
 
 /** 头部那一行画什么（#1302）。`null` = 退回团队壳（私聊里那只已经被删了，

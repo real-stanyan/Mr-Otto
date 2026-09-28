@@ -17,6 +17,17 @@ export const CHAT_GROUP_MAX = 6;
 /** 建群时界面要求的下限。库里的下限是 1——删智能体不该连坐删群（spec §4） */
 export const CHAT_GROUP_CREATE_MIN = 2;
 export const CHAT_NAME_MAX = 60;
+/** 群里真人的上限（群主不算，#1393）。群里每句人话都可能点起一只智能体，而它们花的是群主的额度——
+    上限不是性能数，是「群主一个人兜得住多少人」。取 20：一个小团队的量级，微信群那种几百人的用法不在这里 */
+export const CHAT_HUMANS_MAX = 20;
+/** Supabase auth 的 uid 形状。线上来的 uid 不是这个形状就拒帧：它要拿去查好友关系、写进一张有外键的表 */
+export const USER_UID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** 群里的一个真人（群主之外）。名字是写进日志那一刻的快照 */
+export interface ChatHuman {
+  uid: string;
+  name: string;
+}
 
 export function applyChatRosterEvent(state: ChatRoster, e: SessionEvent): ChatRoster {
   if (e.type !== "chat_roster_changed") return state;
@@ -27,6 +38,58 @@ export function chatRosterOf(events: readonly SessionEvent[]): ChatRoster {
   let state: ChatRoster = null;
   for (const e of events) state = applyChatRosterEvent(state, e);
   return state;
+}
+
+/** 群里此刻的真人（群主之外，#1393）：最后一条名单事件的 `humans`，缺席 = 没有别人。
+    一条名单事件都没有时回 `null`（与 `chatRosterOf` 同一个意思：这条会话没有名单这回事） */
+export function chatHumansOf(events: readonly SessionEvent[]): readonly ChatHuman[] | null {
+  let state: readonly ChatHuman[] | null = null;
+  for (const e of events) if (e.type === "chat_roster_changed") state = e.humans ?? [];
+  return state;
+}
+
+/** 客户端那一侧的「此刻」：日志里最后一条胜出，一条都没加载到时退回 welcome 那份快照（同 `chatRosterNow`
+    的理由：进房只拉尾巴，名单事件多半落在窗口外面） */
+export function chatHumansNow(events: readonly SessionEvent[], fallback: readonly ChatHuman[]): readonly ChatHuman[] {
+  return chatHumansOf(events) ?? fallback;
+}
+
+/** 线上来的真人 uid 名单：去重保序；不是数组 / 有一个不像 uid / 超出上限，一律 null（调用方**拒帧**，
+    同 `normalizeChatAgentIds` 的纪律）。下限 0：一个朋友都没有的群就是今天的主场群聊 */
+export function normalizeChatHumanUids(raw: unknown): string[] | null {
+  if (!Array.isArray(raw)) return null;
+  const out: string[] = [];
+  for (const x of raw) {
+    if (typeof x !== "string" || !USER_UID_RE.test(x)) return null;
+    const uid = x.toLowerCase();
+    if (!out.includes(uid)) out.push(uid);
+  }
+  return out.length <= CHAT_HUMANS_MAX ? out : null;
+}
+
+/** 一次改真人名单能不能做（#1393，spec §2 决定 5）。**群主（或建群的人）什么都能改**；别人只能
+    ① 拉**自己的**朋友进来、② 把**自己**移出去——智能体归群主管，别人拉进来的人别人移不走。
+    `friendsOfActor` 由调用方现查（服务端的 `friendships`），这一层只回答「形状上允不允许」。
+    回 null = 允许；回字符串 = 不允许的那句人话 */
+export function humanRosterChangeProblem(o: {
+  actorUid: string;
+  actorIsOwner: boolean;
+  before: readonly string[];
+  after: readonly string[];
+  ownerUid: string;
+  friendsOfActor: ReadonlySet<string>;
+}): string | null {
+  const before = new Set(o.before);
+  const after = new Set(o.after);
+  if (after.has(o.ownerUid)) return "群主本来就在群里。";
+  const added = [...after].filter((u) => !before.has(u));
+  const removed = [...before].filter((u) => !after.has(u));
+  if (!o.actorIsOwner) {
+    if (removed.some((u) => u !== o.actorUid)) return "只有群主能把别人移出群聊。";
+  }
+  if (added.some((u) => u === o.actorUid)) return o.actorIsOwner ? "群主本来就在群里。" : "你已经在群里了。";
+  if (added.some((u) => !o.friendsOfActor.has(u))) return "只能拉你的朋友进群。";
+  return null;
 }
 
 /** 团队名单 ∩ 聊天名单。**顺序跟团队名单走**（created_at 升序）：「名单第一只」这个回落

@@ -11,6 +11,7 @@ import { normalizeSandboxApproval, type SandboxApproval } from "./workspaceAgent
 import type { AgentToolAllow } from "./agentToolAllow.js";
 import type { WorkspaceMentionRow } from "./workspaceMentions.js";
 import type { SessionLast } from "./sessionLast.js";
+import { assembleGuestChat, guestAgentRow, guestsBySession, personName, type ChatPerson, type GuestChat } from "./chatGuests.js";
 
 /** supabase-js 的 {data,error} 归一:error 转 throw(带 pg code,上层认 23505 等) */
 function unwrap<T>(res: { data: T; error: { message: string; code?: string } | null }): T {
@@ -443,6 +444,9 @@ export interface CloudSessionRow {
   /** 聊天的名单投影（#1280）。权威在日志（`chat_roster_changed`），这一列是给
       「没开着这条聊天」的桌面看的。读不到回 [] */
   agentIds: string[];
+  /** 群里的客人（#1393）：群主之外被拉进来的真人，按加入先后。投影表 workspace_session_members
+      读的（0043），**缺席 = 没有或读不到**——两者在列表上同一个画法（只画智能体），所以不分 */
+  humans?: ChatPerson[];
 }
 
 /** ISO 字符串 → epoch ms；解析不出来回 0，不让脏数据混进排序比较
@@ -471,16 +475,85 @@ export async function listCloudSessions(
   }[];
   const participants = await fetchCloudParticipants(client, workspaceId);
   const chats = await fetchCloudChats(client, workspaceId);
-  return rows.map((r) => ({
-    id: r.id,
-    title: r.title,
-    publisherUid: r.publisher_uid,
-    archived: r.archived,
-    updatedTs: toEpochMs(r.updated_at),
-    participantUids: participants.get(r.id) ?? [],
-    chatKind: chats.get(r.id)?.chatKind ?? null,
-    agentIds: chats.get(r.id)?.agentIds ?? [],
-  }));
+  // 群里的客人（#1393）只有群聊会有：一条群聊都没有时不打这一趟
+  const groupIds = rows.filter((r) => chats.get(r.id)?.chatKind === "group").map((r) => r.id);
+  const guests = await fetchSessionGuests(client, groupIds);
+  return rows.map((r) => {
+    const humans = guests.get(r.id);
+    return {
+      id: r.id,
+      title: r.title,
+      publisherUid: r.publisher_uid,
+      archived: r.archived,
+      updatedTs: toEpochMs(r.updated_at),
+      participantUids: participants.get(r.id) ?? [],
+      chatKind: chats.get(r.id)?.chatKind ?? null,
+      agentIds: chats.get(r.id)?.agentIds ?? [],
+      ...(humans !== undefined ? { humans } : {}),
+    };
+  });
+}
+
+/** 这几条群聊里的客人（#1393）。**单独一条、容错**，理由与 `fetchCloudChats` 逐字相同：
+    0043 没跑时这张表不存在，合进主查询会让整个主场一条聊天都读不出来。读不到回空 Map——
+    每个群都退回只画智能体的样子，也就是改动前的界面。名字与头像批查一次 profiles，
+    查挂了名字退回 uid 前 8 位（同 assembleSnapshot 的 profileOf 约定） */
+export async function fetchSessionGuests(
+  client: SupabaseClient,
+  sessionIds: readonly string[],
+): Promise<Map<string, ChatPerson[]>> {
+  if (sessionIds.length === 0) return new Map();
+  try {
+    const res = await client
+      .from("workspace_session_members")
+      .select("session_id,uid,created_at")
+      .in("session_id", [...sessionIds])
+      .order("created_at", { ascending: true });
+    if (res.error) return new Map();
+    const rows = (res.data ?? []) as { session_id: unknown; uid: unknown }[];
+    const uids = rows.map((r) => r.uid).filter((u): u is string => typeof u === "string");
+    const profiles = await fetchProfiles(client, uids).catch(() => new Map<string, MemberProfile>());
+    return guestsBySession(rows, profiles);
+  } catch {
+    // 容错这一格连「抛出来的」也接住：它挂了只该少画几个人，不该把整份聊天清单一起拖下水
+    return new Map();
+  }
+}
+
+/** 别人主场里拉我进去的群（#1393，客人那一侧）。四步：我在哪几条 → 那几条会话的行 → 每条里的客人
+    与群主的名字 → 每条里那几只智能体（RPC，只给名字 / 职责 / 头像）。
+    **第一步读不到回 []**（0043 没跑 = 没有这回事，不是一个错误）；之后任何一步挂了往上抛——
+    调用方保留上一次的列表（「读不到」不许被说成「你被移出了所有群」） */
+export async function listGuestChats(client: SupabaseClient, selfUid: string): Promise<GuestChat[]> {
+  const mine = await client.from("workspace_session_members").select("session_id").eq("uid", selfUid);
+  if (mine.error) return [];
+  const ids = [...new Set(((mine.data ?? []) as { session_id: unknown }[]).map((r) => r.session_id).filter((x): x is string => typeof x === "string"))];
+  if (ids.length === 0) return [];
+  const rows = (unwrap(
+    await client
+      .from("workspace_sessions")
+      .select("id,workspace_id,publisher_uid,title,archived,updated_at,agent_ids,last_ts,last_excerpt,last_from")
+      .in("id", ids),
+  ) ?? []) as {
+    id: string; workspace_id: string; publisher_uid: string; title: string; archived: boolean; updated_at: string;
+    agent_ids?: unknown; last_ts?: unknown; last_excerpt?: unknown; last_from?: unknown;
+  }[];
+  const guests = await fetchSessionGuests(client, rows.map((r) => r.id));
+  const owners = await fetchProfiles(client, rows.map((r) => r.publisher_uid)).catch(() => new Map<string, MemberProfile>());
+  return Promise.all(
+    rows.map(async (row) => {
+      const res = await client.rpc("guest_chat_agents", { p_session: row.id });
+      const raw = (unwrap(res) ?? []) as { agent_id: unknown; name: unknown; description: unknown; avatar_slot: unknown }[];
+      const agents = raw.map((r) => guestAgentRow(r, row.publisher_uid)).filter((a) => a !== null);
+      const ownerProfile = owners.get(row.publisher_uid);
+      return assembleGuestChat({
+        row,
+        agents,
+        humans: guests.get(row.id) ?? [],
+        owner: { uid: row.publisher_uid, name: personName(row.publisher_uid, ownerProfile), avatarUrl: ownerProfile?.avatarUrl ?? "" },
+      });
+    }),
+  );
 }
 
 /** 这只智能体现在挂在哪几条聊天上（#1280）：它自己那条私聊 + 它在的那几个群。

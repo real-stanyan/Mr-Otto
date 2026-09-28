@@ -187,6 +187,20 @@ describe("聊天与个人主场的提示词（#1280，ADR-0298）", () => {
     expect(groupHome).toContain("这是一条**群聊**会话");
   });
 
+  // #1393：主场的群里可以有群主的朋友了。朋友点起的那一轮每一刀都等群主批（policyApprover），
+  // 提示词若照旧只说「这里没有审批」，模型会宣布一步不会发生的「直接做了」——#1206 那个形状
+  it("主场的群聊：对面是群主和他的朋友，朋友点起的那一轮要等群主批", () => {
+    expect(groupHome).toContain("群主和他拉进来的朋友");
+    expect(groupHome).toContain("群里的朋友点起的那一轮不一样");
+    expect(groupHome).toContain("要等群主批");
+    expect(groupHome).not.toContain("团队的多个成员");
+    // 私聊里不会有第二个人：那一段一个字不动
+    expect(dmHome).not.toContain("朋友点起的");
+    // 团队群聊一个字不动
+    expect(team).toContain("团队的多个成员都能发言");
+    expect(team).not.toContain("群主");
+  });
+
   it("主场里连本机那句「会弹给用户审批」也不出现", () => {
     expect(dmHome).not.toContain("危险操作会弹给用户审批");
     expect(groupHome).not.toContain("危险操作会弹给用户审批");

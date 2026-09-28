@@ -39,7 +39,8 @@ describe("cs 帧协议", () => {
     // null 静默丢掉，create() 于是白等满超时才回一句"云端无响应"
     // 20 = #1280：聊天（create.chat / chat_update + result / welcome.chat /
     //     backlog.tail / backlog.hasMore，六处一次进位）。
-    expect(CS_PROTOCOL_VERSION).toBe(20);
+    // 21 = #1393：群里可以有真人（create.chat.humans / chat_update.humans / welcome.chat.humans）
+    expect(CS_PROTOCOL_VERSION).toBe(21);
   });
   it("房名生成", () => {
     expect(csCtlChannel()).toBe("cs-ctl");
@@ -183,8 +184,8 @@ describe("rate_limited 码（issue #819）", () => {
 // 协议 14（#1102）：repo 那一组整个走了——config / config_result 两条帧删除。
 // 留下的是 modelRoute 那一格，它换了唯一的载体（welcome + workspace_state）
 describe("协议 14：config 帧没了，modelRoute 还在（#1102）", () => {
-  it("协议号跟着最新一条变更走（此刻 = 20，#1280 的聊天六帧是最近进位者；#1233 的 say.voice 是 19）", () => {
-    expect(CS_PROTOCOL_VERSION).toBe(20);
+  it("协议号跟着最新一条变更走（此刻 = 21，#1393 的群里真人是最近进位者；#1280 的聊天六帧是 20）", () => {
+    expect(CS_PROTOCOL_VERSION).toBe(21);
   });
 
   it("config 帧解不出来了 —— 老客户端发过来一律 null", () => {
@@ -327,7 +328,7 @@ describe("wiki_write / wiki_write_result（协议 18，#1140）", () => {
     const bad = { ...ok, ok: false, message: "常驻超预算" };
     expect(decodeCsDown(encodeCs(bad))).toEqual(bad);
   });
-  it("CS_PROTOCOL_VERSION 是 20（#1280 的聊天六帧之后）", () => { expect(CS_PROTOCOL_VERSION).toBe(20); });
+  it("CS_PROTOCOL_VERSION 是 21（#1393 群里的真人之后）", () => { expect(CS_PROTOCOL_VERSION).toBe(21); });
 });
 
 // 协议 17（#1163）：语音通话名单。会话房帧——任何在籍成员都能发，服务端复核名单里的 id

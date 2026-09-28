@@ -149,7 +149,7 @@ describe("打开时先种 cloudSession.chat（#1301）", () => {
     seed({ cloudSessionList: { home: [GROUP] } });
     await useChat.getState().openGroupChat("g-1");
     expect(useChat.getState().cloudSession?.chat).toEqual({
-      kind: "group", agentIds: ["admin", "a_000000000001"],
+      kind: "group", agentIds: ["admin", "a_000000000001"], humans: [],
     });
   });
 
@@ -172,7 +172,7 @@ describe("打开时先种 cloudSession.chat（#1301）", () => {
     seed();
     await useChat.getState().openAgentChat("a_000000000001");
     await useChat.getState().createCloudSessionFromDraft("home", "你好");
-    expect(useChat.getState().cloudSession?.chat).toEqual({ kind: "dm", agentIds: ["a_000000000001"] });
+    expect(useChat.getState().cloudSession?.chat).toEqual({ kind: "dm", agentIds: ["a_000000000001"], humans: [] });
   });
 });
 

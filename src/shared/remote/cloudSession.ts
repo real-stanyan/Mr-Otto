@@ -4,11 +4,14 @@
 // 事件只发给已过 hello 验籍的 cid——房名可猜，所以不存在房间级广播。
 
 import type { SessionEvent } from "../../session/events.js";
-import { AGENT_ID_RE, CHAT_NAME_MAX, normalizeChatAgentIds } from "../chatRoster.js";
+import { AGENT_ID_RE, CHAT_NAME_MAX, normalizeChatAgentIds, normalizeChatHumanUids, USER_UID_RE, type ChatHuman } from "../chatRoster.js";
 import { b64decode, b64encode } from "./b64.js";
 import { MAX_FRAME_BYTES } from "./wire.js";
 
-/** 20（issue #1280）：聊天。`create` 多了 `chat`（缺席 = 团队会话，同旧）、多了一条
+/** 21（#1393，ADR-0325）：群里可以有真人（群主的朋友）。`create` 的 group `chat` 多 `humans`（uid 名单）、
+    `chat_update` 多 `humans`（改动之后的完整名单）、`welcome` 的 `chat` 多 `humans`（{uid,name}）。
+    加字段照样进位：老 runtime 会把 `humans` 静默丢掉，于是新客户端以为拉了人、群里其实没有。
+    20（issue #1280）：聊天。`create` 多了 `chat`（缺席 = 团队会话，同旧）、多了一条
     `create_failed` 回执；新控制房帧 `chat_update` / `chat_update_result`；`welcome` 多了
     `chat`；`backlog` 上行多了 `tail` 那一种、下行最后一片多了 `hasMore`。**七处一次进位**：
     分页那半的实现晚几个 PR，但帧先定下来——握手是精确相等，进两次位就是发两次版。
@@ -116,7 +119,7 @@ import { MAX_FRAME_BYTES } from "./wire.js";
     少一格状态。**加一个枚举值同理**：老客户端的 isValidCsDeniedCode 认不出
     `rate_limited`，decodeCsDown 回 null，那一帧被静默忽略，于是 create()
     要白等满超时才回一句"云端无响应"——把"你被限速了"说成"对面没回话"。 */
-export const CS_PROTOCOL_VERSION = 20;
+export const CS_PROTOCOL_VERSION = 21;
 export const CS_MAX_TEXT_BYTES = 64 * 1024;
 
 /** 一次回多少字节的文件内容（#1056）。中继单帧上限是 256 KiB（wire.ts 的
@@ -288,11 +291,14 @@ export type CsWikiWriteReq =
 /** 建一条聊天（协议 20，#1280）。create 帧上缺席 = 团队会话 */
 export type CsChatSpec =
   | { kind: "dm"; agentId: string }
-  | { kind: "group"; name: string; agentIds: string[] };
-/** welcome 里带的聊天身份。agentIds 是日志投影原样——与现存智能体求交集留给读取侧 */
+  /** `humans`（协议 21，#1393）：群主之外拉进来的真人 uid。缺席 = 没有 */
+  | { kind: "group"; name: string; agentIds: string[]; humans?: string[] };
+/** welcome 里带的聊天身份。agentIds 是日志投影原样——与现存智能体求交集留给读取侧。
+    `humans`（协议 21）：群主之外的真人，名字是日志里的快照；私聊恒为空 */
 export interface CsChatInfo {
   kind: "dm" | "group";
   agentIds: string[];
+  humans: ChatHuman[];
 }
 /** 尾巴分页（协议 20）：进房第一页的条数，与一页的上限 */
 export const BACKLOG_TAIL_DEFAULT = 200;
@@ -361,7 +367,9 @@ export type CsUp =
       只改群名时不必把名单一起发过去（那等于替用户声明「那一格我也确认是这个值」，
       而两个人同时改一条群聊时后发的那份会把先发的名单覆盖回去）。
       名单落成 `chat_roster_changed` 事件广播给房里所有人，库里那两列只是投影 */
-  | { t: "chat_update"; workspaceId: string; sessionId: string; name?: string; agentIds?: string[] }
+  /** `humans`（协议 21，#1393）：改动之后群主之外的**完整**真人名单。群主以外的人只能拉自己的朋友、
+      只能把自己移出去（判据在 runtime，见 `humanRosterChangeProblem`） */
+  | { t: "chat_update"; workspaceId: string; sessionId: string; name?: string; agentIds?: string[]; humans?: string[] }
   /** 设置页改一页 wiki（协议 18，#1140）：write 整页替换、remove 删页。判据同 files——任何在籍成员都能写，
       服务端走与 wiki 工具同一条写入路径（保留页 / 预算 / 可疑指令由 wikiService 把关） */
   | ({ t: "wiki_write"; workspaceId: string } & CsWikiWriteReq)
@@ -519,9 +527,15 @@ function normalizeChatSpec(v: unknown): CsChatSpec | null | undefined {
   }
   if (o.kind === "group") {
     const name = normalizeChatName(o.name);
-    // 建一条群聊要 ≥1：一个人都没有的群建出来没有意义（界面上的下限是 2，见 chatRoster.ts）
-    const agentIds = normalizeChatAgentIds(o.agentIds, 1);
-    return name !== null && agentIds !== null ? { kind: "group", name, agentIds } : null;
+    // 智能体那一格下限 0（#1393）：群里可以只有群主和他的朋友；「至少拉进来两位」由 runtime 的
+    // planChatCreate 按智能体 + 朋友合起来判（界面上的下限同一个数，见 chatRoster.ts）
+    const agentIds = normalizeChatAgentIds(o.agentIds, 0);
+    if (name === null || agentIds === null) return null;
+    if (o.humans === undefined) return agentIds.length >= 1 ? { kind: "group", name, agentIds } : null;
+    // 带了但形状不对 → 拒帧，不「修好了再用」（同 agentIds）
+    const humans = normalizeChatHumanUids(o.humans);
+    if (humans === null || agentIds.length + humans.length < 1) return null;
+    return { kind: "group", name, agentIds, humans };
   }
   return null;
 }
@@ -533,7 +547,19 @@ function normalizeChatInfo(v: unknown): CsChatInfo | null | undefined {
   if (o.kind !== "dm" && o.kind !== "group") return null;
   // 这里不用 normalizeChatAgentIds：下行名单可以是空的（群里的智能体全被删了）
   if (!Array.isArray(o.agentIds) || !o.agentIds.every((x) => typeof x === "string")) return null;
-  return { kind: o.kind, agentIds: o.agentIds as string[] };
+  // humans 缺席按空（下行容错：协议号相等时它总在，缺了只可能是一个不该发生的实现漏写——
+  // 那时少画几个人比整条 welcome 读不出来好）；在场而形状不对才拒
+  let humans: ChatHuman[] = [];
+  if (o.humans !== undefined) {
+    if (!Array.isArray(o.humans)) return null;
+    for (const h of o.humans) {
+      if (h === null || typeof h !== "object") return null;
+      const r = h as Record<string, unknown>;
+      if (typeof r.uid !== "string" || !USER_UID_RE.test(r.uid) || typeof r.name !== "string") return null;
+      humans.push({ uid: r.uid, name: r.name });
+    }
+  }
+  return { kind: o.kind, agentIds: o.agentIds as string[], humans };
 }
 
 const isSeq = (v: unknown): v is number => Number.isInteger(v) && (v as number) >= 0;
@@ -789,7 +815,7 @@ export function decodeCsUp(b64: string): CsUp | null {
     if (t === "chat_update") {
       if (typeof obj.workspaceId !== "string" || typeof obj.sessionId !== "string") return null;
       // 两格都没带的话这条帧没有意义——不是「什么都不改」，是发帧的人漏了东西
-      if (obj.name === undefined && obj.agentIds === undefined) return null;
+      if (obj.name === undefined && obj.agentIds === undefined && obj.humans === undefined) return null;
       const update: Extract<CsUp, { t: "chat_update" }> = {
         t: "chat_update",
         workspaceId: obj.workspaceId,
@@ -806,6 +832,11 @@ export function decodeCsUp(b64: string): CsUp | null {
         const ids = normalizeChatAgentIds(obj.agentIds, 0);
         if (ids === null) return null;
         update.agentIds = ids;
+      }
+      if (obj.humans !== undefined) {
+        const humans = normalizeChatHumanUids(obj.humans);
+        if (humans === null) return null;
+        update.humans = humans;
       }
       return update;
     }
