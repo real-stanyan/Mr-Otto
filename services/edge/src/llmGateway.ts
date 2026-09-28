@@ -113,12 +113,13 @@ export interface SettleMeta {
     2026-09-21 实测同一个账号同一份请求，SYD 那侧 `/billing/v1/me`（一趟 DO）0.35s，
     HEL 那侧 3.65s（#1304）。一次成功的调用原来要打三趟（hold → settle → remaining），
     而后两趟问的是同一个 DO 手里同一份状态。
-    所以 `hold` 与 `settle` **顺带把额度快照回来**，`remaining()` 退成兜底：
-    settle 撞上 `no_hold`（幂等重入）时没有快照可言，那时才单独问一趟。 */
+    所以 `hold` 与 `settle` **顺带把额度快照回来**，`remaining()` 退成兜底。
+    #1398 之后网关**不再读 settle 那份**：三条路的 settle 都不挡在响应前面了（流式本来就不挡，
+    非流式见 `settleInBackground`），额度头一律取 hold 的快照。DO 照旧回它，没人读而已。 */
 export interface QuotaPort {
   hold(uid: string, requestId: string, estimateMicro: number): Promise<HoldOutcome>;
-  /** 回这一笔结算之后的额度快照；`null` = 没有挂着的 hold（重复 settle / 已释放），
-      那时调用方自己去问 `remaining()` */
+  /** 回这一笔结算之后的额度快照；`null` = 没有挂着的 hold（重复 settle / 已释放）。
+      网关此刻不读它（#1398），留着是因为 DO 本来就回 */
   settle(uid: string, requestId: string, meta: SettleMeta): Promise<QuotaRemaining | null>;
   release(uid: string, requestId: string): Promise<void>;
   remaining(uid: string): Promise<QuotaRemaining>;
@@ -383,6 +384,27 @@ export function createLlmGateway(deps: LlmGatewayDeps): (req: Request, caller: C
   const headersFrom = (r: QuotaRemaining | null | undefined, uid: string): Promise<Record<string, string>> =>
     r ? Promise.resolve(headersOf(r)) : remainingHeaders(uid);
 
+  /** 非流式三条路（chat 非流式 / 决策 / 语音）的结算：发出去、交给 waitUntil，**不等它回来再回响应**
+      （#1398）。响应里的每一个字节在它之前就定了——额度头取 hold 的快照（流式那条本来就这么取）、
+      花费头本地算——而远 colo 上这一趟 DO 往返约 330ms（2026-09-28 从 VPS 量：AMS 进来、DO 在悉尼）。
+      结算本身一个字没变：同一个 requestId、同一份 usage、同一个 costMicro，只是不挡在响应前面。
+      后台失败时照旧 release 那笔 hold：改动前这条路是「settle 抛 → 外层 catch → release + 502」，
+      内容已经交出去之后只剩 release 这一半，钱的结局不变（流式那条失败时只记日志、等 TTL，
+      这里不照抄它：MAX_INFLIGHT 是 4，挂着的 hold 会堵这个账号十分钟）。
+      async IIFE 而不是 `.then(…, …)`：settle 同步抛也要接得住 */
+  const settleInBackground = (uid: string, requestId: string, meta: SettleMeta): void => {
+    const p = (async () => {
+      try {
+        await deps.quota.settle(uid, requestId, meta);
+      } catch (err) {
+        console.error("llmGateway: settle 失败，释放这笔 hold", err);
+        await deps.quota.release(uid, requestId).catch(() => {});
+      }
+    })();
+    if (deps.waitUntil) deps.waitUntil(p);
+    else void p;
+  };
+
   return async function handle(req: Request, caller: Caller): Promise<Response> {
     const raw = await req.text();
     let body: Record<string, unknown>;
@@ -479,8 +501,8 @@ export function createLlmGateway(deps: LlmGatewayDeps): (req: Request, caller: C
           }
           const usage: UsageCounts = { promptTokens: 0, cachedTokens: 0, completionTokens: reply.usageChars ?? units };
           const cost = costMicro(usage, route);
-          const settled = await deps.quota.settle(caller.uid, requestId, { caller, route, usage, costMicro: cost });
-          const headers = await headersFrom(settled, caller.uid);
+          settleInBackground(caller.uid, requestId, { caller, route, usage, costMicro: cost });
+          const headers = await headersFrom(held.remaining, caller.uid);
           // Node 的 lib 只把 ArrayBuffer 当 BodyInit（Uint8Array<ArrayBufferLike> 过不了 tsc）；
           // 按 byteOffset/byteLength 切一份，不假设这个视图从 0 开始
           const audio = reply.audio.buffer.slice(reply.audio.byteOffset, reply.audio.byteOffset + reply.audio.byteLength) as ArrayBuffer;
@@ -510,7 +532,7 @@ export function createLlmGateway(deps: LlmGatewayDeps): (req: Request, caller: C
     // ② 钱只算**输入** token（输出免费）：预扣按请求体字节 ÷ 3 估，结算用上游报的 input_tokens；
     // ③ 请求体摘掉 `use` 再发（那是我们自己的字段，上游不认识）；
     // ④ **上游回了 200 就结算**，哪怕答案形状不对（同 #855：收了钱的调用不许 release）——
-    //    结算完再回 502，客户端据此回落到原来那条路。
+    //    结算发出去再回 502，客户端据此回落到原来那条路（结算不等它回来，#1398）。
     // 不换站：决策模型今天也只有一条路，所以这里返回的是 `Response` 不是 `Response | null`——
     // 外层 failover 循环见非 null 就直接收下，不会换下一条候选（同 serveTts）
     const serveDecision = async (route: RouteRow, key: string): Promise<Response> => {
@@ -572,8 +594,8 @@ export function createLlmGateway(deps: LlmGatewayDeps): (req: Request, caller: C
           const inputTokens = reply.ok ? reply.reply.inputTokens : reply.inputTokens;
           const usage: UsageCounts = inputTokens === null ? estimate : { promptTokens: inputTokens, cachedTokens: 0, completionTokens: 0 };
           const cost = costMicro(usage, route);
-          const settled = await deps.quota.settle(caller.uid, requestId, { caller, route, usage, costMicro: cost });
-          const headers = await headersFrom(settled, caller.uid);
+          settleInBackground(caller.uid, requestId, { caller, route, usage, costMicro: cost });
+          const headers = await headersFrom(held.remaining, caller.uid);
           if (!reply.ok) return apiError(502, reply.message, "upstream", {}, headers);
           return json(200, {
             model: reply.reply.model, answers: reply.reply.answers, usage: { input_tokens: usage.promptTokens },
@@ -707,7 +729,7 @@ export function createLlmGateway(deps: LlmGatewayDeps): (req: Request, caller: C
           // #855：挑不出 usage 也按预扣结算，与流式那条同一规则——200 = 上游收了钱，
           // 正文马上就出门；release 会把这笔成本送掉
           const finalUsage = usage ?? estimateUsage(bodyBytes, maxTokens);
-          await settleAt(finalUsage);
+          settleInBackground(caller.uid, requestId, { caller, route, usage: finalUsage, costMicro: costMicro(finalUsage, route) });
           // #857：本次花了多少。非流式走响应头；流式放不进头（settle 要等流收尾，
           // 那一刻响应头早发出去了），改成流末尾一行 SSE 注释，见 tapSseUsage 的 trailer
           const costHeader = { [BILLING_HEADERS.cost]: String(costMicro(finalUsage, route)) };
