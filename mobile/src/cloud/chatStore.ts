@@ -8,6 +8,8 @@
 //   先存成 pendingFirst，等会话 ready 再发——**先取后发**：状态推送会重复来，晚一步清就发两遍。
 // · **回执三态**（ADR-0228）：ok 撤掉「不确定」那行；unknown 摆成那一行（绑 sessionId）；
 //   确定失败 = sendError（输入框里的原文由调用方留着；草稿第一句那种则经 draftSeed 摆回输入框）。
+// · **本机缓存**（#1426）：点进来先画上次存下的那一段（provisional），第一次 ready 时按服务器
+//   这一轮最早那条对账；之后每来一条事件攒 1 秒写回。判据在 shared 的 chatCache.ts。
 // · **代数**：人在异步途中离开了这一页（closeChat），晚到的 open / create 结果不该再把一条
 //   会话接回来。
 // · **给语音那一层的钩子**（A4）：事件落进来、流式碎片、房间状态翻转、离开这一页——语音的编排
@@ -20,11 +22,15 @@ import type { CloudAck, CloudSessionDelta, CloudSessionStatus } from "../../../s
 import type { SessionEvent } from "../../../src/session/events.js";
 import { createStore } from "../externalStore.js";
 import { cloudClient, ensureUid, setCloudSinks } from "./cloudClient.js";
+import { reconcileCachedEvents } from "../../../src/shared/chatCache.js";
+import { flushChatCacheSave, loadChatCache, removeChatCache, scheduleChatCacheSave } from "./chatCache.js";
 
 export interface ChatSession extends CloudSessionCore {
   /** 上一次往前翻的结局。failed 之后不自己重试——那是一颗要人点的钮 */
   older: "idle" | "loading" | "failed";
   events: SessionEvent[];
+  /** 此刻 events 里还混着本机缓存来的（#1426）：第一次 ready 时对账，之后为假。为真时不写回缓存 */
+  provisional: boolean;
 }
 
 export interface UnsentLine {
@@ -75,6 +81,10 @@ export function chatEvents(sessionId: string): readonly SessionEvent[] | null {
 /** 每次 closeChat 加一：异步回来时比一比，变了就说明人已经离开了这一页 */
 let gen = 0;
 
+/** 本机缓存（#1426）：这条聊天是替谁开的（缓存按账号分键）；对账之前服务器这一轮下发的最小 seq */
+let cacheOwner: string | null = null;
+let serverMin: number | null = null;
+
 export function useChatStore(): ChatStoreState {
   return useSyncExternalStore(store.subscribe, store.get);
 }
@@ -82,10 +92,13 @@ export function useChatStore(): ChatStoreState {
 function onEvent(event: SessionEvent): void {
   const s = store.get();
   if (s.session === null || s.session.sessionId !== event.sessionId) return;
+  // 对账之前记下服务器这一轮给到哪儿——排在去重之前：与缓存同 seq 的那几条也是服务器给的
+  if (s.session.provisional) serverMin = serverMin === null ? event.seq : Math.min(serverMin, event.seq);
   const events = insertCloudEvent(s.session.events, event);
   if (events === null) return;
   const streaming = clearCloudStreamingOn(s.streaming, event);
   store.set({ session: { ...s.session, events }, ...(streaming !== s.streaming ? { streaming } : {}) });
+  if (!s.session.provisional && cacheOwner !== null) scheduleChatCacheSave(cacheOwner, event.sessionId, events);
   activity?.event(event);
 }
 
@@ -101,7 +114,15 @@ function onStatus(status: CloudSessionStatus): void {
   const s = store.get();
   if (s.session === null || s.session.sessionId !== status.sessionId) return;
   const prev = s.session.state;
-  const session: ChatSession = { ...s.session, ...applyCloudStatus(s.session, status) };
+  let session: ChatSession = { ...s.session, ...applyCloudStatus(s.session, status) };
+  // 第一次 ready：服务器这一轮的历史已经全部进来了（客户端在 backlog 最后一片之后才翻 ready），
+  // 扔掉缓存里比它更早的，从此以服务器为准（spec §3）
+  if (session.provisional && session.state === "ready") {
+    session = { ...session, provisional: false, events: reconcileCachedEvents(session.events, serverMin) };
+    serverMin = null;
+    if (cacheOwner !== null) scheduleChatCacheSave(cacheOwner, session.sessionId, session.events);
+  }
+  if (session.state === "denied" && cacheOwner !== null) void removeChatCache(cacheOwner, session.sessionId);
   store.set({ session, ...(status.notice === undefined ? {} : { notice: status.notice }) });
   if (prev !== session.state) activity?.room(session.sessionId, prev, session.state);
   if (session.state === "ready") void flushPendingFirst(session.sessionId);
@@ -142,12 +163,18 @@ export async function openChat(
   const uid = await ensureUid();
   if (g !== gen) return;
   if (store.get().session?.sessionId === sessionId) return;
+  // 先画本机存着的（#1426）：本地 sqlite，毫秒级；读不到就是空的，照旧转圈
+  const cached = uid === null ? null : await loadChatCache(uid, sessionId);
+  if (g !== gen) return;
+  if (store.get().session?.sessionId === sessionId) return;
+  cacheOwner = uid;
+  serverMin = null;
   store.set({
     session: {
       workspaceId, sessionId, state: "connecting",
       initiatorUid: null, ownerUid: "", selfUid: uid ?? "",
       modelRoute: null, gapNote: null, chat: seed, hasOlder: false,
-      older: "idle", events: [],
+      older: "idle", events: cached ?? [], provisional: true,
     },
     streaming: {}, unsent: null, sendError: null, notice: null, error: null,
   });
@@ -250,7 +277,13 @@ export function takeDraftSeed(sessionId: string): string | null {
 /** 离开这一页：先让语音那一层收口（停麦停放音——通话本身还在），再断连接、清状态 */
 export function closeChat(): void {
   activity?.closed();
+  // 对过账的才写回：没连上就离开的，手上那份是「缓存 + 半截 backlog」，写回去没有新信息
+  const s = store.get().session;
+  if (s !== null && !s.provisional && cacheOwner !== null) scheduleChatCacheSave(cacheOwner, s.sessionId, s.events);
+  void flushChatCacheSave();
   gen += 1;
+  cacheOwner = null;
+  serverMin = null;
   void cloudClient.leave();
   store.set(EMPTY);
 }
