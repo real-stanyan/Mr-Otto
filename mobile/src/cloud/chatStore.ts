@@ -98,7 +98,8 @@ function onEvent(event: SessionEvent): void {
   if (events === null) return;
   const streaming = clearCloudStreamingOn(s.streaming, event);
   store.set({ session: { ...s.session, events }, ...(streaming !== s.streaming ? { streaming } : {}) });
-  if (!s.session.provisional && cacheOwner !== null) scheduleChatCacheSave(cacheOwner, event.sessionId, events);
+  // denied 的会话缓存刚删掉，再写回就白删了
+  if (!s.session.provisional && s.session.state !== "denied" && cacheOwner !== null) scheduleChatCacheSave(cacheOwner, event.sessionId, events);
   activity?.event(event);
 }
 
@@ -279,7 +280,8 @@ export function closeChat(): void {
   activity?.closed();
   // 对过账的才写回：没连上就离开的，手上那份是「缓存 + 半截 backlog」，写回去没有新信息
   const s = store.get().session;
-  if (s !== null && !s.provisional && cacheOwner !== null) scheduleChatCacheSave(cacheOwner, s.sessionId, s.events);
+  // denied 的会话缓存已经删了，离开时不许写回
+  if (s !== null && !s.provisional && s.state !== "denied" && cacheOwner !== null) scheduleChatCacheSave(cacheOwner, s.sessionId, s.events);
   void flushChatCacheSave();
   gen += 1;
   cacheOwner = null;

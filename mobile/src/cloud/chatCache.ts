@@ -36,12 +36,16 @@ async function readIndex(uid: string): Promise<ChatCacheIndex> {
 }
 
 async function write(uid: string, sessionId: string, events: readonly SessionEvent[]): Promise<void> {
+  // 排队期间账号可能已经退出了：退出那一刻清掉的东西不许被排在后面的写盘再建回来
+  if (uid !== owner) return;
   const raw = serializeChatCache(events);
   if (raw === null) return drop(uid, sessionId);
-  await AsyncStorage.setItem(keyOf(uid, sessionId), raw);
+  // 先记索引再写正文：两步之间失败，留下的是「索引里有、正文没有」（读到就是 null，无害），
+  // 反过来是「正文在、索引不认识」——淘汰和退出登录都清不到它，会一直躺在磁盘上
   const { index, evicted } = touchChatCacheIndex(await readIndex(uid), sessionId, Date.now(), CHAT_CACHE_MAX_CHATS);
   for (const sid of evicted) await AsyncStorage.removeItem(keyOf(uid, sid));
   await AsyncStorage.setItem(indexKeyOf(uid), serializeChatCacheIndex(index));
+  await AsyncStorage.setItem(keyOf(uid, sessionId), raw);
 }
 
 async function drop(uid: string, sessionId: string): Promise<void> {
@@ -54,6 +58,9 @@ let timer: ReturnType<typeof setTimeout> | null = null;
 
 /** 攒 1 秒写一次：聊天开着时每来一条事件都会调到这里 */
 export function scheduleChatCacheSave(uid: string, sessionId: string, events: readonly SessionEvent[]): void {
+  // 只替当前登录的账号存：退出登录清完缓存之后，聊天页卸载 / 晚到的事件还会带着旧 uid 来写，
+  // 放行的话刚清掉的私人内容又被写回磁盘
+  if (uid !== owner) return;
   pending = { uid, sessionId, events };
   if (timer !== null) return;
   timer = setTimeout(() => {
