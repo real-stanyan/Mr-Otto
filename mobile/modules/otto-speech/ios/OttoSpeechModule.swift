@@ -82,6 +82,11 @@ public class OttoSpeechModule: Module {
       self.recognizer.stopPlay()
     }.runOnQueue(speechQueue)
 
+    // 系统来电进行中由 JS 打开（#1428）：音频会话交给 CallKit，这边不自己开关
+    AsyncFunction("setSessionManagedExternally") { (on: Bool) in
+      self.recognizer.externalSession = on
+    }.runOnQueue(speechQueue)
+
     OnDestroy {
       // recognizerInstance 是在 speechQueue 上懒建的：读它也在队列上，排在还没做完的命令后面
       speechQueue.async { self.recognizerInstance?.shutdown() }

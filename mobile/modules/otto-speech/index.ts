@@ -27,6 +27,8 @@ declare class OttoSpeechModule extends NativeModule<OttoSpeechEvents> {
       由 played / playError 事件回来 */
   play(id: string, uri: string): Promise<void>;
   stopPlay(): Promise<void>;
+  /** 系统来电（CallKit）进行中：音频会话由系统激活，这边不 setCategory / setActive（#1428） */
+  setSessionManagedExternally(on: boolean): Promise<void>;
 }
 
 export const OttoSpeech: OttoSpeechModule | null = requireOptionalNativeModule<OttoSpeechModule>("OttoSpeech");
