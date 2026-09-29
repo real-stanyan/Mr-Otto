@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   DISPATCH_ACT_AT, DISPATCH_NONE_BELOW, DISPATCH_PEOPLE_AT, DISPATCH_PEOPLE_CLEAR, DISPATCH_PICK_AT,
+  DISPATCH_REPLY_AT, DISPATCH_REPLY_QUIET,
   dispatchQuestions, dispatchVia, verdictFromScores,
 } from "../../services/runtime/src/dispatchDecision.js";
 import type { DispatchInput, DispatchVerdict } from "../../services/runtime/src/dispatch.js";
@@ -23,10 +24,12 @@ const input = (over: Partial<DispatchInput> = {}): DispatchInput => ({
   text: "构建为什么红了",
   ...over,
 });
-const reply = (act: number, agents: number[], people?: number): DecisionReply => ({
+/** `rep` = P(在等人回一句)（#1422）。缺省 0：「不是活」的那几条用例默认是「好的 / 谢谢」那种 */
+const reply = (act: number, agents: number[], people?: number, rep = 0): DecisionReply => ({
   model: "jev-1.13.0", inputTokens: 100,
   answers: {
     act: { type: "noul", noul: act },
+    reply: { type: "noul", noul: rep },
     ...(people !== undefined ? { people: { type: "noul", noul: people } } : {}),
     ...Object.fromEntries(agents.map((p, i) => [`a${i + 1}`, { type: "noul", noul: p }])),
   },
@@ -35,7 +38,7 @@ const reply = (act: number, agents: number[], people?: number): DecisionReply =>
 describe("dispatchQuestions", () => {
   it("一个 act + 每只一个 a<n>；**键是编号不是名字**", () => {
     const { questions } = dispatchQuestions(input());
-    expect(Object.keys(questions)).toEqual(["act", "a1", "a2", "a3"]);
+    expect(Object.keys(questions)).toEqual(["act", "reply", "a1", "a2", "a3"]);
     expect(Object.values(questions).every((q) => q.type === "noul")).toBe(true);
   });
   it("state 带名册（含 fallback 记号）、最近几句（分得清人和智能体）、这句话；名字里的 ] 与换行撑不破结构", () => {
@@ -54,6 +57,34 @@ describe("dispatchQuestions", () => {
   it("这句话超长时截断到 DISPATCH_TEXT_MAX_CHARS", () => {
     const { state } = dispatchQuestions(input({ text: "字".repeat(5000) }));
     expect((state.said as { text: string }).text.length).toBeLessThanOrEqual(1200);
+  });
+});
+
+describe("verdictFromScores：不是活、但在等人回一句（#1422）", () => {
+  const withPeople = (): DispatchInput => input({ people: { count: 2, names: ["小王", "小李"] } });
+  it("「有人在吗」：不像在要求做事、P(在等回话) 到阈值 → none{reply}", () => {
+    expect(verdictFromScores(reply(0.08, [0.4, 0.05, 0.05], undefined, DISPATCH_REPLY_AT), input())?.verdict)
+      .toEqual({ kind: "none", reply: true });
+  });
+  it("「好的 / 谢谢」：P(在等回话) 低于 DISPATCH_REPLY_QUIET → 普通 none，没人接", () => {
+    expect(verdictFromScores(reply(0.08, [0.1, 0.1, 0.1], undefined, DISPATCH_REPLY_QUIET - 0.01), input())?.verdict)
+      .toEqual({ kind: "none" });
+  });
+  it("P(在等回话) 在中间那段 → escalate，交给 LLM", () => {
+    expect(verdictFromScores(reply(0.08, [0.1, 0.1, 0.1], undefined, DISPATCH_REPLY_QUIET), input())?.verdict).toBe("escalate");
+    expect(verdictFromScores(reply(0.08, [0.1, 0.1, 0.1], undefined, DISPATCH_REPLY_AT - 0.01), input())?.verdict).toBe("escalate");
+  });
+  it("群里有别人：等回话、但拿不准不是说给人的 → escalate；确定不是说给人的 → none{reply}；确定是说给人的 → none{to:people}", () => {
+    expect(verdictFromScores(reply(0.08, [0.1, 0.1, 0.1], DISPATCH_PEOPLE_CLEAR, 0.9), withPeople())?.verdict).toBe("escalate");
+    expect(verdictFromScores(reply(0.08, [0.1, 0.1, 0.1], DISPATCH_PEOPLE_CLEAR - 0.01, 0.9), withPeople())?.verdict)
+      .toEqual({ kind: "none", reply: true });
+    expect(verdictFromScores(reply(0.08, [0.1, 0.1, 0.1], DISPATCH_PEOPLE_AT, 0.9), withPeople())?.verdict)
+      .toEqual({ kind: "none", to: "people" });
+  });
+  it("回包里没有 reply → null（同其余各题：没答全整份不认）", () => {
+    const r = reply(0.08, [0.1, 0.1, 0.1]);
+    const { reply: _drop, ...rest } = r.answers;
+    expect(verdictFromScores({ ...r, answers: rest }, input())).toBeNull();
   });
 });
 
@@ -83,7 +114,7 @@ describe("verdictFromScores：判决表（阈值是初值，边界用常量表�
     expect(verdictFromScores(reply(0.1, [0.1, 0.9, 0.1]), input())?.verdict).toBe("escalate");
   });
   it("scores 原样带出（日志要用）", () => {
-    expect(verdictFromScores(reply(0.9, [0.1, 0.8, 0.2]), input())?.scores).toEqual({ act: 0.9, a1: 0.1, a2: 0.8, a3: 0.2 });
+    expect(verdictFromScores(reply(0.9, [0.1, 0.8, 0.2]), input())?.scores).toEqual({ act: 0.9, reply: 0, a1: 0.1, a2: 0.8, a3: 0.2 });
   });
   it("回包里缺 act → null", () => {
     expect(verdictFromScores({ model: "m", inputTokens: null, answers: {} }, input())).toBeNull();
@@ -97,11 +128,11 @@ describe("群里还有别人：多问一题「是不是说给某个人的」", (
 
   it("有别人才问 people，state 带上「群里的其他人」；没有别人时题目与 state 都不多一个字", () => {
     const q = dispatchQuestions(withPeople());
-    expect(Object.keys(q.questions)).toEqual(["act", "people", "a1", "a2", "a3"]);
+    expect(Object.keys(q.questions)).toEqual(["act", "reply", "people", "a1", "a2", "a3"]);
     expect(q.questions.people!.type).toBe("noul");
     expect(q.state.people).toEqual({ count: 2, names: ["小王", "小李"] });
     const alone = dispatchQuestions(input());
-    expect(Object.keys(alone.questions)).toEqual(["act", "a1", "a2", "a3"]);
+    expect(Object.keys(alone.questions)).toEqual(["act", "reply", "a1", "a2", "a3"]);
     expect(alone.state).not.toHaveProperty("people");
   });
 
@@ -136,7 +167,7 @@ describe("群里还有别人：多问一题「是不是说给某个人的」", (
   });
 
   it("scores 里带上 people；问了 people 回包里却没有 → null", () => {
-    expect(verdictFromScores(reply(0.9, [0.1, 0.8, 0.2], 0.4), withPeople())?.scores).toEqual({ act: 0.9, people: 0.4, a1: 0.1, a2: 0.8, a3: 0.2 });
+    expect(verdictFromScores(reply(0.9, [0.1, 0.8, 0.2], 0.4), withPeople())?.scores).toEqual({ act: 0.9, reply: 0, people: 0.4, a1: 0.1, a2: 0.8, a3: 0.2 });
     expect(verdictFromScores(reply(0.9, [0.1, 0.8, 0.2]), withPeople())).toBeNull();
   });
 });

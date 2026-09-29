@@ -6,7 +6,8 @@
 // 被判 none、整场沉默」那类只能靠加规则兜（ADR-0275）。
 //
 // 这里换成一次请求里的一组是/否：一个 `act`（这句话是在要求做事吗）+ 每只 agent 一个
-// `a<n>`（该它接吗）；群里还有别人时再加一个 `people`（这句话是说给群里某个人的吗，#1405）。
+// `a<n>`（该它接吗）+ 一个 `reply`（不是活的话，是在等人回一句吗，#1422）；群里还有别人时
+// 再加一个 `people`（这句话是说给群里某个人的吗，#1405）。
 // 同一请求里的问题并行且互相独立，多选 = 多个 noul（官方的写法）；问题多了只多 token 不多
 // 时间（#1300 量过）。**键是编号不是名字**——同 ADR-0270：名字不经过模型的嘴。
 //
@@ -47,6 +48,11 @@ export const DISPATCH_PEOPLE_AT = 0.7;
 /** 归 fallback 那一格额外要 P(说给群里某个人的) 低于它（#1405）：「要做事、谁的职责都
     对不上」正是一句布置给人的活的样子，拿不准是不是说给人的就交给 LLM，不硬塞给管理员 */
 export const DISPATCH_PEOPLE_CLEAR = 0.3;
+/** 不是活时，P(在等人回一句) 到它 = 由一只应（#1422：「有人在吗」）。低于 DISPATCH_REPLY_QUIET
+    = 「好的 / 谢谢」那种，没人接；中间那段交给 LLM。应的那一只也要 people 低于
+    DISPATCH_PEOPLE_CLEAR——「大家好」在有同事的团队群里可能是说给人的，拿不准就交给 LLM */
+export const DISPATCH_REPLY_AT = 0.6;
+export const DISPATCH_REPLY_QUIET = 0.3;
 /** 上游回 5xx / 429 是立刻回落，只有「挂住不回」才付满这一格。**on 档下人在等它**：
     派活挡着自己那句话出现在群里（ADR-0270），超时之后还要再走今天那条 5 秒的 LLM 路。
     2026-09-28 从真正跑派活的那台 VPS 量（#1405，这天从 Cloudflare 的 AMS 进）：九发
@@ -89,6 +95,11 @@ export function dispatchQuestions(input: DispatchInput): { state: Record<string,
       "是明确要做的事、提出的问题、布置的任务；或者是在回答 `recent` 里某只智能体刚向人提的问题",
       "闲聊、问候、感谢、确认、感叹，或者只是对上一条回复的简单回应、不需要对方继续做事",
     ),
+    reply: noul(
+      "群里有人说了 `said.text` 这句话，没有 @ 任何人。先不管它是不是在要求做事：说这句话的人是在等智能体回他一句吗？",
+      "在等回话：打招呼（「大家好」「早」）、问有没有人在（「有人在吗」「在吗」）、问大家在不在、问了一个问题",
+      "不用谁回：感谢、确认、感叹、「好的」「收到」「哈哈」，或者只是对上一条回复的简单回应",
+    ),
   };
   if (hasPeople) {
     questions.people = noul(
@@ -114,7 +125,9 @@ export function verdictFromScores(
 ): { verdict: DispatchVerdict | "escalate"; scores: Record<string, number> } | null {
   const act = reply.answers.act;
   if (!act || act.type !== "noul") return null;
-  const scores: Record<string, number> = { act: act.noul };
+  const rep = reply.answers.reply;
+  if (!rep || rep.type !== "noul") return null;
+  const scores: Record<string, number> = { act: act.noul, reply: rep.noul };
   // 问了 `people` 回包里却没有 = 这份回包没答全，整份不认（同 parseDecisionReply 的纪律）
   let people: number | null = null;
   if (input.people.count > 0) {
@@ -143,7 +156,12 @@ export function verdictFromScores(
   if (act.noul < DISPATCH_NONE_BELOW) {
     // 自相矛盾（不像在要求做事，却有一只强烈对得上）不硬判 none：那多半是一句很短的
     // 回答（「main」），两个问题各看到了一半——交给读得到整段上下文的那条路
-    return { verdict: picks.length > 0 ? "escalate" : { kind: "none" }, scores };
+    if (picks.length > 0) return { verdict: "escalate", scores };
+    // 不是活：等着回话的由一只应（#1422），「好的 / 谢谢」没人接，中间那段交给 LLM
+    if (rep.noul < DISPATCH_REPLY_QUIET) return { verdict: { kind: "none" }, scores };
+    const notToPeople = people === null || people < DISPATCH_PEOPLE_CLEAR;
+    if (rep.noul >= DISPATCH_REPLY_AT && notToPeople) return { verdict: { kind: "none", reply: true }, scores };
+    return { verdict: "escalate", scores };
   }
   if (picks.length > 0) return { verdict: { kind: "picked", agentIds: picks.map((p) => p.agentId) }, scores };
   // 归 fallback 那一格：要做事、谁的职责都对不上——**而且不像是说给人的**（#1405）。
@@ -156,7 +174,9 @@ export function verdictFromScores(
 }
 
 const show = (v: DispatchVerdict): string =>
-  v.kind === "picked" ? `picked:${v.agentIds.join(",")}` : v.kind === "none" && v.to === "people" ? "none:people" : v.kind;
+  v.kind === "picked" ? `picked:${v.agentIds.join(",")}`
+    : v.kind === "none" && v.to === "people" ? "none:people"
+      : v.kind === "none" && v.reply === true ? "none:reply" : v.kind;
 
 export function dispatchVia(o: {
   mode: DecisionModeState;

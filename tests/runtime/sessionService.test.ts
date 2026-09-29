@@ -5414,7 +5414,7 @@ describe("不 @ 谁的话，谁的活谁接（#1153）", () => {
     { agentId: "admin", name: "管理员", description: "这个工作区的默认智能体", instructions: "", models: ["m-admin"], tools: [] as AgentToolAllow[] },
     AGENTS[1]!,
   ];
-  type Verdict = { kind: "picked"; agentIds: string[] } | { kind: "none"; to?: "people" } | { kind: "failed"; reason: string };
+  type Verdict = { kind: "picked"; agentIds: string[] } | { kind: "none"; to?: "people"; reply?: true } | { kind: "failed"; reason: string };
   type DispatchCall = Parameters<NonNullable<Parameters<typeof createCloudSession>[0]["dispatch"]>>[0];
 
   function open(store: EventStore, opts: {
@@ -5490,6 +5490,48 @@ describe("不 @ 谁的话，谁的活谁接（#1153）", () => {
     expect(seen).toEqual([]);
     expect(store.load("s1").map((e) => e.type)).toEqual(["chat_message"]);
     store.close();
+  });
+
+  describe("不是活、但在等人回一句（#1422：「有人在吗」没人接）", () => {
+    it("新群、一句话都还没有：管理员应，开场白带 dispatch 记号，不落 chat_message", async () => {
+      const store = newStore();
+      const seen: string[] = [];
+      const session = open(store, { agents: async () => ROSTER_WITH_ADMIN, verdict: { kind: "none", reply: true }, seen });
+      await session.say("u1", "alice", "有人在吗", false, [], undefined, []);
+      await session.settled();
+      expect(seen).toEqual(["admin"]);
+      const log = store.load("s1");
+      expect(log.filter((e) => e.type === "chat_message")).toHaveLength(0);
+      expect(log.find((e) => e.type === "user_message")).toMatchObject({ mentions: ["admin"], dispatch: "auto" });
+      store.close();
+    });
+
+    it("新群、群里没有管理员：名单第一只应", async () => {
+      const store = newStore();
+      const seen: string[] = [];
+      const session = open(store, { verdict: { kind: "none", reply: true }, seen });
+      await session.say("u1", "alice", "有人在吗", false, [], undefined, []);
+      await session.settled();
+      expect(seen).toEqual(["ops"]);
+      store.close();
+    });
+
+    it("有人开过口：最近开口的那只应，不是管理员", async () => {
+      const store = newStore();
+      const seen: string[] = [];
+      let n = 0;
+      const session = open(store, {
+        agents: async () => ROSTER_WITH_ADMIN,
+        verdict: () => (n++ === 0 ? { kind: "picked", agentIds: ["ads"] } : { kind: "none", reply: true }),
+        seen,
+      });
+      await session.say("u1", "alice", "投放预算看一下", false, [], undefined, []);
+      await session.settled();
+      await session.say("u1", "alice", "还在吗", false, [], undefined, []);
+      await session.settled();
+      expect(seen).toEqual(["ads", "ads"]);
+      store.close();
+    });
   });
 
   it("分类器失败 + mention:false（composer）：chat_message + 一句署名系统的话「没派出去」，没人起 turn", async () => {
