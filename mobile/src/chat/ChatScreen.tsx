@@ -94,6 +94,9 @@ function Gap() {
   return <View style={{ height: 16 }} />;
 }
 
+/** 倒置列表不满一屏时贴顶（#1424），用法见 FlatList 那一处 */
+const CHAT_LIST_TOP = { flexGrow: 1, justifyContent: "flex-end", paddingBottom: 8 } as const;
+
 function Line({ tone, children }: { tone: "muted" | "warn" | "error"; children: ReactNode }) {
   const { c } = usePalette();
   const color = tone === "error" ? c.destructive : tone === "warn" ? c.warn : c.mutedForeground;
@@ -588,6 +591,10 @@ export function ChatScreen({ route, navigation }: Props) {
           ) : (
             <FlatList
               inverted
+              // 不满一屏时贴顶（#1424，微信同款）：inverted 是整张列表上下翻转，内容坐标里的
+              // 「尾」就是屏幕上的「顶」——撑满之后往尾部挤，画出来就是从顶往下排。满屏之后
+              // flexGrow 不起作用，行为与改动前相同。paddingBottom 在屏幕上是顶上那一点留白
+              contentContainerStyle={CHAT_LIST_TOP}
               data={items}
               keyExtractor={(it) => (it.kind === "row" ? it.row.key : it.kind === "now" ? it.now.key : "roles")}
               renderItem={({ item }) =>

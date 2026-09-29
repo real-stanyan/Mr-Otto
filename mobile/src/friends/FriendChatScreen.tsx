@@ -148,6 +148,9 @@ export function FriendChatScreen({ route, navigation }: Props) {
           ) : (
             <FlatList
               inverted
+              // 不满一屏时贴顶（#1424）：inverted 翻转了上下，内容坐标的「尾」是屏幕上的「顶」，
+              // 同 chat/ChatScreen.tsx 那一处
+              contentContainerStyle={{ flexGrow: 1, justifyContent: "flex-end", paddingBottom: 8 }}
               data={items}
               keyExtractor={(it) => it.key}
               renderItem={({ item }) =>
