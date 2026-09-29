@@ -76,6 +76,12 @@ describe("缓存索引", () => {
     expect(r.index.map((x) => x.sessionId)).toEqual(["new", "mid"]);
     expect(r.evicted).toEqual(["old"]);
   });
+  it("时钟往回拨：刚写的这条自己不被淘汰，被淘汰的是别人里最旧的", () => {
+    const start = [{ sessionId: "a", ts: 100 }, { sessionId: "b", ts: 90 }];
+    const r = touchChatCacheIndex(start, "new", 5, 2);
+    expect(r.index.map((x) => x.sessionId)).toEqual(["new", "a"]);
+    expect(r.evicted).toEqual(["b"]);
+  });
   it("remove 与 parse/serialize 来回；坏数据回空表、坏条目跳过", () => {
     const idx = [{ sessionId: "a", ts: 2 }, { sessionId: "b", ts: 1 }];
     expect(parseChatCacheIndex(serializeChatCacheIndex(idx))).toEqual(idx);

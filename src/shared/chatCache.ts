@@ -84,15 +84,18 @@ export function serializeChatCacheIndex(index: ChatCacheIndex): string {
   return JSON.stringify(index);
 }
 
-/** 记一次写入：这条挪到最前（ts 更新），超过 max 的按最久没写的淘汰，回被淘汰的那几条 */
+/** 记一次写入：这条挪到最前（ts 更新），其余的按 ts 降序、超过 max 的按最久没写的淘汰，回被淘汰的那几条。
+    这条自己永远不淘汰：时钟往回拨时它的 ts 可能比别人都小，按 ts 排的话刚写下的正文会被当场淘汰、
+    成了索引不认识的孤儿，退出登录也清不到 */
 export function touchChatCacheIndex(
   index: ChatCacheIndex,
   sessionId: string,
   ts: number,
   max: number,
 ): { index: ChatCacheIndex; evicted: string[] } {
-  const next = [{ sessionId, ts }, ...index.filter((x) => x.sessionId !== sessionId)].sort((a, b) => b.ts - a.ts);
-  return { index: next.slice(0, max), evicted: next.slice(max).map((x) => x.sessionId) };
+  const others = index.filter((x) => x.sessionId !== sessionId).sort((a, b) => b.ts - a.ts);
+  const keep = Math.max(0, max - 1);
+  return { index: [{ sessionId, ts }, ...others.slice(0, keep)], evicted: others.slice(keep).map((x) => x.sessionId) };
 }
 
 export function removeFromChatCacheIndex(index: ChatCacheIndex, sessionId: string): ChatCacheIndex {

@@ -123,6 +123,8 @@ function onStatus(status: CloudSessionStatus): void {
     serverMin = null;
     if (cacheOwner !== null) scheduleChatCacheSave(cacheOwner, session.sessionId, session.events);
   }
+  // 连接中就被拒（被踢 / 会话没了）：服务器说了算，缓存里的消息不许继续留在屏幕上
+  if (session.provisional && session.state === "denied") session = { ...session, events: [], provisional: false };
   if (session.state === "denied" && cacheOwner !== null) void removeChatCache(cacheOwner, session.sessionId);
   store.set({ session, ...(status.notice === undefined ? {} : { notice: status.notice }) });
   if (prev !== session.state) activity?.room(session.sessionId, prev, session.state);

@@ -205,7 +205,9 @@ export function ChatInfoScreen({ route, navigation }: Props) {
     if (g === null) return <View style={{ flex: 1, backgroundColor: c.background }} />;
     const selfUid = chat.session?.selfUid || home.selfUid || "";
     // 名单优先读底下那条聊天的日志（同主场群那条纪律），头像从清单那一行补
-    const open = chat.session !== null && chat.session.sessionId === g.session.id && chat.session.chat ? chat.session : null;
+    // 连接中（provisional）不读：events 里可能是缓存，缓存里的名单可能比清单投影还旧，
+    // 而 chat_update 发的是完整名单，拿旧的发出去会把别的设备上的改动悄悄撤销（#1426）
+    const open = chat.session !== null && chat.session.sessionId === g.session.id && chat.session.chat && !chat.session.provisional ? chat.session : null;
     const dbPeople = g.session.humans ?? [];
     const people: ChatPerson[] = open !== null && open.chat
       ? chatHumansNow(open.events, open.chat.humans).map((h) => ({ uid: h.uid, name: h.name, avatarUrl: dbPeople.find((p) => p.uid === h.uid)?.avatarUrl ?? "" }))
@@ -395,13 +397,14 @@ export function ChatInfoScreen({ route, navigation }: Props) {
   const row = groupRows(ws, home.chats).find((g) => g.sessionId === target.sessionId) ?? null;
   if (row === null) return <View style={{ flex: 1, backgroundColor: c.background }} />;
   // 名单优先读底下那条聊天的日志（A3 那条纪律：投影一陈旧，下一次完整名单会把上一次的改动覆盖回去）
-  const live = chat.session !== null && chat.session.sessionId === row.sessionId && chat.session.chat
+  // 连接中（provisional）不读日志：缓存里的名单可能比清单投影还旧，chat_update 发的是完整名单（#1426）
+  const live = chat.session !== null && chat.session.sessionId === row.sessionId && chat.session.chat && !chat.session.provisional
     ? chatViewOf(ws, chat.session.chat, chat.session.events, row.name)
     : null;
   const agentIds = live?.agentIds ?? row.agentIds;
   // 我拉进来的朋友（#1393）：日志里那份是事实（开着这条聊天时），否则读清单那一行的投影；头像从投影补
   const dbPeople = home.chats.find((x) => x.id === row.sessionId)?.humans ?? [];
-  const openChat = chat.session !== null && chat.session.sessionId === row.sessionId && chat.session.chat ? chat.session : null;
+  const openChat = chat.session !== null && chat.session.sessionId === row.sessionId && chat.session.chat && !chat.session.provisional ? chat.session : null;
   const people: ChatPerson[] = openChat !== null && openChat.chat
     ? chatHumansNow(openChat.events, openChat.chat.humans).map((h) => ({ uid: h.uid, name: h.name, avatarUrl: dbPeople.find((p) => p.uid === h.uid)?.avatarUrl ?? "" }))
     : dbPeople;

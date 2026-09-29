@@ -260,6 +260,10 @@ export function ChatScreen({ route, navigation }: Props) {
 
   const session = chat.session;
   const events = session?.events ?? EMPTY_EVENTS;
+  // 名单只读服务器给的：连接中 events 里可能是缓存，缓存里的名单可能比清单投影还旧，
+  // 而 chat_update 发的是完整名单，拿旧的发出去会把别的设备上的改动悄悄撤销（#1426）。
+  // 时间线照旧画缓存，只有这两处名单推导退回连接前的回落（种子 / 清单投影）
+  const rosterEvents = session?.provisional === true ? EMPTY_EVENTS : events;
   const selfUid = session?.selfUid || inbox.selfUid || "";
   const draft = resolved !== null && resolved.sessionId === null && session === null;
   // 群里的真人（#1393）：welcome 之后日志里那份是事实；清单那一行的投影只补头像、以及 welcome 之前先画上
@@ -270,11 +274,11 @@ export function ChatScreen({ route, navigation }: Props) {
   const chatInfo = session?.chat ?? null;
   const people = useMemo<ChatPerson[]>(() => {
     if (isTeam || chatInfo === null) return dbPeople;
-    return chatHumansNow(events, chatInfo.humans).map((h) => ({ uid: h.uid, name: h.name, avatarUrl: dbPeople.find((p) => p.uid === h.uid)?.avatarUrl ?? "" }));
-  }, [isTeam, chatInfo, events, dbPeople]);
+    return chatHumansNow(rosterEvents, chatInfo.humans).map((h) => ({ uid: h.uid, name: h.name, avatarUrl: dbPeople.find((p) => p.uid === h.uid)?.avatarUrl ?? "" }));
+  }, [isTeam, chatInfo, rosterEvents, dbPeople]);
   // 名字、头像、「等 X 批」都按成员表查：把群里的人补进这一条群用的快照（团队群的成员表本来就全）
   const ws = useMemo(() => (baseWs === null || isTeam ? baseWs : withGuests(baseWs, people)), [baseWs, isTeam, people]);
-  const view = ws !== null && session !== null && session.chat ? chatViewOf(ws, session.chat, events, resolved?.title ?? "") : null;
+  const view = ws !== null && session !== null && session.chat ? chatViewOf(ws, session.chat, rosterEvents, resolved?.title ?? "") : null;
   const kind = view?.kind ?? resolved?.kind ?? "dm";
   const agentIds = view?.agentIds ?? resolved?.agentIds ?? [];
   const dmAgent = kind === "dm" ? (agentIds[0] ?? null) : null;
@@ -385,6 +389,8 @@ export function ChatScreen({ route, navigation }: Props) {
   };
 
   const decide = async (callId: string, decision: "approved" | "denied"): Promise<void> => {
+    // 没连上之前画的可能是缓存里的审批卡（#1426）：不许批，钮也已经按住了，这里是第二道
+    if (!ready) return;
     setDeciding(callId);
     const r = await cloudClient.approve(callId, decision);
     setDeciding(null);
@@ -600,6 +606,7 @@ export function ChatScreen({ route, navigation }: Props) {
                     selfAvatar={me.avatar}
                     group={group}
                     deciding={deciding}
+                    decideReady={ready}
                     onDecide={(id, d) => void decide(id, d)}
                     onAgent={(agentId) => navigation.navigate("Agent", isTeam || isGuestChat ? { agentId, workspaceId: ws.id } : { agentId })}
                     onCallAgent={(agentId) => {

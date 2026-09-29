@@ -31,6 +31,10 @@
 6. 语音那一层（`voiceSession`）只在 `ready` 之后才动：拨号、接回电、加入通话都等 ready，
    `startCall` 在发帧前按 `chatEvents` 的尾巴记 `sinceSeq`。缓存里的事件在 ready 之前放进 store，
    不经 `activity.event`（与今天 `openChat` 直接放 `events: []` 同一个位置），不会被当成新事件念出来。
+   除了语音层，还有几处读 `chatEvents` / store 里的 events：ChatScreen 与 ChatInfoScreen 为
+   `chat_update` / 退群推导完整名单（`chatViewOf` / `chatHumansNow`），以及审批卡的 `decide`。
+   这些在 `provisional` 期间一律按今天的行为处理——名单读种子 / 清单投影（当作没有 events），
+   审批要等 ready；只有时间线本身画缓存。
 
 ## 1. 缓存的内容与边界
 
@@ -114,4 +118,4 @@
 ## 8. 决策记录
 
 ADR（编号合并时定）：「手机本机缓存云会话事件，只作首屏占位、连上以服务器为准」——事件日志仍是
-唯一事实源；缓存是它的一段前缀副本，第一次 ready 时按 serverMin 对账；按账号分键、退出即清。
+唯一事实源；缓存是它的一段连续的副本，第一次 ready 时按 serverMin 对账；按账号分键、退出即清。
