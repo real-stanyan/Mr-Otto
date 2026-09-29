@@ -1531,11 +1531,58 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     const prewritten = added.filter((p) => {
       const ring = callback?.rings.get(p.agentId);
       if (ring === undefined || ring.opening === null) return false;
-      busy ??= new Set(openTurns(store.load(sessionId)).map((t) => t.agentId));
+      busy ??= busyAgents();
       return !busy.has(p.agentId);
     });
-    for (const p of prewritten) speakOpening(p, callback!.rings.get(p.agentId)!.opening!, byUid, callback!.byLabel);
-    const rest = added.filter((p) => !prewritten.includes(p));
+    if (prewritten.length > 0) deferOpenings(prewritten, byUid, budget, callback!);
+    enqueueGreetings(added.filter((p) => !prewritten.includes(p)), byUid, budget, callback);
+  }
+
+  function busyAgents(): Set<string> {
+    return new Set(openTurns(store.load(sessionId)).map((t) => t.agentId));
+  }
+
+  /** 替它说开场白**挪到 call 回执之后**（#1420 终审 I1）：frameHandler 在 `await setVoiceCall` 之后同步发
+      call_result，而桌面（`joinVoiceCall`）与旧手机是收到回执才按**那一刻的日志尾**开听——三条事件要是在
+      setVoiceCall 里同步落下，广播先于回执到达，它们会把开场白当成历史、一个字都不读（改动前招呼那一轮的
+      回复总在回执之后才到，所以从没撞见过）。setImmediate 是宏任务，排在 `await` 的续体（微任务）之后，
+      回执一定先出门。代价是这一拍里世界可能变了，所以到点逐只重判：会话归档了 → 什么都不落；它又忙了
+      （回执之后人立刻又 @ 了它）→ 回落改动前那条路（带开场白的招呼、排队起一轮，同一个 budget 问价）；
+      否则照旧替它说。settled() 等这一拍（`pendingOpenings`），测试与收房才有等待点 */
+  function deferOpenings(
+    list: readonly VoiceCallParticipant[],
+    byUid: string,
+    budget: ((n: number) => string | null) | undefined,
+    callback: { byLabel: string; rings: ReadonlyMap<string, RingState> },
+  ): void {
+    const p = new Promise<void>((resolve) => {
+      setImmediate(() => {
+        try {
+          if (archived) return;
+          const busy = busyAgents();
+          for (const q of list) {
+            if (!busy.has(q.agentId)) speakOpening(q, callback.rings.get(q.agentId)!.opening!, byUid, callback.byLabel);
+          }
+          enqueueGreetings(list.filter((q) => busy.has(q.agentId)), byUid, budget, callback);
+        } catch (err) {
+          // fire-and-forget 的宏任务里抛出去就是 uncaughtException（整个 daemon 退出）
+          console.error(`[otto-runtime] 回电开场白补说失败（session=${sessionId}）`, err);
+        } finally {
+          resolve();
+        }
+      });
+    });
+    pendingOpenings.add(p);
+    void p.finally(() => pendingOpenings.delete(p));
+  }
+
+  /** 给这几只各落一条招呼开场白并入队（#1174 / #1411）——拉进通话的普通招呼，或回电接通时回落的那条 */
+  function enqueueGreetings(
+    rest: readonly VoiceCallParticipant[],
+    byUid: string,
+    budget?: (n: number) => string | null,
+    callback?: { byLabel: string; rings: ReadonlyMap<string, RingState> },
+  ): void {
     if (rest.length === 0) return;
     const veto = budget?.(rest.length) ?? null;
     if (veto !== null) {
@@ -2193,6 +2240,9 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       路径上没有任何人等排空结束（issue #937：等就是死锁），它存在的唯一理由是
       给测试与冒烟脚本一个「turn 跑完了」的等待点 */
   let inflight: Promise<void> | null = null;
+  /** 挪到 call 回执之后的回电开场白（deferOpenings）。同 inflight：只有 settled() 读它。
+      不并进 inflight——那一格此刻可能正指着一条在跑的排空，覆盖掉它 settled() 就提前 resolve */
+  const pendingOpenings = new Set<Promise<void>>();
 
   /** 后台起一条排空。**故意不做「已经有一条就跳过」的去重**：start_turn 只在
       协调器 idle 时才回（turnCoordinator 的 running 在 nextJob 取空那一刻就落，
@@ -2612,7 +2662,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     async settled() {
       // while 不是 if：一条排空在 await 里的时候可能又有人发言排上新 job，
       // 那一条跑完后 inflight 会指向新的一条
-      while (inflight) await inflight;
+      // 补说的开场白可能回落成一轮（deferOpenings），那一轮的排空在它之后才起
+      while (inflight || pendingOpenings.size > 0) await Promise.all([...pendingOpenings, inflight]);
     },
 
     lastSeq() {

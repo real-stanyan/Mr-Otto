@@ -7412,6 +7412,8 @@ describe("回电（#1411）", () => {
     id === "ops" && round === 1 ? { content: "", toolCalls: [{ id: "c1", name: CALL_USER_TOOL_NAME, args: { reason, opening: OPENING } }] } : { content: "好" };
   const phases = (store: EventStore): string[] =>
     store.load("s1").filter((e) => e.type === "call_ring").map((e) => (e as CallRingEvent).phase);
+  /** 让出一个宏任务：runtime 替它说开场白挪到了 call 回执之后（#1420 终审 I1），要等这一拍才落 */
+  const nextMacrotask = (): Promise<void> => new Promise((r) => setImmediate(r));
 
   it("推送关着：工具表里没有 call_user；开着：有", async () => {
     const off: Record<string, string[]> = {};
@@ -7473,6 +7475,7 @@ describe("回电（#1411）", () => {
     const roundsBefore = rounds.length;
     const before = store.load("s1").length;
     expect(await session.setVoiceCall("u1", "alice", ["ops"])).toEqual({ kind: "ok" });
+    await nextMacrotask();
     const after = store.load("s1").slice(before);
     expect(after.map((e) => e.type)).toEqual(["voice_call_changed", "call_ring", "user_message", "assistant_message", "turn_ended"]);
     expect(after[1]).toMatchObject({ phase: "answered", opening: OPENING });
@@ -7486,6 +7489,74 @@ describe("回电（#1411）", () => {
     await session.settled();
     expect(rounds.length).toBe(roundsBefore);
     expect(openTurnsOf(store.load("s1")).some((t) => t.agentId === "ops")).toBe(false);
+    store.close();
+  }, TWO_TURN_SETTLE_MS);
+
+  it("开场白落在 call 回执之后：setVoiceCall 返回那一刻只有名单与接通，让出一个宏任务才有开场白（#1420 终审 I1）", async () => {
+    // frameHandler 在 `await setVoiceCall` 之后同步发 call_result；桌面与旧手机在回执之后才按日志尾开听，
+    // 开场白要是在回执之前就广播出去，它们会把它当历史、一个字都不读
+    const store = newStore();
+    const session = open(store, { callback: fakeCallback().cb, reply: callsBack("部署完了") });
+    await session.say("u1", "alice", "@运维 部署一下", true, ["ops"]);
+    await session.settled();
+    const before = store.load("s1").length;
+    expect(await session.setVoiceCall("u1", "alice", ["ops"])).toEqual({ kind: "ok" });
+    const sync = store.load("s1").slice(before);
+    expect(sync.map((e) => e.type)).toEqual(["voice_call_changed", "call_ring"]);
+    expect(sync[1]).toMatchObject({ phase: "answered" });
+    await nextMacrotask();
+    const later = store.load("s1").slice(before);
+    expect(later.map((e) => e.type)).toEqual(["voice_call_changed", "call_ring", "user_message", "assistant_message", "turn_ended"]);
+    expect(later[3]).toMatchObject({ agentId: "ops", content: OPENING });
+    await session.settled();
+    store.close();
+  }, TWO_TURN_SETTLE_MS);
+
+  it("接听时空闲、到补说那一拍前又忙了：回落成带开场白的招呼、排在那一轮后面跑，不替它说", async () => {
+    const store = newStore();
+    let release!: () => void;
+    const hold = new Promise<void>((r) => { release = r; });
+    const session = open(store, {
+      callback: fakeCallback().cb,
+      // 第 1、2 圈是打电话那一轮；第 3 圈是接通之后人又 @ 它的那一轮，先挂住
+      replyAsync: async (id, round) => {
+        if (id === "ops" && round === 3) await hold;
+        return callsBack("部署完了")(id, round);
+      },
+    });
+    await session.say("u1", "alice", "@运维 部署一下", true, ["ops"]);
+    await session.settled();
+    const before = store.load("s1").length;
+    expect(await session.setVoiceCall("u1", "alice", ["ops"])).toEqual({ kind: "ok" });
+    // 回执之后、补说那一拍之前：人又 @ 了它一句。say 在测试装配里只走微任务，
+    // 所以这条 user_message 一定落在 setImmediate 之前——补说时 openTurns 里已经有它
+    const said = session.say("u1", "alice", "@运维 顺便看下日志", true, ["ops"]);
+    await nextMacrotask();
+    await said;
+    const after = store.load("s1").slice(before);
+    expect(after.some((e) => e.type === "assistant_message" && (e as { content?: string }).content === OPENING)).toBe(false);
+    const greeting = after.find((e) => e.type === "user_message" && (e as UserMessageEvent).greeting === "callback") as UserMessageEvent | undefined;
+    expect(greeting?.content).toBe(callbackGreetingText("运维", "alice", "部署完了", OPENING));
+    release();
+    await session.settled();
+    const ended = store.load("s1").filter((e) => e.type === "turn_ended" && (e as { agentId?: string }).agentId === "ops");
+    expect(ended.some((e) => ((e as { readUpToSeq?: number }).readUpToSeq ?? -1) >= greeting!.seq)).toBe(true);
+    expect(openTurnsOf(store.load("s1")).some((t) => t.agentId === "ops")).toBe(false);
+    store.close();
+  }, TWO_TURN_SETTLE_MS);
+
+  it("接听时空闲、补说那一拍前会话归档了：什么都不落", async () => {
+    const store = newStore();
+    const session = open(store, { callback: fakeCallback().cb, reply: callsBack("部署完了") });
+    await session.say("u1", "alice", "@运维 部署一下", true, ["ops"]);
+    await session.settled();
+    const before = store.load("s1").length;
+    await session.setVoiceCall("u1", "alice", ["ops"]);
+    session.archive("alice");
+    await nextMacrotask();
+    await session.settled();
+    const after = store.load("s1").slice(before);
+    expect(after.some((e) => e.type === "assistant_message" || e.type === "user_message")).toBe(false);
     store.close();
   }, TWO_TURN_SETTLE_MS);
 
@@ -7543,6 +7614,7 @@ describe("回电（#1411）", () => {
     await session.settled();
     const before = store.load("s1").length;
     await session.setVoiceCall("u1", "alice", ["ops"]);
+    await nextMacrotask();
     const after = store.load("s1").slice(before);
     expect(after.some((e) => e.type === "voice_call_changed")).toBe(false);
     expect(after.map((e) => e.type)).toEqual(["call_ring", "user_message", "assistant_message", "turn_ended"]);
