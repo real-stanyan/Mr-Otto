@@ -7480,6 +7480,8 @@ describe("回电（#1411）", () => {
     expect((after[2] as UserMessageEvent).content).toBe(callbackAnsweredText("运维", "alice"));
     expect(after[3]).toMatchObject({ agentId: "ops", content: OPENING, model: "m-ops" });
     expect((after[3] as { usage?: unknown }).usage).toBeUndefined();
+    expect((after[3] as { route?: unknown }).route).toBeUndefined();
+    expect((after[3] as { creditCostMicro?: unknown }).creditCostMicro).toBeUndefined();
     expect(after[4]).toMatchObject({ outcome: "completed", agentId: "ops", readUpToSeq: after[2]!.seq });
     await session.settled();
     expect(rounds.length).toBe(roundsBefore);
@@ -7507,8 +7509,10 @@ describe("回电（#1411）", () => {
     expect((after[2] as UserMessageEvent).content).toBe(callbackGreetingText("运维", "alice", "部署完了", OPENING));
     release();
     await session.settled();
-    const replies = store.load("s1").slice(before).filter((e) => e.type === "assistant_message");
-    expect(replies.length).toBeGreaterThan(0); // 模型接着答了那条招呼
+    // 那条招呼真的被跑了、也收口了（不是只要 ops 第二轮的回复落在 before 之后就算）
+    const ended = store.load("s1").filter((e) => e.type === "turn_ended" && (e as { agentId?: string }).agentId === "ops");
+    expect(ended.some((e) => ((e as { readUpToSeq?: number }).readUpToSeq ?? -1) >= after[2]!.seq)).toBe(true);
+    expect(openTurnsOf(store.load("s1")).some((t) => t.agentId === "ops")).toBe(false);
     store.close();
   }, TWO_TURN_SETTLE_MS);
 
