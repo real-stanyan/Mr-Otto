@@ -34,6 +34,20 @@ describe("0045_push_devices", () => {
     expect(body).toMatch(/security definer set search_path = public/);
     expect(body).toMatch(/delete from push_devices where token = p_token and user_id = auth\.uid\(\)/);
   });
+  it("0046 重建 register 时（#1418）上面几条不变量一条没丢，令牌长度仍是 16～256", () => {
+    const fix = readFileSync(new URL("../../supabase/migrations/0046_push_device_token_check.sql", import.meta.url), "utf8")
+      .split("\n")
+      .filter((l) => !l.trimStart().startsWith("--"))
+      .join("\n");
+    expect(fix).toMatch(/security definer set search_path = public/);
+    expect(fix).toMatch(/length\(p_token\) not between 16 and 256/);
+    const del = fix.indexOf("delete from push_devices where token = p_token and user_id <> auth.uid()");
+    expect(del).toBeGreaterThan(-1);
+    expect(fix.indexOf("insert into push_devices")).toBeGreaterThan(del);
+    expect(fix).toMatch(/on conflict \(token\) do update set bundle_id = excluded\.bundle_id, updated_at = now\(\)/);
+    expect(fix).toMatch(/revoke all on function public\.register_push_device\(text, text\) from public/);
+    expect(fix).toMatch(/grant execute on function public\.register_push_device\(text, text\) to authenticated/);
+  });
   it("两个 RPC 都只给 authenticated", () => {
     for (const sig of ["register_push_device\\(text, text\\)", "unregister_push_device\\(text\\)"]) {
       expect(code).toMatch(new RegExp(`revoke all on function public\\.${sig} from public`));
