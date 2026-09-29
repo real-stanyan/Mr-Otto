@@ -313,4 +313,25 @@ describe("voiceSession", () => {
     await flush();
     expect(h.spoke).toEqual([]);
   });
+
+  it("join 给了发帧之前的日志尾：那之后、加入之前已经落下来的话照读（#1420 回电开场白先于回执到）", async () => {
+    const h = harness({ events: [callOn(1, ["a"]), reply(2, "a", "开场白。"), ended(3, "a")] });
+    h.v.join(S, 0);
+    await flush();
+    expect(h.v.state()?.sinceSeq).toBe(0);
+    expect(h.spoke.map((s) => s.text)).toEqual(["开场白。"]);
+  });
+
+  it("join 不给 sinceSeq：照旧只读之后的", async () => {
+    const h = harness({ events: [callOn(1, ["a"]), reply(2, "a", "旧话。")] });
+    h.v.join(S);
+    await flush();
+    expect(h.spoke).toEqual([]);
+  });
+
+  it("join 给的 sinceSeq 比日志尾还大：按日志尾算", () => {
+    const h = harness({ events: [callOn(1, ["a"])] });
+    h.v.join(S, 99);
+    expect(h.v.state()?.sinceSeq).toBe(1);
+  });
 });

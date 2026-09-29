@@ -65,7 +65,8 @@ export interface VoiceSessionDeps {
 
 export interface VoiceSession {
   state(): VoiceListen | null;
-  join(sessionId: string): void;
+  /** `sinceSeq` = 调用方发帧之前记下的日志尾：发帧之后、加入之前就已经落下来的那几条（回电接通时开场白与回执同时出发、先到）当场补读（#1420） */
+  join(sessionId: string, sinceSeq?: number): void;
   leave(): void;
   setMic(on: boolean): void;
   onEvent(e: SessionEvent): void;
@@ -152,21 +153,37 @@ export function createVoiceSession(deps: VoiceSessionDeps): VoiceSession {
     if (listen !== null && listen.sessionId === sessionId) patch({ mic: { ...listen.mic, error: message } });
   };
 
+  const feedOne = (e: SessionEvent): void => {
+    if (listen === null || e.sessionId !== listen.sessionId) return;
+    const participants = participantsOf(listen.sessionId);
+    if (participants === null) {
+      // 通话结束（这条或更早那条空名单）：判据是日志里的名单，不是「我按了挂断」
+      stopAll();
+      set(null);
+      return;
+    }
+    const r = feedEvent(feed, participants, listen.sinceSeq, e);
+    feed = r.state;
+    enqueue(r.out);
+  };
+
   return {
     state: () => listen,
 
-    join(sessionId) {
+    join(sessionId, sinceSeq) {
       const events = deps.events(sessionId);
       if (events === null) return;
       stopAll();
-      const last = events.at(-1);
+      const tail = events.at(-1)?.seq ?? -1;
+      const since = sinceSeq === undefined ? tail : Math.min(sinceSeq, tail);
       set({
-        sessionId, sinceSeq: last === undefined ? -1 : last.seq,
+        sessionId, sinceSeq: since,
         speaking: null, queued: 0, text: null, error: null,
         mic: micStarting(),
       });
       // 常开麦（#1176）：进通话就开
       startMic();
+      for (const e of events) if (e.seq > since) feedOne(e);
     },
 
     leave() {
@@ -186,19 +203,7 @@ export function createVoiceSession(deps: VoiceSessionDeps): VoiceSession {
       }
     },
 
-    onEvent(e) {
-      if (listen === null || e.sessionId !== listen.sessionId) return;
-      const participants = participantsOf(listen.sessionId);
-      if (participants === null) {
-        // 通话结束（这条或更早那条空名单）：判据是日志里的名单，不是「我按了挂断」
-        stopAll();
-        set(null);
-        return;
-      }
-      const r = feedEvent(feed, participants, listen.sinceSeq, e);
-      feed = r.state;
-      enqueue(r.out);
-    },
+    onEvent: feedOne,
 
     onDelta(d) {
       if (listen === null || d.sessionId !== listen.sessionId || d.kind !== "content") return;
