@@ -2,7 +2,7 @@
 // 流式预览里哪几段已经完成可以合成、终态落下来时还有哪几段没读。
 import { describe, expect, it } from "vitest";
 import {
-  EMPTY_VOICE_FEED, feedDelta, feedEvent, markInterrupted, splitSpoken, spokenText, voiceCallAvailable, type VoiceFeedState,
+  EMPTY_VOICE_FEED, feedDelta, feedEvent, markInterrupted, splitSpoken, spokenText, spokenUnits, voiceCallAvailable, type VoiceFeedState,
 } from "../../src/shared/voiceFeed.js";
 import type { BillingMe } from "../../src/shared/billing.js";
 import type { SessionEvent } from "../../src/session/events.js";
@@ -148,5 +148,19 @@ describe("打断（#1184）：人插话之后这只这一轮剩下的话不读",
     expect(feedDelta(s, P, "a", "新一轮。还在").out).toEqual([{ agentId: "a", text: "新一轮。" }]);
     // 别的那只不受影响
     expect(feedDelta(markInterrupted(EMPTY_VOICE_FEED, "a"), P, "b", "我照说。还在").out).toEqual([{ agentId: "b", text: "我照说。" }]);
+  });
+});
+
+describe("spokenUnits（#1420 预合成的键）", () => {
+  it("与终态 assistant_message 实际送去合成的那几句逐字相同", () => {
+    const content = "**部署好了**。你看一下，有个配置要你拍板！\n\n- 第二段也念";
+    const participants = new Set(["a"]);
+    const e = { seq: 5, sessionId: "s", ts: 5, type: "assistant_message", agentId: "a", model: "m", content } as SessionEvent;
+    const { out } = feedEvent(EMPTY_VOICE_FEED, participants, 0, e);
+    expect(spokenUnits(content)).toEqual(out.map((u) => u.text));
+    expect(spokenUnits(content).length).toBeGreaterThan(1);
+  });
+  it("剥完为空的那一段不出现", () => {
+    expect(spokenUnits("```\ncode\n```")).toEqual([]);
   });
 });

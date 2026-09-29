@@ -19,6 +19,8 @@ export const RING_COOLDOWN_MS = 10 * 60_000;
 export const RING_ANSWER_GRACE_MS = 30_000;
 /** 锁屏上那句话的上限（按字算，不按 UTF-16 码元：一个 emoji 不该被劈成两半） */
 export const RING_REASON_MAX = 60;
+/** 开场白的上限（按字算）。超了拒绝、不截断：截在半句上念出来比没有更糟（#1420） */
+export const RING_OPENING_MAX = 200;
 
 export type RingPhase = CallRingEvent["phase"];
 
@@ -28,6 +30,7 @@ export interface RingState {
   fromAgentId: string;
   toUid: string;
   reason: string;
+  opening: string | null;
   expiresTs: number;
   ringingTs: number;
   phase: RingPhase;
@@ -43,6 +46,7 @@ export function applyCallRing(fold: RingFold, e: SessionEvent): void {
   if (e.phase === "ringing") {
     fold.set(e.ringId, {
       ringId: e.ringId, fromAgentId: e.fromAgentId, toUid: e.toUid, reason: e.reason,
+      opening: e.opening ?? null,
       expiresTs: e.expiresTs, ringingTs: e.ts, phase: "ringing", phaseTs: e.ts,
     });
     return;
@@ -95,15 +99,40 @@ export function normalizeRingReason(raw: string): string {
   return chars.length <= RING_REASON_MAX ? flat : `${chars.slice(0, RING_REASON_MAX - 1).join("")}…`;
 }
 
+/** 开场白：空白折成一个空格、去首尾。**不截断**——长度由调用方判（超了拒绝） */
+export function normalizeRingOpening(raw: string): string {
+  return raw.replace(/\s+/gu, " ").trim();
+}
+
 /** 接通之后它先开口的那句开场白（spec §2.3）。形状同 voiceCallGreetingText：`[系统]` 开头、第三人称
     点名、再用「名字：」对上打电话的那只（群里每只都读得到这条）。三个字段都过 promptSafe——agent 名与
     人的显示名是成员可写字段，reason 是模型写的，`]` 与换行都能撑破 `[系统] …` 这个结构 */
-export function callbackGreetingText(agentName: string, userLabel: string, reason: string): string {
+export function callbackGreetingText(agentName: string, userLabel: string, reason: string, opening?: string | null): string {
   const n = promptSafe(agentName);
-  return (
-    `[系统] 「${n}」打给 ${promptSafe(userLabel)} 的电话接通了。${n}：你打这个电话是为了：${promptSafe(reason)}。` +
-    `先把这件事说清楚，说完问他还有没有要你做的。这句话会被读出来，别用列表和记号。`
-  );
+  const head = `[系统] 「${n}」打给 ${promptSafe(userLabel)} 的电话接通了。${n}：你打这个电话是为了：${promptSafe(reason)}。`;
+  const say =
+    opening !== undefined && opening !== null && opening !== ""
+      ? `你打电话时准备的开场白是：${promptSafe(opening)}。先照这个说，说完问他还有没有要你做的。`
+      : "先把这件事说清楚，说完问他还有没有要你做的。";
+  return `${head}${say}这句话会被读出来，别用列表和记号。`;
+}
+
+/** 接通了、开场白由 runtime 替它说（#1420）：这一句只交代「接通了」，开场白是紧跟着的那条 assistant_message */
+export function callbackAnsweredText(agentName: string, userLabel: string): string {
+  return `[系统] 「${promptSafe(agentName)}」打给 ${promptSafe(userLabel)} 的电话接通了。`;
+}
+
+/** 开场白是哪个模型写的（#1420，assistant_message.model 是「事实」）：这只最近一条调了 call_user 的
+    回复；找不到退到它最近一条回复；再没有 "unknown" */
+export function callerModelOf(events: readonly SessionEvent[], agentId: string): string {
+  let fallback: string | null = null;
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i]!;
+    if (e.type !== "assistant_message" || e.agentId !== agentId) continue;
+    if (e.toolCalls?.some((c) => c.name === CALL_USER_TOOL_NAME)) return e.model;
+    fallback ??= e.model;
+  }
+  return fallback ?? "unknown";
 }
 
 /** 手机开哪一种聊天页（推送载荷里的 `chat`，spec §1.3） */
@@ -128,6 +157,7 @@ export interface RingPush {
   reason: string;
   chat: RingChatKind;
   expiresTs: number;
+  opening?: string;
 }
 
 /** 手机从通知里读回 `ring`。形状不对一律 null：推送的字节来自网络，缺一格就不弹来电页 */
@@ -146,7 +176,11 @@ export function ringFromPayload(payload: unknown): RingPush | null {
   if (typeof agentName !== "string" || typeof reason !== "string") return null;
   if (typeof chat !== "string" || !RING_CHAT_KINDS.includes(chat as RingChatKind)) return null;
   if (typeof expiresTs !== "number" || !Number.isFinite(expiresTs)) return null;
-  return { ringId, workspaceId, sessionId, agentId, agentName, reason, chat: chat as RingChatKind, expiresTs };
+  const opening = typeof o.opening === "string" && o.opening !== "" ? o.opening : null;
+  return {
+    ringId, workspaceId, sessionId, agentId, agentName, reason, chat: chat as RingChatKind, expiresTs,
+    ...(opening !== null ? { opening } : {}),
+  };
 }
 
 /** 接听、或者点开一条过期的来电通知之后开哪条聊天。形状与手机的路由（mobile/src/nav/types.ts 的

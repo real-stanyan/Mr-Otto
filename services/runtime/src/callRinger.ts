@@ -105,7 +105,7 @@ export function createRinger(d: RingerDeps): Ringer {
       if (devices === 0) return "他的手机没开通知（或者还没在手机上登录），打不了电话——在聊天里说一声，他回来会看到。";
       const at = d.now();
       const ring: RingState = {
-        ringId: randomUUID(), fromAgentId: agentId, toUid, reason,
+        ringId: randomUUID(), fromAgentId: agentId, toUid, reason, opening: null,
         expiresTs: at + RING_TTL_MS, ringingTs: at, phase: "ringing", phaseTs: at,
       };
       log(ring, "ringing");

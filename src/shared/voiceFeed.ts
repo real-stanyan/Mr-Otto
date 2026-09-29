@@ -117,6 +117,12 @@ export function splitSpoken(text: string): string[] {
   return splitBubbles(text).flatMap(splitSentences);
 }
 
+/** 一段话真正送去合成的那几句（#1420 预合成的键）：与 take() 里的变换逐字相同——切句、每句过
+    spokenText、剥完为空的不要。改 take() 的变换时这里要跟着改（有一条对拍的测试钉着） */
+export function spokenUnits(content: string): string[] {
+  return splitSpoken(content).map(spokenText).filter((t) => t !== "");
+}
+
 /** 快照末尾那一句算不算写完了：中文句末标点 / 西文 !? 收尾算；西文句号不算（可能是「2.」半截） */
 function endsSentence(unit: string): boolean {
   const last = unit.trimEnd().slice(-1);
