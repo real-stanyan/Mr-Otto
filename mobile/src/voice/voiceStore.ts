@@ -257,8 +257,16 @@ export async function startCall(sessionId: string, agentIds: string[]): Promise<
   // 发帧之前记下日志尾（#1420）：runtime 先落事件再回回执，回电接通时开场白比回执先到——
   // 等回执之后才按「此刻的日志尾」加入，那句话就被当成历史不念了
   const sinceSeq = chatEvents(sessionId)?.at(-1)?.seq ?? -1;
+  // 这台本来就在听这条（通话里再拉一只）：回执之前落下来的那几条已经按直播读过了，再按 sinceSeq
+  // 补一遍就是把正在念的那句掐掉、从头再合成一次（又一笔额度）。这时照 #1420 之前的样子在日志尾
+  // 重新加入——runtime 把回电开场白挪到了回执之后（终审 I1），它照样作为直播到、照样念
+  // 发帧前后都在听才算：中途离开过的话，那几条没被读过，要补
+  const listeningBefore = session.state()?.sessionId === sessionId;
   const r = await setVoiceCall(agentIds);
-  if (r.ok) session.join(sessionId, sinceSeq);
+  if (r.ok) {
+    if (listeningBefore && session.state()?.sessionId === sessionId) session.join(sessionId);
+    else session.join(sessionId, sinceSeq);
+  }
   return r;
 }
 

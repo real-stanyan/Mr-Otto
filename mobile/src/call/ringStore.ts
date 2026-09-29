@@ -51,8 +51,10 @@ const handled = new Set<string>();
 function enqueue(ring: RingPush, noticeId: string): void {
   if (handled.has(ring.ringId)) return;
   noticeOf.set(ring.ringId, noticeId);
-  // 响铃这几十秒先把开场白合成好（#1420）：前台收到、点通知进来、冷启动那一条都经过这里
-  if (ring.opening !== undefined) prefetchOpening(ring.agentId, ring.opening, ring.expiresTs + RING_ANSWER_GRACE_MS);
+  // 响铃这几十秒先把开场白合成好（#1420）：前台收到、点通知进来、冷启动那一条都经过这里。
+  // 已经接不起来的那通（推送来晚了、点的是一条旧通知）不合成：合成花的是这个人的额度
+  const answerableUntil = ring.expiresTs + RING_ANSWER_GRACE_MS;
+  if (ring.opening !== undefined && Date.now() < answerableUntil) prefetchOpening(ring.agentId, ring.opening, answerableUntil);
   store.set((s) => ({ ...s, queue: queueRing(s.queue, ring, Date.now()) }));
 }
 
