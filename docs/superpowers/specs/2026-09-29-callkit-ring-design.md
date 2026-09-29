@@ -96,15 +96,18 @@ Swift，照 otto-speech 的形状；podspec 多链 `PushKit`、`CallKit`。
 
 ### 2.3 动作（CXProviderDelegate → JS 事件）
 
-- **接听** `CXAnswerCallAction`：`configureAudioSession()`（只 `setCategory(.playAndRecord, mode: .voiceChat,
-  options: [.allowBluetoothA2DP])`，不 `setActive`），`action.fulfill()`，发 `onAnswer{ringId}`。
+- **接听** `CXAnswerCallAction`：`configureAudioSession()`（只 `setCategory(.playAndRecord, mode: .default,
+  options: [.defaultToSpeaker, .allowBluetoothA2DP])`，与 otto-speech 逐字同一组——回声消除由它的 VPIO 做，
+  再叠 `.voiceChat` 就是两层处理，且那一组是真机验过的；不 `setActive`），`action.fulfill()`，发 `onAnswer{ringId}`。
 - **挂断 / 拒接** `CXEndCallAction`：`fulfill`，发 `onEnd{ringId, answered: Bool}`。
 - **静音** `CXSetMutedCallAction`：`fulfill`，发 `onMute{ringId, muted}`。
 - **音频交接**：`didActivate audioSession` 发 `onAudio{active: true}`；`didDeactivate` 发 `onAudio{active: false}`；
   `providerDidReset` 结束所有来电、发 `onEnd`。
-- JS 调原生：`endCall(ringId)`（App 里挂断 → `CXEndCallAction` 经 `CXCallController`）、
-  `setMuted(ringId, muted)`（App 里静音同步到系统界面）。来电在 `fulfill` 接听那一刻就算接通，系统界面从那一刻计时，
-  不另报「已连接」。
+- JS 调原生：`endCall(ringId)`（App 里挂断 / 通话在别处结束 → `reportCall(... reason: .remoteEnded)`，不走
+  `CXEndCallAction`——那条会回头再发一次 `onEnd`，JS 又去挂一次已经挂掉的电话）。来电在 `fulfill` 接听那一刻就算
+  接通，系统界面从那一刻计时，不另报「已连接」。
+- **静音只同步一个方向**：系统界面上点静音 → App 关麦；App 里点静音不回写系统界面（那要监听语音层的麦克风状态，
+  这次不做，代价是系统界面上那颗静音钮可能与 App 不一致）。
 
 ### 2.4 otto-speech 让出音频会话
 
