@@ -78,6 +78,17 @@ export function chatEvents(sessionId: string): readonly SessionEvent[] | null {
   return s !== null && s.sessionId === sessionId ? s.events : null;
 }
 
+/** 非 hook 的订阅（系统来电那一层看通话开没开，#1428） */
+export function subscribeChat(fn: () => void): () => void {
+  return store.subscribe(fn);
+}
+
+/** 此刻开着的那条会话；不是这一条回 null */
+export function chatSessionOf(sessionId: string): ChatSession | null {
+  const s = store.get().session;
+  return s !== null && s.sessionId === sessionId ? s : null;
+}
+
 /** 每次 closeChat 加一：异步回来时比一比，变了就说明人已经离开了这一页 */
 let gen = 0;
 

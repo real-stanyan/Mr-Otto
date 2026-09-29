@@ -23,6 +23,7 @@ import { agentFaceSlot } from "../../../src/shared/agentAvatar.js";
 import { roleChipsAnchor } from "../../../src/shared/agentOnboarding.js";
 import { resolveSendMentions } from "../../../src/shared/agentMentionInput.js";
 import { chatViewOf } from "../../../src/shared/agentRoster.js";
+import { systemAudioReady } from "../../../src/shared/callKitBridge.js";
 import { mixedGroupName, othersInGroup, withGuests, type ChatPerson } from "../../../src/shared/chatGuests.js";
 import { CHAT_GROUP_CREATE_MIN, CHAT_GROUP_MAX, CHAT_HUMANS_MAX, chatHumansNow, chatRosterNow, narrowRoster } from "../../../src/shared/chatRoster.js";
 import { cloudDeniedText } from "../../../src/shared/cloudSessionState.js";
@@ -38,6 +39,7 @@ import { teamChatTitle } from "../../../src/shared/wechatInbox.js";
 import { agentNameOf } from "../../../src/shared/workspaceView.js";
 import { isHomeWorkspace, type WorkspaceSnapshot } from "../../../src/shared/workspaces.js";
 import type { SessionEvent } from "../../../src/session/events.js";
+import { useCallKit } from "../call/callKit.js";
 import { settleAnswer } from "../call/ringStore.js";
 import { cloudClient } from "../cloud/cloudClient.js";
 import {
@@ -506,14 +508,14 @@ export function ChatScreen({ route, navigation }: Props) {
     return r.ok;
   };
 
-  // 接回电（#1411）：从来电页点「接听」进来——房间一 ready 就把打电话的那只拉进通话（一次）。来电页还盖在
-  // 上面写着「正在接通…」（原地接通）：通话整屏真的出来了（日志里有了这场通话、而且它开着）才撤；打不了就当场撤，
-  // 页面上那一行说为什么
+  // 接回电（#1411 → #1428）：从系统来电界面接听进来——房间 ready、系统把音频会话交过来之后才把打电话的那只拉进
+  // 通话（一次；先开麦会和 CallKit 抢会话）。打不了就当场收尾，页面上那一行说为什么
   const answeredRing = useRef<string | null>(null);
   const [answering, setAnswering] = useState<string | null>(null);
+  const callKit = useCallKit();
   useEffect(() => {
     const ar = route.params.answerRing;
-    if (ar === undefined || answeredRing.current === ar.ringId || !ready || session === null) return;
+    if (ar === undefined || answeredRing.current === ar.ringId || !ready || session === null || !systemAudioReady(callKit, ar.ringId)) return;
     answeredRing.current = ar.ringId;
     setAnswering(ar.ringId);
     void callAgent(ar.agentId).then((ok) => {
@@ -522,7 +524,7 @@ export function ChatScreen({ route, navigation }: Props) {
       settleAnswer(ar.ringId, "note");
     });
     // 只跟「房间好了没有」走（同 autoCall）；callAgent 每次渲染都是新的
-  }, [route.params.answerRing, ready, session?.sessionId]);
+  }, [route.params.answerRing, ready, session?.sessionId, callKit]);
   useEffect(() => {
     if (answering === null || call === null || !callOpen) return;
     settleAnswer(answering, "call");
