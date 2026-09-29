@@ -188,7 +188,8 @@ extension CallCenter: PKPushRegistryDelegate {
         }
         self.calls[ringId] = Call(uuid: uuid, answered: false, timer: timer)
         self.send(["type": "incoming", "ring": ring])
-        self.ensureJS()
+        // 下一拍再起：起 React Native 要在主线程上做一阵子，先让上面的 completion 把 PushKit 放掉
+        DispatchQueue.main.async { self.ensureJS() }
       }
     }
   }

@@ -85,6 +85,9 @@ export function reduceCallKit(s: CallKitState, e: CallKitEvent): CallKitState {
       return { calls, audioActive: calls.size === 0 ? false : s.audioActive };
     }
     case "audio":
+      // 一通都没有时的「交过来了」不记：那是一通已经收掉的来电晚到的回放（原生看门狗扔事件时 audio 不带 ringId、
+      // 扔不掉），记下的话下一通接起来、系统还没真把声音交过来，systemAudioReady 就先说好了，麦开早了
+      if (e.active && s.calls.size === 0) return s;
       return s.audioActive === e.active ? s : { ...s, audioActive: e.active };
     default:
       return s;

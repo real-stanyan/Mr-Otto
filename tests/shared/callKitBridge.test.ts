@@ -56,6 +56,11 @@ describe("reduceCallKit", () => {
     expect(s.audioActive).toBe(false);
     expect(inSystemCall(s)).toBe(false);
   });
+  it("一通都没有时晚到的「音频交过来了」不记：下一通接起来，系统真交过来之前不能开麦", () => {
+    const s = run({ type: "audio", active: true }, incoming(), { type: "answer", ringId: "r1" });
+    expect(s.audioActive).toBe(false);
+    expect(systemAudioReady(s, "r1")).toBe(false);
+  });
   it("不认识的 ringId：原样返回同一个对象", () => {
     const s = run(incoming());
     expect(reduceCallKit(s, { type: "answer", ringId: "nope" })).toBe(s);
