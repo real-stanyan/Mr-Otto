@@ -3,9 +3,9 @@
 import { describe, expect, it } from "vitest";
 import type { SessionEvent } from "../../src/session/events.js";
 import {
-  RING_ANSWER_GRACE_MS, RING_REASON_MAX, RING_TTL_MS,
-  answerableRing, applyCallRing, callRingFoldOf, callbackGreetingText, dropRing, lastRingTs,
-  normalizeRingReason, queueRing, ringCardStatus, ringChatKind, ringFromPayload, ringTarget,
+  RING_ANSWER_GRACE_MS, RING_OPENING_MAX, RING_REASON_MAX, RING_TTL_MS,
+  answerableRing, applyCallRing, callRingFoldOf, callbackAnsweredText, callbackGreetingText, callerModelOf, dropRing, lastRingTs,
+  normalizeRingOpening, normalizeRingReason, queueRing, ringCardStatus, ringChatKind, ringFromPayload, ringTarget,
   type RingFold, type RingPush,
 } from "../../src/shared/callRing.js";
 
@@ -154,5 +154,57 @@ describe("推送载荷与开哪条聊天", () => {
     const b = { ...PUSH, ringId: "b", expiresTs: 200 };
     expect(dropRing([a, b], "a", 0).map((r) => r.ringId)).toEqual(["b"]);
     expect(dropRing([a, b], "x", 150).map((r) => r.ringId)).toEqual(["b"]);
+  });
+});
+
+describe("开场白（#1420）", () => {
+  it("normalizeRingOpening：空白折成一个空格、去首尾，不截断", () => {
+    expect(normalizeRingOpening("  部署好了。\n\n  你看一下  ")).toBe("部署好了。 你看一下");
+    const long = "字".repeat(RING_OPENING_MAX + 5);
+    expect(normalizeRingOpening(long)).toBe(long);
+    expect(normalizeRingOpening(" \n ")).toBe("");
+  });
+
+  it("ringing 带 opening → RingState.opening；没有 → null；answered 沿用 ringing 那条的", () => {
+    const base = { sessionId: "s1", fromAgentId: "ops", toUid: "u1", reason: "部署完了", expiresTs: 9_000, ignorable: true as const };
+    const fold = callRingFoldOf([
+      { ...base, seq: 1, ts: 1, type: "call_ring", ringId: "r1", phase: "ringing", opening: "部署好了，你看一下。" },
+      { ...base, seq: 2, ts: 2, type: "call_ring", ringId: "r2", phase: "ringing" },
+      { ...base, seq: 3, ts: 3, type: "call_ring", ringId: "r1", phase: "answered" },
+    ] as SessionEvent[]);
+    expect(fold.get("r1")).toMatchObject({ phase: "answered", opening: "部署好了，你看一下。" });
+    expect(fold.get("r2")?.opening).toBeNull();
+  });
+
+  it("ringFromPayload：带 opening 读出来；缺席 / 类型不对当没有，整条照收", () => {
+    const ring = { ringId: "r", workspaceId: "w", sessionId: "s", agentId: "a", agentName: "运维", reason: "好了", chat: "dm", expiresTs: 1 };
+    expect(ringFromPayload({ ring: { ...ring, opening: "你好。" } })?.opening).toBe("你好。");
+    expect(ringFromPayload({ ring })).not.toBeNull();
+    expect(ringFromPayload({ ring })?.opening).toBeUndefined();
+    expect(ringFromPayload({ ring: { ...ring, opening: 3 } })?.opening).toBeUndefined();
+    expect(ringFromPayload({ ring: { ...ring, opening: "" } })?.opening).toBeUndefined();
+  });
+
+  it("callbackGreetingText：不给开场白时与改动前逐字相同；给了就带上「先照这个说」", () => {
+    const old = callbackGreetingText("运维", "alice", "部署完了");
+    expect(callbackGreetingText("运维", "alice", "部署完了", null)).toBe(old);
+    expect(old).toContain("先把这件事说清楚");
+    const withOpening = callbackGreetingText("运维", "alice", "部署完了", "部署好了，你看一下。");
+    expect(withOpening).toContain("你打电话时准备的开场白是：部署好了，你看一下。");
+    expect(withOpening).toContain("先照这个说");
+    expect(withOpening.startsWith("[系统] 「运维」打给 alice 的电话接通了。")).toBe(true);
+  });
+
+  it("callbackAnsweredText：只说接通了", () => {
+    expect(callbackAnsweredText("运维", "alice")).toBe("[系统] 「运维」打给 alice 的电话接通了。");
+  });
+
+  it("callerModelOf：取这只最近一条调了 call_user 的回复的 model；退到它最近一条回复；再没有 unknown", () => {
+    const am = (seq: number, agentId: string, model: string, call = false): SessionEvent =>
+      ({ seq, sessionId: "s1", ts: seq, type: "assistant_message", agentId, model, content: "",
+         ...(call ? { toolCalls: [{ id: `c${seq}`, name: "call_user", args: {} }] } : {}) }) as SessionEvent;
+    expect(callerModelOf([am(1, "ops", "m-old", true), am(2, "ops", "m-later"), am(3, "ads", "m-ads", true)], "ops")).toBe("m-old");
+    expect(callerModelOf([am(1, "ops", "m-a"), am(2, "ops", "m-b")], "ops")).toBe("m-b");
+    expect(callerModelOf([am(1, "ads", "m-ads")], "ops")).toBe("unknown");
   });
 });

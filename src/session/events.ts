@@ -653,6 +653,9 @@ export interface CallRingEvent extends SessionEventBase {
   fromAgentId: string;
   toUid: string;
   reason: string;
+  /** 接通之后它先说的那段话（#1420）：打电话那一刻由模型写好，接通时 runtime 直接替它说出来。
+      ringing 之后的 answered / missed 照抄。可选 = 旧日志 / 旧版 runtime 落的照常重放 */
+  opening?: string;
   expiresTs: number;
   ignorable: true;
 }
