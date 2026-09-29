@@ -19,9 +19,16 @@
 // ## 「没人对口」有一只兜底
 //
 // 名册里标着「没人对口的活归它」的那一只（管理员，ADR-0224 给了它 create_agent
-// 正是为了这种活）接**明确是活、但谁的职责都对不上**的那种；**闲聊/问候/确认
-// 不是活**，分类器回 none，群里没人接——这一条与维护者拍板的口径逐字相同
-// （issue #1153）。
+// 正是为了这种活）接**明确是活、但谁的职责都对不上**的那种；**闲聊/确认/感谢
+// 不是活**，分类器回 none，群里没人接（issue #1153）。
+//
+// ## 不是活、但在等人回一句的，有一只应
+//
+// 「有人在吗」「在吗」「大家好」不是活，却是在等回话——#1153 那条口径把它们也判成
+// none，真机上就是一句问候落进群里、两只智能体都不吭声（#1422，维护者改口）。所以
+// none 分两种：「好的 / 谢谢 / 哈哈」照旧没人接；等着回话的（`reply: true`）由一只应——
+// 与通话里「必须有人应」（ADR-0275）同一个人选：最近开口的那只，一只都没开过口（新群）
+// 就是上面那只兜底。
 //
 // ## 说给群里某个人的话，谁都不接
 //
@@ -92,8 +99,10 @@ export type DispatchVerdict =
   | { kind: "picked"; agentIds: string[] }
   /** 分类器明确说没人该接（闲聊/问候/确认）。`to: "people"` = 决策模型**很确定**这句话是
       说给群里另一个人的（#1405）——文字群聊里与普通 none 同一个处置，区别只在通话里：
-      「必须有人应」（ADR-0275）只让这一种闭嘴。只有决策模型会给这一格（LLM 那条路只回 none） */
-  | { kind: "none"; to?: "people" }
+      「必须有人应」（ADR-0275）只让这一种闭嘴。只有决策模型会给这一格（LLM 那条路只回 none）。
+      `reply: true` = 不是活，但在等人回一句（「有人在吗」「大家好」，#1422）——文字群聊里
+      也由一只应（调用方挑谁）。两格互斥：说给某个人的那句不该由智能体应 */
+  | { kind: "none"; to?: "people"; reply?: true }
   /** 这次分类没成功（网关/超时/认不出）——调用方回落改动前的行为，且说一声 */
   | { kind: "failed"; reason: string }
   /** 派活这条路此刻走不了、且**不是临时的**（所有者没订阅 / 订阅不活跃）——调用方
@@ -143,11 +152,12 @@ export const DISPATCH_SYSTEM = [
   "一个人刚在群里说了一句话，没有 @ 任何人。判断这句话该由哪几只智能体接手。",
   "规则：",
   `- 只挑职责明确对得上的那几只，通常只有一只；最多 ${DISPATCH_MAX_TARGETS} 只。`,
-  "- 这句话不是在要求做事（闲聊、问候、感谢、确认、感叹、对上一条回复的简单回应且不需要对方继续做事）→ 回 none。",
   "- 这句话是在跟「群里的其他人」里的某个人说话（叫了他的名字、问他、回他刚说的话、人和人之间商量或闲聊）→ 回 none。",
+  "- 这句话不是在要求做事、但在等智能体回一句（打招呼、问有没有人在、问大家在不在）→ 回 reply。",
+  "- 这句话不是在要求做事、也不用谁回（感谢、确认、感叹、「好的」、对上一条回复的简单回应）→ 回 none。",
   `- 是明确要做的事、没有任何一只的职责对得上、而且不是说给群里某个人的 → 回标着${FALLBACK_MARK}的那一只。`,
   "- 最近的对话里某只智能体刚向人提了问题、这句话是在回答它 → 回那一只。",
-  "只回编号（多个用逗号分隔）或 none，不要解释、不要标点。",
+  "只回编号（多个用逗号分隔）、reply 或 none，不要解释、不要标点。",
 ].join("\n");
 
 /** 「群里的其他人」那一行（#1405）。名字过 promptSafe（来自 profiles 与客人名单，成员可写），
@@ -186,8 +196,8 @@ export function dispatchPrompt(input: DispatchInput): string {
 }
 
 /** 分类器的回答 → 判决。有数字就按数字（去重、越界丢、封顶）；一个有效编号都
-    没有但有数字 = 答案不在名单上 → failed；没数字时只认 none/无/没有 → none；
-    其余 failed。**「有数字就按数字」排在 none 之前**：「没有人对口，归 1」这种
+    没有但有数字 = 答案不在名单上 → failed；没数字时只认 reply → none{reply}、
+    none/无/没有 → none；其余 failed。**「有数字就按数字」排在 none 之前**：「没有人对口，归 1」这种
     话里数字才是答案 */
 export function parseDispatchReply(raw: string, roster: readonly DispatchCandidate[]): DispatchVerdict {
   const nums = (raw.match(/\d+/g) ?? []).map(Number);
@@ -201,6 +211,7 @@ export function parseDispatchReply(raw: string, roster: readonly DispatchCandida
     return { kind: "picked", agentIds: ids.slice(0, DISPATCH_MAX_TARGETS) };
   }
   const t = raw.trim().toLowerCase();
+  if (/^reply\b/.test(t)) return { kind: "none", reply: true };
   if (/^none\b/.test(t) || /^(无|没有)/.test(t)) return { kind: "none" };
   return { kind: "failed", reason: "分类器没给出可识别的答案" };
 }

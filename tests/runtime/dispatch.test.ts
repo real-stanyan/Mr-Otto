@@ -85,6 +85,9 @@ describe("dispatchPrompt", () => {
 
   it("系统提示词里有「说给群里某个人的 → none」那一条，归管理员那一格也排除了说给人的话", () => {
     expect(DISPATCH_SYSTEM).toMatch(/群里的其他人[^\n]*→ 回 none/);
+    // 等着回话的问候有自己的答案（#1422），与 parseDispatchReply 认的是同一个词
+    expect(DISPATCH_SYSTEM).toMatch(/在等智能体回一句[^\n]*→ 回 reply。/);
+    expect(DISPATCH_SYSTEM).toMatch(/也不用谁回[^\n]*→ 回 none。/);
     const fallbackRule = DISPATCH_SYSTEM.split("\n").find((l) => l.includes("没有任何一只的职责对得上"))!;
     expect(fallbackRule).toContain("不是说给群里某个人的");
   });
@@ -120,6 +123,9 @@ describe("parseDispatchReply", () => {
 
   it("none / 无 / 没有 → 没人该接", () => {
     expect(parseDispatchReply("none", ROSTER)).toEqual({ kind: "none" });
+    // 不是活、但在等人回一句（#1422）
+    expect(parseDispatchReply("reply", ROSTER)).toEqual({ kind: "none", reply: true });
+    expect(parseDispatchReply(" Reply\n", ROSTER)).toEqual({ kind: "none", reply: true });
     expect(parseDispatchReply(" None.\n", ROSTER)).toEqual({ kind: "none" });
     expect(parseDispatchReply("无", ROSTER)).toEqual({ kind: "none" });
     expect(parseDispatchReply("没有人该接", ROSTER)).toEqual({ kind: "none" });

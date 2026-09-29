@@ -2274,9 +2274,11 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     return store.load(sessionId, { afterSeq: Math.max(-1, lastSeqSeen - DISPATCH_TAIL_WINDOW) });
   }
 
-  /** 通话里没人对口时谁应（#1183，维护者拍板）：最近开口的通话成员；一只都没开过口（招呼被
-      限速掐掉、或超出尾段窗口）退回 dispatchFallbackOf（管理员在通话里就是它，否则通话第一只） */
-  function callAnswerer(callRoster: AgentSpec[]): string | null {
+  /** 没人对口、却要有一只应时谁应：通话里的闲聊（#1183，维护者拍板），以及文字群聊里等着
+      回话的问候（#1422）。最近开口的那只（通话里只在通话成员里挑）；一只都没开过口（刚建的
+      群、招呼被限速掐掉、或超出尾段窗口）退回 dispatchFallbackOf（管理员在就是它，否则名单
+      第一只） */
+  function answererAmong(callRoster: AgentSpec[]): string | null {
     return lastSpeakerAmong(dispatchTail(), callRoster.map((a) => a.agentId)) ?? dispatchFallbackOf(callRoster);
   }
 
@@ -2411,7 +2413,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
           // 被判成 none、整场沉默。通话里：只有一只时**不问分类器**直接派给它（省掉
           // 一次网关往返，这是人说完到 agent 开口之间最贵的一段之一，#1184）；多只时
           // 照问（活要派给对口的那只），但 none / failed 一律落到「最近开口的那只」
-          // （callAnswerer）。名单降级时不算在通话里：占位名册上谁都不该应
+          // （answererAmong）。名单降级时不算在通话里：占位名册上谁都不该应
           const inCall = voiceCall !== null && callRoster.length > 0 && !degraded;
           // 通话里只有一只、也没有别人用语音开过口：直接给它（ADR-0275）。有别人时照问——
           // 这句可能是说给那个人的（#1405）
@@ -2420,8 +2422,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
             : inCall && callRoster.length === 1 && people.count === 0
               ? { kind: "picked", agentIds: [callRoster[0]!.agentId] }
               : await dispatchVerdictFor(roster, callRoster, fromUid, label, text, people);
-          const answerInCall = (): void => {
-            const id = callAnswerer(callRoster);
+          const answerByOne = (): void => {
+            const id = answererAmong(callRoster);
             if (id === null) return;
             targets = [id];
             dispatch = "auto";
@@ -2434,7 +2436,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
               targets = picked;
               dispatch = "auto";
             } else if (inCall) {
-              answerInCall();
+              answerByOne();
             }
           } else if (verdict.kind === "failed") {
             // **回落今天的行为**（ADR-0237 那条纪律）：开局卡 / 旧手机的 mention:true
@@ -2442,19 +2444,21 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
             // 要说出口，不然人以为有人会接、干等（维护者拍板，#1153）。通话里另有人应，
             // 不用说：分类没成功只在 daemon 日志里有痕迹
             targets = legacy;
-            if (inCall) answerInCall();
+            if (inCall) answerByOne();
             else if (targets.length === 0) dispatchNote = dispatchFailedText(verdict.reason);
           } else if (verdict.kind === "skipped") {
             // 这条路此刻走不了且不是临时的（所有者没订阅）：同样回落改动前的行为，
             // 但**不出声**——那个团队一只 agent 都起不了 turn，头部那行 blocked 已经
             // 在说这件事，每句话再落一条「没派出去」是噪音（判据见 DispatchVerdict）
             targets = legacy;
-          } else if (inCall && !(verdict.to === "people" && people.count > 0)) {
-            // none：文字群聊里闲聊照旧是闲聊（targets 留空）；通话里由最近开口的那只应——
-            // **除非**分类器很确定这句是说给通话里另一个人的（#1405，维护者拍板）：那是人和人
-            // 在说，智能体插一句就是打断。`people.count > 0` 不是多余的：只有真有别人开过口，
-            // 「说给人的」才可能成立，任何别的来路的 `to` 都不许让一场只有他一个人的通话沉默
-            answerInCall();
+          } else if (inCall ? !(verdict.to === "people" && people.count > 0) : verdict.reply === true) {
+            // none：文字群聊里闲聊照旧是闲聊（targets 留空）——**除非**它在等人回一句（「有人
+            // 在吗」，#1422，维护者改口）：那由最近开口的那只应，新群里没人开过口就是管理员。
+            // 通话里由最近开口的那只应——**除非**分类器很确定这句是说给通话里另一个人的
+            // （#1405，维护者拍板）：那是人和人在说，智能体插一句就是打断。`people.count > 0`
+            // 不是多余的：只有真有别人开过口，「说给人的」才可能成立，任何别的来路的 `to` 都
+            // 不许让一场只有他一个人的通话沉默
+            answerByOne();
           }
         }
       }
