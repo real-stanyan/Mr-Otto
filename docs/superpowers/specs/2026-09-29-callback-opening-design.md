@@ -41,7 +41,7 @@
 2. `assistant_message`：`agentId`、`content = opening`、`model` = 打电话那条 `assistant_message` 的 `model`（从日志倒着找这只最近一条 `toolCalls` 含 `call_user` 的；找不到用这只的最近一条 `assistant_message` 的 `model`；再没有用 `"unknown"`）。不带 `usage` / `route` / `creditCostMicro`：这一条没有花钱，钱在打电话那一轮里已经算过。
 3. `turn_ended`：`outcome: "completed"`、`agentId`、`readUpToSeq` = 第 1 条的 seq。账本就此收口，「正在回复」那盏灯不亮。
 
-三条在同一个同步段里 append（JS 单线程，中间插不进别的事件）。之后人说的第一句话照常起一轮，模型看到的上下文是连贯的：「接通了」→ 它自己说的开场白 → 人的回话。
+三条在同一个同步段里 append（JS 单线程，中间插不进别的事件）。这个同步段**排在 `call` 回执之后一拍**（`setImmediate`，终审 I1）：桌面与旧手机收到回执才按日志尾开听，先于回执广播的开场白它们不念；到那一拍逐只重判，归档了不落、又忙了走下面的回落。之后人说的第一句话照常起一轮，模型看到的上下文是连贯的：「接通了」→ 它自己说的开场白 → 人的回话。
 
 **回落到现在那条路**（落带 `greeting:"callback"` 的开场白 + 入队起一轮），两种情况：
 

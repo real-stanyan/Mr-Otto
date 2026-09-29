@@ -254,8 +254,8 @@ export async function refreshVoiceBilling(): Promise<void> {
 /** 开电话：改名单（call 帧）→ 回执 ok 之后这台开始听（发起的人自动加入，同桌面）。
     runtime 先广播那条 voice_call_changed 再回执，所以加入那一刻日志里已经有这场通话 */
 export async function startCall(sessionId: string, agentIds: string[]): Promise<CloudAck> {
-  // 发帧之前记下日志尾（#1420）：runtime 先落事件再回回执，回电接通时开场白比回执先到——
-  // 等回执之后才按「此刻的日志尾」加入，那句话就被当成历史不念了
+  // 发帧之前记下日志尾（#1420）：回执之前就落下来的事件（名单、接通）不会被当成历史。回电开场白
+  // runtime 已经挪到回执之后一拍（终审 I1），这里是第二道保险——哪天它又先于回执到，照样念
   const sinceSeq = chatEvents(sessionId)?.at(-1)?.seq ?? -1;
   // 这台本来就在听这条（通话里再拉一只）：回执之前落下来的那几条已经按直播读过了，再按 sinceSeq
   // 补一遍就是把正在念的那句掐掉、从头再合成一次（又一笔额度）。这时照 #1420 之前的样子在日志尾
