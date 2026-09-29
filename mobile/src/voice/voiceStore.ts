@@ -14,13 +14,15 @@
 import { Directory, File, Paths } from "expo-file-system";
 import { useSyncExternalStore } from "react";
 import { AppState } from "react-native";
+import { agentVoiceId } from "../../../src/shared/agentVoice.js";
 import { edgeBaseUrl } from "../../../src/shared/edgeConfig.js";
 import { createHelperAudio, helperAudioEvent, type HelperAudioBridge } from "../../../src/shared/helperAudio.js";
 import type { BillingSnapshotView, CloudAck, VoiceSpeakResult } from "../../../src/shared/shellBridge.js";
+import { createSpeakCache } from "../../../src/shared/speakCache.js";
 import { speechEventOf } from "../../../src/shared/speechEvent.js";
 import { createTtsClient } from "../../../src/shared/ttsClient.js";
 import { ttsHostedOf } from "../../../src/shared/ttsRoute.js";
-import { voiceCallAvailable } from "../../../src/shared/voiceFeed.js";
+import { spokenUnits, voiceCallAvailable } from "../../../src/shared/voiceFeed.js";
 import { IOS_PERMISSION_HELP, SPEECH_LOCALE, speechHints } from "../../../src/shared/voiceMic.js";
 import { createVoiceSession, type VoiceListen, type VoiceMicPort } from "../../../src/shared/voiceSession.js";
 import { OttoSpeech } from "../../modules/otto-speech/index.js";
@@ -120,14 +122,19 @@ const mic: VoiceMicPort = {
   resume: () => void OttoSpeech?.resume(),
 };
 
+/** 音色按名册顺序解撞（#1372）。预合成与放音必须用同一份，否则键对不上（#1420） */
+const voiceRoster = () => homeSnapshot().home?.agents ?? [];
+/** 回电开场白的预合成（#1420）：通话走它；只对预取过的句子起作用 */
+const speech = createSpeakCache((text, voiceId) => tts.speak(text, voiceId));
+
 const session = createVoiceSession({
-  speak: (text, voiceId) => tts.speak(text, voiceId),
+  speak: speech.speak,
   createAudio: (bytes) => createHelperAudio(bytes, nativeAudio),
   mic,
   say: (text) => sayVoice(text),
   events: (sessionId) => chatEvents(sessionId),
   // 音色按名册顺序解撞、挑过的先占（agentVoiceIds，#1372）：同一只在桌面与手机上是同一个声音
-  roster: () => homeSnapshot().home?.agents ?? [],
+  roster: voiceRoster,
   hints: () => speechHints(homeSnapshot().home),
   permissionHelp: IOS_PERMISSION_HELP,
   onChange: (listen) => store.set({ listen }),
@@ -247,8 +254,11 @@ export async function refreshVoiceBilling(): Promise<void> {
 /** 开电话：改名单（call 帧）→ 回执 ok 之后这台开始听（发起的人自动加入，同桌面）。
     runtime 先广播那条 voice_call_changed 再回执，所以加入那一刻日志里已经有这场通话 */
 export async function startCall(sessionId: string, agentIds: string[]): Promise<CloudAck> {
+  // 发帧之前记下日志尾（#1420）：runtime 先落事件再回回执，回电接通时开场白比回执先到——
+  // 等回执之后才按「此刻的日志尾」加入，那句话就被当成历史不念了
+  const sinceSeq = chatEvents(sessionId)?.at(-1)?.seq ?? -1;
   const r = await setVoiceCall(agentIds);
-  if (r.ok) session.join(sessionId);
+  if (r.ok) session.join(sessionId, sinceSeq);
   return r;
 }
 
@@ -301,4 +311,11 @@ export function playPreview(bytes: Uint8Array, on: { start(): void; end(): void;
     if (!started) void nativeAudio.stop();
     audio.pause();
   };
+}
+
+/** 来电响铃时先把开场白合成好（#1420）：切句与音色都走接通后放音那条路同一套，接起来直接从缓存拿 */
+export function prefetchOpening(agentId: string, opening: string, untilTs: number): void {
+  const texts = spokenUnits(opening);
+  if (texts.length === 0) return;
+  speech.prefetch(texts, agentVoiceId(agentId, voiceRoster()), untilTs);
 }

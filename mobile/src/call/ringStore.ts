@@ -8,13 +8,15 @@
 // setVoiceCall 认出「正在给他响铃」，记接通、换成回电开场白）。聊天页接手之后（通话整屏盖上来，或者说明了
 // 为什么打不了）调 settleAnswer，来电页才撤。重置而不是推一页：手机只有一份「当前聊天」store，聊天页叠
 // 聊天页会让下面那一页在返回时对着一份已关掉的 store。
+// 来电入队时顺手预合成开场白（#1420），接起来立刻出声。
 // 挂断 = 只撤掉来电页与通知，服务端到点记未接，不另发「拒接」（spec §3.2）。
 import { CommonActions } from "@react-navigation/native";
 import * as Notifications from "expo-notifications";
 import { useSyncExternalStore } from "react";
-import { dropRing, queueRing, ringFromPayload, ringTarget, type RingPush } from "../../../src/shared/callRing.js";
+import { dropRing, queueRing, RING_ANSWER_GRACE_MS, ringFromPayload, ringTarget, type RingPush } from "../../../src/shared/callRing.js";
 import { createStore } from "../externalStore.js";
 import { navRef } from "../nav/navRef.js";
+import { prefetchOpening } from "../voice/voiceStore.js";
 import { toast } from "../wx/toast.js";
 
 interface Rings {
@@ -49,6 +51,8 @@ const handled = new Set<string>();
 function enqueue(ring: RingPush, noticeId: string): void {
   if (handled.has(ring.ringId)) return;
   noticeOf.set(ring.ringId, noticeId);
+  // 响铃这几十秒先把开场白合成好（#1420）：前台收到、点通知进来、冷启动那一条都经过这里
+  if (ring.opening !== undefined) prefetchOpening(ring.agentId, ring.opening, ring.expiresTs + RING_ANSWER_GRACE_MS);
   store.set((s) => ({ ...s, queue: queueRing(s.queue, ring, Date.now()) }));
 }
 
