@@ -1290,7 +1290,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         ? null
         : createCallUserTool({
             initiator: () => currentInitiator,
-            ring: (toUid, reason) => ringer.call(spec.agentId, specNames.get(spec.agentId) ?? spec.name, toUid, reason),
+            ring: (toUid, reason, opening) => ringer.call(spec.agentId, specNames.get(spec.agentId) ?? spec.name, toUid, reason, opening),
           });
     const engine = new LoopEngine({
       store: agentView(store, spec.agentId),

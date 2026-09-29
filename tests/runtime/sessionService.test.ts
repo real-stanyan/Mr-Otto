@@ -1374,7 +1374,7 @@ describe("个人主场全免审批（#1280，ADR-0298）", () => {
       model: "m",
       async chat(): Promise<ModelReply> {
         round++;
-        if (round === 1) return { content: "", toolCalls: [{ id: "cC", name: CALL_USER_TOOL_NAME, args: { reason: "查完了" } }] };
+        if (round === 1) return { content: "", toolCalls: [{ id: "cC", name: CALL_USER_TOOL_NAME, args: { reason: "查完了", opening: "查完了，有个结果要你看。" } }] };
         return { content: "好" };
       },
     };
@@ -7404,9 +7404,10 @@ describe("回电（#1411）", () => {
       workspaceLock: createWorkspaceLock(), relayRemainingMicro: async () => null,
     });
   }
+  const OPENING = "部署好了，有个配置要你拍板。";
   /** 运维第一轮打电话、之后收尾 */
   const callsBack = (reason: string) => (id: string, round: number): ModelReply =>
-    id === "ops" && round === 1 ? { content: "", toolCalls: [{ id: "c1", name: CALL_USER_TOOL_NAME, args: { reason } }] } : { content: "好" };
+    id === "ops" && round === 1 ? { content: "", toolCalls: [{ id: "c1", name: CALL_USER_TOOL_NAME, args: { reason, opening: OPENING } }] } : { content: "好" };
   const phases = (store: EventStore): string[] =>
     store.load("s1").filter((e) => e.type === "call_ring").map((e) => (e as CallRingEvent).phase);
 
@@ -7477,7 +7478,7 @@ describe("回电（#1411）", () => {
     const session = open(store, {
       callback: fakeCallback().cb,
       reply: (id, round) =>
-        id === "ops" && round === 2 ? { content: "", toolCalls: [{ id: "c1", name: CALL_USER_TOOL_NAME, args: { reason: "测完了" } }] } : { content: "好" },
+        id === "ops" && round === 2 ? { content: "", toolCalls: [{ id: "c1", name: CALL_USER_TOOL_NAME, args: { reason: "测完了", opening: OPENING } }] } : { content: "好" },
     });
     await session.setVoiceCall("u1", "alice", ["ops"]); // 第一轮：拉进通话打招呼
     await session.settled();

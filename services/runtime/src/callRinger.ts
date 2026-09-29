@@ -41,8 +41,8 @@ export interface RingerDeps {
 }
 
 export interface Ringer {
-  /** call_user 那把刀：`reason` 已经规整过。回给模型的那句话 */
-  call(agentId: string, agentName: string, toUid: string, reason: string): Promise<string>;
+  /** call_user 那把刀：`reason` / `opening` 已经规整过。回给模型的那句话 */
+  call(agentId: string, agentName: string, toUid: string, reason: string, opening: string): Promise<string>;
   /** 这个人发了一帧把这只带进通话：它正在给他响铃（或刚记成未接、还在宽限里）就记接通、回那一通 */
   answer(agentId: string, uid: string): RingState | null;
   /** 装配末尾：还在响的接上——过了时限的补一条 missed，没过的重新挂定时器 */
@@ -58,7 +58,8 @@ export function createRinger(d: RingerDeps): Ringer {
   const log = (ring: RingState, phase: CallRingEvent["phase"]): void => {
     const e = d.append({
       sessionId: d.sessionId, ts: d.now(), type: "call_ring", ringId: ring.ringId, phase,
-      fromAgentId: ring.fromAgentId, toUid: ring.toUid, reason: ring.reason, expiresTs: ring.expiresTs, ignorable: true,
+      fromAgentId: ring.fromAgentId, toUid: ring.toUid, reason: ring.reason,
+      ...(ring.opening !== null ? { opening: ring.opening } : {}), expiresTs: ring.expiresTs, ignorable: true,
     });
     applyCallRing(fold, e);
   };
@@ -87,7 +88,7 @@ export function createRinger(d: RingerDeps): Ringer {
     });
 
   return {
-    async call(agentId, agentName, toUid, reason) {
+    async call(agentId, agentName, toUid, reason, opening) {
       if (d.isWatching(toUid)) return "他这会儿正开着这条聊天，直接在聊天里说就行，不用打电话。";
       const now = d.now();
       const last = lastRingTs(fold, agentId, toUid);
@@ -105,14 +106,14 @@ export function createRinger(d: RingerDeps): Ringer {
       if (devices === 0) return "他的手机没开通知（或者还没在手机上登录），打不了电话——在聊天里说一声，他回来会看到。";
       const at = d.now();
       const ring: RingState = {
-        ringId: randomUUID(), fromAgentId: agentId, toUid, reason, opening: null,
+        ringId: randomUUID(), fromAgentId: agentId, toUid, reason, opening,
         expiresTs: at + RING_TTL_MS, ringingTs: at, phase: "ringing", phaseTs: at,
       };
       log(ring, "ringing");
       arm(ring.ringId, RING_TTL_MS);
       const push: RingPush = {
         ringId: ring.ringId, workspaceId: d.workspaceId, sessionId: d.sessionId, agentId, agentName,
-        reason, chat: d.chatKindFor(toUid), expiresTs: ring.expiresTs,
+        reason, opening, chat: d.chatKindFor(toUid), expiresTs: ring.expiresTs,
       };
       const sent = d.push(toUid, push).catch((err: unknown) => {
         d.log(`[otto-runtime] 推送来电失败（session=${d.sessionId}）：${err instanceof Error ? err.message : String(err)}`);
