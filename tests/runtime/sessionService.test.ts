@@ -10,7 +10,8 @@ import { createInMemoryWikiJournal } from "../../services/runtime/src/wikiJourna
 import { serializeWikiPage } from "../../src/shared/wiki.js";
 import { EventStore } from "../../src/session/store.js";
 import type { SessionEvent, ApprovalRequestEvent, AgentRelayEvent, CallRingEvent, ChatMessageEvent, UserMessageEvent } from "../../src/session/events.js";
-import { CALL_USER_TOOL_NAME, callbackGreetingText, RING_TTL_MS, type RingPush } from "../../src/shared/callRing.js";
+import { CALL_USER_TOOL_NAME, callbackAnsweredText, callbackGreetingText, RING_TTL_MS, type RingPush } from "../../src/shared/callRing.js";
+import { openTurns as openTurnsOf } from "../../src/shared/turnLedger.js";
 import type { ModelAdapter, ModelReply } from "../../src/model/adapter.js";
 import type { ExecutionWorld } from "../../src/world/executionWorld.js";
 import type { PxCallDeps } from "../../services/runtime/src/pxTools.js";
@@ -7377,6 +7378,7 @@ describe("回电（#1411）", () => {
   function open(store: EventStore, o: {
     callback: CloudCallback | null;
     reply?: (agentId: string, round: number) => ModelReply;
+    replyAsync?: (agentId: string, round: number) => Promise<ModelReply>;
     events?: SessionEvent[];
     tools?: Record<string, string[]>;
     timers?: ReturnType<typeof manualTimers>;
@@ -7396,7 +7398,7 @@ describe("回电（#1411）", () => {
         async chat(_messages, tools?: ToolDefinition[]): Promise<ModelReply> {
           rounds[a.agentId] = (rounds[a.agentId] ?? 0) + 1;
           if (o.tools) o.tools[a.agentId] = (tools ?? []).map((t) => t.name);
-          return o.reply ? o.reply(a.agentId, rounds[a.agentId]!) : { content: `${a.name}答` };
+          return o.replyAsync ? o.replyAsync(a.agentId, rounds[a.agentId]!) : o.reply ? o.reply(a.agentId, rounds[a.agentId]!) : { content: `${a.name}答` };
         },
       }),
       onEvent: (e) => o.events?.push(e), onUsage: () => {}, wiki: testWiki(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
@@ -7456,18 +7458,69 @@ describe("回电（#1411）", () => {
     store.close();
   });
 
-  it("接听：他发 call 帧把它带进通话 → 先名单、再接通、再回电开场白", async () => {
+  it("接听、它空闲、带开场白：先名单、再接通，然后替它说出开场白并收口——不起模型调用", async () => {
     const store = newStore();
-    const session = open(store, { callback: fakeCallback().cb, reply: callsBack("部署完了") });
+    const rounds: string[] = [];
+    const session = open(store, {
+      callback: fakeCallback().cb,
+      reply: (id, round) => {
+        rounds.push(`${id}:${round}`);
+        return callsBack("部署完了")(id, round);
+      },
+    });
     await session.say("u1", "alice", "@运维 部署一下", true, ["ops"]);
     await session.settled();
+    const roundsBefore = rounds.length;
     const before = store.load("s1").length;
     expect(await session.setVoiceCall("u1", "alice", ["ops"])).toEqual({ kind: "ok" });
     const after = store.load("s1").slice(before);
-    expect(after.slice(0, 3).map((e) => e.type)).toEqual(["voice_call_changed", "call_ring", "user_message"]);
-    expect(after[0]).toMatchObject({ callback: true });
-    expect(after[1]).toMatchObject({ phase: "answered", fromAgentId: "ops", toUid: "u1" });
+    expect(after.map((e) => e.type)).toEqual(["voice_call_changed", "call_ring", "user_message", "assistant_message", "turn_ended"]);
+    expect(after[1]).toMatchObject({ phase: "answered", opening: OPENING });
     expect(after[2]).toMatchObject({ greeting: "callback", mentions: ["ops"], fromUid: "u1" });
+    expect((after[2] as UserMessageEvent).content).toBe(callbackAnsweredText("运维", "alice"));
+    expect(after[3]).toMatchObject({ agentId: "ops", content: OPENING, model: "m-ops" });
+    expect((after[3] as { usage?: unknown }).usage).toBeUndefined();
+    expect(after[4]).toMatchObject({ outcome: "completed", agentId: "ops", readUpToSeq: after[2]!.seq });
+    await session.settled();
+    expect(rounds.length).toBe(roundsBefore);
+    expect(openTurnsOf(store.load("s1")).some((t) => t.agentId === "ops")).toBe(false);
+    store.close();
+  }, TWO_TURN_SETTLE_MS);
+
+  it("接听时它还在跑那一轮：回落——落带开场白的招呼、起一轮", async () => {
+    const store = newStore();
+    let release!: () => void;
+    const hold = new Promise<void>((r) => { release = r; });
+    const session = open(store, {
+      callback: fakeCallback().cb,
+      replyAsync: async (id, round) => {
+        if (id === "ops" && round === 2) await hold; // 打完电话之后接着干活，还没收口
+        return callsBack("部署完了")(id, round);
+      },
+    });
+    await session.say("u1", "alice", "@运维 部署一下", true, ["ops"]);
+    for (let i = 0; i < 50 && !store.load("s1").some((e) => e.type === "call_ring"); i++) await new Promise((r) => setImmediate(r));
+    const before = store.load("s1").length;
+    expect(await session.setVoiceCall("u1", "alice", ["ops"])).toEqual({ kind: "ok" });
+    const after = store.load("s1").slice(before);
+    expect(after.map((e) => e.type)).toEqual(["voice_call_changed", "call_ring", "user_message"]);
+    expect((after[2] as UserMessageEvent).content).toBe(callbackGreetingText("运维", "alice", "部署完了", OPENING));
+    release();
+    await session.settled();
+    const replies = store.load("s1").slice(before).filter((e) => e.type === "assistant_message");
+    expect(replies.length).toBeGreaterThan(0); // 模型接着答了那条招呼
+    store.close();
+  }, TWO_TURN_SETTLE_MS);
+
+  it("旧响铃（日志里没有开场白）：照旧落改动前那句招呼、起一轮", async () => {
+    const store = newStore();
+    const now = Date.now();
+    store.append({ sessionId: "s1", ts: now, type: "call_ring", ringId: "r0", phase: "ringing", fromAgentId: "ops", toUid: "u1", reason: "部署完了", expiresTs: now + RING_TTL_MS, ignorable: true });
+    const session = open(store, { callback: fakeCallback().cb });
+    const before = store.load("s1").length;
+    await session.setVoiceCall("u1", "alice", ["ops"]);
+    const after = store.load("s1").slice(before);
+    expect(after.map((e) => e.type)).toEqual(["voice_call_changed", "call_ring", "user_message"]);
     expect((after[2] as UserMessageEvent).content).toBe(callbackGreetingText("运维", "alice", "部署完了"));
     await session.settled();
     store.close();
@@ -7488,8 +7541,9 @@ describe("回电（#1411）", () => {
     await session.setVoiceCall("u1", "alice", ["ops"]);
     const after = store.load("s1").slice(before);
     expect(after.some((e) => e.type === "voice_call_changed")).toBe(false);
-    expect(after.slice(0, 2).map((e) => e.type)).toEqual(["call_ring", "user_message"]);
+    expect(after.map((e) => e.type)).toEqual(["call_ring", "user_message", "assistant_message", "turn_ended"]);
     expect(after[1]).toMatchObject({ greeting: "callback" });
+    expect(after[2]).toMatchObject({ agentId: "ops", content: OPENING });
     await session.settled();
     store.close();
   }, TWO_TURN_SETTLE_MS);

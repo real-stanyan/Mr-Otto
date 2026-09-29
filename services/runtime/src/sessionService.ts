@@ -173,7 +173,7 @@ import type { VoiceCallParticipant } from "../../../src/session/events.js";
 import { LoopEngine } from "../../../src/loop/engine.js";
 import type { EventStore } from "../../../src/session/store.js";
 import type { SessionEvent, SessionCreatedEvent, UserMessageEvent, AssistantMessageEvent, AgentRelayEvent, CallRingEvent } from "../../../src/session/events.js";
-import { callbackGreetingText, ringChatKind, type RingPush } from "../../../src/shared/callRing.js";
+import { callbackAnsweredText, callbackGreetingText, callerModelOf, ringChatKind, type RingPush, type RingState } from "../../../src/shared/callRing.js";
 import { createRinger, type Ringer } from "./callRinger.js";
 import { createCallUserTool } from "./callUserTool.js";
 import type { DeltaKind, ModelAdapter } from "../../../src/model/adapter.js";
@@ -1485,6 +1485,28 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     notify(logged);
   }
 
+  /** 回电接通、开场白由 runtime 替它说（#1420，ADR-0332）：同步连落三条——「接通了」、它的开场白、收口。
+      JS 单线程，三条之间插不进别的事件。model 取日志里写下开场白的那一次调用（assistant_message.model
+      是事实）；不带 usage / route：这一条没花钱，钱在打电话那一轮算过了。readUpToSeq 取「接通了」那条的
+      seq：这一「轮」看见的就是它，openTurns 据此收口，「正在回复」那盏灯不亮 */
+  function speakOpening(p: VoiceCallParticipant, opening: string, byUid: string, byLabel: string): void {
+    const model = callerModelOf(store.load(sessionId), p.agentId);
+    const answered = store.append({
+      sessionId,
+      ts: Date.now(),
+      type: "user_message",
+      content: callbackAnsweredText(p.name, byLabel),
+      fromUid: byUid,
+      mentions: [p.agentId],
+      greeting: "callback",
+    }) as UserMessageEvent;
+    notify(answered);
+    notify(store.append({ sessionId, ts: Date.now(), type: "assistant_message", agentId: p.agentId, content: opening, model }));
+    notify(
+      store.append({ sessionId, ts: Date.now(), type: "turn_ended", outcome: "completed", agentId: p.agentId, readUpToSeq: answered.seq })
+    );
+  }
+
   /** 拉进通话的先开口（#1174）：对新增的每只各落一条带 `greeting` 记号的开场白并入队——
       同接力开场白那条路（先落盘再入队，openTurns 的重启补跑、排队中/正在回复那盏灯全部
       免费拿到），fromUid 是改名单的那个人（invite_to_call 那条路上是点火的人）。
@@ -1499,28 +1521,41 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     added: readonly VoiceCallParticipant[],
     byUid: string,
     budget?: (n: number) => string | null,
-    callback?: { byLabel: string; reasons: ReadonlyMap<string, string> },
+    callback?: { byLabel: string; rings: ReadonlyMap<string, RingState> },
   ): void {
     if (added.length === 0) return;
-    const veto = budget?.(added.length) ?? null;
+    // 回电接通、带着开场白、这只此刻没有开着的一轮（#1420）：替它把开场白说出来，不起模型调用。
+    // 「忙不忙」只看 openTurns（排着的与在跑的开场白都在日志里）：它打完电话可能还在干活，这时往日志里
+    // 插一整段「说了开场白、收口」会和 engine 正在写的那一轮交叉，还会把那一轮在账本上提前收口
+    let busy: Set<string> | null = null;
+    const prewritten = added.filter((p) => {
+      const ring = callback?.rings.get(p.agentId);
+      if (ring === undefined || ring.opening === null) return false;
+      busy ??= new Set(openTurns(store.load(sessionId)).map((t) => t.agentId));
+      return !busy.has(p.agentId);
+    });
+    for (const p of prewritten) speakOpening(p, callback!.rings.get(p.agentId)!.opening!, byUid, callback!.byLabel);
+    const rest = added.filter((p) => !prewritten.includes(p));
+    if (rest.length === 0) return;
+    const veto = budget?.(rest.length) ?? null;
     if (veto !== null) {
-      logChat("system", "系统", `${veto} 刚拉进通话的 ${added.length} 只没打招呼——@ 一下它们就会回。`, false);
+      logChat("system", "系统", `${veto} 刚拉进通话的 ${rest.length} 只没打招呼——@ 一下它们就会回。`, false);
       return;
     }
-    const decisions = added.map((p) => {
+    const decisions = rest.map((p) => {
       // 回电接通的那只说回电版开场白（#1411）：它得知道自己为什么打这个电话、接的是谁
-      const reason = callback?.reasons.get(p.agentId);
+      const ring = callback?.rings.get(p.agentId);
       const opening = store.append({
         sessionId,
         ts: Date.now(),
         type: "user_message",
         content:
-          reason !== undefined && callback !== undefined
-            ? callbackGreetingText(p.name, callback.byLabel, reason)
+          ring !== undefined && callback !== undefined
+            ? callbackGreetingText(p.name, callback.byLabel, ring.reason, ring.opening)
             : voiceCallGreetingText(p.name),
         fromUid: byUid,
         mentions: [p.agentId],
-        greeting: reason !== undefined ? "callback" : "voice_call",
+        greeting: ring !== undefined ? "callback" : "voice_call",
       }) as UserMessageEvent;
       notify(opening);
       return coordinator.enqueue({ agentId: p.agentId, fromUid: byUid, opening });
@@ -2679,17 +2714,17 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       if (!same) logVoiceCall(next, byUid);
       // 回电接通（#1411）：发这一帧的人把正在给他响铃的那只带进了名单——新拉进来的，或者本来就在一场没人
       // 挂断的通话里（锁屏 = 这台停听、通话还在，ADR-0320）。落在名单之后：接通那一刻它已经在通话里
-      const reasons = new Map<string, string>();
+      const rings = new Map<string, RingState>();
       if (ringer !== null) {
         for (const id of ids) {
           const r = ringer.answer(id, byUid);
-          if (r !== null) reasons.set(id, r.reason);
+          if (r !== null) rings.set(id, r);
         }
       }
       // 先落名单再落招呼（#1174）：招呼那一轮跑起来时它已经在通话里（system 尾块读得到、回复会被读出来）——
       // 与 say 里「先落并集名单再落开场白」同一个顺序。开口的是新拉进来的那几只，加上回电接通的那几只
       // （它们打这个电话是有话要说的，哪怕本来就在通话里）
-      greetNewcomers(next.filter((p) => !current.includes(p.agentId) || reasons.has(p.agentId)), byUid, budget, { byLabel, reasons });
+      greetNewcomers(next.filter((p) => !current.includes(p.agentId) || rings.has(p.agentId)), byUid, budget, { byLabel, rings });
       return { kind: "ok" };
     },
 
