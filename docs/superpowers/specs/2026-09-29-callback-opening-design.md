@@ -67,6 +67,7 @@
 - `voiceStore`：`createVoiceSession` 的 `speak` 换成缓存包过的那一个。
 - `ringStore.enqueue`：这一通带 `opening` → `prefetch(splitSpoken(opening), agentVoiceId(ring.agentId, roster), ring.expiresTs + RING_ANSWER_GRACE_MS)`。前台收到的、点通知进来的、冷启动那一条都经过 `enqueue`，一处接齐。
 - 切句用放音那条路同一个 `splitSpoken`：接通后 `voiceFeed` 拿到的是整条 `assistant_message`（没有流式碎片），切出来的句子与预合成时逐字相同，键才对得上。
+- **加入通话按发帧前的日志尾**（实现时发现的）：`startCall` 原来是「发帧 → 等回执 → `join`」，`join` 取此刻日志尾当 `sinceSeq`；runtime 先落事件、广播，再回回执，于是开场白先于回执到、被当成历史不念。改成发帧前记下日志尾、`join(sessionId, sinceSeq)` 补读中间那几条（`voiceSession.ts`）。
 
 ## 3. 不做的
 
