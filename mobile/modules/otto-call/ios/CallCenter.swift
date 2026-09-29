@@ -4,8 +4,9 @@ import Foundation
 import PushKit
 
 /// 进程里唯一的一份：PushKit 注册、CallKit provider、这几通来电的账（#1428，spec §2）。
-/// 一律在主队列上动：PushKit 的 registry 建在主队列上，CXProvider 的 delegate 队列给 nil（= 主队列），
-/// JS 调进来的两个函数也 runOnQueue(.main)，所以不需要锁。
+/// 状态一律在主队列上动：PushKit 的 registry 建在主队列上，CXProvider 的 delegate 队列给 nil（= 主队列），
+/// JS 调进来的 endCall 也 runOnQueue(.main)、挂 / 卸监听也 hop 到主队列。**唯一例外是 voipToken**：
+/// 同步的 getVoipToken 在 JS 线程上读它，所以它有自己的锁。
 final class CallCenter: NSObject {
   static let shared = CallCenter()
 
@@ -17,21 +18,40 @@ final class CallCenter: NSObject {
 
   private var registry: PKPushRegistry?
   private let provider: CXProvider
-  private(set) var voipToken: String?
+  private let tokenLock = NSLock()
+  private var _voipToken: String?
+  /// 主队列写、JS 线程读（getVoipToken 是同步函数），所以过锁
+  var voipToken: String? {
+    get { tokenLock.lock(); defer { tokenLock.unlock() }; return _voipToken }
+    set { tokenLock.lock(); defer { tokenLock.unlock() }; _voipToken = newValue }
+  }
   /// ringId → 这一通
   private var calls: [String: Call] = [:]
   /// 已经处理过的 ringId：推送不保证只到一次，同一通再来要报、但报完立刻结束
   private var seen = Set<String>()
   /// JS 还没挂上监听时攒着的事件（被 VoIP 推送从后台叫起来的那一次，JS 比推送回调晚）
   private var pending: [[String: Any]] = []
-  /// JS 那一侧；nil = 没有监听。设上时把攒着的一次发完
-  var emit: (([String: Any]) -> Void)? {
-    didSet {
-      guard let emit else { return }
-      let queued = pending
-      pending = []
-      queued.forEach(emit)
+  /// JS 那一侧；nil = 没有监听。owner 是挂上它的那个模块实例：JS 重载后旧实例的 OnDestroy 只清自己挂的，
+  /// 不会把新实例刚挂上的踩掉。closure 回 true = 送到了；回 false（模块已经没了）= 没送到，事件留着
+  private var emitter: (owner: UUID, deliver: ([String: Any]) -> Bool)?
+
+  /// 挂上监听（主队列）：把攒着的一次发完，发不出去的接着攒
+  func attach(owner: UUID, deliver: @escaping ([String: Any]) -> Bool) {
+    emitter = (owner, deliver)
+    let queued = pending
+    pending = []
+    for (i, body) in queued.enumerated() {
+      if !deliver(body) {
+        pending = Array(queued[i...])
+        break
+      }
     }
+  }
+
+  /// 卸掉监听（主队列）：只认自己挂的
+  func detach(owner: UUID) {
+    guard emitter?.owner == owner else { return }
+    emitter = nil
   }
 
   private override init() {
@@ -59,10 +79,9 @@ final class CallCenter: NSObject {
   }
 
   private func send(_ body: [String: Any]) {
-    if let emit { emit(body) } else { pending.append(body) }
+    if let emitter, emitter.deliver(body) { return }
+    pending.append(body)
   }
-
-  private func uuidOf(_ ringId: String) -> UUID? { calls[ringId]?.uuid }
 
   private func ringIdOf(_ uuid: UUID) -> String? {
     calls.first(where: { $0.value.uuid == uuid })?.key
@@ -111,6 +130,9 @@ extension CallCenter: PKPushRegistryDelegate {
     let expiresMs = (ring?["expiresTs"] as? NSNumber)?.doubleValue ?? 0
     let nowMs = Date().timeIntervalSince1970 * 1000
     let live = ringId != nil && expiresMs > nowMs && !seen.contains(ringId!)
+    // 同步登记，不等下面的异步完成回调：紧挨着到的同 ringId 第二条推送在这一行之后读 seen 就是重复的
+    // （否则两条都当成有效、calls[ringId] 被后一条覆盖，前一条的系统来电永远响下去）
+    if live, let ringId { seen.insert(ringId) }
 
     let uuid = UUID()
     let update = CXCallUpdate()
@@ -128,12 +150,16 @@ extension CallCenter: PKPushRegistryDelegate {
         defer { completion() }
         guard let self else { return }
         // 系统拒了（勿扰挡掉、已经有一通在打……）：什么都不记，服务端到点记未接
-        if error != nil { return }
-        guard live, let ringId, let ring else {
+        if error != nil {
+          // 这条本来有效、却没响成：放开登记，服务端重发的同一通还能再试
+          if live, let ringId { self.seen.remove(ringId) }
+          return
+        }
+        // calls[ringId] != nil 是第二道：不管 seen 怎么漏的，同一 ringId 只留一通，多的这个 uuid 立刻结束
+        guard live, let ringId, let ring, self.calls[ringId] == nil else {
           self.provider.reportCall(with: uuid, endedAt: nil, reason: .failed)
           return
         }
-        self.seen.insert(ringId)
         let timer = Timer.scheduledTimer(withTimeInterval: max(0, (expiresMs - nowMs) / 1000), repeats: false) { [weak self] _ in
           self?.finishUnanswered(ringId)
         }

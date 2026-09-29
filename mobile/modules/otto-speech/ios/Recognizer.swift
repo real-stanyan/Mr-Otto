@@ -89,7 +89,13 @@ final class Recognizer {
       guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
             AVAudioSession.InterruptionType(rawValue: raw) == .began else { return }
       speechQueue.async {
-        guard let self, !self.externalSession else { return }
+        guard let self else { return }
+        if self.externalSession {
+          // 系统来电里的会话激活 / 去激活也会发这条通知：不当成打断、不报错。但引擎真被停了的话
+          // running 还是 true、麦是死的，悄悄收掉（stop 只发 listening:false）
+          if self.running, !self.engine.isRunning { self.stop() }
+          return
+        }
         self.interrupted("被系统打断了（来电 / Siri），点一下麦克风再开")
       }
     })
@@ -97,6 +103,11 @@ final class Recognizer {
       speechQueue.async {
         // 按引擎此刻停没停判（头注 ②）：还在跑 = 起引擎之前开回声消除引出的那一条
         guard let self, !self.engine.isRunning else { return }
+        if self.externalSession {
+          // CallKit 去激活会话时引擎会跟着停：这是系统来电的正常收尾，不报「设备变了」，悄悄收掉
+          if self.running { self.stop() }
+          return
+        }
         self.interrupted("声音设备变了（耳机 / 蓝牙），点一下麦克风再开")
       }
     })
