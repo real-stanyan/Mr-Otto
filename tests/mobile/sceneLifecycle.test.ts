@@ -30,11 +30,16 @@ const SDK58 = read("tests/fixtures/expo/sdk58-AppDelegate.swift");
 const count = (s: string, needle: string): number => s.split(needle).length - 1;
 
 describe("withSceneLifecycle：SDK 57 的 AppDelegate 改走场景生命周期", () => {
-  it("didFinishLaunching 不再自己建窗口，React Native 只在 SceneDelegate 里启动一次", () => {
+  it("didFinishLaunching 不再自己建窗口，React Native 一个进程只起一份", () => {
     expect(SDK57).toContain("UIWindow(frame: UIScreen.main.bounds)");
     const out = plugin.patchAppDelegate(SDK57, SWIFT);
     expect(out).not.toContain("UIWindow(frame: UIScreen.main.bounds)");
-    expect(count(out, "startReactNative(")).toBe(1);
+    // 两个启动点（#1428）：场景连上时，或被 VoIP 推送从后台叫起来、没有场景时（ottoStartReactNative）。
+    // 两处都先置同一个记号、ottoStartReactNative 见它就走，场景那一侧有现成的就搬过去——一个进程只起一份
+    expect(count(out, "startReactNative(")).toBe(2);
+    expect(count(out, "reactNativeStarted = true")).toBe(2);
+    expect(out).toContain("guard !reactNativeStarted");
+    expect(out).toContain("if let root = headlessWindow?.rootViewController");
     expect(out).toContain("return super.application(application, didFinishLaunchingWithOptions: launchOptions)");
     expect(out).toContain("class SceneDelegate: UIResponder, UIWindowSceneDelegate");
   });

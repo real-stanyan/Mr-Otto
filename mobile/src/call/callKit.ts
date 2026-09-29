@@ -79,7 +79,16 @@ function onChatChanged(): void {
   for (const c of s.calls.values()) {
     if (!c.answered) continue;
     const session = chatSessionOf(c.ring.sessionId);
-    if (session === null || session.provisional) continue;
+    if (session === null) {
+      // 通话开起来之后人离开了这条聊天（返回 / 点进别的聊天）：这台不在这通里了——通话本身还在服务端，
+      // 同切后台停听。收掉系统来电，否则「系统来电进行中」一直为真：切后台不再暂停下一条聊天的房间、
+      // 系统收回音频时把别处开的麦悄悄停掉。还没开起来的（接听那一下导航重置时这里短暂为 null）不动
+      const r = onVoiceCall(s, c.ring.sessionId, false);
+      s = r.state;
+      ended.push(...r.ended);
+      continue;
+    }
+    if (session.provisional) continue;
     const events = chatEvents(c.ring.sessionId);
     if (events === null) continue;
     const r = onVoiceCall(s, c.ring.sessionId, voiceCallOf(events) !== null);

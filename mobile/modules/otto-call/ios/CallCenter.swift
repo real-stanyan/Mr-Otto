@@ -2,6 +2,7 @@ import AVFoundation
 import CallKit
 import Foundation
 import PushKit
+import UIKit
 
 /// 进程里唯一的一份：PushKit 注册、CallKit provider、这几通来电的账（#1428，spec §2）。
 /// 状态一律在主队列上动：PushKit 的 registry 建在主队列上，CXProvider 的 delegate 队列给 nil（= 主队列），
@@ -81,6 +82,28 @@ final class CallCenter: NSObject {
   private func send(_ body: [String: Any]) {
     if let emitter, emitter.deliver(body) { return }
     pending.append(body)
+  }
+
+  /// JS 没在跑就让 App 起一份（AppDelegate 上 withSceneLifecycle 插件加的 ottoStartReactNative）：App 被杀掉后被
+  /// VoIP 推送从后台叫起来时不连场景，React Native 不会自己启动，人接起来就是一通没人说话的电话。按名字找，
+  /// 模块不依赖 App 工程；那边已经起过了是空操作
+  private func ensureJS() {
+    guard emitter == nil, let app = UIApplication.shared.delegate as? NSObject else { return }
+    let start = NSSelectorFromString("ottoStartReactNative")
+    if app.responds(to: start) { _ = app.perform(start) }
+  }
+
+  /// 接起来这么久 JS 还没挂上监听：它起不来了（或起得太慢），收掉系统通话，别让人对着一通计时的静音电话。
+  /// JS 在的时候不管——那边有自己的「一直没连上」（ringStore 的 20 秒）
+  private static let answeredWithoutJsLimit: TimeInterval = 30
+
+  private func abandonIfNoJS(_ ringId: String) {
+    guard emitter == nil, let call = calls.removeValue(forKey: ringId) else { return }
+    provider.reportCall(with: call.uuid, endedAt: nil, reason: .failed)
+    // 攒着的这一通的事件一并扔掉：JS 晚些时候起来再回放「接听」，会把人拽进一条早就结束的通话
+    pending.removeAll { body in
+      (body["ringId"] as? String) == ringId || ((body["ring"] as? [String: Any])?["ringId"] as? String) == ringId
+    }
   }
 
   private func ringIdOf(_ uuid: UUID) -> String? {
@@ -165,6 +188,7 @@ extension CallCenter: PKPushRegistryDelegate {
         }
         self.calls[ringId] = Call(uuid: uuid, answered: false, timer: timer)
         self.send(["type": "incoming", "ring": ring])
+        self.ensureJS()
       }
     }
   }
@@ -185,11 +209,15 @@ extension CallCenter: CXProviderDelegate {
       return
     }
     calls[ringId]?.timer?.invalidate()
-    calls[ringId]?.timer = nil
+    // 同一格换成「JS 起不来」的看门狗：结束的几条路（endCall / 用户挂断 / reset）都会把它作废
+    calls[ringId]?.timer = Timer.scheduledTimer(withTimeInterval: Self.answeredWithoutJsLimit, repeats: false) { [weak self] _ in
+      self?.abandonIfNoJS(ringId)
+    }
     calls[ringId]?.answered = true
     configureAudioSession()
     action.fulfill()
     send(["type": "answer", "ringId": ringId])
+    ensureJS()
   }
 
   func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
