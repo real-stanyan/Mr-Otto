@@ -111,7 +111,7 @@ function RosterPill({ parts, ws }: { parts: readonly RosterLinePart[]; ws: Works
   );
 }
 
-export function ChatRowView({ row, ws, selfUid, selfName, selfAvatar, group, onOpenCall, onAgent, onCallAgent, onDecide, deciding }: {
+export function ChatRowView({ row, ws, selfUid, selfName, selfAvatar, group, onOpenCall, onAgent, onCallAgent, onDecide, deciding, decideReady }: {
   row: ChatRow;
   ws: WorkspaceSnapshot;
   selfUid: string;
@@ -126,6 +126,8 @@ export function ChatRowView({ row, ws, selfUid, selfName, selfAvatar, group, onO
   onDecide: (callId: string, decision: "approved" | "denied") => void;
   /** 正在批 / 拒的那张卡 */
   deciding: string | null;
+  /** 房间连上了才批得动：连接中画的是本机缓存里的卡，批下去没有对应的那一轮（#1426） */
+  decideReady: boolean;
 }) {
   const { c } = usePalette();
   switch (row.kind) {
@@ -187,7 +189,7 @@ export function ChatRowView({ row, ws, selfUid, selfName, selfAvatar, group, onO
     case "ring":
       return <RingRecord row={row} ws={ws} group={group} onOpenCall={onOpenCall} onCallAgent={onCallAgent} />;
     case "approval":
-      return <ApprovalCard row={row} busy={deciding === row.callId} onDecide={onDecide} selfUid={selfUid} />;
+      return <ApprovalCard row={row} busy={deciding === row.callId || !decideReady} onDecide={onDecide} selfUid={selfUid} />;
     default: {
       const unhandled: never = row;
       return unhandled;
