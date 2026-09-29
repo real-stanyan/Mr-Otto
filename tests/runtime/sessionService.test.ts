@@ -7564,15 +7564,22 @@ describe("回电（#1411）", () => {
     const store = newStore();
     let release!: () => void;
     const hold = new Promise<void>((r) => { release = r; });
+    // 第 2 圈开跑 = call_user 的 tool_result 已落盘（响铃已在日志里）而这一轮还开着；比轮询日志确定，慢机器上不会提前放行
+    let round2Started!: () => void;
+    const round2 = new Promise<void>((r) => { round2Started = r; });
     const session = open(store, {
       callback: fakeCallback().cb,
       replyAsync: async (id, round) => {
-        if (id === "ops" && round === 2) await hold; // 打完电话之后接着干活，还没收口
+        if (id === "ops" && round === 2) {
+          round2Started();
+          await hold; // 打完电话之后接着干活，还没收口
+        }
         return callsBack("部署完了")(id, round);
       },
     });
     await session.say("u1", "alice", "@运维 部署一下", true, ["ops"]);
-    for (let i = 0; i < 50 && !store.load("s1").some((e) => e.type === "call_ring"); i++) await new Promise((r) => setImmediate(r));
+    await round2;
+    expect(store.load("s1").some((e) => e.type === "call_ring" && (e as CallRingEvent).phase === "ringing")).toBe(true);
     const before = store.load("s1").length;
     expect(await session.setVoiceCall("u1", "alice", ["ops"])).toEqual({ kind: "ok" });
     const after = store.load("s1").slice(before);
