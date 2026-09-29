@@ -43,6 +43,12 @@ export function flushPendingNav(): void {
   go?.();
 }
 
+/** 接了却没开成通话时要做的事（callKit.ts 收掉系统来电）。用注册不用 import：callKit.ts 已经 import 这里 */
+let abandoned: (ringId: string) => void = () => {};
+export function onAnswerAbandoned(fn: (ringId: string) => void): void {
+  abandoned = fn;
+}
+
 export function answerRing(ring: RingPush): void {
   handled.add(ring.ringId);
   connecting = ring.ringId;
@@ -52,18 +58,21 @@ export function answerRing(ring: RingPush): void {
     connectTimer = null;
     if (connecting !== ring.ringId) return;
     connecting = null;
-    toast("没接通：这条聊天一直没连上");
+    // 两种都会走到这里：房间一直没连上，或者系统一直没把声音交过来
+    toast("没接通，过会儿再回拨试试");
+    abandoned(ring.ringId);
   }, CONNECT_TIMEOUT_MS);
 }
 
 /** 聊天页接手了这一通：通话已经开起来（"call"），或者打不了、页面上说了为什么（"note"） */
-export function settleAnswer(ringId: string, _how: "call" | "note"): void {
+export function settleAnswer(ringId: string, how: "call" | "note"): void {
   if (connecting !== ringId) return;
   connecting = null;
   if (connectTimer !== null) {
     clearTimeout(connectTimer);
     connectTimer = null;
   }
+  if (how === "note") abandoned(ringId);
 }
 
 export function declineRing(ring: RingPush): void {

@@ -92,8 +92,12 @@ final class Recognizer {
         guard let self else { return }
         if self.externalSession {
           // 系统来电里的会话激活 / 去激活也会发这条通知：不当成打断、不报错。但引擎真被停了的话
-          // running 还是 true、麦是死的，悄悄收掉（stop 只发 listening:false）
-          if self.running, !self.engine.isRunning { self.stop() }
+          // running 还是 true、麦是死的，悄悄收掉（stop 只发 listening:false）。手上那段放不完了：
+          // 当它放完了报 played（cut），否则放音器的完成回调不会来、JS 的放音队列一直等下去
+          if !self.engine.isRunning {
+            self.playback.cut()
+            if self.running { self.stop() }
+          }
           return
         }
         self.interrupted("被系统打断了（来电 / Siri），点一下麦克风再开")
@@ -105,6 +109,8 @@ final class Recognizer {
         guard let self, !self.engine.isRunning else { return }
         if self.externalSession {
           // CallKit 去激活会话时引擎会跟着停：这是系统来电的正常收尾，不报「设备变了」，悄悄收掉
+          // （手上那段同上：cut 报 played，不报错）
+          self.playback.cut()
           if self.running { self.stop() }
           return
         }

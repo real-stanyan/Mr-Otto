@@ -13,7 +13,7 @@ import { voiceCallOf } from "../../../src/shared/voiceCall.js";
 import { chatEvents, chatSessionOf, subscribeChat } from "../cloud/chatStore.js";
 import { createStore } from "../externalStore.js";
 import { hangUp, setMic } from "../voice/voiceStore.js";
-import { answerRing, declineRing, noteIncoming } from "./ringStore.js";
+import { answerRing, declineRing, noteIncoming, onAnswerAbandoned } from "./ringStore.js";
 import { setInSystemCall } from "./systemCall.js";
 
 const store = createStore<CallKitState>(CALLKIT_IDLE);
@@ -49,14 +49,13 @@ function onEvent(e: CallKitEvent): void {
     }
     case "end": {
       const c = before.calls.get(e.ringId);
+      // 系统界面上挂断：只挂这一条会话的通话——人可能已经切到别的聊天，那里的通话不该被这一下挂掉。
+      // **挂断帧要先于 commit 发出去**：commit 让「系统来电进行中」翻成 false，当场补做切后台那一步
+      // （cloudClient 暂停会话房），锁屏上挂断时 App 正在后台——先 commit 的话那一帧落在已经断开的传输上，
+      // 服务端的通话名单一直开着。call() 在第一个 await 之前就把帧交给了 socket，所以同步调一下就够
+      if (c !== undefined && e.answered && chatSessionOf(c.ring.sessionId) !== null) void hangUp();
       commit(reduceCallKit(before, e));
-      if (c === undefined) return;
-      if (!e.answered) {
-        declineRing(c.ring);
-        return;
-      }
-      // 系统界面上挂断：只挂这一条会话的通话——人可能已经切到别的聊天，那里的通话不该被这一下挂掉
-      if (chatSessionOf(c.ring.sessionId) !== null) void hangUp();
+      if (c !== undefined && !e.answered) declineRing(c.ring);
       return;
     }
     case "mute": {
@@ -91,7 +90,18 @@ function onChatChanged(): void {
   for (const ringId of ended) void OttoCall?.endCall(ringId).catch(() => undefined);
 }
 
+/** 接了却没开成 App 这边的通话（聊天页说了打不了、或一直没连上）：收掉系统来电。不收的话系统界面一直在计时、
+    「系统来电进行中」一直为真，切后台也不停听、不暂停会话房，直到人自己去系统界面上挂断。
+    走 endCall（reportCall）不回发 end 事件，所以这里自己把它从状态里摘掉 */
+function abandonAnswered(ringId: string): void {
+  const before = store.get();
+  if (!before.calls.has(ringId)) return;
+  commit(reduceCallKit(before, { type: "end", ringId, answered: true, reason: "reset" }));
+  void OttoCall?.endCall(ringId).catch(() => undefined);
+}
+
 if (OttoCall !== null) {
+  onAnswerAbandoned(abandonAnswered);
   OttoCall.addListener("onCall", (raw) => {
     const e = callKitEventOf(raw);
     if (e !== null) onEvent(e);
