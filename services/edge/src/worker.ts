@@ -17,10 +17,10 @@ import {
 } from "./px.js";
 import { cloudCallback, cloudConnect, cloudGrant, cloudRefresh, cloudRemove, cloudViewOf, type CloudOpsDeps, type PendingAuth } from "./pxCloudOps.js";
 import { CLOUD_TEXT, cloudNeedsLogin, isCloudServerId, mergeEscrow, parseCloudBox, type CloudBox } from "../../../src/shared/remote/pxCloud.js";
-import { edgeBaseUrl } from "../../../src/shared/edgeConfig.js";
+import { DEFAULT_EDGE_BASE_URL } from "../../../src/shared/edgeConfig.js";
 
-// edgeConfig.ts 的签名写着 NodeJS.ProcessEnv，而 worker 这份 tsconfig 只装 workers-types（不带 @types/node）。
-// 这里补一个只够它类型检查的空壳；运行时我们传 `{}`，永远走它的生产默认，不读 process.env。
+// 仍要这个空壳：edgeConfig.ts 的函数签名写着 NodeJS.ProcessEnv，而 worker 这份 tsconfig 只装 workers-types（不带 @types/node），
+// 只要 import 这个文件（哪怕只取常量）整份都会被类型检查。我们只用常量，运行时不读 process.env。
 declare global {
   // eslint-disable-next-line @typescript-eslint/no-namespace
   namespace NodeJS {
@@ -283,17 +283,22 @@ export class Escrow extends DurableObject<Env> {
       fetch: (url, init) => fetch(url, init),
       now: () => Date.now(),
       random: (n) => crypto.getRandomValues(new Uint8Array(n)),
-      callbackUrl: `${edgeBaseUrl({} as never)}/px/v1/cloud/callback`,
+      // 故意取生产默认：wrangler dev 也用生产回调注册客户端（手机只认一个回调地址，单一来源）
+      callbackUrl: `${DEFAULT_EDGE_BASE_URL}/px/v1/cloud/callback`,
       homeIdOf: async (uid) => {
-        const res = await fetch(`${rest}/workspaces?select=id&owner_uid=eq.${encodeURIComponent(uid)}&kind=eq.home&limit=1`, { headers: supaHeaders });
-        if (!res.ok) return null;
-        const rows: unknown = await res.json();
-        const id = Array.isArray(rows) ? (rows[0] as { id?: unknown } | undefined)?.id : undefined;
-        return typeof id === "string" ? id : null;
+        try {
+          const res = await fetch(`${rest}/workspaces?select=id&owner_uid=eq.${encodeURIComponent(uid)}&kind=eq.home&limit=1`, { headers: supaHeaders });
+          if (!res.ok) return null;
+          const rows: unknown = await res.json();
+          const id = Array.isArray(rows) ? (rows[0] as { id?: unknown } | undefined)?.id : undefined;
+          return typeof id === "string" ? id : null;
+        } catch { return null; }
       },
       isMember: async (uid, workspaceId) => {
-        const res = await fetch(`${rest}/${membershipQuery([workspaceId], uid, uid)}`, { headers: supaHeaders });
-        return res.ok && parseMembershipRows(await res.json(), uid, uid).has(workspaceId);
+        try {
+          const res = await fetch(`${rest}/${membershipQuery([workspaceId], uid, uid)}`, { headers: supaHeaders });
+          return res.ok && parseMembershipRows(await res.json(), uid, uid).has(workspaceId);
+        } catch { return false; }
       },
       log: (m) => console.log(m),
     };
@@ -360,7 +365,12 @@ export class Escrow extends DurableObject<Env> {
       const doc = await this.merged();
       const gate = pxGate(doc, { fromUid, serverId, tool }, { friendAccepted, workspaceOk: await this.workspaceOk(doc, fromUid) });
       if (!gate.ok) {
-        if (isCloudServerId(serverId) && cloudNeedsLogin(await this.cloudBox(), serverId)) {
+        // 「要重新登录」只回给「这台若是活的就过得了闸」的调用者——否则猜一个 id 就能探到别人箱里有这台
+        const box = isCloudServerId(serverId) ? await this.cloudBox() : null;
+        const liveDoc = box && cloudNeedsLogin(box, serverId)
+          ? mergeEscrow(await this.doc(), { ...box, services: box.services.map((s) => ({ ...s, status: "ok" as const })) })
+          : null;
+        if (liveDoc && pxGate(liveDoc, { fromUid, serverId, tool }, { friendAccepted, workspaceOk: await this.workspaceOk(liveDoc, fromUid) }).ok) {
           await this.audit({ ts: Date.now(), fromUid, serverId, tool, outcome: "denied", note: CLOUD_TEXT.needsLogin });
           return json(409, { error: { message: CLOUD_TEXT.needsLogin, type: "otto_edge", code: "needs_login" } });
         }
@@ -375,13 +385,17 @@ export class Escrow extends DurableObject<Env> {
           const oauth = await cloudRefresh(this.cloudDeps(), serverId);
           if (oauth) {
             r = await pxMcpCall(fetchLike, { ...gate.service, oauth: { ...(oauth.tokens ? { tokens: oauth.tokens } : {}), ...(oauth.clientInformation ? { clientInformation: oauth.clientInformation } : {}) } }, tool, b.args);
-          } else {
+          } else if (cloudNeedsLogin(await this.cloudBox(), serverId)) {
+            // 登录确实失效（cloudRefresh 已标）：手机上重新登录
             r = { ok: false, status: 409, code: "needs_login", message: CLOUD_TEXT.needsLogin };
+          } else {
+            // 网络抖 / 5xx / 中途被断开：不是登录问题，稍后再试
+            r = { ok: false, status: 502, code: "refresh_failed", message: CLOUD_TEXT.refreshFailed };
           }
         } else {
           // 桌面那只箱：原来的兜底自刷，只写 sealed
-          const sealedDoc = await this.doc();
           const oauth = await pxRefreshTokens(fetchLike, gate.service);
+          const sealedDoc = await this.doc(); // 网络在前、读改写在后：外呼期间桌面可能刚 put 过
           if (oauth && sealedDoc) {
             const updated: EscrowDoc = {
               ...sealedDoc,
@@ -392,6 +406,10 @@ export class Escrow extends DurableObject<Env> {
             r = await pxMcpCall(fetchLike, { ...gate.service, oauth }, tool, b.args);
           }
         }
+      }
+      if (!r.ok && r.code === "upstream_auth" && isCloudServerId(serverId)) {
+        // 续期成功、重试仍 401：不许落到下面桌面那句「托管凭据已失效——让对方上线」
+        r = { ok: false, status: 502, code: "refresh_failed", message: CLOUD_TEXT.refreshFailed };
       }
       if (!r.ok) {
         await this.audit({ ts: Date.now(), fromUid, serverId, tool, outcome: "error", note: r.message });

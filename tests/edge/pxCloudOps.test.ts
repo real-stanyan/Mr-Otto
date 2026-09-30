@@ -443,3 +443,27 @@ describe("pending 满了不先去厂商注册（M9）", () => {
     expect(regs()).toBe(5);
   });
 });
+
+describe("cloudRefresh：没有 oauth 的应用被 401（Task 7 I1a）", () => {
+  it("token / 免登录应用：标 needs_login 回 null，手机据此弹重新登录（粘新 token）", async () => {
+    for (const [catalogId, params] of [["github", { github_token: "ghp_x" }], ["context7", {}]] as const) {
+      const x = deps();
+      await cloudConnect(x.d, UID, { catalogId, params });
+      expect(x.m.peekBox()!.services[0]!.oauth).toBeUndefined();
+      expect(await cloudRefresh(x.d, `cloud-${catalogId}`)).toBeNull();
+      expect(x.m.peekBox()!.services[0]!.status).toBe("needs_login");
+    }
+  });
+  it("这台已经不在箱里：不写、不建箱子", async () => {
+    const x = deps();
+    expect(await cloudRefresh(x.d, "cloud-github")).toBeNull();
+    expect(x.m.peekBox()).toBeNull();
+  });
+  it("重新粘 token 之后回 ok", async () => {
+    const x = deps();
+    await cloudConnect(x.d, UID, { catalogId: "github", params: { github_token: "old" } });
+    await cloudRefresh(x.d, "cloud-github");
+    await cloudConnect(x.d, UID, { catalogId: "github", params: { github_token: "new" } });
+    expect(x.m.peekBox()!.services[0]).toMatchObject({ status: "ok", headers: { Authorization: "Bearer new" } });
+  });
+});

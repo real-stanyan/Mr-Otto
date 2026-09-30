@@ -146,3 +146,9 @@ describe("线上回包与深链", () => {
     expect(parseCloudError(500, "oops")).toBeNull();
   });
 });
+
+describe("CLOUD_TEXT.refreshFailed（Task 7 I1b）", () => {
+  it("原样的一句话，逗号是全角 U+FF0C", () => {
+    expect(CLOUD_TEXT.refreshFailed).toBe("这个应用暂时连不上，稍后再试");
+  });
+});

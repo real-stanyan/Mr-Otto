@@ -243,7 +243,17 @@ const refreshTokenOf = (oauth: CloudOAuth | undefined): unknown => (oauth?.token
 export async function cloudRefresh(d: CloudOpsDeps, serverId: string): Promise<CloudOAuth | null> {
   const box = await d.store.getBox();
   const svc = box?.services.find((s) => s.serverId === serverId);
-  if (!box || !svc?.oauth) return null;
+  if (!box || !svc) return null;
+  if (!svc.oauth) {
+    // token / 免登录应用被上游 401：没有可续的东西，用户得在手机上重新粘 token / 重新接——
+    // 标 needs_login 让手机弹重新登录；临界区里重看一眼，别覆盖并发的重新接入
+    await d.store.atomic(async () => {
+      const cur = await d.store.getBox();
+      const curSvc = cur?.services.find((s) => s.serverId === serverId);
+      if (cur && curSvc && !curSvc.oauth) await d.store.putBox(markNeedsLogin(cur, serverId, d.now()));
+    });
+    return null;
+  }
   const snapshotRefresh = refreshTokenOf(svc.oauth);
   const result = await refreshCloudOAuth(d.fetch, svc.oauth);
   if (result.kind === "transient") {
