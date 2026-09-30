@@ -11,6 +11,7 @@ import {
   type CatalogEntry,
 } from "../../../shared/mcpCatalog.js";
 import type { McpServerConfig } from "../../../shared/mcp.js";
+import { fillHttpEntry } from "../../../shared/mcpCatalogFill.js";
 import { mcpServerIdError, type McpDisplayStatus } from "./mcpForm.js";
 
 /** 已装的一台 —— 目录卡要的是**状态**，不只是"这个 id 在不在配置里"。
@@ -134,7 +135,9 @@ export function uniqueServerId(base: string, existingIds: readonly string[]): st
       名**，args 里本来就没有占位符可代——代不进去的落 env 才是对的。
 
     空值、以及代完仍留着占位符的（用户没填），一律不落盘：宁可少一个头/一个环境
-    变量让服务端明说缺什么，也不写一个装着 `{hole}` 字面量的键 */
+    变量让服务端明说缺什么，也不写一个装着 `{hole}` 字面量的键。
+
+    http 那半在 shared/mcpCatalogFill.ts，edge 替手机接应用时用同一份 */
 export function configFromEntry(
   entry: CatalogEntry,
   values: Readonly<Record<string, string>>
@@ -147,16 +150,8 @@ export function configFromEntry(
       used.add(name);
       return v;
     });
-  const hasHole = (text: string): boolean => /\{\w+\}/.test(text);
   if (entry.transport === "http") {
-    const url = fill(entry.url ?? "");
-    const headers: Record<string, string> = {};
-    for (const [headerName, template] of Object.entries(entry.headerTemplates ?? {})) {
-      const value = fill(template);
-      if (value === "" || hasHole(value)) continue;
-      headers[headerName] = value;
-    }
-    return { kind: "http", url, headers, enabled: true };
+    return { kind: "http", ...fillHttpEntry(entry, values), enabled: true };
   }
   const args = (entry.args ?? []).map(fill);
   const env = Object.fromEntries(
