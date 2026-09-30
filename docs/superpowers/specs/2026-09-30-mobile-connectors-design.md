@@ -113,19 +113,21 @@ initialize + `tools/list` 验一次，成功才存。token 经 TLS 到 edge，�
 - 手机读状态：`GET /px/v1/cloud`（带 JWT）回自己 `cloud` 的**无凭据视图**：`{serverId, catalogId, status, tools: 名字列表,
   grants: workspaceId 列表, connectedTs}`。这正是 #1376 缺的那半数据源（只覆盖手机接的这部分；桌面接的仍无状态）。
 
-## 5. 智能体怎么用（runtime 不改）
+## 5. 智能体怎么用（runtime 只改工具名封顶）
 
 - DO 的 `grants` / `call` 两个 op 把 `sealed` 与 `cloud` **合成一份视图**再判：`grantedView` 与 `pxGate` 的入参从
   `EscrowDoc` 换成合并后的形状（`cloud` 里每台带自己的 grants，合并时摊平成 `EscrowGrant`）。
 - 判据不变：主场授权要所有者本人；团队授权要调用方与所有者**同在这个团队**（`membershipQuery`）；每次调用记审计。
-- runtime 的 `fetchGrantedTools` / `buildPxTools` / 调用路径一个字不改，也不用重新部署。
+- runtime 的 `fetchGrantedTools` / 调用路径不改；只有 `pxTools.ts` 的工具名要封顶 64 字符（`px_<uid8>_cloud-<id>_<tool>` 比桌面那条多 6 个字符，
+  超长会让整次请求被模型厂商拒掉，见 ADR-0336），所以 runtime 要重新部署一次（计划 Task 8）。
 
 ## 6. 借给团队
 
 - 手机应用详情里「借给团队」列出我所在的团队（不含主场），每行一个开关。
 - **开**：`POST /px/v1/cloud/grant {serverId, workspaceId, on:true}` → edge 先确认我在籍、加授权（`allow: []` 整台）→
   手机再 upsert `workspace_connectors`（`host_uid = me, server_id = cloud-…, label, tools`），与桌面同一个顺序：**箱先于目录**。
-- **关**：反过来，先删目录那一行，再 `on:false` 删授权。
+- **关**：先 `on:false` 删授权，再删目录那一行（授权先删：半路失败留下「目录行在、授权没了」，看得见且再点一次即清；
+  反过来会留下没人看得见的暗门，见 ADR-0336）。
 - 手机 v1 只做整台；团队设置页（桌面）按工具收窄的那份存在团队侧，照旧生效。
 
 ### 6.1 桌面要跟一处
@@ -140,8 +142,8 @@ initialize + `tools/list` 验一次，成功才存。token 经 TLS 到 edge，�
 
 ## 7. 断开
 
-手机「断开」（居中确认、红色实底钮）：删这台在各团队的 `workspace_connectors` 行 → `DELETE /px/v1/cloud/:serverId`
-（DO 从 `cloud` 删掉，凭据一并消失；审计留着）。
+手机「断开」（居中确认、红色实底钮）：`DELETE /px/v1/cloud/:serverId`（DO 从 `cloud` 删掉，凭据与各团队授权一并消失；审计留着）→
+删这台在各团队的 `workspace_connectors` 行。顺序同 §6「关」：授权先删、目录行后删。
 
 退出登录时**不**清 `cloud`（与桌面 `purge` 不同）：凭据本来就只在云端，退出这台手机不等于不要这个应用了。
 
@@ -191,9 +193,11 @@ initialize + `tools/list` 验一次，成功才存。token 经 TLS 到 edge，�
 
 ## 12. 上线顺序
 
-1. 部署 edge（新端点 + DO 合并视图）。不跑 migration，runtime 不用重新部署。
-2. 桌面发版（`cloud-` 行撤回走 edge）。
-3. 手机打包。
+1. 部署 edge（新端点 + DO 合并视图）。不跑 migration。
+2. 部署 runtime（工具名封顶）。
+3. 跑 `scripts/probe-cloud-oauth.mjs`，结果进 `MOBILE_OAUTH_BLOCKED`。
+4. 桌面发版（`cloud-` 行撤回走 edge）。
+5. 手机打包。
 
 ## 13. 不做（v1）
 
