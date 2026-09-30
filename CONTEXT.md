@@ -37,15 +37,6 @@ Domain glossary. All agents' understanding of domain terms is grounded here; cod
 - One agent completes a task from start to finish; an unfinished task changes hands only through a handoff issue
 <!-- /gearbox:glossary -->
 
-## 协议术语（Gearbox）
-
-读规则的人要查的词。来源是 Gearbox 协议 + 本仓的 ADR。
-
-| Term | Definition | Notes |
-|---|---|---|
-| 一次性 worktree (single-use worktree) | 一个 worktree 只服务一个任务、用完即弃、从不 `git checkout` 换活；开工都在它里面，主 checkout 冻结在默认分支只读 | ADR-0149。会切分支的长期 worktree 等于第二个主 checkout——隔离来自「一次性」，不来自「有 worktree」 |
-| context-only handoff | A handoff issue whose lane finished with nothing to transfer — kept for its Memory comment, closed by its first reader after reading. **Closing one is not taking over that lane**: the reader still owes its own handoff, or a terminal declaration | ADR-0048; ADR-0069 (closing ≠ takeover) |
-
 ## 产品 / 技术术语（Mr Otto）
 
 写这个产品的人要查的词。新概念随写随加（AGENTS.md：add new terms as they come up），
@@ -213,3 +204,4 @@ Domain glossary. All agents' understanding of domain terms is grounded here; cod
 
 | Term | Definition | Notes |
 |---|---|---|
+| 一次性 worktree (single-use worktree) | 一个 worktree 只服务一个任务、用完即弃、从不 `git checkout` 换活；开工都在它里面，主 checkout 冻结在默认分支只读 | ADR-0149。会切分支的长期 worktree 等于第二个主 checkout——隔离来自「一次性」，不来自「有 worktree」 |

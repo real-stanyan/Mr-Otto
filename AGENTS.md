@@ -50,7 +50,8 @@ npm test
 
 > One line per GitHub account: `human: Name` (only that person), `shared: Name` (the person and their agents) or `agent, run by Name`; `— maintainer` marks the accounts whose actions approve L1 (ADR-0053).
 
-- `stanyan` — shared: stanyan — maintainer
+- `real-stanyan` — shared: stanyan — maintainer
+- `RicksZhang` — shared: stanyan
 
 <!-- gearbox:protocol v2.0.0 sha256:5cfee13d97b7; managed by gearbox-agents, do not edit by hand; project additions go in "## Local protocol extensions" -->
 ## Working agreement (multi-agent)
@@ -191,31 +192,20 @@ Division of labor is a project property, declared in the project's `## Division 
 
 > Project additions to the fenced protocol. Each `###` entry names the fenced section it extends (`- Extends:`) and where it stands upstream (`- Upstream:` an upstream issue link, `project-specific`, or `undecided`). An entry is tiered as if it were written into the section it extends (ADR-0006/0012).
 
-### From v1: On starting a shift
+### Collision search before a new Task (project ADR-0148)
 
 - Extends: On starting a shift
 - Upstream: undecided
 
-2. Check GitHub Issues — **first look for open handoff issues** (the previous shift's Memory is in there; reading one and closing it = taking over that lane, see ADR-0005. Several open = parallel lanes: take over at most one, leave the rest untouched — see "Parallel shifts" (ADR-0048). If none found → check whether the most recently closed issue has a "no next shift" terminal declaration: if yes = a compliant terminal shift (ADR-0009), start work normally; if no = the previous shift ended out of compliance, open a Protocol gap issue to record it — either way, rebuild context from git log + open issues), then check other open tasks and notes.
-   **Before opening a new Task issue, or claiming one from the frontier, search for a collision first — closed issues included** (project ADR-0148): `gh issue list --state all --search "<关键词>"` plus `git branch -a --list '*<关键词>*'`. A hit gets read before anything else: already done → don't redo it (open a new issue referencing it if it still needs changes); half done → continue from there, don't restart. Step 1's `git log --oneline -10` does not cover this — skimming the last ten commits builds a background impression of what happened, it is not a search for one specific need. A compliantly closed issue is exactly the blind spot (issues #611/#612 were the same need done twice)
+**Before opening a new Task issue, or claiming one from the frontier, search for a collision first — closed issues included** (project ADR-0148): `gh issue list --state all --search "<关键词>"` plus `git branch -a --list '*<关键词>*'`. A hit gets read before anything else: already done → don't redo it (open a new issue referencing it if it still needs changes); half done → continue from there, don't restart. Step 1's `git log --oneline -10` does not cover this — skimming the last ten commits builds a background impression of what happened, it is not a search for one specific need. A compliantly closed issue is exactly the blind spot (issues #611/#612 were the same need done twice)
 
-### From v1: While working
+### Task issue first; verify "can't do" (project ADR-0148 / ADR-0134)
 
 - Extends: While working
 - Upstream: undecided
 
 - **A need in hand gets its Task issue opened before the exploring starts** (project ADR-0148), not after the work is done or half done — one line of the need as stated plus "exploring" is enough at that point. This is what survives an abnormal end: a session killed by an app quit gets no chance to write anything, so the only reliable trace is the one already in the repo while it was still alive — an issue opened up front is still open and unassigned afterwards, and the next shift's step 2 walks into it. Issues opened but not finished are the intended cost: an open empty issue says "somebody touched this and didn't finish", which is the sentence missing at collision time. At shift-end they follow On ending a shift item 3 like any other
-- **Project-owned** architectural decisions go in `docs/adr/` (one decision per file, starting at 0001); protocol ADRs live in `docs/gearbox-adr/`, managed by the gearbox tooling — don't hand-edit them. **Project ADR numbers are claimed at merge, not at branch time** (project ADR-0074, mirroring what "Parallel shifts" already says for protocol ADRs): before merging, re-fetch; if another PR landed on your number, renumber your ADR to `max + 1` inside your PR, add an `原为 ADR-00XX` line at the top of the file, and update every in-repo reference to it. Commit messages can't be rewritten, so the alias line is what keeps old references resolvable. The gate asserts no two files share a four-digit prefix (`tests/docs/adrNumbers.test.ts`)
-- Look up domain-term definitions in `CONTEXT.md` — **two sections: protocol terms and product/technical terms** (ADR-0070); add new terms to the matching section as they come up (product concepts belong there too; no back-filling of historical debt)
 - **读到「做不了 / 不在本仓 / 只能维护者做」这类判断时，先花五分钟验前提本身再决定跳过**（`ssh` 能不能连、`ls` 有没有那个目录、`grep` 有没有那个符号）——这类判断读起来像调查结论，实际往往只是上一班没试，写进 handoff 就成了下一班的既定前提，本仓已连错四次（ADR-0134）。验完确实做不了，把**验的方法和结果**写进 issue，让下一班不用再验
-
-### From v1: On ending a shift
-
-- Extends: On ending a shift
-- Upstream: undecided
-
-4. **Open a handoff issue for the next shift** (Task type, kept open, ADR-0005): the body states the current state and suggestions for next steps, and this shift's Memory comment (five-part format, ADR-0004) goes here. In multi-human repos the body also lists the Task issues this lane still owns (takeover = claiming exactly those), or marks itself **"context only"** when nothing transfers (ADR-0048). **This is the only entry point the next shift is guaranteed to encounter** — Memory no longer gets buried in a casually closed Task issue. **The sole exception — a terminal shift** (ADR-0009): when archiving / confirming there's no next shift, you may skip opening one, but you must explicitly declare "no next shift" + the reason in a comment on the last closed issue. A silent terminal doesn't count as terminal. Terminal is repo-level: with another lane still live (someone else's open handoff or claimed task), a terminal declaration is invalid — that's just a lane end (ADR-0048).
-   **Closing someone else's "context only" handoff does NOT count as taking over a lane** (ADR-0069): that hands you context, not the baton. The shift that closed one still owes this rule — open its own handoff issue, or declare terminal. Two options, no third.
 
 ### Worktree discipline (project ADR-0149)
 
@@ -232,13 +222,12 @@ The main checkout is **frozen on the default branch and read-only**. Every shift
 - **Clean up at shift-end**: `npm run lane:prune` (dry-run; `-- --apply` to act) removes merged+clean worktrees and merged local branches. It never force-deletes, never touches a dirty worktree, and **never deletes a branch nobody has committed on** — that shape is a freshly opened lane, not a leftover twig (#449). Repo-local; this is why the repo no longer depends on `gearbox-agents prune` (ADR-0150).
 - **Mechanical backstop**: `.githooks/pre-commit` refuses commits made in the main checkout on a non-default branch. Installed automatically by `npm install` (the `prepare` script, ADR-0150 — a setup command you must remember to run fails the same way a rule you must remember to follow does); to do it by hand: `git config core.hooksPath .githooks`. Its ceiling is stated in the hook itself — git has no pre-checkout hook, so the branch switch itself cannot be blocked; `--no-verify` is a deliberate escape hatch.
 
-### From v1: Branch hygiene
+### lane:prune instead of gearbox-agents prune (project ADR-0150)
 
 - Extends: Branch hygiene
-- Upstream: undecided
+- Upstream: https://github.com/real-stanyan/gearbox/issues/141
 
-> **This repo uses its own `npm run lane:prune` instead** (ADR-0150) — it carries the zero-work-branch protection this tool lacks (#449 / upstream gearbox#141). The paragraph below is the upstream description, kept for the other three things the upstream tool covers.
-Before shift-end (or when you hit stale refs at shift-start), run `npx gearbox-agents prune`. It cleans up four things (ADR-0030/0043):
+> **This repo uses its own `npm run lane:prune` instead** (ADR-0150) — it carries the zero-work-branch protection this tool lacks (#449 / upstream gearbox#141). The fenced "Branch hygiene" section is the upstream description, kept for the other three things the upstream tool covers.
 
 ## Division of labor
 
