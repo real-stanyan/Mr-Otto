@@ -209,7 +209,11 @@ export async function cloudGrant(
     if (!next) found = false;
     return next;
   });
-  return found ? { ok: true } : fail(404, "not_found", "手机上没接这个应用");
+  if (found) return { ok: true };
+  // 关掉的目的是「这个团队不再有这台的授权」——这台已经不在箱里（手机先断开了、或上一次撤回只做完一半）
+  // 时目的已经达到，算成功且不写：回 404 会让桌面「撤回」永远卡在这一步、目录行删不掉。
+  // 打开才需要这台真在箱里（没有就没有可借的东西），仍回 404
+  return req.on ? fail(404, "not_found", "手机上没接这个应用") : { ok: true };
 }
 
 export async function cloudRemove(d: CloudOpsDeps, serverId: string): Promise<{ ok: true } | OpFail> {

@@ -180,9 +180,24 @@ describe("授权 / 断开 / 视图 / 续期", () => {
     const x = await connected();
     expect(await cloudGrant(x.d, UID, { serverId: "cloud-context7", workspaceId: TEAM, on: true })).toEqual({ ok: true });
     expect(x.m.peekBox()!.services[0]!.grants.map((g) => g.workspaceId)).toEqual([HOME, TEAM]);
+    expect(await cloudGrant(x.d, UID, { serverId: "cloud-nope", workspaceId: TEAM, on: true })).toMatchObject({ ok: false, status: 404 });
     x.d.isMember = async () => false;
     expect(await cloudGrant(x.d, UID, { serverId: "cloud-context7", workspaceId: TEAM, on: true })).toMatchObject({ ok: false, status: 403 });
-    expect(await cloudGrant(x.d, UID, { serverId: "cloud-nope", workspaceId: TEAM, on: false })).toMatchObject({ ok: false, status: 404 });
+  });
+  it("关掉一台箱里已经没有的应用：算成功且不写（撤回要能重试到底）", async () => {
+    const x = await connected();
+    const before = x.m.peekBox();
+    expect(await cloudGrant(x.d, UID, { serverId: "cloud-nope", workspaceId: TEAM, on: false })).toEqual({ ok: true });
+    expect(x.m.peekBox()).toBe(before);
+    // 一个箱子都没有：同样算成功，也不凭空建箱
+    const empty = deps();
+    expect(await cloudGrant(empty.d, UID, { serverId: "cloud-nope", workspaceId: TEAM, on: false })).toEqual({ ok: true });
+    expect(empty.m.peekBox()).toBeNull();
+  });
+  it("打开一台箱里没有的应用仍是 404（没有箱也一样）", async () => {
+    const empty = deps();
+    expect(await cloudGrant(empty.d, UID, { serverId: "cloud-nope", workspaceId: TEAM, on: true })).toMatchObject({ ok: false, status: 404 });
+    expect(empty.m.peekBox()).toBeNull();
   });
   it("关掉不查在籍（被踢出去的人也要能收回）", async () => {
     const x = await connected();
