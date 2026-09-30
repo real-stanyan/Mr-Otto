@@ -3,7 +3,10 @@
 // 也过不了根 tsc（手机是 CJS 包、自己的 tsconfig）；判据全在这里，手机端 connectApp.ts 只递真依赖。
 // 顺序：接入是「箱先于目录」，撤销是「授权先删、目录行后删」（计划开头第 1 条）——授权是钥匙，
 // 目录行只是给团队看的招牌，宁可招牌晚挂 / 早摘，不能招牌在而钥匙没有。
-import { CONNECT_DONE_URL, parseConnectDone, type ConnectReply } from "./remote/pxCloud.js";
+import {
+  CONNECT_DONE_URL, parseCloudError, parseCloudView, parseConnectDone, parseConnectReply,
+  type CloudViewItem, type ConnectReply,
+} from "./remote/pxCloud.js";
 
 /**
  * `connected.serverId` 只是「这次流程自称接上了哪一台」的信号，不是证据：`mrotto://connector-done?...`
@@ -58,4 +61,100 @@ export async function disconnectWith(
 ): Promise<void> {
   await deps.removeApp(o.serverId);
   for (const ws of o.workspaceIds) await deps.deleteRow(ws, o.uid, o.serverId);
+}
+
+// ─── 请求核心（手机打 edge 的 /px/v1/cloud*）───────────────────────────
+// fetch / token / base 由手机端注入：token 每次请求现取（会过期，缓存一份 = 把「过期」变成一次静默失败）。
+
+export interface CloudFetchInit { method?: string; headers: Record<string, string>; body?: string }
+export interface CloudFetchResponse { ok: boolean; status: number; json(): Promise<unknown> }
+
+export interface CloudClientDeps {
+  base: string;
+  token(): Promise<string | null>;
+  fetch(url: string, init: CloudFetchInit): Promise<CloudFetchResponse>;
+}
+
+export interface CloudClient {
+  fetchCloudApps(): Promise<CloudViewItem[]>;
+  startConnect(catalogId: string, params: Record<string, string>): Promise<ConnectReply>;
+  setGrant(serverId: string, workspaceId: string, on: boolean): Promise<void>;
+  removeApp(serverId: string): Promise<void>;
+}
+
+export function createCloudClient(deps: CloudClientDeps): CloudClient {
+  async function call(path: string, method: string | undefined, body: unknown): Promise<unknown> {
+    const token = await deps.token();
+    if (token === null) throw new Error("还没登录。");
+    const headers: Record<string, string> = { authorization: `Bearer ${token}` };
+    const init: CloudFetchInit = { headers };
+    if (method !== undefined) init.method = method;
+    if (body !== undefined) {
+      headers["content-type"] = "application/json";
+      init.body = JSON.stringify(body);
+    }
+    const res = await deps.fetch(`${deps.base}${path}`, init);
+    const payload: unknown = await res.json().catch(() => null);
+    if (!res.ok) throw new Error(parseCloudError(res.status, payload) ?? `HTTP ${res.status}`);
+    return payload;
+  }
+  return {
+    async fetchCloudApps() {
+      const apps = parseCloudView(await call("/px/v1/cloud", undefined, undefined));
+      if (apps === null) throw new Error("应用清单的形状不对。");
+      return apps;
+    },
+    async startConnect(catalogId, params) {
+      const r = parseConnectReply(await call("/px/v1/cloud/connect", "POST", { catalogId, params }));
+      if (r === null) throw new Error("服务端回的形状不对。");
+      return r;
+    },
+    async setGrant(serverId, workspaceId, on) {
+      await call("/px/v1/cloud/grant", "POST", { serverId, workspaceId, on });
+    },
+    async removeApp(serverId) {
+      await call(`/px/v1/cloud/${encodeURIComponent(serverId)}`, "DELETE", undefined);
+    },
+  };
+}
+
+// ─── 已接应用清单的刷新 / 清空状态机 ───────────────────────────────────
+// 读不到 ≠ 空（这次没拉下来，上一份照画）；同时来的几次合成一次；换号（reset）前开跑的拉取，回来时不许写进下一个人的清单。
+
+export interface ConnectorsState { apps: CloudViewItem[] | null; loadError: string | null }
+export const INITIAL_CONNECTORS: ConnectorsState = { apps: null, loadError: null };
+
+export interface ConnectorsStateDeps {
+  fetchApps(): Promise<CloudViewItem[]>;
+  set(patch: Partial<ConnectorsState>): void;
+}
+
+export function createConnectorsState(deps: ConnectorsStateDeps): { refresh(): Promise<void>; reset(): void } {
+  let inflight: Promise<void> | null = null;
+  /** 每 reset 一次加一 */
+  let epoch = 0;
+  return {
+    refresh() {
+      if (inflight !== null) return inflight;
+      const mine = epoch;
+      const run: Promise<void> = deps
+        .fetchApps()
+        .then((apps) => {
+          if (mine === epoch) deps.set({ apps, loadError: null });
+        })
+        .catch((e: unknown) => {
+          if (mine === epoch) deps.set({ loadError: e instanceof Error ? e.message : String(e) });
+        })
+        .finally(() => {
+          if (inflight === run) inflight = null;
+        });
+      inflight = run;
+      return run;
+    },
+    reset() {
+      epoch += 1;
+      inflight = null;
+      deps.set(INITIAL_CONNECTORS);
+    },
+  };
 }
