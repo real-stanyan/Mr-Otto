@@ -65,4 +65,25 @@ describe("/px/v1/cloud 路由", () => {
     const badDel = await h(new Request("https://e/px/v1/cloud/notion", { method: "DELETE", headers: await auth() }));
     expect(badDel.status).toBe(400);
   });
+  it("DELETE 路径编码坏了：不解码、400、不碰箱", async () => {
+    const { calls, stub } = fakeEscrow();
+    const h = createEdge({ config, escrow: stub, isFriend: async () => false });
+    const r = await h(new Request("https://e/px/v1/cloud/cloud-%E0%A4%A", { method: "DELETE", headers: await auth() }));
+    expect(r.status).toBe(400);
+    expect(calls).toEqual([]);
+  });
+  it("grant 的 workspaceId 不是 uuid：400、不碰箱", async () => {
+    const { calls, stub } = fakeEscrow();
+    const h = createEdge({ config, escrow: stub, isFriend: async () => false });
+    const r = await h(new Request("https://e/px/v1/cloud/grant", { method: "POST", headers: await auth(), body: JSON.stringify({ serverId: "cloud-x", workspaceId: "not-a-uuid", on: true }) }));
+    expect(r.status).toBe(400);
+    expect(calls).toEqual([]);
+  });
+  it("callback：箱的 fetch 同步抛错也 302 回 App（ok=0）", async () => {
+    const stub = (): RelayStub => ({ fetch: (() => { throw new Error("boom"); }) as unknown as RelayStub["fetch"] });
+    const h = createEdge({ config, escrow: stub, isFriend: async () => false });
+    const r = await h(new Request(`https://e/px/v1/cloud/callback?code=C&state=${encodeURIComponent(STATE)}`));
+    expect(r.status).toBe(302);
+    expect(decodeURIComponent(r.headers.get("location")!)).toContain("ok=0");
+  });
 });

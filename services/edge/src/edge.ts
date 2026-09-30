@@ -17,7 +17,7 @@ import { verifyJwt } from "./jwt.js";
 import { parseRole, SUBPROTOCOL, type RelayRole } from "./relay.js";
 import { parseEscrowDoc } from "./px.js";
 import { stateUid } from "./pxOAuth.js";
-import { CLOUD_TEXT, connectDoneUrl, isCloudServerId, toConnectDone, type ConnectDone } from "../../../src/shared/remote/pxCloud.js";
+import { CLOUD_TEXT, connectDoneUrl, toConnectDone, type ConnectDone } from "../../../src/shared/remote/pxCloud.js";
 import { isCsChannel } from "../../../src/shared/remote/cloudSession.js";
 import { MAX_GRANT_QUANTITY } from "./billing.js";
 import type { Caller } from "./llmGateway.js";
@@ -41,6 +41,8 @@ export interface EdgeConfig {
 
 /** 平台身份认作的 userId。relay 房间键、px 三道闸都认这个常量当"不是真人" */
 export const RUNTIME_SERVICE_UID = "svc-runtime";
+/** 手机上接的应用的 serverId：`cloud-` + 目录 id（小写字母数字与连字符）。路径里的不解码、直接按这条验 */
+const CLOUD_SERVER_ID_RE = /^cloud-[a-z0-9][a-z0-9-]{0,63}$/;
 
 /** 一个用户的中继实例。生产上是 DO stub,测试里是个假货 */
 export interface RelayStub {
@@ -245,12 +247,20 @@ export function createEdge(deps: EdgeDeps): (req: Request) => Promise<Response> 
       const uid = stateUid(state);
       let done: ConnectDone = { ok: false, message: CLOUD_TEXT.stateExpired };
       if (uid !== null) {
-        const res = await deps.escrow(uid).fetch(new Request("https://px/cloud_callback", {
-          method: "POST",
-          headers: { "content-type": "application/json" },
-          body: JSON.stringify({ uid, state, code: q.get("code"), error: q.get("error_description") ?? q.get("error") }),
-        })).catch(() => null);
-        done = toConnectDone(res ? await res.json().catch(() => null) : null);
+        try {
+          const res = await deps.escrow(uid).fetch(new Request("https://px/cloud_callback", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              uid, state,
+              code: q.get("code")?.slice(0, 2048) ?? null,
+              error: (q.get("error_description") ?? q.get("error"))?.slice(0, 300) ?? null,
+            }),
+          }));
+          done = toConnectDone(await res.json().catch(() => null));
+        } catch {
+          done = toConnectDone(null);
+        }
       }
       return new Response(null, { status: 302, headers: { location: connectDoneUrl(done), "cache-control": "no-store" } });
     }
@@ -336,14 +346,14 @@ export function createEdge(deps: EdgeDeps): (req: Request) => Promise<Response> 
       }
       if (pathname === "/px/v1/cloud/grant" && req.method === "POST") {
         const b = (await req.json().catch(() => null)) as { serverId?: unknown; workspaceId?: unknown; on?: unknown } | null;
-        if (!b || typeof b.serverId !== "string" || !isCloudServerId(b.serverId) || typeof b.workspaceId !== "string" || typeof b.on !== "boolean") {
+        if (!b || typeof b.serverId !== "string" || !CLOUD_SERVER_ID_RE.test(b.serverId) || typeof b.workspaceId !== "string" || !WORKSPACE_ID_RE.test(b.workspaceId) || typeof b.on !== "boolean") {
           return apiError(400, "grant 要 serverId / workspaceId / on", "bad_request");
         }
         return forward(uid, "cloud_grant", { uid, serverId: b.serverId, workspaceId: b.workspaceId, on: b.on });
       }
       if (req.method === "DELETE") {
-        const serverId = decodeURIComponent(pathname.slice("/px/v1/cloud/".length));
-        if (!isCloudServerId(serverId)) return apiError(400, "只能断开手机上接的应用", "bad_request");
+        const serverId = pathname.slice("/px/v1/cloud/".length);
+        if (!CLOUD_SERVER_ID_RE.test(serverId)) return apiError(400, "只能断开手机上接的应用", "bad_request");
         return forward(uid, "cloud_remove", { serverId });
       }
       return apiError(404, `没有这个端点:${pathname}`, "not_found");
