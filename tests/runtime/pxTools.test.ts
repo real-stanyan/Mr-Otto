@@ -142,3 +142,26 @@ describe("pxToolName", () => {
     expect(pxToolName("abcdef12-xxxx", "cloud-google-analytics", "run_realtime_report_with_dimensions_and_metrics")).toBe(a);
   });
 });
+
+// spec §5：工具名被截短时要留一句 warn（原名 → 截后），否则模型那边看到的名字对不上厂商文档、线上无从查起。
+// 每个截断名只说一次（buildPxTools 随授权缓存反复跑，每跑一遍说一遍就是刷屏）
+describe("buildPxTools：截断的工具名 warn 一次（#1430 终审 M9）", () => {
+  it("截了才说，原名与截后都在；同一个名字第二次构建不再说", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const long = "run_realtime_report_with_dimensions_and_metrics_m9_only";
+    const granted: GrantedPxServer[] = [{
+      hostUid: "abcdef12-m9", serverId: "cloud-google-analytics",
+      toolDefs: [{ name: long, description: "", inputSchema: {} }, { name: "short", description: "", inputSchema: {} }],
+    }];
+    const tools = buildPxTools(baseDeps(fetch), "fromU", granted);
+    const capped = tools[0]!.def.name;
+    expect(capped.length).toBeLessThanOrEqual(PX_TOOL_NAME_MAX);
+    expect(warn).toHaveBeenCalledTimes(1);
+    const msg = warn.mock.calls[0]!.join(" ");
+    expect(msg).toContain(`px_abcdef12_cloud-google-analytics_${long}`);
+    expect(msg).toContain(capped);
+    buildPxTools(baseDeps(fetch), "fromU", granted);
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+});

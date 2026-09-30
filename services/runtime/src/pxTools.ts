@@ -88,13 +88,19 @@ function safeName(s: string): string {
     这一轮直接失败——手机上接的应用 serverId 多了 `cloud-` 六个字符，撞上的概率变大（#1430） */
 export const PX_TOOL_NAME_MAX = 64;
 
+const pxRawName = (hostUid: string, serverId: string, tool: string): string =>
+  safeName(`px_${hostUid.slice(0, 8)}_${serverId}_${tool}`);
+
 /** 截断时尾巴挂原名的哈希：同一个原名永远同一个结果（审批记忆按完整工具名记），不同原名极难撞 */
 export function pxToolName(hostUid: string, serverId: string, tool: string): string {
-  const raw = safeName(`px_${hostUid.slice(0, 8)}_${serverId}_${tool}`);
+  const raw = pxRawName(hostUid, serverId, tool);
   if (raw.length <= PX_TOOL_NAME_MAX) return raw;
   const tail = fnv1a(raw).toString(36);
   return `${raw.slice(0, PX_TOOL_NAME_MAX - tail.length - 1)}_${tail}`;
 }
+
+/** 说过的截断名（进程级）：buildPxTools 跟着授权缓存反复跑，每跑一遍说一遍就是刷屏 */
+const warnedTruncations = new Set<string>();
 
 /** 调用结果的 content 数组压成一段文本喂模型：text 项拼正文，其余项整体
     JSON.stringify——px 调用的结果只喂模型，不进时间线卡片，不需要完整
@@ -141,6 +147,12 @@ export function buildPxTools(
   for (const g of granted) {
     for (const t of g.toolDefs) {
       const name = pxToolName(g.hostUid, g.serverId, t.name);
+      const raw = pxRawName(g.hostUid, g.serverId, t.name);
+      if (raw !== name && !warnedTruncations.has(raw)) {
+        // spec §5：截了要留一句——模型看到的名字对不上厂商文档时，线上只有这一行能说清是哪把刀
+        warnedTruncations.add(raw);
+        console.warn(`px 工具名超过 ${PX_TOOL_NAME_MAX} 个字符，截短：${raw} → ${name}`);
+      }
       const prior = seen.get(name);
       if (prior) {
         console.warn(
