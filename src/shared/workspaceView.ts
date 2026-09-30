@@ -26,8 +26,10 @@ import { modelLabel } from "./modelCatalog.js";
 import type { AgentToolAllow } from "./agentToolAllow.js";
 import { describeAllow } from "./proxyShare.js";
 import type { CloudSessionRow } from "./supabaseWorkspacesApi.js";
+import { isCloudServerId } from "./remote/pxCloud.js";
 
-export type ConnectorCloudState = "ready" | "unknown" | "off";
+/** "phone" = 手机上接的那台（#1430）：它不在桌面那只箱里，桌面问不出它此刻连没连上——画「手机上接的」、不画点 */
+export type ConnectorCloudState = "ready" | "unknown" | "off" | "phone";
 
 export interface ConnectorRowView {
   serverId: string;
@@ -36,6 +38,7 @@ export interface ConnectorRowView {
   mine: boolean;
   toolsSummary: string;
   cloudState: ConnectorCloudState;
+  origin: "desktop" | "phone";
 }
 
 /** hostUid/publisherUid → 展示名：成员表查得到就用，查不到（已退群）回 uid 前 8 位——
@@ -62,6 +65,7 @@ function cloudStateOf(
   serverId: string,
   hostedServerIds: readonly string[] | null
 ): ConnectorCloudState {
+  if (isCloudServerId(serverId)) return "phone";
   // 别人的行：能看见这条目录行本身就是闸后可用（ADR-0197），本机探不到对方的箱
   if (!mine) return "ready";
   // hostedServerIds === null = 渲染层拿不到这份清单（还没有 IPC）——"拿不到"
@@ -84,6 +88,7 @@ export function connectorRows(
       mine,
       toolsSummary: toolsSummary(c.tools),
       cloudState: cloudStateOf(mine, c.serverId, hostedServerIds),
+      origin: isCloudServerId(c.serverId) ? "phone" : "desktop",
     };
   });
 }

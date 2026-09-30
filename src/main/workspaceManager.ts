@@ -30,6 +30,7 @@ import { humanizeWorkspaceError } from "../shared/workspaceError.js";
 import { normalizeSandboxApproval, type SandboxApproval } from "../shared/workspaceAgents.js";
 import type { AgentToolAllow } from "../shared/agentToolAllow.js";
 import { createAgentChecked, deleteAgentEverywhere, updateAgentChecked } from "../shared/agentAdmin.js";
+import { isCloudServerId } from "../shared/remote/pxCloud.js";
 import type { ProxyStoreData } from "./proxyStore.js";
 import { danglingWorkspaceGrants, removeWorkspaceGrant, setWorkspaceGrant, workspaceGrantFor } from "./proxyStore.js";
 import type { FriendsResult } from "./proxyManager.js";
@@ -74,6 +75,8 @@ export interface WorkspaceManagerDeps {
   resyncEscrow: () => void;
   /** 本机已接通 server 的展示名（连接器目录行的 label 用） */
   serverLabel: (serverId: string) => string;
+  /** 手机上接的那几台（`cloud-` 前缀）在 edge 上开关团队授权（#1430）。撤回时替代本机台账那条路 */
+  cloudGrant(workspaceId: string, serverId: string, on: boolean): Promise<void>;
 }
 
 export interface WorkspaceManager {
@@ -295,6 +298,13 @@ export function createWorkspaceManager(deps: WorkspaceManagerDeps): WorkspaceMan
 
     async withdrawConnector(id, serverId) {
       return withSession(async (client, uid) => {
+        if (isCloudServerId(serverId)) {
+          // 授权先撤、目录行后删（spec §6.1）：云端撤不掉就整个失败，不删目录行——半路断在这儿留下的是
+          // 「目录行在、授权也在」，界面上看得见、再点一次即清；反过来就是谁都看不见的暗门
+          await deps.cloudGrant(id, serverId, false);
+          await deps.deleteConnectorRow(client, id, uid, serverId);
+          return null;
+        }
         const store = deps.loadStore();
         const existing = workspaceGrantFor(store, id);
         const allow = (existing?.allow ?? []).filter((a) => a.serverId !== serverId);

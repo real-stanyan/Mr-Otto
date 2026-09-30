@@ -183,6 +183,7 @@ import { projectStats, USAGE_DAYS } from "../shared/remote/stats.js";
 import { edgeBaseUrl, relayBaseUrl } from "../shared/edgeConfig.js";
 import { buildEscrowDoc } from "../shared/remote/pxEscrow.js";
 import { createEscrowSync, type EscrowSync } from "./pxEscrowSync.js";
+import { createPxCloudGrant } from "./pxCloudGrant.js";
 import { createAuditBackflow } from "./pxAuditSync.js";
 import { createPxCloudClient } from "./pxCloudClient.js";
 import { createHostedQuota, parseCheckoutTarget, type HostedQuota } from "./hostedQuota.js";
@@ -1681,6 +1682,11 @@ void app.whenReady().then(() => {
     // 落地时，那时 escrowResync 早已就位（同 onGrantsChanged 那条闭包的道理）
     resyncEscrow: () => escrowResync?.(),
     serverLabel: (id) => mcpHub.servers().find((s) => s.id === id)?.name ?? id,
+    // 手机上接的那几台（#1430）：授权在 edge 的 cloud 键里，撤回要打 edge，不碰本机台账
+    cloudGrant: createPxCloudGrant({
+      baseUrl: () => edgeBaseUrl(),
+      accessToken: () => accountManager?.getAccessToken() ?? Promise.resolve(null),
+    }),
   });
   // ─── 云会话客户端（Task 12，ADR-0199）─────────────────────────────────
   // 桌面当显示器，接 VPS 上的 runtime：role 固定 "guest"（runtime 在每个 cs

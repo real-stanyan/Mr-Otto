@@ -26,6 +26,7 @@ import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 /** 云端状态的点：三档不能合并成两档——"unknown"（拿不到清单）与 "off"（清单里确实没有）
     是两件事，前者不该说成后者的负面措辞（同 px 一节 hostStatusLine 的纪律） */
 function CloudStateDot({ state }: { state: ConnectorCloudState }) {
+  if (state === "phone") return null;
   if (state === "ready") {
     return <span className="size-[7px] shrink-0 rounded-full bg-ok" aria-label="云端可用" title="云端可用" />;
   }
@@ -69,7 +70,7 @@ export function WorkspaceConnectorsTab({ ws, selfUid }: { ws: WorkspaceSnapshot;
               key={row.serverId}
               leading={<InsetIcon><Plug /></InsetIcon>}
               title={row.serverId}
-              subtitle={`${row.hostLabel} · ${row.toolsSummary}`}
+              subtitle={row.origin === "phone" ? `${row.hostLabel} · 手机上接的 · ${row.toolsSummary}` : `${row.hostLabel} · ${row.toolsSummary}`}
               trailing={
                 <>
                   <CloudStateDot state={row.cloudState} />
@@ -96,7 +97,7 @@ export function WorkspaceConnectorsTab({ ws, selfUid }: { ws: WorkspaceSnapshot;
       <InsetNote>
         全体成员（含以后加进来的人）会<b className="font-medium text-foreground">以你的身份</b>用这些工具，
         凭证托管在 Mr Otto 云端——你关机他们照样能用。绿点 = 云端此刻可用；灰点 = 本机暂时读不到这份清单，
-        <b className="font-medium text-foreground">不是</b>不可用。
+        <b className="font-medium text-foreground">不是</b>不可用。标着『手机上接的』的，凭据在云端、由手机那边管。
       </InsetNote>
 
       <ContributeConnectorDialog ws={ws} selfUid={selfUid} open={contributeOpen} onOpenChange={setContributeOpen} />

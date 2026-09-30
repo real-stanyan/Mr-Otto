@@ -55,6 +55,16 @@ describe("connectorRows", () => {
     expect(theirs.cloudState).toBe("ready");
   });
 
+  it("cloud- 行：origin phone、状态 phone（不拿桌面箱清单判）", () => {
+    const ws: WorkspaceSnapshot = {
+      ...WS,
+      connectors: [{ workspaceId: "ws-1", hostUid: "owner-uid", serverId: "cloud-notion", label: "Notion", tools: [] }],
+    };
+    const [row] = connectorRows(ws, "owner-uid", ["linear"]);
+    expect(row).toMatchObject({ origin: "phone", cloudState: "phone", mine: true });
+    expect(connectorRows(WS, "owner-uid", null)[0]!.origin).toBe("desktop");
+  });
+
   it("toolsSummary：[] → 全部工具，否则 N 个工具", () => {
     const rows = connectorRows(WS, "owner-uid", null);
     expect(rows.find((r) => r.serverId === "shopify")!.toolsSummary).toBe("全部工具");
