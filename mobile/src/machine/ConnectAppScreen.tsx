@@ -55,7 +55,7 @@ export function ConnectAppScreen({ navigation }: Props) {
                       key={i.id}
                       leading={<AppTile name={i.name} />}
                       label={i.name}
-                      detail={blocked ? (i.blocked ?? i.description) : i.description}
+                      detail={i.blocked !== null && !i.connected ? i.blocked : i.description}
                       {...(i.connected
                         ? { trailing: <Text style={{ ...t.footnote, fontSize: 14, color: c.faint }}>{CONNECTED_MARK}</Text> }
                         : {})}

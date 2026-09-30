@@ -129,31 +129,57 @@ export interface ConnectorsStateDeps {
   set(patch: Partial<ConnectorsState>): void;
 }
 
-export function createConnectorsState(deps: ConnectorsStateDeps): { refresh(): Promise<void>; reset(): void } {
+export interface RefreshOptions {
+  /**
+   * 要一份**在这次调用之后才开跑**的清单（接入 / 重新登录之后核对用）：正在路上的那一趟可能是接入之前就发出去的，
+   * 搭它的车会读到旧清单。有在路上的就排在它后面再拉一趟（不并发两趟：两趟回来的先后不定，旧的可能盖掉新的）；
+   * 已经排了一趟的，后来的 force 搭那一趟（它也是在后来者之后才开跑的）。
+   */
+  force?: boolean;
+}
+
+export function createConnectorsState(deps: ConnectorsStateDeps): { refresh(opts?: RefreshOptions): Promise<void>; reset(): void } {
   let inflight: Promise<void> | null = null;
+  /** force 排在 inflight 后面的那一趟（还没开跑） */
+  let queued: Promise<void> | null = null;
   /** 每 reset 一次加一 */
   let epoch = 0;
+  function start(): Promise<void> {
+    const mine = epoch;
+    const run: Promise<void> = deps
+      .fetchApps()
+      .then((apps) => {
+        if (mine === epoch) deps.set({ apps, loadError: null });
+      })
+      .catch((e: unknown) => {
+        if (mine === epoch) deps.set({ loadError: e instanceof Error ? e.message : String(e) });
+      })
+      .finally(() => {
+        if (inflight === run) inflight = null;
+      });
+    inflight = run;
+    return run;
+  }
   return {
-    refresh() {
-      if (inflight !== null) return inflight;
-      const mine = epoch;
-      const run: Promise<void> = deps
-        .fetchApps()
-        .then((apps) => {
-          if (mine === epoch) deps.set({ apps, loadError: null });
-        })
-        .catch((e: unknown) => {
-          if (mine === epoch) deps.set({ loadError: e instanceof Error ? e.message : String(e) });
-        })
-        .finally(() => {
-          if (inflight === run) inflight = null;
-        });
-      inflight = run;
-      return run;
+    refresh(opts) {
+      if (inflight === null) return start();
+      if (!opts?.force) return inflight;
+      if (queued !== null) return queued;
+      const at = epoch;
+      const q: Promise<void> = inflight.then(() => {
+        if (queued === q) queued = null;
+        // 换过号：这一趟是替上一个人排的，不拉
+        if (at !== epoch) return;
+        // 前一趟收口之后、这里之前又有人开了一趟：它也是在 force 之后才开跑的，搭它
+        return inflight ?? start();
+      });
+      queued = q;
+      return q;
     },
     reset() {
       epoch += 1;
       inflight = null;
+      queued = null;
       deps.set(INITIAL_CONNECTORS);
     },
   };

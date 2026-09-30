@@ -3,17 +3,19 @@
 //
 // 系统登录页（openAuthSessionAsync）升起时这张弹窗是**完全摊开**的，不叠在一张正在退场的 Modal 上（iOS 那样会什么都不发生）；
 // 回来没接上就原样留在这张上：出错写一行，人自己关了浏览器什么都不说。
-// 深链只是信号（connectFlow.ts 的 ConnectOutcome）：任何结局都先重拉云端视图，「接上了」只认重拉回来的那一份
-// （landedApp）。视图要等下一次渲染才换上新的，所以判定挂在 verify 这一格上、在 effect 里读这一帧的 useConnectors()。
+// 深链只是信号（connectFlow.ts 的 ConnectOutcome）：任何结局都先重拉云端视图（force：路上那一趟可能是接入之前发的），
+// 「接上了」只认重拉回来的那一份（landedApp）。视图要等下一次渲染才换上新的，所以判定挂在 verify 这一格上、在 effect 里
+// 读这一帧的 useConnectors()。流程自称接上了、视图里却对不上：弹窗不关，说一句（拉失败说拉失败那句，否则「没接上」）。
 // 关弹窗走 visible → 退场放完 → onExited 再回调：调用方在那里换页 / 弹 toast，不在退场途中叠第二层。
 import { useEffect, useRef, useState } from "react";
-import { Text, View } from "react-native";
+import { ActivityIndicator, Text, View } from "react-native";
 import type { CuratedEntry } from "../../../src/shared/mcpCatalog.js";
 import { connectDialogText, connectParams, landedApp, paramFormError } from "../../../src/shared/mobileConnectors.js";
-import type { CloudViewItem } from "../../../src/shared/remote/pxCloud.js";
-import { Dialog, DialogBody, DialogFooter, DialogLead, DialogTitle } from "../dialog.js";
+import { CLOUD_TEXT, type CloudViewItem } from "../../../src/shared/remote/pxCloud.js";
+import { Dialog, DialogBody, DialogLead, DialogTitle } from "../dialog.js";
 import { radius, space, type as t, usePalette } from "../theme.js";
-import { Field, Labeled } from "../ui.js";
+import { Button, Field, Labeled } from "../ui.js";
+import { Icon } from "../wx/Icon.js";
 import { AppTile } from "./AppTile.js";
 import { realConnectDeps, runConnect } from "./connectApp.js";
 import { refreshConnectors, useConnectors } from "./connectorsStore.js";
@@ -37,11 +39,16 @@ export function ConnectAppDialog({ entry, relogin = false, onClose }: {
 
   useEffect(() => {
     if (verify === null) return;
-    landed.current = landedApp(cloud.apps, entry.id, verify);
+    const got = landedApp(cloud.apps, entry.id, verify);
     setVerify(null);
     setBusy(false);
+    if (got === null) {
+      setError(cloud.loadError ?? CLOUD_TEXT.unknown);
+      return;
+    }
+    landed.current = got;
     setVisible(false);
-  }, [verify, cloud.apps, entry.id]);
+  }, [verify, cloud.apps, cloud.loadError, entry.id]);
 
   const missing = paramFormError(entry, values) !== null;
   const go = async (): Promise<void> => {
@@ -49,7 +56,7 @@ export function ConnectAppDialog({ entry, relogin = false, onClose }: {
     setBusy(true);
     setError(null);
     const r = await runConnect(realConnectDeps, entry.id, connectParams(entry, values));
-    await refreshConnectors();
+    await refreshConnectors({ force: true });
     if (r.kind === "connected") {
       setVerify(r.serverId);
       return;
@@ -67,8 +74,11 @@ export function ConnectAppDialog({ entry, relogin = false, onClose }: {
       <DialogLead>{text.lead}</DialogLead>
       <DialogBody>
         {text.note !== null ? (
-          <View style={{ backgroundColor: c.field, borderRadius: radius.tile, paddingVertical: 9, paddingHorizontal: 11 }}>
-            <Text style={{ ...t.footnote, color: c.mutedForeground, lineHeight: 19 }}>{text.note}</Text>
+          <View style={{ flexDirection: "row", gap: 8, backgroundColor: c.field, borderRadius: radius.tile, paddingVertical: 9, paddingHorizontal: 11 }}>
+            <View style={{ paddingTop: 2 }}>
+              <Icon name="info" size={16} color={c.faint} />
+            </View>
+            <Text style={{ ...t.footnote, color: c.mutedForeground, lineHeight: 19, flex: 1 }}>{text.note}</Text>
           </View>
         ) : null}
         {entry.params.map((p) => (
@@ -92,10 +102,18 @@ export function ConnectAppDialog({ entry, relogin = false, onClose }: {
           </Text>
         ) : null}
       </DialogBody>
-      <DialogFooter
-        left={{ label: "取消", onPress: () => setVisible(false), disabled: busy }}
-        right={{ label: busy ? "连接中…" : text.action, onPress: () => void go(), disabled: busy || missing }}
-      />
+      {/* 同 dialog.tsx 的 DialogFooter 那一排，多一枚转圈（demo：连接中那几秒按钮里转着）——DialogFooter 不带图标位 */}
+      <View style={{ flexDirection: "row", gap: 8, paddingHorizontal: 20, paddingTop: 20 }}>
+        <Button grow size="dialog" variant="secondary" label="取消" onPress={() => setVisible(false)} disabled={busy} />
+        <Button
+          grow
+          size="dialog"
+          label={busy ? "连接中" : text.action}
+          icon={busy ? <ActivityIndicator size="small" color={c.primaryForeground} /> : undefined}
+          onPress={() => void go()}
+          disabled={busy || missing}
+        />
+      </View>
     </Dialog>
   );
 }

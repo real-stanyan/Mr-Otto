@@ -2,7 +2,7 @@
 // 刷新时机由界面决定，不轮询；换号整份清掉（清理挂在自己的 onAuthStateChange 上，同那两份——仓里没有集中的换号清理处）。
 // 刷新 / 清空的状态机（单飞、换号后迟到的结果不写、失败留旧清单）在 src/shared/connectFlow.ts（进 vitest），这里只接真 store。
 import { useSyncExternalStore } from "react";
-import { createConnectorsState, INITIAL_CONNECTORS, type ConnectorsState } from "../../../src/shared/connectFlow.js";
+import { createConnectorsState, INITIAL_CONNECTORS, type ConnectorsState, type RefreshOptions } from "../../../src/shared/connectFlow.js";
 import { createStore } from "../externalStore.js";
 import { supabase } from "../supabase.js";
 import { fetchCloudApps } from "./connectorsApi.js";
@@ -15,8 +15,9 @@ export function useConnectors(): ConnectorsState {
   return useSyncExternalStore(store.subscribe, store.get);
 }
 
-export function refreshConnectors(): Promise<void> {
-  return state.refresh();
+/** `force`：要一份这次调用之后才开跑的清单（接入 / 重新登录之后核对用，见 connectFlow.ts 的 RefreshOptions） */
+export function refreshConnectors(opts?: RefreshOptions): Promise<void> {
+  return state.refresh(opts);
 }
 
 export function resetConnectors(): void {

@@ -106,6 +106,53 @@ describe("createConnectorsState", () => {
     await fresh;
     expect(get()).toEqual({ apps: [app("cloud-新")], loadError: null });
   });
+
+  const flush = async () => { for (let i = 0; i < 10; i++) await Promise.resolve(); };
+
+  it("force：路上那一趟是接入前发的，排在它后面再拉一趟；不并发，最终以后一趟为准", async () => {
+    const { s, fetches, get } = setup();
+    const stale = s.refresh();
+    const forced = s.refresh({ force: true });
+    expect(forced).not.toBe(stale);
+    // 前一趟没收口之前不开第二趟
+    expect(fetches).toHaveLength(1);
+    fetches[0]!.resolve([app("cloud-旧")]);
+    await stale;
+    await flush();
+    expect(fetches).toHaveLength(2);
+    fetches[1]!.resolve([app("cloud-旧"), app("cloud-新")]);
+    await forced;
+    expect(get()).toEqual({ apps: [app("cloud-旧"), app("cloud-新")], loadError: null });
+  });
+
+  it("force：没有在路上的就直接拉；已经排了一趟的，后来的 force 搭那一趟", async () => {
+    const { s, fetches } = setup();
+    const a = s.refresh({ force: true });
+    expect(fetches).toHaveLength(1);
+    const b = s.refresh({ force: true });
+    const c = s.refresh({ force: true });
+    expect(c).toBe(b);
+    fetches[0]!.resolve([]);
+    await a;
+    await flush();
+    expect(fetches).toHaveLength(2);
+    fetches[1]!.resolve([]);
+    await b;
+    expect(fetches).toHaveLength(2);
+  });
+
+  it("force 排着的时候换号：旧那趟不写，排着的那趟也不替上一个人拉", async () => {
+    const { s, fetches, get } = setup();
+    const stale = s.refresh();
+    const forced = s.refresh({ force: true });
+    s.reset();
+    fetches[0]!.resolve([app("cloud-上一个人")]);
+    await stale;
+    await forced;
+    await flush();
+    expect(fetches).toHaveLength(1);
+    expect(get()).toEqual(INITIAL_CONNECTORS);
+  });
 });
 
 describe("createCloudClient", () => {
