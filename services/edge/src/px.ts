@@ -266,11 +266,20 @@ async function mcpHandshake(
   return { ok: true, sessionId };
 }
 
-/** 接入时验一次凭据 + 拿工具清单（spec §3：成功才存）。形状不对的工具项跳过，不拒整份 */
-export async function pxMcpListTools(
-  fetchLike: FetchLike,
-  conn: McpConn
-): Promise<{ ok: true; toolDefs: EscrowService["toolDefs"] } | { ok: false; status: number; code: "upstream_auth" | "upstream_init" | "upstream_list"; message: string }> {
+type ListToolsResult = { ok: true; toolDefs: EscrowService["toolDefs"] } | { ok: false; status: number; code: "upstream_auth" | "upstream_init" | "upstream_list"; message: string };
+
+/** 接入时验一次凭据 + 拿工具清单（spec §3：成功才存）。形状不对的工具项跳过，不拒整份。
+    fetch 自己抛（DNS / 连接重置）不往外漏：调用方（接入 / OAuth 回调）在这之前已经花掉了限速名额或一次性的 pending，
+    抛出去只会变成 500，用户什么都看不到。这里只管 list，`pxMcpCall` 的行为不动 */
+export async function pxMcpListTools(fetchLike: FetchLike, conn: McpConn): Promise<ListToolsResult> {
+  try {
+    return await listToolsUnguarded(fetchLike, conn);
+  } catch (e) {
+    return { ok: false, status: 502, code: "upstream_init", message: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+async function listToolsUnguarded(fetchLike: FetchLike, conn: McpConn): Promise<ListToolsResult> {
   const hs = await mcpHandshake(fetchLike, conn);
   if (!hs.ok) return hs;
   const res = await fetchLike(conn.url, {

@@ -243,6 +243,7 @@ export const CLOUD_TEXT = {
   badToken: "这个 token 用不了，检查一下再粘一次",
   needsLogin: "这个应用要在手机上重新登录",
   tooMany: "操作太频繁了，过一分钟再试",
+  tooManyPending: "有几次登录还没走完，过十分钟再试",
   unknown: "没接上，再试一次",
 } as const;
 

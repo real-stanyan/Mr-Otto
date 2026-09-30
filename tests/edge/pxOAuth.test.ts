@@ -93,13 +93,22 @@ describe("authorizeUrl / exchangeCode / refresh", () => {
     expect(await exchangeCode(async () => J(400, { error: "invalid_grant" }), { tokenEndpoint: "https://a/t", code: "c", verifier: "v", clientId: "cid", redirectUri: "https://e/cb", resource: "r" }))
       .toEqual({ ok: false, code: "token", message: "invalid_grant" });
   });
-  it("续期用记下的 tokenEndpoint；不轮换就保留旧 refresh_token；缺料回 null", async () => {
-    const oauth = { tokens: { access_token: "old", refresh_token: "RT" }, clientInformation: { client_id: "cid" }, tokenEndpoint: "https://a/t" };
+  const oauth = { tokens: { access_token: "old", refresh_token: "RT" }, clientInformation: { client_id: "cid" }, tokenEndpoint: "https://a/t" };
+  it("续期用记下的 tokenEndpoint；不轮换就保留旧 refresh_token", async () => {
     let hit = "";
     const r = await refreshCloudOAuth(async (u) => { hit = u; return J(200, { access_token: "new" }); }, oauth);
     expect(hit).toBe("https://a/t");
-    expect(r!.tokens).toEqual({ access_token: "new", refresh_token: "RT" });
-    expect(await refreshCloudOAuth(async () => J(200, {}), { tokenEndpoint: "https://a/t" })).toBeNull();
-    expect(await refreshCloudOAuth(async () => J(400, {}), oauth)).toBeNull();
+    expect(r).toEqual({ kind: "ok", oauth: { ...oauth, tokens: { access_token: "new", refresh_token: "RT" } } });
+  });
+  it("三态：厂商 4xx / 缺料 / 非 https = dead；网络错 / 5xx / 2xx 读不懂 = transient", async () => {
+    expect(await refreshCloudOAuth(async () => J(400, { error: "invalid_grant" }), oauth)).toEqual({ kind: "dead" });
+    expect(await refreshCloudOAuth(async () => J(200, {}), { tokenEndpoint: "https://a/t" })).toEqual({ kind: "dead" });
+    let called = false;
+    expect(await refreshCloudOAuth(async () => { called = true; return J(200, { access_token: "x" }); }, { ...oauth, tokenEndpoint: "http://a/t" })).toEqual({ kind: "dead" });
+    expect(called).toBe(false);
+    expect(await refreshCloudOAuth(async () => { throw new Error("reset"); }, oauth)).toEqual({ kind: "transient" });
+    expect(await refreshCloudOAuth(async () => J(503, {}), oauth)).toEqual({ kind: "transient" });
+    expect(await refreshCloudOAuth(async () => J(200, { nope: 1 }), oauth)).toEqual({ kind: "transient" });
+    expect(await refreshCloudOAuth(async () => new Response("<html>", { status: 200 }), oauth)).toEqual({ kind: "transient" });
   });
 });

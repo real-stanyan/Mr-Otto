@@ -77,7 +77,7 @@ async function mutate(d: CloudOpsDeps, uid: string, fn: (box: CloudBox) => Cloud
   });
 }
 
-/** 限速 + pending 封顶：一次临界区里判完并记账 */
+/** 每分钟限速：一次临界区里判完并记账（pending 封顶另在 OAuth 分支里判） */
 async function admit(d: CloudOpsDeps): Promise<OpFail | null> {
   return d.store.atomic(async () => {
     const now = d.now();
@@ -88,8 +88,9 @@ async function admit(d: CloudOpsDeps): Promise<OpFail | null> {
   });
 }
 
-function upstreamText(code: string, message: string): string {
-  return code === "upstream_auth" ? CLOUD_TEXT.badToken : `没接上：${message}`;
+/** 「这个 token 用不了」只对要用户粘 token 的应用成立；免登录应用被 401 是上游的事，照实说 */
+function upstreamText(entry: CatalogEntry, code: string, message: string): string {
+  return code === "upstream_auth" && entry.auth === "token" ? CLOUD_TEXT.badToken : `没接上：${message}`;
 }
 
 export async function cloudConnect(
@@ -101,7 +102,8 @@ export async function cloudConnect(
   const missing = missingParams(entry, req.params);
   if (missing.length > 0) return fail(400, "missing_params", `还缺：${missing.join("、")}`);
   const { url, headers } = fillHttpEntry(entry, req.params);
-  if (!/^https:\/\//.test(url) || /\{\w+\}/.test(url)) return fail(400, "bad_url", "这个应用的地址不是 https，不能在云端接");
+  if (/\{\w+\}/.test(url)) return fail(400, "missing_params", "还缺参数");
+  if (!/^https:\/\//.test(url)) return fail(400, "bad_url", "这个应用的地址不是 https，不能在云端接");
   const limited = await admit(d);
   if (limited) return limited;
   const serverId = cloudServerId(entry.id);
@@ -111,7 +113,7 @@ export async function cloudConnect(
     const listed = await pxMcpListTools(d.fetch, conn);
     if (!listed.ok) {
       d.log?.(`[px-cloud] connect ${serverId} ${listed.code}: ${listed.message}`);
-      return fail(listed.code === "upstream_auth" ? 400 : 502, listed.code, upstreamText(listed.code, listed.message));
+      return fail(listed.code === "upstream_auth" ? 400 : 502, listed.code, upstreamText(entry, listed.code, listed.message));
     }
     const homeId = await d.homeIdOf(uid);
     const svc: CloudServiceInput = { serverId, catalogId: entry.id, url, ...(conn.headers ? { headers: conn.headers } : {}), toolDefs: listed.toolDefs };
@@ -119,9 +121,17 @@ export async function cloudConnect(
     return { ok: true, reply: { kind: "connected", serverId } };
   }
 
-  // 浏览器登录：外呼（发现 + 注册）全部在前，最后才进临界区记 pending
+  // 浏览器登录：外呼（发现 + 注册）全部在前，最后才进临界区记 pending。
+  // 先便宜地看一眼 pending 满没满（只读、仅供参考，权威判断仍在下面的临界区里）：满了就别先去厂商那儿注册一个用不上的 client
+  const nowForCap = d.now();
+  if ((await d.store.listPending()).filter((p) => p.exp > nowForCap).length >= PENDING_CAP) {
+    return fail(429, "too_many_pending", CLOUD_TEXT.tooManyPending);
+  }
   const disc = await discoverOAuth(d.fetch, url);
-  if (!disc.ok) return fail(502, disc.code, `没接上：${disc.message}`);
+  if (!disc.ok) {
+    d.log?.(`[px-cloud] discovery ${serverId} ${disc.code}: ${disc.message}`);
+    return fail(502, disc.code, `没接上：${disc.message}`);
+  }
   const reg = await registerClient(d.fetch, disc.meta, d.callbackUrl);
   if (!reg.ok) {
     d.log?.(`[px-cloud] register ${serverId} ${reg.code}: ${reg.message}`);
@@ -144,7 +154,7 @@ export async function cloudConnect(
     await d.store.putPending(pending);
     return false;
   });
-  if (full) return fail(429, "too_many_pending", CLOUD_TEXT.tooMany);
+  if (full) return fail(429, "too_many_pending", CLOUD_TEXT.tooManyPending);
   return {
     ok: true,
     reply: {
@@ -171,11 +181,17 @@ export async function cloudCallback(
     tokenEndpoint: pending.tokenEndpoint, code: q.code, verifier: pending.verifier,
     clientId: pending.clientInformation.client_id, redirectUri: d.callbackUrl, resource: pending.url,
   });
-  if (!tok.ok) return { ok: false, message: `没接上：${tok.message}` };
-  const listed = await pxMcpListTools(d.fetch, { url: pending.url, accessToken: tok.tokens.access_token });
-  if (!listed.ok) return { ok: false, message: `登录成功，但读不到它的工具：${listed.message}` };
-  const homeId = await d.homeIdOf(uid);
   const serverId = cloudServerId(pending.catalogId);
+  if (!tok.ok) {
+    d.log?.(`[px-cloud] exchange ${serverId} ${tok.code}: ${tok.message}`);
+    return { ok: false, message: `没接上：${tok.message}` };
+  }
+  const listed = await pxMcpListTools(d.fetch, { url: pending.url, accessToken: tok.tokens.access_token });
+  if (!listed.ok) {
+    d.log?.(`[px-cloud] callback list ${serverId} ${listed.code}: ${listed.message}`);
+    return { ok: false, message: `登录成功，但读不到它的工具：${listed.message}` };
+  }
+  const homeId = await d.homeIdOf(uid);
   const oauth: CloudOAuth = { tokens: tok.tokens, clientInformation: pending.clientInformation, tokenEndpoint: pending.tokenEndpoint };
   await mutate(d, uid, (box) => upsertCloudService(box, { serverId, catalogId: pending.catalogId, url: pending.url, oauth, toolDefs: listed.toolDefs }, homeId, d.now()));
   return { ok: true, serverId };
@@ -209,23 +225,41 @@ export async function cloudRemove(d: CloudOpsDeps, serverId: string): Promise<{ 
 
 export async function cloudViewOf(d: CloudOpsDeps, uid: string): Promise<CloudViewItem[]> {
   const box = await d.store.getBox();
-  if (!box || box.services.every((s) => s.grants.length > 0)) return cloudView(box);
+  // 空箱不查库。非空就查主场 id、让 ensureHomeGrant 判要不要补（没有要补的它原样返回同一个对象）：
+  // 「有任意一条授权就跳过」会漏掉接入时没主场、后来只借给了团队的那种
+  if (!box || box.services.length === 0) return cloudView(box);
   const homeId = await d.homeIdOf(uid);
-  if (!homeId) return cloudView(box);
+  if (!homeId || ensureHomeGrant(box, homeId, d.now()) === box) return cloudView(box);
   const next = await mutate(d, uid, (b) => ensureHomeGrant(b, homeId, d.now()));
   return cloudView(next);
 }
 
-/** /call 遇上游 401 时调（spec §4）：续上就写回并回新凭据；续不上标 needs_login 回 null */
+const refreshTokenOf = (oauth: CloudOAuth | undefined): unknown => (oauth?.tokens as { refresh_token?: unknown } | undefined)?.refresh_token;
+
+/** /call 遇上游 401 时调（spec §4）：续上就写回并回新凭据；登录确实失效（厂商 4xx）标 needs_login 回 null；
+    网络抖 / 5xx 什么都不写回 null。
+    写回前在临界区里重看一眼这台：外呼期间它可能被断开、被手机重新登录、或被并发的另一次续期换过 refresh_token
+    ——这些情形下这次的结果已经过时，不写；别人已经换成好凭据的话把好凭据交回去 */
 export async function cloudRefresh(d: CloudOpsDeps, serverId: string): Promise<CloudOAuth | null> {
   const box = await d.store.getBox();
   const svc = box?.services.find((s) => s.serverId === serverId);
   if (!box || !svc?.oauth) return null;
-  const oauth = await refreshCloudOAuth(d.fetch, svc.oauth);
-  await d.store.atomic(async () => {
+  const snapshotRefresh = refreshTokenOf(svc.oauth);
+  const result = await refreshCloudOAuth(d.fetch, svc.oauth);
+  if (result.kind === "transient") {
+    d.log?.(`[px-cloud] refresh ${serverId} transient`);
+    return null;
+  }
+  return d.store.atomic(async () => {
     const cur = await d.store.getBox();
-    if (!cur || !cur.services.some((s) => s.serverId === serverId)) return;
-    await d.store.putBox(oauth ? withCloudOAuth(cur, serverId, oauth, d.now()) : markNeedsLogin(cur, serverId, d.now()));
+    const curSvc = cur?.services.find((s) => s.serverId === serverId);
+    if (!cur || !curSvc) return null;
+    if (refreshTokenOf(curSvc.oauth) !== snapshotRefresh) return curSvc.status === "ok" && curSvc.oauth ? curSvc.oauth : null;
+    if (result.kind === "ok") {
+      await d.store.putBox(withCloudOAuth(cur, serverId, result.oauth, d.now()));
+      return result.oauth;
+    }
+    await d.store.putBox(markNeedsLogin(cur, serverId, d.now()));
+    return null;
   });
-  return oauth;
 }

@@ -335,4 +335,18 @@ describe("pxMcpListTools", () => {
     };
     expect(await pxMcpListTools(errList, { url: "https://m.example" })).toMatchObject({ ok: false, code: "upstream_list", message: "workspace not found" });
   });
+  it("fetch 自己抛（DNS / 重置）→ upstream_init 502 带原话，不往外抛", async () => {
+    const dns = async () => { throw new Error("getaddrinfo ENOTFOUND m.example"); };
+    expect(await pxMcpListTools(dns, { url: "https://m.example" }))
+      .toEqual({ ok: false, status: 502, code: "upstream_init", message: "getaddrinfo ENOTFOUND m.example" });
+    // 握手过了、tools/list 那一发才抛
+    const late = async (_u: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body));
+      if (body.method === "initialize") return ok(1, {});
+      if (body.method === "notifications/initialized") return new Response(null, { status: 202 });
+      throw new Error("socket hang up");
+    };
+    expect(await pxMcpListTools(late, { url: "https://m.example" }))
+      .toEqual({ ok: false, status: 502, code: "upstream_init", message: "socket hang up" });
+  });
 });

@@ -166,22 +166,28 @@ export async function exchangeCode(
   }
 }
 
+/** 续期结果三态：dead = 登录确实失效了（要人重新登录）；transient = 这一次没问成（网络 / 5xx / 回包读不懂），
+    凭据没有任何证据说它坏了，不许因为一次抖动就让人重登 */
+export type RefreshResult = { kind: "ok"; oauth: CloudOAuth } | { kind: "dead" } | { kind: "transient" };
+
 /** spec §4：用接入时记下的 tokenEndpoint 续，不再猜 discovery。不轮换 refresh_token 的厂商保留旧的 */
-export async function refreshCloudOAuth(fetchLike: FetchLike, oauth: CloudOAuth): Promise<CloudOAuth | null> {
+export async function refreshCloudOAuth(fetchLike: FetchLike, oauth: CloudOAuth): Promise<RefreshResult> {
   const refresh = (oauth.tokens as { refresh_token?: unknown } | undefined)?.refresh_token;
   const clientId = (oauth.clientInformation as { client_id?: unknown } | undefined)?.client_id;
-  if (typeof refresh !== "string" || typeof clientId !== "string") return null;
+  // 记下的材料缺了 / 端点不是 https（存进去时就该是；这里再验一次，凭据不往明文端点发）：再怎么重试都不会好
+  if (typeof refresh !== "string" || typeof clientId !== "string" || !httpsStr(oauth.tokenEndpoint)) return { kind: "dead" };
   try {
     const res = await fetchLike(oauth.tokenEndpoint, {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
       body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: refresh, client_id: clientId }).toString(),
     });
-    if (!res.ok) return null;
+    if (res.status >= 500) return { kind: "transient" };
+    if (!res.ok) return { kind: "dead" };
     const tokens: unknown = await res.json();
-    if (!isObj(tokens) || typeof tokens.access_token !== "string") return null;
-    return { ...oauth, tokens: { ...oauth.tokens, ...tokens } };
+    if (!isObj(tokens) || typeof tokens.access_token !== "string") return { kind: "transient" };
+    return { kind: "ok", oauth: { ...oauth, tokens: { ...oauth.tokens, ...tokens } } };
   } catch {
-    return null;
+    return { kind: "transient" };
   }
 }
