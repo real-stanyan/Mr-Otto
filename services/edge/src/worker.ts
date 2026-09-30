@@ -18,15 +18,6 @@ import {
 import { cloudCallback, cloudConnect, cloudGrant, cloudRefresh, cloudRemove, cloudViewOf, type CloudOpsDeps, type PendingAuth } from "./pxCloudOps.js";
 import { CLOUD_TEXT, cloudNeedsLogin, isCloudServerId, mergeEscrow, parseCloudBox, type CloudBox } from "../../../src/shared/remote/pxCloud.js";
 import { DEFAULT_EDGE_BASE_URL } from "../../../src/shared/edgeConfig.js";
-
-// 仍要这个空壳：edgeConfig.ts 的函数签名写着 NodeJS.ProcessEnv，而 worker 这份 tsconfig 只装 workers-types（不带 @types/node），
-// 只要 import 这个文件（哪怕只取常量）整份都会被类型检查。我们只用常量，运行时不读 process.env。
-declare global {
-  // eslint-disable-next-line @typescript-eslint/no-namespace
-  namespace NodeJS {
-    interface ProcessEnv { [key: string]: string | undefined }
-  }
-}
 import { createLlmGateway, parseRemaining, upstreamKeyOf, type QuotaPort, type RouteRow } from "./llmGateway.js";
 import {
   addonExpiresAt, addonMicro, addonSinceOf, hold as quotaHold, rebuild, rebuildWindowSince, release as quotaRelease,

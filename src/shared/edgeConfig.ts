@@ -35,7 +35,10 @@ export const DEFAULT_EDGE_BASE_URL = "https://edge.mrotto.agency";
  */
 export const EDGE_BASE_URL_ENV = "OTTO_EDGE_URL";
 
-export function edgeBaseUrl(env: NodeJS.ProcessEnv = process.env): string {
+/** 环境变量表的结构类型：不写 `NodeJS.ProcessEnv`，这个文件才能被没有 @types/node 的运行时（edge Worker）类型检查 */
+type EnvLike = Readonly<Record<string, string | undefined>>;
+
+export function edgeBaseUrl(env: EnvLike = process.env): string {
   return (env[EDGE_BASE_URL_ENV] ?? DEFAULT_EDGE_BASE_URL).replace(/\/+$/, "");
 }
 
@@ -46,11 +49,11 @@ export function edgeBaseUrl(env: NodeJS.ProcessEnv = process.env): string {
  * 再由页内 JS 转发 code 唤起 app（services/edge/src/authLanding.ts）。
  * 跟着 edgeBaseUrl 走：本地起服务调试时全链路照样通。
  */
-export function authLandingUrl(env: NodeJS.ProcessEnv = process.env): string {
+export function authLandingUrl(env: EnvLike = process.env): string {
   return `${edgeBaseUrl(env)}/auth/landing`;
 }
 
 /** 远程中继的根(`/rl/v1/*` 挂在这里)。跟着 edgeBaseUrl 走 */
-export function relayBaseUrl(env: NodeJS.ProcessEnv = process.env): string {
+export function relayBaseUrl(env: EnvLike = process.env): string {
   return edgeBaseUrl(env);
 }
