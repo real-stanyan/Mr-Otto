@@ -220,15 +220,15 @@ export async function cloudGrant(
   return req.on ? fail(404, "not_found", "手机上没接这个应用") : { ok: true };
 }
 
+/** 断开同授权关掉一样幂等（#1430 终审 M2）：目的是「箱里不再有这台」，它已经不在（上一次断开落地了、只是回执
+    丢了）时目的已经达到，算成功且不写——回 404 会让手机上「断开」重试时报一句「没接这个应用」，而它确实已经断了 */
 export async function cloudRemove(d: CloudOpsDeps, serverId: string): Promise<{ ok: true } | OpFail> {
-  let found = false;
   await d.store.atomic(async () => {
     const box = await d.store.getBox();
     if (!box || !box.services.some((s) => s.serverId === serverId)) return;
-    found = true;
     await d.store.putBox(removeCloudService(box, serverId, d.now()));
   });
-  return found ? { ok: true } : fail(404, "not_found", "手机上没接这个应用");
+  return { ok: true };
 }
 
 export async function cloudViewOf(d: CloudOpsDeps, uid: string): Promise<CloudViewItem[]> {

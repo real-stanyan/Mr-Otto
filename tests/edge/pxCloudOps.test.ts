@@ -210,6 +210,17 @@ describe("授权 / 断开 / 视图 / 续期", () => {
     expect(await cloudRemove(x.d, "cloud-context7")).toEqual({ ok: true });
     expect(x.m.peekBox()!.services).toEqual([]);
   });
+  // #1430 终审 M2：断开同授权关掉一样幂等——上一次断开其实已经落地、只是回执丢了，再点一次该收干净而不是报「没接」
+  it("断开一台箱里已经没有的：算成功且不写；一个箱子都没有也一样，不凭空建箱", async () => {
+    const x = await connected();
+    await cloudRemove(x.d, "cloud-context7");
+    const before = x.m.peekBox();
+    expect(await cloudRemove(x.d, "cloud-context7")).toEqual({ ok: true });
+    expect(x.m.peekBox()).toBe(before);
+    const empty = deps();
+    expect(await cloudRemove(empty.d, "cloud-nope")).toEqual({ ok: true });
+    expect(empty.m.peekBox()).toBeNull();
+  });
   it("视图补上主场授权并落库；无凭据", async () => {
     const x = deps({ homeIdOf: async () => null });
     await cloudConnect(x.d, UID, { catalogId: "github", params: { github_token: "ghp_secret" } });
