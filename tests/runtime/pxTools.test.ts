@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { fetchGrantedTools, buildPxTools, type PxCallDeps, type GrantedPxServer } from "../../services/runtime/src/pxTools.js";
+import { fetchGrantedTools, buildPxTools, pxToolName, PX_TOOL_NAME_MAX, type PxCallDeps, type GrantedPxServer } from "../../services/runtime/src/pxTools.js";
 import type { ExecutionWorld } from "../../src/world/executionWorld.js";
 
 const json = (status: number, body: unknown): Response =>
@@ -126,5 +126,19 @@ describe("buildPxTools", () => {
     expect(gated.every((t) => t.requiresApproval === true)).toBe(true);
     // 缺省（人自己 @ 起的那一轮）不变：白名单内没有逐次审批（ADR-0151）
     expect(buildPxTools(baseDeps(fetch), "fromU", granted).every((t) => t.requiresApproval === false)).toBe(true);
+  });
+});
+
+describe("pxToolName", () => {
+  it("短的原样（safe 化）", () => {
+    expect(pxToolName("abcdef12-xxxx", "cloud-notion", "search")).toBe("px_abcdef12_cloud-notion_search");
+  });
+  it("超长截到 64 并带哈希尾，不同原名不撞", () => {
+    const a = pxToolName("abcdef12-xxxx", "cloud-google-analytics", "run_realtime_report_with_dimensions_and_metrics");
+    const b = pxToolName("abcdef12-xxxx", "cloud-google-analytics", "run_realtime_report_with_dimensions_and_metricz");
+    expect(a.length).toBeLessThanOrEqual(PX_TOOL_NAME_MAX);
+    expect(a).toMatch(/^[a-zA-Z0-9_-]+$/);
+    expect(a).not.toBe(b);
+    expect(pxToolName("abcdef12-xxxx", "cloud-google-analytics", "run_realtime_report_with_dimensions_and_metrics")).toBe(a);
   });
 });

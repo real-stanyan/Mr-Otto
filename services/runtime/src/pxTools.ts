@@ -12,6 +12,7 @@
 // 才是权威，这里只管把它给的那份转成工具。
 
 import type { Tool } from "../../../src/tools/tool.js";
+import { fnv1a } from "../../../src/shared/fnv1a.js";
 
 export interface PxCallDeps {
   /** edge 服务根，不带尾斜杠（如 https://edge.mrotto.agency） */
@@ -83,6 +84,18 @@ function safeName(s: string): string {
   return s.replace(/[^a-zA-Z0-9_-]/g, "_");
 }
 
+/** 模型厂商的工具名上限（OpenAI 兼容口径 `^[a-zA-Z0-9_-]{1,64}$`）。超了不是少一把刀，是**整次请求**被拒、
+    这一轮直接失败——手机上接的应用 serverId 多了 `cloud-` 六个字符，撞上的概率变大（#1430） */
+export const PX_TOOL_NAME_MAX = 64;
+
+/** 截断时尾巴挂原名的哈希：同一个原名永远同一个结果（审批记忆按完整工具名记），不同原名极难撞 */
+export function pxToolName(hostUid: string, serverId: string, tool: string): string {
+  const raw = safeName(`px_${hostUid.slice(0, 8)}_${serverId}_${tool}`);
+  if (raw.length <= PX_TOOL_NAME_MAX) return raw;
+  const tail = fnv1a(raw).toString(36);
+  return `${raw.slice(0, PX_TOOL_NAME_MAX - tail.length - 1)}_${tail}`;
+}
+
 /** 调用结果的 content 数组压成一段文本喂模型：text 项拼正文，其余项整体
     JSON.stringify——px 调用的结果只喂模型，不进时间线卡片，不需要完整
     McpContent 形状（那是桌面 pxCloudClient.ts 走 toMcpContent 的理由） */
@@ -127,7 +140,7 @@ export function buildPxTools(
   const seen = new Map<string, { hostUid: string; serverId: string; toolName: string }>();
   for (const g of granted) {
     for (const t of g.toolDefs) {
-      const name = safeName(`px_${g.hostUid.slice(0, 8)}_${g.serverId}_${t.name}`);
+      const name = pxToolName(g.hostUid, g.serverId, t.name);
       const prior = seen.get(name);
       if (prior) {
         console.warn(
