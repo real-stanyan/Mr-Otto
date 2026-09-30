@@ -1,8 +1,8 @@
 # ADR-0005: Handoff Memory lives in an open handoff issue, not buried in a closed Task issue
 
 - Date: 2026-07-17
-- Provenance: copied from [gearbox ADR-0005](https://github.com/real-stanyan/gearbox/blob/master/docs/gearbox-adr/0005-handoff-lives-in-an-open-issue.md) (gearbox-install init, upstream sha256:d8b72eafa18e)
-- Status: accepted
+- Provenance: backfilled from [gearbox ADR-0005](https://github.com/real-stanyan/gearbox/blob/master/docs/gearbox-adr/0005-handoff-lives-in-an-open-issue.md) (gearbox-update tool sync, upstream sha256:fe48ee7a5095)
+- Status: accepted; amended by ADR-0054 (opened only when Tasks are left unfinished; "none found = out of compliance" retired)
 - Provenance: this decision originated in the date-cli Path A experiment (originally date-cli ADR-0007), and backfilled into the scaffold after being validated in real multi-agent collaboration
 
 ## Context
