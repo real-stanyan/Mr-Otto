@@ -1,0 +1,543 @@
+<title>手机上接应用</title>
+<style>
+/*@@SHARED_CSS@@*/
+
+/* ── 舞台（照 wechat-mobile demo）────────────────────────────────────── */
+body { background: var(--side); overflow: hidden; }
+.stage { height: 100%; display: flex; align-items: center; justify-content: center; gap: 40px; padding: 16px; }
+.side-panel {
+  width: 320px; max-height: calc(100dvh - 32px); overflow: auto; background: var(--surface);
+  border-radius: 14px; padding: 16px; display: flex; flex-direction: column; gap: 14px; flex: none;
+}
+.side-panel h1 { font-size: 15px; margin: 0; }
+.side-panel p { margin: 0; color: var(--fg-2); font-size: 13px; line-height: 1.55; }
+.side-panel .k { font-size: 12px; color: var(--fg-3); margin-bottom: 6px; }
+.seg { display: flex; flex-wrap: wrap; gap: 6px; }
+.seg button { font-size: 12px; padding: 5px 10px; border-radius: 999px; background: var(--field); transition: background-color 150ms var(--ease), transform 120ms var(--ease); }
+.seg button:active { transform: scale(0.96); }
+.seg button[aria-pressed="true"] { background: var(--brand); color: #fff; }
+.side-panel ol { margin: 0; padding-left: 18px; color: var(--fg-2); font-size: 13px; line-height: 1.6; }
+.side-panel ol b { color: var(--fg); font-weight: 500; }
+.device-wrap { flex: none; width: 390px; height: 844px; transform-origin: center; }
+.device { width: 390px; height: 844px; border-radius: 56px; padding: 11px; background: #0b0b0c; box-shadow: 0 0 0 1.5px #2a2a2c, 0 30px 80px rgba(0,0,0,.28); position: relative; }
+.screen { --sb: 47px; --home: 34px; position: relative; width: 100%; height: 100%; border-radius: 45px; overflow: hidden; background: var(--ground); font-size: 16px; isolation: isolate; }
+.island { position: absolute; top: 11px; left: 50%; width: 120px; height: 34px; margin-left: -60px; border-radius: 20px; background: #000; z-index: 90; pointer-events: none; }
+.statusbar { position: absolute; top: 0; left: 0; right: 0; height: var(--sb); display: flex; align-items: center; justify-content: space-between; padding: 4px 30px 0 34px; font-size: 16px; font-weight: 600; z-index: 80; pointer-events: none; color: var(--fg); }
+.home-ind { position: absolute; bottom: 8px; left: 50%; width: 136px; height: 5px; margin-left: -68px; border-radius: 3px; background: var(--fg); opacity: .85; z-index: 85; pointer-events: none; }
+@media (max-width: 759px) { .side-panel { display: none; } }
+@media (max-width: 439px) {
+  body { background: var(--ground); } .stage { padding: 0; }
+  .device-wrap, .device { width: 100%; height: 100%; }
+  .device { border-radius: 0; padding: 0; box-shadow: none; background: none; }
+  .screen { border-radius: 0; --sb: 0px; --home: 0px; }
+  .island, .statusbar, .home-ind { display: none; }
+}
+
+/* ── 页面栈 ──────────────────────────────────────────────────────────── */
+.stack { position: absolute; inset: 0; }
+.page { position: absolute; inset: 0; background: var(--ground); display: flex; flex-direction: column; will-change: transform; }
+.page.anim { transition: transform 420ms var(--ease-ios); }
+.page.dimmed::after { content: ""; position: absolute; inset: 0; background: rgba(0,0,0,.1); pointer-events: none; }
+.screen .scroll { scrollbar-width: none; }
+.screen .scroll::-webkit-scrollbar { display: none; }
+.nav { flex: none; padding-top: var(--sb); height: calc(var(--sb) + 44px); display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; padding-left: 8px; padding-right: 8px; background: var(--ground); position: relative; z-index: 2; }
+.nav .l { justify-self: start; display: flex; align-items: center; }
+.nav .r { justify-self: end; display: flex; align-items: center; }
+.nav .c { text-align: center; min-width: 0; max-width: 220px; font-size: 17px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.nbtn { height: 40px; min-width: 40px; padding: 0 8px; display: inline-flex; align-items: center; gap: 2px; border-radius: 10px; color: var(--fg); transition: opacity 120ms linear; font-size: 16px; }
+.nbtn:active { opacity: .45; }
+.nbtn.text { color: var(--brand); font-weight: 500; }
+.content { flex: 1; min-height: 0; padding-bottom: calc(var(--home) + 24px); }
+
+/* ── 列表 ────────────────────────────────────────────────────────────── */
+.list { background: var(--surface); }
+.mrow { position: relative; display: flex; align-items: center; gap: 12px; width: 100%; min-height: 54px; padding: 0 16px; text-align: left; background: var(--surface); transition: background-color 80ms linear; }
+button.mrow:active { background: var(--press); }
+.mrow + .mrow::before { content: ""; position: absolute; top: 0; right: 0; left: var(--sep, 16px); height: .5px; background: var(--line); }
+.mrow.iconed { --sep: 68px; }
+.mrow .meta { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; padding: 11px 0; }
+.mrow .nm { font-size: 17px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mrow .pv { font-size: 13px; color: var(--fg-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.mrow .val { color: var(--fg-2); font-size: 15px; white-space: nowrap; flex: none; }
+.mrow .val.warn { color: var(--warn); font-size: 14px; }
+.mrow .val.dim { color: var(--fg-3); font-size: 14px; }
+.mrow .chev { color: var(--fg-3); flex: none; }
+.mrow .icon-lead { color: var(--fg-2); width: 24px; display: grid; place-items: center; flex: none; }
+.mrow.center { justify-content: center; color: var(--brand); font-size: 17px; font-weight: 500; }
+.mrow.danger { justify-content: center; color: var(--danger); font-size: 17px; }
+.mrow.action { color: var(--brand); }
+.mrow.action .icon-lead { color: var(--brand); }
+.mrow[aria-disabled="true"] .nm { color: var(--fg-3); }
+.mrow.mono .nm { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 15px; }
+.tile { width: 40px; height: 40px; border-radius: 9px; background: var(--raised); color: var(--fg-2); display: grid; place-items: center; flex: none; font-size: 17px; font-weight: 600; }
+.tile.sm { width: 28px; height: 28px; border-radius: 7px; font-size: 14px; }
+.sect { font-size: 13px; color: var(--fg-2); padding: 18px 16px 8px; display: flex; justify-content: space-between; }
+.gap { height: 8px; }
+.foot-note { font-size: 13px; color: var(--fg-2); padding: 8px 16px 0; line-height: 1.5; }
+.hero { display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 18px 24px 22px; text-align: center; }
+.hero .tile { width: 64px; height: 64px; border-radius: 15px; font-size: 28px; }
+.hero .n { font-size: 22px; font-weight: 600; }
+.hero .d { font-size: 14px; color: var(--fg-2); line-height: 1.5; }
+.hero .st { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--fg-2); }
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); flex: none; }
+.dot.warn { background: var(--warn); }
+.empty { padding: 36px 32px 8px; text-align: center; color: var(--fg-2); font-size: 15px; line-height: 1.6; }
+.empty .btn { margin-top: 14px; height: 40px; font-size: 16px; }
+
+/* 搜索条 */
+.msearch { padding: 2px 12px 6px; background: var(--ground); }
+.msearch label { height: 36px; border-radius: 9px; background: var(--input-bg); display: flex; align-items: center; gap: 6px; color: var(--fg-3); padding: 0 10px; }
+.msearch input { border: 0; background: transparent; font-size: 16px; color: var(--fg); width: 100%; padding: 0; }
+.msearch input::placeholder { color: var(--fg-3); }
+
+/* iOS 开关 */
+.sw { position: relative; width: 51px; height: 31px; border-radius: 16px; background: var(--field); flex: none; transition: background-color 200ms var(--ease); }
+.sw::after { content: ""; position: absolute; top: 2px; left: 2px; width: 27px; height: 27px; border-radius: 50%; background: #fff; box-shadow: 0 2px 4px rgba(0,0,0,.18), 0 0 0 .5px rgba(0,0,0,.04); transition: transform 240ms var(--ease-ios); }
+.sw[aria-checked="true"] { background: var(--ok); }
+.sw[aria-checked="true"]::after { transform: translateX(20px); }
+.sw:disabled { opacity: .5; }
+
+/* 弹层关在屏幕里面 */
+.screen .scrim, .screen .dialog { position: absolute; }
+.screen .dialog { width: calc(100% - 48px); max-height: calc(100% - 140px); padding: 22px 20px 18px; border-radius: 14px; }
+.screen .dialog h3 { font-size: 17px; text-align: center; }
+.screen .dialog .desc { text-align: center; font-size: 14px; margin-bottom: 10px; }
+.screen .dialog .actions { justify-content: stretch; }
+.screen .dialog .actions .btn { flex: 1; height: 42px; font-size: 16px; }
+.screen .dialog .field { height: 42px; font-size: 16px; }
+.dialog .d-tile { display: flex; justify-content: center; margin-bottom: 10px; }
+.dialog .who { font-size: 13px; color: var(--fg-2); background: var(--field); border-radius: 9px; padding: 9px 11px; line-height: 1.5; display: flex; gap: 8px; }
+.dialog .who .ic { margin-top: 2px; color: var(--fg-3); }
+.dialog .lbl { font-size: 13px; color: var(--fg-2); margin: 14px 0 6px; }
+.dialog .hint { font-size: 12px; color: var(--fg-3); margin-top: 6px; line-height: 1.5; }
+.dialog .err { font-size: 13px; color: var(--danger); margin-top: 12px; text-align: center; min-height: 0; }
+.btn .spin { width: 16px; height: 16px; border-radius: 50%; border: 2px solid currentColor; border-right-color: transparent; animation: spin 600ms linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* 系统授权会话（模拟 ASWebAuthenticationSession）：从下往上整屏 */
+.auth { position: absolute; inset: 0; z-index: 70; background: #fff; color: #1d1d1f; display: flex; flex-direction: column; transform: translateY(100%); transition: transform 420ms var(--ease-ios); }
+.auth.on { transform: none; }
+.auth .bar { padding: calc(var(--sb) + 4px) 12px 8px; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 8px; background: #f2f2f7; border-bottom: .5px solid rgba(0,0,0,.12); }
+.auth .bar button { color: #0a84ff; font-size: 17px; font-weight: 600; }
+.auth .url { text-align: center; font-size: 13px; color: #6e6e73; display: flex; align-items: center; justify-content: center; gap: 4px; }
+.auth .body { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 24px 28px 80px; text-align: center; }
+.auth .body .tile { width: 56px; height: 56px; font-size: 24px; background: #1d1d1f; color: #fff; border-radius: 13px; }
+.auth .body h2 { font-size: 20px; margin: 0; font-weight: 600; }
+.auth .body p { margin: 0; font-size: 14px; color: #6e6e73; line-height: 1.55; }
+.auth .body .scopes { align-self: stretch; text-align: left; font-size: 14px; background: #f5f5f7; border-radius: 12px; padding: 12px 14px; line-height: 1.8; }
+.auth .body .allow { align-self: stretch; height: 46px; border-radius: 10px; background: #1d1d1f; color: #fff; font-size: 16px; font-weight: 600; transition: transform 120ms var(--ease); }
+.auth .body .allow:active { transform: scale(.98); }
+.sysalert { position: absolute; z-index: 72; left: 50%; top: 40%; transform: translate(-50%, -50%) scale(.96); width: 270px; background: color-mix(in srgb, var(--menu) 97%, transparent); color: var(--fg); border-radius: 14px; text-align: center; box-shadow: 0 12px 40px rgba(0,0,0,.25); opacity: 0; pointer-events: none; transition: opacity 160ms var(--ease), transform 200ms var(--ease); overflow: hidden; }
+.sysalert.on { opacity: 1; transform: translate(-50%, -50%) scale(1); pointer-events: auto; }
+.sysalert .t { padding: 18px 16px 4px; font-weight: 600; font-size: 16px; }
+.sysalert .m { padding: 0 16px 16px; font-size: 13px; color: var(--fg-2); }
+.sysalert .b { display: grid; grid-template-columns: 1fr 1fr; border-top: .5px solid var(--line); }
+.sysalert .b button { height: 44px; font-size: 17px; color: #0a84ff; }
+.sysalert .b button + button { border-left: .5px solid var(--line); font-weight: 600; }
+
+.toast { position: absolute; left: 50%; bottom: calc(var(--home) + 40px); transform: translate(-50%, 8px); background: rgba(30,30,32,.92); color: #fff; font-size: 14px; padding: 10px 16px; border-radius: 12px; opacity: 0; transition: opacity 180ms var(--ease), transform 220ms var(--ease); z-index: 95; pointer-events: none; max-width: calc(100% - 48px); text-align: center; }
+.toast.on { opacity: 1; transform: translate(-50%, 0); }
+@media (prefers-reduced-motion: reduce) {
+  .page.anim, .auth { transition: opacity 200ms linear; }
+}
+</style>
+
+<div class="stage">
+  <aside class="side-panel" id="side"></aside>
+  <div class="device-wrap" id="wrap">
+    <div class="device"><div class="screen" id="screen">
+      <div class="island"></div>
+      <div class="statusbar"><span>9:41</span><span></span></div>
+      <div class="stack" id="stack"></div>
+      <div class="scrim" id="scrim"></div>
+      <div class="dialog" id="dialog" role="dialog" aria-modal="true"></div>
+      <div class="auth" id="auth"></div>
+      <div class="sysalert" id="sysalert" role="alertdialog"></div>
+      <div class="toast" id="toast"></div>
+      <div class="home-ind"></div>
+    </div></div>
+  </div>
+</div>
+
+<script>
+/*@@ICONS@@*/
+/*@@CATALOG@@*/
+function ic(name, size = 20, sw = 1.75) {
+  return `<svg class="ic" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="${sw}" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON_PATHS[name] || ""}</svg>`;
+}
+const $ = (s, r = document) => r.querySelector(s);
+const $$ = (s, r = document) => [...r.querySelectorAll(s)];
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+const byId = (id) => CATALOG.find((e) => e.id === id);
+const tile = (name, cls = "") => `<span class="tile ${cls}">${esc([...name][0].toUpperCase())}</span>`;
+const DAY = 86400000;
+
+/* 工具清单是假的（真的来自接入时 tools/list），只为让详情页有东西可看 */
+const TOOLS = {
+  notion: ["search", "fetch", "create-pages", "update-page", "move-pages", "duplicate-page", "create-database", "update-database", "create-comment", "get-comments", "get-users", "get-self"],
+  linear: ["list_issues", "get_issue", "create_issue", "update_issue", "list_projects", "list_teams", "create_comment"],
+  github: ["search_repositories", "get_file_contents", "list_issues", "create_issue", "create_pull_request", "list_commits"],
+};
+const toolsOf = (id) => TOOLS[id] || ["search", "get", "list", "create", "update"];
+
+/* ── 状态 ─────────────────────────────────────────────────────────────── */
+const S = {
+  entry: "header",         // header = 右上「接入」；row = 列表最上面一行「接入新应用」
+  outcome: "ok",           // 下一次接入的结局
+  phone: [
+    { id: "notion", status: "ok", grants: ["t1"], ts: Date.now() - 3 * DAY },
+    { id: "linear", status: "needs_login", grants: [], ts: Date.now() - 20 * DAY },
+  ],
+  desktop: [["Shopify", "全部工具"], ["Google Ads", "3 个工具"]],
+  teams: [{ id: "t1", name: "山茶小铺" }, { id: "t2", name: "周末工作室" }],
+};
+const phoneOf = (id) => S.phone.find((p) => p.id === id);
+
+const OUTCOMES = [
+  ["ok", "接上了"],
+  ["cancel", "人关了浏览器"],
+  ["nodcr", "不支持动态注册"],
+  ["expired", "授权超时"],
+  ["badtoken", "token 用不了"],
+  ["notools", "登录了但读不到工具"],
+];
+const OUTCOME_TEXT = {
+  nodcr: "这个应用暂时不能在手机上直接登录，去电脑上接",
+  expired: "授权超时了，再点一次连接",
+  badtoken: "这个 token 用不了，检查一下再粘一次",
+  notools: "登录成功，但读不到它的工具：workspace not found",
+};
+
+/* ── 侧栏 ─────────────────────────────────────────────────────────────── */
+function renderSide() {
+  const seg = (key, opts) => `<div class="seg">${opts.map(([v, t]) => `<button data-k="${key}" data-v="${v}" aria-pressed="${S[key] === v}">${t}</button>`).join("")}</div>`;
+  $("#side").innerHTML = `
+    <h1>手机上接应用 · demo（#1430）</h1>
+    <p>位置：我 → 那台电脑 → 应用。点手机里的东西就行；下面这几格是给你切情形用的。数据是假的，目录是真目录里手机能接的那 ${CATALOG.length} 条。</p>
+    <div><div class="k">「接入」放哪</div>${seg("entry", [["header", "右上角「接入」"], ["row", "列表顶上一行"]])}</div>
+    <div><div class="k">下一次接入的结局</div>${seg("outcome", OUTCOMES)}</div>
+    <div><div class="k">跳到</div><div class="seg">
+      <button data-jump="apps">应用</button><button data-jump="connect">接入目录</button><button data-jump="notion">Notion 详情</button><button data-jump="empty">一个都没接</button>
+    </div></div>
+    <div><div class="k">外观</div><div class="seg"><button data-theme="light">浅色</button><button data-theme="dark">深色</button><button data-theme="">跟系统</button></div></div>
+    <div><div class="k">想请你判的</div><ol>
+      <li><b>「接入」放哪</b>：右上角（照 spec）还是列表顶上一行（第一次来的人更容易看见）。</li>
+      <li><b>过期那一行</b>：现在点一下直接弹「重新登录」，不先进详情页。</li>
+      <li><b>借给团队</b>：开关一拨就生效，不再确认——组尾那句话说清「以你的身份」。</li>
+      <li><b>详情里的工具</b>：先列 6 个，其余收在「全部 N 个」里。</li>
+      <li><b>应用图标</b>：先用首字母方块（手机包里还没有厂商 logo）。</li>
+    </ol></div>`;
+  $$("[data-k]", $("#side")).forEach((b) => b.addEventListener("click", () => { S[b.dataset.k] = b.dataset.v; renderSide(); refreshAll(); }));
+  $$("[data-theme]", $("#side")).forEach((b) => b.addEventListener("click", () => {
+    if (b.dataset.theme) document.documentElement.dataset.theme = b.dataset.theme; else delete document.documentElement.dataset.theme;
+  }));
+  $$("[data-jump]", $("#side")).forEach((b) => b.addEventListener("click", () => jump(b.dataset.jump)));
+}
+
+/* ── 页面栈 ───────────────────────────────────────────────────────────── */
+const stack = [];
+function makePage(key, title, render, opts = {}) {
+  const el = document.createElement("div");
+  el.className = "page";
+  const p = { key, title, render, el, opts };
+  p.draw = () => {
+    const prev = stack[stack.indexOf(p) - 1];
+    const right = typeof opts.right === "function" ? opts.right() : "";
+    el.innerHTML = `<div class="nav"><div class="l">${prev ? `<button class="nbtn" data-back>${ic("chevron-left", 24, 2)}${esc(prev.title)}</button>` : `<button class="nbtn" data-me>${ic("chevron-left", 24, 2)}我</button>`}</div><div class="c">${esc(p.title)}</div><div class="r">${right}</div></div><div class="content scroll">${render(p)}</div>`;
+    const back = $("[data-back]", el);
+    if (back) back.addEventListener("click", pop);
+    const me = $("[data-me]", el);
+    if (me) me.addEventListener("click", () => toast("demo 从「那台电脑」开始"));
+    opts.bind?.(p);
+  };
+  return p;
+}
+function push(p, { replace = false, instant = false } = {}) {
+  const prev = stack[stack.length - 1];
+  stack.push(p);
+  p.draw();
+  $("#stack").appendChild(p.el);
+  if (instant || !prev) return;
+  p.el.style.transform = "translateX(100%)";
+  p.el.getBoundingClientRect();
+  p.el.classList.add("anim"); prev.el.classList.add("anim", "dimmed");
+  p.el.style.transform = "translateX(0)";
+  prev.el.style.transform = "translateX(-30%)";
+  setTimeout(() => {
+    if (replace) {
+      // 接好之后：目录页换成详情页，返回直接回到应用列表
+      stack.splice(stack.indexOf(prev), 1); prev.el.remove(); p.draw();
+    } else if (stack[stack.length - 1] !== prev) prev.el.style.visibility = "hidden";
+  }, 430);
+}
+function pop() {
+  if (stack.length < 2) return;
+  const top = stack.pop();
+  const under = stack[stack.length - 1];
+  under.el.style.visibility = "";
+  under.draw();
+  top.el.classList.add("anim"); under.el.classList.add("anim");
+  top.el.style.transform = "translateX(100%)";
+  under.el.style.transform = "translateX(0)";
+  under.el.classList.remove("dimmed");
+  setTimeout(() => top.el.remove(), 430);
+}
+function refreshAll() { stack.forEach((p) => p.draw()); }
+function reset() { stack.splice(0).forEach((p) => p.el.remove()); }
+
+/* ── 页：那台电脑 ─────────────────────────────────────────────────────── */
+function machinePage() {
+  return makePage("machine", "那台电脑", () => `
+    <div class="foot-note" style="padding:6px 16px 12px">你的智能体干活的那台电脑，在云端。</div>
+    <div class="list">
+      ${[["folder", "文件", "", "files"], ["app-window", "应用", `${S.phone.length + S.desktop.length} 个`, "apps"], ["book-open", "记忆", "", "memory"], ["chart-column", "这周谁用得多", "", "usage"]]
+        .map(([i, n, v, k]) => `<button class="mrow" style="--sep:52px" data-go="${k}"><span class="icon-lead">${ic(i, 20, 1.7)}</span><span class="meta"><span class="nm">${n}</span></span>${v ? `<span class="val">${v}</span>` : ""}<span class="chev">${ic("chevron-right", 18)}</span></button>`).join("")}
+    </div>`, {
+    bind: (p) => $$("[data-go]", p.el).forEach((b) => b.addEventListener("click", () => b.dataset.go === "apps" ? push(appsPage()) : toast("demo 只做了「应用」这一格"))),
+  });
+}
+
+/* ── 页：应用 ─────────────────────────────────────────────────────────── */
+function appsPage() {
+  return makePage("apps", "应用", () => {
+    const entryRow = S.entry === "row"
+      ? `<div class="list"><button class="mrow action iconed" data-connect><span class="tile" style="background:var(--field);color:var(--brand)">${ic("plus", 22, 2)}</span><span class="meta"><span class="nm">接入新应用</span></span><span class="chev">${ic("chevron-right", 18)}</span></button></div><div class="gap"></div>`
+      : "";
+    const phone = S.phone.length === 0
+      ? `<div class="empty">手机上还没接应用。<br>接好之后，你的智能体会以你的身份用它。${S.entry === "header" ? `<br><button class="btn primary" data-connect>接入应用</button>` : ""}</div>`
+      : `<div class="sect">手机上接的</div><div class="list">${S.phone.map((a) => {
+          const e = byId(a.id);
+          const n = toolsOf(a.id).length;
+          const trail = a.status === "needs_login" ? `<span class="val warn">点一下重新登录</span>` : "";
+          return `<button class="mrow iconed" data-app="${a.id}">${tile(e.name)}<span class="meta"><span class="nm">${esc(e.name)}</span><span class="pv">${n} 个工具${a.grants.length ? ` · 借给了 ${a.grants.length} 个团队` : ""}</span></span>${trail}${a.status === "ok" ? `<span class="chev">${ic("chevron-right", 18)}</span>` : ""}</button>`;
+        }).join("")}</div><div class="foot-note">凭据存在云端，不在这台手机上。你的智能体随时能用，手机关机也行。</div>`;
+    const desktop = S.desktop.length === 0 ? "" : `<div class="sect">电脑上接的</div><div class="list">${S.desktop.map(([n, t]) => `<div class="mrow iconed">${tile(n)}<span class="meta"><span class="nm">${esc(n)}</span><span class="pv">${t}</span></span></div>`).join("")}</div><div class="foot-note">在电脑上的 Mr Otto 里接的，要在电脑上管。</div>`;
+    return entryRow + phone + desktop;
+  }, {
+    right: () => S.entry === "header" ? `<button class="nbtn text" data-connect-top>接入</button>` : "",
+    bind: (p) => {
+      $$("[data-connect], [data-connect-top]", p.el).forEach((b) => b.addEventListener("click", () => push(connectPage())));
+      $$("[data-app]", p.el).forEach((b) => b.addEventListener("click", () => {
+        const a = phoneOf(b.dataset.app);
+        if (a.status === "needs_login") connectDialog(byId(a.id), { relogin: true });
+        else push(detailPage(a.id));
+      }));
+    },
+  });
+}
+
+/* ── 页：接入目录 ─────────────────────────────────────────────────────── */
+let query = "";
+function connectPage() {
+  const p = makePage("connect", "接入应用", () => `
+    <div class="msearch"><label>${ic("search", 18)}<input id="q" placeholder="搜应用" value="${esc(query)}" autocomplete="off"></label></div>
+    <div id="cat"></div>`, {
+    bind: (pp) => {
+      const q = $("#q", pp.el);
+      const draw = () => { $("#cat", pp.el).innerHTML = catalogHtml(); bindCat(pp); };
+      q.addEventListener("input", () => { query = q.value; draw(); });
+      draw();
+    },
+  });
+  return p;
+}
+function catalogHtml() {
+  const qq = query.trim().toLowerCase();
+  const hit = (e) => qq === "" || [e.id, e.name, e.description].some((f) => f.toLowerCase().includes(qq));
+  const groups = CATEGORIES.map((c) => [c, CATALOG.filter((e) => e.category === c && hit(e))]).filter(([, xs]) => xs.length > 0);
+  if (groups.length === 0) return `<div class="empty">没找到「${esc(query)}」。<br>目录外的应用要在电脑上接。</div>`;
+  return groups.map(([c, xs]) => `<div class="sect">${esc(c)}</div><div class="list">${xs.map((e) => {
+    const connected = !!phoneOf(e.id);
+    return `<button class="mrow iconed" data-cat="${e.id}" ${e.blocked && !connected ? 'aria-disabled="true"' : ""}>${tile(e.name)}<span class="meta"><span class="nm">${esc(e.name)}</span><span class="pv">${esc(e.blocked && !connected ? e.blocked : e.description)}</span></span>${connected ? `<span class="val dim">已接入</span>` : ""}</button>`;
+  }).join("")}</div>`).join("") + `<div class="foot-note" style="padding-top:14px">只列能在云端跑的应用；要装在电脑上的那几类（本机工具）在电脑上接。</div>`;
+}
+function bindCat(p) {
+  $$("[data-cat]", p.el).forEach((b) => b.addEventListener("click", () => {
+    const e = byId(b.dataset.cat);
+    if (phoneOf(e.id)) return push(detailPage(e.id));
+    if (e.blocked) return toast(e.blocked);
+    connectDialog(e, {});
+  }));
+}
+
+/* ── 页：详情 ─────────────────────────────────────────────────────────── */
+function detailPage(id) {
+  let showAll = false;
+  return makePage("detail:" + id, byId(id).name, () => {
+    const a = phoneOf(id);
+    if (!a) return `<div class="empty">这个应用已经断开了。</div>`;
+    const e = byId(id);
+    const tools = toolsOf(id);
+    const shown = showAll ? tools : tools.slice(0, 6);
+    const days = Math.floor((Date.now() - a.ts) / DAY);
+    return `
+      <div class="hero">${tile(e.name)}<div class="n">${esc(e.name)}</div><div class="d">${esc(e.description)}</div>
+        <div class="st"><span class="dot ${a.status === "ok" ? "" : "warn"}"></span>${a.status === "ok" ? `你的智能体能用 · ${days <= 0 ? "今天接入" : `${days} 天前接入`}` : "登录过期了，智能体暂时用不了"}</div></div>
+      ${a.status === "needs_login" ? `<div class="list"><button class="mrow center" data-relogin>重新登录</button></div><div class="gap"></div>` : ""}
+      <div class="sect"><span>它能做的</span><span>${tools.length} 个工具</span></div>
+      <div class="list">${shown.map((t) => `<div class="mrow mono"><span class="meta"><span class="nm">${esc(t)}</span></span></div>`).join("")}
+        ${!showAll && tools.length > 6 ? `<button class="mrow center" data-all style="font-size:16px;font-weight:400">全部 ${tools.length} 个</button>` : ""}</div>
+      <div class="sect">借给团队</div>
+      <div class="list">${S.teams.map((t) => `<div class="mrow"><span class="meta"><span class="nm">${esc(t.name)}</span></span><button class="sw" role="switch" aria-checked="${a.grants.includes(t.id)}" data-team="${t.id}" aria-label="借给${esc(t.name)}"></button></div>`).join("")}</div>
+      <div class="foot-note">借给团队后，团队里的智能体会以你的身份用它。随时能关。</div>
+      <div class="gap" style="height:28px"></div>
+      <div class="list"><button class="mrow danger" data-off>断开</button></div>`;
+  }, {
+    bind: (p) => {
+      $("[data-all]", p.el)?.addEventListener("click", () => { showAll = true; p.draw(); });
+      $("[data-relogin]", p.el)?.addEventListener("click", () => connectDialog(byId(id), { relogin: true }));
+      $$("[data-team]", p.el).forEach((b) => b.addEventListener("click", () => {
+        const a = phoneOf(id);
+        const on = b.getAttribute("aria-checked") !== "true";
+        b.setAttribute("aria-checked", String(on));
+        $$("[data-team]", p.el).forEach((x) => (x.disabled = true));
+        setTimeout(() => {
+          a.grants = on ? [...a.grants, b.dataset.team] : a.grants.filter((g) => g !== b.dataset.team);
+          $$("[data-team]", p.el).forEach((x) => (x.disabled = false));
+          const t = S.teams.find((x) => x.id === b.dataset.team).name;
+          toast(on ? `借给了「${t}」` : `不再借给「${t}」`);
+        }, 450);
+      }));
+      $("[data-off]", p.el)?.addEventListener("click", () => {
+        const n = byId(id).name;
+        openDialog(`<h3>断开 ${esc(n)}？</h3><p class="desc">断开后，你的智能体和借到它的团队都用不了它，云端存的登录凭据会一起删掉。</p>
+          <div class="actions"><button class="btn soft" data-close>取消</button><button class="btn danger-solid" id="ok">断开</button></div>`, (d) => {
+          $("#ok", d).addEventListener("click", () => {
+            closeDialog();
+            S.phone = S.phone.filter((x) => x.id !== id);
+            pop(); setTimeout(() => toast(`已断开 ${n}`), 250);
+          });
+        });
+      });
+    },
+  });
+}
+
+/* ── 弹窗 ─────────────────────────────────────────────────────────────── */
+function openDialog(html, bind) {
+  const d = $("#dialog");
+  d.innerHTML = html;
+  $("#scrim").classList.add("on"); d.classList.add("on");
+  $$("[data-close]", d).forEach((b) => b.addEventListener("click", closeDialog));
+  bind?.(d);
+}
+function closeDialog() { $("#scrim").classList.remove("on"); $("#dialog").classList.remove("on"); }
+$("#scrim").addEventListener("click", () => { if (!$("#dialog").dataset.busy) closeDialog(); });
+
+/* 接入前那一张（spec §8）：做什么的 + 以你的身份 + 要参数的当场问 */
+function connectDialog(e, { relogin }) {
+  const browser = e.auth === "oauth";
+  const action = browser ? "去登录" : "连接";
+  const fields = e.params.map((p) => `<div class="lbl">${esc(p.name === "github_token" ? "GitHub 令牌" : p.name)}</div>
+    <input class="field" data-p="${p.name}" ${e.auth === "token" ? 'type="password"' : ""} autocomplete="off" placeholder="${e.auth === "token" ? "粘贴到这里" : ""}">
+    <div class="hint">${esc(p.description)}</div>`).join("");
+  openDialog(`
+    <div class="d-tile">${tile(e.name)}</div>
+    <h3>${relogin ? `重新登录 ${esc(e.name)}` : `接入 ${esc(e.name)}`}</h3>
+    <p class="desc">${relogin ? "登录过期了。登录之后，借给团队的设置都还在。" : esc(e.description)}</p>
+    ${relogin ? "" : `<div class="who">${ic("info", 16)}<span>接好后，你的智能体会以你的身份操作它。${browser ? "登录在 " + esc(e.name) + " 自己的页面上完成，密码不经过 Mr Otto。" : ""}</span></div>`}
+    ${relogin ? "" : fields}
+    <div class="err" id="err" role="alert"></div>
+    <div class="actions"><button class="btn soft" data-close>取消</button><button class="btn primary" id="go">${action}</button></div>`, (d) => {
+    const go = $("#go", d), err = $("#err", d);
+    const inputs = $$("[data-p]", d);
+    const ready = () => e.params.every((p) => !p.required || (d.querySelector(`[data-p="${p.name}"]`)?.value ?? "").trim() !== "");
+    if (!relogin && e.params.length) { go.disabled = !ready(); inputs.forEach((i) => i.addEventListener("input", () => { go.disabled = !ready(); err.textContent = ""; })); }
+    go.addEventListener("click", () => {
+      err.textContent = "";
+      const busy = (on) => { d.dataset.busy = on ? "1" : ""; go.disabled = on; go.innerHTML = on ? `<span class="spin"></span>连接中` : action; $("[data-close]", d).disabled = on; };
+      busy(true);
+      // 第一跳：POST /px/v1/cloud/connect。token / 免登录在这一跳里就验完了
+      setTimeout(() => {
+        const o = S.outcome;
+        if (!browser) {
+          busy(false);
+          if (o === "badtoken" && e.auth === "token") { err.textContent = OUTCOME_TEXT.badtoken; return; }
+          if (o === "nodcr" || o === "expired" || o === "cancel") { finish(e, relogin); return; }
+          if (o === "notools") { err.textContent = "没接上：上游 tools/list 失败（502）"; return; }
+          return finish(e, relogin);
+        }
+        if (o === "nodcr") { busy(false); err.textContent = OUTCOME_TEXT.nodcr; return; }
+        busy(false);
+        // 交给系统的登录页时，自己这张先让开（留着蒙层）；回来没接上就原样回到这张，接上了就收掉
+        d.classList.remove("on");
+        openAuth(e, (res) => {
+          if (res === "ok") return finish(e, relogin);
+          d.classList.add("on");
+          if (res !== "cancel") err.textContent = OUTCOME_TEXT[res]; // 人自己关了浏览器：什么都不说
+        });
+      }, 650);
+    });
+  });
+}
+
+/* 模拟系统授权会话（ASWebAuthenticationSession）：iOS 先在 App 上问一句，继续了才升起厂商自己的页面——
+   Mr Otto 看不到密码 */
+function openAuth(e, done) {
+  const host = { notion: "mcp.notion.com", linear: "mcp.linear.app" }[e.id] || `${e.id}.example.com`;
+  const sys = $("#sysalert");
+  sys.innerHTML = `<div class="t">“Mr Otto” 想使用 “${host}” 登录</div><div class="m">这将允许该 App 和网站共享有关你的信息。</div><div class="b"><button data-sys-no>取消</button><button data-sys-yes>继续</button></div>`;
+  sys.classList.add("on");
+  $("[data-sys-no]", sys).addEventListener("click", () => { sys.classList.remove("on"); done("cancel"); });
+  $("[data-sys-yes]", sys).addEventListener("click", () => {
+    sys.classList.remove("on");
+    const el = $("#auth");
+    el.innerHTML = `<div class="bar"><button data-x>取消</button><div class="url">${ic("lock", 12, 2)}${host}</div><span style="width:40px"></span></div>
+      <div class="body">${tile(e.name)}<h2>Mr Otto 想访问你的 ${esc(e.name)}</h2><p>这是 ${esc(e.name)} 自己的授权页。允许之后回到 Mr Otto。</p>
+        <div class="scopes">· 读取你能看到的内容<br>· 替你创建和修改内容</div>
+        <button class="allow" data-allow>允许</button></div>`;
+    requestAnimationFrame(() => el.classList.add("on"));
+    const close = (res) => { el.classList.remove("on"); setTimeout(() => done(res), 380); };
+    $("[data-x]", el).addEventListener("click", () => close("cancel"));
+    $("[data-allow]", el).addEventListener("click", () => {
+      const o = S.outcome;
+      close(o === "cancel" ? "cancel" : o === "expired" ? "expired" : o === "notools" ? "notools" : "ok");
+    });
+  });
+}
+
+function finish(e, relogin) {
+  closeDialog();
+  const prior = phoneOf(e.id);
+  if (prior) { prior.status = "ok"; prior.ts = Date.now(); }
+  else S.phone.push({ id: e.id, status: "ok", grants: [], ts: Date.now() });
+  const top = stack[stack.length - 1];
+  if (relogin) { refreshAll(); toast(`${e.name} 重新登录好了`); return; }
+  if (top.key === "connect") push(detailPage(e.id), { replace: true });
+  else refreshAll();
+  setTimeout(() => toast(`接好了。你的智能体现在能用 ${e.name}`), 300);
+}
+
+let tt;
+function toast(msg) {
+  const t = $("#toast");
+  t.textContent = msg; t.classList.add("on");
+  clearTimeout(tt); tt = setTimeout(() => t.classList.remove("on"), 2200);
+}
+
+/* ── 跳转 ─────────────────────────────────────────────────────────────── */
+function jump(k) {
+  closeDialog(); $("#auth").classList.remove("on");
+  if (k === "empty") S.phone = [];
+  if (k !== "empty" && S.phone.length === 0) S.phone = [{ id: "notion", status: "ok", grants: ["t1"], ts: Date.now() - 3 * DAY }, { id: "linear", status: "needs_login", grants: [], ts: Date.now() - 20 * DAY }];
+  reset();
+  push(machinePage(), { instant: true });
+  push(appsPage(), { instant: true });
+  stack[0].el.style.transform = "translateX(-30%)";
+  if (k === "connect") { push(connectPage(), { instant: true }); stack[1].el.style.transform = "translateX(-30%)"; }
+  if (k === "notion") { push(detailPage("notion"), { instant: true }); stack[1].el.style.transform = "translateX(-30%)"; }
+  stack.slice(0, -1).forEach((p) => (p.el.style.visibility = "hidden"));
+}
+
+/* 宽屏：整台手机按视口高度缩放 */
+function fit() {
+  const w = $("#wrap");
+  if (innerWidth < 440) { w.style.transform = ""; return; }
+  const s = Math.min(1, (innerHeight - 32) / 844);
+  w.style.transform = `scale(${s})`;
+  w.style.margin = `${(844 * s - 844) / 2}px ${(390 * s - 390) / 2}px`;
+}
+addEventListener("resize", fit); fit();
+renderSide();
+jump("apps");
+</script>
