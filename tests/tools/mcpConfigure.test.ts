@@ -38,6 +38,22 @@ describe("mcp_configure", () => {
     });
   });
 
+  // #1430 终审 I-2：cloud- 开头的名字留给手机上接的应用，模型也不许在桌面起这种名字
+  it("upsert 一台 cloud- 开头的 server 被拒，configure 一次都不调", async () => {
+    const c = cap();
+    await expect(createMcpConfigureTool().run(
+      { id: "cloud-notion", kind: "http", url: "https://mcp.notion.com/mcp" },
+      world(c)
+    )).rejects.toThrow('"cloud-" 开头的名字留给手机上接的应用，换一个');
+    expect(c.configure).not.toHaveBeenCalled();
+  });
+
+  it("remove 一台 cloud- 开头的（历史遗留）照删——删是在清理，不是在起名", async () => {
+    const c = cap();
+    await createMcpConfigureTool().run({ id: "cloud-old", action: "remove" }, world(c));
+    expect(c.configure).toHaveBeenCalledWith("cloud-old", null);
+  });
+
   // 终审 B Minor：判空用的是 id.trim()，存的却是原始 id ——两把尺子。
   // `" supabase "` 和 `"supabase"` 会成为两台不同的 server，而首尾空白在
   // 审批卡上根本看不见，用户分不出这是新建了一台还是改了那台

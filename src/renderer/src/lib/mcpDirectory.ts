@@ -13,6 +13,7 @@ import {
 import type { McpServerConfig } from "../../../shared/mcp.js";
 import { fillHttpEntry } from "../../../shared/mcpCatalogFill.js";
 import { mcpServerIdError, type McpDisplayStatus } from "./mcpForm.js";
+import { CLOUD_PREFIX, isCloudServerId } from "../../../shared/remote/pxCloud.js";
 
 /** 已装的一台 —— 目录卡要的是**状态**，不只是"这个 id 在不在配置里"。
     只拿 id 的那一版让三件事长得一模一样：连上了 / 需要授权 / 连不上，
@@ -116,7 +117,10 @@ export function uniqueServerId(base: string, existingIds: readonly string[]): st
   // 目录条目的 id 不该是空的（精选层是字面量，注册表那边 slugId 兜了底），
   // 但真空了就得给个名字：mcpServerIdError 只报错不改名，落盘的对象键
   // 不能是空串
-  const stem = base.trim() === "" ? "server" : base.trim();
+  const trimmed = base.trim();
+  // 保留前缀（#1430 终审 I-2）：cloud- 开头的主干补多少数字都过不了 mcpServerIdError，
+  // 不换主干这个循环会转到死。换成 cloud_ 读起来还是那个名字
+  const stem = trimmed === "" ? "server" : isCloudServerId(trimmed) ? `cloud_${trimmed.slice(CLOUD_PREFIX.length)}` : trimmed;
   let id = stem;
   for (let n = 2; mcpServerIdError(id, existingIds) !== null; n += 1) id = `${stem}-${n}`;
   return id;

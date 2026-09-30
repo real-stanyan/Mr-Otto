@@ -113,6 +113,15 @@ describe("uniqueServerId", () => {
     expect(uniqueServerId("notion", ["notion", "notion-2"])).toBe("notion-3");
   });
 
+  // 目录条目的 id 若以 cloud- 开头（注册表 slug 撞上保留前缀），补数字永远补不出合法名字——
+  // 原来那个 for 循环会转到死；这里要换一个不带保留前缀的主干
+  it("cloud- 开头的条目 id 换个主干，不在保留前缀上死循环", () => {
+    const id = uniqueServerId("cloud-run", []);
+    expect(id.startsWith("cloud-")).toBe(false);
+    expect(id).toBe("cloud_run");
+    expect(uniqueServerId("cloud-run", ["cloud_run"])).toBe("cloud_run-2");
+  });
+
   it("空名字不返回空 —— 落盘的对象键不能是空串", () => {
     expect(uniqueServerId("   ", [])).not.toBe("");
   });

@@ -136,6 +136,14 @@ describe("mcpServerIdError", () => {
   it("合法的新名字通过", () => {
     expect(mcpServerIdError("github", ["fs"])).toBeNull();
   });
+
+  // #1430 终审 I-2：cloud- 开头的 id 是手机上接的应用（edge 云箱）的名字空间。桌面起了这种名字，
+  // 撤回会被送去 edge、本机那份授权 + 密封箱原样留着 = 一条谁都看不见的授权
+  it("cloud- 开头的名字被拒（留给手机上接的应用）", () => {
+    expect(mcpServerIdError("cloud-notion", [])).toBe('"cloud-" 开头的名字留给手机上接的应用，换一个');
+    expect(mcpServerIdError("  cloud-x ", [])).toMatch(/留给手机/);
+    expect(mcpServerIdError("cloudflare", [])).toBeNull();
+  });
 });
 
 describe("mcpConfigsEqual", () => {

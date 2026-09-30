@@ -14,6 +14,13 @@ export const CLOUD_PREFIX = "cloud-";
 export const isCloudServerId = (id: string): boolean => id.startsWith(CLOUD_PREFIX);
 export const cloudServerId = (catalogId: string): string => CLOUD_PREFIX + catalogId;
 
+/** 桌面起名时的保留前缀闸（#1430 终审 I-2）：`cloud-` 开头的 id 一律当作手机上接的应用——桌面撤回会走 edge、
+    状态点画成「手机上接的」。桌面若真起了这种名字，撤回那一步把本机那份授权 + 密封箱原样留下 = 一条谁都看不见的
+    授权。设置页新建（mcpServerIdError）与智能体的 mcp_configure 共用这一句 */
+export const CLOUD_ID_RESERVED_TEXT = '"cloud-" 开头的名字留给手机上接的应用，换一个';
+export const cloudIdReservedError = (id: string): string | null =>
+  isCloudServerId(id.trim()) ? CLOUD_ID_RESERVED_TEXT : null;
+
 export type EscrowToolDef = EscrowService["toolDefs"][number];
 
 export interface CloudOAuth {
