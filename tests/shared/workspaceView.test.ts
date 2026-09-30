@@ -65,6 +65,31 @@ describe("connectorRows", () => {
     expect(connectorRows(WS, "owner-uid", null)[0]!.origin).toBe("desktop");
   });
 
+  it("title：目录行有 label 用 label（手机那台读「Notion」不读「cloud-notion」），label 空回 serverId", () => {
+    const ws: WorkspaceSnapshot = {
+      ...WS,
+      connectors: [
+        { workspaceId: "ws-1", hostUid: "owner-uid", serverId: "cloud-notion", label: "Notion", tools: [] },
+        { workspaceId: "ws-1", hostUid: "member-uid", serverId: "linear", label: "", tools: [] },
+        { workspaceId: "ws-1", hostUid: "member-uid", serverId: "sentry", label: "   ", tools: [] },
+      ],
+    };
+    expect(connectorRows(ws, "owner-uid", null).map((r) => r.title)).toEqual(["Notion", "linear", "sentry"]);
+  });
+
+  it("两个人借同一个手机应用（同 serverId）不撞：行键带 hostUid", () => {
+    const ws: WorkspaceSnapshot = {
+      ...WS,
+      connectors: [
+        { workspaceId: "ws-1", hostUid: "owner-uid", serverId: "cloud-notion", label: "Notion", tools: [] },
+        { workspaceId: "ws-1", hostUid: "member-uid", serverId: "cloud-notion", label: "Notion", tools: [] },
+      ],
+    };
+    const keys = connectorRows(ws, "owner-uid", null).map((r) => r.key);
+    expect(new Set(keys).size).toBe(2);
+    expect(keys).toEqual(["owner-uid:cloud-notion", "member-uid:cloud-notion"]);
+  });
+
   it("toolsSummary：[] → 全部工具，否则 N 个工具", () => {
     const rows = connectorRows(WS, "owner-uid", null);
     expect(rows.find((r) => r.serverId === "shopify")!.toolsSummary).toBe("全部工具");

@@ -67,9 +67,9 @@ export function WorkspaceConnectorsTab({ ws, selfUid }: { ws: WorkspaceSnapshot;
         ) : (
           rows.map((row) => (
             <InsetRow
-              key={row.serverId}
+              key={row.key}
               leading={<InsetIcon><Plug /></InsetIcon>}
-              title={row.serverId}
+              title={row.title}
               subtitle={row.origin === "phone" ? `${row.hostLabel} · 手机上接的 · ${row.toolsSummary}` : `${row.hostLabel} · ${row.toolsSummary}`}
               trailing={
                 <>

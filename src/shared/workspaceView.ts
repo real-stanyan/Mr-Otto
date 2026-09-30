@@ -32,7 +32,11 @@ import { isCloudServerId } from "./remote/pxCloud.js";
 export type ConnectorCloudState = "ready" | "unknown" | "off" | "phone";
 
 export interface ConnectorRowView {
+  /** 列表的键：同一个手机应用（cloud-notion）可以被两个人借给同一个团队，只用 serverId 会撞 */
+  key: string;
   serverId: string;
+  /** 行标题：目录行的 label 非空就用它（手机那台读「Notion」），否则回 serverId */
+  title: string;
   hostUid: string;
   hostLabel: string;
   mine: boolean;
@@ -82,7 +86,9 @@ export function connectorRows(
   return ws.connectors.map((c) => {
     const mine = c.hostUid === selfUid;
     return {
+      key: `${c.hostUid}:${c.serverId}`,
       serverId: c.serverId,
+      title: c.label.trim() || c.serverId,
       hostUid: c.hostUid,
       hostLabel: labelOf(ws, c.hostUid),
       mine,
