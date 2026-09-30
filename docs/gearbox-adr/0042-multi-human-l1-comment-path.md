@@ -1,8 +1,8 @@
 # ADR-0042: Multi-human repos narrow L1 approval to the PR-comment path
 
 - Date: 2026-07-23
-- Provenance: copied from [gearbox ADR-0042](https://github.com/real-stanyan/gearbox/blob/master/docs/gearbox-adr/0042-multi-human-l1-comment-path.md) (gearbox-install init, upstream sha256:d76d072583c8)
-- Status: accepted
+- Provenance: backfilled from [gearbox ADR-0042](https://github.com/real-stanyan/gearbox/blob/master/docs/gearbox-adr/0042-multi-human-l1-comment-path.md) (gearbox-update tool sync, upstream sha256:7eb69e72578c)
+- Status: accepted; amended by ADR-0053 (the roster)
 - Related: ADR-0006 (weak-b agreement forms), ADR-0034 (`<maintainer>` anchors a GitHub username), ADR-0036 (install maintainer binding)
 
 ## Context
