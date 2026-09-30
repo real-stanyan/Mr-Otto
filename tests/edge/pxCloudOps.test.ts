@@ -250,6 +250,39 @@ function wrapFetch(x: ReturnType<typeof deps>, hook: (url: string, init: Request
 const isRefresh = (url: string, init: RequestInit) =>
   url === "https://auth.notion.com/t" && new URLSearchParams(String(init.body)).get("grant_type") === "refresh_token";
 
+describe("OAuth 请求的形状（#1430 终审 M7）", () => {
+  it("资源元数据给了 resource / scopes：授权 URL、pending、换 token、落箱的凭据都用它；注册回的 client_secret 换 token 时带上", async () => {
+    const x = deps();
+    const tokenBodies: URLSearchParams[] = [];
+    wrapFetch(x, (url, init) => {
+      if (url.endsWith("/.well-known/oauth-protected-resource/mcp")) {
+        return J(200, { resource: "https://mcp.notion.com/", scopes_supported: ["mcp"], authorization_servers: ["https://auth.notion.com"] });
+      }
+      if (url === "https://auth.notion.com/r") return J(201, { client_id: "cid", client_secret: "sek" });
+      if (url === "https://auth.notion.com/t") tokenBodies.push(new URLSearchParams(String(init.body)));
+      return undefined;
+    });
+    const r = await cloudConnect(x.d, UID, { catalogId: "notion", params: {} });
+    if (!r.ok || r.reply.kind !== "authorize") throw new Error("应当回授权 URL");
+    const u = new URL(r.reply.authorizeUrl);
+    expect(u.searchParams.get("resource")).toBe("https://mcp.notion.com/");
+    expect(u.searchParams.get("scope")).toBe("mcp");
+    const state = u.searchParams.get("state")!;
+    expect(x.m.pending.get(state)).toMatchObject({ resource: "https://mcp.notion.com/", url: "https://mcp.notion.com/mcp" });
+    expect(await cloudCallback(x.d, UID, { state, code: "C", error: null })).toMatchObject({ ok: true });
+    expect(Object.fromEntries(tokenBodies[0]!)).toMatchObject({ resource: "https://mcp.notion.com/", client_secret: "sek" });
+    const svc = x.m.peekBox()!.services[0]!;
+    expect(svc.oauth).toMatchObject({ resource: "https://mcp.notion.com/", clientInformation: { client_id: "cid", client_secret: "sek" } });
+    // MCP 请求仍打接入 URL，resource 只是凭据的受众
+    expect(svc.url).toBe("https://mcp.notion.com/mcp");
+  });
+  it("资源元数据没给 resource：退回接入 URL，也照样记进凭据", async () => {
+    const x = deps();
+    await loginNotion(x);
+    expect(x.m.peekBox()!.services[0]!.oauth).toMatchObject({ resource: "https://mcp.notion.com/mcp" });
+  });
+});
+
 describe("cloudRefresh：并发 / 中途变化（I1）", () => {
   it("两次并发续期、厂商轮换 refresh_token：第二次 invalid_grant 不许把好凭据标成 needs_login", async () => {
     const x = deps();

@@ -31,6 +31,8 @@ export interface PendingAuth {
   uid: string;
   catalogId: string;
   url: string;
+  /** 授权 URL 里带的那个 resource（资源元数据声明的，没有就是 url）；换 token 与之后续期要带同一个 */
+  resource: string;
   verifier: string;
   clientInformation: Record<string, unknown> & { client_id: string };
   tokenEndpoint: string;
@@ -139,8 +141,9 @@ export async function cloudConnect(
   }
   const state = makeState(uid, d.random);
   const { verifier, challenge } = await pkcePair(d.random);
+  const resource = disc.meta.resource ?? url;
   const pending: PendingAuth = {
-    state, uid, catalogId: entry.id, url, verifier,
+    state, uid, catalogId: entry.id, url, resource, verifier,
     clientInformation: reg.client, tokenEndpoint: disc.meta.tokenEndpoint, exp: d.now() + PENDING_TTL_MS,
   };
   const full = await d.store.atomic(async () => {
@@ -159,7 +162,7 @@ export async function cloudConnect(
     ok: true,
     reply: {
       kind: "authorize",
-      authorizeUrl: authorizeUrl({ meta: disc.meta, clientId: reg.client.client_id, redirectUri: d.callbackUrl, challenge, state, resource: url }),
+      authorizeUrl: authorizeUrl({ meta: disc.meta, clientId: reg.client.client_id, redirectUri: d.callbackUrl, challenge, state, resource }),
     },
   };
 }
@@ -179,7 +182,8 @@ export async function cloudCallback(
 
   const tok = await exchangeCode(d.fetch, {
     tokenEndpoint: pending.tokenEndpoint, code: q.code, verifier: pending.verifier,
-    clientId: pending.clientInformation.client_id, redirectUri: d.callbackUrl, resource: pending.url,
+    clientId: pending.clientInformation.client_id, redirectUri: d.callbackUrl, resource: pending.resource,
+    ...(typeof pending.clientInformation.client_secret === "string" ? { clientSecret: pending.clientInformation.client_secret } : {}),
   });
   const serverId = cloudServerId(pending.catalogId);
   if (!tok.ok) {
@@ -192,7 +196,7 @@ export async function cloudCallback(
     return { ok: false, message: `登录成功，但读不到它的工具：${listed.message}` };
   }
   const homeId = await d.homeIdOf(uid);
-  const oauth: CloudOAuth = { tokens: tok.tokens, clientInformation: pending.clientInformation, tokenEndpoint: pending.tokenEndpoint };
+  const oauth: CloudOAuth = { tokens: tok.tokens, clientInformation: pending.clientInformation, tokenEndpoint: pending.tokenEndpoint, resource: pending.resource };
   await mutate(d, uid, (box) => upsertCloudService(box, { serverId, catalogId: pending.catalogId, url: pending.url, oauth, toolDefs: listed.toolDefs }, homeId, d.now()));
   return { ok: true, serverId };
 }

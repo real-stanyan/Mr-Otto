@@ -1,7 +1,7 @@
 // tests/shared/remote/pxCloud.test.ts
 import { describe, expect, it } from "vitest";
 import {
-  CLOUD_TEXT, cloudNeedsLogin, cloudServerId, cloudView, connectDoneUrl, emptyCloudBox, ensureHomeGrant,
+  CLOUD_ID_RESERVED_TEXT, CLOUD_TEXT, cloudIdReservedError, cloudNeedsLogin, cloudServerId, cloudView, connectDoneUrl, emptyCloudBox, ensureHomeGrant,
   isCloudServerId, markNeedsLogin, mergeEscrow, parseCloudBox, parseCloudError, parseCloudView, parseConnectDone,
   parseConnectReply, removeCloudService, setCloudGrant, toConnectDone, upsertCloudService, withCloudOAuth,
   type CloudBox,
@@ -42,6 +42,26 @@ describe("parseCloudBox", () => {
     expect(bad((b) => { b.services[0].status = "weird"; })).toBeNull();
     expect(bad((b) => { b.services[0].serverId = "notion"; })).toBeNull(); // 必须带 cloud- 前缀
     expect(bad((b) => { b.v = 2; })).toBeNull();
+  });
+  it("oauth.resource 可选（没有这一格的旧箱照样有效）；有就得是 https 字符串（#1430 终审 M7）", () => {
+    const good = JSON.parse(JSON.stringify(boxWithNotion()));
+    expect(good.services[0].oauth.resource).toBeUndefined();
+    expect(parseCloudBox(good)).not.toBeNull();
+    const withRes = JSON.parse(JSON.stringify(good));
+    withRes.services[0].oauth.resource = "https://mcp.notion.com/";
+    expect(parseCloudBox(withRes)?.services[0]?.oauth?.resource).toBe("https://mcp.notion.com/");
+    withRes.services[0].oauth.resource = "http://mcp.notion.com/";
+    expect(parseCloudBox(withRes)).toBeNull();
+    withRes.services[0].oauth.resource = 7;
+    expect(parseCloudBox(withRes)).toBeNull();
+  });
+});
+
+describe("保留前缀闸（#1430 终审 I-2）", () => {
+  it("cloud- 开头（去掉首尾空白后）回那句话，别的回 null", () => {
+    expect(cloudIdReservedError(" cloud-x")).toBe(CLOUD_ID_RESERVED_TEXT);
+    expect(cloudIdReservedError("cloudflare")).toBeNull();
+    expect([...CLOUD_ID_RESERVED_TEXT].some((c) => c === ",")).toBe(false); // 中文里的逗号是全角
   });
 });
 

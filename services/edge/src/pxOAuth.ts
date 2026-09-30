@@ -9,6 +9,11 @@ import type { CloudOAuth } from "../../../src/shared/remote/pxCloud.js";
 type FetchLike = (url: string, init: RequestInit) => Promise<Response>;
 export type Random = (n: number) => Uint8Array;
 
+/** 每一发外呼的上限（#1430 终审 M6）。厂商挂住不回时，DO 里这次请求不该陪着挂到平台把它掐掉——超时抛出来的
+    错落进各自原来的失败形状（discovery / register / token 失败、续期 transient），调用方一处都不用改 */
+export const UPSTREAM_TIMEOUT_MS = 15_000;
+const timeoutSignal = (): AbortSignal => AbortSignal.timeout(UPSTREAM_TIMEOUT_MS);
+
 const isObj = (v: unknown): v is Record<string, unknown> =>
   v !== null && typeof v === "object" && !Array.isArray(v);
 const httpsStr = (v: unknown): v is string => typeof v === "string" && /^https:\/\//.test(v);
@@ -45,14 +50,19 @@ export interface OAuthMeta {
   authorizationEndpoint: string;
   tokenEndpoint: string;
   registrationEndpoint: string | null;
+  /** 只取资源元数据（RFC 9728）的 scopes_supported；它没给就空 = 不带 scope。授权服务器那份是它**支持**的全集，
+      整份照搬会向用户要一堆这个资源根本用不上的权限，有的厂商还会因为认不出其中某个直接拒（#1430 终审 M7） */
   scopes: string[];
+  /** 资源元数据里声明的 resource 标识（https 才认）。有它就用它当 resource 参数，而不是接入时的原始 URL——
+      两者差一个尾斜杠 / 路径时，严格的授权服务器会拒掉「受众对不上」 */
+  resource: string | null;
 }
 
 export type OAuthFail = { ok: false; code: "discovery" | "no_dcr" | "register" | "token"; message: string };
 
 async function getJson(fetchLike: FetchLike, url: string): Promise<Record<string, unknown> | null> {
   try {
-    const res = await fetchLike(url, { method: "GET", headers: { accept: "application/json" } });
+    const res = await fetchLike(url, { method: "GET", headers: { accept: "application/json" }, signal: timeoutSignal() });
     if (!res.ok) return null;
     const body: unknown = await res.json();
     return isObj(body) ? body : null;
@@ -81,6 +91,8 @@ export async function discoverOAuth(fetchLike: FetchLike, resourceUrl: string): 
     (path ? await getJson(fetchLike, `${res.origin}/.well-known/oauth-protected-resource${path}`) : null) ??
     (await getJson(fetchLike, `${res.origin}/.well-known/oauth-protected-resource`));
   const servers = prm && Array.isArray(prm.authorization_servers) ? prm.authorization_servers.filter(httpsStr) : [];
+  const resource = prm && httpsStr(prm.resource) ? prm.resource : null;
+  const scopes = prm && Array.isArray(prm.scopes_supported) ? prm.scopes_supported.filter((x): x is string => typeof x === "string") : [];
   const issuer = new URL(servers[0] ?? res.origin);
   const ipath = issuer.pathname === "/" ? "" : issuer.pathname.replace(/\/$/, "");
   const candidates = [
@@ -98,14 +110,16 @@ export async function discoverOAuth(fetchLike: FetchLike, resourceUrl: string): 
         authorizationEndpoint: m.authorization_endpoint,
         tokenEndpoint: m.token_endpoint,
         registrationEndpoint: httpsStr(m.registration_endpoint) ? m.registration_endpoint : null,
-        scopes: Array.isArray(m.scopes_supported) ? m.scopes_supported.filter((s): s is string => typeof s === "string") : [],
+        scopes,
+        resource,
       },
     };
   }
   return { ok: false, code: "discovery", message: "找不到这个应用的登录服务" };
 }
 
-/** RFC 7591。public client（无密钥）：换 token 靠 PKCE，DO 里不存 client_secret */
+/** RFC 7591。按 public client（无密钥）申请：换 token 靠 PKCE。厂商若仍回了 client_secret，它随 clientInformation
+    一起封进箱，换 token / 续期时按 client_secret_post 带上（#1430 终审 M7）——不带的话这种厂商会拒 */
 export async function registerClient(
   fetchLike: FetchLike, meta: OAuthMeta, redirectUri: string
 ): Promise<{ ok: true; client: Record<string, unknown> & { client_id: string } } | OAuthFail> {
@@ -121,6 +135,7 @@ export async function registerClient(
         response_types: ["code"],
         token_endpoint_auth_method: "none",
       }),
+      signal: timeoutSignal(),
     });
     if (!res.ok) return { ok: false, code: "register", message: await upstreamReason(res) };
     const body: unknown = await res.json();
@@ -146,7 +161,7 @@ export function authorizeUrl(o: { meta: OAuthMeta; clientId: string; redirectUri
 
 export async function exchangeCode(
   fetchLike: FetchLike,
-  o: { tokenEndpoint: string; code: string; verifier: string; clientId: string; redirectUri: string; resource: string }
+  o: { tokenEndpoint: string; code: string; verifier: string; clientId: string; clientSecret?: string; redirectUri: string; resource: string }
 ): Promise<{ ok: true; tokens: Record<string, unknown> & { access_token: string } } | OAuthFail> {
   try {
     const res = await fetchLike(o.tokenEndpoint, {
@@ -155,7 +170,9 @@ export async function exchangeCode(
       body: new URLSearchParams({
         grant_type: "authorization_code", code: o.code, code_verifier: o.verifier,
         client_id: o.clientId, redirect_uri: o.redirectUri, resource: o.resource,
+        ...(o.clientSecret !== undefined ? { client_secret: o.clientSecret } : {}),
       }).toString(),
+      signal: timeoutSignal(),
     });
     if (!res.ok) return { ok: false, code: "token", message: await upstreamReason(res) };
     const body: unknown = await res.json();
@@ -166,7 +183,8 @@ export async function exchangeCode(
   }
 }
 
-/** 续期结果三态：dead = 登录确实失效了（要人重新登录）；transient = 这一次没问成（网络 / 5xx / 回包读不懂），
+/** 续期结果三态：dead = 登录确实失效了（要人重新登录）；transient = 这一次没问成（网络 / 超时 / 5xx / 408 / 429 /
+    回包读不懂），
     凭据没有任何证据说它坏了，不许因为一次抖动就让人重登 */
 export type RefreshResult = { kind: "ok"; oauth: CloudOAuth } | { kind: "dead" } | { kind: "transient" };
 
@@ -174,15 +192,22 @@ export type RefreshResult = { kind: "ok"; oauth: CloudOAuth } | { kind: "dead" }
 export async function refreshCloudOAuth(fetchLike: FetchLike, oauth: CloudOAuth): Promise<RefreshResult> {
   const refresh = (oauth.tokens as { refresh_token?: unknown } | undefined)?.refresh_token;
   const clientId = (oauth.clientInformation as { client_id?: unknown } | undefined)?.client_id;
+  const clientSecret = (oauth.clientInformation as { client_secret?: unknown } | undefined)?.client_secret;
   // 记下的材料缺了 / 端点不是 https（存进去时就该是；这里再验一次，凭据不往明文端点发）：再怎么重试都不会好
   if (typeof refresh !== "string" || typeof clientId !== "string" || !httpsStr(oauth.tokenEndpoint)) return { kind: "dead" };
   try {
     const res = await fetchLike(oauth.tokenEndpoint, {
       method: "POST",
       headers: { "content-type": "application/x-www-form-urlencoded", accept: "application/json" },
-      body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: refresh, client_id: clientId }).toString(),
+      body: new URLSearchParams({
+        grant_type: "refresh_token", refresh_token: refresh, client_id: clientId,
+        ...(typeof clientSecret === "string" ? { client_secret: clientSecret } : {}),
+        ...(httpsStr(oauth.resource) ? { resource: oauth.resource } : {}),
+      }).toString(),
+      signal: timeoutSignal(),
     });
-    if (res.status >= 500) return { kind: "transient" };
+    // 408（请求超时）/ 429（限流）说的是「这一次没问成」，不是「这张 refresh_token 坏了」（#1430 终审 M1）
+    if (res.status >= 500 || res.status === 408 || res.status === 429) return { kind: "transient" };
     if (!res.ok) return { kind: "dead" };
     const tokens: unknown = await res.json();
     if (!isObj(tokens) || typeof tokens.access_token !== "string") return { kind: "transient" };

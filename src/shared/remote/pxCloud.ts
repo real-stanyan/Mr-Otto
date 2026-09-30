@@ -28,6 +28,9 @@ export interface CloudOAuth {
   clientInformation?: Record<string, unknown>;
   /** 接入时记下，续期直接用——不再像桌面那只箱的兜底自刷那样每次猜 discovery */
   tokenEndpoint: string;
+  /** 接入时用的 resource 参数（资源元数据声明的那个，没有就是接入 URL）；续期原样带上。
+      可选：这一格加进来之前存的箱没有它，照样有效（#1430 终审 M7） */
+  resource?: string;
 }
 
 /** allow 口径同 workspace_connectors：[] = 整台放行 */
@@ -67,6 +70,7 @@ function parseService(s: unknown): CloudService | null {
   if (s.headers !== undefined && !isStrRecord(s.headers)) return null;
   if (s.oauth !== undefined) {
     if (!isObj(s.oauth) || typeof s.oauth.tokenEndpoint !== "string" || !/^https:\/\//.test(s.oauth.tokenEndpoint)) return null;
+    if (s.oauth.resource !== undefined && (typeof s.oauth.resource !== "string" || !/^https:\/\//.test(s.oauth.resource))) return null;
   }
   if (!Array.isArray(s.toolDefs)) return null;
   if (s.status !== "ok" && s.status !== "needs_login") return null;

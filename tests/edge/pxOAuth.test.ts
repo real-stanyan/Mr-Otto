@@ -43,7 +43,26 @@ describe("discoverOAuth", () => {
       return J(404, {});
     };
     const r = await discoverOAuth(f, "https://mcp.notion.com/mcp");
-    expect(r).toEqual({ ok: true, meta: { authorizationEndpoint: "https://auth.notion.com/a", tokenEndpoint: "https://auth.notion.com/t", registrationEndpoint: "https://auth.notion.com/r", scopes: ["read"] } });
+    // 授权服务器的 scopes_supported 不整份照搬（#1430 终审 M7）：那是它**支持**的全集，不是这个资源要的
+    expect(r).toEqual({ ok: true, meta: { authorizationEndpoint: "https://auth.notion.com/a", tokenEndpoint: "https://auth.notion.com/t", registrationEndpoint: "https://auth.notion.com/r", scopes: [], resource: null } });
+  });
+  it("9728 的 resource / scopes_supported 优先：resource 参数用它、scope 只取资源元数据给的", async () => {
+    const f = async (u: string) => {
+      if (u === "https://mcp.notion.com/.well-known/oauth-protected-resource/mcp") {
+        return J(200, { resource: "https://mcp.notion.com/", scopes_supported: ["mcp:read", 7], authorization_servers: ["https://auth.notion.com"] });
+      }
+      if (u === "https://auth.notion.com/.well-known/oauth-authorization-server") {
+        return J(200, { authorization_endpoint: "https://auth.notion.com/a", token_endpoint: "https://auth.notion.com/t", scopes_supported: ["everything"] });
+      }
+      return J(404, {});
+    };
+    expect(await discoverOAuth(f, "https://mcp.notion.com/mcp")).toMatchObject({ ok: true, meta: { resource: "https://mcp.notion.com/", scopes: ["mcp:read"] } });
+    // resource 不是 https 就不认（凭据的受众不往明文地址指）
+    const g = async (u: string) =>
+      u.endsWith("/oauth-protected-resource/mcp") ? J(200, { resource: "http://mcp.x/", authorization_servers: ["https://auth.x"] })
+        : u === "https://auth.x/.well-known/oauth-authorization-server" ? J(200, { authorization_endpoint: "https://auth.x/a", token_endpoint: "https://auth.x/t" })
+          : J(404, {});
+    expect(await discoverOAuth(g, "https://mcp.x/mcp")).toMatchObject({ ok: true, meta: { resource: null, scopes: [] } });
   });
   it("9728 没有就退回资源同源的 8414", async () => {
     const f = async (u: string) =>
@@ -60,8 +79,31 @@ describe("discoverOAuth", () => {
   });
 });
 
+describe("外呼都带 15 秒超时（#1430 终审 M6），超时落进原来的失败形状", () => {
+  const timeout = () => Promise.reject(new DOMException("The operation was aborted due to timeout", "TimeoutError"));
+  const meta = { authorizationEndpoint: "https://a/a", tokenEndpoint: "https://a/t", registrationEndpoint: "https://a/r", scopes: [], resource: null };
+  it("每一发都带 signal", async () => {
+    const signals: unknown[] = [];
+    const f = async (_u: string, init: RequestInit) => { signals.push(init.signal); return J(404, {}); };
+    await discoverOAuth(f, "https://x.example/mcp");
+    await registerClient(f, meta, "https://e/cb");
+    await exchangeCode(f, { tokenEndpoint: "https://a/t", code: "c", verifier: "v", clientId: "cid", redirectUri: "https://e/cb", resource: "r" });
+    await refreshCloudOAuth(f, { tokens: { refresh_token: "RT" }, clientInformation: { client_id: "cid" }, tokenEndpoint: "https://a/t" });
+    expect(signals.length).toBeGreaterThanOrEqual(6);
+    for (const sg of signals) expect(sg).toBeInstanceOf(AbortSignal);
+  });
+  it("discovery / register / token / 续期 transient", async () => {
+    expect(await discoverOAuth(timeout, "https://x.example/mcp")).toMatchObject({ ok: false, code: "discovery" });
+    expect(await registerClient(timeout, meta, "https://e/cb")).toMatchObject({ ok: false, code: "register" });
+    expect(await exchangeCode(timeout, { tokenEndpoint: "https://a/t", code: "c", verifier: "v", clientId: "cid", redirectUri: "https://e/cb", resource: "r" }))
+      .toMatchObject({ ok: false, code: "token" });
+    expect(await refreshCloudOAuth(timeout, { tokens: { refresh_token: "RT" }, clientInformation: { client_id: "cid" }, tokenEndpoint: "https://a/t" }))
+      .toEqual({ kind: "transient" });
+  });
+});
+
 describe("registerClient", () => {
-  const meta = { authorizationEndpoint: "https://a/a", tokenEndpoint: "https://a/t", registrationEndpoint: "https://a/r", scopes: [] };
+  const meta = { authorizationEndpoint: "https://a/a", tokenEndpoint: "https://a/t", registrationEndpoint: "https://a/r", scopes: [], resource: null };
   it("没有注册端点 = no_dcr", async () => {
     expect(await registerClient(async () => J(200, {}), { ...meta, registrationEndpoint: null }, "https://e/cb")).toMatchObject({ ok: false, code: "no_dcr" });
   });
@@ -78,10 +120,12 @@ describe("registerClient", () => {
 });
 
 describe("authorizeUrl / exchangeCode / refresh", () => {
-  const meta = { authorizationEndpoint: "https://a/authorize?x=1", tokenEndpoint: "https://a/t", registrationEndpoint: null, scopes: ["read", "write"] };
+  const meta = { authorizationEndpoint: "https://a/authorize?x=1", tokenEndpoint: "https://a/t", registrationEndpoint: null, scopes: ["read", "write"], resource: null };
   it("授权 URL 带 S256、resource、scope，保留原有 query", () => {
     const u = new URL(authorizeUrl({ meta, clientId: "cid", redirectUri: "https://e/cb", challenge: "ch", state: "st", resource: "https://m/mcp" }));
     expect(u.searchParams.get("x")).toBe("1");
+    // 资源元数据没给 scopes 就不带 scope（#1430 终审 M7）
+    expect(new URL(authorizeUrl({ meta: { ...meta, scopes: [] }, clientId: "cid", redirectUri: "https://e/cb", challenge: "ch", state: "st", resource: "https://m/mcp" })).searchParams.has("scope")).toBe(false);
     expect(Object.fromEntries(u.searchParams)).toMatchObject({ response_type: "code", client_id: "cid", redirect_uri: "https://e/cb", code_challenge: "ch", code_challenge_method: "S256", state: "st", resource: "https://m/mcp", scope: "read write" });
   });
   it("换 token：表单体；没 access_token 算失败", async () => {
@@ -93,7 +137,25 @@ describe("authorizeUrl / exchangeCode / refresh", () => {
     expect(await exchangeCode(async () => J(400, { error: "invalid_grant" }), { tokenEndpoint: "https://a/t", code: "c", verifier: "v", clientId: "cid", redirectUri: "https://e/cb", resource: "r" }))
       .toEqual({ ok: false, code: "token", message: "invalid_grant" });
   });
+  it("注册回了 client_secret 就在换 token 时带上（client_secret_post）；没回就不带这个键", async () => {
+    let body = "";
+    await exchangeCode(async (_u, init) => { body = String(init.body); return J(200, { access_token: "AT" }); },
+      { tokenEndpoint: "https://a/t", code: "c", verifier: "v", clientId: "cid", clientSecret: "sek", redirectUri: "https://e/cb", resource: "https://m/" });
+    expect(Object.fromEntries(new URLSearchParams(body))).toMatchObject({ client_secret: "sek", resource: "https://m/" });
+    await exchangeCode(async (_u, init) => { body = String(init.body); return J(200, { access_token: "AT" }); },
+      { tokenEndpoint: "https://a/t", code: "c", verifier: "v", clientId: "cid", redirectUri: "https://e/cb", resource: "https://m/" });
+    expect(new URLSearchParams(body).has("client_secret")).toBe(false);
+  });
   const oauth = { tokens: { access_token: "old", refresh_token: "RT" }, clientInformation: { client_id: "cid" }, tokenEndpoint: "https://a/t" };
+  it("续期：记下的 resource 与 client_secret 一起带上；都没有就都不带", async () => {
+    let body = "";
+    const cap = async (_u: string, init: RequestInit) => { body = String(init.body); return J(200, { access_token: "new" }); };
+    await refreshCloudOAuth(cap, { ...oauth, clientInformation: { client_id: "cid", client_secret: "sek" }, resource: "https://m/" });
+    expect(Object.fromEntries(new URLSearchParams(body))).toMatchObject({ grant_type: "refresh_token", client_secret: "sek", resource: "https://m/" });
+    await refreshCloudOAuth(cap, oauth);
+    const b = new URLSearchParams(body);
+    expect(b.has("client_secret") || b.has("resource")).toBe(false);
+  });
   it("续期用记下的 tokenEndpoint；不轮换就保留旧 refresh_token", async () => {
     let hit = "";
     const r = await refreshCloudOAuth(async (u) => { hit = u; return J(200, { access_token: "new" }); }, oauth);
@@ -108,6 +170,9 @@ describe("authorizeUrl / exchangeCode / refresh", () => {
     expect(called).toBe(false);
     expect(await refreshCloudOAuth(async () => { throw new Error("reset"); }, oauth)).toEqual({ kind: "transient" });
     expect(await refreshCloudOAuth(async () => J(503, {}), oauth)).toEqual({ kind: "transient" });
+    // 408 / 429 是「这一次没问成」，不是「登录失效了」（#1430 终审 M1）
+    expect(await refreshCloudOAuth(async () => J(408, {}), oauth)).toEqual({ kind: "transient" });
+    expect(await refreshCloudOAuth(async () => J(429, { error: "slow_down" }), oauth)).toEqual({ kind: "transient" });
     expect(await refreshCloudOAuth(async () => J(200, { nope: 1 }), oauth)).toEqual({ kind: "transient" });
     expect(await refreshCloudOAuth(async () => new Response("<html>", { status: 200 }), oauth)).toEqual({ kind: "transient" });
   });
