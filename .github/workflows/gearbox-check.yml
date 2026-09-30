@@ -1,0 +1,23 @@
+name: gearbox-check
+
+# Protocol check (gearbox ADR-0051): fences intact, AGENTS.md within 32 KiB,
+# required sections present, CI runs the Gate command. Read-only and offline.
+# Tool-owned: gearbox-agents update rewrites this file when the template changes.
+
+on:
+  pull_request:
+  push:
+    branches: [main, master]
+
+permissions:
+  contents: read
+
+jobs:
+  protocol:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+      - run: npx -y gearbox-agents@2 check
