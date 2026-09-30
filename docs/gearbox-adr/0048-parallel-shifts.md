@@ -1,8 +1,8 @@
 # ADR-0048: Parallel shifts in multi-human repos — lanes, per-lane handoffs, repo-level terminals
 
 - Date: 2026-07-23
-- Provenance: copied from [gearbox ADR-0048](https://github.com/real-stanyan/gearbox/blob/master/docs/gearbox-adr/0048-parallel-shifts.md) (gearbox-install init, upstream sha256:5e9f5c280f64)
-- Status: accepted
+- Provenance: backfilled from [gearbox ADR-0048](https://github.com/real-stanyan/gearbox/blob/master/docs/gearbox-adr/0048-parallel-shifts.md) (gearbox-update tool sync, upstream sha256:1a58533f1a74)
+- Status: accepted (amended by ADR-0052: project ADRs are named by issue, so only the Gearbox repo claims ADR numbers at merge); amended by ADR-0054 (no context-only handoffs, no terminal declarations)
 - Related: ADR-0005 (handoff lives in an open issue), ADR-0007 (merge rules), ADR-0009 (terminal shift), ADR-0028 (version held to latest tag), ADR-0042 (multi-human L1 path), ADR-0044 (frontier claiming), ADR-0046 (shift-start sync), ADR-0047 (claim = assignment)
 
 ## Context
