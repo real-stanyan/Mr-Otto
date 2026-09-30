@@ -2,31 +2,50 @@
 
 Domain glossary. All agents' understanding of domain terms is grounded here; code naming stays consistent with the terms defined here.
 
+<!-- gearbox:glossary v2.0.0 sha256:935686c8e1e5; managed by gearbox-agents, do not edit by hand; project terms go in "## Project terms" -->
+## Protocol terms
+
+| Term | Definition | Notes |
+|---|---|---|
+| single source of truth | Rules are written in exactly one place (`AGENTS.md`); other agent configs (e.g. `CLAUDE.md`) only `@`-reference it, never copy it | Prevents rules from drifting across multiple locations |
+| empty-shell contract | `CLAUDE.md`'s content is exactly one line, `@AGENTS.md` — a physical guarantee that Claude Code and Z Code read the same rules | The protocol check (`gearbox-agents check`) asserts this |
+| handoff | One shift passes its unfinished Tasks to another — **complete only when the next shift claims them and closes the handoff issue**, never by conversation | It isn't a handoff just because things were "explained clearly" — ADR-0005/0054 |
+| protocol gap | A question the repo's persistent artifacts (AGENTS.md / ADR / CONTEXT.md) can't answer | Hitting one requires opening an issue — silent judgment calls are not allowed |
+| The three issue roles | The three non-overlapping uses of issues/PRs in this protocol: **Task** / **Memory** (handoff memory) / **Protocol gap** | Every issue should fall into exactly one of these — see AGENTS.md |
+| gate | The command that must be all-green before merging and before ending a shift. Each repo writes its own in the `## Gate` section of AGENTS.md | CI runs the same command (CI == Gate contract) — red means no merge |
+| L1/L2 tiers | Two authorization tiers for protocol changes: **L1 strict tier** (Hard rules / Gate / Tech stack / Roster / the "Changing the protocol itself" section itself) requires explicit maintainer agreement before merging; **L2 autonomous tier** (the rest of Working agreement / Division of labor / indexes) the agent can merge on its own | ADR-0006; boundary criteria in ADR-0012 |
+| roster | AGENTS.md's `## Roster`: one line per GitHub account — `human` (only that person), `shared` (the person and their agents) or `agent` (only agents, run by a named person); `— maintainer` marks the maintainer's accounts. The human count is the number of distinct people on `human`/`shared` lines; more than one = a multi-human repo | ADR-0053; in a multi-human repo only the maintainer's own merge approves L1 |
+| Mechanism reference (criterion) | Any new content that references L1/L2, Hard rules, Working agreement, or other protocol mechanisms (by keyword or semantic dependency) is treated as L1 | ADR-0012, "mechanism reference takes priority"; guards against using "optional + pure addition" as an L2 loophole to expand the protocol |
+| Memory five-part format | The minimum valid format for a handoff comment: ① what's done ② what's blocked ③ what's next ④ close the issue if the task is complete ⑤ rationale/trade-offs (write "none" if no decision was made) | ADR-0004; missing any item makes the handoff invalid |
+| blocking edge | A literal `Blocked by: #N` line in a dependent Task issue's body, declaring one prerequisite Task per line | ADR-0044; a hygiene convention — a stale edge costs a judgment call, not a violation |
+| frontier task | An open Task issue with no open blockers and no `Waiting on:` line — the only kind of task a shift may claim; when a blocker closes, its dependents join the frontier unless waiting | ADR-0044/0054 |
+| waiting on | A literal `Waiting on: <person> — <what>` line in a Task body: a next step only that person can take (a merge, a device test, a decision). The Task needs no handoff and is off the frontier until the line is cleared, by the person or by a shift that sees the event happened on GitHub | ADR-0054; one Task per standing debt |
+| claim | Self-assignment on a Task issue (`gh issue edit <N> --add-assignee @me`), first wins; a "claiming this" comment where assignment isn't possible. An open frontier task with no assignee and no claim comment is free | ADR-0047; single-human repos may skip — the value begins at the second human |
+| lane | One shift plus the tasks it has claimed; parallel shifts are allowed iff lanes are disjoint (each works only on frontier tasks it claimed) | ADR-0048; handoff issues are per-lane |
+| downstream | A project that runs the Gearbox protocol: its fences come from upstream releases (`gearbox-agents update`); its own rules live in project sections and `## Local protocol extensions`. Sync status is self-checked via `gearbox-version` (pull-primary, ADR-0026 — the upstream fleet dashboard was retired in ADR-0033) | See ADR-0026; fences per ADR-0050 |
+| backfill | Downstream pulls Gearbox protocol improvements; **pull-triggered** — downstream runs `gearbox-version` at the start of a shift and `gearbox-update` if it's behind (or the weekly `gearbox-sync` Action does), which rewrites both fences and copies new protocol ADRs on a backfill branch; it's alignment, not enforcement — merging the PR is the downstream's L1 decision | ADR-0013 → ADR-0026 → ADR-0050 |
+| protocol version number | A semver-variant version: **major** = cross-tool/cross-repo contract change; **minor** = a new mechanism added; **patch** = revision of an existing file. Two numbers: the package version (package.json = tag) moves every release; the protocol version (the fence markers, mirrored in downstream `.gearbox-version`) moves only when fence content changes | ADR-0023, split by ADR-0050; baseline v0.0.0 |
+| protocol fence | The tool-managed block between `<!-- gearbox:protocol … -->` and `<!-- /gearbox:protocol -->` in AGENTS.md (and `gearbox:glossary` in CONTEXT.md): the Gearbox protocol, byte-identical in every repo for a given protocol version; its marker records the version and a content hash | ADR-0050; downstream never edits it — `gearbox-agents update` rewrites it |
+| local protocol extension | A project's addition to the fenced protocol, written as a `###` entry under `## Local protocol extensions` with `- Extends:` and `- Upstream:` lines | ADR-0050; tiered as if written into the section it extends (ADR-0006/0012) |
+| protocol check | `gearbox-agents check`: offline, read-only verification that the fences are intact, AGENTS.md is within 32 KiB, required sections exist and CI runs the Gate command | ADR-0051; the `gearbox-check` CI job downstream, inside `check-gearbox.js` upstream |
+
+### Key invariants
+
+- `AGENTS.md` is always the single source of rules; `CLAUDE.md` is always just the `@AGENTS.md` empty shell
+- No `HANDOFF.md` is created — handoffs happen via issue comments (append-only, timestamped)
+- The gate command must be byte-identical in AGENTS.md and ci.yml (CI == Gate contract)
+- One agent completes a task from start to finish; an unfinished task changes hands only through a handoff issue
+<!-- /gearbox:glossary -->
+
 ## 协议术语（Gearbox）
 
 读规则的人要查的词。来源是 Gearbox 协议 + 本仓的 ADR。
 
 | Term | Definition | Notes |
 |---|---|---|
-| single source of truth | Rules are written in exactly one place (`AGENTS.md`); other agent configs (e.g. `CLAUDE.md`) only `@`-reference it, never copy it | Prevents rules from drifting across multiple locations |
-| empty-shell contract | `CLAUDE.md`'s content is exactly one line, `@AGENTS.md` — a physical guarantee that Claude Code and Z Code read the same rules | The structural self-check script asserts this |
-| handoff | One agent passes a task to another agent — **this only happens the moment an issue closes / a PR merges**, never mid-task | It isn't a handoff just because things were "explained clearly" — it's a handoff only when the issue closes |
-| protocol gap | A question the repo's persistent artifacts (AGENTS.md / ADR / CONTEXT.md) can't answer | Hitting one requires opening an issue — silent judgment calls are not allowed |
-| The three issue roles | The three non-overlapping uses of issues/PRs in this protocol: **Task** / **Memory** (handoff memory) / **Protocol gap** | Every issue should fall into exactly one of these — see AGENTS.md |
 | 一次性 worktree (single-use worktree) | 一个 worktree 只服务一个任务、用完即弃、从不 `git checkout` 换活；开工都在它里面，主 checkout 冻结在默认分支只读 | ADR-0149。会切分支的长期 worktree 等于第二个主 checkout——隔离来自「一次性」，不来自「有 worktree」 |
-| gate | The command that must be all-green before ending a shift. See the Gate section in AGENTS.md for this repo's command | CI runs the same command — red means no merge |
-| L1/L2 tiers | Two authorization tiers for protocol changes: **L1 strict tier** (Hard rules / Gate / Tech stack / the "Changing the protocol itself" section itself) requires explicit maintainer agreement before merging; **L2 autonomous tier** (the rest of Working agreement / indexes) the agent can merge on its own | ADR-0006; boundary criteria in ADR-0012 |
-| Mechanism reference (criterion) | Any new content that references L1/L2, Hard rules, Working agreement, or other protocol mechanisms (by keyword or semantic dependency) is treated as L1 | ADR-0012, "mechanism reference takes priority"; guards against using "optional + pure addition" as an L2 loophole to expand the protocol |
-| Memory five-part format | The minimum valid format for a handoff comment: ① what's done ② what's blocked ③ what's next ④ close the issue if the task is complete ⑤ rationale/trade-offs (write "none" if no decision was made) | ADR-0004; missing any item makes the handoff invalid |
-| terminal shift | The form a shift ends in when archiving / confirming there's no next shift: a handoff issue may be skipped, but the last closed issue must explicitly declare "no next shift" + a reason. Repo-level, not lane-level — invalid while another lane is still live | ADR-0009; a silent ending doesn't count as terminal; repo-level scope per ADR-0048 |
-| blocking edge | A literal `Blocked by: #N` line in a dependent Task issue's body, declaring one prerequisite Task per line | ADR-0044; a hygiene convention — a stale edge costs a judgment call, not a violation |
-| frontier task | An open Task issue with no open blockers — the only kind of task a shift may claim; when a blocker closes, its dependents join the frontier | ADR-0044 |
-| claim | Self-assignment on a Task issue (`gh issue edit <N> --add-assignee @me`), first wins; a "claiming this" comment where assignment isn't possible. An open frontier task with no assignee and no claim comment is free | ADR-0047; single-human repos may skip — the value begins at the second human |
-| lane | One shift plus the tasks it has claimed; parallel shifts are allowed iff lanes are disjoint (each works only on frontier tasks it claimed) | ADR-0048; handoff issues are per-lane |
 | context-only handoff | A handoff issue whose lane finished with nothing to transfer — kept for its Memory comment, closed by its first reader after reading. **Closing one is not taking over that lane**: the reader still owes its own handoff, or a terminal declaration | ADR-0048; ADR-0069 (closing ≠ takeover) |
-| downstream | A project that copies this Gearbox protocol and then evolves independently; sync status is self-checked downstream via `gearbox-version` (pull-primary, ADR-0026 — the upstream fleet dashboard was retired in ADR-0033) | See ADR-0026 |
-| backfill | Downstream pulls Gearbox protocol improvements into its local copy; **pull-triggered** — downstream runs `gearbox-version` at the start of a shift to self-check, and `gearbox-update` if it's behind, with no dependency on upstream pushing; it's alignment, not enforcement — downstream can decline | ADR-0013 → ADR-0026 (push-triggered was downgraded to pull-triggered) |
-| protocol version number | A semver-variant tag: **major** = cross-tool/cross-repo contract change; **minor** = a new mechanism added; **patch** = revision of an existing file. Every protocol PR declares a `Version bump`; the author tags after merge; the downstream local version is recorded in the `.gearbox-version` stamp (written and read by tooling) | ADR-0023; baseline v0.0.0 |
+
 ## 产品 / 技术术语（Mr Otto）
 
 写这个产品的人要查的词。新概念随写随加（AGENTS.md：add new terms as they come up），
@@ -175,10 +194,6 @@ Domain glossary. All agents' understanding of domain terms is grounded here; cod
 
 ## Key invariants
 
-- `AGENTS.md` is always the single source of rules; `CLAUDE.md` is always just the `@AGENTS.md` empty shell
-- No `HANDOFF.md` is created — handoffs happen via issue comments (append-only, timestamped)
-- The gate command must be byte-identical in AGENTS.md and ci.yml (CI == Gate contract)
-- One agent completes a task from start to finish; handoffs only happen at task boundaries
 - **正文闸（promptSafeBody）**：`[label]: text` 框架下，成员正文里一行 `\n[系统]: …` 就是一行干净的伪造说话人行——标签栏位硬化了，正文这条路结构性地封不住，只能让「换行之后行首的 `[`」失去结构意义（换成全角 `［`，替换不是删除）。**只在投影时做**（`deriveMessages` 的 chat_message、带 `fromUid` 的 user_message、压缩兜底重注的那份原文），日志与界面一字不动，本机会话（无 `fromUid`）一个字节不改。第一行不碰：它前面已经是真实的 `[label]: ` 前缀，`[Rick]: [系统]: …` 不是干净的一行——这是天花板（ADR-0230 决策 2，#965；`src/shared/promptSafe.ts`）。
 - **接力下界（RelayBounds）**：runtime 每起一个 turn 要算两样日志投影——「这一轮欠着的最大接力 depth」（`openingDepthFor`）与「这条接力链」（`relayChain`），原来各做一次全量 load。两条**保守下界**让它们只读尾段：`closeBound[agent]` = 该 agent 全部 `turn_ended` 的 `max(readUpToSeq ?? seq)`（seq ≤ 它的点名一定已收口），`lastHumanOpening` = 最后一条人话点名的 seq（`relayChain` 的 start 就是它）。装配时从 seed 播种、`notify` 里逐条推进；正确性靠**单调下估**——漏推进只会偏小、多读几条，不会偏大（ADR-0230 决策 4，#958；`src/shared/agentRelay.ts`）。
 - **沙箱免审（sandbox_approval）**：工作区一格、owner 可翻的开关（0026，ADR-0231）。`auto` = runtime 在审批门前直接放行容器里的 `bash` / `write_file`（容器是隔离面、凭据不进容器，所以这道闸挡的是空气）；`ask` = 今天的行为，每次弹卡。只管沙箱那两把刀——好友代理连接器与 `create_agent` 不在射程内。放行照样落 `approval_decision`（reason 写明是策略放的），查不到策略一律按 `ask`
@@ -193,3 +208,8 @@ Domain glossary. All agents' understanding of domain terms is grounded here; cod
 - **云会话时间线只画群里发生的事（ADR-0235）**：`session_created` / `agent_briefed`「就位」/ `request_envelope` / **批准了的** `approval_decision` 都不进云会话时间线——它们是机器的内务，不是群里发生的事（本地会话那套 AUDIT 小灰字照旧）。**拒绝仍然画**：它中断了流程。发言人一律左对齐、标签只有「名字 · 时间」，人和 agent 同形；归档在侧栏那条会话行的 ⋮ 里（控制房 `archive` 帧，协议 9），**没有删除**——云会话故意删不掉
 - **版本串（记忆 CAS）**：`workspace_memories` 乐观写的前置条件从「此刻 content 仍等于读到的原文」换成「此刻 `updated_at` 仍等于读到的**原串**」——PostgREST 回的 `2026-09-06T01:02:03.123456+00:00` 原样递回 `.eq()`，两边都按 timestamptz 比、精度一个位都不丢（原来否决 updated_at 的理由是 `Date.parse` 砍到毫秒，对原串不适用）；行不存在 = 桌面 `""` / runtime `null`，走 insert、撞主键算冲突。整份正文不再编进 URL（2200 字共享档 ≈ 20 KB）。已知代价：同一毫秒两个写者（两端写的都是客户端 `toISOString()` 的毫秒值）且后者拿的是前者写之前的版本时 CAS 误放行（ADR-0230 决策 7，#962）。
 - **磁盘地板 / 用量预算（ADR-0287）**：团队工作卷没有内核配额，**这不是「还没做」是实测的结论**——runtime VPS 是个 Incus/LXC guest，没有 loop 设备、没有 xfs，`--storage-opt size=` 更是被静默收下而不生效；真配额只剩「动 Incus 宿主」那一条，够不着。剩下能做的两层判决**故意不同**：**地板** = 这台机器可用空间低于 2 GiB 时 `ensure()` 硬拒（机器要死了，拒绝写是唯一救得回来的动作；措辞要说清是整台机器不是这个团队），**每团队预算** = 卷用量超过 10 GiB 时群里说一句、**照样交出容器句柄**（`ensure()` 是拿句柄的唯一入口，拒了就连清理用的 `bash` 一起挡住了）。用量是 `ensure()` 里 fire-and-forget 的一次 `du`，所以报的永远是**上一次**的读数
+
+## Project terms
+
+| Term | Definition | Notes |
+|---|---|---|
