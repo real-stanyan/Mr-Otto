@@ -78,7 +78,7 @@
 2. edge：代入模板得到 `url` → 发现授权服务器（先 RFC 9728 protected resource metadata，退回 RFC 8414
    `/.well-known/oauth-authorization-server`）→ 动态注册（`redirect_uris: ["https://edge.mrotto.agency/px/v1/cloud/callback"]`，
    `token_endpoint_auth_method: "none"`，`client_name: "Mr Otto"`）→ 生成 PKCE verifier + `state`。
-   把 `{state, uid, catalogId, url, verifier, clientInformation, tokenEndpoint, exp: now+10min}` 暂存进**该用户的 DO**
+   把 `{state, uid, catalogId, url, resource, verifier, clientInformation, tokenEndpoint, exp: now+10min}` 暂存进**该用户的 DO**
    （storage 键 `pending:<state>`），回 `{authorizeUrl}`。
 3. 手机 `WebBrowser.openAuthSessionAsync(authorizeUrl, "mrotto://connector-done")`（与登录同一套，`mobile/src/oauth.ts`）。
 4. 厂商回跳 `GET /px/v1/cloud/callback?code&state`（**不带 JWT**）。`state` = `<uid>.<32 字节随机 base64url>`：edge 按
@@ -87,6 +87,8 @@
 6. 302 到 `mrotto://connector-done?ok=1&serverId=cloud-notion`；失败带 `ok=0&message=<给人看的一句>`。
 
 - 回调地址是 edge 自己的 https，所以不存在「自定义 scheme 被动态注册拒收」的问题（桌面当初绕开的那条，`mcpOAuth.ts` 头注）。
+- 请求形状（终审 M7，见 ADR-0336 决定 2）：`resource` 取资源元数据声明的那个、没有才用 `url`；`scope` 只取资源元数据的
+  `scopes_supported`，没给就不带；注册若回了 `client_secret`，换 token 与续期按 `client_secret_post` 带上。
 - OAuth token 从头到尾不经过手机。
 
 ### 3.2 粘 token（`auth: "token"`）
@@ -178,6 +180,9 @@ initialize + `tools/list` 验一次，成功才存。token 经 TLS 到 edge，�
 - `/cloud/connect` 按 uid 限速（DO 内计数，每分钟 10 次）；pending 条目数量封顶（同一用户最多 5 条未完成授权，多了先清过期的、
   仍满就拒）。
 - 手机不存任何应用凭据。
+- **已知缺口：授权链接可以被转发（#1432）。** `authorizeUrl` 被发给别人、由别人登录，那人的厂商凭据会落进**转发者**的箱
+  （`state` 绑的是发起者的 uid）；桌面走本机回环回调，不受影响。缓解方向：edge 跳去厂商之前先过一页「你正在把这个应用接到
+  某某 的 Mr Otto」，和 / 或缩短 pending 的 10 分钟。
 
 ## 11. 测试
 
