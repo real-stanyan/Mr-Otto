@@ -41,14 +41,22 @@ export interface TeamDeps {
   deleteRow(workspaceId: string, hostUid: string, serverId: string): Promise<void>;
 }
 
-/** 借出：授权先、目录行后；收回：授权先关、目录行后删。第一步抛了第二步不做 */
+/** 借出：授权先、目录行后；收回：授权先关、目录行后删。第一步抛了第二步不做。
+    借出时目录行没写成，授权要关回去（#1430 终审 M3）：留着就是一条团队里谁都看不见、却真能用的授权，
+    而界面上「借给团队」还是关着的。回滚尽力而为——它也失败时抛的仍是目录行那个错（那才是人要看的原因）；
+    收回那一侧不回滚：授权已经关了、行没删掉，界面看得见、再点一次即清 */
 export async function lendToTeamWith(
   deps: TeamDeps,
   o: { serverId: string; workspaceId: string; on: boolean; label: string; uid: string },
 ): Promise<void> {
   await deps.setGrant(o.serverId, o.workspaceId, o.on);
   if (o.on) {
-    await deps.upsertRow({ workspaceId: o.workspaceId, hostUid: o.uid, serverId: o.serverId, label: o.label, tools: [] });
+    try {
+      await deps.upsertRow({ workspaceId: o.workspaceId, hostUid: o.uid, serverId: o.serverId, label: o.label, tools: [] });
+    } catch (e) {
+      await deps.setGrant(o.serverId, o.workspaceId, false).catch(() => undefined);
+      throw e;
+    }
   } else {
     await deps.deleteRow(o.workspaceId, o.uid, o.serverId);
   }

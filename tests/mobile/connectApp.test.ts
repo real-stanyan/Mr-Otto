@@ -56,6 +56,21 @@ describe("lendToTeam / disconnect 的顺序", () => {
     await expect(lend(true)).rejects.toThrow();
     expect(calls).toEqual(["grant:cloud-x:w1:true"]);
   });
+  // #1430 终审 M3：授权开了、目录行没写成 = 一条团队里谁都看不见、却真能用的授权（界面上「借给团队」也还是关着）。
+  // 把授权关回去（尽力而为），再把原来那个错抛出去
+  it("借出：目录行写失败就把授权关回去，抛原来那个错", async () => {
+    failAt = "upsert:w1:cloud-x";
+    await expect(lend(true)).rejects.toThrow("upsert:w1:cloud-x 炸了");
+    expect(calls).toEqual(["grant:cloud-x:w1:true", "upsert:w1:cloud-x", "grant:cloud-x:w1:false"]);
+  });
+  it("借出：回滚本身也失败时，抛的仍是目录行那个错（回滚是尽力而为）", async () => {
+    const both: TeamDeps = {
+      ...deps,
+      setGrant: (s, w, on) => (on ? step(`grant:${s}:${w}:${on}`) : Promise.reject(new Error("回滚炸了"))),
+      upsertRow: () => Promise.reject(new Error("目录行炸了")),
+    };
+    await expect(lendToTeamWith(both, { serverId: "cloud-x", workspaceId: "w1", on: true, label: "X", uid: "u" })).rejects.toThrow("目录行炸了");
+  });
   it("收回：授权先关，目录行后删；授权没关成就不删行", async () => {
     await lend(false);
     expect(calls).toEqual(["grant:cloud-x:w1:false", "delete:w1:cloud-x"]);
