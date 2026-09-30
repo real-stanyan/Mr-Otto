@@ -11,7 +11,9 @@ import {
   type CatalogEntry,
 } from "../../../shared/mcpCatalog.js";
 import type { McpServerConfig } from "../../../shared/mcp.js";
+import { fillHttpEntry } from "../../../shared/mcpCatalogFill.js";
 import { mcpServerIdError, type McpDisplayStatus } from "./mcpForm.js";
+import { CLOUD_PREFIX, isCloudServerId } from "../../../shared/remote/pxCloud.js";
 
 /** 已装的一台 —— 目录卡要的是**状态**，不只是"这个 id 在不在配置里"。
     只拿 id 的那一版让三件事长得一模一样：连上了 / 需要授权 / 连不上，
@@ -115,7 +117,10 @@ export function uniqueServerId(base: string, existingIds: readonly string[]): st
   // 目录条目的 id 不该是空的（精选层是字面量，注册表那边 slugId 兜了底），
   // 但真空了就得给个名字：mcpServerIdError 只报错不改名，落盘的对象键
   // 不能是空串
-  const stem = base.trim() === "" ? "server" : base.trim();
+  const trimmed = base.trim();
+  // 保留前缀（#1430 终审 I-2）：cloud- 开头的主干补多少数字都过不了 mcpServerIdError，
+  // 不换主干这个循环会转到死。换成 cloud_ 读起来还是那个名字
+  const stem = trimmed === "" ? "server" : isCloudServerId(trimmed) ? `cloud_${trimmed.slice(CLOUD_PREFIX.length)}` : trimmed;
   let id = stem;
   for (let n = 2; mcpServerIdError(id, existingIds) !== null; n += 1) id = `${stem}-${n}`;
   return id;
@@ -134,7 +139,9 @@ export function uniqueServerId(base: string, existingIds: readonly string[]): st
       名**，args 里本来就没有占位符可代——代不进去的落 env 才是对的。
 
     空值、以及代完仍留着占位符的（用户没填），一律不落盘：宁可少一个头/一个环境
-    变量让服务端明说缺什么，也不写一个装着 `{hole}` 字面量的键 */
+    变量让服务端明说缺什么，也不写一个装着 `{hole}` 字面量的键。
+
+    http 那半在 shared/mcpCatalogFill.ts，edge 替手机接应用时用同一份 */
 export function configFromEntry(
   entry: CatalogEntry,
   values: Readonly<Record<string, string>>
@@ -147,16 +154,8 @@ export function configFromEntry(
       used.add(name);
       return v;
     });
-  const hasHole = (text: string): boolean => /\{\w+\}/.test(text);
   if (entry.transport === "http") {
-    const url = fill(entry.url ?? "");
-    const headers: Record<string, string> = {};
-    for (const [headerName, template] of Object.entries(entry.headerTemplates ?? {})) {
-      const value = fill(template);
-      if (value === "" || hasHole(value)) continue;
-      headers[headerName] = value;
-    }
-    return { kind: "http", url, headers, enabled: true };
+    return { kind: "http", ...fillHttpEntry(entry, values), enabled: true };
   }
   const args = (entry.args ?? []).map(fill);
   const env = Object.fromEntries(

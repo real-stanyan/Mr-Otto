@@ -16,6 +16,8 @@ import { timingSafeEqual } from "./util.js";
 import { verifyJwt } from "./jwt.js";
 import { parseRole, SUBPROTOCOL, type RelayRole } from "./relay.js";
 import { parseEscrowDoc } from "./px.js";
+import { stateUid } from "./pxOAuth.js";
+import { CLOUD_TEXT, connectDoneUrl, toConnectDone, type ConnectDone } from "../../../src/shared/remote/pxCloud.js";
 import { isCsChannel } from "../../../src/shared/remote/cloudSession.js";
 import { MAX_GRANT_QUANTITY } from "./billing.js";
 import type { Caller } from "./llmGateway.js";
@@ -39,6 +41,8 @@ export interface EdgeConfig {
 
 /** 平台身份认作的 userId。relay 房间键、px 三道闸都认这个常量当"不是真人" */
 export const RUNTIME_SERVICE_UID = "svc-runtime";
+/** 手机上接的应用的 serverId：`cloud-` + 目录 id（小写字母数字与连字符）。路径里的不解码、直接按这条验 */
+const CLOUD_SERVER_ID_RE = /^cloud-[a-z0-9][a-z0-9-]{0,63}$/;
 
 /** 一个用户的中继实例。生产上是 DO stub,测试里是个假货 */
 export interface RelayStub {
@@ -235,6 +239,31 @@ export function createEdge(deps: EdgeDeps): (req: Request) => Promise<Response> 
       但带上已验实的 fromUid——与 relayConnect 同一条「验完就到此为止」的纪律 */
   async function px(req: Request, pathname: string): Promise<Response> {
     if (!deps.escrow || !deps.isFriend) return apiError(404, "这个服务没开云端执行面", "px_disabled");
+    // 厂商登录完回跳这里（spec §3.1 第 4 步）：浏览器裸访问，**不带 JWT**。身份由 state 的前半段 + DO 里那条
+    // 一次性 pending 共同给出——前半段只用来找到那只 DO，DO 查不到 / 过期 / 用过一律拒
+    if (pathname === "/px/v1/cloud/callback" && req.method === "GET") {
+      const q = new URL(req.url).searchParams;
+      const state = q.get("state") ?? "";
+      const uid = stateUid(state);
+      let done: ConnectDone = { ok: false, message: CLOUD_TEXT.stateExpired };
+      if (uid !== null) {
+        try {
+          const res = await deps.escrow(uid).fetch(new Request("https://px/cloud_callback", {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({
+              uid, state,
+              code: q.get("code")?.slice(0, 2048) ?? null,
+              error: (q.get("error_description") ?? q.get("error"))?.slice(0, 300) ?? null,
+            }),
+          }));
+          done = toConnectDone(await res.json().catch(() => null));
+        } catch {
+          done = toConnectDone(null);
+        }
+      }
+      return new Response(null, { status: 302, headers: { location: connectDoneUrl(done), "cache-control": "no-store" } });
+    }
     const who = await pxIdentify(req);
     if (who instanceof Response) return who;
     const forward = (hostUid: string, op: string, body: unknown): Promise<Response> =>
@@ -298,6 +327,36 @@ export function createEdge(deps: EdgeDeps): (req: Request) => Promise<Response> 
     if (pathname === "/px/v1/audit" && req.method === "GET") {
       const since = Number(new URL(req.url).searchParams.get("since") ?? "0");
       return forward(who.userId, "audit", { since: Number.isFinite(since) ? since : 0 });
+    }
+
+    if (pathname === "/px/v1/cloud" || pathname.startsWith("/px/v1/cloud/")) {
+      // 云端连接器只归真人：平台身份替谁接应用都说不通
+      if (who.userId === RUNTIME_SERVICE_UID) return apiError(403, "平台身份不能管理云端连接器", "forbidden");
+      const uid = who.userId;
+      if (pathname === "/px/v1/cloud" && req.method === "GET") return forward(uid, "cloud_view", { uid });
+      if (pathname === "/px/v1/cloud/connect" && req.method === "POST") {
+        const b = (await req.json().catch(() => null)) as { catalogId?: unknown; params?: unknown } | null;
+        const params = b?.params ?? {};
+        const okParams = typeof params === "object" && params !== null && !Array.isArray(params) &&
+          Object.values(params).every((v) => typeof v === "string" && v.length <= 4096) && Object.keys(params).length <= 16;
+        if (!b || typeof b.catalogId !== "string" || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(b.catalogId) || !okParams) {
+          return apiError(400, "connect 要 catalogId 与字符串参数", "bad_request");
+        }
+        return forward(uid, "cloud_connect", { uid, catalogId: b.catalogId, params });
+      }
+      if (pathname === "/px/v1/cloud/grant" && req.method === "POST") {
+        const b = (await req.json().catch(() => null)) as { serverId?: unknown; workspaceId?: unknown; on?: unknown } | null;
+        if (!b || typeof b.serverId !== "string" || !CLOUD_SERVER_ID_RE.test(b.serverId) || typeof b.workspaceId !== "string" || !WORKSPACE_ID_RE.test(b.workspaceId) || typeof b.on !== "boolean") {
+          return apiError(400, "grant 要 serverId / workspaceId / on", "bad_request");
+        }
+        return forward(uid, "cloud_grant", { uid, serverId: b.serverId, workspaceId: b.workspaceId, on: b.on });
+      }
+      if (req.method === "DELETE") {
+        const serverId = pathname.slice("/px/v1/cloud/".length);
+        if (!CLOUD_SERVER_ID_RE.test(serverId)) return apiError(400, "只能断开手机上接的应用", "bad_request");
+        return forward(uid, "cloud_remove", { serverId });
+      }
+      return apiError(404, `没有这个端点:${pathname}`, "not_found");
     }
 
     return apiError(404, `没有这个端点:${pathname}`, "not_found");

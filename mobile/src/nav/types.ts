@@ -50,8 +50,12 @@ export type RootStackParams = {
   WikiEdit: { path: string };
   /** 这周谁用得多（A5） */
   Usage: undefined;
-  /** 应用（A5）：接着的那几个，只列 */
+  /** 应用（A5；#1430 起上段是手机上接的、下段是电脑上接的） */
   Apps: undefined;
+  /** 接入应用（#1430）：目录 + 搜索 */
+  ConnectApp: undefined;
+  /** 手机上接的一台（#1430）：工具 / 借给团队 / 重新登录 / 断开。serverId = 云端视图里的那一格 */
+  AppDetail: { serverId: string };
   /** 设置：外观 / 连接诊断 / 版本 / 退出登录 */
   Settings: undefined;
   FaceGallery: undefined;

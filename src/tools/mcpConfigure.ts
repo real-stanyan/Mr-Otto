@@ -12,6 +12,7 @@ import type { Tool } from "./tool.js";
 import type { ExecutionWorld } from "../world/executionWorld.js";
 import type { McpServerConfig } from "../shared/mcp.js";
 import { mcpOutcomeReport, normalizeMcpHttpUrl } from "../shared/mcp.js";
+import { cloudIdReservedError } from "../shared/remote/pxCloud.js";
 
 const asRecord = (v: unknown): Record<string, unknown> =>
   v !== null && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
@@ -39,6 +40,9 @@ export function parseConfigureArgs(raw: unknown): { id: string; cfg: McpServerCo
     throw new Error('action 只认 "upsert" 或 "remove"（不传默认 upsert）');
   }
   if (action === "remove") return { id, cfg: null };
+  // 保留前缀只挡「起名」不挡「删」（#1430 终审 I-2）：删一台历史遗留的 cloud- 是在清理
+  const reserved = cloudIdReservedError(id);
+  if (reserved !== null) throw new Error(reserved);
 
   // "false" / 0 / null 从前全被 `!== false` 折成 true（#474）——模型传字符串
   // "false" 的本意明明是关，落盘却成了开（stdio 的开 = 命令会被 spawn）。

@@ -105,6 +105,7 @@ function harness(over: Partial<WorkspaceManagerDeps> = {}) {
       calls.push("resyncEscrow");
     },
     serverLabel: (serverId) => `label:${serverId}`,
+    cloudGrant: async () => {},
     ...over,
   };
 
@@ -380,6 +381,48 @@ describe("workspaceManager（Task 8，ADR-0198 切片 2）", () => {
       { serverId: "old-server", tools: ["a"] },
       { serverId: "new-server", tools: ["read"] },
     ]);
+  });
+
+  it("撤回 cloud- 行：先撤云端授权再删目录行，本机台账不动", async () => {
+    const order: string[] = [];
+    const h = harness({
+      cloudGrant: async (ws, sid, on) => { order.push(`grant:${ws}:${sid}:${on}`); },
+      deleteConnectorRow: async () => { order.push("row"); },
+      saveStore: () => { order.push("store"); },
+      resyncEscrow: () => { order.push("resync"); },
+    });
+    const res = await h.manager.withdrawConnector("ws1", "cloud-notion");
+    expect(res.ok).toBe(true);
+    expect(order).toEqual(["grant:ws1:cloud-notion:false", "row"]);
+  });
+
+  // #1430 终审 I-2 的纵深防御：桌面那边若真有一台叫 cloud-x 的（新建已经挡了，老配置 / 别的路进来的挡不住），
+  // 只撤云端的话本机那份团队授权 + 密封箱原样留着 = 一条谁都看不见的授权。本机台账里列着它，就连本机那一半一起撤
+  it("撤回 cloud- 行、本机台账里也列着它：云端授权 + 本机授权都撤，目录行最后删", async () => {
+    const h: ReturnType<typeof harness> = harness({
+      cloudGrant: async (ws, sid, on) => { h.calls.push(`grant:${ws}:${sid}:${on}`); },
+      deleteConnectorRow: async () => { h.calls.push("row"); },
+    });
+    h.setStore({
+      ...emptyProxyStore(),
+      workspaceGrants: [{ workspaceId: "ws1", allow: [{ serverId: "cloud-x", tools: [] }, { serverId: "linear", tools: [] }] }],
+    });
+    const res = await h.manager.withdrawConnector("ws1", "cloud-x");
+    expect(res.ok).toBe(true);
+    expect(h.calls.filter((c) => c.startsWith("grant") || c === "saveStore" || c === "resyncEscrow" || c === "row"))
+      .toEqual(["grant:ws1:cloud-x:false", "saveStore", "resyncEscrow", "row"]);
+    expect(h.getStore().workspaceGrants).toEqual([{ workspaceId: "ws1", allow: [{ serverId: "linear", tools: [] }] }]);
+  });
+
+  it("撤回 cloud- 行：云端授权撤不掉就不删目录行（不留暗门）", async () => {
+    const order: string[] = [];
+    const h = harness({
+      cloudGrant: async () => { throw new Error("连不上"); },
+      deleteConnectorRow: async () => { order.push("row"); },
+    });
+    const r = await h.manager.withdrawConnector("ws1", "cloud-notion");
+    expect(r.ok).toBe(false);
+    expect(order).toEqual([]);
   });
 
   it("withdrawConnector：目录写失败——本地台账的撤回已经生效不回滚", async () => {

@@ -33,6 +33,7 @@ import {
   parseEscrowDoc, isFriendGrant, WORKSPACE_ID_RE,
   type EscrowDoc, type EscrowGrant, type EscrowService,
 } from "../../../src/shared/remote/pxEscrow.js";
+import { UPSTREAM_TIMEOUT_MS } from "./pxOAuth.js";
 
 const isObj = (v: unknown): v is Record<string, unknown> =>
   v !== null && typeof v === "object" && !Array.isArray(v);
@@ -159,25 +160,36 @@ async function aesKey(keyB64: string): Promise<CryptoKey> {
   return crypto.subtle.importKey("raw", unb64(keyB64), "AES-GCM", false, ["encrypt", "decrypt"]);
 }
 
-/** 密封整箱。keyB64 = 32 字节 base64（worker secret ESCROW_KEY） */
-export async function sealEscrow(keyB64: string, doc: EscrowDoc): Promise<string> {
+/** 密封任意 JSON（cloud 键与 pending 授权也用它）。keyB64 = 32 字节 base64（worker secret ESCROW_KEY） */
+export async function sealJson(keyB64: string, value: unknown): Promise<string> {
   const iv = crypto.getRandomValues(new Uint8Array(12));
-  const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, await aesKey(keyB64), te.encode(JSON.stringify(doc)));
+  const ct = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, await aesKey(keyB64), te.encode(JSON.stringify(value)));
   return `${b64(iv)}.${b64(ct)}`;
 }
 
-/** 解封。解不开（换过 key / 数据坏）回 null——上传方重传一次就能修好 */
-export async function openEscrow(keyB64: string, sealed: string): Promise<EscrowDoc | null> {
+/** 解封。解不开（换过 key / 数据坏）回 null——调用方各自决定 null 意味着什么 */
+export async function openJson(keyB64: string, sealed: string): Promise<unknown | null> {
   try {
     const [ivB64, ctB64] = sealed.split(".");
     if (!ivB64 || !ctB64) return null;
     const pt = await crypto.subtle.decrypt(
       { name: "AES-GCM", iv: unb64(ivB64) }, await aesKey(keyB64), unb64(ctB64)
     );
-    return parseEscrowDoc(JSON.parse(td.decode(pt)));
+    return JSON.parse(td.decode(pt));
   } catch {
     return null;
   }
+}
+
+/** 密封整箱 */
+export async function sealEscrow(keyB64: string, doc: EscrowDoc): Promise<string> {
+  return sealJson(keyB64, doc);
+}
+
+/** 解封整箱。解不开回 null——上传方重传一次就能修好 */
+export async function openEscrow(keyB64: string, sealed: string): Promise<EscrowDoc | null> {
+  const raw = await openJson(keyB64, sealed);
+  return raw === null ? null : parseEscrowDoc(raw);
 }
 
 // 审计形状（PxAudit / appendAudit）也在 pxEscrow.ts——切片 4 A 侧回流要读同一份，
@@ -192,14 +204,21 @@ export async function openEscrow(keyB64: string, sealed: string): Promise<Escrow
 
 type FetchLike = (url: string, init: RequestInit) => Promise<Response>;
 
-function rpcHeaders(service: EscrowService, sessionId?: string): Record<string, string> {
+/** 一次 MCP 连接需要的全部（EscrowService 与接入中途的临时连接都能给出这个形状） */
+export interface McpConn { url: string; headers?: Record<string, string>; accessToken?: string }
+
+const connOf = (service: EscrowService): McpConn => {
   const token = (service.oauth?.tokens as { access_token?: string } | undefined)?.access_token;
+  return { url: service.url, ...(service.headers ? { headers: service.headers } : {}), ...(token ? { accessToken: token } : {}) };
+};
+
+function rpcHeaders(conn: McpConn, sessionId?: string): Record<string, string> {
   return {
     "content-type": "application/json",
     accept: "application/json, text/event-stream",
-    ...(token ? { authorization: `Bearer ${token}` } : {}),
+    ...(conn.accessToken ? { authorization: `Bearer ${conn.accessToken}` } : {}),
     ...(sessionId ? { "mcp-session-id": sessionId } : {}),
-    ...service.headers,
+    ...conn.headers,
   };
 }
 
@@ -225,6 +244,78 @@ async function readRpcResponse(res: Response, id: number): Promise<Record<string
   }
 }
 
+/** 每一发外呼要不要带超时 signal：list 带（#1430 终审 M6），call 不带（pxMcpCall 的行为不动）——所以是个可选的工厂，
+    每发各造一个新的，一个共用的 signal 会让后几发分到的时间越来越少 */
+type SignalFor = () => AbortSignal | undefined;
+const noSignal: SignalFor = () => undefined;
+const withSignal = (init: RequestInit, sig: SignalFor): RequestInit => {
+  const signal = sig();
+  return signal ? { ...init, signal } : init;
+};
+
+/** initialize + initialized。两个调用方（call / list）共用——握手那段各写一份迟早分家 */
+async function mcpHandshake(
+  fetchLike: FetchLike, conn: McpConn, sig: SignalFor = noSignal
+): Promise<{ ok: true; sessionId: string | undefined } | { ok: false; status: number; code: "upstream_auth" | "upstream_init"; message: string }> {
+  const initRes = await fetchLike(conn.url, withSignal({
+    method: "POST",
+    headers: rpcHeaders(conn),
+    body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "otto-px", version: "1" } } }),
+  }, sig));
+  if (initRes.status === 401) return { ok: false, status: 401, code: "upstream_auth", message: "托管凭据被上游拒绝" };
+  if (!initRes.ok) return { ok: false, status: 502, code: "upstream_init", message: `上游 initialize 失败（${initRes.status}）` };
+  const sessionId = initRes.headers.get("mcp-session-id") ?? undefined;
+  const initBody = await readRpcResponse(initRes, 1);
+  if (!initBody || isObj(initBody.error)) return { ok: false, status: 502, code: "upstream_init", message: "上游 initialize 响应不可解" };
+  // initialized 通知：规范要求；上游多半不在乎响应，失败不拦调用
+  await fetchLike(conn.url, withSignal({
+    method: "POST",
+    headers: rpcHeaders(conn, sessionId),
+    body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }),
+  }, sig)).catch(() => undefined);
+  return { ok: true, sessionId };
+}
+
+type ListToolsResult = { ok: true; toolDefs: EscrowService["toolDefs"] } | { ok: false; status: number; code: "upstream_auth" | "upstream_init" | "upstream_list"; message: string };
+
+/** 接入时验一次凭据 + 拿工具清单（spec §3：成功才存）。形状不对的工具项跳过，不拒整份。
+    fetch 自己抛（DNS / 连接重置）不往外漏：调用方（接入 / OAuth 回调）在这之前已经花掉了限速名额或一次性的 pending，
+    抛出去只会变成 500，用户什么都看不到。这里只管 list，`pxMcpCall` 的行为不动 */
+export async function pxMcpListTools(fetchLike: FetchLike, conn: McpConn): Promise<ListToolsResult> {
+  try {
+    return await listToolsUnguarded(fetchLike, conn);
+  } catch (e) {
+    return { ok: false, status: 502, code: "upstream_init", message: e instanceof Error ? e.message : String(e) };
+  }
+}
+
+async function listToolsUnguarded(fetchLike: FetchLike, conn: McpConn): Promise<ListToolsResult> {
+  // 每一发 15 秒上限（#1430 终审 M6）：超时抛出来，由 pxMcpListTools 的 catch 落成 upstream_init
+  const sig: SignalFor = () => AbortSignal.timeout(UPSTREAM_TIMEOUT_MS);
+  const hs = await mcpHandshake(fetchLike, conn, sig);
+  if (!hs.ok) return hs;
+  const res = await fetchLike(conn.url, withSignal({
+    method: "POST",
+    headers: rpcHeaders(conn, hs.sessionId),
+    body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} }),
+  }, sig));
+  if (res.status === 401) return { ok: false, status: 401, code: "upstream_auth", message: "托管凭据被上游拒绝" };
+  if (!res.ok) return { ok: false, status: 502, code: "upstream_list", message: `上游 tools/list 失败（${res.status}）` };
+  const body = await readRpcResponse(res, 2);
+  if (!body) return { ok: false, status: 502, code: "upstream_list", message: "上游 tools/list 响应不可解" };
+  if (isObj(body.error)) {
+    const m = (body.error as { message?: unknown }).message;
+    return { ok: false, status: 502, code: "upstream_list", message: typeof m === "string" ? m : "上游报错" };
+  }
+  const tools = isObj(body.result) && Array.isArray(body.result.tools) ? body.result.tools : [];
+  const toolDefs = tools.flatMap((t: unknown) =>
+    isObj(t) && typeof t.name === "string"
+      ? [{ name: t.name, description: typeof t.description === "string" ? t.description : "", inputSchema: t.inputSchema ?? {} }]
+      : []
+  );
+  return { ok: true, toolDefs };
+}
+
 export type PxCallResult =
   | { ok: true; content: unknown }
   | { ok: false; status: number; code: string; message: string };
@@ -240,34 +331,15 @@ export async function pxMcpCall(
   tool: string,
   args: unknown
 ): Promise<PxCallResult> {
-  const post = (id: number, method: string, params: unknown, sessionId?: string) =>
-    fetchLike(service.url, {
-      method: "POST",
-      headers: rpcHeaders(service, sessionId),
-      body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
-    });
+  const conn = connOf(service);
+  const hs = await mcpHandshake(fetchLike, conn);
+  if (!hs.ok) return hs;
 
-  const initRes = await post(1, "initialize", {
-    protocolVersion: "2025-03-26",
-    capabilities: {},
-    clientInfo: { name: "otto-px", version: "1" },
-  });
-  if (initRes.status === 401) return { ok: false, status: 401, code: "upstream_auth", message: "托管凭据被上游拒绝" };
-  if (!initRes.ok) return { ok: false, status: 502, code: "upstream_init", message: `上游 initialize 失败（${initRes.status}）` };
-  const sessionId = initRes.headers.get("mcp-session-id") ?? undefined;
-  const initBody = await readRpcResponse(initRes, 1);
-  if (!initBody || isObj(initBody.error)) {
-    return { ok: false, status: 502, code: "upstream_init", message: "上游 initialize 响应不可解" };
-  }
-
-  // initialized 通知：规范要求；上游多半不在乎响应，失败不拦调用
-  await fetchLike(service.url, {
+  const callRes = await fetchLike(conn.url, {
     method: "POST",
-    headers: rpcHeaders(service, sessionId),
-    body: JSON.stringify({ jsonrpc: "2.0", method: "notifications/initialized" }),
-  }).catch(() => undefined);
-
-  const callRes = await post(2, "tools/call", { name: tool, arguments: args ?? {} }, sessionId);
+    headers: rpcHeaders(conn, hs.sessionId),
+    body: JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: tool, arguments: args ?? {} } }),
+  });
   if (callRes.status === 401) return { ok: false, status: 401, code: "upstream_auth", message: "托管凭据被上游拒绝" };
   if (!callRes.ok) return { ok: false, status: 502, code: "upstream_call", message: `上游调用失败（${callRes.status}）` };
   const body = await readRpcResponse(callRes, 2);

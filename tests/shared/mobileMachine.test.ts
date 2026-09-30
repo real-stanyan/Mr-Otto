@@ -9,6 +9,7 @@ import {
   wikiPageCount, wikiPageFrom, workEntryRows, workFileText, workFolderText, workFolderTruncated, workHitRows, workIcon,
   type UsageLoad, type WikiIndexState,
 } from "../../src/shared/mobileMachine.js";
+import { DESKTOP_APPS_FOOTER } from "../../src/shared/mobileConnectors.js";
 import type { CsWorkEntry } from "../../src/shared/remote/cloudSession.js";
 import type { BillingSnapshotView } from "../../src/shared/shellBridge.js";
 import { serializeWikiPage, type WikiIndexGroup, type WikiPage } from "../../src/shared/wiki.js";
@@ -220,7 +221,15 @@ describe("应用", () => {
       { key: "me:shopify", title: "shopify", detail: "2 个工具" },
     ]);
     expect(APPS_EMPTY).toBe("还没有接应用。");
-    expect(APPS_FOOTER).toBe("新的应用要在电脑上的 Mr Otto 里接；要登录的也在那台电脑上登，凭据不经过这个手机。它们此刻连没连上，这里看不出来。");
+    expect(APPS_FOOTER).toBe(DESKTOP_APPS_FOOTER);
+    expect(APPS_FOOTER).toBe("在电脑上的 Mr Otto 里接的，要在电脑上管。");
+  });
+  it("手机上接的（cloud- 开头）不混进电脑上接的那一段", () => {
+    const ws: WorkspaceSnapshot = {
+      ...HOME,
+      connectors: [...HOME.connectors, { workspaceId: "home1", hostUid: "me", serverId: "cloud-notion", label: "Notion", tools: [] }],
+    };
+    expect(appRows(ws).map((r) => r.key)).toEqual(["me:github", "me:shopify"]);
   });
 });
 

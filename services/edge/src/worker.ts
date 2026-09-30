@@ -11,10 +11,13 @@ import { DurableObject } from "cloudflare:workers";
 import { createEdge, type RelayStub } from "./edge.js";
 import {
   appendAudit, friendshipQuery, grantedView, membershipQuery, openEscrow, parseEscrowDoc,
-  parseFriendshipRows, parseMembershipRows, pxGate, pxMcpCall, pxRefreshTokens, sealEscrow,
+  openJson, parseFriendshipRows, parseMembershipRows, pxGate, pxMcpCall, pxRefreshTokens, sealEscrow, sealJson,
   workspaceIdsOf,
   type EscrowDoc, type PxAudit,
 } from "./px.js";
+import { cloudCallback, cloudConnect, cloudGrant, cloudRefresh, cloudRemove, cloudViewOf, type CloudOpsDeps, type PendingAuth } from "./pxCloudOps.js";
+import { CLOUD_TEXT, cloudNeedsLogin, isCloudServerId, mergeEscrow, parseCloudBox, type CloudBox } from "../../../src/shared/remote/pxCloud.js";
+import { DEFAULT_EDGE_BASE_URL } from "../../../src/shared/edgeConfig.js";
 import { createLlmGateway, parseRemaining, upstreamKeyOf, type QuotaPort, type RouteRow } from "./llmGateway.js";
 import {
   addonExpiresAt, addonMicro, addonSinceOf, hold as quotaHold, rebuild, rebuildWindowSince, release as quotaRelease,
@@ -223,12 +226,73 @@ export class Relay extends DurableObject<Env> {
 /**
  * 托管箱 DO（ADR-0197）：一户（hostUid）一箱。凭据只在这里解封——edge 层
  * 转进来的请求已验过 JWT 并做完关系闸，这里只剩白名单闸 + 执行 + 审计。
- * storage：`sealed`（AES-GCM 密封的 EscrowDoc）、`audit`（PxAudit[] 环形 500）。
+ * storage：`sealed`（桌面的 EscrowDoc）、`cloud`（手机上接的 CloudBox，#1430）、`pending:<state>`（未完成的授权）、`cloudRate`、`audit`。两个封存键各一个写者。
  */
 export class Escrow extends DurableObject<Env> {
   private async doc(): Promise<EscrowDoc | null> {
     const sealed = await this.ctx.storage.get<string>("sealed");
     return sealed ? openEscrow(this.env.ESCROW_KEY, sealed) : null;
+  }
+
+  private async cloudBox(): Promise<CloudBox | null> {
+    const s = await this.ctx.storage.get<string>("cloud");
+    return s ? parseCloudBox(await openJson(this.env.ESCROW_KEY, s)) : null;
+  }
+
+  /** grants / call 看到的那一份：sealed + cloud 摊平（spec §5） */
+  private async merged(): Promise<EscrowDoc | null> {
+    return mergeEscrow(await this.doc(), await this.cloudBox());
+  }
+
+  private cloudDeps(): CloudOpsDeps {
+    const st = this.ctx.storage;
+    const key = this.env.ESCROW_KEY;
+    const supaHeaders = { apikey: this.env.SUPABASE_SERVICE_KEY, authorization: `Bearer ${this.env.SUPABASE_SERVICE_KEY}` };
+    const rest = `${this.env.SUPABASE_URL}/rest/v1`;
+    return {
+      store: {
+        getBox: () => this.cloudBox(),
+        putBox: async (b) => { await st.put("cloud", await sealJson(key, b)); },
+        getPending: async (s) => {
+          const v = await st.get<string>(`pending:${s}`);
+          return v ? ((await openJson(key, v)) as PendingAuth | null) : null;
+        },
+        putPending: async (p) => { await st.put(`pending:${p.state}`, await sealJson(key, p)); },
+        deletePending: async (s) => { await st.delete(`pending:${s}`); },
+        listPending: async () => {
+          const out: PendingAuth[] = [];
+          for (const v of (await st.list<string>({ prefix: "pending:" })).values()) {
+            const p = (await openJson(key, v)) as PendingAuth | null;
+            if (p) out.push(p);
+          }
+          return out;
+        },
+        getRate: async () => (await st.get<number[]>("cloudRate")) ?? [],
+        putRate: async (ts) => { await st.put("cloudRate", ts); },
+        atomic: (fn) => this.ctx.blockConcurrencyWhile(fn),
+      },
+      fetch: (url, init) => fetch(url, init),
+      now: () => Date.now(),
+      random: (n) => crypto.getRandomValues(new Uint8Array(n)),
+      // 故意取生产默认：wrangler dev 也用生产回调注册客户端（手机只认一个回调地址，单一来源）
+      callbackUrl: `${DEFAULT_EDGE_BASE_URL}/px/v1/cloud/callback`,
+      homeIdOf: async (uid) => {
+        try {
+          const res = await fetch(`${rest}/workspaces?select=id&owner_uid=eq.${encodeURIComponent(uid)}&kind=eq.home&limit=1`, { headers: supaHeaders });
+          if (!res.ok) return null;
+          const rows: unknown = await res.json();
+          const id = Array.isArray(rows) ? (rows[0] as { id?: unknown } | undefined)?.id : undefined;
+          return typeof id === "string" ? id : null;
+        } catch { return null; }
+      },
+      isMember: async (uid, workspaceId) => {
+        try {
+          const res = await fetch(`${rest}/${membershipQuery([workspaceId], uid, uid)}`, { headers: supaHeaders });
+          return res.ok && parseMembershipRows(await res.json(), uid, uid).has(workspaceId);
+        } catch { return false; }
+      },
+      log: (m) => console.log(m),
+    };
   }
 
   private async audit(entry: PxAudit): Promise<void> {
@@ -276,7 +340,7 @@ export class Escrow extends DurableObject<Env> {
     if (op === "grants") {
       const fromUid = typeof b.fromUid === "string" ? b.fromUid : "";
       const friendAccepted = b.friendAccepted === true;
-      const doc = await this.doc();
+      const doc = await this.merged();
       return json(200, grantedView(doc, fromUid, { friendAccepted, workspaceOk: await this.workspaceOk(doc, fromUid) }));
     }
     if (op === "audit") {
@@ -289,26 +353,54 @@ export class Escrow extends DurableObject<Env> {
       const serverId = typeof b.serverId === "string" ? b.serverId : "";
       const tool = typeof b.tool === "string" ? b.tool : "";
       const friendAccepted = b.friendAccepted === true;
-      const doc = await this.doc();
+      const doc = await this.merged();
       const gate = pxGate(doc, { fromUid, serverId, tool }, { friendAccepted, workspaceOk: await this.workspaceOk(doc, fromUid) });
       if (!gate.ok) {
+        // 「要重新登录」只回给「这台若是活的就过得了闸」的调用者——否则猜一个 id 就能探到别人箱里有这台
+        const box = isCloudServerId(serverId) ? await this.cloudBox() : null;
+        const liveDoc = box && cloudNeedsLogin(box, serverId)
+          ? mergeEscrow(await this.doc(), { ...box, services: box.services.map((s) => ({ ...s, status: "ok" as const })) })
+          : null;
+        if (liveDoc && pxGate(liveDoc, { fromUid, serverId, tool }, { friendAccepted, workspaceOk: await this.workspaceOk(liveDoc, fromUid) }).ok) {
+          await this.audit({ ts: Date.now(), fromUid, serverId, tool, outcome: "denied", note: CLOUD_TEXT.needsLogin });
+          return json(409, { error: { message: CLOUD_TEXT.needsLogin, type: "otto_edge", code: "needs_login" } });
+        }
         await this.audit({ ts: Date.now(), fromUid, serverId, tool, outcome: "denied", note: gate.message });
         return json(gate.status, { error: { message: gate.message, type: "otto_edge", code: gate.code } });
       }
       const fetchLike = (url: string, init: RequestInit) => fetch(url, init);
       let r = await pxMcpCall(fetchLike, gate.service, tool, b.args);
       if (!r.ok && r.code === "upstream_auth") {
-        // 兜底自刷一次（ADR-0197「token 生死」）：刷成就更新密封箱再重试
-        const oauth = await pxRefreshTokens(fetchLike, gate.service);
-        if (oauth && doc) {
-          const updated: EscrowDoc = {
-            ...doc,
-            services: doc.services.map((s) => (s.serverId === serverId ? { ...s, oauth } : s)),
-            updatedTs: Date.now(),
-          };
-          await this.ctx.storage.put("sealed", await sealEscrow(this.env.ESCROW_KEY, updated));
-          r = await pxMcpCall(fetchLike, { ...gate.service, oauth }, tool, b.args);
+        if (isCloudServerId(serverId)) {
+          // 手机上接的只有 edge 续（spec §4）：用记下的 tokenEndpoint；续不上 cloudRefresh 自己标 needs_login
+          const oauth = await cloudRefresh(this.cloudDeps(), serverId);
+          if (oauth) {
+            r = await pxMcpCall(fetchLike, { ...gate.service, oauth: { ...(oauth.tokens ? { tokens: oauth.tokens } : {}), ...(oauth.clientInformation ? { clientInformation: oauth.clientInformation } : {}) } }, tool, b.args);
+          } else if (cloudNeedsLogin(await this.cloudBox(), serverId)) {
+            // 登录确实失效（cloudRefresh 已标）：手机上重新登录
+            r = { ok: false, status: 409, code: "needs_login", message: CLOUD_TEXT.needsLogin };
+          } else {
+            // 网络抖 / 5xx / 中途被断开：不是登录问题，稍后再试
+            r = { ok: false, status: 502, code: "refresh_failed", message: CLOUD_TEXT.refreshFailed };
+          }
+        } else {
+          // 桌面那只箱：原来的兜底自刷，只写 sealed
+          const oauth = await pxRefreshTokens(fetchLike, gate.service);
+          const sealedDoc = await this.doc(); // 网络在前、读改写在后：外呼期间桌面可能刚 put 过
+          if (oauth && sealedDoc) {
+            const updated: EscrowDoc = {
+              ...sealedDoc,
+              services: sealedDoc.services.map((s) => (s.serverId === serverId ? { ...s, oauth } : s)),
+              updatedTs: Date.now(),
+            };
+            await this.ctx.storage.put("sealed", await sealEscrow(this.env.ESCROW_KEY, updated));
+            r = await pxMcpCall(fetchLike, { ...gate.service, oauth }, tool, b.args);
+          }
         }
+      }
+      if (!r.ok && r.code === "upstream_auth" && isCloudServerId(serverId)) {
+        // 续期成功、重试仍 401：不许落到下面桌面那句「托管凭据已失效——让对方上线」
+        r = { ok: false, status: 502, code: "refresh_failed", message: CLOUD_TEXT.refreshFailed };
       }
       if (!r.ok) {
         await this.audit({ ts: Date.now(), fromUid, serverId, tool, outcome: "error", note: r.message });
@@ -317,6 +409,30 @@ export class Escrow extends DurableObject<Env> {
       }
       await this.audit({ ts: Date.now(), fromUid, serverId, tool, outcome: "ok" });
       return json(200, { result: r.content });
+    }
+    if (op.startsWith("cloud_")) {
+      const d = this.cloudDeps();
+      const uid = typeof b.uid === "string" ? b.uid : "";
+      const toRes = (r: { ok: true } | { ok: false; status: number; code: string; message: string }, okBody: unknown) =>
+        r.ok ? json(200, okBody) : json(r.status, { error: { message: r.message, type: "otto_edge", code: r.code } });
+      if (op === "cloud_view") return json(200, { apps: await cloudViewOf(d, uid) });
+      if (op === "cloud_connect") {
+        const params = (b.params ?? {}) as Record<string, string>;
+        const r = await cloudConnect(d, uid, { catalogId: String(b.catalogId ?? ""), params });
+        return r.ok ? json(200, r.reply) : toRes(r, null);
+      }
+      if (op === "cloud_callback") {
+        return json(200, await cloudCallback(d, uid, {
+          state: String(b.state ?? ""),
+          code: typeof b.code === "string" ? b.code : null,
+          error: typeof b.error === "string" ? b.error : null,
+        }));
+      }
+      if (op === "cloud_grant") {
+        const r = await cloudGrant(d, uid, { serverId: String(b.serverId ?? ""), workspaceId: String(b.workspaceId ?? ""), on: b.on === true });
+        return toRes(r, { ok: true });
+      }
+      if (op === "cloud_remove") return toRes(await cloudRemove(d, String(b.serverId ?? "")), { ok: true });
     }
     return json(404, { error: { message: `没有这个内部操作:${op}`, type: "otto_edge", code: "not_found" } });
   }

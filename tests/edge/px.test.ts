@@ -293,3 +293,88 @@ describe("isFriendGrant 判据对齐 parseEscrowDoc（审查 round 1）", () => 
     expect(isFriendGrant(mixed)).toBe(false);
   });
 });
+
+import { openJson, pxMcpListTools, sealJson } from "../../services/edge/src/px.js";
+
+describe("sealJson / openJson", () => {
+  const KEY = btoa(String.fromCharCode(...new Uint8Array(32).fill(7)));
+  it("往返；换 key 解不开回 null", async () => {
+    const s = await sealJson(KEY, { a: 1 });
+    expect(await openJson(KEY, s)).toEqual({ a: 1 });
+    const other = btoa(String.fromCharCode(...new Uint8Array(32).fill(8)));
+    expect(await openJson(other, s)).toBeNull();
+    expect(await openJson(KEY, "garbage")).toBeNull();
+  });
+});
+
+describe("pxMcpListTools", () => {
+  const ok = (id: number, result: unknown, extra: Record<string, string> = {}) =>
+    new Response(JSON.stringify({ jsonrpc: "2.0", id, result }), { status: 200, headers: { "content-type": "application/json", ...extra } });
+  it("initialize → initialized → tools/list，带 bearer 与会话头", async () => {
+    const seen: { body: any; headers: Record<string, string> }[] = [];
+    const fetchLike = async (_u: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body));
+      seen.push({ body, headers: init.headers as Record<string, string> });
+      if (body.method === "initialize") return ok(1, {}, { "mcp-session-id": "sess" });
+      if (body.method === "notifications/initialized") return new Response(null, { status: 202 });
+      return ok(2, { tools: [{ name: "search", description: "d", inputSchema: { type: "object" } }, { name: 3 }] });
+    };
+    const r = await pxMcpListTools(fetchLike, { url: "https://m.example/mcp", accessToken: "AT" });
+    expect(r).toEqual({ ok: true, toolDefs: [{ name: "search", description: "d", inputSchema: { type: "object" } }] });
+    expect(seen[0]!.headers.authorization).toBe("Bearer AT");
+    expect(seen[2]!.headers["mcp-session-id"]).toBe("sess");
+  });
+  it("401 报 upstream_auth；list 报错报 upstream_list 带原话", async () => {
+    expect(await pxMcpListTools(async () => new Response("", { status: 401 }), { url: "https://m.example" }))
+      .toMatchObject({ ok: false, code: "upstream_auth" });
+    const errList = async (_u: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body));
+      if (body.method === "initialize") return ok(1, {});
+      if (body.method === "notifications/initialized") return new Response(null, { status: 202 });
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: 2, error: { message: "workspace not found" } }), { status: 200, headers: { "content-type": "application/json" } });
+    };
+    expect(await pxMcpListTools(errList, { url: "https://m.example" })).toMatchObject({ ok: false, code: "upstream_list", message: "workspace not found" });
+  });
+  it("fetch 自己抛（DNS / 重置）→ upstream_init 502 带原话，不往外抛", async () => {
+    const dns = async () => { throw new Error("getaddrinfo ENOTFOUND m.example"); };
+    expect(await pxMcpListTools(dns, { url: "https://m.example" }))
+      .toEqual({ ok: false, status: 502, code: "upstream_init", message: "getaddrinfo ENOTFOUND m.example" });
+    // 握手过了、tools/list 那一发才抛
+    const late = async (_u: string, init: RequestInit) => {
+      const body = JSON.parse(String(init.body));
+      if (body.method === "initialize") return ok(1, {});
+      if (body.method === "notifications/initialized") return new Response(null, { status: 202 });
+      throw new Error("socket hang up");
+    };
+    expect(await pxMcpListTools(late, { url: "https://m.example" }))
+      .toEqual({ ok: false, status: 502, code: "upstream_init", message: "socket hang up" });
+  });
+  // #1430 终审 M6：接入时的 list 每一发都有 15 秒上限（超时落进 upstream_init）；pxMcpCall 的行为一字不动（不带 signal）
+  it("每一发都带超时 signal；超时 → upstream_init", async () => {
+    const signals: unknown[] = [];
+    const f = async (_u: string, init: RequestInit) => {
+      signals.push(init.signal);
+      const body = JSON.parse(String(init.body));
+      if (body.method === "initialize") return ok(1, {});
+      if (body.method === "notifications/initialized") return new Response(null, { status: 202 });
+      return ok(2, { tools: [] });
+    };
+    expect(await pxMcpListTools(f, { url: "https://m.example" })).toMatchObject({ ok: true });
+    expect(signals).toHaveLength(3);
+    for (const sg of signals) expect(sg).toBeInstanceOf(AbortSignal);
+    const timeout = async () => { throw new DOMException("The operation was aborted due to timeout", "TimeoutError"); };
+    expect(await pxMcpListTools(timeout, { url: "https://m.example" })).toMatchObject({ ok: false, status: 502, code: "upstream_init" });
+  });
+  it("pxMcpCall 不带 signal（现有行为不变）", async () => {
+    const signals: unknown[] = [];
+    const f = async (_u: string, init: RequestInit) => {
+      signals.push(init.signal);
+      const body = JSON.parse(String(init.body));
+      if (body.method === "initialize") return ok(1, {});
+      if (body.method === "notifications/initialized") return new Response(null, { status: 202 });
+      return ok(2, { content: [] });
+    };
+    await pxMcpCall(f, { serverId: "s", url: "https://m.example", toolDefs: [] }, "t", {});
+    expect(signals).toEqual([undefined, undefined, undefined]);
+  });
+});

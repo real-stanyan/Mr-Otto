@@ -12,8 +12,10 @@
 import type { WorkspaceUsage } from "./billing.js";
 import { fmtRemainingPercent, liveWindow, usedPercentOf } from "./billingView.js";
 import { quotaToneView, type QuotaToneView } from "./mobileAccount.js";
+import { DESKTOP_APPS_FOOTER } from "./mobileConnectors.js";
 import { rosterTimeLabel } from "./mobileRoster.js";
 import type { CsWorkEntry, CsWorkHit, CsWorkNode } from "./remote/cloudSession.js";
+import { isCloudServerId } from "./remote/pxCloud.js";
 import { joinWorkPath } from "./remote/workPath.js";
 import type { BillingSnapshotView } from "./shellBridge.js";
 import {
@@ -284,7 +286,8 @@ export function workHitRows(hits: readonly CsWorkHit[]): WorkHitRowView[] {
 // ── 应用 ──
 
 export const APPS_EMPTY = "还没有接应用。";
-export const APPS_FOOTER = "新的应用要在电脑上的 Mr Otto 里接；要登录的也在那台电脑上登，凭据不经过这个手机。它们此刻连没连上，这里看不出来。";
+/** 电脑上接的那一段的页脚——文案的唯一一份在 mobileConnectors（应用页两段共用），这里只留旧名 */
+export const APPS_FOOTER = DESKTOP_APPS_FOOTER;
 
 export interface AppRowView {
   key: string;
@@ -292,10 +295,11 @@ export interface AppRowView {
   detail: string;
 }
 
-/** 接着的那几个应用（workspace_connectors，桌面贡献进来的）。**不画状态**：连没连上、要不要重新登录，手机问不出来
+/** 电脑上接着的那几个应用（workspace_connectors，桌面贡献进来的）；**手机上接的（`cloud-` 开头）不在这里**——
+    那些是另一段，来自 edge 的无凭据视图（mobileConnectors.phoneAppRows）。**不画状态**：连没连上、要不要重新登录，手机问不出来
     （见头注）；名字空着退回 serverId；第二行与桌面同一句（toolsSummary） */
 export function appRows(ws: WorkspaceSnapshot): AppRowView[] {
-  return ws.connectors.map((c) => ({
+  return ws.connectors.filter((c) => !isCloudServerId(c.serverId)).map((c) => ({
     key: `${c.hostUid}:${c.serverId}`,
     title: c.label.trim() || c.serverId,
     detail: toolsSummary(c.tools),

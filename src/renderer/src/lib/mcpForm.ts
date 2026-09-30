@@ -17,6 +17,7 @@
 //    体验加分项,是防止真凭据被覆盖成星号且无法察觉的最后一道闸。
 
 import type { McpServerConfig, McpStatus } from "../../../shared/mcp.js";
+import { cloudIdReservedError } from "../../../shared/remote/pxCloud.js";
 
 /** 状态灯的五种活法——比后端的 McpStatus 多一种 disabled。
     "config.enabled === false" 与"没试过就 connecting"合在一起，UI 才分得清
@@ -97,6 +98,8 @@ export function recordFromRows(rows: readonly KeyValueRow[]): Record<string, str
 export function mcpServerIdError(id: string, existingIds: readonly string[]): string | null {
   const trimmed = id.trim();
   if (trimmed === "") return "先给这台 server 起个名字";
+  const reserved = cloudIdReservedError(trimmed);
+  if (reserved !== null) return reserved;
   if (existingIds.includes(trimmed)) return `已经有一台叫「${trimmed}」的 server 了`;
   return null;
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from "vitest";
-import { fetchGrantedTools, buildPxTools, type PxCallDeps, type GrantedPxServer } from "../../services/runtime/src/pxTools.js";
+import { fetchGrantedTools, buildPxTools, pxToolName, PX_TOOL_NAME_MAX, type PxCallDeps, type GrantedPxServer } from "../../services/runtime/src/pxTools.js";
 import type { ExecutionWorld } from "../../src/world/executionWorld.js";
 
 const json = (status: number, body: unknown): Response =>
@@ -126,5 +126,42 @@ describe("buildPxTools", () => {
     expect(gated.every((t) => t.requiresApproval === true)).toBe(true);
     // 缺省（人自己 @ 起的那一轮）不变：白名单内没有逐次审批（ADR-0151）
     expect(buildPxTools(baseDeps(fetch), "fromU", granted).every((t) => t.requiresApproval === false)).toBe(true);
+  });
+});
+
+describe("pxToolName", () => {
+  it("短的原样（safe 化）", () => {
+    expect(pxToolName("abcdef12-xxxx", "cloud-notion", "search")).toBe("px_abcdef12_cloud-notion_search");
+  });
+  it("超长截到 64 并带哈希尾，不同原名不撞", () => {
+    const a = pxToolName("abcdef12-xxxx", "cloud-google-analytics", "run_realtime_report_with_dimensions_and_metrics");
+    const b = pxToolName("abcdef12-xxxx", "cloud-google-analytics", "run_realtime_report_with_dimensions_and_metricz");
+    expect(a.length).toBeLessThanOrEqual(PX_TOOL_NAME_MAX);
+    expect(a).toMatch(/^[a-zA-Z0-9_-]+$/);
+    expect(a).not.toBe(b);
+    expect(pxToolName("abcdef12-xxxx", "cloud-google-analytics", "run_realtime_report_with_dimensions_and_metrics")).toBe(a);
+  });
+});
+
+// spec §5：工具名被截短时要留一句 warn（原名 → 截后），否则模型那边看到的名字对不上厂商文档、线上无从查起。
+// 每个截断名只说一次（buildPxTools 随授权缓存反复跑，每跑一遍说一遍就是刷屏）
+describe("buildPxTools：截断的工具名 warn 一次（#1430 终审 M9）", () => {
+  it("截了才说，原名与截后都在；同一个名字第二次构建不再说", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    const long = "run_realtime_report_with_dimensions_and_metrics_m9_only";
+    const granted: GrantedPxServer[] = [{
+      hostUid: "abcdef12-m9", serverId: "cloud-google-analytics",
+      toolDefs: [{ name: long, description: "", inputSchema: {} }, { name: "short", description: "", inputSchema: {} }],
+    }];
+    const tools = buildPxTools(baseDeps(fetch), "fromU", granted);
+    const capped = tools[0]!.def.name;
+    expect(capped.length).toBeLessThanOrEqual(PX_TOOL_NAME_MAX);
+    expect(warn).toHaveBeenCalledTimes(1);
+    const msg = warn.mock.calls[0]!.join(" ");
+    expect(msg).toContain(`px_abcdef12_cloud-google-analytics_${long}`);
+    expect(msg).toContain(capped);
+    buildPxTools(baseDeps(fetch), "fromU", granted);
+    expect(warn).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
   });
 });
