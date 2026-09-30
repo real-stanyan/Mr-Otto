@@ -36,6 +36,21 @@ describe("Escrow DO 接线", () => {
     // cloud 的 upstream_auth 到不了桌面那句「托管凭据已失效」
     expect(afterRefresh).not.toMatch(/upstream_auth/);
   });
+  // #1430 终审 M5：续期成功、换新凭据重试仍 401 时，cloud 那台要落成「稍后再试」——漏掉这道闸，它会落到下面
+  // 桌面那句「让对方上线重新授权一次」，而手机上接的应用根本没有「对方上线」这回事
+  it("续期后重试仍 401：cloud 那台改成 502 refresh_failed，且这道闸在通用错误出口之前", () => {
+    const call = escrow.slice(escrow.indexOf('op === "call"'));
+    const guardAt = call.indexOf('if (!r.ok && r.code === "upstream_auth" && isCloudServerId(serverId)) {');
+    const exitAt = call.indexOf("if (!r.ok) {");
+    expect(guardAt).toBeGreaterThan(call.indexOf("cloudRefresh("));
+    expect(guardAt).toBeGreaterThan(call.indexOf("pxRefreshTokens("));
+    expect(exitAt).toBeGreaterThan(guardAt);
+    const guard = call.slice(guardAt, exitAt);
+    expect(guard).toMatch(/r = \{ ok: false, status: 502, code: "refresh_failed", message: CLOUD_TEXT\.refreshFailed \}/);
+    // 重试真的发生在续期成功那一支里（没有重试，这道闸就只是在兜「续期成功却什么都没做」）
+    const cloudBranch = call.slice(call.indexOf("cloudRefresh("), call.indexOf("cloudNeedsLogin(await this.cloudBox(), serverId)"));
+    expect(cloudBranch).toMatch(/if \(oauth\) \{\s*r = await pxMcpCall\(/);
+  });
   it("桌面 sealed 自刷：网络先行、之后读 this.doc() 并只展开 sealedDoc，不碰合并视图", () => {
     const call = escrow.slice(escrow.indexOf('op === "call"'));
     const desktop = call.slice(call.indexOf("pxRefreshTokens("), call.indexOf("if (!r.ok) {"));
