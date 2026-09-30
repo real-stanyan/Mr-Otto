@@ -21,7 +21,8 @@ if (!callback.startsWith("https://")) {
 }
 console.log(`回调地址：${callback}\n`);
 
-const f = (url, init) => fetch(url, init);
+// 每一发 15 秒上限：某个厂商挂住不回时，整个探针不该陪着挂（pxOAuth 自己也带，这里兜住它没带的那种）
+const f = (url, init) => fetch(url, { ...init, signal: init?.signal ?? AbortSignal.timeout(15_000) });
 const rows = [];
 for (const e of MCP_CATALOG.filter((x) => x.transport === "http" && x.auth === "oauth")) {
   if (/\{\w+\}/.test(e.url ?? "")) {
