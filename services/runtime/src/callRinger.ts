@@ -103,7 +103,7 @@ export function createRinger(d: RingerDeps): Ringer {
         d.log(`[otto-runtime] 查推送设备失败（session=${d.sessionId}）：${err instanceof Error ? err.message : String(err)}`);
         return "这会儿查不到他的手机，电话没打出去——在聊天里说一声，他回来会看到。";
       }
-      if (devices === 0) return "他的手机没开通知（或者还没在手机上登录），打不了电话——在聊天里说一声，他回来会看到。";
+      if (devices === 0) return "他的手机上还没有能接电话的新版 App（或者还没在手机上登录），打不了电话——在聊天里说一声，他回来会看到。";
       const at = d.now();
       const ring: RingState = {
         ringId: randomUUID(), fromAgentId: agentId, toUid, reason, opening,

@@ -108,7 +108,7 @@ describe("打出去", () => {
 
   it("没有能收推送的设备：不打、不落事件；查设备抛错：另一句话，也不落", async () => {
     const none = makeRinger({ devices: 0 });
-    expect(await none.r.call("ops", "运维", "u1", "部署完了", "部署好了，你看一下。")).toContain("没开通知");
+    expect(await none.r.call("ops", "运维", "u1", "部署完了", "部署好了，你看一下。")).toContain("能接电话的新版");
     expect(none.events).toEqual([]);
     const broken = makeRinger({ devices: new Error("db down") });
     expect(await broken.r.call("ops", "运维", "u1", "部署完了", "部署好了，你看一下。")).toContain("查不到他的手机");

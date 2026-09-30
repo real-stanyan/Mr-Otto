@@ -1,0 +1,250 @@
+import AVFoundation
+import CallKit
+import Foundation
+import PushKit
+import UIKit
+
+/// 进程里唯一的一份：PushKit 注册、CallKit provider、这几通来电的账（#1428，spec §2）。
+/// 状态一律在主队列上动：PushKit 的 registry 建在主队列上，CXProvider 的 delegate 队列给 nil（= 主队列），
+/// JS 调进来的 endCall 也 runOnQueue(.main)、挂 / 卸监听也 hop 到主队列。**唯一例外是 voipToken**：
+/// 同步的 getVoipToken 在 JS 线程上读它，所以它有自己的锁。
+final class CallCenter: NSObject {
+  static let shared = CallCenter()
+
+  private struct Call {
+    let uuid: UUID
+    var answered: Bool
+    var timer: Timer?
+  }
+
+  private var registry: PKPushRegistry?
+  private let provider: CXProvider
+  private let tokenLock = NSLock()
+  private var _voipToken: String?
+  /// 主队列写、JS 线程读（getVoipToken 是同步函数），所以过锁
+  var voipToken: String? {
+    get { tokenLock.lock(); defer { tokenLock.unlock() }; return _voipToken }
+    set { tokenLock.lock(); defer { tokenLock.unlock() }; _voipToken = newValue }
+  }
+  /// ringId → 这一通
+  private var calls: [String: Call] = [:]
+  /// 已经处理过的 ringId：推送不保证只到一次，同一通再来要报、但报完立刻结束
+  private var seen = Set<String>()
+  /// JS 还没挂上监听时攒着的事件（被 VoIP 推送从后台叫起来的那一次，JS 比推送回调晚）
+  private var pending: [[String: Any]] = []
+  /// JS 那一侧；nil = 没有监听。owner 是挂上它的那个模块实例：JS 重载后旧实例的 OnDestroy 只清自己挂的，
+  /// 不会把新实例刚挂上的踩掉。closure 回 true = 送到了；回 false（模块已经没了）= 没送到，事件留着
+  private var emitter: (owner: UUID, deliver: ([String: Any]) -> Bool)?
+
+  /// 挂上监听（主队列）：把攒着的一次发完，发不出去的接着攒
+  func attach(owner: UUID, deliver: @escaping ([String: Any]) -> Bool) {
+    emitter = (owner, deliver)
+    let queued = pending
+    pending = []
+    for (i, body) in queued.enumerated() {
+      if !deliver(body) {
+        pending = Array(queued[i...])
+        break
+      }
+    }
+  }
+
+  /// 卸掉监听（主队列）：只认自己挂的
+  func detach(owner: UUID) {
+    guard emitter?.owner == owner else { return }
+    emitter = nil
+  }
+
+  private override init() {
+    let config = CXProviderConfiguration()
+    config.supportsVideo = false
+    config.maximumCallsPerCallGroup = 1
+    config.maximumCallGroups = 1
+    config.supportedHandleTypes = [.generic]
+    // 通话记录在聊天里已经有了，不往「电话」App 的最近通话里塞
+    config.includesCallsInRecents = false
+    // expo-notifications 插件把它打进了包根目录（app.json 的 sounds）
+    config.ringtoneSound = "ringtone.caf"
+    provider = CXProvider(configuration: config)
+    super.init()
+    provider.setDelegate(self, queue: nil)
+  }
+
+  /// didFinishLaunching 里调（OttoCallAppDelegate）：越早越好，被推送叫起来时回调紧跟其后
+  func start() {
+    guard registry == nil else { return }
+    let r = PKPushRegistry(queue: .main)
+    r.delegate = self
+    r.desiredPushTypes = [.voIP]
+    registry = r
+  }
+
+  private func send(_ body: [String: Any]) {
+    if let emitter, emitter.deliver(body) { return }
+    pending.append(body)
+  }
+
+  /// JS 没在跑就让 App 起一份（AppDelegate 上 withSceneLifecycle 插件加的 ottoStartReactNative）：App 被杀掉后被
+  /// VoIP 推送从后台叫起来时不连场景，React Native 不会自己启动，人接起来就是一通没人说话的电话。按名字找，
+  /// 模块不依赖 App 工程；那边已经起过了是空操作
+  private func ensureJS() {
+    guard emitter == nil, let app = UIApplication.shared.delegate as? NSObject else { return }
+    let start = NSSelectorFromString("ottoStartReactNative")
+    if app.responds(to: start) { _ = app.perform(start) }
+  }
+
+  /// 接起来这么久 JS 还没挂上监听：它起不来了（或起得太慢），收掉系统通话，别让人对着一通计时的静音电话。
+  /// JS 在的时候不管——那边有自己的「一直没连上」（ringStore 的 20 秒）
+  private static let answeredWithoutJsLimit: TimeInterval = 30
+
+  private func abandonIfNoJS(_ ringId: String) {
+    guard emitter == nil, let call = calls.removeValue(forKey: ringId) else { return }
+    provider.reportCall(with: call.uuid, endedAt: nil, reason: .failed)
+    // 攒着的这一通的事件一并扔掉：JS 晚些时候起来再回放「接听」，会把人拽进一条早就结束的通话
+    pending.removeAll { body in
+      (body["ringId"] as? String) == ringId || ((body["ring"] as? [String: Any])?["ringId"] as? String) == ringId
+    }
+  }
+
+  private func ringIdOf(_ uuid: UUID) -> String? {
+    calls.first(where: { $0.value.uuid == uuid })?.key
+  }
+
+  /// App 这边的通话结束了：收掉系统来电。走 reportCall 不走 CXEndCallAction——后者会回调 perform end、
+  /// 再发一条 end 事件，JS 又去挂一次已经挂掉的电话
+  func endCall(ringId: String) {
+    guard let call = calls.removeValue(forKey: ringId) else { return }
+    call.timer?.invalidate()
+    provider.reportCall(with: call.uuid, endedAt: nil, reason: .remoteEnded)
+  }
+
+  private func finishUnanswered(_ ringId: String) {
+    guard let call = calls[ringId], !call.answered else { return }
+    calls.removeValue(forKey: ringId)
+    provider.reportCall(with: call.uuid, endedAt: nil, reason: .unanswered)
+    send(["type": "end", "ringId": ringId, "answered": false, "reason": "missed"])
+  }
+
+  /// 与 otto-speech 逐字同一组（spec §2.3）：回声消除由它的 VPIO 做。只设 category，激活交给 CallKit
+  private func configureAudioSession() {
+    try? AVAudioSession.sharedInstance().setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetoothA2DP])
+  }
+}
+
+extension CallCenter: PKPushRegistryDelegate {
+  func pushRegistry(_ registry: PKPushRegistry, didUpdate pushCredentials: PKPushCredentials, for type: PKPushType) {
+    guard type == .voIP else { return }
+    let token = pushCredentials.token.map { String(format: "%02x", $0) }.joined()
+    voipToken = token
+    send(["type": "token", "token": token])
+  }
+
+  func pushRegistry(_ registry: PKPushRegistry, didInvalidatePushTokenFor type: PKPushType) {
+    guard type == .voIP else { return }
+    voipToken = nil
+  }
+
+  /// iOS 13 起：每一条 VoIP 推送都必须在这里报一通来电，否则系统杀 App、屡犯就不再投递。
+  /// 解析失败 / 已过期 / 重复的也报，报完立刻结束（spec §0.8）
+  func pushRegistry(_ registry: PKPushRegistry, didReceiveIncomingPushWith payload: PKPushPayload, for type: PKPushType, completion: @escaping () -> Void) {
+    let ring = payload.dictionaryPayload["ring"] as? [String: Any]
+    let ringId = ring?["ringId"] as? String
+    let name = (ring?["agentName"] as? String) ?? "Mr Otto"
+    let expiresMs = (ring?["expiresTs"] as? NSNumber)?.doubleValue ?? 0
+    let nowMs = Date().timeIntervalSince1970 * 1000
+    let live = ringId != nil && expiresMs > nowMs && !seen.contains(ringId!)
+    // 同步登记，不等下面的异步完成回调：紧挨着到的同 ringId 第二条推送在这一行之后读 seen 就是重复的
+    // （否则两条都当成有效、calls[ringId] 被后一条覆盖，前一条的系统来电永远响下去）
+    if live, let ringId { seen.insert(ringId) }
+
+    let uuid = UUID()
+    let update = CXCallUpdate()
+    update.remoteHandle = CXHandle(type: .generic, value: (ring?["agentId"] as? String) ?? "otto")
+    update.localizedCallerName = name
+    update.hasVideo = false
+    update.supportsHolding = false
+    update.supportsGrouping = false
+    update.supportsUngrouping = false
+    update.supportsDTMF = false
+
+    provider.reportNewIncomingCall(with: uuid, update: update) { [weak self] error in
+      // 完成回调在哪条队列上来 CallKit 没写：一律 hop 回主队列再碰 calls / Timer（Timer 挂在没有 runloop 的线程上永远不响）
+      DispatchQueue.main.async {
+        defer { completion() }
+        guard let self else { return }
+        // 系统拒了（勿扰挡掉、已经有一通在打……）：什么都不记，服务端到点记未接
+        if error != nil {
+          // 这条本来有效、却没响成：放开登记，服务端重发的同一通还能再试
+          if live, let ringId { self.seen.remove(ringId) }
+          return
+        }
+        // calls[ringId] != nil 是第二道：不管 seen 怎么漏的，同一 ringId 只留一通，多的这个 uuid 立刻结束
+        guard live, let ringId, let ring, self.calls[ringId] == nil else {
+          self.provider.reportCall(with: uuid, endedAt: nil, reason: .failed)
+          return
+        }
+        let timer = Timer.scheduledTimer(withTimeInterval: max(0, (expiresMs - nowMs) / 1000), repeats: false) { [weak self] _ in
+          self?.finishUnanswered(ringId)
+        }
+        self.calls[ringId] = Call(uuid: uuid, answered: false, timer: timer)
+        self.send(["type": "incoming", "ring": ring])
+        // 下一拍再起：起 React Native 要在主线程上做一阵子，先让上面的 completion 把 PushKit 放掉
+        DispatchQueue.main.async { self.ensureJS() }
+      }
+    }
+  }
+}
+
+extension CallCenter: CXProviderDelegate {
+  func providerDidReset(_ provider: CXProvider) {
+    for (ringId, call) in calls {
+      call.timer?.invalidate()
+      send(["type": "end", "ringId": ringId, "answered": call.answered, "reason": "reset"])
+    }
+    calls.removeAll()
+  }
+
+  func provider(_ provider: CXProvider, perform action: CXAnswerCallAction) {
+    guard let ringId = ringIdOf(action.callUUID) else {
+      action.fail()
+      return
+    }
+    calls[ringId]?.timer?.invalidate()
+    // 同一格换成「JS 起不来」的看门狗：结束的几条路（endCall / 用户挂断 / reset）都会把它作废
+    calls[ringId]?.timer = Timer.scheduledTimer(withTimeInterval: Self.answeredWithoutJsLimit, repeats: false) { [weak self] _ in
+      self?.abandonIfNoJS(ringId)
+    }
+    calls[ringId]?.answered = true
+    configureAudioSession()
+    action.fulfill()
+    send(["type": "answer", "ringId": ringId])
+    ensureJS()
+  }
+
+  func provider(_ provider: CXProvider, perform action: CXEndCallAction) {
+    guard let ringId = ringIdOf(action.callUUID), let call = calls.removeValue(forKey: ringId) else {
+      action.fulfill()
+      return
+    }
+    call.timer?.invalidate()
+    action.fulfill()
+    send(["type": "end", "ringId": ringId, "answered": call.answered, "reason": "user"])
+  }
+
+  func provider(_ provider: CXProvider, perform action: CXSetMutedCallAction) {
+    guard let ringId = ringIdOf(action.callUUID) else {
+      action.fail()
+      return
+    }
+    action.fulfill()
+    send(["type": "mute", "ringId": ringId, "muted": action.isMuted])
+  }
+
+  func provider(_ provider: CXProvider, didActivate audioSession: AVAudioSession) {
+    send(["type": "audio", "active": true])
+  }
+
+  func provider(_ provider: CXProvider, didDeactivate audioSession: AVAudioSession) {
+    send(["type": "audio", "active": false])
+  }
+}

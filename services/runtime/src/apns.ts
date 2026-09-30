@@ -1,4 +1,6 @@
-// apns —— 回电的推送：runtime 直发 APNs（#1411，spec §1.3，ADR-0331）。
+// apns —— 回电的推送：runtime 直发 APNs 的 VoIP 推送（#1411 → #1428，ADR-0331 → 本条 ADR）。
+// 普通通知会被 iOS 路由到正在用的设备（开着 iPhone 镜像的 Mac、手表），保证不了在手机上响；
+// VoIP 推送叫起 App、由 CallKit 画系统来电。
 //
 // 分两层（同 config.ts 的纯核心 + 薄壳）：
 // · 纯的：JWT 的形状与签名、请求头与载荷、一次回复算什么（送到 / 令牌作废 / 换个环境再试 / 别的错）、
@@ -17,8 +19,6 @@ export type ApnsEnv = "production" | "sandbox";
 export const APNS_HOSTS: Record<ApnsEnv, string> = { production: "api.push.apple.com", sandbox: "api.sandbox.push.apple.com" };
 /** JWT 多久换一次：APNs 要求不超过 1 小时，也不许换得太勤（spec §1.3） */
 export const APNS_JWT_TTL_MS = 50 * 60_000;
-/** 锁屏铃声的文件名（mobile/assets/sounds/，由 expo-notifications 插件打进包里） */
-export const RING_SOUND = "ringtone.caf";
 
 export interface ApnsKey {
   keyPem: string;
@@ -39,29 +39,22 @@ export function apnsJwt(key: Pick<ApnsKey, "keyPem" | "keyId" | "teamId">, nowMs
   return `${input}.${b64url(sig)}`;
 }
 
-/** 一通来电的推送：标题「名字 来电」、正文是它要说的那句话、30 秒铃声、时效性通知（专注模式里也响）、
-    按会话归组。`ring` 那一格给手机开来电页用 */
-export function ringNotification(ring: RingPush): { aps: Record<string, unknown>; ring: RingPush } {
-  return {
-    aps: {
-      alert: { title: `${ring.agentName} 来电`, body: ring.reason },
-      sound: RING_SOUND,
-      "interruption-level": "time-sensitive",
-      "thread-id": ring.sessionId,
-    },
-    ring,
-  };
+/** VoIP 推送的载荷：只有 ring。VoIP 推送不展示（没有 aps），手机的 otto-call 收到后当场报给 CallKit，
+    系统来电界面上的名字取 ring.agentName */
+export function ringVoipPayload(ring: RingPush): { ring: RingPush } {
+  return { ring };
 }
 
-/** 请求头。`apns-expiration` 是响铃过期那一刻（秒）：过了还没送到的，APNs 不再送 */
-export function ringHeaders(ring: RingPush, bundleId: string, jwt: string): Record<string, string> {
+/** 请求头。topic 是 `<bundle>.voip`（VoIP 推送的规矩）；`apns-expiration: 0` = 送不到就作废：过了时限才到的
+    VoIP 推送手机也必须报来电（iOS 13 起的硬规定），只会变成一通立刻挂掉的来电。VoIP 推送不支持合并，不带
+    collapse-id */
+export function ringHeaders(bundleId: string, jwt: string): Record<string, string> {
   return {
     authorization: `bearer ${jwt}`,
-    "apns-topic": bundleId,
-    "apns-push-type": "alert",
+    "apns-topic": `${bundleId}.voip`,
+    "apns-push-type": "voip",
     "apns-priority": "10",
-    "apns-expiration": String(Math.floor(ring.expiresTs / 1000)),
-    "apns-collapse-id": ring.ringId,
+    "apns-expiration": "0",
   };
 }
 
@@ -126,11 +119,11 @@ export function createApnsPusher(o: {
   };
 
   async function sendOne(device: PushDevice, ring: RingPush): Promise<DeviceOutcome> {
-    const body = JSON.stringify(ringNotification(ring));
+    const body = JSON.stringify(ringVoipPayload(ring));
     for (const env of envOrder(device.env)) {
       let reply: ApnsReply;
       try {
-        reply = await request(env, `/3/device/${device.token}`, ringHeaders(ring, o.key.bundleId, tokenNow()), body);
+        reply = await request(env, `/3/device/${device.token}`, ringHeaders(o.key.bundleId, tokenNow()), body);
       } catch (err) {
         o.log(`[otto-runtime] APNs 请求失败（${env}）：${err instanceof Error ? err.message : String(err)}`);
         return "failed";

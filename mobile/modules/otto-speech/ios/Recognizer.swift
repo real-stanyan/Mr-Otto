@@ -77,6 +77,9 @@ final class Recognizer {
   /// 没人说话时多久换一次 request（毫秒）：攒着的音频有上限
   private let idleRestartMs: Double = 50_000
   private var observers: [NSObjectProtocol] = []
+  /// 系统来电（CallKit）进行中：音频会话由系统激活 / 去激活（#1428，spec §2.4），这里不 setCategory、
+  /// 不 setActive，CallKit 激活 / 去激活会话时发的打断通知也不当成打断
+  var externalSession = false
 
   init(emit: @escaping (Event) -> Void) {
     self.emit = emit
@@ -85,12 +88,32 @@ final class Recognizer {
     observers.append(center.addObserver(forName: AVAudioSession.interruptionNotification, object: nil, queue: nil) { [weak self] note in
       guard let raw = note.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
             AVAudioSession.InterruptionType(rawValue: raw) == .began else { return }
-      speechQueue.async { self?.interrupted("被系统打断了（来电 / Siri），点一下麦克风再开") }
+      speechQueue.async {
+        guard let self else { return }
+        if self.externalSession {
+          // 系统来电里的会话激活 / 去激活也会发这条通知：不当成打断、不报错。但引擎真被停了的话
+          // running 还是 true、麦是死的，悄悄收掉（stop 只发 listening:false）。手上那段放不完了：
+          // 当它放完了报 played（cut），否则放音器的完成回调不会来、JS 的放音队列一直等下去
+          if !self.engine.isRunning {
+            self.playback.cut()
+            if self.running { self.stop() }
+          }
+          return
+        }
+        self.interrupted("被系统打断了（来电 / Siri），点一下麦克风再开")
+      }
     })
     observers.append(center.addObserver(forName: .AVAudioEngineConfigurationChange, object: engine, queue: nil) { [weak self] _ in
       speechQueue.async {
         // 按引擎此刻停没停判（头注 ②）：还在跑 = 起引擎之前开回声消除引出的那一条
         guard let self, !self.engine.isRunning else { return }
+        if self.externalSession {
+          // CallKit 去激活会话时引擎会跟着停：这是系统来电的正常收尾，不报「设备变了」，悄悄收掉
+          // （手上那段同上：cut 报 played，不报错）
+          self.playback.cut()
+          if self.running { self.stop() }
+          return
+        }
         self.interrupted("声音设备变了（耳机 / 蓝牙），点一下麦克风再开")
       }
     })
@@ -154,6 +177,7 @@ final class Recognizer {
   }
 
   private func activateSession() throws {
+    if externalSession { return }
     let session = AVAudioSession.sharedInstance()
     try session.setCategory(.playAndRecord, mode: .default, options: [.defaultToSpeaker, .allowBluetoothA2DP])
     try session.setActive(true)
@@ -163,7 +187,9 @@ final class Recognizer {
   private func deactivateIfIdle() {
     guard !running, !playback.isPlaying else { return }
     if engine.isRunning { engine.stop() }
-    try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    if !externalSession {
+      try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+    }
   }
 
   private func ensureEngine() throws {

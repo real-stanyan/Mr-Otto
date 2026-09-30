@@ -37,7 +37,7 @@ function fakeClient(result: { data?: unknown; error: { message: string } | null 
 }
 
 describe("createSupabasePushDevices", () => {
-  it("list：只取这个人、这个 bundle 的令牌；认不出的环境当没记过", async () => {
+  it("list：只取这个人、这个 bundle 的 VoIP 令牌；认不出的环境当没记过", async () => {
     const f = fakeClient({ data: [{ token: "aa", apns_env: "sandbox" }, { token: "bb", apns_env: null }, { token: "cc", apns_env: "weird" }], error: null });
     const store = createSupabasePushDevices(f.client, "com.stanyan.mrotto.mobile", () => {});
     expect(await store.list("u1")).toEqual([
@@ -49,6 +49,7 @@ describe("createSupabasePushDevices", () => {
       ["select", "push_devices", "token, apns_env"],
       ["eq", "user_id", "u1"],
       ["eq", "bundle_id", "com.stanyan.mrotto.mobile"],
+      ["eq", "kind", "voip"],
     ]);
   });
   it("list 查询失败：往上抛（「查不到」不许说成「他没有设备」）", async () => {

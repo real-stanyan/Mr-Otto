@@ -11,6 +11,7 @@
 //   一次失败不该把电话钮藏到重开这一页；拉到过就不再每次回前台都拉。
 // · 切到后台 = 这台停听（停麦停放音），通话本身还在——回来那一格写「通话还开着」+「接着听」
 //   （维护者 2026-09-26）。只认 background：下拉控制中心 / 来一条通知横幅是 inactive，那不是人离开了。
+//   例外：系统来电（CallKit）进行中不停听，锁着屏也在通话；来电结束时还在后台再补停（#1428，call/systemCall.ts）。
 import { Directory, File, Paths } from "expo-file-system";
 import { useSyncExternalStore } from "react";
 import { AppState } from "react-native";
@@ -26,6 +27,7 @@ import { spokenUnits, voiceCallAvailable } from "../../../src/shared/voiceFeed.j
 import { IOS_PERMISSION_HELP, SPEECH_LOCALE, speechHints } from "../../../src/shared/voiceMic.js";
 import { createVoiceSession, type VoiceListen, type VoiceMicPort } from "../../../src/shared/voiceSession.js";
 import { OttoSpeech } from "../../modules/otto-speech/index.js";
+import { inSystemCall, onSystemCallEnded } from "../call/systemCall.js";
 import { chatEvents, sayVoice, setChatActivity, setVoiceCall } from "../cloud/chatStore.js";
 import { createStore } from "../externalStore.js";
 import { fetchBilling } from "../home/billing.js";
@@ -240,9 +242,16 @@ setChatActivity({
 });
 
 AppState.addEventListener("change", (s) => {
-  if (s === "background") session.leave();
+  if (s === "background") {
+    if (!inSystemCall()) session.leave();
+  }
   // 订阅快照一次都没拉到（见文件头）：回到前台再拉一次
   else if (s === "active" && store.get().billing === null) void refreshVoiceBilling();
+});
+
+// 系统来电期间切后台不停听（#1428，修订 ADR-0320：锁着屏也在通话）；来电结束时还在后台，补做那一步
+onSystemCallEnded(() => {
+  if (AppState.currentState !== "active") session.leave();
 });
 
 /** 进聊天页拉一次订阅快照。拉失败留着上一次的（拿不到 ≠ 没订阅） */

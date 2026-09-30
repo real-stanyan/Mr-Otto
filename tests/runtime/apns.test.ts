@@ -2,7 +2,7 @@
 import { createVerify, generateKeyPairSync } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import {
-  APNS_JWT_TTL_MS, apnsJwt, apnsVerdict, createApnsPusher, envOrder, ringHeaders, ringNotification,
+  APNS_JWT_TTL_MS, apnsJwt, apnsVerdict, createApnsPusher, envOrder, ringHeaders, ringVoipPayload,
   type ApnsEnv, type ApnsReply, type PushDevice, type PushDeviceStore,
 } from "../../services/runtime/src/apns.js";
 import type { RingPush } from "../../src/shared/callRing.js";
@@ -32,25 +32,16 @@ describe("apnsJwt", () => {
 });
 
 describe("载荷与请求头", () => {
-  it("标题「名字 来电」、正文那句话、30 秒铃声、时效性、按会话归组；ring 原样带上", () => {
-    expect(ringNotification(RING)).toEqual({
-      aps: {
-        alert: { title: "运维 来电", body: "部署完了，要你拍板" },
-        sound: "ringtone.caf",
-        "interruption-level": "time-sensitive",
-        "thread-id": "s1",
-      },
-      ring: RING,
-    });
+  it("载荷只有 ring：VoIP 推送不展示，界面由 CallKit 画（#1428）", () => {
+    expect(ringVoipPayload(RING)).toEqual({ ring: RING });
   });
-  it("头：topic = bundle、alert、立即送、过期 = 响铃时限（秒）、同一通合并", () => {
-    expect(ringHeaders(RING, "com.stanyan.mrotto.mobile", "JWT")).toEqual({
+  it("头：voip、topic = bundle.voip、立即送、不存（过期的 VoIP 推送只会变成一通立刻挂掉的来电）、不合并", () => {
+    expect(ringHeaders("com.stanyan.mrotto.mobile", "JWT")).toEqual({
       authorization: "bearer JWT",
-      "apns-topic": "com.stanyan.mrotto.mobile",
-      "apns-push-type": "alert",
+      "apns-topic": "com.stanyan.mrotto.mobile.voip",
+      "apns-push-type": "voip",
       "apns-priority": "10",
-      "apns-expiration": "1700000045",
-      "apns-collapse-id": "r1",
+      "apns-expiration": "0",
     });
   });
 });
@@ -101,8 +92,8 @@ describe("createApnsPusher", () => {
     expect(await p.pushRing("u1", RING)).toBe(1);
     expect(f.calls).toHaveLength(1);
     expect(f.calls[0]!.path).toBe("/3/device/aa");
-    expect(JSON.parse(f.calls[0]!.body)).toEqual(ringNotification(RING));
-    expect(f.calls[0]!.headers["apns-topic"]).toBe("com.stanyan.mrotto.mobile");
+    expect(JSON.parse(f.calls[0]!.body)).toEqual(ringVoipPayload(RING));
+    expect(f.calls[0]!.headers["apns-topic"]).toBe("com.stanyan.mrotto.mobile.voip");
     expect(store.envs).toEqual([]);
   });
   it("没记过：生产说不认识 → 沙盒送到，回写 sandbox", async () => {

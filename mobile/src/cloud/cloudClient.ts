@@ -6,12 +6,14 @@
 // App 回到前台时对当前会话房 reconnectNow：iOS 把后台 app 的 socket 掐了之后，退避重连
 // 可能还要等好几秒，人一回来就该立刻换一条。切到后台时反过来主动断开（#1411）：后台 = 不在看，
 // runtime 据「房里有没有他的连接」决定回电打不打，挂起的 socket 在服务端看来却还连着。
+// 例外：系统来电进行中不暂停（锁着屏通话靠这条连接，#1428，systemCall.ts）。
 import { AppState } from "react-native";
 import { csCtlChannel } from "../../../src/shared/remote/cloudSession.js";
 import { createCloudSessionClient, type CloudSessionClient } from "../../../src/shared/remote/cloudSessionClient.js";
 import { createWsTransport } from "../../../src/shared/remote/wsTransport.js";
 import type { CloudSessionDelta, CloudSessionStatus } from "../../../src/shared/shellBridge.js";
 import type { SessionEvent } from "../../../src/session/events.js";
+import { inSystemCall, onSystemCallEnded } from "../call/systemCall.js";
 import { RELAY_BASE } from "../relay.js";
 import { supabase } from "../supabase.js";
 
@@ -74,5 +76,11 @@ export async function ensureUid(): Promise<string | null> {
 AppState.addEventListener("change", (s) => {
   // 已经关掉的传输（leave 之后）reconnectNow / pause 都是空操作
   if (s === "active") room?.reconnectNow("回到前台");
-  else if (s === "background") room?.pause("切到后台");
+  else if (s === "background" && !inSystemCall()) room?.pause("切到后台");
+});
+
+// 系统来电期间切后台不暂停会话房（#1428）：锁着屏通话靠它；来电结束时还在后台就补暂停——runtime 据「房里有没有
+// 他的连接」决定下一通回电打不打（ADR-0331）
+onSystemCallEnded(() => {
+  if (AppState.currentState !== "active") room?.pause("系统来电结束、在后台");
 });

@@ -55,3 +55,32 @@ describe("0045_push_devices", () => {
     }
   });
 });
+
+describe("0047_push_devices_kind（#1428）", () => {
+  const src = readFileSync(new URL("../../supabase/migrations/0047_push_devices_kind.sql", import.meta.url), "utf8")
+    .split("\n")
+    .filter((l) => !l.trimStart().startsWith("--"))
+    .join("\n");
+  it("kind 列：默认 alert（存量行都是普通令牌），只收 alert / voip", () => {
+    expect(src).toMatch(/add column if not exists kind text not null default 'alert'/);
+    expect(src).toMatch(/check \(kind in \('alert', 'voip'\)\)/);
+  });
+  it("旧的两参版先删掉再建三参版（重载按签名区分，不删就是两份并存）", () => {
+    const drop = src.indexOf("drop function if exists public.register_push_device(text, text)");
+    expect(drop).toBeGreaterThan(-1);
+    expect(src.indexOf("create or replace function public.register_push_device(p_token text, p_bundle text, p_kind text default 'alert')")).toBeGreaterThan(drop);
+  });
+  it("三参版保留 0046 的每一条不变量，并校验 kind、upsert 时一起写", () => {
+    expect(src).toMatch(/security definer set search_path = public/);
+    expect(src).toMatch(/length\(p_token\) not between 16 and 256/);
+    expect(src).toMatch(/p_kind not in \('alert', 'voip'\)/);
+    const del = src.indexOf("delete from push_devices where token = p_token and user_id <> auth.uid()");
+    expect(del).toBeGreaterThan(-1);
+    expect(src.indexOf("insert into push_devices")).toBeGreaterThan(del);
+    expect(src).toMatch(/on conflict \(token\) do update set bundle_id = excluded\.bundle_id, kind = excluded\.kind, updated_at = now\(\)/);
+  });
+  it("三参版只给 authenticated", () => {
+    expect(src).toMatch(/revoke all on function public\.register_push_device\(text, text, text\) from public/);
+    expect(src).toMatch(/grant execute on function public\.register_push_device\(text, text, text\) to authenticated/);
+  });
+});
