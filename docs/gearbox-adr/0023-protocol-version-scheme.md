@@ -1,8 +1,8 @@
 # ADR-0023: Protocol Version Number — a semver Variant Tag Plus a Downstream Stamp
 
 - Date: 2026-07-19
-- Provenance: copied from [gearbox ADR-0023](https://github.com/real-stanyan/gearbox/blob/master/docs/gearbox-adr/0023-protocol-version-scheme.md) (gearbox-install init, upstream sha256:e99b9fe9624c)
-- Status: accepted
+- Provenance: backfilled from [gearbox ADR-0023](https://github.com/real-stanyan/gearbox/blob/master/docs/gearbox-adr/0023-protocol-version-scheme.md) (gearbox-update tool sync, upstream sha256:75d37e84a093)
+- Status: accepted (amended by ADR-0050: `.gearbox-version` carries the protocol version from the fence markers — which moves only when fence content does, while the tag moves every release — and update writes it on every run)
 - Related: ADR-0013 (B-3 backfill), ADR-0016/ADR-0017/ADR-0021/ADR-0022 (the tool family and the hash stamp)
 
 ## Context
