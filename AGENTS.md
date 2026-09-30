@@ -195,14 +195,14 @@ Division of labor is a project property, declared in the project's `## Division 
 ### Collision search before a new Task (project ADR-0148)
 
 - Extends: On starting a shift
-- Upstream: undecided
+- Upstream: https://github.com/real-stanyan/gearbox/issues/154
 
 **Before opening a new Task issue, or claiming one from the frontier, search for a collision first — closed issues included** (project ADR-0148): `gh issue list --state all --search "<关键词>"` plus `git branch -a --list '*<关键词>*'`. A hit gets read before anything else: already done → don't redo it (open a new issue referencing it if it still needs changes); half done → continue from there, don't restart. Step 1's `git log --oneline -10` does not cover this — skimming the last ten commits builds a background impression of what happened, it is not a search for one specific need. A compliantly closed issue is exactly the blind spot (issues #611/#612 were the same need done twice)
 
 ### Task issue first; verify "can't do" (project ADR-0148 / ADR-0134)
 
 - Extends: While working
-- Upstream: undecided
+- Upstream: https://github.com/real-stanyan/gearbox/issues/155
 
 - **A need in hand gets its Task issue opened before the exploring starts** (project ADR-0148), not after the work is done or half done — one line of the need as stated plus "exploring" is enough at that point. This is what survives an abnormal end: a session killed by an app quit gets no chance to write anything, so the only reliable trace is the one already in the repo while it was still alive — an issue opened up front is still open and unassigned afterwards, and the next shift's step 2 walks into it. Issues opened but not finished are the intended cost: an open empty issue says "somebody touched this and didn't finish", which is the sentence missing at collision time. At shift-end they follow On ending a shift item 3 like any other
 - **读到「做不了 / 不在本仓 / 只能维护者做」这类判断时，先花五分钟验前提本身再决定跳过**（`ssh` 能不能连、`ls` 有没有那个目录、`grep` 有没有那个符号）——这类判断读起来像调查结论，实际往往只是上一班没试，写进 handoff 就成了下一班的既定前提，本仓已连错四次（ADR-0134）。验完确实做不了，把**验的方法和结果**写进 issue，让下一班不用再验
@@ -210,7 +210,7 @@ Division of labor is a project property, declared in the project's `## Division 
 ### Worktree discipline (project ADR-0149)
 
 - Extends: Working agreement (multi-agent)
-- Upstream: undecided
+- Upstream: https://github.com/real-stanyan/gearbox/issues/156
 
 The main checkout is **frozen on the default branch and read-only**. Every shift works inside its own worktree.
 
