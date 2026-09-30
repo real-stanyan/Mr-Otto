@@ -1,8 +1,8 @@
 # ADR-0034: `<maintainer>` anchors to a GitHub username
 
 - Date: 2026-07-22
-- Provenance: copied from [gearbox ADR-0034](https://github.com/real-stanyan/gearbox/blob/master/docs/gearbox-adr/0034-maintainer-anchors-github-username.md) (gearbox-install init, upstream sha256:d40854652b43)
-- Status: accepted
+- Provenance: backfilled from [gearbox ADR-0034](https://github.com/real-stanyan/gearbox/blob/master/docs/gearbox-adr/0034-maintainer-anchors-github-username.md) (gearbox-update tool sync, upstream sha256:c23fc9965d7b)
+- Status: accepted; amended by ADR-0053 (the roster)
 - Related: ADR-0006 (protocol change tiers / weak-b agreement), ADR-0012 (L1/L2 boundary criterion)
 
 ## Context
