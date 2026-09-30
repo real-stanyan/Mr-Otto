@@ -298,15 +298,21 @@ export function createWorkspaceManager(deps: WorkspaceManagerDeps): WorkspaceMan
 
     async withdrawConnector(id, serverId) {
       return withSession(async (client, uid) => {
-        if (isCloudServerId(serverId)) {
+        const cloud = isCloudServerId(serverId);
+        if (cloud) {
           // 授权先撤、目录行后删（spec §6.1）：云端撤不掉就整个失败，不删目录行——半路断在这儿留下的是
           // 「目录行在、授权也在」，界面上看得见、再点一次即清；反过来就是谁都看不见的暗门
           await deps.cloudGrant(id, serverId, false);
-          await deps.deleteConnectorRow(client, id, uid, serverId);
-          return null;
         }
         const store = deps.loadStore();
         const existing = workspaceGrantFor(store, id);
+        // 纵深防御（#1430 终审 I-2）：cloud- 的名字按理只属于手机上接的应用，新建时已经挡了；但本机台账里若真列着
+        // 一台同名的（老配置 / 别的路进来的），只撤云端就会把本机那份授权 + 密封箱原样留下 = 谁都看不见的授权。
+        // 列着就连本机那一半一起撤；没列着，cloud- 这一支不碰本机台账（与改动前逐字一样）
+        if (cloud && !(existing?.allow ?? []).some((a) => a.serverId === serverId)) {
+          await deps.deleteConnectorRow(client, id, uid, serverId);
+          return null;
+        }
         const allow = (existing?.allow ?? []).filter((a) => a.serverId !== serverId);
         if (allow.length === 0) {
           // 删空了:整条 workspaceGrant 消失,不留一条空 allow 的僵尸条目
