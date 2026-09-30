@@ -17,7 +17,9 @@ import { FriendScreen } from "../friends/FriendScreen.js";
 import { GroupsScreen } from "../friends/GroupsScreen.js";
 import { RequestsScreen } from "../friends/RequestsScreen.js";
 import { useInbox } from "../inbox/useInbox.js";
+import { AppDetailScreen } from "../machine/AppDetailScreen.js";
 import { AppsScreen } from "../machine/AppsScreen.js";
+import { ConnectAppScreen } from "../machine/ConnectAppScreen.js";
 import { FilePreviewScreen } from "../machine/FilePreviewScreen.js";
 import { FilesScreen } from "../machine/FilesScreen.js";
 import { UsageScreen } from "../machine/UsageScreen.js";
@@ -98,6 +100,8 @@ export function RootNavigator() {
         <Root.Screen name="WikiEdit" component={WikiEditScreen} options={{ title: "改这一页", headerShadowVisible: false }} />
         <Root.Screen name="Usage" component={UsageScreen} options={{ title: "这周谁用得多" }} />
         <Root.Screen name="Apps" component={AppsScreen} options={{ title: "应用" }} />
+        <Root.Screen name="ConnectApp" component={ConnectAppScreen} options={{ title: "接入应用" }} />
+        <Root.Screen name="AppDetail" component={AppDetailScreen} options={{ title: "" }} />
         <Root.Screen name="Settings" component={SettingsScreen} options={{ title: "设置" }} />
         {/* 形象陈列馆：只在开发构建里有（#1356 A0，见 dev/FaceGallery.tsx 头注） */}
         {__DEV__ ? <Root.Screen name="FaceGallery" component={FaceGallery} options={{ title: "形象陈列馆" }} /> : null}

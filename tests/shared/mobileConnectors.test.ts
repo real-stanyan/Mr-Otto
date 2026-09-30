@@ -4,6 +4,7 @@ import {
   APP_GONE, CATALOG_FOOTER, DESKTOP_APPS_FOOTER, DISCONNECT_LEAD, LEND_FOOTER, MOBILE_OAUTH_BLOCKED, PHONE_APPS_EMPTY,
   PHONE_APPS_FOOTER, TOOLS_PREVIEW, appDetail, catalogEmpty, connectCatalog, connectIntro, connectKind, connectedToast,
   disconnectTitle, lendRows, lendToast, paramFormError, phoneAppRows, reloginIntro, reloginToast,
+  CONNECTED_MARK, allToolsLabel, appInitial, connectDialogText, connectParams, disconnectedToast, landedApp, toolCountText,
 } from "../../src/shared/mobileConnectors.js";
 import type { CloudViewItem } from "../../src/shared/remote/pxCloud.js";
 
@@ -106,5 +107,38 @@ describe("文案", () => {
     expect(reloginToast("Notion")).toBe("Notion 重新登录好了");
     expect(lendToast("奶茶店", true)).toBe("借给了「奶茶店」");
     expect(lendToast("奶茶店", false)).toBe("不再借给「奶茶店」");
+  });
+});
+
+describe("弹窗与接入之后", () => {
+  it("弹窗文字：接入带「以你的身份」那句；重新登录不带", () => {
+    const n = connectDialogText(byId("notion"), false);
+    expect(n).toEqual({ title: "接入 Notion", lead: byId("notion").description, note: connectIntro(byId("notion")).note, action: "去登录" });
+    expect(connectDialogText(byId("notion"), true)).toEqual({ ...reloginIntro(byId("notion")), note: null });
+  });
+  it("参数：只带条目认的格子，去空白，空的不带", () => {
+    expect(connectParams(byId("github"), { github_token: "  abc ", other: "x" })).toEqual({ github_token: "abc" });
+    expect(connectParams(byId("github"), { github_token: "   " })).toEqual({});
+  });
+  it("接上了没有看重拉的视图：serverId、目录条目、状态三样都要对上", () => {
+    const ok = item();
+    expect(landedApp([ok], "notion", "cloud-notion")).toBe(ok);
+    expect(landedApp(null, "notion", "cloud-notion")).toBeNull();
+    expect(landedApp([ok], "notion", "cloud-linear")).toBeNull();
+    expect(landedApp([ok], "linear", "cloud-notion")).toBeNull();
+    expect(landedApp([item({ status: "needs_login" })], "notion", "cloud-notion")).toBeNull();
+  });
+  it("首字母方块：按码点取、大写；空名字给问号", () => {
+    expect(appInitial("notion")).toBe("N");
+    expect(appInitial(" 飞书")).toBe("飞");
+    expect(appInitial("\u{1F600}x")).toBe("\u{1F600}");
+    expect(appInitial("")).toBe("?");
+  });
+  it("短文案", () => {
+    expect(CONNECTED_MARK).toBe("已接入");
+    expect(toolCountText(0)).toBe("没有工具");
+    expect(toolCountText(12)).toBe("12 个工具");
+    expect(allToolsLabel(12)).toBe("全部 12 个");
+    expect(disconnectedToast("Notion")).toBe("已断开 Notion");
   });
 });

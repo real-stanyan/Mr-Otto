@@ -75,6 +75,39 @@ export function reloginIntro(entry: CuratedEntry): { title: string; lead: string
   };
 }
 
+/** 弹窗顶上那几句：接入 / 重新登录两种。重新登录不再说「以你的身份」（接的时候说过了），参数照问（token 过期要粘新的） */
+export function connectDialogText(entry: CuratedEntry, relogin: boolean): { title: string; lead: string; note: string | null; action: string } {
+  if (relogin) return { ...reloginIntro(entry), note: null };
+  const intro = connectIntro(entry);
+  return { title: `接入 ${entry.name}`, lead: intro.lead, note: intro.note, action: intro.action };
+}
+
+/** 发给 edge 的参数：只带这个条目认的那几格，去掉首尾空白，空的不带 */
+export function connectParams(entry: CuratedEntry, values: Readonly<Record<string, string>>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const p of entry.params) {
+    const v = (values[p.name] ?? "").trim();
+    if (v !== "") out[p.name] = v;
+  }
+  return out;
+}
+
+/**
+ * 接入 / 重新登录之后「真的接上了」的判据：看**重拉回来的云端视图**，不看回调深链自称的 serverId
+ * （mrotto://connector-done 谁都能打开，见 connectFlow.ts 的 ConnectOutcome）。要三样都对上：
+ * 视图里有这一台、它就是这个目录条目、状态是 ok（重新登录后还写着 needs_login = 没登上）。
+ */
+export function landedApp(
+  view: readonly CloudViewItem[] | null,
+  catalogId: string,
+  claimedServerId: string
+): CloudViewItem | null {
+  return view?.find((v) => v.serverId === claimedServerId && v.catalogId === catalogId && v.status === "ok") ?? null;
+}
+
+/** 应用图标位的首字母方块（手机包里还没有厂商 logo）。按码点取，不劈开代理对 */
+export const appInitial = (name: string): string => ([...name.trim()][0] ?? "?").toUpperCase();
+
 export function paramFormError(entry: CuratedEntry, values: Readonly<Record<string, string>>): string | null {
   const miss = missingParams(entry, values);
   return miss.length === 0 ? null : `还缺：${miss.join("、")}`;
@@ -94,7 +127,7 @@ export interface PhoneAppRow {
 export function phoneAppRows(view: readonly CloudViewItem[], homeId: string | null): PhoneAppRow[] {
   return view.map((v) => {
     const lent = v.grants.filter((g) => g !== homeId).length;
-    const tools = v.tools.length === 0 ? "没有工具" : `${v.tools.length} 个工具`;
+    const tools = toolCountText(v.tools.length);
     return {
       serverId: v.serverId,
       title: titleOf(v.catalogId),
@@ -150,3 +183,7 @@ export const connectedToast = (name: string): string => `接好了。你的智�
 export const reloginToast = (name: string): string => `${name} 重新登录好了`;
 export const lendToast = (team: string, on: boolean): string => (on ? `借给了「${team}」` : `不再借给「${team}」`);
 export const APP_GONE = "这个应用已经断开了。";
+export const CONNECTED_MARK = "已接入";
+export const toolCountText = (n: number): string => (n === 0 ? "没有工具" : `${n} 个工具`);
+export const allToolsLabel = (n: number): string => `全部 ${n} 个`;
+export const disconnectedToast = (name: string): string => `已断开 ${name}`;
