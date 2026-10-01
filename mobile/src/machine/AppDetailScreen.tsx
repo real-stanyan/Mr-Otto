@@ -141,7 +141,7 @@ export function AppDetailScreen({ route, navigation }: Props) {
     <ListPage>
       <View style={{ gap: space.sm }}>
         <View style={{ alignItems: "center", gap: 8, paddingTop: 18, paddingHorizontal: 24, paddingBottom: 14 }}>
-          <AppTile name={view.title} size={64} />
+          <AppTile name={view.title} icon={view.icon} size={64} />
           <Text style={{ ...t.title, fontWeight: "600", color: c.foreground, textAlign: "center" }}>{view.title}</Text>
           {view.description !== "" ? (
             <Text style={{ fontSize: 14, lineHeight: 21, color: c.mutedForeground, textAlign: "center" }}>{view.description}</Text>

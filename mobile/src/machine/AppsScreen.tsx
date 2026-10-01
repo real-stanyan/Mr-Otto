@@ -72,7 +72,7 @@ export function AppsScreen({ navigation }: Props) {
             {phone.map((r) => (
               <Row
                 key={r.serverId}
-                leading={<AppTile name={r.title} />}
+                leading={<AppTile name={r.title} icon={r.icon} />}
                 label={r.title}
                 detail={r.detail}
                 {...(r.trailing !== null
@@ -86,7 +86,7 @@ export function AppsScreen({ navigation }: Props) {
         {desktop.length > 0 ? (
           <Group header="电脑上接的" footer={DESKTOP_APPS_FOOTER} inset={TILE_INSET}>
             {desktop.map((r) => (
-              <Row key={r.key} leading={<AppTile name={r.title} />} label={r.title} detail={r.detail} />
+              <Row key={r.key} leading={<AppTile name={r.title} icon={r.icon} />} label={r.title} detail={r.detail} />
             ))}
           </Group>
         ) : null}
