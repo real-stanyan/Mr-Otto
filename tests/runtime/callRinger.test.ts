@@ -131,6 +131,54 @@ describe("打出去", () => {
   });
 });
 
+describe("tryCall（结构化结果，#1441）", () => {
+  it("ignoreWatching 时对方开着聊天也照打；callerName 进推送", async () => {
+    const { r, events, pushes } = makeRinger({ watching: true });
+    const res = await r.tryCall("ops", "运维", "u2", "事由", "开场", { ignoreWatching: true, callerName: "Stan 的 运维" });
+    expect(res.kind).toBe("ringing");
+    if (res.kind === "ringing") expect(res.ringId).toBe(events[0]!.ringId);
+    expect(pushes[0]!.agentName).toBe("Stan 的 运维");
+    // 日志里的 fromAgentId 仍是智能体自己，名字只改推送
+    expect(events[0]!.fromAgentId).toBe("ops");
+  });
+
+  it("不带选项时 watching 照旧拦、推送用原名", async () => {
+    const w = makeRinger({ watching: true });
+    expect((await w.r.tryCall("ops", "运维", "u1", "事由", "开场")).kind).toBe("watching");
+    const n = makeRinger();
+    await n.r.tryCall("ops", "运维", "u1", "事由", "开场");
+    expect(n.pushes[0]!.agentName).toBe("运维");
+  });
+
+  it("每种不打各回自己的 kind；call() 的文案逐字不变", async () => {
+    const args = ["ops", "运维", "u1", "事由", "开场"] as const;
+    const texts = {
+      watching: "他这会儿正开着这条聊天，直接在聊天里说就行，不用打电话。",
+      cooldown: "你 1 分钟前刚给他打过电话，10 分钟内不再打——在聊天里说一声，他回来会看到。",
+      no_device: "他的手机上还没有能接电话的新版 App（或者还没在手机上登录），打不了电话——在聊天里说一声，他回来会看到。",
+      lookup_failed: "这会儿查不到他的手机，电话没打出去——在聊天里说一声，他回来会看到。",
+      undelivered: "没打通（推送没送到）——在聊天里说一声，他回来会看到。",
+      ringing: "已经打过去了。他接起来你会先开口；45 秒没接就算未接，他回来会在聊天里看到。",
+    };
+    const cases: Array<[keyof typeof texts, () => ReturnType<typeof makeRinger>]> = [
+      ["watching", () => makeRinger({ watching: true })],
+      ["cooldown", () => makeRinger({ start: 1_000_000, seed: [seeded("ringing", 1_000_000 - 60_000, 1_000_000 - 15_000)] })],
+      ["no_device", () => makeRinger({ devices: 0 })],
+      ["lookup_failed", () => makeRinger({ devices: new Error("db down") })],
+      ["undelivered", () => makeRinger({ push: async () => 0 })],
+      ["ringing", () => makeRinger()],
+    ];
+    for (const [kind, make] of cases) {
+      const a = make();
+      const res = await a.r.tryCall(...args);
+      expect(res.kind).toBe(kind);
+      expect(res.message).toBe(texts[kind]);
+      const b = make();
+      expect(await b.r.call(...args)).toBe(texts[kind]);
+    }
+  });
+});
+
 describe("冷却（10 分钟，从日志算）", () => {
   it("同一只打给同一个人：10 分钟内不再打；打给别人不受影响；过了就能再打", async () => {
     const { r, c, events } = makeRinger();
