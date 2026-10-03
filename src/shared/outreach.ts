@@ -65,13 +65,19 @@ export function resolveFriend(friends: readonly { uid: string; name: string }[],
   return { kind: "none", names: [...new Set(friends.map((f) => f.name.trim()).filter((n) => n !== ""))] };
 }
 
+/** say() 落盘时给人说的话加的 `[名字]: ` 前缀（正则与 services/runtime/src/speakerPrefix.ts 同形——那份在
+    services/ 下，shared 不能反向 import，这里只剥一次、不认名字）。转写是「他说了什么」，前缀是日志的
+    排版，带着它汇报就成了「小红：[小红]: …」 */
+const SPEAKER_PREFIX = /^\[[^\]]+\]: /;
+const stripSpeaker = (text: string): string => text.replace(SPEAKER_PREFIX, "");
+
 export function outreachTranscript(events: readonly SessionEvent[], fromSeq: number, agentId: string, peerUid: string): OutreachLine[] {
   const out: OutreachLine[] = [];
   for (const e of events) {
     if (e.seq < fromSeq) continue;
     if (e.type === "assistant_message" && e.agentId === agentId && e.content.trim() !== "") out.push({ who: "agent", text: e.content, ts: e.ts });
-    else if (e.type === "user_message" && e.fromUid === peerUid && e.greeting === undefined && e.relay === undefined) out.push({ who: "peer", text: e.content, ts: e.ts });
-    else if (e.type === "chat_message" && e.fromUid === peerUid) out.push({ who: "peer", text: e.content, ts: e.ts });
+    else if (e.type === "user_message" && e.fromUid === peerUid && e.greeting === undefined && e.relay === undefined) out.push({ who: "peer", text: stripSpeaker(e.content), ts: e.ts });
+    else if (e.type === "chat_message" && e.fromUid === peerUid) out.push({ who: "peer", text: stripSpeaker(e.content), ts: e.ts });
   }
   return out;
 }

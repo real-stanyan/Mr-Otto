@@ -68,7 +68,7 @@ export function systemPromptText(
   // 外联会话（#1441）：这条线上智能体**没有任何工具**，所以下面那串「会用工具的桌面 agent」、
   // 工作目录、read_file / write_file 的围栏、审批、五种围栏全是假话——模型信提示词不信工具表
   // （#1206）。单走一支：身份 + 日期 + 外联那段 + 口语口径，别的一概不带
-  if (cloud?.chat?.kind === "outreach" && cloud.outreach) {
+  if (cloud?.chat?.kind === "outreach") {
     return (
       `你是 Mr. Otto（叫我 Otto）。\n` +
       (today ? `今天是 ${today}（本机时区）。日期以此为准，别按训练截止猜。\n` : "") +
@@ -188,11 +188,12 @@ const CLOUD_GIT_HOME = CLOUD_GIT.replace("「团队设置 → ", "「设置 → 
     团队（没有 `chat`、没有 `home`）拼出来的那一串与改动前**逐字节相同** */
 function cloudSessionText(cloud: CloudSessionFacts): string {
   // 外联（#1441）：不带容器 / 审批 / Git 三段——那里没有容器可跑、没有刀可批、没有仓库可推。
-  // 名字是别人写的字，拼进结构前过 promptSafe（#957 B-C1）。没有 `cloud.outreach` 事实的
-  // outreach（形状不全）退回下面的老路：宁可多说也别造出一句缺了人名的话
-  if (cloud.chat?.kind === "outreach" && cloud.outreach) {
-    const w = promptSafe(cloud.outreach.ownerName);
-    const p = promptSafe(cloud.outreach.peerName);
+  // 名字是别人写的字，拼进结构前过 promptSafe（#957 B-C1）。判据只看 `chat.kind`，与 sessionService 的
+  // `isOutreach`（也只看 kind，它决定「没有工具」）同一把：两处不一致 = 工具表是空的而提示词却在讲
+  // 一个有 bash 的桌面 agent（#1206）。缺了 `cloud.outreach`（形状不全）时名字退回中性称呼
+  if (cloud.chat?.kind === "outreach") {
+    const w = cloud.outreach ? promptSafe(cloud.outreach.ownerName) : "主人";
+    const p = cloud.outreach ? promptSafe(cloud.outreach.peerName) : "对方";
     return (
       `你在替 ${w} 给他的好友 ${p} 打电话。这条线上只有你和 ${p}；${w} 不在场。\n` +
       `你在这里什么工具都没有：不能读写文件、不能查记忆、不能用任何应用。办不了的事就说会转告 ${w}。\n` +
@@ -858,7 +859,7 @@ export function deriveMessages(
           };
           messages.push(systemMessage);
           isCloud = event.cloud !== undefined;
-          isOutreach = event.cloud?.chat?.kind === "outreach" && event.cloud.outreach !== undefined;
+          isOutreach = event.cloud?.chat?.kind === "outreach";
         }
         break;
 

@@ -47,6 +47,14 @@ describe("转写", () => {
     ]);
     expect(o.outreachTranscript(ev, 7, "a", "u2")).toEqual([{ who: "peer", text: "在呢", ts: 12 }]);
   });
+  it("剥掉 say() 加的「[名字]: 」前缀（user_message 与 chat_message 两种），没有前缀的原样", () => {
+    const withPrefix: SessionEvent[] = [
+      { seq: 1, sessionId: "s", ts: 1, type: "user_message", content: "[小红]: 好的，我明天去", fromUid: "u2", mentions: ["a"] },
+      { seq: 2, sessionId: "s", ts: 2, type: "chat_message", content: "[小红]: 文字补一句", fromUid: "u2", label: "小红", mention: false },
+      { seq: 3, sessionId: "s", ts: 3, type: "user_message", content: "没有前缀的话", fromUid: "u2", mentions: ["a"] },
+    ] as SessionEvent[];
+    expect(o.outreachTranscript(withPrefix, 1, "a", "u2").map((l) => l.text)).toEqual(["好的，我明天去", "文字补一句", "没有前缀的话"]);
+  });
   it("超过 20000 字留尾", () => {
     const lines = Array.from({ length: 30 }, (_, i) => ({ who: "peer" as const, text: "字".repeat(1000), ts: i }));
     const kept = o.capTranscript(lines);

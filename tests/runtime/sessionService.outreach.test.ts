@@ -479,6 +479,55 @@ describe("外联的生命周期（#1441 Task 9）", () => {
     store.close();
   });
 
+  it("setVoiceCall 只认进行中那通外联的好友：主人 / 陌生人 / 挂断后的好友一律被拒，日志一个字节都不多", async () => {
+    const store = newStore();
+    outreachSeed(store);
+    const { session } = openLive(store);
+    const len = (): number => store.load(SID).length;
+    const attempts: [string, string][] = [[OWNER, "Stan"], ["stranger", "路人"], [PEER, "小红"]];
+    // 没有外联在进行：三者都被拒
+    for (const [uid, name] of attempts) {
+      const before = len();
+      expect(await session.setVoiceCall(uid, name, ["ops"])).toMatchObject({ kind: "unknown_agent" });
+      expect(len(), `${uid} 无外联`).toBe(before);
+    }
+    await session.startOutreach(START);
+    for (const [uid, name] of attempts.slice(0, 2)) {
+      const before = len();
+      expect(await session.setVoiceCall(uid, name, ["ops"])).toMatchObject({ kind: "unknown_agent" });
+      expect(len(), `${uid} 外联中`).toBe(before);
+    }
+    // 好友接听、挂断；之后好友自己再来也被拒
+    await session.setVoiceCall(PEER, "小红", ["ops"]);
+    await session.settled();
+    await session.setVoiceCall(PEER, "小红", []);
+    const after = len();
+    for (const [uid, name] of attempts) {
+      expect(await session.setVoiceCall(uid, name, ["ops"])).toMatchObject({ kind: "unknown_agent" });
+      expect(len(), `${uid} 挂断后`).toBe(after);
+    }
+    expect(ofKind<VoiceCallChangedEvent>(store, "voice_call_changed").map((e) => e.participants.length)).toEqual([1, 0]);
+    expect(ofKind<UserMessageEvent>(store, "user_message").filter((u) => u.greeting !== undefined)).toHaveLength(1);
+    store.close();
+  });
+
+  it("greetNewAgent 在外联会话里是空操作：不落任何事件、不起 turn（进行中与没有外联两种状态都一样）", async () => {
+    const store = newStore();
+    outreachSeed(store);
+    const { session } = openLive(store);
+    const before = store.load(SID).length;
+    session.greetNewAgent("ops", "运维", OWNER);
+    await session.settled();
+    expect(store.load(SID).length).toBe(before);
+    await session.startOutreach(START);
+    const mid = store.load(SID).length;
+    session.greetNewAgent("ops", "运维", OWNER);
+    await session.settled();
+    expect(store.load(SID).length).toBe(mid);
+    expect(store.ofType(SID, "assistant_message")).toEqual([]);
+    store.close();
+  });
+
   it("重启：上一个进程里停在 started 的那通，装配时补 ended{failed} 并汇报", () => {
     const store = newStore();
     outreachSeed(store);

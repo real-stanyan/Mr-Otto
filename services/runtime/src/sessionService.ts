@@ -2836,7 +2836,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     },
 
     greetNewAgent(agentId, name, byUid) {
-      if (archived) return;
+      // 外联会话（#1441）：这条线只在打电话期间收话，任何人都不能往里塞一条开场白起 turn
+      if (archived || isOutreach) return;
       const opening = store.append({
         sessionId,
         ts: Date.now(),
