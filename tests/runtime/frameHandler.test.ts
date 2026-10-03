@@ -39,6 +39,8 @@ function fakeSession(overrides: Partial<CloudSession> = {}): CloudSession {
     stop: () => "idle",
     // #1163：默认收下——绝大多数用例不关心语音通话
     setVoiceCall: async () => ({ kind: "ok" }),
+    // #1441：默认打不了——绝大多数用例不关心外联
+    startOutreach: async () => ({ kind: "refused", message: "不会被调用" }),
     // #1280：默认团队会话——绝大多数用例不关心聊天身份
     chat: () => null,
     updateChatRoster: async () => ({ kind: "ok", agentIds: [], humans: [], changed: false }),

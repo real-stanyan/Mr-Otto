@@ -172,10 +172,14 @@ import { createInviteToCallTool } from "./inviteToCallTool.js";
 import type { VoiceCallParticipant } from "../../../src/session/events.js";
 import { LoopEngine } from "../../../src/loop/engine.js";
 import type { EventStore } from "../../../src/session/store.js";
-import type { SessionEvent, SessionCreatedEvent, UserMessageEvent, AssistantMessageEvent, AgentRelayEvent, CallRingEvent } from "../../../src/session/events.js";
-import { activeOutreach, applyOutreach, outreachFoldOf, type OutreachFold } from "../../../src/shared/outreach.js";
+import type { SessionEvent, SessionCreatedEvent, UserMessageEvent, AssistantMessageEvent, AgentRelayEvent, CallRingEvent, OutreachEvent } from "../../../src/session/events.js";
+import {
+  activeOutreach, applyOutreach, outreachAnsweredText, outreachCallerName, outreachFoldOf, outreachGreetingText, outreachRingReason,
+  type OutreachFold,
+} from "../../../src/shared/outreach.js";
 import { callbackAnsweredText, callbackGreetingText, callerModelOf, ringChatKind, type RingPush, type RingState } from "../../../src/shared/callRing.js";
 import { createRinger, type Ringer } from "./callRinger.js";
+import { createOutreachRun, type OutreachEnded, type OutreachRun, type OutreachStart, type OutreachStartResult } from "./outreachRun.js";
 import { createCallUserTool } from "./callUserTool.js";
 import type { DeltaKind, ModelAdapter } from "../../../src/model/adapter.js";
 import { createDeltaStream } from "./deltaStream.js";
@@ -455,6 +459,9 @@ export interface CloudSessionOpts {
   /** 智能体回电（#1411）。**必需**（同 approveAll / diskUsage 的纪律）：`null` = 推送关着（没配 APNS_*），
       call_user 那把刀不挂、通话块不提回电；忘接线该编译不过，而不是安静地跑一套「永远打不出电话」的装配 */
   callback: CloudCallback | null;
+  /** 一通外联收尾时通知（#1441）。**必需**（同 callback 的纪律）：`null` = 这条会话不收外联
+      （非外联会话，或 daemon 还没接跨会话那一头），startOutreach 回 refused；忘接线该编译不过 */
+  onOutreachEnded: ((r: OutreachEnded) => void) | null;
   /** 回电响铃的定时器（只给测试拧，同 deltaTimers）。缺席 = setTimeout / clearTimeout */
   ringTimers?: { setTimer?: (fn: () => void, ms: number) => unknown; clearTimer?: (h: unknown) => void };
   /** 这个团队的容器锁（#979 第 2 条，ADR-0232）。**必需**（同 memory / isMember
@@ -555,6 +562,10 @@ export interface CloudSession {
       daemon（它才有 supabase 句柄和 transport）——同这个文件里其余部分
       的分工，纯逻辑不碰 IO。 */
   archive(byLabel: string): boolean;
+  /** 替主人给朋友打一通电话（#1441）：只有外联会话（且推送开着、接了收尾回调）才有——其余回 refused。
+      落 outreach{started}、响铃；之后接听 / 未接 / 挂断 / 封顶由 outreachRun 在这条会话里自己推进，
+      收尾时调 `onOutreachEnded` */
+  startOutreach(s: OutreachStart): Promise<OutreachStartResult>;
   /** 停这一轮（#957 A-2）。ADR-0006 的「无步数天花板」前提是「用户就在屏幕前
       按停止」——云会话里那颗按钮此前根本不存在：`abortTurn()` 在整个
       `services/runtime/` 里零调用，一条跑飞的 turn 谁都停不下来，而烧的是
@@ -977,6 +988,37 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
           log: (m) => console.warn(m),
         });
 
+  /** 外联的生命周期（#1441）：只在外联会话、推送开着、有人接收尾回调时有。append 必须是 store.append + notify
+      ——sessionService 自己的 outreachFold（say 的闸、chat() 的 active）只在 notify 里推进，绕开 notify 它就看不见这一通。
+      定时器与 ringer 共用 ringTimers：测试一块假钟同时拧两边 */
+  const outreachRun: OutreachRun | null =
+    isOutreach && ringer !== null && callback !== null && opts.onOutreachEnded !== null
+      ? createOutreachRun({
+          sessionId,
+          seed,
+          append: (e) => {
+            const logged = store.append(e) as OutreachEvent;
+            notify(logged);
+            return logged;
+          },
+          ring: (s) =>
+            ringer.tryCall(s.agentId, s.agentName, s.peerUid, outreachRingReason(s.opening), s.opening, {
+              ignoreWatching: true,
+              callerName: outreachCallerName(s.ownerName, s.agentName),
+            }),
+          // 清空通话名单：走 logVoiceCall（byUid "system"），与别处改名单同一条出口
+          endCall: () => {
+            if (voiceCall !== null && voiceCall.participants.length > 0) logVoiceCall([], "system");
+          },
+          isWatching: (uid) => callback.isWatching(uid),
+          events: () => store.load(sessionId),
+          onEnded: opts.onOutreachEnded,
+          now,
+          setTimer: opts.ringTimers?.setTimer ?? ((fn, ms) => setTimeout(fn, ms)),
+          clearTimer: opts.ringTimers?.clearTimer ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>)),
+        })
+      : null;
+
   /** 落盘 + 通知的唯一口——engine 自己 append 的、sessionService 直接 append
       的（chat_message / approval_request / agent_briefed / session_archived），
       都从这过一遍，lastSeq() 才对得上 */
@@ -1004,6 +1046,9 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // append 里没有这一种，这条事件只从 logVoiceCall 出门
     if (e.type === "voice_call_changed") voiceCall = applyVoiceCallEvent(voiceCall, e);
     applyOutreach(outreachFold, e);
+    // 外联的生命周期跟着走（#1441）：它收尾时自己 append → 回到这里 → observe 只认 call_ring /
+    // voice_call_changed，不会把自己落的 outreach 事件当别的再收一遍（见 outreachRun.finish 的注释）
+    outreachRun?.observe(e);
     if (e.type === "chat_roster_changed") {
       chatRoster = applyChatRosterEvent(chatRoster, e);
       chatHumans = e.humans ?? [];
@@ -1504,14 +1549,19 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       seq：这一「轮」看见的就是它，openTurns 据此收口，「正在回复」那盏灯不亮 */
   function speakOpening(p: VoiceCallParticipant, opening: string, byUid: string, byLabel: string): void {
     const model = callerModelOf(store.load(sessionId), p.agentId);
+    // 外联会话里接通（#1441）：它得知道主人交代的事（brief）、对面是谁——不是回电那句「谁接了你的电话」
+    const outreach = outreachRun?.live() ?? null;
     const answered = store.append({
       sessionId,
       ts: Date.now(),
       type: "user_message",
-      content: callbackAnsweredText(p.name, byLabel),
+      content:
+        outreach !== null
+          ? outreachAnsweredText({ agentName: p.name, ownerName: outreach.ownerName, peerName: outreach.peerName, brief: outreach.brief })
+          : callbackAnsweredText(p.name, byLabel),
       fromUid: byUid,
       mentions: [p.agentId],
-      greeting: "callback",
+      greeting: outreach !== null ? "outreach" : "callback",
     }) as UserMessageEvent;
     notify(answered);
     notify(store.append({ sessionId, ts: Date.now(), type: "assistant_message", agentId: p.agentId, content: opening, model }));
@@ -1605,17 +1655,24 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     const decisions = rest.map((p) => {
       // 回电接通的那只说回电版开场白（#1411）：它得知道自己为什么打这个电话、接的是谁
       const ring = callback?.rings.get(p.agentId);
+      // 外联接通时它还在忙（#1441）：回落成带 brief 与开场白的招呼，不起「回电」那句
+      const outreach = ring !== undefined ? (outreachRun?.live() ?? null) : null;
       const opening = store.append({
         sessionId,
         ts: Date.now(),
         type: "user_message",
         content:
-          ring !== undefined && callback !== undefined
-            ? callbackGreetingText(p.name, callback.byLabel, ring.reason, ring.opening)
-            : voiceCallGreetingText(p.name),
+          outreach !== null
+            ? outreachGreetingText({
+                agentName: p.name, ownerName: outreach.ownerName, peerName: outreach.peerName,
+                brief: outreach.brief, opening: outreach.opening,
+              })
+            : ring !== undefined && callback !== undefined
+              ? callbackGreetingText(p.name, callback.byLabel, ring.reason, ring.opening)
+              : voiceCallGreetingText(p.name),
         fromUid: byUid,
         mentions: [p.agentId],
-        greeting: ring !== undefined ? "callback" : "voice_call",
+        greeting: outreach !== null ? "outreach" : ring !== undefined ? "callback" : "voice_call",
       }) as UserMessageEvent;
       notify(opening);
       return coordinator.enqueue({ agentId: p.agentId, fromUid: byUid, opening });
@@ -2796,6 +2853,12 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
 
     async setVoiceCall(byUid, byLabel, participants, budget) {
       if (archived) return { kind: "archived", message: "这条会话已经归档，没有通话可言" };
+      // 外联会话里只有打给的那个朋友能动通话名单，且要有一通在进行（#1441）：主人进来只读，
+      // 挂断之后也没有可接的电话——同 say 的闸，放在名单查询之前
+      if (isOutreach) {
+        const live = activeOutreach(outreachFold);
+        if (live === null || byUid !== live.peerUid) return { kind: "unknown_agent", message: "这通电话已经结束了" };
+      }
       // 人刚点了名单 → 要此刻的名单（同 say 的 fresh）：他在设置页刚建的那只要能立刻拉进来
       const roster = await rosterNow({ fresh: true });
       // 名单降级 = 占位不是真名单：拿它核对会把一次 Supabase 抖动说成「这只 agent 不存在」
@@ -2824,6 +2887,11 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // （它们打这个电话是有话要说的，哪怕本来就在通话里）
       greetNewcomers(next.filter((p) => !current.includes(p.agentId) || rings.has(p.agentId)), byUid, budget, { byLabel, rings });
       return { kind: "ok" };
+    },
+
+    startOutreach(s) {
+      if (outreachRun === null) return Promise.resolve({ kind: "refused", message: "这条线打不了电话（推送没开）。" });
+      return outreachRun.start(s);
     },
 
     stop(byUid, byLabel, seq) {
@@ -2857,6 +2925,9 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       archived = true;
       // 还在响的回电一律记未接（#1411）：归档之后没有人会来接，也没有房间可进
       ringer?.missAll();
+      // 进行中的外联一并收成没打通并告诉原聊天（#1441）：放在 missAll 之后——响着的那通先落 missed，
+      // run 的宽限定时器随 finish 一起清掉
+      outreachRun?.failAll();
       // 先说一句人话再落状态事件：群里其他人只看到会话消失是很糟的体验，
       // 而 session_archived 自己没有"谁干的"这个字段（ADR-0087 的形状，
       // 单机时代不需要）。走 chat_message 与 clone 结果通报同一条路
@@ -2885,6 +2956,9 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     if (archived) ringer.missAll();
     else ringer.resume();
   }
+  // 外联（#1441）：上一个进程里停在 started 的那通续不上（brief 与定时器都在内存里），按没打通收。
+  // 排在 ringer.resume 之后：它补的 missed 先落，这里再收尾，日志顺序是「未接 → 没打通」
+  outreachRun?.resume();
 
   // 重启补跑（#932 坑 ②）：上一个 daemon 收下了话（user_message 已落盘）、还
   // 没跑到就死了——按同一份推导把它们重新排上。openTurns 里 running 的也重排：

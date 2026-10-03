@@ -8,7 +8,9 @@ import { createWikiService, type WikiService } from "../../services/runtime/src/
 import { createMemoryWikiFs } from "../../services/runtime/src/wikiFs.js";
 import { createInMemoryWikiJournal } from "../../services/runtime/src/wikiJournal.js";
 import { EventStore } from "../../src/session/store.js";
-import type { RequestEnvelopeEvent, UserMessageEvent } from "../../src/session/events.js";
+import type { AssistantMessageEvent, CallRingEvent, OutreachEvent, RequestEnvelopeEvent, SessionEvent, UserMessageEvent, VoiceCallChangedEvent } from "../../src/session/events.js";
+import type { OutreachEnded, OutreachStart } from "../../services/runtime/src/outreachRun.js";
+import { OUTREACH_CAP_MS } from "../../src/shared/outreach.js";
 import type { ModelAdapter } from "../../src/model/adapter.js";
 import type { ExecutionWorld } from "../../src/world/executionWorld.js";
 import type { PxCallDeps } from "../../services/runtime/src/pxTools.js";
@@ -87,7 +89,7 @@ function open(store: EventStore, o: { team?: (typeof OPS)[] } = {}): Probe {
     onEvent: () => {}, onUsage: () => {}, wiki, mentionInbox: createInMemoryMentionInbox(),
     agentWriter: createInMemoryAgentWriter(), isMember: async () => true, contextWindowOf: () => undefined,
     sandboxApproval: async () => "ask", workspaceLock: createWorkspaceLock(), relayRemainingMicro: async () => null,
-    diskUsage: () => null, approveAll: true, callback: null,
+    diskUsage: () => null, onOutreachEnded: null, approveAll: true, callback: null,
     dispatch: async (input) => {
       probe.dispatchCalls++;
       return { kind: "picked", agentIds: [input.roster[0]!.agentId] };
@@ -241,7 +243,254 @@ describe("外联会话（#1441）", () => {
   });
 });
 
-// 外联在会话**装配之后**才开始的路径（notify 里逐条 applyOutreach）：要等 Task 9 的通话生命周期把
-// outreach 事件经 notify 写进来——今天 CloudSession 没有任何公开入口能让会话自己落一条 outreach，
-// 往 store 直接 append 会绕开 notify（daemon.ts 那几条直写同理），测它只会测出「绕开了」。
-// 接线那天在这里补一条：装配 → 通话开始 → 好友能说话 → 通话结束 → 又被拒。
+// ─── 外联在会话**装配之后**才开始的路径（Task 9）：startOutreach → 接听 → 收尾 ───
+// 这条路径要经 notify 逐条推进 sessionService 自己的外联折叠（say 的闸、chat() 的 active 都读它），
+// 所以 outreachRun 的 append 必须是 store.append + notify——下面「说话被放行」那条用例就是它的执行覆盖。
+
+const START: OutreachStart = {
+  outreachId: "o1", originSessionId: "origin-1", agentId: "ops", agentName: "运维", ownerName: "Stan",
+  peerUid: PEER, peerName: "小红", brief: "问问明天的会去不去", opening: "你好小红，我是运维，替 Stan 问你件事。",
+};
+
+/** 手拧的定时器：记下每个的毫秒数，测试按毫秒数点名触发（封顶 / 宽限 / 掉线轮询各是各的） */
+function fakeTimers() {
+  let n = 1;
+  const pending = new Map<number, { fn: () => void; ms: number }>();
+  return {
+    setTimer: (fn: () => void, ms: number): unknown => {
+      const id = n++;
+      pending.set(id, { fn, ms });
+      return id;
+    },
+    clearTimer: (h: unknown): void => {
+      pending.delete(h as number);
+    },
+    fire(ms: number): void {
+      for (const [id, t] of [...pending]) {
+        if (t.ms !== ms) continue;
+        pending.delete(id);
+        t.fn();
+      }
+    },
+    has: (ms: number): boolean => [...pending.values()].some((t) => t.ms === ms),
+  };
+}
+
+function openLive(store: EventStore, o: { endedTo?: OutreachEnded[] | null; watching?: () => boolean; devices?: number } = {}) {
+  const timers = fakeTimers();
+  const ended = o.endedTo === undefined ? [] : o.endedTo;
+  const pushes: string[] = [];
+  const adapter: ModelAdapter = { model: "fake-model", async chat() { return { content: "好" }; } };
+  const opts: CloudSessionOpts = {
+    sessionMeta: createInMemoryCloudSessionMeta(),
+    workspaceId: "w1", sessionId: SID, ownerUid: OWNER, createdByUid: OWNER, store, world: fakeWorld,
+    agents: async () => [OPS], adapterFor: () => adapter, px,
+    hostUids: async () => [OWNER],
+    onEvent: () => {}, onUsage: () => {}, wiki: testWiki(), mentionInbox: createInMemoryMentionInbox(),
+    agentWriter: createInMemoryAgentWriter(), isMember: async () => true, contextWindowOf: () => undefined,
+    sandboxApproval: async () => "ask", workspaceLock: createWorkspaceLock(), relayRemainingMicro: async () => null,
+    diskUsage: () => null, approveAll: true,
+    callback: {
+      isWatching: o.watching ?? (() => true),
+      deviceCount: async () => o.devices ?? 1,
+      push: async (uid) => {
+        pushes.push(uid);
+        return 1;
+      },
+    },
+    onOutreachEnded: ended === null ? null : (r) => ended.push(r),
+    ringTimers: { setTimer: timers.setTimer, clearTimer: timers.clearTimer },
+  };
+  const session = createCloudSession(opts);
+  return { session, timers, ended: ended ?? [], pushes };
+}
+
+const kinds = (store: EventStore): string[] =>
+  store.load(SID).map((e) => {
+    if (e.type === "outreach") return `outreach:${e.phase}`;
+    if (e.type === "call_ring") return `call_ring:${e.phase}`;
+    if (e.type === "user_message" && e.greeting !== undefined) return `user_message:${e.greeting}`;
+    return e.type;
+  });
+const ofKind = <T extends SessionEvent>(store: EventStore, type: T["type"]): T[] => store.ofType(SID, type) as T[];
+
+describe("外联的生命周期（#1441 Task 9）", () => {
+  it("装配之后才 startOutreach：说话从被拒变成放行，chat().outreach.active 变 true；收尾后又被拒", async () => {
+    const store = newStore();
+    outreachSeed(store); // 一通都没开过
+    const { session } = openLive(store);
+    await expect(session.say(PEER, "小红", "喂", false, [], undefined, [])).rejects.toThrow("这通电话已经结束了");
+    expect(session.chat()).toMatchObject({ outreach: { active: false } });
+
+    expect(await session.startOutreach(START)).toEqual({ kind: "ringing" });
+    // notify 推进了 sessionService 自己的折叠：这两处读的就是它
+    expect(session.chat()).toMatchObject({ outreach: { ownerName: "Stan", active: true } });
+    await session.say(PEER, "小红", "喂，哪位", false, [], undefined, []);
+    await session.settled();
+    expect(ofKind<UserMessageEvent>(store, "user_message")).toHaveLength(1);
+
+    await session.setVoiceCall(PEER, "小红", ["ops"]);
+    await session.settled();
+    await session.setVoiceCall(PEER, "小红", []); // 好友挂断
+    expect(session.chat()).toMatchObject({ outreach: { active: false } });
+    const before = store.load(SID).length;
+    await expect(session.say(PEER, "小红", "还在吗", false, [], undefined, [])).rejects.toThrow("这通电话已经结束了");
+    expect(store.load(SID).length).toBe(before);
+    store.close();
+  });
+
+  it("好友发 call 帧接听：日志依次是 started、ringing、名单、answered、带 brief 的 outreach 开场白、opening、收口", async () => {
+    const store = newStore();
+    outreachSeed(store);
+    const { session, pushes } = openLive(store);
+    await session.startOutreach(START);
+    expect(pushes).toEqual([PEER]); // 对方不在房里也照打：ignoreWatching
+    await session.setVoiceCall(PEER, "小红", ["ops"]);
+    await session.settled();
+    const tail = kinds(store).slice(2); // 去掉 session_created / chat_roster_changed
+    expect(tail).toEqual([
+      "outreach:started", "call_ring:ringing", "voice_call_changed", "call_ring:answered",
+      "user_message:outreach", "assistant_message", "turn_ended",
+    ]);
+    const greet = ofKind<UserMessageEvent>(store, "user_message")[0]!;
+    expect(greet.content).toContain("问问明天的会去不去"); // brief 在这一条里
+    expect(greet.content).toContain("Stan");
+    expect(greet.greeting).toBe("outreach");
+    expect(greet.mentions).toEqual(["ops"]);
+    expect(greet.fromUid).toBe(PEER);
+    const opening = ofKind<AssistantMessageEvent>(store, "assistant_message")[0]!;
+    expect(opening.content).toBe(START.opening);
+    expect(ofKind<CallRingEvent>(store, "call_ring").map((e) => e.phase)).toEqual(["ringing", "answered"]);
+    store.close();
+  });
+
+  it("接通时这只还在忙：回落成带 brief 与开场白的 outreach 招呼，排队起一轮", async () => {
+    const store = newStore();
+    outreachSeed(store);
+    const { session } = openLive(store);
+    await session.startOutreach(START);
+    // 它此刻手上有一条没答的话（openTurns 里有它）：先落一条点名它的话
+    await session.say(PEER, "小红", "喂", false, [], undefined, []);
+    await session.setVoiceCall(PEER, "小红", ["ops"]);
+    await session.settled();
+    const greets = ofKind<UserMessageEvent>(store, "user_message").filter((u) => u.greeting === "outreach");
+    expect(greets).toHaveLength(1);
+    expect(greets[0]!.content).toContain("问问明天的会去不去");
+    expect(greets[0]!.content).toContain(START.opening); // 招呼版带「你准备的开场白是」
+    store.close();
+  });
+
+  it("好友挂断：outreach{ended, completed}，onOutreachEnded 的转写含开场白与好友那句，且只收一次", async () => {
+    const store = newStore();
+    outreachSeed(store);
+    const { session, ended } = openLive(store);
+    await session.startOutreach(START);
+    await session.setVoiceCall(PEER, "小红", ["ops"]);
+    await session.settled();
+    await session.say(PEER, "小红", "好的，我明天去", false, [], undefined, [], true);
+    await session.settled();
+    await session.setVoiceCall(PEER, "小红", []);
+    const ends = ofKind<OutreachEvent>(store, "outreach").filter((e) => e.phase === "ended");
+    expect(ends).toHaveLength(1);
+    expect(ends[0]).toMatchObject({ outcome: "completed", originSessionId: "origin-1" });
+    expect(typeof ends[0]!.durationMs).toBe("number");
+    expect(ended).toHaveLength(1);
+    expect(ended[0]).toMatchObject({ outcome: "completed", agentName: "运维", ownerName: "Stan", originSessionId: "origin-1", peerName: "小红" });
+    const lines = ended[0]!.transcript.map((l) => [l.who, l.text]);
+    expect(lines[0]).toEqual(["agent", START.opening]);
+    // say() 落盘时给正文加了「[小红]: 」发言人前缀，转写原样取日志正文（前缀是否该剥见报告）
+    expect(lines).toContainEqual(["peer", expect.stringContaining("好的，我明天去")]);
+    expect(lines.filter(([who, text]) => who === "peer" && String(text).includes("[系统]"))).toEqual([]); // 开场白那条系统话不算好友说的
+    store.close();
+  });
+
+  it("主人在外联会话里发 call 帧被拒；好友挂断之后好友也被拒", async () => {
+    const store = newStore();
+    outreachSeed(store);
+    const { session } = openLive(store);
+    // 没有外联在进行：谁都不行
+    expect(await session.setVoiceCall(PEER, "小红", ["ops"])).toMatchObject({ kind: "unknown_agent", message: "这通电话已经结束了" });
+    await session.startOutreach(START);
+    const owner = await session.setVoiceCall(OWNER, "Stan", ["ops"]);
+    expect(owner).toMatchObject({ kind: "unknown_agent", message: "这通电话已经结束了" });
+    expect(ofKind<VoiceCallChangedEvent>(store, "voice_call_changed")).toEqual([]); // 一个字节都没落
+    expect(ofKind<CallRingEvent>(store, "call_ring").map((e) => e.phase)).toEqual(["ringing"]); // 也没替好友接听
+    await session.setVoiceCall(PEER, "小红", ["ops"]);
+    await session.settled();
+    await session.setVoiceCall(PEER, "小红", []);
+    expect(await session.setVoiceCall(PEER, "小红", ["ops"])).toMatchObject({ kind: "unknown_agent" });
+    store.close();
+  });
+
+  it("接通满 10 分钟：结局是 capped（不是 completed），恰好一条 ended，通话名单被清空（system）", async () => {
+    const store = newStore();
+    outreachSeed(store);
+    const { session, timers, ended } = openLive(store);
+    await session.startOutreach(START);
+    await session.setVoiceCall(PEER, "小红", ["ops"]);
+    await session.settled();
+    expect(timers.has(OUTREACH_CAP_MS)).toBe(true);
+    timers.fire(OUTREACH_CAP_MS);
+    const ends = ofKind<OutreachEvent>(store, "outreach").filter((e) => e.phase === "ended");
+    expect(ends).toHaveLength(1);
+    expect(ends[0]).toMatchObject({ outcome: "capped" });
+    expect(ended.map((r) => r.outcome)).toEqual(["capped"]);
+    const calls = ofKind<VoiceCallChangedEvent>(store, "voice_call_changed");
+    expect(calls.at(-1)).toMatchObject({ participants: [], byUid: "system" });
+    // ended 先于清名单
+    const k = kinds(store);
+    expect(k.indexOf("outreach:ended")).toBeLessThan(k.lastIndexOf("voice_call_changed"));
+    // 再挂一次（名单已空）也不会再收
+    await session.setVoiceCall(PEER, "小红", []);
+    expect(ofKind<OutreachEvent>(store, "outreach").filter((e) => e.phase === "ended")).toHaveLength(1);
+    store.close();
+  });
+
+  it("ring 没送到（没有可推送设备）：refused、落 started→ended{failed}、不汇报", async () => {
+    const store = newStore();
+    outreachSeed(store);
+    const { session, ended } = openLive(store, { devices: 0 });
+    const r = await session.startOutreach(START);
+    expect(r.kind).toBe("refused");
+    expect(kinds(store).slice(2)).toEqual(["outreach:started", "outreach:ended"]);
+    expect(ofKind<OutreachEvent>(store, "outreach")[1]).toMatchObject({ outcome: "failed" });
+    expect(ended).toEqual([]);
+    expect(session.chat()).toMatchObject({ outreach: { active: false } });
+    store.close();
+  });
+
+  it("归档：进行中的外联收成 failed 并汇报", async () => {
+    const store = newStore();
+    outreachSeed(store);
+    const { session, ended } = openLive(store);
+    await session.startOutreach(START);
+    session.archive("Stan");
+    expect(ofKind<OutreachEvent>(store, "outreach").at(-1)).toMatchObject({ phase: "ended", outcome: "failed" });
+    expect(ended.map((r) => r.outcome)).toEqual(["failed"]);
+    store.close();
+  });
+
+  it("没接收尾回调（onOutreachEnded 为 null）：startOutreach 回 refused，不落任何 outreach 事件", async () => {
+    const store = newStore();
+    outreachSeed(store);
+    const { session } = openLive(store, { endedTo: null });
+    expect(await session.startOutreach(START)).toMatchObject({ kind: "refused" });
+    expect(ofKind<OutreachEvent>(store, "outreach")).toEqual([]);
+    store.close();
+  });
+
+  it("重启：上一个进程里停在 started 的那通，装配时补 ended{failed} 并汇报", () => {
+    const store = newStore();
+    outreachSeed(store);
+    store.append({
+      sessionId: SID, ts: 3, type: "outreach", phase: "started", outreachId: "o1", fromAgentId: "ops",
+      peerUid: PEER, peerName: "小红", originSessionId: "origin-1", ignorable: true,
+    });
+    const { session, ended } = openLive(store);
+    expect(ofKind<OutreachEvent>(store, "outreach").at(-1)).toMatchObject({ phase: "ended", outcome: "failed" });
+    expect(ended).toHaveLength(1);
+    expect(ended[0]).toMatchObject({ originSessionId: "origin-1", outcome: "failed", agentName: "", ownerName: "" });
+    expect(session.chat()).toMatchObject({ outreach: { active: false } });
+    store.close();
+  });
+});

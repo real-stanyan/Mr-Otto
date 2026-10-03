@@ -826,6 +826,9 @@ async function main(): Promise<void> {
       diskUsage: () => sandbox.diskUsage(workspaceId),
       // 回电（#1411）：推送关着 = null（刀不出现）。isWatching = 这个房间里有没有他的连接——手机切后台会
       // 主动断开会话房（mobile/src/cloud/cloudClient.ts），所以「连着」就是「开着这条聊天」
+      // 外联收尾回调（#1441）：跨会话那一头（把结果汇报进原聊天）由 Task 11 接线，在此之前 null
+      // = 外联会话的 startOutreach 一律 refused，不会有一通电话打出去却没人接收尾
+      onOutreachEnded: null,
       callback:
         apns === null
           ? null
