@@ -67,6 +67,7 @@ import { createWsTransport } from "../../../src/shared/remote/wsTransport.js";
 import { ADMIN_AGENT_ID, normalizeSandboxApproval, type SandboxApproval } from "../../../src/shared/workspaceAgents.js";
 import { findModel } from "../../../src/shared/modelCatalog.js";
 import type { RemoteTransport } from "../../../src/shared/remote/transport.js";
+import { liveOr } from "./roomOnce.js";
 
 /** 镜像 sandbox.ts 的同名私有常量（未导出，故在此复制一份——两处改动需同步）。
     只在启动时「对所有在跑的沙箱容器补 markActive」这一步用到（T8 复审 Minor，
@@ -625,6 +626,21 @@ async function main(): Promise<void> {
     createdByUid: string,
     /** 个人主场：审批门前一律放行（#1280，ADR-0298）。两个调用方都已经 await 过
         workspaceFacts，所以这一格与写进 session_created.cloud.home 的那一格同源 */
+    approveAll: boolean
+  ): CloudSession {
+    // **幂等**（#1441 终审 I2）：已经开着就用现成的。放在这里而不是只放在启动补开那一圈：调用方好几处，
+    // 启动补开、外联开原聊天 / 外联会话都可能在同一段启动窗口里碰上同一条会话，守在入口一处就够、
+    // 下一个新调用方也不用再记得先查。同一条会话的所有者与 kind 不会变，现成那间房的装配参数就是这次要的
+    return liveOr(activeSessions.get(sessionId)?.session, () =>
+      assembleSessionRoom(workspaceId, sessionId, ownerUid, createdByUid, approveAll)
+    );
+  }
+
+  function assembleSessionRoom(
+    workspaceId: string,
+    sessionId: string,
+    ownerUid: string,
+    createdByUid: string,
     approveAll: boolean
   ): CloudSession {
     const store = storeFor(workspaceId);

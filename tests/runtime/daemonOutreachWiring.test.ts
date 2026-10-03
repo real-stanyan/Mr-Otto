@@ -37,6 +37,14 @@ describe("daemon.ts：外联的接线（#1441）", () => {
     expect(src).toMatch(/discardRoom\(row\.id\)/); // 启动补开发现归档走同一个函数
     expect(src).toMatch(/async function openExistingRoom\([\s\S]{0,300}activeSessions\.get\(sessionId\)\?\.session/);
   });
+  it("openSessionRoom 幂等：入口先查 activeSessions，装配本体只经它进（终审 I2）", () => {
+    // 启动补开那一圈与外联开原聊天 / 外联会话会在同一段启动窗口里碰上同一条会话；守卫拆掉就是两个 CloudSession 写一份日志
+    expect(src).toMatch(/function openSessionRoom\([\s\S]{0,900}return liveOr\(activeSessions\.get\(sessionId\)\?\.session, \(\) =>\s*assembleSessionRoom\(/);
+    // 装配本体只有 openSessionRoom 这一个调用方（别的调用方绕过守卫直接装配，就回到了老样子）
+    expect(src.match(/assembleSessionRoom\(/g)).toHaveLength(2); // 定义 + 守卫里那一次
+    // 启动补开仍走 openSessionRoom（不是直接 assembleSessionRoom）
+    expect(src).toMatch(/const session = openSessionRoom\(row\.workspace_id, row\.id,/);
+  });
   it("语音票用 config.runtimeSecret 签", () => {
     expect(src).toMatch(/signSpeechTicket:\s*\(t\)\s*=>\s*signSpeechTicket\(t, config\.runtimeSecret\)/);
   });

@@ -831,6 +831,11 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   /** 这一轮的 job 折进了非主人的开场白（#1441 复审）：同一只 agent 排队中的 job 只留第一条的 fromUid，
       客人的话可以搭在主人那条 job 上。runJob 从日志读全这个 job 覆盖的开场白来算，收口复位 */
   let foldedNonOwner = false;
+  /** 重启补跑排上的开场白（#1441 终审 M7）：catchUp 入队时登记 seq。这条话上一个进程里多半已经跑过一段，
+      call_friend 可能已经打出去了——补跑那一轮不算「主人亲口」，刀回一句让它先问主人（见 rerunTurn） */
+  const rerunOpenings = new Set<number>();
+  /** 这一轮的 job 覆盖到了补跑的开场白（#1441 终审 M7）。runJob 起跑时按 covered 算、收口复位 */
+  let rerunTurn = false;
   /** 这一轮是不是主场群里的客人点起的（#1393，ADR-0325）。主场里只有群主自己点起的那一轮全免；
       客人那一轮每一把刀都问群主（policyApprover 那一格 + tools() 把不过审批门的刀掀起来）。
       团队会话恒为假（approveAll 为假），一个字不变 */
@@ -867,7 +872,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     const t = openingTraits(covered, opts.ownerUid);
     reportTurn = reportTurn || t.report;
     foldedNonOwner = foldedNonOwner || t.nonOwner;
-    ownerSpoke = ownerSpoke && t.ownerSpoke && depth === 0;
+    rerunTurn = rerunTurn || covered.some((u) => rerunOpenings.has(u.seq));
+    ownerSpoke = ownerSpoke && t.ownerSpoke && depth === 0 && !rerunTurn;
   };
   const supervisedTurn = (): boolean => opts.approveAll && (guestTurn() || reportTurn || foldedNonOwner);
   /** 这一刻正在跑 turn 的是哪只 agent（#928）。approval_request 落盘时读它——
@@ -1424,7 +1430,12 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       opts.outreach === null || !opts.approveAll || isOutreach
         ? null
         : createCallFriendTool({
-            mayCall: () => (ownerSpoke ? null : "只有他本人亲口让你打，才能给他的好友打电话。这一轮不是。"),
+            mayCall: () =>
+              ownerSpoke
+                ? null
+                : rerunTurn
+                  ? "这一轮是服务重启后的补跑：这通电话上一次可能已经打出去了。先问主人要不要再打，等他亲口说了再打。"
+                  : "只有他本人亲口让你打，才能给他的好友打电话。这一轮不是。",
             dispatch: (friend, brief, opening) =>
               opts.outreach!.dispatch({
                 originSessionId: sessionId, agentId: spec.agentId, agentName: specNames.get(spec.agentId) ?? spec.name, friend, brief, opening,
@@ -2167,6 +2178,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // openingDepth 为 0 才算亲口：接力棒的开场白 fromUid 是点火的那个人（也许就是主人），不能凭它算资格
     reportTurn = false;
     foldedNonOwner = false;
+    rerunTurn = false;
     ownerSpoke = true;
     applyTraits(covered, openingDepth);
     currentAgentId = job.agentId;
@@ -2401,6 +2413,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       reportTurn = false;
       ownerSpoke = false;
       foldedNonOwner = false;
+      rerunTurn = false;
       currentAgentId = null;
       // 这一轮结束，停止键就没有可打的对象了（#957 A-2）。留着的话下一次
       // stop() 会对一台已经收口的 engine 调 abortTurn()——那是无操作，但回执
@@ -3157,7 +3170,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // 收口能不能落，从来不是这条开场白自己的性质，而是**它前面还有没有必须
       // 留着的条目**——所以判据只能在队列上表达：从队头起连续的 kicked /
       // exhausted 才落收口，撞上第一条 runnable / unknown / skipped 就停手
-      type CatchUpKind = "runnable" | "kicked" | "exhausted" | "unknown" | "skipped";
+      type CatchUpKind = "runnable" | "kicked" | "exhausted" | "unknown" | "skipped" | "outreach_over";
       interface CatchUpItem {
         seq: number;
         kind: CatchUpKind;
@@ -3181,9 +3194,19 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // （开场白留着、一条收口都不写），单独一个数组只是为了那行 warn 说的是真话
       const unknownMembership: number[] = [];
       const exhausted: { agentId: string; seq: number }[] = [];
+      // 外联会话里此刻没有外联在进行（#1441 终审 M1）：上一通已经结束、或者刚被上面的 resume() 按 failed 收了。
+      // 朋友在那通里说的话没人答完，补跑它就是一条记在主人账上、对着一通已经挂掉的电话说的回复——全部落收口不跑。
+      // 在第一个 await 之前算：此刻的折叠就是 resume() 之后的样子
+      const outreachOver = isOutreach && activeOutreach(outreachFold) === null;
+      const overSeqs: number[] = [];
       // stale 已经按 seq 升序（openTurns 顺着日志一路 push）：同一只 agent 的
       // 多条开场白在这里天然也按 seq 升序出现，下面的队列直接借了这个顺序
       for (const t of stale) {
+        if (outreachOver) {
+          overSeqs.push(t.seq);
+          enqueueItem(t.agentId, { seq: t.seq, kind: "outreach_over", fromUid: t.fromUid });
+          continue;
+        }
         const opening = seed.find((e) => e.seq === t.seq);
         if (t.fromUid === null || !opening || opening.type !== "user_message") {
           // 跳过的那条**仍然停在「排队中」**，只是这个进程不打算管它了——不说
@@ -3249,6 +3272,16 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
               agentId,
               readUpToSeq: item.seq,
             }));
+          } else if (item.kind === "outreach_over") {
+            notify(store.append({
+              sessionId,
+              ts: Date.now(),
+              type: "turn_ended",
+              outcome: "error",
+              error: "这通电话已经结束了，这句话不再答",
+              agentId,
+              readUpToSeq: item.seq,
+            }));
           } else if (item.kind === "exhausted") {
             // 到上限的那条落一条**真正的**收口（outcome:"error"，不是 interrupted
             // 记号）：不落的话它会在下一次重启时又被 openTurns 捞回来，重新数一遍
@@ -3310,9 +3343,14 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         }));
       }
 
+      // 补跑的开场白登记一下（#1441 终审 M7）：那一轮不算「主人亲口」，call_friend 不会替同一句吩咐再打一通
+      for (const r of runnable) rerunOpenings.add(r.opening.seq);
       const decisions: EnqueueDecision[] = runnable.map((r) =>
         coordinator.enqueue({ agentId: r.agentId, fromUid: r.fromUid, opening: r.opening })
       );
+      if (overSeqs.length > 0) {
+        console.log(`[otto-runtime] 重启补跑不排 ${overSeqs.length} 条（外联会话里没有外联在进行，落收口）：session=${sessionId} seq=${overSeqs.join(",")}`);
+      }
       if (skipped.length > 0) {
         console.warn(
           `[otto-runtime] 重启补跑跳过 ${skipped.length} 条（缺 fromUid 或开场白不是 user_message，它们会一直停在「排队中」）：` +

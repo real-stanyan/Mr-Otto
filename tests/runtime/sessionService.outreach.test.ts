@@ -599,6 +599,8 @@ function openHome(o: {
   onEvent?: (e: SessionEvent, s: CloudSession) => void;
   /** 起跑前那次名单读取（runJob 的 `rosterNow()`，不带参数）的闸：say() 读名单带 `{fresh:true}`，不受它拦 */
   rosterGate?: () => Promise<void>;
+  /** 装配之前往日志里再补几条（重启补跑的用例用：上一个进程留下的、没收口的开场白） */
+  beforeOpen?: (store: EventStore) => void;
 }): CloudSession {
   const kind = o.kind ?? "dm";
   const team = kind === "team";
@@ -613,6 +615,7 @@ function openHome(o: {
       humans: kind === "group" ? [{ uid: GUEST, name: "小红" }] : [],
     });
   }
+  o.beforeOpen?.(o.store);
   let session!: CloudSession;
   session = createCloudSession({
     sessionMeta: createInMemoryCloudSessionMeta(),
@@ -1193,5 +1196,45 @@ describe("受监督的一轮不往外接力（#1441 终审 I1）", () => {
     expect(r.relays).toBe(1);
     expect(r.adsRounds).toBe(1);
     p.store.close();
+  });
+});
+
+describe("重启补跑碰上外联（#1441 终审 M1 / M7）", () => {
+  it("M1：外联会话里没有外联在进行，补跑不起模型调用，开场白落一条 error 收口", async () => {
+    const store = newStore();
+    outreachSeed(store);
+    // 上一个进程：那通在进行，朋友说了一句，还没答 daemon 就死了
+    store.append({
+      sessionId: SID, ts: 3, type: "outreach", phase: "started", outreachId: "o1", fromAgentId: "ops",
+      peerUid: PEER, peerName: "小红", originSessionId: "origin-1", ignorable: true,
+    });
+    const opening = store.append({ sessionId: SID, ts: 4, type: "user_message", content: "[小红]: 我周五来", fromUid: PEER, mentions: ["ops"] });
+    const { session } = openLive(store);
+    await session.settled();
+    expect(ofKind<OutreachEvent>(store, "outreach").at(-1)).toMatchObject({ phase: "ended", outcome: "failed" });
+    expect(store.ofType(SID, "assistant_message")).toEqual([]);
+    expect(store.ofType(SID, "request_envelope")).toEqual([]);
+    const closes = store.ofType(SID, "turn_ended") as { outcome: string; agentId: string; readUpToSeq: number }[];
+    expect(closes).toHaveLength(1);
+    expect(closes[0]).toMatchObject({ outcome: "error", agentId: "ops" });
+    expect(closes[0]!.readUpToSeq).toBeGreaterThanOrEqual(opening.seq);
+    store.close();
+  });
+
+  it("M7：补跑主人那条开场白时 call_friend 打不出去，回的话让它先问主人", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    const calls: PortCall[] = [];
+    const session = openHome({
+      store, events, outreach: { dispatch: async (c) => (calls.push(c), "已经打给 小红 了。") },
+      adapterFor: (id) => callerAdapter(id),
+      beforeOpen: (s) => void s.append({ sessionId: SID, ts: 3, type: "user_message", content: "[Stan]: @运维 给小红打个电话", fromUid: OWNER, mentions: ["ops"] }),
+    });
+    await session.settled();
+    expect(calls).toEqual([]);
+    const out = resultOf(events);
+    expect(out).toContain("补跑");
+    expect(out).toContain("问");
+    store.close();
   });
 });
