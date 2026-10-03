@@ -7,13 +7,13 @@ import { BILLING_HEADERS } from "../../src/shared/billing.js";
 import { SPEECH_TICKET_HEADER } from "../../src/shared/speechTicket.js";
 import { TTS_HEADERS } from "../../src/shared/tts.js";
 
-function make(res: () => Response, over: Partial<{ subscribed: boolean; ttsModels: string[]; token: string | null }> = {}) {
+function make(res: () => Response, over: Partial<{ subscribed: boolean; ttsModels: string[]; token: string | null; noSnapshot: boolean }> = {}) {
   const noted: Headers[] = [];
   const exhausted: unknown[] = [];
   const fetchImpl = vi.fn(async () => res()) as unknown as typeof fetch;
   const voice = createTtsClient({
     quota: {
-      ttsInput: () => ({ subscribed: over.subscribed ?? true, exhausted: false, ttsModels: over.ttsModels ?? ["speech-2.8-turbo"] }),
+      ttsInput: () => (over.noSnapshot === true ? undefined : { subscribed: over.subscribed ?? true, exhausted: false, ttsModels: over.ttsModels ?? ["speech-2.8-turbo"] }),
       noteHeaders: (h) => { noted.push(h); },
       noteExhausted: (i) => { exhausted.push(i); },
     },
@@ -117,5 +117,14 @@ describe("speak 带票（#1441）", () => {
     const r = await voice.speak("你好", "v", { speechTicket: "T.sig" });
     expect(r).toEqual({ ok: false, message: "本周额度已用完" });
     expect(exhausted).toEqual([]);
+  });
+});
+
+describe("speak 带票但订阅快照还没查到（#1441 的取舍，不是意外）", () => {
+  it("没有型号清单可发：照旧 blocked（说订阅那句），一个字节都不发——票绕过的是订阅闸，不是型号来源", async () => {
+    const { voice, fetchImpl } = make(() => new Response(new Uint8Array([1]), { status: 200 }), { noSnapshot: true });
+    const r = await voice.speak("你好", "v", { speechTicket: "T.sig" });
+    expect(r).toEqual({ ok: false, message: "语音通话要订阅 Mr Otto（设置 → 订阅）。" });
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 });

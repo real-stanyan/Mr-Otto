@@ -244,6 +244,10 @@ export function cloudSessionRows(
   ws: WorkspaceSnapshot
 ): CloudSessionRowView[] {
   return rows
+    // 外联会话（#1441）住在主人的主场里，是智能体打给朋友的电话的载体，不是主人的一条会话：
+    // 任何「这个团队 / 主场有哪些云会话」的列表都不列它。显式认出来而不是靠 chatKind 落成 null 碰巧漏掉
+    // （落成 null 的话它会被当成团队会话列出来）
+    .filter((r) => r.chatKind !== "outreach")
     .map((r) => ({
       id: r.id,
       title: displaySessionTitle(r.title),

@@ -1227,7 +1227,7 @@ export interface ShellBridge {
 
   // ─── 云会话（Task 12，ADR-0199）：桌面当显示器，接 VPS 上的 runtime ──────
   /** 这个团队里的云会话清单（Supabase 直查 workspace_sessions，kind='cloud'） */
-  workspaceCloudList(workspaceId: string): Promise<FriendsResult<{ id: string; title: string; publisherUid: string; archived: boolean; updatedTs: number; participantUids: string[]; chatKind: "dm" | "group" | null; agentIds: string[] }[]>>;
+  workspaceCloudList(workspaceId: string): Promise<FriendsResult<{ id: string; title: string; publisherUid: string; archived: boolean; updatedTs: number; participantUids: string[]; chatKind: "dm" | "group" | "outreach" | null; agentIds: string[] }[]>>;
   /** 开一个新云会话（走控制房 create 流程，拿到 sessionId 后还要 Join 才能收事件）。
       `chat` 在场 = 建一条聊天（#1280）；缺席 = 团队会话，一个字不变 */
   workspaceCloudCreate(workspaceId: string, chat?: CsChatSpec): Promise<FriendsResult<{ sessionId: string }>>;

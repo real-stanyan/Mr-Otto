@@ -564,3 +564,26 @@ describe("来电记录（外联会话里）", () => {
     expect(ringRecordView({ ...ringing, status: "ringing" }, false, { noCallback: true }).tap).toBe("answer");
   });
 });
+
+describe("同一个窗口里外联行、来电行、通话卡并存（#1441）", () => {
+  it("三样各出一行，不丢不重", () => {
+    seq = 0;
+    const rows = chatRows({
+      events: [
+        e({ type: "outreach", phase: "started", outreachId: "o1", fromAgentId: "a_000000000002", peerUid: "u_xh", peerName: "小红", ignorable: true }),
+        e({ type: "outreach", phase: "ended", outreachId: "o1", fromAgentId: "a_000000000002", peerUid: "u_xh", peerName: "小红", outcome: "completed", durationMs: 60_000, transcript: [{ who: "agent", text: "你好", ts: DAY }], ignorable: true }),
+        e({ type: "call_ring", ringId: "r1", phase: "ringing", fromAgentId: "a_000000000001", toUid: "me", reason: "部署完了", expiresTs: DAY + 45_000, ignorable: true }),
+        e({ type: "call_ring", ringId: "r1", phase: "missed", fromAgentId: "a_000000000001", toUid: "me", reason: "部署完了", expiresTs: DAY + 45_000, ignorable: true }),
+        e({ type: "voice_call_changed", participants: [{ agentId: "a_000000000001", name: "开发" }], byUid: "me", ignorable: true }),
+        e({ type: "voice_call_changed", participants: [], byUid: "me", ignorable: true }),
+      ],
+      ws: WS, selfUid: "me", now: DAY + 200_000,
+    });
+    const kinds = rows.filter((r) => r.kind !== "time").map((r) => r.kind);
+    expect(kinds.filter((k) => k === "outreach")).toHaveLength(1);
+    expect(kinds.filter((k) => k === "ring")).toHaveLength(1);
+    expect(kinds.filter((k) => k === "call")).toHaveLength(1);
+    expect(kinds).toHaveLength(3);
+    expect(new Set(rows.map((r) => r.key)).size).toBe(rows.length);
+  });
+});

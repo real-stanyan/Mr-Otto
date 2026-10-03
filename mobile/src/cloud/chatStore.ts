@@ -15,7 +15,7 @@
 // · **给语音那一层的钩子**（A4）：事件落进来、流式碎片、房间状态翻转、离开这一页——语音的编排
 //   （shared 的 voiceSession）要知道这四件事；这里不认识语音，只在 store 改完之后通知一声。
 import { useSyncExternalStore } from "react";
-import { applyCloudStatus, insertCloudEvent, unknownSendNote, type CloudSessionCore } from "../../../src/shared/cloudSessionState.js";
+import { applyCloudStatus, insertCloudEvent, speechTicketFor, unknownSendNote, type CloudSessionCore } from "../../../src/shared/cloudSessionState.js";
 import { applyCloudDelta, clearCloudStreamingOn, type CloudStreaming } from "../../../src/shared/cloudStreaming.js";
 import type { CsChatInfo } from "../../../src/shared/remote/cloudSession.js";
 import type { CloudAck, CloudSessionDelta, CloudSessionStatus } from "../../../src/shared/shellBridge.js";
@@ -89,7 +89,7 @@ export function subscribeChat(fn: () => void): () => void {
 /** 此刻开着的这条会话的语音票；没有（不是外联会话 / 还没发）回 undefined。语音合成每次现读，换票自动生效 */
 export function currentSpeechTicket(): string | undefined {
   const s = store.get();
-  return s.speechTicket !== null && s.session?.sessionId === s.speechTicket.sessionId ? s.speechTicket.ticket : undefined;
+  return speechTicketFor(s.speechTicket, s.session?.sessionId ?? null);
 }
 
 /** 此刻开着的那条会话；不是这一条回 null */

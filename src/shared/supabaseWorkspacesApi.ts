@@ -440,7 +440,7 @@ export interface CloudSessionRow {
   participantUids: string[];
   /** 这一行是不是一条聊天，是哪一种（#1280）。`null` = 团队会话 / 这一格读不到——
       两者在界面上同一个答案（照团队会话画），所以不分三态 */
-  chatKind: "dm" | "group" | null;
+  chatKind: "dm" | "group" | "outreach" | null;
   /** 聊天的名单投影（#1280）。权威在日志（`chat_roster_changed`），这一列是给
       「没开着这条聊天」的桌面看的。读不到回 [] */
   agentIds: string[];
@@ -599,17 +599,18 @@ export async function listAgentChats(
 async function fetchCloudChats(
   client: SupabaseClient,
   workspaceId: string,
-): Promise<Map<string, { chatKind: "dm" | "group"; agentIds: string[] }>> {
+): Promise<Map<string, { chatKind: "dm" | "group" | "outreach"; agentIds: string[] }>> {
   const res = await client
     .from("workspace_sessions")
     .select("id,chat_kind,agent_ids")
     .eq("workspace_id", workspaceId)
     .eq("kind", "cloud");
-  const map = new Map<string, { chatKind: "dm" | "group"; agentIds: string[] }>();
+  const map = new Map<string, { chatKind: "dm" | "group" | "outreach"; agentIds: string[] }>();
   if (res.error) return map;
   const rows = (res.data ?? []) as { id: string; chat_kind: unknown; agent_ids: unknown }[];
   for (const r of rows) {
-    if (r.chat_kind !== "dm" && r.chat_kind !== "group") continue;
+    // outreach（#1441）也要读出来：不读的话它落成 null = 团队会话，主人的列表会把它当成一条团队会话列出来
+    if (r.chat_kind !== "dm" && r.chat_kind !== "group" && r.chat_kind !== "outreach") continue;
     const ids = Array.isArray(r.agent_ids) && r.agent_ids.every((x) => typeof x === "string") ? (r.agent_ids as string[]) : [];
     map.set(r.id, { chatKind: r.chat_kind, agentIds: ids });
   }

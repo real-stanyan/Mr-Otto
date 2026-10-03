@@ -355,7 +355,8 @@ export function inboxRows(o: {
 
   for (const t of o.teams) {
     for (const s of t.sessions) {
-      if (s.archived) continue;
+      // 外联（#1441）不是团队群：它只在主人的主场里，且主人不在收件箱里看它（要看转写走原聊天那一行）
+      if (s.archived || s.chatKind === "outreach") continue;
       const last = t.lasts.get(s.id);
       const key = `t:${s.id}`;
       const { humans, agentIds } = teamMembers(t.ws, s, o.selfUid);
@@ -536,7 +537,7 @@ export function groupList(o: { selfUid: string; home: HomeInput | null; teams: r
   }
   for (const t of o.teams) {
     for (const s of t.sessions) {
-      if (s.archived) continue;
+      if (s.archived || s.chatKind === "outreach") continue;
       const { humans, agentIds } = teamMembers(t.ws, s, o.selfUid);
       const members = [...humans.map((h) => h.name), ...agentIds.map((id) => agentNameOf(t.ws, id))].join("、");
       const title = teamChatTitle(t.ws, s);

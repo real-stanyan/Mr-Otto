@@ -156,6 +156,7 @@ export function chatSeedOf(o: {
   }
   const row = o.chats.find((c) => c.id === o.sessionId);
   if (row === undefined) return undefined;
+  // outreach 原样带过去（#1441）：它是一种真的聊天种子，不是「团队会话」；主人的列表本来就不列它，走到这里只会是对方那一侧
   return row.chatKind === null ? null : { kind: row.chatKind, agentIds: [...row.agentIds], humans: [] };
 }
 

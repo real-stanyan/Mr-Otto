@@ -117,3 +117,9 @@ export function cloudDeniedText(code: string | undefined, serverVersion?: number
 export function unknownSendNote(text: string): string {
   return `没有收到回执，不确定有没有发出去：${text.slice(0, 40)}${text.length > 40 ? "…" : ""}`;
 }
+
+/** 外联通话的语音票（#1441）是**绑会话**的：手上那张只在它所属的这条会话开着时才算数。
+    换了会话 / 离开了（`held` 被清成 null）= 没有票，合成就照旧记自己的账 */
+export function speechTicketFor(held: { sessionId: string; ticket: string } | null, openSessionId: string | null): string | undefined {
+  return held !== null && openSessionId !== null && held.sessionId === openSessionId ? held.ticket : undefined;
+}
