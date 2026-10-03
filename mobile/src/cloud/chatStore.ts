@@ -22,6 +22,7 @@ import type { CloudAck, CloudSessionDelta, CloudSessionStatus } from "../../../s
 import type { SessionEvent } from "../../../src/session/events.js";
 import { createStore } from "../externalStore.js";
 import { cloudClient, ensureUid, setCloudSinks } from "./cloudClient.js";
+import type { OlderPageResult } from "../../../src/shared/chatLogExport.js";
 import { reconcileCachedEvents } from "../../../src/shared/chatCache.js";
 import { flushChatCacheSave, loadChatCache, removeChatCache, scheduleChatCacheSave } from "./chatCache.js";
 
@@ -107,6 +108,11 @@ let serverMin: number | null = null;
 
 export function useChatStore(): ChatStoreState {
   return useSyncExternalStore(store.subscribe, store.get);
+}
+
+/** 非响应式读一眼此刻开着的那条（导出这类一次性动作用，不该订阅每一条事件） */
+export function currentChatSession(): ChatSession | null {
+  return store.get().session;
 }
 
 function onEvent(event: SessionEvent): void {
@@ -282,8 +288,16 @@ export function stopTurn(seq: number): Promise<CloudAck> {
 
 /** 往前翻一页（尾巴模式，beforeSeq）。失败只改这一格，hasOlder 仍为真，重试钮点下去还有得拉 */
 export async function loadOlder(): Promise<void> {
+  await loadOlderPage();
+}
+
+/** 同上，回结局（#1446：导出翻齐历史要知道这一页成没成、到头没有、失败的原话） */
+export async function loadOlderPage(): Promise<OlderPageResult> {
   const before = store.get().session;
-  if (before === null || before.older === "loading" || !before.hasOlder) return;
+  if (before === null || !before.hasOlder) return { ok: true, hasOlder: false };
+  // 已经有一页在翻（聊天页的哨兵）也照样往下走：客户端 backlogPage() 对「正在翻」交回同一个
+  // promise、不会多发一帧，于是这里等的就是那一页落地——直接回「还有」会让导出看到
+  // 「没进展」而误报没读到更早的记录
   const sessionId = before.sessionId;
   const patch = (older: ChatSession["older"]): void => {
     const cur = store.get().session;
@@ -292,6 +306,7 @@ export async function loadOlder(): Promise<void> {
   patch("loading");
   const r = await cloudClient.backlogPage();
   patch(r.ok ? "idle" : "failed");
+  return r.ok ? { ok: true, hasOlder: r.value.hasOlder } : { ok: false, message: r.message };
 }
 
 /** 输入框取走那句要摆回去的原文（按 sessionId 挂靠：不是这一条就当没有） */

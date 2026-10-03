@@ -96,6 +96,7 @@ function markResetPending(on: boolean, atGate = false): void {
 import { shareAllow } from "../../shared/shareGrant.js";
 import { ADMIN_AGENT_ID } from "../../shared/workspaceAgents.js";
 import type { OlderState } from "./lib/cloudWindow.js";
+import type { OlderPageResult } from "../../shared/chatLogExport.js";
 import { mergeResidue, residueSettled, type ResidueItem } from "../../shared/residue.js";
 import { PROXY_SHARE_INVITE_TTL_MS } from "../../shared/remote/proxyInvite.js";
 import { runtimePatch } from "./lib/runtimeHydration.js";
@@ -1194,8 +1195,10 @@ interface ChatState {
   cloudStop(seq?: number): Promise<CloudAck>;
   /** 往前翻一页聊天历史（#1280）。那一页的事件照旧从 onCloudSessionEvent 通道
       一条条进来（按 seq 插到对的位置），这里只管把 `older` 这一格推过三态。
-      正在拉时再叫是空操作——顶上那个哨兵在同一屏里连触两次是常态 */
-  loadOlderCloudEvents(): Promise<void>;
+      正在拉时再叫是空操作——顶上那个哨兵在同一屏里连触两次是常态。
+      回结局（#1446，导出翻齐历史要知道这一页成没成、到头没有、失败的原话）；
+      哨兵那类不在乎结局的调用方照旧 `void` 掉 */
+  loadOlderCloudEvents(): Promise<OlderPageResult>;
   /** 改当前云会话的语音通话名单（#1163）。空 = 结束。原样透传 CloudAck，不碰共享错误格；
       通话栏画的是日志里那条 voice_call_changed，不是「我刚点了」 */
   cloudCall(participants: string[]): Promise<CloudAck>;
@@ -3015,7 +3018,9 @@ export const useChat = create<ChatState>((set, get) => ({
   },
   async loadOlderCloudEvents() {
     const before = get().cloudSession;
-    if (before === null || before.older === "loading" || !before.hasOlder) return;
+    if (before === null || !before.hasOlder) return { ok: true, hasOlder: false };
+    // 已经有一页在翻也照样往下走：主进程 backlogPage() 对「正在翻」交回同一个 promise、不会多发一帧，
+    // 这里等的就是那一页落地——直接回「还有」会让导出看到「没进展」而误报（#1446）
     const sessionId = before.sessionId;
     /** 只在仍是同一条会话时落地：翻页要跨一次网络往返，期间人可能已经切走了，
         而 `older` 是这条会话的状态，糊到下一条上就是那一条顶着一行「读取中」 */
@@ -3031,6 +3036,7 @@ export const useChat = create<ChatState>((set, get) => ({
     // `hasOlder` 不在这里改——它是主进程推上来的事实，那边失败时保持为真，
     // 于是重试钮点下去还有得可拉
     patch(r.ok ? "idle" : "failed");
+    return r.ok ? { ok: true, hasOlder: r.value.hasOlder } : { ok: false, message: r.message };
   },
 
   joinVoiceCall() {

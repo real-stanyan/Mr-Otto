@@ -13,25 +13,10 @@
 // 实现，两边分家那天不会有任何报错，只是导出内容悄悄不一样。
 
 import type { SessionEvent } from "../../../session/events.js";
-import { eventsJsonl } from "../replay/trajectoryExport.js";
+import { cloudLogFilename, eventsJsonl } from "../../../shared/chatLogExport.js";
 
-/** 文件名里的时间戳：20260908-223012（本地时区，与 trajectoryExport 同一把尺） */
-function stamp(ts: number): string {
-  const d = new Date(ts);
-  const p = (n: number) => String(n).padStart(2, "0");
-  return (
-    `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}` +
-    `-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`
-  );
-}
-
-/** `otto-cloud-3f9a1c-20260908-223012.jsonl`。带 cloud 前缀是为了落在下载目录里
-    一眼分得清本地轨迹导出（otto-trajectory-*）——两者内容形状不同，混着喂给
-    分析脚本会得到一堆解析错误 */
-export function cloudLogFilename(sessionId: string, exportedTs: number): string {
-  const id = sessionId.slice(0, 8) || "session";
-  return `otto-cloud-${id}-${stamp(exportedTs)}.jsonl`;
-}
+// 文件名 / 序列化已搬进 shared（#1446，手机导出共用），这里原样再导出，既有 import 点不动
+export { cloudLogFilename };
 
 export interface CloudLogFile {
   filename: string;

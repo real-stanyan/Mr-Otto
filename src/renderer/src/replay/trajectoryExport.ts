@@ -273,10 +273,9 @@ export function trajectoryDoc(
   };
 }
 
-/** 原始事件日志，一行一条。无损：拿它能重建任何投影（含这个轨迹视图本身） */
-export function eventsJsonl(events: SessionEvent[]): string {
-  return events.map((e) => JSON.stringify(e)).join("\n") + (events.length ? "\n" : "");
-}
+// 原始事件日志的序列化搬进 shared/chatLogExport（#1446，手机端导出共用），这里再导出保持原路径
+import { eventsJsonl } from "../../../shared/chatLogExport.js";
+export { eventsJsonl };
 
 const fence = (text: string, lang = ""): string => {
   // 正文里可能本来就有 ```，围栏得比它长，不然这一段在 markdown 里当场断掉

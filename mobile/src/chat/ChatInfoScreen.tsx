@@ -9,8 +9,10 @@
 // · 朋友私聊：朋友的头像；邮箱；删除朋友。
 // 确认用居中弹窗，真的会删东西的那颗是实底红（#1362）。删 / 解散之后回列表（这条线没了，退回聊天页只会看见一条连不上的线）。
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
-import { useRef, useState } from "react";
-import { Pressable, ScrollView, Text, View } from "react-native";
+import { useEffect, useRef, useState } from "react";
+import { Pressable, ScrollView, Share, Text, View } from "react-native";
+import { partialExportText, type PartialChoice } from "../../../src/shared/chatLogExport.js";
+import { discardExportFile, exportChatLog, type ExportTarget } from "./exportLog.js";
 import { deleteAgentEverywhere, type AgentDeleteDeps } from "../../../src/shared/agentAdmin.js";
 import { agentFaceSlot } from "../../../src/shared/agentAvatar.js";
 import { chatViewOf, groupRows } from "../../../src/shared/agentRoster.js";
@@ -94,6 +96,97 @@ function DangerRow({ label, onPress }: { label: string; onPress: () => void }) {
     <Group>
       <Row label={label} align="center" tone="destructive" onPress={onPress} />
     </Group>
+  );
+}
+
+/** 「导出聊天记录」（#1446）：整段原始事件 → jsonl 文件 → 系统分享单。
+    自己是一个组件：信息页有好几处提前 return，状态（忙 / 进度 / 没翻齐的弹窗）不能挂在它身上。
+    三个 iOS 细节：忙时整行禁用（防二次启动）；没翻齐的弹窗**选完、退场放完**才继续——分享单是系统界面，
+    不许叠在一个正在退场的 Modal 上，叠了悄悄不出来（同 wx/ActionSheet）；关掉分享单不是错误 */
+function ExportLogRow({ target }: { target: ExportTarget }) {
+  const [busy, setBusy] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [partial, setPartial] = useState<{ text: string; visible: boolean } | null>(null);
+  const choice = useRef<PartialChoice>("retry");
+  const resolver = useRef<((c: PartialChoice) => void) | null>(null);
+  // 同步闸：setState 要下一次渲染才生效，连点两下能挤进两次导出
+  const running = useRef(false);
+  // 页面被退掉之后不再 setState、不再拉起分享单；等着人回答的弹窗按「取消」收口，让那条链走到头
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      const r = resolver.current;
+      resolver.current = null;
+      r?.("cancel");
+    };
+  }, []);
+
+  const pick = (c: PartialChoice): void => {
+    choice.current = c;
+    setPartial((p) => (p === null ? p : { ...p, visible: false }));
+  };
+
+  const start = (): void => {
+    if (running.current) return;
+    running.current = true;
+    setError(null);
+    setBusy(0);
+    void (async () => {
+      try {
+        const r = await exportChatLog(target, {
+          onProgress: (n) => { if (mounted.current) setBusy(n); },
+          askPartial: (p) =>
+            new Promise<PartialChoice>((resolve) => {
+              if (!mounted.current) { resolve("cancel"); return; }
+              choice.current = "retry";
+              resolver.current = resolve;
+              setPartial({ text: partialExportText(p.count, p.message, p.gap), visible: true });
+            }),
+        });
+        if (!r.ok) {
+          if (r.cancelled !== true && mounted.current) setError(r.message);
+          return;
+        }
+        if (!mounted.current) { discardExportFile(r.uri); return; }
+        try {
+          await Share.share({ url: r.uri });
+        } finally {
+          // 分享单关掉（或失败）之后顺手删掉临时文件
+          discardExportFile(r.uri);
+        }
+      } catch (e) {
+        if (mounted.current) setError(e instanceof Error ? e.message : String(e));
+      } finally {
+        running.current = false;
+        if (mounted.current) setBusy(null);
+      }
+    })();
+  };
+
+  return (
+    <>
+      <Group>
+        <Row label="导出聊天记录" {...(busy === null ? {} : { value: `已读 ${busy} 条…` })} chevron disabled={busy !== null} onPress={start} />
+      </Group>
+      {error !== null ? <View style={{ paddingHorizontal: 16 }}><Note tone="error">{error}</Note></View> : null}
+      {partial !== null ? (
+        <Dialog
+          visible={partial.visible}
+          onExited={() => {
+            const r = resolver.current;
+            resolver.current = null;
+            setPartial(null);
+            r?.(choice.current);
+          }}
+        >
+          <DialogTitle>只读到一部分</DialogTitle>
+          <DialogLead>{partial.text}</DialogLead>
+          <DialogFooter left={{ label: "重试", onPress: () => pick("retry") }} right={{ label: "就导出这些", onPress: () => pick("export") }} />
+        </Dialog>
+      ) : null}
+    </>
   );
 }
 
@@ -194,6 +287,7 @@ export function ChatInfoScreen({ route, navigation }: Props) {
             <Row label="群主" value={labelOf(team.ws, owner)} />
             <Row label="没 @ 谁的时候" value={agents.length > 0 ? "智能体按职责自己接" : "等人回"} />
           </Group>
+          <ExportLogRow target={{ kind: "session", sessionId: target.sessionId }} />
         </ScrollView>
       </View>
     );
@@ -249,6 +343,7 @@ export function ChatInfoScreen({ route, navigation }: Props) {
             <Row label="群主" value={owner?.label ?? ""} />
             <Row label="没 @ 谁的时候" value={agentIds.length > 0 ? "智能体按职责自己接" : "等人回"} />
           </Group>
+          <ExportLogRow target={{ kind: "session", sessionId: target.sessionId }} />
           <DangerRow label="退出群聊" onPress={() => { setError(null); setConfirm(true); }} />
         </ScrollView>
         {picker !== null ? (
@@ -318,6 +413,7 @@ export function ChatInfoScreen({ route, navigation }: Props) {
             {ws.agents.length >= 2 || invitable.length > 0 ? <MemberAction icon="plus" label="建群" onPress={() => { setPickError(null); setPicker({ kind: "group", key: Date.now(), visible: true }); }} /> : null}
           </Members>
           <AgentRows ws={ws} agent={agent} />
+          <ExportLogRow target={{ kind: "agent", agentId: agent.agentId }} />
           {isAdmin ? (
             <Text style={{ fontSize: 13, lineHeight: 19, color: c.mutedForeground, paddingHorizontal: 16 }}>管理员删不掉：新建智能体、派活都靠它。</Text>
           ) : (
@@ -458,6 +554,7 @@ export function ChatInfoScreen({ route, navigation }: Props) {
           <Row label="群主" value="我" />
           <Row label="没 @ 谁的时候" value={agentIds.length > 0 ? "智能体按职责自己接" : "没人接"} />
         </Group>
+        <ExportLogRow target={{ kind: "session", sessionId: row.sessionId }} />
         <DangerRow label="解散群聊" onPress={() => { setError(null); setConfirm(true); }} />
       </ScrollView>
 
