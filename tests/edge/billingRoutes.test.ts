@@ -2,6 +2,7 @@ import { createHmac } from "node:crypto";
 import { describe, expect, it } from "vitest";
 import { createEdge, type BillingPort, type EdgeConfig } from "../../services/edge/src/edge.js";
 import type { Caller } from "../../services/edge/src/llmGateway.js";
+import { SPEECH_TICKET_HEADER, signSpeechTicket } from "../../src/shared/speechTicket.js";
 import { AGENT_HEADER, ON_BEHALF_HEADER, SESSION_HEADER, WORKSPACE_HEADER, type BillingMe } from "../../src/shared/billing.js";
 
 const SECRET = "jwt-secret";
@@ -259,5 +260,69 @@ describe("/billing/v1/workspace-usage（#946）", () => {
     // 平台身份认的是 x-runtime-secret 头，不是 Bearer（见上面 /llm 那组用例）
     const res = await h.handle(get(`?workspace=${U7}`, { "x-runtime-secret": RUNTIME, [ON_BEHALF_HEADER]: U7 }));
     expect(res.status).toBe(403);
+  });
+});
+
+// 语音合成的票（#1441）：好友听主人的智能体说话，钱记主人。只认 speech、只认真人身份、
+// 只认 peerUid 本人、过期/验签不过一律静默退回记调用者自己（不是错误响应）
+describe("/llm/v1/speech 的票", () => {
+  const OWNER = "oooooooo-0000-4000-8000-000000000001";
+  const PEER = "u9";
+  const ticketOf = (over: Partial<{ ownerUid: string; peerUid: string; exp: number }> = {}, secret = RUNTIME) =>
+    signSpeechTicket({ ownerUid: OWNER, peerUid: PEER, workspaceId: "tw", sessionId: "ts", exp: NOW_MS + 60_000, ...over }, secret);
+  const peerHeaders = (ticket: string, extra: Record<string, string> = {}) => ({
+    authorization: `Bearer ${token(PEER)}`, [SPEECH_TICKET_HEADER]: ticket,
+    [WORKSPACE_HEADER]: "pw", [SESSION_HEADER]: "ps", [AGENT_HEADER]: "ag", ...extra,
+  });
+
+  it("带有效票：记主人的账，workspace/session 取票里的，agentId 仍是请求头里的", async () => {
+    const h = harness();
+    const res = await h.handle(post("/llm/v1/speech", peerHeaders(await ticketOf())));
+    expect(res.status).toBe(200);
+    expect(h.llmCalls).toEqual([{ uid: OWNER, source: "desktop", workspaceId: "tw", sessionId: "ts", agentId: "ag" }]);
+  });
+
+  it("票过期 / 签名不对 / 调用者不是 peerUid / 票是垃圾：照旧记调用者自己，不报错", async () => {
+    const h = harness();
+    const bad = [
+      await ticketOf({ exp: NOW_MS - 1 }),
+      await ticketOf({}, "another-secret"),
+      await ticketOf({ peerUid: "someone-else" }),
+      "garbage",
+    ];
+    for (const t of bad) {
+      const res = await h.handle(post("/llm/v1/speech", peerHeaders(t)));
+      expect(res.status).toBe(200);
+    }
+    expect(h.llmCalls).toHaveLength(4);
+    for (const c of h.llmCalls) expect(c).toEqual({ uid: PEER, source: "desktop", workspaceId: "pw", sessionId: "ps", agentId: "ag" });
+  });
+
+  it("没配 runtime 口令的 edge：不验票（空口令会让 importKey 抛），照旧记调用者", async () => {
+    const llmCalls: Caller[] = [];
+    const handle = createEdge({
+      config: { jwtSecret: SECRET }, now: () => NOW_MS,
+      llm: async (_req, caller) => { llmCalls.push(caller); return new Response("ok"); },
+    });
+    const res = await handle(post("/llm/v1/speech", peerHeaders(await ticketOf())));
+    expect(res.status).toBe(200);
+    expect(llmCalls[0]).toMatchObject({ uid: PEER, workspaceId: "pw" });
+  });
+
+  it("chat/completions 带票：不认（只有 speech 认）", async () => {
+    const h = harness();
+    const res = await h.handle(post("/llm/v1/chat/completions", peerHeaders(await ticketOf())));
+    expect(res.status).toBe(200);
+    expect(h.llmCalls[0]).toEqual({ uid: PEER, source: "desktop", workspaceId: "pw", sessionId: "ps", agentId: "ag" });
+  });
+
+  it("平台身份带票：不认（平台走 on-behalf-of）", async () => {
+    const h = harness();
+    const ticket = await ticketOf({ peerUid: U7 }); // peerUid 对得上被代表的人，唯一不认的理由就是身份是平台
+    const res = await h.handle(post("/llm/v1/speech", {
+      "x-runtime-secret": RUNTIME, [ON_BEHALF_HEADER]: U7, [SPEECH_TICKET_HEADER]: ticket, [WORKSPACE_HEADER]: "pw", [SESSION_HEADER]: "ps",
+    }));
+    expect(res.status).toBe(200);
+    expect(h.llmCalls[0]).toEqual({ uid: U7, source: "runtime", workspaceId: "pw", sessionId: "ps", agentId: "" });
   });
 });
