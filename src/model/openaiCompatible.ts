@@ -409,7 +409,9 @@ export function createOpenAICompatibleAdapter(opts: OpenAICompatibleOptions): Mo
   async function attemptChat(
     body: string,
     onDelta: ((text: string, kind: DeltaKind) => void) | undefined,
-    signal: AbortSignal | undefined
+    signal: AbortSignal | undefined,
+    /** 调用方扔得掉已播碎片（给了 onRestart，#1448）：流中途的失败也标可重发 */
+    replayable = false
   ): Promise<ModelReply> {
     const endpoint: ResolvedEndpoint = opts.resolveEndpoint
       ? await opts.resolveEndpoint()
@@ -505,7 +507,7 @@ export function createOpenAICompatibleAdapter(opts: OpenAICompatibleOptions): Mo
               new Error(`model API 流 ${timing.idleTimeoutMs}ms 无数据，已掐断`),
               "retryable"
             );
-            abortWith(consumed ? err : markRetryable(err));
+            abortWith(consumed && !replayable ? err : markRetryable(err));
           }, timing.idleTimeoutMs);
         };
         armIdle();
@@ -528,18 +530,20 @@ export function createOpenAICompatibleAdapter(opts: OpenAICompatibleOptions): Mo
         // 上游在流里塞了错误（#1131）：按瞬态处理，话原样带上；没播过就可重发
         if (acc.streamError !== null) {
           const err = markErrorClass(new Error(`model API 流里报错：${acc.streamError}`), "retryable");
-          throw played ? err : markRetryable(err);
+          throw played && !replayable ? err : markRetryable(err);
         }
         // 流没收尾（#1131）：既没等到 `[DONE]` 也没见过 finish_reason 就关了。真机形态
         // 是上游 2 秒后在一行中间断掉，原来这里拿半截 JSON 报 `Unterminated string in
         // JSON at position 21`——一句把真实原因（断流）盖住的语法错。没播过就重发
-        // （同首字节前静默超时那条），播过了不重发（半条消息续不上），但话要说清
+        // （同首字节前静默超时那条），播过了不重发（半条消息续不上），但话要说清。
+        // 调用方扔得掉已播碎片（replayable，#1448）时播过也重发：真机一场群聊十分钟里
+        // 断了四次，每次都是整轮直接失败，而云会话的预览是累计快照，从头再来没有代价
         if (!acc.terminated) {
           const err = markErrorClass(
             new Error(`model API 流中途断开：收到 ${acc.bytes} 字节后上游关了连接，没等到终块`),
             "retryable"
           );
-          throw played ? err : markRetryable(err);
+          throw played && !replayable ? err : markRetryable(err);
         }
         return {
           content: acc.content,
@@ -618,8 +622,23 @@ export function createOpenAICompatibleAdapter(opts: OpenAICompatibleOptions): Mo
       messages: ChatMessage[],
       tools?: ToolDefinition[],
       onDelta?: (text: string, kind: DeltaKind) => void,
-      signal?: AbortSignal
+      signal?: AbortSignal,
+      onRestart?: () => void
     ): Promise<ModelReply> {
+      // 「这次请求播出去过碎片没有」记在重试循环这一层（#1448）：重发之前要先让调用方
+      // 把已播的扔掉，而 attemptChat 每次都是新的一趟
+      let played = false;
+      const tap = onDelta
+        ? (text: string, kind: DeltaKind) => {
+            played = true;
+            onDelta(text, kind);
+          }
+        : undefined;
+      const restartIfPlayed = () => {
+        if (!played) return;
+        played = false;
+        onRestart?.();
+      };
       // 请求体在重试间不变，拼一次
       const body = JSON.stringify({
         model: opts.wireModel ?? opts.model,
@@ -645,7 +664,7 @@ export function createOpenAICompatibleAdapter(opts: OpenAICompatibleOptions): Mo
       for (let attempt = 1; ; attempt++) {
         signal?.throwIfAborted();
         try {
-          return await attemptChat(body, onDelta, signal);
+          return await attemptChat(body, tap, signal, onRestart !== undefined);
         } catch (err) {
           if (errorClassOf(err) === "reroute") {
             // 改道只给一次机会：第二次还是额度用完 = 另一条路也没有，抛给 engine
@@ -664,10 +683,12 @@ export function createOpenAICompatibleAdapter(opts: OpenAICompatibleOptions): Mo
           const custom = opts.retryDelayFor?.(err, attempt);
           if (custom !== null && custom !== undefined) {
             queued += 1;
+            restartIfPlayed();
             await sleep(custom, signal);
             continue;
           }
           if (attempt - queued >= timing.maxAttempts) throw err;
+          restartIfPlayed();
           await sleep(
             timing.backoffMs[Math.min(attempt - queued - 1, timing.backoffMs.length - 1)] ?? 0,
             signal

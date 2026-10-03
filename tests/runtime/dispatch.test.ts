@@ -174,6 +174,18 @@ describe("dispatchContext", () => {
     expect(dispatchContext(events, nameOf).map(renderDispatchLine)).toEqual(["[alice]: 早", "[bob]: @运营 看下", "[运营]: 涨了 3%"]);
   });
 
+  // #1448 真机：开发边干活边说「我先看一眼…」，十来条把产品经理刚向人提的问题挤出了窗口，
+  // 人回答那个问题的「IOS26」被判成没人该接。带旁白的工具步骤群里不画，这里也不算
+  it("要了工具的那一条即使带一句旁白也不算（群里看不见它），不占窗口", () => {
+    const step = (seq: number): SessionEvent =>
+      ev({ type: "assistant_message", content: "我先看一眼目录", agentId: "ops", model: "m", toolCalls: [{ id: `c${seq}`, name: "bash", args: "{}" }] }, seq);
+    const events: SessionEvent[] = [
+      ev({ type: "assistant_message", content: "你用的什么手机？", agentId: "ads", model: "m" }, 1),
+      ...Array.from({ length: 12 }, (_, i) => step(i + 2)),
+    ];
+    expect(dispatchContext(events, nameOf)).toEqual([{ by: "广告", kind: "agent", text: "你用的什么手机？" }]);
+  });
+
   it("接力开场白、拉进通话的招呼与 engine 注的私话（relay / greeting / origin）不算群里的话", () => {
     const events: SessionEvent[] = [
       ev({ type: "user_message", content: "[系统] 「运营」@ 了「广告」", fromUid: "u1", mentions: ["ads"], relay: { fromAgentId: "ops", depth: 1 } }, 1),
@@ -299,6 +311,27 @@ describe("requestDispatch", () => {
     expect(await bodyOf({ cheap: "qwen", mid: "zhipu" })).not.toHaveProperty("reasoning_effort");
     expect(await bodyOf({ mid: "zhipu" })).not.toHaveProperty("reasoning_effort");
     expect(await bodyOf()).not.toHaveProperty("reasoning_effort");
+  });
+
+  // #1448 真机：线上只剩 deepseek-flash，它把 512 个 token 全花在推理上、正文空串，群里两句
+  // 不 @ 的话各落一句「没派出去（分类器没给出可识别的答案）」。DeepSeek 经网关实测收
+  // `thinking: {type:"disabled"}`；智谱拒它（要 reasoning_effort），所以两张名单各管各的
+  it("最便宜那款在 DeepSeek 上关掉思考；智谱、别家、不知道是哪家，不带 thinking", async () => {
+    const bodyOf = async (platforms?: Record<string, string>): Promise<Record<string, unknown>> => {
+      let sent = "";
+      const f = (async (_url: string, init: RequestInit) => {
+        sent = init.body as string;
+        return new Response(JSON.stringify({ choices: [{ message: { content: "2" } }] }), { status: 200 });
+      }) as unknown as typeof fetch;
+      await requestDispatch(deps(f), input(), MODELS, platforms);
+      return JSON.parse(sent) as Record<string, unknown>;
+    };
+    const ds = await bodyOf({ cheap: "deepseek" });
+    expect(ds.thinking).toEqual({ type: "disabled" });
+    expect(ds).not.toHaveProperty("reasoning_effort");
+    expect(await bodyOf({ cheap: "zhipu" })).not.toHaveProperty("thinking");
+    expect(await bodyOf({ cheap: "qwen", mid: "deepseek" })).not.toHaveProperty("thinking");
+    expect(await bodyOf()).not.toHaveProperty("thinking");
   });
 });
 

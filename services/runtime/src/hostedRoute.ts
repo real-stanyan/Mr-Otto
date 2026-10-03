@@ -247,7 +247,7 @@ export function createHostedRuntimeAdapter(deps: HostedRuntimeAdapterDeps): Mode
     async prepare(): Promise<void> {
       prepared = await decide();
     },
-    async chat(messages, tools, onDelta, signal) {
+    async chat(messages, tools, onDelta, signal, onRestart) {
       const route = prepared ?? (await decide());
       prepared = null;
       if (route.kind === "blocked") {
@@ -284,7 +284,7 @@ export function createHostedRuntimeAdapter(deps: HostedRuntimeAdapterDeps): Mode
         reasoningPassback: findModel(route.model)?.reasoningPassback ?? false,
       });
       try {
-        return await adapter.chat(messages, tools, onDelta, signal);
+        return await adapter.chat(messages, tools, onDelta, signal, onRestart);
       } catch (err) {
         // 等满了还是没轮上 → 换成人话再抛（#960）。原来冒上去的是
         // `model API 429: {"error":{"type":"otto_edge",...}}`，用户在群里看到的
@@ -329,8 +329,8 @@ export function withUsage(adapter: ModelAdapter, onUsage: (u: TokenUsage, model:
     },
     ...(adapter.prepare ? { prepare: () => adapter.prepare!() } : {}),
     ...(adapter.requestConfig ? { requestConfig: adapter.requestConfig } : {}),
-    async chat(messages, tools, onDelta, signal) {
-      const reply = await adapter.chat(messages, tools, onDelta, signal);
+    async chat(messages, tools, onDelta, signal, onRestart) {
+      const reply = await adapter.chat(messages, tools, onDelta, signal, onRestart);
       if (reply.usage) onUsage(reply.usage, adapter.model);
       return reply;
     },

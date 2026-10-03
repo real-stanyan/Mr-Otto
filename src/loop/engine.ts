@@ -75,6 +75,10 @@ export interface LoopEngineOptions {
       半成品永不落盘：日志只收凝固后的完整 assistant_message——
       pi 的"消息完成后不可修改"同款边界 */
   onAssistantDelta?: (text: string, kind: DeltaKind) => void;
+  /** 给了 = 装配方扔得掉已经播出去的碎片（#1448）：流中途断了，adapter 先喊这一声再从头
+      重发，之后的碎片是一条全新的回复。缺席 = 照旧，播过就不重发、这一轮失败。
+      云 runtime 给（预览是累计快照，清零即可）；桌面没给（渲染层的流式缓冲是增量拼的） */
+  onAssistantRestart?: () => void;
   /** 工具输出直播回调（bash 的 stdout/stderr 碎片，临时 UI 直播，不是事实）。
       和 onAssistantDelta 一对儿：碎片不落盘，完整输出以 tool_result 事件落盘 */
   onToolOutput?: (toolCallId: string, chunk: string, stream: "stdout" | "stderr") => void;
@@ -881,8 +885,9 @@ export class LoopEngine {
       this.appendEnvelopeIfChanged(log, messages, defs);
 
       // 思考耗时只有在碎片流里才测得到:包一层记下频道切换的时刻,原回调原样透传
-      const clock = createReasoningClock();
+      let clock = createReasoningClock();
       const onDelta = this.opts.onAssistantDelta;
+      const onRestart = this.opts.onAssistantRestart;
       this.sampling = true;
       let reply: ModelReply;
       try {
@@ -895,7 +900,14 @@ export class LoopEngine {
                 onDelta(text, kind);
               }
             : undefined, // 非流式路径:测不到就不测,字段缺席
-          signal // 中断从这穿进 fetch / SSE 读流
+          signal, // 中断从这穿进 fetch / SSE 读流
+          // 流播到一半断了、adapter 要从头重发（#1448）：表也从头走，再让装配方把预览清掉
+          onDelta && onRestart
+            ? () => {
+                clock = createReasoningClock();
+                onRestart();
+              }
+            : undefined
         );
       } catch (err) {
         // 采样没成（中断/暴死）：攒着的后台结果照样落盘——它们是已经发生的事实，
