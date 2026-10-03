@@ -173,6 +173,7 @@ import type { VoiceCallParticipant } from "../../../src/session/events.js";
 import { LoopEngine } from "../../../src/loop/engine.js";
 import type { EventStore } from "../../../src/session/store.js";
 import type { SessionEvent, SessionCreatedEvent, UserMessageEvent, AssistantMessageEvent, AgentRelayEvent, CallRingEvent } from "../../../src/session/events.js";
+import { activeOutreach, applyOutreach, outreachFoldOf, type OutreachFold } from "../../../src/shared/outreach.js";
 import { callbackAnsweredText, callbackGreetingText, callerModelOf, ringChatKind, type RingPush, type RingState } from "../../../src/shared/callRing.js";
 import { createRinger, type Ringer } from "./callRinger.js";
 import { createCallUserTool } from "./callUserTool.js";
@@ -681,8 +682,14 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   let chatHumans: readonly ChatHuman[] | null = chatHumansOf(seed);
   const isGuest = (uid: string): boolean => chatHumans !== null && chatHumans.some((h) => h.uid === uid);
   // 这条会话是不是一条聊天（#1280）：建会话时记进日志的事实，一生不变
-  const chatKind =
-    seed.find((e): e is SessionCreatedEvent => e.type === "session_created")?.cloud?.chat?.kind ?? null;
+  const createdCloud = seed.find((e): e is SessionCreatedEvent => e.type === "session_created")?.cloud;
+  const chatKind = createdCloud?.chat?.kind ?? null;
+  // 外联会话（#1441）：智能体替主人打给朋友的那条线——一只智能体 + 朋友一个客人，**没有任何工具、
+  // 不注入记忆、只在通话进行中收话**。同 chatKind，建会话时记进日志的事实，一生不变
+  const isOutreach = chatKind === "outreach";
+  // 这条线上的外联折叠（#1441）：从 seed 播种、notify 里逐条推进（同 voiceCall）。「通话此刻进行中吗、
+  // 打给的是谁」只从这一份读——say 的闸、chat() 的 active 共用，两处各折一遍迟早分家
+  const outreachFold: OutreachFold = outreachFoldOf(seed);
   /** 这条会话此刻的名单 = 团队名单 ∩ 聊天名单。**全文件读名单只走这一个口**：@ 解析、派活、
       接力、brief、通话选人约 40 处下游一次全对，少改一处就是那一处还站着整个团队。
       团队名单读不出来（degraded）时原样交回：降级记号一旦被名单滤掉，下游「名单读不出来」
@@ -996,6 +1003,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // 通话名单跟着走（#1163）：同 advanceRelayBounds 的推理——daemon.ts 绕过 notify 的那四类
     // append 里没有这一种，这条事件只从 logVoiceCall 出门
     if (e.type === "voice_call_changed") voiceCall = applyVoiceCallEvent(voiceCall, e);
+    applyOutreach(outreachFold, e);
     if (e.type === "chat_roster_changed") {
       chatRoster = applyChatRosterEvent(chatRoster, e);
       chatHumans = e.humans ?? [];
@@ -1301,6 +1309,9 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // 只有管理员那只有 create_agent（spec §10 切片 6）。判据是 agentId 不是名字——
       // 名字随时能改，'admin' 是 0021 触发器种下的稳定键
       tools: () => {
+        // 外联会话（#1441）：一把都没有——连 read_file / wiki / call_user 也不挂。朋友是客人，
+        // 而这条线的全部意义就是「只说话」；提示词（deriveMessages 的外联那一支）说的也是同一句
+        if (isOutreach) return [];
         const list: Tool[] = [
           readFileTool, writeFileTool, bashTool, wikiReadTool, wikiTool, inviteToCallTool,
           ...(callUserTool !== null ? [callUserTool] : []),
@@ -1377,6 +1388,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   /** 起 turn 前落这只 agent 的 wiki 快照（#1140）。判据逐字沿用 ADR-0222 决策 2：**缺席或内容变了才落**。
       ensure/snapshot 失败 warn 跳过、不阻塞 turn（记忆副作用永不阻塞回复）。nudge 只给管理员（spec §7.2） */
   async function loadWikiIfChanged(spec: AgentSpec): Promise<void> {
+    // 外联会话不注入团队记忆（#1441）：对面是群主的朋友，群主的 wiki 一个字都不该进这条线的上下文
+    if (isOutreach) return;
     let snap: WikiSnapshotForAgent;
     try {
       await opts.wiki.ensure();
@@ -2092,6 +2105,9 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
             `（workspaceId=${opts.workspaceId} session=${sessionId} agentId=${spec.agentId}）`
         );
         cachedPxTools = [];
+      } else if (isOutreach) {
+        // 外联会话没有工具（上面 tools()），拉授权是白打的网络往返：每个成员一次 edge
+        cachedPxTools = [];
       } else {
         let granted: Awaited<ReturnType<typeof fetchGrantedTools>> = [];
         try {
@@ -2344,6 +2360,13 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
 
   const session: CloudSession = {
     async say(fromUid, label, text, mention, mentions, budget, memberMentions, voice) {
+      // 外联会话只在通话进行中收话，且只收**打给的那个朋友**（#1441）：没有进行中的外联 = 电话已经
+      // 挂了；主人也不例外（他在这条线上只读）。放在最前面——任何名单查询、落盘之前拒绝，
+      // 挂断之后的一句话一个字节都不落
+      if (isOutreach) {
+        const live = activeOutreach(outreachFold);
+        if (live === null || fromUid !== live.peerUid) throw new SayRejectedError("这通电话已经结束了。");
+      }
       // 人刚开口 → 要此刻的名单（#979 第 5 条）：他在设置页刚建/改的那只要能立刻 @ 到
       const roster = await rosterNow({ fresh: true });
       // **名单降级 + 这句话点了名 = 一个字节都不落**（#957 E2-4）：degraded 那份
@@ -2390,9 +2413,15 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         // 群里还有谁（#1405）。只在用得上时算：下面「只剩一只」那两条捷径要它，分类器要它；
         // 人已经在指名、或没接分类器时两处都用不上——团队会话那边的名单是一次（缓存的）网络
         const chatSole = chatKind !== null && roster.length === 1 && roster[0]!.degraded !== true;
-        const people: DispatchPeople = chatSole || (opts.dispatch !== undefined && !humanAddressed)
-          ? await peopleAround(fromUid)
-          : { count: 0, names: [] };
+        // 外联里「别人」是空集（#1441）：这条线上只有那一只智能体和打给的朋友，能开口的只有朋友
+        // （上面的闸），群主在线与否与这一句无关。`peopleAround` 在这里会把群主（hostUids 里）数成
+        // 「群里还有别人」——通话进行中则看语音发言的人——于是 `sole` 那条捷径被关掉、句子落到分类器
+        // 手里。外联不问分类器：直接给零，也省一次 hostUids 网络
+        const people: DispatchPeople = isOutreach
+          ? { count: 0, names: [] }
+          : chatSole || (opts.dispatch !== undefined && !humanAddressed)
+            ? await peopleAround(fromUid)
+            : { count: 0, names: [] };
         // 聊天里只有一只（#1280，spec §6.2）：这句话只可能是对它说的——不问分类器、不花那次调用，
         // 也不看正文里有没有 @（私聊里没有第二个人可以被指名）。同 ADR-0275 的通话单成员规则。
         // 只对聊天生效：团队会话只有一只时照旧走分类器（闲聊没人接是团队那边的既有口径）。
@@ -2401,7 +2430,9 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         const sole = chatSole && people.count === 0 ? roster[0]! : null;
         if (sole !== null) {
           targets = [sole.agentId];
-        } else if (opts.dispatch === undefined || humanAddressed) {
+        } else if (opts.dispatch === undefined || humanAddressed || isOutreach) {
+          // 外联里名单不是恰好一只（名单降级成团队占位等）时也**不问分类器**（#1441）：落回改动前
+          // 的老语义（mention:true 回落名单第一只）——这条线上一句话到了就该有人应，分类器给不出更好的
           targets = legacy;
         } else {
           // 名单降级 = 分类器读到的是占位不是真名册，判出来的答案必然错；按「这次
@@ -2691,14 +2722,26 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     },
 
     chat() {
-      return chatKind === null ? null : { kind: chatKind, agentIds: [...(chatRoster ?? [])], humans: [...(chatHumans ?? [])] };
+      if (chatKind === null) return null;
+      return {
+        kind: chatKind,
+        agentIds: [...(chatRoster ?? [])],
+        humans: [...(chatHumans ?? [])],
+        // 外联（#1441）：给界面画「某某的智能体」+ 通话还在不在；名字是建会话时记进日志的快照
+        ...(isOutreach && createdCloud?.outreach !== undefined
+          ? { outreach: { ownerName: createdCloud.outreach.ownerName, active: activeOutreach(outreachFold) !== null } }
+          : {}),
+      };
     },
 
     isGuest,
 
     async updateChatRoster(byUid, patch, byName) {
       if (chatKind !== "group") {
-        return { kind: "not_group", message: chatKind === "dm" ? "私聊的名单改不了" : "这不是一条群聊" };
+        return {
+          kind: "not_group",
+          message: chatKind === "dm" ? "私聊的名单改不了" : chatKind === "outreach" ? "这条线的名单改不了" : "这不是一条群聊",
+        };
       }
       // 对着**团队**名单核对不是 rosterNow：要拉进来的那只此刻当然不在聊天名单里。
       // 只改真人那一半时也要这份名单——落的那一条事件带齐两份名单，智能体那一半的名字得现取

@@ -68,7 +68,7 @@ describe("既有三种云会话的提示词（外联加分叉前后逐字节不�
 
 const created = {
   seq: 0, sessionId: "s", ts: 0, type: "session_created" as const, workspace: "/work",
-  cloud: { workspaceId: "w", home: true, chat: { kind: "outreach" as const }, outreach: { ownerName: "Stan", peerUid: "u2", peerName: "小红" } },
+  cloud: { workspaceId: "w", home: true as const, chat: { kind: "outreach" as const }, outreach: { ownerName: "Stan", peerUid: "u2", peerName: "小红" } },
 };
 const sysOf = (events: Parameters<typeof deriveMessages>[0]): string =>
   (deriveMessages(events)[0] as { content: string }).content;
