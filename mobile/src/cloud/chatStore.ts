@@ -295,8 +295,9 @@ export async function loadOlder(): Promise<void> {
 export async function loadOlderPage(): Promise<OlderPageResult> {
   const before = store.get().session;
   if (before === null || !before.hasOlder) return { ok: true, hasOlder: false };
-  // 已经有一页在翻（聊天页的哨兵）：这一次不另起一帧；导出那条路 await 的是自己那一发
-  if (before.older === "loading") return { ok: true, hasOlder: true };
+  // 已经有一页在翻（聊天页的哨兵）也照样往下走：客户端 backlogPage() 对「正在翻」交回同一个
+  // promise、不会多发一帧，于是这里等的就是那一页落地——直接回「还有」会让导出看到
+  // 「没进展」而误报没读到更早的记录
   const sessionId = before.sessionId;
   const patch = (older: ChatSession["older"]): void => {
     const cur = store.get().session;

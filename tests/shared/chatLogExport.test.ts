@@ -10,6 +10,7 @@ import {
   runChatExport,
   type CollectDeps,
   type CollectResult,
+  type OlderPageResult,
   type PartialChoice,
 } from "../../src/shared/chatLogExport.js";
 
@@ -74,6 +75,20 @@ describe("pagerDeps", () => {
     });
     expect(await collectFullLog(deps)).toEqual({ kind: "complete", count: 15 });
   });
+  it("哨兵已经有一页在翻：等那一页落地（同一个 promise），不是无进展", async () => {
+    let n = 5;
+    let hasOlder = true;
+    // 模拟客户端 backlogPage()：已有一页在翻时第二次调用交回同一个 promise
+    let inflight: Promise<OlderPageResult> | null = null;
+    const page = (): Promise<OlderPageResult> => {
+      inflight ??= new Promise<OlderPageResult>((res) =>
+        setTimeout(() => { n += 5; hasOlder = false; inflight = null; res({ ok: true, hasOlder: false }); }, 5));
+      return inflight;
+    };
+    void page(); // 聊天页的哨兵先发了一页
+    const deps = pagerDeps({ loadOlderPage: page, storeHasOlder: () => hasOlder, count: () => n });
+    expect(await collectFullLog(deps)).toEqual({ kind: "complete", count: 10 });
+  });
   it("失败原样带出 message", async () => {
     const deps = pagerDeps({
       loadOlderPage: async () => ({ ok: false, message: "断了" }),
@@ -109,8 +124,42 @@ describe("runChatExport", () => {
     expect(collected).toBe(2);
     expect(seen).toEqual([200, 400]);
   });
-  it("提示语", () => {
+  it("提示语：没翻齐 / 有缺口两种说法", () => {
     expect(partialExportText(400, "断了")).toBe("只读到 400 条，更早的没读到（断了）");
+    expect(partialExportText(400, "缺 3 条", true)).toBe("这份记录有缺口（缺 3 条），共 400 条");
+  });
+  it("翻齐了但有缺口：问人，不当成完整日志直接导出", async () => {
+    const asked: { count: number; message: string; gap: boolean }[] = [];
+    const r = await runChatExport({
+      collect: async () => ({ kind: "complete", count: 9 }),
+      gapNote: () => "缺 3 条",
+      askPartial: async (a) => { asked.push(a); return "cancel"; },
+    });
+    expect(asked).toEqual([{ count: 9, message: "缺 3 条", gap: true }]);
+    expect(r).toBe("cancel");
+  });
+  it("有缺口 + 就导出这些：导出；没缺口：直接导出不问", async () => {
+    expect(await runChatExport({
+      collect: async () => ({ kind: "complete", count: 9 }),
+      gapNote: () => "缺 3 条",
+      askPartial: async () => "export",
+    })).toBe("export");
+    let asked = 0;
+    expect(await runChatExport({
+      collect: async () => ({ kind: "complete", count: 9 }),
+      gapNote: () => null,
+      askPartial: async () => { asked += 1; return "export"; },
+    })).toBe("export");
+    expect(asked).toBe(0);
+  });
+  it("没翻齐时选取消：不导出，也不再翻", async () => {
+    let collected = 0;
+    const r = await runChatExport({
+      collect: async () => { collected += 1; return { kind: "partial", count: 1, message: "断了" }; },
+      askPartial: async () => "cancel",
+    });
+    expect(r).toBe("cancel");
+    expect(collected).toBe(1);
   });
 });
 

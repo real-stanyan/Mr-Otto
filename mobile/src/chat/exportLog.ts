@@ -11,6 +11,7 @@ import {
   cloudLogFilename,
   collectFullLog,
   eventsJsonl,
+  EXPORT_SWITCHED,
   openSessionMatches,
   pagerDeps,
   runChatExport,
@@ -22,14 +23,24 @@ import { currentChatSession, loadOlderPage, type ChatSession } from "../cloud/ch
 export type { ExportTarget };
 export const EXPORT_NOT_READY = "先回到聊天页等它连上再导出";
 
-export type ExportResult = { ok: true; uri: string; count: number } | { ok: false; message: string };
+/** `cancelled` = 人自己放弃了（不是错误，不画报错行） */
+export type ExportResult = { ok: true; uri: string; count: number } | { ok: false; message: string; cancelled?: true };
+
+/** 分享单关掉之后顺手删掉那个临时文件。尽力而为：删不掉缓存目录自己也会被系统清 */
+export function discardExportFile(uri: string): void {
+  try {
+    new File(uri).delete();
+  } catch {
+    /* 忽略 */
+  }
+}
 
 export async function exportChatLog(
   target: ExportTarget,
   io: {
     onProgress(count: number): void;
     /** 没翻齐时问人。resolve 要等弹窗退场之后（见调用方：iOS 在退场中的 Modal 上叠分享单会悄悄不出来） */
-    askPartial(r: { count: number; message: string }): Promise<PartialChoice>;
+    askPartial(r: { count: number; message: string; gap: boolean }): Promise<PartialChoice>;
   },
 ): Promise<ExportResult> {
   const first = currentChatSession();
@@ -41,7 +52,8 @@ export async function exportChatLog(
   };
   io.onProgress(first.events.length);
   try {
-    await runChatExport({
+    const outcome = await runChatExport({
+      gapNote: () => same()?.gapNote ?? null,
       collect: () =>
         collectFullLog(
           pagerDeps({
@@ -54,8 +66,9 @@ export async function exportChatLog(
         ),
       askPartial: io.askPartial,
     });
+    if (outcome === "cancel") return { ok: false, message: "", cancelled: true };
     const s = same();
-    if (s === null) return { ok: false, message: EXPORT_NOT_READY };
+    if (s === null) return { ok: false, message: EXPORT_SWITCHED };
     // store 里按 seq 去重升序（insertCloudEvent），现读一份，翻页期间还在长
     const file = new File(Paths.cache, cloudLogFilename(sessionId, Date.now()));
     file.create({ overwrite: true });

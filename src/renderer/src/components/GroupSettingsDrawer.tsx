@@ -142,7 +142,7 @@ function GroupSettingsRoot({ home, row }: { home: WorkspaceSnapshot; row: GroupC
         <InsetGroup>
           <InsetRow
             title={exp.label}
-            subtitle={exp.disabledReason ?? EXPORT_HINT}
+            subtitle={exp.error ?? exp.disabledReason ?? EXPORT_HINT}
             disabled={exp.busy || exp.disabledReason !== null}
             onClick={exp.run}
           />

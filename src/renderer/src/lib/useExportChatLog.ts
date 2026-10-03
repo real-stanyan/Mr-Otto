@@ -14,6 +14,7 @@ import { useConfirm } from "@/components/ui/confirm-dialog.js";
 import { useChat, type CloudSessionState } from "../store.js";
 import {
   collectFullLog,
+  EXPORT_SWITCHED,
   pagerDeps,
   partialExportText,
   runChatExport,
@@ -30,6 +31,8 @@ export function useExportChatLog(matches: (cs: CloudSessionState) => boolean): {
   busy: boolean;
   /** 不能点的原因（没开着这条聊天 / 还没连上）；null = 能点 */
   disabledReason: string | null;
+  /** 上一次导出没成的原因（会话切走了）；下一次 run 清掉 */
+  error: string | null;
   run: () => void;
 } {
   const confirm = useConfirm();
@@ -39,12 +42,14 @@ export function useExportChatLog(matches: (cs: CloudSessionState) => boolean): {
     return cs !== null && cs.state === "ready" && matches(cs) ? cs.sessionId : null;
   });
   const [progress, setProgress] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
   // 同步闸：setState 要到下一次渲染才生效，连点两下能挤进两次导出
   const running = useRef(false);
 
   const run = useCallback(() => {
     if (openId === null || running.current) return;
     running.current = true;
+    setError(null);
     setProgress(useChat.getState().cloudSession?.events.length ?? 0);
     const sessionId = openId;
     const same = (): CloudSessionState | null => {
@@ -53,7 +58,8 @@ export function useExportChatLog(matches: (cs: CloudSessionState) => boolean): {
     };
     void (async () => {
       try {
-        await runChatExport({
+        const outcome = await runChatExport({
+          gapNote: () => same()?.gapNote ?? null,
           collect: () =>
             collectFullLog(
               pagerDeps({
@@ -67,18 +73,24 @@ export function useExportChatLog(matches: (cs: CloudSessionState) => boolean): {
                 onProgress: setProgress,
               }),
             ),
+          // useConfirm 只有两个出口：确认 = 就导出这些；取消 / Esc / 点遮罩 = 不导出（停下，不是重试——
+          // 持续失败时「关掉弹窗 = 再来一轮」会循环）。重试 = 再点一次这一行，它从已读到的接着翻
           askPartial: async (r) =>
             (await confirm({
-              title: partialExportText(r.count, r.message),
-              description: "可以重试，或者就用已经读到的这些导出。",
+              title: partialExportText(r.count, r.message, r.gap),
+              description: "可以就用已经读到的这些导出；不导出的话，再点一次「导出 log」会从已读到的接着翻。",
               confirmLabel: "就导出这些",
-              cancelLabel: "重试",
+              cancelLabel: "不导出",
             }))
               ? "export"
-              : "retry",
+              : "cancel",
         });
+        if (outcome === "cancel") return;
         const cs = same();
-        if (cs === null) return;
+        if (cs === null) {
+          setError(EXPORT_SWITCHED);
+          return;
+        }
         const file = buildCloudLogExport({ sessionId, events: cs.events, exportedTs: Date.now() });
         downloadText(file.filename, file.mime, file.text);
       } finally {
@@ -92,6 +104,7 @@ export function useExportChatLog(matches: (cs: CloudSessionState) => boolean): {
     label: progress === null ? "导出 log" : `已读 ${progress} 条…`,
     busy: progress !== null,
     disabledReason: openId === null ? EXPORT_NOT_OPEN : null,
+    error,
     run,
   };
 }

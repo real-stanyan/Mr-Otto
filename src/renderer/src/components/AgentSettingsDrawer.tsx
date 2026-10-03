@@ -127,7 +127,7 @@ function AgentSettingsRoot({
           <InsetRow
             leading={<InsetIcon><Download /></InsetIcon>}
             title={exp.label}
-            subtitle={exp.disabledReason ?? EXPORT_HINT}
+            subtitle={exp.error ?? exp.disabledReason ?? EXPORT_HINT}
             disabled={exp.busy || exp.disabledReason !== null}
             onClick={exp.run}
           />

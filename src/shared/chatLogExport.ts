@@ -72,27 +72,40 @@ export function openSessionMatches(
   return s.chat?.kind === "dm" && s.chat.agentIds.includes(target.agentId);
 }
 
-export type PartialChoice ="retry" | "export";
+/** `cancel` = 人不要这份了（桌面弹窗被 Esc / 点遮罩关掉、手机端离开了页面）：不导出，也不再问 */
+export type PartialChoice = "retry" | "export" | "cancel";
 
-/** 导出的整段编排（两端共用）：翻齐 → 没翻齐就问人「重试 / 就导出这些」。
-    问的是人不是自动重试：失败多半是断线，在断线时自己循环只会白打网络；而「读到多少算多少」
-    是一份有损的日志，该不该交出去由人定。重试从当前已读到的接着翻，不从头。
-    返回就是「该导出了」；事件列表由调用方在这之后现读（翻页期间还在长） */
+/** 导出的整段编排（两端共用）：翻齐 → 没翻齐、或翻齐了但日志中间有缺口，就问人。
+    问的是人不是自动重试：失败多半是断线，在断线时自己循环只会白打网络；而有损的日志
+    （缺头 / 中间缺一段）该不该交出去由人定。重试从当前已读到的接着翻，不从头。
+    缺口（`gapNote`，客户端说「有些事件没能下发」）不是翻页能治的，但**不能当成完整日志悄悄交出去**
+    ——接手分析的人对着有洞的日志下结论，而洞本身不报错。
+    返回 `"export"` = 该导出了（事件列表由调用方现读，翻页期间还在长）；`"cancel"` = 什么都不导 */
 export async function runChatExport(io: {
   collect(): Promise<CollectResult>;
-  askPartial(r: { count: number; message: string }): Promise<PartialChoice>;
-}): Promise<void> {
+  askPartial(r: { count: number; message: string; gap: boolean }): Promise<PartialChoice>;
+  gapNote?(): string | null;
+}): Promise<"export" | "cancel"> {
   for (;;) {
     const r = await io.collect();
-    if (r.kind === "complete") return;
-    if ((await io.askPartial(r)) === "export") return;
+    let ask: { count: number; message: string; gap: boolean } | null = null;
+    if (r.kind === "partial") ask = { count: r.count, message: r.message, gap: false };
+    else {
+      const gap = io.gapNote?.() ?? null;
+      if (gap !== null && gap !== "") ask = { count: r.count, message: gap, gap: true };
+    }
+    if (ask === null) return "export";
+    const c = await io.askPartial(ask);
+    if (c !== "retry") return c;
   }
 }
 
-/** 「只读到 N 条，更早的没读到（原因）」——两端的确认弹窗用同一句话 */
-export function partialExportText(count: number, message: string): string {
-  return `只读到 ${count} 条，更早的没读到（${message}）`;
+/** 弹窗那句话：没翻齐「只读到 N 条，更早的没读到（原因）」，有缺口「这份记录有缺口（原因）」 */
+export function partialExportText(count: number, message: string, gap = false): string {
+  return gap ? `这份记录有缺口（${message}），共 ${count} 条` : `只读到 ${count} 条，更早的没读到（${message}）`;
 }
+
+export const EXPORT_SWITCHED = "聊天已经切换，没有导出";
 
 /** 翻一页的结局：`hasOlder` 是那一页回来之后客户端自己报的「前面还有没有」 */
 export type OlderPageResult = { ok: true; hasOlder: boolean } | { ok: false; message: string };

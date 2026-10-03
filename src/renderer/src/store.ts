@@ -3019,8 +3019,8 @@ export const useChat = create<ChatState>((set, get) => ({
   async loadOlderCloudEvents() {
     const before = get().cloudSession;
     if (before === null || !before.hasOlder) return { ok: true, hasOlder: false };
-    // 已经有一页在翻：这一次不另起一帧（导出那条路 await 的是自己那一发，不会落到这里）
-    if (before.older === "loading") return { ok: true, hasOlder: true };
+    // 已经有一页在翻也照样往下走：主进程 backlogPage() 对「正在翻」交回同一个 promise、不会多发一帧，
+    // 这里等的就是那一页落地——直接回「还有」会让导出看到「没进展」而误报（#1446）
     const sessionId = before.sessionId;
     /** 只在仍是同一条会话时落地：翻页要跨一次网络往返，期间人可能已经切走了，
         而 `older` 是这条会话的状态，糊到下一条上就是那一条顶着一行「读取中」 */
