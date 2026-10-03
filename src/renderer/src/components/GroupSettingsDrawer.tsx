@@ -23,6 +23,7 @@ import { NavStack } from "@/components/ui/nav-stack.js";
 import { SidebarProvider } from "@/components/ui/sidebar.js";
 import { useConfirm } from "@/components/ui/confirm-dialog.js";
 import { useChat } from "../store.js";
+import { EXPORT_HINT, useExportChatLog } from "../lib/useExportChatLog.js";
 import { AgentFace } from "./AgentFace.js";
 import { agentFaceSlot } from "../../../shared/agentAvatar.js";
 import { groupRows, homeOf } from "../../../shared/agentRoster.js";
@@ -85,6 +86,7 @@ function GroupSettingsRoot({ home, row }: { home: WorkspaceSnapshot; row: GroupC
   const update = useChat((s) => s.updateGroupChat);
   const dissolve = useChat((s) => s.dissolveGroupChat);
   const [error, setError] = useState<string | null>(null);
+  const exp = useExportChatLog((cs) => cs.sessionId === row.sessionId);
 
   const apply = async (patch: { name?: string; agentIds?: string[] }): Promise<void> => {
     setError(null);
@@ -133,6 +135,18 @@ function GroupSettingsRoot({ home, row }: { home: WorkspaceSnapshot; row: GroupC
           )}
         </InsetGroup>
         <InsetNote>移出之后它在群里说过的话还在，只是不再接这个群的活。</InsetNote>
+      </div>
+
+      {/* 整段原始事件交给别的 AI 排查（#1446）；非破坏性，放在危险区上面 */}
+      <div>
+        <InsetGroup>
+          <InsetRow
+            title={exp.label}
+            subtitle={exp.disabledReason ?? EXPORT_HINT}
+            disabled={exp.busy || exp.disabledReason !== null}
+            onClick={exp.run}
+          />
+        </InsetGroup>
       </div>
 
       {error !== null && <p className="px-1 text-[12px] text-err break-words">{error}</p>}

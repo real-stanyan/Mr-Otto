@@ -15,8 +15,9 @@ import { InsetGroup, InsetIcon, InsetNote, InsetRow } from "@/components/ui/inse
 import { Drawer, DrawerContent, DrawerHeader, DrawerTitle } from "@/components/ui/drawer.js";
 import { SidebarProvider } from "@/components/ui/sidebar.js";
 import { useConfirm } from "@/components/ui/confirm-dialog.js";
-import { Gauge, Sparkles } from "lucide-react";
+import { Download, Gauge, Sparkles } from "lucide-react";
 import { useChat } from "../store.js";
+import { EXPORT_HINT, useExportChatLog } from "../lib/useExportChatLog.js";
 import { AgentEditorScreen } from "./WorkspaceAgentsTab.js";
 import { WorkspaceUsageTab } from "./WorkspaceUsageTab.js";
 import { WorkspaceWikiTab } from "./WorkspaceWikiTab.js";
@@ -78,6 +79,10 @@ function AgentSettingsRoot({
   const confirm = useConfirm();
   const deleteAgent = useChat((s) => s.deleteWorkspaceAgent);
   const isAdmin = agent.agentId === ADMIN_AGENT_ID;
+  // 这一只的私聊 = 开着的那条 dm 里名单含它（私聊名单被库里的唯一索引钉死成一只，ADR-0297）
+  const exp = useExportChatLog(
+    (cs) => cs.workspaceId === ws.id && cs.chat?.kind === "dm" && cs.chat.agentIds.includes(agent.agentId),
+  );
 
   return (
     <div className="flex flex-col gap-[22px]">
@@ -116,6 +121,15 @@ function AgentSettingsRoot({
                 render: () => <WorkspaceUsageTab ws={ws} />,
               })
             }
+          />
+          {/* 与它的那条私聊：导出整段原始事件交给别的 AI 排查（#1446）。
+              只有此刻开着的那条聊天读得到，没开着时说清去哪儿开 */}
+          <InsetRow
+            leading={<InsetIcon><Download /></InsetIcon>}
+            title={exp.label}
+            subtitle={exp.disabledReason ?? EXPORT_HINT}
+            disabled={exp.busy || exp.disabledReason !== null}
+            onClick={exp.run}
           />
         </InsetGroup>
       </div>
