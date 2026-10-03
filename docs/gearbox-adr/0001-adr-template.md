@@ -1,8 +1,11 @@
 # ADR-0001: <decision title>
 
 - Date: <YYYY-MM-DD>
-- Provenance: copied from [gearbox ADR-0001](https://github.com/real-stanyan/gearbox/blob/master/docs/gearbox-adr/0001-adr-template.md) (gearbox-install init, upstream sha256:c8d5cb7c3a05)
+- Provenance: backfilled from [gearbox ADR-0001](https://github.com/real-stanyan/gearbox/blob/master/docs/gearbox-adr/0001-adr-template.md) (gearbox-update tool sync, upstream sha256:2dcdac796b24)
+- Issue: #<issue>
 - Status: accepted | superseded by ADR-XXXX
+
+> Copy this file to start an ADR. In a project repo, name the copy `docs/adr/<issue>-<slug>.md` after the issue that settles the decision and title it `# ADR-<issue>: …` (ADR-0052); in the Gearbox repo, a protocol ADR takes the next number.
 
 ## Context
 

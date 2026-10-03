@@ -48,7 +48,7 @@ jobs:
           git config user.email "gearbox-sync-bot@users.noreply.github.com"
       - name: Run gearbox-update
         if: steps.guard.outputs.skip == 'false'
-        run: npx -y gearbox-agents@latest update --refresh-drift
+        run: npx -y gearbox-agents@2 update --refresh-drift
       - name: Open the backfill PR
         if: steps.guard.outputs.skip == 'false'
         env:

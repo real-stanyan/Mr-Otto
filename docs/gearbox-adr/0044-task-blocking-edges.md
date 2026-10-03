@@ -1,8 +1,8 @@
 # ADR-0044: Task issues declare blocking edges; shifts claim the frontier only
 
 - Date: 2026-07-23
-- Provenance: copied from [gearbox ADR-0044](https://github.com/real-stanyan/gearbox/blob/master/docs/gearbox-adr/0044-task-blocking-edges.md) (gearbox-install init, upstream sha256:00a2d3506cf2)
-- Status: accepted
+- Provenance: backfilled from [gearbox ADR-0044](https://github.com/real-stanyan/gearbox/blob/master/docs/gearbox-adr/0044-task-blocking-edges.md) (gearbox-update tool sync, upstream sha256:12687c4a5e4b)
+- Status: accepted; amended by ADR-0054 (a `Waiting on:` line also keeps a Task off the frontier)
 - Related: ADR-0003 (issue roles), ADR-0005 (handoff lives in an open issue)
 
 ## Context

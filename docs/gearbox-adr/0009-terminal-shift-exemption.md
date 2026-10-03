@@ -1,8 +1,8 @@
 # ADR-0009: Terminal shift ending can be exempted from the handoff issue — but must explicitly declare "no next shift"
 
 - Date: 2026-07-17
-- Provenance: copied from [gearbox ADR-0009](https://github.com/real-stanyan/gearbox/blob/master/docs/gearbox-adr/0009-terminal-shift-exemption.md) (gearbox-install init, upstream sha256:c8111e8ec59a)
-- Status: accepted
+- Provenance: backfilled from [gearbox ADR-0009](https://github.com/real-stanyan/gearbox/blob/master/docs/gearbox-adr/0009-terminal-shift-exemption.md) (gearbox-update tool sync, upstream sha256:263d083cf62f)
+- Status: superseded by ADR-0054 (no terminal declaration: no open handoff means nothing is in flight)
 - Revises: ADR-0005 (does not overturn its body, adds a boundary clause)
 
 ## Context
