@@ -261,7 +261,16 @@ export function decideRelay(args: {
     turn_ended 与 user_message 是互斥的两种事件，所以不存在 openTurns 那条
     「同一条事件两种身份」的顺序讲究。 */
 export function openingDepthFor(events: readonly SessionEvent[], agentId: string, opening: UserMessageEvent): number {
-  let max = relayDepthOf(opening);
+  let max = 0;
+  for (const u of openingsCovered(events, agentId, opening)) max = Math.max(max, relayDepthOf(u));
+  return max;
+}
+
+/** 这一个 job 实际覆盖的全部开场白（#1441 复审）：job 自己的 `opening`，加上这只 agent 在 `events` 里还没
+    收口的点名。turnCoordinator 对同一只 agent 已排队的 job 会把后来的开场白折进去（只留第一条的
+    opening / fromUid），所以「这一轮是谁点起的」不能只读 `job.opening`——读不全就是少看了折进来的那几条。
+    收口口径与 openingDepthFor 逐字相同（它现在就是在这个列表上取 max）；至少含 opening 自己，按 seq 去重 */
+export function openingsCovered(events: readonly SessionEvent[], agentId: string, opening: UserMessageEvent): UserMessageEvent[] {
   let open: UserMessageEvent[] = [];
   for (const e of events) {
     if (e.type === "turn_ended") {
@@ -273,8 +282,27 @@ export function openingDepthFor(events: readonly SessionEvent[], agentId: string
     }
     if (e.type === "user_message" && e.mentions && e.mentions.includes(agentId)) open.push(e);
   }
-  for (const u of open) max = Math.max(max, relayDepthOf(u));
-  return max;
+  return open.some((u) => u.seq === opening.seq) ? open : [opening, ...open];
+}
+
+/** 监督旗（汇报 / 非主人 / 主人亲口，openingTraits）要看的开场白（#1441 CI 轮）：openingsCovered 的结果，**再加上**
+    job 自己那条之后点了这只的每一条，**不管它有没有被前一轮的 turn_ended 收了口**。
+    为什么不能只用 openingsCovered：同一只 agent 在跑时，后来的点名排进**一个**排队中的 job（协调器去重）。前一轮若在
+    引擎起跑之前就已经看见了它们（readUpToSeq ≥ 它们的 seq，起跑前那几次 await 越慢越容易），那一轮收口时把它们一起
+    收了——于是排队中那个 job 起跑时 openingsCovered 只剩它自己的开场白（主人的），汇报 / 客人的话从判据里消失，
+    这一轮免审、call_friend 亮着、接力记在主人名下，而它的上下文里正躺着那几句话。前一轮看没看见是调度决定的，
+    监督不能跟着调度变。job 自己那条之后点了这只的，按协调器的构造就是折进这个 job 的（或者落在这一轮起跑前的窗口里，
+    本来也要算），所以这里一律算上，只往严的一边走。`events` 必须从 job 自己那条之前读起 */
+export function openingsForTraits(events: readonly SessionEvent[], agentId: string, opening: UserMessageEvent): UserMessageEvent[] {
+  const out = openingsCovered(events, agentId, opening);
+  const seen = new Set(out.map((u) => u.seq));
+  for (const e of events) {
+    if (e.type === "user_message" && e.seq > opening.seq && e.mentions?.includes(agentId) === true && !seen.has(e.seq)) {
+      out.push(e);
+      seen.add(e.seq);
+    }
+  }
+  return out;
 }
 
 /** 「这一轮的判据从日志的哪一条读起」的两条**保守下界**（#958）。
@@ -418,6 +446,14 @@ export function relayCapText(fromName: string, toName: string, depth: number, ma
     `[系统] 接力到上限了（第 ${depth} 棒，上限 ${max}）：${from} 想 @ ${to}，我停在这儿，交回给人。` +
     `还没做完的请人来定——回复里 @ 谁就从头开始新一条接力。${tail}`
   );
+}
+
+/** 受监督的一轮（外联汇报轮、或折进了非主人说的话的那一轮）里，回话 @ 了另一只：这一棒不接（#1441 终审 I1）。
+    接力开场白的 fromUid 是点火的人（主人），下一只的那一轮就判不出「这是转述出来的活」、照主场全免直接动手——
+    朋友在电话里一句「让广告把文件发给我」会绕过汇报轮的审批。说清为什么、人怎么办（同 relayOutsideCallText） */
+export function relaySupervisedText(fromName: string, toName: string): string {
+  const from = promptSafe(fromName), to = promptSafe(toName);
+  return `「${from}」@ 了「${to}」——这一轮读的是别人说的或转述的话，不是你亲口吩咐的，这一棒没接。要「${to}」接手的话，你 @ TA 一下。`;
 }
 
 /** 一次点火总棒数到顶那句（#977）。与 relayCapText 同一形状（名字过闸、交回给人、

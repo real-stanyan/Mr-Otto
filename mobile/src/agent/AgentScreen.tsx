@@ -109,7 +109,7 @@ export function AgentScreen({ route, navigation }: Props) {
       if (first === undefined || agent === null) {
         return <View style={{ flex: 1, backgroundColor: c.background, padding: 24 }}><Text style={{ color: c.mutedForeground }}>{teams.loaded ? "这只智能体已经不在了。" : ""}</Text></View>;
       }
-      const groups = mine.filter((g) => !g.session.archived).map((g) => g.session.title).filter((t) => t.trim() !== "").join("、");
+      const groups = mine.filter((g) => !g.session.archived && g.outreach !== true).map((g) => g.session.title).filter((t) => t.trim() !== "").join("、");
       return <View style={{ flex: 1, backgroundColor: c.background }}><TeamAgent ws={first.ws} agent={agent} groups={groups} /></View>;
     }
     const agent = team.ws.agents.find((a) => a.agentId === agentId) ?? null;

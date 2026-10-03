@@ -155,6 +155,7 @@ export const PRIVACY_VERDICTS: Record<SessionEvent["type"], PrivacyVerdict> = {
   voice_call_changed: "strip", // 语音通话名单是那个团队会话的控制面状态，不是这段对话的内容（#1163）
   chat_roster_changed: "strip", // 聊天名单是那条聊天的控制面状态，不是这段对话的内容（#1280，同 voice_call_changed）
   executor_changed: "strip", // 哪台设备在跑是发送方这个人的私事，不是这段对话（#1223）
+  outreach: "strip", // 外联（#1441）：带着朋友的 uid 与整段对话转写，是发送方私事
   call_ring: "strip", // 谁给谁打过电话、锁屏上那句话：带着接电话那个人的 uid 与一句私人的话，不是这段对话（#1411）
   // 残留审计三兄弟（#780 M3）：说的全是发送方那台机器此刻在跑什么，见上面那段注释
   residue_baseline: "strip",

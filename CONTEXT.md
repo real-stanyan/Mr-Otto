@@ -172,6 +172,7 @@ Domain glossary. All agents' understanding of domain terms is grounded here; cod
 
 - **决策模型（ADR-0299）**：不生成文字的那一类模型（今天只有 Jev）：收 `state` + 一组类型化问题（`noul` 是/否、`choice` 多选一、`score` 打分），一次前向回类型化答案 + **校准概率**。在 Otto 里只用来给五处分类器做**前置判断**（派活 / Auto / 重命名 / 语音断句 / 记忆分档），今天那条 LLM 路永远是兜底；**只许加严不许放行**，审批与各种闸一处都不接。三端共用的纯层在 `src/shared/decision.ts`，只经 edge 网关的 `/llm/v1/decision`（`model_route.kind='decision'`）。
 - **影子模式（shadow，ADR-0299）**：决策模型分处开关的中间一档（没列 / `shadow` / `on`）。今天那条路说了算，决策模型并行问一次、**不等它**，回来之后记一行 `[decision] {json}` 对照日志（一致率与校准都从它 grep）。存在的理由是中文校准只能在生产上量；一处从 `shadow` 翻到 `on` 是一个一行 PR，正文贴那一处的数据。
+- **外联会话（outreach，ADR-0337）**：主人个人主场里一条 `chat_kind='outreach'` 的云会话，名单恒为「一只智能体 + 一位好友」、每对一条永久复用，是智能体被派去给好友打电话的地方：没有工具、不注入记忆，好友只在有一通外联进行时能说话；好友的收件箱里显示为「<主人> 的 <智能体>」，主人的收件箱不列，要看转写走原聊天里的 `outreach` 事件。
 
 ## Key invariants
 

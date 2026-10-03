@@ -23,6 +23,7 @@ import { MAX_GRANT_QUANTITY } from "./billing.js";
 import type { Caller } from "./llmGateway.js";
 import { AGENT_HEADER, ON_BEHALF_HEADER, SESSION_HEADER, WORKSPACE_HEADER, type BillingMe, type PlanId, type WorkspaceUsage } from "../../../src/shared/billing.js";
 import { WORKSPACE_ID_RE } from "./usageAttribution.js";
+import { SPEECH_TICKET_HEADER, verifySpeechTicket } from "../../../src/shared/speechTicket.js";
 
 export interface EdgeConfig {
   /** Supabase 的 HS256 JWT secret(验客户端令牌) */
@@ -510,8 +511,18 @@ export function createEdge(deps: EdgeDeps): (req: Request) => Promise<Response> 
     if (pathname === "/llm/v1/chat/completions" || pathname === "/llm/v1/images" || pathname === "/llm/v1/speech" || pathname === "/llm/v1/decision") {
       if (!deps.llm) return apiError(404, "这个服务没开托管网关", "llm_disabled");
       if (req.method !== "POST") return apiError(405, "只收 POST", "method_not_allowed");
-      const caller = await callerOf(req);
+      let caller = await callerOf(req);
       if (caller instanceof Response) return caller;
+      // 语音合成的票（#1441）：好友听主人的智能体说话，钱记主人。只认 speech、只认真人身份——
+      // 平台身份有 on-behalf-of 那条路；让 chat 也认票就是给了好友一条烧主人额度跑模型的路。
+      // 任何一环不成立都静默退回记调用者自己：票是「可以替你付」的凭证，不是准入条件，
+      // 验不过去不该让好友连自己的语音都听不了。没配 runtime 口令就不验（空口令 importKey 会抛），
+      // 验票本身抛了也同样当作不认
+      const rawTicket = req.headers.get(SPEECH_TICKET_HEADER);
+      if (rawTicket !== null && caller.source === "desktop" && pathname === "/llm/v1/speech" && config.runtimeSecret) {
+        const t = await verifySpeechTicket(rawTicket, config.runtimeSecret, caller.uid, now()).catch(() => null);
+        if (t !== null) caller = { ...caller, uid: t.ownerUid, workspaceId: t.workspaceId, sessionId: t.sessionId };
+      }
       return deps.llm(req, caller);
     }
     if (pathname.startsWith("/billing/v1/")) return billingRoute(req, pathname);

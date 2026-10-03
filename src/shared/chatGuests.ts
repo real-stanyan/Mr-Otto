@@ -28,6 +28,9 @@ export interface GuestChat {
   ws: WorkspaceSnapshot;
   session: CloudSessionRow;
   last: SessionLast | null;
+  /** 这一条是智能体给我打电话的外联会话（#1441，`chat_kind = 'outreach'`），不是一个群。我是它唯一的客人。
+      列表上画成「<主人> 的 <智能体>」一行、不进「群聊」那一页；缺席 = 普通的群 */
+  outreach?: true;
 }
 
 /** 名字的兜底：profiles 里没起名 / 查不到时写 uid 前 8 位——界面上总得有个字，编一个名字出来更坏 */
@@ -87,7 +90,7 @@ export function guestAgentRow(r: { agent_id: unknown; name: unknown; description
 export function assembleGuestChat(o: {
   row: {
     id: string; workspace_id: string; publisher_uid: string; title: string; archived: boolean; updated_at: string;
-    agent_ids?: unknown; last_ts?: unknown; last_excerpt?: unknown; last_from?: unknown;
+    agent_ids?: unknown; last_ts?: unknown; last_excerpt?: unknown; last_from?: unknown; chat_kind?: unknown;
   };
   agents: readonly WorkspaceAgentRow[];
   humans: readonly ChatPerson[];
@@ -125,6 +128,7 @@ export function assembleGuestChat(o: {
       humans: [...o.humans],
     },
     last: parseSessionLast(o.row),
+    ...(o.row.chat_kind === "outreach" ? { outreach: true as const } : {}),
   };
 }
 

@@ -42,7 +42,7 @@ export function FriendScreen({ route, navigation }: Props) {
       .flatMap((t) => t.sessions.filter((s) => !s.archived).map((s) => teamChatTitle(t.ws, s))),
     // 我拉 TA 进的群、一起被别人拉进的群（#1393）
     ...home.chats.filter((s) => s.chatKind === "group" && (s.humans ?? []).some((h) => h.uid === uid)).map((s) => s.title),
-    ...teams.guests.filter((g) => !g.session.archived && g.ws.members.some((m) => m.uid === uid)).map((g) => g.session.title),
+    ...teams.guests.filter((g) => !g.session.archived && g.outreach !== true && g.ws.members.some((m) => m.uid === uid)).map((g) => g.session.title),
   ].filter((t) => t.trim() !== "");
   const accepted = row.status === "accepted";
   return (

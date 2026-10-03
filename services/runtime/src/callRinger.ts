@@ -40,8 +40,24 @@ export interface RingerDeps {
   log(m: string): void;
 }
 
+/** 一次拨打的结果：kind 给调用方分支（外联生命周期要按它决定后续），message 是回给模型的那句话 */
+export type RingAttempt =
+  | { kind: "ringing"; ringId: string; message: string }
+  | { kind: "watching" | "cooldown" | "lookup_failed" | "no_device" | "undelivered"; message: string };
+
+export interface RingCallOpts {
+  /** 外联：对方不在这条会话里，「开着聊天」的判断没有意义，照打 */
+  ignoreWatching?: boolean;
+  /** 推送里显示的来电者名字（缺省 = 智能体名）；日志里仍记 agentId */
+  callerName?: string;
+}
+
 export interface Ringer {
-  /** call_user 那把刀：`reason` / `opening` 已经规整过。回给模型的那句话 */
+  /** 结构化版本（#1441）：每种不打各回自己的 kind */
+  tryCall(
+    agentId: string, agentName: string, toUid: string, reason: string, opening: string, o?: RingCallOpts,
+  ): Promise<RingAttempt>;
+  /** call_user 那把刀：`reason` / `opening` 已经规整过。回给模型的那句话（= tryCall 的 message，逐字不变） */
   call(agentId: string, agentName: string, toUid: string, reason: string, opening: string): Promise<string>;
   /** 这个人发了一帧把这只带进通话：它正在给他响铃（或刚记成未接、还在宽限里）就记接通、回那一通 */
   answer(agentId: string, uid: string): RingState | null;
@@ -87,23 +103,26 @@ export function createRinger(d: RingerDeps): Ringer {
       });
     });
 
-  return {
-    async call(agentId, agentName, toUid, reason, opening) {
-      if (d.isWatching(toUid)) return "他这会儿正开着这条聊天，直接在聊天里说就行，不用打电话。";
+  const tryCall: Ringer["tryCall"] = async (agentId, agentName, toUid, reason, opening, o) => {
+      if (o?.ignoreWatching !== true && d.isWatching(toUid)) {
+        return { kind: "watching", message: "他这会儿正开着这条聊天，直接在聊天里说就行，不用打电话。" };
+      }
       const now = d.now();
       const last = lastRingTs(fold, agentId, toUid);
       if (last !== null && now - last < RING_COOLDOWN_MS) {
         const mins = Math.max(1, Math.ceil((now - last) / 60_000));
-        return `你 ${mins} 分钟前刚给他打过电话，10 分钟内不再打——在聊天里说一声，他回来会看到。`;
+        return { kind: "cooldown", message: `你 ${mins} 分钟前刚给他打过电话，10 分钟内不再打——在聊天里说一声，他回来会看到。` };
       }
       let devices: number;
       try {
         devices = await d.deviceCount(toUid);
       } catch (err) {
         d.log(`[otto-runtime] 查推送设备失败（session=${d.sessionId}）：${err instanceof Error ? err.message : String(err)}`);
-        return "这会儿查不到他的手机，电话没打出去——在聊天里说一声，他回来会看到。";
+        return { kind: "lookup_failed", message: "这会儿查不到他的手机，电话没打出去——在聊天里说一声，他回来会看到。" };
       }
-      if (devices === 0) return "他的手机上还没有能接电话的新版 App（或者还没在手机上登录），打不了电话——在聊天里说一声，他回来会看到。";
+      if (devices === 0) {
+        return { kind: "no_device", message: "他的手机上还没有能接电话的新版 App（或者还没在手机上登录），打不了电话——在聊天里说一声，他回来会看到。" };
+      }
       const at = d.now();
       const ring: RingState = {
         ringId: randomUUID(), fromAgentId: agentId, toUid, reason, opening,
@@ -112,7 +131,7 @@ export function createRinger(d: RingerDeps): Ringer {
       log(ring, "ringing");
       arm(ring.ringId, RING_TTL_MS);
       const push: RingPush = {
-        ringId: ring.ringId, workspaceId: d.workspaceId, sessionId: d.sessionId, agentId, agentName,
+        ringId: ring.ringId, workspaceId: d.workspaceId, sessionId: d.sessionId, agentId, agentName: o?.callerName ?? agentName,
         reason, opening, chat: d.chatKindFor(toUid), expiresTs: ring.expiresTs,
       };
       const sent = d.push(toUid, push).catch((err: unknown) => {
@@ -126,9 +145,16 @@ export function createRinger(d: RingerDeps): Ringer {
           disarm(ring.ringId);
           log(r, "missed");
         }
-        return "没打通（推送没送到）——在聊天里说一声，他回来会看到。";
+        return { kind: "undelivered", message: "没打通（推送没送到）——在聊天里说一声，他回来会看到。" };
       }
-      return "已经打过去了。他接起来你会先开口；45 秒没接就算未接，他回来会在聊天里看到。";
+      return { kind: "ringing", ringId: ring.ringId, message: "已经打过去了。他接起来你会先开口；45 秒没接就算未接，他回来会在聊天里看到。" };
+  };
+
+  return {
+    tryCall,
+    // 不用 this：对象字面量里的方法可能被解构后单独传，具名函数互调才稳
+    async call(agentId, agentName, toUid, reason, opening) {
+      return (await tryCall(agentId, agentName, toUid, reason, opening)).message;
     },
     answer(agentId, uid) {
       const r = answerableRing(fold, agentId, uid, d.now());

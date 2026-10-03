@@ -42,7 +42,10 @@ import { createSupabaseAgentWriter, type WorkspaceAgentWriter } from "./agentReg
 import { normalizeAgentTools } from "../../../src/shared/agentToolAllow.js";
 import { safeSpeakerLabel } from "../../../src/shared/promptSafe.js";
 import type { PxCallDeps } from "./pxTools.js";
-import { createHostedProbe, createHostedRuntimeAdapter, createRouteMemo, probeModelRoute, withUsage, type RouteMemo } from "./hostedRoute.js";
+import { createHostedProbe, createHostedRuntimeAdapter, createRouteMemo, decideRuntimeRoute, probeModelRoute, withUsage, type RouteMemo } from "./hostedRoute.js";
+import { createOutreachHub } from "./outreachHub.js";
+import { agentOutreachActive, blockedMessage, countAgentOutreach, ensureOutreachSession, openOriginRoom } from "./outreachSession.js";
+import { signSpeechTicket } from "../../../src/shared/speechTicket.js";
 import { pickAutoModel } from "./autoModel.js";
 import { requestDispatchAsOwner } from "./dispatch.js";
 import { decisionModelOf, modeOf } from "../../../src/shared/decision.js";
@@ -64,6 +67,7 @@ import { createWsTransport } from "../../../src/shared/remote/wsTransport.js";
 import { ADMIN_AGENT_ID, normalizeSandboxApproval, type SandboxApproval } from "../../../src/shared/workspaceAgents.js";
 import { findModel } from "../../../src/shared/modelCatalog.js";
 import type { RemoteTransport } from "../../../src/shared/remote/transport.js";
+import { liveOr } from "./roomOnce.js";
 
 /** 镜像 sandbox.ts 的同名私有常量（未导出，故在此复制一份——两处改动需同步）。
     只在启动时「对所有在跑的沙箱容器补 markActive」这一步用到（T8 复审 Minor，
@@ -497,6 +501,124 @@ async function main(): Promise<void> {
     return svc;
   }
 
+  /** 把一条已经存在的会话房接上（外联的原会话 / 外联会话本身关着时用）：与启动补开同两步——
+      问 workspaceFacts 拿所有者与 kind，再 openSessionRoom。归档的判断留给调用方 */
+  async function openExistingRoom(workspaceId: string, sessionId: string, createdByUid: string): Promise<CloudSession> {
+    // openSessionRoom 不幂等（每次都起新 transport、装配新 CloudSession、覆盖 activeSessions）：已开着就用现成的
+    const live = activeSessions.get(sessionId)?.session;
+    if (live) return live;
+    const facts = await workspaceFacts(workspaceId);
+    return openSessionRoom(workspaceId, sessionId, facts.ownerUid, createdByUid, facts.kind === "home");
+  }
+
+  /** 日志里已经归档的会话：摘掉刚开的房（启动补开与外联开原会话共用同一套收摊） */
+  function discardRoom(sessionId: string): void {
+    closeRoom.get(sessionId)?.();
+    closeRoom.delete(sessionId);
+    activeSessions.delete(sessionId);
+    sessionBroadcast.delete(sessionId);
+  }
+
+  /** 一只智能体在这个团队里的所有外联会话 + 各自的 outreach 事件：上限（countSince）与「同一时刻只打一通」（activeFor）
+      读同一条路径。查询失败抛——「查不出来」不能读成「一通都没打」 */
+  function agentOutreachLogs(workspaceId: string) {
+    return {
+      sessionIds: async (w: string, a: string): Promise<string[]> => {
+        const { data, error } = await supabase
+          .from("workspace_sessions")
+          .select("id")
+          .eq("workspace_id", w)
+          .eq("chat_kind", "outreach")
+          .contains("agent_ids", [a]);
+        if (error) throw new Error(`外联会话查询失败（${w}）：${error.message}`);
+        return ((data ?? []) as { id: string }[]).map((r) => r.id);
+      },
+      outreachEvents: (id: string) => storeFor(workspaceId).ofType(id, "outreach"),
+    };
+  }
+
+  /** 外联（#1441）：agent 替主人给好友打电话。判断都在 outreachHub / outreachSession（进得了 vitest），
+      这里只是把它们接上真数据源。推送关着（apns === null）= 没有这个 hub，刀也就不挂 */
+  const outreachHub =
+    apns === null
+      ? null
+      : createOutreachHub({
+          // 好友名单：accepted 的全部行，对方 uid 再取名字。查询失败一律抛——「查不出来」不能读成「没有好友」
+          friendsOf: async (ownerUid) => {
+            const { data, error } = await supabase
+              .from("friendships")
+              .select("requester,addressee")
+              .eq("status", "accepted")
+              .or(`requester.eq.${ownerUid},addressee.eq.${ownerUid}`);
+            if (error) throw new Error(error.message);
+            const uids = [...friendSetOf(ownerUid, (data ?? []) as { requester: string; addressee: string }[])];
+            return Promise.all(uids.map(async (uid) => ({ uid, name: await labelOf(uid) })));
+          },
+          deviceCount: (uid) => apns.deviceCount(uid),
+          // 额度：与 welcome 用的同一只探针、同一份 decideRuntimeRoute；只有 blocked 才回话
+          ownerBlocked: async (workspaceId, ownerUid) =>
+            blockedMessage(
+              decideRuntimeRoute({
+                me: await hostedProbe.me(ownerUid), requestedModels: [], ownerUid, workspaceId, sessionId: "",
+                edgeBase: config.edgeBase, runtimeSecret: config.runtimeSecret,
+              }),
+            ),
+          countSince: (workspaceId, agentId, since) => countAgentOutreach(agentOutreachLogs(workspaceId), workspaceId, agentId, since),
+          // 一只同一时刻只打一通（终审 M2）：与上限同一条数据路径，只是问「有没有没收尾的」
+          activeFor: (workspaceId, agentId) => agentOutreachActive(agentOutreachLogs(workspaceId), workspaceId, agentId),
+          ensureSession: (workspaceId, ownerUid, ownerName, agent, peer) =>
+            ensureOutreachSession<CloudSession>(
+              {
+                find: async (w, a, peerUid) => {
+                  const { data, error } = await supabase
+                    .from("workspace_sessions")
+                    .select("id")
+                    .eq("workspace_id", w)
+                    .eq("chat_kind", "outreach")
+                    .eq("peer_uid", peerUid)
+                    .contains("agent_ids", [a])
+                    .maybeSingle();
+                  if (error) throw new Error(`外联会话查询失败（${w}）：${error.message}`);
+                  return data ? (data as { id: string }).id : null;
+                },
+                insert: async (row) => {
+                  const { error } = await supabase.from("workspace_sessions").insert(row);
+                  return error ? { code: error.code, message: error.message } : null;
+                },
+                append: (e) => void storeFor(workspaceId).append(e),
+                hasSeed: (id) => storeFor(workspaceId).lastOfType(id, "session_created") !== null,
+                active: (id) => activeSessions.get(id)?.session ?? null,
+                open: (id) => openSessionRoom(workspaceId, id, ownerUid, ownerUid, true),
+                syncGuests: syncGuestRows,
+                newId: randomUUID,
+                now: Date.now,
+                workdir: WORKDIR,
+              },
+              { workspaceId, ownerUid, ownerName, agent, peer },
+            ),
+          origin: (workspaceId, sessionId) =>
+            openOriginRoom<CloudSession>(
+              {
+                active: (id) => activeSessions.get(id)?.session ?? null,
+                row: async (id) => {
+                  const { data, error } = await supabase.from("workspace_sessions").select("workspace_id,publisher_uid,archived").eq("id", id).maybeSingle();
+                  if (error) throw new Error(error.message);
+                  if (!data) return null;
+                  const r = data as { workspace_id: string; publisher_uid: string; archived: boolean };
+                  return { workspace_id: r.workspace_id, archived: r.archived, publisherUid: r.publisher_uid };
+                },
+                open: (w, id, publisherUid) => openExistingRoom(w, id, publisherUid),
+                discard: discardRoom,
+              },
+              workspaceId, sessionId,
+            ),
+          agentName: async (workspaceId, agentId) => (await agentsCache.get(workspaceId)).find((a) => a.agentId === agentId)?.name ?? agentId,
+          labelOf,
+          newId: randomUUID,
+          now: Date.now,
+          log: (m) => console.warn(`[otto-runtime] ${m}`),
+        });
+
   /** 开一条会话房：起 transport、装配 CloudSession、接好扇出与 cid 清理。
       调用时机两处——create 流程（新会话）与启动时把存量 kind='cloud' 会话
       的房间重新接上（不然重启后没人监听那个 channel，desktop 的 join 会
@@ -508,6 +630,21 @@ async function main(): Promise<void> {
     createdByUid: string,
     /** 个人主场：审批门前一律放行（#1280，ADR-0298）。两个调用方都已经 await 过
         workspaceFacts，所以这一格与写进 session_created.cloud.home 的那一格同源 */
+    approveAll: boolean
+  ): CloudSession {
+    // **幂等**（#1441 终审 I2）：已经开着就用现成的。放在这里而不是只放在启动补开那一圈：调用方好几处，
+    // 启动补开、外联开原聊天 / 外联会话都可能在同一段启动窗口里碰上同一条会话，守在入口一处就够、
+    // 下一个新调用方也不用再记得先查。同一条会话的所有者与 kind 不会变，现成那间房的装配参数就是这次要的
+    return liveOr(activeSessions.get(sessionId)?.session, () =>
+      assembleSessionRoom(workspaceId, sessionId, ownerUid, createdByUid, approveAll)
+    );
+  }
+
+  function assembleSessionRoom(
+    workspaceId: string,
+    sessionId: string,
+    ownerUid: string,
+    createdByUid: string,
     approveAll: boolean
   ): CloudSession {
     const store = storeFor(workspaceId);
@@ -826,6 +963,15 @@ async function main(): Promise<void> {
       diskUsage: () => sandbox.diskUsage(workspaceId),
       // 回电（#1411）：推送关着 = null（刀不出现）。isWatching = 这个房间里有没有他的连接——手机切后台会
       // 主动断开会话房（mobile/src/cloud/cloudClient.ts），所以「连着」就是「开着这条聊天」
+      // 外联（#1441）：收尾时把结果汇报回原聊天、call_friend 那把刀的出口。推送关着 = 没有 hub = 两样都是 null；
+      // 刀只挂在主场（home）——approveAll 与 session_created.cloud.home 同源
+      onOutreachEnded: outreachHub === null ? null : (r) => void outreachHub.ended(workspaceId, ownerUid, r),
+      outreach:
+        outreachHub === null || !approveAll
+          ? null
+          : { dispatch: (o) => outreachHub.dispatch({ ...o, workspaceId, ownerUid }) },
+      // 给打给好友的那条线签语音票（#1441）：好友听到的 TTS 记在主人账上，edge 用同一把 RUNTIME_SECRET 验
+      signSpeechTicket: (t) => signSpeechTicket(t, config.runtimeSecret),
       callback:
         apns === null
           ? null
@@ -1377,10 +1523,7 @@ async function main(): Promise<void> {
         // 日志播种，第二次一律回 false）。日志里有 session_archived 就当场
         // 收摊，顺便把那一列补上；补不上也不重试，下次启动还会走到这里
         if (session.isArchived()) {
-          closeRoom.get(row.id)?.();
-          closeRoom.delete(row.id);
-          activeSessions.delete(row.id);
-          sessionBroadcast.delete(row.id);
+          discardRoom(row.id);
           const { error: fixErr } = await supabase
             .from("workspace_sessions")
             .update({ archived: true })

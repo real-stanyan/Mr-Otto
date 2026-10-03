@@ -14,6 +14,7 @@ import {
   relayLineText, stopButtonRows, systemNoteText, turnEndedLineText, userRowIdentity, voiceCallCards, type RosterLinePart, type VoiceCallCard,
 } from "./cloudTimeline.js";
 import { callTopicText } from "./mobileCall.js";
+import { outreachDurationText, outreachFoldOf, outreachRowText, type OutreachLine, type OutreachState } from "./outreach.js";
 import type { FaceState } from "./ottoFace/index.js";
 import type { CsChatInfo } from "./remote/cloudSession.js";
 import type { CloudSessionRow } from "./supabaseWorkspacesApi.js";
@@ -89,6 +90,13 @@ export type ChatRow =
   /** 还没人批的一张审批卡（#1386：团队群里有审批，ADR-0231）。`canDecide` = 我是发起这一轮的人或群主
       （同 cloudSessionClient 转给审批层的那道判据）；否则只写「等 X 批」。主场的群里（#1393）只有群主批得了：
       客人点起的那一轮动的是群主的东西 */
+  /** 智能体替主人给朋友打的一通电话（#1441）：一次外联一行，在 `started` 的位置，状态取这个 outreachId 最后一条。
+      私聊里画成它那一侧的气泡（`view.text`），群里是居中灰条（`groupText`）；`card` = 点开看转写的那张（接通过且
+      带转写时才有，其余不可点） */
+  | {
+    kind: "outreach"; key: string; ts: number; outreachId: string; agentId: string; name: string; peerName: string;
+    view: OutreachRowView; groupText: string; card: VoiceCallCard | null;
+  }
   | {
     kind: "approval"; key: string; ts: number; callId: string; title: string;
     fields: { label: string; value: string }[]; summary: string; canDecide: boolean; waitingFor: string;
@@ -167,6 +175,8 @@ export function chatRows(o: {
     if (card !== undefined) ringCall.set(e.ringId, card);
   }
   const mergedCalls = new Set([...ringCall.values()].map((c) => c.seq));
+  // 外联（#1441）：状态要看这一通后面的事件，同回电那样在循环外先折一遍
+  const outreaches = outreachFoldOf(o.events);
   const requests = new Map<string, ApprovalRequestEvent>();
   const decided = new Set<string>();
   for (const e of o.events) {
@@ -181,6 +191,22 @@ export function chatRows(o: {
       continue;
     }
     if (calls.folded.has(e.seq)) continue;
+    // 外联同样要在 rowOf 之前认出来（桌面把它整条藏了）。只在 `started` 的位置画一行；`ended` 不单独成行，
+    // 而只有 `ended` 落在窗内（尾巴模式裁掉了开头）时 fold 里没有这一通，那就一行都不画——说不清是谁打给谁
+    if (e.type === "outreach") {
+      // 带 originSessionId 的是外联会话那份（指回原聊天；原聊天那份由 outreachHub 落、从不带它）。好友在这条线上
+      // 看到的是铃声记录与通话卡，再画一行「打给 小红 · …」就是把主人那一侧的记录摆到被打的人面前（终审 M3）
+      if (e.originSessionId !== undefined) continue;
+      const st = e.phase === "started" ? outreaches.get(e.outreachId) : undefined;
+      if (st !== undefined) {
+        const name = agentNameOf(o.ws, st.fromAgentId);
+        items.push({
+          kind: "outreach", key: `outreach-${e.outreachId}`, ts: e.ts, outreachId: e.outreachId, agentId: st.fromAgentId, name,
+          peerName: st.peerName, view: outreachRowView(st), groupText: outreachGroupText(name, st), card: outreachCard(e.seq, st, name),
+        });
+      }
+      continue;
+    }
     // 要在 rowOf 之前认出来：rowOf 先问 hiddenFromCloudTimeline，而桌面把 call_ring 整条藏了
     if (e.type === "call_ring") {
       const r = rings.get(e.ringId);
@@ -257,8 +283,11 @@ export interface RingRecordView {
 /** 来电记录那一行怎么说（#1411，维护者看过 demo 选的微信式通话记录）。私聊里挂在它那一侧、只说状态（是谁，头像已经说了）；
     群里是居中灰条，要带上是谁打给谁。能点的在句末说一声（「点一下接」「点一下回拨」）：微信不说，但回拨在这里是新加的，
     不说就没人知道它能点 */
-export function ringRecordView(row: Extract<ChatRow, { kind: "ring" }>, group: boolean): RingRecordView {
-  const tap: RingTap | null = row.call !== null ? "open" : !row.toMe ? null : row.status === "ringing" ? "answer" : row.status === "missed" ? "callback" : null;
+export function ringRecordView(row: Extract<ChatRow, { kind: "ring" }>, group: boolean, opts: { noCallback?: boolean } = {}): RingRecordView {
+  // 外联会话里（#1441）好友不能回拨：一期只有智能体打给他（spec §13），未接的只看不点
+  const tap: RingTap | null = row.call !== null
+    ? "open"
+    : !row.toMe ? null : row.status === "ringing" ? "answer" : row.status === "missed" && opts.noCallback !== true ? "callback" : null;
   const tone: RingRecordView["tone"] = row.call !== null ? "plain" : row.status === "missed" ? "missed" : row.status === "ringing" ? "ringing" : "plain";
   const icon: RingRecordView["icon"] = tone === "missed" ? "phone-missed" : tone === "ringing" ? "phone-incoming" : "phone";
   const dur = row.call !== null && row.call.endedTs !== null ? callOffsetText(row.call.endedTs - row.call.sinceTs) : null;
@@ -275,6 +304,51 @@ export function ringRecordView(row: Extract<ChatRow, { kind: "ring" }>, group: b
     ? `${who} · ${RING_STATUS_TEXT[row.status]}`
     : dur === null ? `${who} · 通话中` : `${talk} ${dur} · ${row.call.utterances} 句`;
   return { icon, tone, line: base + hint, tap };
+}
+
+// ── 外联（#1441） ──
+
+export interface OutreachRowView {
+  text: string;
+  /** live = 正在打；done = 接通过；missed = 没接 / 没打通（同一个红，demo 定的） */
+  tone: "live" | "done" | "missed";
+  /** 接通过才有（点开看转写）；其余 null */
+  transcript: OutreachLine[] | null;
+}
+
+/** 原聊天里那一行怎么说（私聊里挂在智能体那一侧的气泡文案；文字判据在 outreach.ts 的 outreachRowText，一处） */
+export function outreachRowView(s: OutreachState): OutreachRowView {
+  const done = s.phase === "ended" && s.durationMs !== null;
+  return { text: outreachRowText(s), tone: s.phase === "started" ? "live" : done ? "done" : "missed", transcript: done ? s.transcript : null };
+}
+
+/** 群里那一行（居中灰条）：群里每个人都看得到，要带上是谁打给谁 */
+export function outreachGroupText(agentName: string, s: OutreachState): string {
+  if (s.phase === "started") return `${agentName} 正在打给 ${s.peerName}`;
+  const tail = s.durationMs !== null ? `通话 ${outreachDurationText(s.durationMs)}` : s.outcome === "missed" ? "未接" : "没打通";
+  return `${agentName} 打给了 ${s.peerName} · ${tail}`;
+}
+
+/** 点开看转写的那张卡：复用通话卡那扇抽屉（CallSheet 吃 VoiceCallCard）。每句的时刻是相对第一句的 mm:ss；
+    没有转写（没接通 / 旧日志）回 null——那一行就不可点 */
+export function outreachCard(seq: number, s: OutreachState, agentName: string): VoiceCallCard | null {
+  if (s.phase !== "ended" || s.durationMs === null || s.transcript === null) return null;
+  const first = s.transcript[0]?.ts ?? s.startedTs;
+  const lines = s.transcript.map((l, i) => ({
+    seq: i, parts: null, label: l.who === "agent" ? agentName : s.peerName, avatar: null, offsetMs: Math.max(0, l.ts - first), text: l.text, mine: false,
+  }));
+  return {
+    seq, sinceTs: s.startedTs, endedTs: s.startedTs + s.durationMs, utterances: lines.length,
+    parties: [{ name: agentName, avatar: null }, { name: s.peerName, avatar: null }], lines,
+  };
+}
+
+/** 外联会话的输入栏（#1441）：这是智能体打电话的地方，好友不在这里打字（一期不能主动打给它，spec §13），主人只读。
+    其它聊天照旧。种子（welcome 之前）里没有 `outreach` 那一格时也认得出是外联——只是不知道主人叫什么，不编名字 */
+export function outreachComposer(chat: CsChatInfo | null, isOwner: boolean): { kind: "normal" } | { kind: "note"; text: string } {
+  if (chat === null || chat.kind !== "outreach") return { kind: "normal" };
+  if (isOwner) return { kind: "note", text: "这是你的智能体给朋友打电话的地方，只能看" };
+  return { kind: "note", text: chat.outreach !== undefined ? `这是 ${chat.outreach.ownerName} 的智能体给你打电话的地方` : "这是朋友的智能体给你打电话的地方" };
 }
 
 /** 正在写的那一段（流式碎片，协议 16）：累计快照按空行拆，画成它的一行。终态落盘时

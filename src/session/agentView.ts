@@ -111,6 +111,8 @@ const OTHER_AGENT_VERDICTS: Record<SessionEvent["type"], OtherAgentVerdict> = {
   // 穷尽表）。写 keep 不写 drop：这张表根本轮不到它，写 drop 是一句不成立的话。模型看不看得见
   // 由 deriveMessages 决定（它不投影这条）
   call_ring: "keep",
+  // 外联（#1441）：同 call_ring，故意叫 fromAgentId，这张表轮不到它，仍要表态
+  outreach: "keep",
   background_task_started: "drop",
   background_task_completed: "drop",
   image_described: "drop",

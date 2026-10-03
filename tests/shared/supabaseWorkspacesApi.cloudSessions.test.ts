@@ -23,7 +23,11 @@
 
 import { describe, it, expect } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { groupRows, rosterRows } from "../../src/shared/agentRoster.js";
 import { listCloudSessions } from "../../src/shared/supabaseWorkspacesApi.js";
+import { groupList, inboxRows } from "../../src/shared/wechatInbox.js";
+import { cloudSessionRows } from "../../src/shared/workspaceView.js";
+import type { WorkspaceSnapshot } from "../../src/shared/workspaces.js";
 
 type Canned = { data?: unknown; error?: { message: string; code?: string } | null };
 
@@ -156,5 +160,43 @@ describe("listCloudSessions 的 chat_kind / agent_ids（#1280）", () => {
     const row = (await listCloudSessions(client, "w1"))[0]!;
     expect(row.chatKind).toBe("group");
     expect(row.agentIds).toEqual([]);
+  });
+});
+
+// ── 外联会话（#1441）：主人的主场里它是一条 chat_kind='outreach' 的行 ──────────────
+describe("listCloudSessions 认得 outreach，主人的列表一律不列它", () => {
+  const OUT = { id: "os1", publisher_uid: "u1", title: "", archived: false, updated_at: TS_A };
+  const DM = { id: "dm1", publisher_uid: "u1", title: "", archived: false, updated_at: TS_A };
+  const chats = { data: [
+    { id: "os1", chat_kind: "outreach", agent_ids: ["a_000000000002"] },
+    { id: "dm1", chat_kind: "dm", agent_ids: ["a_000000000001"] },
+  ] };
+
+  it("原始行走真映射：chatKind = outreach（不再落成 null = 团队会话）", async () => {
+    const rows = await listCloudSessions(fakeClient({ data: [OUT, DM] }, { data: [] }, [], chats), "home");
+    expect(rows.find((r) => r.id === "os1")).toMatchObject({ chatKind: "outreach", agentIds: ["a_000000000002"] });
+    expect(rows.find((r) => r.id === "os1")!.chatKind).not.toBeNull();
+  });
+
+  it("桌面：名册 / 群 / 云会话列表都没有它；主场不会被当成团队会话", async () => {
+    const rows = await listCloudSessions(fakeClient({ data: [OUT, DM] }, { data: [] }, [], chats), "home");
+    const ws = { id: "home", name: "", ownerUid: "u1", kind: "home", sandboxApproval: "ask", members: [{ uid: "u1", role: "owner", label: "Stan", avatarUrl: "" }], connectors: [], sessions: [],
+      agents: [{ agentId: "a_000000000001", name: "文案" }, { agentId: "a_000000000002", name: "运维" }].map((a) => ({ ...a, description: "", instructions: "", models: [], tools: [], createdBy: "u1", updatedTs: 0, avatarSlot: null })) } as unknown as WorkspaceSnapshot;
+    expect(rosterRows(ws, rows).map((r) => [r.agentId, r.sessionId])).toEqual([["a_000000000001", "dm1"], ["a_000000000002", null]]);
+    expect(groupRows(ws, rows)).toEqual([]);
+    expect(cloudSessionRows(rows, ws).map((r) => r.id)).toEqual(["dm1"]);
+  });
+
+  it("手机：收件箱（主场那一支 / 当团队会话列的那一支）与群聊页都没有它", async () => {
+    const rows = await listCloudSessions(fakeClient({ data: [OUT, DM] }, { data: [] }, [], chats), "home");
+    const ws = { id: "home", name: "", ownerUid: "u1", kind: "home", sandboxApproval: "ask", members: [{ uid: "u1", role: "owner", label: "Stan", avatarUrl: "" }], connectors: [], sessions: [], agents: [] } as unknown as WorkspaceSnapshot;
+    const lasts = new Map();
+    const base = { selfUid: "u1", friends: [], mentions: [], seen: null, openKey: null, guests: [] };
+    // 主场那一支
+    expect(inboxRows({ ...base, home: { ws, chats: rows, lasts }, teams: [] }).map((r) => r.key)).not.toContain("o:os1");
+    expect(inboxRows({ ...base, home: { ws, chats: rows, lasts }, teams: [] }).some((r) => r.key.endsWith("os1"))).toBe(false);
+    // 万一它混进某个团队的清单（当团队会话列）：显式跳过，不靠 chatKind 落成 null
+    expect(inboxRows({ ...base, home: null, teams: [{ ws, sessions: rows, lasts }] }).some((r) => r.key === "t:os1")).toBe(false);
+    expect(groupList({ selfUid: "u1", home: null, teams: [{ ws, sessions: rows, lasts }] }).some((g) => g.key === "t:os1")).toBe(false);
   });
 });

@@ -78,6 +78,16 @@ describe("assembleGuestChat（客人那一侧的一条群）", () => {
     owner: { uid: OWNER, name: "Stan", avatarUrl: "data:o" },
   });
 
+  it("chat_kind = outreach 的行带 outreach 记号（#1441），普通群不带", () => {
+    const mk = (kind?: string) => assembleGuestChat({
+      row: { id: "s9", workspace_id: "w", publisher_uid: OWNER, title: "", archived: false, updated_at: "2026-09-28T00:00:00Z", agent_ids: ["a_1"], ...(kind !== undefined ? { chat_kind: kind } : {}) },
+      agents: [agent("a_1", "文案")], humans: [{ uid: U1, name: "小红", avatarUrl: "" }], owner: { uid: OWNER, name: "Stan", avatarUrl: "" },
+    });
+    expect(mk("outreach").outreach).toBe(true);
+    expect(mk("group").outreach).toBeUndefined();
+    expect("outreach" in mk()).toBe(false);
+  });
+
   it("快照说的是群主的主场：审批只有群主批得了（mobileChat 的 ownerOnly 读 kind）", () => {
     expect(isHomeWorkspace(chat.ws)).toBe(true);
     expect(chat.ws.ownerUid).toBe(OWNER);

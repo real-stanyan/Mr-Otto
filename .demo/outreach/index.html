@@ -1,0 +1,238 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>外联通话 · 手机五处 demo</title>
+<style>
+:root{
+  --ground:#efece3;--surface:#f7f5ef;--raised:#e5e1d3;--hover:rgba(0,0,0,.045);--press:rgba(0,0,0,.08);
+  --fg:#000;--fg-2:rgba(0,0,0,.55);--fg-3:rgba(0,0,0,.4);--line:rgba(0,0,0,.12);--line-2:rgba(0,0,0,.07);
+  --field:rgba(0,0,0,.055);--brand:#4a70a9;--bubble-them:#e5e1d3;--bubble-me:color-mix(in srgb,#4a70a9 18%,#f7f5ef);
+  --danger:#c92a2a;--ok:#2b8a3e;--voice:#2f94a6;--face-disc:#f2f2f3;--scrim:rgba(0,0,0,.28);
+  --ease:cubic-bezier(.23,1,.32,1);--ease-ios:cubic-bezier(.32,.72,0,1);
+  --font:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+  color-scheme:light;
+}
+:root[data-theme=dark]{
+  --ground:#000;--surface:#1d1d1f;--raised:#2c2c2e;--hover:rgba(245,245,247,.05);--press:rgba(245,245,247,.09);
+  --fg:#f5f5f7;--fg-2:rgba(245,245,247,.56);--fg-3:rgba(245,245,247,.38);--line:rgba(245,245,247,.12);--line-2:rgba(245,245,247,.07);
+  --field:rgba(245,245,247,.08);--brand:#0a84ff;--bubble-them:#2c2c2e;--bubble-me:color-mix(in srgb,#0a84ff 18%,#1d1d1f);
+  --danger:#ff453a;--ok:#30d158;--scrim:rgba(0,0,0,.5);color-scheme:dark;
+}
+*{box-sizing:border-box;margin:0}
+body{font-family:var(--font);background:var(--ground);color:var(--fg);font-size:14px;-webkit-font-smoothing:antialiased}
+button{font:inherit;color:inherit;background:none;border:0;cursor:pointer}
+.top{position:sticky;top:0;z-index:5;display:flex;align-items:center;gap:12px;padding:12px 24px;background:var(--surface);border-bottom:1px solid var(--line-2)}
+.top h1{font-size:15px;font-weight:600;flex:1}
+.seg{display:inline-flex;background:var(--field);border-radius:8px;padding:2px;gap:2px}
+.seg button{font-size:12px;padding:4px 10px;border-radius:6px;color:var(--fg-2);transition:background-color 150ms var(--ease),color 150ms var(--ease),transform 120ms var(--ease)}
+.seg button:active{transform:scale(.96)}
+.seg button[aria-pressed=true]{background:var(--surface);color:var(--fg);box-shadow:0 1px 2px rgba(0,0,0,.12)}
+.frames{display:flex;flex-wrap:wrap;gap:36px 28px;padding:28px 24px;justify-content:center}
+.col{width:340px;display:flex;flex-direction:column;gap:10px}
+.cap{display:flex;flex-direction:column;gap:6px}
+.cap b{font-size:13px}
+.cap small{color:var(--fg-2);font-size:12px;line-height:1.5}
+/* 手机 */
+.phone{position:relative;width:340px;height:640px;border-radius:38px;background:var(--surface);border:1px solid var(--line);box-shadow:0 12px 32px rgba(40,32,12,.16);overflow:hidden;display:flex;flex-direction:column}
+.sbar{height:40px;flex:none;display:flex;align-items:flex-end;justify-content:space-between;padding:0 28px 6px;font-size:13px;font-weight:600}
+.hdr{flex:none;height:44px;display:flex;align-items:center;padding:0 8px;border-bottom:1px solid var(--line-2);position:relative}
+.hdr .back{width:36px;height:36px;display:grid;place-items:center;color:var(--brand)}
+.hdr .ttl{position:absolute;left:0;right:0;text-align:center;font-weight:600;font-size:16px;pointer-events:none}
+.tabs{flex:none;height:56px;display:flex;border-top:1px solid var(--line-2);background:var(--surface)}
+.tabs div{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;font-size:10px;color:var(--fg-3)}
+.tabs div.on{color:var(--brand)}
+.list{flex:1;overflow:auto}
+.irow{display:flex;gap:12px;align-items:center;padding:10px 14px;border-bottom:1px solid var(--line-2);transition:background-color 150ms var(--ease)}
+.irow.hot{cursor:pointer}.irow.hot:active{background:var(--press)}
+.irow .mid{flex:1;min-width:0}
+.irow .n{font-size:16px;line-height:22px}
+.irow .s{font-size:13px;color:var(--fg-2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;display:flex;gap:4px;align-items:center}
+.irow .s.red{color:var(--danger)}.irow .s.ring{color:var(--voice)}
+.irow .t{font-size:12px;color:var(--fg-3);align-self:flex-start;margin-top:4px}
+.face{flex:none;border-radius:50%;background:var(--face-disc);display:grid;place-items:center;overflow:hidden}
+.face svg{display:block}
+.pl{width:44px;height:44px;border-radius:50%;display:grid;place-items:center;color:#fff;font-weight:600;font-size:16px;flex:none}
+/* 聊天 */
+.chat{flex:1;overflow:auto;padding:12px 0;display:flex;flex-direction:column;gap:12px}
+.time{align-self:center;font-size:12px;color:var(--fg-3)}
+.msg{display:flex;align-items:flex-start;gap:10px;padding:0 12px}
+.msg.me{justify-content:flex-end}
+.bub{max-width:76%;padding:9px 12px;border-radius:12px;font-size:16px;line-height:24px;background:var(--bubble-them);word-break:break-word}
+.msg:not(.me) .bub{border-top-left-radius:4px}
+.msg.me .bub{background:var(--bubble-me);border-top-right-radius:4px}
+.ring{display:flex;flex-direction:column;gap:3px;text-align:left;transition:opacity 150ms var(--ease),transform 120ms var(--ease)}
+.ring.tap{cursor:pointer}.ring.tap:active{opacity:.8;transform:scale(.985)}
+.ring .l1{display:flex;gap:8px;align-items:center}
+.ring .l2{font-size:14px;line-height:20px;color:var(--fg-2)}
+.ring.red .l1 svg{color:var(--danger)}.ring.live .l1 svg{color:var(--voice)}
+.ring .go{color:var(--brand)}
+.pill{align-self:center;max-width:80%;padding:3px 10px;border-radius:6px;background:var(--hover);font-size:12px;line-height:18px;color:var(--fg-2);text-align:center;display:flex;gap:4px;align-items:center;justify-content:center;flex-wrap:wrap}
+.pill.tap{cursor:pointer}.pill.tap:active{opacity:.6}
+.pill.red{color:var(--danger)}
+.quiet{flex:none;min-height:56px;display:grid;place-items:center;border-top:1px solid var(--line-2);font-size:13px;color:var(--fg-3);padding:0 20px;text-align:center}
+.composer{flex:none;height:56px;border-top:1px solid var(--line-2);display:flex;gap:8px;align-items:center;padding:0 10px}
+.composer div{flex:1;height:36px;border-radius:18px;background:var(--field);display:flex;align-items:center;padding:0 14px;color:var(--fg-3)}
+.dots{display:inline-flex;gap:3px}.dots i{width:5px;height:5px;border-radius:50%;background:var(--voice);animation:b 1.2s infinite var(--ease)}
+.dots i:nth-child(2){animation-delay:.15s}.dots i:nth-child(3){animation-delay:.3s}
+@keyframes b{0%,60%,100%{opacity:.3}30%{opacity:1}}
+/* 抽屉 */
+.scrim{position:absolute;inset:0;background:var(--scrim);opacity:0;pointer-events:none;transition:opacity 200ms var(--ease)}
+.sheet{position:absolute;left:0;right:0;bottom:0;max-height:78%;background:var(--surface);border-radius:20px 20px 0 0;transform:translateY(100%);transition:transform 260ms var(--ease-ios);display:flex;flex-direction:column}
+.open .scrim{opacity:1;pointer-events:auto}.open .sheet{transform:none}
+.sheet .grab{width:36px;height:4px;border-radius:2px;background:var(--line);margin:8px auto 4px}
+.sheet h4{font-size:15px;text-align:center;padding:6px 16px 2px}
+.sheet .sub{font-size:12px;color:var(--fg-3);text-align:center;padding-bottom:8px;border-bottom:1px solid var(--line-2)}
+.script{overflow:auto;padding:12px 16px 24px;display:flex;flex-direction:column;gap:10px}
+.script p{display:grid;grid-template-columns:38px 1fr;gap:6px;font-size:14px;line-height:21px}
+.script p span{color:var(--fg-3);font-size:12px;font-variant-numeric:tabular-nums;padding-top:1px}
+.script b{font-weight:600}
+.script em{font-style:normal;color:var(--fg-2)}
+.toast{position:absolute;left:50%;top:92px;transform:translate(-50%,-8px);background:var(--fg);color:var(--surface);font-size:12px;padding:6px 12px;border-radius:999px;opacity:0;transition:opacity 180ms var(--ease),transform 180ms var(--ease);pointer-events:none;white-space:nowrap;z-index:4}
+.toast.on{opacity:1;transform:translate(-50%,0)}
+/* 来电（系统来电，两个主题下都是深色，故意不跟主题） */
+.call{background:linear-gradient(#2a3140,#10131a);color:#fff;border:1px solid #000;align-items:center;text-align:center}
+.call .sbar{color:#fff}
+.call .who{margin-top:70px;display:flex;flex-direction:column;align-items:center;gap:6px;padding:0 24px}
+.call .who .nm{font-size:30px;font-weight:300;margin-top:14px}
+.call .who .st{font-size:15px;color:rgba(255,255,255,.65)}
+.call .who .op{font-size:14px;color:rgba(255,255,255,.55);margin-top:14px;line-height:21px;max-width:250px}
+.call .btns{margin-top:auto;margin-bottom:84px;display:flex;gap:90px}
+.call .btns button{display:flex;flex-direction:column;align-items:center;gap:8px;font-size:13px;color:#fff}
+.call .btns i{width:68px;height:68px;border-radius:50%;display:grid;place-items:center;transition:transform 120ms var(--ease)}
+.call .btns button:active i{transform:scale(.94)}
+.call .rej i{background:#ff453a}.call .acc i{background:#30d158}
+.call .face{background:#f2f2f3}
+.note{max-width:1100px;margin:0 auto;padding:8px 24px 60px;color:var(--fg-2);line-height:1.7}
+.note h2{font-size:14px;color:var(--fg);margin-bottom:6px}
+.note li{margin-left:18px}
+@media (prefers-reduced-motion:reduce){.sheet,.scrim,.toast{transition-duration:1ms}.dots i{animation:none}}
+</style>
+</head>
+<body>
+<div class="top"><h1>外联通话 · 手机五处（#1441，静态状态 demo）</h1>
+  <div class="seg" id="theme"><button data-v="light" aria-pressed="true">浅色</button><button data-v="dark" aria-pressed="false">深色</button></div></div>
+<div class="frames" id="frames"></div>
+<div class="note">
+<h2>与实现的差别（demo 里只是模拟的部分）</h2>
+<ul>
+<li>像素脸是 11×10 的占位小脸，不是真的 <code>ottoFace</code>；真实现用 <code>AgentFace</code>，通话中那一刻不会动（名册与列表一律静止）。</li>
+<li>来电屏是 CallKit 样子的模拟：真实现由 iOS 系统画，我们只能控制名字（「Stan 的 运维」）和铃声，副标题是否显示「开场白第一句」取决于 CallKit 的 <code>localizedCallerName</code>/<code>handle</code>，真机要验；demo 把它画在名字下面只是表达意图。</li>
+<li>时间、转写文字、第几句、mm:ss 偏移都是写死的样例；真实现的转写来自日志里的 <code>outreach{ended}</code>（封顶 20000 字），时长来自 <code>endedTs - sinceTs</code>。</li>
+<li>「接」「点开转写」是 demo 里的轻提示；真实现点「接」走现有的接听路径（<code>callAgent</code>），转写抽屉与通话卡的抽屉同一个组件。</li>
+<li>「汇报」气泡的措辞（未接 / 没打通那两句）是示意，真文案由智能体按那一轮的结果自己说，不是写死的。</li>
+<li>好友页的「未接来电」按 §13 一期不能回拨，所以不可点、没有「点一下回拨」提示；主人侧的未接行也不可点（只有打通了才有转写可看）。</li>
+<li>抽屉用的是底部抽屉（与现有通话卡一致）；表单类才用居中弹窗，这里没有表单。</li>
+<li>没做：主人收件箱不列外联会话（demo 里 A 是好友侧，所以有这一行）；桌面不画（#1403）。</li>
+<li>动效只有抽屉滑入、按压缩放与提示淡入，全部 ≤260ms 并在 <code>prefers-reduced-motion</code> 下近似瞬切；真实现的原生手势（下拉关闭抽屉）demo 里只能点遮罩关闭。</li>
+</ul></div>
+<script>
+const $=(s,e=document)=>e.querySelector(s);
+const ICON={
+ phone:'<path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .4 1.9.7 2.8a2 2 0 0 1-.5 2.1L8.1 9.9a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.8.7a2 2 0 0 1 1.7 2Z"/>',
+ 'phone-incoming':'<path d="M16 2v6h6"/><path d="m22 2-6 6"/><path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .4 1.9.7 2.8a2 2 0 0 1-.5 2.1L8.1 9.9a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.8.7a2 2 0 0 1 1.7 2Z"/>',
+ 'phone-missed':'<path d="m16 2 6 6"/><path d="m22 2-6 6"/><path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .4 1.9.7 2.8a2 2 0 0 1-.5 2.1L8.1 9.9a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.8.7a2 2 0 0 1 1.7 2Z"/>',
+ 'phone-off':'<path d="M10.7 13.3a16 16 0 0 0 3.2 2.4l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.8.7a2 2 0 0 1 1.7 2v3a2 2 0 0 1-2.2 2A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1 1 .4 1.9.7 2.8a2 2 0 0 1-.5 2.1"/><path d="m2 2 20 20"/>',
+ back:'<path d="m15 18-6-6 6-6"/>',chat:'<path d="M7.9 20A9 9 0 1 0 4 16.1L2 22Z"/>',users:'<path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.9"/><path d="M16 3.1a4 4 0 0 1 0 7.8"/>',user:'<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>'};
+const ic=(n,s=16)=>`<svg width="${s}" height="${s}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${ICON[n]}</svg>`;
+/* 占位像素脸：11×10 格 */
+function face(size,hue){
+  const g=['..#######..','.#########.','###########','##.##.##.##','##.##.##.##','###########','####...####','.####.####.','..#######..','...#####...'];
+  const skin=`hsl(${hue} 30% 55%)`;let r='';
+  g.forEach((row,y)=>[...row].forEach((c,x)=>{if(c==='#')r+=`<rect x="${x}" y="${y}" width="1" height="1" fill="${skin}"/>`;}));
+  r+=[[3,3],[4,3],[3,4],[4,4],[6,3],[7,3],[6,4],[7,4]].map(([x,y])=>`<rect x="${x}" y="${y}" width="1" height="1" fill="#0a0a0b"/>`).join('');
+  const s=size*.74;
+  return `<span class="face" style="width:${size}px;height:${size}px"><svg width="${s}" height="${s*10/11}" viewBox="0 0 11 10" shape-rendering="crispEdges">${r}</svg></span>`;
+}
+const AG=(s=44)=>face(s,205);
+const sbar=(c='')=>`<div class="sbar ${c}"><span>9:41</span><span>5G ▮▮▮</span></div>`;
+const OPEN='Stan 想确认一下周五你来不来';
+const SCRIPT=[['00:02','运维','你好小红，我是 Stan 的智能体运维，他让我问问你周五来不来。'],['00:09','小红','哦，周五啊，我看看……可以的。'],['00:14','运维','好，大概几点到？'],['00:18','小红','七点吧，我下班直接过去。'],['00:25','运维','收到，我转告 Stan。还需要带什么吗？'],['00:31','小红','不用，我带瓶酒就行。'],['00:36','运维','好的，谢谢你，打扰了。'],['00:39','小红','没事，拜拜。']];
+const sheetHTML=`<div class="scrim" data-close></div><div class="sheet"><div class="grab"></div><h4>通话转写</h4><div class="sub">运维 与 小红 · 03:12 · 8 句</div><div class="script">${SCRIPT.map(([t,w,x])=>`<p><span>${t}</span><div><b>${w}：</b>${x}</div></p>`).join('')}<p><span></span><em>—— 通话结束 03:12 ——</em></p></div></div>`;
+
+/* 每个 frame：state -> html。toast 通过 ctx.toast 触发 */
+const FR=[
+ {id:'A',title:'A · 小红的收件箱',note:'聊天 tab 里的一行：名字「Stan 的 运维」，第二行是最近一通的状态。',
+  states:[['ring','正在响'],['done','通话 03:12'],['miss','未接来电']],def:'done',
+  html(s){
+   const l2={ring:`<span class="ring">${ic('phone-incoming',13)}</span>来电 · 正在响`,done:`${ic('phone',13)}通话 03:12`,miss:`${ic('phone-missed',13)}[未接来电]`}[s];
+   const cls={ring:'ring',done:'',miss:'red'}[s];
+   const o=(n,t,x,h)=>`<div class="irow"><span class="pl" style="background:hsl(${h} 35% 55%)">${n[0]}</span><div class="mid"><div class="n">${n}</div><div class="s">${t}</div></div><span class="t">${x}</span></div>`;
+   return `${sbar()}<div class="hdr"><span class="ttl">聊天</span></div><div class="list">
+     <div class="irow hot" data-go="B">${AG()}<div class="mid"><div class="n">Stan 的 运维</div><div class="s ${cls}">${l2}</div></div><span class="t">${s==='ring'?'刚刚':'18:42'}</span></div>
+     ${o('老王','周末爬山去吗','17:05',20)}${o('读书小组','林: 下周读第三章','昨天',150)}${o('妈妈','[语音]','周二',330)}${o('设计群','图我晚点发','周一',260)}</div>
+     <div class="tabs"><div class="on">${ic('chat',22)}聊天</div><div>${ic('users',22)}通讯录</div><div>${ic('user',22)}我</div></div>`;}},
+ {id:'B',title:'B · 小红与「Stan 的 运维」的聊天',note:'通话记录在智能体那一侧；只有「正在响」与「通话时长」可点。输入栏换成一行说明，头部没有电话钮。',
+  states:[['ring','正在响'],['miss','未接来电'],['done','通话时长']],def:'ring',
+  html(s){
+   const line={ring:'来电 · 正在响 · <span class="go">点一下接</span>',miss:'未接来电',done:'通话时长 03:12'}[s];
+   const icn={ring:'phone-incoming',miss:'phone-missed',done:'phone'}[s];
+   const tap=s!=='miss';
+   return `${sbar()}<div class="hdr"><button class="back" data-go="A">${ic('back',22)}</button><span class="ttl">Stan 的 运维</span></div>
+    <div class="chat"><div class="time">18:42</div>
+     <div class="msg">${AG(36)}<div class="bub ring ${tap?'tap':''} ${s==='miss'?'red':s==='ring'?'live':''}" ${tap?`data-act="${s==='ring'?'answer':'open'}"`:''}>
+        <div class="l1">${ic(icn,16)}<span>${line}</span></div><div class="l2">${OPEN}</div></div></div></div>
+    <div class="quiet">这是 Stan 的智能体给你打电话的地方</div><div class="sheetwrap">${sheetHTML}</div>`;}},
+ {id:'C',title:'C · 小红看到的系统来电',note:'名字就是「Stan 的 运维」；副标题放开场白第一句。系统界面，深浅色下一样。',
+  states:[['in','响铃'],['on','接听后']],def:'in',
+  html(s){
+   return `${sbar()}<div class="who">${AG(88)}<div class="nm">Stan 的 运维</div>${s==='in'?`<div class="st">Otto 语音来电…</div><div class="op">“${OPEN}”</div>`:`<div class="st">00:03</div><div class="op">通话中</div>`}</div>
+    <div class="btns">${s==='in'?`<button class="rej" data-s="on-end"><i>${ic('phone-off',28)}</i>拒绝</button><button class="acc" data-s="on"><i>${ic('phone',28)}</i>接听</button>`:`<button class="rej" data-s="in"><i>${ic('phone-off',28)}</i>挂断</button>`}</div>`;},cls:'call'},
+ {id:'D',title:'D · Stan 与运维的私聊',note:'主人原聊天里的外联行，四种状态；点「通话」那行打开转写抽屉。',
+  states:[['live','正在打'],['done','通话 03:12'],['miss','未接'],['fail','没打通']],def:'done',
+  html(s){
+   const line={live:'正在打给 小红',done:'打给 小红 · 通话 03:12',miss:'打给 小红 · 未接',fail:'打给 小红 · 没打通'}[s];
+   const icn={live:'phone',done:'phone',miss:'phone-missed',fail:'phone-off'}[s];
+   const l2={live:'<span class="dots"><i></i><i></i><i></i></span> 通话中',done:'8 句 · 点开看转写',miss:'响了 45 秒没人接',fail:'小红那边连不上'}[s];
+   const sum={done:'小红说周五可以，七点到。',miss:'小红没接电话，要不要我晚点再打一次？',fail:'没打通，小红那边好像还没装手机端。要不要换个方式通知她？'}[s];
+   return `${sbar()}<div class="hdr"><button class="back">${ic('back',22)}</button><span class="ttl">运维</span></div>
+    <div class="chat"><div class="time">18:38</div>
+     <div class="msg me"><div class="bub">去问问小红周五来不来</div></div>
+     <div class="msg">${AG(36)}<div class="bub">打过去了，聊完告诉你</div></div>
+     <div class="msg">${AG(36)}<div class="bub ring ${s==='done'?'tap':''} ${s==='miss'||s==='fail'?'red':s==='live'?'live':''}" ${s==='done'?'data-act="open"':''}>
+        <div class="l1">${ic(icn,16)}<span>${line}</span></div><div class="l2">${l2}</div></div></div>
+     ${sum?`<div class="msg">${AG(36)}<div class="bub">${sum}</div></div>`:''}</div>
+    <div class="composer"><div>说点什么…</div></div><div class="sheetwrap">${sheetHTML}</div>`;}},
+ {id:'E',title:'E · 同一行出现在群聊里',note:'群里是居中灰条，第二行是交代的由头；未接那行用危险色，打通了才可点。',
+  states:[['done','通话 03:12'],['miss','未接']],def:'done',
+  html(s){
+   const t=s==='done'?'运维 打给了 小红 · 通话 03:12':'运维 打给了 小红 · 未接';
+   return `${sbar()}<div class="hdr"><button class="back">${ic('back',22)}</button><span class="ttl">周五聚餐（4）</span></div>
+    <div class="chat"><div class="time">18:38</div>
+     <div class="msg me"><div class="bub">运维，问问小红周五来不来</div></div>
+     <div class="msg">${AG(36)}<div class="bub">好，我打给她</div></div>
+     <div class="pill ${s==='miss'?'red':''} ${s==='done'?'tap':''}" ${s==='done'?'data-act="open"':''}><span style="display:inline-flex;gap:4px;align-items:center">${ic(s==='miss'?'phone-missed':'phone',12)}${t}</span><span style="flex-basis:100%">问问她周五来不来</span></div>
+     ${s==='done'?`<div class="msg">${AG(36)}<div class="bub">小红说周五可以，七点到。</div></div>`:''}</div>
+    <div class="composer"><div>说点什么…</div></div><div class="sheetwrap">${sheetHTML}</div>`;}}
+];
+const root=$('#frames'),st={};
+FR.forEach(f=>{st[f.id]=f.def;
+ const col=document.createElement('div');col.className='col';col.id='f'+f.id;
+ col.innerHTML=`<div class="cap"><b>${f.title}</b><small>${f.note}</small></div><div class="seg" data-seg>${f.states.map(([k,n])=>`<button data-st="${k}">${n}</button>`).join('')}</div><div class="phone ${f.cls||''}"></div>`;
+ root.append(col);});
+function render(id){
+ const f=FR.find(x=>x.id===id),col=$('#f'+id),ph=$('.phone',col);
+ ph.innerHTML=f.html(st[id])+'<div class="toast"></div>';
+ [...$('[data-seg]',col).children].forEach(b=>b.setAttribute('aria-pressed',String(b.dataset.st===st[id])));
+}
+FR.forEach(f=>render(f.id));
+function toast(ph,t){const e=$('.toast',ph);e.textContent=t;e.classList.add('on');clearTimeout(e._t);e._t=setTimeout(()=>e.classList.remove('on'),1600);}
+document.addEventListener('click',e=>{
+ const col=e.target.closest('.col');
+ const th=e.target.closest('#theme button');
+ if(th){document.documentElement.dataset.theme=th.dataset.v;[...th.parentNode.children].forEach(b=>b.setAttribute('aria-pressed',String(b===th)));return;}
+ if(!col)return;const id=col.id.slice(1),ph=$('.phone',col);
+ const sb=e.target.closest('[data-st]');
+ if(sb){st[id]=sb.dataset.st;render(id);return;}
+ const s=e.target.closest('[data-s]');
+ if(s){const v=s.dataset.s;if(v==='on-end'){toast(ph,'已拒绝（演示：回到响铃）');return;}st[id]=v;render(id);return;}
+ if(e.target.closest('[data-close]')){$('.sheetwrap',ph).classList.remove('open');return;}
+ const a=e.target.closest('[data-act]');
+ if(a){if(a.dataset.act==='open'){$('.sheetwrap',ph).classList.add('open');}else toast(ph,'接听 → 进入通话');return;}
+ const g=e.target.closest('[data-go]');
+ if(g){const to=g.dataset.go;toast(ph,'→ 去 '+to+'（演示）');return;}
+});
+</script>
+</body>
+</html>

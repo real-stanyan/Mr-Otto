@@ -138,6 +138,12 @@ describe("joinBlockedText：这台为什么接不了", () => {
     expect(joinBlockedText({ ...ok, room: "gone" })).toBe("正在重连这条聊天…");
     expect(joinBlockedText({ ...ok, room: "denied" })).toBe("这条聊天连不上了，接不了电话。");
   });
+  it("外联会话（#1441）：好友自己没订阅 / 没查到也接得了，房间与原生模块的闸照旧", () => {
+    const free = { native: true, room: "ready" as VoiceRoomState, billing: null, billingExempt: true };
+    expect(joinBlockedText(free)).toBeNull();
+    expect(joinBlockedText({ ...free, native: false })).toContain("开发版");
+    expect(joinBlockedText({ ...free, room: "gone" })).toBe("正在重连这条聊天…");
+  });
   it("订阅还没查到 → 说在查（不说没订阅）", () => {
     const pending = joinBlockedText({ ...ok, billing: null });
     expect(pending).toBe("正在查订阅…");

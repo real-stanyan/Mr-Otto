@@ -10,6 +10,8 @@
 // · 团队群：有审批（卡在时间线里，发起人或群主批）；@ 到的人发提醒（memberMentions，ADR-0256）；进来 = 那里面 @ 我的都看过了。
 // · 有朋友的群（#1393）：我主场里的群可以拉朋友进来；别人主场里拉我进去的群也是这一页（target.kind = "guest"）。
 //   客人点起的那一轮要动手时等群主批（审批卡上写「等 X 批」）；客人能拉自己的朋友，智能体归群主管。
+// · 外联会话（#1441，target.kind = "outreach"）：别人的智能体给我打电话的地方。只有来电记录（正在响的能接，未接的只看）
+//   与通话卡，输入栏换成一句说明，没有电话钮 / 按住说话 / @ / 聊天信息。数据与客人那一条路同源（teams.guests）。
 // · 通话：点「语音通话」整屏升起（CallOverlay）；收起回到这里、头部下面一颗胶囊（点它回去）；离开这一页 = 这台停听、
 //   通话还在（A4 原样）。
 // · 已读：这一页开着时列表不给它画未读；离开时游标推到此刻（seenStore）。
@@ -17,7 +19,8 @@ import { useFocusEffect } from "@react-navigation/native";
 import { useHeaderHeight } from "@react-navigation/elements";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { FlatList, KeyboardAvoidingView, Platform, Pressable, Text, View } from "react-native";
+import { FlatList, KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { activityFoldOf } from "../../../src/shared/agentActivity.js";
 import { agentFaceSlot } from "../../../src/shared/agentAvatar.js";
 import { roleChipsAnchor } from "../../../src/shared/agentOnboarding.js";
@@ -29,10 +32,11 @@ import { CHAT_GROUP_CREATE_MIN, CHAT_GROUP_MAX, CHAT_HUMANS_MAX, chatHumansNow, 
 import { cloudDeniedText } from "../../../src/shared/cloudSessionState.js";
 import { withAgent } from "../../../src/shared/groupEdit.js";
 import { callBarMode, callFace, callMicOn, joinBlockedText, phoneOffered, waveMode } from "../../../src/shared/mobileCall.js";
-import { chatCentre, chatRows, liveRows, nowRowOf, resolveChatTarget, type ChatRow, type NowRow } from "../../../src/shared/mobileChat.js";
+import { chatCentre, chatRows, liveRows, nowRowOf, outreachComposer, resolveChatTarget, type ChatRow, type NowRow } from "../../../src/shared/mobileChat.js";
 import { facePhase } from "../../../src/shared/ottoFace/art.js";
 import type { CsChatInfo } from "../../../src/shared/remote/cloudSession.js";
 import { parseMemberMentions, parseMentions } from "../../../src/shared/remote/agentMention.js";
+import { outreachCallerName } from "../../../src/shared/outreach.js";
 import { openTurns } from "../../../src/shared/turnLedger.js";
 import { voiceCallOf } from "../../../src/shared/voiceCall.js";
 import { teamChatTitle } from "../../../src/shared/wechatInbox.js";
@@ -59,7 +63,7 @@ import { Button, Spinner } from "../ui.js";
 import { CallOverlay, CallPill } from "../voice/CallOverlay.js";
 import { CallSheet } from "../voice/CallSheet.js";
 import {
-  dictationUsable, hangUp, joinCall, refreshVoiceBilling, setMic, startCall, startDictation, stopDictation, useVoice, voiceUsable,
+  dictationUsable, hangUp, joinCall, nativeSpeech, refreshVoiceBilling, setMic, startCall, startDictation, stopDictation, useVoice, voiceUsable,
 } from "../voice/voiceStore.js";
 import { FaceTile, GridTile } from "../wx/Avatar.js";
 import { Icon } from "../wx/Icon.js";
@@ -195,12 +199,14 @@ export function ChatScreen({ route, navigation }: Props) {
   const inbox = useInbox();
   const me = useMyName();
   const headerHeight = useHeaderHeight();
+  const insets = useSafeAreaInsets();
   const friends = useFriends();
   const isTeam = target.kind === "team";
   /** 别人主场里拉我进去的群（#1393）：快照只够这一条群用（成员 = 群主 + 客人，智能体 = 群里那几只） */
-  const isGuestChat = target.kind === "guest";
+  const isOutreach = target.kind === "outreach";
+  const isGuestChat = target.kind === "guest" || isOutreach;
   const team = target.kind === "team" ? (teams.teams.find((t) => t.ws.id === target.workspaceId) ?? null) : null;
-  const guest = target.kind === "guest" ? (teams.guests.find((g) => g.ws.id === target.workspaceId && g.session.id === target.sessionId) ?? null) : null;
+  const guest = target.kind === "guest" || target.kind === "outreach" ? (teams.guests.find((g) => g.ws.id === target.workspaceId && g.session.id === target.sessionId) ?? null) : null;
   const baseWs: WorkspaceSnapshot | null = isTeam ? (team?.ws ?? null) : isGuestChat ? (guest?.ws ?? null) : home.home;
   const loaded = isTeam || isGuestChat ? teams.loaded : home.loaded;
 
@@ -211,6 +217,16 @@ export function ChatScreen({ route, navigation }: Props) {
       if (s === undefined) return null;
       const agentIds = narrowRoster(team.ws.agents, s.chatKind === null ? null : s.agentIds).map((a) => a.agentId);
       return { kind: "group", sessionId: s.id, agentIds, title: teamChatTitle(team.ws, s), seed: null };
+    }
+    if (target.kind === "outreach") {
+      if (guest === null) return null;
+      const agentId = guest.session.agentIds[0];
+      const ownerName = guest.ws.members.find((m) => m.uid === guest.ws.ownerUid)?.label ?? "";
+      return {
+        kind: "dm", sessionId: guest.session.id, agentIds: guest.session.agentIds,
+        title: outreachCallerName(ownerName, agentId === undefined ? "" : agentNameOf(guest.ws, agentId)),
+        seed: { kind: "outreach", agentIds: [...guest.session.agentIds], humans: [], outreach: { ownerName, active: false } },
+      };
     }
     if (target.kind === "guest") {
       if (guest === null) return null;
@@ -231,7 +247,8 @@ export function ChatScreen({ route, navigation }: Props) {
     target.kind === "agent" ? `a:${target.agentId}`
       : target.kind === "group" ? `g:${target.sessionId}`
         : target.kind === "guest" ? `j:${target.sessionId}`
-          : `t:${target.sessionId}`;
+          : target.kind === "outreach" ? `o:${target.sessionId}`
+            : `t:${target.sessionId}`;
 
   const [pageNote, setPageNote] = useState<{ text: string; tone: "muted" | "error" } | null>(null);
   const [stopping, setStopping] = useState(false);
@@ -283,7 +300,10 @@ export function ChatScreen({ route, navigation }: Props) {
   }, [isTeam, chatInfo, rosterEvents, dbPeople]);
   // 名字、头像、「等 X 批」都按成员表查：把群里的人补进这一条群用的快照（团队群的成员表本来就全）
   const ws = useMemo(() => (baseWs === null || isTeam ? baseWs : withGuests(baseWs, people)), [baseWs, isTeam, people]);
-  const view = ws !== null && session !== null && session.chat ? chatViewOf(ws, session.chat, rosterEvents, resolved?.title ?? "") : null;
+  // 外联会话（#1441）只有一只智能体、名单不会变：头部那行直接用清单推出来的，不走 chatViewOf（那条把 outreach 当群）
+  const view = isOutreach
+    ? (resolved === null ? null : { kind: "dm" as const, agentIds: resolved.agentIds, title: resolved.title })
+    : ws !== null && session !== null && session.chat ? chatViewOf(ws, session.chat, rosterEvents, resolved?.title ?? "") : null;
   const kind = view?.kind ?? resolved?.kind ?? "dm";
   const agentIds = view?.agentIds ?? resolved?.agentIds ?? [];
   const dmAgent = kind === "dm" ? (agentIds[0] ?? null) : null;
@@ -403,7 +423,8 @@ export function ChatScreen({ route, navigation }: Props) {
   };
 
   // ── 通话 ──
-  const usable = voiceUsable(voice);
+  // 外联会话里好友听的语音记主人的账（票），他自己订没订阅与这通电话无关：只看这台有没有原生语音模块
+  const usable = isOutreach ? nativeSpeech : voiceUsable(voice);
   const listen = voice.listen !== null && session !== null && voice.listen.sessionId === session.sessionId ? voice.listen : null;
   const starting = callOp === "start";
   const barMode = callBarMode({ call, listeningHere: listen !== null, starting });
@@ -436,6 +457,8 @@ export function ChatScreen({ route, navigation }: Props) {
       if (r.kind === "call" && r.card.seq === openCallSeq) return r.card;
       // 回电接通开出来的那一场合在来电记录里（#1411）
       if (r.kind === "ring" && r.call !== null && r.call.seq === openCallSeq) return r.call;
+      // 我的智能体打给朋友的那通（#1441）：转写抽屉与通话卡同一扇
+      if (r.kind === "outreach" && r.card !== null && r.card.seq === openCallSeq) return r.card;
     }
     return null;
   }, [rows, openCallSeq]);
@@ -557,7 +580,7 @@ export function ChatScreen({ route, navigation }: Props) {
   const count = !group ? 0 : isTeam && ws !== null ? ws.members.length + agentIds.length : humans.length + 1 + agentIds.length;
   const status = session?.state === "gone" ? "正在重连…" : nowRow !== null ? PHASE_STATUS[nowRow.phase] : "";
   const others = inbox.unreadChats;
-  const infoOk = resolved !== null && (sessionId !== null || dmAgent !== null);
+  const infoOk = !isOutreach && resolved !== null && (sessionId !== null || dmAgent !== null);
   useLayoutEffect(() => {
     navigation.setOptions({
       headerTitle: () => <ChatTitle title={title} count={count} status={status} />,
@@ -579,6 +602,9 @@ export function ChatScreen({ route, navigation }: Props) {
   });
   const emptyGroup = group && session !== null && agentIds.length === 0 && humans.length === 0;
   const holdOk = dictationUsable(voice) && canSend;
+  // 外联会话（#1441）：输入栏换成一句说明。主人打开这条也只读（同一份说明判据：mobileChat.outreachComposer）
+  const composerPlan = outreachComposer(chatInfo ?? resolved?.seed ?? null, (session?.ownerUid || baseWs?.ownerUid || "") === selfUid && selfUid !== "");
+  const composerNote = composerPlan.kind === "note" ? composerPlan.text : null;
 
   return (
     <View style={{ flex: 1, backgroundColor: c.background }}>
@@ -592,7 +618,11 @@ export function ChatScreen({ route, navigation }: Props) {
             <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}><Spinner /></View>
           ) : centre === "hello" ? (
             <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
-              <Hello ws={ws} kind={kind} agentIds={agentIds} title={title} people={humans.map((h) => ({ uid: h.uid, name: h.name, avatarUrl: h.url }))} />
+              {isOutreach ? (
+                <Text style={{ fontSize: 14, lineHeight: 20, color: c.mutedForeground, textAlign: "center", paddingHorizontal: 32 }}>
+                  {`${title}打来的电话会记在这里。`}
+                </Text>
+              ) : <Hello ws={ws} kind={kind} agentIds={agentIds} title={title} people={humans.map((h) => ({ uid: h.uid, name: h.name, avatarUrl: h.url }))} />}
             </View>
           ) : centre === "blank" ? (
             <View style={{ flex: 1 }} />
@@ -614,6 +644,7 @@ export function ChatScreen({ route, navigation }: Props) {
                     selfName={me.name}
                     selfAvatar={me.avatar}
                     group={group}
+                    outreachChat={isOutreach}
                     deciding={deciding}
                     decideReady={ready}
                     onDecide={(id, d) => void decide(id, d)}
@@ -681,6 +712,11 @@ export function ChatScreen({ route, navigation }: Props) {
           {emptyGroup && centre !== "hello" ? <Line tone="muted">{EMPTY_GROUP_TEXT}</Line> : null}
         </View>
 
+        {composerNote !== null ? (
+          <View style={{ paddingHorizontal: 16, paddingTop: 12, paddingBottom: Math.max(insets.bottom, 12), borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: c.border }}>
+            <Text style={{ fontSize: 13, lineHeight: 18, color: c.mutedForeground, textAlign: "center" }}>{composerNote}</Text>
+          </View>
+        ) : (
         <WxComposer
           ref={composer}
           draftKey={key}
@@ -714,6 +750,7 @@ export function ChatScreen({ route, navigation }: Props) {
             }
             : {})}
         />
+        )}
       </KeyboardAvoidingView>
 
       {ws !== null ? (
@@ -766,7 +803,7 @@ export function ChatScreen({ route, navigation }: Props) {
               micOn={micOn}
               captionsOn={captionsOn}
               captions={{ agent: listen?.text ?? null, me: listen !== null && listen.mic.transcript !== "" ? listen.mic.transcript : null }}
-              joinBlocked={joinBlockedText({ native: true, room: session.state, billing: voice.billing })}
+              joinBlocked={joinBlockedText({ native: true, room: session.state, billing: voice.billing, ...(isOutreach ? { billingExempt: true } : {}) })}
               busy={callOp !== null}
               onMinimize={() => setCallOpen(false)}
               onToggleCaptions={() => setCaptionsOn((v) => !v)}

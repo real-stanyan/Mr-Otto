@@ -4,7 +4,7 @@
 
 import { describe, expect, it } from "vitest";
 import {
-  applyCloudStatus, cloudDeniedText, insertCloudEvent, unknownSendNote, type CloudSessionCore,
+  applyCloudStatus, cloudDeniedText, insertCloudEvent, speechTicketFor, unknownSendNote, type CloudSessionCore,
 } from "../../src/shared/cloudSessionState.js";
 import { CS_PROTOCOL_VERSION } from "../../src/shared/remote/cloudSession.js";
 import type { SessionEvent } from "../../src/session/events.js";
@@ -118,5 +118,15 @@ describe("unknownSendNote", () => {
     expect(unknownSendNote("你好")).toBe("没有收到回执，不确定有没有发出去：你好");
     const long = "字".repeat(41);
     expect(unknownSendNote(long)).toBe(`没有收到回执，不确定有没有发出去：${"字".repeat(40)}…`);
+  });
+});
+
+describe("speechTicketFor：外联语音票绑会话（#1441）", () => {
+  const held = { sessionId: "s1", ticket: "T.sig" };
+  it("同一条会话 → 票；换了会话 → 没有；离开（被清成 null）/ 没开会话 → 没有", () => {
+    expect(speechTicketFor(held, "s1")).toBe("T.sig");
+    expect(speechTicketFor(held, "s2")).toBeUndefined();
+    expect(speechTicketFor(null, "s1")).toBeUndefined();
+    expect(speechTicketFor(held, null)).toBeUndefined();
   });
 });

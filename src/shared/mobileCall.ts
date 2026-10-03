@@ -101,11 +101,16 @@ export function callCardDurationText(card: VoiceCallCard): string {
     扣款没成功（past_due）单独一句：它不是没订阅（ADR-0240），劝人去订阅是指错了路；A5 起手机上有了订阅页，
     两句都指去「账号 → 订阅」（桌面那句指「设置 → 订阅」，手机上的路不一样）；
     额度用完 / 网关不供语音两句照 ttsBlocked 说 */
-export function joinBlockedText(o: { native: boolean; room: VoiceRoomState; billing: BillingSnapshotView | null }): string | null {
+export function joinBlockedText(o: {
+  native: boolean; room: VoiceRoomState; billing: BillingSnapshotView | null;
+  /** 外联会话（#1441）：好友听的语音记主人的账，他自己有没有订阅与这通电话无关——跳过订阅那几句 */
+  billingExempt?: boolean;
+}): string | null {
   if (!o.native) return "这个版本的 app 听不了电话：要装带语音的开发版（Expo Go 不带语音识别）。";
   if (o.room === "denied") return "这条聊天连不上了，接不了电话。";
   if (o.room === "gone") return "正在重连这条聊天…";
   if (o.room === "connecting") return "正在连上这条聊天…";
+  if (o.billingExempt === true) return null;
   if (o.billing === null) return "正在查订阅…";
   if (o.billing.me?.status === "past_due") return "这个账号的订阅扣款没成功：去「账号 → 订阅」更新付款方式，续上之后才打得了电话。";
   const hosted = ttsHostedOf(o.billing);

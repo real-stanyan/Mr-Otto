@@ -343,3 +343,45 @@ describe("有朋友的群（#1393）", () => {
     expect(inboxRows(rest).map((x) => x.key)).toEqual(["g:grp2"]);
   });
 });
+
+describe("外联会话（#1441）", () => {
+  // 我（me）是被打电话的朋友：小红（u_xh）主场里的一条外联会话，里面只有她的一只智能体「运维」
+  const outreachGuest = {
+    ...assembleGuestChat({
+      row: {
+        id: "os1", workspace_id: "home-of-xh", publisher_uid: "u_xh", title: "", archived: false, updated_at: new Date(NOW - 30 * MIN).toISOString(),
+        agent_ids: ["a_x1"], last_ts: new Date(NOW - 5 * MIN).toISOString(), last_excerpt: "周五来吗", last_from: "agent:a_x1",
+      },
+      agents: [agent("a_x1", "运维", { avatarSlot: 3 })],
+      humans: [{ uid: "me", name: "Stan", avatarUrl: "" }],
+      owner: { uid: "u_xh", name: "小红", avatarUrl: "data:xh" },
+    }),
+    outreach: true as const,
+  };
+  const base = { selfUid: "me", home: null, teams: [], guests: [outreachGuest], friends: [], mentions: [] as WorkspaceMentionRow[], seen: SEEN, openKey: null };
+
+  it("好友那一侧：一行，名字「小红 的 运维」，头像是那只的脸，第二行照旧是最后一句", () => {
+    const r = inboxRows(base).find((x) => x.key === "o:os1")!;
+    expect(r.title).toBe("小红 的 运维");
+    expect(r.target).toEqual({ kind: "outreach", workspaceId: "home-of-xh", sessionId: "os1" });
+    expect(r.avatar).toEqual({ kind: "face", id: "a_x1", slot: expect.any(Number) });
+    expect(r.preview).toBe("周五来吗");
+    expect(r.unread).toEqual({ kind: "dot" });
+    expect(filterInbox([r], "运维")).toHaveLength(1);
+  });
+  it("不进「群聊」那一页，也不占 j: 的键", () => {
+    expect(groupList({ selfUid: "me", home: null, teams: [], guests: [outreachGuest] })).toEqual([]);
+    expect(inboxRows(base).some((x) => x.key === "j:os1")).toBe(false);
+  });
+  it("归档了的不列", () => {
+    const archived = { ...outreachGuest, session: { ...outreachGuest.session, archived: true } };
+    expect(inboxRows({ ...base, guests: [archived] })).toEqual([]);
+  });
+  it("主人那一侧：主场清单里那一行 chat_kind 读不成 dm / group，不进列表", () => {
+    const owner = {
+      ...base, selfUid: "u_xh", guests: [],
+      home: { ws: { ...HOME, ownerUid: "u_xh" }, chats: [row({ id: "os1", chatKind: null, agentIds: [] })], lasts: new Map([["os1", last(NOW - MIN, "agent:a_x1", "周五来吗")]]) },
+    };
+    expect(inboxRows(owner).some((x) => x.key.endsWith("os1"))).toBe(false);
+  });
+});

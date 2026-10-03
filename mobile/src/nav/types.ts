@@ -14,10 +14,12 @@ export type HomeTabParams = {
 export type ChatRoute =
   | ChatTarget
   | { kind: "team"; workspaceId: string; sessionId: string }
-  | { kind: "guest"; workspaceId: string; sessionId: string };
+  | { kind: "guest"; workspaceId: string; sessionId: string }
+  /** 别人的智能体给我打电话的外联会话（#1441）：workspaceId 是对方的主场。只有来电记录与一句说明，没有聊天信息页 */
+  | { kind: "outreach"; workspaceId: string; sessionId: string };
 
-/** 聊天信息页：云会话那三种 + 朋友私聊 */
-export type InfoRoute = ChatRoute | { kind: "friend"; uid: string };
+/** 聊天信息页：云会话那三种 + 朋友私聊（外联会话没有） */
+export type InfoRoute = Exclude<ChatRoute, { kind: "outreach" }> | { kind: "friend"; uid: string };
 
 export type RootStackParams = {
   Home: NavigatorScreenParams<HomeTabParams> | undefined;
