@@ -66,7 +66,7 @@
 
 ## 4. 外联会话
 
-- **建**：`create` 不走客户端帧，由 runtime 自己建（复用 `chatCreate.ts`），幂等：先查、接住 23505。建时落
+- **建**：`create` 不走客户端帧，由 runtime 自己建（`services/runtime/src/outreachSession.ts`，不走 `chatCreate.ts`），幂等：先查、接住 23505。建时落
   `session_created{cloud:{home:true, outreach:{ownerName, peerUid, peerName}}}` 与 `chat_roster_changed{agentIds:[a], humans:[peer]}`，
   投影写 `workspace_session_members`。
 - **工具表为空**。`engineFor` 在 `chatKind==='outreach'` 时一把都不挂（含 wiki 两把、`call_user`、`invite_to_call`、`create_agent`、连接器、git）。
@@ -125,7 +125,7 @@
   `exp` = 外联起算 + 15 分钟。重连重发。
 - 手机在这条聊天里合成时带 `x-otto-speech-ticket`。edge 的 `/llm/v1/speech`：验签、没过期、调用者 JWT 的 uid 等于 `peerUid`
   → 额度与 `usage_event` 记 `ownerUid`（带 workspace / session 归因）。任一条不过 → 按没带票处理（记调用者自己）。
-- 验票是纯函数，住 `services/edge/src/speechTicket.ts`，进 vitest；签票住 `src/shared/speechTicket.ts` 的同一份编码。
+- 签票与验票是同一个纯模块 `src/shared/speechTicket.ts`（`signSpeechTicket` / `verifySpeechTicket`），进 vitest；edge 在 `services/edge/src/edge.ts` 里调验票那一半。
 - 主人自己进去听 → 没有票，记自己。
 
 ## 8. 协议与库
@@ -180,10 +180,11 @@
 
 - **好友必须装了 Otto 手机端且开了来电权限**；通话目前只在开发版里有（ADR-0320）。
 - **票在 15 分钟内能合成任意文字**，记主人的账。封顶靠过期时间与网关的并发上限，没做按票的字数预算。
-- **人设（agent 的 instructions）仍然进提示词**：主人在里面写的私事，好友可能套得出来。记忆不进，人设挡不住。
+- **人设（agent 的 instructions）原文到得了好友的客户端**：它进外联会话的 `agent_briefed.instructions` 与每轮的 `request_envelope.system`，
+  会话房的直播与 backlog 整条日志原样下发，界面不画（与 brief 同一类，见 §14 第 2 条）。主人在里面写的私事，抓包就看得到。记忆不进，人设挡不住。
 - **拒接与没接分不出**（同回电）。
 - **好友不能主动打给这只智能体**，也不能在那条聊天里打字。二期重判。
-- **一只同一时刻只打一通**；派它同时打给三个人要排队说三次。
+- **一只同一时刻只打一通**（跨它的所有外联会话判，见 §14 第 13 条）；派它同时打给三个人要排队说三次。
 - **转写抄一份进原聊天**：同一段话在两条日志里各一份。
 - **汇报那一轮要动手就得主人批**：它想顺手把结果记进日历，会弹一张卡。主人之后亲口说的那一轮照旧免审。
 
@@ -201,3 +202,12 @@
 10. **票的三重绑定**：只在 speech 路径认、调用者 uid 必须等于票上的好友、过期失效；票起算 15 分钟不续，长通话靠 `call` 回执换票。
 11. **好友收件箱第二行沿用「最后一句」**，不显示响铃 / 未接状态（demo 里那一格维护者没要，要做得改 `lastWriter`）。
 12. **转写留在原聊天日志里使之后主人亲口点起的轮都带着它且免审**，同 ADR-0325 对客人历史的立场；2026-10-03 维护者只回了「做完」，按「接受」处理是执行 agent 的裁定、维护者仍可推翻。
+
+### 终审补的（2026-10-03）
+
+13. **「一只同一时刻只打一通」跨它所有外联会话判**：`outreachHub.dispatch` 先问 `activeFor`（折它每条外联会话的 `outreach`，与 24 小时上限同一条数据路径），
+    在打就回「这只正在打另一通电话，等它打完再派。」；查不出来回「稍后再试」。此前只有同一个好友那条线的 `start()` 挡得住。
+14. **没响过铃的不算进 10 通上限**：响铃被拒时外联会话里的 `ended` 带 `unrung`，`outreachCountSince` 跳过；`started` 仍在响铃之前落（理由见 ADR-0337 已知代价）。
+15. **重启补跑**：外联会话里此刻没有外联在进行，未收口的开场白全部落 error 收口、不起模型调用；补跑重放的开场白那一轮 `call_friend` 打不出去（§3「不是系统补跑」从这里兑现）。
+16. **受监督的轮不往外接力**：汇报轮 / 折进非主人说的话的轮里 @ 了别的智能体，这一棒不接、群里说一句。
+17. **好友那一侧的聊天页不画外联会话那份 `outreach`**（带 `originSessionId` 的那份），只看铃声记录与通话卡。

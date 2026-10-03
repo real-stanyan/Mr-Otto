@@ -2291,4 +2291,27 @@ describe("外联会话：语音票与客人进房（#1441）", () => {
     await h2.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "call", participants: ["a1"] }));
     expect(without.sent.at(-1)!.msg).toEqual({ t: "call_result", ok: true });
   });
+
+  it("speechTicketFor 抛了：welcome 照发（不带票），记一笔（终审 M4）", async () => {
+    const r = makeDeps({
+      getSession: () => outreachSession({ speechTicketFor: async () => { throw new Error("empty secret"); } }),
+      isMember: async () => false,
+    });
+    await createFrameHandler(r.deps).onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:friend"));
+    const welcome = r.sent.find((x) => x.msg.t === "welcome");
+    expect(welcome).toBeDefined();
+    expect(welcome!.msg).not.toHaveProperty("speechTicket");
+    expect(r.logs.join("\n")).toContain("empty secret");
+  });
+
+  it("speechTicketFor 抛了：call_result 照回 ok（名单已经落了），不带票，记一笔（终审 M4）", async () => {
+    const r = makeDeps({
+      getSession: () => fakeSession({ setVoiceCall: async () => ({ kind: "ok" }), speechTicketFor: async () => { throw new Error("empty secret"); } }),
+    });
+    const h = createFrameHandler(r.deps);
+    await h.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    await h.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "call", participants: ["a1"] }));
+    expect(r.sent.at(-1)!.msg).toEqual({ t: "call_result", ok: true });
+    expect(r.logs.join("\n")).toContain("empty secret");
+  });
 });

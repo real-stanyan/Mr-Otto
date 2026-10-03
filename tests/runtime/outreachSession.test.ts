@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  blockedMessage, countAgentOutreach, ensureOutreachSession, openOriginRoom, outreachSeedEvents,
+  agentOutreachActive, blockedMessage, countAgentOutreach, ensureOutreachSession, openOriginRoom, outreachSeedEvents,
   type EnsureOutreachDeps, type OutreachSessionRow,
 } from "../../services/runtime/src/outreachSession.js";
 import type { SessionEvent } from "../../src/session/events.js";
@@ -199,6 +199,22 @@ describe("countAgentOutreach", () => {
   });
   it("没有外联会话 = 0", async () => {
     expect(await countAgentOutreach({ sessionIds: async () => [], outreachEvents: () => [] }, "w", "a", 0)).toBe(0);
+  });
+});
+
+describe("agentOutreachActive（终审 M2）", () => {
+  const ev = (sid: string, id: string, phase: "started" | "ended", agentId = "a1"): SessionEvent =>
+    ({ seq: 0, sessionId: sid, ts: 1, type: "outreach", outreachId: id, phase, fromAgentId: agentId, peerUid: "p", peerName: "n", ignorable: true, ...(phase === "ended" ? { outcome: "completed" } : {}) }) as SessionEvent;
+  it("任一条外联会话里这只有一通没收尾：true；都收了：false", async () => {
+    const logs: Record<string, SessionEvent[]> = { s1: [ev("s1", "x", "started"), ev("s1", "x", "ended")], s2: [ev("s2", "y", "started")] };
+    const d = { sessionIds: async () => ["s1", "s2"], outreachEvents: (id: string) => logs[id]! };
+    expect(await agentOutreachActive(d, "w1", "a1")).toBe(true);
+    logs.s2!.push(ev("s2", "y", "ended"));
+    expect(await agentOutreachActive(d, "w1", "a1")).toBe(false);
+  });
+  it("没有外联会话：false；查询失败照抛", async () => {
+    expect(await agentOutreachActive({ sessionIds: async () => [], outreachEvents: () => [] }, "w", "a")).toBe(false);
+    await expect(agentOutreachActive({ sessionIds: async () => { throw new Error("db"); }, outreachEvents: () => [] }, "w", "a")).rejects.toThrow("db");
   });
 });
 

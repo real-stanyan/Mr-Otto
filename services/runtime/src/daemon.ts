@@ -44,7 +44,7 @@ import { safeSpeakerLabel } from "../../../src/shared/promptSafe.js";
 import type { PxCallDeps } from "./pxTools.js";
 import { createHostedProbe, createHostedRuntimeAdapter, createRouteMemo, decideRuntimeRoute, probeModelRoute, withUsage, type RouteMemo } from "./hostedRoute.js";
 import { createOutreachHub } from "./outreachHub.js";
-import { blockedMessage, countAgentOutreach, ensureOutreachSession, openOriginRoom } from "./outreachSession.js";
+import { agentOutreachActive, blockedMessage, countAgentOutreach, ensureOutreachSession, openOriginRoom } from "./outreachSession.js";
 import { signSpeechTicket } from "../../../src/shared/speechTicket.js";
 import { pickAutoModel } from "./autoModel.js";
 import { requestDispatchAsOwner } from "./dispatch.js";
@@ -519,6 +519,24 @@ async function main(): Promise<void> {
     sessionBroadcast.delete(sessionId);
   }
 
+  /** 一只智能体在这个团队里的所有外联会话 + 各自的 outreach 事件：上限（countSince）与「同一时刻只打一通」（activeFor）
+      读同一条路径。查询失败抛——「查不出来」不能读成「一通都没打」 */
+  function agentOutreachLogs(workspaceId: string) {
+    return {
+      sessionIds: async (w: string, a: string): Promise<string[]> => {
+        const { data, error } = await supabase
+          .from("workspace_sessions")
+          .select("id")
+          .eq("workspace_id", w)
+          .eq("chat_kind", "outreach")
+          .contains("agent_ids", [a]);
+        if (error) throw new Error(`外联会话查询失败（${w}）：${error.message}`);
+        return ((data ?? []) as { id: string }[]).map((r) => r.id);
+      },
+      outreachEvents: (id: string) => storeFor(workspaceId).ofType(id, "outreach"),
+    };
+  }
+
   /** 外联（#1441）：agent 替主人给好友打电话。判断都在 outreachHub / outreachSession（进得了 vitest），
       这里只是把它们接上真数据源。推送关着（apns === null）= 没有这个 hub，刀也就不挂 */
   const outreachHub =
@@ -545,23 +563,9 @@ async function main(): Promise<void> {
                 edgeBase: config.edgeBase, runtimeSecret: config.runtimeSecret,
               }),
             ),
-          countSince: (workspaceId, agentId, since) =>
-            countAgentOutreach(
-              {
-                sessionIds: async (w, a) => {
-                  const { data, error } = await supabase
-                    .from("workspace_sessions")
-                    .select("id")
-                    .eq("workspace_id", w)
-                    .eq("chat_kind", "outreach")
-                    .contains("agent_ids", [a]);
-                  if (error) throw new Error(`外联会话查询失败（${w}）：${error.message}`);
-                  return ((data ?? []) as { id: string }[]).map((r) => r.id);
-                },
-                outreachEvents: (id) => storeFor(workspaceId).ofType(id, "outreach"),
-              },
-              workspaceId, agentId, since,
-            ),
+          countSince: (workspaceId, agentId, since) => countAgentOutreach(agentOutreachLogs(workspaceId), workspaceId, agentId, since),
+          // 一只同一时刻只打一通（终审 M2）：与上限同一条数据路径，只是问「有没有没收尾的」
+          activeFor: (workspaceId, agentId) => agentOutreachActive(agentOutreachLogs(workspaceId), workspaceId, agentId),
           ensureSession: (workspaceId, ownerUid, ownerName, agent, peer) =>
             ensureOutreachSession<CloudSession>(
               {

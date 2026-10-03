@@ -24,6 +24,7 @@ function rig(over: Partial<OutreachHubDeps> = {}, startResult: OutreachStartResu
     deviceCount: async () => 1,
     ownerBlocked: async () => null,
     countSince: async () => 0,
+    activeFor: async () => false,
     ensureSession: async (...a) => (ensures.push(a), { startOutreach: async (s) => (starts.push(s), startResult) }),
     origin: async () => origin,
     agentName: async () => "运维现取",
@@ -72,6 +73,21 @@ describe("outreachHub.dispatch", () => {
     const blocked = rig({ ownerBlocked: async () => "额度用完了，周五恢复" });
     expect(await blocked.hub.dispatch(DISPATCH)).toContain("额度用完了，周五恢复");
     for (const r of [capped, nodev, blocked]) expect(r.ensures).toEqual([]);
+  });
+
+  it("这只正在另一条外联会话里打电话（打给别的好友）：拒绝，不建会话、不响铃（终审 M2）", async () => {
+    const seen: unknown[][] = [];
+    const r = rig({ activeFor: async (...a) => (seen.push(a), true) });
+    expect(await r.hub.dispatch(DISPATCH)).toBe("这只正在打另一通电话，等它打完再派。");
+    expect(seen).toEqual([["w1", "ops"]]);
+    expect(r.ensures).toEqual([]);
+    expect(r.starts).toEqual([]);
+  });
+
+  it("activeFor 查不出来：「稍后再试」，不当成没在打（终审 M2）", async () => {
+    const r = rig({ activeFor: async () => { throw new Error("db down"); } });
+    expect(await r.hub.dispatch(DISPATCH)).toContain("稍后再试");
+    expect(r.ensures).toEqual([]);
   });
 
   it("countSince 以「此刻往前 24 小时」为起点按这只智能体问", async () => {

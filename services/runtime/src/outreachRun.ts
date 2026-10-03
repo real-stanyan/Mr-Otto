@@ -54,7 +54,7 @@ export function createOutreachRun(d: OutreachRunDeps): OutreachRun {
       append 本身也会经 notify 回到 observe（那条 outreach 事件）：observe 只认 call_ring 与
       voice_call_changed，不会把它当别的收一遍；而内部状态在 append 返回、applyOutreach 之后
       才清——这一段里没有任何路径能再进 finish */
-  const finish = (outcome: OutreachOutcome, tell: boolean, hangUp = false): void => {
+  const finish = (outcome: OutreachOutcome, tell: boolean, hangUp = false, unrung = false): void => {
     const s = activeOutreach(fold);
     if (s === null) return;
     graceTimer = clear(graceTimer);
@@ -67,7 +67,7 @@ export function createOutreachRun(d: OutreachRunDeps): OutreachRun {
       sessionId: d.sessionId, ts: d.now(), type: "outreach", outreachId: s.outreachId, phase: "ended",
       fromAgentId: s.fromAgentId, peerUid: s.peerUid, peerName: s.peerName,
       ...(s.originSessionId !== null ? { originSessionId: s.originSessionId } : {}),
-      outcome, ...(durationMs !== null ? { durationMs } : {}), ignorable: true,
+      outcome, ...(durationMs !== null ? { durationMs } : {}), ...(unrung ? { unrung: true as const } : {}), ignorable: true,
     });
     applyOutreach(fold, e);
     const meta = live;
@@ -115,8 +115,11 @@ export function createOutreachRun(d: OutreachRunDeps): OutreachRun {
       applyOutreach(fold, e);
       live = s;
       const r = await d.ring(s);
+      // started 仍在响铃之前落（终审 M6 考虑过挪到响铃之后、否掉了）：响铃那一段 await 里，上面那道「同一条线一次
+      // 一通」、说话闸、语音票都靠折叠里有这一通——挪后之后两次 start 能同时响铃，而推送先到、人先接的那一下
+      // 会被闸当成没有外联拒掉。没响成的那通改在 ended 上记 unrung，不算进每日上限
       if (r.kind !== "ringing") {
-        finish("failed", false); // 工具当场把这句话回给模型，不另起汇报那一轮
+        finish("failed", false, false, true); // 工具当场把这句话回给模型，不另起汇报那一轮
         return { kind: "refused", message: r.message };
       }
       return { kind: "ringing" };

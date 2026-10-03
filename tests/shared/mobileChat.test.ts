@@ -525,6 +525,17 @@ describe("outreach 一行", () => {
     const o = two.filter((r) => r.kind === "outreach").map((r) => (r.kind === "outreach" ? r.view.text : ""));
     expect(o).toEqual(["打给 小红 · 未接", "正在打给 阿杰"]);
   });
+  it("chatRows：外联会话那份（带 originSessionId）不出行——好友那一侧只看铃声记录（终审 M3）", () => {
+    seq = 0;
+    const rows = chatRows({
+      events: [
+        e({ type: "outreach", phase: "started", outreachId: "o1", fromAgentId: base.fromAgentId, peerUid: "u_xh", peerName: "小红", originSessionId: "origin-1", ignorable: true }),
+        e({ type: "outreach", phase: "ended", outreachId: "o1", fromAgentId: base.fromAgentId, peerUid: "u_xh", peerName: "小红", originSessionId: "origin-1", outcome: "completed", durationMs: 60_000, ignorable: true }),
+      ],
+      ws: WS, selfUid: "u_xh", now: DAY,
+    });
+    expect(rows.filter((r) => r.kind === "outreach")).toEqual([]);
+  });
 });
 
 describe("外联会话的输入栏", () => {

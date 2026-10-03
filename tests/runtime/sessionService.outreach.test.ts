@@ -456,7 +456,7 @@ describe("外联的生命周期（#1441 Task 9）", () => {
     const r = await session.startOutreach(START);
     expect(r.kind).toBe("refused");
     expect(kinds(store).slice(2)).toEqual(["outreach:started", "outreach:ended"]);
-    expect(ofKind<OutreachEvent>(store, "outreach")[1]).toMatchObject({ outcome: "failed" });
+    expect(ofKind<OutreachEvent>(store, "outreach")[1]).toMatchObject({ outcome: "failed", unrung: true });
     expect(ended).toEqual([]);
     expect(session.chat()).toMatchObject({ outreach: { active: false } });
     store.close();

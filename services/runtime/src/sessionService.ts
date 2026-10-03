@@ -1469,7 +1469,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         // rebuildTools 在 runJob 置好 currentInitiator 之后才跑，这里读到的就是这一轮的发起人
         // requiresApproval 做成**每次读时现算**的访问器，不是建表时定死的值：模型采样的当口才落盘的汇报 /
         // 客人的话（tightenSupervision）要对这一圈已经定下来的调用也生效，快照值收紧不到它们。
-        // Object.create 让 def / run 走原型，原来的工具对象一个字不改
+        // Object.create 让 def / run 走原型，原来的工具对象一个字不改。包出来的对象**自有属性只有 requiresApproval**：
+        // 不许对它展开（`{ ...tool }` 只拷自有可枚举属性，def / run 会整个丢掉），要改形状就再包一层 Object.create
         return opts.approveAll
           ? list.map((t) =>
               Object.create(t, { requiresApproval: { get: () => t.requiresApproval || supervisedTurn(), enumerable: true } }) as Tool,

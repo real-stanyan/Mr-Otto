@@ -236,6 +236,18 @@ async function verifyHello(
 export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
   const cids = new Map<string, CidEntry>();
 
+  /** 外联线上那位好友的语音票（#1441）。签名抛了（例如 RUNTIME_SECRET 为空）一律当没票、记一笔（终审 M4）：
+      welcome 是这条连接唯一的开门帧，丢了它客户端就一直停在「连接中」；call_result 落在 setVoiceCall 已经改完
+      名单之后，丢了它人以为没接通、名单却已经变了。没票只是听不到 TTS，比这两样都轻 */
+  async function ticketOrNull(session: { speechTicketFor(uid: string): Promise<string | null> }, sessionId: string, uid: string): Promise<string | null> {
+    try {
+      return await session.speechTicketFor(uid);
+    } catch (err) {
+      deps.log(`语音票签发失败，这次不带票（session=${sessionId}）：${err instanceof Error ? err.message : String(err)}`);
+      return null;
+    }
+  }
+
   function deny(cid: string, code: CsDeniedCode): void {
     // 每一次拒绝都记一笔（issue #915）：真机上「新建云会话」回
     // not_authorized 的那次，服务器日志里一个字都没有，于是「谁拒的、为什么」
@@ -726,7 +738,7 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
         const ownerUid = await deps.sessions.ownerOf(workspaceId);
         cids.set(cid, { uid: result.uid, label });
         // 外联线上被打的那位好友拿一张语音票（#1441）；其他人、其他会话不带这个键
-        const ticket = await session.speechTicketFor(result.uid);
+        const ticket = await ticketOrNull(session, sessionId, result.uid);
         deps.send(cid, {
           t: "welcome",
           v: CS_PROTOCOL_VERSION,
@@ -938,7 +950,7 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
           const outcome = await session.setVoiceCall(entry.uid, entry.label, msg.participants, budget);
           if (outcome.kind === "ok") {
             // 接通那一刻再带一张（welcome 时电话可能还没响）；不是外联线 / 不是那位好友 = 不带
-            const ticket = await session.speechTicketFor(entry.uid);
+            const ticket = await ticketOrNull(session, sessionId, entry.uid);
             deps.send(cid, { t: "call_result", ok: true, ...(ticket !== null ? { speechTicket: ticket } : {}) });
             return;
           }

@@ -3,7 +3,7 @@
 // 那边只剩查库与调这几个函数（同 chatCreate / outreachHub 的做法）。
 import type { OutreachEvent, SessionEvent } from "../../../src/session/events.js";
 import type { NewSessionEvent } from "../../../src/session/store.js";
-import { outreachCountSince, outreachFoldOf } from "../../../src/shared/outreach.js";
+import { activeOutreach, outreachCountSince, outreachFoldOf } from "../../../src/shared/outreach.js";
 
 export interface OutreachSessionRow {
   id: string;
@@ -122,6 +122,19 @@ export async function countAgentOutreach(
     n += outreachCountSince(outreachFoldOf(d.outreachEvents(id) as OutreachEvent[]), agentId, since);
   }
   return n;
+}
+
+/** 这只此刻有没有一通没收尾的外联（终审 M2）：「一只同一时刻只打一通」跨它的所有外联会话判——每条外联会话
+    自己的 start() 只挡得住同一个好友那条线。数据路径与 countAgentOutreach 同一条；查询失败照抛 */
+export async function agentOutreachActive(
+  d: { sessionIds(workspaceId: string, agentId: string): Promise<string[]>; outreachEvents(sessionId: string): SessionEvent[] },
+  workspaceId: string, agentId: string,
+): Promise<boolean> {
+  for (const id of await d.sessionIds(workspaceId, agentId)) {
+    const live = activeOutreach(outreachFoldOf(d.outreachEvents(id) as OutreachEvent[]));
+    if (live !== null && live.fromAgentId === agentId) return true;
+  }
+  return false;
 }
 
 /** 额度那一格：只有 blocked 才回话，其余（含探不到）放行——探不到时由真正起 turn 那一刻的路由去说 */

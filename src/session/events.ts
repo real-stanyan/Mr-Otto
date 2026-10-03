@@ -685,6 +685,9 @@ export interface OutreachEvent extends SessionEventBase {
   durationMs?: number;
   /** 只在原聊天那份的 ended 上 */
   transcript?: OutreachLine[];
+  /** 只在外联会话那份的 ended 上（#1441 终审 M6）：这一通一次铃都没响（冷却 / 推送没送到 / 没设备），
+      不算进「每只 24 小时 10 通」。缺席 = 响过或旧日志（照旧算，宁可多算） */
+  unrung?: true;
   ignorable: true;
 }
 

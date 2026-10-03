@@ -9,6 +9,8 @@ export interface OutreachHubDeps {
   deviceCount(uid: string): Promise<number>;
   ownerBlocked(workspaceId: string, ownerUid: string): Promise<string | null>; // 额度：null = 能跑
   countSince(workspaceId: string, agentId: string, since: number): Promise<number>;
+  /** 这只此刻在它任一条外联会话里有没有一通没收尾（终审 M2）；抛错 = 这一刻查不出来 */
+  activeFor(workspaceId: string, agentId: string): Promise<boolean>;
   ensureSession(
     workspaceId: string, ownerUid: string, ownerName: string,
     agent: { agentId: string; name: string }, peer: { uid: string; name: string },
@@ -58,6 +60,9 @@ export function createOutreachHub(d: OutreachHubDeps): OutreachHub {
       }
       if (m.kind === "many") return `好友里有 ${m.count} 位叫「${o.friend}」，分不出是哪一位，问问他。`;
       try {
+        // 一只同一时刻只打一通（终审 M2）：跨它所有外联会话判，打给小红的那通还在时不许再打给小明。
+        // 文案与 outreachRun.start 里同一条线的那句逐字相同——对模型来说是同一件事
+        if (await d.activeFor(o.workspaceId, o.agentId)) return "这只正在打另一通电话，等它打完再派。";
         if ((await d.countSince(o.workspaceId, o.agentId, d.now() - DAY_MS)) >= OUTREACH_DAILY_MAX) {
           return `你今天已经替他打了 ${OUTREACH_DAILY_MAX} 通电话，到上限了，明天再打。`;
         }
