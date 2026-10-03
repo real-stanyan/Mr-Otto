@@ -1041,6 +1041,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
           isWatching: (uid) => callback.isWatching(uid),
           events: () => store.load(sessionId),
           onEnded: opts.onOutreachEnded,
+          log: (m) => console.warn(m),
           now,
           setTimer: opts.ringTimers?.setTimer ?? ((fn, ms) => setTimeout(fn, ms)),
           clearTimer: opts.ringTimers?.clearTimer ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>)),
@@ -1661,10 +1662,14 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     budget: ((n: number) => string | null) | undefined,
     callback: { byLabel: string; rings: ReadonlyMap<string, RingState> },
   ): void {
+    // 外联（#1441）：排队这一刻是哪一通在接通。到点时它已经收尾（好友在这一拍里挂了）= 什么都不说，
+    // 否则 speakOpening 会重读 live()、读到 null 而回落成「回电」那句、落一段对着空电话的开场白
+    const scheduled = outreachRun?.live() ?? null;
     const p = new Promise<void>((resolve) => {
       setImmediate(() => {
         try {
           if (archived) return;
+          if (scheduled !== null && outreachRun?.live() !== scheduled) return;
           const busy = busyAgents();
           for (const q of list) {
             if (!busy.has(q.agentId)) speakOpening(q, callback.rings.get(q.agentId)!.opening!, byUid, callback.byLabel);
@@ -1897,6 +1902,9 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // 只留下 `stopRequested` 这一个记号；不在这儿查的话，一次"停止"照样长出
     // 下一棒 —— 而接力是 turn 收口后**唯一**会自己长出新 turn 的路径
     if (archived || stopRequested) return;
+    // 外联会话（#1441）：这条线只有一只智能体和打给的那个朋友。它回复里写了 @ 别人也不接力：接力会起别的 agent 的
+    // turn、落 agent_relay 与系统旁白，那是群聊的机制，在一通电话里没有对应的对象
+    if (isOutreach) return;
     const since = store.load(sessionId, { afterSeq: scanFrom });
     const mine = since.filter((e): e is AssistantMessageEvent => e.type === "assistant_message" && e.agentId === spec.agentId);
     const said = mine.map((e) => e.content).join("\n");

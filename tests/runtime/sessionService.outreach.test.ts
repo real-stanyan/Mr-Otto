@@ -276,15 +276,16 @@ function fakeTimers() {
   };
 }
 
-function openLive(store: EventStore, o: { endedTo?: OutreachEnded[] | null; watching?: () => boolean; devices?: number } = {}) {
+function openLive(store: EventStore, o: { endedTo?: OutreachEnded[] | null; watching?: () => boolean; devices?: number; team?: (typeof OPS)[]; reply?: (agentId: string) => string } = {}) {
   const timers = fakeTimers();
   const ended = o.endedTo === undefined ? [] : o.endedTo;
   const pushes: string[] = [];
-  const adapter: ModelAdapter = { model: "fake-model", async chat() { return { content: "好" }; } };
   const opts: CloudSessionOpts = {
     sessionMeta: createInMemoryCloudSessionMeta(),
     workspaceId: "w1", sessionId: SID, ownerUid: OWNER, createdByUid: OWNER, store, world: fakeWorld,
-    agents: async () => [OPS], adapterFor: () => adapter, px,
+    agents: async () => o.team ?? [OPS],
+    adapterFor: (a) => ({ model: "fake-model", async chat() { return { content: o.reply?.(a.agentId) ?? "好" }; } }),
+    px,
     hostUids: async () => [OWNER],
     onEvent: () => {}, onUsage: () => {}, wiki: testWiki(), mentionInbox: createInMemoryMentionInbox(),
     agentWriter: createInMemoryAgentWriter(), isMember: async () => true, contextWindowOf: () => undefined,
@@ -526,6 +527,43 @@ describe("外联的生命周期（#1441 Task 9）", () => {
     await session.settled();
     expect(store.load(SID).length).toBe(mid);
     expect(store.ofType(SID, "assistant_message")).toEqual([]);
+    store.close();
+  });
+
+  it("智能体回复里 @ 了别的智能体：不接力——没有 agent_relay、没有接力开场白、第二只不起 turn", async () => {
+    const store = newStore();
+    outreachSeed(store);
+    // 名单里放两只（否则 @广告 本来就解析不出来，用例对守卫是空转）
+    store.append({
+      sessionId: SID, ts: 2, type: "chat_roster_changed", agents: [{ agentId: "ops", name: "运维" }, { agentId: "ads", name: "广告" }],
+      humans: [{ uid: PEER, name: "小红" }], ignorable: true,
+    });
+    const { session } = openLive(store, { team: [OPS, ADS], reply: (id) => (id === "ops" ? "我转给 @广告 看看" : "收到") });
+    await session.startOutreach(START);
+    // mention=true 且不给 mentions（给 [] 是「确认谁都没点」）：外联里名单不止一只时回落名单第一只（运维）
+    await session.say(PEER, "小红", "你好", true, undefined, undefined, []);
+    await session.settled();
+    expect(store.ofType(SID, "agent_relay")).toEqual([]);
+    expect(ofKind<UserMessageEvent>(store, "user_message").filter((u) => u.relay !== undefined)).toEqual([]);
+    const replies = ofKind<AssistantMessageEvent>(store, "assistant_message");
+    expect(replies.map((r) => r.agentId)).toEqual(["ops"]); // 广告一轮都没起
+    expect(ofKind<UserMessageEvent>(store, "user_message").flatMap((u) => u.mentions ?? [])).not.toContain("ads");
+    expect(store.ofType(SID, "chat_message")).toEqual([]); // 也没有系统旁白
+    store.close();
+  });
+
+  it("接通开场白排在 setImmediate 里：好友在这一拍里挂断 → 什么都不说（不回落成回电那句）", async () => {
+    const store = newStore();
+    outreachSeed(store);
+    const { session } = openLive(store);
+    await session.startOutreach(START);
+    await session.setVoiceCall(PEER, "小红", ["ops"]);
+    await session.setVoiceCall(PEER, "小红", []); // 开场白那一拍还没跑
+    await session.settled();
+    expect(ofKind<UserMessageEvent>(store, "user_message")).toEqual([]);
+    expect(ofKind<AssistantMessageEvent>(store, "assistant_message")).toEqual([]);
+    expect(store.ofType(SID, "turn_ended")).toEqual([]);
+    expect(ofKind<OutreachEvent>(store, "outreach").at(-1)).toMatchObject({ phase: "ended", outcome: "completed" });
     store.close();
   });
 

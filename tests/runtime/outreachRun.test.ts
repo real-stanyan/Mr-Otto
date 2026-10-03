@@ -14,7 +14,7 @@ const START: OutreachStart = {
   peerUid: PEER, peerName: "小红", brief: "问问明天的会", opening: "你好，我是运维。",
 };
 
-function harness(o: { ring?: RingAttempt; seed?: SessionEvent[]; watching?: () => boolean } = {}) {
+function harness(o: { ring?: RingAttempt; seed?: SessionEvent[]; watching?: () => boolean; onEnded?: (r: OutreachEnded) => void } = {}) {
   let clock = 1_000_000;
   const events: SessionEvent[] = [...(o.seed ?? [])];
   let seq = events.length;
@@ -22,6 +22,7 @@ function harness(o: { ring?: RingAttempt; seed?: SessionEvent[]; watching?: () =
   let nextTimer = 1;
   const ended: OutreachEnded[] = [];
   const endCalls: number[] = [];
+  const logs: string[] = [];
   let run!: OutreachRun;
   const emit = (e: Record<string, unknown>): SessionEvent => {
     const logged = { ...e, seq: ++seq } as SessionEvent;
@@ -40,7 +41,11 @@ function harness(o: { ring?: RingAttempt; seed?: SessionEvent[]; watching?: () =
     },
     isWatching: o.watching ?? (() => true),
     events: () => events,
-    onEnded: (r) => ended.push(r),
+    onEnded: (r) => {
+      ended.push(r);
+      o.onEnded?.(r);
+    },
+    log: (m) => logs.push(m),
     now: () => clock,
     setTimer: (fn, ms) => {
       const id = nextTimer++;
@@ -69,7 +74,7 @@ function harness(o: { ring?: RingAttempt; seed?: SessionEvent[]; watching?: () =
       reason: "r", expiresTs: clock + 45_000, ignorable: true,
     });
   const outreachEvents = (): OutreachEvent[] => events.filter((e): e is OutreachEvent => e.type === "outreach");
-  return { run, events, ended, endCalls, advance, ring, emit, outreachEvents, now: () => clock, pending: () => timers.size };
+  return { run, events, ended, endCalls, logs, advance, ring, emit, outreachEvents, now: () => clock, pending: () => timers.size };
 }
 
 describe("outreachRun（#1441）", () => {
@@ -227,5 +232,30 @@ describe("outreachRun（#1441）", () => {
     h.advance(OUTREACH_CAP_MS * 2);
     expect(h.outreachEvents().filter((e) => e.phase === "ended")).toHaveLength(1);
     expect(h.ended).toHaveLength(1);
+  });
+
+  it("onEnded 抛了：不冒出 observe / 定时器，记一行日志，状态照样清干净，不会再收第二次", async () => {
+    const h = harness({ onEnded: () => { throw new Error("hub 炸了"); } });
+    await h.run.start(START);
+    h.ring("ringing");
+    h.ring("answered");
+    // 好友挂断那条路：从 observe 里收尾
+    expect(() => h.emit({ sessionId: "s1", ts: h.now(), type: "voice_call_changed", participants: [], byUid: PEER, ignorable: true })).not.toThrow();
+    expect(h.logs).toHaveLength(1);
+    expect(h.logs[0]).toContain("hub 炸了");
+    expect(h.run.live()).toBeNull();
+    expect(h.pending()).toBe(0);
+    h.advance(OUTREACH_CAP_MS * 2);
+    expect(h.outreachEvents().filter((e) => e.phase === "ended")).toHaveLength(1);
+
+    // 定时器那条路（封顶）
+    const t = harness({ onEnded: () => { throw new Error("又炸了"); } });
+    await t.run.start(START);
+    t.ring("ringing");
+    t.ring("answered");
+    expect(() => t.advance(OUTREACH_CAP_MS)).not.toThrow();
+    expect(t.logs).toHaveLength(1);
+    expect(t.endCalls).toHaveLength(1); // 回调抛了也先挂了电话
+    expect(t.run.live()).toBeNull();
   });
 });

@@ -20,6 +20,7 @@ export interface OutreachRunDeps {
   isWatching(uid: string): boolean;
   events(): readonly SessionEvent[];                        // 现读日志，取转写
   onEnded(r: OutreachEnded): void;
+  log(m: string): void;
   now(): number; setTimer(fn: () => void, ms: number): unknown; clearTimer(h: unknown): void;
 }
 export interface OutreachRun {
@@ -76,11 +77,17 @@ export function createOutreachRun(d: OutreachRunDeps): OutreachRun {
     awaySince = null;
     if (hangUp) d.endCall();
     if (tell && s.originSessionId !== null) {
-      d.onEnded({
-        outreachId: s.outreachId, originSessionId: s.originSessionId, agentId: s.fromAgentId,
-        agentName: meta?.agentName ?? "", ownerName: meta?.ownerName ?? "",
-        peerUid: s.peerUid, peerName: s.peerName, outcome, durationMs, transcript,
-      });
+      // 收尾回调抛了不许冒出去：这里在定时器回调与 notify 的调用栈里，抛出去 = 整个 daemon 的 uncaughtException，
+      // 或者把别的事件的广播截在半路。状态上面已经清干净，记一行就够
+      try {
+        d.onEnded({
+          outreachId: s.outreachId, originSessionId: s.originSessionId, agentId: s.fromAgentId,
+          agentName: meta?.agentName ?? "", ownerName: meta?.ownerName ?? "",
+          peerUid: s.peerUid, peerName: s.peerName, outcome, durationMs, transcript,
+        });
+      } catch (err) {
+        d.log(`[otto-runtime] 外联收尾回调失败（session=${d.sessionId} outreach=${s.outreachId}）：${err instanceof Error ? err.message : String(err)}`);
+      }
     }
   };
   const pollDrop = (): void => {

@@ -4,6 +4,7 @@
 import type { OutreachEvent, OutreachLine, OutreachOutcome, SessionEvent } from "../session/events.js";
 import { RING_REASON_MAX } from "./callRing.js";
 import { promptSafe } from "./promptSafe.js";
+import { splitSpeakerPrefix } from "./speakerPrefix.js";
 
 export type { OutreachLine, OutreachOutcome };
 export const CALL_FRIEND_TOOL_NAME = "call_friend";
@@ -65,11 +66,9 @@ export function resolveFriend(friends: readonly { uid: string; name: string }[],
   return { kind: "none", names: [...new Set(friends.map((f) => f.name.trim()).filter((n) => n !== ""))] };
 }
 
-/** say() 落盘时给人说的话加的 `[名字]: ` 前缀（正则与 services/runtime/src/speakerPrefix.ts 同形——那份在
-    services/ 下，shared 不能反向 import，这里只剥一次、不认名字）。转写是「他说了什么」，前缀是日志的
-    排版，带着它汇报就成了「小红：[小红]: …」 */
-const SPEAKER_PREFIX = /^\[[^\]]+\]: /;
-const stripSpeaker = (text: string): string => text.replace(SPEAKER_PREFIX, "");
+/** say() 落盘时给人说的话加的 `[名字]: ` 前缀：转写是「他说了什么」，前缀是日志的排版，带着它汇报就成了
+    「小红：[小红]: …」。判据用 speakerPrefix.ts 那一份（正则只此一份）；没有前缀原样 */
+const stripSpeaker = (text: string): string => splitSpeakerPrefix(text)?.body ?? text;
 
 export function outreachTranscript(events: readonly SessionEvent[], fromSeq: number, agentId: string, peerUid: string): OutreachLine[] {
   const out: OutreachLine[] = [];
