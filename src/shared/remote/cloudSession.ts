@@ -8,7 +8,11 @@ import { AGENT_ID_RE, CHAT_NAME_MAX, normalizeChatAgentIds, normalizeChatHumanUi
 import { b64decode, b64encode } from "./b64.js";
 import { MAX_FRAME_BYTES } from "./wire.js";
 
-/** 21（#1393，ADR-0325）：群里可以有真人（群主的朋友）。`create` 的 group `chat` 多 `humans`（uid 名单）、
+/** 22（#1441）：智能体替主人给朋友打电话的外联会话。`welcome.chat.kind` 多一种 `outreach`、`chat` 多可选
+    `outreach`（{ownerName, active}）；`welcome` 与 `call_result{ok:true}` 多可选 `speechTicket`（runtime 签、
+    edge 验的语音合成票）。`create` 帧**不收** outreach——外联会话只由 runtime 建。加字段照样进位：老桌面把
+    `kind:"outreach"` 当形状不对整帧拒掉，新 runtime 配老桌面时要在握手那一步就说清，不是进了房才读不出 welcome。
+    21（#1393，ADR-0325）：群里可以有真人（群主的朋友）。`create` 的 group `chat` 多 `humans`（uid 名单）、
     `chat_update` 多 `humans`（改动之后的完整名单）、`welcome` 的 `chat` 多 `humans`（{uid,name}）。
     加字段照样进位：老 runtime 会把 `humans` 静默丢掉，于是新客户端以为拉了人、群里其实没有。
     20（issue #1280）：聊天。`create` 多了 `chat`（缺席 = 团队会话，同旧）、多了一条
@@ -119,7 +123,7 @@ import { MAX_FRAME_BYTES } from "./wire.js";
     少一格状态。**加一个枚举值同理**：老客户端的 isValidCsDeniedCode 认不出
     `rate_limited`，decodeCsDown 回 null，那一帧被静默忽略，于是 create()
     要白等满超时才回一句"云端无响应"——把"你被限速了"说成"对面没回话"。 */
-export const CS_PROTOCOL_VERSION = 21;
+export const CS_PROTOCOL_VERSION = 22;
 export const CS_MAX_TEXT_BYTES = 64 * 1024;
 
 /** 一次回多少字节的文件内容（#1056）。中继单帧上限是 256 KiB（wire.ts 的
@@ -300,6 +304,8 @@ export interface CsChatInfo {
   kind: "dm" | "group" | "outreach";
   agentIds: string[];
   humans: ChatHuman[];
+  /** 外联会话才有（协议 22，#1441）：主人叫什么、这通电话此刻还开着没有。形状不对当缺席 */
+  outreach?: { ownerName: string; active: boolean };
 }
 /** 尾巴分页（协议 20）：进房第一页的条数，与一页的上限 */
 export const BACKLOG_TAIL_DEFAULT = 200;
@@ -402,6 +408,8 @@ export type CsDown =
       modelRoute: CsModelRoute | null;
       /** 这是一条聊天（协议 20，#1280）：私聊或群聊 + 此刻的名单。缺席 = 团队会话 */
       chat?: CsChatInfo;
+      /** 语音合成的票（协议 22，#1441）：runtime 签、edge 验；缺席 = 这条连接不该出声 */
+      speechTicket?: string;
     }
   | { t: "created"; workspaceId: string; sessionId: string; channel: string }
   /** 建会话**业务上**没成（协议 20，#1280）：名单里没这只、群不到两只、名单读不出来。
@@ -473,7 +481,7 @@ export type CsDown =
   | { t: "stop_result"; ok: boolean; message?: string }
   /** call 的回执（协议 17，#1163）。ok=false 的 message 分得清：名单里没有的 id /
       名单读不出来 / 已归档 / 限速 / 不在籍——文案由服务端给，桌面原样画 */
-  | { t: "call_result"; ok: boolean; message?: string }
+  | { t: "call_result"; ok: boolean; message?: string; speechTicket?: string }
   | { t: "error"; msg: string };
 
 export function encodeCs(msg: CsUp | CsDown): string {
@@ -545,7 +553,7 @@ function normalizeChatInfo(v: unknown): CsChatInfo | null | undefined {
   if (v === undefined) return undefined;
   if (v === null || typeof v !== "object") return null;
   const o = v as Record<string, unknown>;
-  if (o.kind !== "dm" && o.kind !== "group") return null;
+  if (o.kind !== "dm" && o.kind !== "group" && o.kind !== "outreach") return null;
   // 这里不用 normalizeChatAgentIds：下行名单可以是空的（群里的智能体全被删了）
   if (!Array.isArray(o.agentIds) || !o.agentIds.every((x) => typeof x === "string")) return null;
   // humans 缺席按空（下行容错：协议号相等时它总在，缺了只可能是一个不该发生的实现漏写——
@@ -560,7 +568,15 @@ function normalizeChatInfo(v: unknown): CsChatInfo | null | undefined {
       humans.push({ uid: r.uid, name: r.name });
     }
   }
-  return { kind: o.kind, agentIds: o.agentIds as string[], humans };
+  // outreach 是可选的非关键字段：形状不对当缺席，不拒帧（缺了只是少画一行「某某的智能体」）
+  const ob = o.outreach;
+  const outreach =
+    ob !== null && typeof ob === "object" &&
+    typeof (ob as Record<string, unknown>).ownerName === "string" &&
+    typeof (ob as Record<string, unknown>).active === "boolean"
+      ? { ownerName: (ob as { ownerName: string }).ownerName, active: (ob as { active: boolean }).active }
+      : undefined;
+  return { kind: o.kind, agentIds: o.agentIds as string[], humans, ...(outreach !== undefined ? { outreach } : {}) };
 }
 
 const isSeq = (v: unknown): v is number => Number.isInteger(v) && (v as number) >= 0;
@@ -899,6 +915,8 @@ export function decodeCsDown(b64: string): CsDown | null {
           ownerUid: obj.ownerUid,
           modelRoute: normalizeModelRoute(obj.modelRoute),
           ...(chat !== undefined ? { chat } : {}),
+          // 非关键字段：不是字符串当缺席，不拒帧
+          ...(typeof obj.speechTicket === "string" ? { speechTicket: obj.speechTicket } : {}),
         };
       }
       return null;
@@ -1062,6 +1080,7 @@ export function decodeCsDown(b64: string): CsDown | null {
       if (typeof obj.ok === "boolean" && (obj.message === undefined || typeof obj.message === "string")) {
         const result: CsDown = { t: "call_result", ok: obj.ok };
         if (typeof obj.message === "string") result.message = obj.message;
+        if (typeof obj.speechTicket === "string") result.speechTicket = obj.speechTicket;
         return result;
       }
       return null;

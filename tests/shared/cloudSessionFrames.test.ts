@@ -24,8 +24,8 @@ describe("cs_say 的 mentions（#928 切片 1a）", () => {
 });
 
 describe("cs 协议 6（#957 第三批：stop 帧与 say/approve/stop 回执）", () => {
-  it("CS_PROTOCOL_VERSION === 21（…；15 = #1103 Git 凭据；16 = #1107 流式 delta 帧；17 = #1163 语音通话 call 帧；18 = #1140 wiki_write 帧；19 = #1233 say.voice；20 = #1280 聊天；21 = #1393 群里的真人）", () => {
-    expect(CS_PROTOCOL_VERSION).toBe(21);
+  it("CS_PROTOCOL_VERSION === 22（…；15 = #1103 Git 凭据；16 = #1107 流式 delta 帧；17 = #1163 语音通话 call 帧；18 = #1140 wiki_write 帧；19 = #1233 say.voice；20 = #1280 聊天；21 = #1393 群里的真人；22 = #1441 外联会话与语音合成的票）", () => {
+    expect(CS_PROTOCOL_VERSION).toBe(22);
   });
 
   it("delta 下行往返（协议 16，#1107）", () => {
@@ -364,5 +364,45 @@ describe("协议 21：群里的真人（#1393）", () => {
     });
     expect(decodeCsDown(b64({ ...welcome, chat: { kind: "group", agentIds: [], humans: [{ uid: "x", name: "小红" }] } }))).toBeNull();
     expect(decodeCsDown(b64({ ...welcome, chat: { kind: "group", agentIds: [], humans: [{ uid: U1 }] } }))).toBeNull();
+  });
+});
+
+describe("协议 22：外联会话与语音合成的票（#1441）", () => {
+  const SID = "8b1f0c1e-2d3a-4e5f-8a9b-0c1d2e3f4a5b";
+  const WS = "3fa85f64-5717-4562-b3fc-2c963f66afa6";
+  const welcome = (extra: Record<string, unknown>) => ({
+    t: "welcome", v: 22, sessionId: SID, lastSeq: 0, initiatorUid: null, ownerUid: "u1", modelRoute: null, ...extra,
+  });
+
+  it("welcome：chat.kind 认 outreach 与可选 outreach 格；带 speechTicket 原样回来", () => {
+    const f = decodeCsDown(b64(welcome({
+      chat: { kind: "outreach", agentIds: ["ops"], humans: [], outreach: { ownerName: "Stan", active: true } },
+      speechTicket: "p.s",
+    })));
+    expect(f).toMatchObject({
+      t: "welcome",
+      chat: { kind: "outreach", agentIds: ["ops"], outreach: { ownerName: "Stan", active: true } },
+      speechTicket: "p.s",
+    });
+  });
+
+  it("outreach 格形状不对当缺席、不拒帧", () => {
+    const f = decodeCsDown(b64(welcome({ chat: { kind: "outreach", agentIds: [], humans: [], outreach: { ownerName: 1, active: "y" } } })));
+    expect(f).not.toBeNull();
+    expect((f as { chat?: { outreach?: unknown } }).chat?.outreach).toBeUndefined();
+  });
+
+  it("speechTicket 不是字符串当缺席、不拒帧（welcome 与 call_result 都一样）", () => {
+    const f = decodeCsDown(b64(welcome({ speechTicket: 5 })));
+    expect(f).not.toBeNull();
+    expect(f).not.toHaveProperty("speechTicket");
+    const r = decodeCsDown(b64({ t: "call_result", ok: true, speechTicket: { x: 1 } }));
+    expect(r).toEqual({ t: "call_result", ok: true });
+    expect(decodeCsDown(b64({ t: "call_result", ok: true, speechTicket: "p.s" }))).toEqual({ t: "call_result", ok: true, speechTicket: "p.s" });
+  });
+
+  it("客户端 create 帧不许带 outreach：外联会话只由 runtime 建", () => {
+    expect(decodeCsUp(b64({ t: "create", workspaceId: WS, chat: { kind: "outreach", agentIds: ["ops"] } }))).toBeNull();
+    expect(decodeCsUp(b64({ t: "create", workspaceId: WS, chat: { kind: "outreach", name: "x", agentIds: ["ops"], humans: [] } }))).toBeNull();
   });
 });

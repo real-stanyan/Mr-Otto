@@ -117,6 +117,13 @@ describe("推送载荷与开哪条聊天", () => {
     ringId: "r1", workspaceId: "w1", sessionId: "s1", agentId: "ops", agentName: "运维",
     reason: "部署完了", chat: "dm", expiresTs: 46_000,
   };
+  it("外联会话：推送里是 outreach，手机开外联聊天页（#1441）", () => {
+    expect(ringChatKind({ home: true, chatKind: "outreach", toUid: "u2", ownerUid: "u1" })).toBe("outreach");
+    expect(ringChatKind({ home: false, chatKind: "outreach", toUid: "u2", ownerUid: "u1" })).toBe("team");
+    expect(ringTarget({ chat: "outreach", workspaceId: "w", sessionId: "s", agentId: "a" })).toEqual({ kind: "outreach", workspaceId: "w", sessionId: "s" });
+    expect(ringFromPayload({ ring: { ringId: "r", workspaceId: "w", sessionId: "s", agentId: "a", agentName: "Stan 的 运维", reason: "x", chat: "outreach", expiresTs: 1 } })?.chat).toBe("outreach");
+  });
+
   it("ringChatKind：团队 → team；主场私聊 → dm；主场群：群主 group、客人 guest", () => {
     expect(ringChatKind({ home: false, chatKind: null, toUid: "u1", ownerUid: "o" })).toBe("team");
     expect(ringChatKind({ home: true, chatKind: "dm", toUid: "o", ownerUid: "o" })).toBe("dm");

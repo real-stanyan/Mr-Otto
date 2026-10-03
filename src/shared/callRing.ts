@@ -136,13 +136,15 @@ export function callerModelOf(events: readonly SessionEvent[], agentId: string):
 }
 
 /** 手机开哪一种聊天页（推送载荷里的 `chat`，spec §1.3） */
-export type RingChatKind = "dm" | "group" | "team" | "guest";
-const RING_CHAT_KINDS: readonly RingChatKind[] = ["dm", "group", "team", "guest"];
+export type RingChatKind = "dm" | "group" | "team" | "guest" | "outreach";
+const RING_CHAT_KINDS: readonly RingChatKind[] = ["dm", "group", "team", "guest", "outreach"];
 
 /** `home` = 这条会话在个人主场里（runtime 那边就是 approveAll，ADR-0298 同一格）。主场里没有
     chat 标记的旧会话按群算 */
 export function ringChatKind(o: { home: boolean; chatKind: "dm" | "group" | "outreach" | null; toUid: string; ownerUid: string }): RingChatKind {
   if (!o.home) return "team";
+  // 外联会话（#1441）：打给朋友的那条，朋友既不是群主也不是客人，得单列一种
+  if (o.chatKind === "outreach") return "outreach";
   if (o.chatKind === "dm") return "dm";
   return o.toUid === o.ownerUid ? "group" : "guest";
 }
@@ -189,7 +191,8 @@ export type RingTarget =
   | { kind: "agent"; agentId: string }
   | { kind: "group"; sessionId: string }
   | { kind: "team"; workspaceId: string; sessionId: string }
-  | { kind: "guest"; workspaceId: string; sessionId: string };
+  | { kind: "guest"; workspaceId: string; sessionId: string }
+  | { kind: "outreach"; workspaceId: string; sessionId: string };
 
 export function ringTarget(r: Pick<RingPush, "chat" | "workspaceId" | "sessionId" | "agentId">): RingTarget {
   switch (r.chat) {
@@ -201,6 +204,8 @@ export function ringTarget(r: Pick<RingPush, "chat" | "workspaceId" | "sessionId
       return { kind: "team", workspaceId: r.workspaceId, sessionId: r.sessionId };
     case "guest":
       return { kind: "guest", workspaceId: r.workspaceId, sessionId: r.sessionId };
+    case "outreach":
+      return { kind: "outreach", workspaceId: r.workspaceId, sessionId: r.sessionId };
   }
 }
 
