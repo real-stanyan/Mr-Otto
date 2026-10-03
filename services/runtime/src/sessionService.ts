@@ -1498,6 +1498,14 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
                 pushActivity();
               }
             },
+            // 流播到一半断了，adapter 从头重发（#1448）。预览是累计快照：把这只攒下的清零，
+            // 再发一份空快照盖掉各端已经画出来的半句话——之后到的是一条全新的回复。
+            // 先 flush：攒着没发的那半片要是晚于空快照出门，半句话就又回来了
+            onAssistantRestart: () => {
+              deltas.flush();
+              deltas.clearAgent(spec.agentId);
+              opts.onDelta?.(spec.agentId, "content", "");
+            },
           }
         : {}),
       middlewares: [],

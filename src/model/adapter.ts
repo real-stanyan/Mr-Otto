@@ -48,11 +48,14 @@ export interface ModelAdapter {
       无论走不走流式，resolve 的 ModelReply 都是完整消息——落盘只认它。
       调用方拿不齐完整回复就啥也别落：半成品不进日志。
       signal 中止（用户停止 turn）= reject AbortError：请求中、流读到一半都立刻断。
-      已流出的碎片随之作废——不完整就不是消息（ADR-0006 与 pi 边界一致） */
+      已流出的碎片随之作废——不完整就不是消息（ADR-0006 与 pi 边界一致）。
+      onRestart 给了 = 调用方**扔得掉已经播出去的碎片**（#1448）：流播到一半断了，adapter
+      先喊它一声、再从头重发这次请求。缺席 = 照旧，播过就不重发（半条消息续不上） */
   chat(
     messages: ChatMessage[],
     tools?: ToolDefinition[],
     onDelta?: (text: string, kind: DeltaKind) => void,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    onRestart?: () => void
   ): Promise<ModelReply>;
 }

@@ -731,6 +731,61 @@ describe("流没收尾（#1131）——中途断开要说清是断流，不是�
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
+  // #1448 真机：一场群聊十分钟里断了四次，每次都播过字，每次都是整轮直接失败。
+  // 调用方给了 onRestart = 它扔得掉已播的碎片（云会话的预览是累计快照），那就重发
+  it("内容播出去之后才断、调用方给了 onRestart → 先喊一声再从头重发，第二次成功", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({
+        ok: true,
+        body: streamOf(['data: {"choices":[{"delta":{"content":"说了一半"}}]}\n\n', 'data: {"id":"半']),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        body: streamOf(['data: {"choices":[{"delta":{"content":"重新说"}}]}\n\n', "data: [DONE]\n\n"]),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+    const seen: string[] = [];
+    const reply = await fastAdapter().chat(
+      [],
+      undefined,
+      (text) => seen.push(text),
+      undefined,
+      () => seen.push("<restart>")
+    );
+    expect(reply.content).toBe("重新说");
+    expect(seen).toEqual(["说了一半", "<restart>", "重新说"]);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("给了 onRestart 但每次都断 → 重试用完照旧抛断流；最后一次失败不再喊 restart", async () => {
+    const fetchMock = vi.fn(async () => ({
+      ok: true,
+      body: streamOf(['data: {"choices":[{"delta":{"content":"半"}}]}\n\n', 'data: {"id":"半']),
+    }));
+    vi.stubGlobal("fetch", fetchMock);
+    const onRestart = vi.fn();
+    await expect(
+      fastAdapter({ maxAttempts: 2 }).chat([], undefined, () => {}, undefined, onRestart)
+    ).rejects.toThrow(/流中途断开/);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(onRestart).toHaveBeenCalledTimes(1);
+  });
+
+  it("什么都没播过就断 → 重发但不喊 restart（没有东西可扔）", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce({ ok: true, body: streamOf(['data: {"id":"1b2c3d4e-5f6a-']) })
+      .mockResolvedValueOnce({
+        ok: true,
+        body: streamOf(['data: {"choices":[{"delta":{"content":"好"}}]}\n\n', "data: [DONE]\n\n"]),
+      });
+    vi.stubGlobal("fetch", fetchMock);
+    const onRestart = vi.fn();
+    await fastAdapter().chat([], undefined, () => {}, undefined, onRestart);
+    expect(onRestart).not.toHaveBeenCalled();
+  });
+
   it("流整齐地关了但既没有 [DONE] 也没有 finish_reason → 同样算断流", async () => {
     const fetchMock = vi.fn(async () => ({
       ok: true,

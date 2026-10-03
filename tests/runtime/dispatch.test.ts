@@ -300,6 +300,27 @@ describe("requestDispatch", () => {
     expect(await bodyOf({ mid: "zhipu" })).not.toHaveProperty("reasoning_effort");
     expect(await bodyOf()).not.toHaveProperty("reasoning_effort");
   });
+
+  // #1448 真机：线上只剩 deepseek-flash，它把 512 个 token 全花在推理上、正文空串，群里两句
+  // 不 @ 的话各落一句「没派出去（分类器没给出可识别的答案）」。DeepSeek 经网关实测收
+  // `thinking: {type:"disabled"}`；智谱拒它（要 reasoning_effort），所以两张名单各管各的
+  it("最便宜那款在 DeepSeek 上关掉思考；智谱、别家、不知道是哪家，不带 thinking", async () => {
+    const bodyOf = async (platforms?: Record<string, string>): Promise<Record<string, unknown>> => {
+      let sent = "";
+      const f = (async (_url: string, init: RequestInit) => {
+        sent = init.body as string;
+        return new Response(JSON.stringify({ choices: [{ message: { content: "2" } }] }), { status: 200 });
+      }) as unknown as typeof fetch;
+      await requestDispatch(deps(f), input(), MODELS, platforms);
+      return JSON.parse(sent) as Record<string, unknown>;
+    };
+    const ds = await bodyOf({ cheap: "deepseek" });
+    expect(ds.thinking).toEqual({ type: "disabled" });
+    expect(ds).not.toHaveProperty("reasoning_effort");
+    expect(await bodyOf({ cheap: "zhipu" })).not.toHaveProperty("thinking");
+    expect(await bodyOf({ cheap: "qwen", mid: "deepseek" })).not.toHaveProperty("thinking");
+    expect(await bodyOf()).not.toHaveProperty("thinking");
+  });
 });
 
 describe("dispatchFailedText", () => {

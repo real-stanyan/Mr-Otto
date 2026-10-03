@@ -82,6 +82,14 @@ describe("云会话的 system 段（issue #833）", () => {
     expect(withCloud).toContain("空一行");
     expect(withCloud).toContain("连发的一条消息");
     expect(withCloud).toContain("星号井号会原样露出来");
+    // #1448：真机上一条回复仍然四五百字、复述别人、同一句请求催六遍。上限要数得出来，
+    // 那几种大模型腔逐条点名
+    expect(withCloud).toContain("平时一两句");
+    expect(withCloud).toContain("一百来字");
+    expect(withCloud).toContain("别人问到再给");
+    expect(withCloud).toContain("别人刚说过的不复述");
+    expect(withCloud).toContain("不反复催");
+    expect(withCloud).toContain("一次最多问一个问题");
     // 本地会话一个字不沾
     const plain = systemPromptText("/work", "d");
     expect(plain).not.toContain("连发的一条消息");

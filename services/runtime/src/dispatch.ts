@@ -143,6 +143,13 @@ const DISPATCH_MAX_TOKENS = 512;
     **名单按平台、逐家真接口验过才准进**（同 ADR-0274 的 REASONING_PASSBACK）：别家没验过，
     而有的厂商对陌生字段回 400——那样派活会每一句都失败 */
 const LOW_REASONING_PLATFORMS: ReadonlySet<string> = new Set(["zhipu"]);
+/** 哪几家的便宜款收 `thinking: {type: "disabled"}`、而且真的因此不想（#1448）。2026-09-28 起
+    线上只剩 deepseek-flash（#1407），它对「只回一个编号」这种提示也会先推理：真机群聊里两句
+    不 @ 的话（「怎么这么多废话呢，干」「反思一下为什么出错」）各花了近 4 秒把 512 个 token
+    全用在推理上，正文是空串——群里落成「没派出去（分类器没给出可识别的答案）」。
+    经网关实测 DeepSeek 收这个字段（0 reasoning、正文正常）；智谱那款相反，拒它、要
+    `reasoning_effort`。同一条纪律：逐家真接口验过才准进 */
+const NO_THINKING_PLATFORMS: ReadonlySet<string> = new Set(["deepseek"]);
 
 /** 「没人对口的活归它」在名册那一行上的标记文案。只挂在 fallback 那一只上 */
 const FALLBACK_MARK = "（没人对口的活归它）";
@@ -312,6 +319,7 @@ export async function requestDispatch(
   const cheap = models[0]!;
   const platform = modelPlatforms?.[cheap];
   const lowReasoning = platform !== undefined && LOW_REASONING_PLATFORMS.has(platform);
+  const noThinking = platform !== undefined && NO_THINKING_PLATFORMS.has(platform);
   const doFetch = deps.fetchImpl ?? fetch;
   const timeoutMs = deps.timeoutMs ?? DISPATCH_TIMEOUT_MS;
   const controller = new AbortController();
@@ -329,6 +337,7 @@ export async function requestDispatch(
         max_tokens: DISPATCH_MAX_TOKENS,
         stream: false,
         ...(lowReasoning ? { reasoning_effort: "low" } : {}),
+        ...(noThinking ? { thinking: { type: "disabled" } } : {}),
       }),
       signal: controller.signal,
     });
