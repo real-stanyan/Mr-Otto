@@ -223,6 +223,7 @@ import {
   decideRelay,
   mentionedAgents,
   openingsCovered,
+  openingsForTraits,
   relayDepthOf,
   relayApprovalWaitText,
   relayBudgetCapText,
@@ -2109,6 +2110,15 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     }
   }
 
+  /** 监督旗要看的开场白（#1441 CI 轮，判据见 agentRelay.openingsForTraits）：job 自己那条之后点了这只的一律算，
+      不管前一轮有没有把它们收了口。前一轮看没看见它们取决于它起跑前那几次 await 有多慢——CI 上排队的 job 就因此
+      只剩主人那条开场白，带着汇报 / 客人的话免审跑、call_friend 亮着。读日志要从 job 自己那条之前读起：
+      closeBound 可能已经越过它（前一轮收口时 readUpToSeq ≥ 它） */
+  function traitOpenings(job: TurnJob): UserMessageEvent[] {
+    const from = Math.min(bounds.closeBound.get(job.agentId) ?? -1, job.opening.seq - 1);
+    return openingsForTraits(store.load(sessionId, { afterSeq: from }), job.agentId, job.opening);
+  }
+
   /** 跑一个 job（一只 agent 的一次 turn）。agentId/fromUid/开场白全部取自 job
       自己——排空时捞出来的 job 可能来自另一条并发的 say() 调用，不能用外层
       闭包里那条调用自己的参数 */
@@ -2183,7 +2193,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     foldedNonOwner = false;
     rerunTurn = false;
     ownerSpoke = true;
-    applyTraits(covered, openingDepth);
+    applyTraits(traitOpenings(job), openingDepth);
     currentAgentId = job.agentId;
     // 停止键的 idle 判据（#957 A-2 复审）：从**这一刻**起这条会话就欠着一轮，
     // 哪怕 engine 还要几次网络往返之后才拿得到。界面上那行此刻已经在转了
@@ -2371,11 +2381,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // 监督旗**最后一刻**再按日志重算一次（#1441 修复轮 2）：上面那几次 await 之间，同一只 agent 的
       // 开场白（汇报 / 客人的话）可能已经落盘——job 早已出队，它们自己另排一个 job，却已经在这一轮
       // 引擎读的日志里。与 engine 起跑是同一段同步代码，之后落的由 tightenSupervision 接着收紧
-      const lastCovered = openingsCovered(
-        store.load(sessionId, { afterSeq: bounds.closeBound.get(job.agentId) ?? -1 }),
-        job.agentId,
-        job.opening
-      );
+      const lastCovered = traitOpenings(job);
       applyTraits(lastCovered, lastCovered.reduce((m, u) => Math.max(m, relayDepthOf(u)), 0));
       turnBoundary = lastSeqSeen;
       currentEngine = engine;

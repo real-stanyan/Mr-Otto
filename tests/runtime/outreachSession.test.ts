@@ -163,10 +163,13 @@ describe("ensureOutreachSession：部分失败后的修复（#1441 fix 1-3）", 
     const rowsMade: string[] = [];
     const opened: string[] = [];
     const live = new Map<string, string>();
+    // insert 停在一道闸上，直到两通 ensure 都已经发起（不靠墙钟把窗口撑大）
+    let releaseInsert!: () => void;
+    const insertGate = new Promise<void>((r) => (releaseInsert = r));
     const f = fakeDeps({
       find: async () => rowsMade[0] ?? null,
       insert: async (row) => {
-        await new Promise((r) => setTimeout(r, 5));
+        await insertGate;
         rowsMade.push(row.id);
         return null;
       },
@@ -178,7 +181,9 @@ describe("ensureOutreachSession：部分失败后的修复（#1441 fix 1-3）", 
         return room;
       },
     });
-    const [x, y] = await Promise.all([ensureOutreachSession(f.deps, args), ensureOutreachSession(f.deps, args)]);
+    const both = Promise.all([ensureOutreachSession(f.deps, args), ensureOutreachSession(f.deps, args)]);
+    releaseInsert();
+    const [x, y] = await both;
     expect(x).toBe(y);
     expect(rowsMade).toHaveLength(1);
     expect(opened).toHaveLength(1);

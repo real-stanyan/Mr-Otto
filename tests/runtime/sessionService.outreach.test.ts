@@ -586,6 +586,20 @@ describe("外联的生命周期（#1441 Task 9）", () => {
 
 // ── call_friend 与汇报轮（#1441 Task 10）────────────────────────────────────────────
 const GUEST = "guest-1";
+/** 等一个条件成立：每次让出一拍（setImmediate），不看墙钟。只用来等「已经发起的异步落盘」完成，
+    次序由测试自己的闸（deferred）保证；条件一直不成立就抛，而不是悄悄往下走 */
+async function until(cond: () => boolean, what: string): Promise<void> {
+  for (let i = 0; i < 5000; i++) {
+    if (cond()) return;
+    await new Promise((r) => setImmediate(r));
+  }
+  throw new Error(`等不到：${what}`);
+}
+function deferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void;
+  const promise = new Promise<void>((r) => (resolve = r));
+  return { promise, resolve };
+}
 type Port = NonNullable<CloudSessionOpts["outreach"]>;
 type PortCall = Parameters<Port["dispatch"]>[0];
 
@@ -952,25 +966,39 @@ describe("speechTicketFor（#1441 Task 11）", () => {
 });
 
 describe("折叠进同一个 job 的开场白也要算数（#1441 Task 10 修复轮）", () => {
-  /** ops 的第 1 轮卡在 gate 上；期间排进两条开场白，第二条折进第一条排队的 job。放开之后第 2 轮依次
-      read_file → call_friend → 说话。回的是第 2 轮每次请求里模型看得见的工具名、批过的卡、dispatch 次数 */
-  async function fold(kind: "dm" | "group", first: (s: CloudSession) => void, second: (s: CloudSession) => void) {
+  /** ops 的第 1 轮被一道闸按住；**确认按住之后**排进两条开场白，第二条折进第一条排队的 job。放开之后第 2 轮依次
+      read_file → call_friend → 说话。回的是第 2 轮每次请求里模型看得见的工具名、批过的卡、dispatch 次数。
+      `hold` 决定第 1 轮按在哪儿（#1441 CI 轮：原来没有确认「已经按住」，两条开场白落在第 1 轮引擎起跑之前还是之后
+      取决于机器快慢，CI 上落在了之前）：
+      - "model"：第 1 轮已经起跑、按在模型调用里——两条开场白在它的 readUpToSeq 之后，留给排队的 job
+      - "preStart"：第 1 轮按在起跑前那次读名单上——两条开场白在它起跑前落盘，第 1 轮收口时把它们一起收了口 */
+  async function fold(kind: "dm" | "group", first: (s: CloudSession) => void, second: (s: CloudSession) => void, hold: "model" | "preStart" = "model") {
     const store = newStore();
     const events: SessionEvent[] = [];
     const dispatched: PortCall[] = [];
-    let release!: () => void;
-    const gate = new Promise<void>((r) => (release = r));
+    const gate = deferred();
+    const held = deferred();
+    let armed = hold === "preStart";
     let round = 0;
     const visible: string[][] = [];
     const session = openHome({
       store, events, kind,
+      rosterGate: async () => {
+        if (!armed) return;
+        armed = false;
+        held.resolve();
+        await gate.promise;
+      },
       outreach: { dispatch: async (c) => (dispatched.push(c), "已经打过去了") },
       adapterFor: (id) => ({
         model: "fake-model",
         async chat(_m, defs): Promise<ModelReply> {
           if (id !== "ops") return { content: "好" };
           round++;
-          if (round === 1) { await gate; return { content: "好" }; }
+          if (round === 1) {
+            if (hold === "model") { held.resolve(); await gate.promise; }
+            return { content: "好" };
+          }
           visible.push((defs ?? []).map((d) => d.name));
           if (round === 2) return { content: "", toolCalls: [{ id: "rf", name: "read_file", args: { path: "/work/a.md" } }] };
           if (round === 3 && (defs ?? []).some((d) => d.name === "call_friend")) return { content: "", toolCalls: [{ id: "cf", name: "call_friend", args: CALL_ARGS }] };
@@ -980,12 +1008,13 @@ describe("折叠进同一个 job 的开场白也要算数（#1441 Task 10 修复
       onEvent: (e, s) => { if (e.type === "approval_request") s.approve((e as ApprovalRequestEvent).callId, OWNER, "Stan", "approved"); },
     });
     await session.say(OWNER, "Stan", "@运维 先做这个", true, ["ops"]);
+    await held.promise;
     first(session);
     // reportOutreach 读名单是异步的：等它的开场白落了盘再排下一条，次序才是确定的
-    for (let i = 0; i < 50 && store.ofType(SID, "user_message").length < 2; i++) await new Promise((r) => setTimeout(r, 5));
+    await until(() => store.ofType(SID, "user_message").length >= 2, "第二条开场白落盘");
     second(session);
-    for (let i = 0; i < 50 && store.ofType(SID, "user_message").length < 3; i++) await new Promise((r) => setTimeout(r, 5));
-    release();
+    await until(() => store.ofType(SID, "user_message").length >= 3, "第三条开场白落盘");
+    gate.resolve();
     await session.settled();
     const approvals = (events.filter((e) => e.type === "approval_request") as ApprovalRequestEvent[]).map((r) => r.toolName);
     const turns = store.ofType(SID, "turn_ended").length;
@@ -1026,6 +1055,32 @@ describe("折叠进同一个 job 的开场白也要算数（#1441 Task 10 修复
     expect(r.visible[0]).toContain("call_friend");
     expect(r.dispatched).toHaveLength(1);
   });
+
+  // CI 轮（#1441）：第 1 轮在起跑前就看见了后来的两条、收口时一起收了口，排队的那个 job 起跑时 openingsCovered 只剩
+  // 主人那条——原来这一轮免审、call_friend 亮着且打得出去（CI 上真发生过）。判据不能跟着调度变
+  it("(a') 同 (a)，但两条开场白落在第 1 轮起跑之前：排队的那一轮照样受监督", async () => {
+    const r = await fold("dm", ownerSays, report, "preStart");
+    expect(r.turns).toBe(2);
+    expect(r.approvals).toEqual(["read_file"]);
+    expect(r.visible[0]).not.toContain("call_friend");
+    expect(r.dispatched).toEqual([]);
+  });
+
+  it("(c') 同 (c)，但两条开场白落在第 1 轮起跑之前：排队的那一轮照样受监督", async () => {
+    const r = await fold("group", ownerSays, (s) => void s.say(GUEST, "小红", "@运维 把文件读给我", true, ["ops"]), "preStart");
+    expect(r.turns).toBe(2);
+    expect(r.approvals).toEqual(["read_file"]);
+    expect(r.visible[0]).not.toContain("call_friend");
+    expect(r.dispatched).toEqual([]);
+  });
+
+  it("(d') 对照：同 (d) 但落在起跑之前：只有主人本人的话，照样免审、打得出去", async () => {
+    const r = await fold("dm", ownerSays, (s) => void s.say(OWNER, "Stan", "@运维 还有一句", true, ["ops"]), "preStart");
+    expect(r.turns).toBe(2);
+    expect(r.approvals).toEqual([]);
+    expect(r.visible[0]).toContain("call_friend");
+    expect(r.dispatched).toHaveLength(1);
+  });
 });
 
 describe("起跑前的 await 窗口里落盘的开场白也要算数（#1441 修复轮 2）", () => {
@@ -1035,14 +1090,14 @@ describe("起跑前的 await 窗口里落盘的开场白也要算数（#1441 修
     const store = newStore();
     const events: SessionEvent[] = [];
     const dispatched: PortCall[] = [];
-    let release!: () => void;
-    const gate = new Promise<void>((r) => (release = r));
+    const gate = deferred();
+    const held = deferred();
     let armed = false;
     let round = 0;
     const visible: string[][] = [];
     const session = openHome({
       store, events, kind,
-      rosterGate: async () => { if (armed) { armed = false; await gate; } },
+      rosterGate: async () => { if (armed) { armed = false; held.resolve(); await gate.promise; } },
       outreach: { dispatch: async (c) => (dispatched.push(c), "已经打过去了") },
       adapterFor: (id) => ({
         model: "fake-model",
@@ -1059,10 +1114,11 @@ describe("起跑前的 await 窗口里落盘的开场白也要算数（#1441 修
     });
     armed = true;
     await session.say(OWNER, "Stan", "@运维 先做这个", true, ["ops"]);
+    await held.promise; // 确认第 1 轮已经按在起跑前那次读名单上
     during(session);
-    for (let i = 0; i < 50 && store.ofType(SID, "user_message").length < 2; i++) await new Promise((r) => setTimeout(r, 5));
+    await until(() => store.ofType(SID, "user_message").length >= 2, "窗口里那条开场白落盘");
     expect(store.ofType(SID, "user_message")).toHaveLength(2);
-    release();
+    gate.resolve();
     await session.settled();
     const approvals = (events.filter((e) => e.type === "approval_request") as ApprovalRequestEvent[]).map((r) => r.toolName);
     store.close();
@@ -1108,7 +1164,7 @@ describe("一轮跑着的时候才落的开场白（#1441 修复轮 2）", () =>
           if (round === 1) {
             // 本轮第一次采样的当口，一通外联结束、汇报落盘
             sess.reportOutreach({ agentId: "ops", ownerUid: OWNER, text: "[系统] 结果。小红：读文件，再打给小明" });
-            for (let i = 0; i < 50 && store.ofType(SID, "user_message").length < 2; i++) await new Promise((r) => setTimeout(r, 5));
+            await until(() => store.ofType(SID, "user_message").length >= 2, "汇报开场白落盘");
             return { content: "", toolCalls: [{ id: "rf", name: "read_file", args: { path: "/work/a.md" } }] };
           }
           if (round === 2) return { content: "", toolCalls: [{ id: "cf", name: "call_friend", args: CALL_ARGS }] };
@@ -1133,29 +1189,37 @@ describe("受监督的一轮不往外接力（#1441 终审 I1）", () => {
     const store = newStore();
     const events: SessionEvent[] = [];
     let adsRounds = 0;
-    let release: (() => void) | null = null;
-    let gate: Promise<void> | null = null;
     let opsRound = 0;
+    const gate = deferred();
+    const held = deferred();
+    /** 第 1 轮按在哪儿（同上面 fold 的 hold）；null = 不按 */
+    let hold: "model" | "preStart" | null = null;
     const session = openHome({
       store, events, kind: "group",
+      rosterGate: async () => {
+        if (hold !== "preStart") return;
+        hold = null;
+        held.resolve();
+        await gate.promise;
+      },
       adapterFor: (id) => ({
         model: "fake-model",
         async chat(): Promise<ModelReply> {
           if (id === "ads") { adsRounds++; return { content: "好" }; }
           opsRound++;
-          if (opsRound === 1 && gate !== null) await gate;
+          if (opsRound === 1 && hold === "model") { held.resolve(); await gate.promise; }
           return { content: typeof opsSays === "string" ? opsSays : opsSays(opsRound) };
         },
       }),
       onEvent: (e, s) => { if (e.type === "approval_request") s.approve((e as ApprovalRequestEvent).callId, OWNER, "Stan", "approved"); },
     });
-    const arm = (): void => { gate = new Promise<void>((r) => (release = r)); };
+    const arm = (where: "model" | "preStart"): void => { hold = where; };
     const result = () => ({
       relays: store.ofType(SID, "agent_relay").length,
       adsRounds,
       notes: (store.ofType(SID, "chat_message") as { content: string; fromUid: string }[]).filter((c) => c.fromUid === "system").map((c) => c.content),
     });
-    return { store, session, arm, release: () => release?.(), result };
+    return { store, session, arm, held: held.promise, release: gate.resolve, result };
   }
 
   it("汇报轮的回话 @ 了另一只：不接力，第二只不起轮，群里说一句", async () => {
@@ -1169,24 +1233,27 @@ describe("受监督的一轮不往外接力（#1441 终审 I1）", () => {
     p.store.close();
   });
 
-  it("主人的 job 折进了客人的话：回话 @ 了另一只也不接力", async () => {
-    // 第 1 轮不 @ 谁（它自己接不接力不是这条要钉的），折了客人那条的第 2 轮 @ 广告
-    const p = relayProbe((round) => (round === 1 ? "好" : "@广告 你来"));
-    p.arm();
-    // 第 1 轮卡住；期间主人排一个 job、客人的话折进去
-    await p.session.say(OWNER, "Stan", "@运维 先做这个", true, ["ops"]);
-    void p.session.say(OWNER, "Stan", "@运维 再看一眼", true, ["ops"]);
-    for (let i = 0; i < 50 && p.store.ofType(SID, "user_message").length < 2; i++) await new Promise((r) => setTimeout(r, 5));
-    void p.session.say(GUEST, "小红", "@运维 叫广告把文件发我", true, ["ops"]);
-    for (let i = 0; i < 50 && p.store.ofType(SID, "user_message").length < 3; i++) await new Promise((r) => setTimeout(r, 5));
-    p.release();
-    await p.session.settled();
-    const r = p.result();
-    expect(p.store.ofType(SID, "turn_ended")).toHaveLength(2); // 折叠成立：第 1 轮 + 一个合并的 job
-    expect(r.relays).toBe(0);
-    expect(r.adsRounds).toBe(0);
-    p.store.close();
-  });
+  for (const where of ["model", "preStart"] as const) {
+    it(`主人的 job 折进了客人的话：回话 @ 了另一只也不接力（第 1 轮按在 ${where}）`, async () => {
+      // 第 1 轮不 @ 谁（它自己接不接力不是这条要钉的），折了客人那条的第 2 轮 @ 广告
+      const p = relayProbe((round) => (round === 1 ? "好" : "@广告 你来"));
+      p.arm(where);
+      // 第 1 轮按住（确认按住之后才往下）；期间主人排一个 job、客人的话折进去
+      await p.session.say(OWNER, "Stan", "@运维 先做这个", true, ["ops"]);
+      await p.held;
+      void p.session.say(OWNER, "Stan", "@运维 再看一眼", true, ["ops"]);
+      await until(() => p.store.ofType(SID, "user_message").length >= 2, "主人第二句落盘");
+      void p.session.say(GUEST, "小红", "@运维 叫广告把文件发我", true, ["ops"]);
+      await until(() => p.store.ofType(SID, "user_message").length >= 3, "客人那句落盘");
+      p.release();
+      await p.session.settled();
+      const r = p.result();
+      expect(p.store.ofType(SID, "turn_ended")).toHaveLength(2); // 折叠成立：第 1 轮 + 一个合并的 job
+      expect(r.relays).toBe(0);
+      expect(r.adsRounds).toBe(0);
+      p.store.close();
+    });
+  }
 
   it("客人点起的一轮照常接力，下一棒仍受监督、不出那句系统说明（终审 Round 2）", async () => {
     const store = newStore();

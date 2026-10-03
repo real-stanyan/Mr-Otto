@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   DEFAULT_RELAY_MAX_DEPTH, RELAY_GUARD, RELAY_SPIN_STOP_REPEATS, RELAY_BUDGET_FRACTION_OF_REMAINING,
   decideRelay, hopFingerprint, isHumanOpening, mentionedAgents, relayBudgetMicroOf, relayStateSince,
-  openingDepthFor, openingsCovered, relayApprovalWaitText, relayBudgetCapText, relayCapText, relaySpinStopText,
+  openingDepthFor, openingsCovered, openingsForTraits, relayApprovalWaitText, relayBudgetCapText, relayCapText, relaySpinStopText,
   relayChain, relayDepthOf, relayNudgeText, relayOpeningText,
   advanceRelayBounds, emptyRelayBounds, relayBoundsOf, RELAY_MAX_HOPS_PER_IGNITION, relayTotalCapText,
 } from "../../src/shared/agentRelay.js";
@@ -456,5 +456,24 @@ describe("openingsCovered（#1441 复审）", () => {
     expect(openingsCovered([a, b, c], "ops", a).map((u) => u.seq)).toEqual([1, 2]);
     // opening 还没进 events：补在最前
     expect(openingsCovered([a], "ops", b).map((u) => u.seq)).toEqual([2, 1]);
+  });
+});
+
+describe("openingsForTraits（#1441 CI 轮）", () => {
+  const um = (seq: number, mentions: string[]): UserMessageEvent =>
+    ({ sessionId: "s", seq, ts: seq, type: "user_message", content: "x", mentions } as UserMessageEvent);
+  const ended = (seq: number, agentId: string, readUpToSeq: number): TurnEndedEvent =>
+    ({ sessionId: "s", seq, ts: seq, type: "turn_ended", outcome: "completed", agentId, readUpToSeq } as TurnEndedEvent);
+  it("前一轮起跑前就看见、收了口的后来点名，仍算进排队中那个 job 的判据", () => {
+    // 1 = 第一轮的开场白；2 = 排队 job 的开场白（主人）；3 = 折进来的汇报；第一轮 readUpToSeq=3 把 2、3 都收了口
+    const a = um(1, ["ops"]), b = um(2, ["ops"]), c = um(3, ["ops"]), other = um(4, ["ads"]);
+    const events = [a, b, c, other, ended(5, "ops", 3)];
+    expect(openingsCovered(events, "ops", b).map((u) => u.seq)).toEqual([2]);
+    expect(openingsForTraits(events, "ops", b).map((u) => u.seq)).toEqual([2, 3]);
+  });
+  it("job 自己那条之前、已收口的不算；没收口的照算（与 openingsCovered 一致）", () => {
+    const a = um(1, ["ops"]), b = um(2, ["ops"]), d = um(5, ["ops"]);
+    expect(openingsForTraits([a, b, ended(3, "ops", 2), d], "ops", d).map((u) => u.seq)).toEqual([5]);
+    expect(openingsForTraits([a, b], "ops", a).map((u) => u.seq)).toEqual([1, 2]);
   });
 });

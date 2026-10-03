@@ -285,6 +285,26 @@ export function openingsCovered(events: readonly SessionEvent[], agentId: string
   return open.some((u) => u.seq === opening.seq) ? open : [opening, ...open];
 }
 
+/** 监督旗（汇报 / 非主人 / 主人亲口，openingTraits）要看的开场白（#1441 CI 轮）：openingsCovered 的结果，**再加上**
+    job 自己那条之后点了这只的每一条，**不管它有没有被前一轮的 turn_ended 收了口**。
+    为什么不能只用 openingsCovered：同一只 agent 在跑时，后来的点名排进**一个**排队中的 job（协调器去重）。前一轮若在
+    引擎起跑之前就已经看见了它们（readUpToSeq ≥ 它们的 seq，起跑前那几次 await 越慢越容易），那一轮收口时把它们一起
+    收了——于是排队中那个 job 起跑时 openingsCovered 只剩它自己的开场白（主人的），汇报 / 客人的话从判据里消失，
+    这一轮免审、call_friend 亮着、接力记在主人名下，而它的上下文里正躺着那几句话。前一轮看没看见是调度决定的，
+    监督不能跟着调度变。job 自己那条之后点了这只的，按协调器的构造就是折进这个 job 的（或者落在这一轮起跑前的窗口里，
+    本来也要算），所以这里一律算上，只往严的一边走。`events` 必须从 job 自己那条之前读起 */
+export function openingsForTraits(events: readonly SessionEvent[], agentId: string, opening: UserMessageEvent): UserMessageEvent[] {
+  const out = openingsCovered(events, agentId, opening);
+  const seen = new Set(out.map((u) => u.seq));
+  for (const e of events) {
+    if (e.type === "user_message" && e.seq > opening.seq && e.mentions?.includes(agentId) === true && !seen.has(e.seq)) {
+      out.push(e);
+      seen.add(e.seq);
+    }
+  }
+  return out;
+}
+
 /** 「这一轮的判据从日志的哪一条读起」的两条**保守下界**（#958）。
     两条都是整份日志的纯函数，也都能从单条事件增量推进——sessionService 装配时
     用 relayBoundsOf 播种一次，之后每条事件经 notify 过一遍 advanceRelayBounds，
