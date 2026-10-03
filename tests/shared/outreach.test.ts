@@ -93,3 +93,25 @@ describe("文案", () => {
     expect(o.outreachRowText({ ...s, phase: "started", outcome: null, durationMs: null })).toBe("正在打给 小红");
   });
 });
+
+describe("openingTraits（#1441 复审：job 折叠开场白时一律往严算）", () => {
+  const OWNER = "owner";
+  const plain = { fromUid: OWNER };
+  it("只有主人亲口的：ownerSpoke，不是汇报、没有非主人", () => {
+    expect(o.openingTraits([plain, plain], OWNER)).toEqual({ report: false, ownerSpoke: true, nonOwner: false });
+  });
+  it("任何一条是汇报开场白：report 为真，ownerSpoke 为假（无论顺序）", () => {
+    const rep = { fromUid: OWNER, greeting: "outreach_report" };
+    expect(o.openingTraits([plain, rep], OWNER)).toMatchObject({ report: true, ownerSpoke: false });
+    expect(o.openingTraits([rep, plain], OWNER)).toMatchObject({ report: true, ownerSpoke: false });
+  });
+  it("折进了别人的话 / 接力 / 系统开场白 / 来处不明：ownerSpoke 为假；非主人的才算 nonOwner", () => {
+    expect(o.openingTraits([plain, { fromUid: "guest" }], OWNER)).toEqual({ report: false, ownerSpoke: false, nonOwner: true });
+    expect(o.openingTraits([plain, { fromUid: OWNER, relay: { depth: 1 } }], OWNER)).toMatchObject({ ownerSpoke: false, nonOwner: false });
+    expect(o.openingTraits([plain, { fromUid: OWNER, greeting: "new_agent" }], OWNER)).toMatchObject({ ownerSpoke: false, nonOwner: false });
+    expect(o.openingTraits([plain, {}], OWNER)).toMatchObject({ ownerSpoke: false, nonOwner: true });
+  });
+  it("一条都没有：不算主人亲口", () => {
+    expect(o.openingTraits([], OWNER).ownerSpoke).toBe(false);
+  });
+});

@@ -261,7 +261,16 @@ export function decideRelay(args: {
     turn_ended 与 user_message 是互斥的两种事件，所以不存在 openTurns 那条
     「同一条事件两种身份」的顺序讲究。 */
 export function openingDepthFor(events: readonly SessionEvent[], agentId: string, opening: UserMessageEvent): number {
-  let max = relayDepthOf(opening);
+  let max = 0;
+  for (const u of openingsCovered(events, agentId, opening)) max = Math.max(max, relayDepthOf(u));
+  return max;
+}
+
+/** 这一个 job 实际覆盖的全部开场白（#1441 复审）：job 自己的 `opening`，加上这只 agent 在 `events` 里还没
+    收口的点名。turnCoordinator 对同一只 agent 已排队的 job 会把后来的开场白折进去（只留第一条的
+    opening / fromUid），所以「这一轮是谁点起的」不能只读 `job.opening`——读不全就是少看了折进来的那几条。
+    收口口径与 openingDepthFor 逐字相同（它现在就是在这个列表上取 max）；至少含 opening 自己，按 seq 去重 */
+export function openingsCovered(events: readonly SessionEvent[], agentId: string, opening: UserMessageEvent): UserMessageEvent[] {
   let open: UserMessageEvent[] = [];
   for (const e of events) {
     if (e.type === "turn_ended") {
@@ -273,8 +282,7 @@ export function openingDepthFor(events: readonly SessionEvent[], agentId: string
     }
     if (e.type === "user_message" && e.mentions && e.mentions.includes(agentId)) open.push(e);
   }
-  for (const u of open) max = Math.max(max, relayDepthOf(u));
-  return max;
+  return open.some((u) => u.seq === opening.seq) ? open : [opening, ...open];
 }
 
 /** 「这一轮的判据从日志的哪一条读起」的两条**保守下界**（#958）。

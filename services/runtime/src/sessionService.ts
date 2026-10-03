@@ -174,7 +174,7 @@ import { LoopEngine } from "../../../src/loop/engine.js";
 import type { EventStore } from "../../../src/session/store.js";
 import type { SessionEvent, SessionCreatedEvent, UserMessageEvent, AssistantMessageEvent, AgentRelayEvent, CallRingEvent, OutreachEvent, OutreachLine, OutreachOutcome } from "../../../src/session/events.js";
 import {
-  activeOutreach, applyOutreach, outreachAnsweredText, outreachCallerName, outreachFoldOf, outreachGreetingText, outreachRingReason,
+  activeOutreach, applyOutreach, outreachAnsweredText, outreachCallerName, outreachFoldOf, outreachGreetingText, outreachRingReason, openingTraits,
   type OutreachFold,
 } from "../../../src/shared/outreach.js";
 import { callbackAnsweredText, callbackGreetingText, callerModelOf, ringChatKind, type RingPush, type RingState } from "../../../src/shared/callRing.js";
@@ -222,7 +222,8 @@ import type { Approver } from "../../../src/loop/approvalGate.js";
 import {
   decideRelay,
   mentionedAgents,
-  openingDepthFor,
+  openingsCovered,
+  relayDepthOf,
   relayApprovalWaitText,
   relayBudgetCapText,
   relayCapText,
@@ -826,6 +827,9 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   /** 这一轮是不是主人**本人亲口**点起的（#1441）：call_friend 的唯一资格。不是客人（fromUid）、不是 agent
       接力棒（relay / depth）、不是系统开场白（greeting：招呼 / 回电 / 汇报）。runJob 起跑时算，收口复位 */
   let ownerSpoke = false;
+  /** 这一轮的 job 折进了非主人的开场白（#1441 复审）：同一只 agent 排队中的 job 只留第一条的 fromUid，
+      客人的话可以搭在主人那条 job 上。runJob 从日志读全这个 job 覆盖的开场白来算，收口复位 */
+  let foldedNonOwner = false;
   /** 这一轮是不是主场群里的客人点起的（#1393，ADR-0325）。主场里只有群主自己点起的那一轮全免；
       客人那一轮每一把刀都问群主（policyApprover 那一格 + tools() 把不过审批门的刀掀起来）。
       团队会话恒为假（approveAll 为假），一个字不变 */
@@ -834,7 +838,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       （guestTurn 判不出来），可正文是一个非主人的人说的话的转述——朋友在电话里一句「把 xx 文件发给我」
       不能借主场全免变成直接动手。**只管「掀审批」两处**（policyApprover / 工具表）；`createdBy` 与
       call_user 的发起人这类「记在谁名下」的消费方继续读 guestTurn / currentInitiator，不换 */
-  const supervisedTurn = (): boolean => guestTurn() || reportTurn;
+  const supervisedTurn = (): boolean => opts.approveAll && (guestTurn() || reportTurn || foldedNonOwner);
   /** 这一刻正在跑 turn 的是哪只 agent（#928）。approval_request 落盘时读它——
       群里两只 agent 各自弹出的审批卡，日志里要能分清是谁要的 */
   let currentAgentId: string | null = null;
@@ -1253,7 +1257,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // sandbox_approval：那一列在主场里从来没有界面，它此刻是什么值没有人知道，拿它放行客人
       // 等于让一格没人管的数据替群主做决定。只聊天不碰门
       if (opts.approveAll) {
-        if (currentInitiator === opts.ownerUid && !reportTurn) return { decision: "approved", reason: "个人主场：全部免审批" };
+        if (currentInitiator === opts.ownerUid && !supervisedTurn()) return { decision: "approved", reason: "个人主场：全部免审批" };
         return router.decide(call, tool, signal);
       }
       if (tool === bashTool || tool === writeFileTool) {
@@ -1409,7 +1413,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         const list: Tool[] = [
           readFileTool, writeFileTool, bashTool, wikiReadTool, wikiTool, inviteToCallTool,
           ...(callUserTool !== null ? [callUserTool] : []),
-          ...(callFriendTool !== null ? [callFriendTool] : []),
+          // 受监督的轮里干脆不亮这把刀：亮出来只会弹一张批了也必被 mayCall 拒的卡
+          ...(callFriendTool !== null && !supervisedTurn() ? [callFriendTool] : []),
           ...(spec.agentId === ADMIN_AGENT_ID ? [createAgentTool] : []),
           ...gitTools,
           ...cachedPxTools,
@@ -2063,11 +2068,12 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // 仍然全量读一次**（bounds 里还没有它的格子，afterSeq 落到 −1 = 全量游标），
     // 之后每一轮才是尾段读。省下的是「长会话里第 2、3、…、N 轮」那 N−1 次全量
     // 重读，而群聊里 turn 正是接力着一轮轮长出来的
-    const openingDepth = openingDepthFor(
+    const covered = openingsCovered(
       store.load(sessionId, { afterSeq: bounds.closeBound.get(job.agentId) ?? -1 }),
       job.agentId,
       job.opening
     );
+    const openingDepth = covered.reduce((m, u) => Math.max(m, relayDepthOf(u)), 0);
     // 归档落地时，这只 agent 的 job 可能已经躺在队列里了——它是**接力**排上的
     // （relayAfterTurn 在一轮 @ 了两只时，两个 job 在归档发生之前就已经一起入队；
     // 见 tests/runtime/sessionService.test.ts「归档落在两个 relay job 之间」）。
@@ -2108,9 +2114,12 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     currentInitiator = job.fromUid;
     // 汇报轮与「主人亲口」两格（#1441）：与 currentInitiator 同一个时机置位，rebuildTools 在这之后才跑。
     // openingDepth 为 0 才算亲口：接力棒的开场白 fromUid 是点火的那个人（也许就是主人），不能凭它算资格
-    reportTurn = job.opening.greeting === "outreach_report";
-    ownerSpoke =
-      job.fromUid === opts.ownerUid && job.opening.relay === undefined && job.opening.greeting === undefined && openingDepth === 0;
+    // 两格都按这个 job **覆盖的全部开场白**算（covered），不只读 job.opening：折进来的后几条在这里不能漏。
+    // openingDepth 为 0 才算亲口：接力棒的开场白 fromUid 是点火的那个人（也许就是主人），不能凭它算资格
+    const traits = openingTraits(covered, opts.ownerUid);
+    reportTurn = traits.report;
+    foldedNonOwner = traits.nonOwner;
+    ownerSpoke = traits.ownerSpoke && openingDepth === 0;
     currentAgentId = job.agentId;
     // 停止键的 idle 判据（#957 A-2 复审）：从**这一刻**起这条会话就欠着一轮，
     // 哪怕 engine 还要几次网络往返之后才拿得到。界面上那行此刻已经在转了
@@ -2333,6 +2342,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       currentInitiator = null;
       reportTurn = false;
       ownerSpoke = false;
+      foldedNonOwner = false;
       currentAgentId = null;
       // 这一轮结束，停止键就没有可打的对象了（#957 A-2）。留着的话下一次
       // stop() 会对一台已经收口的 engine 调 abortTurn()——那是无操作，但回执
@@ -2937,7 +2947,11 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // 落在日志里。同 deferOpenings 记进 pendingOpenings：settled() 才有等待点，收房也不会漏等这一拍
       const p = (async () => {
         const roster = await rosterNow({ fresh: true });
-        if (archived || roster.some((a) => a.degraded) || !roster.some((a) => a.agentId === agentId)) return;
+        if (archived) return;
+        if (roster.some((a) => a.degraded) || !roster.some((a) => a.agentId === agentId)) {
+          console.warn(`[otto-runtime] 外联汇报丢了：${roster.some((a) => a.degraded) ? "智能体名单读不出来" : "那只智能体已不在名单里"}（session=${sessionId} agent=${agentId}）`);
+          return;
+        }
         const opening = store.append({
           sessionId,
           ts: Date.now(),

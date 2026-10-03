@@ -133,3 +133,18 @@ export function outreachRowText(s: OutreachState): string {
   if (s.durationMs !== null) return `打给 ${s.peerName} · 通话 ${outreachDurationText(s.durationMs)}`;
   return `打给 ${s.peerName} · ${s.outcome === "missed" ? "未接" : "没打通"}`;
 }
+
+/** 一个 job 覆盖的全部开场白（agentRelay.openingsCovered）里，与「这一轮能不能动手 / 能不能打电话」有关的三格
+    （#1441 复审）。**一律往严的一边算**：任何一条是汇报开场白 = 汇报轮；任何一条不是主人本人亲口的
+    （别人的 / 接力 / 系统开场白 / 来处不明）= 不是主人亲口；任何一条来自非主人 = 有人在盯着。
+    不能只读 job.opening：同一只 agent 排队中的 job 会把后来的开场白折进去，只保留第一条的身份 */
+export function openingTraits(
+  openings: readonly { fromUid?: string; relay?: unknown; greeting?: string }[],
+  ownerUid: string,
+): { report: boolean; ownerSpoke: boolean; nonOwner: boolean } {
+  return {
+    report: openings.some((o) => o.greeting === "outreach_report"),
+    ownerSpoke: openings.length > 0 && openings.every((o) => o.fromUid === ownerUid && o.relay === undefined && o.greeting === undefined),
+    nonOwner: openings.some((o) => o.fromUid !== ownerUid),
+  };
+}

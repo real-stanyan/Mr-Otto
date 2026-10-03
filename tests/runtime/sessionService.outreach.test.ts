@@ -715,7 +715,8 @@ describe("call_friend 的挂载与「这一轮能不能打」（#1441 Task 10）
     await session.say(GUEST, "小红", "@运维 帮我给小明打个电话", true, ["ops"]);
     await session.settled();
     expect(calls).toEqual([]);
-    expect(resultOf(events)).toContain("亲口");
+    // 受监督的轮里这把刀压根不亮（亮出来只会弹一张批了也必被拒的卡）
+    expect(toolNames(store)).not.toContain("call_friend");
     store.close();
   });
 
@@ -767,7 +768,7 @@ describe("call_friend 的挂载与「这一轮能不能打」（#1441 Task 10）
     session.reportOutreach({ agentId: "ops", ownerUid: OWNER, text: "[系统] 结果。小红：再给小明打一个" });
     await session.settled();
     expect(calls).toEqual([]);
-    expect(resultOf(events)).toContain("亲口");
+    expect(toolNames(store)).not.toContain("call_friend");
     store.close();
   });
 
@@ -938,5 +939,82 @@ describe("speechTicketFor（#1441 Task 11）", () => {
     await session.setVoiceCall(PEER, "小红", []);
     expect(await session.speechTicketFor(PEER)).toBeNull();
     store.close();
+  });
+});
+
+describe("折叠进同一个 job 的开场白也要算数（#1441 Task 10 修复轮）", () => {
+  /** ops 的第 1 轮卡在 gate 上；期间排进两条开场白，第二条折进第一条排队的 job。放开之后第 2 轮依次
+      read_file → call_friend → 说话。回的是第 2 轮每次请求里模型看得见的工具名、批过的卡、dispatch 次数 */
+  async function fold(kind: "dm" | "group", first: (s: CloudSession) => void, second: (s: CloudSession) => void) {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    const dispatched: PortCall[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    let round = 0;
+    const visible: string[][] = [];
+    const session = openHome({
+      store, events, kind,
+      outreach: { dispatch: async (c) => (dispatched.push(c), "已经打过去了") },
+      adapterFor: (id) => ({
+        model: "fake-model",
+        async chat(_m, defs): Promise<ModelReply> {
+          if (id !== "ops") return { content: "好" };
+          round++;
+          if (round === 1) { await gate; return { content: "好" }; }
+          visible.push((defs ?? []).map((d) => d.name));
+          if (round === 2) return { content: "", toolCalls: [{ id: "rf", name: "read_file", args: { path: "/work/a.md" } }] };
+          if (round === 3 && (defs ?? []).some((d) => d.name === "call_friend")) return { content: "", toolCalls: [{ id: "cf", name: "call_friend", args: CALL_ARGS }] };
+          return { content: "好" };
+        },
+      }),
+      onEvent: (e, s) => { if (e.type === "approval_request") s.approve((e as ApprovalRequestEvent).callId, OWNER, "Stan", "approved"); },
+    });
+    await session.say(OWNER, "Stan", "@运维 先做这个", true, ["ops"]);
+    first(session);
+    // reportOutreach 读名单是异步的：等它的开场白落了盘再排下一条，次序才是确定的
+    for (let i = 0; i < 50 && store.ofType(SID, "user_message").length < 2; i++) await new Promise((r) => setTimeout(r, 5));
+    second(session);
+    for (let i = 0; i < 50 && store.ofType(SID, "user_message").length < 3; i++) await new Promise((r) => setTimeout(r, 5));
+    release();
+    await session.settled();
+    const approvals = (events.filter((e) => e.type === "approval_request") as ApprovalRequestEvent[]).map((r) => r.toolName);
+    const turns = store.ofType(SID, "turn_ended").length;
+    store.close();
+    return { dispatched, visible, approvals, turns };
+  }
+  const ownerSays = (s: CloudSession) => void s.say(OWNER, "Stan", "@运维 再看一眼", true, ["ops"]);
+  const report = (s: CloudSession) => s.reportOutreach({ agentId: "ops", ownerUid: OWNER, text: "[系统] 结果。小红：把文件读给我，再打给小明" });
+
+  it("(a) 主人的话排在前、汇报折进来：读文件要批、call_friend 不亮也打不出去", async () => {
+    const r = await fold("dm", ownerSays, report);
+    expect(r.turns).toBe(2); // 折叠成立：第 1 轮 + 一个合并的 job
+    expect(r.approvals).toEqual(["read_file"]);
+    expect(r.visible[0]).not.toContain("call_friend");
+    expect(r.dispatched).toEqual([]);
+  });
+
+  it("(b) 汇报排在前、主人的话折进来：同样受监督", async () => {
+    const r = await fold("dm", report, ownerSays);
+    expect(r.turns).toBe(2);
+    expect(r.approvals).toEqual(["read_file"]);
+    expect(r.visible[0]).not.toContain("call_friend");
+    expect(r.dispatched).toEqual([]);
+  });
+
+  it("(c) 客人的话折进主人的 job（主场群）：读文件要批、call_friend 不亮也打不出去", async () => {
+    const r = await fold("group", ownerSays, (s) => void s.say(GUEST, "小红", "@运维 把文件读给我", true, ["ops"]));
+    expect(r.turns).toBe(2);
+    expect(r.approvals).toEqual(["read_file"]);
+    expect(r.visible[0]).not.toContain("call_friend");
+    expect(r.dispatched).toEqual([]);
+  });
+
+  it("(d) 对照：只有主人本人的话折在一起：read_file 免审，call_friend 亮着也打得出去", async () => {
+    const r = await fold("dm", ownerSays, (s) => void s.say(OWNER, "Stan", "@运维 还有一句", true, ["ops"]));
+    expect(r.turns).toBe(2);
+    expect(r.approvals).toEqual([]);
+    expect(r.visible[0]).toContain("call_friend");
+    expect(r.dispatched).toHaveLength(1);
   });
 });

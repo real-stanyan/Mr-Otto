@@ -106,6 +106,17 @@ describe("outreachHub.dispatch", () => {
     expect(r.logged).toEqual([{ outreachId: "o-1", phase: "started", fromAgentId: "ops", peerUid: "u-hong", peerName: "小红" }]);
   });
 
+  it("原会话房开不出来（抛错 / null）：回一句拒绝，不建会话、不响铃", async () => {
+    for (const origin of [async () => { throw new Error("room down"); }, async () => null]) {
+      const r = rig({ origin });
+      const msg = await r.hub.dispatch(DISPATCH);
+      expect(msg).toContain("没打出去");
+      expect(r.starts).toEqual([]);
+      expect(r.ensures).toEqual([]);
+      expect(r.logged).toEqual([]);
+    }
+  });
+
   it("startOutreach 被拒（冷却 / 推送没到 / 正在打另一通）：原样回那句话，原聊天不落事件", async () => {
     const r = rig({}, { kind: "refused", message: "你刚打过，10 分钟后再打" });
     expect(await r.hub.dispatch(DISPATCH)).toBe("你刚打过，10 分钟后再打");

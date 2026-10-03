@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import {
   DEFAULT_RELAY_MAX_DEPTH, RELAY_GUARD, RELAY_SPIN_STOP_REPEATS, RELAY_BUDGET_FRACTION_OF_REMAINING,
   decideRelay, hopFingerprint, isHumanOpening, mentionedAgents, relayBudgetMicroOf, relayStateSince,
-  openingDepthFor, relayApprovalWaitText, relayBudgetCapText, relayCapText, relaySpinStopText,
+  openingDepthFor, openingsCovered, relayApprovalWaitText, relayBudgetCapText, relayCapText, relaySpinStopText,
   relayChain, relayDepthOf, relayNudgeText, relayOpeningText,
   advanceRelayBounds, emptyRelayBounds, relayBoundsOf, RELAY_MAX_HOPS_PER_IGNITION, relayTotalCapText,
 } from "../../src/shared/agentRelay.js";
@@ -441,5 +441,20 @@ describe("派活开场白（#1153）", () => {
     const relayed = { sessionId: "s", ts: 2, seq: 2, type: "user_message", content: "[系统] …", fromUid: "u1", mentions: ["ads"], relay: { fromAgentId: "ops", depth: 1 } } as unknown as SessionEvent;
     expect(isHumanOpening(dispatched)).toBe(true);
     expect(isHumanOpening(relayed)).toBe(false);
+  });
+});
+
+describe("openingsCovered（#1441 复审）", () => {
+  const um = (seq: number, mentions: string[]): UserMessageEvent =>
+    ({ sessionId: "s", seq, ts: seq, type: "user_message", content: "x", mentions } as UserMessageEvent);
+  const ended = (seq: number, agentId: string, readUpToSeq: number): TurnEndedEvent =>
+    ({ sessionId: "s", seq, ts: seq, type: "turn_ended", outcome: "completed", agentId, readUpToSeq } as TurnEndedEvent);
+  it("job 自己的 opening + 这只还没收口的点名，按 seq 去重；别的 agent 的与已收口的不算", () => {
+    const a = um(1, ["ops"]), b = um(2, ["ops"]), c = um(3, ["ads"]), d = um(5, ["ops"]);
+    const events = [a, b, c, ended(4, "ops", 2), d];
+    expect(openingsCovered(events, "ops", d).map((u) => u.seq)).toEqual([5]);
+    expect(openingsCovered([a, b, c], "ops", a).map((u) => u.seq)).toEqual([1, 2]);
+    // opening 还没进 events：补在最前
+    expect(openingsCovered([a], "ops", b).map((u) => u.seq)).toEqual([2, 1]);
   });
 });

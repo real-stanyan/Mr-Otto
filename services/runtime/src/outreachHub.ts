@@ -68,6 +68,16 @@ export function createOutreachHub(d: OutreachHubDeps): OutreachHub {
         d.log(`外联前检查失败（workspace=${o.workspaceId}）：${String(err)}`);
         return "这会儿查不了，电话没打出去，稍后再试。";
       }
+      // 原聊天房先拿到、再响铃（#1441 复审）：响铃之后才发现原聊天开不出来，就成了「电话在响、工具报错、
+      // 原聊天里没有 started」。拿不到就一个铃都不打
+      let origin: OutreachOrigin | null;
+      try {
+        origin = await d.origin(o.workspaceId, o.originSessionId);
+      } catch (err) {
+        d.log(`开原会话房失败（session=${o.originSessionId}）：${String(err)}`);
+        origin = null;
+      }
+      if (origin === null) return "电话没打出去（这条聊天这会儿接不了结果），稍后再试。";
       const ownerName = await d.labelOf(o.ownerUid);
       let target: OutreachTarget;
       try {
@@ -82,8 +92,7 @@ export function createOutreachHub(d: OutreachHubDeps): OutreachHub {
         ownerName, peerUid: m.uid, peerName: m.name, brief: o.brief, opening: o.opening,
       });
       if (r.kind === "refused") return r.message;
-      const origin = await d.origin(o.workspaceId, o.originSessionId);
-      origin?.logOutreach({ outreachId, phase: "started", fromAgentId: o.agentId, peerUid: m.uid, peerName: m.name });
+      origin.logOutreach({ outreachId, phase: "started", fromAgentId: o.agentId, peerUid: m.uid, peerName: m.name });
       return `已经打给 ${m.name} 了。先回他一句「打过去了」；聊完或者没接，通话记录会带回这条聊天，到时你再汇报。`;
     },
     async ended(workspaceId, ownerUid, r) {
