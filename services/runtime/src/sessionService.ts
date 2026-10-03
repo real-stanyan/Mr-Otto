@@ -179,6 +179,7 @@ import {
 } from "../../../src/shared/outreach.js";
 import { callbackAnsweredText, callbackGreetingText, callerModelOf, ringChatKind, type RingPush, type RingState } from "../../../src/shared/callRing.js";
 import { createRinger, type Ringer } from "./callRinger.js";
+import { SPEECH_TICKET_TTL_MS, type SpeechTicket } from "../../../src/shared/speechTicket.js";
 import { createOutreachRun, type OutreachEnded, type OutreachRun, type OutreachStart, type OutreachStartResult } from "./outreachRun.js";
 import { createCallUserTool } from "./callUserTool.js";
 import { createCallFriendTool } from "./callFriendTool.js";
@@ -470,6 +471,9 @@ export interface CloudSessionOpts {
   outreach: {
     dispatch(o: { originSessionId: string; agentId: string; agentName: string; friend: string; brief: string; opening: string }): Promise<string>;
   } | null;
+  /** 给打给好友的那条线签语音票（#1441）：好友听到的 TTS 记在主人账上，edge 用同一把密钥验。
+      **必需**（同 callback 的纪律）：忘接线该编译不过，而不是安静地让好友的通话一句话都出不了声 */
+  signSpeechTicket: (t: SpeechTicket) => Promise<string>;
   /** 回电响铃的定时器（只给测试拧，同 deltaTimers）。缺席 = setTimeout / clearTimeout */
   ringTimers?: { setTimer?: (fn: () => void, ms: number) => unknown; clearTimer?: (h: unknown) => void };
   /** 这个团队的容器锁（#979 第 2 条，ADR-0232）。**必需**（同 memory / isMember
@@ -627,6 +631,9 @@ export interface CloudSession {
       事实在日志，`workspace_session_members` 那张表只是给客户端 RLS 用的投影。进房、发言、审批、
       补跑时的复查都拿它和工作区成员一起判 */
   isGuest(uid: string): boolean;
+  /** 外联会话里，这通电话进行中且 uid 就是被打的那位好友时，签一张语音票（#1441）；否则 null。
+      票的有效期从这通电话开始算起（`startedTs + SPEECH_TICKET_TTL_MS`），不从签发那刻算 */
+  speechTicketFor(uid: string): Promise<string | null>;
   /** 新建的智能体先开口（#1356 A2，spec §7.2 第 2 步）：替建这条私聊的人落一条带
       `greeting: "new_agent"` 的开场白（点它自己）并入队——同 greetNewcomers 那条路（先落盘
       再入队，重启补跑与「排队中」那盏灯全部免费拿到）。只由 daemon 在**新**建出一条私聊、且抢到了
@@ -2850,6 +2857,15 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     },
 
     isGuest,
+
+    async speechTicketFor(uid) {
+      const live = activeOutreach(outreachFold);
+      if (!isOutreach || live === null || uid !== live.peerUid) return null;
+      return opts.signSpeechTicket({
+        ownerUid: opts.ownerUid, peerUid: uid, workspaceId: opts.workspaceId, sessionId,
+        exp: live.startedTs + SPEECH_TICKET_TTL_MS,
+      });
+    },
 
     async updateChatRoster(byUid, patch, byName) {
       if (chatKind !== "group") {

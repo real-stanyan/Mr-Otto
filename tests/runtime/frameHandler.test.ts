@@ -22,6 +22,7 @@ function fakeSession(overrides: Partial<CloudSession> = {}): CloudSession {
     say: async () => {},
     // #1356 A2：默认不落——绝大多数用例不关心"新建的智能体先开口"这条路
     greetNewAgent: () => {},
+    speechTicketFor: async () => null,
     logOutreach: () => {},
     reportOutreach: () => {},
     // #937：say() 不再等 turn 跑完，等待点搬进了 settled()。这一层不消费它
@@ -2232,5 +2233,62 @@ describe("uidOf（#1411）", () => {
     expect(handler.uidOf("c1")).toBe("u1");
     handler.onGone("c1");
     expect(handler.uidOf("c1")).toBeNull();
+  });
+});
+
+// 外联线上的语音票（#1441）：被打的那位好友进房 / 接通时拿到一张；没有就不带这个键
+describe("外联会话：语音票与客人进房（#1441）", () => {
+  const outreachSession = (extra: Partial<CloudSession> = {}) =>
+    fakeSession({
+      isGuest: (uid) => uid === "friend",
+      chat: () => ({ kind: "outreach", agentIds: ["a1"], humans: [{ uid: "friend", name: "小红" }], outreach: { ownerName: "老王", active: true } }),
+      ...extra,
+    });
+
+  it("好友是外联会话的客人：非成员也过 hello，welcome 里 chat.kind 是 outreach", async () => {
+    const { deps, sent } = makeDeps({ getSession: () => outreachSession(), isMember: async () => false });
+    const h = createFrameHandler(deps);
+    await h.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:friend"));
+    expect(sent.find((x) => x.msg.t === "welcome")!.msg).toMatchObject({ t: "welcome", chat: { kind: "outreach" } });
+  });
+
+  it("既不是成员也不是这条线的客人：照旧 not_member", async () => {
+    const { deps, sent } = makeDeps({ getSession: () => outreachSession(), isMember: async () => false });
+    const h = createFrameHandler(deps);
+    await h.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:stranger"));
+    expect(sent.at(-1)!.msg).toMatchObject({ t: "denied", code: "not_member" });
+  });
+
+  it("welcome：speechTicketFor 回票就带 speechTicket，回 null 就没有这个键", async () => {
+    const asked: string[] = [];
+    const withTicket = makeDeps({
+      getSession: () => outreachSession({ speechTicketFor: async (uid) => (asked.push(uid), "TICKET") }),
+      isMember: async () => false,
+    });
+    await createFrameHandler(withTicket.deps).onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:friend"));
+    expect(withTicket.sent.find((x) => x.msg.t === "welcome")!.msg).toMatchObject({ speechTicket: "TICKET" });
+    expect(asked).toEqual(["friend"]);
+
+    const without = makeDeps({ getSession: () => fakeSession({ speechTicketFor: async () => null }) });
+    await createFrameHandler(without.deps).onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    expect(without.sent.find((x) => x.msg.t === "welcome")!.msg).not.toHaveProperty("speechTicket");
+  });
+
+  it("call_result{ok:true}：同样只在 speechTicketFor 非空时带 speechTicket", async () => {
+    const withTicket = makeDeps({
+      getSession: () => fakeSession({ setVoiceCall: async () => ({ kind: "ok" }), speechTicketFor: async () => "T2" }),
+    });
+    const h1 = createFrameHandler(withTicket.deps);
+    await h1.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    await h1.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "call", participants: ["a1"] }));
+    expect(withTicket.sent.at(-1)!.msg).toEqual({ t: "call_result", ok: true, speechTicket: "T2" });
+
+    const without = makeDeps({
+      getSession: () => fakeSession({ setVoiceCall: async () => ({ kind: "ok" }), speechTicketFor: async () => null }),
+    });
+    const h2 = createFrameHandler(without.deps);
+    await h2.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    await h2.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "call", participants: ["a1"] }));
+    expect(without.sent.at(-1)!.msg).toEqual({ t: "call_result", ok: true });
   });
 });

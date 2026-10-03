@@ -725,6 +725,8 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
         const label = await deps.labelOf(result.uid);
         const ownerUid = await deps.sessions.ownerOf(workspaceId);
         cids.set(cid, { uid: result.uid, label });
+        // 外联线上被打的那位好友拿一张语音票（#1441）；其他人、其他会话不带这个键
+        const ticket = await session.speechTicketFor(result.uid);
         deps.send(cid, {
           t: "welcome",
           v: CS_PROTOCOL_VERSION,
@@ -735,6 +737,7 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
           modelRoute: await deps.modelRoute(workspaceId, ownerUid),
           // 聊天身份（协议 20，#1280）：团队会话回 null，那一格就不上线
           ...(session.chat() !== null ? { chat: session.chat()! } : {}),
+          ...(ticket !== null ? { speechTicket: ticket } : {}),
         });
         return;
       }
@@ -934,7 +937,9 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
           };
           const outcome = await session.setVoiceCall(entry.uid, entry.label, msg.participants, budget);
           if (outcome.kind === "ok") {
-            deps.send(cid, { t: "call_result", ok: true });
+            // 接通那一刻再带一张（welcome 时电话可能还没响）；不是外联线 / 不是那位好友 = 不带
+            const ticket = await session.speechTicketFor(entry.uid);
+            deps.send(cid, { t: "call_result", ok: true, ...(ticket !== null ? { speechTicket: ticket } : {}) });
             return;
           }
           deps.log(`通话名单被拒 session=${sessionId} uid=${entry.uid}：${outcome.kind}`);

@@ -42,7 +42,10 @@ import { createSupabaseAgentWriter, type WorkspaceAgentWriter } from "./agentReg
 import { normalizeAgentTools } from "../../../src/shared/agentToolAllow.js";
 import { safeSpeakerLabel } from "../../../src/shared/promptSafe.js";
 import type { PxCallDeps } from "./pxTools.js";
-import { createHostedProbe, createHostedRuntimeAdapter, createRouteMemo, probeModelRoute, withUsage, type RouteMemo } from "./hostedRoute.js";
+import { createHostedProbe, createHostedRuntimeAdapter, createRouteMemo, decideRuntimeRoute, probeModelRoute, withUsage, type RouteMemo } from "./hostedRoute.js";
+import { createOutreachHub } from "./outreachHub.js";
+import { blockedMessage, countAgentOutreach, ensureOutreachSession, openOriginRoom } from "./outreachSession.js";
+import { signSpeechTicket } from "../../../src/shared/speechTicket.js";
 import { pickAutoModel } from "./autoModel.js";
 import { requestDispatchAsOwner } from "./dispatch.js";
 import { decisionModelOf, modeOf } from "../../../src/shared/decision.js";
@@ -497,6 +500,107 @@ async function main(): Promise<void> {
     return svc;
   }
 
+  /** 把一条已经存在的会话房接上（外联的原会话 / 外联会话本身关着时用）：与启动补开同两步——
+      问 workspaceFacts 拿所有者与 kind，再 openSessionRoom。归档的判断留给调用方 */
+  async function openExistingRoom(workspaceId: string, sessionId: string, createdByUid: string): Promise<CloudSession> {
+    const facts = await workspaceFacts(workspaceId);
+    return openSessionRoom(workspaceId, sessionId, facts.ownerUid, createdByUid, facts.kind === "home");
+  }
+
+  /** 外联（#1441）：agent 替主人给好友打电话。判断都在 outreachHub / outreachSession（进得了 vitest），
+      这里只是把它们接上真数据源。推送关着（apns === null）= 没有这个 hub，刀也就不挂 */
+  const outreachHub =
+    apns === null
+      ? null
+      : createOutreachHub({
+          // 好友名单：accepted 的全部行，对方 uid 再取名字。查询失败一律抛——「查不出来」不能读成「没有好友」
+          friendsOf: async (ownerUid) => {
+            const { data, error } = await supabase
+              .from("friendships")
+              .select("requester,addressee")
+              .eq("status", "accepted")
+              .or(`requester.eq.${ownerUid},addressee.eq.${ownerUid}`);
+            if (error) throw new Error(error.message);
+            const uids = [...friendSetOf(ownerUid, (data ?? []) as { requester: string; addressee: string }[])];
+            return Promise.all(uids.map(async (uid) => ({ uid, name: await labelOf(uid) })));
+          },
+          deviceCount: (uid) => apns.deviceCount(uid),
+          // 额度：与 welcome 用的同一只探针、同一份 decideRuntimeRoute；只有 blocked 才回话
+          ownerBlocked: async (workspaceId, ownerUid) =>
+            blockedMessage(
+              decideRuntimeRoute({
+                me: await hostedProbe.me(ownerUid), requestedModels: [], ownerUid, workspaceId, sessionId: "",
+                edgeBase: config.edgeBase, runtimeSecret: config.runtimeSecret,
+              }),
+            ),
+          countSince: (workspaceId, agentId, since) =>
+            countAgentOutreach(
+              {
+                sessionIds: async (w, a) => {
+                  const { data, error } = await supabase
+                    .from("workspace_sessions")
+                    .select("id")
+                    .eq("workspace_id", w)
+                    .eq("chat_kind", "outreach")
+                    .contains("agent_ids", [a]);
+                  if (error) throw new Error(`外联会话查询失败（${w}）：${error.message}`);
+                  return ((data ?? []) as { id: string }[]).map((r) => r.id);
+                },
+                outreachEvents: (id) => storeFor(workspaceId).ofType(id, "outreach"),
+              },
+              workspaceId, agentId, since,
+            ),
+          ensureSession: (workspaceId, ownerUid, ownerName, agent, peer) =>
+            ensureOutreachSession<CloudSession>(
+              {
+                find: async (w, a, peerUid) => {
+                  const { data, error } = await supabase
+                    .from("workspace_sessions")
+                    .select("id")
+                    .eq("workspace_id", w)
+                    .eq("chat_kind", "outreach")
+                    .eq("peer_uid", peerUid)
+                    .contains("agent_ids", [a])
+                    .maybeSingle();
+                  if (error) throw new Error(`外联会话查询失败（${w}）：${error.message}`);
+                  return data ? (data as { id: string }).id : null;
+                },
+                insert: async (row) => {
+                  const { error } = await supabase.from("workspace_sessions").insert(row);
+                  return error ? { code: error.code, message: error.message } : null;
+                },
+                append: (e) => void storeFor(workspaceId).append(e),
+                active: (id) => activeSessions.get(id)?.session ?? null,
+                open: (id) => openSessionRoom(workspaceId, id, ownerUid, ownerUid, true),
+                syncGuests: syncGuestRows,
+                newId: randomUUID,
+                now: Date.now,
+                workdir: WORKDIR,
+              },
+              { workspaceId, ownerUid, ownerName, agent, peer },
+            ),
+          origin: (workspaceId, sessionId) =>
+            openOriginRoom<CloudSession>(
+              {
+                active: (id) => activeSessions.get(id)?.session ?? null,
+                row: async (id) => {
+                  const { data, error } = await supabase.from("workspace_sessions").select("workspace_id,publisher_uid,archived").eq("id", id).maybeSingle();
+                  if (error) throw new Error(error.message);
+                  if (!data) return null;
+                  const r = data as { workspace_id: string; publisher_uid: string; archived: boolean };
+                  return { workspace_id: r.workspace_id, archived: r.archived, publisherUid: r.publisher_uid };
+                },
+                open: (w, id, publisherUid) => openExistingRoom(w, id, publisherUid),
+              },
+              workspaceId, sessionId,
+            ),
+          agentName: async (workspaceId, agentId) => (await agentsCache.get(workspaceId)).find((a) => a.agentId === agentId)?.name ?? agentId,
+          labelOf,
+          newId: randomUUID,
+          now: Date.now,
+          log: (m) => console.warn(`[otto-runtime] ${m}`),
+        });
+
   /** 开一条会话房：起 transport、装配 CloudSession、接好扇出与 cid 清理。
       调用时机两处——create 流程（新会话）与启动时把存量 kind='cloud' 会话
       的房间重新接上（不然重启后没人监听那个 channel，desktop 的 join 会
@@ -826,11 +930,15 @@ async function main(): Promise<void> {
       diskUsage: () => sandbox.diskUsage(workspaceId),
       // 回电（#1411）：推送关着 = null（刀不出现）。isWatching = 这个房间里有没有他的连接——手机切后台会
       // 主动断开会话房（mobile/src/cloud/cloudClient.ts），所以「连着」就是「开着这条聊天」
-      // 外联收尾回调（#1441）：跨会话那一头（把结果汇报进原聊天）由 Task 11 接线，在此之前 null
-      // = 外联会话的 startOutreach 一律 refused，不会有一通电话打出去却没人接收尾
-      onOutreachEnded: null,
-      // call_friend 的端口（#1441）：同上由 Task 11 接线；null = 那把刀不出现在任何主场聊天里
-      outreach: null,
+      // 外联（#1441）：收尾时把结果汇报回原聊天、call_friend 那把刀的出口。推送关着 = 没有 hub = 两样都是 null；
+      // 刀只挂在主场（home）——approveAll 与 session_created.cloud.home 同源
+      onOutreachEnded: outreachHub === null ? null : (r) => void outreachHub.ended(workspaceId, ownerUid, r),
+      outreach:
+        outreachHub === null || !approveAll
+          ? null
+          : { dispatch: (o) => outreachHub.dispatch({ ...o, workspaceId, ownerUid }) },
+      // 给打给好友的那条线签语音票（#1441）：好友听到的 TTS 记在主人账上，edge 用同一把 RUNTIME_SECRET 验
+      signSpeechTicket: (t) => signSpeechTicket(t, config.runtimeSecret),
       callback:
         apns === null
           ? null

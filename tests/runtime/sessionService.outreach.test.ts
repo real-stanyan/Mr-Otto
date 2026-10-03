@@ -10,6 +10,7 @@ import { createInMemoryWikiJournal } from "../../services/runtime/src/wikiJourna
 import { EventStore } from "../../src/session/store.js";
 import type { ApprovalRequestEvent, AssistantMessageEvent, CallRingEvent, OutreachEvent, RequestEnvelopeEvent, SessionEvent, UserMessageEvent, VoiceCallChangedEvent } from "../../src/session/events.js";
 import type { OutreachEnded, OutreachStart } from "../../services/runtime/src/outreachRun.js";
+import { SPEECH_TICKET_TTL_MS, type SpeechTicket } from "../../src/shared/speechTicket.js";
 import { OUTREACH_CAP_MS } from "../../src/shared/outreach.js";
 import type { ModelAdapter, ModelReply } from "../../src/model/adapter.js";
 import type { ExecutionWorld } from "../../src/world/executionWorld.js";
@@ -89,7 +90,7 @@ function open(store: EventStore, o: { team?: (typeof OPS)[] } = {}): Probe {
     onEvent: () => {}, onUsage: () => {}, wiki, mentionInbox: createInMemoryMentionInbox(),
     agentWriter: createInMemoryAgentWriter(), isMember: async () => true, contextWindowOf: () => undefined,
     sandboxApproval: async () => "ask", workspaceLock: createWorkspaceLock(), relayRemainingMicro: async () => null,
-    diskUsage: () => null, onOutreachEnded: null, outreach: null, approveAll: true, callback: null,
+    diskUsage: () => null, onOutreachEnded: null, signSpeechTicket: async () => "t", outreach: null, approveAll: true, callback: null,
     dispatch: async (input) => {
       probe.dispatchCalls++;
       return { kind: "picked", agentIds: [input.roster[0]!.agentId] };
@@ -276,7 +277,7 @@ function fakeTimers() {
   };
 }
 
-function openLive(store: EventStore, o: { endedTo?: OutreachEnded[] | null; watching?: () => boolean; devices?: number; team?: (typeof OPS)[]; reply?: (agentId: string) => string } = {}) {
+function openLive(store: EventStore, o: { endedTo?: OutreachEnded[] | null; watching?: () => boolean; devices?: number; team?: (typeof OPS)[]; reply?: (agentId: string) => string; sign?: NonNullable<CloudSessionOpts["signSpeechTicket"]> } = {}) {
   const timers = fakeTimers();
   const ended = o.endedTo === undefined ? [] : o.endedTo;
   const pushes: string[] = [];
@@ -299,7 +300,7 @@ function openLive(store: EventStore, o: { endedTo?: OutreachEnded[] | null; watc
         return 1;
       },
     },
-    onOutreachEnded: ended === null ? null : (r) => ended.push(r),
+    onOutreachEnded: ended === null ? null : (r) => ended.push(r), signSpeechTicket: o.sign ?? (async () => "t"),
     outreach: null,
     ringTimers: { setTimer: timers.setTimer, clearTimer: timers.clearTimer },
   };
@@ -623,7 +624,7 @@ function openHome(o: {
     onUsage: () => {}, wiki: testWiki(), mentionInbox: createInMemoryMentionInbox(),
     agentWriter: createInMemoryAgentWriter(), isMember: async (uid) => uid === OWNER, contextWindowOf: () => undefined,
     sandboxApproval: async () => "ask", workspaceLock: createWorkspaceLock(), relayRemainingMicro: async () => null,
-    diskUsage: () => null, onOutreachEnded: null, approveAll: !team, callback: null,
+    diskUsage: () => null, onOutreachEnded: null, signSpeechTicket: async () => "t", approveAll: !team, callback: null,
     outreach: o.outreach === undefined ? null : o.outreach,
   });
   return session;
@@ -682,7 +683,7 @@ describe("call_friend 的挂载与「这一轮能不能打」（#1441 Task 10）
       onEvent: () => {}, onUsage: () => {}, wiki: testWiki(), mentionInbox: createInMemoryMentionInbox(),
       agentWriter: createInMemoryAgentWriter(), isMember: async () => true, contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask", workspaceLock: createWorkspaceLock(), relayRemainingMicro: async () => null,
-      diskUsage: () => null, onOutreachEnded: null, approveAll: true, callback: null, outreach: portProbe().port,
+      diskUsage: () => null, onOutreachEnded: null, signSpeechTicket: async () => "t", approveAll: true, callback: null, outreach: portProbe().port,
     });
     await s2.say(PEER, "小红", "喂", false, [], undefined, []);
     await s2.settled();
@@ -897,6 +898,45 @@ describe("logOutreach（#1441 Task 10）", () => {
     session.archive("Stan");
     session.logOutreach({ outreachId: "o1", phase: "ended", fromAgentId: "ops", peerUid: PEER, peerName: "小红", outcome: "missed" });
     expect(store.ofType(SID, "outreach")).toHaveLength(1);
+    store.close();
+  });
+});
+
+describe("speechTicketFor（#1441 Task 11）", () => {
+  it("外联进行中、uid 是那位好友：签一张，exp = 这通开始时刻 + 15 分钟，ownerUid / workspaceId / sessionId 都对", async () => {
+    const store = newStore();
+    outreachSeed(store);
+    const signed: SpeechTicket[] = [];
+    const { session } = openLive(store, { sign: async (t) => (signed.push(t), "SIGNED") });
+    await session.startOutreach(START);
+    const started = ofKind<OutreachEvent>(store, "outreach").find((e) => e.phase === "started")!;
+    expect(await session.speechTicketFor(PEER)).toBe("SIGNED");
+    expect(signed).toEqual([{ ownerUid: OWNER, peerUid: PEER, workspaceId: "w1", sessionId: SID, exp: started.ts + SPEECH_TICKET_TTL_MS }]);
+    store.close();
+  });
+
+  it("主人 / 陌生人：null，不签", async () => {
+    const store = newStore();
+    outreachSeed(store);
+    const signed: SpeechTicket[] = [];
+    const { session } = openLive(store, { sign: async (t) => (signed.push(t), "SIGNED") });
+    await session.startOutreach(START);
+    expect(await session.speechTicketFor(OWNER)).toBeNull();
+    expect(await session.speechTicketFor("stranger")).toBeNull();
+    expect(signed).toEqual([]);
+    store.close();
+  });
+
+  it("没有外联在进行 / 挂断之后：null", async () => {
+    const store = newStore();
+    outreachSeed(store);
+    const { session } = openLive(store);
+    expect(await session.speechTicketFor(PEER)).toBeNull();
+    await session.startOutreach(START);
+    await session.setVoiceCall(PEER, "小红", ["ops"]);
+    await session.settled();
+    await session.setVoiceCall(PEER, "小红", []);
+    expect(await session.speechTicketFor(PEER)).toBeNull();
     store.close();
   });
 });
