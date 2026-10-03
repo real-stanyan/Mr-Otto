@@ -1,0 +1,112 @@
+// outreachHub —— 把「原聊天」与「外联会话」两头接起来（#1441）。daemon 一个。只依赖注入的回调：
+// daemon.ts 进不了 vitest，判断住在这儿、接线留在那儿（同 chatCreate / chatHumans 的做法）。
+import type { OutreachLine, OutreachOutcome } from "../../../src/session/events.js";
+import { OUTREACH_DAILY_MAX, outreachReportText, resolveFriend } from "../../../src/shared/outreach.js";
+import type { OutreachEnded, OutreachStart, OutreachStartResult } from "./outreachRun.js";
+
+export interface OutreachHubDeps {
+  friendsOf(ownerUid: string): Promise<{ uid: string; name: string }[]>; // 抛错 = 这一刻查不出来
+  deviceCount(uid: string): Promise<number>;
+  ownerBlocked(workspaceId: string, ownerUid: string): Promise<string | null>; // 额度：null = 能跑
+  countSince(workspaceId: string, agentId: string, since: number): Promise<number>;
+  ensureSession(
+    workspaceId: string, ownerUid: string, ownerName: string,
+    agent: { agentId: string; name: string }, peer: { uid: string; name: string },
+  ): Promise<OutreachTarget>;
+  origin(workspaceId: string, sessionId: string): Promise<OutreachOrigin | null>; // 原会话房，关着就开
+  agentName(workspaceId: string, agentId: string): Promise<string>;
+  labelOf(uid: string): Promise<string>;
+  newId(): string;
+  now(): number;
+  log(m: string): void;
+}
+export interface OutreachTarget {
+  startOutreach(s: OutreachStart): Promise<OutreachStartResult>;
+}
+export interface OutreachOrigin {
+  logOutreach(e: {
+    outreachId: string; phase: "started" | "ended"; fromAgentId: string; peerUid: string; peerName: string;
+    outcome?: OutreachOutcome; durationMs?: number; transcript?: OutreachLine[];
+  }): void;
+  reportOutreach(r: { agentId: string; text: string; ownerUid: string }): void;
+}
+export interface OutreachHub {
+  dispatch(o: {
+    workspaceId: string; ownerUid: string; originSessionId: string; agentId: string; agentName: string;
+    friend: string; brief: string; opening: string;
+  }): Promise<string>;
+  ended(workspaceId: string, ownerUid: string, r: OutreachEnded): Promise<void>;
+}
+
+const DAY_MS = 24 * 60 * 60_000;
+
+export function createOutreachHub(d: OutreachHubDeps): OutreachHub {
+  return {
+    async dispatch(o) {
+      let friends: { uid: string; name: string }[];
+      try {
+        friends = await d.friendsOf(o.ownerUid);
+      } catch (err) {
+        d.log(`查好友名单失败（owner=${o.ownerUid}）：${String(err)}`);
+        return "这会儿查不到好友名单，电话没打出去，稍后再试。";
+      }
+      const m = resolveFriend(friends, o.friend);
+      if (m.kind === "none") {
+        return m.names.length === 0
+          ? "他还没有好友，打不了。"
+          : `好友里没有叫「${o.friend}」的。他的好友有：${m.names.join("、")}。问问他指的是哪一位。`;
+      }
+      if (m.kind === "many") return `好友里有 ${m.count} 位叫「${o.friend}」，分不出是哪一位，问问他。`;
+      try {
+        if ((await d.countSince(o.workspaceId, o.agentId, d.now() - DAY_MS)) >= OUTREACH_DAILY_MAX) {
+          return `你今天已经替他打了 ${OUTREACH_DAILY_MAX} 通电话，到上限了，明天再打。`;
+        }
+        if ((await d.deviceCount(m.uid)) === 0) return `${m.name} 的手机上还没有能接电话的 App，打不了。告诉他换个方式联系。`;
+        const blocked = await d.ownerBlocked(o.workspaceId, o.ownerUid);
+        if (blocked !== null) return `电话没打出去：${blocked}`;
+      } catch (err) {
+        d.log(`外联前检查失败（workspace=${o.workspaceId}）：${String(err)}`);
+        return "这会儿查不了，电话没打出去，稍后再试。";
+      }
+      const ownerName = await d.labelOf(o.ownerUid);
+      let target: OutreachTarget;
+      try {
+        target = await d.ensureSession(o.workspaceId, o.ownerUid, ownerName, { agentId: o.agentId, name: o.agentName }, { uid: m.uid, name: m.name });
+      } catch (err) {
+        d.log(`建外联会话失败（workspace=${o.workspaceId}）：${String(err)}`);
+        return "电话没打出去（线路没建起来），稍后再试。";
+      }
+      const outreachId = d.newId();
+      const r = await target.startOutreach({
+        outreachId, originSessionId: o.originSessionId, agentId: o.agentId, agentName: o.agentName,
+        ownerName, peerUid: m.uid, peerName: m.name, brief: o.brief, opening: o.opening,
+      });
+      if (r.kind === "refused") return r.message;
+      const origin = await d.origin(o.workspaceId, o.originSessionId);
+      origin?.logOutreach({ outreachId, phase: "started", fromAgentId: o.agentId, peerUid: m.uid, peerName: m.name });
+      return `已经打给 ${m.name} 了。先回他一句「打过去了」；聊完或者没接，通话记录会带回这条聊天，到时你再汇报。`;
+    },
+    async ended(workspaceId, ownerUid, r) {
+      try {
+        const origin = await d.origin(workspaceId, r.originSessionId);
+        if (origin === null) {
+          d.log(`外联结束但原会话开不出来（session=${r.originSessionId}）`);
+          return;
+        }
+        origin.logOutreach({
+          outreachId: r.outreachId, phase: "ended", fromAgentId: r.agentId, peerUid: r.peerUid, peerName: r.peerName,
+          outcome: r.outcome, ...(r.durationMs !== null ? { durationMs: r.durationMs } : {}),
+          ...(r.transcript.length > 0 ? { transcript: r.transcript } : {}),
+        });
+        const agentName = r.agentName !== "" ? r.agentName : await d.agentName(workspaceId, r.agentId);
+        const ownerName = r.ownerName !== "" ? r.ownerName : await d.labelOf(ownerUid);
+        origin.reportOutreach({
+          agentId: r.agentId, ownerUid,
+          text: outreachReportText({ agentName, ownerName, peerName: r.peerName, outcome: r.outcome, durationMs: r.durationMs, transcript: r.transcript }),
+        });
+      } catch (err) {
+        d.log(`外联汇报失败（session=${r.originSessionId}）：${String(err)}`);
+      }
+    },
+  };
+}

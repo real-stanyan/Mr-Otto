@@ -829,6 +829,8 @@ async function main(): Promise<void> {
       // 外联收尾回调（#1441）：跨会话那一头（把结果汇报进原聊天）由 Task 11 接线，在此之前 null
       // = 外联会话的 startOutreach 一律 refused，不会有一通电话打出去却没人接收尾
       onOutreachEnded: null,
+      // call_friend 的端口（#1441）：同上由 Task 11 接线；null = 那把刀不出现在任何主场聊天里
+      outreach: null,
       callback:
         apns === null
           ? null

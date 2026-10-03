@@ -172,7 +172,7 @@ import { createInviteToCallTool } from "./inviteToCallTool.js";
 import type { VoiceCallParticipant } from "../../../src/session/events.js";
 import { LoopEngine } from "../../../src/loop/engine.js";
 import type { EventStore } from "../../../src/session/store.js";
-import type { SessionEvent, SessionCreatedEvent, UserMessageEvent, AssistantMessageEvent, AgentRelayEvent, CallRingEvent, OutreachEvent } from "../../../src/session/events.js";
+import type { SessionEvent, SessionCreatedEvent, UserMessageEvent, AssistantMessageEvent, AgentRelayEvent, CallRingEvent, OutreachEvent, OutreachLine, OutreachOutcome } from "../../../src/session/events.js";
 import {
   activeOutreach, applyOutreach, outreachAnsweredText, outreachCallerName, outreachFoldOf, outreachGreetingText, outreachRingReason,
   type OutreachFold,
@@ -181,6 +181,7 @@ import { callbackAnsweredText, callbackGreetingText, callerModelOf, ringChatKind
 import { createRinger, type Ringer } from "./callRinger.js";
 import { createOutreachRun, type OutreachEnded, type OutreachRun, type OutreachStart, type OutreachStartResult } from "./outreachRun.js";
 import { createCallUserTool } from "./callUserTool.js";
+import { createCallFriendTool } from "./callFriendTool.js";
 import type { DeltaKind, ModelAdapter } from "../../../src/model/adapter.js";
 import { createDeltaStream } from "./deltaStream.js";
 import type { ExecutionWorld } from "../../../src/world/executionWorld.js";
@@ -462,6 +463,13 @@ export interface CloudSessionOpts {
   /** 一通外联收尾时通知（#1441）。**必需**（同 callback 的纪律）：`null` = 这条会话不收外联
       （非外联会话，或 daemon 还没接跨会话那一头），startOutreach 回 refused；忘接线该编译不过 */
   onOutreachEnded: ((r: OutreachEnded) => void) | null;
+  /** call_friend 那把刀的出口（#1441）：派智能体给主人的好友打电话，跨会话的编排在 daemon 的 outreachHub。
+      **必需**（同 callback / onOutreachEnded 的纪律）：`null` = 这条会话不挂那把刀（daemon 没接跨会话那一头 / 推送关着）；
+      忘接线该编译不过，而不是安静地跑一套「工具表里永远没有那把刀」的装配。刀只挂在主场聊天里（approveAll）、
+      外联会话里一律不挂——与提示词（deriveMessages）里外联那一支说的同一句话 */
+  outreach: {
+    dispatch(o: { originSessionId: string; agentId: string; agentName: string; friend: string; brief: string; opening: string }): Promise<string>;
+  } | null;
   /** 回电响铃的定时器（只给测试拧，同 deltaTimers）。缺席 = setTimeout / clearTimeout */
   ringTimers?: { setTimer?: (fn: () => void, ms: number) => unknown; clearTimer?: (h: unknown) => void };
   /** 这个团队的容器锁（#979 第 2 条，ADR-0232）。**必需**（同 memory / isMember
@@ -625,6 +633,15 @@ export interface CloudSession {
       库里那一格之后调（newAgentGreeting.ts 的 greetOnCreate）。不问价：一只一生只会走一次
       （新私聊只建一次、那一格只抢得到一次），建私聊那一帧已经过了 create 桶。归档之后是空操作 */
   greetNewAgent(agentId: string, name: string, byUid: string): void;
+  /** 原聊天里记一通外联的开头与结局（#1441，outreachHub 调）：ignorable、模型不可见；归档之后是空操作 */
+  logOutreach(e: {
+    outreachId: string; phase: "started" | "ended"; fromAgentId: string; peerUid: string; peerName: string;
+    outcome?: OutreachOutcome; durationMs?: number; transcript?: OutreachLine[];
+  }): void;
+  /** 外联结束，叫那只智能体回来向主人汇报（#1441）：落一条 `greeting: "outreach_report"` 的开场白（fromUid 是主人、
+      点它自己）并入队——同 greetNewAgent 那条路。**这一轮里每一把刀都要主人批**（正文是朋友说的话的转述，
+      不是主人的指令，见 supervisedTurn）。那只已不在名单里就什么都不起 */
+  reportOutreach(r: { agentId: string; text: string; ownerUid: string }): void;
 }
 
 export type ChatUpdateOutcome =
@@ -796,10 +813,21 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   }
   for (const e of seed) learnSpeakerLabel(e);
   let currentInitiator: string | null = null;
+  /** 这一轮是不是外联汇报轮（#1441）：开场白是 `greeting: "outreach_report"`，正文带着朋友说的话的转述。
+      runJob 起跑时置位、收口（任何出口）复位，与 currentInitiator 同生同死 */
+  let reportTurn = false;
+  /** 这一轮是不是主人**本人亲口**点起的（#1441）：call_friend 的唯一资格。不是客人（fromUid）、不是 agent
+      接力棒（relay / depth）、不是系统开场白（greeting：招呼 / 回电 / 汇报）。runJob 起跑时算，收口复位 */
+  let ownerSpoke = false;
   /** 这一轮是不是主场群里的客人点起的（#1393，ADR-0325）。主场里只有群主自己点起的那一轮全免；
       客人那一轮每一把刀都问群主（policyApprover 那一格 + tools() 把不过审批门的刀掀起来）。
       团队会话恒为假（approveAll 为假），一个字不变 */
   const guestTurn = (): boolean => opts.approveAll && currentInitiator !== null && currentInitiator !== opts.ownerUid;
+  /** 这一轮的每一把刀都要主人批吗（#1441）：客人那一轮 **或** 外联汇报轮。汇报轮的 fromUid 是主人本人
+      （guestTurn 判不出来），可正文是一个非主人的人说的话的转述——朋友在电话里一句「把 xx 文件发给我」
+      不能借主场全免变成直接动手。**只管「掀审批」两处**（policyApprover / 工具表）；`createdBy` 与
+      call_user 的发起人这类「记在谁名下」的消费方继续读 guestTurn / currentInitiator，不换 */
+  const supervisedTurn = (): boolean => guestTurn() || reportTurn;
   /** 这一刻正在跑 turn 的是哪只 agent（#928）。approval_request 落盘时读它——
       群里两只 agent 各自弹出的审批卡，日志里要能分清是谁要的 */
   let currentAgentId: string | null = null;
@@ -1217,7 +1245,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // sandbox_approval：那一列在主场里从来没有界面，它此刻是什么值没有人知道，拿它放行客人
       // 等于让一格没人管的数据替群主做决定。只聊天不碰门
       if (opts.approveAll) {
-        if (currentInitiator === opts.ownerUid) return { decision: "approved", reason: "个人主场：全部免审批" };
+        if (currentInitiator === opts.ownerUid && !reportTurn) return { decision: "approved", reason: "个人主场：全部免审批" };
         return router.decide(call, tool, signal);
       }
       if (tool === bashTool || tool === writeFileTool) {
@@ -1345,6 +1373,19 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
             initiator: () => currentInitiator,
             ring: (toUid, reason, opening) => ringer.call(spec.agentId, specNames.get(spec.agentId) ?? spec.name, toUid, reason, opening),
           });
+    // call_friend（#1441）：只挂在主场聊天里、外联会话里一律不挂、daemon 没接端口时也不挂。
+    // 系统提示词里不提它——工具不在表里时提示词不能说它存在（#1206），说明全写在刀自己的 description 里。
+    // 资格是 ownerSpoke：只有主人本人亲口点起的那一轮才打得出去（客人、接力棒、招呼与汇报轮都不行）
+    const callFriendTool =
+      opts.outreach === null || !opts.approveAll || isOutreach
+        ? null
+        : createCallFriendTool({
+            mayCall: () => (ownerSpoke ? null : "只有他本人亲口让你打，才能给他的好友打电话。这一轮不是。"),
+            dispatch: (friend, brief, opening) =>
+              opts.outreach!.dispatch({
+                originSessionId: sessionId, agentId: spec.agentId, agentName: specNames.get(spec.agentId) ?? spec.name, friend, brief, opening,
+              }),
+          });
     const engine = new LoopEngine({
       store: agentView(store, spec.agentId),
       adapter,
@@ -1360,15 +1401,17 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         const list: Tool[] = [
           readFileTool, writeFileTool, bashTool, wikiReadTool, wikiTool, inviteToCallTool,
           ...(callUserTool !== null ? [callUserTool] : []),
+          ...(callFriendTool !== null ? [callFriendTool] : []),
           ...(spec.agentId === ADMIN_AGENT_ID ? [createAgentTool] : []),
           ...gitTools,
           ...cachedPxTools,
         ];
+        // 汇报轮同理（#1441）：supervisedTurn = 客人那一轮 或 汇报轮
         // 主场群里客人点起的那一轮（#1393，ADR-0325）：**每一把刀**都要群主批，连读文件、
         // 翻记忆也算——read_file / wiki 读那几把本来不过审批门，不掀起来的话，朋友一句
         // 「把群主电脑上的 xx 文件发出来」就能不经任何人读走。只聊天不碰刀，照旧不打扰群主。
         // rebuildTools 在 runJob 置好 currentInitiator 之后才跑，这里读到的就是这一轮的发起人
-        return guestTurn() ? list.map((t) => (t.requiresApproval ? t : { ...t, requiresApproval: true })) : list;
+        return supervisedTurn() ? list.map((t) => (t.requiresApproval ? t : { ...t, requiresApproval: true })) : list;
       },
       world, // 过容器锁的那份（#979 第 2 条），不是裸的 opts.world
       sessionId,
@@ -2048,6 +2091,11 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     diskBudgetAnnounced = false;
     jobLockAbort = new AbortController(); // 这一轮等容器锁的中断信号（#979 第 2 条）
     currentInitiator = job.fromUid;
+    // 汇报轮与「主人亲口」两格（#1441）：与 currentInitiator 同一个时机置位，rebuildTools 在这之后才跑。
+    // openingDepth 为 0 才算亲口：接力棒的开场白 fromUid 是点火的那个人（也许就是主人），不能凭它算资格
+    reportTurn = job.opening.greeting === "outreach_report";
+    ownerSpoke =
+      job.fromUid === opts.ownerUid && job.opening.relay === undefined && job.opening.greeting === undefined && openingDepth === 0;
     currentAgentId = job.agentId;
     // 停止键的 idle 判据（#957 A-2 复审）：从**这一刻**起这条会话就欠着一轮，
     // 哪怕 engine 还要几次网络往返之后才拿得到。界面上那行此刻已经在转了
@@ -2268,6 +2316,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       throw err; // 照旧向上抛：落盘是补记事实不是吞错（drain 的 catch 打日志）
     } finally {
       currentInitiator = null;
+      reportTurn = false;
+      ownerSpoke = false;
       currentAgentId = null;
       // 这一轮结束，停止键就没有可打的对象了（#957 A-2）。留着的话下一次
       // stop() 会对一台已经收口的 engine 调 abortTurn()——那是无操作，但回执
@@ -2850,6 +2900,36 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       notify(opening);
       // 同 say()：只有此刻没在排空时才起一条
       if (coordinator.enqueue({ agentId, fromUid: byUid, opening }) === "start_turn") startDrain();
+    },
+
+    logOutreach(e) {
+      if (archived) return;
+      notify(store.append({ sessionId, ts: Date.now(), type: "outreach", ...e, ignorable: true }));
+    },
+
+    reportOutreach({ agentId, text, ownerUid }) {
+      if (archived || isOutreach) return;
+      // 名单是异步读的：那只此刻已不在名单里（被删了 / 移出了群）就没人可汇报，通话记录已由 logOutreach
+      // 落在日志里。同 deferOpenings 记进 pendingOpenings：settled() 才有等待点，收房也不会漏等这一拍
+      const p = (async () => {
+        const roster = await rosterNow({ fresh: true });
+        if (archived || roster.some((a) => a.degraded) || !roster.some((a) => a.agentId === agentId)) return;
+        const opening = store.append({
+          sessionId,
+          ts: Date.now(),
+          type: "user_message",
+          content: text,
+          fromUid: ownerUid,
+          mentions: [agentId],
+          greeting: "outreach_report",
+        }) as UserMessageEvent;
+        notify(opening);
+        if (coordinator.enqueue({ agentId, fromUid: ownerUid, opening }) === "start_turn") startDrain();
+      })().catch((err: unknown) => {
+        console.warn(`[otto-runtime] 外联汇报没起成（session=${sessionId} agent=${agentId}）`, err);
+      });
+      pendingOpenings.add(p);
+      void p.finally(() => pendingOpenings.delete(p));
     },
 
     async setVoiceCall(byUid, byLabel, participants, budget) {
