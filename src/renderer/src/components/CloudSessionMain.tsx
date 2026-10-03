@@ -9,15 +9,46 @@
 // 在快照还没到时说一句人话。滚动归 CloudSessionPage 自己管（#987：时间线滚、
 // 输入框钉底），这里只负责把高度交下去。
 
-import { useEffect } from "react";
+import { useEffect, useMemo, type ReactNode } from "react";
 import { parseMemberMentions } from "../../../shared/remote/agentMention.js";
 import { useChat } from "../store.js";
 import { CloudSessionPage } from "./CloudSessionPage.js";
 import { chatViewOf, type ChatView } from "../../../shared/agentRoster.js";
+import { withGuests, type ChatPerson } from "../../../shared/chatGuests.js";
+import { chatHumansNow } from "../../../shared/chatRoster.js";
+import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
 
-export function CloudSessionMain({ onManage }: { onManage: (workspaceId: string) => void }) {
+const NO_PEOPLE: ChatPerson[] = [];
+
+export function CloudSessionMain({
+  onManage,
+  wxHeader,
+  fallbackWs,
+}: {
+  onManage: (workspaceId: string) => void;
+  /** 桌面微信式布局（#1386）：头部整个交给调用方画。拿到的是这一页此刻的快照（含群里的客人）、
+      聊天身份（`null` = 团队会话）与语音那颗钮。缺席 = 旧界面逐像素不变 */
+  wxHeader?: (o: { ws: WorkspaceSnapshot; chat: ChatView | null; voiceSlot: ReactNode }) => ReactNode;
+  /** 这条会话落在一个我不在籍的 workspace 里时用哪一份快照（#1393：别人主场里拉我进去的群，
+      快照只够这一条群用）。缺席 = 只认我在籍的那几份 */
+  fallbackWs?: WorkspaceSnapshot | null;
+}) {
   const cs = useChat((s) => s.cloudSession);
-  const ws = useChat((s) => s.workspaceGroups.find((g) => g.id === s.cloudSession?.workspaceId) ?? null);
+  const memberWs = useChat((s) => s.workspaceGroups.find((g) => g.id === s.cloudSession?.workspaceId) ?? null);
+  const baseWs = memberWs ?? fallbackWs ?? null;
+  // 群里的客人（#1393）：日志里那份名单是事实（welcome 之后），清单那一行的投影只补头像。
+  // 补进这一条群用的快照：时间线上的名字与头像、「等 X 批」、@ 选人都按成员表查，而主场的成员表里只有群主
+  const listRow = useChat((s) =>
+    s.cloudSession ? s.cloudSessionList[s.cloudSession.workspaceId]?.find((r) => r.id === s.cloudSession?.sessionId) : undefined
+  );
+  const people = useMemo<ChatPerson[]>(() => {
+    if (!cs || !cs.chat || cs.chat.kind !== "group") return NO_PEOPLE;
+    const known = listRow?.humans ?? [];
+    const humans = chatHumansNow(cs.events, cs.chat.humans);
+    if (humans.length === 0) return NO_PEOPLE;
+    return humans.map((h) => ({ uid: h.uid, name: h.name, avatarUrl: known.find((p) => p.uid === h.uid)?.avatarUrl ?? "" }));
+  }, [cs, listRow]);
+  const ws = useMemo(() => (baseWs === null ? null : withGuests(baseWs, people)), [baseWs, people]);
   const selfUid = useChat((s) => s.account.id);
   const pending = useChat((s) => s.cloudPendingFirstMessage);
   const take = useChat((s) => s.takeCloudPendingFirstMessage);
@@ -128,6 +159,9 @@ export function CloudSessionMain({ onManage }: { onManage: (workspaceId: string)
         <CloudSessionPage
           ws={ws}
           selfUid={selfUid}
+          {...(wxHeader === undefined
+            ? {}
+            : { wx: { header: (voiceSlot: ReactNode) => wxHeader({ ws, chat: chat ?? null, voiceSlot }) } })}
           onSettings={() => onManage(ws.id)}
           onAgentSettings={openAgentSettings}
           {/* `chat === null` = 团队会话：不传这一格，CloudSessionPage 照旧画团队壳。

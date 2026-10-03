@@ -1145,3 +1145,48 @@
     }
   }
 }
+
+/* ── 桌面微信式布局（#1386）────────────────────────────────────────────
+   「聊天信息」那扇抽屉：从右边来、回右边去（进出同一条路）。不是弹窗——没有遮罩、
+   不抢焦点，关着时整扇 inert。260ms 强 ease-out：按下 ··· 那一刻它就开始动。 */
+.wx-drawer {
+  transform: translateX(calc(100% + 24px));
+  transition: transform 260ms var(--ease-strong);
+}
+.wx-drawer[data-open="true"] {
+  transform: none;
+}
+/* 减弱 ≠ 取消：不滑，改成一段纯透明度 */
+@media (prefers-reduced-motion: reduce) {
+  .wx-drawer {
+    transform: none;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 160ms ease;
+  }
+  .wx-drawer[data-open="true"] {
+    opacity: 1;
+    pointer-events: auto;
+  }
+}
+/* 底部那一句小提示：从下面冒上来一点点（不是从无到有） */
+.wx-toast {
+  animation: wx-toast-in 200ms var(--ease-strong) both;
+}
+/* 横向居中走的是 Tailwind 的 translate 属性（不是 transform），这里只动 transform 的纵向那一截，两者叠加 */
+@keyframes wx-toast-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .wx-toast {
+    animation: wx-toast-fade 160ms ease both;
+  }
+  @keyframes wx-toast-fade {
+    from {
+      opacity: 0;
+    }
+  }
+}

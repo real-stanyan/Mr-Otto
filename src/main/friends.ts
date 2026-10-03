@@ -54,6 +54,9 @@ export type FriendsApi = {
   listProfiles(ids: string[]): Promise<ProfileRow[]>;
   insertMessage(sender: string, recipient: string, body: string): Promise<MessageRow>;
   listMessages(uid: string, friendId: string, beforeId?: number): Promise<MessageRow[]>;
+  /** 我收发过的最近一批（#1386）：「聊天」列表每位朋友那一行的最后一条与未读从它算。
+      RLS 已收在收发双方，不用再拼 or；新→旧，封顶一页 */
+  listRecentMessages(): Promise<MessageRow[]>;
   /** 收件箱里 id 最大的一条(起订阅时定水位,免得把历史当新消息推一遍) */
   latestInboxId(uid: string): Promise<number>;
   /** 轮询兜底:发给我的、id 大于水位的消息(旧→新) */
@@ -331,6 +334,11 @@ export class FriendsManager {
     return this.withUid(async (uid) =>
       (await this.api.listMessages(uid, friendId, beforeId)).map(toDirectMessage)
     );
+  }
+
+  /** 最近一批私信（#1386）：不分好友，只为算列表那一行——历史归 listMessages 管 */
+  async recentMessages(): Promise<FriendsResult<DirectMessage[]>> {
+    return this.withUid(async () => (await this.api.listRecentMessages()).map(toDirectMessage));
   }
 
   // ── 在线状态:presence ∪ 心跳 ───────────────────────────────────

@@ -35,7 +35,7 @@ import { FileTypeIcon, FolderIcon } from "./FileTypeIcon.js";
 import { previewLang } from "../lib/previewLang.js";
 import { rehypeCodeLines } from "../lib/codeLines.js";
 import type { CsWorkEntry, CsWorkHit, CsWorkNode } from "../../../shared/remote/cloudSession.js";
-import type { WorkspaceSnapshot } from "../../../shared/workspaces.js";
+import { isHomeWorkspace, type WorkspaceSnapshot } from "../../../shared/workspaces.js";
 import type { CloudWorkspaceState } from "../../../shared/shellBridge.js";
 
 const SECTION_LABEL = "text-[11px] tracking-[0.06em] text-muted-foreground uppercase";
@@ -79,7 +79,7 @@ export function WorkspaceFilesTab({ ws }: { ws: WorkspaceSnapshot }) {
         <p className="text-xs text-err">{modelStatus.full}</p>
       )}
 
-      <WorkFolder workspaceId={ws.id} />
+      <WorkFolder workspaceId={ws.id} home={isHomeWorkspace(ws)} />
     </div>
   );
 }
@@ -99,7 +99,8 @@ export function WorkspaceFilesTab({ ws }: { ws: WorkspaceSnapshot }) {
 
     **读不到 ≠ 里面是空的**（同 ADR-0243）：出错时上一份内容留在原地、错误另起
     一行说——把树清空会让人以为水獭做的东西没了。 */
-function WorkFolder({ workspaceId }: { workspaceId: string }) {
+/** `home`：个人主场（微信式布局「我」那一栏，#1386）里没有「团队」这回事，那句说明换个主语 */
+function WorkFolder({ workspaceId, home }: { workspaceId: string; home: boolean }) {
   const loadFiles = useChat((s) => s.workspaceFiles);
   const searchFiles = useChat((s) => s.workspaceFilesSearch);
 
@@ -268,7 +269,8 @@ function WorkFolder({ workspaceId }: { workspaceId: string }) {
       </div>
 
       <p className="text-[12px] text-muted-foreground">
-        智能体在这个文件夹里干活，做出来的东西都留在这儿。同一个团队的所有会话共用这一份。
+        智能体在这个文件夹里干活，做出来的东西都留在这儿。
+        {home ? "你的几只智能体、每一条聊天都共用这一份。" : "同一个团队的所有会话共用这一份。"}
       </p>
 
       <Input

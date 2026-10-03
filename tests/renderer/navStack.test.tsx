@@ -110,6 +110,23 @@ describe("NavStack", () => {
     const navTitle = document.querySelector<HTMLElement>(".pointer-events-none.absolute.left-1\\/2")!;
     expect(navTitle.style.opacity).toBe("0");
   });
+
+  // 铺满主区时的两个开关（微信式布局「我」那一栏，#1386）：每一页都要吃到，不只是根页——
+  // 推进来的二级页照样贴着窗口上沿、照样会被拉到一千像素宽
+  it("dragBar / contentClassName 落在每一页上（推进来的那页也是）", () => {
+    render(<NavStack root={root} dragBar contentClassName="mx-auto w-[560px]" />);
+    fireEvent.click(screen.getByRole("button", { name: "进去" }));
+    const back = screen.getByRole("button", { name: /团队/ });
+    expect(back.closest(".drag-region")).not.toBeNull();
+    expect(screen.getByText("三只水獭").closest(".w-\\[560px\\]")).not.toBeNull();
+    expect(screen.getByRole("button", { name: "进去" }).closest(".w-\\[560px\\]")).not.toBeNull();
+  });
+
+  it("缺省：导航条不是拖窗口的地方，正文外面也不多一层宽度", () => {
+    render(<NavStack root={root} />);
+    expect(document.querySelector(".drag-region")).toBeNull();
+    expect(screen.getByRole("button", { name: "关闭" }).closest(".drag-region")).toBeNull();
+  });
 });
 
 // 动画路径（reduced-motion 关）。#1125 的回归：rAF 循环曾闭包抓着推入前那一版栈，

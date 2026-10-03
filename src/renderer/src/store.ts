@@ -138,6 +138,10 @@ import { laneOf, type ModelLane } from "../../shared/modelLane.js";
 import { autoModelOf } from "../../shared/autoModel.js";
 import { isSubscribed } from "../../shared/billingView.js";
 import { chatSeedOf, groupRows, homeOf, rosterRows } from "../../shared/agentRoster.js";
+import type { SessionLast } from "../../shared/sessionLast.js";
+import type { GuestChat } from "../../shared/chatGuests.js";
+import { markSeen as advanceSeen, type SeenState } from "../../shared/wechatInbox.js";
+import { mergeRecentDm, restoreSeen, seenStorageKey, serializeSeen } from "./lib/wxInbox.js";
 import { settingsSectionVisible } from "./settingsShell.js";
 import type { MyProfile, ProfilePatch } from "../../shared/profile.js";
 import {
@@ -679,6 +683,17 @@ interface ChatState {
       无推送通道（同 workspaceGroups 的十一个 action），每次改动后调用方自己
       refreshCloudSessions 重拉 */
   cloudSessionList: Record<string, CloudSessionListRow[]>;
+  /** 这一次开机画不画本机写代码那一半（#1386：维护者拍板「先藏起来」）。boot 之后才有准数——
+      此前 App 只画「连接主进程…」那一行，用不上它 */
+  codingUi: boolean;
+  /** workspace id → 那里每条云会话的「最后一句」（0040，#1386 聊天列表）。这一趟没读到的那格留着上一次的 */
+  cloudLasts: Record<string, Record<string, SessionLast>>;
+  /** 别人主场里拉我进去的群（#1393）。这一趟没读到时留着上一次的（「读不到」不许说成「被移出了所有群」） */
+  guestChats: GuestChat[];
+  /** 我收发过的最近一批私信（#1386）：聊天列表每位朋友那一行的最后一条与未读从它算 */
+  recentDms: DirectMessage[];
+  /** 这台电脑上「看过了」的游标（#1386，按账号分键落 localStorage）。null = 还没读出来：一律不画未读 */
+  wxSeen: SeenState | null;
   /** 实时链路健康度:degraded = 已切轮询兜底,UI 如实说"慢几秒"(ADR-0027) */
   realtimeHealth: RealtimeHealth;
   /** 好友抽屉开着没有。提到 store 是因为系统通知点击要能把它掀开(App 本地 state 够不着) */
@@ -1105,6 +1120,20 @@ interface ChatState {
       workspaceCloudList 没有 onChanged，SessionsTab 的「云会话」小节自己
       在挂载时调一次 */
   refreshCloudSessions(workspaceId: string): Promise<void>;
+  /** 这个 workspace 里每条云会话的最后一句（#1386）。读不到不落错误：列表退回按 updated_at 排 */
+  refreshCloudLasts(workspaceId: string): Promise<void>;
+  /** 别人拉我进的群（#1393 / #1386）。顺带把它们的那一行并进 `cloudSessionList[群主主场]`：
+      进房那一刻的种子（chatSeedOf）按清单找，没有这一行的话头几秒两种壳都不画 */
+  refreshGuestChats(): Promise<void>;
+  /** 最近一批私信（#1386） */
+  refreshRecentDms(): Promise<void>;
+  /** 聊天列表那一整份（#1386）：团队快照 → 每个 workspace 的清单与最后一句 → 别人拉我进的群 →
+      私信 → 点名。同一时刻只跑一趟（聚焦、定时、自己改了东西都会叫它） */
+  refreshInbox(): Promise<void>;
+  /** 按账号读回已读游标（#1386）。uid 变了就换一份；登出 = null */
+  loadWxSeen(uid: string | null): void;
+  /** 看过了这一条，看到 ts 那一刻（只往前走） */
+  wxMarkSeen(key: string, ts: number): void;
   /** sessionId = null → 先 workspaceCloudCreate 拿到新 id 再 join；
       非 null → 直接 join 这一条（同时只保留一条连接，join 先顶掉旧的，
       语义与 shared/remote/cloudSessionClient.ts 的 join() 完全对齐）。
@@ -1129,7 +1158,7 @@ interface ChatState {
   closeNewGroup(): void;
   /** 建一个群并进去（#1280 A4）。失败那句话回给弹窗自己画——不落
       `workspaceGroupsError`：那一格画在侧栏上，而这句话要留在人正看着的那扇窗里 */
-  createGroupChat(name: string, agentIds: string[]): Promise<{ ok: true } | { ok: false; message: string }>;
+  createGroupChat(name: string, agentIds: string[], humans?: string[]): Promise<{ ok: true } | { ok: false; message: string }>;
   /** 开一张**聊天**的开局卡（#1280）。与 startCloudDraft 的唯一差别是多记一格
       「要建的是什么」 */
   startChatDraft(workspaceId: string, chat: CsChatSpec): void;
@@ -1265,8 +1294,17 @@ interface ChatState {
       失败那句话回给调用方自己画（同 `createGroupChat` 的纪律） */
   updateGroupChat(
     sessionId: string,
-    patch: { name?: string; agentIds?: string[] },
+    patch: { name?: string; agentIds?: string[]; humans?: string[] },
+    /** 这条群落在哪个 workspace（#1393）。缺席 = 我的主场；别人拉我进的群是群主的主场 */
+    workspaceId?: string,
   ): Promise<{ ok: true } | { ok: false; message: string }>;
+  /** 桌面「新建智能体」（#1386，ADR-0319 那条路）：在主场里落一只带「先开口」的，回它的 id */
+  createHomeAgent(name: string, avatarSlot: number): Promise<{ ok: true; agentId: string } | { ok: false; message: string }>;
+  /** 私聊没建成、人不建了：把「先开口」那一格清掉 */
+  clearHomeAgentGreeting(agentId: string): Promise<void>;
+  /** 当场建它的私聊（不走草稿：新建的那只要先开口，得先有那条线，ADR-0319）。只建不进房——
+      进不进、什么时候进由调用方决定（新建弹窗要先把自己收起来） */
+  createHomeDm(agentId: string): Promise<FriendsResult<{ sessionId: string }>>;
   /** 解散一个群（#1280 A4）：整段聊天记录从 VPS 上抹掉，不可逆；里面的智能体都还在 */
   dissolveGroupChat(sessionId: string): Promise<{ ok: true } | { ok: false; message: string }>;
   /** 拉一次本人资料。登录后由 onAccountChanged 触发,首登引导也在这里决定要不要弹 */
@@ -1287,6 +1325,26 @@ interface ChatState {
 let bootStarted = false; // StrictMode 会双跑 effect，用模块级闩防重复订阅
 // Git Graph 自动重拉的尾随防抖:一串工具调用(agent 连跑 git checkout/merge)只触发一次刷新
 let gitGraphAutoRefresh: ReturnType<typeof setTimeout> | undefined;
+/** 聊天列表那一整份刷新（#1386）同一时刻只跑一趟：聚焦、定时、自己改了东西都会叫它 */
+let inboxInflight: Promise<void> | null = null;
+/** 已读游标此刻属于哪个账号（#1386）。换了人就换一份，不拿上一个人的已读去算这个人的未读 */
+let wxSeenOwner: string | null = null;
+let wxSeenTimer: ReturnType<typeof setTimeout> | null = null;
+/** 游标写盘攒 400ms 一次：聊天开着时每来一句都会推一次游标 */
+function scheduleWxSeenSave(get: () => { wxSeen: SeenState | null }): void {
+  if (wxSeenTimer !== null) return;
+  wxSeenTimer = setTimeout(() => {
+    wxSeenTimer = null;
+    const uid = wxSeenOwner;
+    const seen = get().wxSeen;
+    if (uid === null || seen === null) return;
+    try {
+      localStorage.setItem(seenStorageKey(uid), serializeSeen(seen));
+    } catch {
+      // 写不进去就算了：下次开机从那一刻重新开始，最坏是少一个点
+    }
+  }, 400);
+}
 /** Git Graph 每页条数:首屏拉这么多,滚到底再加一页(主进程侧同名默认值,超上限会被钳) */
 const GIT_GRAPH_PAGE = 300;
 
@@ -1723,6 +1781,11 @@ export const useChat = create<ChatState>((set, get) => ({
   cloudStreaming: {},
   voice: null,
   cloudSessionList: {},
+  codingUi: false,
+  cloudLasts: {},
+  guestChats: [],
+  recentDms: [],
+  wxSeen: null,
   realtimeHealth: "connecting",
   friendsPanelOpen: false,
   openWorkspaceId: null,
@@ -2794,6 +2857,89 @@ export const useChat = create<ChatState>((set, get) => ({
     }));
   },
 
+  async refreshCloudLasts(workspaceId) {
+    const r = await window.otter.workspaceCloudLasts(workspaceId);
+    // 读不到不落错误、不清旧值：这一格只决定列表怎么排、第二行写什么，
+    // 说成「出错了」会把一次 0040 没跑 / 网络抖动放大成页面上的一行红字
+    if (!r.ok) return;
+    set((s) => ({ cloudLasts: { ...s.cloudLasts, [workspaceId]: r.value } }));
+  },
+
+  async refreshGuestChats() {
+    const r = await window.otter.workspaceGuestChats();
+    if (!r.ok) return;
+    set((s) => {
+      const lists = { ...s.cloudSessionList };
+      const byWs = new Map<string, CloudSessionListRow[]>();
+      for (const g of r.value) byWs.set(g.ws.id, [...(byWs.get(g.ws.id) ?? []), g.session]);
+      // 只写别人的主场：我自己在籍的 workspace 那一格由 refreshCloudSessions 管，
+      // 拿一份只有客人那几行的清单盖上去等于把那个团队的其余会话抹掉
+      const mine = new Set(s.workspaceGroups.map((w) => w.id));
+      for (const [id, rows] of byWs) if (!mine.has(id)) lists[id] = rows;
+      return { guestChats: r.value, cloudSessionList: lists };
+    });
+  },
+
+  async refreshRecentDms() {
+    const r = await window.otter.friendsRecentMessages();
+    if (!r.ok) return;
+    set((s) => {
+      // 推送并进来的那几条可能比这一页还新（拉取在路上时到的）：合并而不是覆盖
+      let list = r.value;
+      for (const m of s.recentDms) list = mergeRecentDm(list, m);
+      return { recentDms: list };
+    });
+  },
+
+  async refreshInbox() {
+    if (inboxInflight !== null) return inboxInflight;
+    const run = (async () => {
+      try {
+        if (!get().account.signedIn) return;
+        await get().refreshWorkspaceGroups();
+        const ids = get().workspaceGroups.map((w) => w.id);
+        await Promise.all([
+          ...ids.map((id) => get().refreshCloudSessions(id)),
+          ...ids.map((id) => get().refreshCloudLasts(id)),
+          get().refreshGuestChats(),
+          get().refreshRecentDms(),
+          get().refreshWorkspaceMentions(),
+        ]);
+      } finally {
+        inboxInflight = null;
+      }
+    })();
+    inboxInflight = run;
+    return run;
+  },
+
+  loadWxSeen(uid) {
+    if (uid === wxSeenOwner) return;
+    wxSeenOwner = uid;
+    if (uid === null) {
+      set({ wxSeen: null });
+      return;
+    }
+    let raw: string | null = null;
+    try {
+      raw = localStorage.getItem(seenStorageKey(uid));
+    } catch {
+      // 读不到 = 从此刻重新开始（宁可漏一个点，不可一装上满屏都是未读）
+    }
+    const { seen, fresh } = restoreSeen(raw, Date.now());
+    set({ wxSeen: seen });
+    if (fresh) scheduleWxSeenSave(get);
+  },
+
+  wxMarkSeen(key, ts) {
+    const seen = get().wxSeen;
+    if (seen === null) return;
+    const next = advanceSeen(seen, key, ts);
+    if (next === seen) return;
+    set({ wxSeen: next });
+    scheduleWxSeenSave(get);
+  },
+
   async openCloudSession(workspaceId, sessionId, chat, title) {
     // 换会话先把上一条的语音监听收掉（#1163）：它绑着上一条的 sessionId 与名单。
     // 扣着的话也在这里发出去（#1281 fix round 1）——旧房间真正拆除要等下面
@@ -2909,10 +3055,15 @@ export const useChat = create<ChatState>((set, get) => ({
   openNewGroup: (preset) => set({ newGroupOpen: true, newGroupPreset: preset ?? [] }),
   closeNewGroup: () => set({ newGroupOpen: false, newGroupPreset: [] }),
 
-  async createGroupChat(name, agentIds) {
+  async createGroupChat(name, agentIds, humans) {
     const home = homeOf(get().workspaceGroups);
     if (home === null) return { ok: false, message: "还没有个人主场" };
-    const r = await window.otter.workspaceCloudCreate(home.id, { kind: "group", name, agentIds });
+    // 朋友（#1393）只在有人时才带：协议 21 的帧上缺席 = 没有别人，带一个空数组也是同一句话，
+    // 但少一格就少一次「老 runtime 不认识这一格」的机会
+    const r = await window.otter.workspaceCloudCreate(
+      home.id,
+      humans !== undefined && humans.length > 0 ? { kind: "group", name, agentIds, humans } : { kind: "group", name, agentIds },
+    );
     if (!r.ok) return { ok: false, message: r.message };
     // 先刷清单再进房：侧栏那一行与头部的群名都从这份清单来（房里广播回来的是
     // 名单事件，不是群名），漏了这一刷，新群在侧栏上要等下一次 focus 才出现
@@ -3297,6 +3448,8 @@ export const useChat = create<ChatState>((set, get) => ({
           : failOptimistic(s.dmByFriend[friend.id] ?? [], tempId),
       },
       friendError: r.ok ? null : r.message,
+      // 自己发出去的也进列表那一批（#1386）：否则「最后一句」停在对方上一句上
+      ...(r.ok ? { recentDms: mergeRecentDm(s.recentDms, r.value) } : {}),
     }));
   },
 
@@ -3329,11 +3482,17 @@ export const useChat = create<ChatState>((set, get) => ({
   openGroupSettings: (sessionId) => set({ groupSettingsFor: sessionId }),
   closeGroupSettings: () => set({ groupSettingsFor: null }),
 
-  async updateGroupChat(sessionId, patch) {
+  async updateGroupChat(sessionId, patch, workspaceId) {
     const home = homeOf(get().workspaceGroups);
-    if (home === null) return { ok: false, message: "还没有个人主场" };
-    const r = await window.otter.workspaceCloudChatUpdate(home.id, sessionId, patch);
+    const wsId = workspaceId ?? home?.id ?? null;
+    if (wsId === null) return { ok: false, message: "还没有个人主场" };
+    const r = await window.otter.workspaceCloudChatUpdate(wsId, sessionId, patch);
     if (!r.ok) return { ok: false, message: r.message };
+    // 别人拉我进的群（#1393）：那一行在「拉我进的群」那份清单里，不在我自己的主场里
+    if (home === null || wsId !== home.id) {
+      await get().refreshGuestChats();
+      return { ok: true };
+    }
     // **侧栏那一行**与群名从这份清单来（群名不是日志事实，改名走的是库）；
     // **头部那排名字不从这儿来**——它与时间线上「谁进谁出」那一行读同一份日志
     // 事实（`chat_roster_changed` → `chatViewOf`）。
@@ -3356,6 +3515,34 @@ export const useChat = create<ChatState>((set, get) => ({
     }
     set({ groupSettingsFor: null });
     return { ok: true };
+  },
+
+  async createHomeAgent(name, avatarSlot) {
+    const home = homeOf(get().workspaceGroups);
+    if (home === null) return { ok: false, message: "还没有个人主场" };
+    const r = await window.otter.workspaceAgentCreate(home.id, {
+      name, description: "", instructions: "", models: [], tools: [], avatarSlot, onboarding: "greet",
+    });
+    if (!r.ok) return { ok: false, message: r.message };
+    // 名册要立刻认得它：私聊那条线马上就要建，头部、@ 选人、那张脸都按名册查
+    await get().refreshWorkspaceGroups();
+    return { ok: true, agentId: r.value.agentId };
+  },
+
+  async createHomeDm(agentId) {
+    const home = homeOf(get().workspaceGroups);
+    if (home === null) return { ok: false, message: "还没有个人主场" };
+    const r = await window.otter.workspaceCloudCreate(home.id, { kind: "dm", agentId });
+    // 名册那一行要立刻认得这条私聊（它的 sessionId），否则下一次点它又是一张草稿
+    if (r.ok) await get().refreshCloudSessions(home.id);
+    return r;
+  },
+
+  async clearHomeAgentGreeting(agentId) {
+    const home = homeOf(get().workspaceGroups);
+    if (home === null) return;
+    // 清不掉（离线）就算了：那是 ADR-0319 记着的已知代价
+    await window.otter.workspaceAgentClearOnboarding(home.id, agentId);
   },
 
   setProfileSetupOpen: (open) =>
@@ -3439,6 +3626,8 @@ export const useChat = create<ChatState>((set, get) => ({
               // 登出清场:快照/在线/DM 缓冲/未读全回初始(主进程也会推空快照,双保险)
               friendsSnapshot: { friends: [], incoming: [], outgoing: [] },
               onlineIds: [], friendChat: null, dmByFriend: {}, unreadByFriend: {},
+              // 聊天列表那几格（#1386）：换号 / 登出不该让下一个人看到上一个人的会话与私信
+              cloudLasts: {}, guestChats: [], recentDms: [],
               realtimeHealth: "connecting", friendsPanelOpen: false,
               // 资料跟着登录态清空:留着上一个账号的名字/头像,换号后侧栏会顶着
               // 前一个人的脸,直到新资料拉回来
@@ -3672,6 +3861,8 @@ export const useChat = create<ChatState>((set, get) => ({
           unreadByFriend: open
             ? s.unreadByFriend
             : { ...s.unreadByFriend, [msg.sender]: (s.unreadByFriend[msg.sender] ?? 0) + 1 },
+          // 聊天列表那一行（#1386）：最后一条与未读从这一批算，推送来的当场并进去
+          recentDms: mergeRecentDm(s.recentDms, msg),
         };
       })
     );
@@ -3841,8 +4032,8 @@ export const useChat = create<ChatState>((set, get) => ({
         set((s) => ({ bootDone: s.bootDone + 1 }));
         return v;
       });
-    set({ bootDone: 0, bootTotal: 8 });
-    const [info, sessions, skills, mcpPrompts, account, authRecord, configRoot, keyStatus, fullscreen] = await Promise.all([
+    set({ bootDone: 0, bootTotal: 9 });
+    const [info, sessions, skills, mcpPrompts, account, authRecord, configRoot, keyStatus, fullscreen, codingUi] = await Promise.all([
       tick(window.otter.boot()),
       tick(window.otter.listSessions()),
       tick(window.otter.listSkills()),
@@ -3859,11 +4050,13 @@ export const useChat = create<ChatState>((set, get) => ({
       tick(window.otter.configRoot()),
       tick(window.otter.keyStatus()),
       tick(window.otter.getWindowFullscreen()),
+      // 画哪一套界面（#1386）。和登录记录一起取：它决定首屏，晚一拍就是先闪一下旧界面
+      tick(window.otter.codingUi()),
     ]);
     set(
       info
-        ? { ...enterChat(info, get().panelBySession, get().bootResidue), sessions, skills, mcpPrompts, account, authRecord, configRoot, keyStatus, fullscreen }
-        : { phase: "welcome", sessions, skills, mcpPrompts, account, authRecord, configRoot, keyStatus, fullscreen }
+        ? { ...enterChat(info, get().panelBySession, get().bootResidue), sessions, skills, mcpPrompts, account, authRecord, configRoot, keyStatus, fullscreen, codingUi }
+        : { phase: "welcome", sessions, skills, mcpPrompts, account, authRecord, configRoot, keyStatus, fullscreen, codingUi }
     );
     // 冷启动补一次:用户很可能在浏览器点完重置链接、app 这才被深链唤起
     // 两个字段同一次 set:分两次的话中间会有一帧"登录了但闸没按住",app 闪一下

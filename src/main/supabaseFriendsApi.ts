@@ -21,6 +21,8 @@ const PAGE = 50;
 const SEARCH_PAGE = 8;
 /** 一次轮询最多补多少条积压消息(离线久了不至于一口气推爆渲染层) */
 const INBOX_PAGE = 200;
+/** 「聊天」列表那一页（#1386）：只关心每位朋友最新的那几条，同手机端 listRecentMessages 的 300 */
+const RECENT_PAGE = 300;
 
 /** presenceState() 的形状 {key: metas[]} → 在线 userId 列表(key 即 uid) */
 export function presenceStateToIds(state: Record<string, unknown[]>): string[] {
@@ -144,6 +146,12 @@ export function createSupabaseFriendsApi(client: SupabaseClient): FriendsApi {
         .order("id", { ascending: false }).limit(PAGE);
       if (beforeId !== undefined) q = q.lt("id", beforeId);
       return (unwrap(await q) ?? []) as MessageRow[];
+    },
+
+    async listRecentMessages() {
+      const res = await client.from("messages").select("id,sender,recipient,body,created_at")
+        .order("id", { ascending: false }).limit(RECENT_PAGE);
+      return (unwrap(res) ?? []) as MessageRow[];
     },
 
     async latestInboxId(uid) {

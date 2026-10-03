@@ -65,6 +65,8 @@ export interface WorkspaceManagerDeps {
   updateAgentRow: typeof WorkspacesApi.updateAgentRow;
   deleteAgentRow: typeof WorkspacesApi.deleteAgentRow;
   listAgentNames: typeof WorkspacesApi.listAgentNames;
+  /** 「先开口」那一格清掉（#1386 桌面那张「新建智能体」：行已落、私聊没建成、人不建了） */
+  clearAgentOnboarding: typeof WorkspacesApi.clearAgentOnboarding;
   updateSandboxApproval: typeof WorkspacesApi.updateSandboxApproval;
   listMentions: typeof WorkspacesApi.listMentions;
   markMentionsRead: typeof WorkspacesApi.markMentionsRead;
@@ -100,8 +102,12 @@ export interface WorkspaceManager {
     draft: {
       name: string; description: string; instructions: string; models: string[];
       tools: AgentToolAllow[]; avatarSlot?: number | null;
+      /** 「先开口」（ADR-0319，#1386 桌面那张「新建智能体」） */
+      onboarding?: "greet";
     },
   ): Promise<FriendsResult<{ agentId: string }>>;
+  /** 把「先开口」那一格清掉（只清 'greet'，已经在问职责的那一格不动） */
+  clearAgentOnboarding(id: string, agentId: string): Promise<FriendsResult<null>>;
   /** 改一只 agent（建的人或 owner，RLS 落地判断）。重名同样会撞 23505 */
   updateAgent(
     id: string,
@@ -334,6 +340,13 @@ export function createWorkspaceManager(deps: WorkspaceManagerDeps): WorkspaceMan
         const agentId = "a_" + randomBytes(6).toString("hex");
         await createAgentChecked(deps, client, id, uid, agentId, draft);
         return { agentId };
+      });
+    },
+
+    async clearAgentOnboarding(id, agentId) {
+      return withSession(async (client) => {
+        await deps.clearAgentOnboarding(client, id, agentId);
+        return null;
       });
     },
 

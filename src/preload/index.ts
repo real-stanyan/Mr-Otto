@@ -140,6 +140,7 @@ const bridge: ShellBridge = {
   getAccount: () => ipcRenderer.invoke(CHANNELS.getAccount),
   hasAuthRecord: () => ipcRenderer.invoke(CHANNELS.hasAuthRecord),
   configRoot: () => ipcRenderer.invoke(CHANNELS.configRoot),
+  codingUi: () => ipcRenderer.invoke(CHANNELS.codingUi),
   usageByProvider: (days: number) => ipcRenderer.invoke(CHANNELS.usageByProvider, days),
   usageByModel: (since: number) => ipcRenderer.invoke(CHANNELS.usageByModel, since),
   providerBalances: () => ipcRenderer.invoke(CHANNELS.providerBalances),
@@ -203,6 +204,7 @@ const bridge: ShellBridge = {
     ipcRenderer.invoke(CHANNELS.friendsSendMessage, friendId, body),
   friendsListMessages: (friendId, beforeId) =>
     ipcRenderer.invoke(CHANNELS.friendsListMessages, friendId, beforeId),
+  friendsRecentMessages: () => ipcRenderer.invoke(CHANNELS.friendsRecentMessages),
   shareSessionToFriend: (sessionId, friendUid, message, title, model, grant) =>
     ipcRenderer.invoke(CHANNELS.shareSessionToFriend, sessionId, friendUid, message, title, model, grant ?? null),
   importSharedSession: (prefix, workspace, grant) =>
@@ -235,6 +237,7 @@ const bridge: ShellBridge = {
     ipcRenderer.invoke(CHANNELS.workspaceWithdrawConnector, id, serverId),
   workspaceAgentCreate: (id, draft) =>
     ipcRenderer.invoke(CHANNELS.workspaceAgentCreate, id, draft),
+  workspaceAgentClearOnboarding: (id, agentId) => ipcRenderer.invoke(CHANNELS.workspaceAgentClearOnboarding, id, agentId),
   workspaceAgentUpdate: (id, agentId, patch) =>
     ipcRenderer.invoke(CHANNELS.workspaceAgentUpdate, id, agentId, patch),
   workspaceAgentDelete: (id, agentId) =>
@@ -249,6 +252,8 @@ const bridge: ShellBridge = {
   workspaceImportSession: (publisherUid, pkgId) =>
     ipcRenderer.invoke(CHANNELS.workspaceImportSession, publisherUid, pkgId),
   workspaceCloudList: (workspaceId) => ipcRenderer.invoke(CHANNELS.workspaceCloudList, workspaceId),
+  workspaceCloudLasts: (workspaceId) => ipcRenderer.invoke(CHANNELS.workspaceCloudLasts, workspaceId),
+  workspaceGuestChats: () => ipcRenderer.invoke(CHANNELS.workspaceGuestChats),
   workspaceHomeEnsure: () => ipcRenderer.invoke(CHANNELS.workspaceHomeEnsure),
   workspaceCloudCreate: (workspaceId, chat) => ipcRenderer.invoke(CHANNELS.workspaceCloudCreate, workspaceId, chat),
   workspaceCloudJoin: (workspaceId, sessionId, title) =>

@@ -42,7 +42,11 @@ function CloudStateDot({ state }: { state: ConnectorCloudState }) {
   return <span className="size-[7px] shrink-0 rounded-full bg-border" aria-label="云端不可用" />;
 }
 
-export function WorkspaceConnectorsTab({ ws, selfUid }: { ws: WorkspaceSnapshot; selfUid: string }) {
+/** `backLabel`：推进来的二级页上那颗返回写什么 = 这一页在调用方那里叫什么（团队设置里叫「连接器」，
+    微信式布局「我」那一栏里叫「应用」，#1386） */
+export function WorkspaceConnectorsTab({
+  ws, selfUid, backLabel = "连接器",
+}: { ws: WorkspaceSnapshot; selfUid: string; backLabel?: string }) {
   const withdraw = useChat((s) => s.withdrawWorkspaceConnector);
   // 托管箱清单（#815 M4）：拉 + 推两条都要。拉是因为这一页可能在任何一次推送之前
   // 就被打开（onProxyChanged 只在箱内容真变了那一刻响）；推是因为这一页上最常见的
@@ -102,7 +106,7 @@ export function WorkspaceConnectorsTab({ ws, selfUid }: { ws: WorkspaceSnapshot;
 
       <ContributeConnectorDialog ws={ws} selfUid={selfUid} open={contributeOpen} onOpenChange={setContributeOpen} />
 
-      <GitHostsSection ws={ws} selfUid={selfUid} />
+      <GitHostsSection ws={ws} selfUid={selfUid} backLabel={backLabel} />
     </div>
   );
 }
@@ -112,7 +116,7 @@ export function WorkspaceConnectorsTab({ ws, selfUid }: { ws: WorkspaceSnapshot;
 
     owner 才画 ＋ 与删除；非 owner 看到的是**同一份清单**、只是没有那两颗钮——不是整组
     藏起来（藏起来会让人以为这个团队没配过，同 ADR-0243 对非 owner 的处置）。 */
-function GitHostsSection({ ws, selfUid }: { ws: WorkspaceSnapshot; selfUid: string }) {
+function GitHostsSection({ ws, selfUid, backLabel }: { ws: WorkspaceSnapshot; selfUid: string; backLabel: string }) {
   const load = useChat((s) => s.workspaceCloudState);
   const save = useChat((s) => s.workspaceCloudGitCredential);
   const nav = useNav();
@@ -178,7 +182,7 @@ function GitHostsSection({ ws, selfUid }: { ws: WorkspaceSnapshot; selfUid: stri
             title="添加主机"
             tone="action"
             disabled={loading}
-            onClick={() => nav.push(addGitHostScreen(ws, (next) => setHosts(next)))}
+            onClick={() => nav.push(addGitHostScreen(ws, (next) => setHosts(next), backLabel))}
           />
         )}
       </InsetGroup>
@@ -200,12 +204,13 @@ function GitHostsSection({ ws, selfUid }: { ws: WorkspaceSnapshot; selfUid: stri
     校验一次——渲染层不是安全边界。 */
 function addGitHostScreen(
   ws: WorkspaceSnapshot,
-  onSaved: (hosts: readonly CsGitHost[] | null) => void
+  onSaved: (hosts: readonly CsGitHost[] | null) => void,
+  backLabel: string
 ) {
   return {
     key: `git-host-add:${ws.id}`,
     title: "添加主机",
-    backLabel: "连接器",
+    backLabel,
     render: () => <AddGitHostForm ws={ws} onSaved={onSaved} />,
   };
 }

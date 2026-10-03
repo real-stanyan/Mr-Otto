@@ -46,6 +46,9 @@ import type {
 } from "./friends.js";
 import type { MyProfile, ProfilePatch, ProfileResult } from "./profile.js";
 import type { WorkspaceSnapshot } from "./workspaces.js";
+import type { CloudSessionRow } from "./supabaseWorkspacesApi.js";
+import type { GuestChat } from "./chatGuests.js";
+import type { SessionLast } from "./sessionLast.js";
 import type {
   AskUserAnswer,
   AskUserOption,
@@ -966,6 +969,10 @@ export interface ShellBridge {
       分抽屉起，`~/.mr-otto/agents` 这类写死的字面量已经指不到任何生效的文件了。
       抽屉名是 uid 的哈希，渲染层算不出来，只能问主进程 */
   configRoot(): Promise<string>;
+  /** 这一次开机画不画本机写代码那一半（#1386：维护者拍板「先藏起来」）。开关是环境变量
+      `OTTO_CODING=1`，主进程读；关着（默认）时渲染层只画微信式的聊天界面，旧界面的代码一行不删。
+      开机取一次即可 —— 环境变量在一个进程里恒定 */
+  codingUi(): Promise<boolean>;
   /** 发起 OAuth 登录：打开系统浏览器授权页，失败（含无授权 URL）抛错 */
   signIn(provider: "google" | "github"): Promise<void>;
   /** 邮箱密码登录：成功由 onAccountChanged 推账号，失败（密码错等）抛可读错误 */
@@ -1100,6 +1107,9 @@ export interface ShellBridge {
   friendsSendMessage(friendId: string, body: string): Promise<FriendsResult<DirectMessage>>;
   /** 拉历史,新→旧;beforeId 翻旧页(取 id < beforeId 的一页,每页 50) */
   friendsListMessages(friendId: string, beforeId?: number): Promise<FriendsResult<DirectMessage[]>>;
+  /** 我收发过的最近一批私信（#1386 桌面那一半）：「聊天」列表里每位朋友那一行的最后一条与
+      未读条数从它算（`wechatInbox.friendThreads`，手机同一份）。RLS 已收在收发双方，封顶 300 条 */
+  friendsRecentMessages(): Promise<FriendsResult<DirectMessage[]>>;
   /** @好友分享会话(issue #611)：把 sessionId 这个会话打包(过隐私闸)上传,
       DM 发信封给 friendUid。message = @好友时那句「这个 fork 去干什么」。
       title/model 仅作接收方卡片展示。ok:true 带 pkgId/事件数 */
@@ -1195,8 +1205,15 @@ export interface ShellBridge {
       tools: AgentToolAllow[];
       /** 内置头像坑位；省略/null = 按 agentId 哈希派生（#1007） */
       avatarSlot?: number | null;
+      /** 「先开口」（ADR-0319）：'greet' = 它的私聊一建好就先问你要它干什么，你回的第一句就是它的职责。
+          省略 = 普通的一只（团队设置里那张表单建的都是这种）。0041 没跑的库里这一格落不下去，
+          主进程退回不带它再插一次（shared/agentAdmin 的 createAgentChecked） */
+      onboarding?: "greet";
     },
   ): Promise<FriendsResult<{ agentId: string }>>;
+  /** 不建了（行已落、私聊没建成，#1386 桌面那张「新建智能体」）：把「先开口」那一格清掉——
+      留着的话他下次从草稿发出第一句，runtime 会先替他问一句、紧接着再答他那句（双答） */
+  workspaceAgentClearOnboarding(id: string, agentId: string): Promise<FriendsResult<null>>;
   /** 改一只 agent（建的人或 owner，RLS 拦其余人） */
   workspaceAgentUpdate(
     id: string,
@@ -1225,7 +1242,12 @@ export interface ShellBridge {
 
   // ─── 云会话（Task 12，ADR-0199）：桌面当显示器，接 VPS 上的 runtime ──────
   /** 这个团队里的云会话清单（Supabase 直查 workspace_sessions，kind='cloud'） */
-  workspaceCloudList(workspaceId: string): Promise<FriendsResult<{ id: string; title: string; publisherUid: string; archived: boolean; updatedTs: number; participantUids: string[]; chatKind: "dm" | "group" | null; agentIds: string[] }[]>>;
+  workspaceCloudList(workspaceId: string): Promise<FriendsResult<CloudSessionRow[]>>;
+  /** 这个 workspace 里每条云会话的「最后一句」（0040 那三列，#1386 桌面那一半）：「聊天」列表按它排、
+      第二行写它。**读不到回空**（0040 没跑的库里退回按 updated_at 排、第二行空着），不当成一个错误 */
+  workspaceCloudLasts(workspaceId: string): Promise<FriendsResult<Record<string, SessionLast>>>;
+  /** 别人主场里拉我进去的群（#1393 客人那一侧，#1386 桌面那一半）。0043 没跑 = 空，不是错误 */
+  workspaceGuestChats(): Promise<FriendsResult<GuestChat[]>>;
   /** 开一个新云会话（走控制房 create 流程，拿到 sessionId 后还要 Join 才能收事件）。
       `chat` 在场 = 建一条聊天（#1280）；缺席 = 团队会话，一个字不变 */
   workspaceCloudCreate(workspaceId: string, chat?: CsChatSpec): Promise<FriendsResult<{ sessionId: string }>>;
@@ -1269,7 +1291,7 @@ export interface ShellBridge {
   workspaceCloudChatUpdate(
     workspaceId: string,
     sessionId: string,
-    patch: { name?: string; agentIds?: string[] },
+    patch: { name?: string; agentIds?: string[]; humans?: string[] },
   ): Promise<FriendsResult<null>>;
   /** 停掉当前云会话正在跑的这一轮 turn（#957 第三批）。谁能停由 runtime 判
       （发起人或 owner，与审批同一判据）；resolve 的是服务端的 `stop_result`
@@ -1702,6 +1724,7 @@ export const CHANNELS = {
   getAccount: "otter:getAccount",
   hasAuthRecord: "otter:hasAuthRecord",
   configRoot: "otter:configRoot",
+  codingUi: "otter:codingUi",
   usageByProvider: "otter:usageByProvider",
   usageByModel: "otter:usageByModel",
   providerBalances: "otter:providerBalances",
@@ -1727,6 +1750,7 @@ export const CHANNELS = {
   friendsList: "otter:friendsList",
   friendsSendMessage: "otter:friendsSendMessage",
   friendsListMessages: "otter:friendsListMessages",
+  friendsRecentMessages: "otter:friendsRecentMessages",
   shareSessionToFriend: "otter:shareSessionToFriend",
   importSharedSession: "otter:importSharedSession",
   proxyCreateInvite: "otter:proxyCreateInvite",
@@ -1747,6 +1771,7 @@ export const CHANNELS = {
   workspaceContributeConnector: "otter:workspaceContributeConnector",
   workspaceWithdrawConnector: "otter:workspaceWithdrawConnector",
   workspaceAgentCreate: "otter:workspaceAgentCreate",
+  workspaceAgentClearOnboarding: "otter:workspaceAgentClearOnboarding",
   workspaceAgentUpdate: "otter:workspaceAgentUpdate",
   workspaceAgentDelete: "otter:workspaceAgentDelete",
   workspaceUsage: "otter:workspaceUsage",
@@ -1755,6 +1780,8 @@ export const CHANNELS = {
   workspaceUnpublishSession: "otter:workspaceUnpublishSession",
   workspaceImportSession: "otter:workspaceImportSession",
   workspaceCloudList: "otter:workspaceCloudList",
+  workspaceCloudLasts: "otter:workspaceCloudLasts",
+  workspaceGuestChats: "otter:workspaceGuestChats",
   workspaceHomeEnsure: "otter:workspaceHomeEnsure",
   workspaceCloudCreate: "otter:workspaceCloudCreate",
   workspaceCloudJoin: "otter:workspaceCloudJoin",
