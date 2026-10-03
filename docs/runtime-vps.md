@@ -86,6 +86,28 @@ RUNTIME_SSH=user@host npm run runtime:deploy
    原生件装错架构），或者崩溃重启循环里跑的还是上一份时，文件会撒谎。60 秒内没等到就
    把 journal 尾巴打出来并以退出码 1 收场——「部署没有被证实」不写成「部署成功」。
 
+### 1.4 现在跑在哪台机器上（2026-10-03 起，#1450）
+
+runtime 从 Hetzner 那台 VPS 搬到了维护者 tailscale 里的 `desktop-v6htct5`——一台 Windows 11
+桌面机，daemon 跑在它的 **WSL2 Ubuntu 24.04** 里（systemd、Docker、Node 24 都装在 WSL 里，
+目录布局与上面三节逐字相同）。runtime 只往外连中继，所以家宽没有公网 IP 也不碍事。
+
+- **怎么连**：开发机 `~/.ssh/config` 里有一个别名 `otto-runtime`——先进 Windows 自带的
+  OpenSSH（22，防火墙只放行 `100.64.0.0/10`），再跳到 WSL 里听 `2222` 的 sshd
+  （`ProxyJump user@<tailscale IP>` + `HostName localhost`）。于是部署照旧：
+  `RUNTIME_SSH=otto-runtime npm run runtime:deploy`，`deploy:check` 同理。换一台开发机发版
+  要先把这段别名和公钥配上，否则 `npm run release` 会停在 runtime 那一步。
+- **怎么保活**：WSL 在没有 `wsl.exe` 进程挂着时会自己停掉，systemd 服务留不住它。Windows
+  上有一个计划任务 `otto-wsl-keepalive`（开机触发、S4U 登录类型、跑
+  `wsl -d Ubuntu-24.04 -u root --exec sleep infinity`），加上 `%USERPROFILE%\.wslconfig` 的
+  `vmIdleTimeout=-1` 和交流电下不睡眠。
+- **比 VPS 差在哪**：Windows 更新重启、断电、家宽断网都会让云会话停掉，更新重启挡不住。
+  报「云端无响应」时先看那台机器是不是开着、`tailscale status` 里在不在线，再看
+  `ssh otto-runtime 'systemctl is-active otto-runtime'`。
+- **搬家怎么做的**：两边不能同时跑（都会进控制房）。停旧机 → 原样拷 `/var/lib/otto-runtime`
+  （含 `-wal`，服务停了才一致）与每个 `otto-ws-*` 卷的 `_data` → 起新机 → 看 journal 的就绪行。
+  env 文件与 APNs 密钥由维护者自己拷。bundle 用旧机上正在跑的那一份，不趁搬家升版。
+
 ## 2. 手验清单（DockerWorld / 沙箱真机面）
 
 自动化测试盖不到「真 docker daemon + 真 VPS + 真两台设备」这个组合，以下十四条要真机走一遍。
