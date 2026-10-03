@@ -229,6 +229,7 @@ import {
   relayCapText,
   relaySpinStopText,
   relayTotalCapText,
+  relaySupervisedText,
   relayStateSince,
   relayNudgeText,
   relayOpeningText,
@@ -2004,6 +2005,16 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // 就不用留。回滚的路：git 里这一段连同 tests/runtime/sessionService.test.ts
     // 的 A-6 那几条一起。
     if (targets.length === 0) return;
+    // 受监督的一轮不往外接力（#1441 终审 I1）：汇报轮（朋友的话的转述）或折进了非主人说的话的那一轮。接力开场白的
+    // fromUid 是 job.fromUid（主人），下一只的那一轮会判成「主人亲口」、照主场全免直接动手，而它读得到的上下文里
+    // 正躺着那句转述——监督在这一跳断掉。客人自己点起的轮不用这一道：job.fromUid 就是客人，下一棒照样受监督。
+    // 两个旗此刻还活着（runJob 的 finally 在 relayAfterTurn 返回之后才复位）。只在主场判（approveAll）：团队会话里
+    // 旗照样会被 applyTraits 置上（非 owner 发言是常态），但那里本来每一刀都过审批门，接力一个字不变
+    if (opts.approveAll && (reportTurn || foldedNonOwner)) {
+      const nameOf1 = (id: string): string => roster.find((a) => a.agentId === id)?.name ?? id;
+      for (const to of targets) logChat("system", "系统", relaySupervisedText(nameOf1(spec.agentId), nameOf1(to)), false);
+      return;
+    }
 
     // 所有者那扇 5h 窗还剩多少（#1017）。**查不到回 null 不回 0**：0 会被
     // `decideRelay` 读成「预算为零，下一棒立刻停」，而"这一刻问不出来"该走的是降级

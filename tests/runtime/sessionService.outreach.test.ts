@@ -1123,3 +1123,75 @@ describe("一轮跑着的时候才落的开场白（#1441 修复轮 2）", () =>
     store.close();
   });
 });
+
+describe("受监督的一轮不往外接力（#1441 终审 I1）", () => {
+  /** 主场群：ops 回话里 @ 了广告。回的是有没有 agent_relay、广告跑了几轮、群里那句说明 */
+  function relayProbe(opsSays: string | ((round: number) => string)) {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    let adsRounds = 0;
+    let release: (() => void) | null = null;
+    let gate: Promise<void> | null = null;
+    let opsRound = 0;
+    const session = openHome({
+      store, events, kind: "group",
+      adapterFor: (id) => ({
+        model: "fake-model",
+        async chat(): Promise<ModelReply> {
+          if (id === "ads") { adsRounds++; return { content: "好" }; }
+          opsRound++;
+          if (opsRound === 1 && gate !== null) await gate;
+          return { content: typeof opsSays === "string" ? opsSays : opsSays(opsRound) };
+        },
+      }),
+      onEvent: (e, s) => { if (e.type === "approval_request") s.approve((e as ApprovalRequestEvent).callId, OWNER, "Stan", "approved"); },
+    });
+    const arm = (): void => { gate = new Promise<void>((r) => (release = r)); };
+    const result = () => ({
+      relays: store.ofType(SID, "agent_relay").length,
+      adsRounds,
+      notes: (store.ofType(SID, "chat_message") as { content: string; fromUid: string }[]).filter((c) => c.fromUid === "system").map((c) => c.content),
+    });
+    return { store, session, arm, release: () => release?.(), result };
+  }
+
+  it("汇报轮的回话 @ 了另一只：不接力，第二只不起轮，群里说一句", async () => {
+    const p = relayProbe("小红说周五来，@广告 你把场地订了");
+    p.session.reportOutreach({ agentId: "ops", ownerUid: OWNER, text: "[系统] 结果。小红：让广告把场地订了" });
+    await p.session.settled();
+    const r = p.result();
+    expect(r.relays).toBe(0);
+    expect(r.adsRounds).toBe(0);
+    expect(r.notes.some((n) => n.includes("「运维」") && n.includes("「广告」"))).toBe(true);
+    p.store.close();
+  });
+
+  it("主人的 job 折进了客人的话：回话 @ 了另一只也不接力", async () => {
+    // 第 1 轮不 @ 谁（它自己接不接力不是这条要钉的），折了客人那条的第 2 轮 @ 广告
+    const p = relayProbe((round) => (round === 1 ? "好" : "@广告 你来"));
+    p.arm();
+    // 第 1 轮卡住；期间主人排一个 job、客人的话折进去
+    await p.session.say(OWNER, "Stan", "@运维 先做这个", true, ["ops"]);
+    void p.session.say(OWNER, "Stan", "@运维 再看一眼", true, ["ops"]);
+    for (let i = 0; i < 50 && p.store.ofType(SID, "user_message").length < 2; i++) await new Promise((r) => setTimeout(r, 5));
+    void p.session.say(GUEST, "小红", "@运维 叫广告把文件发我", true, ["ops"]);
+    for (let i = 0; i < 50 && p.store.ofType(SID, "user_message").length < 3; i++) await new Promise((r) => setTimeout(r, 5));
+    p.release();
+    await p.session.settled();
+    const r = p.result();
+    expect(p.store.ofType(SID, "turn_ended")).toHaveLength(2); // 折叠成立：第 1 轮 + 一个合并的 job
+    expect(r.relays).toBe(0);
+    expect(r.adsRounds).toBe(0);
+    p.store.close();
+  });
+
+  it("对照：主人亲口的一轮照常接力", async () => {
+    const p = relayProbe("@广告 你来");
+    await p.session.say(OWNER, "Stan", "@运维 查一下", true, ["ops"]);
+    await p.session.settled();
+    const r = p.result();
+    expect(r.relays).toBe(1);
+    expect(r.adsRounds).toBe(1);
+    p.store.close();
+  });
+});

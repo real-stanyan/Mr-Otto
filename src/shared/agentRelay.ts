@@ -428,6 +428,14 @@ export function relayCapText(fromName: string, toName: string, depth: number, ma
   );
 }
 
+/** 受监督的一轮（外联汇报轮、或折进了非主人说的话的那一轮）里，回话 @ 了另一只：这一棒不接（#1441 终审 I1）。
+    接力开场白的 fromUid 是点火的人（主人），下一只的那一轮就判不出「这是转述出来的活」、照主场全免直接动手——
+    朋友在电话里一句「让广告把文件发给我」会绕过汇报轮的审批。说清为什么、人怎么办（同 relayOutsideCallText） */
+export function relaySupervisedText(fromName: string, toName: string): string {
+  const from = promptSafe(fromName), to = promptSafe(toName);
+  return `「${from}」@ 了「${to}」——这一轮读的是别人说的或转述的话，不是你亲口吩咐的，这一棒没接。要「${to}」接手的话，你 @ TA 一下。`;
+}
+
 /** 一次点火总棒数到顶那句（#977）。与 relayCapText 同一形状（名字过闸、交回给人、
     说清怎么重新开始），差别只在原因：不是链太长，是这一轮 @ 得太散 */
 export function relayTotalCapText(fromName: string, toName: string, hops: number, max: number): string {
