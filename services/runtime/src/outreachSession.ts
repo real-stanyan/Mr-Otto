@@ -45,6 +45,8 @@ export interface EnsureOutreachDeps<S> {
   find(workspaceId: string, agentId: string, peerUid: string): Promise<string | null>;
   insert(row: OutreachSessionRow): Promise<{ code?: string; message: string } | null>;
   append(e: NewSessionEvent): void;
+  /** 这条会话的日志里已经有 session_created 了（头一条种子） */
+  hasSeed(sessionId: string): boolean;
   /** 房间已经开着就回它，否则 null */
   active(sessionId: string): S | null;
   open(sessionId: string): S;
@@ -54,16 +56,47 @@ export interface EnsureOutreachDeps<S> {
   workdir: string;
 }
 
+/** 同一个 (workspace, agent, peer) 的 ensure 串成一条链（daemon 单进程，内存链够用）：
+    两通并发的 ensure 不许一个还在落种子事件、另一个已经查到行去开房——后者会装出一间没有种子的房 */
+const ensureChains = new Map<string, Promise<unknown>>();
+
 /** 一条 (workspace, agent, peer) 只有一条外联会话（0048 的唯一索引）：先查，没有就建，
     撞唯一索引（23505）= 另一通抢先建了，再查一次。**其余错误一律抛**——不退回别的聊天形状：
-    0048 没跑（列不存在）时静默退成 dm / group 就是把一通外联电话落进主人的普通聊天 */
-export async function ensureOutreachSession<S>(
+    0048 没跑（列不存在）时静默退成 dm / group 就是把一通外联电话落进主人的普通聊天。
+    **行与种子分开修**：insert 之后任何一步抛了，行在、日志没种子；下一次走「已有行」那条路时
+    先看日志里有没有种子、没有就补，再开房——否则这条会话会一直装配成非外联会话（好友进不来、没有票）。
+    客人名单每次都对齐一遍（幂等）：第一次写库失败只会被 syncGuestRows 记一笔，不重做好友永远找不到这条线 */
+export function ensureOutreachSession<S>(
   d: EnsureOutreachDeps<S>,
   a: { workspaceId: string; ownerUid: string; ownerName: string; agent: { agentId: string; name: string }; peer: { uid: string; name: string } },
 ): Promise<S> {
-  const reopen = (id: string): S => d.active(id) ?? d.open(id);
+  const key = JSON.stringify([a.workspaceId, a.agent.agentId, a.peer.uid]);
+  const prev = ensureChains.get(key) ?? Promise.resolve();
+  const run = prev.then(() => ensureOnce(d, a), () => ensureOnce(d, a));
+  const tail = run.then(() => undefined, () => undefined);
+  ensureChains.set(key, tail);
+  void tail.then(() => { if (ensureChains.get(key) === tail) ensureChains.delete(key); });
+  return run;
+}
+
+async function ensureOnce<S>(
+  d: EnsureOutreachDeps<S>,
+  a: { workspaceId: string; ownerUid: string; ownerName: string; agent: { agentId: string; name: string }; peer: { uid: string; name: string } },
+): Promise<S> {
+  const seed = (sessionId: string): void => {
+    if (d.hasSeed(sessionId)) return;
+    for (const e of outreachSeedEvents({ sessionId, workspaceId: a.workspaceId, workdir: d.workdir, ownerName: a.ownerName, agent: a.agent, peer: a.peer, ts: d.now() })) {
+      d.append(e);
+    }
+  };
+  const finish = async (sessionId: string): Promise<S> => {
+    seed(sessionId);
+    const session = d.active(sessionId) ?? d.open(sessionId);
+    await d.syncGuests(sessionId, [{ uid: a.peer.uid }], a.ownerUid);
+    return session;
+  };
   const existing = await d.find(a.workspaceId, a.agent.agentId, a.peer.uid);
-  if (existing !== null) return reopen(existing);
+  if (existing !== null) return finish(existing);
   const sessionId = d.newId();
   const err = await d.insert({
     id: sessionId, workspace_id: a.workspaceId, publisher_uid: a.ownerUid, kind: "cloud", title: "", pkg_id: null,
@@ -72,16 +105,11 @@ export async function ensureOutreachSession<S>(
   if (err !== null) {
     if (err.code === "23505") {
       const raced = await d.find(a.workspaceId, a.agent.agentId, a.peer.uid);
-      if (raced !== null) return reopen(raced);
+      if (raced !== null) return finish(raced);
     }
     throw new Error(`外联会话 insert 失败：${err.message}`);
   }
-  for (const e of outreachSeedEvents({ sessionId, workspaceId: a.workspaceId, workdir: d.workdir, ownerName: a.ownerName, agent: a.agent, peer: a.peer, ts: d.now() })) {
-    d.append(e);
-  }
-  const session = d.open(sessionId);
-  await d.syncGuests(sessionId, [{ uid: a.peer.uid }], a.ownerUid);
-  return session;
+  return finish(sessionId);
 }
 
 /** 这只智能体 since 之后在这个团队里打了几通：把它所有外联会话的 outreach 事件各折叠一遍求和 */
@@ -107,6 +135,8 @@ export async function openOriginRoom<S extends { isArchived(): boolean }>(
     active(sessionId: string): S | null;
     row(sessionId: string): Promise<{ workspace_id: string; archived: boolean; publisherUid: string } | null>;
     open(workspaceId: string, sessionId: string, publisherUid: string): Promise<S>;
+    /** 开出来才发现日志已归档：把刚注册的房摘掉（与启动补开发现归档同一套收摊） */
+    discard(sessionId: string): void;
   },
   workspaceId: string, sessionId: string,
 ): Promise<S | null> {
@@ -115,5 +145,9 @@ export async function openOriginRoom<S extends { isArchived(): boolean }>(
   const row = await d.row(sessionId);
   if (row === null || row.archived || row.workspace_id !== workspaceId) return null;
   const s = await d.open(workspaceId, sessionId, row.publisherUid);
-  return s.isArchived() ? null : s;
+  if (s.isArchived()) {
+    d.discard(sessionId);
+    return null;
+  }
+  return s;
 }

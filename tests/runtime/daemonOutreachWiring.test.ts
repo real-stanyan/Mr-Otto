@@ -31,6 +31,12 @@ describe("daemon.ts：外联的接线（#1441）", () => {
     expect(src).toMatch(/onOutreachEnded:\s*outreachHub === null \? null : \(r\) => void outreachHub\.ended\(workspaceId, ownerUid, r\)/);
     expect(src).toMatch(/outreach:\s*outreachHub === null \|\| !approveAll\s*\?\s*null\s*:\s*\{ dispatch: \(o\) => outreachHub\.dispatch\(\{ \.\.\.o, workspaceId, ownerUid \}\) \}/);
   });
+  it("补种子 / 摘归档房 / 开房幂等三处接线", () => {
+    expect(src).toMatch(/hasSeed: \(id\) => storeFor\(workspaceId\)\.lastOfType\(id, "session_created"\) !== null/);
+    expect(src).toMatch(/discard: discardRoom/);
+    expect(src).toMatch(/discardRoom\(row\.id\)/); // 启动补开发现归档走同一个函数
+    expect(src).toMatch(/async function openExistingRoom\([\s\S]{0,300}activeSessions\.get\(sessionId\)\?\.session/);
+  });
   it("语音票用 config.runtimeSecret 签", () => {
     expect(src).toMatch(/signSpeechTicket:\s*\(t\)\s*=>\s*signSpeechTicket\(t, config\.runtimeSecret\)/);
   });

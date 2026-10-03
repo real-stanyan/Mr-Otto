@@ -503,8 +503,19 @@ async function main(): Promise<void> {
   /** 把一条已经存在的会话房接上（外联的原会话 / 外联会话本身关着时用）：与启动补开同两步——
       问 workspaceFacts 拿所有者与 kind，再 openSessionRoom。归档的判断留给调用方 */
   async function openExistingRoom(workspaceId: string, sessionId: string, createdByUid: string): Promise<CloudSession> {
+    // openSessionRoom 不幂等（每次都起新 transport、装配新 CloudSession、覆盖 activeSessions）：已开着就用现成的
+    const live = activeSessions.get(sessionId)?.session;
+    if (live) return live;
     const facts = await workspaceFacts(workspaceId);
     return openSessionRoom(workspaceId, sessionId, facts.ownerUid, createdByUid, facts.kind === "home");
+  }
+
+  /** 日志里已经归档的会话：摘掉刚开的房（启动补开与外联开原会话共用同一套收摊） */
+  function discardRoom(sessionId: string): void {
+    closeRoom.get(sessionId)?.();
+    closeRoom.delete(sessionId);
+    activeSessions.delete(sessionId);
+    sessionBroadcast.delete(sessionId);
   }
 
   /** 外联（#1441）：agent 替主人给好友打电话。判断都在 outreachHub / outreachSession（进得了 vitest），
@@ -570,6 +581,7 @@ async function main(): Promise<void> {
                   return error ? { code: error.code, message: error.message } : null;
                 },
                 append: (e) => void storeFor(workspaceId).append(e),
+                hasSeed: (id) => storeFor(workspaceId).lastOfType(id, "session_created") !== null,
                 active: (id) => activeSessions.get(id)?.session ?? null,
                 open: (id) => openSessionRoom(workspaceId, id, ownerUid, ownerUid, true),
                 syncGuests: syncGuestRows,
@@ -591,6 +603,7 @@ async function main(): Promise<void> {
                   return { workspace_id: r.workspace_id, archived: r.archived, publisherUid: r.publisher_uid };
                 },
                 open: (w, id, publisherUid) => openExistingRoom(w, id, publisherUid),
+                discard: discardRoom,
               },
               workspaceId, sessionId,
             ),
@@ -1490,10 +1503,7 @@ async function main(): Promise<void> {
         // 日志播种，第二次一律回 false）。日志里有 session_archived 就当场
         // 收摊，顺便把那一列补上；补不上也不重试，下次启动还会走到这里
         if (session.isArchived()) {
-          closeRoom.get(row.id)?.();
-          closeRoom.delete(row.id);
-          activeSessions.delete(row.id);
-          sessionBroadcast.delete(row.id);
+          discardRoom(row.id);
           const { error: fixErr } = await supabase
             .from("workspace_sessions")
             .update({ archived: true })
