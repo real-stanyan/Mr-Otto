@@ -1188,6 +1188,35 @@ describe("受监督的一轮不往外接力（#1441 终审 I1）", () => {
     p.store.close();
   });
 
+  it("客人点起的一轮照常接力，下一棒仍受监督、不出那句系统说明（终审 Round 2）", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    let adsRound = 0;
+    const session = openHome({
+      store, events, kind: "group",
+      adapterFor: (id) => ({
+        model: "fake-model",
+        async chat(): Promise<ModelReply> {
+          if (id === "ops") return { content: "@广告 你来看一下" };
+          adsRound++;
+          if (adsRound === 1) return { content: "", toolCalls: [{ id: "rf", name: "read_file", args: { path: "/work/a.md" } }] };
+          return { content: "好" };
+        },
+      }),
+      onEvent: (e, s) => { if (e.type === "approval_request") s.approve((e as ApprovalRequestEvent).callId, OWNER, "Stan", "approved"); },
+    });
+    await session.say(GUEST, "小红", "@运维 帮我看看", true, ["ops"]);
+    await session.settled();
+    expect(store.ofType(SID, "agent_relay")).toHaveLength(1);
+    expect(adsRound).toBeGreaterThanOrEqual(1);
+    // 接力开场白记在客人名下，广告那一轮的 read_file（主场平时免审）要群主批
+    const reqs = events.filter((e) => e.type === "approval_request") as ApprovalRequestEvent[];
+    expect(reqs.map((r) => r.toolName)).toEqual(["read_file"]);
+    const notes = (store.ofType(SID, "chat_message") as { content: string; fromUid: string }[]).filter((c) => c.fromUid === "system").map((c) => c.content);
+    expect(notes.some((n) => n.includes("不是你亲口吩咐的"))).toBe(false);
+    store.close();
+  });
+
   it("对照：主人亲口的一轮照常接力", async () => {
     const p = relayProbe("@广告 你来");
     await p.session.say(OWNER, "Stan", "@运维 查一下", true, ["ops"]);

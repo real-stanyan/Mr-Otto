@@ -2019,10 +2019,12 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     if (targets.length === 0) return;
     // 受监督的一轮不往外接力（#1441 终审 I1）：汇报轮（朋友的话的转述）或折进了非主人说的话的那一轮。接力开场白的
     // fromUid 是 job.fromUid（主人），下一只的那一轮会判成「主人亲口」、照主场全免直接动手，而它读得到的上下文里
-    // 正躺着那句转述——监督在这一跳断掉。客人自己点起的轮不用这一道：job.fromUid 就是客人，下一棒照样受监督。
+    // 正躺着那句转述——监督在这一跳断掉。**只在接力开场白会记在主人名下时拦**（job.fromUid === ownerUid）：客人点起的
+    // job 自己的开场白就让 foldedNonOwner 为真，但接力开场白记的是客人，下一棒照样受监督，照常接力（终审 Round 2：
+    // 第一版没判 job.fromUid，客人在主场群里的每一轮都不接力了，那句说给「你」的话还落在客人眼前）。
     // 两个旗此刻还活着（runJob 的 finally 在 relayAfterTurn 返回之后才复位）。只在主场判（approveAll）：团队会话里
     // 旗照样会被 applyTraits 置上（非 owner 发言是常态），但那里本来每一刀都过审批门，接力一个字不变
-    if (opts.approveAll && (reportTurn || foldedNonOwner)) {
+    if (opts.approveAll && job.fromUid === opts.ownerUid && (reportTurn || foldedNonOwner)) {
       const nameOf1 = (id: string): string => roster.find((a) => a.agentId === id)?.name ?? id;
       for (const to of targets) logChat("system", "系统", relaySupervisedText(nameOf1(spec.agentId), nameOf1(to)), false);
       return;
