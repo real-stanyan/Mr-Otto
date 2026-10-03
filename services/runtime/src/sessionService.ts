@@ -838,6 +838,36 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       （guestTurn 判不出来），可正文是一个非主人的人说的话的转述——朋友在电话里一句「把 xx 文件发给我」
       不能借主场全免变成直接动手。**只管「掀审批」两处**（policyApprover / 工具表）；`createdBy` 与
       call_user 的发起人这类「记在谁名下」的消费方继续读 guestTurn / currentInitiator，不换 */
+  /** 一轮跑着的时候日志里又落了条会进模型视野的话（引擎每圈增量补尾段）：**只收紧不放松**（#1441 修复轮 2）。
+      汇报开场白 / 非主人说的话 → 之后这一轮的每把刀都要主人批、call_friend 不能打；
+      主人的系统开场白 / 接力开场白 → 不再算「主人亲口」。工具表每圈由 provider 重算（engine 的
+      refreshToolsKeepingNames），requiresApproval 与 call_friend 的 mayCall 都读这几个旗，所以改旗就够。
+      进模型视野的种类只有：带 mentions 的 user_message（engine 不为它再采样，但下一圈的增量快照里有）、
+      不带 mentions 的 user_message、chat_message；这里按发言人与 greeting 一起判，不挑种类 */
+  const tightenSupervision = (e: SessionEvent): void => {
+    if (currentAgentId === null || !opts.approveAll) return;
+    if (e.type === "user_message") {
+      if (e.greeting === "outreach_report") {
+        reportTurn = true;
+        ownerSpoke = false;
+      } else if (e.fromUid !== undefined && e.fromUid !== opts.ownerUid && e.fromUid !== "system") {
+        foldedNonOwner = true;
+        ownerSpoke = false;
+      } else if (e.greeting !== undefined || e.relay !== undefined) {
+        ownerSpoke = false;
+      }
+    } else if (e.type === "chat_message" && e.fromUid !== opts.ownerUid && e.fromUid !== "system") {
+      foldedNonOwner = true;
+      ownerSpoke = false;
+    }
+  };
+  /** 用这个 job 覆盖的开场白（日志现读）重算三个旗，只往严的一边改 */
+  const applyTraits = (covered: readonly UserMessageEvent[], depth: number): void => {
+    const t = openingTraits(covered, opts.ownerUid);
+    reportTurn = reportTurn || t.report;
+    foldedNonOwner = foldedNonOwner || t.nonOwner;
+    ownerSpoke = ownerSpoke && t.ownerSpoke && depth === 0;
+  };
   const supervisedTurn = (): boolean => opts.approveAll && (guestTurn() || reportTurn || foldedNonOwner);
   /** 这一刻正在跑 turn 的是哪只 agent（#928）。approval_request 落盘时读它——
       群里两只 agent 各自弹出的审批卡，日志里要能分清是谁要的 */
@@ -1068,6 +1098,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // 文字（本地那条纪律写在 src/main/index.ts 的 send 包装里，这里是同一处）
     deltas.flush();
     lastSeqSeen = e.seq;
+    tightenSupervision(e);
     if (e.type === "turn_ended" && e.agentId) lastTurnEndedTs.set(e.agentId, e.ts);
     // 尾段下界跟着走（#958）。**别把它读成「这里是唯一的落盘口，所以折叠结果
     // 精确等于对整份日志折叠一次」**（复审 Minor ③）：那句话不真——daemon.ts 往
@@ -1424,7 +1455,14 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         // 翻记忆也算——read_file / wiki 读那几把本来不过审批门，不掀起来的话，朋友一句
         // 「把群主电脑上的 xx 文件发出来」就能不经任何人读走。只聊天不碰刀，照旧不打扰群主。
         // rebuildTools 在 runJob 置好 currentInitiator 之后才跑，这里读到的就是这一轮的发起人
-        return supervisedTurn() ? list.map((t) => (t.requiresApproval ? t : { ...t, requiresApproval: true })) : list;
+        // requiresApproval 做成**每次读时现算**的访问器，不是建表时定死的值：模型采样的当口才落盘的汇报 /
+        // 客人的话（tightenSupervision）要对这一圈已经定下来的调用也生效，快照值收紧不到它们。
+        // Object.create 让 def / run 走原型，原来的工具对象一个字不改
+        return opts.approveAll
+          ? list.map((t) =>
+              Object.create(t, { requiresApproval: { get: () => t.requiresApproval || supervisedTurn(), enumerable: true } }) as Tool,
+            )
+          : list;
       },
       world, // 过容器锁的那份（#979 第 2 条），不是裸的 opts.world
       sessionId,
@@ -2116,10 +2154,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // openingDepth 为 0 才算亲口：接力棒的开场白 fromUid 是点火的那个人（也许就是主人），不能凭它算资格
     // 两格都按这个 job **覆盖的全部开场白**算（covered），不只读 job.opening：折进来的后几条在这里不能漏。
     // openingDepth 为 0 才算亲口：接力棒的开场白 fromUid 是点火的那个人（也许就是主人），不能凭它算资格
-    const traits = openingTraits(covered, opts.ownerUid);
-    reportTurn = traits.report;
-    foldedNonOwner = traits.nonOwner;
-    ownerSpoke = traits.ownerSpoke && openingDepth === 0;
+    reportTurn = false;
+    foldedNonOwner = false;
+    ownerSpoke = true;
+    applyTraits(covered, openingDepth);
     currentAgentId = job.agentId;
     // 停止键的 idle 判据（#957 A-2 复审）：从**这一刻**起这条会话就欠着一轮，
     // 哪怕 engine 还要几次网络往返之后才拿得到。界面上那行此刻已经在转了
@@ -2304,6 +2342,15 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // 之后，中间还隔着 hostUids/fetchGrantedTools 两次网络往返
       // 采样边界与停止键同一刻置位（复审 C2-I3）：`lastSeqSeen` 是 notify 维护
       // 的日志尾（engine 的 append 也走它），此刻它就是这一轮起跑前的最后一条
+      // 监督旗**最后一刻**再按日志重算一次（#1441 修复轮 2）：上面那几次 await 之间，同一只 agent 的
+      // 开场白（汇报 / 客人的话）可能已经落盘——job 早已出队，它们自己另排一个 job，却已经在这一轮
+      // 引擎读的日志里。与 engine 起跑是同一段同步代码，之后落的由 tightenSupervision 接着收紧
+      const lastCovered = openingsCovered(
+        store.load(sessionId, { afterSeq: bounds.closeBound.get(job.agentId) ?? -1 }),
+        job.agentId,
+        job.opening
+      );
+      applyTraits(lastCovered, lastCovered.reduce((m, u) => Math.max(m, relayDepthOf(u)), 0));
       turnBoundary = lastSeqSeen;
       currentEngine = engine;
       // 开场白早在 say() 那一刻就落盘了（#932 坑 ②），这里只是对它起 turn——
