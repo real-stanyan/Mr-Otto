@@ -56,7 +56,7 @@
 - **参数**：
   - `friend`：好友的名字。runtime 现查主人的好友名单（`friendships` + `profiles.name`），trim 后精确匹配。
     0 个 → 回「没有叫 X 的好友」并列出好友名字；多个 → 回「有 N 个叫 X 的」，让它回去问主人。查询失败 → 「稍后再试」，不当成没有。
-  - `brief`：交代的事，≤500 字，超了拒绝不截断。只给智能体看，好友看不到。
+  - `brief`：交代的事，≤500 字，超了拒绝不截断。只给智能体看，好友的界面上不画（线上帧里有，见 §14）。
   - `opening`：接通后的第一句，≤200 字（同 ADR-0332）。
 - **不打的几种**（各回一句人话，原聊天不落事件）：这只正有一通外联没结束；这一对 10 分钟内打过（从外联会话日志折）；
   这只 24 小时内已外呼 10 通（从它的各条外联会话日志折）；好友一台能收来电的设备都没有；主人没有可用额度（`decideRuntimeRoute` blocked）。
@@ -84,7 +84,7 @@
 
 ## 5. 响铃、接听、结束
 
-- **响铃**：复用 `callRinger`。`call_ring` 多一格可选 `outreach?: {outreachId, originSessionId, ownerUid}`；推送体 `ring.chat = "outreach"`，
+- **响铃**：复用 `callRinger`。外联会话自己也落 `outreach` 事件（带 `originSessionId`，不带转写），「此刻有没有一通在进行」从它折；推送体 `ring.chat = "outreach"`，
   `agentName` 写「<主人> 的 <智能体>」，`reason` 取 opening 的第一句（≤60 字）——**不取 brief**，brief 不出主人这一侧。
 - **接听**：好友发 `call` 帧，`setVoiceCall` 认出接听（现成），开场白换成 `greeting:"outreach"`。空闲时走 ADR-0332 的同步开口。
 - **结束**的四个出口，都落到同一个 `finishOutreach(outcome)`：
@@ -137,7 +137,7 @@
   - RLS 不用动：好友读这条会话走 0043 的 `is_session_guest`。
 - **新事件类型一种**（`outreach`），在全部穷举表里表态（events / persistencePolicy + DURABLE / deriveMessages / isAuditEvent + EventRow /
   pendingAfter / deriveUsage / agentView = keep / PRIVACY_VERDICTS = strip / hiddenFromCloudTimeline）。
-  `user_message.greeting` 加 `"outreach"`、`"outreach_report"`；`call_ring` 加可选 `outreach`。
+  `user_message.greeting` 加 `"outreach"`、`"outreach_report"`。
 
 ## 9. 手机
 
@@ -186,3 +186,11 @@
 - **一只同一时刻只打一通**；派它同时打给三个人要排队说三次。
 - **转写抄一份进原聊天**：同一段话在两条日志里各一份。
 - **汇报那一轮要动手就得主人批**：它想顺手把结果记进日历，会弹一张卡。主人之后亲口说的那一轮照旧免审。
+
+## 14. 计划阶段的补全（2026-10-03）
+
+1. **`call_ring` 不加字段**：外联会话自己落一份 `outreach{started/ended}`，说话闸、发票、重启收尾都从它折。
+2. **brief 在线上帧里**：模型看得见的必须落盘，brief 作为接通那条 `user_message{greeting:"outreach"}` 的正文进外联会话日志；好友的客户端收得到这一帧，界面不画。懂技术的好友抓包看得到主人交代了什么。
+3. **重启时进行中的那通按没打通收**：brief 与定时器只在内存里，续不上；照样在原聊天汇报一句。
+4. **好友关系只在派的那一刻查**：通话窗口（最长约 11 分钟）内不复查。
+5. **票在 welcome 与 `call` 回执两处发**：好友可能在外联开始前就连着这条会话。
