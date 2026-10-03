@@ -296,7 +296,8 @@ export type CsChatSpec =
 /** welcome 里带的聊天身份。agentIds 是日志投影原样——与现存智能体求交集留给读取侧。
     `humans`（协议 21）：群主之外的真人，名字是日志里的快照；私聊恒为空 */
 export interface CsChatInfo {
-  kind: "dm" | "group";
+  /** `outreach`（#1441）：智能体替主人给朋友打电话开出来的外联会话 */
+  kind: "dm" | "group" | "outreach";
   agentIds: string[];
   humans: ChatHuman[];
 }

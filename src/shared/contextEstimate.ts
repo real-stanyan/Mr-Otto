@@ -190,6 +190,7 @@ function pendingAfter(
         // 云会话专属（#1280）：模型不可见，不占上下文
         break;
       case "call_ring":
+      case "outreach":
         // 回电（#1411）：云会话专属、模型不可见，不占上下文
         break;
       case "executor_changed":

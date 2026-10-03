@@ -101,7 +101,7 @@ export interface UserMessageEvent extends SessionEventBase {
       旧客户端照收，时间线按「`greeting` 在场就不画」一样藏起它。
       `"callback"`（#1411）：智能体打给这个人的电话接通了，runtime 替接听的人落的「把你打电话要说的事
       说清楚」开场白（`mentions` 是打电话的那只，`fromUid` 是接的人）。同样只是记号、同样不画、同样不进协议位 */
-  greeting?: "voice_call" | "new_agent" | "callback";
+  greeting?: "voice_call" | "new_agent" | "callback" | "outreach" | "outreach_report";
   /** 这句话是**在语音通话里说出来的**（#1233）。缺席 = 打字打的 / 旧日志。
       **只是记号**：起 turn、排队、护栏、接力链首、派活全都不看它，模型投影
       （deriveMessages）读都不读——对模型来说这就是一条普通的用户消息，和从前
@@ -318,7 +318,10 @@ export interface RouteChangedEvent extends SessionEventBase {
 export interface CloudSessionFacts {
   workspaceId: string;
   /** 这是一条聊天（#1280）：私聊或群聊。缺席 = 团队会话（旧日志照常重放） */
-  chat?: { kind: "dm" | "group" };
+  chat?: { kind: "dm" | "group" | "outreach" };
+  /** 这是一条外联会话（#1441）：某只智能体替主人给他的朋友打电话 / 留言开出来的那条。
+      提示词里「你在替谁、对着谁」从它投影；缺席 = 不是外联会话（旧日志照常重放） */
+  outreach?: { ownerName: string; peerUid: string; peerName: string };
   /** 这条会话所在的 workspace 是个人主场（workspaces.kind='home'）：提示词里审批那句话怎么说
       由它决定。与 runtime 装配时现查的 approveAll 说的是同一件事；kind 不可变，两处不会分家 */
   home?: true;
@@ -657,6 +660,31 @@ export interface CallRingEvent extends SessionEventBase {
       ringing 之后的 answered / missed 照抄。可选 = 旧日志 / 旧版 runtime 落的照常重放 */
   opening?: string;
   expiresTs: number;
+  ignorable: true;
+}
+
+export type OutreachOutcome = "completed" | "missed" | "capped" | "failed";
+export interface OutreachLine { who: "agent" | "peer"; text: string; ts: number }
+
+/** 智能体替主人给朋友打的一通电话（#1441）：两条日志各落一份——原聊天那份带转写，外联会话那份带来处。
+    `started` 开头，`ended` 收尾，最后一条说了算。
+    **叫 `fromAgentId` 不叫 `agentId`**：同 call_ring，带 agentId 的事件会被 openTurns / foldActivity
+    当成这只自己的动静。模型不可见（`ignorable`）：结果由工具的 tool_result 与报告开场白告诉它 */
+export interface OutreachEvent extends SessionEventBase {
+  type: "outreach";
+  outreachId: string;
+  phase: "started" | "ended";
+  fromAgentId: string;
+  peerUid: string;
+  peerName: string;
+  /** 只在外联会话那份上：指回原聊天 */
+  originSessionId?: string;
+  /** ended 才有 */
+  outcome?: OutreachOutcome;
+  /** 接通过才有 */
+  durationMs?: number;
+  /** 只在原聊天那份的 ended 上 */
+  transcript?: OutreachLine[];
   ignorable: true;
 }
 
@@ -1171,6 +1199,7 @@ export type SessionEvent =
   | AgentRelayEvent
   | VoiceCallChangedEvent
   | CallRingEvent
+  | OutreachEvent
   | ChatRosterChangedEvent
   | ExecutorChangedEvent
   | MemoryLoadedEvent
@@ -1236,6 +1265,7 @@ const KNOWN_EVENT_TYPES_MAP: Record<SessionEvent["type"], true> = {
   agent_relay: true,
   voice_call_changed: true,
   call_ring: true,
+  outreach: true,
   chat_roster_changed: true,
   executor_changed: true,
   memory_loaded: true,

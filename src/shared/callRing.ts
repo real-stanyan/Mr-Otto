@@ -141,7 +141,7 @@ const RING_CHAT_KINDS: readonly RingChatKind[] = ["dm", "group", "team", "guest"
 
 /** `home` = 这条会话在个人主场里（runtime 那边就是 approveAll，ADR-0298 同一格）。主场里没有
     chat 标记的旧会话按群算 */
-export function ringChatKind(o: { home: boolean; chatKind: "dm" | "group" | null; toUid: string; ownerUid: string }): RingChatKind {
+export function ringChatKind(o: { home: boolean; chatKind: "dm" | "group" | "outreach" | null; toUid: string; ownerUid: string }): RingChatKind {
   if (!o.home) return "team";
   if (o.chatKind === "dm") return "dm";
   return o.toUid === o.ownerUid ? "group" : "guest";

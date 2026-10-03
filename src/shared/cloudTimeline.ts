@@ -121,7 +121,8 @@ export function hiddenFromCloudTimeline(e: SessionEvent): boolean {
     e.type === "agent_briefed" ||
     e.type === "request_envelope" ||
     e.type === "session_autotitled" ||
-    e.type === "call_ring"
+    e.type === "call_ring" ||
+    e.type === "outreach" // 外联（#1441）：卡由手机端从日志里自己认，桌面不画
   );
 }
 

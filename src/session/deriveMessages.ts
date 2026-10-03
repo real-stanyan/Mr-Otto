@@ -1072,6 +1072,8 @@ export function deriveMessages(
       // 回电（#1411）：打没打通由 call_user 的 tool_result 说，接通由回电开场白说；这条只是给
       // 手机画卡、给 runtime 算冷却的事实
       case "call_ring":
+      // 外联（#1441）：结果由工具的 tool_result 与报告开场白说，这条只是给卡与冷却的事实
+      case "outreach":
       // 接力棒本身不投影（#950，spec §8）：模型可见的那一面是配对的、带 relay
       // 字段的 user_message（照普通用户消息投影），这条事件只是给 UI/接力判据
       // 看的路标——谁传给了谁、第几棒，喂回模型等于让它读一句关于自己身份的元话
