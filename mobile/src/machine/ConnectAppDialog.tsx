@@ -68,7 +68,7 @@ export function ConnectAppDialog({ entry, relogin = false, onClose }: {
   return (
     <Dialog visible={visible} onExited={() => onClose(landed.current)}>
       <View style={{ alignItems: "center", marginBottom: 10 }}>
-        <AppTile name={entry.name} />
+        <AppTile name={entry.name} icon={entry.icon ?? null} />
       </View>
       <DialogTitle>{text.title}</DialogTitle>
       <DialogLead>{text.lead}</DialogLead>

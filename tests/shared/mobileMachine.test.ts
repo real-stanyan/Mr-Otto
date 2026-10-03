@@ -217,8 +217,9 @@ describe("文件", () => {
 describe("应用", () => {
   it("名字空着退回 serverId；第二行与桌面同一句", () => {
     expect(appRows(HOME)).toEqual([
-      { key: "me:github", title: "GitHub", detail: "全部工具" },
-      { key: "me:shopify", title: "shopify", detail: "2 个工具" },
+      { key: "me:github", title: "GitHub", icon: "github", detail: "全部工具" },
+      // 目录里对不上的（自己配的 server）不猜图标，画首字母（#1437）
+      { key: "me:shopify", title: "shopify", icon: null, detail: "2 个工具" },
     ]);
     expect(APPS_EMPTY).toBe("还没有接应用。");
     expect(APPS_FOOTER).toBe(DESKTOP_APPS_FOOTER);

@@ -3,6 +3,7 @@
 // 见 mobileMachine.appRows）。文案以维护者点完 demo 后的定稿为准（.demo/connectors/mobile.src.html）。
 import { CATALOG_CATEGORIES, MCP_CATALOG, type CuratedEntry } from "./mcpCatalog.js";
 import { missingParams } from "./mcpCatalogFill.js";
+import { catalogIcon } from "./appIcon.js";
 import type { CloudViewItem } from "./remote/pxCloud.js";
 
 /** 用 edge 的 https 回调实测过接不上的（Task 13 的探针产出）。值是给人看的那句原因 */
@@ -19,6 +20,8 @@ export function connectKind(entry: CuratedEntry): ConnectKind {
 export interface CatalogItemView {
   id: string;
   name: string;
+  /** 本地图标键；没有就画首字母 */
+  icon: string | null;
   description: string;
   category: string;
   kind: ConnectKind;
@@ -45,6 +48,7 @@ export function connectCatalog(
         .map((e) => ({
           id: e.id,
           name: e.name,
+          icon: e.icon ?? null,
           description: e.description,
           category,
           kind: connectKind(e),
@@ -118,6 +122,7 @@ const titleOf = (catalogId: string): string => MCP_CATALOG.find((e) => e.id === 
 export interface PhoneAppRow {
   serverId: string;
   title: string;
+  icon: string | null;
   detail: string;
   needsLogin: boolean;
   trailing: string | null;
@@ -131,6 +136,7 @@ export function phoneAppRows(view: readonly CloudViewItem[], homeId: string | nu
     return {
       serverId: v.serverId,
       title: titleOf(v.catalogId),
+      icon: catalogIcon(v.catalogId),
       detail: lent > 0 ? `${tools} · 借给了 ${lent} 个团队` : tools,
       needsLogin: v.status === "needs_login",
       trailing: v.status === "needs_login" ? "点一下重新登录" : null,
@@ -141,6 +147,7 @@ export function phoneAppRows(view: readonly CloudViewItem[], homeId: string | nu
 export interface AppDetailView {
   serverId: string;
   title: string;
+  icon: string | null;
   description: string;
   needsLogin: boolean;
   /** 全部工具名；屏取前 TOOLS_PREVIEW 个，其余折在「全部 N 个」后面 */
@@ -154,6 +161,7 @@ export function appDetail(item: CloudViewItem, now: number): AppDetailView {
   return {
     serverId: item.serverId,
     title: titleOf(item.catalogId),
+    icon: catalogIcon(item.catalogId),
     description: MCP_CATALOG.find((e) => e.id === item.catalogId)?.description ?? "",
     needsLogin,
     tools: item.tools,

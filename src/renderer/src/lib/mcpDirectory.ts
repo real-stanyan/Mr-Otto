@@ -214,38 +214,8 @@ export function directoryTint(id: string): string {
      那支深色底专用的 Blue 400 #2684FF，而不是给它开个特例。
 
    为什么不干脆全走 mask：那等于把 Stripe 画成灰的。品牌色是识别信号的一半。 */
-const MONO_ICONS = new Set([
-  "github",
-  "notion",
-  "linear",
-  "square",
-  "miro",
-  "sentry",
-  "filesystem",
-  "fetch",
-  // 下面这批是 #725 扩表时按同一条判据挑的：品牌色的相对亮度低于 0.06
-  // （深色卡上没影）或高于 0.6（浅色卡上没影）就交给 mask，让它跟主题
-  // 前景色走。Supabase 的绿是 0.55，落在带里，所以照旧保原色
-  "vercel",
-  "posthog",
-  "resend",
-  "sanity",
-  "retool",
-  "calcom",
-  "replicate",
-  "alchemy",
-  "prisma",
-  "paypal",
-  "amplitude",
-  "huggingface",
-  "aws",
-]);
-
-export type IconPaint = "mono" | "color";
-
-export function iconPaint(icon: string): IconPaint {
-  return MONO_ICONS.has(icon) ? "mono" : "color";
-}
+// 表本身住在 shared/appIcon.ts：手机端画同一批标，要同一份判据（#1437）
+export { iconPaint, type IconPaint } from "../../../shared/appIcon.js";
 
 /* ── 目录卡右边那一格该长什么样 ─────────────────────────────────────────
    原来只有两档：装了画 ✓、没装画 +。那个 ✓ 的判据是「配置里有没有一个叫

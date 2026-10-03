@@ -13,6 +13,7 @@ import type { WorkspaceUsage } from "./billing.js";
 import { fmtRemainingPercent, liveWindow, usedPercentOf } from "./billingView.js";
 import { quotaToneView, type QuotaToneView } from "./mobileAccount.js";
 import { DESKTOP_APPS_FOOTER } from "./mobileConnectors.js";
+import { serverIcon } from "./appIcon.js";
 import { rosterTimeLabel } from "./mobileRoster.js";
 import type { CsWorkEntry, CsWorkHit, CsWorkNode } from "./remote/cloudSession.js";
 import { isCloudServerId } from "./remote/pxCloud.js";
@@ -292,6 +293,8 @@ export const APPS_FOOTER = DESKTOP_APPS_FOOTER;
 export interface AppRowView {
   key: string;
   title: string;
+  /** 本地图标键；对不上目录的（自己配的 server）画首字母 */
+  icon: string | null;
   detail: string;
 }
 
@@ -302,6 +305,7 @@ export function appRows(ws: WorkspaceSnapshot): AppRowView[] {
   return ws.connectors.filter((c) => !isCloudServerId(c.serverId)).map((c) => ({
     key: `${c.hostUid}:${c.serverId}`,
     title: c.label.trim() || c.serverId,
+    icon: serverIcon(c.serverId, c.label),
     detail: toolsSummary(c.tools),
   }));
 }

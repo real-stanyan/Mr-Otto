@@ -53,7 +53,7 @@ export function ConnectAppScreen({ navigation }: Props) {
                   return (
                     <Row
                       key={i.id}
-                      leading={<AppTile name={i.name} />}
+                      leading={<AppTile name={i.name} icon={i.icon} />}
                       label={i.name}
                       detail={i.blocked !== null && !i.connected ? i.blocked : i.description}
                       {...(i.connected
