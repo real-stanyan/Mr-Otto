@@ -174,6 +174,18 @@ describe("dispatchContext", () => {
     expect(dispatchContext(events, nameOf).map(renderDispatchLine)).toEqual(["[alice]: 早", "[bob]: @运营 看下", "[运营]: 涨了 3%"]);
   });
 
+  // #1448 真机：开发边干活边说「我先看一眼…」，十来条把产品经理刚向人提的问题挤出了窗口，
+  // 人回答那个问题的「IOS26」被判成没人该接。带旁白的工具步骤群里不画，这里也不算
+  it("要了工具的那一条即使带一句旁白也不算（群里看不见它），不占窗口", () => {
+    const step = (seq: number): SessionEvent =>
+      ev({ type: "assistant_message", content: "我先看一眼目录", agentId: "ops", model: "m", toolCalls: [{ id: `c${seq}`, name: "bash", args: "{}" }] }, seq);
+    const events: SessionEvent[] = [
+      ev({ type: "assistant_message", content: "你用的什么手机？", agentId: "ads", model: "m" }, 1),
+      ...Array.from({ length: 12 }, (_, i) => step(i + 2)),
+    ];
+    expect(dispatchContext(events, nameOf)).toEqual([{ by: "广告", kind: "agent", text: "你用的什么手机？" }]);
+  });
+
   it("接力开场白、拉进通话的招呼与 engine 注的私话（relay / greeting / origin）不算群里的话", () => {
     const events: SessionEvent[] = [
       ev({ type: "user_message", content: "[系统] 「运营」@ 了「广告」", fromUid: "u1", mentions: ["ads"], relay: { fromAgentId: "ops", depth: 1 } }, 1),

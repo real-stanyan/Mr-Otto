@@ -164,6 +164,7 @@ export const DISPATCH_SYSTEM = [
   "- 这句话不是在要求做事、也不用谁回（感谢、确认、感叹、「好的」、对上一条回复的简单回应）→ 回 none。",
   `- 是明确要做的事、没有任何一只的职责对得上、而且不是说给群里某个人的 → 回标着${FALLBACK_MARK}的那一只。`,
   "- 最近的对话里某只智能体刚向人提了问题、这句话是在回答它 → 回那一只。",
+  "- 这句话是在催智能体、问它做到哪了、抱怨或评价它刚才的回复（「怎么这么久」「废话太多」「反思一下」）→ 回最近说话的那一只；看不出是哪只就回 reply。",
   "只回编号（多个用逗号分隔）、reply 或 none，不要解释、不要标点。",
 ].join("\n");
 
@@ -231,8 +232,8 @@ export function parseDispatchReply(raw: string, roster: readonly DispatchCandida
       的私话（origin）不算**——前两种是写给模型的措辞（`fromUid` 是点火的那个人，不是他
       说的话），后者是某只 agent 自己干活过程里的事，都不是群里发生的事（同 cloudTimeline
       的 hiddenFromCloudTimeline、sessionParticipants 的 humanSpeakerOf 与 agentView 的口径）；
-    - 有正文的 assistant_message：agent 的名字；只要了工具没说话的那一轮跳过（群里看不见
-      它，分类器也不该看见）。
+    - 有正文、没要工具的 assistant_message：agent 的名字；要了工具的那一条（不管带没带
+      一句旁白）跳过——群里看不见它，分类器也不该看见，而且它会把真正的对话挤出窗口（#1448）。
     正文折成一行（promptSafeBody 之后再折叠空白——顺序不能反，前者要靠换行认行首的 `[`），
     超长截到 DISPATCH_LINE_MAX_CHARS 加省略号 */
 export function dispatchContext(events: readonly SessionEvent[], agentName: (agentId: string) => string): DispatchLine[] {
@@ -250,7 +251,10 @@ export function dispatchContext(events: readonly SessionEvent[], agentName: (age
         ? { by: safeSpeakerLabel(split.label, uid), kind: "human", text: split.body }
         : { by: safeSpeakerLabel("", uid), kind: "human", text: e.content };
     } else if (e.type === "assistant_message") {
-      if (e.content.trim() === "") continue;
+      // 要了工具的那一条是干活的中间步骤，群里不画它（cloudTimeline 的 isAgentStep），分类器也
+      // 不该看见（#1448）：真机上开发连着十来句「我先看一眼…」把产品经理刚向人提的问题挤出了
+      // 这 8 行，人回答那个问题的「IOS26」就被判成没人该接
+      if (e.content.trim() === "" || (e.toolCalls?.length ?? 0) > 0) continue;
       line = { by: promptSafe(agentName(e.agentId ?? "")), kind: "agent", text: e.content };
     }
     if (line === null) continue;
