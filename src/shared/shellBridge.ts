@@ -546,6 +546,8 @@ export interface CloudSessionStatus {
       与 `gapNote` / `hasOlder` 那种「每次推送重算、缺席即最新结论」的字段相反：
       渲染层对这一格的规矩因此也相反——**缺席就留着手上那份种子**，不清成 null */
   chat?: CsChatInfo | null;
+  /** 外联通话的语音合成票（协议 22，#1441）。welcome 与 call_result 各发一次、留最新那张；缺席 = 没有 */
+  speechTicket?: string;
   /** runtime 说的一句话，**给这条连接的人看**（issue #819）：限速、审批
       失效、事件过大被跳过……这些原来只进主进程日志，用户那边是彻底静默的
       （最难查的失败形态）。一次性——只有真发生时那一次推送带它，其余推送

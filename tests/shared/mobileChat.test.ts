@@ -3,7 +3,10 @@
 
 import { describe, expect, it } from "vitest";
 import { activityFoldOf } from "../../src/shared/agentActivity.js";
-import { chatCentre, chatRows, clockLabel, liveRows, NOW_PHASE_TEXT, nowRowOf, resolveChatTarget, ringRecordView } from "../../src/shared/mobileChat.js";
+import {
+  chatCentre, chatRows, clockLabel, liveRows, NOW_PHASE_TEXT, nowRowOf, outreachCard, outreachComposer, outreachGroupText, outreachRowView, resolveChatTarget,
+  ringRecordView,
+} from "../../src/shared/mobileChat.js";
 import { openTurns } from "../../src/shared/turnLedger.js";
 import type { SessionEvent } from "../../src/session/events.js";
 import type { CloudSessionRow } from "../../src/shared/supabaseWorkspacesApi.js";
@@ -444,5 +447,120 @@ describe("chatRows：回电的通话记录（#1411，维护者看过 demo 选的
     if (theirs?.kind !== "ring") throw new Error("应有来电记录");
     expect(theirs).toMatchObject({ toMe: false, toName: "小红" });
     expect(ringRecordView(theirs, true)).toEqual({ icon: "phone-incoming", tone: "ringing", line: "运维 打给 小红 · 正在响", tap: null });
+  });
+});
+
+// 外联（#1441）：智能体替主人给朋友打的电话。原聊天里一次外联一行，外联会话里好友看到的是来电记录 + 一句说明
+describe("outreach 一行", () => {
+  const base = { outreachId: "o1", fromAgentId: "a_000000000002", peerUid: "u_xh", peerName: "小红", originSessionId: "s1", startedTs: DAY };
+  const started = { ...base, phase: "started" as const, outcome: null, durationMs: null, transcript: null };
+  const done = {
+    ...started, phase: "ended" as const, outcome: "completed" as const, durationMs: 192_000,
+    transcript: [{ who: "agent" as const, text: "周五来吗", ts: DAY + 1000 }, { who: "peer" as const, text: "来", ts: DAY + 6000 }],
+  };
+  const missed = { ...started, phase: "ended" as const, outcome: "missed" as const };
+  const failed = { ...started, phase: "ended" as const, outcome: "failed" as const };
+
+  it("进行中 / 接通过 / 未接 / 没打通", () => {
+    expect(outreachRowView(started)).toEqual({ text: "正在打给 小红", tone: "live", transcript: null });
+    expect(outreachRowView(done).text).toBe("打给 小红 · 通话 03:12");
+    expect(outreachRowView(done).tone).toBe("done");
+    expect(outreachRowView(done).transcript).toHaveLength(2);
+    expect(outreachRowView(missed)).toEqual({ text: "打给 小红 · 未接", tone: "missed", transcript: null });
+    // 没打通与未接同红（demo 定的）
+    expect(outreachRowView(failed)).toEqual({ text: "打给 小红 · 没打通", tone: "missed", transcript: null });
+  });
+  it("群里那一句带上是谁打的", () => {
+    expect(outreachGroupText("运维", started)).toBe("运维 正在打给 小红");
+    expect(outreachGroupText("运维", done)).toBe("运维 打给了 小红 · 通话 03:12");
+    expect(outreachGroupText("运维", missed)).toBe("运维 打给了 小红 · 未接");
+    expect(outreachGroupText("运维", failed)).toBe("运维 打给了 小红 · 没打通");
+  });
+  it("转写抽屉那张卡：每句 mm:ss 相对第一句；没有转写不给卡", () => {
+    const card = outreachCard(7, done, "运维")!;
+    expect(card.seq).toBe(7);
+    expect(card.utterances).toBe(2);
+    expect(card.endedTs! - card.sinceTs).toBe(192_000);
+    expect(card.lines.map((l) => [l.label, l.offsetMs, l.text, l.mine, l.parts])).toEqual([
+      ["运维", 0, "周五来吗", false, null],
+      ["小红", 5000, "来", false, null],
+    ]);
+    expect(outreachCard(7, missed, "运维")).toBeNull();
+  });
+
+  it("chatRows：started 的位置出一行，状态取这个 outreachId 最后一条", () => {
+    seq = 0;
+    const rows = chatRows({
+      events: [
+        e({ type: "user_message", content: "[Stan]: 问问小红", fromUid: "me", mentions: [] }),
+        e({ type: "outreach", phase: "started", outreachId: "o1", fromAgentId: base.fromAgentId, peerUid: "u_xh", peerName: "小红", ignorable: true }),
+        e({ type: "outreach", phase: "ended", outreachId: "o1", fromAgentId: base.fromAgentId, peerUid: "u_xh", peerName: "小红", outcome: "completed", durationMs: 192_000, transcript: done.transcript, ignorable: true }),
+      ],
+      ws: WS, selfUid: "me", now: DAY,
+    });
+    expect(rows.map((r) => r.kind)).toEqual(["time", "mine", "outreach"]);
+    const r = rows[2];
+    if (r?.kind !== "outreach") throw new Error("第三行应是外联记录");
+    expect(r).toMatchObject({ key: "outreach-o1", agentId: base.fromAgentId, name: "运维", peerName: "小红" });
+    expect(r.view.text).toBe("打给 小红 · 通话 03:12");
+    expect(r.card?.lines).toHaveLength(2);
+    expect(r.groupText).toBe("运维 打给了 小红 · 通话 03:12");
+  });
+  it("chatRows：只有 ended 在窗内（尾巴模式）不出行；两通各出各的", () => {
+    seq = 0;
+    const only = chatRows({
+      events: [e({ type: "outreach", phase: "ended", outreachId: "o9", fromAgentId: base.fromAgentId, peerUid: "u_xh", peerName: "小红", outcome: "missed", ignorable: true })],
+      ws: WS, selfUid: "me", now: DAY,
+    });
+    expect(only).toEqual([]);
+    seq = 0;
+    const two = chatRows({
+      events: [
+        e({ type: "outreach", phase: "started", outreachId: "o1", fromAgentId: base.fromAgentId, peerUid: "u_xh", peerName: "小红", ignorable: true }),
+        e({ type: "outreach", phase: "started", outreachId: "o2", fromAgentId: base.fromAgentId, peerUid: "u_aj", peerName: "阿杰", ignorable: true }),
+        e({ type: "outreach", phase: "ended", outreachId: "o1", fromAgentId: base.fromAgentId, peerUid: "u_xh", peerName: "小红", outcome: "missed", ignorable: true }),
+      ],
+      ws: WS, selfUid: "me", now: DAY,
+    });
+    const o = two.filter((r) => r.kind === "outreach").map((r) => (r.kind === "outreach" ? r.view.text : ""));
+    expect(o).toEqual(["打给 小红 · 未接", "正在打给 阿杰"]);
+  });
+});
+
+describe("外联会话的输入栏", () => {
+  const info = { kind: "outreach" as const, agentIds: ["a"], humans: [], outreach: { ownerName: "Stan", active: false } };
+  it("好友看到说明；主人看到只读说明；其它聊天照旧", () => {
+    expect(outreachComposer(info, false)).toEqual({ kind: "note", text: "这是 Stan 的智能体给你打电话的地方" });
+    const o = outreachComposer(info, true);
+    expect(o.kind).toBe("note");
+    expect(outreachComposer({ kind: "group", agentIds: [], humans: [] }, false)).toEqual({ kind: "normal" });
+    expect(outreachComposer(null, false)).toEqual({ kind: "normal" });
+  });
+  it("welcome 还没到（只有种子、没有 outreach 格）也认得出是外联：好友那句说明里不编主人名字", () => {
+    const seed = { kind: "outreach" as const, agentIds: ["a"], humans: [] };
+    expect(outreachComposer(seed, false)).toEqual({ kind: "note", text: "这是朋友的智能体给你打电话的地方" });
+  });
+});
+
+describe("来电记录（外联会话里）", () => {
+  it("未接不可点、不写「点一下回拨」；正在响照旧能接", () => {
+    seq = 0;
+    const mk = (extra: Record<string, unknown>[]) => {
+      const rows = chatRows({
+        events: [
+          e({ type: "call_ring", ringId: "r1", phase: "ringing", fromAgentId: "a_000000000002", toUid: "me", reason: "问问周五", expiresTs: DAY + 45_000, ignorable: true }),
+          ...extra.map((x) => e(x)),
+        ],
+        ws: WS, selfUid: "me", now: DAY + 200_000,
+      });
+      const r = rows.find((x) => x.kind === "ring");
+      if (r?.kind !== "ring") throw new Error("应有来电记录");
+      return r;
+    };
+    const missedRow = mk([{ type: "call_ring", ringId: "r1", phase: "missed", fromAgentId: "a_000000000002", toUid: "me", reason: "问问周五", expiresTs: DAY + 45_000, ignorable: true }]);
+    expect(ringRecordView(missedRow, false).tap).toBe("callback");
+    expect(ringRecordView(missedRow, false, { noCallback: true })).toEqual({ icon: "phone-missed", tone: "missed", line: "未接来电", tap: null });
+    const ringing = mk([]);
+    expect(ringRecordView({ ...ringing, status: "ringing" }, false, { noCallback: true }).tap).toBe("answer");
   });
 });

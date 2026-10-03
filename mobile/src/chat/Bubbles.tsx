@@ -111,7 +111,7 @@ function RosterPill({ parts, ws }: { parts: readonly RosterLinePart[]; ws: Works
   );
 }
 
-export function ChatRowView({ row, ws, selfUid, selfName, selfAvatar, group, onOpenCall, onAgent, onCallAgent, onDecide, deciding, decideReady }: {
+export function ChatRowView({ row, ws, selfUid, selfName, selfAvatar, group, outreachChat = false, onOpenCall, onAgent, onCallAgent, onDecide, deciding, decideReady }: {
   row: ChatRow;
   ws: WorkspaceSnapshot;
   selfUid: string;
@@ -119,6 +119,8 @@ export function ChatRowView({ row, ws, selfUid, selfName, selfAvatar, group, onO
   selfAvatar: string;
   /** 群里：别人那边的头像上方写名字 */
   group: boolean;
+  /** 这是外联会话（#1441）：好友在这里只接电话，未接的来电记录不可回拨 */
+  outreachChat?: boolean;
   onOpenCall: (seq: number) => void;
   onAgent: (agentId: string) => void;
   /** 点来电记录「接」或「回拨」：打给这一只（ChatScreen 的 callAgent） */
@@ -187,7 +189,9 @@ export function ChatRowView({ row, ws, selfUid, selfName, selfAvatar, group, onO
       );
     }
     case "ring":
-      return <RingRecord row={row} ws={ws} group={group} onOpenCall={onOpenCall} onCallAgent={onCallAgent} />;
+      return <RingRecord row={row} ws={ws} group={group} noCallback={outreachChat} onOpenCall={onOpenCall} onCallAgent={onCallAgent} />;
+    case "outreach":
+      return <OutreachRecord row={row} ws={ws} group={group} onOpenCall={onOpenCall} />;
     case "approval":
       return <ApprovalCard row={row} busy={deciding === row.callId || !decideReady} onDecide={onDecide} selfUid={selfUid} />;
     default: {
@@ -211,15 +215,17 @@ function NotePill({ text, tone, detail }: { text: string; tone: "muted" | "error
 /** 它打来的一通电话（#1411，维护者看过 demo 选的微信式通话记录）：私聊里是它那一侧的一个气泡——图标 + 「未接来电」/
     「来电 · 正在响」/「通话时长 00:12」，第二行是它要说的那句话；群里（或者打给的不是我）是居中灰条。点一下做什么
     与每一行怎么说都在 ringRecordView */
-function RingRecord({ row, ws, group, onOpenCall, onCallAgent }: {
+function RingRecord({ row, ws, group, noCallback, onOpenCall, onCallAgent }: {
   row: Extract<ChatRow, { kind: "ring" }>;
   ws: WorkspaceSnapshot;
   group: boolean;
+  /** 外联会话里好友不能回拨（#1441） */
+  noCallback: boolean;
   onOpenCall: (seq: number) => void;
   onCallAgent: (agentId: string) => void;
 }) {
   const { c } = usePalette();
-  const v = ringRecordView(row, group);
+  const v = ringRecordView(row, group, { noCallback });
   const call = row.call;
   const onPress = v.tap === null ? undefined : v.tap === "open" ? (call !== null ? () => onOpenCall(call.seq) : undefined) : () => onCallAgent(row.agentId);
   const label = `${v.line}。${row.reason}`;
@@ -262,6 +268,58 @@ function RingRecord({ row, ws, group, onOpenCall, onCallAgent }: {
           <Text style={{ flexShrink: 1, fontSize: 16, lineHeight: 24, color: c.foreground }}>{v.line}</Text>
         </View>
         <Text style={{ fontSize: 14, lineHeight: 20, color: c.mutedForeground }}>{row.reason}</Text>
+      </Pressable>
+    </View>
+  );
+}
+
+/** 我的智能体打给朋友的一通电话（#1441）：私聊里是它那一侧的一个气泡，群里是居中灰条。进行中 / 未接 / 没打通都不可点；
+    接通过且带转写的点开底部抽屉看全文（与通话卡同一扇）。文案与「点不点得开」的判据都在 mobileChat（outreachRowView / outreachCard） */
+function OutreachRecord({ row, ws, group, onOpenCall }: {
+  row: Extract<ChatRow, { kind: "outreach" }>;
+  ws: WorkspaceSnapshot;
+  group: boolean;
+  onOpenCall: (seq: number) => void;
+}) {
+  const { c } = usePalette();
+  const { card, view } = row;
+  const onPress = card === null ? undefined : () => onOpenCall(card.seq);
+  const icon = view.tone === "missed" ? "phone-missed" : "phone";
+  const text = group ? row.groupText : view.text;
+  const label = card === null ? text : `${text}，点开看说了什么`;
+  if (group) {
+    const ink = view.tone === "missed" ? c.destructive : c.mutedForeground;
+    return (
+      <Pressable
+        accessibilityRole={onPress === undefined ? "text" : "button"}
+        accessibilityLabel={label}
+        disabled={onPress === undefined}
+        onPress={onPress}
+        style={({ pressed }) => [{ alignSelf: "center", maxWidth: "80%" }, pressed && { opacity: 0.6 }]}
+      >
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 4, paddingVertical: 3, paddingHorizontal: 10, borderRadius: 6, backgroundColor: withAlpha(c.foreground, 0.05) }}>
+          <Icon name={icon} size={12} stroke={2} color={ink} />
+          <Text style={{ flexShrink: 1, fontSize: 12, lineHeight: 18, color: ink, textAlign: "center" }}>{text}</Text>
+        </View>
+      </Pressable>
+    );
+  }
+  const tint = view.tone === "missed" ? c.destructive : view.tone === "live" ? c.voice : c.foreground;
+  return (
+    <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 10, paddingHorizontal: 12 }}>
+      <AgentAvatar ws={ws} agentId={row.agentId} name={row.name} />
+      <Pressable
+        accessibilityRole={onPress === undefined ? "text" : "button"}
+        accessibilityLabel={label}
+        disabled={onPress === undefined}
+        onPress={onPress}
+        style={({ pressed }) => [
+          { flexShrink: 1, maxWidth: "76%", flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 9, paddingHorizontal: 12, borderRadius: RADIUS, borderTopLeftRadius: 4, backgroundColor: c.bubbleThem },
+          pressed && { opacity: 0.8 },
+        ]}
+      >
+        <Icon name={icon} size={16} stroke={2} color={tint} />
+        <Text style={{ flexShrink: 1, fontSize: 16, lineHeight: 24, color: view.tone === "missed" ? c.destructive : c.foreground }}>{text}</Text>
       </Pressable>
     </View>
   );

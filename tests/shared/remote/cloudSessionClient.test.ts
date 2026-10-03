@@ -1620,6 +1620,35 @@ describe("createCloudSessionClient — call 帧与 call_result 回执（#1163）
   });
 });
 
+// ── #1441：外联通话的语音票 ──────────────────────────────────────────────
+describe("createCloudSessionClient — speechTicket（welcome / call_result 两处发，#1441）", () => {
+  async function joined() {
+    const h = harness();
+    await h.client.join("w1", "cloud-s1");
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    return { h, t };
+  }
+  it("welcome 带票：随状态推送透传；不带票：状态里没有这一格", async () => {
+    const a = await joined();
+    a.t.emitDown({ t: "welcome", v: CS_PROTOCOL_VERSION, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: "self-uid", ownerUid: "u2", modelRoute: null, speechTicket: "T1.sig" });
+    expect(a.h.statuses.at(-1)).toMatchObject({ speechTicket: "T1.sig" });
+    const b = await joined();
+    b.t.emitDown({ t: "welcome", v: CS_PROTOCOL_VERSION, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: "self-uid", ownerUid: "u2", modelRoute: null });
+    expect("speechTicket" in b.h.statuses.at(-1)!).toBe(false);
+  });
+  it("call_result 带票：换成最新那张并推一次状态；之后不带票的推送仍带着最新那张", async () => {
+    const { h, t } = await joined();
+    t.emitDown({ t: "welcome", v: CS_PROTOCOL_VERSION, sessionId: "cloud-s1", lastSeq: -1, initiatorUid: "self-uid", ownerUid: "u2", modelRoute: null, speechTicket: "T1.sig" });
+    t.emitDown({ t: "backlog", events: [], done: true });
+    const pending = h.client.call(["a"]);
+    t.emitDown({ t: "call_result", ok: true, speechTicket: "T2.sig" });
+    expect(await pending).toEqual({ ok: true });
+    expect(h.statuses.at(-1)).toMatchObject({ speechTicket: "T2.sig" });
+  });
+});
+
 describe("createCloudSessionClient — create 带聊天（#1280）", () => {
   it("chat 原样进 create 帧；created 照旧", async () => {
     const h = harness();

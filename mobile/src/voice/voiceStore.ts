@@ -28,7 +28,7 @@ import { IOS_PERMISSION_HELP, SPEECH_LOCALE, speechHints } from "../../../src/sh
 import { createVoiceSession, type VoiceListen, type VoiceMicPort } from "../../../src/shared/voiceSession.js";
 import { OttoSpeech } from "../../modules/otto-speech/index.js";
 import { inSystemCall, onSystemCallEnded } from "../call/systemCall.js";
-import { chatEvents, sayVoice, setChatActivity, setVoiceCall } from "../cloud/chatStore.js";
+import { chatEvents, currentSpeechTicket, sayVoice, setChatActivity, setVoiceCall } from "../cloud/chatStore.js";
 import { createStore } from "../externalStore.js";
 import { fetchBilling } from "../home/billing.js";
 import { homeSnapshot } from "../home/homeStore.js";
@@ -127,7 +127,12 @@ const mic: VoiceMicPort = {
 /** 音色按名册顺序解撞（#1372）。预合成与放音必须用同一份，否则键对不上（#1420） */
 const voiceRoster = () => homeSnapshot().home?.agents ?? [];
 /** 回电开场白的预合成（#1420）：通话走它；只对预取过的句子起作用 */
-const speech = createSpeakCache((text, voiceId) => tts.speak(text, voiceId));
+/** 外联通话（#1441）：这条会话手上有票就每次合成都带上，钱记主人；没有票 = 一切照旧。每次现读，换票自动生效 */
+const speechOpts = (): { speechTicket?: string } => {
+  const speechTicket = currentSpeechTicket();
+  return speechTicket === undefined ? {} : { speechTicket };
+};
+const speech = createSpeakCache((text, voiceId) => tts.speak(text, voiceId, speechOpts()));
 
 const session = createVoiceSession({
   speak: speech.speak,

@@ -278,6 +278,9 @@ interface ActiveSession {
       （ADR-0217）、`sandboxApproval` 的 `null`（ADR-0243）、`planBadge` 的 `null`
       （ADR-0240）——这个仓库第四次在同一条纪律上立规矩 */
   chat: CsChatInfo | null | undefined;
+  /** 外联通话的语音合成票（协议 22，#1441）：welcome 与 `call_result` 各发一次，**留最新那张**；缺席 = 这条
+      连接不该出声（不是外联会话）。每次状态推送都带着它——渲染层（手机）合成语音时递给网关 */
+  speechTicket?: string;
   /** 岛上那一行写什么（#1280）。join 的调用方递，null = 团队会话（照旧写「云会话」） */
   title: string | null;
   /** 已经转发给渲染层的事件 seq。backlog 与直播可能重叠，靠它去重（拉全量
@@ -429,6 +432,7 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
       // 原来写的是 `chat === null ? {} : {...}`，把「还不知道」与「是团队」压成
       // 同一个缺席——渲染层于是在 welcome 之前就替这条会话下了「团队」的结论
       ...(session.chat === undefined ? {} : { chat: session.chat }),
+      ...(session.speechTicket === undefined ? {} : { speechTicket: session.speechTicket }),
       ...(notice === undefined ? {} : { notice }),
       // 持久（issue #957 C-I7）：与上面那条一次性的 notice 相反，只要这一份
       // 历史还缺着，**每一次**推送都带上它——渲染层因此不需要自己记着
@@ -614,6 +618,8 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
         session.initiatorUid = msg.initiatorUid;
         session.ownerUid = msg.ownerUid;
         session.chat = msg.chat ?? null; // #1280：缺席 = 团队会话
+        // 外联会话的语音票（#1441）：缺席就不动（重连后 runtime 会再发新的；旧的过期了网关自会退回记好友自己）
+        if (msg.speechTicket !== undefined) session.speechTicket = msg.speechTicket;
         // issue #945：runtime 用 turn 同一份 decideRuntimeRoute 算好的路由。
         // 桌面是显示器不是执行者——这一格照收不重算
         session.modelRoute = msg.modelRoute;
@@ -657,6 +663,12 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
         settleStop(session, msg.ok ? { ok: true } : { ok: false, message: msg.message ?? "没能停下这一轮" });
         return;
       case "call_result":
+        // 接通的那一刻签的新票（#1441）：好友可能在外联开始前就连着这条会话，welcome 那张是外联之前发的。先推状态再收口，
+        // 于是 await call 的人醒来时手上已经是最新那张
+        if (msg.ok && msg.speechTicket !== undefined) {
+          session.speechTicket = msg.speechTicket;
+          pushStatus(session);
+        }
         settleCall(session, msg.ok ? { ok: true } : { ok: false, message: msg.message ?? "通话名单没有改上" });
         return;
       case "denied":

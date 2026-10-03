@@ -11,6 +11,7 @@
 import { BILLING_HEADERS, parseBillingError } from "./billing.js";
 import type { VoiceSpeakResult } from "./shellBridge.js";
 import { TTS_HEADERS } from "./tts.js";
+import { SPEECH_TICKET_HEADER } from "./speechTicket.js";
 import { routeTts, type TtsRouteInput } from "./ttsRoute.js";
 
 /** 额度那三个口：桌面是 hostedQuota（结构上就是它），手机是一份订阅快照 + 两个空口 */
@@ -27,8 +28,15 @@ export interface TtsClientDeps {
   fetchImpl?: typeof fetch;
 }
 
+/** 一次合成的附加项 */
+export interface TtsSpeakOpts {
+  /** 外联通话的票（#1441）：好友听主人的智能体说话，钱记主人。runtime 在 welcome / call_result 里签发，
+      网关验过才改记主人，验不过去退回记调用者自己。缺席或空串 = 一切照旧 */
+  speechTicket?: string;
+}
+
 export interface TtsClient {
-  speak(text: string, voiceId: string): Promise<VoiceSpeakResult>;
+  speak(text: string, voiceId: string, opts?: TtsSpeakOpts): Promise<VoiceSpeakResult>;
 }
 
 const numberHeader = (h: Headers, name: string): number | null => {
@@ -41,9 +49,14 @@ const numberHeader = (h: Headers, name: string): number | null => {
 export function createTtsClient(deps: TtsClientDeps): TtsClient {
   const doFetch = deps.fetchImpl ?? fetch;
   return {
-    async speak(text, voiceId) {
+    async speak(text, voiceId, opts) {
       const token = await deps.accessToken();
-      const hosted = deps.quota.ttsInput();
+      const ticket = opts?.speechTicket !== undefined && opts.speechTicket !== "" ? opts.speechTicket : null;
+      // 带票时这笔钱记主人：好友自己有没有订阅、额度还剩多少与这一笔无关，客户端不拿「我没订阅」把它挡掉。
+      // 网关验不过票会退回记好友自己，那一侧的 402 / 429 由网关当场说出口。型号清单（ttsModels）是路由表读出来的、
+      // 与订阅无关，所以仍从快照取；快照还没查到（undefined）时没有型号可发，照旧不发
+      const own = deps.quota.ttsInput();
+      const hosted = ticket !== null && own !== undefined ? { ...own, subscribed: true, exhausted: false } : own;
       const route = routeTts({
         ...(hosted === undefined ? {} : { hosted }),
         hostedBaseUrl: `${deps.edgeBaseUrl()}/llm/v1`,
@@ -54,7 +67,11 @@ export function createTtsClient(deps: TtsClientDeps): TtsClient {
       try {
         res = await doFetch(route.url, {
           method: "POST",
-          headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+          headers: {
+            authorization: `Bearer ${token}`,
+            "content-type": "application/json",
+            ...(ticket !== null ? { [SPEECH_TICKET_HEADER]: ticket } : {}),
+          },
           body: JSON.stringify({ model: route.model, text, voice_id: voiceId }),
         });
       } catch (err) {
@@ -63,12 +80,14 @@ export function createTtsClient(deps: TtsClientDeps): TtsClient {
       if (!res.ok) {
         const payload: unknown = await res.json().catch(() => null);
         const e = parseBillingError(res.status, payload);
-        if (e?.code === "quota_exhausted") {
+        // 带票时 429 说的是主人的额度，不是「我的额度用完了」：记进去会让好友自己那枚环亮红
+        if (e?.code === "quota_exhausted" && ticket === null) {
           deps.quota.noteExhausted(e.resetAt !== undefined ? { resetAt: e.resetAt } : {});
         }
         return { ok: false, message: e?.message ?? `语音合成失败（HTTP ${res.status}）` };
       }
-      deps.quota.noteHeaders(res.headers);
+      // 带票时回的额度头是主人那本账的：记进好友自己的快照，他那枚环就跟着别人的用量动
+      if (ticket === null) deps.quota.noteHeaders(res.headers);
       const audio = new Uint8Array(await res.arrayBuffer());
       return {
         ok: true,

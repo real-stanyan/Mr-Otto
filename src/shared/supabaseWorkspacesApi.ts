@@ -532,11 +532,11 @@ export async function listGuestChats(client: SupabaseClient, selfUid: string): P
   const rows = (unwrap(
     await client
       .from("workspace_sessions")
-      .select("id,workspace_id,publisher_uid,title,archived,updated_at,agent_ids,last_ts,last_excerpt,last_from")
+      .select("id,workspace_id,publisher_uid,title,archived,updated_at,agent_ids,last_ts,last_excerpt,last_from,chat_kind")
       .in("id", ids),
   ) ?? []) as {
     id: string; workspace_id: string; publisher_uid: string; title: string; archived: boolean; updated_at: string;
-    agent_ids?: unknown; last_ts?: unknown; last_excerpt?: unknown; last_from?: unknown;
+    agent_ids?: unknown; last_ts?: unknown; last_excerpt?: unknown; last_from?: unknown; chat_kind?: unknown;
   }[];
   const guests = await fetchSessionGuests(client, rows.map((r) => r.id));
   const owners = await fetchProfiles(client, rows.map((r) => r.publisher_uid)).catch(() => new Map<string, MemberProfile>());

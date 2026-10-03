@@ -52,10 +52,13 @@ export interface ChatStoreState {
   notice: string | null;
   /** 开 / 建会话失败的那句 */
   error: string | null;
+  /** 外联通话的语音票（协议 22，#1441）：welcome 与 call_result 各发一次，留最新那张；绑 sessionId，离开这条聊天就清 */
+  speechTicket: { sessionId: string; ticket: string } | null;
 }
 
 const EMPTY: ChatStoreState = {
   session: null, streaming: {}, pendingFirst: null, unsent: null, draftSeed: null, sendError: null, notice: null, error: null,
+  speechTicket: null,
 };
 const store = createStore<ChatStoreState>(EMPTY);
 
@@ -81,6 +84,12 @@ export function chatEvents(sessionId: string): readonly SessionEvent[] | null {
 /** 非 hook 的订阅（系统来电那一层看通话开没开，#1428） */
 export function subscribeChat(fn: () => void): () => void {
   return store.subscribe(fn);
+}
+
+/** 此刻开着的这条会话的语音票；没有（不是外联会话 / 还没发）回 undefined。语音合成每次现读，换票自动生效 */
+export function currentSpeechTicket(): string | undefined {
+  const s = store.get();
+  return s.speechTicket !== null && s.session?.sessionId === s.speechTicket.sessionId ? s.speechTicket.ticket : undefined;
 }
 
 /** 此刻开着的那条会话；不是这一条回 null */
@@ -137,7 +146,12 @@ function onStatus(status: CloudSessionStatus): void {
   // 连接中就被拒（被踢 / 会话没了）：服务器说了算，缓存里的消息不许继续留在屏幕上
   if (session.provisional && session.state === "denied") session = { ...session, events: [], provisional: false };
   if (session.state === "denied" && cacheOwner !== null) void removeChatCache(cacheOwner, session.sessionId);
-  store.set({ session, ...(status.notice === undefined ? {} : { notice: status.notice }) });
+  store.set({
+    session,
+    ...(status.notice === undefined ? {} : { notice: status.notice }),
+    // 带票就换成最新那张；不带就留着手上的（welcome 之后的状态推送不重复带，由 client 每次都带——这里两种都稳）
+    ...(status.speechTicket === undefined ? {} : { speechTicket: { sessionId: session.sessionId, ticket: status.speechTicket } }),
+  });
   if (prev !== session.state) activity?.room(session.sessionId, prev, session.state);
   if (session.state === "ready") void flushPendingFirst(session.sessionId);
 }
@@ -190,7 +204,7 @@ export async function openChat(
       modelRoute: null, gapNote: null, chat: seed, hasOlder: false,
       older: "idle", events: cached ?? [], provisional: true,
     },
-    streaming: {}, unsent: null, sendError: null, notice: null, error: null,
+    streaming: {}, unsent: null, sendError: null, notice: null, error: null, speechTicket: null,
   });
   const r = await cloudClient.join(workspaceId, sessionId, title);
   if (g !== gen) {

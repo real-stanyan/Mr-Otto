@@ -20,6 +20,7 @@ import { groupRows, rosterRows } from "./agentRoster.js";
 import { narrowRoster } from "./chatRoster.js";
 import { withGuests, type ChatPerson, type GuestChat } from "./chatGuests.js";
 import type { FaceState } from "./ottoFace/states.js";
+import { outreachCallerName } from "./outreach.js";
 import { lastSpeakerOf, type SessionLast } from "./sessionLast.js";
 import type { CloudSessionRow } from "./supabaseWorkspacesApi.js";
 import type { WorkspaceMentionRow } from "./workspaceMentions.js";
@@ -121,12 +122,14 @@ export type InboxTarget =
   | { kind: "team"; workspaceId: string; sessionId: string }
   /** 别人主场里拉我进去的群（#1393）：workspaceId 是群主的主场 */
   | { kind: "guest"; workspaceId: string; sessionId: string }
+  /** 别人的智能体给我打电话的那条外联会话（#1441）：workspaceId 同样是对方的主场 */
+  | { kind: "outreach"; workspaceId: string; sessionId: string }
   | { kind: "friend"; uid: string };
 
 export type Unread = { kind: "count"; n: number } | { kind: "dot" } | null;
 
 export interface InboxRow {
-  /** 列表键，也是草稿与已读游标的键：`a:` 智能体私聊 / `g:` 主场群 / `t:` 团队群 / `j:` 别人拉我进的群 / `f:` 朋友私聊 */
+  /** 列表键，也是草稿与已读游标的键：`a:` 智能体私聊 / `g:` 主场群 / `t:` 团队群 / `j:` 别人拉我进的群 / `o:` 别人的智能体打给我的外联 / `f:` 朋友私聊 */
   key: string;
   target: InboxTarget;
   title: string;
@@ -312,6 +315,27 @@ export function inboxRows(o: {
   for (const g of o.guests ?? []) {
     if (g.session.archived) continue;
     const last = g.last ?? undefined;
+    if (g.outreach === true) {
+      // 外联（#1441）：别人的智能体打给我的电话。一只一行，名字「<主人> 的 <智能体>」，头像是那只的脸；第二行照旧是最后一句
+      // （响铃 / 未接那类状态不上列表：那是聊天页里通话记录的事）
+      const agentId = g.session.agentIds[0] ?? "";
+      const ownerName = g.ws.members.find((m) => m.uid === g.ws.ownerUid)?.label ?? "";
+      const title = outreachCallerName(ownerName, agentNameOf(g.ws, agentId));
+      const key = `o:${g.session.id}`;
+      rows.push({
+        key,
+        target: { kind: "outreach", workspaceId: g.ws.id, sessionId: g.session.id },
+        title,
+        avatar: stated(faceCell(g.ws, agentId), g.session.id),
+        ts: last?.ts ?? g.session.updatedTs,
+        preview: last?.excerpt ?? "",
+        mention: false,
+        unread: dot(last, key),
+        hay: [title, last?.excerpt ?? ""].join("\n"),
+        ...rowActivity(g.session.id, g.session.agentIds),
+      });
+      continue;
+    }
     const key = `j:${g.session.id}`;
     const people = guestOthers(g, o.selfUid);
     const title = groupTitleOf(g.session.title, g.ws, g.session.agentIds, people);
@@ -496,7 +520,8 @@ export function groupList(o: { selfUid: string; home: HomeInput | null; teams: r
     }
   }
   for (const g of o.guests ?? []) {
-    if (g.session.archived) continue;
+    // 外联会话不是群（#1441）：「群聊」那一页不列它
+    if (g.session.archived || g.outreach === true) continue;
     const people = guestOthers(g, o.selfUid);
     const members = [...people.map((p) => p.name), ...g.session.agentIds.map((id) => agentNameOf(g.ws, id))].join("、");
     const title = groupTitleOf(g.session.title, g.ws, g.session.agentIds, people);
