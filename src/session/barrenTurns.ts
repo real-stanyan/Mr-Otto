@@ -57,6 +57,13 @@ export function barrenEventIndexes(events: readonly SessionEvent[]): Set<number>
     if (barren !== true) continue;
     skip.add(i);
     if (events[i - 1]?.type === "image_described") skip.add(i - 1);
+    // runtime 的代读在它服务的那条**之后**、带 forSeq 指回来（#1491 P4）：那条跳了它也跳
+    const seq = events[i]?.seq;
+    for (let j = i + 1; j < events.length; j++) {
+      const e = events[j]!;
+      if (e.type === "image_described" && e.forSeq === seq) skip.add(j);
+      if (e.type === "user_message") break;
+    }
   }
 
   return skip;

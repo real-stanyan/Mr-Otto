@@ -60,6 +60,7 @@ import type { ModelAdapter } from "../../../src/model/adapter.js";
 import { EventStore } from "../../../src/session/store.js";
 import { AttachmentStore } from "../../../src/session/attachments.js";
 import { createChatMediaIntake } from "./chatMediaIntake.js";
+import { bridgeModelFor, describeImagesWith } from "./visionBridge.js";
 import { friendTiersOf } from "./chatHumans.js";
 import { DEFAULT_TIER, type FriendTier, type FriendTierRow } from "../../../src/shared/friendTier.js";
 import type { SessionEvent, TokenUsage } from "../../../src/session/events.js";
@@ -853,6 +854,33 @@ async function main(): Promise<void> {
       adapterFor: (a) => withUsage(adapterFor(workspaceId, sessionId, ownerUid, a, routeMemo), recordUsage),
       // 这句话带的图 / 视频（#1491）：下载、校验、落附件库，回事件里那两格
       media: (refs) => chatMedia.intake(workspaceId, sessionId, refs),
+      // 无视觉模型的代读员（#1491 P4）：网关清单里最便宜那款带眼睛的，走托管 adapter、账记在所有者名下
+      vision: {
+        bridgeModel: async () => {
+          const me = await hostedProbe.me(ownerUid);
+          if (me === null || me === "unreachable" || me.status !== "active") return null;
+          return bridgeModelFor(me.models);
+        },
+        describe: (model, refs, text) =>
+          describeImagesWith(
+            withUsage(
+              createHostedRuntimeAdapter({
+                edgeBase: config.edgeBase,
+                runtimeSecret: config.runtimeSecret,
+                probe: hostedProbe,
+                preferredModels: () => [model],
+                routeMemo,
+                ownerUid,
+                workspaceId,
+                sessionId,
+                readAttachment: (id) => attachmentsFor(workspaceId).read(id),
+              }),
+              recordUsage
+            ),
+            refs,
+            text
+          ),
+      },
       // 「Auto」那一档（#1009）：白名单为空的 agent，起跑前用**最便宜那款**读一遍
       // 开场白判难度，再据此挑型号。装配在 daemon 而不是 sessionService——凭据
       // （edgeBase / runtimeSecret）与订阅探针都在这一层。
