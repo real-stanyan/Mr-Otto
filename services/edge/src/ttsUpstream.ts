@@ -1,7 +1,7 @@
 // ttsUpstream —— MiniMax t2a_v2 的请求 / 回包纯映射（#1163）。
 //
 // 网关只在这一层认识 MiniMax 的形状。三件会坏的事各占一个函数，所以各进得了单测：
-//   ① 客户端发的 `{model, text, voice_id, speed?}` 合不合法（parseTtsRequest）；
+//   ① 客户端发的 `{model, text, voice_id, speed?, vol?, emotion?}` 合不合法（parseTtsRequest）；
 //   ② 上游要的是 voice_setting / audio_setting 那套（ttsUpstreamBody）；
 //   ③ 回包里音频是 **hex**、错误是 **HTTP 200 + base_resp.status_code≠0**
 //      （parseTtsReply）——真机：.io 站对国内 key 回 200 + 2049 invalid api key。

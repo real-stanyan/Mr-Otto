@@ -1,5 +1,5 @@
 // MiniMax t2a_v2 的请求 / 回包纯映射（#1163）。网关只在这一层认识 MiniMax 的形状：
-// 客户端发的是 `{model, text, voice_id, speed?}`，上游要的是 voice_setting /
+// 客户端发的是 `{model, text, voice_id, speed?, vol?, emotion?}`，上游要的是 voice_setting /
 // audio_setting 那套；回包里音频是 **hex**，错误是 **HTTP 200 + base_resp.status_code≠0**
 // （真机：.io 站对国内 key 回 200 + 2049 invalid api key）。
 import { describe, expect, it } from "vitest";

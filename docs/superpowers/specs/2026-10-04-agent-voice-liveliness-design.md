@@ -48,7 +48,7 @@ export function stripEmotionTag(bubble: string): string;
 export function prosodyFor(emotion: SpeechEmotion | null): { speed: number; vol: number };
 /** AI 大写、四位年份逐位（搬播客 normalize.ts，边界同） */
 export function normalizeSpoken(text: string): string;
-/** 句间 230 / 换说话人 460（真人 p50 / p90 四舍五入到档）（实施时改：播放器手上有 agentId 没有段边界，真人 p90 那一档本来就是话轮切换，ADR-0354 决策 6） */
+/** 句间 230 / 换说话人 460（真人 p50 / p90 四舍五入到档）（实施时改：播放器手上有 agentId 没有段边界，真人 p90 那一档本来就是话轮切换，ADR-0355 决策 6） */
 export const GAP_MS = { sentence: 230, speaker: 460 } as const;
 ```
 
@@ -97,6 +97,7 @@ export const GAP_MS = { sentence: 230, speaker: 460 } as const;
 
 ### 7. 真机验收（要维护者部署 edge）
 
+0. **上线顺序：客户端先发版 → 部署 edge → 跑兼容矩阵 → 最后部署 runtime。** 提示词（`deriveMessages`）、推送正文剥记号（`replyNotify`）、名册最后一句（`sessionLast`）都跑在云 runtime 里，runtime 一上线模型就开始写括注；还没更新的桌面 / 手机构建会把 `（笑）` 原样画进气泡、原样送去合成。构建落后仓库是常态（TestFlight），所以 runtime 排最后。
 1. 部署 edge（`services/edge/README.md` 五步）。
 2. `.superpowers/voice-smoke.mjs` 加一轮：turbo × `agentVoice.ts` 十三个音色 × 7 emotion 各念「测」，记 `status_code` 进 `docs/voice-emotion-compat.md`（播客那张表同形）。不接受的组合由 §4 的降级路兜，表上记下来是为了知道哪几档在哪个音色上**从来没生效过**。
 3. 开一场电话，人耳听三件事：括注有没有漏到气泡 / 字幕 / 通话卡里；带（笑）的一段听得出比平叙活；句间停顿不拖。听完决定 `TTS_EMOTION_INTENSITY` 1.0 还是往 2.0 拉。
