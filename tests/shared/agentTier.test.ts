@@ -160,6 +160,10 @@ describe("提示词（spec §5）", () => {
     expect(p).toContain("你有子工：订票员");
     expect(p).toContain("别找别的专员");
     expect(tierPrompt({ agent: dev, ownerName: "Stan", roster: [admin, dev] })).not.toContain("你有子工");
+    // 管理员改过名（#1596）：专员那段 @ 的是它的名字
+    const renamed = tierPrompt({ agent: dev, ownerName: "Stan", roster: [{ ...admin, name: "小李" }, dev] });
+    expect(renamed).toContain("@小李 转过去");
+    expect(renamed).toContain("有事报小李");
   });
   it("L2：只做上级派的那一件、报给上级、不派活", () => {
     const p = tierPrompt({ agent: booker, ownerName: "Stan", roster });

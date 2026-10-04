@@ -21,8 +21,9 @@ describe("FriendChatScreen", () => {
     // 两边的管理员同一个 agentId（真机 2026-10-05 分不清谁是谁的）：按 entries 画，我的叫「我的管理员」标「我的」，对方的叫「X的管理员」标「X 的」
     expect(src).toMatch(/\.\.\.broughtNames\.map\(\(a\) => \(\{ key: `mine:\$\{a\.agentId\}`, name: a\.name, tag: "我的"/);
     expect(src).toMatch(/\.\.\.peerNames\.map\(\(a\) => \(\{ key: `peer:\$\{a\.agentId\}`, name: a\.name, tag: `\$\{name\} 的`/);
-    expect(src).toMatch(/name: id === ADMIN_AGENT_ID \? "我的管理员" : agentNameOf\(homeWs, id\)/);
-    expect(src).toContain('name: `${name.replace(/\\s+/g, "")}的管理员`');
+    // 管理员改过名就用它的名字；还叫「管理员」才叫「我的管理员」/「X的管理员」（#1596 改名那一步）
+    expect(src).toMatch(/name: id === ADMIN_AGENT_ID && agentNameOf\(homeWs, id\) === "管理员" \? "我的管理员" : agentNameOf\(homeWs, id\)/);
+    expect(src).toContain('name: theirs === "管理员" ? `${name.replace(/\\s+/g, "")}的管理员` : theirs');
     expect(src).toMatch(/humans=\{\[\]\}/);
   });
   it("挑中的名字等抽屉退场再经 ref.mention 插回", () => {
