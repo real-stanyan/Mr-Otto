@@ -13,11 +13,16 @@ describe("FriendChatScreen", () => {
   it("带了智能体才接 onAt", () => {
     // #1523：朋友公开给我的智能体也能 @，所以两边任一有就接
     // #1544：我主场里没带进来的那几只也能 @（先带进来再发），所以三者任一有就接
-    expect(src).toMatch(/\{\.\.\.\(broughtNames\.length > 0 \|\| peerNames\.length > 0 \|\| otherMine\.length > 0 \? \{ onAt: \(\) => setMentioning\(true\) \} : \{\}\)\}/);
+    // #1571 第二轮：没带进来的专员不再能 @（由管理员拉），所以只看两条车道
+    expect(src).toMatch(/\{\.\.\.\(broughtNames\.length > 0 \|\| peerNames\.length > 0 \? \{ onAt: \(\) => setMentioning\(true\) \} : \{\}\)\}/);
   });
   it("MentionSheet 的名单 = 带进来的那几只，不列朋友", () => {
     // #1523：名单 = 我带进来的 + 朋友公开给我的；仍不列朋友（humans 恒空）
-    expect(src).toMatch(/agentIds=\{\[\.\.\.broughtNames\.map\(\(a\) => a\.agentId\), \.\.\.peerNames\.map\(\(a\) => a\.agentId\), \.\.\.otherMine\.map\(\(a\) => a\.agentId\)\]\}/);
+    // 两边的管理员同一个 agentId（真机 2026-10-05 分不清谁是谁的）：按 entries 画，我的叫「我的管理员」标「我的」，对方的叫「X的管理员」标「X 的」
+    expect(src).toMatch(/\.\.\.broughtNames\.map\(\(a\) => \(\{ key: `mine:\$\{a\.agentId\}`, name: a\.name, tag: "我的"/);
+    expect(src).toMatch(/\.\.\.peerNames\.map\(\(a\) => \(\{ key: `peer:\$\{a\.agentId\}`, name: a\.name, tag: `\$\{name\} 的`/);
+    expect(src).toMatch(/name: id === ADMIN_AGENT_ID \? "我的管理员" : agentNameOf\(homeWs, id\)/);
+    expect(src).toContain('name: `${name.replace(/\\s+/g, "")}的管理员`');
     expect(src).toMatch(/humans=\{\[\]\}/);
   });
   it("挑中的名字等抽屉退场再经 ref.mention 插回", () => {

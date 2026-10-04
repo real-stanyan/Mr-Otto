@@ -258,7 +258,8 @@ export function FriendChatScreen({ route, navigation }: Props) {
     return [...(chatRosterNow(laneSession?.provisional === true ? EMPTY_LANE : laneEvents, fallback) ?? fallback)];
   }, [laneSession, laneEvents, lane.agentIds]);
   const broughtNames = useMemo(
-    () => (homeWs === null ? [] : brought.filter((id) => homeWs.agents.some((a) => a.agentId === id)).map((id) => ({ agentId: id, name: agentNameOf(homeWs, id) }))),
+    // 两边都叫「管理员」时分不清谁是谁的（真机 2026-10-05）：@ 的候选名我的叫「我的管理员」、对方的叫「X的管理员」（parseMentions 的名字不能有空白）
+    () => (homeWs === null ? [] : brought.filter((id) => homeWs.agents.some((a) => a.agentId === id)).map((id) => ({ agentId: id, name: id === ADMIN_AGENT_ID ? "我的管理员" : agentNameOf(homeWs, id) }))),
     [homeWs, brought],
   );
   const selfUid = friends.uid ?? "";
@@ -272,8 +273,8 @@ export function FriendChatScreen({ route, navigation }: Props) {
   // 或车道已经在，名单里就列管理员这一位；第一次 @ 时再替 TA 开车道（#1533）。名字取车道名单里的，没有就叫「管理员」
   const peerNames = useMemo(() => {
     if (peer === null || (peer.publicAgent === null && peer.session === null)) return [];
-    return [{ agentId: ADMIN_AGENT_ID, name: peer.agents.find((a) => a.agentId === ADMIN_AGENT_ID)?.name ?? "管理员" }];
-  }, [peer]);
+    return [{ agentId: ADMIN_AGENT_ID, name: `${name.replace(/\s+/g, "")}的管理员` }];
+  }, [peer, name]);
   // @ 选人与画脸要一份快照：我的主场 + 朋友公开给我的那几只（只有名字 / 职责 / 头像，0043 的 RPC 给的）
   const mentionWs = useMemo<WorkspaceSnapshot | null>(() => {
     const theirs = peer === null ? [] : [...peer.agents];
@@ -403,18 +404,12 @@ export function FriendChatScreen({ route, navigation }: Props) {
   }, [thread?.messages, thread?.pending, taskRows]);
 
   /** 这句话 @ 了哪条车道里的谁（#1523）：先看我带进来的，再看朋友公开给我的；都没有 = 发给朋友 */
-  // 我主场里还没带进来的那几只（#1544）：@ 名单里也列它们，@ 了就先带进车道再发——接受来的名片智能体、刚建的那只，不用先去 ＋ 里「带上」
-  const otherMine = useMemo(
-    () => (homeWs === null ? [] : homeWs.agents.filter((a) => !brought.includes(a.agentId)).map((a) => ({ agentId: a.agentId, name: a.name }))),
-    [homeWs, brought],
-  );
-  const laneTargetsOf = (text: string): { lane: "mine" | "peer" | "bring"; ids: string[] } | null => {
+  const laneTargetsOf = (text: string): { lane: "mine" | "peer"; ids: string[] } | null => {
     const mine = laneTargets(text, broughtNames);
     if (mine !== null) return { lane: "mine", ids: mine };
     const theirs = laneTargets(text, peerNames);
-    if (theirs !== null) return { lane: "peer", ids: theirs };
-    const unbrought = laneTargets(text, otherMine);
-    return unbrought !== null ? { lane: "bring", ids: unbrought } : null;
+    // 没带进来的专员不再能 @ 了（#1571 第二轮：人不召唤专员，由管理员拉）——#1544 的「@ 了先带进来」撤掉
+    return theirs !== null ? { lane: "peer", ids: theirs } : null;
   };
   /** 等车道连上（带进来那一下 openChat 是异步的）：最多等 8 秒 */
   const waitLaneReady = async (sid: string): Promise<boolean> => {
@@ -444,27 +439,6 @@ export function FriendChatScreen({ route, navigation }: Props) {
       if (r.ok) return true;
       if (r.unknown) {
         setNote(`这句话不确定有没有交给${name}的智能体，没看到回复的话再说一遍。`);
-        return true;
-      }
-      setNote(r.message);
-      return false;
-    }
-    if (targets !== null && targets.lane === "bring") {
-      // @ 了还没带进来的那只（#1544）：先带进车道（沿用此刻的朝向；没有车道就建一条），连上了再发
-      if (homeWs === null) return false;
-      const b = await bringAgents(homeWs.id, uid, [...brought, ...targets.ids], laneFacing);
-      if (!b.ok) {
-        setNote(b.message);
-        return false;
-      }
-      if (!(await waitLaneReady(b.sessionId))) {
-        setNote("已经带进来了，车道还没连上，稍等一下再发。");
-        return false;
-      }
-      const r = await sendText(text, targets.ids);
-      if (r.ok) return true;
-      if (r.unknown) {
-        setNote("这句话不确定有没有交给私人智能体，没看到回复的话再说一遍。");
         return true;
       }
       setNote(r.message);
@@ -673,7 +647,7 @@ export function FriendChatScreen({ route, navigation }: Props) {
             canSend
             sessionId={null}
             onSend={send}
-            {...(broughtNames.length > 0 || peerNames.length > 0 || otherMine.length > 0 ? { onAt: () => setMentioning(true) } : {})}
+            {...(broughtNames.length > 0 || peerNames.length > 0 ? { onAt: () => setMentioning(true) } : {})}
             plus={[
               // 图片 / 视频（#1443）：相册一次最多挑 9 样；拍摄是拍照或录一段（≤60 秒）
               { key: "album", icon: "image", label: "相册", onPress: () => void sendPicked(pickFromLibrary) },
@@ -756,11 +730,15 @@ export function FriendChatScreen({ route, navigation }: Props) {
           onExited={() => setDispatching(null)}
         />
       ) : null}
-      {mentionWs !== null && (broughtNames.length > 0 || peerNames.length > 0 || otherMine.length > 0) ? (
+      {mentionWs !== null && homeWs !== null && (broughtNames.length > 0 || peerNames.length > 0) ? (
         <MentionSheet
           visible={mentioning}
           ws={mentionWs}
-          agentIds={[...broughtNames.map((a) => a.agentId), ...peerNames.map((a) => a.agentId), ...otherMine.map((a) => a.agentId)]}
+          agentIds={[]}
+          entries={[
+            ...broughtNames.map((a) => ({ key: `mine:${a.agentId}`, name: a.name, tag: "我的", slot: agentFaceSlot(homeWs, a.agentId) })),
+            ...peerNames.map((a) => ({ key: `peer:${a.agentId}`, name: a.name, tag: `${name} 的`, slot: slotOfAgent(a.agentId) })),
+          ]}
           humans={[]}
           footer={laneFacing === "both" || peerNames.length > 0 ? `@ 了智能体的那句进它的车道，不 @ 谁就是发给${name}。` : `@ 了它的那句只有你看得到，${name}收不到；不 @ 谁就是发给${name}。`}
           onPick={(picked) => {
