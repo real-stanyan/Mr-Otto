@@ -1908,6 +1908,14 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // 分级那一段（#1571，ADR-0367）只在主场加：管理员怎么派、专员只做本域、子工只听上级。进 brief 而不是现拼：
     // 模型看见的就是日志里那一句（model-visible means logged）；名单变了（新雇了人）这一句也变，会重新 brief
     let instructions = opts.approveAll ? spec.instructions + tierPrompt({ agent: spec, ownerName: "主人", roster }) : spec.instructions;
+    // 主人（与车道里的朋友）此刻叫什么：名字改了这一句跟着变 → 重新 brief。写在 brief 里而不是每句消息上，消息正文一个字不动
+    if (opts.approveAll && opts.labelOf !== undefined) {
+      const owner = await opts.labelOf(opts.ownerUid).catch(() => "");
+      const peer = isPair && pairFacts !== undefined ? await opts.labelOf(pairFacts.peerUid).catch(() => "") : "";
+      if (owner !== "") {
+        instructions += `\n[名字：主人此刻叫「${promptSafe(owner)}」${peer !== "" ? `，这条私聊里的朋友叫「${promptSafe(peer)}」` : ""}——消息前面带的就是这个名字；改了名也还是同一个人，别当成陌生人。]\n`;
+      }
+    }
     // 公开车道里对对方的授权（#1578，ADR-0368）：按好友档位写一段，进 brief（档位改了下一次 brief 跟着变）
     if (isPair && pairFacts !== undefined && opts.peerTier !== undefined && pairFacingOf(chatHumans, pairFacts.peerUid) === "both") {
       const tier = (await opts.peerTier(pairFacts.peerUid).catch(() => null)) ?? "chat";

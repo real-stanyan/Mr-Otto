@@ -42,6 +42,20 @@ describe("laneTasksOf", () => {
     expect(laneTaskStatus(tasks[1]!, false)).toBe("waiting");
   });
 
+  it("同一个人半小时内接着说的归到他上一条；换人或隔久了才开新的（真机 2026-10-05 三条卡）", () => {
+    reset();
+    const tasks = laneTasksOf([
+      ev({ type: "user_message", content: "@我的管理员 你带上 Stan 的管理员去看营业额", fromUid: ME }),
+      ev({ type: "assistant_message", agentId: "admin", content: "得他本人确认" }),
+      ev({ type: "user_message", content: "他不在线，你去给他打电话", fromUid: ME }),
+      ev({ type: "assistant_message", agentId: "admin", content: "好" }),
+      ev({ type: "user_message", content: "你可以给他打电话的", fromUid: ME }),
+      ev({ type: "user_message", content: "我来说一句", fromUid: FRIEND }),
+      ev({ type: "user_message", content: "隔了很久", fromUid: FRIEND, ts: 1000 + seq + 31 * 60_000 }),
+    ], ME, nameOf);
+    expect(tasks.map((t) => [t.startedBy, t.items.filter((i) => i.who !== "agent").length])).toEqual([["me", 3], ["friend", 1], ["friend", 1]]);
+    expect(tasks[0]!.title).toBe("@我的管理员 你带上 Stan 的管理员去看营业额");
+  });
   it("电话开一条（标题带打给谁）；挂断是它的一行；之后的总结归到它；招呼 / 总结的开场白不画", () => {
     reset();
     const tasks = laneTasksOf([
