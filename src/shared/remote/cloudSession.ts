@@ -9,7 +9,10 @@ import { parseChatMediaRefs, type ChatMediaRef } from "../chatMedia.js";
 import { b64decode, b64encode } from "./b64.js";
 import { MAX_FRAME_BYTES } from "./wire.js";
 
-/** 26（#1533，#1532 一期）：公开智能体。`create` 的 pair 多 `onBehalf: true`——由**配对的朋友**发到主人的主场控制房，
+/** 27（#1520）：`CsUp` 加 `pick_friend`（点选人卡上的一位，uid null = 都不是），`CsDown` 加
+    `pick_friend_result`（带 pickId，同 approve_result 的理由）。加帧照样进位（握手精确相等）：老 runtime
+    收到 pick_friend 会当未知帧丢掉，于是新客户端点了人、卡一直转圈，runtime 这头什么都没发生。
+    26（#1533，#1532 一期）：公开智能体。`create` 的 pair 多 `onBehalf: true`——由**配对的朋友**发到主人的主场控制房，
     替主人开（或找到）装着 TA 公开智能体的共享车道；frameHandler 对这一种帧放行非成员，daemon 核对朋友关系 / 档位 /
     主人设了哪只。加字段照样进位：老 runtime 会把 onBehalf 静默丢掉、再按「非成员」拒掉——在握手那一步就说清。
     25（#1523，#1461 P2）：共享车道。`create` 的 pair `facing` 收 "both"；`chat_update` 多 `facing`（只在车道上有意义：
@@ -140,7 +143,7 @@ import { MAX_FRAME_BYTES } from "./wire.js";
     少一格状态。**加一个枚举值同理**：老客户端的 isValidCsDeniedCode 认不出
     `rate_limited`，decodeCsDown 回 null，那一帧被静默忽略，于是 create()
     要白等满超时才回一句"云端无响应"——把"你被限速了"说成"对面没回话"。 */
-export const CS_PROTOCOL_VERSION = 26;
+export const CS_PROTOCOL_VERSION = 27;
 export const CS_MAX_TEXT_BYTES = 64 * 1024;
 
 /** 一次回多少字节的文件内容（#1056）。中继单帧上限是 256 KiB（wire.ts 的
