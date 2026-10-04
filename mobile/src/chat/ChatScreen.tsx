@@ -32,7 +32,7 @@ import { CHAT_GROUP_CREATE_MIN, CHAT_GROUP_MAX, CHAT_HUMANS_MAX, chatHumansNow, 
 import { cloudDeniedText } from "../../../src/shared/cloudSessionState.js";
 import { withAgent } from "../../../src/shared/groupEdit.js";
 import { callBarMode, callFace, callMicOn, joinBlockedText, phoneOffered, waveMode } from "../../../src/shared/mobileCall.js";
-import { chatCentre, chatRows, liveRows, nowRowOf, outreachComposer, resolveChatTarget, type ChatRow, type NowRow } from "../../../src/shared/mobileChat.js";
+import { chatCentre, chatRows, liveRows, nowRowOf, outreachComposer, resolveChatTarget, screenOwnsSession, type ChatRow, type NowRow } from "../../../src/shared/mobileChat.js";
 import { facePhase } from "../../../src/shared/ottoFace/art.js";
 import type { CsChatInfo } from "../../../src/shared/remote/cloudSession.js";
 import { parseMemberMentions, parseMentions } from "../../../src/shared/remote/agentMention.js";
@@ -47,7 +47,7 @@ import { useCallKit } from "../call/callKit.js";
 import { settleAnswer } from "../call/ringStore.js";
 import { cloudClient } from "../cloud/cloudClient.js";
 import {
-  closeChat, dropUnsent, loadOlder, openChat, resendUnsent, sendText, startDm, stopTurn, useChatStore,
+  chatSessionOf, closeChat, dropUnsent, loadOlder, openChat, resendUnsent, sendText, startDm, stopTurn, useChatStore, type OutboxLine,
 } from "../cloud/chatStore.js";
 import { useFriends } from "../friends/friendsStore.js";
 import { PickAgentsDialog } from "../group/PickAgentsDialog.js";
@@ -69,7 +69,7 @@ import { FaceTile, GridTile } from "../wx/Avatar.js";
 import { Icon } from "../wx/Icon.js";
 import { HeaderIconButton } from "../wx/TabHeader.js";
 import { toast } from "../wx/toast.js";
-import { ChatRowView, TypingRow } from "./Bubbles.js";
+import { ChatRowView, PendingMineRow, TypingRow } from "./Bubbles.js";
 import { MentionSheet } from "./MentionSheet.js";
 import { RoleChips } from "./RoleChips.js";
 import { WxComposer, type ComposerHandle, type HoldState, type PlusItem } from "./WxComposer.js";
@@ -84,7 +84,7 @@ const PHASE_STATUS: Record<NowRow["phase"], string> = {
   composing: "正在想…",
   queued: "排队中…",
 };
-type Item = { kind: "row"; row: ChatRow } | { kind: "now"; now: NowRow } | { kind: "roles" };
+type Item = { kind: "row"; row: ChatRow } | { kind: "outbox"; line: OutboxLine } | { kind: "now"; now: NowRow } | { kind: "roles" };
 type Props = NativeStackScreenProps<RootStackParams, "Chat">;
 
 interface Resolved {
@@ -279,8 +279,25 @@ export function ChatScreen({ route, navigation }: Props) {
     // 只跟「是哪一条」走：resolved 每次刷新都是新对象
   }, [baseWs?.id, sessionId]);
   useEffect(() => () => closeChat(), []);
+  // 回到这一页时连接可能已经被别的页面拿走了（#1461：从群信息点进朋友私聊，那一页要连它自己的私密车道——
+  // 手机同一时刻只连得上一条）。拿走了就再进一次房，本机缓存先画，毫秒级
+  useFocusEffect(
+    useCallback(() => {
+      if (baseWs === null || resolved === null || sessionId === null) return;
+      if (chatSessionOf(sessionId) === null) void openChat(baseWs.id, sessionId, resolved.seed, resolved.title);
+      // 同上：只跟「是哪一条」走
+    }, [baseWs?.id, sessionId]),
+  );
 
-  const session = chat.session;
+  // 只认这一页自己那一条（#1461）：连接被叠在上面的朋友私聊页拿去连私密车道时，store 里是那条车道——
+  // 不判的话这一页会在后台拿车道的事件画自己的时间线。草稿（还没有 sessionId）只认这只智能体的私聊（复审 M2）
+  const session = screenOwnsSession({
+    pageSessionId: sessionId,
+    draftAgentId: resolved?.kind === "dm" ? (resolved.agentIds[0] ?? null) : null,
+    current: chat.session,
+  })
+    ? chat.session
+    : null;
   const events = session?.events ?? EMPTY_EVENTS;
   // 名单只读服务器给的：连接中 events 里可能是缓存，缓存里的名单可能比清单投影还旧，
   // 而 chat_update 发的是完整名单，拿旧的发出去会把别的设备上的改动悄悄撤销（#1426）。
@@ -371,12 +388,16 @@ export function ChatScreen({ route, navigation }: Props) {
       list.push({ kind: "row", row });
       if (roleAnchor !== null && row.key === `e${roleAnchor}`) list.push({ kind: "roles" });
     }
+    // 发出去、回执还没回来的那几句（#1473）：先画在最底下。回执一到就从 outbox 摘掉——服务端先广播
+    // 事件再回 say_result，两帧走同一条连接按序到，摘掉那一刻真的那条已经在 rows 里了
+    const sid = session?.sessionId ?? null;
+    for (const line of chat.outbox) if (line.sessionId === sid) list.push({ kind: "outbox", line });
     // 它已经在往外写字了（流式那一段画出来了）就不再画三个点
     if (nowRow !== null && !(nowRow.phase === "solving" && live.some((r) => r.kind === "agent" && r.agentId === nowRow.agentId))) {
       list.push({ kind: "now", now: nowRow });
     }
     return list.reverse();
-  }, [rows, live, nowRow, roleAnchor]);
+  }, [rows, live, nowRow, roleAnchor, chat.outbox, session?.sessionId]);
 
   const ready = session?.state === "ready";
   const canSend = draft || ready;
@@ -657,6 +678,8 @@ export function ChatScreen({ route, navigation }: Props) {
                       setCallSheetOpen(true);
                     }}
                   />
+                ) : item.kind === "outbox" ? (
+                  <PendingMineRow text={item.line.text} selfName={me.name} selfAvatar={me.avatar} />
                 ) : item.kind === "now" ? (
                   <TypingRow
                     ws={ws}

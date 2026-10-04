@@ -56,6 +56,9 @@ export function boundedContextEvents(store: EventLog, sessionId: string): Sessio
     ...store.ofType(sessionId, "workspace_memory_loaded", { beforeSeq: cp.seq }),
     // 团队 wiki 快照（#1140）：同上
     ...store.ofType(sessionId, "workspace_wiki_loaded", { beforeSeq: cp.seq }),
+    // 私密车道的私聊信封（#1461）：同上。不捞的话压过一次之后、私聊又没新话（信封没变不重落）时，
+    // 车道里的智能体就再也看不到私聊——症状只是「它忽然不知道你们在聊什么」
+    ...store.ofType(sessionId, "pair_context_loaded", { beforeSeq: cp.seq }),
     // agent 身份快照（#957 A-3）：同上，全部捞、投影只认最后一条。不捞的话，
     // 压过一次的云会话里这只 agent 就再也不知道自己是谁——而 system 消息里
     // 没有它，症状只是「模型忽然不认自己的职责」，不崩不报错

@@ -200,3 +200,16 @@ describe("listCloudSessions 认得 outreach，主人的列表一律不列它", (
     expect(groupList({ selfUid: "u1", home: null, teams: [{ ws, sessions: rows, lasts }] }).some((g) => g.key === "t:os1")).toBe(false);
   });
 });
+
+describe("listCloudSessions：私密车道不进任何清单（#1461 P1）", () => {
+  it("chat_kind = pair 的那一行整行摘掉——它画在和那位朋友的私聊页里，不认出来就会以团队会话的样子混进列表", async () => {
+    const client = fakeClient(
+      { data: [ROW_A, { ...ROW_A, id: "pair-1" }] },
+      { data: [] },
+      [],
+      { data: [{ id: "pair-1", chat_kind: "pair", agent_ids: ["admin"] }] },
+    );
+    const rows = await listCloudSessions(client, "w1");
+    expect(rows.map((r) => r.id)).toEqual(["cs-1"]);
+  });
+});

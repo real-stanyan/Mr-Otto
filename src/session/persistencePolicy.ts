@@ -80,6 +80,7 @@ export function shouldPersist(kind: EmittedKind): boolean {
     case "memory_loaded":
     case "workspace_memory_loaded": // 工作区记忆快照（#949）：模型可见 = 必须落
     case "workspace_wiki_loaded": // 团队 wiki 快照（#1140）：模型可见 = 必须落
+    case "pair_context_loaded": // 私密车道的私聊信封（#1461）：模型可见 = 必须落
     case "memory_user_edit":
     case "memory_nudge":
     case "micro_compacted":

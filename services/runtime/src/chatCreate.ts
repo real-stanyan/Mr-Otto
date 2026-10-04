@@ -10,7 +10,7 @@ type TeamAgent = { agentId: string; name: string; degraded?: boolean };
 export type ChatCreatePlan =
   | {
       ok: true;
-      chatKind: "dm" | "group";
+      chatKind: "dm" | "group" | "pair";
       agentIds: string[];
       title: string;
       entries: { agentId: string; name: string }[];
@@ -42,4 +42,14 @@ export function planChatCreate(chat: CsChatSpec, team: readonly TeamAgent[]): Ch
     agentIds: members.map((a) => a.agentId),
     entries: members.map((a) => ({ agentId: a.agentId, name: a.name })),
   };
+}
+
+/** 私密车道（#1461 P1，ADR-0346）能不能建：只在**我自己的主场**里（智能体是我的、在我的云电脑上跑、花我的额度——
+    团队的智能体不归我一个人带出去），只对**已接受的朋友**（`friends` 由调用方现查 `friendships`，查不到由调用方
+    说「稍后再试」，不在这里读成「不是朋友」），不能和自己配对。回 null = 可以；回字符串 = 给人看的那句话 */
+export function pairCreateProblem(o: { byUid: string; peerUid: string; home: boolean; friends: ReadonlySet<string> }): string | null {
+  if (!o.home) return "私人智能体只能从你自己的主场里带。";
+  if (o.peerUid === o.byUid) return "不能和自己配对。";
+  if (!o.friends.has(o.peerUid)) return "只能在和朋友的私聊里带智能体。";
+  return null;
 }

@@ -24,8 +24,8 @@ describe("cs_say 的 mentions（#928 切片 1a）", () => {
 });
 
 describe("cs 协议 6（#957 第三批：stop 帧与 say/approve/stop 回执）", () => {
-  it("CS_PROTOCOL_VERSION === 22（…；15 = #1103 Git 凭据；16 = #1107 流式 delta 帧；17 = #1163 语音通话 call 帧；18 = #1140 wiki_write 帧；19 = #1233 say.voice；20 = #1280 聊天；21 = #1393 群里的真人；22 = #1441 外联会话与语音合成的票）", () => {
-    expect(CS_PROTOCOL_VERSION).toBe(22);
+  it("CS_PROTOCOL_VERSION === 22（…；15 = #1103 Git 凭据；16 = #1107 流式 delta 帧；17 = #1163 语音通话 call 帧；18 = #1140 wiki_write 帧；19 = #1233 say.voice；20 = #1280 聊天；21 = #1393 群里的真人；22 = #1441 外联会话与语音合成的票；23 = #1461 好友私聊里的私密车道）", () => {
+    expect(CS_PROTOCOL_VERSION).toBe(23);
   });
 
   it("delta 下行往返（协议 16，#1107）", () => {
@@ -404,5 +404,41 @@ describe("协议 22：外联会话与语音合成的票（#1441）", () => {
   it("客户端 create 帧不许带 outreach：外联会话只由 runtime 建", () => {
     expect(decodeCsUp(b64({ t: "create", workspaceId: WS, chat: { kind: "outreach", agentIds: ["ops"] } }))).toBeNull();
     expect(decodeCsUp(b64({ t: "create", workspaceId: WS, chat: { kind: "outreach", name: "x", agentIds: ["ops"], humans: [] } }))).toBeNull();
+  });
+});
+
+describe("协议 23：好友私聊里的私密车道（#1461 P1）", () => {
+  const PEER = "22222222-2222-4222-8222-222222222222";
+  const create = (chat: unknown) => b64({ t: "create", workspaceId: "w1", chat });
+
+  it("create 收 pair：peerUid + facing self + 至少一只智能体", () => {
+    const chat = { kind: "pair", peerUid: PEER, facing: "self", agentIds: ["admin", "a_000000000001"] };
+    expect(decodeCsUp(encodeCs({ t: "create", workspaceId: "w1", chat } as never))).toEqual({ t: "create", workspaceId: "w1", chat });
+  });
+
+  it("形状不对整帧拒掉，不降级成团队会话：peerUid 不像 uid / facing 不是 self（both 是 P2）/ 零只 / agentId 不像", () => {
+    expect(decodeCsUp(create({ kind: "pair", peerUid: "nope", facing: "self", agentIds: ["admin"] }))).toBeNull();
+    expect(decodeCsUp(create({ kind: "pair", peerUid: PEER, facing: "both", agentIds: ["admin"] }))).toBeNull();
+    expect(decodeCsUp(create({ kind: "pair", peerUid: PEER, agentIds: ["admin"] }))).toBeNull();
+    expect(decodeCsUp(create({ kind: "pair", peerUid: PEER, facing: "self", agentIds: [] }))).toBeNull();
+    expect(decodeCsUp(create({ kind: "pair", peerUid: PEER, facing: "self", agentIds: ["bad id"] }))).toBeNull();
+    expect(decodeCsUp(create({ kind: "pair", peerUid: PEER, facing: "self", agentIds: ["admin", "admin"] }))).toEqual({
+      t: "create", workspaceId: "w1", chat: { kind: "pair", peerUid: PEER, facing: "self", agentIds: ["admin"] },
+    });
+  });
+
+  it("peerUid 归一成小写（runtime 拿它查好友、写进唯一索引，大小写两份 = 两条车道）", () => {
+    expect(decodeCsUp(create({ kind: "pair", peerUid: PEER.toUpperCase(), facing: "self", agentIds: ["admin"] }))).toEqual({
+      t: "create", workspaceId: "w1", chat: { kind: "pair", peerUid: PEER, facing: "self", agentIds: ["admin"] },
+    });
+  });
+
+  it("welcome 的 chat 认 pair，带 pair 那一格（形状不对当缺席）", () => {
+    const w = (chat: unknown) =>
+      decodeCsDown(b64({ t: "welcome", v: 23, sessionId: "s1", lastSeq: 0, initiatorUid: null, ownerUid: "u1", modelRoute: null, chat }));
+    const ok = w({ kind: "pair", agentIds: ["admin"], humans: [], pair: { peerUid: PEER, facing: "self" } });
+    expect(ok && ok.t === "welcome" ? ok.chat : undefined).toEqual({ kind: "pair", agentIds: ["admin"], humans: [], pair: { peerUid: PEER, facing: "self" } });
+    const bad = w({ kind: "pair", agentIds: ["admin"], humans: [], pair: { peerUid: 3 } });
+    expect(bad && bad.t === "welcome" ? bad.chat : undefined).toEqual({ kind: "pair", agentIds: ["admin"], humans: [] });
   });
 });

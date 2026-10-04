@@ -9,8 +9,9 @@
 // 手机端仍然不是第二个完整客户端:它不碰 presence / 工作区在场 / 好友分支徽章
 // 那一层,只做加好友、收发请求、私信这三件"人对人"的事(ADR-0114)。
 
-import { File, UploadType } from "expo-file-system";
-import { SUPABASE_ANON_KEY } from "../../../src/shared/authConfig.js";
+import { File } from "expo-file-system";
+import { SUPABASE_ANON_KEY, SUPABASE_URL } from "../../../src/shared/authConfig.js";
+import { TusError, tusUpload } from "../../../src/shared/tusUpload.js";
 import {
   DM_MEDIA_BUCKET, missingMediaColumn, parseDmMedia, type ChatMediaItem,
 } from "../../../src/shared/chatMedia.js";
@@ -215,22 +216,39 @@ function storageError(status: number, body: string): string {
 }
 
 /**
- * 把一个本机文件传进 dm-media。先要一个签名上传地址（这一步按 0052 的 insert 策略判：第一段是自己、对方是已接受的好友），
- * 再由 expo-file-system 把文件原样 PUT 上去——不把一段 50MB 的视频读进 JS 内存。
- * 头与 storage-js 的 uploadToSignedUrl 对原始字节那一支逐格相同（content-type / x-upsert / cache-control），
- * 另带 apikey：网关要它，而这条请求不经过 supabase-js 的 fetch。
+ * 把一个本机文件传进 dm-media（#1480）：走 TUS 可续传上传——6MB 一片，断了问清服务器收到哪儿接着传。原来是整个文件
+ * 一个 PUT 传到签名地址，相册里几十 MB 的原片视频途中网络一抖就整体失败（真机报 The network connection was lost）。
+ * 权限照旧：Supabase 按这次请求带的用户 JWT 判 0052 的 insert 策略（第一段是自己、对方是已接受的好友）。
+ * 一次只读一片进 JS 内存，不把整段视频读进来。
  */
 export async function uploadDmFile(path: string, uri: string, mime: string, onProgress: (sent: number) => void): Promise<void> {
-  const { data, error } = await supabase.storage.from(DM_MEDIA_BUCKET).createSignedUploadUrl(path);
-  if (error !== null) throw new Error(/bucket not found/i.test(error.message) ? "服务器还没准备好收图片和视频，过一阵再试" : error.message);
-  const res = await new File(uri).upload(data.signedUrl, {
-    httpMethod: "PUT",
-    uploadType: UploadType.BINARY_CONTENT,
-    headers: { "content-type": mime, "x-upsert": "false", "cache-control": "max-age=3600", apikey: SUPABASE_ANON_KEY },
-    onProgress: (p) => onProgress(p.bytesSent),
-    sessionType: "foreground",
-  });
-  if (res.status < 200 || res.status >= 300) throw new Error(storageError(res.status, res.body));
+  const { data } = await supabase.auth.getSession();
+  const token = data.session?.access_token;
+  if (token === undefined) throw new Error("登录过期了，重新登录后再发");
+  const file = new File(uri);
+  const handle = file.open();
+  try {
+    await tusUpload({
+      endpoint: `${SUPABASE_URL}/storage/v1/upload/resumable`,
+      headers: { authorization: `Bearer ${token}`, apikey: SUPABASE_ANON_KEY, "x-upsert": "false" },
+      metadata: { bucketName: DM_MEDIA_BUCKET, objectName: path, contentType: mime, cacheControl: "3600" },
+      size: file.size,
+      readChunk: (offset, length) => {
+        handle.offset = offset;
+        return handle.readBytes(length);
+      },
+      fetch: async (url, init) => {
+        const r = await fetch(url, init);
+        return { status: r.status, header: (n) => r.headers.get(n), text: () => r.text() };
+      },
+      onProgress,
+    });
+  } catch (e) {
+    if (e instanceof TusError) throw new Error(e.status === 0 ? e.message : storageError(e.status, e.message));
+    throw e;
+  } finally {
+    handle.close();
+  }
 }
 
 /** 收掉传了一半的（消息没写成）。尽力而为 */

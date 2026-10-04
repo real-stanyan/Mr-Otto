@@ -81,6 +81,21 @@ function MessageRow({ mine, agent = false, avatar, name, paragraphs, onAvatar }:
   );
 }
 
+/** 发出去、回执还没回来的那句（#1473）：照「我说的」那一行画，气泡左边一个小转圈（照微信）。
+    回执一到它就被 rows 里真的那条顶替——同一句、同一个位置，看起来只是转圈消失 */
+export function PendingMineRow({ text, selfName, selfAvatar }: { text: string; selfName: string; selfAvatar: string }) {
+  const { c } = usePalette();
+  return (
+    <View style={{ flexDirection: "row-reverse", alignItems: "flex-start", gap: 10, paddingHorizontal: 12 }}>
+      <PersonTile name={selfName} url={selfAvatar} size={AVATAR} me />
+      <View style={{ flexShrink: 1, maxWidth: "76%", flexDirection: "row-reverse", alignItems: "center", gap: 6 }}>
+        <Bubble text={text} mine agent={false} first />
+        <ActivityIndicator size="small" color={c.mutedForeground} accessibilityLabel="发送中" />
+      </View>
+    </View>
+  );
+}
+
 function AgentAvatar({ ws, agentId, name, state = "plain" }: { ws: WorkspaceSnapshot; agentId: string; name: string; state?: FaceState }) {
   const face = agentFaceIfKnown(ws, agentId);
   return face !== null

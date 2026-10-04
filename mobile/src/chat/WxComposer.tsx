@@ -2,7 +2,10 @@
 // 中间输入框 / 按住说话、右 表情 + ⊕（打了字 ⊕ 换成「发送」）。⊕ 与表情各是一块面板，从输入栏底下升起、顶掉键盘的位置；
 // 点输入框 = 收面板、起键盘。
 //
-// · 回车就是发送（照微信：returnKeyType send，不换行）；回执三态照旧（ADR-0228）：ok / unknown 清，确定失败留着原文。
+// · 回车就是发送（照微信：returnKeyType send，不换行）。**发出即清**（#1473）：不等回执，文字当场离开输入框、钮不锁——
+//   回执在 DM 里也要 ~850ms（群里走派活分类器两三秒、会话刚 ready 时更久），等它的话钮灰着、字留着，人就一直点。
+//   回执三态照旧（ADR-0228）：ok / unknown 不管，确定失败把原文摆回输入框（框里已经在打新的一句就等它空了再摆）。
+//   两句连发的排队在 chatStore 那一层（sendQueue），这里不管。
 // · 群里打一个 @（刚打的那一个，shared 的 justOpenedMention）就弹选人：调用方开抽屉，挑中了经 ref.mention 插回来。
 // · 按住说话：按下开麦（调用方接 voiceStore 的 startDictation）、上划 60pt 变「松开取消」、松手发出去。
 //   中间那块提示（声浪 + 听到的字 + 松开发送 / 上划取消）由调用方画在屏幕正中：它要盖在时间线上面，这一栏画不到那里。
@@ -55,7 +58,6 @@ export function WxComposer({ placeholder, canSend, sessionId, draftKey, onSend, 
   const insets = useSafeAreaInsets();
   const reduce = useReduceMotion();
   const [draft, setDraftText] = useState(() => draftOf(draftKey));
-  const [sending, setSending] = useState(false);
   const [mode, setMode] = useState<"text" | "voice">("text");
   const [panel, setPanel] = useState<"plus" | "emoji" | null>(null);
   // 键盘起着的时候底下不再让出 home 条那一截（键盘本身已经盖过它了），否则输入栏和键盘之间空一道
@@ -75,8 +77,11 @@ export function WxComposer({ placeholder, canSend, sessionId, draftKey, onSend, 
   useEffect(() => {
     draftNow.current = draft;
   }, [draft]);
-  // 离开这条线时把草稿存下来（每敲一个字都存的话，底下那一列每个字都要重画一遍）
-  useEffect(() => () => setDraft(draftKey, draftNow.current), [draftKey]);
+  /** 确定没发出去、而框里已经在打别的话时，等框空了再摆回来的那句（#1473） */
+  const restore = useRef<string | null>(null);
+  // 离开这条线时把草稿存下来（每敲一个字都存的话，底下那一列每个字都要重画一遍）。
+  // 框空着而还有一句等着摆回来的，存的就是那句——不然它就哪儿都不在了
+  useEffect(() => () => setDraft(draftKey, draftNow.current !== "" ? draftNow.current : restore.current ?? ""), [draftKey]);
 
   const put = (text: string, caret: number): void => {
     setDraftText(text);
@@ -106,22 +111,32 @@ export function WxComposer({ placeholder, canSend, sessionId, draftKey, onSend, 
     if (text !== null) setDraftText(text);
   }, [seed, sessionId, draft]);
 
-  const live = draft.trim() !== "" && canSend && !sending;
+  const live = draft.trim() !== "" && canSend;
+  /** 确定失败的那句回到输入框：框空着就直接摆回；人已经在打下一句就先记着，等框空了再摆 */
+  const restoreText = (text: string): void => {
+    if (draftNow.current === "") put(text, text.length);
+    else restore.current = restore.current === null ? text : `${restore.current}\n${text}`;
+  };
+  useEffect(() => {
+    if (draft !== "" || restore.current === null) return;
+    const text = restore.current;
+    restore.current = null;
+    put(text, text.length);
+  }, [draft]);
   const submit = async (): Promise<void> => {
     const text = draft.trim();
     if (!live) return;
-    setSending(true);
-    let clear = false;
+    // 发出即清（#1473）：回执要几百毫秒到几秒，等它的话这一行一直灰着、字一直留着，人就一直点
+    setDraftText("");
+    draftNow.current = "";
+    selection.current = { start: 0, end: 0 };
+    let accepted = false;
     try {
-      clear = await onSend(text);
-    } finally {
-      setSending(false);
+      accepted = await onSend(text);
+    } catch {
+      accepted = false;
     }
-    if (clear) {
-      setDraftText("");
-      draftNow.current = "";
-      selection.current = { start: 0, end: 0 };
-    }
+    if (!accepted) restoreText(text);
   };
 
   const onChange = (next: string): void => {

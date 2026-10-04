@@ -51,6 +51,7 @@ const DURABLE = [
   "memory_loaded",
   "workspace_memory_loaded",
   "workspace_wiki_loaded",
+  "pair_context_loaded",
   "memory_user_edit",
   "memory_nudge",
   "micro_compacted",

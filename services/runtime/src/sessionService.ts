@@ -254,6 +254,7 @@ import { createActivityWriter } from "./activityWriter.js";
 import { adminIntroText, advanceRoleWait, newAgentGreetingText, roleWaitOf, settledRole, type RoleWait } from "../../../src/shared/agentOnboarding.js";
 import { alertBody, muteKeyFor, type AlertPush, type NotifyKind } from "../../../src/shared/notifyPrefs.js";
 import { advanceReplyNotify, createReplyNotifyState, type ReplyNote } from "../../../src/shared/replyNotify.js";
+import { pairContextLines, samePairLines, type PairMessageRow } from "../../../src/shared/pairChat.js";
 
 /** 派活分类器读日志尾段多少条事件（#1153）。一轮 turn 十几条事件是常态，200 条
     足够捞出最近 8 句说出口的话；不读全量是因为 say() 的回执等着这一步 */
@@ -482,6 +483,11 @@ export interface CloudSessionOpts {
   outreach: {
     dispatch(o: { originSessionId: string; agentId: string; agentName: string; friend: string; brief: string; opening: string }): Promise<string>;
   } | null;
+  /** 私密车道的上下文信封（#1461 P1，ADR-0346）：读主人与朋友私聊（messages 表）最近几句，回原样的行——
+      取哪几句、怎么封顶由 sessionService 调 shared 的 pairContextLines 判（daemon.ts 进不了 vitest）。
+      **必需**（同 callback / signSpeechTicket 的纪律）：`null` = 这条会话不读私聊（不是私密车道，或 daemon
+      没接）；忘接线该编译不过，而不是安静地让车道里的智能体对私聊一无所知 */
+  pairMessages: ((o: { ownerUid: string; peerUid: string }) => Promise<PairMessageRow[]>) | null;
   /** 给打给好友的那条线签语音票（#1441）：好友听到的 TTS 记在主人账上，edge 用同一把密钥验。
       **必需**（同 callback 的纪律）：忘接线该编译不过，而不是安静地让好友的通话一句话都出不了声 */
   signSpeechTicket: (t: SpeechTicket) => Promise<string>;
@@ -733,6 +739,15 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   // 外联会话（#1441）：智能体替主人打给朋友的那条线——一只智能体 + 朋友一个客人，**没有任何工具、
   // 不注入记忆、只在通话进行中收话**。同 chatKind，建会话时记进日志的事实，一生不变
   const isOutreach = chatKind === "outreach";
+  // 私密车道（#1461 P1，ADR-0346）：主人带进与朋友私聊的智能体住的那条会话。只有主人进得来（主场的工作区成员
+  // 只有他，车道不收客人），开跑前读一份私聊信封。同 chatKind，建会话时记进日志的事实，一生不变
+  const isPair = chatKind === "pair";
+  const pairFacts = isPair ? createdCloud?.pair : undefined;
+  // 推送 / 回电那张表（ringChatKind）不认 pair，这里把它折成 null 只为类型。车道里三条路都走不到它：
+  // 回电——ringer 不建；回复推送——pushReply 在 isPair 时早退；@ 提醒——只推 hostUids ∪ 客人里被点到的人，
+  // 而车道里发言的只有主人自己（被剔掉）、没有客人。**alertTargetFor 本身对 pair 不回 null**（折成 null 后
+  // 按主场群算），哪天车道收了第二个人，这里要回来重判
+  const ringKind = chatKind === "pair" ? null : chatKind;
   // 这条线上的外联折叠（#1441）：从 seed 播种、notify 里逐条推进（同 voiceCall）。「通话此刻进行中吗、
   // 打给的是谁」只从这一份读——say 的闸、chat() 的 active 共用，两处各折一遍迟早分家
   const outreachFold: OutreachFold = outreachFoldOf(seed);
@@ -1066,7 +1081,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   /** 回电（#1411）：推送开着才有。它自己从 seed 播种、之后只有它落 call_ring，所以状态它自己推进就是权威 */
   const callback = opts.callback;
   const ringer: Ringer | null =
-    callback === null
+    callback === null || isPair
       ? null
       : createRinger({
           sessionId,
@@ -1081,7 +1096,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
           deviceCount: (uid) => callback.deviceCount(uid),
           push: (uid, ring) => callback.push(uid, ring),
           // 手机开哪种聊天页：个人主场 = approveAll（ADR-0298 同一格），私聊 / 群看建会话时记下的 chat 标记
-          chatKindFor: (uid) => ringChatKind({ home: opts.approveAll, chatKind, toUid: uid, ownerUid: opts.ownerUid }),
+          chatKindFor: (uid) => ringChatKind({ home: opts.approveAll, chatKind: ringKind, toUid: uid, ownerUid: opts.ownerUid }),
           now,
           setTimer: opts.ringTimers?.setTimer ?? ((fn, ms) => setTimeout(fn, ms)),
           clearTimer: opts.ringTimers?.clearTimer ?? ((h) => clearTimeout(h as ReturnType<typeof setTimeout>)),
@@ -1122,7 +1137,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
 
   /** 推送点开去哪（#1442）：这个人在列表里是哪一种聊天，与回电同一张表（ringChatKind）。外联会话不推 */
   function alertTargetFor(uid: string, agentId: string): AlertPush["target"] | null {
-    const chat = ringChatKind({ home: opts.approveAll, chatKind, toUid: uid, ownerUid: opts.ownerUid });
+    const chat = ringChatKind({ home: opts.approveAll, chatKind: ringKind, toUid: uid, ownerUid: opts.ownerUid });
     if (chat === "outreach" || muteKeyFor(chat, sessionId, agentId) === null) return null;
     return { kind: "cloud", chat, workspaceId: opts.workspaceId, sessionId, agentId };
   }
@@ -1131,7 +1146,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       名字；群里标题是群名、副标题是它 */
   async function pushReply(n: ReplyNote): Promise<void> {
     const alert = opts.alert;
-    if (alert === undefined || isOutreach || archived) return;
+    if (alert === undefined || isOutreach || isPair || archived) return; // 私密车道（#1461）：主人此刻就在私聊页里看着，不另推
     const team = await opts.agents();
     const name = team.find((a) => a.agentId === n.agentId)?.name ?? n.agentId;
     for (const uid of n.uids) {
@@ -1477,8 +1492,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // call_friend（#1441）：只挂在主场聊天里、外联会话里一律不挂、daemon 没接端口时也不挂。
     // 系统提示词里不提它——工具不在表里时提示词不能说它存在（#1206），说明全写在刀自己的 description 里。
     // 资格是 ownerSpoke：只有主人本人亲口点起的那一轮才打得出去（客人、接力棒、招呼与汇报轮都不行）
+    // 私密车道里也不挂（#1461 复审 M3）：车道的提示词说「你发不了消息给朋友」，工具表得说同一句话（#1206）；
+    // 而且外联的汇报轮要主人批，车道那一侧的界面根本没有审批卡可点
     const callFriendTool =
-      opts.outreach === null || !opts.approveAll || isOutreach
+      opts.outreach === null || !opts.approveAll || isOutreach || isPair
         ? null
         : createCallFriendTool({
             mayCall: () =>
@@ -1623,6 +1640,26 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     }));
   }
 
+  /** 私密车道（#1461 P1，ADR-0346）：起 turn 前读主人与朋友私聊最近几句，封成一条 pair_context_loaded 落进日志——
+      **模型看得见的必须落盘**（硬规则），私聊那张表不在日志里。判据同 wiki 快照：缺席或内容变了才落、最新一条胜出。
+      整条车道一份（不分哪只）。读失败 warn 跳过、不阻塞 turn：智能体少一段背景，好过这一轮整个起不来 */
+  async function loadPairContextIfChanged(): Promise<void> {
+    if (!isPair || pairFacts === undefined || opts.pairMessages === null) return;
+    let lines;
+    try {
+      lines = pairContextLines(await opts.pairMessages({ ownerUid: opts.ownerUid, peerUid: pairFacts.peerUid }), opts.ownerUid, pairFacts.peerUid);
+    } catch (err) {
+      console.warn(`[otto-runtime] 私聊信封读取失败，本 turn 不落（session=${sessionId}）`, err);
+      return;
+    }
+    const last = store.lastOfType(sessionId, "pair_context_loaded");
+    if (last && last.type === "pair_context_loaded" && samePairLines(last.lines, lines)) return;
+    notify(store.append({
+      sessionId, ts: Date.now(), type: "pair_context_loaded",
+      ownerName: pairFacts.ownerName, peerName: pairFacts.peerName, lines,
+    }));
+  }
+
   /** 这只 agent 在这条会话里有没有被介绍过、介绍的还是不是现在这份指令。
       两个判据缺一不可：只判"有没有"的话，用户改完提示词要重开会话才生效；
       每 turn 都落一条的话，日志里堆满同一段文字，而且模型每轮都被重新
@@ -1703,7 +1740,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       byUid,
       ...(byAgentId !== undefined ? { byAgentId } : {}),
       // 推送开着时带上（#1411）：通话块据它说「挂断之后可以用 call_user 回电」
-      ...(opts.callback !== null && participants.length > 0 ? { callback: true as const } : {}),
+      ...(ringer !== null && participants.length > 0 ? { callback: true as const } : {}),
       ignorable: true,
     });
     notify(logged);
@@ -2334,6 +2371,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       briefIfNeeded(spec, roster);
       specNames.set(spec.agentId, spec.name);
       await loadWikiIfChanged(spec);
+      await loadPairContextIfChanged();
 
       // 「Auto」那一档（#1009）：白名单为空 = 界面上选了 Auto = 这一轮先让最便宜
       // 那款读一遍开场白，判 simple/hard，再据此挑型号。配了型号的 agent 一字不变
@@ -2637,6 +2675,9 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         const live = activeOutreach(outreachFold);
         if (live === null || fromUid !== live.peerUid) throw new SayRejectedError("这通电话已经结束了。");
       }
+      // 私密车道（#1461）：只听主人的。进房的闸（工作区成员 ∪ 客人）在主场里本来就只放主人进来、车道也不收客人，
+      // 这一道是第二道：判据挂在「这条车道是谁的」这个事实上，不挂在「此刻谁进得了房」的巧合上
+      if (isPair && fromUid !== opts.ownerUid) throw new SayRejectedError("这是别人的私人智能体。");
       // 人刚开口 → 要此刻的名单（#979 第 5 条）：他在设置页刚建/改的那只要能立刻 @ 到
       const roster = await rosterNow({ fresh: true });
       // **名单降级 + 这句话点了名 = 一个字节都不落**（#957 E2-4）：degraded 那份
@@ -3007,6 +3048,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         ...(isOutreach && createdCloud?.outreach !== undefined
           ? { outreach: { ownerName: createdCloud.outreach.ownerName, active: activeOutreach(outreachFold) !== null } }
           : {}),
+        // 私密车道（#1461）：配对的是哪位朋友、朝向。客户端认得出「这条车道是我和谁的」
+        ...(pairFacts !== undefined ? { pair: { peerUid: pairFacts.peerUid, facing: pairFacts.facing } } : {}),
       };
     },
 
@@ -3022,7 +3065,9 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     },
 
     async updateChatRoster(byUid, patch, byName) {
-      if (chatKind !== "group") {
+      // 私密车道（#1461）：带进 / 带走几只智能体就是改智能体那一半名单；它不收人（车道里只有主人）
+      if (isPair && patch.humans !== undefined) return { kind: "not_group", message: "私人智能体的车道里不能拉人" };
+      if (chatKind !== "group" && !isPair) {
         return {
           kind: "not_group",
           message: chatKind === "dm" ? "私聊的名单改不了" : chatKind === "outreach" ? "这条线的名单改不了" : "这不是一条群聊",
