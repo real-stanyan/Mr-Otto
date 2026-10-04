@@ -124,6 +124,8 @@ export function parseChatMedia(raw: unknown): ChatMediaItem[] | null {
     if (it === null) return null;
     out.push(it);
   }
+  // 一段语音就是一条消息（同 planMediaMessages 一条一个）：跟图片拼不成九宫格、两段语音也没有排法
+  if (out.some((it) => it.kind === "audio") && out.length !== 1) return null;
   return out;
 }
 
@@ -151,6 +153,16 @@ export function mediaPlaceholder(items: readonly Pick<ChatMediaItem, "kind">[]):
 /** 新客户端藏不藏正文：带着解析得出的媒体、且正文恰好是它的占位。别的情形（有人配了字、媒体解析失败）照画字 */
 export function mediaBodyHidden(body: string, media: readonly ChatMediaItem[] | null): boolean {
   return media !== null && media.length > 0 && body.trim() === mediaPlaceholder(media);
+}
+
+/**
+ * 还不会画语音条的地方（桌面私聊，维护者 2026-10-04 拍板这一期桌面不放音）显示的那一行：「[语音] 转写」，
+ * 没转写只「[语音]」。不是恰好一段语音回 null，调用方照旧画 body / 媒体气泡。
+ */
+export function voiceNoteText(media: readonly ChatMediaItem[] | null | undefined): string | null {
+  const a = media !== null && media !== undefined && media.length === 1 ? media[0] : undefined;
+  if (a === undefined || a.kind !== "audio") return null;
+  return a.transcript !== undefined ? `${MEDIA_PLACEHOLDER.audio} ${a.transcript}` : MEDIA_PLACEHOLDER.audio;
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

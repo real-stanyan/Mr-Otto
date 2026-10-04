@@ -1,0 +1,411 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>语音消息 demo（#1492）</title>
+<style>
+:root {
+  --ground: #efece3; --surface: #f7f5ef; --side: #e9e5d8; --fg: #000; --fg-2: rgba(0,0,0,.55); --fg-3: rgba(0,0,0,.4);
+  --brand: #4a70a9; --voice: #2F94A6; --danger: #c92a2a; --press: rgba(0,0,0,.08); --field: rgba(0,0,0,.055);
+  --input-bg: #f7f5ef; --line: rgba(0,0,0,.12); --me: #d8dde2; --them: #e5e1d3; --agent: #d9e6dc; --scrim: rgba(0,0,0,.42);
+  --ease: cubic-bezier(.23,1,.32,1); --ease-ios: cubic-bezier(.32,.72,0,1);
+}
+:root[data-theme="dark"] {
+  --ground: #1c1c1e; --surface: #2c2c2e; --side: #151517; --fg: #f5f5f7; --fg-2: rgba(245,245,247,.56); --fg-3: rgba(245,245,247,.38);
+  --brand: #0a84ff; --press: rgba(245,245,247,.09); --field: rgba(245,245,247,.08); --input-bg: #2c2c2e; --line: rgba(245,245,247,.12);
+  --me: #1a3047; --them: #2c2c2e; --agent: #16301f; --scrim: rgba(0,0,0,.6);
+}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+body { margin: 0; background: var(--side); color: var(--fg); font: 15px/1.4 -apple-system, BlinkMacSystemFont, "PingFang SC", sans-serif; display: flex; gap: 28px; justify-content: center; align-items: flex-start; padding: 24px 16px; min-height: 100vh; }
+button { font: inherit; color: inherit; border: 0; background: none; cursor: pointer; }
+
+.panel { width: 300px; background: var(--surface); border-radius: 14px; padding: 16px; display: flex; flex-direction: column; gap: 14px; position: sticky; top: 24px; }
+.panel h1 { font-size: 16px; margin: 0; }
+.panel p { margin: 0; font-size: 13px; color: var(--fg-2); line-height: 1.55; }
+.seg { display: flex; flex-direction: column; gap: 6px; }
+.seg .lab { font-size: 12px; color: var(--fg-2); }
+.seg .opts { display: flex; flex-wrap: wrap; gap: 6px; }
+.seg button { padding: 5px 10px; border-radius: 999px; background: var(--field); font-size: 13px; transition: background-color 150ms ease, transform 120ms var(--ease); }
+.seg button:active { transform: scale(.97); }
+.seg button[aria-pressed="true"] { background: var(--brand); color: #fff; }
+.note { font-size: 12.5px; color: var(--fg-2); line-height: 1.6; border-top: .5px solid var(--line); padding-top: 12px; }
+.note b { color: var(--fg); font-weight: 600; }
+
+.phone { width: 390px; height: 800px; border-radius: 44px; background: var(--ground); position: relative; overflow: hidden; box-shadow: 0 0 0 10px #111, 0 20px 60px rgba(0,0,0,.25); display: flex; flex-direction: column; user-select: none; -webkit-user-select: none; }
+.sb { height: 47px; flex: none; }
+.nav { height: 44px; flex: none; display: flex; align-items: center; justify-content: center; position: relative; box-shadow: 0 .5px 0 var(--line); }
+.nav .t { font-weight: 600; font-size: 17px; }
+.nav .back { position: absolute; left: 10px; font-size: 26px; color: var(--fg); top: 3px; }
+.list { flex: 1; overflow-y: auto; padding: 12px 0 16px; display: flex; flex-direction: column; gap: 14px; }
+.row { display: flex; gap: 9px; padding: 0 12px; align-items: flex-start; }
+.row.me { flex-direction: row-reverse; }
+.av { width: 40px; height: 40px; border-radius: 7px; flex: none; display: grid; place-items: center; color: #fff; font-weight: 600; font-size: 15px; }
+.col { display: flex; flex-direction: column; gap: 4px; max-width: 72%; min-width: 0; }
+.row.me .col { align-items: flex-end; }
+.name { font-size: 12px; color: var(--fg-2); padding-left: 2px; }
+.bub { padding: 9px 12px; border-radius: 8px; font-size: 16px; line-height: 1.45; word-break: break-word; }
+.me .bub { background: var(--me); } .them .bub { background: var(--them); } .agent .bub { background: var(--agent); }
+.sys { align-self: center; font-size: 12px; color: var(--fg-2); background: var(--field); padding: 3px 10px; border-radius: 6px; }
+
+/* ---- 语音条：公共 ---- */
+.vwrap { display: flex; align-items: center; gap: 6px; }
+.me .vwrap { flex-direction: row-reverse; }
+.voice { position: relative; display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 12px; border-radius: 8px; cursor: pointer; transition: transform 120ms var(--ease), filter 120ms ease; overflow: hidden; }
+.voice:active { transform: scale(.97); }
+.me .voice { background: var(--me); flex-direction: row-reverse; } .them .voice { background: var(--them); }
+.voice .dur { font-size: 15px; font-variant-numeric: tabular-nums; color: var(--fg); }
+.dot { width: 8px; height: 8px; border-radius: 50%; background: var(--danger); flex: none; }
+.waves { width: 18px; height: 18px; flex: none; }
+.me .waves { transform: scaleX(-1); }
+.waves path { stroke: var(--fg); fill: none; stroke-width: 2; stroke-linecap: round; }
+.voice.playing .waves .w2 { animation: blink 900ms steps(1) infinite; } .voice.playing .waves .w3 { animation: blink 900ms steps(1) infinite 300ms; }
+@keyframes blink { 0% { opacity: 0 } 50% { opacity: 1 } }
+.tx { font-size: 15px; line-height: 1.45; padding: 8px 11px; border-radius: 8px; background: var(--surface); color: var(--fg); max-width: 100%; transform-origin: top; animation: txin 220ms var(--ease); }
+.me .tx { transform-origin: top right; } .them .tx { transform-origin: top left; }
+@keyframes txin { from { opacity: 0; transform: scale(.96) translateY(-4px); } }
+.tx .muted { color: var(--fg-3); }
+.txlink { font-size: 12.5px; color: var(--brand); padding: 0 2px; }
+.menu { position: absolute; z-index: 60; background: #3a3a3c; color: #fff; border-radius: 8px; display: flex; padding: 4px; gap: 2px; font-size: 13px; box-shadow: 0 8px 24px rgba(0,0,0,.25); animation: menuin 150ms var(--ease); transform-origin: bottom center; }
+@keyframes menuin { from { opacity: 0; transform: scale(.95); } }
+.menu button { padding: 6px 10px; border-radius: 6px; color: #fff; } .menu button:active { background: rgba(255,255,255,.15); }
+
+/* B：波形条 */
+.styleB .voice { gap: 10px; }
+.bars { display: flex; align-items: center; gap: 2px; height: 22px; }
+.bars i { width: 3px; border-radius: 2px; background: var(--fg-3); transition: background-color 120ms linear; }
+.bars i.on { background: var(--fg); }
+/* C：胶囊 + 转写常驻 */
+.styleC .voice { height: auto; min-height: 44px; flex-direction: column !important; align-items: stretch; padding: 8px 10px; gap: 6px; border-radius: 14px; }
+.styleC .vtop { display: flex; align-items: center; gap: 8px; }
+.play { width: 26px; height: 26px; border-radius: 50%; background: var(--fg); color: var(--ground); display: grid; place-items: center; flex: none; font-size: 10px; }
+.styleC .ctx { font-size: 13.5px; color: var(--fg-2); line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.styleC .ctx.open { -webkit-line-clamp: unset; }
+
+/* ---- 输入栏 ---- */
+.composer { flex: none; display: flex; align-items: center; gap: 8px; padding: 8px 10px 30px; background: var(--side); box-shadow: 0 -.5px 0 var(--line); position: relative; z-index: 40; }
+.ic { width: 32px; height: 32px; border-radius: 50%; border: 1.6px solid var(--fg); display: grid; place-items: center; font-size: 14px; flex: none; }
+.hold { flex: 1; height: 38px; border-radius: 8px; background: var(--input-bg); display: grid; place-items: center; font-weight: 600; font-size: 16px; touch-action: none; cursor: pointer; }
+.hold.down { background: var(--press); }
+
+/* ---- 录音浮层 ---- */
+.ov { position: absolute; inset: 0; z-index: 50; background: var(--scrim); opacity: 0; pointer-events: none; transition: opacity 160ms ease; }
+.ov.on { opacity: 1; }
+.rec { position: absolute; left: 50%; bottom: 300px; transform: translateX(-50%); min-width: 160px; max-width: 300px; padding: 14px 16px; border-radius: 12px; background: #95ec69; color: #000; display: flex; flex-direction: column; align-items: center; gap: 8px; transition: background-color 150ms ease; }
+.rec::after { content: ""; position: absolute; bottom: -6px; left: 50%; margin-left: -6px; border: 6px solid transparent; border-bottom: 0; border-top-color: inherit; }
+.rec .lv { display: flex; gap: 3px; align-items: center; height: 26px; }
+.rec .lv i { width: 3px; border-radius: 2px; background: rgba(0,0,0,.75); height: 24px; transform: scaleY(.17); transition: transform 90ms linear; }
+.rec .live { font-size: 15px; line-height: 1.45; text-align: left; align-self: stretch; display: none; }
+.rec.cancel { background: #fa5151; color: #fff; } .rec.cancel .lv i { background: rgba(255,255,255,.85); }
+.rec.text { background: #fff; min-width: 260px; } .rec.text .live { display: block; } .rec.text .lv { display: none; }
+.rec .left { font-size: 12px; opacity: .7; }
+.hint { position: absolute; left: 0; right: 0; bottom: 190px; text-align: center; color: #fff; font-size: 13px; opacity: .9; }
+.tgt { position: absolute; bottom: 210px; width: 72px; height: 72px; border-radius: 50%; background: rgba(255,255,255,.18); color: #fff; display: grid; place-items: center; font-size: 22px; transition: transform 160ms var(--ease), background-color 150ms ease, color 150ms ease; }
+.tgt.l { left: 48px; } .tgt.r { right: 48px; }
+.tgt.hot { transform: scale(1.18); background: #fff; color: #000; }
+.tgt small { position: absolute; bottom: -22px; font-size: 12px; color: #fff; white-space: nowrap; }
+.arc { position: absolute; left: -20%; right: -20%; bottom: -260px; height: 400px; border-radius: 50%; background: rgba(255,255,255,.9); display: flex; justify-content: center; padding-top: 50px; color: #000; font-size: 14px; transition: background-color 150ms ease, color 150ms ease; }
+.arc.dim { background: rgba(255,255,255,.25); color: #fff; }
+.g2 .tgt.l { left: 50%; margin-left: -36px; bottom: 470px; }
+.g2 .tgt.r { right: 22px; bottom: 120px; }
+
+/* 转文字编辑面板 */
+.edit { position: absolute; left: 12px; right: 12px; bottom: 120px; z-index: 55; background: var(--surface); border-radius: 14px; padding: 14px; display: none; flex-direction: column; gap: 12px; box-shadow: 0 12px 40px rgba(0,0,0,.3); animation: menuin 200ms var(--ease); }
+.edit.on { display: flex; }
+.edit textarea { width: 100%; min-height: 90px; border: 0; border-radius: 8px; background: var(--field); color: var(--fg); padding: 10px; font: 16px/1.45 inherit; resize: none; }
+.edit .acts { display: flex; justify-content: space-between; }
+.edit .acts button { padding: 8px 14px; border-radius: 8px; font-size: 15px; }
+.edit .send { background: var(--brand); color: #fff; }
+.toast { position: absolute; left: 50%; top: 45%; transform: translate(-50%, -50%); background: rgba(0,0,0,.78); color: #fff; padding: 12px 18px; border-radius: 10px; font-size: 14px; z-index: 70; opacity: 0; transition: opacity 160ms ease; pointer-events: none; }
+.toast.on { opacity: 1; }
+@media (prefers-reduced-motion: reduce) { .tx, .menu, .edit { animation: none; } }
+@media (max-width: 760px) { body { flex-direction: column; align-items: center; } .panel { position: static; width: 100%; max-width: 390px; } }
+</style>
+</head>
+<body>
+<aside class="panel">
+  <h1>语音消息 demo · #1492</h1>
+  <p>按住输入栏的「按住 说话」录一段（鼠标/触摸都行）。录音和识别都是假的，按住时间就是语音时长。</p>
+  <div class="seg"><span class="lab">语音条样式</span><div class="opts" id="optStyle">
+    <button data-v="A" aria-pressed="true">A 经典（长按转文字）</button>
+    <button data-v="B" aria-pressed="false">B 波形 + 「转文字」链接</button>
+    <button data-v="C" aria-pressed="false">C 胶囊 + 转写常驻</button>
+  </div></div>
+  <div class="seg"><span class="lab">按住时的手势</span><div class="opts" id="optGesture">
+    <button data-v="g1" aria-pressed="true">G1 微信 8：左取消 / 右转文字</button>
+    <button data-v="g2" aria-pressed="false">G2 上滑取消 / 右滑转文字</button>
+  </div></div>
+  <div class="seg"><span class="lab">转文字松手后</span><div class="opts" id="optEdit">
+    <button data-v="edit" aria-pressed="true">先给我改一下再发</button>
+    <button data-v="direct" aria-pressed="false">直接发文字</button>
+  </div></div>
+  <div class="seg"><span class="lab">外观</span><div class="opts" id="optTheme">
+    <button data-v="light" aria-pressed="true">浅色</button>
+    <button data-v="dark" aria-pressed="false">深色</button>
+  </div></div>
+  <div class="note">
+    <b>规则（所有方向都一样）</b><br />
+    · 不足 1 秒 → 「说话时间太短」，不发<br />
+    · 50 秒起倒数，60 秒自动发出<br />
+    · 别人的语音没听过的带红点，点开播放后红点消失<br />
+    · 同一时间只放一条；连着的未读语音自动接着放（微信行为）<br />
+    · 智能体只收转写：群里 Otto 的回复是看了你那段话的转写后写的
+  </div>
+</aside>
+
+<div class="phone" id="phone">
+  <div class="sb"></div>
+  <div class="nav"><span class="back">‹</span><span class="t">周末徒步群 (4)</span></div>
+  <div class="list" id="list"></div>
+  <div class="composer">
+    <span class="ic">⌨︎</span>
+    <div class="hold" id="hold">按住 说话</div>
+    <span class="ic">☺︎</span><span class="ic">＋</span>
+  </div>
+  <div class="ov" id="ov">
+    <div class="rec" id="rec"><div class="lv" id="lv"></div><div class="live" id="live"></div><div class="left" id="left"></div></div>
+    <div class="tgt l" id="tL">✕<small>取消</small></div>
+    <div class="tgt r" id="tR">文<small>转文字</small></div>
+    <div class="hint" id="hint"></div>
+    <div class="arc" id="arc">松开 发送</div>
+  </div>
+  <div class="edit" id="edit">
+    <textarea id="editTa"></textarea>
+    <div class="acts"><button id="eCancel">取消</button><button id="eVoice">发送原语音</button><button class="send" id="eSend">发送</button></div>
+  </div>
+  <div class="toast" id="toast"></div>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const S = { style: "A", gesture: "g1", edit: "edit", playing: null, menu: null };
+const PEOPLE = {
+  me: { name: "我", color: "#4a70a9" },
+  ann: { name: "安安", color: "#d9822b" },
+  leo: { name: "Leo", color: "#7b5ea7" },
+  otto: { name: "Otto · 智能体", color: "#2b8a3e" },
+};
+const PHRASES = [
+  "周六早上七点在地铁站集合吧，我带水和一点吃的",
+  "天气预报说下午可能有雨，大家记得带件外套",
+  "Otto 帮我查一下周六蓝山那边的天气，顺便看看有没有封路",
+  "我可能晚到十分钟，你们先走不用等我",
+];
+let seq = 0;
+const msgs = [
+  { id: ++seq, who: "ann", kind: "voice", dur: 7, unread: true, tx: "我这周六有空，几点出发呀？顺便问下要不要带帐篷" },
+  { id: ++seq, who: "me", kind: "voice", dur: 3, tx: "七点半，不用帐篷" },
+  { id: ++seq, who: "leo", kind: "voice", dur: 32, unread: true, tx: "我看了下路线，从 Wentworth Falls 那边下去比较好走，全程大概四个小时，中间有个瀑布可以休息吃午饭，回来的时候走另一条环线，不走回头路" },
+  { id: ++seq, who: "leo", kind: "voice", dur: 5, unread: true, tx: "@Otto 帮忙算下大家几点能回到市区" },
+  { id: ++seq, who: "otto", kind: "text", text: "按 Leo 说的环线：7:30 出发，约 9:30 到起点，徒步 4 小时含午饭，14:00 左右回到车上，到市区大约 16:00。" },
+];
+
+function hash(n) { let x = Math.sin(n * 999) * 10000; return x - Math.floor(x); }
+function vWidth(d) { return Math.round(64 + 150 * Math.sqrt(Math.min(d, 60) / 60)); }
+
+function waves() {
+  return `<svg class="waves" viewBox="0 0 18 18"><path class="w1" d="M3 9h.01"/><path class="w2" d="M7 5.5a5 5 0 0 1 0 7"/><path class="w3" d="M11 2.5a9 9 0 0 1 0 13"/></svg>`;
+}
+function bars(m) {
+  const n = Math.max(8, Math.min(26, Math.round(6 + m.dur * 0.6)));
+  let h = "";
+  for (let i = 0; i < n; i++) h += `<i style="height:${4 + Math.round(hash(m.id * 31 + i) * 18)}px" data-i="${i}"></i>`;
+  return `<span class="bars" data-n="${n}">${h}</span>`;
+}
+
+function render() {
+  const list = $("list");
+  list.className = "list style" + S.style;
+  list.innerHTML = `<div class="sys">今天 10:12</div>` + msgs.map(row).join("");
+  list.scrollTop = list.scrollHeight;
+}
+function row(m) {
+  const p = PEOPLE[m.who];
+  const side = m.who === "me" ? "me" : m.who === "otto" ? "them agent" : "them";
+  const name = m.who === "me" ? "" : `<span class="name">${p.name}</span>`;
+  let body;
+  if (m.kind === "text") body = `<div class="bub">${m.text}</div>`;
+  else body = voiceHtml(m);
+  return `<div class="row ${side}" data-id="${m.id}"><div class="av" style="background:${p.color}">${p.name[0]}</div><div class="col">${name}${body}</div></div>`;
+}
+function voiceHtml(m) {
+  const playing = S.playing === m.id ? " playing" : "";
+  const dot = m.unread ? `<span class="dot"></span>` : "";
+  const txShown = m.txOpen ? `<div class="tx">${m.tx || '<span class="muted">没识别出文字</span>'}</div>` : "";
+  if (S.style === "A") {
+    return `<div class="vwrap"><div class="voice${playing}" data-v="${m.id}" style="width:${vWidth(m.dur)}px">${waves()}<span class="dur">${m.dur}″</span></div>${dot}</div>${txShown}`;
+  }
+  if (S.style === "B") {
+    const link = `<button class="txlink" data-tx="${m.id}">${m.txOpen ? "收起文字" : "转文字"}</button>`;
+    return `<div class="vwrap"><div class="voice${playing}" data-v="${m.id}"><span class="play" style="width:22px;height:22px">${S.playing === m.id ? "❚❚" : "▶"}</span>${bars(m)}<span class="dur">${m.dur}″</span></div>${dot}</div>${txShown}${link}`;
+  }
+  return `<div class="vwrap"><div class="voice${playing}" data-v="${m.id}" style="min-width:${Math.max(180, vWidth(m.dur))}px"><div class="vtop"><span class="play">${S.playing === m.id ? "❚❚" : "▶"}</span>${bars(m)}<span class="dur">${m.dur}″</span></div><div class="ctx${m.txOpen ? " open" : ""}" data-ctx="${m.id}">${m.tx || "没识别出文字"}</div></div>${dot}</div>`;
+}
+
+// ---- 播放 ----
+let playTimer = null, playStart = 0;
+function play(id) {
+  stopPlay();
+  const m = msgs.find((x) => x.id === id);
+  S.playing = id; m.unread = false; render();
+  playStart = performance.now();
+  const total = Math.min(m.dur, 8) * 1000; // demo 里最多放 8 秒
+  playTimer = setInterval(() => {
+    const t = (performance.now() - playStart) / total;
+    const el = document.querySelector(`[data-v="${id}"] .bars`);
+    if (el) { const n = +el.dataset.n; el.querySelectorAll("i").forEach((b, i) => b.classList.toggle("on", i / n < t)); }
+    if (t >= 1) {
+      stopPlay();
+      const idx = msgs.indexOf(m);
+      const next = msgs.slice(idx + 1).find((x) => x.kind === "voice" && x.unread);
+      const between = next && msgs.slice(idx + 1, msgs.indexOf(next)).every((x) => x.kind === "voice" && x.who !== "me");
+      if (next && between) play(next.id); else render();
+    }
+  }, 50);
+}
+function stopPlay() { clearInterval(playTimer); playTimer = null; S.playing = null; }
+
+$("list").addEventListener("click", (e) => {
+  closeMenu();
+  const tx = e.target.closest("[data-tx]");
+  if (tx) { const m = msgs.find((x) => x.id === +tx.dataset.tx); m.txOpen = !m.txOpen; render(); return; }
+  const ctx = e.target.closest("[data-ctx]");
+  if (ctx) { const m = msgs.find((x) => x.id === +ctx.dataset.ctx); m.txOpen = !m.txOpen; render(); return; }
+  const v = e.target.closest("[data-v]");
+  if (v) { const id = +v.dataset.v; if (S.playing === id) { stopPlay(); render(); } else play(id); }
+});
+// 长按（A 的转文字入口；B/C 也可以长按）
+let lp = null;
+$("list").addEventListener("pointerdown", (e) => {
+  const v = e.target.closest("[data-v]"); if (!v) return;
+  lp = setTimeout(() => { lp = "fired"; openMenu(v); }, 450);
+});
+["pointerup", "pointerleave", "pointercancel"].forEach((t) => $("list").addEventListener(t, (e) => {
+  if (lp === "fired") { e.preventDefault(); setTimeout(() => (lp = null)); return; }
+  clearTimeout(lp); lp = null;
+}));
+$("list").addEventListener("click", (e) => { if (lp === "fired") e.stopImmediatePropagation(); }, true);
+$("list").addEventListener("contextmenu", (e) => e.preventDefault());
+function openMenu(v) {
+  closeMenu();
+  const id = +v.dataset.v, m = msgs.find((x) => x.id === id);
+  const r = v.getBoundingClientRect(), pr = $("phone").getBoundingClientRect();
+  const menu = document.createElement("div");
+  menu.className = "menu";
+  menu.innerHTML = `<button data-a="tx">${m.txOpen ? "隐藏文字" : "转文字"}</button><button data-a="spk">听筒播放</button><button data-a="fwd">转发</button><button data-a="del">删除</button>`;
+  menu.style.left = Math.max(8, r.left - pr.left + r.width / 2 - 110) + "px";
+  menu.style.top = (r.top - pr.top - 44) + "px";
+  menu.onclick = (e) => {
+    const a = e.target.dataset.a;
+    if (a === "tx") { m.txOpen = !m.txOpen; render(); }
+    if (a === "del") { msgs.splice(msgs.indexOf(m), 1); render(); }
+    closeMenu();
+  };
+  $("phone").appendChild(menu); S.menu = menu;
+}
+function closeMenu() { if (S.menu) { S.menu.remove(); S.menu = null; } }
+
+// ---- 录音 ----
+const LV = 18;
+$("lv").innerHTML = "<i></i>".repeat(LV);
+let rec = null;
+function zoneOf(x, y) {
+  const pr = $("phone").getBoundingClientRect();
+  const lx = x - pr.left, ly = y - pr.top;
+  const near = (el) => { const r = el.getBoundingClientRect(); const cx = r.left - pr.left + r.width / 2, cy = r.top - pr.top + r.height / 2; return Math.hypot(lx - cx, ly - cy) < 60; };
+  if (S.gesture === "g1") {
+    if (near($("tL"))) return "cancel";
+    if (near($("tR"))) return "text";
+    return "send";
+  }
+  const dy = rec.y0 - y, dx = x - rec.x0;
+  if (dy > 60 && dy > dx) return "cancel";
+  if (dx > 60) return "text";
+  return "send";
+}
+function startRec(e) {
+  if (rec) return;
+  stopPlay(); closeMenu(); render();
+  try { $("hold").setPointerCapture(e.pointerId); } catch {}
+  const phrase = PHRASES[seq % PHRASES.length];
+  rec = { t0: performance.now(), x0: e.clientX, y0: e.clientY, zone: "send", phrase, pid: e.pointerId };
+  $("hold").classList.add("down"); $("hold").textContent = "松开 发送";
+  $("ov").className = "ov on " + S.gesture;
+  $("hint").textContent = S.gesture === "g1" ? "" : "↑ 上滑取消　　→ 右滑转文字";
+  rec.timer = setInterval(tick, 90);
+  tick();
+}
+function tick() {
+  const el = (performance.now() - rec.t0) / 1000;
+  $("lv").querySelectorAll("i").forEach((b, i) => (b.style.transform = `scaleY(${(4 + Math.abs(Math.sin(el * 7 + i * 0.7)) * Math.random() * 20) / 24})`));
+  const shown = rec.phrase.slice(0, Math.min(rec.phrase.length, Math.floor(el * 5)));
+  $("live").textContent = shown || "…";
+  $("left").textContent = el >= 50 ? `还可以说 ${Math.max(0, Math.ceil(60 - el))} 秒` : "";
+  if (el >= 60) endRec(true);
+}
+function moveRec(e) {
+  if (!rec) return;
+  const z = zoneOf(e.clientX, e.clientY);
+  if (z === rec.zone) return;
+  rec.zone = z;
+  $("rec").className = "rec" + (z === "cancel" ? " cancel" : z === "text" ? " text" : "");
+  $("tL").classList.toggle("hot", z === "cancel");
+  $("tR").classList.toggle("hot", z === "text");
+  $("arc").classList.toggle("dim", z !== "send");
+  $("arc").textContent = z === "cancel" ? "松开 取消" : z === "text" ? "松开 转文字" : "松开 发送";
+  $("hold").textContent = $("arc").textContent;
+}
+function endRec(forceSend) {
+  if (!rec) return;
+  clearInterval(rec.timer);
+  const dur = Math.min(60, Math.round((performance.now() - rec.t0) / 1000));
+  const ms = performance.now() - rec.t0;
+  const zone = forceSend ? "send" : rec.zone;
+  const elapsed = (performance.now() - rec.t0) / 1000;
+  const tx = rec.phrase.slice(0, Math.max(6, Math.floor(elapsed * 5)));
+  rec = null;
+  $("ov").className = "ov"; $("rec").className = "rec"; $("tL").classList.remove("hot"); $("tR").classList.remove("hot"); $("arc").classList.remove("dim"); $("arc").textContent = "松开 发送";
+  $("hold").classList.remove("down"); $("hold").textContent = "按住 说话";
+  if (zone === "cancel") return;
+  if (ms < 1000) { toast("说话时间太短"); return; }
+  if (zone === "text") {
+    if (S.edit === "edit") { $("editTa").value = tx; $("edit").classList.add("on"); $("edit").dataset.dur = dur; $("edit").dataset.tx = tx; return; }
+    send({ kind: "text", text: tx });
+    return;
+  }
+  send({ kind: "voice", dur: Math.max(1, dur), tx });
+}
+function send(m) {
+  msgs.push({ id: ++seq, who: "me", ...m });
+  render();
+  const text = m.kind === "text" ? m.text : m.tx;
+  if (/otto/i.test(text)) {
+    setTimeout(() => { msgs.push({ id: ++seq, who: "otto", kind: "text", text: `（Otto 读到的是你这段话的转写：「${text}」）周六蓝山白天多云、15–22°C，下午 3 点后有 40% 降雨；目前没有封路公告。` }); render(); }, 900);
+  }
+}
+$("hold").addEventListener("pointerdown", (e) => { e.preventDefault(); startRec(e); });
+$("hold").addEventListener("pointermove", moveRec);
+$("hold").addEventListener("pointerup", () => endRec(false));
+$("hold").addEventListener("pointercancel", () => { if (rec) { rec.zone = "cancel"; endRec(false); } });
+$("eCancel").onclick = () => $("edit").classList.remove("on");
+$("eSend").onclick = () => { const v = $("editTa").value.trim(); $("edit").classList.remove("on"); if (v) send({ kind: "text", text: v }); };
+$("eVoice").onclick = () => { $("edit").classList.remove("on"); send({ kind: "voice", dur: Math.max(1, +$("edit").dataset.dur), tx: $("edit").dataset.tx }); };
+
+let toastT;
+function toast(s) { $("toast").textContent = s; $("toast").classList.add("on"); clearTimeout(toastT); toastT = setTimeout(() => $("toast").classList.remove("on"), 1200); }
+
+function seg(id, key, apply) {
+  $(id).addEventListener("click", (e) => {
+    const b = e.target.closest("button"); if (!b) return;
+    $(id).querySelectorAll("button").forEach((x) => x.setAttribute("aria-pressed", String(x === b)));
+    S[key] = b.dataset.v; apply && apply(); render();
+  });
+}
+seg("optStyle", "style");
+seg("optGesture", "gesture");
+seg("optEdit", "edit");
+seg("optTheme", "theme", () => document.documentElement.dataset.theme = S.theme);
+render();
+</script>
+</body>
+</html>
