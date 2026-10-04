@@ -31,9 +31,14 @@ describe("FriendChatScreen", () => {
 
 describe("ContactCardBubble", () => {
   const src = read("mobile/src/friends/ContactCardBubble.tsx");
-  it("接受 = 在我主场建一只：新 id、与「建一只」同一道闸；tools / models 空", () => {
+  it("接受 = 在我主场建一只：新 id、与「建一只」同一道闸；三格经 acceptedAgentInput（职责只在 description 的那只也有提示词，#1544）", () => {
     expect(src).toMatch(/agentIdFromBytes\(ExpoCrypto\.getRandomBytes\(6\)\)/);
-    expect(src).toMatch(/createAgentChecked\(\{ listAgentNames, insertAgentRow \}, supabase, ws\.id, selfUid, agentId, \{\s+name: card\.name, description: card\.description, instructions: card\.instructions, models: \[\], tools: \[\], avatarSlot: card\.avatarSlot,/);
+    expect(src).toMatch(/const input = acceptedAgentInput\(card\);/);
+    expect(src).toMatch(/name: input\.name, description: input\.description, instructions: input\.instructions, models: \[\], tools: \[\], avatarSlot: card\.avatarSlot,/);
+  });
+  it("接受过的真相在名单里（#1544）：myAgentNames 来自主场名册", () => {
+    expect(src).toMatch(/const myAgentNames = home\.home\?\.agents\.map\(\(a\) => a\.name\) \?\? \[\];/);
+    expect(src).toMatch(/contactCardView\(card, \{ mine, fromName, selfUid, friendUids, accepted, myAgentNames \}\)/);
   });
   it("声音另写一笔、尽力而为（认不出 / 列不存在都不挡）", () => {
     expect(src).toMatch(/voiceChoiceOf\(card\.voice\) !== null/);
@@ -44,7 +49,7 @@ describe("ContactCardBubble", () => {
     expect(src).toMatch(/initial=\{REQUEST_DEFAULT_TIER\}/);
   });
   it("画法与钮都从 contactCardView 来，不自己再判一遍", () => {
-    expect(src).toMatch(/const v = contactCardView\(card, \{ mine, fromName, selfUid, friendUids, accepted \}\);/);
+    expect(src).toMatch(/const v = contactCardView\(card, \{ mine, fromName, selfUid, friendUids, accepted, myAgentNames \}\);/);
     expect(src).not.toMatch(/card\.kind === "person" && !friendUids/);
   });
 });

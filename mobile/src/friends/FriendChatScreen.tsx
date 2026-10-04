@@ -9,6 +9,7 @@
 // 名片（#1524）：＋ 里「名片」挑我的智能体 / 别的朋友发给 TA；收到的卡画成 ContactCardBubble（加为朋友 / 发消息 / 接受）。
 // 公开智能体（#1533）：标题栏电话钮 → 给本人（二期）/ 给 TA 的公开智能体（先替 TA 开车道、再把聊天页以客人身份开在那条上拨出去）；
 // @ 名单里先列 TA 的公开智能体，车道还没有时第一次 @ 就开。
+// @ 我主场里还没带进来的那只（#1544）：先带进车道再发——接受来的名片智能体不用先去 ＋ 里「带上」。
 // 车道的朝向（#1523）：我带进来的可以「仅我可见」或「公开给 TA」（横幅上的那颗标签 / 聊天信息页能切）；
 // 朋友公开给我的那条用第二条连接读（peerLane.ts），画成另一种底色的虚线气泡，@ 它说的话走朋友那条车道。
 import { allowsPair } from "../../../src/shared/friendTier.js";
@@ -391,11 +392,26 @@ export function FriendChatScreen({ route, navigation }: Props) {
   }, [thread?.messages, thread?.pending, laneItems, peerItems]);
 
   /** 这句话 @ 了哪条车道里的谁（#1523）：先看我带进来的，再看朋友公开给我的；都没有 = 发给朋友 */
-  const laneTargetsOf = (text: string): { lane: "mine" | "peer"; ids: string[] } | null => {
+  // 我主场里还没带进来的那几只（#1544）：@ 名单里也列它们，@ 了就先带进车道再发——接受来的名片智能体、刚建的那只，不用先去 ＋ 里「带上」
+  const otherMine = useMemo(
+    () => (homeWs === null ? [] : homeWs.agents.filter((a) => !brought.includes(a.agentId)).map((a) => ({ agentId: a.agentId, name: a.name }))),
+    [homeWs, brought],
+  );
+  const laneTargetsOf = (text: string): { lane: "mine" | "peer" | "bring"; ids: string[] } | null => {
     const mine = laneTargets(text, broughtNames);
     if (mine !== null) return { lane: "mine", ids: mine };
     const theirs = laneTargets(text, peerNames);
-    return theirs !== null ? { lane: "peer", ids: theirs } : null;
+    if (theirs !== null) return { lane: "peer", ids: theirs };
+    const unbrought = laneTargets(text, otherMine);
+    return unbrought !== null ? { lane: "bring", ids: unbrought } : null;
+  };
+  /** 等车道连上（带进来那一下 openChat 是异步的）：最多等 8 秒 */
+  const waitLaneReady = async (sid: string): Promise<boolean> => {
+    for (let i = 0; i < 40; i++) {
+      if (chatSessionOf(sid)?.state === "ready") return true;
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    return false;
   };
   const send = async (text: string): Promise<boolean> => {
     setNote(null);
@@ -417,6 +433,27 @@ export function FriendChatScreen({ route, navigation }: Props) {
       if (r.ok) return true;
       if (r.unknown) {
         setNote(`这句话不确定有没有交给${name}的智能体，没看到回复的话再说一遍。`);
+        return true;
+      }
+      setNote(r.message);
+      return false;
+    }
+    if (targets !== null && targets.lane === "bring") {
+      // @ 了还没带进来的那只（#1544）：先带进车道（沿用此刻的朝向；没有车道就建一条），连上了再发
+      if (homeWs === null) return false;
+      const b = await bringAgents(homeWs.id, uid, [...brought, ...targets.ids], laneFacing);
+      if (!b.ok) {
+        setNote(b.message);
+        return false;
+      }
+      if (!(await waitLaneReady(b.sessionId))) {
+        setNote("已经带进来了，车道还没连上，稍等一下再发。");
+        return false;
+      }
+      const r = await sendText(text, targets.ids);
+      if (r.ok) return true;
+      if (r.unknown) {
+        setNote("这句话不确定有没有交给私人智能体，没看到回复的话再说一遍。");
         return true;
       }
       setNote(r.message);
@@ -626,7 +663,7 @@ export function FriendChatScreen({ route, navigation }: Props) {
             canSend
             sessionId={null}
             onSend={send}
-            {...(broughtNames.length > 0 || peerNames.length > 0 ? { onAt: () => setMentioning(true) } : {})}
+            {...(broughtNames.length > 0 || peerNames.length > 0 || otherMine.length > 0 ? { onAt: () => setMentioning(true) } : {})}
             plus={[
               // 图片 / 视频（#1443）：相册一次最多挑 9 样；拍摄是拍照或录一段（≤60 秒）
               { key: "album", icon: "image", label: "相册", onPress: () => void sendPicked(pickFromLibrary) },
@@ -709,11 +746,11 @@ export function FriendChatScreen({ route, navigation }: Props) {
           onExited={() => setDispatching(null)}
         />
       ) : null}
-      {mentionWs !== null && (broughtNames.length > 0 || peerNames.length > 0) ? (
+      {mentionWs !== null && (broughtNames.length > 0 || peerNames.length > 0 || otherMine.length > 0) ? (
         <MentionSheet
           visible={mentioning}
           ws={mentionWs}
-          agentIds={[...broughtNames.map((a) => a.agentId), ...peerNames.map((a) => a.agentId)]}
+          agentIds={[...broughtNames.map((a) => a.agentId), ...peerNames.map((a) => a.agentId), ...otherMine.map((a) => a.agentId)]}
           humans={[]}
           footer={laneFacing === "both" || peerNames.length > 0 ? `@ 了智能体的那句进它的车道，不 @ 谁就是发给${name}。` : `@ 了它的那句只有你看得到，${name}收不到；不 @ 谁就是发给${name}。`}
           onPick={(picked) => {

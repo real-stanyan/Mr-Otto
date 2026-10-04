@@ -121,10 +121,11 @@ export interface ContactCardView {
 }
 
 /** 这张卡在**我**的屏幕上画成什么。判据全在这里：自己发的不给钮；联系人已经是朋友 → 「发消息」，是我自己 → 不给钮；
-    智能体名片自己发的不给钮，别人发的给「接受」；`accepted` = 这一次会话里刚接受过（本机状态，刷新就没了） */
+    智能体名片自己发的不给钮，别人发的给「接受」。**接受过的真相在我的名单里**（#1544）：主场里已有同名的那只 = 接受过
+    （再按一次本来也会被同名闸拒），`myAgentNames` 给的就是它；`accepted` 只是刚点完、名册还没刷回来那几秒的本机状态 */
 export function contactCardView(
   card: ContactCard,
-  o: { mine: boolean; fromName: string; selfUid: string; friendUids: readonly string[]; accepted?: boolean },
+  o: { mine: boolean; fromName: string; selfUid: string; friendUids: readonly string[]; accepted?: boolean; myAgentNames?: readonly string[] },
 ): ContactCardView {
   const who = o.fromName.trim() === "" ? "对方" : o.fromName.trim();
   if (card.kind === "person") {
@@ -145,6 +146,19 @@ export function contactCardView(
     heading: o.mine ? "你分享了一只智能体" : `${who} 分享了一只智能体`,
     title: card.name,
     subtitle: card.description.trim() !== "" ? card.description.trim() : `${card.from.name} 的智能体`,
-    action: o.mine ? { kind: "none", label: "" } : o.accepted === true ? { kind: "none", label: "已保存到我的智能体" } : { kind: "accept_agent", label: "接受" },
+    action: o.mine
+      ? { kind: "none", label: "" }
+      : o.accepted === true || (o.myAgentNames ?? []).some((n) => n.trim() === card.name.trim())
+        ? { kind: "none", label: "已保存到我的智能体" }
+        : { kind: "accept_agent", label: "接受" },
   };
+}
+
+/** 接受时建那只用的三格（#1544）。runtime 的 agent_briefed 只带 name + instructions、不带自己的 description——手机「建一只」
+    的职责（onboarding → description）在 brief 里模型看不到。名片原样复制 instructions；它是空的而 description 不空时，
+    把职责写成一句提示词，不然复制出来的那只开口就是「我是 Otto」 */
+export function acceptedAgentInput(card: AgentCard): { name: string; description: string; instructions: string } {
+  const description = card.description.trim();
+  const instructions = card.instructions.trim() !== "" ? card.instructions : description !== "" ? `你是「${card.name}」。${description}` : "";
+  return { name: card.name, description, instructions };
 }
