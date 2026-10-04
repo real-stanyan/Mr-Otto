@@ -42,6 +42,26 @@ alter table public.agent_routines add constraint agent_routines_tz_shape
 create index if not exists agent_routines_due on public.agent_routines (next_run_at) where next_run_at is not null;
 create index if not exists agent_routines_agent on public.agent_routines (workspace_id, agent_id);
 
+-- 一只智能体启用中的任务最多 20 条（ROUTINES_ENABLED_MAX，I2）：客户端与 schedule_task 各自先挡一次、给更好懂的话，
+-- 这里兜住直接打 REST 的写入。只在「这一行要变成启用」时数（插入一条启用的 / 把停用的打开）：已经启用的行改标题、
+-- 调度器认领推进 next_run_at 不该因为别处的并发多出一条而被拒——认领被拒的行会每一拍都堵在队头。
+-- security definer：数的是这只名下所有启用的行，不受调用者 RLS 只看得见自己那几行的影响。并发两笔同时插第 20 条
+-- 可能都过，最多超一条，接受。
+create or replace function public.agent_routines_enabled_cap() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  if new.enabled and (tg_op = 'INSERT' or not old.enabled) then
+    if (select count(*) from public.agent_routines r
+        where r.workspace_id = new.workspace_id and r.agent_id = new.agent_id and r.enabled and r.id <> new.id) >= 20 then
+      raise exception '启用中的定时任务最多 20 条' using errcode = 'check_violation';
+    end if;
+  end if;
+  return new;
+end $$;
+drop trigger if exists agent_routines_enabled_cap on public.agent_routines;
+create trigger agent_routines_enabled_cap before insert or update on public.agent_routines
+  for each row execute function public.agent_routines_enabled_cap();
+
 alter table public.agent_routines enable row level security;
 
 drop policy if exists ar_select_owner on public.agent_routines;
