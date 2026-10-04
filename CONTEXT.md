@@ -178,6 +178,7 @@ Domain glossary. All agents' understanding of domain terms is grounded here; cod
 - **公开智能体（public agent，ADR-0356 / #1533）**：每人在「我」页设定的一只自己主场里的智能体（`profiles.public_agent_id`）。朋友（已接受、两边都不是仅聊天）在和我的私聊里能 @ 它、给它打电话：载体是我主场里与那位朋友的共享车道，朋友那一侧能按需开出来（协议 26 的 `onBehalf` create）。打完电话它把朋友的需求总结写在车道里（两人都看得到），那一轮受监督。
 - **人与人电话（human call，ADR-0357 / #1534）**：两位好友在私聊里的实时语音——WebRTC P2P + 自建 coturn 兜底，信令走中继 `hc:<callId>` 房（host↔guest），来电借 RingPush 的壳（`chat = "human"`）进 CallKit。与「电话」的另外两种分开：智能体回电（ADR-0331）、外联（ADR-0337）都是人 ↔ 智能体、靠本地识别 + TTS，没有手机到手机的音频通道。
 - **车道桥（lane bridge，ADR-0358 / #1542）**：好友私聊里两位主人各自公开的智能体之间的那条文字链路——A 的智能体调 `message_friend_agent`，runtime 以 A（客人）的身份把那句话落进 B 公开给 A 的车道、带接力记号；深度跨车道累加到顶硬停、每小时封顶。是 AGENTS.md「不做通用多 agent 编排」之下的第二条窄口（第一条是群聊接力，ADR-0223）。
+- **共有的智能体（shared agent，ADR-0359 / #1545）**：名片接受出来的那只与原来那只是两只（ADR-0354 的复制），但 `agent_shares`（0058）记着「谁的哪只 ↔ 谁的哪只」，双方名册 / 资料页上都标「共有」。不是同一只：记忆、聊天记录、额度各管各。
 
 ## Key invariants
 

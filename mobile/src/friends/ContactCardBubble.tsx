@@ -11,12 +11,15 @@ import { acceptedAgentInput, contactCardView, type ContactCard } from "../../../
 import { REQUEST_DEFAULT_TIER, type FriendTier } from "../../../src/shared/friendTier.js";
 import { insertAgentRow, listAgentNames, updateAgentRow } from "../../../src/shared/supabaseWorkspacesApi.js";
 import { refreshHomeAfterWrite, useHome } from "../home/homeStore.js";
+import { refreshAgentShares } from "../home/agentSharesStore.js";
+import { acceptedShareText } from "../../../src/shared/agentShares.js";
+import { recordAgentShare } from "../../../src/shared/agentSharesApi.js";
 import { supabase } from "../supabase.js";
 import { usePalette, withAlpha } from "../theme.js";
 import { FaceTile, PersonTile } from "../wx/Avatar.js";
 import { Icon } from "../wx/Icon.js";
 import { toast } from "../wx/toast.js";
-import { addFriend, AlreadyLinked, useFriends } from "./friendsStore.js";
+import { addFriend, AlreadyLinked, sendToFriend, useFriends } from "./friendsStore.js";
 import { TierPickDialog } from "./TierPickDialog.js";
 
 export function ContactCardBubble({ card, mine, fromName, onOpenChat }: {
@@ -62,6 +65,12 @@ export function ContactCardBubble({ card, mine, fromName, onOpenChat }: {
       setAccepted(true);
       toast(`「${card.name}」已保存到我的智能体`);
       void refreshHomeAfterWrite();
+      // 共有（#1545）：记一行「分享方的原 id ↔ 我这边的新 id」（两边都读得到，资料页据它标「共有」），再往这条私聊里说一句
+      // ——分享方那边据这句话知道 TA 接受了。两件都尽力而为：0058 没跑 / 发不出去都不碰「已保存」这个事实
+      void recordAgentShare(supabase, { ownerUid: card.from.uid, agentId: card.agentId, withUid: selfUid, copyAgentId: agentId, name: card.name })
+        .then((ok) => { if (ok) void refreshAgentShares(); })
+        .catch(() => undefined);
+      void sendToFriend(card.from.uid, acceptedShareText(card.name)).catch(() => undefined);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {

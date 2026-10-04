@@ -15,6 +15,11 @@ import type { WorkspaceAgentRow, WorkspaceSnapshot } from "../../../src/shared/w
 import { ActivityFace } from "../activity/ActivityFace.js";
 import { useActivity } from "../activity/activityStore.js";
 import { useHome } from "../home/homeStore.js";
+import { refreshAgentShares, shareBadgeFor, useAgentShares } from "../home/agentSharesStore.js";
+import { useFriends } from "../friends/friendsStore.js";
+import { friendName } from "../../../src/shared/wechatInbox.js";
+import { useFocusEffect } from "@react-navigation/native";
+import { useCallback } from "react";
 import { useTeams } from "../inbox/teamsStore.js";
 import type { RootStackParams } from "../nav/types.js";
 import { usePalette } from "../theme.js";
@@ -99,6 +104,15 @@ export function AgentScreen({ route, navigation }: Props) {
   const home = useHome();
   const teams = useTeams();
   const voice = useVoice();
+  // 共有（#1545）：这只是从谁那儿来的 / 谁也有一只，进来拉一次
+  const shares = useAgentShares();
+  const friends = useFriends();
+  useFocusEffect(useCallback(() => { void refreshAgentShares(); }, []));
+  const nameOfUid = (uid: string): string => {
+    const r = friends.rows?.find((x) => x.profile.id === uid);
+    return r !== undefined ? friendName(r.profile) : uid.slice(0, 8);
+  };
+  const shareBadge = shareBadgeFor(agentId, shares, nameOfUid);
   if (workspaceId !== undefined) {
     const team = teams.teams.find((t) => t.ws.id === workspaceId) ?? null;
     // 别人主场里拉我进去的群（#1393）：它只在那几条群里，每条群的快照各带那几只
@@ -141,7 +155,7 @@ export function AgentScreen({ route, navigation }: Props) {
             />
           }
           name={agent.name}
-          tag="智能体"
+          tag={shareBadge === null ? "智能体" : `智能体 · ${shareBadge}`}
           sub={agent.description}
         />
         <AgentRows ws={ws} agent={agent} />
