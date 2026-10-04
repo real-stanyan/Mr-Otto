@@ -17,7 +17,8 @@ import Speech
 // ③ 回声消除的 ducking 配置是 iOS 17 起才有的 API；
 // ④ 放音收 expo-file-system 给的 file:// URI（Playback.swift）；
 // ⑤ 起完引擎再报一次 status：aec 要开完回声消除才知道（桌面那份只在开引擎之前报，第一次开麦时 aec 还是 nil）。
-// ⑥ 开麦时引擎若已经因为放音在跑（第一次开麦要等授权），先把手上那段当放完收掉、停引擎，再开回声消除。
+// ⑥ 开麦时引擎若已经因为放音在跑（第一次开麦要等授权；系统来电接通时开场白往往先到），先把手上那段停下
+//    记着、停引擎、开回声消除，引擎重起之后那段从头再放（#1514；原来是当放完收掉，开场白整句没了）。
 // **所有状态都在 speechQueue 上动**（OttoSpeechModule.swift；不用主线程的理由写在那里：iOS 的主线程是
 // 界面线程，而 setActive 是同步阻塞的）。命令本来就在它上面跑；音频 tap、识别回调、两道授权回调、两条通知
 // 各在系统挑的线程上，一律 hop 过去；定时器也挂在它上面。
@@ -217,16 +218,19 @@ final class Recognizer {
 
   private func beginAudio() {
     guard !running else { return }
-    // 正在放它的话（开麦要等两道授权，它已经开口了）：先把手上那段收掉、停引擎——回声消除只能在停着的引擎上开，
-    // 在跑着的引擎上开会抛（退回半双工）或者引发一次「配置变了」，把刚开的麦又关掉
-    // 放在激活会话之前：cut() 报的 played 会走 deactivateIfIdle()，把会话交还系统；先收再激活，顺序才对
+    // 正在放它的话（开麦要等两道授权，它已经开口了）：先把手上那段停下记着、停引擎——回声消除只能在停着的引擎上开，
+    // 在跑着的引擎上开会抛（退回半双工）或者引发一次「配置变了」，把刚开的麦又关掉。引擎带着回声消除重起之后
+    // 那段从头再放（#1514：系统来电的开场白就是这么被整句收掉的）；下面任何一处没开成，它当放完收掉
+    // （cut 报的 played 会走 deactivateIfIdle()——所以 cut 一律排在 deactivateIfIdle 之前）
+    var suspended = false
     if engine.isRunning {
-      playback.cut()
+      suspended = playback.suspend()
       engine.stop()
     }
     do {
       try activateSession()
     } catch {
+      if suspended { playback.cut() }
       emit(Event(type: "error", message: "麦克风打不开：\(error.localizedDescription)"))
       return
     }
@@ -245,12 +249,14 @@ final class Recognizer {
     }
     let format = input.outputFormat(forBus: 0)
     guard format.sampleRate > 0, format.channelCount > 0 else {
+      if suspended { playback.cut() }
       emit(Event(type: "error", message: "没有可用的麦克风"))
       deactivateIfIdle()
       return
     }
     // 开着回声消除时输出格式可能是多声道，识别器吃不下：只取第 0 声道折成 mono（桌面同一条）
     guard let mono = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: format.sampleRate, channels: 1, interleaved: false) else {
+      if suspended { playback.cut() }
       emit(Event(type: "error", message: "麦克风格式不支持（\(format.sampleRate) Hz）"))
       deactivateIfIdle()
       return
@@ -292,10 +298,12 @@ final class Recognizer {
       try ensureEngine()
     } catch {
       input.removeTap(onBus: 0)
+      if suspended { playback.cut() }
       emit(Event(type: "error", message: "麦克风打不开：\(error.localizedDescription)"))
       deactivateIfIdle()
       return
     }
+    if suspended { playback.resume() }
     running = true
     paused = false
     // 开麦之前就说要录（startRecording 排在 start 后面、授权还没回来）：现在开文件
