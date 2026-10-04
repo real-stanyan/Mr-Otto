@@ -75,3 +75,9 @@ describe("routine 三把刀", () => {
     await expect(update.run({ id, enabled: true }, world)).rejects.toThrow("20");
   });
 });
+
+describe("schedule_task 的说明（#1561）", () => {
+  it("开头直说能定时——wiki 里的旧记录说做不到时，模型要先看到这句", () => {
+    expect(rig().schedule.def.description.startsWith("你能定时")).toBe(true);
+  });
+});
