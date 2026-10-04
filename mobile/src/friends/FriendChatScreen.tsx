@@ -6,6 +6,7 @@
 // 每条先挂一个本地气泡报进度，传完换成真消息。纯媒体消息的正文是占位「[图片]」/「[视频]」，带着媒体时不画字。
 // 带了智能体之后打一个 @ 弹选人（#1493）：名单是我带进来的那几只 + 朋友公开给我的那几只（朋友不在里面——@ 朋友没有去处），
 // 挑中了经 ref.mention 插回光标处，判据与群聊页同一份（agentMentionInput / MentionSheet）。
+// 名片（#1524）：＋ 里「名片」挑我的智能体 / 别的朋友发给 TA；收到的卡画成 ContactCardBubble（加为朋友 / 发消息 / 接受）。
 // 车道的朝向（#1523）：我带进来的可以「仅我可见」或「公开给 TA」（横幅上的那颗标签 / 聊天信息页能切）；
 // 朋友公开给我的那条用第二条连接读（peerLane.ts），画成另一种底色的虚线气泡，@ 它说的话走朋友那条车道。
 import { allowsPair } from "../../../src/shared/friendTier.js";
@@ -29,6 +30,8 @@ import { LaneFacingDialog } from "./LaneFacingDialog.js";
 import type { WorkspaceSnapshot } from "../../../src/shared/workspaces.js";
 import { readUpTo, receiptLabel } from "../../../src/shared/readReceipt.js";
 import { decodeEnvelope } from "../../../src/shared/sessionPackageCodec.js";
+import { CARD_TOO_BIG, decodeContactCard, encodeContactCard, type ContactCard } from "../../../src/shared/contactCard.js";
+import { ContactCardBubble } from "./ContactCardBubble.js";
 import { shareCardView } from "../../../src/shared/shareCard.js";
 import { friendName, needsTimeRow, timelineTimeLabel } from "../../../src/shared/wechatInbox.js";
 import { MentionSheet } from "../chat/MentionSheet.js";
@@ -102,10 +105,14 @@ function LaneBubble({ item, name, slot, meName, meAvatar, friendName: fname, fri
   );
 }
 
-function Bubble({ m, mine, name, avatar, meName, meAvatar, onLongPress }: { m: DirectMessage; mine: boolean; name: string; avatar: string; meName: string; meAvatar: string; onLongPress?: () => void }) {
+function Bubble({ m, mine, name, avatar, meName, meAvatar, onLongPress, onOpenChat }: { m: DirectMessage; mine: boolean; name: string; avatar: string; meName: string; meAvatar: string; onLongPress?: () => void; onOpenChat: (uid: string) => void }) {
   const { c } = usePalette();
   const env = decodeEnvelope(m.body);
-  const body = env !== null ? (
+  // 名片（#1524）：整段 body 是一张卡；认不出才往下走分享信封 / 正文
+  const card = decodeContactCard(m.body);
+  const body = card !== null ? (
+    <ContactCardBubble card={card} mine={mine} fromName={name} onOpenChat={onOpenChat} />
+  ) : env !== null ? (
     (() => {
       const v = shareCardView(env, { mine, fromName: name });
       return (
@@ -169,6 +176,10 @@ export function FriendChatScreen({ route, navigation }: Props) {
   const [holdText, setHoldText] = useState("");
   const home = useHome();
   const [grouping, setGrouping] = useState<{ key: number; visible: boolean } | null>(null);
+  // 名片（#1524）：＋ 里「名片」挑我的智能体 / 别的朋友，每挑一张发一条
+  const [carding, setCarding] = useState<{ key: number; visible: boolean } | null>(null);
+  const [cardBusy, setCardBusy] = useState(false);
+  const [cardError, setCardError] = useState<string | null>(null);
   const createdGroup = useRef<string | null>(null);
   // 打 @ 弹选人（#1493）：挑中的名字先存着，等抽屉的 Modal 退场完再插——同 ChatScreen
   const composer = useRef<ComposerHandle>(null);
@@ -520,6 +531,7 @@ export function FriendChatScreen({ route, navigation }: Props) {
                       avatar={row?.profile.avatarUrl ?? ""}
                       meName={me.name}
                       meAvatar={me.avatar}
+                      onOpenChat={(target) => navigation.push("FriendChat", { uid: target })}
                       {...(homeWs !== null && homeWs.agents.length > 0 && (row === null || allowsPair(row.tiers.effective))
                         ? { onLongPress: () => setDispatching({ key: Date.now(), visible: true, m: item.m }) }
                         : {})}
@@ -584,6 +596,8 @@ export function FriendChatScreen({ route, navigation }: Props) {
               // 图片 / 视频（#1443）：相册一次最多挑 9 样；拍摄是拍照或录一段（≤60 秒）
               { key: "album", icon: "image", label: "相册", onPress: () => void sendPicked(pickFromLibrary) },
               { key: "camera", icon: "camera", label: "拍摄", onPress: () => void sendPicked(pickFromCamera) },
+              // 名片（#1524）：推一位朋友给 TA，或把我的一只智能体发给 TA（TA 接受就复制进 TA 的智能体库）
+              { key: "card", icon: "user-round", label: "名片", onPress: () => { setCardError(null); setCarding({ key: Date.now(), visible: true }); } },
               // 拉人建群（#1393）：带上 TA，再拉几位——群建在我的主场里
               ...(home.home !== null
                 ? [{ key: "group", icon: "users-round" as const, label: "拉人建群", onPress: () => setGrouping({ key: Date.now(), visible: true }) }]
@@ -747,6 +761,54 @@ export function FriendChatScreen({ route, navigation }: Props) {
           onExited={() => {
             setFacingPick(null);
             setFacingError(null);
+          }}
+        />
+      ) : null}
+      {carding !== null ? (
+        <PickAgentsDialog
+          key={carding.key}
+          visible={carding.visible}
+          ws={homeWs ?? { id: "", name: "", ownerUid: "", members: [], connectors: [], sessions: [], agents: [], sandboxApproval: null, kind: "home" }}
+          title="发名片"
+          lead={`挑要发给${name}的：你的智能体（TA 接受就存进 TA 的智能体库），或别的朋友（TA 可以一键加好友）。`}
+          options={homeWs?.agents.map((a) => a.agentId) ?? []}
+          people={(friends.rows ?? []).filter((r) => r.status === "accepted" && r.profile.id !== uid).map((r) => ({ uid: r.profile.id, name: friendName(r.profile), url: r.profile.avatarUrl }))}
+          peopleLabel="朋友"
+          min={1}
+          okLabel="发送"
+          busy={cardBusy}
+          error={cardError}
+          onOk={(agentIds, _n, people) => {
+            void (async () => {
+              setCardBusy(true);
+              setCardError(null);
+              const cards: ContactCard[] = [];
+              for (const id of agentIds) {
+                const a = homeWs?.agents.find((x) => x.agentId === id);
+                if (a === undefined) continue;
+                cards.push({
+                  kind: "agent", agentId: a.agentId, name: a.name, description: a.description, instructions: a.instructions, avatarSlot: a.avatarSlot,
+                  ...(a.voice !== undefined ? { voice: a.voice } : {}), from: { uid: selfUid, name: me.name },
+                });
+              }
+              for (const p of people) {
+                const r = friends.rows?.find((x) => x.profile.id === p);
+                if (r !== undefined) cards.push({ kind: "person", uid: r.profile.id, name: friendName(r.profile), avatarUrl: r.profile.avatarUrl, email: r.profile.email });
+              }
+              try {
+                for (const card of cards) await sendToFriend(uid, encodeContactCard(card));
+                setCarding((d) => (d === null ? d : { ...d, visible: false }));
+              } catch (e) {
+                setCardError(e instanceof Error ? (e.message === CARD_TOO_BIG ? CARD_TOO_BIG : e.message) : String(e));
+              } finally {
+                setCardBusy(false);
+              }
+            })();
+          }}
+          onClose={() => setCarding((d) => (d === null ? d : { ...d, visible: false }))}
+          onExited={() => {
+            setCarding(null);
+            setCardError(null);
           }}
         />
       ) : null}
