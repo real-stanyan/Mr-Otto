@@ -76,6 +76,8 @@ import { fileSizeOf, sha256OfFile } from "../media/hash.js";
 import { PendingMediaBubble } from "../media/MediaBubble.js";
 import { pickFromCamera, pickFromLibrary, pickedKind, prepareAsset, type PickedAsset } from "../media/prepareMedia.js";
 import { MentionSheet } from "./MentionSheet.js";
+import { DispatchDialog } from "./DispatchDialog.js";
+import { dispatchOpening, quoteLinesFromRows, quoteWindow } from "../../../src/shared/dispatchQuote.js";
 import { RoleChips } from "./RoleChips.js";
 import { WxComposer, type ComposerHandle, type HoldState, type PlusItem } from "./WxComposer.js";
 
@@ -265,6 +267,9 @@ export function ChatScreen({ route, navigation }: Props) {
   const pendingMention = useRef<string | null>(null);
   const [pendingMedia, setPendingMedia] = useState<PendingCloudMedia[]>([]);
   const pendingMediaSeq = useRef(0);
+  // 长按一句话派智能体（#1505）：挑好那只、写一句提示 → 推一张它的私聊页，开场白经路由参数 dispatch 带过去
+  const [dispatching, setDispatching] = useState<{ key: number; visible: boolean; row: ChatRow } | null>(null);
+  const dispatched = useRef(false);
   const voice = useVoice();
   const [callOp, setCallOp] = useState<"start" | "hangup" | null>(null);
   const [callOpen, setCallOpen] = useState(false);
@@ -446,6 +451,15 @@ export function ChatScreen({ route, navigation }: Props) {
     const r = await sendText(text, plan.mentions, memberMentions);
     return r.ok || r.unknown === true;
   };
+
+  // 别处长按派过来的开场白（#1505）：房间一能发就发（一次）。走 onSend：私聊还没建就 startDm 顺手建，建了就 sendText
+  useEffect(() => {
+    const text = route.params.dispatch;
+    if (text === undefined || dispatched.current || !canSend || ws === null || resolved === null) return;
+    dispatched.current = true;
+    void onSend(text);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [route.params.dispatch, canSend, ws, resolved]);
 
   // 图 / 视频（#1491 P3）：先传进 chat-media（按内容寻址），引用塞进 say 帧。点到谁与打字那条路同一份判据
   // （空正文 = 没 @ 谁；私聊里 resolveSendMentions 照样解出那一只），runtime 落盘时把正文写成占位「[图片]」
@@ -750,6 +764,9 @@ export function ChatScreen({ route, navigation }: Props) {
                     decideReady={ready}
                     onDecide={(id, d) => void decide(id, d)}
                     onAgent={(agentId) => navigation.navigate("Agent", isTeam || isGuestChat ? { agentId, workspaceId: ws.id } : { agentId })}
+                    {...(home.home !== null && home.home.agents.length > 0 && !isOutreach
+                      ? { onLongPress: (r: ChatRow) => setDispatching({ key: Date.now(), visible: true, row: r }) }
+                      : {})}
                     onCallAgent={(agentId) => {
                       if (ready) void callAgent(agentId);
                     }}
@@ -870,6 +887,23 @@ export function ChatScreen({ route, navigation }: Props) {
         )}
       </View>
 
+      {dispatching !== null && home.home !== null ? (
+        <DispatchDialog
+          key={dispatching.key}
+          visible={dispatching.visible}
+          ws={home.home}
+          agentIds={home.home.agents.map((a) => a.agentId)}
+          preview={dispatching.row.kind === "agent" ? dispatching.row.paragraphs.join(" ") : dispatching.row.kind === "mine" || dispatching.row.kind === "human" ? dispatching.row.text : ""}
+          onOk={(agentId, prompt) => {
+            const lines = quoteWindow(quoteLinesFromRows(rows, me.name), dispatching.row.key);
+            setDispatching((d) => (d === null ? d : { ...d, visible: false }));
+            if (lines === null) return;
+            navigation.push("Chat", { kind: "agent", agentId, dispatch: dispatchOpening({ prompt, source: title, lines }) });
+          }}
+          onClose={() => setDispatching((d) => (d === null ? d : { ...d, visible: false }))}
+          onExited={() => setDispatching(null)}
+        />
+      ) : null}
       {ws !== null ? (
         <MentionSheet
           visible={mentioning}

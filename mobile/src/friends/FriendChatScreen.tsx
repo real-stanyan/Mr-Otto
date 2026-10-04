@@ -27,6 +27,9 @@ import { decodeEnvelope } from "../../../src/shared/sessionPackageCodec.js";
 import { shareCardView } from "../../../src/shared/shareCard.js";
 import { friendName, needsTimeRow, timelineTimeLabel } from "../../../src/shared/wechatInbox.js";
 import { MentionSheet } from "../chat/MentionSheet.js";
+import { DispatchDialog } from "../chat/DispatchDialog.js";
+import { dispatchOpening, quoteWindow, type QuoteLine } from "../../../src/shared/dispatchQuote.js";
+import { mediaPlaceholder } from "../../../src/shared/chatMedia.js";
 import { WxComposer, type ComposerHandle, type HoldState } from "../chat/WxComposer.js";
 import { NewGroupDialog } from "../group/NewGroupDialog.js";
 import { useHome } from "../home/homeStore.js";
@@ -84,7 +87,7 @@ function LaneBubble({ item, name, slot, meName, meAvatar }: { item: LaneItem; na
   );
 }
 
-function Bubble({ m, mine, name, avatar, meName, meAvatar }: { m: DirectMessage; mine: boolean; name: string; avatar: string; meName: string; meAvatar: string }) {
+function Bubble({ m, mine, name, avatar, meName, meAvatar, onLongPress }: { m: DirectMessage; mine: boolean; name: string; avatar: string; meName: string; meAvatar: string; onLongPress?: () => void }) {
   const { c } = usePalette();
   const env = decodeEnvelope(m.body);
   const body = env !== null ? (
@@ -114,7 +117,7 @@ function Bubble({ m, mine, name, avatar, meName, meAvatar }: { m: DirectMessage;
   return (
     <View style={{ flexDirection: mine ? "row-reverse" : "row", alignItems: "flex-start", gap: 10, paddingHorizontal: 12 }}>
       {mine ? <PersonTile name={meName} url={meAvatar} size={40} me /> : <PersonTile name={name} url={avatar} size={40} />}
-      <View style={{ flexShrink: 1, maxWidth: "76%" }}>{body}</View>
+      <Pressable disabled={onLongPress === undefined} onLongPress={onLongPress} delayLongPress={350} style={({ pressed }) => [{ flexShrink: 1, maxWidth: "76%" }, pressed && onLongPress !== undefined && { opacity: 0.85 }]}>{body}</Pressable>
     </View>
   );
 }
@@ -156,6 +159,8 @@ export function FriendChatScreen({ route, navigation }: Props) {
   const composer = useRef<ComposerHandle>(null);
   const [mentioning, setMentioning] = useState(false);
   const pendingMention = useRef<string | null>(null);
+  // 长按一句话派智能体（#1505）：只在好友权限到「可带智能体」时给（让我的智能体读你们的话，和带它进私聊是同一件事）
+  const [dispatching, setDispatching] = useState<{ key: number; visible: boolean; m: DirectMessage } | null>(null);
   const row = friends.rows?.find((r) => r.profile.id === uid) ?? null;
   const name = row !== null ? friendName(row.profile) : "";
   const friend = row?.status === "accepted";
@@ -408,7 +413,17 @@ export function FriendChatScreen({ route, navigation }: Props) {
                   </View>
                 ) : (
                   <View>
-                    <Bubble m={item.m} mine={item.m.sender !== uid} name={name} avatar={row?.profile.avatarUrl ?? ""} meName={me.name} meAvatar={me.avatar} />
+                    <Bubble
+                      m={item.m}
+                      mine={item.m.sender !== uid}
+                      name={name}
+                      avatar={row?.profile.avatarUrl ?? ""}
+                      meName={me.name}
+                      meAvatar={me.avatar}
+                      {...(homeWs !== null && homeWs.agents.length > 0 && (row === null || allowsPair(row.tiers.effective))
+                        ? { onLongPress: () => setDispatching({ key: Date.now(), visible: true, m: item.m }) }
+                        : {})}
+                    />
                     {receipt !== null && receipt.messageId === item.m.id ? (
                       <Text style={{ alignSelf: "flex-end", marginRight: 62, marginTop: 4, fontSize: 12, color: receipt.read ? c.faint : c.mutedForeground }}>
                         {receipt.read ? "已读" : "未读"}
@@ -511,6 +526,28 @@ export function FriendChatScreen({ route, navigation }: Props) {
           </View>
         )}
       </View>
+      {dispatching !== null && homeWs !== null ? (
+        <DispatchDialog
+          key={dispatching.key}
+          visible={dispatching.visible}
+          ws={homeWs}
+          agentIds={homeWs.agents.map((a) => a.agentId)}
+          preview={dispatching.m.body}
+          onOk={(agentId, prompt) => {
+            const lines: QuoteLine[] = (thread?.messages ?? []).map((m) => ({
+              key: String(m.id),
+              who: m.sender === uid ? name : me.name,
+              text: m.media !== undefined && mediaBodyHidden(m.body, m.media) ? mediaPlaceholder(m.media) : m.body,
+            }));
+            const window = quoteWindow(lines, String(dispatching.m.id));
+            setDispatching((d) => (d === null ? d : { ...d, visible: false }));
+            if (window === null) return;
+            navigation.push("Chat", { kind: "agent", agentId, dispatch: dispatchOpening({ prompt, source: `和${name}的私聊`, lines: window }) });
+          }}
+          onClose={() => setDispatching((d) => (d === null ? d : { ...d, visible: false }))}
+          onExited={() => setDispatching(null)}
+        />
+      ) : null}
       {homeWs !== null && broughtNames.length > 0 ? (
         <MentionSheet
           visible={mentioning}
