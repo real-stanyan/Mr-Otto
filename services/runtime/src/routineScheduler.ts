@@ -13,7 +13,8 @@ export interface RoutineSchedulerDeps {
   store: RoutineStore;
   /** 主人剩余周额度；null = 问不出来——照跑（同 ADR-0238 的降级：问不出钱不等于没钱，且这是主人自己建的任务） */
   quota(ownerUid: string): Promise<{ remainingMicro: number; limitMicro: number } | null>;
-  /** 找私聊 → 开房 → session.runRoutine（daemon 接 routineRun.ts 的 runRoutineInRoom）。必须 await 到 turn 跑完 */
+  /** 找私聊 → 开房 → session.runRoutine（daemon 接 routineRun.ts 的 runRoutineInRoom）。落下开场白、入队就回
+      （enqueue → startDrain），不等 turn 跑完——"started" 的意思是「已入队」，turn 的成败在会话日志里 */
   run(r: RoutineRow, firedAt: number): Promise<RoutineRunResult>;
   /** 私聊里落一条 routine_note；开不出房就算了（调用方自己吞错） */
   note(r: RoutineRow, reason: "missed" | "skipped_quota", plannedAt: number): Promise<void>;
@@ -100,7 +101,7 @@ export function createRoutineScheduler(deps: RoutineSchedulerDeps): { tick(): Pr
       for (const r of due) {
         // 每行各自兜底：一条坏行（bad tz 让 nextRunAt 抛、claim 稳定报错…）不能堵在队头饿死后面的行、也不能拦住 purge。
         // 认领在先的语义不变：claim 偶发抛错没推进 next_run_at，下一拍自然重试。
-        // 每行读新鲜时钟：前面行的 run 要 await 到整轮 turn 跑完，共用 tick 起点的 now 会让后面的行拿旧钟算宽限、盖 lastRunAt。
+        // 每行读新鲜时钟：前面行的 run 要开房、读名单、落盘（房没开着还得现开），共用 tick 起点的 now 会让后面的行拿旧钟算宽限、盖 lastRunAt。
         try {
           await handle(r, deps.now());
         } catch (err) {

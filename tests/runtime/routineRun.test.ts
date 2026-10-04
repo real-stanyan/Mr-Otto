@@ -15,7 +15,7 @@ function room(result: "ok" | "archived" | "no_agent" = "ok") {
 }
 function deps(over: Partial<RoutineRunDeps<RoutineRoom>> & { s?: RoutineRoom }): RoutineRunDeps<RoutineRoom> {
   const { s, ...rest } = over;
-  return { ownerOf: async () => "owner", findDm: async () => "sid", room: async () => s ?? room().s, ...rest };
+  return { homeOwnerOf: async () => "owner", findDm: async () => "sid", room: async () => s ?? room().s, ...rest };
 }
 
 describe("runRoutineInRoom", () => {
@@ -34,12 +34,22 @@ describe("runRoutineInRoom", () => {
     const { s, calls } = room();
     let touched = false;
     const r = await runRoutineInRoom(
-      deps({ s, ownerOf: async () => "someone-else", findDm: async () => ((touched = true), "sid"), room: async () => ((touched = true), s) }),
+      deps({ s, homeOwnerOf: async () => "someone-else", findDm: async () => ((touched = true), "sid"), room: async () => ((touched = true), s) }),
       R, 1,
     );
     expect(r).toBe("no_chat");
     expect(touched).toBe(false);
     expect(calls).toEqual([]);
+  });
+  it("workspace 不是主场（团队空间，homeOwnerOf 回 null）→ no_chat，什么都不碰；注记也不落", async () => {
+    const { s, calls, notes } = room();
+    let touched = false;
+    const d = deps({ s, homeOwnerOf: async () => null, findDm: async () => ((touched = true), "sid"), room: async () => ((touched = true), s) });
+    expect(await runRoutineInRoom(d, R, 1)).toBe("no_chat");
+    await noteRoutineInRoom(d, R, "missed", 1);
+    expect(touched).toBe(false);
+    expect(calls).toEqual([]);
+    expect(notes).toEqual([]);
   });
   it("runRoutine 的错原样抛给调度器（它会标 failed）", async () => {
     const s: RoutineRoom = { isArchived: () => false, runRoutine: async () => { throw new Error("boom"); }, logRoutineNote: () => {} };
@@ -57,7 +67,7 @@ describe("noteRoutineInRoom", () => {
   });
   it("主人不符：注记也不落（别人的主场里不该冒出这条任务的话）", async () => {
     const { s, notes } = room();
-    await noteRoutineInRoom(deps({ s, ownerOf: async () => "someone-else" }), R, "skipped_quota", 99);
+    await noteRoutineInRoom(deps({ s, homeOwnerOf: async () => "someone-else" }), R, "skipped_quota", 99);
     expect(notes).toEqual([]);
   });
 });

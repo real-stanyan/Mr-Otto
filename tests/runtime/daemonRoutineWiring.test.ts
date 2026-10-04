@@ -19,8 +19,8 @@ describe("daemon.ts：定时任务的接线（#1283）", () => {
     expect(src).toMatch(/note: \(r, reason, plannedAt\) => noteRoutineInRoom\(routineRooms, r, reason, plannedAt\)/);
     expect(src.match(/routineScheduler\.start\(\)/g)).toHaveLength(1);
   });
-  it("到点先验主人（现查 workspaceFacts）、找私聊走 findDmSession、开房走 openOriginRoom（开着就用、归档回 null）", () => {
-    expect(src).toMatch(/const routineRooms = \{[\s\S]*ownerOf: async \(w: string\) => \(await workspaceFacts\(w\)\)\.ownerUid,[\s\S]*findDm: \(w: string, a: string\) => findDmSession\(w, \[a\]\),[\s\S]*openOriginRoom<CloudSession>\(/);
+  it("到点先验主人（现查 workspaceFacts，不是主场回 null）、找私聊走 findDmSession、开房走 openOriginRoom（开着就用、归档回 null）", () => {
+    expect(src).toMatch(/const routineRooms = \{[\s\S]*homeOwnerOf: async \(w: string\) => \{\s*const f = await workspaceFacts\(w\);\s*return f\.kind === "home" \? f\.ownerUid : null;\s*\},[\s\S]*findDm: \(w: string, a: string\) => findDmSession\(w, \[a\]\),[\s\S]*openOriginRoom<CloudSession>\(/);
   });
   it("openOriginRoom 的 row 回调只有一份（sessionRowOf），外联与定时任务共用", () => {
     expect(src.match(/async function sessionRowOf\(/g)).toHaveLength(1);

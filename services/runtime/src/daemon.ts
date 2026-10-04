@@ -1609,8 +1609,11 @@ async function main(): Promise<void> {
 
   // ── 定时任务调度器（#1283，spec §3）：30 秒一拍、原子认领、先推进 next_run_at 再起 turn ─────────
   const routineRooms = {
-    // 到点现查主人：任务行上的 ownerUid 与主场现在的主人对不上就不跑（runRoutineInRoom 里判）
-    ownerOf: async (w: string) => (await workspaceFacts(w)).ownerUid,
+    // 到点现查主人：任务行上的 ownerUid 与主场现在的主人对不上、或者这根本不是主场，就不跑（runRoutineInRoom 里判）
+    homeOwnerOf: async (w: string) => {
+      const f = await workspaceFacts(w);
+      return f.kind === "home" ? f.ownerUid : null;
+    },
     findDm: (w: string, a: string) => findDmSession(w, [a]),
     room: (w: string, id: string) =>
       openOriginRoom<CloudSession>(
