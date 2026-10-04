@@ -29,6 +29,7 @@ import { PickAgentsDialog } from "../group/PickAgentsDialog.js";
 import { bringAgents, loadPairLane, loadPairPresence, setLaneFacing, usePairLane, usePairPresence } from "./pairLane.js";
 import { closePeerLane, ensurePeerLane, openPeerLane, sayToPeerLane, usePeerLane } from "./peerLane.js";
 import { CallPickDialog } from "./CallPickDialog.js";
+import { startHumanCall } from "../call/humanCall.js";
 import { LaneFacingDialog } from "./LaneFacingDialog.js";
 import type { WorkspaceSnapshot } from "../../../src/shared/workspaces.js";
 import { readUpTo, receiptLabel } from "../../../src/shared/readReceipt.js";
@@ -776,6 +777,12 @@ export function FriendChatScreen({ route, navigation }: Props) {
           agentName={publicAgent?.name ?? null}
           busy={callBusy}
           error={callError}
+          onPerson={() => {
+            // 人与人（#1534）：先进通话页再拨——runtime 推来电、回 ICE 清单，对方接起来就通
+            setCalling((d) => (d === null ? d : { ...d, visible: false }));
+            void startHumanCall(uid);
+            navigation.push("HumanCall", { callId: "", friendUid: uid, incoming: false });
+          }}
           onAgent={() => {
             void (async () => {
               setCallBusy(true);
