@@ -56,4 +56,9 @@ describe("AssistantMessageRow（#1132：一条回复拆成几张气泡）", () =
     const texts = bubbles().map((b) => b.textContent);
     expect(texts).toEqual(["弄好了。", "就是慢。"]);
   });
+
+  it("整段只有一个记号的段不画成空气泡（#1515）", () => {
+    render(<AssistantMessageRow event={reply("（笑）\n\n弄好了。")} ws={ws} />);
+    expect(bubbles().map((b) => b.textContent)).toEqual(["弄好了。"]);
+  });
 });

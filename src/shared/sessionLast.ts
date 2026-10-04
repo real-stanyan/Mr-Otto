@@ -32,7 +32,8 @@ export interface SessionLast {
 /** 第一段非空文字（段 = 空行分隔，与气泡拆段同一条判据 `splitBubbles`）→ 折叠空白 →
     超长截断（省略号算在上限里）。只有空白 → 空串 */
 export function excerptOf(text: string): string {
-  const first = stripEmotionTag(splitBubbles(text)[0] ?? "");
+  // 剥完才判「非空」：整段只有一个记号的那段不算第一段（#1515）
+  const first = splitBubbles(text).map(stripEmotionTag).find((p) => p.trim() !== "") ?? "";
   const flat = first.replace(/\s+/g, " ").trim();
   const chars = Array.from(flat);
   if (chars.length <= LAST_EXCERPT_MAX) return flat;

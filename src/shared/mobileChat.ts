@@ -137,7 +137,7 @@ function rowOf(e: SessionEvent, ws: WorkspaceSnapshot, selfUid: string): ItemRow
         : { kind: "human", key, ts: e.ts, uid: e.fromUid, name: e.label, text: e.content, ...media };
     }
     case "assistant_message": {
-      const paragraphs = splitBubbles(e.content).map(stripEmotionTag);
+      const paragraphs = splitBubbles(e.content).map(stripEmotionTag).filter((p) => p !== "");
       if (paragraphs.length === 0) return null;
       return { kind: "agent", key, ts: e.ts, agentId: e.agentId ?? "", name: assistantLabel(e, ws), paragraphs };
     }
@@ -373,7 +373,7 @@ export function liveRows(o: { streaming: Readonly<Record<string, string>>; ws: W
   for (const [agentId, text] of Object.entries(o.streaming)) {
     // 通话开着时通话里那几只的那一段不画（A4）：落下来就折进通话卡，画了会一闪而过；它在说的话看电话那一格的「转文字」
     if (o.hide?.has(agentId) === true) continue;
-    const paragraphs = splitBubbles(text).map(stripEmotionTag);
+    const paragraphs = splitBubbles(text).map(stripEmotionTag).filter((p) => p !== "");
     if (paragraphs.length === 0) continue;
     out.push({ kind: "agent", key: `live-${agentId}`, ts: o.now, agentId, name: agentNameOf(o.ws, agentId), paragraphs });
   }

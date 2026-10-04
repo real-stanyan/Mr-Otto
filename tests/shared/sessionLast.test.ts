@@ -34,6 +34,9 @@ describe("excerptOf", () => {
   it("段首情绪括注不进「最后一句」（#1515）", () => {
     expect(excerptOf("（笑）弄好了。\n\n第二段")).toBe("弄好了。");
   });
+  it("整段只有一个记号的段跳过，取剥完后第一段非空的（#1515）", () => {
+    expect(excerptOf("（笑）\n\n弄好了。")).toBe("弄好了。");
+  });
 });
 
 describe("lastOf", () => {
