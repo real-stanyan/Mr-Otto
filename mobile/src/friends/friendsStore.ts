@@ -7,16 +7,23 @@
 // · 未读条数不在这里数：列表那一行按「这台手机上看到哪一刻」算（wechatInbox.friendThreads），
 //   与智能体那几种同一套游标。
 // · 换号整份清掉（ADR-0187）。
+// · 图片 / 视频（#1443 P1）：先在这条线底下挂一条「发送中」的本地气泡（pending），文件传完、消息写成之后换成真行；
+//   失败停在原地带一句原因，人点「重试」再跑一遍、点「删除」丢掉。pending 只活在内存里：App 被杀掉就没了
+//   （文件已经传上去的那几个由 sendMediaMessage 在失败时收掉；被杀在半路的那几个是已知的孤儿）。
+import * as ExpoCrypto from "expo-crypto";
 import { useSyncExternalStore } from "react";
 import { AppState } from "react-native";
+import { sendMediaMessage, type PreparedMedia } from "../../../src/shared/chatMedia.js";
 import type { DirectMessage } from "../../../src/shared/friends.js";
 import { mergeMessages } from "../../../src/shared/friendsQuery.js";
 import { createSendQueue } from "../../../src/shared/sendQueue.js";
 import { createStore } from "../externalStore.js";
+import { clearMediaUrls } from "../media/mediaUrls.js";
 import { supabase } from "../supabase.js";
 import {
-  acceptFriend, AlreadyLinked, latestInboxId, listFriends, listInboxSince, listMessages, listRecentMessages,
-  removeFriend, requestFriend, sendMessage, subscribeFriends, type FriendRow,
+  acceptFriend, AlreadyLinked, insertMediaMessage, latestInboxId, listFriends, listInboxSince, listMessages,
+  listRecentMessages, removeDmFiles, removeFriend, requestFriend, sendMessage, subscribeFriends, uploadDmFile,
+  type FriendRow,
 } from "./friendsApi.js";
 
 export { AlreadyLinked };
@@ -24,8 +31,20 @@ export { AlreadyLinked };
 /** Realtime 哑了以后多久拉一次。8 秒:比人等得住的上限短,比一条心跳长 */
 const POLL_MS = 8_000;
 
+/** 一条还没发出去的媒体消息（本地气泡） */
+export interface PendingMedia {
+  localId: string;
+  items: PreparedMedia[];
+  state: "sending" | "failed";
+  /** 0..1，按字节 */
+  progress: number;
+  error: string | null;
+}
+
 export interface FriendThreadState {
   messages: DirectMessage[];
+  /** 还没发出去的图片 / 视频，按排队先后 */
+  pending: PendingMedia[];
   /** 第一页还没回来 */
   loading: boolean;
   hasOlder: boolean;
@@ -55,6 +74,17 @@ export function friendsSnapshot(): FriendsState {
   return store.get();
 }
 
+/** 冷启动先铺上一次存在本机的那份（#1471）：只在名单还没拉到、而且是同一个账号时铺 */
+export function hydrateFriends(uid: string, p: { rows: FriendRow[]; recent: DirectMessage[] }): void {
+  const s = store.get();
+  if (s.rows !== null || (s.uid !== null && s.uid !== uid)) return;
+  store.set({ rows: p.rows, recent: mergeMessages(s.recent, p.recent) });
+}
+
+export function onFriendsChange(fn: () => void): () => void {
+  return store.subscribe(fn);
+}
+
 function why(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
@@ -65,7 +95,7 @@ let poll: ReturnType<typeof setInterval> | null = null;
 let epoch = 0;
 
 function patchThread(friendId: string, patch: Partial<FriendThreadState>): void {
-  const cur = store.get().threads.get(friendId) ?? { messages: [], loading: false, hasOlder: false, older: "idle" as const, error: null };
+  const cur = store.get().threads.get(friendId) ?? { messages: [], pending: [], loading: false, hasOlder: false, older: "idle" as const, error: null };
   const threads = new Map(store.get().threads);
   threads.set(friendId, { ...cur, ...patch });
   store.set({ threads });
@@ -114,6 +144,7 @@ async function adopt(uid: string | null): Promise<void> {
   stopLive();
   cursor = 0;
   store.set({ ...INITIAL, uid });
+  clearMediaUrls();
   if (uid === null) return;
   try {
     cursor = await latestInboxId(uid);
@@ -191,6 +222,72 @@ export async function sendToFriend(friendId: string, body: string): Promise<void
   if (uid === null) throw new Error("还没登录");
   const m = await sendQueue.run(() => sendMessage(uid, friendId, body));
   deliver(m);
+}
+
+function patchPending(friendId: string, localId: string, patch: Partial<PendingMedia> | null): void {
+  const t = store.get().threads.get(friendId);
+  if (t === undefined) return;
+  const pending = patch === null
+    ? t.pending.filter((p) => p.localId !== localId)
+    : t.pending.map((p) => (p.localId === localId ? { ...p, ...patch } : p));
+  patchThread(friendId, { pending });
+}
+
+async function runPending(friendId: string, localId: string): Promise<void> {
+  const uid = store.get().uid;
+  const job = store.get().threads.get(friendId)?.pending.find((p) => p.localId === localId);
+  if (job === undefined) return;
+  if (uid === null) {
+    patchPending(friendId, localId, { state: "failed", error: "还没登录" });
+    return;
+  }
+  const mine = epoch;
+  patchPending(friendId, localId, { state: "sending", progress: 0, error: null });
+  // 进度只在跨过一个百分点时才写 store：上传回调一秒几十次，每次都重画整条线没必要
+  let shown = 0;
+  try {
+    const m = await sendMediaMessage(
+      {
+        newId: () => ExpoCrypto.randomUUID(),
+        upload: uploadDmFile,
+        remove: removeDmFiles,
+        insert: (body, media) => insertMediaMessage(uid, friendId, body, media),
+      },
+      uid, friendId, job.items,
+      (f) => {
+        if (mine !== epoch || f - shown < 0.01) return;
+        shown = f;
+        patchPending(friendId, localId, { progress: f });
+      },
+    );
+    if (mine !== epoch) return;
+    patchPending(friendId, localId, null);
+    deliver(m);
+  } catch (e) {
+    if (mine === epoch) patchPending(friendId, localId, { state: "failed", error: why(e) });
+  }
+}
+
+let localSeq = 0;
+
+/** 发一条图片 / 视频消息（items 已经由 prepareMedia 处理好，一条最多 9 样）。不等它：本地气泡自己报进度和结局 */
+export function sendMediaToFriend(friendId: string, items: PreparedMedia[]): void {
+  const t = store.get().threads.get(friendId);
+  const localId = `local-${Date.now()}-${(localSeq += 1)}`;
+  patchThread(friendId, { pending: [...(t?.pending ?? []), { localId, items, state: "sending", progress: 0, error: null }] });
+  void runPending(friendId, localId);
+}
+
+/** 失败那条再发一次 */
+export function retryMediaSend(friendId: string, localId: string): void {
+  // 还在发的那条不重复跑（连点两下「重试」会传两份）
+  if (store.get().threads.get(friendId)?.pending.find((p) => p.localId === localId)?.state !== "failed") return;
+  void runPending(friendId, localId);
+}
+
+/** 失败那条不要了 */
+export function dropMediaSend(friendId: string, localId: string): void {
+  patchPending(friendId, localId, null);
 }
 
 export async function addFriend(uid: string): Promise<void> {

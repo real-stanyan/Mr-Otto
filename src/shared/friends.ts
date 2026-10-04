@@ -1,6 +1,7 @@
 // friends — 好友系统的共享类型(三边共 import:main/preload/renderer)。
 // 纯类型 + 零运行时依赖,遵守 shellBridge.ts 的"共享世界"约定。
 // 行形状与 supabase/migrations/0001_friends.sql 的列一一对应。
+import type { ChatMediaItem } from "./chatMedia.js";
 
 /** profiles 表一行的渲染层形态(snake_case 列名在主进程归一成 camelCase) */
 export interface FriendProfile {
@@ -33,6 +34,9 @@ export interface DirectMessage {
   body: string;
   /** ISO 8601(supabase timestamptz 原样传) */
   createdAt: string;
+  /** 图片 / 视频（messages.media，0052，#1443）。只放解析得出、且路径落在这一对人目录下的（parseDmMedia）；
+      缺席 = 纯文字，或那一格形状不对——那条照画 body（纯媒体消息的 body 是占位「[图片]」/「[视频]」） */
+  media?: ChatMediaItem[];
 }
 
 /** 实时链路健康度(主进程判定,渲染层只显示):

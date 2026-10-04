@@ -61,6 +61,9 @@ export function GateCard({ gate, ensureError, onSubscribe }: { gate: RosterGate;
   }
 }
 
+/** 第一次装上（没有本机快照）时，最多等三份到齐这么久，过了就有什么先画什么 */
+const FIRST_PAINT_CAP_MS = 2_500;
+
 export function ChatsScreen() {
   const { c } = usePalette();
   const navigation = useNavigation();
@@ -68,6 +71,12 @@ export function ChatsScreen() {
   const teams = useTeams();
   const inbox = useInbox();
   const friends = useFriends();
+  const friendsRows = friends.rows;
+  const [waitedEnough, setWaitedEnough] = useState(false);
+  useEffect(() => {
+    const t = setTimeout(() => setWaitedEnough(true), FIRST_PAINT_CAP_MS);
+    return () => clearTimeout(t);
+  }, []);
   const { drafts } = useSeenStore();
   const now = useNow(60_000);
   const [q, setQ] = useState("");
@@ -148,7 +157,10 @@ export function ChatsScreen() {
   };
 
   const title = inbox.unreadChats > 0 ? `聊天(${inbox.unreadChats})` : "聊天";
-  const loading = !home.loaded;
+  // 三份（主场 / 团队群 / 朋友）都到了才一起画，不然列表先画一部分、再一行一行插进来（#1471）。
+  // 本机快照开机就把三份一起铺上，所以通常不用等；第一次装上没有快照时最多等 FIRST_PAINT_CAP_MS
+  const allIn = home.loaded && teams.loaded && friendsRows !== null;
+  const loading = !home.loaded || (!allIn && !waitedEnough);
   const error = home.loadError ?? teams.loadError;
   return (
     <View style={{ flex: 1, backgroundColor: c.background }}>
@@ -162,7 +174,7 @@ export function ChatsScreen() {
       />
       <FlatList
         ref={list}
-        data={rows}
+        data={loading ? [] : rows}
         keyExtractor={(r) => r.key}
         renderItem={({ item }) => <ChatListRow row={item} draft={drafts.get(item.key) ?? ""} now={now} onPress={() => open(item)} />}
         ItemSeparatorComponent={() => (

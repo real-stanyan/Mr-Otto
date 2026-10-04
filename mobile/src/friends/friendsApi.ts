@@ -9,6 +9,11 @@
 // 手机端仍然不是第二个完整客户端:它不碰 presence / 工作区在场 / 好友分支徽章
 // 那一层,只做加好友、收发请求、私信这三件"人对人"的事(ADR-0114)。
 
+import { File, UploadType } from "expo-file-system";
+import { SUPABASE_ANON_KEY } from "../../../src/shared/authConfig.js";
+import {
+  DM_MEDIA_BUCKET, missingMediaColumn, parseDmMedia, type ChatMediaItem,
+} from "../../../src/shared/chatMedia.js";
 import type { DirectMessage, FriendProfile } from "../../../src/shared/friends.js";
 import {
   dmOr, mergeChannelHealth, profileSearchOr, rankFriendship,
@@ -21,12 +26,27 @@ const PAGE = 50;
 const SEARCH_PAGE = 8;
 
 const PROFILE_COLUMNS = "id,email,name,avatar_url";
-const MESSAGE_COLUMNS = "id,sender,recipient,body,created_at";
+const BASE_MESSAGE_COLUMNS = "id,sender,recipient,body,created_at";
+/** 库上有没有 messages.media（0052，#1443）。没跑那份 migration 时第一次查询报「没这一列」，从此退回不带它的列——
+    文字照常收发，只是看不到图（那几条画占位正文）。不缓存到下次冷启动：跑完 migration 重开 App 就回来 */
+let mediaColumn = true;
+const messageColumns = (): string => (mediaColumn ? `${BASE_MESSAGE_COLUMNS},media` : BASE_MESSAGE_COLUMNS);
 
 type ProfileRow = { id: string; email: string; name: string | null; avatar_url: string | null };
 type MessageRow = {
-  id: number; sender: string; recipient: string; body: string; created_at: string;
+  id: number; sender: string; recipient: string; body: string; created_at: string; media?: unknown;
 };
+type QueryResult = { data: unknown; error: { message: string; code?: string } | null };
+
+/** 带着 media 列查一次；库上没有这一列就退回不带它的再查一次 */
+async function selectMessages(run: (cols: string) => PromiseLike<QueryResult>): Promise<unknown> {
+  const res = await run(messageColumns());
+  if (res.error !== null && mediaColumn && missingMediaColumn(res.error)) {
+    mediaColumn = false;
+    return unwrap(await run(messageColumns()));
+  }
+  return unwrap(res);
+}
 
 export interface FriendRow {
   friendshipId: string;
@@ -41,8 +61,11 @@ function toProfile(p: ProfileRow): FriendProfile {
 }
 
 function toMessage(m: MessageRow): DirectMessage {
+  // 字节来自对方的客户端：逐格验，路径必须落在这一对人的目录下（parseDmMedia）。不对的整份丢掉，那条照画占位正文
+  const media = parseDmMedia(m.media, m.sender, m.recipient);
   return {
     id: m.id, sender: m.sender, recipient: m.recipient, body: m.body, createdAt: m.created_at,
+    ...(media !== null ? { media } : {}),
   };
 }
 
@@ -137,9 +160,11 @@ export async function removeFriend(friendshipId: string): Promise<void> {
 
 /** 一条会话的最近一页,**升序**返回(界面从上往下就是从旧到新)。`beforeId` = 往上翻：只要比它更早的那一页 */
 export async function listMessages(uid: string, friendId: string, beforeId?: number): Promise<DirectMessage[]> {
-  let q = supabase.from("messages").select(MESSAGE_COLUMNS).or(dmOr(uid, friendId));
-  if (beforeId !== undefined) q = q.lt("id", beforeId);
-  const rows = unwrap(await q.order("id", { ascending: false }).limit(PAGE)) as MessageRow[];
+  const rows = (await selectMessages((cols) => {
+    let q = supabase.from("messages").select(cols).or(dmOr(uid, friendId));
+    if (beforeId !== undefined) q = q.lt("id", beforeId);
+    return q.order("id", { ascending: false }).limit(PAGE);
+  })) as MessageRow[];
   return rows.map(toMessage).reverse();
 }
 
@@ -147,9 +172,9 @@ export async function listMessages(uid: string, friendId: string, beforeId?: num
     RLS 已经收在收发双方，不用再拼 or。封顶 RECENT 条：列表只关心每人最新的那几条 */
 const RECENT = 300;
 export async function listRecentMessages(): Promise<DirectMessage[]> {
-  const rows = unwrap(await supabase.from("messages").select(MESSAGE_COLUMNS)
+  const rows = (await selectMessages((cols) => supabase.from("messages").select(cols)
     .order("id", { ascending: false })
-    .limit(RECENT)) as MessageRow[];
+    .limit(RECENT))) as MessageRow[];
   return rows.map(toMessage);
 }
 
@@ -160,8 +185,66 @@ export async function sendMessage(
 ): Promise<DirectMessage> {
   const row = unwrap(await supabase.from("messages")
     .insert({ sender: uid, recipient: friendId, body })
-    .select(MESSAGE_COLUMNS).single()) as MessageRow;
+    .select(messageColumns()).single()) as MessageRow;
   return toMessage(row);
+}
+
+/** 发一条带媒体的（文件已经传完，见 shared/chatMedia 的 sendMediaMessage）。body 是占位「[图片]」/「[视频]」 */
+export async function insertMediaMessage(
+  uid: string, friendId: string, body: string, media: ChatMediaItem[],
+): Promise<DirectMessage> {
+  const res = await supabase.from("messages")
+    .insert({ sender: uid, recipient: friendId, body, media })
+    .select(`${BASE_MESSAGE_COLUMNS},media`).single();
+  if (res.error !== null && missingMediaColumn(res.error)) throw new Error("服务器还没准备好收图片和视频，过一阵再试");
+  return toMessage(unwrap(res) as MessageRow);
+}
+
+/** Storage 回的错（JSON 里带 message / error）翻成人话。只翻认得出的，认不出的原样留 */
+function storageError(status: number, body: string): string {
+  if (status === 413) return "文件太大，传不上去";
+  let msg = "";
+  try {
+    const o = JSON.parse(body) as { message?: unknown; error?: unknown };
+    msg = typeof o.message === "string" ? o.message : typeof o.error === "string" ? o.error : "";
+  } catch {
+    msg = body.slice(0, 200);
+  }
+  if (/mime type/i.test(msg)) return "这个格式传不上去";
+  return msg === "" ? `上传失败（${status}）` : `上传失败：${msg}`;
+}
+
+/**
+ * 把一个本机文件传进 dm-media。先要一个签名上传地址（这一步按 0052 的 insert 策略判：第一段是自己、对方是已接受的好友），
+ * 再由 expo-file-system 把文件原样 PUT 上去——不把一段 50MB 的视频读进 JS 内存。
+ * 头与 storage-js 的 uploadToSignedUrl 对原始字节那一支逐格相同（content-type / x-upsert / cache-control），
+ * 另带 apikey：网关要它，而这条请求不经过 supabase-js 的 fetch。
+ */
+export async function uploadDmFile(path: string, uri: string, mime: string, onProgress: (sent: number) => void): Promise<void> {
+  const { data, error } = await supabase.storage.from(DM_MEDIA_BUCKET).createSignedUploadUrl(path);
+  if (error !== null) throw new Error(/bucket not found/i.test(error.message) ? "服务器还没准备好收图片和视频，过一阵再试" : error.message);
+  const res = await new File(uri).upload(data.signedUrl, {
+    httpMethod: "PUT",
+    uploadType: UploadType.BINARY_CONTENT,
+    headers: { "content-type": mime, "x-upsert": "false", "cache-control": "max-age=3600", apikey: SUPABASE_ANON_KEY },
+    onProgress: (p) => onProgress(p.bytesSent),
+    sessionType: "foreground",
+  });
+  if (res.status < 200 || res.status >= 300) throw new Error(storageError(res.status, res.body));
+}
+
+/** 收掉传了一半的（消息没写成）。尽力而为 */
+export async function removeDmFiles(paths: string[]): Promise<void> {
+  await supabase.storage.from(DM_MEDIA_BUCKET).remove(paths);
+}
+
+/** 一批对象的签名地址（私有 bucket，读要签名）。回 path → url；签不出来的那几个不在里面 */
+export async function signDmMedia(paths: string[], ttlSec: number): Promise<Map<string, string>> {
+  const { data, error } = await supabase.storage.from(DM_MEDIA_BUCKET).createSignedUrls(paths, ttlSec);
+  if (error !== null) throw new Error(error.message);
+  const out = new Map<string, string>();
+  for (const d of data) if (d.path !== null && d.signedUrl !== null && d.error === null) out.set(d.path, d.signedUrl);
+  return out;
 }
 
 /** 收件箱当前的最大 id。轮询兜底开工前拿它当游标起点 ——
@@ -175,9 +258,9 @@ export async function latestInboxId(uid: string): Promise<number> {
 
 /** 收件箱里 id 大于 sinceId 的那些。Realtime 哑掉时靠它兜底(ADR-0027 的手机版) */
 export async function listInboxSince(uid: string, sinceId: number): Promise<DirectMessage[]> {
-  const rows = unwrap(await supabase.from("messages").select(MESSAGE_COLUMNS)
+  const rows = (await selectMessages((cols) => supabase.from("messages").select(cols)
     .eq("recipient", uid).gt("id", sinceId)
-    .order("id", { ascending: true }).limit(PAGE)) as MessageRow[];
+    .order("id", { ascending: true }).limit(PAGE))) as MessageRow[];
   return rows.map(toMessage);
 }
 
