@@ -8,7 +8,7 @@
 // · 气泡：我那边是点缀色 18% 调进纸面（不是整块蓝——蓝色一屏只给一个主动作），别人那边是 raised；
 //   靠头像那一角收尖（4pt），照微信的「说话方向」。
 import { useEffect, useRef, useState } from "react";
-import { ActivityIndicator, Animated, Easing, Pressable, Text, View } from "react-native";
+import { ActivityIndicator, Animated, Easing, Pressable, Text, View, type StyleProp, type ViewStyle } from "react-native";
 import { agentFaceIfKnown } from "../../../src/shared/agentAvatar.js";
 import type { RosterLinePart } from "../../../src/shared/cloudTimeline.js";
 import { callOffsetText } from "../../../src/shared/cloudTimeline.js";
@@ -21,7 +21,7 @@ import { memberAvatarOf } from "../../../src/shared/workspaceView.js";
 import type { WorkspaceSnapshot } from "../../../src/shared/workspaces.js";
 import { usePalette, withAlpha } from "../theme.js";
 import { Button, useReduceMotion } from "../ui.js";
-import { FaceTile, PersonTile } from "../wx/Avatar.js";
+import { FaceTile, PersonTile, tileRadius } from "../wx/Avatar.js";
 import { Icon } from "../wx/Icon.js";
 
 export const AVATAR = 40;
@@ -142,7 +142,7 @@ function RosterPill({ parts, ws }: { parts: readonly RosterLinePart[]; ws: Works
   );
 }
 
-export function ChatRowView({ row, ws, selfUid, selfName, selfAvatar, group, outreachChat = false, onOpenCall, onAgent, onCallAgent, onDecide, deciding, decideReady, onLongPress }: {
+export function ChatRowView({ row, ws, selfUid, selfName, selfAvatar, group, outreachChat = false, onOpenCall, onAgent, onCallAgent, onDecide, deciding, decideReady, friendAvatarOf, picking, onPickFriend, onLongPress }: {
   row: ChatRow;
   /** 长按一句话（我的 / 别人的 / 智能体的）：派一只智能体去办（#1505）。缺席 = 这页不给 */
   onLongPress?: (row: ChatRow) => void;
@@ -163,6 +163,11 @@ export function ChatRowView({ row, ws, selfUid, selfName, selfAvatar, group, out
   deciding: string | null;
   /** 房间连上了才批得动：连接中画的是本机缓存里的卡，批下去没有对应的那一轮（#1426） */
   decideReady: boolean;
+  /** 选人卡的头像（#1520）：按 uid 从好友表取，取不到给空串画首字 */
+  friendAvatarOf: (uid: string) => string;
+  /** 选人卡里我刚点下、回执还没到的那一下（本地态，日志里没有） */
+  picking: { pickId: string; uid: string | null } | null;
+  onPickFriend: (pickId: string, uid: string | null) => void;
 }) {
   const { c } = usePalette();
   switch (row.kind) {
@@ -229,6 +234,8 @@ export function ChatRowView({ row, ws, selfUid, selfName, selfAvatar, group, out
       return <RingRecord row={row} ws={ws} group={group} noCallback={outreachChat} onOpenCall={onOpenCall} onCallAgent={onCallAgent} />;
     case "outreach":
       return <OutreachRecord row={row} ws={ws} group={group} onOpenCall={onOpenCall} />;
+    case "friend_pick":
+      return <FriendPickCard row={row} ws={ws} avatarOf={friendAvatarOf} picking={picking} ready={decideReady} onPick={onPickFriend} />;
     case "approval":
       return <ApprovalCard row={row} busy={deciding === row.callId || !decideReady} onDecide={onDecide} selfUid={selfUid} />;
     default: {
@@ -358,6 +365,100 @@ function OutreachRecord({ row, ws, group, onOpenCall }: {
         <Icon name={icon} size={16} stroke={2} color={tint} />
         <Text style={{ flexShrink: 1, fontSize: 16, lineHeight: 24, color: view.tone === "missed" ? c.destructive : c.foreground }}>{text}</Text>
       </Pressable>
+    </View>
+  );
+}
+
+/** 选人卡（#1520；维护者看过 demo 选的 A 版）：长在它的气泡里——上面一句问话，下面一行一人（头像 + 名字 + 为什么猜他），
+    最底下「都不是」。点人 = 直接拨（卡里存着交代与开场白，不再过一轮模型）。头像按 uid 从好友表取，取不到画首字。
+    `picking` = 这张卡我刚点下、回执还没到（本地态，日志里没有）。
+    `row.canPick` 为假（主场群里的客人）= 只读：没有电话图标、行不可点、没有「都不是」，开着时脚注写等谁选；
+    点过 / 失败 / 过期这些结局两边画得一样 */
+function FriendPickCard({ row, ws, avatarOf, picking, ready, onPick }: {
+  row: Extract<ChatRow, { kind: "friend_pick" }>;
+  ws: WorkspaceSnapshot;
+  avatarOf: (uid: string) => string;
+  picking: { pickId: string; uid: string | null } | null;
+  ready: boolean;
+  onPick: (pickId: string, uid: string | null) => void;
+}) {
+  const { c } = usePalette();
+  const mine = picking !== null && picking.pickId === row.pickId ? picking : null;
+  const open = row.status === "open" && mine === null && row.canPick;
+  const waiting = row.status === "open" && !row.canPick;
+  const chosen = mine?.uid ?? row.pickedUid;
+  const chosenName = row.candidates.find((x) => x.uid === chosen)?.name ?? "";
+  const line = { borderTopWidth: 1, borderTopColor: c.border } as const;
+  const foot =
+    mine !== null && mine.uid !== null ? (
+      <View style={[line, { flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 8, paddingHorizontal: 12 }]}>
+        <ActivityIndicator size="small" color={c.voice} />
+        <Text style={{ fontSize: 13, color: c.mutedForeground }}>{`正在拨给 ${chosenName}…`}</Text>
+      </View>
+    ) : row.status === "failed" ? (
+      <Text style={[line, { paddingVertical: 8, paddingHorizontal: 12, fontSize: 13, lineHeight: 18, color: c.destructive }]}>{row.message ?? ""}</Text>
+    ) : row.status === "dismissed" ? (
+      <Text style={[line, { paddingVertical: 8, paddingHorizontal: 12, fontSize: 13, color: c.mutedForeground }]}>都不是。要打给谁，直接告诉我名字。</Text>
+    ) : row.status === "expired" ? (
+      <Text style={[line, { paddingVertical: 8, paddingHorizontal: 12, fontSize: 13, color: c.mutedForeground }]}>这张卡过期了，要打再跟我说。</Text>
+    ) : waiting ? (
+      <Text style={[line, { paddingVertical: 8, paddingHorizontal: 12, fontSize: 13, color: c.mutedForeground }]}>{row.waitingFor !== null ? `等 ${row.waitingFor} 选` : "等主人选"}</Text>
+    ) : open ? (
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel="都不是"
+        disabled={!ready}
+        onPress={() => onPick(row.pickId, null)}
+        style={({ pressed }) => [line, { paddingVertical: 9, alignItems: "center" }, pressed && { opacity: 0.6 }]}
+      >
+        <Text style={{ fontSize: 14, color: c.mutedForeground }}>都不是</Text>
+      </Pressable>
+    ) : null;
+  return (
+    <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 10, paddingHorizontal: 12 }}>
+      <AgentAvatar ws={ws} agentId={row.agentId} name={row.name} />
+      <View style={{ flexShrink: 1, maxWidth: "76%", minWidth: 240, borderRadius: RADIUS, borderTopLeftRadius: 4, backgroundColor: c.bubbleAgent, overflow: "hidden" }}>
+        <Text style={{ paddingTop: 9, paddingBottom: 7, paddingHorizontal: 12, fontSize: 16, lineHeight: 24, color: c.foreground }}>{row.question}</Text>
+        {row.candidates.map((f) => {
+          const picked = chosen === f.uid && row.status !== "dismissed" && row.status !== "expired";
+          const dim = !open && !picked && !waiting; // 只读但还开着：行都是正常亮度，只是不可点
+          const rowStyle: StyleProp<ViewStyle> = [
+            line,
+            { flexDirection: "row", alignItems: "center", gap: 10, paddingVertical: 8, paddingHorizontal: 12 },
+            picked && { backgroundColor: withAlpha(c.voice, 0.2) },
+            dim && { opacity: 0.35 },
+          ];
+          // 头像描边：点中的那位圈一道 voice 色（demo 的 .picked .av）；别人也留同样大的透明边，免得整列头像错位
+          const face = (
+            <View style={{ padding: 1, borderWidth: 2, borderColor: picked ? c.voice : "transparent", borderRadius: tileRadius(36) + 3 }}>
+              <PersonTile name={f.name} url={avatarOf(f.uid)} size={36} />
+            </View>
+          );
+          const text = (
+            <View style={{ flex: 1, minWidth: 0 }}>
+              <Text numberOfLines={1} style={{ fontSize: 16, lineHeight: 22, fontWeight: "500", color: c.foreground }}>{f.name}</Text>
+              {f.why !== "" ? <Text numberOfLines={1} style={{ fontSize: 12, lineHeight: 16, color: c.mutedForeground }}>{f.why}</Text> : null}
+            </View>
+          );
+          // 只读（不是主人）：一行普通的字，不是按钮——别让客人以为点得动
+          if (!row.canPick) return <View key={f.uid} style={rowStyle}>{face}{text}</View>;
+          return (
+            <Pressable
+              key={f.uid}
+              accessibilityRole="button"
+              accessibilityLabel={f.why === "" ? `打给 ${f.name}` : `打给 ${f.name}，${f.why}`}
+              disabled={!open || !ready}
+              onPress={() => onPick(row.pickId, f.uid)}
+              style={({ pressed }) => [...rowStyle, pressed && open && { opacity: 0.7 }]}
+            >
+              {face}
+              {text}
+              {open ? <Icon name="phone" size={16} stroke={2} color={c.voice} /> : null}
+            </Pressable>
+          );
+        })}
+        {foot}
+      </View>
     </View>
   );
 }

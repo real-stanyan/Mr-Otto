@@ -24,6 +24,8 @@ function fakeSession(overrides: Partial<CloudSession> = {}): CloudSession {
     greetNewAgent: () => {},
     speechTicketFor: async () => null,
     logOutreach: () => {},
+    logFriendPick: () => {},
+    pickFriend: async () => ({ ok: true }),
     reportOutreach: () => {},
     // #1283：默认不起——绝大多数用例不关心定时任务
     runRoutine: async () => "ok" as const,
@@ -390,6 +392,46 @@ describe("createFrameHandler", () => {
     await handler.onCtlFrame("c1", encodeCs({ t: "create", workspaceId: "w1" }));
 
     expect(sent).toEqual([{ cid: "c1", msg: { t: "denied", code: "not_authorized" } }]);
+  });
+
+  it("pick_friend：转给 CloudSession.pickFriend（带发帧人的 uid），回执带 pickId（#1520）", async () => {
+    const calls: unknown[] = [];
+    const session = fakeSession({ pickFriend: async (...args) => (calls.push(args), { ok: true }) });
+    const { deps, sent } = makeDeps({ getSession: () => session });
+    const handler = createFrameHandler(deps);
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    sent.length = 0;
+    await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "pick_friend", pickId: "p1", uid: "u-hong" }));
+    expect(calls).toEqual([["p1", "u1", "u-hong"]]);
+    expect(sent).toEqual([{ cid: "c1", msg: { t: "pick_friend_result", pickId: "p1", ok: true } }]);
+  });
+
+  it("pick_friend：被拒时回 ok:false + 那句话 + log", async () => {
+    const session = fakeSession({ pickFriend: async () => ({ ok: false, message: "只有他本人能选。" }) });
+    const { deps, sent, logs } = makeDeps({ getSession: () => session });
+    const handler = createFrameHandler(deps);
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    sent.length = 0;
+    await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "pick_friend", pickId: "p1", uid: null }));
+    expect(sent).toEqual([{ cid: "c1", msg: { t: "pick_friend_result", pickId: "p1", ok: false, message: "只有他本人能选。" } }]);
+    expect(logs.join("\n")).toContain("p1");
+  });
+
+  it("pick_friend：hello 之后被移出团队 → 在籍复查拦下，回带 pickId 的 ok:false，没调到 pickFriend（#1520）", async () => {
+    let member = true;
+    const calls: unknown[] = [];
+    const session = fakeSession({ pickFriend: async (...args) => (calls.push(args), { ok: true }) });
+    const { deps, sent } = makeDeps({ getSession: () => session, isMember: async () => member });
+    const handler = createFrameHandler(deps);
+    await handler.onSessionFrame("w1", "s1", "c1", hello(CS_PROTOCOL_VERSION, "jwt:u1"));
+    sent.length = 0;
+    member = false;
+    await handler.onSessionFrame("w1", "s1", "c1", encodeCs({ t: "pick_friend", pickId: "p1", uid: "u-hong" }));
+    expect(calls).toEqual([]);
+    expect(sent[0]).toEqual({
+      cid: "c1",
+      msg: { t: "pick_friend_result", pickId: "p1", ok: false, message: expect.stringContaining("不在这个团队") },
+    });
   });
 
   it("approve：CloudSession.approve 回 ok 时回 approve_result{ok:true}（#964）", async () => {

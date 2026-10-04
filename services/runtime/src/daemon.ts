@@ -1096,7 +1096,10 @@ async function main(): Promise<void> {
       outreach:
         outreachHub === null || !approveAll
           ? null
-          : { dispatch: (o) => outreachHub.dispatch({ ...o, workspaceId, ownerUid }) },
+          : {
+              dispatch: (o) => outreachHub.dispatch({ ...o, workspaceId, ownerUid }),
+              dialPicked: (o) => outreachHub.dialPicked({ ...o, workspaceId, ownerUid }),
+            },
       // 给打给好友的那条线签语音票（#1441）：好友听到的 TTS 记在主人账上，edge 用同一把 RUNTIME_SECRET 验
       signSpeechTicket: (t) => signSpeechTicket(t, config.runtimeSecret),
       // 私密车道的上下文信封（#1461 P1，ADR-0346）：主人与朋友私聊最近一页（service key 读，RLS 不在场——

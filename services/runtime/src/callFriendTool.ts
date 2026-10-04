@@ -1,5 +1,6 @@
 // call_friend —— 派智能体给主人的好友打电话（#1441，spec §3）。只管参数与「这一轮能不能打」，
 // 解析好友、几种不打、建会话、响铃都在 outreachHub 里（注入的 dispatch）。
+// candidates（#1520）：模型拿不准时列的候选，认不准就出选人卡（outreachHub）。
 import type { Tool } from "../../../src/tools/tool.js";
 import type { ExecutionWorld } from "../../../src/world/executionWorld.js";
 import { RING_OPENING_MAX, normalizeRingOpening } from "../../../src/shared/callRing.js";
@@ -8,7 +9,7 @@ import { CALL_FRIEND_TOOL_NAME, OUTREACH_BRIEF_MAX } from "../../../src/shared/o
 export interface CallFriendDeps {
   /** 这一轮能不能打：主人本人亲口点起、不是接力、不是汇报轮。不能时回那句人话 */
   mayCall: () => string | null;
-  dispatch: (friend: string, brief: string, opening: string) => Promise<string>;
+  dispatch: (a: { friend: string; brief: string; opening: string; candidates?: string[] }) => Promise<string>;
 }
 
 export function createCallFriendTool(deps: CallFriendDeps): Tool {
@@ -32,6 +33,10 @@ export function createCallFriendTool(deps: CallFriendDeps): Tool {
           friend: { type: "string", description: "好友的名字，照用户说的写" },
           brief: { type: "string", description: "用户交代的事（500 字以内）：要问什么、要转达什么、哪些不要说。只给通话里的你看" },
           opening: { type: "string", description: "好友接起来之后你先说的那段话（200 字以内）：说清你是谁的智能体、为什么事打来。口语，别用列表和记号" },
+          candidates: {
+            type: "array", items: { type: "string" }, minItems: 2, maxItems: 4,
+            description: "拿不准用户指的是哪位好友时（比如「他」「她」指代不清）填 2–4 个可能的名字，会弹卡让用户点选；拿得准就别填",
+          },
         },
         required: ["friend", "brief", "opening"],
       },
@@ -44,9 +49,17 @@ export function createCallFriendTool(deps: CallFriendDeps): Tool {
       if ([...brief].length > OUTREACH_BRIEF_MAX) throw new Error(`call_friend: brief 超过 ${OUTREACH_BRIEF_MAX} 字了，缩短一点`);
       const opening = normalizeRingOpening(str(args, "opening"));
       if ([...opening].length > RING_OPENING_MAX) throw new Error(`call_friend: opening 超过 ${RING_OPENING_MAX} 字了，缩短一点（念出来的话宜短）`);
+      const raw = (args as Record<string, unknown> | null)?.candidates;
+      let candidates: string[] | undefined;
+      if (raw !== undefined) {
+        if (!Array.isArray(raw) || raw.length < 2 || raw.length > 4 || raw.some((x) => typeof x !== "string" || x.trim() === "")) {
+          throw new Error("call_friend: candidates 要么不填，要么是 2–4 个名字");
+        }
+        candidates = raw.map((x) => (x as string).trim());
+      }
       const no = deps.mayCall();
       if (no !== null) return no;
-      return deps.dispatch(friend, brief, opening);
+      return deps.dispatch({ friend, brief, opening, ...(candidates !== undefined ? { candidates } : {}) });
     },
   };
 }
