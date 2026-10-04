@@ -52,6 +52,7 @@ import { useFriends } from "../friends/friendsStore.js";
 import { PickAgentsDialog } from "../group/PickAgentsDialog.js";
 import { friendPeople } from "../group/people.js";
 import { refreshHomeAfterWrite, useHome } from "../home/homeStore.js";
+import { peerLaneGuestChat } from "../friends/peerLane.js";
 import { markSeen, setOpenKey } from "../inbox/seenStore.js";
 import { readTeamMentions, refreshTeams, useTeams } from "../inbox/teamsStore.js";
 import { useInbox } from "../inbox/useInbox.js";
@@ -216,7 +217,10 @@ export function ChatScreen({ route, navigation }: Props) {
   const isOutreach = target.kind === "outreach";
   const isGuestChat = target.kind === "guest" || isOutreach;
   const team = target.kind === "team" ? (teams.teams.find((t) => t.ws.id === target.workspaceId) ?? null) : null;
-  const guest = target.kind === "guest" || target.kind === "outreach" ? (teams.guests.find((g) => g.ws.id === target.workspaceId && g.session.id === target.sessionId) ?? null) : null;
+  // 朋友公开给我的车道（#1533）不在 teams.guests 里（它画在私聊页、不是一条群）：给 TA 的智能体打电话时从 peerLane 拼一份快照
+  const guest = target.kind === "guest" || target.kind === "outreach"
+    ? (teams.guests.find((g) => g.ws.id === target.workspaceId && g.session.id === target.sessionId) ?? (target.kind === "guest" ? peerLaneGuestChat(target.sessionId) : null))
+    : null;
   const baseWs: WorkspaceSnapshot | null = isTeam ? (team?.ws ?? null) : isGuestChat ? (guest?.ws ?? null) : home.home;
   const loaded = isTeam || isGuestChat ? teams.loaded : home.loaded;
 

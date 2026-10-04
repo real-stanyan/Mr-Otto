@@ -259,6 +259,7 @@ import { adminIntroText, advanceRoleWait, newAgentGreetingText, roleWaitOf, sett
 import { alertBody, muteKeyFor, type AlertPush, type NotifyKind } from "../../../src/shared/notifyPrefs.js";
 import { advanceReplyNotify, createReplyNotifyState, type ReplyNote } from "../../../src/shared/replyNotify.js";
 import { pairContextLines, pairFacingOf, samePairLines, type PairMessageRow } from "../../../src/shared/pairChat.js";
+import { pairCallSummaryText } from "../../../src/shared/publicAgent.js";
 
 /** 派活分类器读日志尾段多少条事件（#1153）。一轮 turn 十几条事件是常态，200 条
     足够捞出最近 8 句说出口的话；不读全量是因为 say() 的回执等着这一步 */
@@ -680,6 +681,8 @@ export interface CloudSession {
       点它自己）并入队——同 greetNewAgent 那条路。**这一轮里每一把刀都要主人批**（正文是朋友说的话的转述，
       不是主人的指令，见 supervisedTurn）。那只已不在名单里就什么都不起 */
   reportOutreach(r: { agentId: string; text: string; ownerUid: string }): void;
+  /** 测试用：这场通话是谁开的（#1533），null = 没在通话里。可选：假装配（smoke / frameHandler 测试）不必带 */
+  callStarter?(): string | null;
 }
 
 export type ChatUpdateOutcome =
@@ -895,7 +898,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   const tightenSupervision = (e: SessionEvent): void => {
     if (currentAgentId === null || !opts.approveAll) return;
     if (e.type === "user_message") {
-      if (e.greeting === "outreach_report") {
+      if (e.greeting === "outreach_report" || e.greeting === "pair_call_summary") {
         reportTurn = true;
         ownerSpoke = false;
       } else if (e.fromUid !== undefined && e.fromUid !== opts.ownerUid && e.fromUid !== "system") {
@@ -1745,6 +1748,21 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       **回刚落盘那条事件**（#1064）：收件箱那一行的主键要 seq，而「只 @ 了人」
       那条路走的正是这里（targets 为空，不起 turn，只落一条 chat_message） */
   /** 落一条通话名单（#1163）。`byAgentId` 在场 = 是那只 agent 用 invite_to_call 拉的 */
+  /** 这场通话是谁开的（#1533）：从空名单到非空那一帧的发帧人；挂断（回到空）时读一次就清 */
+  let callStartedBy: string | null = null;
+
+  /** 朋友给主人的公开智能体打完电话（#1533）：替主人落一条 `greeting: "pair_call_summary"` 的开场白让它总结需求——
+      同 reportOutreach 那条路（先落盘再入队；受监督）。两人都看得到那段话（车道是公开的） */
+  function queuePairCallSummary(agentId: string, agentName: string): void {
+    if (archived || pairFacts === undefined) return;
+    const text = pairCallSummaryText({ agentName, ownerName: pairFacts.ownerName, peerName: pairFacts.peerName });
+    const opening = store.append({
+      sessionId, ts: Date.now(), type: "user_message", content: text, fromUid: opts.ownerUid, mentions: [agentId], greeting: "pair_call_summary",
+    }) as UserMessageEvent;
+    notify(opening);
+    if (coordinator.enqueue({ agentId, fromUid: opts.ownerUid, opening }) === "start_turn") startDrain();
+  }
+
   function logVoiceCall(participants: VoiceCallParticipant[], byUid: string, byAgentId?: string): void {
     const logged = store.append({
       sessionId,
@@ -3136,6 +3154,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
 
     isGuest,
 
+    callStarter: () => callStartedBy,
+
     async speechTicketFor(uid) {
       const live = activeOutreach(outreachFold);
       if (!isOutreach || live === null || uid !== live.peerUid) return null;
@@ -3268,6 +3288,17 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       const same = current.length === ids.length && ids.every((id) => current.includes(id));
       const next = ids.map((id) => ({ agentId: id, name: roster.find((a) => a.agentId === id)!.name }));
       if (!same) logVoiceCall(next, byUid);
+      // 车道里朋友打给公开智能体（#1533）：记下这场通话是谁开的；朋友开的、挂了 → 让那只把朋友的需求总结给主人
+      if (current.length === 0 && next.length > 0) callStartedBy = byUid;
+      if (current.length > 0 && next.length === 0) {
+        const starter = callStartedBy;
+        callStartedBy = null;
+        if (isPair && pairFacts !== undefined && starter !== null && starter !== opts.ownerUid && isGuest(starter)) {
+          const agentId = current[0];
+          const name = roster.find((a) => a.agentId === agentId)?.name;
+          if (agentId !== undefined && name !== undefined) queuePairCallSummary(agentId, name);
+        }
+      }
       // 回电接通（#1411）：发这一帧的人把正在给他响铃的那只带进了名单——新拉进来的，或者本来就在一场没人
       // 挂断的通话里（锁屏 = 这台停听、通话还在，ADR-0320）。落在名单之后：接通那一刻它已经在通话里
       const rings = new Map<string, RingState>();

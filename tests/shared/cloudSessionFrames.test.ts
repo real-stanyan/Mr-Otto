@@ -25,7 +25,7 @@ describe("cs_say 的 mentions（#928 切片 1a）", () => {
 
 describe("cs 协议 6（#957 第三批：stop 帧与 say/approve/stop 回执）", () => {
   it("CS_PROTOCOL_VERSION === 22（…；15 = #1103 Git 凭据；16 = #1107 流式 delta 帧；17 = #1163 语音通话 call 帧；18 = #1140 wiki_write 帧；19 = #1233 say.voice；20 = #1280 聊天；21 = #1393 群里的真人；22 = #1441 外联会话与语音合成的票；23 = #1461 好友私聊里的私密车道；24 = #1491 say.media 图片视频引用）", () => {
-    expect(CS_PROTOCOL_VERSION).toBe(25);
+    expect(CS_PROTOCOL_VERSION).toBe(26);
   });
 
   it("delta 下行往返（协议 16，#1107）", () => {
@@ -435,6 +435,13 @@ describe("协议 23：好友私聊里的私密车道（#1461 P1）", () => {
     });
   });
 
+  it("create pair 收 onBehalf（协议 26，#1533）：只认 true；别的值整帧拒；缺席就没有那一格", () => {
+    const base = { kind: "pair", peerUid: PEER, facing: "both", agentIds: ["admin"] };
+    expect(decodeCsUp(create({ ...base, onBehalf: true }))).toMatchObject({ t: "create", chat: { kind: "pair", onBehalf: true } });
+    expect(decodeCsUp(create({ ...base, onBehalf: false }))).toBeNull();
+    expect(decodeCsUp(create({ ...base, onBehalf: "yes" }))).toBeNull();
+    expect((decodeCsUp(create(base)) as { chat: Record<string, unknown> }).chat).not.toHaveProperty("onBehalf");
+  });
   it("chat_update 收 facing（协议 25，#1523）：self / both；别的值整帧拒；只带 facing 也算一条有意义的帧", () => {
     const up = (facing: unknown) => encodeCs({ t: "chat_update", workspaceId: "w1", sessionId: "s1", facing } as never);
     expect(decodeCsUp(up("both"))).toEqual({ t: "chat_update", workspaceId: "w1", sessionId: "s1", facing: "both" });
