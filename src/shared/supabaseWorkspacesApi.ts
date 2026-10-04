@@ -458,6 +458,11 @@ function toEpochMs(iso: string): number {
   return Number.isNaN(ts) ? 0 : ts;
 }
 
+/** 上面那道 filter 之后 pair 不会走到这里；这一层只是让类型说同一句话（缺席 = 团队会话 / 读不到） */
+function notPair(k: "dm" | "group" | "outreach" | "pair" | undefined): "dm" | "group" | "outreach" | null {
+  return k === undefined || k === "pair" ? null : k;
+}
+
 /** 这个团队里的云会话清单，成员在籍即可见（RLS wss_select_member，同
     kind='package' 那一半）。runtime 用 service key 写 kind='cloud' 行
     （daemon.ts 的 sessions.create），这里只读 */
@@ -478,7 +483,8 @@ export async function listCloudSessions(
   // 群里的客人（#1393）只有群聊会有：一条群聊都没有时不打这一趟
   const groupIds = rows.filter((r) => chats.get(r.id)?.chatKind === "group").map((r) => r.id);
   const guests = await fetchSessionGuests(client, groupIds);
-  return rows.map((r) => {
+  // 私密车道（#1461）不进任何清单：它画在和那位朋友的私聊页里，不是一条可以单独点进去的聊天
+  return rows.filter((r) => chats.get(r.id)?.chatKind !== "pair").map((r) => {
     const humans = guests.get(r.id);
     return {
       id: r.id,
@@ -487,7 +493,7 @@ export async function listCloudSessions(
       archived: r.archived,
       updatedTs: toEpochMs(r.updated_at),
       participantUids: participants.get(r.id) ?? [],
-      chatKind: chats.get(r.id)?.chatKind ?? null,
+      chatKind: notPair(chats.get(r.id)?.chatKind),
       agentIds: chats.get(r.id)?.agentIds ?? [],
       ...(humans !== undefined ? { humans } : {}),
     };
@@ -582,7 +588,7 @@ export async function listAgentChats(
   const groups: { sessionId: string; agentIds: string[] }[] = [];
   for (const r of rows) {
     if (r.chat_kind === "dm") dmSessionId = r.id;
-    else if (r.chat_kind === "group") {
+    else if (r.chat_kind === "group" || r.chat_kind === "pair") { // 私密车道（#1461）也得摘：在场提示数的是名单那一列
       // 这一列读不出数组时按空名单算：差集之后还是空，于是那个群被摘成空群。
       // 比跳过它好——跳过会留下一个名单里挂着不存在智能体的群
       const ids = Array.isArray(r.agent_ids) ? r.agent_ids.filter((x): x is string => typeof x === "string") : [];
@@ -599,18 +605,19 @@ export async function listAgentChats(
 async function fetchCloudChats(
   client: SupabaseClient,
   workspaceId: string,
-): Promise<Map<string, { chatKind: "dm" | "group" | "outreach"; agentIds: string[] }>> {
+): Promise<Map<string, { chatKind: "dm" | "group" | "outreach" | "pair"; agentIds: string[] }>> {
   const res = await client
     .from("workspace_sessions")
     .select("id,chat_kind,agent_ids")
     .eq("workspace_id", workspaceId)
     .eq("kind", "cloud");
-  const map = new Map<string, { chatKind: "dm" | "group" | "outreach"; agentIds: string[] }>();
+  const map = new Map<string, { chatKind: "dm" | "group" | "outreach" | "pair"; agentIds: string[] }>();
   if (res.error) return map;
   const rows = (res.data ?? []) as { id: string; chat_kind: unknown; agent_ids: unknown }[];
   for (const r of rows) {
     // outreach（#1441）也要读出来：不读的话它落成 null = 团队会话，主人的列表会把它当成一条团队会话列出来
-    if (r.chat_kind !== "dm" && r.chat_kind !== "group" && r.chat_kind !== "outreach") continue;
+    // pair（#1461）同理：私密车道属于那位朋友的私聊页，不认出来它就会以团队会话的样子混进列表
+    if (r.chat_kind !== "dm" && r.chat_kind !== "group" && r.chat_kind !== "outreach" && r.chat_kind !== "pair") continue;
     const ids = Array.isArray(r.agent_ids) && r.agent_ids.every((x) => typeof x === "string") ? (r.agent_ids as string[]) : [];
     map.set(r.id, { chatKind: r.chat_kind, agentIds: ids });
   }
@@ -734,4 +741,36 @@ export async function markMentionsRead(
     .eq("session_id", sessionId)
     .is("read_at", null);
   if (error) throw new Error(error.message);
+}
+
+/** 和这位朋友的那条私密车道（#1461 P1，ADR-0343）：我主场里 chat_kind = pair、facing = self 的那一行，没有回 null。
+    **查询出错往上抛**，不兜底成 null：手机上「没有」画的是「带上我的智能体」，把「读不到」说成「没有」
+    人会再带一次——runtime 那侧幂等，不会建出第二条，但这一屏会把一条其实在跑的车道藏起来 */
+export async function findPairLane(
+  client: SupabaseClient,
+  homeId: string,
+  peerUid: string,
+): Promise<{ sessionId: string; agentIds: string[] } | null> {
+  const { data, error } = await client
+    .from("workspace_sessions")
+    .select("id,agent_ids")
+    .eq("workspace_id", homeId)
+    .eq("chat_kind", "pair")
+    .eq("peer_uid", peerUid)
+    .eq("facing", "self")
+    .maybeSingle();
+  if (error) throw new Error(error.message);
+  if (data === null || data === undefined) return null;
+  const row = data as { id: string; agent_ids?: unknown };
+  const agentIds = Array.isArray(row.agent_ids) ? row.agent_ids.filter((x): x is string => typeof x === "string") : [];
+  return { sessionId: row.id, agentIds };
+}
+
+/** 朋友那一侧的在场提示（#1461 P1）：`owner` 在和我的私聊里带了几只私人智能体。只有一个数（0053 的 pair_presence，
+    security definer：我对那条车道没有读路径，只拿得到计数）。读不到（0053 没跑 / 抖了 / 形状不对）回 null——
+    界面上同「没有」一个画法（不画），但不拿 0 冒充一个查到的事实 */
+export async function fetchPairPresence(client: SupabaseClient, owner: string): Promise<number | null> {
+  const { data, error } = await client.rpc("pair_presence", { p_owner: owner });
+  if (error) return null;
+  return typeof data === "number" && Number.isInteger(data) && data >= 0 ? data : null;
 }
