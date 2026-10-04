@@ -9,10 +9,15 @@
 // visible=false 送不到这里，退场那 140ms 永远跑不到。按钮先让 visible 变 false，onExited 里再卸。
 // 键盘弹起时居中的是键盘上面那块：Modal 里的 KeyboardAvoidingView 量的是整屏坐标，
 // 没有 ui.tsx 里 useKeyboardInset 说的那个「相对父级」的坑。
+// 卡**限高到键盘上面那块**、超出的在卡里滚（#1456）：KAV 只把可用区缩到键盘上方，不管卡多高。
+// 「新建智能体」那张（说明 + 72 的脸 + 输入框 + 十张脸的墙）比中文键盘上方剩下的还高，居中排版
+// 让它上下一起溢出，上半截连标题带说明被推出屏幕顶——真机上看就是「整个弹窗被顶飞」。
+// 可用高度量里面那一层的 onLayout（不自己算键盘高度：那是 KAV 已经做对的事，算第二遍就有两份判据）。
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import {
-  Animated, Easing, KeyboardAvoidingView, Modal, Platform, Pressable, StyleSheet, Text, View, useWindowDimensions,
+  Animated, Easing, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, Text, View, useWindowDimensions,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { spring, type as t, usePalette } from "./theme.js";
 import { Button, useReduceMotion } from "./ui.js";
 
@@ -20,6 +25,8 @@ const WIDTH = 320;
 /** 宽一档（demo 的 .dlg.wide：min(348, 屏宽 − 40)）：两行并列、左边带图的选择卡用 */
 const WIDE_WIDTH = 348;
 const RADIUS = 22;
+/** 卡与可用区上下边之间至少留这么多（键盘起着时贴着键盘顶也不好看） */
+const EDGE = 12;
 
 export function Dialog({ visible, onExited, dismissible = false, onDismiss, wide = false, children }: {
   visible: boolean;
@@ -35,6 +42,9 @@ export function Dialog({ visible, onExited, dismissible = false, onDismiss, wide
   const { c } = usePalette();
   const reduce = useReduceMotion();
   const { width } = useWindowDimensions();
+  const insets = useSafeAreaInsets();
+  /** 键盘上方（或整屏）扣掉安全区与边距之后，卡最多能有多高。还没量到时不限 */
+  const [room, setRoom] = useState<number | null>(null);
   const [mounted, setMounted] = useState(visible);
   /** 0 = 收着，1 = 摊开。暗幕的透明度、卡的透明度与缩放都挂在它上面 */
   const k = useRef(new Animated.Value(0)).current;
@@ -80,25 +90,41 @@ export function Dialog({ visible, onExited, dismissible = false, onDismiss, wide
       <KeyboardAvoidingView
         pointerEvents={visible ? "auto" : "none"}
         behavior={Platform.OS === "ios" ? "padding" : undefined}
-        style={{ flex: 1, alignItems: "center", justifyContent: "center" }}
+        style={{ flex: 1 }}
       >
-        {dismissible ? (
-          // 暗幕那一层接不了手指（上面那层是 pointerEvents="none" 的动画层）：点外面退出挂在这里，
-          // 排在卡的前面——卡是后画的兄弟，点在卡上落不到这一层
-          <Pressable style={StyleSheet.absoluteFill} onPress={dismiss} accessibilityRole="button" accessibilityLabel="关闭" />
-        ) : null}
-        <Animated.View
-          accessibilityViewIsModal
-          style={{
-            width: wide ? Math.min(WIDE_WIDTH, width - 40) : Math.min(WIDTH, width - 48),
-            borderRadius: RADIUS, backgroundColor: c.card,
-            borderWidth: StyleSheet.hairlineWidth, borderColor: c.border, paddingTop: 24, paddingBottom: 20,
-            shadowColor: "#000", shadowOpacity: 0.55, shadowRadius: 25, shadowOffset: { width: 0, height: 25 },
-            opacity: k, transform: [{ scale }],
-          }}
+        <View
+          style={{ flex: 1, alignItems: "center", justifyContent: "center", paddingTop: insets.top + EDGE, paddingBottom: EDGE }}
+          onLayout={(e) => setRoom(Math.max(0, e.nativeEvent.layout.height - insets.top - EDGE * 2))}
         >
-          {children}
-        </Animated.View>
+          {dismissible ? (
+            // 暗幕那一层接不了手指（上面那层是 pointerEvents="none" 的动画层）：点外面退出挂在这里，
+            // 排在卡的前面——卡是后画的兄弟，点在卡上落不到这一层
+            <Pressable style={StyleSheet.absoluteFill} onPress={dismiss} accessibilityRole="button" accessibilityLabel="关闭" />
+          ) : null}
+          <Animated.View
+            accessibilityViewIsModal
+            style={{
+              width: wide ? Math.min(WIDE_WIDTH, width - 40) : Math.min(WIDTH, width - 48),
+              borderRadius: RADIUS, backgroundColor: c.card,
+              borderWidth: StyleSheet.hairlineWidth, borderColor: c.border,
+              ...(room === null ? {} : { maxHeight: room }),
+              shadowColor: "#000", shadowOpacity: 0.55, shadowRadius: 25, shadowOffset: { width: 0, height: 25 },
+              opacity: k, transform: [{ scale }],
+            }}
+          >
+            {/* 放得下时它就是一层透明的壳（不弹、不画滚动条）；放不下才滚。圆角靠里面这层自己裁：
+                卡上不能 overflow:hidden，那会把卡的阴影一起裁掉 */}
+            <ScrollView
+              style={{ flexGrow: 0, flexShrink: 1, borderRadius: RADIUS }}
+              contentContainerStyle={{ paddingTop: 24, paddingBottom: 20 }}
+              keyboardShouldPersistTaps="handled"
+              alwaysBounceVertical={false}
+              showsVerticalScrollIndicator={false}
+            >
+              {children}
+            </ScrollView>
+          </Animated.View>
+        </View>
       </KeyboardAvoidingView>
     </Modal>
   );
