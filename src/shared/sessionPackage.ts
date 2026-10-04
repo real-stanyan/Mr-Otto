@@ -165,7 +165,8 @@ export const PRIVACY_VERDICTS: Record<SessionEvent["type"], PrivacyVerdict> = {
   task_progress: "strip",
   task_needs_owner: "strip",
   task_done: "strip",
-  task_failed: "strip", // 定时任务的标题是主人私事，不是这段对话（#1283）
+  task_failed: "strip",
+  task_collab: "strip", // 定时任务的标题是主人私事，不是这段对话（#1283）
   // 残留审计三兄弟（#780 M3）：说的全是发送方那台机器此刻在跑什么，见上面那段注释
   residue_baseline: "strip",
   residue_detected: "strip",

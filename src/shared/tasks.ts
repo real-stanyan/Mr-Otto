@@ -23,6 +23,8 @@ export interface TaskRow {
   createdByAgent: string;
   createdTs: number;
   updatedTs: number;
+  /** 邀请了谁家的管理员协作（#1578）：只在日志折出来的那份里有，投影表没有这一列（状态行用不上） */
+  collaborator?: { uid: string; name: string };
 }
 
 export const TASK_TITLE_MAX = 80;
@@ -96,6 +98,10 @@ export function foldTask(fold: Map<string, TaskRow>, e: SessionEvent, workspaceI
       t.summary = e.reason;
       t.question = null;
       return;
+    case "task_collab":
+      // 不动状态：协作是「多了一个人在帮」，不是进度
+      t.collaborator = { uid: e.withUid, name: e.withName };
+      return;
   }
 }
 
@@ -158,5 +164,6 @@ export function taskEventText(e: TaskEvent, nameOf: (agentId: string) => string,
     case "task_needs_owner": return `「${title}」等你拍板：${e.question}`;
     case "task_done": return `「${title}」完成：${e.summary}`;
     case "task_failed": return `「${title}」没办成：${e.reason}`;
+    case "task_collab": return `「${title}」邀请了${e.withName}的管理员协作`;
   }
 }

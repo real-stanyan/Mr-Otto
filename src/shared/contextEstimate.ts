@@ -199,6 +199,7 @@ function pendingAfter(
       case "task_needs_owner":
       case "task_done":
       case "task_failed":
+      case "task_collab":
         // 回电（#1411）：云会话专属、模型不可见，不占上下文
         break;
       case "executor_changed":

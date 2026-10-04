@@ -194,6 +194,9 @@ import { createRoutineTools } from "./routineTools.js";
 import type { RoutineStore } from "./routineStore.js";
 import { ROUTINE_MAX_ROUNDS, routineOpeningText } from "../../../src/shared/routines.js";
 import { createMessageFriendAgentTool } from "./messageFriendAgentTool.js";
+import { createCollabTool } from "./collabTool.js";
+import { collabAuthPrompt } from "../../../src/shared/collab.js";
+import type { FriendTier } from "../../../src/shared/friendTier.js";
 import { MESSAGE_FRIEND_AGENT_TOOL_NAME } from "../../../src/shared/laneBridge.js";
 import type { DeltaKind, ModelAdapter } from "../../../src/model/adapter.js";
 import { createDeltaStream } from "./deltaStream.js";
@@ -534,6 +537,9 @@ export interface CloudSessionOpts {
   laneBridge?: {
     send(o: { ownerUid: string; peerUid: string; fromAgentId: string; fromAgentName: string; text: string; wanted: string | undefined; depth: number }): Promise<string>;
   } | null;
+  /** 主人给这位朋友的好友档位（两边取小，#1578）：管理员在公开车道里对对方能说多少、做多少，按它写进 brief。
+      null = 查不到（按最严的「仅聊天」写）。可选：团队会话 / 没接的装配不带 */
+  peerTier?: (peerUid: string) => Promise<FriendTier | null>;
   /** message_friend（#1549）：派智能体给主人的好友发一条私聊——解析好友 / 档位 / 落库都在 daemon 的 outreachHub.message。
       可选（同 laneBridge 的理由：几十份夹具不该为一把只在主场亮的刀都改一遍）：缺席 / null = 刀不挂。daemon 是唯一的真装配者，它总会给 */
   friendMessage?: {
@@ -1680,6 +1686,24 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
                 fromAgentName: specNames.get(spec.agentId) ?? spec.name, text, wanted: agent, depth: currentOpeningDepth,
               }),
           });
+    // 跨主场协作（#1578）：管理员把任务交给对方的管理员——落 task_collab + 走同一条桥
+    const collabTool =
+      laneBridge === null || !isPair || pairFacts === undefined
+        ? null
+        : createCollabTool({
+            peer: () => ({ uid: pairFacts.peerUid, name: pairFacts.peerName }),
+            ownerName: () => pairFacts.ownerName,
+            tasks: () => taskFold,
+            record: (taskId, withUid, withName) => {
+              if (archived) return;
+              notify(store.append({ sessionId, ts: Date.now(), type: "task_collab", taskId, withUid, withName, byAgentId: spec.agentId, ignorable: true }));
+            },
+            send: (text) =>
+              laneBridge.send({
+                ownerUid: opts.ownerUid, peerUid: pairFacts.peerUid, fromAgentId: spec.agentId,
+                fromAgentName: specNames.get(spec.agentId) ?? spec.name, text, wanted: undefined, depth: currentOpeningDepth,
+              }),
+          });
     const engine = new LoopEngine({
       store: agentView(store, spec.agentId),
       adapter,
@@ -1716,6 +1740,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
           ...(messageFriendTool !== null && adminOnly && !supervisedTurn() ? [messageFriendTool] : []),
           // 对面公开的智能体（#1542）：只在这条车道此刻是公开的（朋友在客人名单里）才亮
           ...(bridgeTool !== null && adminOnly && pairFacingOf(chatHumans, pairFacts!.peerUid) === "both" ? [bridgeTool] : []),
+          ...(collabTool !== null && adminOnly && pairFacingOf(chatHumans, pairFacts!.peerUid) === "both" ? [collabTool] : []),
           ...(isAdmin ? [createAgentTool] : []),
           // 管理员拉人 / 请人（#1571 第二轮第 3 条）：主场里才有，外联 / 团队会话没有这回事
           ...(isAdmin && opts.approveAll ? [rosterTools.bring, rosterTools.dismiss] : []),
@@ -1858,7 +1883,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       两个判据缺一不可：只判"有没有"的话，用户改完提示词要重开会话才生效；
       每 turn 都落一条的话，日志里堆满同一段文字，而且模型每轮都被重新
       自我介绍一遍 */
-  function briefIfNeeded(spec: AgentSpec, roster: AgentSpec[]): void {
+  async function briefIfNeeded(spec: AgentSpec, roster: AgentSpec[]): Promise<void> {
     const otherRoster = roster.filter((r) => r.agentId !== spec.agentId);
 
     // 这条 brief 此时有没有内容可说——不是"没提示词就跳过"的特例优化，是
@@ -1881,7 +1906,12 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // 通用规则——冒烟变绿只是这条规则生效的必然副产品
     // 分级那一段（#1571，ADR-0367）只在主场加：管理员怎么派、专员只做本域、子工只听上级。进 brief 而不是现拼：
     // 模型看见的就是日志里那一句（model-visible means logged）；名单变了（新雇了人）这一句也变，会重新 brief
-    const instructions = opts.approveAll ? spec.instructions + tierPrompt({ agent: spec, ownerName: "主人", roster }) : spec.instructions;
+    let instructions = opts.approveAll ? spec.instructions + tierPrompt({ agent: spec, ownerName: "主人", roster }) : spec.instructions;
+    // 公开车道里对对方的授权（#1578，ADR-0368）：按好友档位写一段，进 brief（档位改了下一次 brief 跟着变）
+    if (isPair && pairFacts !== undefined && opts.peerTier !== undefined && pairFacingOf(chatHumans, pairFacts.peerUid) === "both") {
+      const tier = (await opts.peerTier(pairFacts.peerUid).catch(() => null)) ?? "chat";
+      instructions += collabAuthPrompt(tier, pairFacts.peerName);
+    }
     if (instructions.trim() === "" && otherRoster.length === 0) return;
 
     // **裸 store，不是 agentView 包过的那份**。理由不是"包过的会回空数组"——
@@ -2654,7 +2684,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         return;
       }
 
-      briefIfNeeded(spec, roster);
+      await briefIfNeeded(spec, roster);
       specNames.set(spec.agentId, spec.name);
       await loadWikiIfChanged(spec);
       await loadPairContextIfChanged();

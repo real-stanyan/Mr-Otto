@@ -263,6 +263,9 @@ describe("私密车道（#1461 P1）", () => {
       const tool = env.tools.find((t) => t.name === "message_friend_agent");
       expect(tool).toBeDefined();
       expect(env.system).toContain("message_friend_agent");
+      // 跨主场协作（#1578）：同一条件下 invite_collaborator 也挂着（只有 L0 有，HELPER 标的是 L0；提示词那段按 agentId 认
+      // 管理员，HELPER 不是 admin 所以这里不验 system）
+      expect(env.tools.find((t) => t.name === "invite_collaborator")).toBeDefined();
       store.close();
     });
     it("私密车道（没有朋友在名单里）不挂 message_friend_agent；没接 laneBridge 也不挂", async () => {

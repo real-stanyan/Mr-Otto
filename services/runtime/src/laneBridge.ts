@@ -5,6 +5,7 @@
 // → ③ 对面有没有公开给 A 的车道、A 在不在它的客人名单里 → ④ 对面车道里点谁。全过了才以 **A（对面车道的客人）** 的身份
 // `say` 一句进去，带 `relay: { fromAgentId, depth + 1 }`——对面那一轮是客人点起的（每一刀要 B 批），且是接力棒（连接器要点火者批）。
 import { DEFAULT_RELAY_MAX_DEPTH } from "../../../src/shared/agentRelay.js";
+import { ADMIN_AGENT_ID } from "../../../src/shared/workspaceAgents.js";
 import {
   bridgeSentText, bridgeSpeakerLabel, bridgeWindowAllows, pruneBridgeWindow, resolveBridgeTarget, BRIDGE_PER_HOUR_MAX,
 } from "../../../src/shared/laneBridge.js";
@@ -65,7 +66,10 @@ export function createLaneBridge(d: LaneBridgeDeps): LaneBridge {
       if (!target.isGuest(o.ownerUid)) return `${peerName} 那条车道没有把你的主人加进去（可能刚收成了仅 TA 可见），发不过去。`;
       // ④ 点谁
       const roster = await target.roster();
-      const who = resolveBridgeTarget(roster, o.wanted);
+      // 跨主场只有 L0 ↔ L0（#1578，ADR-0368）：对面车道里有管理员就一律交给它，点名别的只也改到管理员；
+      // 老车道（名单里还没有管理员）照旧按名字找
+      const admin = roster.find((a) => a.agentId === ADMIN_AGENT_ID);
+      const who = admin !== undefined ? ({ kind: "one", agentId: admin.agentId, name: admin.name } as const) : resolveBridgeTarget(roster, o.wanted);
       if (who.kind === "none") {
         return who.names.length === 0
           ? `${peerName} 的车道里此刻没有智能体，发不过去。`

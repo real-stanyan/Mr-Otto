@@ -73,3 +73,15 @@ describe("四道闸", () => {
     expect(r.logs.some((l) => l.includes("落话"))).toBe(true);
   });
 });
+
+describe("跨主场只有 L0 ↔ L0（#1578）", () => {
+  it("对面名单里有管理员：不管点谁都交给管理员；没有管理员的老车道照旧按名字找", async () => {
+    const withAdmin = rig({}, { roster: async () => [{ agentId: "admin", name: "管理员" }, { agentId: "a_0000000000b1", name: "Otto 开发" }] });
+    expect(await withAdmin.bridge.send({ ...SEND, wanted: "Otto 开发" })).toContain("管理员");
+    expect((withAdmin.says[0] as unknown[])[3]).toEqual(["admin"]);
+    const old = rig();
+    await old.bridge.send(SEND);
+    expect((old.says[0] as unknown[])[3]).toEqual(["a_0000000000b1"]);
+  });
+});
+

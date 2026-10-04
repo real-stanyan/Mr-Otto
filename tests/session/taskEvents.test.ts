@@ -7,12 +7,12 @@ import { hiddenFromCloudTimeline } from "../../src/shared/cloudTimeline.js";
 import { shouldPersist } from "../../src/session/persistencePolicy.js";
 import { deriveMessages } from "../../src/session/deriveMessages.js";
 
-const TYPES = ["task_created", "task_assigned", "task_progress", "task_needs_owner", "task_done", "task_failed"] as const;
+const TYPES = ["task_created", "task_assigned", "task_progress", "task_needs_owner", "task_done", "task_failed", "task_collab"] as const;
 const created: TaskCreatedEvent = { sessionId: "s", seq: 2, ts: 2, type: "task_created", taskId: "t_1", byAgentId: "admin", title: "明天出游", ignorable: true };
 const assigned: TaskAssignedEvent = { sessionId: "s", seq: 3, ts: 3, type: "task_assigned", taskId: "t_1", byAgentId: "admin", toAgentId: "a_travel", ignorable: true };
 
 describe("任务事件的登记", () => {
-  it("六种都是已知类型、落盘、分享包里剥掉、要握笔、桌面时间线不画", () => {
+  it("七种都是已知类型、落盘、分享包里剥掉、要握笔、桌面时间线不画", () => {
     for (const t of TYPES) {
       expect(KNOWN_EVENT_TYPES.has(t)).toBe(true);
       expect(PRIVACY_VERDICTS[t]).toBe("strip");
