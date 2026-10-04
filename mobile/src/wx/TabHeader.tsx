@@ -7,7 +7,7 @@ import { usePalette } from "../theme.js";
 
 export const TAB_HEADER_HEIGHT = 44;
 
-export function TabHeader({ title, right }: { title: string; right?: ReactNode }) {
+export function TabHeader({ title, left, right }: { title: string; left?: ReactNode; right?: ReactNode }) {
   const { c } = usePalette();
   const insets = useSafeAreaInsets();
   return (
@@ -16,6 +16,7 @@ export function TabHeader({ title, right }: { title: string; right?: ReactNode }
         <Text accessibilityRole="header" numberOfLines={1} style={{ fontSize: 17, fontWeight: "600", letterSpacing: -0.2, color: c.foreground, maxWidth: "60%" }}>
           {title}
         </Text>
+        {left !== undefined ? <View style={{ position: "absolute", left: 6, top: 0, bottom: 0, justifyContent: "center" }}>{left}</View> : null}
         {right !== undefined ? <View style={{ position: "absolute", right: 6, top: 0, bottom: 0, justifyContent: "center" }}>{right}</View> : null}
       </View>
     </View>
