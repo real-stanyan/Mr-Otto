@@ -26,6 +26,8 @@ import { useLaunchUpdate } from "./src/updates/launchUpdate.js";
 import "./src/push/pushRegistration.js";
 import "./src/push/messagePush.js";
 import "./src/call/callKit.js";
+// 聊天列表的本机快照（#1471）：越早读越好，开屏还没走完列表就已经铺上
+import "./src/inbox/inboxCache.js";
 
 // 外观偏好冷启动时读一次（A5）：读回来之前那几帧跟随系统——冷启动有 Splash 挡着，看不见那一下切换
 void loadThemePref();
