@@ -1244,7 +1244,14 @@ async function main(): Promise<void> {
             },
             workspaceId,
             dmAgent.agentId,
-            () => session.greetNewAgent(dmAgent.agentId, dmAgent.name, byUid),
+            () => {
+              session.greetNewAgent(dmAgent.agentId, dmAgent.name, byUid);
+              // 主场管理员的自我介绍（#1465，ADR-0341）：它没有「第一句回话写成职责」那一步，开过口就把那一格清回
+              // null（settleRole 带 null = 只清不写）
+              if (home && dmAgent.agentId === ADMIN_AGENT_ID) {
+                void agentWriter.settleRole(workspaceId, ADMIN_AGENT_ID, null).catch((e: unknown) => console.warn(`[otto-runtime] 清管理员 onboarding 失败：${e instanceof Error ? e.message : String(e)}`));
+              }
+            },
           );
         }
         return { sessionId };

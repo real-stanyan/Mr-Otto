@@ -5,6 +5,9 @@
 // 的 code 在不同版本里挂的位置不一样（#1213 的 23505 那次就踩过），而这里有一个比错误码
 // 更硬的判据：回头重查。查得到就是抢输了（对用户来说什么都没发生），查不到才是真失败，
 // 原错误优先。
+//
+// `created` = 这一次真是新建的（#1465，ADR-0341）：调用方据此替新用户开好和管理员的私聊，管理员先自我介绍、
+// 引导建第一只（0051 让新主场的管理员带着 onboarding = 'greet'）。
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { HOME_WORKSPACE_NAME } from "./workspaces.js";
@@ -18,14 +21,15 @@ export async function ensureHomeWorkspace(
   deps: HomeWorkspaceDeps,
   client: SupabaseClient,
   uid: string
-): Promise<{ id: string }> {
+): Promise<{ id: string; created: boolean }> {
   const found = await deps.findHomeWorkspace(client, uid);
-  if (found !== null) return { id: found };
+  if (found !== null) return { id: found, created: false };
   try {
-    return { id: (await deps.createWorkspace(client, HOME_WORKSPACE_NAME, uid, "home")).id };
+    return { id: (await deps.createWorkspace(client, HOME_WORKSPACE_NAME, uid, "home")).id, created: true };
   } catch (err) {
+    // 抢输了：另一台设备刚建好，管理员的自我介绍由那一台去开（#1465）
     const raced = await deps.findHomeWorkspace(client, uid).catch(() => null);
-    if (raced !== null) return { id: raced };
+    if (raced !== null) return { id: raced, created: false };
     throw err;
   }
 }

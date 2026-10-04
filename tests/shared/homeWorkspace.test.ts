@@ -18,13 +18,13 @@ function deps(o: Partial<HomeWorkspaceDeps>): HomeWorkspaceDeps {
 describe("ensureHomeWorkspace", () => {
   it("已经有主场：直接用，不建", async () => {
     const d = deps({ findHomeWorkspace: vi.fn(async () => "home-1") });
-    expect(await ensureHomeWorkspace(d, client, "u1")).toEqual({ id: "home-1" });
+    expect(await ensureHomeWorkspace(d, client, "u1")).toEqual({ id: "home-1", created: false });
     expect(d.createWorkspace).not.toHaveBeenCalled();
   });
 
   it("没有：用 HOME_WORKSPACE_NAME 建一个 home", async () => {
     const d = deps({});
-    expect(await ensureHomeWorkspace(d, client, "u1")).toEqual({ id: "made" });
+    expect(await ensureHomeWorkspace(d, client, "u1")).toEqual({ id: "made", created: true });
     expect(d.createWorkspace).toHaveBeenCalledWith(client, HOME_WORKSPACE_NAME, "u1", "home");
   });
 
@@ -33,7 +33,7 @@ describe("ensureHomeWorkspace", () => {
       .mockResolvedValueOnce(null)
       .mockResolvedValueOnce("home-raced");
     const d = deps({ findHomeWorkspace: find, createWorkspace: vi.fn(async () => { throw new Error("23505"); }) });
-    expect(await ensureHomeWorkspace(d, client, "u1")).toEqual({ id: "home-raced" });
+    expect(await ensureHomeWorkspace(d, client, "u1")).toEqual({ id: "home-raced", created: false });
   });
 
   it("建失败且重查也没有：抛原来那个错", async () => {

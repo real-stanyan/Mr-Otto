@@ -100,8 +100,10 @@ export interface UserMessageEvent extends SessionEventBase {
       同样只是记号，同样不画；这一格加取值**不进协议位**——事件在线上只浅校验 base 四格，
       旧客户端照收，时间线按「`greeting` 在场就不画」一样藏起它。
       `"callback"`（#1411）：智能体打给这个人的电话接通了，runtime 替接听的人落的「把你打电话要说的事
-      说清楚」开场白（`mentions` 是打电话的那只，`fromUid` 是接的人）。同样只是记号、同样不画、同样不进协议位 */
-  greeting?: "voice_call" | "new_agent" | "callback" | "outreach" | "outreach_report";
+      说清楚」开场白（`mentions` 是打电话的那只，`fromUid` 是接的人）。同样只是记号、同样不画、同样不进协议位。
+      `"admin_intro"`（#1465，ADR-0341）：新用户的管理员第一次开口——自我介绍、引导建第一只专属智能体。
+      与 `new_agent` 分开：管理员职责固定，不走「第一句回话写成职责」那一步。同样只是记号、同样不画 */
+  greeting?: "voice_call" | "new_agent" | "callback" | "outreach" | "outreach_report" | "admin_intro";
   /** 这句话是**在语音通话里说出来的**（#1233）。缺席 = 打字打的 / 旧日志。
       **只是记号**：起 turn、排队、护栏、接力链首、派活全都不看它，模型投影
       （deriveMessages）读都不读——对模型来说这就是一条普通的用户消息，和从前

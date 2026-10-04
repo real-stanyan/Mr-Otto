@@ -250,7 +250,7 @@ import { LAST_THROTTLE_MS, lastOf } from "../../../src/shared/sessionLast.js";
 import { createLastWriter } from "./lastWriter.js";
 import { ACTIVITY_BEAT_MS, ACTIVITY_THROTTLE_MS, activityFoldOf, activityOf, foldActivity, knownAgents } from "../../../src/shared/agentActivity.js";
 import { createActivityWriter } from "./activityWriter.js";
-import { advanceRoleWait, newAgentGreetingText, roleWaitOf, settledRole, type RoleWait } from "../../../src/shared/agentOnboarding.js";
+import { adminIntroText, advanceRoleWait, newAgentGreetingText, roleWaitOf, settledRole, type RoleWait } from "../../../src/shared/agentOnboarding.js";
 import { alertBody, muteKeyFor, type AlertPush, type NotifyKind } from "../../../src/shared/notifyPrefs.js";
 import { advanceReplyNotify, createReplyNotifyState, type ReplyNote } from "../../../src/shared/replyNotify.js";
 import { pairContextLines, samePairLines, type PairMessageRow } from "../../../src/shared/pairChat.js";
@@ -3095,14 +3095,17 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     greetNewAgent(agentId, name, byUid) {
       // 外联会话（#1441）：这条线只在打电话期间收话，任何人都不能往里塞一条开场白起 turn
       if (archived || isOutreach) return;
+      // 主场的管理员（#1465，ADR-0341）：新用户第一次见它——自我介绍、引导建第一只。职责固定，所以是
+      // admin_intro 不是 new_agent（advanceRoleWait 只认后者，不会把人的回话写成管理员的职责）
+      const adminIntro = agentId === ADMIN_AGENT_ID && opts.approveAll;
       const opening = store.append({
         sessionId,
         ts: Date.now(),
         type: "user_message",
-        content: newAgentGreetingText(name),
+        content: adminIntro ? adminIntroText() : newAgentGreetingText(name),
         fromUid: byUid,
         mentions: [agentId],
-        greeting: "new_agent",
+        greeting: adminIntro ? "admin_intro" : "new_agent",
       }) as UserMessageEvent; // append 回的是 union；这一条我们刚亲手写的就是 user_message
       notify(opening);
       // 同 say()：只有此刻没在排空时才起一条
