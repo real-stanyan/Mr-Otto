@@ -24,6 +24,7 @@ import { ensureHome, refreshHome, refreshHomeAfterWrite, useHome } from "../home
 import { useSeenStore } from "../inbox/seenStore.js";
 import { refreshTeams, useTeams } from "../inbox/teamsStore.js";
 import { useInbox } from "../inbox/useInbox.js";
+import { syncDeviceTimezone } from "../me/profileStore.js";
 import { space, usePalette } from "../theme.js";
 import { Button, Note, Spinner, useNow } from "../ui.js";
 import { Icon } from "../wx/Icon.js";
@@ -35,6 +36,8 @@ import { ChatListRow, CHAT_ROW_SEP } from "./ChatListRow.js";
 export function refreshAll(): void {
   void refreshHome().then(() => refreshTeams());
   void refreshFriends();
+  // 进页与回前台都走这里：设备时区变了才写（runtime 建定时任务时 tz 省略就用账号上的）
+  void syncDeviceTimezone();
 }
 
 /** 没有主场时，列表顶上那一张（demo 的 .mgate）。只说实话：给得出去处才给钮 */

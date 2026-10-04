@@ -15,6 +15,14 @@ export interface ApnsSettings {
   bundleId: string;
 }
 
+/** TURN 兜底（#1534）：两个 TURN_* 全有才有这一份（同 APNS 的「要么全有要么全无」） */
+export interface TurnConfig {
+  /** turn:host:3478?transport=udp 这类，逗号分开 */
+  urls: string[];
+  /** 与 coturn 的 static-auth-secret 同一个值（deploy/coturn/turnserver.conf.example） */
+  secret: string;
+}
+
 export interface RuntimeConfig {
   runtimeSecret: string;
   supabaseJwtSecret: string;
@@ -26,6 +34,8 @@ export interface RuntimeConfig {
   dataDir: string;
   /** 回电的推送（#1411）。null = 推送关着：call_user 那把刀不出现（不能让模型许诺一通打不出去的电话） */
   apns: ApnsSettings | null;
+  /** 人打人电话的 TURN 兜底（#1534）。null = 只给公共 STUN，对称 NAT 后面的两台手机打不通 */
+  turn: TurnConfig | null;
 }
 
 const REQUIRED_KEYS = [
@@ -48,6 +58,7 @@ const DEFAULT_DATA_DIR = "/var/lib/otto-runtime";
 /** 回电推送的三个变量（#1411）：**要么全有要么全无**。全无 = 推送关着；只给一部分 = 配错了，同必需项
     一样启动失败——带着半份推送配置跑起来，每一通电话都会安静地失败 */
 const APNS_KEYS = ["APNS_KEY_FILE", "APNS_KEY_ID", "APNS_TEAM_ID"] as const;
+const TURN_KEYS = ["TURN_URLS", "TURN_SECRET"] as const;
 const DEFAULT_APNS_BUNDLE_ID = "com.stanyan.mrotto.mobile";
 
 export class MissingConfigError extends Error {
@@ -61,9 +72,11 @@ export class MissingConfigError extends Error {
     side effect 留给 loadConfig，这里可以直接喂假 env 单测 */
 export function resolveConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
   const apnsGiven = APNS_KEYS.some((k) => env[k]);
+  const turnGiven = TURN_KEYS.some((k) => env[k]);
   const missing = [
     ...REQUIRED_KEYS.filter((k) => !env[k]),
     ...(apnsGiven ? APNS_KEYS.filter((k) => !env[k]) : []),
+    ...(turnGiven ? TURN_KEYS.filter((k) => !env[k]) : []),
   ];
   if (missing.length > 0) {
     throw new MissingConfigError(missing);
@@ -84,6 +97,9 @@ export function resolveConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
           teamId: env.APNS_TEAM_ID!,
           bundleId: env.APNS_BUNDLE_ID && env.APNS_BUNDLE_ID.length > 0 ? env.APNS_BUNDLE_ID : DEFAULT_APNS_BUNDLE_ID,
         }
+      : null,
+    turn: turnGiven
+      ? { urls: env.TURN_URLS!.split(",").map((u) => u.trim()).filter((u) => u !== ""), secret: env.TURN_SECRET! }
       : null,
   };
 }

@@ -6,6 +6,7 @@
 // ringing → missed → answered（见 RING_ANSWER_GRACE_MS）。最后一条说了算。
 
 import type { CallRingEvent, SessionEvent } from "../session/events.js";
+import { parseIceServers, type IceServer } from "./humanCall.js";
 import { promptSafe } from "./promptSafe.js";
 
 /** 回电那把刀的名字。定义在 shared：deriveMessages 的通话块要点名它，而 src/session 不能 import services/runtime */
@@ -125,8 +126,9 @@ export function callerModelOf(events: readonly SessionEvent[], agentId: string):
 }
 
 /** 手机开哪一种聊天页（推送载荷里的 `chat`，spec §1.3） */
-export type RingChatKind = "dm" | "group" | "team" | "guest" | "outreach";
-const RING_CHAT_KINDS: readonly RingChatKind[] = ["dm", "group", "team", "guest", "outreach"];
+/** `human`（#1534）：人打人的来电——借这个壳进 CallKit（见 shared/humanCall.ts 文件头），sessionId = callId、agentId = 打的人 */
+export type RingChatKind = "dm" | "group" | "team" | "guest" | "outreach" | "human";
+const RING_CHAT_KINDS: readonly RingChatKind[] = ["dm", "group", "team", "guest", "outreach", "human"];
 
 /** `home` = 这条会话在个人主场里（runtime 那边就是 approveAll，ADR-0298 同一格）。主场里没有
     chat 标记的旧会话按群算 */
@@ -149,6 +151,8 @@ export interface RingPush {
   chat: RingChatKind;
   expiresTs: number;
   opening?: string;
+  /** 人打人的来电（#1534）：接的人要用的 ICE 服务器（STUN + 一张时限 TURN 票）。智能体的回电没有这一格 */
+  ice?: IceServer[];
 }
 
 /** 手机从通知里读回 `ring`。形状不对一律 null：推送的字节来自网络，缺一格就不弹来电页 */
@@ -168,9 +172,12 @@ export function ringFromPayload(payload: unknown): RingPush | null {
   if (typeof chat !== "string" || !RING_CHAT_KINDS.includes(chat as RingChatKind)) return null;
   if (typeof expiresTs !== "number" || !Number.isFinite(expiresTs)) return null;
   const opening = typeof o.opening === "string" && o.opening !== "" ? o.opening : null;
+  // ICE 清单是可选的非关键字段（#1534）：形状不对当缺席（手机退回公共 STUN），不拒整条来电
+  const ice = parseIceServers(o.ice);
   return {
     ringId, workspaceId, sessionId, agentId, agentName, reason, chat: chat as RingChatKind, expiresTs,
     ...(opening !== null ? { opening } : {}),
+    ...(ice !== null ? { ice } : {}),
   };
 }
 
@@ -181,7 +188,9 @@ export type RingTarget =
   | { kind: "group"; sessionId: string }
   | { kind: "team"; workspaceId: string; sessionId: string }
   | { kind: "guest"; workspaceId: string; sessionId: string }
-  | { kind: "outreach"; workspaceId: string; sessionId: string };
+  | { kind: "outreach"; workspaceId: string; sessionId: string }
+  /** 人打人的来电（#1534）：开的是通话页，不是聊天页 */
+  | { kind: "human"; callId: string; fromUid: string };
 
 export function ringTarget(r: Pick<RingPush, "chat" | "workspaceId" | "sessionId" | "agentId">): RingTarget {
   switch (r.chat) {
@@ -195,6 +204,8 @@ export function ringTarget(r: Pick<RingPush, "chat" | "workspaceId" | "sessionId
       return { kind: "guest", workspaceId: r.workspaceId, sessionId: r.sessionId };
     case "outreach":
       return { kind: "outreach", workspaceId: r.workspaceId, sessionId: r.sessionId };
+    case "human":
+      return { kind: "human", callId: r.sessionId, fromUid: r.agentId };
   }
 }
 

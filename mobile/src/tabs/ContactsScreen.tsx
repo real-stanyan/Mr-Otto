@@ -15,6 +15,7 @@ import { NewAgentDialog } from "../agent/NewAgentDialog.js";
 import { AddFriendDialog } from "../friends/AddFriendDialog.js";
 import { useFriends } from "../friends/friendsStore.js";
 import { refreshHomeAfterWrite, useHome } from "../home/homeStore.js";
+import { refreshAgentShares, shareBadgeFor, useAgentShares } from "../home/agentSharesStore.js";
 import { useTeams } from "../inbox/teamsStore.js";
 import { useInbox } from "../inbox/useInbox.js";
 import { usePalette } from "../theme.js";
@@ -81,6 +82,13 @@ export function ContactsScreen() {
   const scroll = useRef<ScrollView>(null);
   useScrollToTop(scroll);
   useFocusEffect(useCallback(() => refreshAll(), []));
+  // 共有（#1545）：名册那一行小字前面标「共有 · 来自 X」/「共有 · X 也有一只」
+  useFocusEffect(useCallback(() => { void refreshAgentShares(); }, []));
+  const shares = useAgentShares();
+  const nameOfUid = (uid: string): string => {
+    const r = friends.rows?.find((x) => x.profile.id === uid);
+    return r !== undefined ? friendName(r.profile) : uid.slice(0, 8);
+  };
 
   const ws = home.home;
   const access = workspaceAccess({ signedIn: true, billing: home.billing });
@@ -174,7 +182,7 @@ export function ContactsScreen() {
                   />
                 }
                 name={a.name}
-                sub={a.description}
+                sub={(() => { const b = shareBadgeFor(a.agentId, shares, nameOfUid); return b === null ? a.description : a.description === "" ? b : `${b} · ${a.description}`; })()}
                 onPress={() => navigation.navigate("Agent", { agentId: a.agentId })}
               />
             ))

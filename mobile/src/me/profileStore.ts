@@ -4,6 +4,7 @@
 import { useSyncExternalStore } from "react";
 import type { MyProfile, ProfilePatch } from "../../../src/shared/profile.js";
 import { buildColumnPatch, toMyProfile, type MyProfileRow } from "../../../src/shared/profileEdit.js";
+import { saveTimezone } from "../../../src/shared/supabaseRoutinesApi.js";
 import { createStore } from "../externalStore.js";
 import { supabase } from "../supabase.js";
 
@@ -80,4 +81,19 @@ export async function saveProfile(patch: ProfilePatch): Promise<void> {
   const res = await supabase.from("profiles").update(columns.value).eq("id", uid).select(COLUMNS()).single();
   if (res.error) throw new Error(res.error.message);
   store.set({ me: toMyProfile(res.data as unknown as MyProfileRow), loadError: null, loaded: true });
+}
+
+let lastSyncedTz: string | null = null;
+/** 设备时区写到账号上（#1283，spec §6.3）：runtime 建任务时 tz 省略就用它。前台时调，变了才写；
+    写的是 user_settings（只有本人读得到），不是 profiles——profiles 所有登录用户都能读，出差时区一变就等于报了行踪。
+    写失败静默——0058 没跑 / 网络抖，下一次前台再试（lastSyncedTz 只在写成功后记） */
+export async function syncDeviceTimezone(): Promise<void> {
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
+  if (!tz || tz === lastSyncedTz) return;
+  const uid = await uidNow();
+  if (uid === null) return;
+  try {
+    await saveTimezone(supabase, uid, tz);
+    lastSyncedTz = tz;
+  } catch { /* 下次再写 */ }
 }

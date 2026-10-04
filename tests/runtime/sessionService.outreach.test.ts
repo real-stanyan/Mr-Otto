@@ -91,7 +91,7 @@ function open(store: EventStore, o: { team?: (typeof OPS)[] } = {}): Probe {
     onEvent: () => {}, onUsage: () => {}, wiki, mentionInbox: createInMemoryMentionInbox(),
     agentWriter: createInMemoryAgentWriter(), isMember: async () => true, contextWindowOf: () => undefined,
     sandboxApproval: async () => "ask", workspaceLock: createWorkspaceLock(), relayRemainingMicro: async () => null,
-    diskUsage: () => null, onOutreachEnded: null, signSpeechTicket: async () => "t", pairMessages: null, outreach: null, approveAll: true, callback: null,
+    diskUsage: () => null, routines: null, onOutreachEnded: null, signSpeechTicket: async () => "t", pairMessages: null, outreach: null, approveAll: true, callback: null,
     dispatch: async (input) => {
       probe.dispatchCalls++;
       return { kind: "picked", agentIds: [input.roster[0]!.agentId] };
@@ -292,7 +292,7 @@ function openLive(store: EventStore, o: { endedTo?: OutreachEnded[] | null; watc
     onEvent: () => {}, onUsage: () => {}, wiki: testWiki(), mentionInbox: createInMemoryMentionInbox(),
     agentWriter: createInMemoryAgentWriter(), isMember: async () => true, contextWindowOf: () => undefined,
     sandboxApproval: async () => "ask", workspaceLock: createWorkspaceLock(), relayRemainingMicro: async () => null,
-    diskUsage: () => null, approveAll: true,
+    diskUsage: () => null, routines: null, approveAll: true,
     callback: {
       isWatching: o.watching ?? (() => true),
       deviceCount: async () => o.devices ?? 1,
@@ -650,7 +650,7 @@ function openHome(o: {
     onUsage: () => {}, wiki: testWiki(), mentionInbox: createInMemoryMentionInbox(),
     agentWriter: createInMemoryAgentWriter(), isMember: async (uid) => uid === OWNER, contextWindowOf: () => undefined,
     sandboxApproval: async () => "ask", workspaceLock: createWorkspaceLock(), relayRemainingMicro: async () => null,
-    diskUsage: () => null, onOutreachEnded: null, signSpeechTicket: async () => "t", pairMessages: null, approveAll: !team, callback: null,
+    diskUsage: () => null, routines: null, onOutreachEnded: null, signSpeechTicket: async () => "t", pairMessages: null, approveAll: !team, callback: null,
     outreach: o.outreach === undefined ? null : o.outreach,
   });
   return session;
@@ -709,7 +709,7 @@ describe("call_friend 的挂载与「这一轮能不能打」（#1441 Task 10）
       onEvent: () => {}, onUsage: () => {}, wiki: testWiki(), mentionInbox: createInMemoryMentionInbox(),
       agentWriter: createInMemoryAgentWriter(), isMember: async () => true, contextWindowOf: () => undefined,
       sandboxApproval: async () => "ask", workspaceLock: createWorkspaceLock(), relayRemainingMicro: async () => null,
-      diskUsage: () => null, onOutreachEnded: null, signSpeechTicket: async () => "t", pairMessages: null, approveAll: true, callback: null, outreach: portProbe().port,
+      diskUsage: () => null, routines: null, onOutreachEnded: null, signSpeechTicket: async () => "t", pairMessages: null, approveAll: true, callback: null, outreach: portProbe().port,
     });
     await s2.say(PEER, "小红", "喂", false, [], undefined, []);
     await s2.settled();

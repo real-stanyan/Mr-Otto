@@ -637,6 +637,8 @@ export function Field(props: {
   secure?: boolean;
   invalid?: boolean;
   maxLength?: number;
+  /** 多行（弹窗里「到点要做什么」那种一段话）：同 EditTextDialog 的多行框——110 起、220 封顶、字顶在上头 */
+  multiline?: boolean;
   autoFocus?: boolean;
   keyboardType?: TextInputProps["keyboardType"];
   autoComplete?: TextInputProps["autoComplete"];
@@ -664,6 +666,8 @@ export function Field(props: {
       placeholderTextColor={c.mutedForeground}
       secureTextEntry={props.secure}
       maxLength={props.maxLength}
+      multiline={props.multiline}
+      textAlignVertical={props.multiline ? "top" : undefined}
       autoFocus={props.autoFocus}
       keyboardType={props.keyboardType ?? "default"}
       autoCapitalize="none"
@@ -677,7 +681,7 @@ export function Field(props: {
       onFocus={() => setFocused(true)}
       onBlur={() => setFocused(false)}
       style={{
-        height: v === "gate" ? 42 : 46,
+        ...(props.multiline ? { minHeight: 110, maxHeight: 220, paddingTop: 10, paddingBottom: 10, lineHeight: 23 } : { height: v === "gate" ? 42 : 46 }),
         borderRadius: radius.control,
         borderWidth: 1,
         borderColor: props.invalid ? c.destructive : focused ? c.brand : c.input,

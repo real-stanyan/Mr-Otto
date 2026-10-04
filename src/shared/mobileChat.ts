@@ -17,6 +17,7 @@ import {
 } from "./cloudTimeline.js";
 import { callTopicText } from "./mobileCall.js";
 import { outreachDurationText, outreachFoldOf, outreachRowText, type OutreachLine, type OutreachState } from "./outreach.js";
+import { routineNoteText } from "./routines.js";
 import type { FaceState } from "./ottoFace/index.js";
 import type { CsChatInfo } from "./remote/cloudSession.js";
 import type { CloudSessionRow } from "./supabaseWorkspacesApi.js";
@@ -247,6 +248,17 @@ export function chatRows(o: {
           waitingFor: o.ownerUid !== undefined && o.ownerUid !== "" ? labelOf(o.ws, o.ownerUid) : null,
         });
       }
+      continue;
+    }
+    // 定时任务（#1283）：开场白是 greeting 一族里唯一要画的——别的 greeting 都有前一条可见事件解释「为什么它开口了」
+    // （名单变了 / 新建了它 / 电话接通了），这条没有，藏了就是回话凭空冒出来。要在 rowOf 之前认出来：
+    // rowOf 先问 hiddenFromCloudTimeline，而桌面把 greeting 一族整条藏了
+    if (e.type === "user_message" && e.greeting === "routine") {
+      items.push({ kind: "note", key: `routine-${e.seq}`, ts: e.ts, text: `⏰ 定时任务「${e.routine?.title ?? "定时任务"}」`, tone: "muted", detail: null });
+      continue;
+    }
+    if (e.type === "routine_note") {
+      items.push({ kind: "note", key: `rnote-${e.seq}`, ts: e.ts, text: routineNoteText(e), tone: "muted", detail: null });
       continue;
     }
     // 要在 rowOf 之前认出来：rowOf 先问 hiddenFromCloudTimeline，而桌面把 call_ring 整条藏了

@@ -11,6 +11,7 @@ import {
   renderMemoryPrompt,
   projectInstructionsText,
   dayOfLastEvent,
+  userTzOf,
 } from "../session/deriveMessages.js";
 import { barrenEventIndexes } from "../session/barrenTurns.js";
 import { absorbedIndexes, latestMicroCompacted } from "../session/microCompact.js";
@@ -320,7 +321,7 @@ export function contextBreakdown(
   const today = dayOfLastEvent(events);
   const system = workspace
     ? estimateTokens(
-        systemPromptText(workspace, today, workspaceKindOf(events)) +
+        systemPromptText(workspace, today, workspaceKindOf(events), undefined, undefined, userTzOf(events)) +
           (memoryEvent
             ? renderMemoryPrompt(memoryEvent.memory, memoryEvent.user, memoryEvent.project, memoryEvent.projectRoot, memoryEvent.topics)
             : "")

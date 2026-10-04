@@ -33,6 +33,9 @@ import { createFrameRateLimiter } from "./rateLimit.js";
 import { createCloudSession, type CloudSession, type AgentSpec } from "./sessionService.js";
 import { ChatCreateError, pairCreateProblem, planChatCreate } from "./chatCreate.js";
 import { onBehalfPairProblem } from "../../../src/shared/publicAgent.js";
+import { DEFAULT_STUN, HUMAN_CALL_RING_MS, humanRingPush } from "../../../src/shared/humanCall.js";
+import { iceServersFor } from "./turnCredentials.js";
+import { createLaneBridge } from "./laneBridge.js";
 import { createHumansProblem, friendSetOf, friendshipFilter, planHumansChange } from "./chatHumans.js";
 import { greetOnCreate } from "./newAgentGreeting.js";
 import { createSupabaseLegacyMemoryReader } from "./workspaceMemory.js";
@@ -49,6 +52,9 @@ import type { PxCallDeps } from "./pxTools.js";
 import { createHostedProbe, createHostedRuntimeAdapter, createRouteMemo, decideRuntimeRoute, probeModelRoute, withUsage, type RouteMemo } from "./hostedRoute.js";
 import { createOutreachHub } from "./outreachHub.js";
 import { agentOutreachActive, blockedMessage, ensureOutreachSession, openOriginRoom } from "./outreachSession.js";
+import { createSupabaseRoutineStore } from "./routineStore.js";
+import { createRoutineScheduler } from "./routineScheduler.js";
+import { noteRoutineInRoom, runRoutineInRoom } from "./routineRun.js";
 import { signSpeechTicket } from "../../../src/shared/speechTicket.js";
 import { PAIR_CONTEXT_MAX_LINES } from "../../../src/shared/pairChat.js";
 import { pickAutoModel } from "./autoModel.js";
@@ -159,6 +165,9 @@ async function main(): Promise<void> {
   mkdirSync(config.dataDir, { recursive: true });
 
   const supabase = createClient(config.supabaseUrl, config.supabaseServiceKey);
+  // 定时任务（#1283）：一张表、一只调度器（启动末尾起）。每条会话房都接同一个 store，挂不挂刀由 sessionService
+  // 按 approveAll + chatKind 判（团队会话 / 外联 / 私密车道都不挂）
+  const routineStore = createSupabaseRoutineStore(supabase, { log: (m) => console.warn(`[otto-runtime] ${m}`) });
   // 回电的推送（#1411，ADR-0331）：三个 APNS_* 全有才开（config.ts）；.p8 这里读一次——读不到就起不来，
   // 同 loadConfig 的 fail fast：带着一把读不出来的钥匙跑起来，每一通电话都会安静地失败
   const apnsCfg = config.apns;
@@ -362,6 +371,15 @@ async function main(): Promise<void> {
 
   async function ownerOf(workspaceId: string): Promise<string> {
     return (await workspaceFacts(workspaceId)).ownerUid;
+  }
+
+  /** openOriginRoom 的 row 回调（外联汇报与定时任务共用）：这条会话行的归属与归档态，没有回 null */
+  async function sessionRowOf(sid: string): Promise<{ workspace_id: string; archived: boolean; publisherUid: string } | null> {
+    const { data, error } = await supabase.from("workspace_sessions").select("workspace_id,publisher_uid,archived").eq("id", sid).maybeSingle();
+    if (error) throw new Error(error.message);
+    if (!data) return null;
+    const r = data as { workspace_id: string; publisher_uid: string; archived: boolean };
+    return { workspace_id: r.workspace_id, archived: r.archived, publisherUid: r.publisher_uid };
   }
 
   /** 这只智能体现成的那条私聊（#1280），没有回 null。库里那条唯一索引是权威，
@@ -684,13 +702,7 @@ async function main(): Promise<void> {
             openOriginRoom<CloudSession>(
               {
                 active: (id) => activeSessions.get(id)?.session ?? null,
-                row: async (id) => {
-                  const { data, error } = await supabase.from("workspace_sessions").select("workspace_id,publisher_uid,archived").eq("id", id).maybeSingle();
-                  if (error) throw new Error(error.message);
-                  if (!data) return null;
-                  const r = data as { workspace_id: string; publisher_uid: string; archived: boolean };
-                  return { workspace_id: r.workspace_id, archived: r.archived, publisherUid: r.publisher_uid };
-                },
+                row: sessionRowOf,
                 open: (w, id, publisherUid) => openExistingRoom(w, id, publisherUid),
                 discard: discardRoom,
               },
@@ -1074,6 +1086,8 @@ async function main(): Promise<void> {
       // 上一次量出来的卷用量（#836，ADR-0287）。纯读 sandbox 的内存缓存、不打
       // docker——量这一下发生在 sandbox.ensure() 里，这里只是把读数递过去
       diskUsage: () => sandbox.diskUsage(workspaceId),
+      // 定时任务（#1283）：同一个 store 递给每一间房；挂不挂刀由 sessionService 按 approveAll + chatKind 判
+      routines: routineStore,
       // 回电（#1411）：推送关着 = null（刀不出现）。isWatching = 这个房间里有没有他的连接——手机切后台会
       // 主动断开会话房（mobile/src/cloud/cloudClient.ts），所以「连着」就是「开着这条聊天」
       // 外联（#1441）：收尾时把结果汇报回原聊天、call_friend 那把刀的出口。推送关着 = 没有 hub = 两样都是 null；
@@ -1090,6 +1104,9 @@ async function main(): Promise<void> {
       signSpeechTicket: (t) => signSpeechTicket(t, config.runtimeSecret),
       // 私密车道的上下文信封（#1461 P1，ADR-0346）：主人与朋友私聊最近一页（service key 读，RLS 不在场——
       // 所以查询按这一对过滤之外，sessionService 那侧的 pairContextLines 还会再收一道）。只在车道里被调
+      // 对面公开的智能体（#1542）：箭头里才读 laneBridge——它在这个函数的后面才声明，房间启动补开时这里已经跑过，
+      // 但只有工具真被调用那一刻才会碰到它
+      laneBridge: { send: (o) => laneBridge.send(o) },
       pairMessages: async ({ ownerUid: o, peerUid: p }) => {
         const { data, error } = await supabase
           .from("messages")
@@ -1174,8 +1191,78 @@ async function main(): Promise<void> {
     return settledOrCapped.catch(() => undefined);
   }
 
+  // 双方公开的智能体互相说话（#1542，ADR-0358）：A 车道里的智能体 → B 主场里公开给 A 的那条车道。判断在 laneBridge.ts，
+  // 这里只接三件事：按（B 的主场, peer = A, facing both）找那条、开（或拿到）它的房、以 A（客人）的身份 say
+  const laneBridge = createLaneBridge({
+    findPeerLane: async (peerUid, ownerUid) => {
+      const { data, error } = await supabase
+        .from("workspace_sessions")
+        .select("id,workspace_id")
+        .eq("chat_kind", "pair")
+        .eq("facing", "both")
+        .eq("peer_uid", ownerUid)
+        .eq("publisher_uid", peerUid)
+        .eq("archived", false)
+        .maybeSingle();
+      if (error) throw new Error(`对面车道查询失败：${error.message}`);
+      return data ? { workspaceId: (data as { workspace_id: string }).workspace_id, sessionId: (data as { id: string }).id } : null;
+    },
+    openLane: async (workspaceId, sessionId) => {
+      let active = activeSessions.get(sessionId);
+      if (active === undefined || active.workspaceId !== workspaceId) {
+        try {
+          const facts = await workspaceFacts(workspaceId);
+          openSessionRoom(workspaceId, sessionId, facts.ownerUid, facts.ownerUid, facts.kind === "home");
+          active = activeSessions.get(sessionId);
+        } catch (err) {
+          console.warn(`[otto-runtime] 开对面车道失败（session=${sessionId}）：${String(err)}`);
+          return null;
+        }
+      }
+      if (active === undefined) return null;
+      const s = active.session;
+      return {
+        isGuest: (uid) => s.isGuest(uid),
+        roster: async () => {
+          const ids = s.chat()?.agentIds ?? [];
+          const team = await agentsCache.get(workspaceId);
+          return ids.map((agentId) => ({ agentId, name: team.find((a) => a.agentId === agentId)?.name ?? agentId }));
+        },
+        say: (fromUid, label, text, mentions, relay) => s.say(fromUid, label, text, true, mentions, undefined, [], undefined, undefined, relay),
+      };
+    },
+    labelOf,
+    now: () => Date.now(),
+    log: (m) => console.warn(`[otto-runtime] ${m}`),
+  });
+
   const frameHandlerDeps: FrameHandlerDeps = {
     log: (m) => console.log(`[otto-runtime] 帧：${m}`),
+    // 人打人的电话（#1534）：是好友就能打；给对方推一条 VoIP 来电（RingPush 的壳，chat = human），两端各一张 TURN 票
+    humanCall: async (fromUid, toUid, callId) => {
+      if (apns === null) return { ok: false, message: "这台服务器没开推送，打不了电话。" };
+      if (fromUid === toUid) return { ok: false, message: "不能给自己打电话。" };
+      let friends: Set<string>;
+      try {
+        friends = await acceptedFriendsOf(fromUid, [toUid]);
+      } catch (err) {
+        console.warn(`[otto-runtime] 打电话前查好友失败（from=${fromUid}）：${String(err)}`);
+        return { ok: false, message: "这会儿查不到朋友名单，稍后再试" };
+      }
+      if (!friends.has(toUid)) return { ok: false, message: "只能给朋友打电话。" };
+      const now = Date.now();
+      const expiresTs = now + HUMAN_CALL_RING_MS;
+      const ring = humanRingPush({ callId, fromUid, fromName: await labelOf(fromUid), expiresTs, ice: iceServersFor(config.turn, toUid, now, DEFAULT_STUN) });
+      let delivered: number;
+      try {
+        delivered = await apns.pushRing(toUid, ring);
+      } catch (err) {
+        console.warn(`[otto-runtime] 人打人来电推送失败（to=${toUid}）：${String(err)}`);
+        return { ok: false, message: "这会儿推不到对方的手机，稍后再试" };
+      }
+      if (delivered === 0) return { ok: false, message: "对方的手机收不到来电（没登记设备，或推送没送到）。" };
+      return { ok: true, ice: iceServersFor(config.turn, fromUid, now, DEFAULT_STUN), expiresTs };
+    },
     verifyJwt: async (token) => {
       const result = await verifyJwtEdge(token, config.supabaseJwtSecret, Date.now() / 1000);
       return result.ok ? { userId: result.claims.sub } : null;
@@ -1653,6 +1740,44 @@ async function main(): Promise<void> {
     },
     5 * 60 * 1000
   );
+
+  // ── 定时任务调度器（#1283，spec §3）：30 秒一拍、原子认领、先推进 next_run_at 再起 turn ─────────
+  const routineRooms = {
+    // 到点现查主人：任务行上的 ownerUid 与主场现在的主人对不上、或者这根本不是主场，就不跑（runRoutineInRoom 里判）
+    homeOwnerOf: async (w: string) => {
+      const f = await workspaceFacts(w);
+      return f.kind === "home" ? f.ownerUid : null;
+    },
+    findDm: (w: string, a: string) => findDmSession(w, [a]),
+    room: (w: string, id: string) =>
+      openOriginRoom<CloudSession>(
+        {
+          active: (sid) => activeSessions.get(sid)?.session ?? null,
+          row: sessionRowOf,
+          open: (ww, sid, publisherUid) => openExistingRoom(ww, sid, publisherUid),
+          discard: discardRoom,
+        },
+        w, id,
+      ),
+  };
+  const routineScheduler = createRoutineScheduler({
+    store: routineStore,
+    // 额度门（spec §5.3）：与接力预算同一只探针；「没有数」与探针本身出错一律 null = 照跑，quota 绝不抛
+    quota: async (ownerUid) => {
+      try {
+        const me = await hostedProbe.me(ownerUid);
+        if (me === "unreachable" || me === null || me.windows === null) return null;
+        return { remainingMicro: me.windows.week.limitMicro - me.windows.week.usedMicro, limitMicro: me.windows.week.limitMicro };
+      } catch {
+        return null;
+      }
+    },
+    run: (r, firedAt) => runRoutineInRoom(routineRooms, r, firedAt),
+    note: (r, reason, plannedAt) => noteRoutineInRoom(routineRooms, r, reason, plannedAt),
+    now: Date.now,
+    log: (m) => console.warn(`[otto-runtime] ${m}`),
+  });
+  routineScheduler.start();
 
   // ── 控制房：常驻一条，处理 hello/create ─────────────────────────────
   const ctlTransport = createWsTransport({

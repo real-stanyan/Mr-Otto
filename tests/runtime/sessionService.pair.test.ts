@@ -48,7 +48,7 @@ const msg = (sender: string, recipient: string, body: string, sec: number): Pair
   sender, recipient, body, createdAt: new Date(Date.UTC(2026, 9, 4, 0, 0, sec)).toISOString(),
 });
 
-function open(store: EventStore, o: { messages?: () => Promise<PairMessageRow[]>; alerts?: string[]; outreach?: CloudSessionOpts["outreach"] } = {}): { session: CloudSession; reads: number } {
+function open(store: EventStore, o: { messages?: () => Promise<PairMessageRow[]>; alerts?: string[]; outreach?: CloudSessionOpts["outreach"]; bridge?: CloudSessionOpts["laneBridge"] } = {}): { session: CloudSession; reads: number } {
   const probe = { reads: 0 } as { session: CloudSession; reads: number };
   const adapter: ModelAdapter = { model: "fake-model", async chat() { return { content: "好的" }; } };
   const opts: CloudSessionOpts = {
@@ -61,12 +61,12 @@ function open(store: EventStore, o: { messages?: () => Promise<PairMessageRow[]>
     mentionInbox: createInMemoryMentionInbox(),
     agentWriter: createInMemoryAgentWriter(), isMember: async () => true, contextWindowOf: () => undefined,
     sandboxApproval: async () => "ask", workspaceLock: createWorkspaceLock(), relayRemainingMicro: async () => null,
-    diskUsage: () => null, onOutreachEnded: null, signSpeechTicket: async () => "t",
+    diskUsage: () => null, routines: null, onOutreachEnded: null, signSpeechTicket: async () => "t",
     pairMessages: async () => {
       probe.reads++;
       return o.messages ? o.messages() : [msg(PEER, OWNER, "周末去哪", 1), msg(OWNER, PEER, "爬山？", 2)];
     },
-    outreach: o.outreach ?? null, approveAll: true, callback: null,
+    outreach: o.outreach ?? null, laneBridge: o.bridge ?? null, approveAll: true, callback: null,
     ...(o.alerts ? { alert: (uid: string) => void o.alerts!.push(uid) } : {}),
   };
   probe.session = createCloudSession(opts);
@@ -210,6 +210,39 @@ describe("私密车道（#1461 P1）", () => {
       const after = store.ofType(SID, "user_message").filter((e) => e.type === "user_message" && e.greeting === "pair_call_summary");
       expect(after).toHaveLength(1);
       expect(store.ofType(SID, "user_message").length).toBeGreaterThanOrEqual(before);
+      store.close();
+    });
+    it("message_friend_agent（#1542）：公开车道 + 接了 laneBridge 才挂；客人点起的轮里也不要批；发出去带这一轮的深度", async () => {
+      const store = newStore();
+      sharedSeed(store);
+      const sends: unknown[] = [];
+      const { session } = open(store, { bridge: { send: async (o) => { sends.push(o); return "已发"; } } });
+      await say(session, "@助手 在吗", [HELPER.agentId], PEER);
+      await session.settled();
+      const env = store.ofType(SID, "request_envelope").at(-1) as RequestEnvelopeEvent;
+      const tool = env.tools.find((t) => t.name === "message_friend_agent");
+      expect(tool).toBeDefined();
+      expect(env.system).toContain("message_friend_agent");
+      store.close();
+    });
+    it("私密车道（没有朋友在名单里）不挂 message_friend_agent；没接 laneBridge 也不挂", async () => {
+      const store = newStore();
+      pairSeed(store);
+      const { session } = open(store, { bridge: { send: async () => "x" } });
+      await say(session, "@助手 在吗", [HELPER.agentId]);
+      await session.settled();
+      const env = store.ofType(SID, "request_envelope").at(-1) as RequestEnvelopeEvent;
+      expect(env.tools.map((t) => t.name)).not.toContain("message_friend_agent");
+      store.close();
+    });
+    it("say 的 relay 记号落进 user_message（对面车道发来的那句）", async () => {
+      const store = newStore();
+      sharedSeed(store);
+      const { session } = open(store);
+      await session.say(PEER, "管理员（小红 的智能体）", "能借 100 吗", true, [HELPER.agentId], undefined, [], undefined, undefined, { fromAgentId: "a_0000000000b1", depth: 1 });
+      await session.settled();
+      const opening = store.ofType(SID, "user_message").find((e) => e.type === "user_message" && e.relay !== undefined);
+      expect(opening).toMatchObject({ fromUid: PEER, relay: { fromAgentId: "a_0000000000b1", depth: 1 } });
       store.close();
     });
     it("chat() 从名单推朝向：有朋友 = both", () => {

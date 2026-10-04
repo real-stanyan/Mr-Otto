@@ -6,12 +6,17 @@
 import type { SessionEvent } from "../../session/events.js";
 import { AGENT_ID_RE, CHAT_NAME_MAX, normalizeChatAgentIds, normalizeChatHumanUids, USER_UID_RE, type ChatHuman } from "../chatRoster.js";
 import { parseChatMediaRefs, type ChatMediaRef } from "../chatMedia.js";
+import { isIanaTimeZone } from "../routines.js";
+import { parseIceServers, type IceServer } from "../humanCall.js";
 import { b64decode, b64encode } from "./b64.js";
 import { MAX_FRAME_BYTES } from "./wire.js";
 
-/** 27（#1520）：`CsUp` 加 `pick_friend`（点选人卡上的一位，uid null = 都不是），`CsDown` 加
+/** 28（#1520）：`CsUp` 加 `pick_friend`（点选人卡上的一位，uid null = 都不是），`CsDown` 加
     `pick_friend_result`（带 pickId，同 approve_result 的理由）。加帧照样进位（握手精确相等）：老 runtime
     收到 pick_friend 会当未知帧丢掉，于是新客户端点了人、卡一直转圈，runtime 这头什么都没发生。
+    27（#1534，#1532 二期）：人打人的语音电话。控制房多一对 `human_call` / `human_call_result`：打的人发 toUid + callId，
+    runtime 核对是好友、给对方推一条 VoIP 来电（RingPush 的壳，chat = human）、回执里带打的人那一张 TURN 票；
+    媒体与信令都不经 runtime（信令走中继 hc:<callId> 房，host↔guest）。加帖照样进位。
     26（#1533，#1532 一期）：公开智能体。`create` 的 pair 多 `onBehalf: true`——由**配对的朋友**发到主人的主场控制房，
     替主人开（或找到）装着 TA 公开智能体的共享车道；frameHandler 对这一种帧放行非成员，daemon 核对朋友关系 / 档位 /
     主人设了哪只。加字段照样进位：老 runtime 会把 onBehalf 静默丢掉、再按「非成员」拒掉——在握手那一步就说清。
@@ -143,7 +148,7 @@ import { MAX_FRAME_BYTES } from "./wire.js";
     少一格状态。**加一个枚举值同理**：老客户端的 isValidCsDeniedCode 认不出
     `rate_limited`，decodeCsDown 回 null，那一帧被静默忽略，于是 create()
     要白等满超时才回一句"云端无响应"——把"你被限速了"说成"对面没回话"。 */
-export const CS_PROTOCOL_VERSION = 27;
+export const CS_PROTOCOL_VERSION = 28;
 export const CS_MAX_TEXT_BYTES = 64 * 1024;
 
 /** 一次回多少字节的文件内容（#1056）。中继单帧上限是 256 KiB（wire.ts 的
@@ -362,7 +367,7 @@ export type CsUp =
       唯一知道这件事的是麦克风那一侧 */
   /** `media`（协议 24，#1491）= 这句话带的图片 / 视频引用，1..9 个、要么全图片要么一段视频（parseChatMediaRefs）。
       正文可以为空（纯发图）：runtime 落盘时正文写占位 `[图片]` / `[视频]`，老客户端照常显示 */
-  | { t: "say"; text: string; mention: boolean; mentions?: string[]; memberMentions?: string[]; voice?: true; media?: ChatMediaRef[] }
+  | { t: "say"; text: string; mention: boolean; mentions?: string[]; memberMentions?: string[]; voice?: true; media?: ChatMediaRef[]; tz?: string }
   | { t: "backlog"; afterSeq: number }
   /** 尾巴分页（协议 20，#1280）：进房只要最后 `limit` 条，`beforeSeq` 在场 = 再往前翻一页。
       与 `afterSeq` 那一种并列而不是取代它——后者是「我断线前读到这儿，补上后面的」，
@@ -375,6 +380,9 @@ export type CsUp =
       回 `workspace_state`。任何在籍成员都能读——路由本来就在 welcome 上给所有人看，
       凭据清单里没有 token（有哪几台主机不是秘密，那把钥匙才是） */
   | { t: "workspace"; workspaceId: string }
+  /** 人打人的电话（控制房帖，协议 27，#1534）：给 toUid 推一条来电。不带 workspaceId——这不是关于某个团队的动作，
+      在籍那道闸不适用；是不是好友由 runtime 判 */
+  | { t: "human_call"; callId: string; toUid: string }
   /** 存 / 删一台主机的 Git 凭据（控制房帧，协议 15，#1103）。**owner 才受理**，
       服务端判。`token` 两态：非空 = 存这一把（同一台主机再存就是换新），
       `""` = **删掉这台主机**。
@@ -451,6 +459,9 @@ export type CsDown =
       在这条帧之前，控制房的 create 只认 `created` / `denied` 两种回执，抛错就是让桌面
       白等满超时、把「群聊至少要两只」报成「云端无响应」——方向指向 VPS 宕机 */
   | { t: "create_failed"; workspaceId: string; message: string }
+  /** `human_call` 的回执（协议 27，#1534）：ok = 来电已推到对方至少一台手机；`ice` 是打的人要用的 ICE 服务器
+      （STUN + 一张时限 TURN 票），`expiresTs` = 响铃到点的时刻 */
+  | { t: "human_call_result"; callId: string; ok: boolean; message?: string; ice?: IceServer[]; expiresTs?: number }
   /** `v`（add-only，协议号不变）= **服务端**此刻的协议号（复审 C2-I6）。
       `version_mismatch` 是严格相等判出来的，而只有码没有版本号的话，桌面
       分不清"我旧了"还是"云端旧了"——这两件事该做的动作相反（更新 app vs
@@ -791,6 +802,9 @@ export function decodeCsUp(b64: string): CsUp | null {
         // 拒帧是因为丢掉它们会静默改变「这句话点了谁」，而这一格只影响时间线
         // 上折不折卡：脏值退化成「不折」= 改动前的行为，为它拒掉一句真话更糟
         if (obj.voice === true) say.voice = true;
+        // tz 只认 Intl 认得的 IANA 名（#1283）：它只影响投影里「今天是」那一行，脏值退化成「不带」= 改动前的行为，
+        // 为它拒掉一句真话更糟（同 voice 那一格的口径）
+        if (isIanaTimeZone(obj.tz)) say.tz = obj.tz;
         // media 形状不对整帧拒掉（协议 24，#1491）：同 mentions——丢掉它会静默改变这句话的内容
         if (obj.media !== undefined) {
           const media = parseChatMediaRefs(obj.media);
@@ -840,6 +854,13 @@ export function decodeCsUp(b64: string): CsUp | null {
     if (t === "workspace") {
       if (typeof obj.workspaceId === "string") return { t: "workspace", workspaceId: obj.workspaceId };
       return null;
+    }
+
+    if (t === "human_call") {
+      // callId 是打的人铸的随机串（进中继房名）；toUid 要像一个 uid（拿去查好友、查推送令牌）
+      if (typeof obj.callId !== "string" || !/^[0-9A-Za-z_-]{8,64}$/.test(obj.callId)) return null;
+      if (typeof obj.toUid !== "string" || !USER_UID_RE.test(obj.toUid)) return null;
+      return { t: "human_call", callId: obj.callId, toUid: obj.toUid.toLowerCase() };
     }
 
     if (t === "git_credential") {
@@ -1181,6 +1202,17 @@ export function decodeCsDown(b64: string): CsDown | null {
       return typeof obj.workspaceId === "string" && typeof obj.message === "string"
         ? { t: "create_failed", workspaceId: obj.workspaceId, message: obj.message }
         : null;
+    }
+
+    if (t === "human_call_result") {
+      if (typeof obj.callId !== "string" || typeof obj.ok !== "boolean") return null;
+      const ice = parseIceServers(obj.ice);
+      return {
+        t: "human_call_result", callId: obj.callId, ok: obj.ok,
+        ...(typeof obj.message === "string" ? { message: obj.message } : {}),
+        ...(ice !== null ? { ice } : {}),
+        ...(typeof obj.expiresTs === "number" && Number.isFinite(obj.expiresTs) ? { expiresTs: obj.expiresTs } : {}),
+      };
     }
 
     if (t === "created") {

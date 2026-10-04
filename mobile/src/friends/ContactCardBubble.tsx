@@ -1,22 +1,25 @@
 // 私聊里的名片（#1524）：联系人名片画头像 + 名字 + 邮箱，智能体名片画脸 + 名字 + 职责；底下一颗钮——
 // 「加为朋友」（走现成的好友请求，先选我给 TA 的档位，#1494）/「发消息」/「接受」（在我主场里复制出一只：新 id、我的电脑跑、
 // 我的额度；记忆与连接器不带）。判据（抬头 / 钮画不画、画哪种）在 shared/contactCard.ts 的 contactCardView，这里只接线。
-// 接受过只记在本机这一次会话里（刷新就没了）：再按一次会再建一只同名的——建之前查一次名单，同名就说已有。
+// 接受过的真相在我的名单里（#1544）：主场里已有同名 = 接受过，退出再进来也不再给钮；刚点完那几秒靠本机 accepted 顶着。
 import * as ExpoCrypto from "expo-crypto";
 import { useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { agentIdFromBytes, createAgentChecked } from "../../../src/shared/agentAdmin.js";
 import { voiceChoiceOf } from "../../../src/shared/agentVoice.js";
-import { contactCardView, type ContactCard } from "../../../src/shared/contactCard.js";
+import { acceptedAgentInput, contactCardView, type ContactCard } from "../../../src/shared/contactCard.js";
 import { REQUEST_DEFAULT_TIER, type FriendTier } from "../../../src/shared/friendTier.js";
 import { insertAgentRow, listAgentNames, updateAgentRow } from "../../../src/shared/supabaseWorkspacesApi.js";
 import { refreshHomeAfterWrite, useHome } from "../home/homeStore.js";
+import { refreshAgentShares } from "../home/agentSharesStore.js";
+import { acceptedShareText } from "../../../src/shared/agentShares.js";
+import { recordAgentShare } from "../../../src/shared/agentSharesApi.js";
 import { supabase } from "../supabase.js";
 import { usePalette, withAlpha } from "../theme.js";
 import { FaceTile, PersonTile } from "../wx/Avatar.js";
 import { Icon } from "../wx/Icon.js";
 import { toast } from "../wx/toast.js";
-import { addFriend, AlreadyLinked, useFriends } from "./friendsStore.js";
+import { addFriend, AlreadyLinked, sendToFriend, useFriends } from "./friendsStore.js";
 import { TierPickDialog } from "./TierPickDialog.js";
 
 export function ContactCardBubble({ card, mine, fromName, onOpenChat }: {
@@ -35,7 +38,9 @@ export function ContactCardBubble({ card, mine, fromName, onOpenChat }: {
   const [picking, setPicking] = useState<{ key: number; visible: boolean } | null>(null);
   const selfUid = friends.uid ?? home.selfUid ?? "";
   const friendUids = (friends.rows ?? []).filter((r) => r.status === "accepted").map((r) => r.profile.id);
-  const v = contactCardView(card, { mine, fromName, selfUid, friendUids, accepted });
+  // 接受过的真相在名单里（#1544）：主场里已有同名 = 接受过，退出再进来也不再给钮
+  const myAgentNames = home.home?.agents.map((a) => a.name) ?? [];
+  const v = contactCardView(card, { mine, fromName, selfUid, friendUids, accepted, myAgentNames });
 
   const acceptAgent = async (): Promise<void> => {
     if (card.kind !== "agent") return;
@@ -48,8 +53,10 @@ export function ContactCardBubble({ card, mine, fromName, onOpenChat }: {
     setError(null);
     try {
       const agentId = agentIdFromBytes(ExpoCrypto.getRandomBytes(6));
+      // 职责只在 description 里的那只，复制时把职责写成提示词（#1544：brief 不读自己的 description）
+      const input = acceptedAgentInput(card);
       await createAgentChecked({ listAgentNames, insertAgentRow }, supabase, ws.id, selfUid, agentId, {
-        name: card.name, description: card.description, instructions: card.instructions, models: [], tools: [], avatarSlot: card.avatarSlot,
+        name: input.name, description: input.description, instructions: input.instructions, models: [], tools: [], avatarSlot: card.avatarSlot,
       });
       // 声音另写一笔、尽力而为：认不出的键 / 0042 没跑都当没挑过，这只已经建成了
       if (card.voice !== undefined && voiceChoiceOf(card.voice) !== null) {
@@ -58,6 +65,12 @@ export function ContactCardBubble({ card, mine, fromName, onOpenChat }: {
       setAccepted(true);
       toast(`「${card.name}」已保存到我的智能体`);
       void refreshHomeAfterWrite();
+      // 共有（#1545）：记一行「分享方的原 id ↔ 我这边的新 id」（两边都读得到，资料页据它标「共有」），再往这条私聊里说一句
+      // ——分享方那边据这句话知道 TA 接受了。两件都尽力而为：0059 没跑 / 发不出去都不碰「已保存」这个事实
+      void recordAgentShare(supabase, { ownerUid: card.from.uid, agentId: card.agentId, withUid: selfUid, copyAgentId: agentId, name: card.name })
+        .then((ok) => { if (ok) void refreshAgentShares(); })
+        .catch(() => undefined);
+      void sendToFriend(card.from.uid, acceptedShareText(card.name)).catch(() => undefined);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
