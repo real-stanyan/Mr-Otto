@@ -79,6 +79,17 @@ describe("boundedContextEvents（issue #351）", () => {
     store.close();
   });
 
+  it("聊天名单（#1523）：checkpoint 之前落的 chat_roster_changed 幸存于有界重建（车道的朝向从它推导）", () => {
+    const store = new EventStore(":memory:");
+    put(store, { type: "session_created", title: "t", workspace: "/w", cloud: { workspaceId: "w1", chat: { kind: "pair" }, home: true, pair: { ownerName: "小明", peerUid: "22222222-2222-4222-8222-222222222222", peerName: "小红", facing: "self" } } });
+    put(store, { type: "chat_roster_changed", agents: [{ agentId: "admin", name: "管理员" }], humans: [{ uid: "22222222-2222-4222-8222-222222222222", name: "小红" }], ignorable: true });
+    for (let i = 1; i <= 8; i++) turn(store, i);
+    put(store, { type: "context_compacted", summary: "前八轮的摘要", model: "m" });
+    for (let i = 9; i <= 11; i++) turn(store, i);
+    expect(boundedContextEvents(store, S)!.some((e) => e.type === "chat_roster_changed")).toBe(true);
+    assertEquivalent(store);
+    store.close();
+  });
   it("私密车道的私聊信封（#1461）：checkpoint 之前落的 pair_context_loaded 幸存于有界重建", () => {
     const store = new EventStore(":memory:");
     put(store, { type: "session_created", title: "t", workspace: "/w", cloud: { workspaceId: "w1", chat: { kind: "pair" }, home: true } });

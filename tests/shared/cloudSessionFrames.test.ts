@@ -25,7 +25,7 @@ describe("cs_say 的 mentions（#928 切片 1a）", () => {
 
 describe("cs 协议 6（#957 第三批：stop 帧与 say/approve/stop 回执）", () => {
   it("CS_PROTOCOL_VERSION === 22（…；15 = #1103 Git 凭据；16 = #1107 流式 delta 帧；17 = #1163 语音通话 call 帧；18 = #1140 wiki_write 帧；19 = #1233 say.voice；20 = #1280 聊天；21 = #1393 群里的真人；22 = #1441 外联会话与语音合成的票；23 = #1461 好友私聊里的私密车道；24 = #1491 say.media 图片视频引用）", () => {
-    expect(CS_PROTOCOL_VERSION).toBe(24);
+    expect(CS_PROTOCOL_VERSION).toBe(25);
   });
 
   it("delta 下行往返（协议 16，#1107）", () => {
@@ -418,7 +418,9 @@ describe("协议 23：好友私聊里的私密车道（#1461 P1）", () => {
 
   it("形状不对整帧拒掉，不降级成团队会话：peerUid 不像 uid / facing 不是 self（both 是 P2）/ 零只 / agentId 不像", () => {
     expect(decodeCsUp(create({ kind: "pair", peerUid: "nope", facing: "self", agentIds: ["admin"] }))).toBeNull();
-    expect(decodeCsUp(create({ kind: "pair", peerUid: PEER, facing: "both", agentIds: ["admin"] }))).toBeNull();
+    // 协议 25（#1523）起收 both；别的值仍拒
+    expect(decodeCsUp(create({ kind: "pair", peerUid: PEER, facing: "both", agentIds: ["admin"] }))).toMatchObject({ t: "create", chat: { kind: "pair", facing: "both" } });
+    expect(decodeCsUp(create({ kind: "pair", peerUid: PEER, facing: "all", agentIds: ["admin"] }))).toBeNull();
     expect(decodeCsUp(create({ kind: "pair", peerUid: PEER, agentIds: ["admin"] }))).toBeNull();
     expect(decodeCsUp(create({ kind: "pair", peerUid: PEER, facing: "self", agentIds: [] }))).toBeNull();
     expect(decodeCsUp(create({ kind: "pair", peerUid: PEER, facing: "self", agentIds: ["bad id"] }))).toBeNull();
@@ -433,6 +435,13 @@ describe("协议 23：好友私聊里的私密车道（#1461 P1）", () => {
     });
   });
 
+  it("chat_update 收 facing（协议 25，#1523）：self / both；别的值整帧拒；只带 facing 也算一条有意义的帧", () => {
+    const up = (facing: unknown) => encodeCs({ t: "chat_update", workspaceId: "w1", sessionId: "s1", facing } as never);
+    expect(decodeCsUp(up("both"))).toEqual({ t: "chat_update", workspaceId: "w1", sessionId: "s1", facing: "both" });
+    expect(decodeCsUp(up("self"))).toEqual({ t: "chat_update", workspaceId: "w1", sessionId: "s1", facing: "self" });
+    expect(decodeCsUp(up("all"))).toBeNull();
+    expect(decodeCsUp(encodeCs({ t: "chat_update", workspaceId: "w1", sessionId: "s1" } as never))).toBeNull();
+  });
   it("welcome 的 chat 认 pair，带 pair 那一格（形状不对当缺席）", () => {
     const w = (chat: unknown) =>
       decodeCsDown(b64({ t: "welcome", v: 23, sessionId: "s1", lastSeq: 0, initiatorUid: null, ownerUid: "u1", modelRoute: null, chat }));

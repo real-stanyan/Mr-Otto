@@ -44,7 +44,8 @@ describe("JS 那一侧", () => {
     const src = read("mobile/src/friends/FriendChatScreen.tsx");
     expect(src).toMatch(/startDictation\(setHoldText, \(m\) => setNote\(m\)\);\s*startVoiceRecording\(\);/);
     expect(src).toMatch(/const rec = await stopVoiceRecording\(ok\);/);
-    expect(src).toMatch(/if \(rec !== null && rec\.durationMs >= 1000 && laneTargets\(trimmed, broughtNames\) === null\)/);
+    // #1523：两条车道（我的、朋友公开给我的）任一被 @ 都发文字，判据合在 laneTargetsOf
+    expect(src).toMatch(/if \(rec !== null && rec\.durationMs >= 1000 && laneTargetsOf\(trimmed\) === null\)/);
     expect(src).toMatch(/kind: "audio", uri: rec\.uri, mediaType: "audio\/mp4"/);
     expect(src).toMatch(/toast\(rec !== null && rec\.durationMs < 1000 \? "说话时间太短" : "没听清，按住再说一遍"\)/);
   });

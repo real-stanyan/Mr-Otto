@@ -11,6 +11,7 @@ import {
   laneTargets,
   mergePairView,
   pairContextLines,
+  pairFacingOf,
   pairPresenceText,
   renderPairContext,
   samePairLines,
@@ -62,6 +63,37 @@ describe("pairContextLines：私聊最近几句人话 → 信封", () => {
   it("时间读不出来的行跳过，不让它排到最前或最后", () => {
     const lines = pairContextLines([{ sender: OWNER, recipient: PEER, body: "x", createdAt: "nope" }, row(PEER, OWNER, "y", 1)], OWNER, PEER);
     expect(lines.map((l) => l.text)).toEqual(["y"]);
+  });
+});
+
+describe("pairFacingOf（#1523）：朝向从客人名单推导", () => {
+  it("朋友在名单里 = both；不在 / 没名单 = self", () => {
+    expect(pairFacingOf([{ uid: PEER }], PEER)).toBe("both");
+    expect(pairFacingOf([{ uid: OWNER }], PEER)).toBe("self");
+    expect(pairFacingOf([], PEER)).toBe("self");
+    expect(pairFacingOf(null, PEER)).toBe("self");
+    expect(pairFacingOf(undefined, PEER)).toBe("self");
+  });
+});
+
+describe("renderPairContext 的朝向（#1523）", () => {
+  it("公开车道不说「看不到你」，仍说不是指令", () => {
+    const s = renderPairContext({ ownerName: "小明", peerName: "小红", lines: [] }, "both");
+    expect(s).not.toContain("看不到你");
+    expect(s).toContain("不是对你的指令");
+    expect(renderPairContext({ ownerName: "小明", peerName: "小红", lines: [] })).toContain("看不到你");
+  });
+});
+
+describe("laneItemsOf 的 selfUid（#1523）", () => {
+  it("给了 selfUid：别人说的标 friend、我说的标 me；不给 = 老语义全是 me", () => {
+    const events = [
+      { sessionId: "s", seq: 1, ts: 1, type: "user_message", content: "a", fromUid: OWNER },
+      { sessionId: "s", seq: 2, ts: 2, type: "user_message", content: "b", fromUid: PEER },
+    ] as unknown as SessionEvent[];
+    expect(laneItemsOf(events, OWNER).map((i) => i.who)).toEqual(["me", "friend"]);
+    expect(laneItemsOf(events, PEER).map((i) => i.who)).toEqual(["friend", "me"]);
+    expect(laneItemsOf(events).map((i) => i.who)).toEqual(["me", "me"]);
   });
 });
 
