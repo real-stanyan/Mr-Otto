@@ -7,6 +7,8 @@
 // 带了智能体之后打一个 @ 弹选人（#1493）：名单是我带进来的那几只 + 朋友公开给我的那几只（朋友不在里面——@ 朋友没有去处），
 // 挑中了经 ref.mention 插回光标处，判据与群聊页同一份（agentMentionInput / MentionSheet）。
 // 名片（#1524）：＋ 里「名片」挑我的智能体 / 别的朋友发给 TA；收到的卡画成 ContactCardBubble（加为朋友 / 发消息 / 接受）。
+// 公开智能体（#1533）：标题栏电话钮 → 给本人（二期）/ 给 TA 的公开智能体（先替 TA 开车道、再把聊天页以客人身份开在那条上拨出去）；
+// @ 名单里先列 TA 的公开智能体，车道还没有时第一次 @ 就开。
 // 车道的朝向（#1523）：我带进来的可以「仅我可见」或「公开给 TA」（横幅上的那颗标签 / 聊天信息页能切）；
 // 朋友公开给我的那条用第二条连接读（peerLane.ts），画成另一种底色的虚线气泡，@ 它说的话走朋友那条车道。
 import { allowsPair } from "../../../src/shared/friendTier.js";
@@ -25,7 +27,8 @@ import { agentNameOf } from "../../../src/shared/workspaceView.js";
 import { chatSessionOf, closeChatIf, openChat, sendText, useChatStore } from "../cloud/chatStore.js";
 import { PickAgentsDialog } from "../group/PickAgentsDialog.js";
 import { bringAgents, loadPairLane, loadPairPresence, setLaneFacing, usePairLane, usePairPresence } from "./pairLane.js";
-import { closePeerLane, openPeerLane, sayToPeerLane, usePeerLane } from "./peerLane.js";
+import { closePeerLane, ensurePeerLane, openPeerLane, sayToPeerLane, usePeerLane } from "./peerLane.js";
+import { CallPickDialog } from "./CallPickDialog.js";
 import { LaneFacingDialog } from "./LaneFacingDialog.js";
 import type { WorkspaceSnapshot } from "../../../src/shared/workspaces.js";
 import { readUpTo, receiptLabel } from "../../../src/shared/readReceipt.js";
@@ -212,9 +215,16 @@ export function FriendChatScreen({ route, navigation }: Props) {
   const peer = usePeerLane(uid);
   useFocusEffect(
     useCallback(() => {
-      if (friend) void openPeerLane(uid);
+      if (friend) void openPeerLane(uid, { name, avatarUrl: row?.profile.avatarUrl ?? "" });
+      // 名字 / 头像只是快照，变了不重连
+      // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [uid, friend]),
   );
+  // 电话钮（#1533）：给本人（二期）/ 给 TA 的公开智能体——后者把聊天页以客人身份开在 TA 那条车道上、房间一好就拨
+  const [calling, setCalling] = useState<{ key: number; visible: boolean } | null>(null);
+  const [callBusy, setCallBusy] = useState(false);
+  const [callError, setCallError] = useState<string | null>(null);
+  const publicAgent = peer?.publicAgent ?? null;
   useEffect(() => () => closePeerLane(), []);
   useEffect(() => {
     if (homeId !== null && friend) void loadPairLane(homeId, uid);
@@ -270,18 +280,27 @@ export function FriendChatScreen({ route, navigation }: Props) {
     const fallback = peer.session.chat?.agentIds ?? [];
     return [...(chatRosterNow(peerEvents, fallback) ?? fallback)];
   }, [peer, peerEvents]);
-  const peerNames = useMemo(
-    () => (peer === null ? [] : peerAgentIds.filter((id) => peer.agents.some((a) => a.agentId === id)).map((id) => ({ agentId: id, name: peer.agents.find((a) => a.agentId === id)?.name ?? id }))),
-    [peer, peerAgentIds],
-  );
+  const peerNames = useMemo(() => {
+    if (peer === null) return [];
+    const inLane = peerAgentIds.filter((id) => peer.agents.some((a) => a.agentId === id)).map((id) => ({ agentId: id, name: peer.agents.find((a) => a.agentId === id)?.name ?? id }));
+    // 车道还没有 / 公开智能体还没进名单（#1533）：@ 名单里先列它，第一次 @ 时再替 TA 开车道
+    if (peer.publicAgent !== null && !inLane.some((a) => a.agentId === peer.publicAgent!.agentId)) inLane.push({ agentId: peer.publicAgent.agentId, name: peer.publicAgent.name });
+    return inLane;
+  }, [peer, peerAgentIds]);
   const peerItems = useMemo<LaneRow[]>(
     () => (peer === null || peer.session === null ? [] : [...laneItemsOf(peerEvents, selfUid), ...lanePending(peerEvents, peer.streaming)].map((item) => ({ ...item, peer: true }))),
     [peer, peerEvents, selfUid],
   );
   // @ 选人与画脸要一份快照：我的主场 + 朋友公开给我的那几只（只有名字 / 职责 / 头像，0043 的 RPC 给的）
   const mentionWs = useMemo<WorkspaceSnapshot | null>(() => {
-    if (homeWs === null) return peer !== null && peer.agents.length > 0 ? { ...(peer.session !== null ? { id: peer.session.workspaceId } : { id: "" }), name: "", ownerUid: uid, members: [], connectors: [], sessions: [], agents: [...peer.agents], sandboxApproval: null, kind: "home" } : null;
-    return peer === null || peer.agents.length === 0 ? homeWs : { ...homeWs, agents: [...homeWs.agents, ...peer.agents.filter((a) => !homeWs.agents.some((b) => b.agentId === a.agentId))] };
+    const theirs = peer === null ? [] : [...peer.agents];
+    // 公开智能体（#1533）还没进车道名单时也要画得出脸 / 名字：RPC 给的几格拼一行
+    if (peer?.publicAgent && !theirs.some((a) => a.agentId === peer.publicAgent!.agentId)) {
+      const p = peer.publicAgent;
+      theirs.push({ agentId: p.agentId, name: p.name, description: p.description, instructions: "", models: [], tools: [], createdBy: uid, updatedTs: 0, avatarSlot: p.avatarSlot });
+    }
+    if (homeWs === null) return theirs.length > 0 ? { id: peer?.session?.workspaceId ?? "", name: "", ownerUid: uid, members: [], connectors: [], sessions: [], agents: theirs, sandboxApproval: null, kind: "home" } : null;
+    return theirs.length === 0 ? homeWs : { ...homeWs, agents: [...homeWs.agents, ...theirs.filter((a) => !homeWs.agents.some((b) => b.agentId === a.agentId))] };
   }, [homeWs, peer, uid]);
   const presenceText = pairPresenceText(presence);
 
@@ -337,13 +356,21 @@ export function FriendChatScreen({ route, navigation }: Props) {
       // 名字底下一行在线状态（#1460）。对方从没报过时只有名字
       headerTitle: () => <FriendTitle uid={uid} name={name} />,
       headerRight: () => (
-        <HeaderIconButton label="聊天信息" onPress={() => navigation.navigate("ChatInfo", { kind: "friend", uid })}>
-          <Icon name="ellipsis" size={24} stroke={2} color={c.foreground} />
-        </HeaderIconButton>
+        <View style={{ flexDirection: "row", alignItems: "center" }}>
+          {friend ? (
+            // 打电话（#1533）：给本人（二期）/ 给 TA 的公开智能体
+            <HeaderIconButton label="打电话" onPress={() => { setCallError(null); setCalling({ key: Date.now(), visible: true }); }}>
+              <Icon name="phone" size={22} stroke={2} color={c.foreground} />
+            </HeaderIconButton>
+          ) : null}
+          <HeaderIconButton label="聊天信息" onPress={() => navigation.navigate("ChatInfo", { kind: "friend", uid })}>
+            <Icon name="ellipsis" size={24} stroke={2} color={c.foreground} />
+          </HeaderIconButton>
+        </View>
       ),
       ...(others > 0 ? { headerBackTitle: String(others), headerBackButtonDisplayMode: "default" as const } : { headerBackButtonDisplayMode: "minimal" as const }),
     });
-  }, [navigation, name, uid, others, c.foreground]);
+  }, [navigation, name, uid, others, c.foreground, friend]);
 
   const items = useMemo<Item[]>(() => {
     const out: Item[] = [];
@@ -374,7 +401,14 @@ export function FriendChatScreen({ route, navigation }: Props) {
     // @ 了我带进来的智能体 → 进我的车道（不写进 messages）；@ 了朋友公开给我的 → 进朋友那条（第二条连接）；否则照旧发给朋友
     const targets = laneTargetsOf(text);
     if (targets !== null && targets.lane === "peer") {
-      if (peer?.session?.state !== "ready") {
+      if (peer?.session === null || peer?.session === undefined) {
+        // 第一次 @ TA 的公开智能体（#1533）：先替 TA 开车道（runtime 核对朋友关系 / 档位 / 设了哪只）
+        const opened = await ensurePeerLane(uid);
+        if (!opened.ok) {
+          setNote(opened.message);
+          return false;
+        }
+      } else if (peer.session.state !== "ready") {
         setNote(`${name}的智能体还没连上，稍等一下再发。`);
         return false;
       }
@@ -731,6 +765,35 @@ export function FriendChatScreen({ route, navigation }: Props) {
           onExited={() => {
             setBringing(null);
             setBringError(null);
+          }}
+        />
+      ) : null}
+      {calling !== null ? (
+        <CallPickDialog
+          key={calling.key}
+          visible={calling.visible}
+          friendName={name}
+          agentName={publicAgent?.name ?? null}
+          busy={callBusy}
+          error={callError}
+          onAgent={() => {
+            void (async () => {
+              setCallBusy(true);
+              setCallError(null);
+              const r = await ensurePeerLane(uid);
+              setCallBusy(false);
+              if (!r.ok) {
+                setCallError(r.message);
+                return;
+              }
+              setCalling((d) => (d === null ? d : { ...d, visible: false }));
+              navigation.push("Chat", { kind: "guest", workspaceId: r.workspaceId, sessionId: r.sessionId, autoCall: true });
+            })();
+          }}
+          onClose={() => setCalling((d) => (d === null ? d : { ...d, visible: false }))}
+          onExited={() => {
+            setCalling(null);
+            setCallError(null);
           }}
         />
       ) : null}

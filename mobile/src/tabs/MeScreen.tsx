@@ -9,6 +9,9 @@ import { PlanPill } from "../account/PlanPill.js";
 import { refreshBilling, useBilling } from "../account/billingStore.js";
 import { useHome } from "../home/homeStore.js";
 import { ensureProfile, refreshProfile, useProfile } from "../me/profileStore.js";
+import { PickAgentsDialog } from "../group/PickAgentsDialog.js";
+import { setPublicAgent } from "../../../src/shared/supabaseWorkspacesApi.js";
+import { agentNameOf } from "../../../src/shared/workspaceView.js";
 import { supabase } from "../supabase.js";
 import { usePalette } from "../theme.js";
 import { Group, Row, useNow } from "../ui.js";
@@ -47,6 +50,11 @@ export function MeScreen() {
   const { billing } = useBilling();
   const now = useNow(60_000);
   const me = useMyName();
+  const { me: profile } = useProfile();
+  // 公开智能体（#1533）：挑一只 / 不设
+  const [picking, setPicking] = useState<{ key: number; visible: boolean } | null>(null);
+  const [pubBusy, setPubBusy] = useState(false);
+  const [pubError, setPubError] = useState<string | null>(null);
   useFocusEffect(
     useCallback(() => {
       void refreshProfile();
@@ -93,6 +101,19 @@ export function MeScreen() {
         </Group>
 
         {ws !== null ? (
+          // 公开智能体（#1533）：朋友在和我的私聊里能 @ 它、给它打电话（只对「可带智能体」及以上的朋友）
+          <Group inset={52} footer="设定一只之后，朋友在和你的私聊里能 @ 它、给它打电话；它会把朋友的需求总结给你。只对「可带智能体」及以上的朋友开放。">
+            <Row
+              leading={<Lead name="sparkles" />}
+              label="公开智能体"
+              value={profile?.publicAgentId !== undefined && profile?.publicAgentId !== null && ws.agents.some((a) => a.agentId === profile.publicAgentId) ? agentNameOf(ws, profile.publicAgentId) : "没设"}
+              chevron
+              onPress={() => { setPubError(null); setPicking({ key: Date.now(), visible: true }); }}
+            />
+          </Group>
+        ) : null}
+
+        {ws !== null ? (
           <Group header="它们共用的一台电脑" inset={52}>
             <Row leading={<Lead name="folder" />} label="文件" chevron onPress={() => navigation.navigate("Files", { path: "" })} />
             <Row leading={<Lead name="blocks" />} label="应用" {...(ws.connectors.length > 0 ? { value: `${ws.connectors.length} 个` } : {})} chevron onPress={() => navigation.navigate("Apps")} />
@@ -105,6 +126,40 @@ export function MeScreen() {
           <Row leading={<Lead name="settings" />} label="设置" chevron onPress={() => navigation.navigate("Settings")} />
         </Group>
       </ScrollView>
+      {picking !== null && ws !== null ? (
+        <PickAgentsDialog
+          key={picking.key}
+          visible={picking.visible}
+          ws={ws}
+          title="公开智能体"
+          lead="挑一只（不挑 = 不设）。朋友在和你的私聊里能 @ 它、给它打电话。"
+          options={ws.agents.map((a) => a.agentId)}
+          preset={profile?.publicAgentId !== undefined && profile?.publicAgentId !== null ? [profile.publicAgentId] : []}
+          min={0}
+          max={1}
+          okLabel="保存"
+          busy={pubBusy}
+          error={pubError}
+          onOk={(picked) => {
+            void (async () => {
+              if (profile === null) return;
+              setPubBusy(true);
+              setPubError(null);
+              try {
+                await setPublicAgent(supabase, profile.id, picked[0] ?? null);
+                await refreshProfile();
+                setPicking((p) => (p === null ? p : { ...p, visible: false }));
+              } catch (e) {
+                setPubError(e instanceof Error ? e.message : String(e));
+              } finally {
+                setPubBusy(false);
+              }
+            })();
+          }}
+          onClose={() => setPicking((p) => (p === null ? p : { ...p, visible: false }))}
+          onExited={() => setPicking(null)}
+        />
+      ) : null}
     </View>
   );
 }
