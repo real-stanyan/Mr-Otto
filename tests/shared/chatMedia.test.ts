@@ -1,4 +1,4 @@
-// chatMedia —— 聊天里发图片和视频的纯判据（#1443 P1，ADR-0342）：上限、jsonb 那一格的严格解析、占位正文、
+// chatMedia —— 聊天里发图片和视频的纯判据（#1443 P1，ADR-0343）：上限、jsonb 那一格的严格解析、占位正文、
 // 路径、一次挑了好几样时怎么拆成几条消息、图片要不要重编码与阶梯、视频收不收。
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
