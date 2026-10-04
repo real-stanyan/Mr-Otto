@@ -46,6 +46,7 @@ const DURABLE = [
   "voice_call_changed",
   "call_ring",
   "outreach",
+  "friend_pick",
   "chat_roster_changed",
   "executor_changed",
   "memory_loaded",

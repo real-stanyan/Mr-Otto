@@ -728,6 +728,31 @@ export interface OutreachEvent extends SessionEventBase {
   ignorable: true;
 }
 
+/** 选人卡上的一位候选（#1520）。`why` = 卡上第二行（为什么猜他）；空串 = 不画那一行（模型点名的候选不附理由） */
+export interface FriendPickCandidate { uid: string; name: string; why: string }
+
+/** 智能体打电话认不准是哪位好友时，在原聊天里弹的一张选人卡（#1520）。`offered` 开头（带候选、问话与
+    存好的 brief / opening），之后至多一条 `picked` / `dismissed`，`picked` 之后打不出去再落一条 `failed`；最后一条说了算。
+    过期（offered 超过 10 分钟）与作废（之后又出了一张新卡）不落事件，读的时候算（friendPick.ts 的 friendPickStatus）。
+    **叫 `fromAgentId` 不叫 `agentId`**：同 outreach / call_ring。模型不可见（`ignorable`）：出卡由 call_friend 的
+    tool_result 告诉它，点了之后的结果由外联的汇报开场白告诉它 */
+export interface FriendPickEvent extends SessionEventBase {
+  type: "friend_pick";
+  pickId: string;
+  phase: "offered" | "picked" | "dismissed" | "failed";
+  fromAgentId: string;
+  /** offered 才有 */
+  question?: string;
+  candidates?: FriendPickCandidate[];
+  brief?: string;
+  opening?: string;
+  /** picked 才有 */
+  uid?: string;
+  /** failed 才有：卡上那行红字 */
+  message?: string;
+  ignorable: true;
+}
+
 /** 聊天名单变了（#1280，spec §5.1）。`agents` 是变动之后的**完整**名单，名字是写入那一刻的
     快照（同 voice_call_changed：改名不改史）。最新一条胜出，投影在 src/shared/chatRoster.ts；
     一条都没有 = 这条会话没有名单这回事（团队会话 / 存量日志）= 整份团队名单都在。
@@ -1257,6 +1282,7 @@ export type SessionEvent =
   | VoiceCallChangedEvent
   | CallRingEvent
   | OutreachEvent
+  | FriendPickEvent
   | ChatRosterChangedEvent
   | ExecutorChangedEvent
   | MemoryLoadedEvent
@@ -1324,6 +1350,7 @@ const KNOWN_EVENT_TYPES_MAP: Record<SessionEvent["type"], true> = {
   voice_call_changed: true,
   call_ring: true,
   outreach: true,
+  friend_pick: true,
   chat_roster_changed: true,
   executor_changed: true,
   memory_loaded: true,
