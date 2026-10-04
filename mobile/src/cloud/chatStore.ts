@@ -115,6 +115,8 @@ export function chatSessionOf(sessionId: string): ChatSession | null {
 
 /** 每次 closeChat 加一：异步回来时比一比，变了就说明人已经离开了这一页 */
 let gen = 0;
+/** 此刻正在开（openChat 还没回来）的是哪一条。closeChatIf 据它判「别人是不是已经在接手这一条连接」 */
+let pendingOpen: { sessionId: string; gen: number } | null = null;
 
 /** 本机缓存（#1426）：这条聊天是替谁开的（缓存按账号分键）；对账之前服务器这一轮下发的最小 seq */
 let cacheOwner: string | null = null;
@@ -207,7 +209,25 @@ export async function openChat(
   seed: CsChatInfo | null | undefined,
   title?: string,
 ): Promise<void> {
+  // 同一条已经在开：挂载那一下与「回到这一页」那一下会撞在一起（#1461），第二次什么都不做，不然 join 两遍
+  if (pendingOpen !== null && pendingOpen.sessionId === sessionId && pendingOpen.gen === gen) return;
   const g = gen;
+  const mine = { sessionId, gen: g };
+  pendingOpen = mine;
+  try {
+    await openChatInner(g, workspaceId, sessionId, seed, title);
+  } finally {
+    if (pendingOpen === mine) pendingOpen = null;
+  }
+}
+
+async function openChatInner(
+  g: number,
+  workspaceId: string,
+  sessionId: string,
+  seed: CsChatInfo | null | undefined,
+  title: string | undefined,
+): Promise<void> {
   const uid = await ensureUid();
   if (g !== gen) return;
   if (store.get().session?.sessionId === sessionId) return;
@@ -215,6 +235,11 @@ export async function openChat(
   const cached = uid === null ? null : await loadChatCache(uid, sessionId);
   if (g !== gen) return;
   if (store.get().session?.sessionId === sessionId) return;
+  // 换下来的是**另一条**会话（#1461 复审 M1：群聊页回前台重连、朋友私聊页连私密车道，都会直接顶掉当前那条）：
+  // 先照 closeChat 那样收口——语音那一层停麦停放音、写回缓存。不收的话通话里说完的一句会经 sayVoice 发进新房间。
+  // 不加 gen：这一次 open 本身还要接着走。必须排在 cacheOwner 换人之前（写回的是旧那条的缓存）
+  const prev = store.get().session;
+  if (prev !== null && prev.sessionId !== sessionId) retireSession();
   cacheOwner = uid;
   serverMin = null;
   store.set({
@@ -265,7 +290,13 @@ export async function sendText(text: string, mentions: string[] | undefined, mem
   const sid = store.get().session?.sessionId ?? null;
   const line: OutboxLine | null = sid === null ? null : { id: ++outboxSeq, sessionId: sid, text, ts: Date.now() };
   if (line !== null) store.set((s) => ({ outbox: [...s.outbox, line] }));
-  const r = await sendQueue.run(() => say(text, mentions, memberMentions)).finally(() => {
+  // 排着队的那一句轮到时，连接可能已经换成别的会话了（#1461：朋友私聊页连私密车道、群聊页回前台重连）——
+  // say 发进的是「此刻那一条」，所以轮到时再核一次，换了就不发，不然这句话会落进别的房间
+  const r = await sendQueue.run(() =>
+    store.get().session?.sessionId === sid
+      ? say(text, mentions, memberMentions)
+      : Promise.resolve<CloudAck>({ ok: false, message: "已经离开了这条聊天，这句没有发出去" }),
+  ).finally(() => {
     if (line !== null) store.set((s) => ({ outbox: s.outbox.filter((l) => l.id !== line.id) }));
   });
   if (sid === null || store.get().session?.sessionId !== sid) return r;
@@ -337,15 +368,32 @@ export function takeDraftSeed(sessionId: string): string | null {
   return seed.text;
 }
 
-/** 离开这一页：先让语音那一层收口（停麦停放音——通话本身还在），再断连接、清状态 */
-export function closeChat(): void {
+/** 只在这条连接此刻还归 `sessionId` 时才关（#1461 P1）。手机同一时刻只连得上一条云会话，而和朋友私聊的页面
+    也要连它的私密车道——两个页面会交替拿这一条连接（从群里点进朋友私聊、私聊里拉人建群 replace 成群聊页）。
+    不判就是后离开的那一页把先到的那一页刚接上的连接断掉：别人已经开着另一条、或者正在开另一条，都不关 */
+export function closeChatIf(sessionId: string): void {
+  if (pendingOpen !== null && pendingOpen.sessionId !== sessionId) return;
+  const cur = store.get().session?.sessionId ?? null;
+  if (cur !== null && cur !== sessionId) return;
+  closeChat();
+}
+
+/** 换下手上这一条会话时的收口（closeChat 与「openChat 顶掉另一条」共用一份）：语音那一层先收口
+    （停麦停放音——通话本身还在），再把对过账的那份写回缓存 */
+function retireSession(): void {
   activity?.closed();
   // 对过账的才写回：没连上就离开的，手上那份是「缓存 + 半截 backlog」，写回去没有新信息
   const s = store.get().session;
   // denied 的会话缓存已经删了，离开时不许写回
   if (s !== null && !s.provisional && s.state !== "denied" && cacheOwner !== null) scheduleChatCacheSave(cacheOwner, s.sessionId, s.events);
   void flushChatCacheSave();
+}
+
+/** 离开这一页：先让语音那一层收口（停麦停放音——通话本身还在），再断连接、清状态 */
+export function closeChat(): void {
+  retireSession();
   gen += 1;
+  pendingOpen = null;
   cacheOwner = null;
   serverMin = null;
   void cloudClient.leave();

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { planChatCreate } from "../../services/runtime/src/chatCreate.js";
+import { pairCreateProblem, planChatCreate } from "../../services/runtime/src/chatCreate.js";
 
 const TEAM = [
   { agentId: "admin", name: "管理员" },
@@ -67,5 +67,32 @@ describe("planChatCreate（#1280）", () => {
     expect(
       planChatCreate({ kind: "dm", agentId: "admin" }, [{ agentId: "admin", name: "管理员", degraded: true }]),
     ).toEqual({ ok: false, message: "智能体名单这会儿读不出来，稍后再试" });
+  });
+});
+
+describe("planChatCreate：私密车道（#1461 P1）", () => {
+  const PEER = "22222222-2222-4222-8222-222222222222";
+  it("pair：标题恒空、名单按团队顺序", () => {
+    expect(planChatCreate({ kind: "pair", peerUid: PEER, facing: "self", agentIds: ["a_000000000002", "admin"] }, TEAM)).toEqual({
+      ok: true,
+      chatKind: "pair",
+      agentIds: ["admin", "a_000000000002"],
+      title: "",
+      entries: [{ agentId: "admin", name: "管理员" }, { agentId: "a_000000000002", name: "开发" }],
+    });
+  });
+  it("带进来的智能体不在了就拒，不悄悄少带几只", () => {
+    expect(planChatCreate({ kind: "pair", peerUid: PEER, facing: "self", agentIds: ["a_0000000000ff"] }, TEAM)).toMatchObject({ ok: false });
+  });
+});
+
+describe("pairCreateProblem（#1461 P1）", () => {
+  const ME = "11111111-1111-4111-8111-111111111111";
+  const PEER = "22222222-2222-4222-8222-222222222222";
+  it("只在主场、只对朋友、不能和自己配对", () => {
+    expect(pairCreateProblem({ byUid: ME, peerUid: PEER, home: true, friends: new Set([PEER]) })).toBeNull();
+    expect(pairCreateProblem({ byUid: ME, peerUid: PEER, home: false, friends: new Set([PEER]) })).toMatch(/主场/);
+    expect(pairCreateProblem({ byUid: ME, peerUid: PEER, home: true, friends: new Set() })).toMatch(/朋友/);
+    expect(pairCreateProblem({ byUid: ME, peerUid: ME, home: true, friends: new Set([ME]) })).toMatch(/自己/);
   });
 });

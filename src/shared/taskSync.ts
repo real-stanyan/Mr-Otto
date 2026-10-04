@@ -71,6 +71,7 @@ export const PEN_VERDICTS: Record<SessionEvent["type"], PenVerdict> = {
   memory_loaded: "executor",
   workspace_memory_loaded: "executor",
   workspace_wiki_loaded: "executor",
+  pair_context_loaded: "executor", // 私密车道信封（#1461）：起 turn 前由执行方落，同 wiki 快照
   memory_nudge: "executor",
   session_autotitled: "executor",
   session_topic_assigned: "executor",

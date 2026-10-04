@@ -152,6 +152,7 @@ export const PRIVACY_VERDICTS: Record<SessionEvent["type"], PrivacyVerdict> = {
   memory_loaded: "strip",
   workspace_memory_loaded: "strip", // 工作区的记忆是那个工作区的私事，不是这段对话（#949）
   workspace_wiki_loaded: "strip", // 团队的 wiki 是那个团队的私事（#1140）
+  pair_context_loaded: "strip", // 私密车道的信封（#1461）：整段是发送方和朋友的私聊原文，是两个人的私事
   voice_call_changed: "strip", // 语音通话名单是那个团队会话的控制面状态，不是这段对话的内容（#1163）
   chat_roster_changed: "strip", // 聊天名单是那条聊天的控制面状态，不是这段对话的内容（#1280，同 voice_call_changed）
   executor_changed: "strip", // 哪台设备在跑是发送方这个人的私事，不是这段对话（#1223）
