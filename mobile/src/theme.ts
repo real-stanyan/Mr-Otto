@@ -53,7 +53,9 @@ export interface Palette {
   bubbleMe: string;
   /** 别人说的那个气泡（人） */
   bubbleThem: string;
-  /** 智能体说的那个气泡：ok 绿 14% 调进纸面（#1465，维护者从三个方向里挑的 B），一眼分得出机器说的和人说的 */
+  /** 智能体说的那个气泡：ok 绿调进纸面（#1465，维护者从三个方向里挑的 B），一眼分得出机器说的和人说的。浅色 14%；
+      深色 22%——14% 调进黑底算出来是 #16301f，在屏幕上和人的灰气泡 #2c2c2e 分不开（维护者 2026-10-04 真机截图），
+      22% 是三档里他挑的那一档 */
   bubbleAgent: string;
 }
 
@@ -118,7 +120,7 @@ const dark: Palette = {
   // color-mix(in srgb, #0a84ff 18%, #1d1d1f)
   bubbleMe: "#1a3047",
   bubbleThem: "#2c2c2e",
-  bubbleAgent: "#16301f",
+  bubbleAgent: "#21452b",
 };
 
 export function usePalette(): { c: Palette; isDark: boolean } {
