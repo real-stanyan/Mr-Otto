@@ -1,5 +1,8 @@
 // 「聊天」页签（#1386，spec §5.1，demo 的 chatsRoot）：标题「聊天(n)」+ 右上 ⊕；搜索条；没有主场时一张订阅卡；
-// 一列会话（智能体私聊 / 群 / 有真人的群 / 朋友私聊）按最近一句降序——判据在 shared/wechatInbox.ts。
+// 一列会话按最近一句降序——判据在 shared/wechatInbox.ts。
+// #1566（维护者 2026-10-04）：**主页只留人↔人与群**（朋友私聊 / 主场群 / 团队群 / 别人拉我进的群）；智能体的行
+// 收进顶上一格「智能体」（进 AgentChatsScreen；别人的智能体再收一层抽屉）。搜索时不分家：搜到哪行列哪行。
+// 每一行左滑「删除」= 只从这台手机的列表里拿掉（hiddenStore），有新话再冒出来。
 //
 // · 进门几态照搬 rosterGate（A1 定的，原样成立）：还没查到 / 正在建主场 → 不下结论、不劝订阅；没订阅 / 档位不带 →
 //   一张订阅卡（朋友私聊与团队群照常在下面，demo 同款）；建失败 → 原因 + 重试钮、不自动重试；
@@ -8,11 +11,16 @@
 // · 刷新：进这一页、回到前台。不轮询（朋友那条有 realtime）。
 import { useFocusEffect, useNavigation, useScrollToTop } from "@react-navigation/native";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { AppState, FlatList, StyleSheet, Text, View } from "react-native";
+import { AppState, FlatList, Pressable, StyleSheet, Text, View } from "react-native";
 import { rosterGate, type RosterGate } from "../../../src/shared/agentRoster.js";
 import { CHAT_GROUP_CREATE_MIN } from "../../../src/shared/chatRoster.js";
 import { mixedGroupName } from "../../../src/shared/chatGuests.js";
-import { filterInbox, type InboxRow } from "../../../src/shared/wechatInbox.js";
+import { agentFolderSummary, filterInbox, listTimeLabel, splitInbox, type InboxRow } from "../../../src/shared/wechatInbox.js";
+import { workspaceAgentActivity } from "../../../src/shared/agentActivityRows.js";
+import { useActivity } from "../activity/activityStore.js";
+import { hideChat } from "../inbox/hiddenStore.js";
+import { CountBadge, DotBadge } from "../wx/Badge.js";
+import { SwipeRow } from "../wx/SwipeRow.js";
 import { workspaceAccess } from "../../../src/shared/workspaceAccess.js";
 import { NewAgentDialog } from "../agent/NewAgentDialog.js";
 import { cloudClient } from "../cloud/cloudClient.js";
@@ -31,7 +39,11 @@ import { Icon } from "../wx/Icon.js";
 import { PlusMenu, type MenuItem } from "../wx/Menu.js";
 import { SearchBar } from "../wx/SearchBar.js";
 import { HeaderIconButton, TabHeader } from "../wx/TabHeader.js";
-import { ChatListRow, CHAT_ROW_SEP } from "./ChatListRow.js";
+import { ChatListRow, CHAT_ROW_AVATAR, CHAT_ROW_SEP } from "./ChatListRow.js";
+import { agentFaceSlot } from "../../../src/shared/agentAvatar.js";
+import { GRID_MAX, type GridCell } from "../../../src/shared/wechatInbox.js";
+import type { WorkspaceSnapshot } from "../../../src/shared/workspaces.js";
+import { SpecAvatar } from "../wx/Avatar.js";
 
 export function refreshAll(): void {
   void refreshHome().then(() => refreshTeams());
@@ -62,6 +74,72 @@ export function GateCard({ gate, ensureError, onSubscribe }: { gate: RosterGate;
     default:
       return null;
   }
+}
+
+/** 「智能体」那一格（#1566）：长得像一行聊天（头像 48 是前几只的脸拼的九宫格、右上角未读数），第二行写
+    「N 只 · M 在忙」+ 最近一句；右边时间 + 箭头。点进 AgentChatsScreen */
+function AgentFolderRow({ ws, unread, mention, preview, ts, now, onPress }: {
+  ws: WorkspaceSnapshot;
+  unread: number;
+  mention: boolean;
+  preview: string;
+  ts: number;
+  now: number;
+  onPress: () => void;
+}) {
+  const { c } = usePalette();
+  const activity = useActivity();
+  const cells = ws.agents.slice(0, GRID_MAX).map((a): GridCell => ({ kind: "face", id: a.agentId, slot: agentFaceSlot(ws, a.agentId) }));
+  const busy = ws.agents.filter((a) => {
+    const s = workspaceAgentActivity(activity.rows, ws.id, a.agentId, now);
+    return s !== null && s !== "idle";
+  }).length;
+  const count = `${ws.agents.length} 只${busy > 0 ? ` · ${busy} 在忙` : ""}`;
+  const time = ts > 0 ? listTimeLabel(ts, now) : "";
+  return (
+    <View style={{ backgroundColor: c.card }}>
+      <Pressable
+        accessibilityRole="button"
+        accessibilityLabel={`智能体，${count}${unread > 0 ? `，${unread} 条聊天有新消息` : ""}${preview !== "" ? `，${preview}` : ""}`}
+        onPress={onPress}
+        style={({ pressed }) => [
+          { flexDirection: "row", alignItems: "center", gap: 12, minHeight: 72, paddingHorizontal: 16 },
+          pressed && { backgroundColor: c.press },
+        ]}
+      >
+        <View>
+          {cells.length > 0 ? (
+            <SpecAvatar spec={{ kind: "grid", cells }} size={CHAT_ROW_AVATAR} />
+          ) : (
+            <View style={{ width: CHAT_ROW_AVATAR, height: CHAT_ROW_AVATAR, borderRadius: 7, backgroundColor: c.secondary, alignItems: "center", justifyContent: "center" }}>
+              <Icon name="sparkles" size={24} color={c.mutedForeground} />
+            </View>
+          )}
+          {unread > 0 ? (
+            <View style={{ position: "absolute", top: -6, right: -7 }}>
+              <CountBadge n={unread} ring={c.card} />
+            </View>
+          ) : mention ? (
+            <View style={{ position: "absolute", top: -3, right: -3 }}>
+              <DotBadge ring={c.card} />
+            </View>
+          ) : null}
+        </View>
+        <View style={{ flex: 1, minWidth: 0, paddingVertical: 12, gap: 4 }}>
+          <View style={{ flexDirection: "row", alignItems: "baseline", gap: 8 }}>
+            <Text numberOfLines={1} style={{ flex: 1, minWidth: 0, fontSize: 17, color: c.foreground }}>智能体</Text>
+            {time !== "" ? <Text style={{ fontSize: 12, color: c.faint, fontVariant: ["tabular-nums"] }}>{time}</Text> : null}
+          </View>
+          <Text numberOfLines={1} style={{ fontSize: 14, color: c.mutedForeground }}>
+            <Text style={{ color: busy > 0 ? c.brand : c.mutedForeground }}>{count}</Text>
+            {preview !== "" ? ` · ${preview}` : ""}
+          </Text>
+        </View>
+        <Icon name="chevron-right" size={18} stroke={1.8} color={c.faint} />
+      </Pressable>
+      <View style={{ height: StyleSheet.hairlineWidth, backgroundColor: c.border, marginLeft: CHAT_ROW_SEP }} />
+    </View>
+  );
 }
 
 /** 第一次装上（没有本机快照）时，最多等三份到齐这么久，过了就有什么先画什么 */
@@ -107,7 +185,11 @@ export function ChatsScreen() {
   }, [gate, home.ensure]);
 
   const ws = home.home;
-  const rows = useMemo(() => filterInbox(inbox.rows, q), [inbox.rows, q]);
+  const searching = q.trim() !== "";
+  // 主页只留人与群（#1566）；搜索时把智能体的行也列进来——搜到的那一行不该被收进文件夹藏起来
+  const split = useMemo(() => splitInbox(inbox.rows), [inbox.rows]);
+  const rows = useMemo(() => (searching ? filterInbox(inbox.rows, q) : split.main), [searching, inbox.rows, q, split.main]);
+  const folder = useMemo(() => agentFolderSummary(split.agents, split.others), [split.agents, split.others]);
   /** 发起群聊时能拉的朋友（#1393）：你的智能体和朋友可以在同一个群里 */
   const invitable = useMemo(() => friendPeople(friends.rows, new Set([home.selfUid ?? ""])), [friends.rows, home.selfUid]);
   const items: MenuItem[] = [
@@ -179,7 +261,11 @@ export function ChatsScreen() {
         ref={list}
         data={loading ? [] : rows}
         keyExtractor={(r) => r.key}
-        renderItem={({ item }) => <ChatListRow row={item} draft={drafts.get(item.key) ?? ""} now={now} onPress={() => open(item)} />}
+        renderItem={({ item }) => (
+          <SwipeRow onDelete={() => hideChat(item.key, item.ts)}>
+            <ChatListRow row={item} draft={drafts.get(item.key) ?? ""} now={now} onPress={() => open(item)} />
+          </SwipeRow>
+        )}
         ItemSeparatorComponent={() => (
           <View style={{ backgroundColor: c.card }}>
             <View style={{ height: StyleSheet.hairlineWidth, backgroundColor: c.border, marginLeft: CHAT_ROW_SEP }} />
@@ -194,18 +280,30 @@ export function ChatsScreen() {
               </View>
             ) : null}
             <GateCard gate={gate} ensureError={home.ensureError} onSubscribe={() => navigation.navigate("Subscription")} />
+            {/* 「智能体」那一格（#1566）：有主场才有；搜索时不画（搜到的行已经铺在下面） */}
+            {!loading && !searching && ws !== null ? (
+              <AgentFolderRow
+                ws={ws}
+                unread={folder.unread}
+                mention={folder.mention}
+                preview={folder.preview}
+                ts={folder.ts}
+                now={now}
+                onPress={() => navigation.navigate("AgentChats")}
+              />
+            ) : null}
           </>
         }
         ListEmptyComponent={
           loading ? (
             <View style={{ paddingTop: space.xl }}><Spinner /></View>
-          ) : q.trim() !== "" ? (
+          ) : searching ? (
             <Text style={{ fontSize: 15, color: c.mutedForeground, textAlign: "center", marginTop: space.xl }}>{`没有找到「${q.trim()}」`}</Text>
           ) : (
             <View style={{ alignItems: "center", marginTop: 56, gap: 6, paddingHorizontal: space.xl }}>
-              <Text style={{ fontSize: 16, color: c.foreground }}>还没有聊天</Text>
+              <Text style={{ fontSize: 16, color: c.foreground }}>还没有和人的聊天</Text>
               <Text style={{ fontSize: 14, lineHeight: 21, color: c.mutedForeground, textAlign: "center" }}>
-                {ws !== null ? "去通讯录找一只智能体说句话，或者加个朋友。" : "加个朋友，或者订阅之后建一只智能体。"}
+                {ws !== null ? "加个朋友，或者拉几只智能体建个群。和智能体的私聊在上面那一格里。" : "加个朋友，或者订阅之后建一只智能体。"}
               </Text>
             </View>
           )
