@@ -1062,6 +1062,8 @@ async function main(): Promise<void> {
       // 上一次量出来的卷用量（#836，ADR-0287）。纯读 sandbox 的内存缓存、不打
       // docker——量这一下发生在 sandbox.ensure() 里，这里只是把读数递过去
       diskUsage: () => sandbox.diskUsage(workspaceId),
+      // 定时任务（#1283）：本任务只把接口立起来，daemon 接 RoutineStore / scheduler 在后续任务——此刻不挂刀
+      routines: null,
       // 回电（#1411）：推送关着 = null（刀不出现）。isWatching = 这个房间里有没有他的连接——手机切后台会
       // 主动断开会话房（mobile/src/cloud/cloudClient.ts），所以「连着」就是「开着这条聊天」
       // 外联（#1441）：收尾时把结果汇报回原聊天、call_friend 那把刀的出口。推送关着 = 没有 hub = 两样都是 null；

@@ -188,6 +188,9 @@ import { SPEECH_TICKET_TTL_MS, type SpeechTicket } from "../../../src/shared/spe
 import { createOutreachRun, type OutreachEnded, type OutreachRun, type OutreachStart, type OutreachStartResult } from "./outreachRun.js";
 import { createCallUserTool } from "./callUserTool.js";
 import { createCallFriendTool } from "./callFriendTool.js";
+import { createRoutineTools } from "./routineTools.js";
+import type { RoutineStore } from "./routineStore.js";
+import { ROUTINE_MAX_ROUNDS, routineOpeningText } from "../../../src/shared/routines.js";
 import type { DeltaKind, ModelAdapter } from "../../../src/model/adapter.js";
 import { createDeltaStream } from "./deltaStream.js";
 import type { ExecutionWorld } from "../../../src/world/executionWorld.js";
@@ -520,6 +523,9 @@ export interface CloudSessionOpts {
       本进程还没量过。**只用来说话不用来拦人**，为什么见 sandbox.ts 的
       DISK_LIMIT_KIB */
   diskUsage: () => { usedKib: number; limitKib: number } | null;
+  /** 定时任务（#1283，spec §7）。**必需**（同 agentWriter / isMember 的纪律）：忘接线该编译不过。
+      null = 不挂那三把刀（团队会话 / 外联 / 0056 没跑）。刀只在 approveAll 且 chat.kind === "dm" 的会话里挂 */
+  routines: RoutineStore | null;
   /** 时钟（只给测试拧 TTL 用）。缺席 = Date.now */
   now?: () => number;
 }
@@ -683,6 +689,11 @@ export interface CloudSession {
       点它自己）并入队——同 greetNewAgent 那条路。**这一轮里每一把刀都要主人批**（正文是朋友说的话的转述，
       不是主人的指令，见 supervisedTurn）。那只已不在名单里就什么都不起 */
   reportOutreach(r: { agentId: string; text: string; ownerUid: string }): void;
+  /** 定时任务到点（#1283，spec §4.2）：替主人落一条 greeting:"routine" 的开场白并入队——与 greetNewAgent /
+      reportOutreach 同一条路。名单现读：那只已删 / 已移出回 no_agent，一个事件都不落 */
+  runRoutine(r: { routineId: string; title: string; instruction: string; tz: string; firedAt: number; agentId: string }): Promise<"ok" | "archived" | "no_agent">;
+  /** 定时任务没跑成的注记（错过 / 额度不够，spec §4.3）：ignorable，不起 turn */
+  logRoutineNote(n: { routineId: string; title: string; reason: "missed" | "skipped_quota"; plannedAt: number; tz: string }): void;
 }
 
 export type ChatUpdateOutcome =
@@ -881,6 +892,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   const rerunOpenings = new Set<number>();
   /** 这一轮的 job 覆盖到了补跑的开场白（#1441 终审 M7）。runJob 起跑时按 covered 算、收口复位 */
   let rerunTurn = false;
+  /** 这一轮是定时任务起的（#1283）：圈数上限只对它（没人在场按停止键）。按 job 覆盖的开场白算，同 reportTurn */
+  let routineTurn = false;
   /** 这一轮是不是主场群里的客人点起的（#1393，ADR-0325）。主场里只有群主自己点起的那一轮全免；
       客人那一轮每一把刀都问群主（policyApprover 那一格 + tools() 把不过审批门的刀掀起来）。
       团队会话恒为假（approveAll 为假），一个字不变 */
@@ -919,6 +932,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     reportTurn = reportTurn || t.report;
     foldedNonOwner = foldedNonOwner || t.nonOwner;
     rerunTurn = rerunTurn || covered.some((u) => rerunOpenings.has(u.seq));
+    routineTurn = routineTurn || covered.some((u) => u.greeting === "routine");
     ownerSpoke = ownerSpoke && t.ownerSpoke && depth === 0 && !rerunTurn;
   };
   const supervisedTurn = (): boolean => opts.approveAll && (guestTurn() || reportTurn || foldedNonOwner);
@@ -1527,10 +1541,21 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
                 originSessionId: sessionId, agentId: spec.agentId, agentName: specNames.get(spec.agentId) ?? spec.name, friend, brief, opening,
               }),
           });
+    // 定时任务三把刀（#1283）：只在主场私聊里挂；亮不亮按「主人亲口 && 不受监督」现算（routine 轮算主人亲口，Task 8）
+    const routineTools =
+      opts.routines === null || !opts.approveAll || chatKind !== "dm"
+        ? []
+        : createRoutineTools({
+            workspaceId: opts.workspaceId, agentId: spec.agentId, ownerUid: opts.ownerUid, store: opts.routines,
+            now: () => opts.now?.() ?? Date.now(),
+            available: () => ownerSpoke && !supervisedTurn(),
+          });
     const engine = new LoopEngine({
       store: agentView(store, spec.agentId),
       adapter,
       agentId: spec.agentId,
+      // 定时任务那一轮的圈数硬上限（#1283，spec §5.4）：没人在场按停止键。普通轮不封顶（ADR-0006）
+      maxRounds: () => (routineTurn ? ROUTINE_MAX_ROUNDS : undefined),
       // 每 turn 惰性重算：cachedPxTools 在 runJob 里于起跑前现拉，engine 的
       // rebuildTools()（runTurn 开头）读到的就是这一 turn 的授权快照
       // 只有管理员那只有 create_agent（spec §10 切片 6）。判据是 agentId 不是名字——
@@ -1545,6 +1570,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
           // 受监督的轮里干脆不亮这把刀：亮出来只会弹一张批了也必被 mayCall 拒的卡
           ...(callFriendTool !== null && !supervisedTurn() ? [callFriendTool] : []),
           ...(spec.agentId === ADMIN_AGENT_ID ? [createAgentTool] : []),
+          ...routineTools,
           ...gitTools,
           ...cachedPxTools,
         ];
@@ -2356,6 +2382,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // 两格都按这个 job **覆盖的全部开场白**算（covered），不只读 job.opening：折进来的后几条在这里不能漏。
     // openingDepth 为 0 才算亲口：接力棒的开场白 fromUid 是点火的那个人（也许就是主人），不能凭它算资格
     reportTurn = false;
+    routineTurn = false;
     foldedNonOwner = false;
     rerunTurn = false;
     ownerSpoke = true;
@@ -2590,6 +2617,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     } finally {
       currentInitiator = null;
       reportTurn = false;
+      routineTurn = false;
       ownerSpoke = false;
       foldedNonOwner = false;
       rerunTurn = false;
@@ -3211,6 +3239,33 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       notify(opening);
       // 同 say()：只有此刻没在排空时才起一条
       if (coordinator.enqueue({ agentId, fromUid: byUid, opening }) === "start_turn") startDrain();
+    },
+
+    async runRoutine(r) {
+      if (archived || isOutreach) return "archived";
+      // 名单现读（同 reportOutreach）：任务建的时候那只还在，到点可能已删
+      const roster = await rosterNow({ fresh: true });
+      if (archived) return "archived";
+      if (roster.some((a) => a.degraded) || !roster.some((a) => a.agentId === r.agentId)) return "no_agent";
+      const opening = store.append({
+        sessionId,
+        ts: Date.now(),
+        type: "user_message",
+        content: routineOpeningText({ title: r.title, instruction: r.instruction, firedAt: r.firedAt, tz: r.tz }),
+        fromUid: opts.ownerUid,
+        mentions: [r.agentId],
+        greeting: "routine",
+        routine: { id: r.routineId, title: r.title },
+        tz: r.tz,
+      }) as UserMessageEvent;
+      notify(opening);
+      if (coordinator.enqueue({ agentId: r.agentId, fromUid: opts.ownerUid, opening }) === "start_turn") startDrain();
+      return "ok";
+    },
+
+    logRoutineNote(n) {
+      if (archived) return;
+      notify(store.append({ sessionId, ts: Date.now(), type: "routine_note", ...n, ignorable: true }));
     },
 
     logOutreach(e) {
