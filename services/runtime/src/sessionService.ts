@@ -3261,7 +3261,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
 
     async pickFriend(pickId, byUid, uid) {
       if (archived) return { ok: false, message: "这条聊天已经归档了。" };
-      if (opts.outreach === null || byUid !== opts.ownerUid) return { ok: false, message: "只有他本人能选。" };
+      // 与刀的挂载条件同一句（callFriendTool 装配处）：外联会话 / 私密车道里不会有选人卡，也不认
+      if (opts.outreach === null || isOutreach || isPair || byUid !== opts.ownerUid) return { ok: false, message: "只有他本人能选。" };
       const st = friendPickFold.get(pickId);
       if (st === undefined || friendPickStatus(st, Date.now()) !== "open") return { ok: false, message: "这张卡已经用过或过期了。" };
       if (uid !== null && !st.candidates.some((c) => c.uid === uid)) return { ok: false, message: "这个人不在卡上。" };
@@ -3272,11 +3273,18 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       }
       // 先落 picked 再 await：notify 同步推进 fold，连点的第二帧在这里就会看到「用过了」
       log({ pickId, phase: "picked", fromAgentId: st.fromAgentId, uid });
-      const roster = await rosterNow({ fresh: true });
-      const agent = roster.some((a) => a.degraded) ? undefined : roster.find((a) => a.agentId === st.fromAgentId);
-      const failed = agent === undefined
-        ? "它已经不在这条聊天里了，电话没打出去。"
-        : await opts.outreach.dialPicked({ originSessionId: sessionId, agentId: st.fromAgentId, agentName: agent.name, uid, brief: st.brief, opening: st.opening });
+      // picked 已落盘：这一段任何一步抛了都要落 failed，否则卡永远停在「已选」、再点只会被拒
+      let failed: string | null;
+      try {
+        const roster = await rosterNow({ fresh: true });
+        const agent = roster.some((a) => a.degraded) ? undefined : roster.find((a) => a.agentId === st.fromAgentId);
+        failed = agent === undefined
+          ? "它已经不在这条聊天里了，电话没打出去。"
+          : await opts.outreach.dialPicked({ originSessionId: sessionId, agentId: st.fromAgentId, agentName: agent.name, uid, brief: st.brief, opening: st.opening });
+      } catch (err) {
+        console.warn(`[otto-runtime] 选人卡拨号失败（session=${sessionId}, pick=${pickId}）`, err);
+        failed = "电话没打出去，稍后再试。";
+      }
       if (failed !== null) log({ pickId, phase: "failed", fromAgentId: st.fromAgentId, message: failed });
       return { ok: true };
     },

@@ -1385,6 +1385,29 @@ describe("选人卡（#1520）", () => {
     expect(await t.session.pickFriend("p1", OWNER, "u-hong")).toEqual({ ok: true });
     expect(await t.session.pickFriend("p1", OWNER, "u-ming")).toEqual({ ok: false, message: "这张卡已经用过或过期了。" });
     expect(t.calls).toHaveLength(1);
+    expect(picksOf(t.events)).toEqual(["offered", "picked"]);
+    t.store.close();
+  });
+
+  it("拨号那一步抛了：仍落 failed 带那句话，卡不会卡在已选（回执 ok）", async () => {
+    const t = withPort(async () => { throw new Error("boom"); });
+    t.session.logFriendPick(OFFER);
+    expect(await t.session.pickFriend("p1", OWNER, "u-hong")).toEqual({ ok: true });
+    expect(picksOf(t.events)).toEqual(["offered", "picked", "failed"]);
+    expect((t.events.at(-1) as { message?: string }).message).toBe("电话没打出去，稍后再试。");
+    t.store.close();
+  });
+
+  it("并发连点：一个 ok、另一个被拒，dialPicked 只拨一次", async () => {
+    const gate = deferred();
+    const t = withPort(async () => { await gate.promise; return null; });
+    t.session.logFriendPick(OFFER);
+    const both = Promise.all([t.session.pickFriend("p1", OWNER, "u-hong"), t.session.pickFriend("p1", OWNER, "u-ming")]);
+    gate.resolve();
+    const results = await both;
+    expect(results).toContainEqual({ ok: true });
+    expect(results).toContainEqual({ ok: false, message: "这张卡已经用过或过期了。" });
+    expect(t.calls).toHaveLength(1);
     t.store.close();
   });
 
