@@ -5,10 +5,9 @@
 // 图片与视频（#1443 P1）：＋ 里「相册」「拍摄」；挑好的先就地处理（prepareMedia），图片攒一条、视频一条一个，
 // 每条先挂一个本地气泡报进度，传完换成真消息。纯媒体消息的正文是占位「[图片]」/「[视频]」，带着媒体时不画字。
 import { useFocusEffect, useIsFocused } from "@react-navigation/native";
-import { useHeaderHeight } from "@react-navigation/elements";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { AppState, FlatList, KeyboardAvoidingView, Platform, Pressable, Text, View } from "react-native";
+import { AppState, FlatList, Pressable, Text, View } from "react-native";
 import { agentFaceSlot } from "../../../src/shared/agentAvatar.js";
 import { chatRosterNow } from "../../../src/shared/chatRoster.js";
 import type { SessionEvent } from "../../../src/session/events.js";
@@ -34,7 +33,7 @@ import { pickFromCamera, pickFromLibrary, pickedKind, prepareAsset, type PickedA
 import type { RootStackParams } from "../nav/types.js";
 import { useMyName } from "../tabs/MeScreen.js";
 import { usePalette, withAlpha } from "../theme.js";
-import { Spinner } from "../ui.js";
+import { Spinner, useKeyboardInset } from "../ui.js";
 import { dictationUsable, startDictation, stopDictation, useVoice } from "../voice/voiceStore.js";
 import { FaceTile, PersonTile } from "../wx/Avatar.js";
 import { Icon } from "../wx/Icon.js";
@@ -141,7 +140,8 @@ export function FriendChatScreen({ route, navigation }: Props) {
   const inbox = useInbox();
   const me = useMyName();
   const voice = useVoice();
-  const headerHeight = useHeaderHeight();
+  // 键盘让位自己量(#1490):不再靠 KAV + useHeaderHeight,见 ui.tsx 的 useKeyboardInset
+  const kb = useKeyboardInset(() => {});
   const [note, setNote] = useState<string | null>(null);
   const [hold, setHold] = useState<HoldState>({ phase: "idle" });
   const [holdText, setHoldText] = useState("");
@@ -338,7 +338,7 @@ export function FriendChatScreen({ route, navigation }: Props) {
 
   return (
     <View style={{ flex: 1, backgroundColor: c.background }}>
-      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined} keyboardVerticalOffset={headerHeight}>
+      <View ref={kb.root.ref} onLayout={kb.root.onLayout} style={{ flex: 1, paddingBottom: kb.keyboard }}>
         {presenceText !== null ? (
           // 朋友带了私人智能体（#1461）：只说有几只，内容我看不到
           <Text style={{ fontSize: 12, color: c.mutedForeground, textAlign: "center", paddingVertical: 6, backgroundColor: c.side }}>{presenceText}</Text>
@@ -499,7 +499,7 @@ export function FriendChatScreen({ route, navigation }: Props) {
             </Text>
           </View>
         )}
-      </KeyboardAvoidingView>
+      </View>
       {bringing !== null && homeWs !== null ? (
         <PickAgentsDialog
           key={bringing.key}
