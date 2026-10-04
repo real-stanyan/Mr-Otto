@@ -46,6 +46,7 @@ import type {
 } from "./friends.js";
 import type { MyProfile, ProfilePatch, ProfileResult } from "./profile.js";
 import type { WorkspaceSnapshot } from "./workspaces.js";
+import type { SpeechEmotion } from "./voiceProsody.js";
 import type {
   AskUserAnswer,
   AskUserOption,
@@ -1286,7 +1287,7 @@ export interface ShellBridge {
   workspaceCloudBacklogPage(): Promise<FriendsResult<{ hasOlder: boolean }>>;
   /** 团队语音通话（#1163）：把一段文字合成语音。主进程拿 JWT 打网关，钱记在
       **听的人**自己的额度上；渲染层只拿字节去播 */
-  teamVoiceSpeak(text: string, voiceId: string): Promise<VoiceSpeakResult>;
+  teamVoiceSpeak(text: string, voiceId: string, emotion?: SpeechEmotion | null): Promise<VoiceSpeakResult>;
   /** 群语音里的麦克风（#1176）：开 / 关 / 半双工暂停 / 恢复。结果不从返回值来——
       全部走 onSpeechEvent（识别结果是 helper 自己冒出来的，没有哪条命令在等它） */
   /** `hints`：上下文词表（voiceMic.ts 的 speechHints），可选——旧调用方不传照旧 */

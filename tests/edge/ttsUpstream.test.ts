@@ -1,13 +1,13 @@
 // MiniMax t2a_v2 的请求 / 回包纯映射（#1163）。网关只在这一层认识 MiniMax 的形状：
-// 客户端发的是 `{model, text, voice_id, speed?}`，上游要的是 voice_setting /
+// 客户端发的是 `{model, text, voice_id, speed?, vol?, emotion?}`，上游要的是 voice_setting /
 // audio_setting 那套；回包里音频是 **hex**，错误是 **HTTP 200 + base_resp.status_code≠0**
 // （真机：.io 站对国内 key 回 200 + 2049 invalid api key）。
 import { describe, expect, it } from "vitest";
-import { hexToBytes, parseTtsReply, parseTtsRequest, ttsUpstreamBody } from "../../services/edge/src/ttsUpstream.js";
+import { hexToBytes, parseTtsReply, parseTtsRequest, TTS_EMOTION_INTENSITY, ttsUpstreamBody } from "../../services/edge/src/ttsUpstream.js";
 
 describe("parseTtsRequest", () => {
   it("text / voice_id 必填，speed 缺省 1、越界拒", () => {
-    expect(parseTtsRequest({ text: "你好", voice_id: "v" })).toEqual({ ok: true, req: { text: "你好", voiceId: "v", speed: 1 } });
+    expect(parseTtsRequest({ text: "你好", voice_id: "v" })).toEqual({ ok: true, req: { text: "你好", voiceId: "v", speed: 1, vol: 1, emotion: null } });
     expect(parseTtsRequest({ voice_id: "v" })).toMatchObject({ ok: false });
     expect(parseTtsRequest({ text: "  ", voice_id: "v" })).toMatchObject({ ok: false });
     expect(parseTtsRequest({ text: "x", voice_id: "" })).toMatchObject({ ok: false });
@@ -29,7 +29,7 @@ describe("parseTtsRequest", () => {
 
 describe("ttsUpstreamBody：MiniMax t2a_v2 的形状，非流式 mp3 64kbps 单声道", () => {
   it("字段齐全，model 是路由行的 wire_model", () => {
-    const b = JSON.parse(ttsUpstreamBody("speech-2.8-turbo", { text: "hi", voiceId: "v", speed: 1.2 }));
+    const b = JSON.parse(ttsUpstreamBody("speech-2.8-turbo", { text: "hi", voiceId: "v", speed: 1.2, vol: 1, emotion: null }));
     expect(b).toEqual({
       model: "speech-2.8-turbo",
       text: "hi",
@@ -43,7 +43,7 @@ describe("ttsUpstreamBody：MiniMax t2a_v2 的形状，非流式 mp3 64kbps 单�
 describe("parseTtsReply", () => {
   it("HTTP 200 + status_code≠0 是失败，带上游的码与话", () => {
     const r = parseTtsReply(JSON.stringify({ base_resp: { status_code: 2049, status_msg: "invalid api key" } }));
-    expect(r).toEqual({ ok: false, message: "MiniMax 2049：invalid api key" });
+    expect(r).toEqual({ ok: false, code: 2049, message: "MiniMax 2049：invalid api key" });
   });
 
   it("成功：hex → 字节，usage_characters / audio_length 带回", () => {
@@ -74,5 +74,27 @@ describe("parseTtsReply", () => {
     expect(hexToBytes("abc")).toBeNull();
     expect(hexToBytes("zz")).toBeNull();
     expect(hexToBytes("")).toEqual(new Uint8Array(0));
+  });
+});
+
+describe("情绪（#1515）", () => {
+  it("parseTtsRequest：emotion 只认六档 + neutral（neutral 当成不带）；vol 0.5–2；缺省不带 / 1", () => {
+    expect(parseTtsRequest({ text: "x", voice_id: "v", emotion: "happy", speed: 1.12, vol: 1.12 }))
+      .toEqual({ ok: true, req: { text: "x", voiceId: "v", speed: 1.12, vol: 1.12, emotion: "happy" } });
+    expect(parseTtsRequest({ text: "x", voice_id: "v", emotion: "neutral" })).toMatchObject({ ok: true, req: { emotion: null } });
+    expect(parseTtsRequest({ text: "x", voice_id: "v", emotion: "ecstatic" })).toMatchObject({ ok: false });
+    expect(parseTtsRequest({ text: "x", voice_id: "v", vol: 3 })).toMatchObject({ ok: false });
+    expect(parseTtsRequest({ text: "x", voice_id: "v", vol: "1" })).toMatchObject({ ok: false });
+  });
+  it("ttsUpstreamBody：带 emotion 写 emotion + emotion_intensity 常量；不带时 voice_setting 四格逐字节同以前", () => {
+    const withE = JSON.parse(ttsUpstreamBody("m", { text: "hi", voiceId: "v", speed: 0.88, vol: 0.92, emotion: "sad" }));
+    expect(withE.voice_setting).toEqual({ voice_id: "v", speed: 0.88, vol: 0.92, pitch: 0, emotion: "sad", emotion_intensity: TTS_EMOTION_INTENSITY });
+    const plain = JSON.parse(ttsUpstreamBody("m", { text: "hi", voiceId: "v", speed: 1, vol: 1, emotion: null }));
+    expect(Object.keys(plain.voice_setting)).toEqual(["voice_id", "speed", "vol", "pitch"]);
+  });
+  it("parseTtsReply：失败时带 code（降级判据要它）；非 JSON / 形状不对 code 为 null", () => {
+    expect(parseTtsReply(JSON.stringify({ base_resp: { status_code: 2013, status_msg: "invalid params" } })))
+      .toEqual({ ok: false, code: 2013, message: "MiniMax 2013：invalid params" });
+    expect(parseTtsReply("nope")).toEqual({ ok: false, code: null, message: "MiniMax 回了非 JSON" });
   });
 });

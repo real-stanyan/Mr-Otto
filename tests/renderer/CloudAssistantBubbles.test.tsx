@@ -50,4 +50,21 @@ describe("AssistantMessageRow（#1132：一条回复拆成几张气泡）", () =
     expect(bubbles()[1]).toHaveTextContent("echo a");
     expect(bubbles()[1]).toHaveTextContent("echo b");
   });
+
+  it("段首情绪括注不画出来（#1515）：记号是给 TTS 的，日志里留着、气泡里剥掉", () => {
+    render(<AssistantMessageRow event={reply("（笑）弄好了。\n\n（叹）就是慢。")} ws={ws} />);
+    const texts = bubbles().map((b) => b.textContent);
+    expect(texts).toEqual(["弄好了。", "就是慢。"]);
+  });
+
+  it("整段只有一个记号的段不画成空气泡（#1515）", () => {
+    render(<AssistantMessageRow event={reply("（笑）\n\n弄好了。")} ws={ws} />);
+    expect(bubbles().map((b) => b.textContent)).toEqual(["弄好了。"]);
+  });
+
+  it("整条回复只有一个记号：一张气泡都不画，原始记号也不露（#1515）", () => {
+    render(<AssistantMessageRow event={reply("（笑）")} ws={ws} />);
+    expect(bubbles()).toHaveLength(0);
+    expect(screen.queryByText(/（笑）/)).toBeNull();
+  });
 });

@@ -14,6 +14,7 @@
 // 最多 24 棒、棒棒推他一条（审查 #1442）；他问的那一句由第一棒回答时已经推过。代价：接力链后面几棒的结论不推。「新建的那只先打招呼」与「外联回来汇报」照推：前者人多半还在 App 里
 // （前台不弹，见手机那侧），后者就是人等着的那条消息。
 import type { SessionEvent } from "../session/events.js";
+import { stripEmotionTags } from "./voiceProsody.js";
 
 export interface ReplyNote {
   agentId: string;
@@ -47,7 +48,9 @@ export function advanceReplyNotify(s: ReplyNotifyState, e: SessionEvent): ReplyN
     return null;
   }
   if (e.type === "assistant_message") {
-    if (e.agentId !== undefined && e.content.trim() !== "") s.lastText.set(e.agentId, e.content);
+    // 推送正文是锁屏上读的字，不是给 TTS 的：段首情绪括注（#1515）剥掉；整条只有记号 = 没话，不存
+    const spoken = stripEmotionTags(e.content);
+    if (e.agentId !== undefined && spoken.trim() !== "") s.lastText.set(e.agentId, spoken);
     return null;
   }
   if (e.type !== "turn_ended" || e.agentId === undefined) return null;

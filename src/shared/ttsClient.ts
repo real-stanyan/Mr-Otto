@@ -13,6 +13,7 @@ import type { VoiceSpeakResult } from "./shellBridge.js";
 import { TTS_HEADERS } from "./tts.js";
 import { SPEECH_TICKET_HEADER } from "./speechTicket.js";
 import { routeTts, type TtsRouteInput } from "./ttsRoute.js";
+import { prosodyFor, type SpeechEmotion } from "./voiceProsody.js";
 
 /** 额度那三个口：桌面是 hostedQuota（结构上就是它），手机是一份订阅快照 + 两个空口 */
 export interface TtsQuotaPort {
@@ -33,6 +34,8 @@ export interface TtsSpeakOpts {
   /** 外联通话的票（#1441）：好友听主人的智能体说话，钱记主人。runtime 在 welcome / call_result 里签发，
       网关验过才改记主人，验不过去退回记调用者自己。缺席或空串 = 一切照旧 */
   speechTicket?: string;
+  /** 这一句的情绪（#1515）：带上时请求体多 emotion / speed / vol；null / 缺席 = 平读，三格请求体同以前 */
+  emotion?: SpeechEmotion | null;
 }
 
 export interface TtsClient {
@@ -63,6 +66,10 @@ export function createTtsClient(deps: TtsClientDeps): TtsClient {
         ...(token ? { hostedToken: token } : {}),
       });
       if (route.kind === "blocked") return { ok: false, message: route.reason };
+      const emotion = opts?.emotion ?? null;
+      const body = emotion === null
+        ? { model: route.model, text, voice_id: voiceId }
+        : { model: route.model, text, voice_id: voiceId, emotion, ...prosodyFor(emotion) };
       let res: Response;
       try {
         res = await doFetch(route.url, {
@@ -72,7 +79,7 @@ export function createTtsClient(deps: TtsClientDeps): TtsClient {
             "content-type": "application/json",
             ...(ticket !== null ? { [SPEECH_TICKET_HEADER]: ticket } : {}),
           },
-          body: JSON.stringify({ model: route.model, text, voice_id: voiceId }),
+          body: JSON.stringify(body),
         });
       } catch (err) {
         return { ok: false, message: `连不上订阅网关：${err instanceof Error ? err.message : String(err)}` };

@@ -598,3 +598,31 @@ describe("同一个窗口里外联行、来电行、通话卡并存（#1441）",
     expect(new Set(rows.map((r) => r.key)).size).toBe(rows.length);
   });
 });
+
+describe("段首情绪括注（#1515）", () => {
+  it("段首情绪括注剥掉：终态与流式都剥", () => {
+    seq = 0;
+    const rows = chatRows({
+      events: [e({ type: "assistant_message", agentId: "a_000000000001", content: "（笑）弄好了。\n\n（叹）就是慢。", model: "m" })],
+      ws: WS, selfUid: "me", now: DAY,
+    });
+    expect(rows.find((r) => r.kind === "agent")).toMatchObject({ paragraphs: ["弄好了。", "就是慢。"] });
+    const live = liveRows({ streaming: { a_000000000001: "（惊）这么快？" }, ws: WS, now: DAY });
+    expect(live[0]).toMatchObject({ paragraphs: ["这么快？"] });
+  });
+  it("整段只有一个记号的段不进 paragraphs；整条只有记号就没有这一行（#1515）", () => {
+    seq = 0;
+    const rows = chatRows({
+      events: [e({ type: "assistant_message", agentId: "a_000000000001", content: "（笑）\n\n弄好了。", model: "m" })],
+      ws: WS, selfUid: "me", now: DAY,
+    });
+    expect(rows.find((r) => r.kind === "agent")).toMatchObject({ paragraphs: ["弄好了。"] });
+    seq = 0;
+    const only = chatRows({
+      events: [e({ type: "assistant_message", agentId: "a_000000000001", content: "（笑）", model: "m" })],
+      ws: WS, selfUid: "me", now: DAY,
+    });
+    expect(only.find((r) => r.kind === "agent")).toBeUndefined();
+    expect(liveRows({ streaming: { a_000000000001: "（惊）" }, ws: WS, now: DAY })).toEqual([]);
+  });
+});

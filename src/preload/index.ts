@@ -274,7 +274,7 @@ const bridge: ShellBridge = {
     ipcRenderer.invoke(CHANNELS.workspaceCloudChatUpdate, workspaceId, sessionId, patch),
   workspaceCloudBacklogPage: () => ipcRenderer.invoke(CHANNELS.workspaceCloudBacklogPage),
   workspaceCloudStop: (seq) => ipcRenderer.invoke(CHANNELS.workspaceCloudStop, seq ?? null),
-  teamVoiceSpeak: (text, voiceId) => ipcRenderer.invoke(CHANNELS.teamVoiceSpeak, text, voiceId),
+  teamVoiceSpeak: (text, voiceId, emotion) => ipcRenderer.invoke(CHANNELS.teamVoiceSpeak, text, voiceId, emotion ?? null),
   speechStart: (locale, hints) => ipcRenderer.invoke(CHANNELS.speechStart, locale, hints),
   speechStop: () => ipcRenderer.invoke(CHANNELS.speechStop),
   speechPause: () => ipcRenderer.invoke(CHANNELS.speechPause),

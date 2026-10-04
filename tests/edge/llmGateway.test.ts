@@ -826,6 +826,41 @@ describe("语音那扇门（#1163）：kind=tts 打 /t2a_v2，按字符数预扣
     expect(((await waited[0]) as Response).status).toBe(200);
     await waited[1];
   });
+
+  it("带 emotion 被上游拒（200 + 参数类非零 code）：去掉 emotion 同一个 hold 内重试一次，第二发不带 emotion（#1515）", async () => {
+    const { quota, calls } = quotaStub();
+    let n = 0;
+    const up = upstream(() => (++n === 1 ? Response.json({ base_resp: { status_code: 2013, status_msg: "invalid params" } }) : mmOk()()));
+    const handle = createLlmGateway({ routes: async () => [tts], quota, upstreamKey: () => "k", fetchImpl: up.fetchImpl });
+    const res = await handle(speechReq({ model: "speech-2.8-turbo", text: "hi", voice_id: "v", emotion: "happy", speed: 1.12, vol: 1.12 }), caller);
+    expect(res.status).toBe(200);
+    expect(up.seen).toHaveLength(2);
+    expect((await up.seen[0]!.json()).voice_setting).toMatchObject({ emotion: "happy" });
+    expect((await up.seen[1]!.json()).voice_setting).not.toHaveProperty("emotion");
+    expect(calls.hold).toHaveLength(1);
+    expect(calls.release).toHaveLength(0);
+    expect(calls.settle).toHaveLength(1);
+  });
+  it("第二发也被拒：release + 502，不打第三发", async () => {
+    const { quota, calls } = quotaStub();
+    const up = upstream(() => Response.json({ base_resp: { status_code: 2013, status_msg: "invalid params" } }));
+    const handle = createLlmGateway({ routes: async () => [tts], quota, upstreamKey: () => "k", fetchImpl: up.fetchImpl });
+    const res = await handle(speechReq({ model: "speech-2.8-turbo", text: "hi", voice_id: "v", emotion: "happy" }), caller);
+    expect(res.status).toBe(502);
+    expect(up.seen).toHaveLength(2);
+    expect(calls.release).toHaveLength(1);
+  });
+  it("限流 1002 / 欠费 1008 与 emotion 无关：不重试、直接 502；不带 emotion 的被拒也不重试", async () => {
+    const cases: Array<[number, Record<string, unknown>]> = [[1002, { emotion: "happy" }], [1008, { emotion: "happy" }], [2013, {}]];
+    for (const [code, body] of cases) {
+      const { quota } = quotaStub();
+      const up = upstream(() => Response.json({ base_resp: { status_code: code, status_msg: "x" } }));
+      const handle = createLlmGateway({ routes: async () => [tts], quota, upstreamKey: () => "k", fetchImpl: up.fetchImpl });
+      const res = await handle(speechReq({ model: "speech-2.8-turbo", text: "hi", voice_id: "v", ...body }), caller);
+      expect(res.status).toBe(502);
+      expect(up.seen).toHaveLength(1);
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

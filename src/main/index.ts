@@ -190,6 +190,7 @@ import { createHostedQuota, parseCheckoutTarget, type HostedQuota } from "./host
 import { createDecisionClient } from "./decisionClient.js";
 import { createEndpointJudge, type EndpointJudge } from "./endpointJudge.js";
 import { createTtsClient } from "../shared/ttsClient.js";
+import type { SpeechEmotion } from "../shared/voiceProsody.js";
 import type { WorkspaceUsage } from "../shared/billing.js";
 import { islandRail } from "../shared/islandRail.js";
 import type { BilledRow } from "../shared/usageStats.js";
@@ -3624,7 +3625,8 @@ void app.whenReady().then(() => {
     cloudClient.stop(seq ?? undefined)
   );
   ipcMain.handle(CHANNELS.workspaceCloudBacklogPage, () => cloudClient.backlogPage());
-  ipcMain.handle(CHANNELS.teamVoiceSpeak, (_e, text: string, voiceId: string) => teamVoice.speak(text, voiceId));
+  ipcMain.handle(CHANNELS.teamVoiceSpeak, (_e, text: string, voiceId: string, emotion: SpeechEmotion | null = null) =>
+    teamVoice.speak(text, voiceId, { emotion }));
   // 麦克风四条命令（#1176）：没有 helper 的机器上，开麦要把「为什么没声」说出口——
   // 一条 error + 一条 listening:false，通话栏据此画「开麦」而不是一直转着「正在开麦」
   const speechSend = (c: SpeechCommand): void => {

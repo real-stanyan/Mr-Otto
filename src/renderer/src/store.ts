@@ -1530,7 +1530,7 @@ function micSync(p: { speaking: string | null; queued: number; aec: boolean | nu
 function voicePlayerFor(set: StoreApi<ChatState>["setState"], get: () => ChatState): VoicePlayer {
   if (voicePlayer === null) {
     voicePlayer = new VoicePlayer({
-      speak: (text, voiceId) => window.otter.teamVoiceSpeak(text, voiceId),
+      speak: (text, voiceId, emotion) => window.otter.teamVoiceSpeak(text, voiceId, emotion),
       // 回声消除开着 → 交给 helper 播（#1201，不被 macOS 压低）；否则 Web Audio。每段起播时现判
       createAudio: (bytes) =>
         get().voice?.mic.aec === true

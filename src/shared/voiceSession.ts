@@ -21,6 +21,7 @@ import { voiceCallOf } from "./voiceCall.js";
 import { EMPTY_VOICE_FEED, feedDelta, feedEvent, markInterrupted, type Utterance, type VoiceFeedState } from "./voiceFeed.js";
 import { applySpeechEvent, bargeInOn, MIC_OFF, micShouldPause, type MicState, type PermissionHelp } from "./voiceMic.js";
 import { VoicePlayer, type PlayerAudio } from "./voicePlayer.js";
+import type { SpeechEmotion } from "./voiceProsody.js";
 
 export type VoiceRoomState = "connecting" | "ready" | "gone" | "denied";
 
@@ -48,7 +49,7 @@ export interface VoiceMicPort {
 }
 
 export interface VoiceSessionDeps {
-  speak(text: string, voiceId: string): Promise<VoiceSpeakResult>;
+  speak(text: string, voiceId: string, emotion: SpeechEmotion | null): Promise<VoiceSpeakResult>;
   createAudio(bytes: Uint8Array): PlayerAudio;
   mic: VoiceMicPort;
   /** 一句说完了：发出去（不 @、走派活，带 voice 记号由调用方负责） */
@@ -121,7 +122,7 @@ export function createVoiceSession(deps: VoiceSessionDeps): VoiceSession {
   };
 
   const player = new VoicePlayer({
-    speak: (text, voiceId) => deps.speak(text, voiceId),
+    speak: (text, voiceId, emotion) => deps.speak(text, voiceId, emotion),
     createAudio: (bytes) => deps.createAudio(bytes),
     onChange: (p) => {
       if (listen === null) return;

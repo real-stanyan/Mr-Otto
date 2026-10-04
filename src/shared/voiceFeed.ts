@@ -19,6 +19,7 @@
 import { splitBubbles } from "./chatBubbles.js";
 import type { BillingSnapshotView } from "./shellBridge.js";
 import type { SessionEvent } from "../session/events.js";
+import { emotionTagLiteral, normalizeSpoken, parseEmotionTag, type SpeechEmotion } from "./voiceProsody.js";
 
 /** 语音钮画不画：订阅活跃且网关供语音。`null`（还没查到）与没订阅给**同一个答案：不画**
     ——同 modelMenu 对 hosted 的处置（ADR-0244）：按「能用」画会给一个没订阅的人一颗点了
@@ -35,7 +36,8 @@ export function voiceCallAvailable(billing: BillingSnapshotView | null): boolean
     记号（云会话的提示词已经让模型别用，但它偶尔还是会——星号念出来是「星星」）。
     剥完是空串 = 这一段没有可念的 */
 export function spokenText(content: string): string {
-  let text = content;
+  // 段首情绪括注（#1515）：它是给 TTS 的 emotion，不是话；键里留着它是为了已读判据与缓存键区分带不带情绪
+  let text = parseEmotionTag(content).text;
   // 关上的围栏整段删；剩下一个没关上的，从它起全删
   text = text.replace(/(^|\n)\s*(```|~~~)[^\n]*\n[\s\S]*?\n\s*\2\s*(?=\n|$)/g, "$1");
   const open = text.search(/(^|\n)\s*(```|~~~)/);
@@ -53,12 +55,19 @@ export function spokenText(content: string): string {
       .replace(/`([^`\n]*)`/g, "$1") // 行内代码：留内容
       .trim()
   );
-  return lines.filter((l) => l !== "").join("\n");
+  return normalizeSpoken(lines.filter((l) => l !== "").join("\n"));
 }
 
 export interface Utterance {
   agentId: string;
   text: string;
+  /** 这一句所在段的段首括注解出来的情绪；没写 = null（平读） */
+  emotion: SpeechEmotion | null;
+}
+
+export interface SpokenUnit {
+  text: string;
+  emotion: SpeechEmotion | null;
 }
 
 /** 每只 agent **这一轮**已经读过（或跳过）的句，原文相等判重；`interrupted` 是这一轮被人打断了的
@@ -112,15 +121,24 @@ function splitSentences(bubble: string): string[] {
   return out;
 }
 
-/** 一条回复 → 要读的单位：先按空行切段（同气泡），段内再按句 */
+/** 一条回复 → 要读的单位（键）：先按空行切段（同气泡），段内再按句。带情绪括注的段，每一句的键前面
+    都拼回**规范形**括注（（笑）第一句。 / （笑）第二句。）——已读判据与手机缓存键都按键比，同一句
+    带不带情绪是两个单位；送合成的字节由 spokenText 剥。围栏整段一个单位、不解记号 */
 export function splitSpoken(text: string): string[] {
-  return splitBubbles(text).flatMap(splitSentences);
+  return splitBubbles(text).flatMap((bubble) => {
+    if (FENCE.test(bubble)) return [bubble];
+    const { emotion, text: body } = parseEmotionTag(bubble);
+    const tag = emotion === null ? "" : emotionTagLiteral(emotion);
+    return splitSentences(body).map((s) => tag + s);
+  });
 }
 
 /** 一段话真正送去合成的那几句（#1420 预合成的键）：与 take() 里的变换逐字相同——切句、每句过
     spokenText、剥完为空的不要。改 take() 的变换时这里要跟着改（有一条对拍的测试钉着） */
-export function spokenUnits(content: string): string[] {
-  return splitSpoken(content).map(spokenText).filter((t) => t !== "");
+export function spokenUnits(content: string): SpokenUnit[] {
+  return splitSpoken(content)
+    .map((key) => ({ text: spokenText(key), emotion: parseEmotionTag(key).emotion }))
+    .filter((u) => u.text !== "");
 }
 
 /** 快照末尾那一句算不算写完了：中文句末标点 / 西文 !? 收尾算；西文句号不算（可能是「2.」半截） */
@@ -139,7 +157,7 @@ function take(state: VoiceFeedState, agentId: string, units: readonly string[]):
   if (!state.interrupted.includes(agentId)) {
     for (const b of fresh) {
       const text = spokenText(b);
-      if (text !== "") out.push({ agentId, text });
+      if (text !== "") out.push({ agentId, text, emotion: parseEmotionTag(b).emotion });
     }
   }
   return { state: { ...state, spoken: { ...state.spoken, [agentId]: [...seen, ...fresh] } }, out };
