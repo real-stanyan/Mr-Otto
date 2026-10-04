@@ -44,6 +44,7 @@ import { cn, isMac } from "@/lib/utils.js";
 import { Button } from "@/components/ui/button.js";
 import { Bubble, BubbleContent } from "@/components/ui/bubble.js";
 import { splitBubbles } from "../../../shared/chatBubbles.js";
+import { stripEmotionTag } from "../../../shared/voiceProsody.js";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar.js";
 import { Textarea } from "@/components/ui/textarea.js";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip.js";
@@ -1790,9 +1791,13 @@ export function AssistantMessageRow({ event, ws }: { event: AssistantMessageEven
     一个字都拆不出来（纯空白）时仍画一张，与改动前的形状一致：这一行能画出来
     就说明时间线认为它该在（isAgentStep 已经把空回复滤掉了）。
     第二张起 `mt-1`：SpeakerRow 那一摞的 gap 是给「署名行 → 气泡」定的 2px，
-    两张气泡只隔 2px 读起来是一张裂开的，6px 才是两条消息 */
+    两张气泡只隔 2px 读起来是一张裂开的，6px 才是两条消息。
+    整条回复只有情绪记号（#1515）= 没有话，一张气泡都不画（纯空白的老形状不变）。 */
 function AgentBubbles({ text }: { text: string }) {
-  const parts = splitBubbles(text);
+  // 段首情绪括注（#1515）是给 TTS 的，不是话：日志留着，气泡剥掉；剥完成空串的段（整段只有一个记号）不画
+  const raw = splitBubbles(text);
+  const parts = raw.map(stripEmotionTag).filter((p) => p !== "");
+  if (raw.length > 0 && parts.length === 0) return null;
   const chunks = parts.length > 0 ? parts : [text];
   return (
     <>

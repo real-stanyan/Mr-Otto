@@ -225,7 +225,7 @@ export interface CloudSessionClient {
   chatUpdate(
     workspaceId: string,
     sessionId: string,
-    patch: { name?: string; agentIds?: string[]; humans?: string[] },
+    patch: { name?: string; agentIds?: string[]; humans?: string[]; facing?: "self" | "both" },
   ): Promise<FriendsResult<null>>;
   /** 停掉当前正在跑的这一轮 turn（#957 第三批）。谁能停由服务端判（发起人
       或 owner，与 approve 同一判据）——resolve 的是 `stop_result` 那条回执，
@@ -1202,7 +1202,7 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
   function chatUpdate(
     workspaceId: string,
     sessionId: string,
-    patch: { name?: string; agentIds?: string[]; humans?: string[] },
+    patch: { name?: string; agentIds?: string[]; humans?: string[]; facing?: "self" | "both" },
   ): Promise<FriendsResult<null>> {
     // patch 摊平进帧：没带的那一格在帧上就是缺席，不补 undefined（编码时会被丢掉，
     // 但显式展开让「只改名那条帧上没有名单」这件事在源码里看得见）

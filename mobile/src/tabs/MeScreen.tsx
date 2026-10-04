@@ -8,7 +8,7 @@ import { accountBadge, accountName, weekQuota } from "../../../src/shared/mobile
 import { PlanPill } from "../account/PlanPill.js";
 import { refreshBilling, useBilling } from "../account/billingStore.js";
 import { useHome } from "../home/homeStore.js";
-import { refreshProfile, useProfile } from "../me/profileStore.js";
+import { ensureProfile, refreshProfile, useProfile } from "../me/profileStore.js";
 import { supabase } from "../supabase.js";
 import { usePalette } from "../theme.js";
 import { Group, Row, useNow } from "../ui.js";
@@ -23,8 +23,12 @@ function Lead({ name }: { name: IconName }) {
 
 /** 我叫什么：profiles 里那一格（朋友和群里的人看到的）优先，没有就用登录带来的名字 / 邮箱 */
 export function useMyName(): { name: string; email: string; avatar: string } {
-  const { me } = useProfile();
+  const { me, loaded } = useProfile();
   const [auth, setAuth] = useState<{ name: string; email: string }>({ name: "", email: "" });
+  // 只在「我」页聚焦时拉的话，冷启动直接进聊天，自己的头像要等去过「我」页才出来（#1519）；换号清仓后 loaded 回 false，再拉一次
+  useEffect(() => {
+    if (!loaded) void ensureProfile();
+  }, [loaded]);
   useEffect(() => {
     void supabase.auth.getSession().then(({ data }) => {
       const u = data.session?.user;

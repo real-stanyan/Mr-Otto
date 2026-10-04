@@ -1,5 +1,6 @@
 // 头像（#1386，照微信）：圆角方块，不是圆。三种——
-// · 智能体 = 像素脸画在纸白底上（两个主题同一个值，DISC_COLOR），脸按「63 格宽」缩进去、往下挪 2 格
+// · 智能体 = 像素脸画在淡绿底上（FACE_TILE_BG，#1513：与浅色模式智能体气泡同一个绿，两个主题同一个值——像素脸是黑的，
+//   底色一深就看不见，所以深色模式也用这个浅的；桌面 paint.ts 仍是纸白 DISC_COLOR），脸按「63 格宽」缩进去、往下挪 2 格
 //   （demo 的 Face.draw 同一组数：63 比网格宽几格，四角多露一点底；往下挪是因为头发在上、下巴在下，
 //   几何中心会让脸显得往上飘）。判断全在 src/shared/ottoFace/（art 那一层），这里只把几层 Path 摆进方块。
 // · 人 = 头像图（profiles.avatar_url，data URL 或 https），没有就名字的第一个字；我 = 同样，底色反过来。
@@ -9,13 +10,15 @@
 import { memo, useEffect, useState } from "react";
 import { Image, Text, View } from "react-native";
 import Svg, { G, Path, Rect } from "react-native-svg";
-import { DISC_COLOR, GRID_H, GRID_W, faceAnimates, type FaceState } from "../../../src/shared/ottoFace/index.js";
+import { GRID_H, GRID_W, faceAnimates, type FaceState } from "../../../src/shared/ottoFace/index.js";
 import { createFaceArtCache, faceArtKey } from "../../../src/shared/ottoFace/art.js";
 import { gridLayout, initialOf, type AvatarSpec, type GridCell } from "../../../src/shared/wechatInbox.js";
 import { subscribeFaceClock } from "../face/clock.js";
 import { usePalette, withAlpha } from "../theme.js";
 import { useReduceMotion } from "../ui.js";
 
+/** 智能体头像的底色（#1513）：与 theme.ts 浅色模式的 bubbleAgent 同一个值，机器的脸与机器的话一个色系 */
+const FACE_TILE_BG = "#d9e6dc";
 const artOf = createFaceArtCache();
 /** 方块宽几格（demo 的 CELLS） */
 const CELLS = 63;
@@ -52,13 +55,13 @@ export const FaceTile = memo(function FaceTile({ slot, size, state = "plain", ph
   const art = artOf(slot, state, animated ? t : 0);
   return (
     <View
-      style={{ width: size, height: size, borderRadius: radius ?? tileRadius(size), overflow: "hidden", backgroundColor: DISC_COLOR }}
+      style={{ width: size, height: size, borderRadius: radius ?? tileRadius(size), overflow: "hidden", backgroundColor: FACE_TILE_BG }}
       {...(label === undefined
         ? { accessibilityElementsHidden: true, importantForAccessibility: "no-hide-descendants" as const }
         : { accessible: true, accessibilityRole: "image" as const, accessibilityLabel: label })}
     >
       <Svg width={size} height={size} viewBox={VIEW}>
-        <Rect x={GRID_W / 2 - CELLS / 2} y={GRID_H / 2 - 2 - CELLS / 2} width={CELLS} height={CELLS} fill={DISC_COLOR} />
+        <Rect x={GRID_W / 2 - CELLS / 2} y={GRID_H / 2 - 2 - CELLS / 2} width={CELLS} height={CELLS} fill={FACE_TILE_BG} />
         <G opacity={art.dim ? DIM_ALPHA : 1}>
           {art.layers.map((l) => <Path key={l.tone} d={l.d} fill={l.color} />)}
         </G>

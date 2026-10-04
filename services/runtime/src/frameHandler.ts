@@ -135,7 +135,7 @@ export interface FrameHandlerDeps {
       workspaceId: string,
       sessionId: string,
       byUid: string,
-      patch: { name?: string; agentIds?: string[]; humans?: string[] },
+      patch: { name?: string; agentIds?: string[]; humans?: string[]; facing?: "self" | "both" },
     ): Promise<{ ok: true } | { ok: false; message: string }>;
     ownerOf(workspaceId: string): Promise<string>;
     /** 收尾一条云会话（issue #822）：落日志（CloudSession.archive）+ 写
@@ -570,7 +570,8 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
         ]);
         // 群主 / 建群的人什么都能改；群里的客人只能动客人名单（拉自己的朋友、把自己移出去，
         // 细的判据在 daemon 的 planHumansChange——它握着好友关系的查询）
-        const onlyHumans = msg.humans !== undefined && msg.name === undefined && msg.agentIds === undefined;
+        // 车道的朝向（#1523）归主人：客人在车道里什么都改不了，所以 facing 不算进「只动客人名单」
+        const onlyHumans = msg.humans !== undefined && msg.name === undefined && msg.agentIds === undefined && msg.facing === undefined;
         if (entry.uid !== ownerUid && entry.uid !== creator && !(guestUpdate && onlyHumans)) {
           deny(cid, "not_authorized");
           return;

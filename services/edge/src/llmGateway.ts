@@ -31,7 +31,7 @@ import { TTS_HEADERS, ttsUnits } from "../../../src/shared/tts.js";
 import type { DecisionUses } from "../../../src/shared/decision.js";
 import { decisionUpstreamBody, parseDecisionRequest, parseDecisionUpstreamReply } from "./decisionUpstream.js";
 import { DECISION_USES } from "./decisionUses.js";
-import { parseTtsReply, parseTtsRequest, ttsUpstreamBody } from "./ttsUpstream.js";
+import { parseTtsReply, parseTtsRequest, ttsUpstreamBody, type TtsReply, type TtsRequest } from "./ttsUpstream.js";
 
 /** 这一行路由是给谁用的（#1081）。`chat` = 输入框那枚选单里选得到的对话模型；
     `image` = 出图工具专用，**不进 `me.models`**。
@@ -476,25 +476,41 @@ export function createLlmGateway(deps: LlmGatewayDeps): (req: Request, caller: C
       // 而 MiniMax 按**提交的字符数**收钱，那笔在请求发出去那一刻就花掉了，中止省不下它。
       // 整段交给 waitUntil 的理由也一样：请求上下文真被取消时，最坏的结局不该是这笔 hold
       // 挂满 HOLD_TTL_MS（10 分钟）—— MAX_INFLIGHT 是 4，四发中断就能堵住这个账号的整扇门。
+      // emotion 被拒的降级（#1515，搬 ai-podcast MinimaxTts.synthesize）：上游 200 + 参数类非零 code、请求带
+      // emotion → 去掉 emotion 同一个 hold 内再打一次，宁可这句平淡也别整句不出声。限流 / 欠费与 emotion 无关，
+      // 重试救不了还白丢情绪；HTTP 非 200 / 连不上照旧 release + 502。第二发不带 emotion，不存在第三发
+      const TTS_NO_RETRY_CODES = new Set([1002, 1008]);
+      type Attempt = { kind: "unreachable" } | { kind: "http"; res: Response } | { kind: "reply"; reply: TtsReply };
+      const attempt = async (req: TtsRequest): Promise<Attempt> => {
+        let res: Response;
+        try {
+          res = await doFetch(`${route.baseUrl}${upstreamPathFor(route.kind)}`, {
+            method: "POST",
+            headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
+            body: ttsUpstreamBody(route.wireModel, req),
+          });
+        } catch {
+          return { kind: "unreachable" };
+        }
+        if (!res.ok) return { kind: "http", res };
+        return { kind: "reply", reply: parseTtsReply(await res.text()) };
+      };
       const work = (async (): Promise<Response> => {
         try {
-          let res: Response;
-          try {
-            res = await doFetch(`${route.baseUrl}${upstreamPathFor(route.kind)}`, {
-              method: "POST",
-              headers: { "content-type": "application/json", authorization: `Bearer ${key}` },
-              body: ttsUpstreamBody(route.wireModel, parsed.req),
-            });
-          } catch {
+          let a = await attempt(parsed.req);
+          if (a.kind === "reply" && !a.reply.ok && parsed.req.emotion !== null && a.reply.code !== null && !TTS_NO_RETRY_CODES.has(a.reply.code)) {
+            a = await attempt({ ...parsed.req, emotion: null });
+          }
+          if (a.kind === "unreachable") {
             await deps.quota.release(caller.uid, requestId);
             return apiError(502, `上游连不上：${route.platform}`, "upstream");
           }
-          if (!res.ok) {
+          if (a.kind === "http") {
             await deps.quota.release(caller.uid, requestId);
-            const snippet = (await res.text().catch(() => "")).slice(0, 300);
-            return apiError(502, `上游 ${res.status}：${snippet}`, "upstream", { upstreamStatus: res.status });
+            const snippet = (await a.res.text().catch(() => "")).slice(0, 300);
+            return apiError(502, `上游 ${a.res.status}：${snippet}`, "upstream", { upstreamStatus: a.res.status });
           }
-          const reply = parseTtsReply(await res.text());
+          const reply = a.reply;
           if (!reply.ok) {
             await deps.quota.release(caller.uid, requestId);
             return apiError(502, reply.message, "upstream");

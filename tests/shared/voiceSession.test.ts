@@ -5,6 +5,7 @@ import { AGENT_VOICE_CHOICES, agentVoiceId, type VoiceRoster } from "../../src/s
 import type { CloudAck, SpeechEvent, VoiceSpeakResult } from "../../src/shared/shellBridge.js";
 import { IOS_PERMISSION_HELP } from "../../src/shared/voiceMic.js";
 import type { PlayerAudio } from "../../src/shared/voicePlayer.js";
+import type { SpeechEmotion } from "../../src/shared/voiceProsody.js";
 import { createVoiceSession, type VoiceListen, type VoiceSessionDeps } from "../../src/shared/voiceSession.js";
 import type { SessionEvent } from "../../src/session/events.js";
 
@@ -22,13 +23,13 @@ interface FakeAudio extends PlayerAudio { end(): void }
 function harness(o: { events?: SessionEvent[]; say?: (text: string) => CloudAck; roster?: VoiceRoster } = {}) {
   let events: SessionEvent[] = o.events ?? [callOn(1, ["a"])];
   const mic: string[] = [];
-  const spoke: { text: string; voiceId: string }[] = [];
+  const spoke: { text: string; voiceId: string; emotion: SpeechEmotion | null }[] = [];
   const said: string[] = [];
   const audios: FakeAudio[] = [];
   const changes: (VoiceListen | null)[] = [];
   const deps: VoiceSessionDeps = {
-    speak: async (text, voiceId): Promise<VoiceSpeakResult> => {
-      spoke.push({ text, voiceId });
+    speak: async (text, voiceId, emotion): Promise<VoiceSpeakResult> => {
+      spoke.push({ text, voiceId, emotion });
       return { ok: true, audio: new Uint8Array([1]), costMicro: 1, audioMs: 100 };
     },
     createAudio: () => {
@@ -91,7 +92,7 @@ describe("voiceSession", () => {
     h.push(reply(3, "a", "新的一句。"));
     h.push(reply(4, "b", "我不在通话里。"));
     await flush();
-    expect(h.spoke).toEqual([{ text: "新的一句。", voiceId: agentVoiceId("a", ["a", "b"]) }]);
+    expect(h.spoke).toEqual([{ text: "新的一句。", voiceId: agentVoiceId("a", ["a", "b"]), emotion: null }]);
   });
 
   it("挑过声音的（#1372）照它挑的那一档读", async () => {
@@ -101,7 +102,7 @@ describe("voiceSession", () => {
     h.v.join(S);
     h.push(reply(2, "a", "我挑了这一档。"));
     await flush();
-    expect(h.spoke).toEqual([{ text: "我挑了这一档。", voiceId: pick.voiceId }]);
+    expect(h.spoke).toEqual([{ text: "我挑了这一档。", voiceId: pick.voiceId, emotion: null }]);
   });
 
   it("流式：写完的句先出声，终态只补没读过的", async () => {
@@ -114,6 +115,14 @@ describe("voiceSession", () => {
     h.push(reply(2, "a", "第一句。第二句。"));
     await flush();
     expect(h.spoke.map((s) => s.text)).toEqual(["第一句。", "第二句。"]);
+  });
+
+  it("段首括注（笑）：emotion 一路带到 speak，送合成的字节里没有括注（#1515）", async () => {
+    const h = harness();
+    h.v.join(S);
+    h.push(reply(2, "a", "（笑）弄好了。"));
+    await flush();
+    expect(h.spoke).toEqual([{ text: "弄好了。", voiceId: agentVoiceId("a", ["a", "b"]), emotion: "happy" }]);
   });
 
   it("推理碎片（reasoning）不读", async () => {

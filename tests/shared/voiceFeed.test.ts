@@ -43,6 +43,33 @@ describe("spokenText：读出来之前剥什么", () => {
   });
 });
 
+describe("情绪括注（#1515）：段首记号进 emotion、键里留着、送合成的字节剥掉", () => {
+  it("splitSpoken：带记号的段每一句的键都带规范形括注；不带的段键不变；半角写法也归到全角", () => {
+    expect(splitSpoken("（笑）弄好了。你看一眼。\n\n第二段。")).toEqual(["（笑）弄好了。", "（笑）你看一眼。", "第二段。"]);
+    expect(splitSpoken("(惊) 这么快？")).toEqual(["（惊）这么快？"]);
+  });
+  it("spokenText：剥记号、剥 Markdown、归一化 AI 与年份", () => {
+    expect(spokenText("（笑）**Ai** 2026年就这样。")).toBe("AI 二零二六年就这样。");
+  });
+  it("spokenUnits：回 {text, emotion}，剥完为空的不要", () => {
+    expect(spokenUnits("（叹）没赶上。\n\n```\nx\n```\n\n行。")).toEqual([
+      { text: "没赶上。", emotion: "sad" },
+      { text: "行。", emotion: null },
+    ]);
+  });
+  it("feedDelta / feedEvent：Utterance 带 emotion；同一句带不带情绪是两个单位（已读判据是键）", () => {
+    let s: VoiceFeedState = EMPTY_VOICE_FEED;
+    let r = feedDelta(s, P, "a", "（笑）弄好了。\n\n没");
+    expect(r.out).toEqual([{ agentId: "a", text: "弄好了。", emotion: "happy" }]);
+    s = r.state;
+    r = feedEvent(s, P, 0, chat("a", 7, "（笑）弄好了。\n\n弄好了。"));
+    expect(r.out).toEqual([{ agentId: "a", text: "弄好了。", emotion: null }]);
+  });
+  it("词表外的括注当正文念出来", () => {
+    expect(spokenUnits("（笑死）行。")).toEqual([{ text: "（笑死）行。", emotion: null }]);
+  });
+});
+
 const P = new Set(["a", "b"]);
 const chat = (agentId: string, seq: number, content: string): SessionEvent =>
   ({ sessionId: "s", ts: 0, seq, type: "assistant_message", content, model: "m", agentId });
@@ -51,10 +78,10 @@ describe("feedDelta：流式预览里完成的段立刻出声", () => {
   it("快照「a\\n\\nb\\n\\nc（未完）」出 a、b；再来「a\\n\\nb\\n\\nc\\n\\nd」只出 c；不在名单的一段都不出", () => {
     let s: VoiceFeedState = EMPTY_VOICE_FEED;
     let r = feedDelta(s, P, "a", "第一段\n\n第二段\n\n第三");
-    expect(r.out).toEqual([{ agentId: "a", text: "第一段" }, { agentId: "a", text: "第二段" }]);
+    expect(r.out).toEqual([{ agentId: "a", text: "第一段", emotion: null }, { agentId: "a", text: "第二段", emotion: null }]);
     s = r.state;
     r = feedDelta(s, P, "a", "第一段\n\n第二段\n\n第三段\n\n第四");
-    expect(r.out).toEqual([{ agentId: "a", text: "第三段" }]);
+    expect(r.out).toEqual([{ agentId: "a", text: "第三段", emotion: null }]);
     s = r.state;
     // 同一份快照再来一遍（中继重发）：一段都不重读
     r = feedDelta(s, P, "a", "第一段\n\n第二段\n\n第三段\n\n第四");
@@ -69,7 +96,7 @@ describe("feedDelta：流式预览里完成的段立刻出声", () => {
 
   it("完成的段剥完是空的（纯代码围栏）：跳过但记成已读", () => {
     const r = feedDelta(EMPTY_VOICE_FEED, P, "a", "```\nx\n```\n\n然后\n\n再");
-    expect(r.out).toEqual([{ agentId: "a", text: "然后" }]);
+    expect(r.out).toEqual([{ agentId: "a", text: "然后", emotion: null }]);
     expect(r.state.spoken.a).toEqual(["```\nx\n```", "然后"]);
   });
 });
@@ -78,7 +105,7 @@ describe("feedEvent：终态落下来补读没读过的段，然后清这只的�
   it("a、b 已读后终态「a\\n\\nb\\n\\nc」只出 c；之后这只的记号清空", () => {
     const s = feedDelta(EMPTY_VOICE_FEED, P, "a", "第一段\n\n第二段\n\n第三").state;
     const r = feedEvent(s, P, 0, chat("a", 5, "第一段\n\n第二段\n\n第三段"));
-    expect(r.out).toEqual([{ agentId: "a", text: "第三段" }]);
+    expect(r.out).toEqual([{ agentId: "a", text: "第三段", emotion: null }]);
     expect(r.state.spoken.a).toBeUndefined();
   });
 
@@ -94,7 +121,7 @@ describe("feedEvent：终态落下来补读没读过的段，然后清这只的�
 
   it("没走过流式（旧 runtime / 掉帧）：终态整条按段全读", () => {
     const r = feedEvent(EMPTY_VOICE_FEED, P, 0, chat("b", 5, "一\n\n二"));
-    expect(r.out).toEqual([{ agentId: "b", text: "一" }, { agentId: "b", text: "二" }]);
+    expect(r.out).toEqual([{ agentId: "b", text: "一", emotion: null }, { agentId: "b", text: "二", emotion: null }]);
   });
 
   it("不在名单里的 agent 终态：不读，也不动状态", () => {
@@ -122,15 +149,15 @@ describe("splitSpoken：段内按句切", () => {
 describe("feedDelta 按句：一段里写完的句子立刻出声", () => {
   it("「好的，我看一下。还在写」出第一句；下一片补上后一句；终态一句都不重读", () => {
     let r = feedDelta(EMPTY_VOICE_FEED, P, "a", "好的，我看一下。还在写");
-    expect(r.out).toEqual([{ agentId: "a", text: "好的，我看一下。" }]);
+    expect(r.out).toEqual([{ agentId: "a", text: "好的，我看一下。", emotion: null }]);
     r = feedDelta(r.state, P, "a", "好的，我看一下。还在写的这句也完了。");
-    expect(r.out).toEqual([{ agentId: "a", text: "还在写的这句也完了。" }]);
+    expect(r.out).toEqual([{ agentId: "a", text: "还在写的这句也完了。", emotion: null }]);
     const fin = feedEvent(r.state, P, 0, chat("a", 5, "好的，我看一下。还在写的这句也完了。\n\n第二段"));
-    expect(fin.out).toEqual([{ agentId: "a", text: "第二段" }]);
+    expect(fin.out).toEqual([{ agentId: "a", text: "第二段", emotion: null }]);
   });
   it("最后一句以西文句号收尾时不算完（可能是 2. 这种半截）；中文句号算完", () => {
     expect(feedDelta(EMPTY_VOICE_FEED, P, "a", "Version 2.").out).toEqual([]);
-    expect(feedDelta(EMPTY_VOICE_FEED, P, "a", "好。").out).toEqual([{ agentId: "a", text: "好。" }]);
+    expect(feedDelta(EMPTY_VOICE_FEED, P, "a", "好。").out).toEqual([{ agentId: "a", text: "好。", emotion: null }]);
   });
 });
 
@@ -145,9 +172,9 @@ describe("打断（#1184）：人插话之后这只这一轮剩下的话不读",
     const ended: SessionEvent = { sessionId: "s", ts: 0, seq: 6, type: "turn_ended", outcome: "completed", agentId: "a" };
     s = feedEvent(r.state, P, 0, ended).state;
     expect(s.interrupted).toEqual([]);
-    expect(feedDelta(s, P, "a", "新一轮。还在").out).toEqual([{ agentId: "a", text: "新一轮。" }]);
+    expect(feedDelta(s, P, "a", "新一轮。还在").out).toEqual([{ agentId: "a", text: "新一轮。", emotion: null }]);
     // 别的那只不受影响
-    expect(feedDelta(markInterrupted(EMPTY_VOICE_FEED, "a"), P, "b", "我照说。还在").out).toEqual([{ agentId: "b", text: "我照说。" }]);
+    expect(feedDelta(markInterrupted(EMPTY_VOICE_FEED, "a"), P, "b", "我照说。还在").out).toEqual([{ agentId: "b", text: "我照说。", emotion: null }]);
   });
 });
 
@@ -157,7 +184,7 @@ describe("spokenUnits（#1420 预合成的键）", () => {
     const participants = new Set(["a"]);
     const e = { seq: 5, sessionId: "s", ts: 5, type: "assistant_message", agentId: "a", model: "m", content } as SessionEvent;
     const { out } = feedEvent(EMPTY_VOICE_FEED, participants, 0, e);
-    expect(spokenUnits(content)).toEqual(out.map((u) => u.text));
+    expect(spokenUnits(content)).toEqual(out.map((u) => ({ text: u.text, emotion: u.emotion })));
     expect(spokenUnits(content).length).toBeGreaterThan(1);
   });
   it("剥完为空的那一段不出现", () => {

@@ -7,6 +7,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useChat } from "../../src/renderer/src/store.js";
 import { AGENT_VOICE_CHOICES, agentVoiceId } from "../../src/shared/agentVoice.js";
+import { GAP_MS } from "../../src/shared/voiceProsody.js";
 import type { SessionEvent } from "../../src/session/events.js";
 import type { WorkspaceSnapshot } from "../../src/shared/workspaces.js";
 
@@ -60,6 +61,7 @@ beforeEach(() => {
 });
 afterEach(() => {
   useChat.getState().leaveVoiceCall();
+  vi.useRealTimers();
 });
 
 const flush = async (): Promise<void> => { for (let i = 0; i < 8; i++) await Promise.resolve(); };
@@ -276,6 +278,8 @@ describe("store：回声消除开着时 TTS 交给 helper 播（#1201）", () =>
 
   it("aec 开：一段合成好的字节走 speechPlay；helper 报 played 才算播完、下一段接着走", async () => {
     playSeq = 0;
+    // 句间停顿（#1515）是真时间：flush 只冲微任务，不拨钟的话第二句永远停在 230ms 的 setTimeout 上
+    vi.useFakeTimers();
     const st = useChat.getState();
     st.joinVoiceCall();
     aecOn();
@@ -285,6 +289,9 @@ describe("store：回声消除开着时 TTS 交给 helper 播（#1201）", () =>
     expect(m("speechPlay").mock.calls[0]![0]).toBeInstanceOf(Uint8Array);
     expect(useChat.getState().voice).toMatchObject({ speaking: "a_1", text: "第一句。" });
     st.speechOnEvent({ type: "played", id: "p1" });
+    await flush();
+    expect(m("speechPlay")).toHaveBeenCalledTimes(1); // 停顿没过，第二句还没起播
+    await vi.advanceTimersByTimeAsync(GAP_MS.sentence);
     await flush();
     expect(m("speechPlay")).toHaveBeenCalledTimes(2);
     expect(useChat.getState().voice?.text).toBe("第二句。");
