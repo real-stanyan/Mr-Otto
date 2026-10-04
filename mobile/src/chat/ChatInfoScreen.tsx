@@ -49,7 +49,8 @@ import { Icon, type IconName } from "../wx/Icon.js";
 
 type Props = NativeStackScreenProps<RootStackParams, "ChatInfo">;
 
-const deleteDeps: AgentDeleteDeps = {
+/** 删一只智能体要动的几处（私聊 / 群名单 / 记忆页）；资料页（#1571 第 4 步起删人的入口在那儿）共用这一份 */
+export const deleteDeps: AgentDeleteDeps = {
   listAgentChats,
   deleteAgentRow,
   removeCloudSession: (w, s) => cloudClient.remove(w, s),
@@ -108,7 +109,7 @@ function MuteRow({ muteKey }: { muteKey: string }) {
   );
 }
 
-function DangerRow({ label, onPress }: { label: string; onPress: () => void }) {
+export function DangerRow({ label, onPress }: { label: string; onPress: () => void }) {
   return (
     <Group>
       <Row label={label} align="center" tone="destructive" onPress={onPress} />
@@ -207,7 +208,7 @@ function ExportLogRow({ target }: { target: ExportTarget }) {
   );
 }
 
-function Confirm({ visible, title, lead, ok, busy, error, onOk, onCancel, onExited }: {
+export function Confirm({ visible, title, lead, ok, busy, error, onOk, onCancel, onExited }: {
   visible: boolean; title: string; lead: string; ok: string; busy: boolean; error: string | null;
   onOk: () => void; onCancel: () => void; onExited?: () => void;
 }) {

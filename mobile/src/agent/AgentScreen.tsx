@@ -31,6 +31,12 @@ import { Group, Row, useNow } from "../ui.js";
 import { useVoice, voiceUsable } from "../voice/voiceStore.js";
 import { Icon, type IconName } from "../wx/Icon.js";
 import { AgentRows } from "./AgentRows.js";
+import { useRef, useState } from "react";
+import { deleteAgentEverywhere } from "../../../src/shared/agentAdmin.js";
+import { ADMIN_AGENT_ID } from "../../../src/shared/workspaceAgents.js";
+import { Confirm, DangerRow, deleteDeps } from "../chat/ChatInfoScreen.js";
+import { refreshHomeAfterWrite } from "../home/homeStore.js";
+import { supabase } from "../supabase.js";
 
 type Props = NativeStackScreenProps<RootStackParams, "Agent">;
 
@@ -112,6 +118,12 @@ export function AgentScreen({ route, navigation }: Props) {
   const shares = useAgentShares();
   const friends = useFriends();
   const tasks = useTasks();
+  // 删人（#1571 第二轮第 7 条：除管理员外都能删，人保留这个权力）。入口原来只在它私聊的「聊天信息」里，
+  // 员工表之后专员的私聊不再从列表进得去，所以搬到这儿。做法与 ChatInfoScreen 同一份（deleteDeps / Confirm）
+  const [confirm, setConfirm] = useState(false);
+  const [delBusy, setDelBusy] = useState(false);
+  const [delError, setDelError] = useState<string | null>(null);
+  const deleted = useRef(false);
   useFocusEffect(useCallback(() => { void refreshAgentShares(); }, []));
   const nameOfUid = (uid: string): string => {
     const r = friends.rows?.find((x) => x.profile.id === uid);
@@ -198,7 +210,30 @@ export function AgentScreen({ route, navigation }: Props) {
             </>
           ) : null}
         </View>
+        {agentId === ADMIN_AGENT_ID ? (
+          <Text style={{ fontSize: 13, lineHeight: 19, color: c.mutedForeground, paddingHorizontal: 16 }}>管理员删不掉：雇人、派活都靠它。</Text>
+        ) : (
+          <DangerRow label="删除这只智能体" onPress={() => { setDelError(null); setConfirm(true); }} />
+        )}
       </ScrollView>
+      <Confirm
+        visible={confirm}
+        title={`删掉「${agent.name}」？`}
+        lead={`它的私聊一起删掉；它待过的群还在，只是少了它；它自己那页记忆一起删掉${subworkersOf(agentId, ws.agents).length > 0 ? "；它的子工一起删掉" : ""}。删了找不回来。`}
+        ok="删除"
+        busy={delBusy}
+        error={delError}
+        onCancel={() => setConfirm(false)}
+        onOk={() => {
+          setDelBusy(true);
+          deleteAgentEverywhere(deleteDeps, supabase, ws.id, agentId)
+            .then(() => refreshHomeAfterWrite())
+            .then(() => { deleted.current = true; setConfirm(false); })
+            .catch((e: unknown) => setDelError(e instanceof Error ? e.message : String(e)))
+            .finally(() => setDelBusy(false));
+        }}
+        onExited={() => { if (deleted.current) navigation.goBack(); }}
+      />
     </View>
   );
 }

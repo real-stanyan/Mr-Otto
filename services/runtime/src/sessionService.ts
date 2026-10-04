@@ -1531,7 +1531,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     team: () => opts.agents({ fresh: true }),
     current: () => chatRoster ?? [],
     apply: async (agentIds) => {
-      const out = await session.updateChatRoster(opts.ownerUid, { agentIds }, "管理员");
+      // byUid 留空、byName「管理员」：时间线那句「谁把谁拉进了群聊」读 byName——带主人的 uid 会写成「你把…」（真机 2026-10-05）
+      const out = await session.updateChatRoster("", { agentIds }, "管理员");
       if (out.kind !== "ok") return out.message;
       if (out.changed && opts.onRosterChanged !== undefined) await opts.onRosterChanged(out.agentIds).catch(() => undefined);
       return null;

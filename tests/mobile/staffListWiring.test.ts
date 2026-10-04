@@ -61,3 +61,16 @@ describe("任务卡与 store", () => {
     expect(store).toMatch(/if \(s === "active" && store\.get\(\)\.uid !== null\) void refreshTasks\(\);/);
   });
 });
+
+describe("资料页能删人（#1571 第二轮第 7 条，员工表之后专员的私聊不再从列表进得去）", () => {
+  it("非管理员有「删除这只智能体」，与聊天信息页同一份 deleteDeps / Confirm；管理员那行写删不掉", () => {
+    const src = read("mobile/src/agent/AgentScreen.tsx");
+    expect(src).toMatch(/import \{ Confirm, DangerRow, deleteDeps \} from "\.\.\/chat\/ChatInfoScreen\.js";/);
+    expect(src).toMatch(/<DangerRow label="删除这只智能体"/);
+    expect(src).toMatch(/deleteAgentEverywhere\(deleteDeps, supabase, ws\.id, agentId\)/);
+    expect(src).toMatch(/管理员删不掉/);
+  });
+  it("管理员拉人 / 请人落的名单事件不带主人的 uid（时间线那句读 byName「管理员」，不写成「你把…」）", () => {
+    expect(read("services/runtime/src/sessionService.ts")).toMatch(/session\.updateChatRoster\("", \{ agentIds \}, "管理员"\)/);
+  });
+});
