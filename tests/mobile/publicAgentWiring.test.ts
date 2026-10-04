@@ -43,7 +43,8 @@ describe("FriendChatScreen", () => {
   });
   it("@ 名单里先列公开智能体；第一次 @ 先 ensurePeerLane", () => {
     // 代办入口（#1564）：朋友这一侧只列 TA 的管理员
-    expect(src).toMatch(/return \[\{ agentId: ADMIN_AGENT_ID, name: peer\.agents\.find\(\(a\) => a\.agentId === ADMIN_AGENT_ID\)\?\.name \?\? "管理员" \}\];/);
+    // 2026-10-05 真机：两边都叫「管理员」分不清谁是谁的——对方那只的 @ 候选名改成「X的管理员」
+    expect(src).toContain('return [{ agentId: ADMIN_AGENT_ID, name: `${name.replace(/\\s+/g, "")}的管理员` }];');
     expect(src).not.toMatch(/inLane\.push\(\{ agentId: peer\.publicAgent\.agentId/);
     expect(src).toMatch(/const opened = await ensurePeerLane\(uid\);/);
   });

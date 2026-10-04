@@ -55,8 +55,9 @@ describe("FriendChatScreen：两条车道合在一条时间线上", () => {
     expect(read("mobile/src/friends/LaneBubble.tsx")).toMatch(/item\.who === "friend" \? <PersonTile/); // 气泡随 #1565 搬成独立文件
   });
   it("@ 名单合并两边的智能体（#1544 起还列我主场里没带进来的那几只，@ 了先带进来）；语音松手那一刀也按两条车道判", () => {
-    expect(src).toMatch(/agentIds=\{\[\.\.\.broughtNames\.map\(\(a\) => a\.agentId\), \.\.\.peerNames\.map\(\(a\) => a\.agentId\), \.\.\.otherMine\.map\(\(a\) => a\.agentId\)\]\}/);
-    expect(src).toMatch(/if \(targets !== null && targets\.lane === "bring"\) \{[\s\S]*?bringAgents\(homeWs\.id, uid, \[\.\.\.brought, \.\.\.targets\.ids\], laneFacing\)/);
+    // #1571 第二轮：没带进来的专员不再能 @，#1544 的「@ 了先带进来」撤掉；名单按 entries 画（两边的管理员分开标）
+    expect(src).not.toMatch(/targets\.lane === "bring"/);
+    expect(src).toMatch(/entries=\{\[/);
     expect(src).toMatch(/laneTargetsOf\(trimmed\) === null/);
   });
 });
