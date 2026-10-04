@@ -1,0 +1,43 @@
+# coturn（TURN / STUN）——人与人在私聊里打语音电话的媒体兜底（#1534，ADR-0357）。
+# 装在 runtime 同一台机器上：`apt install coturn`，这份拷到 /etc/turnserver.conf，再 `systemctl enable --now coturn`。
+# 两台手机能直连（STUN 打洞成功）时流量不过这里；对称 NAT / 运营商 NAT 后面的那一对才走 TURN 中转。
+#
+# runtime 侧要配两个 env（deploy/otto-runtime.env.example）：
+#   TURN_URLS=turn:<公网 IP 或域名>:3478?transport=udp,turn:<同>:3478?transport=tcp
+#   TURN_SECRET=<下面 static-auth-secret 同一个值>
+# 没配这两个 = 只给公共 STUN，打得通但不保证。
+
+listening-port=3478
+# TLS（turns:）要证书才开；先只走 3478。开了的话手机那头 TURN_URLS 加一条 turns:<域名>:5349
+# tls-listening-port=5349
+# cert=/etc/letsencrypt/live/<域名>/fullchain.pem
+# pkey=/etc/letsencrypt/live/<域名>/privkey.pem
+
+# 公网地址。云主机内网网卡 + 弹性 IP 时写 external-ip=<公网>/<内网>
+# external-ip=1.2.3.4
+
+# 时限凭据（TURN REST API）：用户名 `<过期秒>:<标识>`，密码 = base64(HMAC-SHA1(secret, 用户名))。
+# runtime 的 services/runtime/src/turnCredentials.ts 按这个签；这里的值与 TURN_SECRET 必须一样。
+use-auth-secret
+static-auth-secret=CHANGE_ME_long_random_string
+realm=otto
+
+# 只做语音：一通一两百 kbps 足够。防止被当成免费中转
+total-quota=100
+user-quota=12
+max-bps=400000
+
+# 中转端口范围（防火墙放开 UDP 49160-49200 与 3478/udp+tcp）
+min-port=49160
+max-port=49200
+
+# 不让 TURN 中转到内网
+no-multicast-peers
+denied-peer-ip=10.0.0.0-10.255.255.255
+denied-peer-ip=192.168.0.0-192.168.255.255
+denied-peer-ip=172.16.0.0-172.31.255.255
+
+fingerprint
+no-cli
+log-file=/var/log/turnserver.log
+simple-log

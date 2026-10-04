@@ -67,6 +67,7 @@
 // `src/main/cloudSessionFleet.ts`（#1356：客户端挪进 shared，这一行是桌面专属）。
 
 import type { RemoteTransport } from "./transport.js";
+import { DEFAULT_STUN, HUMAN_CALL_RING_MS, type IceServer } from "../humanCall.js";
 import {
   BACKLOG_SKIP_MARKER,
   BACKLOG_TAIL_DEFAULT,
@@ -224,6 +225,9 @@ export interface CloudSessionClient {
     sessionId: string,
     patch: { name?: string; agentIds?: string[]; humans?: string[]; facing?: "self" | "both" },
   ): Promise<FriendsResult<null>>;
+  /** 给朋友打电话（控制房 RPC，协议 27，#1534）：runtime 核对是好友、推一条 VoIP 来电给对方；回执带打的人要用的
+      ICE 服务器与响铃到点的时刻。媒体与信令不经这里（call/humanCall.ts 直接走中继 hc:<callId> 房） */
+  humanCall(callId: string, toUid: string): Promise<FriendsResult<{ ice: IceServer[]; expiresTs: number }>>;
   /** 停掉当前正在跑的这一轮 turn（#957 第三批）。谁能停由服务端判（发起人
       或 owner，与 approve 同一判据）——resolve 的是 `stop_result` 那条回执，
       不是「帧交给 socket 了」 */
@@ -948,6 +952,14 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     });
   }
 
+  function humanCall(callId: string, toUid: string): Promise<FriendsResult<{ ice: IceServer[]; expiresTs: number }>> {
+    return ctlRequest({ t: "human_call", callId, toUid }, (msg) => {
+      if (msg.t !== "human_call_result" || msg.callId !== callId) return null;
+      if (!msg.ok) return { ok: false, message: msg.message ?? "没打出去" };
+      return { ok: true, value: { ice: msg.ice ?? [DEFAULT_STUN], expiresTs: msg.expiresTs ?? Date.now() + HUMAN_CALL_RING_MS } };
+    });
+  }
+
   function workspaceState(workspaceId: string): Promise<FriendsResult<WorkspaceCloudState>> {
     return ctlRequest({ t: "workspace", workspaceId }, (msg) =>
       // 答复带 workspaceId：一条连接只问一个，但认一下比赌顺序便宜
@@ -1224,5 +1236,5 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     };
   }
 
-  return { currentSessionId, activeSummary, create, join, leave, say, approve, archive, remove, chatUpdate, stop, call, backlogPage, workspaceState, workspaceGitCredential, workspaceFiles, workspaceFilesSearch, workspaceWikiWrite };
+  return { currentSessionId, activeSummary, create, join, leave, say, approve, archive, remove, chatUpdate, humanCall, stop, call, backlogPage, workspaceState, workspaceGitCredential, workspaceFiles, workspaceFilesSearch, workspaceWikiWrite };
 }

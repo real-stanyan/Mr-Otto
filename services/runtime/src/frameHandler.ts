@@ -16,6 +16,7 @@
 // 每条非 hello 的帧都先过这张表，没过表的 cid 什么都做不了。
 
 import { validateGitHost } from "../../../src/shared/remote/gitHost.js";
+import type { IceServer } from "../../../src/shared/humanCall.js";
 import {
   BACKLOG_SKIP_MARKER,
   CS_PROTOCOL_VERSION,
@@ -122,6 +123,9 @@ export interface FrameHandlerDeps {
   verifyJwt: (token: string) => Promise<{ userId: string } | null>;
   isMember: (workspaceId: string, uid: string) => Promise<boolean>;
   labelOf: (uid: string) => Promise<string>; // profiles 查询，查不到回 uid.slice(0,8)
+  /** 人打人的电话（#1534）：核对是好友、给 toUid 推一条 VoIP 来电；ok 带打的人那一张 TURN 票与响铃到点的时刻。
+      不挂在任何工作区上（在籍那道闸不适用） */
+  humanCall?: (fromUid: string, toUid: string, callId: string) => Promise<{ ok: true; ice: IceServer[]; expiresTs: number } | { ok: false; message: string }>;
   sessions: {
     get(workspaceId: string, sessionId: string): CloudSession | null;
     /** `chat` 在场 = 建一条聊天（#1280），缺席 = 团队会话（同旧）。
@@ -447,9 +451,21 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
       if (
         msg.t !== "create" && msg.t !== "workspace" && msg.t !== "git_credential" &&
         msg.t !== "archive" && msg.t !== "delete" && msg.t !== "files" &&
-        msg.t !== "files_search" && msg.t !== "wiki_write" && msg.t !== "chat_update"
+        msg.t !== "files_search" && msg.t !== "wiki_write" && msg.t !== "chat_update" && msg.t !== "human_call"
       ) {
         deny(cid, "not_authorized");
+        return;
+      }
+
+      // 人打人的电话（#1534，协议 27）：不关于任何团队，不过在籍那道闸；限速走 call 那一档（与拉智能体进通话同一只桶）
+      if (msg.t === "human_call") {
+        if (!deps.rateLimit.allow("call", entry.uid)) {
+          deps.send(cid, { t: "human_call_result", callId: msg.callId, ok: false, message: throttleMessage("call") });
+          return;
+        }
+        // 可选的装配：smoke / 测试假货不接它；真 daemon 总会给
+        const r = deps.humanCall === undefined ? { ok: false as const, message: "这台服务器还不支持人与人打电话。" } : await deps.humanCall(entry.uid, msg.toUid, msg.callId);
+        deps.send(cid, { t: "human_call_result", callId: msg.callId, ok: r.ok, ...(r.ok ? { ice: r.ice, expiresTs: r.expiresTs } : { message: r.message }) });
         return;
       }
 

@@ -1155,7 +1155,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   /** 推送点开去哪（#1442）：这个人在列表里是哪一种聊天，与回电同一张表（ringChatKind）。外联会话不推 */
   function alertTargetFor(uid: string, agentId: string): AlertPush["target"] | null {
     const chat = ringChatKind({ home: opts.approveAll, chatKind: ringKind, toUid: uid, ownerUid: opts.ownerUid });
-    if (chat === "outreach" || muteKeyFor(chat, sessionId, agentId) === null) return null;
+    // human（#1534）是人打人的来电那个壳，不是一条聊天的推送目标——ringChatKind 本就不会折出它，这里只是让类型说同一句话
+    if (chat === "outreach" || chat === "human" || muteKeyFor(chat, sessionId, agentId) === null) return null;
     return { kind: "cloud", chat, workspaceId: opts.workspaceId, sessionId, agentId };
   }
 
