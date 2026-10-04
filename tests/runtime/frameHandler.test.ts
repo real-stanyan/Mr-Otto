@@ -2188,6 +2188,26 @@ describe("群里的客人（#1393）", () => {
     expect(sent.at(-1)!.msg).toEqual({ t: "chat_update_result", workspaceId: "w1", sessionId: "s1", ok: true });
   });
 
+  it("控制房：朋友替主人开公开智能体的车道（#1533）——非成员的 onBehalf create 过在籍那道闸、交给 daemon 细判；普通 create 仍拒", async () => {
+    const createCalls: unknown[] = [];
+    const { deps, sent } = makeDeps({
+      isMember: async () => false,
+      createSession: async (workspaceId, byUid, chat) => {
+        createCalls.push([workspaceId, byUid, chat]);
+        return { sessionId: "s-lane" };
+      },
+    });
+    const h = createFrameHandler(deps);
+    await h.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, "jwt:friend"));
+    const PEER = "00000000-0000-4000-8000-000000000002";
+    await h.onCtlFrame("c1", encodeCs({ t: "create", workspaceId: "w1", chat: { kind: "pair", peerUid: PEER, facing: "both", agentIds: ["admin"], onBehalf: true } }));
+    expect(createCalls).toHaveLength(1);
+    expect(sent.at(-1)!.msg).toMatchObject({ t: "created", sessionId: "s-lane" });
+    await h.onCtlFrame("c1", encodeCs({ t: "create", workspaceId: "w1", chat: { kind: "pair", peerUid: PEER, facing: "both", agentIds: ["admin"] } }));
+    expect(sent.at(-1)!.msg).toMatchObject({ t: "denied", code: "not_member" });
+    expect(createCalls).toHaveLength(1);
+  });
+
   it("控制房：客人切不了车道的朝向（#1523，朝向归主人）", async () => {
     let calls = 0;
     const { deps, sent } = makeDeps({

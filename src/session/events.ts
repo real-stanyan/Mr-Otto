@@ -104,12 +104,14 @@ export interface UserMessageEvent extends SessionEventBase {
       `"callback"`（#1411）：智能体打给这个人的电话接通了，runtime 替接听的人落的「把你打电话要说的事
       说清楚」开场白（`mentions` 是打电话的那只，`fromUid` 是接的人）。同样只是记号、同样不画、同样不进协议位。
       `"admin_intro"`（#1465，ADR-0341）：新用户的管理员第一次开口——自我介绍、引导建第一只专属智能体。
-      与 `new_agent` 分开：管理员职责固定，不走「第一句回话写成职责」那一步。同样只是记号、同样不画
+      与 `new_agent` 分开：管理员职责固定，不走「第一句回话写成职责」那一步。同样只是记号、同样不画。
+      `"pair_call_summary"`（#1533）：朋友给主人的公开智能体打完电话，runtime 替主人落的那条「把 TA 的需求总结给我」——
+      与 outreach_report 同一种性质（正文是外人的话的转述），那一轮受监督
       `"routine"`（#1283，ADR-0357）：定时任务到点，runtime 替主人落的开场白（`mentions` 是那只，`fromUid` 是主人）。
       与别的 greeting 两处不同：① 它**算主人亲口**（openingTraits 的 ownerSpoke 放行它——任务原话是主人写的）；
       ② 手机时间线**画它**（一条居中灰条「⏰ 定时任务「x」」）：别的 greeting 都有前一条可见事件解释「为什么它开口了」，
       这条没有。桌面照旧藏。同样不进协议位 */
-  greeting?: "voice_call" | "new_agent" | "callback" | "outreach" | "outreach_report" | "admin_intro" | "routine";
+  greeting?: "voice_call" | "new_agent" | "callback" | "outreach" | "outreach_report" | "admin_intro" | "pair_call_summary" | "routine";
   /** 这句话是**在语音通话里说出来的**（#1233）。缺席 = 打字打的 / 旧日志。
       **只是记号**：起 turn、排队、护栏、接力链首、派活全都不看它，模型投影
       （deriveMessages）读都不读——对模型来说这就是一条普通的用户消息，和从前

@@ -94,6 +94,13 @@ describe("文案", () => {
   });
 });
 
+describe("openingTraits：pair_call_summary 也算汇报轮（#1533）", () => {
+  it("任何一条是 pair_call_summary 开场白 = report", () => {
+    expect(o.openingTraits([{ fromUid: "o", greeting: "pair_call_summary" }], "o").report).toBe(true);
+    expect(o.openingTraits([{ fromUid: "o" }], "o").report).toBe(false);
+  });
+});
+
 describe("openingTraits（#1441 复审：job 折叠开场白时一律往严算）", () => {
   const OWNER = "owner";
   const plain = { fromUid: OWNER };

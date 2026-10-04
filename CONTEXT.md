@@ -176,6 +176,7 @@ Domain glossary. All agents' understanding of domain terms is grounded here; cod
 - **定时任务（routine）**：一只账号级智能体记住的一条「到点自己起一轮」的任务（#1283，ADR-0357）。两类：**永久**（`daily` / `weekly`，墙上时间固定）与**日抛**（`once`，跑完即停用、列表里留 7 天）。存 `agent_routines`，调度器在云 runtime 里（30 秒 tick + 原子认领），到点在它的私聊里落一条 `greeting:"routine"` 的开场白起 turn——与回电 / 外联汇报同一条路。只存在于个人主场（RLS 与到点各核一次）。routine 轮视同主人亲口（免审、`call_friend` 亮），刹车是额度门 + 圈数上限。模型侧三把刀 `schedule_task` / `list_schedules` / `update_schedule`。
 - **情绪括注（emotion tag）**：通话里模型写在**段首**的括注 `（笑）（惊）（叹）（气）（怕）（嫌）`，对到 MiniMax 的 emotion（happy / surprised / sad / angry / fearful / disgusted）。落日志不落界面：显示剥（六处，含通话字幕）、出声解；只认段首白名单，词表外的括注是正文。ADR-0355，`src/shared/voiceProsody.ts`
 - **车道（pair lane，ADR-0346 / #1523）**：主人个人主场里一条 `chat_kind='pair'` 的云会话，装着他带进与某位朋友私聊的智能体；一人对一位朋友只有一条，朝向（`facing`）可切——**私密车道**（self）只有主人看得到、只听主人的；**公开车道 / 共享车道**（both）朋友以客人身份进同一条，看得到、能 @，朋友点起的轮每一刀等主人批。朝向从日志里最后一条名单事件的客人名单推导，`facing` 那一列是投影。
+- **公开智能体（public agent，ADR-0356 / #1533）**：每人在「我」页设定的一只自己主场里的智能体（`profiles.public_agent_id`）。朋友（已接受、两边都不是仅聊天）在和我的私聊里能 @ 它、给它打电话：载体是我主场里与那位朋友的共享车道，朋友那一侧能按需开出来（协议 26 的 `onBehalf` create）。打完电话它把朋友的需求总结写在车道里（两人都看得到），那一轮受监督。
 
 ## Key invariants
 

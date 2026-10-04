@@ -10,7 +10,10 @@ import { isIanaTimeZone } from "../routines.js";
 import { b64decode, b64encode } from "./b64.js";
 import { MAX_FRAME_BYTES } from "./wire.js";
 
-/** 25（#1523，#1461 P2）：共享车道。`create` 的 pair `facing` 收 "both"；`chat_update` 多 `facing`（只在车道上有意义：
+/** 26（#1533，#1532 一期）：公开智能体。`create` 的 pair 多 `onBehalf: true`——由**配对的朋友**发到主人的主场控制房，
+    替主人开（或找到）装着 TA 公开智能体的共享车道；frameHandler 对这一种帧放行非成员，daemon 核对朋友关系 / 档位 /
+    主人设了哪只。加字段照样进位：老 runtime 会把 onBehalf 静默丢掉、再按「非成员」拒掉——在握手那一步就说清。
+    25（#1523，#1461 P2）：共享车道。`create` 的 pair `facing` 收 "both"；`chat_update` 多 `facing`（只在车道上有意义：
     主人把带进来的智能体在「仅我可见 / 公开给 TA」之间切，runtime 折成客人名单 [朋友] / []）。加枚举值 / 加字段照样进位：
     老 runtime 会拒 facing both 的 create、把 chat_update.facing 静默丢掉——新客户端以为公开了、其实没有。
     23（#1461 P1，ADR-0346）：好友私聊里带上自己的智能体（私密车道）。`create` 的 `chat` 多一种
@@ -138,7 +141,7 @@ import { MAX_FRAME_BYTES } from "./wire.js";
     少一格状态。**加一个枚举值同理**：老客户端的 isValidCsDeniedCode 认不出
     `rate_limited`，decodeCsDown 回 null，那一帧被静默忽略，于是 create()
     要白等满超时才回一句"云端无响应"——把"你被限速了"说成"对面没回话"。 */
-export const CS_PROTOCOL_VERSION = 25;
+export const CS_PROTOCOL_VERSION = 26;
 export const CS_MAX_TEXT_BYTES = 64 * 1024;
 
 /** 一次回多少字节的文件内容（#1056）。中继单帧上限是 256 KiB（wire.ts 的
@@ -315,7 +318,10 @@ export type CsChatSpec =
   /** 车道（协议 23，#1461 P1；协议 25 收 "both"，#1523）：我主场里一条与朋友 `peerUid` 配对的会话。
       `facing` = "self" 只有我看得到；"both" 朋友以客人身份进来、看得到也能 @。同一对 (主场, 朋友) 只有一条，
       朝向可切（chat_update.facing），runtime 幂等 */
-  | { kind: "pair"; peerUid: string; facing: "self" | "both"; agentIds: string[] };
+  | { kind: "pair"; peerUid: string; facing: "self" | "both"; agentIds: string[];
+      /** `onBehalf`（协议 26，#1533）：发帧的是配对的那位朋友（= peerUid），替主人开装着 TA 公开智能体的车道；
+          朝向与名单由 runtime 定（both、[公开智能体]），帧里的只是客户端的猜 */
+      onBehalf?: true };
 /** welcome 里带的聊天身份。agentIds 是日志投影原样——与现存智能体求交集留给读取侧。
     `humans`（协议 21）：群主之外的真人，名字是日志里的快照；私聊恒为空 */
 export interface CsChatInfo {
@@ -576,7 +582,9 @@ function normalizeChatSpec(v: unknown): CsChatSpec | null | undefined {
     if ((o.facing !== "self" && o.facing !== "both") || typeof o.peerUid !== "string" || !USER_UID_RE.test(o.peerUid)) return null;
     const agentIds = normalizeChatAgentIds(o.agentIds, 1);
     if (agentIds === null) return null;
-    return { kind: "pair", peerUid: o.peerUid.toLowerCase(), facing: o.facing, agentIds };
+    // onBehalf 只认 true；带了别的值整帧拒（同 agentIds 的纪律）
+    if (o.onBehalf !== undefined && o.onBehalf !== true) return null;
+    return { kind: "pair", peerUid: o.peerUid.toLowerCase(), facing: o.facing, agentIds, ...(o.onBehalf === true ? { onBehalf: true as const } : {}) };
   }
   return null;
 }

@@ -18,6 +18,8 @@ export interface MyProfileRow {
   name: string | null;
   avatar_url: string | null;
   onboarded_at: string | null;
+  /** 0057 之前的库没有这一列：读不到就当没设 */
+  public_agent_id?: string | null;
 }
 
 /** 允许进库的头像来源。https 是 provider 给的图,data:image 是用户自己传的
@@ -57,6 +59,8 @@ export function toMyProfile(row: MyProfileRow): MyProfile {
     name: row.name ?? "",
     avatarUrl: row.avatar_url ?? "",
     onboarded: row.onboarded_at !== null,
+    // 公开智能体（#1533）：行里带了这一列才有这一格（0057 之前的行 / 老夹具一个字节不变）
+    ...(row.public_agent_id === undefined ? {} : { publicAgentId: typeof row.public_agent_id === "string" && row.public_agent_id !== "" ? row.public_agent_id : null }),
   };
 }
 

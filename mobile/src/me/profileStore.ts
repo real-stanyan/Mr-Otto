@@ -8,7 +8,11 @@ import { saveTimezone } from "../../../src/shared/supabaseRoutinesApi.js";
 import { createStore } from "../externalStore.js";
 import { supabase } from "../supabase.js";
 
-const COLUMNS = "id,email,name,avatar_url,onboarded_at";
+const BASE_COLUMNS = "id,email,name,avatar_url,onboarded_at";
+/** 公开智能体那一列（0057，#1533）。没跑那份 migration 时第一次查询报「没这一列」，从此退回不带它——同 friendsApi 的 tierColumns */
+let publicAgentColumn = true;
+const COLUMNS = (): string => (publicAgentColumn ? `${BASE_COLUMNS},public_agent_id` : BASE_COLUMNS);
+const missingColumn = (e: { message: string; code?: string }): boolean => e.code === "42703" || /public_agent_id/.test(e.message);
 
 export interface ProfileState {
   me: MyProfile | null;
@@ -43,12 +47,16 @@ export async function refreshProfile(): Promise<void> {
   const uid = await uidNow();
   if (uid === null) return;
   // maybeSingle：profiles 那一行由 auth.users 的触发器建，注册那一瞬间可能还没到——那是「还没有」不是错误
-  const res = await supabase.from("profiles").select(COLUMNS).eq("id", uid).maybeSingle();
+  let res = await supabase.from("profiles").select(COLUMNS()).eq("id", uid).maybeSingle();
+  if (res.error && publicAgentColumn && missingColumn(res.error)) {
+    publicAgentColumn = false;
+    res = await supabase.from("profiles").select(COLUMNS()).eq("id", uid).maybeSingle();
+  }
   if (res.error) {
     store.set({ loadError: res.error.message, loaded: true });
     return;
   }
-  const row = res.data as MyProfileRow | null;
+  const row = res.data as unknown as MyProfileRow | null;
   store.set({ me: row === null ? null : toMyProfile(row), loadError: null, loaded: true });
 }
 
@@ -70,9 +78,9 @@ export async function saveProfile(patch: ProfilePatch): Promise<void> {
   const columns = buildColumnPatch(patch, new Date().toISOString());
   if (!columns.ok) throw new Error(columns.message);
   // .eq("id", uid) 不是多余的：没有它是一条全表更新，被 RLS 收成 0 行，然后 single() 报一个与权限无关的错
-  const res = await supabase.from("profiles").update(columns.value).eq("id", uid).select(COLUMNS).single();
+  const res = await supabase.from("profiles").update(columns.value).eq("id", uid).select(COLUMNS()).single();
   if (res.error) throw new Error(res.error.message);
-  store.set({ me: toMyProfile(res.data as MyProfileRow), loadError: null, loaded: true });
+  store.set({ me: toMyProfile(res.data as unknown as MyProfileRow), loadError: null, loaded: true });
 }
 
 let lastSyncedTz: string | null = null;

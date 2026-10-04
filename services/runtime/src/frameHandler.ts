@@ -457,7 +457,10 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
       // 只放这一种帧，别的「关于整个工作区」的动作照旧只认工作区成员
       const guestUpdate =
         msg.t === "chat_update" && deps.sessions.get(msg.workspaceId, msg.sessionId)?.isGuest(entry.uid) === true;
-      if (!guestUpdate && !(await deps.isMember(msg.workspaceId, entry.uid))) {
+      // 朋友替主人开公开智能体的车道（#1533，协议 26）：发帧的不是主场成员。只放这一种 create，是不是配对的朋友、
+      // 主人设了没有、档位够不够，细判在 daemon（它握着好友关系与 profiles 的查询）
+      const onBehalfCreate = msg.t === "create" && msg.chat?.kind === "pair" && msg.chat.onBehalf === true;
+      if (!guestUpdate && !onBehalfCreate && !(await deps.isMember(msg.workspaceId, entry.uid))) {
         deny(cid, "not_member");
         return;
       }

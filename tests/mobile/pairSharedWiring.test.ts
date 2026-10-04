@@ -32,7 +32,8 @@ describe("peerLane.ts：第二条连接", () => {
 describe("FriendChatScreen：两条车道合在一条时间线上", () => {
   const src = read("mobile/src/friends/FriendChatScreen.tsx");
   it("进来 / 回来找朋友那条，离开断掉", () => {
-    expect(src).toMatch(/if \(friend\) void openPeerLane\(uid\);/);
+    // #1533: openPeerLane now also carries the friend name / avatar (guest snapshot)
+    expect(src).toMatch(/if \(friend\) void openPeerLane\(uid, \{ name, avatarUrl: row\?\.profile\.avatarUrl \?\? "" \}\);/);
     expect(src).toMatch(/useEffect\(\(\) => \(\) => closePeerLane\(\), \[\]\);/);
   });
   it("@ 了朋友的智能体走 sayToPeerLane；@ 了自己的仍走 sendText；都没有发给朋友", () => {
