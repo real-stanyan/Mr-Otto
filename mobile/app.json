@@ -10,7 +10,7 @@
       "supportsTablet": true,
       "bundleIdentifier": "com.stanyan.mrotto.mobile",
       "infoPlist": {
-        "NSMicrophoneUsageDescription": "语音通话时要用麦克风听你说话。",
+        "NSMicrophoneUsageDescription": "语音通话、发语音消息时要用麦克风。",
         "NSSpeechRecognitionUsageDescription": "语音通话时把你说的话转成文字，发给智能体。",
         "UIBackgroundModes": [
           "voip",
@@ -76,7 +76,7 @@
       }
     },
     "owner": "real_stanyan",
-    "runtimeVersion": "1",
+    "runtimeVersion": "2",
     "updates": {
       "url": "https://u.expo.dev/02a88a0c-a498-4453-b03e-00dac97d5938",
       "enabled": true,

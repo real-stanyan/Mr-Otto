@@ -29,6 +29,11 @@ declare class OttoSpeechModule extends NativeModule<OttoSpeechEvents> {
   stopPlay(): Promise<void>;
   /** 系统来电（CallKit）进行中：音频会话由系统激活，这边不 setCategory / setActive（#1428） */
   setSessionManagedExternally(on: boolean): Promise<void>;
+  /** 录音（#1492，ADR-0351）：按住说话时顺手把麦克风的声音写成 m4a。start 之后调；授权还没回来也行 */
+  startRecording(): Promise<void>;
+  /** keep = 要这段（回 file:// URI、时长、字节）；否则删掉回 null。排在 stop 之后也取得到。
+      **老原生包（1.0.1 (4)）没有这两条**：调用方先 typeof 判一下 */
+  stopRecording(keep: boolean): Promise<{ uri: string; durationMs: number; bytes: number } | null>;
 }
 
 export const OttoSpeech: OttoSpeechModule | null = requireOptionalNativeModule<OttoSpeechModule>("OttoSpeech");

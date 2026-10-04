@@ -82,6 +82,16 @@ public class OttoSpeechModule: Module {
       self.recognizer.stopPlay()
     }.runOnQueue(speechQueue)
 
+    // 录音（#1492，ADR-0351 第 5 条）：按住说话时顺手把麦克风的声音写成 m4a。startRecording 排在 start 后面、
+    // 授权还没回来也行（原生那侧记着，引擎起来那一刻开文件）；stopRecording 排在 stop 之后也取得到
+    AsyncFunction("startRecording") {
+      self.recognizer.startRecording()
+    }.runOnQueue(speechQueue)
+
+    AsyncFunction("stopRecording") { (keep: Bool) -> [String: Any]? in
+      self.recognizer.stopRecording(keep: keep)
+    }.runOnQueue(speechQueue)
+
     // 系统来电进行中由 JS 打开（#1428）：音频会话交给 CallKit，这边不自己开关
     AsyncFunction("setSessionManagedExternally") { (on: Bool) in
       self.recognizer.externalSession = on
