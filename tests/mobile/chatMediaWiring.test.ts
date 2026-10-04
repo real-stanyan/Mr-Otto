@@ -17,11 +17,15 @@ describe("friendsApi", () => {
   it("媒体那一格过 parseDmMedia（路径必须落在这一对人的目录下）", () => {
     expect(src).toMatch(/parseDmMedia\(m\.media, m\.sender, m\.recipient\)/);
   });
-  it("上传：签名地址 + PUT 原样字节 + 不覆盖", () => {
-    expect(src).toMatch(/createSignedUploadUrl\(path\)/);
-    expect(src).toMatch(/httpMethod: "PUT"/);
-    expect(src).toMatch(/UploadType\.BINARY_CONTENT/);
+  // #1480：整个文件一个 PUT 传签名地址，相册里几十 MB 的原片途中网络一抖就整体失败（真机 The network connection was
+  // lost）。改走 TUS 可续传上传：带用户 JWT（Storage 按它判 0052 的 insert 策略）、一次只读一片、不覆盖
+  it("上传：TUS 可续传、带用户 JWT、一次读一片、不覆盖", () => {
+    expect(src).toMatch(/tusUpload\(\{/);
+    expect(src).toMatch(/endpoint: `\$\{SUPABASE_URL\}\/storage\/v1\/upload\/resumable`/);
+    expect(src).toMatch(/authorization: `Bearer \$\{token\}`/);
+    expect(src).toMatch(/handle\.readBytes\(length\)/);
     expect(src).toMatch(/"x-upsert": "false"/);
+    expect(src).not.toMatch(/createSignedUploadUrl\(path\)/);
   });
 });
 
