@@ -51,8 +51,9 @@
 | `created_at` / `updated_at` | timestamptz | |
 
 - 索引：`(next_run_at) where next_run_at is not null`（tick 扫它）；`(workspace_id, agent_id)`（设置页列它）。
-- RLS：本人（`owner_uid = auth.uid()`）读写删；**insert / update 另要求 `exists (select 1 from workspaces w where w.id = workspace_id and w.owner_uid = auth.uid())`**——谁也种不进别人的主场（runtime 起 turn 前还要再核一次，见 3.5）；runtime 用 service key。不进 realtime publication（设置页进页现查，列表很短；同 `chat_mutes` 的理由——只有本人读，DELETE 不查 RLS）。
-- 上限：每只**启用中**的任务 ≤ 20 条（`updateRoutineChecked` 与工具两处都查，DB 不加触发器——同 `agentSettingsForm` 的分工：规则在 shared，一份）。
+- 形状 check：`schedule` 是对象且 `kind in ('once','daily','weekly')`；`tz` 1–64 字、只含 `[A-Za-z0-9_+\-/]`（入口挡住绕过客户端的写入；漏进来的坏行由调度器隔离，见 3.3）。
+- RLS：本人（`owner_uid = auth.uid()`）读写删；**insert / update 另要求 `exists (select 1 from workspaces w where w.id = workspace_id and w.owner_uid = auth.uid() and w.kind = 'home')`**——谁也种不进别人的主场，团队空间也种不进（runtime 起 turn 前还要再核一次，见 3.5）；runtime 用 service key。不进 realtime publication（设置页进页现查，列表很短；同 `chat_mutes` 的理由——只有本人读，DELETE 不查 RLS）。
+- 上限：每只**启用中**的任务 ≤ 20 条。工具与手机设置页先查（话更好懂），**库里再由 `before insert or update` 触发器兜一次**（终审 I2：只在客户端查等于 REST 接口照收无限多条）——一行「变成启用」时数同一只名下其它启用行，`>= 20` 以 `check_violation` 拒；已启用行的改动（改标题、调度器认领）不数。
 
 ### 2.2 `schedule` 三种形状
 
@@ -82,9 +83,9 @@ type RoutineSchedule =
 
 1. **tick 每 30 秒**（与 `sweepIdle` 的 5 分钟同一只 `setInterval` 家族，但自己一只——周期不同）。
 2. **认领是原子的**：`update agent_routines set next_run_at = <按 schedule 算的下一跳或 null>, last_run_at = now() where id = $1 and next_run_at = $2 returning *`——`$2` 是刚读到的值。两个实例同时 tick（#1412 那类重启交叠），只有一个 `returning` 有行。认领成功才起 turn；认领失败 = 别人跑了，跳过。**先推进 `next_run_at` 再起 turn**：起 turn 失败不会让它每 30 秒重试一次烧钱（失败记 `last_status='failed'`，重复任务等下一跳，一次性任务到此为止）。
-3. 每次 tick 一条 SQL 读 `next_run_at <= now() + 0`，按 `next_run_at` 升序、limit 50；一轮处理完再等下一 tick——不并发起 50 个 turn。**每一行包在自己的 try/catch 里**（一行坏数据挡不住这一拍，也挡不住第 6 步的清理）；**每行现取一次时钟**（`deps.now()` 在循环里调：`run` 要等那一轮跑到结束才返回，拍头取的 `now` 到后面几行早已过期，漏跑判据与认领的 `last_run_at` 都会算偏）。
+3. 每次 tick 一条 SQL 读 `enabled = true and next_run_at <= now()`，按 `next_run_at` 升序、limit 50；一轮处理完再等下一 tick——不并发起 50 个 turn。**每一行包在自己的 try/catch 里**（一行坏数据挡不住这一拍，也挡不住第 6 步的清理）；**每行现取一次时钟**（`deps.now()` 在循环里调：`run` 要开房、读名单、落盘入队才返回——不等那一轮跑完，`started` = 已入队——拍头取的 `now` 到后面几行可能已过期，漏跑判据与认领的 `last_run_at` 都会算偏）。**坏行不堵队头**：`due()` 逐行映射，`schedule` 读不懂的行当场隔离（停用 + `next_run_at` 清空 + `failed`，记日志）；`tz` 认不出、算不出下一跳的行照样先认领（`next_run_at = null`）再标 `failed` 停用——不认领它就永远排在队头，50 条就占满 limit。**停用 = 不再到点**：`setStatus(…, enabled=false)` 顺手清空 `next_run_at`。
 4. **漏跑**（daemon 停机期间错过的；判据是 `now() - next_run_at`）：一次性任务晚 ≤ 2 小时照跑，> 2 小时不跑、标 `missed`、私聊里落一条灰条「定时任务「x」错过了（原定 10-05 09:00）」；重复任务晚 ≤ 10 分钟照跑，更晚的直接推到下一跳、不落灰条（人没醒着的时候一天的早报都迟到三小时才来，不如不来）。宽限常数两枚放 `routines.ts`。
-5. **起 turn**：`openSessionRoom(workspaceId, sessionId, ownerUid, ownerUid, approveAll=true)` 取房（幂等），调新方法 `session.runRoutine({ routineId, title, instruction, tz, firedAt })`（第 4 节）。私聊按 0037 唯一索引现查（`findDmSession(workspaceId, [agentId])`），查不到 / 已归档 / 智能体已删 → `failed`，并把任务 `enabled=false`。**起 turn 前再核归属**：`workspaceFacts(workspaceId).ownerUid === row.ownerUid`（`routineRun.ts` 的 `ownerOf` 依赖，每次现查；行上的 `ownerUid` 是建任务那一刻的旧话），对不上 → `failed` 并停用，不替前主人起 turn。
+5. **起 turn**：`openSessionRoom(workspaceId, sessionId, ownerUid, ownerUid, approveAll=true)` 取房（幂等），调新方法 `session.runRoutine({ routineId, title, instruction, tz, firedAt })`（第 4 节）。私聊按 0037 唯一索引现查（`findDmSession(workspaceId, [agentId])`），查不到 / 已归档 / 智能体已删 → `failed`，并把任务 `enabled=false`。智能体名单读不出来（`degraded`，一次查询失败）**不算**智能体已删：`runRoutine` 抛错，调度器标 `failed` 但不停用，下一跳再试。**起 turn 前再核归属**：`routineRun.ts` 的 `homeOwnerOf` 依赖（daemon 现查 `workspaceFacts`，不是主场回 `null`；行上的 `ownerUid` 是建任务那一刻的旧话），`null` 或对不上 `row.ownerUid` → `failed` 并停用，不替前主人起 turn。
 6. **清理**：同一 tick 顺手 `delete … where schedule->>'kind' = 'once' and enabled=false and last_status in ('done','missed') and last_run_at < now() - interval '7 days'`（日抛跑完留 7 天给人看）。**只清一次性**：停用的重复任务是人暂停的、不是跑完的，不能被删（设置页里的「已完成」同口径，见 8.2）。
 7. 不做：没有「立刻跑一次」的按钮（人想现在跑，直接在私聊里说一句就是了）。
 
@@ -111,7 +112,7 @@ routine?: { id: string; title: string };
 
 ### 4.2 `CloudSession.runRoutine`
 
-与 `greetNewAgent` 同形：名单现读（那只还在不在）→ 追加 `user_message{greeting:"routine", routine, mentions:[agentId], fromUid: ownerUid}` → `notify` → `coordinator.enqueue({agentId, fromUid: ownerUid, opening})` → `"start_turn"` 则 `startDrain()`。`"queued"`（它正忙）就排队——早报等它干完手上的活再写，不丢。
+与 `greetNewAgent` 同形：名单现读（那只还在不在；读不出来抛错，见 3.5）→ 追加 `user_message{greeting:"routine", routine, mentions:[agentId], fromUid: ownerUid}`（**不带 `tz`**：正文里已写明时间与时区，带上会让投影的「今天是」改按任务建时的时区算） → `notify` → `coordinator.enqueue({agentId, fromUid: ownerUid, opening})` → `"start_turn"` 则 `startDrain()`。`"queued"`（它正忙）就排队——早报等它干完手上的活再写，不丢。
 
 ### 4.3 投影
 
@@ -123,7 +124,7 @@ routine?: { id: string; title: string };
 ## 5. 审批、监督、刹车
 
 1. **免审**：`fromUid = ownerUid` → `currentInitiator === ownerUid` → `policyApprover` 走主场全免那一格，不改代码。
-2. **`ownerSpoke` 对 routine 开场白为真**（本设计唯一放宽的一处）：`openingTraits` 的 `ownerSpoke` 判据改为「每条开场白都是主人、无 `relay`、且 `greeting` 为 undefined **或 `"routine"`**」；`tightenSupervision` 对应放行。理由：任务原话是主人亲手写的，与主人当场说一句逐字等价；不放行则 `call_friend` 在 routine 轮里永远灭着，拍板第 2 条「定时打给好友」做不成。代价写进 ADR：routine 轮里 `call_friend` 的监督与主人当场派它一样松。
+2. **`ownerSpoke` 对 routine 开场白为真**（本设计唯一放宽的一处）：`openingTraits` 的 `ownerSpoke` 判据改为「每条开场白都是主人、无 `relay`、且 `greeting` 为 undefined **或 `"routine"`**」；`tightenSupervision` 对应放行。理由：任务原话是主人亲手写的，与主人当场说一句逐字等价（`created_by='agent'` 的行不成立，见第 10 节已知代价）；不放行则 `call_friend` 在 routine 轮里永远灭着，拍板第 2 条「定时打给好友」做不成。代价写进 ADR：routine 轮里 `call_friend` 的监督与主人当场派它一样松。
 3. **额度刹车（起跑前）**：`relayRemainingMicro()` 回数且 `< limitMicro * 0.1`（沿用 `RELAY_BUDGET_FRACTION_OF_REMAINING`）→ 不起，`last_status='skipped_quota'`，落 `routine_note`；回 `null`（探针不可达）→ **照跑**（与 ADR-0238 的降级一致：问不出钱不等于没钱；且这是主人自己建的任务，不是接力失控）。重复任务下一跳照常算，不因为跳过而停。
 4. **圈数硬上限**：engine 加可选项 `maxRounds?: number`，每轮只读一次；到数就**抛错走既有的 `turn_ended{outcome:"error"}` 收口路径**（与 `loopGuardMaxNudges` 同一条路，不新造事件，**不伪造一条 `assistant_message`**）；错误文案里写清是定时任务的硬上限，手机上画成「「x」这一轮出错」那条灰条。缺席 = 不限（老行为逐字不变）。routine 轮传 40。普通轮不传——人在场自己会按停止。
 5. **数量上限**：每只启用中 ≤ 20 条；同一任务两次执行间隔 ≥ 60 秒（`nextRunAt` 的 `after` 取 `max(now, firedAt + 60s)`）。
@@ -133,7 +134,7 @@ routine?: { id: string; title: string };
 
 1. **`say` 帧加可选 `tz: string`**（设备 IANA，`Intl.DateTimeFormat().resolvedOptions().timeZone`）。runtime 校验是合法 IANA 后写到 `user_message.tz`（新可选字段，缺席 = 旧日志 / 桌面）。协议**不升**：可选字段，旧 runtime 忽略，旧客户端不发。非 @ 的 `chat_message` 路径**不带** `tz`（私聊里每句话都是 `user_message`，它在这里无关）。
 2. **投影里「今天是」按最近一条带 `tz` 的人话算**：`deriveMessages` 的 `today` 从「日志里最后一条事件的 `ts`」变成「同一个 `ts`，按最近一条 `user_message.tz` 格式化」，没有 tz 的日志逐字节不变（老投影断言不动）。括号里的「本机时区」改成具体时区名。**这是模型知道「现在几点、哪个时区」的唯一来源**，可从日志推导，不读库。多时区的群聊里，「今天是」那一行会随最近一位说话的人的时区来回翻——前缀缓存因此失效（见第 10 节已知代价）。读取的纯函数是 `userTzOf`（`deriveMessages.ts`）。
-3. **`profiles.timezone`**（同一份 0057）：手机前台时（`AppState` → `active`）设备 tz 与上次写的不同才 `update`（手机写，runtime 不写；调度器只在建任务时读它当默认值）。调度器建任务时 `tz` 省略 → 读它；读不到 → 拒绝建任务并让智能体问一句「你在哪个城市」。桌面不写（桌面不在本期）。
+3. **`user_settings.timezone`**（同一份 0057 新建的 `user_settings` 表，uid 主键、只有本人读写的 RLS）：手机前台时（`AppState` → `active`）设备 tz 与上次写的不同才 `upsert`（手机写，runtime 用 service key 读、不写；调度器只在建任务时读它当默认值）。**不放 `profiles`**（终审 C3）：`profiles` 的 select 是 `using (true)`（0001），所有登录用户都读得到，一个出差就会变、前台就会改写的时区挂在那儿等于让任何人跟踪你人在哪。调度器建任务时 `tz` 省略 → 读它；读不到 → 拒绝建任务并让智能体问一句「你在哪个城市」。桌面不写（桌面不在本期）。
 4. **打给好友的任务**：`schedule_task` 的说明里写死「任务里要打给好友的，先问好友所在城市，换成 IANA 时区传 `tz`；没问到别建」。模型做城市 → 时区这一步（它会），工具只校验 IANA 合法。
 
 ## 7. 模型侧工具（私聊里给每只；外联会话一把都没有，照旧）
@@ -181,6 +182,8 @@ routine?: { id: string; title: string };
 - 多时区的群聊里，「今天是」那行随最近一位说话的人的时区来回翻，投影前缀不再逐字稳定，前缀缓存失效。
 - **编辑暂停的任务会让它重新启用**：产品决定——人点进去改了，多半就是想让它跑；只想改个错别字、仍想暂停的人得再拨一下开关。
 - 行上的 `owner_uid` 是建任务那一刻的旧话：主场易主后，旧任务只会 `failed` 停用，不会迁给新主人。
+- `created_by='agent'` 的任务正文是模型写的，不是主人逐字写的；一次被注入的轮可能留下一条免审且 `call_friend` 亮着的重复任务。后续：智能体建的任务要主人在设置页确认过才算主人亲口（另开 issue）。
+- 库内 20 条上限挡不住两笔并发同时插第 20 条，最多超一条，接受。
 
 不做：cron 任意表达式；按事件触发（「收到邮件就…」，#1283 标题里的「触发」留给下一条 issue）；桌面设置页；立刻跑一次；单次花费上限；群里的定时任务。
 
