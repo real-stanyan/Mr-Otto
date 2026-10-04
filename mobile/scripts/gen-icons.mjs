@@ -18,7 +18,7 @@ const NAMES = [
   "phone-missed", "phone-incoming",
   "mic", "mic-off", "type", "at-sign", "plus", "x", "folder", "file-text", "blocks", "book-open", "chart-column",
   "settings", "gauge", "check", "app-window", "square", "user-round-minus", "log-out", "mail", "lock-keyhole", "image",
-  "trash-2", "pencil", "info", "shield-check", "circle-alert", "bell-off",
+  "trash-2", "pencil", "info", "shield-check", "circle-alert", "bell-off", "camera", "play", "rotate-ccw",
 ];
 
 /** 一个图标文件里的 __iconNode（有的文件是别名：只 re-export 另一个图标，跟过去） */
