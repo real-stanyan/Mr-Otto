@@ -5219,7 +5219,7 @@ describe("流式输出（#1107，协议 16 的 delta 帧）", () => {
       },
     };
     const session = createCloudSession({
-      diskUsage: () => null, onOutreachEnded: null, signSpeechTicket: async () => "t", outreach: null, approveAll: false, callback: null,
+      diskUsage: () => null, onOutreachEnded: null, signSpeechTicket: async () => "t", pairMessages: null, outreach: null, approveAll: false, callback: null,
       sessionMeta: createInMemoryCloudSessionMeta(),
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
       store, world: fakeWorld, px, hostUids: async () => [],
