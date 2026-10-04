@@ -8,7 +8,11 @@ import { AGENT_ID_RE, CHAT_NAME_MAX, normalizeChatAgentIds, normalizeChatHumanUi
 import { b64decode, b64encode } from "./b64.js";
 import { MAX_FRAME_BYTES } from "./wire.js";
 
-/** 22（#1441）：智能体替主人给朋友打电话的外联会话。`welcome.chat.kind` 多一种 `outreach`、`chat` 多可选
+/** 23（#1461 P1，ADR-0343）：好友私聊里带上自己的智能体（私密车道）。`create` 的 `chat` 多一种
+    `{kind:"pair", peerUid, facing:"self", agentIds}`；`welcome.chat.kind` 多 `pair`、`chat` 多可选
+    `pair`（{peerUid, facing}）。加枚举值照样进位：老客户端把 `kind:"pair"` 当形状不对整帧拒掉，
+    老 runtime 会把 pair 的 create 帧拒掉——都要在握手那一步说清，不是白等超时。
+    22（#1441）：智能体替主人给朋友打电话的外联会话。`welcome.chat.kind` 多一种 `outreach`、`chat` 多可选
     `outreach`（{ownerName, active}）；`welcome` 与 `call_result{ok:true}` 多可选 `speechTicket`（runtime 签、
     edge 验的语音合成票）。`create` 帧**不收** outreach——外联会话只由 runtime 建。加字段照样进位：老桌面把
     `kind:"outreach"` 当形状不对整帧拒掉，新 runtime 配老桌面时要在握手那一步就说清，不是进了房才读不出 welcome。
@@ -123,7 +127,7 @@ import { MAX_FRAME_BYTES } from "./wire.js";
     少一格状态。**加一个枚举值同理**：老客户端的 isValidCsDeniedCode 认不出
     `rate_limited`，decodeCsDown 回 null，那一帧被静默忽略，于是 create()
     要白等满超时才回一句"云端无响应"——把"你被限速了"说成"对面没回话"。 */
-export const CS_PROTOCOL_VERSION = 22;
+export const CS_PROTOCOL_VERSION = 23;
 export const CS_MAX_TEXT_BYTES = 64 * 1024;
 
 /** 一次回多少字节的文件内容（#1056）。中继单帧上限是 256 KiB（wire.ts 的
@@ -296,16 +300,21 @@ export type CsWikiWriteReq =
 export type CsChatSpec =
   | { kind: "dm"; agentId: string }
   /** `humans`（协议 21，#1393）：群主之外拉进来的真人 uid。缺席 = 没有 */
-  | { kind: "group"; name: string; agentIds: string[]; humans?: string[] };
+  | { kind: "group"; name: string; agentIds: string[]; humans?: string[] }
+  /** 私密车道（协议 23，#1461 P1）：我主场里一条与朋友 `peerUid` 配对、只有我看得到的会话。
+      `facing` 只收 "self"（"both" 是 P2 的共享车道）。同一对 (主场, 朋友, facing) 只有一条，runtime 幂等 */
+  | { kind: "pair"; peerUid: string; facing: "self"; agentIds: string[] };
 /** welcome 里带的聊天身份。agentIds 是日志投影原样——与现存智能体求交集留给读取侧。
     `humans`（协议 21）：群主之外的真人，名字是日志里的快照；私聊恒为空 */
 export interface CsChatInfo {
-  /** `outreach`（#1441）：智能体替主人给朋友打电话开出来的外联会话 */
-  kind: "dm" | "group" | "outreach";
+  /** `outreach`（#1441）：智能体替主人给朋友打电话开出来的外联会话；`pair`（#1461）：好友私聊旁的私密车道 */
+  kind: "dm" | "group" | "outreach" | "pair";
   agentIds: string[];
   humans: ChatHuman[];
   /** 外联会话才有（协议 22，#1441）：主人叫什么、这通电话此刻还开着没有。形状不对当缺席 */
   outreach?: { ownerName: string; active: boolean };
+  /** 私密车道才有（协议 23，#1461）：配对的是哪位朋友、朝向。形状不对当缺席 */
+  pair?: { peerUid: string; facing: "self" | "both" };
 }
 /** 尾巴分页（协议 20）：进房第一页的条数，与一页的上限 */
 export const BACKLOG_TAIL_DEFAULT = 200;
@@ -546,6 +555,13 @@ function normalizeChatSpec(v: unknown): CsChatSpec | null | undefined {
     if (humans === null || agentIds.length + humans.length < 1) return null;
     return { kind: "group", name, agentIds, humans };
   }
+  if (o.kind === "pair") {
+    // 只收 self（P1）。peerUid 归一成小写：它要拿去查好友、进唯一索引，大小写两份就是两条车道
+    if (o.facing !== "self" || typeof o.peerUid !== "string" || !USER_UID_RE.test(o.peerUid)) return null;
+    const agentIds = normalizeChatAgentIds(o.agentIds, 1);
+    if (agentIds === null) return null;
+    return { kind: "pair", peerUid: o.peerUid.toLowerCase(), facing: "self", agentIds };
+  }
   return null;
 }
 
@@ -553,7 +569,7 @@ function normalizeChatInfo(v: unknown): CsChatInfo | null | undefined {
   if (v === undefined) return undefined;
   if (v === null || typeof v !== "object") return null;
   const o = v as Record<string, unknown>;
-  if (o.kind !== "dm" && o.kind !== "group" && o.kind !== "outreach") return null;
+  if (o.kind !== "dm" && o.kind !== "group" && o.kind !== "outreach" && o.kind !== "pair") return null;
   // 这里不用 normalizeChatAgentIds：下行名单可以是空的（群里的智能体全被删了）
   if (!Array.isArray(o.agentIds) || !o.agentIds.every((x) => typeof x === "string")) return null;
   // humans 缺席按空（下行容错：协议号相等时它总在，缺了只可能是一个不该发生的实现漏写——
@@ -576,7 +592,20 @@ function normalizeChatInfo(v: unknown): CsChatInfo | null | undefined {
     typeof (ob as Record<string, unknown>).active === "boolean"
       ? { ownerName: (ob as { ownerName: string }).ownerName, active: (ob as { active: boolean }).active }
       : undefined;
-  return { kind: o.kind, agentIds: o.agentIds as string[], humans, ...(outreach !== undefined ? { outreach } : {}) };
+  // pair 同理：可选的非关键字段，形状不对当缺席（缺了只是少认出「这是和谁配对的」）
+  const pb = o.pair as Record<string, unknown> | null | undefined;
+  const pair =
+    pb !== null && typeof pb === "object" && typeof pb.peerUid === "string" && USER_UID_RE.test(pb.peerUid) &&
+    (pb.facing === "self" || pb.facing === "both")
+      ? { peerUid: pb.peerUid, facing: pb.facing as "self" | "both" }
+      : undefined;
+  return {
+    kind: o.kind,
+    agentIds: o.agentIds as string[],
+    humans,
+    ...(outreach !== undefined ? { outreach } : {}),
+    ...(pair !== undefined ? { pair } : {}),
+  };
 }
 
 const isSeq = (v: unknown): v is number => Number.isInteger(v) && (v as number) >= 0;
