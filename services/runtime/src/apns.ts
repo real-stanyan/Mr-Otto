@@ -1,6 +1,8 @@
-// apns —— 回电的推送：runtime 直发 APNs 的 VoIP 推送（#1411 → #1428，ADR-0331 → 本条 ADR）。
-// 普通通知会被 iOS 路由到正在用的设备（开着 iPhone 镜像的 Mac、手表），保证不了在手机上响；
-// VoIP 推送叫起 App、由 CallKit 画系统来电。
+// apns —— runtime 直发 APNs。两种推送共用一条连接、一张令牌表、一套环境探测：
+// · 回电：VoIP 推送（#1411 → #1428，ADR-0331 / ADR-0335）。普通通知会被 iOS 路由到正在用的设备（开着
+//   iPhone 镜像的 Mac、手表），保证不了在手机上响；VoIP 推送叫起 App、由 CallKit 画系统来电。
+// · 消息：普通通知（#1442）。智能体回答 / 有人 @ 我 / 朋友消息。发给 kind='alert' 的令牌；
+//   推不推（开关、免打扰）由 notifier.ts 判，这一层只管发。
 //
 // 分两层（同 config.ts 的纯核心 + 薄壳）：
 // · 纯的：JWT 的形状与签名、请求头与载荷、一次回复算什么（送到 / 令牌作废 / 换个环境再试 / 别的错）、
@@ -14,6 +16,7 @@
 import { createSign } from "node:crypto";
 import { connect, type ClientHttp2Session, type ClientHttp2Stream } from "node:http2";
 import type { RingPush } from "../../../src/shared/callRing.js";
+import { alertPayload, type AlertPush } from "../../../src/shared/notifyPrefs.js";
 
 export type ApnsEnv = "production" | "sandbox";
 export const APNS_HOSTS: Record<ApnsEnv, string> = { production: "api.push.apple.com", sandbox: "api.sandbox.push.apple.com" };
@@ -58,6 +61,18 @@ export function ringHeaders(bundleId: string, jwt: string): Record<string, strin
   };
 }
 
+/** 普通通知的请求头。topic 就是 bundle（不带 .voip）；送不到的通知 APNs 存着、手机连上再送（一天封顶，
+    过期的消息没必要半夜补到）；collapse-id 不带：同一条聊天的几条通知各自是一条消息，不该互相覆盖 */
+export function alertHeaders(bundleId: string, jwt: string, nowMs: number): Record<string, string> {
+  return {
+    authorization: `bearer ${jwt}`,
+    "apns-topic": bundleId,
+    "apns-push-type": "alert",
+    "apns-priority": "10",
+    "apns-expiration": String(Math.floor(nowMs / 1000) + 24 * 3600),
+  };
+}
+
 export interface ApnsReply {
   status: number;
   reason: string | null;
@@ -84,8 +99,10 @@ export interface PushDevice {
 }
 
 /** 令牌表那一侧（daemon 接 Supabase，测试接内存） */
+export type PushKind = "voip" | "alert";
+
 export interface PushDeviceStore {
-  list(uid: string): Promise<PushDevice[]>;
+  list(uid: string, kind: PushKind): Promise<PushDevice[]>;
   setEnv(token: string, env: ApnsEnv): Promise<void>;
   remove(token: string): Promise<void>;
 }
@@ -100,6 +117,8 @@ export interface ApnsPusher {
   pushRing(uid: string, ring: RingPush): Promise<number>;
   /** 这个人登记了几台设备（打之前问：一台都没有就不落 ringing）。抛错 = 这一刻查不出来 */
   deviceCount(uid: string): Promise<number>;
+  /** 给这个人每一台登记了普通通知的设备推一条消息，回送到了几台。读令牌表失败往上抛 */
+  pushAlert(uid: string, push: AlertPush): Promise<number>;
 }
 
 export function createApnsPusher(o: {
@@ -118,12 +137,11 @@ export function createApnsPusher(o: {
     return jwt.token;
   };
 
-  async function sendOne(device: PushDevice, ring: RingPush): Promise<DeviceOutcome> {
-    const body = JSON.stringify(ringVoipPayload(ring));
+  async function sendOne(device: PushDevice, body: string, headers: () => Record<string, string>): Promise<DeviceOutcome> {
     for (const env of envOrder(device.env)) {
       let reply: ApnsReply;
       try {
-        reply = await request(env, `/3/device/${device.token}`, ringHeaders(o.key.bundleId, tokenNow()), body);
+        reply = await request(env, `/3/device/${device.token}`, headers(), body);
       } catch (err) {
         o.log(`[otto-runtime] APNs 请求失败（${env}）：${err instanceof Error ? err.message : String(err)}`);
         return "failed";
@@ -150,11 +168,18 @@ export function createApnsPusher(o: {
 
   return {
     async deviceCount(uid) {
-      return (await o.devices.list(uid)).length;
+      return (await o.devices.list(uid, "voip")).length;
     },
     async pushRing(uid, ring) {
-      const devices = await o.devices.list(uid);
-      const outcomes = await Promise.all(devices.map((d) => sendOne(d, ring)));
+      const devices = await o.devices.list(uid, "voip");
+      const body = JSON.stringify(ringVoipPayload(ring));
+      const outcomes = await Promise.all(devices.map((d) => sendOne(d, body, () => ringHeaders(o.key.bundleId, tokenNow()))));
+      return outcomes.filter((x) => x === "delivered").length;
+    },
+    async pushAlert(uid, push) {
+      const devices = await o.devices.list(uid, "alert");
+      const body = JSON.stringify(alertPayload(push));
+      const outcomes = await Promise.all(devices.map((d) => sendOne(d, body, () => alertHeaders(o.key.bundleId, tokenNow(), now()))));
       return outcomes.filter((x) => x === "delivered").length;
     },
   };

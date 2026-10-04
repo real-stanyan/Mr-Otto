@@ -40,7 +40,7 @@ describe("createSupabasePushDevices", () => {
   it("list：只取这个人、这个 bundle 的 VoIP 令牌；认不出的环境当没记过", async () => {
     const f = fakeClient({ data: [{ token: "aa", apns_env: "sandbox" }, { token: "bb", apns_env: null }, { token: "cc", apns_env: "weird" }], error: null });
     const store = createSupabasePushDevices(f.client, "com.stanyan.mrotto.mobile", () => {});
-    expect(await store.list("u1")).toEqual([
+    expect(await store.list("u1", "voip")).toEqual([
       { token: "aa", env: "sandbox" },
       { token: "bb", env: null },
       { token: "cc", env: null },
@@ -52,9 +52,14 @@ describe("createSupabasePushDevices", () => {
       ["eq", "kind", "voip"],
     ]);
   });
+  it("list：按种类取（消息通知只发普通令牌，#1442）", async () => {
+    const f = fakeClient({ data: [], error: null });
+    await createSupabasePushDevices(f.client, "b", () => {}).list("u1", "alert");
+    expect(f.calls).toContainEqual(["eq", "kind", "alert"]);
+  });
   it("list 查询失败：往上抛（「查不到」不许说成「他没有设备」）", async () => {
     const f = fakeClient({ error: { message: "boom" } });
-    await expect(createSupabasePushDevices(f.client, "b", () => {}).list("u1")).rejects.toThrow("boom");
+    await expect(createSupabasePushDevices(f.client, "b", () => {}).list("u1", "voip")).rejects.toThrow("boom");
   });
   it("setEnv / remove：失败只记日志不抛", async () => {
     const logs: string[] = [];
