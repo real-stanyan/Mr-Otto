@@ -41,14 +41,14 @@ export function SysPill({ children, tone = "muted", onPress }: { children: React
   );
 }
 
-function Bubble({ text, mine, first }: { text: string; mine: boolean; first: boolean }) {
+function Bubble({ text, mine, agent, first }: { text: string; mine: boolean; agent: boolean; first: boolean }) {
   const { c } = usePalette();
   return (
     <View
       style={{
         paddingVertical: 9, paddingHorizontal: 12, borderRadius: RADIUS,
         ...(first ? (mine ? { borderTopRightRadius: 4 } : { borderTopLeftRadius: 4 }) : {}),
-        backgroundColor: mine ? c.bubbleMe : c.bubbleThem,
+        backgroundColor: mine ? c.bubbleMe : agent ? c.bubbleAgent : c.bubbleThem,
       }}
     >
       <Text selectable style={{ fontSize: 16, lineHeight: 24, color: c.foreground }}>{text}</Text>
@@ -57,8 +57,10 @@ function Bubble({ text, mine, first }: { text: string; mine: boolean; first: boo
 }
 
 /** 一句话一行：左边（别人 / 它）或右边（我）。`name` 只在群里给 */
-function MessageRow({ mine, avatar, name, paragraphs, onAvatar }: {
+function MessageRow({ mine, agent = false, avatar, name, paragraphs, onAvatar }: {
   mine: boolean;
+  /** 智能体说的（#1465：气泡换 bubbleAgent，与人的分开） */
+  agent?: boolean;
   avatar: React.ReactNode;
   name: string | null;
   paragraphs: readonly string[];
@@ -73,7 +75,7 @@ function MessageRow({ mine, avatar, name, paragraphs, onAvatar }: {
       {head}
       <View style={{ flexShrink: 1, maxWidth: "76%", gap: 6, alignItems: mine ? "flex-end" : "flex-start" }}>
         {name !== null ? <Text numberOfLines={1} style={{ fontSize: 12, color: c.mutedForeground, marginBottom: -3, paddingHorizontal: 2 }}>{name}</Text> : null}
-        {paragraphs.map((p, i) => <Bubble key={i} text={p} mine={mine} first={i === 0} />)}
+        {paragraphs.map((p, i) => <Bubble key={i} text={p} mine={mine} agent={agent} first={i === 0} />)}
       </View>
     </View>
   );
@@ -150,6 +152,7 @@ export function ChatRowView({ row, ws, selfUid, selfName, selfAvatar, group, out
       return (
         <MessageRow
           mine={false}
+          agent
           avatar={<AgentAvatar ws={ws} agentId={row.agentId} name={row.name} />}
           name={group ? row.name : null}
           paragraphs={row.paragraphs}
@@ -259,7 +262,7 @@ function RingRecord({ row, ws, group, noCallback, onOpenCall, onCallAgent }: {
         disabled={onPress === undefined}
         onPress={onPress}
         style={({ pressed }) => [
-          { flexShrink: 1, maxWidth: "76%", gap: 3, paddingVertical: 9, paddingHorizontal: 12, borderRadius: RADIUS, borderTopLeftRadius: 4, backgroundColor: c.bubbleThem },
+          { flexShrink: 1, maxWidth: "76%", gap: 3, paddingVertical: 9, paddingHorizontal: 12, borderRadius: RADIUS, borderTopLeftRadius: 4, backgroundColor: c.bubbleAgent },
           pressed && { opacity: 0.8 },
         ]}
       >
@@ -314,7 +317,7 @@ function OutreachRecord({ row, ws, group, onOpenCall }: {
         disabled={onPress === undefined}
         onPress={onPress}
         style={({ pressed }) => [
-          { flexShrink: 1, maxWidth: "76%", flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 9, paddingHorizontal: 12, borderRadius: RADIUS, borderTopLeftRadius: 4, backgroundColor: c.bubbleThem },
+          { flexShrink: 1, maxWidth: "76%", flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 9, paddingHorizontal: 12, borderRadius: RADIUS, borderTopLeftRadius: 4, backgroundColor: c.bubbleAgent },
           pressed && { opacity: 0.8 },
         ]}
       >
@@ -409,7 +412,7 @@ function TypingDots() {
   return (
     <View
       accessibilityLabel="正在回复"
-      style={{ height: 38, paddingHorizontal: 14, borderRadius: RADIUS, borderTopLeftRadius: 4, backgroundColor: c.bubbleThem, flexDirection: "row", alignItems: "center", gap: 4 }}
+      style={{ height: 38, paddingHorizontal: 14, borderRadius: RADIUS, borderTopLeftRadius: 4, backgroundColor: c.bubbleAgent, flexDirection: "row", alignItems: "center", gap: 4 }}
     >
       {[0, 1, 2].map((i) => <Dot key={i} delay={i * 150} />)}
     </View>
