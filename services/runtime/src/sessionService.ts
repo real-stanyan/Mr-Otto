@@ -230,6 +230,7 @@ import {
   CREATE_AGENT_TOOL_NAME, createAgentApprovalFields, createAgentApprovalSummary, parseCreateAgentArgs, scanCreateAgentThreat,
 } from "../../../src/shared/createAgentDraft.js";
 import { ADMIN_AGENT_ID, type SandboxApproval } from "../../../src/shared/workspaceAgents.js";
+import { guestTargetsInLane } from "../../../src/shared/delegation.js";
 import type { Approver } from "../../../src/loop/approvalGate.js";
 import {
   decideRelay,
@@ -3013,6 +3014,9 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         }
       }
       // **价钱在判据的同一侧算**（#957 B2-C1）：限速原来跑在 frameHandler 里、
+      // 代办入口（#1564，ADR-0363）：公开车道里客人点的名一律改成管理员——朋友的请求先到管理员，再由它下发给
+      // 主人指定的那只；名单里还没有管理员（老车道）时原样，不能让朋友一句话都发不出去
+      if (isPair && fromUid !== opts.ownerUid) targets = guestTargetsInLane(targets, roster.map((a) => a.agentId));
       // 按客户端自报的 mention/mentions 计价，而这句话真正会起几条 turn 是上面
       // resolveTargets 之后才知道的 —— 省掉 mentions 字段的客户端发一句 @ 了
       // 40 个名字的话，那边扣 1 个令牌、这边起 40 条真花钱的模型调用。问价挪到
@@ -3469,7 +3473,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       const roster = await rosterNow({ fresh: true });
       // 名单降级 = 占位不是真名单：拿它核对会把一次 Supabase 抖动说成「这只 agent 不存在」
       if (roster.some((a) => a.degraded)) return { kind: "unknown_agent", message: "智能体名单这会儿读不出来，稍后再试" };
-      const ids = [...new Set(participants)];
+      // 代办入口（#1564）：客人在公开车道里只打得通管理员——同 say 里对客人点名的改写
+      const ids = isPair && byUid !== opts.ownerUid ? guestTargetsInLane([...new Set(participants)], roster.map((a) => a.agentId)) : [...new Set(participants)];
       const unknown = ids.filter((id) => !roster.some((a) => a.agentId === id));
       // 只回显个数不回显 id 原文（同 sayUnknown 的纪律）：这些 id 直接来自客户端帧
       if (unknown.length > 0) {

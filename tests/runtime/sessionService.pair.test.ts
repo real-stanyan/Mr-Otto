@@ -31,6 +31,7 @@ const fakeWorld: ExecutionWorld = {
 };
 const HELPER = { agentId: "a_000000000001", name: "助手", description: "", instructions: "", models: ["fake-model"], tools: [] as AgentToolAllow[] };
 const TRANS = { agentId: "a_000000000002", name: "翻译", description: "", instructions: "", models: ["fake-model"], tools: [] as AgentToolAllow[] };
+const ADMIN = { agentId: "admin", name: "管理员", description: "", instructions: "", models: ["fake-model"], tools: [] as AgentToolAllow[] };
 
 function newStore(): EventStore {
   return new EventStore(join(tempDir("mrotto-runtime-pair-"), "session.db"));
@@ -54,7 +55,7 @@ function open(store: EventStore, o: { messages?: () => Promise<PairMessageRow[]>
   const opts: CloudSessionOpts = {
     sessionMeta: createInMemoryCloudSessionMeta(),
     workspaceId: "home", sessionId: SID, ownerUid: OWNER, createdByUid: OWNER, store, world: fakeWorld,
-    agents: async () => [HELPER, TRANS], adapterFor: () => adapter, px: { edgeBase: "https://edge.example", runtimeSecret: "sek" },
+    agents: async () => [HELPER, TRANS, ADMIN], adapterFor: () => adapter, px: { edgeBase: "https://edge.example", runtimeSecret: "sek" },
     hostUids: async () => [OWNER],
     onEvent: () => {}, onUsage: () => {},
     wiki: createWikiService({ workspaceId: "home", fs: createMemoryWikiFs(), journal: createInMemoryWikiJournal(), legacyMemories: async () => [], agentNames: async () => new Map(), isRunning: async () => true }),
@@ -164,6 +165,38 @@ describe("私密车道（#1461 P1）", () => {
       });
       store.append({ sessionId: SID, ts: 2, type: "chat_roster_changed", agents: [{ agentId: HELPER.agentId, name: "助手" }], humans: [{ uid: PEER, name: "小红" }], ignorable: true });
     }
+    it("代办入口（#1564，ADR-0363）：名单里有管理员时，客人点谁都落给管理员、客人开的通话只拉管理员；主人点谁还是谁；没管理员的老车道原样", async () => {
+      const store = newStore();
+      store.append({
+        sessionId: SID, ts: 1, type: "session_created", workspace: "/work",
+        cloud: { workspaceId: "home", home: true, chat: { kind: "pair" }, pair: { ownerName: "小明", peerUid: PEER, peerName: "小红", facing: "both" } },
+      });
+      store.append({ sessionId: SID, ts: 2, type: "chat_roster_changed", agents: [{ agentId: "admin", name: "管理员" }, { agentId: HELPER.agentId, name: "助手" }], humans: [{ uid: PEER, name: "小红" }], ignorable: true });
+      const { session } = open(store);
+      await say(session, "@助手 帮我查个东西", [HELPER.agentId], PEER);
+      await session.settled();
+      const guestOpening = store.ofType(SID, "user_message").filter((e) => e.type === "user_message" && e.fromUid === PEER).at(-1) as { mentions?: string[] };
+      expect(guestOpening.mentions).toEqual(["admin"]);
+      expect(await session.setVoiceCall(PEER, "小红", [HELPER.agentId])).toEqual({ kind: "ok" });
+      const call = store.ofType(SID, "voice_call_changed").at(-1) as { participants: { agentId: string }[] };
+      expect(call.participants.map((p) => p.agentId)).toEqual(["admin"]);
+      await session.setVoiceCall(PEER, "小红", []);
+      await session.settled();
+      await say(session, "@助手 你来", [HELPER.agentId]);
+      await session.settled();
+      const ownerOpening = store.ofType(SID, "user_message").filter((e) => e.type === "user_message" && e.fromUid === OWNER && e.greeting === undefined).at(-1) as { mentions?: string[] };
+      expect(ownerOpening.mentions).toEqual([HELPER.agentId]);
+      store.close();
+      // 老车道（名单里还没有管理员）：客人点的名原样，不能让朋友一句话都发不出去
+      const old = newStore();
+      sharedSeed(old);
+      const o = open(old);
+      await say(o.session, "@助手 在吗", [HELPER.agentId], PEER);
+      await o.session.settled();
+      const legacy = old.ofType(SID, "user_message").filter((e) => e.type === "user_message" && e.fromUid === PEER).at(-1) as { mentions?: string[] };
+      expect(legacy.mentions).toEqual([HELPER.agentId]);
+      old.close();
+    });
     it("朋友（客人）能说、能点起一轮；路人仍被拒", async () => {
       const store = newStore();
       sharedSeed(store);
