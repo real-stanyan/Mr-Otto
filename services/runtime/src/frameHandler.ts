@@ -889,6 +889,23 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
           return;
         }
 
+        case "pick_friend": {
+          // 选人卡（#1520）：谁能点、卡还开没开着、点的人在不在卡上，全判在 CloudSession.pickFriend（读日志折出来的卡），
+          // 这一层只做在籍复查与回执。回执带 pickId：同 approve_result，一张卡一条。
+          // 不进限速桶：同 approve——卡一次性，用过即失效，刷不了日志
+          if (!(await requireStillMemberIn(session, workspaceId, cid, entry.uid, () =>
+            deps.send(cid, { t: "pick_friend_result", pickId: msg.pickId, ok: false, message: NOT_MEMBER_MESSAGE })
+          ))) return;
+          const r = await session.pickFriend(msg.pickId, entry.uid, msg.uid);
+          if (!r.ok) {
+            deps.log(`选人卡被拒 pickId=${msg.pickId} uid=${entry.uid}：${r.message}`);
+            deps.send(cid, { t: "pick_friend_result", pickId: msg.pickId, ok: false, message: r.message });
+          } else {
+            deps.send(cid, { t: "pick_friend_result", pickId: msg.pickId, ok: true });
+          }
+          return;
+        }
+
         case "stop": {
           // 停一轮正在跑的 turn（#957 A-2）。谁能停 = **与审批逐字同一条判据**
           // （发起人或 owner），由 CloudSession.stop 里的 router.canDecide 判——
