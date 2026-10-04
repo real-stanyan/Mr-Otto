@@ -598,3 +598,31 @@ describe("同一个窗口里外联行、来电行、通话卡并存（#1441）",
     expect(new Set(rows.map((r) => r.key)).size).toBe(rows.length);
   });
 });
+
+describe("定时任务的灰条（#1283）", () => {
+  it("routine 开场白不藏，画「⏰ 定时任务「x」」；routine_note 画原因；两条都是 muted 的 note 行", () => {
+    seq = 0;
+    const rows = chatRows({
+      events: [
+        e({ type: "session_created" }),
+        e({ type: "user_message", content: "【定时任务到点】…", fromUid: "me", mentions: ["a_000000000001"], greeting: "routine", routine: { id: "r1", title: "早报" } }),
+        e({ type: "assistant_message", content: "报表看完了", model: "m", agentId: "a_000000000001" }),
+        e({ type: "routine_note", routineId: "r1", title: "早报", reason: "skipped_quota", plannedAt: DAY, tz: "Asia/Shanghai", ignorable: true }),
+      ],
+      ws: WS, selfUid: "me", now: DAY,
+    });
+    expect(rows.map((r) => r.kind)).toEqual(["time", "note", "agent", "note"]);
+    expect(rows[1]).toMatchObject({ kind: "note", key: "routine-1", text: "⏰ 定时任务「早报」", tone: "muted" });
+    expect(rows[3]).toMatchObject({ kind: "note", key: "rnote-3", tone: "muted" });
+    expect((rows[3] as { text: string }).text).toContain("早报");
+    expect((rows[3] as { text: string }).text).toContain("额度");
+  });
+  it("别的 greeting 照旧藏（new_agent）", () => {
+    seq = 0;
+    const rows = chatRows({
+      events: [e({ type: "session_created" }), e({ type: "user_message", content: "x", fromUid: "me", mentions: ["a_000000000001"], greeting: "new_agent" })],
+      ws: WS, selfUid: "me", now: DAY,
+    });
+    expect(rows).toEqual([]);
+  });
+});
