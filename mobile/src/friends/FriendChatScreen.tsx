@@ -22,7 +22,9 @@ import { chatHumansNow, chatRosterNow } from "../../../src/shared/chatRoster.js"
 import type { SessionEvent } from "../../../src/session/events.js";
 import { AUDIO_MAX_MS, mediaBodyHidden, planMediaMessages, type PreparedMedia } from "../../../src/shared/chatMedia.js";
 import type { DirectMessage } from "../../../src/shared/friends.js";
-import { LANE_FACING_LABEL, laneItemsOf, lanePending, laneTargets, mergePairView, pairFacingOf, pairPresenceText, type LaneItem, type PairFacing } from "../../../src/shared/pairChat.js";
+import { LANE_FACING_LABEL, lanePending, laneTargets, pairFacingOf, pairPresenceText, type PairFacing } from "../../../src/shared/pairChat.js";
+import { laneBusy, laneTaskStatus, laneTaskSubtitle, laneTasksOf, type LaneTask, type LaneTaskStatus } from "../../../src/shared/laneTasks.js";
+import { TaskDrawer } from "./TaskDrawer.js";
 import { PRESENCE_TEXT } from "../../../src/shared/presence.js";
 import { agentNameOf } from "../../../src/shared/workspaceView.js";
 import { chatSessionOf, closeChatIf, openChat, sendText, useChatStore } from "../cloud/chatStore.js";
@@ -71,43 +73,35 @@ type Item =
   | { kind: "time"; key: string; label: string }
   | { kind: "msg"; key: string; m: DirectMessage }
   | { kind: "pending"; key: string; p: PendingMedia }
-  /** 车道里的一行（#1461）：我的车道，或朋友公开给我的那条（`peer`，#1523） */
-  | { kind: "lane"; key: string; item: LaneRow };
+  /** 一条代办任务（#1565）：车道里一次请求折成的一张卡——我的车道里的，或朋友公开给我的那条（`peer`） */
+  | { kind: "task"; key: string; t: TaskRow };
 
-/** 车道的一行 + 它来自哪条车道（#1523）。两条车道的行合在同一条时间线上，画法不同 */
-type LaneRow = LaneItem & { peer: boolean };
+/** 一条任务 + 它在哪条车道、这条车道此刻还有没有人在答 */
+type TaskRow = { task: LaneTask; peer: boolean; busy: boolean };
 
-/** 车道的一行（#1461 P1；#1523 多了朋友说的与朋友的车道）：我说的靠右、智能体与朋友说的靠左，气泡描一圈虚线、
-    底下一行说这句谁看得到——它与人话混排在同一条时间线上，必须一眼分得出「这句朋友看不看得到」。
-    朋友公开给我的那条（peer）底色用朋友气泡那一色，与我自己的车道分得开 */
-function LaneBubble({ item, name, slot, meName, meAvatar, friendName: fname, friendAvatar, footer, peer }: {
-  item: LaneItem; name: string; slot: number; meName: string; meAvatar: string; friendName: string; friendAvatar: string;
-  /** 底下那一行：仅你可见 / 你和 TA 都看得到 / TA 的智能体 · 两人都看得到 */
-  footer: string;
-  peer: boolean;
-}) {
+/** 主页上的那张卡（#1565，ADR-0364）：标题 = 请求的第一行 / 打给谁的电话，第二行 = 谁在办 · 几条进展 · 状态；点开抽屉看过程 */
+function TaskCard({ t, status, subtitle, footer, onPress }: { t: TaskRow; status: LaneTaskStatus; subtitle: string; footer: string; onPress: () => void }) {
   const { c } = usePalette();
-  const mine = item.who === "me";
-  const tint = peer ? c.foreground : c.brand;
+  const tint = t.peer ? c.foreground : c.brand;
+  const dot = status === "working" ? c.brand : status === "waiting" ? c.mutedForeground : c.faint;
   return (
-    <View style={{ flexDirection: mine ? "row-reverse" : "row", alignItems: "flex-start", gap: 10, paddingHorizontal: 12 }}>
-      {mine ? <PersonTile name={meName} url={meAvatar} size={40} me /> : item.who === "friend" ? <PersonTile name={fname} url={friendAvatar} size={40} /> : <FaceTile slot={slot} size={40} />}
-      <View style={{ flexShrink: 1, maxWidth: "76%", alignItems: mine ? "flex-end" : "flex-start", gap: 4 }}>
-        {mine ? null : <Text style={{ fontSize: 12, color: c.mutedForeground }}>{item.who === "friend" ? fname : name}</Text>}
-        <View
-          style={{
-            paddingVertical: 9, paddingHorizontal: 12, borderRadius: 12, ...(mine ? { borderTopRightRadius: 4 } : { borderTopLeftRadius: 4 }),
-            backgroundColor: withAlpha(tint, 0.06), borderWidth: 1, borderStyle: "dashed", borderColor: withAlpha(tint, 0.35),
-          }}
-        >
-          <Text selectable style={{ fontSize: 16, lineHeight: 24, color: c.foreground }}>{item.text}</Text>
+    <Pressable accessibilityRole="button" onPress={onPress} style={({ pressed }) => [{ paddingHorizontal: 12 }, pressed && { opacity: 0.7 }]}>
+      <View style={{ padding: 12, borderRadius: 12, backgroundColor: withAlpha(tint, 0.06), borderWidth: 1, borderStyle: "dashed", borderColor: withAlpha(tint, 0.35), gap: 6 }}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          <Icon name={t.task.kind === "call" ? "phone" : "sparkles"} size={16} stroke={2} color={c.mutedForeground} />
+          <Text numberOfLines={2} style={{ flex: 1, fontSize: 15, lineHeight: 20, color: c.foreground }}>{t.task.title}</Text>
+          <Icon name="chevron-right" size={16} stroke={2} color={c.faint} />
+        </View>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+          <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: dot }} />
+          <Text numberOfLines={1} style={{ flex: 1, fontSize: 12, color: c.mutedForeground }}>{subtitle}</Text>
         </View>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 3 }}>
-          <Icon name={peer || footer !== "仅你可见" ? "users-round" : "lock-keyhole"} size={11} stroke={2} color={c.faint} />
+          <Icon name={t.peer || footer !== "仅你可见" ? "users-round" : "lock-keyhole"} size={11} stroke={2} color={c.faint} />
           <Text style={{ fontSize: 11, color: c.faint }}>{footer}</Text>
         </View>
       </View>
-    </View>
+    </Pressable>
   );
 }
 
@@ -272,10 +266,6 @@ export function FriendChatScreen({ route, navigation }: Props) {
   const laneFacing: PairFacing = laneSession !== null
     ? pairFacingOf(chatHumansNow(laneSession.provisional === true ? EMPTY_LANE : laneEvents, laneSession.chat?.humans ?? []), uid)
     : lane.facing;
-  const laneItems = useMemo<LaneRow[]>(
-    () => [...laneItemsOf(laneEvents, selfUid), ...lanePending(laneEvents, laneSession !== null ? chat.streaming : {})].map((item) => ({ ...item, peer: false })),
-    [laneEvents, laneSession, chat.streaming, selfUid],
-  );
   // 朋友公开给我的那条（#1523）：名单以日志为准，名字从 guest_chat_agents 那份表拿
   const peerEvents = peer?.session?.events ?? EMPTY_LANE;
   // 代办入口（#1564，ADR-0363）：朋友这一侧只能 @ TA 的管理员——TA 别的智能体由管理员下发才动。TA 开了代办（设了公开智能体）
@@ -284,10 +274,6 @@ export function FriendChatScreen({ route, navigation }: Props) {
     if (peer === null || (peer.publicAgent === null && peer.session === null)) return [];
     return [{ agentId: ADMIN_AGENT_ID, name: peer.agents.find((a) => a.agentId === ADMIN_AGENT_ID)?.name ?? "管理员" }];
   }, [peer]);
-  const peerItems = useMemo<LaneRow[]>(
-    () => (peer === null || peer.session === null ? [] : [...laneItemsOf(peerEvents, selfUid), ...lanePending(peerEvents, peer.streaming)].map((item) => ({ ...item, peer: true }))),
-    [peer, peerEvents, selfUid],
-  );
   // @ 选人与画脸要一份快照：我的主场 + 朋友公开给我的那几只（只有名字 / 职责 / 头像，0043 的 RPC 给的）
   const mentionWs = useMemo<WorkspaceSnapshot | null>(() => {
     const theirs = peer === null ? [] : [...peer.agents];
@@ -303,6 +289,27 @@ export function FriendChatScreen({ route, navigation }: Props) {
     if (homeWs === null) return theirs.length > 0 ? { id: peer?.session?.workspaceId ?? "", name: "", ownerUid: uid, members: [], connectors: [], sessions: [], agents: theirs, sandboxApproval: null, kind: "home" } : null;
     return theirs.length === 0 ? homeWs : { ...homeWs, agents: [...homeWs.agents, ...theirs.filter((a) => !homeWs.agents.some((b) => b.agentId === a.agentId))] };
   }, [homeWs, peer, uid]);
+  const nameOfAgent = useCallback((id: string): string => (mentionWs !== null ? agentNameOf(mentionWs, id) : id), [mentionWs]);
+  const slotOfAgent = useCallback((id: string): number => (mentionWs !== null ? agentFaceSlot(mentionWs, id) : 0), [mentionWs]);
+  // 代办的任务（#1565，ADR-0364）：两条车道各折成任务，还在答的那几只（流式碎片）挂在最后一条上；主页每条一张卡
+  const taskRows = useMemo<TaskRow[]>(() => {
+    const build = (events: readonly SessionEvent[], streaming: Readonly<Record<string, string>>, peerLane: boolean): TaskRow[] => {
+      const tasks = laneTasksOf(events, selfUid, nameOfAgent);
+      const pending = lanePending(events, streaming);
+      const last = tasks.at(-1);
+      if (pending.length > 0 && last !== undefined) last.items.push(...pending);
+      const busy = laneBusy(events);
+      return tasks.map((task, i) => ({ task, peer: peerLane, busy: busy && i === tasks.length - 1 }));
+    };
+    return [
+      ...build(laneEvents, laneSession !== null ? chat.streaming : {}, false),
+      ...(peer === null || peer.session === null ? [] : build(peerEvents, peer.streaming, true)),
+    ];
+  }, [laneEvents, laneSession, chat.streaming, peer, peerEvents, selfUid, nameOfAgent]);
+  /** 点开的那张卡（#1565）：按 key 现找，抽屉里的内容跟着车道一起长 */
+  const [openTaskKey, setOpenTaskKey] = useState<{ key: string; peer: boolean } | null>(null);
+  const [taskDrawerOpen, setTaskDrawerOpen] = useState(false);
+  const openTask = openTaskKey === null ? null : taskRows.find((r) => r.peer === openTaskKey.peer && r.task.key === openTaskKey.key) ?? null;
   const presenceText = pairPresenceText(presence);
 
   useEffect(() => {
@@ -377,18 +384,23 @@ export function FriendChatScreen({ route, navigation }: Props) {
     const out: Item[] = [];
     let prev: number | null = null;
     const now = Date.now();
-    // 私聊 ∪ 我的车道 ∪ 朋友公开给我的车道，按服务器时间合成一条（shared/pairChat 的 mergePairView）
-    for (const r of mergePairView(thread?.messages ?? [], [...laneItems, ...peerItems])) {
+    // 私聊 ∪ 两条车道的任务卡（#1565）：按服务器时间合成一条；同一毫秒私聊在前（人话先于对它的回应）。
+    // 车道逐条不再铺在主页上——过程在抽屉里（ADR-0364）
+    const rows = [
+      ...(thread?.messages ?? []).map((m) => ({ kind: "dm" as const, ts: Date.parse(m.createdAt) || 0, m })),
+      ...taskRows.map((t) => ({ kind: "task" as const, ts: t.task.ts, t })),
+    ].sort((a, b) => a.ts - b.ts || (a.kind === b.kind ? 0 : a.kind === "dm" ? -1 : 1));
+    for (const r of rows) {
       const ts = r.ts;
-      const tkey = r.kind === "dm" ? `t${r.m.id}` : `t${r.item.peer ? "p" : ""}${r.item.key}`;
-      if (ts !== Number.MAX_SAFE_INTEGER && needsTimeRow(prev, ts)) out.push({ kind: "time", key: tkey, label: timelineTimeLabel(ts, now) });
-      if (ts !== Number.MAX_SAFE_INTEGER) prev = ts;
-      out.push(r.kind === "dm" ? { kind: "msg", key: `m${r.m.id}`, m: r.m } : { kind: "lane", key: `l${r.item.peer ? "p" : ""}${r.item.key}`, item: r.item });
+      const tkey = r.kind === "dm" ? `t${r.m.id}` : `t${r.t.peer ? "p" : ""}${r.t.task.key}`;
+      if (needsTimeRow(prev, ts)) out.push({ kind: "time", key: tkey, label: timelineTimeLabel(ts, now) });
+      prev = ts;
+      out.push(r.kind === "dm" ? { kind: "msg", key: `m${r.m.id}`, m: r.m } : { kind: "task", key: `k${r.t.peer ? "p" : ""}${r.t.task.key}`, t: r.t });
     }
     // 还没发出去的排在最底下（最新），按排队先后
     for (const p of thread?.pending ?? []) out.push({ kind: "pending", key: p.localId, p });
     return out.reverse();
-  }, [thread?.messages, thread?.pending, laneItems, peerItems]);
+  }, [thread?.messages, thread?.pending, taskRows]);
 
   /** 这句话 @ 了哪条车道里的谁（#1523）：先看我带进来的，再看朋友公开给我的；都没有 = 发给朋友 */
   // 我主场里还没带进来的那几只（#1544）：@ 名单里也列它们，@ 了就先带进车道再发——接受来的名片智能体、刚建的那只，不用先去 ＋ 里「带上」
@@ -567,17 +579,16 @@ export function FriendChatScreen({ route, navigation }: Props) {
               renderItem={({ item }) =>
                 item.kind === "time" ? (
                   <Text style={{ alignSelf: "center", fontSize: 11.5, color: c.faint, fontVariant: ["tabular-nums"] }}>{item.label}</Text>
-                ) : item.kind === "lane" ? (
-                  <LaneBubble
-                    item={item.item}
-                    name={mentionWs !== null && item.item.agentId !== undefined ? agentNameOf(mentionWs, item.item.agentId) : "智能体"}
-                    slot={mentionWs !== null && item.item.agentId !== undefined ? agentFaceSlot(mentionWs, item.item.agentId) : 0}
-                    meName={me.name}
-                    meAvatar={me.avatar}
-                    friendName={name}
-                    friendAvatar={row?.profile.avatarUrl ?? ""}
-                    footer={item.item.peer ? `${name}的智能体 · 两人都看得到` : laneFacing === "both" ? "你和 TA 都看得到" : "仅你可见"}
-                    peer={item.item.peer}
+                ) : item.kind === "task" ? (
+                  <TaskCard
+                    t={item.t}
+                    status={laneTaskStatus(item.t.task, item.t.busy)}
+                    subtitle={laneTaskSubtitle(item.t.task, laneTaskStatus(item.t.task, item.t.busy), nameOfAgent)}
+                    footer={item.t.peer ? `${name}的管理员在办 · 两人都看得到` : laneFacing === "both" ? "你和 TA 都看得到" : "仅你可见"}
+                    onPress={() => {
+                      setOpenTaskKey({ key: item.t.task.key, peer: item.t.peer });
+                      setTaskDrawerOpen(true);
+                    }}
                   />
                 ) : item.kind === "pending" ? (
                   <View style={{ flexDirection: "row-reverse", alignItems: "flex-start", gap: 10, paddingHorizontal: 12 }}>
@@ -805,6 +816,30 @@ export function FriendChatScreen({ route, navigation }: Props) {
           }}
         />
       ) : null}
+      <TaskDrawer
+        visible={taskDrawerOpen}
+        task={openTask?.task ?? null}
+        peer={openTask?.peer ?? false}
+        busy={openTask?.busy ?? false}
+        nameOf={nameOfAgent}
+        slotOf={slotOfAgent}
+        meName={me.name}
+        meAvatar={me.avatar}
+        friendName={name}
+        friendAvatar={row?.profile.avatarUrl ?? ""}
+        footer={openTask?.peer === true ? `${name}的管理员 · 两人都看得到` : laneFacing === "both" ? "你和 TA 都看得到" : "仅你可见"}
+        onSend={async (text) => {
+          // 接着说：进这条任务所在的车道。朋友那条 → 只能对 TA 的管理员说（#1564）；我的 → 对这条任务里的那几只
+          if (openTask === null) return false;
+          const r = openTask.peer
+            ? await sayToPeerLane(text, [ADMIN_AGENT_ID])
+            : await sendText(text, openTask.task.agentIds.length > 0 ? openTask.task.agentIds : brought);
+          if (!r.ok && !r.unknown) setNote(r.message);
+          return r.ok || r.unknown === true;
+        }}
+        onClose={() => setTaskDrawerOpen(false)}
+        onExited={() => setOpenTaskKey(null)}
+      />
       {calling !== null ? (
         <CallPickDialog
           key={calling.key}
