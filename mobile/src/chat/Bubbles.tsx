@@ -59,7 +59,7 @@ function Bubble({ text, mine, agent, first }: { text: string; mine: boolean; age
 }
 
 /** 一句话一行：左边（别人 / 它）或右边（我）。`name` 只在群里给 */
-function MessageRow({ mine, agent = false, avatar, name, paragraphs, media, onAvatar }: {
+function MessageRow({ mine, agent = false, avatar, name, paragraphs, media, onAvatar, onLongPress }: {
   mine: boolean;
   /** 智能体说的（#1465：气泡换 bubbleAgent，与人的分开） */
   agent?: boolean;
@@ -69,6 +69,8 @@ function MessageRow({ mine, agent = false, avatar, name, paragraphs, media, onAv
   /** 这句带的图 / 视频（#1491，云会话的 chat-media）：正文是占位「[图片]」时只画图 */
   media?: ChatMediaItem[];
   onAvatar?: () => void;
+  /** 长按这一句（#1505：派一只智能体去办）。缺席 = 这页不给 */
+  onLongPress?: () => void;
 }) {
   const { c } = usePalette();
   const texts = media !== undefined && paragraphs.length === 1 && mediaBodyHidden(paragraphs[0] ?? "", media) ? [] : paragraphs;
@@ -78,11 +80,17 @@ function MessageRow({ mine, agent = false, avatar, name, paragraphs, media, onAv
   return (
     <View style={{ flexDirection: mine ? "row-reverse" : "row", alignItems: "flex-start", gap: 10, paddingHorizontal: 12 }}>
       {head}
-      <View style={{ flexShrink: 1, maxWidth: "76%", gap: 6, alignItems: mine ? "flex-end" : "flex-start" }}>
+      <Pressable
+        disabled={onLongPress === undefined}
+        onLongPress={onLongPress}
+        delayLongPress={350}
+        accessibilityHint={onLongPress === undefined ? undefined : "长按派一只智能体去办"}
+        style={({ pressed }) => [{ flexShrink: 1, maxWidth: "76%", gap: 6, alignItems: mine ? "flex-end" : "flex-start" }, pressed && onLongPress !== undefined && { opacity: 0.85 }]}
+      >
         {name !== null ? <Text numberOfLines={1} style={{ fontSize: 12, color: c.mutedForeground, marginBottom: -3, paddingHorizontal: 2 }}>{name}</Text> : null}
         {media !== undefined ? <MediaBubble media={media} bucket={CHAT_MEDIA_BUCKET} /> : null}
         {texts.map((p, i) => <Bubble key={i} text={p} mine={mine} agent={agent} first={i === 0 && media === undefined} />)}
-      </View>
+      </Pressable>
     </View>
   );
 }
@@ -134,8 +142,10 @@ function RosterPill({ parts, ws }: { parts: readonly RosterLinePart[]; ws: Works
   );
 }
 
-export function ChatRowView({ row, ws, selfUid, selfName, selfAvatar, group, outreachChat = false, onOpenCall, onAgent, onCallAgent, onDecide, deciding, decideReady }: {
+export function ChatRowView({ row, ws, selfUid, selfName, selfAvatar, group, outreachChat = false, onOpenCall, onAgent, onCallAgent, onDecide, deciding, decideReady, onLongPress }: {
   row: ChatRow;
+  /** 长按一句话（我的 / 别人的 / 智能体的）：派一只智能体去办（#1505）。缺席 = 这页不给 */
+  onLongPress?: (row: ChatRow) => void;
   ws: WorkspaceSnapshot;
   selfUid: string;
   selfName: string;
@@ -159,7 +169,7 @@ export function ChatRowView({ row, ws, selfUid, selfName, selfAvatar, group, out
     case "time":
       return <Text style={{ alignSelf: "center", fontSize: 11.5, color: c.faint, fontVariant: ["tabular-nums"], paddingVertical: 2 }}>{row.label}</Text>;
     case "mine":
-      return <MessageRow mine avatar={<PersonTile name={selfName} url={selfAvatar} size={AVATAR} me />} name={null} paragraphs={[row.text]} {...(row.media !== undefined ? { media: row.media } : {})} />;
+      return <MessageRow mine avatar={<PersonTile name={selfName} url={selfAvatar} size={AVATAR} me />} name={null} paragraphs={[row.text]} {...(row.media !== undefined ? { media: row.media } : {})} {...(onLongPress !== undefined ? { onLongPress: () => onLongPress(row) } : {})} />;
     case "human":
       return (
         <MessageRow
@@ -168,6 +178,7 @@ export function ChatRowView({ row, ws, selfUid, selfName, selfAvatar, group, out
           name={group ? row.name : null}
           paragraphs={[row.text]}
           {...(row.media !== undefined ? { media: row.media } : {})}
+          {...(onLongPress !== undefined ? { onLongPress: () => onLongPress(row) } : {})}
         />
       );
     case "agent":
@@ -179,6 +190,7 @@ export function ChatRowView({ row, ws, selfUid, selfName, selfAvatar, group, out
           name={group ? row.name : null}
           paragraphs={row.paragraphs}
           {...(agentFaceIfKnown(ws, row.agentId) !== null ? { onAvatar: () => onAgent(row.agentId) } : {})}
+          {...(onLongPress !== undefined ? { onLongPress: () => onLongPress(row) } : {})}
         />
       );
     case "note":
