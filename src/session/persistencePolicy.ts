@@ -75,6 +75,7 @@ export function shouldPersist(kind: EmittedKind): boolean {
     case "voice_call_changed": // 语音通话名单（#1163）：派活/接力只在通话成员里进行，判据要从日志重放；system 尾块也从它投影
     case "outreach": // 外联（#1441）：重启后补收口、聊天里那张卡都从日志重放
     case "call_ring": // 回电（#1411）：重启后接着计时 / 补未接、聊天里那张卡都从日志重放
+    case "routine_note": // 定时任务没跑成（#1283）：时间线那张灰条从日志重放
     case "chat_roster_changed": // 聊天名单（#1280）：名单收窄的判据要从日志重放，只活在内存里等于每次重启整份团队名单都回来
     case "executor_changed": // 换执行器（#1223）：提示词块与时间线分隔行都从它投影，谁在跑这件事推不出来
     case "memory_loaded":
