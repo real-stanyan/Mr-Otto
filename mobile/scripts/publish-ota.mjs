@@ -44,5 +44,5 @@ if (dirty !== "") {
 }
 
 execFileSync("npx", ["tsc", "--noEmit", "-p", "."], { cwd: mobile, stdio: "inherit" });
-execFileSync("eas", ["update", "--branch", "production", "--platform", "ios", "--non-interactive", "--message", message], { cwd: mobile, stdio: "inherit" });
+execFileSync("eas", ["update", "--branch", "production", "--platform", "ios", "--environment", "production", "--non-interactive", "--message", message], { cwd: mobile, stdio: "inherit" });
 console.log("热更新已发：用户下次打开 App（或在后台待够 30 分钟回来）就会换上。");
