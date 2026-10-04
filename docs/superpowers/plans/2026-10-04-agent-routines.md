@@ -19,7 +19,7 @@
 - `greeting` 加取值**不进协议位**；`say` 帧的 `tz` 是可选字段，`CS_PROTOCOL_VERSION`（现为 24）**不升**。
 - 手机端不加原生依赖（ADR-0340：原生改动走不了热更新）；表单类流程用居中 `Dialog`，不用底部抽屉。
 - 数字常量（spec §2–§5）：标题 ≤ 40 字、任务原话 ≤ 2000 字、每只启用中 ≤ 20 条、一次性漏跑宽限 2 小时、重复漏跑宽限 10 分钟、同一任务两次执行间隔 ≥ 60 秒、routine 轮圈数上限 40、额度门 = 剩余周额度 < `limitMicro * RELAY_BUDGET_FRACTION_OF_REMAINING`（0.1）、已完成的一次性任务留 7 天。
-- 最新 migration 是 0055 → 本期是 **0056**；最新 ADR 是 0352 → 本期 **0353**（合并前按 ADR-0074 重核编号）。（合并主干后实际号：migration 先改为 0057——0056 被共享车道占了；ADR 先改为 0356。再次合并主干又撞：0356 / 0057 被「公开智能体」占了，终版 migration **0058**、ADR **0357**。）
+- 最新 migration 是 0055 → 本期是 **0056**；最新 ADR 是 0352 → 本期 **0353**（合并前按 ADR-0074 重核编号）。（合并主干后实际号：migration 先改为 0057——0056 被共享车道占了；ADR 先改为 0356。再次合并主干又撞：0356 / 0057 被「公开智能体」占了，终版 migration **0058**；ADR 第三次撞——0357 被「人与人电话」占了——终版 ADR **0358**。）
 - 门禁：`npm test`（`tsc --noEmit` + 手机端 `tsc --noEmit` + `vitest run`）。跑之前 `npm --prefix mobile ci` 一次。
 - 提交信息写**为什么**，中文，结尾带 `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`。
 

@@ -39,6 +39,27 @@ daemon，装配现有 agent 核心 + DockerWorld，权威 EventStore 落 VPS 本
 任何模型 key，也不做 env 兜底**——有兜底就等于「忘了配的工作区默默烧维护者的钱」。没配
 模型的工作区能建会话、能聊天，但 @Agent 起不了 turn，会回一条看得见的话。
 
+### 1.1.1 可选：coturn（人与人语音电话的 TURN 兜底，#1534 / ADR-0357）
+
+两台手机直连不了（对称 NAT / 运营商 NAT）时媒体走 TURN 中转。装在 runtime 同一台机器：
+
+```bash
+sudo apt install coturn
+sudo cp deploy/coturn/turnserver.conf.example /etc/turnserver.conf   # 改 static-auth-secret、external-ip
+sudo sed -i 's/^#TURNSERVER_ENABLED=1/TURNSERVER_ENABLED=1/' /etc/default/coturn
+sudo systemctl enable --now coturn
+```
+
+防火墙放开 3478/udp、3478/tcp 与 UDP 49160-49200。然后 `/etc/otto-runtime.env` 加两行（要么全有要么全无，同 APNS）：
+
+| env | 值 |
+|---|---|
+| `TURN_URLS` | `turn:<公网 IP>:3478?transport=udp,turn:<公网 IP>:3478?transport=tcp` |
+| `TURN_SECRET` | 与 turnserver.conf 里 `static-auth-secret` 同一个值 |
+
+runtime 按 coturn 的 TURN REST API 签时限票（`services/runtime/src/turnCredentials.ts`），手机拿不到长期密码。没配这两行 = 只给公共 STUN。
+验：`turnutils_uclient -u <票的用户名> -w <票的密码> -y <公网 IP>` 能分到 relay 地址。
+
 ### 1.2 systemd unit
 
 ```bash

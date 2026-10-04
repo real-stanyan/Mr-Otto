@@ -22,8 +22,9 @@ let connectTimer: ReturnType<typeof setTimeout> | null = null;
 export function noteIncoming(ring: RingPush): void {
   if (handled.has(ring.ringId)) return;
   const answerableUntil = ring.expiresTs + RING_ANSWER_GRACE_MS;
-  // 外联（#1441）的来电不预合成：那一笔要带票记主人，票在进了那条聊天、welcome 到了才有；这里合成就是记好友自己的账
-  if (ring.chat !== "outreach" && ring.opening !== undefined && Date.now() < answerableUntil) prefetchOpening(ring.agentId, ring.opening, answerableUntil);
+  // 外联（#1441）的来电不预合成：那一笔要带票记主人，票在进了那条聊天、welcome 到了才有；这里合成就是记好友自己的账。
+  // 人打人的来电（#1534）没有开场白，也不预合成
+  if (ring.chat !== "outreach" && ring.chat !== "human" && ring.opening !== undefined && Date.now() < answerableUntil) prefetchOpening(ring.agentId, ring.opening, answerableUntil);
 }
 
 let pendingNav: (() => void) | null = null;
@@ -31,6 +32,15 @@ let pendingNav: (() => void) | null = null;
 /** 把人送进那条聊天。冷启动（被推送叫起来）时导航还没挂上，先记着，RootNavigator 的 onReady 再送 */
 function openChatOf(ring: RingPush): void {
   const target = ringTarget(ring);
+  // 人打人的来电（#1534）：开的是通话页，不是聊天页；媒体那一层由 answerHumanCall 接（callKit.ts 在 answer 事件里调）
+  if (target.kind === "human") {
+    const go = (): void => {
+      navRef.dispatch(CommonActions.reset({ index: 1, routes: [{ name: "Home" }, { name: "HumanCall", params: { callId: target.callId, friendUid: target.fromUid, incoming: true } }] }));
+    };
+    if (navRef.isReady()) go();
+    else pendingNav = go;
+    return;
+  }
   const params = { ...target, answerRing: { ringId: ring.ringId, agentId: ring.agentId } };
   const go = (): void => {
     navRef.dispatch(CommonActions.reset({ index: 1, routes: [{ name: "Home" }, { name: "Chat", params }] }));

@@ -70,7 +70,8 @@
           "microphonePermission": "拍视频时要录声音。"
         }
       ],
-      "expo-video"
+      "expo-video",
+      "@config-plugins/react-native-webrtc"
     ],
     "extra": {
       "eas": {

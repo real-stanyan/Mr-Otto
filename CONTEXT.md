@@ -173,10 +173,11 @@ Domain glossary. All agents' understanding of domain terms is grounded here; cod
 - **决策模型（ADR-0299）**：不生成文字的那一类模型（今天只有 Jev）：收 `state` + 一组类型化问题（`noul` 是/否、`choice` 多选一、`score` 打分），一次前向回类型化答案 + **校准概率**。在 Otto 里只用来给五处分类器做**前置判断**（派活 / Auto / 重命名 / 语音断句 / 记忆分档），今天那条 LLM 路永远是兜底；**只许加严不许放行**，审批与各种闸一处都不接。三端共用的纯层在 `src/shared/decision.ts`，只经 edge 网关的 `/llm/v1/decision`（`model_route.kind='decision'`）。
 - **影子模式（shadow，ADR-0299）**：决策模型分处开关的中间一档（没列 / `shadow` / `on`）。今天那条路说了算，决策模型并行问一次、**不等它**，回来之后记一行 `[decision] {json}` 对照日志（一致率与校准都从它 grep）。存在的理由是中文校准只能在生产上量；一处从 `shadow` 翻到 `on` 是一个一行 PR，正文贴那一处的数据。
 - **外联会话（outreach，ADR-0337）**：主人个人主场里一条 `chat_kind='outreach'` 的云会话，名单恒为「一只智能体 + 一位好友」、每对一条永久复用，是智能体被派去给好友打电话的地方：没有工具、不注入记忆，好友只在有一通外联进行时能说话；好友的收件箱里显示为「<主人> 的 <智能体>」，主人的收件箱不列，要看转写走原聊天里的 `outreach` 事件。
-- **定时任务（routine）**：一只账号级智能体记住的一条「到点自己起一轮」的任务（#1283，ADR-0357）。两类：**永久**（`daily` / `weekly`，墙上时间固定）与**日抛**（`once`，跑完即停用、列表里留 7 天）。存 `agent_routines`，调度器在云 runtime 里（30 秒 tick + 原子认领），到点在它的私聊里落一条 `greeting:"routine"` 的开场白起 turn——与回电 / 外联汇报同一条路。只存在于个人主场（RLS 与到点各核一次）。routine 轮视同主人亲口（免审、`call_friend` 亮），刹车是额度门 + 圈数上限。模型侧三把刀 `schedule_task` / `list_schedules` / `update_schedule`。
+- **定时任务（routine）**：一只账号级智能体记住的一条「到点自己起一轮」的任务（#1283，ADR-0358）。两类：**永久**（`daily` / `weekly`，墙上时间固定）与**日抛**（`once`，跑完即停用、列表里留 7 天）。存 `agent_routines`，调度器在云 runtime 里（30 秒 tick + 原子认领），到点在它的私聊里落一条 `greeting:"routine"` 的开场白起 turn——与回电 / 外联汇报同一条路。只存在于个人主场（RLS 与到点各核一次）。routine 轮视同主人亲口（免审、`call_friend` 亮），刹车是额度门 + 圈数上限。模型侧三把刀 `schedule_task` / `list_schedules` / `update_schedule`。
 - **情绪括注（emotion tag）**：通话里模型写在**段首**的括注 `（笑）（惊）（叹）（气）（怕）（嫌）`，对到 MiniMax 的 emotion（happy / surprised / sad / angry / fearful / disgusted）。落日志不落界面：显示剥（六处，含通话字幕）、出声解；只认段首白名单，词表外的括注是正文。ADR-0355，`src/shared/voiceProsody.ts`
 - **车道（pair lane，ADR-0346 / #1523）**：主人个人主场里一条 `chat_kind='pair'` 的云会话，装着他带进与某位朋友私聊的智能体；一人对一位朋友只有一条，朝向（`facing`）可切——**私密车道**（self）只有主人看得到、只听主人的；**公开车道 / 共享车道**（both）朋友以客人身份进同一条，看得到、能 @，朋友点起的轮每一刀等主人批。朝向从日志里最后一条名单事件的客人名单推导，`facing` 那一列是投影。
 - **公开智能体（public agent，ADR-0356 / #1533）**：每人在「我」页设定的一只自己主场里的智能体（`profiles.public_agent_id`）。朋友（已接受、两边都不是仅聊天）在和我的私聊里能 @ 它、给它打电话：载体是我主场里与那位朋友的共享车道，朋友那一侧能按需开出来（协议 26 的 `onBehalf` create）。打完电话它把朋友的需求总结写在车道里（两人都看得到），那一轮受监督。
+- **人与人电话（human call，ADR-0357 / #1534）**：两位好友在私聊里的实时语音——WebRTC P2P + 自建 coturn 兜底，信令走中继 `hc:<callId>` 房（host↔guest），来电借 RingPush 的壳（`chat = "human"`）进 CallKit。与「电话」的另外两种分开：智能体回电（ADR-0331）、外联（ADR-0337）都是人 ↔ 智能体、靠本地识别 + TTS，没有手机到手机的音频通道。
 
 ## Key invariants
 

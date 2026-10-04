@@ -33,6 +33,8 @@ import { createFrameRateLimiter } from "./rateLimit.js";
 import { createCloudSession, type CloudSession, type AgentSpec } from "./sessionService.js";
 import { ChatCreateError, pairCreateProblem, planChatCreate } from "./chatCreate.js";
 import { onBehalfPairProblem } from "../../../src/shared/publicAgent.js";
+import { DEFAULT_STUN, HUMAN_CALL_RING_MS, humanRingPush } from "../../../src/shared/humanCall.js";
+import { iceServersFor } from "./turnCredentials.js";
 import { createHumansProblem, friendSetOf, friendshipFilter, planHumansChange } from "./chatHumans.js";
 import { greetOnCreate } from "./newAgentGreeting.js";
 import { createSupabaseLegacyMemoryReader } from "./workspaceMemory.js";
@@ -1184,6 +1186,31 @@ async function main(): Promise<void> {
 
   const frameHandlerDeps: FrameHandlerDeps = {
     log: (m) => console.log(`[otto-runtime] 帧：${m}`),
+    // 人打人的电话（#1534）：是好友就能打；给对方推一条 VoIP 来电（RingPush 的壳，chat = human），两端各一张 TURN 票
+    humanCall: async (fromUid, toUid, callId) => {
+      if (apns === null) return { ok: false, message: "这台服务器没开推送，打不了电话。" };
+      if (fromUid === toUid) return { ok: false, message: "不能给自己打电话。" };
+      let friends: Set<string>;
+      try {
+        friends = await acceptedFriendsOf(fromUid, [toUid]);
+      } catch (err) {
+        console.warn(`[otto-runtime] 打电话前查好友失败（from=${fromUid}）：${String(err)}`);
+        return { ok: false, message: "这会儿查不到朋友名单，稍后再试" };
+      }
+      if (!friends.has(toUid)) return { ok: false, message: "只能给朋友打电话。" };
+      const now = Date.now();
+      const expiresTs = now + HUMAN_CALL_RING_MS;
+      const ring = humanRingPush({ callId, fromUid, fromName: await labelOf(fromUid), expiresTs, ice: iceServersFor(config.turn, toUid, now, DEFAULT_STUN) });
+      let delivered: number;
+      try {
+        delivered = await apns.pushRing(toUid, ring);
+      } catch (err) {
+        console.warn(`[otto-runtime] 人打人来电推送失败（to=${toUid}）：${String(err)}`);
+        return { ok: false, message: "这会儿推不到对方的手机，稍后再试" };
+      }
+      if (delivered === 0) return { ok: false, message: "对方的手机收不到来电（没登记设备，或推送没送到）。" };
+      return { ok: true, ice: iceServersFor(config.turn, fromUid, now, DEFAULT_STUN), expiresTs };
+    },
     verifyJwt: async (token) => {
       const result = await verifyJwtEdge(token, config.supabaseJwtSecret, Date.now() / 1000);
       return result.ok ? { userId: result.claims.sub } : null;
