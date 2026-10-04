@@ -12,7 +12,12 @@
       "infoPlist": {
         "NSMicrophoneUsageDescription": "语音通话时要用麦克风听你说话。",
         "NSSpeechRecognitionUsageDescription": "语音通话时把你说的话转成文字，发给智能体。",
-        "UIBackgroundModes": ["voip", "audio"]
+        "UIBackgroundModes": [
+          "voip",
+          "audio"
+        ],
+        "NSPhotoLibraryUsageDescription": "选照片和视频发到聊天里时要用一下相册。",
+        "NSCameraUsageDescription": "拍照片和视频发到聊天里时要用一下相机。"
       },
       "entitlements": {
         "com.apple.developer.usernotifications.time-sensitive": true
@@ -25,7 +30,11 @@
         "backgroundImage": "./assets/android-icon-background.png",
         "monochromeImage": "./assets/android-icon-monochrome.png"
       },
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO"
+      ]
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -45,10 +54,37 @@
       [
         "expo-notifications",
         {
-          "sounds": ["./assets/sounds/ringtone.caf"]
+          "sounds": [
+            "./assets/sounds/ringtone.caf"
+          ]
         }
       ],
-      "./plugins/withSceneLifecycle"
-    ]
+      "./plugins/withSceneLifecycle",
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "选照片和视频发到聊天里时要用一下相册。",
+          "cameraPermission": "拍照片和视频发到聊天里时要用一下相机。",
+          "microphonePermission": "拍视频时要录声音。"
+        }
+      ],
+      "expo-video"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "02a88a0c-a498-4453-b03e-00dac97d5938"
+      }
+    },
+    "owner": "real_stanyan",
+    "runtimeVersion": "1",
+    "updates": {
+      "url": "https://u.expo.dev/02a88a0c-a498-4453-b03e-00dac97d5938",
+      "enabled": true,
+      "checkAutomatically": "ON_LOAD",
+      "fallbackToCacheTimeout": 0,
+      "requestHeaders": {
+        "expo-channel-name": "production"
+      }
+    }
   }
 }

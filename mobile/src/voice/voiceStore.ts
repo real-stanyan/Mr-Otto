@@ -47,6 +47,11 @@ export function useVoice(): VoiceStoreState {
   return useSyncExternalStore(store.subscribe, store.get);
 }
 
+/** 这台此刻在不在一场通话里听着（热更新那侧要：通话中不重启，#1463） */
+export function voiceListening(): boolean {
+  return store.get().listen !== null;
+}
+
 /** 这个 app 里有没有语音原生模块（开发版有、Expo Go 没有） */
 export const nativeSpeech = OttoSpeech !== null;
 
