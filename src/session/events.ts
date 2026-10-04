@@ -188,7 +188,7 @@ export interface AssistantMessageEvent extends SessionEventBase {
       可选 = 旧日志 / direct 路 / 流式（settle 在响应发出之后，那一刻才知道数） */
   creditCostMicro?: number;
   /** 模型答完之后接着续写了别人的说话人行（「[Otto产品经理]: …」+ 一段思考 + 答案重写，
-      #1483，ADR-0345）：engine 落盘前从那一行起截掉，`content` 只留它真正说的那部分，
+      #1483，ADR-0347）：engine 落盘前从那一行起截掉，`content` 只留它真正说的那部分，
       截掉的那一截原样放这里——日志仍然说得清模型那一刻吐了什么，而投影（模型上下文 /
       气泡 / 最后一句 / 语音）只读 content。缺席 = 没截过（正常回复 / 本机会话 / 旧日志） */
   trimmed?: string;

@@ -958,7 +958,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
 
   // 流式碎片的合帧（#1107）：碎片永远不落日志，出口只有 opts.onDelta；
   // notify() 开头那声 flush 是「事件先放完碎片再出门」那一半纪律
-  // 预览快照过同一把尺子（#1483，ADR-0345）：终态 assistant_message 在 engine 里截，预览
+  // 预览快照过同一把尺子（#1483，ADR-0347）：终态 assistant_message 在 engine 里截，预览
   // 不截的话客户端会先画出一行伪造的发言、答案落下来时又消失。名单取此刻认得的人：
   // 发言标签表（speakerLabels：真人 + 同伴）+ 这条会话里 agent 的名字（specNames，runJob
   // 每次刷新）+ 系统旁白的保留名。specNames 在下面才声明——闭包只在 turn 跑起来之后执行

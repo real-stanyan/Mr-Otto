@@ -1,4 +1,4 @@
-// speakerLeak —— 模型续写了别人的发言，从那一行起截掉（#1483，ADR-0345）。
+// speakerLeak —— 模型续写了别人的发言，从那一行起截掉（#1483，ADR-0347）。
 //
 // 云会话里别人的话以「[名字]: 内容」投影给模型（deriveMessages 的 chat_message /
 // user_message 两条路，agentView.memberSpeech 把同伴的回复也折成这个样子）。模型
