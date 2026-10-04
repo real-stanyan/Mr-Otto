@@ -44,7 +44,7 @@ describe("otto-speech 原生模块与桌面 MrOttoSpeech 对拍", () => {
     const js = read(`${MOBILE}/index.ts`);
     const native = [...swift.matchAll(/AsyncFunction\("(\w+)"\)/g)].map((m) => m[1]!).sort();
     // #1492 起 stopRecording 回的不是 void：声明按「: Promise<…>;」认，不只认 void
-    const declared = [...js.matchAll(/^\s+(\w+)\([^)]*\): Promise<[^;]+>;/gm)].map((m) => m[1]!).sort();
+    const declared = [...js.matchAll(/^\s+(\w+)\([^)]*\): Promise<.+>;$/gm)].map((m) => m[1]!).sort();
     expect(native).toEqual(["pause", "play", "resume", "setSessionManagedExternally", "start", "startRecording", "status", "stop", "stopPlay", "stopRecording"]);
     expect(declared).toEqual(native);
     expect(swift).toContain('Name("OttoSpeech")');
