@@ -39,19 +39,22 @@ function busyAdapter(seenTools: string[][], stopAfter?: number): ModelAdapter {
   };
 }
 
-function open(o: { adapter?: ModelAdapter; routines?: ReturnType<typeof createInMemoryRoutineStore> | null } = {}) {
+function open(o: {
+  adapter?: ModelAdapter; routines?: ReturnType<typeof createInMemoryRoutineStore> | null;
+  agents?: CloudSessionOpts["agents"]; approveAll?: boolean; chatKind?: "dm" | "group" | "pair";
+} = {}) {
   const store = new EventStore(join(tempDir("mrotto-runtime-routine-"), "session.db"));
-  store.append({ sessionId: SID, ts: 1, type: "session_created", workspace: "/work", cloud: { workspaceId: "home", home: true, chat: { kind: "dm" } } });
+  store.append({ sessionId: SID, ts: 1, type: "session_created", workspace: "/work", cloud: { workspaceId: "home", home: true, chat: { kind: o.chatKind ?? "dm" } } });
   const fallback: ModelAdapter = { model: "fake-model", async chat() { return { content: "好的" }; } };
   const opts: CloudSessionOpts = {
     sessionMeta: createInMemoryCloudSessionMeta(),
     workspaceId: "home", sessionId: SID, ownerUid: OWNER, createdByUid: OWNER, store, world: fakeWorld,
-    agents: async () => [HELPER], adapterFor: () => o.adapter ?? fallback, px: { edgeBase: "https://edge.example", runtimeSecret: "sek" },
+    agents: o.agents ?? (async () => [HELPER]), adapterFor: () => o.adapter ?? fallback, px: { edgeBase: "https://edge.example", runtimeSecret: "sek" },
     hostUids: async () => [OWNER], onEvent: () => {}, onUsage: () => {},
     wiki: createWikiService({ workspaceId: "home", fs: createMemoryWikiFs(), journal: createInMemoryWikiJournal(), legacyMemories: async () => [], agentNames: async () => new Map(), isRunning: async () => true }),
     mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(), isMember: async () => true, contextWindowOf: () => undefined,
     sandboxApproval: async () => "ask", workspaceLock: createWorkspaceLock(), relayRemainingMicro: async () => null,
-    diskUsage: () => null, onOutreachEnded: null, signSpeechTicket: async () => "t", pairMessages: null, outreach: null, approveAll: true, callback: null,
+    diskUsage: () => null, onOutreachEnded: null, signSpeechTicket: async () => "t", pairMessages: null, outreach: null, approveAll: o.approveAll ?? true, callback: null,
     routines: o.routines === undefined ? createInMemoryRoutineStore() : o.routines,
   };
   return { session: createCloudSession(opts), store };
@@ -67,6 +70,8 @@ describe("runRoutine", () => {
     expect(opening).toMatchObject({ fromUid: OWNER, mentions: [HELPER.agentId], greeting: "routine", routine: { id: "r1", title: "早报" } });
     expect(opening.content).toContain("现在是 2026-10-05 09:00（Asia/Shanghai，周一）");
     expect(opening.content).toContain("看一眼报表");
+    // 不带 tz：正文已经写明了时间与时区；带了的话投影「今天是」会按任务建时的时区算，主人人在别处时日期会跳
+    expect("tz" in opening).toBe(false);
     expect(log.some((e) => e.type === "assistant_message")).toBe(true);
     store.close();
   });
@@ -76,6 +81,12 @@ describe("runRoutine", () => {
     expect(store.load(SID).filter((e) => e.type === "user_message")).toEqual([]);
     session.archive("owner");
     expect(await session.runRoutine(ROUTINE)).toBe("archived");
+    store.close();
+  });
+  it("名单读不出来（degraded，一次查询失败）：抛错而不是 no_agent——调度器标 failed 但不停用，下一跳再试；一个事件都不落", async () => {
+    const { session, store } = open({ agents: async () => [{ ...HELPER, degraded: true as const }] });
+    await expect(session.runRoutine(ROUTINE)).rejects.toThrow("智能体名单读不出来");
+    expect(store.load(SID).filter((e) => e.type === "user_message")).toEqual([]);
     store.close();
   });
   it("routine 轮里 schedule_task 亮着（主人亲口）；圈数到 ROUTINE_MAX_ROUNDS 以 error 收口", async () => {
@@ -107,6 +118,34 @@ describe("runRoutine", () => {
     await session.settled();
     expect(seen[0]).not.toContain(SCHEDULE_TASK_TOOL_NAME);
     store.close();
+  });
+});
+
+describe("三把刀的挂载闸（#1283 终审 I3）", () => {
+  const firstTools = async (o: Parameters<typeof open>[0], kick: (s: ReturnType<typeof open>["session"]) => unknown) => {
+    const seen: string[][] = [];
+    const { session, store } = open({ ...o, adapter: busyAdapter(seen, 0) });
+    await kick(session);
+    await session.settled();
+    store.close();
+    // 先确认这一轮真的跑起来了、模型真看到了一张工具表——否则「不含」是空表上的白断言
+    expect(seen.length).toBeGreaterThan(0);
+    expect(seen[0]!).toContain("bash");
+    return seen[0]!;
+  };
+  it("基线：主场私聊、approveAll、主人亲口——亮", async () => {
+    expect(await firstTools({}, (s) => s.runRoutine(ROUTINE))).toContain(SCHEDULE_TASK_TOOL_NAME);
+  });
+  it("approveAll: false（非主场）：不挂", async () => {
+    expect(await firstTools({ approveAll: false }, (s) => s.runRoutine(ROUTINE))).not.toContain(SCHEDULE_TASK_TOOL_NAME);
+  });
+  it("群聊 / 配对线：不挂", async () => {
+    expect(await firstTools({ chatKind: "group" }, (s) => s.runRoutine(ROUTINE))).not.toContain(SCHEDULE_TASK_TOOL_NAME);
+    expect(await firstTools({ chatKind: "pair" }, (s) => s.runRoutine(ROUTINE))).not.toContain(SCHEDULE_TASK_TOOL_NAME);
+  });
+  it("受监督的轮（外联汇报开场白）：主场私聊里挂着但不进模型的工具表", async () => {
+    const tools = await firstTools({}, (s) => s.reportOutreach({ agentId: HELPER.agentId, text: "朋友说：帮我每天提醒他", ownerUid: OWNER }));
+    expect(tools).not.toContain(SCHEDULE_TASK_TOOL_NAME);
   });
 });
 

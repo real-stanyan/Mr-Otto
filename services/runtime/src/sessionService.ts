@@ -690,7 +690,8 @@ export interface CloudSession {
       不是主人的指令，见 supervisedTurn）。那只已不在名单里就什么都不起 */
   reportOutreach(r: { agentId: string; text: string; ownerUid: string }): void;
   /** 定时任务到点（#1283，spec §4.2）：替主人落一条 greeting:"routine" 的开场白并入队——与 greetNewAgent /
-      reportOutreach 同一条路。名单现读：那只已删 / 已移出回 no_agent，一个事件都不落 */
+      reportOutreach 同一条路。名单现读：那只已删 / 已移出回 no_agent，一个事件都不落；名单读不出来（degraded）
+      抛错——那是一次查询失败，不能让调度器当成「那只没了」把任务停掉 */
   runRoutine(r: { routineId: string; title: string; instruction: string; tz: string; firedAt: number; agentId: string }): Promise<"ok" | "archived" | "no_agent">;
   /** 定时任务没跑成的注记（错过 / 额度不够，spec §4.3）：ignorable，不起 turn */
   logRoutineNote(n: { routineId: string; title: string; reason: "missed" | "skipped_quota"; plannedAt: number; tz: string }): void;
@@ -3251,7 +3252,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // 名单现读（同 reportOutreach）：任务建的时候那只还在，到点可能已删
       const roster = await rosterNow({ fresh: true });
       if (archived) return "archived";
-      if (roster.some((a) => a.degraded) || !roster.some((a) => a.agentId === r.agentId)) return "no_agent";
+      // 名单读不出来是一次查询失败，不是那只没了：抛错 → 调度器标 failed 但不停用，下一跳再试。
+      // 回 no_agent 会让一次网络抖动永久停掉主人的任务（终审 I1b）
+      if (roster.some((a) => a.degraded)) throw new Error("智能体名单读不出来，这次先不跑");
+      if (!roster.some((a) => a.agentId === r.agentId)) return "no_agent";
       const opening = store.append({
         sessionId,
         ts: Date.now(),
@@ -3261,7 +3265,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         mentions: [r.agentId],
         greeting: "routine",
         routine: { id: r.routineId, title: r.title },
-        tz: r.tz,
+        // 不带 tz：正文里已经写明了时间与时区。带上的话投影「今天是」会改按任务建时的时区算（userTzOf 取说话人
+        // 最近一条带 tz 的）——主人人在别处时，日期会因为一条定时任务跳一下，下一句真话再跳回来
       }) as UserMessageEvent;
       notify(opening);
       if (coordinator.enqueue({ agentId: r.agentId, fromUid: opts.ownerUid, opening }) === "start_turn") startDrain();
