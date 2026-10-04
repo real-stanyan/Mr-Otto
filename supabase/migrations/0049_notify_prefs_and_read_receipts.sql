@@ -3,6 +3,9 @@
 -- 一条语句的结果，逐条发）。**部署顺序：先跑这份、再部署 runtime、再发手机包**——反过来 runtime 每次要推
 -- 都读不到开关，按「读不到就不推」（见 services/runtime/src/notifier.ts）一条都不发；手机设置页读不到开关
 -- 就整段不画。
+-- 已于 2026-10-04 经维护者同意在生产执行（Management API，逐条发，28 条）。跑前核过三张表与两个函数都不在；
+-- 跑后核过：三张表 RLS 开着、7 条策略、只有 friend_reads 进了 supabase_realtime、触发器在、mark_friend_read
+-- 只授给 authenticated（anon 的默认授权已收掉）；原样重跑一遍全过，计数不变。
 --
 -- 三张表，写法各不相同：
 --
@@ -102,6 +105,7 @@ begin
     where friend_reads.last_read_id is distinct from greatest(coalesce(friend_reads.last_read_id, 0), excluded.last_read_id);
 end $$;
 revoke all on function public.mark_friend_read(uuid, bigint) from public;
+revoke all on function public.mark_friend_read(uuid, bigint) from anon;
 grant execute on function public.mark_friend_read(uuid, bigint) to authenticated;
 
 -- 关掉已读回执：我名下的回执一律置空（不删行，理由见文件头）。开回来不补：下一次读到新消息时再写
