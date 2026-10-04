@@ -7,10 +7,12 @@ import type { SpeechEmotion } from "../../src/shared/voiceProsody.js";
 
 interface FakeAudio extends PlayerAudio { ended(): void; played: number }
 
-function harness(speakImpl?: (text: string) => VoiceSpeakResult) {
+function harness(speakImpl?: (text: string) => VoiceSpeakResult, opts: { gateWaits?: boolean } = {}) {
   const speakCalls: string[] = [];
   const emotions: (string | null)[] = [];
   const waits: number[] = [];
+  /** gateWaits 时每次 wait 都挂着，等测试手动放行（验「正在停顿中」的状态） */
+  const gates: (() => void)[] = [];
   let clock = 0;
   const audios: FakeAudio[] = [];
   const states: VoicePlayerState[] = [];
@@ -34,9 +36,13 @@ function harness(speakImpl?: (text: string) => VoiceSpeakResult) {
     },
     onChange: (s) => states.push(s),
     now: () => clock,
-    wait: async (ms) => { waits.push(ms); clock += ms; },
+    wait: async (ms) => {
+      waits.push(ms);
+      if (opts.gateWaits) await new Promise<void>((r) => { gates.push(r); });
+      clock += ms;
+    },
   });
-  return { player, speak, speakCalls, emotions, waits, audios, states, tick: (ms: number) => { clock += ms; } };
+  return { player, speak, speakCalls, emotions, waits, gates, audios, states, tick: (ms: number) => { clock += ms; } };
 }
 const flush = async (): Promise<void> => { for (let i = 0; i < 6; i++) await Promise.resolve(); };
 
@@ -159,14 +165,34 @@ describe("情绪与停顿（#1515）", () => {
     expect(waits).toEqual([]);
     expect(audios).toHaveLength(2);
   });
-  it("stop() 之后等着的停顿不再起播", async () => {
-    const { player, audios } = harness();
+  it("停顿进行中 stop()：放行后不再起播", async () => {
+    const { player, audios, waits, gates } = harness(undefined, { gateWaits: true });
     player.enqueue({ agentId: "a", text: "一", voiceId: "v", emotion: null });
     player.enqueue({ agentId: "a", text: "二", voiceId: "v", emotion: null });
     await flush();
     audios[0]!.ended();
+    await flush();
+    expect(waits).toEqual([230]); // 确实停在停顿里了，不是停在等合成
     player.stop();
+    gates[0]!();
     await flush();
     expect(audios).toHaveLength(1);
+  });
+  it("停顿进行中 stop() 再入新句：老队头不起播，新句不吃旧停顿（lastEnded 已清）", async () => {
+    const { player, audios, waits, gates } = harness(undefined, { gateWaits: true });
+    player.enqueue({ agentId: "a", text: "一", voiceId: "v", emotion: null });
+    player.enqueue({ agentId: "a", text: "二", voiceId: "v", emotion: null });
+    await flush();
+    audios[0]!.ended();
+    await flush();
+    expect(waits).toEqual([230]);
+    player.stop();
+    player.enqueue({ agentId: "b", text: "三", voiceId: "v", emotion: null });
+    gates[0]!();
+    await flush();
+    expect(waits).toEqual([230]); // 新句没有再等
+    expect(audios).toHaveLength(2); // 第一段 + 新句；老的「二」没起播
+    expect(player.state()).toMatchObject({ speaking: "b", text: "三", queued: 0 });
+    expect(audios[1]!.played).toBe(1);
   });
 });
