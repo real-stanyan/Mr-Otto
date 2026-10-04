@@ -35,6 +35,7 @@ import { ChatCreateError, pairCreateProblem, planChatCreate } from "./chatCreate
 import { onBehalfPairProblem } from "../../../src/shared/publicAgent.js";
 import { DEFAULT_STUN, HUMAN_CALL_RING_MS, humanRingPush } from "../../../src/shared/humanCall.js";
 import { iceServersFor } from "./turnCredentials.js";
+import { createLaneBridge } from "./laneBridge.js";
 import { createHumansProblem, friendSetOf, friendshipFilter, planHumansChange } from "./chatHumans.js";
 import { greetOnCreate } from "./newAgentGreeting.js";
 import { createSupabaseLegacyMemoryReader } from "./workspaceMemory.js";
@@ -1089,6 +1090,9 @@ async function main(): Promise<void> {
       signSpeechTicket: (t) => signSpeechTicket(t, config.runtimeSecret),
       // 私密车道的上下文信封（#1461 P1，ADR-0346）：主人与朋友私聊最近一页（service key 读，RLS 不在场——
       // 所以查询按这一对过滤之外，sessionService 那侧的 pairContextLines 还会再收一道）。只在车道里被调
+      // 对面公开的智能体（#1542）：箭头里才读 laneBridge——它在这个函数的后面才声明，房间启动补开时这里已经跑过，
+      // 但只有工具真被调用那一刻才会碰到它
+      laneBridge: { send: (o) => laneBridge.send(o) },
       pairMessages: async ({ ownerUid: o, peerUid: p }) => {
         const { data, error } = await supabase
           .from("messages")
@@ -1172,6 +1176,51 @@ async function main(): Promise<void> {
     // 排空那一步抛了也照走：删除不该因为一条卡死的 turn 而卡住
     return settledOrCapped.catch(() => undefined);
   }
+
+  // 双方公开的智能体互相说话（#1542，ADR-0358）：A 车道里的智能体 → B 主场里公开给 A 的那条车道。判断在 laneBridge.ts，
+  // 这里只接三件事：按（B 的主场, peer = A, facing both）找那条、开（或拿到）它的房、以 A（客人）的身份 say
+  const laneBridge = createLaneBridge({
+    findPeerLane: async (peerUid, ownerUid) => {
+      const { data, error } = await supabase
+        .from("workspace_sessions")
+        .select("id,workspace_id")
+        .eq("chat_kind", "pair")
+        .eq("facing", "both")
+        .eq("peer_uid", ownerUid)
+        .eq("publisher_uid", peerUid)
+        .eq("archived", false)
+        .maybeSingle();
+      if (error) throw new Error(`对面车道查询失败：${error.message}`);
+      return data ? { workspaceId: (data as { workspace_id: string }).workspace_id, sessionId: (data as { id: string }).id } : null;
+    },
+    openLane: async (workspaceId, sessionId) => {
+      let active = activeSessions.get(sessionId);
+      if (active === undefined || active.workspaceId !== workspaceId) {
+        try {
+          const facts = await workspaceFacts(workspaceId);
+          openSessionRoom(workspaceId, sessionId, facts.ownerUid, facts.ownerUid, facts.kind === "home");
+          active = activeSessions.get(sessionId);
+        } catch (err) {
+          console.warn(`[otto-runtime] 开对面车道失败（session=${sessionId}）：${String(err)}`);
+          return null;
+        }
+      }
+      if (active === undefined) return null;
+      const s = active.session;
+      return {
+        isGuest: (uid) => s.isGuest(uid),
+        roster: async () => {
+          const ids = s.chat()?.agentIds ?? [];
+          const team = await agentsCache.get(workspaceId);
+          return ids.map((agentId) => ({ agentId, name: team.find((a) => a.agentId === agentId)?.name ?? agentId }));
+        },
+        say: (fromUid, label, text, mentions, relay) => s.say(fromUid, label, text, true, mentions, undefined, [], undefined, undefined, relay),
+      };
+    },
+    labelOf,
+    now: () => Date.now(),
+    log: (m) => console.warn(`[otto-runtime] ${m}`),
+  });
 
   const frameHandlerDeps: FrameHandlerDeps = {
     log: (m) => console.log(`[otto-runtime] 帧：${m}`),
