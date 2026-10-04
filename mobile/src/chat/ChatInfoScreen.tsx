@@ -38,7 +38,9 @@ import { supabase } from "../supabase.js";
 import type { RootStackParams } from "../nav/types.js";
 import { useMyName } from "../tabs/MeScreen.js";
 import { usePalette } from "../theme.js";
+import { Switch } from "react-native";
 import { Group, Note, Row } from "../ui.js";
+import { setMuted, useNotify } from "../push/notifyStore.js";
 import { FaceTile, PersonTile } from "../wx/Avatar.js";
 import { EditTextDialog } from "../wx/EditTextDialog.js";
 import { Icon, type IconName } from "../wx/Icon.js";
@@ -89,6 +91,19 @@ function MemberAction({ icon, label, onPress, disabled = false }: { icon: IconNa
 function Members({ children }: { children: React.ReactNode }) {
   const { c } = usePalette();
   return <View style={{ flexDirection: "row", flexWrap: "wrap", rowGap: 14, paddingHorizontal: 14, paddingTop: 16, paddingBottom: 14, backgroundColor: c.card }}>{children}</View>;
+}
+
+/** 消息免打扰（#1442）：开了这条聊天就不推送，列表里只画红点不画数。key 与列表键逐字相同（runtime 按它判推不推）。
+    免打扰那份读不到时不画（画一个关着的开关就是在说「没开」，而我们并不知道） */
+function MuteRow({ muteKey }: { muteKey: string }) {
+  const notify = useNotify();
+  if (notify.mutes === null) return null;
+  const on = notify.mutes.has(muteKey);
+  return (
+    <Group footer={notify.error ?? undefined}>
+      <Row label="消息免打扰" trailing={<Switch value={on} onValueChange={(v) => void setMuted(muteKey, v)} accessibilityLabel="消息免打扰" />} />
+    </Group>
+  );
 }
 
 function DangerRow({ label, onPress }: { label: string; onPress: () => void }) {
@@ -241,6 +256,7 @@ export function ChatInfoScreen({ route, navigation }: Props) {
           <Group>
             <Row label="邮箱" value={row.profile.email} />
           </Group>
+          <MuteRow muteKey={`f:${target.uid}`} />
           <DangerRow label="删除朋友" onPress={() => { setError(null); setConfirm(true); }} />
         </ScrollView>
         <Confirm
@@ -287,6 +303,7 @@ export function ChatInfoScreen({ route, navigation }: Props) {
             <Row label="群主" value={labelOf(team.ws, owner)} />
             <Row label="没 @ 谁的时候" value={agents.length > 0 ? "智能体按职责自己接" : "等人回"} />
           </Group>
+          <MuteRow muteKey={`t:${target.sessionId}`} />
           <ExportLogRow target={{ kind: "session", sessionId: target.sessionId }} />
         </ScrollView>
       </View>
@@ -343,6 +360,7 @@ export function ChatInfoScreen({ route, navigation }: Props) {
             <Row label="群主" value={owner?.label ?? ""} />
             <Row label="没 @ 谁的时候" value={agentIds.length > 0 ? "智能体按职责自己接" : "等人回"} />
           </Group>
+          <MuteRow muteKey={`j:${target.sessionId}`} />
           <ExportLogRow target={{ kind: "session", sessionId: target.sessionId }} />
           <DangerRow label="退出群聊" onPress={() => { setError(null); setConfirm(true); }} />
         </ScrollView>
@@ -413,6 +431,7 @@ export function ChatInfoScreen({ route, navigation }: Props) {
             {ws.agents.length >= 2 || invitable.length > 0 ? <MemberAction icon="plus" label="建群" onPress={() => { setPickError(null); setPicker({ kind: "group", key: Date.now(), visible: true }); }} /> : null}
           </Members>
           <AgentRows ws={ws} agent={agent} />
+          <MuteRow muteKey={`a:${agent.agentId}`} />
           <ExportLogRow target={{ kind: "agent", agentId: agent.agentId }} />
           {isAdmin ? (
             <Text style={{ fontSize: 13, lineHeight: 19, color: c.mutedForeground, paddingHorizontal: 16 }}>管理员删不掉：新建智能体、派活都靠它。</Text>
@@ -554,6 +573,7 @@ export function ChatInfoScreen({ route, navigation }: Props) {
           <Row label="群主" value="我" />
           <Row label="没 @ 谁的时候" value={agentIds.length > 0 ? "智能体按职责自己接" : "没人接"} />
         </Group>
+        <MuteRow muteKey={`g:${row.sessionId}`} />
         <ExportLogRow target={{ kind: "session", sessionId: row.sessionId }} />
         <DangerRow label="解散群聊" onPress={() => { setError(null); setConfirm(true); }} />
       </ScrollView>
