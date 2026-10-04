@@ -19,7 +19,8 @@ describe("daemon.ts：外联的接线（#1441）", () => {
   });
   it("好友名单只认 accepted 的行，查询出错抛", () => {
     expect(src).toMatch(/from\("friendships"\)[\s\S]{0,120}\.eq\("status", "accepted"\)/);
-    expect(src).toMatch(/friendsOf:[\s\S]{0,600}if \(error\) throw/);
+    // #1494 起带两列档位、没跑 0054 退回两列再查：抛错的那一句从 `if (error)` 变成 `if (res.error)`
+    expect(src).toMatch(/friendsOf:[\s\S]{0,900}if \(res\.error\) throw/);
   });
   it("额度闸复用 decideRuntimeRoute + hostedProbe，不另造判据", () => {
     expect(src).toMatch(/ownerBlocked:[\s\S]{0,300}decideRuntimeRoute\([\s\S]{0,120}hostedProbe\.me\(ownerUid\)/);

@@ -6,6 +6,7 @@
 // 每条先挂一个本地气泡报进度，传完换成真消息。纯媒体消息的正文是占位「[图片]」/「[视频]」，带着媒体时不画字。
 // 带了智能体之后打一个 @ 弹选人（#1493）：名单只有我带进来的那几只（朋友不在里面——@ 朋友没有去处），
 // 挑中了经 ref.mention 插回光标处，判据与群聊页同一份（agentMentionInput / MentionSheet）。
+import { allowsPair } from "../../../src/shared/friendTier.js";
 import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
@@ -473,7 +474,8 @@ export function FriendChatScreen({ route, navigation }: Props) {
                 ? [{ key: "group", icon: "users-round" as const, label: "拉人建群", onPress: () => setGrouping({ key: Date.now(), visible: true }) }]
                 : []),
               // 带上我的智能体（#1461 P1）：住在我主场的私密车道里，朋友看不到；车道还读不到时不给（不劝人再带一次）
-              ...(home.home !== null && (lane.status === "ready" || lane.status === "none")
+              // 好友权限（#1494）：两边取最小值到不了「可带智能体」就不给入口（服务端 pairCreateProblem 是真正的闸）
+              ...(home.home !== null && (lane.status === "ready" || lane.status === "none") && (row === null || allowsPair(row.tiers.effective))
                 ? [{ key: "bring", icon: "sparkles" as const, label: "带上我的智能体", onPress: () => setBringing({ key: Date.now(), visible: true }) }]
                 : []),
             ]}

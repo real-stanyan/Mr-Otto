@@ -16,6 +16,7 @@ import {
   DM_MEDIA_BUCKET, missingMediaColumn, parseDmMedia, type ChatMediaItem,
 } from "../../../src/shared/chatMedia.js";
 import type { DirectMessage, FriendProfile } from "../../../src/shared/friends.js";
+import { REQUEST_DEFAULT_TIER, tiersOf, type FriendTier } from "../../../src/shared/friendTier.js";
 import {
   dmOr, mergeChannelHealth, profileSearchOr, rankFriendship,
 } from "../../../src/shared/friendsQuery.js";
@@ -55,6 +56,16 @@ export interface FriendRow {
   status: "accepted" | "pending";
   /** pending 的还带方向:待我处理的和我发出去的,人要分得开 */
   direction: "incoming" | "outgoing";
+  /** 好友权限（#1494，ADR-0350）：我给 TA 的、TA 给我的、生效的（两边取最小值）。0054 没跑时按默认档 */
+  tiers: { mine: FriendTier; theirs: FriendTier; effective: FriendTier };
+}
+
+/** 库上有没有 friendships 的两列档位（0054，#1494）。没跑那份 migration 时第一次查询报「没这一列」，从此退回不带它们——
+    档位按默认档算，改档位的入口会报「服务器还没准备好」。同 mediaColumn 的纪律 */
+let tierColumns = true;
+const friendshipColumns = (): string => (tierColumns ? "id,requester,addressee,status,requester_tier,addressee_tier" : "id,requester,addressee,status");
+function missingTierColumn(e: { message: string; code?: string }): boolean {
+  return (e.code === "42703" || e.code === "PGRST204") && /_tier/.test(e.message);
 }
 
 function toProfile(p: ProfileRow): FriendProfile {
@@ -86,9 +97,12 @@ export async function listFriends(): Promise<FriendRow[]> {
   if (!uid) return [];
 
   // RLS 已把可见范围钉在"自己参与的行",不用再拼 or 条件
-  const rows = unwrap(
-    await supabase.from("friendships").select("id,requester,addressee,status"),
-  ) as { id: string; requester: string; addressee: string; status: "pending" | "accepted" }[];
+  let res = (await supabase.from("friendships").select(friendshipColumns())) as QueryResult;
+  if (res.error !== null && tierColumns && missingTierColumn(res.error)) {
+    tierColumns = false;
+    res = (await supabase.from("friendships").select(friendshipColumns())) as QueryResult;
+  }
+  const rows = unwrap(res) as { id: string; requester: string; addressee: string; status: "pending" | "accepted"; requester_tier?: unknown; addressee_tier?: unknown }[];
   if (rows.length === 0) return [];
 
   const otherOf = (r: (typeof rows)[number]): string =>
@@ -109,6 +123,7 @@ export async function listFriends(): Promise<FriendRow[]> {
       profile,
       status: r.status,
       direction: r.requester === uid ? "outgoing" : "incoming",
+      tiers: tiersOf(r, uid),
     });
   }
   return out.sort((a, b) => rankFriendship(a.status, a.direction) - rankFriendship(b.status, b.direction));
@@ -134,12 +149,13 @@ export class AlreadyLinked extends Error {
   }
 }
 
-export async function requestFriend(addressee: string): Promise<void> {
+export async function requestFriend(addressee: string, tier: FriendTier = REQUEST_DEFAULT_TIER): Promise<void> {
   const uid = await currentUserId();
   if (!uid) throw new Error("没登录");
   try {
+    // 只定自己那一边（#1494）：对方那一边由 0054 的默认值 + 对方接受时自己选；0054 没跑就不带这一列
     unwrap(await supabase.from("friendships")
-      .insert({ requester: uid, addressee, status: "pending" }));
+      .insert({ requester: uid, addressee, status: "pending", ...(tierColumns ? { requester_tier: tier } : {}) }));
   } catch (e: unknown) {
     // 23505 = 那条无序对唯一索引。这不是错误,是"已经有了"
     if ((e as { code?: string }).code === "23505") throw new AlreadyLinked();
@@ -147,11 +163,19 @@ export async function requestFriend(addressee: string): Promise<void> {
   }
 }
 
-export async function acceptFriend(friendshipId: string): Promise<void> {
-  // 只改 status/updated_at:requester/addressee 被列级 grant 钉死,改不了(0001_friends.sql)
+export async function acceptFriend(friendshipId: string, tier: FriendTier = REQUEST_DEFAULT_TIER): Promise<void> {
+  // 只改 status/updated_at:requester/addressee 被列级 grant 钉死,改不了(0001_friends.sql)。
+  // 接受的人是 addressee，顺手定自己那一边的档位（0054 放开了这一列；没跑就不带）
   unwrap(await supabase.from("friendships")
-    .update({ status: "accepted", updated_at: new Date().toISOString() })
+    .update({ status: "accepted", updated_at: new Date().toISOString(), ...(tierColumns ? { addressee_tier: tier } : {}) })
     .eq("id", friendshipId));
+}
+
+/** 改我给 TA 的那一档（#1494）：哪一列是「我的」看这一行里我是请求方还是被请求方；对方那一列触发器不许我动 */
+export async function setFriendTier(friendshipId: string, direction: "incoming" | "outgoing", tier: FriendTier): Promise<void> {
+  if (!tierColumns) throw new Error("服务器还没准备好好友权限，过一阵再试");
+  const column = direction === "outgoing" ? "requester_tier" : "addressee_tier";
+  unwrap(await supabase.from("friendships").update({ [column]: tier }).eq("id", friendshipId));
 }
 
 /** 拒绝请求 / 撤回请求 / 删好友 —— 库里都是同一件事:把那一行删掉 */

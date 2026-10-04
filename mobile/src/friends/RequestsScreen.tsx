@@ -12,6 +12,8 @@ import { Icon } from "../wx/Icon.js";
 import { HeaderIconButton } from "../wx/TabHeader.js";
 import { toast } from "../wx/toast.js";
 import { AddFriendDialog } from "./AddFriendDialog.js";
+import { TierPickDialog } from "./TierPickDialog.js";
+import { REQUEST_DEFAULT_TIER } from "../../../src/shared/friendTier.js";
 import type { FriendRow } from "./friendsApi.js";
 import { accept, drop, useFriends } from "./friendsStore.js";
 
@@ -40,6 +42,8 @@ export function RequestsScreen({ navigation }: Props) {
   const friends = useFriends();
   const [busy, setBusy] = useState<string | null>(null);
   const [adding, setAdding] = useState<{ key: number; visible: boolean } | null>(null);
+  // 接受时选我给 TA 的那一档（#1494）：弹一张单选，选完才真的接受
+  const [accepting, setAccepting] = useState<{ key: number; visible: boolean; r: FriendRow } | null>(null);
   useLayoutEffect(() => {
     navigation.setOptions({
       headerRight: () => (
@@ -76,7 +80,7 @@ export function RequestsScreen({ navigation }: Props) {
                 right={
                   <View style={{ flexDirection: "row", gap: 6 }}>
                     <Button size="sm" variant="quiet" label="拒绝" disabled={busy !== null} onPress={() => act(r.friendshipId, () => drop(r.friendshipId), "拒绝了")} />
-                    <Button size="sm" variant="primary" label="接受" disabled={busy !== null} onPress={() => act(r.friendshipId, () => accept(r.friendshipId), `你和「${friendName(r.profile)}」是朋友了`)} />
+                    <Button size="sm" variant="primary" label="接受" disabled={busy !== null} onPress={() => setAccepting({ key: Date.now(), visible: true, r })} />
                   </View>
                 }
               />
@@ -97,6 +101,24 @@ export function RequestsScreen({ navigation }: Props) {
           </View>
         ) : null}
       </ScrollView>
+      {accepting !== null ? (
+        <TierPickDialog
+          key={accepting.key}
+          visible={accepting.visible}
+          title={`接受「${friendName(accepting.r.profile)}」`}
+          lead="选一下你给 TA 的权限，之后在 TA 的资料页随时能改。"
+          initial={REQUEST_DEFAULT_TIER}
+          okLabel="接受"
+          busy={busy !== null}
+          onOk={(tier) => {
+            const r = accepting.r;
+            act(r.friendshipId, () => accept(r.friendshipId, tier), `你和「${friendName(r.profile)}」是朋友了`);
+            setAccepting((a) => (a === null ? a : { ...a, visible: false }));
+          }}
+          onClose={() => setAccepting((a) => (a === null ? a : { ...a, visible: false }))}
+          onExited={() => setAccepting(null)}
+        />
+      ) : null}
       {adding !== null ? <AddFriendDialog key={adding.key} visible={adding.visible} onClose={() => setAdding((a) => (a === null ? a : { ...a, visible: false }))} onExited={() => setAdding(null)} /> : null}
     </View>
   );
