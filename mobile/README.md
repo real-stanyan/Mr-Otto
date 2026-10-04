@@ -72,6 +72,13 @@ store 分发、channel `production`、版本号读 app.json）。**凭据只能�
 云端只装 `mobile/` 的依赖——所以手机端用到的包都得在 `mobile/package.json` 里（`npx expo export --platform ios` 在没装仓库根
 依赖的目录里打得出 bundle，就是这件事的检查）。
 
+**Mac 上不想走云端**就照老路 Xcode 归档（版本号同样读 app.json，prebuild 会烤进去）：
+
+    cd mobile
+    npx expo prebuild --platform ios --clean   # 重新生成 ios/（动过 modules/otto-speech 必须 --clean）
+    cd ios && pod install && cd ..
+    open ios/MrOtto.xcworkspace                 # Xcode：选真机 / Any iOS Device → Product › Archive → Distribute App › TestFlight
+
 包出来之后两件事，少一件热更新链路就不通：① app.json 的 `version` / `ios.buildNumber` 每次打包往上加（上一包 1.0.1 (4)）；
 ② 更新 `mobile/native-build.json`（`runtimeVersion`、打包那个 commit、`build`）——`publish-ota` 据它判「那之后动过原生没有」。
 
