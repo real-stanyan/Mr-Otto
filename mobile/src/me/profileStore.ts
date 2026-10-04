@@ -51,6 +51,17 @@ export async function refreshProfile(): Promise<void> {
   store.set({ me: row === null ? null : toMyProfile(row), loadError: null, loaded: true });
 }
 
+let inflight: Promise<void> | null = null;
+
+/** 仓里还没有就拉一份（#1519）：聊天页、群资料页读的是同一个仓，冷启动直接进聊天时没人去过「我」页。
+ * 几个屏同时挂上只发一条查询 */
+export function ensureProfile(): Promise<void> {
+  inflight ??= refreshProfile().finally(() => {
+    inflight = null;
+  });
+  return inflight;
+}
+
 /** 改名字 / 换头像。校验没过或库里拒了都抛出一句人话，调用方原样显示 */
 export async function saveProfile(patch: ProfilePatch): Promise<void> {
   const uid = await uidNow();
