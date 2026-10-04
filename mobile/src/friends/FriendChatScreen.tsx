@@ -259,7 +259,8 @@ export function FriendChatScreen({ route, navigation }: Props) {
   }, [laneSession, laneEvents, lane.agentIds]);
   const broughtNames = useMemo(
     // 两边都叫「管理员」时分不清谁是谁的（真机 2026-10-05）：@ 的候选名我的叫「我的管理员」、对方的叫「X的管理员」（parseMentions 的名字不能有空白）
-    () => (homeWs === null ? [] : brought.filter((id) => homeWs.agents.some((a) => a.agentId === id)).map((id) => ({ agentId: id, name: id === ADMIN_AGENT_ID ? "我的管理员" : agentNameOf(homeWs, id) }))),
+    // 管理员改过名就用它的名字（主人起的）；没改（还叫「管理员」）才叫「我的管理员」——不然两边都叫管理员分不清
+    () => (homeWs === null ? [] : brought.filter((id) => homeWs.agents.some((a) => a.agentId === id)).map((id) => ({ agentId: id, name: id === ADMIN_AGENT_ID && agentNameOf(homeWs, id) === "管理员" ? "我的管理员" : agentNameOf(homeWs, id) }))),
     [homeWs, brought],
   );
   const selfUid = friends.uid ?? "";
@@ -273,7 +274,8 @@ export function FriendChatScreen({ route, navigation }: Props) {
   // 或车道已经在，名单里就列管理员这一位；第一次 @ 时再替 TA 开车道（#1533）。名字取车道名单里的，没有就叫「管理员」
   const peerNames = useMemo(() => {
     if (peer === null || (peer.publicAgent === null && peer.session === null)) return [];
-    return [{ agentId: ADMIN_AGENT_ID, name: `${name.replace(/\s+/g, "")}的管理员` }];
+    const theirs = peer.agents.find((a) => a.agentId === ADMIN_AGENT_ID)?.name ?? "管理员";
+    return [{ agentId: ADMIN_AGENT_ID, name: theirs === "管理员" ? `${name.replace(/\s+/g, "")}的管理员` : theirs }];
   }, [peer, name]);
   // @ 选人与画脸要一份快照：我的主场 + 朋友公开给我的那几只（只有名字 / 职责 / 头像，0043 的 RPC 给的）
   const mentionWs = useMemo<WorkspaceSnapshot | null>(() => {

@@ -74,6 +74,7 @@ describe("资料页能删人（#1571 第二轮第 7 条，员工表之后专员�
     expect(src).toMatch(/管理员删不掉/);
   });
   it("管理员拉人 / 请人落的名单事件不带主人的 uid（时间线那句读 byName「管理员」，不写成「你把…」）", () => {
-    expect(read("services/runtime/src/sessionService.ts")).toMatch(/session\.updateChatRoster\("", \{ agentIds \}, "管理员"\)/);
+    // byName 读管理员此刻的名字（#1596 改名那一步）：主人给它起了名就写名字
+    expect(read("services/runtime/src/sessionService.ts")).toMatch(/session\.updateChatRoster\("", \{ agentIds \}, turnRoster\.find\(\(a\) => a\.agentId === ADMIN_AGENT_ID\)\?\.name \?\? "管理员"\)/);
   });
 });
