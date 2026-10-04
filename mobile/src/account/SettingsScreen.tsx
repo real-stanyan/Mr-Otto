@@ -81,6 +81,9 @@ export function SettingsScreen() {
           {allowed === false ? <Row label="去系统设置打开通知" chevron onPress={() => void Linking.openSettings()} /> : null}
         </Group>
       ) : null}
+      <Group header="免打扰与汇报" footer="免打扰期间手机不推消息，朋友的消息和代办由管理员替你收着；到你设的时间它打电话或发消息汇报。">
+        <Row label="免打扰时段 · 管理员汇报" chevron onPress={() => navigation.navigate("QuietHours")} />
+      </Group>
       {prefs !== null ? (
         <Group header="隐私" footer="关掉之后，朋友看不到你有没有读他的消息。">
           {toggle("已读回执", prefs.readReceipts, (v) => void setPref({ readReceipts: v }))}

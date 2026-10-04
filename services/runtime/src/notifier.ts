@@ -9,6 +9,14 @@
 // 两份读数按人缓存 30 秒：一只智能体连着答几句、或一个群里刷屏时不必每条都打两次库。改了开关最晚 30 秒生效。
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { alertKey, prefsFromRow, pushAllowed, type AlertPush, type NotifyKind, type NotifyPrefs } from "../../../src/shared/notifyPrefs.js";
+import { inQuietWindow, parseQuietWindow, type QuietWindow } from "../../../src/shared/quietHours.js";
+
+/** 免打扰（#1569）：这个人的时段与时区。都为 null = 没开 */
+export interface QuietState {
+  window: QuietWindow | null;
+  tz: string | null;
+}
+const NO_QUIET: QuietState = { window: null, tz: null };
 
 export interface NotifyStore {
   /** 抛错 = 这一刻查不出来 */
@@ -27,22 +35,24 @@ export const NOTIFY_CACHE_MS = 30_000;
 export function createNotifier(o: {
   store: NotifyStore;
   push: (uid: string, push: AlertPush) => Promise<number>;
+  /** 免打扰时段（#1569，ADR-0365）：在时段里的一条都不推（消息由管理员到点汇报）。缺席 = 不看时段；**不抛**（查不到当没开） */
+  quiet?: (uid: string) => Promise<QuietState>;
   now?: () => number;
   log: (m: string) => void;
 }): Notifier {
   const now = o.now ?? (() => Date.now());
-  const cache = new Map<string, { at: number; prefs: NotifyPrefs; mutes: ReadonlySet<string> }>();
-  const read = async (uid: string): Promise<{ prefs: NotifyPrefs; mutes: ReadonlySet<string> }> => {
+  const cache = new Map<string, { at: number; prefs: NotifyPrefs; mutes: ReadonlySet<string>; quiet: QuietState }>();
+  const read = async (uid: string): Promise<{ prefs: NotifyPrefs; mutes: ReadonlySet<string>; quiet: QuietState }> => {
     const hit = cache.get(uid);
     if (hit !== undefined && now() - hit.at < NOTIFY_CACHE_MS) return hit;
-    const [prefs, mutes] = await Promise.all([o.store.prefs(uid), o.store.mutes(uid)]);
-    const fresh = { at: now(), prefs, mutes };
+    const [prefs, mutes, quiet] = await Promise.all([o.store.prefs(uid), o.store.mutes(uid), o.quiet === undefined ? Promise.resolve(NO_QUIET) : o.quiet(uid)]);
+    const fresh = { at: now(), prefs, mutes, quiet };
     cache.set(uid, fresh);
     return fresh;
   };
   return {
     async send(uid, kind, push) {
-      let r: { prefs: NotifyPrefs; mutes: ReadonlySet<string> };
+      let r: { prefs: NotifyPrefs; mutes: ReadonlySet<string>; quiet: QuietState };
       try {
         r = await read(uid);
       } catch (err) {
@@ -50,6 +60,8 @@ export function createNotifier(o: {
         return;
       }
       if (!pushAllowed(kind, r.prefs, r.mutes.has(alertKey(push.target)))) return;
+      // 免打扰（#1569）：时段里一条都不推。消息本身照常落库、打开 App 照样看得见；到汇报时间管理员一起说
+      if (r.quiet.window !== null && r.quiet.tz !== null && inQuietWindow(r.quiet.window, r.quiet.tz, now())) return;
       try {
         await o.push(uid, push);
       } catch (err) {
@@ -71,6 +83,28 @@ export function createSupabaseNotifyStore(client: SupabaseClient): NotifyStore {
       const { data, error } = await client.from("chat_mutes").select("chat_key").eq("uid", uid);
       if (error) throw new Error(`chat_mutes 查询失败：${error.message}`);
       return new Set(((data ?? []) as { chat_key: string }[]).map((r) => r.chat_key));
+    },
+  };
+}
+
+/** 免打扰那两列（0060）：service key 读。**不抛**：列还没加（42703）/ 抖了 = 当没开——免打扰是锦上添花，查不到不能让推送全停 */
+export function createSupabaseQuietStore(client: SupabaseClient): { quietOf(uid: string): Promise<QuietState> } {
+  let supported = true;
+  return {
+    async quietOf(uid) {
+      if (!supported) return NO_QUIET;
+      try {
+        const { data, error } = await client.from("notify_prefs").select("quiet, tz").eq("uid", uid).maybeSingle();
+        if (error) {
+          if (error.code === "42703") supported = false;
+          return NO_QUIET;
+        }
+        const row = data as { quiet?: unknown; tz?: unknown } | null;
+        if (row === null) return NO_QUIET;
+        return { window: parseQuietWindow(row.quiet), tz: typeof row.tz === "string" ? row.tz : null };
+      } catch {
+        return NO_QUIET;
+      }
     },
   };
 }

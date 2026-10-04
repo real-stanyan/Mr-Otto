@@ -67,6 +67,8 @@ export type RootStackParams = {
   AppDetail: { serverId: string };
   /** 设置：外观 / 连接诊断 / 版本 / 退出登录 */
   Settings: undefined;
+  /** 免打扰时段 + 管理员定时汇报（#1569） */
+  QuietHours: undefined;
   FaceGallery: undefined;
 };
 

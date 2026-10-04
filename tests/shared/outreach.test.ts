@@ -97,6 +97,9 @@ describe("文案", () => {
 describe("openingTraits：pair_call_summary 也算汇报轮（#1533）", () => {
   it("任何一条是 pair_call_summary 开场白 = report", () => {
     expect(o.openingTraits([{ fromUid: "o", greeting: "pair_call_summary" }], "o").report).toBe(true);
+    // 定时汇报（#1569）：也是汇报轮（受监督），并多一面 ownerReport 旗给 call_user 的例外
+    expect(o.openingTraits([{ fromUid: "o", greeting: "dnd_report" }], "o")).toMatchObject({ report: true, ownerReport: true, ownerSpoke: false });
+    expect(o.openingTraits([{ fromUid: "o", greeting: "pair_call_summary" }], "o").ownerReport).toBe(false);
     expect(o.openingTraits([{ fromUid: "o" }], "o").report).toBe(false);
   });
 });

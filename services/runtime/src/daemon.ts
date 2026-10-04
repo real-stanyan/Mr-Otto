@@ -14,7 +14,7 @@ import { createClient } from "@supabase/supabase-js";
 import { loadConfig } from "./config.js";
 import { createApnsPusher } from "./apns.js";
 import { createSupabasePushDevices } from "./pushDevices.js";
-import { createNotifier, createSessionTitles, createSupabaseNotifyStore, withGroupTitle } from "./notifier.js";
+import { createNotifier, createSessionTitles, createSupabaseNotifyStore, withGroupTitle, createSupabaseQuietStore } from "./notifier.js";
 import { createFriendPush, createProfileNames, subscribeFriendMessages } from "./friendPush.js";
 import type { AlertPush, NotifyKind } from "../../../src/shared/notifyPrefs.js";
 import { createGitCredentialStore } from "./gitCredentialStore.js";
@@ -34,6 +34,11 @@ import { createCloudSession, type CloudSession, type AgentSpec } from "./session
 import { ChatCreateError, pairCreateProblem, planChatCreate } from "./chatCreate.js";
 import { onBehalfPairProblem } from "../../../src/shared/publicAgent.js";
 import { delegationRoster } from "../../../src/shared/delegation.js";
+import { createReportScheduler, type ReportRow } from "./reportScheduler.js";
+import { parseReportPlan, reportOpeningText, type ReportPlan } from "../../../src/shared/quietHours.js";
+import { isIanaTimeZone } from "../../../src/shared/routines.js";
+import { LANE_TASK_STATUS_LABEL, laneBusy, laneTaskStatus, laneTasksOf } from "../../../src/shared/laneTasks.js";
+import { dmPreview } from "../../../src/shared/wechatInbox.js";
 import { DEFAULT_STUN, HUMAN_CALL_RING_MS, humanRingPush } from "../../../src/shared/humanCall.js";
 import { iceServersFor } from "./turnCredentials.js";
 import { createLaneBridge } from "./laneBridge.js";
@@ -189,7 +194,7 @@ async function main(): Promise<void> {
   const notifier =
     apns === null
       ? null
-      : createNotifier({ store: createSupabaseNotifyStore(supabase), push: (uid, p) => apns.pushAlert(uid, p), log: (m) => console.warn(m) });
+      : createNotifier({ store: createSupabaseNotifyStore(supabase), quiet: createSupabaseQuietStore(supabase).quietOf, push: (uid, p) => apns.pushAlert(uid, p), log: (m) => console.warn(m) });
   const sessionTitles = createSessionTitles(supabase);
   if (notifier !== null) {
     const friendPush = createFriendPush({ notifier, nameOf: createProfileNames(supabase), log: (m) => console.warn(m) });
@@ -1795,6 +1800,99 @@ async function main(): Promise<void> {
     log: (m) => console.warn(`[otto-runtime] ${m}`),
   });
   routineScheduler.start();
+
+  /** 定时汇报到点（#1569，ADR-0365）：拼这段时间的摘要（朋友发来的消息 + 公开车道里朋友点起的代办任务），开管理员的
+      私聊房、落 dnd_report 开场白。主人的主场 / 管理员私聊找不到就记一行算了——汇报是锦上添花 */
+  async function runDndReport(r: { uid: string; plan: ReportPlan; tz: string; since: number; firedAt: number }): Promise<void> {
+    const { data: ws, error: wsErr } = await supabase.from("workspaces").select("id").eq("owner_uid", r.uid).eq("kind", "home").maybeSingle();
+    if (wsErr) throw new Error(wsErr.message);
+    const home = (ws as { id: string } | null)?.id;
+    if (home === undefined) {
+      console.warn(`[otto-runtime] 汇报：这个人没有主场（uid=${r.uid}）`);
+      return;
+    }
+    const sid = await findDmSession(home, [ADMIN_AGENT_ID]);
+    if (sid === null) {
+      console.warn(`[otto-runtime] 汇报：没有管理员的私聊（home=${home}）`);
+      return;
+    }
+    const room = await routineRooms.room(home, sid);
+    if (room === null) return;
+    const names = new Map<string, string>();
+    const nameOf = async (uid: string): Promise<string> => {
+      let n = names.get(uid);
+      if (n === undefined) {
+        n = await labelOf(uid);
+        names.set(uid, n);
+      }
+      return n;
+    };
+    // 朋友发来的消息：这段时间里收到的，名片 / 分享信封过 dmPreview 变成一句话
+    const { data: msgs, error: mErr } = await supabase
+      .from("messages").select("sender,body,created_at").eq("recipient", r.uid).gt("created_at", new Date(r.since).toISOString()).order("id", { ascending: true }).limit(200);
+    if (mErr) throw new Error(mErr.message);
+    const messages: { from: string; text: string; ts: number }[] = [];
+    for (const m of (msgs ?? []) as { sender: string; body: string; created_at: string }[]) {
+      messages.push({ from: await nameOf(m.sender), text: dmPreview(m.body), ts: Date.parse(m.created_at) });
+    }
+    // 代办任务：主场里公开着的车道，这段时间朋友点起的（投影同私聊页的任务卡，ADR-0364）
+    const { data: lanes, error: lErr } = await supabase.from("workspace_sessions").select("id,peer_uid").eq("workspace_id", home).eq("chat_kind", "pair").eq("facing", "both");
+    if (lErr) throw new Error(lErr.message);
+    const agentNames = new Map((await agentsCache.get(home)).map((a) => [a.agentId, a.name] as const));
+    const tasks: { friend: string; title: string; status: string }[] = [];
+    for (const lane of (lanes ?? []) as { id: string; peer_uid: string | null }[]) {
+      if (lane.peer_uid === null) continue;
+      const events = storeFor(home).load(lane.id);
+      const all = laneTasksOf(events, r.uid, (id) => agentNames.get(id) ?? id);
+      const busy = laneBusy(events);
+      const friend = await nameOf(lane.peer_uid);
+      all.forEach((t, i) => {
+        if (t.startedBy === "friend" && t.ts > r.since) tasks.push({ friend, title: t.title, status: LANE_TASK_STATUS_LABEL[laneTaskStatus(t, busy && i === all.length - 1)] });
+      });
+    }
+    const text = reportOpeningText({ ownerName: await labelOf(r.uid), mode: r.plan.mode, since: r.since, until: r.firedAt, tz: r.tz, messages, tasks });
+    const res = await room.runReport({ text, firedAt: r.firedAt });
+    if (res !== "ok") console.warn(`[otto-runtime] 汇报没起来（uid=${r.uid}）：${res}`);
+  }
+  // 定时汇报的调度（#1569）：数据源在这里接，判断在 reportScheduler；0060 没跑（42703）= 没人开了汇报
+  const reportScheduler = createReportScheduler({
+    due: async (nowMs, limit) => {
+      const res = await supabase
+        .from("notify_prefs").select("uid, report, tz, report_next_at, report_last_at").not("report", "is", null)
+        .or(`report_next_at.is.null,report_next_at.lte.${new Date(nowMs).toISOString()}`).limit(limit);
+      if (res.error) {
+        if (res.error.code === "42703") return [];
+        throw new Error(res.error.message);
+      }
+      const out: ReportRow[] = [];
+      for (const raw of (res.data ?? []) as { uid: string; report: unknown; tz: unknown; report_next_at: string | null; report_last_at: string | null }[]) {
+        const plan = parseReportPlan(raw.report);
+        if (plan === null || typeof raw.tz !== "string" || !isIanaTimeZone(raw.tz)) continue;
+        out.push({
+          uid: raw.uid, plan, tz: raw.tz,
+          nextAt: raw.report_next_at === null ? null : Date.parse(raw.report_next_at),
+          lastAt: raw.report_last_at === null ? null : Date.parse(raw.report_last_at),
+        });
+      }
+      return out;
+    },
+    setNext: async (uid, nextAt) => {
+      const { error } = await supabase.from("notify_prefs").update({ report_next_at: nextAt === null ? null : new Date(nextAt).toISOString() }).eq("uid", uid);
+      if (error) throw new Error(error.message);
+    },
+    claim: async (uid, expected, nextAt, lastAt) => {
+      const { data, error } = await supabase
+        .from("notify_prefs")
+        .update({ report_next_at: nextAt === null ? null : new Date(nextAt).toISOString(), report_last_at: new Date(lastAt).toISOString() })
+        .eq("uid", uid).eq("report_next_at", new Date(expected).toISOString()).select("uid");
+      if (error) throw new Error(error.message);
+      return (data ?? []).length > 0;
+    },
+    run: (r) => runDndReport(r),
+    now: Date.now,
+    log: (m) => console.warn(`[otto-runtime] ${m}`),
+  });
+  reportScheduler.start();
 
   // ── 控制房：常驻一条，处理 hello/create ─────────────────────────────
   const ctlTransport = createWsTransport({
