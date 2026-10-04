@@ -102,7 +102,7 @@ function Bubble({ m, mine, name, avatar, meName, meAvatar }: { m: DirectMessage;
     })()
   ) : (
     <View style={{ gap: 6, alignItems: mine ? "flex-end" : "flex-start" }}>
-      {m.media !== undefined ? <MediaBubble media={m.media} /> : null}
+      {m.media !== undefined ? <MediaBubble media={m.media} mine={mine} /> : null}
       {mediaBodyHidden(m.body, m.media ?? null) ? null : (
         <View style={{ paddingVertical: 9, paddingHorizontal: 12, borderRadius: 12, ...(mine ? { borderTopRightRadius: 4 } : { borderTopLeftRadius: 4 }), backgroundColor: mine ? c.bubbleMe : c.bubbleThem }}>
           <Text selectable style={{ fontSize: 16, lineHeight: 24, color: c.foreground }}>{m.body}</Text>

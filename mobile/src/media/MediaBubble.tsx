@@ -12,6 +12,7 @@ import { Spinner } from "../ui.js";
 import { Icon } from "../wx/Icon.js";
 import { retryMediaUrl, useMediaUrl } from "./mediaUrls.js";
 import { MediaViewer } from "./MediaViewer.js";
+import { AudioBubble, AudioPendingBar } from "./AudioBubble.js";
 
 const CELL = 80;
 const GAP = 4;
@@ -74,9 +75,11 @@ function RemoteTile({ path, bucket, width, height }: { path: string | undefined;
 
 /** 已经发出去的那几样（真消息里的 media） */
 /** `bucket`：私聊是 dm-media（默认），云会话是 chat-media（#1491） */
-export function MediaBubble({ media, bucket = DM_MEDIA_BUCKET }: { media: ChatMediaItem[]; bucket?: string }) {
+export function MediaBubble({ media, bucket = DM_MEDIA_BUCKET, mine = false }: { media: ChatMediaItem[]; bucket?: string; mine?: boolean }) {
   const [open, setOpen] = useState<number | null>(null);
   const single = media.length === 1 ? media[0] : undefined;
+  // 语音（#1492）：一条消息就一段，自己一种气泡（点播、底下「转文字」），不进看图的那一套
+  if (single !== undefined && single.kind === "audio") return <AudioBubble item={single} bucket={bucket} mine={mine} />;
   const body = single !== undefined ? (
     (() => {
       const box = mediaBubbleBox(single.width, single.height);
@@ -121,6 +124,7 @@ export function PendingMediaBubble({ items, state, progress, error, onRetry, onD
   const { c } = usePalette();
   const single = items.length === 1 ? items[0] : undefined;
   const tile = (p: PreparedMedia, w: number, h: number, key?: string) => {
+    if (p.kind === "audio") return <AudioPendingBar key={key} durationMs={p.durationMs ?? 0} dim={state === "sending"} />;
     const uri = p.kind === "image" ? p.uri : p.posterUri;
     return (
       <View key={key} style={{ opacity: state === "sending" ? 0.6 : 1 }}>
