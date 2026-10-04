@@ -125,7 +125,7 @@ export function RoutineEditDialog({ visible, initial, onSave, onDelete, onClose,
             <Field value={title} onChangeText={edit(setTitle)} placeholder="比如：早报" maxLength={ROUTINE_TITLE_MAX} variant="dialog" editable={!busy} />
           </Labeled>
           <Labeled label="到点要做什么" hint="它会照这段话去做" error={null}>
-            <Field value={instruction} onChangeText={edit(setInstruction)} placeholder="比如：看一眼昨天的销售报表，有异常告诉我" maxLength={ROUTINE_INSTRUCTION_MAX} variant="dialog" editable={!busy} />
+            <Field value={instruction} onChangeText={edit(setInstruction)} placeholder="比如：看一眼昨天的销售报表，有异常告诉我" maxLength={ROUTINE_INSTRUCTION_MAX} variant="dialog" multiline editable={!busy} />
           </Labeled>
           <View style={{ flexDirection: "row", gap: 8 }}>
             {KINDS.map((k) => <Chip key={k.k} label={k.label} on={kind === k.k} onPress={() => edit(setKind)(k.k)} />)}

@@ -14,7 +14,7 @@ import { Group, Hint, Inset, ListPage, Note, Row } from "../ui.js";
 import { HeaderIconButton } from "../wx/TabHeader.js";
 import { Icon } from "../wx/Icon.js";
 import { RoutineEditDialog, type RoutineDraft } from "./RoutineEditDialog.js";
-import { useRoutines } from "./routinesStore.js";
+import { routineGroups, useRoutines } from "./routinesStore.js";
 
 const statusText = (r: RoutineRow): string =>
   r.lastStatus === "done" ? "已执行" : r.lastStatus === "missed" ? "错过了" : r.lastStatus === "skipped_quota" ? "额度不够没跑" : r.lastStatus === "failed" ? "没跑成" : "";
@@ -89,10 +89,7 @@ export function RoutinesScreen() {
     await routines.refresh();
   };
 
-  const live = routines.rows.filter((r) => r.enabled || (r.lastStatus !== "done" && r.lastStatus !== "missed"));
-  const recurring = live.filter((r) => r.schedule.kind !== "once");
-  const once = live.filter((r) => r.schedule.kind === "once");
-  const finished = routines.rows.filter((r) => !r.enabled && (r.lastStatus === "done" || r.lastStatus === "missed"));
+  const { recurring, once, finished } = routineGroups(routines.rows);
   const open = (r: RoutineRow): void => { setError(null); setEditing({ row: r, key: Date.now(), visible: true }); };
   const rowOf = (r: RoutineRow, done = false) => (
     <Row
@@ -107,7 +104,8 @@ export function RoutinesScreen() {
 
   return (
     <ListPage>
-      {routines.loaded && routines.rows.length === 0 ? <Inset><Hint>跟它说一句「每天早上九点……」就能建，也可以点右上角自己加。</Hint></Inset> : null}
+      {routines.error !== null ? <Inset><Hint>{routines.error}</Hint></Inset> : null}
+      {routines.error === null && routines.loaded && routines.rows.length === 0 ? <Inset><Hint>跟它说一句「每天早上九点……」就能建，也可以点右上角自己加。</Hint></Inset> : null}
       {recurring.length > 0 ? <Group header="重复">{recurring.map((r) => rowOf(r))}</Group> : null}
       {once.length > 0 ? <Group header="一次性">{once.map((r) => rowOf(r))}</Group> : null}
       {finished.length > 0 ? <Group header="已完成" footer="跑完的一次性任务留 7 天">{finished.map((r) => rowOf(r, true))}</Group> : null}

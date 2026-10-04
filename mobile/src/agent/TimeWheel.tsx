@@ -1,7 +1,7 @@
 // 时 / 分两列滚轮（#1283）：纯 JS（ScrollView + snapToInterval），不加原生依赖——原生改动走不了热更新（ADR-0340）。
 // 滚轮是手上带着动量的东西：停靠、惯性都交给原生滚动，不再叠一层自己的动画（滚到哪儿、停在哪儿，手指说了算）。
 // 点一格也能选（不想拖的人 / 读屏），点中那一格滚过去。
-import { useEffect, useRef } from "react";
+import { useRef } from "react";
 import { Pressable, ScrollView, Text, View, type NativeScrollEvent, type NativeSyntheticEvent } from "react-native";
 import { type as t, usePalette } from "../theme.js";
 
@@ -11,7 +11,6 @@ const VISIBLE = 5;
 function Column({ count, value, onChange, label }: { count: number; value: number; onChange: (v: number) => void; label: string }) {
   const { c } = usePalette();
   const ref = useRef<ScrollView>(null);
-  useEffect(() => { ref.current?.scrollTo({ y: value * ITEM, animated: false }); }, []); // 只在挂上时定位：之后的位置归手指管
   const settle = (e: NativeSyntheticEvent<NativeScrollEvent>): void => {
     onChange(Math.max(0, Math.min(count - 1, Math.round(e.nativeEvent.contentOffset.y / ITEM))));
   };
@@ -23,6 +22,8 @@ function Column({ count, value, onChange, label }: { count: number; value: numbe
   return (
     <ScrollView
       ref={ref}
+      // 初始位置走 contentOffset（首帧就在位）：挂载后 scrollTo 赶在布局之前会落空。之后的位置归手指管，value 变了不回写
+      contentOffset={{ x: 0, y: value * ITEM }}
       style={{ height: ITEM * VISIBLE, width: 72 }}
       showsVerticalScrollIndicator={false}
       snapToInterval={ITEM}
