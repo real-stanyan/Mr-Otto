@@ -19,6 +19,7 @@ import { FriendChatScreen } from "../friends/FriendChatScreen.js";
 import { FriendScreen } from "../friends/FriendScreen.js";
 import { GroupsScreen } from "../friends/GroupsScreen.js";
 import { RequestsScreen } from "../friends/RequestsScreen.js";
+import { AgentChatsScreen } from "../inbox/AgentChatsScreen.js";
 import { useInbox } from "../inbox/useInbox.js";
 import { AppDetailScreen } from "../machine/AppDetailScreen.js";
 import { AppsScreen } from "../machine/AppsScreen.js";
@@ -98,6 +99,7 @@ export function RootNavigator() {
         <Root.Screen name="Friend" component={FriendScreen} options={{ title: "", headerShadowVisible: false }} />
         <Root.Screen name="Requests" component={RequestsScreen} options={{ title: "新的朋友" }} />
         <Root.Screen name="Groups" component={GroupsScreen} options={{ title: "群聊" }} />
+        <Root.Screen name="AgentChats" component={AgentChatsScreen} options={{ title: "智能体" }} />
         <Root.Screen name="Profile" component={ProfileScreen} options={{ title: "个人信息" }} />
         <Root.Screen name="Quota" component={QuotaScreen} options={{ title: "订阅与额度" }} />
         <Root.Screen name="Subscription" component={SubscriptionScreen} options={{ title: "订阅" }} />

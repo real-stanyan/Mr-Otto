@@ -1,7 +1,7 @@
 // 「聊天」页签的一行（#1386，demo 的 .mrow）：头像 48（右上角压一枚角标）| 名字 + 右边时间 | 第二行。
 // 第二行的优先级：草稿（「[草稿]」加粗）>「[有人@我]」（点缀色）> 最后一句。按下整行变色（列表行的语汇），不缩放。
 // 分隔线从头像右边开始（照微信），由列表那一层画。
-import { memo } from "react";
+import { memo, type ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
 import { ACTIVITY_TEXT, activityBadge } from "../../../src/shared/agentActivity.js";
 import { listTimeLabel, type InboxRow } from "../../../src/shared/wechatInbox.js";
@@ -15,11 +15,13 @@ export const CHAT_ROW_AVATAR = 48;
 /** 分隔线从哪儿开始：左边距 16 + 头像 48 + 间距 12 */
 export const CHAT_ROW_SEP = 76;
 
-export const ChatListRow = memo(function ChatListRow({ row, draft, now, onPress }: {
+export const ChatListRow = memo(function ChatListRow({ row, draft, now, onPress, status }: {
   row: InboxRow;
   draft: string;
   now: number;
   onPress: () => void;
+  /** 第二行底下再加一行（#1566 智能体列表里的「空闲 / 执行中 · 在〈群名〉」）；缺席 = 两行，与改动前相同 */
+  status?: ReactNode;
 }) {
   const { c } = usePalette();
   const time = row.ts > 0 ? listTimeLabel(row.ts, now) : "";
@@ -77,6 +79,7 @@ export const ChatListRow = memo(function ChatListRow({ row, draft, now, onPress 
         {/* 免打扰（#1442）：同微信，第二行右边一枚静音标 */}
         {row.muted === true ? <Icon name="bell-off" size={14} stroke={1.8} color={c.faint} /> : null}
         </View>
+        {status ?? null}
       </View>
     </Pressable>
   );
