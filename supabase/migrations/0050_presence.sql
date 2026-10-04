@@ -1,5 +1,7 @@
 -- 0050_presence.sql —— 好友在线状态（#1460，ADR-0339）。幂等，重跑不炸。同 0044 / 0049 的约定：Management API
 -- 逐条发。**部署顺序：先跑这份、再发手机包**——反过来手机每 60 秒报一次心跳都报「函数不存在」，头像上不画点，不出别的事。
+-- 已于 2026-10-04 经维护者同意在生产执行（Management API，逐条发，9 条）。跑前核过表与函数都不在；跑后核过：RLS 开着、
+-- 只有 pr_select_friends 一条策略、进了 supabase_realtime、touch_presence 只授给 authenticated；原样重跑一遍全过。
 --
 -- 一人一行：online（App 在不在前台）+ seen_at（最后一次心跳）。在线的判据在 src/shared/presence.ts（心跳超过
 -- 150 秒没更新也算不在线：被杀掉 / 断网时报不了 false）。
