@@ -18,6 +18,7 @@ import { useSyncExternalStore } from "react";
 import { applyCloudStatus, insertCloudEvent, speechTicketFor, unknownSendNote, type CloudSessionCore } from "../../../src/shared/cloudSessionState.js";
 import { applyCloudDelta, clearCloudStreamingOn, type CloudStreaming } from "../../../src/shared/cloudStreaming.js";
 import type { CsChatInfo } from "../../../src/shared/remote/cloudSession.js";
+import type { ChatMediaRef } from "../../../src/shared/chatMedia.js";
 import type { CloudAck, CloudSessionDelta, CloudSessionStatus } from "../../../src/shared/shellBridge.js";
 import type { SessionEvent } from "../../../src/session/events.js";
 import { createSendQueue } from "../../../src/shared/sendQueue.js";
@@ -182,11 +183,11 @@ function onStatus(status: CloudSessionStatus): void {
 
 setCloudSinks({ event: onEvent, status: onStatus, delta: onDelta });
 
-function say(text: string, mentions: string[] | undefined, memberMentions: string[] = []): Promise<CloudAck> {
+function say(text: string, mentions: string[] | undefined, memberMentions: string[] = [], media?: ChatMediaRef[]): Promise<CloudAck> {
   // 布尔与数组同源（同桌面 store.cloudSay）：mentions 缺席 = 老语义，由 mention 那个布尔说了算。
   // memberMentions（#1386 团队群）= 点到的人类成员：不起 turn，只发提醒（ADR-0256），所以不进那个布尔
   const mention = mentions === undefined ? true : mentions.length > 0;
-  return cloudClient.say(text, mention, mentions, memberMentions);
+  return cloudClient.say(text, mention, mentions, memberMentions, undefined, media);
 }
 
 async function flushPendingFirst(sessionId: string): Promise<void> {
@@ -288,7 +289,7 @@ export async function startDm(
     （ok 与 unknown 都不摆：unknown 时那句话很可能已经落地，原文去了「不确定」那一行）。
     输入框发出即清（#1473），所以这句在回执回来之前先挂在 outbox 里让聊天页画出来；
     排队发：第二句等第一句的回执落定再发，不然客户端会以「上一句还没有回执」拒掉它 */
-export async function sendText(text: string, mentions: string[] | undefined, memberMentions: string[] = []): Promise<CloudAck> {
+export async function sendText(text: string, mentions: string[] | undefined, memberMentions: string[] = [], media?: ChatMediaRef[]): Promise<CloudAck> {
   const sid = store.get().session?.sessionId ?? null;
   const line: OutboxLine | null = sid === null ? null : { id: ++outboxSeq, sessionId: sid, text, ts: Date.now() };
   if (line !== null) store.set((s) => ({ outbox: [...s.outbox, line] }));
@@ -296,7 +297,7 @@ export async function sendText(text: string, mentions: string[] | undefined, mem
   // say 发进的是「此刻那一条」，所以轮到时再核一次，换了就不发，不然这句话会落进别的房间
   const r = await sendQueue.run(() =>
     store.get().session?.sessionId === sid
-      ? say(text, mentions, memberMentions)
+      ? say(text, mentions, memberMentions, media)
       : Promise.resolve<CloudAck>({ ok: false, message: "已经离开了这条聊天，这句没有发出去" }),
   ).finally(() => {
     if (line !== null) store.set((s) => ({ outbox: s.outbox.filter((l) => l.id !== line.id) }));
