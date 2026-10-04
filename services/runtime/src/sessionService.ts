@@ -3070,10 +3070,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         // 通话里说出来的（#1233）才带。同 dispatch：只是记号，起 turn 那一路
         // 一个判断都不读它
         ...(voice !== undefined ? { voice } : {}),
-        // 带的图 / 视频（#1491）：deriveMessages 把 attachments 折成 image_ref、videos 拼成一行说明
-        ...mediaFields,
         // 对面车道的智能体发来的（#1542）：接力记号，深度跨车道累加
         ...(relay !== undefined ? { relay } : {}),
+        // 带的图 / 视频（#1491）：deriveMessages 把 attachments 折成 image_ref、videos 拼成一行说明（读源码的测试钉着它排在最后）
+        ...mediaFields,
       }) as UserMessageEvent; // append 回的是 union；这一条我们刚亲手写的就是 user_message
       notify(opening);
       sayUnknown(); // 排在开场白之后：先有那句话，再说"其中这几个没人接"
