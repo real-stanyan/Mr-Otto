@@ -90,9 +90,19 @@ describe("云会话的 system 段（issue #833）", () => {
     expect(withCloud).toContain("别人刚说过的不复述");
     expect(withCloud).toContain("不反复催");
     expect(withCloud).toContain("一次最多问一个问题");
+    // #1454：吃到 #1448 提示词的两条真机回复仍是「三件事。排查：…交付：…」。规则再加收益
+    // 递减，这次拉三根没拉过的杆子：① 允许不回（空回复在时间线上本来就不画，
+    // cloudTimeline.isAgentStep）；② 一条消息只对一个人说；③ 一对坏例 / 好例代替再加一条规则
+    expect(withCloud).toContain("一个字都不发");
+    expect(withCloud).toContain("空回复不会显示出来");
+    expect(withCloud).toContain("一条消息只对一个人说");
+    expect(withCloud).toContain("标签分段");
+    expect(withCloud).toContain("太像机器");
+    expect(withCloud).toContain("才像人");
     // 本地会话一个字不沾
     const plain = systemPromptText("/work", "d");
     expect(plain).not.toContain("连发的一条消息");
+    expect(plain).not.toContain("太像机器");
   });
 
   it("cloud 与 workspaceKind/isolated 互不干扰（各自独立注入）", () => {
@@ -235,8 +245,16 @@ describe("聊天与个人主场的提示词（#1280，ADR-0298）", () => {
     expect(dmHome).toContain("对面这个人不一定是开发者");
     expect(dmHome).toContain("界面会把每一段当成你连发的一条消息");
     expect(dmHome).toContain("界面显示的是纯文字");
+    // #1454：私聊里只有一个人，「一条消息只对一个人说」「被 @ 到」在那里是在描述一个
+    // 不存在的场合——换回「一段只说一件事」，允许不回与对照例照旧
+    expect(dmHome).not.toContain("一条消息只对一个人说");
+    expect(dmHome).not.toContain("@ 到");
+    expect(dmHome).toContain("一段只说一件事");
+    expect(dmHome).toContain("一个字都不发");
+    expect(dmHome).toContain("太像机器");
     // 群聊那一版一个字不变
     expect(groupHome).toContain("群里的人来自各行各业");
+    expect(groupHome).toContain("一条消息只对一个人说");
   });
 
   it("团队里没有 chat 标记时，听众那一段仍然按群聊走（存量日志）", () => {

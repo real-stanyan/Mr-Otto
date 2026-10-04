@@ -375,10 +375,13 @@ export function relayBoundsOf(events: readonly SessionEvent[]): RelayBounds {
     **第三人称**（复审 Minor ⑧）：这条 user_message 在 agentView 里对每只 agent 都是 keep
     （spec §4.6 / ADR-0219），群里所有 agent 都读得到同一条——"你" 在这种场合是歧义的，读的人
     第一反应会以为在叫自己。写成「「A」@ 了「B」」把接收方点名说清楚，再用「B：」这个聊天惯例
-    的前缀重新对上被叫到的那位，"接着处理…" 里的"你"才有了唯一的先行词 */
+    的前缀重新对上被叫到的那位，"接着处理…" 里的"你"才有了唯一的先行词。
+    **「没要补的就不用回」**（#1454）：原来写「做完了在回复里说结论」，被 @ 的那只每次都得
+    产出一条——真机上产品经理把开发刚说的原样复述一遍（64997e68 的 seq 508 整条是 478 的
+    转述）。空回复在时间线上本来就不画（cloudTimeline.isAgentStep），只是开场白从没说过可以 */
 export function relayOpeningText(fromName: string, toName: string, depth: number): string {
   const from = promptSafe(fromName), to = promptSafe(toName);
-  return `[系统] 「${from}」在上一条发言里 @ 了「${to}」（接力第 ${depth} 棒）。${to}：接着处理交给你的事；做完了在回复里说结论，需要谁再 @ 谁。`;
+  return `[系统] 「${from}」在上一条发言里 @ 了「${to}」（接力第 ${depth} 棒）。${to}：交给你的事接着做；有结论再说，没要补的就不用回，需要谁再 @ 谁。`;
 }
 
 export function relayNudgeText(fromName: string, toName: string, loop: ToolLoopDetection): string {

@@ -126,6 +126,10 @@ describe("agentRelay 纯逻辑（#950，spec §8）", () => {
     expect(relayOpeningText("运营", "广告", 2)).toContain("「广告」"); // 接收方也点名说清楚,不能只留一个"你"
     expect(relayOpeningText("运营", "广告", 2)).toContain("广告："); // 聊天惯例的前缀,重新对上被叫到的那位
     expect(relayOpeningText("运营", "广告", 2)).toContain("第 2 棒");
+    // #1454：原来写「做完了在回复里说结论」，被 @ 的那只每次都得产出一条——真机上产品经理
+    // 把开发刚说的原样复述一遍（seq 508 整条是 478 的转述）。开场白要说清「没要补的就不用回」
+    expect(relayOpeningText("运营", "广告", 2)).toContain("不用回");
+    expect(relayOpeningText("运营", "广告", 2)).not.toContain("做完了在回复里说结论");
     expect(relayNudgeText("运营", "广告", { period: 2, repeats: 2 })).toContain("打转");
     const cap = relayCapText("运营", "广告", 7, 6, "还差报表");
     expect(cap).toContain("接力到上限");
