@@ -556,6 +556,12 @@ export interface ImageDescribedEvent extends SessionEventBase {
   /** hosted 路这次结算的 credit（micro-USD），同 `assistant_message.creditCostMicro`
       那一格。缺席 ≠ 0 */
   creditCostMicro?: number;
+  /** runtime 的代读（#1491 P4，ADR-0349）：替哪一只读的、读的是哪一条。群里一条带图的发言同时给能看和不能看的
+      智能体，每只各一份，agentView 按 agentId 把别人的那份挡在外面；`forSeq` 在场 = 它在它服务的那条**之后**
+      （开场白在 say() 那一刻就落盘了，没法像桌面那样紧贴在前），投影把它折进那条、不再按事件位置单独注入。
+      两格都缺席 = 桌面那种「紧贴在随后那条 user_message 之前」的老形状，旧日志照常重放 */
+  agentId?: string;
+  forSeq?: number;
 }
 
 /** 额外 10：分区分类（会话目录）。**不再产出**（ADR-0292）：会话目录换成了每轮一格的

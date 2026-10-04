@@ -173,9 +173,11 @@ import { createInviteToCallTool } from "./inviteToCallTool.js";
 import type { VoiceCallParticipant } from "../../../src/session/events.js";
 import { LoopEngine } from "../../../src/loop/engine.js";
 import type { EventStore } from "../../../src/session/store.js";
-import type { SessionEvent, SessionCreatedEvent, UserMessageEvent, AssistantMessageEvent, AgentRelayEvent, CallRingEvent, OutreachEvent, OutreachLine, OutreachOutcome, UserAttachmentRef, ChatVideoRef } from "../../../src/session/events.js";
+import type { SessionEvent, SessionCreatedEvent, UserMessageEvent, AssistantMessageEvent, AgentRelayEvent, CallRingEvent, OutreachEvent, OutreachLine, OutreachOutcome, UserAttachmentRef, ChatVideoRef, TokenUsage } from "../../../src/session/events.js";
 import { ChatMediaRejectedError } from "./chatMediaIntake.js";
 import { mediaPlaceholder, type ChatMediaRef } from "../../../src/shared/chatMedia.js";
+import { pendingImageDescriptions } from "../../../src/shared/visionPending.js";
+import { findModel } from "../../../src/shared/modelCatalog.js";
 import {
   activeOutreach, applyOutreach, outreachAnsweredText, outreachCallerName, outreachFoldOf, outreachGreetingText, outreachRingReason, openingTraits,
   type OutreachFold,
@@ -351,6 +353,12 @@ export interface CloudSessionOpts {
   /** 这句话带的图 / 视频引用 → 事件里那两格（#1491，chatMediaIntake）。daemon 给；缺席 = 这台不收媒体
       （测试 / 冒烟），带了媒体的 say 会被拒绝而不是静默丢图 */
   media?: (refs: readonly ChatMediaRef[]) => Promise<{ attachments: UserAttachmentRef[]; videos: ChatVideoRef[] }>;
+  /** 无视觉模型的代读员（#1491 P4，ADR-0349）。daemon 给；缺席 = 不代读（没眼睛的型号看到的是占位文字）。
+      `bridgeModel` = 网关此刻供的清单里最便宜那款带眼睛的（没有 → null）；`describe` 走托管 adapter 读图 */
+  vision?: {
+    bridgeModel: () => Promise<string | null>;
+    describe: (model: string, refs: readonly UserAttachmentRef[], text: string) => Promise<{ content: string; usage?: TokenUsage; creditCostMicro?: number }>;
+  };
   /** 「Auto」那一档（#1009）：这只 agent 没配型号白名单时，用最便宜那款先判一手
       这段开场白的难度，回这一 turn 该用的型号 id；判不出来回 null = 按原样走
       （路由照旧取网关首选款）。daemon 给——它才有 hostedProbe 与 edge 凭据。
@@ -2239,6 +2247,43 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   /** 跑一个 job（一只 agent 的一次 turn）。agentId/fromUid/开场白全部取自 job
       自己——排空时捞出来的 job 可能来自另一条并发的 say() 调用，不能用外层
       闭包里那条调用自己的参数 */
+  /** 这只 agent 的型号看不了图、而它这一轮要读的发言里有图 → 先代读（#1491 P4）。
+      判「要读哪几条」：上一次收口之后的尾段里带图、且还没替它读过的（pendingImageDescriptions）；
+      判「看不看得了」：按 adapterFor 现算的路由（prepare 之后的 model）查目录的 supportsVision。
+      代读失败不拦 turn：落一句系统旁白说清是看图模型没读出来，这一轮它读到的是占位文字 */
+  async function describeIfBlind(job: TurnJob, runSpec: AgentSpec): Promise<void> {
+    const vision = opts.vision;
+    if (vision === undefined) return;
+    const since = Math.min(bounds.closeBound.get(job.agentId) ?? -1, job.opening.seq - 1);
+    const pending = pendingImageDescriptions(store.load(sessionId, { afterSeq: since }), job.agentId);
+    if (pending.length === 0) return;
+    const probe = opts.adapterFor(runSpec);
+    await probe.prepare?.();
+    const sees = findModel(probe.model)?.supportsVision;
+    // 目录认不出（路由 blocked / 占位串）= 这一轮本来就起不来，不在这里花钱代读
+    if (sees !== false) return;
+    const model = await vision.bridgeModel();
+    if (model === null) {
+      logChat("system", "系统", `${runSpec.name} 用的型号看不了图，网关也没有一款能看图的型号替它读，这几张图它读到的是占位文字`, false);
+      return;
+    }
+    for (const p of pending) {
+      try {
+        const d = await vision.describe(model, p.refs, p.text);
+        notify(store.append({
+          sessionId, ts: Date.now(), type: "image_described",
+          content: d.content, model, agentId: job.agentId, forSeq: p.seq, route: "hosted",
+          ...(d.usage ? { usage: d.usage } : {}),
+          ...(d.creditCostMicro !== undefined ? { creditCostMicro: d.creditCostMicro } : {}),
+        }));
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        console.warn(`[otto-runtime] 代读失败 session=${sessionId} agent=${job.agentId} seq=${p.seq}：${message}`);
+        logChat("system", "系统", `看图模型（${model}）没读出来第 ${p.seq} 条带的图：${message}。${runSpec.name} 这一轮读到的是占位文字`, false);
+      }
+    }
+  }
+
   async function runJob(job: TurnJob): Promise<void> {
     // **这一轮欠着的最大接力 depth，一进 runJob 就算一次**（#957 复审 Important 1）。
     // 判据是「日志里点了我、又还没被我的 turn_ended.readUpToSeq 收口的那些
@@ -2412,6 +2457,9 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         const picked = await opts.pickAutoModel(spec, job.opening.content);
         if (picked !== null) runSpec = { ...spec, models: [picked] };
       }
+      // 没眼睛的型号先请代读员（#1491 P4）：这一轮它要读的发言里带图、而它看不了 → 每条落一份
+      // image_described{agentId, forSeq}。在 engineFor 之前：代读是一次网络往返，失败不拦 turn
+      await describeIfBlind(job, runSpec);
       const engine = engineFor(runSpec);
 
       // **降级名单一把刀都不挂，也不去拉**（#957 B-I7 + 复审 Minor 2）：

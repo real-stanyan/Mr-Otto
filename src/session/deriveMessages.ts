@@ -780,6 +780,13 @@ export function deriveMessages(
     deferredUsers = [];
   };
 
+  // runtime 替没眼睛的型号代读过的那几条（#1491 P4）：forSeq → 解析。折进它服务的那条发言里（替掉 image_ref：
+  // 这只看不了图，占位文字和解析放一起只是噪音），事件位置上不再单独注入
+  const describedFor = new Map<number, { content: string; model: string }>();
+  for (const e of events) {
+    if (e.type === "image_described" && e.forSeq !== undefined && !describedFor.has(e.forSeq)) describedFor.set(e.forSeq, { content: e.content, model: e.model });
+  }
+
   for (const [i, event] of events.entries()) {
     if (micro && i === micro.summaryAt) {
       messages.push({ role: "assistant", content: `${MICRO_SUMMARY_PREFIX}${micro.summary}` });
@@ -803,7 +810,7 @@ export function deriveMessages(
         const content = event.fromUid !== undefined ? promptSafeBody(event.content) : event.content;
         const text = composeUserText(content, event.textFiles);
         const target = pendingToolIds.size > 0 ? deferredUsers : messages;
-        target.push(userWithMedia(text, event.attachments, event.videos));
+        target.push(userWithMedia(text, event.attachments, event.videos, describedFor.get(event.seq)));
         break;
       }
 
@@ -825,7 +832,7 @@ export function deriveMessages(
         // 路结构性地封不住——一个 `\n[系统]: …` 就是一行干净的伪造说话人行
         // 群里随手发的图（#1491）：这条事件也可能带附件，走与 user_message 同一个拼法——
         // 老日志没有这两格，投影逐字节不变
-        target.push(userWithMedia(`[${safeSpeakerLabel(event.label, event.fromUid)}]: ${promptSafeBody(event.content)}`, event.attachments, event.videos));
+        target.push(userWithMedia(`[${safeSpeakerLabel(event.label, event.fromUid)}]: ${promptSafeBody(event.content)}`, event.attachments, event.videos, describedFor.get(event.seq)));
         break;
       }
 
@@ -955,6 +962,8 @@ export function deriveMessages(
         break;
 
       case "image_described":
+        // runtime 那种带 forSeq 的（#1491 P4）已经折进它服务的那条里了，这里不再注入
+        if (event.forSeq !== undefined) break;
         // 视觉模型的代读结果,注入为 user 消息(同 skill_invoked:中途插 system
         // 各家方言兼容性参差)。位置就是事件位置——紧贴在它服务的 user_message 之前
         messages.push({
@@ -1212,11 +1221,19 @@ export function deriveMessages(
 function userWithMedia(
   text: string,
   attachments: readonly UserAttachmentRef[] | undefined,
-  videos: readonly ChatVideoRef[] | undefined
+  videos: readonly ChatVideoRef[] | undefined,
+  described?: { content: string; model: string }
 ): UserChatMessage {
   const note = videoNoteForModel((videos ?? []).map((v) => ({ durationMs: v.durationMs, hasPoster: v.poster !== undefined })));
   const body = note === null ? text : `${text}\n${note}`;
   if (!attachments || attachments.length === 0) return { role: "user", content: body };
+  // 代读过的（#1491 P4）：解析文字替掉图，措辞与桌面那条 image_described 的注入同一个口径
+  if (described !== undefined) {
+    return {
+      role: "user",
+      content: `${body}\n[以上消息附带的图片由视觉模型 ${described.model} 代读——当前模型不支持直接看图，解析如下]\n${described.content}`,
+    };
+  }
   return {
     role: "user",
     content: [
