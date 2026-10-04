@@ -38,7 +38,23 @@ function columnsOf(p: RoutinePatch): Record<string, unknown> {
   return c;
 }
 
-export function createSupabaseRoutineStore(supabase: SupabaseClient): RoutineStore {
+/** due() 读出来的原始行逐条映射：schedule 解析不了的行单列出来（带 id 与原因），不让它连坐整批——
+    一条坏行让 due() 整个抛，就是每一拍谁的任务都不跑、purge 也不跑（Supabase 那份 due() 拿 bad 去隔离） */
+export function splitDueRows(raw: Record<string, unknown>[]): { rows: RoutineRow[]; bad: { id: string; error: string }[] } {
+  const rows: RoutineRow[] = [];
+  const bad: { id: string; error: string }[] = [];
+  for (const x of raw) {
+    try {
+      rows.push(routineRowOf(x));
+    } catch (err) {
+      bad.push({ id: String(x.id), error: err instanceof Error ? err.message : String(err) });
+    }
+  }
+  return { rows, bad };
+}
+
+export function createSupabaseRoutineStore(supabase: SupabaseClient, opts: { log?: (m: string) => void } = {}): RoutineStore {
+  const log = opts.log ?? (() => {});
   const fail = (what: string, e: { message: string } | null): never => { throw new Error(`${what}：${e?.message ?? "no data"}`); };
   return {
     async list(workspaceId, agentId) {
@@ -73,7 +89,14 @@ export function createSupabaseRoutineStore(supabase: SupabaseClient): RoutineSto
       const r = await supabase.from("agent_routines").select(ROUTINE_COLUMNS).not("next_run_at", "is", null).lte("next_run_at", new Date(nowMs).toISOString())
         .order("next_run_at", { ascending: true }).limit(limit);
       if (r.error) fail("到点任务读取失败", r.error);
-      return ((r.data ?? []) as Record<string, unknown>[]).map(routineRowOf);
+      const { rows, bad } = splitDueRows((r.data ?? []) as Record<string, unknown>[]);
+      for (const b of bad) {
+        // 隔离：停用 + next_run_at 清空 + failed，从此不在 due 里。隔离那一笔写失败也只记日志——下一拍再隔离一次
+        log(`定时任务行读不懂，隔离（id=${b.id}）：${b.error}`);
+        const q = await supabase.from("agent_routines").update({ next_run_at: null, enabled: false, last_status: "failed", updated_at: new Date().toISOString() }).eq("id", b.id);
+        if (q.error) log(`定时任务坏行隔离失败（id=${b.id}）：${q.error.message}`);
+      }
+      return rows;
     },
     async claim(id, expectedNextRunAt, next) {
       // where next_run_at = 读到的值：两个实例同时 tick 只有一个改得动（spec §3.2）

@@ -104,6 +104,17 @@ describe("routineScheduler.tick", () => {
     expect(runs.map((x) => x.id)).toEqual([old.id, good.id]);
     expect(await store.get(old.id)).toBeNull(); // purge 没被坏行拦住
   });
+  it("坏 tz（Mars/Olympus）：算不出下一跳也先认领——next_run_at 清空、停用、failed、记日志；同一拍后面的好行照跑", async () => {
+    const { store, runs, logs, sched } = rig();
+    const bad = await store.insert({ ...base, tz: "Mars/Olympus", title: "火星", schedule: { kind: "daily", time: "09:00" }, nextRunAt: T0 - 1 });
+    const good = await store.insert({ ...base, title: "好", schedule: { kind: "daily", time: "09:00" }, nextRunAt: T0 });
+    await sched.tick();
+    expect(await store.get(bad.id)).toMatchObject({ nextRunAt: null, lastRunAt: T0, enabled: false, lastStatus: "failed" });
+    expect(runs.map((x) => x.id)).toEqual([good.id]);
+    expect(logs.join("\n")).toContain(bad.id);
+    // 下一拍它不在 due 里了：不会每 30 秒堵一次队头
+    expect((await store.due(T0 + 86_400_000 * 2, 50)).map((x) => x.id)).not.toContain(bad.id);
+  });
   it("每行读新鲜时钟：前一行的 run 拨走了时钟，后一行的 lastRunAt 盖的是新钟", async () => {
     let clock = T0;
     let first = true;

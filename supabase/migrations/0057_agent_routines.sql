@@ -29,6 +29,16 @@ create table if not exists public.agent_routines (
   foreign key (workspace_id, agent_id) references public.workspace_agents(workspace_id, agent_id) on delete cascade
 );
 
+-- 表级兜底（C1）：schedule 至少得是三种 kind 之一、tz 至少长得像 IANA 名字。客户端与 runtime 各自校验过，
+-- 这两条拦的是绕过客户端直接打 REST 的写入——一条坏行在 runtime 那边会被 due() 隔离 / 调度器停用，
+-- 但能在入口就挡住的不该放进来。drop + add 而不是写进 create table：表若已在别处建过（dev 库跑过旧版），重跑也补得上。
+alter table public.agent_routines drop constraint if exists agent_routines_schedule_shape;
+alter table public.agent_routines add constraint agent_routines_schedule_shape
+  check (jsonb_typeof(schedule) = 'object' and schedule->>'kind' in ('once', 'daily', 'weekly'));
+alter table public.agent_routines drop constraint if exists agent_routines_tz_shape;
+alter table public.agent_routines add constraint agent_routines_tz_shape
+  check (char_length(tz) between 1 and 64 and tz ~ '^[A-Za-z0-9_+\-/]+$');
+
 create index if not exists agent_routines_due on public.agent_routines (next_run_at) where next_run_at is not null;
 create index if not exists agent_routines_agent on public.agent_routines (workspace_id, agent_id);
 

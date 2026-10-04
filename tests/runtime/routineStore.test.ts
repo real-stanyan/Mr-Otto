@@ -1,6 +1,6 @@
 // RoutineStore 的内存实现——调度器与工具的测试都踩它，所以它自己的语义先钉死（认领的原子性、due 的排序、purge 的判据）。
 import { describe, expect, it } from "vitest";
-import { createInMemoryRoutineStore } from "../../services/runtime/src/routineStore.js";
+import { createInMemoryRoutineStore, splitDueRows } from "../../services/runtime/src/routineStore.js";
 
 const base = { workspaceId: "w", agentId: "ops", ownerUid: "owner", title: "早报", instruction: "看报表", tz: "Asia/Shanghai", createdBy: "agent" as const };
 
@@ -46,5 +46,20 @@ describe("createInMemoryRoutineStore", () => {
     expect(await s.get(d.id)).toMatchObject({ enabled: false, lastStatus: "done", lastRunAt: 60 });
     expect(await s.purge(1_000_000)).toBe(0);
     expect(await s.get(d.id)).not.toBeNull();
+  });
+});
+
+// 坏行隔离（schedule 解析不了的行）只在 Supabase 实现里有：内存实现存的是已经解析好的 RoutineRow，表示不出一条坏行。
+// 判据抽成纯函数 splitDueRows 钉在这里；隔离那一笔 update（停用 + next_run_at 清空 + failed）是 Supabase 那份 due() 自己的事
+describe("splitDueRows", () => {
+  const raw = (id: string, schedule: unknown) => ({
+    id, workspace_id: "w", agent_id: "ops", owner_uid: "owner", title: "t", instruction: "i", schedule, tz: "Asia/Shanghai", enabled: true,
+    next_run_at: "2026-10-05T01:00:00+00:00", last_run_at: null, last_status: null, created_by: "agent", created_at: null, updated_at: null,
+  });
+  it("一条坏 schedule 不连坐：好行照常映射、坏行带着 id 与原因单列", () => {
+    const { rows, bad } = splitDueRows([raw("a", { kind: "daily", time: "09:00" }), raw("b", { kind: "hourly" }), raw("c", "nope"), raw("d", { kind: "once", at: "2026-10-05T09:00" })]);
+    expect(rows.map((r) => r.id)).toEqual(["a", "d"]);
+    expect(bad.map((b) => b.id)).toEqual(["b", "c"]);
+    expect(bad[0]!.error).toContain("kind");
   });
 });

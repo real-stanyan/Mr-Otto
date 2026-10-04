@@ -6,8 +6,9 @@ const src = readFileSync(new URL("../../services/runtime/src/daemon.ts", import.
 
 describe("daemon.ts：定时任务的接线（#1283）", () => {
   it("每条会话房都接了同一个 routines（Supabase store，只建一次），团队会话 / 外联传 null 由 sessionService 自己按 approveAll + chatKind 判", () => {
-    expect(src.match(/createSupabaseRoutineStore\(supabase\)/g)).toHaveLength(1);
-    expect(src).toMatch(/const routineStore = createSupabaseRoutineStore\(supabase\)/);
+    expect(src.match(/createSupabaseRoutineStore\(supabase\b/g)).toHaveLength(1);
+    // 第二格接日志：坏行被隔离时要留一句话（C1）
+    expect(src).toMatch(/const routineStore = createSupabaseRoutineStore\(supabase, \{ log: /);
     expect(src).toMatch(/routines: routineStore,/);
     expect(src).not.toMatch(/routines: null/);
   });

@@ -163,7 +163,7 @@ async function main(): Promise<void> {
   const supabase = createClient(config.supabaseUrl, config.supabaseServiceKey);
   // 定时任务（#1283）：一张表、一只调度器（启动末尾起）。每条会话房都接同一个 store，挂不挂刀由 sessionService
   // 按 approveAll + chatKind 判（团队会话 / 外联 / 私密车道都不挂）
-  const routineStore = createSupabaseRoutineStore(supabase);
+  const routineStore = createSupabaseRoutineStore(supabase, { log: (m) => console.warn(`[otto-runtime] ${m}`) });
   // 回电的推送（#1411，ADR-0331）：三个 APNS_* 全有才开（config.ts）；.p8 这里读一次——读不到就起不来，
   // 同 loadConfig 的 fail fast：带着一把读不出来的钥匙跑起来，每一通电话都会安静地失败
   const apnsCfg = config.apns;

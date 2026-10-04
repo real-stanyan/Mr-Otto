@@ -33,7 +33,16 @@ export function createRoutineScheduler(deps: RoutineSchedulerDeps): { tick(): Pr
     if (planned === null) return;
     const once = r.schedule.kind === "once";
     // 下一跳：严格晚于 max(now, 原定 + 60s)——时钟抖到原定之前一点点也不会算出同一刻
-    const next = nextRunAt(r.schedule, r.tz, Math.max(now, planned + ROUTINE_MIN_GAP_MS));
+    let next: number | null;
+    try {
+      next = nextRunAt(r.schedule, r.tz, Math.max(now, planned + ROUTINE_MIN_GAP_MS));
+    } catch (err) {
+      // 算不出下一跳（tz 不是认得的时区…）：照样先认领、把 next_run_at 清空再停用——不认领它就永远堵在队头，
+      // 50 条这样的行能把 limit 50 那一格占满，谁的任务都不跑
+      deps.log(`定时任务算不出下一跳，停用（id=${r.id}「${r.title}」tz=${r.tz}）：${err instanceof Error ? err.message : String(err)}`);
+      if (await deps.store.claim(r.id, planned, { nextRunAt: null, lastRunAt: now })) await deps.store.setStatus(r.id, "failed", false);
+      return;
+    }
     if (!(await deps.store.claim(r.id, planned, { nextRunAt: next, lastRunAt: now }))) return; // 另一个实例先到
     const late = now - planned;
     if (late > (once ? ROUTINE_ONCE_GRACE_MS : ROUTINE_RECURRING_GRACE_MS)) {
