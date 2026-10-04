@@ -469,3 +469,19 @@ export function chatCentre(o: {
   if (o.rowCount > 0) return "timeline";
   return o.session.state === "denied" ? "blank" : "hello";
 }
+
+/** 聊天页认不认 store 里此刻那一条会话（#1461 复审 M2）。手机同一时刻只连一条云会话，而朋友私聊页挂着时会占着它
+    连私密车道：有 sessionId 的页只认自己那一条；**草稿**（智能体私聊还没建）只认「这只智能体的私聊」——
+    本页 startDm 建出来的那条进房时就带着 `{kind:"dm", agentIds:[它]}` 的种子，所以同一个判据也认得它。
+    不判的话从通讯录点开一只没聊过的智能体，会画出车道的历史、第一句话也会经 sendText 发进车道 */
+export function screenOwnsSession(o: {
+  pageSessionId: string | null;
+  draftAgentId: string | null;
+  current: { sessionId: string; chat?: CsChatInfo | null } | null;
+}): boolean {
+  const cur = o.current;
+  if (cur === null) return false;
+  if (o.pageSessionId !== null) return cur.sessionId === o.pageSessionId;
+  if (o.draftAgentId === null) return false;
+  return cur.chat?.kind === "dm" && cur.chat.agentIds.includes(o.draftAgentId);
+}

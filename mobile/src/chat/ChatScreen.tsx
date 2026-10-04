@@ -32,7 +32,7 @@ import { CHAT_GROUP_CREATE_MIN, CHAT_GROUP_MAX, CHAT_HUMANS_MAX, chatHumansNow, 
 import { cloudDeniedText } from "../../../src/shared/cloudSessionState.js";
 import { withAgent } from "../../../src/shared/groupEdit.js";
 import { callBarMode, callFace, callMicOn, joinBlockedText, phoneOffered, waveMode } from "../../../src/shared/mobileCall.js";
-import { chatCentre, chatRows, liveRows, nowRowOf, outreachComposer, resolveChatTarget, type ChatRow, type NowRow } from "../../../src/shared/mobileChat.js";
+import { chatCentre, chatRows, liveRows, nowRowOf, outreachComposer, resolveChatTarget, screenOwnsSession, type ChatRow, type NowRow } from "../../../src/shared/mobileChat.js";
 import { facePhase } from "../../../src/shared/ottoFace/art.js";
 import type { CsChatInfo } from "../../../src/shared/remote/cloudSession.js";
 import { parseMemberMentions, parseMentions } from "../../../src/shared/remote/agentMention.js";
@@ -290,8 +290,14 @@ export function ChatScreen({ route, navigation }: Props) {
   );
 
   // 只认这一页自己那一条（#1461）：连接被叠在上面的朋友私聊页拿去连私密车道时，store 里是那条车道——
-  // 不判的话这一页会在后台拿车道的事件画自己的时间线。草稿（还没有 sessionId）照旧认 store 里那一条
-  const session = chat.session !== null && (sessionId === null || chat.session.sessionId === sessionId) ? chat.session : null;
+  // 不判的话这一页会在后台拿车道的事件画自己的时间线。草稿（还没有 sessionId）只认这只智能体的私聊（复审 M2）
+  const session = screenOwnsSession({
+    pageSessionId: sessionId,
+    draftAgentId: resolved?.kind === "dm" ? (resolved.agentIds[0] ?? null) : null,
+    current: chat.session,
+  })
+    ? chat.session
+    : null;
   const events = session?.events ?? EMPTY_EVENTS;
   // 名单只读服务器给的：连接中 events 里可能是缓存，缓存里的名单可能比清单投影还旧，
   // 而 chat_update 发的是完整名单，拿旧的发出去会把别的设备上的改动悄悄撤销（#1426）。
