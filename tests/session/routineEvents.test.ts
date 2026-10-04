@@ -26,6 +26,7 @@ describe("routine 事件的登记（#1283）", () => {
     const created = { sessionId: "s", seq: 0, ts: 0, type: "session_created", workspace: "/work", cloud: { workspaceId: "w", chat: { kind: "dm" }, home: true } } as const;
     const msgs = deriveMessages([created, opening, note]);
     expect(msgs.filter((m) => m.role === "user").map((m) => m.content)).toEqual(["【定时任务到点】…"]);
-    expect(JSON.stringify(msgs)).not.toContain("错过");
+    expect(JSON.stringify(msgs)).not.toContain("早报");
+    expect(JSON.stringify(msgs)).not.toContain("r1");
   });
 });
