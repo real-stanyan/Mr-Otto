@@ -16,8 +16,11 @@ describe("员工表", () => {
     expect(src).toMatch(/liveTaskOf\(tasks\.rows\.values\(\), a\.agentId, where\.sessionId\)/);
     expect(src).toMatch(/taskLine\(task, \(id\) => tasks\.rows\.get\(id\)\?\.title \?\? null\)/);
   });
-  it("点一只进资料页，管理员那行进它的私聊；别人的智能体那格还是聊天", () => {
-    expect(src).toMatch(/onPick\(a\.agentId === ADMIN_AGENT_ID \? \{ kind: "chat", route: \{ kind: "agent", agentId: ADMIN_AGENT_ID \} \} : \{ kind: "agent", agentId: a\.agentId \}\)/);
+  it("点一只进它的私聊；别人的智能体那格还是聊天", () => {
+    // 2026-10-05 真机改口：点一只直接进它的私聊（资料页从聊天信息页进）；头像压未读，看过就灭
+    expect(src).toMatch(/onPick\(\{ kind: "chat", route: \{ kind: "agent", agentId: a\.agentId \} \}\)/);
+    expect(src).toMatch(/row\?\.unread\?\.kind === "count" \? \(/);
+    expect(src).toMatch(/for \(const r of inbox\.rows\) if \(r\.target\.kind === "agent"\) m\.set\(r\.target\.agentId, r\);/);
     expect(src).toMatch(/onPick\(\{ kind: "chat", route: r\.target \}\)/);
     const chats = read("mobile/src/tabs/ChatsScreen.tsx");
     expect(chats).toMatch(/if \(next\.kind === "agent"\) navigation\.navigate\("Agent", \{ agentId: next\.agentId \}\);\s*else navigation\.navigate\("Chat", next\.route\);/);
