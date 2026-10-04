@@ -47,7 +47,7 @@ import { useCallKit } from "../call/callKit.js";
 import { settleAnswer } from "../call/ringStore.js";
 import { cloudClient } from "../cloud/cloudClient.js";
 import {
-  closeChat, dropUnsent, loadOlder, openChat, resendUnsent, sendText, startDm, stopTurn, useChatStore,
+  chatSessionOf, closeChat, dropUnsent, loadOlder, openChat, resendUnsent, sendText, startDm, stopTurn, useChatStore,
 } from "../cloud/chatStore.js";
 import { useFriends } from "../friends/friendsStore.js";
 import { PickAgentsDialog } from "../group/PickAgentsDialog.js";
@@ -279,8 +279,19 @@ export function ChatScreen({ route, navigation }: Props) {
     // 只跟「是哪一条」走：resolved 每次刷新都是新对象
   }, [baseWs?.id, sessionId]);
   useEffect(() => () => closeChat(), []);
+  // 回到这一页时连接可能已经被别的页面拿走了（#1461：从群信息点进朋友私聊，那一页要连它自己的私密车道——
+  // 手机同一时刻只连得上一条）。拿走了就再进一次房，本机缓存先画，毫秒级
+  useFocusEffect(
+    useCallback(() => {
+      if (baseWs === null || resolved === null || sessionId === null) return;
+      if (chatSessionOf(sessionId) === null) void openChat(baseWs.id, sessionId, resolved.seed, resolved.title);
+      // 同上：只跟「是哪一条」走
+    }, [baseWs?.id, sessionId]),
+  );
 
-  const session = chat.session;
+  // 只认这一页自己那一条（#1461）：连接被叠在上面的朋友私聊页拿去连私密车道时，store 里是那条车道——
+  // 不判的话这一页会在后台拿车道的事件画自己的时间线。草稿（还没有 sessionId）照旧认 store 里那一条
+  const session = chat.session !== null && (sessionId === null || chat.session.sessionId === sessionId) ? chat.session : null;
   const events = session?.events ?? EMPTY_EVENTS;
   // 名单只读服务器给的：连接中 events 里可能是缓存，缓存里的名单可能比清单投影还旧，
   // 而 chat_update 发的是完整名单，拿旧的发出去会把别的设备上的改动悄悄撤销（#1426）。

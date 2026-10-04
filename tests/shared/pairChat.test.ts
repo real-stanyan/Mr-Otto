@@ -7,6 +7,7 @@ import {
   PAIR_CONTEXT_MAX_LINES,
   PAIR_LINE_MAX_CHARS,
   laneItemsOf,
+  lanePending,
   laneTargets,
   mergePairView,
   pairContextLines,
@@ -107,6 +108,19 @@ describe("laneItemsOf：私密车道里画得出来的那几行", () => {
       ["agent", "没答上来：boom"],
     ]);
     expect(items[1]!.agentId).toBe("a_000000000001");
+  });
+});
+
+describe("lanePending：还在答的那几只", () => {
+  const ask = ev(2, 3, { type: "user_message", content: "@助手 @翻译 x", fromUid: OWNER, mentions: ["a_000000000001", "a_000000000002"] });
+  it("欠回答的每只一行：有碎片画碎片、没有画「…」，排在最后", () => {
+    const p = lanePending([ask], { a_000000000001: "正在想" });
+    expect(p.map((i) => [i.agentId, i.text])).toEqual([["a_000000000001", "正在想"], ["a_000000000002", "…"]]);
+    expect(p[0]!.ts).toBe(Number.MAX_SAFE_INTEGER);
+  });
+  it("答完了（turn_ended）就不画，哪怕还残留碎片", () => {
+    const done = ev(3, 4, { type: "turn_ended", outcome: "completed", agentId: "a_000000000001", readUpToSeq: 2 });
+    expect(lanePending([ask, done], { a_000000000001: "残留" }).map((i) => i.agentId)).toEqual(["a_000000000002"]);
   });
 });
 

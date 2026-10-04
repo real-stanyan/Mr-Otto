@@ -7,8 +7,16 @@ import { useHeaderHeight } from "@react-navigation/elements";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AppState, FlatList, KeyboardAvoidingView, Platform, Pressable, Text, View } from "react-native";
+import { agentFaceSlot } from "../../../src/shared/agentAvatar.js";
+import { chatRosterNow } from "../../../src/shared/chatRoster.js";
+import type { SessionEvent } from "../../../src/session/events.js";
 import type { DirectMessage } from "../../../src/shared/friends.js";
+import { laneItemsOf, lanePending, laneTargets, mergePairView, pairPresenceText, type LaneItem } from "../../../src/shared/pairChat.js";
 import { PRESENCE_TEXT } from "../../../src/shared/presence.js";
+import { agentNameOf } from "../../../src/shared/workspaceView.js";
+import { chatSessionOf, closeChatIf, openChat, sendText, useChatStore } from "../cloud/chatStore.js";
+import { PickAgentsDialog } from "../group/PickAgentsDialog.js";
+import { bringAgents, loadPairLane, loadPairPresence, usePairLane, usePairPresence } from "./pairLane.js";
 import { readUpTo, receiptLabel } from "../../../src/shared/readReceipt.js";
 import { decodeEnvelope } from "../../../src/shared/sessionPackageCodec.js";
 import { shareCardView } from "../../../src/shared/shareCard.js";
@@ -23,7 +31,7 @@ import { useMyName } from "../tabs/MeScreen.js";
 import { usePalette, withAlpha } from "../theme.js";
 import { Spinner } from "../ui.js";
 import { dictationUsable, startDictation, stopDictation, useVoice } from "../voice/voiceStore.js";
-import { PersonTile } from "../wx/Avatar.js";
+import { FaceTile, PersonTile } from "../wx/Avatar.js";
 import { Icon } from "../wx/Icon.js";
 import { HeaderIconButton } from "../wx/TabHeader.js";
 import { toast } from "../wx/toast.js";
@@ -32,7 +40,38 @@ import { usePresence } from "./presenceStore.js";
 import { loadPeerRead, markFriendRead, usePeerRead } from "./readReceipts.js";
 
 type Props = NativeStackScreenProps<RootStackParams, "FriendChat">;
-type Item = { kind: "time"; key: string; label: string } | { kind: "msg"; key: string; m: DirectMessage };
+type Item =
+  | { kind: "time"; key: string; label: string }
+  | { kind: "msg"; key: string; m: DirectMessage }
+  /** 我私密车道里的一行（#1461）：只有我看得到 */
+  | { kind: "lane"; key: string; item: LaneItem };
+
+/** 私密车道的一行（#1461 P1）：我对智能体说的话靠右、智能体的回复靠左，气泡描一圈虚线、底下一行「仅你可见」——
+    它与人话混排在同一条时间线上，必须一眼分得出「这句朋友看不到」 */
+function LaneBubble({ item, name, slot, meName, meAvatar }: { item: LaneItem; name: string; slot: number; meName: string; meAvatar: string }) {
+  const { c } = usePalette();
+  const mine = item.who === "me";
+  return (
+    <View style={{ flexDirection: mine ? "row-reverse" : "row", alignItems: "flex-start", gap: 10, paddingHorizontal: 12 }}>
+      {mine ? <PersonTile name={meName} url={meAvatar} size={40} me /> : <FaceTile slot={slot} size={40} />}
+      <View style={{ flexShrink: 1, maxWidth: "76%", alignItems: mine ? "flex-end" : "flex-start", gap: 4 }}>
+        {mine ? null : <Text style={{ fontSize: 12, color: c.mutedForeground }}>{name}</Text>}
+        <View
+          style={{
+            paddingVertical: 9, paddingHorizontal: 12, borderRadius: 12, ...(mine ? { borderTopRightRadius: 4 } : { borderTopLeftRadius: 4 }),
+            backgroundColor: withAlpha(c.brand, 0.06), borderWidth: 1, borderStyle: "dashed", borderColor: withAlpha(c.brand, 0.35),
+          }}
+        >
+          <Text selectable style={{ fontSize: 16, lineHeight: 24, color: c.foreground }}>{item.text}</Text>
+        </View>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 3 }}>
+          <Icon name="lock-keyhole" size={11} stroke={2} color={c.faint} />
+          <Text style={{ fontSize: 11, color: c.faint }}>仅你可见</Text>
+        </View>
+      </View>
+    </View>
+  );
+}
 
 function Bubble({ m, mine, name, avatar, meName, meAvatar }: { m: DirectMessage; mine: boolean; name: string; avatar: string; meName: string; meAvatar: string }) {
   const { c } = usePalette();
@@ -63,6 +102,8 @@ function Bubble({ m, mine, name, avatar, meName, meAvatar }: { m: DirectMessage;
     </View>
   );
 }
+
+const EMPTY_LANE: readonly SessionEvent[] = [];
 
 function FriendTitle({ uid, name }: { uid: string; name: string }) {
   const { c } = usePalette();
@@ -100,6 +141,56 @@ export function FriendChatScreen({ route, navigation }: Props) {
   const thread = friends.threads.get(uid);
   const key = `f:${uid}`;
   const others = inbox.unreadChats;
+
+  // ── 私密车道（#1461 P1）：我带进这条私聊的智能体，只有我看得到、只听我的 ───────────────
+  const homeWs = home.home;
+  const homeId = homeWs?.id ?? null;
+  const lane = usePairLane(uid);
+  const laneSid = lane.status === "ready" ? lane.sessionId : null;
+  const presence = usePairPresence(uid);
+  const chat = useChatStore();
+  const [bringing, setBringing] = useState<{ key: number; visible: boolean } | null>(null);
+  const [bringBusy, setBringBusy] = useState(false);
+  const [bringError, setBringError] = useState<string | null>(null);
+  useEffect(() => {
+    if (homeId !== null && friend) void loadPairLane(homeId, uid);
+  }, [homeId, uid, friend]);
+  // 朋友带没带私人智能体：只给一个数，进来时、回到这一页时各问一次
+  useFocusEffect(
+    useCallback(() => {
+      if (friend) void loadPairPresence(uid);
+    }, [uid, friend]),
+  );
+  // 连上车道。手机同一时刻只连得上一条云会话：回到这一页时连接可能被别的页面拿走了，再进一次房
+  useFocusEffect(
+    useCallback(() => {
+      if (homeId === null || laneSid === null) return;
+      if (chatSessionOf(laneSid) === null) {
+        void openChat(homeId, laneSid, { kind: "pair", agentIds: [...lane.agentIds], humans: [], pair: { peerUid: uid, facing: "self" } });
+      }
+      // 只跟「是哪一条」走：名单变了不重连
+    }, [homeId, laneSid, uid]),
+  );
+  // 离开这一页才关，而且只在连接此刻还归这条车道时才关（closeChatIf）：私聊里拉人建群会 replace 成群聊页，
+  // 那一页正在接手这条连接
+  const laneRef = useRef<string | null>(null);
+  laneRef.current = laneSid;
+  useEffect(() => () => {
+    if (laneRef.current !== null) closeChatIf(laneRef.current);
+  }, []);
+  const laneSession = laneSid !== null && chat.session?.sessionId === laneSid ? chat.session : null;
+  const laneEvents = laneSession?.events ?? EMPTY_LANE;
+  // 名单：连上之后以日志为准（chatRosterNow），没连上之前退回清单那一份
+  const brought = useMemo<string[]>(() => {
+    const fallback = laneSession?.chat?.agentIds ?? lane.agentIds;
+    return [...(chatRosterNow(laneSession?.provisional === true ? EMPTY_LANE : laneEvents, fallback) ?? fallback)];
+  }, [laneSession, laneEvents, lane.agentIds]);
+  const broughtNames = useMemo(
+    () => (homeWs === null ? [] : brought.filter((id) => homeWs.agents.some((a) => a.agentId === id)).map((id) => ({ agentId: id, name: agentNameOf(homeWs, id) }))),
+    [homeWs, brought],
+  );
+  const laneItems = useMemo(() => [...laneItemsOf(laneEvents), ...lanePending(laneEvents, laneSession !== null ? chat.streaming : {})], [laneEvents, laneSession, chat.streaming]);
+  const presenceText = pairPresenceText(presence);
 
   useEffect(() => {
     void openThread(uid);
@@ -155,17 +246,35 @@ export function FriendChatScreen({ route, navigation }: Props) {
     const out: Item[] = [];
     let prev: number | null = null;
     const now = Date.now();
-    for (const m of thread?.messages ?? []) {
-      const ts = Date.parse(m.createdAt) || 0;
-      if (needsTimeRow(prev, ts)) out.push({ kind: "time", key: `t${m.id}`, label: timelineTimeLabel(ts, now) });
-      prev = ts;
-      out.push({ kind: "msg", key: `m${m.id}`, m });
+    // 私聊 ∪ 我的私密车道，按服务器时间合成一条（shared/pairChat 的 mergePairView）
+    for (const r of mergePairView(thread?.messages ?? [], laneItems)) {
+      const ts = r.ts;
+      const tkey = r.kind === "dm" ? `t${r.m.id}` : `t${r.item.key}`;
+      if (ts !== Number.MAX_SAFE_INTEGER && needsTimeRow(prev, ts)) out.push({ kind: "time", key: tkey, label: timelineTimeLabel(ts, now) });
+      if (ts !== Number.MAX_SAFE_INTEGER) prev = ts;
+      out.push(r.kind === "dm" ? { kind: "msg", key: `m${r.m.id}`, m: r.m } : { kind: "lane", key: `l${r.item.key}`, item: r.item });
     }
     return out.reverse();
-  }, [thread?.messages]);
+  }, [thread?.messages, laneItems]);
 
   const send = async (text: string): Promise<boolean> => {
     setNote(null);
+    // @ 了我带进来的智能体 → 进私密车道（不写进 messages，朋友看不到）；否则照旧发给朋友
+    const targets = laneTargets(text, broughtNames);
+    if (targets !== null && laneSid !== null) {
+      if (chatSessionOf(laneSid)?.state !== "ready") {
+        setNote("私人智能体还没连上，稍等一下再发。");
+        return false;
+      }
+      const r = await sendText(text, targets);
+      if (r.ok) return true;
+      if (r.unknown) {
+        setNote("这句话不确定有没有交给私人智能体，没看到回复的话再说一遍。");
+        return true;
+      }
+      setNote(r.message);
+      return false;
+    }
     try {
       await sendToFriend(uid, text);
       return true;
@@ -178,6 +287,24 @@ export function FriendChatScreen({ route, navigation }: Props) {
   return (
     <View style={{ flex: 1, backgroundColor: c.background }}>
       <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined} keyboardVerticalOffset={headerHeight}>
+        {presenceText !== null ? (
+          // 朋友带了私人智能体（#1461）：只说有几只，内容我看不到
+          <Text style={{ fontSize: 12, color: c.mutedForeground, textAlign: "center", paddingVertical: 6, backgroundColor: c.side }}>{presenceText}</Text>
+        ) : null}
+        {broughtNames.length > 0 ? (
+          // 我带进来的那几只（#1461）：点一下改名单。@ 它们说的话只有我看得到
+          <Pressable
+            accessibilityRole="button"
+            onPress={() => setBringing({ key: Date.now(), visible: true })}
+            style={({ pressed }) => [{ flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 6, paddingHorizontal: 16, backgroundColor: withAlpha(c.brand, 0.06) }, pressed && { opacity: 0.6 }]}
+          >
+            <Icon name="lock-keyhole" size={12} stroke={2} color={c.mutedForeground} />
+            <Text numberOfLines={1} style={{ flex: 1, fontSize: 12, color: c.mutedForeground }}>
+              {`带着 ${broughtNames.map((a) => `@${a.name}`).join(" ")} · 只有你看得到${laneSession?.state === "ready" ? "" : "（连接中）"}`}
+            </Text>
+            <Icon name="chevron-right" size={14} stroke={2} color={c.faint} />
+          </Pressable>
+        ) : null}
         <View style={{ flex: 1 }}>
           {thread === undefined || thread.loading ? (
             <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}><Spinner /></View>
@@ -197,6 +324,14 @@ export function FriendChatScreen({ route, navigation }: Props) {
               renderItem={({ item }) =>
                 item.kind === "time" ? (
                   <Text style={{ alignSelf: "center", fontSize: 11.5, color: c.faint, fontVariant: ["tabular-nums"] }}>{item.label}</Text>
+                ) : item.kind === "lane" ? (
+                  <LaneBubble
+                    item={item.item}
+                    name={homeWs !== null && item.item.agentId !== undefined ? agentNameOf(homeWs, item.item.agentId) : "智能体"}
+                    slot={homeWs !== null && item.item.agentId !== undefined ? agentFaceSlot(homeWs, item.item.agentId) : 0}
+                    meName={me.name}
+                    meAvatar={me.avatar}
+                  />
                 ) : (
                   <View>
                     <Bubble m={item.m} mine={item.m.sender !== uid} name={name} avatar={row?.profile.avatarUrl ?? ""} meName={me.name} meAvatar={me.avatar} />
@@ -253,8 +388,14 @@ export function FriendChatScreen({ route, navigation }: Props) {
             onSend={send}
             plus={
               // 拉人建群（#1393）：带上 TA，再拉几位——群建在我的主场里
+              // 带上我的智能体（#1461 P1）：住在我主场的私密车道里，朋友看不到；车道还读不到时不给（不劝人再带一次）
               home.home !== null
-                ? [{ key: "group", icon: "users-round", label: "拉人建群", onPress: () => setGrouping({ key: Date.now(), visible: true }) }]
+                ? [
+                  { key: "group", icon: "users-round", label: "拉人建群", onPress: () => setGrouping({ key: Date.now(), visible: true }) },
+                  ...(lane.status === "ready" || lane.status === "none"
+                    ? [{ key: "bring", icon: "sparkles" as const, label: "带上我的智能体", onPress: () => setBringing({ key: Date.now(), visible: true }) }]
+                    : []),
+                ]
                 : []
             }
             {...(dictationUsable(voice)
@@ -289,6 +430,39 @@ export function FriendChatScreen({ route, navigation }: Props) {
           </View>
         )}
       </KeyboardAvoidingView>
+      {bringing !== null && homeWs !== null ? (
+        <PickAgentsDialog
+          key={bringing.key}
+          visible={bringing.visible}
+          ws={homeWs}
+          title="带上我的智能体"
+          lead={`只有你看得到它们，${name}看不到。@ 它们说的话不会发给${name}；它们会读你们最近的聊天来帮你。`}
+          options={homeWs.agents.map((a) => a.agentId)}
+          preset={brought}
+          min={laneSid === null ? 1 : 0}
+          okLabel={laneSid === null ? "带上" : "好"}
+          busy={bringBusy}
+          error={bringError}
+          onOk={(picked) => {
+            void (async () => {
+              setBringBusy(true);
+              setBringError(null);
+              const r = await bringAgents(homeWs.id, uid, picked);
+              setBringBusy(false);
+              if (!r.ok) {
+                setBringError(r.message);
+                return;
+              }
+              setBringing((b) => (b === null ? b : { ...b, visible: false }));
+            })();
+          }}
+          onClose={() => setBringing((b) => (b === null ? b : { ...b, visible: false }))}
+          onExited={() => {
+            setBringing(null);
+            setBringError(null);
+          }}
+        />
+      ) : null}
       {grouping !== null && home.home !== null ? (
         <NewGroupDialog
           key={grouping.key}

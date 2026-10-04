@@ -10,6 +10,7 @@ import type { SessionEvent } from "../session/events.js";
 import { parseMentions, type MentionCandidate } from "./remote/agentMention.js";
 import { promptSafe } from "./promptSafe.js";
 import { decodeEnvelope } from "./sessionPackageCodec.js";
+import { openTurns } from "./turnLedger.js";
 
 /** 车道朝向。P1 只建 "self"；"both"（两人都看得到、都能 @，ADR-0325 的客人那一套）是 P2 */
 export type PairFacing = "self" | "both";
@@ -111,6 +112,20 @@ export function laneItemsOf(events: readonly SessionEvent[]): LaneItem[] {
     } else if (e.type === "turn_ended" && e.outcome === "error") {
       out.push({ key: `e${e.seq}`, ts: e.ts, who: "agent", text: `没答上来：${e.error ?? "出错了"}`, ...(e.agentId !== undefined ? { agentId: e.agentId } : {}) });
     }
+  }
+  return out;
+}
+
+/** 车道里此刻还在答的那几只（画在最底下）：有流式碎片的画正在长的字，没有的画「…」。
+    判据是 `openTurns`（谁还欠一个回答），与云会话的状态行同一份；不欠了就不画，哪怕还残留碎片 */
+export function lanePending(events: readonly SessionEvent[], streaming: Readonly<Record<string, string>>): LaneItem[] {
+  const seen = new Set<string>();
+  const out: LaneItem[] = [];
+  for (const t of openTurns(events)) {
+    if (seen.has(t.agentId)) continue;
+    seen.add(t.agentId);
+    const text = streaming[t.agentId];
+    out.push({ key: `p${t.agentId}`, ts: Number.MAX_SAFE_INTEGER, who: "agent", agentId: t.agentId, text: text !== undefined && text.trim() !== "" ? text : "…" });
   }
   return out;
 }

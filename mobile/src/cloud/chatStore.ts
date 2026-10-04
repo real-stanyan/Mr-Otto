@@ -101,6 +101,8 @@ export function chatSessionOf(sessionId: string): ChatSession | null {
 
 /** 每次 closeChat 加一：异步回来时比一比，变了就说明人已经离开了这一页 */
 let gen = 0;
+/** 此刻正在开（openChat 还没回来）的是哪一条。closeChatIf 据它判「别人是不是已经在接手这一条连接」 */
+let pendingOpen: { sessionId: string; gen: number } | null = null;
 
 /** 本机缓存（#1426）：这条聊天是替谁开的（缓存按账号分键）；对账之前服务器这一轮下发的最小 seq */
 let cacheOwner: string | null = null;
@@ -193,7 +195,25 @@ export async function openChat(
   seed: CsChatInfo | null | undefined,
   title?: string,
 ): Promise<void> {
+  // 同一条已经在开：挂载那一下与「回到这一页」那一下会撞在一起（#1461），第二次什么都不做，不然 join 两遍
+  if (pendingOpen !== null && pendingOpen.sessionId === sessionId && pendingOpen.gen === gen) return;
   const g = gen;
+  const mine = { sessionId, gen: g };
+  pendingOpen = mine;
+  try {
+    await openChatInner(g, workspaceId, sessionId, seed, title);
+  } finally {
+    if (pendingOpen === mine) pendingOpen = null;
+  }
+}
+
+async function openChatInner(
+  g: number,
+  workspaceId: string,
+  sessionId: string,
+  seed: CsChatInfo | null | undefined,
+  title: string | undefined,
+): Promise<void> {
   const uid = await ensureUid();
   if (g !== gen) return;
   if (store.get().session?.sessionId === sessionId) return;
@@ -317,6 +337,16 @@ export function takeDraftSeed(sessionId: string): string | null {
   return seed.text;
 }
 
+/** 只在这条连接此刻还归 `sessionId` 时才关（#1461 P1）。手机同一时刻只连得上一条云会话，而和朋友私聊的页面
+    也要连它的私密车道——两个页面会交替拿这一条连接（从群里点进朋友私聊、私聊里拉人建群 replace 成群聊页）。
+    不判就是后离开的那一页把先到的那一页刚接上的连接断掉：别人已经开着另一条、或者正在开另一条，都不关 */
+export function closeChatIf(sessionId: string): void {
+  if (pendingOpen !== null && pendingOpen.sessionId !== sessionId) return;
+  const cur = store.get().session?.sessionId ?? null;
+  if (cur !== null && cur !== sessionId) return;
+  closeChat();
+}
+
 /** 离开这一页：先让语音那一层收口（停麦停放音——通话本身还在），再断连接、清状态 */
 export function closeChat(): void {
   activity?.closed();
@@ -326,6 +356,7 @@ export function closeChat(): void {
   if (s !== null && !s.provisional && s.state !== "denied" && cacheOwner !== null) scheduleChatCacheSave(cacheOwner, s.sessionId, s.events);
   void flushChatCacheSave();
   gen += 1;
+  pendingOpen = null;
   cacheOwner = null;
   serverMin = null;
   void cloudClient.leave();
