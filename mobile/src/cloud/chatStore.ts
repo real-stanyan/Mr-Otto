@@ -221,6 +221,11 @@ async function openChatInner(
   const cached = uid === null ? null : await loadChatCache(uid, sessionId);
   if (g !== gen) return;
   if (store.get().session?.sessionId === sessionId) return;
+  // 换下来的是**另一条**会话（#1461 复审 M1：群聊页回前台重连、朋友私聊页连私密车道，都会直接顶掉当前那条）：
+  // 先照 closeChat 那样收口——语音那一层停麦停放音、写回缓存。不收的话通话里说完的一句会经 sayVoice 发进新房间。
+  // 不加 gen：这一次 open 本身还要接着走。必须排在 cacheOwner 换人之前（写回的是旧那条的缓存）
+  const prev = store.get().session;
+  if (prev !== null && prev.sessionId !== sessionId) retireSession();
   cacheOwner = uid;
   serverMin = null;
   store.set({
@@ -347,14 +352,20 @@ export function closeChatIf(sessionId: string): void {
   closeChat();
 }
 
-/** 离开这一页：先让语音那一层收口（停麦停放音——通话本身还在），再断连接、清状态 */
-export function closeChat(): void {
+/** 换下手上这一条会话时的收口（closeChat 与「openChat 顶掉另一条」共用一份）：语音那一层先收口
+    （停麦停放音——通话本身还在），再把对过账的那份写回缓存 */
+function retireSession(): void {
   activity?.closed();
   // 对过账的才写回：没连上就离开的，手上那份是「缓存 + 半截 backlog」，写回去没有新信息
   const s = store.get().session;
   // denied 的会话缓存已经删了，离开时不许写回
   if (s !== null && !s.provisional && s.state !== "denied" && cacheOwner !== null) scheduleChatCacheSave(cacheOwner, s.sessionId, s.events);
   void flushChatCacheSave();
+}
+
+/** 离开这一页：先让语音那一层收口（停麦停放音——通话本身还在），再断连接、清状态 */
+export function closeChat(): void {
+  retireSession();
   gen += 1;
   pendingOpen = null;
   cacheOwner = null;
