@@ -2,7 +2,7 @@
 // 编不下（提示词把 4000 字的 body 撑爆）就拒，不截断。
 import { describe, expect, it } from "vitest";
 import {
-  CARD_TOO_BIG, CONTACT_CARD_KIND, contactCardPreview, contactCardView, decodeContactCard, encodeContactCard, type AgentCard, type PersonCard,
+  CARD_TOO_BIG, CONTACT_CARD_KIND, acceptedAgentInput, contactCardPreview, contactCardView, decodeContactCard, encodeContactCard, type AgentCard, type PersonCard,
 } from "../../src/shared/contactCard.js";
 import { decodeEnvelope } from "../../src/shared/sessionPackageCodec.js";
 
@@ -76,6 +76,17 @@ describe("contactCardView：我屏幕上这张卡", () => {
     expect(contactCardView(agent, { ...base, accepted: true }).action).toEqual({ kind: "none", label: "已保存到我的智能体" });
     expect(contactCardView(agent, { ...base, mine: true }).action.kind).toBe("none");
     expect(contactCardView({ ...agent, description: " " }, base).subtitle).toBe("小红 的智能体");
+  });
+  it("接受过的真相在名单里（#1544）：主场里已有同名 → 「已保存」不给钮；别的名字照给「接受」", () => {
+    const base = { mine: false, fromName: "小红", selfUid: ME, friendUids: [PEER] };
+    expect(contactCardView(agent, { ...base, myAgentNames: ["翻译", "管理员"] }).action).toEqual({ kind: "none", label: "已保存到我的智能体" });
+    expect(contactCardView(agent, { ...base, myAgentNames: [" 翻译 "] }).action.kind).toBe("none");
+    expect(contactCardView(agent, { ...base, myAgentNames: ["管理员"] }).action.kind).toBe("accept_agent");
+  });
+  it("acceptedAgentInput（#1544）：有提示词原样；没有就把职责写成一句提示词；都没有就空", () => {
+    expect(acceptedAgentInput(agent)).toEqual({ name: "翻译", description: "中英互译", instructions: "你是翻译。" });
+    expect(acceptedAgentInput({ ...agent, instructions: "  " })).toEqual({ name: "翻译", description: "中英互译", instructions: "你是「翻译」。中英互译" });
+    expect(acceptedAgentInput({ ...agent, instructions: "", description: " " }).instructions).toBe("");
   });
   it("发送方没名字时抬头写「对方」", () => {
     expect(contactCardView(person, { mine: false, fromName: " ", selfUid: ME, friendUids: [] }).heading).toBe("对方 推荐了一位联系人");

@@ -12,11 +12,12 @@ describe("FriendChatScreen", () => {
   const src = read("mobile/src/friends/FriendChatScreen.tsx");
   it("带了智能体才接 onAt", () => {
     // #1523：朋友公开给我的智能体也能 @，所以两边任一有就接
-    expect(src).toMatch(/\{\.\.\.\(broughtNames\.length > 0 \|\| peerNames\.length > 0 \? \{ onAt: \(\) => setMentioning\(true\) \} : \{\}\)\}/);
+    // #1544：我主场里没带进来的那几只也能 @（先带进来再发），所以三者任一有就接
+    expect(src).toMatch(/\{\.\.\.\(broughtNames\.length > 0 \|\| peerNames\.length > 0 \|\| otherMine\.length > 0 \? \{ onAt: \(\) => setMentioning\(true\) \} : \{\}\)\}/);
   });
   it("MentionSheet 的名单 = 带进来的那几只，不列朋友", () => {
     // #1523：名单 = 我带进来的 + 朋友公开给我的；仍不列朋友（humans 恒空）
-    expect(src).toMatch(/agentIds=\{\[\.\.\.broughtNames\.map\(\(a\) => a\.agentId\), \.\.\.peerNames\.map\(\(a\) => a\.agentId\)\]\}/);
+    expect(src).toMatch(/agentIds=\{\[\.\.\.broughtNames\.map\(\(a\) => a\.agentId\), \.\.\.peerNames\.map\(\(a\) => a\.agentId\), \.\.\.otherMine\.map\(\(a\) => a\.agentId\)\]\}/);
     expect(src).toMatch(/humans=\{\[\]\}/);
   });
   it("挑中的名字等抽屉退场再经 ref.mention 插回", () => {

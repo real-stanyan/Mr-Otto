@@ -54,8 +54,9 @@ describe("FriendChatScreen：两条车道合在一条时间线上", () => {
     expect(src).toMatch(/laneItemsOf\(peerEvents, selfUid\)/);
     expect(src).toMatch(/item\.who === "friend" \? <PersonTile/);
   });
-  it("@ 名单合并两边的智能体；语音松手那一刀也按两条车道判", () => {
-    expect(src).toMatch(/agentIds=\{\[\.\.\.broughtNames\.map\(\(a\) => a\.agentId\), \.\.\.peerNames\.map\(\(a\) => a\.agentId\)\]\}/);
+  it("@ 名单合并两边的智能体（#1544 起还列我主场里没带进来的那几只，@ 了先带进来）；语音松手那一刀也按两条车道判", () => {
+    expect(src).toMatch(/agentIds=\{\[\.\.\.broughtNames\.map\(\(a\) => a\.agentId\), \.\.\.peerNames\.map\(\(a\) => a\.agentId\), \.\.\.otherMine\.map\(\(a\) => a\.agentId\)\]\}/);
+    expect(src).toMatch(/if \(targets !== null && targets\.lane === "bring"\) \{[\s\S]*?bringAgents\(homeWs\.id, uid, \[\.\.\.brought, \.\.\.targets\.ids\], laneFacing\)/);
     expect(src).toMatch(/laneTargetsOf\(trimmed\) === null/);
   });
 });
