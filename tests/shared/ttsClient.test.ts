@@ -88,6 +88,16 @@ describe("teamVoice.speak", () => {
       expect(r.message).not.toContain("要订阅");
     }
   });
+
+  it("带 emotion（#1515）：请求体多 emotion / speed / vol，数值按 prosodyFor；不带时三格逐字节同以前", async () => {
+    const { voice, fetchImpl } = make(() => new Response(new Uint8Array([1]), { status: 200 }));
+    await voice.speak("行。", "v", { emotion: "sad" });
+    const [, init] = (fetchImpl as unknown as { mock: { calls: [string, RequestInit][] } }).mock.calls[0]!;
+    expect(JSON.parse(String(init.body))).toEqual({ model: "speech-2.8-turbo", text: "行。", voice_id: "v", emotion: "sad", speed: 0.88, vol: 0.92 });
+    await voice.speak("行。", "v", { emotion: null });
+    const [, init2] = (fetchImpl as unknown as { mock: { calls: [string, RequestInit][] } }).mock.calls[1]!;
+    expect(JSON.parse(String(init2.body))).toEqual({ model: "speech-2.8-turbo", text: "行。", voice_id: "v" });
+  });
 });
 
 describe("speak 带票（#1441）", () => {
