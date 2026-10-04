@@ -635,7 +635,7 @@ describe("选人卡一行（#1520）", () => {
     brief: "随便聊聊", opening: "你好", ignorable: true,
   });
   const rowsOf = (events: SessionEvent[], now = DAY) =>
-    chatRows({ events, ws: WS, selfUid: "me", now }).filter((r) => r.kind === "friend_pick");
+    chatRows({ events, ws: WS, selfUid: "me", now, ownerUid: "me" }).filter((r) => r.kind === "friend_pick");
 
   it("offered 的位置出一行，带问话、候选、是谁弹的；还开着 = open", () => {
     seq = 0;
@@ -643,8 +643,26 @@ describe("选人卡一行（#1520）", () => {
       kind: "friend_pick", key: "friend_pick-p1", ts: DAY, pickId: "p1", agentId: "a_000000000002", name: "运维",
       question: "好友里没有叫「Mingxuan Zhang」的。你要打给哪位？点一下我就拨。",
       candidates: [{ uid: "u_baba", name: "爸爸", why: "上次打的就是他" }, { uid: "u_mz", name: "Mingxuan Zhou", why: "名字相近" }],
-      status: "open", pickedUid: null, message: null,
+      status: "open", pickedUid: null, message: null, canPick: true, waitingFor: "Stan",
     }]);
+  });
+
+  it("canPick 只给主人（I-1）：客人看到的是只读的卡；ownerUid 缺席 = 没人认得出主人，也只读", () => {
+    seq = 0;
+    const withGuest: WorkspaceSnapshot = { ...WS, members: [...WS.members, { uid: "u_guest", role: "member", label: "小红", avatarUrl: "" }] };
+    const as = (selfUid: string, ownerUid?: string) =>
+      chatRows({ events: [offer("p1")], ws: withGuest, selfUid, now: DAY, ...(ownerUid !== undefined ? { ownerUid } : {}) }).filter((r) => r.kind === "friend_pick");
+    expect(as("me", "me")[0]).toMatchObject({ canPick: true });
+    expect(as("u_guest", "me")[0]).toMatchObject({ canPick: false, waitingFor: "Stan" });
+    expect(as("me")[0]).toMatchObject({ canPick: false, waitingFor: null });
+  });
+
+  it("dismissed：状态取最后一条，不单独成行（spec §9 六态之一）", () => {
+    seq = 0;
+    const dismissed = e({ type: "friend_pick", pickId: "p1", phase: "dismissed", fromAgentId: "a_000000000002", ignorable: true });
+    const rows = rowsOf([offer("p1"), dismissed]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ status: "dismissed", pickedUid: null, message: null });
   });
 
   it("状态取这张卡最后一条：picked / failed（带 message）/ dismissed；后面那几条不单独成行", () => {

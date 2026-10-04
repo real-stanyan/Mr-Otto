@@ -105,6 +105,10 @@ export type ChatRow =
   | {
     kind: "friend_pick"; key: string; ts: number; pickId: string; agentId: string; name: string; question: string;
     candidates: FriendPickCandidate[]; status: FriendPickStatus; pickedUid: string | null; message: string | null;
+    /** 我点得了吗：只有这条会话的主人（runtime 的 pickFriend 同一条闸）。客人在主场群里也看得见这张卡，但只读 */
+    canPick: boolean;
+    /** 只读时「等谁选」写谁：主人的名字，不知道主人是谁时 null */
+    waitingFor: string | null;
   }
   | {
     kind: "approval"; key: string; ts: number; callId: string; title: string;
@@ -238,6 +242,9 @@ export function chatRows(o: {
           kind: "friend_pick", key: `friend_pick-${e.pickId}`, ts: e.ts, pickId: e.pickId, agentId: st.fromAgentId,
           name: agentNameOf(o.ws, st.fromAgentId), question: st.question, candidates: st.candidates,
           status: friendPickStatus(st, o.now), pickedUid: st.uid, message: st.message,
+          // 同审批卡的 iAmOwner：ownerUid 缺席 = 不知道谁是主人，那就谁都不当主人（runtime 反正会拒）
+          canPick: o.ownerUid !== undefined && o.ownerUid !== "" && o.ownerUid === o.selfUid,
+          waitingFor: o.ownerUid !== undefined && o.ownerUid !== "" ? labelOf(o.ws, o.ownerUid) : null,
         });
       }
       continue;

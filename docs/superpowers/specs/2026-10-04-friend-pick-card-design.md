@@ -92,7 +92,7 @@ interface FriendPickEvent extends SessionEventBase {
 
 ## 6. 协议
 
-协议版本 24 → 25。
+协议版本 26 → 27（起草时写的是 24 → 25，实施期间 main 先升到了 26）。
 
 - 手机 → runtime：`{ t: "pick_friend", pickId: string, uid: string | null }`（`null` = 「都不是」）。
 - runtime → 手机：`{ t: "pick_friend_result", pickId: string, ok: boolean, message?: string }`（同 `approve_result`：带 pickId，一张卡一条回执，成功也回）。
@@ -124,7 +124,9 @@ runtime 处理（`frameHandler` 新 case → `CloudSession.pickFriend` → `outr
   - 失败：红字 `message`。都不是：灰字「都不是。要打给谁，直接告诉我名字。」过期 / 作废：灰字「这张卡过期了，要打再跟我说。」
   - 无障碍：每行是 button，label =「打给 名字，why」。
 - 桌面：`Timeline.tsx` 对 `friend_pick` 返回 `null`（桌面本来就不画外联）。
-- 群聊：`call_friend` 只挂在个人主场，群里出不了卡，不处理。
+- 群聊：`call_friend` 挂在个人主场，主场的群里有客人（#1393），所以群里**会出卡**。只有主人能点：runtime 的 `pickFriend` 拒非主人，
+  手机端 `chatRows` 给 `friend_pick` 行带 `canPick`（同审批卡的主人判据），客人看到的是只读卡——没有电话图标、行不可点、没有「都不是」，
+  开着时脚注写「等 <主人> 选」（不知道主人是谁写「等主人选」）；点过 / 失败 / 过期这些结局两边画得一样。
 
 ## 8. 不做
 
@@ -139,7 +141,7 @@ runtime 处理（`frameHandler` 新 case → `CloudSession.pickFriend` → `outr
 - `tests/services/runtime/outreachHub.test.ts`：出卡路径落 `offered` 并回那句 tool_result；`dialPicked` 成功 / 已用过 / 过期 / 不在候选 /
   出卡后被删好友 / 降档 / 正在打别的 → 各自的事件与回执。
 - `tests/services/runtime/frameHandler`：`pick_friend` 非主人拒、回执带 pickId。
-- 协议：`cloudSession` 解析 `pick_friend` 帧的正反例；版本号断言 25。
+- 协议：`cloudSession` 解析 `pick_friend` 帧的正反例；版本号断言 27。
 - `tests/shared/mobileChat`：`friend_pick` 行的六种状态。
 - 真机：模拟器冒烟三种场景各点一次（`mobile-sim-smoke-expo-go` 那套）。
 
@@ -147,7 +149,7 @@ runtime 处理（`frameHandler` 新 case → `CloudSession.pickFriend` → `outr
 
 - `src/shared/friendPick.ts`（新）、`src/shared/outreach.ts`（`resolveFriend` 保留给 `pickFriend` 用）
 - `src/session/events.ts`（`FriendPickEvent`）
-- `src/shared/remote/cloudSession.ts`（两种帧 + 版本 25）
+- `src/shared/remote/cloudSession.ts`（两种帧 + 版本 27）
 - `services/runtime/src/callFriendTool.ts`（`candidates`）、`outreachHub.ts`（出卡、`dialResolved`、`dialPicked`）、
   `sessionService.ts`（最近打过的 uid、`logFriendPick`、`pickFriend`）、`frameHandler.ts`（新 case）
 - `src/shared/mobileChat.ts`、`mobile/src/chat/Bubbles.tsx`、`mobile/src/chat/ChatScreen.tsx`、手机端 cloud client 发帧

@@ -176,6 +176,7 @@ Domain glossary. All agents' understanding of domain terms is grounded here; cod
 - **情绪括注（emotion tag）**：通话里模型写在**段首**的括注 `（笑）（惊）（叹）（气）（怕）（嫌）`，对到 MiniMax 的 emotion（happy / surprised / sad / angry / fearful / disgusted）。落日志不落界面：显示剥（六处，含通话字幕）、出声解；只认段首白名单，词表外的括注是正文。ADR-0355，`src/shared/voiceProsody.ts`
 - **车道（pair lane，ADR-0346 / #1523）**：主人个人主场里一条 `chat_kind='pair'` 的云会话，装着他带进与某位朋友私聊的智能体；一人对一位朋友只有一条，朝向（`facing`）可切——**私密车道**（self）只有主人看得到、只听主人的；**公开车道 / 共享车道**（both）朋友以客人身份进同一条，看得到、能 @，朋友点起的轮每一刀等主人批。朝向从日志里最后一条名单事件的客人名单推导，`facing` 那一列是投影。
 - **公开智能体（public agent，ADR-0356 / #1533）**：每人在「我」页设定的一只自己主场里的智能体（`profiles.public_agent_id`）。朋友（已接受、两边都不是仅聊天）在和我的私聊里能 @ 它、给它打电话：载体是我主场里与那位朋友的共享车道，朋友那一侧能按需开出来（协议 26 的 `onBehalf` create）。打完电话它把朋友的需求总结写在车道里（两人都看得到），那一轮受监督。
+- **选人卡（friend_pick，ADR-0357 / #1520）**：智能体用 `call_friend` 给好友打电话、认不准是哪位（名字对不上、重名、模型自己列了几个候选）时，在原聊天里落的一张卡：问话 + 最多 4 位候选，主人点谁就直接拨谁（卡里存着交代与开场白，不再过一轮模型），也可以点「都不是」。卡 10 分钟过期、被新卡顶掉也作废；只有会话主人点得了，主场群里的客人看到的是只读卡。事件是 `friend_pick`（ignorable、模型不可见），状态取这张卡最后一条。
 
 ## Key invariants
 
