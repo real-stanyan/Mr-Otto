@@ -44,3 +44,11 @@ describe("TaskDrawer", () => {
     expect(src).toMatch(/const ok = await onSend\(text\);\s*setSending\(false\);\s*if \(ok\) setDraft\(""\);/);
   });
 });
+
+describe("抽屉里的键盘让位（真机 2026-10-05）", () => {
+  it("TaskDrawer 自己听键盘高度、给根 View 垫底（Modal 里 KAV 量不准）；扣掉抽屉已垫的 insets.bottom", () => {
+    const src = readFileSync(new URL("../../mobile/src/friends/TaskDrawer.tsx", import.meta.url), "utf8");
+    expect(src).toMatch(/Keyboard\.addListener\(Platform\.OS === "ios" \? "keyboardWillShow" : "keyboardDidShow", \(e\) => setKb\(Math\.max\(0, e\.endCoordinates\.height - insets\.bottom\)\)\)/);
+    expect(src).toMatch(/<View style=\{\{ flex: 1, paddingBottom: kb \}\}>/);
+  });
+});

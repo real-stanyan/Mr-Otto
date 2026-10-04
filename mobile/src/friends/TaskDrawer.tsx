@@ -1,7 +1,8 @@
 // 代办的抽屉（#1565，ADR-0364）：私聊页上一张任务卡点开的那一扇——这次请求的来回、管理员下发给了谁、谁回了什么，
 // 按时间一行一行；底下一格能接着说（进的是这条任务所在的车道，不是私聊）。主页只留卡，过程全在这里。
-import { useState } from "react";
-import { Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { useEffect, useState } from "react";
+import { Keyboard, Platform, Pressable, ScrollView, Text, TextInput, View } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { LANE_TASK_STATUS_LABEL, laneTaskStatus, type LaneTask } from "../../../src/shared/laneTasks.js";
 import { BottomSheet } from "../sheet/BottomSheet.js";
 import { space, usePalette, withAlpha } from "../theme.js";
@@ -42,9 +43,18 @@ export function TaskDrawer({ visible, task, peer, busy, nameOf, slotOf, meName, 
     setSending(false);
     if (ok) setDraft("");
   };
+  // 键盘让位（真机 2026-10-05：键盘一弹，底下那格输入框整个被盖住）：抽屉是个 Modal，KAV 在里面量不准，
+  // 自己听键盘高度、给根 View 垫同样的底——抽屉已经垫了 insets.bottom，键盘盖住的那段要扣掉
+  const insets = useSafeAreaInsets();
+  const [kb, setKb] = useState(0);
+  useEffect(() => {
+    const show = Keyboard.addListener(Platform.OS === "ios" ? "keyboardWillShow" : "keyboardDidShow", (e) => setKb(Math.max(0, e.endCoordinates.height - insets.bottom)));
+    const hide = Keyboard.addListener(Platform.OS === "ios" ? "keyboardWillHide" : "keyboardDidHide", () => setKb(0));
+    return () => { show.remove(); hide.remove(); };
+  }, [insets.bottom]);
   return (
     <BottomSheet visible={visible} title={title} onClose={onClose} onExited={onExited}>
-      <View style={{ flex: 1 }}>
+      <View style={{ flex: 1, paddingBottom: kb }}>
         {task === null ? (
           <Text style={{ fontSize: 13, color: c.mutedForeground, textAlign: "center", padding: space.md }}>这条任务已经不在了。</Text>
         ) : (
