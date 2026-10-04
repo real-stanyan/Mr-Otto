@@ -33,9 +33,17 @@ max-port=49200
 
 # 不让 TURN 中转到内网
 no-multicast-peers
+denied-peer-ip=0.0.0.0-0.255.255.255
 denied-peer-ip=10.0.0.0-10.255.255.255
 denied-peer-ip=192.168.0.0-192.168.255.255
 denied-peer-ip=172.16.0.0-172.31.255.255
+# 100.64/10 是 tailscale（及运营商 CGNAT）：宿主在 tailnet 里时，不挡就等于让拿到票的人借 TURN 打进 tailnet
+denied-peer-ip=100.64.0.0-100.127.255.255
+denied-peer-ip=127.0.0.0-127.255.255.255
+denied-peer-ip=169.254.0.0-169.254.255.255
+denied-peer-ip=::1
+denied-peer-ip=fc00::-fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff
+denied-peer-ip=fe80::-febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff
 
 fingerprint
 no-cli
