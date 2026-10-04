@@ -52,6 +52,11 @@ describe("pairContextLines：私聊最近几句人话 → 信封", () => {
     expect(lines.length).toBeGreaterThan(0);
   });
 
+  it("名片（#1524）只给名字：不把一只智能体的整段提示词塞进另一只的上下文", () => {
+    const card = JSON.stringify({ otto: "otto.contact-card", v: 1, card: { kind: "agent", agentId: "a_0123456789ab", name: "翻译", description: "", instructions: "秘密提示词", avatarSlot: null, from: { uid: PEER, name: "小红" } } });
+    const lines = pairContextLines([row(PEER, OWNER, card, 1)], OWNER, PEER);
+    expect(lines.map((l) => l.text)).toEqual(["[智能体名片] 翻译"]);
+  });
   it("换行折成空格、空话不收；分享卡片换成一句占位，不把信封 JSON 塞给模型", () => {
     const env = JSON.stringify({ otto: "otto.session-share", v: 1, bucket: "b", prefix: "p" });
     const lines = pairContextLines([row(OWNER, PEER, "a\n\nb", 1), row(PEER, OWNER, "   ", 2), row(PEER, OWNER, env, 3)], OWNER, PEER);
