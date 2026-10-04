@@ -3,6 +3,7 @@
 
 import { describe, expect, it } from "vitest";
 import {
+  adminIntroText,
   ROLE_PRESETS, advanceRoleWait, newAgentGreetingText, roleChipsAnchor, roleFromReply, roleWaitOf,
   settledRole,
 } from "../../src/shared/agentOnboarding.js";
@@ -156,5 +157,17 @@ describe("settledRole", () => {
   it("asking（人抢在它前面先说了）/ asked → roleFromReply(那句话)", () => {
     expect(settledRole({ agentId: A, phase: "asking", anchor: null }, "帮我对账\n别的")).toBe("帮我对账");
     expect(settledRole({ agentId: A, phase: "asked", anchor: 1 }, "帮我对账\n别的")).toBe("帮我对账");
+  });
+});
+
+describe("adminIntroText（#1465）：管理员先自我介绍，再引导建第一只", () => {
+  it("说清自己是干什么的、问想要它干什么、请他起名、用 create_agent 建", () => {
+    const t = adminIntroText();
+    expect(t.startsWith("[系统]")).toBe(true);
+    expect(t).toMatch(/智能体主管/);
+    expect(t).toMatch(/介绍自己/);
+    expect(t).toMatch(/起个名字/);
+    expect(t).toMatch(/create_agent/);
+    expect(t).toMatch(/别列清单/);
   });
 });

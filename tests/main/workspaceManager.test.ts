@@ -627,7 +627,7 @@ describe("workspace relay max depth（#950 Task 9）", () => {
 describe("ensureHome（#1280）", () => {
   it("已经有主场：直接回它，不建", async () => {
     const h = harness({ findHomeWorkspace: async () => "home-1" });
-    expect(await h.manager.ensureHome()).toEqual({ ok: true, value: { id: "home-1" } });
+    expect(await h.manager.ensureHome()).toEqual({ ok: true, value: { id: "home-1", created: false } });
     expect(h.calls).not.toContain("createWorkspace");
     expect(h.calls).not.toContain("createWorkspace:home");
   });
@@ -640,7 +640,7 @@ describe("ensureHome（#1280）", () => {
         return { id: "home-new", name, owner_uid: uid, created_at: "2026-01-01T00:00:00Z" };
       },
     });
-    expect(await h.manager.ensureHome()).toEqual({ ok: true, value: { id: "home-new" } });
+    expect(await h.manager.ensureHome()).toEqual({ ok: true, value: { id: "home-new", created: true } });
     expect(seen).toEqual([["我的智能体", "home"]]);
   });
 
@@ -652,7 +652,7 @@ describe("ensureHome（#1280）", () => {
         throw Object.assign(new Error("duplicate key value violates unique constraint"), { code: "23505" });
       },
     });
-    expect(await h.manager.ensureHome()).toEqual({ ok: true, value: { id: "home-raced" } });
+    expect(await h.manager.ensureHome()).toEqual({ ok: true, value: { id: "home-raced", created: false } });
   });
 
   it("建失败且重查也没有：把原因带回去（档位不够 / 库比客户端旧都走这条）", async () => {
