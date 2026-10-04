@@ -49,9 +49,11 @@ describe("JS 那一侧", () => {
     expect(src).toMatch(/kind: "audio", uri: rec\.uri, mediaType: "audio\/mp4"/);
     expect(src).toMatch(/toast\(rec !== null && rec\.durationMs < 1000 \? "说话时间太短" : "没听清，按住再说一遍"\)/);
   });
-  it("动了原生：runtimeVersion 进到 2，麦克风文案提到语音消息", () => {
+  // 下限而不是定值：维护者每出一个原生包就在 main 上直接抬 runtimeVersion（3、4…），钉死的话每次都把 CI 打红
+  it("动了原生：runtimeVersion 至少到了 2（之后的原生包只会更大），麦克风文案提到语音消息", () => {
     const app = JSON.parse(read("mobile/app.json")) as { expo: { runtimeVersion: string; ios: { infoPlist: Record<string, string> } } };
-    expect(app.expo.runtimeVersion).toBe("2");
+    expect(app.expo.runtimeVersion).toMatch(/^\d+$/);
+    expect(Number(app.expo.runtimeVersion)).toBeGreaterThanOrEqual(2);
     expect(app.expo.ios.infoPlist.NSMicrophoneUsageDescription).toMatch(/语音消息/);
   });
 });
