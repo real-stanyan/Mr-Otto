@@ -105,7 +105,7 @@ export interface UserMessageEvent extends SessionEventBase {
       说清楚」开场白（`mentions` 是打电话的那只，`fromUid` 是接的人）。同样只是记号、同样不画、同样不进协议位。
       `"admin_intro"`（#1465，ADR-0341）：新用户的管理员第一次开口——自我介绍、引导建第一只专属智能体。
       与 `new_agent` 分开：管理员职责固定，不走「第一句回话写成职责」那一步。同样只是记号、同样不画
-      `"routine"`（#1283，ADR-0356）：定时任务到点，runtime 替主人落的开场白（`mentions` 是那只，`fromUid` 是主人）。
+      `"routine"`（#1283，ADR-0357）：定时任务到点，runtime 替主人落的开场白（`mentions` 是那只，`fromUid` 是主人）。
       与别的 greeting 两处不同：① 它**算主人亲口**（openingTraits 的 ownerSpoke 放行它——任务原话是主人写的）；
       ② 手机时间线**画它**（一条居中灰条「⏰ 定时任务「x」」）：别的 greeting 都有前一条可见事件解释「为什么它开口了」，
       这条没有。桌面照旧藏。同样不进协议位 */

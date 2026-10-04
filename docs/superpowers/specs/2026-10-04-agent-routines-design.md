@@ -31,7 +31,7 @@
 
 ## 2. 形状：一张表 + 一个纯函数
 
-### 2.1 `agent_routines`（migration 0057）
+### 2.1 `agent_routines`（migration 0058）
 
 | 列 | 类型 | 说明 |
 |---|---|---|
@@ -134,7 +134,7 @@ routine?: { id: string; title: string };
 
 1. **`say` 帧加可选 `tz: string`**（设备 IANA，`Intl.DateTimeFormat().resolvedOptions().timeZone`）。runtime 校验是合法 IANA 后写到 `user_message.tz`（新可选字段，缺席 = 旧日志 / 桌面）。协议**不升**：可选字段，旧 runtime 忽略，旧客户端不发。非 @ 的 `chat_message` 路径**不带** `tz`（私聊里每句话都是 `user_message`，它在这里无关）。
 2. **投影里「今天是」按最近一条带 `tz` 的人话算**：`deriveMessages` 的 `today` 从「日志里最后一条事件的 `ts`」变成「同一个 `ts`，按最近一条 `user_message.tz` 格式化」，没有 tz 的日志逐字节不变（老投影断言不动）。括号里的「本机时区」改成具体时区名。**这是模型知道「现在几点、哪个时区」的唯一来源**，可从日志推导，不读库。多时区的群聊里，「今天是」那一行会随最近一位说话的人的时区来回翻——前缀缓存因此失效（见第 10 节已知代价）。读取的纯函数是 `userTzOf`（`deriveMessages.ts`）。
-3. **`user_settings.timezone`**（同一份 0057 新建的 `user_settings` 表，uid 主键、只有本人读写的 RLS）：手机前台时（`AppState` → `active`）设备 tz 与上次写的不同才 `upsert`（手机写，runtime 用 service key 读、不写；调度器只在建任务时读它当默认值）。**不放 `profiles`**（终审 C3）：`profiles` 的 select 是 `using (true)`（0001），所有登录用户都读得到，一个出差就会变、前台就会改写的时区挂在那儿等于让任何人跟踪你人在哪。调度器建任务时 `tz` 省略 → 读它；读不到 → 拒绝建任务并让智能体问一句「你在哪个城市」。桌面不写（桌面不在本期）。
+3. **`user_settings.timezone`**（同一份 0058 新建的 `user_settings` 表，uid 主键、只有本人读写的 RLS）：手机前台时（`AppState` → `active`）设备 tz 与上次写的不同才 `upsert`（手机写，runtime 用 service key 读、不写；调度器只在建任务时读它当默认值）。**不放 `profiles`**（终审 C3）：`profiles` 的 select 是 `using (true)`（0001），所有登录用户都读得到，一个出差就会变、前台就会改写的时区挂在那儿等于让任何人跟踪你人在哪。调度器建任务时 `tz` 省略 → 读它；读不到 → 拒绝建任务并让智能体问一句「你在哪个城市」。桌面不写（桌面不在本期）。
 4. **打给好友的任务**：`schedule_task` 的说明里写死「任务里要打给好友的，先问好友所在城市，换成 IANA 时区传 `tz`；没问到别建」。模型做城市 → 时区这一步（它会），工具只校验 IANA 合法。
 
 ## 7. 模型侧工具（私聊里给每只；外联会话一把都没有，照旧）
@@ -171,7 +171,7 @@ routine?: { id: string; title: string };
 
 ## 10. 部署顺序与已知代价
 
-部署：**0057 → runtime → 手机热更新**（没有原生改动）。反过来 runtime 读不到表会在 tick 里报错一次然后静默。
+部署：**0058 → runtime → 手机热更新**（没有原生改动）。反过来 runtime 读不到表会在 tick 里报错一次然后静默。
 
 已知代价：
 

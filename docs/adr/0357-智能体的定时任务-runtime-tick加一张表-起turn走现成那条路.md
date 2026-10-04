@@ -1,5 +1,5 @@
-# ADR-0356：智能体的定时任务——runtime 里一只 tick 加一张表，到点起 turn 走现成那条路
-原为 ADR-0353（合并主干时撞号改为 0356，代码注释与 migration 头已同步改）
+# ADR-0357：智能体的定时任务——runtime 里一只 tick 加一张表，到点起 turn 走现成那条路
+原为 ADR-0353（合并主干时撞号改为 0356）；原为 ADR-0356（再次撞号——主干上 0356 被「公开智能体」占了——改为 0357；migration 同时由 0057 改为 0058，代码注释与 migration 头已同步改）
 
 日期：2026-10-04 · issue #1283 · spec `docs/superpowers/specs/2026-10-04-agent-routines-design.md` · 维护者在会话里拍板
 
