@@ -35,7 +35,7 @@ describe("daemon.ts：外联的接线（#1441）", () => {
     expect(src).not.toMatch(/onOutreachEnded:\s*null/);
     expect(src).not.toMatch(/\boutreach:\s*null,/);
     expect(src).toMatch(/onOutreachEnded:\s*outreachHub === null \? null : \(r\) => void outreachHub\.ended\(workspaceId, ownerUid, r\)/);
-    expect(src).toMatch(/outreach:\s*outreachHub === null \|\| !approveAll\s*\?\s*null\s*:\s*\{ dispatch: \(o\) => outreachHub\.dispatch\(\{ \.\.\.o, workspaceId, ownerUid \}\) \}/);
+    expect(src).toMatch(/outreach:\s*outreachHub === null \|\| !approveAll\s*\?\s*null\s*:\s*\{\s*dispatch: \(o\) => outreachHub\.dispatch\(\{ \.\.\.o, workspaceId, ownerUid \}\),\s*dialPicked: \(o\) => outreachHub\.dialPicked\(\{ \.\.\.o, workspaceId, ownerUid \}\),?\s*\}/);
   });
   it("补种子 / 摘归档房 / 开房幂等三处接线", () => {
     expect(src).toMatch(/hasSeed: \(id\) => storeFor\(workspaceId\)\.lastOfType\(id, "session_created"\) !== null/);

@@ -264,6 +264,7 @@ export function ChatScreen({ route, navigation }: Props) {
           : target.kind === "outreach" ? `o:${target.sessionId}`
             : `t:${target.sessionId}`;
 
+  const [picking, setPicking] = useState<{ pickId: string; uid: string | null } | null>(null);
   const [pageNote, setPageNote] = useState<{ text: string; tone: "muted" | "error" } | null>(null);
   const [stopping, setStopping] = useState(false);
   const [deciding, setDeciding] = useState<string | null>(null);
@@ -535,6 +536,19 @@ export function ChatScreen({ route, navigation }: Props) {
     if (!r.ok) setPageNote(r.unknown ? { text: "没有收到回执，不确定批下去没有", tone: "muted" } : { text: r.message, tone: "error" });
   };
 
+  // 选人卡（#1520）：点谁就拨谁。没连上之前画的可能是缓存里的卡，同 decide 不许点
+  const pickFriendOn = async (pickId: string, uid: string | null): Promise<void> => {
+    if (!ready || picking !== null) return;
+    setPicking({ pickId, uid });
+    const r = await cloudClient.pickFriend(pickId, uid);
+    setPicking(null);
+    if (!r.ok) setPageNote(r.unknown ? { text: "没有收到回执，不确定拨出去没有", tone: "muted" } : { text: r.message, tone: "error" });
+  };
+  const friendAvatars = useMemo(
+    () => new Map((friends.rows ?? []).map((f) => [f.profile.id, f.profile.avatarUrl])),
+    [friends.rows],
+  );
+
   // ── 通话 ──
   // 外联会话里好友听的语音记主人的账（票），他自己订没订阅与这通电话无关：只看这台有没有原生语音模块
   const usable = isOutreach ? nativeSpeech : voiceUsable(voice);
@@ -781,6 +795,9 @@ export function ChatScreen({ route, navigation }: Props) {
                     deciding={deciding}
                     decideReady={ready}
                     onDecide={(id, d) => void decide(id, d)}
+                    friendAvatarOf={(uid) => friendAvatars.get(uid) ?? ""}
+                    picking={picking}
+                    onPickFriend={(id, uid) => void pickFriendOn(id, uid)}
                     onAgent={(agentId) => navigation.navigate("Agent", isTeam || isGuestChat ? { agentId, workspaceId: ws.id } : { agentId })}
                     {...(home.home !== null && home.home.agents.length > 0 && !isOutreach
                       ? { onLongPress: (r: ChatRow) => setDispatching({ key: Date.now(), visible: true, row: r }) }

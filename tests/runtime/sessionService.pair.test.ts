@@ -262,13 +262,16 @@ describe("私密车道（#1461 P1）", () => {
   it("车道里不挂 call_friend：提示词说「你发不了消息给朋友」，工具表必须说同一句话（#1206；复审 M3）", async () => {
     const store = newStore();
     pairSeed(store);
-    const { session } = open(store, { outreach: { dispatch: async () => "打了" } });
+    const { session } = open(store, { outreach: { dispatch: async () => "打了", dialPicked: async () => null } });
     await say(session, "@助手 帮我问问", [HELPER.agentId]);
     await session.settled();
     const env = store.ofType(SID, "request_envelope").at(-1) as RequestEnvelopeEvent;
     expect(env.tools.length).toBeGreaterThan(0); // 不是空转：别的刀照挂
     expect(env.tools.map((t) => t.name)).not.toContain("call_friend");
     expect(env.system).toContain("发不了消息给");
+    // 选人卡的收口同一条件（#1520）：车道里就算有人伪造 pick_friend 也不认
+    session.logFriendPick({ pickId: "p1", phase: "offered", fromAgentId: HELPER.agentId, question: "q", candidates: [{ uid: "u1", name: "小红", why: "" }, { uid: "u2", name: "小明", why: "" }], brief: "b", opening: "o" });
+    expect(await session.pickFriend("p1", OWNER, "u1")).toEqual({ ok: false, message: "只有他本人能选。" });
     store.close();
   });
 

@@ -19,8 +19,8 @@ describe("协议 27：human_call / human_call_result 帖", () => {
     expect(decodeCsDown(encodeCs({ t: "human_call_result", callId: "c", ok: false, message: "只能给朋友打电话。" }))).toEqual({ t: "human_call_result", callId: "c", ok: false, message: "只能给朋友打电话。" });
     expect(decodeCsDown(encodeCs({ t: "human_call_result", callId: "c", ok: true, ice: "x" } as never))).toEqual({ t: "human_call_result", callId: "c", ok: true });
   });
-  it("协议号 27", () => {
-    expect(CS_PROTOCOL_VERSION).toBe(27);
+  it("协议号 27 起有这一对帖（此刻 28：#1520 选人卡在它之后进位）", () => {
+    expect(CS_PROTOCOL_VERSION).toBe(28);
   });
 });
 

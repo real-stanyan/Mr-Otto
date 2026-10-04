@@ -534,6 +534,11 @@ describe("createCloudSessionClient — say/approve/archive 就绪闸", () => {
     expect(await h.client.approve("c1", "approved")).toEqual({ ok: false, message: "没有已连接的云会话" });
   });
 
+  it("没有 join 过：pickFriend 失败（#1520）", async () => {
+    const h = harness();
+    expect(await h.client.pickFriend("p1", "u1")).toEqual({ ok: false, message: "没有已连接的云会话" });
+  });
+
   it("还在 connecting（welcome 之前）：一律未就绪失败", async () => {
     const h = harness();
     await h.client.join("w1", "cloud-s1");

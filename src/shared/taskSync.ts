@@ -69,6 +69,7 @@ export const PEN_VERDICTS: Record<SessionEvent["type"], PenVerdict> = {
   call_ring: "executor",
   routine_note: "executor",
   outreach: "executor",
+  friend_pick: "executor",
   memory_loaded: "executor",
   workspace_memory_loaded: "executor",
   workspace_wiki_loaded: "executor",

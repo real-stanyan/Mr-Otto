@@ -192,6 +192,7 @@ function pendingAfter(
         break;
       case "call_ring":
       case "outreach":
+      case "friend_pick":
         // 回电（#1411）：云会话专属、模型不可见，不占上下文
         break;
       case "executor_changed":

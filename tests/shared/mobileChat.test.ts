@@ -654,3 +654,61 @@ describe("段首情绪括注（#1515）", () => {
     expect(liveRows({ streaming: { a_000000000001: "（惊）" }, ws: WS, now: DAY })).toEqual([]);
   });
 });
+
+describe("选人卡一行（#1520）", () => {
+  const offer = (pickId: string, ts = DAY) => e({
+    type: "friend_pick", pickId, phase: "offered", fromAgentId: "a_000000000002", ts,
+    question: "好友里没有叫「Mingxuan Zhang」的。你要打给哪位？点一下我就拨。",
+    candidates: [{ uid: "u_baba", name: "爸爸", why: "上次打的就是他" }, { uid: "u_mz", name: "Mingxuan Zhou", why: "名字相近" }],
+    brief: "随便聊聊", opening: "你好", ignorable: true,
+  });
+  const rowsOf = (events: SessionEvent[], now = DAY) =>
+    chatRows({ events, ws: WS, selfUid: "me", now, ownerUid: "me" }).filter((r) => r.kind === "friend_pick");
+
+  it("offered 的位置出一行，带问话、候选、是谁弹的；还开着 = open", () => {
+    seq = 0;
+    expect(rowsOf([offer("p1")])).toEqual([{
+      kind: "friend_pick", key: "friend_pick-p1", ts: DAY, pickId: "p1", agentId: "a_000000000002", name: "运维",
+      question: "好友里没有叫「Mingxuan Zhang」的。你要打给哪位？点一下我就拨。",
+      candidates: [{ uid: "u_baba", name: "爸爸", why: "上次打的就是他" }, { uid: "u_mz", name: "Mingxuan Zhou", why: "名字相近" }],
+      status: "open", pickedUid: null, message: null, canPick: true, waitingFor: "Stan",
+    }]);
+  });
+
+  it("canPick 只给主人（I-1）：客人看到的是只读的卡；ownerUid 缺席 = 没人认得出主人，也只读", () => {
+    seq = 0;
+    const withGuest: WorkspaceSnapshot = { ...WS, members: [...WS.members, { uid: "u_guest", role: "member", label: "小红", avatarUrl: "" }] };
+    const as = (selfUid: string, ownerUid?: string) =>
+      chatRows({ events: [offer("p1")], ws: withGuest, selfUid, now: DAY, ...(ownerUid !== undefined ? { ownerUid } : {}) }).filter((r) => r.kind === "friend_pick");
+    expect(as("me", "me")[0]).toMatchObject({ canPick: true });
+    expect(as("u_guest", "me")[0]).toMatchObject({ canPick: false, waitingFor: "Stan" });
+    expect(as("me")[0]).toMatchObject({ canPick: false, waitingFor: null });
+  });
+
+  it("dismissed：状态取最后一条，不单独成行（spec §9 六态之一）", () => {
+    seq = 0;
+    const dismissed = e({ type: "friend_pick", pickId: "p1", phase: "dismissed", fromAgentId: "a_000000000002", ignorable: true });
+    const rows = rowsOf([offer("p1"), dismissed]);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ status: "dismissed", pickedUid: null, message: null });
+  });
+
+  it("状态取这张卡最后一条：picked / failed（带 message）/ dismissed；后面那几条不单独成行", () => {
+    seq = 0;
+    const picked = e({ type: "friend_pick", pickId: "p1", phase: "picked", fromAgentId: "a_000000000002", uid: "u_baba", ignorable: true });
+    expect(rowsOf([offer("p1"), picked]).map((r) => [r.kind === "friend_pick" && r.status, r.kind === "friend_pick" && r.pickedUid])).toEqual([["picked", "u_baba"]]);
+    seq = 0;
+    const failed = e({ type: "friend_pick", pickId: "p1", phase: "failed", fromAgentId: "a_000000000002", message: "没设备", ignorable: true });
+    const f = rowsOf([offer("p1"), picked, failed]);
+    expect(f).toHaveLength(1);
+    expect(f[0]).toMatchObject({ status: "failed", pickedUid: "u_baba", message: "没设备" });
+  });
+
+  it("过了 10 分钟 / 被新卡顶掉：expired", () => {
+    seq = 0;
+    expect(rowsOf([offer("p1")], DAY + 10 * 60_000 + 1)[0]).toMatchObject({ status: "expired" });
+    seq = 0;
+    const two = rowsOf([offer("p1"), offer("p2")]);
+    expect(two.map((r) => r.kind === "friend_pick" && r.status)).toEqual(["expired", "open"]);
+  });
+});
