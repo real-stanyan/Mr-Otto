@@ -104,7 +104,7 @@ export function AgentRows({ ws, agent }: { ws: WorkspaceSnapshot; agent: Workspa
         <Row label="职责" value={text(agent.description)} chevron onPress={() => setEditing({ field: "description", key: Date.now(), visible: true })} />
         <Row label="还有什么要交代的" value={text(agent.instructions)} chevron onPress={() => setEditing({ field: "instructions", key: Date.now(), visible: true })} />
         <Row label="说话的声音" value={voiceRowValue(voiceNow)} chevron onPress={openVoice} />
-        {/* 读不到（0056 还没跑）就整行不画——画一行点进去是空的，不如没有 */}
+        {/* 读不到（0057 还没跑）就整行不画——画一行点进去是空的，不如没有 */}
         {routines.error === null ? (
           <Row label="定时任务" value={routines.loaded ? routinesRowValue(routines.rows, now) : ""} chevron onPress={() => navigation.navigate("Routines", { agentId: agent.agentId })} />
         ) : null}

@@ -19,7 +19,7 @@
 - `greeting` 加取值**不进协议位**；`say` 帧的 `tz` 是可选字段，`CS_PROTOCOL_VERSION`（现为 24）**不升**。
 - 手机端不加原生依赖（ADR-0340：原生改动走不了热更新）；表单类流程用居中 `Dialog`，不用底部抽屉。
 - 数字常量（spec §2–§5）：标题 ≤ 40 字、任务原话 ≤ 2000 字、每只启用中 ≤ 20 条、一次性漏跑宽限 2 小时、重复漏跑宽限 10 分钟、同一任务两次执行间隔 ≥ 60 秒、routine 轮圈数上限 40、额度门 = 剩余周额度 < `limitMicro * RELAY_BUDGET_FRACTION_OF_REMAINING`（0.1）、已完成的一次性任务留 7 天。
-- 最新 migration 是 0055 → 本期是 **0056**；最新 ADR 是 0352 → 本期 **0353**（合并前按 ADR-0074 重核编号）。
+- 最新 migration 是 0055 → 本期是 **0056**；最新 ADR 是 0352 → 本期 **0353**（合并前按 ADR-0074 重核编号）。（合并主干后实际号：migration 改为 **0057**——0056 被共享车道占了；ADR 改为 **0356**。）
 - 门禁：`npm test`（`tsc --noEmit` + 手机端 `tsc --noEmit` + `vitest run`）。跑之前 `npm --prefix mobile ci` 一次。
 - 提交信息写**为什么**，中文，结尾带 `Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>`。
 
@@ -35,7 +35,7 @@
 |---|---|
 | `src/shared/routines.ts`（新） | 类型、常量、`parseRoutineSchedule`、`routineErrors`、`isIanaTimeZone`、`zonedParts` / `wallClockToUtc`（夏令时）、`nextRunAt`、`scheduleText` / `formatInTz` / `routineOpeningText` / `routineNoteText`、工具名常量。**纯函数，零依赖** |
 | `src/shared/supabaseRoutinesApi.ts`（新） | 手机（将来桌面）直接读写 `agent_routines` 与 `profiles.timezone` 的薄封装 + 行映射 `routineRowOf` |
-| `supabase/migrations/0056_agent_routines.sql`（新） | 表 + 索引 + RLS + `profiles.timezone` |
+| `supabase/migrations/0057_agent_routines.sql`（新） | 表 + 索引 + RLS + `profiles.timezone` |
 | `src/session/events.ts` | `UserMessageEvent.greeting` 加 `"routine"`、加 `routine?` / `tz?`；新 `RoutineNoteEvent`；`KNOWN_EVENT_TYPES_MAP` 登记 |
 | `src/shared/sessionPackage.ts` / `src/shared/taskSync.ts` / `src/shared/cloudTimeline.ts` | 三张穷举表给 `routine_note` 表态 |
 | `src/shared/outreach.ts` | `openingTraits` 对 `greeting:"routine"` 的 `ownerSpoke` 放行 |
@@ -439,10 +439,10 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 ---
 
-### Task 2: migration 0056 —— `agent_routines` + `profiles.timezone`
+### Task 2: migration 0057 —— `agent_routines` + `profiles.timezone`
 
 **Files:**
-- Create: `supabase/migrations/0056_agent_routines.sql`
+- Create: `supabase/migrations/0057_agent_routines.sql`
 - Modify: `CONTEXT.md`（「产品 / 技术术语」一节加「定时任务（routine）」）
 
 **Interfaces:**
@@ -451,7 +451,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - [ ] **Step 1: 写 migration**
 
 ```sql
--- 0056_agent_routines.sql —— 智能体的定时任务（#1283，ADR-0353）。幂等，重跑不炸。
+-- 0057_agent_routines.sql —— 智能体的定时任务（#1283，ADR-0356）。幂等，重跑不炸。
 -- 同 0049 的约定：Supabase SQL editor / Management API 手动执行一次（那个端点只回最后一条语句的结果，逐条发）。
 -- **部署顺序：先跑这份、再部署 runtime、再发手机热更新**——反过来 runtime 的调度器每 30 秒读一次不存在的表、
 -- 只记一行日志；手机的「定时任务」那一行读不到表就整行不画。**还没有在生产执行**。
@@ -510,14 +510,14 @@ Run: `which psql >/dev/null && psql --version || echo "no psql, skip"`。有 psq
 在「## 产品 / 技术术语（Mr Otto）」那一节末尾（`## Key invariants` 之前）加：
 
 ```markdown
-- **定时任务（routine）**：一只账号级智能体记住的一条「到点自己起一轮」的任务（#1283，ADR-0353）。两类：**永久**（`daily` / `weekly`，墙上时间固定）与**日抛**（`once`，跑完即停用、列表里留 7 天）。存 `agent_routines`，调度器在云 runtime 里（30 秒 tick + 原子认领），到点在它的私聊里落一条 `greeting:"routine"` 的开场白起 turn——与回电 / 外联汇报同一条路。routine 轮视同主人亲口（免审、`call_friend` 亮），刹车是额度门 + 圈数上限。模型侧三把刀 `schedule_task` / `list_schedules` / `update_schedule`。
+- **定时任务（routine）**：一只账号级智能体记住的一条「到点自己起一轮」的任务（#1283，ADR-0356）。两类：**永久**（`daily` / `weekly`，墙上时间固定）与**日抛**（`once`，跑完即停用、列表里留 7 天）。存 `agent_routines`，调度器在云 runtime 里（30 秒 tick + 原子认领），到点在它的私聊里落一条 `greeting:"routine"` 的开场白起 turn——与回电 / 外联汇报同一条路。routine 轮视同主人亲口（免审、`call_friend` 亮），刹车是额度门 + 圈数上限。模型侧三把刀 `schedule_task` / `list_schedules` / `update_schedule`。
 ```
 
 - [ ] **Step 4: 提交**
 
 ```bash
-git add supabase/migrations/0056_agent_routines.sql CONTEXT.md
-git commit -m "feat(db): agent_routines 表 + profiles.timezone（0056，#1283）
+git add supabase/migrations/0057_agent_routines.sql CONTEXT.md
+git commit -m "feat(db): agent_routines 表 + profiles.timezone（0057，#1283）
 
 调度器只看 next_run_at 那一列、认领靠 where next_run_at = 读到的值；不存 session_id，
 私聊按 0037 的唯一索引现查。还没在生产执行，部署顺序写在文件头。
@@ -596,7 +596,7 @@ Expected: FAIL（tsc 层：`"routine"` 不在联合里 / `routine_note` 不是�
 在 `greeting` 那条注释末尾（`"admin_intro"` 那段之后）追加一段，并改联合：
 
 ```ts
-      `"routine"`（#1283，ADR-0353）：定时任务到点，runtime 替主人落的开场白（`mentions` 是那只，`fromUid` 是主人）。
+      `"routine"`（#1283，ADR-0356）：定时任务到点，runtime 替主人落的开场白（`mentions` 是那只，`fromUid` 是主人）。
       与别的 greeting 两处不同：① 它**算主人亲口**（openingTraits 的 ownerSpoke 放行它——任务原话是主人写的）；
       ② 手机时间线**画它**（一条居中灰条「⏰ 定时任务「x」」）：别的 greeting 都有前一条可见事件解释「为什么它开口了」，
       这条没有。桌面照旧藏。同样不进协议位 */
@@ -1228,7 +1228,7 @@ git add src/shared/outreach.ts services/runtime/src/sessionService.ts tests/shar
 git commit -m "feat(supervision): 定时任务的开场白算主人亲口——任务原话是他写的（#1283）
 
 不放行的话 routine 轮里 call_friend 永远灭着，「定时打给好友」做不成。这是本设计
-唯一放宽的一处，代价写在 spec §5.2 / ADR-0353。
+唯一放宽的一处，代价写在 spec §5.2 / ADR-0356。
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ```
@@ -1797,7 +1797,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 ```ts
 // CloudSessionOpts
-/** 定时任务（#1283）。**必需**（同 agentWriter 的纪律）：null = 不挂刀（团队会话 / 0056 没跑 / 外联）。
+/** 定时任务（#1283）。**必需**（同 agentWriter 的纪律）：null = 不挂刀（团队会话 / 0057 没跑 / 外联）。
     刀只挂在 approveAll 且 chat.kind === "dm" 的会话 */
 routines: RoutineStore | null;
 // CloudSession
@@ -1910,7 +1910,7 @@ Expected: FAIL（tsc：`routines` / `runRoutine` 不存在）
 
 ```ts
   /** 定时任务（#1283，spec §7）。**必需**（同 agentWriter / isMember 的纪律）：忘接线该编译不过。
-      null = 不挂那三把刀（团队会话 / 外联 / 0056 没跑）。刀只在 approveAll 且 chat.kind === "dm" 的会话里挂 */
+      null = 不挂那三把刀（团队会话 / 外联 / 0057 没跑）。刀只在 approveAll 且 chat.kind === "dm" 的会话里挂 */
   routines: RoutineStore | null;
 ```
 
@@ -2250,7 +2250,7 @@ export function createRoutineScheduler(deps: RoutineSchedulerDeps): { tick(): Pr
       try {
         due = await deps.store.due(now, ROUTINE_TICK_LIMIT);
       } catch (err) {
-        // 0056 没跑时这里每 30 秒报一次——只记日志，不炸进程
+        // 0057 没跑时这里每 30 秒报一次——只记日志，不炸进程
         deps.log(`到点任务读不出来：${err instanceof Error ? err.message : String(err)}`);
         return;
       }
@@ -2652,7 +2652,7 @@ export function useRoutines(workspaceId: string, agentId: string): { rows: Routi
       setRows(await listRoutines(supabase, workspaceId, agentId));
       setError(null);
     } catch (e) {
-      // 0056 没跑：整行不画（AgentRows 按 error !== null 判），不报红
+      // 0057 没跑：整行不画（AgentRows 按 error !== null 判），不报红
       setError(e instanceof Error ? e.message : String(e));
     } finally {
       setLoaded(true);
@@ -3023,7 +3023,7 @@ export async function syncDeviceTimezone(): Promise<void> {
   try {
     await saveTimezone(supabase, uid, tz);
     lastSyncedTz = tz;
-  } catch { /* 0056 没跑 / 网络抖：下次再写 */ }
+  } catch { /* 0057 没跑 / 网络抖：下次再写 */ }
 }
 ```
 
@@ -3034,7 +3034,7 @@ export async function syncDeviceTimezone(): Promise<void> {
 Run: `npx tsc --noEmit && (cd mobile && npx tsc --noEmit)`
 Expected: 零错误。
 
-模拟器冒烟（记录到 issue #1283 的评论里，不阻塞合并）：智能体资料页 → 「定时任务」→ 「+」→ 建一条 2 分钟后的一次性任务 → 回私聊等 → 到点看到灰条「⏰ 定时任务「…」」+ 它的回话 +（切后台时）一条推送；列表里那条进了「已完成」。runtime 要先部署（0056 → runtime → 热更新）。
+模拟器冒烟（记录到 issue #1283 的评论里，不阻塞合并）：智能体资料页 → 「定时任务」→ 「+」→ 建一条 2 分钟后的一次性任务 → 回私聊等 → 到点看到灰条「⏰ 定时任务「…」」+ 它的回话 +（切后台时）一条推送；列表里那条进了「已完成」。runtime 要先部署（0057 → runtime → 热更新）。
 
 - [ ] **Step 13: 提交**
 
@@ -3050,7 +3050,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 ---
 
-### Task 14: 文档 —— ADR-0353、代码地图、spec 回写
+### Task 14: 文档 —— ADR-0356、代码地图、spec 回写
 
 **Files:**
 - Create: `docs/adr/0353-智能体的定时任务-runtime-tick加一张表-起turn走现成那条路.md`
@@ -3060,7 +3060,7 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 - [ ] **Step 1: 写 ADR**
 
 ```markdown
-# ADR-0353：智能体的定时任务——runtime 里一只 tick 加一张表，到点起 turn 走现成那条路
+# ADR-0356：智能体的定时任务——runtime 里一只 tick 加一张表，到点起 turn 走现成那条路
 
 日期：2026-10-04 · issue #1283 · spec `docs/superpowers/specs/2026-10-04-agent-routines-design.md` · 维护者在会话里拍板
 
@@ -3107,7 +3107,7 @@ ADR-0298 把个人主场的审批整个免掉时，点名说 routine 要重判�
 `docs/where-to-find-things.md` 末尾加：
 
 ```markdown
-- `src/shared/routines.ts` / `supabaseRoutinesApi.ts` / `services/runtime/src/routineStore.ts` / `routineTools.ts` / `routineScheduler.ts` / `routineRun.ts` / `supabase/migrations/0056_agent_routines.sql` / `mobile/src/agent/RoutinesScreen.tsx` / `RoutineEditDialog.tsx` / `TimeWheel.tsx` — **智能体的定时任务**（ADR-0353，#1283）：墙上时间 + IANA 时区存 `agent_routines`，`nextRunAt` 一份纯函数（夏令时按 ICU 惯例），runtime 30 秒 tick 原子认领（`where next_run_at = 读到的值`，先推进再起 turn），到点落 `user_message{greeting:"routine"}` 走 `enqueue → startDrain`（与回电 / 外联汇报同一条路）。routine 轮算主人亲口（`openingTraits` 放行）、免审，刹车是额度门（剩余周额度 < 10%）+ `maxRounds` 40（抛错走 `turn_ended{outcome:"error"}`）。时区：手机 `say` 帧带 `tz` 落 `user_message.tz`，投影「今天是」按它算（`userTzOf`）；`profiles.timezone` 只给建任务当默认。三把刀 `schedule_task` / `list_schedules` / `update_schedule` 只在主场私聊、主人亲口的轮亮。手机灰条：开场白与 `routine_note` 都是 `note` 行；桌面照旧藏。**部署顺序 0056 → runtime → 手机热更新**
+- `src/shared/routines.ts` / `supabaseRoutinesApi.ts` / `services/runtime/src/routineStore.ts` / `routineTools.ts` / `routineScheduler.ts` / `routineRun.ts` / `supabase/migrations/0057_agent_routines.sql` / `mobile/src/agent/RoutinesScreen.tsx` / `RoutineEditDialog.tsx` / `TimeWheel.tsx` — **智能体的定时任务**（ADR-0356，#1283）：墙上时间 + IANA 时区存 `agent_routines`，`nextRunAt` 一份纯函数（夏令时按 ICU 惯例），runtime 30 秒 tick 原子认领（`where next_run_at = 读到的值`，先推进再起 turn），到点落 `user_message{greeting:"routine"}` 走 `enqueue → startDrain`（与回电 / 外联汇报同一条路）。routine 轮算主人亲口（`openingTraits` 放行）、免审，刹车是额度门（剩余周额度 < 10%）+ `maxRounds` 40（抛错走 `turn_ended{outcome:"error"}`）。时区：手机 `say` 帧带 `tz` 落 `user_message.tz`，投影「今天是」按它算（`userTzOf`）；`profiles.timezone` 只给建任务当默认。三把刀 `schedule_task` / `list_schedules` / `update_schedule` 只在主场私聊、主人亲口的轮亮。手机灰条：开场白与 `routine_note` 都是 `note` 行；桌面照旧藏。**部署顺序 0057 → runtime → 手机热更新**
 ```
 
 - [ ] **Step 3: spec 回写三处**
@@ -3117,13 +3117,13 @@ ADR-0298 把个人主场的审批整个免掉时，点名说 routine 要重判�
 - [ ] **Step 4: 跑 ADR 编号测试**
 
 Run: `npx vitest run tests/docs/adrNumbers.test.ts`
-Expected: PASS（合并前再 `git fetch origin && git -c core.quotePath=false ls-tree --name-only origin/main docs/adr | tail -1` 核一次编号，撞了按 ADR-0074 改成 max+1 并在文件头加 `原为 ADR-0353`——改号只改自己这条，别全局替换）
+Expected: PASS（合并前再 `git fetch origin && git -c core.quotePath=false ls-tree --name-only origin/main docs/adr | tail -1` 核一次编号，撞了按 ADR-0074 改成 max+1 并在文件头加 `原为 ADR-0356`——改号只改自己这条，别全局替换）
 
 - [ ] **Step 5: 提交**
 
 ```bash
 git add docs/adr/0353-*.md docs/where-to-find-things.md docs/superpowers/specs/2026-10-04-agent-routines-design.md
-git commit -m "docs: ADR-0353 智能体的定时任务 + 代码地图 + spec 回写三处小修（#1283）
+git commit -m "docs: ADR-0356 智能体的定时任务 + 代码地图 + spec 回写三处小修（#1283）
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ```
@@ -3154,10 +3154,10 @@ PR 正文（写进 `/tmp/pr-body.md`，用 Write 工具，别用 heredoc）：
 ```markdown
 Closes #1283
 
-spec：`docs/superpowers/specs/2026-10-04-agent-routines-design.md` · ADR-0353 · plan：`docs/superpowers/plans/2026-10-04-agent-routines.md`
+spec：`docs/superpowers/specs/2026-10-04-agent-routines-design.md` · ADR-0356 · plan：`docs/superpowers/plans/2026-10-04-agent-routines.md`
 
 ## 做了什么
-- `agent_routines`（0056）+ `src/shared/routines.ts` 一份纯函数（下一跳 / 校验 / 文案，夏令时按 ICU 惯例）
+- `agent_routines`（0057）+ `src/shared/routines.ts` 一份纯函数（下一跳 / 校验 / 文案，夏令时按 ICU 惯例）
 - runtime：30 秒 tick 原子认领 → 找私聊 → 开房 → `runRoutine`（`greeting:"routine"` 开场白，与回电 / 外联汇报同一条路）；额度门 + `maxRounds` 40
 - 三把刀 `schedule_task` / `list_schedules` / `update_schedule`，只在主场私聊、主人亲口的轮亮
 - 时区：手机 `say` 帧带 `tz` → `user_message.tz` → 投影「今天是」按它算；`profiles.timezone` 当建任务默认
@@ -3167,7 +3167,7 @@ spec：`docs/superpowers/specs/2026-10-04-agent-routines-design.md` · ADR-0353 
 两类任务；打给好友先问城市定时区；无人在场照主场免审；重复形状到每天 + 每周；设置页只做手机；调度器放 runtime。
 
 ## 部署顺序
-0056 → runtime → 手机热更新。**三件都还没做**，真机冒烟记在 #1283。
+0057 → runtime → 手机热更新。**三件都还没做**，真机冒烟记在 #1283。
 
 ## 对 spec 的三处小修
 见 plan 开头（圈数到数走 error 收口；表不存 session_id；桌面照旧藏）。
@@ -3183,7 +3183,7 @@ gh pr merge --merge --delete-branch
 
 - [ ] **Step 5: 收工**
 
-按 AGENTS.md「On ending a shift」：#1283 由 PR 关闭；开一条交接 issue（Task 型，标题「交接：#1283 定时任务已合，待 0056 / runtime 部署 / 手机热更新 / 真机冒烟」），正文列三件线上动作 + 桌面设置页另开的 issue 号；五段式 Memory 评论；`npm run lane:prune` 看一眼。
+按 AGENTS.md「On ending a shift」：#1283 由 PR 关闭；开一条交接 issue（Task 型，标题「交接：#1283 定时任务已合，待 0057 / runtime 部署 / 手机热更新 / 真机冒烟」），正文列三件线上动作 + 桌面设置页另开的 issue 号；五段式 Memory 评论；`npm run lane:prune` 看一眼。
 
 ---
 

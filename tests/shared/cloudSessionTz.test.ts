@@ -13,7 +13,7 @@ describe("say 帧的 tz", () => {
     expect(say({ tz: "Beijing" })).toEqual({ t: "say", text: "hi", mention: true });
     expect(say({ tz: 8 })).toEqual({ t: "say", text: "hi", mention: true });
   });
-  it("协议号不动（可选字段）", () => {
-    expect(CS_PROTOCOL_VERSION).toBe(24);
+  it("协议号不动（可选字段）：本期没碰它，断言的是主干当前值（24 → 25 是共享车道 #1523 合进来的）", () => {
+    expect(CS_PROTOCOL_VERSION).toBe(25);
   });
 });

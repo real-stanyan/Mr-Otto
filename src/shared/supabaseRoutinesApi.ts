@@ -1,4 +1,4 @@
-// supabaseRoutinesApi —— agent_routines（migration 0056）的行映射与列清单（#1283）。
+// supabaseRoutinesApi —— agent_routines（migration 0057）的行映射与列清单（#1283）。
 // 客户端与 runtime 共用这一份映射：列名 → 字段名只写一处，两边读到的 RoutineRow 才一致。
 // 客户端（手机，将来桌面）用登录者自己的 JWT 直接读写这张表，RLS 兜底。
 

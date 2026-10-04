@@ -524,7 +524,7 @@ export interface CloudSessionOpts {
       DISK_LIMIT_KIB */
   diskUsage: () => { usedKib: number; limitKib: number } | null;
   /** 定时任务（#1283，spec §7）。**必需**（同 agentWriter / isMember 的纪律）：忘接线该编译不过。
-      null = 不挂那三把刀（团队会话 / 外联 / 0056 没跑）。刀只在 approveAll 且 chat.kind === "dm" 的会话里挂 */
+      null = 不挂那三把刀（团队会话 / 外联 / 0057 没跑）。刀只在 approveAll 且 chat.kind === "dm" 的会话里挂 */
   routines: RoutineStore | null;
   /** 时钟（只给测试拧 TTL 用）。缺席 = Date.now */
   now?: () => number;

@@ -84,7 +84,7 @@ export function createRoutineScheduler(deps: RoutineSchedulerDeps): { tick(): Pr
       try {
         due = await deps.store.due(now, ROUTINE_TICK_LIMIT);
       } catch (err) {
-        // 0056 没跑时这里每 30 秒报一次——只记日志，不炸进程
+        // 0057 没跑时这里每 30 秒报一次——只记日志，不炸进程
         deps.log(`到点任务读不出来：${err instanceof Error ? err.message : String(err)}`);
         return;
       }
