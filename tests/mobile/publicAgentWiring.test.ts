@@ -36,7 +36,7 @@ describe("FriendChatScreen", () => {
   it("电话钮弹两项；给智能体 = ensurePeerLane → guest ChatScreen + autoCall", () => {
     expect(src).toMatch(/<HeaderIconButton label="打电话"/);
     // 只拉公开的那一只（#1550）：车道里可能带着别的智能体，它们不该一起接
-    expect(src).toMatch(/navigation\.push\("Chat", \{ kind: "guest", workspaceId: r\.workspaceId, sessionId: r\.sessionId, autoCall: true, callAgentId: publicAgent\.agentId \}\)/);
+    expect(src).toMatch(/navigation\.push\("Chat", \{ kind: "guest", workspaceId: r\.workspaceId, sessionId: r\.sessionId, autoCall: true, callAgentId: publicAgent\.agentId, callOnly: true \}\)/);
     expect(src).toMatch(/onAgent=\{\(\) => \{\s*if \(publicAgent === null\) return;/);
     expect(read("mobile/src/friends/CallPickDialog.tsx")).toMatch(/人与人的通话还没做好（#1534）/);
   });
@@ -52,6 +52,20 @@ describe("ChatScreen", () => {
     expect(read("mobile/src/nav/types.ts")).toMatch(/autoCall\?: boolean; callAgentId\?: string;/);
     expect(src).toMatch(/const only = route\.params\.callAgentId;\s*const ids = only !== undefined && agentIds\.includes\(only\) \? \[only\] : dmAgent !== null \? \[dmAgent\] : agentIds;/);
     expect(src).toMatch(/if \(route\.params\.callAgentId === undefined\) return;\s*if \(call !== null\) autoCallLive\.current = true;\s*else if \(autoCallLive\.current\) \{\s*autoCallLive\.current = false;\s*navigation\.goBack\(\);/);
+  });
+  it("callOnly（#1558）：只画通话——标题是那只的名字、不画时间线 / 输入框 / 信息钮、通话浮层常开、没有缩小", () => {
+    const src = read("mobile/src/chat/ChatScreen.tsx");
+    expect(read("mobile/src/nav/types.ts")).toMatch(/callAgentId\?: string; callOnly\?: boolean;/);
+    expect(src).toMatch(/const callOnly = route\.params\.callOnly === true && route\.params\.callAgentId !== undefined;/);
+    expect(src).toMatch(/const callOnlyTitle = callOnly && ws !== null \? agentNameOf\(ws, route\.params\.callAgentId!\) : "通话";/);
+    expect(src).toMatch(/headerTitle: \(\) => <ChatTitle title=\{callOnly \? callOnlyTitle : title\} count=\{callOnly \? 0 : count\}/);
+    expect(src).toMatch(/infoOk && !callOnly \? \(/);
+    expect(src).toMatch(/\{callOnly \? \([\s\S]{0,200}\{call === null && pageNote === null \? <Text[^\n]*\{`正在接通 \$\{callOnlyTitle\}…`\}/);
+    expect(src).toMatch(/\) : callOnly \? null : \(\s*<WxComposer/);
+    expect(src).toMatch(/visible=\{callOpen \|\| callOnly\}/);
+    expect(src).toMatch(/title=\{callOnly \? callOnlyTitle : title\}/);
+    expect(src).toMatch(/if \(!callOnly\) setCallOpen\(false\);/);
+    expect(src).toMatch(/session !== null && !callOnly \? <CallPill/);
   });
   it("客人快照退到 peerLaneGuestChat", () => {
     expect(read("mobile/src/chat/ChatScreen.tsx")).toMatch(/\?\? \(target\.kind === "guest" \? peerLaneGuestChat\(target\.sessionId\) : null\)/);

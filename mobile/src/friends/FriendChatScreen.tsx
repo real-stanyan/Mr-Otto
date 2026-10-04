@@ -832,8 +832,8 @@ export function FriendChatScreen({ route, navigation }: Props) {
                 return;
               }
               setCalling((d) => (d === null ? d : { ...d, visible: false }));
-              // 只拉公开的那一只进通话（#1550）：车道里可能还带着对方别的智能体
-              navigation.push("Chat", { kind: "guest", workspaceId: r.workspaceId, sessionId: r.sessionId, autoCall: true, callAgentId: publicAgent.agentId });
+              // 只拉公开的那一只进通话（#1550）；那一页只画通话、不露车道群聊（#1558），挂断回到这页，总结在这页里出现
+              navigation.push("Chat", { kind: "guest", workspaceId: r.workspaceId, sessionId: r.sessionId, autoCall: true, callAgentId: publicAgent.agentId, callOnly: true });
             })();
           }}
           onClose={() => setCalling((d) => (d === null ? d : { ...d, visible: false }))}
