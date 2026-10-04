@@ -88,7 +88,16 @@ export function createRoutineScheduler(deps: RoutineSchedulerDeps): { tick(): Pr
         deps.log(`到点任务读不出来：${err instanceof Error ? err.message : String(err)}`);
         return;
       }
-      for (const r of due) await handle(r, now);
+      for (const r of due) {
+        // 每行各自兜底：一条坏行（bad tz 让 nextRunAt 抛、claim 稳定报错…）不能堵在队头饿死后面的行、也不能拦住 purge。
+        // 认领在先的语义不变：claim 偶发抛错没推进 next_run_at，下一拍自然重试。
+        // 每行读新鲜时钟：前面行的 run 要 await 到整轮 turn 跑完，共用 tick 起点的 now 会让后面的行拿旧钟算宽限、盖 lastRunAt。
+        try {
+          await handle(r, deps.now());
+        } catch (err) {
+          deps.log(`定时任务处理失败（id=${r.id}「${r.title}」）：${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
       try {
         const n = await deps.store.purge(now - ROUTINE_KEEP_DONE_MS);
         if (n > 0) deps.log(`清掉 ${n} 条跑完超过 7 天的一次性定时任务`);

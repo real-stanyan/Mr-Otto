@@ -91,6 +91,28 @@ describe("routineScheduler.tick", () => {
     await sched.tick();
     expect((await store.get(r.id))!.nextRunAt).toBeGreaterThanOrEqual(T0 + ROUTINE_MIN_GAP_MS);
   });
+  it("一条坏行（quota 抛错）不堵队头：后面的行照跑、日志记下错误、purge 照常执行", async () => {
+    const { store, runs, logs, sched, setNow } = rig({ quota: async (uid) => { if (uid === "bad") throw new Error("quota-down"); return null; } });
+    const old = await store.insert({ ...base, schedule: { kind: "once", at: "2026-10-05T09:00" }, nextRunAt: T0 });
+    await sched.tick(); // old 跑完 -> done + 停用
+    const later = T0 + ROUTINE_KEEP_DONE_MS + 1;
+    setNow(later);
+    await store.insert({ ...base, ownerUid: "bad", title: "毒", schedule: { kind: "daily", time: "09:00" }, nextRunAt: later - 1 });
+    const good = await store.insert({ ...base, title: "好", schedule: { kind: "daily", time: "09:00" }, nextRunAt: later });
+    await sched.tick();
+    expect(logs.join("\n")).toContain("quota-down");
+    expect(runs.map((x) => x.id)).toEqual([old.id, good.id]);
+    expect(await store.get(old.id)).toBeNull(); // purge 没被坏行拦住
+  });
+  it("每行读新鲜时钟：前一行的 run 拨走了时钟，后一行的 lastRunAt 盖的是新钟", async () => {
+    let clock = T0;
+    let first = true;
+    const { store, sched, setNow } = rig({ run: async () => { if (first) { first = false; clock = T0 + 5 * 60_000; setNow(clock); } return "started"; } });
+    await store.insert({ ...base, schedule: { kind: "daily", time: "09:00" }, nextRunAt: T0 - 1 });
+    const b = await store.insert({ ...base, title: "b", schedule: { kind: "daily", time: "09:00" }, nextRunAt: T0 });
+    await sched.tick();
+    expect((await store.get(b.id))!.lastRunAt).toBe(clock);
+  });
   it("清理：停用且 done/missed 且过了 7 天的删掉", async () => {
     const { store, sched, setNow } = rig();
     const r = await store.insert({ ...base, schedule: { kind: "once", at: "2026-10-05T09:00" }, nextRunAt: T0 });
