@@ -11,6 +11,8 @@
 //
 // 本文件手机端也会 import 同一份源码，纯类型 + 纯函数，零 IO。
 
+import { isAgentDomain } from "./agentDomain.js";
+import { isAgentTier, type AgentTier } from "./agentTier.js";
 import { normalizeAgentTools, type AgentToolAllow } from "./agentToolAllow.js";
 import { VOICE_KEY_RE } from "./agentVoice.js";
 import type { SandboxApproval } from "./workspaceAgents.js";
@@ -64,6 +66,13 @@ export interface WorkspaceAgentRow {
       那样必填 null（必填要改几十处测试夹具，换不来任何行为差别）。形状合格的陌生键（新版才有的档）
       原样留着，派生那一侧（voiceChoiceOf）再当没挑过 */
   voice?: string;
+  /** 等级（#1571，ADR-0365）：0 管理员 / 1 专员 / 2 子工。**缺席 = 0060 没跑或旧夹具**：判据层按 agentId 推
+      （admin 是 0、其余 1，`agentTier.tierOf`）——与 voice 同一条「读不到就派生」的纪律 */
+  tier?: AgentTier;
+  /** 职责域（`agentDomain.ts` 的键）。缺席同上：管理员当 admin、其余当「未分配」 */
+  domain?: string;
+  /** 只有子工有：它上级那只专员的 agentId */
+  parentAgentId?: string | null;
 }
 
 /** 团队还是个人主场（#1280，ADR-0297）。`kind` 由 0037 的触发器钉成**不可变** */
@@ -150,6 +159,8 @@ export function assembleSnapshot(
     agent_id: string; name: string; description: string; instructions: string; models: unknown;
     tools: unknown; created_by: string; created_at?: string; updated_at: string; avatar_slot?: unknown;
     voice?: unknown;
+    /** 0060 的三列（#1571）：缺席 / 脏值都不带进快照，判据层派生 */
+    tier?: unknown; domain?: unknown; parent_agent_id?: unknown;
   }[],
   profileOf: (uid: string) => MemberProfile | null,
 ): WorkspaceSnapshot {
@@ -196,6 +207,9 @@ export function assembleSnapshot(
         avatarSlot: normalizeAvatarSlot(a.avatar_slot),
         ...(Number.isNaN(created) ? {} : { createdTs: created }),
         ...(voice === null ? {} : { voice }),
+        ...(isAgentTier(a.tier) ? { tier: a.tier } : {}),
+        ...(isAgentDomain(a.domain) ? { domain: a.domain } : {}),
+        ...(typeof a.parent_agent_id === "string" ? { parentAgentId: a.parent_agent_id } : {}),
       };
     }),
     sandboxApproval: ws.sandbox_approval,

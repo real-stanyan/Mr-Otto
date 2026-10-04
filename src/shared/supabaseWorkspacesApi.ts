@@ -129,13 +129,33 @@ export async function fetchWorkspace(
     tools: unknown; created_by: string; created_at?: string; updated_at: string; avatar_slot?: unknown;
   }[];
   const voices = await fetchAgentVoices(client, id);
+  const tiers = await fetchAgentTiers(client, id);
   const profiles = await fetchProfiles(client, members.map((m) => m.uid));
   return assembleSnapshot(
     { ...ws, sandbox_approval: sandboxApproval, kind },
     members, connectors, sessions,
-    agents.map((a) => (voices.has(a.agent_id) ? { ...a, voice: voices.get(a.agent_id) } : a)),
+    agents.map((a) => ({
+      ...a,
+      ...(voices.has(a.agent_id) ? { voice: voices.get(a.agent_id) } : {}),
+      ...(tiers.get(a.agent_id) ?? {}),
+    })),
     (uid) => profiles.get(uid) ?? null,
   );
+}
+
+/** 每只的等级 / 域 / 上级（0060 的三列，#1571）。**单独一条、容错**，理由与 `fetchAgentVoices` 逐字相同：
+    0060 没跑时拼进主 select 整个名册读不出来。读不到回空表——判据层按 agentId 派生（admin 是 0、其余 1） */
+export async function fetchAgentTiers(
+  client: SupabaseClient,
+  workspaceId: string,
+): Promise<Map<string, { tier: unknown; domain: unknown; parent_agent_id: unknown }>> {
+  const res = await client.from("workspace_agents").select("agent_id,tier,domain,parent_agent_id").eq("workspace_id", workspaceId);
+  const out = new Map<string, { tier: unknown; domain: unknown; parent_agent_id: unknown }>();
+  if (res.error || !Array.isArray(res.data)) return out;
+  for (const r of res.data as { agent_id?: unknown; tier?: unknown; domain?: unknown; parent_agent_id?: unknown }[]) {
+    if (typeof r.agent_id === "string") out.set(r.agent_id, { tier: r.tier, domain: r.domain, parent_agent_id: r.parent_agent_id });
+  }
+  return out;
 }
 
 /** `workspaces.kind` 那一格（#1280）。**单独一条、容错**，理由与 `fetchSandboxApproval`
@@ -309,10 +329,17 @@ export async function insertAgentRow(
     instructions: string; models: string[]; tools: AgentToolAllow[]; createdBy: string;
     avatarSlot?: number | null;
     onboarding?: "greet";
+    /** 等级与域（#1571，0060）：缺席就**不带这几个键**（0060 没跑的库照样插得进去，落默认 tier=1 / 未分配） */
+    tier?: 1 | 2;
+    domain?: string;
+    parentAgentId?: string;
   },
 ): Promise<void> {
   unwrap(
     await client.from("workspace_agents").insert({
+      ...(row.tier === undefined ? {} : { tier: row.tier }),
+      ...(row.domain === undefined ? {} : { domain: row.domain }),
+      ...(row.parentAgentId === undefined ? {} : { parent_agent_id: row.parentAgentId }),
       workspace_id: row.workspaceId,
       agent_id: row.agentId,
       name: row.name,
