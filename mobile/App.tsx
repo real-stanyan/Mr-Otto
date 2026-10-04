@@ -21,6 +21,7 @@ import { Splash } from "./src/gate/Splash.js";
 import { readResetHold, writeResetHold } from "./src/gate/resetHold.js";
 import { hasStoredSessionSync } from "./src/gate/storedSession.js";
 import { loadThemePref } from "./src/themePref.js";
+import { useLaunchUpdate } from "./src/updates/launchUpdate.js";
 // 回电（#1411）：推送登记要在第一条通知到之前挂上——模块一加载就挂
 import "./src/push/pushRegistration.js";
 import "./src/push/messagePush.js";
@@ -75,12 +76,20 @@ export default function App() {
   useStatusBarStyle(usePalette().isDark);
 
   const progress = splashProgress({ done, total: BOOT_STEPS, elapsedMs: now - t0 });
-  // 开屏那只钟：进度条到头就停，进了 app 之后不再每 100ms 醒一次
+  // 热更新（#1463）：开屏进度条走完之后，有更新正在下就接着挡、下完当场重启进新包（不用退出两次）。
+  // 还在查最多再挡几秒；判据在 shared/launchUpdate.ts
+  const holdForUpdate = useLaunchUpdate();
+  const [fullAt, setFullAt] = useState<number | null>(null);
   useEffect(() => {
-    if (progress >= 1) return;
+    if (progress >= 1 && fullAt === null) setFullAt(Date.now());
+  }, [progress, fullAt]);
+  const updating = progress >= 1 && holdForUpdate(fullAt === null ? 0 : now - fullAt);
+  // 开屏那只钟：进度条到头、也不再等更新就停，进了 app 之后不再每 100ms 醒一次
+  useEffect(() => {
+    if (progress >= 1 && !updating) return;
     const id = setTimeout(() => setNow(Date.now()), 100);
     return () => clearTimeout(id);
-  }, [progress, now]);
+  }, [progress, now, updating]);
 
   // 找回密码那条路的「按住 / 放开」：先落盘再改状态——验码换来 session 的那一刻，闸门看到的已经是按住
   const hold = useCallback(async () => {
@@ -94,7 +103,7 @@ export default function App() {
 
   const view = gateView({
     booted: done >= BOOT_STEPS,
-    splashDone: progress >= 1,
+    splashDone: progress >= 1 && !updating,
     hasSession,
     resetHold,
   });
