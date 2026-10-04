@@ -1,7 +1,9 @@
 // 「智能体」侧页的内容（#1566 → #1574 → #1571 第 4 步）：**员工表**，不是聊天列表。
 // 人只对人和自己的管理员说话（ADR-0367）：管理员那条私聊留在聊天主页；这里列主场里的 L0 / L1（`visibleAgents`，L2 在它上级的
 // 资料页里），每行：脸 + 名字 + 「专员 · 出行」+ 状态行（空闲 / 执行中 · 任务：明天出游 › 订票 / 执行中 · 在〈群〉）。
-// 点一行进资料页（管理员那行进它的私聊——它就是入口）。不再左滑删聊天：删人在资料页那条线的「聊天信息」里。
+// 点一行**进它的私聊**（维护者 2026-10-05 真机：「从侧页点击智能体应该直接进入聊天窗口」）；资料页从聊天信息页进。
+// 头像右上角照聊天列表那样压未读：它想完了发来一句就亮一枚（点数 / 点），点进去看过就灭（seenStore 的游标）。
+// 不再左滑删聊天：删人在资料页。
 // 底下一格抽屉「别人的智能体」照旧：那是别人的智能体跟我的**对话**（外联会话，#1441），默认收着。
 import { useMemo } from "react";
 import { ScrollView, StyleSheet, Text, View } from "react-native";
@@ -12,8 +14,8 @@ import { domainLabel } from "../../../src/shared/agentDomain.js";
 import { domainOf, TIER_LABEL, tierOf, visibleAgents } from "../../../src/shared/agentTier.js";
 import { liveTaskOf, taskLine } from "../../../src/shared/tasks.js";
 import { splitInbox } from "../../../src/shared/wechatInbox.js";
-import { ADMIN_AGENT_ID } from "../../../src/shared/workspaceAgents.js";
 import { ActivityFace } from "../activity/ActivityFace.js";
+import { CountBadge, DotBadge } from "../wx/Badge.js";
 import { useActivity } from "../activity/activityStore.js";
 import { useHome } from "../home/homeStore.js";
 import type { ChatRoute } from "../nav/types.js";
@@ -48,6 +50,12 @@ export function AgentPanel({ onPick }: { onPick: (pick: PanelPick) => void }) {
     return (sid: string): string | null => m.get(sid) ?? null;
   }, [split.main]);
   const staff = visibleAgents(ws?.agents ?? []);
+  /** 每只的会话行（含管理员那条——它在聊天主页，但侧页这一行也要亮未读）：agentId → 行 */
+  const chatRow = useMemo(() => {
+    const m = new Map<string, (typeof inbox.rows)[number]>();
+    for (const r of inbox.rows) if (r.target.kind === "agent") m.set(r.target.agentId, r);
+    return m;
+  }, [inbox.rows]);
   const sep = <View style={{ height: StyleSheet.hairlineWidth, backgroundColor: c.border, marginLeft: CHAT_ROW_SEP }} />;
   return (
     <View style={{ flex: 1, backgroundColor: c.background }}>
@@ -66,12 +74,22 @@ export function AgentPanel({ onPick }: { onPick: (pick: PanelPick) => void }) {
                 : `${agentStatusText(where, () => null)} · ${taskLine(task, (id) => tasks.rows.get(id)?.title ?? null)}`;
               const busy = where !== null && where.activity !== "idle";
               const role = `${TIER_LABEL[tierOf(a)]} · ${domainLabel(domainOf(a))}`;
+              const row = chatRow.get(a.agentId);
               return (
                 <View key={a.agentId}>
                   {i === 0 ? null : sep}
                   <ContactRow
                     first
-                    avatar={<ActivityFace slot={agentFaceSlot(ws, a.agentId)} size={48} activity={where?.activity ?? null} ring={c.card} badgeSize={10} />}
+                    avatar={
+                      <View>
+                        <ActivityFace slot={agentFaceSlot(ws, a.agentId)} size={48} activity={where?.activity ?? null} ring={c.card} badgeSize={10} />
+                        {row?.unread?.kind === "count" ? (
+                          <View style={{ position: "absolute", top: -6, right: -7 }}><CountBadge n={row.unread.n} ring={c.card} /></View>
+                        ) : row?.unread?.kind === "dot" || row?.mention === true ? (
+                          <View style={{ position: "absolute", top: -3, right: -3 }}><DotBadge ring={c.card} /></View>
+                        ) : null}
+                      </View>
+                    }
                     name={a.name}
                     sub={role}
                     right={
@@ -81,7 +99,7 @@ export function AgentPanel({ onPick }: { onPick: (pick: PanelPick) => void }) {
                       </View>
                     }
                     onPress={() =>
-                      onPick(a.agentId === ADMIN_AGENT_ID ? { kind: "chat", route: { kind: "agent", agentId: ADMIN_AGENT_ID } } : { kind: "agent", agentId: a.agentId })
+                      onPick({ kind: "chat", route: { kind: "agent", agentId: a.agentId } })
                     }
                   />
                 </View>
