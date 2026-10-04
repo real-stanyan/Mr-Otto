@@ -739,7 +739,7 @@ export function FriendChatScreen({ route, navigation }: Props) {
           key={dispatching.key}
           visible={dispatching.visible}
           ws={homeWs}
-          agentIds={homeWs.agents.map((a) => a.agentId)}
+          agentIds={[ADMIN_AGENT_ID]}
           preview={dispatching.m.body}
           onOk={(agentId, prompt) => {
             const lines: QuoteLine[] = (thread?.messages ?? []).map((m) => ({
@@ -914,8 +914,8 @@ export function FriendChatScreen({ route, navigation }: Props) {
           visible={carding.visible}
           ws={homeWs ?? { id: "", name: "", ownerUid: "", members: [], connectors: [], sessions: [], agents: [], sandboxApproval: null, kind: "home" }}
           title="发名片"
-          lead={`挑要发给${name}的：你的智能体（TA 接受就存进 TA 的智能体库），或别的朋友（TA 可以一键加好友）。`}
-          options={homeWs?.agents.map((a) => a.agentId) ?? []}
+          lead={`挑要推给${name}的朋友（TA 可以一键加好友）。`}
+          options={[]}
           people={(friends.rows ?? []).filter((r) => r.status === "accepted" && r.profile.id !== uid).map((r) => ({ uid: r.profile.id, name: friendName(r.profile), url: r.profile.avatarUrl }))}
           peopleLabel="朋友"
           min={1}

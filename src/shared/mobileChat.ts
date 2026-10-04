@@ -18,6 +18,7 @@ import {
 import { callTopicText } from "./mobileCall.js";
 import { outreachDurationText, outreachFoldOf, outreachRowText, type OutreachLine, type OutreachState } from "./outreach.js";
 import { routineNoteText } from "./routines.js";
+import { taskFoldOf, type TaskRow, type TaskStatus } from "./tasks.js";
 import type { FaceState } from "./ottoFace/index.js";
 import type { CsChatInfo } from "./remote/cloudSession.js";
 import type { CloudSessionRow } from "./supabaseWorkspacesApi.js";
@@ -114,6 +115,12 @@ export type ChatRow =
   | {
     kind: "approval"; key: string; ts: number; callId: string; title: string;
     fields: { label: string; value: string }[]; summary: string; canDecide: boolean; waitingFor: string;
+  }
+  /** 任务卡（#1571 第 4 步）：一个任务一张卡，在 task_created 的位置；状态 / 派给谁 / 问主人的话 / 收口一句从这条会话的日志折出来
+      （taskFoldOf），后面的 task_* 事件不单独占行 */
+  | {
+    kind: "task"; key: string; ts: number; taskId: string; title: string; parentTitle: string | null; brief: string;
+    status: TaskStatus; assigneeName: string | null; question: string | null; summary: string | null;
   };
 
 type ItemRow = Exclude<ChatRow, { kind: "time" }>;
@@ -205,6 +212,8 @@ export function chatRows(o: {
   // 外联（#1441）：状态要看这一通后面的事件，同回电那样在循环外先折一遍
   const outreaches = outreachFoldOf(o.events);
   const picks = friendPickFoldOf(o.events);
+  // 任务卡（#1571）：整条日志折一次，每张卡读折好的那一行
+  const tasks: ReadonlyMap<string, TaskRow> = taskFoldOf(o.events, o.ws.id);
   const requests = new Map<string, ApprovalRequestEvent>();
   const decided = new Set<string>();
   for (const e of o.events) {
@@ -236,6 +245,20 @@ export function chatRows(o: {
       continue;
     }
     // 选人卡（#1520）：只在 offered 的位置画一行；之后的 picked / dismissed / failed 只改这一行的状态
+    if (e.type.startsWith("task_")) {
+      if (e.type === "task_created") {
+        const t = tasks.get(e.taskId);
+        if (t !== undefined) {
+          items.push({
+            kind: "task", key: `task-${t.id}`, ts: e.ts, taskId: t.id, title: t.title, brief: t.brief,
+            parentTitle: t.parentId === null ? null : (tasks.get(t.parentId)?.title ?? null),
+            status: t.status, assigneeName: t.assigneeAgentId === null ? null : agentNameOf(o.ws, t.assigneeAgentId),
+            question: t.question, summary: t.summary,
+          });
+        }
+      }
+      continue;
+    }
     if (e.type === "friend_pick") {
       const st = e.phase === "offered" ? picks.get(e.pickId) : undefined;
       if (st !== undefined) {

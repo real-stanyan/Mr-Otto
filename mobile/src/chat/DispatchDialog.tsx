@@ -27,7 +27,7 @@ export function DispatchDialog({ visible, ws, agentIds, preview, onOk, onClose, 
   const [prompt, setPrompt] = useState("");
   return (
     <Dialog visible={visible} wide {...(onExited === undefined ? {} : { onExited })}>
-      <DialogTitle>派一只智能体去办</DialogTitle>
+      <DialogTitle>交给管理员去办</DialogTitle>
       <DialogLead>{`它会收到这条和前面几句：「${preview.length > 60 ? `${preview.slice(0, 60)}…` : preview}」`}</DialogLead>
       <DialogBody>
         <Field variant="dialog" value={prompt} onChangeText={setPrompt} placeholder={DISPATCH_DEFAULT_PROMPT} maxLength={DISPATCH_PROMPT_MAX_CHARS} />

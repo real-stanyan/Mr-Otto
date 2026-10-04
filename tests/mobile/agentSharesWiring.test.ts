@@ -16,10 +16,10 @@ describe("接受名片之后", () => {
 });
 
 describe("标「共有」", () => {
-  it("资料页 tag：共有时写「智能体 · 共有 · …」", () => {
+  it("资料页 tag：共有时接在「等级 · 域」后面（#1571 第 4 步起 tag 先写等级与域）", () => {
     const src = read("mobile/src/agent/AgentScreen.tsx");
     expect(src).toMatch(/const shareBadge = shareBadgeFor\(agentId, shares, nameOfUid\);/);
-    expect(src).toMatch(/tag=\{shareBadge === null \? "智能体" : `智能体 · \$\{shareBadge\}`\}/);
+    expect(src).toMatch(/\$\{shareBadge === null \? "" : ` · \$\{shareBadge\}`\}`\}/);
   });
   it("通讯录那一行：小字前面标；进页面拉一次 shares", () => {
     const src = read("mobile/src/tabs/ContactsScreen.tsx");

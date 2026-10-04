@@ -6,12 +6,13 @@ import { useCallback, useMemo, useRef, useState } from "react";
 import { Pressable, ScrollView, StyleSheet, Text, View } from "react-native";
 import { workspaceAgentActivity } from "../../../src/shared/agentActivityRows.js";
 import { agentFaceSlot } from "../../../src/shared/agentAvatar.js";
+import { domainLabel } from "../../../src/shared/agentDomain.js";
+import { domainOf, TIER_LABEL, tierOf, visibleAgents } from "../../../src/shared/agentTier.js";
 import { rosterGate, type RosterGate } from "../../../src/shared/agentRoster.js";
 import { friendName, groupList, sortFriends } from "../../../src/shared/wechatInbox.js";
 import { workspaceAccess } from "../../../src/shared/workspaceAccess.js";
 import { ActivityFace } from "../activity/ActivityFace.js";
 import { useActivity } from "../activity/activityStore.js";
-import { NewAgentDialog } from "../agent/NewAgentDialog.js";
 import { AddFriendDialog } from "../friends/AddFriendDialog.js";
 import { useFriends } from "../friends/friendsStore.js";
 import { refreshHomeAfterWrite, useHome } from "../home/homeStore.js";
@@ -77,8 +78,7 @@ export function ContactsScreen() {
   const friends = useFriends();
   const inbox = useInbox();
   const [q, setQ] = useState("");
-  const [dialog, setDialog] = useState<{ kind: "agent" | "friend"; key: number; visible: boolean } | null>(null);
-  const created = useRef<{ agentId: string; refresh: Promise<void> } | null>(null);
+  const [dialog, setDialog] = useState<{ kind: "friend"; key: number; visible: boolean } | null>(null);
   const scroll = useRef<ScrollView>(null);
   useScrollToTop(scroll);
   useFocusEffect(useCallback(() => refreshAll(), []));
@@ -95,7 +95,8 @@ export function ContactsScreen() {
   const gate: RosterGate = home.loaded ? rosterGate({ access, home: ws, ensure: home.ensure }) : "unknown";
   const term = q.trim().toLowerCase();
   const match = (...hay: string[]): boolean => term === "" || hay.some((h) => h.toLowerCase().includes(term));
-  const agents = (ws?.agents ?? []).filter((a) => match(a.name, a.description));
+  // 员工表（#1571 第 4 步）：只列 L0 / L1，L2 在它上级的资料页里；搜名字 / 职责 / 域
+  const agents = visibleAgents(ws?.agents ?? []).filter((a) => match(a.name, a.description, domainLabel(domainOf(a))));
   const accepted = useMemo(() => sortFriends((friends.rows ?? []).filter((r) => r.status === "accepted")), [friends.rows]);
   const shownFriends = accepted.filter((r) => match(friendName(r.profile), r.profile.email));
   const groupCount = useMemo(
@@ -105,16 +106,6 @@ export function ContactsScreen() {
   const searching = term !== "";
 
   const close = (): void => setDialog((d) => (d === null ? d : { ...d, visible: false }));
-  const onExited = async (): Promise<void> => {
-    setDialog(null);
-    const next = created.current;
-    created.current = null;
-    if (next === null) return;
-    await next.refresh;
-    if (!navigation.isFocused()) return;
-    // 建好就去它那条线上（它先开口问你要它干什么，ADR-0319）
-    navigation.navigate("Chat", { kind: "agent", agentId: next.agentId });
-  };
 
   return (
     <View style={{ flex: 1, backgroundColor: c.background }}>
@@ -151,19 +142,6 @@ export function ContactsScreen() {
           label="智能体"
           count={agents.length}
           forceOpen={searching}
-          action={
-            ws !== null && home.selfUid !== null ? (
-              <Pressable
-                accessibilityRole="button"
-                accessibilityLabel="新建智能体"
-                hitSlop={6}
-                onPress={() => setDialog({ kind: "agent", key: Date.now(), visible: true })}
-                style={({ pressed }) => [{ paddingHorizontal: 6, height: 30, justifyContent: "center" }, pressed && { opacity: 0.45 }]}
-              >
-                <Text style={{ fontSize: 15, fontWeight: "500", color: c.brand }}>新建</Text>
-              </Pressable>
-            ) : undefined
-          }
         >
           {ws === null ? (
             <GateCard gate={gate} ensureError={home.ensureError} onSubscribe={() => navigation.navigate("Subscription")} />
@@ -182,7 +160,7 @@ export function ContactsScreen() {
                   />
                 }
                 name={a.name}
-                sub={(() => { const b = shareBadgeFor(a.agentId, shares, nameOfUid); return b === null ? a.description : a.description === "" ? b : `${b} · ${a.description}`; })()}
+                sub={(() => { const role = `${TIER_LABEL[tierOf(a)]} · ${domainLabel(domainOf(a))}`; const b = shareBadgeFor(a.agentId, shares, nameOfUid); return b === null ? role : `${b} · ${role}`; })()}
                 onPress={() => navigation.navigate("Agent", { agentId: a.agentId })}
               />
             ))
@@ -213,20 +191,6 @@ export function ContactsScreen() {
         )}
       </ScrollView>
 
-      {dialog?.kind === "agent" && ws !== null && home.selfUid !== null ? (
-        <NewAgentDialog
-          key={dialog.key}
-          visible={dialog.visible}
-          ws={ws}
-          selfUid={home.selfUid}
-          onClose={close}
-          onCreated={(agentId) => {
-            created.current = { agentId, refresh: refreshHomeAfterWrite() };
-            close();
-          }}
-          onExited={() => void onExited()}
-        />
-      ) : null}
       {dialog?.kind === "friend" ? <AddFriendDialog key={dialog.key} visible={dialog.visible} onClose={close} onExited={() => setDialog(null)} /> : null}
     </View>
   );

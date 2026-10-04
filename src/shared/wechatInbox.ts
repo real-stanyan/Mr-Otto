@@ -25,6 +25,7 @@ import { outreachCallerName } from "./outreach.js";
 import { lastSpeakerOf, type SessionLast } from "./sessionLast.js";
 import type { CloudSessionRow } from "./supabaseWorkspacesApi.js";
 import type { WorkspaceMentionRow } from "./workspaceMentions.js";
+import { ADMIN_AGENT_ID } from "./workspaceAgents.js";
 import { agentNameOf, labelOf } from "./workspaceView.js";
 import type { WorkspaceSnapshot } from "./workspaces.js";
 
@@ -418,9 +419,10 @@ export function isHidden(hidden: ReadonlyMap<string, number>, key: string, ts: n
 }
 
 /** 「聊天」主页只留人↔人与群（#1566，维护者 2026-10-04）：智能体的行收进一个列表，别人的智能体（外联，`o:`）再收一层。
+    **管理员那条私聊留在主页**（#1571 第二轮：管理员是唯一入口，人只对人和自己的管理员说话——它就是主聊天，不藏）。
     三份都保持 inboxRows 给的顺序（最近一句降序） */
 export interface InboxSplit {
-  /** 朋友私聊 + 主场群 + 团队群 + 别人拉我进的群 */
+  /** 朋友私聊 + 主场群 + 团队群 + 别人拉我进的群 + 管理员那条私聊 */
   main: InboxRow[];
   /** 我自己的智能体的私聊（`a:`） */
   agents: InboxRow[];
@@ -431,7 +433,7 @@ export interface InboxSplit {
 export function splitInbox(rows: readonly InboxRow[]): InboxSplit {
   const s: InboxSplit = { main: [], agents: [], others: [] };
   for (const r of rows) {
-    if (r.target.kind === "agent") s.agents.push(r);
+    if (r.target.kind === "agent" && r.target.agentId !== ADMIN_AGENT_ID) s.agents.push(r);
     else if (r.target.kind === "outreach") s.others.push(r);
     else s.main.push(r);
   }

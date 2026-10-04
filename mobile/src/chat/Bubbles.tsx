@@ -13,6 +13,7 @@ import { agentFaceIfKnown } from "../../../src/shared/agentAvatar.js";
 import type { RosterLinePart } from "../../../src/shared/cloudTimeline.js";
 import { callOffsetText } from "../../../src/shared/cloudTimeline.js";
 import { ringRecordView, type ChatRow } from "../../../src/shared/mobileChat.js";
+import { TASK_STATUS_TEXT } from "../../../src/shared/tasks.js";
 import { CHAT_MEDIA_BUCKET, mediaBodyHidden, type ChatMediaItem } from "../../../src/shared/chatMedia.js";
 import { MediaBubble } from "../media/MediaBubble.js";
 import { facePhase } from "../../../src/shared/ottoFace/art.js";
@@ -238,11 +239,42 @@ export function ChatRowView({ row, ws, selfUid, selfName, selfAvatar, group, out
       return <FriendPickCard row={row} ws={ws} avatarOf={friendAvatarOf} picking={picking} ready={decideReady} onPick={onPickFriend} />;
     case "approval":
       return <ApprovalCard row={row} busy={deciding === row.callId || !decideReady} onDecide={onDecide} selfUid={selfUid} />;
+    case "task":
+      return <TaskCard row={row} />;
     default: {
       const unhandled: never = row;
       return unhandled;
     }
   }
+}
+
+/** 任务卡（#1571 第 4 步）：居中一张，标题 + 状态 + 派给谁；等主人拍板的那句 / 收口的那句写在底下。点一下展开说明 */
+function TaskCard({ row }: { row: Extract<ChatRow, { kind: "task" }> }) {
+  const { c } = usePalette();
+  const [open, setOpen] = useState(false);
+  const tone = row.status === "needs_owner" ? c.brand : row.status === "failed" ? c.destructive : row.status === "done" ? c.ok : c.mutedForeground;
+  const tail = row.status === "needs_owner" ? row.question : row.status === "done" || row.status === "failed" ? row.summary : null;
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={`任务 ${row.title}，${TASK_STATUS_TEXT[row.status]}${row.assigneeName === null ? "" : `，派给${row.assigneeName}`}${tail === null ? "" : `，${tail}`}`}
+      onPress={() => setOpen((v) => !v)}
+      style={({ pressed }) => [{ alignSelf: "center", width: "82%" }, pressed && { opacity: 0.7 }]}
+    >
+      <View style={{ borderRadius: 10, backgroundColor: c.card, borderWidth: 0.5, borderColor: c.border, paddingVertical: 8, paddingHorizontal: 12, gap: 4 }}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          <Icon name="check" size={13} stroke={2.2} color={tone} />
+          <Text numberOfLines={1} style={{ flex: 1, fontSize: 13, fontWeight: "600", color: c.foreground }}>
+            {row.parentTitle === null ? row.title : `${row.parentTitle} › ${row.title}`}
+          </Text>
+          <Text style={{ fontSize: 12, color: tone }}>{TASK_STATUS_TEXT[row.status]}</Text>
+        </View>
+        {row.assigneeName !== null ? <Text style={{ fontSize: 12, color: c.mutedForeground }}>{`派给 ${row.assigneeName}`}</Text> : null}
+        {tail !== null ? <Text style={{ fontSize: 12, lineHeight: 17, color: row.status === "needs_owner" ? c.foreground : c.mutedForeground }}>{tail}</Text> : null}
+        {open && row.brief !== "" ? <Text style={{ fontSize: 12, lineHeight: 17, color: c.mutedForeground }}>{row.brief}</Text> : null}
+      </View>
+    </Pressable>
+  );
 }
 
 /** 旁白 / 出错。带全文（后台任务那一档、出错原文、拒绝的理由）时点一下展开 */

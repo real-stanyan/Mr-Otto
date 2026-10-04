@@ -6,7 +6,11 @@
 // 删一只在它私聊的「聊天信息」里（demo 同款），不在这里。
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { Pressable, ScrollView, Text, View } from "react-native";
-import { workspaceAgentActivity } from "../../../src/shared/agentActivityRows.js";
+import { agentStatusText, workspaceAgentActivity, workspaceAgentWhere } from "../../../src/shared/agentActivityRows.js";
+import { domainLabel } from "../../../src/shared/agentDomain.js";
+import { domainOf, subworkersOf, TIER_LABEL, tierOf } from "../../../src/shared/agentTier.js";
+import { liveTaskOf, TASK_STATUS_TEXT, taskLine } from "../../../src/shared/tasks.js";
+import { useTasks } from "../tasks/tasksStore.js";
 import { agentFaceSlot } from "../../../src/shared/agentAvatar.js";
 import { facePhase } from "../../../src/shared/ottoFace/art.js";
 import { teamChatTitle } from "../../../src/shared/wechatInbox.js";
@@ -107,6 +111,7 @@ export function AgentScreen({ route, navigation }: Props) {
   // 共有（#1545）：这只是从谁那儿来的 / 谁也有一只，进来拉一次
   const shares = useAgentShares();
   const friends = useFriends();
+  const tasks = useTasks();
   useFocusEffect(useCallback(() => { void refreshAgentShares(); }, []));
   const nameOfUid = (uid: string): string => {
     const r = friends.rows?.find((x) => x.profile.id === uid);
@@ -155,10 +160,35 @@ export function AgentScreen({ route, navigation }: Props) {
             />
           }
           name={agent.name}
-          tag={shareBadge === null ? "智能体" : `智能体 · ${shareBadge}`}
+          tag={`${TIER_LABEL[tierOf(agent)]} · ${domainLabel(domainOf(agent))}${shareBadge === null ? "" : ` · ${shareBadge}`}`}
           sub={agent.description}
         />
+        {/* 此刻在干嘛 + 手上的任务（#1571 第 4 步）：状态从 agent_activity 跨会话取最要紧的，任务从 tasks 投影表反查 */}
+        {(() => {
+          const where = workspaceAgentWhere(activity.rows, ws.id, agentId, now);
+          const task = where === null || where.activity === "idle" ? null : liveTaskOf(tasks.rows.values(), agentId, where.sessionId);
+          const mine = [...tasks.rows.values()].filter((t) => t.assigneeAgentId === agentId).sort((x, y) => y.updatedTs - x.updatedTs).slice(0, 5);
+          return (
+            <Group>
+              <Row label="状态" value={agentStatusText(where, () => null)} />
+              {task !== null ? <Row label="当前任务" value={taskLine(task, (id) => tasks.rows.get(id)?.title ?? null).replace(/^任务：/, "")} /> : null}
+              {mine.map((t) => <Row key={t.id} label={t.title} value={TASK_STATUS_TEXT[t.status]} />)}
+            </Group>
+          );
+        })()}
         <AgentRows ws={ws} agent={agent} />
+        {/* 子工（#1571 第二轮第 3 条）：L2 不进列表，只在它上级这里 */}
+        {(() => {
+          const subs = subworkersOf(agentId, ws.agents);
+          if (subs.length === 0) return null;
+          return (
+            <Group footer="子工只接这只专员派的活，做完报回给它。">
+              {subs.map((s) => (
+                <Row key={s.agentId} label={s.name} value={`子工 · ${domainLabel(domainOf(s))}`} chevron onPress={() => navigation.push("Agent", { agentId: s.agentId })} />
+              ))}
+            </Group>
+          );
+        })()}
         <View>
           <CenterAction icon="message-circle" label="发消息" onPress={() => navigation.navigate("Chat", { kind: "agent", agentId })} />
           {voiceUsable(voice) ? (

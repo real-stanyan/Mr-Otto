@@ -17,7 +17,7 @@ describe("聊天页主页", () => {
   });
   it("侧页（#1574）：左上角钮 + 左缘右划打开；点侧页里的一行先收再推；顶上那一格与 AgentChats 路由都没了", () => {
     expect(src).toMatch(/<SidePanel visible=\{panel\} title="智能体" onClose=\{\(\) => setPanel\(false\)\} onExited=\{onPanelExited\}>/);
-    expect(src).toMatch(/<AgentPanel onPick=\{\(route\) => \{ panelPick\.current = route; setPanel\(false\); \}\} \/>/);
+    expect(src).toMatch(/<AgentPanel onPick=\{\(pick\) => \{ panelPick\.current = pick; setPanel\(false\); \}\} \/>/);
     expect(src).toMatch(/\.hitSlop\(\{ left: 0, width: SIDE_PANEL_EDGE \}\)\s*\.activeOffsetX\(12\)\s*\.failOffsetY\(\[-10, 10\]\)/);
     expect(src).toMatch(/agentFolderSummary\(split\.agents, split\.others\)/); // 钮上的角标
     expect(src).not.toMatch(/AgentFolderRow|navigate\("AgentChats"\)/);
@@ -40,13 +40,13 @@ describe("智能体侧页的内容", () => {
     expect(panel).toMatch(/\.activeOffsetX\(\[-12, 999\]\)\s*\.failOffsetY\(\[-10, 10\]\)/);
     expect(panel).toMatch(/e\.velocityX < -DISMISS_VELOCITY \|\| landing > panelW \* DISMISS_DISTANCE/);
   });
-  it("每一只一行、带状态：跨会话取最要紧那条（workspaceAgentWhere）+ agentStatusText（群名从主页那几行查）", () => {
+  it("每一只一行、带状态：跨会话取最要紧那条（workspaceAgentWhere）+ agentStatusText（群名从主页那几行查；#1571 第 4 步起没任务时才带群名）", () => {
     expect(src).toMatch(/const where = workspaceAgentWhere\(activity\.rows, ws\.id, a\.agentId, now\);/);
-    expect(src).toMatch(/const status = agentStatusText\(where, groupTitle\);/);
+    expect(src).toMatch(/\? agentStatusText\(where, groupTitle\)/);
     expect(src).toMatch(/r\.target\.kind !== "friend" && r\.target\.kind !== "agent"\) m\.set\(r\.target\.sessionId, r\.title\)/);
   });
-  it("聊过的行与别人的智能体都能左滑删；别人的智能体是一格默认收着的抽屉", () => {
-    expect(src.match(/<SwipeRow onDelete=\{\(\) => hideChat\(/g)?.length).toBe(2);
+  it("别人的智能体能左滑删、是一格默认收着的抽屉（员工那几行不是聊天，不能删，#1571 第 4 步）", () => {
+    expect(src.match(/<SwipeRow onDelete=\{\(\) => hideChat\(/g)?.length).toBe(1);
     expect(src).toMatch(/<Fold id="agents-others" label="别人的智能体" count=\{split\.others\.length\} defaultClosed>/);
   });
 });
