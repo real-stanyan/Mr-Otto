@@ -33,6 +33,7 @@ import { createFrameRateLimiter } from "./rateLimit.js";
 import { createCloudSession, type CloudSession, type AgentSpec } from "./sessionService.js";
 import { ChatCreateError, pairCreateProblem, planChatCreate } from "./chatCreate.js";
 import { onBehalfPairProblem } from "../../../src/shared/publicAgent.js";
+import { delegationRoster } from "../../../src/shared/delegation.js";
 import { DEFAULT_STUN, HUMAN_CALL_RING_MS, humanRingPush } from "../../../src/shared/humanCall.js";
 import { iceServersFor } from "./turnCredentials.js";
 import { createLaneBridge } from "./laneBridge.js";
@@ -1322,11 +1323,14 @@ async function main(): Promise<void> {
           });
           if (problem !== null) throw new ChatCreateError(problem);
           onBehalf = true;
-          chat = { kind: "pair", peerUid: byUid, facing: "both", agentIds: [publicAgentId as string] };
+          // 名单 = 管理员 + 公开智能体（#1564）：朋友的请求先到管理员，再由它下发给主人选的那只
+          chat = { kind: "pair", peerUid: byUid, facing: "both", agentIds: delegationRoster([], publicAgentId as string) };
           // 从这里起「动手的人」是主人：行的 publisher_uid、房间的 createdBy、客人投影的 added_by 都记主人——
           // creator 能改名单、能归档，这些不能因为是朋友开的口就落到朋友头上
           byUid = owner;
         }
+        // 代办入口（#1564，ADR-0363）：一开始就公开的车道里管理员必须在——朋友的请求先到它
+        if (chat?.kind === "pair" && chat.facing === "both") chat = { ...chat, agentIds: delegationRoster(chat.agentIds) };
         // 建一条聊天（#1280）。`chat` 缺席 = 团队会话，下面一个字都不变
         const plan = chat ? planChatCreate(chat, await agentsCache.refresh(workspaceId)) : null;
         if (plan && !plan.ok) throw new ChatCreateError(plan.message);
@@ -1541,6 +1545,11 @@ async function main(): Promise<void> {
           }
           humansNext = patch.facing === "both" ? [{ uid: chat.pair.peerUid, name: await labelOf(chat.pair.peerUid) }] : [];
           row.facing = patch.facing;
+          // 代办入口（#1564）：切成公开那一刻把管理员补进名单（排第一）；收回私密时不动名单
+          if (patch.facing === "both") {
+            const cur = patch.agentIds ?? chat.agentIds;
+            if (!cur.includes(ADMIN_AGENT_ID)) patch = { ...patch, agentIds: delegationRoster(cur) };
+          }
         }
         if (patch.agentIds !== undefined || humansNext !== undefined) {
           const out = await active.session.updateChatRoster(

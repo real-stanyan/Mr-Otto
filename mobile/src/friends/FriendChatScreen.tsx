@@ -40,6 +40,7 @@ import { ContactCardBubble } from "./ContactCardBubble.js";
 import { shareCardView } from "../../../src/shared/shareCard.js";
 import { friendName, needsTimeRow, timelineTimeLabel } from "../../../src/shared/wechatInbox.js";
 import { MentionSheet } from "../chat/MentionSheet.js";
+import { ADMIN_AGENT_ID } from "../../../src/shared/workspaceAgents.js";
 import { DispatchDialog } from "../chat/DispatchDialog.js";
 import { dispatchOpening, quoteWindow, type QuoteLine } from "../../../src/shared/dispatchQuote.js";
 import { mediaPlaceholder } from "../../../src/shared/chatMedia.js";
@@ -277,18 +278,12 @@ export function FriendChatScreen({ route, navigation }: Props) {
   );
   // 朋友公开给我的那条（#1523）：名单以日志为准，名字从 guest_chat_agents 那份表拿
   const peerEvents = peer?.session?.events ?? EMPTY_LANE;
-  const peerAgentIds = useMemo<string[]>(() => {
-    if (peer === null || peer.session === null) return [];
-    const fallback = peer.session.chat?.agentIds ?? [];
-    return [...(chatRosterNow(peerEvents, fallback) ?? fallback)];
-  }, [peer, peerEvents]);
+  // 代办入口（#1564，ADR-0363）：朋友这一侧只能 @ TA 的管理员——TA 别的智能体由管理员下发才动。TA 开了代办（设了公开智能体）
+  // 或车道已经在，名单里就列管理员这一位；第一次 @ 时再替 TA 开车道（#1533）。名字取车道名单里的，没有就叫「管理员」
   const peerNames = useMemo(() => {
-    if (peer === null) return [];
-    const inLane = peerAgentIds.filter((id) => peer.agents.some((a) => a.agentId === id)).map((id) => ({ agentId: id, name: peer.agents.find((a) => a.agentId === id)?.name ?? id }));
-    // 车道还没有 / 公开智能体还没进名单（#1533）：@ 名单里先列它，第一次 @ 时再替 TA 开车道
-    if (peer.publicAgent !== null && !inLane.some((a) => a.agentId === peer.publicAgent!.agentId)) inLane.push({ agentId: peer.publicAgent.agentId, name: peer.publicAgent.name });
-    return inLane;
-  }, [peer, peerAgentIds]);
+    if (peer === null || (peer.publicAgent === null && peer.session === null)) return [];
+    return [{ agentId: ADMIN_AGENT_ID, name: peer.agents.find((a) => a.agentId === ADMIN_AGENT_ID)?.name ?? "管理员" }];
+  }, [peer]);
   const peerItems = useMemo<LaneRow[]>(
     () => (peer === null || peer.session === null ? [] : [...laneItemsOf(peerEvents, selfUid), ...lanePending(peerEvents, peer.streaming)].map((item) => ({ ...item, peer: true }))),
     [peer, peerEvents, selfUid],
@@ -300,6 +295,10 @@ export function FriendChatScreen({ route, navigation }: Props) {
     if (peer?.publicAgent && !theirs.some((a) => a.agentId === peer.publicAgent!.agentId)) {
       const p = peer.publicAgent;
       theirs.push({ agentId: p.agentId, name: p.name, description: p.description, instructions: "", models: [], tools: [], createdBy: uid, updatedTs: 0, avatarSlot: p.avatarSlot });
+    }
+    // TA 的管理员（#1564）：@ 名单里只列它，画脸 / 名字也要有一行
+    if (peer !== null && !theirs.some((a) => a.agentId === ADMIN_AGENT_ID)) {
+      theirs.push({ agentId: ADMIN_AGENT_ID, name: "管理员", description: "", instructions: "", models: [], tools: [], createdBy: uid, updatedTs: 0, avatarSlot: null });
     }
     if (homeWs === null) return theirs.length > 0 ? { id: peer?.session?.workspaceId ?? "", name: "", ownerUid: uid, members: [], connectors: [], sessions: [], agents: theirs, sandboxApproval: null, kind: "home" } : null;
     return theirs.length === 0 ? homeWs : { ...homeWs, agents: [...homeWs.agents, ...theirs.filter((a) => !homeWs.agents.some((b) => b.agentId === a.agentId))] };
@@ -833,7 +832,8 @@ export function FriendChatScreen({ route, navigation }: Props) {
               }
               setCalling((d) => (d === null ? d : { ...d, visible: false }));
               // 只拉公开的那一只进通话（#1550）；那一页只画通话、不露车道群聊（#1558），挂断回到这页，总结在这页里出现
-              navigation.push("Chat", { kind: "guest", workspaceId: r.workspaceId, sessionId: r.sessionId, autoCall: true, callAgentId: publicAgent.agentId, callOnly: true });
+              // 打给 TA 的管理员（#1564）：它是代办入口，要动手的它再交给 TA 指定的那只
+              navigation.push("Chat", { kind: "guest", workspaceId: r.workspaceId, sessionId: r.sessionId, autoCall: true, callAgentId: ADMIN_AGENT_ID, callOnly: true });
             })();
           }}
           onClose={() => setCalling((d) => (d === null ? d : { ...d, visible: false }))}

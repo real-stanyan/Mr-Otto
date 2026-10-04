@@ -17,6 +17,8 @@ import { WORKSPACE_MEMORY_LIMITS, workspaceTierRuleText } from "../shared/worksp
 import { renderWikiPrompt } from "../shared/wiki.js";
 import { pairFacingOf, renderPairContext } from "../shared/pairChat.js";
 import { chatHumansOf } from "../shared/chatRoster.js";
+import { delegationRolePrompt } from "../shared/delegation.js";
+import { ADMIN_AGENT_ID } from "../shared/workspaceAgents.js";
 import { sanitizeForPrompt } from "../shared/threatPatterns.js";
 import type { ExecutorKind } from "../shared/taskSync.js";
 
@@ -779,6 +781,10 @@ export function deriveMessages(
   // 而这份信息只在 agent_briefed 上（roster 不带 id，所以名单事件自带名字快照）
   let briefName: string | null = null;
   let briefRoster: { name: string; description: string }[] = [];
+  /** 这份投影是给哪只的（agent_briefed 的 agentId，#1564）：公开车道里管理员与别的智能体各加一段不同的话 */
+  let briefAgentId: string | null = null;
+  /** 车道此刻的名单（最后一条 chat_roster_changed 胜出，#1564）：管理员那段要列出能下发给谁 */
+  let laneAgents: readonly { agentId: string; name: string }[] = [];
   const boundary = compression ? fidelityBoundary(events, compression.keepRecentTurns, barren) : 0;
   // 孤儿 tool_result 过滤（issue #186）：nudge 派活的收口 tool_result
   // （toolCallId = memory-nudge-N）没有对应的 assistant_message.toolCalls，
@@ -1060,6 +1066,7 @@ export function deriveMessages(
         const text = `[你是这个团队里的「${promptSafe(event.name)}」。${others}]\n${event.instructions}`;
         briefName = event.name;
         briefRoster = event.roster;
+        briefAgentId = event.agentId;
         // 没有围栏 system 时（旧日志 / 没带 workspace 的裸装配）退回事件位置那条
         // user 消息 —— 理由同 project_instructions：那种日志本来就没有清场保护
         // 可言，但「我是谁」是这只 agent 能不能开口的前提，宁可退化不能没有
@@ -1078,6 +1085,11 @@ export function deriveMessages(
         // 提示——不补造一条。主会话的 session_created 总是带 workspace，缺口
         // 只发生在子会话或旧日志上，不影响主线记忆功能。
         if (systemMessage) systemMessage.content += renderMemoryPrompt(event.memory, event.user, event.project, event.projectRoot, event.topics);
+        break;
+
+      case "chat_roster_changed":
+        // 名单最新一条胜出（#1564）：只给公开车道里的代办那一段用；朝向照旧由 chatHumansOf 在主循环后算
+        laneAgents = event.agents;
         break;
 
       case "voice_call_changed":
@@ -1251,6 +1263,15 @@ export function deriveMessages(
   if (systemMessage && pairCloud !== null && pairFacing === "both") {
     const seg = pairLaneSegments(pairCloud);
     systemMessage.content = systemMessage.content.replace(seg.self, seg.shared);
+    // 代办（#1564，ADR-0363）：公开车道里管理员是朋友请求的唯一入口，别的智能体等它下发——按这份投影是给谁的各加一段
+    if (briefAgentId !== null) {
+      systemMessage.content += delegationRolePrompt({
+        isAdmin: briefAgentId === ADMIN_AGENT_ID,
+        ownerName: pairCloud.pair?.ownerName ?? "主人",
+        peerName: pairCloud.pair?.peerName ?? "朋友",
+        others: laneAgents,
+      });
+    }
   }
   // 私聊信封（#1461）排在 wiki 之后：私聊每来一句就换一份，比 wiki 更常变——放后面，前缀缓存从这儿往下失效
   if (systemMessage && pairContext !== null) systemMessage.content += renderPairContext(pairContext, pairFacing);

@@ -132,7 +132,7 @@ export function MeScreen() {
           visible={picking.visible}
           ws={ws}
           title="公开智能体"
-          lead="挑一只（不挑 = 不设）。朋友在和你的私聊里能 @ 它、给它打电话。"
+          lead="挑一只做代办（不挑 = 不开）。朋友找不到你时，TA 的请求先到你的管理员，要动手的再由管理员交给它。"
           options={ws.agents.map((a) => a.agentId)}
           preset={profile?.publicAgentId !== undefined && profile?.publicAgentId !== null ? [profile.publicAgentId] : []}
           min={0}

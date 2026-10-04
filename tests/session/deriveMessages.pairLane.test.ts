@@ -57,6 +57,19 @@ describe("公开车道的 system 段（#1523，#1461 P2）", () => {
     expect(s).toContain("群主自己点起的那一轮，这里没有审批");
     expect(s.split("这里没有审批").length).toBe(2);
   });
+  it("代办那一段（#1564，ADR-0363）：管理员 = 入口，列出能下发给谁；别的智能体 = 等管理员下发；私密车道一个字不加", () => {
+    const rosterBoth = ev({ type: "chat_roster_changed", agents: [{ agentId: "admin", name: "管理员" }, { agentId: "a_000000000001", name: "助手" }], humans: [{ uid: PEER, name: "小红" }], ignorable: true });
+    const brief = (agentId: string, name: string) => ev({ type: "agent_briefed", agentId, name, instructions: "", roster: [] });
+    const admin = sys([created(), rosterBoth, brief("admin", "管理员")]);
+    expect(admin).toContain("你是 小明 的管理员");
+    expect(admin).toContain("指定的代办智能体：助手");
+    expect(admin).not.toContain("管理员 @ 你下发");
+    const helper = sys([created(), rosterBoth, brief("a_000000000001", "助手")]);
+    expect(helper).toContain("管理员 @ 你下发的事才轮到你做");
+    expect(helper).not.toContain("你是 小明 的管理员");
+    // 私密车道：没有这一段
+    expect(sys([created(), roster([]), brief("admin", "管理员")])).not.toContain("[代办：");
+  });
   it("名单里没有朋友（或没有名单事件）→ 私密那一版原样", () => {
     expect(sys([created(), roster([])])).toContain("看不到你");
     expect(sys([created()])).toContain("看不到你");
