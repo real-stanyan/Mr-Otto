@@ -137,7 +137,7 @@ const speechOpts = (): { speechTicket?: string } => {
   const speechTicket = currentSpeechTicket();
   return speechTicket === undefined ? {} : { speechTicket };
 };
-const speech = createSpeakCache((text, voiceId) => tts.speak(text, voiceId, speechOpts()));
+const speech = createSpeakCache((text, voiceId, emotion) => tts.speak(text, voiceId, { ...speechOpts(), emotion }));
 
 const session = createVoiceSession({
   speak: speech.speak,
@@ -342,7 +342,7 @@ export function playPreview(bytes: Uint8Array, on: { start(): void; end(): void;
 
 /** 来电响铃时先把开场白合成好（#1420）：切句与音色都走接通后放音那条路同一套，接起来直接从缓存拿 */
 export function prefetchOpening(agentId: string, opening: string, untilTs: number): void {
-  const texts = spokenUnits(opening);
-  if (texts.length === 0) return;
-  speech.prefetch(texts, agentVoiceId(agentId, voiceRoster()), untilTs);
+  const units = spokenUnits(opening);
+  if (units.length === 0) return;
+  speech.prefetch(units, agentVoiceId(agentId, voiceRoster()), untilTs);
 }
