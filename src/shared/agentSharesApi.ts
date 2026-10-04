@@ -1,4 +1,4 @@
-// agent_shares（0058，#1545）的两条查询。**容错**：0058 没跑时读回空（手机当没有共有）、写只记一笔不抛——
+// agent_shares（0059，#1545）的两条查询。**容错**：0059 没跑时读回空（手机当没有共有）、写只记一笔不抛——
 // 共有那一行是锦上添花，不能因为它让接受名片本身失败。
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { parseAgentShareRow, type AgentShare } from "./agentShares.js";
@@ -10,7 +10,7 @@ export async function fetchAgentShares(client: SupabaseClient, selfUid: string):
   return res.data.map(parseAgentShareRow).filter((s): s is AgentShare => s !== null);
 }
 
-/** 接受名片那一刻记一行。回 true = 写进去了；false = 没写（0058 没跑 / 策略拒了 / 抖了），调用方只记日志 */
+/** 接受名片那一刻记一行。回 true = 写进去了；false = 没写（0059 没跑 / 策略拒了 / 抖了），调用方只记日志 */
 export async function recordAgentShare(client: SupabaseClient, s: AgentShare): Promise<boolean> {
   const res = await client.from("agent_shares").upsert(
     { owner_uid: s.ownerUid, agent_id: s.agentId, with_uid: s.withUid, copy_agent_id: s.copyAgentId, name: s.name },

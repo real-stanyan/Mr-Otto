@@ -1,5 +1,5 @@
 // 共有的智能体（#1545）：我参与的 agent_shares 行（我分享出去的 + 我接受进来的），通讯录 / 资料页据它标「共有 · …」。
-// 进通讯录 / 资料页时拉一次、接受名片之后再拉一次；读不到留着上一份（0058 没跑 = 永远空，当没有共有）。
+// 进通讯录 / 资料页时拉一次、接受名片之后再拉一次；读不到留着上一份（0059 没跑 = 永远空，当没有共有）。
 import { useSyncExternalStore } from "react";
 import { agentShareBadge, type AgentShare } from "../../../src/shared/agentShares.js";
 import { fetchAgentShares } from "../../../src/shared/agentSharesApi.js";
