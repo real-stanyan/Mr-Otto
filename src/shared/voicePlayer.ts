@@ -11,6 +11,7 @@
 // 那一端的 API 带进了另一端。
 
 import type { VoiceSpeakResult } from "./shellBridge.js";
+import { GAP_MS, type SpeechEmotion } from "./voiceProsody.js";
 
 export interface VoicePlayerState {
   /** 此刻在说话的 agent；null = 静默 */
@@ -33,16 +34,20 @@ export interface PlayerAudio {
 }
 
 export interface VoicePlayerDeps {
-  speak: (text: string, voiceId: string) => Promise<VoiceSpeakResult>;
+  speak: (text: string, voiceId: string, emotion: SpeechEmotion | null) => Promise<VoiceSpeakResult>;
   /** 字节 → 能播的东西。必填（见文件头）：桌面给 Web Audio 或语音 helper，手机给原生模块 */
   createAudio: (bytes: Uint8Array) => PlayerAudio;
   onChange: (s: VoicePlayerState) => void;
+  /** 时钟与等待（#1515 句间停顿）：测试注入；缺省真时钟 */
+  now?: () => number;
+  wait?: (ms: number) => Promise<void>;
 }
 
 interface Item {
   agentId: string;
   text: string;
   voiceId: string;
+  emotion: SpeechEmotion | null;
   /** 合成的结果；入队时不发，轮到它或它前面那段起播时才发（预取一段） */
   fetch: Promise<VoiceSpeakResult> | null;
 }
@@ -55,8 +60,15 @@ export class VoicePlayer {
   private epoch = 0;
   private readonly createAudio: (bytes: Uint8Array) => PlayerAudio;
 
+  /** 上一句播完的时刻与说话人（#1515）：下一句起播前至少隔 GAP_MS（扣掉等合成已经等掉的）。stop() 清 */
+  private lastEnded: { at: number; agentId: string } | null = null;
+  private readonly now: () => number;
+  private readonly wait: (ms: number) => Promise<void>;
+
   constructor(private readonly deps: VoicePlayerDeps) {
     this.createAudio = deps.createAudio;
+    this.now = deps.now ?? (() => Date.now());
+    this.wait = deps.wait ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
   }
 
   state(): VoicePlayerState {
@@ -70,7 +82,7 @@ export class VoicePlayer {
     return ids;
   }
 
-  enqueue(u: { agentId: string; text: string; voiceId: string }): void {
+  enqueue(u: { agentId: string; text: string; voiceId: string; emotion: SpeechEmotion | null }): void {
     this.queue.push({ ...u, fetch: null });
     this.emit();
     void this.pump();
@@ -78,6 +90,7 @@ export class VoicePlayer {
 
   stop(): void {
     this.epoch += 1;
+    this.lastEnded = null;
     this.queue = [];
     if (this.current) {
       const { audio } = this.current;
@@ -96,7 +109,7 @@ export class VoicePlayer {
 
   private ensureFetch(item: Item): Promise<VoiceSpeakResult> {
     if (item.fetch === null) {
-      item.fetch = this.deps.speak(item.text, item.voiceId).catch(
+      item.fetch = this.deps.speak(item.text, item.voiceId, item.emotion).catch(
         (err: unknown): VoiceSpeakResult => ({ ok: false, message: err instanceof Error ? err.message : String(err) })
       );
     }
@@ -115,6 +128,16 @@ export class VoicePlayer {
     const result = await fetch;
     if (epoch !== this.epoch) return; // 等合成的时候被 stop 了
     if (this.queue[0] !== head) return; // 队列被换过（stop 后重新入队），这一份作废
+    // 句间停顿（#1515）：真人句间中位 0.23s、换人 p90 0.55s；合成晚回来的那段时间已经是停顿，只补差额
+    if (this.lastEnded !== null && result.ok) {
+      const gap = head.agentId === this.lastEnded.agentId ? GAP_MS.sentence : GAP_MS.speaker;
+      const due = gap - (this.now() - this.lastEnded.at);
+      if (due > 0) {
+        await this.wait(due);
+        if (epoch !== this.epoch) return;
+        if (this.queue[0] !== head) return;
+      }
+    }
     this.queue.shift();
     if (!result.ok) {
       this.error = result.message;
@@ -125,6 +148,7 @@ export class VoicePlayer {
     const audio = this.createAudio(result.audio);
     const done = (): void => {
       if (epoch !== this.epoch || this.current?.audio !== audio) return;
+      this.lastEnded = { at: this.now(), agentId: head.agentId };
       this.current = null;
       this.emit();
       void this.pump();

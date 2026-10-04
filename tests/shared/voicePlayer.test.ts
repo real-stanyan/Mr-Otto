@@ -3,15 +3,20 @@
 import { describe, expect, it, vi } from "vitest";
 import { VoicePlayer, type PlayerAudio, type VoicePlayerState } from "../../src/shared/voicePlayer.js";
 import type { VoiceSpeakResult } from "../../src/shared/shellBridge.js";
+import type { SpeechEmotion } from "../../src/shared/voiceProsody.js";
 
 interface FakeAudio extends PlayerAudio { ended(): void; played: number }
 
 function harness(speakImpl?: (text: string) => VoiceSpeakResult) {
   const speakCalls: string[] = [];
+  const emotions: (string | null)[] = [];
+  const waits: number[] = [];
+  let clock = 0;
   const audios: FakeAudio[] = [];
   const states: VoicePlayerState[] = [];
-  const speak = vi.fn(async (text: string, _voiceId: string): Promise<VoiceSpeakResult> => {
+  const speak = vi.fn(async (text: string, _voiceId: string, emotion: SpeechEmotion | null): Promise<VoiceSpeakResult> => {
     speakCalls.push(text);
+    emotions.push(emotion);
     await Promise.resolve();
     return speakImpl ? speakImpl(text) : { ok: true, audio: new Uint8Array([1]), costMicro: 1, audioMs: 100 };
   });
@@ -28,16 +33,18 @@ function harness(speakImpl?: (text: string) => VoiceSpeakResult) {
       return a;
     },
     onChange: (s) => states.push(s),
+    now: () => clock,
+    wait: async (ms) => { waits.push(ms); clock += ms; },
   });
-  return { player, speak, speakCalls, audios, states };
+  return { player, speak, speakCalls, emotions, waits, audios, states, tick: (ms: number) => { clock += ms; } };
 }
 const flush = async (): Promise<void> => { for (let i = 0; i < 6; i++) await Promise.resolve(); };
 
 describe("VoicePlayer", () => {
   it("串行：第二段要等第一段播完才起播；播着的那只 = speaking", async () => {
     const { player, audios, states } = harness();
-    player.enqueue({ agentId: "a", text: "一", voiceId: "v" });
-    player.enqueue({ agentId: "b", text: "二", voiceId: "v" });
+    player.enqueue({ agentId: "a", text: "一", voiceId: "v", emotion: null });
+    player.enqueue({ agentId: "b", text: "二", voiceId: "v", emotion: null });
     await flush();
     expect(audios).toHaveLength(1);
     expect(audios[0]!.played).toBe(1);
@@ -54,8 +61,8 @@ describe("VoicePlayer", () => {
 
   it("预取：第一段还在播时第二段的合成已经发出去了", async () => {
     const { player, speakCalls, audios } = harness();
-    player.enqueue({ agentId: "a", text: "一", voiceId: "v" });
-    player.enqueue({ agentId: "a", text: "二", voiceId: "v" });
+    player.enqueue({ agentId: "a", text: "一", voiceId: "v", emotion: null });
+    player.enqueue({ agentId: "a", text: "二", voiceId: "v", emotion: null });
     await flush();
     expect(audios).toHaveLength(1); // 只播了一段
     expect(speakCalls).toEqual(["一", "二"]); // 但两段都在合成
@@ -63,14 +70,14 @@ describe("VoicePlayer", () => {
 
   it("合成失败：记 error（onChange 报出来）、跳过这段接着播下一段，不卡死；下一段起播就清 error", async () => {
     const { player, audios, states } = harness((text) => (text === "坏" ? { ok: false, message: "网关不供语音" } : { ok: true, audio: new Uint8Array([1]), costMicro: 0, audioMs: null }));
-    player.enqueue({ agentId: "a", text: "坏", voiceId: "v" });
-    player.enqueue({ agentId: "a", text: "好", voiceId: "v" });
+    player.enqueue({ agentId: "a", text: "坏", voiceId: "v", emotion: null });
+    player.enqueue({ agentId: "a", text: "好", voiceId: "v", emotion: null });
     await flush();
     expect(audios).toHaveLength(1);
     expect(states.some((s) => s.error === "网关不供语音")).toBe(true);
     // 只剩一段且它失败：error 留着（这时没有下一段来清它）
     const solo = harness(() => ({ ok: false, message: "额度用完" }));
-    solo.player.enqueue({ agentId: "a", text: "x", voiceId: "v" });
+    solo.player.enqueue({ agentId: "a", text: "x", voiceId: "v", emotion: null });
     await flush();
     expect(solo.player.state()).toEqual({ speaking: null, queued: 0, error: "额度用完", text: null });
     expect(player.state()).toEqual({ speaking: "a", queued: 0, error: null, text: "好" });
@@ -78,8 +85,8 @@ describe("VoicePlayer", () => {
 
   it("stop：清队列、停当前、speaking 归零；之后入队照常", async () => {
     const { player, audios } = harness();
-    player.enqueue({ agentId: "a", text: "一", voiceId: "v" });
-    player.enqueue({ agentId: "a", text: "二", voiceId: "v" });
+    player.enqueue({ agentId: "a", text: "一", voiceId: "v", emotion: null });
+    player.enqueue({ agentId: "a", text: "二", voiceId: "v", emotion: null });
     await flush();
     expect(player.state()).toMatchObject({ speaking: "a", text: "一" }); // 正在读的原文：回声兜底与字幕都要它
     expect(player.pendingAgentIds()).toEqual(["a"]); // 在说的 + 排着的，去重
@@ -89,7 +96,7 @@ describe("VoicePlayer", () => {
     audios[0]!.ended(); // 旧的那段播完不该再推进
     await flush();
     expect(audios).toHaveLength(1);
-    player.enqueue({ agentId: "b", text: "三", voiceId: "v" });
+    player.enqueue({ agentId: "b", text: "三", voiceId: "v", emotion: null });
     await flush();
     expect(audios).toHaveLength(2);
     expect(player.state().speaking).toBe("b");
@@ -102,10 +109,64 @@ describe("VoicePlayer", () => {
       createAudio: () => ({ onended: null, onerror: null, async play() { throw new Error("NotAllowedError"); }, pause() {} }),
       onChange: () => {},
     });
-    p2.enqueue({ agentId: "a", text: "一", voiceId: "v" });
+    p2.enqueue({ agentId: "a", text: "一", voiceId: "v", emotion: null });
     await flush();
     expect(p2.state().speaking).toBeNull();
     expect(p2.state().error).toContain("NotAllowedError");
     void player;
+  });
+});
+
+describe("情绪与停顿（#1515）", () => {
+  it("emotion 原样传给 speak", async () => {
+    const { player, emotions } = harness();
+    player.enqueue({ agentId: "a", text: "一", voiceId: "v", emotion: "happy" });
+    player.enqueue({ agentId: "a", text: "二", voiceId: "v", emotion: null });
+    await flush();
+    expect(emotions).toEqual(["happy", null]);
+  });
+  it("第一句不等；同一只的下一句至少隔 230ms；换说话人至少隔 460ms", async () => {
+    const { player, audios, waits } = harness();
+    player.enqueue({ agentId: "a", text: "一", voiceId: "v", emotion: null });
+    player.enqueue({ agentId: "a", text: "二", voiceId: "v", emotion: null });
+    player.enqueue({ agentId: "b", text: "三", voiceId: "v", emotion: null });
+    await flush();
+    expect(waits).toEqual([]);
+    audios[0]!.ended();
+    await flush();
+    expect(waits).toEqual([230]);
+    audios[1]!.ended();
+    await flush();
+    expect(waits).toEqual([230, 460]);
+  });
+  it("停顿扣掉已经等掉的：下一句合成晚回来 300ms，230 的档不再补", async () => {
+    let release: (() => void) | null = null;
+    const { player, audios, waits, tick } = harness();
+    const slow = vi.fn(async (text: string): Promise<VoiceSpeakResult> => {
+      if (text === "二") await new Promise<void>((r) => { release = r; });
+      return { ok: true, audio: new Uint8Array([1]), costMicro: 1, audioMs: 100 };
+    });
+    // 换掉 speak：第二句挂着不回
+    (player as unknown as { deps: { speak: typeof slow } }).deps.speak = slow;
+    player.enqueue({ agentId: "a", text: "一", voiceId: "v", emotion: null });
+    player.enqueue({ agentId: "a", text: "二", voiceId: "v", emotion: null });
+    await flush();
+    audios[0]!.ended();
+    await flush();
+    tick(300);
+    release!();
+    await flush();
+    expect(waits).toEqual([]);
+    expect(audios).toHaveLength(2);
+  });
+  it("stop() 之后等着的停顿不再起播", async () => {
+    const { player, audios } = harness();
+    player.enqueue({ agentId: "a", text: "一", voiceId: "v", emotion: null });
+    player.enqueue({ agentId: "a", text: "二", voiceId: "v", emotion: null });
+    await flush();
+    audios[0]!.ended();
+    player.stop();
+    await flush();
+    expect(audios).toHaveLength(1);
   });
 });
