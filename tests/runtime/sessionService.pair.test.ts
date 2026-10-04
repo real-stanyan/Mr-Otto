@@ -30,7 +30,7 @@ const fakeWorld: ExecutionWorld = {
   exec: async () => ({ stdout: "hi", stderr: "", exitCode: 0 }),
   http: { postJson: async () => ({}) },
 };
-// 对外的刀（车道桥 / 打给朋友 / 发私聊）只有 L0 有（#1571，ADR-0366）：这份夹具把助手标成 L0——测的是车道本身，不是等级
+// 对外的刀（车道桥 / 打给朋友 / 发私聊）只有 L0 有（#1571，ADR-0367）：这份夹具把助手标成 L0——测的是车道本身，不是等级
 const HELPER = { agentId: "a_000000000001", name: "助手", description: "", instructions: "", models: ["fake-model"], tools: [] as AgentToolAllow[], tier: 0 as AgentTier };
 const TRANS = { agentId: "a_000000000002", name: "翻译", description: "", instructions: "", models: ["fake-model"], tools: [] as AgentToolAllow[] };
 const ADMIN = { agentId: "admin", name: "管理员", description: "", instructions: "", models: ["fake-model"], tools: [] as AgentToolAllow[] };

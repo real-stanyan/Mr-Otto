@@ -1132,7 +1132,7 @@ async function main(): Promise<void> {
       // 外联（#1441）：收尾时把结果汇报回原聊天、call_friend 那把刀的出口。推送关着 = 没有 hub = 两样都是 null；
       // 刀只挂在主场（home）——approveAll 与 session_created.cloud.home 同源
       onOutreachEnded: outreachHub === null ? null : (r) => void outreachHub.ended(workspaceId, ownerUid, r),
-      // 管理员拉人 / 请人（#1571，ADR-0366）：名单的真相在日志里，这一头只把 workspace_sessions.agent_ids 那一列跟上（同 chat_update）
+      // 管理员拉人 / 请人（#1571，ADR-0367）：名单的真相在日志里，这一头只把 workspace_sessions.agent_ids 那一列跟上（同 chat_update）
       onRosterChanged: async (agentIds) => {
         const { error } = await supabase.from("workspace_sessions").update({ agent_ids: agentIds }).eq("id", sessionId);
         if (error) console.warn(`[otto-runtime] bring/dismiss 写 agent_ids 失败（session=${sessionId}），等下次对账：${error.message}`);

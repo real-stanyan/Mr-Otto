@@ -1,4 +1,4 @@
-// bring_agent / dismiss_agent 的四条判据（#1571，ADR-0366）：名字对不上 / 只能拉专员 / 管理员自己 / 已在场；apply 回错就抛。
+// bring_agent / dismiss_agent 的四条判据（#1571，ADR-0367）：名字对不上 / 只能拉专员 / 管理员自己 / 已在场；apply 回错就抛。
 import { describe, expect, it } from "vitest";
 import { createRosterTools } from "../../services/runtime/src/rosterTools.js";
 import type { ExecutionWorld } from "../../src/world/executionWorld.js";

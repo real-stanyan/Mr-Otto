@@ -1,4 +1,4 @@
-// 分级在 daemon 里的接线（#1571，ADR-0366）：名单查询带上三列（单独一条、容错）、缺管理员自愈、bring/dismiss 改名单后写
+// 分级在 daemon 里的接线（#1571，ADR-0367）：名单查询带上三列（单独一条、容错）、缺管理员自愈、bring/dismiss 改名单后写
 // workspace_sessions.agent_ids。daemon.ts 进不了 vitest，读源码钉住；正则不依赖换行（工作区可能是 CRLF）。
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";

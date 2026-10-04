@@ -505,7 +505,7 @@ export interface CloudSessionOpts {
   /** 一通外联收尾时通知（#1441）。**必需**（同 callback 的纪律）：`null` = 这条会话不收外联
       （非外联会话，或 daemon 还没接跨会话那一头），startOutreach 回 refused；忘接线该编译不过 */
   onOutreachEnded: ((r: OutreachEnded) => void) | null;
-  /** 管理员用 bring_agent / dismiss_agent 改了这条对话的名单（#1571，ADR-0366）：daemon 接去写 workspace_sessions.agent_ids
+  /** 管理员用 bring_agent / dismiss_agent 改了这条对话的名单（#1571，ADR-0367）：daemon 接去写 workspace_sessions.agent_ids
       （与 chat_update 那条路同一列）。可选而不是必需：名单的真相在日志里（chat_roster_changed），这一头只是列表的投影；
       没接的话列表那一列等下次对账，不影响对话本身 */
   onRosterChanged?: (agentIds: string[]) => Promise<void>;
@@ -1517,7 +1517,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // 团队会话没有等级，照旧
     ...(opts.approveAll ? { team: () => opts.agents({ fresh: true }), onCreated: (line: string) => logChat("system", "系统", line, false) } : {}),
   });
-  /** 管理员拉人 / 请人（#1571，ADR-0366）：改的是这条对话的名单（chat_roster_changed），主人那一侧的 chat_update 走同一条 */
+  /** 管理员拉人 / 请人（#1571，ADR-0367）：改的是这条对话的名单（chat_roster_changed），主人那一侧的 chat_update 走同一条 */
   const rosterTools = createRosterTools({
     team: () => opts.agents({ fresh: true }),
     current: () => chatRoster ?? [],
@@ -1859,7 +1859,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // 这一态，之前每次都会先落一条空洞的 agent_briefed 把断言顶掉第一位。
     // 这不是为了讨好那条冒烟脚本才加的特例，是这个占位本来就该服从这条
     // 通用规则——冒烟变绿只是这条规则生效的必然副产品
-    // 分级那一段（#1571，ADR-0366）只在主场加：管理员怎么派、专员只做本域、子工只听上级。进 brief 而不是现拼：
+    // 分级那一段（#1571，ADR-0367）只在主场加：管理员怎么派、专员只做本域、子工只听上级。进 brief 而不是现拼：
     // 模型看见的就是日志里那一句（model-visible means logged）；名单变了（新雇了人）这一句也变，会重新 brief
     const instructions = opts.approveAll ? spec.instructions + tierPrompt({ agent: spec, ownerName: "主人", roster }) : spec.instructions;
     if (instructions.trim() === "" && otherRoster.length === 0) return;
@@ -1884,7 +1884,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // created_at 排，顺序稳定，但判据不该押在别人的排序上
     const rosterKey = (r: readonly { name: string; description: string }[]): string =>
       JSON.stringify([...r].map((x) => [x.name, x.description]).sort());
-    // 分级那一段（#1571，ADR-0366）只在主场加：管理员怎么派、专员只做本域、子工只听上级。进 brief 而不是现拼：
+    // 分级那一段（#1571，ADR-0367）只在主场加：管理员怎么派、专员只做本域、子工只听上级。进 brief 而不是现拼：
     // 模型看见的就是日志里那一句（model-visible means logged）；名单变了 rosterKey 不同，会重新 brief
     if (
       already && already.type === "agent_briefed" &&
@@ -2993,7 +2993,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       /** 派活没成（失败 / 限速 / 名单读不出来）时群里那句系统话。**只在没人接的
           时候说**：回落成名单第一只（mention:true）时有人答，不用说 */
       let dispatchNote: string | null = null;
-      // 管理员是唯一入口（#1571 第二轮，ADR-0366）：主场里没点名的话一律到管理员，由它判断自己做还是派——
+      // 管理员是唯一入口（#1571 第二轮，ADR-0367）：主场里没点名的话一律到管理员，由它判断自己做还是派——
       // 不再让分类器在几只之间挑。人点了名的照旧（拉进来的专员在名单里，人能直接回它）
       const adminEntry = opts.approveAll && roster.some((a) => a.agentId === ADMIN_AGENT_ID && a.degraded !== true);
       if (explicit.length === 0 && adminEntry && mentionTokens(text).length === 0) {
