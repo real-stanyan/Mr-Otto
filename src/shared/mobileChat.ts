@@ -4,12 +4,13 @@
 // 步骤、开场白都不画，ADR-0235 / 0250）。这里只回答「留下来的那些画成哪一种行」，以及
 // 最底下「此刻」那一行挑哪一只。
 
-import type { ApprovalRequestEvent, ChatRosterChangedEvent, SessionEvent } from "../session/events.js";
+import type { ApprovalRequestEvent, ChatRosterChangedEvent, FriendPickCandidate, SessionEvent } from "../session/events.js";
 import { ACTIVITY_ORDER, ACTIVITY_TEXT, activityFace, activityFoldOf, activityOf, type ActivityFold, type AgentActivity } from "./agentActivity.js";
 import { groupRows, rosterRows } from "./agentRoster.js";
 import { callRingFoldOf, RING_STATUS_TEXT, ringCardStatus, type RingCardStatus } from "./callRing.js";
 import { splitBubbles } from "./chatBubbles.js";
 import { chatMediaItemsOf, type ChatMediaItem } from "./chatMedia.js";
+import { friendPickFoldOf, friendPickStatus, type FriendPickStatus } from "./friendPick.js";
 import {
   approvalCardTitle, assistantLabel, callOffsetText, chatRosterLineParts, cloudEmptyState, decisionLineText, hiddenFromCloudTimeline,
   relayLineText, stopButtonRows, systemNoteText, turnEndedLineText, userRowIdentity, voiceCallCards, type RosterLinePart, type VoiceCallCard,
@@ -98,6 +99,12 @@ export type ChatRow =
   | {
     kind: "outreach"; key: string; ts: number; outreachId: string; agentId: string; name: string; peerName: string;
     view: OutreachRowView; groupText: string; card: VoiceCallCard | null;
+  }
+  /** 选人卡（#1520）：它认不准要打给哪位好友时弹的那张。一张卡一行，在 `offered` 的位置；状态取这张卡最后一条，
+      过期 / 被新卡顶掉读的时候算（friendPickStatus，`now` 由调用方递）。头像不在这里——手机按 uid 从好友表取 */
+  | {
+    kind: "friend_pick"; key: string; ts: number; pickId: string; agentId: string; name: string; question: string;
+    candidates: FriendPickCandidate[]; status: FriendPickStatus; pickedUid: string | null; message: string | null;
   }
   | {
     kind: "approval"; key: string; ts: number; callId: string; title: string;
@@ -192,6 +199,7 @@ export function chatRows(o: {
   const mergedCalls = new Set([...ringCall.values()].map((c) => c.seq));
   // 外联（#1441）：状态要看这一通后面的事件，同回电那样在循环外先折一遍
   const outreaches = outreachFoldOf(o.events);
+  const picks = friendPickFoldOf(o.events);
   const requests = new Map<string, ApprovalRequestEvent>();
   const decided = new Set<string>();
   for (const e of o.events) {
@@ -218,6 +226,18 @@ export function chatRows(o: {
         items.push({
           kind: "outreach", key: `outreach-${e.outreachId}`, ts: e.ts, outreachId: e.outreachId, agentId: st.fromAgentId, name,
           peerName: st.peerName, view: outreachRowView(st), groupText: outreachGroupText(name, st), card: outreachCard(e.seq, st, name),
+        });
+      }
+      continue;
+    }
+    // 选人卡（#1520）：只在 offered 的位置画一行；之后的 picked / dismissed / failed 只改这一行的状态
+    if (e.type === "friend_pick") {
+      const st = e.phase === "offered" ? picks.get(e.pickId) : undefined;
+      if (st !== undefined) {
+        items.push({
+          kind: "friend_pick", key: `friend_pick-${e.pickId}`, ts: e.ts, pickId: e.pickId, agentId: st.fromAgentId,
+          name: agentNameOf(o.ws, st.fromAgentId), question: st.question, candidates: st.candidates,
+          status: friendPickStatus(st, o.now), pickedUid: st.uid, message: st.message,
         });
       }
       continue;
