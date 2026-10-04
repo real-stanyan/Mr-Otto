@@ -67,42 +67,42 @@ describe("云会话的 system 段（issue #833）", () => {
     const plain = systemPromptText("/work", "d");
     expect(withCloud).not.toContain("otto-spec");
     expect(withCloud).not.toContain("otto-compare");
-    expect(withCloud).toContain("各行各业");
+    expect(withCloud).toContain("不是客服也不是助手");
     expect(plain).toContain("otto-spec");
-    expect(plain).not.toContain("各行各业");
+    expect(plain).not.toContain("不是客服也不是助手");
   });
 
-  it("cloud 的口径是「像同事在群里聊天」：先说结论、别倒细节、空行 = 下一条消息、不用 Markdown 骨架（#1132）", () => {
+  it("cloud 的口径是「群里的一个同事」：人设 + 跟着对方的用词走 + 口吻样例，机制事实照留（#1132 → #1483）", () => {
     const withCloud = systemPromptText("/work", "d", undefined, undefined, { workspaceId: "w" });
-    // 四句各对应一条真机上看到的病：术语堆砌 / 一口气五百字 / 加粗编号小标题（气泡
-    // 是纯文字，星号原样露出来）/ 该拆成几条的一坨。界面按空行拆气泡（chatBubbles.ts），
-    // 所以「空行 = 下一条消息」这句话必须与渲染层说的是同一件事
-    expect(withCloud).toContain("先说结论");
-    expect(withCloud).toContain("别一次把细节全倒出来");
-    expect(withCloud).toContain("空一行");
-    expect(withCloud).toContain("连发的一条消息");
-    expect(withCloud).toContain("星号井号会原样露出来");
-    // #1448：真机上一条回复仍然四五百字、复述别人、同一句请求催六遍。上限要数得出来，
-    // 那几种大模型腔逐条点名
+    // #1483 第四轮：前三轮（#1132 / #1448 / #1454）都是往里加「别这样」的规则，维护者的观感
+    // 是越改越机械——每条都合规、合起来像在填表。这次换成人设 + 样例：
+    // ① 身份——在群里是个同事，不是客服 / 助手；
+    // ② 用词跟着对方走（取代「各行各业」那个在开发群里不成立的假前提）；
+    // ③ 长度仍然数得出来；细节问了再给；
+    // ④ @ 只用来叫人——回刚跟你说话的人不用 @ 他（真机每条都以「@Stan Yan」开头）；
+    // ⑤ 允许不回（#1454 那根杆子照留：空回复在时间线上不画）；
+    // ⑥ 口吻样例一组，内容是日常事，不撞真实任务的词（照抄进别的群也不穿帮）
+    expect(withCloud).toContain("是个同事，不是客服也不是助手");
+    expect(withCloud).toContain("跟着对方的用词走");
     expect(withCloud).toContain("平时一两句");
-    expect(withCloud).toContain("一百来字");
-    expect(withCloud).toContain("别人问到再给");
-    expect(withCloud).toContain("别人刚说过的不复述");
-    expect(withCloud).toContain("不反复催");
-    expect(withCloud).toContain("一次最多问一个问题");
-    // #1454：吃到 #1448 提示词的两条真机回复仍是「三件事。排查：…交付：…」。规则再加收益
-    // 递减，这次拉三根没拉过的杆子：① 允许不回（空回复在时间线上本来就不画，
-    // cloudTimeline.isAgentStep）；② 一条消息只对一个人说；③ 一对坏例 / 好例代替再加一条规则
+    expect(withCloud).toContain("细节别人问了再给");
+    expect(withCloud).toContain("不用 @ 他");
     expect(withCloud).toContain("一个字都不发");
-    expect(withCloud).toContain("空回复不会显示出来");
-    expect(withCloud).toContain("一条消息只对一个人说");
-    expect(withCloud).toContain("标签分段");
-    expect(withCloud).toContain("太像机器");
-    expect(withCloud).toContain("才像人");
+    expect(withCloud).toContain("空回复不会显示");
+    expect(withCloud).toContain("口吻参考");
+    // 机制事实两条（与渲染层说的是同一件事）：界面按空行拆气泡（chatBubbles.ts）；气泡是纯文字
+    expect(withCloud).toContain("空一行");
+    expect(withCloud).toContain("连发的两条");
+    expect(withCloud).toContain("纯文字");
+    expect(withCloud).toContain("围栏");
+    // 规则清单那几句退场：假前提、点名禁令、对照例
+    expect(withCloud).not.toContain("各行各业");
+    expect(withCloud).not.toContain("一是、二是、三是");
+    expect(withCloud).not.toContain("太像机器");
     // 本地会话一个字不沾
     const plain = systemPromptText("/work", "d");
-    expect(plain).not.toContain("连发的一条消息");
-    expect(plain).not.toContain("太像机器");
+    expect(plain).not.toContain("口吻参考");
+    expect(plain).not.toContain("连发的两条");
   });
 
   it("cloud 与 workspaceKind/isolated 互不干扰（各自独立注入）", () => {
@@ -241,24 +241,26 @@ describe("聊天与个人主场的提示词（#1280，ADR-0298）", () => {
     }
   });
 
-  it("说人话那一段在私聊里不提「群里」，但四条口径一条不少", () => {
-    expect(dmHome).toContain("对面这个人不一定是开发者");
-    expect(dmHome).toContain("界面会把每一段当成你连发的一条消息");
-    expect(dmHome).toContain("界面显示的是纯文字");
-    // #1454：私聊里只有一个人，「一条消息只对一个人说」「被 @ 到」在那里是在描述一个
-    // 不存在的场合——换回「一段只说一件事」，允许不回与对照例照旧
-    expect(dmHome).not.toContain("一条消息只对一个人说");
-    expect(dmHome).not.toContain("@ 到");
-    expect(dmHome).toContain("一段只说一件事");
+  it("说人话那一段在私聊里不提「群里」，但口径一条不少（#1483）", () => {
+    // 私聊里只有一个人、没有 @：身份换成「对面这个人的同事」，@ 那一行整个不要，
+    // 「只对一个人」也不说；人设 / 用词跟着走 / 长度 / 允许不回 / 口吻样例 / 机制两条照旧
+    expect(dmHome).toContain("你是对面这个人的同事，不是客服也不是助手");
+    expect(dmHome).toContain("跟着对方的用词走");
+    expect(dmHome).toContain("平时一两句");
     expect(dmHome).toContain("一个字都不发");
-    expect(dmHome).toContain("太像机器");
-    // 群聊那一版一个字不变
-    expect(groupHome).toContain("群里的人来自各行各业");
-    expect(groupHome).toContain("一条消息只对一个人说");
+    expect(dmHome).toContain("口吻参考");
+    expect(dmHome).toContain("界面会当成你连发的两条");
+    expect(dmHome).toContain("纯文字");
+    expect(dmHome).not.toContain("@");
+    expect(dmHome).not.toContain("只对一个人");
+    // 群聊那一版：身份在群里、@ 规则在、只对一个人在
+    expect(groupHome).toContain("在这个群里你是个同事");
+    expect(groupHome).toContain("不用 @ 他");
+    expect(groupHome).toContain("只对一个人");
   });
 
   it("团队里没有 chat 标记时，听众那一段仍然按群聊走（存量日志）", () => {
     expect(team).toContain("这是一条**群聊**会话");
-    expect(team).toContain("群里的人来自各行各业");
+    expect(team).toContain("在这个群里你是个同事");
   });
 });

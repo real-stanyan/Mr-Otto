@@ -26,11 +26,14 @@ function node([tag, a]: IconNode, i: number) {
   }
 }
 
-export const Icon = memo(function Icon({ name, size = 24, color, stroke = 1.75 }: {
+export const Icon = memo(function Icon({ name, size = 24, color, stroke = 1.75, fill = false }: {
   name: IconName;
   size?: number;
   color: string;
   stroke?: number;
+  /** 填实（#1482）：桌面 `fill-current` 的同义——停钮那颗方块要的是实心，不是描边框。
+      默认只描边，与改动前逐字相同 */
+  fill?: boolean;
 }) {
   const nodes = ICON_NODES[name] as readonly IconNode[];
   return (
@@ -38,7 +41,7 @@ export const Icon = memo(function Icon({ name, size = 24, color, stroke = 1.75 }
       width={size}
       height={size}
       viewBox="0 0 24 24"
-      fill="none"
+      fill={fill ? color : "none"}
       stroke={color}
       strokeWidth={stroke}
       strokeLinecap="round"
