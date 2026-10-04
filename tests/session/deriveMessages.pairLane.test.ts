@@ -46,6 +46,33 @@ describe("私密车道的 system 段（#1461）", () => {
   });
 });
 
+describe("公开车道的 system 段（#1523，#1461 P2）", () => {
+  const roster = (humans: { uid: string; name: string }[]) => ev({ type: "chat_roster_changed", agents: [{ agentId: "admin", name: "管理员" }], humans, ignorable: true });
+  it("名单里有朋友 → 换成公开那一版：朋友看得到你、朋友点起的轮等群主批；私密那半句不再出现", () => {
+    const s = sys([created(), roster([{ uid: PEER, name: "小红" }])]);
+    expect(s).toContain("也看得到你说的话");
+    expect(s).toContain("都要等群主批");
+    expect(s).not.toContain("看不到你");
+    // 审批那一段换成了群里有客人那一版：「这里没有审批」只剩群主那半句里的一处
+    expect(s).toContain("群主自己点起的那一轮，这里没有审批");
+    expect(s.split("这里没有审批").length).toBe(2);
+  });
+  it("名单里没有朋友（或没有名单事件）→ 私密那一版原样", () => {
+    expect(sys([created(), roster([])])).toContain("看不到你");
+    expect(sys([created()])).toContain("看不到你");
+  });
+  it("最后一条名单胜出：公开过又收回 → 私密那一版", () => {
+    const s = sys([created(), roster([{ uid: PEER, name: "小红" }]), ev({ type: "user_message", content: "x", fromUid: "u" }), roster([])]);
+    expect(s).toContain("看不到你");
+  });
+  it("信封头跟着朝向走：公开时不说「也看不到你」", () => {
+    const ctx = ev({ type: "pair_context_loaded", ownerName: "小明", peerName: "小红", lines: [{ from: "peer", text: "周末去哪", ts: 1 }] });
+    const s = sys([created(), roster([{ uid: PEER, name: "小红" }]), ctx]);
+    expect(s).toContain("小红：周末去哪");
+    expect(s).not.toContain("也看不到你");
+  });
+});
+
 describe("pair_context_loaded 的投影（#1461）", () => {
   const ctx = (texts: string[]) =>
     ev({ type: "pair_context_loaded", ownerName: "小明", peerName: "小红", lines: texts.map((t, i) => ({ from: i % 2 ? "owner" : "peer", text: t, ts: i })) });

@@ -3,6 +3,7 @@
 // assembleSnapshot 里单测，这里薄到无逻辑不单测（错误原样上抛给调用方收敛）。
 
 import type { SupabaseClient } from "@supabase/supabase-js";
+import type { PairFacing } from "./pairChat.js";
 import {
   assembleSnapshot,
   type MemberProfile, type WorkspaceKind, type WorkspaceSnapshot,
@@ -544,10 +545,12 @@ export async function listGuestChats(client: SupabaseClient, selfUid: string): P
     id: string; workspace_id: string; publisher_uid: string; title: string; archived: boolean; updated_at: string;
     agent_ids?: unknown; last_ts?: unknown; last_excerpt?: unknown; last_from?: unknown; chat_kind?: unknown;
   }[];
-  const guests = await fetchSessionGuests(client, rows.map((r) => r.id));
-  const owners = await fetchProfiles(client, rows.map((r) => r.publisher_uid)).catch(() => new Map<string, MemberProfile>());
+  // 公开给我的车道（#1523）也让我成了那条会话的客人，但它画在和那位朋友的私聊页里，不是一条可以单独点进去的群
+  const chats = rows.filter((r) => r.chat_kind !== "pair");
+  const guests = await fetchSessionGuests(client, chats.map((r) => r.id));
+  const owners = await fetchProfiles(client, chats.map((r) => r.publisher_uid)).catch(() => new Map<string, MemberProfile>());
   return Promise.all(
-    rows.map(async (row) => {
+    chats.map(async (row) => {
       const res = await client.rpc("guest_chat_agents", { p_session: row.id });
       const raw = (unwrap(res) ?? []) as { agent_id: unknown; name: unknown; description: unknown; avatar_slot: unknown }[];
       const agents = raw.map((r) => guestAgentRow(r, row.publisher_uid)).filter((a) => a !== null);
@@ -743,27 +746,50 @@ export async function markMentionsRead(
   if (error) throw new Error(error.message);
 }
 
-/** 和这位朋友的那条私密车道（#1461 P1，ADR-0346）：我主场里 chat_kind = pair、facing = self 的那一行，没有回 null。
+/** 和这位朋友的那条车道（#1461 P1，ADR-0346）：我主场里 chat_kind = pair、peer_uid = TA 的那一行，没有回 null。
+    **不按朝向找**（#1523）：一个人对一位朋友只有一条车道，朝向可切；`facing` 那一列是投影，连上之后以日志为准。
     **查询出错往上抛**，不兜底成 null：手机上「没有」画的是「带上我的智能体」，把「读不到」说成「没有」
     人会再带一次——runtime 那侧幂等，不会建出第二条，但这一屏会把一条其实在跑的车道藏起来 */
 export async function findPairLane(
   client: SupabaseClient,
   homeId: string,
   peerUid: string,
-): Promise<{ sessionId: string; agentIds: string[] } | null> {
+): Promise<{ sessionId: string; agentIds: string[]; facing: PairFacing } | null> {
   const { data, error } = await client
     .from("workspace_sessions")
-    .select("id,agent_ids")
+    .select("id,agent_ids,facing")
     .eq("workspace_id", homeId)
     .eq("chat_kind", "pair")
     .eq("peer_uid", peerUid)
-    .eq("facing", "self")
     .maybeSingle();
   if (error) throw new Error(error.message);
   if (data === null || data === undefined) return null;
-  const row = data as { id: string; agent_ids?: unknown };
+  const row = data as { id: string; agent_ids?: unknown; facing?: unknown };
   const agentIds = Array.isArray(row.agent_ids) ? row.agent_ids.filter((x): x is string => typeof x === "string") : [];
-  return { sessionId: row.id, agentIds };
+  return { sessionId: row.id, agentIds, facing: row.facing === "both" ? "both" : "self" };
+}
+
+/** 朋友那一侧（#1523）：这位朋友在 TA 主场里**公开给我**的那条车道（chat_kind = pair、facing = both、peer_uid = 我、建的人是 TA）。
+    我读得到那一行靠 0043 的 wss_select_guest（我在 workspace_session_members 里）。没有 / 读不到都回 null：
+    这一屏上「没有」与「读不到」是同一个画法（不画），不像自己那条要分开说 */
+export async function findSharedLaneFrom(
+  client: SupabaseClient,
+  friendUid: string,
+  selfUid: string,
+): Promise<{ sessionId: string; workspaceId: string; agentIds: string[] } | null> {
+  const { data, error } = await client
+    .from("workspace_sessions")
+    .select("id,workspace_id,agent_ids")
+    .eq("chat_kind", "pair")
+    .eq("facing", "both")
+    .eq("peer_uid", selfUid)
+    .eq("publisher_uid", friendUid)
+    .eq("archived", false)
+    .maybeSingle();
+  if (error || data === null || data === undefined) return null;
+  const row = data as { id: string; workspace_id: string; agent_ids?: unknown };
+  const agentIds = Array.isArray(row.agent_ids) ? row.agent_ids.filter((x): x is string => typeof x === "string") : [];
+  return { sessionId: row.id, workspaceId: row.workspace_id, agentIds };
 }
 
 /** 朋友那一侧的在场提示（#1461 P1）：`owner` 在和我的私聊里带了几只私人智能体。只有一个数（0053 的 pair_presence，

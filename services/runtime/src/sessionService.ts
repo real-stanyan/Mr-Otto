@@ -258,7 +258,7 @@ import { createActivityWriter } from "./activityWriter.js";
 import { adminIntroText, advanceRoleWait, newAgentGreetingText, roleWaitOf, settledRole, type RoleWait } from "../../../src/shared/agentOnboarding.js";
 import { alertBody, muteKeyFor, type AlertPush, type NotifyKind } from "../../../src/shared/notifyPrefs.js";
 import { advanceReplyNotify, createReplyNotifyState, type ReplyNote } from "../../../src/shared/replyNotify.js";
-import { pairContextLines, samePairLines, type PairMessageRow } from "../../../src/shared/pairChat.js";
+import { pairContextLines, pairFacingOf, samePairLines, type PairMessageRow } from "../../../src/shared/pairChat.js";
 
 /** 派活分类器读日志尾段多少条事件（#1153）。一轮 turn 十几条事件是常态，200 条
     足够捞出最近 8 句说出口的话；不读全量是因为 say() 的回执等着这一步 */
@@ -2747,7 +2747,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       }
       // 私密车道（#1461）：只听主人的。进房的闸（工作区成员 ∪ 客人）在主场里本来就只放主人进来、车道也不收客人，
       // 这一道是第二道：判据挂在「这条车道是谁的」这个事实上，不挂在「此刻谁进得了房」的巧合上
-      if (isPair && fromUid !== opts.ownerUid) throw new SayRejectedError("这是别人的私人智能体。");
+      // 公开车道（#1523）：朋友以客人身份进来，也能说。isGuest 读的是日志里此刻的名单——事实在日志
+      if (isPair && fromUid !== opts.ownerUid && !isGuest(fromUid)) throw new SayRejectedError("这是别人的私人智能体。");
       // 人刚开口 → 要此刻的名单（#979 第 5 条）：他在设置页刚建/改的那只要能立刻 @ 到
       const roster = await rosterNow({ fresh: true });
       // **名单降级 + 这句话点了名 = 一个字节都不落**（#957 E2-4）：degraded 那份
@@ -3128,7 +3129,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
           ? { outreach: { ownerName: createdCloud.outreach.ownerName, active: activeOutreach(outreachFold) !== null } }
           : {}),
         // 私密车道（#1461）：配对的是哪位朋友、朝向。客户端认得出「这条车道是我和谁的」
-        ...(pairFacts !== undefined ? { pair: { peerUid: pairFacts.peerUid, facing: pairFacts.facing } } : {}),
+        // 朝向从名单推导（#1523）：朋友在客人名单里 = 公开。session_created 里那一格只是建会话时的初值
+        ...(pairFacts !== undefined ? { pair: { peerUid: pairFacts.peerUid, facing: pairFacingOf(chatHumans, pairFacts.peerUid) } } : {}),
       };
     },
 
@@ -3145,7 +3147,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
 
     async updateChatRoster(byUid, patch, byName) {
       // 私密车道（#1461）：带进 / 带走几只智能体就是改智能体那一半名单；它不收人（车道里只有主人）
-      if (isPair && patch.humans !== undefined) return { kind: "not_group", message: "私人智能体的车道里不能拉人" };
+      // 车道（#1461 / #1523）：客人名单只可能是 [朋友]（公开）或 []（仅我可见）——daemon 把 chat_update.facing 折成这两种，别人进不来
+      if (isPair && patch.humans !== undefined && patch.humans.some((h) => h.uid !== pairFacts?.peerUid)) {
+        return { kind: "not_group", message: "车道里只能有配对的那位朋友" };
+      }
       if (chatKind !== "group" && !isPair) {
         return {
           kind: "not_group",
