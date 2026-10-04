@@ -12,6 +12,7 @@ import {
   Platform, Pressable, ScrollView, StyleSheet, Text, TextInput, View,
   type StyleProp, type TextInputProps, type TextStyle, type ViewStyle,
 } from "react-native";
+import { keyboardInsetOf } from "../../src/shared/keyboardInset.js";
 import { CheckGlyph } from "./chrome/Glyphs.js";
 import { MONO, PRESS_SPRING, radius, space, type, usePalette, withAlpha, type Palette } from "./theme.js";
 
@@ -488,7 +489,7 @@ export function Avatar({ url, name, size = 36 }: { url?: string; name: string; s
 }
 
 /**
- * 键盘占了屏幕底下多少,给一个直接能当 paddingBottom 用的数。
+ * 键盘占了屏幕底下多少,给一个直接能当 paddingBottom 用的数。算术在 shared 的 keyboardInsetOf(进 vitest)。
  *
  * **为什么不是 KeyboardAvoidingView**:它的 behavior="padding" 拿
  * `_frame.y + _frame.height` 和键盘的 screenY 求差,而 `_frame` 来自 onLayout ——
@@ -501,6 +502,12 @@ export function Avatar({ url, name, size = 36 }: { url?: string; name: string; s
  * 同一套系。只在 layout 时量一次存下来,键盘事件里就不必等异步回调——让位得和
  * 键盘同一帧开始动,晚一帧就看得出来。
  *
+ * 聊天页(#1490)也从 KAV 换到这里:原生栈的页要靠 keyboardVerticalOffset={useHeaderHeight()} 把标题栏那一截
+ * 补回去,算式里多一个外来的输入;而 iOS 偶发把 screenY 报成 0 时 KAV 的差值 = 整个内容区,输入栏贴到标题栏下。
+ * 这里①不看 header 高度(量的本来就是屏幕坐标),②让位夹到键盘自己的高度(keyboardInsetOf),
+ * ③键盘事件里**再量一次**底边——存下来的那个可能是上一次布局的(页刚推入、第一次弹键盘时 onLayout 还没来),
+ * 量到的和刚用的不一样就补一拍。
+ *
  * Android 不接:系统的 adjustResize 已经把窗口缩过了,再让一次是双份。
  */
 export function useKeyboardInset(onShow: () => void): {
@@ -511,9 +518,13 @@ export function useKeyboardInset(onShow: () => void): {
   /** 这一屏底边在屏幕坐标里的位置 */
   const bottom = useRef<number | null>(null);
   const [inset, setInset] = useState(0);
-  const onLayout = (): void => {
-    ref.current?.measureInWindow((_x, y, _w, h) => { bottom.current = y + h; });
+  const measure = (then?: (b: number) => void): void => {
+    ref.current?.measureInWindow((_x, y, _w, h) => {
+      bottom.current = y + h;
+      then?.(y + h);
+    });
   };
+  const onLayout = (): void => measure();
 
   // 回调每次 render 都是新的,但监听只装一次:存进 ref,别让它进依赖
   const shown = useRef(onShow);
@@ -523,17 +534,25 @@ export function useKeyboardInset(onShow: () => void): {
     if (Platform.OS !== "ios") return;
     // willChangeFrame 一个事件管收放两头:收起时 screenY 就是屏幕高度,差值自然归零
     const sub = Keyboard.addListener("keyboardWillChangeFrame", (e) => {
-      const b = bottom.current;
-      if (b === null) return;
-      const next = Math.max(0, b - e.endCoordinates.screenY);
+      const frame = e.endCoordinates;
+      const next = keyboardInsetOf(bottom.current, frame);
       LayoutAnimation.configureNext({
         duration: e.duration || 250,
         update: { type: LayoutAnimation.Types.keyboard },
       });
       setInset(next);
       if (next > 0) shown.current();
+      measure((b) => {
+        const again = keyboardInsetOf(b, frame);
+        setInset((cur) => (cur === again ? cur : again));
+      });
     });
-    return () => sub.remove();
+    // 兜底:收起那一下不管 willChangeFrame 报了什么,落地后一定是 0
+    const hid = Keyboard.addListener("keyboardDidHide", () => setInset((cur) => (cur === 0 ? cur : 0)));
+    return () => {
+      sub.remove();
+      hid.remove();
+    };
   }, []);
 
   return { root: { ref, onLayout }, keyboard: inset };
