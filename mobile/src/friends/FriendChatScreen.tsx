@@ -14,7 +14,7 @@ import { AppState, FlatList, Pressable, Text, View } from "react-native";
 import { agentFaceSlot } from "../../../src/shared/agentAvatar.js";
 import { chatRosterNow } from "../../../src/shared/chatRoster.js";
 import type { SessionEvent } from "../../../src/session/events.js";
-import { mediaBodyHidden, planMediaMessages, type PreparedMedia } from "../../../src/shared/chatMedia.js";
+import { AUDIO_MAX_MS, mediaBodyHidden, planMediaMessages, type PreparedMedia } from "../../../src/shared/chatMedia.js";
 import type { DirectMessage } from "../../../src/shared/friends.js";
 import { laneItemsOf, lanePending, laneTargets, mergePairView, pairPresenceText, type LaneItem } from "../../../src/shared/pairChat.js";
 import { PRESENCE_TEXT } from "../../../src/shared/presence.js";
@@ -38,7 +38,7 @@ import type { RootStackParams } from "../nav/types.js";
 import { useMyName } from "../tabs/MeScreen.js";
 import { usePalette, withAlpha } from "../theme.js";
 import { Spinner, useKeyboardInset } from "../ui.js";
-import { dictationUsable, startDictation, stopDictation, useVoice } from "../voice/voiceStore.js";
+import { dictationUsable, startDictation, startVoiceRecording, stopDictation, stopVoiceRecording, useVoice } from "../voice/voiceStore.js";
 import { FaceTile, PersonTile } from "../wx/Avatar.js";
 import { Icon } from "../wx/Icon.js";
 import { HeaderIconButton } from "../wx/TabHeader.js";
@@ -485,18 +485,30 @@ export function FriendChatScreen({ route, navigation }: Props) {
                   onDown: () => {
                     setHoldText("");
                     startDictation(setHoldText, (m) => setNote(m));
+                    startVoiceRecording();
                   },
                   onChange: setHold,
                   onUp: (ok: boolean) => {
                     void (async () => {
                       const text = await stopDictation(ok);
+                      const rec = await stopVoiceRecording(ok);
                       setHoldText("");
                       if (!ok) return;
-                      if (text.trim() === "") {
-                        toast("没听清，按住再说一遍");
+                      const trimmed = text.trim();
+                      // 语音消息（#1492，ADR-0351）：录到了就发语音条、转写随消息走；@ 了带进来的智能体那句仍发文字
+                      // 给车道（智能体只收字，维护者拍板）；老原生包录不了（rec === null）退回发文字
+                      if (rec !== null && rec.durationMs >= 1000 && laneTargets(trimmed, broughtNames) === null) {
+                        sendMediaToFriend(uid, [{
+                          kind: "audio", uri: rec.uri, mediaType: "audio/mp4", bytes: rec.bytes, width: 0, height: 0,
+                          durationMs: Math.min(rec.durationMs, AUDIO_MAX_MS), ...(trimmed !== "" ? { transcript: trimmed } : {}),
+                        }]);
                         return;
                       }
-                      await send(text.trim());
+                      if (trimmed === "") {
+                        toast(rec !== null && rec.durationMs < 1000 ? "说话时间太短" : "没听清，按住再说一遍");
+                        return;
+                      }
+                      await send(trimmed);
                     })();
                   },
                 },

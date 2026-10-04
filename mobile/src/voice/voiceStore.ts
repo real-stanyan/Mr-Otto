@@ -205,6 +205,24 @@ export async function stopDictation(send: boolean): Promise<string> {
   return text;
 }
 
+/** 按住说话时顺手录音（#1492，ADR-0351）：开麦之后调；引擎还没起来原生那侧会记着。老原生包没有这条命令 = 不录 */
+export function startVoiceRecording(): void {
+  const speech = OttoSpeech;
+  if (speech === null || dictation === null || typeof speech.startRecording !== "function") return;
+  void speech.startRecording().catch(() => undefined);
+}
+
+/** 收尾：keep = 要这段。老原生包 / 没录上 / 原生抛错一律回 null（调用方退回发文字） */
+export async function stopVoiceRecording(keep: boolean): Promise<{ uri: string; durationMs: number; bytes: number } | null> {
+  const speech = OttoSpeech;
+  if (speech === null || typeof speech.stopRecording !== "function") return null;
+  try {
+    return await speech.stopRecording(keep);
+  } catch {
+    return null;
+  }
+}
+
 function onDictationEvent(d: Dictation, ev: NonNullable<ReturnType<typeof speechEventOf>>): void {
   switch (ev.type) {
     case "partial":
