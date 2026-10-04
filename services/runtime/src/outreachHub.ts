@@ -2,7 +2,8 @@
 // daemon.ts 进不了 vitest，判断住在这儿、接线留在那儿（同 chatCreate / chatHumans 的做法）。
 import { outreachTierProblem, type FriendTier } from "../../../src/shared/friendTier.js";
 import type { OutreachLine, OutreachOutcome } from "../../../src/session/events.js";
-import { outreachReportText, resolveFriend } from "../../../src/shared/outreach.js";
+import { FRIEND_MESSAGE_PER_HOUR_MAX, agentDmBody, friendMessageSentText, outreachReportText, resolveFriend } from "../../../src/shared/outreach.js";
+import { bridgeWindowAllows, pruneBridgeWindow } from "../../../src/shared/laneBridge.js";
 import type { OutreachEnded, OutreachStart, OutreachStartResult } from "./outreachRun.js";
 
 export interface OutreachHubDeps {
@@ -22,6 +23,9 @@ export interface OutreachHubDeps {
   newId(): string;
   now(): number;
   log(m: string): void;
+  /** message_friend（#1549）：以主人（sender）名义往私聊里写一条。好友关系由 friendsOf（只认 accepted）+ resolveFriend 在这里验过，
+      实现用 service key 绕过 RLS 直接 insert；抛错 = 没写进去 */
+  sendDm(sender: string, recipient: string, body: string): Promise<void>;
 }
 export interface OutreachTarget {
   startOutreach(s: OutreachStart): Promise<OutreachStartResult>;
@@ -39,9 +43,13 @@ export interface OutreachHub {
     friend: string; brief: string; opening: string;
   }): Promise<string>;
   ended(workspaceId: string, ownerUid: string, r: OutreachEnded): Promise<void>;
+  /** message_friend（#1549）：解析好友、档位、每小时窗，然后以主人名义写一条私聊。回给模型的那句话 */
+  message(o: { workspaceId: string; ownerUid: string; agentId: string; agentName: string; friend: string; text: string }): Promise<string>;
 }
 
 export function createOutreachHub(d: OutreachHubDeps): OutreachHub {
+  // 发消息的滑动窗（#1549）：每（主场，智能体，好友）最近一小时的时间戳。进程内即可——重启清零的代价是多发几条，不是漏发
+  const dmWindow = new Map<string, number[]>();
   return {
     async dispatch(o) {
       let friends: { uid: string; name: string; tier?: FriendTier }[];
@@ -102,6 +110,43 @@ export function createOutreachHub(d: OutreachHubDeps): OutreachHub {
       if (r.kind === "refused") return r.message;
       origin.logOutreach({ outreachId, phase: "started", fromAgentId: o.agentId, peerUid: m.uid, peerName: m.name });
       return `已经打给 ${m.name} 了。先回他一句「打过去了」；聊完或者没接，通话记录会带回这条聊天，到时你再汇报。`;
+    },
+    async message(o) {
+      let friends: { uid: string; name: string; tier?: FriendTier }[];
+      try {
+        friends = await d.friendsOf(o.ownerUid);
+      } catch (err) {
+        d.log(`查好友名单失败（owner=${o.ownerUid}）：${String(err)}`);
+        return "这会儿查不到好友名单，消息没发出去，稍后再试。";
+      }
+      const m = resolveFriend(friends, o.friend);
+      if (m.kind === "none") {
+        return m.names.length === 0
+          ? "他还没有好友，发不了。"
+          : `好友里没有叫「${o.friend}」的。他的好友有：${m.names.join("、")}。问问他指的是哪一位。`;
+      }
+      if (m.kind === "many") return `好友里有 ${m.count} 位叫「${o.friend}」，分不出是哪一位，问问他。`;
+      // 档位同打电话（#1494）：那句文案本来就写着「打电话或发消息」
+      const tier = friends.find((f) => f.uid === m.uid)?.tier;
+      if (tier !== undefined) {
+        const refused = outreachTierProblem(tier, m.name);
+        if (refused !== null) return refused;
+      }
+      const key = `${o.workspaceId}/${o.agentId}/${m.uid}`;
+      const now = d.now();
+      const sent = pruneBridgeWindow(dmWindow.get(key) ?? [], now);
+      if (!bridgeWindowAllows(sent, now, FRIEND_MESSAGE_PER_HOUR_MAX)) {
+        return `这一小时里给 ${m.name} 发的消息已经到上限了（${FRIEND_MESSAGE_PER_HOUR_MAX} 条），缓一缓再发，或者让他自己发。`;
+      }
+      const body = agentDmBody(o.agentName, o.text);
+      try {
+        await d.sendDm(o.ownerUid, m.uid, body);
+      } catch (err) {
+        d.log(`替主人发私聊失败（owner=${o.ownerUid} → ${m.uid}）：${String(err)}`);
+        return "消息没发出去（写不进去），稍后再试。";
+      }
+      dmWindow.set(key, [...sent, now]);
+      return friendMessageSentText(m.name, body);
     },
     async ended(workspaceId, ownerUid, r) {
       try {

@@ -713,6 +713,12 @@ async function main(): Promise<void> {
           newId: randomUUID,
           now: Date.now,
           log: (m) => console.warn(`[otto-runtime] ${m}`),
+          // message_friend（#1549）：以主人名义写一条私聊。service key 绕过 RLS——好友关系已由上面的 friendsOf（只认 accepted）
+          // 与 hub 里的 resolveFriend 验过；写进去之后 friendPush 订的那条 INSERT 照旧把它推给对方，不用再推一遍
+          sendDm: async (sender, recipient, body) => {
+            const { error } = await supabase.from("messages").insert({ sender, recipient, body });
+            if (error) throw new Error(error.message);
+          },
         });
 
   /** 开一条会话房：起 transport、装配 CloudSession、接好扇出与 cid 清理。
@@ -1104,6 +1110,8 @@ async function main(): Promise<void> {
       // 对面公开的智能体（#1542）：箭头里才读 laneBridge——它在这个函数的后面才声明，房间启动补开时这里已经跑过，
       // 但只有工具真被调用那一刻才会碰到它
       laneBridge: { send: (o) => laneBridge.send(o) },
+      // message_friend（#1549）：与 outreach 那把刀同一个开关（有 hub 且主场），出口是同一个 hub
+      friendMessage: outreachHub === null || !approveAll ? null : { send: (o) => outreachHub.message({ ...o, workspaceId, ownerUid }) },
       pairMessages: async ({ ownerUid: o, peerUid: p }) => {
         const { data, error } = await supabase
           .from("messages")

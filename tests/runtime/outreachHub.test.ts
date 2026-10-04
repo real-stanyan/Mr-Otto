@@ -30,6 +30,7 @@ function rig(over: Partial<OutreachHubDeps> = {}, startResult: OutreachStartResu
     newId: () => "o-1",
     now: () => 10 * 24 * 3_600_000,
     log: (m) => void logs.push(m),
+    sendDm: async () => { throw new Error("打电话那条路不该发私聊"); },
     ...over,
   };
   return { hub: createOutreachHub(deps), logged, reported, starts, logs, ensures };

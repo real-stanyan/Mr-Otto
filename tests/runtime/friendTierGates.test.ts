@@ -48,6 +48,7 @@ describe("outreachHub.dispatch 的档位", () => {
       newId: () => "id",
       now: () => 0,
       log: () => {},
+      sendDm: async () => { calls.push("sendDm"); },
     });
     return { hub, calls };
   };
