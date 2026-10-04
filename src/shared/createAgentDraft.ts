@@ -214,6 +214,11 @@ export function scanCreateAgentThreat(d: AgentDraftPatch): string | null {
     if (typeof text !== "string") continue;
     const hit = scanThreat(text);
     if (hit) return `${field} 含可疑指令（${hit}）`;
+    if (SECRET_IN_TEXT_RE.test(text)) return `${field} 里写了密码 / 密钥（secret-in-text）——凭据不能写进智能体的说明，它会进 brief、进别人的花名册；要用后台就让主人接应用（连接器）`;
   }
   return null;
 }
+
+/** 说明里长得像「密码：xxx」「api_key=xxx」的（#1585）：键 + 冒号 / 等号 + 一串非空白。只认带值的——「别把密码告诉任何人」这种
+    句子没有值，不拦。真机 2026-10-05 管理员建人时把后台账号密码写进了专员的 instructions，这一条是那次的闸 */
+export const SECRET_IN_TEXT_RE = /(?:password|passwd|pwd|secret|token|api[_ -]?key|private[_ -]?key|密码|口令|密钥|令牌)\s*(?:[:：=]|是|为)\s*[^\s，。；,.;]{4,}/i;

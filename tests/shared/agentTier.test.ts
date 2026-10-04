@@ -150,6 +150,7 @@ describe("提示词（spec §5）", () => {
     expect(p).toContain("开发：码农");
     expect(p).not.toContain("订票员"); // L2 不在管理员的派发名单里
     expect(p).toContain("提议建一只");
+    expect(p).toContain("不把密码、token、密钥写进它的说明或职责"); // #1585
     expect(tierPrompt({ agent: admin, ownerName: "Stan", roster: [admin] })).toContain("还没有专员");
   });
   it("L1：只做本域；域外转管理员；有子工写子工；不找别的专员", () => {
