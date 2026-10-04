@@ -45,6 +45,7 @@ const DURABLE = [
   "agent_relay",
   "voice_call_changed",
   "call_ring",
+  "routine_note",
   "outreach",
   "chat_roster_changed",
   "executor_changed",

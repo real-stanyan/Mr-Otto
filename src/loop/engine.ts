@@ -135,6 +135,11 @@ export interface LoopEngineOptions {
       99 次护栏、零进展、没有任何终点。命中时抛错，走 runFrom 既有的
       turn_ended{outcome:"error"}，不新造 outcome 也不新造事件类型 */
   loopGuardMaxNudges?: number;
+  /** 单 turn 模型步数硬上限（#1283，spec §5.4）：**每轮起跑时现取**，回 undefined / 0 / 负数 = 不封顶
+      （缺席 = 现状，ADR-0006「无步数天花板」对有人在场的会话仍成立）。给没人在场的 routine 轮用：
+      没人按停止键，一条跑 300 圈的 turn 没有任何终点。到数抛错，走 runFrom 既有的
+      turn_ended{outcome:"error"}，不新造 outcome 也不新造事件类型（同 loopGuardMaxNudges） */
+  maxRounds?: () => number | undefined;
 }
 
 export class LoopEngine {
@@ -788,9 +793,13 @@ export class LoopEngine {
     const world = withAbortSignal(this.opts.world, signal);
     // 本 turn 的模型步数（长 turn 软告警用；恰好踩线喊一次，之后不再重复）
     let rounds = 0;
+    const roundCap = this.opts.maxRounds?.() ?? 0;
 
     while (true) {
       signal.throwIfAborted(); // 上一圈工具被杀后从这收口，不再浪费一次投影
+      if (roundCap > 0 && rounds >= roundCap) {
+        throw new Error(`这一轮已经跑满 ${roundCap} 步还没收口，先停在这里（没人在场的那一轮有圈数上限）`);
+      }
 
       // 每圈只取一次快照（issue #193），且快照是增量维护的（issue #277）：
       // 首圈全量、之后补尾段，占用检查和投影读同一份

@@ -61,7 +61,7 @@ function open(store: EventStore, o: { messages?: () => Promise<PairMessageRow[]>
     mentionInbox: createInMemoryMentionInbox(),
     agentWriter: createInMemoryAgentWriter(), isMember: async () => true, contextWindowOf: () => undefined,
     sandboxApproval: async () => "ask", workspaceLock: createWorkspaceLock(), relayRemainingMicro: async () => null,
-    diskUsage: () => null, onOutreachEnded: null, signSpeechTicket: async () => "t",
+    diskUsage: () => null, routines: null, onOutreachEnded: null, signSpeechTicket: async () => "t",
     pairMessages: async () => {
       probe.reads++;
       return o.messages ? o.messages() : [msg(PEER, OWNER, "周末去哪", 1), msg(OWNER, PEER, "爬山？", 2)];

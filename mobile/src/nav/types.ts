@@ -34,6 +34,8 @@ export type RootStackParams = {
   ChatInfo: InfoRoute;
   /** 智能体资料。workspaceId 缺席 = 我主场里的（能改）；给了 = 团队里的 / 别人群里的（别人的，只看） */
   Agent: { agentId: string; workspaceId?: string };
+  /** 一只智能体的定时任务（#1283）：只有我主场里的有 */
+  Routines: { agentId: string };
   Friend: { uid: string };
   /** 新的朋友：别人加我的 / 我加别人的 */
   Requests: undefined;
