@@ -1,7 +1,7 @@
 // 定时任务的纯函数（#1283，spec §2）：runtime 算下一跳、手机画「下次」、工具回显都用这一份。
 import { describe, expect, it } from "vitest";
 import {
-  formatInTz, isIanaTimeZone, nextRunAt, parseRoutineSchedule, routineErrors, routineOpeningText, scheduleText,
+  formatInTz, isIanaTimeZone, nextRunAt, parseRoutineSchedule, routineErrors, routineNoteText, routineOpeningText, scheduleText,
   wallClockToUtc, zonedParts, ROUTINES_ENABLED_MAX, ROUTINE_TITLE_MAX,
 } from "../../src/shared/routines.js";
 
@@ -24,6 +24,29 @@ describe("zonedParts / wallClockToUtc", () => {
     const dup = wallClockToUtc({ y: 2026, m: 4, d: 5, hh: 2, mm: 30 }, "Australia/Sydney");
     expect(dup).toBe(utc(2026, 4, 4, 15, 30));
     expect(zonedParts(dup, "Australia/Sydney")).toMatchObject({ d: 5, hh: 2, mm: 30 });
+  });
+});
+
+describe("wallClockToUtc：+13 / 半小时 / 45 分钟偏移的时区", () => {
+  it("新西兰（+13→+12）重复的那一小时也取先到的那一次", () => {
+    // 奥克兰 2026-04-05 03:00 NZDT → 02:00 NZST，切换点 = 04-04 14:00Z；02:30 出现两次，先到的是 +13 那次 = 13:30Z
+    expect(wallClockToUtc({ y: 2026, m: 4, d: 5, hh: 2, mm: 30 }, "Pacific/Auckland")).toBe(utc(2026, 4, 4, 13, 30));
+    // 整点边界：02:00 同样先到 +13 那次 = 13:00Z
+    expect(wallClockToUtc({ y: 2026, m: 4, d: 5, hh: 2, mm: 0 }, "Pacific/Auckland")).toBe(utc(2026, 4, 4, 13, 0));
+  });
+  it("新西兰春季跳过的那一小时后移", () => {
+    // 奥克兰 2026-09-27 02:00 NZST → 03:00 NZDT；02:30 不存在 → 03:30 NZDT = 09-26 14:30Z
+    expect(wallClockToUtc({ y: 2026, m: 9, d: 27, hh: 2, mm: 30 }, "Pacific/Auckland")).toBe(utc(2026, 9, 26, 14, 30));
+  });
+  it("查塔姆（+12:45 / +13:45）重复取先到的", () => {
+    // 查塔姆 2026-04-05 03:45 CHADT(+13:45) → 02:45 CHAST(+12:45)，切换点 = 04-04 14:00Z；03:00 出现两次，先到的 = 13:15Z
+    expect(wallClockToUtc({ y: 2026, m: 4, d: 5, hh: 3, mm: 0 }, "Pacific/Chatham")).toBe(utc(2026, 4, 4, 13, 15));
+  });
+  it("豪勋爵岛（半小时夏令时）重复取先到的、跳过的后移半小时", () => {
+    // 2026-04-05 02:00 LHDT(+11) → 01:30 LHST(+10:30)，切换点 = 04-04 15:00Z；01:45 出现两次，先到的 +11 = 14:45Z
+    expect(wallClockToUtc({ y: 2026, m: 4, d: 5, hh: 1, mm: 45 }, "Australia/Lord_Howe")).toBe(utc(2026, 4, 4, 14, 45));
+    // 2026-10-04 02:00 LHST(+10:30) → 02:30 LHDT(+11)，切换点 = 10-03 15:30Z；02:15 不存在，后移半小时 → 02:45 LHDT = 15:45Z
+    expect(wallClockToUtc({ y: 2026, m: 10, d: 4, hh: 2, mm: 15 }, "Australia/Lord_Howe")).toBe(utc(2026, 10, 3, 15, 45));
   });
 });
 
@@ -64,6 +87,13 @@ describe("parseRoutineSchedule / routineErrors / isIanaTimeZone", () => {
     expect(() => parseRoutineSchedule({ kind: "once", at: "2026-10-05 09:00" })).toThrow("YYYY-MM-DDTHH:mm");
     expect(() => parseRoutineSchedule({ kind: "hourly" })).toThrow("once / daily / weekly");
   });
+  it("日历上不存在的日子不过：02-30 / 04-31 / 非闰年 02-29 抛，闰年 02-29 过", () => {
+    expect(() => parseRoutineSchedule({ kind: "once", at: "2026-02-30T09:00" })).toThrow("这个日期不存在");
+    expect(() => parseRoutineSchedule({ kind: "once", at: "2026-04-31T09:00" })).toThrow("这个日期不存在");
+    expect(() => parseRoutineSchedule({ kind: "once", at: "2027-02-29T09:00" })).toThrow("这个日期不存在");
+    expect(parseRoutineSchedule({ kind: "once", at: "2028-02-29T09:00" })).toEqual({ kind: "once", at: "2028-02-29T09:00" });
+    expect(routineErrors({ title: "t", instruction: "i", schedule: { kind: "once", at: "2026-02-30T09:00" }, tz: SH })).toContain("这个日期不存在");
+  });
   it("时区只认 Intl 认得的 IANA 名", () => {
     expect(isIanaTimeZone("Asia/Shanghai")).toBe(true);
     expect(isIanaTimeZone("Beijing")).toBe(false);
@@ -90,5 +120,12 @@ describe("文案", () => {
     expect(text).toContain("任务：看一眼报表");
     expect(text).toContain("call_user");
     expect(text).toContain("call_friend");
+    // 正文是「任务：<instruction>」，标题不进正文（它在界面那条灰条里）
+    expect(text).not.toContain("早报");
+  });
+  it("routineNoteText：两种没跑成的灰条文案", () => {
+    const plannedAt = utc(2026, 10, 5, 1, 0);
+    expect(routineNoteText({ title: "早报", reason: "missed", plannedAt, tz: SH })).toBe("定时任务「早报」错过了（原定 2026-10-05 09:00（Asia/Shanghai，周一），服务那会儿没在线）");
+    expect(routineNoteText({ title: "早报", reason: "skipped_quota", plannedAt, tz: SH })).toBe("定时任务「早报」这次没跑（原定 2026-10-05 09:00（Asia/Shanghai，周一），本周额度快用完了）");
   });
 });

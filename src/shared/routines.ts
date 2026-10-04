@@ -66,7 +66,12 @@ export function parseRoutineSchedule(v: unknown): RoutineSchedule {
   if (typeof v !== "object" || v === null) throw new Error("schedule 要是一个对象");
   const o = v as Record<string, unknown>;
   if (o.kind === "once") {
-    if (typeof o.at !== "string" || !AT_RE.test(o.at)) throw new Error("once 的 at 要写成 YYYY-MM-DDTHH:mm（墙上时间，不带时区）");
+    const m = typeof o.at === "string" ? AT_RE.exec(o.at) : null;
+    if (!m || typeof o.at !== "string") throw new Error("once 的 at 要写成 YYYY-MM-DDTHH:mm（墙上时间，不带时区）");
+    // 正则放过了 02-30 / 04-31 这类：过一遍 Date.UTC 再比年月日，对不上就是日历上不存在的日子
+    const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+    const chk = new Date(Date.UTC(y, mo - 1, d));
+    if (chk.getUTCFullYear() !== y || chk.getUTCMonth() + 1 !== mo || chk.getUTCDate() !== d) throw new Error(`这个日期不存在：${o.at.slice(0, 10)}`);
     return { kind: "once", at: o.at };
   }
   if (o.kind === "daily") {
@@ -132,12 +137,15 @@ function offsetMinutesAt(utcMs: number, tz: string): number {
 
 /** tz 里的墙上时间 → UTC 毫秒。夏令时两种边角按 ICU / Java 的惯例：
     跳过的那一小时**按跳过的长度后移**（02:30 → 03:30）；重复的那一小时**取先到的那一次**。
-    做法：拿前后 12 小时的两个偏移各算一个候选，先用「切换前」那个偏移——正常日子两个候选相同；
-    重复时「切换前」的偏移给的是先到的那次；跳过时两个都对不上，「切换前」的偏移正好把它后移一个跳跃 */
+    做法：把墙上时间当 UTC 得到 guess，真实时刻在 guess 往前 / 往后至多约 14 小时（偏移范围 -12..+14）。
+    在 guess ± 24 小时各取一个偏移（没有哪个时区 48 小时内有两次切换，所以两个探针必然落在切换的两侧或同一侧；
+    12 小时不够：+13 的地区真实时刻在 guess - 13h，guess - 12h 可能已经越过切换点），各算一个候选，
+    先用「切换前」那个偏移——正常日子两个偏移相同、直接返回；重复时「切换前」的偏移给的是先到的那次；
+    跳过时两个候选都对不上墙上时间，返回「切换前」偏移的那个，正好把它后移一个跳跃 */
 export function wallClockToUtc(w: { y: number; m: number; d: number; hh: number; mm: number }, tz: string): number {
   const guess = Date.UTC(w.y, w.m - 1, w.d, w.hh, w.mm);
-  const before = offsetMinutesAt(guess - 12 * 3_600_000, tz);
-  const after = offsetMinutesAt(guess + 12 * 3_600_000, tz);
+  const before = offsetMinutesAt(guess - 24 * 3_600_000, tz);
+  const after = offsetMinutesAt(guess + 24 * 3_600_000, tz);
   const a = guess - before * 60_000;
   if (before === after) return a;
   const same = (ts: number): boolean => {
