@@ -61,4 +61,10 @@ describe("AssistantMessageRow（#1132：一条回复拆成几张气泡）", () =
     render(<AssistantMessageRow event={reply("（笑）\n\n弄好了。")} ws={ws} />);
     expect(bubbles().map((b) => b.textContent)).toEqual(["弄好了。"]);
   });
+
+  it("整条回复只有一个记号：一张气泡都不画，原始记号也不露（#1515）", () => {
+    render(<AssistantMessageRow event={reply("（笑）")} ws={ws} />);
+    expect(bubbles()).toHaveLength(0);
+    expect(screen.queryByText(/（笑）/)).toBeNull();
+  });
 });
