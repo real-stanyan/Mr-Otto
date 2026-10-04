@@ -747,7 +747,6 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   // 而车道里发言的只有主人自己（被剔掉）、没有客人。**alertTargetFor 本身对 pair 不回 null**（折成 null 后
   // 按主场群算），哪天车道收了第二个人，这里要回来重判
   const ringKind = chatKind === "pair" ? null : chatKind;
-  const ringKind = chatKind === "pair" ? null : chatKind;
   // 这条线上的外联折叠（#1441）：从 seed 播种、notify 里逐条推进（同 voiceCall）。「通话此刻进行中吗、
   // 打给的是谁」只从这一份读——say 的闸、chat() 的 active 共用，两处各折一遍迟早分家
   const outreachFold: OutreachFold = outreachFoldOf(seed);
