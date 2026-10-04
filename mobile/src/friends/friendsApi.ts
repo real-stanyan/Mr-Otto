@@ -221,7 +221,7 @@ function storageError(status: number, body: string): string {
  * 权限照旧：Supabase 按这次请求带的用户 JWT 判 0052 的 insert 策略（第一段是自己、对方是已接受的好友）。
  * 一次只读一片进 JS 内存，不把整段视频读进来。
  */
-export async function uploadDmFile(path: string, uri: string, mime: string, onProgress: (sent: number) => void): Promise<void> {
+export async function uploadMediaFile(bucket: string, path: string, uri: string, mime: string, onProgress: (sent: number) => void): Promise<void> {
   const { data } = await supabase.auth.getSession();
   const token = data.session?.access_token;
   if (token === undefined) throw new Error("登录过期了，重新登录后再发");
@@ -231,7 +231,7 @@ export async function uploadDmFile(path: string, uri: string, mime: string, onPr
     await tusUpload({
       endpoint: `${SUPABASE_URL}/storage/v1/upload/resumable`,
       headers: { authorization: `Bearer ${token}`, apikey: SUPABASE_ANON_KEY, "x-upsert": "false" },
-      metadata: { bucketName: DM_MEDIA_BUCKET, objectName: path, contentType: mime, cacheControl: "3600" },
+      metadata: { bucketName: bucket, objectName: path, contentType: mime, cacheControl: "3600" },
       size: file.size,
       readChunk: (offset, length) => {
         handle.offset = offset;
@@ -251,18 +251,26 @@ export async function uploadDmFile(path: string, uri: string, mime: string, onPr
   }
 }
 
+export function uploadDmFile(path: string, uri: string, mime: string, onProgress: (sent: number) => void): Promise<void> {
+  return uploadMediaFile(DM_MEDIA_BUCKET, path, uri, mime, onProgress);
+}
+
 /** 收掉传了一半的（消息没写成）。尽力而为 */
 export async function removeDmFiles(paths: string[]): Promise<void> {
   await supabase.storage.from(DM_MEDIA_BUCKET).remove(paths);
 }
 
-/** 一批对象的签名地址（私有 bucket，读要签名）。回 path → url；签不出来的那几个不在里面 */
-export async function signDmMedia(paths: string[], ttlSec: number): Promise<Map<string, string>> {
-  const { data, error } = await supabase.storage.from(DM_MEDIA_BUCKET).createSignedUrls(paths, ttlSec);
+/** 一批对象的签名地址（私有 bucket，读要签名；#1491 起 bucket 当参数）。回 path → url；签不出来的那几个不在里面 */
+export async function signMedia(bucket: string, paths: string[], ttlSec: number): Promise<Map<string, string>> {
+  const { data, error } = await supabase.storage.from(bucket).createSignedUrls(paths, ttlSec);
   if (error !== null) throw new Error(error.message);
   const out = new Map<string, string>();
   for (const d of data) if (d.path !== null && d.signedUrl !== null && d.error === null) out.set(d.path, d.signedUrl);
   return out;
+}
+
+export function signDmMedia(paths: string[], ttlSec: number): Promise<Map<string, string>> {
+  return signMedia(DM_MEDIA_BUCKET, paths, ttlSec);
 }
 
 /** 收件箱当前的最大 id。轮询兜底开工前拿它当游标起点 ——

@@ -6,7 +6,7 @@
 // 不画新的颜色：底色取 c.card / c.muted，字取 c.mutedForeground / c.destructive / c.brand（同私聊里「重试」那一行）。
 import { useState } from "react";
 import { Image, Pressable, Text, View } from "react-native";
-import { mediaBubbleBox, videoDurationLabel, type ChatMediaItem, type PreparedMedia } from "../../../src/shared/chatMedia.js";
+import { DM_MEDIA_BUCKET, mediaBubbleBox, videoDurationLabel, type ChatMediaItem, type PreparedMedia } from "../../../src/shared/chatMedia.js";
 import { usePalette } from "../theme.js";
 import { Spinner } from "../ui.js";
 import { Icon } from "../wx/Icon.js";
@@ -41,9 +41,9 @@ function DurationTag({ ms }: { ms: number }) {
 }
 
 /** 一格：签名地址到手才画图；签不出来画一句话、点一下重签 */
-function RemoteTile({ path, width, height }: { path: string | undefined; width: number; height: number }) {
+function RemoteTile({ path, bucket, width, height }: { path: string | undefined; bucket: string; width: number; height: number }) {
   const { c } = usePalette();
-  const url = useMediaUrl(path);
+  const url = useMediaUrl(path, bucket);
   const [broken, setBroken] = useState(false);
   if (path === undefined) return <View style={{ width, height, borderRadius: RADIUS, backgroundColor: c.muted }} />;
   if (url === "failed" || broken) {
@@ -53,7 +53,7 @@ function RemoteTile({ path, width, height }: { path: string | undefined; width: 
         accessibilityLabel="加载不出来，点一下重试"
         onPress={() => {
           setBroken(false);
-          retryMediaUrl(path);
+          retryMediaUrl(path, bucket);
         }}
         style={{ width, height, borderRadius: RADIUS, backgroundColor: c.muted, alignItems: "center", justifyContent: "center", padding: 6 }}
       >
@@ -73,7 +73,8 @@ function RemoteTile({ path, width, height }: { path: string | undefined; width: 
 }
 
 /** 已经发出去的那几样（真消息里的 media） */
-export function MediaBubble({ media }: { media: ChatMediaItem[] }) {
+/** `bucket`：私聊是 dm-media（默认），云会话是 chat-media（#1491） */
+export function MediaBubble({ media, bucket = DM_MEDIA_BUCKET }: { media: ChatMediaItem[]; bucket?: string }) {
   const [open, setOpen] = useState<number | null>(null);
   const single = media.length === 1 ? media[0] : undefined;
   const body = single !== undefined ? (
@@ -82,7 +83,7 @@ export function MediaBubble({ media }: { media: ChatMediaItem[] }) {
       return (
         <Pressable accessibilityRole="button" accessibilityLabel={single.kind === "video" ? "视频，点开播放" : "图片，点开看大图"} onPress={() => setOpen(0)} style={({ pressed }) => [pressed && { opacity: 0.85 }]}>
           <View>
-            <RemoteTile path={single.kind === "video" ? single.poster : single.path} width={box.width} height={box.height} />
+            <RemoteTile bucket={bucket} path={single.kind === "video" ? single.poster : single.path} width={box.width} height={box.height} />
             {single.kind === "video" ? <><PlayBadge /><DurationTag ms={single.durationMs ?? 0} /></> : null}
           </View>
         </Pressable>
@@ -93,7 +94,7 @@ export function MediaBubble({ media }: { media: ChatMediaItem[] }) {
       {media.map((m, i) => (
         <Pressable key={m.path} accessibilityRole="button" accessibilityLabel={`第 ${i + 1} 张，点开看大图`} onPress={() => setOpen(i)} style={({ pressed }) => [pressed && { opacity: 0.85 }]}>
           <View>
-            <RemoteTile path={m.kind === "video" ? m.poster : m.path} width={CELL} height={CELL} />
+            <RemoteTile bucket={bucket} path={m.kind === "video" ? m.poster : m.path} width={CELL} height={CELL} />
             {m.kind === "video" ? <PlayBadge size={28} /> : null}
           </View>
         </Pressable>
@@ -103,7 +104,7 @@ export function MediaBubble({ media }: { media: ChatMediaItem[] }) {
   return (
     <>
       {body}
-      {open !== null ? <MediaViewer media={media} index={open} onClose={() => setOpen(null)} /> : null}
+      {open !== null ? <MediaViewer media={media} bucket={bucket} index={open} onClose={() => setOpen(null)} /> : null}
     </>
   );
 }

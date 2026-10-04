@@ -5,7 +5,7 @@ import { VideoView, useVideoPlayer } from "expo-video";
 import { useState } from "react";
 import { FlatList, Image, Modal, Pressable, Text, View, useWindowDimensions } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import type { ChatMediaItem } from "../../../src/shared/chatMedia.js";
+import { DM_MEDIA_BUCKET, type ChatMediaItem } from "../../../src/shared/chatMedia.js";
 import { Spinner } from "../ui.js";
 import { Icon } from "../wx/Icon.js";
 import { retryMediaUrl, useMediaUrl } from "./mediaUrls.js";
@@ -13,21 +13,21 @@ import { retryMediaUrl, useMediaUrl } from "./mediaUrls.js";
 const FG = "#ffffff";
 const FG2 = "rgba(255,255,255,0.6)";
 
-function Unavailable({ path }: { path: string }) {
+function Unavailable({ path, bucket }: { path: string; bucket: string }) {
   return (
-    <Pressable accessibilityRole="button" onPress={() => retryMediaUrl(path)} style={{ alignItems: "center", gap: 8 }}>
+    <Pressable accessibilityRole="button" onPress={() => retryMediaUrl(path, bucket)} style={{ alignItems: "center", gap: 8 }}>
       <Icon name="rotate-ccw" size={22} stroke={1.8} color={FG2} />
       <Text style={{ fontSize: 14, color: FG2 }}>加载不出来 · 点一下重试</Text>
     </Pressable>
   );
 }
 
-function ImagePage({ path, width, height }: { path: string; width: number; height: number }) {
-  const url = useMediaUrl(path);
+function ImagePage({ path, bucket, width, height }: { path: string; bucket: string; width: number; height: number }) {
+  const url = useMediaUrl(path, bucket);
   const [broken, setBroken] = useState(false);
   return (
     <View style={{ width, height, alignItems: "center", justifyContent: "center" }}>
-      {url === null ? <Spinner /> : url === "failed" || broken ? <Unavailable path={path} /> : (
+      {url === null ? <Spinner /> : url === "failed" || broken ? <Unavailable path={path} bucket={bucket} /> : (
         <Image source={{ uri: url }} resizeMode="contain" onError={() => setBroken(true)} style={{ width, height }} />
       )}
     </View>
@@ -41,10 +41,10 @@ function VideoPlayerPage({ url, width, height }: { url: string; width: number; h
   return <VideoView player={player} nativeControls contentFit="contain" style={{ width, height }} />;
 }
 
-function VideoPage({ item, active, width, height }: { item: ChatMediaItem; active: boolean; width: number; height: number }) {
-  const url = useMediaUrl(item.path);
-  const poster = useMediaUrl(item.poster);
-  if (url === "failed") return <View style={{ width, height, alignItems: "center", justifyContent: "center" }}><Unavailable path={item.path} /></View>;
+function VideoPage({ item, bucket, active, width, height }: { item: ChatMediaItem; bucket: string; active: boolean; width: number; height: number }) {
+  const url = useMediaUrl(item.path, bucket);
+  const poster = useMediaUrl(item.poster, bucket);
+  if (url === "failed") return <View style={{ width, height, alignItems: "center", justifyContent: "center" }}><Unavailable path={item.path} bucket={bucket} /></View>;
   if (active && url !== null) return <VideoPlayerPage url={url} width={width} height={height} />;
   return (
     <View style={{ width, height, alignItems: "center", justifyContent: "center" }}>
@@ -56,7 +56,7 @@ function VideoPage({ item, active, width, height }: { item: ChatMediaItem; activ
   );
 }
 
-export function MediaViewer({ media, index, onClose }: { media: ChatMediaItem[]; index: number; onClose: () => void }) {
+export function MediaViewer({ media, bucket = DM_MEDIA_BUCKET, index, onClose }: { media: ChatMediaItem[]; bucket?: string; index: number; onClose: () => void }) {
   const { width, height } = useWindowDimensions();
   const insets = useSafeAreaInsets();
   const [current, setCurrent] = useState(index);
@@ -74,8 +74,8 @@ export function MediaViewer({ media, index, onClose }: { media: ChatMediaItem[];
           onMomentumScrollEnd={(e) => setCurrent(Math.round(e.nativeEvent.contentOffset.x / width))}
           renderItem={({ item, index: i }) =>
             item.kind === "video"
-              ? <VideoPage item={item} active={i === current} width={width} height={height} />
-              : <ImagePage path={item.path} width={width} height={height} />
+              ? <VideoPage item={item} bucket={bucket} active={i === current} width={width} height={height} />
+              : <ImagePage path={item.path} bucket={bucket} width={width} height={height} />
           }
         />
         <View pointerEvents="box-none" style={{ position: "absolute", top: insets.top + 8, left: 16, right: 16, flexDirection: "row", alignItems: "center", justifyContent: "space-between" }}>

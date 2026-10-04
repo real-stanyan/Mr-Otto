@@ -64,11 +64,17 @@ import { CallSheet } from "../voice/CallSheet.js";
 import {
   dictationUsable, hangUp, joinCall, nativeSpeech, refreshVoiceBilling, setMic, startCall, startDictation, stopDictation, useVoice, voiceUsable,
 } from "../voice/voiceStore.js";
-import { FaceTile, GridTile } from "../wx/Avatar.js";
+import { FaceTile, GridTile, PersonTile } from "../wx/Avatar.js";
 import { Icon } from "../wx/Icon.js";
 import { HeaderIconButton } from "../wx/TabHeader.js";
 import { toast } from "../wx/toast.js";
 import { ChatRowView, PendingMineRow, TypingRow } from "./Bubbles.js";
+import { planMediaMessages, type PreparedMedia } from "../../../src/shared/chatMedia.js";
+import { sendCloudMedia } from "../../../src/shared/chatMediaCloud.js";
+import { uploadMediaFile } from "../friends/friendsApi.js";
+import { fileSizeOf, sha256OfFile } from "../media/hash.js";
+import { PendingMediaBubble } from "../media/MediaBubble.js";
+import { pickFromCamera, pickFromLibrary, pickedKind, prepareAsset, type PickedAsset } from "../media/prepareMedia.js";
 import { MentionSheet } from "./MentionSheet.js";
 import { RoleChips } from "./RoleChips.js";
 import { WxComposer, type ComposerHandle, type HoldState, type PlusItem } from "./WxComposer.js";
@@ -83,7 +89,9 @@ const PHASE_STATUS: Record<NowRow["phase"], string> = {
   composing: "正在想…",
   queued: "排队中…",
 };
-type Item = { kind: "row"; row: ChatRow } | { kind: "outbox"; line: OutboxLine } | { kind: "now"; now: NowRow } | { kind: "roles" };
+/** 正在传 / 传失败的一组图或一段视频（#1491 P3）：只活在这一页的内存里，同私聊的 PendingMedia */
+interface PendingCloudMedia { key: number; items: PreparedMedia[]; state: "sending" | "failed"; progress: number; error: string | null }
+type Item = { kind: "row"; row: ChatRow } | { kind: "outbox"; line: OutboxLine } | { kind: "media"; p: PendingCloudMedia } | { kind: "now"; now: NowRow } | { kind: "roles" };
 type Props = NativeStackScreenProps<RootStackParams, "Chat">;
 
 interface Resolved {
@@ -255,6 +263,8 @@ export function ChatScreen({ route, navigation }: Props) {
   const [deciding, setDeciding] = useState<string | null>(null);
   const [mentioning, setMentioning] = useState(false);
   const pendingMention = useRef<string | null>(null);
+  const [pendingMedia, setPendingMedia] = useState<PendingCloudMedia[]>([]);
+  const pendingMediaSeq = useRef(0);
   const voice = useVoice();
   const [callOp, setCallOp] = useState<"start" | "hangup" | null>(null);
   const [callOpen, setCallOpen] = useState(false);
@@ -400,12 +410,14 @@ export function ChatScreen({ route, navigation }: Props) {
     // 事件再回 say_result，两帧走同一条连接按序到，摘掉那一刻真的那条已经在 rows 里了
     const sid = session?.sessionId ?? null;
     for (const line of chat.outbox) if (line.sessionId === sid) list.push({ kind: "outbox", line });
+    // 正在传的图 / 视频（#1491）：也在最底下，传完 say 的回执一到，真的那条已经在 rows 里
+    for (const p of pendingMedia) list.push({ kind: "media", p });
     // 它已经在往外写字了（流式那一段画出来了）就不再画三个点
     if (nowRow !== null && !(nowRow.phase === "solving" && live.some((r) => r.kind === "agent" && r.agentId === nowRow.agentId))) {
       list.push({ kind: "now", now: nowRow });
     }
     return list.reverse();
-  }, [rows, live, nowRow, roleAnchor, chat.outbox, session?.sessionId]);
+  }, [rows, live, nowRow, roleAnchor, chat.outbox, pendingMedia, session?.sessionId]);
 
   const ready = session?.state === "ready";
   const canSend = draft || ready;
@@ -433,6 +445,60 @@ export function ChatScreen({ route, navigation }: Props) {
     const memberMentions = memberCandidates.length > 0 ? parseMemberMentions(text, candidates, memberCandidates).filter((uid) => uid !== selfUid) : [];
     const r = await sendText(text, plan.mentions, memberMentions);
     return r.ok || r.unknown === true;
+  };
+
+  // 图 / 视频（#1491 P3）：先传进 chat-media（按内容寻址），引用塞进 say 帧。点到谁与打字那条路同一份判据
+  // （空正文 = 没 @ 谁；私聊里 resolveSendMentions 照样解出那一只），runtime 落盘时把正文写成占位「[图片]」
+  const runMediaSend = (p: PendingCloudMedia): void => {
+    if (ws === null || session === null) return;
+    const wsId = ws.id;
+    const sid = session.sessionId;
+    const candidates = agentIds.map((id) => ({ agentId: id, name: agentNameOf(ws, id) }));
+    const memberCandidates = isTeam ? ws.members.map((m) => ({ agentId: m.uid, name: m.label })) : humans.map((h) => ({ agentId: h.uid, name: h.name }));
+    const plan = resolveSendMentions({ text: "", parsed: parseMentions("", candidates), refreshFailed: false, freshCandidates: candidates, memberCandidates });
+    const mentions = plan.kind === "block" ? [] : plan.mentions;
+    const patch = (f: (x: PendingCloudMedia) => PendingCloudMedia): void => setPendingMedia((list) => list.map((x) => (x.key === p.key ? f(x) : x)));
+    patch((x) => ({ ...x, state: "sending", error: null, progress: 0 }));
+    void sendCloudMedia(wsId, sid, p.items, {
+      hash: sha256OfFile,
+      fileSize: fileSizeOf,
+      upload: (bucket, path, uri, mime) => uploadMediaFile(bucket, path, uri, mime, () => {}),
+      send: (refs) => sendText("", mentions, [], refs),
+      onProgress: (fraction) => patch((x) => ({ ...x, progress: fraction })),
+    }).then(
+      (r) => {
+        if (r.ok || r.unknown === true) setPendingMedia((list) => list.filter((x) => x.key !== p.key));
+        else patch((x) => ({ ...x, state: "failed", error: r.message }));
+      },
+      (e: unknown) => patch((x) => ({ ...x, state: "failed", error: e instanceof Error ? e.message : String(e) })),
+    );
+  };
+  // 挑好的就地处理（同朋友私聊）：HEIC 转 JPEG、原图缩到 2048、视频查时长大小抽封面。一样处理不了只说那一样，别的照发
+  const sendPicked = async (pick: () => Promise<PickedAsset[]>): Promise<void> => {
+    setPageNote(null);
+    let assets: PickedAsset[];
+    try {
+      assets = await pick();
+    } catch (e) {
+      setPageNote({ text: e instanceof Error ? e.message : String(e), tone: "error" });
+      return;
+    }
+    if (assets.length === 0) return;
+    const ready: PreparedMedia[] = [];
+    const problems: string[] = [];
+    for (const a of assets) {
+      try {
+        ready.push(await prepareAsset(a));
+      } catch (e) {
+        problems.push(`${pickedKind(a) === "video" ? "视频" : "图片"}：${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+    for (const group of planMediaMessages(ready)) {
+      const p: PendingCloudMedia = { key: ++pendingMediaSeq.current, items: group, state: "sending", progress: 0, error: null };
+      setPendingMedia((list) => [...list, p]);
+      runMediaSend(p);
+    }
+    if (problems.length > 0) setPageNote({ text: problems.length === 1 ? (problems[0] ?? "") : `有 ${problems.length} 样没发：${problems[0] ?? ""}`, tone: "error" });
   };
 
   const stop = async (seq: number): Promise<void> => {
@@ -584,6 +650,12 @@ export function ChatScreen({ route, navigation }: Props) {
   }, [answering, call !== null, callOpen]);
 
   const plus: PlusItem[] = [];
+  // 图片 / 视频（#1491 P3）：相册一次最多挑 9 样；拍摄是拍照或录一段（≤60 秒）。要会话已经建好（草稿私聊的第一句先是字）、
+  // 外联会话只读
+  if (ready && session !== null && !isOutreach && ws !== null) {
+    plus.push({ key: "album", icon: "image", label: "相册", onPress: () => void sendPicked(pickFromLibrary) });
+    plus.push({ key: "camera", icon: "camera", label: "拍摄", onPress: () => void sendPicked(pickFromCamera) });
+  }
   if (offerPhone) plus.push({ key: "call", icon: "phone", label: "语音通话", onPress: () => void onStartCall() });
   const openPicker = (kind: "group" | "add" | "invite"): void => {
     setPickError(null);
@@ -663,7 +735,7 @@ export function ChatScreen({ route, navigation }: Props) {
               // flexGrow 不起作用，行为与改动前相同。paddingBottom 在屏幕上是顶上那一点留白
               contentContainerStyle={CHAT_LIST_TOP}
               data={items}
-              keyExtractor={(it) => (it.kind === "row" ? it.row.key : it.kind === "now" ? it.now.key : "roles")}
+              keyExtractor={(it) => (it.kind === "row" ? it.row.key : it.kind === "now" ? it.now.key : it.kind === "outbox" ? `o${it.line.id}` : it.kind === "media" ? `m${it.p.key}` : "roles")}
               renderItem={({ item }) =>
                 item.kind === "row" ? (
                   <ChatRowView
@@ -688,6 +760,20 @@ export function ChatScreen({ route, navigation }: Props) {
                   />
                 ) : item.kind === "outbox" ? (
                   <PendingMineRow text={item.line.text} selfName={me.name} selfAvatar={me.avatar} />
+                ) : item.kind === "media" ? (
+                  <View style={{ flexDirection: "row-reverse", alignItems: "flex-start", gap: 10, paddingHorizontal: 12 }}>
+                    <PersonTile name={me.name} url={me.avatar} size={40} me />
+                    <View style={{ flexShrink: 1, maxWidth: "76%" }}>
+                      <PendingMediaBubble
+                        items={item.p.items}
+                        state={item.p.state}
+                        progress={item.p.progress}
+                        error={item.p.error}
+                        onRetry={() => runMediaSend(item.p)}
+                        onDrop={() => setPendingMedia((list) => list.filter((x) => x.key !== item.p.key))}
+                      />
+                    </View>
+                  </View>
                 ) : item.kind === "now" ? (
                   <TypingRow
                     ws={ws}
