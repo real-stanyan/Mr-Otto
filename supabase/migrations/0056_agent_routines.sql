@@ -8,6 +8,7 @@
 -- 两个 runtime 实例同时 tick 只有一个 returning 有行。墙上时间 + tz 存在 schedule / tz 里，
 -- next_run_at 是按它们算出来的绝对时刻缓存（runtime 认领时按 schedule 重算，手机算错最多早 / 晚一次）。
 -- 没有 session_id：私聊按 0037 的唯一索引 (workspace_id, agent_ids[1]) where chat_kind='dm' 现查。
+-- 写入要求 workspace 是本人的（owner_uid = auth.uid() 且 workspaces.owner_uid = auth.uid()）：定时任务只存在于个人主场，视同主人亲口起的轮，别人不能往你的主场里塞一条。
 
 create table if not exists public.agent_routines (
   id            uuid primary key default gen_random_uuid(),
@@ -36,9 +37,14 @@ alter table public.agent_routines enable row level security;
 drop policy if exists ar_select_owner on public.agent_routines;
 create policy ar_select_owner on public.agent_routines for select to authenticated using (owner_uid = auth.uid());
 drop policy if exists ar_insert_owner on public.agent_routines;
-create policy ar_insert_owner on public.agent_routines for insert to authenticated with check (owner_uid = auth.uid());
+create policy ar_insert_owner on public.agent_routines for insert to authenticated
+  with check (owner_uid = auth.uid()
+    and exists (select 1 from public.workspaces w where w.id = workspace_id and w.owner_uid = auth.uid()));
 drop policy if exists ar_update_owner on public.agent_routines;
-create policy ar_update_owner on public.agent_routines for update to authenticated using (owner_uid = auth.uid()) with check (owner_uid = auth.uid());
+create policy ar_update_owner on public.agent_routines for update to authenticated
+  using (owner_uid = auth.uid())
+  with check (owner_uid = auth.uid()
+    and exists (select 1 from public.workspaces w where w.id = workspace_id and w.owner_uid = auth.uid()));
 drop policy if exists ar_delete_owner on public.agent_routines;
 create policy ar_delete_owner on public.agent_routines for delete to authenticated using (owner_uid = auth.uid());
 
