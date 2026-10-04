@@ -176,6 +176,7 @@ Domain glossary. All agents' understanding of domain terms is grounded here; cod
 - **情绪括注（emotion tag）**：通话里模型写在**段首**的括注 `（笑）（惊）（叹）（气）（怕）（嫌）`，对到 MiniMax 的 emotion（happy / surprised / sad / angry / fearful / disgusted）。落日志不落界面：显示剥（六处，含通话字幕）、出声解；只认段首白名单，词表外的括注是正文。ADR-0355，`src/shared/voiceProsody.ts`
 - **车道（pair lane，ADR-0346 / #1523）**：主人个人主场里一条 `chat_kind='pair'` 的云会话，装着他带进与某位朋友私聊的智能体；一人对一位朋友只有一条，朝向（`facing`）可切——**私密车道**（self）只有主人看得到、只听主人的；**公开车道 / 共享车道**（both）朋友以客人身份进同一条，看得到、能 @，朋友点起的轮每一刀等主人批。朝向从日志里最后一条名单事件的客人名单推导，`facing` 那一列是投影。
 - **公开智能体（public agent，ADR-0356 / #1533）**：每人在「我」页设定的一只自己主场里的智能体（`profiles.public_agent_id`）。朋友（已接受、两边都不是仅聊天）在和我的私聊里能 @ 它、给它打电话：载体是我主场里与那位朋友的共享车道，朋友那一侧能按需开出来（协议 26 的 `onBehalf` create）。打完电话它把朋友的需求总结写在车道里（两人都看得到），那一轮受监督。
+- **人与人电话（human call，ADR-0357 / #1534）**：两位好友在私聊里的实时语音——WebRTC P2P + 自建 coturn 兜底，信令走中继 `hc:<callId>` 房（host↔guest），来电借 RingPush 的壳（`chat = "human"`）进 CallKit。与「电话」的另外两种分开：智能体回电（ADR-0331）、外联（ADR-0337）都是人 ↔ 智能体、靠本地识别 + TTS，没有手机到手机的音频通道。
 
 ## Key invariants
 

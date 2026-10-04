@@ -25,7 +25,7 @@ describe("cs_say 的 mentions（#928 切片 1a）", () => {
 
 describe("cs 协议 6（#957 第三批：stop 帧与 say/approve/stop 回执）", () => {
   it("CS_PROTOCOL_VERSION === 22（…；15 = #1103 Git 凭据；16 = #1107 流式 delta 帧；17 = #1163 语音通话 call 帧；18 = #1140 wiki_write 帧；19 = #1233 say.voice；20 = #1280 聊天；21 = #1393 群里的真人；22 = #1441 外联会话与语音合成的票；23 = #1461 好友私聊里的私密车道；24 = #1491 say.media 图片视频引用）", () => {
-    expect(CS_PROTOCOL_VERSION).toBe(26);
+    expect(CS_PROTOCOL_VERSION).toBe(27);
   });
 
   it("delta 下行往返（协议 16，#1107）", () => {

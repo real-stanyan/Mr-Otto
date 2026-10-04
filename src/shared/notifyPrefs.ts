@@ -64,13 +64,16 @@ export function muteKeyFor(chat: RingChatKind, sessionId: string, agentId: strin
       return `j:${sessionId}`;
     case "outreach":
       return null;
+    case "human":
+      // 人打人的来电（#1534）：不是一条聊天，没有免打扰那一格
+      return null;
   }
 }
 
 /** 点开推送去哪：云会话那四种（与 ringTarget 同一张表）/ 朋友私聊。agentId 只有私聊（dm）用得上，
     别的几种可以是空串 */
 export type AlertTarget =
-  | { kind: "cloud"; chat: Exclude<RingChatKind, "outreach">; workspaceId: string; sessionId: string; agentId: string }
+  | { kind: "cloud"; chat: Exclude<RingChatKind, "outreach" | "human">; workspaceId: string; sessionId: string; agentId: string }
   | { kind: "friend"; uid: string };
 
 /** 这条推送对应列表里哪一行（手机前台时：人正看着这一条就不弹） */
@@ -123,5 +126,5 @@ export function alertTargetFromPayload(payload: unknown): AlertTarget | null {
   if (workspaceId === null || sessionId === null) return null;
   // 私聊点开要找的是那只（列表键 a:<agentId>），缺了就找不到
   if (o.chat === "dm" && agentId === null) return null;
-  return { kind: "cloud", chat: o.chat as Exclude<RingChatKind, "outreach">, workspaceId, sessionId, agentId: agentId ?? "" };
+  return { kind: "cloud", chat: o.chat as Exclude<RingChatKind, "outreach" | "human">, workspaceId, sessionId, agentId: agentId ?? "" };
 }

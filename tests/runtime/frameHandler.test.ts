@@ -2185,6 +2185,33 @@ describe("群里的客人（#1393）", () => {
     expect(sent.at(-1)!.msg).toEqual({ t: "chat_update_result", workspaceId: "w1", sessionId: "s1", ok: true });
   });
 
+  it("控制房：人打人的电话（#1534）——human_call 不过在籍那道闸、限速走 call 那一档、交给 deps.humanCall；没接那个 dep 回「不支持」", async () => {
+    const calls: unknown[] = [];
+    const PEER = "00000000-0000-4000-8000-000000000002";
+    const { deps, sent } = makeDeps({ isMember: async () => false });
+    deps.humanCall = async (from, to, callId) => {
+      calls.push([from, to, callId]);
+      return { ok: true, ice: [{ urls: ["stun:s"] }], expiresTs: 99 };
+    };
+    const h = createFrameHandler(deps);
+    await h.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, "jwt:caller"));
+    await h.onCtlFrame("c1", encodeCs({ t: "human_call", callId: "abcdefgh-1", toUid: PEER }));
+    expect(calls).toEqual([["caller", PEER, "abcdefgh-1"]]);
+    expect(sent.at(-1)!.msg).toEqual({ t: "human_call_result", callId: "abcdefgh-1", ok: true, ice: [{ urls: ["stun:s"] }], expiresTs: 99 });
+
+    const plain = makeDeps({ isMember: async () => false, rateLimit: { allow: (kind) => kind !== "call" } });
+    const h2 = createFrameHandler(plain.deps);
+    await h2.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, "jwt:caller"));
+    await h2.onCtlFrame("c1", encodeCs({ t: "human_call", callId: "abcdefgh-1", toUid: PEER }));
+    expect(plain.sent.at(-1)!.msg).toMatchObject({ t: "human_call_result", callId: "abcdefgh-1", ok: false });
+
+    const none = makeDeps({ isMember: async () => false });
+    const h3 = createFrameHandler(none.deps);
+    await h3.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, "jwt:caller"));
+    await h3.onCtlFrame("c1", encodeCs({ t: "human_call", callId: "abcdefgh-1", toUid: PEER }));
+    expect(none.sent.at(-1)!.msg).toMatchObject({ t: "human_call_result", ok: false, message: expect.stringContaining("不支持") });
+  });
+
   it("控制房：朋友替主人开公开智能体的车道（#1533）——非成员的 onBehalf create 过在籍那道闸、交给 daemon 细判；普通 create 仍拒", async () => {
     const createCalls: unknown[] = [];
     const { deps, sent } = makeDeps({

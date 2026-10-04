@@ -13,6 +13,7 @@ import { voiceCallOf } from "../../../src/shared/voiceCall.js";
 import { chatEvents, chatSessionOf, subscribeChat } from "../cloud/chatStore.js";
 import { createStore } from "../externalStore.js";
 import { hangUp, setMic } from "../voice/voiceStore.js";
+import { answerHumanCall, hangUpHumanCall, inHumanCall, setHumanMic } from "./humanCall.js";
 import { answerRing, declineRing, noteIncoming, onAnswerAbandoned } from "./ringStore.js";
 import { setInSystemCall } from "./systemCall.js";
 
@@ -44,7 +45,11 @@ function onEvent(e: CallKitEvent): void {
     case "answer": {
       const c = before.calls.get(e.ringId);
       commit(reduceCallKit(before, e));
-      if (c !== undefined) answerRing(c.ring);
+      if (c !== undefined) {
+        // 人打人的来电（#1534）：媒体那一层在这里接起（连中继、开麦），导航交给 answerRing → 通话页
+        if (c.ring.chat === "human") answerHumanCall(c.ring);
+        answerRing(c.ring);
+      }
       return;
     }
     case "end": {
@@ -53,14 +58,20 @@ function onEvent(e: CallKitEvent): void {
       // **挂断帧要先于 commit 发出去**：commit 让「系统来电进行中」翻成 false，当场补做切后台那一步
       // （cloudClient 暂停会话房），锁屏上挂断时 App 正在后台——先 commit 的话那一帧落在已经断开的传输上，
       // 服务端的通话名单一直开着。call() 在第一个 await 之前就把帧交给了 socket，所以同步调一下就够
-      if (c !== undefined && e.answered && chatSessionOf(c.ring.sessionId) !== null) void hangUp();
+      if (c !== undefined && c.ring.chat === "human") {
+        // 人打人（#1534）：系统界面上挂断 / 拒接 → 挂我们这边的那一通（对端收到 hangup 帖）
+        if (inHumanCall()) hangUpHumanCall(e.answered ? "user" : "declined");
+      } else if (c !== undefined && e.answered && chatSessionOf(c.ring.sessionId) !== null) {
+        void hangUp();
+      }
       commit(reduceCallKit(before, e));
       if (c !== undefined && !e.answered) declineRing(c.ring);
       return;
     }
     case "mute": {
       const c = before.calls.get(e.ringId);
-      if (c?.answered === true && chatSessionOf(c.ring.sessionId) !== null) setMic(!e.muted);
+      if (c?.ring.chat === "human") setHumanMic(!e.muted);
+      else if (c?.answered === true && chatSessionOf(c.ring.sessionId) !== null) setMic(!e.muted);
       return;
     }
     case "audio":
