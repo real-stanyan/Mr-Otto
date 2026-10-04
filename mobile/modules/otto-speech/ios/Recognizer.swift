@@ -72,6 +72,17 @@ final class Recognizer {
   /// 回声消除开没开；nil = 还没开过麦
   private var aec: Bool? = nil
   private var lastLevelEmitAt: Double = 0
+  // ── 录音（#1492，ADR-0351 第 5 条）：按住说话时顺手把麦克风的声音写成 m4a ─────────────────────────
+  /// 想录（startRecording 来了）；引擎还没起来（开麦要等两道授权）时先记着，起来那一刻再开文件
+  private var wantRecording = false
+  /// 正在写的文件。音频线程只读它（同 paused：speechQueue 上改，最坏多写一两块，无害）
+  private var recordFile: AVAudioFile?
+  /// 最近一段的去处与帧数：stop() 关了文件之后 stopRecording 还要来取，所以不随 recordFile 一起清
+  private var recordURL: URL?
+  private var recordRate: Double = 0
+  private var recordFrames: AVAudioFramePosition = 0
+  /// 写文件不在音频线程上做（AVAudioFile.write 不是实时安全的）：拷一份 buffer 排到这条队列
+  private let recordQueue = DispatchQueue(label: "mrotto.speech.record", qos: .utility)
   /// level 事件的节流（毫秒）：音频块几十块一秒，界面画声浪 10 帧一秒够了
   private let levelEveryMs: Double = 100
   /// 没人说话时多久换一次 request（毫秒）：攒着的音频有上限
@@ -254,6 +265,20 @@ final class Recognizer {
       for i in 0..<n { sum += src[0][i] * src[0][i] }
       let rms = (sum / Float(n)).squareRoot()
       speechQueue.async { self.onLevel(rms: rms) }
+      // 录音（#1492）不看 paused：松手那一下先 pause 再 stop，最后几块还要落进文件。第 0 声道折成 mono，
+      // 与喂识别器的同一份
+      if let file = self.recordFile, let copy = AVAudioPCMBuffer(pcmFormat: mono, frameCapacity: buffer.frameLength) {
+        copy.frameLength = buffer.frameLength
+        memcpy(copy.floatChannelData![0], src[0], n * MemoryLayout<Float>.size)
+        self.recordQueue.async {
+          do {
+            try file.write(from: copy)
+            self.recordFrames += AVAudioFramePosition(copy.frameLength)
+          } catch {
+            NSLog("[OttoSpeech] record write failed: %@", String(describing: error))
+          }
+        }
+      }
       guard !self.paused, let req = self.request else { return }
       if buffer.format.channelCount > 1, let out = AVAudioPCMBuffer(pcmFormat: mono, frameCapacity: buffer.frameLength) {
         out.frameLength = buffer.frameLength
@@ -273,6 +298,8 @@ final class Recognizer {
     }
     running = true
     paused = false
+    // 开麦之前就说要录（startRecording 排在 start 后面、授权还没回来）：现在开文件
+    if wantRecording, recordFile == nil { openRecordFile(rate: format.sampleRate) }
     emit(Event(type: "listening", on: true))
     // 头注 ⑤：aec 这时才知道
     emit(status())
@@ -390,6 +417,7 @@ final class Recognizer {
     request = nil
     endpointer = Endpointer()  // 手上那半句作废（离开 / 挂断）
     engine.inputNode.removeTap(onBus: 0)
+    closeRecordFile()  // 文件关上、URL 与帧数留着：JS 的 stopRecording 排在 stop 之后也取得到
     emit(Event(type: "listening", on: false))
     // 正在放它的话就先不停引擎（放音也挂在它上面），放完那一刻再停
     deactivateIfIdle()
@@ -409,6 +437,62 @@ final class Recognizer {
   func stopPlay() {
     playback.stop()
     deactivateIfIdle()
+  }
+
+  // ── 录音（#1492，ADR-0351 第 5 条）──
+
+  /// 开始录：引擎在跑就现在开文件，没在跑先记着（start 那一刻补开）
+  func startRecording() {
+    wantRecording = true
+    guard running, recordFile == nil else { return }
+    let rate = engine.inputNode.outputFormat(forBus: 0).sampleRate
+    if rate > 0 { openRecordFile(rate: rate) }
+  }
+
+  /// 收尾：keep = 要这段（回 uri / durationMs / bytes）；否则删掉文件回 nil。不管 stop() 有没有先来都能取到
+  func stopRecording(keep: Bool) -> [String: Any]? {
+    wantRecording = false
+    closeRecordFile()
+    guard let url = recordURL else { return nil }
+    recordURL = nil
+    let frames = recordQueue.sync { recordFrames }
+    let durationMs = recordRate > 0 ? Int((Double(frames) / recordRate * 1000).rounded()) : 0
+    if !keep {
+      try? FileManager.default.removeItem(at: url)
+      return nil
+    }
+    let bytes = ((try? FileManager.default.attributesOfItem(atPath: url.path))?[.size] as? NSNumber)?.intValue ?? 0
+    return ["uri": url.absoluteString, "durationMs": durationMs, "bytes": bytes]
+  }
+
+  /// 缓存目录里的一个 m4a（AAC 单声道 64kbps，采样率跟麦克风走）。开不了就报一条 error，听写照常
+  private func openRecordFile(rate: Double) {
+    let dir = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask)[0].appendingPathComponent("otto-voice-rec", isDirectory: true)
+    try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    let url = dir.appendingPathComponent(UUID().uuidString + ".m4a")
+    let settings: [String: Any] = [
+      AVFormatIDKey: kAudioFormatMPEG4AAC,
+      AVSampleRateKey: rate,
+      AVNumberOfChannelsKey: 1,
+      AVEncoderBitRateKey: 64_000,
+    ]
+    do {
+      let file = try AVAudioFile(forWriting: url, settings: settings, commonFormat: .pcmFormatFloat32, interleaved: false)
+      recordQueue.sync { recordFrames = 0 }
+      recordURL = url
+      recordRate = rate
+      recordFile = file
+    } catch {
+      NSLog("[OttoSpeech] record open failed: %@", String(describing: error))
+      emit(Event(type: "error", message: "录不了音：\(error.localizedDescription)"))
+    }
+  }
+
+  /// 关文件（AVAudioFile 在最后一个引用没了那一刻写尾、关文件）。先等写队列上排着的最后几块落完
+  private func closeRecordFile() {
+    guard recordFile != nil else { return }
+    recordFile = nil
+    recordQueue.sync { }
   }
 
   /// 系统把声音拿走了（头注 ②）：手上那段放音报 playError；在听的话先说一句为什么、再停听
