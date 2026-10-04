@@ -233,6 +233,8 @@ import { ADMIN_AGENT_ID, type SandboxApproval } from "../../../src/shared/worksp
 import { connectorsAllowed, dispatchDenied, scopedTools, tierOf, type AgentTier } from "../../../src/shared/agentTier.js";
 import { tierPrompt } from "../../../src/shared/tierPrompt.js";
 import { createRosterTools } from "./rosterTools.js";
+import { createTaskTools } from "./taskTools.js";
+import { foldTask, isTaskEvent, taskFoldOf } from "../../../src/shared/tasks.js";
 import { guestTargetsInLane } from "../../../src/shared/delegation.js";
 import type { Approver } from "../../../src/loop/approvalGate.js";
 import {
@@ -872,6 +874,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       那份 seed），之后在 notify 里逐条推进——同 bounds / voiceCall 的手法。流式正文不是事件，「在不在吐字」
       另记一格，终态事件落盘时清掉（同 deltas.clearAgent）。判据在 shared/agentActivity.ts，与手机聊天页共用 */
   const activityFold = activityFoldOf(seed);
+  /** 任务（#1571 第 3 步）：从日志折出来的那份，notify 里逐条推进、每推一条把那一行 upsert 进投影表 */
+  const taskFold = taskFoldOf(seed, opts.workspaceId);
   const streamingNow = new Set<string>();
   const activity = createActivityWriter({
     write: (rows) => opts.sessionMeta.setActivity(rows),
@@ -1324,6 +1328,11 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // 智能体状态（#1282）：同 advanceRelayBounds 的推理——daemon.ts 绕过 notify 直接 append 的那四类
     // （chat_message / model_usage / route_changed / session_created）与状态无关，漏不掉
     foldActivity(activityFold, e);
+    if (isTaskEvent(e)) {
+      foldTask(taskFold, e, opts.workspaceId);
+      const row = taskFold.get(e.taskId);
+      if (row !== undefined) void opts.sessionMeta.upsertTask(row);
+    }
     if ((e.type === "assistant_message" || e.type === "turn_ended") && e.agentId) streamingNow.delete(e.agentId);
     pushActivity();
     opts.onEvent(e);
@@ -1580,6 +1589,16 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // 语音通话里把人拉进来那把刀（#1163），每只都挂：通话进行中只有通话成员参与，任何一只
     // 都可能撞上「这件事该由通话外的人做」。不过审批门（口头同意就行，纪律在提示词里）；
     // byUid 是点火的那个人（同 create_agent 的 created_by），byAgentId 是这只自己
+    // 任务那三把刀（#1571 第 3 步）：主场里才有；落的是事件，byAgentId = 这只自己
+    const taskTools = !opts.approveAll ? [] : createTaskTools({
+      agentId: spec.agentId,
+      roster: () => turnRoster,
+      tasks: () => taskFold,
+      append: (e) => {
+        if (archived) return;
+        notify(store.append({ sessionId, ts: Date.now(), ...e, byAgentId: spec.agentId, ignorable: true }));
+      },
+    });
     const inviteToCallTool = createInviteToCallTool({
       agentId: spec.agentId,
       currentCall: () => voiceCall,
@@ -1701,6 +1720,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
           // 管理员拉人 / 请人（#1571 第二轮第 3 条）：主场里才有，外联 / 团队会话没有这回事
           ...(isAdmin && opts.approveAll ? [rosterTools.bring, rosterTools.dismiss] : []),
           ...routineTools,
+          ...taskTools,
           ...px,
         ];
         // 汇报轮同理（#1441）：supervisedTurn = 客人那一轮 或 汇报轮

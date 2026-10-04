@@ -725,6 +725,41 @@ export interface RoutineNoteEvent extends SessionEventBase {
   ignorable: true;
 }
 
+/** 任务（#1571 第 3 步，ADR-0365 §2.4）：六种事件落在任务所在那条会话的日志里，`tasks` 表是 runtime 折出来的投影
+    （折法在 src/shared/tasks.ts）。**不带 agentId**（同 call_ring / routine_note 的纪律）：谁落的写在 byAgentId。
+    模型可见（deriveMessages 投影成一句系统话——管理员与被派的那只都要看得见任务在哪一步）；`ignorable` = 不欠谁一轮 */
+interface TaskEventBase extends SessionEventBase {
+  taskId: string;
+  byAgentId: string;
+  ignorable: true;
+}
+export interface TaskCreatedEvent extends TaskEventBase {
+  type: "task_created";
+  title: string;
+  brief?: string;
+  parentTaskId?: string;
+}
+export interface TaskAssignedEvent extends TaskEventBase {
+  type: "task_assigned";
+  toAgentId: string;
+}
+export interface TaskProgressEvent extends TaskEventBase {
+  type: "task_progress";
+  note: string;
+}
+export interface TaskNeedsOwnerEvent extends TaskEventBase {
+  type: "task_needs_owner";
+  question: string;
+}
+export interface TaskDoneEvent extends TaskEventBase {
+  type: "task_done";
+  summary: string;
+}
+export interface TaskFailedEvent extends TaskEventBase {
+  type: "task_failed";
+  reason: string;
+}
+
 export type OutreachOutcome = "completed" | "missed" | "capped" | "failed";
 export interface OutreachLine { who: "agent" | "peer"; text: string; ts: number }
 
@@ -1307,6 +1342,12 @@ export type SessionEvent =
   | VoiceCallChangedEvent
   | CallRingEvent
   | RoutineNoteEvent
+  | TaskCreatedEvent
+  | TaskAssignedEvent
+  | TaskProgressEvent
+  | TaskNeedsOwnerEvent
+  | TaskDoneEvent
+  | TaskFailedEvent
   | OutreachEvent
   | FriendPickEvent
   | ChatRosterChangedEvent
@@ -1376,6 +1417,12 @@ const KNOWN_EVENT_TYPES_MAP: Record<SessionEvent["type"], true> = {
   voice_call_changed: true,
   call_ring: true,
   routine_note: true,
+  task_created: true,
+  task_assigned: true,
+  task_progress: true,
+  task_needs_owner: true,
+  task_done: true,
+  task_failed: true,
   outreach: true,
   friend_pick: true,
   chat_roster_changed: true,

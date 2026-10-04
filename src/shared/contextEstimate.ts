@@ -193,6 +193,12 @@ function pendingAfter(
       case "call_ring":
       case "outreach":
       case "friend_pick":
+      case "task_created":
+      case "task_assigned":
+      case "task_progress":
+      case "task_needs_owner":
+      case "task_done":
+      case "task_failed":
         // 回电（#1411）：云会话专属、模型不可见，不占上下文
         break;
       case "executor_changed":
