@@ -2,11 +2,14 @@
 // 同一套样子。一次拉最近 50 条，往上翻再拉；realtime 推新消息，通道哑了降级成轮询（friendsStore）。
 // 桌面发来的「分享会话」是一段 JSON 信封：画成一张卡（shareCardView：邀请码不上屏），手机上打不开会话包，只说去哪儿做。
 // 删了好友的那个人：库里 RLS 不许再发（messages_insert_accepted_friend），输入栏换成一句实话。
+// 图片与视频（#1443 P1）：＋ 里「相册」「拍摄」；挑好的先就地处理（prepareMedia），图片攒一条、视频一条一个，
+// 每条先挂一个本地气泡报进度，传完换成真消息。纯媒体消息的正文是占位「[图片]」/「[视频]」，带着媒体时不画字。
 import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import { useHeaderHeight } from "@react-navigation/elements";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AppState, FlatList, KeyboardAvoidingView, Platform, Pressable, Text, View } from "react-native";
+import { mediaBodyHidden, planMediaMessages, type PreparedMedia } from "../../../src/shared/chatMedia.js";
 import type { DirectMessage } from "../../../src/shared/friends.js";
 import { PRESENCE_TEXT } from "../../../src/shared/presence.js";
 import { readUpTo, receiptLabel } from "../../../src/shared/readReceipt.js";
@@ -18,6 +21,8 @@ import { NewGroupDialog } from "../group/NewGroupDialog.js";
 import { useHome } from "../home/homeStore.js";
 import { markSeen, setOpenKey } from "../inbox/seenStore.js";
 import { useInbox } from "../inbox/useInbox.js";
+import { MediaBubble, PendingMediaBubble } from "../media/MediaBubble.js";
+import { pickFromCamera, pickFromLibrary, pickedKind, prepareAsset, type PickedAsset } from "../media/prepareMedia.js";
 import type { RootStackParams } from "../nav/types.js";
 import { useMyName } from "../tabs/MeScreen.js";
 import { usePalette, withAlpha } from "../theme.js";
@@ -27,12 +32,17 @@ import { PersonTile } from "../wx/Avatar.js";
 import { Icon } from "../wx/Icon.js";
 import { HeaderIconButton } from "../wx/TabHeader.js";
 import { toast } from "../wx/toast.js";
-import { loadOlderThread, openThread, sendToFriend, useFriends } from "./friendsStore.js";
+import {
+  dropMediaSend, loadOlderThread, openThread, retryMediaSend, sendMediaToFriend, sendToFriend, useFriends, type PendingMedia,
+} from "./friendsStore.js";
 import { usePresence } from "./presenceStore.js";
 import { loadPeerRead, markFriendRead, usePeerRead } from "./readReceipts.js";
 
 type Props = NativeStackScreenProps<RootStackParams, "FriendChat">;
-type Item = { kind: "time"; key: string; label: string } | { kind: "msg"; key: string; m: DirectMessage };
+type Item =
+  | { kind: "time"; key: string; label: string }
+  | { kind: "msg"; key: string; m: DirectMessage }
+  | { kind: "pending"; key: string; p: PendingMedia };
 
 function Bubble({ m, mine, name, avatar, meName, meAvatar }: { m: DirectMessage; mine: boolean; name: string; avatar: string; meName: string; meAvatar: string }) {
   const { c } = usePalette();
@@ -52,8 +62,13 @@ function Bubble({ m, mine, name, avatar, meName, meAvatar }: { m: DirectMessage;
       );
     })()
   ) : (
-    <View style={{ paddingVertical: 9, paddingHorizontal: 12, borderRadius: 12, ...(mine ? { borderTopRightRadius: 4 } : { borderTopLeftRadius: 4 }), backgroundColor: mine ? c.bubbleMe : c.bubbleThem }}>
-      <Text selectable style={{ fontSize: 16, lineHeight: 24, color: c.foreground }}>{m.body}</Text>
+    <View style={{ gap: 6, alignItems: mine ? "flex-end" : "flex-start" }}>
+      {m.media !== undefined ? <MediaBubble media={m.media} /> : null}
+      {mediaBodyHidden(m.body, m.media ?? null) ? null : (
+        <View style={{ paddingVertical: 9, paddingHorizontal: 12, borderRadius: 12, ...(mine ? { borderTopRightRadius: 4 } : { borderTopLeftRadius: 4 }), backgroundColor: mine ? c.bubbleMe : c.bubbleThem }}>
+          <Text selectable style={{ fontSize: 16, lineHeight: 24, color: c.foreground }}>{m.body}</Text>
+        </View>
+      )}
     </View>
   );
   return (
@@ -161,8 +176,10 @@ export function FriendChatScreen({ route, navigation }: Props) {
       prev = ts;
       out.push({ kind: "msg", key: `m${m.id}`, m });
     }
+    // 还没发出去的排在最底下（最新），按排队先后
+    for (const p of thread?.pending ?? []) out.push({ kind: "pending", key: p.localId, p });
     return out.reverse();
-  }, [thread?.messages]);
+  }, [thread?.messages, thread?.pending]);
 
   const send = async (text: string): Promise<boolean> => {
     setNote(null);
@@ -173,6 +190,33 @@ export function FriendChatScreen({ route, navigation }: Props) {
       setNote(e instanceof Error ? e.message : String(e));
       return false;
     }
+  };
+
+  // 挑好的就地处理：HEIC 转 JPEG、原图缩到 2048、视频查时长大小抽封面。一样处理不了只说那一样，别的照发
+  const [preparing, setPreparing] = useState(false);
+  const sendPicked = async (pick: () => Promise<PickedAsset[]>): Promise<void> => {
+    setNote(null);
+    let assets: PickedAsset[];
+    try {
+      assets = await pick();
+    } catch (e) {
+      setNote(e instanceof Error ? e.message : String(e));
+      return;
+    }
+    if (assets.length === 0) return;
+    setPreparing(true);
+    const ready: PreparedMedia[] = [];
+    const problems: string[] = [];
+    for (const a of assets) {
+      try {
+        ready.push(await prepareAsset(a));
+      } catch (e) {
+        problems.push(`${pickedKind(a) === "video" ? "视频" : "图片"}：${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+    setPreparing(false);
+    for (const group of planMediaMessages(ready)) sendMediaToFriend(uid, group);
+    if (problems.length > 0) setNote(problems.length === 1 ? (problems[0] ?? "") : `有 ${problems.length} 样没发：${problems[0] ?? ""}`);
   };
 
   return (
@@ -197,6 +241,20 @@ export function FriendChatScreen({ route, navigation }: Props) {
               renderItem={({ item }) =>
                 item.kind === "time" ? (
                   <Text style={{ alignSelf: "center", fontSize: 11.5, color: c.faint, fontVariant: ["tabular-nums"] }}>{item.label}</Text>
+                ) : item.kind === "pending" ? (
+                  <View style={{ flexDirection: "row-reverse", alignItems: "flex-start", gap: 10, paddingHorizontal: 12 }}>
+                    <PersonTile name={me.name} url={me.avatar} size={40} me />
+                    <View style={{ flexShrink: 1, maxWidth: "76%" }}>
+                      <PendingMediaBubble
+                        items={item.p.items}
+                        state={item.p.state}
+                        progress={item.p.progress}
+                        error={item.p.error}
+                        onRetry={() => retryMediaSend(uid, item.p.localId)}
+                        onDrop={() => dropMediaSend(uid, item.p.localId)}
+                      />
+                    </View>
+                  </View>
                 ) : (
                   <View>
                     <Bubble m={item.m} mine={item.m.sender !== uid} name={name} avatar={row?.profile.avatarUrl ?? ""} meName={me.name} meAvatar={me.avatar} />
@@ -241,6 +299,9 @@ export function FriendChatScreen({ route, navigation }: Props) {
             </View>
           ) : null}
         </View>
+        {preparing ? (
+          <Text style={{ fontSize: 13, color: c.mutedForeground, paddingHorizontal: 16, paddingBottom: 6 }}>正在准备图片和视频…</Text>
+        ) : null}
         {note !== null || thread?.error ? (
           <Text style={{ fontSize: 13, color: c.destructive, paddingHorizontal: 16, paddingBottom: 6 }}>{note ?? `没拉到最新的消息（${thread?.error ?? ""}）`}</Text>
         ) : null}
@@ -251,12 +312,15 @@ export function FriendChatScreen({ route, navigation }: Props) {
             canSend
             sessionId={null}
             onSend={send}
-            plus={
+            plus={[
+              // 图片 / 视频（#1443）：相册一次最多挑 9 样；拍摄是拍照或录一段（≤60 秒）
+              { key: "album", icon: "image", label: "相册", onPress: () => void sendPicked(pickFromLibrary) },
+              { key: "camera", icon: "camera", label: "拍摄", onPress: () => void sendPicked(pickFromCamera) },
               // 拉人建群（#1393）：带上 TA，再拉几位——群建在我的主场里
-              home.home !== null
-                ? [{ key: "group", icon: "users-round", label: "拉人建群", onPress: () => setGrouping({ key: Date.now(), visible: true }) }]
-                : []
-            }
+              ...(home.home !== null
+                ? [{ key: "group", icon: "users-round" as const, label: "拉人建群", onPress: () => setGrouping({ key: Date.now(), visible: true }) }]
+                : []),
+            ]}
             {...(dictationUsable(voice)
               ? {
                 hold: {
