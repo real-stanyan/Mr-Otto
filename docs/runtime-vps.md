@@ -141,6 +141,30 @@ runtime 从 Hetzner 那台 VPS 搬到了维护者 tailscale 里的 `desktop-v6ht
   （含 `-wal`，服务停了才一致）与每个 `otto-ws-*` 卷的 `_data` → 起新机 → 看 journal 的就绪行。
   env 文件与 APNs 密钥由维护者自己拷。bundle 用旧机上正在跑的那一份，不趁搬家升版。
 
+### 1.5 从这台 Windows 开发机部署（2026-10-05 起的做法）
+
+宿主就是本机的 WSL2，**部署脚本要在 WSL 里的克隆（`~/Mr-Otto`）跑，不要在 Windows 侧跑**：
+
+```bash
+wsl -e bash -lc 'cd ~/Mr-Otto && git pull --ff-only && RUNTIME_SSH=stan@localhost npm run runtime:deploy'
+```
+
+三个坑，都踩过一次（#1571 收尾那晚）：
+
+1. **Windows 没有 rsync**：脚本在「rsync runtime.mjs」那步 `spawnSync rsync ENOENT`。Git Bash 不带 rsync。
+2. **Windows 上算的指纹永远对不上**：`deployStamp` 按文件内容 hash，Windows 克隆是 CRLF（`core.autocrlf=true`），
+   同一份源码在 Windows 算出的 stamp 与 WSL / CI 的不同——所以 **Windows 侧的 `deploy:check` 会一直说「落后」**，
+   不是线上真的落后；要问线上是不是当前的，也在 WSL 里问：
+   ```bash
+   wsl -e bash -lc 'cd ~/Mr-Otto && RUNTIME_SSH=stan@localhost npm run deploy:check'
+   ```
+3. **ssh 要两把钥匙**：Windows 的 `~/.ssh/id_ed25519.pub` 与 WSL 里 stan 自己的 `~/.ssh/id_ed25519.pub` 都得在
+   WSL 的 `~/.ssh/authorized_keys` 里——前者给 Windows 侧的 `deploy:check` / 手工 ssh 用，后者给 WSL 里跑的脚本
+   ssh 到 `localhost:2222`（它自己）用。PowerShell 里设 env 用 `$env:RUNTIME_SSH = "stan@localhost"; npm run …`，
+   `VAR=x cmd` 那种写法 PowerShell 不认。
+
+`~/Mr-Otto` 那份克隆只用来部署：始终在 main、不在里面开发；`npm ci` 只在 package-lock 变了之后补一次。
+
 ## 2. 手验清单（DockerWorld / 沙箱真机面）
 
 自动化测试盖不到「真 docker daemon + 真 VPS + 真两台设备」这个组合，以下十四条要真机走一遍。
