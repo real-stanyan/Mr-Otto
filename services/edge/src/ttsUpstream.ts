@@ -11,12 +11,23 @@
 // 那条路共用 hold / settle / release。
 
 import { TTS_MAX_UNITS, ttsUnits } from "../../../src/shared/tts.js";
+import { SPEECH_EMOTIONS, type SpeechEmotion } from "../../../src/shared/voiceProsody.js";
 
 export interface TtsRequest {
   text: string;
   voiceId: string;
   speed: number;
+  vol: number;
+  /** 情绪（#1515）；null = 不写 voice_setting.emotion，让上游走缺省 */
+  emotion: SpeechEmotion | null;
 }
+
+/** 情绪强度（#1515）：这是「这个上游对这组音色的调法」，换上游 / 换音色跟着变，所以是 edge 常量不是
+    客户端传的。播客在克隆声上听出 2.0 又活又像本人；系统预置音色没验过，先 1.0，真机听过再调——改这里、部署 edge，客户端不发版 */
+export const TTS_EMOTION_INTENSITY = 1.0;
+
+const numberIn = (v: unknown, lo: number, hi: number): number | null =>
+  typeof v === "number" && Number.isFinite(v) && v >= lo && v <= hi ? v : null;
 
 export type TtsRequestParse = { ok: true; req: TtsRequest } | { ok: false; message: string };
 
@@ -41,7 +52,20 @@ export function parseTtsRequest(body: Record<string, unknown>): TtsRequestParse 
     }
     speed = body.speed;
   }
-  return { ok: true, req: { text, voiceId, speed } };
+  let vol = 1;
+  if (body.vol !== undefined) {
+    const v = numberIn(body.vol, 0.5, 2);
+    if (v === null) return { ok: false, message: "vol 要在 0.5–2 之间" };
+    vol = v;
+  }
+  let emotion: SpeechEmotion | null = null;
+  if (body.emotion !== undefined && body.emotion !== "neutral") {
+    if (typeof body.emotion !== "string" || !(SPEECH_EMOTIONS as readonly string[]).includes(body.emotion)) {
+      return { ok: false, message: `emotion 只认 ${SPEECH_EMOTIONS.join(" / ")} / neutral` };
+    }
+    emotion = body.emotion as SpeechEmotion;
+  }
+  return { ok: true, req: { text, voiceId, speed, vol, emotion } };
 }
 
 /** 非流式 + mp3 64kbps 单声道：语音够用，字节比默认 128kbps 少一半——这段
@@ -51,14 +75,17 @@ export function ttsUpstreamBody(wireModel: string, req: TtsRequest): string {
     model: wireModel,
     text: req.text,
     stream: false,
-    voice_setting: { voice_id: req.voiceId, speed: req.speed, vol: 1, pitch: 0 },
+    voice_setting: {
+      voice_id: req.voiceId, speed: req.speed, vol: req.vol, pitch: 0,
+      ...(req.emotion !== null ? { emotion: req.emotion, emotion_intensity: TTS_EMOTION_INTENSITY } : {}),
+    },
     audio_setting: { sample_rate: 32000, bitrate: 64000, format: "mp3", channel: 1 },
   });
 }
 
 export type TtsReply =
   | { ok: true; audio: Uint8Array; usageChars: number | null; audioMs: number | null }
-  | { ok: false; message: string };
+  | { ok: false; code: number | null; message: string };
 
 const isObj = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
 
@@ -76,21 +103,21 @@ export function parseTtsReply(text: string): TtsReply {
   try {
     parsed = JSON.parse(text);
   } catch {
-    return { ok: false, message: "MiniMax 回了非 JSON" };
+    return { ok: false, code: null, message: "MiniMax 回了非 JSON" };
   }
-  if (!isObj(parsed)) return { ok: false, message: "MiniMax 回包形状不对" };
+  if (!isObj(parsed)) return { ok: false, code: null, message: "MiniMax 回包形状不对" };
   // 先看 base_resp：它是 200 之下唯一说得出「失败」的地方
   const base = isObj(parsed.base_resp) ? parsed.base_resp : null;
   const code = finiteOrNull(base?.status_code);
   if (code !== null && code !== 0) {
     const msg = typeof base?.status_msg === "string" && base.status_msg !== "" ? base.status_msg : "unknown error";
-    return { ok: false, message: `MiniMax ${code}：${msg}` };
+    return { ok: false, code, message: `MiniMax ${code}：${msg}` };
   }
   const data = isObj(parsed.data) ? parsed.data : null;
   const hex = typeof data?.audio === "string" ? data.audio : "";
-  if (hex === "") return { ok: false, message: "MiniMax 没有返回音频" };
+  if (hex === "") return { ok: false, code: null, message: "MiniMax 没有返回音频" };
   const audio = hexToBytes(hex);
-  if (audio === null) return { ok: false, message: "MiniMax 返回的音频不是合法的 hex" };
+  if (audio === null) return { ok: false, code: null, message: "MiniMax 返回的音频不是合法的 hex" };
   const extra = isObj(parsed.extra_info) ? parsed.extra_info : null;
   return { ok: true, audio, usageChars: finiteOrNull(extra?.usage_characters), audioMs: finiteOrNull(extra?.audio_length) };
 }
