@@ -27,7 +27,15 @@ console.log(`[edge-deploy] 内容指纹：${stamp}`);
 
 // 先问一句「你是谁」：没登录时 wrangler 会开浏览器等交互，而这个脚本可能跑在
 // release 中间——那时它会挂在那儿看起来像卡死。提前失败，把话说清楚
-const who = spawnSync("npx", ["wrangler", "whoami"], { cwd: EDGE_DIR, encoding: "utf8" });
+// Windows 上 npx 是 .cmd 垫片：Node 不带 shell 根本不肯 spawn .cmd（CVE-2024-27980 之后是 EINVAL，再早是 ENOENT），
+// 只能经 cmd.exe 起；参数自己加引号。与 mobile/scripts/publish-ota.mjs 同一招（2026-10-05 在 Windows 推 edge 时踩的）
+const win = process.platform === "win32";
+const quote = (a) => (win ? `"${String(a).replace(/"/g, '""')}"` : a);
+const npx = (args, opts) =>
+  win
+    ? spawnSync("cmd.exe", ["/d", "/s", "/c", ["npx.cmd", ...args.map(quote)].join(" ")], { ...opts, windowsVerbatimArguments: true })
+    : spawnSync("npx", args, opts);
+const who = npx(["wrangler", "whoami"], { cwd: EDGE_DIR, encoding: "utf8" });
 if (who.status !== 0) {
   console.error(
     "[edge-deploy] wrangler 没有登录（`npx wrangler whoami` 失败）。\n" +
@@ -37,11 +45,7 @@ if (who.status !== 0) {
   process.exit(2);
 }
 
-const deploy = spawnSync(
-  "npx",
-  ["wrangler", "deploy", "--var", `BUILD_STAMP:${stamp}`],
-  { cwd: EDGE_DIR, stdio: "inherit" }
-);
+const deploy = npx(["wrangler", "deploy", "--var", `BUILD_STAMP:${stamp}`], { cwd: EDGE_DIR, stdio: "inherit" });
 if (deploy.status !== 0) {
   console.error(`[edge-deploy] wrangler deploy 失败（exit ${deploy.status}）`);
   process.exit(deploy.status ?? 1);
