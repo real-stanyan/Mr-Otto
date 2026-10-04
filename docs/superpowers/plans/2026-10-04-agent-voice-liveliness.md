@@ -39,7 +39,7 @@
 | `src/renderer/src/components/CloudSessionPage.tsx` / `src/shared/mobileChat.ts` / `src/shared/sessionLast.ts` / `src/shared/cloudTimeline.ts` | 显示剥记号 | Task 9 |
 | `src/session/deriveMessages.ts` | 通话块加三句 | Task 10 |
 | `scripts/tts-emotion-matrix.mjs` / `docs/voice-emotion-compat.md` | 真机兼容矩阵（维护者跑） | Task 11 |
-| `docs/adr/0352-*.md` / `docs/where-to-find-things.md` / `CONTEXT.md` | 决策 / 代码地图 / 词汇 | Task 12 |
+| `docs/adr/0354-*.md` / `docs/where-to-find-things.md` / `CONTEXT.md` | 决策 / 代码地图 / 词汇 | Task 12 |
 
 ---
 
@@ -149,7 +149,7 @@ Expected: FAIL，`Cannot find module '../../src/shared/voiceProsody.js'`
 
 ```ts
 // src/shared/voiceProsody.ts
-// voiceProsody —— 智能体说话的活人感那几件纯逻辑（#1515，ADR-0352）。三端共用、零 IO。
+// voiceProsody —— 智能体说话的活人感那几件纯逻辑（#1515，ADR-0354）。三端共用、零 IO。
 //
 // 情绪从哪来：模型在段首写一个括注（（笑）（惊）（叹）（气）（怕）（嫌）），通话提示词只给这六个。
 // 记号**落日志不落界面**：显示路径各剥一次（stripEmotionTag），出声路径解出来进 voice_setting.emotion。
@@ -1302,14 +1302,14 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 ### Task 12: ADR + 代码地图 + 词汇 + 门禁
 
 **Files:**
-- Create: `docs/adr/0352-智能体语音活人感-段首括注情绪进TTS-投影剥掉-pitch恒0.md`（合并前 re-fetch 核号，撞了改 `max+1` 并加「原为」行，ADR-0074）
+- Create: `docs/adr/0354-智能体语音活人感-段首括注情绪进TTS-投影剥掉-pitch恒0.md`（合并前 re-fetch 核号，撞了改 `max+1` 并加「原为」行，ADR-0074）
 - Modify: `docs/where-to-find-things.md`（语音那一节 `:159` 之后加一条）、`CONTEXT.md`（产品 / 技术词那一节加「情绪括注」）
 - Modify: `docs/superpowers/specs/2026-10-04-agent-voice-liveliness-design.md` §2 的 `GAP_MS` 行改成 `{ sentence: 230, speaker: 460 }` 并注明原因（见 Global Constraints）
 
 - [ ] **Step 1: 写 ADR**
 
 ```md
-# ADR-0352：智能体语音的活人感——模型在段首写括注情绪，界面剥掉、日志留着，TTS 带 emotion 与韵律，pitch 恒 0
+# ADR-0354：智能体语音的活人感——模型在段首写括注情绪，界面剥掉、日志留着，TTS 带 emotion 与韵律，pitch 恒 0
 
 - 状态：已接受
 - 日期：2026-10-04
@@ -1344,15 +1344,15 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 `docs/where-to-find-things.md` 在 `:159` 那条语音条目之后加一行：
 ```md
-- `src/shared/voiceProsody.ts` / `services/edge/src/ttsUpstream.ts` 的 `TTS_EMOTION_INTENSITY` / `services/edge/src/llmGateway.ts` `serveTts` 的 `attempt` — **智能体语音的活人感**（#1515，ADR-0352）：模型在段首写括注情绪（（笑）（惊）（叹）（气）（怕）（嫌）），`voiceFeed` 解出来进 `voice_setting.emotion`、键里留着（同一句带不带情绪是两个单位，手机缓存键同），显示路径四处（`CloudSessionPage` 的 `AgentBubbles` / `mobileChat` / `sessionLast` / `cloudTimeline.voiceCallCards`）各剥一次；speed/vol 按情绪微映射（播客 recipe：1.12 / 0.88）、pitch 永远 0；句间 230 / 换人 460ms 由 `voicePlayer` 补、扣掉等合成已等掉的；edge 带 emotion 被拒（200 + 非 1002/1008 的非零 code）去掉重试一次、同一个 hold。**turbo + 系统预置音色对 emotion 的接受度没验到**（播客 key 欠费）：部署 edge 后维护者跑 `scripts/tts-emotion-matrix.mjs` 填 `docs/voice-emotion-compat.md`，再定 `TTS_EMOTION_INTENSITY` 从 1.0 拉不拉到播客的 2.0
+- `src/shared/voiceProsody.ts` / `services/edge/src/ttsUpstream.ts` 的 `TTS_EMOTION_INTENSITY` / `services/edge/src/llmGateway.ts` `serveTts` 的 `attempt` — **智能体语音的活人感**（#1515，ADR-0354）：模型在段首写括注情绪（（笑）（惊）（叹）（气）（怕）（嫌）），`voiceFeed` 解出来进 `voice_setting.emotion`、键里留着（同一句带不带情绪是两个单位，手机缓存键同），显示路径四处（`CloudSessionPage` 的 `AgentBubbles` / `mobileChat` / `sessionLast` / `cloudTimeline.voiceCallCards`）各剥一次；speed/vol 按情绪微映射（播客 recipe：1.12 / 0.88）、pitch 永远 0；句间 230 / 换人 460ms 由 `voicePlayer` 补、扣掉等合成已等掉的；edge 带 emotion 被拒（200 + 非 1002/1008 的非零 code）去掉重试一次、同一个 hold。**turbo + 系统预置音色对 emotion 的接受度没验到**（播客 key 欠费）：部署 edge 后维护者跑 `scripts/tts-emotion-matrix.mjs` 填 `docs/voice-emotion-compat.md`，再定 `TTS_EMOTION_INTENSITY` 从 1.0 拉不拉到播客的 2.0
 ```
 
 `CONTEXT.md` 产品 / 技术词那一节加：
 ```md
-- **情绪括注（emotion tag）**：通话里模型写在**段首**的括注 `（笑）（惊）（叹）（气）（怕）（嫌）`，对到 MiniMax 的 emotion（happy / surprised / sad / angry / fearful / disgusted）。落日志不落界面：显示剥、出声解；只认段首白名单，词表外的括注是正文。ADR-0352，`src/shared/voiceProsody.ts`
+- **情绪括注（emotion tag）**：通话里模型写在**段首**的括注 `（笑）（惊）（叹）（气）（怕）（嫌）`，对到 MiniMax 的 emotion（happy / surprised / sad / angry / fearful / disgusted）。落日志不落界面：显示剥、出声解；只认段首白名单，词表外的括注是正文。ADR-0354，`src/shared/voiceProsody.ts`
 ```
 
-`docs/superpowers/specs/2026-10-04-agent-voice-liveliness-design.md` §2：`GAP_MS = { sentence: 230, bubble: 460 }` 那一行改成 `{ sentence: 230, speaker: 460 }`，行尾加「（实施时改：播放器手上有 agentId 没有段边界，真人 p90 那一档本来就是话轮切换，ADR-0352 决策 6）」；§3 对应的「跨段补 GAP_MS.bubble」改成「换说话人补 GAP_MS.speaker」。
+`docs/superpowers/specs/2026-10-04-agent-voice-liveliness-design.md` §2：`GAP_MS = { sentence: 230, bubble: 460 }` 那一行改成 `{ sentence: 230, speaker: 460 }`，行尾加「（实施时改：播放器手上有 agentId 没有段边界，真人 p90 那一档本来就是话轮切换，ADR-0354 决策 6）」；§3 对应的「跨段补 GAP_MS.bubble」改成「换说话人补 GAP_MS.speaker」。
 
 - [ ] **Step 3: 跑门禁**
 
@@ -1362,8 +1362,8 @@ Expected: 全绿（含 `tests/docs/adrNumbers.test.ts` 不撞号、`tests/archit
 - [ ] **Step 4: Commit + push**
 
 ```bash
-git add docs/adr/0352-*.md docs/where-to-find-things.md CONTEXT.md docs/superpowers/specs/2026-10-04-agent-voice-liveliness-design.md
-git commit -m "docs: ADR-0352 智能体语音活人感——情绪括注落日志不落界面、pitch 恒 0、被拒降级（#1515）
+git add docs/adr/0354-*.md docs/where-to-find-things.md CONTEXT.md docs/superpowers/specs/2026-10-04-agent-voice-liveliness-design.md
+git commit -m "docs: ADR-0354 智能体语音活人感——情绪括注落日志不落界面、pitch 恒 0、被拒降级（#1515）
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 git push -u origin claude/otto-agent-voice-naturalness-8a0d11

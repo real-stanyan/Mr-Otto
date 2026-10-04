@@ -42,13 +42,13 @@ export type SpeechEmotion = "happy" | "sad" | "angry" | "fearful" | "disgusted" 
 export const EMOTION_TAGS: Record<string, SpeechEmotion> = { 笑: "happy", 惊: "surprised", 叹: "sad", 气: "angry", 怕: "fearful", 嫌: "disgusted" };
 /** 段首一个括注（全角 / 半角括号都认，只认白名单），回情绪 + 剥掉记号的正文；不是白名单 → emotion null、正文原样 */
 export function parseEmotionTag(bubble: string): { emotion: SpeechEmotion | null; text: string };
-/** 只剥不解——给显示用（四处渲染一个函数） */
+/** 只剥不解——给显示用（六处渲染一个函数） */
 export function stripEmotionTag(bubble: string): string;
 /** 播客 recipe 的数值：高唤起（happy / surprised / angry）1.12 / 1.12；低唤起（sad / fearful）0.88 / 0.92；其余 1 / 1。pitch 永远 0，这个函数不回 pitch */
 export function prosodyFor(emotion: SpeechEmotion | null): { speed: number; vol: number };
 /** AI 大写、四位年份逐位（搬播客 normalize.ts，边界同） */
 export function normalizeSpoken(text: string): string;
-/** 句间 230 / 换说话人 460（真人 p50 / p90 四舍五入到档）（实施时改：播放器手上有 agentId 没有段边界，真人 p90 那一档本来就是话轮切换，ADR-0352 决策 6） */
+/** 句间 230 / 换说话人 460（真人 p50 / p90 四舍五入到档）（实施时改：播放器手上有 agentId 没有段边界，真人 p90 那一档本来就是话轮切换，ADR-0354 决策 6） */
 export const GAP_MS = { sentence: 230, speaker: 460 } as const;
 ```
 
