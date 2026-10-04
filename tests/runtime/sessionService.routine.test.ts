@@ -19,7 +19,8 @@ import { tempDir } from "../helpers/tempDir.js";
 
 const OWNER = "owner";
 const SID = "s-routine";
-const HELPER = { agentId: "a_000000000001", name: "助手", description: "", instructions: "", models: ["fake-model"], tools: [] };
+// 主场里专员的工具面按域圈（#1571，ADR-0365）：这份夹具给它 dev 域（整面）——测的是定时任务那三把刀的挂载闸，不是等级
+const HELPER = { agentId: "a_000000000001", name: "助手", description: "", instructions: "", models: ["fake-model"], tools: [], domain: "dev" };
 const fakeWorld: ExecutionWorld = { fs: { read: async () => "", write: async () => {} }, exec: async () => ({ stdout: "", stderr: "", exitCode: 0 }), http: { postJson: async () => ({}) } };
 
 const FIRED = Date.UTC(2026, 9, 5, 1, 0);

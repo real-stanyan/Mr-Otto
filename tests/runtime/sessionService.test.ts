@@ -1173,7 +1173,8 @@ describe("个人主场全免审批（#1280，ADR-0298）", () => {
       diskUsage: () => null, routines: null, onOutreachEnded: null, signSpeechTicket: async () => "t", pairMessages: null, outreach: null, approveAll, callback: null,
       sessionMeta: createInMemoryCloudSessionMeta(),
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator", store, world: fakeWorld,
-      agents: async () => [DEFAULT_AGENT], adapterFor: () => adapter, px, hostUids: async () => [],
+      // 主场里专员的工具面按域圈（#1571）：这份夹具给它 dev 域（整面），测的是审批策略不是等级
+      agents: async () => [{ ...DEFAULT_AGENT, domain: "dev" }], adapterFor: () => adapter, px, hostUids: async () => [],
       onEvent: (e) => {
         events.push(e);
         // 有卡就批：approveAll 为真时这一支一次都不该走到
@@ -1270,7 +1271,7 @@ describe("个人主场全免审批（#1280，ADR-0298）", () => {
       diskUsage: () => null, routines: null, onOutreachEnded: null, signSpeechTicket: async () => "t", pairMessages: null, outreach: null, approveAll: true, callback: o.callback ?? null, ringTimers: { setTimer: () => 0, clearTimer: () => {} },
       sessionMeta: createInMemoryCloudSessionMeta(),
       workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "owner", store, world: fakeWorld,
-      agents: o.agents ?? (async () => [DEFAULT_AGENT]), adapterFor: () => o.adapter, px, hostUids: async () => ["owner"],
+      agents: o.agents ?? (async () => [{ ...DEFAULT_AGENT, domain: "dev" }]), adapterFor: () => o.adapter, px, hostUids: async () => ["owner"],
       onEvent: (e) => {
         o.events.push(e);
         o.onEvent?.(e, session);
@@ -1410,7 +1411,7 @@ describe("个人主场全免审批（#1280，ADR-0298）", () => {
       async chat(): Promise<ModelReply> {
         round++;
         if (round === 1) {
-          return { content: "", toolCalls: [{ id: "c1", name: "create_agent", args: { name: "财务", description: "管账", instructions: "你管账", models: [], tools: [] } }] };
+          return { content: "", toolCalls: [{ id: "c1", name: "create_agent", args: { name: "财务", description: "管账", instructions: "你管账", models: [], tools: [], domain: "finance" } }] };
         }
         return { content: "建好了" };
       },

@@ -245,3 +245,12 @@ describe("先开口那一格：Supabase 实现（#1356 A2）", () => {
     await expect(w.settleRole("w1", "a_000000000001", "帮我对账")).rejects.toThrow("workspace_agents 更新失败：boom");
   });
 });
+
+describe("ensureAdmin（#1571 自愈）", () => {
+  it("内存实现：缺就补一只 L0 / admin 域、回 true；有就回 false", async () => {
+    const w = createInMemoryAgentWriter();
+    expect(await w.ensureAdmin("w1", "owner")).toBe(true);
+    expect(w.specs("w1")).toEqual([expect.objectContaining({ agentId: "admin", name: "管理员", domain: "admin" })]);
+    expect(await w.ensureAdmin("w1", "owner")).toBe(false);
+  });
+});
