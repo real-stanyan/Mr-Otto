@@ -712,3 +712,19 @@ describe("选人卡一行（#1520）", () => {
     expect(two.map((r) => r.kind === "friend_pick" && r.status)).toEqual(["expired", "open"]);
   });
 });
+
+describe("任务卡（#1571 第 4 步）", () => {
+  it("一个任务一张卡，在 task_created 的位置；状态 / 派给谁 / 问主人的话从日志折出来；别的 task_* 事件不占行", () => {
+    const events = [
+      e({ type: "session_created", workspace: "/work", cloud: { workspaceId: "w1", chat: { kind: "dm" }, home: true } }),
+      e({ type: "task_created", taskId: "t_1", byAgentId: "admin", title: "明天出游", ignorable: true }),
+      e({ type: "task_created", taskId: "t_2", byAgentId: "admin", title: "订票", parentTaskId: "t_1", brief: "早上 8 点", ignorable: true }),
+      e({ type: "task_assigned", taskId: "t_2", byAgentId: "admin", toAgentId: "a_000000000001", ignorable: true }),
+      e({ type: "task_needs_owner", taskId: "t_2", byAgentId: "a_000000000001", question: "8 点还是 10 点？", ignorable: true }),
+    ];
+    const rows = chatRows({ events, ws: WS, selfUid: "me", now: DAY }).filter((r) => r.kind === "task");
+    expect(rows).toHaveLength(2);
+    expect(rows[0]).toMatchObject({ kind: "task", taskId: "t_1", title: "明天出游", parentTitle: null, status: "open", assigneeName: null });
+    expect(rows[1]).toMatchObject({ kind: "task", taskId: "t_2", parentTitle: "明天出游", status: "needs_owner", assigneeName: "开发", question: "8 点还是 10 点？", brief: "早上 8 点" });
+  });
+});

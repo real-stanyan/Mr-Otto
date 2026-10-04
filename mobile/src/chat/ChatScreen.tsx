@@ -57,6 +57,7 @@ import { markSeen, setOpenKey } from "../inbox/seenStore.js";
 import { readTeamMentions, refreshTeams, useTeams } from "../inbox/teamsStore.js";
 import { useInbox } from "../inbox/useInbox.js";
 import type { RootStackParams } from "../nav/types.js";
+import { ADMIN_AGENT_ID } from "../../../src/shared/workspaceAgents.js";
 import { useMyName } from "../tabs/MeScreen.js";
 import { usePalette, withAlpha } from "../theme.js";
 import { Button, Spinner, useKeyboardInset } from "../ui.js";
@@ -936,7 +937,7 @@ export function ChatScreen({ route, navigation }: Props) {
           key={dispatching.key}
           visible={dispatching.visible}
           ws={home.home}
-          agentIds={home.home.agents.map((a) => a.agentId)}
+          agentIds={[ADMIN_AGENT_ID]}
           preview={dispatching.row.kind === "agent" ? dispatching.row.paragraphs.join(" ") : dispatching.row.kind === "mine" || dispatching.row.kind === "human" ? dispatching.row.text : ""}
           onOk={(agentId, prompt) => {
             const lines = quoteWindow(quoteLinesFromRows(rows, me.name), dispatching.row.key);

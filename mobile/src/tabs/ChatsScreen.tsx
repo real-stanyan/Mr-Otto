@@ -8,7 +8,7 @@
 // · 进门几态照搬 rosterGate（A1 定的，原样成立）：还没查到 / 正在建主场 → 不下结论、不劝订阅；没订阅 / 档位不带 →
 //   一张订阅卡（朋友私聊与团队群照常在下面，demo 同款）；建失败 → 原因 + 重试钮、不自动重试；
 //   有主场就进得去、不再看档位。
-// · ⊕：新建智能体 / 发起群聊（有主场才有这两样）/ 添加朋友。两个浮层不叠着出场：菜单收完再开弹窗。
+// · ⊕：发起群聊（有主场才有）/ 添加朋友。「新建智能体」撤了（#1571 第二轮：人不建人，管理员按需雇）。两个浮层不叠着出场：菜单收完再开弹窗。
 // · 刷新：进这一页、回到前台。不轮询（朋友那条有 realtime）。
 import { useFocusEffect, useNavigation, useScrollToTop } from "@react-navigation/native";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -20,12 +20,11 @@ import { agentFolderSummary, filterInbox, splitInbox, type InboxRow } from "../.
 import { hideChat } from "../inbox/hiddenStore.js";
 import { SwipeRow } from "../wx/SwipeRow.js";
 import { SidePanel, SIDE_PANEL_EDGE } from "../wx/SidePanel.js";
-import { AgentPanel } from "../inbox/AgentPanel.js";
+import { AgentPanel, type PanelPick } from "../inbox/AgentPanel.js";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
 import type { ChatRoute } from "../nav/types.js";
 import { CountBadge } from "../wx/Badge.js";
 import { workspaceAccess } from "../../../src/shared/workspaceAccess.js";
-import { NewAgentDialog } from "../agent/NewAgentDialog.js";
 import { cloudClient } from "../cloud/cloudClient.js";
 import { AddFriendDialog } from "../friends/AddFriendDialog.js";
 import { refreshFriends, useFriends } from "../friends/friendsStore.js";
@@ -126,11 +125,14 @@ export function ChatsScreen() {
   const folder = useMemo(() => agentFolderSummary(split.agents, split.others), [split.agents, split.others]);
   /** 侧页（#1574）：开着没有；点侧页里的一行先收侧页、退场完再推（Modal 盖着时推的页看不见） */
   const [panel, setPanel] = useState(false);
-  const panelPick = useRef<ChatRoute | null>(null);
+  const panelPick = useRef<PanelPick | null>(null);
   const onPanelExited = (): void => {
     const next = panelPick.current;
     panelPick.current = null;
-    if (next !== null && navigation.isFocused()) navigation.navigate("Chat", next);
+    if (next === null || !navigation.isFocused()) return;
+    // 员工表（#1571 第 4 步）：点一只进资料页，不进聊天；管理员那行与别人的智能体那格是聊天
+    if (next.kind === "agent") navigation.navigate("Agent", { agentId: next.agentId });
+    else navigation.navigate("Chat", next.route);
   };
   /** 从左缘右划开侧页（照微信）：只在左边 SIDE_PANEL_EDGE 以内起手、横向过 12pt 才算；纵向先动就让给列表 */
   const edgePan = Gesture.Pan()
@@ -144,7 +146,6 @@ export function ChatsScreen() {
   const items: MenuItem[] = [
     ...(ws !== null
       ? [
-        { key: "agent", icon: "sparkles", label: "新建智能体" } as MenuItem,
         ...(ws.agents.length + invitable.length >= CHAT_GROUP_CREATE_MIN ? [{ key: "group", icon: "users-round", label: "发起群聊" } as MenuItem] : []),
       ]
       : []),
@@ -265,7 +266,7 @@ export function ChatsScreen() {
       </GestureDetector>
 
       <SidePanel visible={panel} title="智能体" onClose={() => setPanel(false)} onExited={onPanelExited}>
-        <AgentPanel onPick={(route) => { panelPick.current = route; setPanel(false); }} />
+        <AgentPanel onPick={(pick) => { panelPick.current = pick; setPanel(false); }} />
       </SidePanel>
 
       <PlusMenu
@@ -277,20 +278,7 @@ export function ChatsScreen() {
           setDialog({ kind: key === "agent" ? "agent" : key === "group" ? "group" : "friend", key: Date.now(), visible: true });
         }}
       />
-      {dialog?.kind === "agent" && ws !== null && home.selfUid !== null ? (
-        <NewAgentDialog
-          key={dialog.key}
-          visible={dialog.visible}
-          ws={ws}
-          selfUid={home.selfUid}
-          onClose={closeDialog}
-          onCreated={(agentId) => {
-            created.current = { kind: "agent", agentId, refresh: refreshHomeAfterWrite() };
-            closeDialog();
-          }}
-          onExited={() => void onDialogExited()}
-        />
-      ) : null}
+      {/* 「新建智能体」撤了（#1571 第二轮）：人不建人，管理员按需雇——跟它说你要办什么 */}
       {dialog?.kind === "group" && ws !== null ? (
         <PickAgentsDialog
           key={dialog.key}
