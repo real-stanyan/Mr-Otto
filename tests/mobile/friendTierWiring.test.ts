@@ -33,12 +33,21 @@ describe("入口", () => {
     expect(src).toMatch(/<TierPickDialog/);
     expect(src).toMatch(/accept\(r\.friendshipId, tier\)/);
   });
-  it("资料页：我给 TA 的（可改）、TA 给我的（只读）、实际生效；改走 setTier(id, direction, tier)", () => {
-    const src = read("mobile/src/friends/FriendScreen.tsx");
+  it("权限那一组是一个组件：我给 TA 的（可改）、TA 给我的（只读）、实际生效；改走 setTier(id, direction, tier)", () => {
+    const src = read("mobile/src/friends/FriendTierRows.tsx");
     expect(src).toMatch(/label="我给 TA 的权限" value=\{TIER_LABEL\[row\.tiers\.mine\]\} chevron onPress/);
     expect(src).toMatch(/label="TA 给我的权限" value=\{TIER_LABEL\[row\.tiers\.theirs\]\} \/>/);
     expect(src).toMatch(/label="实际生效" value=\{TIER_LABEL\[row\.tiers\.effective\]\} \/>/);
     expect(src).toMatch(/await setTier\(row\.friendshipId, row\.direction, tier\)/);
+  });
+  it("聊天信息页：好友没了（删完 / 被删）直接回首页，不留空白页", () => {
+    const src = read("mobile/src/chat/ChatInfoScreen.tsx");
+    expect(src).toMatch(/const friendGone = target\.kind === "friend" && friends\.rows !== null && !friends\.rows\.some\(\(r\) => r\.profile\.id === target\.uid\);/);
+    expect(src).toMatch(/if \(friendGone\) navigation\.popToTop\(\);/);
+  });
+  it("资料页与朋友私聊的「聊天信息」页都挂那一组（维护者 2026-10-04：聊天信息页也要能改）", () => {
+    expect(read("mobile/src/friends/FriendScreen.tsx")).toMatch(/\{accepted \? <FriendTierRows row=\{row\} \/> : null\}/);
+    expect(read("mobile/src/chat/ChatInfoScreen.tsx")).toMatch(/\{row\.status === "accepted" \? <FriendTierRows row=\{row\} \/> : null\}/);
   });
   it("私聊里「带上我的智能体」按生效档藏", () => {
     const src = read("mobile/src/friends/FriendChatScreen.tsx");

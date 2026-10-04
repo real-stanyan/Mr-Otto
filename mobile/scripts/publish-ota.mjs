@@ -29,8 +29,15 @@ if (native.runtimeVersion !== app.expo.runtimeVersion) {
   process.exit(1);
 }
 const git = (...args) => execFileSync("git", args, { cwd: mobile, encoding: "utf8" }).trim();
-// Windows 上 npx / eas 是 .cmd 垫片，spawnSync 不带 shell 找不到（ENOENT）；git 是真 exe 不用管（2026-10-04 第一次在 Windows 发时踩到）
-const exe = (name) => (process.platform === "win32" ? `${name}.cmd` : name);
+// Windows 上 npx / eas 是 .cmd 垫片：Node 不带 shell 根本不肯 spawn .cmd（CVE-2024-27980 之后是 EINVAL，再早是
+// ENOENT），只能经 cmd.exe 起；参数自己加引号（消息里有空格、分号、中文）。git 是真 exe 不用管（2026-10-04 在
+// Windows 发第一、二次热更新时各踩一次）
+const win = process.platform === "win32";
+const quote = (a) => (win ? `"${String(a).replace(/"/g, '""')}"` : a);
+const run = (name, args, opts) =>
+  win
+    ? execFileSync("cmd.exe", ["/d", "/s", "/c", [`${name}.cmd`, ...args.map(quote)].join(" ")], { ...opts, windowsVerbatimArguments: true })
+    : execFileSync(name, args, opts);
 const changed = git("diff", "--name-only", native.commit, "HEAD", "--", ...NATIVE_PATHS.map((p) => join("..", p)))
   .split("\n")
   .filter((l) => l !== "");
@@ -45,14 +52,14 @@ if (dirty !== "") {
   process.exit(1);
 }
 
-execFileSync(exe("npx"), ["tsc", "--noEmit", "-p", "."], { cwd: mobile, stdio: "inherit" });
+run("npx", ["tsc", "--noEmit", "-p", "."], { cwd: mobile, stdio: "inherit" });
 // 手机按 production **频道**来要更新（app.json 的 requestHeaders），频道再指向同名分支。只发到分支、频道却不在，
 // 更新就躺在服务器上谁也收不到——而 eas update 不会替你建频道，也不报错（2026-10-04 第一次发热更新时踩到）
 try {
-  execFileSync(exe("eas"), ["channel:view", "production", "--non-interactive"], { cwd: mobile, stdio: "ignore" });
+  run("eas", ["channel:view", "production", "--non-interactive"], { cwd: mobile, stdio: "ignore" });
 } catch {
   console.log("production 频道不在，先建（指向同名分支）");
-  execFileSync(exe("eas"), ["channel:create", "production", "--non-interactive"], { cwd: mobile, stdio: "inherit" });
+  run("eas", ["channel:create", "production", "--non-interactive"], { cwd: mobile, stdio: "inherit" });
 }
-execFileSync(exe("eas"), ["update", "--branch", "production", "--platform", "ios", "--environment", "production", "--non-interactive", "--message", message], { cwd: mobile, stdio: "inherit" });
+run("eas", ["update", "--branch", "production", "--platform", "ios", "--environment", "production", "--non-interactive", "--message", message], { cwd: mobile, stdio: "inherit" });
 console.log("热更新已发：用户下次打开 App（或在后台待够 30 分钟回来）就会换上。");

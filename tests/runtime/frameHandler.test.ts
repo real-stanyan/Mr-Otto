@@ -2185,6 +2185,25 @@ describe("群里的客人（#1393）", () => {
     expect(sent.at(-1)!.msg).toEqual({ t: "chat_update_result", workspaceId: "w1", sessionId: "s1", ok: true });
   });
 
+  it("控制房：客人切不了车道的朝向（#1523，朝向归主人）", async () => {
+    let calls = 0;
+    const { deps, sent } = makeDeps({
+      getSession: () => guestSession(),
+      isMember: async () => false,
+      ownerOf: async () => "owner",
+      creatorOf: async () => "owner",
+      updateChat: async () => {
+        calls++;
+        return { ok: true as const };
+      },
+    });
+    const h = createFrameHandler(deps);
+    await h.onCtlFrame("c1", hello(CS_PROTOCOL_VERSION, "jwt:guest"));
+    await h.onCtlFrame("c1", encodeCs({ t: "chat_update", workspaceId: "w1", sessionId: "s1", humans: [], facing: "self" }));
+    expect(sent.at(-1)!.msg).toMatchObject({ t: "denied", code: "not_authorized" });
+    expect(calls).toBe(0);
+  });
+
   it("控制房：客人改不了群名、改不了智能体（智能体归群主管）", async () => {
     let calls = 0;
     const { deps, sent } = makeDeps({

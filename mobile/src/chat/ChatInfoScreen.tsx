@@ -6,7 +6,7 @@
 //   退出群聊（群主可以再把我拉回来）。
 // · 团队群（有真人的群）：成员格（人 + 智能体，只看）；群聊名称、群主（只看）；注脚说清成员由群主在电脑上管
 //   （拉一个人进来其实是拉进整个团队，spec §2）。
-// · 朋友私聊：朋友的头像；邮箱；删除朋友。
+// · 朋友私聊：朋友的头像；邮箱；好友权限（#1494，同资料页那一组）；带进来的智能体给谁看（#1523，有车道才画）；删除朋友。
 // 确认用居中弹窗，真的会删东西的那颗是实底红（#1362）。删 / 解散之后回列表（这条线没了，退回聊天页只会看见一条连不上的线）。
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useEffect, useRef, useState } from "react";
@@ -30,6 +30,8 @@ import { cloudClient } from "../cloud/cloudClient.js";
 import { useChatStore } from "../cloud/chatStore.js";
 import { Dialog, DialogFooter, DialogLead, DialogTitle } from "../dialog.js";
 import { drop, useFriends } from "../friends/friendsStore.js";
+import { FriendTierRows } from "../friends/FriendTierRows.js";
+import { LaneFacingRows } from "../friends/LaneFacingRows.js";
 import { PickAgentsDialog } from "../group/PickAgentsDialog.js";
 import { friendPeople } from "../group/people.js";
 import { refreshHomeAfterWrite, useHome } from "../home/homeStore.js";
@@ -241,6 +243,13 @@ export function ChatInfoScreen({ route, navigation }: Props) {
 
   const ws = home.home;
   const closePicker = (): void => setPicker((p) => (p === null ? p : { ...p, visible: false }));
+  // 朋友私聊：删完好友（或被对方删了）这一页就没东西可画了——直接回首页，不留一张空白的「聊天信息」（维护者 2026-10-04
+  // 真机截图）。原来靠确认弹窗的 onExited 回首页，但 drop() 刷新名单后 row 先变 null、下面那张早退的空页把弹窗一起卸了，
+  // onExited 永远不会来。名单还没读到（rows === null）不算「没了」
+  const friendGone = target.kind === "friend" && friends.rows !== null && !friends.rows.some((r) => r.profile.id === target.uid);
+  useEffect(() => {
+    if (friendGone) navigation.popToTop();
+  }, [friendGone, navigation]);
 
   // ── 朋友私聊 ──
   if (target.kind === "friend") {
@@ -256,6 +265,10 @@ export function ChatInfoScreen({ route, navigation }: Props) {
           <Group>
             <Row label="邮箱" value={row.profile.email} />
           </Group>
+          {/* 好友权限（#1494）：资料页那一组同一个组件，这里也能改（维护者 2026-10-04） */}
+          {row.status === "accepted" ? <FriendTierRows row={row} /> : null}
+          {/* 带进来的智能体给谁看（#1523）：有车道才画 */}
+          {row.status === "accepted" ? <LaneFacingRows row={row} /> : null}
           <MuteRow muteKey={`f:${target.uid}`} />
           <DangerRow label="删除朋友" onPress={() => { setError(null); setConfirm(true); }} />
         </ScrollView>

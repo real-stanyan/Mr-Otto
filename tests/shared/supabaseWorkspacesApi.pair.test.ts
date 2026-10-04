@@ -3,10 +3,11 @@
 // 撞上一条其实存在的车道），后者才画「带上」。在场提示读不到一律不画（null），不拿 0 冒充。
 import { describe, expect, it } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { fetchPairPresence, findPairLane } from "../../src/shared/supabaseWorkspacesApi.js";
+import { fetchPairPresence, findPairLane, findSharedLaneFrom } from "../../src/shared/supabaseWorkspacesApi.js";
 
 type Call = { op: string; arg: unknown };
 const PEER = "22222222-2222-4222-8222-222222222222";
+const ME = "11111111-1111-4111-8111-111111111111";
 
 function fakeClient(calls: Call[], result: { data: unknown; error: { message: string; code?: string } | null }): SupabaseClient {
   const builder = {
@@ -22,14 +23,25 @@ function fakeClient(calls: Call[], result: { data: unknown; error: { message: st
 }
 
 describe("findPairLane", () => {
-  it("按主场 + 朋友 + self 找那一条；名单只收 agent id 字符串", async () => {
+  it("按主场 + 朋友找那一条（不按朝向，#1523：一人对一位朋友只有一条、朝向可切）；名单只收 agent id 字符串；朝向读列、认不出按 self", async () => {
     const calls: Call[] = [];
-    const lane = await findPairLane(fakeClient(calls, { data: { id: "s1", agent_ids: ["admin", 3] }, error: null }), "home", PEER);
-    expect(lane).toEqual({ sessionId: "s1", agentIds: ["admin"] });
+    const lane = await findPairLane(fakeClient(calls, { data: { id: "s1", agent_ids: ["admin", 3], facing: "both" }, error: null }), "home", PEER);
+    expect(lane).toEqual({ sessionId: "s1", agentIds: ["admin"], facing: "both" });
     expect(calls).toContainEqual({ op: "eq", arg: "chat_kind=pair" });
     expect(calls).toContainEqual({ op: "eq", arg: `peer_uid=${PEER}` });
-    expect(calls).toContainEqual({ op: "eq", arg: "facing=self" });
+    expect(calls).not.toContainEqual({ op: "eq", arg: "facing=self" });
     expect(calls).toContainEqual({ op: "eq", arg: "workspace_id=home" });
+    expect(await findPairLane(fakeClient([], { data: { id: "s1", agent_ids: [] }, error: null }), "home", PEER)).toEqual({ sessionId: "s1", agentIds: [], facing: "self" });
+  });
+  it("findSharedLaneFrom（朋友那一侧）：按 both + peer_uid=我 + publisher_uid=TA 找；没有 / 读不到都是 null", async () => {
+    const calls: Call[] = [];
+    const lane = await findSharedLaneFrom(fakeClient(calls, { data: { id: "s9", workspace_id: "home-9", agent_ids: ["admin"] }, error: null }), PEER, ME);
+    expect(lane).toEqual({ sessionId: "s9", workspaceId: "home-9", agentIds: ["admin"] });
+    expect(calls).toContainEqual({ op: "eq", arg: "facing=both" });
+    expect(calls).toContainEqual({ op: "eq", arg: `peer_uid=${ME}` });
+    expect(calls).toContainEqual({ op: "eq", arg: `publisher_uid=${PEER}` });
+    expect(await findSharedLaneFrom(fakeClient([], { data: null, error: null }), PEER, ME)).toBeNull();
+    expect(await findSharedLaneFrom(fakeClient([], { data: null, error: { message: "x" } }), PEER, ME)).toBeNull();
   });
   it("没有 → null；查询出错 → 抛（不说成「还没带」）", async () => {
     expect(await findPairLane(fakeClient([], { data: null, error: null }), "home", PEER)).toBeNull();
