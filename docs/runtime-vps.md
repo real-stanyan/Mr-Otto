@@ -167,8 +167,9 @@ wsl -e bash -lc 'cd ~/Mr-Otto && git pull --ff-only && RUNTIME_SSH=stan@localhos
 
 **edge 反过来：在 Windows 侧推**（`npm run edge:deploy`，wrangler 的 OAuth 登录存在 Windows 用户下；WSL 没登录）。
 同一条 CRLF 的账：edge 的指纹在 Windows 算，所以 **Windows 侧 `deploy:check` 看 edge 准、看 runtime 不准；WSL 侧反之**。
-两边各信各的那一半。wrangler login 若报 `UNABLE_TO_VERIFY_LEAF_SIGNATURE`，从 Git Bash 起 `npx wrangler login` 能过
-（PowerShell 那一回没查出原因，2026-10-05）。
+两边各信各的那一半。wrangler login 若报 `UNABLE_TO_VERIFY_LEAF_SIGNATURE`：这台机的 PowerShell 环境里挂着 **Norton 的 HTTPS 拦截**
+（`NODE_EXTRA_CA_CERTS=C:\ProgramData\Norton\Antivirus\wscert.pem`、`NODE_USE_SYSTEM_CA=1`、`SSLKEYLOGFILE` 指向 Norton 的代理），
+wrangler 自己那条 fetch 不认那张证书。从 Git Bash 起 `npx wrangler login` 能过（Git Bash 的环境没有那几个变量，2026-10-05）。
 
 ## 2. 手验清单（DockerWorld / 沙箱真机面）
 
