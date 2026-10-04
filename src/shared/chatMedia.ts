@@ -331,3 +331,81 @@ export function mediaBubbleBox(width: number, height: number, max = 200, min = 8
   const k = max / Math.max(width, height);
   return { width: Math.max(min, Math.round(width * k)), height: Math.max(min, Math.round(height * k)) };
 }
+
+// ── 云会话（#1491，#1443 P2）：say 帧里的媒体引用 ───────────────────────────────────────────────
+//
+// 手机先把文件传进 `chat-media`（路径 = chatMediaPath，按内容寻址），再在 say 帧里带引用。引用里**不带路径**：
+// 路径由 runtime 用 `<团队>/<会话>/<sha256>` 自己拼——客户端给路径就是给它一个指到别的会话目录的机会，
+// 而 RLS 只管「读的人读不读得到」，不管「这条消息引用的是不是自己目录里的对象」（同 parseDmMedia 那条纪律）。
+// runtime 下载后还会复算 sha256 对一遍：客户端声称的哈希就是对象名，名不副实的对象一个字节不进附件库。
+export interface ChatMediaRef {
+  kind: "image" | "video";
+  /** 64 位小写十六进制。对象名就是它 */
+  sha256: string;
+  mediaType: ImageMime | VideoMime;
+  bytes: number;
+  /** 0 = 系统没给（同 ChatMediaItem） */
+  width: number;
+  height: number;
+  /** 只有视频有，必填（模型只看封面，这个数要进那句「发了一段 N 秒视频」） */
+  durationMs?: number;
+  /** 视频封面（JPEG，同一个 bucket 的另一个对象）。缺席 = 没抽出来：模型只能听说有一段视频 */
+  poster?: { sha256: string; bytes: number };
+}
+
+const DIM_MAX = 16_384;
+const isHex64 = (v: unknown): v is string => typeof v === "string" && SHA256.test(v);
+const isCountUpTo = (v: unknown, max: number): v is number => typeof v === "number" && Number.isInteger(v) && v >= 1 && v <= max;
+const isDim = (v: unknown): v is number => typeof v === "number" && Number.isInteger(v) && v >= 0 && v <= DIM_MAX;
+
+function parseMediaRef(raw: unknown): ChatMediaRef | null {
+  if (typeof raw !== "object" || raw === null) return null;
+  const o = raw as Record<string, unknown>;
+  if (!isHex64(o.sha256) || !isDim(o.width) || !isDim(o.height)) return null;
+  if (o.kind === "image") {
+    if (!isImageMime(o.mediaType) || !isCountUpTo(o.bytes, IMAGE_MAX_BYTES)) return null;
+    if (o.durationMs !== undefined || o.poster !== undefined) return null;
+    return { kind: "image", sha256: o.sha256, mediaType: o.mediaType, bytes: o.bytes, width: o.width, height: o.height };
+  }
+  if (o.kind === "video") {
+    if (!isVideoMime(o.mediaType) || !isCountUpTo(o.bytes, VIDEO_MAX_BYTES) || !isCountUpTo(o.durationMs, VIDEO_MAX_MS)) return null;
+    const ref: ChatMediaRef = { kind: "video", sha256: o.sha256, mediaType: o.mediaType, bytes: o.bytes, width: o.width, height: o.height, durationMs: o.durationMs };
+    if (o.poster !== undefined) {
+      if (typeof o.poster !== "object" || o.poster === null) return null;
+      const p = o.poster as Record<string, unknown>;
+      if (!isHex64(p.sha256) || !isCountUpTo(p.bytes, IMAGE_MAX_BYTES)) return null;
+      ref.poster = { sha256: p.sha256, bytes: p.bytes };
+    }
+    return ref;
+  }
+  return null;
+}
+
+/**
+ * say 帧里那一格 media 的严格解析：1..9 个，**要么全是图片、要么恰好一段视频**（同 planMediaMessages 的拆法——
+ * 客户端本来就这么拆，服务端照同一条规矩收）；一处不对整份回 null（调用方据此拒帧，不降级成「没带媒体」：
+ * 静默丢掉等于一句「看这张图」发出去时图没了，而发言人那侧完全无声）。同一个哈希出现两次也拒：
+ * 按内容寻址的对象列表里重复只能是客户端的 bug。
+ */
+export function parseChatMediaRefs(raw: unknown): ChatMediaRef[] | null {
+  if (!Array.isArray(raw) || raw.length === 0 || raw.length > MEDIA_MAX_PER_MESSAGE) return null;
+  const out: ChatMediaRef[] = [];
+  const seen = new Set<string>();
+  for (const item of raw) {
+    const ref = parseMediaRef(item);
+    if (ref === null || seen.has(ref.sha256)) return null;
+    seen.add(ref.sha256);
+    out.push(ref);
+  }
+  const videos = out.filter((r) => r.kind === "video").length;
+  if (videos > 1 || (videos === 1 && out.length !== 1)) return null;
+  return out;
+}
+
+/** 模型要读的那一行（#1443 拍板第 5 条：模型只看封面帧）。有封面时封面已作为图片附在前面；没封面只能听说 */
+export function videoNoteForModel(videos: readonly { durationMs: number; hasPoster: boolean }[]): string | null {
+  if (videos.length === 0) return null;
+  return videos
+    .map((v) => `[发了一段 ${videoDurationLabel(v.durationMs)} 的视频${v.hasPoster ? "，上面那张图是它的封面" : "，没有封面可看"}]`)
+    .join("\n");
+}
