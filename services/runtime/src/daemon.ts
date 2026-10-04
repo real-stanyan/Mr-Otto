@@ -1851,6 +1851,7 @@ async function main(): Promise<void> {
       });
     }
     const text = reportOpeningText({ ownerName: await labelOf(r.uid), mode: r.plan.mode, since: r.since, until: r.firedAt, tz: r.tz, messages, tasks });
+    if (room.runReport === undefined) return; // 假装配（smoke / 测试）不带这一格
     const res = await room.runReport({ text, firedAt: r.firedAt });
     if (res !== "ok") console.warn(`[otto-runtime] 汇报没起来（uid=${r.uid}）：${res}`);
   }

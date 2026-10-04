@@ -183,7 +183,7 @@ import {
   type OutreachFold,
 } from "../../../src/shared/outreach.js";
 import { applyFriendPick, friendPickFailureText, friendPickFoldOf, friendPickStatus, recentPeerUids, type FriendPickFold } from "../../../src/shared/friendPick.js";
-import { callbackAnsweredText, callbackGreetingText, callerModelOf, ringChatKind, type RingPush, type RingState } from "../../../src/shared/callRing.js";
+import { CALL_USER_TOOL_NAME, callbackAnsweredText, callbackGreetingText, callerModelOf, ringChatKind, type RingPush, type RingState } from "../../../src/shared/callRing.js";
 import { createRinger, type Ringer } from "./callRinger.js";
 import { SPEECH_TICKET_TTL_MS, type SpeechTicket } from "../../../src/shared/speechTicket.js";
 import { createOutreachRun, type OutreachEnded, type OutreachRun, type OutreachStart, type OutreachStartResult } from "./outreachRun.js";
@@ -729,7 +729,7 @@ export interface CloudSession {
   runRoutine(r: { routineId: string; title: string; instruction: string; tz: string; firedAt: number; agentId: string }): Promise<"ok" | "archived" | "no_agent">;
   /** 定时汇报到点（#1569，ADR-0365）：替主人落一条 greeting:"dnd_report" 的开场白给管理员并入队——正文由 daemon 拼好
       （免打扰期间朋友发来的消息与代办任务的摘要 + 打电话 / 发消息的要求）。管理员不在名单里回 no_agent */
-  runReport(r: { text: string; firedAt: number }): Promise<"ok" | "archived" | "no_agent">;
+  runReport?(r: { text: string; firedAt: number }): Promise<"ok" | "archived" | "no_agent">;
   /** 定时任务没跑成的注记（错过 / 额度不够，spec §4.3）：ignorable，不起 turn */
   logRoutineNote(n: { routineId: string; title: string; reason: "missed" | "skipped_quota"; plannedAt: number; tz: string }): void;
   /** 测试用：这场通话是谁开的（#1533），null = 没在通话里。可选：假装配（smoke / frameHandler 测试）不必带 */
