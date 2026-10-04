@@ -30,6 +30,7 @@ describe("0053 私密车道", () => {
     expect(code).toContain("s.facing = 'self'");
     expect(code).toContain("f.status = 'accepted'");
     expect(code).toMatch(/revoke all on function public\.pair_presence\(uuid\) from public/);
+    expect(code).toMatch(/revoke all on function public\.pair_presence\(uuid\) from anon/);
     expect(code).toMatch(/grant execute on function public\.pair_presence\(uuid\) to authenticated/);
   });
   it("不给 authenticated 加任何策略：朋友对车道那一行没有读路径，这正是私密的定义", () => expect(code).not.toMatch(/create policy/i));

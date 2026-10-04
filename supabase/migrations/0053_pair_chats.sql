@@ -55,4 +55,6 @@ language sql stable security definer set search_path = public as $$
   ), 0)
 $$;
 revoke all on function public.pair_presence(uuid) from public;
+-- Supabase 给 anon 有一份单独的默认授权，不在 public 里：同 0049 / 0050，显式收掉
+revoke all on function public.pair_presence(uuid) from anon;
 grant execute on function public.pair_presence(uuid) to authenticated;

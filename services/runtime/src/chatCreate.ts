@@ -27,7 +27,7 @@ export function planChatCreate(chat: CsChatSpec, team: readonly TeamAgent[]): Ch
       ok: false,
       message:
         chat.kind === "dm"
-          ?"这只智能体已经不在了（名单可能刚变过，刷新再试）"
+          ? "这只智能体已经不在了（名单可能刚变过，刷新再试）"
           : `有 ${missing} 只智能体已经不在了（名单可能刚变过，刷新再试）`,
     };
   }
