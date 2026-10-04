@@ -195,4 +195,44 @@ describe("情绪与停顿（#1515）", () => {
     expect(player.state()).toMatchObject({ speaking: "b", text: "三", queued: 0 });
     expect(audios[1]!.played).toBe(1);
   });
+  it("停顿进行中 state() 不回静默：speaking / text 还是刚播完的那句，下一句起播后换成它，播空才归零", async () => {
+    const { player, audios, gates } = harness(undefined, { gateWaits: true });
+    player.enqueue({ agentId: "a", text: "一", voiceId: "v", emotion: null });
+    player.enqueue({ agentId: "a", text: "二", voiceId: "v", emotion: null });
+    await flush();
+    audios[0]!.ended();
+    await flush();
+    // 停在 230ms 的停顿里：字幕 / 状态文字 / 声圈 / AEC 自回声过滤都不该闪成空
+    expect(player.state()).toEqual({ speaking: "a", queued: 1, error: null, text: "一" });
+    expect(player.pendingAgentIds()).toEqual(["a"]); // 排着的那一只；刚播完的不重复算
+    gates[0]!();
+    await flush();
+    expect(player.state()).toEqual({ speaking: "a", queued: 0, error: null, text: "二" });
+    audios[1]!.ended();
+    await flush();
+    expect(player.state()).toEqual({ speaking: null, queued: 0, error: null, text: null });
+  });
+  it("停顿进行中 stop()：state 立刻是静默，留着的那句不复活", async () => {
+    const { player, audios, gates } = harness(undefined, { gateWaits: true });
+    player.enqueue({ agentId: "a", text: "一", voiceId: "v", emotion: null });
+    player.enqueue({ agentId: "a", text: "二", voiceId: "v", emotion: null });
+    await flush();
+    audios[0]!.ended();
+    await flush();
+    player.stop();
+    expect(player.state()).toEqual({ speaking: null, queued: 0, error: null, text: null });
+    gates[0]!();
+    await flush();
+    expect(player.state()).toEqual({ speaking: null, queued: 0, error: null, text: null });
+  });
+  it("时钟往回跳：停顿不会比档位还长（waits 夹在 gap 以内）", async () => {
+    const { player, audios, waits, tick } = harness();
+    player.enqueue({ agentId: "a", text: "一", voiceId: "v", emotion: null });
+    player.enqueue({ agentId: "a", text: "二", voiceId: "v", emotion: null });
+    await flush();
+    audios[0]!.ended();
+    tick(-10_000); // ended() 到下一次 pump 之间 Date.now 往回跳了十秒
+    await flush();
+    expect(waits).toEqual([230]);
+  });
 });

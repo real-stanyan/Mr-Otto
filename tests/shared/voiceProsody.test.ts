@@ -25,6 +25,9 @@ describe("parseEmotionTag：只认段首、只认白名单", () => {
   it("段首空白之后的括注也认", () => {
     expect(parseEmotionTag("  （笑）行。")).toEqual({ emotion: "happy", text: "行。" });
   });
+  it("记号独占一行：连行尾换行一起吞，正文不以空行开头", () => {
+    expect(parseEmotionTag("（笑）\n弄好了。")).toEqual({ emotion: "happy", text: "弄好了。" });
+  });
 });
 
 describe("stripEmotionTag / stripEmotionTags", () => {
@@ -32,6 +35,9 @@ describe("stripEmotionTag / stripEmotionTags", () => {
     expect(stripEmotionTag("（笑）行。")).toBe("行。");
     expect(stripEmotionTags("（笑）第一段。\n\n（叹）第二段。\n\n第三段。")).toBe("第一段。\n\n第二段。\n\n第三段。");
     expect(stripEmotionTags("（笑死）不是记号。\n\n他（笑）说。")).toBe("（笑死）不是记号。\n\n他（笑）说。");
+  });
+  it("记号独占一行：整条剥完不留空行，段间空行照旧", () => {
+    expect(stripEmotionTags("（笑）\n弄好了。\n\n（叹）\n就是慢。")).toBe("弄好了。\n\n就是慢。");
   });
 });
 

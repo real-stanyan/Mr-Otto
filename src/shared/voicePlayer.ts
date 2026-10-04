@@ -62,6 +62,12 @@ export class VoicePlayer {
 
   /** 上一句播完的时刻与说话人（#1515）：下一句起播前至少隔 GAP_MS（扣掉等合成已经等掉的）。stop() 清 */
   private lastEnded: { at: number; agentId: string } | null = null;
+  /**
+   * 句间停顿里 current 是 null、下一句已在队里：state() 不该因此回「静默」（字幕 / 状态文字 / 声圈 / 手机波形
+   * 每句闪一下，AEC 自回声过滤也会拿 "" 去比）。done() 记下刚播完的那一句，到下一句起播（current 顶上）、
+   * stop()、队列播空时清。pendingAgentIds 不看它。
+   */
+  private lingering: { agentId: string; text: string } | null = null;
   private readonly now: () => number;
   private readonly wait: (ms: number) => Promise<void>;
 
@@ -72,7 +78,8 @@ export class VoicePlayer {
   }
 
   state(): VoicePlayerState {
-    return { speaking: this.current?.item.agentId ?? null, queued: this.queue.length, error: this.error, text: this.current?.item.text ?? null };
+    const shown = this.current?.item ?? (this.queue.length > 0 ? this.lingering : null);
+    return { speaking: shown?.agentId ?? null, queued: this.queue.length, error: this.error, text: shown?.text ?? null };
   }
 
   /** 此刻有话要说的每一只（在说的 + 排着的），去重。人插话时这几只这一轮剩下的都不读 */
@@ -91,6 +98,7 @@ export class VoicePlayer {
   stop(): void {
     this.epoch += 1;
     this.lastEnded = null;
+    this.lingering = null;
     this.queue = [];
     if (this.current) {
       const { audio } = this.current;
@@ -119,7 +127,10 @@ export class VoicePlayer {
   private async pump(): Promise<void> {
     if (this.current !== null) return;
     const head = this.queue[0];
-    if (head === undefined) return;
+    if (head === undefined) {
+      this.lingering = null;
+      return;
+    }
     const epoch = this.epoch;
     const fetch = this.ensureFetch(head);
     // 预取：下一段的合成与这一段的播放并行
@@ -131,7 +142,8 @@ export class VoicePlayer {
     // 句间停顿（#1515）：真人句间中位 0.23s、换人 p90 0.55s；合成晚回来的那段时间已经是停顿，只补差额
     if (this.lastEnded !== null && result.ok) {
       const gap = head.agentId === this.lastEnded.agentId ? GAP_MS.sentence : GAP_MS.speaker;
-      const due = gap - (this.now() - this.lastEnded.at);
+      // min：时钟往回跳（NTP / 手动改时间）时 now - at 为负，不夹的话等待会比 gap 还长
+      const due = Math.min(gap, gap - (this.now() - this.lastEnded.at));
       if (due > 0) {
         await this.wait(due);
         if (epoch !== this.epoch) return;
@@ -149,6 +161,7 @@ export class VoicePlayer {
     const done = (): void => {
       if (epoch !== this.epoch || this.current?.audio !== audio) return;
       this.lastEnded = { at: this.now(), agentId: head.agentId };
+      this.lingering = { agentId: head.agentId, text: head.text };
       this.current = null;
       this.emit();
       void this.pump();
@@ -159,6 +172,7 @@ export class VoicePlayer {
       done();
     };
     this.current = { item: head, audio };
+    this.lingering = null;
     this.error = null;
     this.emit();
     try {

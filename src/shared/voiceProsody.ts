@@ -1,4 +1,4 @@
-// voiceProsody —— 智能体说话的活人感那几件纯逻辑（#1515，ADR-0354）。三端共用、零 IO。
+// voiceProsody —— 智能体说话的活人感那几件纯逻辑（#1515，ADR-0355）。三端共用、零 IO。
 //
 // 情绪从哪来：模型在段首写一个括注（（笑）（惊）（叹）（气）（怕）（嫌）），通话提示词只给这六个。
 // 记号**落日志不落界面**：显示路径各剥一次（stripEmotionTag），出声路径解出来进 voice_setting.emotion。
@@ -21,8 +21,11 @@ const LITERAL: Readonly<Record<SpeechEmotion, string>> = {
   happy: "（笑）", surprised: "（惊）", sad: "（叹）", angry: "（气）", fearful: "（怕）", disgusted: "（嫌）",
 };
 
-/** 段首：可选空白 + 全角或半角括号里 1–2 个非括号非空白字 + 可选空白 */
-const TAG_AT_START = /^\s*[（(]([^()（）\s]{1,2})[）)][ \t]*/;
+/**
+ * 段首：可选空白 + 全角或半角括号里 1–2 个非括号非空白字 + 可选空白 + 至多一个换行（记号独占一行时
+ * 连行尾一起吞，否则正文以空行开头）。\s 含全角空格（U+3000），与下面段落版的缩进口径一致
+ */
+const TAG_AT_START = /^\s*[（(]([^()（）\s]{1,2})[）)][ \t]*\n?[ \t]*/;
 
 export function parseEmotionTag(bubble: string): { emotion: SpeechEmotion | null; text: string } {
   const m = TAG_AT_START.exec(bubble);
@@ -37,7 +40,7 @@ export function stripEmotionTag(bubble: string): string {
 }
 
 /** 整条回复：每个段首（开头、或空行之后）各剥一次；段间的空行一个字节不动 */
-const TAG_AT_PARAGRAPH = /(^|\n[ \t]*\n)([ \t]*)[（(]([^()（）\s]{1,2})[）)][ \t]*/g;
+const TAG_AT_PARAGRAPH = /(^|\n[ \t\u3000]*\n)([ \t\u3000]*)[（(]([^()（）\s]{1,2})[）)][ \t]*\n?[ \t]*/g;
 
 export function stripEmotionTags(content: string): string {
   return content.replace(TAG_AT_PARAGRAPH, (whole, sep: string, indent: string, word: string) =>
