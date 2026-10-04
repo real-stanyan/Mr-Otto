@@ -15,6 +15,7 @@ import type { RootStackParams } from "../nav/types.js";
 import { usePalette } from "../theme.js";
 import { Group, Note, Row } from "../ui.js";
 import { PersonTile } from "../wx/Avatar.js";
+import { FriendAvatar } from "./FriendAvatar.js";
 import { drop, useFriends } from "./friendsStore.js";
 
 type Props = NativeStackScreenProps<RootStackParams, "Friend">;
@@ -48,7 +49,7 @@ export function FriendScreen({ route, navigation }: Props) {
   return (
     <View style={{ flex: 1, backgroundColor: c.background }}>
       <ScrollView contentContainerStyle={{ gap: 8, paddingBottom: 40 }}>
-        <CardHead avatar={<PersonTile name={name} url={row.profile.avatarUrl} size={68} radius={12} />} name={name} tag={accepted ? "朋友" : "等对方同意"} sub={row.profile.email} />
+        <CardHead avatar={accepted ? <FriendAvatar uid={uid} name={name} url={row.profile.avatarUrl} size={68} radius={12} ring={c.card} dot={12} /> : <PersonTile name={name} url={row.profile.avatarUrl} size={68} radius={12} />} name={name} tag={accepted ? "朋友" : "等对方同意"} sub={row.profile.email} />
         <Group>
           <Row label="一起在的群" value={together.length === 0 ? "没有" : together.join("、")} />
         </Group>

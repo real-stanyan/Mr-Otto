@@ -19,7 +19,7 @@ import { useTeams } from "../inbox/teamsStore.js";
 import { useInbox } from "../inbox/useInbox.js";
 import { usePalette } from "../theme.js";
 import { useNow } from "../ui.js";
-import { PersonTile } from "../wx/Avatar.js";
+import { FriendAvatar } from "../friends/FriendAvatar.js";
 import { CountBadge } from "../wx/Badge.js";
 import { Fold } from "../wx/Fold.js";
 import { Icon, type IconName } from "../wx/Icon.js";
@@ -189,7 +189,7 @@ export function ContactsScreen() {
               <ContactRow
                 key={r.profile.id}
                 first={i === 0}
-                avatar={<PersonTile name={friendName(r.profile)} url={r.profile.avatarUrl} size={40} />}
+                avatar={<FriendAvatar uid={r.profile.id} name={friendName(r.profile)} url={r.profile.avatarUrl} size={40} ring={c.card} dot={8} />}
                 name={friendName(r.profile)}
                 sub={r.profile.email}
                 onPress={() => navigation.navigate("Friend", { uid: r.profile.id })}
