@@ -114,4 +114,11 @@ describe("openingTraits（#1441 复审：job 折叠开场白时一律往严算�
   it("一条都没有：不算主人亲口", () => {
     expect(o.openingTraits([], OWNER).ownerSpoke).toBe(false);
   });
+  it("routine 开场白算主人亲口（#1283）：任务原话是主人写的；混进别的 greeting 仍为假", () => {
+    const routine = { fromUid: OWNER, greeting: "routine" };
+    expect(o.openingTraits([routine], OWNER)).toEqual({ report: false, ownerSpoke: true, nonOwner: false });
+    expect(o.openingTraits([plain, routine], OWNER).ownerSpoke).toBe(true);
+    expect(o.openingTraits([routine, { fromUid: OWNER, greeting: "callback" }], OWNER).ownerSpoke).toBe(false);
+    expect(o.openingTraits([{ fromUid: "guest", greeting: "routine" }], OWNER)).toMatchObject({ ownerSpoke: false, nonOwner: true });
+  });
 });

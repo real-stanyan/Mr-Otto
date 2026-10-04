@@ -138,7 +138,9 @@ export function openingTraits(
 ): { report: boolean; ownerSpoke: boolean; nonOwner: boolean } {
   return {
     report: openings.some((o) => o.greeting === "outreach_report"),
-    ownerSpoke: openings.length > 0 && openings.every((o) => o.fromUid === ownerUid && o.relay === undefined && o.greeting === undefined),
+    // routine 开场白（#1283）是 greeting 一族里唯一算「主人亲口」的：正文是主人自己写的任务原话，
+    // 与他当场说一句逐字等价；不放行的话定时轮里 call_friend 永远灭着（spec §5.2 的已知代价）
+    ownerSpoke: openings.length > 0 && openings.every((o) => o.fromUid === ownerUid && o.relay === undefined && (o.greeting === undefined || o.greeting === "routine")),
     nonOwner: openings.some((o) => o.fromUid !== ownerUid),
   };
 }

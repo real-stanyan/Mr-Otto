@@ -904,7 +904,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       } else if (e.fromUid !== undefined && e.fromUid !== opts.ownerUid && e.fromUid !== "system") {
         foldedNonOwner = true;
         ownerSpoke = false;
-      } else if (e.greeting !== undefined || e.relay !== undefined) {
+      } else if ((e.greeting !== undefined && e.greeting !== "routine") || e.relay !== undefined) {
+        // routine 开场白不收紧（#1283）：同 openingTraits
         ownerSpoke = false;
       }
     } else if (e.type === "chat_message" && e.fromUid !== opts.ownerUid && e.fromUid !== "system") {
