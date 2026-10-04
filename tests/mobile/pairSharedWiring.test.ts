@@ -52,7 +52,7 @@ describe("FriendChatScreen：两条车道合在一条时间线上", () => {
     expect(src).toMatch(/pairFacingOf\(chatHumansNow\(/);
     // #1565 起车道不再逐条铺在主页上：两条车道各折成任务（laneTasksOf 带 selfUid 判「我 / 朋友」），见 taskDrawerWiring.test
     expect(src).toMatch(/const tasks = laneTasksOf\(events, selfUid, nameOfAgent\);/);
-    expect(src).toMatch(/item\.who === "friend" \? <PersonTile/);
+    expect(read("mobile/src/friends/LaneBubble.tsx")).toMatch(/item\.who === "friend" \? <PersonTile/); // 气泡随 #1565 搬成独立文件
   });
   it("@ 名单合并两边的智能体（#1544 起还列我主场里没带进来的那几只，@ 了先带进来）；语音松手那一刀也按两条车道判", () => {
     expect(src).toMatch(/agentIds=\{\[\.\.\.broughtNames\.map\(\(a\) => a\.agentId\), \.\.\.peerNames\.map\(\(a\) => a\.agentId\), \.\.\.otherMine\.map\(\(a\) => a\.agentId\)\]\}/);
