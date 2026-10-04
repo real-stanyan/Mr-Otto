@@ -60,6 +60,18 @@ sudo systemctl enable --now coturn
 runtime 按 coturn 的 TURN REST API 签时限票（`services/runtime/src/turnCredentials.ts`），手机拿不到长期密码。没配这两行 = 只给公共 STUN。
 验：`turnutils_uclient -u <票的用户名> -w <票的密码> -y <公网 IP>` 能分到 relay 地址。
 
+**宿主是家里 Windows 的 WSL2 时**（2026-10-03 起的现状，#1450；装法见 #1556）——上面「同一台机器」的前提是那台机有公网 IP，WSL 没有，要多三步：
+
+1. WSL 切 mirrored 网络：Windows 的 `%USERPROFILE%\.wslconfig` 的 `[wsl2]` 下加 `networkingMode=mirrored`，`wsl --shutdown` 后由
+   `otto-wsl-keepalive` 计划任务拉起（WSL 内 systemd 带起 runtime / coturn）。NAT 模式不行：`netsh portproxy` 不转 UDP。
+   `external-ip=<公网 IP>/<Windows 的局域网 IP>`。WSL 里自带的 tailscaled 要关（与 Windows 的 tailscale 抢 41641 和 100.64/10 路由）。
+2. 防火墙两层都放：mirrored 下 WSL 的入站归 **Hyper-V 防火墙**管（默认 Block），`New-NetFirewallHyperVRule -VMCreatorId '{40E0AC32-46A5-438A-A0B2-2B479E8F2E90}'`
+   放 3478 tcp/udp 与 49160-49200 udp，Defender 防火墙再各放一条。**坑**：切 mirrored 后 Windows 上 `localhost:2222` 进 WSL sshd 的那条 ssh 跳板也被挡了，
+   要再加一条只放 `127.0.0.1` 的 2222 规则，且开发机 `~/.ssh/config` 的 `otto-runtime` 写 `HostName 127.0.0.1`（写 `localhost` 会先走 `::1`，
+   Hyper-V 规则的 `-RemoteAddresses ::1` 报「参数错误」建不出来）。
+3. 路由器：UDP+TCP 3478、UDP 49160-49200 转发到 Windows 的局域网 IP，并给它做 DHCP 保留；家宽 IP 若会变，`external-ip` 与 `TURN_URLS` 要跟着改（或上 DDNS 域名）。
+   路由器 WAN IP 必须就是公网 IP——运营商 CGNAT 下转发无效。从外网验：在另一台有公网的机器上对 `<公网 IP>:3478` 发一个 STUN Binding 能回包。
+
 ### 1.2 systemd unit
 
 ```bash
