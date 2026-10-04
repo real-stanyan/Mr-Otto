@@ -3,7 +3,7 @@
 // 那边只剩查库与调这几个函数（同 chatCreate / outreachHub 的做法）。
 import type { OutreachEvent, SessionEvent } from "../../../src/session/events.js";
 import type { NewSessionEvent } from "../../../src/session/store.js";
-import { activeOutreach, outreachCountSince, outreachFoldOf } from "../../../src/shared/outreach.js";
+import { activeOutreach, outreachFoldOf } from "../../../src/shared/outreach.js";
 
 export interface OutreachSessionRow {
   id: string;
@@ -112,20 +112,8 @@ async function ensureOnce<S>(
   return finish(sessionId);
 }
 
-/** 这只智能体 since 之后在这个团队里打了几通：把它所有外联会话的 outreach 事件各折叠一遍求和 */
-export async function countAgentOutreach(
-  d: { sessionIds(workspaceId: string, agentId: string): Promise<string[]>; outreachEvents(sessionId: string): SessionEvent[] },
-  workspaceId: string, agentId: string, since: number,
-): Promise<number> {
-  let n = 0;
-  for (const id of await d.sessionIds(workspaceId, agentId)) {
-    n += outreachCountSince(outreachFoldOf(d.outreachEvents(id) as OutreachEvent[]), agentId, since);
-  }
-  return n;
-}
-
 /** 这只此刻有没有一通没收尾的外联（终审 M2）：「一只同一时刻只打一通」跨它的所有外联会话判——每条外联会话
-    自己的 start() 只挡得住同一个好友那条线。数据路径与 countAgentOutreach 同一条；查询失败照抛 */
+    自己的 start() 只挡得住同一个好友那条线。查询失败照抛 */
 export async function agentOutreachActive(
   d: { sessionIds(workspaceId: string, agentId: string): Promise<string[]>; outreachEvents(sessionId: string): SessionEvent[] },
   workspaceId: string, agentId: string,

@@ -47,7 +47,7 @@ import { safeSpeakerLabel } from "../../../src/shared/promptSafe.js";
 import type { PxCallDeps } from "./pxTools.js";
 import { createHostedProbe, createHostedRuntimeAdapter, createRouteMemo, decideRuntimeRoute, probeModelRoute, withUsage, type RouteMemo } from "./hostedRoute.js";
 import { createOutreachHub } from "./outreachHub.js";
-import { agentOutreachActive, blockedMessage, countAgentOutreach, ensureOutreachSession, openOriginRoom } from "./outreachSession.js";
+import { agentOutreachActive, blockedMessage, ensureOutreachSession, openOriginRoom } from "./outreachSession.js";
 import { signSpeechTicket } from "../../../src/shared/speechTicket.js";
 import { PAIR_CONTEXT_MAX_LINES } from "../../../src/shared/pairChat.js";
 import { pickAutoModel } from "./autoModel.js";
@@ -571,8 +571,8 @@ async function main(): Promise<void> {
     sessionBroadcast.delete(sessionId);
   }
 
-  /** 一只智能体在这个团队里的所有外联会话 + 各自的 outreach 事件：上限（countSince）与「同一时刻只打一通」（activeFor）
-      读同一条路径。查询失败抛——「查不出来」不能读成「一通都没打」 */
+  /** 一只智能体在这个团队里的所有外联会话 + 各自的 outreach 事件：「同一时刻只打一通」（activeFor）读它。
+      查询失败抛——「查不出来」不能读成「一通都没在打」。不设每日上限（#1499） */
   function agentOutreachLogs(workspaceId: string) {
     return {
       sessionIds: async (w: string, a: string): Promise<string[]> => {
@@ -615,8 +615,7 @@ async function main(): Promise<void> {
                 edgeBase: config.edgeBase, runtimeSecret: config.runtimeSecret,
               }),
             ),
-          countSince: (workspaceId, agentId, since) => countAgentOutreach(agentOutreachLogs(workspaceId), workspaceId, agentId, since),
-          // 一只同一时刻只打一通（终审 M2）：与上限同一条数据路径，只是问「有没有没收尾的」
+          // 一只同一时刻只打一通（终审 M2）：问它所有外联会话里「有没有没收尾的」
           activeFor: (workspaceId, agentId) => agentOutreachActive(agentOutreachLogs(workspaceId), workspaceId, agentId),
           ensureSession: (workspaceId, ownerUid, ownerName, agent, peer) =>
             ensureOutreachSession<CloudSession>(

@@ -7,14 +7,14 @@ const src = readFileSync(new URL("../../services/runtime/src/daemon.ts", import.
 
 describe("daemon.ts：外联的接线（#1441）", () => {
   it("hub 接上了真数据源，且推送关着时没有 hub", () => {
-    for (const k of ["friendsOf:", "deviceCount:", "ownerBlocked:", "countSince:", "activeFor:", "ensureSession:", "origin:", "agentName:"]) {
+    for (const k of ["friendsOf:", "deviceCount:", "ownerBlocked:", "activeFor:", "ensureSession:", "origin:", "agentName:"]) {
       expect(src).toContain(k);
     }
+    expect(src).not.toContain("countSince:"); // 不设每日上限（#1499）
     expect(src).toMatch(/const outreachHub =\s*apns === null\s*\?\s*null\s*:\s*createOutreachHub\(/);
   });
-  it("一只同一时刻只打一通：activeFor 与 countSince 读同一条外联会话路径（终审 M2）", () => {
+  it("一只同一时刻只打一通：activeFor 读这只的所有外联会话（终审 M2）", () => {
     expect(src).toMatch(/activeFor: \(workspaceId, agentId\) => agentOutreachActive\(agentOutreachLogs\(workspaceId\), workspaceId, agentId\)/);
-    expect(src).toMatch(/countSince: \(workspaceId, agentId, since\) => countAgentOutreach\(agentOutreachLogs\(workspaceId\), workspaceId, agentId, since\)/);
     expect(src).toMatch(/function agentOutreachLogs\([\s\S]{0,400}\.eq\("chat_kind", "outreach"\)[\s\S]{0,200}if \(error\) throw/);
   });
   it("好友名单只认 accepted 的行，查询出错抛", () => {
