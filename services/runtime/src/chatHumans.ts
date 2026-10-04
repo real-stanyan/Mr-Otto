@@ -2,6 +2,7 @@
 // docker / Supabase，进不了 vitest，所以「查谁是朋友」「改名单那一刀让不让过」「表要增删哪几行」
 // 这几个判断住在这儿、接线留在那儿（同 chatCreate.ts 的做法）。
 import { humanRosterChangeProblem, USER_UID_RE, type ChatHuman } from "../../../src/shared/chatRoster.js";
+import { tiersOf, type FriendTier, type FriendTierRow } from "../../../src/shared/friendTier.js";
 
 /** 「uid 与这几个人里哪几个是朋友」的 PostgREST 过滤串。**只拼校验过的 uid**：候选名单来自线上，
     不是 uuid 形状的直接丢掉（协议那一层已经拒过一次，这里是第二道——拼进查询串的东西不能只靠上游） */
@@ -72,4 +73,15 @@ export function createHumansProblem(o: {
   if (o.humans.includes(o.creatorUid)) return "你本来就在群里。";
   if (o.humans.some((u) => !o.friendsOfCreator.has(u))) return "只能拉你的朋友进群。";
   return null;
+}
+
+/** 查回来的 accepted 好友行 → 对方 uid → 生效的那一档（#1494，ADR-0350：两边取最小值）。
+    没跑 0054 时两列缺席，tiersOf 按默认档 agents 算 */
+export function friendTiersOf(uid: string, rows: readonly FriendTierRow[]): Map<string, FriendTier> {
+  const out = new Map<string, FriendTier>();
+  for (const r of rows) {
+    const other = r.requester === uid ? r.addressee : r.addressee === uid ? r.requester : null;
+    if (other !== null) out.set(other, tiersOf(r, uid).effective);
+  }
+  return out;
 }
