@@ -558,7 +558,9 @@ export interface CloudSession {
       位置参数，插中间会让既有调用把 `budget` 喂给新参数——两者都是「可选的、
       形状对不上就报错」，但 `true` 与一个回调在 tsc 眼里分得开，而 `mentions`
       与 `memberMentions` 那两个同型数组分不开（同 `meFromParts` 那条教训）。
-      它只往下传到落盘那一格，say() 里没有任何判断读它 */
+      它只往下传到落盘那一格，say() 里没有任何判断读它。
+      `tz`（#1283）同理放在 `media` 之后（第 10 个，仍是最后一个）：发话人设备的
+      时区，原样落到 user_message.tz；同 voice 只往下传到落盘那一格 */
   say(
     fromUid: string,
     label: string,
@@ -568,7 +570,8 @@ export interface CloudSession {
     budget?: (targetCount: number) => string | null,
     memberMentions?: string[],
     voice?: true,
-    media?: readonly ChatMediaRef[]
+    media?: readonly ChatMediaRef[],
+    tz?: string
   ): Promise<void>;
   /** 排空跑完了吗——**给测试与冒烟脚本等待用的，不是协议的一部分**
       （issue #937）：say() 不再等 turn，可断言「turn 跑完之后」的地方需要一个
@@ -2737,7 +2740,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   }
 
   const session: CloudSession = {
-    async say(fromUid, label, text, mention, mentions, budget, memberMentions, voice, media) {
+    async say(fromUid, label, text, mention, mentions, budget, memberMentions, voice, media, tz) {
       // 外联会话只在通话进行中收话，且只收**打给的那个朋友**（#1441）：没有进行中的外联 = 电话已经
       // 挂了；主人也不例外（他在这条线上只读）。放在最前面——任何名单查询、落盘之前拒绝，
       // 挂断之后的一句话一个字节都不落
@@ -3019,6 +3022,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         // 通话里说出来的（#1233）才带。同 dispatch：只是记号，起 turn 那一路
         // 一个判断都不读它
         ...(voice !== undefined ? { voice } : {}),
+        // 设备时区（#1283）：只给投影里「今天是」那一行用，起 turn 那一路一个判断都不读它
+        ...(tz !== undefined ? { tz } : {}),
         // 带的图 / 视频（#1491）：deriveMessages 把 attachments 折成 image_ref、videos 拼成一行说明
         ...mediaFields,
       }) as UserMessageEvent; // append 回的是 union；这一条我们刚亲手写的就是 user_message

@@ -6,6 +6,7 @@
 import type { SessionEvent } from "../../session/events.js";
 import { AGENT_ID_RE, CHAT_NAME_MAX, normalizeChatAgentIds, normalizeChatHumanUids, USER_UID_RE, type ChatHuman } from "../chatRoster.js";
 import { parseChatMediaRefs, type ChatMediaRef } from "../chatMedia.js";
+import { isIanaTimeZone } from "../routines.js";
 import { b64decode, b64encode } from "./b64.js";
 import { MAX_FRAME_BYTES } from "./wire.js";
 
@@ -349,7 +350,7 @@ export type CsUp =
       唯一知道这件事的是麦克风那一侧 */
   /** `media`（协议 24，#1491）= 这句话带的图片 / 视频引用，1..9 个、要么全图片要么一段视频（parseChatMediaRefs）。
       正文可以为空（纯发图）：runtime 落盘时正文写占位 `[图片]` / `[视频]`，老客户端照常显示 */
-  | { t: "say"; text: string; mention: boolean; mentions?: string[]; memberMentions?: string[]; voice?: true; media?: ChatMediaRef[] }
+  | { t: "say"; text: string; mention: boolean; mentions?: string[]; memberMentions?: string[]; voice?: true; media?: ChatMediaRef[]; tz?: string }
   | { t: "backlog"; afterSeq: number }
   /** 尾巴分页（协议 20，#1280）：进房只要最后 `limit` 条，`beforeSeq` 在场 = 再往前翻一页。
       与 `afterSeq` 那一种并列而不是取代它——后者是「我断线前读到这儿，补上后面的」，
@@ -769,6 +770,9 @@ export function decodeCsUp(b64: string): CsUp | null {
         // 拒帧是因为丢掉它们会静默改变「这句话点了谁」，而这一格只影响时间线
         // 上折不折卡：脏值退化成「不折」= 改动前的行为，为它拒掉一句真话更糟
         if (obj.voice === true) say.voice = true;
+        // tz 只认 Intl 认得的 IANA 名（#1283）：它只影响投影里「今天是」那一行，脏值退化成「不带」= 改动前的行为，
+        // 为它拒掉一句真话更糟（同 voice 那一格的口径）
+        if (isIanaTimeZone(obj.tz)) say.tz = obj.tz;
         // media 形状不对整帧拒掉（协议 24，#1491）：同 mentions——丢掉它会静默改变这句话的内容
         if (obj.media !== undefined) {
           const media = parseChatMediaRefs(obj.media);

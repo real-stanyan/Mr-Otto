@@ -43,6 +43,8 @@ let sinks: CloudSinks | null = null;
 export const cloudClient: CloudSessionClient = createCloudSessionClient({
   accessToken,
   selfUid: () => uid,
+  // 设备时区（#1283）：每句话带上，runtime 落到 user_message.tz，模型投影的「今天是」才按人在的地方算
+  deviceTz: () => Intl.DateTimeFormat().resolvedOptions().timeZone,
   createTransport: (channel) => {
     const t = createWsTransport({
       baseUrl: RELAY_BASE,
