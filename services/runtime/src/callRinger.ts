@@ -1,8 +1,8 @@
 // callRinger —— 一次回电从打出去到接通 / 未接（#1411，spec §2.2–2.3）。
 //
 // sessionService 每条会话一个（推送开着时）。它自己持有这条会话所有响铃的状态：从日志播种，之后只有它
-// 自己落 call_ring，所以自己推进就是权威。负责：几种不打（对方开着这条聊天 / 10 分钟冷却 / 没有能收推送
-// 的设备 / 查不到设备）、落 ringing、推送（最多等 5 秒）、45 秒到点落 missed、接听时落 answered、归档时
+// 自己落 call_ring，所以自己推进就是权威。负责：几种不打（对方开着这条聊天 / 没有能收推送的设备 /
+// 查不到设备；不设冷却，随时能再打，#1499）、落 ringing、推送（最多等 5 秒）、45 秒到点落 missed、接听时落 answered、归档时
 // 收摊、重启后把还在响的接上。
 //
 // spec §2.2 第 2 条「正在通话不打」并进了第 1 条（计划阶段的补全）：锁屏 = 这台停听、通话还在
@@ -13,7 +13,7 @@
 import { randomUUID } from "node:crypto";
 import type { CallRingEvent, SessionEvent } from "../../../src/session/events.js";
 import {
-  RING_COOLDOWN_MS, RING_TTL_MS, answerableRing, applyCallRing, callRingFoldOf, lastRingTs,
+  RING_TTL_MS, answerableRing, applyCallRing, callRingFoldOf,
   type RingChatKind, type RingPush, type RingState,
 } from "../../../src/shared/callRing.js";
 
@@ -43,7 +43,7 @@ export interface RingerDeps {
 /** 一次拨打的结果：kind 给调用方分支（外联生命周期要按它决定后续），message 是回给模型的那句话 */
 export type RingAttempt =
   | { kind: "ringing"; ringId: string; message: string }
-  | { kind: "watching" | "cooldown" | "lookup_failed" | "no_device" | "undelivered"; message: string };
+  | { kind: "watching" | "lookup_failed" | "no_device" | "undelivered"; message: string };
 
 export interface RingCallOpts {
   /** 外联：对方不在这条会话里，「开着聊天」的判断没有意义，照打 */
@@ -106,12 +106,6 @@ export function createRinger(d: RingerDeps): Ringer {
   const tryCall: Ringer["tryCall"] = async (agentId, agentName, toUid, reason, opening, o) => {
       if (o?.ignoreWatching !== true && d.isWatching(toUid)) {
         return { kind: "watching", message: "他这会儿正开着这条聊天，直接在聊天里说就行，不用打电话。" };
-      }
-      const now = d.now();
-      const last = lastRingTs(fold, agentId, toUid);
-      if (last !== null && now - last < RING_COOLDOWN_MS) {
-        const mins = Math.max(1, Math.ceil((now - last) / 60_000));
-        return { kind: "cooldown", message: `你 ${mins} 分钟前刚给他打过电话，10 分钟内不再打——在聊天里说一声，他回来会看到。` };
       }
       let devices: number;
       try {

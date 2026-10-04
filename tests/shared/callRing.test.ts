@@ -4,7 +4,7 @@ import { describe, expect, it } from "vitest";
 import type { SessionEvent } from "../../src/session/events.js";
 import {
   RING_ANSWER_GRACE_MS, RING_OPENING_MAX, RING_REASON_MAX, RING_TTL_MS,
-  answerableRing, applyCallRing, callRingFoldOf, callbackAnsweredText, callbackGreetingText, callerModelOf, dropRing, lastRingTs,
+  answerableRing, applyCallRing, callRingFoldOf, callbackAnsweredText, callbackGreetingText, callerModelOf, dropRing,
   normalizeRingOpening, normalizeRingReason, queueRing, ringCardStatus, ringChatKind, ringFromPayload, ringTarget,
   type RingFold, type RingPush,
 } from "../../src/shared/callRing.js";
@@ -66,16 +66,7 @@ describe("answerableRing：发 call 帧的那一下算不算接听", () => {
   });
 });
 
-describe("冷却与卡片状态", () => {
-  it("lastRingTs：这一对最近一次打出去的时刻；没打过回 null", () => {
-    const f = callRingFoldOf([
-      ring("ringing", { ringId: "a", ts: 1_000 }),
-      ring("ringing", { ringId: "b", ts: 9_000 }),
-      ring("ringing", { ringId: "c", ts: 20_000, from: "ads" }),
-    ]);
-    expect(lastRingTs(f, "ops", "u1")).toBe(9_000);
-    expect(lastRingTs(f, "ops", "u2")).toBeNull();
-  });
+describe("卡片状态", () => {
   it("ringCardStatus：还挂在 ringing 但过了时限按未接画", () => {
     const r = callRingFoldOf([ring("ringing", { ts: 1_000, expiresTs: 46_000 })]).get("r1")!;
     expect(ringCardStatus(r, 45_999)).toBe("ringing");

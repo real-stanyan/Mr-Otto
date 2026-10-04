@@ -1,5 +1,5 @@
 // callRing —— 智能体回电（#1411）：一次响铃的日志投影、回电那几句话、推送载荷的形状。纯逻辑零 IO，
-// runtime（打出去 / 接通 / 未接 / 冷却）与手机（来电页、聊天里那张卡）共用——「这一通此刻是什么状态」
+// runtime（打出去 / 接通 / 未接）与手机（来电页、聊天里那张卡）共用——「这一通此刻是什么状态」
 // 的判据只能有一处，两端各写一遍迟早分家（同 voiceCall / turnLedger 的纪律）。
 //
 // 一次响铃是两到三条 `call_ring`：`ringing` 开头，`answered` 或 `missed` 收尾；接晚了的那一通是
@@ -12,8 +12,6 @@ import { promptSafe } from "./promptSafe.js";
 export const CALL_USER_TOOL_NAME = "call_user";
 /** 响多久算未接（spec §2.3） */
 export const RING_TTL_MS = 45_000;
-/** 同一只打给同一个人的最短间隔（spec §2.2） */
-export const RING_COOLDOWN_MS = 10 * 60_000;
 /** 过了响铃时限还认「接听」的宽限：人在第 44 秒点了接听，手机还要开页面、连房间、发帧，落到服务端时
     已经记了未接——那一下仍然是他接起来了，打电话的那只得知道自己为什么打这个电话 */
 export const RING_ANSWER_GRACE_MS = 30_000;
@@ -24,7 +22,7 @@ export const RING_OPENING_MAX = 200;
 
 export type RingPhase = CallRingEvent["phase"];
 
-/** 一通电话此刻的样子。`ringingTs` 是打出去那一刻（冷却按它算），`phaseTs` 是最后一条的时刻 */
+/** 一通电话此刻的样子。`ringingTs` 是打出去那一刻，`phaseTs` 是最后一条的时刻 */
 export interface RingState {
   ringId: string;
   fromAgentId: string;
@@ -62,7 +60,7 @@ export function callRingFoldOf(events: readonly SessionEvent[]): RingFold {
 }
 
 /** 这一只此刻有没有一通「能接」的电话打给这个人：没接通过、而且还在时限加宽限之内（还在响，或者刚按
-    时限记成未接）。有几通取最近打的那一通（冷却让同一对 10 分钟最多一通，这里不假设它） */
+    时限记成未接）。有几通取最近打的那一通（不设冷却，同一对可以连着打好几通，#1499） */
 export function answerableRing(fold: RingFold, agentId: string, uid: string, now: number): RingState | null {
   let hit: RingState | null = null;
   for (const r of fold.values()) {
@@ -71,15 +69,6 @@ export function answerableRing(fold: RingFold, agentId: string, uid: string, now
     if (hit === null || r.ringingTs >= hit.ringingTs) hit = r;
   }
   return hit;
-}
-
-/** 这一只上一次打给这个人是什么时候（冷却用）；没打过回 null */
-export function lastRingTs(fold: RingFold, agentId: string, uid: string): number | null {
-  let last: number | null = null;
-  for (const r of fold.values()) {
-    if (r.fromAgentId === agentId && r.toUid === uid && (last === null || r.ringingTs > last)) last = r.ringingTs;
-  }
-  return last;
 }
 
 export type RingCardStatus = RingPhase;

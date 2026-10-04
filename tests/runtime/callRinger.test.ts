@@ -2,7 +2,7 @@
 // 45 秒到点、5 秒推送封顶、冷却 10 分钟都不用真等。
 import { describe, expect, it } from "vitest";
 import { RING_PUSH_WAIT_MS, createRinger } from "../../services/runtime/src/callRinger.js";
-import { RING_ANSWER_GRACE_MS, RING_COOLDOWN_MS, RING_TTL_MS, type RingChatKind, type RingPush } from "../../src/shared/callRing.js";
+import { RING_ANSWER_GRACE_MS, RING_TTL_MS, type RingChatKind, type RingPush } from "../../src/shared/callRing.js";
 import type { CallRingEvent, SessionEvent } from "../../src/session/events.js";
 
 /** 手拨的钟：advance 到点的定时器按时间顺序跑 */
@@ -154,7 +154,6 @@ describe("tryCall（结构化结果，#1441）", () => {
     const args = ["ops", "运维", "u1", "事由", "开场"] as const;
     const texts = {
       watching: "他这会儿正开着这条聊天，直接在聊天里说就行，不用打电话。",
-      cooldown: "你 1 分钟前刚给他打过电话，10 分钟内不再打——在聊天里说一声，他回来会看到。",
       no_device: "他的手机上还没有能接电话的新版 App（或者还没在手机上登录），打不了电话——在聊天里说一声，他回来会看到。",
       lookup_failed: "这会儿查不到他的手机，电话没打出去——在聊天里说一声，他回来会看到。",
       undelivered: "没打通（推送没送到）——在聊天里说一声，他回来会看到。",
@@ -162,7 +161,6 @@ describe("tryCall（结构化结果，#1441）", () => {
     };
     const cases: Array<[keyof typeof texts, () => ReturnType<typeof makeRinger>]> = [
       ["watching", () => makeRinger({ watching: true })],
-      ["cooldown", () => makeRinger({ start: 1_000_000, seed: [seeded("ringing", 1_000_000 - 60_000, 1_000_000 - 15_000)] })],
       ["no_device", () => makeRinger({ devices: 0 })],
       ["lookup_failed", () => makeRinger({ devices: new Error("db down") })],
       ["undelivered", () => makeRinger({ push: async () => 0 })],
@@ -179,26 +177,23 @@ describe("tryCall（结构化结果，#1441）", () => {
   });
 });
 
-describe("冷却（10 分钟，从日志算）", () => {
-  it("同一只打给同一个人：10 分钟内不再打；打给别人不受影响；过了就能再打", async () => {
+describe("不设冷却（#1499）", () => {
+  it("同一只打给同一个人：刚打过一分钟也照样再打", async () => {
     const { r, c, events } = makeRinger();
     await r.call("ops", "运维", "u1", "一", "部署好了，你看一下。");
     c.advance(60_000);
-    expect(await r.call("ops", "运维", "u1", "二", "部署好了，你看一下。")).toContain("分钟前刚给他打过电话");
-    expect(await r.call("ops", "运维", "u2", "三", "部署好了，你看一下。")).toContain("已经打过去了");
-    c.advance(RING_COOLDOWN_MS);
-    expect(await r.call("ops", "运维", "u1", "四", "部署好了，你看一下。")).toContain("已经打过去了");
-    expect(events.filter((e) => e.phase === "ringing")).toHaveLength(3);
+    expect(await r.call("ops", "运维", "u1", "二", "部署好了，你看一下。")).toContain("已经打过去了");
+    expect(events.filter((e) => e.phase === "ringing")).toHaveLength(2);
   });
 
-  it("重启之后照样认（冷却读的是日志，不是内存）", async () => {
+  it("重启后日志里有刚打过的那一通，也照样再打", async () => {
     const start = 1_000_000;
     const { r, events } = makeRinger({
       start,
       seed: [seeded("ringing", start - 60_000, start - 15_000), seeded("missed", start - 15_000, start - 15_000)],
     });
-    expect(await r.call("ops", "运维", "u1", "再打一次", "部署好了，你看一下。")).toContain("分钟前刚给他打过电话");
-    expect(events).toEqual([]);
+    expect(await r.call("ops", "运维", "u1", "再打一次", "部署好了，你看一下。")).toContain("已经打过去了");
+    expect(events.map((e) => e.phase)).toEqual(["ringing"]);
   });
 });
 
