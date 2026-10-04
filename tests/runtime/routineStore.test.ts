@@ -37,6 +37,17 @@ describe("createInMemoryRoutineStore", () => {
     expect(await s.purge(61)).toBe(1);
     expect(await s.get(r.id)).toBeNull();
   });
+  it("setStatus 停用时顺手清空 next_run_at；due 只给启用中的", async () => {
+    const s = createInMemoryRoutineStore();
+    const r = await s.insert({ ...base, schedule: { kind: "daily", time: "09:00" }, nextRunAt: 100 });
+    await s.setStatus(r.id, "failed");
+    expect(await s.get(r.id)).toMatchObject({ enabled: true, nextRunAt: 100 });
+    await s.setStatus(r.id, "failed", false);
+    expect(await s.get(r.id)).toMatchObject({ enabled: false, nextRunAt: null });
+    const off = await s.insert({ ...base, title: "off", schedule: { kind: "daily", time: "09:00" }, nextRunAt: 100 });
+    await s.update(off.id, "owner", { enabled: false });
+    expect((await s.due(1_000, 10)).map((x) => x.id)).toEqual([]);
+  });
   it("purge 只清一次性的：停用的 daily（done、lastRunAt 很旧）留着", async () => {
     const s = createInMemoryRoutineStore();
     const d = await s.insert({ ...base, schedule: { kind: "daily", time: "09:00" }, nextRunAt: 50 });

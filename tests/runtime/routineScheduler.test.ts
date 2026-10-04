@@ -74,6 +74,16 @@ describe("routineScheduler.tick", () => {
     await sched.tick();
     expect(await store.get(r.id)).toMatchObject({ lastStatus: "failed", enabled: false });
   });
+  it("调度器停用的重复任务不再响：第一天 no_agent → 停用；过一天再 tick 不跑、next_run_at 已清空", async () => {
+    const results: string[] = [];
+    const { store, sched, setNow } = rig({ run: async (r) => (results.push(r.id), "no_agent") });
+    const r = await store.insert({ ...base, schedule: { kind: "daily", time: "09:00" }, nextRunAt: T0 });
+    await sched.tick();
+    expect(await store.get(r.id)).toMatchObject({ lastStatus: "failed", enabled: false, nextRunAt: null });
+    setNow(T0 + 86_400_000);
+    await sched.tick();
+    expect(results).toEqual([r.id]);
+  });
   it("run 抛错：记日志、failed、不炸 tick；同一 tick 里后面的照跑", async () => {
     let k = 0;
     const { store, runs, logs, sched } = rig({ run: async (r) => { if (k++ === 0) throw new Error("boom"); runs.push({ id: r.id, firedAt: 0 }); return "started"; } });

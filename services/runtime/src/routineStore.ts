@@ -14,10 +14,11 @@ export interface RoutineStore {
   insert(row: RoutineInsert): Promise<RoutineRow>;
   update(id: string, ownerUid: string, patch: RoutinePatch): Promise<RoutineRow | null>;
   remove(id: string, ownerUid: string): Promise<boolean>;
-  /** next_run_at <= nowMs 的行，按 next_run_at 升序 */
+  /** 启用中且 next_run_at <= nowMs 的行，按 next_run_at 升序 */
   due(nowMs: number, limit: number): Promise<RoutineRow[]>;
   /** 原子认领：只有 next_run_at 仍等于读到的那个值才改。回 false = 另一个实例先到 */
   claim(id: string, expectedNextRunAt: number, next: { nextRunAt: number | null; lastRunAt: number }): Promise<boolean>;
+  /** enabled === false 时顺手清空 next_run_at（停用 = 不再到点） */
   setStatus(id: string, status: RoutineStatus, enabled?: boolean): Promise<void>;
   /** 只清一次性的：schedule.kind=once 且 enabled=false 且 last_status in (done, missed) 且 last_run_at < beforeMs，回清了几条。
       停用的重复任务是用户暂停的，不能被清掉（spec §2 / §3.6 / §8.2） */
@@ -86,7 +87,8 @@ export function createSupabaseRoutineStore(supabase: SupabaseClient, opts: { log
       return (r.data ?? []).length > 0;
     },
     async due(nowMs, limit) {
-      const r = await supabase.from("agent_routines").select(ROUTINE_COLUMNS).not("next_run_at", "is", null).lte("next_run_at", new Date(nowMs).toISOString())
+      // enabled = true 是第二道闸：停用的行即使 next_run_at 没清干净（客户端只改了 enabled）也不会响
+      const r = await supabase.from("agent_routines").select(ROUTINE_COLUMNS).eq("enabled", true).not("next_run_at", "is", null).lte("next_run_at", new Date(nowMs).toISOString())
         .order("next_run_at", { ascending: true }).limit(limit);
       if (r.error) fail("到点任务读取失败", r.error);
       const { rows, bad } = splitDueRows((r.data ?? []) as Record<string, unknown>[]);
@@ -107,7 +109,10 @@ export function createSupabaseRoutineStore(supabase: SupabaseClient, opts: { log
       return (r.data ?? []).length > 0;
     },
     async setStatus(id, status, enabled) {
-      const r = await supabase.from("agent_routines").update({ last_status: status, ...(enabled !== undefined ? { enabled } : {}), updated_at: new Date().toISOString() }).eq("id", id);
+      // 停用时顺手清空 next_run_at：认领已经把它推到下一跳了，只改 enabled 的话这行明天照样到点、照样跑（I1）
+      const r = await supabase.from("agent_routines").update({
+        last_status: status, ...(enabled !== undefined ? { enabled } : {}), ...(enabled === false ? { next_run_at: null } : {}), updated_at: new Date().toISOString(),
+      }).eq("id", id);
       if (r.error) fail("定时任务状态写入失败", r.error);
     },
     async purge(beforeMs) {
@@ -154,7 +159,7 @@ export function createInMemoryRoutineStore(): RoutineStore & { rows(): RoutineRo
       return true;
     },
     async due(nowMs, limit) {
-      return [...rows.values()].filter((r) => r.nextRunAt !== null && r.nextRunAt <= nowMs).sort((x, y) => x.nextRunAt! - y.nextRunAt!).slice(0, limit);
+      return [...rows.values()].filter((r) => r.enabled && r.nextRunAt !== null && r.nextRunAt <= nowMs).sort((x, y) => x.nextRunAt! - y.nextRunAt!).slice(0, limit);
     },
     async claim(id, expected, next) {
       const r = rows.get(id);
@@ -164,7 +169,7 @@ export function createInMemoryRoutineStore(): RoutineStore & { rows(): RoutineRo
     },
     async setStatus(id, status, enabled) {
       const r = rows.get(id);
-      if (r) rows.set(id, { ...r, lastStatus: status, ...(enabled !== undefined ? { enabled } : {}) });
+      if (r) rows.set(id, { ...r, lastStatus: status, ...(enabled !== undefined ? { enabled } : {}), ...(enabled === false ? { nextRunAt: null } : {}) });
     },
     async purge(beforeMs) {
       let k = 0;
