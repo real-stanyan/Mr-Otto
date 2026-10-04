@@ -36,12 +36,15 @@ describe("FriendChatScreen", () => {
   it("电话钮弹两项；给智能体 = ensurePeerLane → guest ChatScreen + autoCall", () => {
     expect(src).toMatch(/<HeaderIconButton label="打电话"/);
     // 只拉公开的那一只（#1550）：车道里可能带着别的智能体，它们不该一起接
-    expect(src).toMatch(/navigation\.push\("Chat", \{ kind: "guest", workspaceId: r\.workspaceId, sessionId: r\.sessionId, autoCall: true, callAgentId: publicAgent\.agentId, callOnly: true \}\)/);
+    expect(src).toMatch(/navigation\.push\("Chat", \{ kind: "guest", workspaceId: r\.workspaceId, sessionId: r\.sessionId, autoCall: true, callAgentId: ADMIN_AGENT_ID, callOnly: true \}\)/);
+    expect(read("mobile/src/friends/CallPickDialog.tsx")).toMatch(/label="给 TA 的管理员打电话"/);
     expect(src).toMatch(/onAgent=\{\(\) => \{\s*if \(publicAgent === null\) return;/);
     expect(read("mobile/src/friends/CallPickDialog.tsx")).toMatch(/人与人的通话还没做好（#1534）/);
   });
   it("@ 名单里先列公开智能体；第一次 @ 先 ensurePeerLane", () => {
-    expect(src).toMatch(/inLane\.push\(\{ agentId: peer\.publicAgent\.agentId, name: peer\.publicAgent\.name \}\)/);
+    // 代办入口（#1564）：朋友这一侧只列 TA 的管理员
+    expect(src).toMatch(/return \[\{ agentId: ADMIN_AGENT_ID, name: peer\.agents\.find\(\(a\) => a\.agentId === ADMIN_AGENT_ID\)\?\.name \?\? "管理员" \}\];/);
+    expect(src).not.toMatch(/inLane\.push\(\{ agentId: peer\.publicAgent\.agentId/);
     expect(src).toMatch(/const opened = await ensurePeerLane\(uid\);/);
   });
 });
