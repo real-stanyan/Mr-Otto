@@ -188,6 +188,9 @@ export interface HostedRuntimeAdapterDeps {
   sessionId: string;
   /** 这一台 adapter 服务哪只团队 agent（#946）；桌面直连没有这一格 */
   agentId?: string;
+  /** 读附件库里的一张图（#1491）：给了它，支持视觉的型号就能看见 user_message / chat_message 里的
+      image_ref；缺席 = 图一律换成占位文字（openaiCompatible 在 vision=false 时的行为） */
+  readAttachment?: (id: string) => Uint8Array;
   /** 这只 agent 的型号白名单，**按顺序**（#957 D1 / #979 第 4 条）。**每次现读**
       （白名单在设置页里随时可改，会话房是长命的）。缺席/回 [] = 网关第一款 */
   preferredModels?: () => readonly string[];
@@ -282,6 +285,11 @@ export function createHostedRuntimeAdapter(deps: HostedRuntimeAdapterDeps): Mode
         // 查不到 400——等审批（接力棒上 2 分钟、人审批更久）与 daemon 重启补跑
         // 都在赌它。目录认不出的型号 = 没验过 = 不开（改动前的行为）
         reasoningPassback: findModel(route.model)?.reasoningPassback ?? false,
+        // 看图（#1491）：型号目录说它能看、且 daemon 接了附件库，image_ref 才真的发成 image_url；
+        // 否则 openaiCompatible 换成占位文字——目录认不出的型号 = 没验过 = 不开
+        ...(deps.readAttachment !== undefined
+          ? { vision: findModel(route.model)?.supportsVision ?? false, readAttachment: deps.readAttachment }
+          : {}),
       });
       try {
         return await adapter.chat(messages, tools, onDelta, signal, onRestart);

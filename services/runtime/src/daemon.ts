@@ -58,6 +58,8 @@ import { DISPATCH_DECISION_TIMEOUT_MS, dispatchVia } from "./dispatchDecision.js
 import { createDockerWorld, WORKDIR } from "../../../src/world/dockerWorld.js";
 import type { ModelAdapter } from "../../../src/model/adapter.js";
 import { EventStore } from "../../../src/session/store.js";
+import { AttachmentStore } from "../../../src/session/attachments.js";
+import { createChatMediaIntake } from "./chatMediaIntake.js";
 import type { SessionEvent, TokenUsage } from "../../../src/session/events.js";
 import { verifyJwt as verifyJwtEdge } from "../../edge/src/jwt.js";
 import {
@@ -212,6 +214,8 @@ async function main(): Promise<void> {
       runtimeSecret: config.runtimeSecret,
       probe: hostedProbe,
       preferredModels: () => agent.models,
+      // 看图（#1491）：这个团队的附件库
+      readAttachment: (id) => attachmentsFor(workspaceId).read(id),
       routeMemo,
       ownerUid,
       workspaceId,
@@ -443,6 +447,25 @@ async function main(): Promise<void> {
 
   const activeSessions = new Map<string, { session: CloudSession; workspaceId: string }>();
   const workspaceStores = new Map<string, EventStore>();
+
+  // 每个团队一个附件库（#1491）：云会话里发的图下到这里，模型读图走它；目录与事件日志并排
+  const attachmentStores = new Map<string, AttachmentStore>();
+  function attachmentsFor(workspaceId: string): AttachmentStore {
+    let store = attachmentStores.get(workspaceId);
+    if (!store) {
+      store = new AttachmentStore(join(config.dataDir, `${workspaceId}-attachments`));
+      attachmentStores.set(workspaceId, store);
+    }
+    return store;
+  }
+  const chatMedia = createChatMediaIntake({
+    download: async (bucket, path) => {
+      const { data, error } = await supabase.storage.from(bucket).download(path);
+      if (error || data === null) throw new Error(error?.message ?? "对象不存在");
+      return new Uint8Array(await data.arrayBuffer());
+    },
+    storeFor: attachmentsFor,
+  });
 
   function storeFor(workspaceId: string): EventStore {
     let store = workspaceStores.get(workspaceId);
@@ -809,6 +832,8 @@ async function main(): Promise<void> {
       // `route_changed` 不再落（ADR-0233）：只剩一条路，没有换轨可记；事件类型
       // 留在 schema 里给旧日志重放
       adapterFor: (a) => withUsage(adapterFor(workspaceId, sessionId, ownerUid, a, routeMemo), recordUsage),
+      // 这句话带的图 / 视频（#1491）：下载、校验、落附件库，回事件里那两格
+      media: (refs) => chatMedia.intake(workspaceId, sessionId, refs),
       // 「Auto」那一档（#1009）：白名单为空的 agent，起跑前用**最便宜那款**读一遍
       // 开场白判难度，再据此挑型号。装配在 daemon 而不是 sessionService——凭据
       // （edgeBase / runtimeSecret）与订阅探针都在这一层。
