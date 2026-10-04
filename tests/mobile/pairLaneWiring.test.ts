@@ -33,6 +33,10 @@ describe("chatStore（M1）", () => {
     expect(retire).toBeLessThan(inner.indexOf("cacheOwner = uid;"));
     expect(retire).toBeLessThan(inner.indexOf("cloudClient.join("));
   });
+  it("排着队的那一句轮到时再核一次会话没换，换了就不发（不落进别的房间）", () => {
+    const send = src.slice(src.indexOf("export async function sendText"), src.indexOf("export async function resendUnsent"));
+    expect(send).toMatch(/sendQueue\.run\(\(\) =>\s+store\.get\(\)\.session\?\.sessionId === sid\s+\? say\(/);
+  });
   it("收口只有一份：closeChat 也走它，它里面有语音那一层的 closed()", () => {
     const retireFn = src.slice(src.indexOf("function retireSession"), src.indexOf("export function closeChat("));
     expect(retireFn).toContain("activity?.closed();");

@@ -290,7 +290,13 @@ export async function sendText(text: string, mentions: string[] | undefined, mem
   const sid = store.get().session?.sessionId ?? null;
   const line: OutboxLine | null = sid === null ? null : { id: ++outboxSeq, sessionId: sid, text, ts: Date.now() };
   if (line !== null) store.set((s) => ({ outbox: [...s.outbox, line] }));
-  const r = await sendQueue.run(() => say(text, mentions, memberMentions)).finally(() => {
+  // 排着队的那一句轮到时，连接可能已经换成别的会话了（#1461：朋友私聊页连私密车道、群聊页回前台重连）——
+  // say 发进的是「此刻那一条」，所以轮到时再核一次，换了就不发，不然这句话会落进别的房间
+  const r = await sendQueue.run(() =>
+    store.get().session?.sessionId === sid
+      ? say(text, mentions, memberMentions)
+      : Promise.resolve<CloudAck>({ ok: false, message: "已经离开了这条聊天，这句没有发出去" }),
+  ).finally(() => {
     if (line !== null) store.set((s) => ({ outbox: s.outbox.filter((l) => l.id !== line.id) }));
   });
   if (sid === null || store.get().session?.sessionId !== sid) return r;
