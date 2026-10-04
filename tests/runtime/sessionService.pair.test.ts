@@ -194,12 +194,17 @@ describe("私密车道（#1461 P1）", () => {
       expect(await session.setVoiceCall(PEER, "小红", [HELPER.agentId])).toEqual({ kind: "ok" });
       expect(session.callStarter?.()).toBe(PEER);
       await session.settled();
+      // 电话里朋友说的话要随总结的开场白一起给它（#1550）
+      await session.say(PEER, "小红", "周五帮我看看仓库的账", true, [HELPER.agentId]);
+      await session.settled();
       expect(await session.setVoiceCall(PEER, "小红", [])).toEqual({ kind: "ok" });
       await session.settled();
       const openings = store.ofType(SID, "user_message").filter((e) => e.type === "user_message" && e.greeting === "pair_call_summary");
       expect(openings).toHaveLength(1);
       expect(openings[0]).toMatchObject({ fromUid: OWNER, mentions: [HELPER.agentId] });
       expect((openings[0] as { content: string }).content).toContain("小红");
+      expect((openings[0] as { content: string }).content).toContain("电话里的记录：");
+      expect((openings[0] as { content: string }).content).toContain("小红：周五帮我看看仓库的账");
       expect(store.ofType(SID, "assistant_message").length).toBeGreaterThan(0);
       // 主人自己开、自己挂：不落总结
       const before = store.ofType(SID, "user_message").length;

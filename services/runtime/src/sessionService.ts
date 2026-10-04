@@ -179,7 +179,7 @@ import { mediaPlaceholder, type ChatMediaRef } from "../../../src/shared/chatMed
 import { pendingImageDescriptions } from "../../../src/shared/visionPending.js";
 import { findModel } from "../../../src/shared/modelCatalog.js";
 import {
-  activeOutreach, applyOutreach, outreachAnsweredText, outreachCallerName, outreachFoldOf, outreachGreetingText, outreachRingReason, openingTraits,
+  activeOutreach, applyOutreach, capTranscript, outreachAnsweredText, outreachCallerName, outreachFoldOf, outreachGreetingText, outreachRingReason, outreachTranscript, openingTraits,
   type OutreachFold,
 } from "../../../src/shared/outreach.js";
 import { callbackAnsweredText, callbackGreetingText, callerModelOf, ringChatKind, type RingPush, type RingState } from "../../../src/shared/callRing.js";
@@ -1813,12 +1813,16 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   /** 落一条通话名单（#1163）。`byAgentId` 在场 = 是那只 agent 用 invite_to_call 拉的 */
   /** 这场通话是谁开的（#1533）：从空名单到非空那一帧的发帧人；挂断（回到空）时读一次就清 */
   let callStartedBy: string | null = null;
+  /** 这场通话从哪条 voice_call_changed 起（#1550）：挂断时从这个 seq 起取电话里的记录给总结那一轮 */
+  let callStartedSeq: number | null = null;
 
   /** 朋友给主人的公开智能体打完电话（#1533）：替主人落一条 `greeting: "pair_call_summary"` 的开场白让它总结需求——
       同 reportOutreach 那条路（先落盘再入队；受监督）。两人都看得到那段话（车道是公开的） */
-  function queuePairCallSummary(agentId: string, agentName: string): void {
+  function queuePairCallSummary(agentId: string, agentName: string, fromSeq: number | null): void {
     if (archived || pairFacts === undefined) return;
-    const text = pairCallSummaryText({ agentName, ownerName: pairFacts.ownerName, peerName: pairFacts.peerName });
+    // 电话里的记录（#1550）：这只在这通电话里说的 + 朋友说的，从通话开始那条起、同外联汇报的取法与封顶
+    const transcript = fromSeq === null ? [] : capTranscript(outreachTranscript(store.load(sessionId), fromSeq, agentId, pairFacts.peerUid));
+    const text = pairCallSummaryText({ agentName, ownerName: pairFacts.ownerName, peerName: pairFacts.peerName, transcript });
     const opening = store.append({
       sessionId, ts: Date.now(), type: "user_message", content: text, fromUid: opts.ownerUid, mentions: [agentId], greeting: "pair_call_summary",
     }) as UserMessageEvent;
@@ -1826,7 +1830,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     if (coordinator.enqueue({ agentId, fromUid: opts.ownerUid, opening }) === "start_turn") startDrain();
   }
 
-  function logVoiceCall(participants: VoiceCallParticipant[], byUid: string, byAgentId?: string): void {
+  function logVoiceCall(participants: VoiceCallParticipant[], byUid: string, byAgentId?: string): number {
     const logged = store.append({
       sessionId,
       ts: Date.now(),
@@ -1839,6 +1843,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       ignorable: true,
     });
     notify(logged);
+    return logged.seq;
   }
 
   /** 回电接通、开场白由 runtime 替它说（#1420，ADR-0332）：同步连落三条——「接通了」、它的开场白、收口。
@@ -3388,16 +3393,22 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       const current = voiceCall?.participants.map((p) => p.agentId) ?? [];
       const same = current.length === ids.length && ids.every((id) => current.includes(id));
       const next = ids.map((id) => ({ agentId: id, name: roster.find((a) => a.agentId === id)!.name }));
-      if (!same) logVoiceCall(next, byUid);
-      // 车道里朋友打给公开智能体（#1533）：记下这场通话是谁开的；朋友开的、挂了 → 让那只把朋友的需求总结给主人
-      if (current.length === 0 && next.length > 0) callStartedBy = byUid;
+      const loggedSeq = same ? null : logVoiceCall(next, byUid);
+      // 车道里朋友打给公开智能体（#1533）：记下这场通话是谁开的、从哪条起；朋友开的、挂了 → 让那只把朋友的需求总结给主人
+      if (current.length === 0 && next.length > 0) {
+        callStartedBy = byUid;
+        callStartedSeq = loggedSeq;
+      }
       if (current.length > 0 && next.length === 0) {
         const starter = callStartedBy;
+        const fromSeq = callStartedSeq;
         callStartedBy = null;
+        callStartedSeq = null;
         if (isPair && pairFacts !== undefined && starter !== null && starter !== opts.ownerUid && isGuest(starter)) {
+          // 总结的是刚才在电话里的那只（#1550）：手机那头只拉公开的那一只进通话，这里就是它；车道里带着别的智能体也不会轮到它们
           const agentId = current[0];
           const name = roster.find((a) => a.agentId === agentId)?.name;
-          if (agentId !== undefined && name !== undefined) queuePairCallSummary(agentId, name);
+          if (agentId !== undefined && name !== undefined) queuePairCallSummary(agentId, name, fromSeq);
         }
       }
       // 回电接通（#1411）：发这一帧的人把正在给他响铃的那只带进了名单——新拉进来的，或者本来就在一场没人

@@ -26,7 +26,8 @@ export type RootStackParams = {
   /** autoCall：从智能体资料点「语音通话」进来——房间一 ready 就把电话打出去（一次）。
       answerRing：从来电页点「接听」进来（#1411）——房间一 ready 就把打电话的那只拉进通话（一次） */
   /** dispatch（#1505）：长按别处的一条消息派过来的开场白——房间一能发就把它发出去（一次），私聊还没建就顺手建 */
-  Chat: ChatRoute & { autoCall?: boolean; answerRing?: { ringId: string; agentId: string }; dispatch?: string };
+  /** callAgentId（#1550）：autoCall 只拉这一只进通话（私聊页「给 TA 的智能体打电话」——车道里可能带着别的智能体），挂断就回上一页 */
+  Chat: ChatRoute & { autoCall?: boolean; callAgentId?: string; answerRing?: { ringId: string; agentId: string }; dispatch?: string };
   /** 朋友私聊（messages 表，不是云会话） */
   FriendChat: { uid: string };
   /** 人与人的通话页（#1534）：哪一通、和谁、是不是来电。状态在 call/humanCall.ts 的 store 里 */

@@ -821,6 +821,7 @@ export function FriendChatScreen({ route, navigation }: Props) {
             navigation.push("HumanCall", { callId: "", friendUid: uid, incoming: false });
           }}
           onAgent={() => {
+            if (publicAgent === null) return;
             void (async () => {
               setCallBusy(true);
               setCallError(null);
@@ -831,7 +832,8 @@ export function FriendChatScreen({ route, navigation }: Props) {
                 return;
               }
               setCalling((d) => (d === null ? d : { ...d, visible: false }));
-              navigation.push("Chat", { kind: "guest", workspaceId: r.workspaceId, sessionId: r.sessionId, autoCall: true });
+              // 只拉公开的那一只进通话（#1550）：车道里可能还带着对方别的智能体
+              navigation.push("Chat", { kind: "guest", workspaceId: r.workspaceId, sessionId: r.sessionId, autoCall: true, callAgentId: publicAgent.agentId });
             })();
           }}
           onClose={() => setCalling((d) => (d === null ? d : { ...d, visible: false }))}

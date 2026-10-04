@@ -551,13 +551,27 @@ export function ChatScreen({ route, navigation }: Props) {
     if (session === null || agentIds.length === 0) return;
     setCallOp("start");
     setCallOpen(true);
-    const r = await startCall(session.sessionId, dmAgent !== null ? [dmAgent] : agentIds);
+    // 只打这一只（#1550）：私聊页「给 TA 的智能体打电话」进来的——车道里可能还带着别的智能体，它们不该一起接
+    const only = route.params.callAgentId;
+    const ids = only !== undefined && agentIds.includes(only) ? [only] : dmAgent !== null ? [dmAgent] : agentIds;
+    const r = await startCall(session.sessionId, ids);
     setCallOp(null);
     if (!r.ok) {
       setCallOpen(false);
       setPageNote(r.unknown ? { text: "没有收到回执，不确定电话打出去没有", tone: "muted" } : { text: r.message, tone: "error" });
     }
   };
+  // 从私聊页打给对方的智能体（#1550）：这页只是通话的载体，不是他要看的群聊——挂断就回私聊页，
+  // 总结那段话会出现在那页里（车道的话本来就并在私聊里显示）
+  const autoCallLive = useRef(false);
+  useEffect(() => {
+    if (route.params.callAgentId === undefined) return;
+    if (call !== null) autoCallLive.current = true;
+    else if (autoCallLive.current) {
+      autoCallLive.current = false;
+      navigation.goBack();
+    }
+  }, [route.params.callAgentId, call !== null]);
   const onHangUp = async (): Promise<void> => {
     setCallOp("hangup");
     const r = await hangUp();
