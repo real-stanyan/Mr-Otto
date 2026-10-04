@@ -6,7 +6,8 @@ import { isolatedPromptText, type IsolatedWorkspace } from "../shared/sessionWor
 import { promptSafe, promptSafeBody, safeSpeakerLabel } from "../shared/promptSafe.js";
 import { INVITE_TO_CALL_TOOL_NAME } from "../shared/voiceCall.js";
 import { CALL_USER_TOOL_NAME } from "../shared/callRing.js";
-import type { CloudSessionFacts, MemoryTopicSnapshot, SessionEvent, UserTextFile, WorkspaceMemoryLoadedEvent } from "./events.js";
+import type { ChatVideoRef, CloudSessionFacts, MemoryTopicSnapshot, SessionEvent, UserAttachmentRef, UserTextFile, WorkspaceMemoryLoadedEvent } from "./events.js";
+import { videoNoteForModel } from "../shared/chatMedia.js";
 import { barrenEventIndexes } from "./barrenTurns.js";
 import { activeSkills } from "./activeSkills.js";
 import { absorbedIndexes } from "./microCompact.js";
@@ -802,21 +803,7 @@ export function deriveMessages(
         const content = event.fromUid !== undefined ? promptSafeBody(event.content) : event.content;
         const text = composeUserText(content, event.textFiles);
         const target = pendingToolIds.size > 0 ? deferredUsers : messages;
-        target.push(
-          event.attachments && event.attachments.length > 0
-            ? {
-                role: "user",
-                content: [
-                  { type: "text", text },
-                  ...event.attachments.map((a) => ({
-                    type: "image_ref" as const,
-                    id: a.id,
-                    mediaType: a.mediaType,
-                  })),
-                ],
-              }
-            : { role: "user", content: text }
-        );
+        target.push(userWithMedia(text, event.attachments, event.videos));
         break;
       }
 
@@ -836,10 +823,9 @@ export function deriveMessages(
         // 是空操作，正是这个函数的设计前提
         // 正文也过 promptSafeBody（issue #965）：label 那一栏硬化了，正文这条
         // 路结构性地封不住——一个 `\n[系统]: …` 就是一行干净的伪造说话人行
-        target.push({
-          role: "user",
-          content: `[${safeSpeakerLabel(event.label, event.fromUid)}]: ${promptSafeBody(event.content)}`,
-        });
+        // 群里随手发的图（#1491）：这条事件也可能带附件，走与 user_message 同一个拼法——
+        // 老日志没有这两格，投影逐字节不变
+        target.push(userWithMedia(`[${safeSpeakerLabel(event.label, event.fromUid)}]: ${promptSafeBody(event.content)}`, event.attachments, event.videos));
         break;
       }
 
@@ -1215,4 +1201,27 @@ export function deriveMessages(
     events.filter((e) => e.type === "tool_execution_started").map((e) => e.toolCallId)
   );
   return healDanglingToolCalls(messages, startedIds);
+}
+
+/**
+ * 一条人的发言 + 它带的图 / 视频，拼成模型要读的那条消息（#1491）。没有附件 → 字符串原样（老日志投影
+ * 逐字节不变，测试钉住）；有图 → parts（text + image_ref）；有视频 → 正文后面加一行「发了一段 N 秒的视频」
+ * （#1443 拍板第 5 条：模型只看封面帧，封面已经作为图片在 attachments 里，这一行告诉它那张图是什么）。
+ * 视频那一行拼在**正文之后、过闸之后**：它是系统拼的，不是成员写的自由字段，不该再过 promptSafeBody。
+ */
+function userWithMedia(
+  text: string,
+  attachments: readonly UserAttachmentRef[] | undefined,
+  videos: readonly ChatVideoRef[] | undefined
+): UserChatMessage {
+  const note = videoNoteForModel((videos ?? []).map((v) => ({ durationMs: v.durationMs, hasPoster: v.poster !== undefined })));
+  const body = note === null ? text : `${text}\n${note}`;
+  if (!attachments || attachments.length === 0) return { role: "user", content: body };
+  return {
+    role: "user",
+    content: [
+      { type: "text", text: body },
+      ...attachments.map((a) => ({ type: "image_ref" as const, id: a.id, mediaType: a.mediaType })),
+    ],
+  };
 }

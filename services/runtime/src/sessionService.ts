@@ -173,7 +173,9 @@ import { createInviteToCallTool } from "./inviteToCallTool.js";
 import type { VoiceCallParticipant } from "../../../src/session/events.js";
 import { LoopEngine } from "../../../src/loop/engine.js";
 import type { EventStore } from "../../../src/session/store.js";
-import type { SessionEvent, SessionCreatedEvent, UserMessageEvent, AssistantMessageEvent, AgentRelayEvent, CallRingEvent, OutreachEvent, OutreachLine, OutreachOutcome } from "../../../src/session/events.js";
+import type { SessionEvent, SessionCreatedEvent, UserMessageEvent, AssistantMessageEvent, AgentRelayEvent, CallRingEvent, OutreachEvent, OutreachLine, OutreachOutcome, UserAttachmentRef, ChatVideoRef } from "../../../src/session/events.js";
+import { ChatMediaRejectedError } from "./chatMediaIntake.js";
+import { mediaPlaceholder, type ChatMediaRef } from "../../../src/shared/chatMedia.js";
 import {
   activeOutreach, applyOutreach, outreachAnsweredText, outreachCallerName, outreachFoldOf, outreachGreetingText, outreachRingReason, openingTraits,
   type OutreachFold,
@@ -346,6 +348,9 @@ export interface CloudSessionOpts {
   agents: (o?: { fresh?: boolean }) => Promise<AgentSpec[]>;
   /** 按 agent 造 adapter(型号来自它的白名单)。daemon 给 */
   adapterFor: (agent: AgentSpec) => ModelAdapter;
+  /** 这句话带的图 / 视频引用 → 事件里那两格（#1491，chatMediaIntake）。daemon 给；缺席 = 这台不收媒体
+      （测试 / 冒烟），带了媒体的 say 会被拒绝而不是静默丢图 */
+  media?: (refs: readonly ChatMediaRef[]) => Promise<{ attachments: UserAttachmentRef[]; videos: ChatVideoRef[] }>;
   /** 「Auto」那一档（#1009）：这只 agent 没配型号白名单时，用最便宜那款先判一手
       这段开场白的难度，回这一 turn 该用的型号 id；判不出来回 null = 按原样走
       （路由照旧取网关首选款）。daemon 给——它才有 hostedProbe 与 edge 凭据。
@@ -554,7 +559,8 @@ export interface CloudSession {
     mentions?: string[],
     budget?: (targetCount: number) => string | null,
     memberMentions?: string[],
-    voice?: true
+    voice?: true,
+    media?: readonly ChatMediaRef[]
   ): Promise<void>;
   /** 排空跑完了吗——**给测试与冒烟脚本等待用的，不是协议的一部分**
       （issue #937）：say() 不再等 turn，可断言「turn 跑完之后」的地方需要一个
@@ -1906,13 +1912,29 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       …），它们一律不带 —— 加成必需参数等于让每条系统话都去回答一个与它无关的
       问题。为什么不在那条出口直接 `store.append`：`safeSpeakerLabel` 那道闸只能
       有一处（#957 复审 Important 2），绕开它就是给「伪造说话人」开第二个入口 */
-  function logChat(fromUid: string, label: string, text: string, mention: boolean, voice?: true): SessionEvent {
+  /** say 帧里的媒体引用 → 事件里那两格（#1491）。这台没接媒体 = 明说收不了，不静默丢图 */
+  async function intakeMedia(refs: readonly ChatMediaRef[]): Promise<{ attachments: UserAttachmentRef[]; videos: ChatVideoRef[] }> {
+    if (opts.media === undefined) throw new SayRejectedError("这台服务器还收不了图片和视频");
+    try {
+      return await opts.media(refs);
+    } catch (err) {
+      if (err instanceof ChatMediaRejectedError) throw new SayRejectedError(err.message);
+      throw err;
+    }
+  }
+
+  function logChat(
+    fromUid: string, label: string, text: string, mention: boolean, voice?: true,
+    media: { attachments?: UserAttachmentRef[]; videos?: ChatVideoRef[] } = {}
+  ): SessionEvent {
     const logged = store.append({
       sessionId,
       ts: Date.now(),
       type: "chat_message",
       fromUid,
       ...(voice !== undefined ? { voice } : {}),
+      // 群里随手发的图（#1491）：没 @ 谁也要带上，模型下一轮读 chat_message 时才看得见
+      ...media,
       // 发言人名字过闸（#957 复审 Important 2）：daemon.labelOf 已经过一遍，
       // 这里再过是给别的调用方兜底（测试/冒烟/将来别的入口）——safeSpeakerLabel
       // 幂等，跑两遍与跑一遍同一个结果。保留名「系统」只对 fromUid === "system"
@@ -2667,7 +2689,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   }
 
   const session: CloudSession = {
-    async say(fromUid, label, text, mention, mentions, budget, memberMentions, voice) {
+    async say(fromUid, label, text, mention, mentions, budget, memberMentions, voice, media) {
       // 外联会话只在通话进行中收话，且只收**打给的那个朋友**（#1441）：没有进行中的外联 = 电话已经
       // 挂了；主人也不例外（他在这条线上只读）。放在最前面——任何名单查询、落盘之前拒绝，
       // 挂断之后的一句话一个字节都不落
@@ -2895,11 +2917,18 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         }
       };
 
+      // 图 / 视频先收进来（#1491）：下载 + 校验 + 落附件库都在落盘之前——收不下的那句一个字节不落，
+      // 发言人拿到的是一句说得清的拒绝。纯发图（正文为空）的正文写占位 `[图片]` / `[视频]`：
+      // 老客户端与模型都读得出这里有东西
+      const got = media !== undefined && media.length > 0 ? await intakeMedia(media) : null;
+      const mediaFields = got === null ? {} : { attachments: got.attachments, ...(got.videos.length > 0 ? { videos: got.videos } : {}) };
+      if (got !== null && text.trim() === "") text = mediaPlaceholder(media ?? []);
+
       if (targets.length === 0) {
         // 没人被点名（也没派出去）：只落 chat_message，不起 turn。**「只 @ 了人」走的
         // 正是这条路**——那是这条 issue 里最常见的一种消息（ADR-0252 让客户端在这种
         // 情形下发一个权威的空数组）。派活没成的那句系统话排在正文之后
-        const logged = logChat(fromUid, label, text, mention, voice);
+        const logged = logChat(fromUid, label, text, mention, voice, mediaFields);
         sayUnknown();
         if (dispatchNote !== null) logChat("system", "系统", dispatchNote, false);
         await recordMemberMentions(logged.seq);
@@ -2942,6 +2971,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         // 通话里说出来的（#1233）才带。同 dispatch：只是记号，起 turn 那一路
         // 一个判断都不读它
         ...(voice !== undefined ? { voice } : {}),
+        // 带的图 / 视频（#1491）：deriveMessages 把 attachments 折成 image_ref、videos 拼成一行说明
+        ...mediaFields,
       }) as UserMessageEvent; // append 回的是 union；这一条我们刚亲手写的就是 user_message
       notify(opening);
       sayUnknown(); // 排在开场白之后：先有那句话，再说"其中这几个没人接"

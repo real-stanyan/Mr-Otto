@@ -5,6 +5,7 @@
 
 import type { SessionEvent } from "../../session/events.js";
 import { AGENT_ID_RE, CHAT_NAME_MAX, normalizeChatAgentIds, normalizeChatHumanUids, USER_UID_RE, type ChatHuman } from "../chatRoster.js";
+import { parseChatMediaRefs, type ChatMediaRef } from "../chatMedia.js";
 import { b64decode, b64encode } from "./b64.js";
 import { MAX_FRAME_BYTES } from "./wire.js";
 
@@ -105,6 +106,12 @@ import { MAX_FRAME_BYTES } from "./wire.js";
     `error`，那条帧还承载 backlog 跳过等不相干消息，await 它会被无关 error
     提前唤醒。旧 runtime × 新桌面 / 新 runtime × 旧桌面都走既有
     version_mismatch，不做双版本兼容。
+    24（#1491，#1443 P2）：`say` 多了 `media` 一格——这句话带的图片 / 视频的**引用**
+    （sha256 + 格式 + 大小 + 尺寸，视频另带时长与封面；文件本体在 Storage 的 `chat-media`，
+    路径由 runtime 用 `<团队>/<会话>/<sha256>` 自己拼，客户端不给路径）。形状不对**整帧拒掉**
+    （同 mentions 那条纪律）：静默丢掉等于「看这张图」发出去时图没了，发言人那侧无声。
+    加字段照样进位（握手精确相等）：老 runtime 收到带这一格的 say 会把它 JSON.parse 掉再丢弃，
+    于是新手机以为图发出去了、群里谁都没看见、模型也没看见——比拒绝更糟。
     13（issue #1064）：`say` 多了 `memberMentions` 一格——「这句话点到了哪几个
     人类成员」。**加字段照样进位**（同下面 4 那条）：老 runtime 收到带这一格的
     say 会照常处理（多余字段被 decode 丢掉），但那意味着**通知静默不发**，而
@@ -127,7 +134,7 @@ import { MAX_FRAME_BYTES } from "./wire.js";
     少一格状态。**加一个枚举值同理**：老客户端的 isValidCsDeniedCode 认不出
     `rate_limited`，decodeCsDown 回 null，那一帧被静默忽略，于是 create()
     要白等满超时才回一句"云端无响应"——把"你被限速了"说成"对面没回话"。 */
-export const CS_PROTOCOL_VERSION = 23;
+export const CS_PROTOCOL_VERSION = 24;
 export const CS_MAX_TEXT_BYTES = 64 * 1024;
 
 /** 一次回多少字节的文件内容（#1056）。中继单帧上限是 256 KiB（wire.ts 的
@@ -340,7 +347,9 @@ export type CsUp =
       都不看它。缺席 = 打字打的（旧客户端、手机端、开局卡都走这条）。
       服务端不自己判「这句是不是说出来的」：转写出来的正文与手打的正文一个字节都不差，
       唯一知道这件事的是麦克风那一侧 */
-  | { t: "say"; text: string; mention: boolean; mentions?: string[]; memberMentions?: string[]; voice?: true }
+  /** `media`（协议 24，#1491）= 这句话带的图片 / 视频引用，1..9 个、要么全图片要么一段视频（parseChatMediaRefs）。
+      正文可以为空（纯发图）：runtime 落盘时正文写占位 `[图片]` / `[视频]`，老客户端照常显示 */
+  | { t: "say"; text: string; mention: boolean; mentions?: string[]; memberMentions?: string[]; voice?: true; media?: ChatMediaRef[] }
   | { t: "backlog"; afterSeq: number }
   /** 尾巴分页（协议 20，#1280）：进房只要最后 `limit` 条，`beforeSeq` 在场 = 再往前翻一页。
       与 `afterSeq` 那一种并列而不是取代它——后者是「我断线前读到这儿，补上后面的」，
@@ -760,6 +769,12 @@ export function decodeCsUp(b64: string): CsUp | null {
         // 拒帧是因为丢掉它们会静默改变「这句话点了谁」，而这一格只影响时间线
         // 上折不折卡：脏值退化成「不折」= 改动前的行为，为它拒掉一句真话更糟
         if (obj.voice === true) say.voice = true;
+        // media 形状不对整帧拒掉（协议 24，#1491）：同 mentions——丢掉它会静默改变这句话的内容
+        if (obj.media !== undefined) {
+          const media = parseChatMediaRefs(obj.media);
+          if (media === null) return null;
+          say.media = media;
+        }
         return say;
       }
       return null;

@@ -28,6 +28,8 @@ export interface UserMessageEvent extends SessionEventBase {
   content: string;
   /** 图片附件引用。可选 = 旧日志照常重放(schema 向后兼容硬规则) */
   attachments?: UserAttachmentRef[];
+  /** 云会话里发的视频（#1491）。可选 = 旧日志照常重放 */
+  videos?: ChatVideoRef[];
   /** 文本文件附件(全文快照,同 skill_invoked 语义:日志自包含,原文件改/删
       不影响重放)。结构化存而不内联进 content——content 保持纯用户正文,
       UI 才能把文件渲染成卡片而不是摊开全文;模型投影时(deriveMessages)
@@ -138,6 +140,25 @@ export interface UserAttachmentRef {
   mediaType: string; // "image/png" | "image/jpeg" | "image/webp" | "image/gif"
   bytes: number;
   name?: string;     // basename,剥过路径(本机目录结构不进日志)
+  /** 像素尺寸（#1491，云会话的发图带）：只给界面排版用，模型投影不读。0 / 缺席 = 不知道，按方块画 */
+  width?: number;
+  height?: number;
+}
+
+/** 云会话里发的一段视频（#1491，#1443 P2）。模型看不了视频：它看的是 `attachments` 里那张封面
+    （`poster` 指向其中一条的 id）加投影层拼的一句「发了一段 N 秒视频」；视频本体只在 Storage 里
+    （`chat-media/<团队>/<会话>/<sha256>.<ext>`，id 的 hex 就是对象名），客户端自己签名去放。
+    与 `attachments` 分两格是维护者拍板（#1443 第 4 条）：图生图的 edit_last 从 attachments 里取
+    「最近一张图」，视频混进去会被当成底图 */
+export interface ChatVideoRef {
+  id: string;        // "sha256:<hex>"，对象名
+  mediaType: string; // "video/mp4" | "video/quicktime"
+  bytes: number;
+  width: number;
+  height: number;
+  durationMs: number;
+  /** 封面在 attachments 里的 id；缺席 = 没抽出来 */
+  poster?: string;
 }
 
 /** 模型发出的一次工具调用请求（不是事件，是 AssistantMessageEvent 的组成部分） */
@@ -1140,6 +1161,11 @@ export interface ChatMessageEvent extends SessionEventBase {
   content: string;
   /** 这条发言 @ 了本机操作者（决定要不要提醒/高亮，UI 消费） */
   mention: boolean;
+  /** 群里随手发的图 / 视频（#1491）：没 @ 谁的那句落的是这条事件，而模型下一轮照样会读到它——
+      所以它也得带附件，不然群里发的图只有 @ 了谁的那几张模型才看得见。形状与 user_message 的同名两格
+      逐字相同；可选 = 旧日志照常重放 */
+  attachments?: UserAttachmentRef[];
+  videos?: ChatVideoRef[];
   /** 这句话是在语音通话里说出来的（#1233）。语义与落点逐字同
       `UserMessageEvent.voice`，两个事件都要有是因为**一条语音发言落成哪一个
       取决于有没有人接**：`say()` 解出 targets 非空走 user_message，空则只落
