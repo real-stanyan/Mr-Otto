@@ -1,9 +1,10 @@
 // 选人卡的判定与折叠（#1520）：纯函数，runtime 与手机共用
 import { describe, expect, it } from "vitest";
 import {
-  FRIEND_PICK_TTL_MS, friendPickFoldOf, friendPickStatus, friendPickToolText, namesSimilar, pickFriend, recentPeerUids,
+  FRIEND_PICK_TTL_MS, friendPickFailureText, friendPickFoldOf, friendPickStatus, friendPickToolText, namesSimilar, pickFriend, recentPeerUids,
 } from "../../src/shared/friendPick.js";
 import { outreachFoldOf } from "../../src/shared/outreach.js";
+import { outreachTierProblem } from "../../src/shared/friendTier.js";
 import type { SessionEvent } from "../../src/session/events.js";
 
 const F = (uid: string, name: string, tier?: "chat" | "agents" | "full") => ({ uid, name, ...(tier !== undefined ? { tier } : {}) });
@@ -95,6 +96,33 @@ describe("pickFriend", () => {
   it("最近打过但已不是好友：不上卡", () => {
     const r = pickFriend({ friends, wanted: "Mingxuan Zhang", recentUids: ["u_gone", "u_baba"] });
     expect(r.kind === "card" ? r.candidates.map((c) => c.uid) : []).toEqual(["u_baba", "u_mz"]);
+  });
+
+  it("排在最近第一位的人已不是好友：第二位不顶替「上次打的就是他」，写「最近打过」（M-5 的裁定）", () => {
+    const r = pickFriend({ friends, wanted: "Mingxuan Zhang", recentUids: ["u_gone", "u_baba"] });
+    expect(r.kind === "card" ? r.candidates[0] : null).toEqual({ uid: "u_baba", name: "爸爸", why: "最近打过" });
+  });
+});
+
+describe("friendPickFailureText（I-2：模型向的拒绝改成对主人说的话）", () => {
+  it("去掉开头的「电话没打出去：」", () => {
+    expect(friendPickFailureText("电话没打出去：额度用完了，周五恢复")).toBe("额度用完了，周五恢复");
+  });
+  it("档位拒绝：「告诉他…」那句整句删掉", () => {
+    const out = friendPickFailureText(outreachTierProblem("agents", "小红")!);
+    expect(out).not.toContain("告诉他");
+    expect(out).toBe("小红 没有把好友权限开到「全部开放」，智能体不能直接给 小红 打电话或发消息。");
+  });
+  it("没有设备：保留前一句", () => {
+    expect(friendPickFailureText("小红 的手机上还没有能接电话的 App，打不了。告诉他换个方式联系。"))
+      .toBe("小红 的手机上还没有能接电话的 App，打不了。");
+  });
+  it("删完是空的：落到通用那句", () => {
+    expect(friendPickFailureText("告诉他换个方式联系。")).toBe("电话没打出去，稍后再试。");
+    expect(friendPickFailureText("电话没打出去：")).toBe("电话没打出去，稍后再试。");
+  });
+  it("本来就是对主人说的话：原样", () => {
+    expect(friendPickFailureText("电话没打出去，稍后再试。")).toBe("电话没打出去，稍后再试。");
   });
 });
 

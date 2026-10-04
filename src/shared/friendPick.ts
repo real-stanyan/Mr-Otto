@@ -118,6 +118,16 @@ export function recentPeerUids(fold: OutreachFold): string[] {
   return out;
 }
 
+/** 拨号被拒时那句话原本是说给模型听的（「电话没打出去：…」「…告诉他可以…」），落在卡上要改成对主人说的：
+    去掉开头的「电话没打出去：」，删掉以「告诉他」开头的整句（到下一个「。」为止），删完是空的就用通用那句 */
+export function friendPickFailureText(message: string): string {
+  const FALLBACK = "电话没打出去，稍后再试。";
+  const stripped = message.replace(/^电话没打出去：/u, "");
+  const kept = stripped.match(/[^。]*。?/gu)?.filter((s) => s !== "" && !s.startsWith("告诉他")).join("") ?? "";
+  const out = kept.trim();
+  return out === "" ? FALLBACK : out;
+}
+
 export function friendPickToolText(names: readonly string[]): string {
   return `没认准是哪位，已经弹了张卡让他点选（候选：${names.join("、")}）。卡片自己会问，你这一轮不用再说话；他点了电话会直接拨出去，不用你再调 call_friend。`;
 }

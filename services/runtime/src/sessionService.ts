@@ -182,7 +182,7 @@ import {
   activeOutreach, applyOutreach, outreachAnsweredText, outreachCallerName, outreachFoldOf, outreachGreetingText, outreachRingReason, openingTraits,
   type OutreachFold,
 } from "../../../src/shared/outreach.js";
-import { applyFriendPick, friendPickFoldOf, friendPickStatus, recentPeerUids, type FriendPickFold } from "../../../src/shared/friendPick.js";
+import { applyFriendPick, friendPickFailureText, friendPickFoldOf, friendPickStatus, recentPeerUids, type FriendPickFold } from "../../../src/shared/friendPick.js";
 import { callbackAnsweredText, callbackGreetingText, callerModelOf, ringChatKind, type RingPush, type RingState } from "../../../src/shared/callRing.js";
 import { createRinger, type Ringer } from "./callRinger.js";
 import { SPEECH_TICKET_TTL_MS, type SpeechTicket } from "../../../src/shared/speechTicket.js";
@@ -3277,15 +3277,20 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       let failed: string | null;
       try {
         const roster = await rosterNow({ fresh: true });
-        const agent = roster.some((a) => a.degraded) ? undefined : roster.find((a) => a.agentId === st.fromAgentId);
-        failed = agent === undefined
+        // 名单是占位（读失败）≠ 那只不在了：别把一次抖动说成「已经不在这条聊天里」
+        const degraded = roster.some((a) => a.degraded);
+        const agent = degraded ? undefined : roster.find((a) => a.agentId === st.fromAgentId);
+        failed = degraded
+          ? "这会儿查不了，稍后再试。"
+          : agent === undefined
           ? "它已经不在这条聊天里了，电话没打出去。"
           : await opts.outreach.dialPicked({ originSessionId: sessionId, agentId: st.fromAgentId, agentName: agent.name, uid, brief: st.brief, opening: st.opening });
       } catch (err) {
         console.warn(`[otto-runtime] 选人卡拨号失败（session=${sessionId}, pick=${pickId}）`, err);
         failed = "电话没打出去，稍后再试。";
       }
-      if (failed !== null) log({ pickId, phase: "failed", fromAgentId: st.fromAgentId, message: failed });
+      // 拒绝原话是说给模型听的（「…告诉他可以…」）：落盘前改成对主人说的，日志里就是卡上显示的那句
+      if (failed !== null) log({ pickId, phase: "failed", fromAgentId: st.fromAgentId, message: friendPickFailureText(failed) });
       return { ok: true };
     },
 

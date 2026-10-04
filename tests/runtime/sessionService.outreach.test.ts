@@ -12,6 +12,7 @@ import type { ApprovalRequestEvent, AssistantMessageEvent, CallRingEvent, Outrea
 import type { OutreachEnded, OutreachStart } from "../../services/runtime/src/outreachRun.js";
 import { SPEECH_TICKET_TTL_MS, type SpeechTicket } from "../../src/shared/speechTicket.js";
 import { OUTREACH_CAP_MS } from "../../src/shared/outreach.js";
+import { FRIEND_PICK_TTL_MS } from "../../src/shared/friendPick.js";
 import type { ModelAdapter, ModelReply } from "../../src/model/adapter.js";
 import type { ExecutionWorld } from "../../src/world/executionWorld.js";
 import type { PxCallDeps } from "../../services/runtime/src/pxTools.js";
@@ -615,6 +616,8 @@ function openHome(o: {
   rosterGate?: () => Promise<void>;
   /** 装配之前往日志里再补几条（重启补跑的用例用：上一个进程留下的、没收口的开场白） */
   beforeOpen?: (store: EventStore) => void;
+  /** 名单换成别的（降级占位之类）。缺席 = [运维, 广告] */
+  roster?: () => (typeof OPS)[];
 }): CloudSession {
   const kind = o.kind ?? "dm";
   const team = kind === "team";
@@ -636,7 +639,7 @@ function openHome(o: {
     workspaceId: "w1", sessionId: SID, ownerUid: OWNER, createdByUid: OWNER, store: o.store, world: fakeWorld,
     agents: async (arg) => {
       if (arg === undefined && o.rosterGate !== undefined) await o.rosterGate();
-      return [OPS, ADS];
+      return o.roster !== undefined ? o.roster() : [OPS, ADS];
     },
     adapterFor: (a) => o.adapterFor(a.agentId), px,
     hostUids: async () => [OWNER],
@@ -1364,6 +1367,89 @@ describe("选人卡（#1520）", () => {
     expect(picksOf(t.events)).toEqual(["offered", "picked", "failed"]);
     const failed = t.events.at(-1) as { message?: string };
     expect(failed.message).toContain("没有能接电话的 App");
+    t.store.close();
+  });
+
+  it("拒绝原话是说给模型听的：落在卡上的是改成对主人说的那版（I-2）", async () => {
+    const t = withPort(async () => "小红 的手机上还没有能接电话的 App，打不了。告诉他换个方式联系。");
+    t.session.logFriendPick(OFFER);
+    await t.session.pickFriend("p1", OWNER, "u-hong");
+    expect((t.events.at(-1) as { message?: string }).message).toBe("小红 的手机上还没有能接电话的 App，打不了。");
+    t.store.close();
+  });
+
+  it("名单读不出来（降级占位）：failed 说「这会儿查不了」，不冤枉成「已经不在这条聊天里」（M-1）", async () => {
+    const calls: unknown[] = [];
+    const port: Port = { dispatch: async () => "x", dialPicked: async (o) => (calls.push(o), null) };
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    const session = openHome({
+      store, events, outreach: port, roster: () => [{ ...OPS, degraded: true } as never],
+      adapterFor: () => ({ model: "fake-model", async chat() { return { content: "好" }; } }),
+    });
+    session.logFriendPick(OFFER);
+    expect(await session.pickFriend("p1", OWNER, "u-hong")).toEqual({ ok: true });
+    expect((events.at(-1) as { phase: string; message?: string })).toMatchObject({ phase: "failed", message: "这会儿查不了，稍后再试。" });
+    expect(calls).toEqual([]);
+    store.close();
+  });
+
+  it("那只确实已经不在名单里：failed 说「已经不在这条聊天里了」", async () => {
+    const calls: unknown[] = [];
+    const port: Port = { dispatch: async () => "x", dialPicked: async (o) => (calls.push(o), null) };
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    const session = openHome({
+      store, events, outreach: port, roster: () => [{ ...OPS, agentId: "other", name: "别的" }],
+      adapterFor: () => ({ model: "fake-model", async chat() { return { content: "好" }; } }),
+    });
+    session.logFriendPick(OFFER);
+    await session.pickFriend("p1", OWNER, "u-hong");
+    expect((events.at(-1) as { message?: string }).message).toBe("它已经不在这条聊天里了，电话没打出去。");
+    expect(calls).toEqual([]);
+    store.close();
+  });
+
+  it("重开会话：日志里留着一张开着的卡，折叠种回来，点了照样能拨（M-3，钉 friendPickFoldOf(seed)）", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    const calls: unknown[] = [];
+    const port: Port = { dispatch: async () => "x", dialPicked: async (o) => (calls.push(o), null) };
+    const session = openHome({
+      store, events, outreach: port,
+      beforeOpen: (s) => void s.append({ sessionId: SID, ts: Date.now(), type: "friend_pick", ignorable: true, ...OFFER }),
+      adapterFor: () => ({ model: "fake-model", async chat() { return { content: "好" }; } }),
+    });
+    expect(await session.pickFriend("p1", OWNER, "u-hong")).toEqual({ ok: true });
+    expect(picksOf(events)).toEqual(["picked"]);
+    expect(calls).toEqual([{ originSessionId: SID, agentId: "ops", agentName: "运维", uid: "u-hong", brief: "问周五", opening: "你好" }]);
+    store.close();
+  });
+
+  it("过期的卡（offered 已过 10 分钟）：服务端也拒，不拨、不落事件（M-4）", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    const calls: unknown[] = [];
+    const port: Port = { dispatch: async () => "x", dialPicked: async (o) => (calls.push(o), null) };
+    const session = openHome({
+      store, events, outreach: port,
+      beforeOpen: (s) => void s.append({ sessionId: SID, ts: Date.now() - FRIEND_PICK_TTL_MS - 1000, type: "friend_pick", ignorable: true, ...OFFER }),
+      adapterFor: () => ({ model: "fake-model", async chat() { return { content: "好" }; } }),
+    });
+    expect(await session.pickFriend("p1", OWNER, "u-hong")).toEqual({ ok: false, message: "这张卡已经用过或过期了。" });
+    expect(calls).toEqual([]);
+    expect(picksOf(events)).toEqual([]);
+    store.close();
+  });
+
+  it("被新卡顶掉的旧卡：点旧的被拒，点新的照常（M-4）", async () => {
+    const t = withPort(async () => null);
+    t.session.logFriendPick(OFFER);
+    t.session.logFriendPick({ ...OFFER, pickId: "p2" });
+    expect(await t.session.pickFriend("p1", OWNER, "u-hong")).toEqual({ ok: false, message: "这张卡已经用过或过期了。" });
+    expect(t.calls).toEqual([]);
+    expect(await t.session.pickFriend("p2", OWNER, "u-hong")).toEqual({ ok: true });
+    expect(t.calls).toHaveLength(1);
     t.store.close();
   });
 
