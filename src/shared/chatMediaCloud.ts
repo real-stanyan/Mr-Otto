@@ -29,6 +29,8 @@ export function alreadyThere(err: unknown): boolean {
 export async function sendCloudMedia<Ack>(
   workspaceId: string, sessionId: string, items: readonly PreparedMedia[], deps: CloudMediaDeps<Ack>
 ): Promise<Ack> {
+  // 语音（#1492）这一期只在朋友私聊里：云会话的引用（ChatMediaRef）还没有 audio 这一种
+  if (items.some((it) => it.kind === "audio")) throw new Error("群里暂时发不了语音消息");
   const steps = items.reduce((n, it) => n + 1 + (it.kind === "video" && it.posterUri !== undefined ? 1 : 0), 0);
   let done = 0;
   const put = async (uri: string, mime: string, fallbackBytes: number): Promise<{ sha256: string; bytes: number }> => {

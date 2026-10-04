@@ -29,13 +29,21 @@ export const POSTER_MAX_EDGE = 720;
 /** 存进 bucket 的格式。HEIC 在客户端转成 JPEG 再传：桌面的 Electron 解不了 HEIC，模型也不收 */
 export const IMAGE_MIME_TYPES = ["image/jpeg", "image/png"] as const;
 export const VIDEO_MIME_TYPES = ["video/mp4", "video/quicktime"] as const;
+/** 语音消息（#1492）：手机录的 AAC 装在 m4a 里 */
+export const AUDIO_MIME_TYPES = ["audio/mp4"] as const;
 export type ImageMime = (typeof IMAGE_MIME_TYPES)[number];
 export type VideoMime = (typeof VIDEO_MIME_TYPES)[number];
+export type AudioMime = (typeof AUDIO_MIME_TYPES)[number];
+/** 一条语音最长 60 秒（照微信）、最多 5MB（60 秒 AAC 远不到）、转写最多 2000 字 */
+export const AUDIO_MAX_MS = 60_000;
+export const AUDIO_MAX_BYTES = 5 * 1024 * 1024;
+export const TRANSCRIPT_MAX_CHARS = 2000;
 
-export const MEDIA_PLACEHOLDER = { image: "[图片]", video: "[视频]" } as const;
+export const MEDIA_PLACEHOLDER = { image: "[图片]", video: "[视频]", audio: "[语音]" } as const;
 
 export interface ChatMediaItem {
-  kind: "image" | "video";
+  /** `audio`（#1492，ADR-0351）= 一条语音消息：m4a 一段 + 时长 + 发送方那一刻的转写（可缺席） */
+  kind: "image" | "video" | "audio";
   /** bucket 里的对象键（不含 bucket 名） */
   path: string;
   mediaType: string;
@@ -47,9 +55,12 @@ export interface ChatMediaItem {
   durationMs?: number;
   /** 视频封面的对象键（同一个 bucket，JPEG）。缺席 = 没生成出来，气泡画一块底色加播放钮 */
   poster?: string;
+  /** 只有语音有：发送方录的时候听写出来的字（#1492，维护者拍板：接收方「转文字」不再识别一遍，用这一份）。
+      缺席 = 没听清 / 没开听写 */
+  transcript?: string;
 }
 
-const EXT: Record<string, string> = { "image/jpeg": "jpg", "image/png": "png", "video/mp4": "mp4", "video/quicktime": "mov" };
+const EXT: Record<string, string> = { "image/jpeg": "jpg", "image/png": "png", "video/mp4": "mp4", "video/quicktime": "mov", "audio/mp4": "m4a" };
 
 export function extForMime(mime: string): string | null {
   return EXT[mime] ?? null;
@@ -58,6 +69,10 @@ export function extForMime(mime: string): string | null {
 function isImageMime(m: unknown): m is ImageMime {
   return typeof m === "string" && (IMAGE_MIME_TYPES as readonly string[]).includes(m);
 }
+function isAudioMime(m: unknown): m is AudioMime {
+  return typeof m === "string" && (AUDIO_MIME_TYPES as readonly string[]).includes(m);
+}
+
 function isVideoMime(m: unknown): m is VideoMime {
   return typeof m === "string" && (VIDEO_MIME_TYPES as readonly string[]).includes(m);
 }
@@ -85,6 +100,13 @@ function parseItem(raw: unknown): ChatMediaItem | null {
     if (!isVideoMime(o.mediaType) || !isPositiveInt(o.durationMs)) return null;
     if (o.poster !== undefined && !isObjectKey(o.poster)) return null;
     return { kind: "video", ...base, durationMs: o.durationMs, ...(o.poster !== undefined ? { poster: o.poster } : {}) };
+  }
+  if (o.kind === "audio") {
+    // 语音（#1492）：m4a、有时长且 ≤ 60 秒、没有尺寸也没有封面；转写可缺席、是字符串、≤ 2000 字
+    if (!isAudioMime(o.mediaType) || !isPositiveInt(o.durationMs) || o.durationMs > AUDIO_MAX_MS || o.bytes > AUDIO_MAX_BYTES) return null;
+    if (o.width !== 0 || o.height !== 0 || o.poster !== undefined) return null;
+    if (o.transcript !== undefined && (typeof o.transcript !== "string" || o.transcript.length > TRANSCRIPT_MAX_CHARS)) return null;
+    return { kind: "audio", ...base, durationMs: o.durationMs, ...(typeof o.transcript === "string" && o.transcript !== "" ? { transcript: o.transcript } : {}) };
   }
   return null;
 }
@@ -118,11 +140,12 @@ export function parseDmMedia(raw: unknown, sender: string, recipient: string): C
   return ok ? items : null;
 }
 
-/** 纯媒体消息的正文。全是图片 [图片]、全是视频 [视频]、混着两样都写（今天的界面不会发出混的，见 planMediaMessages） */
+/** 纯媒体消息的正文。全是图片 [图片]、全是视频 [视频]、语音 [语音]、混着的都写（今天的界面不会发出混的，见 planMediaMessages） */
 export function mediaPlaceholder(items: readonly Pick<ChatMediaItem, "kind">[]): string {
   const img = items.some((i) => i.kind === "image");
   const vid = items.some((i) => i.kind === "video");
-  return (img ? MEDIA_PLACEHOLDER.image : "") + (vid ? MEDIA_PLACEHOLDER.video : "");
+  const aud = items.some((i) => i.kind === "audio");
+  return (img ? MEDIA_PLACEHOLDER.image : "") + (vid ? MEDIA_PLACEHOLDER.video : "") + (aud ? MEDIA_PLACEHOLDER.audio : "");
 }
 
 /** 新客户端藏不藏正文：带着解析得出的媒体、且正文恰好是它的占位。别的情形（有人配了字、媒体解析失败）照画字 */
@@ -166,11 +189,12 @@ export function chatMediaPath(workspaceId: string, sessionId: string, sha256hex:
  * 一次挑了好几样，拆成几条消息：**图片攒成一条**（满 9 张换下一条），**视频一条一个**——一条消息里一段视频
  * 加几张图在气泡里没有好的排法，而视频是要点开看的东西。顺序跟挑的顺序走：每条消息出现在它第一样的位置。
  */
-export function planMediaMessages<T extends { kind: "image" | "video" }>(picks: readonly T[]): T[][] {
+export function planMediaMessages<T extends { kind: "image" | "video" | "audio" }>(picks: readonly T[]): T[][] {
   const out: T[][] = [];
   let open: T[] | null = null;
   for (const p of picks) {
-    if (p.kind === "video") {
+    // 视频一条一个；语音也是（#1492：一条语音消息就是一段）
+    if (p.kind !== "image") {
       out.push([p]);
       continue;
     }
@@ -231,7 +255,7 @@ export function videoDurationLabel(ms: number): string {
 
 /** 手机上准备好、还没传的一样：本机文件 URI + 传完要写进 media 的那几格 */
 export interface PreparedMedia {
-  kind: "image" | "video";
+  kind: "image" | "video" | "audio";
   uri: string;
   mediaType: string;
   bytes: number;
@@ -240,6 +264,8 @@ export interface PreparedMedia {
   durationMs?: number;
   /** 视频封面的本机 JPEG。缺席 = 没生成出来 */
   posterUri?: string;
+  /** 语音（#1492）：录的时候听写出来的字，随消息一起走 */
+  transcript?: string;
 }
 
 export interface MediaSendDeps<T> {
@@ -300,6 +326,10 @@ export async function sendMediaMessage<T>(
           }
         }
         media.push({ ...base, durationMs: it.durationMs ?? 0, ...(poster !== undefined ? { poster } : {}) });
+      } else if (it.kind === "audio") {
+        // 语音（#1492）：时长 + 转写（有才带，截到上限）
+        const t = (it.transcript ?? "").slice(0, TRANSCRIPT_MAX_CHARS);
+        media.push({ ...base, durationMs: it.durationMs ?? 0, ...(t !== "" ? { transcript: t } : {}) });
       } else {
         media.push(base);
       }
