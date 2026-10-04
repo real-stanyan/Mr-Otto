@@ -42,6 +42,16 @@ export function teamsSnapshot(): TeamsState {
   return store.get();
 }
 
+/** 冷启动先铺上一次存在本机的那份（#1471）。网上那份已经到了就不铺 */
+export function hydrateTeams(p: Pick<TeamsState, "teams" | "guests" | "mentions">): void {
+  if (store.get().loaded) return;
+  store.set({ ...p, loaded: true });
+}
+
+export function onTeamsChange(fn: () => void): () => void {
+  return store.subscribe(fn);
+}
+
 /** 这个团队的快照（团队群的聊天页 / 聊天信息 / 别人的智能体资料页用） */
 export function teamWorkspace(workspaceId: string): WorkspaceSnapshot | null {
   return store.get().teams.find((t) => t.ws.id === workspaceId)?.ws ?? null;

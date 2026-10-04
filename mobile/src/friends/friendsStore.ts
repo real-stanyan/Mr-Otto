@@ -73,6 +73,17 @@ export function friendsSnapshot(): FriendsState {
   return store.get();
 }
 
+/** 冷启动先铺上一次存在本机的那份（#1471）：只在名单还没拉到、而且是同一个账号时铺 */
+export function hydrateFriends(uid: string, p: { rows: FriendRow[]; recent: DirectMessage[] }): void {
+  const s = store.get();
+  if (s.rows !== null || (s.uid !== null && s.uid !== uid)) return;
+  store.set({ rows: p.rows, recent: mergeMessages(s.recent, p.recent) });
+}
+
+export function onFriendsChange(fn: () => void): () => void {
+  return store.subscribe(fn);
+}
+
 function why(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }

@@ -49,6 +49,17 @@ export function useHome(): HomeState {
   return useSyncExternalStore(store.subscribe, store.get);
 }
 
+/** 冷启动先铺上一次存在本机的那份（#1471，inbox/inboxCache.ts）。网上那份已经到了（loaded）就不铺：
+    缓存永远只是「还没拉到之前」的替身，拉到了以网上为准 */
+export function hydrateHome(p: Pick<HomeState, "selfUid" | "home" | "chats" | "lasts">): void {
+  if (store.get().loaded || p.home === null) return;
+  store.set({ ...p, loaded: true });
+}
+
+export function onHomeChange(fn: () => void): () => void {
+  return store.subscribe(fn);
+}
+
 async function currentUid(): Promise<string | null> {
   return (await supabase.auth.getSession()).data.session?.user.id ?? null;
 }
