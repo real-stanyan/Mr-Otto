@@ -13,6 +13,8 @@ import { agentFaceIfKnown } from "../../../src/shared/agentAvatar.js";
 import type { RosterLinePart } from "../../../src/shared/cloudTimeline.js";
 import { callOffsetText } from "../../../src/shared/cloudTimeline.js";
 import { ringRecordView, type ChatRow } from "../../../src/shared/mobileChat.js";
+import { CHAT_MEDIA_BUCKET, mediaBodyHidden, type ChatMediaItem } from "../../../src/shared/chatMedia.js";
+import { MediaBubble } from "../media/MediaBubble.js";
 import { facePhase } from "../../../src/shared/ottoFace/art.js";
 import type { FaceState } from "../../../src/shared/ottoFace/index.js";
 import { memberAvatarOf } from "../../../src/shared/workspaceView.js";
@@ -57,16 +59,19 @@ function Bubble({ text, mine, agent, first }: { text: string; mine: boolean; age
 }
 
 /** 一句话一行：左边（别人 / 它）或右边（我）。`name` 只在群里给 */
-function MessageRow({ mine, agent = false, avatar, name, paragraphs, onAvatar }: {
+function MessageRow({ mine, agent = false, avatar, name, paragraphs, media, onAvatar }: {
   mine: boolean;
   /** 智能体说的（#1465：气泡换 bubbleAgent，与人的分开） */
   agent?: boolean;
   avatar: React.ReactNode;
   name: string | null;
   paragraphs: readonly string[];
+  /** 这句带的图 / 视频（#1491，云会话的 chat-media）：正文是占位「[图片]」时只画图 */
+  media?: ChatMediaItem[];
   onAvatar?: () => void;
 }) {
   const { c } = usePalette();
+  const texts = media !== undefined && paragraphs.length === 1 && mediaBodyHidden(paragraphs[0] ?? "", media) ? [] : paragraphs;
   const head = onAvatar === undefined ? avatar : (
     <Pressable accessibilityRole="button" accessibilityLabel={name ?? "资料"} onPress={onAvatar} hitSlop={4}>{avatar}</Pressable>
   );
@@ -75,7 +80,8 @@ function MessageRow({ mine, agent = false, avatar, name, paragraphs, onAvatar }:
       {head}
       <View style={{ flexShrink: 1, maxWidth: "76%", gap: 6, alignItems: mine ? "flex-end" : "flex-start" }}>
         {name !== null ? <Text numberOfLines={1} style={{ fontSize: 12, color: c.mutedForeground, marginBottom: -3, paddingHorizontal: 2 }}>{name}</Text> : null}
-        {paragraphs.map((p, i) => <Bubble key={i} text={p} mine={mine} agent={agent} first={i === 0} />)}
+        {media !== undefined ? <MediaBubble media={media} bucket={CHAT_MEDIA_BUCKET} /> : null}
+        {texts.map((p, i) => <Bubble key={i} text={p} mine={mine} agent={agent} first={i === 0 && media === undefined} />)}
       </View>
     </View>
   );
@@ -153,7 +159,7 @@ export function ChatRowView({ row, ws, selfUid, selfName, selfAvatar, group, out
     case "time":
       return <Text style={{ alignSelf: "center", fontSize: 11.5, color: c.faint, fontVariant: ["tabular-nums"], paddingVertical: 2 }}>{row.label}</Text>;
     case "mine":
-      return <MessageRow mine avatar={<PersonTile name={selfName} url={selfAvatar} size={AVATAR} me />} name={null} paragraphs={[row.text]} />;
+      return <MessageRow mine avatar={<PersonTile name={selfName} url={selfAvatar} size={AVATAR} me />} name={null} paragraphs={[row.text]} {...(row.media !== undefined ? { media: row.media } : {})} />;
     case "human":
       return (
         <MessageRow
@@ -161,6 +167,7 @@ export function ChatRowView({ row, ws, selfUid, selfName, selfAvatar, group, out
           avatar={<PersonTile name={row.name} url={row.uid !== null ? memberAvatarOf(ws, row.uid) : ""} size={AVATAR} />}
           name={group ? row.name : null}
           paragraphs={[row.text]}
+          {...(row.media !== undefined ? { media: row.media } : {})}
         />
       );
     case "agent":
