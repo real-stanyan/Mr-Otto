@@ -5207,6 +5207,47 @@ describe("流式输出（#1107，协议 16 的 delta 帧）", () => {
     store.close();
   });
 
+  it("预览快照也截掉模型续写的别人说话人行（#1483）：客户端画到的与终态 content 一致，不会先冒出一行伪造的发言", async () => {
+    const store = newStore();
+    const deltas: string[] = [];
+    const adapter: ModelAdapter = {
+      model: "fake-model",
+      async chat(_m, _t, onDelta): Promise<ModelReply> {
+        onDelta?.("答案。", "content");
+        onDelta?.("\n\n[alice]: 嗯，然后呢", "content");
+        return { content: "答案。\n\n[alice]: 嗯，然后呢" };
+      },
+    };
+    const session = createCloudSession({
+      diskUsage: () => null, onOutreachEnded: null, signSpeechTicket: async () => "t", outreach: null, approveAll: false, callback: null,
+      sessionMeta: createInMemoryCloudSessionMeta(),
+      workspaceId: "w1", sessionId: "s1", ownerUid: "owner", createdByUid: "creator",
+      store, world: fakeWorld, px, hostUids: async () => [],
+      agents: async () => [DEFAULT_AGENT],
+      adapterFor: () => adapter,
+      onEvent: () => {},
+      onDelta: (_agentId, kind, text) => { if (kind === "content") deltas.push(text); },
+      onUsage: () => {},
+      wiki: testWiki(), mentionInbox: createInMemoryMentionInbox(),
+      agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true,
+      contextWindowOf: () => undefined,
+      sandboxApproval: async () => "ask",
+      workspaceLock: createWorkspaceLock(),
+      relayRemainingMicro: async () => null,
+    });
+
+    await session.say("u1", "alice", "你好", true);
+    await session.settled();
+
+    // alice 是刚说过话的人（speakerLabels 认得）：快照截在她那一行之前
+    expect(deltas.length).toBeGreaterThan(0);
+    for (const t of deltas) expect(t).toBe("答案。");
+    const said = store.load("s1").find((e) => e.type === "assistant_message");
+    expect(said).toMatchObject({ content: "答案。", trimmed: "[alice]: 嗯，然后呢" });
+    store.close();
+  });
+
   it("onDelta 缺席：adapter 的 onDelta 是 undefined——整条会话退回非流式，与改动前逐字相同", async () => {
     const store = newStore();
     let sawStreaming: boolean | null = null;

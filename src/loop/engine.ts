@@ -15,6 +15,7 @@ import { barrenEventIndexes } from "../session/barrenTurns.js";
 import { boundedContextEvents } from "../session/modelContextScan.js";
 import { clipHeadTail, redactSensitiveText } from "../shared/redact.js";
 import { contextUsed } from "../shared/contextEstimate.js";
+import { cutSpeakerLeak, speakerNamesOf, type SpeakerLeakCut } from "../shared/speakerLeak.js";
 import { shouldAutoCompact, shouldIdleCompact, type AutoCompactSettings } from "../shared/autoCompact.js";
 import {
   detectToolLoop,
@@ -919,10 +920,21 @@ export class LoopEngine {
       this.sampling = false;
       const reasoningMs = clock.finish();
 
+      // 模型答完之后接着续写了别人的说话人行（#1483，ADR-0345）：落盘前从那一行起截掉，
+      // 截掉的尾巴留在 trimmed 里。名单从这只眼里的日志现算（名单事件 + 发言标签 +
+      // 用户消息前缀）。只在配了 agentId 的云会话上做：本机会话没有说话人行这回事，
+      // 日志形状一个字节不变
+      let spoken: SpeakerLeakCut = { content: reply.content };
+      if (this.opts.agentId) {
+        const who = speakerNamesOf(log, this.opts.agentId);
+        spoken = cutSpeakerLeak(reply.content, who.names, who.self);
+      }
+
       this.append({
         ...this.env(),
         type: "assistant_message",
-        content: reply.content,
+        content: spoken.content,
+        ...(spoken.trimmed !== undefined ? { trimmed: spoken.trimmed } : {}),
         model: this.adapter.model,
         ...(reply.toolCalls ? { toolCalls: reply.toolCalls } : {}),
         ...(reply.usage ? { usage: reply.usage } : {}), // token 账单随事件落盘，UI 从日志求和
