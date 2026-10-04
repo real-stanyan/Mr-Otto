@@ -42,17 +42,34 @@ export interface SystemChatMessage {
     刻意不读时钟:投影是纯函数,同一份日志必须永远投出同一串字节(硬规则)。
     日期从事件的 ts 推——它本来就在日志里,重放到哪天就是哪天。
     只取到天:系统提示词是缓存前缀,按天变 = 一天失效一次,按 turn 变 = 每轮都白付 */
-function dayOf(ts: number): string {
+/** 最近一条带 tz 的人话的时区（#1283）：云会话里手机的 say 帧带设备时区落到 user_message.tz。
+    没有 = 本机会话 / 旧日志 / 桌面发的 */
+export function userTzOf(events: readonly { type: string; tz?: string }[]): string | undefined {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i]!;
+    if (e.type === "user_message" && e.tz !== undefined) return e.tz;
+  }
+  return undefined;
+}
+
+function dayOf(ts: number, tz?: string): string {
+  if (tz !== undefined) {
+    // en-CA 的 dateStyle 短格就是 YYYY-MM-DD；Intl 认不得的时区名在落盘前已被 runtime 挡掉，这里兜一层回进程时区
+    try {
+      return new Intl.DateTimeFormat("en-CA", { timeZone: tz, year: "numeric", month: "2-digit", day: "2-digit" }).format(ts);
+    } catch { /* 回落到下面 */ }
+  }
   const d = new Date(ts);
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
 /** 日志里最后一条事件的日期 —— 投影和用量估算共用同一处口径（两边各算一遍
-    就会出现"估算里没有日期那一行、真实请求里有"的偏差）。空日志 = 没有日期 */
-export function dayOfLastEvent(events: { ts: number }[]): string | undefined {
+    就会出现"估算里没有日期那一行、真实请求里有"的偏差）。空日志 = 没有日期。
+    时区取最近一条 user_message.tz（#1283），没有就是进程时区（老行为） */
+export function dayOfLastEvent(events: { ts: number; type?: string; tz?: string }[]): string | undefined {
   const last = events[events.length - 1];
-  return last ? dayOf(last.ts) : undefined;
+  return last ? dayOf(last.ts, userTzOf(events as { type: string; tz?: string }[])) : undefined;
 }
 
 /** 围栏 system 消息的正文——投影(下面)和上下文用量估算(shared/contextEstimate)
@@ -66,7 +83,9 @@ export function systemPromptText(
   today?: string,
   workspaceKind?: "default",
   isolated?: IsolatedWorkspace,
-  cloud?: CloudSessionFacts
+  cloud?: CloudSessionFacts,
+  /** 日期那行括号里写的时区名（#1283）；缺席 = 「本机时区」，逐字节同老文案 */
+  todayTz?: string
 ): string {
   // 外联会话（#1441）：这条线上智能体**没有任何工具**，所以下面那串「会用工具的桌面 agent」、
   // 工作目录、read_file / write_file 的围栏、审批、五种围栏全是假话——模型信提示词不信工具表
@@ -74,14 +93,14 @@ export function systemPromptText(
   if (cloud?.chat?.kind === "outreach") {
     return (
       `你是 Mr. Otto（叫我 Otto）。\n` +
-      (today ? `今天是 ${today}（本机时区）。日期以此为准，别按训练截止猜。\n` : "") +
+      (today ? `今天是 ${today}（${todayTz ?? "本机时区"}）。日期以此为准，别按训练截止猜。\n` : "") +
       cloudSessionText(cloud) +
       plainTalk(cloud)
     );
   }
   return (
     `你是 Mr. Otto（叫我 Otto），一个会用工具的桌面 agent。当前工程文件夹：${workspace}\n` +
-    (today ? `今天是 ${today}（本机时区）。日期以此为准，别按训练截止猜。\n` : "") +
+    (today ? `今天是 ${today}（${todayTz ?? "本机时区"}）。日期以此为准，别按训练截止猜。\n` : "") +
     (workspaceKind === "default" ? PACKAGE_NUDGE : "") +
     // 云会话（issue #833）：不注入的话模型对自己的处境一无所知——不知道
     // 在容器里、不知道对面是一群人、不知道自己的提交推不出去
@@ -727,6 +746,7 @@ export function deriveMessages(
   // 「今天」= 日志里最后一条事件的日期(见 dayOf)。空日志没有日期可推,
   // 那条 system 消息也不会被投出来(要 session_created 才有)
   const today = dayOfLastEvent(events);
+  const todayTz = userTzOf(events);
   // 围栏 system 消息单独记着：context_compacted 清场时它要被抬回来
   let systemMessage: SystemChatMessage | null = null;
   // agent 身份快照（#957 A-3）：同 workspaceMemoryPrompt——最新一条胜出，
@@ -935,7 +955,7 @@ export function deriveMessages(
           // 不取 session_created 自己的 ts——跨夜的会话会一直以为还是开会话那天
           systemMessage = {
             role: "system",
-            content: systemPromptText(event.workspace, today, event.workspaceKind, event.isolated, event.cloud),
+            content: systemPromptText(event.workspace, today, event.workspaceKind, event.isolated, event.cloud, todayTz),
           };
           messages.push(systemMessage);
           isCloud = event.cloud !== undefined;

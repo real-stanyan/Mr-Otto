@@ -133,6 +133,9 @@ export interface CloudSessionClientDeps {
   accessToken: () => Promise<string | null>;
   /** 当前登录者的 uid；未登录回 null */
   selfUid: () => string | null;
+  /** 这台设备的 IANA 时区（#1283）：每次 say 现取、带在帧上，runtime 落到 user_message.tz。
+      不给 = 不带（桌面：它的「今天是」本来就按本机算） */
+  deviceTz?: () => string | undefined;
   /** 建一条按 cid 寻址的传输，role 固定 "guest"（由调用方在闭包里决定，
       本模块不关心 baseUrl/token 怎么拼——同 proxyManager 的 openWireTransport
       注入方式）。测试用假货直接顶替，生产装配传 createWsTransport 的薄封装 */
@@ -1092,6 +1095,8 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     if (voice === true) frame.voice = true;
     // 带了才进帧（协议 24，#1491）：空数组与缺席是同一件事
     if (media !== undefined && media.length > 0) frame.media = media;
+    const tz = deps.deviceTz?.();
+    if (tz !== undefined && tz !== "") frame.tz = tz;
     const sent = sendFrame(session, frame);
     // 压根没发出去就别挂 15 秒（#829 的四条丢帧路径 + encode 抛错）
     if (!sent.ok) return sent;

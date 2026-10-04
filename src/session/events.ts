@@ -106,8 +106,12 @@ export interface UserMessageEvent extends SessionEventBase {
       `"admin_intro"`（#1465，ADR-0341）：新用户的管理员第一次开口——自我介绍、引导建第一只专属智能体。
       与 `new_agent` 分开：管理员职责固定，不走「第一句回话写成职责」那一步。同样只是记号、同样不画。
       `"pair_call_summary"`（#1533）：朋友给主人的公开智能体打完电话，runtime 替主人落的那条「把 TA 的需求总结给我」——
-      与 outreach_report 同一种性质（正文是外人的话的转述），那一轮受监督 */
-  greeting?: "voice_call" | "new_agent" | "callback" | "outreach" | "outreach_report" | "admin_intro" | "pair_call_summary";
+      与 outreach_report 同一种性质（正文是外人的话的转述），那一轮受监督
+      `"routine"`（#1283，ADR-0359）：定时任务到点，runtime 替主人落的开场白（`mentions` 是那只，`fromUid` 是主人）。
+      与别的 greeting 两处不同：① 它**算主人亲口**（openingTraits 的 ownerSpoke 放行它——任务原话是主人写的）；
+      ② 手机时间线**画它**（一条居中灰条「⏰ 定时任务「x」」）：别的 greeting 都有前一条可见事件解释「为什么它开口了」，
+      这条没有。桌面照旧藏。同样不进协议位 */
+  greeting?: "voice_call" | "new_agent" | "callback" | "outreach" | "outreach_report" | "admin_intro" | "pair_call_summary" | "routine";
   /** 这句话是**在语音通话里说出来的**（#1233）。缺席 = 打字打的 / 旧日志。
       **只是记号**：起 turn、排队、护栏、接力链首、派活全都不看它，模型投影
       （deriveMessages）读都不读——对模型来说这就是一条普通的用户消息，和从前
@@ -125,6 +129,11 @@ export interface UserMessageEvent extends SessionEventBase {
       写入权同 `origin`：runtime 从 say 帧上那一格取，桌面的 IPC 入口只有语音
       那条路会带 true（`store.speechOnEvent`）。 */
   voice?: true;
+  /** 哪条定时任务（#1283）：只在 greeting === "routine" 时在场。时间线的灰条要标题，日志里得有——任务可能已被删 */
+  routine?: { id: string; title: string };
+  /** 发话人设备的 IANA 时区（#1283，spec §6）：手机的 say 帧带、runtime 校验是合法时区后原样落。缺席 = 旧日志 / 桌面。
+      **只影响投影里「今天是」那一行**（deriveMessages 按最近一条带 tz 的人话算日期）；起 turn、排队、护栏一个判断都不读它 */
+  tz?: string;
 }
 
 /** 文本文件附件:全文进日志(快照),不进附件库(附件库只收图片) */
@@ -702,6 +711,19 @@ export interface CallRingEvent extends SessionEventBase {
   ignorable: true;
 }
 
+/** 定时任务没跑成的那一笔（#1283，spec §4.3）：错过了 / 额度不够跳过。模型不可见（`ignorable`），只画一条灰条。
+    **不带 agentId**：带的话 openTurns / 活动折叠会把它认成那只的一轮（同 call_ring 的纪律） */
+export interface RoutineNoteEvent extends SessionEventBase {
+  type: "routine_note";
+  routineId: string;
+  title: string;
+  reason: "missed" | "skipped_quota";
+  /** 原定的那一刻（UTC 毫秒）与它的时区——文案按时区格式化 */
+  plannedAt: number;
+  tz: string;
+  ignorable: true;
+}
+
 export type OutreachOutcome = "completed" | "missed" | "capped" | "failed";
 export interface OutreachLine { who: "agent" | "peer"; text: string; ts: number }
 
@@ -1258,6 +1280,7 @@ export type SessionEvent =
   | AgentRelayEvent
   | VoiceCallChangedEvent
   | CallRingEvent
+  | RoutineNoteEvent
   | OutreachEvent
   | ChatRosterChangedEvent
   | ExecutorChangedEvent
@@ -1325,6 +1348,7 @@ const KNOWN_EVENT_TYPES_MAP: Record<SessionEvent["type"], true> = {
   agent_relay: true,
   voice_call_changed: true,
   call_ring: true,
+  routine_note: true,
   outreach: true,
   chat_roster_changed: true,
   executor_changed: true,

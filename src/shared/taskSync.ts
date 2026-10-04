@@ -67,6 +67,7 @@ export const PEN_VERDICTS: Record<SessionEvent["type"], PenVerdict> = {
   voice_call_changed: "executor",
   chat_roster_changed: "executor",
   call_ring: "executor",
+  routine_note: "executor",
   outreach: "executor",
   memory_loaded: "executor",
   workspace_memory_loaded: "executor",

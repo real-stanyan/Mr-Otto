@@ -123,6 +123,7 @@ export function hiddenFromCloudTimeline(e: SessionEvent): boolean {
     e.type === "request_envelope" ||
     e.type === "session_autotitled" ||
     e.type === "call_ring" ||
+    e.type === "routine_note" || // 定时任务没跑成的灰条（#1283）：手机画，桌面等微信式布局
     e.type === "outreach" || // 外联（#1441）：卡由手机端从日志里自己认，桌面不画
     e.type === "pair_context_loaded" // 私密车道的私聊信封（#1461）：给模型的背景，私聊原文本来就画在私聊里
   );

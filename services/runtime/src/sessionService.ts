@@ -188,6 +188,9 @@ import { SPEECH_TICKET_TTL_MS, type SpeechTicket } from "../../../src/shared/spe
 import { createOutreachRun, type OutreachEnded, type OutreachRun, type OutreachStart, type OutreachStartResult } from "./outreachRun.js";
 import { createCallUserTool } from "./callUserTool.js";
 import { createCallFriendTool } from "./callFriendTool.js";
+import { createRoutineTools } from "./routineTools.js";
+import type { RoutineStore } from "./routineStore.js";
+import { ROUTINE_MAX_ROUNDS, routineOpeningText } from "../../../src/shared/routines.js";
 import { createMessageFriendAgentTool } from "./messageFriendAgentTool.js";
 import { MESSAGE_FRIEND_AGENT_TOOL_NAME } from "../../../src/shared/laneBridge.js";
 import type { DeltaKind, ModelAdapter } from "../../../src/model/adapter.js";
@@ -529,6 +532,9 @@ export interface CloudSessionOpts {
       本进程还没量过。**只用来说话不用来拦人**，为什么见 sandbox.ts 的
       DISK_LIMIT_KIB */
   diskUsage: () => { usedKib: number; limitKib: number } | null;
+  /** 定时任务（#1283，spec §7）。**必需**（同 agentWriter / isMember 的纪律）：忘接线该编译不过。
+      null = 不挂那三把刀（团队会话 / 外联 / 0058 没跑）。刀只在 approveAll 且 chat.kind === "dm" 的会话里挂 */
+  routines: RoutineStore | null;
   /** 时钟（只给测试拧 TTL 用）。缺席 = Date.now */
   now?: () => number;
 }
@@ -567,7 +573,9 @@ export interface CloudSession {
       位置参数，插中间会让既有调用把 `budget` 喂给新参数——两者都是「可选的、
       形状对不上就报错」，但 `true` 与一个回调在 tsc 眼里分得开，而 `mentions`
       与 `memberMentions` 那两个同型数组分不开（同 `meFromParts` 那条教训）。
-      它只往下传到落盘那一格，say() 里没有任何判断读它 */
+      它只往下传到落盘那一格，say() 里没有任何判断读它。
+      `tz`（#1283）同理放在 `media` 之后（第 10 个，仍是最后一个）：发话人设备的
+      时区，原样落到 user_message.tz；同 voice 只往下传到落盘那一格 */
   say(
     fromUid: string,
     label: string,
@@ -581,6 +589,8 @@ export interface CloudSession {
     /** 这句话是对面车道里的智能体经 laneBridge 发来的（#1542）：落成带 `relay` 的 user_message，深度跨车道累加——
         接力的三道闸（深度 / 棒数 / 预算）与「接力棒上的连接器要点火者批」都按它算。缺席 = 人说的 */
     relay?: { fromAgentId: string; depth: number },
+    /** 发话人设备的 IANA 时区（#1283）：原样落到 user_message.tz，只给投影里「今天是」那一行用。**最后一个位置参数**（同 voice 的纪律）。缺席 = 桌面 / 旧客户端 */
+    tz?: string
   ): Promise<void>;
   /** 排空跑完了吗——**给测试与冒烟脚本等待用的，不是协议的一部分**
       （issue #937）：say() 不再等 turn，可断言「turn 跑完之后」的地方需要一个
@@ -692,6 +702,12 @@ export interface CloudSession {
       点它自己）并入队——同 greetNewAgent 那条路。**这一轮里每一把刀都要主人批**（正文是朋友说的话的转述，
       不是主人的指令，见 supervisedTurn）。那只已不在名单里就什么都不起 */
   reportOutreach(r: { agentId: string; text: string; ownerUid: string }): void;
+  /** 定时任务到点（#1283，spec §4.2）：替主人落一条 greeting:"routine" 的开场白并入队——与 greetNewAgent /
+      reportOutreach 同一条路。名单现读：那只已删 / 已移出回 no_agent，一个事件都不落；名单读不出来（degraded）
+      抛错——那是一次查询失败，不能让调度器当成「那只没了」把任务停掉 */
+  runRoutine(r: { routineId: string; title: string; instruction: string; tz: string; firedAt: number; agentId: string }): Promise<"ok" | "archived" | "no_agent">;
+  /** 定时任务没跑成的注记（错过 / 额度不够，spec §4.3）：ignorable，不起 turn */
+  logRoutineNote(n: { routineId: string; title: string; reason: "missed" | "skipped_quota"; plannedAt: number; tz: string }): void;
   /** 测试用：这场通话是谁开的（#1533），null = 没在通话里。可选：假装配（smoke / frameHandler 测试）不必带 */
   callStarter?(): string | null;
 }
@@ -894,6 +910,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   const rerunOpenings = new Set<number>();
   /** 这一轮的 job 覆盖到了补跑的开场白（#1441 终审 M7）。runJob 起跑时按 covered 算、收口复位 */
   let rerunTurn = false;
+  /** 这一轮是定时任务起的（#1283）：圈数上限只对它（没人在场按停止键）。按 job 覆盖的开场白算，同 reportTurn */
+  let routineTurn = false;
   /** 这一轮是不是主场群里的客人点起的（#1393，ADR-0325）。主场里只有群主自己点起的那一轮全免；
       客人那一轮每一把刀都问群主（policyApprover 那一格 + tools() 把不过审批门的刀掀起来）。
       团队会话恒为假（approveAll 为假），一个字不变 */
@@ -917,7 +935,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       } else if (e.fromUid !== undefined && e.fromUid !== opts.ownerUid && e.fromUid !== "system") {
         foldedNonOwner = true;
         ownerSpoke = false;
-      } else if (e.greeting !== undefined || e.relay !== undefined) {
+      } else if ((e.greeting !== undefined && e.greeting !== "routine") || e.relay !== undefined) {
+        // routine 开场白不收紧（#1283）：同 openingTraits
         ownerSpoke = false;
       }
     } else if (e.type === "chat_message" && e.fromUid !== opts.ownerUid && e.fromUid !== "system") {
@@ -931,6 +950,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     reportTurn = reportTurn || t.report;
     foldedNonOwner = foldedNonOwner || t.nonOwner;
     rerunTurn = rerunTurn || covered.some((u) => rerunOpenings.has(u.seq));
+    routineTurn = routineTurn || covered.some((u) => u.greeting === "routine");
     ownerSpoke = ownerSpoke && t.ownerSpoke && depth === 0 && !rerunTurn;
   };
   const supervisedTurn = (): boolean => opts.approveAll && (guestTurn() || reportTurn || foldedNonOwner);
@@ -1540,6 +1560,15 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
                 originSessionId: sessionId, agentId: spec.agentId, agentName: specNames.get(spec.agentId) ?? spec.name, friend, brief, opening,
               }),
           });
+    // 定时任务三把刀（#1283）：只在主场私聊里挂；亮不亮按「主人亲口 && 不受监督」现算（routine 轮算主人亲口，Task 8）
+    const routineTools =
+      opts.routines === null || !opts.approveAll || chatKind !== "dm"
+        ? []
+        : createRoutineTools({
+            workspaceId: opts.workspaceId, agentId: spec.agentId, ownerUid: opts.ownerUid, store: opts.routines,
+            now: () => opts.now?.() ?? Date.now(),
+            available: () => ownerSpoke && !supervisedTurn(),
+          });
     // message_friend_agent（#1542，ADR-0358）：只挂在公开（facing both）的车道里、daemon 接了 laneBridge 时。
     // 只说话、不动任何人的东西，所以客人点起的轮里也**不掀成要批**（下面 tools() 的例外）——不然 B 的智能体
     // 每回一句都要 B 按一次卡，这条链就等于没有。深度读这一轮开场白的接力深度（currentOpeningDepth）
@@ -1558,6 +1587,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       store: agentView(store, spec.agentId),
       adapter,
       agentId: spec.agentId,
+      // 定时任务那一轮的圈数硬上限（#1283，spec §5.4）：没人在场按停止键。普通轮不封顶（ADR-0006）
+      maxRounds: () => (routineTurn ? ROUTINE_MAX_ROUNDS : undefined),
       // 每 turn 惰性重算：cachedPxTools 在 runJob 里于起跑前现拉，engine 的
       // rebuildTools()（runTurn 开头）读到的就是这一 turn 的授权快照
       // 只有管理员那只有 create_agent（spec §10 切片 6）。判据是 agentId 不是名字——
@@ -1574,6 +1605,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
           // 对面公开的智能体（#1542）：只在这条车道此刻是公开的（朋友在客人名单里）才亮
           ...(bridgeTool !== null && pairFacingOf(chatHumans, pairFacts!.peerUid) === "both" ? [bridgeTool] : []),
           ...(spec.agentId === ADMIN_AGENT_ID ? [createAgentTool] : []),
+          ...routineTools,
           ...gitTools,
           ...cachedPxTools,
         ];
@@ -2402,6 +2434,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // 两格都按这个 job **覆盖的全部开场白**算（covered），不只读 job.opening：折进来的后几条在这里不能漏。
     // openingDepth 为 0 才算亲口：接力棒的开场白 fromUid 是点火的那个人（也许就是主人），不能凭它算资格
     reportTurn = false;
+    routineTurn = false;
     foldedNonOwner = false;
     rerunTurn = false;
     ownerSpoke = true;
@@ -2636,6 +2669,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     } finally {
       currentInitiator = null;
       reportTurn = false;
+      routineTurn = false;
       ownerSpoke = false;
       foldedNonOwner = false;
       rerunTurn = false;
@@ -2787,7 +2821,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   }
 
   const session: CloudSession = {
-    async say(fromUid, label, text, mention, mentions, budget, memberMentions, voice, media, relay) {
+    async say(fromUid, label, text, mention, mentions, budget, memberMentions, voice, media, relay, tz) {
       // 外联会话只在通话进行中收话，且只收**打给的那个朋友**（#1441）：没有进行中的外联 = 电话已经
       // 挂了；主人也不例外（他在这条线上只读）。放在最前面——任何名单查询、落盘之前拒绝，
       // 挂断之后的一句话一个字节都不落
@@ -3072,6 +3106,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         ...(voice !== undefined ? { voice } : {}),
         // 对面车道的智能体发来的（#1542）：接力记号，深度跨车道累加
         ...(relay !== undefined ? { relay } : {}),
+        // 设备时区（#1283）：只给投影里「今天是」那一行用，起 turn 那一路一个判断都不读它
+        ...(tz !== undefined ? { tz } : {}),
         // 带的图 / 视频（#1491）：deriveMessages 把 attachments 折成 image_ref、videos 拼成一行说明（读源码的测试钉着它排在最后）
         ...mediaFields,
       }) as UserMessageEvent; // append 回的是 union；这一条我们刚亲手写的就是 user_message
@@ -3264,6 +3300,37 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       notify(opening);
       // 同 say()：只有此刻没在排空时才起一条
       if (coordinator.enqueue({ agentId, fromUid: byUid, opening }) === "start_turn") startDrain();
+    },
+
+    async runRoutine(r) {
+      if (archived || isOutreach) return "archived";
+      // 名单现读（同 reportOutreach）：任务建的时候那只还在，到点可能已删
+      const roster = await rosterNow({ fresh: true });
+      if (archived) return "archived";
+      // 名单读不出来是一次查询失败，不是那只没了：抛错 → 调度器标 failed 但不停用，下一跳再试。
+      // 回 no_agent 会让一次网络抖动永久停掉主人的任务（终审 I1b）
+      if (roster.some((a) => a.degraded)) throw new Error("智能体名单读不出来，这次先不跑");
+      if (!roster.some((a) => a.agentId === r.agentId)) return "no_agent";
+      const opening = store.append({
+        sessionId,
+        ts: Date.now(),
+        type: "user_message",
+        content: routineOpeningText({ title: r.title, instruction: r.instruction, firedAt: r.firedAt, tz: r.tz }),
+        fromUid: opts.ownerUid,
+        mentions: [r.agentId],
+        greeting: "routine",
+        routine: { id: r.routineId, title: r.title },
+        // 不带 tz：正文里已经写明了时间与时区。带上的话投影「今天是」会改按任务建时的时区算（userTzOf 取说话人
+        // 最近一条带 tz 的）——主人人在别处时，日期会因为一条定时任务跳一下，下一句真话再跳回来
+      }) as UserMessageEvent;
+      notify(opening);
+      if (coordinator.enqueue({ agentId: r.agentId, fromUid: opts.ownerUid, opening }) === "start_turn") startDrain();
+      return "ok";
+    },
+
+    logRoutineNote(n) {
+      if (archived) return;
+      notify(store.append({ sessionId, ts: Date.now(), type: "routine_note", ...n, ignorable: true }));
     },
 
     logOutreach(e) {

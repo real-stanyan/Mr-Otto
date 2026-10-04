@@ -10,7 +10,7 @@ const read = (p: string): string => readFileSync(new URL(`../../${p}`, import.me
 
 describe("frameHandler", () => {
   it("say 帧的 media 递进 session.say", () => {
-    expect(read("services/runtime/src/frameHandler.ts")).toMatch(/msg\.memberMentions, msg\.voice, msg\.media\s*\)/);
+    expect(read("services/runtime/src/frameHandler.ts")).toMatch(/msg\.memberMentions, msg\.voice, msg\.media(?:, undefined, msg\.tz)?\s*\)/);
   });
 });
 

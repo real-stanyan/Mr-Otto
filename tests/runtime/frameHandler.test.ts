@@ -25,6 +25,9 @@ function fakeSession(overrides: Partial<CloudSession> = {}): CloudSession {
     speechTicketFor: async () => null,
     logOutreach: () => {},
     reportOutreach: () => {},
+    // #1283：默认不起——绝大多数用例不关心定时任务
+    runRoutine: async () => "ok" as const,
+    logRoutineNote: () => {},
     // #937：say() 不再等 turn 跑完，等待点搬进了 settled()。这一层不消费它
     settled: async () => {},
     approve: () => "ok",
