@@ -48,8 +48,8 @@ export function stripEmotionTag(bubble: string): string;
 export function prosodyFor(emotion: SpeechEmotion | null): { speed: number; vol: number };
 /** AI 大写、四位年份逐位（搬播客 normalize.ts，边界同） */
 export function normalizeSpoken(text: string): string;
-/** 句间 230 / 段间 460（真人 p50 / p90 四舍五入到档） */
-export const GAP_MS = { sentence: 230, bubble: 460 } as const;
+/** 句间 230 / 换说话人 460（真人 p50 / p90 四舍五入到档）（实施时改：播放器手上有 agentId 没有段边界，真人 p90 那一档本来就是话轮切换，ADR-0352 决策 6） */
+export const GAP_MS = { sentence: 230, speaker: 460 } as const;
 ```
 
 **不认的括注**：`（笑死）（无奈）` 这类词表外的照原样当正文，既不剥也不传情绪——剥词表外的括注就是在改模型说的话。只认**段首**：段中的「他（笑）说」是正文。
@@ -57,14 +57,14 @@ export const GAP_MS = { sentence: 230, bubble: 460 } as const;
 接进现有两条路：
 
 - **出声**（`src/shared/voiceFeed.ts`）：`splitSpoken` 按段切句之前先 `parseEmotionTag`，这一段的每一句都沿用它的情绪；`Utterance` 多一格 `emotion: SpeechEmotion | null`。**已读判据不变**（原文相等）：单位字符串里把记号**重新拼回每一句的句首**（`（笑）我弄好了。` / `（笑）你看一眼。`），`spokenText` 剥记号 + `normalizeSpoken` 之后才是送合成的字节——这样同一句话带不带情绪是两个单位，手机 `createSpeakCache` 的键（#1420）也随之区分。`spokenUnits` 与 `take()` 的变换逐字相同那条对拍测试照留，加情绪维度。
-- **显示**：`chatBubbles.splitBubbles` **不动**（它是切段判据，出声那条路要从它拿到带记号的段）；显示方各在拿到段之后过 `stripEmotionTag`，五处：桌面云会话气泡（`CloudSessionPage.tsx` 的 `AgentBubbles`，终态 + 流式预览同一处）、手机气泡（`src/shared/mobileChat.ts` 两处 `splitBubbles`）、侧栏最后一句（`src/shared/sessionLast.ts`）、通话卡全文（`src/shared/cloudTimeline.ts` `voiceCallCards` 的 `text`）、通话字幕（`VoicePlayer.state().text` 已是 `spokenText` 之后的，天然剥过，加一条断言钉住）。`speakerLeak.ts` 不碰（它判的是署名泄漏，记号不在它管的形状里）。
+- **显示**：`chatBubbles.splitBubbles` **不动**（它是切段判据，出声那条路要从它拿到带记号的段）；显示方各在拿到段之后过 `stripEmotionTag`，六处：桌面云会话气泡（`CloudSessionPage.tsx` 的 `AgentBubbles`，终态 + 流式预览同一处）、手机气泡（`src/shared/mobileChat.ts` 两处 `splitBubbles`）、侧栏最后一句（`src/shared/sessionLast.ts`）、通话卡全文（`src/shared/cloudTimeline.ts` `voiceCallCards` 的 `text`）、推送正文（`src/shared/replyNotify.ts` 存进 `lastText` 的那一格，runtime `pushReply` 发成 iOS 推送正文；同样 `stripEmotionTags`，整条只有记号则什么都不存）、通话字幕（`VoicePlayer.state().text` 已是 `spokenText` 之后的，天然剥过，加一条断言钉住）。气泡处剥完成空串的段不画，整条回复只有记号时桌面不画气泡、手机不出行（69243808 / 9c59cd56）。`speakerLeak.ts` 不碰（它判的是署名泄漏，记号不在它管的形状里）。
 
 **日志一个字不动**：`assistant_message` 原文带括注落盘（模型说的话就是这样的），剥是投影（Hard rule：投影可从日志推导）。协议位不动：没有新事件、没有新字段。
 
 ### 3. 客户端 → edge 请求体（`src/shared/ttsClient.ts` / `voicePlayer.ts` / `voiceSession.ts` / `mobile/src/voice/voiceStore.ts`）
 
 - `TtsClient.speak(text, voiceId, opts)`：`opts` 多一格 `emotion?: SpeechEmotion`。请求体从 `{model, text, voice_id}` 变成 `{model, text, voice_id, emotion?, speed, vol}`——`speed / vol` 由 `prosodyFor(emotion)` 算，客户端算而不是 edge 算，因为 edge 不该知道「叹气要慢一点」这种产品判断；edge 只校验范围。**不带 emotion 时 `speed 1 / vol 1`**，与今天 edge 缺省逐字节等价（老客户端只发三格，edge 照旧补 1）。
-- `VoicePlayer.enqueue` 收 `emotion`，透传给 `speak`；**句间停顿**：一句 `onended` 之后、下一句开播之前补 `GAP_MS.sentence`，跨段补 `GAP_MS.bubble`，**扣掉已经等掉的**（下一段合成还没回来时本来就在等，停顿是「至少隔这么久」不是「再加这么久」）；`stop()` 也要掐掉等着的停顿（epoch 判据照旧）。
+- `VoicePlayer.enqueue` 收 `emotion`，透传给 `speak`；**句间停顿**：一句 `onended` 之后、下一句开播之前补 `GAP_MS.sentence`，换说话人补 `GAP_MS.speaker`，**扣掉已经等掉的**（下一段合成还没回来时本来就在等，停顿是「至少隔这么久」不是「再加这么久」）；`stop()` 也要掐掉等着的停顿（epoch 判据照旧）。
 - 手机 `createSpeakCache` 的键加 emotion；试听 `speakPreview` 不带 emotion（范围外）。
 
 ### 4. edge（`services/edge/src/ttsUpstream.ts` / `llmGateway.ts` `serveTts`）
@@ -108,6 +108,6 @@ hd 型号、克隆音色、流式 TTS、氛围音、试听带情绪、语音消�
 ### 9. 已知代价
 
 - 存量日志里的通话没有记号，重放还是平读——append-only 补不回。
-- 模型在非通话的云会话里也可能学会写括注（提示词只在通话块里说，但记忆 / 历史会话里会出现带括注的回复）：显示路径五处都剥，所以人看不到；只是那几段当成了正文落盘。
+- 模型在非通话的云会话里也可能学会写括注（提示词只在通话块里说，但记忆 / 历史会话里会出现带括注的回复）：显示路径六处都剥，所以人看不到；只是那几段当成了正文落盘。
 - 一段里句子沿用同一情绪，句级起伏做不到——播客也是按行（1–3 句）标的，够用。
 - emotion_intensity 的最终值要听过才知道；1.0 是「不会更差」的起点。
