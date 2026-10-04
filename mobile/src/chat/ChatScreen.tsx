@@ -352,6 +352,10 @@ export function ChatScreen({ route, navigation }: Props) {
   const kind = view?.kind ?? resolved?.kind ?? "dm";
   const agentIds = view?.agentIds ?? resolved?.agentIds ?? [];
   const dmAgent = kind === "dm" ? (agentIds[0] ?? null) : null;
+  // 只画通话的那一页（#1558）：私聊页「给 TA 的智能体打电话」进来的——这页是通话的载体，不是他要看的群聊，
+  // 标题是那只的名字，时间线 / 输入框 / 群聊信息都不画；挂断回私聊页（下面那条 goBack）
+  const callOnly = route.params.callOnly === true && route.params.callAgentId !== undefined;
+  const callOnlyTitle = callOnly && ws !== null ? agentNameOf(ws, route.params.callAgentId!) : "通话";
   const group = kind === "group";
   const title = (view?.title ?? resolved?.title ?? "") || (group ? people.map((p) => p.name).join("、") : "");
   /** 群里除了我之外的人：团队群 = 别的成员；有朋友的群 = 群主那一侧的客人，或客人那一侧的群主 + 别的客人 */
@@ -730,16 +734,16 @@ export function ChatScreen({ route, navigation }: Props) {
   const infoOk = !isOutreach && resolved !== null && (sessionId !== null || dmAgent !== null);
   useLayoutEffect(() => {
     navigation.setOptions({
-      headerTitle: () => <ChatTitle title={title} count={count} status={status} />,
+      headerTitle: () => <ChatTitle title={callOnly ? callOnlyTitle : title} count={callOnly ? 0 : count} status={status} />,
       headerRight: () =>
-        infoOk ? (
+        infoOk && !callOnly ? (
           <HeaderIconButton label="聊天信息" onPress={() => navigation.navigate("ChatInfo", target)}>
             <Icon name="ellipsis" size={24} stroke={2} color={c.foreground} />
           </HeaderIconButton>
         ) : null,
       ...(others > 0 ? { headerBackTitle: String(others), headerBackButtonDisplayMode: "default" as const } : { headerBackButtonDisplayMode: "minimal" as const }),
     });
-  }, [navigation, title, count, status, others, infoOk, target, c.foreground]);
+  }, [navigation, title, count, status, others, infoOk, target, c.foreground, callOnly, callOnlyTitle]);
 
   const centre = chatCentre({
     session: session === null ? null : { state: session.state, eventCount: events.length },
@@ -757,7 +761,12 @@ export function ChatScreen({ route, navigation }: Props) {
     <View style={{ flex: 1, backgroundColor: c.background }}>
       <View ref={kb.root.ref} onLayout={kb.root.onLayout} style={{ flex: 1, paddingBottom: kb.keyboard }}>
         <View style={{ flex: 1 }}>
-          {ws !== null && resolved === null ? (
+          {callOnly ? (
+            // 接通前这一行；接通后 CallOverlay 盖在上面
+            <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
+              {call === null && pageNote === null ? <Text style={{ fontSize: 15, color: c.mutedForeground }}>{`正在接通 ${callOnlyTitle}…`}</Text> : null}
+            </View>
+          ) : ws !== null && resolved === null ? (
             <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
               {loaded ? <Text style={{ fontSize: 15, color: c.mutedForeground }}>这条聊天已经不在了。</Text> : <Spinner />}
             </View>
@@ -854,7 +863,7 @@ export function ChatScreen({ route, navigation }: Props) {
               keyboardDismissMode="interactive"
             />
           )}
-          {call !== null && !callOpen && session !== null ? <CallPill sinceTs={call.sinceTs} onPress={() => setCallOpen(true)} /> : null}
+          {call !== null && !callOpen && session !== null && !callOnly ? <CallPill sinceTs={call.sinceTs} onPress={() => setCallOpen(true)} /> : null}
           <HoldOverlay state={holdState} text={holdText} />
         </View>
 
@@ -885,40 +894,40 @@ export function ChatScreen({ route, navigation }: Props) {
           <View style={{ paddingHorizontal: 16, paddingTop: 12, paddingBottom: Math.max(insets.bottom, 12), borderTopWidth: StyleSheet.hairlineWidth, borderTopColor: c.border }}>
             <Text style={{ fontSize: 13, lineHeight: 18, color: c.mutedForeground, textAlign: "center" }}>{composerNote}</Text>
           </View>
-        ) : (
-        <WxComposer
-          ref={composer}
-          draftKey={key}
-          placeholder={roleAnchor !== null ? "说一句它是干什么的…" : group ? "说点什么，输入 @ 点名" : ""}
-          canSend={canSend}
-          sessionId={session?.sessionId ?? null}
-          onSend={onSend}
-          {...(group ? { onAt: () => setMentioning(true) } : {})}
-          plus={plus}
-          {...(holdOk
-            ? {
-              hold: {
-                onDown: () => {
-                  setHoldText("");
-                  startDictation(setHoldText, (m) => setPageNote({ text: m, tone: "error" }));
-                },
-                onChange: setHoldState,
-                onUp: (send: boolean) => {
-                  void (async () => {
-                    const text = await stopDictation(send);
+        ) : callOnly ? null : (
+          <WxComposer
+            ref={composer}
+            draftKey={key}
+            placeholder={roleAnchor !== null ? "说一句它是干什么的…" : group ? "说点什么，输入 @ 点名" : ""}
+            canSend={canSend}
+            sessionId={session?.sessionId ?? null}
+            onSend={onSend}
+            {...(group ? { onAt: () => setMentioning(true) } : {})}
+            plus={plus}
+            {...(holdOk
+              ? {
+                hold: {
+                  onDown: () => {
                     setHoldText("");
-                    if (!send) return;
-                    if (text.trim() === "") {
-                      toast("没听清，按住再说一遍");
-                      return;
-                    }
-                    await onSend(text.trim());
-                  })();
+                    startDictation(setHoldText, (m) => setPageNote({ text: m, tone: "error" }));
+                  },
+                  onChange: setHoldState,
+                  onUp: (send: boolean) => {
+                    void (async () => {
+                      const text = await stopDictation(send);
+                      setHoldText("");
+                      if (!send) return;
+                      if (text.trim() === "") {
+                        toast("没听清，按住再说一遍");
+                        return;
+                      }
+                      await onSend(text.trim());
+                    })();
+                  },
                 },
-              },
-            }
-            : {})}
-        />
+              }
+              : {})}
+          />
         )}
       </View>
 
@@ -978,9 +987,9 @@ export function ChatScreen({ route, navigation }: Props) {
           const speaking = listen?.speaking ?? null;
           return (
             <CallOverlay
-              visible={callOpen}
+              visible={callOpen || callOnly}
               mode={barMode === "idle" ? "idle" : "live"}
-              title={title}
+              title={callOnly ? callOnlyTitle : title}
               faces={faces}
               status={barMode === "idle" ? "通话还开着" : speaking !== null ? `${agentNameOf(ws, speaking)} 正在说` : face?.state === "composing" || face?.state === "queued" ? "在想" : "在听"}
               sinceTs={call.sinceTs}
@@ -991,7 +1000,10 @@ export function ChatScreen({ route, navigation }: Props) {
               captions={{ agent: listen?.text ?? null, me: listen !== null && listen.mic.transcript !== "" ? listen.mic.transcript : null }}
               joinBlocked={joinBlockedText({ native: true, room: session.state, billing: voice.billing, ...(isOutreach ? { billingExempt: true } : {}) })}
               busy={callOp !== null}
-              onMinimize={() => setCallOpen(false)}
+              onMinimize={() => {
+                // 只画通话的那一页没有「缩小」可去：底下没有群聊可看，挂断就回私聊页
+                if (!callOnly) setCallOpen(false);
+              }}
               onToggleCaptions={() => setCaptionsOn((v) => !v)}
               onToggleMic={() => setMic(!micOn)}
               onHangUp={() => void onHangUp()}
