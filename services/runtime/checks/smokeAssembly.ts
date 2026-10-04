@@ -154,7 +154,7 @@ async function scenarioMainFlow(): Promise<void> {
         async create(ws, byUid) {
           const sessionId = randomUUID();
           const session = createCloudSession({
-            onOutreachEnded: null, outreach: null, signSpeechTicket: async () => "t", diskUsage: () => null, // 冒烟装配没有真容器可量（#836）
+            onOutreachEnded: null, outreach: null, signSpeechTicket: async () => "t", pairMessages: null, diskUsage: () => null, // 冒烟装配没有真容器可量（#836）
             callback: null, // 冒烟装配不接推送（#1411）
             approveAll: false, // 冒烟跑的是团队会话（#1280）
             workspaceId: ws,

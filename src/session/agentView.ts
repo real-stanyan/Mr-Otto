@@ -95,6 +95,9 @@ const OTHER_AGENT_VERDICTS: Record<SessionEvent["type"], OtherAgentVerdict> = {
   agent_briefed: "drop",
   workspace_memory_loaded: "drop", // 别人的记忆快照是它的上下文，不是我的（#949）
   workspace_wiki_loaded: "drop", // 别人的 wiki 快照是它的上下文，不是我的（#1140）
+  // 私密车道的上下文信封（#1461）：整条车道共用一份、不带 agentId，车道里每一只都该看见——判 keep
+  // （判 drop 也够不着它：projectForAgent 对不带 agentId 的事件早退放行，这一格写的是意图）
+  pair_context_loaded: "keep",
   // 接力棒（#950）：没有 agentId 字段，早退路径本来就放行（两只 agent 都要看得见
   // 这一棒），这里仍要表态——Record 是穷尽表，"反正放行了"不构成不写的理由
   agent_relay: "keep",

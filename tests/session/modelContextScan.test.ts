@@ -79,6 +79,18 @@ describe("boundedContextEvents（issue #351）", () => {
     store.close();
   });
 
+  it("私密车道的私聊信封（#1461）：checkpoint 之前落的 pair_context_loaded 幸存于有界重建", () => {
+    const store = new EventStore(":memory:");
+    put(store, { type: "session_created", title: "t", workspace: "/w", cloud: { workspaceId: "w1", chat: { kind: "pair" }, home: true } });
+    put(store, { type: "pair_context_loaded", ownerName: "小明", peerName: "小红", lines: [{ from: "peer", text: "周末去哪", ts: 1 }] });
+    for (let i = 1; i <= 8; i++) turn(store, i);
+    put(store, { type: "context_compacted", summary: "前八轮的摘要", model: "m" });
+    for (let i = 9; i <= 11; i++) turn(store, i);
+    expect(boundedContextEvents(store, S)!.some((e) => e.type === "pair_context_loaded")).toBe(true);
+    assertEquivalent(store);
+    store.close();
+  });
+
   it("agent 身份快照（#957 A-3）：checkpoint 之前落的 agent_briefed 幸存于有界重建", () => {
     const store = new EventStore(":memory:");
     put(store, { type: "session_created", title: "t", workspace: "/w", cloud: { workspaceId: "w1" } });

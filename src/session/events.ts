@@ -318,7 +318,10 @@ export interface RouteChangedEvent extends SessionEventBase {
 export interface CloudSessionFacts {
   workspaceId: string;
   /** 这是一条聊天（#1280）：私聊或群聊。缺席 = 团队会话（旧日志照常重放） */
-  chat?: { kind: "dm" | "group" | "outreach" };
+  chat?: { kind: "dm" | "group" | "outreach" | "pair" };
+  /** 这是一条私密车道（#1461 P1，ADR-0343）：主人带进与朋友私聊的智能体住的那条会话。提示词里「你在帮谁、
+      旁边在和谁聊、对方看不看得到你」从它投影；缺席 = 不是私密车道（旧日志照常重放）。名字是建会话那一刻的快照 */
+  pair?: { ownerName: string; peerUid: string; peerName: string; facing: "self" | "both" };
   /** 这是一条外联会话（#1441）：某只智能体替主人给他的朋友打电话 / 留言开出来的那条。
       提示词里「你在替谁、对着谁」从它投影；缺席 = 不是外联会话（旧日志照常重放） */
   outreach?: { ownerName: string; peerUid: string; peerName: string };
@@ -806,6 +809,18 @@ export interface WorkspaceWikiLoadedEvent extends SessionEventBase {
   nudge: string | null;
 }
 
+/** 私密车道的上下文信封（#1461 P1，ADR-0343）：起 turn 前 runtime 读主人与朋友私聊（messages 表）最近几句
+    人话，封成一条落进车道会话的日志——**模型看得见的必须落盘**，私聊那张表不在日志里，不落的话投影推不出来。
+    缺席或内容变了才落、投影拼进 system 尾部、**最新一条胜出**（判据同 workspace_wiki_loaded）。
+    封顶在 src/shared/pairChat.ts（句数 / 单句 / 总字数）。不带 agentId：整条车道共用一份，不分哪只。
+    名字是落盘那一刻的快照。不 ignorable：模型可见，旧版本读到要拒而不是静默少一段视野 */
+export interface PairContextLoadedEvent extends SessionEventBase {
+  type: "pair_context_loaded";
+  ownerName: string;
+  peerName: string;
+  lines: { from: "owner" | "peer"; text: string; ts: number }[];
+}
+
 /** 额外 15：用户在 UI（设置页 / memory-chips 的"忘掉"）直接改记忆文件。
     模型不可见。它是"记忆文件可从日志重建"这句话的凭据：工具写入已经有
     tool_call/tool_result 作证，人手改的没有——这条补上 */
@@ -1208,6 +1223,7 @@ export type SessionEvent =
   | MemoryLoadedEvent
   | WorkspaceMemoryLoadedEvent
   | WorkspaceWikiLoadedEvent
+  | PairContextLoadedEvent
   | MemoryUserEditEvent
   | MemoryNudgeEvent
   | MicroCompactedEvent
@@ -1274,6 +1290,7 @@ const KNOWN_EVENT_TYPES_MAP: Record<SessionEvent["type"], true> = {
   memory_loaded: true,
   workspace_memory_loaded: true,
   workspace_wiki_loaded: true,
+  pair_context_loaded: true,
   memory_user_edit: true,
   memory_nudge: true,
   micro_compacted: true,

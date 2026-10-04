@@ -31,7 +31,7 @@ import { createTtlCache } from "./ttlCache.js";
 import { createWorkspaceLocks } from "./workspaceLock.js";
 import { createFrameRateLimiter } from "./rateLimit.js";
 import { createCloudSession, type CloudSession, type AgentSpec } from "./sessionService.js";
-import { ChatCreateError, planChatCreate } from "./chatCreate.js";
+import { ChatCreateError, pairCreateProblem, planChatCreate } from "./chatCreate.js";
 import { createHumansProblem, friendSetOf, friendshipFilter, planHumansChange } from "./chatHumans.js";
 import { greetOnCreate } from "./newAgentGreeting.js";
 import { createSupabaseLegacyMemoryReader } from "./workspaceMemory.js";
@@ -49,6 +49,7 @@ import { createHostedProbe, createHostedRuntimeAdapter, createRouteMemo, decideR
 import { createOutreachHub } from "./outreachHub.js";
 import { agentOutreachActive, blockedMessage, countAgentOutreach, ensureOutreachSession, openOriginRoom } from "./outreachSession.js";
 import { signSpeechTicket } from "../../../src/shared/speechTicket.js";
+import { PAIR_CONTEXT_MAX_LINES } from "../../../src/shared/pairChat.js";
 import { pickAutoModel } from "./autoModel.js";
 import { requestDispatchAsOwner } from "./dispatch.js";
 import { decisionModelOf, modeOf } from "../../../src/shared/decision.js";
@@ -353,6 +354,21 @@ async function main(): Promise<void> {
       .contains("agent_ids", agentIds)
       .maybeSingle();
     if (error) throw new Error(`私聊查询失败（${workspaceId}）：${error.message}`);
+    return data ? (data as { id: string }).id : null;
+  }
+
+  /** 这位朋友现成的那条私密车道（#1461 P1），没有回 null。同 findDmSession：0053 那条唯一索引是权威，
+      这里只是撞上它之前先问一遍（「先查再插」不是原子的） */
+  async function findPairSession(workspaceId: string, peerUid: string, facing: "self" | "both"): Promise<string | null> {
+    const { data, error } = await supabase
+      .from("workspace_sessions")
+      .select("id")
+      .eq("workspace_id", workspaceId)
+      .eq("chat_kind", "pair")
+      .eq("peer_uid", peerUid)
+      .eq("facing", facing)
+      .maybeSingle();
+    if (error) throw new Error(`私密车道查询失败（${workspaceId}）：${error.message}`);
     return data ? (data as { id: string }).id : null;
   }
 
@@ -985,6 +1001,20 @@ async function main(): Promise<void> {
           : { dispatch: (o) => outreachHub.dispatch({ ...o, workspaceId, ownerUid }) },
       // 给打给好友的那条线签语音票（#1441）：好友听到的 TTS 记在主人账上，edge 用同一把 RUNTIME_SECRET 验
       signSpeechTicket: (t) => signSpeechTicket(t, config.runtimeSecret),
+      // 私密车道的上下文信封（#1461 P1，ADR-0343）：主人与朋友私聊最近一页（service key 读，RLS 不在场——
+      // 所以查询按这一对过滤之外，sessionService 那侧的 pairContextLines 还会再收一道）。只在车道里被调
+      pairMessages: async ({ ownerUid: o, peerUid: p }) => {
+        const { data, error } = await supabase
+          .from("messages")
+          .select("sender,recipient,body,created_at")
+          .or(`and(sender.eq.${o},recipient.eq.${p}),and(sender.eq.${p},recipient.eq.${o})`)
+          .order("id", { ascending: false })
+          .limit(PAIR_CONTEXT_MAX_LINES);
+        if (error) throw new Error(error.message);
+        return ((data ?? []) as { sender: string; recipient: string; body: string; created_at: string }[]).map((r) => ({
+          sender: r.sender, recipient: r.recipient, body: r.body, createdAt: r.created_at,
+        }));
+      },
       // 消息推送（#1442）：人正开着这条聊天（连着这个房间）就不推——同回电那条 isWatching 的判据
       ...(notifier === null
         ? {}
@@ -1107,6 +1137,26 @@ async function main(): Promise<void> {
           if (problem !== null) throw new ChatCreateError(problem);
           humans = await Promise.all(humanUids.map(async (uid) => ({ uid, name: await labelOf(uid) })));
         }
+        // 私密车道（#1461 P1，ADR-0343）：只在我自己的主场、只对已接受的朋友；同一对 (主场, 朋友, facing) 只有一条。
+        // 现成的那条直接回（名单不在这里改：客户端随后走 chat_update，带进 / 带走几只是那一条路的事）
+        let pairFacts: { ownerName: string; peerUid: string; peerName: string; facing: "self" } | undefined;
+        if (chat?.kind === "pair") {
+          let friends: Set<string>;
+          try {
+            friends = await acceptedFriendsOf(byUid, [chat.peerUid]);
+          } catch (err) {
+            console.warn(`[otto-runtime] 带私人智能体时查好友失败（workspace=${workspaceId}）：${String(err)}`);
+            throw new ChatCreateError("这会儿查不到你的朋友名单，稍后再试");
+          }
+          const problem = pairCreateProblem({ byUid, peerUid: chat.peerUid, home, friends });
+          if (problem !== null) throw new ChatCreateError(problem);
+          const existing = await findPairSession(workspaceId, chat.peerUid, chat.facing);
+          if (existing) {
+            if (!activeSessions.has(existing)) openSessionRoom(workspaceId, existing, owner, byUid, home);
+            return { sessionId: existing };
+          }
+          pairFacts = { ownerName: await labelOf(byUid), peerUid: chat.peerUid, peerName: await labelOf(chat.peerUid), facing: chat.facing };
+        }
         // 私聊幂等：那只已经有一条了就回现成的（两台设备同时发第一句话，落进同一条线）
         if (plan?.ok && plan.chatKind === "dm") {
           const existing = await findDmSession(workspaceId, plan.agentIds);
@@ -1123,8 +1173,17 @@ async function main(): Promise<void> {
           title: plan?.ok ? plan.title : "",
           pkg_id: null,
           ...(plan?.ok ? { chat_kind: plan.chatKind, agent_ids: plan.agentIds } : {}),
+          ...(pairFacts !== undefined ? { peer_uid: pairFacts.peerUid, facing: pairFacts.facing } : {}),
         });
         if (error) {
+          // 车道那条唯一索引撞了（23505）= 另一台设备抢先建好了：回现成的那条（同私聊）
+          if (pairFacts !== undefined) {
+            const existing = await findPairSession(workspaceId, pairFacts.peerUid, pairFacts.facing);
+            if (existing) {
+              if (!activeSessions.has(existing)) openSessionRoom(workspaceId, existing, owner, byUid, home);
+              return { sessionId: existing };
+            }
+          }
           // 私聊那条唯一索引撞了（23505）= 另一台设备抢在前面建好了：回现成的那条，
           // 不报错——两台设备同时发第一句话时，用户看到的该是同一条线
           if (plan?.ok && plan.chatKind === "dm") {
@@ -1151,6 +1210,8 @@ async function main(): Promise<void> {
           cloud: {
             workspaceId,
             ...(plan?.ok ? { chat: { kind: plan.chatKind } } : {}),
+            // 私密车道（#1461）：提示词里「你在帮谁、旁边在和谁聊」从这一格投影，sessionService 的信封也从它取朋友是谁
+            ...(pairFacts !== undefined ? { pair: pairFacts } : {}),
             ...(home ? { home: true as const } : {}),
           },
         });

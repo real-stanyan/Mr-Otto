@@ -1,0 +1,162 @@
+// 私密车道钉死（#1461 P1，ADR-0343）：主人带进与朋友私聊的智能体住的那条会话。
+// 只听主人的、开跑前把私聊最近几句封成信封落进日志（模型看得见的必须落盘）、信封没变不重落、
+// 读私聊失败不挡 turn、名单只改智能体那一半、不推回复不回电。装配照 sessionService.outreach.test.ts 抄最小一份。
+import { describe, expect, it } from "vitest";
+import { join } from "node:path";
+import { createCloudSession, SayRejectedError, type CloudSession, type CloudSessionOpts } from "../../services/runtime/src/sessionService.js";
+import { createWikiService } from "../../services/runtime/src/wikiService.js";
+import { createMemoryWikiFs } from "../../services/runtime/src/wikiFs.js";
+import { createInMemoryWikiJournal } from "../../services/runtime/src/wikiJournal.js";
+import { EventStore } from "../../src/session/store.js";
+import type { PairContextLoadedEvent, RequestEnvelopeEvent } from "../../src/session/events.js";
+import type { PairMessageRow } from "../../src/shared/pairChat.js";
+import type { ModelAdapter } from "../../src/model/adapter.js";
+import type { ExecutionWorld } from "../../src/world/executionWorld.js";
+import type { AgentToolAllow } from "../../src/shared/agentToolAllow.js";
+import { tempDir } from "../helpers/tempDir.js";
+import { createInMemoryAgentWriter } from "../../services/runtime/src/agentRegistry.js";
+import { createInMemoryMentionInbox } from "../../services/runtime/src/mentionInbox.js";
+import { createWorkspaceLock } from "../../services/runtime/src/workspaceLock.js";
+import { createInMemoryCloudSessionMeta } from "../../services/runtime/src/cloudSessionMeta.js";
+
+const OWNER = "11111111-1111-4111-8111-111111111111";
+const PEER = "22222222-2222-4222-8222-222222222222";
+const SID = "s-pair";
+
+const fakeWorld: ExecutionWorld = {
+  fs: { read: async (path) => `<content of ${path}>`, write: async () => {} },
+  exec: async () => ({ stdout: "hi", stderr: "", exitCode: 0 }),
+  http: { postJson: async () => ({}) },
+};
+const HELPER = { agentId: "a_000000000001", name: "助手", description: "", instructions: "", models: ["fake-model"], tools: [] as AgentToolAllow[] };
+const TRANS = { agentId: "a_000000000002", name: "翻译", description: "", instructions: "", models: ["fake-model"], tools: [] as AgentToolAllow[] };
+
+function newStore(): EventStore {
+  return new EventStore(join(tempDir("mrotto-runtime-pair-"), "session.db"));
+}
+
+function pairSeed(store: EventStore): void {
+  store.append({
+    sessionId: SID, ts: 1, type: "session_created", workspace: "/work",
+    cloud: { workspaceId: "home", home: true, chat: { kind: "pair" }, pair: { ownerName: "小明", peerUid: PEER, peerName: "小红", facing: "self" } },
+  });
+  store.append({ sessionId: SID, ts: 2, type: "chat_roster_changed", agents: [{ agentId: HELPER.agentId, name: "助手" }], ignorable: true });
+}
+
+const msg = (sender: string, recipient: string, body: string, sec: number): PairMessageRow => ({
+  sender, recipient, body, createdAt: new Date(Date.UTC(2026, 9, 4, 0, 0, sec)).toISOString(),
+});
+
+function open(store: EventStore, o: { messages?: () => Promise<PairMessageRow[]>; alerts?: string[] } = {}): { session: CloudSession; reads: number } {
+  const probe = { reads: 0 } as { session: CloudSession; reads: number };
+  const adapter: ModelAdapter = { model: "fake-model", async chat() { return { content: "好的" }; } };
+  const opts: CloudSessionOpts = {
+    sessionMeta: createInMemoryCloudSessionMeta(),
+    workspaceId: "home", sessionId: SID, ownerUid: OWNER, createdByUid: OWNER, store, world: fakeWorld,
+    agents: async () => [HELPER, TRANS], adapterFor: () => adapter, px: { edgeBase: "https://edge.example", runtimeSecret: "sek" },
+    hostUids: async () => [OWNER],
+    onEvent: () => {}, onUsage: () => {},
+    wiki: createWikiService({ workspaceId: "home", fs: createMemoryWikiFs(), journal: createInMemoryWikiJournal(), legacyMemories: async () => [], agentNames: async () => new Map(), isRunning: async () => true }),
+    mentionInbox: createInMemoryMentionInbox(),
+    agentWriter: createInMemoryAgentWriter(), isMember: async () => true, contextWindowOf: () => undefined,
+    sandboxApproval: async () => "ask", workspaceLock: createWorkspaceLock(), relayRemainingMicro: async () => null,
+    diskUsage: () => null, onOutreachEnded: null, signSpeechTicket: async () => "t",
+    pairMessages: async () => {
+      probe.reads++;
+      return o.messages ? o.messages() : [msg(PEER, OWNER, "周末去哪", 1), msg(OWNER, PEER, "爬山？", 2)];
+    },
+    outreach: null, approveAll: true, callback: null,
+    ...(o.alerts ? { alert: (uid: string) => void o.alerts!.push(uid) } : {}),
+  };
+  probe.session = createCloudSession(opts);
+  return probe;
+}
+
+const say = (s: CloudSession, text: string, mentions: string[], from = OWNER) => s.say(from, "小明", text, true, mentions, undefined, []);
+
+describe("私密车道（#1461 P1）", () => {
+  it("开跑前把私聊信封落进日志，而且在请求之前——模型看到的 system 里有它", async () => {
+    const store = newStore();
+    pairSeed(store);
+    const { session } = open(store);
+    await say(session, "@助手 帮我想想", [HELPER.agentId]);
+    await session.settled();
+    const types = store.load(SID).map((e) => e.type);
+    expect(types.indexOf("pair_context_loaded")).toBeGreaterThan(-1);
+    expect(types.indexOf("pair_context_loaded")).toBeLessThan(types.indexOf("request_envelope"));
+    const ctx = store.ofType(SID, "pair_context_loaded")[0] as PairContextLoadedEvent;
+    expect(ctx.lines.map((l) => [l.from, l.text])).toEqual([["peer", "周末去哪"], ["owner", "爬山？"]]);
+    const env = store.ofType(SID, "request_envelope").at(-1) as RequestEnvelopeEvent;
+    expect(env.system).toContain("小红：周末去哪");
+    expect(env.system).toContain("看不到你");
+    store.close();
+  });
+
+  it("私聊没变就不重落一条；变了再落", async () => {
+    const store = newStore();
+    pairSeed(store);
+    let rows = [msg(PEER, OWNER, "a", 1)];
+    const { session } = open(store, { messages: async () => rows });
+    await say(session, "@助手 一", [HELPER.agentId]);
+    await session.settled();
+    await say(session, "@助手 二", [HELPER.agentId]);
+    await session.settled();
+    expect(store.ofType(SID, "pair_context_loaded")).toHaveLength(1);
+    rows = [...rows, msg(OWNER, PEER, "b", 2)];
+    await say(session, "@助手 三", [HELPER.agentId]);
+    await session.settled();
+    expect(store.ofType(SID, "pair_context_loaded")).toHaveLength(2);
+    store.close();
+  });
+
+  it("读私聊失败不挡 turn：这一轮照答，只是不落信封", async () => {
+    const store = newStore();
+    pairSeed(store);
+    const { session } = open(store, { messages: async () => { throw new Error("db down"); } });
+    await say(session, "@助手 在吗", [HELPER.agentId]);
+    await session.settled();
+    expect(store.ofType(SID, "pair_context_loaded")).toEqual([]);
+    expect(store.ofType(SID, "assistant_message").length).toBeGreaterThan(0);
+    store.close();
+  });
+
+  it("只听主人的：别人说话被拒，一个字节都不落", async () => {
+    const store = newStore();
+    pairSeed(store);
+    const { session } = open(store);
+    const before = store.load(SID).length;
+    await expect(say(session, "@助手 帮我", [HELPER.agentId], PEER)).rejects.toBeInstanceOf(SayRejectedError);
+    expect(store.load(SID).length).toBe(before);
+    store.close();
+  });
+
+  it("chat() 报出 pair 与配对的朋友", () => {
+    const store = newStore();
+    pairSeed(store);
+    const { session } = open(store);
+    expect(session.chat()).toEqual({ kind: "pair", agentIds: [HELPER.agentId], humans: [], pair: { peerUid: PEER, facing: "self" } });
+    store.close();
+  });
+
+  it("名单只改智能体那一半：带进一只成功、拉人被拒", async () => {
+    const store = newStore();
+    pairSeed(store);
+    const { session } = open(store);
+    const r = await session.updateChatRoster(OWNER, { agentIds: [HELPER.agentId, TRANS.agentId] }, "小明");
+    expect(r).toMatchObject({ kind: "ok", changed: true, agentIds: [HELPER.agentId, TRANS.agentId] });
+    const r2 = await session.updateChatRoster(OWNER, { humans: [{ uid: PEER, name: "小红" }] }, "小明");
+    expect(r2.kind).toBe("not_group");
+    store.close();
+  });
+
+  it("不推回复：车道里智能体答完不发推送", async () => {
+    const store = newStore();
+    pairSeed(store);
+    const alerts: string[] = [];
+    const { session } = open(store, { alerts });
+    await say(session, "@助手 在吗", [HELPER.agentId]);
+    await session.settled();
+    expect(alerts).toEqual([]);
+    store.close();
+  });
+});
