@@ -23,7 +23,8 @@ describe("peerLane.ts：第二条连接", () => {
     expect(src).toMatch(/onApprovalRequest: \(\) => \{\}/);
   });
   it("离开就忘：closePeerLane 走 leave 并清空，不写本机缓存", () => {
-    expect(src).toMatch(/export function closePeerLane\(\): void \{\n\s+gen\+\+;/);
+    // 换行写成 \r?\n：Windows 检出是 CRLF（读源码的测试别依赖换行，见 mr-otto 的本机约束）
+    expect(src).toMatch(/export function closePeerLane\(\): void \{\r?\n\s+gen\+\+;/);
     expect(src).not.toMatch(/chatCache/);
   });
 });
