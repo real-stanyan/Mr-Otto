@@ -742,8 +742,11 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   // 只有他，车道不收客人），开跑前读一份私聊信封。同 chatKind，建会话时记进日志的事实，一生不变
   const isPair = chatKind === "pair";
   const pairFacts = isPair ? createdCloud?.pair : undefined;
-  // 推送 / 回电那张表（ringChatKind）不认 pair：车道不推回复、不回电（ringer 不建、alertTargetFor 回 null），
-  // 这里把它折成 null 只为类型——两条路在 isPair 时都走不到它
+  // 推送 / 回电那张表（ringChatKind）不认 pair，这里把它折成 null 只为类型。车道里三条路都走不到它：
+  // 回电——ringer 不建；回复推送——pushReply 在 isPair 时早退；@ 提醒——只推 hostUids ∪ 客人里被点到的人，
+  // 而车道里发言的只有主人自己（被剔掉）、没有客人。**alertTargetFor 本身对 pair 不回 null**（折成 null 后
+  // 按主场群算），哪天车道收了第二个人，这里要回来重判
+  const ringKind = chatKind === "pair" ? null : chatKind;
   const ringKind = chatKind === "pair" ? null : chatKind;
   // 这条线上的外联折叠（#1441）：从 seed 播种、notify 里逐条推进（同 voiceCall）。「通话此刻进行中吗、
   // 打给的是谁」只从这一份读——say 的闸、chat() 的 active 共用，两处各折一遍迟早分家
