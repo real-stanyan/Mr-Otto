@@ -409,3 +409,44 @@ export function videoNoteForModel(videos: readonly { durationMs: number; hasPost
     .map((v) => `[发了一段 ${videoDurationLabel(v.durationMs)} 的视频${v.hasPoster ? "，上面那张图是它的封面" : "，没有封面可看"}]`)
     .join("\n");
 }
+
+/**
+ * 事件里那两格 → 气泡要画的那几样（#1491 P3）：`attachments` 里的图按对象名拼回 chat-media 的路径；视频从 `videos`
+ * 来，它的封面是 attachments 里的一张（`poster` 指着），只跟着视频走、不单独当一张图。认不出的（不是 sha256 id、
+ * 格式不在白名单——桌面本机的 webp / gif 附件）跳过：画不出来的东西不如不画。
+ */
+export function chatMediaItemsOf(
+  workspaceId: string,
+  sessionId: string,
+  attachments: readonly { id: string; mediaType: string; bytes: number; name?: string; width?: number; height?: number }[] | undefined,
+  videos: readonly { id: string; mediaType: string; bytes: number; width: number; height: number; durationMs: number; poster?: string }[] | undefined,
+): ChatMediaItem[] {
+  const out: ChatMediaItem[] = [];
+  const posters = new Set<string>();
+  for (const v of videos ?? []) if (v.poster !== undefined) posters.add(v.poster);
+  const pathOf = (id: string, mime: string): string | null => {
+    const hex = id.startsWith("sha256:") ? id.slice(7) : "";
+    if (!SHA256.test(hex) || extForMime(mime) === null) return null;
+    try {
+      return chatMediaPath(workspaceId, sessionId, hex, mime);
+    } catch {
+      return null;
+    }
+  };
+  for (const a of attachments ?? []) {
+    if (posters.has(a.id)) continue;
+    const path = pathOf(a.id, a.mediaType);
+    if (path === null) continue;
+    out.push({ kind: "image", path, mediaType: a.mediaType, bytes: a.bytes, width: a.width ?? 0, height: a.height ?? 0 });
+  }
+  for (const v of videos ?? []) {
+    const path = pathOf(v.id, v.mediaType);
+    if (path === null) continue;
+    const poster = v.poster !== undefined ? pathOf(v.poster, "image/jpeg") : null;
+    out.push({
+      kind: "video", path, mediaType: v.mediaType, bytes: v.bytes, width: v.width, height: v.height, durationMs: v.durationMs,
+      ...(poster !== null ? { poster } : {}),
+    });
+  }
+  return out;
+}

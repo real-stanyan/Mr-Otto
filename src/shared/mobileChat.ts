@@ -9,6 +9,7 @@ import { ACTIVITY_ORDER, ACTIVITY_TEXT, activityFace, activityFoldOf, activityOf
 import { groupRows, rosterRows } from "./agentRoster.js";
 import { callRingFoldOf, RING_STATUS_TEXT, ringCardStatus, type RingCardStatus } from "./callRing.js";
 import { splitBubbles } from "./chatBubbles.js";
+import { chatMediaItemsOf, type ChatMediaItem } from "./chatMedia.js";
 import {
   approvalCardTitle, assistantLabel, callOffsetText, chatRosterLineParts, cloudEmptyState, decisionLineText, hiddenFromCloudTimeline,
   relayLineText, stopButtonRows, systemNoteText, turnEndedLineText, userRowIdentity, voiceCallCards, type RosterLinePart, type VoiceCallCard,
@@ -66,10 +67,10 @@ export function resolveChatTarget(
 export type ChatRow =
   /** 居中的一条时刻（#1386：照微信，相邻两句隔 5 分钟以上才插，今天只写钟点） */
   | { kind: "time"; key: string; label: string }
-  /** 我说的：右侧气泡 */
-  | { kind: "mine"; key: string; ts: number; text: string }
+  /** 我说的：右侧气泡。`media`（#1491）= 这句带的图 / 视频，正文是占位时气泡只画图 */
+  | { kind: "mine"; key: string; ts: number; text: string; media?: ChatMediaItem[] }
   /** 别的人说的（团队群里的成员）：左侧带头像与名字。uid 缺席（旧日志）时头像退回首字 */
-  | { kind: "human"; key: string; ts: number; uid: string | null; name: string; text: string }
+  | { kind: "human"; key: string; ts: number; uid: string | null; name: string; text: string; media?: ChatMediaItem[] }
   /** 它说的：按空行拆成几个气泡（splitBubbles，ADR-0266） */
   | { kind: "agent"; key: string; ts: number; agentId: string; name: string; paragraphs: string[] }
   /** 旁白（系统说的一句、engine 注的后台任务 / 护栏、接力线）与出错 */
@@ -104,6 +105,16 @@ export type ChatRow =
 
 type ItemRow = Exclude<ChatRow, { kind: "time" }>;
 
+/** 这句带的图 / 视频（#1491）：有才给那一格（exactOptionalPropertyTypes 不许塞 undefined） */
+function mediaFieldOf(
+  e: { sessionId: string; attachments?: readonly { id: string; mediaType: string; bytes: number; name?: string; width?: number; height?: number }[]; videos?: readonly { id: string; mediaType: string; bytes: number; width: number; height: number; durationMs: number; poster?: string }[] },
+  ws: WorkspaceSnapshot,
+): { media?: ChatMediaItem[] } {
+  if (e.attachments === undefined && e.videos === undefined) return {};
+  const media = chatMediaItemsOf(ws.id, e.sessionId, e.attachments, e.videos);
+  return media.length > 0 ? { media } : {};
+}
+
 function rowOf(e: SessionEvent, ws: WorkspaceSnapshot, selfUid: string): ItemRow | null {
   if (hiddenFromCloudTimeline(e)) return null;
   const key = `e${e.seq}`;
@@ -112,15 +123,18 @@ function rowOf(e: SessionEvent, ws: WorkspaceSnapshot, selfUid: string): ItemRow
       const note = systemNoteText(e, ws);
       if (note !== null) return { kind: "note", key, ts: e.ts, text: note, tone: "muted", detail: systemNoteDetail(e) };
       const id = userRowIdentity(e, ws, selfUid);
+      const media = mediaFieldOf(e, ws);
       return id.mine
-        ? { kind: "mine", key, ts: e.ts, text: id.text }
-        : { kind: "human", key, ts: e.ts, uid: id.uid, name: id.label ?? (id.uid !== null ? labelOf(ws, id.uid) : "成员"), text: id.text };
+        ? { kind: "mine", key, ts: e.ts, text: id.text, ...media }
+        : { kind: "human", key, ts: e.ts, uid: id.uid, name: id.label ?? (id.uid !== null ? labelOf(ws, id.uid) : "成员"), text: id.text, ...media };
     }
-    case "chat_message":
+    case "chat_message": {
       if (e.fromUid === "system") return { kind: "note", key, ts: e.ts, text: e.content, tone: "muted", detail: null };
+      const media = mediaFieldOf(e, ws);
       return e.fromUid === selfUid
-        ? { kind: "mine", key, ts: e.ts, text: e.content }
-        : { kind: "human", key, ts: e.ts, uid: e.fromUid, name: e.label, text: e.content };
+        ? { kind: "mine", key, ts: e.ts, text: e.content, ...media }
+        : { kind: "human", key, ts: e.ts, uid: e.fromUid, name: e.label, text: e.content, ...media };
+    }
     case "assistant_message": {
       const paragraphs = splitBubbles(e.content);
       if (paragraphs.length === 0) return null;
