@@ -29,21 +29,23 @@ function save(key: string, closed: boolean): void {
   void AsyncStorage.setItem(KEY, JSON.stringify(cache)).catch(() => undefined);
 }
 
-export function Fold({ id, label, count, action, forceOpen = false, children }: {
+export function Fold({ id, label, count, action, forceOpen = false, defaultClosed = false, children }: {
   id: string;
   label: string;
   count: number;
   action?: ReactNode;
   forceOpen?: boolean;
+  /** 这台手机上还没点过它时收着（#1566 的「别人的智能体」抽屉）；点过一次之后照记下来的 */
+  defaultClosed?: boolean;
   children: ReactNode;
 }) {
   const { c } = usePalette();
   const reduce = useReduceMotion();
-  const [closed, setClosed] = useState(false);
+  const [closed, setClosed] = useState(defaultClosed);
   useEffect(() => {
     let alive = true;
     const sync = (): void => {
-      if (alive && cache !== null) setClosed(cache[id] === true);
+      if (alive && cache !== null) setClosed(cache[id] ?? defaultClosed);
     };
     listeners.add(sync);
     void load().then(sync);
@@ -51,7 +53,7 @@ export function Fold({ id, label, count, action, forceOpen = false, children }: 
       alive = false;
       listeners.delete(sync);
     };
-  }, [id]);
+  }, [id, defaultClosed]);
   const open = forceOpen || !closed;
   const turn = useRef(new Animated.Value(open ? 1 : 0)).current;
   useEffect(() => {

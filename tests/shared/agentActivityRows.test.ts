@@ -4,7 +4,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import { ACTIVITY_STALE_MS } from "../../src/shared/agentActivity.js";
 import {
   activityKey, activityRowOf, fetchAgentActivity, liveActivity, mergeActivitySnapshot, sessionAgentActivity, sessionLastOfRow,
-  subscribeAgentActivity, workspaceAgentActivity, type ActivityRow,
+  agentStatusText, subscribeAgentActivity, workspaceAgentActivity, workspaceAgentWhere, type ActivityRow,
 } from "../../src/shared/agentActivityRows.js";
 
 const T = Date.parse("2026-09-28T10:00:00.000Z");
@@ -61,6 +61,23 @@ describe("按会话 / 按工作区取", () => {
     expect(workspaceAgentActivity(rows, "w1", "nobody", T)).toBeNull();
     // 在进行的两行都过期了，剩下那行出错不上这张脸
     expect(workspaceAgentActivity(rows, "w1", "ops", T + ACTIVITY_STALE_MS + 1)).toBeNull();
+  });
+  it("workspaceAgentWhere（#1566）：还说在哪条会话里；并列同一档取 since 新的那条；闲着 / 不知道", () => {
+    expect(workspaceAgentWhere(rows, "w1", "ops", T)).toEqual({ activity: "waiting", sessionId: "g1" });
+    expect(workspaceAgentWhere(rows, "w1", "ads", T)).toEqual({ activity: "idle", sessionId: "dm" });
+    expect(workspaceAgentWhere(rows, "w1", "nobody", T)).toBeNull();
+    const tie = index(
+      rowOf({ session_id: "g1", state: "working", since: "2026-09-28T09:50:00.000Z" }),
+      rowOf({ session_id: "g2", state: "working", since: "2026-09-28T09:58:00.000Z" }),
+    );
+    expect(workspaceAgentWhere(tie, "w1", "ops", T)).toEqual({ activity: "working", sessionId: "g2" });
+  });
+  it("agentStatusText：空闲 / 档位 / 档位 · 在〈群名〉", () => {
+    const titleOf = (sid: string): string | null => (sid === "g1" ? "周末摆摊" : null);
+    expect(agentStatusText(null, titleOf)).toBe("空闲");
+    expect(agentStatusText({ activity: "idle", sessionId: "g1" }, titleOf)).toBe("空闲");
+    expect(agentStatusText({ activity: "working", sessionId: "dm" }, titleOf)).toBe("执行中");
+    expect(agentStatusText({ activity: "waiting", sessionId: "g1" }, titleOf)).toBe("等你处理 · 在〈周末摆摊〉");
   });
   it("出错 / 额度用完是某一条会话里上一轮的结局：通讯录那张脸不认，那条会话那一行照认", () => {
     const outcomes = index(

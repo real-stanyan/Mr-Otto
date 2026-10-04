@@ -254,6 +254,9 @@ export function inboxRows(o: {
   activity?: (sessionId: string, agentId: string) => AgentActivity | null;
   /** 开了免打扰的那几条（键同 InboxRow.key，#1442）。缺席 = 一条都没有 */
   muted?: ReadonlySet<string>;
+  /** 在这台手机上左滑删掉的（#1566）：键 → 删的那一刻它最近一句的时刻。那一刻之后有新的一句才再冒出来
+      （微信语义：删的是列表里这一行，不是聊天记录，更不是对方）。缺席 = 一条都没删 */
+  hidden?: ReadonlyMap<string, number>;
 }): InboxRow[] {
   const rows: InboxRow[] = [];
   const mentioned = new Set(o.mentions.filter((m) => !m.read).map((m) => m.sessionId));
@@ -403,7 +406,46 @@ export function inboxRows(o: {
   const out = muted === undefined || muted.size === 0
     ? rows
     : rows.map((r): InboxRow => (muted.has(r.key) ? { ...r, muted: true, unread: r.unread === null ? null : { kind: "dot" } } : r));
-  return out.sort((a, b) => b.ts - a.ts || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+  const hidden = o.hidden;
+  const shown = hidden === undefined || hidden.size === 0 ? out : out.filter((r) => !isHidden(hidden, r.key, r.ts));
+  return shown.sort((a, b) => b.ts - a.ts || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+}
+
+/** 删掉的那一行此刻还藏着没有：删之后没有新的一句（ts 没超过删时记的那一刻）就还藏着 */
+export function isHidden(hidden: ReadonlyMap<string, number>, key: string, ts: number): boolean {
+  const at = hidden.get(key);
+  return at !== undefined && ts <= at;
+}
+
+/** 「聊天」主页只留人↔人与群（#1566，维护者 2026-10-04）：智能体的行收进一个列表，别人的智能体（外联，`o:`）再收一层。
+    三份都保持 inboxRows 给的顺序（最近一句降序） */
+export interface InboxSplit {
+  /** 朋友私聊 + 主场群 + 团队群 + 别人拉我进的群 */
+  main: InboxRow[];
+  /** 我自己的智能体的私聊（`a:`） */
+  agents: InboxRow[];
+  /** 别人的智能体跟我的对话（`o:`）：智能体列表底下那格抽屉 */
+  others: InboxRow[];
+}
+
+export function splitInbox(rows: readonly InboxRow[]): InboxSplit {
+  const s: InboxSplit = { main: [], agents: [], others: [] };
+  for (const r of rows) {
+    if (r.target.kind === "agent") s.agents.push(r);
+    else if (r.target.kind === "outreach") s.others.push(r);
+    else s.main.push(r);
+  }
+  return s;
+}
+
+/** 聊天页顶上「智能体」那一格的摘要：几条有新消息、第二行写最近的那一句（带名字），没聊过写一句说明 */
+export function agentFolderSummary(agents: readonly InboxRow[], others: readonly InboxRow[]): { unread: number; mention: boolean; preview: string; ts: number } {
+  const all = [...agents, ...others];
+  const unread = inboxUnreadChats(all);
+  const mention = all.some((r) => r.mention);
+  const latest = all.reduce<InboxRow | null>((best, r) => (best === null || r.ts > best.ts ? r : best), null);
+  const preview = latest === null || latest.preview === "" ? "" : `${latest.title}: ${latest.preview}`;
+  return { unread, mention, preview, ts: latest?.ts ?? 0 };
 }
 
 /** 有新消息的聊天有几条（页签角标与「聊天(n)」，spec §3.1）。@ 了我的那一条也算；开了免打扰的只在被 @ 时算

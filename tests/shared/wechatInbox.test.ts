@@ -7,9 +7,9 @@ import type { DirectMessage, FriendProfile } from "../../src/shared/friends.js";
 import type { SessionLast } from "../../src/shared/sessionLast.js";
 import type { CloudSessionRow } from "../../src/shared/supabaseWorkspacesApi.js";
 import {
-  badgeText, cloudUnread, dmPreview, filterInbox, friendName, friendThreads, gridLayout, groupList, inboxRows, inboxUnreadChats,
-  initialOf, listTimeLabel, markSeen, needsTimeRow, parseSeen, serializeSeen, sortFriends, teamChatTitle, timelineTimeLabel,
-  type SeenState,
+  agentFolderSummary, badgeText, cloudUnread, dmPreview, filterInbox, friendName, friendThreads, gridLayout, groupList, inboxRows,
+  inboxUnreadChats, initialOf, isHidden, listTimeLabel, markSeen, needsTimeRow, parseSeen, serializeSeen, sortFriends, splitInbox,
+  teamChatTitle, timelineTimeLabel, type InboxRow, type SeenState,
 } from "../../src/shared/wechatInbox.js";
 import type { WorkspaceMentionRow } from "../../src/shared/workspaceMentions.js";
 import type { WorkspaceAgentRow, WorkspaceSnapshot } from "../../src/shared/workspaces.js";
@@ -196,6 +196,28 @@ describe("inboxRows", () => {
     expect(by("g:grp1").activity).toBe("waiting");
     expect(by("t:ts1").activity).toBeUndefined();
     expect("activity" in by("f:u_aj")).toBe(false);
+  });
+  it("左滑删除（#1566）：删时记下最近一句的时刻，之后没新话就藏着、有新话再冒出来；角标跟着不数它", () => {
+    const plain = inboxRows(base);
+    const hidden = new Map([["a:a_000000000001", NOW - 5 * MIN], ["f:u_aj", NOW - 30 * MIN]]);
+    const rows = inboxRows({ ...base, hidden });
+    // 文案那条删时就是最近一句（NOW-5m）→ 藏；阿杰那条删了之后又来了一句（NOW-10m > NOW-30m）→ 冒出来
+    expect(rows.map((r) => r.key)).toEqual(["f:u_aj", "t:ts1", "g:grp1"]);
+    expect(inboxUnreadChats(rows)).toBe(inboxUnreadChats(plain) - 1);
+    expect(isHidden(hidden, "a:a_000000000001", NOW - 5 * MIN)).toBe(true);
+    expect(isHidden(hidden, "a:a_000000000001", NOW)).toBe(false);
+    expect(isHidden(hidden, "nope", 0)).toBe(false);
+  });
+  it("splitInbox（#1566）：主页只留人↔人与群；我的智能体一份、别人的智能体（外联）一份；各自保持顺序", () => {
+    const rows = inboxRows(base);
+    const outreach: InboxRow = { ...rows[0]!, key: "o:x", target: { kind: "outreach", workspaceId: "w", sessionId: "x" }, title: "小红 的 运维", ts: NOW - MIN, preview: "周五来吗" };
+    const s = splitInbox([outreach, ...rows]);
+    expect(s.main.map((r) => r.key)).toEqual(["f:u_aj", "t:ts1", "g:grp1"]);
+    expect(s.agents.map((r) => r.key)).toEqual(["a:a_000000000001"]);
+    expect(s.others.map((r) => r.key)).toEqual(["o:x"]);
+    const sum = agentFolderSummary(s.agents, s.others);
+    expect(sum).toEqual({ unread: 2, mention: false, preview: "小红 的 运维: 周五来吗", ts: NOW - MIN });
+    expect(agentFolderSummary([], [])).toEqual({ unread: 0, mention: false, preview: "", ts: 0 });
   });
   it("不给查状态的函数：输出与改动前逐字相同（脸上没有 state、行上没有 activity）", () => {
     const rows = inboxRows(base);
