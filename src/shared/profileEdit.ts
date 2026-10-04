@@ -59,7 +59,8 @@ export function toMyProfile(row: MyProfileRow): MyProfile {
     name: row.name ?? "",
     avatarUrl: row.avatar_url ?? "",
     onboarded: row.onboarded_at !== null,
-    publicAgentId: typeof row.public_agent_id === "string" && row.public_agent_id !== "" ? row.public_agent_id : null,
+    // 公开智能体（#1533）：行里带了这一列才有这一格（0057 之前的行 / 老夹具一个字节不变）
+    ...(row.public_agent_id === undefined ? {} : { publicAgentId: typeof row.public_agent_id === "string" && row.public_agent_id !== "" ? row.public_agent_id : null }),
   };
 }
 

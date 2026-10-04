@@ -1197,8 +1197,7 @@ async function main(): Promise<void> {
         const active = activeSessions.get(sessionId);
         return active && active.workspaceId === workspaceId ? active.session : null;
       },
-      async create(workspaceId, byUid, chatIn) {
-        let chat = chatIn;
+      async create(workspaceId, byUid, chat) {
         const sessionId = randomUUID();
         // 所有者与 kind 一次问出来（#1280）：kind 同时决定提示词里审批那句话
         // （落进 session_created.cloud.home）与审批门（approveAll），两处同源
@@ -1226,8 +1225,10 @@ async function main(): Promise<void> {
           if (problem !== null) throw new ChatCreateError(problem);
           onBehalf = true;
           chat = { kind: "pair", peerUid: byUid, facing: "both", agentIds: [publicAgentId as string] };
+          // 从这里起「动手的人」是主人：行的 publisher_uid、房间的 createdBy、客人投影的 added_by 都记主人——
+          // creator 能改名单、能归档，这些不能因为是朋友开的口就落到朋友头上
+          byUid = owner;
         }
-        const publisher = onBehalf ? owner : byUid;
         // 建一条聊天（#1280）。`chat` 缺席 = 团队会话，下面一个字都不变
         const plan = chat ? planChatCreate(chat, await agentsCache.refresh(workspaceId)) : null;
         if (plan && !plan.ok) throw new ChatCreateError(plan.message);
@@ -1267,7 +1268,7 @@ async function main(): Promise<void> {
           }
           const existing = await findPairSession(workspaceId, chat.peerUid);
           if (existing) {
-            const room = activeSessions.has(existing) ? activeSessions.get(existing)!.session : openSessionRoom(workspaceId, existing, owner, publisher, home);
+            const room = activeSessions.has(existing) ? activeSessions.get(existing)!.session : openSessionRoom(workspaceId, existing, owner, byUid, home);
             // 朋友替主人找到现成那条（#1533）：公开智能体要在名单里、朝向要是 both——主人之前可能只带了别的几只、或收成了仅我可见。
             // 名单与朝向都由主人名下改（byUid 主人），朋友只是触发
             if (onBehalf && plan?.ok) {
@@ -1299,7 +1300,7 @@ async function main(): Promise<void> {
         const { error } = await supabase.from("workspace_sessions").insert({
           id: sessionId,
           workspace_id: workspaceId,
-          publisher_uid: publisher,
+          publisher_uid: byUid,
           kind: "cloud",
           title: plan?.ok ? plan.title : "",
           pkg_id: null,
@@ -1360,9 +1361,9 @@ async function main(): Promise<void> {
             ignorable: true,
           });
         }
-        const session = openSessionRoom(workspaceId, sessionId, owner, publisher, home);
+        const session = openSessionRoom(workspaceId, sessionId, owner, byUid, home);
         // 客人名单的投影（#1393）：房间开好之后写——客人那一侧靠这张表才找得到这个群
-        if (humans.length > 0) await syncGuestRows(sessionId, humans, publisher);
+        if (humans.length > 0) await syncGuestRows(sessionId, humans, byUid);
         // 新建的智能体先开口（#1356 A2，spec §7.2 第 2 步）：只在**新**建出来的私聊上问——上面
         // 找回现成那条的两条路都已经 return 了（那只要么早开过口，要么是桌面那侧的老智能体）。
         // 抢那一格、抢到才落开场白的判断在 newAgentGreeting.ts（这个文件进不了 vitest）；
