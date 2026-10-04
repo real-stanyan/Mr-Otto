@@ -6,7 +6,7 @@ import {
   CHAT_MEDIA_BUCKET, DM_MEDIA_BUCKET, IMAGE_MAX_EDGE, MEDIA_MAX_PER_MESSAGE, MEDIA_PLACEHOLDER, VIDEO_MAX_BYTES,
   VIDEO_MAX_MS, chatMediaPath, dmMediaPath, dmPosterPath, extForMime, fitImageSteps, imageNeedsReencode,
   mediaBodyHidden, mediaBubbleBox, mediaPlaceholder, parseChatMedia, parseDmMedia, planMediaMessages,
-  videoDurationLabel, videoProblem, sendMediaMessage, missingMediaColumn, type ChatMediaItem,
+  videoDurationLabel, videoProblem, sendMediaMessage, missingMediaColumn, voiceNoteText, type ChatMediaItem,
 } from "../../src/shared/chatMedia.js";
 import { IMAGE_FIT_LADDER, IMAGE_FIT_TARGET_BYTES } from "../../src/shared/imageFit.js";
 import { dmPreview } from "../../src/shared/wechatInbox.js";
@@ -22,6 +22,10 @@ const img = (over: Partial<ChatMediaItem> = {}): ChatMediaItem => ({
 const vid = (over: Partial<ChatMediaItem> = {}): ChatMediaItem => ({
   kind: "video", path: `${A}/${B}/${U}.mov`, mediaType: "video/quicktime", bytes: 5_000_000, width: 1080, height: 1920,
   durationMs: 7_000, poster: `${A}/${B}/${U}.poster.jpg`, ...over,
+});
+const aud = (over: Partial<ChatMediaItem> = {}): ChatMediaItem => ({
+  kind: "audio", path: `${A}/${B}/${U}.m4a`, mediaType: "audio/mp4", bytes: 120_000, width: 0, height: 0,
+  durationMs: 7_000, transcript: "周六七点地铁站集合", ...over,
 });
 
 describe("上限", () => {
@@ -323,5 +327,33 @@ describe("missingMediaColumn：0052 还没跑时退回不带 media 的查询", (
     expect(missingMediaColumn({ code: "42501", message: "permission denied" })).toBe(false);
     expect(missingMediaColumn({ code: "42703", message: "column messages.foo does not exist" })).toBe(false);
     expect(missingMediaColumn(new Error("boom"))).toBe(false);
+  });
+});
+
+describe("voiceNoteText：还不会画语音条的地方显示「[语音] 转写」（#1492）", () => {
+  it("恰好一段语音：带转写 -> 「[语音] 转写」", () => {
+    expect(voiceNoteText([aud()])).toBe("[语音] 周六七点地铁站集合");
+  });
+  it("没转写只「[语音]」", () => {
+    const { transcript: _t, ...noTranscript } = aud();
+    expect(voiceNoteText([noTranscript])).toBe("[语音]");
+  });
+  it("不是恰好一段语音：null（调用方照旧画 body / 媒体气泡）", () => {
+    expect(voiceNoteText([img()])).toBeNull();
+    expect(voiceNoteText(null)).toBeNull();
+    expect(voiceNoteText(undefined)).toBeNull();
+    expect(voiceNoteText([])).toBeNull();
+  });
+});
+
+describe("语音永远单独一条：和别的混在一条里整份拒（#1492）", () => {
+  it("单独一段语音照收", () => {
+    expect(parseChatMedia([aud()])).toEqual([aud()]);
+  });
+  it("语音 + 图片 / 图片 + 语音 / 语音 + 视频 / 两段语音：null", () => {
+    expect(parseChatMedia([aud(), img()])).toBeNull();
+    expect(parseChatMedia([img(), aud()])).toBeNull();
+    expect(parseChatMedia([aud(), vid()])).toBeNull();
+    expect(parseChatMedia([aud(), aud({ path: `${A}/${B}/44444444-4444-4444-8444-444444444444.m4a` })])).toBeNull();
   });
 });

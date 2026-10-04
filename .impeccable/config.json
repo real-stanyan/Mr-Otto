@@ -11,6 +11,24 @@
         ],
         "createdAt": "2026-09-27T07:11:40.717Z",
         "reason": "sanctioned exception: DESIGN.md documents Shimmer (状态文案表面有一道光带扫过，标示正在发生的直播态) as the live-status treatment; in this demo it is only on the 正在输入/正在干活 status line, reduced-motion falls back to solid text"
+      },
+      {
+        "rule": "clipped-overflow-container",
+        "value": "*",
+        "files": [
+          ".demo/voice-messages.html"
+        ],
+        "createdAt": "2026-10-04T06:23:07.502Z",
+        "reason": "Claude: phone-frame mock intentionally clips overlays/menus to the screen bounds"
+      },
+      {
+        "rule": "cream-palette",
+        "value": "*",
+        "files": [
+          ".demo/voice-messages.html"
+        ],
+        "createdAt": "2026-10-04T06:23:53.866Z",
+        "reason": "Claude: demo copies the shipped mobile palette from mobile/src/theme.ts (#efece3 etc.), not a fresh choice"
       }
     ]
   }

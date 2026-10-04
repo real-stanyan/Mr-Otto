@@ -10,6 +10,7 @@ import type {
 import type { WorkspaceMentionRow } from "../shared/workspaceMentions.js";
 import type { WorkspacePresence } from "../shared/friends.js";
 import { dmOr, mergeChannelHealth, profileSearchOr } from "../shared/friendsQuery.js";
+import { missingMediaColumn } from "../shared/chatMedia.js";
 
 // 这两条搬去了 src/shared(手机端 import 同一份源码,见那个文件开头的理由)。
 // 从这里原样再导出去:它们本来就是这个模块的公开面,调用方和测试不该因为
@@ -21,6 +22,7 @@ const PAGE = 50;
 const SEARCH_PAGE = 8;
 /** 一次轮询最多补多少条积压消息(离线久了不至于一口气推爆渲染层) */
 const INBOX_PAGE = 200;
+const MESSAGE_COLUMNS = "id,sender,recipient,body,created_at";
 
 /** presenceState() 的形状 {key: metas[]} → 在线 userId 列表(key 即 uid) */
 export function presenceStateToIds(state: Record<string, unknown[]>): string[] {
@@ -94,6 +96,21 @@ export function createSupabaseFriendsApi(client: SupabaseClient): FriendsApi {
   let currentWorkspace: WorkspacePresence | null = null;
   /** 真库还没跑 0008:心跳退回只写/只读 last_seen_at,工作区只剩 Realtime 那条腿 */
   let legacySchema = false;
+  /** 真库还没跑 0052：私信退回不带 media 列（那几条画占位正文）。记住，不每次先试一遍 */
+  let noMediaColumn = false;
+  async function selectMessages(
+    run: (cols: string) => PromiseLike<{ data: unknown; error: { message: string; code?: string } | null }>,
+  ): Promise<MessageRow[]> {
+    if (!noMediaColumn) {
+      try {
+        return (unwrap(await run(`${MESSAGE_COLUMNS},media`)) ?? []) as MessageRow[];
+      } catch (e) {
+        if (!missingMediaColumn(e)) throw e;
+        noMediaColumn = true;
+      }
+    }
+    return (unwrap(await run(MESSAGE_COLUMNS)) ?? []) as MessageRow[];
+  }
   return {
     async getUserId() {
       const { data } = await client.auth.getUser();
@@ -139,11 +156,13 @@ export function createSupabaseFriendsApi(client: SupabaseClient): FriendsApi {
     },
 
     async listMessages(uid, friendId, beforeId) {
-      let q = client.from("messages").select("id,sender,recipient,body,created_at")
-        .or(dmOr(uid, friendId))
-        .order("id", { ascending: false }).limit(PAGE);
-      if (beforeId !== undefined) q = q.lt("id", beforeId);
-      return (unwrap(await q) ?? []) as MessageRow[];
+      return selectMessages((cols) => {
+        let q = client.from("messages").select(cols)
+          .or(dmOr(uid, friendId))
+          .order("id", { ascending: false }).limit(PAGE);
+        if (beforeId !== undefined) q = q.lt("id", beforeId);
+        return q;
+      });
     },
 
     async latestInboxId(uid) {
@@ -153,10 +172,9 @@ export function createSupabaseFriendsApi(client: SupabaseClient): FriendsApi {
     },
 
     async listInboxSince(uid, sinceId) {
-      const res = await client.from("messages").select("id,sender,recipient,body,created_at")
+      return selectMessages((cols) => client.from("messages").select(cols)
         .eq("recipient", uid).gt("id", sinceId)
-        .order("id", { ascending: true }).limit(INBOX_PAGE);
-      return (unwrap(res) ?? []) as MessageRow[];
+        .order("id", { ascending: true }).limit(INBOX_PAGE));
     },
 
     async touchPresence(uid, workspace) {
