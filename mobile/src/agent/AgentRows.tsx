@@ -5,8 +5,10 @@
 // 变了才存**，不是每点一下写一次库（ADR-0323）。比的是「认得的那一档」（agentFormPatch 同一条）：认不出的新键
 // （新版客户端存的）不会因为点了一下「自动」试听就被冲掉。判据原样：表单校验（agentSettingsForm）、落库前校验 + 查重名 + 23505 翻译
 // （agentAdmin.updateAgentChecked，与桌面同一份编排）。
+// 「定时任务」（#1283）是进另一屏的一行，列表在 RoutinesScreen。
 // 「模型」「能用哪几个应用」「它记下的东西」不在这里（#1356 撤掉的三样，理由原样成立）。
-import { useFocusEffect } from "@react-navigation/native";
+import { useFocusEffect, useNavigation } from "@react-navigation/native";
+import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import { useCallback, useMemo, useState } from "react";
 import { updateAgentChecked, type AgentUpdateDeps } from "../../../src/shared/agentAdmin.js";
 import { avatarPreviewSlot } from "../../../src/shared/agentAvatar.js";
@@ -18,12 +20,14 @@ import { AGENT_NAME_MAX } from "../../../src/shared/workspaceAgents.js";
 import { usageRows } from "../../../src/shared/workspaceUsageView.js";
 import type { WorkspaceAgentRow, WorkspaceSnapshot } from "../../../src/shared/workspaces.js";
 import { refreshHomeAfterWrite } from "../home/homeStore.js";
+import type { RootStackParams } from "../nav/types.js";
 import { refreshUsage, useMachine } from "../machine/machineStore.js";
 import { supabase } from "../supabase.js";
-import { Group, Row } from "../ui.js";
+import { Group, Row, useNow } from "../ui.js";
 import { FaceTile } from "../wx/Avatar.js";
 import { EditTextDialog } from "../wx/EditTextDialog.js";
 import { FacePickerSheet } from "./FacePickerSheet.js";
+import { routinesRowValue, useRoutines } from "./routinesStore.js";
 import { VoicePickerSheet } from "./VoicePickerSheet.js";
 
 const updateDeps: AgentUpdateDeps = { listAgentNames, updateAgentRow };
@@ -58,10 +62,16 @@ export function AgentRows({ ws, agent }: { ws: WorkspaceSnapshot; agent: Workspa
   const [voiceShown, setVoiceShown] = useState<string | null | undefined>(undefined);
   /** 形象、声音这两格挑完就存，存不进去的那句话写在这一组底下 */
   const [pickError, setPickError] = useState<string | null>(null);
+  const navigation = useNavigation<NativeStackNavigationProp<RootStackParams>>();
+  const routines = useRoutines(ws.id, agent.agentId);
+  const now = useNow(60_000);
+  const refreshRoutines = routines.refresh;
   useFocusEffect(
     useCallback(() => {
       void refreshUsage(ws.id);
-    }, [ws.id]),
+      // 从定时任务那一屏返回时「N 个 · 下次…」要跟着变
+      void refreshRoutines();
+    }, [ws.id, refreshRoutines]),
   );
   const usage = machine.usage.kind === "ok" ? machine.usage.usage : machine.usage.kind === "error" ? machine.usage.usage : null;
   const percent = useMemo(() => {
@@ -94,6 +104,10 @@ export function AgentRows({ ws, agent }: { ws: WorkspaceSnapshot; agent: Workspa
         <Row label="职责" value={text(agent.description)} chevron onPress={() => setEditing({ field: "description", key: Date.now(), visible: true })} />
         <Row label="还有什么要交代的" value={text(agent.instructions)} chevron onPress={() => setEditing({ field: "instructions", key: Date.now(), visible: true })} />
         <Row label="说话的声音" value={voiceRowValue(voiceNow)} chevron onPress={openVoice} />
+        {/* 读不到（0056 还没跑）就整行不画——画一行点进去是空的，不如没有 */}
+        {routines.error === null ? (
+          <Row label="定时任务" value={routines.loaded ? routinesRowValue(routines.rows, now) : ""} chevron onPress={() => navigation.navigate("Routines", { agentId: agent.agentId })} />
+        ) : null}
         {percent !== null ? <Row label="本周用了额度的" value={percent} /> : null}
       </Group>
 
