@@ -1,5 +1,5 @@
 # ADR-0356：智能体的定时任务——runtime 里一只 tick 加一张表，到点起 turn 走现成那条路
-原为 ADR-0353（合并前 origin/main 已有 0353–0355，按 ADR-0074 改成 max+1；代码注释与 migration 头里仍写 ADR-0353 的，指的就是这条）
+原为 ADR-0353（合并主干时撞号改为 0356，代码注释与 migration 头已同步改）
 
 日期：2026-10-04 · issue #1283 · spec `docs/superpowers/specs/2026-10-04-agent-routines-design.md` · 维护者在会话里拍板
 
