@@ -108,10 +108,11 @@ export interface UserMessageEvent extends SessionEventBase {
       `"pair_call_summary"`（#1533）：朋友给主人的公开智能体打完电话，runtime 替主人落的那条「把 TA 的需求总结给我」——
       与 outreach_report 同一种性质（正文是外人的话的转述），那一轮受监督
       `"routine"`（#1283，ADR-0359）：定时任务到点，runtime 替主人落的开场白（`mentions` 是那只，`fromUid` 是主人）。
+      `"dnd_report"`（#1569，ADR-0366）：到了主人设的汇报时间，runtime 替主人落给管理员的开场白——正文是免打扰期间朋友发来的消息与代办任务的摘要。与 outreach_report 同一种性质（别人的话的转述），那一轮受监督；只有 call_user（打给主人本人汇报）不掀。同样只是记号、同样不画、不进协议位。
       与别的 greeting 两处不同：① 它**算主人亲口**（openingTraits 的 ownerSpoke 放行它——任务原话是主人写的）；
       ② 手机时间线**画它**（一条居中灰条「⏰ 定时任务「x」」）：别的 greeting 都有前一条可见事件解释「为什么它开口了」，
       这条没有。桌面照旧藏。同样不进协议位 */
-  greeting?: "voice_call" | "new_agent" | "callback" | "outreach" | "outreach_report" | "admin_intro" | "pair_call_summary" | "routine";
+  greeting?: "voice_call" | "new_agent" | "callback" | "outreach" | "outreach_report" | "admin_intro" | "pair_call_summary" | "routine" | "dnd_report";
   /** 这句话是**在语音通话里说出来的**（#1233）。缺席 = 打字打的 / 旧日志。
       **只是记号**：起 turn、排队、护栏、接力链首、派活全都不看它，模型投影
       （deriveMessages）读都不读——对模型来说这就是一条普通的用户消息，和从前

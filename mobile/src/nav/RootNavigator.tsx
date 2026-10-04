@@ -10,6 +10,7 @@ import { SubscriptionScreen } from "../account/SubscriptionScreen.js";
 import { SettingsScreen } from "../account/SettingsScreen.js";
 import { AgentScreen } from "../agent/AgentScreen.js";
 import { RoutinesScreen } from "../agent/RoutinesScreen.js";
+import { QuietHoursScreen } from "../account/QuietHoursScreen.js";
 import { flushPendingNav } from "../call/ringStore.js";
 import { HumanCallScreen } from "../call/HumanCallScreen.js";
 import { flushPushNav } from "../push/messagePush.js";
@@ -95,6 +96,7 @@ export function RootNavigator() {
         <Root.Screen name="ChatInfo" component={ChatInfoScreen} options={{ title: "聊天信息" }} />
         <Root.Screen name="Agent" component={AgentScreen} options={{ title: "", headerShadowVisible: false }} />
         <Root.Screen name="Routines" component={RoutinesScreen} options={{ title: "定时任务" }} />
+        <Root.Screen name="QuietHours" component={QuietHoursScreen} options={{ title: "免打扰与汇报" }} />
         <Root.Screen name="Friend" component={FriendScreen} options={{ title: "", headerShadowVisible: false }} />
         <Root.Screen name="Requests" component={RequestsScreen} options={{ title: "新的朋友" }} />
         <Root.Screen name="Groups" component={GroupsScreen} options={{ title: "群聊" }} />

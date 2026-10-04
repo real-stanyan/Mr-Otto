@@ -135,10 +135,12 @@ export function outreachRowText(s: OutreachState): string {
 export function openingTraits(
   openings: readonly { fromUid?: string; relay?: unknown; greeting?: string }[],
   ownerUid: string,
-): { report: boolean; ownerSpoke: boolean; nonOwner: boolean } {
+): { report: boolean; ownerSpoke: boolean; nonOwner: boolean; ownerReport: boolean } {
   return {
-    // pair_call_summary（#1533）同一种性质：正文是朋友在电话里说的话的转述，那一轮每一刀都要主人批
-    report: openings.some((o) => o.greeting === "outreach_report" || o.greeting === "pair_call_summary"),
+    // pair_call_summary（#1533）/ dnd_report（#1569）同一种性质：正文是别人说的话的转述，那一轮每一刀都要主人批
+    report: openings.some((o) => o.greeting === "outreach_report" || o.greeting === "pair_call_summary" || o.greeting === "dnd_report"),
+    // 定时汇报那一轮（#1569，ADR-0366）：受监督，但 call_user（打给主人本人）不掀——汇报的方式就是打电话
+    ownerReport: openings.some((o) => o.greeting === "dnd_report"),
     // routine 开场白（#1283）是 greeting 一族里唯一算「主人亲口」的：正文是主人自己写的任务原话，
     // 与他当场说一句逐字等价；不放行的话定时轮里 call_friend 永远灭着（spec §5.2 的已知代价）
     ownerSpoke: openings.length > 0 && openings.every((o) => o.fromUid === ownerUid && o.relay === undefined && (o.greeting === undefined || o.greeting === "routine")),

@@ -183,7 +183,7 @@ import {
   type OutreachFold,
 } from "../../../src/shared/outreach.js";
 import { applyFriendPick, friendPickFailureText, friendPickFoldOf, friendPickStatus, recentPeerUids, type FriendPickFold } from "../../../src/shared/friendPick.js";
-import { callbackAnsweredText, callbackGreetingText, callerModelOf, ringChatKind, type RingPush, type RingState } from "../../../src/shared/callRing.js";
+import { CALL_USER_TOOL_NAME, callbackAnsweredText, callbackGreetingText, callerModelOf, ringChatKind, type RingPush, type RingState } from "../../../src/shared/callRing.js";
 import { createRinger, type Ringer } from "./callRinger.js";
 import { SPEECH_TICKET_TTL_MS, type SpeechTicket } from "../../../src/shared/speechTicket.js";
 import { createOutreachRun, type OutreachEnded, type OutreachRun, type OutreachStart, type OutreachStartResult } from "./outreachRun.js";
@@ -727,6 +727,9 @@ export interface CloudSession {
       reportOutreach 同一条路。名单现读：那只已删 / 已移出回 no_agent，一个事件都不落；名单读不出来（degraded）
       抛错——那是一次查询失败，不能让调度器当成「那只没了」把任务停掉 */
   runRoutine(r: { routineId: string; title: string; instruction: string; tz: string; firedAt: number; agentId: string }): Promise<"ok" | "archived" | "no_agent">;
+  /** 定时汇报到点（#1569，ADR-0366）：替主人落一条 greeting:"dnd_report" 的开场白给管理员并入队——正文由 daemon 拼好
+      （免打扰期间朋友发来的消息与代办任务的摘要 + 打电话 / 发消息的要求）。管理员不在名单里回 no_agent */
+  runReport?(r: { text: string; firedAt: number }): Promise<"ok" | "archived" | "no_agent">;
   /** 定时任务没跑成的注记（错过 / 额度不够，spec §4.3）：ignorable，不起 turn */
   logRoutineNote(n: { routineId: string; title: string; reason: "missed" | "skipped_quota"; plannedAt: number; tz: string }): void;
   /** 测试用：这场通话是谁开的（#1533），null = 没在通话里。可选：假装配（smoke / frameHandler 测试）不必带 */
@@ -922,6 +925,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   /** 这一轮是不是外联汇报轮（#1441）：开场白是 `greeting: "outreach_report"`，正文带着朋友说的话的转述。
       runJob 起跑时置位、收口（任何出口）复位，与 currentInitiator 同生同死 */
   let reportTurn = false;
+  /** 这一轮是定时汇报起的（#1569，ADR-0366）：受监督（正文是别人的话），但 call_user 不掀——汇报的方式就是打给主人 */
+  let ownerReportTurn = false;
   /** 这一轮是不是主人**本人亲口**点起的（#1441）：call_friend 的唯一资格。不是客人（fromUid）、不是 agent
       接力棒（relay / depth）、不是系统开场白（greeting：招呼 / 回电 / 汇报）。runJob 起跑时算，收口复位 */
   let ownerSpoke = false;
@@ -952,9 +957,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   const tightenSupervision = (e: SessionEvent): void => {
     if (currentAgentId === null || !opts.approveAll) return;
     if (e.type === "user_message") {
-      if (e.greeting === "outreach_report" || e.greeting === "pair_call_summary") {
+      if (e.greeting === "outreach_report" || e.greeting === "pair_call_summary" || e.greeting === "dnd_report") {
         reportTurn = true;
         ownerSpoke = false;
+        if (e.greeting === "dnd_report") ownerReportTurn = true;
       } else if (e.fromUid !== undefined && e.fromUid !== opts.ownerUid && e.fromUid !== "system") {
         foldedNonOwner = true;
         ownerSpoke = false;
@@ -971,6 +977,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   const applyTraits = (covered: readonly UserMessageEvent[], depth: number): void => {
     const t = openingTraits(covered, opts.ownerUid);
     reportTurn = reportTurn || t.report;
+    ownerReportTurn = ownerReportTurn || t.ownerReport;
     foldedNonOwner = foldedNonOwner || t.nonOwner;
     rerunTurn = rerunTurn || covered.some((u) => rerunOpenings.has(u.seq));
     routineTurn = routineTurn || covered.some((u) => u.greeting === "routine");
@@ -1664,7 +1671,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         return opts.approveAll
           ? list.map((t) =>
               // message_friend_agent（#1542）不掀：它只往对面车道落一句两个人都看得到的话，与回话是同一种东西
-              Object.create(t, { requiresApproval: { get: () => t.requiresApproval || (supervisedTurn() && t.def.name !== MESSAGE_FRIEND_AGENT_TOOL_NAME), enumerable: true } }) as Tool,
+              Object.create(t, { requiresApproval: { get: () => t.requiresApproval || (supervisedTurn() && t.def.name !== MESSAGE_FRIEND_AGENT_TOOL_NAME && !(ownerReportTurn && t.def.name === CALL_USER_TOOL_NAME)), enumerable: true } }) as Tool,
             )
           : list;
       },
@@ -2482,6 +2489,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // 两格都按这个 job **覆盖的全部开场白**算（covered），不只读 job.opening：折进来的后几条在这里不能漏。
     // openingDepth 为 0 才算亲口：接力棒的开场白 fromUid 是点火的那个人（也许就是主人），不能凭它算资格
     reportTurn = false;
+    ownerReportTurn = false;
     routineTurn = false;
     foldedNonOwner = false;
     rerunTurn = false;
@@ -3419,6 +3427,20 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       }) as UserMessageEvent;
       notify(opening);
       if (coordinator.enqueue({ agentId: r.agentId, fromUid: opts.ownerUid, opening }) === "start_turn") startDrain();
+      return "ok";
+    },
+
+    async runReport(r) {
+      if (archived || isOutreach) return "archived";
+      const roster = await rosterNow({ fresh: true });
+      if (archived) return "archived";
+      if (roster.some((a) => a.degraded)) throw new Error("智能体名单读不出来，这次先不汇报");
+      if (!roster.some((a) => a.agentId === ADMIN_AGENT_ID)) return "no_agent";
+      const opening = store.append({
+        sessionId, ts: Date.now(), type: "user_message", content: r.text, fromUid: opts.ownerUid, mentions: [ADMIN_AGENT_ID], greeting: "dnd_report",
+      }) as UserMessageEvent;
+      notify(opening);
+      if (coordinator.enqueue({ agentId: ADMIN_AGENT_ID, fromUid: opts.ownerUid, opening }) === "start_turn") startDrain();
       return "ok";
     },
 
