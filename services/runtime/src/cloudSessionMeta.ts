@@ -27,6 +27,7 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 import type { ParticipantWindow } from "../../../src/shared/sessionParticipants.js";
 import type { SessionLast } from "../../../src/shared/sessionLast.js";
 import type { ActivityWrite } from "./activityWriter.js";
+import { taskRowToDb, type TaskRow } from "../../../src/shared/tasks.js";
 
 export interface CloudSessionMeta {
   /** 侧栏那一行显示的名字。空串不该走到这里（调用方自己判） */
@@ -38,6 +39,8 @@ export interface CloudSessionMeta {
   /** agent_activity 那张表（#1282，spec §3.2）：这条会话里几只智能体的状态，一次写一批。节流与心跳在
       调用方（activityWriter）。接口方法而不是可选依赖：漏实现编译不过，而不是安静地永远不写 */
   setActivity(rows: ActivityWrite[]): Promise<void>;
+  /** `tasks` 投影表（#1571，0061）：一条任务事件折过之后把那一行整行 upsert。接口方法同 setActivity 的纪律 */
+  upsertTask(row: TaskRow): Promise<void>;
 }
 
 /** 记在内存里的假件（测试 / 冒烟）。两格直接给断言读 */
@@ -47,18 +50,23 @@ export function createInMemoryCloudSessionMeta(): CloudSessionMeta & {
   last: SessionLast | null;
   /** setActivity 收到的每一批，按先后 */
   activity: ActivityWrite[][];
+  /** upsertTask 收到的每一行，按先后 */
+  tasks: TaskRow[];
 } {
-  const state: { title: string | null; participants: ParticipantWindow | null; last: SessionLast | null; activity: ActivityWrite[][] } = {
+  const state: { title: string | null; participants: ParticipantWindow | null; last: SessionLast | null; activity: ActivityWrite[][]; tasks: TaskRow[] } = {
     title: null,
     participants: null,
     last: null,
     activity: [],
+    tasks: [],
   };
   return {
     get title() { return state.title; },
     get participants() { return state.participants; },
     get last() { return state.last; },
     get activity() { return state.activity; },
+    get tasks() { return state.tasks; },
+    async upsertTask(row) { state.tasks.push({ ...row }); },
     async setTitle(title) { state.title = title; },
     async setParticipants(w) { state.participants = { window: w.window, uids: [...w.uids] }; },
     async setLast(l) { state.last = { ...l }; },
@@ -93,6 +101,7 @@ export function createSupabaseCloudSessionMeta(
 
   /** 0044 还没跑时每一次写都撞「表不存在」（Postgres 42P01 / PostgREST PGRST205）：这条会话只说一次 */
   let activityMissingSaid = false;
+  let tasksMissingSaid = false;
 
   return {
     async setTitle(title) { await write({ title }, "会话标题"); },
@@ -101,6 +110,19 @@ export function createSupabaseCloudSessionMeta(
     },
     async setLast(l) {
       await write({ last_ts: new Date(l.ts).toISOString(), last_excerpt: l.excerpt, last_from: l.from }, "最后一句");
+    },
+    async upsertTask(row) {
+      try {
+        const { error } = await client.from("tasks").upsert(taskRowToDb(row), { onConflict: "id" });
+        if (!error) return;
+        if (error.code === "42P01" || error.code === "PGRST205") {
+          if (tasksMissingSaid) return;
+          tasksMissingSaid = true;
+        }
+        log(`[otto-runtime] 任务投影写入失败（session=${sessionId}）：${error.message}`);
+      } catch (err: unknown) {
+        log(`[otto-runtime] 任务投影写入抛出异常（session=${sessionId}）：${err instanceof Error ? err.message : String(err)}`);
+      }
     },
     async setActivity(rows) {
       try {

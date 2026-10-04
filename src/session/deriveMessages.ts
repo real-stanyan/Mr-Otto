@@ -21,6 +21,7 @@ import { delegationRolePrompt } from "../shared/delegation.js";
 import { ADMIN_AGENT_ID } from "../shared/workspaceAgents.js";
 import { sanitizeForPrompt } from "../shared/threatPatterns.js";
 import type { ExecutorKind } from "../shared/taskSync.js";
+import { taskEventText } from "../shared/tasks.js";
 
 /** 用户正文 + 文本文件全文拼成模型可见文本。日志里二者分开存
     (content 纯正文,textFiles 结构化)——UI 按结构渲染文件卡片,
@@ -829,6 +830,8 @@ export function deriveMessages(
   // 消息先攒着，组的结果齐了再进上下文——模型晚一拍看到它，配对约束不破。
   // 组永远没答完（中断后新 turn / turn_ended）就地冲账，消息不丢
   let pendingToolIds = new Set<string>();
+  /** 任务标题（#1571）：task_created 记下，后面的事件按 taskId 回头找标题 */
+  const taskTitles = new Map<string, string>();
   let deferredUsers: UserChatMessage[] = [];
   const flushDeferred = () => {
     messages.push(...deferredUsers);
@@ -1231,6 +1234,18 @@ export function deriveMessages(
       // 看的路标——谁传给了谁、第几棒，喂回模型等于让它读一句关于自己身份的元话
       case "agent_relay":
         break;
+      // 任务（#1571）：一句系统话，管理员与被派的那只都读得到任务在哪一步。同 chat_message：卡在工具调用与结果之间时先攒着
+      case "task_created":
+      case "task_assigned":
+      case "task_progress":
+      case "task_needs_owner":
+      case "task_done":
+      case "task_failed": {
+        taskTitles.set(event.taskId, event.type === "task_created" ? event.title : (taskTitles.get(event.taskId) ?? "任务"));
+        const line = `[任务 ${event.taskId}] ${promptSafe(taskEventText(event, (id) => id, (id) => taskTitles.get(id) ?? null))}`;
+        (pendingToolIds.size > 0 ? deferredUsers : messages).push({ role: "user", content: line });
+        break;
+      }
 
       // 钩子干预事件本身不直接投影（issue #350）：pre/block 与 post/reject 的
       // 模型可见面已在配对的 tool_result 里；post/feedback 的包装在上面的

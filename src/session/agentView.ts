@@ -116,6 +116,13 @@ const OTHER_AGENT_VERDICTS: Record<SessionEvent["type"], OtherAgentVerdict> = {
   call_ring: "keep",
   // 定时任务没跑成（#1283）：同 call_ring，不带 agentId，早退路径本来就放行，表态为 keep
   routine_note: "keep",
+  // 任务（#1571）：群事实，管理员与被派的那只都要看得见
+  task_created: "keep",
+  task_assigned: "keep",
+  task_progress: "keep",
+  task_needs_owner: "keep",
+  task_done: "keep",
+  task_failed: "keep",
   // 外联（#1441）：同 call_ring，故意叫 fromAgentId，这张表轮不到它，仍要表态
   outreach: "keep",
   // 选人卡（#1520）：同 outreach，故意叫 fromAgentId，这张表轮不到它，仍要表态
