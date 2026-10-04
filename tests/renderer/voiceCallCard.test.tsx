@@ -149,6 +149,13 @@ describe("点开那个弹窗（#1233）", () => {
     expect(screen.getByText("拉进了通话")).toBeInTheDocument();
   });
 
+  it("卡里的全文剥掉段首情绪括注（#1515）", () => {
+    renderCard([callChanged(1, 0, ["a_1"]), spoke(2, 2_000, "能听到吗"), answered(3, 4_000, "（笑）能，很清楚。"), callChanged(4, 9_000, [])]);
+    fireEvent.click(screen.getByRole("button", { name: /看记录/ }));
+    expect(screen.getByText("能，很清楚。")).toBeInTheDocument();
+    expect(screen.queryByText(/（笑）/)).toBeNull();
+  });
+
   it("每一行带说话人与「第几分几秒说的」——通话里墙上时间没有意义", () => {
     renderCard(ENDED);
     fireEvent.click(screen.getByRole("button", { name: /看记录/ }));

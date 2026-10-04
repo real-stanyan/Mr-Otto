@@ -13,6 +13,7 @@ import { splitBubbles } from "./chatBubbles.js";
 import { isAgentStep, parseUserMessageLabel } from "./cloudTimeline.js";
 import { humanSpeakerOf } from "./sessionParticipants.js";
 import { isSystemNote } from "./systemNote.js";
+import { stripEmotionTag } from "./voiceProsody.js";
 
 /** 一条摘录最多多少字——按 Unicode 字符数，不按 UTF-16 码元（emoji 不该被劈成两半） */
 export const LAST_EXCERPT_MAX = 120;
@@ -31,7 +32,7 @@ export interface SessionLast {
 /** 第一段非空文字（段 = 空行分隔，与气泡拆段同一条判据 `splitBubbles`）→ 折叠空白 →
     超长截断（省略号算在上限里）。只有空白 → 空串 */
 export function excerptOf(text: string): string {
-  const first = splitBubbles(text)[0] ?? "";
+  const first = stripEmotionTag(splitBubbles(text)[0] ?? "");
   const flat = first.replace(/\s+/g, " ").trim();
   const chars = Array.from(flat);
   if (chars.length <= LAST_EXCERPT_MAX) return flat;

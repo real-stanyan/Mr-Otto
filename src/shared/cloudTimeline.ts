@@ -17,6 +17,7 @@ import type { WorkspaceSnapshot } from "./workspaces.js";
 import { CREATE_AGENT_TOOL_NAME } from "./createAgentDraft.js";
 import { countdown } from "./billingView.js";
 import type { OpenTurn } from "./turnLedger.js";
+import { stripEmotionTags } from "./voiceProsody.js";
 
 /** sessionService.ts 的 say() 点火一个 turn 时拼的前缀:`\`[${label}]: ${text}\``。
     协议没有给 user_message 配独立的 fromUid/label 字段（这个事件本来就是
@@ -604,7 +605,7 @@ export function voiceCallCards(
       if (isAgentStep(e) || e.agentId === undefined || !roster.has(e.agentId)) continue;
       // 名单里必有它（上面 roster.has 那道闸），所以快照一定查得到
       const party = partyOfAgent(e.agentId, draft.agents.get(e.agentId));
-      say(e, party.name, party.avatar, e.content, false);
+      say(e, party.name, party.avatar, stripEmotionTags(e.content), false);
       continue;
     }
   }
