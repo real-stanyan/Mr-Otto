@@ -251,6 +251,8 @@ import { createLastWriter } from "./lastWriter.js";
 import { ACTIVITY_BEAT_MS, ACTIVITY_THROTTLE_MS, activityFoldOf, activityOf, foldActivity, knownAgents } from "../../../src/shared/agentActivity.js";
 import { createActivityWriter } from "./activityWriter.js";
 import { advanceRoleWait, newAgentGreetingText, roleWaitOf, settledRole, type RoleWait } from "../../../src/shared/agentOnboarding.js";
+import { alertBody, muteKeyFor, type AlertPush, type NotifyKind } from "../../../src/shared/notifyPrefs.js";
+import { advanceReplyNotify, createReplyNotifyState, type ReplyNote } from "../../../src/shared/replyNotify.js";
 
 /** 派活分类器读日志尾段多少条事件（#1153）。一轮 turn 十几条事件是常态，200 条
     足够捞出最近 8 句说出口的话；不读全量是因为 say() 的回执等着这一步 */
@@ -390,6 +392,11 @@ export interface CloudSessionOpts {
       写入是**日志的投影**（权威那份已经落盘），所以它失败只记一行日志、不把一句
       已经发出去的话翻成失败 */
   mentionInbox: MentionInbox;
+  /** 消息推送（#1442）：智能体回答完了推给问的人、有人被 @ 推给他。开关与免打扰由这一格的实现查
+      （daemon 接 notifier.ts），这里只管「推给谁、推什么」。可选：推送关着（没配 APNs）时 daemon 不给，
+      测试装配也不给——缺席 = 一条都不推，与改动前逐字相同。接线有一条读 daemon.ts 源码的断言
+      （tests/runtime/daemonPushWiring.test.ts）：忘接的后果是无声的 */
+  alert?: (uid: string, kind: NotifyKind, push: AlertPush) => void;
   /** `workspace_sessions` 那三格的写入口（#1213）。**必需**（同 memory / mentionInbox
       的纪律）：忘接线该编译不过，而不是安静地跑一条「侧栏永远叫新会话、永远看不出
       谁在里面说过话」的会话——那正是这条 issue 要拆掉的东西，失败模式本来就是无声的。
@@ -788,6 +795,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       participants 的形状）。它只决定「这一句要不要去结算职责、结算成什么」——只有那一句会碰库，
       别的每一句零额外查询；真正的闸是库里那一格（settleRole 的条件更新） */
   let roleWait: RoleWait | null = roleWaitOf(seed);
+  /** 智能体回答该推给谁（#1442）：装配时把种子整份喂一遍（重启时正在答的那几句照样推得到，丢掉这时吐出来的
+      旧收口），之后在 notify 里逐条推进 */
+  const replyFold = createReplyNotifyState();
+  for (const e of seed) advanceReplyNotify(replyFold, e);
   /** 此刻的标题。空串 = 还没有。日志里最后一条 session_autotitled 胜出（同本机
       store.ts 的标题投影），首行兜底那次也会更新它——它是重判时递给模型的那一格 */
   let title = "";
@@ -1097,6 +1108,30 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         })
       : null;
 
+  /** 推送点开去哪（#1442）：这个人在列表里是哪一种聊天，与回电同一张表（ringChatKind）。外联会话不推 */
+  function alertTargetFor(uid: string, agentId: string): AlertPush["target"] | null {
+    const chat = ringChatKind({ home: opts.approveAll, chatKind, toUid: uid, ownerUid: opts.ownerUid });
+    if (chat === "outreach" || muteKeyFor(chat, sessionId, agentId) === null) return null;
+    return { kind: "cloud", chat, workspaceId: opts.workspaceId, sessionId, agentId };
+  }
+
+  /** 智能体回答完了，推给这一轮答的那几句话是谁说的（#1442；判据在 shared/replyNotify.ts）。私聊标题是它的
+      名字；群里标题是群名、副标题是它 */
+  async function pushReply(n: ReplyNote): Promise<void> {
+    const alert = opts.alert;
+    if (alert === undefined || isOutreach || archived) return;
+    const team = await opts.agents();
+    const name = team.find((a) => a.agentId === n.agentId)?.name ?? n.agentId;
+    for (const uid of n.uids) {
+      const target = alertTargetFor(uid, n.agentId);
+      if (target === null) continue;
+      const dm = target.kind === "cloud" && target.chat === "dm";
+      alert(uid, "agent_reply", dm
+        ? { title: name, body: alertBody(n.text), target }
+        : { title: title || "群聊", subtitle: name, body: alertBody(n.text), target });
+    }
+  }
+
   /** 落盘 + 通知的唯一口——engine 自己 append 的、sessionService 直接 append
       的（chat_message / approval_request / agent_briefed / session_archived），
       都从这过一遍，lastSeq() 才对得上 */
@@ -1135,6 +1170,9 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // 谁在等它的职责（#1356 A2）：同 voiceCall 的推理——daemon.ts 绕过 notify 直接 append 的那几类
     // 里没有 user_message，漏不掉
     roleWait = advanceRoleWait(roleWait, e);
+    // 智能体回答完了推给问的人（#1442）。fire-and-forget：推送失败只记日志，不碍这一条事件出门
+    const replyNote = opts.alert === undefined ? null : advanceReplyNotify(replyFold, e);
+    if (replyNote !== null) void pushReply(replyNote).catch((err: unknown) => console.warn(`[otto-runtime] 回答推送失败（session=${sessionId}）`, err));
     // 最近谁说过话（#1163 那条的邻居，#1213）：同 advanceRelayBounds 的推理——
     // daemon.ts 绕过 notify 直接 append 的那四类里有 chat_message，但那几条的
     // fromUid 是 "system"，`humanSpeakerOf` 本来就不认；漏掉一条的后果也只是
@@ -2789,6 +2827,12 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
             rows.push({
               workspaceId: opts.workspaceId, sessionId, seq, uid, fromUid, fromLabel: label, text,
             });
+          }
+          // 推送（#1442）：被点名的人手机响一下。开关 / 免打扰由 alert 的实现查。排在收件箱写入之前：
+          // 那一格写失败（抛）不该连推送一起吞掉
+          for (const r of rows) {
+            const target = alertTargetFor(r.uid, "");
+            if (target !== null) opts.alert?.(r.uid, "mention", { title: title || "群聊", subtitle: label, body: alertBody(text), target });
           }
           await opts.mentionInbox.record(rows);
         } catch (err) {

@@ -114,6 +114,17 @@ describe("inboxRows", () => {
     openKey: null,
   };
 
+  it("免打扰（#1442）：未读数换成点、打上 muted；角标只在被 @ 时算它", () => {
+    const rows = inboxRows({ ...base, muted: new Set(["f:u_aj", "t:ts1"]) });
+    const by = (k: string) => rows.find((r) => r.key === k)!;
+    expect(by("f:u_aj").unread).toEqual({ kind: "dot" });
+    expect(by("f:u_aj").muted).toBe(true);
+    expect(by("a:a_000000000001").muted).toBeUndefined();
+    const plain = inboxRows(base);
+    expect(inboxUnreadChats(rows)).toBe(inboxUnreadChats(plain) - [by("f:u_aj"), by("t:ts1")].filter((r) => r.unread !== null).length);
+    const mentioned = rows.map((r) => (r.key === "t:ts1" ? { ...r, mention: true } : r));
+    expect(inboxUnreadChats(mentioned)).toBe(inboxUnreadChats(rows) + 1);
+  });
   it("四种混排、按最近一句降序；没聊过的智能体与没消息的朋友不进来；归档的团队会话不进来", () => {
     const rows = inboxRows(base);
     expect(rows.map((r) => r.key)).toEqual(["a:a_000000000001", "f:u_aj", "t:ts1", "g:grp1"]);

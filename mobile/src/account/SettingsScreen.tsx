@@ -1,19 +1,23 @@
-// 设置（#1356 A5；#1386 换成微信式通栏，退出登录从账号页挪到这里——demo 同款）：外观（这台手机自己的偏好）、
-// 连接诊断（中继 + 版本）、退出登录。demo 里「有人 @ 我时通知」「智能体回话时通知」两行不画：手机没有推送凭据那一层
-// （ADR-0256 的已知代价），画出来就是点了不生效的开关（#722）。
+// 设置（#1356 A5；#1386 换成微信式通栏，退出登录从账号页挪到这里——demo 同款）：消息通知（#1442）、隐私（已读回执）、
+// 外观（这台手机自己的偏好）、连接诊断（中继 + 版本）、退出登录。
+// 通知那几个开关存在账号上（notify_prefs），runtime 推之前读它；读不到时整段不画（画成「全开」就是撒谎，#722）。
+// 系统层面没允许通知时开关照画，但底下说清「这里开着也收不到」——那一格只有人自己去系统设置里改得了。
 // 外观是单选清单（iOS 设置的语汇）不是分段控件：RN 没有原生分段控件，不为它加依赖。
-import { useNavigation } from "@react-navigation/native";
-import { useState } from "react";
+import { useFocusEffect, useNavigation } from "@react-navigation/native";
+import * as Notifications from "expo-notifications";
+import { useCallback, useState } from "react";
+import { Linking, Switch } from "react-native";
 import { authNoticeOf, type AuthNotice } from "../../../src/shared/authError.js";
 import { ACCOUNT_FOOTER, THEME_PREFS } from "../../../src/shared/mobileAccount.js";
 import { Dialog, DialogFooter, DialogLead, DialogTitle } from "../dialog.js";
 import { NoticeLine } from "../gate/NoticeLine.js";
 import { goOffline } from "../friends/presenceStore.js";
+import { loadNotify, setPref, useNotify } from "../push/notifyStore.js";
 import { unregisterPush } from "../push/pushRegistration.js";
 import { RELAY_BASE } from "../relay.js";
 import { supabase } from "../supabase.js";
 import { setThemePref, useThemePref } from "../themePref.js";
-import { Group, Inset, ListPage, Row } from "../ui.js";
+import { Group, Inset, ListPage, Note, Row } from "../ui.js";
 // 版本号只有一个事实来源:打包时用的就是这份 app.json 里的 expo.version
 import appJson from "../../app.json";
 
@@ -23,6 +27,21 @@ export function SettingsScreen() {
   const [confirm, setConfirm] = useState(false);
   const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState<AuthNotice | null>(null);
+  const notify = useNotify();
+  /** 系统层面允没允许通知。null = 还没问到 */
+  const [allowed, setAllowed] = useState<boolean | null>(null);
+  useFocusEffect(
+    useCallback(() => {
+      void loadNotify().catch(() => undefined);
+      void Notifications.getPermissionsAsync()
+        .then((p) => setAllowed(p.status !== "denied"))
+        .catch(() => setAllowed(null));
+    }, []),
+  );
+  const prefs = notify.prefs;
+  const toggle = (label: string, value: boolean, onChange: (v: boolean) => void) => (
+    <Row label={label} trailing={<Switch value={value} onValueChange={onChange} accessibilityLabel={label} />} />
+  );
 
   // 登出之后回登录页由 App 那层的 onAuthStateChange 接住。登出会失败：断网而 access token 又过期时，supabase 刷新不了
   // session，就原样留着本地那份、也不发 SIGNED_OUT——这时必须说出来，否则按钮转一下又回来，什么都没发生（A0 原话）
@@ -47,6 +66,27 @@ export function SettingsScreen() {
 
   return (
     <ListPage>
+      {prefs !== null ? (
+        <Group
+          header="消息通知"
+          footer={
+            allowed === false
+              ? "系统设置里没有允许 Otto 发通知，这里开着也收不到。"
+              : "关掉之后这一类不再推到你的手机。单个聊天的「消息免打扰」在聊天信息里设。"
+          }
+        >
+          {toggle("智能体回答", prefs.agentReply, (v) => void setPref({ agentReply: v }))}
+          {toggle("有人 @ 我", prefs.mentions, (v) => void setPref({ mentions: v }))}
+          {toggle("朋友消息", prefs.friends, (v) => void setPref({ friends: v }))}
+          {allowed === false ? <Row label="去系统设置打开通知" chevron onPress={() => void Linking.openSettings()} /> : null}
+        </Group>
+      ) : null}
+      {prefs !== null ? (
+        <Group header="隐私" footer="关掉之后，朋友看不到你有没有读他的消息。">
+          {toggle("已读回执", prefs.readReceipts, (v) => void setPref({ readReceipts: v }))}
+        </Group>
+      ) : null}
+      {notify.error !== null ? <Inset><Note tone="error">{notify.error}</Note></Inset> : null}
       <Group header="外观" footer="只改这台手机。跟随系统时，系统切深浅色它也跟着切。">
         {THEME_PREFS.map((p) => (
           <Row key={p.key} label={p.label} checked={pref === p.key} onPress={() => void setThemePref(p.key)} />

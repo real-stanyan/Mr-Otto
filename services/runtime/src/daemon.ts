@@ -14,6 +14,9 @@ import { createClient } from "@supabase/supabase-js";
 import { loadConfig } from "./config.js";
 import { createApnsPusher } from "./apns.js";
 import { createSupabasePushDevices } from "./pushDevices.js";
+import { createNotifier, createSessionTitles, createSupabaseNotifyStore, withGroupTitle } from "./notifier.js";
+import { createFriendPush, createProfileNames, subscribeFriendMessages } from "./friendPush.js";
+import type { AlertPush, NotifyKind } from "../../../src/shared/notifyPrefs.js";
 import { createGitCredentialStore } from "./gitCredentialStore.js";
 import { cloneWithSidecar, sanitizeCloneText } from "./sandbox.js";
 import { createFrameHandler, safeEncodeCs, type FrameHandlerDeps } from "./frameHandler.js";
@@ -165,6 +168,16 @@ async function main(): Promise<void> {
       ? "[otto-runtime] 推送关着（没配 APNS_*）：智能体没有回电那把刀"
       : `[otto-runtime] 推送开着（APNs，bundle ${apnsCfg.bundleId}）`
   );
+  // 消息推送（#1442）：智能体回答 / 有人 @ 我 / 朋友消息。推不推由 notifier 查开关与免打扰；推送关着就都没有
+  const notifier =
+    apns === null
+      ? null
+      : createNotifier({ store: createSupabaseNotifyStore(supabase), push: (uid, p) => apns.pushAlert(uid, p), log: (m) => console.warn(m) });
+  const sessionTitles = createSessionTitles(supabase);
+  if (notifier !== null) {
+    const friendPush = createFriendPush({ notifier, nameOf: createProfileNames(supabase), log: (m) => console.warn(m) });
+    subscribeFriendMessages(supabase, (raw) => void friendPush.onInsert(raw), (m) => console.log(m));
+  }
   const docker = new Docker();
 
   // sandbox 的构造挪到下面（activeSessions/storeFor/sessionBroadcast 定义
@@ -972,6 +985,15 @@ async function main(): Promise<void> {
           : { dispatch: (o) => outreachHub.dispatch({ ...o, workspaceId, ownerUid }) },
       // 给打给好友的那条线签语音票（#1441）：好友听到的 TTS 记在主人账上，edge 用同一把 RUNTIME_SECRET 验
       signSpeechTicket: (t) => signSpeechTicket(t, config.runtimeSecret),
+      // 消息推送（#1442）：人正开着这条聊天（连着这个房间）就不推——同回电那条 isWatching 的判据
+      ...(notifier === null
+        ? {}
+        : {
+            alert: (uid: string, kind: NotifyKind, p: AlertPush) => {
+              if ([...roster].some((cid) => frameHandler.uidOf(cid) === uid)) return;
+              void withGroupTitle(p, sessionTitles).then((q) => notifier.send(uid, kind, q));
+            },
+          }),
       callback:
         apns === null
           ? null

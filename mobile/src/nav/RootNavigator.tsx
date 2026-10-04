@@ -10,6 +10,7 @@ import { SubscriptionScreen } from "../account/SubscriptionScreen.js";
 import { SettingsScreen } from "../account/SettingsScreen.js";
 import { AgentScreen } from "../agent/AgentScreen.js";
 import { flushPendingNav } from "../call/ringStore.js";
+import { flushPushNav } from "../push/messagePush.js";
 import { ChatInfoScreen } from "../chat/ChatInfoScreen.js";
 import { ChatScreen } from "../chat/ChatScreen.js";
 import { FriendChatScreen } from "../friends/FriendChatScreen.js";
@@ -71,7 +72,10 @@ export function RootNavigator() {
   const theme = useNavTheme();
   const { c } = usePalette();
   return (
-    <NavigationContainer ref={navRef} theme={theme} onReady={flushPendingNav}>
+    <NavigationContainer ref={navRef} theme={theme} onReady={() => {
+      flushPendingNav();
+      flushPushNav();
+    }}>
       <Root.Navigator
         screenOptions={{
           headerBackButtonDisplayMode: "minimal",

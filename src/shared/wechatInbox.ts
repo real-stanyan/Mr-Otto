@@ -141,6 +141,8 @@ export interface InboxRow {
   /** 有人在这个群里 @ 了我、还没看（团队群才会有） */
   mention: boolean;
   unread: Unread;
+  /** 开了「消息免打扰」（#1442）：未读只画点不画数、右边画一枚静音标、不进页签角标的计数。缺席 = 没开 */
+  muted?: true;
   /** 这一行最要紧的那个状态（#1282，角标颜色与读屏文字从它来）。闲着 / 不知道不出现 */
   activity?: AgentActivity;
   /** 搜索的草堆：标题 + 最后一句 + 成员名 */
@@ -249,6 +251,8 @@ export function inboxRows(o: {
   openKey: string | null;
   /** 查某条会话里某只此刻的状态（#1282）。null = 不知道。缺席 = 输出与改动前逐字相同 */
   activity?: (sessionId: string, agentId: string) => AgentActivity | null;
+  /** 开了免打扰的那几条（键同 InboxRow.key，#1442）。缺席 = 一条都没有 */
+  muted?: ReadonlySet<string>;
 }): InboxRow[] {
   const rows: InboxRow[] = [];
   const mentioned = new Set(o.mentions.filter((m) => !m.read).map((m) => m.sessionId));
@@ -394,12 +398,17 @@ export function inboxRows(o: {
     });
   }
 
-  return rows.sort((a, b) => b.ts - a.ts || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
+  const muted = o.muted;
+  const out = muted === undefined || muted.size === 0
+    ? rows
+    : rows.map((r): InboxRow => (muted.has(r.key) ? { ...r, muted: true, unread: r.unread === null ? null : { kind: "dot" } } : r));
+  return out.sort((a, b) => b.ts - a.ts || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0));
 }
 
-/** 有新消息的聊天有几条（页签角标与「聊天(n)」，spec §3.1）。@ 了我的那一条也算 */
+/** 有新消息的聊天有几条（页签角标与「聊天(n)」，spec §3.1）。@ 了我的那一条也算；开了免打扰的只在被 @ 时算
+    （同微信：静音的群不往角标上加数，但有人点我的名照样算） */
 export function inboxUnreadChats(rows: readonly InboxRow[]): number {
-  return rows.filter((r) => r.unread !== null || r.mention).length;
+  return rows.filter((r) => r.mention || (r.unread !== null && r.muted !== true)).length;
 }
 
 /** 本机搜索：按标题 / 成员名 / 最后一句过滤，拉丁字母不分大小写 */
