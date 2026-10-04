@@ -11,6 +11,7 @@ import { authNoticeOf, type AuthNotice } from "../../../src/shared/authError.js"
 import { ACCOUNT_FOOTER, THEME_PREFS } from "../../../src/shared/mobileAccount.js";
 import { Dialog, DialogFooter, DialogLead, DialogTitle } from "../dialog.js";
 import { NoticeLine } from "../gate/NoticeLine.js";
+import { goOffline } from "../friends/presenceStore.js";
 import { loadNotify, setPref, useNotify } from "../push/notifyStore.js";
 import { unregisterPush } from "../push/pushRegistration.js";
 import { RELAY_BASE } from "../relay.js";
@@ -50,6 +51,8 @@ export function SettingsScreen() {
     try {
       // 先注销这台的推送令牌（#1411）：退出之后这台手机不该再响这个账号的来电。最多等 3 秒，断网也照样退出
       await unregisterPush();
+      // 好友那边当场变红（#1460），不等心跳过期
+      await goOffline();
       // 只登出这台手机：supabase 缺省是 global，会把电脑上的 Mr Otto 一起登出（spec §10 第 88 条）
       const { error } = await supabase.auth.signOut({ scope: "local" });
       if (error) setNotice(authNoticeOf(error.message));

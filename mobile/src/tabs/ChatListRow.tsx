@@ -7,7 +7,8 @@ import { ACTIVITY_TEXT, activityBadge } from "../../../src/shared/agentActivity.
 import { listTimeLabel, type InboxRow } from "../../../src/shared/wechatInbox.js";
 import { usePalette } from "../theme.js";
 import { SpecAvatar } from "../wx/Avatar.js";
-import { CountBadge, DotBadge, StatusBadge } from "../wx/Badge.js";
+import { CountBadge, DotBadge, PresenceDot, StatusBadge } from "../wx/Badge.js";
+import { usePresence } from "../friends/presenceStore.js";
 import { Icon } from "../wx/Icon.js";
 
 export const CHAT_ROW_AVATAR = 48;
@@ -51,6 +52,8 @@ export const ChatListRow = memo(function ChatListRow({ row, draft, now, onPress 
             <StatusBadge badge={badge} ring={c.card} size={10} />
           </View>
         ) : null}
+        {/* 朋友私聊：在线点（#1460）。智能体那几种行右下角是状态角标，朋友行没有，两枚不打架 */}
+        {row.target.kind === "friend" ? <FriendPresenceDot uid={row.target.uid} ring={c.card} /> : null}
       </View>
       <View style={{ flex: 1, minWidth: 0, paddingVertical: 12, gap: 4 }}>
         <View style={{ flexDirection: "row", alignItems: "baseline", gap: 8 }}>
@@ -78,3 +81,14 @@ export const ChatListRow = memo(function ChatListRow({ row, draft, now, onPress 
     </Pressable>
   );
 });
+
+/** 单拎出来是因为 hook 只能在朋友行里调（ChatListRow 是所有行共用的） */
+function FriendPresenceDot({ uid, ring }: { uid: string; ring: string }) {
+  const presence = usePresence(uid);
+  if (presence === null) return null;
+  return (
+    <View style={{ position: "absolute", bottom: -3, right: -3 }}>
+      <PresenceDot presence={presence} ring={ring} size={10} />
+    </View>
+  );
+}

@@ -48,3 +48,18 @@ export function StatusBadge({ badge, ring, size }: { badge: FaceBadge; ring: str
     />
   );
 }
+
+/** 好友在线（#1460，ADR-0339）：绿 = 在线、红 = 不在线（维护者指定的红绿）。位置同 StatusBadge（头像右下）。
+    这里的红是「不在线」不是「出事了」——与上面那条红的规矩不一致，是维护者点名要的，ADR-0339 记着这处借形 */
+export function PresenceDot({ presence, ring, size = 10 }: { presence: "online" | "offline"; ring: string; size?: number }) {
+  const { c } = usePalette();
+  return (
+    <View
+      accessibilityLabel={presence === "online" ? "在线" : "不在线"}
+      style={{
+        width: size, height: size, borderRadius: size / 2 + RING, backgroundColor: presence === "online" ? c.ok : c.destructive,
+        borderWidth: RING, borderColor: ring, boxSizing: "content-box",
+      }}
+    />
+  );
+}

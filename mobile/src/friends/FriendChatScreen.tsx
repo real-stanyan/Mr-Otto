@@ -8,6 +8,7 @@ import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { AppState, FlatList, KeyboardAvoidingView, Platform, Pressable, Text, View } from "react-native";
 import type { DirectMessage } from "../../../src/shared/friends.js";
+import { PRESENCE_TEXT } from "../../../src/shared/presence.js";
 import { readUpTo, receiptLabel } from "../../../src/shared/readReceipt.js";
 import { decodeEnvelope } from "../../../src/shared/sessionPackageCodec.js";
 import { shareCardView } from "../../../src/shared/shareCard.js";
@@ -27,6 +28,7 @@ import { Icon } from "../wx/Icon.js";
 import { HeaderIconButton } from "../wx/TabHeader.js";
 import { toast } from "../wx/toast.js";
 import { loadOlderThread, openThread, sendToFriend, useFriends } from "./friendsStore.js";
+import { usePresence } from "./presenceStore.js";
 import { loadPeerRead, markFriendRead, usePeerRead } from "./readReceipts.js";
 
 type Props = NativeStackScreenProps<RootStackParams, "FriendChat">;
@@ -58,6 +60,22 @@ function Bubble({ m, mine, name, avatar, meName, meAvatar }: { m: DirectMessage;
     <View style={{ flexDirection: mine ? "row-reverse" : "row", alignItems: "flex-start", gap: 10, paddingHorizontal: 12 }}>
       {mine ? <PersonTile name={meName} url={meAvatar} size={40} me /> : <PersonTile name={name} url={avatar} size={40} />}
       <View style={{ flexShrink: 1, maxWidth: "76%" }}>{body}</View>
+    </View>
+  );
+}
+
+function FriendTitle({ uid, name }: { uid: string; name: string }) {
+  const { c } = usePalette();
+  const presence = usePresence(uid);
+  return (
+    <View style={{ alignItems: "center" }}>
+      <Text numberOfLines={1} style={{ fontSize: 17, fontWeight: "600", color: c.foreground }}>{name}</Text>
+      {presence !== null ? (
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+          <View style={{ width: 6, height: 6, borderRadius: 3, backgroundColor: presence === "online" ? c.ok : c.destructive }} />
+          <Text style={{ fontSize: 11, color: c.mutedForeground }}>{PRESENCE_TEXT[presence]}</Text>
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -122,6 +140,8 @@ export function FriendChatScreen({ route, navigation }: Props) {
   useLayoutEffect(() => {
     navigation.setOptions({
       title: name,
+      // 名字底下一行在线状态（#1460）。对方从没报过时只有名字
+      headerTitle: () => <FriendTitle uid={uid} name={name} />,
       headerRight: () => (
         <HeaderIconButton label="聊天信息" onPress={() => navigation.navigate("ChatInfo", { kind: "friend", uid })}>
           <Icon name="ellipsis" size={24} stroke={2} color={c.foreground} />
