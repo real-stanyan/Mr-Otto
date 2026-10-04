@@ -19,7 +19,8 @@ export interface RoutineStore {
   /** 原子认领：只有 next_run_at 仍等于读到的那个值才改。回 false = 另一个实例先到 */
   claim(id: string, expectedNextRunAt: number, next: { nextRunAt: number | null; lastRunAt: number }): Promise<boolean>;
   setStatus(id: string, status: RoutineStatus, enabled?: boolean): Promise<void>;
-  /** 清掉 enabled=false 且 last_status in (done, missed) 且 last_run_at < beforeMs 的行，回清了几条 */
+  /** 只清一次性的：schedule.kind=once 且 enabled=false 且 last_status in (done, missed) 且 last_run_at < beforeMs，回清了几条。
+      停用的重复任务是用户暂停的，不能被清掉（spec §2 / §3.6 / §8.2） */
   purge(beforeMs: number): Promise<number>;
   ownerTimezone(ownerUid: string): Promise<string | null>;
 }
@@ -87,7 +88,7 @@ export function createSupabaseRoutineStore(supabase: SupabaseClient): RoutineSto
       if (r.error) fail("定时任务状态写入失败", r.error);
     },
     async purge(beforeMs) {
-      const r = await supabase.from("agent_routines").delete().eq("enabled", false).in("last_status", ["done", "missed"]).lt("last_run_at", new Date(beforeMs).toISOString()).select("id");
+      const r = await supabase.from("agent_routines").delete().eq("schedule->>kind", "once").eq("enabled", false).in("last_status", ["done", "missed"]).lt("last_run_at", new Date(beforeMs).toISOString()).select("id");
       if (r.error) fail("定时任务清理失败", r.error);
       return (r.data ?? []).length;
     },
@@ -144,7 +145,7 @@ export function createInMemoryRoutineStore(): RoutineStore & { rows(): RoutineRo
     async purge(beforeMs) {
       let k = 0;
       for (const [id, r] of rows) {
-        if (!r.enabled && (r.lastStatus === "done" || r.lastStatus === "missed") && r.lastRunAt !== null && r.lastRunAt < beforeMs) { rows.delete(id); k++; }
+        if (r.schedule.kind === "once" && !r.enabled && (r.lastStatus === "done" || r.lastStatus === "missed") && r.lastRunAt !== null && r.lastRunAt < beforeMs) { rows.delete(id); k++; }
       }
       return k;
     },

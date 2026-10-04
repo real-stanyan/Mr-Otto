@@ -121,4 +121,14 @@ describe("routineScheduler.tick", () => {
     await sched.tick();
     expect(await store.get(r.id)).toBeNull();
   });
+  it("清理只清一次性的：用户停用的 daily 跑过一次后过了 7 天仍在", async () => {
+    const { store, sched, setNow } = rig();
+    const r = await store.insert({ ...base, schedule: { kind: "daily", time: "09:00" }, nextRunAt: T0 });
+    await sched.tick();
+    expect(await store.get(r.id)).toMatchObject({ lastStatus: "done", enabled: true });
+    await store.update(r.id, "owner", { enabled: false, nextRunAt: null });
+    setNow(T0 + ROUTINE_KEEP_DONE_MS + 1);
+    await sched.tick();
+    expect(await store.get(r.id)).toMatchObject({ enabled: false, lastStatus: "done" });
+  });
 });

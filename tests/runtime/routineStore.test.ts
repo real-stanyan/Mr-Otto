@@ -37,4 +37,14 @@ describe("createInMemoryRoutineStore", () => {
     expect(await s.purge(61)).toBe(1);
     expect(await s.get(r.id)).toBeNull();
   });
+  it("purge 只清一次性的：停用的 daily（done、lastRunAt 很旧）留着", async () => {
+    const s = createInMemoryRoutineStore();
+    const d = await s.insert({ ...base, schedule: { kind: "daily", time: "09:00" }, nextRunAt: 50 });
+    await s.claim(d.id, 50, { nextRunAt: 100, lastRunAt: 60 });
+    await s.setStatus(d.id, "done");
+    await s.update(d.id, "owner", { enabled: false, nextRunAt: null });
+    expect(await s.get(d.id)).toMatchObject({ enabled: false, lastStatus: "done", lastRunAt: 60 });
+    expect(await s.purge(1_000_000)).toBe(0);
+    expect(await s.get(d.id)).not.toBeNull();
+  });
 });
