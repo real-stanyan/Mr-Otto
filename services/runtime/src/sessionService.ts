@@ -173,7 +173,7 @@ import { createInviteToCallTool } from "./inviteToCallTool.js";
 import type { VoiceCallParticipant } from "../../../src/session/events.js";
 import { LoopEngine } from "../../../src/loop/engine.js";
 import type { EventStore } from "../../../src/session/store.js";
-import type { SessionEvent, SessionCreatedEvent, UserMessageEvent, AssistantMessageEvent, AgentRelayEvent, CallRingEvent, OutreachEvent, OutreachLine, OutreachOutcome, UserAttachmentRef, ChatVideoRef, TokenUsage } from "../../../src/session/events.js";
+import type { FriendPickCandidate, SessionEvent, SessionCreatedEvent, UserMessageEvent, AssistantMessageEvent, AgentRelayEvent, CallRingEvent, OutreachEvent, OutreachLine, OutreachOutcome, UserAttachmentRef, ChatVideoRef, TokenUsage } from "../../../src/session/events.js";
 import { ChatMediaRejectedError } from "./chatMediaIntake.js";
 import { mediaPlaceholder, type ChatMediaRef } from "../../../src/shared/chatMedia.js";
 import { pendingImageDescriptions } from "../../../src/shared/visionPending.js";
@@ -182,6 +182,7 @@ import {
   activeOutreach, applyOutreach, outreachAnsweredText, outreachCallerName, outreachFoldOf, outreachGreetingText, outreachRingReason, openingTraits,
   type OutreachFold,
 } from "../../../src/shared/outreach.js";
+import { applyFriendPick, friendPickFailureText, friendPickFoldOf, friendPickStatus, recentPeerUids, type FriendPickFold } from "../../../src/shared/friendPick.js";
 import { callbackAnsweredText, callbackGreetingText, callerModelOf, ringChatKind, type RingPush, type RingState } from "../../../src/shared/callRing.js";
 import { createRinger, type Ringer } from "./callRinger.js";
 import { SPEECH_TICKET_TTL_MS, type SpeechTicket } from "../../../src/shared/speechTicket.js";
@@ -501,7 +502,12 @@ export interface CloudSessionOpts {
       忘接线该编译不过，而不是安静地跑一套「工具表里永远没有那把刀」的装配。刀只挂在主场聊天里（approveAll）、
       外联会话里一律不挂——与提示词（deriveMessages）里外联那一支说的同一句话 */
   outreach: {
-    dispatch(o: { originSessionId: string; agentId: string; agentName: string; friend: string; brief: string; opening: string }): Promise<string>;
+    dispatch(o: {
+      originSessionId: string; agentId: string; agentName: string; friend: string; brief: string; opening: string;
+      candidates?: string[]; recentUids: string[];
+    }): Promise<string>;
+    /** dialPicked（#1520）：主人点了选人卡上的一位，按卡里存的 brief / opening 拨；null = 已拨出，string = 打不出去的那句人话 */
+    dialPicked(o: { originSessionId: string; agentId: string; agentName: string; uid: string; brief: string; opening: string }): Promise<string | null>;
   } | null;
   /** 私密车道的上下文信封（#1461 P1，ADR-0346）：读主人与朋友私聊（messages 表）最近几句，回原样的行——
       取哪几句、怎么封顶由 sessionService 调 shared 的 pairContextLines 判（daemon.ts 进不了 vitest）。
@@ -704,6 +710,14 @@ export interface CloudSession {
     outreachId: string; phase: "started" | "ended"; fromAgentId: string; peerUid: string; peerName: string;
     outcome?: OutreachOutcome; durationMs?: number; transcript?: OutreachLine[];
   }): void;
+  /** 原聊天里记一张选人卡（#1520，outreachHub 出卡、pickFriend 收卡时调）：ignorable、模型不可见；归档之后是空操作 */
+  logFriendPick(e: {
+    pickId: string; phase: "offered" | "picked" | "dismissed" | "failed"; fromAgentId: string;
+    question?: string; candidates?: FriendPickCandidate[]; brief?: string; opening?: string; uid?: string; message?: string;
+  }): void;
+  /** 主人点了选人卡（#1520，pick_friend 帧）：uid null = 都不是。只认主人本人、只认还开着的卡、只认卡上的人；
+      点了就落 picked 再拨，打不出去落 failed（回执仍是 ok，失败画在卡上） */
+  pickFriend(pickId: string, byUid: string, uid: string | null): Promise<{ ok: true } | { ok: false; message: string }>;
   /** 外联结束，叫那只智能体回来向主人汇报（#1441）：落一条 `greeting: "outreach_report"` 的开场白（fromUid 是主人、
       点它自己）并入队——同 greetNewAgent 那条路。**这一轮里每一把刀都要主人批**（正文是朋友说的话的转述，
       不是主人的指令，见 supervisedTurn）。那只已不在名单里就什么都不起 */
@@ -801,6 +815,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   // 这条线上的外联折叠（#1441）：从 seed 播种、notify 里逐条推进（同 voiceCall）。「通话此刻进行中吗、
   // 打给的是谁」只从这一份读——say 的闸、chat() 的 active 共用，两处各折一遍迟早分家
   const outreachFold: OutreachFold = outreachFoldOf(seed);
+  // 选人卡（#1520）：同 outreachFold，从 seed 播种、notify 里推进；「这张卡还能不能点」只从这一份读
+  const friendPickFold: FriendPickFold = friendPickFoldOf(seed);
   /** 这条会话此刻的名单 = 团队名单 ∩ 聊天名单。**全文件读名单只走这一个口**：@ 解析、派活、
       接力、brief、通话选人约 40 处下游一次全对，少改一处就是那一处还站着整个团队。
       团队名单读不出来（degraded）时原样交回：降级记号一旦被名单滤掉，下游「名单读不出来」
@@ -1244,6 +1260,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // append 里没有这一种，这条事件只从 logVoiceCall 出门
     if (e.type === "voice_call_changed") voiceCall = applyVoiceCallEvent(voiceCall, e);
     applyOutreach(outreachFold, e);
+    applyFriendPick(friendPickFold, e);
     // 外联的生命周期跟着走（#1441）：它收尾时自己 append → 回到这里 → observe 只认 call_ring /
     // voice_call_changed，不会把自己落的 outreach 事件当别的再收一遍（见 outreachRun.finish 的注释）
     outreachRun?.observe(e);
@@ -1561,9 +1578,11 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
                 : rerunTurn
                   ? "这一轮是服务重启后的补跑：这通电话上一次可能已经打出去了。先问主人要不要再打，等他亲口说了再打。"
                   : "只有他本人亲口让你打，才能给他的好友打电话。这一轮不是。",
-            dispatch: (friend, brief, opening) =>
+            dispatch: (a) =>
               opts.outreach!.dispatch({
-                originSessionId: sessionId, agentId: spec.agentId, agentName: specNames.get(spec.agentId) ?? spec.name, friend, brief, opening,
+                originSessionId: sessionId, agentId: spec.agentId, agentName: specNames.get(spec.agentId) ?? spec.name, ...a,
+                // 「上次打的就是他」按 uid 认（#1520）：改了名也排得出来
+                recentUids: recentPeerUids(outreachFold),
               }),
           });
     // message_friend（#1549）：call_friend 的姊妹刀。亮刀条件逐字相同（主场、主人亲口、非车道 / 外联、非监督轮）——
@@ -2843,6 +2862,12 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     }
   }
 
+  // 选人卡（#1520）落盘：outreachHub 出卡、pickFriend 收卡共用。归档之后是空操作
+  const logFriendPickEvent: CloudSession["logFriendPick"] = (e) => {
+    if (archived) return;
+    notify(store.append({ sessionId, ts: Date.now(), type: "friend_pick", ...e, ignorable: true }));
+  };
+
   const session: CloudSession = {
     async say(fromUid, label, text, mention, mentions, budget, memberMentions, voice, media, relay, tz) {
       // 外联会话只在通话进行中收话，且只收**打给的那个朋友**（#1441）：没有进行中的外联 = 电话已经
@@ -3323,6 +3348,43 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       notify(opening);
       // 同 say()：只有此刻没在排空时才起一条
       if (coordinator.enqueue({ agentId, fromUid: byUid, opening }) === "start_turn") startDrain();
+    },
+
+    logFriendPick: logFriendPickEvent,
+
+    async pickFriend(pickId, byUid, uid) {
+      if (archived) return { ok: false, message: "这条聊天已经归档了。" };
+      // 与刀的挂载条件同一句（callFriendTool 装配处）：外联会话 / 私密车道里不会有选人卡，也不认
+      if (opts.outreach === null || isOutreach || isPair || byUid !== opts.ownerUid) return { ok: false, message: "只有他本人能选。" };
+      const st = friendPickFold.get(pickId);
+      if (st === undefined || friendPickStatus(st, Date.now()) !== "open") return { ok: false, message: "这张卡已经用过或过期了。" };
+      if (uid !== null && !st.candidates.some((c) => c.uid === uid)) return { ok: false, message: "这个人不在卡上。" };
+      const log = logFriendPickEvent;
+      if (uid === null) {
+        log({ pickId, phase: "dismissed", fromAgentId: st.fromAgentId });
+        return { ok: true };
+      }
+      // 先落 picked 再 await：notify 同步推进 fold，连点的第二帧在这里就会看到「用过了」
+      log({ pickId, phase: "picked", fromAgentId: st.fromAgentId, uid });
+      // picked 已落盘：这一段任何一步抛了都要落 failed，否则卡永远停在「已选」、再点只会被拒
+      let failed: string | null;
+      try {
+        const roster = await rosterNow({ fresh: true });
+        // 名单是占位（读失败）≠ 那只不在了：别把一次抖动说成「已经不在这条聊天里」
+        const degraded = roster.some((a) => a.degraded);
+        const agent = degraded ? undefined : roster.find((a) => a.agentId === st.fromAgentId);
+        failed = degraded
+          ? "这会儿查不了，稍后再试。"
+          : agent === undefined
+          ? "它已经不在这条聊天里了，电话没打出去。"
+          : await opts.outreach.dialPicked({ originSessionId: sessionId, agentId: st.fromAgentId, agentName: agent.name, uid, brief: st.brief, opening: st.opening });
+      } catch (err) {
+        console.warn(`[otto-runtime] 选人卡拨号失败（session=${sessionId}, pick=${pickId}）`, err);
+        failed = "电话没打出去，稍后再试。";
+      }
+      // 拒绝原话是说给模型听的（「…告诉他可以…」）：落盘前改成对主人说的，日志里就是卡上显示的那句
+      if (failed !== null) log({ pickId, phase: "failed", fromAgentId: st.fromAgentId, message: friendPickFailureText(failed) });
+      return { ok: true };
     },
 
     async runRoutine(r) {

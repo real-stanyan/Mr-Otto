@@ -33,7 +33,7 @@ describe("friendTiersOf", () => {
 });
 
 describe("outreachHub.dispatch 的档位", () => {
-  const DISPATCH = { workspaceId: "w", ownerUid: ME, originSessionId: "s", agentId: "a_1", agentName: "小助", friend: "小红", brief: "b", opening: "o" };
+  const DISPATCH = { workspaceId: "w", ownerUid: ME, originSessionId: "s", agentId: "a_1", agentName: "小助", friend: "小红", brief: "b", opening: "o", recentUids: [] as string[] };
   const rig = (tier: "chat" | "agents" | "full" | undefined) => {
     const calls: string[] = [];
     const hub = createOutreachHub({
