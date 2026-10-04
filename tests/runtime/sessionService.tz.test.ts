@@ -40,7 +40,7 @@ function open() {
 describe("say() 的 tz", () => {
   it("给了就落在开场白上；不给就没有这一格", async () => {
     const { session, store } = open();
-    await session.say(OWNER, "小明", "早", true, [HELPER.agentId], undefined, [], undefined, undefined, "Asia/Shanghai");
+    await session.say(OWNER, "小明", "早", true, [HELPER.agentId], undefined, [], undefined, undefined, undefined, "Asia/Shanghai");
     await session.settled();
     await session.say(OWNER, "小明", "晚", true, [HELPER.agentId], undefined, []);
     await session.settled();

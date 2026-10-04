@@ -829,7 +829,7 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
           // 现在把它翻成一条回执，与 config 那条路同一个形状
           try {
             await session.say(
-              entry.uid, entry.label, msg.text, msg.mention, msg.mentions, budget, msg.memberMentions, msg.voice, msg.media, msg.tz
+              entry.uid, entry.label, msg.text, msg.mention, msg.mentions, budget, msg.memberMentions, msg.voice, msg.media, undefined, msg.tz
             );
           } catch (err) {
             // 限速 / 一句话 @ 太多 / 名单降级都从 say() 抛 SayRejectedError

@@ -1,6 +1,6 @@
 # Mr Otto
 
-Mr Otto（曾用名 otter，仓库目录沿用 Otter）是 macOS 桌面 GUI agent 工具（每个 bot 是一只会用工具、有独立沙箱的水獭）。MVP 完成标准：单 agent + 3 工具（读/写文件、bash）+ event-sourced 会话日志 + replay UI + 危险操作审批 UI + 模型切换 + ExecutionWorld 接口（LocalWorld 实现）。明确不做：通用多 agent 编排框架——工作区群聊里 agent 互相 @ 接力是唯一例外（带周期护栏与棒数上限，ADR-0223；本机子 agent 仍不能再派子 agent，ADR-0047）、插件系统（skill 库是纯提示词注入，不算插件系统，见 docs/adr/0007）。MCP 做 client 那一半（接外部 server 的 tools/resources/prompts，见 docs/adr/0049），不做 server。
+Mr Otto（曾用名 otter，仓库目录沿用 Otter）是 macOS 桌面 GUI agent 工具（每个 bot 是一只会用工具、有独立沙箱的水獭）。MVP 完成标准：单 agent + 3 工具（读/写文件、bash）+ event-sourced 会话日志 + replay UI + 危险操作审批 UI + 模型切换 + ExecutionWorld 接口（LocalWorld 实现）。明确不做：通用多 agent 编排框架——只开两条窄口：工作区群聊里 agent 互相 @ 接力（带周期护栏与棒数上限，ADR-0223），以及好友私聊里两位主人各自公开的智能体之间的往返（同一套棒数上限、每小时封顶、对面那一轮要对面主人批，ADR-0358）；本机子 agent 仍不能再派子 agent，ADR-0047）、插件系统（skill 库是纯提示词注入，不算插件系统，见 docs/adr/0007）。MCP 做 client 那一半（接外部 server 的 tools/resources/prompts，见 docs/adr/0049），不做 server。
 
 架构参考项目（学习/对照用，不引入为依赖）：
 - **DeepSeek Harness**：三原则 —— event-sourced 会话日志 / 工具中间件管线 / capability seam（ExecutionWorld）

@@ -191,6 +191,8 @@ import { createCallFriendTool } from "./callFriendTool.js";
 import { createRoutineTools } from "./routineTools.js";
 import type { RoutineStore } from "./routineStore.js";
 import { ROUTINE_MAX_ROUNDS, routineOpeningText } from "../../../src/shared/routines.js";
+import { createMessageFriendAgentTool } from "./messageFriendAgentTool.js";
+import { MESSAGE_FRIEND_AGENT_TOOL_NAME } from "../../../src/shared/laneBridge.js";
 import type { DeltaKind, ModelAdapter } from "../../../src/model/adapter.js";
 import { createDeltaStream } from "./deltaStream.js";
 import type { ExecutionWorld } from "../../../src/world/executionWorld.js";
@@ -505,6 +507,12 @@ export interface CloudSessionOpts {
       **必需**（同 callback / signSpeechTicket 的纪律）：`null` = 这条会话不读私聊（不是私密车道，或 daemon
       没接）；忘接线该编译不过，而不是安静地让车道里的智能体对私聊一无所知 */
   pairMessages: ((o: { ownerUid: string; peerUid: string }) => Promise<PairMessageRow[]>) | null;
+  /** 车道里的智能体给对面主人公开的智能体发话（#1542，ADR-0358）：找对面的车道、以主人（那边的客人）的身份落一句。
+      可选（与 outreach 的「必需」不同：几十份测试夹具不该为一把只在车道里亮的刀都改一遍）：缺席 / null = 这台没接（刀不挂）。
+      daemon 是唯一的真装配者，它总会给 */
+  laneBridge?: {
+    send(o: { ownerUid: string; peerUid: string; fromAgentId: string; fromAgentName: string; text: string; wanted: string | undefined; depth: number }): Promise<string>;
+  } | null;
   /** 给打给好友的那条线签语音票（#1441）：好友听到的 TTS 记在主人账上，edge 用同一把密钥验。
       **必需**（同 callback 的纪律）：忘接线该编译不过，而不是安静地让好友的通话一句话都出不了声 */
   signSpeechTicket: (t: SpeechTicket) => Promise<string>;
@@ -578,6 +586,10 @@ export interface CloudSession {
     memberMentions?: string[],
     voice?: true,
     media?: readonly ChatMediaRef[],
+    /** 这句话是对面车道里的智能体经 laneBridge 发来的（#1542）：落成带 `relay` 的 user_message，深度跨车道累加——
+        接力的三道闸（深度 / 棒数 / 预算）与「接力棒上的连接器要点火者批」都按它算。缺席 = 人说的 */
+    relay?: { fromAgentId: string; depth: number },
+    /** 发话人设备的 IANA 时区（#1283）：原样落到 user_message.tz，只给投影里「今天是」那一行用。**最后一个位置参数**（同 voice 的纪律）。缺席 = 桌面 / 旧客户端 */
     tz?: string
   ): Promise<void>;
   /** 排空跑完了吗——**给测试与冒烟脚本等待用的，不是协议的一部分**
@@ -882,6 +894,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   }
   for (const e of seed) learnSpeakerLabel(e);
   let currentInitiator: string | null = null;
+  /** 这一轮开场白的接力深度（#1542 的 message_friend_agent 读它：发出去的那句 depth + 1）。runJob 起跑时写 */
+  let currentOpeningDepth = 0;
   /** 这一轮是不是外联汇报轮（#1441）：开场白是 `greeting: "outreach_report"`，正文带着朋友说的话的转述。
       runJob 起跑时置位、收口（任何出口）复位，与 currentInitiator 同生同死 */
   let reportTurn = false;
@@ -1555,6 +1569,20 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
             now: () => opts.now?.() ?? Date.now(),
             available: () => ownerSpoke && !supervisedTurn(),
           });
+    // message_friend_agent（#1542，ADR-0358）：只挂在公开（facing both）的车道里、daemon 接了 laneBridge 时。
+    // 只说话、不动任何人的东西，所以客人点起的轮里也**不掀成要批**（下面 tools() 的例外）——不然 B 的智能体
+    // 每回一句都要 B 按一次卡，这条链就等于没有。深度读这一轮开场白的接力深度（currentOpeningDepth）
+    const laneBridge = opts.laneBridge ?? null;
+    const bridgeTool =
+      laneBridge === null || !isPair || pairFacts === undefined
+        ? null
+        : createMessageFriendAgentTool({
+            send: (text, agent) =>
+              laneBridge.send({
+                ownerUid: opts.ownerUid, peerUid: pairFacts.peerUid, fromAgentId: spec.agentId,
+                fromAgentName: specNames.get(spec.agentId) ?? spec.name, text, wanted: agent, depth: currentOpeningDepth,
+              }),
+          });
     const engine = new LoopEngine({
       store: agentView(store, spec.agentId),
       adapter,
@@ -1574,6 +1602,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
           ...(callUserTool !== null ? [callUserTool] : []),
           // 受监督的轮里干脆不亮这把刀：亮出来只会弹一张批了也必被 mayCall 拒的卡
           ...(callFriendTool !== null && !supervisedTurn() ? [callFriendTool] : []),
+          // 对面公开的智能体（#1542）：只在这条车道此刻是公开的（朋友在客人名单里）才亮
+          ...(bridgeTool !== null && pairFacingOf(chatHumans, pairFacts!.peerUid) === "both" ? [bridgeTool] : []),
           ...(spec.agentId === ADMIN_AGENT_ID ? [createAgentTool] : []),
           ...routineTools,
           ...gitTools,
@@ -1590,7 +1620,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         // 不许对它展开（`{ ...tool }` 只拷自有可枚举属性，def / run 会整个丢掉），要改形状就再包一层 Object.create
         return opts.approveAll
           ? list.map((t) =>
-              Object.create(t, { requiresApproval: { get: () => t.requiresApproval || supervisedTurn(), enumerable: true } }) as Tool,
+              // message_friend_agent（#1542）不掀：它只往对面车道落一句两个人都看得到的话，与回话是同一种东西
+              Object.create(t, { requiresApproval: { get: () => t.requiresApproval || (supervisedTurn() && t.def.name !== MESSAGE_FRIEND_AGENT_TOOL_NAME), enumerable: true } }) as Tool,
             )
           : list;
       },
@@ -2359,6 +2390,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       job.opening
     );
     const openingDepth = covered.reduce((m, u) => Math.max(m, relayDepthOf(u)), 0);
+    currentOpeningDepth = openingDepth;
     // 归档落地时，这只 agent 的 job 可能已经躺在队列里了——它是**接力**排上的
     // （relayAfterTurn 在一轮 @ 了两只时，两个 job 在归档发生之前就已经一起入队；
     // 见 tests/runtime/sessionService.test.ts「归档落在两个 relay job 之间」）。
@@ -2789,7 +2821,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   }
 
   const session: CloudSession = {
-    async say(fromUid, label, text, mention, mentions, budget, memberMentions, voice, media, tz) {
+    async say(fromUid, label, text, mention, mentions, budget, memberMentions, voice, media, relay, tz) {
       // 外联会话只在通话进行中收话，且只收**打给的那个朋友**（#1441）：没有进行中的外联 = 电话已经
       // 挂了；主人也不例外（他在这条线上只读）。放在最前面——任何名单查询、落盘之前拒绝，
       // 挂断之后的一句话一个字节都不落
@@ -3072,9 +3104,11 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         // 通话里说出来的（#1233）才带。同 dispatch：只是记号，起 turn 那一路
         // 一个判断都不读它
         ...(voice !== undefined ? { voice } : {}),
+        // 对面车道的智能体发来的（#1542）：接力记号，深度跨车道累加
+        ...(relay !== undefined ? { relay } : {}),
         // 设备时区（#1283）：只给投影里「今天是」那一行用，起 turn 那一路一个判断都不读它
         ...(tz !== undefined ? { tz } : {}),
-        // 带的图 / 视频（#1491）：deriveMessages 把 attachments 折成 image_ref、videos 拼成一行说明
+        // 带的图 / 视频（#1491）：deriveMessages 把 attachments 折成 image_ref、videos 拼成一行说明（读源码的测试钉着它排在最后）
         ...mediaFields,
       }) as UserMessageEvent; // append 回的是 union；这一条我们刚亲手写的就是 user_message
       notify(opening);
