@@ -23,4 +23,7 @@ describe("daemon.ts：新建的智能体先开口的接线（#1356 A2）", () =>
     expect(src).toMatch(/claimGreeting: \(w, a\) => rawAgentWriter\.claimGreeting\(w, a\)/);
     expect(src).toMatch(/const wrote = await rawAgentWriter\.settleRole\(workspaceId, agentId, role\);[\s\S]*?if \(wrote\) agentsCache\.invalidate\(workspaceId\);/);
   });
+  it("主场管理员开过口就清掉那一格（#1465）：它没有「回话写成职责」那一步", () => {
+    expect(create).toMatch(/if \(home && dmAgent\.agentId === ADMIN_AGENT_ID\) \{\s*void agentWriter\.settleRole\(workspaceId, ADMIN_AGENT_ID, null\)/);
+  });
 });

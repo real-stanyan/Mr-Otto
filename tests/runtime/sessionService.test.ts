@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { readFile } from "node:fs/promises";
 import { createCloudSession, kickedNoteText, SANDBOX_PROBE_FAIL_TEXT, SayRejectedError, speakerLabelOf, TAIL_FLOOR_MAX_EXTRA, type CloudCallback, type CloudSession, type CloudSessionOpts } from "../../services/runtime/src/sessionService.js";
 import { CHAT_CONTEXT_BUDGET_TOKENS, CHAT_IDLE_COMPACT_MIN_TOKENS, CHAT_IDLE_COMPACT_MS } from "../../src/shared/autoCompact.js";
-import { newAgentGreetingText } from "../../src/shared/agentOnboarding.js";
+import { adminIntroText, newAgentGreetingText } from "../../src/shared/agentOnboarding.js";
 import { createWikiService, type WikiService } from "../../services/runtime/src/wikiService.js";
 import { createMemoryWikiFs } from "../../services/runtime/src/wikiFs.js";
 import { createInMemoryWikiJournal } from "../../services/runtime/src/wikiJournal.js";
@@ -7227,6 +7227,32 @@ describe("新建的智能体先开口，第一句回话写进职责（#1356 A2�
     ]);
     expect(seen).toEqual([NEW.agentId]);
     expect(store.load("s1").some((e) => e.type === "assistant_message" && e.agentId === NEW.agentId)).toBe(true);
+  });
+
+  it("主场的管理员（#1465）：开场白是自我介绍那一段（admin_intro），人的回话不写成它的职责", async () => {
+    const store = newStore();
+    const ADMIN = { agentId: "admin", name: "管理员", description: "帮你建智能体，接没人对口的活", instructions: "", models: ["m-new"], tools: [] as AgentToolAllow[] };
+    store.append({ sessionId: "s1", ts: 1, type: "session_created", workspace: "/work", cloud: { workspaceId: "w1", chat: { kind: "dm" }, home: true } });
+    store.append({ sessionId: "s1", ts: 2, type: "chat_roster_changed", ignorable: true, agents: [{ agentId: "admin", name: "管理员" }] });
+    const writer = createInMemoryAgentWriter();
+    const settle = vi.spyOn(writer, "settleRole");
+    const session = createCloudSession({
+      ...baseOpts(store, []),
+      wiki: testWiki(),
+      approveAll: true,
+      agents: async () => [ADMIN],
+      adapterFor: () => ({ model: "m-new", async chat() { return { content: "你好，我是你的智能体主管。" }; } }),
+      agentWriter: writer,
+    });
+    session.greetNewAgent("admin", "管理员", "owner");
+    await session.settled();
+    expect(userMessages(store)).toEqual([
+      expect.objectContaining({ fromUid: "owner", mentions: ["admin"], greeting: "admin_intro", content: adminIntroText() }),
+    ]);
+    await session.say("owner", "我", "想要一个帮我管店的，叫小周", true);
+    await session.settled();
+    expect(settle).not.toHaveBeenCalled();
+    store.close();
   });
 
   it("开场白那一轮一句话都没答出来就收口（出错）：人的下一句不当职责，只清那一格（#1356 F1）", async () => {

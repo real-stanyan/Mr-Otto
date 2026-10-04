@@ -8,6 +8,8 @@
 // · 建主场失败不自动重试（那一颗钮要人点，rosterGate 的 failed 一态）。
 import { useSyncExternalStore } from "react";
 import { ensureHomeWorkspace } from "../../../src/shared/homeWorkspace.js";
+import { ADMIN_AGENT_ID } from "../../../src/shared/workspaceAgents.js";
+import { cloudClient } from "../cloud/cloudClient.js";
 import type { SessionLast } from "../../../src/shared/sessionLast.js";
 import type { BillingSnapshotView } from "../../../src/shared/shellBridge.js";
 import {
@@ -135,8 +137,12 @@ export async function ensureHome(): Promise<void> {
   try {
     const uid = await currentUid();
     if (uid === null) throw new Error("还没登录");
-    await ensureHomeWorkspace({ findHomeWorkspace, createWorkspace }, supabase, uid);
+    const ensured = await ensureHomeWorkspace({ findHomeWorkspace, createWorkspace }, supabase, uid);
     if (mine !== epoch) return;
+    // 新用户（#1465，ADR-0341）：替他开好和管理员的私聊——runtime 建这条新私聊时抢到管理员那一格 'greet'，
+    // 管理员先自我介绍、引导他建第一只专属智能体。开不成（断网）不拦进门：之后他点进管理员照样会建这条私聊、
+    // 那一格还是 'greet'，管理员照样先开口
+    if (ensured.created) void cloudClient.create(ensured.id, { kind: "dm", agentId: ADMIN_AGENT_ID }).then(() => refreshHome()).catch(() => undefined);
     // 建之前开跑的那次刷新看不见新主场：等它收尾，再拉一次新的
     if (inflight !== null) await inflight;
     await refreshHome();

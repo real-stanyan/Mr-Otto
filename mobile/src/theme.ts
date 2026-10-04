@@ -51,8 +51,10 @@ export interface Palette {
   inputBg: string;
   /** 我说的那个气泡（点缀色 18% 调进纸面，不是整块蓝——蓝色一屏只给一个主动作） */
   bubbleMe: string;
-  /** 别人 / 它说的那个气泡 */
+  /** 别人说的那个气泡（人） */
   bubbleThem: string;
+  /** 智能体说的那个气泡：ok 绿 14% 调进纸面（#1465，维护者从三个方向里挑的 B），一眼分得出机器说的和人说的 */
+  bubbleAgent: string;
 }
 
 /** 浅色 = app.css 的裸 `:root` */
@@ -84,6 +86,7 @@ const light: Palette = {
   // color-mix(in srgb, #4a70a9 18%, #f7f5ef)
   bubbleMe: "#d8dde2",
   bubbleThem: "#e5e1d3",
+  bubbleAgent: "#d9e6dc",
 };
 
 /** 深色 = app.css 的 `.dark` */
@@ -115,6 +118,7 @@ const dark: Palette = {
   // color-mix(in srgb, #0a84ff 18%, #1d1d1f)
   bubbleMe: "#1a3047",
   bubbleThem: "#2c2c2e",
+  bubbleAgent: "#16301f",
 };
 
 export function usePalette(): { c: Palette; isDark: boolean } {
