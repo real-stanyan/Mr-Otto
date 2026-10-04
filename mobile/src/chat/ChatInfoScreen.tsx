@@ -242,6 +242,13 @@ export function ChatInfoScreen({ route, navigation }: Props) {
 
   const ws = home.home;
   const closePicker = (): void => setPicker((p) => (p === null ? p : { ...p, visible: false }));
+  // 朋友私聊：删完好友（或被对方删了）这一页就没东西可画了——直接回首页，不留一张空白的「聊天信息」（维护者 2026-10-04
+  // 真机截图）。原来靠确认弹窗的 onExited 回首页，但 drop() 刷新名单后 row 先变 null、下面那张早退的空页把弹窗一起卸了，
+  // onExited 永远不会来。名单还没读到（rows === null）不算「没了」
+  const friendGone = target.kind === "friend" && friends.rows !== null && !friends.rows.some((r) => r.profile.id === target.uid);
+  useEffect(() => {
+    if (friendGone) navigation.popToTop();
+  }, [friendGone, navigation]);
 
   // ── 朋友私聊 ──
   if (target.kind === "friend") {
