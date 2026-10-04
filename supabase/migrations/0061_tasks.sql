@@ -1,4 +1,4 @@
--- 0061_tasks.sql —— 任务的投影表（#1571，ADR-0364，spec §2.4）。幂等。与 0060 一起跑，再部署 runtime。
+-- 0061_tasks.sql —— 任务的投影表（#1571，ADR-0365，spec §2.4）。幂等。与 0060 一起跑，再部署 runtime。
 --
 -- 任务是**事件**（task_created / task_assigned / task_progress / task_done / task_failed / task_needs_owner），
 -- 落在管理员那条私聊的会话日志里；这张表是 runtime 折出来的投影，**客户端只读**（RLS：主场成员可读，

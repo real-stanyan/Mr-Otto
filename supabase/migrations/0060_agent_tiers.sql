@@ -1,4 +1,4 @@
--- 0060_agent_tiers.sql —— 智能体分级（#1571，ADR-0364，spec docs/superpowers/specs/2026-10-05-agent-tiers-design.md §4）。
+-- 0060_agent_tiers.sql —— 智能体分级（#1571，ADR-0365，spec docs/superpowers/specs/2026-10-05-agent-tiers-design.md §4）。
 -- 幂等，重跑不炸。同 0049 / 0058 的约定：Supabase SQL editor 手动执行一次。
 -- **部署顺序：先跑这份（与 0061）、再部署 runtime、再发手机热更新**——手机要写 tier / domain，列不在就 42703。
 --

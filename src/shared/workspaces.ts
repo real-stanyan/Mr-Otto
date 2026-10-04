@@ -66,7 +66,7 @@ export interface WorkspaceAgentRow {
       那样必填 null（必填要改几十处测试夹具，换不来任何行为差别）。形状合格的陌生键（新版才有的档）
       原样留着，派生那一侧（voiceChoiceOf）再当没挑过 */
   voice?: string;
-  /** 等级（#1571，ADR-0364）：0 管理员 / 1 专员 / 2 子工。**缺席 = 0060 没跑或旧夹具**：判据层按 agentId 推
+  /** 等级（#1571，ADR-0365）：0 管理员 / 1 专员 / 2 子工。**缺席 = 0060 没跑或旧夹具**：判据层按 agentId 推
       （admin 是 0、其余 1，`agentTier.tierOf`）——与 voice 同一条「读不到就派生」的纪律 */
   tier?: AgentTier;
   /** 职责域（`agentDomain.ts` 的键）。缺席同上：管理员当 admin、其余当「未分配」 */
