@@ -20,6 +20,7 @@ import { applyCloudDelta, clearCloudStreamingOn, type CloudStreaming } from "../
 import type { CsChatInfo } from "../../../src/shared/remote/cloudSession.js";
 import type { CloudAck, CloudSessionDelta, CloudSessionStatus } from "../../../src/shared/shellBridge.js";
 import type { SessionEvent } from "../../../src/session/events.js";
+import { createSendQueue } from "../../../src/shared/sendQueue.js";
 import { createStore } from "../externalStore.js";
 import { cloudClient, ensureUid, setCloudSinks } from "./cloudClient.js";
 import type { OlderPageResult } from "../../../src/shared/chatLogExport.js";
@@ -42,10 +43,20 @@ export interface UnsentLine {
   note: string;
 }
 
+/** 发出去、回执还没回来的一句（#1473）：聊天页先把它画在最底下，回执一到就摘掉 */
+export interface OutboxLine {
+  id: number;
+  sessionId: string;
+  text: string;
+  ts: number;
+}
+
 export interface ChatStoreState {
   session: ChatSession | null;
   streaming: CloudStreaming;
   pendingFirst: { sessionId: string; text: string; mentions: string[] | undefined } | null;
+  /** 在路上的那几句，按发出顺序。只有当前会话的才画（离开这条聊天就清） */
+  outbox: OutboxLine[];
   unsent: UnsentLine | null;
   draftSeed: { sessionId: string; text: string } | null;
   sendError: string | null;
@@ -58,10 +69,13 @@ export interface ChatStoreState {
 }
 
 const EMPTY: ChatStoreState = {
-  session: null, streaming: {}, pendingFirst: null, unsent: null, draftSeed: null, sendError: null, notice: null, error: null,
+  session: null, streaming: {}, pendingFirst: null, outbox: [], unsent: null, draftSeed: null, sendError: null, notice: null, error: null,
   speechTicket: null,
 };
 const store = createStore<ChatStoreState>(EMPTY);
+/** 一句一句发（#1473）：输入框发出即清之后人能连着发，而客户端对「上一句还没有回执」的第二次 say 是直接拒的 */
+const sendQueue = createSendQueue();
+let outboxSeq = 0;
 
 /** 语音那一层要知道的四件事（A4）。只在 store 改完之后调（它会回头读 chatEvents） */
 export interface ChatActivity {
@@ -210,7 +224,7 @@ export async function openChat(
       modelRoute: null, gapNote: null, chat: seed, hasOlder: false,
       older: "idle", events: cached ?? [], provisional: true,
     },
-    streaming: {}, unsent: null, sendError: null, notice: null, error: null, speechTicket: null,
+    streaming: {}, outbox: [], unsent: null, sendError: null, notice: null, error: null, speechTicket: null,
   });
   const r = await cloudClient.join(workspaceId, sessionId, title);
   if (g !== gen) {
@@ -243,11 +257,17 @@ export async function startDm(
   return { ok: true, sessionId };
 }
 
-/** 发一句话。回执三态落在 store 里；返回原样的回执，调用方据此决定清不清输入框
-    （ok 与 unknown 都清：unknown 时那句话很可能已经落地，原文去了「不确定」那一行） */
+/** 发一句话。回执三态落在 store 里；返回原样的回执，调用方据此决定要不要把原文摆回输入框
+    （ok 与 unknown 都不摆：unknown 时那句话很可能已经落地，原文去了「不确定」那一行）。
+    输入框发出即清（#1473），所以这句在回执回来之前先挂在 outbox 里让聊天页画出来；
+    排队发：第二句等第一句的回执落定再发，不然客户端会以「上一句还没有回执」拒掉它 */
 export async function sendText(text: string, mentions: string[] | undefined, memberMentions: string[] = []): Promise<CloudAck> {
   const sid = store.get().session?.sessionId ?? null;
-  const r = await say(text, mentions, memberMentions);
+  const line: OutboxLine | null = sid === null ? null : { id: ++outboxSeq, sessionId: sid, text, ts: Date.now() };
+  if (line !== null) store.set((s) => ({ outbox: [...s.outbox, line] }));
+  const r = await sendQueue.run(() => say(text, mentions, memberMentions)).finally(() => {
+    if (line !== null) store.set((s) => ({ outbox: s.outbox.filter((l) => l.id !== line.id) }));
+  });
   if (sid === null || store.get().session?.sessionId !== sid) return r;
   if (r.ok) store.set({ unsent: null, sendError: null });
   else if (r.unknown) store.set({ unsent: { sessionId: sid, text, mentions, note: unknownSendNote(text) }, sendError: null });
