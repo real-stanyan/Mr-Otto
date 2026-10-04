@@ -1,14 +1,13 @@
 // outreachHub —— 把「原聊天」与「外联会话」两头接起来（#1441）。daemon 一个。只依赖注入的回调：
 // daemon.ts 进不了 vitest，判断住在这儿、接线留在那儿（同 chatCreate / chatHumans 的做法）。
 import type { OutreachLine, OutreachOutcome } from "../../../src/session/events.js";
-import { OUTREACH_DAILY_MAX, outreachReportText, resolveFriend } from "../../../src/shared/outreach.js";
+import { outreachReportText, resolveFriend } from "../../../src/shared/outreach.js";
 import type { OutreachEnded, OutreachStart, OutreachStartResult } from "./outreachRun.js";
 
 export interface OutreachHubDeps {
   friendsOf(ownerUid: string): Promise<{ uid: string; name: string }[]>; // 抛错 = 这一刻查不出来
   deviceCount(uid: string): Promise<number>;
   ownerBlocked(workspaceId: string, ownerUid: string): Promise<string | null>; // 额度：null = 能跑
-  countSince(workspaceId: string, agentId: string, since: number): Promise<number>;
   /** 这只此刻在它任一条外联会话里有没有一通没收尾（终审 M2）；抛错 = 这一刻查不出来 */
   activeFor(workspaceId: string, agentId: string): Promise<boolean>;
   ensureSession(
@@ -40,8 +39,6 @@ export interface OutreachHub {
   ended(workspaceId: string, ownerUid: string, r: OutreachEnded): Promise<void>;
 }
 
-const DAY_MS = 24 * 60 * 60_000;
-
 export function createOutreachHub(d: OutreachHubDeps): OutreachHub {
   return {
     async dispatch(o) {
@@ -63,9 +60,6 @@ export function createOutreachHub(d: OutreachHubDeps): OutreachHub {
         // 一只同一时刻只打一通（终审 M2）：跨它所有外联会话判，打给小红的那通还在时不许再打给小明。
         // 文案与 outreachRun.start 里同一条线的那句逐字相同——对模型来说是同一件事
         if (await d.activeFor(o.workspaceId, o.agentId)) return "这只正在打另一通电话，等它打完再派。";
-        if ((await d.countSince(o.workspaceId, o.agentId, d.now() - DAY_MS)) >= OUTREACH_DAILY_MAX) {
-          return `你今天已经替他打了 ${OUTREACH_DAILY_MAX} 通电话，到上限了，明天再打。`;
-        }
         if ((await d.deviceCount(m.uid)) === 0) return `${m.name} 的手机上还没有能接电话的 App，打不了。告诉他换个方式联系。`;
         const blocked = await d.ownerBlocked(o.workspaceId, o.ownerUid);
         if (blocked !== null) return `电话没打出去：${blocked}`;

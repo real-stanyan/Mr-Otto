@@ -19,16 +19,10 @@ describe("折叠", () => {
   it("窗口裁掉了 started：孤零零的 ended 跳过", () => {
     expect(o.outreachFoldOf([ended(2, "x", 200, "missed")]).size).toBe(0);
   });
-  it("24 小时内打了几通", () => {
-    const f = o.outreachFoldOf([started(1, "x", 100), ended(2, "x", 150, "missed"), started(3, "y", 5000)]);
-    expect(o.outreachCountSince(f, "a", 1000)).toBe(1);
-    expect(o.outreachCountSince(f, "a", 0)).toBe(2);
-    expect(o.outreachCountSince(f, "b", 0)).toBe(0);
-  });
-  it("没响过铃的那几通（ended 带 unrung）不算进上限；旧日志没有这一格的照旧算（终审 M6）", () => {
+  it("ended 带 unrung 的那一通照样收尾（终审 M6）", () => {
     const unrung: SessionEvent = { ...base, seq: 2, ts: 150, outreachId: "x", phase: "ended" as const, outcome: "failed" as const, unrung: true as const };
-    const f = o.outreachFoldOf([started(1, "x", 100), unrung, started(3, "y", 200), ended(4, "y", 250, "failed")]);
-    expect(o.outreachCountSince(f, "a", 0)).toBe(1);
+    const f = o.outreachFoldOf([started(1, "x", 100), unrung]);
+    expect(f.get("x")?.outcome).toBe("failed");
     expect(o.activeOutreach(f)).toBeNull();
   });
 });

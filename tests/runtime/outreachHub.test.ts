@@ -2,7 +2,6 @@
 import { describe, expect, it } from "vitest";
 import { createOutreachHub, type OutreachHubDeps, type OutreachOrigin } from "../../services/runtime/src/outreachHub.js";
 import type { OutreachEnded, OutreachStart, OutreachStartResult } from "../../services/runtime/src/outreachRun.js";
-import { OUTREACH_DAILY_MAX } from "../../src/shared/outreach.js";
 
 const DISPATCH = {
   workspaceId: "w1", ownerUid: "owner", originSessionId: "origin-1", agentId: "ops", agentName: "运维",
@@ -23,7 +22,6 @@ function rig(over: Partial<OutreachHubDeps> = {}, startResult: OutreachStartResu
     friendsOf: async () => [{ uid: "u-hong", name: "小红" }, { uid: "u-ming", name: "小明" }],
     deviceCount: async () => 1,
     ownerBlocked: async () => null,
-    countSince: async () => 0,
     activeFor: async () => false,
     ensureSession: async (...a) => (ensures.push(a), { startOutreach: async (s) => (starts.push(s), startResult) }),
     origin: async () => origin,
@@ -65,14 +63,12 @@ describe("outreachHub.dispatch", () => {
     expect(a.ensures).toEqual([]);
   });
 
-  it("24 小时已满 / 好友没有设备 / 主人额度 blocked：各回一句，不建会话", async () => {
-    const capped = rig({ countSince: async () => OUTREACH_DAILY_MAX });
-    expect(await capped.hub.dispatch(DISPATCH)).toContain("上限");
+  it("好友没有设备 / 主人额度 blocked：各回一句，不建会话", async () => {
     const nodev = rig({ deviceCount: async () => 0 });
     expect(await nodev.hub.dispatch(DISPATCH)).toContain("没有能接电话的 App");
     const blocked = rig({ ownerBlocked: async () => "额度用完了，周五恢复" });
     expect(await blocked.hub.dispatch(DISPATCH)).toContain("额度用完了，周五恢复");
-    for (const r of [capped, nodev, blocked]) expect(r.ensures).toEqual([]);
+    for (const r of [nodev, blocked]) expect(r.ensures).toEqual([]);
   });
 
   it("这只正在另一条外联会话里打电话（打给别的好友）：拒绝，不建会话、不响铃（终审 M2）", async () => {
@@ -88,13 +84,6 @@ describe("outreachHub.dispatch", () => {
     const r = rig({ activeFor: async () => { throw new Error("db down"); } });
     expect(await r.hub.dispatch(DISPATCH)).toContain("稍后再试");
     expect(r.ensures).toEqual([]);
-  });
-
-  it("countSince 以「此刻往前 24 小时」为起点按这只智能体问", async () => {
-    const seen: unknown[][] = [];
-    const r = rig({ countSince: async (...a) => (seen.push(a), 0) });
-    await r.hub.dispatch(DISPATCH);
-    expect(seen).toEqual([["w1", "ops", 10 * 24 * 3_600_000 - 24 * 3_600_000]]);
   });
 
   it("前置检查抛错：「稍后再试」，不建会话", async () => {

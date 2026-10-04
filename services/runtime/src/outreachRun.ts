@@ -117,7 +117,7 @@ export function createOutreachRun(d: OutreachRunDeps): OutreachRun {
       const r = await d.ring(s);
       // started 仍在响铃之前落（终审 M6 考虑过挪到响铃之后、否掉了）：响铃那一段 await 里，上面那道「同一条线一次
       // 一通」、说话闸、语音票都靠折叠里有这一通——挪后之后两次 start 能同时响铃，而推送先到、人先接的那一下
-      // 会被闸当成没有外联拒掉。没响成的那通改在 ended 上记 unrung，不算进每日上限
+      // 会被闸当成没有外联拒掉。没响成的那通改在 ended 上记 unrung
       if (r.kind !== "ringing") {
         finish("failed", false, false, true); // 工具当场把这句话回给模型，不另起汇报那一轮
         return { kind: "refused", message: r.message };

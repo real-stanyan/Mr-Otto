@@ -11,15 +11,12 @@ export const CALL_FRIEND_TOOL_NAME = "call_friend";
 export const OUTREACH_BRIEF_MAX = 500;
 export const OUTREACH_CAP_MS = 10 * 60_000;
 export const OUTREACH_DROP_MS = 90_000;
-export const OUTREACH_DAILY_MAX = 10;
 export const OUTREACH_TRANSCRIPT_MAX = 20_000;
 
 export interface OutreachState {
   outreachId: string; fromAgentId: string; peerUid: string; peerName: string;
   originSessionId: string | null; startedTs: number; phase: OutreachEvent["phase"];
   outcome: OutreachOutcome | null; durationMs: number | null; transcript: OutreachLine[] | null;
-  /** 一次铃都没响就收了（ended 带 unrung，终审 M6）：不算进每日上限 */
-  unrung?: true;
 }
 export type OutreachFold = Map<string, OutreachState>;
 
@@ -38,7 +35,6 @@ export function applyOutreach(fold: OutreachFold, e: SessionEvent): void {
   fold.set(e.outreachId, {
     ...prev, phase: "ended", outcome: e.outcome ?? "failed",
     durationMs: e.durationMs ?? null, transcript: e.transcript ?? null,
-    ...(e.unrung === true ? { unrung: true as const } : {}),
   });
 }
 export function outreachFoldOf(events: readonly SessionEvent[]): OutreachFold {
@@ -50,12 +46,6 @@ export function activeOutreach(fold: OutreachFold): OutreachState | null {
   let hit: OutreachState | null = null;
   for (const s of fold.values()) if (s.phase === "started") hit = s;
   return hit;
-}
-export function outreachCountSince(fold: OutreachFold, agentId: string, since: number): number {
-  let n = 0;
-  // 没响过铃的不算（终审 M6）：冷却 / 推送没送到 / 没设备时 start() 也落了 started→ended，那不是「打了一通」
-  for (const s of fold.values()) if (s.fromAgentId === agentId && s.startedTs >= since && s.unrung !== true) n++;
-  return n;
 }
 
 export type FriendMatch =

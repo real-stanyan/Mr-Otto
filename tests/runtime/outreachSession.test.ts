@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
-  agentOutreachActive, blockedMessage, countAgentOutreach, ensureOutreachSession, openOriginRoom, outreachSeedEvents,
+  agentOutreachActive, blockedMessage, ensureOutreachSession, openOriginRoom, outreachSeedEvents,
   type EnsureOutreachDeps, type OutreachSessionRow,
 } from "../../services/runtime/src/outreachSession.js";
 import type { SessionEvent } from "../../src/session/events.js";
@@ -188,22 +188,6 @@ describe("ensureOutreachSession：部分失败后的修复（#1441 fix 1-3）", 
     expect(rowsMade).toHaveLength(1);
     expect(opened).toHaveLength(1);
     expect(seedTypes(f)).toEqual(["session_created", "chat_roster_changed"]);
-  });
-});
-
-describe("countAgentOutreach", () => {
-  const ev = (sid: string, id: string, ts: number): SessionEvent =>
-    ({ seq: 0, sessionId: sid, ts, type: "outreach", outreachId: id, phase: "started", fromAgentId: "a1", peerUid: "p", peerName: "n", ignorable: true }) as SessionEvent;
-  it("把这只的每条外联会话各折叠一遍求和，只数 since 之后的", async () => {
-    const logs: Record<string, SessionEvent[]> = {
-      s1: [ev("s1", "x", 100), ev("s1", "y", 10)],
-      s2: [ev("s2", "z", 200)],
-    };
-    const n = await countAgentOutreach({ sessionIds: async () => ["s1", "s2"], outreachEvents: (id) => logs[id]! }, "w1", "a1", 50);
-    expect(n).toBe(2);
-  });
-  it("没有外联会话 = 0", async () => {
-    expect(await countAgentOutreach({ sessionIds: async () => [], outreachEvents: () => [] }, "w", "a", 0)).toBe(0);
   });
 });
 
