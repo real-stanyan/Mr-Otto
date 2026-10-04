@@ -47,7 +47,7 @@ const msg = (sender: string, recipient: string, body: string, sec: number): Pair
   sender, recipient, body, createdAt: new Date(Date.UTC(2026, 9, 4, 0, 0, sec)).toISOString(),
 });
 
-function open(store: EventStore, o: { messages?: () => Promise<PairMessageRow[]>; alerts?: string[] } = {}): { session: CloudSession; reads: number } {
+function open(store: EventStore, o: { messages?: () => Promise<PairMessageRow[]>; alerts?: string[]; outreach?: CloudSessionOpts["outreach"] } = {}): { session: CloudSession; reads: number } {
   const probe = { reads: 0 } as { session: CloudSession; reads: number };
   const adapter: ModelAdapter = { model: "fake-model", async chat() { return { content: "好的" }; } };
   const opts: CloudSessionOpts = {
@@ -65,7 +65,7 @@ function open(store: EventStore, o: { messages?: () => Promise<PairMessageRow[]>
       probe.reads++;
       return o.messages ? o.messages() : [msg(PEER, OWNER, "周末去哪", 1), msg(OWNER, PEER, "爬山？", 2)];
     },
-    outreach: null, approveAll: true, callback: null,
+    outreach: o.outreach ?? null, approveAll: true, callback: null,
     ...(o.alerts ? { alert: (uid: string) => void o.alerts!.push(uid) } : {}),
   };
   probe.session = createCloudSession(opts);
@@ -146,6 +146,19 @@ describe("私密车道（#1461 P1）", () => {
     expect(r).toMatchObject({ kind: "ok", changed: true, agentIds: [HELPER.agentId, TRANS.agentId] });
     const r2 = await session.updateChatRoster(OWNER, { humans: [{ uid: PEER, name: "小红" }] }, "小明");
     expect(r2.kind).toBe("not_group");
+    store.close();
+  });
+
+  it("车道里不挂 call_friend：提示词说「你发不了消息给朋友」，工具表必须说同一句话（#1206；复审 M3）", async () => {
+    const store = newStore();
+    pairSeed(store);
+    const { session } = open(store, { outreach: { dispatch: async () => "打了" } });
+    await say(session, "@助手 帮我问问", [HELPER.agentId]);
+    await session.settled();
+    const env = store.ofType(SID, "request_envelope").at(-1) as RequestEnvelopeEvent;
+    expect(env.tools.length).toBeGreaterThan(0); // 不是空转：别的刀照挂
+    expect(env.tools.map((t) => t.name)).not.toContain("call_friend");
+    expect(env.system).toContain("发不了消息给");
     store.close();
   });
 

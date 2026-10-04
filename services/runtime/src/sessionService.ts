@@ -1478,8 +1478,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // call_friend（#1441）：只挂在主场聊天里、外联会话里一律不挂、daemon 没接端口时也不挂。
     // 系统提示词里不提它——工具不在表里时提示词不能说它存在（#1206），说明全写在刀自己的 description 里。
     // 资格是 ownerSpoke：只有主人本人亲口点起的那一轮才打得出去（客人、接力棒、招呼与汇报轮都不行）
+    // 私密车道里也不挂（#1461 复审 M3）：车道的提示词说「你发不了消息给朋友」，工具表得说同一句话（#1206）；
+    // 而且外联的汇报轮要主人批，车道那一侧的界面根本没有审批卡可点
     const callFriendTool =
-      opts.outreach === null || !opts.approveAll || isOutreach
+      opts.outreach === null || !opts.approveAll || isOutreach || isPair
         ? null
         : createCallFriendTool({
             mayCall: () =>
