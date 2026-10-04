@@ -16,10 +16,9 @@
 //   通话还在（A4 原样）。
 // · 已读：这一页开着时列表不给它画未读；离开时游标推到此刻（seenStore）。
 import { useFocusEffect } from "@react-navigation/native";
-import { useHeaderHeight } from "@react-navigation/elements";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { FlatList, KeyboardAvoidingView, Platform, Pressable, StyleSheet, Text, View } from "react-native";
+import { FlatList, Pressable, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { activityFoldOf } from "../../../src/shared/agentActivity.js";
 import { agentFaceSlot } from "../../../src/shared/agentAvatar.js";
@@ -59,7 +58,7 @@ import { useInbox } from "../inbox/useInbox.js";
 import type { RootStackParams } from "../nav/types.js";
 import { useMyName } from "../tabs/MeScreen.js";
 import { usePalette, withAlpha } from "../theme.js";
-import { Button, Spinner } from "../ui.js";
+import { Button, Spinner, useKeyboardInset } from "../ui.js";
 import { CallOverlay, CallPill } from "../voice/CallOverlay.js";
 import { CallSheet } from "../voice/CallSheet.js";
 import {
@@ -198,7 +197,8 @@ export function ChatScreen({ route, navigation }: Props) {
   const chat = useChatStore();
   const inbox = useInbox();
   const me = useMyName();
-  const headerHeight = useHeaderHeight();
+  // 键盘让位自己量(#1490):不再靠 KAV + useHeaderHeight,见 ui.tsx 的 useKeyboardInset
+  const kb = useKeyboardInset(() => {});
   const insets = useSafeAreaInsets();
   const friends = useFriends();
   const isTeam = target.kind === "team";
@@ -637,7 +637,7 @@ export function ChatScreen({ route, navigation }: Props) {
 
   return (
     <View style={{ flex: 1, backgroundColor: c.background }}>
-      <KeyboardAvoidingView style={{ flex: 1 }} behavior={Platform.OS === "ios" ? "padding" : undefined} keyboardVerticalOffset={headerHeight}>
+      <View ref={kb.root.ref} onLayout={kb.root.onLayout} style={{ flex: 1, paddingBottom: kb.keyboard }}>
         <View style={{ flex: 1 }}>
           {ws !== null && resolved === null ? (
             <View style={{ flex: 1, alignItems: "center", justifyContent: "center" }}>
@@ -782,7 +782,7 @@ export function ChatScreen({ route, navigation }: Props) {
             : {})}
         />
         )}
-      </KeyboardAvoidingView>
+      </View>
 
       {ws !== null ? (
         <MentionSheet
