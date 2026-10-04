@@ -1240,7 +1240,8 @@ export function deriveMessages(
       case "task_progress":
       case "task_needs_owner":
       case "task_done":
-      case "task_failed": {
+      case "task_failed":
+      case "task_collab": {
         taskTitles.set(event.taskId, event.type === "task_created" ? event.title : (taskTitles.get(event.taskId) ?? "任务"));
         const line = `[任务 ${event.taskId}] ${promptSafe(taskEventText(event, (id) => id, (id) => taskTitles.get(id) ?? null))}`;
         (pendingToolIds.size > 0 ? deferredUsers : messages).push({ role: "user", content: line });

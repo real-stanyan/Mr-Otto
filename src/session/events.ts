@@ -759,6 +759,12 @@ export interface TaskFailedEvent extends TaskEventBase {
   type: "task_failed";
   reason: string;
 }
+/** 邀请了对方的管理员协作（#1578）：任务还归这边，对方是协作者。withUid = 对方主人 */
+export interface TaskCollabEvent extends TaskEventBase {
+  type: "task_collab";
+  withUid: string;
+  withName: string;
+}
 
 export type OutreachOutcome = "completed" | "missed" | "capped" | "failed";
 export interface OutreachLine { who: "agent" | "peer"; text: string; ts: number }
@@ -1348,6 +1354,7 @@ export type SessionEvent =
   | TaskNeedsOwnerEvent
   | TaskDoneEvent
   | TaskFailedEvent
+  | TaskCollabEvent
   | OutreachEvent
   | FriendPickEvent
   | ChatRosterChangedEvent
@@ -1423,6 +1430,7 @@ const KNOWN_EVENT_TYPES_MAP: Record<SessionEvent["type"], true> = {
   task_needs_owner: true,
   task_done: true,
   task_failed: true,
+  task_collab: true,
   outreach: true,
   friend_pick: true,
   chat_roster_changed: true,

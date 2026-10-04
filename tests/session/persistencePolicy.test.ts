@@ -52,6 +52,7 @@ const DURABLE = [
   "task_needs_owner",
   "task_done",
   "task_failed",
+  "task_collab",
   "outreach",
   "friend_pick",
   "chat_roster_changed",

@@ -270,6 +270,7 @@ function TaskCard({ row }: { row: Extract<ChatRow, { kind: "task" }> }) {
           <Text style={{ fontSize: 12, color: tone }}>{TASK_STATUS_TEXT[row.status]}</Text>
         </View>
         {row.assigneeName !== null ? <Text style={{ fontSize: 12, color: c.mutedForeground }}>{`派给 ${row.assigneeName}`}</Text> : null}
+        {row.collaboratorName !== null ? <Text style={{ fontSize: 12, color: c.mutedForeground }}>{`协作：${row.collaboratorName}`}</Text> : null}
         {tail !== null ? <Text style={{ fontSize: 12, lineHeight: 17, color: row.status === "needs_owner" ? c.foreground : c.mutedForeground }}>{tail}</Text> : null}
         {open && row.brief !== "" ? <Text style={{ fontSize: 12, lineHeight: 17, color: c.mutedForeground }}>{row.brief}</Text> : null}
       </View>

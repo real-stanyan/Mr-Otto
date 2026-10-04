@@ -82,7 +82,8 @@ export function shouldPersist(kind: EmittedKind): boolean {
     case "task_progress":
     case "task_needs_owner":
     case "task_done":
-    case "task_failed": // 定时任务没跑成（#1283）：时间线那张灰条从日志重放
+    case "task_failed":
+    case "task_collab": // 定时任务没跑成（#1283）：时间线那张灰条从日志重放
     case "chat_roster_changed": // 聊天名单（#1280）：名单收窄的判据要从日志重放，只活在内存里等于每次重启整份团队名单都回来
     case "executor_changed": // 换执行器（#1223）：提示词块与时间线分隔行都从它投影，谁在跑这件事推不出来
     case "memory_loaded":

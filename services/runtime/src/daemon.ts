@@ -1151,6 +1151,15 @@ async function main(): Promise<void> {
       // 对面公开的智能体（#1542）：箭头里才读 laneBridge——它在这个函数的后面才声明，房间启动补开时这里已经跑过，
       // 但只有工具真被调用那一刻才会碰到它
       laneBridge: { send: (o) => laneBridge.send(o) },
+      // 好友档位（#1578）：主人给这位朋友的那一档，两边取小；查不到回 null（sessionService 按「仅聊天」写）
+      peerTier: async (peerUid) => {
+        try {
+          const rows = await acceptedFriendRows(ownerUid, [peerUid]);
+          return friendTiersOf(ownerUid, rows).get(peerUid) ?? null;
+        } catch {
+          return null;
+        }
+      },
       // message_friend（#1549）：与 outreach 那把刀同一个开关（有 hub 且主场），出口是同一个 hub
       friendMessage: outreachHub === null || !approveAll ? null : { send: (o) => outreachHub.message({ ...o, workspaceId, ownerUid }) },
       pairMessages: async ({ ownerUid: o, peerUid: p }) => {

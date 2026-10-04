@@ -121,6 +121,8 @@ export type ChatRow =
   | {
     kind: "task"; key: string; ts: number; taskId: string; title: string; parentTitle: string | null; brief: string;
     status: TaskStatus; assigneeName: string | null; question: string | null; summary: string | null;
+    /** 协作者（#1578）：「小红的管理员」 */
+    collaboratorName: string | null;
   };
 
 type ItemRow = Exclude<ChatRow, { kind: "time" }>;
@@ -254,6 +256,7 @@ export function chatRows(o: {
             parentTitle: t.parentId === null ? null : (tasks.get(t.parentId)?.title ?? null),
             status: t.status, assigneeName: t.assigneeAgentId === null ? null : agentNameOf(o.ws, t.assigneeAgentId),
             question: t.question, summary: t.summary,
+            collaboratorName: t.collaborator === undefined ? null : `${t.collaborator.name}的管理员`,
           });
         }
       }

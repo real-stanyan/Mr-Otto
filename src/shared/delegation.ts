@@ -3,6 +3,7 @@
 // 这里是纯逻辑：公开车道的名单长什么样、客人点的名怎么改、两种身份在车道里各加哪一段提示词。
 import { ADMIN_AGENT_ID } from "./workspaceAgents.js";
 import { promptSafe } from "./promptSafe.js";
+import { collabRolePrompt } from "./collab.js";
 
 /** 公开出去的车道名单：管理员永远在、排第一；主人选的公开智能体（代办目标）与原名单跟在后面，去重 */
 export function delegationRoster(agentIds: readonly string[], publicAgentId?: string | null): string[] {
@@ -36,6 +37,8 @@ export function delegationRolePrompt(o: {
     : `${w} 没有指定别的代办智能体，`;
   return (
     `\n[代办：你是 ${w} 的管理员，${p} 找 ${w} 找不到时先找你。${p} 的请求你先接住：问清要办什么、什么时候要，答得了的直接答。` +
-    `${hand}办不了、要 ${w} 拍板的记下来，等 ${w} 回来总结给他。别替 ${w} 答应任何事。]\n`
+    `${hand}办不了、要 ${w} 拍板的记下来，等 ${w} 回来总结给他。别替 ${w} 答应任何事。]\n` +
+    // 跨主场协作（#1578）：谁牵头、怎么邀对方的管理员、收到对方的邀请时怎么答
+    collabRolePrompt(o.ownerName, o.peerName)
   );
 }

@@ -123,6 +123,7 @@ const OTHER_AGENT_VERDICTS: Record<SessionEvent["type"], OtherAgentVerdict> = {
   task_needs_owner: "keep",
   task_done: "keep",
   task_failed: "keep",
+  task_collab: "keep",
   // 外联（#1441）：同 call_ring，故意叫 fromAgentId，这张表轮不到它，仍要表态
   outreach: "keep",
   // 选人卡（#1520）：同 outreach，故意叫 fromAgentId，这张表轮不到它，仍要表态
