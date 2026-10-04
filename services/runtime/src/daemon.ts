@@ -48,6 +48,9 @@ import type { PxCallDeps } from "./pxTools.js";
 import { createHostedProbe, createHostedRuntimeAdapter, createRouteMemo, decideRuntimeRoute, probeModelRoute, withUsage, type RouteMemo } from "./hostedRoute.js";
 import { createOutreachHub } from "./outreachHub.js";
 import { agentOutreachActive, blockedMessage, ensureOutreachSession, openOriginRoom } from "./outreachSession.js";
+import { createSupabaseRoutineStore } from "./routineStore.js";
+import { createRoutineScheduler } from "./routineScheduler.js";
+import { noteRoutineInRoom, runRoutineInRoom } from "./routineRun.js";
 import { signSpeechTicket } from "../../../src/shared/speechTicket.js";
 import { PAIR_CONTEXT_MAX_LINES } from "../../../src/shared/pairChat.js";
 import { pickAutoModel } from "./autoModel.js";
@@ -158,6 +161,9 @@ async function main(): Promise<void> {
   mkdirSync(config.dataDir, { recursive: true });
 
   const supabase = createClient(config.supabaseUrl, config.supabaseServiceKey);
+  // 定时任务（#1283）：一张表、一只调度器（启动末尾起）。每条会话房都接同一个 store，挂不挂刀由 sessionService
+  // 按 approveAll + chatKind 判（团队会话 / 外联 / 私密车道都不挂）
+  const routineStore = createSupabaseRoutineStore(supabase);
   // 回电的推送（#1411，ADR-0331）：三个 APNS_* 全有才开（config.ts）；.p8 这里读一次——读不到就起不来，
   // 同 loadConfig 的 fail fast：带着一把读不出来的钥匙跑起来，每一通电话都会安静地失败
   const apnsCfg = config.apns;
@@ -361,6 +367,15 @@ async function main(): Promise<void> {
 
   async function ownerOf(workspaceId: string): Promise<string> {
     return (await workspaceFacts(workspaceId)).ownerUid;
+  }
+
+  /** openOriginRoom 的 row 回调（外联汇报与定时任务共用）：这条会话行的归属与归档态，没有回 null */
+  async function sessionRowOf(sid: string): Promise<{ workspace_id: string; archived: boolean; publisherUid: string } | null> {
+    const { data, error } = await supabase.from("workspace_sessions").select("workspace_id,publisher_uid,archived").eq("id", sid).maybeSingle();
+    if (error) throw new Error(error.message);
+    if (!data) return null;
+    const r = data as { workspace_id: string; publisher_uid: string; archived: boolean };
+    return { workspace_id: r.workspace_id, archived: r.archived, publisherUid: r.publisher_uid };
   }
 
   /** 这只智能体现成的那条私聊（#1280），没有回 null。库里那条唯一索引是权威，
@@ -672,13 +687,7 @@ async function main(): Promise<void> {
             openOriginRoom<CloudSession>(
               {
                 active: (id) => activeSessions.get(id)?.session ?? null,
-                row: async (id) => {
-                  const { data, error } = await supabase.from("workspace_sessions").select("workspace_id,publisher_uid,archived").eq("id", id).maybeSingle();
-                  if (error) throw new Error(error.message);
-                  if (!data) return null;
-                  const r = data as { workspace_id: string; publisher_uid: string; archived: boolean };
-                  return { workspace_id: r.workspace_id, archived: r.archived, publisherUid: r.publisher_uid };
-                },
+                row: sessionRowOf,
                 open: (w, id, publisherUid) => openExistingRoom(w, id, publisherUid),
                 discard: discardRoom,
               },
@@ -1062,8 +1071,8 @@ async function main(): Promise<void> {
       // 上一次量出来的卷用量（#836，ADR-0287）。纯读 sandbox 的内存缓存、不打
       // docker——量这一下发生在 sandbox.ensure() 里，这里只是把读数递过去
       diskUsage: () => sandbox.diskUsage(workspaceId),
-      // 定时任务（#1283）：本任务只把接口立起来，daemon 接 RoutineStore / scheduler 在后续任务——此刻不挂刀
-      routines: null,
+      // 定时任务（#1283）：同一个 store 递给每一间房；挂不挂刀由 sessionService 按 approveAll + chatKind 判
+      routines: routineStore,
       // 回电（#1411）：推送关着 = null（刀不出现）。isWatching = 这个房间里有没有他的连接——手机切后台会
       // 主动断开会话房（mobile/src/cloud/cloudClient.ts），所以「连着」就是「开着这条聊天」
       // 外联（#1441）：收尾时把结果汇报回原聊天、call_friend 那把刀的出口。推送关着 = 没有 hub = 两样都是 null；
@@ -1576,6 +1585,41 @@ async function main(): Promise<void> {
     },
     5 * 60 * 1000
   );
+
+  // ── 定时任务调度器（#1283，spec §3）：30 秒一拍、原子认领、先推进 next_run_at 再起 turn ─────────
+  const routineRooms = {
+    // 到点现查主人：任务行上的 ownerUid 与主场现在的主人对不上就不跑（runRoutineInRoom 里判）
+    ownerOf: async (w: string) => (await workspaceFacts(w)).ownerUid,
+    findDm: (w: string, a: string) => findDmSession(w, [a]),
+    room: (w: string, id: string) =>
+      openOriginRoom<CloudSession>(
+        {
+          active: (sid) => activeSessions.get(sid)?.session ?? null,
+          row: sessionRowOf,
+          open: (ww, sid, publisherUid) => openExistingRoom(ww, sid, publisherUid),
+          discard: discardRoom,
+        },
+        w, id,
+      ),
+  };
+  const routineScheduler = createRoutineScheduler({
+    store: routineStore,
+    // 额度门（spec §5.3）：与接力预算同一只探针；「没有数」与探针本身出错一律 null = 照跑，quota 绝不抛
+    quota: async (ownerUid) => {
+      try {
+        const me = await hostedProbe.me(ownerUid);
+        if (me === "unreachable" || me === null || me.windows === null) return null;
+        return { remainingMicro: me.windows.week.limitMicro - me.windows.week.usedMicro, limitMicro: me.windows.week.limitMicro };
+      } catch {
+        return null;
+      }
+    },
+    run: (r, firedAt) => runRoutineInRoom(routineRooms, r, firedAt),
+    note: (r, reason, plannedAt) => noteRoutineInRoom(routineRooms, r, reason, plannedAt),
+    now: Date.now,
+    log: (m) => console.warn(`[otto-runtime] ${m}`),
+  });
+  routineScheduler.start();
 
   // ── 控制房：常驻一条，处理 hello/create ─────────────────────────────
   const ctlTransport = createWsTransport({
