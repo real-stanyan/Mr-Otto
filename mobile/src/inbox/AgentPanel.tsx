@@ -1,9 +1,9 @@
-// 「智能体」那一页（#1566，维护者 2026-10-04）：聊天页主页只留人↔人与群，我的智能体收在这里——
+// 「智能体」侧页的内容（#1566 → #1574）：聊天页主页只留人↔人与群，我的智能体收在从左缘滑出来的侧页里（wx/SidePanel）——
 // 主场里的每一只一行（聊过的带最后一句 + 未读，没聊过的写职责），每一行带**此刻的状态**：空闲 / 档位 ·
 // 在〈哪个群〉（agent_activity 跨会话取最要紧的那条，判据 agentActivityRows.workspaceAgentWhere）。
 // 底下一格抽屉「别人的智能体」：别人的智能体跟我的对话（外联会话，#1441），默认收着——那是最次级的。
 // 所有聊过的行左滑删除（同聊天页：只从这台手机的列表里拿掉，有新话再冒出来，hiddenStore）。
-import type { NativeStackScreenProps } from "@react-navigation/native-stack";
+// 点一行不在这里推页：侧页是个 Modal，盖着的时候推的页看不见——交给 `onPick`，由聊天页先收侧页、退场完再推。
 import { useMemo } from "react";
 import { ScrollView, StyleSheet, Text, View } from "react-native";
 import { agentStatusText, workspaceAgentWhere } from "../../../src/shared/agentActivityRows.js";
@@ -13,7 +13,7 @@ import { splitInbox } from "../../../src/shared/wechatInbox.js";
 import { ActivityFace } from "../activity/ActivityFace.js";
 import { useActivity } from "../activity/activityStore.js";
 import { useHome } from "../home/homeStore.js";
-import type { RootStackParams } from "../nav/types.js";
+import type { ChatRoute } from "../nav/types.js";
 import { ChatListRow, CHAT_ROW_SEP } from "../tabs/ChatListRow.js";
 import { ContactRow } from "../tabs/ContactsScreen.js";
 import { space, usePalette } from "../theme.js";
@@ -24,9 +24,7 @@ import { hideChat } from "./hiddenStore.js";
 import { useSeenStore } from "./seenStore.js";
 import { useInbox } from "./useInbox.js";
 
-type Props = NativeStackScreenProps<RootStackParams, "AgentChats">;
-
-export function AgentChatsScreen({ navigation }: Props) {
+export function AgentPanel({ onPick }: { onPick: (route: ChatRoute) => void }) {
   const { c } = usePalette();
   const home = useHome();
   const inbox = useInbox();
@@ -47,11 +45,11 @@ export function AgentChatsScreen({ navigation }: Props) {
   const sep = <View style={{ height: StyleSheet.hairlineWidth, backgroundColor: c.border, marginLeft: CHAT_ROW_SEP }} />;
   return (
     <View style={{ flex: 1, backgroundColor: c.background }}>
-      <ScrollView contentContainerStyle={{ paddingTop: 8, paddingBottom: 40 }}>
+      <ScrollView contentContainerStyle={{ paddingTop: 4, paddingBottom: 40 }}>
         {ws === null ? (
           <Text style={{ fontSize: 14, color: c.mutedForeground, paddingHorizontal: 16, paddingVertical: 8 }}>订阅之后才有自己的智能体。</Text>
         ) : agents.length === 0 ? (
-          <Text style={{ fontSize: 14, color: c.mutedForeground, paddingHorizontal: 16, paddingVertical: 8 }}>还没有智能体。去聊天页右上角建一只。</Text>
+          <Text style={{ fontSize: 14, color: c.mutedForeground, paddingHorizontal: 16, paddingVertical: 8 }}>还没有智能体。收起这一页，右上角 ⊕ 建一只。</Text>
         ) : (
           <View style={{ backgroundColor: c.card }}>
             {agents.map((a, i) => {
@@ -75,7 +73,7 @@ export function AgentChatsScreen({ navigation }: Props) {
                       avatar={<ActivityFace slot={agentFaceSlot(ws, a.agentId)} size={48} activity={where?.activity ?? null} ring={c.card} badgeSize={10} />}
                       name={a.name}
                       sub={a.description === "" ? status : `${a.description} · ${status}`}
-                      onPress={() => navigation.navigate("Chat", { kind: "agent", agentId: a.agentId })}
+                      onPress={() => onPick({ kind: "agent", agentId: a.agentId })}
                     />
                   </View>
                 );
@@ -84,7 +82,7 @@ export function AgentChatsScreen({ navigation }: Props) {
                 <View key={a.agentId}>
                   {i === 0 ? null : sep}
                   <SwipeRow onDelete={() => hideChat(row.key, row.ts)}>
-                    <ChatListRow row={row} draft={drafts.get(row.key) ?? ""} now={now} onPress={() => navigation.navigate("Chat", { kind: "agent", agentId: a.agentId })} status={statusLine} />
+                    <ChatListRow row={row} draft={drafts.get(row.key) ?? ""} now={now} onPress={() => onPick({ kind: "agent", agentId: a.agentId })} status={statusLine} />
                   </SwipeRow>
                 </View>
               );
@@ -100,7 +98,7 @@ export function AgentChatsScreen({ navigation }: Props) {
                 <View key={r.key}>
                   {i === 0 ? null : sep}
                   <SwipeRow onDelete={() => hideChat(r.key, r.ts)}>
-                    <ChatListRow row={r} draft={drafts.get(r.key) ?? ""} now={now} onPress={() => { if (r.target.kind === "outreach") navigation.navigate("Chat", r.target); }} />
+                    <ChatListRow row={r} draft={drafts.get(r.key) ?? ""} now={now} onPress={() => { if (r.target.kind === "outreach") onPick(r.target); }} />
                   </SwipeRow>
                 </View>
               ))}

@@ -1862,7 +1862,7 @@ async function main(): Promise<void> {
         .from("notify_prefs").select("uid, report, tz, report_next_at, report_last_at").not("report", "is", null)
         .or(`report_next_at.is.null,report_next_at.lte.${new Date(nowMs).toISOString()}`).limit(limit);
       if (res.error) {
-        if (res.error.code === "42703") return [];
+        if (String(res.error.code) === "42703") return []; // 列还没加 = 没人开了汇报
         throw new Error(res.error.message);
       }
       const out: ReportRow[] = [];

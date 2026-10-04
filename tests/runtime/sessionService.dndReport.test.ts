@@ -33,7 +33,7 @@ describe("daemon：免打扰与汇报", () => {
   it("调度：到点的行按 report_next_at 查、认领用 update … where report_next_at = 读到的那个值、42703 当没人开", () => {
     expect(daemon).toMatch(/\.not\("report", "is", null\)\s*\.or\(`report_next_at\.is\.null,report_next_at\.lte\.\$\{new Date\(nowMs\)\.toISOString\(\)\}`\)/);
     expect(daemon).toMatch(/\.eq\("uid", uid\)\.eq\("report_next_at", new Date\(expected\)\.toISOString\(\)\)\.select\("uid"\)/);
-    expect(daemon).toMatch(/if \(res\.error\.code === "42703"\) return \[\];/);
+    expect(daemon).toMatch(/if \(String\(res\.error\.code\) === "42703"\) return \[\];/);
     expect(daemon).toMatch(/reportScheduler\.start\(\);/);
   });
   it("摘要：朋友消息按 recipient + created_at > since 查、过 dmPreview；任务只取公开车道里朋友点起的；进管理员的私聊房 runReport", () => {

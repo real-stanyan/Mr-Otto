@@ -43,8 +43,6 @@ export type RootStackParams = {
   Requests: undefined;
   /** 群聊：所有群一列 */
   Groups: undefined;
-  /** 智能体（#1566）：聊天页主页只留人与群，我的智能体的私聊收在这一页；别人的智能体跟我的对话在它底下那格抽屉里 */
-  AgentChats: undefined;
   /** 个人信息：头像 / 名字 / 邮箱 / 改密码 */
   Profile: undefined;
   /** 订阅与额度 */

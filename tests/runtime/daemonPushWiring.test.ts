@@ -8,7 +8,8 @@ const src = readFileSync(new URL("../../services/runtime/src/daemon.ts", import.
 
 describe("daemon.ts：消息推送的接线（#1442）", () => {
   it("notifier 读真库的开关，发 APNs 的普通通知", () => {
-    expect(src).toMatch(/createNotifier\(\{\s*store: createSupabaseNotifyStore\(supabase\),\s*push: \(uid, p\) => apns\.pushAlert\(uid, p\)/);
+    // 免打扰（#1569）：中间多了 quiet 那一格
+    expect(src).toMatch(/createNotifier\(\{\s*store: createSupabaseNotifyStore\(supabase\),\s*quiet: createSupabaseQuietStore\(supabase\)\.quietOf,\s*push: \(uid, p\) => apns\.pushAlert\(uid, p\)/);
   });
   it("朋友消息：订 messages、推给 notifier", () => {
     expect(src).toMatch(/createFriendPush\(\{\s*notifier,/);
