@@ -137,7 +137,8 @@ export function openingTraits(
   ownerUid: string,
 ): { report: boolean; ownerSpoke: boolean; nonOwner: boolean } {
   return {
-    report: openings.some((o) => o.greeting === "outreach_report"),
+    // pair_call_summary（#1533）同一种性质：正文是朋友在电话里说的话的转述，那一轮每一刀都要主人批
+    report: openings.some((o) => o.greeting === "outreach_report" || o.greeting === "pair_call_summary"),
     ownerSpoke: openings.length > 0 && openings.every((o) => o.fromUid === ownerUid && o.relay === undefined && o.greeting === undefined),
     nonOwner: openings.some((o) => o.fromUid !== ownerUid),
   };

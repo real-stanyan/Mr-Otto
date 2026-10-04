@@ -184,7 +184,7 @@ describe("rate_limited 码（issue #819）", () => {
 // 协议 14（#1102）：repo 那一组整个走了——config / config_result 两条帧删除。
 // 留下的是 modelRoute 那一格，它换了唯一的载体（welcome + workspace_state）
 describe("协议 14：config 帧没了，modelRoute 还在（#1102）", () => {
-  it("协议号跟着最新一条变更走（此刻 = 26，#1520 的选人卡是最近进位者；#1523 的共享车道是 25；#1491 的 say.media 是 24；#1461 的私密车道是 23；#1441 的外联会话是 22；#1393 的群里真人是 21；#1280 的聊天六帧是 20）", () => {
+  it("协议号跟着最新一条变更走（此刻 = 24，#1491 的 say.media 是最近进位者；#1461 的私密车道是 23；#1441 的外联会话是 22；#1393 的群里真人是 21；#1280 的聊天六帧是 20）", () => {
     expect(CS_PROTOCOL_VERSION).toBe(26);
   });
 
@@ -328,7 +328,7 @@ describe("wiki_write / wiki_write_result（协议 18，#1140）", () => {
     const bad = { ...ok, ok: false, message: "常驻超预算" };
     expect(decodeCsDown(encodeCs(bad))).toEqual(bad);
   });
-  it("CS_PROTOCOL_VERSION 是 26（#1520 选人卡之后）", () => { expect(CS_PROTOCOL_VERSION).toBe(26); });
+  it("CS_PROTOCOL_VERSION 是 26（#1533 公开智能体之后）", () => { expect(CS_PROTOCOL_VERSION).toBe(26); });
 });
 
 // 协议 17（#1163）：语音通话名单。会话房帧——任何在籍成员都能发，服务端复核名单里的 id

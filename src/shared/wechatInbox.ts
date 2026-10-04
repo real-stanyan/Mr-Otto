@@ -14,6 +14,7 @@
 
 import type { DirectMessage, FriendProfile } from "./friends.js";
 import { decodeEnvelope } from "./sessionPackageCodec.js";
+import { contactCardPreview, decodeContactCard } from "./contactCard.js";
 import { activityFace, mostUrgent, type AgentActivity } from "./agentActivity.js";
 import { agentFaceSlot } from "./agentAvatar.js";
 import { groupRows, rosterRows } from "./agentRoster.js";
@@ -566,6 +567,9 @@ export function groupList(o: { selfUid: string; home: HomeInput | null; teams: r
 /** 朋友私聊那一行的第二行：普通话压平空白；桌面发来的「分享会话」信封（整条 body 是一段 JSON）
     写成「[会话分享] 标题」——摊开来是一坨 JSON，里面还有一次性的邀请码（shareCard.ts 那条纪律） */
 export function dmPreview(body: string): string {
+  // 名片（#1524）同理：写成「[名片] 名字」/「[智能体名片] 名字」，不摊开里面的提示词
+  const card = decodeContactCard(body);
+  if (card !== null) return contactCardPreview(card);
   const env = decodeEnvelope(body);
   if (env !== null) return env.title !== null && env.title.trim() !== "" ? `[会话分享] ${env.title.trim()}` : "[会话分享]";
   return body.replace(/\s+/g, " ").trim();

@@ -21,6 +21,7 @@ import { createInMemoryCloudSessionMeta } from "../../services/runtime/src/cloud
 
 const OWNER = "11111111-1111-4111-8111-111111111111";
 const PEER = "22222222-2222-4222-8222-222222222222";
+const STRANGER = "33333333-3333-4333-8333-333333333333";
 const SID = "s-pair";
 
 const fakeWorld: ExecutionWorld = {
@@ -138,15 +139,86 @@ describe("私密车道（#1461 P1）", () => {
     store.close();
   });
 
-  it("名单只改智能体那一半：带进一只成功、拉人被拒", async () => {
+  it("名单：带进一只成功；客人名单只能是 [配对的朋友]（公开）或 []（仅我可见），别人进不来（#1523）", async () => {
     const store = newStore();
     pairSeed(store);
     const { session } = open(store);
     const r = await session.updateChatRoster(OWNER, { agentIds: [HELPER.agentId, TRANS.agentId] }, "小明");
     expect(r).toMatchObject({ kind: "ok", changed: true, agentIds: [HELPER.agentId, TRANS.agentId] });
     const r2 = await session.updateChatRoster(OWNER, { humans: [{ uid: PEER, name: "小红" }] }, "小明");
-    expect(r2.kind).toBe("not_group");
+    expect(r2).toMatchObject({ kind: "ok", changed: true, humans: [{ uid: PEER, name: "小红" }] });
+    expect(session.chat()?.pair).toEqual({ peerUid: PEER, facing: "both" });
+    const r3 = await session.updateChatRoster(OWNER, { humans: [{ uid: PEER, name: "小红" }, { uid: STRANGER, name: "路人" }] }, "小明");
+    expect(r3.kind).toBe("not_group");
+    const r4 = await session.updateChatRoster(OWNER, { humans: [] }, "小明");
+    expect(r4).toMatchObject({ kind: "ok", changed: true, humans: [] });
+    expect(session.chat()?.pair).toEqual({ peerUid: PEER, facing: "self" });
     store.close();
+  });
+
+  describe("公开车道（#1523，#1461 P2）", () => {
+    function sharedSeed(store: EventStore): void {
+      store.append({
+        sessionId: SID, ts: 1, type: "session_created", workspace: "/work",
+        cloud: { workspaceId: "home", home: true, chat: { kind: "pair" }, pair: { ownerName: "小明", peerUid: PEER, peerName: "小红", facing: "both" } },
+      });
+      store.append({ sessionId: SID, ts: 2, type: "chat_roster_changed", agents: [{ agentId: HELPER.agentId, name: "助手" }], humans: [{ uid: PEER, name: "小红" }], ignorable: true });
+    }
+    it("朋友（客人）能说、能点起一轮；路人仍被拒", async () => {
+      const store = newStore();
+      sharedSeed(store);
+      const { session } = open(store);
+      expect(session.isGuest(PEER)).toBe(true);
+      await say(session, "@助手 帮我们想想", [HELPER.agentId], PEER);
+      await session.settled();
+      expect(store.ofType(SID, "assistant_message").length).toBeGreaterThan(0);
+      await expect(say(session, "@助手 x", [HELPER.agentId], STRANGER)).rejects.toBeInstanceOf(SayRejectedError);
+      store.close();
+    });
+    it("提示词说公开那一版：朋友看得到你、朋友点起的轮要等主人批；信封头不再说「看不到你」", async () => {
+      const store = newStore();
+      sharedSeed(store);
+      const { session } = open(store);
+      await say(session, "@助手 在吗", [HELPER.agentId]);
+      await session.settled();
+      const env = store.ofType(SID, "request_envelope").at(-1) as RequestEnvelopeEvent;
+      expect(env.system).toContain("也看得到你说的话");
+      expect(env.system).toContain("都要等群主批");
+      expect(env.system).not.toContain("看不到你");
+      store.close();
+    });
+    it("朋友（客人）打给公开智能体、挂了 → 替主人落一条 pair_call_summary 开场白，那一轮它总结给主人（#1533）；主人自己开的通话不落", async () => {
+      const store = newStore();
+      sharedSeed(store);
+      const { session } = open(store);
+      expect(await session.setVoiceCall(PEER, "小红", [HELPER.agentId])).toEqual({ kind: "ok" });
+      expect(session.callStarter?.()).toBe(PEER);
+      await session.settled();
+      expect(await session.setVoiceCall(PEER, "小红", [])).toEqual({ kind: "ok" });
+      await session.settled();
+      const openings = store.ofType(SID, "user_message").filter((e) => e.type === "user_message" && e.greeting === "pair_call_summary");
+      expect(openings).toHaveLength(1);
+      expect(openings[0]).toMatchObject({ fromUid: OWNER, mentions: [HELPER.agentId] });
+      expect((openings[0] as { content: string }).content).toContain("小红");
+      expect(store.ofType(SID, "assistant_message").length).toBeGreaterThan(0);
+      // 主人自己开、自己挂：不落总结
+      const before = store.ofType(SID, "user_message").length;
+      await session.setVoiceCall(OWNER, "小明", [HELPER.agentId]);
+      await session.settled();
+      await session.setVoiceCall(OWNER, "小明", []);
+      await session.settled();
+      const after = store.ofType(SID, "user_message").filter((e) => e.type === "user_message" && e.greeting === "pair_call_summary");
+      expect(after).toHaveLength(1);
+      expect(store.ofType(SID, "user_message").length).toBeGreaterThanOrEqual(before);
+      store.close();
+    });
+    it("chat() 从名单推朝向：有朋友 = both", () => {
+      const store = newStore();
+      sharedSeed(store);
+      const { session } = open(store);
+      expect(session.chat()).toEqual({ kind: "pair", agentIds: [HELPER.agentId], humans: [{ uid: PEER, name: "小红" }], pair: { peerUid: PEER, facing: "both" } });
+      store.close();
+    });
   });
 
   it("车道里不挂 call_friend：提示词说「你发不了消息给朋友」，工具表必须说同一句话（#1206；复审 M3）", async () => {

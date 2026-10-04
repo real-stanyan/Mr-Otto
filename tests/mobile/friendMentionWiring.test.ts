@@ -11,10 +11,12 @@ const read = (p: string): string => readFileSync(new URL(`../../${p}`, import.me
 describe("FriendChatScreen", () => {
   const src = read("mobile/src/friends/FriendChatScreen.tsx");
   it("带了智能体才接 onAt", () => {
-    expect(src).toMatch(/\{\.\.\.\(broughtNames\.length > 0 \? \{ onAt: \(\) => setMentioning\(true\) \} : \{\}\)\}/);
+    // #1523：朋友公开给我的智能体也能 @，所以两边任一有就接
+    expect(src).toMatch(/\{\.\.\.\(broughtNames\.length > 0 \|\| peerNames\.length > 0 \? \{ onAt: \(\) => setMentioning\(true\) \} : \{\}\)\}/);
   });
   it("MentionSheet 的名单 = 带进来的那几只，不列朋友", () => {
-    expect(src).toMatch(/agentIds=\{broughtNames\.map\(\(a\) => a\.agentId\)\}/);
+    // #1523：名单 = 我带进来的 + 朋友公开给我的；仍不列朋友（humans 恒空）
+    expect(src).toMatch(/agentIds=\{\[\.\.\.broughtNames\.map\(\(a\) => a\.agentId\), \.\.\.peerNames\.map\(\(a\) => a\.agentId\)\]\}/);
     expect(src).toMatch(/humans=\{\[\]\}/);
   });
   it("挑中的名字等抽屉退场再经 ref.mention 插回", () => {
@@ -22,7 +24,9 @@ describe("FriendChatScreen", () => {
     expect(src).toMatch(/requestAnimationFrame\(\(\) => composer\.current\?\.mention\(picked\)\)/);
   });
   it("底下那一句是私聊的口径", () => {
-    expect(src).toMatch(/footer=\{`@ 了它的那句只有你看得到/);
+    // #1523：仅我可见时仍是那句；公开 / 朋友也带了时换成「进它的车道」那句
+    expect(src).toMatch(/`@ 了它的那句只有你看得到/);
+    expect(src).toMatch(/`@ 了智能体的那句进它的车道，不 @ 谁就是发给\$\{name\}。`/);
   });
 });
 

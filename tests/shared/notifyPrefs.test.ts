@@ -138,6 +138,12 @@ describe("advanceReplyNotify：这一轮答了谁就推给谁", () => {
       expect(run([say("u1", ["ops"], { greeting: g } as Partial<SessionEvent>), reply("ops", "x"), end("ops", "completed")])).toEqual([]);
     }
   });
+  it("推送正文剥掉段首情绪括注；整条只有记号 = 没话，不推（#1515）", () => {
+    expect(run([say("u1", ["ops"]), reply("ops", "（笑）弄好了。\n\n（叹）就是慢。"), end("ops", "completed")])).toEqual([
+      { agentId: "ops", text: "弄好了。\n\n就是慢。", uids: ["u1"] },
+    ]);
+    expect(run([say("u1", ["ops"]), reply("ops", "（笑）"), end("ops", "completed")])).toEqual([]);
+  });
   it("接力开场白：不推（点火的人只在他问的那一句被答时收一条）", () => {
     expect(run([say("u1", ["b"], { relay: { fromAgentId: "a", depth: 1 } } as Partial<SessionEvent>), reply("b", "x"), end("b", "completed")])).toEqual([]);
   });

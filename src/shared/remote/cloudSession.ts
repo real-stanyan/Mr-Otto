@@ -9,9 +9,9 @@ import { parseChatMediaRefs, type ChatMediaRef } from "../chatMedia.js";
 import { b64decode, b64encode } from "./b64.js";
 import { MAX_FRAME_BYTES } from "./wire.js";
 
-/** 26（#1520）：`CsUp` 加 `pick_friend`（点选人卡上的一位，uid null = 都不是），`CsDown` 加
-    `pick_friend_result`（带 pickId，同 approve_result 的理由）。加帧照样进位（握手精确相等）：老 runtime
-    收到 pick_friend 会当未知帧丢掉，于是新客户端点了人、卡一直转圈，runtime 这头什么都没发生。
+/** 26（#1533，#1532 一期）：公开智能体。`create` 的 pair 多 `onBehalf: true`——由**配对的朋友**发到主人的主场控制房，
+    替主人开（或找到）装着 TA 公开智能体的共享车道；frameHandler 对这一种帧放行非成员，daemon 核对朋友关系 / 档位 /
+    主人设了哪只。加字段照样进位：老 runtime 会把 onBehalf 静默丢掉、再按「非成员」拒掉——在握手那一步就说清。
     25（#1523，#1461 P2）：共享车道。`create` 的 pair `facing` 收 "both"；`chat_update` 多 `facing`（只在车道上有意义：
     主人把带进来的智能体在「仅我可见 / 公开给 TA」之间切，runtime 折成客人名单 [朋友] / []）。加枚举值 / 加字段照样进位：
     老 runtime 会拒 facing both 的 create、把 chat_update.facing 静默丢掉——新客户端以为公开了、其实没有。
@@ -314,9 +314,13 @@ export type CsChatSpec =
   | { kind: "dm"; agentId: string }
   /** `humans`（协议 21，#1393）：群主之外拉进来的真人 uid。缺席 = 没有 */
   | { kind: "group"; name: string; agentIds: string[]; humans?: string[] }
-  /** 私密车道（协议 23，#1461 P1）：我主场里一条与朋友 `peerUid` 配对、只有我看得到的会话。
-      `facing` 只收 "self"（"both" 是 P2 的共享车道）。同一对 (主场, 朋友, facing) 只有一条，runtime 幂等 */
-  | { kind: "pair"; peerUid: string; facing: "self"; agentIds: string[] };
+  /** 车道（协议 23，#1461 P1；协议 25 收 "both"，#1523）：我主场里一条与朋友 `peerUid` 配对的会话。
+      `facing` = "self" 只有我看得到；"both" 朋友以客人身份进来、看得到也能 @。同一对 (主场, 朋友) 只有一条，
+      朝向可切（chat_update.facing），runtime 幂等 */
+  | { kind: "pair"; peerUid: string; facing: "self" | "both"; agentIds: string[];
+      /** `onBehalf`（协议 26，#1533）：发帧的是配对的那位朋友（= peerUid），替主人开装着 TA 公开智能体的车道；
+          朝向与名单由 runtime 定（both、[公开智能体]），帧里的只是客户端的猜 */
+      onBehalf?: true };
 /** welcome 里带的聊天身份。agentIds 是日志投影原样——与现存智能体求交集留给读取侧。
     `humans`（协议 21）：群主之外的真人，名字是日志里的快照；私聊恒为空 */
 export interface CsChatInfo {
@@ -402,7 +406,9 @@ export type CsUp =
       名单落成 `chat_roster_changed` 事件广播给房里所有人，库里那两列只是投影 */
   /** `humans`（协议 21，#1393）：改动之后群主之外的**完整**真人名单。群主以外的人只能拉自己的朋友、
       只能把自己移出去（判据在 runtime，见 `humanRosterChangeProblem`） */
-  | { t: "chat_update"; workspaceId: string; sessionId: string; name?: string; agentIds?: string[]; humans?: string[] }
+  | { t: "chat_update"; workspaceId: string; sessionId: string; name?: string; agentIds?: string[]; humans?: string[];
+      /** `facing`（协议 25，#1523）：车道的朝向，只有主人能切；别的聊天上带它 runtime 回「不是车道」 */
+      facing?: "self" | "both" }
   /** 设置页改一页 wiki（协议 18，#1140）：write 整页替换、remove 删页。判据同 files——任何在籍成员都能写，
       服务端走与 wiki 工具同一条写入路径（保留页 / 预算 / 可疑指令由 wikiService 把关） */
   | ({ t: "wiki_write"; workspaceId: string } & CsWikiWriteReq)
@@ -576,11 +582,13 @@ function normalizeChatSpec(v: unknown): CsChatSpec | null | undefined {
     return { kind: "group", name, agentIds, humans };
   }
   if (o.kind === "pair") {
-    // 只收 self（P1）。peerUid 归一成小写：它要拿去查好友、进唯一索引，大小写两份就是两条车道
-    if (o.facing !== "self" || typeof o.peerUid !== "string" || !USER_UID_RE.test(o.peerUid)) return null;
+    // self / both（协议 25 起收 both，#1523）。peerUid 归一成小写：它要拿去查好友、进唯一索引，大小写两份就是两条车道
+    if ((o.facing !== "self" && o.facing !== "both") || typeof o.peerUid !== "string" || !USER_UID_RE.test(o.peerUid)) return null;
     const agentIds = normalizeChatAgentIds(o.agentIds, 1);
     if (agentIds === null) return null;
-    return { kind: "pair", peerUid: o.peerUid.toLowerCase(), facing: "self", agentIds };
+    // onBehalf 只认 true；带了别的值整帧拒（同 agentIds 的纪律）
+    if (o.onBehalf !== undefined && o.onBehalf !== true) return null;
+    return { kind: "pair", peerUid: o.peerUid.toLowerCase(), facing: o.facing, agentIds, ...(o.onBehalf === true ? { onBehalf: true as const } : {}) };
   }
   return null;
 }
@@ -894,7 +902,7 @@ export function decodeCsUp(b64: string): CsUp | null {
     if (t === "chat_update") {
       if (typeof obj.workspaceId !== "string" || typeof obj.sessionId !== "string") return null;
       // 两格都没带的话这条帧没有意义——不是「什么都不改」，是发帧的人漏了东西
-      if (obj.name === undefined && obj.agentIds === undefined && obj.humans === undefined) return null;
+      if (obj.name === undefined && obj.agentIds === undefined && obj.humans === undefined && obj.facing === undefined) return null;
       const update: Extract<CsUp, { t: "chat_update" }> = {
         t: "chat_update",
         workspaceId: obj.workspaceId,
@@ -916,6 +924,11 @@ export function decodeCsUp(b64: string): CsUp | null {
         const humans = normalizeChatHumanUids(obj.humans);
         if (humans === null) return null;
         update.humans = humans;
+      }
+      if (obj.facing !== undefined) {
+        // 不是这两个值整帧拒（同 agentIds 的纪律：不「修好了再用」）
+        if (obj.facing !== "self" && obj.facing !== "both") return null;
+        update.facing = obj.facing;
       }
       return update;
     }

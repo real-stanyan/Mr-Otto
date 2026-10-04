@@ -256,6 +256,10 @@ describe("朋友", () => {
     const env = JSON.stringify({ otto: "otto.session-share", v: 1, bucket: "b", prefix: "p", message: "", title: "排班", eventCount: 3, invite: "otto-proxy:SECRET" });
     expect(dmPreview(env)).toBe("[会话分享] 排班");
     expect(dmPreview(env)).not.toContain("SECRET");
+    // 名片（#1524）：只写名字，不摊开提示词
+    const card = JSON.stringify({ otto: "otto.contact-card", v: 1, card: { kind: "agent", agentId: "a_0123456789ab", name: "翻译", description: "", instructions: "秘密提示词", avatarSlot: null, from: { uid: "22222222-2222-4222-8222-222222222222", name: "小红" } } });
+    expect(dmPreview(card)).toBe("[智能体名片] 翻译");
+    expect(dmPreview(card)).not.toContain("秘密");
   });
   it("按名字排", () => {
     const list = sortFriends([{ profile: profile("b", "王") }, { profile: profile("a", "阿杰") }]);

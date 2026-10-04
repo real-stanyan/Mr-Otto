@@ -88,6 +88,18 @@ describe("通话里像打电话（#1183）", () => {
   });
 });
 
+describe("通话里像真人（#1515）", () => {
+  it("通话块给六个情绪括注的词表、说平叙不写；要口头连接词与短接", () => {
+    const text = renderVoiceCallPrompt([{ agentId: "admin", name: "管理员" }], "管理员", []);
+    expect(text).toContain("（笑）（惊）（叹）（气）（怕）（嫌）");
+    expect(text).toContain("平叙就不写");
+    expect(text).toContain("口头连接");
+  });
+  it("没有通话时 system 里一个括注词表都没有", () => {
+    expect(systemOf([created, brief, user])).not.toContain("（笑）");
+  });
+});
+
 describe("通话名单以通话块为准（#1194）", () => {
   it("提示词要说清：聊天记录里更早的招呼 / 通话是上一场的，别据此推断谁在这一场里", () => {
     const text = renderVoiceCallPrompt([{ agentId: "admin", name: "管理员" }], "管理员", [{ name: "开发", description: "管代码" }]);
