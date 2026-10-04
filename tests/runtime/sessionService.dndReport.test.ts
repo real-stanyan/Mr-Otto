@@ -1,5 +1,5 @@
-// 定时汇报在 sessionService / daemon 里的接线（#1569，ADR-0365）：runReport 落 dnd_report 给管理员；那一轮受监督但 call_user 不掀；
-// daemon 的调度 / 摘要 / 免打扰读的是 0060 那几列。读源码验，正则不依赖换行。
+// 定时汇报在 sessionService / daemon 里的接线（#1569，ADR-0366）：runReport 落 dnd_report 给管理员；那一轮受监督但 call_user 不掀；
+// daemon 的调度 / 摘要 / 免打扰读的是 0062 那几列。读源码验，正则不依赖换行。
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 

@@ -1,4 +1,4 @@
--- 0060_quiet_report.sql —— 免打扰时段与管理员的定时汇报（#1569，ADR-0365）。都挂在 notify_prefs 上（一人一行，0049）：
+-- 0062_quiet_report.sql —— 免打扰时段与管理员的定时汇报（#1569，ADR-0366）。都挂在 notify_prefs 上（一人一行，0049）：
 --   quiet   jsonb  null = 不开；{ "start": "22:00", "end": "08:00", "days": [1..7]? }  跨夜允许（start > end），days 缺席 = 每天
 --   report  jsonb  null = 不开；{ "schedule": { "kind": "daily", "time": "09:00" } | { "kind": "weekly", "days": [..], "time": "HH:mm" }, "mode": "call" | "message" }
 --   tz      text   手机写的 IANA 时区，两样都按它算

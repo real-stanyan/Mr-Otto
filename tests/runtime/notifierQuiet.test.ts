@@ -1,4 +1,4 @@
-// 推送的免打扰时段（#1569，ADR-0365）：时段里一条不推；时段外照旧；quiet 查不到 / 没接当没开。
+// 推送的免打扰时段（#1569，ADR-0366）：时段里一条不推；时段外照旧；quiet 查不到 / 没接当没开。
 import { describe, expect, it } from "vitest";
 import { createNotifier, type NotifyStore } from "../../services/runtime/src/notifier.js";
 import { DEFAULT_NOTIFY_PREFS, type AlertPush } from "../../src/shared/notifyPrefs.js";
@@ -22,7 +22,7 @@ describe("notifier：免打扰", () => {
     await legacy.send("me", "friend", push);
     expect(sent).toEqual(["me", "me"]);
   });
-  it("quiet 为 null（没开 / 0060 没跑）照推", async () => {
+  it("quiet 为 null（没开 / 0062 没跑）照推", async () => {
     const sent: string[] = [];
     const n = createNotifier({ store, quiet: async () => ({ window: null, tz: null }), push: async (uid) => (sent.push(uid), 1), now: () => sh(2026, 10, 5, 23, 30), log: () => {} });
     await n.send("me", "friend", push);

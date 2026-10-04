@@ -1,4 +1,4 @@
-// 定时汇报的调度器（#1569，ADR-0365）：先认领再跑、刚设好只排不跑、错过太久不补、认领不到就让、查不出来这一拍跳过。
+// 定时汇报的调度器（#1569，ADR-0366）：先认领再跑、刚设好只排不跑、错过太久不补、认领不到就让、查不出来这一拍跳过。
 import { describe, expect, it } from "vitest";
 import { createReportScheduler, type ReportRow, type ReportSchedulerDeps } from "../../services/runtime/src/reportScheduler.js";
 import { REPORT_GRACE_MS } from "../../src/shared/quietHours.js";

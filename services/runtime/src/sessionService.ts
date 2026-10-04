@@ -727,7 +727,7 @@ export interface CloudSession {
       reportOutreach 同一条路。名单现读：那只已删 / 已移出回 no_agent，一个事件都不落；名单读不出来（degraded）
       抛错——那是一次查询失败，不能让调度器当成「那只没了」把任务停掉 */
   runRoutine(r: { routineId: string; title: string; instruction: string; tz: string; firedAt: number; agentId: string }): Promise<"ok" | "archived" | "no_agent">;
-  /** 定时汇报到点（#1569，ADR-0365）：替主人落一条 greeting:"dnd_report" 的开场白给管理员并入队——正文由 daemon 拼好
+  /** 定时汇报到点（#1569，ADR-0366）：替主人落一条 greeting:"dnd_report" 的开场白给管理员并入队——正文由 daemon 拼好
       （免打扰期间朋友发来的消息与代办任务的摘要 + 打电话 / 发消息的要求）。管理员不在名单里回 no_agent */
   runReport?(r: { text: string; firedAt: number }): Promise<"ok" | "archived" | "no_agent">;
   /** 定时任务没跑成的注记（错过 / 额度不够，spec §4.3）：ignorable，不起 turn */
@@ -925,7 +925,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   /** 这一轮是不是外联汇报轮（#1441）：开场白是 `greeting: "outreach_report"`，正文带着朋友说的话的转述。
       runJob 起跑时置位、收口（任何出口）复位，与 currentInitiator 同生同死 */
   let reportTurn = false;
-  /** 这一轮是定时汇报起的（#1569，ADR-0365）：受监督（正文是别人的话），但 call_user 不掀——汇报的方式就是打给主人 */
+  /** 这一轮是定时汇报起的（#1569，ADR-0366）：受监督（正文是别人的话），但 call_user 不掀——汇报的方式就是打给主人 */
   let ownerReportTurn = false;
   /** 这一轮是不是主人**本人亲口**点起的（#1441）：call_friend 的唯一资格。不是客人（fromUid）、不是 agent
       接力棒（relay / depth）、不是系统开场白（greeting：招呼 / 回电 / 汇报）。runJob 起跑时算，收口复位 */

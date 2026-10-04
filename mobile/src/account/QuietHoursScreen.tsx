@@ -1,6 +1,6 @@
-// 免打扰与汇报（#1569，ADR-0365）：设置页里的一页——一段免打扰时段（期间手机不推消息，管理员替你收着），
+// 免打扰与汇报（#1569，ADR-0366）：设置页里的一页——一段免打扰时段（期间手机不推消息，管理员替你收着），
 // 一条汇报计划（每天 / 按星期几的某个时刻，管理员打电话或发消息把这段时间的朋友消息与代办汇报给你）。
-// 两样都存在 notify_prefs 上（quiet / report / tz），改完就存；0060 没跑时整页说清、不画成能改的样子。
+// 两样都存在 notify_prefs 上（quiet / report / tz），改完就存；0062 没跑时整页说清、不画成能改的样子。
 import { useMemo, useState } from "react";
 import { Pressable, ScrollView, Switch, Text, View } from "react-native";
 import {
@@ -79,7 +79,7 @@ export function QuietHoursScreen() {
   if (q === null) {
     return (
       <ScrollView style={{ flex: 1, backgroundColor: c.background }} contentContainerStyle={{ paddingVertical: 16 }}>
-        <Inset><Note tone="warn">服务器还没准备好这一项（迁移 0060 没跑），暂时设不了。</Note></Inset>
+        <Inset><Note tone="warn">服务器还没准备好这一项（迁移 0062 没跑），暂时设不了。</Note></Inset>
       </ScrollView>
     );
   }

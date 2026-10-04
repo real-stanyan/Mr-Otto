@@ -35,7 +35,7 @@ export const NOTIFY_CACHE_MS = 30_000;
 export function createNotifier(o: {
   store: NotifyStore;
   push: (uid: string, push: AlertPush) => Promise<number>;
-  /** 免打扰时段（#1569，ADR-0365）：在时段里的一条都不推（消息由管理员到点汇报）。缺席 = 不看时段；**不抛**（查不到当没开） */
+  /** 免打扰时段（#1569，ADR-0366）：在时段里的一条都不推（消息由管理员到点汇报）。缺席 = 不看时段；**不抛**（查不到当没开） */
   quiet?: (uid: string) => Promise<QuietState>;
   now?: () => number;
   log: (m: string) => void;
@@ -87,7 +87,7 @@ export function createSupabaseNotifyStore(client: SupabaseClient): NotifyStore {
   };
 }
 
-/** 免打扰那两列（0060）：service key 读。**不抛**：列还没加（42703）/ 抖了 = 当没开——免打扰是锦上添花，查不到不能让推送全停 */
+/** 免打扰那两列（0062）：service key 读。**不抛**：列还没加（42703）/ 抖了 = 当没开——免打扰是锦上添花，查不到不能让推送全停 */
 export function createSupabaseQuietStore(client: SupabaseClient): { quietOf(uid: string): Promise<QuietState> } {
   let supported = true;
   return {

@@ -1801,7 +1801,7 @@ async function main(): Promise<void> {
   });
   routineScheduler.start();
 
-  /** 定时汇报到点（#1569，ADR-0365）：拼这段时间的摘要（朋友发来的消息 + 公开车道里朋友点起的代办任务），开管理员的
+  /** 定时汇报到点（#1569，ADR-0366）：拼这段时间的摘要（朋友发来的消息 + 公开车道里朋友点起的代办任务），开管理员的
       私聊房、落 dnd_report 开场白。主人的主场 / 管理员私聊找不到就记一行算了——汇报是锦上添花 */
   async function runDndReport(r: { uid: string; plan: ReportPlan; tz: string; since: number; firedAt: number }): Promise<void> {
     const { data: ws, error: wsErr } = await supabase.from("workspaces").select("id").eq("owner_uid", r.uid).eq("kind", "home").maybeSingle();
@@ -1855,7 +1855,7 @@ async function main(): Promise<void> {
     const res = await room.runReport({ text, firedAt: r.firedAt });
     if (res !== "ok") console.warn(`[otto-runtime] 汇报没起来（uid=${r.uid}）：${res}`);
   }
-  // 定时汇报的调度（#1569）：数据源在这里接，判断在 reportScheduler；0060 没跑（42703）= 没人开了汇报
+  // 定时汇报的调度（#1569）：数据源在这里接，判断在 reportScheduler；0062 没跑（42703）= 没人开了汇报
   const reportScheduler = createReportScheduler({
     due: async (nowMs, limit) => {
       const res = await supabase

@@ -1,4 +1,6 @@
-# ADR-0365：免打扰时段与管理员的定时汇报——都挂在 notify_prefs 上；时段里一条不推；到点由管理员打电话或发消息把朋友消息与代办汇报给主人
+# ADR-0366：免打扰时段与管理员的定时汇报——都挂在 notify_prefs 上；时段里一条不推；到点由管理员打电话或发消息把朋友消息与代办汇报给主人
+
+原为 ADR-0365（另一条 PR #1573 先占了 0365；按项目 ADR-0074 改成 max + 1）。
 
 日期：2026-10-05 · issue #1569 · 维护者原话：「个人可以设置免打扰时间，在此期间所有收到的消息以及任务，将由管理员统一收集，
 管理员加一个功能，用户可以设定按天或者每天什么时候准时向自己汇报，可以选择打电话方式或者发消息方式。」
@@ -11,11 +13,11 @@
 
 ## 决定
 
-1. **两样设置都挂在 `notify_prefs` 上**（0060：`quiet` / `report` / `tz` 三列 + `report_next_at` / `report_last_at` 两根指针），
+1. **两样设置都挂在 `notify_prefs` 上**（0062：`quiet` / `report` / `tz` 三列 + `report_next_at` / `report_last_at` 两根指针），
    不另建表：一人一行、RLS 现成、runtime 本来就按人读它。`quiet = { start, end, days? }`（跨夜允许）；`report = { schedule, mode }`，
    `schedule` 复用定时任务的形状（daily / weekly，不收 once），`mode` 是 call / message。时区按手机写的 IANA 名。
 2. **免打扰只拦推送**（`notifier.send` 多一道 `inQuietWindow`）：消息照常落库、打开 App 照样看得见、来电（RingPush）照响——
-   「所有收到的消息以及任务」指的是文字，电话另有免打扰那一格（chat_mutes）可用。查不到时段（0060 没跑 / 抖了）当没开，
+   「所有收到的消息以及任务」指的是文字，电话另有免打扰那一格（chat_mutes）可用。查不到时段（0062 没跑 / 抖了）当没开，
    免打扰是锦上添花，不能让推送全停。
 3. **「管理员统一收集」不另记收件箱**：汇报那一刻**从事实现算**——朋友发来的消息（`messages`，recipient = 主人、created_at >
    上一次汇报）+ 公开车道里朋友点起的代办任务（同私聊页任务卡的 `laneTasksOf` 投影，ADR-0364）。收集 = 查询，不是写一张
@@ -38,6 +40,6 @@
 
 ## 影响的文件
 
-`supabase/migrations/0060_quiet_report.sql`、`src/shared/quietHours.ts`、`services/runtime/src/reportScheduler.ts`、`notifier.ts`（quiet）、
+`supabase/migrations/0062_quiet_report.sql`、`src/shared/quietHours.ts`、`services/runtime/src/reportScheduler.ts`、`notifier.ts`（quiet）、
 `daemon.ts`（`runDndReport` + 调度接线）、`sessionService.ts`（`runReport`、ownerReportTurn）、`src/session/events.ts`（greeting `dnd_report`）、
-`src/shared/outreach.ts`（openingTraits）、手机 `QuietHoursScreen` / `notifyStore` / 设置页一行。部署：0060 → runtime → 热更新。
+`src/shared/outreach.ts`（openingTraits）、手机 `QuietHoursScreen` / `notifyStore` / 设置页一行。部署：0062 → runtime → 热更新。

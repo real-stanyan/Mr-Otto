@@ -1,4 +1,4 @@
-// 定时汇报的调度器（#1569，ADR-0365）：daemon 里一只 60 秒的 setInterval 调 tick()；判断全在这里、数据源注入。
+// 定时汇报的调度器（#1569，ADR-0366）：daemon 里一只 60 秒的 setInterval 调 tick()；判断全在这里、数据源注入。
 // 顺序纪律同定时任务（#1283）：**先认领（推进 report_next_at）再起 turn**——起 turn 失败不会让它每分钟重试一次烧钱；
 // 两台 runtime 同时跑也只有一台认领得到（update … where report_next_at = 读到的那个值）。
 import { REPORT_GRACE_MS, nextReportAt, type ReportPlan } from "../../../src/shared/quietHours.js";

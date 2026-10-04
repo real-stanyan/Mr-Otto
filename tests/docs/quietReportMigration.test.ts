@@ -1,11 +1,11 @@
-// 0060_quiet_report.sql 的可执行版（#1569）：五列挂在 notify_prefs 上、两条形状约束、到点索引；不建新表、不加函数、不动策略。
+// 0062_quiet_report.sql 的可执行版（#1569）：五列挂在 notify_prefs 上、两条形状约束、到点索引；不建新表、不加函数、不动策略。
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-const sql = readFileSync(new URL("../../supabase/migrations/0060_quiet_report.sql", import.meta.url), "utf8");
+const sql = readFileSync(new URL("../../supabase/migrations/0062_quiet_report.sql", import.meta.url), "utf8");
 const code = sql.split("\n").filter((l) => !l.trimStart().startsWith("--")).join("\n");
 
-describe("0060 免打扰与汇报", () => {
+describe("0062 免打扰与汇报", () => {
   it("五列都是 add column if not exists", () => {
     for (const col of ["quiet jsonb", "report jsonb", "tz text", "report_next_at timestamptz", "report_last_at timestamptz"]) {
       expect(code).toContain(`alter table public.notify_prefs add column if not exists ${col};`);

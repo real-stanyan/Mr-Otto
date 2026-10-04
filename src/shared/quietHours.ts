@@ -1,5 +1,5 @@
-// 免打扰时段与管理员的定时汇报（#1569，ADR-0365）的纯逻辑：两样设置怎么认、此刻在不在免打扰里、下一次汇报在什么时候、
-// 汇报那一轮的开场白（把这段时间收到的朋友消息与代办任务摊给管理员）。事实在 notify_prefs 的 quiet / report / tz 三列（0060）。
+// 免打扰时段与管理员的定时汇报（#1569，ADR-0366）的纯逻辑：两样设置怎么认、此刻在不在免打扰里、下一次汇报在什么时候、
+// 汇报那一轮的开场白（把这段时间收到的朋友消息与代办任务摊给管理员）。事实在 notify_prefs 的 quiet / report / tz 三列（0062）。
 import { promptSafe } from "./promptSafe.js";
 import { nextRunAt, parseRoutineSchedule, zonedParts, type RoutineSchedule } from "./routines.js";
 

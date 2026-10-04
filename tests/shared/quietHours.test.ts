@@ -1,4 +1,4 @@
-// 免打扰与定时汇报（#1569，ADR-0365）的纯逻辑：两格怎么认、跨夜怎么判、下一次汇报、开场白把消息与任务摊清楚。
+// 免打扰与定时汇报（#1569，ADR-0366）的纯逻辑：两格怎么认、跨夜怎么判、下一次汇报、开场白把消息与任务摊清楚。
 import { describe, expect, it } from "vitest";
 import {
   DIGEST_PER_FRIEND_MAX, DIGEST_TEXT_MAX, inQuietWindow, minutesOf, nextReportAt, parseQuietWindow, parseReportPlan, quietWindowText, reportOpeningText, reportPlanText,

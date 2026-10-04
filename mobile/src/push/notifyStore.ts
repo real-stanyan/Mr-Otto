@@ -21,7 +21,7 @@ export interface QuietSettings {
 export interface NotifyState {
   prefs: NotifyPrefs | null;
   mutes: ReadonlySet<string> | null;
-  /** undefined = 还没读；null = 读不到（0060 没跑 / 断网），那一页说清、不画成能改的样子 */
+  /** undefined = 还没读；null = 读不到（0062 没跑 / 断网），那一页说清、不画成能改的样子 */
   quiet: QuietSettings | null | undefined;
   /** 最近一次写失败说的话（设置页 / 信息页底下那一行）。下一次成功清掉 */
   error: string | null;
@@ -51,7 +51,7 @@ export async function loadNotify(): Promise<void> {
   const [p, m, q] = await Promise.all([
     supabase.from("notify_prefs").select("agent_reply, mentions, friends, read_receipts").eq("uid", me).maybeSingle(),
     supabase.from("chat_mutes").select("chat_key").eq("uid", me),
-    // 免打扰与汇报（#1569）：单独一问——0060 没跑时这一问 42703，别把四个开关一起拖下水
+    // 免打扰与汇报（#1569）：单独一问——0062 没跑时这一问 42703，别把四个开关一起拖下水
     supabase.from("notify_prefs").select("quiet, report, tz").eq("uid", me).maybeSingle(),
   ]);
   if (owner !== me) return;
@@ -81,7 +81,7 @@ export async function setQuietSettings(next: QuietSettings): Promise<{ ok: true 
   const { error } = await supabase
     .from("notify_prefs")
     .upsert({ uid: me, quiet: next.quiet, report: next.report, tz: next.tz, report_next_at: null, updated_at: new Date().toISOString() }, { onConflict: "uid" });
-  if (error) return { ok: false, message: error.code === "42703" ? "服务器还没准备好这一项（迁移 0060 没跑）" : `没存上：${error.message}` };
+  if (error) return { ok: false, message: error.code === "42703" ? "服务器还没准备好这一项（迁移 0062 没跑）" : `没存上：${error.message}` };
   if (owner === me) store.set({ quiet: next, error: null });
   return { ok: true };
 }
