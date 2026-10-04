@@ -8,7 +8,7 @@
 // · 气泡：我那边是点缀色 18% 调进纸面（不是整块蓝——蓝色一屏只给一个主动作），别人那边是 raised；
 //   靠头像那一角收尖（4pt），照微信的「说话方向」。
 import { useEffect, useRef, useState } from "react";
-import { Animated, Easing, Pressable, Text, View } from "react-native";
+import { ActivityIndicator, Animated, Easing, Pressable, Text, View } from "react-native";
 import { agentFaceIfKnown } from "../../../src/shared/agentAvatar.js";
 import type { RosterLinePart } from "../../../src/shared/cloudTimeline.js";
 import { callOffsetText } from "../../../src/shared/cloudTimeline.js";
@@ -76,6 +76,21 @@ function MessageRow({ mine, agent = false, avatar, name, paragraphs, onAvatar }:
       <View style={{ flexShrink: 1, maxWidth: "76%", gap: 6, alignItems: mine ? "flex-end" : "flex-start" }}>
         {name !== null ? <Text numberOfLines={1} style={{ fontSize: 12, color: c.mutedForeground, marginBottom: -3, paddingHorizontal: 2 }}>{name}</Text> : null}
         {paragraphs.map((p, i) => <Bubble key={i} text={p} mine={mine} agent={agent} first={i === 0} />)}
+      </View>
+    </View>
+  );
+}
+
+/** 发出去、回执还没回来的那句（#1473）：照「我说的」那一行画，气泡左边一个小转圈（照微信）。
+    回执一到它就被 rows 里真的那条顶替——同一句、同一个位置，看起来只是转圈消失 */
+export function PendingMineRow({ text, selfName, selfAvatar }: { text: string; selfName: string; selfAvatar: string }) {
+  const { c } = usePalette();
+  return (
+    <View style={{ flexDirection: "row-reverse", alignItems: "flex-start", gap: 10, paddingHorizontal: 12 }}>
+      <PersonTile name={selfName} url={selfAvatar} size={AVATAR} me />
+      <View style={{ flexShrink: 1, maxWidth: "76%", flexDirection: "row-reverse", alignItems: "center", gap: 6 }}>
+        <Bubble text={text} mine agent={false} first />
+        <ActivityIndicator size="small" color={c.mutedForeground} accessibilityLabel="发送中" />
       </View>
     </View>
   );

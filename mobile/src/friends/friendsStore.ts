@@ -16,6 +16,7 @@ import { AppState } from "react-native";
 import { sendMediaMessage, type PreparedMedia } from "../../../src/shared/chatMedia.js";
 import type { DirectMessage } from "../../../src/shared/friends.js";
 import { mergeMessages } from "../../../src/shared/friendsQuery.js";
+import { createSendQueue } from "../../../src/shared/sendQueue.js";
 import { createStore } from "../externalStore.js";
 import { clearMediaUrls } from "../media/mediaUrls.js";
 import { supabase } from "../supabase.js";
@@ -71,6 +72,17 @@ export function useFriends(): FriendsState {
 
 export function friendsSnapshot(): FriendsState {
   return store.get();
+}
+
+/** 冷启动先铺上一次存在本机的那份（#1471）：只在名单还没拉到、而且是同一个账号时铺 */
+export function hydrateFriends(uid: string, p: { rows: FriendRow[]; recent: DirectMessage[] }): void {
+  const s = store.get();
+  if (s.rows !== null || (s.uid !== null && s.uid !== uid)) return;
+  store.set({ rows: p.rows, recent: mergeMessages(s.recent, p.recent) });
+}
+
+export function onFriendsChange(fn: () => void): () => void {
+  return store.subscribe(fn);
 }
 
 function why(e: unknown): string {
@@ -202,11 +214,13 @@ export async function loadOlderThread(friendId: string): Promise<void> {
   }
 }
 
-/** 发一条。回真行（界面拿真 id 与时间落位）；失败抛给调用方，原文留在输入框里 */
+/** 发一条。回真行（界面拿真 id 与时间落位）；失败抛给调用方，原文回到输入框里。
+    排队发（#1473）：输入框发出即清之后人能连着发两句，落库顺序要跟手指顺序一致 */
+const sendQueue = createSendQueue();
 export async function sendToFriend(friendId: string, body: string): Promise<void> {
   const uid = store.get().uid;
   if (uid === null) throw new Error("还没登录");
-  const m = await sendMessage(uid, friendId, body);
+  const m = await sendQueue.run(() => sendMessage(uid, friendId, body));
   deliver(m);
 }
 

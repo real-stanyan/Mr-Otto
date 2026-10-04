@@ -1001,7 +1001,7 @@ async function main(): Promise<void> {
           : { dispatch: (o) => outreachHub.dispatch({ ...o, workspaceId, ownerUid }) },
       // 给打给好友的那条线签语音票（#1441）：好友听到的 TTS 记在主人账上，edge 用同一把 RUNTIME_SECRET 验
       signSpeechTicket: (t) => signSpeechTicket(t, config.runtimeSecret),
-      // 私密车道的上下文信封（#1461 P1，ADR-0344）：主人与朋友私聊最近一页（service key 读，RLS 不在场——
+      // 私密车道的上下文信封（#1461 P1，ADR-0346）：主人与朋友私聊最近一页（service key 读，RLS 不在场——
       // 所以查询按这一对过滤之外，sessionService 那侧的 pairContextLines 还会再收一道）。只在车道里被调
       pairMessages: async ({ ownerUid: o, peerUid: p }) => {
         const { data, error } = await supabase
@@ -1137,7 +1137,7 @@ async function main(): Promise<void> {
           if (problem !== null) throw new ChatCreateError(problem);
           humans = await Promise.all(humanUids.map(async (uid) => ({ uid, name: await labelOf(uid) })));
         }
-        // 私密车道（#1461 P1，ADR-0344）：只在我自己的主场、只对已接受的朋友；同一对 (主场, 朋友, facing) 只有一条。
+        // 私密车道（#1461 P1，ADR-0346）：只在我自己的主场、只对已接受的朋友；同一对 (主场, 朋友, facing) 只有一条。
         // 现成的那条直接回（名单不在这里改：客户端随后走 chat_update，带进 / 带走几只是那一条路的事）
         let pairFacts: { ownerName: string; peerUid: string; peerName: string; facing: "self" } | undefined;
         if (chat?.kind === "pair") {

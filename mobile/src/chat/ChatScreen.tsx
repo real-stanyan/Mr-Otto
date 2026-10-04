@@ -47,7 +47,7 @@ import { useCallKit } from "../call/callKit.js";
 import { settleAnswer } from "../call/ringStore.js";
 import { cloudClient } from "../cloud/cloudClient.js";
 import {
-  chatSessionOf, closeChat, dropUnsent, loadOlder, openChat, resendUnsent, sendText, startDm, stopTurn, useChatStore,
+  chatSessionOf, closeChat, dropUnsent, loadOlder, openChat, resendUnsent, sendText, startDm, stopTurn, useChatStore, type OutboxLine,
 } from "../cloud/chatStore.js";
 import { useFriends } from "../friends/friendsStore.js";
 import { PickAgentsDialog } from "../group/PickAgentsDialog.js";
@@ -69,7 +69,7 @@ import { FaceTile, GridTile } from "../wx/Avatar.js";
 import { Icon } from "../wx/Icon.js";
 import { HeaderIconButton } from "../wx/TabHeader.js";
 import { toast } from "../wx/toast.js";
-import { ChatRowView, TypingRow } from "./Bubbles.js";
+import { ChatRowView, PendingMineRow, TypingRow } from "./Bubbles.js";
 import { MentionSheet } from "./MentionSheet.js";
 import { RoleChips } from "./RoleChips.js";
 import { WxComposer, type ComposerHandle, type HoldState, type PlusItem } from "./WxComposer.js";
@@ -84,7 +84,7 @@ const PHASE_STATUS: Record<NowRow["phase"], string> = {
   composing: "正在想…",
   queued: "排队中…",
 };
-type Item = { kind: "row"; row: ChatRow } | { kind: "now"; now: NowRow } | { kind: "roles" };
+type Item = { kind: "row"; row: ChatRow } | { kind: "outbox"; line: OutboxLine } | { kind: "now"; now: NowRow } | { kind: "roles" };
 type Props = NativeStackScreenProps<RootStackParams, "Chat">;
 
 interface Resolved {
@@ -388,12 +388,16 @@ export function ChatScreen({ route, navigation }: Props) {
       list.push({ kind: "row", row });
       if (roleAnchor !== null && row.key === `e${roleAnchor}`) list.push({ kind: "roles" });
     }
+    // 发出去、回执还没回来的那几句（#1473）：先画在最底下。回执一到就从 outbox 摘掉——服务端先广播
+    // 事件再回 say_result，两帧走同一条连接按序到，摘掉那一刻真的那条已经在 rows 里了
+    const sid = session?.sessionId ?? null;
+    for (const line of chat.outbox) if (line.sessionId === sid) list.push({ kind: "outbox", line });
     // 它已经在往外写字了（流式那一段画出来了）就不再画三个点
     if (nowRow !== null && !(nowRow.phase === "solving" && live.some((r) => r.kind === "agent" && r.agentId === nowRow.agentId))) {
       list.push({ kind: "now", now: nowRow });
     }
     return list.reverse();
-  }, [rows, live, nowRow, roleAnchor]);
+  }, [rows, live, nowRow, roleAnchor, chat.outbox, session?.sessionId]);
 
   const ready = session?.state === "ready";
   const canSend = draft || ready;
@@ -674,6 +678,8 @@ export function ChatScreen({ route, navigation }: Props) {
                       setCallSheetOpen(true);
                     }}
                   />
+                ) : item.kind === "outbox" ? (
+                  <PendingMineRow text={item.line.text} selfName={me.name} selfAvatar={me.avatar} />
                 ) : item.kind === "now" ? (
                   <TypingRow
                     ws={ws}
