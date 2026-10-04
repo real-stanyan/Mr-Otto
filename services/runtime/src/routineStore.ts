@@ -116,7 +116,8 @@ export function createSupabaseRoutineStore(supabase: SupabaseClient, opts: { log
       return (r.data ?? []).length;
     },
     async ownerTimezone(ownerUid) {
-      const r = await supabase.from("profiles").select("timezone").eq("id", ownerUid).maybeSingle();
+      // user_settings 而不是 profiles：profiles 对所有登录用户可读，时区是私事（只有本人 + service key 读得到）
+      const r = await supabase.from("user_settings").select("timezone").eq("uid", ownerUid).maybeSingle();
       if (r.error) fail("时区读取失败", r.error);
       const tz = (r.data as { timezone?: string | null } | null)?.timezone;
       return typeof tz === "string" && tz !== "" ? tz : null;

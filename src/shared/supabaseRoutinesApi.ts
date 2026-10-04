@@ -56,7 +56,8 @@ export async function updateRoutine(client: SupabaseClient, id: string, p: Param
 export async function deleteRoutine(client: SupabaseClient, id: string): Promise<void> {
   unwrap(await client.from("agent_routines").delete().eq("id", id));
 }
-/** 设备时区写到账号上（spec §6.3）：runtime 建任务时 tz 省略就用它 */
+/** 设备时区写到账号上（spec §6.3）：runtime 建任务时 tz 省略就用它。写 user_settings（RLS 只有本人读写），
+    不写 profiles——profiles 对所有登录用户可读，一个出差会变的时区放那儿等于让任何人看你人在哪 */
 export async function saveTimezone(client: SupabaseClient, uid: string, tz: string): Promise<void> {
-  unwrap(await client.from("profiles").update({ timezone: tz }).eq("id", uid));
+  unwrap(await client.from("user_settings").upsert({ uid, timezone: tz, updated_at: new Date().toISOString() }));
 }

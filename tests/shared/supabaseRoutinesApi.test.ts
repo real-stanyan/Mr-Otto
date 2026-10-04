@@ -1,6 +1,6 @@
 // 行映射：客户端与 runtime 共用（#1283）。
 import { describe, expect, it } from "vitest";
-import { routineInsertColumns, routinePatchColumns, routineRowOf } from "../../src/shared/supabaseRoutinesApi.js";
+import { routineInsertColumns, routinePatchColumns, routineRowOf, saveTimezone } from "../../src/shared/supabaseRoutinesApi.js";
 
 describe("routineRowOf", () => {
   it("列名翻字段名，时间戳翻毫秒，schedule 过校验", () => {
@@ -22,5 +22,21 @@ describe("写入的列映射", () => {
   it("patch：只带给了的格；nextRunAt null → next_run_at null", () => {
     expect(routinePatchColumns({ enabled: false, nextRunAt: null })).toMatchObject({ enabled: false, next_run_at: null });
     expect(Object.keys(routinePatchColumns({ title: "x" }))).toEqual(["title", "updated_at"]);
+  });
+});
+
+describe("saveTimezone", () => {
+  it("写 user_settings（只有本人读得到），不写 profiles（所有登录用户都读得到，出差会被人跟踪）", async () => {
+    const calls: { table: string; op: string; arg: unknown; opts?: unknown }[] = [];
+    const client = {
+      from: (table: string) => ({
+        upsert: async (arg: unknown, opts?: unknown) => (calls.push({ table, op: "upsert", arg, opts }), { data: null, error: null }),
+        update: (arg: unknown) => (calls.push({ table, op: "update", arg }), { eq: async () => ({ data: null, error: null }) }),
+      }),
+    };
+    await saveTimezone(client as never, "me", "Asia/Shanghai");
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ table: "user_settings", op: "upsert", arg: { uid: "me", timezone: "Asia/Shanghai" } });
+    expect(typeof (calls[0]!.arg as { updated_at: unknown }).updated_at).toBe("string");
   });
 });

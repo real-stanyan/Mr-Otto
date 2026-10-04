@@ -60,5 +60,19 @@ create policy ar_delete_owner on public.agent_routines for delete to authenticat
 
 -- 不进 supabase_realtime：只有本人读，而 Realtime 对 DELETE 不查 RLS（同 chat_mutes 的理由）。
 
--- 主人的设备时区（spec §6.3）：手机前台时写，调度器建任务时 tz 省略就用它。IANA 名字，由客户端校验。
-alter table public.profiles add column if not exists timezone text;
+-- 主人的设备时区（spec §6.3）：手机前台时写，调度器建任务时 tz 省略就用它。IANA 名字，由客户端校验，这里只拦形状。
+-- **不放 profiles**：profiles 的 select 策略是 using (true)（0001_friends），所有登录用户都读得到；
+-- 一个出差就会变、手机前台就会改写的时区放在那儿，等于让任何人跟踪你人在哪。单开一张只有本人读写的表
+-- （runtime 用 service key 读，不受 RLS 管）。
+create table if not exists public.user_settings (
+  uid        uuid primary key references auth.users(id) on delete cascade,
+  timezone   text check (timezone is null or (char_length(timezone) between 1 and 64 and timezone ~ '^[A-Za-z0-9_+\-/]+$')),
+  updated_at timestamptz not null default now()
+);
+alter table public.user_settings enable row level security;
+drop policy if exists us_select_self on public.user_settings;
+create policy us_select_self on public.user_settings for select to authenticated using (uid = auth.uid());
+drop policy if exists us_insert_self on public.user_settings;
+create policy us_insert_self on public.user_settings for insert to authenticated with check (uid = auth.uid());
+drop policy if exists us_update_self on public.user_settings;
+create policy us_update_self on public.user_settings for update to authenticated using (uid = auth.uid()) with check (uid = auth.uid());
