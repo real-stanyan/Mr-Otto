@@ -47,7 +47,7 @@ import { useCallKit } from "../call/callKit.js";
 import { settleAnswer } from "../call/ringStore.js";
 import { cloudClient } from "../cloud/cloudClient.js";
 import {
-  chatSessionOf, closeChat, dropUnsent, loadOlder, openChat, resendUnsent, sendText, startDm, stopTurn, useChatStore, type OutboxLine,
+  chatSessionOf, closeChatOwned, dropUnsent, loadOlder, openChat, resendUnsent, sendText, startDm, stopTurn, useChatStore, type OutboxLine,
 } from "../cloud/chatStore.js";
 import { useFriends } from "../friends/friendsStore.js";
 import { PickAgentsDialog } from "../group/PickAgentsDialog.js";
@@ -278,7 +278,15 @@ export function ChatScreen({ route, navigation }: Props) {
     void openChat(baseWs.id, sessionId, resolved.seed, resolved.title);
     // 只跟「是哪一条」走：resolved 每次刷新都是新对象
   }, [baseWs?.id, sessionId]);
-  useEffect(() => () => closeChat(), []);
+  // 离开时只断归这一页的连接（#1461 车道卡在「连接中」）：退场动画放完才卸载，那时朋友私聊页可能已经开上了它的
+  // 私密车道——无条件 closeChat 会把那条掐掉。认法同下面 screenOwnsSession（草稿认这只智能体的私聊）
+  const ownRef = useRef({ sessionId, draftAgentId: resolved?.kind === "dm" ? (resolved.agentIds[0] ?? null) : null });
+  ownRef.current = { sessionId, draftAgentId: resolved?.kind === "dm" ? (resolved.agentIds[0] ?? null) : null };
+  useEffect(
+    () => () =>
+      closeChatOwned((s) => screenOwnsSession({ pageSessionId: ownRef.current.sessionId, draftAgentId: ownRef.current.draftAgentId, current: s })),
+    [],
+  );
   // 回到这一页时连接可能已经被别的页面拿走了（#1461：从群信息点进朋友私聊，那一页要连它自己的私密车道——
   // 手机同一时刻只连得上一条）。拿走了就再进一次房，本机缓存先画，毫秒级
   useFocusEffect(

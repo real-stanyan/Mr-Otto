@@ -234,6 +234,16 @@ export function FriendChatScreen({ route, navigation }: Props) {
     const sub = AppState.addEventListener("change", (st) => setActive(st === "active"));
     return () => sub.remove();
   }, []);
+  // 车道连接没了、这一页又在前台：自己接回来（#1461 车道卡在「连接中」）。上面的 useFocusEffect 只在「进这一页 /
+  // 回到这一页」那一下跑，页面一直在前台时连接被别处断掉（例：刚退出来的那一页卸载得晚、在这之后才断连接），
+  // 它不会再跑，横幅就永远停在「连接中」。只在**谁都没占着**时接：别的页面正开着另一条是正当的接手，不抢；
+  // 上一次进房失败（error）也不接，免得连不上时一圈一圈地重试——横幅照实说没连上，回到这一页时再试
+  const laneDropped = chat.session === null && chat.error === null;
+  useEffect(() => {
+    if (!focused || homeId === null || laneSid === null || !laneDropped) return;
+    void openChat(homeId, laneSid, { kind: "pair", agentIds: [...lane.agentIds], humans: [], pair: { peerUid: uid, facing: "self" } });
+    // 只跟「是哪一条」与「此刻有没有连接」走：名单变了不重连
+  }, [focused, homeId, laneSid, laneDropped, uid]);
   useEffect(() => {
     if (upTo !== null && friend && focused && active) markFriendRead(uid, upTo);
   }, [uid, upTo, friend, focused, active]);
@@ -342,7 +352,7 @@ export function FriendChatScreen({ route, navigation }: Props) {
           >
             <Icon name="lock-keyhole" size={12} stroke={2} color={c.mutedForeground} />
             <Text numberOfLines={1} style={{ flex: 1, fontSize: 12, color: c.mutedForeground }}>
-              {`带着 ${broughtNames.map((a) => `@${a.name}`).join(" ")} · 只有你看得到${laneSession?.state === "ready" ? "" : "（连接中）"}`}
+              {`带着 ${broughtNames.map((a) => `@${a.name}`).join(" ")} · 只有你看得到${laneSession?.state === "ready" ? "" : laneSession === null && chat.session === null && chat.error !== null ? "（没连上，退出再进来试试）" : "（连接中）"}`}
             </Text>
             <Icon name="chevron-right" size={14} stroke={2} color={c.faint} />
           </Pressable>

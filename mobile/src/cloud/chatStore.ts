@@ -21,6 +21,7 @@ import type { CsChatInfo } from "../../../src/shared/remote/cloudSession.js";
 import type { CloudAck, CloudSessionDelta, CloudSessionStatus } from "../../../src/shared/shellBridge.js";
 import type { SessionEvent } from "../../../src/session/events.js";
 import { createSendQueue } from "../../../src/shared/sendQueue.js";
+import { mayCloseConnection } from "../../../src/shared/mobileChat.js";
 import { createStore } from "../externalStore.js";
 import { cloudClient, ensureUid, setCloudSinks } from "./cloudClient.js";
 import type { OlderPageResult } from "../../../src/shared/chatLogExport.js";
@@ -116,7 +117,8 @@ export function chatSessionOf(sessionId: string): ChatSession | null {
 /** 每次 closeChat 加一：异步回来时比一比，变了就说明人已经离开了这一页 */
 let gen = 0;
 /** 此刻正在开（openChat 还没回来）的是哪一条。closeChatIf 据它判「别人是不是已经在接手这一条连接」 */
-let pendingOpen: { sessionId: string; gen: number } | null = null;
+/** `chat` = 打开那一刻的种子：草稿页（还没 sessionId）据它认「这是不是我建出来的那条私聊」（closeChatOwned） */
+let pendingOpen: { sessionId: string; gen: number; chat: CsChatInfo | null | undefined } | null = null;
 
 /** 本机缓存（#1426）：这条聊天是替谁开的（缓存按账号分键）；对账之前服务器这一轮下发的最小 seq */
 let cacheOwner: string | null = null;
@@ -212,7 +214,7 @@ export async function openChat(
   // 同一条已经在开：挂载那一下与「回到这一页」那一下会撞在一起（#1461），第二次什么都不做，不然 join 两遍
   if (pendingOpen !== null && pendingOpen.sessionId === sessionId && pendingOpen.gen === gen) return;
   const g = gen;
-  const mine = { sessionId, gen: g };
+  const mine = { sessionId, gen: g, chat: seed };
   pendingOpen = mine;
   try {
     await openChatInner(g, workspaceId, sessionId, seed, title);
@@ -372,9 +374,13 @@ export function takeDraftSeed(sessionId: string): string | null {
     也要连它的私密车道——两个页面会交替拿这一条连接（从群里点进朋友私聊、私聊里拉人建群 replace 成群聊页）。
     不判就是后离开的那一页把先到的那一页刚接上的连接断掉：别人已经开着另一条、或者正在开另一条，都不关 */
 export function closeChatIf(sessionId: string): void {
-  if (pendingOpen !== null && pendingOpen.sessionId !== sessionId) return;
-  const cur = store.get().session?.sessionId ?? null;
-  if (cur !== null && cur !== sessionId) return;
+  closeChatOwned((s) => s.sessionId === sessionId);
+}
+
+/** 离开一页时只断「归这一页」的连接（判据 mayCloseConnection）。`owns` 由页面给：有 sessionId 的页认自己那条，
+    草稿页认它那只智能体的私聊（screenOwnsSession）。谁都不占着时照旧断——那会顺手掐掉草稿页还在路上的 startDm */
+export function closeChatOwned(owns: (s: { sessionId: string; chat?: CsChatInfo | null | undefined }) => boolean): void {
+  if (!mayCloseConnection({ pending: pendingOpen, current: store.get().session, owns })) return;
   closeChat();
 }
 
