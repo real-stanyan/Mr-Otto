@@ -62,7 +62,7 @@ describe("mediaUrls / friendsApi / MediaBubble", () => {
   });
   it("MediaBubble / MediaViewer 的 bucket 一路传到 useMediaUrl 与重试", () => {
     const bubble = read("mobile/src/media/MediaBubble.tsx");
-    expect(bubble).toMatch(/export function MediaBubble\(\{ media, bucket = DM_MEDIA_BUCKET \}/);
+    expect(bubble).toMatch(/export function MediaBubble\(\{ media, bucket = DM_MEDIA_BUCKET, mine = false \}/);
     expect(bubble).toMatch(/useMediaUrl\(path, bucket\)/);
     expect(bubble).toMatch(/retryMediaUrl\(path, bucket\)/);
     const viewer = read("mobile/src/media/MediaViewer.tsx");
