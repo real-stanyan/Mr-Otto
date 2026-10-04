@@ -363,6 +363,12 @@ async function scenarioAssemblyResilience(): Promise<void> {
     logOutreach() {
       /* 不会被调用 */
     },
+    logFriendPick() {
+      /* 不会被调用 */
+    },
+    async pickFriend() {
+      return { ok: true as const };
+    },
     reportOutreach() {
       /* 不会被调用 */
     },

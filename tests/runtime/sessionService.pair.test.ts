@@ -224,7 +224,7 @@ describe("私密车道（#1461 P1）", () => {
   it("车道里不挂 call_friend：提示词说「你发不了消息给朋友」，工具表必须说同一句话（#1206；复审 M3）", async () => {
     const store = newStore();
     pairSeed(store);
-    const { session } = open(store, { outreach: { dispatch: async () => "打了" } });
+    const { session } = open(store, { outreach: { dispatch: async () => "打了", dialPicked: async () => null } });
     await say(session, "@助手 帮我问问", [HELPER.agentId]);
     await session.settled();
     const env = store.ofType(SID, "request_envelope").at(-1) as RequestEnvelopeEvent;

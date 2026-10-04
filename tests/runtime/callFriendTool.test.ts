@@ -5,7 +5,7 @@ import { CALL_FRIEND_TOOL_NAME } from "../../src/shared/outreach.js";
 
 const mk = (over: Partial<CallFriendDeps> = {}) => {
   const calls: unknown[] = [];
-  const tool = createCallFriendTool({ mayCall: () => null, dispatch: async (...a) => (calls.push(a), "已经打过去了"), ...over });
+  const tool = createCallFriendTool({ mayCall: () => null, dispatch: async (a) => (calls.push(a), "已经打过去了"), ...over });
   return { tool, calls };
 };
 
@@ -19,7 +19,7 @@ describe("call_friend", () => {
   it("参数齐全：规整后交给 dispatch", async () => {
     const { tool, calls } = mk();
     expect(await tool.run({ friend: " 小红 ", brief: "问周五\n来不来", opening: "小红你好" }, null as never)).toBe("已经打过去了");
-    expect(calls[0]).toEqual(["小红", "问周五 来不来", "小红你好"]);
+    expect(calls[0]).toEqual({ friend: "小红", brief: "问周五 来不来", opening: "小红你好" });
   });
 
   it("brief 超 500 字 / opening 超 200 字：拒绝不截断，也不打", async () => {
@@ -50,6 +50,19 @@ describe("call_friend", () => {
     const { tool, calls } = mk({ mayCall: () => "只有 Stan 亲口让你打，才能给他的好友打电话。" });
     expect(await tool.run({ friend: "小红", brief: "事", opening: "嗨" }, null as never)).toContain("亲口");
     expect(calls).toEqual([]);
+  });
+
+  it("candidates：2–4 个字符串原样转给 dispatch；不给就不带这一格；形状不对就抛（#1520）", async () => {
+    const { tool, calls } = mk();
+    const world = null as never;
+    const base = { friend: "她", brief: "问搬家", opening: "你好" };
+    await tool.run({ ...base, candidates: ["小红", "小李"] }, world);
+    await tool.run(base, world);
+    expect(calls).toEqual([{ ...base, candidates: ["小红", "小李"] }, base]);
+    await expect(tool.run({ ...base, candidates: ["只有一个"] }, world)).rejects.toThrow("candidates");
+    await expect(tool.run({ ...base, candidates: ["a", "b", "c", "d", "e"] }, world)).rejects.toThrow("candidates");
+    await expect(tool.run({ ...base, candidates: [1, 2] }, world)).rejects.toThrow("candidates");
+    expect((tool.def.parameters as { properties: Record<string, unknown> }).properties.candidates).toBeDefined();
   });
 
   it("不过审批门", () => expect(mk().tool.requiresApproval).toBe(false));

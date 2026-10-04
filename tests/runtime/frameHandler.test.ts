@@ -24,6 +24,8 @@ function fakeSession(overrides: Partial<CloudSession> = {}): CloudSession {
     greetNewAgent: () => {},
     speechTicketFor: async () => null,
     logOutreach: () => {},
+    logFriendPick: () => {},
+    pickFriend: async () => ({ ok: true }),
     reportOutreach: () => {},
     // #937：say() 不再等 turn 跑完，等待点搬进了 settled()。这一层不消费它
     settled: async () => {},

@@ -677,7 +677,7 @@ const resultOf = (events: SessionEvent[]): string => {
 describe("call_friend 的挂载与「这一轮能不能打」（#1441 Task 10）", () => {
   function portProbe() {
     const calls: PortCall[] = [];
-    const port: Port = { dispatch: async (c) => (calls.push(c), "已经打给 小红 了。") };
+    const port: Port = { dispatch: async (c) => (calls.push(c), "已经打给 小红 了。"), dialPicked: async () => null };
     return { port, calls };
   }
 
@@ -721,7 +721,7 @@ describe("call_friend 的挂载与「这一轮能不能打」（#1441 Task 10）
     const session = openHome({ store, events, outreach: port, adapterFor: (id) => callerAdapter(id) });
     await session.say(OWNER, "Stan", "@运维 给小红打个电话问周五", true, ["ops"]);
     await session.settled();
-    expect(calls).toEqual([{ originSessionId: SID, agentId: "ops", agentName: "运维", ...CALL_ARGS }]);
+    expect(calls).toEqual([{ originSessionId: SID, agentId: "ops", agentName: "运维", ...CALL_ARGS, recentUids: [] }]);
     expect(resultOf(events)).toBe("已经打给 小红 了。");
     expect(events.filter((e) => e.type === "approval_request")).toHaveLength(0); // 主场免审，这把刀自己也不过门
     store.close();
@@ -989,7 +989,7 @@ describe("折叠进同一个 job 的开场白也要算数（#1441 Task 10 修复
         held.resolve();
         await gate.promise;
       },
-      outreach: { dispatch: async (c) => (dispatched.push(c), "已经打过去了") },
+      outreach: { dispatch: async (c) => (dispatched.push(c), "已经打过去了"), dialPicked: async () => null },
       adapterFor: (id) => ({
         model: "fake-model",
         async chat(_m, defs): Promise<ModelReply> {
@@ -1098,7 +1098,7 @@ describe("起跑前的 await 窗口里落盘的开场白也要算数（#1441 修
     const session = openHome({
       store, events, kind,
       rosterGate: async () => { if (armed) { armed = false; held.resolve(); await gate.promise; } },
-      outreach: { dispatch: async (c) => (dispatched.push(c), "已经打过去了") },
+      outreach: { dispatch: async (c) => (dispatched.push(c), "已经打过去了"), dialPicked: async () => null },
       adapterFor: (id) => ({
         model: "fake-model",
         async chat(_m, defs): Promise<ModelReply> {
@@ -1156,7 +1156,7 @@ describe("一轮跑着的时候才落的开场白（#1441 修复轮 2）", () =>
     let sess!: CloudSession;
     const session = openHome({
       store, events,
-      outreach: { dispatch: async (c) => (dispatched.push(c), "打了") },
+      outreach: { dispatch: async (c) => (dispatched.push(c), "打了"), dialPicked: async () => null },
       adapterFor: () => ({
         model: "fake-model",
         async chat(): Promise<ModelReply> {
@@ -1322,7 +1322,7 @@ describe("重启补跑碰上外联（#1441 终审 M1 / M7）", () => {
     const events: SessionEvent[] = [];
     const calls: PortCall[] = [];
     const session = openHome({
-      store, events, outreach: { dispatch: async (c) => (calls.push(c), "已经打给 小红 了。") },
+      store, events, outreach: { dispatch: async (c) => (calls.push(c), "已经打给 小红 了。"), dialPicked: async () => null },
       adapterFor: (id) => callerAdapter(id),
       beforeOpen: (s) => void s.append({ sessionId: SID, ts: 3, type: "user_message", content: "[Stan]: @运维 给小红打个电话", fromUid: OWNER, mentions: ["ops"] }),
     });
@@ -1331,6 +1331,85 @@ describe("重启补跑碰上外联（#1441 终审 M1 / M7）", () => {
     const out = resultOf(events);
     expect(out).toContain("补跑");
     expect(out).toContain("问");
+    store.close();
+  });
+});
+
+describe("选人卡（#1520）", () => {
+  const OFFER = { pickId: "p1", phase: "offered" as const, fromAgentId: "ops", question: "q", candidates: [{ uid: "u-hong", name: "小红", why: "" }, { uid: "u-ming", name: "小明", why: "" }], brief: "问周五", opening: "你好" };
+
+  function withPort(dialPicked: Port["dialPicked"]) {
+    const calls: Parameters<Port["dialPicked"]>[0][] = [];
+    const port: Port = { dispatch: async () => "x", dialPicked: async (o) => (calls.push(o), dialPicked(o)) };
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    const session = openHome({ store, events, outreach: port, adapterFor: () => ({ model: "fake-model", async chat() { return { content: "好" }; } }) });
+    return { session, store, events, calls };
+  }
+  const picksOf = (events: SessionEvent[]) => events.filter((e) => e.type === "friend_pick").map((e) => (e as { phase: string }).phase);
+
+  it("主人点了一位：落 picked，dialPicked 拿到卡里的 brief / opening 与现取的名字", async () => {
+    const t = withPort(async () => null);
+    t.session.logFriendPick(OFFER);
+    expect(await t.session.pickFriend("p1", OWNER, "u-hong")).toEqual({ ok: true });
+    expect(picksOf(t.events)).toEqual(["offered", "picked"]);
+    expect(t.calls).toEqual([{ originSessionId: SID, agentId: "ops", agentName: "运维", uid: "u-hong", brief: "问周五", opening: "你好" }]);
+    t.store.close();
+  });
+
+  it("打不出去：再落 failed 带那句话，回执仍是 ok（失败画在卡上）", async () => {
+    const t = withPort(async () => "小红 的手机上还没有能接电话的 App，打不了。");
+    t.session.logFriendPick(OFFER);
+    expect(await t.session.pickFriend("p1", OWNER, "u-hong")).toEqual({ ok: true });
+    expect(picksOf(t.events)).toEqual(["offered", "picked", "failed"]);
+    const failed = t.events.at(-1) as { message?: string };
+    expect(failed.message).toContain("没有能接电话的 App");
+    t.store.close();
+  });
+
+  it("都不是：落 dismissed，不拨", async () => {
+    const t = withPort(async () => null);
+    t.session.logFriendPick(OFFER);
+    expect(await t.session.pickFriend("p1", OWNER, null)).toEqual({ ok: true });
+    expect(picksOf(t.events)).toEqual(["offered", "dismissed"]);
+    expect(t.calls).toEqual([]);
+    t.store.close();
+  });
+
+  it("拒：不是主人 / 卡不存在 / 点过第二次 / 人不在卡上；一律不拨、不落事件", async () => {
+    const t = withPort(async () => null);
+    t.session.logFriendPick(OFFER);
+    expect(await t.session.pickFriend("p1", "stranger", "u-hong")).toEqual({ ok: false, message: "只有他本人能选。" });
+    expect(await t.session.pickFriend("nope", OWNER, "u-hong")).toEqual({ ok: false, message: "这张卡已经用过或过期了。" });
+    expect(await t.session.pickFriend("p1", OWNER, "u-other")).toEqual({ ok: false, message: "这个人不在卡上。" });
+    expect(await t.session.pickFriend("p1", OWNER, "u-hong")).toEqual({ ok: true });
+    expect(await t.session.pickFriend("p1", OWNER, "u-ming")).toEqual({ ok: false, message: "这张卡已经用过或过期了。" });
+    expect(t.calls).toHaveLength(1);
+    t.store.close();
+  });
+
+  it("call_friend 把这条聊天打过的人（新的在前）与 candidates 递给 dispatch", async () => {
+    const calls: PortCall[] = [];
+    const port: Port = { dispatch: async (c) => (calls.push(c), "已经弹了张卡"), dialPicked: async () => null };
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    const session = openHome({
+      store, events, outreach: port,
+      beforeOpen: (s) => {
+        s.append({ sessionId: SID, ts: 3, type: "outreach", phase: "started", outreachId: "o1", fromAgentId: "ops", peerUid: "u-baba", peerName: "Mingxuan Zhang", ignorable: true });
+      },
+      adapterFor: (id) => {
+        let round = 0;
+        return { model: "fake-model", async chat(): Promise<ModelReply> {
+          round++;
+          if (id === "ops" && round === 1) return { content: "", toolCalls: [{ id: "cf1", name: "call_friend", args: { ...CALL_ARGS, candidates: ["小红", "小明"] } }] };
+          return { content: "好" };
+        } };
+      },
+    });
+    await session.say(OWNER, "Stan", "@运维 给她打个电话", true, ["ops"]);
+    await session.settled();
+    expect(calls).toEqual([{ originSessionId: SID, agentId: "ops", agentName: "运维", ...CALL_ARGS, candidates: ["小红", "小明"], recentUids: ["u-baba"] }]);
     store.close();
   });
 });
