@@ -27,7 +27,7 @@ daemon，装配现有 agent 核心 + DockerWorld，权威 EventStore 落 VPS 本
 | `EDGE_BASE` | edge worker 部署后的根地址，不带尾斜杠。好友代理云端执行面 `/px/v1/*`（runtime 打 px call 时用平台身份自证）走这个根 |
 | `RELAY_BASE` | edge worker 部署后的中继根地址，不带尾斜杠。cs 帧（云会话协议）走的那条 WebSocket |
 | `DATA_DIR`（可选） | 本地状态（EventStore、`orphans.json`、workspace-config.json）落盘目录，缺省 `/var/lib/otto-runtime`（`config.ts` 的 `DEFAULT_DATA_DIR`），一般不用填 |
-| `APNS_KEY_FILE` / `APNS_KEY_ID` / `APNS_TEAM_ID`（可选，三个一组） | 回电的推送（#1411，ADR-0331）。Apple Developer → Certificates, Identifiers & Profiles → Keys → +，勾 Apple Push Notifications service (APNs)，下载 `.p8`（**只能下载一次**）、记下 Key ID；Team ID 是 `HV982TTRNP`。`.p8` 放到 VPS 上只给 daemon 读：`sudo install -d -m 0750 -o root -g otto /etc/otto-runtime && sudo install -m 0440 -o root -g otto AuthKey_XXXXXXXXXX.p8 /etc/otto-runtime/apns.p8`，`APNS_KEY_FILE` 填这个路径。三个要么全有要么全无：只填一部分，启动就报缺哪几个；全不填 = 推送关着，智能体没有 `call_user`。开没开看 journal 里「推送开着 / 推送关着」那一行 |
+| `APNS_KEY_FILE` / `APNS_KEY_ID` / `APNS_TEAM_ID`（可选，三个一组） | 回电与消息的推送（#1411，ADR-0331；消息推送 #1442，ADR-0338，同一把钥匙）。Apple Developer → Certificates, Identifiers & Profiles → Keys → +，勾 Apple Push Notifications service (APNs)，下载 `.p8`（**只能下载一次**）、记下 Key ID；Team ID 是 `HV982TTRNP`。`.p8` 放到 VPS 上只给 daemon 读：`sudo install -d -m 0750 -o root -g otto /etc/otto-runtime && sudo install -m 0440 -o root -g otto AuthKey_XXXXXXXXXX.p8 /etc/otto-runtime/apns.p8`，`APNS_KEY_FILE` 填这个路径。三个要么全有要么全无：只填一部分，启动就报缺哪几个；全不填 = 推送关着，智能体没有 `call_user`，消息也不推。开没开看 journal 里「推送开着 / 推送关着」那一行 |
 | `APNS_BUNDLE_ID`（可选） | 推送的 topic，缺省 `com.stanyan.mrotto.mobile`（手机 App 的 bundle id） |
 
 **一共 6 个必需变量**（逐字数 `REQUIRED_KEYS` 得出，不是估的数）。可选的有两种：`DATA_DIR` 与 `APNS_BUNDLE_ID` 不填就用缺省值；

@@ -1,6 +1,6 @@
 // notifier —— 推不推的最后一道闸（#1442）：开关、免打扰、读不到就不推、30 秒缓存。
 import { describe, expect, it } from "vitest";
-import { NOTIFY_CACHE_MS, createNotifier, type NotifyStore } from "../../services/runtime/src/notifier.js";
+import { NOTIFY_CACHE_MS, createNotifier, withGroupTitle, type NotifyStore } from "../../services/runtime/src/notifier.js";
 import { DEFAULT_NOTIFY_PREFS, type AlertPush, type NotifyPrefs } from "../../src/shared/notifyPrefs.js";
 
 const DM: AlertPush = { title: "开发", body: "好了", target: { kind: "cloud", chat: "dm", workspaceId: "w", sessionId: "s", agentId: "dev" } };
@@ -64,5 +64,23 @@ describe("createNotifier", () => {
     const n = createNotifier({ store, push: async () => { throw new Error("db down"); }, log: (m) => logs.push(m) });
     await expect(n.send("u1", "mention", DM)).resolves.toBeUndefined();
     expect(logs.join("\n")).toMatch(/推送失败/);
+  });
+});
+
+describe("withGroupTitle：群里的推送换上真群名", () => {
+  const group: AlertPush = { title: "群聊", subtitle: "开发", body: "x", target: { kind: "cloud", chat: "group", workspaceId: "w", sessionId: "s9", agentId: "" } };
+  it("查得到就换", async () => {
+    expect((await withGroupTitle(group, async (id) => (id === "s9" ? "周末摆摊" : null))).title).toBe("周末摆摊");
+  });
+  it("查不到 / 抛：留原来的", async () => {
+    expect((await withGroupTitle(group, async () => null)).title).toBe("群聊");
+    expect((await withGroupTitle(group, async () => { throw new Error("x"); })).title).toBe("群聊");
+  });
+  it("私聊 / 朋友私聊不查", async () => {
+    let asked = 0;
+    const q = async () => { asked += 1; return "x"; };
+    await withGroupTitle(DM, q);
+    await withGroupTitle(FRIEND, q);
+    expect(asked).toBe(0);
   });
 });

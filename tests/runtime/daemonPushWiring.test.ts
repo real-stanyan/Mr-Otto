@@ -15,6 +15,6 @@ describe("daemon.ts：消息推送的接线（#1442）", () => {
     expect(src).toMatch(/subscribeFriendMessages\(supabase, \(raw\) => void friendPush\.onInsert\(raw\)/);
   });
   it("每条会话都接上 alert，且人正开着这条聊天就不推（同回电的在场判据）", () => {
-    expect(src).toMatch(/alert: \(uid: string, kind: NotifyKind, p: AlertPush\) => \{\s*if \(\[\.\.\.roster\]\.some\(\(cid\) => frameHandler\.uidOf\(cid\) === uid\)\) return;\s*void notifier\.send\(uid, kind, p\);/);
+    expect(src).toMatch(/alert: \(uid: string, kind: NotifyKind, p: AlertPush\) => \{\s*if \(\[\.\.\.roster\]\.some\(\(cid\) => frameHandler\.uidOf\(cid\) === uid\)\) return;\s*void withGroupTitle\(p, sessionTitles\)\.then\(\(q\) => notifier\.send\(uid, kind, q\)\);/);
   });
 });

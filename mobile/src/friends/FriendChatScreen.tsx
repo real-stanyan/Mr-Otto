@@ -2,11 +2,11 @@
 // 同一套样子。一次拉最近 50 条，往上翻再拉；realtime 推新消息，通道哑了降级成轮询（friendsStore）。
 // 桌面发来的「分享会话」是一段 JSON 信封：画成一张卡（shareCardView：邀请码不上屏），手机上打不开会话包，只说去哪儿做。
 // 删了好友的那个人：库里 RLS 不许再发（messages_insert_accepted_friend），输入栏换成一句实话。
-import { useFocusEffect } from "@react-navigation/native";
+import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import { useHeaderHeight } from "@react-navigation/elements";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { FlatList, KeyboardAvoidingView, Platform, Pressable, Text, View } from "react-native";
+import { AppState, FlatList, KeyboardAvoidingView, Platform, Pressable, Text, View } from "react-native";
 import type { DirectMessage } from "../../../src/shared/friends.js";
 import { readUpTo, receiptLabel } from "../../../src/shared/readReceipt.js";
 import { decodeEnvelope } from "../../../src/shared/sessionPackageCodec.js";
@@ -105,9 +105,16 @@ export function FriendChatScreen({ route, navigation }: Props) {
   }, [uid]);
   const loaded = thread !== undefined && !thread.loading;
   const upTo = loaded ? readUpTo(thread.messages, uid) : null;
+  // 只在人真看着的时候报：页面在栈顶（聊天信息页叠上来时它还挂着）且 App 在前台（后台时 realtime 可能还在送）
+  const focused = useIsFocused();
+  const [active, setActive] = useState(AppState.currentState === "active");
   useEffect(() => {
-    if (upTo !== null && friend) markFriendRead(uid, upTo);
-  }, [uid, upTo, friend]);
+    const sub = AppState.addEventListener("change", (st) => setActive(st === "active"));
+    return () => sub.remove();
+  }, []);
+  useEffect(() => {
+    if (upTo !== null && friend && focused && active) markFriendRead(uid, upTo);
+  }, [uid, upTo, friend, focused, active]);
   const peerRead = usePeerRead(uid);
   const selfUid = friends.uid ?? "";
   const receipt = useMemo(() => (thread === undefined ? null : receiptLabel(thread.messages, selfUid, peerRead)), [thread?.messages, selfUid, peerRead]);

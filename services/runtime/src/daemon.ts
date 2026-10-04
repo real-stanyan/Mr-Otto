@@ -14,7 +14,7 @@ import { createClient } from "@supabase/supabase-js";
 import { loadConfig } from "./config.js";
 import { createApnsPusher } from "./apns.js";
 import { createSupabasePushDevices } from "./pushDevices.js";
-import { createNotifier, createSupabaseNotifyStore } from "./notifier.js";
+import { createNotifier, createSessionTitles, createSupabaseNotifyStore, withGroupTitle } from "./notifier.js";
 import { createFriendPush, createProfileNames, subscribeFriendMessages } from "./friendPush.js";
 import type { AlertPush, NotifyKind } from "../../../src/shared/notifyPrefs.js";
 import { createGitCredentialStore } from "./gitCredentialStore.js";
@@ -173,6 +173,7 @@ async function main(): Promise<void> {
     apns === null
       ? null
       : createNotifier({ store: createSupabaseNotifyStore(supabase), push: (uid, p) => apns.pushAlert(uid, p), log: (m) => console.warn(m) });
+  const sessionTitles = createSessionTitles(supabase);
   if (notifier !== null) {
     const friendPush = createFriendPush({ notifier, nameOf: createProfileNames(supabase), log: (m) => console.warn(m) });
     subscribeFriendMessages(supabase, (raw) => void friendPush.onInsert(raw), (m) => console.log(m));
@@ -990,7 +991,7 @@ async function main(): Promise<void> {
         : {
             alert: (uid: string, kind: NotifyKind, p: AlertPush) => {
               if ([...roster].some((cid) => frameHandler.uidOf(cid) === uid)) return;
-              void notifier.send(uid, kind, p);
+              void withGroupTitle(p, sessionTitles).then((q) => notifier.send(uid, kind, q));
             },
           }),
       callback:

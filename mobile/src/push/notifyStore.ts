@@ -56,7 +56,8 @@ export async function setPref(patch: Partial<NotifyPrefs>): Promise<void> {
   const next = { ...before, ...patch };
   store.set({ prefs: next, error: null });
   const { error } = await supabase.from("notify_prefs").upsert(prefsToRow(me, next), { onConflict: "uid" });
-  if (error) store.set({ prefs: before, error: `没存上：${error.message}` });
+  // 写的这一会儿换了号：退回的是上一个号的值，不能落进这个号的状态里
+  if (error && owner === me) store.set({ prefs: before, error: `没存上：${error.message}` });
 }
 
 export async function setMuted(key: string, on: boolean): Promise<void> {
@@ -70,7 +71,7 @@ export async function setMuted(key: string, on: boolean): Promise<void> {
   const { error } = on
     ? await supabase.from("chat_mutes").upsert({ uid: me, chat_key: key }, { onConflict: "uid,chat_key" })
     : await supabase.from("chat_mutes").delete().eq("uid", me).eq("chat_key", key);
-  if (error) store.set({ mutes: before, error: `没存上：${error.message}` });
+  if (error && owner === me) store.set({ mutes: before, error: `没存上：${error.message}` });
 }
 
 function adopt(next: string | null): void {

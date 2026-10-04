@@ -74,3 +74,25 @@ export function createSupabaseNotifyStore(client: SupabaseClient): NotifyStore {
     },
   };
 }
+
+/** 群名（workspace_sessions.title）：主场的群起名走库不走日志（ADR-0297），sessionService 手上没有它，
+    推送标题在 daemon 这一层补。按会话缓存 60 秒；查不到 / 没起名回 null（调用方留着原来那个标题） */
+export function createSessionTitles(client: SupabaseClient, now: () => number = () => Date.now()): (sessionId: string) => Promise<string | null> {
+  const cache = new Map<string, { at: number; title: string | null }>();
+  return async (sessionId) => {
+    const hit = cache.get(sessionId);
+    if (hit !== undefined && now() - hit.at < 60_000) return hit.title;
+    const { data, error } = await client.from("workspace_sessions").select("title").eq("id", sessionId).maybeSingle();
+    if (error) return null;
+    const t = typeof (data as { title?: unknown } | null)?.title === "string" ? ((data as { title: string }).title.trim() || null) : null;
+    cache.set(sessionId, { at: now(), title: t });
+    return t;
+  };
+}
+
+/** 群里的推送（有副标题 = 群里谁说的）换上真群名；私聊 / 朋友私聊原样 */
+export async function withGroupTitle(push: AlertPush, titleOf: (sessionId: string) => Promise<string | null>): Promise<AlertPush> {
+  if (push.target.kind !== "cloud" || push.target.chat === "dm" || push.subtitle === undefined) return push;
+  const t = await titleOf(push.target.sessionId).catch(() => null);
+  return t === null ? push : { ...push, title: t };
+}

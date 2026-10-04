@@ -12,7 +12,8 @@
 --   （src/shared/wechatInbox.ts 的 InboxRow.key：a: / g: / t: / j: / f:），runtime 按同一个规则算
 --   （src/shared/notifyPrefs.ts 的 muteKeyFor），两边一个判据。不进 realtime publication：只有本人读，
 --   而 Realtime 对 DELETE 不查 RLS，进了就是把「谁静音了谁」推给所有订阅者。
--- · friend_reads：朋友私聊的已读回执。一行 = reader 已经读到 peer 发来的第几条（messages.id）。
+-- · friend_reads：朋友私聊的已读回执（已知例外：profiles 那一行被删时级联删行，DELETE 会把 (reader, peer)
+--   推给订阅者；今天没有删账号的流程）。一行 = reader 已经读到 peer 发来的第几条（messages.id）。
 --   只能经 mark_friend_read 往前推（客户端不许直接写：直接写就能替别人把「已读」标上）；双方都能读，
 --   进 realtime 让发信的那一侧当场看到「已读」。**从不删行**（同 0044：DELETE 会把主键 (reader, peer)
 --   ——也就是「谁和谁是朋友」——推给所有订阅者）：关掉已读回执时把 last_read_id 置空，对方那边就什么都不画。
@@ -96,7 +97,9 @@ begin
   insert into friend_reads (reader, peer, last_read_id, updated_at)
   values (auth.uid(), p_peer, coalesce(v_cap, 0), now())
   on conflict (reader, peer) do update
-    set last_read_id = greatest(coalesce(friend_reads.last_read_id, 0), excluded.last_read_id), updated_at = now();
+    set last_read_id = greatest(coalesce(friend_reads.last_read_id, 0), excluded.last_read_id), updated_at = now()
+    -- 没往前走就不写：写了就是一条推给对方的 UPDATE，等于告诉他「他刚打开过这个聊天」
+    where friend_reads.last_read_id is distinct from greatest(coalesce(friend_reads.last_read_id, 0), excluded.last_read_id);
 end $$;
 revoke all on function public.mark_friend_read(uuid, bigint) from public;
 grant execute on function public.mark_friend_read(uuid, bigint) to authenticated;

@@ -138,6 +138,9 @@ describe("advanceReplyNotify：这一轮答了谁就推给谁", () => {
       expect(run([say("u1", ["ops"], { greeting: g } as Partial<SessionEvent>), reply("ops", "x"), end("ops", "completed")])).toEqual([]);
     }
   });
+  it("接力开场白：不推（点火的人只在他问的那一句被答时收一条）", () => {
+    expect(run([say("u1", ["b"], { relay: { fromAgentId: "a", depth: 1 } } as Partial<SessionEvent>), reply("b", "x"), end("b", "completed")])).toEqual([]);
+  });
   it("新建的那只先开口、外联回来汇报：照推", () => {
     for (const g of ["new_agent", "outreach_report"]) {
       expect(run([say("u1", ["ops"], { greeting: g } as Partial<SessionEvent>), reply("ops", "x"), end("ops", "completed")])).toHaveLength(1);

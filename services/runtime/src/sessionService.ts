@@ -2828,12 +2828,13 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
               workspaceId: opts.workspaceId, sessionId, seq, uid, fromUid, fromLabel: label, text,
             });
           }
-          await opts.mentionInbox.record(rows);
-          // 推送（#1442）：被点名的人手机响一下。开关 / 免打扰由 alert 的实现查
+          // 推送（#1442）：被点名的人手机响一下。开关 / 免打扰由 alert 的实现查。排在收件箱写入之前：
+          // 那一格写失败（抛）不该连推送一起吞掉
           for (const r of rows) {
             const target = alertTargetFor(r.uid, "");
             if (target !== null) opts.alert?.(r.uid, "mention", { title: title || "群聊", subtitle: label, body: alertBody(text), target });
           }
+          await opts.mentionInbox.record(rows);
         } catch (err) {
           // 收件箱是日志的投影，权威那份已经落盘了：写不上的后果是「他要自己
           // 进来才看得见」= 改动前的行为，不该把一句已经发出去的话翻成失败

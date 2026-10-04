@@ -10,7 +10,8 @@
 // 只有 completed 才推：aborted 是人按了停止，error / interrupted 没有结论可推。
 //
 // 不推的开场白：通话里说出来的（voice）与通话 / 回电 / 外联那几种招呼——那一刻人正在电话里听着它说，
-// 再弹一条通知是同一句话两遍。「新建的那只先打招呼」与「外联回来汇报」照推：前者人多半还在 App 里
+// 再弹一条通知是同一句话两遍。接力开场白（relay）也不推：它的 fromUid 是点火的那个人，算他的话就是一次点火
+// 最多 24 棒、棒棒推他一条（审查 #1442）；他问的那一句由第一棒回答时已经推过。代价：接力链后面几棒的结论不推。「新建的那只先打招呼」与「外联回来汇报」照推：前者人多半还在 App 里
 // （前台不弹，见手机那侧），后者就是人等着的那条消息。
 import type { SessionEvent } from "../session/events.js";
 
@@ -37,7 +38,7 @@ export function advanceReplyNotify(s: ReplyNotifyState, e: SessionEvent): ReplyN
   if (e.type === "user_message") {
     const uid = e.fromUid;
     if (uid === undefined || uid === "" || uid === "system" || e.mentions === undefined || e.mentions.length === 0) return null;
-    if (e.voice === true || (e.greeting !== undefined && SILENT_GREETINGS.has(e.greeting))) return null;
+    if (e.voice === true || e.relay !== undefined || (e.greeting !== undefined && SILENT_GREETINGS.has(e.greeting))) return null;
     for (const agentId of e.mentions) {
       const list = s.askers.get(agentId) ?? [];
       list.push({ seq: e.seq, uid });
