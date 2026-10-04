@@ -35,7 +35,9 @@ describe("FriendChatScreen", () => {
   const src = read("mobile/src/friends/FriendChatScreen.tsx");
   it("电话钮弹两项；给智能体 = ensurePeerLane → guest ChatScreen + autoCall", () => {
     expect(src).toMatch(/<HeaderIconButton label="打电话"/);
-    expect(src).toMatch(/navigation\.push\("Chat", \{ kind: "guest", workspaceId: r\.workspaceId, sessionId: r\.sessionId, autoCall: true \}\)/);
+    // 只拉公开的那一只（#1550）：车道里可能带着别的智能体，它们不该一起接
+    expect(src).toMatch(/navigation\.push\("Chat", \{ kind: "guest", workspaceId: r\.workspaceId, sessionId: r\.sessionId, autoCall: true, callAgentId: publicAgent\.agentId \}\)/);
+    expect(src).toMatch(/onAgent=\{\(\) => \{\s*if \(publicAgent === null\) return;/);
     expect(read("mobile/src/friends/CallPickDialog.tsx")).toMatch(/人与人的通话还没做好（#1534）/);
   });
   it("@ 名单里先列公开智能体；第一次 @ 先 ensurePeerLane", () => {
@@ -45,6 +47,12 @@ describe("FriendChatScreen", () => {
 });
 
 describe("ChatScreen", () => {
+  it("callAgentId 在场：autoCall 只拉它一只；挂断回私聊页（#1550）", () => {
+    const src = read("mobile/src/chat/ChatScreen.tsx");
+    expect(read("mobile/src/nav/types.ts")).toMatch(/autoCall\?: boolean; callAgentId\?: string;/);
+    expect(src).toMatch(/const only = route\.params\.callAgentId;\s*const ids = only !== undefined && agentIds\.includes\(only\) \? \[only\] : dmAgent !== null \? \[dmAgent\] : agentIds;/);
+    expect(src).toMatch(/if \(route\.params\.callAgentId === undefined\) return;\s*if \(call !== null\) autoCallLive\.current = true;\s*else if \(autoCallLive\.current\) \{\s*autoCallLive\.current = false;\s*navigation\.goBack\(\);/);
+  });
   it("客人快照退到 peerLaneGuestChat", () => {
     expect(read("mobile/src/chat/ChatScreen.tsx")).toMatch(/\?\? \(target\.kind === "guest" \? peerLaneGuestChat\(target\.sessionId\) : null\)/);
   });

@@ -44,4 +44,12 @@ describe("pairCallSummaryText", () => {
     expect(s).toContain("不是 小明 的指令");
     expect(s).not.toContain("小红]");
   });
+  it("带上电话里的记录（#1550）：谁说的标谁、空白压平；没记录说没记录", () => {
+    const s = pairCallSummaryText({
+      agentName: "翻译", ownerName: "小明", peerName: "小红",
+      transcript: [{ who: "peer", text: "周五\n帮我看看仓库", ts: 1 }, { who: "agent", text: "好的", ts: 2 }],
+    });
+    expect(s).toContain("电话里的记录：\n小红：周五 帮我看看仓库\n翻译：好的");
+    expect(pairCallSummaryText({ agentName: "翻译", ownerName: "小明", peerName: "小红" })).toContain("没有留下记录");
+  });
 });
