@@ -5,6 +5,7 @@
 
 import { randomBytes } from "node:crypto";
 import type { SupabaseClient } from "@supabase/supabase-js";
+import { ADMIN_SEED, type AgentTier } from "../../../src/shared/agentTier.js";
 import type { CreateAgentDraft } from "../../../src/shared/createAgentDraft.js";
 import type { AgentToolAllow } from "../../../src/shared/agentToolAllow.js";
 import type { AgentOnboarding } from "../../../src/shared/agentOnboarding.js";
@@ -58,6 +59,9 @@ export interface WorkspaceAgentWriter {
       （null = 不写），不管写没写都把那一格清成 null。回 true = 职责真写进去了。两条都是条件更新
       （`onboarding = 'role'`、`description = ''`）——与设置页同时改职责的人抢不坏。出错就抛 */
   settleRole(workspaceId: string, agentId: string, role: string | null): Promise<boolean>;
+  /** 主场里缺管理员就补一只（#1571 自愈，ADR-0365 §2.3）：`on conflict do nothing`，有就什么都不做。
+      回 true = 这次补了。0021 的触发器建主场时已 seed，这一条兜删库 / 手工误删 */
+  ensureAdmin(workspaceId: string, ownerUid: string): Promise<boolean>;
 }
 
 /** 与桌面 workspaceManager.createAgent 同一形状（"a_" + 12 hex）——同一张表里两条路铸出来的 id 长得一样 */
@@ -73,7 +77,7 @@ export interface StoredAgentRow extends CreateAgentDraft {
 
 export function createInMemoryAgentWriter(): WorkspaceAgentWriter & {
   rows(): StoredAgentRow[];
-  specs(workspaceId: string): { agentId: string; name: string; description: string; instructions: string; models: string[]; tools: AgentToolAllow[] }[];
+  specs(workspaceId: string): { agentId: string; name: string; description: string; instructions: string; models: string[]; tools: AgentToolAllow[]; domain?: string; tier?: AgentTier; parentAgentId?: string }[];
   /** 测试用：把「先开口」那一格摆成某个值（库里是手机插入时写的） */
   seedOnboarding(workspaceId: string, agentId: string, v: AgentOnboarding | null): void;
   /** 测试用：那一格此刻是什么 */
@@ -115,7 +119,17 @@ export function createInMemoryAgentWriter(): WorkspaceAgentWriter & {
     specs: (workspaceId) =>
       rows
         .filter((r) => r.workspaceId === workspaceId)
-        .map((r) => ({ agentId: r.agentId, name: r.name, description: r.description, instructions: r.instructions, models: [...r.models], tools: r.tools.map((t) => ({ ...t })) })),
+        .map((r) => ({
+          agentId: r.agentId, name: r.name, description: r.description, instructions: r.instructions, models: [...r.models], tools: r.tools.map((t) => ({ ...t })),
+          ...(r.domain === undefined ? {} : { domain: r.domain }),
+          ...(r.tier === undefined ? {} : { tier: r.tier }),
+          ...(r.parentAgentId === undefined ? {} : { parentAgentId: r.parentAgentId }),
+        })),
+    async ensureAdmin(workspaceId, ownerUid) {
+      if (rows.some((r) => r.workspaceId === workspaceId && r.agentId === ADMIN_SEED.agentId)) return false;
+      rows.push({ workspaceId, agentId: ADMIN_SEED.agentId, name: ADMIN_SEED.name, description: ADMIN_SEED.description, instructions: "", models: [], tools: [], domain: ADMIN_SEED.domain, createdBy: ownerUid });
+      return true;
+    },
   };
 }
 
@@ -140,12 +154,26 @@ export function createSupabaseAgentWriter(client: SupabaseClient): WorkspaceAgen
         models: draft.models,
         tools: draft.tools,
         created_by: createdBy,
+        // 分级那三格（#1571）：缺席就不带键，0060 没跑的库照样插得进去
+        ...(draft.domain === undefined ? {} : { domain: draft.domain }),
+        ...(draft.tier === undefined ? {} : { tier: draft.tier }),
+        ...(draft.parentAgentId === undefined ? {} : { parent_agent_id: draft.parentAgentId }),
       });
       if (error) {
         if ((error as { code?: string }).code === "23505") throw new DuplicateAgentNameError(draft.name);
         throw new Error(`workspace_agents 写入失败：${error.message}`);
       }
       return { agentId };
+    },
+    async ensureAdmin(workspaceId, ownerUid) {
+      const { data, error } = await client.from("workspace_agents")
+        .upsert(
+          { workspace_id: workspaceId, agent_id: ADMIN_SEED.agentId, name: ADMIN_SEED.name, description: ADMIN_SEED.description, instructions: "", created_by: ownerUid, tier: 0, domain: ADMIN_SEED.domain },
+          { onConflict: "workspace_id,agent_id", ignoreDuplicates: true },
+        )
+        .select("agent_id");
+      if (error) throw new Error(`workspace_agents 补管理员失败：${error.message}`);
+      return Array.isArray(data) && data.length > 0;
     },
     async claimGreeting(workspaceId, agentId) {
       const { data, error } = await client

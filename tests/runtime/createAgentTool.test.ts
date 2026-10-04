@@ -75,3 +75,46 @@ describe("工具说明（#1280 A5）", () => {
     expect(harness().tool.def.description).not.toContain("直接落库");
   });
 });
+
+describe("主场的分级护栏（#1571 第二轮第 2 条）", () => {
+  const TEAM = [
+    { agentId: "admin", name: "管理员", tier: 0 as const, domain: "admin" },
+    { agentId: "a_travel", name: "出行", tier: 1 as const, domain: "travel" },
+  ];
+  function home(team = TEAM, lines: string[] = []) {
+    const writer = createInMemoryAgentWriter();
+    const tool = createCreateAgentTool({ workspaceId: "w1", createdBy: () => "owner", writer, approveAll: true, team: async () => team, onCreated: (l) => lines.push(l) });
+    return { writer, tool, lines };
+  }
+  it("域必填且合规；说明里列出清单", async () => {
+    const { tool, writer } = home();
+    expect(tool.def.description).toContain("travel=出行");
+    await expect(tool.run({ name: "财务" }, world)).rejects.toThrow("要带 domain");
+    await expect(tool.run({ name: "财务", domain: "banana" }, world)).rejects.toThrow("不合规");
+    expect(writer.rows()).toEqual([]);
+  });
+  it("一域一只：那个域已有专员就拒、让它派给现有的；别的域能建，落 tier/domain，对话里落一句", async () => {
+    const { tool, writer, lines } = home();
+    await expect(tool.run({ name: "导游", domain: "travel" }, world)).rejects.toThrow("已经有专员「出行」");
+    await tool.run({ name: "财务", description: "管账", domain: "finance" }, world);
+    expect(writer.rows()[0]).toMatchObject({ name: "财务", domain: "finance" });
+    expect(lines[0]).toContain("新雇了「财务」专员「财务」");
+  });
+  it("专员上限", async () => {
+    const many = [TEAM[0]!, ...Array.from({ length: 8 }, (_, i) => ({ agentId: `a_${i}`, name: `专员${i}`, tier: 1 as const, domain: `custom:域${i}` }))];
+    const { tool } = home(many);
+    await expect(tool.run({ name: "再来", domain: "finance" }, world)).rejects.toThrow("上限 8");
+  });
+  it("子工：上级得是专员（按 id 或名字找），落 parentAgentId", async () => {
+    const { tool, writer } = home();
+    await expect(tool.run({ name: "x", domain: "travel", tier: 2 }, world)).rejects.toThrow("必须带 parentAgentId");
+    await expect(tool.run({ name: "x", domain: "travel", tier: 2, parentAgentId: "admin" }, world)).rejects.toThrow("不是专员");
+    await tool.run({ name: "订票员", domain: "travel", tier: 2, parentAgentId: "出行" }, world);
+    expect(writer.rows()[0]).toMatchObject({ name: "订票员", tier: 2, parentAgentId: "a_travel" });
+  });
+  it("团队会话（没给 team）：三条护栏都不判，不要求 domain", async () => {
+    const { tool, writer } = harness("u1");
+    await tool.run({ name: "财务" }, world);
+    expect(writer.rows()).toHaveLength(1);
+  });
+});

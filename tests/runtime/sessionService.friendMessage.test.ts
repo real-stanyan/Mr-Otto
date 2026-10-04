@@ -19,7 +19,7 @@ describe("sessionService：message_friend", () => {
     expect(ss).toMatch(/"只有他本人亲口让你发，才能给他的好友发消息。这一轮不是。"/);
   });
   it("工具表里紧挨着 call_friend，同样受监督的轮不亮；agentName 取 specNames 里的现名", () => {
-    expect(ss).toMatch(/\.\.\.\(callFriendTool !== null && !supervisedTurn\(\) \? \[callFriendTool\] : \[\]\),\s*\.\.\.\(messageFriendTool !== null && !supervisedTurn\(\) \? \[messageFriendTool\] : \[\]\),/);
+    expect(ss).toMatch(/\.\.\.\(callFriendTool !== null && adminOnly && !supervisedTurn\(\) \? \[callFriendTool\] : \[\]\),\s*\.\.\.\(messageFriendTool !== null && adminOnly && !supervisedTurn\(\) \? \[messageFriendTool\] : \[\]\),/);
     expect(ss).toMatch(/friendMessage\.send\(\{ agentId: spec\.agentId, agentName: specNames\.get\(spec\.agentId\) \?\? spec\.name, friend, text \}\)/);
   });
 });

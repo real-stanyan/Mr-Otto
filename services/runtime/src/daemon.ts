@@ -87,6 +87,8 @@ import {
 } from "../../../src/shared/remote/cloudSession.js";
 import { createWsTransport } from "../../../src/shared/remote/wsTransport.js";
 import { ADMIN_AGENT_ID, normalizeSandboxApproval, type SandboxApproval } from "../../../src/shared/workspaceAgents.js";
+import { isAgentDomain } from "../../../src/shared/agentDomain.js";
+import { isAgentTier, type AgentTier } from "../../../src/shared/agentTier.js";
 import { findModel } from "../../../src/shared/modelCatalog.js";
 import type { RemoteTransport } from "../../../src/shared/remote/transport.js";
 import { liveOr } from "./roomOnce.js";
@@ -264,11 +266,35 @@ async function main(): Promise<void> {
       .eq("workspace_id", workspaceId)
       .order("created_at", { ascending: true });
     if (error) throw new Error(error.message);
-    return (data ?? []).map(
+    const rows = data ?? [];
+    // 主场缺管理员就补一只再查一次（#1571 自愈）：管理员是唯一入口，少了它整个主场哑掉
+    if (!rows.some((r: { agent_id: string }) => r.agent_id === ADMIN_AGENT_ID)) {
+      const ws = await supabase.from("workspaces").select("owner_uid").eq("id", workspaceId).maybeSingle();
+      const ownerUid = (ws.data as { owner_uid?: unknown } | null)?.owner_uid;
+      if (typeof ownerUid === "string" && (await rawAgentWriter.ensureAdmin(workspaceId, ownerUid))) {
+        console.warn(`[otto-runtime] 主场 ${workspaceId} 缺管理员，已补一只`);
+        return queryAgents(workspaceId);
+      }
+    }
+    // 分级那三列（0060）**单独一条、容错**（同 shared 的 fetchAgentTiers）：0060 没跑时拼进主 select 整个名单读不出来
+    const tiers = await supabase.from("workspace_agents").select("agent_id,tier,domain,parent_agent_id").eq("workspace_id", workspaceId);
+    const tierOf = new Map<string, { tier?: AgentTier; domain?: string; parentAgentId?: string | null }>();
+    if (!tiers.error) {
+      for (const r of (tiers.data ?? []) as { agent_id?: unknown; tier?: unknown; domain?: unknown; parent_agent_id?: unknown }[]) {
+        if (typeof r.agent_id !== "string") continue;
+        tierOf.set(r.agent_id, {
+          ...(isAgentTier(r.tier) ? { tier: r.tier } : {}),
+          ...(isAgentDomain(r.domain) ? { domain: r.domain } : {}),
+          ...(typeof r.parent_agent_id === "string" ? { parentAgentId: r.parent_agent_id } : {}),
+        });
+      }
+    }
+    return rows.map(
       (r: { agent_id: string; name: string; description: string; instructions: string; models: string[]; tools: unknown }) => ({
         agentId: r.agent_id, name: r.name, description: r.description, instructions: r.instructions,
         models: r.models ?? [],
         tools: normalizeAgentTools(r.tools),
+        ...(tierOf.get(r.agent_id) ?? {}),
       })
     );
   }
@@ -291,6 +317,7 @@ async function main(): Promise<void> {
       return r;
     },
     claimGreeting: (w, a) => rawAgentWriter.claimGreeting(w, a),
+    ensureAdmin: (w, u) => rawAgentWriter.ensureAdmin(w, u),
     async settleRole(workspaceId, agentId, role) {
       const wrote = await rawAgentWriter.settleRole(workspaceId, agentId, role);
       // 职责写进去了：它进的是别的智能体的花名册（brief 的 roster）与派活的名册——名单快照作废，
@@ -1105,6 +1132,11 @@ async function main(): Promise<void> {
       // 外联（#1441）：收尾时把结果汇报回原聊天、call_friend 那把刀的出口。推送关着 = 没有 hub = 两样都是 null；
       // 刀只挂在主场（home）——approveAll 与 session_created.cloud.home 同源
       onOutreachEnded: outreachHub === null ? null : (r) => void outreachHub.ended(workspaceId, ownerUid, r),
+      // 管理员拉人 / 请人（#1571，ADR-0367）：名单的真相在日志里，这一头只把 workspace_sessions.agent_ids 那一列跟上（同 chat_update）
+      onRosterChanged: async (agentIds) => {
+        const { error } = await supabase.from("workspace_sessions").update({ agent_ids: agentIds }).eq("id", sessionId);
+        if (error) console.warn(`[otto-runtime] bring/dismiss 写 agent_ids 失败（session=${sessionId}），等下次对账：${error.message}`);
+      },
       outreach:
         outreachHub === null || !approveAll
           ? null

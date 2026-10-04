@@ -26,6 +26,12 @@ export interface CreateAgentDraft {
   models: string[];
   /** 连接器白名单；[] = 整池放行（与 workspace_agents.tools 同口径） */
   tools: AgentToolAllow[];
+  /** 分级（#1571，ADR-0365）：职责域（agentDomain.ts 的键）。缺席 = 不带这一列（0060 没跑的库照样插得进去） */
+  domain?: string;
+  /** 1 专员 / 2 子工；缺席 = 库默认（1） */
+  tier?: 1 | 2;
+  /** 只有子工有：上级那只专员的 agentId */
+  parentAgentId?: string;
 }
 
 const asRecord = (v: unknown): Record<string, unknown> =>
@@ -122,13 +128,28 @@ export function parseCreateAgentArgs(raw: unknown): CreateAgentDraft {
   const a = asRecord(raw);
   if (a["name"] === undefined) throw new Error("name 必填，且必须是字符串（群里 @ 它用的名字）");
   const p = parseAgentFields(a);
-  return {
+  const out: CreateAgentDraft = {
     name: p.name!,
     description: p.description ?? "",
     instructions: p.instructions ?? "",
     models: p.models ?? [],
     tools: p.tools ?? [],
   };
+  // 分级那三格（#1571）：形状在这里判，「域存不存在 / 上级是不是专员」是 IO，留给调用方
+  if (a["domain"] !== undefined) {
+    if (typeof a["domain"] !== "string" || a["domain"].trim() === "") throw new Error("domain 必须是非空字符串（职责域的键，或 custom:名字）");
+    out.domain = a["domain"].trim();
+  }
+  if (a["tier"] !== undefined) {
+    if (a["tier"] !== 1 && a["tier"] !== 2) throw new Error("tier 只能是 1（专员）或 2（子工）");
+    out.tier = a["tier"];
+  }
+  if (a["parentAgentId"] !== undefined) {
+    if (typeof a["parentAgentId"] !== "string" || a["parentAgentId"].trim() === "") throw new Error("parentAgentId 必须是非空字符串");
+    out.parentAgentId = a["parentAgentId"].trim();
+  }
+  if ((out.tier === 2) !== (out.parentAgentId !== undefined)) throw new Error("子工（tier 2）必须带 parentAgentId，专员不带");
+  return out;
 }
 
 /** B-C1（#957）：改一只 agent 的那条路与建的那条路过同一份校验。桌面主进程

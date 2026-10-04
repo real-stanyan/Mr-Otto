@@ -230,6 +230,9 @@ import {
   CREATE_AGENT_TOOL_NAME, createAgentApprovalFields, createAgentApprovalSummary, parseCreateAgentArgs, scanCreateAgentThreat,
 } from "../../../src/shared/createAgentDraft.js";
 import { ADMIN_AGENT_ID, type SandboxApproval } from "../../../src/shared/workspaceAgents.js";
+import { connectorsAllowed, dispatchDenied, scopedTools, tierOf, type AgentTier } from "../../../src/shared/agentTier.js";
+import { tierPrompt } from "../../../src/shared/tierPrompt.js";
+import { createRosterTools } from "./rosterTools.js";
 import { guestTargetsInLane } from "../../../src/shared/delegation.js";
 import type { Approver } from "../../../src/loop/approvalGate.js";
 import {
@@ -292,6 +295,10 @@ export interface AgentSpec {
       可以用发起人全部的好友代理授权"是最不该有的默认。runJob 见到它就一把
       px 刀都不挂。**只增不改**：真名单里没有这个字段，行为逐字节不变 */
   degraded?: true;
+  /** 分级（#1571，ADR-0365）：三格缺席按 agentId 派生（agentTier.tierOf / domainOf） */
+  tier?: AgentTier;
+  domain?: string;
+  parentAgentId?: string | null;
 }
 
 /** 这句话点了哪几只。三级，缺一不可：
@@ -498,6 +505,10 @@ export interface CloudSessionOpts {
   /** 一通外联收尾时通知（#1441）。**必需**（同 callback 的纪律）：`null` = 这条会话不收外联
       （非外联会话，或 daemon 还没接跨会话那一头），startOutreach 回 refused；忘接线该编译不过 */
   onOutreachEnded: ((r: OutreachEnded) => void) | null;
+  /** 管理员用 bring_agent / dismiss_agent 改了这条对话的名单（#1571，ADR-0367）：daemon 接去写 workspace_sessions.agent_ids
+      （与 chat_update 那条路同一列）。可选而不是必需：名单的真相在日志里（chat_roster_changed），这一头只是列表的投影；
+      没接的话列表那一列等下次对账，不影响对话本身 */
+  onRosterChanged?: (agentIds: string[]) => Promise<void>;
   /** call_friend 那把刀的出口（#1441）：派智能体给主人的好友打电话，跨会话的编排在 daemon 的 outreachHub。
       **必需**（同 callback / onOutreachEnded 的纪律）：`null` = 这条会话不挂那把刀（daemon 没接跨会话那一头 / 推送关着）；
       忘接线该编译不过，而不是安静地跑一套「工具表里永远没有那把刀」的装配。刀只挂在主场聊天里（approveAll）、
@@ -1049,6 +1060,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   // #822 那条路会把日志里已归档的会话重新开出房间；它不会再有人答，状态写回 idle、不再心跳
   if (archived) activity.close();
   let cachedPxTools: Tool[] = [];
+  /** 此刻在跑的这只与它所在的名单（#1571 工具面）：engine 按 agentId 缓存，tools() 闭包里的 spec 是第一次装配那份，
+      等级 / 域改了要从这里读 */
+  let turnSpec: AgentSpec | null = null;
+  let turnRoster: AgentSpec[] = [];
   const now = opts.now ?? (() => Date.now());
 
   // 流式碎片的合帧（#1107）：碎片永远不落日志，出口只有 opts.onDelta；
@@ -1498,6 +1513,20 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     writer: opts.agentWriter,
     // 说明里「会不会弹卡」跟审批门读同一格（#1280 A5）：分家就是 #1206 那个形状
     approveAll: opts.approveAll,
+    // 分级护栏（#1571 第二轮第 2 条）只在主场：一域一只先复用、每主场专员上限；建成在对话里落一句让主人看见。
+    // 团队会话没有等级，照旧
+    ...(opts.approveAll ? { team: () => opts.agents({ fresh: true }), onCreated: (line: string) => logChat("system", "系统", line, false) } : {}),
+  });
+  /** 管理员拉人 / 请人（#1571，ADR-0367）：改的是这条对话的名单（chat_roster_changed），主人那一侧的 chat_update 走同一条 */
+  const rosterTools = createRosterTools({
+    team: () => opts.agents({ fresh: true }),
+    current: () => chatRoster ?? [],
+    apply: async (agentIds) => {
+      const out = await session.updateChatRoster(opts.ownerUid, { agentIds }, "管理员");
+      if (out.kind !== "ok") return out.message;
+      if (out.changed && opts.onRosterChanged !== undefined) await opts.onRosterChanged(out.agentIds).catch(() => undefined);
+      return null;
+    },
   });
 
   /** 三把 Git 刀（#1105）。**给所有 agent**，不像 create_agent 那样只给管理员：
@@ -1646,18 +1675,33 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         // 外联会话（#1441）：一把都没有——连 read_file / wiki / call_user 也不挂。朋友是客人，
         // 而这条线的全部意义就是「只说话」；提示词（deriveMessages 的外联那一支）说的也是同一句
         if (isOutreach) return [];
+        // 工具面按等级 + 域圈（#1571，ADR-0365 §2.3 第二道闸），只在主场：动手的那几把（读写文件 / bash / git / 连接器）
+        // 按 scopedTools 过；对外说话的那几把（打给朋友 / 发私聊 / 车道桥 / 建人 / 拉人）只有管理员有——它是唯一入口。
+        // 不在面里的工具**不装**（模型看不见），不是调用了再拒
+        const me = opts.approveAll && turnSpec !== null && turnSpec.agentId === spec.agentId ? turnSpec : null;
+        // 「管理员」在这里按等级认（L0）而不按 agentId：库里 admin ⇔ tier 0 用 check 钉死（0060），两种认法在生产等价；
+        // 按等级认让夹具能把任何一只标成 L0 来测对外那几把刀本身
+        const isAdmin = me === null ? spec.agentId === ADMIN_AGENT_ID : tierOf(me) === 0;
+        const hands: Tool[] = [readFileTool, writeFileTool, bashTool, ...gitTools];
+        const scopedHands = me === null ? hands : (() => {
+          const allowed = new Set(scopedTools(me, turnRoster, hands.map((t) => t.def.name)));
+          return hands.filter((t) => allowed.has(t.def.name));
+        })();
+        const px = me === null || connectorsAllowed(me, turnRoster) ? cachedPxTools : [];
+        const adminOnly = me === null || isAdmin;
         const list: Tool[] = [
-          readFileTool, writeFileTool, bashTool, wikiReadTool, wikiTool, inviteToCallTool,
+          ...scopedHands, wikiReadTool, wikiTool, inviteToCallTool,
           ...(callUserTool !== null ? [callUserTool] : []),
           // 受监督的轮里干脆不亮这把刀：亮出来只会弹一张批了也必被 mayCall 拒的卡
-          ...(callFriendTool !== null && !supervisedTurn() ? [callFriendTool] : []),
-          ...(messageFriendTool !== null && !supervisedTurn() ? [messageFriendTool] : []),
+          ...(callFriendTool !== null && adminOnly && !supervisedTurn() ? [callFriendTool] : []),
+          ...(messageFriendTool !== null && adminOnly && !supervisedTurn() ? [messageFriendTool] : []),
           // 对面公开的智能体（#1542）：只在这条车道此刻是公开的（朋友在客人名单里）才亮
-          ...(bridgeTool !== null && pairFacingOf(chatHumans, pairFacts!.peerUid) === "both" ? [bridgeTool] : []),
-          ...(spec.agentId === ADMIN_AGENT_ID ? [createAgentTool] : []),
+          ...(bridgeTool !== null && adminOnly && pairFacingOf(chatHumans, pairFacts!.peerUid) === "both" ? [bridgeTool] : []),
+          ...(isAdmin ? [createAgentTool] : []),
+          // 管理员拉人 / 请人（#1571 第二轮第 3 条）：主场里才有，外联 / 团队会话没有这回事
+          ...(isAdmin && opts.approveAll ? [rosterTools.bring, rosterTools.dismiss] : []),
           ...routineTools,
-          ...gitTools,
-          ...cachedPxTools,
+          ...px,
         ];
         // 汇报轮同理（#1441）：supervisedTurn = 客人那一轮 或 汇报轮
         // 主场群里客人点起的那一轮（#1393，ADR-0325）：**每一把刀**都要群主批，连读文件、
@@ -1815,7 +1859,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // 这一态，之前每次都会先落一条空洞的 agent_briefed 把断言顶掉第一位。
     // 这不是为了讨好那条冒烟脚本才加的特例，是这个占位本来就该服从这条
     // 通用规则——冒烟变绿只是这条规则生效的必然副产品
-    if (spec.instructions.trim() === "" && otherRoster.length === 0) return;
+    // 分级那一段（#1571，ADR-0367）只在主场加：管理员怎么派、专员只做本域、子工只听上级。进 brief 而不是现拼：
+    // 模型看见的就是日志里那一句（model-visible means logged）；名单变了（新雇了人）这一句也变，会重新 brief
+    const instructions = opts.approveAll ? spec.instructions + tierPrompt({ agent: spec, ownerName: "主人", roster }) : spec.instructions;
+    if (instructions.trim() === "" && otherRoster.length === 0) return;
 
     // **裸 store，不是 agentView 包过的那份**。理由不是"包过的会回空数组"——
     // 那个说法不准确（终审实测过）：projectForAgent 对 owner === agentId 有
@@ -1837,9 +1884,11 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // created_at 排，顺序稳定，但判据不该押在别人的排序上
     const rosterKey = (r: readonly { name: string; description: string }[]): string =>
       JSON.stringify([...r].map((x) => [x.name, x.description]).sort());
+    // 分级那一段（#1571，ADR-0367）只在主场加：管理员怎么派、专员只做本域、子工只听上级。进 brief 而不是现拼：
+    // 模型看见的就是日志里那一句（model-visible means logged）；名单变了 rosterKey 不同，会重新 brief
     if (
       already && already.type === "agent_briefed" &&
-      already.instructions === spec.instructions &&
+      already.instructions === instructions &&
       already.name === spec.name &&
       rosterKey(already.roster) === rosterKey(otherRoster)
     ) return;
@@ -1850,7 +1899,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         type: "agent_briefed",
         agentId: spec.agentId,
         name: spec.name,
-        instructions: spec.instructions,
+        instructions,
         roster: otherRoster.map((r) => ({ name: r.name, description: r.description })),
       })
     );
@@ -2252,16 +2301,25 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     }
     const candidates = roster.map((a) => ({ agentId: a.agentId, name: a.name }));
     let targets = mentionedAgents(said, candidates, spec.agentId);
+    const nameOf0 = (id: string): string => roster.find((a) => a.agentId === id)?.name ?? id;
     // 通话进行中只有通话成员接活（#1163）：@ 了通话外的那一棒不接，群里说一声——写那个
     // @ 的是模型，它该做的是先问用户、用户同意后调 invite_to_call；这一行是人看得见
     // 「它没照做」的唯一信号（与 #1055 撤掉的那条不同：那条说的是 @ 了不存在的名字）
     if (voiceCall !== null) {
       const call = voiceCall;
-      const nameOf0 = (id: string): string => roster.find((a) => a.agentId === id)?.name ?? id;
       for (const to of targets.filter((id) => !inVoiceCall(call, id))) {
         logChat("system", "系统", relayOutsideCallText(nameOf0(spec.agentId), nameOf0(to)), false);
       }
       targets = targets.filter((id) => inVoiceCall(call, id));
+    }
+    // 派活只能往下一级、报结果只能往上一级（#1571，ADR-0365 §2.3 第一道闸）：横向 / 越级的 @ 丢掉、落一句旁白。
+    // 只在主场判（团队会话没有等级）。主人点名不经过这里（那是 say 那条路）
+    if (opts.approveAll) {
+      const denied = dispatchDenied(spec.agentId, targets, roster);
+      for (const to of denied) {
+        logChat("system", "系统", `「${nameOf0(spec.agentId)}」不能直接找「${nameOf0(to)}」——派活只能往下一级，报结果只能往上一级`, false);
+      }
+      if (denied.length > 0) targets = targets.filter((id) => !denied.includes(id));
     }
     // 这一轮里 @ 了、但**没落到名单上**的那几个（#957 A-6）曾经在群里落一条
     // 「「运营」@ 了 N 个名单里没有的名字（可能改过名或还没建），这一棒没人接」。
@@ -2548,6 +2606,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // 不用重开会话——job 可能在队列里等了一会儿，起跑前重新读一次名单
       const roster = await rosterNow();
       const spec = roster.find((a) => a.agentId === job.agentId);
+      turnSpec = spec ?? null;
+      turnRoster = roster;
       if (!spec) {
         // 排队期间这只 agent 被删了（#932 坑 ③）。1a 是静默 return，那在 1b
         // 里变成了**永久的**"排队中"：开场白已经落盘、它的 mentions 里有这只
@@ -2933,7 +2993,12 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       /** 派活没成（失败 / 限速 / 名单读不出来）时群里那句系统话。**只在没人接的
           时候说**：回落成名单第一只（mention:true）时有人答，不用说 */
       let dispatchNote: string | null = null;
-      if (explicit.length === 0) {
+      // 管理员是唯一入口（#1571 第二轮，ADR-0367）：主场里没点名的话一律到管理员，由它判断自己做还是派——
+      // 不再让分类器在几只之间挑。人点了名的照旧（拉进来的专员在名单里，人能直接回它）
+      const adminEntry = opts.approveAll && roster.some((a) => a.agentId === ADMIN_AGENT_ID && a.degraded !== true);
+      if (explicit.length === 0 && adminEntry && mentionTokens(text).length === 0) {
+        targets = [ADMIN_AGENT_ID];
+      } else if (explicit.length === 0) {
         // 正文里有 @ token（哪怕解析不出——打错的名字、名单刚变过）或点了人类成员
         // = 人已经在指名，这句话有明确的收件人，分类器不该替他改主意。前者由
         // sayUnknown 那句系统话接手（「有 N 个点名找不到」），后者是说给人听的
@@ -3024,7 +3089,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // **价钱在判据的同一侧算**（#957 B2-C1）：限速原来跑在 frameHandler 里、
       // 代办入口（#1564，ADR-0363）：公开车道里客人点的名一律改成管理员——朋友的请求先到管理员，再由它下发给
       // 主人指定的那只；名单里还没有管理员（老车道）时原样，不能让朋友一句话都发不出去
-      if (isPair && fromUid !== opts.ownerUid) targets = guestTargetsInLane(targets, roster.map((a) => a.agentId));
+      // #1571 第二轮第 4 条：主场里任何不是主人的人（群里的客人）点谁都改成管理员——群里只能 @ 人，别人家的智能体由那家的管理员接
+      if ((isPair || opts.approveAll) && fromUid !== opts.ownerUid) targets = guestTargetsInLane(targets, roster.map((a) => a.agentId));
       // 按客户端自报的 mention/mentions 计价，而这句话真正会起几条 turn 是上面
       // resolveTargets 之后才知道的 —— 省掉 mentions 字段的客户端发一句 @ 了
       // 40 个名字的话，那边扣 1 个令牌、这边起 40 条真花钱的模型调用。问价挪到
@@ -3306,7 +3372,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       if (isPair && patch.humans !== undefined && patch.humans.some((h) => h.uid !== pairFacts?.peerUid)) {
         return { kind: "not_group", message: "车道里只能有配对的那位朋友" };
       }
-      if (chatKind !== "group" && !isPair) {
+      // 管理员那条私聊（#1571 第二轮第 3 条）：管理员可以把专员拉进来——名单长了它还是「与管理员的私聊」（admin 恒排第一，
+      // 0037 的唯一索引按 agent_ids[1] 认它），只是多了几只在场。别的私聊照旧改不了
+      const adminDm = chatKind === "dm" && opts.approveAll && (chatRoster ?? [])[0] === ADMIN_AGENT_ID;
+      if (chatKind !== "group" && !isPair && !adminDm) {
         return {
           kind: "not_group",
           message: chatKind === "dm" ? "私聊的名单改不了" : chatKind === "outreach" ? "这条线的名单改不了" : "这不是一条群聊",

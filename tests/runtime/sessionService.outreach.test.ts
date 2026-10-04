@@ -17,6 +17,7 @@ import type { ModelAdapter, ModelReply } from "../../src/model/adapter.js";
 import type { ExecutionWorld } from "../../src/world/executionWorld.js";
 import type { PxCallDeps } from "../../services/runtime/src/pxTools.js";
 import type { AgentToolAllow } from "../../src/shared/agentToolAllow.js";
+import type { AgentTier } from "../../src/shared/agentTier.js";
 import { tempDir } from "../helpers/tempDir.js";
 import { createInMemoryAgentWriter } from "../../services/runtime/src/agentRegistry.js";
 import { createInMemoryMentionInbox } from "../../services/runtime/src/mentionInbox.js";
@@ -33,8 +34,10 @@ const fakeWorld: ExecutionWorld = {
   http: { postJson: async () => ({}) },
 };
 const px: PxCallDeps = { edgeBase: "https://edge.example", runtimeSecret: "sek" };
-const OPS = { agentId: "ops", name: "运维", description: "", instructions: "", models: ["fake-model"], tools: [] as AgentToolAllow[] };
-const ADS = { agentId: "ads", name: "广告", description: "", instructions: "", models: ["fake-model"], tools: [] as AgentToolAllow[] };
+// 主场里对外的刀（call_friend / message_friend）只有 L0 有（#1571，ADR-0367）：这份夹具把运维标成 L0——
+// 测的是外联本身，不是等级（等级的判据在 sessionService.tiers.test.ts）
+const OPS = { agentId: "ops", name: "运维", description: "", instructions: "", models: ["fake-model"], tools: [] as AgentToolAllow[], tier: 0 as AgentTier };
+const ADS = { agentId: "ads", name: "广告", description: "", instructions: "", models: ["fake-model"], tools: [] as AgentToolAllow[], tier: 1 as AgentTier };
 
 function newStore(): EventStore {
   return new EventStore(join(tempDir("mrotto-runtime-outreach-"), "session.db"));
@@ -767,7 +770,8 @@ describe("call_friend 的挂载与「这一轮能不能打」（#1441 Task 10）
     await session.settled();
     expect(events.some((e) => e.type === "agent_relay")).toBe(true);
     expect(calls).toEqual([]);
-    expect(resultOf(events)).toContain("亲口");
+    // #1571（ADR-0367）：对外的刀只有 L0 有——接力棒到了专员（广告，L1）手上，call_friend 根本不在它的工具表里
+    expect(resultOf(events)).toContain("未知工具: call_friend");
     store.close();
   });
 
