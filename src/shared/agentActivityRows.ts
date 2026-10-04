@@ -3,7 +3,7 @@
 // 这里只管「表里那一行此刻说明什么」。手机现在用，桌面等 #1403 之后接同一份。
 
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { ACTIVITY_STALE_MS, LIVE_ACTIVITIES, isAgentActivity, mostUrgent, type AgentActivity } from "./agentActivity.js";
+import { ACTIVITY_ORDER, ACTIVITY_STALE_MS, ACTIVITY_TEXT, LIVE_ACTIVITIES, isAgentActivity, type AgentActivity } from "./agentActivity.js";
 import type { SessionLast } from "./sessionLast.js";
 
 export interface ActivityRow {
@@ -51,13 +51,31 @@ export function sessionAgentActivity(rows: ActivityIndex, sessionId: string, age
     会话那一行上（sessionAgentActivity）。算进来的话，排着队被移出群的那只、额度窗早就刷新了的那只，
     这张脸会永远红着 / 黄着。一行都不知道 = null */
 export function workspaceAgentActivity(rows: ActivityIndex, workspaceId: string, agentId: string, now: number): AgentActivity | null {
-  const known: AgentActivity[] = [];
+  return workspaceAgentWhere(rows, workspaceId, agentId, now)?.activity ?? null;
+}
+
+/** 同 workspaceAgentActivity，还说**在哪条会话里**（#1566 智能体列表那一行「执行中 · 在〈群名〉」）。
+    取的是最要紧那一档所在的会话；几条会话并列同一档时取 since 最新的那条。闲着 / 不知道 = sessionId 没意义但照给 */
+export function workspaceAgentWhere(rows: ActivityIndex, workspaceId: string, agentId: string, now: number): { activity: AgentActivity; sessionId: string } | null {
+  let best: { activity: AgentActivity; sessionId: string; since: number } | null = null;
   for (const r of rows.values()) {
     if (r.workspaceId !== workspaceId || r.agentId !== agentId) continue;
     const a = liveActivity(r, now);
-    if (a !== null && (LIVE_ACTIVITIES.has(a) || a === "idle")) known.push(a);
+    if (a === null || !(LIVE_ACTIVITIES.has(a) || a === "idle")) continue;
+    const better = best === null
+      || ACTIVITY_ORDER.indexOf(a) < ACTIVITY_ORDER.indexOf(best.activity)
+      || (a === best.activity && r.since > best.since);
+    if (better) best = { activity: a, sessionId: r.sessionId, since: r.since };
   }
-  return mostUrgent(known);
+  return best === null ? null : { activity: best.activity, sessionId: best.sessionId };
+}
+
+/** 智能体列表那一行的状态字（#1566）：闲着 / 不知道写「空闲」；在忙写档位，忙在群里的再带「· 在〈群名〉」
+    （私聊里忙的不带——这一行本身就是那条私聊）。`titleOf` 回 null = 那条会话不是群（或认不出） */
+export function agentStatusText(where: { activity: AgentActivity; sessionId: string } | null, titleOf: (sessionId: string) => string | null): string {
+  if (where === null || where.activity === "idle") return "空闲";
+  const title = titleOf(where.sessionId);
+  return title === null ? ACTIVITY_TEXT[where.activity] : `${ACTIVITY_TEXT[where.activity]} · 在〈${title}〉`;
 }
 
 /** 拉一次。只拉不在 idle 的行：没有那一行就是闲着 / 不知道，画法相同——这张表只增不删，闲着的行
