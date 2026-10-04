@@ -6,7 +6,7 @@ import {
   CHAT_MEDIA_BUCKET, DM_MEDIA_BUCKET, IMAGE_MAX_EDGE, MEDIA_MAX_PER_MESSAGE, MEDIA_PLACEHOLDER, VIDEO_MAX_BYTES,
   VIDEO_MAX_MS, chatMediaPath, dmMediaPath, dmPosterPath, extForMime, fitImageSteps, imageNeedsReencode,
   mediaBodyHidden, mediaBubbleBox, mediaPlaceholder, parseChatMedia, parseDmMedia, planMediaMessages,
-  videoDurationLabel, videoProblem, type ChatMediaItem,
+  videoDurationLabel, videoProblem, sendMediaMessage, missingMediaColumn, type ChatMediaItem,
 } from "../../src/shared/chatMedia.js";
 import { IMAGE_FIT_LADDER, IMAGE_FIT_TARGET_BYTES } from "../../src/shared/imageFit.js";
 import { dmPreview } from "../../src/shared/wechatInbox.js";
@@ -245,5 +245,83 @@ describe("0052：两个私有 bucket + messages.media", () => {
     expect(sql).toMatch(/alter table public\.messages add column if not exists media jsonb/);
     expect(sql).toMatch(/between 1 and 9/);
     expect(sql).not.toMatch(/drop constraint[\s\S]*body/);
+  });
+});
+
+describe("sendMediaMessage：先传文件、再写消息；半路失败把传上去的收掉", () => {
+  const ids = [U, "44444444-4444-4444-8444-444444444444"];
+  function deps(o: { failUpload?: string; failInsert?: boolean } = {}) {
+    const log: string[] = [];
+    let n = 0;
+    return {
+      log,
+      d: {
+        newId: () => ids[n++] ?? "55555555-5555-4555-8555-555555555555",
+        upload: async (path: string, uri: string, mime: string, onProgress: (sent: number) => void) => {
+          if (o.failUpload !== undefined && path.endsWith(o.failUpload)) throw new Error("网断了");
+          onProgress(50);
+          log.push(`up ${path} ${uri} ${mime}`);
+        },
+        remove: async (paths: string[]) => {
+          log.push(`rm ${paths.join(",")}`);
+        },
+        insert: async (body: string, media: ChatMediaItem[]) => {
+          if (o.failInsert === true) throw new Error("不是好友了");
+          log.push(`insert ${body} ${media.length}`);
+          return { id: 1, body, media };
+        },
+      },
+    };
+  }
+  const photo = { kind: "image" as const, uri: "file:///a.jpg", mediaType: "image/jpeg", bytes: 100, width: 10, height: 20 };
+  const clip = { kind: "video" as const, uri: "file:///b.mov", mediaType: "video/quicktime", bytes: 300, width: 9, height: 16, durationMs: 3000, posterUri: "file:///b.jpg" };
+
+  it("图片：路径按 <我>/<对方>/<uuid>，写进去的 media 与路径一致", async () => {
+    const { d, log } = deps();
+    const r = await sendMediaMessage(d, A, B, [photo]);
+    expect(log).toEqual([`up ${A}/${B}/${U}.jpg file:///a.jpg image/jpeg`, "insert [图片] 1"]);
+    expect(r.media).toEqual([{ kind: "image", path: `${A}/${B}/${U}.jpg`, mediaType: "image/jpeg", bytes: 100, width: 10, height: 20 }]);
+  });
+  it("视频：先传视频再传封面，封面与视频同 id", async () => {
+    const { d, log } = deps();
+    const r = await sendMediaMessage(d, A, B, [clip]);
+    expect(log.slice(0, 2)).toEqual([`up ${A}/${B}/${U}.mov file:///b.mov video/quicktime`, `up ${A}/${B}/${U}.poster.jpg file:///b.jpg image/jpeg`]);
+    expect(r.media[0]).toMatchObject({ kind: "video", durationMs: 3000, poster: `${A}/${B}/${U}.poster.jpg` });
+    expect(r.body).toBe("[视频]");
+  });
+  it("封面传不上去：不带封面照发（封面是锦上添花）", async () => {
+    const { d } = deps({ failUpload: ".poster.jpg" });
+    const r = await sendMediaMessage(d, A, B, [clip]);
+    expect(r.media[0]?.poster).toBeUndefined();
+  });
+  it("第二张传失败：已传的那张收掉、不写消息、错误抛给调用方", async () => {
+    const { d, log } = deps({ failUpload: `${ids[1]}.jpg` });
+    await expect(sendMediaMessage(d, A, B, [photo, photo])).rejects.toThrow("网断了");
+    expect(log).toEqual([`up ${A}/${B}/${U}.jpg file:///a.jpg image/jpeg`, `rm ${A}/${B}/${U}.jpg`]);
+  });
+  it("写消息失败：文件全收掉", async () => {
+    const { d, log } = deps({ failInsert: true });
+    await expect(sendMediaMessage(d, A, B, [clip])).rejects.toThrow("不是好友了");
+    expect(log.at(-1)).toBe(`rm ${A}/${B}/${U}.mov,${A}/${B}/${U}.poster.jpg`);
+  });
+  it("进度按字节算、只增不减、最后是 1；超过 9 样当场拒", async () => {
+    const seen: number[] = [];
+    const { d } = deps();
+    await sendMediaMessage(d, A, B, [photo, photo], (f) => seen.push(f));
+    expect(seen.at(-1)).toBe(1);
+    expect([...seen].sort((a, b) => a - b)).toEqual(seen);
+    await expect(sendMediaMessage(d, A, B, Array.from({ length: 10 }, () => photo))).rejects.toThrow();
+  });
+});
+
+describe("missingMediaColumn：0052 还没跑时退回不带 media 的查询", () => {
+  it("认 42703 / PGRST204 且话里提到 media", () => {
+    expect(missingMediaColumn({ code: "42703", message: "column messages.media does not exist" })).toBe(true);
+    expect(missingMediaColumn({ code: "PGRST204", message: "Could not find the 'media' column of 'messages' in the schema cache" })).toBe(true);
+  });
+  it("别的错不认（不把真故障吞成「没这一列」）", () => {
+    expect(missingMediaColumn({ code: "42501", message: "permission denied" })).toBe(false);
+    expect(missingMediaColumn({ code: "42703", message: "column messages.foo does not exist" })).toBe(false);
+    expect(missingMediaColumn(new Error("boom"))).toBe(false);
   });
 });

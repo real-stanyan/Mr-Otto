@@ -229,6 +229,102 @@ export function videoDurationLabel(ms: number): string {
   return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
 }
 
+/** 手机上准备好、还没传的一样：本机文件 URI + 传完要写进 media 的那几格 */
+export interface PreparedMedia {
+  kind: "image" | "video";
+  uri: string;
+  mediaType: string;
+  bytes: number;
+  width: number;
+  height: number;
+  durationMs?: number;
+  /** 视频封面的本机 JPEG。缺席 = 没生成出来 */
+  posterUri?: string;
+}
+
+export interface MediaSendDeps<T> {
+  newId(): string;
+  /** 把本机文件传到 bucket 的 path。onProgress 报这个文件已经发出去的字节数 */
+  upload(path: string, uri: string, mime: string, onProgress: (sent: number) => void): Promise<void>;
+  /** 收掉传了一半的那几个（尽力而为，失败不抛） */
+  remove(paths: string[]): Promise<void>;
+  /** 写消息那一行 */
+  insert(body: string, media: ChatMediaItem[]): Promise<T>;
+}
+
+/**
+ * 发一条带媒体的私聊：**先把文件全传上去、再写消息**——反过来的话对方会先收到一条点不开的消息。
+ * 半路失败（某个文件没传上去 / 消息没写成）把已经传上去的收掉再抛：留着就是 bucket 里没人引用的孤儿，
+ * 而 P6 的生命周期只管「删会话时一起删」，私聊那边永久保留，孤儿永远不会被收。
+ * 视频封面传不上去不算失败：不带封面照发，气泡画一块底色加播放钮。
+ */
+export async function sendMediaMessage<T>(
+  deps: MediaSendDeps<T>,
+  sender: string,
+  recipient: string,
+  items: readonly PreparedMedia[],
+  onProgress?: (fraction: number) => void,
+): Promise<T> {
+  if (items.length === 0 || items.length > MEDIA_MAX_PER_MESSAGE) throw new Error(`一条消息里放 1~${MEDIA_MAX_PER_MESSAGE} 样`);
+  const total = items.reduce((n, it) => n + it.bytes, 0) || 1;
+  let done = 0;
+  let best = 0;
+  const report = (sentNow: number): void => {
+    const f = Math.min(1, (done + sentNow) / total);
+    if (f > best) {
+      best = f;
+      onProgress?.(f);
+    }
+  };
+  const uploaded: string[] = [];
+  const media: ChatMediaItem[] = [];
+  try {
+    for (const it of items) {
+      const id = deps.newId();
+      const path = dmMediaPath(sender, recipient, id, it.mediaType);
+      await deps.upload(path, it.uri, it.mediaType, (sent) => report(Math.min(sent, it.bytes)));
+      uploaded.push(path);
+      done += it.bytes;
+      report(0);
+      const base: ChatMediaItem = { kind: it.kind, path, mediaType: it.mediaType, bytes: it.bytes, width: it.width, height: it.height };
+      if (it.kind === "video") {
+        let poster: string | undefined;
+        if (it.posterUri !== undefined) {
+          const p = dmPosterPath(sender, recipient, id);
+          try {
+            await deps.upload(p, it.posterUri, "image/jpeg", () => undefined);
+            uploaded.push(p);
+            poster = p;
+          } catch {
+            // 封面传不上去：不带封面照发
+          }
+        }
+        media.push({ ...base, durationMs: it.durationMs ?? 0, ...(poster !== undefined ? { poster } : {}) });
+      } else {
+        media.push(base);
+      }
+    }
+    const row = await deps.insert(mediaPlaceholder(media), media);
+    report(0);
+    if (best < 1) onProgress?.(1);
+    return row;
+  } catch (e) {
+    if (uploaded.length > 0) await deps.remove(uploaded).catch(() => undefined);
+    throw e;
+  }
+}
+
+/**
+ * 「messages 上还没有 media 这一列」（0052 还没在库上跑）。只认 undefined_column（42703）与 PostgREST 的
+ * 「schema cache 里没有这一列」（PGRST204），且话里提到 media——别的错一概不认，不把真故障吞成「没这一列」。
+ */
+export function missingMediaColumn(err: unknown): boolean {
+  if (typeof err !== "object" || err === null) return false;
+  const o = err as { code?: unknown; message?: unknown };
+  if (o.code !== "42703" && o.code !== "PGRST204") return false;
+  return typeof o.message === "string" && /\bmedia\b/.test(o.message);
+}
+
 /** 气泡里单张图 / 一段视频画多大：长边封顶 200，短边至少 80（太细长的图别画成一根线），宽高读不出画 160 的方块 */
 export function mediaBubbleBox(width: number, height: number, max = 200, min = 80): { width: number; height: number } {
   if (!(width > 0) || !(height > 0)) return { width: 160, height: 160 };
