@@ -50,8 +50,8 @@ describe("FriendChatScreen：两条车道合在一条时间线上", () => {
   });
   it("朝向从日志里的客人名单推；朋友说的话标 friend（laneItemsOf 带 selfUid）", () => {
     expect(src).toMatch(/pairFacingOf\(chatHumansNow\(/);
-    expect(src).toMatch(/laneItemsOf\(laneEvents, selfUid\)/);
-    expect(src).toMatch(/laneItemsOf\(peerEvents, selfUid\)/);
+    // #1565 起车道不再逐条铺在主页上：两条车道各折成任务（laneTasksOf 带 selfUid 判「我 / 朋友」），见 taskDrawerWiring.test
+    expect(src).toMatch(/const tasks = laneTasksOf\(events, selfUid, nameOfAgent\);/);
     expect(src).toMatch(/item\.who === "friend" \? <PersonTile/);
   });
   it("@ 名单合并两边的智能体（#1544 起还列我主场里没带进来的那几只，@ 了先带进来）；语音松手那一刀也按两条车道判", () => {
