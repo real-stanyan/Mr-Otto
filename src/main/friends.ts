@@ -13,12 +13,13 @@ import type {
   FriendWorkspace, RealtimeHealth, WorkspacePresence, WorkspacesSnapshot,
 } from "../shared/friends.js";
 import type { WorkspaceMentionRow } from "../shared/workspaceMentions.js";
+import { parseDmMedia } from "../shared/chatMedia.js";
 
 // email 可空:auth.users.email 本就可为 null(手机/匿名注册),见 docs/adr/0025。
 // null 只活到主进程边界为止,toFriendProfile 归一成 ""
 export type ProfileRow = { id: string; email: string | null; name: string | null; avatar_url: string | null };
 export type FriendshipRow = { id: string; requester: string; addressee: string; status: "pending" | "accepted" };
-export type MessageRow = { id: number; sender: string; recipient: string; body: string; created_at: string };
+export type MessageRow = { id: number; sender: string; recipient: string; body: string; created_at: string; media?: unknown };
 /** 心跳行。repo_key/repo_branch 是 0008 加的列:心跳那条腿顺便把"我在哪"带上(issue #167),
     可选是因为没跑 0008 的库 select 不到这两列——此时只有在线点,没有分支 */
 export type LastSeenRow = {
@@ -104,8 +105,13 @@ export function toFriendProfile(row: ProfileRow): FriendProfile {
   return { id: row.id, email: row.email ?? "", name: row.name ?? "", avatarUrl: row.avatar_url ?? "" };
 }
 
+/** media 只放解析得出、且路径落在这一对人目录下的（parseDmMedia）；认不出就不带，那条照画 body（占位或原文） */
 export function toDirectMessage(row: MessageRow): DirectMessage {
-  return { id: row.id, sender: row.sender, recipient: row.recipient, body: row.body, createdAt: row.created_at };
+  const media = parseDmMedia(row.media, row.sender, row.recipient);
+  return {
+    id: row.id, sender: row.sender, recipient: row.recipient, body: row.body, createdAt: row.created_at,
+    ...(media !== null ? { media } : {}),
+  };
 }
 
 /** 关系行 + 对方 profile → 三组快照。profile 缺席的行丢弃(别渲染幽灵) */

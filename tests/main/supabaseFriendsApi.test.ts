@@ -123,3 +123,52 @@ describe("心跳在没跑 0008 的库上退化", () => {
     await expect(createSupabaseFriendsApi(client).touchPresence("me", null)).rejects.toMatchObject({ code: "42501" });
   });
 });
+
+const ME = "11111111-1111-4111-8111-111111111111"; // dmOr 只认 uuid（防注入），listMessages 的两个 id 得是真 uuid
+const U2 = "22222222-2222-4222-8222-222222222222";
+
+describe("私信在没跑 0052 的库上退化（#1492）", () => {
+  /** 假 client：messages 的 select 按「有没有带 media 列」决定报不报缺列；链式方法都回自己，await 时出结果 */
+  function fakeClient(hasMedia: boolean, otherError?: { message: string; code: string }) {
+    const cols: string[] = [];
+    const from = () => ({
+      select: (c: string) => {
+        cols.push(c);
+        const res = otherError !== undefined
+          ? { data: null, error: otherError }
+          : !hasMedia && c.includes("media")
+            ? { data: null, error: { message: "column messages.media does not exist", code: "42703" } }
+            : { data: [{ id: 1, sender: "u2", recipient: "me", body: "[语音]", created_at: "t" }], error: null };
+        const q: Record<string, unknown> = {};
+        for (const k of ["or", "order", "limit", "lt", "eq", "gt"]) q[k] = () => q;
+        q.then = (ok: (v: unknown) => unknown, bad?: (e: unknown) => unknown) => Promise.resolve(res).then(ok, bad);
+        return q;
+      },
+    });
+    return { client: { from } as unknown as SupabaseClient, cols };
+  }
+
+  it("有列：带 media 一次查成", async () => {
+    const { client, cols } = fakeClient(true);
+    const api = createSupabaseFriendsApi(client);
+    expect(await api.listMessages(ME, U2)).toHaveLength(1);
+    expect(cols).toEqual(["id,sender,recipient,body,created_at,media"]);
+  });
+
+  it("缺列：退回不带 media，之后记住不再试；收件箱同理", async () => {
+    const { client, cols } = fakeClient(false);
+    const api = createSupabaseFriendsApi(client);
+    expect(await api.listMessages(ME, U2)).toHaveLength(1);
+    await api.listInboxSince("me", 0);
+    expect(cols).toEqual([
+      "id,sender,recipient,body,created_at,media",
+      "id,sender,recipient,body,created_at",
+      "id,sender,recipient,body,created_at",
+    ]);
+  });
+
+  it("别的错误照样上抛，不吞成「没这一列」", async () => {
+    const { client } = fakeClient(true, { message: "rls", code: "42501" });
+    await expect(createSupabaseFriendsApi(client).listMessages(ME, U2)).rejects.toMatchObject({ code: "42501" });
+  });
+});

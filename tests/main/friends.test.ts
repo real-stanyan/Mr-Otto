@@ -189,6 +189,27 @@ describe("FriendsManager 关系链", () => {
       value: [{ id: 7, sender: "u2", recipient: "me", body: "yo", createdAt: "2026-08-18T00:00:00Z" }],
     });
   });
+
+  it("行里带 media：按这一对人的目录解析进 DirectMessage；不在目录下 / 形状不对就不带（照画 body）", async () => {
+    const voice = { kind: "audio", path: "u2/me/x.m4a", mediaType: "audio/mp4", bytes: 1000, width: 0, height: 0, durationMs: 3000, transcript: "到了" };
+    const api = fakeApi({
+      listMessages: vi.fn(async () => [
+        { id: 8, sender: "u2", recipient: "me", body: "[语音]", created_at: "t", media: [voice] },
+        { id: 9, sender: "u2", recipient: "me", body: "[语音]", created_at: "t", media: [{ ...voice, path: "zz/me/x.m4a" }] },
+        { id: 10, sender: "u2", recipient: "me", body: "hi", created_at: "t", media: null },
+      ]),
+    });
+    const m = new FriendsManager({ api, push: noPush });
+    const res = await m.listMessages("u2");
+    expect(res).toEqual({
+      ok: true,
+      value: [
+        { id: 8, sender: "u2", recipient: "me", body: "[语音]", createdAt: "t", media: [voice] },
+        { id: 9, sender: "u2", recipient: "me", body: "[语音]", createdAt: "t" },
+        { id: 10, sender: "u2", recipient: "me", body: "hi", createdAt: "t" },
+      ],
+    });
+  });
 });
 
 describe("FriendsManager 生命周期", () => {

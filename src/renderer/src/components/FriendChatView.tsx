@@ -20,6 +20,7 @@ import { SidebarNub } from "./SidebarNub.js";
 import { buildChatRows, timeLabel, type ChatMessage } from "../lib/friendsState.js";
 import { SessionShareCard } from "./SessionShareCard.js";
 import { decodeEnvelope } from "../../../shared/sessionPackageCodec.js";
+import { voiceNoteText } from "../../../shared/chatMedia.js";
 
 // 好友未选中/dmByFriend 里没这个人时的兜底——模块级常量而非每次渲染 `?? []`,
 // 保证 selector 每次返回同一引用,不触发 zustand 无谓重渲(仓库 selector 约定)
@@ -156,7 +157,8 @@ export function FriendChatView() {
                             variant={failed ? "destructive" : row.mine ? "tinted" : "muted"}
                             className={`dm-bubble ${m.status === "sending" ? "opacity-60" : ""}`}
                           >
-                            <BubbleContent className="whitespace-pre-wrap">{m.body}</BubbleContent>
+                            {/* 语音（#1492）桌面先不放音：显示「[语音] 转写」，转写是发送方手机识别的 */}
+                            <BubbleContent className="whitespace-pre-wrap">{voiceNoteText(m.media) ?? m.body}</BubbleContent>
                           </Bubble>
                         )}
                         {/* 时间/状态只在组尾出现:每条都盖一行时间会把对话读成日志 */}
