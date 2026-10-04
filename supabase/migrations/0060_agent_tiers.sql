@@ -12,7 +12,7 @@
 --           库里只管非空；形状在 shared 校验（清单会加，不写进 check）。
 --   parent_agent_id  只有 tier=2 有，指同主场里的一只 tier=1（fk + check；上级是不是 1 由 shared 校验 + runtime 复核——
 --           跨行的条件 check 写不了，触发器又多一处要维护的逻辑，这一条先放在应用层）。
--- 删 L1 连带删它的 L2（fk on delete cascade）。**还没有在生产执行**。
+-- 删 L1 连带删它的 L2（fk on delete cascade）。**2026-10-05 已在生产执行**（单事务；清除维护者在会话里确认过，#1580）。
 
 alter table public.workspace_agents add column if not exists tier smallint not null default 1;
 alter table public.workspace_agents add column if not exists domain text not null default 'custom:未分配';
@@ -23,6 +23,10 @@ alter table public.workspace_agents add constraint workspace_agents_tier_range c
 
 alter table public.workspace_agents drop constraint if exists workspace_agents_domain_nonempty;
 alter table public.workspace_agents add constraint workspace_agents_domain_nonempty check (char_length(domain) between 1 and 40);
+
+-- 管理员先落成 0 / 'admin'，下面那条 admin ⇔ 0 的 check 才建得起来：新列默认 tier=1，存量的 admin 行全是 1，
+-- 先建约束会 23514（2026-10-05 生产前在事务里试跑撞到，#1580）
+update public.workspace_agents set tier = 0, domain = 'admin', parent_agent_id = null where agent_id = 'admin';
 
 alter table public.workspace_agents drop constraint if exists workspace_agents_admin_tier;
 alter table public.workspace_agents add constraint workspace_agents_admin_tier check ((agent_id = 'admin') = (tier = 0));
