@@ -62,7 +62,9 @@ export function createRoutineTools(deps: RoutineToolDeps): Tool[] {
   const schedule: Tool = {
     def: {
       name: SCHEDULE_TASK_TOOL_NAME,
+      // 「你能定时」放最前（#1561）：team wiki 里早先记过「没有定时能力」的工作区，模型信那条不信工具表
       description:
+        "你能定时：用户要你到点提醒 / 到点做某事时用它，不要叫用户到点再来喊你。" +
         "给自己记一条定时任务：到点我会在这条私聊里收到一句「定时任务到点」，然后按任务去做。" +
         "一次性的（kind once）跑完就自动停用；每天 / 每周几的（daily / weekly）长期有效。" +
         "时间写**墙上时间**，不带时区；tz 不传 = 主人设备的时区。人说的是相对时间（「今天下午三点」「明早」）就按对话里的「现在是 / 今天是」换算。" +

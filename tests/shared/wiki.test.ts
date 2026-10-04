@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  WIKI_PROMPT_INTRO,
   WIKI_SCHEMA_PATH, agentIdOfPage, agentPagePath, classifyWikiPath, extractWikiLinks, indexGroups,
   isRemovableWikiPath, parseIndex, parseWikiPage, renderIndex, serializeWikiPage, singleLine,
   validateWikiFields, type WikiPage,
@@ -303,5 +304,15 @@ describe("投影（spec §3.2）", () => {
     expect(cut).toMatch(/索引还有 \d+ 行/);
     expect(cut.split("\n").slice(0, -1).every((l) => l.startsWith("- [["))).toBe(true);
     expect(truncateIndexForPrompt("短")).toBe("短");
+  });
+});
+
+describe("wiki 提示词：能力以工具表为准（#1561）", () => {
+  it("wiki 里说做不到、工具表里有的，以工具为准并改掉那条", () => {
+    expect(WIKI_PROMPT_INTRO).toContain("能做什么以这一轮你手上的工具为准");
+    expect(WIKI_PROMPT_INTRO).toContain("那条是旧记录");
+  });
+  it("不记自己能不能做什么", () => {
+    expect(WIKI_PROMPT_INTRO).toContain("不记「自己能做 / 不能做什么」");
   });
 });
