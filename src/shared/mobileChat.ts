@@ -477,11 +477,28 @@ export function chatCentre(o: {
 export function screenOwnsSession(o: {
   pageSessionId: string | null;
   draftAgentId: string | null;
-  current: { sessionId: string; chat?: CsChatInfo | null } | null;
+  current: { sessionId: string; chat?: CsChatInfo | null | undefined } | null;
 }): boolean {
   const cur = o.current;
   if (cur === null) return false;
   if (o.pageSessionId !== null) return cur.sessionId === o.pageSessionId;
   if (o.draftAgentId === null) return false;
   return cur.chat?.kind === "dm" && cur.chat.agentIds.includes(o.draftAgentId);
+}
+
+/** 离开一页时能不能断开那条云会话连接（#1461 车道卡在「连接中」）。手机同一时刻只连一条，几个页面轮流拿它：
+    只在「此刻在开的那条」与「此刻开着的那条」都归这一页（`owns` 认它）、或者谁都不占着时才断。
+    不判的真机形状：从智能体私聊退回列表、马上点进朋友私聊——车道早就查到了，朋友私聊页一挂载就开车道，
+    而智能体私聊页的卸载要等退场动画放完才跑，那时它无条件 closeChat 把刚开的车道断掉，朋友私聊页的
+    「回到这一页再进一次房」不会再跑（它一直在前台），横幅就永远停在「连接中」 */
+export function mayCloseConnection(o: {
+  /** 正在开、还没回来的那一条（openChat 进行中） */
+  pending: { sessionId: string; chat?: CsChatInfo | null | undefined } | null;
+  /** 此刻开着的那一条 */
+  current: { sessionId: string; chat?: CsChatInfo | null | undefined } | null;
+  owns(s: { sessionId: string; chat?: CsChatInfo | null | undefined }): boolean;
+}): boolean {
+  if (o.pending !== null && !o.owns(o.pending)) return false;
+  if (o.current !== null && !o.owns(o.current)) return false;
+  return true;
 }
