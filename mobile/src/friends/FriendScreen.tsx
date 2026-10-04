@@ -16,7 +16,9 @@ import { usePalette } from "../theme.js";
 import { Group, Note, Row } from "../ui.js";
 import { PersonTile } from "../wx/Avatar.js";
 import { FriendAvatar } from "./FriendAvatar.js";
-import { drop, useFriends } from "./friendsStore.js";
+import { drop, setTier, useFriends } from "./friendsStore.js";
+import { TierPickDialog } from "./TierPickDialog.js";
+import { TIER_DESC, TIER_LABEL } from "../../../src/shared/friendTier.js";
 
 type Props = NativeStackScreenProps<RootStackParams, "Friend">;
 
@@ -29,6 +31,9 @@ export function FriendScreen({ route, navigation }: Props) {
   const [grouping, setGrouping] = useState<{ key: number; visible: boolean } | null>(null);
   const created = useRef<string | null>(null);
   const [confirm, setConfirm] = useState(false);
+  const [picking, setPicking] = useState<{ key: number; visible: boolean } | null>(null);
+  const [tierBusy, setTierBusy] = useState(false);
+  const [tierError, setTierError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const done = useRef(false);
@@ -54,6 +59,14 @@ export function FriendScreen({ route, navigation }: Props) {
           <Row label="一起在的群" value={together.length === 0 ? "没有" : together.join("、")} />
         </Group>
         {accepted ? (
+          // 好友权限（#1494，ADR-0350）：我给 TA 的可改，TA 给我的只读，生效 = 两边的最小值
+          <Group footer={TIER_DESC[row.tiers.effective]}>
+            <Row label="我给 TA 的权限" value={TIER_LABEL[row.tiers.mine]} chevron onPress={() => { setTierError(null); setPicking({ key: Date.now(), visible: true }); }} />
+            <Row label="TA 给我的权限" value={TIER_LABEL[row.tiers.theirs]} />
+            <Row label="实际生效" value={TIER_LABEL[row.tiers.effective]} />
+          </Group>
+        ) : null}
+        {accepted ? (
           <View>
             <CenterAction icon="message-circle" label="发消息" onPress={() => navigation.navigate("FriendChat", { uid })} />
             {home.home !== null ? (
@@ -68,6 +81,34 @@ export function FriendScreen({ route, navigation }: Props) {
           <Row label={accepted ? "删除朋友" : "撤回申请"} align="center" tone="destructive" onPress={() => { setError(null); setConfirm(true); }} />
         </Group>
       </ScrollView>
+      {picking !== null ? (
+        <TierPickDialog
+          key={picking.key}
+          visible={picking.visible}
+          title="我给 TA 的权限"
+          lead={`${name} 那边给你开到「${TIER_LABEL[row.tiers.theirs]}」。`}
+          initial={row.tiers.mine}
+          okLabel="保存"
+          busy={tierBusy}
+          error={tierError}
+          onOk={(tier) => {
+            void (async () => {
+              setTierBusy(true);
+              setTierError(null);
+              try {
+                await setTier(row.friendshipId, row.direction, tier);
+                setPicking((p) => (p === null ? p : { ...p, visible: false }));
+              } catch (e) {
+                setTierError(e instanceof Error ? e.message : String(e));
+              } finally {
+                setTierBusy(false);
+              }
+            })();
+          }}
+          onClose={() => setPicking((p) => (p === null ? p : { ...p, visible: false }))}
+          onExited={() => setPicking(null)}
+        />
+      ) : null}
       {grouping !== null && home.home !== null ? (
         <NewGroupDialog
           key={grouping.key}

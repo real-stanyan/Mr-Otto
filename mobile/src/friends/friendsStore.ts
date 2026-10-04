@@ -10,6 +10,7 @@
 // · 图片 / 视频（#1443 P1）：先在这条线底下挂一条「发送中」的本地气泡（pending），文件传完、消息写成之后换成真行；
 //   失败停在原地带一句原因，人点「重试」再跑一遍、点「删除」丢掉。pending 只活在内存里：App 被杀掉就没了
 //   （文件已经传上去的那几个由 sendMediaMessage 在失败时收掉；被杀在半路的那几个是已知的孤儿）。
+import type { FriendTier } from "../../../src/shared/friendTier.js";
 import * as ExpoCrypto from "expo-crypto";
 import { useSyncExternalStore } from "react";
 import { AppState } from "react-native";
@@ -22,7 +23,7 @@ import { clearMediaUrls } from "../media/mediaUrls.js";
 import { supabase } from "../supabase.js";
 import {
   acceptFriend, AlreadyLinked, insertMediaMessage, latestInboxId, listFriends, listInboxSince, listMessages,
-  listRecentMessages, removeDmFiles, removeFriend, requestFriend, sendMessage, subscribeFriends, uploadDmFile,
+  listRecentMessages, removeDmFiles, removeFriend, requestFriend, sendMessage, setFriendTier, subscribeFriends, uploadDmFile,
   type FriendRow,
 } from "./friendsApi.js";
 
@@ -290,13 +291,19 @@ export function dropMediaSend(friendId: string, localId: string): void {
   patchPending(friendId, localId, null);
 }
 
-export async function addFriend(uid: string): Promise<void> {
-  await requestFriend(uid);
+export async function addFriend(uid: string, tier?: FriendTier): Promise<void> {
+  await requestFriend(uid, tier);
   await refreshFriends();
 }
 
-export async function accept(friendshipId: string): Promise<void> {
-  await acceptFriend(friendshipId);
+export async function accept(friendshipId: string, tier?: FriendTier): Promise<void> {
+  await acceptFriend(friendshipId, tier);
+  await refreshFriends();
+}
+
+/** 改我给 TA 的那一档（#1494） */
+export async function setTier(friendshipId: string, direction: "incoming" | "outgoing", tier: FriendTier): Promise<void> {
+  await setFriendTier(friendshipId, direction, tier);
   await refreshFriends();
 }
 

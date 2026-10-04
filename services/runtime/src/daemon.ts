@@ -61,6 +61,8 @@ import { EventStore } from "../../../src/session/store.js";
 import { AttachmentStore } from "../../../src/session/attachments.js";
 import { createChatMediaIntake } from "./chatMediaIntake.js";
 import { bridgeModelFor, describeImagesWith } from "./visionBridge.js";
+import { friendTiersOf } from "./chatHumans.js";
+import { DEFAULT_TIER, type FriendTier, type FriendTierRow } from "../../../src/shared/friendTier.js";
 import type { SessionEvent, TokenUsage } from "../../../src/session/events.js";
 import { verifyJwt as verifyJwtEdge } from "../../edge/src/jwt.js";
 import {
@@ -296,12 +298,25 @@ async function main(): Promise<void> {
   /** uid 与这几个人里哪几个是 accepted 好友（#1393）。查询失败原样抛：拉人进群的判据是「是不是朋友」，
       「这一刻查不出来」不能读成「不是」也不能读成「是」——调用方把它说成「稍后再试」 */
   async function acceptedFriendsOf(uid: string, candidates: readonly string[]): Promise<Set<string>> {
-    const filter = friendshipFilter(uid, candidates);
-    if (filter === null) return new Set();
-    const { data, error } = await supabase.from("friendships").select("requester,addressee").eq("status", "accepted").or(filter);
-    if (error) throw new Error(error.message);
-    return friendSetOf(uid, (data ?? []) as { requester: string; addressee: string }[]);
+    return friendSetOf(uid, await acceptedFriendRows(uid, candidates));
   }
+
+  /** accepted 好友行，带两列档位（#1494）。0054 还没跑（42703 没这一列）就退回不带它们的两列再查一次——
+      档位按默认档算（friendTiersOf），不炸 */
+  let tierColumns = true;
+  async function acceptedFriendRows(uid: string, candidates: readonly string[]): Promise<FriendTierRow[]> {
+    const filter = friendshipFilter(uid, candidates);
+    if (filter === null) return [];
+    const cols = tierColumns ? "requester,addressee,requester_tier,addressee_tier" : "requester,addressee";
+    const res = await supabase.from("friendships").select(cols).eq("status", "accepted").or(filter);
+    if (res.error && tierColumns && res.error.code === "42703") {
+      tierColumns = false;
+      return acceptedFriendRows(uid, candidates);
+    }
+    if (res.error) throw new Error(`好友查询失败：${res.error.message}`);
+    return (res.data ?? []) as unknown as FriendTierRow[];
+  }
+
 
   /** 客人名单的投影（#1393）：`workspace_session_members` 只给客户端 RLS 与「我在哪几个群」用，
       事实在日志里。**先落日志再写这张表**（同 agent_ids 那一列），写失败只记一笔——日志赢，
@@ -598,14 +613,19 @@ async function main(): Promise<void> {
       : createOutreachHub({
           // 好友名单：accepted 的全部行，对方 uid 再取名字。查询失败一律抛——「查不出来」不能读成「没有好友」
           friendsOf: async (ownerUid) => {
-            const { data, error } = await supabase
-              .from("friendships")
-              .select("requester,addressee")
-              .eq("status", "accepted")
-              .or(`requester.eq.${ownerUid},addressee.eq.${ownerUid}`);
-            if (error) throw new Error(error.message);
-            const uids = [...friendSetOf(ownerUid, (data ?? []) as { requester: string; addressee: string }[])];
-            return Promise.all(uids.map(async (uid) => ({ uid, name: await labelOf(uid) })));
+            // 带两列档位（#1494）：0054 没跑就退回两列、按默认档算（同 acceptedFriendRows）
+            const cols = tierColumns ? "requester,addressee,requester_tier,addressee_tier" : "requester,addressee";
+            type Res = { data: unknown; error: { message: string; code?: string } | null };
+            let res: Res = await supabase.from("friendships").select(cols).eq("status", "accepted").or(`requester.eq.${ownerUid},addressee.eq.${ownerUid}`);
+            if (res.error && tierColumns && res.error.code === "42703") {
+              tierColumns = false;
+              res = await supabase.from("friendships").select("requester,addressee").eq("status", "accepted").or(`requester.eq.${ownerUid},addressee.eq.${ownerUid}`);
+            }
+            if (res.error) throw new Error(res.error.message);
+            const rows = (res.data ?? []) as unknown as FriendTierRow[];
+            const tiers = friendTiersOf(ownerUid, rows);
+            const uids = [...friendSetOf(ownerUid, rows)];
+            return Promise.all(uids.map(async (uid) => ({ uid, name: await labelOf(uid), tier: tiers.get(uid) ?? DEFAULT_TIER })));
           },
           deviceCount: (uid) => apns.deviceCount(uid),
           // 额度：与 welcome 用的同一只探针、同一份 decideRuntimeRoute；只有 blocked 才回话
@@ -1194,13 +1214,17 @@ async function main(): Promise<void> {
         let pairFacts: { ownerName: string; peerUid: string; peerName: string; facing: "self" } | undefined;
         if (chat?.kind === "pair") {
           let friends: Set<string>;
+          let tiers: Map<string, FriendTier>;
           try {
-            friends = await acceptedFriendsOf(byUid, [chat.peerUid]);
+            const rows = await acceptedFriendRows(byUid, [chat.peerUid]);
+            friends = friendSetOf(byUid, rows);
+            tiers = friendTiersOf(byUid, rows);
           } catch (err) {
             console.warn(`[otto-runtime] 带私人智能体时查好友失败（workspace=${workspaceId}）：${String(err)}`);
             throw new ChatCreateError("这会儿查不到你的朋友名单，稍后再试");
           }
-          const problem = pairCreateProblem({ byUid, peerUid: chat.peerUid, home, friends });
+          // 档位（#1494，ADR-0350）：两边取最小值 ≥ 可带智能体
+          const problem = pairCreateProblem({ byUid, peerUid: chat.peerUid, home, friends, tiers });
           if (problem !== null) throw new ChatCreateError(problem);
           const existing = await findPairSession(workspaceId, chat.peerUid, chat.facing);
           if (existing) {

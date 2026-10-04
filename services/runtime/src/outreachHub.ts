@@ -1,11 +1,13 @@
 // outreachHub —— 把「原聊天」与「外联会话」两头接起来（#1441）。daemon 一个。只依赖注入的回调：
 // daemon.ts 进不了 vitest，判断住在这儿、接线留在那儿（同 chatCreate / chatHumans 的做法）。
+import { outreachTierProblem, type FriendTier } from "../../../src/shared/friendTier.js";
 import type { OutreachLine, OutreachOutcome } from "../../../src/session/events.js";
 import { outreachReportText, resolveFriend } from "../../../src/shared/outreach.js";
 import type { OutreachEnded, OutreachStart, OutreachStartResult } from "./outreachRun.js";
 
 export interface OutreachHubDeps {
-  friendsOf(ownerUid: string): Promise<{ uid: string; name: string }[]>; // 抛错 = 这一刻查不出来
+  /** `tier` = 这位朋友与主人之间生效的那一档（#1494）；缺席 = 不按档位拦（老调用方 / 测试） */
+  friendsOf(ownerUid: string): Promise<{ uid: string; name: string; tier?: FriendTier }[]>; // 抛错 = 这一刻查不出来
   deviceCount(uid: string): Promise<number>;
   ownerBlocked(workspaceId: string, ownerUid: string): Promise<string | null>; // 额度：null = 能跑
   /** 这只此刻在它任一条外联会话里有没有一通没收尾（终审 M2）；抛错 = 这一刻查不出来 */
@@ -42,7 +44,7 @@ export interface OutreachHub {
 export function createOutreachHub(d: OutreachHubDeps): OutreachHub {
   return {
     async dispatch(o) {
-      let friends: { uid: string; name: string }[];
+      let friends: { uid: string; name: string; tier?: FriendTier }[];
       try {
         friends = await d.friendsOf(o.ownerUid);
       } catch (err) {
@@ -56,6 +58,13 @@ export function createOutreachHub(d: OutreachHubDeps): OutreachHub {
           : `好友里没有叫「${o.friend}」的。他的好友有：${m.names.join("、")}。问问他指的是哪一位。`;
       }
       if (m.kind === "many") return `好友里有 ${m.count} 位叫「${o.friend}」，分不出是哪一位，问问他。`;
+      // 档位（#1494，ADR-0350）：只有两边都开到「全部开放」，智能体才能直接打过去。拦在 resolveFriend 之后——
+      // 模型拿到的是真话（「他没开放」），不是「没这个朋友」
+      const tier = friends.find((f) => f.uid === m.uid)?.tier;
+      if (tier !== undefined) {
+        const refused = outreachTierProblem(tier, m.name);
+        if (refused !== null) return refused;
+      }
       try {
         // 一只同一时刻只打一通（终审 M2）：跨它所有外联会话判，打给小红的那通还在时不许再打给小明。
         // 文案与 outreachRun.start 里同一条线的那句逐字相同——对模型来说是同一件事

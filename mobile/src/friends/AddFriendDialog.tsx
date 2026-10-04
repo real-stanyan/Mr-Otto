@@ -2,8 +2,9 @@
 // 结果一行一个人，右边一颗「加」。已经是朋友 / 已经在等对方同意的，那颗钮换成一句实话，不给一颗点了必然
 // 撞唯一约束的钮（#722）。自己不在结果里（friendsApi.searchProfiles 排掉了）。
 import { useEffect, useRef, useState } from "react";
-import { ScrollView, Text, View } from "react-native";
+import { Pressable, ScrollView, Text, View } from "react-native";
 import type { FriendProfile } from "../../../src/shared/friends.js";
+import { FRIEND_TIERS, REQUEST_DEFAULT_TIER, TIER_DESC, TIER_LABEL, type FriendTier } from "../../../src/shared/friendTier.js";
 import { friendName } from "../../../src/shared/wechatInbox.js";
 import { Dialog, DialogBody, DialogLead, DialogTitle } from "../dialog.js";
 import { usePalette } from "../theme.js";
@@ -54,11 +55,13 @@ export function AddFriendDialog({ visible, onClose, onExited }: { visible: boole
     return r.status === "accepted" ? "friend" : "pending";
   };
 
+  // 发请求时选我给 TA 的那一档（#1494），默认仅聊天；生效看两边的最小值
+  const [tier, setTier] = useState<FriendTier>(REQUEST_DEFAULT_TIER);
   const add = async (p: FriendProfile): Promise<void> => {
     setBusyId(p.id);
     setError(null);
     try {
-      await addFriend(p.id);
+      await addFriend(p.id, tier);
       toast(`申请发给「${friendName(p)}」了，对方同意了就会出现在朋友里`);
     } catch (e) {
       setError(e instanceof AlreadyLinked ? e.message : e instanceof Error ? e.message : String(e));
@@ -74,6 +77,20 @@ export function AddFriendDialog({ visible, onClose, onExited }: { visible: boole
       <DialogBody>
         <Field variant="dialog" value={q} onChangeText={setQ} placeholder="名字或邮箱" autoFocus keyboardType="email-address" returnKeyType="search" />
       </DialogBody>
+      <View style={{ flexDirection: "row", gap: 6, paddingHorizontal: 20, paddingTop: 10, flexWrap: "wrap" }}>
+        {FRIEND_TIERS.map((t) => (
+          <Pressable
+            key={t}
+            accessibilityRole="button"
+            accessibilityState={{ selected: tier === t }}
+            onPress={() => setTier(t)}
+            style={{ paddingHorizontal: 12, paddingVertical: 6, borderRadius: 14, backgroundColor: tier === t ? c.primary : c.inputBg }}
+          >
+            <Text style={{ fontSize: 13, color: tier === t ? c.primaryForeground : c.foreground }}>{TIER_LABEL[t]}</Text>
+          </Pressable>
+        ))}
+      </View>
+      <Text style={{ fontSize: 12, lineHeight: 17, color: c.mutedForeground, paddingHorizontal: 20, paddingTop: 6 }}>{TIER_DESC[tier]} 这是你给 TA 的权限，真正生效的是你们俩里低的那一档；加了之后在 TA 的资料页能改。</Text>
       <ScrollView style={{ maxHeight: 260, marginTop: 8 }} keyboardShouldPersistTaps="handled">
         {searching && results === null ? (
           <View style={{ padding: 16 }}><Spinner /></View>
