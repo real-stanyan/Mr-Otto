@@ -2,12 +2,13 @@
   "expo": {
     "name": "Otto",
     "slug": "mr-otto",
-    "version": "1.0.1",
+    "version": "1.0.2",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
     "ios": {
       "supportsTablet": true,
+      "buildNumber": "5",
       "bundleIdentifier": "com.stanyan.mrotto.mobile",
       "infoPlist": {
         "NSMicrophoneUsageDescription": "语音通话、发语音消息时要用麦克风。",

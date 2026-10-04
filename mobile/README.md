@@ -59,6 +59,22 @@ npm --prefix mobile run ios        # 走 mobile/ios/，需要 Apple 开发者账
 
 `mobile/ios/`、`mobile/android/` 是 prebuild 产物，进了 `.gitignore`。
 
+### 打 TestFlight 包（EAS Build，Windows 上也行，#1528）
+
+原生包以前是 Mac 上 Xcode 归档上传的；没有 Mac 时走 EAS 云端编译（`mobile/eas.json` 的 `production` profile：
+store 分发、channel `production`、版本号读 app.json）。**凭据只能维护者在交互里给**：第一次会要 Apple 账号登录（2FA）
+或 App Store Connect API key，EAS 替你生成分发证书与描述文件并存在 EAS 上，之后不再问。
+
+    cd mobile
+    npx eas-cli build --platform ios --profile production --auto-submit
+
+`--auto-submit` 编完直接提交 TestFlight。EAS 上传的是**整个 git 仓库**（手机端 import 仓库根的 `src/shared/`），
+云端只装 `mobile/` 的依赖——所以手机端用到的包都得在 `mobile/package.json` 里（`npx expo export --platform ios` 在没装仓库根
+依赖的目录里打得出 bundle，就是这件事的检查）。
+
+包出来之后两件事，少一件热更新链路就不通：① app.json 的 `version` / `ios.buildNumber` 每次打包往上加（上一包 1.0.1 (4)）；
+② 更新 `mobile/native-build.json`（`runtimeVersion`、打包那个 commit、`build`）——`publish-ota` 据它判「那之后动过原生没有」。
+
 ### 语音通话要开发版（A4）
 
 语音识别不在 Expo Go 里，通话用的是本仓自己的原生模块 `modules/otto-speech/`（Swift，照搬桌面 `native/MrOttoSpeech`，ADR-0320）。
