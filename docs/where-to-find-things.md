@@ -1,6 +1,6 @@
 # Where to find things
 
-代码地图，从 AGENTS.md 挪出来按需读（常驻那份只留协议与工具链几条 + 指向这里的一行，ADR-0341）。每条以路径开头，按路径 grep；新条目加在这里。
+代码地图，从 AGENTS.md 挪出来按需读（常驻那份只留协议与工具链几条 + 指向这里的一行，ADR-0342）。每条以路径开头，按路径 grep；新条目加在这里。
 
 - `CONTEXT.md` — domain glossary (protocol terms + product/technical terms, two sections, ADR-0070)
 - `docs/gearbox-adr/` — protocol ADRs (copied from Gearbox, managed by tooling — don't hand-edit)

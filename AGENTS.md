@@ -203,4 +203,4 @@ Tasks aren't routed by agent specialty: whoever claims a Task issue sees it thro
 - `scripts/wip.mjs` — `npm run wip [说明]`：把手上的活落成一个提交而不是 stash（多 worktree 共享同一个 stash 栈，#543 踩过；撤销 `git reset --soft HEAD~1`，ADR-0154）
 - `scripts/lane.mjs` / `scripts/lane-prune.mjs` / `scripts/install-hooks.mjs` — 开一条 lane / 收工清理 / 自动挂钩子（`npm run lane -- <任务名>`、`npm run lane:prune`；零工作量分支为什么不删见 ADR-0150 与 #449）
 - `.githooks/pre-commit` / `tests/hooks/preCommitWorktree.test.ts` — 「主 checkout 只读、开工用一次性 worktree」的机制兜底 + 它的可执行版（装一次：`git config core.hooksPath .githooks`；天花板与逃生门写在钩子文件头，ADR-0149）
-- `docs/where-to-find-things.md` — 代码地图：每个模块在哪、为什么长这样、踩过什么坑、对应哪条 ADR。不常驻上下文：动一块代码之前先按它的路径在这里 grep；新加的条目也写在那里，不写在这里（ADR-0341）
+- `docs/where-to-find-things.md` — 代码地图：每个模块在哪、为什么长这样、踩过什么坑、对应哪条 ADR。不常驻上下文：动一块代码之前先按它的路径在这里 grep；新加的条目也写在那里，不写在这里（ADR-0342）
