@@ -187,6 +187,31 @@ describe("私密车道（#1461 P1）", () => {
       expect(env.system).not.toContain("看不到你");
       store.close();
     });
+    it("朋友（客人）打给公开智能体、挂了 → 替主人落一条 pair_call_summary 开场白，那一轮它总结给主人（#1533）；主人自己开的通话不落", async () => {
+      const store = newStore();
+      sharedSeed(store);
+      const { session } = open(store);
+      expect(await session.setVoiceCall(PEER, "小红", [HELPER.agentId])).toEqual({ kind: "ok" });
+      expect(session.callStarter?.()).toBe(PEER);
+      await session.settled();
+      expect(await session.setVoiceCall(PEER, "小红", [])).toEqual({ kind: "ok" });
+      await session.settled();
+      const openings = store.ofType(SID, "user_message").filter((e) => e.type === "user_message" && e.greeting === "pair_call_summary");
+      expect(openings).toHaveLength(1);
+      expect(openings[0]).toMatchObject({ fromUid: OWNER, mentions: [HELPER.agentId] });
+      expect((openings[0] as { content: string }).content).toContain("小红");
+      expect(store.ofType(SID, "assistant_message").length).toBeGreaterThan(0);
+      // 主人自己开、自己挂：不落总结
+      const before = store.ofType(SID, "user_message").length;
+      await session.setVoiceCall(OWNER, "小明", [HELPER.agentId]);
+      await session.settled();
+      await session.setVoiceCall(OWNER, "小明", []);
+      await session.settled();
+      const after = store.ofType(SID, "user_message").filter((e) => e.type === "user_message" && e.greeting === "pair_call_summary");
+      expect(after).toHaveLength(1);
+      expect(store.ofType(SID, "user_message").length).toBeGreaterThanOrEqual(before);
+      store.close();
+    });
     it("chat() 从名单推朝向：有朋友 = both", () => {
       const store = newStore();
       sharedSeed(store);
