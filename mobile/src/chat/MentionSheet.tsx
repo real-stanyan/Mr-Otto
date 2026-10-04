@@ -13,12 +13,14 @@ import { FaceTile, PersonTile } from "../wx/Avatar.js";
 /** 抽屉底下那一句：不 @ 谁时谁接（ADR-0270 的派活） */
 export const MENTION_FOOTER = "不 @ 谁 = 它们自己认领：读一遍名册和最近几句，挑职责对口的那只；都不对口就没人接。";
 
-export function MentionSheet({ visible, ws, agentIds, humans, onPick, onClose, onExited }: {
+export function MentionSheet({ visible, ws, agentIds, humans, footer = MENTION_FOOTER, onPick, onClose, onExited }: {
   visible: boolean;
   ws: WorkspaceSnapshot;
   agentIds: readonly string[];
   /** 团队群里别的人（名字 + 头像）；主场群里没有 */
   humans: readonly { uid: string; name: string; url: string }[];
+  /** 底下那一句。默认是群里的派活规矩；朋友私聊里（#1493）不 @ 谁是发给朋友，调用方换一句；null 不画 */
+  footer?: string | null;
   /** 挑中的那个名字 */
   onPick: (name: string) => void;
   onClose: () => void;
@@ -47,7 +49,7 @@ export function MentionSheet({ visible, ws, agentIds, humans, onPick, onClose, o
           {agentIds.map((id, i) => row(`a:${id}`, <FaceTile slot={agentFaceSlot(ws, id)} size={36} />, agentNameOf(ws, id), "智能体", i === 0))}
           {humans.map((h, i) => row(`h:${h.uid}`, <PersonTile name={h.name} url={h.url} size={36} />, h.name, "成员", agentIds.length === 0 && i === 0))}
         </View>
-        {agentIds.length > 0 ? <Text style={{ fontSize: 13, lineHeight: 19, color: c.mutedForeground, padding: 16 }}>{MENTION_FOOTER}</Text> : null}
+        {agentIds.length > 0 && footer !== null ? <Text style={{ fontSize: 13, lineHeight: 19, color: c.mutedForeground, padding: 16 }}>{footer}</Text> : null}
       </ScrollView>
     </BottomSheet>
   );

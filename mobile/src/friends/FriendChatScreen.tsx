@@ -4,6 +4,8 @@
 // 删了好友的那个人：库里 RLS 不许再发（messages_insert_accepted_friend），输入栏换成一句实话。
 // 图片与视频（#1443 P1）：＋ 里「相册」「拍摄」；挑好的先就地处理（prepareMedia），图片攒一条、视频一条一个，
 // 每条先挂一个本地气泡报进度，传完换成真消息。纯媒体消息的正文是占位「[图片]」/「[视频]」，带着媒体时不画字。
+// 带了智能体之后打一个 @ 弹选人（#1493）：名单只有我带进来的那几只（朋友不在里面——@ 朋友没有去处），
+// 挑中了经 ref.mention 插回光标处，判据与群聊页同一份（agentMentionInput / MentionSheet）。
 import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import { useHeaderHeight } from "@react-navigation/elements";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
@@ -24,7 +26,8 @@ import { readUpTo, receiptLabel } from "../../../src/shared/readReceipt.js";
 import { decodeEnvelope } from "../../../src/shared/sessionPackageCodec.js";
 import { shareCardView } from "../../../src/shared/shareCard.js";
 import { friendName, needsTimeRow, timelineTimeLabel } from "../../../src/shared/wechatInbox.js";
-import { WxComposer, type HoldState } from "../chat/WxComposer.js";
+import { MentionSheet } from "../chat/MentionSheet.js";
+import { WxComposer, type ComposerHandle, type HoldState } from "../chat/WxComposer.js";
 import { NewGroupDialog } from "../group/NewGroupDialog.js";
 import { useHome } from "../home/homeStore.js";
 import { markSeen, setOpenKey } from "../inbox/seenStore.js";
@@ -148,6 +151,10 @@ export function FriendChatScreen({ route, navigation }: Props) {
   const home = useHome();
   const [grouping, setGrouping] = useState<{ key: number; visible: boolean } | null>(null);
   const createdGroup = useRef<string | null>(null);
+  // 打 @ 弹选人（#1493）：挑中的名字先存着，等抽屉的 Modal 退场完再插——同 ChatScreen
+  const composer = useRef<ComposerHandle>(null);
+  const [mentioning, setMentioning] = useState(false);
+  const pendingMention = useRef<string | null>(null);
   const row = friends.rows?.find((r) => r.profile.id === uid) ?? null;
   const name = row !== null ? friendName(row.profile) : "";
   const friend = row?.status === "accepted";
@@ -450,11 +457,13 @@ export function FriendChatScreen({ route, navigation }: Props) {
         ) : null}
         {friend ? (
           <WxComposer
+            ref={composer}
             draftKey={key}
             placeholder=""
             canSend
             sessionId={null}
             onSend={send}
+            {...(broughtNames.length > 0 ? { onAt: () => setMentioning(true) } : {})}
             plus={[
               // 图片 / 视频（#1443）：相册一次最多挑 9 样；拍摄是拍照或录一段（≤60 秒）
               { key: "album", icon: "image", label: "相册", onPress: () => void sendPicked(pickFromLibrary) },
@@ -500,6 +509,26 @@ export function FriendChatScreen({ route, navigation }: Props) {
           </View>
         )}
       </KeyboardAvoidingView>
+      {homeWs !== null && broughtNames.length > 0 ? (
+        <MentionSheet
+          visible={mentioning}
+          ws={homeWs}
+          agentIds={broughtNames.map((a) => a.agentId)}
+          humans={[]}
+          footer={`@ 了它的那句只有你看得到，${name}收不到；不 @ 谁就是发给${name}。`}
+          onPick={(picked) => {
+            pendingMention.current = picked;
+            setMentioning(false);
+          }}
+          onClose={() => setMentioning(false)}
+          onExited={() => {
+            const picked = pendingMention.current;
+            pendingMention.current = null;
+            // 抽屉的 Modal 要等这一拍提交之后才真的收起：等一帧再插，不然输入框拿不到焦点
+            if (picked !== null) requestAnimationFrame(() => composer.current?.mention(picked));
+          }}
+        />
+      ) : null}
       {bringing !== null && homeWs !== null ? (
         <PickAgentsDialog
           key={bringing.key}
