@@ -4,6 +4,7 @@
 
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { PairFacing } from "./pairChat.js";
+import { PUBLIC_AGENT_NOT_READY, parsePublicAgentRow, type PublicAgentInfo } from "./publicAgent.js";
 import {
   assembleSnapshot,
   type MemberProfile, type WorkspaceKind, type WorkspaceSnapshot,
@@ -767,6 +768,21 @@ export async function findPairLane(
   const row = data as { id: string; agent_ids?: unknown; facing?: unknown };
   const agentIds = Array.isArray(row.agent_ids) ? row.agent_ids.filter((x): x is string => typeof x === "string") : [];
   return { sessionId: row.id, agentIds, facing: row.facing === "both" ? "both" : "self" };
+}
+
+/** 这位朋友的公开智能体（#1533，0057 的 public_agent_of）：只给已接受、档位到「可带智能体」的好友；没设 / 不给 / 读不到
+    都回 null——界面上同一个画法（不画），不像车道那样要分开说 */
+export async function fetchPublicAgentOf(client: SupabaseClient, uid: string): Promise<PublicAgentInfo | null> {
+  const res = await client.rpc("public_agent_of", { p_uid: uid });
+  if (res.error) return null;
+  const rows = Array.isArray(res.data) ? res.data : res.data === null || res.data === undefined ? [] : [res.data];
+  return rows.length === 0 ? null : parsePublicAgentRow(rows[0]);
+}
+
+/** 设 / 清我的公开智能体（#1533）：profiles 自己那一行（profiles_update_self）。0057 没跑说「服务器还没准备好」 */
+export async function setPublicAgent(client: SupabaseClient, uid: string, agentId: string | null): Promise<void> {
+  const res = await client.from("profiles").update({ public_agent_id: agentId }).eq("id", uid);
+  if (res.error) throw new Error(res.error.code === "42703" || res.error.code === "PGRST204" ? PUBLIC_AGENT_NOT_READY : res.error.message);
 }
 
 /** 朋友那一侧（#1523）：这位朋友在 TA 主场里**公开给我**的那条车道（chat_kind = pair、facing = both、peer_uid = 我、建的人是 TA）。

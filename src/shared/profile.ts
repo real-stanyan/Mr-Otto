@@ -12,6 +12,8 @@ export interface MyProfile {
   avatarUrl: string;
   /** 引导走完了没有(点"完成"或"以后再说"都算走完);DB 里是可空的 onboarded_at */
   onboarded: boolean;
+  /** 公开智能体（#1533，profiles.public_agent_id）：null = 没设 / 这一列还没有（0057 没跑）。可选：老夹具不带 */
+  publicAgentId?: string | null;
 }
 
 /** 改资料的补丁。字段全可选 = 只改传了的那些,没传的一律不动 */

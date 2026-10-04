@@ -32,6 +32,7 @@ import { createWorkspaceLocks } from "./workspaceLock.js";
 import { createFrameRateLimiter } from "./rateLimit.js";
 import { createCloudSession, type CloudSession, type AgentSpec } from "./sessionService.js";
 import { ChatCreateError, pairCreateProblem, planChatCreate } from "./chatCreate.js";
+import { onBehalfPairProblem } from "../../../src/shared/publicAgent.js";
 import { createHumansProblem, friendSetOf, friendshipFilter, planHumansChange } from "./chatHumans.js";
 import { greetOnCreate } from "./newAgentGreeting.js";
 import { createSupabaseLegacyMemoryReader } from "./workspaceMemory.js";
@@ -375,6 +376,18 @@ async function main(): Promise<void> {
       .maybeSingle();
     if (error) throw new Error(`私聊查询失败（${workspaceId}）：${error.message}`);
     return data ? (data as { id: string }).id : null;
+  }
+
+  /** 主人设的公开智能体（#1533，profiles.public_agent_id）：string = 设了，null = 没设，undefined = 这一刻读不到
+      （0057 没跑 → 42703，或抖了）。三态交给 onBehalfPairProblem 说话，不在这里把「读不到」读成「没设」 */
+  async function publicAgentIdOf(uid: string): Promise<string | null | undefined> {
+    const res = await supabase.from("profiles").select("public_agent_id").eq("id", uid).maybeSingle();
+    if (res.error) {
+      if (res.error.code !== "42703") console.warn(`[otto-runtime] 读公开智能体失败（uid=${uid}）：${res.error.message}`);
+      return undefined;
+    }
+    const v = (res.data as { public_agent_id?: unknown } | null)?.public_agent_id;
+    return typeof v === "string" && v !== "" ? v : null;
   }
 
   /** 这位朋友现成的那条车道（#1461 P1），没有回 null。**不按朝向找**（#1523）：一个人对一位朋友只有一条车道、朝向可切，
@@ -1184,12 +1197,37 @@ async function main(): Promise<void> {
         const active = activeSessions.get(sessionId);
         return active && active.workspaceId === workspaceId ? active.session : null;
       },
-      async create(workspaceId, byUid, chat) {
+      async create(workspaceId, byUid, chatIn) {
+        let chat = chatIn;
         const sessionId = randomUUID();
         // 所有者与 kind 一次问出来（#1280）：kind 同时决定提示词里审批那句话
         // （落进 session_created.cloud.home）与审批门（approveAll），两处同源
         const { ownerUid: owner, kind } = await workspaceFacts(workspaceId);
         const home = kind === "home";
+        // 朋友替主人开公开智能体的车道（#1533）：发帖的 byUid 是朋友（= chat.peerUid），车道在主人主场里、
+        // 名单与朝向由这里定（[公开智能体]、both），帧里的只是客户端的猜。行的 publisher 与房间的 createdBy 都记主人：
+        // creator 能改名单、能归档，这些权限不能因为是朋友开的口就落到朋友头上
+        let onBehalf = false;
+        if (chat?.kind === "pair" && chat.onBehalf === true) {
+          let rows: FriendTierRow[];
+          try {
+            rows = await acceptedFriendRows(owner, [byUid]);
+          } catch (err) {
+            console.warn(`[otto-runtime] 替主人开车道时查好友失败（workspace=${workspaceId}）：${String(err)}`);
+            throw new ChatCreateError("这会儿查不到朋友名单，稍后再试");
+          }
+          const publicAgentId = await publicAgentIdOf(owner);
+          const team = await agentsCache.refresh(workspaceId);
+          const problem = onBehalfPairProblem({
+            byUid, peerUid: chat.peerUid, ownerUid: owner, home, publicAgentId,
+            agentExists: typeof publicAgentId === "string" && team.some((a) => a.agentId === publicAgentId && a.degraded !== true),
+            friends: friendSetOf(owner, rows), tiers: friendTiersOf(owner, rows),
+          });
+          if (problem !== null) throw new ChatCreateError(problem);
+          onBehalf = true;
+          chat = { kind: "pair", peerUid: byUid, facing: "both", agentIds: [publicAgentId as string] };
+        }
+        const publisher = onBehalf ? owner : byUid;
         // 建一条聊天（#1280）。`chat` 缺席 = 团队会话，下面一个字都不变
         const plan = chat ? planChatCreate(chat, await agentsCache.refresh(workspaceId)) : null;
         if (plan && !plan.ok) throw new ChatCreateError(plan.message);
@@ -1212,25 +1250,41 @@ async function main(): Promise<void> {
         // 现成的那条直接回（名单不在这里改：客户端随后走 chat_update，带进 / 带走几只是那一条路的事）
         let pairFacts: { ownerName: string; peerUid: string; peerName: string; facing: "self" | "both" } | undefined;
         if (chat?.kind === "pair") {
-          let friends: Set<string>;
-          let tiers: Map<string, FriendTier>;
-          try {
-            const rows = await acceptedFriendRows(byUid, [chat.peerUid]);
-            friends = friendSetOf(byUid, rows);
-            tiers = friendTiersOf(byUid, rows);
-          } catch (err) {
-            console.warn(`[otto-runtime] 带私人智能体时查好友失败（workspace=${workspaceId}）：${String(err)}`);
-            throw new ChatCreateError("这会儿查不到你的朋友名单，稍后再试");
+          if (!onBehalf) {
+            let friends: Set<string>;
+            let tiers: Map<string, FriendTier>;
+            try {
+              const rows = await acceptedFriendRows(byUid, [chat.peerUid]);
+              friends = friendSetOf(byUid, rows);
+              tiers = friendTiersOf(byUid, rows);
+            } catch (err) {
+              console.warn(`[otto-runtime] 带私人智能体时查好友失败（workspace=${workspaceId}）：${String(err)}`);
+              throw new ChatCreateError("这会儿查不到你的朋友名单，稍后再试");
+            }
+            // 档位（#1494，ADR-0350）：两边取最小值 ≥ 可带智能体
+            const problem = pairCreateProblem({ byUid, peerUid: chat.peerUid, home, friends, tiers });
+            if (problem !== null) throw new ChatCreateError(problem);
           }
-          // 档位（#1494，ADR-0350）：两边取最小值 ≥ 可带智能体
-          const problem = pairCreateProblem({ byUid, peerUid: chat.peerUid, home, friends, tiers });
-          if (problem !== null) throw new ChatCreateError(problem);
           const existing = await findPairSession(workspaceId, chat.peerUid);
           if (existing) {
-            if (!activeSessions.has(existing)) openSessionRoom(workspaceId, existing, owner, byUid, home);
+            const room = activeSessions.has(existing) ? activeSessions.get(existing)!.session : openSessionRoom(workspaceId, existing, owner, publisher, home);
+            // 朋友替主人找到现成那条（#1533）：公开智能体要在名单里、朝向要是 both——主人之前可能只带了别的几只、或收成了仅我可见。
+            // 名单与朝向都由主人名下改（byUid 主人），朋友只是触发
+            if (onBehalf && plan?.ok) {
+              const cur = room.chat();
+              const want = [...new Set([...(cur?.agentIds ?? []), ...plan.agentIds])];
+              const out = await room.updateChatRoster(owner, { agentIds: want, humans }, await labelOf(owner));
+              if (out.kind === "ok" && out.changed) {
+                await syncGuestRows(existing, out.humans, owner);
+                const { error: upErr } = await supabase.from("workspace_sessions").update({ agent_ids: out.agentIds, facing: "both" }).eq("id", existing);
+                if (upErr) console.warn(`[otto-runtime] 替主人补车道投影失败（session=${existing}）：${upErr.message}`);
+              } else if (out.kind !== "ok") {
+                throw new ChatCreateError(out.message);
+              }
+            }
             return { sessionId: existing };
           }
-          pairFacts = { ownerName: await labelOf(byUid), peerUid: chat.peerUid, peerName: await labelOf(chat.peerUid), facing: chat.facing };
+          pairFacts = { ownerName: await labelOf(owner), peerUid: chat.peerUid, peerName: await labelOf(chat.peerUid), facing: chat.facing };
           // 公开车道（#1523）：朋友以客人身份进同一条车道——客人名单就是 [朋友]，走 0043 那一套（日志事实 + 投影表）
           if (chat.facing === "both") humans = [{ uid: chat.peerUid, name: pairFacts.peerName }];
         }
@@ -1245,7 +1299,7 @@ async function main(): Promise<void> {
         const { error } = await supabase.from("workspace_sessions").insert({
           id: sessionId,
           workspace_id: workspaceId,
-          publisher_uid: byUid,
+          publisher_uid: publisher,
           kind: "cloud",
           title: plan?.ok ? plan.title : "",
           pkg_id: null,
@@ -1306,9 +1360,9 @@ async function main(): Promise<void> {
             ignorable: true,
           });
         }
-        const session = openSessionRoom(workspaceId, sessionId, owner, byUid, home);
+        const session = openSessionRoom(workspaceId, sessionId, owner, publisher, home);
         // 客人名单的投影（#1393）：房间开好之后写——客人那一侧靠这张表才找得到这个群
-        if (humans.length > 0) await syncGuestRows(sessionId, humans, byUid);
+        if (humans.length > 0) await syncGuestRows(sessionId, humans, publisher);
         // 新建的智能体先开口（#1356 A2，spec §7.2 第 2 步）：只在**新**建出来的私聊上问——上面
         // 找回现成那条的两条路都已经 return 了（那只要么早开过口，要么是桌面那侧的老智能体）。
         // 抢那一格、抢到才落开场白的判断在 newAgentGreeting.ts（这个文件进不了 vitest）；
