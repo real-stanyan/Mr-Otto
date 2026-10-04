@@ -215,7 +215,7 @@ function cloudSessionText(cloud: CloudSessionFacts): string {
     );
   }
   const home = cloud.home === true;
-  // 私密车道（#1461 P1，ADR-0343）：只换「对面是谁」那一段——容器、审批（车道只住在主场里、只有主人说得上话，
+  // 私密车道（#1461 P1，ADR-0344）：只换「对面是谁」那一段——容器、审批（车道只住在主场里、只有主人说得上话，
   // 所以是主场那一版「没有审批」）、Git 三段与私聊一样。不换的话模型会照「群聊」的习惯挑着回，
   // 或者以为朋友也在读它的话、替主人回朋友（它发不了，朋友也看不到）
   if (cloud.chat?.kind === "pair") {

@@ -8,7 +8,7 @@ import { AGENT_ID_RE, CHAT_NAME_MAX, normalizeChatAgentIds, normalizeChatHumanUi
 import { b64decode, b64encode } from "./b64.js";
 import { MAX_FRAME_BYTES } from "./wire.js";
 
-/** 23（#1461 P1，ADR-0343）：好友私聊里带上自己的智能体（私密车道）。`create` 的 `chat` 多一种
+/** 23（#1461 P1，ADR-0344）：好友私聊里带上自己的智能体（私密车道）。`create` 的 `chat` 多一种
     `{kind:"pair", peerUid, facing:"self", agentIds}`；`welcome.chat.kind` 多 `pair`、`chat` 多可选
     `pair`（{peerUid, facing}）。加枚举值照样进位：老客户端把 `kind:"pair"` 当形状不对整帧拒掉，
     老 runtime 会把 pair 的 create 帧拒掉——都要在握手那一步说清，不是白等超时。

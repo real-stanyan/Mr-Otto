@@ -743,7 +743,7 @@ export async function markMentionsRead(
   if (error) throw new Error(error.message);
 }
 
-/** 和这位朋友的那条私密车道（#1461 P1，ADR-0343）：我主场里 chat_kind = pair、facing = self 的那一行，没有回 null。
+/** 和这位朋友的那条私密车道（#1461 P1，ADR-0344）：我主场里 chat_kind = pair、facing = self 的那一行，没有回 null。
     **查询出错往上抛**，不兜底成 null：手机上「没有」画的是「带上我的智能体」，把「读不到」说成「没有」
     人会再带一次——runtime 那侧幂等，不会建出第二条，但这一屏会把一条其实在跑的车道藏起来 */
 export async function findPairLane(

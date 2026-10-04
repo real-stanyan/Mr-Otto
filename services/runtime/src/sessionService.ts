@@ -482,7 +482,7 @@ export interface CloudSessionOpts {
   outreach: {
     dispatch(o: { originSessionId: string; agentId: string; agentName: string; friend: string; brief: string; opening: string }): Promise<string>;
   } | null;
-  /** 私密车道的上下文信封（#1461 P1，ADR-0343）：读主人与朋友私聊（messages 表）最近几句，回原样的行——
+  /** 私密车道的上下文信封（#1461 P1，ADR-0344）：读主人与朋友私聊（messages 表）最近几句，回原样的行——
       取哪几句、怎么封顶由 sessionService 调 shared 的 pairContextLines 判（daemon.ts 进不了 vitest）。
       **必需**（同 callback / signSpeechTicket 的纪律）：`null` = 这条会话不读私聊（不是私密车道，或 daemon
       没接）；忘接线该编译不过，而不是安静地让车道里的智能体对私聊一无所知 */
@@ -738,7 +738,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   // 外联会话（#1441）：智能体替主人打给朋友的那条线——一只智能体 + 朋友一个客人，**没有任何工具、
   // 不注入记忆、只在通话进行中收话**。同 chatKind，建会话时记进日志的事实，一生不变
   const isOutreach = chatKind === "outreach";
-  // 私密车道（#1461 P1，ADR-0343）：主人带进与朋友私聊的智能体住的那条会话。只有主人进得来（主场的工作区成员
+  // 私密车道（#1461 P1，ADR-0344）：主人带进与朋友私聊的智能体住的那条会话。只有主人进得来（主场的工作区成员
   // 只有他，车道不收客人），开跑前读一份私聊信封。同 chatKind，建会话时记进日志的事实，一生不变
   const isPair = chatKind === "pair";
   const pairFacts = isPair ? createdCloud?.pair : undefined;
@@ -1624,7 +1624,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     }));
   }
 
-  /** 私密车道（#1461 P1，ADR-0343）：起 turn 前读主人与朋友私聊最近几句，封成一条 pair_context_loaded 落进日志——
+  /** 私密车道（#1461 P1，ADR-0344）：起 turn 前读主人与朋友私聊最近几句，封成一条 pair_context_loaded 落进日志——
       **模型看得见的必须落盘**（硬规则），私聊那张表不在日志里。判据同 wiki 快照：缺席或内容变了才落、最新一条胜出。
       整条车道一份（不分哪只）。读失败 warn 跳过、不阻塞 turn：智能体少一段背景，好过这一轮整个起不来 */
   async function loadPairContextIfChanged(): Promise<void> {
