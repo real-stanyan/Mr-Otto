@@ -92,7 +92,7 @@ interface FriendPickEvent extends SessionEventBase {
 
 ## 6. 协议
 
-协议版本 26 → 27（起草时写的是 24 → 25，实施期间 main 先升到了 26）。
+协议版本 27 → 28（起草时写的是 24 → 25，实施期间 main 先升到了 26、又被 #1534 人与人电话占了 27）。
 
 - 手机 → runtime：`{ t: "pick_friend", pickId: string, uid: string | null }`（`null` = 「都不是」）。
 - runtime → 手机：`{ t: "pick_friend_result", pickId: string, ok: boolean, message?: string }`（同 `approve_result`：带 pickId，一张卡一条回执，成功也回）。
@@ -141,7 +141,7 @@ runtime 处理（`frameHandler` 新 case → `CloudSession.pickFriend` → `outr
 - `tests/services/runtime/outreachHub.test.ts`：出卡路径落 `offered` 并回那句 tool_result；`dialPicked` 成功 / 已用过 / 过期 / 不在候选 /
   出卡后被删好友 / 降档 / 正在打别的 → 各自的事件与回执。
 - `tests/services/runtime/frameHandler`：`pick_friend` 非主人拒、回执带 pickId。
-- 协议：`cloudSession` 解析 `pick_friend` 帧的正反例；版本号断言 27。
+- 协议：`cloudSession` 解析 `pick_friend` 帧的正反例；版本号断言 28。
 - `tests/shared/mobileChat`：`friend_pick` 行的六种状态。
 - 真机：模拟器冒烟三种场景各点一次（`mobile-sim-smoke-expo-go` 那套）。
 
@@ -149,7 +149,7 @@ runtime 处理（`frameHandler` 新 case → `CloudSession.pickFriend` → `outr
 
 - `src/shared/friendPick.ts`（新）、`src/shared/outreach.ts`（`resolveFriend` 保留给 `pickFriend` 用）
 - `src/session/events.ts`（`FriendPickEvent`）
-- `src/shared/remote/cloudSession.ts`（两种帧 + 版本 27）
+- `src/shared/remote/cloudSession.ts`（两种帧 + 版本 28）
 - `services/runtime/src/callFriendTool.ts`（`candidates`）、`outreachHub.ts`（出卡、`dialResolved`、`dialPicked`）、
   `sessionService.ts`（最近打过的 uid、`logFriendPick`、`pickFriend`）、`frameHandler.ts`（新 case）
 - `src/shared/mobileChat.ts`、`mobile/src/chat/Bubbles.tsx`、`mobile/src/chat/ChatScreen.tsx`、手机端 cloud client 发帧
