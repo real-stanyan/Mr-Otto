@@ -381,7 +381,10 @@ function ApprovalCard({ row, busy, onDecide }: {
 }
 
 /** 最底下那一行 =「此刻」：它那边一个打字的气泡（三个点一口一口地亮），脸跟着它在干什么走；
-    右边一颗小的「停」，只在它真在跑时出现（demo 没画这颗，但停下这一轮是 ADR-0227 的能力，不能因为换了壳就没了） */
+    右边一颗小的停钮，只在它真在跑时出现（demo 没画这颗，但停下这一轮是 ADR-0227 的能力，不能因为换了壳就没了）。
+    钮里是实心小方块（#1482）——桌面「停止生成」同一个符号（composer 的 SquareIcon fill-current），
+    不再写字「停」；正在停的那几百毫秒换成转圈，钮本身不变灰（变灰 + 字没了，看起来像坏了）。
+    28pt 圆钮、底色 c.field、按下 0.5 透明：全是原来那颗胶囊的数 */
 export function TypingRow({ ws, agentId, name, face, group, canStop, stopping, onStop }: {
   ws: WorkspaceSnapshot;
   agentId: string;
@@ -404,15 +407,16 @@ export function TypingRow({ ws, agentId, name, face, group, canStop, stopping, o
             <Pressable
               accessibilityRole="button"
               accessibilityLabel={`让${name}停下这一轮`}
+              accessibilityState={{ busy: stopping }}
               disabled={stopping}
               onPress={onStop}
               hitSlop={8}
               style={({ pressed }) => [
-                { height: 28, paddingHorizontal: 12, borderRadius: 14, justifyContent: "center", backgroundColor: c.field },
-                (pressed || stopping) && { opacity: 0.5 },
+                { width: 28, height: 28, borderRadius: 14, alignItems: "center", justifyContent: "center", backgroundColor: c.field },
+                pressed && { opacity: 0.5 },
               ]}
             >
-              <Text style={{ fontSize: 13, color: c.foreground }}>{stopping ? "正在停…" : "停"}</Text>
+              {stopping ? <ActivityIndicator size="small" color={c.mutedForeground} /> : <Icon name="square" size={10} fill color={c.foreground} />}
             </Pressable>
           ) : null}
         </View>
