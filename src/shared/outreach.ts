@@ -145,3 +145,22 @@ export function openingTraits(
     nonOwner: openings.some((o) => o.fromUid !== ownerUid),
   };
 }
+
+// ── 发消息（#1549）：call_friend 的姊妹刀——不响铃，以主人名义往私聊（messages 表）里写一条 ─────────
+export const MESSAGE_FRIEND_TOOL_NAME = "message_friend";
+/** 智能体替主人发的那条正文上限。messages.body 的 check 是 1..4000（0001），前缀另算，留足余量 */
+export const FRIEND_MESSAGE_MAX = 2000;
+/** 每（主场，智能体，好友）每小时封顶——同 laneBridge 的窗口形状（滑动一小时） */
+export const FRIEND_MESSAGE_PER_HOUR_MAX = 20;
+
+/** 收信人看到的正文：前缀说明是谁家的智能体代发。这条是**以主人名义**写进私聊的（sender = 主人），
+    不标就是让智能体冒充本人；老客户端不认任何信封，所以是纯文本前缀而不是 JSON */
+export function agentDmBody(agentName: string, text: string): string {
+  return `[${agentName} 代发] ${text}`;
+}
+
+/** 发出去之后回给模型的那句：说清对方看到的是什么、回不回它看不到（别让它许诺回复） */
+export function friendMessageSentText(peerName: string, body: string): string {
+  const shown = [...body].length > 80 ? `${[...body].slice(0, 80).join("")}…` : body;
+  return `已经以他的名义发给 ${peerName} 了，对方看到的是「${shown}」。回他一句「发了」就行；${peerName} 回不回、什么时候回你看不到，他自己在私聊里能看到。`;
+}

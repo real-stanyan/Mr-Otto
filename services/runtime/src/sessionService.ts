@@ -189,6 +189,7 @@ import { SPEECH_TICKET_TTL_MS, type SpeechTicket } from "../../../src/shared/spe
 import { createOutreachRun, type OutreachEnded, type OutreachRun, type OutreachStart, type OutreachStartResult } from "./outreachRun.js";
 import { createCallUserTool } from "./callUserTool.js";
 import { createCallFriendTool } from "./callFriendTool.js";
+import { createMessageFriendTool } from "./messageFriendTool.js";
 import { createRoutineTools } from "./routineTools.js";
 import type { RoutineStore } from "./routineStore.js";
 import { ROUTINE_MAX_ROUNDS, routineOpeningText } from "../../../src/shared/routines.js";
@@ -518,6 +519,11 @@ export interface CloudSessionOpts {
       daemon 是唯一的真装配者，它总会给 */
   laneBridge?: {
     send(o: { ownerUid: string; peerUid: string; fromAgentId: string; fromAgentName: string; text: string; wanted: string | undefined; depth: number }): Promise<string>;
+  } | null;
+  /** message_friend（#1549）：派智能体给主人的好友发一条私聊——解析好友 / 档位 / 落库都在 daemon 的 outreachHub.message。
+      可选（同 laneBridge 的理由：几十份夹具不该为一把只在主场亮的刀都改一遍）：缺席 / null = 刀不挂。daemon 是唯一的真装配者，它总会给 */
+  friendMessage?: {
+    send(o: { agentId: string; agentName: string; friend: string; text: string }): Promise<string>;
   } | null;
   /** 给打给好友的那条线签语音票（#1441）：好友听到的 TTS 记在主人账上，edge 用同一把密钥验。
       **必需**（同 callback 的纪律）：忘接线该编译不过，而不是安静地让好友的通话一句话都出不了声 */
@@ -1579,6 +1585,22 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
                 recentUids: recentPeerUids(outreachFold),
               }),
           });
+    // message_friend（#1549）：call_friend 的姊妹刀。亮刀条件逐字相同（主场、主人亲口、非车道 / 外联、非监督轮）——
+    // 它写进的是主人与朋友的私聊，和打电话一样是「以主人名义对外」，凭据只能是主人本人这一轮亲口说的
+    const friendMessage = opts.friendMessage ?? null;
+    const messageFriendTool =
+      friendMessage === null || !opts.approveAll || isOutreach || isPair
+        ? null
+        : createMessageFriendTool({
+            maySend: () =>
+              ownerSpoke
+                ? null
+                : rerunTurn
+                  ? "这一轮是服务重启后的补跑：这条消息上一次可能已经发出去了。先问主人要不要再发，等他亲口说了再发。"
+                  : "只有他本人亲口让你发，才能给他的好友发消息。这一轮不是。",
+            dispatch: (friend, text) =>
+              friendMessage.send({ agentId: spec.agentId, agentName: specNames.get(spec.agentId) ?? spec.name, friend, text }),
+          });
     // 定时任务三把刀（#1283）：只在主场私聊里挂；亮不亮按「主人亲口 && 不受监督」现算（routine 轮算主人亲口，Task 8）
     const routineTools =
       opts.routines === null || !opts.approveAll || chatKind !== "dm"
@@ -1621,6 +1643,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
           ...(callUserTool !== null ? [callUserTool] : []),
           // 受监督的轮里干脆不亮这把刀：亮出来只会弹一张批了也必被 mayCall 拒的卡
           ...(callFriendTool !== null && !supervisedTurn() ? [callFriendTool] : []),
+          ...(messageFriendTool !== null && !supervisedTurn() ? [messageFriendTool] : []),
           // 对面公开的智能体（#1542）：只在这条车道此刻是公开的（朋友在客人名单里）才亮
           ...(bridgeTool !== null && pairFacingOf(chatHumans, pairFacts!.peerUid) === "both" ? [bridgeTool] : []),
           ...(spec.agentId === ADMIN_AGENT_ID ? [createAgentTool] : []),
