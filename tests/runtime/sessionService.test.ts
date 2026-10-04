@@ -7726,3 +7726,51 @@ describe("回电（#1411）", () => {
     store.close();
   });
 });
+
+describe("消息推送（#1442）：回答推给问的人、@ 推给被点名的人", () => {
+  type Sent = { uid: string; kind: string; title: string; subtitle?: string; body: string; target: unknown };
+  const rig = (hosts: string[]) => {
+    const store = newStore();
+    const sent: Sent[] = [];
+    const session = createCloudSession({
+      ...baseOpts(store, []),
+      wiki: testWiki(),
+      hostUids: async () => hosts,
+      alert: (uid, kind, p) => sent.push({ uid, kind, title: p.title, ...(p.subtitle === undefined ? {} : { subtitle: p.subtitle }), body: p.body, target: p.target }),
+    });
+    return { store, sent, session };
+  };
+  /** 推送是 fire-and-forget（要先 await 一次 agents()），settled 之后再让一拍微任务跑完 */
+  const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
+
+  it("团队群：只推给问的那个人，标题是群名（这里是首行兜底起的名）、副标题是回答的那只", async () => {
+    const r = rig(["u1", "u2"]);
+    await r.session.say("u1", "alice", "你好", true);
+    await r.session.settled();
+    await flush();
+    expect(r.sent).toEqual([
+      { uid: "u1", kind: "agent_reply", title: "你好", subtitle: "default", body: "好", target: { kind: "cloud", chat: "team", workspaceId: "w1", sessionId: "s1", agentId: "default" } },
+    ]);
+    r.store.close();
+  });
+
+  it("只在群里说一句（不起 turn）：不推", async () => {
+    const r = rig(["u1", "u2"]);
+    await r.session.say("u1", "alice", "随便说说", false, []);
+    await r.session.settled();
+    await flush();
+    expect(r.sent).toEqual([]);
+    r.store.close();
+  });
+
+  it("@ 一个人：推给他，类别 mention，副标题是说话的人", async () => {
+    const r = rig(["u1", "u-hong"]);
+    await r.session.say("u1", "alice", "@小红 看下", false, [], undefined, ["u-hong"]);
+    await r.session.settled();
+    await flush();
+    expect(r.sent).toEqual([
+      { uid: "u-hong", kind: "mention", title: "群聊", subtitle: "alice", body: "@小红 看下", target: { kind: "cloud", chat: "team", workspaceId: "w1", sessionId: "s1", agentId: "" } },
+    ]);
+    r.store.close();
+  });
+});

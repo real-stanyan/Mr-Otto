@@ -8,6 +8,7 @@ import { useActivity } from "../activity/activityStore.js";
 import { useFriends } from "../friends/friendsStore.js";
 import { useHome } from "../home/homeStore.js";
 import { useNow } from "../ui.js";
+import { useNotify } from "../push/notifyStore.js";
 import { useSeenStore } from "./seenStore.js";
 import { useTeams } from "./teamsStore.js";
 
@@ -27,6 +28,7 @@ export function useInbox(): Inbox {
   const teams = useTeams();
   const friends = useFriends();
   const { seen, openKey } = useSeenStore();
+  const notify = useNotify();
   const activity = useActivity();
   // 30 秒重判一次陈旧（spec §3.3）：心跳停了的那一行 3 分钟内翻回 plain
   const now = useNow(30_000);
@@ -55,8 +57,9 @@ export function useInbox(): Inbox {
         seen,
         openKey,
         activity: look,
+        ...(notify.mutes === null ? {} : { muted: notify.mutes }),
       }),
-    [selfUid, home.home, home.chats, home.lasts, teams.teams, teams.guests, teams.mentions, threads, seen, openKey, look],
+    [selfUid, home.home, home.chats, home.lasts, teams.teams, teams.guests, teams.mentions, threads, seen, openKey, look, notify.mutes],
   );
   const incoming = (friends.rows ?? []).filter((r) => r.status === "pending" && r.direction === "incoming").length;
   return { selfUid, rows, unreadChats: inboxUnreadChats(rows), threads, incoming, loaded: home.loaded && teams.loaded };

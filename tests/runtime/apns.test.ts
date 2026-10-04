@@ -62,13 +62,18 @@ describe("apnsVerdict / envOrder", () => {
   });
 });
 
-function fakeStore(devices: PushDevice[]): PushDeviceStore & { envs: [string, ApnsEnv][]; removed: string[] } {
+function fakeStore(devices: PushDevice[]): PushDeviceStore & { envs: [string, ApnsEnv][]; removed: string[]; kinds: string[] } {
   const envs: [string, ApnsEnv][] = [];
   const removed: string[] = [];
+  const kinds: string[] = [];
   return {
     envs,
     removed,
-    list: async () => devices,
+    kinds,
+    list: async (_uid, kind) => {
+      kinds.push(kind);
+      return devices;
+    },
     setEnv: async (token, env) => { envs.push([token, env]); },
     remove: async (token) => { removed.push(token); },
   };
@@ -154,5 +159,28 @@ describe("createApnsPusher", () => {
       request: async () => ({ status: 200, reason: null }), log: () => {},
     });
     expect(await p.deviceCount("u1")).toBe(2);
+  });
+  it("pushAlert：只取普通令牌，topic 是 bundle、push-type alert，载荷带 aps 与 otto（#1442）", async () => {
+    const store = fakeStore([{ token: "ab", env: "production" }]);
+    const f = fakeRequest({ "production:ab": { status: 200, reason: null } });
+    const p = createApnsPusher({ key: KEY, devices: store, request: f.request, now: () => 1_700_000_000_000, log: () => {} });
+    const n = await p.pushAlert("u1", { title: "开发", body: "好了", target: { kind: "cloud", chat: "dm", workspaceId: "w", sessionId: "s", agentId: "admin" } });
+    expect(n).toBe(1);
+    expect(store.kinds).toEqual(["alert"]);
+    const h = f.calls[0]!.headers;
+    expect(h["apns-topic"]).toBe(KEY.bundleId);
+    expect(h["apns-push-type"]).toBe("alert");
+    expect(h["apns-expiration"]).toBe(String(1_700_000_000 + 86_400));
+    const body = JSON.parse(f.calls[0]!.body) as { aps: { alert: unknown; "thread-id": string }; otto: unknown };
+    expect(body.aps.alert).toEqual({ title: "开发", body: "好了" });
+    expect(body.aps["thread-id"]).toBe("a:admin");
+    expect(body.otto).toEqual({ kind: "cloud", chat: "dm", workspaceId: "w", sessionId: "s", agentId: "admin" });
+  });
+  it("回电与 deviceCount 只看 VoIP 令牌", async () => {
+    const store = fakeStore([{ token: "a", env: "production" }]);
+    const p = createApnsPusher({ key: KEY, devices: store, request: async () => ({ status: 200, reason: null }), log: () => {} });
+    await p.deviceCount("u1");
+    await p.pushRing("u1", RING);
+    expect(store.kinds).toEqual(["voip", "voip"]);
   });
 });

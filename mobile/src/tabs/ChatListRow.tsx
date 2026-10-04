@@ -8,6 +8,7 @@ import { listTimeLabel, type InboxRow } from "../../../src/shared/wechatInbox.js
 import { usePalette } from "../theme.js";
 import { SpecAvatar } from "../wx/Avatar.js";
 import { CountBadge, DotBadge, StatusBadge } from "../wx/Badge.js";
+import { Icon } from "../wx/Icon.js";
 
 export const CHAT_ROW_AVATAR = 48;
 /** 分隔线从哪儿开始：左边距 16 + 头像 48 + 间距 12 */
@@ -27,7 +28,7 @@ export const ChatListRow = memo(function ChatListRow({ row, draft, now, onPress 
   return (
     <Pressable
       accessibilityRole="button"
-      accessibilityLabel={`${row.title}${activityText}${unreadText}${row.mention ? "，有人@我" : ""}，${draft !== "" ? `草稿：${draft}` : row.preview}${time !== "" ? `，${time}` : ""}`}
+      accessibilityLabel={`${row.title}${activityText}${unreadText}${row.mention ? "，有人@我" : ""}${row.muted === true ? "，消息免打扰" : ""}，${draft !== "" ? `草稿：${draft}` : row.preview}${time !== "" ? `，${time}` : ""}`}
       onPress={onPress}
       style={({ pressed }) => [
         { flexDirection: "row", alignItems: "center", gap: 12, minHeight: 72, paddingHorizontal: 16, backgroundColor: c.card },
@@ -56,7 +57,8 @@ export const ChatListRow = memo(function ChatListRow({ row, draft, now, onPress 
           <Text numberOfLines={1} style={{ flex: 1, minWidth: 0, fontSize: 17, color: c.foreground }}>{row.title}</Text>
           {time !== "" ? <Text style={{ fontSize: 12, color: c.faint, fontVariant: ["tabular-nums"] }}>{time}</Text> : null}
         </View>
-        <Text numberOfLines={1} style={{ fontSize: 14, color: c.mutedForeground }}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+        <Text numberOfLines={1} style={{ flex: 1, minWidth: 0, fontSize: 14, color: c.mutedForeground }}>
           {draft !== "" ? (
             <>
               <Text style={{ fontWeight: "500", color: c.foreground }}>[草稿] </Text>
@@ -69,6 +71,9 @@ export const ChatListRow = memo(function ChatListRow({ row, draft, now, onPress 
             </>
           )}
         </Text>
+        {/* 免打扰（#1442）：同微信，第二行右边一枚静音标 */}
+        {row.muted === true ? <Icon name="bell-off" size={14} stroke={1.8} color={c.faint} /> : null}
+        </View>
       </View>
     </Pressable>
   );

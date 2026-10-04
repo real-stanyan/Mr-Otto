@@ -2,12 +2,13 @@
 // 同一套样子。一次拉最近 50 条，往上翻再拉；realtime 推新消息，通道哑了降级成轮询（friendsStore）。
 // 桌面发来的「分享会话」是一段 JSON 信封：画成一张卡（shareCardView：邀请码不上屏），手机上打不开会话包，只说去哪儿做。
 // 删了好友的那个人：库里 RLS 不许再发（messages_insert_accepted_friend），输入栏换成一句实话。
-import { useFocusEffect } from "@react-navigation/native";
+import { useFocusEffect, useIsFocused } from "@react-navigation/native";
 import { useHeaderHeight } from "@react-navigation/elements";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { FlatList, KeyboardAvoidingView, Platform, Pressable, Text, View } from "react-native";
+import { AppState, FlatList, KeyboardAvoidingView, Platform, Pressable, Text, View } from "react-native";
 import type { DirectMessage } from "../../../src/shared/friends.js";
+import { readUpTo, receiptLabel } from "../../../src/shared/readReceipt.js";
 import { decodeEnvelope } from "../../../src/shared/sessionPackageCodec.js";
 import { shareCardView } from "../../../src/shared/shareCard.js";
 import { friendName, needsTimeRow, timelineTimeLabel } from "../../../src/shared/wechatInbox.js";
@@ -26,6 +27,7 @@ import { Icon } from "../wx/Icon.js";
 import { HeaderIconButton } from "../wx/TabHeader.js";
 import { toast } from "../wx/toast.js";
 import { loadOlderThread, openThread, sendToFriend, useFriends } from "./friendsStore.js";
+import { loadPeerRead, markFriendRead, usePeerRead } from "./readReceipts.js";
 
 type Props = NativeStackScreenProps<RootStackParams, "FriendChat">;
 type Item = { kind: "time"; key: string; label: string } | { kind: "msg"; key: string; m: DirectMessage };
@@ -97,6 +99,25 @@ export function FriendChatScreen({ route, navigation }: Props) {
   useEffect(() => {
     if (last !== undefined) markSeen(key, Date.parse(last.createdAt) || Date.now());
   }, [key, last]);
+  // 已读回执（#1442）：对方读到哪了进来时拉一次（之后 realtime 推）；我读到哪了，这一页一拉下来、来了新的都报一次
+  useEffect(() => {
+    void loadPeerRead(uid);
+  }, [uid]);
+  const loaded = thread !== undefined && !thread.loading;
+  const upTo = loaded ? readUpTo(thread.messages, uid) : null;
+  // 只在人真看着的时候报：页面在栈顶（聊天信息页叠上来时它还挂着）且 App 在前台（后台时 realtime 可能还在送）
+  const focused = useIsFocused();
+  const [active, setActive] = useState(AppState.currentState === "active");
+  useEffect(() => {
+    const sub = AppState.addEventListener("change", (st) => setActive(st === "active"));
+    return () => sub.remove();
+  }, []);
+  useEffect(() => {
+    if (upTo !== null && friend && focused && active) markFriendRead(uid, upTo);
+  }, [uid, upTo, friend, focused, active]);
+  const peerRead = usePeerRead(uid);
+  const selfUid = friends.uid ?? "";
+  const receipt = useMemo(() => (thread === undefined ? null : receiptLabel(thread.messages, selfUid, peerRead)), [thread?.messages, selfUid, peerRead]);
 
   useLayoutEffect(() => {
     navigation.setOptions({
@@ -157,7 +178,14 @@ export function FriendChatScreen({ route, navigation }: Props) {
                 item.kind === "time" ? (
                   <Text style={{ alignSelf: "center", fontSize: 11.5, color: c.faint, fontVariant: ["tabular-nums"] }}>{item.label}</Text>
                 ) : (
-                  <Bubble m={item.m} mine={item.m.sender !== uid} name={name} avatar={row?.profile.avatarUrl ?? ""} meName={me.name} meAvatar={me.avatar} />
+                  <View>
+                    <Bubble m={item.m} mine={item.m.sender !== uid} name={name} avatar={row?.profile.avatarUrl ?? ""} meName={me.name} meAvatar={me.avatar} />
+                    {receipt !== null && receipt.messageId === item.m.id ? (
+                      <Text style={{ alignSelf: "flex-end", marginRight: 62, marginTop: 4, fontSize: 12, color: receipt.read ? c.faint : c.mutedForeground }}>
+                        {receipt.read ? "已读" : "未读"}
+                      </Text>
+                    ) : null}
+                  </View>
                 )
               }
               ItemSeparatorComponent={() => <View style={{ height: 16 }} />}

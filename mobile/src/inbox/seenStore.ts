@@ -73,6 +73,11 @@ export function markSeen(key: string, ts: number): void {
   scheduleSave();
 }
 
+/** 此刻开着的那一条（推送那侧要：人正看着这条就不弹，#1442） */
+export function openKeyNow(): string | null {
+  return store.get().openKey;
+}
+
 export function setOpenKey(key: string | null): void {
   if (store.get().openKey !== key) store.set({ openKey: key });
 }
