@@ -87,13 +87,37 @@ async function prepareImage(a: PickedAsset): Promise<PreparedMedia> {
   return { kind: "image", uri: r.out.uri, mediaType: "image/jpeg", bytes: sizeOf(r.out.uri), width: r.out.width, height: r.out.height };
 }
 
-/** 抽封面：expo-video 的 generateThumbnailsAsync 回一个原生图片引用，交给 ImageManipulator 存成 JPEG。5 秒抽不出来就算了 */
+/** 等播放器把视频加载好（readyToPlay）。刚建出来就抽帧会扑空：相册里的 4K 原片加载要一两秒（#1480 真机上封面是黑块） */
+function whenReady(player: ReturnType<typeof createVideoPlayer>, ms: number): Promise<void> {
+  if (player.status === "readyToPlay") return Promise.resolve();
+  return new Promise<void>((resolve, reject) => {
+    const t = setTimeout(() => {
+      sub.remove();
+      reject(new Error("timeout"));
+    }, ms);
+    const sub = player.addListener("statusChange", ({ status }) => {
+      if (status === "readyToPlay") {
+        clearTimeout(t);
+        sub.remove();
+        resolve();
+      } else if (status === "error") {
+        clearTimeout(t);
+        sub.remove();
+        reject(new Error("error"));
+      }
+    });
+  });
+}
+
+/** 抽封面：等播放器加载好，再用 expo-video 的 generateThumbnailsAsync 抽第一帧，交给 ImageManipulator 存成 JPEG。
+    加载 + 抽帧最多 8 秒，抽不出来就算了（不拦发送，气泡画一块底色加播放钮） */
 async function posterOf(uri: string): Promise<string | undefined> {
   const player = createVideoPlayer(uri);
   try {
+    await whenReady(player, 6000);
     const thumbs = await Promise.race([
-      player.generateThumbnailsAsync(0, { maxWidth: POSTER_MAX_EDGE, maxHeight: POSTER_MAX_EDGE }),
-      new Promise<never>((_, rej) => setTimeout(() => rej(new Error("timeout")), 5000)),
+      player.generateThumbnailsAsync(0.1, { maxWidth: POSTER_MAX_EDGE, maxHeight: POSTER_MAX_EDGE }),
+      new Promise<never>((_, rej) => setTimeout(() => rej(new Error("timeout")), 2000)),
     ]);
     const t = thumbs[0];
     if (t === undefined) return undefined;
