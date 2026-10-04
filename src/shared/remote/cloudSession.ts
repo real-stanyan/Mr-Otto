@@ -9,7 +9,13 @@ import { parseChatMediaRefs, type ChatMediaRef } from "../chatMedia.js";
 import { b64decode, b64encode } from "./b64.js";
 import { MAX_FRAME_BYTES } from "./wire.js";
 
-/** 23（#1461 P1，ADR-0346）：好友私聊里带上自己的智能体（私密车道）。`create` 的 `chat` 多一种
+/** 26（#1520）：`CsUp` 加 `pick_friend`（点选人卡上的一位，uid null = 都不是），`CsDown` 加
+    `pick_friend_result`（带 pickId，同 approve_result 的理由）。加帧照样进位（握手精确相等）：老 runtime
+    收到 pick_friend 会当未知帧丢掉，于是新客户端点了人、卡一直转圈，runtime 这头什么都没发生。
+    25（#1523，#1461 P2）：共享车道。`create` 的 pair `facing` 收 "both"；`chat_update` 多 `facing`（只在车道上有意义：
+    主人把带进来的智能体在「仅我可见 / 公开给 TA」之间切，runtime 折成客人名单 [朋友] / []）。加枚举值 / 加字段照样进位：
+    老 runtime 会拒 facing both 的 create、把 chat_update.facing 静默丢掉——新客户端以为公开了、其实没有。
+    23（#1461 P1，ADR-0346）：好友私聊里带上自己的智能体（私密车道）。`create` 的 `chat` 多一种
     `{kind:"pair", peerUid, facing:"self", agentIds}`；`welcome.chat.kind` 多 `pair`、`chat` 多可选
     `pair`（{peerUid, facing}）。加枚举值照样进位：老客户端把 `kind:"pair"` 当形状不对整帧拒掉，
     老 runtime 会把 pair 的 create 帧拒掉——都要在握手那一步说清，不是白等超时。
@@ -134,7 +140,7 @@ import { MAX_FRAME_BYTES } from "./wire.js";
     少一格状态。**加一个枚举值同理**：老客户端的 isValidCsDeniedCode 认不出
     `rate_limited`，decodeCsDown 回 null，那一帧被静默忽略，于是 create()
     要白等满超时才回一句"云端无响应"——把"你被限速了"说成"对面没回话"。 */
-export const CS_PROTOCOL_VERSION = 24;
+export const CS_PROTOCOL_VERSION = 26;
 export const CS_MAX_TEXT_BYTES = 64 * 1024;
 
 /** 一次回多少字节的文件内容（#1056）。中继单帧上限是 256 KiB（wire.ts 的
@@ -356,6 +362,8 @@ export type CsUp =
       这一种是「这条聊天太长了，先给我末尾一屏」 */
   | { t: "backlog"; tail: true; beforeSeq?: number; limit: number }
   | { t: "approve"; callId: string; decision: "approved" | "denied" }
+  /** 点选人卡（#1520）：uid = 卡上的一位，null = 都不是。只有主人本人点得动，判在 runtime */
+  | { t: "pick_friend"; pickId: string; uid: string | null }
   /** 读这个团队此刻的路由 + Git 凭据清单（控制房帧，协议 8；协议 15 多了后者）：
       回 `workspace_state`。任何在籍成员都能读——路由本来就在 welcome 上给所有人看，
       凭据清单里没有 token（有哪几台主机不是秘密，那把钥匙才是） */
@@ -494,6 +502,9 @@ export type CsDown =
   /** approve 的回执（#957 第三批）。callId 让桌面把它跟自己发出去的那次
       approve 对上号——`pendingApprove` 是按 callId 分 Map 的。 */
   | { t: "approve_result"; callId: string; ok: boolean; message?: string }
+  /** pick_friend 的回执（#1520）。pickId 让客户端把它跟自己发出去的那次点选对上号——
+      `pendingPick` 按 pickId 分 Map，理由同 approve_result */
+  | { t: "pick_friend_result"; pickId: string; ok: boolean; message?: string }
   /** stop 的回执（#957 第三批）。ok=false 常见两种：没有在跑的 turn、或
       发起人/owner 之外的人点了停。 */
   | { t: "stop_result"; ok: boolean; message?: string }
@@ -808,6 +819,13 @@ export function decodeCsUp(b64: string): CsUp | null {
       return null;
     }
 
+    if (t === "pick_friend") {
+      if (typeof obj.pickId === "string" && (obj.uid === null || typeof obj.uid === "string")) {
+        return { t: "pick_friend", pickId: obj.pickId, uid: obj.uid };
+      }
+      return null;
+    }
+
     if (t === "workspace") {
       if (typeof obj.workspaceId === "string") return { t: "workspace", workspaceId: obj.workspaceId };
       return null;
@@ -1105,6 +1123,19 @@ export function decodeCsDown(b64: string): CsDown | null {
         (obj.message === undefined || typeof obj.message === "string")
       ) {
         const result: CsDown = { t: "approve_result", callId: obj.callId, ok: obj.ok };
+        if (typeof obj.message === "string") result.message = obj.message;
+        return result;
+      }
+      return null;
+    }
+
+    if (t === "pick_friend_result") {
+      if (
+        typeof obj.pickId === "string" &&
+        typeof obj.ok === "boolean" &&
+        (obj.message === undefined || typeof obj.message === "string")
+      ) {
+        const result: CsDown = { t: "pick_friend_result", pickId: obj.pickId, ok: obj.ok };
         if (typeof obj.message === "string") result.message = obj.message;
         return result;
       }

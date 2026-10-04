@@ -24,8 +24,8 @@ describe("cs_say 的 mentions（#928 切片 1a）", () => {
 });
 
 describe("cs 协议 6（#957 第三批：stop 帧与 say/approve/stop 回执）", () => {
-  it("CS_PROTOCOL_VERSION === 22（…；15 = #1103 Git 凭据；16 = #1107 流式 delta 帧；17 = #1163 语音通话 call 帧；18 = #1140 wiki_write 帧；19 = #1233 say.voice；20 = #1280 聊天；21 = #1393 群里的真人；22 = #1441 外联会话与语音合成的票；23 = #1461 好友私聊里的私密车道；24 = #1491 say.media 图片视频引用）", () => {
-    expect(CS_PROTOCOL_VERSION).toBe(24);
+  it("CS_PROTOCOL_VERSION === 26（…；15 = #1103 Git 凭据；16 = #1107 流式 delta 帧；17 = #1163 语音通话 call 帧；18 = #1140 wiki_write 帧；19 = #1233 say.voice；20 = #1280 聊天；21 = #1393 群里的真人；22 = #1441 外联会话与语音合成的票；23 = #1461 好友私聊里的私密车道；24 = #1491 say.media 图片视频引用；25 = #1523 共享车道；26 = #1520 选人卡 pick_friend）", () => {
+    expect(CS_PROTOCOL_VERSION).toBe(26);
   });
 
   it("delta 下行往返（协议 16，#1107）", () => {
@@ -440,5 +440,22 @@ describe("协议 23：好友私聊里的私密车道（#1461 P1）", () => {
     expect(ok && ok.t === "welcome" ? ok.chat : undefined).toEqual({ kind: "pair", agentIds: ["admin"], humans: [], pair: { peerUid: PEER, facing: "self" } });
     const bad = w({ kind: "pair", agentIds: ["admin"], humans: [], pair: { peerUid: 3 } });
     expect(bad && bad.t === "welcome" ? bad.chat : undefined).toEqual({ kind: "pair", agentIds: ["admin"], humans: [] });
+  });
+});
+
+describe("cs 协议 26（#1520：选人卡）", () => {
+  it("pick_friend 上行往返：选了人 / 都不是（uid null）", () => {
+    expect(decodeCsUp(encodeCs({ t: "pick_friend", pickId: "p1", uid: "u1" }))).toEqual({ t: "pick_friend", pickId: "p1", uid: "u1" });
+    expect(decodeCsUp(encodeCs({ t: "pick_friend", pickId: "p1", uid: null }))).toEqual({ t: "pick_friend", pickId: "p1", uid: null });
+  });
+  it("pick_friend 形状不对整帧拒掉", () => {
+    expect(decodeCsUp(b64({ t: "pick_friend", pickId: "p1" }))).toBeNull();
+    expect(decodeCsUp(b64({ t: "pick_friend", pickId: 1, uid: "u1" }))).toBeNull();
+    expect(decodeCsUp(b64({ t: "pick_friend", pickId: "p1", uid: 3 }))).toBeNull();
+  });
+  it("pick_friend_result 下行往返（有/无 message）", () => {
+    expect(decodeCsDown(encodeCs({ t: "pick_friend_result", pickId: "p1", ok: true }))).toEqual({ t: "pick_friend_result", pickId: "p1", ok: true });
+    expect(decodeCsDown(encodeCs({ t: "pick_friend_result", pickId: "p1", ok: false, message: "这张卡已经用过或过期了。" })))
+      .toEqual({ t: "pick_friend_result", pickId: "p1", ok: false, message: "这张卡已经用过或过期了。" });
   });
 });
