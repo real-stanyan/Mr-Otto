@@ -33,6 +33,10 @@ function titleOf(text: string): string {
   return chars.length > LANE_TASK_TITLE_MAX ? `${chars.slice(0, LANE_TASK_TITLE_MAX - 1).join("")}…` : first;
 }
 
+/** 同一个人在这么久以内接着说的话归到他上一条任务里（真机 2026-10-05：「他不在线，你去给他打电话」「你可以给他打电话的」各自成了一条卡）。
+    换一个人说、或隔久了、或上一条是电话 / 智能体自己起的，才开新的一条 */
+export const LANE_TASK_GAP_MS = 30 * 60_000;
+
 /** 把一条车道的日志折成任务。`selfUid` 判「我 / 朋友」；`nameOf` 给电话那条任务起标题（参与的智能体叫什么） */
 export function laneTasksOf(events: readonly SessionEvent[], selfUid: string | undefined, nameOf: (agentId: string) => string = (id) => id): LaneTask[] {
   const tasks: LaneTask[] = [];
@@ -63,6 +67,11 @@ export function laneTasksOf(events: readonly SessionEvent[], selfUid: string | u
       }
       if (e.greeting !== undefined) continue; // 招呼 / 汇报 / 总结的开场白是模型可见的内务，不画；它引出的回话会归到当前任务
       const by = who(e.fromUid);
+      const last = tasks.at(-1);
+      if (last !== undefined && last.kind === "message" && last.startedBy === by && e.ts - last.lastTs < LANE_TASK_GAP_MS) {
+        attach({ key: `u${e.seq}`, ts: e.ts, who: by, text: e.content }, () => last);
+        continue;
+      }
       const task = start({ key: `u${e.seq}`, ts: e.ts, startedBy: by, kind: "message", title: titleOf(e.content) });
       task.items.push({ key: `u${e.seq}`, ts: e.ts, who: by, text: e.content });
     } else if (e.type === "voice_call_changed") {
