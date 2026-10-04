@@ -1,0 +1,60 @@
+# ADR-0356：智能体的定时任务——runtime 里一只 tick 加一张表，到点起 turn 走现成那条路
+原为 ADR-0353（合并前 origin/main 已有 0353–0355，按 ADR-0074 改成 max+1；代码注释与 migration 头里仍写 ADR-0353 的，指的就是这条）
+
+日期：2026-10-04 · issue #1283 · spec `docs/superpowers/specs/2026-10-04-agent-routines-design.md` · 维护者在会话里拍板
+
+## 背景
+
+维护者原话：「给每个智能体加一个定时任务的功能，用户可以口头描述要求，然后智能体记住定时时间，按照用户的要求去执行。
+这个定时任务会在智能体的设置里面显示，用户后期可以点进去调整。」分两类：永久（每天 / 每周几固定时间）与日抛（一次性）。
+ADR-0298 把个人主场的审批整个免掉时，点名说 routine 要重判——没人在场的那一轮，刀与钱怎么管。
+
+## 决定
+
+1. **调度器放云 runtime daemon**：`agent_routines` 一张表 + 30 秒一拍的 tick，`update … where next_run_at = 读到的值` 原子认领。
+   否决 pg_cron + webhook（runtime 没有对外 HTTP 入口）与 edge cron / DO alarm（Quota DO 刻意无 alarm，最后还是要叫 runtime）。
+   **先推进 `next_run_at` 再起 turn**：起不成不会每 30 秒重试烧钱。每一行包在自己的 try/catch 里（一行坏数据挡不住这一拍、也挡不住清理），
+   每行现取一次时钟（`deps.now()` 在循环里调，因为 `run` 要等到那一轮跑完才返回，拍头那个 `now` 到第 N 行早已过期）。
+2. **表里没有 `session_id`，私聊到点现查**：按 0037 的唯一索引找（`chat_kind='dm'`、`agent_ids[1]`），查不到 = `failed` 并停用。
+   手机手动新建前先让 runtime 幂等地保证私聊存在。
+3. **起 turn 不造第二种机制**（ADR-0223）：到点在它的私聊里落 `user_message{greeting:"routine", routine:{id,title}}`，
+   `fromUid` 是主人，然后 `coordinator.enqueue` → `startDrain`——与回电开场白、外联汇报、新智能体问候同一条路。`greeting`
+   加取值不进协议位。开场白正文是 `任务：<instruction>`，标题不重复（标题在手机那条灰条上）。
+   手机时间线**画**这条开场白（一条灰条）：别的 greeting 都有前一条可见事件解释它为什么开口，这条没有。**桌面照旧藏**
+   （`hiddenFromCloudTimeline` 对 `greeting` 一族与 `routine_note` 都回 true）——桌面不在本期，只有手机画。
+4. **routine 轮视同主人亲口**（维护者选的）：主场免审照旧；`openingTraits` 的 `ownerSpoke` 对 `greeting:"routine"` 放行，
+   否则 `call_friend` 在定时轮里永远灭着，「定时打给好友」做不成。这是唯一放宽的一处。
+5. **刹车不靠审批靠两道门**：起跑前剩余周额度 < 10%（沿用 `RELAY_BUDGET_FRACTION_OF_REMAINING`）不起、落 `routine_note`；
+   engine 加可选 `maxRounds`，routine 轮 40 圈。`maxRounds` 每轮只读一次，到数**抛错走既有的 `turn_ended{outcome:"error"}`**
+   （与 `loopGuardMaxNudges` 同一条收口路径），不造新事件、不伪造一条 `assistant_message`。有人在场的轮不封顶（ADR-0006 那句仍成立）。
+6. **任务只属于主人的家**：`agent_routines` 的 insert / update RLS 除 `owner_uid = auth.uid()` 外还要
+   `exists (select 1 from workspaces w where w.id = workspace_id and w.owner_uid = auth.uid())`——谁也种不进别人的主场；
+   runtime 起 turn 前再核一次 `workspaceFacts(workspaceId).ownerUid === row.ownerUid`（`routineRun.ts` 的 `ownerOf` 依赖），
+   对不上（主场易主之类，行上的 `ownerUid` 是建任务那一刻的旧话）→ `failed` 并停用，不替前主人起。
+7. **时区从日志来**：手机 `say` 帧带设备 IANA 时区，runtime 落到 `user_message.tz`；投影的「今天是」按最近一条带 tz 的人话算
+   ——仍是纯函数、不读库。`profiles.timezone` 由手机在前台、设备时区变了才写，只给调度器建任务时当默认值。
+   非 @ 的 `chat_message` 路径不带 `tz`（私聊里每句话都是 `user_message`，它无关）。打给好友的任务，工具说明里写死「先问好友所在城市」。
+8. **形状只到每天 + 每周几**，不做 cron；墙上时间 + IANA 时区，不存 UTC cron。夏令时按 ICU / Java 惯例：
+   跳过的墙上时间按跳过的长度后移（02:30 → 03:30），重复的取先到的；`wallClockToUtc` 往两侧各探 ±24 小时（±12 小时对 UTC+12 / +13 的时区太窄）。
+9. **漏跑宽限**：一次性 2 小时、重复 10 分钟；超了一次性标 `missed` + 注记 + 停用，重复直接等下一跳不解释。
+10. **7 天清理只清一次性**（`schedule->>kind = 'once'` 且 `done` / `missed`）：停用的重复任务是人暂停的，不是跑完的，不能被删。
+    手机「已完成」段同口径只放一次性的 `done` / `missed`；暂停的重复任务留在「重复」段，开关拨到关。
+11. **设置页只做手机**（维护者选的），纯 JS 时间滚轮、不加原生依赖；桌面另开 issue。编辑一条任务（改标题也算）会把暂停的它重新启用
+    （手机 `save` 在改了时间或行本来就是停用时写 `enabled: true`）；只改标题且本来启用的行**不**重算 `next_run_at`。
+
+## 已知代价
+
+- routine 轮里 `call_friend` 的监督与主人当场派它一样松。出事先收窄 routine 的刀（ADR-0298 的原话），不收窄私聊。
+- VPS 停机半天，那天的早报不会来也不会解释（重复任务的漏跑不注记）。
+- 模型知道的「现在」是最近一条人话的时区；人换了地方还没在这条聊天说过话，它看到的是上一地的。
+  多时区的群聊里，「今天是」那行会随最近一位说话的人的时区来回翻——前缀缓存会因此失效（投影前缀不再逐字稳定）。
+- 工具只校验 IANA 合法，不校验「好友真在那个城市」。
+- **编辑暂停的任务会让它重新启用**：是产品决定，不是疏漏——人点进去改了，多半就是想让它跑；想继续暂停就别保存，或保存后回列表拨开关。
+  代价是「只想改个错别字、仍想暂停」的人得多拨一下开关。
+- 行上的 `owner_uid` 是建任务那一刻的旧话，主场易主后旧任务只会 `failed` 停用，不会迁给新主人。
+
+## 推翻条件
+
+- 改成按需开房（ADR-0297 的推翻条件）：`openOriginRoom` 仍幂等，只是 tick 的 limit 50 要再看。
+- routine 轮真出了事：先给它一张比私聊窄的工具表（`available` 那个口子），不动审批。
+- 引擎有了按钱停的机制：圈数上限换成花费上限。
