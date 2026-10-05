@@ -61,7 +61,8 @@ revoke all on function public.is_room_member(uuid) from public, anon;
 grant execute on function public.is_room_member(uuid) to authenticated;
 
 -- broadcast 两种频道：
---   room:<uuid>      成员互发的即时消息（应用自己的 msg）——joined 成员读、写（没关房才能写）；
+--   room:<uuid>      成员互发的即时消息（应用自己的 msg）——joined 成员读、写（「成员 + 没关房」在加入频道时判一次，不逐条判：
+--                    已经 join 的人在关房 / 退房后仍能发，直到重新 join，见 ADR-0374 §8）；
 --   room-sys:<uuid>  触发器发的系统事件（change / members / closed）——成员只能读，客户端写不了，所以伪造不了。
 -- 名字不合形状回 false（不让 ::uuid 的转换报错把策略炸掉）。只问当前登录的人，不带 uid 参数。
 create or replace function public.room_topic_readable(p_topic text) returns boolean
@@ -221,8 +222,11 @@ declare v_uid uuid := auth.uid();
 begin
   if v_uid is null then raise exception '还没登录'; end if;
   if not public.is_room_member(p_room) then raise exception '你不在这一局里'; end if;
+  -- 同 app_room_set：锁房间行再判关房（不和关房 / 别的写交错），删完顶房间的 updated_at（rooms() 按它排序）
+  perform 1 from public.app_rooms where id = p_room for update;
   if exists (select 1 from public.app_rooms where id = p_room and closed) then raise exception '这一局已经结束了，只能看'; end if;
   delete from public.app_room_data where room_id = p_room and key = p_key;
+  update public.app_rooms set updated_at = now() where id = p_room;
 end $$;
 
 -- 叫人：成员、没关房；同人同房 10 秒一条、每小时 60 条——超了回 false（提醒丢一条不该让游戏报错）
@@ -280,7 +284,7 @@ create policy "otto_apps_select_room" on storage.objects for select to authentic
   )
 );
 
--- 即时消息：私有 broadcast——room:<id> joined 成员收发（关房后不能再发）；room-sys:<id> 成员只收（系统事件只有触发器能发）
+-- 即时消息：私有 broadcast——room:<id> joined 成员收发（「没关房」在加入频道时判一次，不逐条判，见 ADR-0374 §8）；room-sys:<id> 成员只收（系统事件只有触发器能发）
 drop policy if exists "app_room_broadcast_select" on realtime.messages;
 create policy "app_room_broadcast_select" on realtime.messages for select to authenticated using (
   realtime.messages.extension = 'broadcast' and public.room_topic_readable(realtime.topic())
@@ -368,9 +372,12 @@ begin
 end $$;
 revoke all on function public.app_room_closed_notify() from public, anon, authenticated;
 drop trigger if exists app_room_closed_notify on public.app_rooms;
+-- 只在 closed 这一列被更新、且从没关变成关时触发（set / remove 顶 updated_at 不再白跑一趟）；函数里的判断留着兜底
 create trigger app_room_closed_notify
-  after update on public.app_rooms
-  for each row execute function public.app_room_closed_notify();
+  after update of closed on public.app_rooms
+  for each row
+  when (old.closed is distinct from true and new.closed)
+  execute function public.app_room_closed_notify();
 
 do $$
 declare t text;

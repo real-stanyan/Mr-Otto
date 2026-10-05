@@ -29,6 +29,13 @@ select case when count(*) = 3 then 'PASS' else 'FAIL: ' || count(*) end as "三�
  where n.nspname = 'public' and t.tgname in ('app_room_data_notify', 'app_room_members_notify', 'app_room_closed_notify') and not t.tgisinternal
    and (t.tgtype & 1) = 1 and (t.tgtype & 2) = 0;
 
+select case when count(*) = 1 then 'PASS' else 'FAIL: ' || count(*) end as "关房触发器只盯 closed 一列（UPDATE OF closed）且带 WHEN 条件"
+  from pg_trigger t join pg_class c on c.oid = t.tgrelid join pg_namespace n on n.oid = c.relnamespace
+ where n.nspname = 'public' and c.relname = 'app_rooms' and t.tgname = 'app_room_closed_notify' and not t.tgisinternal
+   and t.tgqual is not null
+   and cardinality(t.tgattr::int2[]) = 1
+   and (select attname from pg_attribute where attrelid = c.oid and attnum = t.tgattr[0]) = 'closed';
+
 select case when count(*) = 3 then 'PASS' else 'FAIL: ' || count(*) end as "三个触发器函数是 security definer、客户端不能直接调"
   from pg_proc p where p.proname in ('app_room_data_notify', 'app_room_members_notify', 'app_room_closed_notify') and p.prosecdef
    and not has_function_privilege('authenticated', p.oid, 'execute');

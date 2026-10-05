@@ -41,7 +41,8 @@ describe("0067 app rooms", () => {
   it("系统事件走 room-sys:<id>（成员只读、伪造不了）；关房时发 closed", () => {
     expect(sql).not.toMatch(/'room:' \|\| (old|new|v_room)/);
     expect((sql.match(/'room-sys:' \|\| /g) ?? []).length).toBeGreaterThanOrEqual(4);
-    expect(sql).toMatch(/create trigger \w+\s+after update on public\.app_rooms\s+for each row execute function/);
+    // 只在 closed 那一列变、且从没关变成关时才跑（终审 i）；函数里自己的判断留着兜底
+    expect(sql).toMatch(/create trigger app_room_closed_notify\s+after update of closed on public\.app_rooms\s+for each row\s+when \(old\.closed is distinct from true and new\.closed\)\s+execute function public\.app_room_closed_notify\(\);/);
     expect(sql).toMatch(/realtime\.send\(\s*jsonb_build_object\('closed', true\),\s*'closed',\s*'room-sys:' \|\| new\.id,\s*true\s*\)/);
     expect(sql).toMatch(/old\.closed[\s\S]*?new\.closed/);
   });
@@ -64,8 +65,19 @@ describe("0067 app rooms", () => {
     expect(sql).toContain("function public.room_topic_writable(p_topic text) returns boolean");
     expect(sql).not.toMatch(/is_room_member\([^)]*,/);
   });
-  it("并发：invite / set / ping 先锁房间行再判上限与限速", () => {
-    expect((sql.match(/for update/g) ?? []).length).toBeGreaterThanOrEqual(3);
+  it("并发：invite / set / remove / ping 先锁房间行再判上限与限速", () => {
+    expect((sql.match(/for update/g) ?? []).length).toBeGreaterThanOrEqual(4);
+  });
+  it("app_room_remove 同 app_room_set：锁房间行、判关房、改完顶 app_rooms.updated_at（rooms() 按它排序）", () => {
+    const remove = sql.match(/function public\.app_room_remove[\s\S]*?end \$\$;/)?.[0] ?? "";
+    expect(remove).toContain("perform 1 from public.app_rooms where id = p_room for update;");
+    expect(remove.indexOf("for update")).toBeLessThan(remove.indexOf("closed"));
+    expect(remove).toContain("update public.app_rooms set updated_at = now() where id = p_room;");
+  });
+  it("注释不把 room: 的写说成逐条判关房：授权在加入频道时判一次（ADR-0374 §8）", () => {
+    expect(sql).not.toContain("（没关房才能写）");
+    expect(sql).not.toContain("（关房后不能再发）");
+    expect((sql.match(/加入频道时判/g) ?? []).length).toBeGreaterThanOrEqual(2);
   });
   it("限额与 if_rev 在 RPC 里判", () => {
     for (const s of [">= 8", ">= 50", ">= 500", "65536", "interval '10 seconds'", ">= 60", "p_if_rev"]) expect(sql).toContain(s);
