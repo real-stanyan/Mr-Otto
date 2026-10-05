@@ -250,7 +250,7 @@ import { createBuildAppTool } from "./buildAppTool.js";
 import { createSettingsTool, type OwnerSettingsStore } from "./settingsTool.js";
 import { pickCallAck } from "../../../src/shared/callAck.js";
 import {
-  groupOwnerOf, groupSeatsOf, lastMirroredSeq, mirrorLinesOf, nextGroupOwner, reseat, seatAgentId, seatAskedText, seatDeclinedText, seatExpiredText,
+  groupOwnerOf, groupSeatsOf, lastMirroredSeq, mirrorLinesOf, nextGroupOwner, reseat, seatAgentId, seatAskedText, seatDeclinedText, seatExpiredText, seatLangOf,
   seatGrantText, seatLabel, seatMentionsIn, seatUidOf, SEAT_MIRROR_BACKFILL, SEAT_RELAY_MAX_DEPTH, SEAT_RELAY_PER_HOUR_MAX, SEAT_REQUEST_EXPIRE_MS, SEAT_UPGRADE_TEXT,
   type GroupSeat, type MirrorLine, type SeatPolicy,
 } from "../../../src/shared/groupSeats.js";
@@ -1659,7 +1659,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       r.timer = null;
       if (archived || r.decision !== null) return;
       seatDecision(requestId, "expired", null);
-      seatSays(seatExpiredText(seatOwnerName()));
+      seatSays(seatExpiredText(seatOwnerName(), seatLangOf(r.event.ask)));
     }, Math.max(0, r.event.expiresTs - (opts.now?.() ?? Date.now())));
   }
   if (isSeat) for (const id of seatRequests.keys()) armSeatExpiry(id);
@@ -1684,7 +1684,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     if (hub !== null) {
       await hub.request({ group: seatGroup, event }).catch((err: unknown) => console.warn(`[otto-runtime] 点头卡送不到群（session=${sessionId}）：${err instanceof Error ? err.message : String(err)}`));
     }
-    return seatAskedText(seatOwnerName());
+    return seatAskedText(seatOwnerName(), seatLangOf(ask));
   }
   // 开房时把这边还在等点头的请求再送一遍（#1605 真机 2026-10-05）：送不送到不能靠管理员自觉——它看见自己说过「交给了」
   // 就只会复述，不会再调工具。对面按 requestId 去重，重送是安全的；只有发起这一侧（车道里、请求是这边落的）送
@@ -4290,7 +4290,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       seatDecision(requestId, decision, byUid);
       const tz = requestTz.get(requestId);
       if (decision === "accepted") seatGrant({ fromUid: r.event.fromUid, fromName: r.event.fromName, ask: r.event.ask, via: "card", ...(tz !== undefined ? { tz } : {}) });
-      else seatSays(seatDeclinedText(seatOwnerName()));
+      else seatSays(seatDeclinedText(seatOwnerName(), seatLangOf(r.event.ask)));
       return null;
     },
     mirroredUpTo() {
