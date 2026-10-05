@@ -105,7 +105,7 @@ export function createRoutineTools(deps: RoutineToolDeps): Tool[] {
       const enabled = (await deps.store.list(deps.workspaceId, deps.agentId)).filter((r) => r.enabled).length;
       if (enabled >= ROUTINES_ENABLED_MAX) throw new Error(`启用中的定时任务已经有 ${ROUTINES_ENABLED_MAX} 条了，先停掉或删掉几条`);
       const row = await deps.store.insert({ workspaceId: deps.workspaceId, agentId: deps.agentId, ownerUid: deps.ownerUid, title, instruction, schedule: sched, tz, createdBy: "agent", nextRunAt: next, ...(deps.sessionId !== undefined ? { sessionId: deps.sessionId } : {}) });
-      return `已记下「${row.title}」（id ${row.id}）：${scheduleText(row.schedule, row.tz)}。${nextText(row)}。请用人话复述给用户确认。`;
+      return `已记下「${row.title}」（id ${row.id}）：${scheduleText(row.schedule, row.tz)}。${nextText(row)}。请用人话、用用户说话的语言复述给用户确认。`;
     },
   };
 

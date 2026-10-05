@@ -53,7 +53,9 @@ describe("定时任务：时段内每隔 N 分钟（every）", () => {
     const sql = read("supabase/migrations/0066_routine_every.sql");
     expect(sql).toContain(">= 50 then");
     expect(sql).toContain("in ('once', 'daily', 'weekly', 'every')");
-    expect(read("services/runtime/src/routineTools.ts")).toContain('enum: ["once", "daily", "weekly", "every"]');
+    // monthly（#1682）跟在 every 后面：工具表与 0068 的形状约束一起放宽
+    expect(read("services/runtime/src/routineTools.ts")).toContain('enum: ["once", "daily", "weekly", "every", "monthly"]');
+    expect(read("supabase/migrations/0068_group_seats.sql")).toContain("in ('once', 'daily', 'weekly', 'every', 'monthly')");
     expect(read("mobile/src/agent/RoutineEditDialog.tsx")).toContain('{ k: "every", label: "时段内重复" }');
   });
 });
