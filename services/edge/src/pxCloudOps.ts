@@ -310,6 +310,12 @@ export async function cloudRefresh(d: CloudOpsDeps, serverId: string): Promise<C
   const raw = await refreshCloudOAuth(d.fetch, client ? { ...svc.oauth, clientInformation: client } : svc.oauth);
   // 写回 / 交回的那份换回箱里记的 clientInformation：补进去的 secret 不落盘
   const result = raw.kind === "ok" && stored ? { ...raw, oauth: { ...raw.oauth, clientInformation: stored } } : raw;
+  // 预置客户端（resolveClient 补了 secret，client !== stored）被 token 端点以 invalid_client 拒：是我们的凭据贴错 / 轮换漏了，
+  // 不是用户的登录坏了——同「取不到 secret」按抖动处理，别让每个 Gmail 用户因为我们的失误去重登（#1619）。其余 dead 仍是 dead
+  if (client && client !== stored && raw.kind === "dead" && raw.error === "invalid_client") {
+    d.log?.(`[px-cloud] refresh ${serverId} preset invalid_client`);
+    return null;
+  }
   if (result.kind === "transient") {
     d.log?.(`[px-cloud] refresh ${serverId} transient`);
     return null;

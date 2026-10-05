@@ -644,4 +644,54 @@ describe("预置 OAuth 客户端（#1619）", () => {
     expect(up.calls.length).toBe(before);
     expect(m.peekBox()!.services[0]!.status).toBe("ok");
   });
+
+  it("续期时我们的 secret 被拒（invalid_client）= transient：不标 needs_login，用户登录没坏（#1619 终审 F3）", async () => {
+    let p = PRESET;
+    const { d, m, up } = deps({ presetClient: () => p });
+    const logs: string[] = [];
+    d.log = (s: string) => { logs.push(s); };
+    const r = await cloudConnect(d, UID, { catalogId: "gmail", params: {} });
+    if (!r.ok || r.reply.kind !== "authorize") throw new Error("应当回 authorize");
+    const state = new URL(r.reply.authorizeUrl).searchParams.get("state")!;
+    await cloudCallback(d, UID, { state, code: "C", error: null });
+    p = { ...PRESET, client_secret: "WRONG" }; // 轮换时贴错了
+    const before = up.calls.length;
+    expect(await cloudRefresh(d, "cloud-gmail")).toBeNull();
+    expect(up.calls.length).toBe(before + 1); // 这回真的外呼了、被上游 401 invalid_client 打回
+    expect(m.peekBox()!.services[0]!.status).toBe("ok");
+    expect(m.peekBox()!.services[0]!.oauth!.tokens).toMatchObject({ refresh_token: "RT" });
+    expect(logs).toContain("[px-cloud] refresh cloud-gmail preset invalid_client");
+  });
+
+  it("护栏：非预置应用续期被 invalid_grant / invalid_client 拒，照旧标 needs_login", async () => {
+    for (const reply of [J(400, { error: "invalid_grant" }), J(401, { error: "invalid_client" })]) {
+      const x = deps({ presetClient: () => PRESET });
+      await loginNotion(x);
+      wrapFetch(x, (url, init) => (isRefresh(url, init) ? reply.clone() : undefined));
+      expect(await cloudRefresh(x.d, "cloud-notion")).toBeNull();
+      expect(x.m.peekBox()!.services[0]!.status).toBe("needs_login");
+    }
+  });
+
+  it("护栏：目录条目不是预置的，存下来的 clientInformation.preset 骗不到 secret（resolveClient 只看目录）", async () => {
+    const m = memStore();
+    const bodies: string[] = [];
+    const up = upstream(m.store, {});
+    const f = async (url: string, init: RequestInit): Promise<Response> => {
+      if (url === "https://auth.notion.com/t") bodies.push(String(init.body ?? ""));
+      return up.f(url, init);
+    };
+    const { d } = deps({ store: m.store, fetch: f, presetClient: () => PRESET });
+    await m.store.atomic(async () => {
+      await m.store.putBox(upsertCloudService(
+        { v: 1, hostUid: UID, services: [], updatedTs: 0 },
+        {
+          serverId: "cloud-notion", catalogId: "notion", url: "https://mcp.notion.com/mcp", toolDefs: [],
+          oauth: { tokens: { access_token: "AT", refresh_token: "RT" }, clientInformation: { client_id: "cid", preset: "google" }, tokenEndpoint: "https://auth.notion.com/t" },
+        }, HOME, 1_000_000));
+    });
+    await cloudRefresh(d, "cloud-notion");
+    expect(bodies.length).toBe(1); // 确实打到了那个 token 端点，下面的「不含」才有意义
+    expect(bodies.join("\n")).not.toContain("GSECRET");
+  });
 });

@@ -179,8 +179,15 @@ describe("authorizeUrl / exchangeCode / refresh", () => {
     expect(hit).toBe("https://a/t");
     expect(r).toEqual({ kind: "ok", oauth: { ...oauth, tokens: { access_token: "new", refresh_token: "RT" } } });
   });
+  it("dead 带上回包里的 OAuth error（尽力而为）：读不出来就不带这个键，永不抛", async () => {
+    expect(await refreshCloudOAuth(async () => J(401, { error: "invalid_client" }), oauth)).toEqual({ kind: "dead", error: "invalid_client" });
+    expect(await refreshCloudOAuth(async () => new Response("<html>nope", { status: 400 }), oauth)).toStrictEqual({ kind: "dead" });
+    expect(await refreshCloudOAuth(async () => J(403, { error: 7 }), oauth)).toStrictEqual({ kind: "dead" });
+    expect(await refreshCloudOAuth(async () => J(400, {}), oauth)).toStrictEqual({ kind: "dead" });
+    expect(await refreshCloudOAuth(async () => J(400, { error: "" }), oauth)).toStrictEqual({ kind: "dead" });
+  });
   it("三态：厂商 4xx / 缺料 / 非 https = dead；网络错 / 5xx / 2xx 读不懂 = transient", async () => {
-    expect(await refreshCloudOAuth(async () => J(400, { error: "invalid_grant" }), oauth)).toEqual({ kind: "dead" });
+    expect(await refreshCloudOAuth(async () => J(400, { error: "invalid_grant" }), oauth)).toEqual({ kind: "dead", error: "invalid_grant" });
     expect(await refreshCloudOAuth(async () => J(200, {}), { tokenEndpoint: "https://a/t" })).toEqual({ kind: "dead" });
     let called = false;
     expect(await refreshCloudOAuth(async () => { called = true; return J(200, { access_token: "x" }); }, { ...oauth, tokenEndpoint: "http://a/t" })).toEqual({ kind: "dead" });

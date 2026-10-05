@@ -195,7 +195,17 @@ export async function exchangeCode(
 /** 续期结果三态：dead = 登录确实失效了（要人重新登录）；transient = 这一次没问成（网络 / 超时 / 5xx / 408 / 429 /
     回包读不懂），
     凭据没有任何证据说它坏了，不许因为一次抖动就让人重登 */
-export type RefreshResult = { kind: "ok"; oauth: CloudOAuth } | { kind: "dead" } | { kind: "transient" };
+export type RefreshResult = { kind: "ok"; oauth: CloudOAuth } | { kind: "dead"; error?: string } | { kind: "transient" };
+
+/** 从被拒的回包里尽力读出 OAuth 的 `error` 字段（RFC 6749 §5.2）。读不出来 / 不是非空字符串就是 undefined，永不抛 */
+async function oauthErrorOf(res: Response): Promise<string | undefined> {
+  try {
+    const body: unknown = await res.json();
+    return isObj(body) && typeof body.error === "string" && body.error !== "" ? body.error : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 /** spec §4：用接入时记下的 tokenEndpoint 续，不再猜 discovery。不轮换 refresh_token 的厂商保留旧的 */
 export async function refreshCloudOAuth(fetchLike: FetchLike, oauth: CloudOAuth): Promise<RefreshResult> {
@@ -217,7 +227,11 @@ export async function refreshCloudOAuth(fetchLike: FetchLike, oauth: CloudOAuth)
     });
     // 408（请求超时）/ 429（限流）说的是「这一次没问成」，不是「这张 refresh_token 坏了」（#1430 终审 M1）
     if (res.status >= 500 || res.status === 408 || res.status === 429) return { kind: "transient" };
-    if (!res.ok) return { kind: "dead" };
+    if (!res.ok) {
+      // 带上厂商说的原因：调用方要能分出「我们的客户端凭据被拒（invalid_client）」和「这张 refresh_token 坏了」
+      const error = await oauthErrorOf(res);
+      return error !== undefined ? { kind: "dead", error } : { kind: "dead" };
+    }
     const tokens: unknown = await res.json();
     if (!isObj(tokens) || typeof tokens.access_token !== "string") return { kind: "transient" };
     return { kind: "ok", oauth: { ...oauth, tokens: { ...oauth.tokens, ...tokens } } };
