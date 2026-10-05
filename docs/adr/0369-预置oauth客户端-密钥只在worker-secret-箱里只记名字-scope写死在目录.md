@@ -35,7 +35,10 @@ Google 也只在 `access_type=offline` + `prompt=consent` 时才给 `refresh_tok
    回调时 secret 被删了：换 token 前现取失败，回 `preset_unconfigured`，深链照常回手机，手机拉视图看到没接上。续期时取不到：按
    `transient` 处理（凭据没坏、是我们这边没配好，不许把用户标成 `needs_login` 要重登）。手机不提前置灰，点「去登录」弹出 edge 回的那句话。
 6. **桌面这一版不接，`desktopBlocked(entry)` 回「这个应用在手机上接」。** Web application 客户端的回调地址要精确匹配，桌面是随机回环端口。
-   桌面读 `entry.blocked` 的几处与 `mcp_configure` 装目录条目那条路都改用 `desktopBlocked`。
+   桌面读 `entry.blocked` 的几处（`McpConnectorPage`、`McpServerEditor` 的入参、`mcpDirectory.installSlot`、`mcpDetail`）和 `mcp_catalog` 的渲染文字都改用 `desktopBlocked`。
+   **`mcp_configure` 不拦。** 它收的是一条原始 URL、从不查目录，没有「按目录条目安装」这条路可拦；按 URL 硬拦 Gmail 的地址还会误伤手填 OAuth 客户端的用户（ADR-0309）。
+   所以这道拦是劝告式的：靠 `mcp_catalog` 渲染出的「现在接不上：…别装这台」让智能体别装。代价：智能体无视这句话硬装，mcp.json 里会留下一台
+   到 `mcp_authorize` 才失败的 server。
 
 ## 上线顺序
 

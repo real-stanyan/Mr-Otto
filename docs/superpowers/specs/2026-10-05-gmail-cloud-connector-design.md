@@ -94,7 +94,8 @@ authorizeParams?: Readonly<Record<string, string>>;
 
 `mcpCatalog.ts` 加 `desktopBlocked(entry)`：`entry.blocked ?? (entry.presetClient ? "这个应用在手机上接：Mr Otto 手机 App →「接入应用」" : undefined)`。
 桌面读 `entry.blocked` 的几处（`McpConnectorPage`、`McpServerEditor` 的入参、`mcpDirectory.installSlot`、`mcpDetail`）改用它。
-智能体的 `mcp_configure` 装目录条目时同样拦（找到它装目录条目的那条路，带 `presetClient` 的回这句话）。
+`mcp_catalog` 的渲染文字同样用它（「现在接不上：…别装这台」）。`mcp_configure` 不拦：它收原始 URL、从不查目录，没有按目录条目安装的路径；
+按 URL 硬拦还会误伤手填 OAuth 客户端的用户（ADR-0309）。所以这道拦是劝告式的，代价是智能体无视它硬装时，mcp.json 里会留下一台到 `mcp_authorize` 才失败的 server。
 
 ### 3.5 ADR
 
