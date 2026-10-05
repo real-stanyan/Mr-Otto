@@ -109,7 +109,7 @@ export function checkScenario(r: ScenarioResult, city: City, opts: { chineseOk?:
     for (const leak of r.scenario.leaks ?? []) {
       const p = CAST.find((x) => x.id === leak.owner)!;
       if (!l.text.includes(leak.text) || l.who === p.name) continue;
-      const privateToOwner = l.where === `${p.name} ↔ ${p.adminName}（私聊）`;
+      const privateToOwner = l.where === `${p.name} ↔ ${p.adminName}（私聊）` || (leak.okWhere ?? []).some((w) => l.where.includes(w));
       if (!privateToOwner) findings.push({ severity: "bug", check: "私下交代的事外流", detail: `${p.name} 私聊里交代保密的「${leak.text}」出现在「${l.where}」的 ${l.who} 那句里` });
     }
   }

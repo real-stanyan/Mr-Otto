@@ -72,7 +72,7 @@ export interface Scenario {
   owner?: string;
   members?: string[];
   /** 这场里不该出现在 owner 自己私下以外地方的字串（比如私聊里交代保密的 wifi 密码） */
-  leaks?: { owner: string; text: string }[];
+  leaks?: { owner: string; text: string; okWhere?: string[] }[];
   beats: Beat[];
 }
 
