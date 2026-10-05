@@ -150,6 +150,10 @@ export interface FrameHandlerDeps {
     ownerOf(workspaceId: string): Promise<string>;
     /** 对面管理员的协作请求，主人接 / 不接（#1605）：房没开就开；判据在 CloudSession.decideCollab */
     decideCollab(workspaceId: string, sessionId: string, byUid: string, requestId: string, decision: "accepted" | "declined"): Promise<{ ok: true } | { ok: false; message: string }>;
+    /** 座位制的群（#1682）：点头卡、我的座位策略、退群。可选：smoke / 测试假货不接 */
+    decideSeat?(workspaceId: string, sessionId: string, byUid: string, requestId: string, decision: "accepted" | "declined", note?: string): Promise<{ ok: true } | { ok: false; message: string }>;
+    seatPolicy?(workspaceId: string, sessionId: string, byUid: string, policy: "ask" | "open"): Promise<{ ok: true } | { ok: false; message: string }>;
+    leaveGroup?(workspaceId: string, sessionId: string, byUid: string): Promise<{ ok: true } | { ok: false; message: string }>;
     /** 收尾一条云会话（issue #822）：落日志（CloudSession.archive）+ 写
         Supabase 那行的 archived 列 + 收掉房间。三件事在 daemon 里，因为
         只有它同时握着 supabase 句柄和 transport。false = 已经归档过了 */
@@ -338,6 +342,17 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
     beforeDeny?: () => void,
     session?: CloudSession | null,
   ): Promise<boolean> {
+    // 座位制的群（#1682）：在籍只看座位名单——群主退了群，工作区所有者也不再在籍
+    const seated = session?.seatMember?.(uid) ?? null;
+    if (seated === true) return true;
+    if (seated === false) {
+      beforeDeny?.();
+      deny(cid, "not_authorized");
+      cids.delete(cid);
+      deps.dropCid?.(cid);
+      deps.health?.gone(cid);
+      return false;
+    }
     // 群里的客人（#1393）按那条会话日志里的名单算在籍：他们不是工作区成员
     if (session?.isGuest(uid) === true) return true;
     if (await deps.isMember(workspaceId, uid)) return true;
@@ -465,7 +480,8 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
         msg.t !== "create" && msg.t !== "workspace" && msg.t !== "git_credential" &&
         msg.t !== "archive" && msg.t !== "delete" && msg.t !== "files" &&
         msg.t !== "files_search" && msg.t !== "wiki_write" && msg.t !== "chat_update" && msg.t !== "human_call" &&
-        msg.t !== "collab_decide" && msg.t !== "app_accept" && msg.t !== "app_delete"
+        msg.t !== "collab_decide" && msg.t !== "app_accept" && msg.t !== "app_delete" &&
+        msg.t !== "seat_decide" && msg.t !== "seat_policy" && msg.t !== "group_leave"
       ) {
         deny(cid, "not_authorized");
         return;
@@ -509,10 +525,39 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
       // 只放这一种帧，别的「关于整个工作区」的动作照旧只认工作区成员
       const guestUpdate =
         msg.t === "chat_update" && deps.sessions.get(msg.workspaceId, msg.sessionId)?.isGuest(entry.uid) === true;
+      // 座位制的群（#1682）：在籍只看座位名单（群主退了群，工作区所有者也不再在籍）；座位帧只认群里的人
+      const seatedHere =
+        msg.t === "chat_update" || msg.t === "seat_decide" || msg.t === "seat_policy" || msg.t === "group_leave"
+          ? (deps.sessions.get(msg.workspaceId, msg.sessionId)?.seatMember?.(entry.uid) ?? null)
+          : null;
+      // 座位帧打到一条不是座位制的会话上（会话关着 / 不是群）：不在籍一律按不在籍回
+      if (seatedHere === false || ((msg.t === "seat_decide" || msg.t === "seat_policy" || msg.t === "group_leave") && seatedHere !== true)) {
+        deny(cid, "not_member");
+        return;
+      }
+      if (msg.t === "seat_decide" || msg.t === "seat_policy" || msg.t === "group_leave") {
+        // 走到这里 seatedHere 必为 true（上面那道已把不在座位名单里的挡掉）
+        const op = msg.t === "seat_decide" ? "decide" : msg.t === "seat_policy" ? "policy" : "leave";
+        if (!deps.rateLimit.allow("create", entry.uid)) {
+          deps.send(cid, { t: "seat_result", workspaceId: msg.workspaceId, sessionId: msg.sessionId, op, ...(msg.t === "seat_decide" ? { requestId: msg.requestId } : {}), ok: false, message: throttleMessage("create") });
+          return;
+        }
+        const r =
+          msg.t === "seat_decide"
+            ? (await deps.sessions.decideSeat?.(msg.workspaceId, msg.sessionId, entry.uid, msg.requestId, msg.decision, msg.note))
+            : msg.t === "seat_policy"
+              ? (await deps.sessions.seatPolicy?.(msg.workspaceId, msg.sessionId, entry.uid, msg.policy))
+              : msg.t === "group_leave"
+                ? (await deps.sessions.leaveGroup?.(msg.workspaceId, msg.sessionId, entry.uid))
+                : undefined;
+        const out = r ?? { ok: false as const, message: "这台服务器还不支持这个操作。" };
+        deps.send(cid, { t: "seat_result", workspaceId: msg.workspaceId, sessionId: msg.sessionId, op, ...(msg.t === "seat_decide" ? { requestId: msg.requestId } : {}), ok: out.ok, ...(out.ok ? {} : { message: out.message }) });
+        return;
+      }
       // 朋友替主人开公开智能体的车道（#1533，协议 26）：发帧的不是主场成员。只放这一种 create，是不是配对的朋友、
       // 主人设了没有、档位够不够，细判在 daemon（它握着好友关系与 profiles 的查询）
       const onBehalfCreate = msg.t === "create" && msg.chat?.kind === "pair" && msg.chat.onBehalf === true;
-      if (!guestUpdate && !onBehalfCreate && !(await deps.isMember(msg.workspaceId, entry.uid))) {
+      if (seatedHere !== true && !guestUpdate && !onBehalfCreate && !(await deps.isMember(msg.workspaceId, entry.uid))) {
         deny(cid, "not_member");
         return;
       }
@@ -627,7 +672,10 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
         // 细的判据在 daemon 的 planHumansChange——它握着好友关系的查询）
         // 车道的朝向（#1523）归主人：客人在车道里什么都改不了，所以 facing 不算进「只动客人名单」
         const onlyHumans = msg.humans !== undefined && msg.name === undefined && msg.agentIds === undefined && msg.facing === undefined;
-        if (entry.uid !== ownerUid && entry.uid !== creator && !(guestUpdate && onlyHumans)) {
+        // 座位制的群（#1682）：群里的人都能拉自己的朋友；改群名归群主（建群的人 / 转给的那位）。工作区所有者退了群就什么都改不了
+        const seatOwner = seatedHere === true ? deps.sessions.get(msg.workspaceId, msg.sessionId)?.groupOwner?.() : undefined;
+        const seatAllowed = seatedHere === true && (onlyHumans || (entry.uid === seatOwner && msg.agentIds === undefined && msg.facing === undefined));
+        if (seatedHere === true ? !seatAllowed : entry.uid !== ownerUid && entry.uid !== creator && !(guestUpdate && onlyHumans)) {
           deny(cid, "not_authorized");
           return;
         }
@@ -793,8 +841,9 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
         const session = deps.sessions.get(workspaceId, sessionId);
         // 在籍 = 工作区成员 ∪ 这条群聊的客人（#1393）。先问会话：客人不是工作区成员，只问工作区会把他挡在门外。
         // 会话不在时照旧先报 not_member（不在籍的人不该从回执里探出「这条会话存不存在」）
-        const guest = session?.isGuest(result.uid) === true;
-        if (!guest && !(await deps.isMember(workspaceId, result.uid))) {
+        const seatedIn = session?.seatMember?.(result.uid) ?? null;
+        const guest = seatedIn === true || (seatedIn === null && session?.isGuest(result.uid) === true);
+        if (seatedIn === false || (!guest && !(await deps.isMember(workspaceId, result.uid)))) {
           deny(cid, "not_member");
           return;
         }

@@ -20,16 +20,20 @@ export interface RoutineToolDeps {
   now: () => number;
   /** 此刻亮不亮（sessionService 给：主人亲口的轮 && 不受监督） */
   available: () => boolean;
+  /** 群座位里定的（#1682）：到点回这条会话跑，不回私聊。缺席 = 私聊 */
+  sessionId?: string;
 }
 
 const SCHEDULE_SCHEMA = {
   type: "object",
   description:
     "四种形状之一：{kind:'once', at:'YYYY-MM-DDTHH:mm'}（一次性，墙上时间）/ {kind:'daily', time:'HH:mm'} / {kind:'weekly', days:[1..7], time:'HH:mm'}（1 = 周一 … 7 = 周日）" +
-    " / {kind:'every', minutes:N, from:'HH:mm', to:'HH:mm', days?:[1..7]}（时段内每隔 N 分钟，N 在 5..720，不跨夜，days 不传 = 每天）。" +
+    " / {kind:'every', minutes:N, from:'HH:mm', to:'HH:mm', days?:[1..7]}（时段内每隔 N 分钟，N 在 5..720，不跨夜，days 不传 = 每天）" +
+    " / {kind:'monthly', days:[1..31], time:'HH:mm'}（每月几号；那个月没有这一天就落在月底，31 = 每月月底）。" +
+    "「每月 1 号交房租」「每月 15 号还信用卡」用 monthly，别用一次性的凑。" +
     "「营业时间里每 10 分钟看一次」这种用一条 every，别拆成很多条 daily。",
   properties: {
-    kind: { type: "string", enum: ["once", "daily", "weekly", "every"] },
+    kind: { type: "string", enum: ["once", "daily", "weekly", "every", "monthly"] },
     at: { type: "string" }, time: { type: "string" }, days: { type: "array", items: { type: "integer" } },
     minutes: { type: "integer" }, from: { type: "string" }, to: { type: "string" },
   },
@@ -40,6 +44,22 @@ const nextText = (r: RoutineRow): string => (r.nextRunAt === null ? "没有下�
 const lineOf = (r: RoutineRow): string =>
   `- [${r.id}]「${r.title}」${scheduleText(r.schedule, r.tz)}；${r.enabled ? "启用中" : "已停用"}；${nextText(r)}` +
   (r.lastStatus !== null ? `；上次：${r.lastStatus}` : "") + `\n  任务：${r.instruction}`;
+
+/** 标题超长就截（#1682 模拟：模型起的标题动辄 50 字，报「最多 40 字」它要再来一趟，有的就此放弃不定了） */
+function fitTitle(v: string): string {
+  return v.length <= ROUTINE_TITLE_MAX ? v : `${v.slice(0, ROUTINE_TITLE_MAX - 1).trimEnd()}…`;
+}
+
+/** 任务内容的几个常见别名（#1682 模拟：参数写成 content / text / message，报「任务内容不能空」后模型以为工具坏了、
+    让主人自己去 app 里设）。认下来，不让一个字段名挡住一条提醒 */
+function instructionOf(a: Record<string, unknown>): unknown {
+  return a.instruction ?? a.content ?? a.text ?? a.message ?? a.task ?? a.reminder;
+}
+
+/** 校验的错在前面补一句「参数怎么写」：模型读到的是修法，不是「坏了」 */
+function argsHint(err: string): string {
+  return `${err}（参数：title 一句话标题、instruction 到点要做什么、schedule 形状见说明；改了再调一次就行，工具没坏）`;
+}
 
 function asRecord(args: unknown): Record<string, unknown> {
   if (typeof args !== "object" || args === null) throw new Error("参数要是一个对象");
@@ -70,7 +90,7 @@ export function createRoutineTools(deps: RoutineToolDeps): Tool[] {
       description:
         "你能定时：用户要你到点提醒 / 到点做某事时用它，不要叫用户到点再来喊你。" +
         "给自己记一条定时任务：到点我会在这条私聊里收到一句「定时任务到点」，然后按任务去做。" +
-        "一次性的（kind once）跑完就自动停用；每天 / 每周几的（daily / weekly）长期有效。" +
+        "一次性的（kind once）跑完就自动停用；每天 / 每周几 / 每月几号的（daily / weekly / monthly）长期有效。" +
         "时间写**墙上时间**，不带时区；tz 不传 = 主人设备的时区。人说的是相对时间（「今天下午三点」「明早」）就按对话里的「现在是 / 今天是」换算。" +
         "**任务里要打给好友的，先问清好友在哪个城市，换成 IANA 时区名用 tz 传进来；没问到别建。**" +
         "建好之后用人话复述一遍「下次执行」的时间给用户确认。",
@@ -91,17 +111,18 @@ export function createRoutineTools(deps: RoutineToolDeps): Tool[] {
     async run(args: unknown, _world: ExecutionWorld) {
       const a = asRecord(args);
       const tz = await resolveTz(a.tz);
-      const title = String(a.title ?? "").trim();
-      const instruction = String(a.instruction ?? "").trim();
+      const instruction = String(instructionOf(a) ?? "").trim();
+      // 没给标题就拿任务内容的头一截当标题（标题只是列表里那一行）
+      const title = fitTitle(String(a.title ?? "").trim() || instruction.split("\n")[0]!.trim());
       const err = routineErrors({ title, instruction, schedule: a.schedule, tz });
-      if (err !== null) throw new Error(err);
+      if (err !== null) throw new Error(argsHint(err));
       const sched: RoutineSchedule = parseRoutineSchedule(a.schedule);
       const next = nextRunAt(sched, tz, deps.now());
       if (next === null) throw new Error("这个时刻已经过了，换一个将来的时间");
       const enabled = (await deps.store.list(deps.workspaceId, deps.agentId)).filter((r) => r.enabled).length;
       if (enabled >= ROUTINES_ENABLED_MAX) throw new Error(`启用中的定时任务已经有 ${ROUTINES_ENABLED_MAX} 条了，先停掉或删掉几条`);
-      const row = await deps.store.insert({ workspaceId: deps.workspaceId, agentId: deps.agentId, ownerUid: deps.ownerUid, title, instruction, schedule: sched, tz, createdBy: "agent", nextRunAt: next });
-      return `已记下「${row.title}」（id ${row.id}）：${scheduleText(row.schedule, row.tz)}。${nextText(row)}。请用人话复述给用户确认。`;
+      const row = await deps.store.insert({ workspaceId: deps.workspaceId, agentId: deps.agentId, ownerUid: deps.ownerUid, title, instruction, schedule: sched, tz, createdBy: "agent", nextRunAt: next, ...(deps.sessionId !== undefined ? { sessionId: deps.sessionId } : {}) });
+      return `已记下「${row.title}」（id ${row.id}）：${scheduleText(row.schedule, row.tz)}。${nextText(row)}。请用人话、用用户说话的语言复述给用户确认。`;
     },
   };
 
@@ -143,12 +164,13 @@ export function createRoutineTools(deps: RoutineToolDeps): Tool[] {
         return `已删除「${r.title}」。`;
       }
       const p = typeof a.patch === "object" && a.patch !== null ? (a.patch as Record<string, unknown>) : {};
-      const title = p.title !== undefined ? String(p.title).trim() : r.title;
-      const instruction = p.instruction !== undefined ? String(p.instruction).trim() : r.instruction;
+      const title = p.title !== undefined ? fitTitle(String(p.title).trim()) : r.title;
+      const ins = instructionOf(p);
+      const instruction = ins !== undefined ? String(ins).trim() : r.instruction;
       const tz = p.tz !== undefined ? await resolveTz(p.tz) : r.tz;
       const scheduleRaw = p.schedule !== undefined ? p.schedule : r.schedule;
       const err = routineErrors({ title, instruction, schedule: scheduleRaw, tz });
-      if (err !== null) throw new Error(err);
+      if (err !== null) throw new Error(argsHint(err));
       const sched = parseRoutineSchedule(scheduleRaw);
       const enabled = typeof a.enabled === "boolean" ? a.enabled : r.enabled;
       const next = enabled ? nextRunAt(sched, tz, deps.now()) : null;

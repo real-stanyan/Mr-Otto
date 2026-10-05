@@ -3,7 +3,7 @@
 // 校验它们焊在一起真的对得上（HistoryCapability 接口两头的实现一致）。
 import { describe, it, expect } from "vitest";
 import { EventStore } from "../../src/session/store.js";
-import { createHistoryCapability } from "../../src/main/historyCapability.js";
+import { createHistoryCapability } from "../../src/session/historyCapability.js";
 import { createSessionSearchTool, parseSessionSearchResult } from "../../src/tools/sessionSearch.js";
 import type { ExecutionWorld } from "../../src/world/executionWorld.js";
 

@@ -56,6 +56,8 @@ const DURABLE = [
   "app_card",
   "collab_request",
   "collab_decision",
+  "seat_request",
+  "seat_decision",
   "outreach",
   "friend_pick",
   "app_connect",

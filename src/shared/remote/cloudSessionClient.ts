@@ -76,6 +76,7 @@ import {
   csChannel,
   encodeCs,
   decodeCsDown,
+  SEAT_NOTE_MAX,
   type CsDeniedCode,
   type CsGitHost,
   type CsChatInfo,
@@ -243,6 +244,14 @@ export interface CloudSessionClient {
   ): Promise<FriendsResult<null>>;
   /** 对面管理员的协作请求，接 / 不接（控制房 RPC，协议 29，#1605）：只有主人能点，服务端判 */
   collabDecide(workspaceId: string, sessionId: string, requestId: string, decision: "accepted" | "declined"): Promise<FriendsResult<null>>;
+  /** 群里别人使唤我的管理员，接 / 不接（控制房 RPC，协议 31，#1682）：sessionId 是那个群；只有那个座位的主人点得了，服务端判。
+      回执只答收没收下——卡的结局另以 seat_decision 事件广播。`note` = 主人附的一句（可选）：去掉首尾空白，空的不带，
+      超过 SEAT_NOTE_MAX 字截掉——服务端对超长的整帧拒，一句附言不该让「接 / 不接」本身点不成 */
+  seatDecide(workspaceId: string, sessionId: string, requestId: string, decision: "accepted" | "declined", note?: string): Promise<FriendsResult<null>>;
+  /** 这个群里别人使唤我的管理员：每次问我 / 全部放行（控制房 RPC，协议 31）。只改发帧的人自己那个座位 */
+  seatPolicy(workspaceId: string, sessionId: string, policy: "ask" | "open"): Promise<FriendsResult<null>>;
+  /** 退出这个座位制的群（控制房 RPC，协议 31）：群主退群转给最早入群的人 */
+  groupLeave(workspaceId: string, sessionId: string): Promise<FriendsResult<null>>;
   /** 给朋友打电话（控制房 RPC，协议 27，#1534）：runtime 核对是好友、推一条 VoIP 来电给对方；回执带打的人要用的
       ICE 服务器与响铃到点的时刻。媒体与信令不经这里（call/humanCall.ts 直接走中继 hc:<callId> 房） */
   humanCall(callId: string, toUid: string): Promise<FriendsResult<{ ice: IceServer[]; expiresTs: number }>>;
@@ -1361,6 +1370,28 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     });
   }
 
+  /** 三条座位帧共用一条 seat_result（协议 31）：按 op + sessionId（点头卡再加 requestId）认自己那一条 */
+  function seatRequest(frame: CsUp, op: "decide" | "policy" | "leave", sessionId: string, requestId: string | undefined, fail: string): Promise<FriendsResult<null>> {
+    return ctlRequest(frame, (msg) => {
+      if (msg.t !== "seat_result" || msg.op !== op || msg.sessionId !== sessionId || (requestId !== undefined && msg.requestId !== requestId)) return null;
+      return msg.ok ? { ok: true, value: null } : { ok: false, message: msg.message ?? fail };
+    });
+  }
+
+  function seatDecide(workspaceId: string, sessionId: string, requestId: string, decision: "accepted" | "declined", note?: string): Promise<FriendsResult<null>> {
+    // 按 Unicode 字符数截（服务端也是这么数的），emoji 不劈成两半；截完再 trim 一次，免得尾巴上剩个空格
+    const said = note === undefined ? "" : Array.from(note.trim()).slice(0, SEAT_NOTE_MAX).join("").trim();
+    return seatRequest({ t: "seat_decide", workspaceId, sessionId, requestId, decision, ...(said !== "" ? { note: said } : {}) }, "decide", sessionId, requestId, "没有点成");
+  }
+
+  function seatPolicy(workspaceId: string, sessionId: string, policy: "ask" | "open"): Promise<FriendsResult<null>> {
+    return seatRequest({ t: "seat_policy", workspaceId, sessionId, policy }, "policy", sessionId, undefined, "没有改成");
+  }
+
+  function groupLeave(workspaceId: string, sessionId: string): Promise<FriendsResult<null>> {
+    return seatRequest({ t: "group_leave", workspaceId, sessionId }, "leave", sessionId, undefined, "没有退成");
+  }
+
   function currentSessionId(): string | null {
     return active ? active.sessionId : null;
   }
@@ -1398,5 +1429,5 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     sendCaps(active);
   }
 
-  return { refreshCaps, currentSessionId, activeSummary, create, join, leave, say, approve, pickFriend, answerAppConnect, archive, remove, chatUpdate, collabDecide, humanCall, appAccept, appDelete, stop, call, backlogPage, workspaceState, workspaceGitCredential, workspaceFiles, workspaceFilesSearch, workspaceWikiWrite };
+  return { refreshCaps, currentSessionId, activeSummary, create, join, leave, say, approve, pickFriend, answerAppConnect, archive, remove, chatUpdate, collabDecide, seatDecide, seatPolicy, groupLeave, humanCall, appAccept, appDelete, stop, call, backlogPage, workspaceState, workspaceGitCredential, workspaceFiles, workspaceFilesSearch, workspaceWikiWrite };
 }

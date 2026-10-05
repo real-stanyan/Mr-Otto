@@ -29,7 +29,8 @@ async function ownerMatches<S extends RoutineRoom>(d: RoutineRunDeps<S>, r: Rout
 
 export async function runRoutineInRoom<S extends RoutineRoom>(d: RoutineRunDeps<S>, r: RoutineRow, firedAt: number): Promise<RoutineRunResult> {
   if (!(await ownerMatches(d, r))) return "no_chat";
-  const sessionId = await d.findDm(r.workspaceId, r.agentId);
+  // 群座位里定的（#1682）：回那个座位跑；没有这一格就是那只的私聊
+  const sessionId = r.sessionId ?? (await d.findDm(r.workspaceId, r.agentId));
   if (sessionId === null) return "no_chat";
   const room = await d.room(r.workspaceId, sessionId);
   if (room === null) return "archived";
@@ -42,7 +43,7 @@ export async function runRoutineInRoom<S extends RoutineRoom>(d: RoutineRunDeps<
 /** 注记：开得出房才落；没有私聊 / 归档了 / 主人对不上就算了——注记是给人看的，没地方给人看就不必落 */
 export async function noteRoutineInRoom<S extends RoutineRoom>(d: RoutineRunDeps<S>, r: RoutineRow, reason: "missed" | "skipped_quota", plannedAt: number): Promise<void> {
   if (!(await ownerMatches(d, r))) return;
-  const sessionId = await d.findDm(r.workspaceId, r.agentId);
+  const sessionId = r.sessionId ?? (await d.findDm(r.workspaceId, r.agentId));
   if (sessionId === null) return;
   const room = await d.room(r.workspaceId, sessionId);
   if (room === null) return;

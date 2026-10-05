@@ -90,7 +90,8 @@ describe("占位正文", () => {
     expect(mediaPlaceholder([img(), img()])).toBe(MEDIA_PLACEHOLDER.image);
     expect(mediaPlaceholder([vid()])).toBe(MEDIA_PLACEHOLDER.video);
     expect(mediaPlaceholder([img(), vid()])).toBe("[图片][视频]");
-    expect(MEDIA_PLACEHOLDER).toEqual({ image: "[图片]", video: "[视频]", audio: "[语音]" });
+    // 文件（#1683）的占位带名字，见 tests/shared/chatFiles.test.ts
+    expect(MEDIA_PLACEHOLDER).toEqual({ image: "[图片]", video: "[视频]", audio: "[语音]", file: "[文件]" });
   });
   it("占位过得了 messages.body 的 1..4000 那条 check", () => {
     for (const p of [mediaPlaceholder([img()]), mediaPlaceholder([vid()]), mediaPlaceholder([img(), vid()])]) {

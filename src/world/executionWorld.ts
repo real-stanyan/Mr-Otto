@@ -190,7 +190,7 @@ export interface HistoryHit {
 }
 
 /** 历史会话查询能力——session_search 工具的世界（硬规则：工具只认 ExecutionWorld，
-    不直接碰 EventStore）。v1 由 src/main/historyCapability.ts 焊在 EventStore 上；
+    不直接碰 EventStore）。v1 由 src/session/historyCapability.ts 焊在 EventStore 上；
     v2 SandboxWorld 可以换成 RPC 到宿主 */
 export interface HistoryCapability {
   /** 全文检索（已排除归档/子会话/当前会话） */
@@ -294,6 +294,11 @@ export interface ExecutionWorld {
   fs: {
     read(path: string): Promise<string>;
     write(path: string, content: string): Promise<void>;
+    /** 可选：按字节读写（#1683）——PDF / Excel / PPT 这类二进制文件。read/write 走 UTF-8 字符串，
+        二进制过一道就坏了。可选的理由同 execDetached（仓里几十处假 world 只实现了 read/write）；
+        缺席 = 这个世界读写不了二进制，create_document / read_document / send_file 不挂 */
+    readBytes?(path: string): Promise<Uint8Array>;
+    writeBytes?(path: string, data: Uint8Array): Promise<void>;
   };
   exec(cmd: string, opts?: ExecOptions): Promise<ExecResult>;
   /** 可选：后台执行（issue #389）——不绑 turn 信号、超时放宽（LocalWorld 30 分钟）。

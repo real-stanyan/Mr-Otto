@@ -59,6 +59,19 @@ export function resolveFriend(friends: readonly { uid: string; name: string }[],
   const hits = friends.filter((f) => f.name.trim() === w);
   if (hits.length === 1) return { kind: "one", uid: hits[0]!.uid, name: hits[0]!.name };
   if (hits.length > 1) return { kind: "many", count: hits.length };
+  // 全名对不上时退一步（#1683 模拟：主人说「Mei Ling」，好友名单里是「Tan Mei Ling」）：不分大小写、或名字里连着的几个词恰好是它。
+  // 只认唯一命中——两位都对得上就当没对上（宁可问一句，不发错人）
+  const lower = w.toLowerCase();
+  const words = lower.split(/\s+/).filter((x) => x !== "");
+  const loose = words.length === 0 ? [] : friends.filter((f) => {
+    const n = f.name.trim().toLowerCase();
+    if (n === lower) return true;
+    const t = n.split(/\s+/);
+    for (let i = 0; i + words.length <= t.length; i++) if (words.every((x, k) => t[i + k] === x)) return true;
+    return false;
+  });
+  if (loose.length === 1) return { kind: "one", uid: loose[0]!.uid, name: loose[0]!.name };
+  if (loose.length > 1) return { kind: "many", count: loose.length };
   return { kind: "none", names: [...new Set(friends.map((f) => f.name.trim()).filter((n) => n !== ""))] };
 }
 

@@ -1,6 +1,7 @@
 // LoopEngine — 把环闭上：输入 → 落盘 → 投影 → 模型 → 落盘 → 工具 → 落盘 → 再投影……
 // 不变量执行处：每一步先 append 再继续，模型看到的永远是日志的投影。
 
+import { isPlaceholderReply } from "../shared/placeholderReply.js";
 import type { NewSessionEvent } from "../session/store.js";
 import type { EventLog } from "../session/eventLog.js";
 import type {
@@ -459,6 +460,8 @@ export class LoopEngine {
               ...(raw.concludesTurn ? { concludesTurn: true } : {}),
               // 原始字节到此为止：能不能落盘由 imageIntake 中间件说了算
               ...(raw.images && raw.images.length > 0 ? { images: raw.images } : {}),
+              // 文件同理（#1683）：能不能落盘由 toolFiles 中间件说了算
+              ...(raw.files && raw.files.length > 0 ? { files: raw.files } : {}),
               // 工具里套着的那次模型调用的账（#1084）：透传给落盘处摊平
               ...(raw.billing ? { billing: raw.billing } : {}),
             };
@@ -937,6 +940,8 @@ export class LoopEngine {
       if (this.opts.agentId) {
         const who = speakerNamesOf(log, this.opts.agentId);
         spoken = cutSpeakerLeak(reply.content, who.names, who.self);
+        // 整句只是「（无输出）」这类占位（#1683）：当它什么都没说——原话留在 trimmed，日志说得清模型吐了什么
+        if (isPlaceholderReply(spoken.content)) spoken = { content: "", trimmed: reply.content };
       }
 
       this.append({
@@ -1014,6 +1019,9 @@ export class LoopEngine {
             // imageRefs = 这个键整个不出现,旧日志形状不变
             ...(outcome.imageRefs && outcome.imageRefs.length > 0
               ? { images: [...outcome.imageRefs] }
+              : {}),
+            ...(outcome.fileRefs && outcome.fileRefs.length > 0
+              ? { files: [...outcome.fileRefs] }
               : {}),
             // 工具里套着的那次模型调用的账（#1084）：摊平成与 assistant_message
             // 同名的四格，deriveUsage 的 billed() 按「有没有这一格」记账，

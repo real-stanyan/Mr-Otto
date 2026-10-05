@@ -8,7 +8,7 @@
 // · 气泡：我那边是点缀色 18% 调进纸面（不是整块蓝——蓝色一屏只给一个主动作），别人那边是 raised；
 //   靠头像那一角收尖（4pt），照微信的「说话方向」。
 import { useEffect, useRef, useState } from "react";
-import { ActivityIndicator, Animated, Easing, Pressable, Text, View, type StyleProp, type ViewStyle } from "react-native";
+import { ActivityIndicator, Animated, Easing, Pressable, Text, TextInput, View, type StyleProp, type ViewStyle } from "react-native";
 import { agentFaceIfKnown } from "../../../src/shared/agentAvatar.js";
 import { APP_CONNECT_BUTTON, appConnectCardTitle, type AppConnectAction } from "../../../src/shared/appConnect.js";
 import { catalogIcon } from "../../../src/shared/appIcon.js";
@@ -16,6 +16,7 @@ import { AppTile } from "../machine/AppTile.js";
 import type { RosterLinePart } from "../../../src/shared/cloudTimeline.js";
 import { callOffsetText } from "../../../src/shared/cloudTimeline.js";
 import { ringRecordView, type ChatRow } from "../../../src/shared/mobileChat.js";
+import { SEAT_NOTE_MAX } from "../../../src/shared/remote/cloudSession.js";
 import { parseDispatchOpening, type DispatchCardView } from "../../../src/shared/dispatchQuote.js";
 import { TASK_STATUS_TEXT } from "../../../src/shared/tasks.js";
 import { CHAT_MEDIA_BUCKET, mediaBodyHidden, type ChatMediaItem } from "../../../src/shared/chatMedia.js";
@@ -67,7 +68,7 @@ function Bubble({ text, mine, agent, first }: { text: string; mine: boolean; age
 }
 
 /** 一句话一行：左边（别人 / 它）或右边（我）。`name` 只在群里给 */
-function MessageRow({ mine, agent = false, avatar, name, paragraphs, media, onAvatar, onLongPress }: {
+function MessageRow({ mine, agent = false, avatar, name, paragraphs, media, onAvatar, onAvatarLongPress, onLongPress }: {
   mine: boolean;
   /** 智能体说的（#1465：气泡换 bubbleAgent，与人的分开） */
   agent?: boolean;
@@ -77,13 +78,25 @@ function MessageRow({ mine, agent = false, avatar, name, paragraphs, media, onAv
   /** 这句带的图 / 视频（#1491，云会话的 chat-media）：正文是占位「[图片]」时只画图 */
   media?: ChatMediaItem[];
   onAvatar?: () => void;
+  /** 长按头像 = @ TA（#1682 拍板 L，照微信）。缺席 = 这页不给（私聊里没有 @） */
+  onAvatarLongPress?: () => void;
   /** 长按这一句（#1505：派一只智能体去办）。缺席 = 这页不给 */
   onLongPress?: () => void;
 }) {
   const { c } = usePalette();
   const texts = media !== undefined && paragraphs.length === 1 && mediaBodyHidden(paragraphs[0] ?? "", media) ? [] : paragraphs;
-  const head = onAvatar === undefined ? avatar : (
-    <Pressable accessibilityRole="button" accessibilityLabel={name ?? "资料"} onPress={onAvatar} hitSlop={4}>{avatar}</Pressable>
+  const head = onAvatar === undefined && onAvatarLongPress === undefined ? avatar : (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={name ?? "资料"}
+      {...(onAvatarLongPress !== undefined ? { accessibilityHint: "长按 @ TA" } : {})}
+      onPress={onAvatar}
+      onLongPress={onAvatarLongPress}
+      delayLongPress={350}
+      hitSlop={4}
+    >
+      {avatar}
+    </Pressable>
   );
   return (
     <View style={{ flexDirection: mine ? "row-reverse" : "row", alignItems: "flex-start", gap: 10, paddingHorizontal: 12 }}>
@@ -207,8 +220,14 @@ function RosterPill({ parts, ws }: { parts: readonly RosterLinePart[]; ws: Works
   );
 }
 
-export function ChatRowView({ row, ws, selfUid, selfName, selfAvatar, group, outreachChat = false, onOpenCall, onAgent, onCallAgent, onDecide, deciding, decideReady, friendAvatarOf, picking, onPickFriend, appConnectActionOf, connecting, onAppConnect, onAppConnectDismiss, onLongPress }: {
+export function ChatRowView({ row, ws, selfUid, selfName, selfAvatar, group, outreachChat = false, onOpenCall, onAgent, onCallAgent, onDecide, deciding, decideReady, friendAvatarOf, picking, onPickFriend, appConnectActionOf, connecting, onAppConnect, onAppConnectDismiss, onLongPress, onMentionAvatar, seatDeciding = null, onSeatDecide }: {
   row: ChatRow;
+  /** 长按别人 / 智能体的头像：把 @ TA 插进输入框（#1682 拍板 L）。缺席 = 不给（私聊） */
+  onMentionAvatar?: (row: Extract<ChatRow, { kind: "human" | "agent" }>) => void;
+  /** 点头卡里我刚点下、回执还没到的那一张（requestId；本地态） */
+  seatDeciding?: string | null;
+  /** 点头卡的「接 / 不接」（#1682）。`note` = 主人顺手附的一句（可选，空串 = 没附）。缺席 = 这页没有点头卡（不是座位制的群） */
+  onSeatDecide?: (requestId: string, decision: "accepted" | "declined", note: string) => void;
   /** 长按一句话（我的 / 别人的 / 智能体的）：派一只智能体去办（#1505）。缺席 = 这页不给 */
   onLongPress?: (row: ChatRow) => void;
   ws: WorkspaceSnapshot;
@@ -269,6 +288,7 @@ export function ChatRowView({ row, ws, selfUid, selfName, selfAvatar, group, out
           name={group ? row.name : null}
           paragraphs={[row.text]}
           {...(row.media !== undefined ? { media: row.media } : {})}
+          {...(onMentionAvatar !== undefined ? { onAvatarLongPress: () => onMentionAvatar(row) } : {})}
           {...(onLongPress !== undefined ? { onLongPress: () => onLongPress(row) } : {})}
         />
       );
@@ -280,7 +300,9 @@ export function ChatRowView({ row, ws, selfUid, selfName, selfAvatar, group, out
           avatar={<AgentAvatar ws={ws} agentId={row.agentId} name={row.name} />}
           name={group ? row.name : null}
           paragraphs={row.paragraphs}
+          {...(row.media !== undefined ? { media: row.media } : {})}
           {...(agentFaceIfKnown(ws, row.agentId) !== null ? { onAvatar: () => onAgent(row.agentId) } : {})}
+          {...(onMentionAvatar !== undefined ? { onAvatarLongPress: () => onMentionAvatar(row) } : {})}
           {...(onLongPress !== undefined ? { onLongPress: () => onLongPress(row) } : {})}
         />
       );
@@ -340,6 +362,10 @@ export function ChatRowView({ row, ws, selfUid, selfName, selfAvatar, group, out
       return <TaskCard row={row} />;
     case "app":
       return <AppCard row={row} />;
+    case "seat_card":
+      return <SeatNodCard row={row} busy={seatDeciding === row.requestId || !decideReady} {...(onSeatDecide !== undefined ? { onDecide: onSeatDecide } : {})} />;
+    case "worker":
+      return <WorkerFoldRow row={row} group={group} />;
     default: {
       const unhandled: never = row;
       return unhandled;
@@ -664,6 +690,92 @@ function AppConnectCard({ row, ws, action, busy, ready, onPrimary, onDismiss }: 
         {foot}
       </View>
     </View>
+  );
+}
+
+/** 点头卡（#1682，ADR-0376）：别人使唤某人的管理员、要动手时，居中一张——谁想让谁动手做什么 + 那人的原话（小字），
+    底下是状态；我就是那个座位的主人、卡还开着时换成「不接 / 接」。样子照审批卡（同一类「等人拍板」），边框换成点缀色：
+    这里批的不是一把刀，是一件事 */
+function SeatNodCard({ row, busy, onDecide }: {
+  row: Extract<ChatRow, { kind: "seat_card" }>;
+  busy: boolean;
+  onDecide?: (requestId: string, decision: "accepted" | "declined", note: string) => void;
+}) {
+  const { c } = usePalette();
+  const open = row.canDecide && onDecide !== undefined;
+  // 附一句（可选）：本地态，点了「接 / 不接」随帧带走；卡定了就收起，那句话从日志回来画在状态底下
+  const [note, setNote] = useState("");
+  const tone = row.state === "accepted" ? c.ok : c.mutedForeground;
+  return (
+    <View style={{ marginHorizontal: 24, padding: 14, borderRadius: 14, backgroundColor: c.card, borderWidth: 1, borderColor: withAlpha(c.brand, row.state === "pending" ? 0.5 : 0.2), gap: 8 }}>
+      <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 6 }}>
+        <Icon name="shield-check" size={16} stroke={2} color={c.brand} />
+        <Text selectable style={{ flex: 1, fontSize: 14, lineHeight: 20, fontWeight: "600", color: c.foreground }}>{row.headline}</Text>
+      </View>
+      {row.ask !== "" ? <Text selectable numberOfLines={4} style={{ fontSize: 12, lineHeight: 17, color: c.mutedForeground }}>{`原话：${row.ask}`}</Text> : null}
+      {open ? (
+        <>
+          {/* 单行、小一号、不抢按钮：照微信「备注」那种可填可不填的一格。maxLength 数的是 UTF-16 码元，
+              服务端按字符数——码元只多不少，所以这里拦住的一定过得了服务端那道 */}
+          <TextInput
+            value={note}
+            onChangeText={setNote}
+            placeholder="附一句（可选）"
+            placeholderTextColor={c.faint}
+            maxLength={SEAT_NOTE_MAX}
+            editable={!busy}
+            returnKeyType="done"
+            accessibilityLabel="附一句给对方的管理员，可选"
+            style={{ marginTop: 2, height: 34, paddingHorizontal: 10, paddingVertical: 0, borderRadius: 8, backgroundColor: withAlpha(c.foreground, 0.05), fontSize: 14, color: c.foreground }}
+          />
+          <View style={{ flexDirection: "row", gap: 8 }}>
+            <Button grow size="compact" variant="secondary" label="不接" disabled={busy} onPress={() => onDecide(row.requestId, "declined", note)} />
+            <Button grow size="compact" variant="primary" label={busy ? "…" : "接"} disabled={busy} onPress={() => onDecide(row.requestId, "accepted", note)} />
+          </View>
+        </>
+      ) : row.status !== null ? (
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
+          {row.state === "accepted" ? <Icon name="check" size={13} stroke={2.6} color={tone} /> : null}
+          <Text style={{ fontSize: 13, color: tone }}>{row.status}</Text>
+        </View>
+      ) : null}
+      {!open && row.note !== null ? <Text selectable numberOfLines={3} style={{ fontSize: 13, lineHeight: 18, color: c.mutedForeground }}>{row.note}</Text> : null}
+    </View>
+  );
+}
+
+/** 专员（L1）说的那几句（#1682）：挂在那家座位底下的一行小字——缩进到气泡那一列（头像那一格空着：它不是管理员本人，
+    也没有头像可长按 @），左边一道细竖线读成「这是旁边那位手下的」。一句画「Nomad（继爸的专员）· 第一行」，几句画「说了 3 句」；
+    点一下展开全文（每句前写是谁），再点收起。不画气泡：气泡是「这人对群说话」，这几句只是过程 */
+function WorkerFoldRow({ row, group }: { row: Extract<ChatRow, { kind: "worker" }>; group: boolean }) {
+  const { c } = usePalette();
+  const [open, setOpen] = useState(false);
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityState={{ expanded: open }}
+      accessibilityLabel={open ? `收起${row.tag}的话` : row.summary}
+      onPress={() => setOpen((v) => !v)}
+      style={({ pressed }) => [
+        { marginLeft: 12 + (group ? AVATAR + 10 : 0), marginRight: 24, paddingLeft: 9, paddingVertical: 2, borderLeftWidth: 2, borderLeftColor: withAlpha(c.foreground, 0.12), gap: 4 },
+        pressed && { opacity: 0.6 },
+      ]}
+    >
+      <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+        <Text numberOfLines={1} style={{ flexShrink: 1, fontSize: 12.5, lineHeight: 18, color: c.mutedForeground }}>{row.summary}</Text>
+        <View style={open ? { transform: [{ rotate: "180deg" }] } : null}>
+          <Icon name="chevron-down" size={12} stroke={2.2} color={c.faint} />
+        </View>
+      </View>
+      {open
+        ? row.lines.map((l, i) => (
+          <Text key={i} selectable style={{ fontSize: 13.5, lineHeight: 20, color: c.foreground, opacity: 0.85 }}>
+            <Text style={{ color: c.mutedForeground }}>{`${l.name}：`}</Text>
+            {l.text}
+          </Text>
+        ))
+        : null}
+    </Pressable>
   );
 }
 

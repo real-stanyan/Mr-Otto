@@ -26,7 +26,7 @@ import {
 import { createAgent, loadDotEnv, newSessionId, type AgentPush } from "./agent.js";
 import { createShadowGitCheckpoints, sessionCheckpointStoreName, workspaceStoreName } from "../world/checkpoints.js";
 import { formatCompletion, type BackgroundCompletion } from "./backgroundTasks.js";
-import { createHistoryCapability } from "./historyCapability.js";
+import { createHistoryCapability } from "../session/historyCapability.js";
 import { createTerminalHub } from "./terminalHub.js";
 import { createSimulatorHub } from "./simulatorHub.js";
 import type { SimButton } from "../shared/simulator.js";

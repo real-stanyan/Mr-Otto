@@ -53,7 +53,9 @@ describe("定时任务：时段内每隔 N 分钟（every）", () => {
     const sql = read("supabase/migrations/0066_routine_every.sql");
     expect(sql).toContain(">= 50 then");
     expect(sql).toContain("in ('once', 'daily', 'weekly', 'every')");
-    expect(read("services/runtime/src/routineTools.ts")).toContain('enum: ["once", "daily", "weekly", "every"]');
+    // monthly（#1682）跟在 every 后面：工具表与 0068 的形状约束一起放宽
+    expect(read("services/runtime/src/routineTools.ts")).toContain('enum: ["once", "daily", "weekly", "every", "monthly"]');
+    expect(read("supabase/migrations/0068_group_seats.sql")).toContain("in ('once', 'daily', 'weekly', 'every', 'monthly')");
     expect(read("mobile/src/agent/RoutineEditDialog.tsx")).toContain('{ k: "every", label: "时段内重复" }');
   });
 });
@@ -104,7 +106,7 @@ describe("专员上报：escalate_to_admin", () => {
   it("接线：只给这条对话里没有管理员的专员；那一轮放行排定时；daemon 送进管理员私聊；手机画灰条", () => {
     const svc = read("services/runtime/src/sessionService.ts");
     expect(svc).toContain("escalateTool !== null && me !== null && tierOf(me) === 1 && !turnRoster.some((a) => a.agentId === ADMIN_AGENT_ID)");
-    expect(svc).toContain("available: () => (ownerSpoke || escalationTurn) && !supervisedTurn(),");
+    expect(svc).toContain("available: () => (ownerSpoke || escalationTurn || seatGrantTurn || ownChainTurn) && !supervisedTurn(),");
     expect(svc).toContain('greeting: "escalation"');
     const daemon = read("services/runtime/src/daemon.ts");
     expect(daemon).toContain("escalateToAdmin: async (e) =>");

@@ -78,6 +78,8 @@ export const PEN_VERDICTS: Record<SessionEvent["type"], PenVerdict> = {
   app_card: "executor",
   collab_request: "executor",
   collab_decision: "executor",
+  seat_request: "executor",
+  seat_decision: "executor",
   outreach: "executor",
   friend_pick: "executor",
   app_connect: "executor", // 连接卡（#1666）

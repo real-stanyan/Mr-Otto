@@ -208,6 +208,89 @@ describe("A 家：invite_collaborator 的落点", () => {
     expect(store.load("s1").filter((e) => e.type === "assistant_message").length).toBeGreaterThanOrEqual(3);
     store.close();
   });
+
+
+  it("主人和自己管理员的私聊里也能找朋友的管理员（#1683）：多一格 friend 按好友名单查（「Mei Ling」认得出「Tan Mei Ling」），送到桥；查不到就说清好友有谁", async () => {
+    const store = newStore();
+    const b = bridgeStub();
+    store.append({ sessionId: "s1", ts: 1, type: "session_created", workspace: "/work", cloud: { workspaceId: "wa", chat: { kind: "dm" }, home: true } });
+    store.append({ sessionId: "s1", ts: 2, type: "chat_roster_changed", ignorable: true, agents: [{ agentId: "admin", name: "Sherpa" }] });
+    let round = 0;
+    const tools: string[][] = [];
+    const outputs: string[] = [];
+    const s = createCloudSession({
+      diskUsage: () => null, routines: null, onOutreachEnded: null, signSpeechTicket: async () => "t", pairMessages: null, outreach: null, callback: null,
+      approveAll: true, sessionMeta: createInMemoryCloudSessionMeta(),
+      workspaceId: "wa", sessionId: "s1", ownerUid: "u_a", createdByUid: "u_a",
+      store, world: fakeWorld, px, hostUids: async () => ["u_a"],
+      agents: async () => [{ ...ADMIN, name: "Sherpa" }],
+      adapterFor: (): ModelAdapter => ({
+        model: "m",
+        async chat(messages, ts): Promise<ModelReply> {
+          tools.push((ts ?? []).map((t) => t.name));
+          round++;
+          const transcript = JSON.stringify(messages);
+          if (round === 1) return { content: "", toolCalls: [{ id: "c1", name: "create_task", args: { title: "Team dinner within policy?", brief: "INR 18,400 / 12" } }] };
+          if (round === 2) return { content: "", toolCalls: [{ id: "c2", name: "invite_collaborator", args: { taskId: idIn(transcript), friend: "Priya" } }] };
+          if (round === 3) return { content: "", toolCalls: [{ id: "c3", name: "invite_collaborator", args: { taskId: idIn(transcript), friend: "mei ling", note: "Is INR 18,400 for 12 within policy?" } }] };
+          return { content: "Sent to Mei Ling's assistant." };
+        },
+      }),
+      onEvent: (e) => { if (e.type === "tool_result") outputs.push(e.output); }, onUsage: () => {}, wiki: testWiki(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
+      isMember: async () => true, contextWindowOf: () => undefined, sandboxApproval: async () => "ask", workspaceLock: createWorkspaceLock(), relayRemainingMicro: async () => null,
+      adminsBridge: b.bridge,
+      friendsOf: async () => [{ uid: "u_m", name: "Tan Mei Ling" }, { uid: "u_h", name: "Haruto Sato" }],
+    });
+    await s.say("u_a", "Arjun Mehta", "@Sherpa check with Mei Ling's assistant whether the team dinner is within policy", true, ["admin"]);
+    await s.settled();
+    expect(tools[0]).toContain("invite_collaborator");
+    expect(outputs.some((o) => o.includes("好友里没有叫「Priya」的") && o.includes("Tan Mei Ling"))).toBe(true);
+    expect(b.requests).toHaveLength(1);
+    expect(b.requests[0]).toMatchObject({ ownerUid: "u_a", peerUid: "u_m", origin: { workspaceId: "wa", sessionId: "s1" }, event: { quote: { ownerName: "Arjun Mehta" } } });
+    const req = store.load("s1").find((e): e is CollabRequestEvent => e.type === "collab_request")!;
+    expect(taskFoldOf(store.load("s1"), "wa").get(req.taskId)!.collaborator).toMatchObject({ uid: "u_m", state: "pending" });
+    // 对面管理员的回话接力进来：那一轮刀不亮（同车道）——转告主人，要动手等主人下一句；不弹没人点的卡
+    const before = tools.length;
+    s.receiveCollabReply({ fromUid: "u_m", text: "Within policy: SGD 23.8/head.", fromAgentId: "admin", fromAgentName: "Abacus" });
+    await s.settled();
+    expect(tools.length).toBeGreaterThan(before);
+    expect(tools[tools.length - 1]).toEqual([]);
+    expect(store.load("s1").some((e) => e.type === "approval_request")).toBe(false);
+    store.close();
+  });
+
+  describe("对面秒回的决定比本地请求先到（#1682 人与人模拟）", () => {
+  it("仅聊天档秒回绝：决定在本地 collab_request 落盘前就到了——先存着，请求一落就补上，任务折成 declined", async () => {
+    const store = newStore();
+    const holder: { s: CloudSession | null } = { s: null };
+    const bridge: AdminsBridge = {
+      async deliverRequest(o) {
+        // 对面按权限秒定：送过去的这一刻就回绝（本地那条请求还没落）
+        holder.s!.receiveCollabDecision({ sessionId: "x", seq: 1, ts: 1, type: "collab_decision", requestId: o.event.requestId, decision: "declined", byUid: null, via: "tier_chat", ignorable: true });
+        return null;
+      },
+      async deliverBack() {},
+    };
+    let round = 0;
+    holder.s = openPair(store, {
+      bridge,
+      reply: (_names, transcript) => {
+        round++;
+        if (round === 1) return { content: "", toolCalls: [{ id: "c1", name: "create_task", args: { title: "借梯子", brief: "问问" } }] };
+        if (round === 2) return { content: "", toolCalls: [{ id: "c2", name: "invite_collaborator", args: { taskId: idIn(transcript), note: "借梯子" } }] };
+        return { content: "交过去了。" };
+      },
+    });
+    await holder.s.say("u_a", "继爸", "@雨姐 问问对面有没有梯子", true, ["admin"]);
+    await holder.s.settled();
+    const log = store.load("s1");
+    const req = log.find((e): e is CollabRequestEvent => e.type === "collab_request")!;
+    const dec = log.find((e): e is CollabDecisionEvent => e.type === "collab_decision")!;
+    expect(dec).toMatchObject({ requestId: req.requestId, decision: "declined", via: "tier_chat" });
+    expect(dec.seq).toBeGreaterThan(req.seq);
+    store.close();
+  });
+  });
 });
 
 describe("A 家开房时重送还在等点头的请求（#1605 真机）", () => {

@@ -173,8 +173,9 @@ import { createInviteToCallTool } from "./inviteToCallTool.js";
 import type { VoiceCallParticipant } from "../../../src/session/events.js";
 import { LoopEngine } from "../../../src/loop/engine.js";
 import type { EventStore } from "../../../src/session/store.js";
+import type { EventLog } from "../../../src/session/eventLog.js";
 import type { AppConnectEvent, FriendPickCandidate, SessionEvent, SessionCreatedEvent, UserMessageEvent, AssistantMessageEvent, AgentRelayEvent, CallRingEvent, OutreachEvent, OutreachLine, OutreachOutcome, UserAttachmentRef, ChatVideoRef, TokenUsage, CollabRequestEvent, CollabDecisionEvent } from "../../../src/session/events.js";
-import { ChatMediaRejectedError } from "./chatMediaIntake.js";
+import { ChatMediaRejectedError, FILE_TEXT_MAX_CHARS } from "./chatMediaIntake.js";
 import { mediaPlaceholder, type ChatMediaRef } from "../../../src/shared/chatMedia.js";
 import { pendingImageDescriptions } from "../../../src/shared/visionPending.js";
 import { findModel } from "../../../src/shared/modelCatalog.js";
@@ -182,6 +183,7 @@ import {
   activeOutreach, applyOutreach, capTranscript, outreachAnsweredText, outreachCallerName, outreachFoldOf, outreachGreetingText, outreachRingReason, outreachTranscript, openingTraits,
   OUTREACH_CHAT_PER_HOUR_MAX, outreachLiveAt,
   type OutreachFold,
+  resolveFriend,
 } from "../../../src/shared/outreach.js";
 import { applyFriendPick, friendPickFailureText, friendPickFoldOf, friendPickStatus, recentPeerUids, type FriendPickFold } from "../../../src/shared/friendPick.js";
 import { CALL_USER_TOOL_NAME, callbackAnsweredText, callbackGreetingText, callerModelOf, ringChatKind, type RingPush, type RingState } from "../../../src/shared/callRing.js";
@@ -203,7 +205,7 @@ import { createMessageFriendAgentTool } from "./messageFriendAgentTool.js";
 import { createCollabTool } from "./collabTool.js";
 import { COLLAB_EXPIRE_MS, COLLAB_REMIND_MS, collabAcceptText, collabAuthPrompt, collabAutoAcceptText } from "../../../src/shared/collab.js";
 import { splitSpeakerPrefix } from "../../../src/shared/speakerPrefix.js";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { allowsOutreach, type FriendTier } from "../../../src/shared/friendTier.js";
 import { MESSAGE_FRIEND_AGENT_TOOL_NAME, bridgeWindowAllows, pruneBridgeWindow } from "../../../src/shared/laneBridge.js";
 import type { DeltaKind, ModelAdapter } from "../../../src/model/adapter.js";
@@ -249,6 +251,25 @@ import { createRosterTools } from "./rosterTools.js";
 import { createBuildAppTool } from "./buildAppTool.js";
 import { createSettingsTool, type OwnerSettingsStore } from "./settingsTool.js";
 import { pickCallAck } from "../../../src/shared/callAck.js";
+import {
+  groupOwnerOf, groupSeatsOf, lastMirroredSeq, mirrorLinesOf, nextGroupOwner, reseat, seatAgentId, seatAskedText, seatDeclinedText, seatExpiredText, seatGoneText, seatLangOf, PRIVATE_DIR_RE, PRIVATE_BLOCKED_TEXT, stripPrivateLines,
+  seatGrantText, seatLabel, seatMentionsIn, seatUidOf, SEAT_MIRROR_BACKFILL, SEAT_RELAY_MAX_DEPTH, SEAT_RELAY_PER_HOUR_MAX, SEAT_REQUEST_EXPIRE_MS, SEAT_UPGRADE_TEXT,
+  type GroupSeat, type MirrorLine, type SeatPolicy,
+} from "../../../src/shared/groupSeats.js";
+import type { SeatDecisionEvent, SeatRequestEvent } from "../../../src/session/events.js";
+import { createAskOwnerTool } from "./askOwnerTool.js";
+import { createGenerateImageTool } from "../../../src/tools/generateImage.js";
+import { latestImageRef } from "../../../src/session/latestImage.js";
+import type { ToolFile, ToolImage } from "../../../src/tools/tool.js";
+import { createDocumentTools, type DocumentToolsPort } from "./documentTools.js";
+import { createRecentFiles, createToolFileIntakeMiddleware, publishToolFiles } from "./toolFiles.js";
+import type { ChatFileRef } from "../../../src/session/events.js";
+import { createToolImageIntakeMiddleware, publishToolImages, type RuntimeImageRoute, type ToolImagesPort } from "./toolImages.js";
+import { createWebSearchTool } from "../../../src/tools/webSearch.js";
+import { createWebExtractTool } from "../../../src/tools/webExtract.js";
+import { createSessionSearchTool } from "../../../src/tools/sessionSearch.js";
+import { createHistoryCapability } from "../../../src/session/historyCapability.js";
+import type { SeatHub, SeatOpening } from "./seatHub.js";
 
 /** 管理员车道的桥（#1605）：A 的协作请求送到 B 家的 admins 车道；B 的决定与回复送回 A 的那条会话。daemon 一个 */
 export interface AdminsBridge {
@@ -397,7 +418,7 @@ export interface CloudSessionOpts {
   adapterFor: (agent: AgentSpec) => ModelAdapter;
   /** 这句话带的图 / 视频引用 → 事件里那两格（#1491，chatMediaIntake）。daemon 给；缺席 = 这台不收媒体
       （测试 / 冒烟），带了媒体的 say 会被拒绝而不是静默丢图 */
-  media?: (refs: readonly ChatMediaRef[]) => Promise<{ attachments: UserAttachmentRef[]; videos: ChatVideoRef[] }>;
+  media?: (refs: readonly ChatMediaRef[]) => Promise<{ attachments: UserAttachmentRef[]; videos: ChatVideoRef[]; files?: ChatFileRef[] }>;
   /** 无视觉模型的代读员（#1491 P4，ADR-0349）。daemon 给；缺席 = 不代读（没眼睛的型号看到的是占位文字）。
       `bridgeModel` = 网关此刻供的清单里最便宜那款带眼睛的（没有 → null）；`describe` 走托管 adapter 读图 */
   vision?: {
@@ -574,6 +595,8 @@ export interface CloudSessionOpts {
   friendMessage?: {
     send(o: { agentId: string; agentName: string; friend: string; text: string }): Promise<string>;
   } | null;
+  /** 主人的好友名单（只认 accepted）。私聊里 invite_collaborator 按名字找朋友的管理员用（#1683）。缺席 = 私聊里不挂那把刀 */
+  friendsOf?: ((ownerUid: string) => Promise<{ uid: string; name: string }[]>) | null;
   /** relay_to_owner（#1655）：外联里管理员替朋友带话给主人——找主人的管理员私聊、封顶都在 daemon 的 outreachHub.relayToOwner。
       可选（同 friendMessage 的理由）：缺席 / null = 刀不挂。只在外联会话里读 */
   outreachRelay?: {
@@ -612,6 +635,25 @@ export interface CloudSessionOpts {
   settings?: OwnerSettingsStore | null;
   /** 管理员车道的桥（#1605）。可选：没接 = invite_collaborator 不挂、决定送不回去 */
   adminsBridge?: AdminsBridge | null;
+  /** 联网搜索 / 读网页那把 key（#1682 日常能力：天气、新闻、汇率、营业时间、菜谱……）。可选：缺席 = 不挂这两把刀（测试 / 冒烟）。
+      daemon 给 env ANYSEARCH_API_KEY，没有就是内置那把（同桌面） */
+  webSearchKey?: (() => string | undefined) | null;
+  /** 群座位的桥（#1682，ADR-0376）。可选（几十份夹具不该为它都改一遍）：缺席 / null = 座位制的群里 @ 了管理员也送不出去
+      （群里说一句「接不住」），座位里的回话送不回群。daemon 是唯一的真装配者，它总会给 */
+  seatHub?: SeatHub | null;
+  /** 出图（generate_image，#1682 日常能力：贺卡、海报、头像、插画）。可选：缺席 / null = 不挂这把刀（测试 / 冒烟）。
+      钱记在所有者头上（同聊天，ADR-0217）——凭据与订阅探针在 daemon，这里只要两个答案：
+      `ready` = 这一轮亮不亮这把刀（起跑前现问一次，粗闸：订阅 / 额度 / 网关供不供出图，同桌面 imageBlocked）；
+      `resolve` = 真要画的那一刻现解一次路（端点 + 算好的头 + 型号，或一句走不通的人话）。
+      要配上 toolImages 才挂：画出来的图没处落、手机也看不见的话，这把刀只会让模型说「画好了」而人什么都没收到 */
+  imageGen?: { ready: () => Promise<boolean>; resolve: (agentId: string) => Promise<RuntimeImageRoute> } | null;
+  /** 工具产出的图落附件库 + 传进 Storage 的 chat-media（toolImages.ts）。可选：缺席 = 不挂那层中间件，工具的图不进日志。
+      群座位的桥也用它：座位里画的图在群那边的目录里再传一份 */
+  toolImages?: ToolImagesPort | null;
+  /** 文件三把刀（#1683：create_document / read_document / send_file）：PDF 字体与文档转文字。可选：缺席 / null = 不挂。
+      交出去的文件借 toolImages 的 upload 传进 chat-media——两样都在、底下的世界读写得了二进制才挂
+      （不然模型说「发给你了」而人什么都没收到） */
+  documents?: DocumentToolsPort | null;
   /** 时钟（只给测试拧 TTL 用）。缺席 = Date.now */
   now?: () => number;
 }
@@ -754,7 +796,9 @@ export interface CloudSession {
       缺席 = 那一半不变；落的那一条事件总带齐两份（「缺席」在日志里只有一个意思：没有别人） */
   updateChatRoster(
     byUid: string,
-    patch: { agentIds?: string[]; humans?: ChatHuman[] },
+    /** `seatPeople`（#1682）：座位制的群里改人——变动之后**全部**的人（含群主），带名字与各自管理员的名字（daemon 现取）。
+        在场时 `agentIds` / `humans` 不看 */
+    patch: { agentIds?: string[]; humans?: ChatHuman[]; seatPeople?: { uid: string; name: string; agentName: string }[] },
     byName?: string,
   ): Promise<ChatUpdateOutcome>;
   /** 这个 uid 是不是这条群聊里的**客人**（群主之外拉进来的真人，#1393）。判据是日志里此刻的名单——
@@ -817,6 +861,36 @@ export interface CloudSession {
   logRoutineNote(n: { routineId: string; title: string; reason: "missed" | "skipped_quota"; plannedAt: number; tz: string }): void;
   /** 测试用：这场通话是谁开的（#1533），null = 没在通话里。可选：假装配（smoke / frameHandler 测试）不必带 */
   callStarter?(): string | null;
+
+  // ── 群座位制（#1682，ADR-0376）。都是可选的：假装配不必带；不是座位制的会话上调到是空操作 / 回拒绝 ──
+  /** 座位制的群：这个人在不在群里（座位名单）。null = 这不是座位制的群（按工作区成员 ∪ 客人判） */
+  seatMember?(uid: string): boolean | null;
+  /** 座位制的群：此刻的座位（null = 不是座位制）与群主 */
+  seats?(): readonly GroupSeat[] | null;
+  groupOwner?(): string;
+  /** 群 → 座位的镜像：这个座位上次镜像到 `afterSeq` 之后群里的每一句（null = 新座位，带最后 SEAT_MIRROR_BACKFILL 句） */
+  seatLinesFor?(seatUid: string, afterSeq: number | null): MirrorLine[];
+  /** 座位 → 群：管理员的回话 / 点头卡 / 结局（镜像进群的日志） */
+  /** `images` = 这句回话之前座位里那一轮画出来的图（字节，#1682 出图）：群这边落附件库、传进群的目录，挂在这条回话上 */
+  receiveSeatReply?(o: { seatUid: string; text: string; model: string; toUid: string | null; depth: number; worker?: { agentId: string; name: string }; images?: readonly ToolImage[]; files?: readonly ToolFile[] }): void | Promise<void>;
+  receiveSeatRequest?(e: SeatRequestEvent): void;
+  /** 座位 → 群：管理员流式的半句话，原样转成这间房的 delta 帧（署名 seat:<uid>） */
+  receiveSeatDelta?(seatUid: string, text: string): void;
+  receiveSeatDecision?(e: SeatDecisionEvent): void;
+  /** 座位主人在群里点头卡（seat_decide 帧）：只认那个座位的主人、只认还开着的卡 */
+  decideSeat?(requestId: string, byUid: string, decision: "accepted" | "declined", note?: string): Promise<{ ok: true } | { ok: false; message: string }>;
+  /** 成员改自己座位的策略（seat_policy 帧） */
+  setSeatPolicy?(byUid: string, byName: string, policy: SeatPolicy): { ok: true; changed: boolean } | { ok: false; message: string };
+  /** 退群（自己）：座位撤、群主走了转给最早入群的人。回退群之后的座位名单（daemon 拿去写投影） */
+  leaveGroup?(uid: string, name: string): { ok: true; seats: GroupSeat[]; groupOwnerUid: string } | { ok: false; message: string };
+  /** 旧群迁移（拍板 H）：有客人的主场群转成座位制。`people` = 群主 + 客人（名字与管理员名字由 daemon 现取） */
+  upgradeToSeats?(people: { uid: string; name: string; agentName: string }[]): boolean;
+  /** 座位那一侧：群 → 座位送来的一句（先镜像、再按谁在说起一轮或弹卡）。回 null = 收下了；字符串 = 拒绝的那句人话 */
+  seatDeliver?(o: { lines: MirrorLine[]; opening: SeatOpening }): string | null;
+  /** 座位那一侧：主人的决定 */
+  seatDecide?(requestId: string, byUid: string, decision: "accepted" | "declined", note?: string): string | null;
+  /** 座位那一侧：镜像到群里的哪一句了（日志推导） */
+  mirroredUpTo?(): number | null;
 }
 
 export type ChatUpdateOutcome =
@@ -867,14 +941,24 @@ export function kickedNoteText(label: string): string {
   return `${label} 已不在这个团队，上面那句点名不作数`;
 }
 
+/** 座位里专员（L1）的视野（#1682 拍板 F）：只拿管理员交代的话——镜像进来的群聊（chat_message.mirror）与群里送来的开场白
+    （带 mirror 的 user_message）都不进它的上下文。管理员说的话照旧以「[管理员]: …」进来，接力开场白照旧 */
+function seatWorkerView(view: EventLog): EventLog {
+  const keep = (e: SessionEvent): boolean => !((e.type === "chat_message" || e.type === "user_message") && e.mirror !== undefined);
+  return { ...view, load: (sid, o) => view.load(sid, o).filter(keep) };
+}
+
 export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   const { store, sessionId } = opts;
-  const coordinator = createTurnCoordinator();
 
   // 起点从已有日志播种（resume 场景：daemon 可能拿一条有历史的会话来装配）。
   // **一次 load 推两件事**：末条 seq 与归档状态——它们是同一份日志的两个
   // 投影，读两遍只是把同一段 IO 做两次
   const seed = store.load(sessionId);
+  // 群座位（#1682，ADR-0376）：座位里不同的人使唤管理员是不同的一轮——协调器按 (智能体, 发起人, 开场白种类) 去重，
+  // 别人的话不折进正在排的主人那一轮（那正是 4cfbe736 里「中途插一句，整轮变成客人轮」的形状）
+  const seatKind = seed.find((e): e is SessionCreatedEvent => e.type === "session_created")?.cloud?.chat?.kind === "seat";
+  const coordinator = createTurnCoordinator(seatKind ? { sameJob: (a, b) => a.agentId === b.agentId && a.fromUid === b.fromUid && (a.opening.greeting ?? "") === (b.opening.greeting ?? "") } : undefined);
   // 语音通话名单（#1163）：从 seed 折叠一次播种，之后 notify 里逐条推进（同 bounds 的手法，
   // #958 之后 turn 起跑不再全量读日志）。派活 / 接力 / invite_to_call 读的都是这一份
   let voiceCall: VoiceCallState | null = voiceCallOf(seed);
@@ -883,7 +967,9 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   let chatRoster: ChatRoster = chatRosterOf(seed);
   // 群里的客人（#1393）：同 chatRoster，从 seed 折叠一次播种、notify 里逐条推进。null = 没有名单这回事
   let chatHumans: readonly ChatHuman[] | null = chatHumansOf(seed);
-  const isGuest = (uid: string): boolean => chatHumans !== null && chatHumans.some((h) => h.uid === uid);
+  // 座位制的群（#1682）里在籍按座位名单算（含群主；群主退群之后工作区所有者也不再在籍——frameHandler 读 seatMember）
+  const isGuest = (uid: string): boolean =>
+    groupSeats !== null ? groupSeats.some((s) => s.uid === uid) : chatHumans !== null && chatHumans.some((h) => h.uid === uid);
   // 这条会话是不是一条聊天（#1280）：建会话时记进日志的事实，一生不变
   const createdCloud = seed.find((e): e is SessionCreatedEvent => e.type === "session_created")?.cloud;
   const chatKind = createdCloud?.chat?.kind ?? null;
@@ -898,6 +984,21 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   // 管理员车道（#1605）：对面主人的协作请求的收件箱。名单固定只有管理员，对面主人是只读客人。同 chatKind，一生不变
   const isAdmins = chatKind === "admins";
   const adminsFacts = isAdmins ? createdCloud?.admins : undefined;
+  // 群座位（#1682，ADR-0376）：成员自己主场里、他的管理员在某个群里的座位。不收人（没人进这间房），话由 seatHub 送来
+  const isSeat = chatKind === "seat";
+  const seatFacts = isSeat ? createdCloud?.seat : undefined;
+  const seatGroup = seatFacts !== undefined ? { workspaceId: seatFacts.groupWorkspaceId, sessionId: seatFacts.groupSessionId } : null;
+  // 座位制的群（#1682）：名单事件里带 `seats` = 座位制。从 seed 折一次、notify 里推进（同 chatRoster）
+  let groupSeats: GroupSeat[] | null = chatKind === "group" ? groupSeatsOf(seed) : null;
+  let groupOwnerUid: string = groupOwnerOf(seed, opts.ownerUid);
+  /** 点头卡（两边都折：座位那份是正本、群里那份是镜像）。从 seed 播种、notify 里推进 */
+  const seatRequests = new Map<string, { event: SeatRequestEvent; decision: SeatDecisionEvent["decision"] | null; timer: unknown }>();
+  for (const e of seed) {
+    if (e.type === "seat_request" && !seatRequests.has(e.requestId)) seatRequests.set(e.requestId, { event: e, decision: null, timer: null });
+    if (e.type === "seat_decision") { const r = seatRequests.get(e.requestId); if (r !== undefined) r.decision = e.decision; }
+  }
+  /** 群里座位之间互相使唤的滑动一小时窗（#1682，同车道桥）：进程内，重启清零 */
+  let seatRelaySent: number[] = [];
   /** 这条日志里见过的协作请求（两边都折：A 那份看任务状态，B 那份看该不该放行对面的接力）；从 seed 播种，notify 里推进 */
   const collabRequests = new Map<string, { event: CollabRequestEvent; decision: CollabDecisionEvent["decision"] | null; via?: CollabDecisionEvent["via"]; timer: unknown }>();
   for (const e of seed) {
@@ -908,7 +1009,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   // 回电——ringer 不建；回复推送——pushReply 在 isPair 时早退；@ 提醒——只推 hostUids ∪ 客人里被点到的人，
   // 而车道里发言的只有主人自己（被剔掉）、没有客人。**alertTargetFor 本身对 pair 不回 null**（折成 null 后
   // 按主场群算），哪天车道收了第二个人，这里要回来重判
-  const ringKind = chatKind === "pair" || chatKind === "admins" ? null : chatKind;
+  const ringKind = chatKind === "pair" || chatKind === "admins" || chatKind === "seat" ? null : chatKind;
   // 这条线上的外联折叠（#1441）：从 seed 播种、notify 里逐条推进（同 voiceCall）。「通话此刻进行中吗、
   // 打给的是谁」只从这一份读——say 的闸、chat() 的 active 共用，两处各折一遍迟早分家
   const outreachFold: OutreachFold = outreachFoldOf(seed);
@@ -1051,11 +1152,29 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   let healthTurn = false;
   /** 这一轮是专员上报起的（#1659）：排定时放行（专员撞墙最常见的就是到点提醒），打给别人的那几把仍只认主人亲口 */
   let escalationTurn = false;
+  /** 这一轮是座位里主人点了头 / 设了放行起的（#1682）：主人认可了这件事，排定时放行（提醒是最常见的「这件事」） */
+  let seatGrantTurn = false;
+  /** 主人私聊里、自家智能体之间接力的那一轮（#1682 模拟）：开场白是自家专员 @ 回来的，ownerSpoke 为假，
+      于是管理员和专员都没有定时刀，互相说「你来定」踢了四棒。私聊里只有主人和自家智能体，链头是主人，
+      定提醒这类只碰主人自己的事照主人亲口算（别人的话折进来、汇报轮照旧由 supervisedTurn 收紧） */
+  let ownChainTurn = false;
+  /** 这一轮 generate_image 亮不亮（#1682）：runJob 起跑前问一次 opts.imageGen.ready（异步：订阅快照要过网），收口复位 */
+  let imageReady = false;
+  /** 座位里这一轮画出来、还没跟着管理员的回话送回群的图（#1682）。进程内：重启丢了只是群里少一张，座位里那张还在 */
+  let seatPendingImages: UserAttachmentRef[] = [];
+  /** 同上，文件（#1683）：座位里做出来的文件跟着管理员的回话进群 */
+  let seatPendingFiles: ChatFileRef[] = [];
+  /** 最近交出去的文件字节（toolFiles.ts）：座位把文件送进群时要在群的目录里再传一份 */
+  const recentFiles = createRecentFiles();
   /** 这一轮是不是主场群里的客人点起的（#1393，ADR-0325）。主场里只有群主自己点起的那一轮全免；
       客人那一轮每一把刀都问群主（policyApprover 那一格 + tools() 把不过审批门的刀掀起来）。
       团队会话恒为假（approveAll 为假），一个字不变 */
   /** 协作请求推给主人的时刻（#1605）：同一条隔一小时以上才再提醒 */
   const collabPushedAt = new Map<string, number>();
+  /** 先到的协作决定（#1682 人与人模拟）：发起这一侧是「送过去 → 对面收下 → 才在本地落 collab_request」，
+      对面按好友权限秒定（仅聊天 = 直接回绝）时，决定比本地那条请求先到，原来直接丢掉——主人那边永远停在「等对面点头」。
+      先存着，本地请求一落就补上 */
+  const earlyCollabDecisions = new Map<string, CollabDecisionEvent>();
   /** 管理员车道里主人接了的请求还活着（#1605）：对面管理员接力进来的那几轮按主人自己的规矩走，不再是客人轮 */
   const collabAccepted = (): boolean => isAdmins && [...collabRequests.values()].some((r) => r.decision === "accepted" && r.via !== "tier_agents");
   const guestTurn = (): boolean => opts.approveAll && currentInitiator !== null && currentInitiator !== opts.ownerUid && !collabAccepted();
@@ -1070,7 +1189,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       进模型视野的种类只有：带 mentions 的 user_message（engine 不为它再采样，但下一圈的增量快照里有）、
       不带 mentions 的 user_message、chat_message；这里按发言人与 greeting 一起判，不挑种类 */
   const tightenSupervision = (e: SessionEvent): void => {
-    if (currentAgentId === null || !opts.approveAll) return;
+    // 座位（#1682）：别人的话各排各的一轮（协调器按发起人分开），镜像进来的群聊是背景——都不收紧这一轮
+    if (currentAgentId === null || !opts.approveAll || isSeat) return;
     if (e.type === "user_message") {
       if (e.greeting === "outreach_report" || e.greeting === "pair_call_summary" || e.greeting === "dnd_report" || e.greeting === "friend_relay") {
         reportTurn = true;
@@ -1195,14 +1315,20 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   // 不截的话客户端会先画出一行伪造的发言、答案落下来时又消失。名单取此刻认得的人：
   // 发言标签表（speakerLabels：真人 + 同伴）+ 这条会话里 agent 的名字（specNames，runJob
   // 每次刷新）+ 系统旁白的保留名。specNames 在下面才声明——闭包只在 turn 跑起来之后执行
+  /** 流式碎片出门（#1107）。座位里（#1682）管理员的正文碎片另送一份回群——群里才看得到它在说 */
+  const emitDelta = (agentId: string, kind: "content" | "reasoning", text: string): void => {
+    opts.onDelta?.(agentId, kind, text);
+    const hub = opts.seatHub ?? null;
+    if (isSeat && kind === "content" && agentId === ADMIN_AGENT_ID && hub !== null && seatGroup !== null) hub.delta({ group: seatGroup, seatUid: opts.ownerUid, text });
+  };
   const deltas = createDeltaStream(
     (agentId, kind, text) => {
       if (kind !== "content") {
-        opts.onDelta?.(agentId, kind, text);
+        emitDelta(agentId, kind, text);
         return;
       }
       const names = new Set<string>([SYSTEM_SPEAKER_NAME, ...speakerLabels.values(), ...specNames.values()]);
-      opts.onDelta?.(agentId, kind, cutSpeakerLeak(text, names, specNames.get(agentId) ?? null).content);
+      emitDelta(agentId, kind, cutSpeakerLeak(text, names, specNames.get(agentId) ?? null).content);
     },
     opts.deltaTimers
   );
@@ -1248,21 +1374,51 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   }
   /** 挂在 engine 上的 world：每条容器操作先过 gateContainer。`...opts.world` 把
       http 与可选能力原样带过去（DockerWorld 只实现 fs/exec/http） */
+  /** 这一轮是不是「替别人办事」（#1682）：座位里别人点起的、或主人点了头 / 设了放行才起的那一轮。主人的私人文件夹在这一轮里硬拦 */
+  const forSomeoneElse = (): boolean => isSeat && currentInitiator !== null && (currentInitiator !== opts.ownerUid || seatGrantTurn);
   const world: ExecutionWorld = {
     ...opts.world,
+    // 搜自己的聊天记录（#1682 日常能力：「我上周说的那家餐厅叫什么」）：只在主场——团队会话里那是整个团队的会话。
+    // 亮不亮到某一轮由 session_search 的 available 管（主人自己的轮才亮，替别人办事的那一轮不亮）
+    ...(opts.approveAll ? { history: createHistoryCapability(store, () => sessionId) } : {}),
     fs: {
       read: async (path) => {
+        if (forSomeoneElse() && PRIVATE_DIR_RE.test(path)) throw new Error(PRIVATE_BLOCKED_TEXT);
         await gateContainer();
         return opts.world.fs.read(path);
       },
       write: async (path, content) => {
+        if (forSomeoneElse() && PRIVATE_DIR_RE.test(path)) throw new Error(PRIVATE_BLOCKED_TEXT);
         await gateContainer();
         return opts.world.fs.write(path, content);
       },
+      // 二进制读写（#1683，文件工具）：同一道私人文件夹闸、同一道容器闸。底下的世界没有这两把就不给（工具据此不挂）
+      ...(opts.world.fs.readBytes !== undefined && opts.world.fs.writeBytes !== undefined
+        ? (() => {
+            const readBytes = opts.world.fs.readBytes.bind(opts.world.fs);
+            const writeBytes = opts.world.fs.writeBytes.bind(opts.world.fs);
+            return {
+              readBytes: async (path: string) => {
+                if (forSomeoneElse() && PRIVATE_DIR_RE.test(path)) throw new Error(PRIVATE_BLOCKED_TEXT);
+                await gateContainer();
+                return readBytes(path);
+              },
+              writeBytes: async (path: string, data: Uint8Array) => {
+                if (forSomeoneElse() && PRIVATE_DIR_RE.test(path)) throw new Error(PRIVATE_BLOCKED_TEXT);
+                await gateContainer();
+                return writeBytes(path, data);
+              },
+            };
+          })()
+        : {}),
     },
     exec: async (cmd, o) => {
+      const guarded = forSomeoneElse();
+      if (guarded && PRIVATE_DIR_RE.test(cmd)) return { stdout: "", stderr: PRIVATE_BLOCKED_TEXT, exitCode: 126 };
       await gateContainer();
-      return opts.world.exec(cmd, o);
+      const r = await opts.world.exec(cmd, o);
+      // 命令没点名私人文件夹、却把它扫了出来（grep -r / find）：带路径的那几行去掉
+      return guarded ? { ...r, stdout: stripPrivateLines(r.stdout), stderr: stripPrivateLines(r.stderr) } : r;
     },
   };
 
@@ -1314,7 +1470,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   /** 回电（#1411）：推送开着才有。它自己从 seed 播种、之后只有它落 call_ring，所以状态它自己推进就是权威 */
   const callback = opts.callback;
   const ringer: Ringer | null =
-    callback === null || isPair
+    callback === null || isPair || isSeat
       ? null
       : createRinger({
           sessionId,
@@ -1381,7 +1537,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       名字；群里标题是群名、副标题是它 */
   async function pushReply(n: ReplyNote): Promise<void> {
     const alert = opts.alert;
-    if (alert === undefined || isPair || archived) return; // 私密车道（#1461）：主人此刻就在私聊页里看着，不另推
+    if (alert === undefined || isPair || isSeat || archived) return; // 私密车道（#1461）：主人此刻就在私聊页里看着，不另推；座位（#1682）：推送由群那一侧发
     // 外联（#1655）：通话里不推（人正在听）；不在通话里谁问的都推给那位朋友——主人的回话（owner_reply）起的那一轮
     // 也是说给朋友听的，它的开场白 fromUid 是主人，所以不能照 n.uids 推
     if (isOutreach && (activeOutreach(outreachFold) !== null || outreachPeerUid === null)) return;
@@ -1436,6 +1592,30 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     if (e.type === "chat_roster_changed") {
       chatRoster = applyChatRosterEvent(chatRoster, e);
       chatHumans = e.humans ?? [];
+      if (chatKind === "group" && e.seats !== undefined) groupSeats = e.seats;
+      if (e.groupOwnerUid !== undefined) groupOwnerUid = e.groupOwnerUid;
+    }
+    // 点头卡（#1682）：两边都折；座位那份到点过期
+    if (e.type === "seat_request" && !seatRequests.has(e.requestId)) {
+      seatRequests.set(e.requestId, { event: e, decision: null, timer: null });
+      if (isSeat) armSeatExpiry(e.requestId);
+    }
+    if (e.type === "seat_decision") {
+      const r = seatRequests.get(e.requestId);
+      if (r !== undefined) { r.decision = e.decision; if (r.timer !== null) { clearCollabTimer(r.timer); r.timer = null; } }
+    }
+    // 座位里画出来的图（#1682 出图）攒着，跟管理员的下一句回话一起回群：图是「它给的东西」，回话是「它说的话」，
+    // 群里看到的是一条带图的回话。专员画的也攒——专员的话在群里折成一行小字，图挂在那上面看不见，等管理员转述那一句
+    if (isSeat && e.type === "tool_result" && e.status === "ok" && e.images !== undefined && e.images.length > 0) {
+      seatPendingImages = [...seatPendingImages, ...e.images];
+    }
+    if (isSeat && e.type === "tool_result" && e.status === "ok" && e.files !== undefined && e.files.length > 0) {
+      seatPendingFiles = [...seatPendingFiles, ...e.files];
+    }
+    // 座位里管理员说的每一句送回群（#1682）：非空、不是系统替它应的那句。专员（L1）的话也送，带 worker——群里折叠成一行
+    if (isSeat && e.type === "assistant_message" && e.agentId !== undefined && e.ack === undefined && e.content.trim() !== "") {
+      const admin = e.agentId === ADMIN_AGENT_ID;
+      bridgeSeatReply(e.content.trim(), e.model, admin ? undefined : { agentId: e.agentId, name: specNames.get(e.agentId) ?? e.agentId }, admin ? takeSeatImages() : [], admin ? takeSeatFiles() : []);
     }
     // 谁在等它的职责（#1356 A2）：同 voiceCall 的推理——daemon.ts 绕过 notify 直接 append 的那几类
     // 里没有 user_message，漏不掉
@@ -1522,6 +1702,167 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     }, wait);
   }
   for (const id of collabRequests.keys()) armCollabExpiry(id);
+
+  // ── 群座位（#1682，ADR-0376）：座位那一侧的点头卡、授权开场白、回话回群 ─────────────────────────
+  /** 座位主人叫什么：建座位那一刻的快照 */
+  const seatOwnerName = (): string => seatFacts?.ownerName ?? "主人";
+  /** 管理员此刻叫什么（回群时署名、卡上写名字） */
+  const seatAgentName = (): string => specNames.get(ADMIN_AGENT_ID) ?? "管理员";
+  /** 授权开场白 seq → 当初提要求的那个人（推送给他，不推给点头的主人）。进程内：重启后那一轮的回话推给主人，不推也不错 */
+  const grantRequesters = new Map<number, string>();
+  /** 点头卡 → 提要求那句话的时区（进程内）：点了头起的那一轮带上它，「十分钟后」才算得对 */
+  const requestTz = new Map<string, string>();
+  /** 群这一侧落座位的回话（receiveSeatReply 的后半段；带图时等图传好了才走到这里） */
+  function landSeatReply(o: {
+    seatUid: string; text: string; model: string; toUid: string | null; depth: number;
+    worker: { agentId: string; name: string } | undefined; attachments: readonly UserAttachmentRef[];
+    files?: readonly ChatFileRef[];
+  }): void {
+    const { seatUid, text, model, toUid, depth, worker } = o;
+    const seats = groupSeats ?? [];
+    const seat = seats.find((s) => s.uid === seatUid);
+    if (archived || seat === undefined) return; // 退群了（传图那一会儿也可能刚退）：它最后那句不再进群
+    const said = store.append({
+      sessionId, ts: Date.now(), type: "assistant_message", agentId: seatAgentId(seatUid), content: text, model,
+      ...(worker !== undefined ? { worker } : {}), ...(o.attachments.length > 0 ? { attachments: [...o.attachments] } : {}),
+      ...(o.files !== undefined && o.files.length > 0 ? { files: [...o.files] } : {}),
+    }) as AssistantMessageEvent;
+    notify(said);
+    // 专员的话只是折叠在群里给人看过程：不推送、不当成去使唤别家（它只听自家管理员）
+    if (worker !== undefined) return;
+    // 推给叫醒它的那个人
+    if (toUid !== null && toUid !== seatUid && seats.some((s) => s.uid === toUid)) {
+      const target = alertTargetFor(toUid, seatAgentId(seatUid));
+      // 只交了图 / 文件、一句话没说（#1683：轮末把攒着的送出去）：推送正文写占位，不推一条空的
+      const shown = text !== "" ? text : o.files !== undefined && o.files.length > 0 ? `[文件] ${o.files.map((f) => f.name).join("、")}` : "[图片]";
+      if (target !== null) opts.alert?.(toUid, "agent_reply", { title: title || "群聊", subtitle: seatLabel(seat), body: alertBody(shown), target });
+    }
+    // 回话里 @ 了别家管理员 = 以本家主人的身份去使唤它（规矩同人 @ 它）。刹车：深度与每小时次数（同车道桥）
+    const others = seatMentionsIn(text, seats).filter((u) => u !== seatUid);
+    if (others.length === 0) return;
+    if (depth + 1 > SEAT_RELAY_MAX_DEPTH) {
+      logChat("system", "系统", `管理员之间已经来回 ${SEAT_RELAY_MAX_DEPTH} 棒了，先停一停——要接着办，请人来 @。`, false);
+      return;
+    }
+    const t = opts.now?.() ?? Date.now();
+    const sent = pruneBridgeWindow(seatRelaySent, t);
+    if (!bridgeWindowAllows(sent, t, SEAT_RELAY_PER_HOUR_MAX)) {
+      logChat("system", "系统", "这个群里管理员之间这一小时互相找得太多了，先停一停。", false);
+      return;
+    }
+    seatRelaySent = [...sent, ...others.map(() => t)];
+    for (const uid of others) deliverToSeat(uid, { fromUid: seatUid, fromName: seatLabel(seat), text, depth: depth + 1, groupSeq: said.seq });
+  }
+  /** 攒着的图取出来（字节，从这个团队的附件库读）。读不到的那张跳过——群里少一张，座位里那张还在 */
+  function takeSeatImages(): ToolImage[] {
+    const refs = seatPendingImages;
+    seatPendingImages = [];
+    const port = opts.toolImages ?? null;
+    if (port === null) return [];
+    const out: ToolImage[] = [];
+    for (const r of refs) {
+      try {
+        out.push({ data: port.store.read(r.id), mimeType: r.mediaType });
+      } catch {
+        // 附件库里那份没了：跳过
+      }
+    }
+    return out;
+  }
+  /** 群里落一家管理员交出的文件时顺手转好字（#1683）：别家的座位镜像这一句时连字一起带过去，别家管理员被 @ 去核这份表时读得到。
+      转不出就不带（只是别家读不到内容，不影响这一句进群） */
+  async function withFileText(refs: ChatFileRef[], files: readonly ToolFile[]): Promise<ChatFileRef[]> {
+    const toText = opts.documents?.toText;
+    const out: ChatFileRef[] = [];
+    for (const r of refs) {
+      const f = files.find((x) => createHash("sha256").update(x.data).digest("hex") === r.id.slice("sha256:".length));
+      let text: string | undefined;
+      try {
+        if (f !== undefined) text = r.mediaType.startsWith("text/") ? new TextDecoder().decode(f.data) : toText !== undefined ? await toText(f.data) : undefined;
+      } catch {
+        text = undefined;
+      }
+      out.push(text !== undefined && text.trim() !== "" ? { ...r, text: text.length > FILE_TEXT_MAX_CHARS ? `${text.slice(0, FILE_TEXT_MAX_CHARS)}\n…（后面还有 ${text.length - FILE_TEXT_MAX_CHARS} 字）` : text } : r);
+    }
+    return out;
+  }
+  /** 攒着的文件取出来（字节，从最近交出去的那几份里取）。取不到的跳过——群里少一份，座位里那份还在 */
+  function takeSeatFiles(): ToolFile[] {
+    const refs = seatPendingFiles;
+    seatPendingFiles = [];
+    return refs.map((r) => recentFiles.get(r.id)).filter((f): f is ToolFile => f !== null);
+  }
+  /** 座位里管理员说的一句送回群。深度 = 叫醒这一轮的那句的深度（群那边 @ 别家时 +1）。`images` / `files` = 跟着这句一起回群的图与文件 */
+  function bridgeSeatReply(text: string, model: string, worker: { agentId: string; name: string } | undefined, images: readonly ToolImage[], files: readonly ToolFile[] = []): void {
+    const hub = opts.seatHub ?? null;
+    if (hub === null || seatGroup === null || archived) return;
+    const toUid = (currentJob !== null ? grantRequesters.get(currentJob.openingSeq) : undefined) ?? currentInitiator;
+    void hub.reply({ group: seatGroup, seatUid: opts.ownerUid, text, model, toUid, depth: currentOpeningDepth, ...(worker !== undefined ? { worker } : {}), ...(images.length > 0 ? { images } : {}), ...(files.length > 0 ? { files } : {}) })
+      .catch((err: unknown) => console.warn(`[otto-runtime] 座位的回话送不回群（session=${sessionId}）：${err instanceof Error ? err.message : String(err)}`));
+  }
+  /** 不花模型的那几句（没同意 / 没回）：以管理员的身份落一条 assistant_message——群里看到的是它说的，它自己下一轮也记得 */
+  function seatSays(text: string): void {
+    if (archived) return;
+    notify(store.append({ sessionId, ts: Date.now(), type: "assistant_message", agentId: ADMIN_AGENT_ID, content: text, model: callerModelOf(store.load(sessionId), ADMIN_AGENT_ID) }));
+  }
+  /** 授权开场白：主人点了头 / 设了全部放行。主人的规矩，但带 greeting = 不算主人亲口 */
+  function seatGrant(o: { fromUid: string; fromName: string; ask: string; via: "card" | "policy"; groupSeq?: number; tz?: string; note?: string; files?: ChatFileRef[] }): void {
+    if (archived) return;
+    const opening = store.append({
+      sessionId, ts: Date.now(), type: "user_message", fromUid: opts.ownerUid, mentions: [ADMIN_AGENT_ID], greeting: "seat_grant",
+      ...(o.groupSeq !== undefined ? { mirror: { seq: o.groupSeq } } : {}),
+      ...(o.tz !== undefined ? { tz: o.tz } : {}),
+      ...(o.files !== undefined ? { files: o.files } : {}),
+      content: seatGrantText({ ownerName: seatOwnerName(), fromName: o.fromName, ask: o.ask, via: o.via, ...(o.note !== undefined ? { note: o.note } : {}) }),
+    }) as UserMessageEvent;
+    grantRequesters.set(opening.seq, o.fromUid);
+    notify(opening);
+    if (coordinator.enqueue({ agentId: ADMIN_AGENT_ID, fromUid: opts.ownerUid, opening }) === "start_turn") startDrain();
+  }
+  function seatDecision(requestId: string, decision: SeatDecisionEvent["decision"], byUid: string | null, note?: string): SeatDecisionEvent {
+    const d = store.append({ sessionId, ts: Date.now(), type: "seat_decision", requestId, seatUid: opts.ownerUid, decision, byUid, ...(note !== undefined ? { note } : {}), ignorable: true }) as SeatDecisionEvent;
+    notify(d);
+    const hub = opts.seatHub ?? null;
+    if (hub !== null && seatGroup !== null) {
+      void hub.decision({ group: seatGroup, event: d }).catch((err: unknown) => console.warn(`[otto-runtime] 点头卡的结局送不回群（session=${sessionId}）：${err instanceof Error ? err.message : String(err)}`));
+    }
+    return d;
+  }
+  /** 10 分钟没人点（拍板 D）：落 expired、管理员在群里说一句。重启后从 seed 补上表 */
+  function armSeatExpiry(requestId: string): void {
+    const r = seatRequests.get(requestId);
+    if (r === undefined || r.decision !== null || r.timer !== null) return;
+    r.timer = setCollabTimer(() => {
+      r.timer = null;
+      if (archived || r.decision !== null) return;
+      seatDecision(requestId, "expired", null);
+      seatSays(seatExpiredText(seatOwnerName(), seatLangOf(r.event.ask)));
+    }, Math.max(0, r.event.expiresTs - (opts.now?.() ?? Date.now())));
+  }
+  if (isSeat) for (const id of seatRequests.keys()) armSeatExpiry(id);
+  /** ask_owner 落卡（客人轮里）：发起人 = 这一轮的发起人，原话 = 叫醒这一轮的那句（去掉名字前缀） */
+  async function seatAsk(summary: string): Promise<string> {
+    const hub = opts.seatHub ?? null;
+    const from = currentInitiator;
+    if (!isSeat || seatGroup === null || from === null || from === opts.ownerUid || currentJob === null) return "这一轮不用问——直接按主人的规矩办。";
+    if (archived) return "这个座位已经收了。";
+    const pending = [...seatRequests.values()].find((r) => r.decision === null && r.event.fromUid === from);
+    if (pending !== undefined) return `已经在等 ${seatOwnerName()} 点头了（同一个人的事一次一张卡），这一轮说一句「还在等」就结束。`;
+    const ask = (splitSpeakerPrefix(currentJob.openingContent)?.body ?? currentJob.openingContent).replace(/\s+/g, " ").trim().slice(0, 300);
+    const event = store.append({
+      sessionId, ts: Date.now(), type: "seat_request", requestId: `q_${randomUUID().slice(0, 8)}`, seatUid: opts.ownerUid,
+      ownerName: seatOwnerName(), agentName: seatAgentName(), fromUid: from,
+      fromName: speakerLabels.get(from) ?? speakerLabelOf(currentJob.openingContent, from), ask, summary,
+      expiresTs: (opts.now?.() ?? Date.now()) + SEAT_REQUEST_EXPIRE_MS, ignorable: true,
+    }) as SeatRequestEvent;
+    notify(event);
+    const opening = store.load(sessionId, { afterSeq: currentJob.openingSeq - 1 })[0];
+    if (opening?.type === "user_message" && opening.tz !== undefined) requestTz.set(event.requestId, opening.tz);
+    if (hub !== null) {
+      await hub.request({ group: seatGroup, event }).catch((err: unknown) => console.warn(`[otto-runtime] 点头卡送不到群（session=${sessionId}）：${err instanceof Error ? err.message : String(err)}`));
+    }
+    return seatAskedText(seatOwnerName(), seatLangOf(ask));
+  }
   // 开房时把这边还在等点头的请求再送一遍（#1605 真机 2026-10-05）：送不送到不能靠管理员自觉——它看见自己说过「交给了」
   // 就只会复述，不会再调工具。对面按 requestId 去重，重送是安全的；只有发起这一侧（车道里、请求是这边落的）送
   if (isPair && pairFacts !== undefined && (opts.adminsBridge ?? null) !== null) {
@@ -1910,8 +2251,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // message_friend（#1549）：call_friend 的姊妹刀。亮刀条件逐字相同（主场、主人亲口、非车道 / 外联、非监督轮）——
     // 它写进的是主人与朋友的私聊，和打电话一样是「以主人名义对外」，凭据只能是主人本人这一轮亲口说的
     const friendMessage = opts.friendMessage ?? null;
+    // 车道里也挂（#1682 人与人模拟）：主人在车道里让它起草回朋友的话，一句「发吧」它却只能说「你自己复制粘贴」。
+    // 车道就在那条私聊旁边，主人亲口说发，替他发进去（标明代发）正是车道的用处；call_friend 照旧不挂（汇报轮在车道里没卡可点）
     const messageFriendTool =
-      friendMessage === null || !opts.approveAll || isOutreach || isPair
+      friendMessage === null || !opts.approveAll || isOutreach
         ? null
         : createMessageFriendTool({
             maySend: () =>
@@ -1950,7 +2293,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // 在 tools() 里再按「受监督轮不亮、接力棒上（开场白接力深度 > 0）不亮、等级 ≤ 1、有连接器域」判。reason 恒为 missing——
     // 「登录过期」那一路由连接器 409 兜底直接调 offerAppConnect（#1666 Task 4）
     const appConnectTool =
-      !opts.approveAll || isOutreach || isPair
+      !opts.approveAll || isOutreach || isPair || isSeat
         ? null
         : createRequestAppConnectTool({
             // 白名单现取这一轮的 spec（engine 按 agent 缓存，这里闭包里的 spec 是第一次开口时的）
@@ -1958,12 +2301,14 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
           });
     // 定时任务三把刀（#1283）：只在主场私聊里挂；亮不亮按「主人亲口 && 不受监督」现算（routine 轮算主人亲口，Task 8）
     const routineTools =
-      opts.routines === null || !opts.approveAll || chatKind !== "dm"
+      opts.routines === null || !opts.approveAll || (chatKind !== "dm" && chatKind !== "seat" && chatKind !== "pair")
         ? []
         : createRoutineTools({
             workspaceId: opts.workspaceId, agentId: spec.agentId, ownerUid: opts.ownerUid, store: opts.routines,
+            // 群座位里定的提醒到点回这个座位（#1682）：管理员到点说的话经桥回到群里，而不是跑去主人的私聊
+            ...(isSeat ? { sessionId } : {}),
             now: () => opts.now?.() ?? Date.now(),
-            available: () => (ownerSpoke || escalationTurn) && !supervisedTurn(),
+            available: () => (ownerSpoke || escalationTurn || seatGrantTurn || ownChainTurn) && !supervisedTurn(),
           });
     // update_settings（#1621）：主场私聊里、只给管理员；主人亲口的那一轮才亮（同 routineTools）；改完落一句系统行
     // escalate_to_admin（#1659）：主场里、daemon 接了出口才有；挂不挂到具体那一只由工具表按「是专员 + 这条对话没管理员」判
@@ -2003,12 +2348,42 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // 跨主场协作（#1578）：管理员把任务交给对方的管理员——落 task_collab + 走同一条桥
     // 第 1 期 b（#1605）：落点从对面的公开车道换成 collab_request——本地一份（任务的协作者状态从它折）+ 送到对面家的管理员车道
     const adminsBridge = opts.adminsBridge ?? null;
+    // 主人和自己管理员的私聊里（#1683 模拟：「去问问 Mei Ling 的助手团建晚餐超不超标」，管理员只能答「我不知道她的助手是谁」）：
+    // 同一把刀，多一格 friend，按好友名单现查（只认 accepted）；主人名字取他最近一句话的说话人前缀
+    const friendsOf = opts.friendsOf ?? null;
+    const dmCollab = chatKind === "dm" && opts.approveAll && spec.agentId === ADMIN_AGENT_ID && friendsOf !== null;
+    const ownerNameNow = (): string => {
+      if (pairFacts !== undefined) return pairFacts.ownerName;
+      const log = store.load(sessionId);
+      for (let i = log.length - 1; i >= 0; i--) {
+        const e = log[i]!;
+        if (e.type === "user_message" && e.fromUid === opts.ownerUid && e.relay === undefined && e.greeting === undefined) {
+          const who = splitSpeakerPrefix(e.content)?.label;
+          if (who !== undefined && who.trim() !== "") return who.trim();
+        }
+      }
+      return "主人";
+    };
     const collabTool =
-      adminsBridge === null || !isPair || pairFacts === undefined
+      adminsBridge === null || !((isPair && pairFacts !== undefined) || dmCollab)
         ? null
         : createCollabTool({
-            peer: () => ({ uid: pairFacts.peerUid, name: pairFacts.peerName }),
-            ownerName: () => pairFacts.ownerName,
+            needsFriend: !isPair,
+            peer: async (friend) => {
+              if (pairFacts !== undefined) return { uid: pairFacts.peerUid, name: pairFacts.peerName };
+              if (friend === undefined) return "friend 必填：要找哪位朋友的管理员";
+              let friends: { uid: string; name: string }[];
+              try {
+                friends = await friendsOf!(opts.ownerUid);
+              } catch {
+                return "这会儿查不到好友名单，稍后再试";
+              }
+              const m = resolveFriend(friends, friend);
+              if (m.kind === "many") return `好友里有 ${m.count} 位叫「${friend}」，问问主人是哪一位`;
+              if (m.kind === "none") return m.names.length === 0 ? "主人还没有好友，找不了别人的管理员" : `好友里没有叫「${friend}」的。好友有：${m.names.join("、")}——问问主人指的是哪一位`;
+              return { uid: m.uid, name: m.name };
+            },
+            ownerName: ownerNameNow,
             tasks: () => taskFold,
             ownerLineBefore: (taskId) => {
               const log = store.load(sessionId);
@@ -2022,40 +2397,87 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
               }
               return "";
             },
-            request: async ({ task, note, ownerLine, result }) => {
+            request: async ({ task, note, ownerLine, result, peer }) => {
               if (archived) return "这条会话已经收尾了";
               const requestId = `r_${randomUUID().slice(0, 8)}`;
               const draft: CollabRequestEvent = {
                 sessionId, seq: 0, ts: Date.now(), type: "collab_request", requestId, taskId: task.id, title: task.title,
                 fromUid: opts.ownerUid, fromAgentName: specNames.get(spec.agentId) ?? spec.name,
-                quote: { ownerName: pairFacts.ownerName, ownerLine, note }, result: result.slice(0, 500), expiresTs: Date.now() + COLLAB_EXPIRE_MS,
+                quote: { ownerName: ownerNameNow(), ownerLine, note }, result: result.slice(0, 500), expiresTs: Date.now() + COLLAB_EXPIRE_MS,
                 byAgentId: spec.agentId, ignorable: true,
               };
               // **先送达、再落本地**（真机 2026-10-05：对面建车道撞了约束，这边却已经落了请求，任务卡写着「等 TA 点头」）。
               // 送不到 = 这边一个字不落，回那句话
               const refused = await adminsBridge
-                .deliverRequest({ ownerUid: opts.ownerUid, peerUid: pairFacts.peerUid, event: draft, origin: { workspaceId: opts.workspaceId, sessionId } })
+                .deliverRequest({ ownerUid: opts.ownerUid, peerUid: peer.uid, event: draft, origin: { workspaceId: opts.workspaceId, sessionId } })
                 .catch((err: unknown) => {
                   console.warn(`[otto-runtime] 协作请求送不过去（session=${sessionId}）：${err instanceof Error ? err.message : String(err)}`);
                   return "对面那边这会儿接不住，稍后再试";
                 });
               if (refused !== null) return refused;
               // 先 task_collab 再 collab_request：重放时 foldTask 要先见到协作者那一格，请求才记得上 pending
-              notify(store.append({ sessionId, ts: Date.now(), type: "task_collab", taskId: task.id, withUid: pairFacts.peerUid, withName: pairFacts.peerName, byAgentId: spec.agentId, ignorable: true }));
+              notify(store.append({ sessionId, ts: Date.now(), type: "task_collab", taskId: task.id, withUid: peer.uid, withName: peer.name, byAgentId: spec.agentId, ignorable: true }));
               const { seq: _seq, ...rest } = draft;
               notify(store.append({ ...rest, ts: Date.now() }));
+              const early = earlyCollabDecisions.get(requestId);
+              if (early !== undefined) {
+                earlyCollabDecisions.delete(requestId);
+                const { seq: _s2, sessionId: _sid2, ts: _ts2, ...d } = early;
+                notify(store.append({ ...d, sessionId, ts: Date.now() }));
+              }
               return null;
             },
             redeliver: async (requestId) => {
               const e = store.load(sessionId).find((x): x is CollabRequestEvent => x.type === "collab_request" && x.requestId === requestId);
               if (e === undefined) return "找不到那条请求";
+              // 私聊里（#1683）对面是谁记在任务的协作者那一格（task_collab 落的）
+              const peerUid = pairFacts?.peerUid ?? taskFold.get(e.taskId)?.collaborator?.uid;
+              if (peerUid === undefined) return "找不到这条请求是发给谁的";
               return adminsBridge
-                .deliverRequest({ ownerUid: opts.ownerUid, peerUid: pairFacts.peerUid, event: e, origin: { workspaceId: opts.workspaceId, sessionId } })
+                .deliverRequest({ ownerUid: opts.ownerUid, peerUid, event: e, origin: { workspaceId: opts.workspaceId, sessionId } })
                 .catch(() => "对面那边这会儿接不住，稍后再试");
             },
           });
+    // 日常能力（#1682）：联网搜索 / 读网页（只读外呼，不碰主人的东西，所以授权轮也能用）；搜自己的聊天记录只在主人自己的轮里亮
+    const searchKey = opts.webSearchKey ?? null;
+    const webTools: Tool[] = searchKey === null ? [] : [createWebSearchTool(searchKey), createWebExtractTool(searchKey)];
+    const sessionSearchTool: Tool | null = !opts.approveAll ? null : Object.create(createSessionSearchTool(), {
+      available: { value: () => currentInitiator === opts.ownerUid && !supervisedTurn() && !forSomeoneElse() && !isOutreach, enumerable: true },
+    }) as Tool;
+    // ask_owner（#1682）：只在座位里、只给管理员；亮不亮在 tools() 里按「这一轮是不是别人使唤」判
+    const askOwnerTool = isSeat && spec.agentId === ADMIN_AGENT_ID ? createAskOwnerTool({ request: seatAsk }) : null;
+    // generate_image（#1682 日常能力：「给妈妈做张生日贺卡」）：daemon 接了出图 + 落图两头才建。亮不亮按这一轮起跑前现问的
+    // imageReady（粗闸）；座位里别人使唤的那一轮、外联那一轮在 tools() 里早返回，碰不到它（替别人花主人的钱要主人点头）。
+    // 不过审批门（同 web_search：纯外呼、不碰主人的东西）；主场群里客人点起的那一轮照 tools() 末尾的包装掀成要群主批
+    const imageGen = opts.imageGen ?? null;
+    const toolImages = opts.toolImages ?? null;
+    const imageTool =
+      imageGen === null || toolImages === null
+        ? null
+        : createGenerateImageTool({
+            mounted: () => imageReady,
+            resolve: () => imageGen.resolve(spec.agentId),
+            // 图生图的底图：这条会话里最近一张（用户发的、或上次画的）。附件库里那份没了就当没有（同桌面）
+            latestImage: async () => {
+              const ref = latestImageRef(store.load(sessionId));
+              if (ref === null) return null;
+              try {
+                return { data: toolImages.store.read(ref.id), mimeType: ref.mediaType };
+              } catch {
+                return null;
+              }
+            },
+          });
+    // 文件三把刀（#1683）：字体 / 转文字有了、上传有了（借出图那一套）、底下的世界读写得了二进制才挂。
+    // 不过审批门（只在自己工作区的 outputs/ 写、发到的就是这条对话）；主场群里客人点起的那一轮照末尾的包装掀成要群主批
+    const documents = opts.documents ?? null;
+    const docTools: Tool[] =
+      documents !== null && toolImages !== null && opts.world.fs.readBytes !== undefined && opts.world.fs.writeBytes !== undefined
+        ? createDocumentTools(documents)
+        : [];
     const engine = new LoopEngine({
-      store: agentView(store, spec.agentId),
+      // 座位里的专员（L1，拍板 F）：只看管理员交代的话，不看镜像进来的群聊、也不看群里送来的开场白
+      store: isSeat && spec.agentId !== ADMIN_AGENT_ID ? seatWorkerView(agentView(store, spec.agentId)) : agentView(store, spec.agentId),
       adapter,
       agentId: spec.agentId,
       // 定时任务那一轮的圈数硬上限（#1283，spec §5.4）：没人在场按停止键。普通轮不封顶（ADR-0006）
@@ -2065,6 +2487,9 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // 只有管理员那只有 create_agent（spec §10 切片 6）。判据是 agentId 不是名字——
       // 名字随时能改，'admin' 是 0021 触发器种下的稳定键
       tools: () => {
+        // 座位里别人使唤的那一轮（#1682，ADR-0376）：只能聊天，手上只有 ask_owner——动手之前要主人点头。
+        // 早返回 = 不过下面的审批包装（这把刀只是落一张卡，不动主人的任何东西）
+        if (isSeat && currentInitiator !== null && currentInitiator !== opts.ownerUid) return askOwnerTool !== null ? [askOwnerTool] : [];
         // 外联会话（#1441 → #1655）：只挂一把 relay_to_owner，且只给 L0（ADR-0367 对外的刀只有管理员有）。
         // 早返回 = 不过下面的审批包装：这把刀只对自己主人说话，朋友点起的轮里也不掀（同 message_friend_agent）
         if (isOutreach) {
@@ -2087,7 +2512,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         const px = me === null || connectorsAllowed(me, turnRoster) ? cachedPxTools : [];
         const adminOnly = me === null || isAdmin;
         const list: Tool[] = [
-          ...scopedHands, wikiReadTool, wikiTool, inviteToCallTool,
+          ...scopedHands, wikiReadTool, wikiTool, inviteToCallTool, ...webTools,
+          ...(imageTool !== null ? [imageTool] : []),
+          ...docTools,
+          ...(sessionSearchTool !== null ? [sessionSearchTool] : []),
           ...(callUserTool !== null ? [callUserTool] : []),
           // 受监督的轮里干脆不亮这把刀：亮出来只会弹一张批了也必被 mayCall 拒的卡
           ...(callFriendTool !== null && adminOnly && !supervisedTurn() ? [callFriendTool] : []),
@@ -2124,10 +2552,31 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         // 客人的话（tightenSupervision）要对这一圈已经定下来的调用也生效，快照值收紧不到它们。
         // Object.create 让 def / run 走原型，原来的工具对象一个字不改。包出来的对象**自有属性只有 requiresApproval**：
         // 不许对它展开（`{ ...tool }` 只拷自有可枚举属性，def / run 会整个丢掉），要改形状就再包一层 Object.create
+        // 车道里别人点起的那一轮（#1682 人与人模拟；#1526）：公开车道里朋友 @ 它、管理员车道里对面管理员接力进来——
+        // 这两种对话在手机上没有审批卡可点，掀成要批只会让卡等两分钟超时、整条对话堵住。刀干脆不亮：
+        // 它用主人已经说过、写给朋友看的东西回话；要动主人的东西，回一句「得问 X 本人」。
+        // message_friend_agent 例外（只说话，同下面那条不掀的例外）
+        // 主人和自己管理员的私聊里，对面管理员的协作回话接力进来的那一轮（#1683 模拟：Bea 的管理员回了话，Paolo 的专员接着要做 Excel、
+        // 写笔记，每一步都弹卡，Paolo 不在，两分钟超时全拒）：同车道，刀不亮——把对面说的转告主人，要动手等主人下一句
+        if ((isPair || isAdmins || chatKind === "dm") && guestTurn()) return list.filter((t) => t.def.name === MESSAGE_FRIEND_AGENT_TOOL_NAME);
+        // 车道里一轮跑到一半混进了别人的话（对面管理员的回话接力进来、朋友插了一句）：同样没有卡可点（#1526）。
+        // 不掀审批，那一下调用直接拒、说清为什么——#1682 模拟里一张 invite_collaborator 的卡在私密车道里干等了十分钟
+        const lane = isPair || isAdmins;
+        const laneGuard = (t: Tool): Tool =>
+          !lane || t.def.name === MESSAGE_FRIEND_AGENT_TOOL_NAME
+            ? t
+            : (Object.create(t, {
+                run: {
+                  value: async (args: unknown, w: ExecutionWorld, ...rest: unknown[]) => {
+                    if (supervisedTurn()) throw new Error("这一轮里混进了别人的话，车道里没法让主人点头：这件事先不动手，回一句说明，等主人下一句再办。");
+                    return (t.run as (a: unknown, w: ExecutionWorld, ...r: unknown[]) => ReturnType<Tool["run"]>)(args, w, ...rest);
+                  },
+                },
+              }) as Tool);
         return opts.approveAll
           ? list.map((t) =>
               // message_friend_agent（#1542）不掀：它只往对面车道落一句两个人都看得到的话，与回话是同一种东西
-              Object.create(t, { requiresApproval: { get: () => t.requiresApproval || (supervisedTurn() && t.def.name !== MESSAGE_FRIEND_AGENT_TOOL_NAME && !(ownerReportTurn && t.def.name === CALL_USER_TOOL_NAME)), enumerable: true } }) as Tool,
+              Object.create(laneGuard(t), { requiresApproval: { get: () => t.requiresApproval || (!lane && supervisedTurn() && t.def.name !== MESSAGE_FRIEND_AGENT_TOOL_NAME && !(ownerReportTurn && t.def.name === CALL_USER_TOOL_NAME)), enumerable: true } }) as Tool,
             )
           : list;
       },
@@ -2157,11 +2606,21 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
             onAssistantRestart: () => {
               deltas.flush();
               deltas.clearAgent(spec.agentId);
-              opts.onDelta?.(spec.agentId, "content", "");
+              emitDelta(spec.agentId, "content", "");
             },
           }
         : {}),
-      middlewares: [],
+      // 工具产出的图（generate_image）落附件库 + 传进 chat-media，engine 把 ref 落进 tool_result.images（手机按它画图）
+      // 交给人的文件（#1683）同一个口子：传进 chat-media，engine 把 ref 落进 tool_result.files
+      middlewares: toolImages === null ? [] : [
+        createToolImageIntakeMiddleware(toolImages, { workspaceId: opts.workspaceId, sessionId }),
+        createToolFileIntakeMiddleware(
+          { upload: toolImages.upload, ...(toolImages.log !== undefined ? { log: toolImages.log } : {}) },
+          { workspaceId: opts.workspaceId, sessionId },
+          recentFiles,
+          (id) => store.load(sessionId).some((e) => e.type === "tool_result" && e.status === "ok" && (e.files ?? []).some((f) => f.id === id)),
+        ),
+      ],
       // 自动压缩（#957 A-1，ADR-0062）。桌面在 src/main/agent.ts 里一直有这一格，
       // runtime 从头到尾没有——于是云会话的上下文**单调增长**，直到每一轮都因超窗
       // 400，而每一轮都按全尺寸计在 owner 头上，且没有任何自愈路径（用户唯一能做的
@@ -2201,13 +2660,20 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
 
   /** 起 turn 前落这只 agent 的 wiki 快照（#1140）。判据逐字沿用 ADR-0222 决策 2：**缺席或内容变了才落**。
       ensure/snapshot 失败 warn 跳过、不阻塞 turn（记忆副作用永不阻塞回复）。nudge 只给管理员（spec §7.2） */
-  async function loadWikiIfChanged(spec: AgentSpec): Promise<void> {
+  async function loadWikiIfChanged(spec: AgentSpec, guest = false): Promise<void> {
     // 外联（#1441 不注入 → #1655 注入）：外联存在 = 主人对这位朋友全部开放；那条线没有 wiki 刀，nudge 不给
     // （它催的是用 wiki 记），引言由 deriveMessages 换只读版
     let snap: WikiSnapshotForAgent;
     try {
-      await opts.wiki.ensure();
-      snap = await opts.wiki.snapshot(spec.agentId, { nudge: spec.agentId === ADMIN_AGENT_ID && !isOutreach });
+      // 别人使唤的那一轮（座位客人轮、车道里朋友点起的、管理员车道里按好友权限接进来的，#1682 模拟）：主人的记忆不进上下文。
+      // 真机模拟里妈妈在家庭群问女儿的管理员「孩子们是不是在计划什么」，它从记忆索引的摘要里知道惊喜派对，
+      // 嘴上说「不知道」，又补一句「17 号晚上最好空着」——不给看，就没有可暗示的。主人自己的下一轮内容变了，照常再落完整快照
+      if (guest) {
+        snap = { index: "（这一轮是别人在使唤你：主人的记忆这一轮不给你看。别人问到主人的计划、行程、私事，不暗示、不打哑谜，说「得问主人本人」。）", pinned: [], own: null, nudge: null };
+      } else {
+        await opts.wiki.ensure();
+        snap = await opts.wiki.snapshot(spec.agentId, { nudge: spec.agentId === ADMIN_AGENT_ID && !isOutreach });
+      }
     } catch (err) {
       console.warn(`[otto-runtime] 团队 wiki 读取失败，本 turn 不落快照（workspaceId=${opts.workspaceId} agent=${spec.agentId}）`, err);
       return;
@@ -2531,7 +2997,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       问题。为什么不在那条出口直接 `store.append`：`safeSpeakerLabel` 那道闸只能
       有一处（#957 复审 Important 2），绕开它就是给「伪造说话人」开第二个入口 */
   /** say 帧里的媒体引用 → 事件里那两格（#1491）。这台没接媒体 = 明说收不了，不静默丢图 */
-  async function intakeMedia(refs: readonly ChatMediaRef[]): Promise<{ attachments: UserAttachmentRef[]; videos: ChatVideoRef[] }> {
+  async function intakeMedia(refs: readonly ChatMediaRef[]): Promise<{ attachments: UserAttachmentRef[]; videos: ChatVideoRef[]; files?: ChatFileRef[] }> {
     if (opts.media === undefined) throw new SayRejectedError("这台服务器还收不了图片和视频");
     try {
       return await opts.media(refs);
@@ -2543,7 +3009,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
 
   function logChat(
     fromUid: string, label: string, text: string, mention: boolean, voice?: true,
-    media: { attachments?: UserAttachmentRef[]; videos?: ChatVideoRef[] } = {}
+    media: { attachments?: UserAttachmentRef[]; videos?: ChatVideoRef[]; files?: ChatFileRef[] } = {}
   ): SessionEvent {
     const logged = store.append({
       sessionId,
@@ -2859,6 +3325,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       只剩主人那条开场白，带着汇报 / 客人的话免审跑、call_friend 亮着。读日志要从 job 自己那条之前读起：
       closeBound 可能已经越过它（前一轮收口时 readUpToSeq ≥ 它） */
   function traitOpenings(job: TurnJob): UserMessageEvent[] {
+    // 座位（#1682）：一个 job 只算它自己那一句——别人的话另排一轮（协调器按发起人分开），不折进来
+    if (isSeat) return [job.opening];
     const from = Math.min(bounds.closeBound.get(job.agentId) ?? -1, job.opening.seq - 1);
     return openingsForTraits(store.load(sessionId, { afterSeq: from }), job.agentId, job.opening);
   }
@@ -2927,7 +3395,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       job.agentId,
       job.opening
     );
-    const openingDepth = covered.reduce((m, u) => Math.max(m, relayDepthOf(u)), 0);
+    // 座位（#1682）：一个 job 只答它自己那一句（别人的话另排），深度就是那一句的
+    const openingDepth = isSeat ? relayDepthOf(job.opening) : covered.reduce((m, u) => Math.max(m, relayDepthOf(u)), 0);
     currentOpeningDepth = openingDepth;
     // 归档落地时，这只 agent 的 job 可能已经躺在队列里了——它是**接力**排上的
     // （relayAfterTurn 在一轮 @ 了两只时，两个 job 在归档发生之前就已经一起入队；
@@ -2978,6 +3447,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     foldedNonOwner = false;
     rerunTurn = false;
     ownerSpoke = true;
+    seatGrantTurn = isSeat && job.fromUid === opts.ownerUid && job.opening.greeting === "seat_grant" && !rerunOpenings.has(job.opening.seq);
+    ownChainTurn = chatKind === "dm" && opts.approveAll && job.fromUid === opts.ownerUid && !rerunOpenings.has(job.opening.seq);
     const traitCovered = traitOpenings(job);
     applyTraits(traitCovered, openingDepth);
     healthTurn = healthEligible(job.fromUid, traitCovered, openingDepth);
@@ -3007,7 +3478,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // 前者只是"这一刻问不出来"（人重发一次就好）。说成同一句话，一次
       // Supabase 抖动就会被读成"我被踢了"
       // 群里的客人（#1393）按日志里的名单算在籍——他们不是工作区成员，问 opts.isMember 只会得到 false
-      const membership = isGuest(job.fromUid) ? true : await opts.isMember(job.fromUid);
+      // 座位（#1682）：在籍由群那一侧在送话前判过（座位名单），这里的工作区成员只有主人自己
+      const membership = isGuest(job.fromUid) || isSeat ? true : await opts.isMember(job.fromUid);
       if (membership !== true) {
         // 确认不在籍那一支也要在群里说一声（复审 E2-5 的另一半）：收口只让这条
         // turn 不跑，那句点名正文照旧躺在每只 agent 的上下文里。补跑那条路上的
@@ -3064,7 +3536,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
 
       await briefIfNeeded(spec, roster);
       specNames.set(spec.agentId, spec.name);
-      await loadWikiIfChanged(spec);
+      await loadWikiIfChanged(spec, (isSeat || isPair || isAdmins) && guestTurn());
       await loadPairContextIfChanged();
 
       // 「Auto」那一档（#1009）：白名单为空 = 界面上选了 Auto = 这一轮先让最便宜
@@ -3100,6 +3572,9 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
           `[otto-runtime] agent 名单处于降级占位（workspace_agents 查询失败），本 turn 不挂任何好友代理工具、也不拉授权` +
             `（workspaceId=${opts.workspaceId} session=${sessionId} agentId=${spec.agentId}）`
         );
+        cachedPxTools = [];
+      } else if (isSeat && job.fromUid !== opts.ownerUid) {
+        // 座位里别人使唤的那一轮（#1682）：手上只有 ask_owner，拉授权是白打的网络往返
         cachedPxTools = [];
       } else if (isOutreach) {
         // 外联会话不挂好友代理工具（上面 tools() 至多一把 relay_to_owner，#1655），拉授权是白打的网络往返：每个成员一次 edge
@@ -3161,6 +3636,12 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
             : {}),
         });
       }
+      // 出图那把刀这一轮亮不亮（#1682）：座位里别人使唤的那一轮、外联、降级名单都不问（那几种 tools() 里本来就没有它，
+      // 问了是白打一次网络）。问挂了 = 不亮，不拦 turn
+      imageReady =
+        opts.imageGen != null && opts.toolImages != null && !spec.degraded && !isOutreach && !(isSeat && job.fromUid !== opts.ownerUid)
+          ? await opts.imageGen.ready().catch(() => false)
+          : false;
       // 起跑**之前**捕获这只 agent 这一轮的扫描起点（复审 Critical ①，与
       // engine.ts 的 readUpToSeq 同一个量：这一轮开跑前日志已经到哪儿）。
       // 不能事后现算 `job.opening.seq`——同一只 agent 排队排两个 job 时，
@@ -3242,11 +3723,18 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       }
       throw err; // 照旧向上抛：落盘是补记事实不是吞错（drain 的 catch 打日志）
     } finally {
+      // 座位里这一轮最后交出的图 / 文件之后管理员没再开口（#1682 遗留，#1683）：别等它下一句，轮末送回群
+      if (isSeat && job.agentId === ADMIN_AGENT_ID && (seatPendingImages.length > 0 || seatPendingFiles.length > 0)) {
+        bridgeSeatReply("", callerModelOf(store.load(sessionId), ADMIN_AGENT_ID), undefined, takeSeatImages(), takeSeatFiles());
+      }
       currentInitiator = null;
       reportTurn = false;
       routineTurn = false;
       healthTurn = false;
       escalationTurn = false;
+      seatGrantTurn = false;
+      ownChainTurn = false;
+      imageReady = false;
       ownerSpoke = false;
       foldedNonOwner = false;
       rerunTurn = false;
@@ -3425,6 +3913,81 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     return appConnectToolText(o.appName);
   };
 
+  /** 座位制的群里说一句（#1682，ADR-0376）：落 chat_message（不落 user_message——群里不起 turn，openTurns 不能把它当排队中），
+      @ 了人照旧提醒，@ 了谁的管理员就经 seatHub 送进那个人的座位 */
+  async function saySeated(
+    fromUid: string, label: string, text: string, mentions: string[] | undefined, budget: ((n: number) => string | null) | undefined,
+    memberMentions: string[] | undefined, voice: true | undefined, media: readonly ChatMediaRef[] | undefined, tz: string | undefined,
+  ): Promise<void> {
+    const seats = groupSeats ?? [];
+    if (!seats.some((s) => s.uid === fromUid)) throw new SayRejectedError("你已经不在这个群里了。");
+    // 点了哪几个座位：客户端给了（含空数组）就以它为准，没给就从正文里认（同 resolveTargets 的 ①②）
+    const fromClient = mentions === undefined ? null : mentions.map(seatUidOf).filter((u): u is string => u !== null);
+    const targets = [...new Set(fromClient ?? seatMentionsIn(text, seats))].filter((u) => seats.some((s) => s.uid === u));
+    // @ 的是一个已经退群的人的管理员（打字打出来的，客户端名单里本来就没有它）：不说一声的话这句 @ 跟闲聊长得一样
+    const gone = departedSeats().filter((d) => !seats.some((s) => s.uid === d.uid) && seatMentionsIn(text, [d]).length > 0);
+    const veto = budget?.(targets.length) ?? null;
+    if (veto !== null) throw new SayRejectedError(veto);
+    const got = media !== undefined && media.length > 0 ? await intakeMedia(media) : null;
+    const mediaFields = got === null ? {} : { attachments: got.attachments, ...(got.videos.length > 0 ? { videos: got.videos } : {}), ...(got.files !== undefined && got.files.length > 0 ? { files: got.files } : {}) };
+    if (got !== null && text.trim() === "") text = mediaPlaceholder(media ?? []);
+    const logged = store.append({
+      sessionId, ts: Date.now(), type: "chat_message", fromUid, label: safeSpeakerLabel(label, fromUid), content: text, mention: targets.length > 0,
+      ...(voice !== undefined ? { voice } : {}), ...mediaFields,
+      ...(targets.length > 0 ? { seatMentions: targets.map(seatAgentId) } : {}),
+    });
+    notify(logged);
+    // @ 了人：收件箱 + 推送（能被点名的人 = 座位名单）
+    if (memberMentions !== undefined && memberMentions.length > 0) {
+      const rows: MentionInboxRow[] = [];
+      for (const uid of new Set(memberMentions)) {
+        if (uid === fromUid || !seats.some((s) => s.uid === uid)) continue;
+        rows.push({ workspaceId: opts.workspaceId, sessionId, seq: logged.seq, uid, fromUid, fromLabel: label, text });
+        const target = alertTargetFor(uid, "");
+        if (target !== null) opts.alert?.(uid, "mention", { title: title || "群聊", subtitle: label, body: alertBody(text), target });
+      }
+      await opts.mentionInbox.record(rows).catch((err: unknown) => console.error(`[otto-runtime] 点名提醒写入失败（session=${sessionId}）`, err));
+    }
+    for (const seatUid of targets) deliverToSeat(seatUid, { fromUid, fromName: label, text, depth: 0, groupSeq: logged.seq, ...(tz !== undefined ? { tz } : {}) });
+    for (const d of gone) logChat("system", "系统", seatGoneText(d, seatLangOf(text)), false);
+  }
+  /** 这个群里出现过、此刻已经不在的座位（日志里每一条名单事件的并集减去此刻的） */
+  function departedSeats(): GroupSeat[] {
+    const seen = new Map<string, GroupSeat>();
+    for (const e of store.ofType(sessionId, "chat_roster_changed")) for (const s of (e as { seats?: GroupSeat[] }).seats ?? []) seen.set(s.uid, s);
+    return [...seen.values()].filter((s) => !(groupSeats ?? []).some((x) => x.uid === s.uid));
+  }
+  /** 送进一个座位（人 @ 的 depth 0；管理员之间 @ 的 depth ≥ 1）。没送到就在群里说一句——不出声的话 @ 了等于没 @ */
+  function deliverToSeat(seatUid: string, o: { fromUid: string; fromName: string; text: string; depth: number; groupSeq: number; tz?: string }): void {
+    const seat = (groupSeats ?? []).find((s) => s.uid === seatUid);
+    if (seat === undefined) return;
+    const hub = opts.seatHub ?? null;
+    const say = (why: string): void => { logChat("system", "系统", `${seatLabel(seat)}这会儿接不住：${why}`, false); };
+    if (hub === null) { say("服务这边还没接上"); return; }
+    void hub
+      .deliver({ group: { workspaceId: opts.workspaceId, sessionId }, seatUid, opening: { ...o, policy: seat.policy === "open" ? "open" : "ask" } })
+      .then((refused) => { if (refused !== null && !archived) say(refused); })
+      .catch((err: unknown) => {
+        console.warn(`[otto-runtime] 送进座位失败（session=${sessionId} seat=${seatUid}）：${err instanceof Error ? err.message : String(err)}`);
+        if (!archived) say("稍后再 @ 一次");
+      });
+  }
+  /** 有人走了：他那个座位上、以及他发起的还在等的卡，群里的镜像一并按过期收（座位那份到点自己收） */
+  function expireSeatCardsOf(uid: string): void {
+    for (const [requestId, r] of seatRequests) {
+      if (r.decision === null && (r.event.seatUid === uid || r.event.fromUid === uid)) {
+        notify(store.append({ sessionId, ts: Date.now(), type: "seat_decision", requestId, seatUid: r.event.seatUid, decision: "expired", byUid: null, ignorable: true }));
+      }
+    }
+  }
+  /** 改座位名单（落一条带齐三份名单的名单事件）。`humans` = 除群主之外的人（旧客户端读得懂） */
+  function logSeats(next: GroupSeat[], owner: string, byUid: string, byName: string | undefined): void {
+    notify(store.append({
+      sessionId, ts: Date.now(), type: "chat_roster_changed", byUid, ...(byName !== undefined && byName !== "" ? { byName } : {}), ignorable: true,
+      agents: [], humans: next.filter((s) => s.uid !== owner).map((s) => ({ uid: s.uid, name: s.name })), seats: next, groupOwnerUid: owner,
+    }));
+  }
+
   const session: CloudSession = {
     async say(fromUid, label, text, mention, mentions, budget, memberMentions, voice, media, relay, tz) {
       // 外联会话（#1441 → #1655）：只有那位朋友能说话，主人在这条线上只读。通话进行中（语音转写走这里）不查档位、
@@ -3454,6 +4017,13 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       if (isPair && fromUid !== opts.ownerUid && !isGuest(fromUid)) throw new SayRejectedError("这是别人的私人智能体。");
       // 管理员车道（#1605）：对面主人本人在这里只看不说；对面管理员的话走桥（带 relay）
       if (isAdmins && fromUid !== opts.ownerUid && relay === undefined) throw new SayRejectedError("管理员车道里只有两家管理员说话。");
+      // 群座位（#1682）：没人进这间房；话由群那一侧经 seatHub 送进来
+      if (isSeat) throw new SayRejectedError("这是群座位，去群里说话。");
+      // 座位制的群（#1682，ADR-0376）：群里不起 turn，@ 到的管理员各在自己主场的座位里接
+      if (groupSeats !== null) {
+        await saySeated(fromUid, label, text, mentions, budget, memberMentions, voice, media, tz);
+        return;
+      }
       // 人刚开口 → 要此刻的名单（#979 第 5 条）：他在设置页刚建/改的那只要能立刻 @ 到
       const roster = await rosterNow({ fresh: true });
       // **名单降级 + 这句话点了名 = 一个字节都不落**（#957 E2-4）：degraded 那份
@@ -3684,7 +4254,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // 发言人拿到的是一句说得清的拒绝。纯发图（正文为空）的正文写占位 `[图片]` / `[视频]`：
       // 老客户端与模型都读得出这里有东西
       const got = media !== undefined && media.length > 0 ? await intakeMedia(media) : null;
-      const mediaFields = got === null ? {} : { attachments: got.attachments, ...(got.videos.length > 0 ? { videos: got.videos } : {}) };
+      const mediaFields = got === null ? {} : { attachments: got.attachments, ...(got.videos.length > 0 ? { videos: got.videos } : {}), ...(got.files !== undefined && got.files.length > 0 ? { files: got.files } : {}) };
       if (got !== null && text.trim() === "") text = mediaPlaceholder(media ?? []);
 
       if (targets.length === 0) {
@@ -3854,7 +4424,12 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     receiveCollabDecision(e) {
       if (archived) return;
       const r = collabRequests.get(e.requestId);
-      if (r === undefined || r.decision !== null) return;
+      if (r === undefined) {
+        // 本地那条请求还没落（见 earlyCollabDecisions）：存着等它
+        earlyCollabDecisions.set(e.requestId, e);
+        return;
+      }
+      if (r.decision !== null) return;
       const { seq: _seq, sessionId: _sid, ts: _ts, ...rest } = e;
       notify(store.append({ ...rest, sessionId, ts: Date.now() }));
     },
@@ -3894,12 +4469,164 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       return { ok: true };
     },
 
+    // ── 群座位制（#1682，ADR-0376）────────────────────────────────────────────
+    seatMember(uid) {
+      return groupSeats === null ? null : groupSeats.some((s) => s.uid === uid);
+    },
+    seats() {
+      return groupSeats;
+    },
+    groupOwner() {
+      return groupOwnerUid;
+    },
+    seatLinesFor(seatUid, afterSeq) {
+      const seats = groupSeats ?? [];
+      if (afterSeq !== null) return mirrorLinesOf(store.load(sessionId, { afterSeq }), seatUid, seats);
+      // 新座位：带最后 SEAT_MIRROR_BACKFILL 句当背景（只算镜像得出来的那几种，不按事件条数截）
+      return mirrorLinesOf(store.load(sessionId), seatUid, seats).slice(-SEAT_MIRROR_BACKFILL);
+    },
+    receiveSeatReply({ seatUid, text, model, toUid, depth, worker, images, files }) {
+      if (archived || !(groupSeats ?? []).some((s) => s.uid === seatUid)) return; // 退群了：它最后那句不再进群
+      // 座位里画的图（#1682 出图）、做的文件（#1683）：座位的目录群里的人读不到（RLS 按团队/会话目录放行），在群的目录里再传一份，
+      // 传好了再落这句——先落的话手机先画出一张加载不出的图。传不上去的那份跳过，话照样进群
+      const port = opts.toolImages ?? null;
+      const hasImages = images !== undefined && images.length > 0;
+      const hasFiles = files !== undefined && files.length > 0;
+      if ((hasImages || hasFiles) && port !== null) {
+        return Promise.all([
+          hasImages ? publishToolImages(port, opts.workspaceId, sessionId, images, "generate_image").catch(() => [] as UserAttachmentRef[]) : Promise.resolve([] as UserAttachmentRef[]),
+          hasFiles
+            ? publishToolFiles({ upload: port.upload }, opts.workspaceId, sessionId, files).then((refs) => withFileText(refs, files)).catch(() => [] as ChatFileRef[])
+            : Promise.resolve([] as ChatFileRef[]),
+        ]).then(([attachments, fileRefs]) => {
+          if (text === "" && attachments.length === 0 && fileRefs.length === 0) return; // 只有图 / 文件却一份都没传上去：不落一条空话
+          landSeatReply({ seatUid, text, model, toUid, depth, worker, attachments, files: fileRefs });
+        });
+      }
+      if (text === "") return;
+      landSeatReply({ seatUid, text, model, toUid, depth, worker, attachments: [] });
+    },
+    receiveSeatDelta(seatUid, text) {
+      if (archived || !(groupSeats ?? []).some((s) => s.uid === seatUid)) return;
+      opts.onDelta?.(seatAgentId(seatUid), "content", text);
+    },
+    receiveSeatRequest(e) {
+      if (archived || groupSeats === null || seatRequests.has(e.requestId)) return;
+      const { seq: _seq, sessionId: _sid, ...rest } = e;
+      notify(store.append({ ...rest, sessionId, ts: Date.now() }));
+      // 推给座位主人：10 分钟会过期，不推等于没卡
+      const target = alertTargetFor(e.seatUid, seatAgentId(e.seatUid));
+      if (target !== null) {
+        opts.alert?.(e.seatUid, "mention", {
+          title: title || "群聊", subtitle: `${e.fromName} 想让${e.agentName}动手`, body: alertBody(`${e.summary}——点开看看，接不接你定。`), target,
+        });
+      }
+    },
+    receiveSeatDecision(e) {
+      if (archived || groupSeats === null) return;
+      const r = seatRequests.get(e.requestId);
+      if (r === undefined || r.decision !== null) return;
+      const { seq: _seq, sessionId: _sid, ...rest } = e;
+      notify(store.append({ ...rest, sessionId, ts: Date.now() }));
+    },
+    async decideSeat(requestId, byUid, decision, note) {
+      if (groupSeats === null) return { ok: false, message: "这不是座位制的群" };
+      const r = seatRequests.get(requestId);
+      if (r === undefined) return { ok: false, message: "没有这张卡" };
+      if (byUid !== r.event.seatUid) return { ok: false, message: `只有${r.event.ownerName}能点` };
+      if (r.decision !== null) return { ok: false, message: r.decision === "expired" ? "这张卡已经过期了" : "已经答过了" };
+      if (archived) return { ok: false, message: "这个群已经收尾了" };
+      const hub = opts.seatHub ?? null;
+      if (hub === null) return { ok: false, message: "服务这边还没接上，稍后再点" };
+      const refused = await hub.decide({ group: { workspaceId: opts.workspaceId, sessionId }, seatUid: r.event.seatUid, requestId, byUid, decision, ...(note !== undefined && note !== "" ? { note } : {}) });
+      return refused === null ? { ok: true } : { ok: false, message: refused };
+    },
+    setSeatPolicy(byUid, byName, policy) {
+      if (groupSeats === null) return { ok: false, message: "这不是座位制的群" };
+      if (archived) return { ok: false, message: "这个群已经收尾了" };
+      const mine = groupSeats.find((s) => s.uid === byUid);
+      if (mine === undefined) return { ok: false, message: "你已经不在这个群里了" };
+      if ((mine.policy === "open" ? "open" : "ask") === policy) return { ok: true, changed: false };
+      const next: GroupSeat[] = groupSeats.map((s) => (s.uid !== byUid ? s : policy === "open" ? { ...s, policy: "open" as const } : { uid: s.uid, name: s.name, agentName: s.agentName }));
+      logSeats(next, groupOwnerUid, byUid, byName);
+      return { ok: true, changed: true };
+    },
+    leaveGroup(uid, name) {
+      if (groupSeats === null) return { ok: false, message: "这不是座位制的群" };
+      if (archived) return { ok: false, message: "这个群已经收尾了" };
+      if (!groupSeats.some((s) => s.uid === uid)) return { ok: false, message: "你已经不在这个群里了" };
+      const before = groupSeats;
+      const next = before.filter((s) => s.uid !== uid);
+      // 群主走了转给最早入群的人（拍板 K）；最后一个人也走了，群主那一格留着他（群就此没人能说话）
+      const owner = uid === groupOwnerUid ? (nextGroupOwner(before, uid) ?? groupOwnerUid) : groupOwnerUid;
+      logSeats(next, owner, uid, name);
+      expireSeatCardsOf(uid);
+      return { ok: true, seats: next, groupOwnerUid: owner };
+    },
+    upgradeToSeats(people) {
+      if (chatKind !== "group" || groupSeats !== null || archived || people.length === 0) return false;
+      logSeats(reseat([], people), opts.ownerUid, "", "");
+      logChat("system", "系统", SEAT_UPGRADE_TEXT, false);
+      return true;
+    },
+    seatDeliver({ lines, opening }) {
+      if (!isSeat) return "这不是群座位";
+      if (archived) return "这个座位已经收了";
+      // ① 补上下文：群里上次之后的每一句（不收紧监督——见 tightenSupervision）。叫醒它的那一句不镜像（它就是下面的开场白），
+      //    排在它之后的（群里已经又说了几句）镜像在开场白之后，顺序与群里一致
+      const mirrorLine = (l: MirrorLine): void => {
+        notify(store.append({ sessionId, ts: Date.now(), type: "chat_message", fromUid: l.fromUid, label: safeSpeakerLabel(l.label, l.fromUid), content: l.content, mention: false, mirror: { seq: l.seq }, ...(l.files !== undefined ? { files: l.files } : {}) }));
+      };
+      for (const l of lines) if (l.seq < opening.groupSeq) mirrorLine(l);
+      const after = lines.filter((l) => l.seq > opening.groupSeq);
+      const label = safeSpeakerLabel(opening.fromName, opening.fromUid);
+      // 叫醒它的那一句带的文件（#1683：「@我的管理员 看看这份合同」）跟着开场白进来——那一句本身不镜像
+      const openingFiles = lines.find((l) => l.seq === opening.groupSeq)?.files;
+      // ② 别人使唤、这个座位设了全部放行：直接授权，不弹卡
+      if (opening.fromUid !== opts.ownerUid && opening.policy === "open") {
+        seatGrant({ fromUid: opening.fromUid, fromName: label, ask: opening.text, via: "policy", groupSeq: opening.groupSeq, ...(opening.tz !== undefined ? { tz: opening.tz } : {}), ...(openingFiles !== undefined ? { files: openingFiles } : {}) });
+        for (const l of after) mirrorLine(l);
+        return null;
+      }
+      // ③ 主人自己 @ = 主人的一轮；别人 @ = 客人轮（只有 ask_owner）。别家管理员来的带 relay（深度）
+      const msg = store.append({
+        sessionId, ts: Date.now(), type: "user_message", content: `[${label}]: ${opening.text}`, fromUid: opening.fromUid, mentions: [ADMIN_AGENT_ID],
+        mirror: { seq: opening.groupSeq },
+        ...(opening.tz !== undefined ? { tz: opening.tz } : {}),
+        ...(openingFiles !== undefined ? { files: openingFiles } : {}),
+        ...(opening.depth > 0 ? { relay: { fromAgentId: seatAgentId(opening.fromUid), depth: opening.depth } } : {}),
+      }) as UserMessageEvent;
+      notify(msg);
+      for (const l of after) mirrorLine(l);
+      if (coordinator.enqueue({ agentId: ADMIN_AGENT_ID, fromUid: opening.fromUid, opening: msg }) === "start_turn") startDrain();
+      return null;
+    },
+    seatDecide(requestId, byUid, decision, note) {
+      if (!isSeat) return "这不是群座位";
+      if (byUid !== opts.ownerUid) return `只有${seatOwnerName()}能点`;
+      const r = seatRequests.get(requestId);
+      if (r === undefined) return "没有这张卡";
+      if (r.decision !== null) return r.decision === "expired" ? "这张卡已经过期了" : "已经答过了";
+      if (archived) return "这个座位已经收了";
+      const n = note !== undefined && note.trim() !== "" ? note.trim() : undefined;
+      seatDecision(requestId, decision, byUid, n);
+      const tz = requestTz.get(requestId);
+      if (decision === "accepted") seatGrant({ fromUid: r.event.fromUid, fromName: r.event.fromName, ask: r.event.ask, via: "card", ...(tz !== undefined ? { tz } : {}), ...(n !== undefined ? { note: n } : {}) });
+      else seatSays(seatDeclinedText(seatOwnerName(), seatLangOf(r.event.ask), n));
+      return null;
+    },
+    mirroredUpTo() {
+      return isSeat ? lastMirroredSeq(store.load(sessionId)) : null;
+    },
+
     chat() {
       if (chatKind === null) return null;
       return {
         kind: chatKind,
         agentIds: [...(chatRoster ?? [])],
         humans: [...(chatHumans ?? [])],
+        // 座位制的群（#1682）：座位名单与群主
+        ...(groupSeats !== null ? { seats: groupSeats.map((x) => ({ ...x })), groupOwnerUid } : {}),
         // 外联（#1441）：给界面画「某某的智能体」+ 通话还在不在；名字是建会话时记进日志的快照
         ...(isOutreach && createdCloud?.outreach !== undefined
           ? { outreach: { ownerName: createdCloud.outreach.ownerName, active: activeOutreach(outreachFold) !== null } }
@@ -3926,6 +4653,20 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     },
 
     async updateChatRoster(byUid, patch, byName) {
+      // 座位制的群（#1682）：只改人（座位跟着人走），智能体那一半不存在
+      if (groupSeats !== null) {
+        const before = groupSeats;
+        if (patch.agentIds !== undefined && patch.agentIds.length > 0) return { kind: "not_group", message: "这个群里每个人都带着自己的管理员，不用拉智能体" };
+        const humansNow = (): ChatHuman[] => (groupSeats ?? []).filter((x) => x.uid !== groupOwnerUid).map((x) => ({ uid: x.uid, name: x.name }));
+        if (patch.seatPeople === undefined) return { kind: "ok", agentIds: [], humans: humansNow(), changed: false };
+        const next = reseat(before, patch.seatPeople);
+        const same = next.length === before.length && next.every((x, i) => x.uid === before[i]!.uid && x.name === before[i]!.name && x.agentName === before[i]!.agentName);
+        if (same) return { kind: "ok", agentIds: [], humans: humansNow(), changed: false };
+        const owner = next.some((x) => x.uid === groupOwnerUid) ? groupOwnerUid : (next[0]?.uid ?? groupOwnerUid);
+        logSeats(next, owner, byUid, byName);
+        for (const gone of before.filter((x) => !next.some((y) => y.uid === x.uid))) expireSeatCardsOf(gone.uid);
+        return { kind: "ok", agentIds: [], humans: humansNow(), changed: true };
+      }
       // 私密车道（#1461）：带进 / 带走几只智能体就是改智能体那一半名单；它不收人（车道里只有主人）
       // 车道（#1461 / #1523）：客人名单只可能是 [朋友]（公开）或 []（仅我可见）——daemon 把 chat_update.facing 折成这两种，别人进不来
       if (isPair && patch.humans !== undefined && patch.humans.some((h) => h.uid !== pairFacts?.peerUid)) {
@@ -3934,7 +4675,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // 管理员那条私聊（#1571 第二轮第 3 条）：管理员可以把专员拉进来——名单长了它还是「与管理员的私聊」（admin 恒排第一，
       // 0037 的唯一索引按 agent_ids[1] 认它），只是多了几只在场。别的私聊照旧改不了
       const adminDm = chatKind === "dm" && opts.approveAll && (chatRoster ?? [])[0] === ADMIN_AGENT_ID;
-      if (chatKind !== "group" && !isPair && !adminDm) {
+      // 座位（#1682）：管理员把自家专员拉进来干活，同管理员私聊（admin 恒排第一）——真模型模拟里 bring_agent 在这里一直被拒
+      if (chatKind !== "group" && !isPair && !adminDm && !isSeat) {
         return {
           kind: "not_group",
           message: chatKind === "dm" ? "私聊的名单改不了" : chatKind === "outreach" ? "这条线的名单改不了" : "这不是一条群聊",

@@ -24,8 +24,8 @@ describe("cs_say 的 mentions（#928 切片 1a）", () => {
 });
 
 describe("cs 协议 6（#957 第三批：stop 帧与 say/approve/stop 回执）", () => {
-  it("CS_PROTOCOL_VERSION === 30（…；30 = #1666 应用连接卡 app_connect；15 = #1103 Git 凭据；16 = #1107 流式 delta 帧；17 = #1163 语音通话 call 帧；18 = #1140 wiki_write 帧；19 = #1233 say.voice；20 = #1280 聊天；21 = #1393 群里的真人；22 = #1441 外联会话与语音合成的票；23 = #1461 好友私聊里的私密车道；24 = #1491 say.media 图片视频引用；25 = #1523 共享车道；26 = #1533 公开智能体 onBehalf；27 = #1534 人打人电话 human_call；28 = #1520 选人卡 pick_friend；29 = #1656 健康三帧 caps/health_query/health_result）", () => {
-    expect(CS_PROTOCOL_VERSION).toBe(30);
+  it("CS_PROTOCOL_VERSION === 31（…；31 = #1682 群座位 seat_decide/seat_policy/group_leave；30 = #1666 应用连接卡 app_connect；15 = #1103 Git 凭据；16 = #1107 流式 delta 帧；17 = #1163 语音通话 call 帧；18 = #1140 wiki_write 帧；19 = #1233 say.voice；20 = #1280 聊天；21 = #1393 群里的真人；22 = #1441 外联会话与语音合成的票；23 = #1461 好友私聊里的私密车道；24 = #1491 say.media 图片视频引用；25 = #1523 共享车道；26 = #1533 公开智能体 onBehalf；27 = #1534 人打人电话 human_call；28 = #1520 选人卡 pick_friend；29 = #1656 健康三帧 caps/health_query/health_result）", () => {
+    expect(CS_PROTOCOL_VERSION).toBe(31);
   });
 
   it("delta 下行往返（协议 16，#1107）", () => {

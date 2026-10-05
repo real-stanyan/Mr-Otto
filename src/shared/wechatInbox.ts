@@ -29,6 +29,7 @@ import type { CloudSessionRow } from "./supabaseWorkspacesApi.js";
 import type { WorkspaceMentionRow } from "./workspaceMentions.js";
 import { ADMIN_AGENT_ID } from "./workspaceAgents.js";
 import { agentNameOf, labelOf } from "./workspaceView.js";
+import { seatUidOf } from "./groupSeats.js";
 import type { WorkspaceSnapshot } from "./workspaces.js";
 
 // ── 时间 ─────────────────────────────────────────────────────────────
@@ -200,6 +201,9 @@ function speakerPrefix(ws: WorkspaceSnapshot, last: SessionLast, selfUid: string
   const who = lastSpeakerOf(last.from);
   if (who === null) return "";
   if (who.kind === "human") return who.uid === selfUid ? "" : `${labelOf(ws, who.uid)}: `;
+  // 座位制的群（#1682）：各家管理员的 id 是 seat:<uid>，不在名册里——写成「继爸的管理员」，不写一串 id
+  const seatUid = seatUidOf(who.agentId);
+  if (seatUid !== null) return `${seatUid === selfUid ? "我" : labelOf(ws, seatUid)}的管理员: `;
   return `${agentNameOf(ws, who.agentId)}: `;
 }
 

@@ -1,10 +1,10 @@
 // scripts/runtime-deploy.mjs —— 云 runtime 部署链（ADR-0199，task-11）。
 //
 // 四步：① esbuild 把 daemon.ts 打成单文件 ESM bundle（原生绑定 external 出去）
-// ② 生成瘦身版 deploy-package.json（只含 better-sqlite3 + dockerode 两个原生件，
+// ② 生成瘦身版 deploy-package.json（只含打不进 bundle 的那几个外置件，
 // 版本从根 package.json 现读，不在这再手抄一遍） ③ rsync 推送 dist/ +
 // deploy-package.json + Dockerfile 到 $RUNTIME_SSH:/opt/otto-runtime/ ④ 远端
-// npm install --omit=dev（只装两个原生件）+ docker build 沙箱镜像 + 重启 systemd。
+// npm install --omit=dev（只装外置件）+ 补装字体+ docker build 沙箱镜像 + 重启 systemd。
 //
 // RUNTIME_SSH 是唯一必需的 env（形如 user@host）：这是一次会真的连真机、真的
 // 重启线上服务的操作，没有目标地址直接打印用法退出 2，不往下走半步。
@@ -78,14 +78,14 @@ await build({
   target: "node24",
   format: "esm",
   outfile: "services/runtime/dist/runtime.mjs",
-  external: ["better-sqlite3", "dockerode"],
+  external: STAMP_TARGETS.runtime.external,
   banner: {
     js: "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);",
   },
 });
 console.log(`[runtime-deploy] 写好 ${OUTFILE}`);
 
-// ── ② deploy-package.json：只含两个原生件，版本从根 package.json 现读 ──────
+// ── ② deploy-package.json：只含外置件，版本从根 package.json 现读 ──────
 // 现读而不是写死：根 package.json 升级 better-sqlite3/dockerode 版本时，
 // 这份瘦身清单不该在这再手动同步一遍——同一个事实只留一处（根 package.json）。
 //
@@ -95,7 +95,8 @@ console.log(`[runtime-deploy] 写好 ${OUTFILE}`);
 // 硬约束，逼着桌面安装包一直背着 dockerode/docker-modem/ssh2。这台 VPS 的
 // `npm install` 只看这份生成出来的清单，dep 在根里挂哪一栏与它无关。
 const rootPkg = JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8"));
-const NATIVE_DEPS = ["better-sqlite3", "dockerode"];
+// 与 esbuild 的 external 同一份（deploy-stamp.mjs 的 STAMP_TARGETS.runtime.external）：外置的每一个远端都要装
+const NATIVE_DEPS = STAMP_TARGETS.runtime.external;
 const deployDeps = {};
 for (const dep of NATIVE_DEPS) {
   const version = rootPkg.dependencies?.[dep] ?? rootPkg.devDependencies?.[dep];
@@ -128,7 +129,11 @@ runOrDie("rsync", ["-avz", ...sshOpt, DEPLOY_PKG, `${RUNTIME_SSH}:${REMOTE_DIR}/
 runOrDie("rsync", ["-avz", ...sshOpt, DOCKERFILE, `${RUNTIME_SSH}:${REMOTE_DIR}/sandbox/Dockerfile`], "rsync Dockerfile");
 
 // ── ④ 远端：装原生件 + 建沙箱镜像 + 重启服务（brief 给的命令逐字照用）──────
-const remoteCmd = `cd ${REMOTE_DIR} && npm install --omit=dev && docker build -t otto-sandbox ./sandbox && sudo systemctl restart otto-runtime`;
+// 字体（#1683）：create_document 印中日韩 / 泰文 / 天城文 PDF 要系统字体（services/runtime/src/systemFonts.ts）。
+// 装过就跳过；sudo -n 不让输密码——装不上只打一行提示、不中断部署（缺字体时那种文字的 PDF 会让模型改做 Word）
+const FONT_PKGS = "fonts-noto-cjk fonts-noto-core fonts-dejavu-core";
+const fontCmd = `(dpkg -s ${FONT_PKGS} >/dev/null 2>&1 || sudo -n apt-get install -y --no-install-recommends ${FONT_PKGS} >/dev/null 2>&1 || echo "[runtime-deploy] 字体没装上：请手动 sudo apt-get install -y ${FONT_PKGS}")`;
+const remoteCmd = `cd ${REMOTE_DIR} && npm install --omit=dev && ${fontCmd} && docker build -t otto-sandbox ./sandbox && sudo systemctl restart otto-runtime`;
 runOrDie("ssh", ["-p", SSH_PORT, RUNTIME_SSH, remoteCmd], "远端部署命令");
 
 // ── ⑤ 自检：跑着的那个进程真的是这一份吗（#791，ADR-0258）────────────────

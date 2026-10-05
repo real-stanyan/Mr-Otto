@@ -12,7 +12,7 @@ import { Button, Field, Labeled } from "../ui.js";
 import { TimeWheel } from "./TimeWheel.js";
 
 type Kind = RoutineSchedule["kind"];
-const KINDS: { k: Kind; label: string }[] = [{ k: "once", label: "一次" }, { k: "daily", label: "每天" }, { k: "weekly", label: "每周" }, { k: "every", label: "时段内重复" }];
+const KINDS: { k: Kind; label: string }[] = [{ k: "once", label: "一次" }, { k: "daily", label: "每天" }, { k: "weekly", label: "每周" }, { k: "every", label: "时段内重复" }, { k: "monthly", label: "每月" }];
 /** every 的间隔档（#1659）：工具那边 5..720 都收，表单只给常用的几档 */
 const STEPS = [10, 15, 30, 60];
 const WEEK = ["一", "二", "三", "四", "五", "六", "日"];
@@ -77,6 +77,7 @@ export function RoutineEditDialog({ visible, initial, onSave, onDelete, onClose,
   const [days, setDays] = useState<number[]>(
     initial?.schedule.kind === "weekly" ? initial.schedule.days : initial?.schedule.kind === "every" ? initial.schedule.days ?? [1, 2, 3, 4, 5, 6, 7] : [1, 2, 3, 4, 5],
   );
+  const [monthDays, setMonthDays] = useState<number[]>(initial?.schedule.kind === "monthly" ? initial.schedule.days : [1]);
   const [tzOpen, setTzOpen] = useState(false);
   const [tzQuery, setTzQuery] = useState("");
   const [busy, setBusy] = useState(false);
@@ -88,8 +89,9 @@ export function RoutineEditDialog({ visible, initial, onSave, onDelete, onClose,
       kind === "once" ? { kind, at: `${date}T${time}` }
       : kind === "daily" ? { kind, time }
       : kind === "every" ? { kind, minutes: step, from: time, to: until, ...(days.length === 7 ? {} : { days }) }
+      : kind === "monthly" ? { kind, days: monthDays, time }
       : { kind, days, time },
-    [kind, date, time, days, step, until],
+    [kind, date, time, days, step, until, monthDays],
   );
   const problem = routineErrors({ title, instruction, schedule, tz });
   const parsed = problem === null ? parseRoutineSchedule(schedule) : null;
@@ -140,7 +142,7 @@ export function RoutineEditDialog({ visible, initial, onSave, onDelete, onClose,
           <Labeled label="到点要做什么" hint="它会照这段话去做" error={null}>
             <Field value={instruction} onChangeText={edit(setInstruction)} placeholder="比如：看一眼昨天的销售报表，有异常告诉我" maxLength={ROUTINE_INSTRUCTION_MAX} variant="dialog" multiline editable={!busy} />
           </Labeled>
-          <View style={{ flexDirection: "row", gap: 8 }}>
+          <View style={{ flexDirection: "row", gap: 8, flexWrap: "wrap" }}>
             {KINDS.map((k) => <Chip key={k.k} label={k.label} on={kind === k.k} onPress={() => edit(setKind)(k.k)} />)}
           </View>
           {kind === "once" ? (
@@ -152,6 +154,13 @@ export function RoutineEditDialog({ visible, initial, onSave, onDelete, onClose,
             <View style={{ flexDirection: "row", gap: 6, flexWrap: "wrap" }}>
               {WEEK.map((w, i) => (
                 <Chip key={w} label={w} on={days.includes(i + 1)} onPress={() => edit(setDays)(days.includes(i + 1) ? days.filter((x) => x !== i + 1) : [...days, i + 1].sort((a, b) => a - b))} />
+              ))}
+            </View>
+          ) : null}
+          {kind === "monthly" ? (
+            <View style={{ flexDirection: "row", gap: 6, flexWrap: "wrap" }}>
+              {Array.from({ length: 31 }, (_, i) => i + 1).map((d) => (
+                <Chip key={d} label={d === 31 ? "月底" : String(d)} on={monthDays.includes(d)} onPress={() => edit(setMonthDays)(monthDays.includes(d) ? monthDays.filter((x) => x !== d) : [...monthDays, d].sort((a, b) => a - b))} />
               ))}
             </View>
           ) : null}

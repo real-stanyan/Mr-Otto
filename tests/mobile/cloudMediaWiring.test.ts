@@ -32,10 +32,11 @@ describe("ChatScreen", () => {
 
 describe("Bubbles", () => {
   const src = read("mobile/src/chat/Bubbles.tsx");
-  it("mine / human 行的 media 画成 MediaBubble，bucket 是 chat-media，正文是占位时不画字", () => {
+  it("mine / human / agent 行的 media 画成 MediaBubble，bucket 是 chat-media，正文是占位时不画字", () => {
     expect(src).toMatch(/<MediaBubble media=\{media\} bucket=\{CHAT_MEDIA_BUCKET\} \/>/);
     expect(src).toMatch(/mediaBodyHidden\(paragraphs\[0\] \?\? "", media\)/);
-    expect(src.match(/\{\.\.\.\(row\.media !== undefined \? \{ media: row\.media \} : \{\}\)\}/g)?.length).toBe(2);
+    // 三行：我 / 别人 / 智能体（#1682 起它那一侧也带 media：工具出的图；#1683 起还有它交出来的文件）
+    expect(src.match(/\{\.\.\.\(row\.media !== undefined \? \{ media: row\.media \} : \{\}\)\}/g)?.length).toBe(3);
   });
 });
 

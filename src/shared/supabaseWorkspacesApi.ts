@@ -487,9 +487,12 @@ function toEpochMs(iso: string): number {
   return Number.isNaN(ts) ? 0 : ts;
 }
 
-/** 上面那道 filter 之后 pair 不会走到这里；这一层只是让类型说同一句话（缺席 = 团队会话 / 读不到） */
-function notPair(k: "dm" | "group" | "outreach" | "pair" | undefined): "dm" | "group" | "outreach" | null {
-  return k === undefined || k === "pair" ? null : k;
+/** 不进任何清单的几种会话：私密车道（#1461）、群座位（#1682，ADR-0376：每位成员主场里管理员替他坐的那一席，后台会话） */
+const HIDDEN_CHAT_KINDS: ReadonlySet<string> = new Set(["pair", "seat"]);
+
+/** 上面那道 filter 之后 pair / seat 不会走到这里；这一层只是让类型说同一句话（缺席 = 团队会话 / 读不到） */
+function notPair(k: "dm" | "group" | "outreach" | "pair" | "seat" | undefined): "dm" | "group" | "outreach" | null {
+  return k === undefined || k === "pair" || k === "seat" ? null : k;
 }
 
 /** 这个团队里的云会话清单，成员在籍即可见（RLS wss_select_member，同
@@ -512,8 +515,9 @@ export async function listCloudSessions(
   // 群里的客人（#1393）只有群聊会有：一条群聊都没有时不打这一趟
   const groupIds = rows.filter((r) => chats.get(r.id)?.chatKind === "group").map((r) => r.id);
   const guests = await fetchSessionGuests(client, groupIds);
-  // 私密车道（#1461）不进任何清单：它画在和那位朋友的私聊页里，不是一条可以单独点进去的聊天
-  return rows.filter((r) => chats.get(r.id)?.chatKind !== "pair").map((r) => {
+  // 私密车道（#1461）不进任何清单：它画在和那位朋友的私聊页里，不是一条可以单独点进去的聊天。
+  // 群座位（#1682）同理：管理员在某个群里干活的后台会话，人不进它的房
+  return rows.filter((r) => !HIDDEN_CHAT_KINDS.has(chats.get(r.id)?.chatKind ?? "")).map((r) => {
     const humans = guests.get(r.id);
     return {
       id: r.id,
@@ -573,8 +577,9 @@ export async function listGuestChats(client: SupabaseClient, selfUid: string): P
     id: string; workspace_id: string; publisher_uid: string; title: string; archived: boolean; updated_at: string;
     agent_ids?: unknown; last_ts?: unknown; last_excerpt?: unknown; last_from?: unknown; chat_kind?: unknown;
   }[];
-  // 公开给我的车道（#1523）也让我成了那条会话的客人，但它画在和那位朋友的私聊页里，不是一条可以单独点进去的群
-  const chats = rows.filter((r) => r.chat_kind !== "pair");
+  // 公开给我的车道（#1523）也让我成了那条会话的客人，但它画在和那位朋友的私聊页里，不是一条可以单独点进去的群。
+  // 只认群与外联（#1682）：座位 / 车道 / 认不出来的新种类一律不列——列出来就会被当成一个群画、点进去是别人的后台会话
+  const chats = rows.filter((r) => r.chat_kind === "group" || r.chat_kind === "outreach");
   const guests = await fetchSessionGuests(client, chats.map((r) => r.id));
   const owners = await fetchProfiles(client, chats.map((r) => r.publisher_uid)).catch(() => new Map<string, MemberProfile>());
   return Promise.all(
@@ -636,19 +641,20 @@ export async function listAgentChats(
 async function fetchCloudChats(
   client: SupabaseClient,
   workspaceId: string,
-): Promise<Map<string, { chatKind: "dm" | "group" | "outreach" | "pair"; agentIds: string[] }>> {
+): Promise<Map<string, { chatKind: "dm" | "group" | "outreach" | "pair" | "seat"; agentIds: string[] }>> {
   const res = await client
     .from("workspace_sessions")
     .select("id,chat_kind,agent_ids")
     .eq("workspace_id", workspaceId)
     .eq("kind", "cloud");
-  const map = new Map<string, { chatKind: "dm" | "group" | "outreach" | "pair"; agentIds: string[] }>();
+  const map = new Map<string, { chatKind: "dm" | "group" | "outreach" | "pair" | "seat"; agentIds: string[] }>();
   if (res.error) return map;
   const rows = (res.data ?? []) as { id: string; chat_kind: unknown; agent_ids: unknown }[];
   for (const r of rows) {
     // outreach（#1441）也要读出来：不读的话它落成 null = 团队会话，主人的列表会把它当成一条团队会话列出来
     // pair（#1461）同理：私密车道属于那位朋友的私聊页，不认出来它就会以团队会话的样子混进列表
-    if (r.chat_kind !== "dm" && r.chat_kind !== "group" && r.chat_kind !== "outreach" && r.chat_kind !== "pair") continue;
+    // seat（#1682）同理：座位是后台会话，不认出来就会以团队会话的样子混进列表
+    if (r.chat_kind !== "dm" && r.chat_kind !== "group" && r.chat_kind !== "outreach" && r.chat_kind !== "pair" && r.chat_kind !== "seat") continue;
     const ids = Array.isArray(r.agent_ids) && r.agent_ids.every((x) => typeof x === "string") ? (r.agent_ids as string[]) : [];
     map.set(r.id, { chatKind: r.chat_kind, agentIds: ids });
   }

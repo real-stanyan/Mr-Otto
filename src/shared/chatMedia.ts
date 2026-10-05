@@ -34,16 +34,27 @@ export const AUDIO_MIME_TYPES = ["audio/mp4"] as const;
 export type ImageMime = (typeof IMAGE_MIME_TYPES)[number];
 export type VideoMime = (typeof VIDEO_MIME_TYPES)[number];
 export type AudioMime = (typeof AUDIO_MIME_TYPES)[number];
+/** 文件（#1683）：聊天里发的文档，也是智能体做出来交给人的那份（create_document / send_file）。
+    只收这几种——都是手机能直接点开看的（系统自带预览认得），也是 anydoc 转得出文字、模型读得到的 */
+export const DOCX_MIME = "application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+export const XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+export const PPTX_MIME = "application/vnd.openxmlformats-officedocument.presentationml.presentation";
+export const DOC_MIME_TYPES = ["application/pdf", DOCX_MIME, XLSX_MIME, PPTX_MIME, "text/plain", "text/csv", "text/markdown"] as const;
+export type DocMime = (typeof DOC_MIME_TYPES)[number];
+/** 一个文件最多 20MB：够一份带图的 PPT；bucket 的上限是 50MB（视频），这个数只在客户端与 runtime 判 */
+export const FILE_MAX_BYTES = 20 * 1024 * 1024;
+/** 文件名（不含路径）最长多少个字符 */
+export const FILE_NAME_MAX = 120;
 /** 一条语音最长 60 秒（照微信）、最多 5MB（60 秒 AAC 远不到）、转写最多 2000 字 */
 export const AUDIO_MAX_MS = 60_000;
 export const AUDIO_MAX_BYTES = 5 * 1024 * 1024;
 export const TRANSCRIPT_MAX_CHARS = 2000;
 
-export const MEDIA_PLACEHOLDER = { image: "[图片]", video: "[视频]", audio: "[语音]" } as const;
+export const MEDIA_PLACEHOLDER = { image: "[图片]", video: "[视频]", audio: "[语音]", file: "[文件]" } as const;
 
 export interface ChatMediaItem {
   /** `audio`（#1492，ADR-0351）= 一条语音消息：m4a 一段 + 时长 + 发送方那一刻的转写（可缺席） */
-  kind: "image" | "video" | "audio";
+  kind: "image" | "video" | "audio" | "file";
   /** bucket 里的对象键（不含 bucket 名） */
   path: string;
   mediaType: string;
@@ -58,9 +69,15 @@ export interface ChatMediaItem {
   /** 只有语音有：发送方录的时候听写出来的字（#1492，维护者拍板：接收方「转文字」不再识别一遍，用这一份）。
       缺席 = 没听清 / 没开听写 */
   transcript?: string;
+  /** 只有文件有（#1683）：给人看的文件名（发送方那一刻的名字，剥过路径）。对象键里是 uuid / 哈希，名字只在这一格 */
+  name?: string;
 }
 
-const EXT: Record<string, string> = { "image/jpeg": "jpg", "image/png": "png", "video/mp4": "mp4", "video/quicktime": "mov", "audio/mp4": "m4a" };
+const EXT: Record<string, string> = {
+  "image/jpeg": "jpg", "image/png": "png", "video/mp4": "mp4", "video/quicktime": "mov", "audio/mp4": "m4a",
+  "application/pdf": "pdf", [DOCX_MIME]: "docx", [XLSX_MIME]: "xlsx", [PPTX_MIME]: "pptx",
+  "text/plain": "txt", "text/csv": "csv", "text/markdown": "md",
+};
 
 export function extForMime(mime: string): string | null {
   return EXT[mime] ?? null;
@@ -75,6 +92,37 @@ function isAudioMime(m: unknown): m is AudioMime {
 
 function isVideoMime(m: unknown): m is VideoMime {
   return typeof m === "string" && (VIDEO_MIME_TYPES as readonly string[]).includes(m);
+}
+
+export function isDocMime(m: unknown): m is DocMime {
+  return typeof m === "string" && (DOC_MIME_TYPES as readonly string[]).includes(m);
+}
+
+/** 按扩展名认文件的格式（手机的文件选择器有时给的 mimeType 是空的或系统私有的 UTI）。认不出回 null = 发不了 */
+export function docMimeForName(name: string): DocMime | null {
+  const ext = /\.([A-Za-z0-9]+)$/.exec(name)?.[1]?.toLowerCase();
+  if (ext === undefined) return null;
+  for (const m of DOC_MIME_TYPES) if (EXT[m] === ext || (ext === "markdown" && m === "text/markdown")) return m;
+  return null;
+}
+
+/** 文件名过一道：剥路径、去控制字符、收空白、截到上限（保住扩展名）。剥完是空的回 null */
+export function cleanFileName(raw: string): string | null {
+  const base = raw.split(/[\\/]/).pop() ?? "";
+  let s = base.replace(/[\u0000-\u001f\u007f]/g, "").replace(/\s+/g, " ").trim();
+  if (s === "" || s === "." || s === "..") return null;
+  if (s.length > FILE_NAME_MAX) {
+    const dot = s.lastIndexOf(".");
+    const ext = dot > 0 && s.length - dot <= 10 ? s.slice(dot) : "";
+    s = `${s.slice(0, FILE_NAME_MAX - ext.length - 1)}…${ext}`;
+  }
+  return s;
+}
+
+/** 文件大小写成人话：KB 起步（「0 B」读起来像坏了），MB 留一位小数 */
+export function fileSizeLabel(bytes: number): string {
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
 /** 对象键：非空、不以 / 开头、没有空段 / . / ..、没有反斜杠与控制字符。只防「指到别处」，不管命名风格 */
@@ -108,6 +156,13 @@ function parseItem(raw: unknown): ChatMediaItem | null {
     if (o.transcript !== undefined && (typeof o.transcript !== "string" || o.transcript.length > TRANSCRIPT_MAX_CHARS)) return null;
     return { kind: "audio", ...base, durationMs: o.durationMs, ...(typeof o.transcript === "string" && o.transcript !== "" ? { transcript: o.transcript } : {}) };
   }
+  if (o.kind === "file") {
+    // 文件（#1683）：白名单格式、≤ 20MB、没有尺寸 / 时长 / 封面、名字过得了 cleanFileName 且就是清过的那个
+    if (!isDocMime(o.mediaType) || o.bytes > FILE_MAX_BYTES) return null;
+    if (o.width !== 0 || o.height !== 0 || o.durationMs !== undefined || o.poster !== undefined) return null;
+    if (typeof o.name !== "string" || cleanFileName(o.name) !== o.name) return null;
+    return { kind: "file", ...base, name: o.name };
+  }
   return null;
 }
 
@@ -124,8 +179,8 @@ export function parseChatMedia(raw: unknown): ChatMediaItem[] | null {
     if (it === null) return null;
     out.push(it);
   }
-  // 一段语音就是一条消息（同 planMediaMessages 一条一个）：跟图片拼不成九宫格、两段语音也没有排法
-  if (out.some((it) => it.kind === "audio") && out.length !== 1) return null;
+  // 一段语音就是一条消息（同 planMediaMessages 一条一个）：跟图片拼不成九宫格、两段语音也没有排法。文件同理（#1683）
+  if (out.some((it) => it.kind === "audio" || it.kind === "file") && out.length !== 1) return null;
   return out;
 }
 
@@ -142,8 +197,11 @@ export function parseDmMedia(raw: unknown, sender: string, recipient: string): C
   return ok ? items : null;
 }
 
-/** 纯媒体消息的正文。全是图片 [图片]、全是视频 [视频]、语音 [语音]、混着的都写（今天的界面不会发出混的，见 planMediaMessages） */
-export function mediaPlaceholder(items: readonly Pick<ChatMediaItem, "kind">[]): string {
+/** 纯媒体消息的正文。全是图片 [图片]、全是视频 [视频]、语音 [语音]、混着的都写（今天的界面不会发出混的，见 planMediaMessages）。
+    文件（#1683）写「[文件] 名字」：会话列表第二行、推送正文、老客户端读的都是 body，带上名字它们才说得清发的是哪份 */
+export function mediaPlaceholder(items: readonly Pick<ChatMediaItem, "kind" | "name">[]): string {
+  const file = items.find((i) => i.kind === "file");
+  if (file !== undefined) return file.name !== undefined ? `${MEDIA_PLACEHOLDER.file} ${file.name}` : MEDIA_PLACEHOLDER.file;
   const img = items.some((i) => i.kind === "image");
   const vid = items.some((i) => i.kind === "video");
   const aud = items.some((i) => i.kind === "audio");
@@ -201,7 +259,7 @@ export function chatMediaPath(workspaceId: string, sessionId: string, sha256hex:
  * 一次挑了好几样，拆成几条消息：**图片攒成一条**（满 9 张换下一条），**视频一条一个**——一条消息里一段视频
  * 加几张图在气泡里没有好的排法，而视频是要点开看的东西。顺序跟挑的顺序走：每条消息出现在它第一样的位置。
  */
-export function planMediaMessages<T extends { kind: "image" | "video" | "audio" }>(picks: readonly T[]): T[][] {
+export function planMediaMessages<T extends { kind: "image" | "video" | "audio" | "file" }>(picks: readonly T[]): T[][] {
   const out: T[][] = [];
   let open: T[] | null = null;
   for (const p of picks) {
@@ -267,7 +325,7 @@ export function videoDurationLabel(ms: number): string {
 
 /** 手机上准备好、还没传的一样：本机文件 URI + 传完要写进 media 的那几格 */
 export interface PreparedMedia {
-  kind: "image" | "video" | "audio";
+  kind: "image" | "video" | "audio" | "file";
   uri: string;
   mediaType: string;
   bytes: number;
@@ -278,6 +336,8 @@ export interface PreparedMedia {
   posterUri?: string;
   /** 语音（#1492）：录的时候听写出来的字，随消息一起走 */
   transcript?: string;
+  /** 文件（#1683）：给人看的名字（cleanFileName 过的） */
+  name?: string;
 }
 
 export interface MediaSendDeps<T> {
@@ -342,6 +402,9 @@ export async function sendMediaMessage<T>(
         // 语音（#1492）：时长 + 转写（有才带，截到上限）
         const t = (it.transcript ?? "").slice(0, TRANSCRIPT_MAX_CHARS);
         media.push({ ...base, durationMs: it.durationMs ?? 0, ...(t !== "" ? { transcript: t } : {}) });
+      } else if (it.kind === "file") {
+        // 文件（#1683）：没有尺寸，带名字
+        media.push({ ...base, width: 0, height: 0, name: cleanFileName(it.name ?? "") ?? `file.${extOrThrow(it.mediaType)}` });
       } else {
         media.push(base);
       }
@@ -381,10 +444,11 @@ export function mediaBubbleBox(width: number, height: number, max = 200, min = 8
 // 而 RLS 只管「读的人读不读得到」，不管「这条消息引用的是不是自己目录里的对象」（同 parseDmMedia 那条纪律）。
 // runtime 下载后还会复算 sha256 对一遍：客户端声称的哈希就是对象名，名不副实的对象一个字节不进附件库。
 export interface ChatMediaRef {
-  kind: "image" | "video";
+  /** `file`（#1683）= 一份文档：runtime 下载、复算哈希、转成文字给模型读、原件存进工作区 inbox/ */
+  kind: "image" | "video" | "file";
   /** 64 位小写十六进制。对象名就是它 */
   sha256: string;
-  mediaType: ImageMime | VideoMime;
+  mediaType: ImageMime | VideoMime | DocMime;
   bytes: number;
   /** 0 = 系统没给（同 ChatMediaItem） */
   width: number;
@@ -393,6 +457,8 @@ export interface ChatMediaRef {
   durationMs?: number;
   /** 视频封面（JPEG，同一个 bucket 的另一个对象）。缺席 = 没抽出来：模型只能听说有一段视频 */
   poster?: { sha256: string; bytes: number };
+  /** 只有文件有，必填（cleanFileName 过的） */
+  name?: string;
 }
 
 const DIM_MAX = 16_384;
@@ -420,6 +486,12 @@ function parseMediaRef(raw: unknown): ChatMediaRef | null {
     }
     return ref;
   }
+  if (o.kind === "file") {
+    if (!isDocMime(o.mediaType) || !isCountUpTo(o.bytes, FILE_MAX_BYTES) || o.width !== 0 || o.height !== 0) return null;
+    if (o.durationMs !== undefined || o.poster !== undefined) return null;
+    if (typeof o.name !== "string" || cleanFileName(o.name) !== o.name) return null;
+    return { kind: "file", sha256: o.sha256, mediaType: o.mediaType, bytes: o.bytes, width: 0, height: 0, name: o.name };
+  }
   return null;
 }
 
@@ -441,6 +513,8 @@ export function parseChatMediaRefs(raw: unknown): ChatMediaRef[] | null {
   }
   const videos = out.filter((r) => r.kind === "video").length;
   if (videos > 1 || (videos === 1 && out.length !== 1)) return null;
+  // 文件也是一条一个（#1683，同 planMediaMessages）
+  if (out.some((r) => r.kind === "file") && out.length !== 1) return null;
   return out;
 }
 
@@ -462,6 +536,8 @@ export function chatMediaItemsOf(
   sessionId: string,
   attachments: readonly { id: string; mediaType: string; bytes: number; name?: string; width?: number; height?: number }[] | undefined,
   videos: readonly { id: string; mediaType: string; bytes: number; width: number; height: number; durationMs: number; poster?: string }[] | undefined,
+  /** 文件（#1683）：人发来的、智能体做出来的。形状同 events 的 ChatFileRef */
+  files?: readonly { id: string; name: string; mediaType: string; bytes: number }[] | undefined,
 ): ChatMediaItem[] {
   const out: ChatMediaItem[] = [];
   const posters = new Set<string>();
@@ -490,5 +566,31 @@ export function chatMediaItemsOf(
       ...(poster !== null ? { poster } : {}),
     });
   }
+  for (const f of files ?? []) {
+    if (!isDocMime(f.mediaType)) continue;
+    const path = pathOf(f.id, f.mediaType);
+    if (path === null) continue;
+    out.push({ kind: "file", path, mediaType: f.mediaType, bytes: f.bytes, width: 0, height: 0, name: cleanFileName(f.name) ?? `file.${extForMime(f.mediaType) ?? "bin"}` });
+  }
   return out;
+}
+
+/**
+ * 模型要读的那几行（#1683）：人发来的文件。runtime 收下时已经把原件存进工作区、转出了文字（ChatFileRef.text），
+ * 转得出就整段给它（同桌面 composeUserText 那条「[用户附上文件…内容如下]」的口径）；转不出就说清为什么、原件在哪。
+ * 系统拼的行，不过 promptSafeBody（同 videoNoteForModel）。
+ */
+export function fileNoteForModel(
+  files: readonly { name: string; bytes: number; path?: string; text?: string; textError?: string }[],
+): string | null {
+  if (files.length === 0) return null;
+  return files
+    .map((f) => {
+      const where = f.path !== undefined ? `，原件存在工作区 ${f.path}` : "";
+      const head = `[发来文件「${f.name}」（${fileSizeLabel(f.bytes)}）${where}]`;
+      if (f.text !== undefined) return `${head}\n[文件内容如下]\n${f.text}`;
+      if (f.textError !== undefined) return `${head}\n[读不出文字：${f.textError}]`;
+      return head;
+    })
+    .join("\n");
 }

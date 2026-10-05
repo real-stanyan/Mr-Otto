@@ -1,9 +1,8 @@
 // 群聊（#1386，demo 的 groupsPage）：所有群一列——主场里你的群 + 有真人的群（团队里的每条会话）+ 别人拉你进去的群（#1393）；
-// 右上「+」发起群聊（智能体和朋友都能拉，#1393）。点一行进那个群。
+// 右上「+」发起群聊（#1682 起只拉朋友：每个人带着自己的管理员进来）。点一行进那个群。
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ScrollView, Text, View } from "react-native";
-import { CHAT_GROUP_CREATE_MIN } from "../../../src/shared/chatRoster.js";
 import { mixedGroupName } from "../../../src/shared/chatGuests.js";
 import { groupList } from "../../../src/shared/wechatInbox.js";
 import { cloudClient } from "../cloud/cloudClient.js";
@@ -36,7 +35,8 @@ export function GroupsScreen({ navigation }: Props) {
     () => groupList({ selfUid: home.selfUid ?? "", home: ws === null ? null : { ws, chats: home.chats, lasts: home.lasts }, teams: teams.teams, guests: teams.guests }),
     [home.selfUid, ws, home.chats, home.lasts, teams.teams, teams.guests],
   );
-  const canNew = ws !== null && ws.agents.length + invitable.length >= CHAT_GROUP_CREATE_MIN;
+  // 新群只拉朋友（#1682）：一位朋友都没有就建不了
+  const canNew = ws !== null && invitable.length > 0;
   useLayoutEffect(() => {
     navigation.setOptions({
       headerRight: () =>
@@ -62,7 +62,7 @@ export function GroupsScreen({ navigation }: Props) {
         ))}
         <Text style={{ fontSize: 13, lineHeight: 19, color: c.mutedForeground, padding: 16 }}>
           {list.length === 0 ? "还没有群。" : ""}
-          群里的智能体归群主管，干活走群主的额度。
+          每个人都带着自己的管理员，干活花它主人的额度。
         </Text>
       </ScrollView>
       {picker !== null && ws !== null ? (
@@ -71,24 +71,24 @@ export function GroupsScreen({ navigation }: Props) {
           visible={picker.visible}
           ws={ws}
           title="发起群聊"
-          lead="拉几位进来（智能体或朋友），凑够 2 位就能建。朋友让智能体动手要等你批。"
-          options={ws.agents.map((a) => a.agentId)}
-          min={CHAT_GROUP_CREATE_MIN}
+          lead="拉几位朋友进来。每个人都带着自己的管理员，@ 谁的管理员它就来帮忙。"
+          options={[]}
+          min={1}
           people={invitable}
           okLabel="建群"
           withName
           busy={busy}
           error={error}
-          onOk={(picked, name, pickedPeople) => {
+          onOk={(_picked, name, pickedPeople) => {
             setBusy(true);
             setError(null);
             const people = invitable.filter((p) => pickedPeople.includes(p.uid)).map((p) => ({ name: p.name }));
             cloudClient
               .create(ws.id, {
                 kind: "group",
-                name: mixedGroupName(ws, picked, people, name),
-                agentIds: picked,
-                ...(pickedPeople.length > 0 ? { humans: pickedPeople } : {}),
+                name: mixedGroupName(ws, [], people, name),
+                agentIds: [],
+                humans: pickedPeople,
               })
               .then(async (r) => {
                 if (!r.ok) throw new Error(r.message);

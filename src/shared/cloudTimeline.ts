@@ -126,7 +126,9 @@ export function hiddenFromCloudTimeline(e: SessionEvent): boolean {
     e.type === "routine_note" ||
     e.type.startsWith("task_") ||
     e.type === "app_card" ||
-    e.type === "collab_request" || e.type === "collab_decision" || // 镜像卡（#1605）：手机画，桌面不画 // 应用卡（#1591）：手机画，桌面不画 // 任务（#1571）：手机画卡，桌面等微信式布局 // 定时任务没跑成的灰条（#1283）：手机画，桌面等微信式布局
+    e.type === "collab_request" || e.type === "collab_decision" ||
+    e.type === "seat_request" || e.type === "seat_decision" || // 群座位的点头卡（#1682）：手机画，桌面不画
+    // 镜像卡（#1605）：手机画，桌面不画 // 应用卡（#1591）：手机画，桌面不画 // 任务（#1571）：手机画卡，桌面等微信式布局 // 定时任务没跑成的灰条（#1283）：手机画，桌面等微信式布局
     e.type === "outreach" || // 外联（#1441）：卡由手机端从日志里自己认，桌面不画
     e.type === "friend_pick" || // 选人卡（#1520）：手机端自己认，桌面不画
     e.type === "app_connect" || // 连接卡（#1666）：手机端自己认，桌面不画

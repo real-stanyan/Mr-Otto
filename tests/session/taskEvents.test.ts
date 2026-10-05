@@ -25,7 +25,7 @@ describe("任务事件的登记", () => {
   it("模型读到一句带 id 的系统话；标题从 task_created 回头找", () => {
     const base = { sessionId: "s", seq: 0, ts: 0, type: "session_created", workspace: "/work", cloud: { workspaceId: "w", chat: { kind: "dm" }, home: true } } as const;
     const msgs = deriveMessages([base, created, assigned]);
-    const users = msgs.filter((m) => m.role === "user").map((m) => m.content);
+    const users = msgs.filter((m) => m.role === "user").map((m) => String(m.content).replace(/\n（此刻：[^）]*（[^）]*））$/, ""));
     // promptSafe 会把全角引号折成半角的，所以只钉前缀与标题
     expect(users).toHaveLength(2);
     expect(users[0]).toMatch(/^\[任务 t_1\] admin建了任务.明天出游.$/);

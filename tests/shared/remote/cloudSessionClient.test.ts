@@ -3,7 +3,7 @@ import {
   createCloudSessionClient, deniedMessage,
   type CloudSessionClient, type CloudSessionClientDeps, type CloudSessionSummary,
 } from "../../../src/shared/remote/cloudSessionClient.js";
-import { BACKLOG_SKIP_MARKER, decodeCsUp, encodeCs, type CsDown, type CsUp, CS_PROTOCOL_VERSION } from "../../../src/shared/remote/cloudSession.js";
+import { BACKLOG_SKIP_MARKER, decodeCsUp, encodeCs, SEAT_NOTE_MAX, type CsDown, type CsUp, CS_PROTOCOL_VERSION } from "../../../src/shared/remote/cloudSession.js";
 import type { RemoteTransport } from "../../../src/shared/remote/transport.js";
 import type { ApprovalDecisionEvent, ApprovalRequestEvent, ChatMessageEvent, SessionEvent } from "../../../src/session/events.js";
 import type { ApprovalRequest, CloudSessionStatus } from "../../../src/shared/shellBridge.js";
@@ -1452,6 +1452,78 @@ describe("createCloudSessionClient — workspaceState（控制房）", () => {
     expect(settled).toBe(false);
     t.emitDown({ t: "chat_update_result", workspaceId: "w1", sessionId: "s1", ok: true });
     expect(await promise).toEqual({ ok: true, value: null });
+  });
+
+  // 协议 31（#1682）：座位制的群——点头卡、「别人使唤我的管理员」、退群三条控制房帧共用一条 seat_result
+  it("seatDecide：帧形状对，只认同一个 op + 会话 + requestId 的回执", async () => {
+    const h = harness();
+    const promise = h.client.seatDecide("w1", "s1", "r1", "accepted");
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    expect(t.decoded()[1]).toEqual({ t: "seat_decide", workspaceId: "w1", sessionId: "s1", requestId: "r1", decision: "accepted" });
+    t.emitDown({ t: "seat_result", workspaceId: "w1", sessionId: "s1", op: "decide", requestId: "别的卡", ok: true });
+    t.emitDown({ t: "seat_result", workspaceId: "w1", sessionId: "s1", op: "policy", ok: true });
+    let settled = false;
+    void promise.then(() => { settled = true; });
+    await tick();
+    expect(settled).toBe(false);
+    t.emitDown({ t: "seat_result", workspaceId: "w1", sessionId: "s1", op: "decide", requestId: "r1", ok: false, message: "这张卡已经过期了" });
+    expect(await promise).toEqual({ ok: false, message: "这张卡已经过期了" });
+  });
+
+  it("seatDecide 带附言：去首尾空白；空的不带；超过 SEAT_NOTE_MAX 字按字符截（emoji 不劈）", async () => {
+    const h = harness();
+    const first = h.client.seatDecide("w1", "s1", "r1", "declined", "  告诉她我那天上班 ");
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    expect(t.decoded()[1]).toEqual({ t: "seat_decide", workspaceId: "w1", sessionId: "s1", requestId: "r1", decision: "declined", note: "告诉她我那天上班" });
+    t.emitDown({ t: "seat_result", workspaceId: "w1", sessionId: "s1", op: "decide", requestId: "r1", ok: true });
+    expect(await first).toEqual({ ok: true, value: null });
+
+    const blank = h.client.seatDecide("w1", "s1", "r2", "accepted", "   ");
+    await tick();
+    const t2 = h.transports[1]!;
+    t2.emitPeer();
+    await tick();
+    expect(t2.decoded()[1]).toEqual({ t: "seat_decide", workspaceId: "w1", sessionId: "s1", requestId: "r2", decision: "accepted" });
+    t2.emitDown({ t: "seat_result", workspaceId: "w1", sessionId: "s1", op: "decide", requestId: "r2", ok: true });
+    await blank;
+
+    const long = h.client.seatDecide("w1", "s1", "r3", "accepted", "😀".repeat(SEAT_NOTE_MAX + 10));
+    await tick();
+    const t3 = h.transports[2]!;
+    t3.emitPeer();
+    await tick();
+    const frame = t3.decoded()[1] as { note?: string };
+    expect(Array.from(frame.note ?? "")).toHaveLength(SEAT_NOTE_MAX);
+    expect(frame.note).toBe("😀".repeat(SEAT_NOTE_MAX));
+    t3.emitDown({ t: "seat_result", workspaceId: "w1", sessionId: "s1", op: "decide", requestId: "r3", ok: true });
+    await long;
+  });
+
+  it("seatPolicy / groupLeave：帧形状对，回执按 op 认", async () => {
+    const h = harness();
+    const policy = h.client.seatPolicy("w1", "s1", "open");
+    await tick();
+    const t = h.transports[0]!;
+    t.emitPeer();
+    await tick();
+    expect(t.decoded()[1]).toEqual({ t: "seat_policy", workspaceId: "w1", sessionId: "s1", policy: "open" });
+    t.emitDown({ t: "seat_result", workspaceId: "w1", sessionId: "s1", op: "policy", ok: true });
+    expect(await policy).toEqual({ ok: true, value: null });
+
+    const leave = h.client.groupLeave("w1", "s1");
+    await tick();
+    const t2 = h.transports[1]!;
+    t2.emitPeer();
+    await tick();
+    expect(t2.decoded()[1]).toEqual({ t: "group_leave", workspaceId: "w1", sessionId: "s1" });
+    t2.emitDown({ t: "seat_result", workspaceId: "w1", sessionId: "s1", op: "leave", ok: false });
+    expect(await leave).toEqual({ ok: false, message: "没有退成" });
   });
 
   it("workspaceState：hello + workspace 发给第一个 host，workspace_state 回来就 resolve 并关连接", async () => {

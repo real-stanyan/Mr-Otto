@@ -26,7 +26,14 @@ export interface TurnCoordinator {
   pendingOpeningSeqs(): number[];
 }
 
-export function createTurnCoordinator(): TurnCoordinator {
+export interface TurnCoordinatorOptions {
+  /** 「同一个 job」怎么认（#1682，群座位）：缺席 = 同一只 agent 就算（改动前的口径）。座位里按 (智能体, 发起人, 开场白种类) 认——
+      别人的话另排一轮，不折进正在排的主人那一轮 */
+  sameJob?: (queued: TurnJob, incoming: TurnJob) => boolean;
+}
+
+export function createTurnCoordinator(options?: TurnCoordinatorOptions): TurnCoordinator {
+  const sameJob = options?.sameJob ?? ((q: TurnJob, j: TurnJob) => q.agentId === j.agentId);
   const queue: TurnJob[] = [];
   let running = false;
 
@@ -37,7 +44,7 @@ export function createTurnCoordinator(): TurnCoordinator {
       if (!job.agentId) return "logged_only";
       // 同一只已经在队里就不重复排。连点三下 @运营 不该跑三遍 —— 它这一轮
       // 开跑时读的是整份日志,三句话都在里面
-      if (queue.some((q) => q.agentId === job.agentId)) return "logged_only";
+      if (queue.some((q) => sameJob(q, job))) return "logged_only";
       queue.push(job);
       // **回 start_turn 时任务也已经在队里**:调用方开始 while (nextJob()) 排空,
       // 不是拿着手上这个 job 去跑。两种写法差一个 job,而那正是最容易错的地方

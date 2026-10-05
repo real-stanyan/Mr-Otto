@@ -204,6 +204,8 @@ function pendingAfter(
       case "app_card":
       case "collab_request":
       case "collab_decision":
+      case "seat_request":
+      case "seat_decision":
         // 回电（#1411）：云会话专属、模型不可见，不占上下文
         break;
       case "executor_changed":

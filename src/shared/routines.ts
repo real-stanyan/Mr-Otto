@@ -9,7 +9,10 @@ export type RoutineSchedule =
   | { kind: "weekly"; days: number[]; time: string }
   /** 时段内每隔 N 分钟（#1659 第二轮）：from 那一刻起、每 minutes 一次、不晚于 to；days 缺席 = 每天。
       不跨夜（from < to）。盯盘这类「营业时间里每 10 分钟看一眼」原来要拆成十几条 daily，一条就够 */
-  | { kind: "every"; minutes: number; from: string; to: string; days?: number[] };
+  | { kind: "every"; minutes: number; from: string; to: string; days?: number[] }
+  /** 每月几号（#1682 日常能力：交房租、还信用卡、发工资）。days 是 1..31；那个月没有这一天（2 月 30 号、
+      小月 31 号）就落在当月最后一天——「每月 31 号」读作「每月月底」 */
+  | { kind: "monthly"; days: number[]; time: string };
 
 export type RoutineStatus = "done" | "skipped_quota" | "missed" | "failed";
 
@@ -29,6 +32,8 @@ export interface RoutineRow {
   createdBy: "user" | "agent";
   createdAt: number;
   updatedAt: number;
+  /** 到点在哪条会话里跑（#1682）：群座位里定的提醒回那个座位（管理员的话因此回到群里）。缺席 / null = 那只的私聊（改动前的口径） */
+  sessionId?: string | null;
 }
 
 export const ROUTINE_TITLE_MAX = 40;
@@ -105,7 +110,15 @@ export function parseRoutineSchedule(v: unknown): RoutineSchedule {
     if (days.some((d) => !(d >= 1 && d <= 7))) throw new Error("days 里只能是 1..7（1 = 周一 … 7 = 周日）");
     return days.length === 7 ? { kind: "every", minutes: o.minutes, from: o.from, to: o.to } : { kind: "every", minutes: o.minutes, from: o.from, to: o.to, days };
   }
-  throw new Error("kind 只能是 once / daily / weekly / every");
+  if (o.kind === "monthly") {
+    if (typeof o.time !== "string" || !TIME_RE.test(o.time)) throw new Error("time 要写成 HH:mm（两位小时，24 小时制）");
+    if (!Array.isArray(o.days)) throw new Error("monthly 的 days 要是数组，写几号（1..31；31 = 月底）");
+    const days = [...new Set(o.days.map((d) => (typeof d === "number" && Number.isInteger(d) ? d : NaN)))].sort((a, b) => a - b);
+    if (days.length === 0) throw new Error("monthly 至少选一天");
+    if (days.some((d) => !(d >= 1 && d <= 31))) throw new Error("monthly 的 days 里只能是 1..31（31 = 月底）");
+    return { kind: "monthly", days, time: o.time };
+  }
+  throw new Error("kind 只能是 once / daily / weekly / every / monthly");
 }
 
 /** 表单 / 工具共用的整条校验：第一条毛病先说；都好回 null */
@@ -196,11 +209,32 @@ export function nextRunAt(schedule: RoutineSchedule, tz: string, afterMs: number
     return at > afterMs ? at : null;
   }
   if (schedule.kind === "every") return nextEveryRunAt(schedule, tz, afterMs);
+  if (schedule.kind === "monthly") return nextMonthlyRunAt(schedule, tz, afterMs);
   const { hh, mm } = parseTime(schedule.time);
   const today = zonedParts(afterMs, tz);
   for (let i = 0; i <= 8; i++) {
     const day = addDays(today, i);
     if (schedule.kind === "weekly" && !schedule.days.includes(day.weekday)) continue;
+    const cand = wallClockToUtc({ y: day.y, m: day.m, d: day.d, hh, mm }, tz);
+    if (cand > afterMs) return cand;
+  }
+  return null;
+}
+
+/** 那个月有几天（按 UTC 日历算，与时区无关） */
+function daysInMonth(y: number, m: number): number {
+  return new Date(Date.UTC(y, m, 0)).getUTCDate();
+}
+
+/** monthly 的下一跳：逐天往后看两个多月，当天是「选中的几号」或「月底且选了比月底还大的号」就命中 */
+function nextMonthlyRunAt(s: Extract<RoutineSchedule, { kind: "monthly" }>, tz: string, afterMs: number): number | null {
+  const { hh, mm } = parseTime(s.time);
+  const today = zonedParts(afterMs, tz);
+  for (let i = 0; i <= 64; i++) {
+    const day = addDays(today, i);
+    const last = daysInMonth(day.y, day.m);
+    const hit = s.days.includes(day.d) || (day.d === last && s.days.some((d) => d > last));
+    if (!hit) continue;
     const cand = wallClockToUtc({ y: day.y, m: day.m, d: day.d, hh, mm }, tz);
     if (cand > afterMs) return cand;
   }
@@ -241,6 +275,7 @@ export function formatInTz(ts: number, tz: string): string {
 export function scheduleText(schedule: RoutineSchedule, tz: string): string {
   if (schedule.kind === "daily") return `每天 ${schedule.time} · ${tz}`;
   if (schedule.kind === "weekly") return `每周${schedule.days.map((d) => WEEKDAY_CN[d] ?? "?").join("、")} ${schedule.time} · ${tz}`;
+  if (schedule.kind === "monthly") return `每月${schedule.days.map((d) => (d === 31 ? "月底" : `${d} 号`)).join("、")} ${schedule.time} · ${tz}`;
   if (schedule.kind === "every") {
     const when = schedule.days === undefined ? "每天" : `每周${schedule.days.map((d) => WEEKDAY_CN[d] ?? "?").join("、")}`;
     const step = schedule.minutes % 60 === 0 ? `${schedule.minutes / 60} 小时` : `${schedule.minutes} 分钟`;

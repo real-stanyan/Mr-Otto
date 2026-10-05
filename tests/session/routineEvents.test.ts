@@ -25,7 +25,7 @@ describe("routine 事件的登记（#1283）", () => {
     expect(hiddenFromCloudTimeline(opening)).toBe(true);
     const created = { sessionId: "s", seq: 0, ts: 0, type: "session_created", workspace: "/work", cloud: { workspaceId: "w", chat: { kind: "dm" }, home: true } } as const;
     const msgs = deriveMessages([created, opening, note]);
-    expect(msgs.filter((m) => m.role === "user").map((m) => m.content)).toEqual(["【定时任务到点】…"]);
+    expect(msgs.filter((m) => m.role === "user").map((m) => String(m.content).replace(/\n（此刻：[^）]*（[^）]*））$/, ""))).toEqual(["【定时任务到点】…"]);
     expect(JSON.stringify(msgs)).not.toContain("早报");
     expect(JSON.stringify(msgs)).not.toContain("r1");
   });

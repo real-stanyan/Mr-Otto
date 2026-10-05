@@ -3,6 +3,8 @@
 // 点一下打开全屏的 MediaViewer（图片可左右翻，视频在那里播）。
 //
 // 「发送中」的本地气泡（PendingMediaBubble）画本机文件，压一层半透明、底下一行进度；失败那条一行原因 +「重试」「删除」。
+// 文件（#1683）画成文件卡（FileBubble），一份一张、竖着排：人发的一条消息只带一份，但工具那一行（tool_result）
+// 可以同时交出几份文件和几张图——文件卡排在上面，图照旧走九宫格 / 看大图那一套（看大图的翻页里不放文件）。
 // 不画新的颜色：底色取 c.card / c.muted，字取 c.mutedForeground / c.destructive / c.brand（同私聊里「重试」那一行）。
 import { useState } from "react";
 import { Image, Pressable, Text, View } from "react-native";
@@ -13,6 +15,7 @@ import { Icon } from "../wx/Icon.js";
 import { retryMediaUrl, useMediaUrl } from "./mediaUrls.js";
 import { MediaViewer } from "./MediaViewer.js";
 import { AudioBubble, AudioPendingBar } from "./AudioBubble.js";
+import { FileBubble, PendingFileCard } from "./FileBubble.js";
 
 const CELL = 80;
 const GAP = 4;
@@ -77,6 +80,16 @@ function RemoteTile({ path, bucket, width, height }: { path: string | undefined;
 /** `bucket`：私聊是 dm-media（默认），云会话是 chat-media（#1491） */
 export function MediaBubble({ media, bucket = DM_MEDIA_BUCKET, mine = false }: { media: ChatMediaItem[]; bucket?: string; mine?: boolean }) {
   const [open, setOpen] = useState<number | null>(null);
+  const files = media.filter((m) => m.kind === "file");
+  if (files.length > 0) {
+    const visual = media.filter((m) => m.kind !== "file");
+    return (
+      <View style={{ gap: 6, alignItems: mine ? "flex-end" : "flex-start" }}>
+        {files.map((f) => <FileBubble key={f.path} item={f} bucket={bucket} />)}
+        {visual.length > 0 ? <MediaBubble media={visual} bucket={bucket} mine={mine} /> : null}
+      </View>
+    );
+  }
   const single = media.length === 1 ? media[0] : undefined;
   // 语音（#1492）：一条消息就一段，自己一种气泡（点播、底下「转文字」），不进看图的那一套
   if (single !== undefined && single.kind === "audio") return <AudioBubble item={single} bucket={bucket} mine={mine} />;
@@ -125,6 +138,7 @@ export function PendingMediaBubble({ items, state, progress, error, onRetry, onD
   const single = items.length === 1 ? items[0] : undefined;
   const tile = (p: PreparedMedia, w: number, h: number, key?: string) => {
     if (p.kind === "audio") return <AudioPendingBar key={key} durationMs={p.durationMs ?? 0} dim={state === "sending"} />;
+    if (p.kind === "file") return <PendingFileCard key={key} item={p} sending={state === "sending"} />;
     const uri = p.kind === "image" ? p.uri : p.posterUri;
     return (
       <View key={key} style={{ opacity: state === "sending" ? 0.6 : 1 }}>

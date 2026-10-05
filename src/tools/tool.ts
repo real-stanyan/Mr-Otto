@@ -33,6 +33,17 @@ export interface ToolImage {
   mimeType: string;
 }
 
+/** 工具交给人的一份文件（#1683，create_document / send_file）。同 ToolImage：字节到中间件为止，
+    传进 Storage、换成 ref 才进日志（tool_result.files）。没装那层中间件时就地丢弃——
+    所以交文件的工具只在中间件在场时才挂（不然模型说「发给你了」而人什么都没收到） */
+export interface ToolFile {
+  data: Uint8Array;
+  /** DOC_MIME_TYPES 之一 */
+  mimeType: string;
+  /** 给人看的名字 */
+  name: string;
+}
+
 /** 工具调用里套着的那次模型调用的账（#1084）。绝大多数工具不烧钱、没有这个字段；
     generate_image 那种「工具内部又打了一次模型 API」的才带——那笔钱的载体是
     tool_result（它不产生 assistant_message），不带的话日志里查不到这次花费
@@ -76,6 +87,6 @@ export interface Tool {
     world: ExecutionWorld,
     ctx?: ToolRunContext
   ): Promise<
-    string | { output: string; concludesTurn?: true; images?: readonly ToolImage[]; billing?: ToolBilling }
+    string | { output: string; concludesTurn?: true; images?: readonly ToolImage[]; files?: readonly ToolFile[]; billing?: ToolBilling }
   >;
 }

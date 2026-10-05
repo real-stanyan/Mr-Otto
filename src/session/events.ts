@@ -5,6 +5,7 @@ import type { ModelLane } from "../shared/modelLane.js";
 import type { MemoryTarget } from "../shared/memoryStore.js";
 import type { ResidueSnapshot, ResidueItem, CleanupResult } from "../shared/residue.js";
 import type { ModelErrorClass } from "../model/errorClass.js";
+import type { GroupSeat } from "../shared/groupSeats.js";
 
 /** 所有事件共享的信封 */
 export interface SessionEventBase {
@@ -30,6 +31,8 @@ export interface UserMessageEvent extends SessionEventBase {
   attachments?: UserAttachmentRef[];
   /** 云会话里发的视频（#1491）。可选 = 旧日志照常重放 */
   videos?: ChatVideoRef[];
+  /** 云会话里发的文件（#1683）：PDF / Word / Excel / PPT / 文本。可选 = 旧日志照常重放 */
+  files?: ChatFileRef[];
   /** 文本文件附件(全文快照,同 skill_invoked 语义:日志自包含,原文件改/删
       不影响重放)。结构化存而不内联进 content——content 保持纯用户正文,
       UI 才能把文件渲染成卡片而不是摊开全文;模型投影时(deriveMessages)
@@ -68,6 +71,9 @@ export interface UserMessageEvent extends SessionEventBase {
       读它时用 `"agentId" in e` 这个 union 判据侧路，这里补上声明让它成为
       一等字段，不用再侧路） */
   agentId?: string;
+  /** 群座位（#1682，ADR-0376）：这句开场白对应群日志里的哪一句（座位据它知道镜像到哪儿了，那一句不再重复镜像）。
+      缺席 = 不是群里送来的（旧日志照常重放） */
+  mirror?: { seq: number };
   /** 云会话群聊（#928 / #932）：这句话是哪个成员说的。**只在 runtime 落的
       user_message 上出现**——本机会话没有"别人"，缺席 = 本机操作者/旧日志。
       有了它，渲染层判"这句是不是我说的"不用再拿 `[label]: ` 前缀跟自己的
@@ -114,7 +120,7 @@ export interface UserMessageEvent extends SessionEventBase {
       这条没有。桌面照旧藏。同样不进协议位
       friend_relay（#1655）：朋友在外联里让管理员带话，落在主人的管理员私聊里，受监督；owner_reply（#1655）：主人的回话落回外联，起一轮让管理员转告朋友。
       app_connected / app_declined（#1666）：连接卡的结局，算主人亲口（只有主人点得出来）。*/
-  greeting?: "voice_call" | "new_agent" | "callback" | "outreach" | "outreach_report" | "admin_intro" | "pair_call_summary" | "routine" | "dnd_report" | "collab_accept" | "escalation" | "friend_relay" | "owner_reply" | "app_connected" | "app_declined";
+  greeting?: "voice_call" | "new_agent" | "callback" | "outreach" | "outreach_report" | "admin_intro" | "pair_call_summary" | "routine" | "dnd_report" | "collab_accept" | "escalation" | "friend_relay" | "owner_reply" | "app_connected" | "app_declined" | "seat_grant";
   /** 这句话是**在语音通话里说出来的**（#1233）。缺席 = 打字打的 / 旧日志。
       **只是记号**：起 turn、排队、护栏、接力链首、派活全都不看它，模型投影
       （deriveMessages）读都不读——对模型来说这就是一条普通的用户消息，和从前
@@ -179,6 +185,25 @@ export interface ChatVideoRef {
   poster?: string;
 }
 
+/** 聊天里的一份文件（#1683）：人发来的，或智能体做出来交给人的（create_document / send_file）。
+    本体在 Storage 的 `chat-media/<团队>/<会话>/<hex>.<ext>`（id 的 hex 就是对象名，同 ChatVideoRef），客户端自己签名去开。
+    人发来的那份 runtime 收下时还会：原件存进工作区（`path`）、转成文字（`text`，≤ 100KB，**快照语义**同 UserTextFile——
+    日志自包含，原件后来改了删了不影响重放）。转不出的写 `textError`（扫描件 PDF、加密、太大）。
+    智能体交出去的那份三格都不带：它是给人看的，模型那一轮的事实在 tool_result 的 output 里 */
+export interface ChatFileRef {
+  id: string;        // "sha256:<hex>"，对象名
+  /** 给人看的名字（cleanFileName 过的） */
+  name: string;
+  mediaType: string; // DOC_MIME_TYPES 之一
+  bytes: number;
+  /** 原件在工作区里的路径（人发来的那份才有） */
+  path?: string;
+  /** 转出来的文字（Markdown）。模型投影读它 */
+  text?: string;
+  /** 转不出文字的原因（人话） */
+  textError?: string;
+}
+
 /** 模型发出的一次工具调用请求（不是事件，是 AssistantMessageEvent 的组成部分） */
 export interface ToolCallRequest {
   id: string;      // 调用唯一 id：审批、结果都靠它对号
@@ -234,6 +259,16 @@ export interface AssistantMessageEvent extends SessionEventBase {
       截掉的那一截原样放这里——日志仍然说得清模型那一刻吐了什么，而投影（模型上下文 /
       气泡 / 最后一句 / 语音）只读 content。缺席 = 没截过（正常回复 / 本机会话 / 旧日志） */
   trimmed?: string;
+  /** 群座位制的群里（#1682）：这句是某家管理员手下的专员（L1）说的——群里折叠成一行，署名「名字（谁的专员）」。
+      缺席 = 管理员自己说的 / 不是座位制的群（旧日志照常重放） */
+  worker?: { agentId: string; name: string };
+  /** 这句回话带的图（#1682 出图）：群座位制的群里，某家管理员在自己座位里画的图跟着它的回话进群——
+      图的 ref 与 user_message.attachments 同一个形状（id = `sha256:<hex>`，对象在 chat-media 的这条会话目录下）。
+      **模型不读**（deriveMessages 不折它：图是给人看的，画图那一侧的 tool_result.images 才是那一轮的事实）。
+      缺席 = 没带图（旧日志 / 本机会话照常重放） */
+  attachments?: UserAttachmentRef[];
+  /** 这句回话带的文件（#1683）：同上一格，座位里做出来的文件跟着回话进群。模型不读。缺席 = 没带 */
+  files?: ChatFileRef[];
   /** 这条是哪只工作区 agent 干的（#928）。**缺席 = 单 agent 会话**——旧日志、
       本机会话、云会话在多智能体上线前落的那些，全在这一档，照常重放。
       落盘由 engine 的 env() 统一供料，不是每个 append 点各写一遍 */
@@ -288,6 +323,10 @@ export interface ToolResultEvent extends SessionEventBase {
       可选 = 旧日志无此字段照样重放（schema 向后兼容硬规则）。
       图丢了不该炸时间线 —— 同 ADR-0009 对用户附件的取舍，UI 退成一行缺图提示 */
   images?: UserAttachmentRef[];
+  /** 这次调用交给人的文件（#1683，create_document / send_file）：只记 ref，本体在 Storage 的 chat-media
+      （手机够不着 VPS 的磁盘，同 images 那条「传一份进 Storage」）。传上去由中间件做（硬规则：工具不碰 fs / 网络）。
+      可选 = 旧日志照常重放 */
+  files?: ChatFileRef[];
   /** 这次工具调用里套着的那次模型调用的账（#1084）：generate_image 走网关出图，
       钱扣在网关那边（usage_event 有行），本机的账也得能从日志求和——它的载体
       只能是这条 tool_result（出图不产生 assistant_message）。四格与
@@ -367,7 +406,10 @@ export interface RouteChangedEvent extends SessionEventBase {
 export interface CloudSessionFacts {
   workspaceId: string;
   /** 这是一条聊天（#1280）：私聊或群聊。缺席 = 团队会话（旧日志照常重放） */
-  chat?: { kind: "dm" | "group" | "outreach" | "pair" | "admins" };
+  chat?: { kind: "dm" | "group" | "outreach" | "pair" | "admins" | "seat" };
+  /** 这是一条群座位（#1682，ADR-0376）：成员 `ownerName` 在群 `groupSessionId`（建在 `groupWorkspaceId` 那个主场）里的座位，
+      他的管理员在这里干活。缺席 = 不是座位（旧日志照常重放）。群名是建座位那一刻的快照 */
+  seat?: { groupWorkspaceId: string; groupSessionId: string; ownerName: string; groupTitle: string };
   /** 这是一条私密车道（#1461 P1，ADR-0346）：主人带进与朋友私聊的智能体住的那条会话。提示词里「你在帮谁、
       旁边在和谁聊、对方看不看得到你」从它投影；缺席 = 不是私密车道（旧日志照常重放）。名字是建会话那一刻的快照 */
   pair?: { ownerName: string; peerUid: string; peerName: string; facing: "self" | "both" };
@@ -809,6 +851,37 @@ export interface CollabDecisionEvent extends SessionEventBase {
   ignorable: true;
 }
 
+/** 群座位的点头卡（#1682，ADR-0376）：别人在群里使唤某人的管理员、要动手时，它调 ask_owner 落这一条。座位那份是正本，
+    群里那份是镜像（同 requestId，界面画卡、群主点）。模型不可见（它自己的 tool_result 已经说了） */
+export interface SeatRequestEvent extends SessionEventBase {
+  type: "seat_request";
+  requestId: string;
+  /** 被使唤的那个座位（管理员的主人） */
+  seatUid: string;
+  ownerName: string;
+  agentName: string;
+  /** 使唤它的人（别家管理员来协作时 = 那家的主人） */
+  fromUid: string;
+  fromName: string;
+  /** 那人的原话 */
+  ask: string;
+  /** 管理员写的：要做什么、会动到什么 */
+  summary: string;
+  expiresTs: number;
+  ignorable: true;
+}
+/** 点头卡的结局（#1682）：主人接 / 不接、10 分钟没人点、或座位设了全部放行。座位落、镜像回群 */
+export interface SeatDecisionEvent extends SessionEventBase {
+  type: "seat_decision";
+  requestId: string;
+  seatUid: string;
+  decision: "accepted" | "declined" | "expired";
+  byUid: string | null;
+  /** 主人点的时候附的一句（#1682）：「告诉她我那天上班」。缺席 = 没附 */
+  note?: string;
+  ignorable: true;
+}
+
 /** 应用卡（#1591，spec §3.3）：应用专员 build_app 打出一版，聊天里一张卡「打开」。不带 agentId（同 task_*），谁打的写 byAgentId；
     模型不可见（它自己的 tool_result 已经说了）；手机画卡，桌面不画 */
 export interface AppCardEvent extends SessionEventBase {
@@ -908,6 +981,11 @@ export interface ChatRosterChangedEvent extends SessionEventBase {
   type: "chat_roster_changed";
   agents: { agentId: string; name: string }[];
   humans?: { uid: string; name: string }[];
+  /** 座位制的群（#1682，ADR-0376）：群里每个人（含群主）一个座位，带着他的管理员与「别人使唤我」的策略。
+      **在场 = 座位制**；缺席 = 旧群 / 私聊 / 团队会话（旧日志照常重放）。顺序 = 入群顺序 */
+  seats?: GroupSeat[];
+  /** 座位制的群主（#1682）：缺席 = 工作区所有者（建群的人）。群主退群转给最早入群的人时写这一格 */
+  groupOwnerUid?: string;
   byUid?: string;
   byName?: string;
   ignorable: true;
@@ -1339,6 +1417,13 @@ export interface ChatMessageEvent extends SessionEventBase {
       逐字相同；可选 = 旧日志照常重放 */
   attachments?: UserAttachmentRef[];
   videos?: ChatVideoRef[];
+  /** 群里随手发的文件（#1683），同 user_message.files */
+  files?: ChatFileRef[];
+  /** 座位里镜像进来的群聊行（#1682，ADR-0376）：群日志里的 seq。座位据它知道镜像到哪儿了；在场的这一句不收紧监督
+      （它是群里的背景，不是对这一轮的指令）。缺席 = 不是镜像（旧日志照常重放） */
+  mirror?: { seq: number };
+  /** 座位制的群里这句话 @ 了哪几个座位（#1682，`seat:<uid>`）：群里不起 turn，这一格只给界面高亮与送达记账。缺席 = 没 @ */
+  seatMentions?: string[];
   /** 这句话是在语音通话里说出来的（#1233）。语义与落点逐字同
       `UserMessageEvent.voice`，两个事件都要有是因为**一条语音发言落成哪一个
       取决于有没有人接**：`say()` 解出 targets 非空走 user_message，空则只落
@@ -1433,6 +1518,8 @@ export type SessionEvent =
   | TaskCollabEvent
   | CollabRequestEvent
   | CollabDecisionEvent
+  | SeatRequestEvent
+  | SeatDecisionEvent
   | AppCardEvent
   | OutreachEvent
   | FriendPickEvent
@@ -1513,6 +1600,8 @@ const KNOWN_EVENT_TYPES_MAP: Record<SessionEvent["type"], true> = {
   task_collab: true,
   collab_request: true,
   collab_decision: true,
+  seat_request: true,
+  seat_decision: true,
   app_card: true,
   outreach: true,
   friend_pick: true,

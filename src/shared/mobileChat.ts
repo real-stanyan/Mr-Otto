@@ -14,6 +14,8 @@ import { escalationNoteText } from "./escalation.js";
 import { chatMediaItemsOf, type ChatMediaItem } from "./chatMedia.js";
 import { parseDispatchOpening, type DispatchCardView } from "./dispatchQuote.js";
 import { friendPickFoldOf, friendPickStatus, type FriendPickStatus } from "./friendPick.js";
+import { seatCardsOf, seatCardStateAt, type GroupSeat, type SeatCard } from "./groupSeats.js";
+import { knownSeats, seatCardView, seatNotesOf, seatRosterLineParts, seatWorkerTag, workerFoldText } from "./groupSeatsView.js";
 import { healthReadLineText, READ_HEALTH_TOOL } from "./health.js";
 import {
   approvalCardTitle, assistantLabel, callOffsetText, chatRosterLineParts, cloudEmptyState, decisionLineText, hiddenFromCloudTimeline,
@@ -80,8 +82,9 @@ export type ChatRow =
   | { kind: "mine"; key: string; ts: number; text: string; media?: ChatMediaItem[]; dispatch?: DispatchCardView }
   /** 别的人说的（团队群里的成员）：左侧带头像与名字。uid 缺席（旧日志）时头像退回首字 */
   | { kind: "human"; key: string; ts: number; uid: string | null; name: string; text: string; media?: ChatMediaItem[] }
-  /** 它说的：按空行拆成几个气泡（splitBubbles，ADR-0266） */
-  | { kind: "agent"; key: string; ts: number; agentId: string; name: string; paragraphs: string[] }
+  /** 它说的：按空行拆成几个气泡（splitBubbles，ADR-0266）。`media`（#1682 出图）= 它给的图：工具画出来的那几张单独成一行
+      （paragraphs 为空，在 tool_result 的位置），群座位制的群里跟着管理员的回话一起进群的挂在那句上 */
+  | { kind: "agent"; key: string; ts: number; agentId: string; name: string; paragraphs: string[]; media?: ChatMediaItem[] }
   /** 旁白（系统说的一句、engine 注的后台任务 / 护栏、接力线）与出错 */
   | { kind: "note"; key: string; ts: number; text: string; tone: "muted" | "error"; detail: string | null }
   /** 群的名单变了那一行（A3）：居中，名字那几格带 agentId（左边画脸）；几格拼起来就是那句话本身 */
@@ -143,22 +146,51 @@ export type ChatRow =
     collaboratorName: string | null;
   }
   /** 应用卡（#1591）：专员 build_app 打出一版，一张卡「打开」。在 app_card 的位置 */
-  | { kind: "app"; key: string; ts: number; appId: string; version: number; name: string; icon: string; note: string; byName: string };
+  | { kind: "app"; key: string; ts: number; appId: string; version: number; name: string; icon: string; note: string; byName: string }
+  /** 点头卡（#1682，ADR-0376）：座位制的群里别人使唤某人的管理员、要动手时的那张。一张卡一行，在 seat_request 的位置；
+      状态从日志折（seat_decision 不单独占行），过了点按过期画（seatCardStateAt，`now` 由调用方递）。
+      `canDecide` = 我就是那个座位的主人、卡还开着：画「接 / 不接」；否则 `status` 那一行 */
+  | {
+    kind: "seat_card"; key: string; ts: number; requestId: string; headline: string; ask: string;
+    state: SeatCard["state"]; status: string | null; canDecide: boolean;
+    /** 主人点的时候附的那一句，定了之后画在状态底下：「继爸：「只告诉他周五」」。null = 没附 / 还没定 */
+    note: string | null;
+  }
+  /** 专员（L1）在群里说的话（#1682）：某家管理员手下的专员干活时镜像进群的那几句。不是那家管理员的回话——
+      折成挂在那家座位底下的一行小字，同一家连着说的几句并成一行（「Nomad（继爸的专员）说了 3 句」），点开看全文。
+      没有头像（长按 @ 不给：专员只听自家管理员，@ 不到），也不进名册「最后一句」（sessionLast.lastOf 同一条判据）。
+      `key` 取这一串第一句的位置，后面再并进来的几句不换 key（列表不重挂） */
+  | {
+    kind: "worker"; key: string; ts: number; seatAgentId: string; tag: string; summary: string;
+    lines: { name: string; text: string }[];
+  };
 
 type ItemRow = Exclude<ChatRow, { kind: "time" }>;
 
 /** 这句带的图 / 视频（#1491）：有才给那一格（exactOptionalPropertyTypes 不许塞 undefined） */
 function mediaFieldOf(
-  e: { sessionId: string; attachments?: readonly { id: string; mediaType: string; bytes: number; name?: string; width?: number; height?: number }[]; videos?: readonly { id: string; mediaType: string; bytes: number; width: number; height: number; durationMs: number; poster?: string }[] },
+  e: {
+    sessionId: string;
+    attachments?: readonly { id: string; mediaType: string; bytes: number; name?: string; width?: number; height?: number }[];
+    videos?: readonly { id: string; mediaType: string; bytes: number; width: number; height: number; durationMs: number; poster?: string }[];
+    /** 文件（#1683） */
+    files?: readonly { id: string; name: string; mediaType: string; bytes: number }[];
+  },
   ws: WorkspaceSnapshot,
 ): { media?: ChatMediaItem[] } {
-  if (e.attachments === undefined && e.videos === undefined) return {};
-  const media = chatMediaItemsOf(ws.id, e.sessionId, e.attachments, e.videos);
+  if (e.attachments === undefined && e.videos === undefined && e.files === undefined) return {};
+  const media = chatMediaItemsOf(ws.id, e.sessionId, e.attachments, e.videos, e.files);
   return media.length > 0 ? { media } : {};
 }
 
+/** 只交文件、一个字没说的那句回话（#1683：座位里做出来的文件跟着回话进群，正文可能是空的）。isAgentStep 把空正文
+    当中间步骤藏掉——对它不成立：人要的就是那份文件。要了工具的那条照旧是步骤 */
+function filesOnlyReply(e: SessionEvent): boolean {
+  return e.type === "assistant_message" && (e.toolCalls?.length ?? 0) === 0 && (e.files?.length ?? 0) > 0;
+}
+
 function rowOf(e: SessionEvent, ws: WorkspaceSnapshot, selfUid: string): ItemRow | null {
-  if (hiddenFromCloudTimeline(e)) return null;
+  if (hiddenFromCloudTimeline(e) && !filesOnlyReply(e)) return null;
   const key = `e${e.seq}`;
   switch (e.type) {
     case "user_message": {
@@ -181,8 +213,9 @@ function rowOf(e: SessionEvent, ws: WorkspaceSnapshot, selfUid: string): ItemRow
     }
     case "assistant_message": {
       const paragraphs = splitBubbles(e.content).map(stripEmotionTag).filter((p) => p !== "");
-      if (paragraphs.length === 0) return null;
-      return { kind: "agent", key, ts: e.ts, agentId: e.agentId ?? "", name: assistantLabel(e, ws), paragraphs };
+      const media = mediaFieldOf(e, ws);
+      if (paragraphs.length === 0 && media.media === undefined) return null;
+      return { kind: "agent", key, ts: e.ts, agentId: e.agentId ?? "", name: assistantLabel(e, ws), paragraphs, ...media };
     }
     case "turn_ended":
       // 停了（aborted）是人自己按的，「此刻」那一行随事件消失就是回答；出错才画
@@ -215,6 +248,8 @@ export function chatRows(o: {
   ownerUid?: string;
   /** 只有群主批得了（个人主场里的会话，#1393，同 runtime 的 initiatorMayDecide）。缺席 = 团队那条规矩 */
   ownerOnly?: boolean;
+  /** 座位制的群里认得出的座位（含走了的人，knownSeats）：专员那一行写「谁的专员」用。缺席 = 从这份日志里现折 */
+  seats?: readonly GroupSeat[];
 }): ChatRow[] {
   const items: ItemRow[] = [];
   let prevRoster: ChatRosterChangedEvent | null = null;
@@ -239,6 +274,11 @@ export function chatRows(o: {
   const connects = appConnectFoldOf(o.events);
   // 任务卡（#1571）：整条日志折一次，每张卡读折好的那一行
   const tasks: ReadonlyMap<string, TaskRow> = taskFoldOf(o.events, o.ws.id);
+  // 点头卡（#1682）：结局在后面的 seat_decision 里，同任务卡整条日志折一次
+  const seatCards = seatCardsOf(o.events);
+  const seatNotes = seatNotesOf(o.events);
+  // 专员那一行的「谁的专员」：调用方给了就用（此刻的座位 + 走了的人），没给从日志现折；一句专员的话都没有就不折
+  let seatList: readonly GroupSeat[] | null = o.seats ?? null;
   // 读健康数据那一行（#1656）：结果要对回调用时的参数（哪几类、哪几天），先把 read_health 的调用收一遍
   const healthCalls = new Map<string, unknown>();
   for (const e of o.events) {
@@ -258,10 +298,20 @@ export function chatRows(o: {
       continue;
     }
     if (calls.folded.has(e.seq)) continue;
-    // 工具调用手机端一律不画，只有这一把例外（#1656）：读了人的健康数据要让他看得见，在结果那一条的位置画一行灰字
+    // 工具调用手机端一律不画，只有两种例外：读了人的健康数据要让他看得见（#1656），在结果那一条的位置画一行灰字；
+    // 工具画出来的图（#1682 出图：贺卡、海报）是它给人的东西，在结果那一条的位置画成它那一侧的一张图（失败的调用不留图，
+    // 同 latestImageRef / imageIntake 的立场）
     if (e.type === "tool_result") {
       if (healthCalls.has(e.toolCallId)) {
         items.push({ kind: "note", key: `health-${e.seq}`, ts: e.ts, text: healthReadLineText(healthCalls.get(e.toolCallId), e.status), tone: "muted", detail: null });
+      }
+      // 工具交给人的文件（#1683，create_document / send_file）与图同一个位置、同一种画法
+      if (e.status === "ok" && ((e.images !== undefined && e.images.length > 0) || (e.files !== undefined && e.files.length > 0))) {
+        const media = chatMediaItemsOf(o.ws.id, e.sessionId, e.images, undefined, e.files);
+        if (media.length > 0) {
+          const agentId = e.agentId ?? "";
+          items.push({ kind: "agent", key: `img-${e.seq}`, ts: e.ts, agentId, name: agentId !== "" ? agentNameOf(o.ws, agentId) : "Agent", paragraphs: [], media });
+        }
       }
       continue;
     }
@@ -359,8 +409,37 @@ export function chatRows(o: {
       }
       continue;
     }
+    // 点头卡（#1682）：要在 rowOf 之前认出来——桌面把 seat_* 整条藏了。结局那条不单独成行，卡上的状态就是它
+    if (e.type === "seat_request") {
+      const card = seatCards.get(e.requestId);
+      if (card !== undefined && card.seq === e.seq) {
+        const state = seatCardStateAt(card, o.now);
+        items.push({ kind: "seat_card", key: `seat-${e.requestId}`, ts: e.ts, requestId: e.requestId, state, ...seatCardView(card, state, o.selfUid, seatNotes.get(e.requestId)) });
+      }
+      continue;
+    }
+    if (e.type === "seat_decision") continue;
+    // 专员的话（#1682）：要在 rowOf 之前认出来——否则画成那家管理员的气泡。中间步骤（要了工具 / 空正文）同管理员的一样不画
+    if (e.type === "assistant_message" && e.worker !== undefined && e.agentId !== undefined) {
+      if (hiddenFromCloudTimeline(e)) continue;
+      const text = splitBubbles(e.content).map(stripEmotionTag).filter((p) => p !== "").join("\n\n");
+      if (text === "") continue;
+      seatList ??= knownSeats(o.events, null);
+      const line = { name: e.worker.name, text };
+      const prev = items[items.length - 1];
+      // 同一家连着说的并成一行：中间夹的只要是不画的（工具结果、内务）就还算连着
+      if (prev !== undefined && prev.kind === "worker" && prev.seatAgentId === e.agentId) {
+        prev.lines.push(line);
+        prev.summary = workerFoldText(prev.lines, prev.tag);
+        continue;
+      }
+      const tag = seatWorkerTag(e.agentId, seatList, o.selfUid);
+      items.push({ kind: "worker", key: `worker-${e.seq}`, ts: e.ts, seatAgentId: e.agentId, tag, summary: workerFoldText([line], tag), lines: [line] });
+      continue;
+    }
     if (e.type === "chat_roster_changed") {
-      const parts = chatRosterLineParts(prevRoster, e, o.selfUid);
+      // 座位制的群（#1682）按座位比：humans 不含群主，群主一换手按旧那份比会读错
+      const parts = e.seats !== undefined ? seatRosterLineParts(prevRoster, e, o.selfUid, o.ownerUid ?? "") : chatRosterLineParts(prevRoster, e, o.selfUid);
       prevRoster = e;
       if (parts !== null) items.push({ kind: "roster", key: `e${e.seq}`, ts: e.ts, parts });
       continue;

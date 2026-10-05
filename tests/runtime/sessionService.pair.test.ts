@@ -267,6 +267,18 @@ describe("私密车道（#1461 P1）", () => {
       expect(env.system).toContain("message_friend_agent");
       // 跨主场协作（#1578 → #1605）：接了 adminsBridge 时 invite_collaborator 也挂着（只有 L0 有，HELPER 标的是 L0；提示词那段按 agentId 认
       // 管理员，HELPER 不是 admin 所以这里不验 system）
+      // #1682：朋友点起的这一轮只剩 message_friend_agent——别的刀要主人批，而车道里没有卡可点（#1526），掀了只会超时堵住。
+      // invite_collaborator 也在其列（以主人名义去找别家管理员，得主人自己那一轮）
+      expect(env.tools.map((t) => t.name)).toEqual(["message_friend_agent"]);
+      store.close();
+    });
+    it("公开车道里主人自己那一轮：invite_collaborator 挂着（接了 adminsBridge）", async () => {
+      const store = newStore();
+      sharedSeed(store);
+      const { session } = open(store, { bridge: { send: async () => "已发" } });
+      await say(session, "@助手 帮我问问对面", [HELPER.agentId]);
+      await session.settled();
+      const env = store.ofType(SID, "request_envelope").at(-1) as RequestEnvelopeEvent;
       expect(env.tools.find((t) => t.name === "invite_collaborator")).toBeDefined();
       store.close();
     });
@@ -299,7 +311,8 @@ describe("私密车道（#1461 P1）", () => {
     });
   });
 
-  it("车道里不挂 call_friend：提示词说「你发不了消息给朋友」，工具表必须说同一句话（#1206；复审 M3）", async () => {
+  // #1682：message_friend 进了车道（主人亲口说「发」才替他发进私聊），提示词跟着改；call_friend 照旧不挂
+  it("车道里不挂 call_friend；提示词说「主人亲口说发才用 message_friend」（#1206；复审 M3；#1682）", async () => {
     const store = newStore();
     pairSeed(store);
     const { session } = open(store, { outreach: { dispatch: async () => "打了", dialPicked: async () => null } });
@@ -308,7 +321,7 @@ describe("私密车道（#1461 P1）", () => {
     const env = store.ofType(SID, "request_envelope").at(-1) as RequestEnvelopeEvent;
     expect(env.tools.length).toBeGreaterThan(0); // 不是空转：别的刀照挂
     expect(env.tools.map((t) => t.name)).not.toContain("call_friend");
-    expect(env.system).toContain("发不了消息给");
+    expect(env.system).toContain("亲口说「发」，再用 message_friend");
     // 选人卡的收口同一条件（#1520）：车道里就算有人伪造 pick_friend 也不认
     session.logFriendPick({ pickId: "p1", phase: "offered", fromAgentId: HELPER.agentId, question: "q", candidates: [{ uid: "u1", name: "小红", why: "" }, { uid: "u2", name: "小明", why: "" }], brief: "b", opening: "o" });
     expect(await session.pickFriend("p1", OWNER, "u1")).toEqual({ ok: false, message: "只有他本人能选。" });

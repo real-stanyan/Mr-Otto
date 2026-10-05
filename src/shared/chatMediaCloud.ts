@@ -6,7 +6,7 @@
 //   「已存在」（x-upsert: false 不覆盖）——那正是我们要的字节。
 // · 失败不收已传的：客户端对 chat-media 没有删除策略（0052），孤儿留给 P6 收。
 // · 引用最后再过一遍 parseChatMediaRefs：发出去的和 runtime 收的是同一份判据，在这里就拦住比让服务端拒帧好。
-import { CHAT_MEDIA_BUCKET, chatMediaPath, parseChatMediaRefs, type ChatMediaRef, type ImageMime, type PreparedMedia, type VideoMime } from "./chatMedia.js";
+import { CHAT_MEDIA_BUCKET, chatMediaPath, cleanFileName, parseChatMediaRefs, type ChatMediaRef, type DocMime, type ImageMime, type PreparedMedia, type VideoMime } from "./chatMedia.js";
 
 export interface CloudMediaDeps<Ack> {
   /** 一个本机文件的 sha256（小写十六进制） */
@@ -52,6 +52,11 @@ export async function sendCloudMedia<Ack>(
     const base = { sha256: main.sha256, bytes: main.bytes, width: Math.max(0, Math.round(it.width)), height: Math.max(0, Math.round(it.height)) };
     if (it.kind === "image") {
       refs.push({ kind: "image", mediaType: it.mediaType as ImageMime, ...base });
+      continue;
+    }
+    if (it.kind === "file") {
+      // 文件（#1683）：没有尺寸，带名字（名字清不出来就按格式起一个，同 sendMediaMessage）
+      refs.push({ kind: "file", mediaType: it.mediaType as DocMime, sha256: main.sha256, bytes: main.bytes, width: 0, height: 0, name: cleanFileName(it.name ?? "") ?? "file" });
       continue;
     }
     const ref: ChatMediaRef = { kind: "video", mediaType: it.mediaType as VideoMime, ...base, durationMs: Math.max(1, Math.round(it.durationMs ?? 1)) };
