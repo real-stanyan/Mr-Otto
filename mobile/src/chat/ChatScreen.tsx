@@ -22,6 +22,11 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { FlatList, Pressable, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { activityFoldOf } from "../../../src/shared/agentActivity.js";
+import { appConnectAction } from "../../../src/shared/appConnect.js";
+import { MCP_CATALOG, type CuratedEntry } from "../../../src/shared/mcpCatalog.js";
+import { lendToTeam } from "../machine/connectApp.js";
+import { ConnectAppDialog } from "../machine/ConnectAppDialog.js";
+import { refreshConnectors, useConnectors } from "../machine/connectorsStore.js";
 import { agentFaceSlot } from "../../../src/shared/agentAvatar.js";
 import { roleChipsAnchor } from "../../../src/shared/agentOnboarding.js";
 import { resolveSendMentions } from "../../../src/shared/agentMentionInput.js";
@@ -275,6 +280,15 @@ export function ChatScreen({ route, navigation }: Props) {
             : `t:${target.sessionId}`;
 
   const [picking, setPicking] = useState<{ pickId: string; uid: string | null } | null>(null);
+  // 连接卡（#1666）：这台手机上接了哪些应用（主按钮该是哪个看它）；进页拉一次，读不到照画上一份
+  const cloudApps = useConnectors();
+  useEffect(() => {
+    void refreshConnectors();
+  }, []);
+  /** 连接卡里我刚发了帧、回执还没到的那一张（connectId） */
+  const [connecting, setConnecting] = useState<string | null>(null);
+  /** 连接卡点了「去连接 / 重新登录」开着的那个接入弹窗；接成了才替这张卡发 connected */
+  const [connectEntry, setConnectEntry] = useState<{ entry: CuratedEntry; relogin: boolean; connectId: string } | null>(null);
   const [pageNote, setPageNote] = useState<{ text: string; tone: "muted" | "error" } | null>(null);
   const [stopping, setStopping] = useState(false);
   const [deciding, setDeciding] = useState<string | null>(null);
@@ -560,6 +574,52 @@ export function ChatScreen({ route, navigation }: Props) {
     setPicking(null);
     if (!r.ok) setPageNote(r.unknown ? { text: "没有收到回执，不确定拨出去没有", tone: "muted" } : { text: r.message, tone: "error" });
   };
+  // 连接卡（#1666）：点了做什么按这台手机的云端视图判（appConnectAction）。发帧照 pickFriendOn：
+  // 没连上之前画的可能是缓存里的卡，不许点；一次只发一张
+  const answerAppConnect = useCallback(async (connectId: string, outcome: "connected" | "dismissed"): Promise<void> => {
+    setConnecting(connectId);
+    const r = await cloudClient.answerAppConnect(connectId, outcome);
+    setConnecting(null);
+    if (!r.ok) setPageNote(r.unknown ? { text: "没有收到回执，不确定送到没有", tone: "muted" } : { text: r.message, tone: "error" });
+  }, []);
+  const appConnectActionOf = useCallback(
+    (catalogId: string) => appConnectAction(cloudApps.apps ?? [], catalogId, ws?.id ?? ""),
+    [cloudApps.apps, ws?.id],
+  );
+  /** 点主按钮（Task 7 的自动弹出也走这一个）：新接 / 重新登录 → 现有接入弹窗，接成了再发帧；打开 → 借给这个工作区再发帧；
+      已经好了 → 直接发帧 */
+  const onAppConnect = useCallback(async (row: Extract<ChatRow, { kind: "app_connect" }>): Promise<void> => {
+    if (!ready || connecting !== null || connectEntry !== null || ws === null || !row.canAct || row.status !== "open") return;
+    const action = appConnectActionOf(row.catalogId);
+    if (action === "connect" || action === "relogin") {
+      const entry = MCP_CATALOG.find((x) => x.id === row.catalogId);
+      if (entry === undefined) {
+        setPageNote({ text: "目录里没有这个应用了", tone: "error" });
+        return;
+      }
+      setConnectEntry({ entry, relogin: action === "relogin", connectId: row.connectId });
+      return;
+    }
+    if (action === "grant") {
+      const item = (cloudApps.apps ?? []).find((v) => v.catalogId === row.catalogId);
+      if (item === undefined) return;
+      setConnecting(row.connectId);
+      try {
+        // label 是这个工作区目录行上应用的名字（同 AppDetailScreen 借给团队时递 view.title），不是工作区名
+        await lendToTeam({ serverId: item.serverId, workspaceId: ws.id, on: true, label: row.appName, uid: selfUid });
+      } catch (e) {
+        setConnecting(null);
+        setPageNote({ text: e instanceof Error ? e.message : String(e), tone: "error" });
+        return;
+      }
+      void refreshConnectors({ force: true });
+    }
+    await answerAppConnect(row.connectId, "connected");
+  }, [ready, connecting, connectEntry, ws, appConnectActionOf, cloudApps.apps, selfUid, answerAppConnect]);
+  const onAppConnectDismiss = useCallback((row: Extract<ChatRow, { kind: "app_connect" }>): void => {
+    if (!ready || connecting !== null || !row.canAct || row.status !== "open") return;
+    void answerAppConnect(row.connectId, "dismissed");
+  }, [ready, connecting, answerAppConnect]);
   const friendAvatars = useMemo(
     () => new Map((friends.rows ?? []).map((f) => [f.profile.id, f.profile.avatarUrl])),
     [friends.rows],
@@ -826,6 +886,10 @@ export function ChatScreen({ route, navigation }: Props) {
                     friendAvatarOf={(uid) => friendAvatars.get(uid) ?? ""}
                     picking={picking}
                     onPickFriend={(id, uid) => void pickFriendOn(id, uid)}
+                    appConnectActionOf={appConnectActionOf}
+                    connecting={connecting}
+                    onAppConnect={(r) => void onAppConnect(r)}
+                    onAppConnectDismiss={onAppConnectDismiss}
                     onAgent={(agentId) => navigation.navigate("Agent", isTeam || isGuestChat ? { agentId, workspaceId: ws.id } : { agentId })}
                     {...(home.home !== null && home.home.agents.length > 0 && !isOutreach
                       ? { onLongPress: (r: ChatRow) => setDispatching({ key: Date.now(), visible: true, row: r }) }
@@ -950,6 +1014,18 @@ export function ChatScreen({ route, navigation }: Props) {
         )}
       </View>
 
+      {connectEntry !== null ? (
+        <ConnectAppDialog
+          entry={connectEntry.entry}
+          relogin={connectEntry.relogin}
+          onClose={(landed) => {
+            // 人取消了（landed null）：卡保持开着，想连再点
+            const id = connectEntry.connectId;
+            setConnectEntry(null);
+            if (landed !== null) void answerAppConnect(id, "connected");
+          }}
+        />
+      ) : null}
       {dispatching !== null && home.home !== null ? (
         <DispatchDialog
           key={dispatching.key}
