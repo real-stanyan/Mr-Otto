@@ -14,6 +14,8 @@ import { escalationNoteText } from "./escalation.js";
 import { chatMediaItemsOf, type ChatMediaItem } from "./chatMedia.js";
 import { parseDispatchOpening, type DispatchCardView } from "./dispatchQuote.js";
 import { friendPickFoldOf, friendPickStatus, type FriendPickStatus } from "./friendPick.js";
+import { seatCardsOf, seatCardStateAt, type SeatCard } from "./groupSeats.js";
+import { seatCardView, seatRosterLineParts } from "./groupSeatsView.js";
 import { healthReadLineText, READ_HEALTH_TOOL } from "./health.js";
 import {
   approvalCardTitle, assistantLabel, callOffsetText, chatRosterLineParts, cloudEmptyState, decisionLineText, hiddenFromCloudTimeline,
@@ -143,7 +145,14 @@ export type ChatRow =
     collaboratorName: string | null;
   }
   /** 应用卡（#1591）：专员 build_app 打出一版，一张卡「打开」。在 app_card 的位置 */
-  | { kind: "app"; key: string; ts: number; appId: string; version: number; name: string; icon: string; note: string; byName: string };
+  | { kind: "app"; key: string; ts: number; appId: string; version: number; name: string; icon: string; note: string; byName: string }
+  /** 点头卡（#1682，ADR-0376）：座位制的群里别人使唤某人的管理员、要动手时的那张。一张卡一行，在 seat_request 的位置；
+      状态从日志折（seat_decision 不单独占行），过了点按过期画（seatCardStateAt，`now` 由调用方递）。
+      `canDecide` = 我就是那个座位的主人、卡还开着：画「接 / 不接」；否则 `status` 那一行 */
+  | {
+    kind: "seat_card"; key: string; ts: number; requestId: string; headline: string; ask: string;
+    state: SeatCard["state"]; status: string | null; canDecide: boolean;
+  };
 
 type ItemRow = Exclude<ChatRow, { kind: "time" }>;
 
@@ -239,6 +248,8 @@ export function chatRows(o: {
   const connects = appConnectFoldOf(o.events);
   // 任务卡（#1571）：整条日志折一次，每张卡读折好的那一行
   const tasks: ReadonlyMap<string, TaskRow> = taskFoldOf(o.events, o.ws.id);
+  // 点头卡（#1682）：结局在后面的 seat_decision 里，同任务卡整条日志折一次
+  const seatCards = seatCardsOf(o.events);
   // 读健康数据那一行（#1656）：结果要对回调用时的参数（哪几类、哪几天），先把 read_health 的调用收一遍
   const healthCalls = new Map<string, unknown>();
   for (const e of o.events) {
@@ -359,8 +370,19 @@ export function chatRows(o: {
       }
       continue;
     }
+    // 点头卡（#1682）：要在 rowOf 之前认出来——桌面把 seat_* 整条藏了。结局那条不单独成行，卡上的状态就是它
+    if (e.type === "seat_request") {
+      const card = seatCards.get(e.requestId);
+      if (card !== undefined && card.seq === e.seq) {
+        const state = seatCardStateAt(card, o.now);
+        items.push({ kind: "seat_card", key: `seat-${e.requestId}`, ts: e.ts, requestId: e.requestId, state, ...seatCardView(card, state, o.selfUid) });
+      }
+      continue;
+    }
+    if (e.type === "seat_decision") continue;
     if (e.type === "chat_roster_changed") {
-      const parts = chatRosterLineParts(prevRoster, e, o.selfUid);
+      // 座位制的群（#1682）按座位比：humans 不含群主，群主一换手按旧那份比会读错
+      const parts = e.seats !== undefined ? seatRosterLineParts(prevRoster, e, o.selfUid, o.ownerUid ?? "") : chatRosterLineParts(prevRoster, e, o.selfUid);
       prevRoster = e;
       if (parts !== null) items.push({ kind: "roster", key: `e${e.seq}`, ts: e.ts, parts });
       continue;

@@ -1134,7 +1134,7 @@ export function FriendChatScreen({ route, navigation }: Props) {
           ws={home.home}
           selfUid={home.selfUid ?? ""}
           title="拉人建群"
-          lead={`带上${name}，再拉几位（你的智能体或朋友），凑够 2 位就能建。朋友让智能体动手要等你批。`}
+          lead={`带上${name}，还可以再拉几位朋友。每个人都带着自己的管理员。`}
           presetPeople={[uid]}
           onClose={() => setGrouping((g) => (g === null ? g : { ...g, visible: false }))}
           onCreated={(sid) => {

@@ -74,8 +74,8 @@ describe("聊天信息页 / 清单", () => {
     expect(src).toMatch(/cloudClient\.create\(homeId, \{ kind: "pair", peerUid, facing, agentIds \}\)/);
     expect(src).toMatch(/cloudClient\.chatUpdate\(homeId, lane\.sessionId, \{ facing \}\)/);
   });
-  it("listGuestChats 把 pair 摘掉", () => {
-    expect(read("src/shared/supabaseWorkspacesApi.ts")).toMatch(/const chats = rows\.filter\(\(r\) => r\.chat_kind !== "pair"\);/);
+  it("listGuestChats 把 pair 摘掉（#1682 起改成只认群与外联：座位 / 车道 / 认不出来的都不列）", () => {
+    expect(read("src/shared/supabaseWorkspacesApi.ts")).toMatch(/const chats = rows\.filter\(\(r\) => r\.chat_kind === "group" \|\| r\.chat_kind === "outreach"\);/);
   });
 });
 

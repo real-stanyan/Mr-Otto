@@ -67,7 +67,7 @@ function Bubble({ text, mine, agent, first }: { text: string; mine: boolean; age
 }
 
 /** 一句话一行：左边（别人 / 它）或右边（我）。`name` 只在群里给 */
-function MessageRow({ mine, agent = false, avatar, name, paragraphs, media, onAvatar, onLongPress }: {
+function MessageRow({ mine, agent = false, avatar, name, paragraphs, media, onAvatar, onAvatarLongPress, onLongPress }: {
   mine: boolean;
   /** 智能体说的（#1465：气泡换 bubbleAgent，与人的分开） */
   agent?: boolean;
@@ -77,13 +77,25 @@ function MessageRow({ mine, agent = false, avatar, name, paragraphs, media, onAv
   /** 这句带的图 / 视频（#1491，云会话的 chat-media）：正文是占位「[图片]」时只画图 */
   media?: ChatMediaItem[];
   onAvatar?: () => void;
+  /** 长按头像 = @ TA（#1682 拍板 L，照微信）。缺席 = 这页不给（私聊里没有 @） */
+  onAvatarLongPress?: () => void;
   /** 长按这一句（#1505：派一只智能体去办）。缺席 = 这页不给 */
   onLongPress?: () => void;
 }) {
   const { c } = usePalette();
   const texts = media !== undefined && paragraphs.length === 1 && mediaBodyHidden(paragraphs[0] ?? "", media) ? [] : paragraphs;
-  const head = onAvatar === undefined ? avatar : (
-    <Pressable accessibilityRole="button" accessibilityLabel={name ?? "资料"} onPress={onAvatar} hitSlop={4}>{avatar}</Pressable>
+  const head = onAvatar === undefined && onAvatarLongPress === undefined ? avatar : (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={name ?? "资料"}
+      {...(onAvatarLongPress !== undefined ? { accessibilityHint: "长按 @ TA" } : {})}
+      onPress={onAvatar}
+      onLongPress={onAvatarLongPress}
+      delayLongPress={350}
+      hitSlop={4}
+    >
+      {avatar}
+    </Pressable>
   );
   return (
     <View style={{ flexDirection: mine ? "row-reverse" : "row", alignItems: "flex-start", gap: 10, paddingHorizontal: 12 }}>
@@ -207,8 +219,14 @@ function RosterPill({ parts, ws }: { parts: readonly RosterLinePart[]; ws: Works
   );
 }
 
-export function ChatRowView({ row, ws, selfUid, selfName, selfAvatar, group, outreachChat = false, onOpenCall, onAgent, onCallAgent, onDecide, deciding, decideReady, friendAvatarOf, picking, onPickFriend, appConnectActionOf, connecting, onAppConnect, onAppConnectDismiss, onLongPress }: {
+export function ChatRowView({ row, ws, selfUid, selfName, selfAvatar, group, outreachChat = false, onOpenCall, onAgent, onCallAgent, onDecide, deciding, decideReady, friendAvatarOf, picking, onPickFriend, appConnectActionOf, connecting, onAppConnect, onAppConnectDismiss, onLongPress, onMentionAvatar, seatDeciding = null, onSeatDecide }: {
   row: ChatRow;
+  /** 长按别人 / 智能体的头像：把 @ TA 插进输入框（#1682 拍板 L）。缺席 = 不给（私聊） */
+  onMentionAvatar?: (row: Extract<ChatRow, { kind: "human" | "agent" }>) => void;
+  /** 点头卡里我刚点下、回执还没到的那一张（requestId；本地态） */
+  seatDeciding?: string | null;
+  /** 点头卡的「接 / 不接」（#1682）。缺席 = 这页没有点头卡（不是座位制的群） */
+  onSeatDecide?: (requestId: string, decision: "accepted" | "declined") => void;
   /** 长按一句话（我的 / 别人的 / 智能体的）：派一只智能体去办（#1505）。缺席 = 这页不给 */
   onLongPress?: (row: ChatRow) => void;
   ws: WorkspaceSnapshot;
@@ -269,6 +287,7 @@ export function ChatRowView({ row, ws, selfUid, selfName, selfAvatar, group, out
           name={group ? row.name : null}
           paragraphs={[row.text]}
           {...(row.media !== undefined ? { media: row.media } : {})}
+          {...(onMentionAvatar !== undefined ? { onAvatarLongPress: () => onMentionAvatar(row) } : {})}
           {...(onLongPress !== undefined ? { onLongPress: () => onLongPress(row) } : {})}
         />
       );
@@ -281,6 +300,7 @@ export function ChatRowView({ row, ws, selfUid, selfName, selfAvatar, group, out
           name={group ? row.name : null}
           paragraphs={row.paragraphs}
           {...(agentFaceIfKnown(ws, row.agentId) !== null ? { onAvatar: () => onAgent(row.agentId) } : {})}
+          {...(onMentionAvatar !== undefined ? { onAvatarLongPress: () => onMentionAvatar(row) } : {})}
           {...(onLongPress !== undefined ? { onLongPress: () => onLongPress(row) } : {})}
         />
       );
@@ -340,6 +360,8 @@ export function ChatRowView({ row, ws, selfUid, selfName, selfAvatar, group, out
       return <TaskCard row={row} />;
     case "app":
       return <AppCard row={row} />;
+    case "seat_card":
+      return <SeatNodCard row={row} busy={seatDeciding === row.requestId || !decideReady} {...(onSeatDecide !== undefined ? { onDecide: onSeatDecide } : {})} />;
     default: {
       const unhandled: never = row;
       return unhandled;
@@ -663,6 +685,39 @@ function AppConnectCard({ row, ws, action, busy, ready, onPrimary, onDismiss }: 
         </View>
         {foot}
       </View>
+    </View>
+  );
+}
+
+/** 点头卡（#1682，ADR-0376）：别人使唤某人的管理员、要动手时，居中一张——谁想让谁动手做什么 + 那人的原话（小字），
+    底下是状态；我就是那个座位的主人、卡还开着时换成「不接 / 接」。样子照审批卡（同一类「等人拍板」），边框换成点缀色：
+    这里批的不是一把刀，是一件事 */
+function SeatNodCard({ row, busy, onDecide }: {
+  row: Extract<ChatRow, { kind: "seat_card" }>;
+  busy: boolean;
+  onDecide?: (requestId: string, decision: "accepted" | "declined") => void;
+}) {
+  const { c } = usePalette();
+  const open = row.canDecide && onDecide !== undefined;
+  const tone = row.state === "accepted" ? c.ok : c.mutedForeground;
+  return (
+    <View style={{ marginHorizontal: 24, padding: 14, borderRadius: 14, backgroundColor: c.card, borderWidth: 1, borderColor: withAlpha(c.brand, row.state === "pending" ? 0.5 : 0.2), gap: 8 }}>
+      <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 6 }}>
+        <Icon name="shield-check" size={16} stroke={2} color={c.brand} />
+        <Text selectable style={{ flex: 1, fontSize: 14, lineHeight: 20, fontWeight: "600", color: c.foreground }}>{row.headline}</Text>
+      </View>
+      {row.ask !== "" ? <Text selectable numberOfLines={4} style={{ fontSize: 12, lineHeight: 17, color: c.mutedForeground }}>{`原话：${row.ask}`}</Text> : null}
+      {open ? (
+        <View style={{ flexDirection: "row", gap: 8, marginTop: 4 }}>
+          <Button grow size="compact" variant="secondary" label="不接" disabled={busy} onPress={() => onDecide(row.requestId, "declined")} />
+          <Button grow size="compact" variant="primary" label={busy ? "…" : "接"} disabled={busy} onPress={() => onDecide(row.requestId, "accepted")} />
+        </View>
+      ) : row.status !== null ? (
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
+          {row.state === "accepted" ? <Icon name="check" size={13} stroke={2.6} color={tone} /> : null}
+          <Text style={{ fontSize: 13, color: tone }}>{row.status}</Text>
+        </View>
+      ) : null}
     </View>
   );
 }

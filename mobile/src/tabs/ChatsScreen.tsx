@@ -16,7 +16,6 @@ import { AppState, FlatList, StyleSheet, Text, View } from "react-native";
 import { APPS_PULL_TRIGGER } from "../../../src/shared/appsDrawer.js";
 import { AppsDrawer } from "../apps/AppsDrawer.js";
 import { rosterGate, type RosterGate } from "../../../src/shared/agentRoster.js";
-import { CHAT_GROUP_CREATE_MIN } from "../../../src/shared/chatRoster.js";
 import { mixedGroupName } from "../../../src/shared/chatGuests.js";
 import { agentFolderSummary, filterInbox, splitInbox, type InboxRow } from "../../../src/shared/wechatInbox.js";
 import { hideChat } from "../inbox/hiddenStore.js";
@@ -151,7 +150,8 @@ export function ChatsScreen() {
   const items: MenuItem[] = [
     ...(ws !== null
       ? [
-        ...(ws.agents.length + invitable.length >= CHAT_GROUP_CREATE_MIN ? [{ key: "group", icon: "users-round", label: "发起群聊" } as MenuItem] : []),
+        // 新群只拉朋友（#1682）：一位朋友都没有就不给这一项
+        ...(invitable.length > 0 ? [{ key: "group", icon: "users-round", label: "发起群聊" } as MenuItem] : []),
       ]
       : []),
     { key: "friend", icon: "user-round-plus", label: "添加朋友" },
@@ -174,16 +174,16 @@ export function ChatsScreen() {
     navigation.navigate("Chat", next.kind === "agent" ? { kind: "agent", agentId: next.agentId } : { kind: "group", sessionId: next.sessionId });
   };
 
-  const createGroup = async (picked: string[], name: string, pickedPeople: string[]): Promise<void> => {
+  const createGroup = async (name: string, pickedPeople: string[]): Promise<void> => {
     if (ws === null) return;
     setGroupBusy(true);
     setGroupError(null);
     const people = invitable.filter((p) => pickedPeople.includes(p.uid)).map((p) => ({ name: p.name }));
     const r = await cloudClient.create(ws.id, {
       kind: "group",
-      name: mixedGroupName(ws, picked, people, name),
-      agentIds: picked,
-      ...(pickedPeople.length > 0 ? { humans: pickedPeople } : {}),
+      name: mixedGroupName(ws, [], people, name),
+      agentIds: [],
+      humans: pickedPeople,
     });
     if (!r.ok) {
       setGroupBusy(false);
@@ -297,15 +297,15 @@ export function ChatsScreen() {
           visible={dialog.visible}
           ws={ws}
           title="发起群聊"
-          lead="拉几位进来（智能体或朋友），凑够 2 位就能建。朋友让智能体动手要等你批。"
-          options={ws.agents.map((a) => a.agentId)}
-          min={CHAT_GROUP_CREATE_MIN}
+          lead="拉几位朋友进来。每个人都带着自己的管理员，@ 谁的管理员它就来帮忙。"
+          options={[]}
+          min={1}
           people={invitable}
           okLabel="建群"
           withName
           busy={groupBusy}
           error={groupError}
-          onOk={(picked, name, pickedPeople) => void createGroup(picked, name, pickedPeople)}
+          onOk={(_picked, name, pickedPeople) => void createGroup(name, pickedPeople)}
           onClose={closeDialog}
           onExited={() => void onDialogExited()}
         />
