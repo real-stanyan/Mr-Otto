@@ -126,8 +126,8 @@ describe("read_health 的挂载", () => {
       async chat(): Promise<ModelReply> {
         n++;
         if (n === 1) {
-          void session.say("friend", "小红", "我也想问", true, [HELPER.agentId], undefined, []);
-          await new Promise((r) => setTimeout(r, 20));
+          // 等 say 本身返回：别人的话落进日志是它返回前的事，不靠睡一会儿碰运气
+          await session.say("friend", "小红", "我也想问", true, [HELPER.agentId], undefined, []);
           return { content: "", toolCalls: [{ id: "f1", name: "read_file", args: { path: "a.txt" } }] };
         }
         if (n === 2) return { content: "", toolCalls: [{ id: "h2", name: "read_health", args: { metrics: ["steps"], from: "2026-10-04", to: "2026-10-04" } }] };
