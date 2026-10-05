@@ -5,6 +5,7 @@
 // 纯函数 + 注入 fetch，全部进根门禁（tests/edge/pxOAuth.test.ts）。
 
 import type { CloudOAuth } from "../../../src/shared/remote/pxCloud.js";
+import { AUTHORIZE_RESERVED } from "../../../src/shared/mcpCatalog.js";
 
 type FetchLike = (url: string, init: RequestInit) => Promise<Response>;
 export type Random = (n: number) => Uint8Array;
@@ -146,7 +147,11 @@ export async function registerClient(
   }
 }
 
-export function authorizeUrl(o: { meta: OAuthMeta; clientId: string; redirectUri: string; challenge: string; state: string; resource: string }): string {
+/** scopes：目录写死的那份（#1619），给了就不用资源元数据的；extra：目录的 authorizeParams，保留键一律忽略 */
+export function authorizeUrl(o: {
+  meta: OAuthMeta; clientId: string; redirectUri: string; challenge: string; state: string; resource: string;
+  scopes?: readonly string[]; extra?: Readonly<Record<string, string>>;
+}): string {
   const u = new URL(o.meta.authorizationEndpoint);
   u.searchParams.set("response_type", "code");
   u.searchParams.set("client_id", o.clientId);
@@ -155,7 +160,11 @@ export function authorizeUrl(o: { meta: OAuthMeta; clientId: string; redirectUri
   u.searchParams.set("code_challenge_method", "S256");
   u.searchParams.set("state", o.state);
   u.searchParams.set("resource", o.resource);
-  if (o.meta.scopes.length > 0) u.searchParams.set("scope", o.meta.scopes.join(" "));
+  const scopes = o.scopes ?? o.meta.scopes;
+  if (scopes.length > 0) u.searchParams.set("scope", scopes.join(" "));
+  for (const [k, v] of Object.entries(o.extra ?? {})) {
+    if (!AUTHORIZE_RESERVED.includes(k)) u.searchParams.set(k, v);
+  }
   return u.toString();
 }
 

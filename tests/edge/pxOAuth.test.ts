@@ -128,6 +128,23 @@ describe("authorizeUrl / exchangeCode / refresh", () => {
     expect(new URL(authorizeUrl({ meta: { ...meta, scopes: [] }, clientId: "cid", redirectUri: "https://e/cb", challenge: "ch", state: "st", resource: "https://m/mcp" })).searchParams.has("scope")).toBe(false);
     expect(Object.fromEntries(u.searchParams)).toMatchObject({ response_type: "code", client_id: "cid", redirect_uri: "https://e/cb", code_challenge: "ch", code_challenge_method: "S256", state: "st", resource: "https://m/mcp", scope: "read write" });
   });
+  it("scopes 覆盖资源元数据那份；extra 逐个带上，保留键不许被覆盖（#1619）", () => {
+    const u = new URL(authorizeUrl({
+      meta, clientId: "cid", redirectUri: "https://e/cb", challenge: "ch", state: "st", resource: "https://m/mcp",
+      scopes: ["s.read", "s.compose"],
+      extra: { access_type: "offline", prompt: "consent", client_id: "evil", redirect_uri: "https://evil/cb", scope: "all" },
+    }));
+    expect(u.searchParams.get("scope")).toBe("s.read s.compose");
+    expect(u.searchParams.get("access_type")).toBe("offline");
+    expect(u.searchParams.get("prompt")).toBe("consent");
+    expect(u.searchParams.get("client_id")).toBe("cid");
+    expect(u.searchParams.get("redirect_uri")).toBe("https://e/cb");
+    expect(u.searchParams.getAll("client_id")).toHaveLength(1);
+  });
+  it("scopes 给了空数组 = 不带 scope（不退回资源元数据那份）", () => {
+    const u = new URL(authorizeUrl({ meta: { ...meta, scopes: ["x"] }, clientId: "cid", redirectUri: "https://e/cb", challenge: "ch", state: "st", resource: "https://m/mcp", scopes: [] }));
+    expect(u.searchParams.has("scope")).toBe(false);
+  });
   it("换 token：表单体；没 access_token 算失败", async () => {
     let body = "";
     const ok = await exchangeCode(async (_u, init) => { body = String(init.body); return J(200, { access_token: "AT", refresh_token: "RT" }); },
