@@ -170,6 +170,10 @@ describe("群座位制：主人 @ 自己的管理员", () => {
     expect(w.calls[0]!.ws).toBe("wa");
     expect(w.calls[0]!.tools).toContain("bash");
     expect(w.calls[0]!.tools).not.toContain("ask_owner");
+    // 连接卡在座位里没人看得到：不亮
+    expect(w.calls[0]!.tools).not.toContain("request_app_connect");
+    // 管理员能把自家专员拉进座位（bring_agent 落名单），同管理员私聊
+    expect(await w.seatOf(A)!.updateChatRoster("", { agentIds: ["admin"] }, "雨姐")).toMatchObject({ kind: "ok" });
     expect(said(w.groupLog(), A)).toEqual(["在呢，继爸。"]);
     // 群里不起 turn：人话落 chat_message、带 seatMentions；群日志里没有 user_message
     expect(w.groupLog().some((e) => e.type === "user_message")).toBe(false);
@@ -366,6 +370,9 @@ describe("群座位制：名单", () => {
     expect(w.group.seatMember!(A)).toBe(false);
     expect(w.group.isGuest(A)).toBe(false);
     await expect(w.group.say(A, "继爸", "我还在吗", false, [])).rejects.toThrow("不在这个群里");
+    // 打字 @ 了已经退群的人的管理员：群里说一句，不是石沉大海
+    await w.group.say(B, "Stan Yan", "@雨姐 继爸还来吗", false);
+    expect(w.groupLog().some((e) => e.type === "chat_message" && e.fromUid === "system" && e.content.includes("雨姐已经跟着继爸退群了"))).toBe(true);
     expect(w.group.chat()!.humans.map((h) => h.uid)).toEqual([C]);
   });
 

@@ -250,7 +250,7 @@ import { createBuildAppTool } from "./buildAppTool.js";
 import { createSettingsTool, type OwnerSettingsStore } from "./settingsTool.js";
 import { pickCallAck } from "../../../src/shared/callAck.js";
 import {
-  groupOwnerOf, groupSeatsOf, lastMirroredSeq, mirrorLinesOf, nextGroupOwner, reseat, seatAgentId, seatAskedText, seatDeclinedText, seatExpiredText, seatLangOf,
+  groupOwnerOf, groupSeatsOf, lastMirroredSeq, mirrorLinesOf, nextGroupOwner, reseat, seatAgentId, seatAskedText, seatDeclinedText, seatExpiredText, seatGoneText, seatLangOf,
   seatGrantText, seatLabel, seatMentionsIn, seatUidOf, SEAT_MIRROR_BACKFILL, SEAT_RELAY_MAX_DEPTH, SEAT_RELAY_PER_HOUR_MAX, SEAT_REQUEST_EXPIRE_MS, SEAT_UPGRADE_TEXT,
   type GroupSeat, type MirrorLine, type SeatPolicy,
 } from "../../../src/shared/groupSeats.js";
@@ -1113,6 +1113,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   let healthTurn = false;
   /** 这一轮是专员上报起的（#1659）：排定时放行（专员撞墙最常见的就是到点提醒），打给别人的那几把仍只认主人亲口 */
   let escalationTurn = false;
+  /** 这一轮是座位里主人点了头 / 设了放行起的（#1682）：主人认可了这件事，排定时放行（提醒是最常见的「这件事」） */
+  let seatGrantTurn = false;
   /** 这一轮是不是主场群里的客人点起的（#1393，ADR-0325）。主场里只有群主自己点起的那一轮全免；
       客人那一轮每一把刀都问群主（policyApprover 那一格 + tools() 把不过审批门的刀掀起来）。
       团队会话恒为假（approveAll 为假），一个字不变 */
@@ -2114,7 +2116,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // 在 tools() 里再按「受监督轮不亮、接力棒上（开场白接力深度 > 0）不亮、等级 ≤ 1、有连接器域」判。reason 恒为 missing——
     // 「登录过期」那一路由连接器 409 兜底直接调 offerAppConnect（#1666 Task 4）
     const appConnectTool =
-      !opts.approveAll || isOutreach || isPair
+      !opts.approveAll || isOutreach || isPair || isSeat
         ? null
         : createRequestAppConnectTool({
             // 白名单现取这一轮的 spec（engine 按 agent 缓存，这里闭包里的 spec 是第一次开口时的）
@@ -2129,7 +2131,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
             // 群座位里定的提醒到点回这个座位（#1682）：管理员到点说的话经桥回到群里，而不是跑去主人的私聊
             ...(isSeat ? { sessionId } : {}),
             now: () => opts.now?.() ?? Date.now(),
-            available: () => (ownerSpoke || escalationTurn) && !supervisedTurn(),
+            available: () => (ownerSpoke || escalationTurn || seatGrantTurn) && !supervisedTurn(),
           });
     // update_settings（#1621）：主场私聊里、只给管理员；主人亲口的那一轮才亮（同 routineTools）；改完落一句系统行
     // escalate_to_admin（#1659）：主场里、daemon 接了出口才有；挂不挂到具体那一只由工具表按「是专员 + 这条对话没管理员」判
@@ -3152,6 +3154,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     foldedNonOwner = false;
     rerunTurn = false;
     ownerSpoke = true;
+    seatGrantTurn = isSeat && job.fromUid === opts.ownerUid && job.opening.greeting === "seat_grant" && !rerunOpenings.has(job.opening.seq);
     const traitCovered = traitOpenings(job);
     applyTraits(traitCovered, openingDepth);
     healthTurn = healthEligible(job.fromUid, traitCovered, openingDepth);
@@ -3425,6 +3428,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       routineTurn = false;
       healthTurn = false;
       escalationTurn = false;
+      seatGrantTurn = false;
       ownerSpoke = false;
       foldedNonOwner = false;
       rerunTurn = false;
@@ -3614,6 +3618,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     // 点了哪几个座位：客户端给了（含空数组）就以它为准，没给就从正文里认（同 resolveTargets 的 ①②）
     const fromClient = mentions === undefined ? null : mentions.map(seatUidOf).filter((u): u is string => u !== null);
     const targets = [...new Set(fromClient ?? seatMentionsIn(text, seats))].filter((u) => seats.some((s) => s.uid === u));
+    // @ 的是一个已经退群的人的管理员（打字打出来的，客户端名单里本来就没有它）：不说一声的话这句 @ 跟闲聊长得一样
+    const gone = departedSeats().filter((d) => !seats.some((s) => s.uid === d.uid) && seatMentionsIn(text, [d]).length > 0);
     const veto = budget?.(targets.length) ?? null;
     if (veto !== null) throw new SayRejectedError(veto);
     const got = media !== undefined && media.length > 0 ? await intakeMedia(media) : null;
@@ -3637,6 +3643,13 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       await opts.mentionInbox.record(rows).catch((err: unknown) => console.error(`[otto-runtime] 点名提醒写入失败（session=${sessionId}）`, err));
     }
     for (const seatUid of targets) deliverToSeat(seatUid, { fromUid, fromName: label, text, depth: 0, groupSeq: logged.seq, ...(tz !== undefined ? { tz } : {}) });
+    for (const d of gone) logChat("system", "系统", seatGoneText(d, seatLangOf(text)), false);
+  }
+  /** 这个群里出现过、此刻已经不在的座位（日志里每一条名单事件的并集减去此刻的） */
+  function departedSeats(): GroupSeat[] {
+    const seen = new Map<string, GroupSeat>();
+    for (const e of store.ofType(sessionId, "chat_roster_changed")) for (const s of (e as { seats?: GroupSeat[] }).seats ?? []) seen.set(s.uid, s);
+    return [...seen.values()].filter((s) => !(groupSeats ?? []).some((x) => x.uid === s.uid));
   }
   /** 送进一个座位（人 @ 的 depth 0；管理员之间 @ 的 depth ≥ 1）。没送到就在群里说一句——不出声的话 @ 了等于没 @ */
   function deliverToSeat(seatUid: string, o: { fromUid: string; fromName: string; text: string; depth: number; groupSeq: number; tz?: string }): void {
@@ -4353,7 +4366,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // 管理员那条私聊（#1571 第二轮第 3 条）：管理员可以把专员拉进来——名单长了它还是「与管理员的私聊」（admin 恒排第一，
       // 0037 的唯一索引按 agent_ids[1] 认它），只是多了几只在场。别的私聊照旧改不了
       const adminDm = chatKind === "dm" && opts.approveAll && (chatRoster ?? [])[0] === ADMIN_AGENT_ID;
-      if (chatKind !== "group" && !isPair && !adminDm) {
+      // 座位（#1682）：管理员把自家专员拉进来干活，同管理员私聊（admin 恒排第一）——真模型模拟里 bring_agent 在这里一直被拒
+      if (chatKind !== "group" && !isPair && !adminDm && !isSeat) {
         return {
           kind: "not_group",
           message: chatKind === "dm" ? "私聊的名单改不了" : chatKind === "outreach" ? "这条线的名单改不了" : "这不是一条群聊",
