@@ -71,6 +71,11 @@ describe("rosterRows", () => {
   it("名单里多于一只的「私聊」不认（库里那条唯一索引拦得住，这里是第二道）", () => {
     expect(rosterRows(home, [chat("weird", "dm", ["a_1", "a_2"])]).every((r) => r.sessionId === null)).toBe(true);
   });
+
+  it("管理员那条除外：admin 打头、拉了专员进来的仍是管理员的私聊；被拉进来的专员不因此认错线（#1606，真机 2026-10-05）", () => {
+    const rows = rosterRows(home, [chat("adm", "dm", ["admin", "a_1"], 7), chat("s1", "dm", ["a_1"], 5)]);
+    expect(rows.map((r) => r.sessionId)).toEqual(["adm", "s1", null]);
+  });
 });
 
 describe("groupRows", () => {
