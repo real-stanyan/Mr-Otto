@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { CATALOG_CATEGORIES, MCP_CATALOG, searchCatalog } from "../../src/shared/mcpCatalog.js";
+import { AUTHORIZE_RESERVED, CATALOG_CATEGORIES, MCP_CATALOG, PRESET_ON_PHONE, desktopBlocked, searchCatalog } from "../../src/shared/mcpCatalog.js";
 
 describe("mcpCatalog", () => {
   it("id 唯一", () => {
@@ -117,5 +117,31 @@ describe("mcpCatalog", () => {
         "先确认不是只试了 OAuth 那一条路（#766 就是这么错过 GitHub 的 token 路的）；" +
         "确实没路就删掉条目，要留就改这条断言并说明为什么留"
     ).toEqual([]);
+  });
+});
+
+describe("预置 OAuth 客户端（#1619）", () => {
+  const gmail = MCP_CATALOG.find((e) => e.id === "gmail")!;
+  it("Gmail：官方端点、预置 google 客户端、只要两个 scope、带 offline + consent", () => {
+    expect(gmail).toMatchObject({
+      transport: "http", url: "https://gmailmcp.googleapis.com/mcp/v1", auth: "oauth", params: [], presetClient: "google",
+      scopes: ["https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/gmail.compose"],
+      authorizeParams: { access_type: "offline", prompt: "consent" },
+    });
+  });
+  it("presetClient / scopes / authorizeParams 只出现在 http + oauth 条目上；scopes 非空；authorizeParams 不碰保留键", () => {
+    for (const e of MCP_CATALOG) {
+      if (e.presetClient === undefined && e.scopes === undefined && e.authorizeParams === undefined) continue;
+      expect([e.id, e.transport, e.auth]).toEqual([e.id, "http", "oauth"]);
+      if (e.scopes !== undefined) expect(e.scopes.length).toBeGreaterThan(0);
+      for (const k of Object.keys(e.authorizeParams ?? {})) expect(AUTHORIZE_RESERVED).not.toContain(k);
+    }
+  });
+  it("desktopBlocked：预置客户端的条目指去手机；其余等于 blocked", () => {
+    expect(desktopBlocked(gmail)).toBe(PRESET_ON_PHONE);
+    expect(PRESET_ON_PHONE).toBe("这个应用在手机上接：Mr Otto 手机 App →「接入应用」");
+    const notion = MCP_CATALOG.find((e) => e.id === "notion")!;
+    expect(desktopBlocked(notion)).toBe(notion.blocked);
+    expect(desktopBlocked({ ...notion, blocked: "坏了" })).toBe("坏了");
   });
 });
