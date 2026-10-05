@@ -106,6 +106,7 @@ export interface RoomLinkHandlers {
   members(): void;
   closed(): void;
   message(from: string, msg: unknown): void;
+  /** room-sys 那条的订阅状态原样给；room: 那条的带 chat: 前缀 */
   status?(s: string): void;
 }
 
@@ -152,12 +153,14 @@ export function subscribeRoom(client: SupabaseClient, roomId: string, selfUid: s
       const o = p.payload as { from?: unknown; msg?: unknown } | undefined;
       if (o !== undefined && typeof o.from === "string") h.message(o.from, o.msg ?? null);
     })
-    .subscribe();
+    // 这条的状态带 chat: 前缀给：宿主的断线重订只认 room-sys 的原样状态，这条断了不至于两条一起重订
+    .subscribe((s: string) => h.status?.(`chat:${s}`));
   return {
     async send(msg) {
       if (jsonBytes(msg) > ROOM_MSG_BYTES_MAX) throw new Error("即时消息太大（最多 4 KB）");
       if (!gate()) throw new Error("发得太快了（每秒最多 20 条）");
-      await chat.send({ type: "broadcast", event: "msg", payload: { from: selfUid, msg } });
+      const r = await chat.send({ type: "broadcast", event: "msg", payload: { from: selfUid, msg } });
+      if (r !== "ok") throw new Error("即时消息没发出去");
     },
     async close() {
       await Promise.all([client.removeChannel(sys), client.removeChannel(chat)]);

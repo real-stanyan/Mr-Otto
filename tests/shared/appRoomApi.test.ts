@@ -9,11 +9,11 @@ const U1 = "2819d0bb-933b-499d-be44-2bb51b5a8391";
 /** 照 realtime-js 2.112.3 的样子：channel(topic) 见到同名（topic 带 realtime: 前缀）的就把那条原样还回去——
     哪怕它正在 leaving；只有 removeChannel 那条 promise 落地之后它才从 getChannels() 里消失。
     manualRemove：removeChannel 挂着，等测试逐条 settle */
-function fakeClient(rpcReply: (fn: string, args: Record<string, unknown>) => { data: unknown; error: { message: string } | null }, opts: { manualRemove?: boolean } = {}) {
+function fakeClient(rpcReply: (fn: string, args: Record<string, unknown>) => { data: unknown; error: { message: string } | null }, opts: { manualRemove?: boolean; sendReply?: string } = {}) {
   const calls: { fn: string; args: Record<string, unknown> }[] = [];
   type FakeChannel = { topic: string; on(kind: string, filter: { event: string }, cb: (p: { payload: unknown }) => void): FakeChannel; subscribe(cb?: (s: string) => void): FakeChannel; send(m: unknown): Promise<string> };
   // 每个频道名一份：记下 opts 与按事件名注册的回调
-  const channels = new Map<string, { opts: unknown; on: Map<string, (p: { payload: unknown }) => void>; sent: unknown[]; subscribed: number; api: FakeChannel }>();
+  const channels = new Map<string, { opts: unknown; on: Map<string, (p: { payload: unknown }) => void>; sent: unknown[]; subscribed: number; status: ((s: string) => void) | null; api: FakeChannel }>();
   const pending: { topic: string; settle: () => void }[] = [];
   const removed: string[] = [];
   const client = {
@@ -21,12 +21,12 @@ function fakeClient(rpcReply: (fn: string, args: Record<string, unknown>) => { d
     channel(topic: string, o: unknown) {
       const had = channels.get(topic);
       if (had !== undefined) return had.api;
-      const c = { opts: o, on: new Map<string, (p: { payload: unknown }) => void>(), sent: [] as unknown[], subscribed: 0, api: null as unknown as FakeChannel };
+      const c = { opts: o, on: new Map<string, (p: { payload: unknown }) => void>(), sent: [] as unknown[], subscribed: 0, status: null as ((s: string) => void) | null, api: null as unknown as FakeChannel };
       const api: FakeChannel = {
         topic: `realtime:${topic}`,
         on(kind, filter, cb) { if (kind === "broadcast") c.on.set(filter.event, cb); return api; },
-        subscribe() { c.subscribed += 1; return api; },
-        async send(m) { c.sent.push(m); return "ok"; },
+        subscribe(cb) { c.subscribed += 1; c.status = cb ?? null; return api; },
+        async send(m) { c.sent.push(m); return opts.sendReply ?? "ok"; },
       };
       c.api = api;
       channels.set(topic, c);
@@ -43,7 +43,8 @@ function fakeClient(rpcReply: (fn: string, args: Record<string, unknown>) => { d
     },
   } as unknown as SupabaseClient;
   const fire = (topic: string, event: string, payload: unknown) => channels.get(topic)?.on.get(event)?.({ payload });
-  return { client, calls, channels, fire, pending, removed };
+  const status = (topic: string, s: string) => channels.get(topic)?.status?.(s);
+  return { client, calls, channels, fire, status, pending, removed };
 }
 
 const flush = (): Promise<void> => new Promise((r) => setTimeout(r, 0));
@@ -114,6 +115,20 @@ describe("appRoomApi", () => {
     await link.send({ hi: 1 });
     expect(f.channels.get(`room:${ROOM}`)?.sent[0]).toEqual({ type: "broadcast", event: "msg", payload: { from: U1, msg: { hi: 1 } } });
     await expect(link.send("x".repeat(5000))).rejects.toThrow("4 KB");
+  });
+
+  it("send：频道没收下（回的不是 ok，比如 timed out / error）就抛「即时消息没发出去」", async () => {
+    const f = fakeClient(() => ({ data: null, error: null }), { sendReply: "timed out" });
+    const link = subscribeRoom(f.client, ROOM, U1, noop);
+    await expect(link.send({ hi: 1 })).rejects.toThrow("即时消息没发出去");
+  });
+  it("status：room-sys 的原样给；room: 那条带 chat: 前缀给（宿主的重订只认 room-sys 的）", () => {
+    const f = fakeClient(() => ({ data: null, error: null }));
+    const got: string[] = [];
+    subscribeRoom(f.client, ROOM, U1, { ...noop, status: (s) => got.push(s) });
+    f.status(`room-sys:${ROOM}`, "SUBSCRIBED");
+    f.status(`room:${ROOM}`, "CHANNEL_ERROR");
+    expect(got).toEqual(["SUBSCRIBED", "chat:CHANNEL_ERROR"]);
   });
 
   it("close() 是个 promise：两条频道都真拆完才落地；拆完之前同名 channel() 还会拿回那条旧的（realtime-js 的行为）", async () => {
