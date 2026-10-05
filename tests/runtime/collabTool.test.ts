@@ -31,6 +31,9 @@ describe("invite_collaborator", () => {
     expect(h.sent[0]).toContain("问问周六有没有空");
     expect(h.recorded).toEqual([["t1", "u_xh", "小红"]]);
     expect(out).toContain("已邀请小红的管理员协作");
+    // #1605：回执说清对面要主人点头，别把「发到了」说成「在办了」
+    expect(out).toContain("要 小红 本人看到并点头");
+    expect(out).toContain("别说成已经在办");
   });
   it("没这个任务 / 收口了 / 邀过了 / note 太长", async () => {
     const h = harness([row("t1", "done"), row("t2", "open", { collaborator: { uid: "u_xh", name: "小红" } }), row("t3", "open")]);
