@@ -36,6 +36,7 @@ import { chatSessionOf, closeChatIf, openChat, sendText, useChatStore } from "..
 import { PickAgentsDialog } from "../group/PickAgentsDialog.js";
 import { decodeAppCard } from "../../../src/shared/appCard.js";
 import { AppShareBubble } from "../apps/AppShareBubble.js";
+import { AppPickSheet } from "../apps/AppPickSheet.js";
 import { bringAgents, loadPairLane, loadPairPresence, usePairPresence } from "./pairLane.js";
 import { closePeerLane, ensurePeerLane, openPeerLane, sayToPeerLane, usePeerLane } from "./peerLane.js";
 import { CallPickDialog } from "./CallPickDialog.js";
@@ -226,6 +227,7 @@ export function FriendChatScreen({ route, navigation }: Props) {
   const [grouping, setGrouping] = useState<{ key: number; visible: boolean } | null>(null);
   // 名片（#1524）：＋ 里「名片」挑我的智能体 / 别的朋友，每挑一张发一条
   const [carding, setCarding] = useState<{ key: number; visible: boolean } | null>(null);
+  const [appPicking, setAppPicking] = useState<{ key: number; visible: boolean } | null>(null);
   const [cardBusy, setCardBusy] = useState(false);
   const [cardError, setCardError] = useState<string | null>(null);
   const createdGroup = useRef<string | null>(null);
@@ -776,6 +778,8 @@ export function FriendChatScreen({ route, navigation }: Props) {
               { key: "camera", icon: "camera", label: "拍摄", onPress: () => void sendPicked(pickFromCamera) },
               // 名片（#1524）：推一位朋友给 TA，或把我的一只智能体发给 TA（TA 接受就复制进 TA 的智能体库）
               { key: "card", icon: "user-round", label: "名片", onPress: () => { setCardError(null); setCarding({ key: Date.now(), visible: true }); } },
+              // 应用（#1648 真机：「没办法直接分享给 Stan」）：挑一个我的应用，直接发一张应用卡
+              { key: "app", icon: "app-window", label: "应用", onPress: () => setAppPicking({ key: Date.now(), visible: true }) },
               // 拉人建群（#1393）：带上 TA，再拉几位——群建在我的主场里
               ...(home.home !== null
                 ? [{ key: "group", icon: "users-round" as const, label: "拉人建群", onPress: () => setGrouping({ key: Date.now(), visible: true }) }]
@@ -1027,6 +1031,17 @@ export function FriendChatScreen({ route, navigation }: Props) {
             setFacingPick(null);
             setFacingError(null);
           }}
+        />
+      ) : null}
+      {appPicking !== null ? (
+        <AppPickSheet
+          key={appPicking.key}
+          visible={appPicking.visible}
+          selfUid={selfUid}
+          selfName={me.name}
+          onSend={(body) => sendToFriend(uid, body)}
+          onClose={() => setAppPicking((d) => (d === null ? d : { ...d, visible: false }))}
+          onExited={() => setAppPicking(null)}
         />
       ) : null}
       {carding !== null ? (

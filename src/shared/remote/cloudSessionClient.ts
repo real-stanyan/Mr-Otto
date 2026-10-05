@@ -237,6 +237,8 @@ export interface CloudSessionClient {
   humanCall(callId: string, toUid: string): Promise<FriendsResult<{ ice: IceServer[]; expiresTs: number }>>;
   /** 把私信里分享来的应用添加到我名下（控制房 RPC，协议 29，#1648） */
   appAccept(messageId: number): Promise<FriendsResult<{ appId: string; already: boolean }>>;
+  /** 删掉我的一个应用（控制房 RPC，协议 29，#1648） */
+  appDelete(appId: string): Promise<FriendsResult<null>>;
   /** 停掉当前正在跑的这一轮 turn（#957 第三批）。谁能停由服务端判（发起人
       或 owner，与 approve 同一判据）——resolve 的是 `stop_result` 那条回执，
       不是「帧交给 socket 了」 */
@@ -979,6 +981,13 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     });
   }
 
+  function appDelete(appId: string): Promise<FriendsResult<null>> {
+    return ctlRequest({ t: "app_delete", appId }, (msg) => {
+      if (msg.t !== "app_delete_result" || msg.appId !== appId) return null;
+      return msg.ok ? { ok: true, value: null } : { ok: false, message: msg.message ?? "没删成" };
+    });
+  }
+
   function appAccept(messageId: number): Promise<FriendsResult<{ appId: string; already: boolean }>> {
     return ctlRequest({ t: "app_accept", messageId }, (msg) => {
       if (msg.t !== "app_accept_result" || msg.messageId !== messageId) return null;
@@ -1297,5 +1306,5 @@ export function createCloudSessionClient(deps: CloudSessionClientDeps): CloudSes
     };
   }
 
-  return { currentSessionId, activeSummary, create, join, leave, say, approve, pickFriend, archive, remove, chatUpdate, collabDecide, humanCall, appAccept, stop, call, backlogPage, workspaceState, workspaceGitCredential, workspaceFiles, workspaceFilesSearch, workspaceWikiWrite };
+  return { currentSessionId, activeSummary, create, join, leave, say, approve, pickFriend, archive, remove, chatUpdate, collabDecide, humanCall, appAccept, appDelete, stop, call, backlogPage, workspaceState, workspaceGitCredential, workspaceFiles, workspaceFilesSearch, workspaceWikiWrite };
 }

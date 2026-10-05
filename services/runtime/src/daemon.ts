@@ -90,7 +90,7 @@ import { ADMIN_AGENT_ID, normalizeSandboxApproval, type SandboxApproval } from "
 import { isAgentDomain } from "../../../src/shared/agentDomain.js";
 import { APP_BUCKET } from "../../../src/shared/apps.js";
 import { createSupabaseAppStore } from "./appStore.js";
-import { acceptAppShare } from "./appShare.js";
+import { acceptAppShare, deleteApp } from "./appShare.js";
 import { appRowOf, appVersionRowOf } from "../../../src/shared/apps.js";
 import { createSupabaseOwnerSettings } from "./ownerSettingsStore.js";
 import type { AdminsBridge } from "./sessionService.js";
@@ -1451,6 +1451,28 @@ async function main(): Promise<void> {
           if (error) throw new Error(`复制文件失败 ${from}：${error.message}`);
         },
       }, byUid, messageId),
+    // 删掉我的一个应用（#1648）：判断在 appShare.ts（deleteApp）
+    appDelete: (byUid, appId) =>
+      deleteApp({
+        app: async (id) => {
+          const { data, error } = await supabase.from("apps").select("*").eq("id", id).maybeSingle();
+          if (error) throw new Error(`读应用失败：${error.message}`);
+          return data === null ? null : appRowOf(data);
+        },
+        versions: async (id) => {
+          const { data, error } = await supabase.from("app_versions").select("*").eq("app_id", id);
+          if (error) throw new Error(`读应用版本失败：${error.message}`);
+          return ((data ?? []) as unknown[]).map(appVersionRowOf).filter((v): v is NonNullable<typeof v> => v !== null).map((v) => ({ version: v.version, files: v.files }));
+        },
+        removeObjects: async (paths) => {
+          const { error } = await supabase.storage.from(APP_BUCKET).remove(paths);
+          if (error) console.warn(`[otto-runtime] 删应用文件失败：${error.message}`);
+        },
+        deleteRow: async (id) => {
+          const { error } = await supabase.from("apps").delete().eq("id", id);
+          if (error) throw new Error(`删应用失败：${error.message}`);
+        },
+      }, byUid, appId),
     humanCall: async (fromUid, toUid, callId) => {
       if (apns === null) return { ok: false, message: "这台服务器没开推送，打不了电话。" };
       if (fromUid === toUid) return { ok: false, message: "不能给自己打电话。" };

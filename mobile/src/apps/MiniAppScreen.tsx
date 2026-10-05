@@ -64,6 +64,7 @@ export function MiniAppScreen({ route, navigation }: Props) {
         if (!alive) return;
         setLoaded({ app, version, dirUri: dir.uri, uid });
         loadedRef.current = { app, version, dirUri: dir.uri, uid };
+        if (route.params.share === true) setSharing({ key: Date.now(), visible: true });
         markAppOpened(app.id);
         setPage(version.manifest.entry);
       } catch (e) {
