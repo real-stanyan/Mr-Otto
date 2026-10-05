@@ -10,6 +10,49 @@ import {
   isTextExtension, parseAppManifest, safeRelPath, type AppFileEntry,
 } from "../../../src/shared/apps.js";
 import type { AppStore } from "./appStore.js";
+import { APP_BRIDGE_JS } from "../../../src/shared/appBridge.js";
+
+/** 沙箱里跑的那段检查（jsdom）：每一页开一遍、等 1.5 秒，收脚本报错；桥用一个假的（storage 回空）。
+    退出码 4 = 页面报错（stdout 是 JSON 数组）；别的非零 = 检查本身没跑起来（不拦，回执里说一句） */
+export const APP_CHECK_JS = `
+const { JSDOM, VirtualConsole } = require("jsdom");
+const fs = require("fs"), path = require("path");
+const [dir, ...pages] = process.argv.slice(2);
+const BRIDGE = ${JSON.stringify(APP_BRIDGE_JS)};
+const errs = [];
+(async () => {
+  for (const p of pages) {
+    const vc = new VirtualConsole();
+    vc.on("jsdomError", (e) => errs.push(p + "：" + String((e && e.detail && e.detail.message) || (e && e.message) || e)));
+    const file = path.join(dir, p);
+    const dom = new JSDOM(fs.readFileSync(file, "utf8"), {
+      url: "file://" + file, runScripts: "dangerously", resources: "usable", pretendToBeVisual: true, virtualConsole: vc,
+      beforeParse(w) {
+        w.ReactNativeWebView = { postMessage(raw) { try { const m = JSON.parse(raw); if (m && m.id) setTimeout(() => w.__ottoReply && w.__ottoReply(m.id, true, m.method === "storage.list" ? [] : null), 5); } catch (_) {} } };
+        w.eval(BRIDGE);
+      },
+    });
+    await new Promise((r) => setTimeout(r, 1500));
+    dom.window.close();
+  }
+  if (errs.length > 0) { console.log(JSON.stringify(errs.slice(0, 5))); process.exit(4); }
+  console.log("ok");
+})().catch((e) => { console.error(String(e)); process.exit(3); });
+`;
+
+/** 装一次 jsdom（缓存在 /work/.otto/appcheck），把检查脚本落盘，跑每一页 */
+export function appCheckScript(dir: string, pages: readonly string[]): string {
+  const b64 = Buffer.from(APP_CHECK_JS, "utf8").toString("base64");
+  const q = (s: string): string => `'${s.replace(/'/g, `'\\''`)}'`;
+  return [
+    "set -e",
+    "CK=/work/.otto/appcheck",
+    'mkdir -p "$CK" && cd "$CK"',
+    '[ -d node_modules/jsdom ] || { npm init -y >/dev/null 2>&1; npm i jsdom@24 --no-audit --no-fund --silent >/dev/null 2>&1 || exit 5; }',
+    `echo ${b64} | base64 -d > check.js`,
+    `node check.js ${q(`/work/${dir}`)} ${pages.map(q).join(" ")}`,
+  ].join("\n");
+}
 
 export interface BuildAppDeps {
   agentId: string;
@@ -82,6 +125,17 @@ export function createBuildAppTool(deps: BuildAppDeps): Tool {
       const manifest = parseAppManifest(manifestRaw);
       const problem = checkAppFiles({ manifest, files });
       if (problem !== null) throw new Error(problem);
+      // ③½ 在沙箱里 headless 开一遍每一页（spec §3.3 ②；真机 2026-10-05：日历记事本 bind() 里用了没缓存的 el.prev，
+      // 一打开就 TypeError、月历一格都没画——静态检查看不出来）。页面报错就不打包；检查本身没跑起来不拦，回执里说一句
+      const pages = files.filter((f) => f.path.endsWith(".html")).map((f) => f.path);
+      const check = await deps.exec(appCheckScript(dir, pages));
+      let checkNote = "";
+      if (check.exitCode === 4) {
+        let errs: string[] = [];
+        try { errs = JSON.parse(check.stdout.trim().split("\n").at(-1) ?? "[]") as string[]; } catch { errs = [check.stdout.trim().slice(0, 500)]; }
+        throw new Error(`页面一打开就报错，没打包：\n${errs.map((e) => `- ${e}`).join("\n")}\n改好再调 build_app。`);
+      }
+      if (check.exitCode !== 0) checkNote = "（这次没能在沙箱里试开页面，打开后要是不对劲就跟主人说一声）";
       // ④ 找 / 建应用行，定版本号
       const existing = await deps.store.findBySlug(deps.workspaceId, manifest.slug);
       const app = existing ?? (await deps.store.create({
@@ -97,7 +151,7 @@ export function createBuildAppTool(deps: BuildAppDeps): Tool {
       }
       await deps.store.recordVersion({ appId: app.id, version, manifest, files: entries, builtByAgent: deps.agentId, note, name: manifest.name, icon: manifest.icon, description: manifest.description });
       deps.card({ appId: app.id, version, name: manifest.name, icon: manifest.icon, note });
-      return `「${manifest.name}」v${version} 已打好（${files.length} 个文件）。主人聊天里有一张卡，点开就能用；要改就改文件再调一次 build_app。`;
+      return `「${manifest.name}」v${version} 已打好（${files.length} 个文件，每一页都在沙箱里试开过${checkNote === "" ? "、没报错" : ""}）。主人聊天里有一张卡，点开就能用；要改就改文件再调一次 build_app。${checkNote}`;
     },
   };
 }

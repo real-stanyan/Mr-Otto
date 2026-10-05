@@ -19,6 +19,10 @@ export const APP_BRIDGE_JS = `(function(){
     delete pending[id];
     if (ok) p.res(value); else p.rej(new Error(String(value)));
   };
+  // 应用自己的脚本报错（#1591 真机）：报给宿主，宿主露一条「这个应用出错了 · 让管理员修」
+  function report(msg) { try { window.ReactNativeWebView.postMessage(JSON.stringify({ error: String(msg).slice(0, 500) })); } catch (_) {} }
+  window.addEventListener("error", function (e) { report((e && (e.message || (e.error && e.error.message))) || "出错了"); });
+  window.addEventListener("unhandledrejection", function (e) { report((e && e.reason && (e.reason.message || e.reason)) || "出错了"); });
   window.otto = {
     storage: {
       get: function (k) { return call("storage.get", [k]); },
@@ -84,4 +88,21 @@ export function bridgeReplyJs(id: string, ok: boolean, value: unknown): string {
 export function appAskText(appName: string, text: unknown): string | null {
   const t = typeof text === "string" ? text.replace(/\s+/g, " ").trim().slice(0, 1000) : "";
   return t === "" ? null : `[应用「${appName.replace(/[\[\]]/g, "")}」]: ${t}`;
+}
+
+/** 应用报上来的错（{ error }）：不是这个形状回 null */
+export function parseBridgeError(raw: unknown): string | null {
+  if (typeof raw !== "string" || raw.length > 4096) return null;
+  try {
+    const o = JSON.parse(raw) as unknown;
+    if (typeof o === "object" && o !== null && typeof (o as { error?: unknown }).error === "string") return ((o as { error: string }).error).slice(0, 500);
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+/** 「让管理员修」发到管理员私聊里的那句 */
+export function appFixText(appName: string, version: number, error: string): string {
+  return `[应用「${appName.replace(/[\[\]]/g, "")}」v${version} 出错了]: ${error.replace(/\s+/g, " ").slice(0, 400)}——让应用专员修一下、出下一版。`;
 }

@@ -1911,7 +1911,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
           ...routineTools,
           ...(settingsTool !== null && isAdmin ? [settingsTool] : []),
           ...taskTools,
-          ...(buildAppTool !== null && (isAdmin || (me !== null && domainOf(me) === "apps")) ? [buildAppTool] : []),
+          // 只给 apps 域的专员（#1591 真机：管理员拿着这把刀就自己下场了，主人要的是专人专管）
+          ...(buildAppTool !== null && me !== null && domainOf(me) === "apps" ? [buildAppTool] : []),
           ...px,
         ];
         // 汇报轮同理（#1441）：supervisedTurn = 客人那一轮 或 汇报轮
