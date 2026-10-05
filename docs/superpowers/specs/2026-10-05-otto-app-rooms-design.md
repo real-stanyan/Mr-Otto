@@ -176,8 +176,10 @@ otto.on(event, cb) / otto.off(event, cb)
 
 | 期 | 内容 | 上线方式 |
 |---|---|---|
-| **1** | migration 0067（表 / RLS / RPC / Realtime 策略 / 版本与桶的读放行）+ 桥 `otto.room` + 宿主房间模式 + 邀请卡 + build_app 假桥 + 专员提示词 | migration（维护者点头）→ runtime 部署 → OTA |
-| **2** | `room.ping` 推送（`app_room_pings` + `roomPush.ts`）+ 推送深链进房间 | runtime 部署 → OTA |
+| **1** | migration 0067（表 / RLS / RPC / Realtime 策略 / 版本与桶的读放行）+ 桥 `otto.room` + 宿主房间模式 + 邀请卡 + build_app 假桥 + 专员提示词 | migration（维护者点头）→ OTA（手机）→ runtime 部署 |
+| **2** | `room.ping` 推送（`app_room_pings` + `roomPush.ts`）+ 推送深链进房间 | OTA（手机）→ runtime 部署 |
 | **3** | 端到端：四个样板应用两账号验收（#1661 续） | — |
+
+**上线顺序是 migration → OTA → runtime，手机先于 runtime**：老手机的 `parseAppManifest` 见到不认识的能力 `room` 会抛错、整份清单读不出来，runtime 先上的话专员就能造出没更新的手机打不开的房间应用。
 
 第 1 期不带推送也能玩（双方都开着应用时实时同步）；第 2 期让回合制「轮到你了」能叫醒对方。
