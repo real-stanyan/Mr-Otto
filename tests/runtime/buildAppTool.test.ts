@@ -142,3 +142,39 @@ describe("build_app", () => {
     expect(s.tool.exposure).toBe("direct");
   });
 });
+
+describe("build_app 打包前在沙箱里试开每一页（#1591 真机）", () => {
+  function withCheck(result: { stdout: string; stderr: string; exitCode: number }) {
+    const work = fakeWork(GOOD);
+    const scripts: string[] = [];
+    const store = createInMemoryAppStore();
+    const uploads: string[] = [];
+    const tool = createBuildAppTool({
+      agentId: "a_apps", workspaceId: "w1", ownerUid: "owner", store, card: () => {},
+      upload: async (path) => { uploads.push(path); },
+      exec: async (script) => {
+        if (script.includes("check.js")) { scripts.push(script); return result; }
+        return work.exec(script);
+      },
+    });
+    return { tool, scripts, store, uploads };
+  }
+  it("页面报错（退出码 4）：不打包、把报错原样给模型", async () => {
+    const r = withCheck({ stdout: JSON.stringify(["index.html：Cannot read properties of undefined (reading 'addEventListener')"]), stderr: "", exitCode: 4 });
+    await expect(r.tool.run({ dir: "apps/notes" }, world)).rejects.toThrow("页面一打开就报错");
+    await expect(r.tool.run({ dir: "apps/notes" }, world)).rejects.toThrow("addEventListener");
+    expect(r.uploads).toEqual([]);
+    expect(r.store.rows()).toEqual([]);
+  });
+  it("检查脚本装 jsdom、跑 check.js、带上每一页；没报错照常打包", async () => {
+    const r = withCheck({ stdout: "ok", stderr: "", exitCode: 0 });
+    expect(await r.tool.run({ dir: "apps/notes" }, world)).toContain("试开过、没报错");
+    expect(r.scripts[0]).toContain("npm i jsdom");
+    expect(r.scripts[0]).toContain("'index.html'");
+    expect(r.uploads.length).toBeGreaterThan(0);
+  });
+  it("检查本身没跑起来（装不上 jsdom 等）：不拦，回执里说一句", async () => {
+    const r = withCheck({ stdout: "", stderr: "npm ERR", exitCode: 5 });
+    expect(await r.tool.run({ dir: "apps/notes" }, world)).toContain("没能在沙箱里试开页面");
+  });
+});
