@@ -328,6 +328,89 @@ describe("连接器 409 needs_login 兜底发卡（#1666）", () => {
   });
 });
 
+describe("接力棒上 / L2：工具不亮、409 不发卡（#1666 终审）", () => {
+  // 主场群：运维（L0）+ 开发（L1，dev 域有连接器）+ 小开（L2，开发的下属）。主人 @运维，运维回一句 @开发 → 开发那一轮接力深度 1
+  const DEV = { agentId: "dev1", name: "开发", description: "", instructions: "", models: ["fake-model"], tools: [] as AgentToolAllow[], tier: 1 as AgentTier, domain: "dev" };
+  const SUB = { agentId: "sub1", name: "小开", description: "", instructions: "", models: ["fake-model"], tools: [] as AgentToolAllow[], tier: 2 as AgentTier, domain: "dev", parentAgentId: "dev1" };
+  const PX_TOOL = "px_owner_cloud-supabase_list";
+  const groupSeed = (store: EventStore): void => {
+    store.append({ sessionId: SID, ts: 1, type: "session_created", workspace: "/work", cloud: { workspaceId: "w1", home: true, chat: { kind: "group" } } });
+    store.append({
+      sessionId: SID, ts: 2, type: "chat_roster_changed", ignorable: true, humans: [],
+      agents: [{ agentId: ADMIN_AGENT_ID, name: "运维" }, { agentId: "dev1", name: "开发" }, { agentId: "sub1", name: "小开" }],
+    });
+  };
+  const needsLogin = (async (url: string) =>
+    String(url).includes("/px/v1/grants")
+      ? Response.json({ servers: [{ serverId: "cloud-supabase", toolDefs: [{ name: "list", description: "d", inputSchema: {} }] }] })
+      : Response.json({ error: { message: "这个应用要在手机上重新登录", type: "otto_edge", code: "needs_login" } }, { status: 409 })) as unknown as typeof fetch;
+  const perAgent = (store: EventStore, agentId: string): string[][] =>
+    (store.ofType(SID, "request_envelope") as RequestEnvelopeEvent[]).filter((e) => e.agentId === agentId).map((e) => e.tools.map((t) => t.name));
+  /** 运维第一句 @开发；其余（开发 / 小开）第一句调一次连接器，之后收口 */
+  function openGroup(store: EventStore): CloudSession {
+    const rounds = new Map<string, number>();
+    let s!: CloudSession;
+    s = createCloudSession({
+      sessionMeta: createInMemoryCloudSessionMeta(),
+      workspaceId: "w1", sessionId: SID, ownerUid: OWNER, createdByUid: OWNER, store, world: fakeWorld,
+      agents: async () => [OPS, DEV, SUB],
+      adapterFor: (a) => ({ model: "fake-model", async chat(): Promise<ModelReply> {
+        const n = (rounds.get(a.agentId) ?? 0) + 1;
+        rounds.set(a.agentId, n);
+        if (n > 1) return { content: "好的" };
+        if (a.agentId === ADMIN_AGENT_ID) return { content: "@开发 你来查一下库" };
+        return { content: "", toolCalls: [{ id: `p-${a.agentId}`, name: PX_TOOL, args: {} }] };
+      } }),
+      px: { ...basePx, fetchImpl: needsLogin }, hostUids: async () => [OWNER],
+      // 接力棒上连接器要点火的人批（requiresApproval: openingDepth > 0）：主人当场批
+      onEvent: (e) => {
+        if (e.type === "approval_request") void s.approve((e as ApprovalRequestEvent).callId, OWNER, "Stan", "approved");
+      },
+      onUsage: () => {}, wiki: testWiki(), mentionInbox: createInMemoryMentionInbox(),
+      agentWriter: createInMemoryAgentWriter(), isMember: async () => true, contextWindowOf: () => undefined,
+      sandboxApproval: async () => "ask", workspaceLock: createWorkspaceLock(), relayRemainingMicro: async () => null,
+      diskUsage: () => null, routines: null, onOutreachEnded: null, signSpeechTicket: async () => "t", pairMessages: null,
+      outreach: null, approveAll: true, callback: null,
+    } as CloudSessionOpts);
+    return s;
+  }
+
+  it("主人 @运维 → 运维 @开发：运维那轮亮着；开发那轮（接力深度 1）不亮，它撞的 409 也不发卡，模型拿 edge 原话", async () => {
+    const store = newStore();
+    groupSeed(store);
+    const s = openGroup(store);
+    await s.say(OWNER, "Stan", "@运维 查一下库", true, [ADMIN_AGENT_ID]);
+    await s.settled();
+    const opening = (store.ofType(SID, "user_message") as UserMessageEvent[]).find((m) => m.relay !== undefined);
+    expect(opening).toMatchObject({ mentions: ["dev1"], relay: { depth: 1 } });
+    expect(perAgent(store, ADMIN_AGENT_ID)[0]).toContain(TOOL);
+    const devTools = perAgent(store, "dev1");
+    expect(devTools.length).toBeGreaterThan(0);
+    expect(devTools[0]).toContain(PX_TOOL); // 连接器在手上——是接力深度把连接卡挡掉的，不是没连接器域
+    expect(devTools[0]).not.toContain(TOOL);
+    expect(cards(store)).toHaveLength(0);
+    const devResult = results(store).find((r) => r.toolCallId === "p-dev1");
+    expect(devResult).toMatchObject({ status: "error", output: "这个应用要在手机上重新登录" });
+    store.close();
+  });
+
+  it("主人直接 @小开（L2，深度 0、不受监督）：不亮，它撞的 409 也不发卡", async () => {
+    const store = newStore();
+    groupSeed(store);
+    const s = openGroup(store);
+    await s.say(OWNER, "Stan", "@小开 查一下库", true, ["sub1"]);
+    await s.settled();
+    const subTools = perAgent(store, "sub1");
+    expect(subTools.length).toBeGreaterThan(0);
+    expect(subTools[0]).toContain(PX_TOOL);
+    expect(subTools[0]).not.toContain(TOOL);
+    expect(cards(store)).toHaveLength(0);
+    expect(results(store).find((r) => r.toolCallId === "p-sub1")).toMatchObject({ status: "error", output: "这个应用要在手机上重新登录" });
+    expect(store.ofType(SID, "approval_request")).toHaveLength(0); // 深度 0 的主人轮：确实不是靠审批 / 受监督挡的
+    store.close();
+  });
+});
+
 describe("主人点连接卡 answerAppConnect（#1666）", () => {
   const CID = "card-1";
   const seedCard = (store: EventStore, fromAgentId: string = ADMIN_AGENT_ID, ts: number = Date.now()): void => {

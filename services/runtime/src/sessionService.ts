@@ -1925,7 +1925,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
             dispatch: (friend, text) => friendReply.send({ agentId: spec.agentId, agentName: specNames.get(spec.agentId) ?? spec.name, friend, text }),
           });
     // request_app_connect（#1666）：请主人连一个连接器目录应用，会话里出一张卡。只在主场（approveAll）、非外联、非车道挂；
-    // 在 tools() 里再按「主人亲口那一轮之外的受监督轮不亮、等级 ≤ 1、有连接器域」判。reason 恒为 missing——
+    // 在 tools() 里再按「受监督轮不亮、接力棒上（开场白接力深度 > 0）不亮、等级 ≤ 1、有连接器域」判。reason 恒为 missing——
     // 「登录过期」那一路由连接器 409 兜底直接调 offerAppConnect（#1666 Task 4）
     const appConnectTool =
       !opts.approveAll || isOutreach || isPair
@@ -2071,8 +2071,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
           ...(callFriendTool !== null && adminOnly && !supervisedTurn() ? [callFriendTool] : []),
           ...(messageFriendTool !== null && adminOnly && !supervisedTurn() ? [messageFriendTool] : []),
           ...(replyToFriendTool !== null && adminOnly && !supervisedTurn() ? [replyToFriendTool] : []),
-          // 请主人连应用（#1666）：受监督轮不亮（那一轮不是主人在说话，卡只该为主人发）；动手的刀按等级与连接器域过
-          ...(appConnectTool !== null && !supervisedTurn() && (me === null || tierOf(me) <= 1) && (me === null || connectorsAllowed(me, turnRoster)) ? [appConnectTool] : []),
+          // 请主人连应用（#1666）：受监督轮不亮（那一轮不是主人在说话，卡只该为主人发）；接力棒上不亮（主人一点卡起的是
+          // 深度 0 的主人轮，会绕开接力棒上连接器要批 / 棒数与额度上限，#1666 终审）；动手的刀按等级与连接器域过。
+          // 与连接器 409 兜底（runJob 里的 onNeedsLogin）同一套条件，改一处要改两处
+          ...(appConnectTool !== null && !supervisedTurn() && currentOpeningDepth === 0 && (me === null || tierOf(me) <= 1) && (me === null || connectorsAllowed(me, turnRoster)) ? [appConnectTool] : []),
           // 对面公开的智能体（#1542）：只在这条车道此刻是公开的（朋友在客人名单里）才亮
           ...(bridgeTool !== null && adminOnly && pairFacingOf(chatHumans, pairFacts!.peerUid) === "both" ? [bridgeTool] : []),
           // 第 1 期 b（#1605）：不再要求车道公开——对面看的是自己家的管理员车道，不是这条
@@ -3110,13 +3112,14 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         cachedPxTools = buildPxTools(opts.px, job.fromUid, filterGrantedByAllow(granted, spec.tools), {
           requiresApproval: openingDepth > 0,
           // 连接器登录过期（#1666）：edge 回 409 needs_login 时自动发「重新登录」卡，并把工具错误文本换成给模型的那句。
-          // 只在能发卡的场合传（主场、非外联、非车道，同 appConnectTool 的挂刀条件）；
+          // 只在能发卡的场合传（主场、非外联、非车道，同 appConnectTool 的建刀条件）；
           // 只认主人自己云箱里的：别人借来的应用过期了，轮不到这位主人去登
           ...(opts.approveAll && !isOutreach && !isPair
             ? {
                 onNeedsLogin: ({ hostUid, serverId }: { hostUid: string; serverId: string }): string | null => {
                   if (hostUid !== opts.ownerUid) return null;
-                  // 与 request_app_connect 的亮刀条件同一套（tools() 里那句）：受监督轮 / 接力棒上 / L2 不发卡，回 edge 原话。
+                  // 与 request_app_connect 的亮刀条件同一套（tools() 里那句）：受监督轮 / 接力深度 > 0 / 等级 > 1 不发卡，回 edge 原话；
+                  // 连接器域不用再判——没有连接器域的那只手上根本没有连接器（tools() 里 px 按 connectorsAllowed 过），走不到 409。
                   // 主人一点卡，起的是「主人亲口、免审批」的一轮（app_connected 开场白算主人说的）——朋友带话那一轮
                   // 若能发卡，朋友的请求就借主人这一下变成了不受监督的轮（#1666 终审 Critical）。
                   // 调用时现读：supervisedTurn() 会因折进别人的话在一轮中途收紧
