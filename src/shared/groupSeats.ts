@@ -169,3 +169,48 @@ export function seatAudienceText(o: { ownerName: string; groupTitle: string }): 
     `${w} 的私事在群里一律不说：${w} 在群里问私事，回一句「私下说」就好。\n`
   );
 }
+
+// ── 客户端那一侧（手机）────────────────────────────────────────────
+
+/** 客户端的「此刻座位」：日志里最后一条带 seats 的名单胜出，一条都没加载到退回 welcome 那份（同 chatRosterNow 的理由：
+    进房只拉尾巴）。null = 不是座位制的群 */
+export function groupSeatsNow(events: readonly SessionEvent[], fallback: readonly GroupSeat[] | undefined): GroupSeat[] | null {
+  return groupSeatsOf(events) ?? (fallback === undefined ? null : [...fallback]);
+}
+
+/** 群里的一张点头卡（从日志折）：谁想让谁的管理员干什么、此刻什么状态 */
+export interface SeatCard {
+  requestId: string;
+  seq: number;
+  seatUid: string;
+  ownerName: string;
+  agentName: string;
+  fromUid: string;
+  fromName: string;
+  ask: string;
+  summary: string;
+  expiresTs: number;
+  state: "pending" | "accepted" | "declined" | "expired";
+}
+
+/** 日志里的点头卡（按 requestId）。结局事件先于请求到（翻页边界）时那条结局丢掉——没有卡可挂 */
+export function seatCardsOf(events: readonly SessionEvent[]): Map<string, SeatCard> {
+  const out = new Map<string, SeatCard>();
+  for (const e of events) {
+    if (e.type === "seat_request" && !out.has(e.requestId)) {
+      out.set(e.requestId, {
+        requestId: e.requestId, seq: e.seq, seatUid: e.seatUid, ownerName: e.ownerName, agentName: e.agentName, fromUid: e.fromUid,
+        fromName: e.fromName, ask: e.ask, summary: e.summary, expiresTs: e.expiresTs, state: "pending",
+      });
+    } else if (e.type === "seat_decision") {
+      const c = out.get(e.requestId);
+      if (c !== undefined && c.state === "pending") c.state = e.decision;
+    }
+  }
+  return out;
+}
+
+/** 界面上这张卡算什么状态：还在等但已经过了点 = 过期（runtime 那边的过期事件可能还没到，按钮不该还能点） */
+export function seatCardStateAt(card: SeatCard, now: number): SeatCard["state"] {
+  return card.state === "pending" && card.expiresTs <= now ? "expired" : card.state;
+}
