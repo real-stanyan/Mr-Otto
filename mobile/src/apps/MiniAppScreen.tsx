@@ -22,6 +22,7 @@ import { friendName } from "../../../src/shared/wechatInbox.js";
 import { PickAgentsDialog } from "../group/PickAgentsDialog.js";
 import { sendToFriend, useFriends } from "../friends/friendsStore.js";
 import { useMyName } from "../tabs/MeScreen.js";
+import { markAppOpened } from "./recentApps.js";
 import { appFileUri, ensureAppFiles } from "./appFiles.js";
 
 type Props = NativeStackScreenProps<RootStackParams, "MiniApp">;
@@ -63,6 +64,7 @@ export function MiniAppScreen({ route, navigation }: Props) {
         if (!alive) return;
         setLoaded({ app, version, dirUri: dir.uri, uid });
         loadedRef.current = { app, version, dirUri: dir.uri, uid };
+        markAppOpened(app.id);
         setPage(version.manifest.entry);
       } catch (e) {
         if (alive) setError(e instanceof Error ? e.message : String(e));
