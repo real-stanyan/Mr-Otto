@@ -17,6 +17,9 @@ describe("授权档位", () => {
     expect(admin).toContain("invite_collaborator");
     expect(admin).toContain("小红 的管理员带来的任务你是协作者");
     expect(collabRolePrompt("Stan", "小红")).toContain("Stan 交给你的任务你牵头");
+    // #1605：没调工具不许说发了
+    expect(collabRolePrompt("Stan", "小红")).toContain("没调 invite_collaborator 就等于没发");
+    expect(collabRolePrompt("Stan", "小红")).toContain("那边要 小红 看到并点头才动");
     expect(delegationRolePrompt({ isAdmin: false, ownerName: "Stan", peerName: "小红", others: [] })).not.toContain("invite_collaborator");
   });
   it("邀请那句话：带任务 id、标题、简述、谁牵头、附言；promptSafe 过一遍", () => {

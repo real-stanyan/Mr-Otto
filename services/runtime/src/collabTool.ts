@@ -50,7 +50,8 @@ export function createCollabTool(deps: CollabToolDeps): Tool {
       if (task.collaborator?.uid === peer.uid) return `「${task.title}」已经邀过${peer.name}的管理员了，等它回话就行。`;
       const sent = await deps.send(collabInviteText(task, deps.ownerName(), note));
       deps.record(task.id, peer.uid, peer.name);
-      return `已邀请${peer.name}的管理员协作「${task.title}」。${sent}`;
+      // 对面那一轮是客人点起的，要对面主人批（ADR-0358）：主人不在线就停在那儿——回执说清，别让这边的管理员把「发到了」说成「在办了」
+      return `已邀请${peer.name}的管理员协作「${task.title}」。${sent} 注意：那边要 ${peer.name} 本人看到并点头，它的管理员才会动；${peer.name} 不在线就得等。告诉主人「已交给 ${peer.name} 的管理员，等那边回」，别说成已经在办。`;
     },
   };
 }
