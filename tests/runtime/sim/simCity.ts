@@ -17,6 +17,8 @@ import { createInMemoryMentionInbox } from "../../../services/runtime/src/mentio
 import { createWorkspaceLock } from "../../../services/runtime/src/workspaceLock.js";
 import { createInMemoryCloudSessionMeta } from "../../../services/runtime/src/cloudSessionMeta.js";
 import { BUILTIN_ANYSEARCH_KEY } from "../../../src/tools/anysearch.js";
+import { AttachmentStore } from "../../../src/session/attachments.js";
+import { decideRuntimeImageRoute, type ToolImagesPort } from "../../../services/runtime/src/toolImages.js";
 import { EventStore } from "../../../src/session/store.js";
 import type { SessionEvent } from "../../../src/session/events.js";
 import type { ModelAdapter } from "../../../src/model/adapter.js";
@@ -156,6 +158,13 @@ export async function createCity(o: { edgeBase: string; runtimeSecret: string; p
   /** 所有开着的对话：sid → 房、store、标签、哪家、哪种 */
   const rooms = new Map<string, { room: CloudSession; store: EventStore; label: string; home: string; kind: string }>();
   const log: string[] = [];
+  /** 出图（#1682）：附件库按团队一份；上传不真进 Storage，只记一行「传到哪、多大」 */
+  const attachments = new Map<string, AttachmentStore>();
+  const imagesFor = (ws: string): ToolImagesPort => {
+    let st = attachments.get(ws);
+    if (st === undefined) { st = new AttachmentStore(tempDir(`otto-sim-att-`)); attachments.set(ws, st); }
+    return { store: st, upload: async (bucket, path, bytes) => { log.push(`[出图] ${bucket}/${path} ${bytes.length}B`); } };
+  };
   let personaCalls = 0;
   const nameOf = (uid: string): string => byUid.get(uid)?.p.name ?? uid.slice(0, 8);
 
@@ -304,6 +313,15 @@ export async function createCity(o: { edgeBase: string; runtimeSecret: string; p
       laneBridge,
       adminsBridge,
       webSearchKey: () => process.env["ANYSEARCH_API_KEY"] ?? BUILTIN_ANYSEARCH_KEY,
+      // 出图：同 daemon，钱记在付款账号头上（模拟里所有人共用一个真账号）
+      imageGen: (() => {
+        const route = async (agentId?: string) => decideRuntimeImageRoute({
+          me: await probe.me(o.payer), edgeBase: o.edgeBase, runtimeSecret: o.runtimeSecret, ownerUid: o.payer, workspaceId: o.payerWs, sessionId,
+          ...(agentId !== undefined ? { agentId } : {}),
+        });
+        return { ready: async () => !("blocked" in (await route())), resolve: (agentId: string) => route(agentId) };
+      })(),
+      toolImages: imagesFor(h.ws),
       peerTier: async (peerUid) => h.p.tiers?.[byUid.get(peerUid)?.p.id ?? ""] ?? "agents",
       // 朋友私聊的信封（ADR-0346）：同 daemon，最新的在前
       pairMessages: async ({ ownerUid, peerUid }) =>
