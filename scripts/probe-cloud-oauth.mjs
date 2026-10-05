@@ -5,6 +5,8 @@
 // 用法（不进门禁，用 tsx 直接 import TS 纯函数）：
 //   npx tsx scripts/probe-cloud-oauth.mjs [--callback https://edge.mrotto.agency/px/v1/cloud/callback]
 //
+// 预置客户端的条目（presetClient，如 Gmail）跳过：它们本来就不走动态注册，跑 DCR 只会得到 no_dcr，
+// 照着 FAIL 填 MOBILE_OAUTH_BLOCKED 会把能接的应用误封（#1619）。
 // 副作用：注册会在各厂商那边真的留下一个 OAuth client（无害但会累积）。
 // 只在上线前跑一次，结果与日期写进 #1430 评论；FAIL 的条目按原因填进 src/shared/mobileConnectors.ts 的
 // MOBILE_OAUTH_BLOCKED（no_dcr 写「这个应用暂时不能在手机上直接登录，去电脑上接」，
@@ -25,6 +27,10 @@ console.log(`回调地址：${callback}\n`);
 const f = (url, init) => fetch(url, { ...init, signal: init?.signal ?? AbortSignal.timeout(15_000) });
 const rows = [];
 for (const e of MCP_CATALOG.filter((x) => x.transport === "http" && x.auth === "oauth")) {
+  if (e.presetClient !== undefined) {
+    rows.push([e.id, "skip", "预置客户端，不走动态注册（#1619）"]);
+    continue;
+  }
   if (/\{\w+\}/.test(e.url ?? "")) {
     rows.push([e.id, "skip", "url 带参数，手测"]);
     continue;
@@ -40,4 +46,4 @@ for (const e of MCP_CATALOG.filter((x) => x.transport === "http" && x.auth === "
 for (const [id, s, why] of rows) console.log(`${s.padEnd(4)} ${id.padEnd(24)} ${why}`);
 const ok = rows.filter((r) => r[1] === "ok").length;
 const skipped = rows.filter((r) => r[1] === "skip").length;
-console.log(`\n${ok}/${rows.length} ok，${skipped} 条跳过（url 带参数，手测）`);
+console.log(`\n${ok}/${rows.length} ok，${skipped} 条跳过（见上面每行的原因）`);
