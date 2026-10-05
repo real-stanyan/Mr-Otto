@@ -1,6 +1,7 @@
 // 应用与宿主之间的桥（#1591）：请求怎么认、能力怎么拦、回执怎么拼、ask 那句怎么写。
 import { describe, expect, it } from "vitest";
-import { APP_BRIDGE_JS, appAskText, appFixText, bridgeDenied, bridgeReplyJs, capabilityOf, parseBridgeError, parseBridgeRequest } from "../../src/shared/appBridge.js";
+import { APP_BRIDGE_JS, appAskText, appFixText, bridgeDenied, bridgeEventJs, bridgeReplyJs, capabilityOf, parseBridgeError, parseBridgeRequest } from "../../src/shared/appBridge.js";
+import { APP_CAPABILITIES } from "../../src/shared/apps.js";
 import { appPageOk } from "../../src/shared/appsApi.js";
 
 describe("appBridge", () => {
@@ -45,5 +46,39 @@ describe("应用报错（#1591 真机）", () => {
     expect(parseBridgeError(JSON.stringify({ id: "c1", method: "back" }))).toBeNull();
     expect(parseBridgeError("nope")).toBeNull();
     expect(appFixText("日历记事本", 1, "Cannot read  properties")).toBe("[应用「日历记事本」v1 出错了]: Cannot read properties——让应用专员修一下、出下一版。");
+  });
+});
+
+describe("房间（#1675）", () => {
+  it("能力清单有 room；room.* 归 room；没声明就拒", () => {
+    expect(APP_CAPABILITIES).toContain("room");
+    expect(capabilityOf("room.set")).toBe("room");
+    expect(capabilityOf("room.rooms")).toBe("room");
+    expect(bridgeDenied("room.send", ["storage"])).toMatch("room");
+    expect(bridgeDenied("room.send", ["room"])).toBeNull();
+  });
+  it("请求白名单认 room.*", () => {
+    for (const m of ["room.current", "room.create", "room.invite", "room.rooms", "room.open", "room.leave", "room.get", "room.list", "room.set", "room.remove", "room.send", "room.ping"]) {
+      expect(parseBridgeRequest(JSON.stringify({ id: "c1", method: m, args: [] }))?.method).toBe(m);
+    }
+  });
+  it("注进去的 JS：otto.room 十二件 + on/off + __ottoEvent；事件分发到注册的回调、off 之后不再收", () => {
+    const posted: string[] = [];
+    const w: Record<string, unknown> = { ReactNativeWebView: { postMessage: (s: string) => posted.push(s) }, addEventListener: () => {} };
+    new Function("window", APP_BRIDGE_JS)(w);
+    const otto = w.otto as { room: Record<string, unknown>; on(n: string, cb: (p: unknown) => void): void; off(n: string, cb: (p: unknown) => void): void };
+    for (const k of ["current", "create", "invite", "rooms", "open", "leave", "get", "list", "set", "remove", "send", "ping"]) expect(typeof otto.room[k]).toBe("function");
+    const got: unknown[] = [];
+    const cb = (p: unknown): void => { got.push(p); };
+    otto.on("room.change", cb);
+    (w.__ottoEvent as (n: string, p: unknown) => void)("room.change", { key: "b" });
+    otto.off("room.change", cb);
+    (w.__ottoEvent as (n: string, p: unknown) => void)("room.change", { key: "c" });
+    expect(got).toEqual([{ key: "b" }]);
+    void (otto.room.set as (k: string, v: unknown, o: unknown) => Promise<unknown>)("board", { x: 1 }, { ifRev: 2 });
+    expect(JSON.parse(posted.at(-1)!)).toMatchObject({ method: "room.set", args: ["board", { x: 1 }, { ifRev: 2 }] });
+  });
+  it("bridgeEventJs：名字与载荷都过 JSON", () => {
+    expect(bridgeEventJs("room.message", { from: "u", msg: "hi" })).toBe(`window.__ottoEvent("room.message", {"from":"u","msg":"hi"}); true;`);
   });
 });

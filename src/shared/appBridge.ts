@@ -23,6 +23,13 @@ export const APP_BRIDGE_JS = `(function(){
   function report(msg) { try { window.ReactNativeWebView.postMessage(JSON.stringify({ error: String(msg).slice(0, 500) })); } catch (_) {} }
   window.addEventListener("error", function (e) { report((e && (e.message || (e.error && e.error.message))) || "出错了"); });
   window.addEventListener("unhandledrejection", function (e) { report((e && e.reason && (e.reason.message || e.reason)) || "出错了"); });
+  // 宿主推下来的事件（#1675 房间）：宿主 injectJavaScript("window.__ottoEvent(name, payload)")，按名字分发给 otto.on 注册的回调
+  var handlers = {};
+  window.__ottoEvent = function (name, payload) {
+    var hs = handlers[name];
+    if (!hs) return;
+    hs.slice().forEach(function (h) { try { h(payload); } catch (e) { report((e && e.message) || e); } });
+  };
   window.otto = {
     storage: {
       get: function (k) { return call("storage.get", [k]); },
@@ -34,12 +41,35 @@ export const APP_BRIDGE_JS = `(function(){
     share: function (opts) { return call("share", [opts || {}]); },
     nav: function (page) { return call("nav", [page]); },
     back: function () { return call("back", []); },
-    haptic: function () { return call("haptic", []); }
+    haptic: function () { return call("haptic", []); },
+    on: function (name, cb) { (handlers[name] = handlers[name] || []).push(cb); },
+    off: function (name, cb) { var hs = handlers[name]; if (hs) handlers[name] = hs.filter(function (x) { return x !== cb; }); },
+    room: {
+      current: function () { return call("room.current", []); },
+      create: function (o) { return call("room.create", [o || {}]); },
+      invite: function () { return call("room.invite", []); },
+      rooms: function () { return call("room.rooms", []); },
+      open: function (id) { return call("room.open", [id]); },
+      leave: function () { return call("room.leave", []); },
+      get: function (k) { return call("room.get", [k]); },
+      list: function (p) { return call("room.list", [p || ""]); },
+      set: function (k, v, o) { return call("room.set", [k, v, o || {}]); },
+      remove: function (k) { return call("room.remove", [k]); },
+      send: function (m) { return call("room.send", [m]); },
+      ping: function (t) { return call("room.ping", [t]); }
+    }
   };
 })(); true;`;
 
-export type BridgeMethod = "storage.get" | "storage.set" | "storage.list" | "storage.remove" | "ask" | "share" | "nav" | "back" | "haptic";
-const METHODS: ReadonlySet<string> = new Set<BridgeMethod>(["storage.get", "storage.set", "storage.list", "storage.remove", "ask", "share", "nav", "back", "haptic"]);
+export type BridgeMethod =
+  | "storage.get" | "storage.set" | "storage.list" | "storage.remove" | "ask" | "share" | "nav" | "back" | "haptic"
+  | "room.current" | "room.create" | "room.invite" | "room.rooms" | "room.open" | "room.leave"
+  | "room.get" | "room.list" | "room.set" | "room.remove" | "room.send" | "room.ping";
+const METHODS: ReadonlySet<string> = new Set<BridgeMethod>([
+  "storage.get", "storage.set", "storage.list", "storage.remove", "ask", "share", "nav", "back", "haptic",
+  "room.current", "room.create", "room.invite", "room.rooms", "room.open", "room.leave",
+  "room.get", "room.list", "room.set", "room.remove", "room.send", "room.ping",
+]);
 
 export interface BridgeRequest { id: string; method: BridgeMethod; args: unknown[] }
 
@@ -62,10 +92,22 @@ export function parseBridgeRequest(raw: unknown): BridgeRequest | null {
 /** 这个方法要哪一项能力（清单里没声明的调了就拒） */
 export function capabilityOf(method: BridgeMethod): AppCapability {
   if (method.startsWith("storage.")) return "storage";
+  if (method.startsWith("room.")) return "room";
   if (method === "nav" || method === "back") return "nav";
   if (method === "ask") return "ask";
   if (method === "share") return "share";
   return "haptic";
+}
+
+/** 宿主推一个事件给应用（#1675）：名字与载荷都过 JSON；序列化不了的载荷推 null */
+export function bridgeEventJs(name: string, payload: unknown): string {
+  let v: string;
+  try {
+    v = JSON.stringify(payload === undefined ? null : payload) ?? "null";
+  } catch {
+    v = "null";
+  }
+  return `window.__ottoEvent(${JSON.stringify(name)}, ${v}); true;`;
 }
 
 export function bridgeDenied(method: BridgeMethod, capabilities: readonly AppCapability[]): string | null {
