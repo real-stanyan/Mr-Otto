@@ -70,7 +70,7 @@ app_room_pings    id bigserial · room_id · from_uid · text（1–80）· crea
 - **跑房主那一版**：`app_versions` 加一条 select 策略——`exists 房间 r where r.host_app_id = app_id and r.host_version = version and is_room_member(r.id)`；
   `otto-apps` 桶加对应的 select 策略（路径 `<host_uid>/<host_app_id>/<host_version>/…`）。**只放钉住的那一版**，房主别的版本、别的应用仍读不到。
 - **两条私有 broadcast 频道**（`realtime.messages` 上两条策略，都要 `extension = 'broadcast'`）：
-  - `room:<id>`：成员互发的即时消息（应用自己的 `msg`）。joined 成员可读可写；**房间关了就不能再写**（`room_topic_writable` 判 `closed`）。
+  - `room:<id>`：成员互发的即时消息（应用自己的 `msg`）。joined 成员可读可写；**加入频道时**（`room_topic_writable`）判是成员且房间没关——join 时评估，不是逐条消息判：已经 join 的成员在房间关了或自己退房后仍可继续发 `msg`，直到重新 join / 刷新 token。`msg` 是应用自己的即时消息、不是权威状态，所以接受这一点。
   - `room-sys:<id>`：系统事件（`change` / `members` / `closed`），**只有触发器能发**。成员只读、客户端写不了，所以没人能伪造 `change`（假的 `rev` / `by` 会搅乱别人的 if_rev 状态）、`members` 或 `closed`。关了的房间仍可读。
   - 判据是两个函数，都不带 uid、用 `auth.uid()`：`room_topic_readable(topic)`（`room:` 或 `room-sys:` + 合法 uuid、且是 joined 成员）、`room_topic_writable(topic)`（只认 `room:`、是 joined 成员、房间没关）。
   - 这些消息不进我们的表，但 `realtime.send` 会在 `realtime.messages` 里留一个保留期的行，不是「不落库」。
@@ -80,7 +80,7 @@ app_room_pings    id bigserial · room_id · from_uid · text（1–80）· crea
   另有一个 `AFTER UPDATE` 触发器挂在 `app_rooms` 上：`closed` 由 false 变 true 时发事件 `closed`，载荷 `{closed: true}`。
   投递由上面 `realtime.messages` 的 select 策略把关，只有 joined 成员收得到。触发器里发送失败吞掉（不回滚写入）——漏一条通知，应用回前台时重读对齐即可。
   只有 `app_room_pings` 留在 publication（runtime 用 service role 订；客户端没有它的 select 策略）。
-- **频道授权在加入（join）时评估**：Realtime 在客户端 join 频道时判一次，退房 / 关房要等客户端重新 join 或刷新 token 才生效，不是逐条消息判；写入不靠它，写永远走 RPC 并由 RPC 核成员与房间状态。
+- **频道授权在加入（join）时评估**：Realtime 在客户端 join 频道时判一次，退房 / 关房要等客户端重新 join 或刷新 token 才生效，不是逐条消息判；权威状态（`app_room_data`）的写不靠它，永远走 RPC，每次调用都核成员与房间状态；唯一不逐次把关的写是 `room:<id>` 上的 `msg`。
 - 个人 `app_data` 不动。
 
 **为什么写只走 RPC**：比较后再写（`if_rev`）、人数上限、好友判据、限速都要在一个事务里判；拆成「RLS + 客户端先读后写」就是竞态。

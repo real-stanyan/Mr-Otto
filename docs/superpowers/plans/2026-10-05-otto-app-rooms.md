@@ -1,5 +1,7 @@
 # Otto 应用的「房间」Implementation Plan
 
+> 实现中设计有变（触发器 + 私有 broadcast 的 room-sys / room 两个频道、单参数的 is_room_member / room_topic_readable / room_topic_writable），以 ADR-0374 与 spec 为准；本计划保留原样作历史记录。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 让 Otto 应用能和好友一起玩 / 一起记——房主在应用里开房间、邀好友，房间里有成员共读写的持久数据与即时消息，回合制能 ping 对方。
