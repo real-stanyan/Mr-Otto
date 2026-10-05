@@ -22,7 +22,10 @@ export interface ScenarioReport {
     humanLines: number; agentReplies: number; cards: number; accepted: number; declined: number; expired: number;
     unanswered: number; medianReplySec: number | null; maxReplySec: number | null; guestTurns: number; grantTurns: number; ownerTurns: number;
     toolCalls: Record<string, number>;
+    files: number;
   };
+  /** 这一场出现过的文件（#1683）：人发的、智能体做的，带读回来的字 */
+  files: ScenarioResult["files"];
   /** 群的那一份（有群时） */
   transcript: TranscriptLine[];
   /** 这一场碰过的所有对话 */
@@ -31,6 +34,23 @@ export interface ScenarioReport {
 }
 
 const CJK = /[一-鿿]/;
+/** 非拉丁文字（#1683 亚洲用户）：对话的人主要用哪种写，智能体的回话 / 做的文件里就该有这种字 */
+const SCRIPTS: { name: string; re: RegExp }[] = [
+  { name: "韩文", re: /[가-힯]/ },
+  { name: "日文假名", re: /[ぁ-ゟ゠-ヿ]/ },
+  { name: "泰文", re: /[฀-๿]/ },
+  { name: "天城文（印地语）", re: /[ऀ-ॿ]/ },
+];
+/** 人要一份文件的那几种说法（各语言）：开场白像这样、那一轮却没有做文件 / 发文件，报一条 warn */
+const WANTS_FILE = new RegExp(
+  [
+    "\\b(make|create|put together|export|turn|draft|prepare|generate|send|give|build|whip up)\\b[^.?!\\n]{0,60}\\b(pdf|excel|spreadsheet|xlsx|slides?|deck|powerpoint|pptx|word doc(ument)?|docx|csv)\\b",
+    "(做|生成|导出|整理成|出一份|弄一份|做成|做个)[^。？！\\n]{0,20}(pdf|PDF|表格|excel|Excel|文档|ppt|PPT|幻灯片|word|Word)",
+    "(PDF|資料|スライド|エクセル|Excel|ワード|議事録|請求書)[^。？！\\n]{0,20}(作って|作成|まとめて|お願い)",
+    "(PDF|엑셀|슬라이드|파일|문서|PPT)[^.?!\\n]{0,20}(만들어|작성|정리해)",
+  ].join("|"),
+  "i",
+);
 const personaByUid = new Map(CAST.map((p) => [p.uid, p] as const));
 
 /** 一条对话切成一轮一轮：开场白（点了智能体的 user_message）到它的 turn_ended */
@@ -69,6 +89,12 @@ export function checkScenario(r: ScenarioResult, city: City, opts: { chineseOk?:
   for (const [where, { home, kind, events }] of Object.entries(r.logs)) {
     const owner = CAST.find((p) => p.id === home)!;
     for (const t of turnsOf(events)) {
+      // 要了一份文件，这一轮却没做也没发（#1683）。客人轮只能聊天，不算
+      if (t.opening.fromUid === owner.uid && WANTS_FILE.test(t.opening.content)) {
+        const made = t.events.some((e) => e.type === "tool_result" && e.status === "ok" && e.files !== undefined && e.files.length > 0);
+        const tried = t.events.some((e) => e.type === "assistant_message" && (e.toolCalls ?? []).some((c) => c.name === "create_document" || c.name === "send_file" || c.name === "assign_task"));
+        if (!made && !tried) findings.push({ severity: "warn", check: "要了文件没做", detail: `${where}：「${t.opening.content.replace(/^\[[^\]]*\]:\s*/, "").slice(0, 80)}」这一轮没有做文件` });
+      }
       const guest = t.opening.fromUid !== owner.uid;
       const grant = t.opening.greeting === "seat_grant";
       if (guest) guestTurns++;
@@ -116,11 +142,13 @@ export function checkScenario(r: ScenarioResult, city: City, opts: { chineseOk?:
 
   // ③ 替别人说话；④ 英文对话里冒出中文
   const englishWhere = new Set<string>();
+  const scriptOfWhere = new Map<string, { name: string; re: RegExp }>();
   const byWhere = new Map<string, TranscriptLine[]>();
   for (const l of r.everywhere) byWhere.set(l.where, [...(byWhere.get(l.where) ?? []), l]);
   for (const [where, lines] of byWhere) {
     const humans = lines.filter((l) => l.kind === "human");
     if (humans.length > 0 && humans.filter((l) => CJK.test(l.text)).length * 2 < humans.length) englishWhere.add(where);
+    for (const s of SCRIPTS) if (humans.length > 0 && humans.filter((l) => s.re.test(l.text)).length * 2 > humans.length) scriptOfWhere.set(where, s);
   }
   for (const l of r.everywhere) {
     if (l.kind !== "agent") continue;
@@ -132,9 +160,29 @@ export function checkScenario(r: ScenarioResult, city: City, opts: { chineseOk?:
         break;
       }
     }
-    if (englishWhere.has(l.where) && CJK.test(l.text) && !(opts.chineseOk ?? []).includes(speakerId)) {
-      findings.push({ severity: "bug", check: "英文对话里说中文", detail: `${l.where} · ${l.who}：「${l.text.slice(0, 60)}」` });
+    // 📎 那行是模拟自己写的「交出了哪份文件」（文件名里的字另有「文件里冒中文」那条查）
+    if (l.who !== "📎" && englishWhere.has(l.where) && CJK.test(l.text) && !(opts.chineseOk ?? []).includes(speakerId)) {
+      findings.push({ severity: "bug", check: "不说中文的对话里冒中文", detail: `${l.where} · ${l.who}：「${l.text.slice(0, 60)}」` });
     }
+    const want = scriptOfWhere.get(l.where);
+    if (want !== undefined && l.who !== "📎" && l.text.length > 24 && !want.re.test(l.text)) {
+      findings.push({ severity: "warn", check: "没用对方的语言", detail: `${l.where} 里人说${want.name}，${l.who} 回：「${l.text.slice(0, 60)}」` });
+    }
+  }
+
+  // ④b 文件（#1683）：读不回来 = 做坏了；内容的语言要跟对话的人一致
+  for (const f of r.files) {
+    if (f.fromHuman) continue;
+    if (/^（(读不回来|Storage 里没有这份)/.test(f.text)) {
+      findings.push({ severity: "bug", check: "做出来的文件打不开", detail: `${f.where} · ${f.by}：${f.name} ${f.text.slice(0, 80)}` });
+      continue;
+    }
+    if (f.text.trim() === "") findings.push({ severity: "bug", check: "做出来的文件是空的", detail: `${f.where} · ${f.by}：${f.name}` });
+    if (englishWhere.has(f.where) && CJK.test(f.text) && !(opts.chineseOk ?? []).some((id) => f.by.includes(CAST.find((p) => p.id === id)?.name ?? "\u0000"))) {
+      findings.push({ severity: "bug", check: "文件里冒中文", detail: `${f.where} · ${f.name}：「${(f.text.match(/[^\n]*[一-鿿][^\n]*/)?.[0] ?? "").slice(0, 60)}」` });
+    }
+    const want = scriptOfWhere.get(f.where);
+    if (want !== undefined && !want.re.test(f.text)) findings.push({ severity: "warn", check: "文件没用对方的语言", detail: `${f.where} 里人说${want.name}，${f.name} 里一个${want.name}字都没有` });
   }
 
   // ⑤ 同一只短时间内说了两句差不多的话
@@ -194,7 +242,9 @@ export function checkScenario(r: ScenarioResult, city: City, opts: { chineseOk?:
       medianReplySec: lat.length ? Math.round(lat[Math.floor(lat.length / 2)]!) : null,
       maxReplySec: lat.length ? Math.round(lat[lat.length - 1]!) : null,
       guestTurns, grantTurns, ownerTurns, toolCalls,
+      files: r.files.filter((f) => !f.fromHuman).length,
     },
+    files: r.files,
     transcript: r.transcript,
     everywhere: r.everywhere,
     trace,

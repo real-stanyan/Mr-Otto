@@ -113,14 +113,14 @@ export function mirrorLinesOf(events: readonly SessionEvent[], seatUid: string, 
     if (e.type === "chat_message") {
       if (e.mirror !== undefined) continue;
       out.push({ seq: e.seq, fromUid: e.fromUid, label: e.label, content: e.content, ...(e.files !== undefined && e.files.length > 0 ? { files: e.files } : {}) });
-    } else if (e.type === "assistant_message" && e.agentId !== undefined && e.content.trim() !== "" && e.ack === undefined) {
+    } else if (e.type === "assistant_message" && e.agentId !== undefined && (e.content.trim() !== "" || (e.files ?? []).length > 0) && e.ack === undefined) {
       const uid = seatUidOf(e.agentId);
       if (uid === null || uid === seatUid) continue;
       const seat = seats.find((s) => s.uid === uid);
       const label = e.worker !== undefined
         ? `${e.worker.name}（${seat?.name ?? "某位"}的专员）`
         : seat !== undefined ? seatLabel(seat) : "某位的管理员";
-      out.push({ seq: e.seq, fromUid: e.agentId, label, content: e.content });
+      out.push({ seq: e.seq, fromUid: e.agentId, label, content: e.content, ...(e.files !== undefined && e.files.length > 0 ? { files: e.files } : {}) });
     }
   }
   return out;

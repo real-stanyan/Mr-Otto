@@ -3,7 +3,8 @@
 import { describe, expect, it } from "vitest";
 import { writeFileSync } from "node:fs";
 import { createCity } from "./simCity.js";
-import { CAST, LIFE_SCENARIOS, PEOPLE_SCENARIOS, SCENARIOS } from "./cast.js";
+import { CAST, FILE_SCENARIOS, LIFE_SCENARIOS, PEOPLE_SCENARIOS, SCENARIOS } from "./cast.js";
+import { ASIA_LIFE_SCENARIOS, ASIA_PEOPLE_SCENARIOS, ASIA_SCENARIOS } from "./castAsia.js";
 import { checkScenario, type ScenarioReport } from "./checks.js";
 
 const LIVE = process.env.OTTO_LIVE === "1";
@@ -11,7 +12,7 @@ const LIVE = process.env.OTTO_LIVE === "1";
 describe.skipIf(!LIVE)("群座位制 · 欧美用户模拟", () => {
   it("建人 → 建专员 → 六个群场景 → 自动检查", async () => {
     const only = (process.env.OTTO_SIM_ONLY ?? "").split(",").filter((x) => x !== "");
-    const scenarios = [...LIFE_SCENARIOS, ...PEOPLE_SCENARIOS, ...SCENARIOS].filter((s) => only.length === 0 || only.includes(s.id));
+    const scenarios = [...LIFE_SCENARIOS, ...FILE_SCENARIOS, ...ASIA_LIFE_SCENARIOS, ...PEOPLE_SCENARIOS, ...ASIA_PEOPLE_SCENARIOS, ...SCENARIOS, ...ASIA_SCENARIOS].filter((s) => only.length === 0 || only.includes(s.id));
     const ids = new Set(scenarios.flatMap((s) => [
       ...(s.owner !== undefined ? [s.owner] : []), ...(s.members ?? []), ...(s.extras ?? []),
       ...s.beats.flatMap((b) =>
@@ -55,7 +56,7 @@ describe.skipIf(!LIVE)("群座位制 · 欧美用户模拟", () => {
       // ② 一场一场跑
       for (const sc of scenarios) {
         const r = await city.runScenario(sc);
-        reports.push(checkScenario(r, city, { chineseOk: ["stan"] }));
+        reports.push(checkScenario(r, city, { chineseOk: ["stan", "liwei", "xiaoyu", "haruto", "yuki"] }));
         flush();
       }
     } finally {

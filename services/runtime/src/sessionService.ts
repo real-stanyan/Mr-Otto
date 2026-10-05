@@ -175,7 +175,7 @@ import { LoopEngine } from "../../../src/loop/engine.js";
 import type { EventStore } from "../../../src/session/store.js";
 import type { EventLog } from "../../../src/session/eventLog.js";
 import type { AppConnectEvent, FriendPickCandidate, SessionEvent, SessionCreatedEvent, UserMessageEvent, AssistantMessageEvent, AgentRelayEvent, CallRingEvent, OutreachEvent, OutreachLine, OutreachOutcome, UserAttachmentRef, ChatVideoRef, TokenUsage, CollabRequestEvent, CollabDecisionEvent } from "../../../src/session/events.js";
-import { ChatMediaRejectedError } from "./chatMediaIntake.js";
+import { ChatMediaRejectedError, FILE_TEXT_MAX_CHARS } from "./chatMediaIntake.js";
 import { mediaPlaceholder, type ChatMediaRef } from "../../../src/shared/chatMedia.js";
 import { pendingImageDescriptions } from "../../../src/shared/visionPending.js";
 import { findModel } from "../../../src/shared/modelCatalog.js";
@@ -204,7 +204,7 @@ import { createMessageFriendAgentTool } from "./messageFriendAgentTool.js";
 import { createCollabTool } from "./collabTool.js";
 import { COLLAB_EXPIRE_MS, COLLAB_REMIND_MS, collabAcceptText, collabAuthPrompt, collabAutoAcceptText } from "../../../src/shared/collab.js";
 import { splitSpeakerPrefix } from "../../../src/shared/speakerPrefix.js";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { allowsOutreach, type FriendTier } from "../../../src/shared/friendTier.js";
 import { MESSAGE_FRIEND_AGENT_TOOL_NAME, bridgeWindowAllows, pruneBridgeWindow } from "../../../src/shared/laneBridge.js";
 import type { DeltaKind, ModelAdapter } from "../../../src/model/adapter.js";
@@ -1763,6 +1763,23 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       } catch {
         // 附件库里那份没了：跳过
       }
+    }
+    return out;
+  }
+  /** 群里落一家管理员交出的文件时顺手转好字（#1683）：别家的座位镜像这一句时连字一起带过去，别家管理员被 @ 去核这份表时读得到。
+      转不出就不带（只是别家读不到内容，不影响这一句进群） */
+  async function withFileText(refs: ChatFileRef[], files: readonly ToolFile[]): Promise<ChatFileRef[]> {
+    const toText = opts.documents?.toText;
+    const out: ChatFileRef[] = [];
+    for (const r of refs) {
+      const f = files.find((x) => createHash("sha256").update(x.data).digest("hex") === r.id.slice("sha256:".length));
+      let text: string | undefined;
+      try {
+        if (f !== undefined) text = r.mediaType.startsWith("text/") ? new TextDecoder().decode(f.data) : toText !== undefined ? await toText(f.data) : undefined;
+      } catch {
+        text = undefined;
+      }
+      out.push(text !== undefined && text.trim() !== "" ? { ...r, text: text.length > FILE_TEXT_MAX_CHARS ? `${text.slice(0, FILE_TEXT_MAX_CHARS)}\n…（后面还有 ${text.length - FILE_TEXT_MAX_CHARS} 字）` : text } : r);
     }
     return out;
   }
@@ -4435,7 +4452,9 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       if ((hasImages || hasFiles) && port !== null) {
         return Promise.all([
           hasImages ? publishToolImages(port, opts.workspaceId, sessionId, images, "generate_image").catch(() => [] as UserAttachmentRef[]) : Promise.resolve([] as UserAttachmentRef[]),
-          hasFiles ? publishToolFiles({ upload: port.upload }, opts.workspaceId, sessionId, files).catch(() => [] as ChatFileRef[]) : Promise.resolve([] as ChatFileRef[]),
+          hasFiles
+            ? publishToolFiles({ upload: port.upload }, opts.workspaceId, sessionId, files).then((refs) => withFileText(refs, files)).catch(() => [] as ChatFileRef[])
+            : Promise.resolve([] as ChatFileRef[]),
         ]).then(([attachments, fileRefs]) => {
           if (text === "" && attachments.length === 0 && fileRefs.length === 0) return; // 只有图 / 文件却一份都没传上去：不落一条空话
           landSeatReply({ seatUid, text, model, toUid, depth, worker, attachments, files: fileRefs });

@@ -624,6 +624,26 @@ describe("群座位制：文件（#1683）", () => {
     expect(w.calls.find((c) => c.ws === "wa")!.tools).toEqual(["ask_owner"]);
   });
 
+  it("一家管理员交进群的文件，别家管理员被 @ 时读得到内容（群这边转好字、随镜像过去）", async () => {
+    const w = setup({
+      docs: docRig(),
+      script: (c) =>
+        c.ws === "wa"
+          ? c.tools.includes("create_document") && !c.transcript.includes("做好了：")
+            ? { content: "", toolCalls: [{ id: "d1", name: "create_document", args: { format: "csv", filename: "claims", sheets: [{ name: "x", rows: [["item", "inr"], ["team dinner", 18400]] }] } }] }
+            : { content: "Posted the claim sheet." }
+          : { content: "Checked it." },
+    });
+    await w.group.say(A, "继爸", "@雨姐 post the claims sheet here", true, [seatAgentId(A)]);
+    await w.settleAll();
+    expect(w.groupLog().find((e) => e.type === "assistant_message" && e.agentId === seatAgentId(A))).toMatchObject({ files: [{ name: "claims.csv", text: expect.stringContaining("team dinner") }] });
+    await w.group.say(B, "Stan Yan", "@峰哥 check 雨姐's claim sheet against policy", true, [seatAgentId(B)]);
+    await w.settleAll();
+    const bCall = w.calls.find((c) => c.ws === "wb")!;
+    expect(bCall.transcript).toContain("claims.csv");
+    expect(bCall.transcript).toContain("team dinner,18400");
+  });
+
   it("群里发的文件跟着 @ 那一句进座位：管理员读得到转好的文字", async () => {
     const w = setup({ script: () => ({ content: "Rent is due on the 1st." }), docs: docRig() });
     const ref = { kind: "file" as const, sha256: "a".repeat(64), mediaType: "application/pdf" as const, bytes: 1234, width: 0, height: 0, name: "lease.pdf" };

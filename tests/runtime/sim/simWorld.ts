@@ -58,6 +58,17 @@ export async function createSimBox(name: string): Promise<SimBox> {
         return r.stdout;
       },
       write,
+      // 二进制（#1683 文件）：docker exec 的输入输出都是字符串，过一道 base64（同 DockerWorld）
+      readBytes: async (path) => {
+        const r = await run(["exec", name, "base64", "-w0", abs(path)]);
+        if (r.exitCode !== 0) throw new Error(r.stderr.trim() || `读不到 ${path}`);
+        return new Uint8Array(Buffer.from(r.stdout.trim(), "base64"));
+      },
+      writeBytes: async (path, data) => {
+        const p = abs(path);
+        const r = await run(["exec", "-i", name, "sh", "-c", `mkdir -p "$(dirname ${q(p)})" && base64 -d > ${q(p)}`], Buffer.from(data).toString("base64"));
+        if (r.exitCode !== 0) throw new Error(r.stderr || `写不进 ${p}`);
+      },
     },
     exec: async (cmd) => {
       const r = await run(["exec", "-w", "/work", name, "bash", "-lc", cmd]);

@@ -29,6 +29,37 @@ import type { PairMessageRow } from "../../../src/shared/pairChat.js";
 import { groupSeatsOf, seatAgentId, seatCardsOf, seatHandles, seatLabel, seatUidOf, type GroupSeat } from "../../../src/shared/groupSeats.js";
 import { tempDir } from "../../helpers/tempDir.js";
 import { createSimBox, type SimBox } from "./simWorld.js";
+import { createHash } from "node:crypto";
+import { formatFromBytes, toMarkdownBytes } from "@firecrawl/anydoc";
+import { createChatMediaIntake } from "../../../services/runtime/src/chatMediaIntake.js";
+import { createSystemFonts } from "../../../services/runtime/src/systemFonts.js";
+import { renderCsv, renderDocx, renderPptx, renderXlsx } from "../../../services/runtime/src/documents/office.js";
+import { renderPdf } from "../../../services/runtime/src/documents/pdf.js";
+import { parseMarkdownLite } from "../../../services/runtime/src/documents/markdownLite.js";
+import { CHAT_MEDIA_BUCKET, chatMediaPath, docMimeForName, type ChatMediaRef, type DocMime } from "../../../src/shared/chatMedia.js";
+
+/** 人在聊天里发的一份文件（#1683）：模拟现做出来（同 create_document 的渲染器），传进假的 Storage 再带进 say */
+export interface SimFile {
+  name: string;
+  /** pdf / docx / md / txt 的正文（小号 Markdown） */
+  text?: string;
+  /** xlsx / csv */
+  rows?: (string | number | null)[][];
+  /** pptx */
+  slides?: { title: string; bullets?: string[] }[];
+}
+
+/** 这一场里出现过的文件：人发的、智能体做出来交给人的。text = 读回来的文字（anydoc），报告与检查用 */
+export interface ProducedFile {
+  where: string;
+  by: string;
+  name: string;
+  mediaType: string;
+  bytes: number;
+  fromHuman: boolean;
+  text: string;
+  ts: number;
+}
 
 export interface PersonaDef {
   id: string;
@@ -46,21 +77,23 @@ export interface PersonaDef {
   wantsAgents?: string[];
   /** 他给每位朋友开的好友档位（缺席 = 可带智能体） */
   tiers?: Record<string, FriendTier>;
+  /** 他说什么话（检查「回话 / 文件有没有用他的语言」用）：en / zh / ja / ko / hi / th / vi / id / tl。缺席 = en */
+  lang?: string;
 }
 
 export type Beat =
   /** 群里说一句 */
-  | { kind: "say"; who: string; goal: string; at?: string[]; cards?: "persona" | "ignore" }
+  | { kind: "say"; who: string; goal: string; at?: string[]; cards?: "persona" | "ignore"; file?: SimFile }
   | { kind: "policy"; who: string; policy: "ask" | "open" }
   | { kind: "leave"; who: string }
   | { kind: "invite"; who: string; add: string[] }
   | { kind: "fire_timers" }
   /** 和自己的管理员一对一（私聊） */
-  | { kind: "dm_admin"; who: string; goal: string }
+  | { kind: "dm_admin"; who: string; goal: string; file?: SimFile }
   /** 两个人之间直接发私聊（不经智能体；线上的 messages 表） */
   | { kind: "friend_dm"; who: string; to: string; goal: string }
   /** 在 owner 和 peer 那条私聊旁边的车道里说话：speaker 是 owner（自己的车道）或 peer（公开车道里的客人） */
-  | { kind: "lane"; owner: string; peer: string; speaker: string; facing: "self" | "both"; goal: string }
+  | { kind: "lane"; owner: string; peer: string; speaker: string; facing: "self" | "both"; goal: string; file?: SimFile }
   /** 让到点的定时任务（这些人的；缺席 = 全部）现在就跑——不等真钟 */
   | { kind: "fire_routines"; who?: string[] };
 
@@ -141,6 +174,8 @@ export interface ScenarioResult {
   logs: Record<string, { home: string; kind: string; events: SessionEvent[] }>;
   groupLog: SessionEvent[];
   seats: GroupSeat[];
+  /** 这一场里出现过的文件（#1683） */
+  files: ProducedFile[];
   startedAt: number;
   endedAt: number;
 }
@@ -160,13 +195,50 @@ export async function createCity(o: { edgeBase: string; runtimeSecret: string; p
   /** 所有开着的对话：sid → 房、store、标签、哪家、哪种 */
   const rooms = new Map<string, { room: CloudSession; store: EventStore; label: string; home: string; kind: string }>();
   const log: string[] = [];
-  /** 出图（#1682）：附件库按团队一份；上传不真进 Storage，只记一行「传到哪、多大」 */
+  /** 假的 Storage（#1683）：bucket/path → 字节。出图、交文件往里传，人发的文件从这里取 */
+  const storage = new Map<string, Uint8Array>();
+  /** 出图（#1682）：附件库按团队一份；上传进假的 Storage，记一行「传到哪、多大」 */
   const attachments = new Map<string, AttachmentStore>();
-  const imagesFor = (ws: string): ToolImagesPort => {
+  const attachmentsOf = (ws: string): AttachmentStore => {
     let st = attachments.get(ws);
     if (st === undefined) { st = new AttachmentStore(tempDir(`otto-sim-att-`)); attachments.set(ws, st); }
-    return { store: st, upload: async (bucket, path, bytes) => { log.push(`[出图] ${bucket}/${path} ${bytes.length}B`); } };
+    return st;
   };
+  const imagesFor = (ws: string): ToolImagesPort => ({
+    store: attachmentsOf(ws),
+    upload: async (bucket, path, bytes) => { storage.set(`${bucket}/${path}`, bytes); log.push(`[上传] ${bucket}/${path} ${bytes.length}B`); },
+  });
+  const toText = async (data: Uint8Array): Promise<string> => {
+    const f = formatFromBytes(data);
+    if (f === null) throw Object.assign(new Error("认不出"), { code: "unsupported" });
+    return toMarkdownBytes(data, f);
+  };
+  const fonts = createSystemFonts();
+  // 人发来的文件：同 daemon 的 chatMedia（下载、复算哈希、存进那一家的沙箱 inbox/、转字）
+  const intake = createChatMediaIntake({
+    download: async (bucket, path) => { const d = storage.get(`${bucket}/${path}`); if (d === undefined) throw new Error("Object not found"); return d; },
+    storeFor: attachmentsOf,
+    saveFile: async (ws, path, data) => { const h = [...homes.values()].find((x) => x.ws === ws); if (h === undefined) throw new Error("没有这一家"); await h.box.world.fs.writeBytes!(path, data); },
+    toText,
+  });
+  /** 模拟里的人「发一份文件」：现做出字节、传进假的 Storage，回 say 帧里那一格 */
+  async function humanFile(ws: string, sid: string, f: SimFile): Promise<ChatMediaRef> {
+    const mime = docMimeForName(f.name);
+    if (mime === null) throw new Error(`模拟文件格式不认：${f.name}`);
+    const ext = f.name.split(".").pop()!.toLowerCase();
+    const data: Uint8Array =
+      ext === "xlsx" ? (await renderXlsx([{ name: "Sheet1", rows: f.rows ?? [] }])).data
+        : ext === "csv" ? renderCsv({ name: "Sheet1", rows: f.rows ?? [] })
+          : ext === "pptx" ? await renderPptx({ slides: f.slides ?? [] })
+            : ext === "docx" ? await renderDocx({ blocks: parseMarkdownLite(f.text ?? "") })
+              : ext === "pdf" ? await renderPdf({ blocks: parseMarkdownLite(f.text ?? ""), fonts })
+                : new TextEncoder().encode(f.text ?? "");
+    const sha = createHash("sha256").update(data).digest("hex");
+    storage.set(`${CHAT_MEDIA_BUCKET}/${chatMediaPath(ws, sid, sha, mime)}`, data);
+    return { kind: "file", sha256: sha, mediaType: mime as DocMime, bytes: data.byteLength, width: 0, height: 0, name: f.name };
+  }
+  const fileHint = (f: SimFile | undefined): string =>
+    f === undefined ? "" : `\nYou are attaching a file called "${f.name}" to this message (the app attaches it for you) — write only the message text that goes with it, don't paste the file contents.`;
   let personaCalls = 0;
   const nameOf = (uid: string): string => byUid.get(uid)?.p.name ?? uid.slice(0, 8);
 
@@ -324,6 +396,9 @@ export async function createCity(o: { edgeBase: string; runtimeSecret: string; p
         return { ready: async () => !("blocked" in (await route())), resolve: (agentId: string) => route(agentId) };
       })(),
       toolImages: imagesFor(h.ws),
+      // 文件（#1683）：同 daemon——做文件 / 读文件 / 发文件三把刀，人发来的文件收下转字
+      documents: { fonts, toText },
+      media: (refs) => intake.intake(h.ws, sessionId, refs),
       peerTier: async (peerUid) => h.p.tiers?.[byUid.get(peerUid)?.p.id ?? ""] ?? "agents",
       // 朋友私聊的信封（ADR-0346）：同 daemon，最新的在前
       pairMessages: async ({ ownerUid, peerUid }) =>
@@ -356,7 +431,9 @@ export async function createCity(o: { edgeBase: string; runtimeSecret: string; p
     const sys =
       `You are role-playing a real person in a messaging app. Stay fully in character.\n${p.bio}\n` +
       `Write like a real person texting: casual, short (usually 1-2 sentences), your own slang/abbreviations, occasional typos, emojis only if it fits you. ` +
-      `Never sound like a customer-service bot. Never explain that you are role-playing. Output ONLY the message text, nothing else.\n${hint}`;
+      `Never sound like a customer-service bot. Never explain that you are role-playing. Output ONLY the message text, nothing else.\n` +
+      // #1683 亚洲用户：bio 是母语写的、目标有时是母语有时是英文（公司群），说哪种语言照这一句判
+      `Write in the language this person would naturally use in this chat (your bio says what you speak; a goal written in your own language means write in it; work group chats with foreign colleagues are in English).\n${hint}`;
     const user = `Recent chat (oldest first):\n${context.slice(-25).join("\n") || "(nothing yet)"}\n\nWhat you want to do in your next message: ${goal}`;
     return (await chatModel(`persona-${p.id}`, sys, user)).replace(/^["'“]|["'”]$/g, "").trim();
   }
@@ -394,23 +471,30 @@ export async function createCity(o: { edgeBase: string; runtimeSecret: string; p
   /** 一条对话里的事件 → 人看得懂的一行 */
   function lineOf(e: SessionEvent, where: string, roomHome: string): TranscriptLine | null {
     const h = homes.get(roomHome);
+    const att = (fs: readonly { name: string }[] | undefined): string => (fs !== undefined && fs.length > 0 ? `\n📎 ${fs.map((f) => f.name).join("、")}` : "");
     if (e.type === "chat_message") {
       if (e.mirror !== undefined) return null;
-      return { kind: e.fromUid === "system" ? "system" : "human", where, who: e.fromUid === "system" ? "system" : e.label, text: e.content, ts: e.ts };
+      return { kind: e.fromUid === "system" ? "system" : "human", where, who: e.fromUid === "system" ? "system" : e.label, text: e.content + att(e.files), ts: e.ts };
     }
     if (e.type === "user_message") {
       if (e.mirror !== undefined || e.relay !== undefined && where.includes("座位")) return null;
       if (e.greeting !== undefined) return { kind: "system", where, who: `[${e.greeting}]`, text: e.content.slice(0, 400), ts: e.ts };
-      return { kind: "human", where, who: nameOf(e.fromUid ?? ""), text: e.content.replace(/^\[[^\]]*\]:\s*/, ""), ts: e.ts };
+      return { kind: "human", where, who: nameOf(e.fromUid ?? ""), text: e.content.replace(/^\[[^\]]*\]:\s*/, "") + att(e.files), ts: e.ts };
+    }
+    if (e.type === "tool_result" && e.status === "ok" && e.files !== undefined && e.files.length > 0 && !where.includes("座位")) {
+      return { kind: "agent", where, who: "📎", text: `file: ${e.files.map((f) => f.name).join(", ")}`, ts: e.ts };
+    }
+    if (e.type === "assistant_message" && e.files !== undefined && e.files.length > 0 && e.content.trim() === "") {
+      return { kind: "agent", where, who: "📎", text: `file: ${e.files.map((f) => f.name).join(", ")}`, ts: e.ts };
     }
     if (e.type === "assistant_message" && e.content.trim() !== "" && e.ack === undefined) {
       if (e.agentId !== undefined && seatUidOf(e.agentId) !== null) {
         const sh = byUid.get(seatUidOf(e.agentId)!);
         const who = e.worker !== undefined ? `${e.worker.name}（${sh?.p.name ?? "?"}的专员）` : sh !== undefined ? seatLabel({ name: sh.p.name, agentName: sh.p.adminName }) : e.agentId;
-        return { kind: "agent", where, who, text: e.content, ts: e.ts };
+        return { kind: "agent", where, who, text: e.content + att(e.files), ts: e.ts };
       }
       const name = teamOf(h!).find((a) => a.agentId === e.agentId)?.name ?? e.agentId ?? "?";
-      return { kind: "agent", where, who: `${name}（${h?.p.name ?? "?"}的${e.agentId === "admin" ? "管理员" : "专员"}）`, text: e.content, ts: e.ts };
+      return { kind: "agent", where, who: `${name}（${h?.p.name ?? "?"}的${e.agentId === "admin" ? "管理员" : "专员"}）`, text: e.content + att(e.files), ts: e.ts };
     }
     if (e.type === "seat_request") return { kind: "card", where, who: e.agentName, text: `${e.fromName} → ${e.agentName}：${e.summary}`, ts: e.ts };
     if (e.type === "seat_decision") return { kind: "decision", where, who: "", text: e.decision + (e.note ? `（附言：${e.note}）` : ""), ts: e.ts };
@@ -522,10 +606,11 @@ export async function createCity(o: { edgeBase: string; runtimeSecret: string; p
             (b.at !== undefined && b.at.length > 0
               ? `In this message you MUST tag: ${b.at.map((id) => `@${handles.get(homes.get(id)!.p.uid) ?? homes.get(id)!.p.adminName}`).join(" ")}.`
               : `Do NOT tag any assistant in this message, you're just talking to the humans.`);
-          const text = await personaLine(p, ctxOf(gid), b.goal, hint);
+          const text = await personaLine(p, ctxOf(gid), b.goal, hint + fileHint(b.file));
           const at = (b.at ?? []).map((id) => seatAgentId(homes.get(id)!.p.uid));
           try {
-            await group.say(p.uid, p.name, text, at.length > 0, at, undefined, undefined, undefined, undefined, undefined, p.tz);
+            const media = b.file !== undefined ? [await humanFile(homes.get(sc.owner!)!.ws, gid, b.file)] : undefined;
+            await group.say(p.uid, p.name, text, at.length > 0, at, undefined, undefined, undefined, media, undefined, p.tz);
           } catch (err) {
             log.push(`[发不出去] ${sc.id} ${p.name}: ${err instanceof Error ? err.message : String(err)}`);
           }
@@ -549,8 +634,9 @@ export async function createCity(o: { edgeBase: string; runtimeSecret: string; p
         } else if (b.kind === "dm_admin") {
           const h = homes.get(b.who)!;
           const dm = ensureDm(h);
-          const text = await personaLine(h.p, ctxOf(DM_SID(h.p.id)), b.goal, `You're in your private 1:1 chat with your own AI assistant "${h.p.adminName}". It can look things up online, set reminders, keep lists and notes, message your friends, and remember what you told it.`);
-          await dm.say(h.p.uid, h.p.name, text, true, ["admin"], undefined, undefined, undefined, undefined, undefined, h.p.tz);
+          const text = await personaLine(h.p, ctxOf(DM_SID(h.p.id)), b.goal, `You're in your private 1:1 chat with your own AI assistant "${h.p.adminName}". It can look things up online, set reminders, keep lists and notes, make documents (PDF, Word, Excel, slides), message your friends, and remember what you told it.` + fileHint(b.file));
+          const media = b.file !== undefined ? [await humanFile(h.ws, DM_SID(h.p.id), b.file)] : undefined;
+          await dm.say(h.p.uid, h.p.name, text, true, ["admin"], undefined, undefined, undefined, media, undefined, h.p.tz);
           await settle();
           await handleCollab();
         } else if (b.kind === "friend_dm") {
@@ -568,9 +654,10 @@ export async function createCity(o: { edgeBase: string; runtimeSecret: string; p
           const hint = own
             ? `You're chatting 1:1 with your friend ${peer.p.name}; your own AI assistant "${owner.p.adminName}" sits beside that chat (${b.facing === "both" ? `${peer.p.name} can see it too` : "only you can see it"}). It can read your recent messages with ${peer.p.name}. Tag it as @${owner.p.adminName}. Recent DMs with ${peer.p.name}:\n${dmCtx(owner.p.uid, peer.p.uid).slice(-8).join("\n")}`
             : `${owner.p.name} made their AI assistant "${owner.p.adminName}" visible in your 1:1 chat with them. Tag it as @${owner.p.adminName}. Recent DMs:\n${dmCtx(owner.p.uid, speaker.p.uid).slice(-8).join("\n")}`;
-          const text = await personaLine(speaker.p, ctxOf(sid), b.goal, hint);
+          const text = await personaLine(speaker.p, ctxOf(sid), b.goal, hint + fileHint(b.file));
           try {
-            await lane.say(speaker.p.uid, speaker.p.name, text, true, ["admin"], undefined, undefined, undefined, undefined, undefined, speaker.p.tz);
+            const media = b.file !== undefined ? [await humanFile(owner.ws, sid, b.file)] : undefined;
+            await lane.say(speaker.p.uid, speaker.p.name, text, true, ["admin"], undefined, undefined, undefined, media, undefined, speaker.p.tz);
           } catch (err) {
             log.push(`[发不出去] ${sc.id} ${speaker.p.name}（车道）: ${err instanceof Error ? err.message : String(err)}`);
           }
@@ -612,13 +699,43 @@ export async function createCity(o: { edgeBase: string; runtimeSecret: string; p
         logs[r.label] = { home: r.home, kind: r.kind, events };
         for (const e of events) { const l = lineOf(e, r.label, r.home); if (l !== null) everywhere.push(l); }
       }
+      // 这一场出现过的文件（#1683）：人发的（带着收下时转好的字）、智能体交出来的（从假的 Storage 取回来读一遍）
+      const files: ProducedFile[] = [];
+      for (const [sid, r] of rooms) {
+        const from = startSeq.get(sid) ?? -1;
+        const ws = homes.get(r.home)!.ws;
+        let lastAgent = "";
+        for (const e of r.store.load(sid)) {
+          if (e.seq <= from) continue;
+          if (e.type === "assistant_message" && (e.toolCalls ?? []).length > 0) {
+            lastAgent = teamOf(homes.get(r.home)!).find((a) => a.agentId === e.agentId)?.name ?? e.agentId ?? "?";
+          }
+          if ((e.type === "user_message" || e.type === "chat_message") && e.files !== undefined && e.mirror === undefined) {
+            for (const f of e.files) files.push({ where: r.label, by: nameOf(e.fromUid ?? ""), name: f.name, mediaType: f.mediaType, bytes: f.bytes, fromHuman: true, text: (f.text ?? f.textError ?? "").slice(0, 3000), ts: e.ts });
+          }
+          if (e.type === "tool_result" && e.files !== undefined) {
+            for (const f of e.files) {
+              const data = storage.get(`${CHAT_MEDIA_BUCKET}/${chatMediaPath(ws, sid, f.id.slice(7), f.mediaType)}`);
+              let text = "";
+              if (data !== undefined) {
+                try {
+                  text = f.mediaType.startsWith("text/") ? new TextDecoder().decode(data) : await toText(data);
+                } catch (err) {
+                  text = `（读不回来：${err instanceof Error ? err.message : String(err)}）`;
+                }
+              } else text = "（Storage 里没有这份）";
+              files.push({ where: r.label, by: `${lastAgent}（${homes.get(r.home)!.p.name}家）`, name: f.name, mediaType: f.mediaType, bytes: f.bytes, fromHuman: false, text: text.slice(0, 4000), ts: e.ts });
+            }
+          }
+        }
+      }
       for (const m of friendDM.slice(dmStart)) {
         everywhere.push({ kind: "human", where: `${nameOf(m.sender)} ↔ ${nameOf(m.recipient)}（朋友私聊）`, who: nameOf(m.sender), text: m.body, ts: Date.parse(m.createdAt) });
       }
       everywhere.sort((a, b) => a.ts - b.ts);
       const groupLog = gstore !== null && gid !== null ? gstore.load(gid) : [];
       const transcript = everywhere.filter((l) => gid !== null && l.where === rooms.get(gid)?.label);
-      return { scenario: sc, transcript, everywhere, logs, groupLog, seats: knownSeatsOf(groupLog), startedAt, endedAt: Date.now() };
+      return { scenario: sc, transcript, everywhere, logs, groupLog, seats: knownSeatsOf(groupLog), files, startedAt, endedAt: Date.now() };
     },
     async destroy() {
       for (const h of homes.values()) {

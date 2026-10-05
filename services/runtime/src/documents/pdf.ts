@@ -92,7 +92,9 @@ export async function renderPdf(o: { title?: string; blocks: readonly Block[]; f
   const fontFor = (s: Script, bold: boolean): string => registered.get(`${s}${bold ? "B" : "R"}`) ?? registered.get(`latin${bold ? "B" : "R"}`)!;
   // Helvetica 印不出的字（没有 Unicode 西文字体时）：换成问号，好过一个乱码
   const helv = registered.get("latinR") === "Helvetica";
-  const safe = (s: string): string => (helv ? s.replace(/[^\u0000-ÿ–—‘’“”•…€]/g, "?") : s);
+  // emoji 哪款 PDF 字体都没有（彩色字形 pdfkit 也画不了）：印出来是一个方框，干脆去掉（#1683 模拟：「🏔️ Tahoe Trip」）
+  const noEmoji = (s: string): string => s.replace(/\p{Extended_Pictographic}|[\u{FE0E}\u{FE0F}\u{200D}\u{20E3}]|[\u{1F1E6}-\u{1F1FF}]/gu, "");
+  const safe = (s: string): string => (helv ? noEmoji(s).replace(/[^\u0000-ÿ–—‘’“”•…€]/g, "?") : noEmoji(s));
 
   const left = PAGE_MARGIN;
   const width = doc.page.width - PAGE_MARGIN * 2;
