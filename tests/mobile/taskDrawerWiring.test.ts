@@ -12,7 +12,7 @@ describe("FriendChatScreen：任务卡", () => {
   it("主页上没有车道逐条（laneItemsOf / mergePairView 不再用），只有任务卡", () => {
     expect(src).not.toMatch(/laneItemsOf\(/);
     expect(src).not.toMatch(/mergePairView\(/);
-    expect(src).toMatch(/\| \{ kind: "task"; key: string; t: TaskRow \};/);
+    expect(src).toMatch(/\| \{ kind: "task"; key: string; t: TaskRow \}/);
     expect(src).toMatch(/function TaskCard\(/);
     expect(src).toMatch(/item\.kind === "task" \? \(\s*<TaskCard/);
   });
@@ -76,5 +76,15 @@ describe("朋友那条车道的名字 / 脸按朋友的名册解析（#1613，�
     expect(src).toMatch(/laneTaskSubtitle\(item\.t\.task, laneTaskStatus\(item\.t\.task, item\.t\.busy\), item\.t\.peer \? nameOfPeerAgent : nameOfAgent\)/);
     expect(src).toMatch(/nameOf=\{openTask\?\.peer === true \? nameOfPeerAgent : nameOfAgent\}\s*slotOf=\{openTask\?\.peer === true \? slotOfPeerAgent : slotOfAgent\}/);
     expect(src).toMatch(/tag: `\$\{name\} 的`, slot: slotOfPeerAgent\(a\.agentId\)/);
+  });
+});
+
+describe("聊天形状的任务在主页按气泡铺开（#1620，真机 2026-10-05）", () => {
+  const src = readFileSync(new URL("../../mobile/src/friends/FriendChatScreen.tsx", import.meta.url), "utf8");
+  it("laneTaskShape = chat 的不出卡：每一行一个 LaneBubble，还在答的补一行「在想」；别的照旧 TaskCard", () => {
+    expect(src).toMatch(/\} else if \(laneTaskShape\(r\.t\.task\) === "chat"\) \{/);
+    expect(src).toMatch(/for \(const item of r\.t\.task\.items\) out\.push\(\{ kind: "lane", key: `l\$\{pk\}\$\{item\.key\}`, t: r\.t, item, thinking: false \}\);/);
+    expect(src).toMatch(/item\.kind === "lane" \? \(\s*<LaneBubble/);
+    expect(src).toMatch(/footer=\{item\.thinking \? "在想…" :/);
   });
 });
