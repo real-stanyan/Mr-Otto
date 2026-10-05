@@ -8,12 +8,14 @@
 // runtime 据「房里有没有他的连接」决定回电打不打，挂起的 socket 在服务端看来却还连着。
 // 例外：系统来电进行中不暂停（锁着屏通话靠这条连接，#1428，systemCall.ts）。
 import { AppState } from "react-native";
+import { answerHealthQuery } from "../../../src/shared/health.js";
 import { csCtlChannel } from "../../../src/shared/remote/cloudSession.js";
 import { createCloudSessionClient, type CloudSessionClient } from "../../../src/shared/remote/cloudSessionClient.js";
 import { createWsTransport } from "../../../src/shared/remote/wsTransport.js";
 import type { CloudSessionDelta, CloudSessionStatus } from "../../../src/shared/shellBridge.js";
 import type { SessionEvent } from "../../../src/session/events.js";
 import { inSystemCall, onSystemCallEnded } from "../call/systemCall.js";
+import { healthEnabled, onHealthPrefChange, readHealth } from "../health/healthPrefs.js";
 import { RELAY_BASE } from "../relay.js";
 import { supabase } from "../supabase.js";
 
@@ -45,6 +47,9 @@ export const cloudClient: CloudSessionClient = createCloudSessionClient({
   selfUid: () => uid,
   // 设备时区（#1283）：每句话带上，runtime 落到 user_message.tz，模型投影的「今天是」才按人在的地方算
   deviceTz: () => Intl.DateTimeFormat().resolvedOptions().timeZone,
+  // Apple 健康（#1656）：开着才声明能力；runtime 来问时开关再判一次（问的那一刻可能刚关）
+  deviceCaps: () => ({ health: healthEnabled() }),
+  onHealthQuery: (q) => answerHealthQuery(q, { enabled: healthEnabled, read: readHealth }),
   createTransport: (channel) => {
     const t = createWsTransport({
       baseUrl: RELAY_BASE,
@@ -86,3 +91,6 @@ AppState.addEventListener("change", (s) => {
 onSystemCallEnded(() => {
   if (AppState.currentState !== "active") room?.pause("系统来电结束、在后台");
 });
+
+// 开关变了当场告诉 runtime（#1656）：不然要等下次进房 welcome 才更新，关掉之后那段时间它还会来问
+onHealthPrefChange(() => cloudClient.refreshCaps());

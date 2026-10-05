@@ -38,3 +38,30 @@ describe("otto-health 模块", () => {
     }
   });
 });
+
+describe("手机 JS 接线", () => {
+  const prefs = read("mobile/src/health/healthPrefs.ts");
+  const client = read("mobile/src/cloud/cloudClient.ts");
+  const settings = read("mobile/src/account/SettingsScreen.tsx");
+  it("开关存在这台手机的 kv-store、默认关", () => {
+    expect(prefs).toMatch(/import AsyncStorage from "expo-sqlite\/kv-store";/);
+    expect(prefs).toMatch(/const KEY = "otto\.health";/);
+    expect(prefs).toMatch(/createStore<\{ on: boolean \}>\(\{ on: false \}\)/);
+  });
+  it("打开前先请求授权；不可用就不让开", () => {
+    expect(prefs).toMatch(/await OttoHealth\.requestAuthorization\(\)/);
+    expect(prefs).toMatch(/if \(!healthAvailable\(\)\) throw new Error/);
+  });
+  it("cloudClient：声明能力、应答走 answerHealthQuery、开关变了重发 caps", () => {
+    expect(client).toMatch(/deviceCaps: \(\) => \(\{ health: healthEnabled\(\) \}\),/);
+    expect(client).toMatch(/onHealthQuery: \(q\) => answerHealthQuery\(q, \{ enabled: healthEnabled, read: readHealth \}\),/);
+    expect(client).toMatch(/onHealthPrefChange\(\(\) => cloudClient\.refreshCaps\(\)\);/);
+  });
+  it("设置页有 Apple 健康这一组", () => {
+    expect(settings).toMatch(/header="Apple 健康"/);
+    expect(settings).toMatch(/setHealthEnabled\(/);
+  });
+  it("冷启动读开关", () => {
+    expect(read("mobile/App.tsx")).toMatch(/void loadHealthPref\(\);/);
+  });
+});
