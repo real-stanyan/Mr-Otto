@@ -173,7 +173,7 @@ import { createInviteToCallTool } from "./inviteToCallTool.js";
 import type { VoiceCallParticipant } from "../../../src/session/events.js";
 import { LoopEngine } from "../../../src/loop/engine.js";
 import type { EventStore } from "../../../src/session/store.js";
-import type { FriendPickCandidate, SessionEvent, SessionCreatedEvent, UserMessageEvent, AssistantMessageEvent, AgentRelayEvent, CallRingEvent, OutreachEvent, OutreachLine, OutreachOutcome, UserAttachmentRef, ChatVideoRef, TokenUsage, CollabRequestEvent, CollabDecisionEvent } from "../../../src/session/events.js";
+import type { AppConnectEvent, FriendPickCandidate, SessionEvent, SessionCreatedEvent, UserMessageEvent, AssistantMessageEvent, AgentRelayEvent, CallRingEvent, OutreachEvent, OutreachLine, OutreachOutcome, UserAttachmentRef, ChatVideoRef, TokenUsage, CollabRequestEvent, CollabDecisionEvent } from "../../../src/session/events.js";
 import { ChatMediaRejectedError } from "./chatMediaIntake.js";
 import { mediaPlaceholder, type ChatMediaRef } from "../../../src/shared/chatMedia.js";
 import { pendingImageDescriptions } from "../../../src/shared/visionPending.js";
@@ -194,6 +194,8 @@ import { createMessageFriendTool } from "./messageFriendTool.js";
 import { createRelayToOwnerTool } from "./relayToOwnerTool.js";
 import { createOutreachFollowup } from "./outreachFollowup.js";
 import { createReplyToFriendTool } from "./replyToFriendTool.js";
+import { createRequestAppConnectTool } from "./requestAppConnectTool.js";
+import { APP_CONNECT_PER_HOUR_MAX, appConnectStatus, appConnectedOpening, appDeclinedOpening, appConnectFoldOf, appConnectToolText, applyAppConnect, catalogIdOfServer, cloudServerIdOf, resolveConnectApp, openCardFor, type AppConnectFold } from "../../../src/shared/appConnect.js";
 import { createRoutineTools } from "./routineTools.js";
 import type { RoutineStore } from "./routineStore.js";
 import { ROUTINE_MAX_ROUNDS, routineOpeningText } from "../../../src/shared/routines.js";
@@ -789,6 +791,10 @@ export interface CloudSession {
   /** 主人点了选人卡（#1520，pick_friend 帧）：uid null = 都不是。只认主人本人、只认还开着的卡、只认卡上的人；
       点了就落 picked 再拨，打不出去落 failed（回执仍是 ok，失败画在卡上） */
   pickFriend(pickId: string, byUid: string, uid: string | null): Promise<{ ok: true } | { ok: false; message: string }>;
+  /** 主人点了连接卡（#1666，app_connect 帧）：只认主人本人（主场、非外联、非车道）、只认还开着的卡。
+      先同步落结局事件（连点的第二帧就会被拒），再读名单：发卡那只还在 → 落一条 app_connected / app_declined 开场白并起一轮，
+      让它接着办；已不在 / 名单读不出来 → 只落结局、不起轮。拒绝一律带一句对主人说的话 */
+  answerAppConnect(connectId: string, byUid: string, outcome: "connected" | "dismissed"): Promise<{ ok: true } | { ok: false; message: string }>;
   /** 外联结束，叫那只智能体回来向主人汇报（#1441）：落一条 `greeting: "outreach_report"` 的开场白（fromUid 是主人、
       点它自己）并入队——同 greetNewAgent 那条路。**这一轮里每一把刀都要主人批**（正文是朋友说的话的转述，
       不是主人的指令，见 supervisedTurn）。那只已不在名单里就什么都不起 */
@@ -914,6 +920,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   let outreachChatSent: number[] = [];
   // 选人卡（#1520）：同 outreachFold，从 seed 播种、notify 里推进；「这张卡还能不能点」只从这一份读
   const friendPickFold: FriendPickFold = friendPickFoldOf(seed);
+  // 应用连接卡（#1666）：同 friendPickFold；「这个应用此刻有没有一张开着的卡」只从这一份读
+  const appConnectFold: AppConnectFold = appConnectFoldOf(seed);
+  /** 连接卡发出的滑动一小时窗（#1666）：进程内，重启清零（同 outreachChatSent / laneBridge） */
+  let appConnectOffered: number[] = [];
   /** 这条会话此刻的名单 = 团队名单 ∩ 聊天名单。**全文件读名单只走这一个口**：@ 解析、派活、
       接力、brief、通话选人约 40 处下游一次全对，少改一处就是那一处还站着整个团队。
       团队名单读不出来（degraded）时原样交回：降级记号一旦被名单滤掉，下游「名单读不出来」
@@ -1419,6 +1429,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     applyOutreach(outreachFold, e);
     outreachFollowup?.observe(e, activeOutreach(outreachFold) !== null);
     applyFriendPick(friendPickFold, e);
+    applyAppConnect(appConnectFold, e);
     // 外联的生命周期跟着走（#1441）：它收尾时自己 append → 回到这里 → observe 只认 call_ring /
     // voice_call_changed，不会把自己落的 outreach 事件当别的再收一遍（见 outreachRun.finish 的注释）
     outreachRun?.observe(e);
@@ -1935,6 +1946,16 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
                   : "只有他本人亲口让你回，才能把话送回给朋友。这一轮不是。",
             dispatch: (friend, text) => friendReply.send({ agentId: spec.agentId, agentName: specNames.get(spec.agentId) ?? spec.name, friend, text }),
           });
+    // request_app_connect（#1666）：请主人连一个连接器目录应用，会话里出一张卡。只在主场（approveAll）、非外联、非车道挂；
+    // 在 tools() 里再按「受监督轮不亮、接力棒上（开场白接力深度 > 0）不亮、等级 ≤ 1、有连接器域」判。reason 恒为 missing——
+    // 「登录过期」那一路由连接器 409 兜底直接调 offerAppConnect（#1666 Task 4）
+    const appConnectTool =
+      !opts.approveAll || isOutreach || isPair
+        ? null
+        : createRequestAppConnectTool({
+            // 白名单现取这一轮的 spec（engine 按 agent 缓存，这里闭包里的 spec 是第一次开口时的）
+            offer: (o) => offerAppConnect({ agentId: spec.agentId, ...o, reason: "missing", tools: (turnSpec !== null && turnSpec.agentId === spec.agentId ? turnSpec : spec).tools }),
+          });
     // 定时任务三把刀（#1283）：只在主场私聊里挂；亮不亮按「主人亲口 && 不受监督」现算（routine 轮算主人亲口，Task 8）
     const routineTools =
       opts.routines === null || !opts.approveAll || chatKind !== "dm"
@@ -2072,6 +2093,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
           ...(callFriendTool !== null && adminOnly && !supervisedTurn() ? [callFriendTool] : []),
           ...(messageFriendTool !== null && adminOnly && !supervisedTurn() ? [messageFriendTool] : []),
           ...(replyToFriendTool !== null && adminOnly && !supervisedTurn() ? [replyToFriendTool] : []),
+          // 请主人连应用（#1666）：受监督轮不亮（那一轮不是主人在说话，卡只该为主人发）；接力棒上不亮（主人一点卡起的是
+          // 深度 0 的主人轮，会绕开接力棒上连接器要批 / 棒数与额度上限，#1666 终审）；动手的刀按等级与连接器域过。
+          // 与连接器 409 兜底（runJob 里的 onNeedsLogin）同一套条件，改一处要改两处
+          ...(appConnectTool !== null && !supervisedTurn() && currentOpeningDepth === 0 && (me === null || tierOf(me) <= 1) && (me === null || connectorsAllowed(me, turnRoster)) ? [appConnectTool] : []),
           // 对面公开的智能体（#1542）：只在这条车道此刻是公开的（朋友在客人名单里）才亮
           ...(bridgeTool !== null && adminOnly && pairFacingOf(chatHumans, pairFacts!.peerUid) === "both" ? [bridgeTool] : []),
           // 第 1 期 b（#1605）：不再要求车道公开——对面看的是自己家的管理员车道，不是这条
@@ -3108,6 +3133,32 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         // 卡故意放未截断的提示词全文让人读完再批（ADR-0226），2 分钟是紧的
         cachedPxTools = buildPxTools(opts.px, job.fromUid, filterGrantedByAllow(granted, spec.tools), {
           requiresApproval: openingDepth > 0,
+          // 连接器登录过期（#1666）：edge 回 409 needs_login 时自动发「重新登录」卡，并把工具错误文本换成给模型的那句。
+          // 只在能发卡的场合传（主场、非外联、非车道，同 appConnectTool 的建刀条件）；
+          // 只认主人自己云箱里的：别人借来的应用过期了，轮不到这位主人去登
+          ...(opts.approveAll && !isOutreach && !isPair
+            ? {
+                onNeedsLogin: ({ hostUid, serverId }: { hostUid: string; serverId: string }): string | null => {
+                  if (hostUid !== opts.ownerUid) return null;
+                  // 与 request_app_connect 的亮刀条件同一套（tools() 里那句）：受监督轮 / 接力深度 > 0 / 等级 > 1 不发卡，回 edge 原话；
+                  // 连接器域不用再判——没有连接器域的那只手上根本没有连接器（tools() 里 px 按 connectorsAllowed 过），走不到 409。
+                  // 主人一点卡，起的是「主人亲口、免审批」的一轮（app_connected 开场白算主人说的）——朋友带话那一轮
+                  // 若能发卡，朋友的请求就借主人这一下变成了不受监督的轮（#1666 终审 Critical）。
+                  // 调用时现读：supervisedTurn() 会因折进别人的话在一轮中途收紧
+                  const me = turnSpec !== null && turnSpec.agentId === spec.agentId ? turnSpec : null;
+                  if (supervisedTurn() || currentOpeningDepth > 0 || (me !== null && tierOf(me) > 1)) return null;
+                  const catalogId = catalogIdOfServer(serverId);
+                  const r = catalogId === null ? null : resolveConnectApp(catalogId);
+                  if (r === null || r.kind !== "ok") return null;
+                  const said = offerAppConnect({ agentId: spec.agentId, catalogId: r.entry.id, appName: r.entry.name, why: "它的登录过期了，要重新登录才能接着用", reason: "needs_login", tools: spec.tools });
+                  // 真发出了新卡才说「已经请主人重新登录」；已有开着的卡 / 本小时发满了，卡没新发，
+                  // 照 offerAppConnect 自己那句说（并补上这次调用失败的原因），不能谎称已发
+                  return said === appConnectToolText(r.entry.name)
+                    ? `${r.entry.name} 的登录过期了，已经在会话里请主人重新登录；这一轮别再调它。`
+                    : `${r.entry.name} 的登录过期了。${said}`;
+                },
+              }
+            : {}),
         });
       }
       // 起跑**之前**捕获这只 agent 这一轮的扫描起点（复审 Critical ①，与
@@ -3350,6 +3401,28 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   const logFriendPickEvent: CloudSession["logFriendPick"] = (e) => {
     if (archived) return;
     notify(store.append({ sessionId, ts: Date.now(), type: "friend_pick", ...e, ignorable: true }));
+  };
+
+  // 应用连接卡（#1666）落盘：request_app_connect 与连接器 409 兜底共用。归档之后是空操作（同 logFriendPickEvent）
+  const logAppConnect = (e: Omit<AppConnectEvent, "type" | "seq" | "sessionId" | "ts" | "ignorable">): void => {
+    if (archived) return;
+    notify(store.append({ sessionId, ts: Date.now(), type: "app_connect", ...e, ignorable: true }));
+  };
+  /** 发一张「请主人连 X」的卡；回给模型的那句话。已经能用 / 已有开着的卡 / 这个小时发够了，都不发（#1666） */
+  const offerAppConnect = (o: { agentId: string; catalogId: string; appName: string; why: string; reason: "missing" | "needs_login"; tools: readonly AgentToolAllow[] }): string => {
+    const t = now();
+    // 「已经连上了」只对 missing 成立；needs_login 恰恰是「连着、但登录过期」——授权快照里必有它，不能拿来拦卡。
+    // 快照先过这只的白名单（同 runJob 建刀那句 filterGrantedByAllow）：被白名单挡掉的应用连着也不在它手上，
+    // 说「直接用它的工具」它找不到刀（#1666 终审 Minor）
+    if (o.reason === "missing" && grantsSnapshot !== null && filterGrantedByAllow(grantsSnapshot.value, o.tools).some((g) => g.serverId === cloudServerIdOf(o.catalogId))) return `${o.appName} 已经连上了，直接用它的工具。`;
+    if (openCardFor(appConnectFold, o.catalogId, t) !== null) return `连 ${o.appName} 的卡已经在会话里了，等主人点。这一轮别再试它。`;
+    const sent = pruneBridgeWindow(appConnectOffered, t);
+    if (!bridgeWindowAllows(sent, t, APP_CONNECT_PER_HOUR_MAX)) {
+      return `这个小时已经发了 ${APP_CONNECT_PER_HOUR_MAX} 张连接卡了。直接用文字告诉主人要连什么，让他去「我 → 应用」里连。`;
+    }
+    logAppConnect({ connectId: randomUUID(), phase: "offered", fromAgentId: o.agentId, catalogId: o.catalogId, appName: o.appName, why: o.why, reason: o.reason });
+    appConnectOffered = [...sent, t];
+    return appConnectToolText(o.appName);
   };
 
   const session: CloudSession = {
@@ -3960,6 +4033,38 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       }
       // 拒绝原话是说给模型听的（「…告诉他可以…」）：落盘前改成对主人说的，日志里就是卡上显示的那句
       if (failed !== null) log({ pickId, phase: "failed", fromAgentId: st.fromAgentId, message: friendPickFailureText(failed) });
+      return { ok: true };
+    },
+
+    async answerAppConnect(connectId, byUid, outcome) {
+      if (archived) return { ok: false, message: "这条聊天已经归档了。" };
+      // 与 request_app_connect 的挂载条件同一句（appConnectTool 装配处）：团队会话 / 外联会话 / 私密车道里不会有连接卡，也不认
+      if (isOutreach || isPair || !opts.approveAll || byUid !== opts.ownerUid) return { ok: false, message: "只有他本人能点。" };
+      const st = appConnectFold.get(connectId);
+      if (st === undefined || appConnectStatus(st, now()) !== "open") return { ok: false, message: "这张卡已经用过或过期了。" };
+      // 先落结局再 await：notify 同步推进 fold，连点的第二帧在上面就会看到「用过了」
+      logAppConnect({ connectId, phase: outcome, fromAgentId: st.fromAgentId });
+      // 刚连上：授权快照作废，开场白那一轮要看到新连上的工具，不能等 60s 的 TTL
+      if (outcome === "connected") grantsSnapshot = null;
+      // 名单现读（同 reportOutreach）：发卡那只此刻可能已删 / 被移出群。读不出来（degraded）不是「它不在了」，
+      // 但两种都没法稳妥地替主人叫它——结局已落盘，卡上画得对；只是不写开场白、不起轮
+      const roster = await rosterNow({ fresh: true });
+      if (archived) return { ok: true };
+      if (roster.some((a) => a.degraded) || !roster.some((a) => a.agentId === st.fromAgentId)) {
+        console.warn(`[otto-runtime] 连接卡的开场白丢了：${roster.some((a) => a.degraded) ? "智能体名单读不出来" : "那只智能体已不在名单里"}（session=${sessionId} agent=${st.fromAgentId}）`);
+        return { ok: true };
+      }
+      const opening = store.append({
+        sessionId,
+        ts: Date.now(),
+        type: "user_message",
+        content: outcome === "connected" ? appConnectedOpening(st.appName) : appDeclinedOpening(st.appName),
+        fromUid: opts.ownerUid,
+        mentions: [st.fromAgentId],
+        greeting: outcome === "connected" ? "app_connected" : "app_declined",
+      }) as UserMessageEvent;
+      notify(opening);
+      if (coordinator.enqueue({ agentId: st.fromAgentId, fromUid: opts.ownerUid, opening }) === "start_turn") startDrain();
       return { ok: true };
     },
 

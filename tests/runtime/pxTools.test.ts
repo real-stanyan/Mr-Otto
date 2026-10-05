@@ -117,7 +117,41 @@ describe("buildPxTools", () => {
     await expect(tools[0]!.run({}, fakeWorld)).rejects.toThrow("no_grant");
   });
 
-  it("第四参 requiresApproval:true —— 接力棒上的这一刀要点火的人批一次（#957 B-C3）；缺省仍是 false", () => {
+  it("409 needs_login + onNeedsLogin 回字符串 → run 抛那句话；回调收到 {hostUid, serverId}（#1666）", async () => {
+    const fetchImpl = (async () => json(409, { error: { message: "这个应用要在手机上重新登录", type: "otto_edge", code: "needs_login" } })) as typeof fetch;
+    const granted: GrantedPxServer[] = [
+      { hostUid: "hostA1234", serverId: "cloud-supabase", toolDefs: [{ name: "t1", description: "d", inputSchema: {} }] },
+    ];
+    const seen: { hostUid: string; serverId: string }[] = [];
+    const tools = buildPxTools(baseDeps(fetchImpl), "fromU", granted, { onNeedsLogin: (g) => { seen.push(g); return "X"; } });
+
+    await expect(tools[0]!.run({}, fakeWorld)).rejects.toThrow("X");
+    expect(seen).toEqual([{ hostUid: "hostA1234", serverId: "cloud-supabase" }]);
+  });
+
+  it("409 needs_login + onNeedsLogin 回 null → 抛原 message", async () => {
+    const fetchImpl = (async () => json(409, { error: { message: "这个应用要在手机上重新登录", code: "needs_login" } })) as typeof fetch;
+    const granted: GrantedPxServer[] = [
+      { hostUid: "hostA1234", serverId: "sq", toolDefs: [{ name: "t1", description: "d", inputSchema: {} }] },
+    ];
+    const tools = buildPxTools(baseDeps(fetchImpl), "fromU", granted, { onNeedsLogin: () => null });
+
+    await expect(tools[0]!.run({}, fakeWorld)).rejects.toThrow("这个应用要在手机上重新登录");
+  });
+
+  it("别的 code（403 forbidden）不调 onNeedsLogin，照旧抛原 message", async () => {
+    const fetchImpl = (async () => json(403, { error: { message: "没授权", code: "forbidden" } })) as typeof fetch;
+    const granted: GrantedPxServer[] = [
+      { hostUid: "hostA1234", serverId: "sq", toolDefs: [{ name: "t1", description: "d", inputSchema: {} }] },
+    ];
+    let called = 0;
+    const tools = buildPxTools(baseDeps(fetchImpl), "fromU", granted, { onNeedsLogin: () => { called++; return "X"; } });
+
+    await expect(tools[0]!.run({}, fakeWorld)).rejects.toThrow("没授权");
+    expect(called).toBe(0);
+  });
+
+  it("第四参 requiresApproval:true ——接力棒上的这一刀要点火的人批一次（#957 B-C3）；缺省仍是 false", () => {
     const granted: GrantedPxServer[] = [
       { hostUid: "hostA1234", serverId: "sq", toolDefs: [{ name: "t1", description: "d", inputSchema: {} }, { name: "t2", description: "d", inputSchema: {} }] },
     ];

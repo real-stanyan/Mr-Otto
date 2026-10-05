@@ -374,6 +374,9 @@ async function scenarioAssemblyResilience(): Promise<void> {
     async pickFriend() {
       return { ok: true as const };
     },
+    async answerAppConnect() {
+      return { ok: true as const };
+    },
     reportOutreach() {
       /* 不会被调用 */
     },

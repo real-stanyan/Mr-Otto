@@ -20,6 +20,11 @@ export function refreshConnectors(opts?: RefreshOptions): Promise<void> {
   return state.refresh(opts);
 }
 
+/** 此刻的清单（不订阅）：`await refreshConnectors({ force: true })` 之后同一个回调里要按新清单再判一次时读它（#1666 连接卡） */
+export function connectorsNow(): ConnectorsState {
+  return store.get();
+}
+
 export function resetConnectors(): void {
   state.reset();
 }

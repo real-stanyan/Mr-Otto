@@ -1241,6 +1241,8 @@ export function deriveMessages(
       case "outreach":
       // 选人卡（#1520）：出卡由 call_friend 的 tool_result 说，这条只是给手机画卡
       case "friend_pick":
+      // 连接卡（#1666）：出卡由 request_app_connect 的 tool_result 说，结局由 app_connected / app_declined 开场白说
+      case "app_connect":
       // 接力棒本身不投影（#950，spec §8）：模型可见的那一面是配对的、带 relay
       // 字段的 user_message（照普通用户消息投影），这条事件只是给 UI/接力判据
       // 看的路标——谁传给了谁、第几棒，喂回模型等于让它读一句关于自己身份的元话

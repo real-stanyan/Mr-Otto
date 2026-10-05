@@ -1058,6 +1058,51 @@ describe("createCloudSessionClient — say/approve/stop 的回执（#957 第三�
     }
   });
 
+  it("answerAppConnect：发出的帧形状对，回执 ok 解析成 {ok:true}（#1666）", async () => {
+    const { h, t } = await ready();
+    const pending = h.client.answerAppConnect("k1", "connected");
+    expect(t.decoded()[t.decoded().length - 1]).toEqual({ t: "app_connect", connectId: "k1", outcome: "connected" });
+    t.emitDown({ t: "app_connect_result", connectId: "k1", ok: true });
+    expect(await pending).toEqual({ ok: true });
+  });
+
+  it("answerAppConnect：回执 ok:false 带 message 原样回（#1666）", async () => {
+    const { h, t } = await ready();
+    const pending = h.client.answerAppConnect("k1", "dismissed");
+    t.emitDown({ t: "app_connect_result", connectId: "k1", ok: false, message: "这张卡已经用过或过期了。" });
+    expect(await pending).toEqual({ ok: false, message: "这张卡已经用过或过期了。" });
+  });
+
+  it("answerAppConnect：同一 connectId 回执没到再按 → 稍等（#1666）", async () => {
+    const { h, t } = await ready();
+    const first = h.client.answerAppConnect("k1", "connected");
+    expect(await h.client.answerAppConnect("k1", "connected")).toEqual({ ok: false, message: "这张卡的回执还没到，稍等" });
+    t.emitDown({ t: "app_connect_result", connectId: "k1", ok: true });
+    expect(await first).toEqual({ ok: true });
+  });
+
+  it("answerAppConnect：15 秒没回执 → 同一句「不确定」（#1666）", async () => {
+    const { h } = await ready();
+    vi.useFakeTimers();
+    try {
+      const pending = h.client.answerAppConnect("k1", "connected");
+      await vi.advanceTimersByTimeAsync(15_000);
+      const r = await pending;
+      expect(r.ok === false && r.message).toBe("没有收到回执，不确定有没有生效——看时间线");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("answerAppConnect：断线时挂着的结掉；没 join 过直接失败（#1666）", async () => {
+    const { h, t } = await ready();
+    const a = h.client.answerAppConnect("k1", "connected");
+    t.emitGone();
+    expect((await a).ok).toBe(false);
+    const h2 = harness();
+    expect(await h2.client.answerAppConnect("k1", "connected")).toEqual({ ok: false, message: "没有已连接的云会话" });
+  });
+
   it("approve：断线时挂着的每一条都结掉", async () => {
     const { h, t } = await ready();
     const a = h.client.approve("call-a", "approved");

@@ -10,6 +10,9 @@
 import { useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Animated, Easing, Pressable, Text, View, type StyleProp, type ViewStyle } from "react-native";
 import { agentFaceIfKnown } from "../../../src/shared/agentAvatar.js";
+import { APP_CONNECT_BUTTON, appConnectCardTitle, type AppConnectAction } from "../../../src/shared/appConnect.js";
+import { catalogIcon } from "../../../src/shared/appIcon.js";
+import { AppTile } from "../machine/AppTile.js";
 import type { RosterLinePart } from "../../../src/shared/cloudTimeline.js";
 import { callOffsetText } from "../../../src/shared/cloudTimeline.js";
 import { ringRecordView, type ChatRow } from "../../../src/shared/mobileChat.js";
@@ -204,7 +207,7 @@ function RosterPill({ parts, ws }: { parts: readonly RosterLinePart[]; ws: Works
   );
 }
 
-export function ChatRowView({ row, ws, selfUid, selfName, selfAvatar, group, outreachChat = false, onOpenCall, onAgent, onCallAgent, onDecide, deciding, decideReady, friendAvatarOf, picking, onPickFriend, onLongPress }: {
+export function ChatRowView({ row, ws, selfUid, selfName, selfAvatar, group, outreachChat = false, onOpenCall, onAgent, onCallAgent, onDecide, deciding, decideReady, friendAvatarOf, picking, onPickFriend, appConnectActionOf, connecting, onAppConnect, onAppConnectDismiss, onLongPress }: {
   row: ChatRow;
   /** 长按一句话（我的 / 别人的 / 智能体的）：派一只智能体去办（#1505）。缺席 = 这页不给 */
   onLongPress?: (row: ChatRow) => void;
@@ -230,6 +233,12 @@ export function ChatRowView({ row, ws, selfUid, selfName, selfAvatar, group, out
   /** 选人卡里我刚点下、回执还没到的那一下（本地态，日志里没有） */
   picking: { pickId: string; uid: string | null } | null;
   onPickFriend: (pickId: string, uid: string | null) => void;
+  /** 连接卡（#1666）的主按钮该是哪个：按这台手机的云端视图 + 卡的 reason 判（appConnectActionFor）；null = 清单还没拉到 */
+  appConnectActionOf: (row: { catalogId: string; reason: "missing" | "needs_login" }) => AppConnectAction | null;
+  /** 连接卡里我刚发了帧、回执还没到的那一张（connectId；本地态，日志里没有） */
+  connecting: string | null;
+  onAppConnect: (row: Extract<ChatRow, { kind: "app_connect" }>) => void;
+  onAppConnectDismiss: (row: Extract<ChatRow, { kind: "app_connect" }>) => void;
 }) {
   const { c } = usePalette();
   switch (row.kind) {
@@ -313,6 +322,18 @@ export function ChatRowView({ row, ws, selfUid, selfName, selfAvatar, group, out
       return <OutreachRecord row={row} ws={ws} group={group} onOpenCall={onOpenCall} />;
     case "friend_pick":
       return <FriendPickCard row={row} ws={ws} avatarOf={friendAvatarOf} picking={picking} ready={decideReady} onPick={onPickFriend} />;
+    case "app_connect":
+      return (
+        <AppConnectCard
+          row={row}
+          ws={ws}
+          action={appConnectActionOf(row)}
+          busy={connecting === row.connectId}
+          ready={decideReady}
+          onPrimary={onAppConnect}
+          onDismiss={onAppConnectDismiss}
+        />
+      );
     case "approval":
       return <ApprovalCard row={row} busy={deciding === row.callId || !decideReady} onDecide={onDecide} selfUid={selfUid} />;
     case "task":
@@ -568,6 +589,78 @@ function FriendPickCard({ row, ws, avatarOf, picking, ready, onPick }: {
             </Pressable>
           );
         })}
+        {foot}
+      </View>
+    </View>
+  );
+}
+
+/** 连接卡（#1666；维护者看过 demo 的「连接卡」）：长在它的气泡里——上面应用图标 + 标题 + 为什么要连，下面一条顶边线
+    隔出两格「不用了 | 主按钮」。主按钮写什么（去连接 / 重新登录 / 打开 / 好了，接着办）由调用方按自己的云端视图算好
+    递进来（`action`；null = 清单还没拉到，主按钮转圈不给点），卡本身不读 store。`busy` = 这张卡我刚发了帧、回执还没到（本地态）：两格都按不动，主按钮那格转圈。
+    `row.canAct` 为假（主场群里的客人）= 只读：开着时只写等谁连；连上 / 没连 / 过期这些结局两边画得一样。
+    标题只在「开着、我点得了、知道按钮」时跟按钮走，否则中性（appConnectCardTitle，#1666 终审） */
+function AppConnectCard({ row, ws, action, busy, ready, onPrimary, onDismiss }: {
+  row: Extract<ChatRow, { kind: "app_connect" }>;
+  ws: WorkspaceSnapshot;
+  action: AppConnectAction | null;
+  busy: boolean;
+  ready: boolean;
+  onPrimary: (row: Extract<ChatRow, { kind: "app_connect" }>) => void;
+  onDismiss: (row: Extract<ChatRow, { kind: "app_connect" }>) => void;
+}) {
+  const { c } = usePalette();
+  const line = { borderTopWidth: 1, borderTopColor: c.border } as const;
+  const status = (text: string, color: string, check = false) => (
+    <View style={[line, { flexDirection: "row", alignItems: "center", gap: 6, paddingVertical: 9, paddingHorizontal: 13 }]}>
+      {check ? <Icon name="check" size={14} stroke={2.6} color={color} /> : null}
+      <Text style={{ flexShrink: 1, fontSize: 13, lineHeight: 18, color }}>{text}</Text>
+    </View>
+  );
+  const off = busy || !ready;
+  const foot =
+    row.status === "connected" ? status("已连上，接着办", c.ok, true)
+      : row.status === "dismissed" ? status("没连。要用再跟我说。", c.mutedForeground)
+        : row.status === "expired" ? status("这张卡过期了，要用再跟我说。", c.mutedForeground)
+          : !row.canAct ? status(row.waitingFor !== null ? `等 ${row.waitingFor} 连` : "等主人连", c.mutedForeground)
+            : (
+              <View style={[line, { flexDirection: "row" }]}>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel="不用了"
+                  disabled={off}
+                  onPress={() => onDismiss(row)}
+                  style={({ pressed }) => [{ flex: 1, paddingVertical: 10, alignItems: "center", justifyContent: "center" }, pressed && { opacity: 0.55 }]}
+                >
+                  <Text style={{ fontSize: 15, lineHeight: 20, color: c.foreground }}>不用了</Text>
+                </Pressable>
+                <Pressable
+                  accessibilityRole="button"
+                  accessibilityLabel={action === null ? "正在查这个应用" : APP_CONNECT_BUTTON[action]}
+                  disabled={off || action === null}
+                  onPress={() => onPrimary(row)}
+                  style={({ pressed }) => [
+                    { flex: 1, paddingVertical: 10, alignItems: "center", justifyContent: "center", borderLeftWidth: 1, borderLeftColor: c.border },
+                    pressed && { opacity: 0.55 },
+                  ]}
+                >
+                  {busy || action === null
+                    ? <ActivityIndicator size="small" color={c.brand} />
+                    : <Text style={{ fontSize: 15, lineHeight: 20, fontWeight: "600", color: c.brand }}>{APP_CONNECT_BUTTON[action]}</Text>}
+                </Pressable>
+              </View>
+            );
+  return (
+    <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 10, paddingHorizontal: 12 }}>
+      <AgentAvatar ws={ws} agentId={row.agentId} name={row.name} />
+      <View style={{ flexShrink: 1, maxWidth: "76%", minWidth: 240, borderRadius: RADIUS, borderTopLeftRadius: 4, backgroundColor: c.bubbleAgent, overflow: "hidden" }}>
+        <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 11, paddingVertical: 11, paddingHorizontal: 13 }}>
+          <AppTile name={row.appName} icon={catalogIcon(row.catalogId)} />
+          <View style={{ flex: 1, minWidth: 0 }}>
+            <Text style={{ fontSize: 16, lineHeight: 22, fontWeight: "600", color: c.foreground }}>{appConnectCardTitle(row, action)}</Text>
+            {row.why !== "" ? <Text style={{ marginTop: 2, fontSize: 14, lineHeight: 20, color: c.mutedForeground }}>{row.why}</Text> : null}
+          </View>
+        </View>
         {foot}
       </View>
     </View>
