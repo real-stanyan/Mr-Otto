@@ -182,7 +182,7 @@ export const LIFE_SCENARIOS: Scenario[] = [
     ],
   },
   {
-    id: "linda_day", title: "Tech-shy mum's day (1:1 + messaging family)",
+    id: "linda_day", title: "Tech-shy mum's day (1:1 + messaging family)", extras: ["sophie"],
     aim: "不太会用手机的妈妈：每天早 8 点吃降压药的提醒（到点真跑）、布里斯班今天的新闻、看不懂儿子发来的英式俚语、让管理员替她给女儿发消息、要一个六人份 pavlova 菜谱。",
     beats: [
       { kind: "dm_admin", who: "linda", goal: "Ask it to remind you every morning at 8am to take your blood pressure tablets, you keep forgetting." },

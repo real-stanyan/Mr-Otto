@@ -13,7 +13,7 @@ describe.skipIf(!LIVE)("群座位制 · 欧美用户模拟", () => {
     const only = (process.env.OTTO_SIM_ONLY ?? "").split(",").filter((x) => x !== "");
     const scenarios = [...LIFE_SCENARIOS, ...PEOPLE_SCENARIOS, ...SCENARIOS].filter((s) => only.length === 0 || only.includes(s.id));
     const ids = new Set(scenarios.flatMap((s) => [
-      ...(s.owner !== undefined ? [s.owner] : []), ...(s.members ?? []),
+      ...(s.owner !== undefined ? [s.owner] : []), ...(s.members ?? []), ...(s.extras ?? []),
       ...s.beats.flatMap((b) =>
         b.kind === "invite" ? b.add
           : b.kind === "friend_dm" ? [b.who, b.to]

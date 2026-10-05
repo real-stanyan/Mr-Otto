@@ -75,6 +75,8 @@ export interface Scenario {
   members?: string[];
   /** 这场里不该出现在 owner 自己私下以外地方的字串（比如私聊里交代保密的 wifi 密码） */
   leaks?: { owner: string; text: string; okWhere?: string[] }[];
+  /** 剧本里没说话、但得在场的人（比如被代发消息的那位朋友：不在场就「好友里没有这个人」） */
+  extras?: string[];
   beats: Beat[];
 }
 
