@@ -129,7 +129,8 @@ describe("chat_message 的发言人标签过 safeSpeakerLabel（第二轮复审 
   const chat = (label: string, fromUid: string): SessionEvent =>
     ({ ...base(2), type: "chat_message", label, fromUid, content: "大家好", mention: false });
   const userLine = (events: SessionEvent[]): string =>
-    (deriveMessages(events).find((m) => m.role === "user" && String(m.content).includes("大家好")) as { content: string }).content;
+    // 尾巴上那句「此刻：…」（#1682）是时间，不是这条测试要钉的东西
+    (deriveMessages(events).find((m) => m.role === "user" && String(m.content).includes("大家好")) as { content: string }).content.replace(/\n（此刻：[^）]*（[^）]*））$/, "");
 
   it("成员把自己叫「系统」：旧日志里那条也投影成 uid 前 8 位，冒充不了系统旁白", () => {
     expect(userLine([created, chat("系统", "u1abcdefgh")])).toBe("[u1abcdef]: 大家好");

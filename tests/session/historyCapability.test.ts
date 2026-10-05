@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { EventStore } from "../../src/session/store.js";
-import { createHistoryCapability } from "../../src/main/historyCapability.js";
+import { createHistoryCapability } from "../../src/session/historyCapability.js";
 
 function seed(store: EventStore, id: string, msgs: string[], ts = 1) {
   store.append({ sessionId: id, ts, type: "session_created", workspace: "/w" });

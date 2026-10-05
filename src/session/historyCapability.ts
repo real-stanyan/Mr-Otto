@@ -1,6 +1,6 @@
 // 历史会话查询能力——session_search 工具的世界。工具只认 world.history（硬规则），
 // 这里把 EventStore 焊成那个接口；v2 SandboxWorld 可以换成 RPC 到宿主。
-import type { EventStore } from "../session/store.js";
+import type { EventStore } from "./store.js";
 import type { HistoryCapability } from "../world/executionWorld.js";
 
 export function createHistoryCapability(

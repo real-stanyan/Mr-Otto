@@ -5,6 +5,8 @@
 import type { ExecutionWorld } from "../world/executionWorld.js";
 
 export const ANYSEARCH_ENDPOINT = "https://api.anysearch.com/mcp";
+/** 内置的那把 key（原在 src/main/agent.ts）：桌面与云端 runtime 共用，env ANYSEARCH_API_KEY 在场时让位 */
+export const BUILTIN_ANYSEARCH_KEY = "as_sk_510528174cb15e70f912bc49bdd80eb5";
 
 export type GetKey = () => string | undefined;
 

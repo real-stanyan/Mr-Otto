@@ -69,6 +69,23 @@ function dayOf(ts: number, tz?: string): string {
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
 
+/** 当地「YYYY-MM-DD 周X HH:mm（时区）」——云会话尾巴上那句「此刻」（#1682）。时区认不出回进程时区 */
+function localClock(ts: number, tz?: string): string {
+  const fmt = (zone?: string): string => {
+    const p = Object.fromEntries(
+      new Intl.DateTimeFormat("en-CA", { ...(zone ? { timeZone: zone } : {}), year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", hour12: false, weekday: "short" })
+        .formatToParts(ts).map((x) => [x.type, x.value]),
+    ) as Record<string, string>;
+    const wd = ({ Mon: "周一", Tue: "周二", Wed: "周三", Thu: "周四", Fri: "周五", Sat: "周六", Sun: "周日" } as Record<string, string>)[p.weekday ?? ""] ?? "";
+    return `${p.year}-${p.month}-${p.day} ${wd} ${p.hour === "24" ? "00" : p.hour}:${p.minute}（${zone ?? "本机时区"}）`;
+  };
+  try {
+    return fmt(tz);
+  } catch {
+    return fmt();
+  }
+}
+
 /** 日志里最后一条事件的日期 —— 投影和用量估算共用同一处口径（两边各算一遍
     就会出现"估算里没有日期那一行、真实请求里有"的偏差）。空日志 = 没有日期。
     时区取最近一条 user_message.tz（#1283），没有就是进程时区（老行为） */
@@ -1335,6 +1352,22 @@ export function deriveMessages(
   // summaryAt 可能 === events.length（被吸收区是日志尾巴）——循环里插不到，这里补
   if (micro && micro.summaryAt >= events.length) {
     messages.push({ role: "assistant", content: `${MICRO_SUMMARY_PREFIX}${micro.summary}` });
+  }
+
+  // 此刻几点（#1682 日常能力）：云会话里最后一条 user 消息后面带一句当地时间——「十分钟后提醒我」「今晚八点」都要它，
+  // 系统提示词里只有日期。挂在最后一条 user 上而不是 system：system 每分钟一变会让整段前缀缓存每轮作废；挂在尾巴上，
+  // 一轮里多圈工具调用时这条不变、缓存照样命中。时刻取日志最后一条事件的 ts、时区取发话人设备的（同「今天」那一行），可从日志推导
+  if (isCloud && !isOutreach) {
+    const last = events[events.length - 1];
+    const at = last === undefined ? null : localClock(last.ts, todayTz);
+    for (let i = messages.length - 1; at !== null && i >= 0; i--) {
+      const m = messages[i]!;
+      if (m.role !== "user") continue;
+      const note = `\n（此刻：${at}）`;
+      if (typeof m.content === "string") m.content += note;
+      else m.content = [...m.content, { type: "text", text: note }];
+      break;
+    }
   }
 
   const startedIds = new Set(

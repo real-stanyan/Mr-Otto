@@ -104,7 +104,7 @@ describe("专员上报：escalate_to_admin", () => {
   it("接线：只给这条对话里没有管理员的专员；那一轮放行排定时；daemon 送进管理员私聊；手机画灰条", () => {
     const svc = read("services/runtime/src/sessionService.ts");
     expect(svc).toContain("escalateTool !== null && me !== null && tierOf(me) === 1 && !turnRoster.some((a) => a.agentId === ADMIN_AGENT_ID)");
-    expect(svc).toContain("available: () => (ownerSpoke || escalationTurn) && !supervisedTurn(),");
+    expect(svc).toContain("available: () => (ownerSpoke || escalationTurn || seatGrantTurn) && !supervisedTurn(),");
     expect(svc).toContain('greeting: "escalation"');
     const daemon = read("services/runtime/src/daemon.ts");
     expect(daemon).toContain("escalateToAdmin: async (e) =>");

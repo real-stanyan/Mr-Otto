@@ -46,6 +46,7 @@ import { DEFAULT_STUN, HUMAN_CALL_RING_MS, humanRingPush } from "../../../src/sh
 import { iceServersFor } from "./turnCredentials.js";
 import { createLaneBridge } from "./laneBridge.js";
 import { createSeatHub, type GroupRef } from "./seatHub.js";
+import { BUILTIN_ANYSEARCH_KEY } from "../../../src/tools/anysearch.js";
 import { createHumansProblem, friendSetOf, friendshipFilter, planHumansChange } from "./chatHumans.js";
 import { CHAT_HUMANS_MAX, humanRosterChangeProblem } from "../../../src/shared/chatRoster.js";
 import { greetOnCreate } from "./newAgentGreeting.js";
@@ -1358,6 +1359,8 @@ async function main(): Promise<void> {
       adminsBridge,
       // 群座位的桥（#1682）
       seatHub,
+      // 联网搜索 / 读网页（#1682 日常能力）：同桌面那把 key，env 在场时让位
+      webSearchKey: () => process.env["ANYSEARCH_API_KEY"] ?? BUILTIN_ANYSEARCH_KEY,
       // 专员上报（#1659）：送进主人和管理员的私聊。routineRooms 在下面才建——这里只在专员调刀时才读，那时早建好了
       escalateToAdmin: async (e) => {
         const f = await workspaceFacts(e.workspaceId);

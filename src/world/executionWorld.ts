@@ -190,7 +190,7 @@ export interface HistoryHit {
 }
 
 /** 历史会话查询能力——session_search 工具的世界（硬规则：工具只认 ExecutionWorld，
-    不直接碰 EventStore）。v1 由 src/main/historyCapability.ts 焊在 EventStore 上；
+    不直接碰 EventStore）。v1 由 src/session/historyCapability.ts 焊在 EventStore 上；
     v2 SandboxWorld 可以换成 RPC 到宿主 */
 export interface HistoryCapability {
   /** 全文检索（已排除归档/子会话/当前会话） */

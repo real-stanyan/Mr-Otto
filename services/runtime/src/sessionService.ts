@@ -257,6 +257,10 @@ import {
 } from "../../../src/shared/groupSeats.js";
 import type { SeatDecisionEvent, SeatRequestEvent } from "../../../src/session/events.js";
 import { createAskOwnerTool } from "./askOwnerTool.js";
+import { createWebSearchTool } from "../../../src/tools/webSearch.js";
+import { createWebExtractTool } from "../../../src/tools/webExtract.js";
+import { createSessionSearchTool } from "../../../src/tools/sessionSearch.js";
+import { createHistoryCapability } from "../../../src/session/historyCapability.js";
 import type { SeatHub, SeatOpening } from "./seatHub.js";
 
 /** 管理员车道的桥（#1605）：A 的协作请求送到 B 家的 admins 车道；B 的决定与回复送回 A 的那条会话。daemon 一个 */
@@ -621,6 +625,9 @@ export interface CloudSessionOpts {
   settings?: OwnerSettingsStore | null;
   /** 管理员车道的桥（#1605）。可选：没接 = invite_collaborator 不挂、决定送不回去 */
   adminsBridge?: AdminsBridge | null;
+  /** 联网搜索 / 读网页那把 key（#1682 日常能力：天气、新闻、汇率、营业时间、菜谱……）。可选：缺席 = 不挂这两把刀（测试 / 冒烟）。
+      daemon 给 env ANYSEARCH_API_KEY，没有就是内置那把（同桌面） */
+  webSearchKey?: (() => string | undefined) | null;
   /** 群座位的桥（#1682，ADR-0376）。可选（几十份夹具不该为它都改一遍）：缺席 / null = 座位制的群里 @ 了管理员也送不出去
       （群里说一句「接不住」），座位里的回话送不回群。daemon 是唯一的真装配者，它总会给 */
   seatHub?: SeatHub | null;
@@ -1331,6 +1338,9 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   const forSomeoneElse = (): boolean => isSeat && currentInitiator !== null && (currentInitiator !== opts.ownerUid || seatGrantTurn);
   const world: ExecutionWorld = {
     ...opts.world,
+    // 搜自己的聊天记录（#1682 日常能力：「我上周说的那家餐厅叫什么」）：只在主场——团队会话里那是整个团队的会话。
+    // 亮不亮到某一轮由 session_search 的 available 管（主人自己的轮才亮，替别人办事的那一轮不亮）
+    ...(opts.approveAll ? { history: createHistoryCapability(store, () => sessionId) } : {}),
     fs: {
       read: async (path) => {
         if (forSomeoneElse() && PRIVATE_DIR_RE.test(path)) throw new Error(PRIVATE_BLOCKED_TEXT);
@@ -2238,6 +2248,12 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
                 .catch(() => "对面那边这会儿接不住，稍后再试");
             },
           });
+    // 日常能力（#1682）：联网搜索 / 读网页（只读外呼，不碰主人的东西，所以授权轮也能用）；搜自己的聊天记录只在主人自己的轮里亮
+    const searchKey = opts.webSearchKey ?? null;
+    const webTools: Tool[] = searchKey === null ? [] : [createWebSearchTool(searchKey), createWebExtractTool(searchKey)];
+    const sessionSearchTool: Tool | null = !opts.approveAll ? null : Object.create(createSessionSearchTool(), {
+      available: { value: () => currentInitiator === opts.ownerUid && !supervisedTurn() && !forSomeoneElse() && !isOutreach, enumerable: true },
+    }) as Tool;
     // ask_owner（#1682）：只在座位里、只给管理员；亮不亮在 tools() 里按「这一轮是不是别人使唤」判
     const askOwnerTool = isSeat && spec.agentId === ADMIN_AGENT_ID ? createAskOwnerTool({ request: seatAsk }) : null;
     const engine = new LoopEngine({
@@ -2277,7 +2293,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         const px = me === null || connectorsAllowed(me, turnRoster) ? cachedPxTools : [];
         const adminOnly = me === null || isAdmin;
         const list: Tool[] = [
-          ...scopedHands, wikiReadTool, wikiTool, inviteToCallTool,
+          ...scopedHands, wikiReadTool, wikiTool, inviteToCallTool, ...webTools,
+          ...(sessionSearchTool !== null ? [sessionSearchTool] : []),
           ...(callUserTool !== null ? [callUserTool] : []),
           // 受监督的轮里干脆不亮这把刀：亮出来只会弹一张批了也必被 mayCall 拒的卡
           ...(callFriendTool !== null && adminOnly && !supervisedTurn() ? [callFriendTool] : []),

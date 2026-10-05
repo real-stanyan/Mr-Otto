@@ -36,6 +36,7 @@ import { createBashTool } from "../tools/bash.js";
 import { createWaitTaskTool } from "../tools/waitTask.js";
 import { BackgroundTasks } from "./backgroundTasks.js";
 import { createWebSearchTool } from "../tools/webSearch.js";
+import { BUILTIN_ANYSEARCH_KEY } from "../tools/anysearch.js";
 import { createWebExtractTool } from "../tools/webExtract.js";
 import { createGenerateImageTool } from "../tools/generateImage.js";
 import { latestImageRef } from "../session/latestImage.js";
@@ -127,7 +128,6 @@ import type { ExecutionWorld } from "../world/executionWorld.js";
 
 /** 内置 anysearch key(免费注册所得,仅搜索限额,无支付面)。仓库私有;若开源须先轮换。
     ANYSEARCH_API_KEY 环境变量优先于它。 */
-const BUILTIN_ANYSEARCH_KEY = "as_sk_510528174cb15e70f912bc49bdd80eb5";
 
 export interface AgentPush {
   event(e: SessionEvent): void;
