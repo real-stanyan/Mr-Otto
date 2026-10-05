@@ -19,6 +19,7 @@ import { createWorkspaceLock } from "../../services/runtime/src/workspaceLock.js
 import { createInMemoryCloudSessionMeta } from "../../services/runtime/src/cloudSessionMeta.js";
 import { taskFoldOf } from "../../src/shared/tasks.js";
 import { createInMemoryAppStore } from "../../services/runtime/src/appStore.js";
+import { createInMemoryOwnerSettings } from "../../services/runtime/src/ownerSettingsStore.js";
 
 const fakeWorld: ExecutionWorld = {
   fs: { read: async (path) => `<content of ${path}>`, write: async () => {} },
@@ -55,6 +56,8 @@ function open(store: EventStore, o: {
   meta?: ReturnType<typeof createInMemoryCloudSessionMeta>;
   /** build_app（#1591）要的两样：接了 git（execInWorkspace）+ apps（表 + 上传） */
   apps?: CloudSessionOpts["apps"];
+  /** update_settings（#1621） */
+  settings?: CloudSessionOpts["settings"];
 }): CloudSession {
   const home = o.home ?? true;
   store.append({ sessionId: "s1", ts: 1, type: "session_created", workspace: "/work", cloud: { workspaceId: "w1", chat: { kind: o.kind ?? "group" }, ...(home ? { home: true } : {}) } });
@@ -89,6 +92,7 @@ function open(store: EventStore, o: {
     sandboxApproval: async () => "ask",
     workspaceLock: createWorkspaceLock(),
     relayRemainingMicro: async () => null,
+    ...(o.settings === undefined ? {} : { settings: o.settings }),
     ...(o.apps === undefined ? {} : {
       apps: o.apps,
       git: {
@@ -192,5 +196,35 @@ describe("build_app（#1591）挂给谁", () => {
     await s2.settled();
     expect(tools["a_apps"]).not.toContain("build_app");
     store2.close();
+  });
+});
+
+describe("update_settings（#1621）挂给谁", () => {
+  it("主场私聊里的管理员有；专员没有；群里 / 没接 settings 的没有", async () => {
+    const store = newStore();
+    const tools: Record<string, string[]> = {};
+    const s1 = open(store, { roster: ["admin"], kind: "dm", settings: createInMemoryOwnerSettings(), reply: (id, names) => { tools[id] = names; return { content: "好" }; } });
+    await s1.say("owner", "Stan", "把免打扰设到十点", false, undefined);
+    await s1.settled();
+    expect(tools["admin"]).toContain("update_settings");
+    store.close();
+    const store2 = newStore();
+    const s2 = open(store2, { roster: ["a_travel"], kind: "dm", settings: createInMemoryOwnerSettings(), reply: (id, names) => { tools[id] = names; return { content: "好" }; } });
+    await s2.say("owner", "Stan", "@出行 来", true, ["a_travel"]);
+    await s2.settled();
+    expect(tools["a_travel"]).not.toContain("update_settings");
+    store2.close();
+    const store3 = newStore();
+    const s3 = open(store3, { roster: ["admin"], kind: "group", settings: createInMemoryOwnerSettings(), reply: (id, names) => { tools[id] = names; return { content: "好" }; } });
+    await s3.say("owner", "Stan", "@管理员 来", true, ["admin"]);
+    await s3.settled();
+    expect(tools["admin"]).not.toContain("update_settings");
+    store3.close();
+    const store4 = newStore();
+    const s4 = open(store4, { roster: ["admin"], kind: "dm", reply: (id, names) => { tools[id] = names; return { content: "好" }; } });
+    await s4.say("owner", "Stan", "来", false, undefined);
+    await s4.settled();
+    expect(tools["admin"]).not.toContain("update_settings");
+    store4.close();
   });
 });

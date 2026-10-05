@@ -237,6 +237,7 @@ import { connectorsAllowed, dispatchDenied, scopedTools, tierOf, type AgentTier 
 import { tierPrompt } from "../../../src/shared/tierPrompt.js";
 import { createRosterTools } from "./rosterTools.js";
 import { createBuildAppTool } from "./buildAppTool.js";
+import { createSettingsTool, type OwnerSettingsStore } from "./settingsTool.js";
 import type { AppStore } from "./appStore.js";
 import { domainOf } from "../../../src/shared/agentTier.js";
 import { createTaskTools } from "./taskTools.js";
@@ -572,6 +573,9 @@ export interface CloudSessionOpts {
   /** 定时任务（#1283，spec §7）。**必需**（同 agentWriter / isMember 的纪律）：忘接线该编译不过。
       null = 不挂那三把刀（团队会话 / 外联 / 0058 没跑）。刀只在 approveAll 且 chat.kind === "dm" 的会话里挂 */
   routines: RoutineStore | null;
+  /** 管理员改 Otto 设置（#1621）：update_settings 落库的那一半。可选：没接的装配不挂这把刀。
+      刀只在主场私聊里、只给 L0；亮不亮同 routineTools（主人亲口的那一轮） */
+  settings?: OwnerSettingsStore | null;
   /** 时钟（只给测试拧 TTL 用）。缺席 = Date.now */
   now?: () => number;
 }
@@ -1689,6 +1693,15 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
             now: () => opts.now?.() ?? Date.now(),
             available: () => ownerSpoke && !supervisedTurn(),
           });
+    // update_settings（#1621）：主场私聊里、只给管理员；主人亲口的那一轮才亮（同 routineTools）；改完落一句系统行
+    const settingsTool =
+      opts.settings === null || opts.settings === undefined || !opts.approveAll || chatKind !== "dm"
+        ? null
+        : createSettingsTool({
+            workspaceId: opts.workspaceId, ownerUid: opts.ownerUid, store: opts.settings,
+            available: () => ownerSpoke && !supervisedTurn(),
+            announce: (line) => logChat("system", "系统", line, false),
+          });
     // message_friend_agent（#1542，ADR-0358）：只挂在公开（facing both）的车道里、daemon 接了 laneBridge 时。
     // 只说话、不动任何人的东西，所以客人点起的轮里也**不掀成要批**（下面 tools() 的例外）——不然 B 的智能体
     // 每回一句都要 B 按一次卡，这条链就等于没有。深度读这一轮开场白的接力深度（currentOpeningDepth）
@@ -1762,6 +1775,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
           // 管理员拉人 / 请人（#1571 第二轮第 3 条）：主场里才有，外联 / 团队会话没有这回事
           ...(isAdmin && opts.approveAll ? [rosterTools.bring, rosterTools.dismiss] : []),
           ...routineTools,
+          ...(settingsTool !== null && isAdmin ? [settingsTool] : []),
           ...taskTools,
           ...(buildAppTool !== null && (isAdmin || (me !== null && domainOf(me) === "apps")) ? [buildAppTool] : []),
           ...px,
