@@ -6,7 +6,7 @@ import type { ChatRow } from "../../src/shared/mobileChat.js";
 type Card = Extract<ChatRow, { kind: "app_connect" }>;
 const card = (connectId: string, seq: number, o: Partial<Card> = {}): Card => ({
   kind: "app_connect", key: `app_connect-${connectId}`, ts: 1000 + seq, seq, connectId, agentId: "admin", name: "小管家",
-  catalogId: "supabase", appName: "Supabase", why: "查表", status: "open", canAct: true, waitingFor: null, ...o,
+  catalogId: "supabase", appName: "Supabase", why: "查表", reason: "missing", status: "open", canAct: true, waitingFor: null, ...o,
 });
 const text = (seq: number): ChatRow => ({ kind: "mine", key: `m${seq}`, ts: 1000 + seq, text: "hi" }) as unknown as ChatRow;
 const ok = { baselineSeq: 10, popped: new Set<string>(), focused: true };

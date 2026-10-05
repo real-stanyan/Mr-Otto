@@ -82,6 +82,25 @@ export function appConnectAction(view: readonly CloudViewItem[], catalogId: stri
   if (item.status === "needs_login") return "relogin";
   return item.grants.includes(workspaceId) ? "ready" : "grant";
 }
+/** 卡与弹窗共用的那一句（#1666 终审）：视图还没拉到（null）= 不知道，回 null——卡上主按钮不给点、弹窗不弹，
+    不能把「没拉到」当「没接」。needs_login 卡在视图说「好着」时也给重新登录：edge 是回 409 那一刻才把应用翻成
+    needs_login 的，手机进页拉的那份多半比这张卡旧；卡本身就是登录失效的证据，主人登好了这张卡也就答了 */
+export function appConnectActionFor(
+  view: readonly CloudViewItem[] | null, catalogId: string, workspaceId: string, reason: "missing" | "needs_login",
+): AppConnectAction | null {
+  if (view === null) return null;
+  const a = appConnectAction(view, catalogId, workspaceId);
+  return reason === "needs_login" && (a === "ready" || a === "grant") ? "relogin" : a;
+}
+/** 不跟按钮走的中性标题：关了的卡（已连 / 没连 / 过期）、客人看到的卡、还不知道该给哪个按钮时 */
+export function appConnectNeutralTitle(appName: string): string {
+  return `要用 ${appName}`;
+}
+/** 卡上 / 弹窗里的标题：开着、我点得了、知道按钮 → 跟按钮走；否则中性（关了的卡写「已经连好了」上面又写「没连」就矛盾了；
+    客人的视图是他自己手机上的应用，拿来判主人的工作区不对） */
+export function appConnectCardTitle(row: { status: AppConnectStatus; canAct: boolean; appName: string }, action: AppConnectAction | null): string {
+  return row.status === "open" && row.canAct && action !== null ? appConnectTitle(action, row.appName) : appConnectNeutralTitle(row.appName);
+}
 export function appConnectTitle(action: AppConnectAction, appName: string): string {
   switch (action) {
     case "connect": return `要连上 ${appName} 才能办`;

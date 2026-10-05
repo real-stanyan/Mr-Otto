@@ -743,8 +743,17 @@ describe("连接卡一行（#1666）", () => {
     seq = 0;
     expect(rowsOf([offer("c1")])).toEqual([{
       kind: "app_connect", key: "app_connect-c1", ts: DAY, seq: 0, connectId: "c1", agentId: "a_000000000002", name: "运维",
-      catalogId: "notion", appName: "Notion", why: "要把会议纪要存进你的 Notion", status: "open", canAct: true, waitingFor: "Stan",
+      catalogId: "notion", appName: "Notion", why: "要把会议纪要存进你的 Notion", reason: "missing", status: "open", canAct: true, waitingFor: "Stan",
     }]);
+  });
+
+  it("needs_login 卡带上 reason：手机据此在自己的视图还说「好着」时也给「重新登录」", () => {
+    seq = 0;
+    const relogin = e({
+      type: "app_connect", connectId: "c2", phase: "offered", fromAgentId: "a_000000000002", ts: DAY,
+      catalogId: "notion", appName: "Notion", why: "它的登录过期了", reason: "needs_login", ignorable: true,
+    });
+    expect(rowsOf([relogin])[0]).toMatchObject({ reason: "needs_login" });
   });
 
   it("canAct 只给主人：客人看到的是只读的卡", () => {

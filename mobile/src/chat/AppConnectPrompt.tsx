@@ -6,7 +6,7 @@
 // （ConnectAppDialog.tsx 头注释）。
 import { Text, View } from "react-native";
 import { catalogIcon } from "../../../src/shared/appIcon.js";
-import { APP_CONNECT_BUTTON, appConnectTitle, type AppConnectAction } from "../../../src/shared/appConnect.js";
+import { APP_CONNECT_BUTTON, appConnectCardTitle, type AppConnectAction } from "../../../src/shared/appConnect.js";
 import type { ChatRow } from "../../../src/shared/mobileChat.js";
 import { Dialog } from "../dialog.js";
 import { AppTile } from "../machine/AppTile.js";
@@ -15,7 +15,8 @@ import { Button } from "../ui.js";
 
 export function AppConnectPrompt({ row, action, visible, onShown, onPrimary, onLater, onExited }: {
   row: Extract<ChatRow, { kind: "app_connect" }>;
-  action: AppConnectAction;
+  /** 调用方只在知道按钮时才弹（appConnectActionFor 非 null）；开着时清单被清空（换号）回 null：主按钮不给点、标题中性 */
+  action: AppConnectAction | null;
   visible: boolean;
   /** Modal 真的摊开之后调一次 */
   onShown: () => void;
@@ -31,13 +32,13 @@ export function AppConnectPrompt({ row, action, visible, onShown, onPrimary, onL
         <AppTile name={row.appName} icon={catalogIcon(row.catalogId)} size={56} />
         <Text style={{ fontSize: 12, lineHeight: 16, color: c.faint }}>{row.name}</Text>
         <Text style={{ fontSize: 17, lineHeight: 22, fontWeight: "600", textAlign: "center", color: c.foreground }}>
-          {appConnectTitle(action, row.appName)}
+          {appConnectCardTitle(row, action)}
         </Text>
         {row.why !== "" ? (
           <Text style={{ fontSize: 14, lineHeight: 20, textAlign: "center", color: c.mutedForeground }}>{row.why}</Text>
         ) : null}
         <View style={{ alignSelf: "stretch", gap: 8, marginTop: 6 }}>
-          <Button size="dialog" variant="primary" label={APP_CONNECT_BUTTON[action]} onPress={onPrimary} />
+          <Button size="dialog" variant="primary" label={action === null ? "…" : APP_CONNECT_BUTTON[action]} disabled={action === null} onPress={onPrimary} />
           <Button size="dialog" variant="quiet" label="稍后" onPress={onLater} />
         </View>
       </View>

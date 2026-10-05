@@ -10,7 +10,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ActivityIndicator, Animated, Easing, Pressable, Text, View, type StyleProp, type ViewStyle } from "react-native";
 import { agentFaceIfKnown } from "../../../src/shared/agentAvatar.js";
-import { APP_CONNECT_BUTTON, appConnectTitle, type AppConnectAction } from "../../../src/shared/appConnect.js";
+import { APP_CONNECT_BUTTON, appConnectCardTitle, type AppConnectAction } from "../../../src/shared/appConnect.js";
 import { catalogIcon } from "../../../src/shared/appIcon.js";
 import { AppTile } from "../machine/AppTile.js";
 import type { RosterLinePart } from "../../../src/shared/cloudTimeline.js";
@@ -233,8 +233,8 @@ export function ChatRowView({ row, ws, selfUid, selfName, selfAvatar, group, out
   /** 选人卡里我刚点下、回执还没到的那一下（本地态，日志里没有） */
   picking: { pickId: string; uid: string | null } | null;
   onPickFriend: (pickId: string, uid: string | null) => void;
-  /** 连接卡（#1666）的主按钮该是哪个：按这台手机的云端视图判（appConnectAction） */
-  appConnectActionOf: (catalogId: string) => AppConnectAction;
+  /** 连接卡（#1666）的主按钮该是哪个：按这台手机的云端视图 + 卡的 reason 判（appConnectActionFor）；null = 清单还没拉到 */
+  appConnectActionOf: (row: { catalogId: string; reason: "missing" | "needs_login" }) => AppConnectAction | null;
   /** 连接卡里我刚发了帧、回执还没到的那一张（connectId；本地态，日志里没有） */
   connecting: string | null;
   onAppConnect: (row: Extract<ChatRow, { kind: "app_connect" }>) => void;
@@ -327,7 +327,7 @@ export function ChatRowView({ row, ws, selfUid, selfName, selfAvatar, group, out
         <AppConnectCard
           row={row}
           ws={ws}
-          action={appConnectActionOf(row.catalogId)}
+          action={appConnectActionOf(row)}
           busy={connecting === row.connectId}
           ready={decideReady}
           onPrimary={onAppConnect}
@@ -597,12 +597,13 @@ function FriendPickCard({ row, ws, avatarOf, picking, ready, onPick }: {
 
 /** 连接卡（#1666；维护者看过 demo 的「连接卡」）：长在它的气泡里——上面应用图标 + 标题 + 为什么要连，下面一条顶边线
     隔出两格「不用了 | 主按钮」。主按钮写什么（去连接 / 重新登录 / 打开 / 好了，接着办）由调用方按自己的云端视图算好
-    递进来（`action`），卡本身不读 store。`busy` = 这张卡我刚发了帧、回执还没到（本地态）：两格都按不动，主按钮那格转圈。
-    `row.canAct` 为假（主场群里的客人）= 只读：开着时只写等谁连；连上 / 没连 / 过期这些结局两边画得一样 */
+    递进来（`action`；null = 清单还没拉到，主按钮转圈不给点），卡本身不读 store。`busy` = 这张卡我刚发了帧、回执还没到（本地态）：两格都按不动，主按钮那格转圈。
+    `row.canAct` 为假（主场群里的客人）= 只读：开着时只写等谁连；连上 / 没连 / 过期这些结局两边画得一样。
+    标题只在「开着、我点得了、知道按钮」时跟按钮走，否则中性（appConnectCardTitle，#1666 终审） */
 function AppConnectCard({ row, ws, action, busy, ready, onPrimary, onDismiss }: {
   row: Extract<ChatRow, { kind: "app_connect" }>;
   ws: WorkspaceSnapshot;
-  action: AppConnectAction;
+  action: AppConnectAction | null;
   busy: boolean;
   ready: boolean;
   onPrimary: (row: Extract<ChatRow, { kind: "app_connect" }>) => void;
@@ -635,15 +636,15 @@ function AppConnectCard({ row, ws, action, busy, ready, onPrimary, onDismiss }: 
                 </Pressable>
                 <Pressable
                   accessibilityRole="button"
-                  accessibilityLabel={APP_CONNECT_BUTTON[action]}
-                  disabled={off}
+                  accessibilityLabel={action === null ? "正在查这个应用" : APP_CONNECT_BUTTON[action]}
+                  disabled={off || action === null}
                   onPress={() => onPrimary(row)}
                   style={({ pressed }) => [
                     { flex: 1, paddingVertical: 10, alignItems: "center", justifyContent: "center", borderLeftWidth: 1, borderLeftColor: c.border },
                     pressed && { opacity: 0.55 },
                   ]}
                 >
-                  {busy
+                  {busy || action === null
                     ? <ActivityIndicator size="small" color={c.brand} />
                     : <Text style={{ fontSize: 15, lineHeight: 20, fontWeight: "600", color: c.brand }}>{APP_CONNECT_BUTTON[action]}</Text>}
                 </Pressable>
@@ -656,7 +657,7 @@ function AppConnectCard({ row, ws, action, busy, ready, onPrimary, onDismiss }: 
         <View style={{ flexDirection: "row", alignItems: "flex-start", gap: 11, paddingVertical: 11, paddingHorizontal: 13 }}>
           <AppTile name={row.appName} icon={catalogIcon(row.catalogId)} />
           <View style={{ flex: 1, minWidth: 0 }}>
-            <Text style={{ fontSize: 16, lineHeight: 22, fontWeight: "600", color: c.foreground }}>{appConnectTitle(action, row.appName)}</Text>
+            <Text style={{ fontSize: 16, lineHeight: 22, fontWeight: "600", color: c.foreground }}>{appConnectCardTitle(row, action)}</Text>
             {row.why !== "" ? <Text style={{ marginTop: 2, fontSize: 14, lineHeight: 20, color: c.mutedForeground }}>{row.why}</Text> : null}
           </View>
         </View>

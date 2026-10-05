@@ -22,12 +22,12 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { AppState, FlatList, Pressable, StyleSheet, Text, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { activityFoldOf } from "../../../src/shared/agentActivity.js";
-import { appConnectAction } from "../../../src/shared/appConnect.js";
+import { appConnectActionFor, type AppConnectAction } from "../../../src/shared/appConnect.js";
 import { nextBaseline, popupCandidate, type PopupBaseline } from "../../../src/shared/appConnectPopup.js";
 import { MCP_CATALOG, type CuratedEntry } from "../../../src/shared/mcpCatalog.js";
 import { lendToTeam } from "../machine/connectApp.js";
 import { ConnectAppDialog } from "../machine/ConnectAppDialog.js";
-import { refreshConnectors, useConnectors } from "../machine/connectorsStore.js";
+import { connectorsNow, refreshConnectors, useConnectors } from "../machine/connectorsStore.js";
 import { agentFaceSlot } from "../../../src/shared/agentAvatar.js";
 import { roleChipsAnchor } from "../../../src/shared/agentOnboarding.js";
 import { resolveSendMentions } from "../../../src/shared/agentMentionInput.js";
@@ -429,6 +429,18 @@ export function ChatScreen({ route, navigation }: Props) {
     () => (ws !== null ? chatRows({ events, ws, selfUid, now: Date.now(), ownerOnly: isHomeWorkspace(ws), ...(session?.ownerUid ? { ownerUid: session.ownerUid } : {}) }) : []),
     [ws, events, selfUid, session?.ownerUid],
   );
+  // 连接卡（#1666 终审）：开着的卡多了一张就强制重拉一次清单。edge 是回 409 那一刻才把应用翻成 needs_login 的，
+  // 进页拉的那份比新来的卡旧——不重拉，卡上的按钮按旧视图判（needs_login 卡由 appConnectActionFor 兜住，这里让其它情况也跟上）
+  const openConnectIds = useMemo(
+    () => rows.filter((r) => r.kind === "app_connect" && r.status === "open").map((r) => (r.kind === "app_connect" ? r.connectId : "")),
+    [rows],
+  );
+  const knownOpenConnects = useRef(new Set<string>());
+  useEffect(() => {
+    const grew = openConnectIds.some((id) => !knownOpenConnects.current.has(id));
+    knownOpenConnects.current = new Set(openConnectIds);
+    if (grew) void refreshConnectors({ force: true });
+  }, [openConnectIds]);
   const live = useMemo(
     () => (ws !== null ? liveRows({ streaming: chat.streaming, ws, now: Date.now(), ...(inCall === null ? {} : { hide: inCall }) }) : []),
     [ws, chat.streaming, inCall],
@@ -584,15 +596,30 @@ export function ChatScreen({ route, navigation }: Props) {
     setConnecting(null);
     if (!r.ok) setPageNote(r.unknown ? { text: "没有收到回执，不确定送到没有", tone: "muted" } : { text: r.message, tone: "error" });
   }, []);
+  /** null = 清单还没拉到，不知道该给哪个按钮：卡上主按钮转圈不给点，弹窗不弹（appConnectActionFor） */
   const appConnectActionOf = useCallback(
-    (catalogId: string) => appConnectAction(cloudApps.apps ?? [], catalogId, ws?.id ?? ""),
+    (row: { catalogId: string; reason: "missing" | "needs_login" }): AppConnectAction | null =>
+      appConnectActionFor(cloudApps.apps, row.catalogId, ws?.id ?? "", row.reason),
     [cloudApps.apps, ws?.id],
   );
   /** 点主按钮（Task 7 的自动弹出也走这一个）：新接 / 重新登录 → 现有接入弹窗，接成了再发帧；打开 → 借给这个工作区再发帧；
       已经好了 → 直接发帧 */
   const onAppConnect = useCallback(async (row: Extract<ChatRow, { kind: "app_connect" }>): Promise<void> => {
     if (!ready || connecting !== null || connectEntry !== null || ws === null || !row.canAct || row.status !== "open") return;
-    const action = appConnectActionOf(row.catalogId);
+    let action = appConnectActionOf(row);
+    if (action === null) return;
+    let view = cloudApps.apps ?? [];
+    // 「好了，接着办」会直接起一轮：先强制重拉一份清单再判（#1666 终审）。按旧视图说「好着」其实已经过期了，
+    // 起的那一轮会再撞一次、再发一张卡——一小时内最多绕三圈
+    if (action === "ready") {
+      setConnecting(row.connectId);
+      await refreshConnectors({ force: true });
+      setConnecting(null);
+      const fresh = connectorsNow().apps;
+      action = appConnectActionFor(fresh, row.catalogId, ws.id, row.reason);
+      if (action === null || fresh === null) return;
+      view = fresh;
+    }
     if (action === "connect" || action === "relogin") {
       const entry = MCP_CATALOG.find((x) => x.id === row.catalogId);
       if (entry === undefined) {
@@ -603,7 +630,7 @@ export function ChatScreen({ route, navigation }: Props) {
       return;
     }
     if (action === "grant") {
-      const item = (cloudApps.apps ?? []).find((v) => v.catalogId === row.catalogId);
+      const item = view.find((v) => v.catalogId === row.catalogId);
       if (item === undefined) return;
       setConnecting(row.connectId);
       try {
@@ -847,9 +874,11 @@ export function ChatScreen({ route, navigation }: Props) {
     if (overlayOpen || overlaySettling) return;
     const cand = popupCandidate(rows, { baselineSeq: base.seq, popped: popped.current, focused: watching });
     if (cand === null) return;
+    // 清单还没拉到就不知道该给哪个按钮：等它到了这个 effect 会再跑一遍（#1666 终审）
+    if (appConnectActionOf(cand.row) === null) return;
     // 记「弹过」要等弹窗真的摊开（onShown）才记：没出来的话下一轮还能再弹，不是白白丢掉一次
     setPrompt({ row: cand.row, seen: cand.seen, shown: false, visible: true, then: null });
-  }, [session, events, rows, focused, appActive, prompt, connectEntry, connecting, holdState.phase, dispatching, picker, pasted, mentioning, mentionLive, callSheetOpen, openCallSeq, overlayOpen, overlaySettling]);
+  }, [session, events, rows, focused, appActive, appConnectActionOf, prompt, connectEntry, connecting, holdState.phase, dispatching, picker, pasted, mentioning, mentionLive, callSheetOpen, openCallSeq, overlayOpen, overlaySettling]);
   // 兜底：弹窗等了 2.5 秒还没摊开（被别的原生层挡了 / 平台丢了），不让 prompt 永远卡在那里挡住后面的卡：
   // 放弃这一次，把这几张记成弹过——它们仍在会话里当卡，主人照样点得到
   const promptId = prompt === null ? null : prompt.row.connectId;
@@ -1108,7 +1137,7 @@ export function ChatScreen({ route, navigation }: Props) {
         <AppConnectPrompt
           key={prompt.row.connectId}
           row={prompt.row}
-          action={appConnectActionOf(prompt.row.catalogId)}
+          action={appConnectActionOf(prompt.row)}
           visible={prompt.visible}
           onShown={() => {
             for (const id of prompt.seen) popped.current.add(id);

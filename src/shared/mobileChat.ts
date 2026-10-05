@@ -121,7 +121,10 @@ export type ChatRow =
       过期 / 被新卡顶掉读的时候算（appConnectStatus，`now` 由调用方递）。按哪个按钮不在这里——手机按自己的云端视图判 */
   | {
     kind: "app_connect"; key: string; ts: number; seq: number; connectId: string; agentId: string; name: string;
-    catalogId: string; appName: string; why: string; status: AppConnectStatus;
+    catalogId: string; appName: string; why: string;
+    /** 为什么发的卡（#1666 终审）：needs_login = 连接器回了 409，登录过期——手机的视图还说「好着」时也给重新登录（appConnectActionFor） */
+    reason: "missing" | "needs_login";
+    status: AppConnectStatus;
     /** 我点得了吗：只有这条会话的主人 */
     canAct: boolean;
     /** 只读时「等谁连」写谁：主人的名字，不知道主人是谁时 null（同选人卡的 waitingFor） */
@@ -319,7 +322,7 @@ export function chatRows(o: {
       if (st !== undefined) {
         items.push({
           kind: "app_connect", key: `app_connect-${e.connectId}`, ts: e.ts, seq: e.seq, connectId: e.connectId, agentId: st.fromAgentId,
-          name: agentNameOf(o.ws, st.fromAgentId), catalogId: st.catalogId, appName: st.appName, why: st.why,
+          name: agentNameOf(o.ws, st.fromAgentId), catalogId: st.catalogId, appName: st.appName, why: st.why, reason: st.reason,
           status: appConnectStatus(st, o.now),
           // 同选人卡的 canPick：ownerUid 缺席 = 谁都不当主人（runtime 反正会拒）
           canAct: o.ownerUid !== undefined && o.ownerUid !== "" && o.ownerUid === o.selfUid,
