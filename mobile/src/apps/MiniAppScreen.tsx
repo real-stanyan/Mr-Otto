@@ -1,7 +1,7 @@
 // 小应用的宿主（#1591 第 1 期 b，spec §3.4）：拉这一版的清单与文件表 → 文件落本机 → WebView 以 file:// 载入入口页 →
 // 桥（window.otto）：storage 走 app_data、nav 换页、share 走系统分享单、ask 把人带到管理员私聊并发出那句（plan 小修 3）、haptic。
 // 没有外网：WebView 只许读本机这一版的目录；应用自己乱发的消息只会被忽略（parseBridgeRequest）。
-import { useNavigation } from "@react-navigation/native";
+import { useFocusEffect, useNavigation } from "@react-navigation/native";
 import type { NativeStackScreenProps } from "@react-navigation/native-stack";
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { ActivityIndicator, AppState, Pressable, Share, Text, View } from "react-native";
@@ -24,6 +24,7 @@ import { friendName } from "../../../src/shared/wechatInbox.js";
 import { PickAgentsDialog } from "../group/PickAgentsDialog.js";
 import { sendToFriend, useFriends } from "../friends/friendsStore.js";
 import { useMyName } from "../tabs/MeScreen.js";
+import { setOpenKey } from "../inbox/seenStore.js";
 import { markAppOpened } from "./recentApps.js";
 import { appFileUri, ensureAppFiles } from "./appFiles.js";
 
@@ -185,6 +186,7 @@ export function MiniAppScreen({ route, navigation }: Props) {
       }
       case "room.open": {
         if (typeof a0 !== "string") throw new Error("要给房间 id");
+        if (l.room !== null && a0 === l.room.id) return true; // 就在这一间：不重进
         const rooms = (await listRooms(supabase, familyOf(l.app), l.app.id)) ?? [];
         if (!rooms.some((r) => r.id === a0)) throw new Error("没有这一间（或你不在里面）");
         // 只是被邀请、还没加入的：读房主那一版要先是成员（RLS 认 joined），先替 TA 加入
@@ -295,6 +297,18 @@ export function MiniAppScreen({ route, navigation }: Props) {
       prevClose.current = started.then(() => link?.close()).catch(() => undefined);
     };
   }, [loaded?.room?.id, relink]);
+
+  // 正看着这一间（同 ChatScreen / FriendChatScreen 的 openKey）：这间的叫人推送不弹横幅（messagePush 比 alertKey = r:<id>）
+  const openRoomId = loaded?.room?.id ?? null;
+  useFocusEffect(
+    useCallback(() => {
+      if (openRoomId === null) return undefined;
+      setOpenKey("r:" + openRoomId);
+      return () => {
+        setOpenKey(null);
+      };
+    }, [openRoomId]),
+  );
 
   // 真从后台回来才重订（spec §5.2：后台里 socket 多半被系统掐了）
   useEffect(() => {

@@ -96,6 +96,13 @@ describe("房间模式（#1675）", () => {
     expect(src).toMatch(/updatedAt: new Date\(r\.updatedTs\)\.toISOString\(\)/);
     expect(src).toMatch(/case "room\.send": \{\s*needRoom\(l\);/);
   });
+  it("room.open 当前这一间是空操作、回 true（不重进、不 replace）", () => {
+    expect(src).toMatch(/if \(typeof a0 !== "string"\) throw new Error\("要给房间 id"\);\s*if \(l\.room !== null && a0 === l\.room\.id\) return true;/);
+  });
+  it("房间模式下标记正在看这间（setOpenKey(\"r:\" + roomId)），同一间的叫人推送不弹横幅；离开时清掉", () => {
+    expect(src).toMatch(/import \{ setOpenKey \} from "\.\.\/inbox\/seenStore\.js";/);
+    expect(src).toMatch(/setOpenKey\("r:" \+ openRoomId\);\s*return \(\) => \{\s*setOpenKey\(null\);/);
+  });
   it("room.open 进一间只是被邀请的房：先 joinRoom 再换页；房间模式读不到那一版给明白话", () => {
     expect(src).toMatch(/if \(mine\?\.status === "invited"\) await joinRoom\(supabase, a0\);\s*navigation\.replace\("MiniApp", \{ appId: l\.app\.id, roomId: a0 \}\);/);
     expect(src).toContain("进不了这一局的那一版（先在私聊里点加入）");
