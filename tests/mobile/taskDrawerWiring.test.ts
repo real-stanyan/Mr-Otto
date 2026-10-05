@@ -22,7 +22,7 @@ describe("FriendChatScreen：任务卡", () => {
   });
   it("与私聊按时间合成，同一毫秒私聊在前", () => {
     // #1605 之后中间还夹一行镜像卡（collabCards），排序那句不变
-    expect(src).toMatch(/\.\.\.taskRows\.map\(\(t\) => \(\{ kind: "task" as const, ts: t\.task\.ts, t \}\)\),\s*(\.\.\.collabCards[^\n]*\n)?\s*\]\.sort\(\(a, b\) => a\.ts - b\.ts \|\| \(a\.kind === b\.kind \? 0 : a\.kind === "dm" \? -1 : 1\)\);/);
+    expect(src).toMatch(/\.\.\.taskRows\.map\(\(t\) => \(\{ kind: "task" as const, ts: t\.task\.ts, t \}\)\),\s*(\s*\/\/[^\n]*\n)*(\s*\.\.\.collabCards[^\n]*\n)?\s*\]\.sort\(\(a, b\) => a\.ts - b\.ts \|\| \(a\.kind === b\.kind \? 0 : a\.kind === "dm" \? -1 : 1\)\);/);
   });
   it("点卡开抽屉；抽屉按 key 现找；接着说走对的那条车道（朋友的只对管理员）", () => {
     expect(src).toMatch(/setOpenTaskKey\(\{ key: item\.t\.task\.key, peer: item\.t\.peer \}\);\s*setTaskDrawerOpen\(true\);/);
