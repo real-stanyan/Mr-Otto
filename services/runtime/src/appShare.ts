@@ -50,3 +50,24 @@ export async function acceptAppShare(d: AppShareDeps, byUid: string, messageId: 
   });
   return { ok: true, appId: row.id, already: false };
 }
+
+export interface AppDeleteDeps {
+  app(appId: string): Promise<AppRow | null>;
+  /** 这个应用每一版的文件表（删桶里的对象用） */
+  versions(appId: string): Promise<{ version: number; files: AppFileEntry[] }[]>;
+  removeObjects(paths: string[]): Promise<void>;
+  /** 删那一行（app_versions / app_data 级联） */
+  deleteRow(appId: string): Promise<void>;
+}
+
+/** 删掉我的一个应用（#1648）：只认主人。先删行（列表立刻没有它），再尽力删桶里的文件（删不掉只是占地方） */
+export async function deleteApp(d: AppDeleteDeps, byUid: string, appId: string): Promise<{ ok: true } | { ok: false; message: string }> {
+  const a = await d.app(appId);
+  if (a === null) return { ok: true };
+  if (a.ownerUid !== byUid) return { ok: false, message: "这不是你的应用" };
+  const vs = await d.versions(appId);
+  await d.deleteRow(appId);
+  const paths = vs.flatMap((v) => v.files.map((f) => appObjectPath(byUid, appId, v.version, f.path)));
+  if (paths.length > 0) await d.removeObjects(paths).catch(() => undefined);
+  return { ok: true };
+}

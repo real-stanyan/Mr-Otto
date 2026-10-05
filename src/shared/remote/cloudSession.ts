@@ -387,6 +387,8 @@ export type CsUp =
   | { t: "human_call"; callId: string; toUid: string }
   /** 把好友私信里分享来的应用添加到我名下（**控制房帧**，协议 29，#1648）：messageId = 那条私信的 id；runtime 现读那条私信核对 */
   | { t: "app_accept"; messageId: number }
+  /** 删掉我的一个应用（**控制房帧**，协议 29，#1648）：只认主人；行、版本、数据格子、桶里的文件一起删 */
+  | { t: "app_delete"; appId: string }
   /** 存 / 删一台主机的 Git 凭据（控制房帧，协议 15，#1103）。**owner 才受理**，
       服务端判。`token` 两态：非空 = 存这一把（同一台主机再存就是换新），
       `""` = **删掉这台主机**。
@@ -470,6 +472,7 @@ export type CsDown =
   | { t: "human_call_result"; callId: string; ok: boolean; message?: string; ice?: IceServer[]; expiresTs?: number }
   /** app_accept 的回执（#1648）：appId = 复制到我名下的那一个；already = 之前添加过 */
   | { t: "app_accept_result"; messageId: number; ok: boolean; appId?: string; already?: boolean; message?: string }
+  | { t: "app_delete_result"; appId: string; ok: boolean; message?: string }
   /** `v`（add-only，协议号不变）= **服务端**此刻的协议号（复审 C2-I6）。
       `version_mismatch` 是严格相等判出来的，而只有码没有版本号的话，桌面
       分不清"我旧了"还是"云端旧了"——这两件事该做的动作相反（更新 app vs
@@ -866,6 +869,11 @@ export function decodeCsUp(b64: string): CsUp | null {
       return null;
     }
 
+    if (t === "app_delete") {
+      if (typeof obj.appId !== "string" || !/^[0-9a-f-]{36}$/i.test(obj.appId)) return null;
+      return { t: "app_delete", appId: obj.appId.toLowerCase() };
+    }
+
     if (t === "app_accept") {
       if (typeof obj.messageId !== "number" || !Number.isSafeInteger(obj.messageId) || obj.messageId < 1) return null;
       return { t: "app_accept", messageId: obj.messageId };
@@ -1232,6 +1240,11 @@ export function decodeCsDown(b64: string): CsDown | null {
       return typeof obj.workspaceId === "string" && typeof obj.message === "string"
         ? { t: "create_failed", workspaceId: obj.workspaceId, message: obj.message }
         : null;
+    }
+
+    if (t === "app_delete_result") {
+      if (typeof obj.appId !== "string" || typeof obj.ok !== "boolean") return null;
+      return { t: "app_delete_result", appId: obj.appId, ok: obj.ok, ...(typeof obj.message === "string" ? { message: obj.message } : {}) };
     }
 
     if (t === "app_accept_result") {

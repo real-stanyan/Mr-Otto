@@ -18,3 +18,10 @@ export function markAppOpened(appId: string): void {
   store.set({ ids });
   void AsyncStorage.setItem(KEY, JSON.stringify(ids)).catch(() => {});
 }
+
+/** 删掉的应用从最近使用里拿掉 */
+export function forgetRecent(appId: string): void {
+  const ids = store.get().ids.filter((id) => id !== appId);
+  store.set({ ids });
+  void AsyncStorage.setItem(KEY, JSON.stringify(ids)).catch(() => {});
+}

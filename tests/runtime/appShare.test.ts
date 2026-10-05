@@ -1,6 +1,6 @@
 // 添加分享来的应用（#1648）：认那条私信本身，核对收件人 / 发的人 / 好友 / 来源；复制文件再记版本；添加过的不重复。
 import { describe, expect, it } from "vitest";
-import { acceptAppShare, type AppShareDeps } from "../../services/runtime/src/appShare.js";
+import { acceptAppShare, deleteApp, type AppShareDeps } from "../../services/runtime/src/appShare.js";
 import { encodeAppCard } from "../../src/shared/appCard.js";
 import type { AppRow } from "../../src/shared/apps.js";
 
@@ -48,5 +48,24 @@ describe("acceptAppShare", () => {
     expect(await acceptAppShare(rig({ msg: { sender: B, recipient: B, body } }).deps, B, 7)).toMatchObject({ ok: false, message: "这张卡对不上发的人" });
     expect(await acceptAppShare(rig({ friends: false }).deps, B, 7)).toMatchObject({ ok: false, message: "你们已经不是好友了，添加不了" });
     expect(await acceptAppShare(rig({ src: row({ ownerUid: "x" }) }).deps, B, 7)).toMatchObject({ ok: false, message: "对方已经没有这个应用了" });
+  });
+});
+
+describe("deleteApp（#1648）", () => {
+  it("只认主人；先删行再删每一版的文件；没有这个应用当删过了", async () => {
+    const removed: string[][] = [];
+    const deleted: string[] = [];
+    const deps = {
+      app: async (id: string) => (id === "gone" ? null : row({ id, ownerUid: B })),
+      versions: async () => [{ version: 1, files: [{ path: "index.html", size: 1, sha256: "x" }] }, { version: 2, files: [{ path: "index.html", size: 1, sha256: "x" }, { path: "a.js", size: 1, sha256: "y" }] }],
+      removeObjects: async (p: string[]) => { removed.push(p); },
+      deleteRow: async (id: string) => { deleted.push(id); },
+    };
+    expect(await deleteApp(deps, A, "x1")).toEqual({ ok: false, message: "这不是你的应用" });
+    expect(deleted).toEqual([]);
+    expect(await deleteApp(deps, B, "x1")).toEqual({ ok: true });
+    expect(deleted).toEqual(["x1"]);
+    expect(removed[0]).toEqual([`${B}/x1/1/index.html`, `${B}/x1/2/index.html`, `${B}/x1/2/a.js`]);
+    expect(await deleteApp(deps, B, "gone")).toEqual({ ok: true });
   });
 });
