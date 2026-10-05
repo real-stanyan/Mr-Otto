@@ -196,6 +196,9 @@ export interface AssistantMessageEvent extends SessionEventBase {
   type: "assistant_message";
   content: string;               // 纯工具调用时可为空串
   toolCalls?: ToolCallRequest[]; // 有 = 本条回复要求执行工具
+  /** 通话里 runtime 替它应的那一句（#1623，src/shared/callAck.ts）：人话一落盘就落、电话里念、日志里有，
+      **不喂回模型**——它不是模型的输出，喂回去模型会以为自己已经答过。缺席 = 模型自己说的 */
+  ack?: true;
   model: string;                 // 实际生成这条的模型（事实，非配置）
   /** 本次调用的 token 消耗。可选 = 旧日志/不报 usage 的 API 照样重放 */
   usage?: TokenUsage;
