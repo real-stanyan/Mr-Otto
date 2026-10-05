@@ -11,6 +11,8 @@ export const INVITE_COLLABORATOR_TOOL_NAME = "invite_collaborator";
 export const COLLAB_NOTE_MAX = 500;
 /** 对面主人多久没点头算失败（#1605，维护者拍的 24 小时） */
 export const COLLAB_EXPIRE_MS = 24 * 3_600_000;
+/** 还在等点头的请求，同一条隔多久才再推一次提醒（#1605） */
+export const COLLAB_REMIND_MS = 3_600_000;
 export const COLLAB_DECISION_LABEL: Record<CollabDecisionEvent["decision"], string> = { accepted: "接了", declined: "不接", expired: "没回" };
 
 /** 镜像卡上 / 对面管理员读到的那段：谁找、为什么（主人原话）、说明、到目前的结果 */
