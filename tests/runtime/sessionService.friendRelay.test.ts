@@ -77,6 +77,8 @@ function openWith(store: EventStore, o: {
   /** 审批卡一落就由主人批掉（受监督的轮里 read_file 会弹卡，不批 settled() 会等到超时） */
   autoApprove?: boolean;
   alert?: CloudSessionOpts["alert"];
+  /** 缺席 = true（主场）；false = 团队工作区 */
+  approveAll?: boolean;
 }): CloudSession {
   const adapter = o.adapter ?? { model: "fake-model", async chat() { return { content: "好" }; } };
   let s!: CloudSession;
@@ -93,7 +95,7 @@ function openWith(store: EventStore, o: {
     agentWriter: createInMemoryAgentWriter(), isMember: async () => true, contextWindowOf: () => undefined,
     sandboxApproval: async () => "ask", workspaceLock: createWorkspaceLock(), relayRemainingMicro: async () => null,
     diskUsage: () => null, routines: null, onOutreachEnded: null, signSpeechTicket: async () => "t", pairMessages: null,
-    outreach: null, approveAll: true, callback: null,
+    outreach: null, approveAll: o.approveAll ?? true, callback: null,
     ...(o.outreachRelay !== undefined ? { outreachRelay: o.outreachRelay } : {}),
     ...(o.friendReply !== undefined ? { friendReply: o.friendReply } : {}),
   });
@@ -157,6 +159,16 @@ describe("relayFromFriend：落在管理员私聊（#1655）", () => {
     const opening = (store.ofType(SID, "user_message") as UserMessageEvent[]).at(-1)!;
     expect(opening).toMatchObject({ greeting: "friend_relay", fromUid: OWNER, content: "[系统] 小红让带话" });
     expect(events.filter((e) => e.type === "approval_request")).toHaveLength(1);
+    store.close();
+  });
+  it("团队工作区（approveAll=false）里的私聊上调：archived，一个事件都不落——带话只落主场", async () => {
+    const store = newStore();
+    dmSeed(store);
+    const s = openWith(store, { approveAll: false });
+    const before = store.load(SID).length;
+    expect(await s.relayFromFriend!({ text: "[系统] 小红让带话" })).toBe("archived");
+    await s.settled();
+    expect(store.load(SID).length).toBe(before);
     store.close();
   });
   it("在外联会话上调：archived，一个事件都不落", async () => {

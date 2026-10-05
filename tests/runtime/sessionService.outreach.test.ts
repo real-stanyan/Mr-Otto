@@ -1,5 +1,5 @@
-// 外联会话钉死（#1441 Task 8）：一只智能体 + 打给的那个朋友，没有工具、不注入记忆、
-// 只在通话进行中收话。装配照 sessionService.test.ts 顶部的 baseOpts（那份没导出，这里抄最小一份，
+// 外联会话钉死（#1441 Task 8）：一只智能体 + 打给的那个朋友，工具至多 relay_to_owner、注入只读 wiki、
+// 朋友在通话外也能打字（#1655）。装配照 sessionService.test.ts 顶部的 baseOpts（那份没导出，这里抄最小一份，
 // 不去动既有文件的结构）。
 import { describe, expect, it } from "vitest";
 import { join } from "node:path";
@@ -173,6 +173,19 @@ describe("外联会话（#1441）", () => {
     await session.say(PEER, "小红", "还在吗", false, [], undefined, []);
     await session.settled();
     expect(store.ofType(SID, "user_message")).toHaveLength(1);
+    store.close();
+  });
+
+  it("挂断之后还飘来的语音转写（voice）：拒「这通电话已经结束了。」，不查档位、不占每小时窗、一个字节都不落（#1655）", async () => {
+    const store = newStore();
+    outreachSeed(store, { ended: true });
+    let tierAsked = 0;
+    const { session } = open(store, { peerTier: async () => (tierAsked++, "full") });
+    const before = store.load(SID).length;
+    await expect(session.say(PEER, "小红", "那我挂了", false, [], undefined, [], true)).rejects.toThrow("这通电话已经结束了。");
+    await expect(session.say(PEER, "小红", "那我挂了", false, [], undefined, [], true)).rejects.toBeInstanceOf(SayRejectedError);
+    expect(tierAsked).toBe(0);
+    expect(store.load(SID).length).toBe(before);
     store.close();
   });
 
@@ -1332,6 +1345,24 @@ describe("重启补跑碰上外联（#1441 终审 M1 / M7）", () => {
     expect(closes).toHaveLength(1);
     expect(closes[0]).toMatchObject({ outcome: "error", agentId: "ops" });
     expect(closes[0]!.readUpToSeq).toBeGreaterThanOrEqual(opening.seq);
+    store.close();
+  });
+
+  it("通话里落下的 owner_reply 开场白：重启后照常补跑（主人那边已经被告知「转告了」），不按通话里的话丢掉（#1655）", async () => {
+    const store = newStore();
+    outreachSeed(store);
+    store.append({
+      sessionId: SID, ts: 3, type: "outreach", phase: "started", outreachId: "o1", fromAgentId: "ops",
+      peerUid: PEER, peerName: "小红", originSessionId: "origin-1", ignorable: true,
+    });
+    const opening = store.append({
+      sessionId: SID, ts: 4, type: "user_message", content: "[系统] Stan 回 小红 的话：周五见", fromUid: OWNER, mentions: ["ops"], greeting: "owner_reply",
+    });
+    const { session } = openLive(store);
+    await until(() => store.ofType(SID, "assistant_message").length > 0, "owner_reply 那一轮补跑出回话");
+    await session.settled();
+    const closes = store.ofType(SID, "turn_ended") as { outcome: string; readUpToSeq: number }[];
+    expect(closes.some((c) => c.outcome === "error" && c.readUpToSeq >= opening.seq)).toBe(false);
     store.close();
   });
 

@@ -870,8 +870,9 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   // 这条会话是不是一条聊天（#1280）：建会话时记进日志的事实，一生不变
   const createdCloud = seed.find((e): e is SessionCreatedEvent => e.type === "session_created")?.cloud;
   const chatKind = createdCloud?.chat?.kind ?? null;
-  // 外联会话（#1441）：智能体替主人打给朋友的那条线——一只智能体 + 朋友一个客人，**没有任何工具、
-  // 不注入记忆、只在通话进行中收话**。同 chatKind，建会话时记进日志的事实，一生不变
+  // 外联会话（#1441 → #1655）：智能体替主人打给朋友的那条线——一只智能体 + 朋友一个客人。工具至多一把
+  // relay_to_owner（只 L0 有），团队 wiki 只读快照照注入（外联存在 = 主人对这位朋友全部开放），
+  // 朋友在通话外也能打字（档位 + 每小时封顶，见 say()）。同 chatKind，建会话时记进日志的事实，一生不变
   const isOutreach = chatKind === "outreach";
   // 私密车道（#1461 P1，ADR-0346）：主人带进与朋友私聊的智能体住的那条会话。只有主人进得来（主场的工作区成员
   // 只有他，车道不收客人），开跑前读一份私聊信封。同 chatKind，建会话时记进日志的事实，一生不变
@@ -2998,7 +2999,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         );
         cachedPxTools = [];
       } else if (isOutreach) {
-        // 外联会话没有工具（上面 tools()），拉授权是白打的网络往返：每个成员一次 edge
+        // 外联会话不挂好友代理工具（上面 tools() 至多一把 relay_to_owner，#1655），拉授权是白打的网络往返：每个成员一次 edge
         cachedPxTools = [];
       } else {
         let granted: Awaited<ReturnType<typeof fetchGrantedTools>> = [];
@@ -3278,6 +3279,9 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         const peer = live?.peerUid ?? outreachPeerUid;
         if (peer === null || fromUid !== peer) throw new SayRejectedError("这条线只有对方能说话，你只能看。");
         if (live === null) {
+          // 挂断之后还飘来的语音转写（#1655）：不是在打字，是上一通的尾巴——不起一轮记在主人账上的回复、
+          // 不占打字的每小时窗。放在档位与计数之前
+          if (voice === true) throw new SayRejectedError("这通电话已经结束了。");
           if (opts.peerTier !== undefined) {
             const tier = await opts.peerTier(peer).catch(() => null);
             if (tier === null || !allowsOutreach(tier)) throw new SayRejectedError("对方没再对你开「全部开放」，这里只能看。");
@@ -3917,7 +3921,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     },
 
     async relayFromFriend(r) {
-      if (archived || chatKind !== "dm") return "archived";
+      // 只落主场（approveAll）的私聊（#1655）：团队工作区里的私聊不是「主人的管理员私聊」
+      if (archived || chatKind !== "dm" || !opts.approveAll) return "archived";
       const roster = await rosterNow({ fresh: true });
       if (archived) return "archived";
       if (roster.some((a) => a.degraded)) throw new Error("智能体名单读不出来，这次先不带话");
@@ -4163,13 +4168,15 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // stale 已经按 seq 升序（openTurns 顺着日志一路 push）：同一只 agent 的
       // 多条开场白在这里天然也按 seq 升序出现，下面的队列直接借了这个顺序
       for (const t of stale) {
-        // 只丢落在一通电话之内的（#1655）：打字聊的那句照常补跑
-        if (outreachOver && outreachLiveAt(seed, t.seq)) {
+        const opening = seed.find((e) => e.seq === t.seq);
+        // 只丢落在一通电话之内的（#1655）：打字聊的那句照常补跑。主人的回话（owner_reply）也不丢——
+        // 落下它的那一刻主人那边已经被告知「转告了」，丢了就是对主人说了假话
+        const ownerReply = opening?.type === "user_message" && opening.greeting === "owner_reply";
+        if (outreachOver && !ownerReply && outreachLiveAt(seed, t.seq)) {
           overSeqs.push(t.seq);
           enqueueItem(t.agentId, { seq: t.seq, kind: "outreach_over", fromUid: t.fromUid });
           continue;
         }
-        const opening = seed.find((e) => e.seq === t.seq);
         if (t.fromUid === null || !opening || opening.type !== "user_message") {
           // 跳过的那条**仍然停在「排队中」**，只是这个进程不打算管它了——不说
           // 一声的话，界面上一条永远转圈的行在服务器日志里没有任何对应物。
