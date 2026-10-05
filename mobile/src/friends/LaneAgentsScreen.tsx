@@ -91,14 +91,14 @@ export function LaneAgentsScreen({ route }: Props) {
               }
             />
           ))}
-          {rest.length > 0 ? (
-            <Row
-              label="带上智能体"
-              tone="accent"
-              disabled={busy !== null}
-              onPress={() => { setAddError(null); setAdding({ key: Date.now(), visible: true }); }}
-            />
-          ) : null}
+          {/* 一直画（#1652）：主场里只有管理员一只、又已经带进来时，藏掉这一行读起来像「这页没有添加」——置灰、说清为什么 */}
+          <Row
+            label="带上智能体"
+            tone="accent"
+            {...(rest.length === 0 ? { detail: "你的智能体都带进来了。要新的，跟你的管理员说一声" } : {})}
+            disabled={busy !== null || rest.length === 0}
+            onPress={() => { setAddError(null); setAdding({ key: Date.now(), visible: true }); }}
+          />
         </Group>
         {error !== null ? <Text style={{ fontSize: 13, color: c.destructive, paddingHorizontal: 16 }}>{error}</Text> : null}
       </ScrollView>
