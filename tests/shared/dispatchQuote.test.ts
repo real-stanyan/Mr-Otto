@@ -1,6 +1,6 @@
 // 长按消息派智能体的引用拼接（#1505，ADR-0352）：行 → 能引用的句、以被选那条为末尾往前取窗、开场白的形状。
 import { describe, expect, it } from "vitest";
-import { DISPATCH_DEFAULT_PROMPT, DISPATCH_QUOTE_MAX_CHARS, dispatchOpening, quoteLinesFromRows, quoteWindow } from "../../src/shared/dispatchQuote.js";
+import { DISPATCH_DEFAULT_PROMPT, DISPATCH_QUOTE_MAX_CHARS, dispatchOpening, parseDispatchOpening, quoteLinesFromRows, quoteWindow } from "../../src/shared/dispatchQuote.js";
 import type { ChatRow } from "../../src/shared/mobileChat.js";
 
 const rows: ChatRow[] = [
@@ -45,5 +45,46 @@ describe("dispatchOpening", () => {
     const text = dispatchOpening({ prompt: "  帮我把这单下了 ", source: "与峰同聊", lines: quoteWindow(quoteLinesFromRows(rows, "Stan"), "e5", 1)! });
     expect(text).toBe("[派活] 帮我把这单下了\n\n（引用自「与峰同聊」的对话，最后一条是要办的那条）\n> 运维：查到了。 明天下午到。\n> 阿峰：那帮我订 20 箱");
     expect(dispatchOpening({ prompt: "", source: "", lines: [] })).toBe(`[派活] ${DISPATCH_DEFAULT_PROMPT}\n\n（引用自的对话，最后一条是要办的那条）\n`);
+  });
+});
+
+describe("parseDispatchOpening（#1665：派活那条画成卡，从开场白文本拆回来）", () => {
+  const lines = [
+    { key: "a", who: "Stan Yan", text: "是划算的" },
+    { key: "b", who: "继爸", text: "帮我开个你本地会话" },
+    { key: "c", who: "继爸", text: "[雨姐 代发] Stan，Mingxuan 让我跟你带个话：跑下 0066。" },
+  ];
+
+  it("dispatchOpening 拼出来的能原样拆回：要办什么 / 出处 / 前面几句 / 要办的那条", () => {
+    const text = dispatchOpening({ prompt: "办一下", source: "和继爸的私聊", lines });
+    expect(parseDispatchOpening(text)).toEqual({
+      prompt: "办一下",
+      source: "和继爸的私聊",
+      before: [{ who: "Stan Yan", text: "是划算的" }, { who: "继爸", text: "帮我开个你本地会话" }],
+      target: { who: "继爸", text: "[雨姐 代发] Stan，Mingxuan 让我跟你带个话：跑下 0066。" },
+    });
+  });
+
+  it("没写提示 = 默认那句；出处空 = null；只引了一句 = before 为空", () => {
+    const text = dispatchOpening({ prompt: "  ", source: " ", lines: [lines[0]!] });
+    expect(parseDispatchOpening(text)).toEqual({
+      prompt: DISPATCH_DEFAULT_PROMPT, source: null, before: [], target: { who: "Stan Yan", text: "是划算的" },
+    });
+  });
+
+  it("那句里再有全角冒号：只按第一个切", () => {
+    const text = dispatchOpening({ prompt: "看看", source: "群", lines: [{ key: "x", who: "阿峰", text: "注意：明天到" }] });
+    expect(parseDispatchOpening(text)?.target).toEqual({ who: "阿峰", text: "注意：明天到" });
+  });
+
+  it("对不上形状的一律 null（照旧画普通气泡）", () => {
+    const head = "[派活] 办一下\n\n（引用自「群」的对话，最后一条是要办的那条）";
+    expect(parseDispatchOpening("办一下")).toBeNull();
+    expect(parseDispatchOpening("[派活] 办一下")).toBeNull();
+    expect(parseDispatchOpening(head)).toBeNull();
+    expect(parseDispatchOpening(`${head}\n`)).toBeNull();
+    expect(parseDispatchOpening(`${head}\n> 阿峰：好\n随手一行`)).toBeNull();
+    expect(parseDispatchOpening(`${head}\n> 没有冒号`)).toBeNull();
+    expect(parseDispatchOpening("[派活] 办一下\n\n随便写的\n> 阿峰：好")).toBeNull();
   });
 });

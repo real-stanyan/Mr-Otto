@@ -13,6 +13,7 @@ import { agentFaceIfKnown } from "../../../src/shared/agentAvatar.js";
 import type { RosterLinePart } from "../../../src/shared/cloudTimeline.js";
 import { callOffsetText } from "../../../src/shared/cloudTimeline.js";
 import { ringRecordView, type ChatRow } from "../../../src/shared/mobileChat.js";
+import { parseDispatchOpening, type DispatchCardView } from "../../../src/shared/dispatchQuote.js";
 import { TASK_STATUS_TEXT } from "../../../src/shared/tasks.js";
 import { CHAT_MEDIA_BUCKET, mediaBodyHidden, type ChatMediaItem } from "../../../src/shared/chatMedia.js";
 import { MediaBubble } from "../media/MediaBubble.js";
@@ -100,16 +101,73 @@ function MessageRow({ mine, agent = false, avatar, name, paragraphs, media, onAv
 }
 
 /** 发出去、回执还没回来的那句（#1473）：照「我说的」那一行画，气泡左边一个小转圈（照微信）。
-    回执一到它就被 rows 里真的那条顶替——同一句、同一个位置，看起来只是转圈消失 */
+    回执一到它就被 rows 里真的那条顶替——同一句、同一个位置，看起来只是转圈消失。派活开场白（#1665）在这里
+    就画成卡：否则发出那一下先闪一段原文，回执到了才变卡 */
 export function PendingMineRow({ text, selfName, selfAvatar }: { text: string; selfName: string; selfAvatar: string }) {
   const { c } = usePalette();
+  const dispatch = parseDispatchOpening(text);
   return (
     <View style={{ flexDirection: "row-reverse", alignItems: "flex-start", gap: 10, paddingHorizontal: 12 }}>
       <PersonTile name={selfName} url={selfAvatar} size={AVATAR} me />
       <View style={{ flexShrink: 1, maxWidth: "76%", flexDirection: "row-reverse", alignItems: "center", gap: 6 }}>
-        <Bubble text={text} mine agent={false} first />
+        {dispatch !== null ? <DispatchCard view={dispatch} /> : <Bubble text={text} mine agent={false} first />}
         <ActivityIndicator size="small" color={c.mutedForeground} accessibilityLabel="发送中" />
       </View>
+    </View>
+  );
+}
+
+/** 派活卡（#1665；维护者看过 demo 选的 A「任务单」）：长按派活的那条开场白，拆回来画成一张卡——上面「派活」
+    + 要办什么 + 出处，中间单独框出要办的那条，前面那几句收起来、点开才看。底色还是我的气泡色，读得出是我发的 */
+function DispatchCard({ view }: { view: DispatchCardView }) {
+  const { c } = usePalette();
+  const [open, setOpen] = useState(false);
+  const n = view.before.length;
+  return (
+    <View style={{ flexShrink: 1, minWidth: 240, borderRadius: RADIUS, borderTopRightRadius: 4, backgroundColor: c.bubbleMe, overflow: "hidden" }}>
+      <View style={{ paddingTop: 11, paddingHorizontal: 13, paddingBottom: 9, gap: 6 }}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
+          <Icon name="check" size={13} stroke={2.4} color={c.mutedForeground} />
+          <Text style={{ fontSize: 12, letterSpacing: 0.5, color: c.mutedForeground }}>派活</Text>
+        </View>
+        <Text selectable style={{ fontSize: 17, lineHeight: 24, fontWeight: "600", color: c.foreground }}>{view.prompt}</Text>
+        {view.source !== null ? (
+          <View style={{ alignSelf: "flex-start", maxWidth: "100%", flexDirection: "row", alignItems: "center", gap: 4, paddingVertical: 3, paddingHorizontal: 8, borderRadius: 999, backgroundColor: c.field }}>
+            <Icon name="message-circle" size={12} stroke={2.2} color={c.mutedForeground} />
+            <Text numberOfLines={1} style={{ flexShrink: 1, fontSize: 12, color: c.mutedForeground }}>{`来自 ${view.source}`}</Text>
+          </View>
+        ) : null}
+      </View>
+      <View style={{ marginHorizontal: 8, paddingVertical: 9, paddingHorizontal: 11, borderRadius: 10, backgroundColor: withAlpha(c.brand, 0.16), gap: 3 }}>
+        <Text style={{ fontSize: 11, letterSpacing: 0.6, color: c.brand }}>要办的这条</Text>
+        <Text selectable style={{ fontSize: 15, lineHeight: 22, color: c.foreground }}>
+          <Text style={{ fontWeight: "600" }}>{`${view.target.who}：`}</Text>
+          {view.target.text}
+        </Text>
+      </View>
+      {n > 0 ? (
+        <View style={{ paddingTop: 8, paddingHorizontal: 13, paddingBottom: 10, gap: 6 }}>
+          <Pressable
+            accessibilityRole="button"
+            accessibilityState={{ expanded: open }}
+            accessibilityLabel={open ? "收起前面几句" : `看前面 ${n} 句`}
+            onPress={() => setOpen((v) => !v)}
+            hitSlop={8}
+            style={({ pressed }) => [{ alignSelf: "flex-start", flexDirection: "row", alignItems: "center", gap: 4 }, pressed && { opacity: 0.6 }]}
+          >
+            <Text style={{ fontSize: 13, color: c.brand }}>{`前面 ${n} 句`}</Text>
+            <View style={open ? { transform: [{ rotate: "180deg" }] } : null}>
+              <Icon name="chevron-down" size={12} stroke={2.4} color={c.brand} />
+            </View>
+          </Pressable>
+          {open ? view.before.map((l, i) => (
+            <Text key={i} selectable style={{ fontSize: 14, lineHeight: 20, color: c.mutedForeground }}>
+              <Text style={{ color: c.foreground, opacity: 0.8 }}>{`${l.who}：`}</Text>
+              {l.text}
+            </Text>
+          )) : null}
+        </View>
+      ) : <View style={{ height: 10 }} />}
     </View>
   );
 }
@@ -178,6 +236,21 @@ export function ChatRowView({ row, ws, selfUid, selfName, selfAvatar, group, out
     case "time":
       return <Text style={{ alignSelf: "center", fontSize: 11.5, color: c.faint, fontVariant: ["tabular-nums"], paddingVertical: 2 }}>{row.label}</Text>;
     case "mine":
+      if (row.dispatch !== undefined) {
+        return (
+          <View style={{ flexDirection: "row-reverse", alignItems: "flex-start", gap: 10, paddingHorizontal: 12 }}>
+            <PersonTile name={selfName} url={selfAvatar} size={AVATAR} me />
+            <Pressable
+              disabled={onLongPress === undefined}
+              onLongPress={onLongPress === undefined ? undefined : () => onLongPress(row)}
+              delayLongPress={350}
+              style={({ pressed }) => [{ flexShrink: 1, maxWidth: "76%" }, pressed && onLongPress !== undefined && { opacity: 0.85 }]}
+            >
+              <DispatchCard view={row.dispatch} />
+            </Pressable>
+          </View>
+        );
+      }
       return <MessageRow mine avatar={<PersonTile name={selfName} url={selfAvatar} size={AVATAR} me />} name={null} paragraphs={[row.text]} {...(row.media !== undefined ? { media: row.media } : {})} {...(onLongPress !== undefined ? { onLongPress: () => onLongPress(row) } : {})} />;
     case "human":
       return (

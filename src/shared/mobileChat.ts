@@ -11,6 +11,7 @@ import { callRingFoldOf, RING_STATUS_TEXT, ringCardStatus, type RingCardStatus }
 import { splitBubbles } from "./chatBubbles.js";
 import { escalationNoteText } from "./escalation.js";
 import { chatMediaItemsOf, type ChatMediaItem } from "./chatMedia.js";
+import { parseDispatchOpening, type DispatchCardView } from "./dispatchQuote.js";
 import { friendPickFoldOf, friendPickStatus, type FriendPickStatus } from "./friendPick.js";
 import {
   approvalCardTitle, assistantLabel, callOffsetText, chatRosterLineParts, cloudEmptyState, decisionLineText, hiddenFromCloudTimeline,
@@ -72,8 +73,9 @@ export function resolveChatTarget(
 export type ChatRow =
   /** 居中的一条时刻（#1386：照微信，相邻两句隔 5 分钟以上才插，今天只写钟点） */
   | { kind: "time"; key: string; label: string }
-  /** 我说的：右侧气泡。`media`（#1491）= 这句带的图 / 视频，正文是占位时气泡只画图 */
-  | { kind: "mine"; key: string; ts: number; text: string; media?: ChatMediaItem[] }
+  /** 我说的：右侧气泡。`media`（#1491）= 这句带的图 / 视频，正文是占位时气泡只画图。
+      `dispatch`（#1665）= 这句是长按派活的开场白，拆好了画成任务卡；`text` 仍是原文（长按引用 / 复制照旧读它） */
+  | { kind: "mine"; key: string; ts: number; text: string; media?: ChatMediaItem[]; dispatch?: DispatchCardView }
   /** 别的人说的（团队群里的成员）：左侧带头像与名字。uid 缺席（旧日志）时头像退回首字 */
   | { kind: "human"; key: string; ts: number; uid: string | null; name: string; text: string; media?: ChatMediaItem[] }
   /** 它说的：按空行拆成几个气泡（splitBubbles，ADR-0266） */
@@ -149,8 +151,10 @@ function rowOf(e: SessionEvent, ws: WorkspaceSnapshot, selfUid: string): ItemRow
       if (note !== null) return { kind: "note", key, ts: e.ts, text: note, tone: "muted", detail: systemNoteDetail(e) };
       const id = userRowIdentity(e, ws, selfUid);
       const media = mediaFieldOf(e, ws);
+      // 派活开场白只会是主人自己发进智能体私聊的那条（ADR-0352），所以只拆「我的」
+      const dispatch = id.mine ? parseDispatchOpening(id.text) : null;
       return id.mine
-        ? { kind: "mine", key, ts: e.ts, text: id.text, ...media }
+        ? { kind: "mine", key, ts: e.ts, text: id.text, ...media, ...(dispatch !== null ? { dispatch } : {}) }
         : { kind: "human", key, ts: e.ts, uid: id.uid, name: id.label ?? (id.uid !== null ? labelOf(ws, id.uid) : "成员"), text: id.text, ...media };
     }
     case "chat_message": {
