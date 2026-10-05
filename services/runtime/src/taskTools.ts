@@ -120,7 +120,7 @@ export function createTaskTools(deps: TaskToolDeps): Tool[] {
         const canBring = self === undefined || tierOf(self) === 0;
         throw new Error(canBring
           ? `「${name}」不在这条对话里——先 bring_agent 把它拉进来（只能拉专员）`
-          : `「${name}」不在这条对话里，你也拉不了人：要它办的事直接告诉主人，写好一句让主人转过去的话；这个任务你能做的那半截做完就 report_task`);
+          : `「${name}」不在这条对话里，你也拉不了人：要管理员办的用 escalate_to_admin 转过去（没有那把就告诉主人，写好一句让主人转的话）；这个任务你能做的那半截做完就 report_task`);
       }
       if (target.agentId === deps.agentId) throw new Error("不用派给自己：直接做，做完 report_task");
       if (!canDispatch(deps.agentId, target.agentId, roster)) throw new Error(`不能派给「${target.name}」——派活只能往下一级（管理员派专员、专员派自己的子工）`);

@@ -12,7 +12,9 @@ import { Button, Field, Labeled } from "../ui.js";
 import { TimeWheel } from "./TimeWheel.js";
 
 type Kind = RoutineSchedule["kind"];
-const KINDS: { k: Kind; label: string }[] = [{ k: "once", label: "一次" }, { k: "daily", label: "每天" }, { k: "weekly", label: "每周" }];
+const KINDS: { k: Kind; label: string }[] = [{ k: "once", label: "一次" }, { k: "daily", label: "每天" }, { k: "weekly", label: "每周" }, { k: "every", label: "时段内重复" }];
+/** every 的间隔档（#1659）：工具那边 5..720 都收，表单只给常用的几档 */
+const STEPS = [10, 15, 30, 60];
 const WEEK = ["一", "二", "三", "四", "五", "六", "日"];
 /** Intl.supportedValuesOf 在这个引擎上可能没有（Hermes）：退回常用的几个，其余靠手打 IANA 名字 */
 const COMMON_ZONES = ["Asia/Shanghai", "Asia/Hong_Kong", "Asia/Taipei", "Asia/Tokyo", "Asia/Seoul", "Asia/Singapore", "Australia/Sydney", "Europe/London", "Europe/Berlin", "America/New_York", "America/Chicago", "America/Los_Angeles", "UTC"];
@@ -67,17 +69,28 @@ export function RoutineEditDialog({ visible, initial, onSave, onDelete, onClose,
   const [title, setTitle] = useState(initial?.title ?? "");
   const [instruction, setInstruction] = useState(initial?.instruction ?? "");
   const [kind, setKind] = useState<Kind>(initial?.schedule.kind ?? "daily");
-  const [time, setTime] = useState(initial === null ? "09:00" : initial.schedule.kind === "once" ? initial.schedule.at.slice(11, 16) : initial.schedule.time);
+  const [time, setTime] = useState(initial === null ? "09:00" : initial.schedule.kind === "once" ? initial.schedule.at.slice(11, 16) : initial.schedule.kind === "every" ? initial.schedule.from : initial.schedule.time);
+  const [until, setUntil] = useState(initial?.schedule.kind === "every" ? initial.schedule.to : "22:00");
+  const [step, setStep] = useState(initial?.schedule.kind === "every" ? initial.schedule.minutes : 30);
   const [tz, setTz] = useState(initial?.tz ?? deviceTz);
   const [date, setDate] = useState(initial?.schedule.kind === "once" ? initial.schedule.at.slice(0, 10) : dateOptions(initial?.tz ?? deviceTz)[0]!);
-  const [days, setDays] = useState<number[]>(initial?.schedule.kind === "weekly" ? initial.schedule.days : [1, 2, 3, 4, 5]);
+  const [days, setDays] = useState<number[]>(
+    initial?.schedule.kind === "weekly" ? initial.schedule.days : initial?.schedule.kind === "every" ? initial.schedule.days ?? [1, 2, 3, 4, 5, 6, 7] : [1, 2, 3, 4, 5],
+  );
   const [tzOpen, setTzOpen] = useState(false);
   const [tzQuery, setTzQuery] = useState("");
   const [busy, setBusy] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const schedule = useMemo((): unknown => (kind === "once" ? { kind, at: `${date}T${time}` } : kind === "daily" ? { kind, time } : { kind, days, time }), [kind, date, time, days]);
+  const schedule = useMemo(
+    (): unknown =>
+      kind === "once" ? { kind, at: `${date}T${time}` }
+      : kind === "daily" ? { kind, time }
+      : kind === "every" ? { kind, minutes: step, from: time, to: until, ...(days.length === 7 ? {} : { days }) }
+      : { kind, days, time },
+    [kind, date, time, days, step, until],
+  );
   const problem = routineErrors({ title, instruction, schedule, tz });
   const parsed = problem === null ? parseRoutineSchedule(schedule) : null;
   const next = parsed === null ? null : nextRunAt(parsed, tz, Date.now());
@@ -135,14 +148,26 @@ export function RoutineEditDialog({ visible, initial, onSave, onDelete, onClose,
               {dates.map((d, i) => <Chip key={d} label={i === 0 ? "今天" : i === 1 ? "明天" : d.slice(5)} on={date === d} onPress={() => edit(setDate)(d)} />)}
             </ScrollView>
           ) : null}
-          {kind === "weekly" ? (
+          {kind === "weekly" || kind === "every" ? (
             <View style={{ flexDirection: "row", gap: 6, flexWrap: "wrap" }}>
               {WEEK.map((w, i) => (
                 <Chip key={w} label={w} on={days.includes(i + 1)} onPress={() => edit(setDays)(days.includes(i + 1) ? days.filter((x) => x !== i + 1) : [...days, i + 1].sort((a, b) => a - b))} />
               ))}
             </View>
           ) : null}
-          <TimeWheel value={time} onChange={edit(setTime)} />
+          {kind === "every" ? (
+            <>
+              <View style={{ flexDirection: "row", gap: 8, flexWrap: "wrap" }}>
+                {STEPS.map((m) => <Chip key={m} label={m === 60 ? "每小时" : `每 ${m} 分钟`} on={step === m} onPress={() => edit(setStep)(m)} />)}
+              </View>
+              <Text style={{ ...t.footnote, color: c.mutedForeground, textAlign: "center" }}>从</Text>
+              <TimeWheel value={time} onChange={edit(setTime)} />
+              <Text style={{ ...t.footnote, color: c.mutedForeground, textAlign: "center" }}>到</Text>
+              <TimeWheel value={until} onChange={edit(setUntil)} />
+            </>
+          ) : (
+            <TimeWheel value={time} onChange={edit(setTime)} />
+          )}
           <Pressable onPress={() => setTzOpen((v) => !v)} accessibilityRole="button" hitSlop={8} style={({ pressed }) => ({ opacity: pressed ? 0.5 : 1 })}>
             <Text style={{ ...t.footnote, color: c.mutedForeground, textAlign: "center" }}>
               时区 {tz}{tz !== deviceTz ? "（不是这台设备的）" : ""} · <Text style={{ color: c.brand }}>{tzOpen ? "收起" : "更换"}</Text>

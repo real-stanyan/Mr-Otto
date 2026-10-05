@@ -112,7 +112,7 @@ export interface UserMessageEvent extends SessionEventBase {
       与别的 greeting 两处不同：① 它**算主人亲口**（openingTraits 的 ownerSpoke 放行它——任务原话是主人写的）；
       ② 手机时间线**画它**（一条居中灰条「⏰ 定时任务「x」」）：别的 greeting 都有前一条可见事件解释「为什么它开口了」，
       这条没有。桌面照旧藏。同样不进协议位 */
-  greeting?: "voice_call" | "new_agent" | "callback" | "outreach" | "outreach_report" | "admin_intro" | "pair_call_summary" | "routine" | "dnd_report" | "collab_accept";
+  greeting?: "voice_call" | "new_agent" | "callback" | "outreach" | "outreach_report" | "admin_intro" | "pair_call_summary" | "routine" | "dnd_report" | "collab_accept" | "escalation";
   /** 这句话是**在语音通话里说出来的**（#1233）。缺席 = 打字打的 / 旧日志。
       **只是记号**：起 turn、排队、护栏、接力链首、派活全都不看它，模型投影
       （deriveMessages）读都不读——对模型来说这就是一条普通的用户消息，和从前
@@ -132,6 +132,10 @@ export interface UserMessageEvent extends SessionEventBase {
   voice?: true;
   /** 哪条定时任务（#1283）：只在 greeting === "routine" 时在场。时间线的灰条要标题，日志里得有——任务可能已被删 */
   routine?: { id: string; title: string };
+  /** 专员上报（#1659，greeting === "escalation" 时在场）：哪只专员转来的、转的原话。管理员私聊里的灰条要它；
+      正文（content）是给管理员的整段开场白。不算主人亲口（call_friend / message_friend 不亮），
+      但那一轮放行 schedule_task——专员撞墙最常见的就是「到点提醒」 */
+  escalation?: { fromAgentId: string; fromName: string; text: string };
   /** 发话人设备的 IANA 时区（#1283，spec §6）：手机的 say 帧带、runtime 校验是合法时区后原样落。缺席 = 旧日志 / 桌面。
       **只影响投影里「今天是」那一行**（deriveMessages 按最近一条带 tz 的人话算日期）；起 turn、排队、护栏一个判断都不读它 */
   tz?: string;

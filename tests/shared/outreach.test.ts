@@ -111,7 +111,7 @@ describe("openingTraits（#1441 复审：job 折叠开场白时一律往严算�
   const OWNER = "owner";
   const plain = { fromUid: OWNER };
   it("只有主人亲口的：ownerSpoke，不是汇报、没有非主人", () => {
-    expect(o.openingTraits([plain, plain], OWNER)).toEqual({ report: false, ownerSpoke: true, nonOwner: false, ownerReport: false });
+    expect(o.openingTraits([plain, plain], OWNER)).toEqual({ report: false, ownerSpoke: true, nonOwner: false, ownerReport: false, escalation: false });
   });
   it("任何一条是汇报开场白：report 为真，ownerSpoke 为假（无论顺序）", () => {
     const rep = { fromUid: OWNER, greeting: "outreach_report" };
@@ -119,7 +119,7 @@ describe("openingTraits（#1441 复审：job 折叠开场白时一律往严算�
     expect(o.openingTraits([rep, plain], OWNER)).toMatchObject({ report: true, ownerSpoke: false });
   });
   it("折进了别人的话 / 接力 / 系统开场白 / 来处不明：ownerSpoke 为假；非主人的才算 nonOwner", () => {
-    expect(o.openingTraits([plain, { fromUid: "guest" }], OWNER)).toEqual({ report: false, ownerSpoke: false, nonOwner: true, ownerReport: false });
+    expect(o.openingTraits([plain, { fromUid: "guest" }], OWNER)).toEqual({ report: false, ownerSpoke: false, nonOwner: true, ownerReport: false, escalation: false });
     expect(o.openingTraits([plain, { fromUid: OWNER, relay: { depth: 1 } }], OWNER)).toMatchObject({ ownerSpoke: false, nonOwner: false });
     expect(o.openingTraits([plain, { fromUid: OWNER, greeting: "new_agent" }], OWNER)).toMatchObject({ ownerSpoke: false, nonOwner: false });
     expect(o.openingTraits([plain, {}], OWNER)).toMatchObject({ ownerSpoke: false, nonOwner: true });
@@ -129,7 +129,7 @@ describe("openingTraits（#1441 复审：job 折叠开场白时一律往严算�
   });
   it("routine 开场白算主人亲口（#1283）：任务原话是主人写的；混进别的 greeting 仍为假", () => {
     const routine = { fromUid: OWNER, greeting: "routine" };
-    expect(o.openingTraits([routine], OWNER)).toEqual({ report: false, ownerSpoke: true, nonOwner: false, ownerReport: false });
+    expect(o.openingTraits([routine], OWNER)).toEqual({ report: false, ownerSpoke: true, nonOwner: false, ownerReport: false, escalation: false });
     expect(o.openingTraits([plain, routine], OWNER).ownerSpoke).toBe(true);
     expect(o.openingTraits([routine, { fromUid: OWNER, greeting: "callback" }], OWNER).ownerSpoke).toBe(false);
     expect(o.openingTraits([{ fromUid: "guest", greeting: "routine" }], OWNER)).toMatchObject({ ownerSpoke: false, nonOwner: true });
