@@ -147,8 +147,10 @@ export function outreachRowText(s: OutreachState): string {
 export function openingTraits(
   openings: readonly { fromUid?: string; relay?: unknown; greeting?: string }[],
   ownerUid: string,
-): { report: boolean; ownerSpoke: boolean; nonOwner: boolean; ownerReport: boolean } {
+): { report: boolean; ownerSpoke: boolean; nonOwner: boolean; ownerReport: boolean; escalation: boolean } {
   return {
+    // 专员上报（#1659）：话是主人在专员那边说的、专员转来——不算亲口（打给别人那几把不亮），不受监督，排定时放行
+    escalation: openings.length > 0 && openings.every((o) => o.fromUid === ownerUid && o.relay === undefined && o.greeting === "escalation"),
     // pair_call_summary（#1533）/ dnd_report（#1569）同一种性质：正文是别人说的话的转述，那一轮每一刀都要主人批；friend_relay（#1655）同一种性质
     report: openings.some((o) => o.greeting === "outreach_report" || o.greeting === "pair_call_summary" || o.greeting === "dnd_report" || o.greeting === "friend_relay"),
     // 定时汇报那一轮（#1569，ADR-0366）：受监督，但 call_user（打给主人本人）不掀——汇报的方式就是打电话

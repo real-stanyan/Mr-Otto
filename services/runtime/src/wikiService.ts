@@ -8,7 +8,7 @@ import { withMemoryFileLock, byteCount, charCount } from "../../../src/shared/me
 import { scanThreat } from "../../../src/shared/threatPatterns.js";
 import {
   WIKI_INDEX_PATH, WIKI_OWN_BUDGET, WIKI_PINNED_BUDGET, WIKI_READ_PAGE_LIMIT, WIKI_TEAM_PATH,
-  agentIdOfPage, bodyCharCount, checkWiki, classifyWikiPath, isRemovableWikiPath, logLine, migrateTiersToPages, nudgeFrom, parseWikiPage,
+  agentIdOfPage, agentPagePath, bodyCharCount, isOwnAgentPage, checkWiki, classifyWikiPath, isRemovableWikiPath, logLine, migrateTiersToPages, nudgeFrom, parseWikiPage,
   renderCheckReport, renderIndex, schemaPage, seedPages, serializeWikiPage, singleLine, validateWikiFields,
   type WikiLogKind, type WikiPage,
 } from "../../../src/shared/wiki.js";
@@ -144,7 +144,7 @@ export function createWikiService(deps: WikiServiceDeps): WikiService {
       const page = parseWikiPage(p.path, p.text);
       return { path: p.path, title: page.front.title, body: guardBody(p.path, page.body) };
     });
-    const own = dump.own === null ? null : guardBody(`agents/${agentId}.md`, parseWikiPage(`agents/${agentId}.md`, dump.own).body);
+    const own = dump.own === null ? null : guardBody(agentPagePath(agentId), parseWikiPage(agentPagePath(agentId), dump.own).body);
     // 索引整份进 system 提示词，而它是**磁盘上的文件**——工具每次重生成它，但 bash 也写得动，
     // 而且页正文那道闸放不到这里（索引不是页）。换在建事件之前，日志里那份才等于喂给模型那份
     const indexHit = scanThreat(dump.index);
@@ -198,8 +198,8 @@ export function createWikiService(deps: WikiServiceDeps): WikiService {
       if (hit) throw new Error(`${label}含可疑指令（${hit}），拒绝写入`);
     }
     const pageAgent = agentIdOfPage(args.path);
-    if (pageAgent !== null && author.kind === "agent" && author.id !== pageAgent) {
-      throw new Error(`${args.path} 只有智能体「${pageAgent}」自己（或成员在设置页）能写`);
+    if (pageAgent !== null && author.kind === "agent" && !isOwnAgentPage(args.path, author.id)) {
+      throw new Error(`${args.path} 是别的智能体的页，只有它自己（或成员在设置页）能写；你自己那页是 ${agentPagePath(author.id)}`);
     }
     const pinned = args.path === WIKI_TEAM_PATH ? true : args.pinned === true;
     const chars = bodyCharCount(args.body);
@@ -245,7 +245,7 @@ export function createWikiService(deps: WikiServiceDeps): WikiService {
     if (classifyWikiPath(path) === "invalid") throw new Error(`路径不合法：${path}`);
     if (!isRemovableWikiPath(path)) throw new Error(`${path} 不可删（index / log 工具专有，SCHEMA.md 与 team.md 是保留页）`);
     const pageAgent = agentIdOfPage(path);
-    if (pageAgent !== null && author.kind === "agent" && author.id !== pageAgent) throw new Error(`${path} 只有智能体「${pageAgent}」自己（或成员）能删`);
+    if (pageAgent !== null && author.kind === "agent" && !isOwnAgentPage(path, author.id)) throw new Error(`${path} 是别的智能体的页，只有它自己（或成员）能删`);
     await withMemoryFileLock(wikiLockKey(deps.workspaceId), async () => {
       await deps.fs.removePage(path);
       await regenIndex();

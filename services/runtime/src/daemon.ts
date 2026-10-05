@@ -1268,6 +1268,23 @@ async function main(): Promise<void> {
       settings: ownerSettings,
       // 管理员车道的桥（#1605）
       adminsBridge,
+      // 专员上报（#1659）：送进主人和管理员的私聊。routineRooms 在下面才建——这里只在专员调刀时才读，那时早建好了
+      escalateToAdmin: async (e) => {
+        const f = await workspaceFacts(e.workspaceId);
+        if (f.kind !== "home") return { ok: false, message: "只有主场里能转给管理员" };
+        const sid = await findDmSession(e.workspaceId, [ADMIN_AGENT_ID]);
+        if (sid === null) return { ok: false, message: "主人和管理员还没有私聊" };
+        if (sid === e.fromSessionId) return { ok: false, message: "管理员就在这条对话里，直接 @ 它" };
+        let room: Awaited<ReturnType<typeof routineRooms.room>>;
+        try {
+          room = await routineRooms.room(e.workspaceId, sid);
+        } catch (err) {
+          console.warn(`[otto-runtime] 专员上报开不了管理员的房（home=${e.workspaceId}）`, err);
+          return { ok: false, message: "管理员那边这会儿开不了，稍后再转" };
+        }
+        if (room === null || room.runEscalation === undefined) return { ok: false, message: "管理员那条私聊已经归档了" };
+        return room.runEscalation({ fromAgentId: e.fromAgentId, fromName: e.fromName, text: e.text, taskTitle: e.taskTitle });
+      },
       // 回电（#1411）：推送关着 = null（刀不出现）。isWatching = 这个房间里有没有他的连接——手机切后台会
       // 主动断开会话房（mobile/src/cloud/cloudClient.ts），所以「连着」就是「开着这条聊天」
       // 外联（#1441）：收尾时把结果汇报回原聊天、call_friend 那把刀的出口。推送关着 = 没有 hub = 两样都是 null；

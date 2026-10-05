@@ -50,8 +50,17 @@ export function isWikiSegment(s: string): boolean {
 export function isRemovableWikiPath(p: string): boolean {
   return classifyWikiPath(p) === "page" && p !== WIKI_SCHEMA_PATH && p !== WIKI_TEAM_PATH;
 }
+/** agent id → 页名那一段（#1659）：id 是 `a_<12hex>`，带下划线，而页名只收小写 kebab——
+    原样拼出来的 `agents/a_xxx.md` 是非法路径，专员永远建不了自己那页。下划线换连字符、其余非法字符同理 */
+export function agentPageSlug(agentId: string): string {
+  return agentId.toLowerCase().replace(/[^a-z0-9-]/g, "-");
+}
 export function agentPagePath(agentId: string): string {
-  return `${WIKI_AGENTS_DIR}/${agentId}.md`;
+  return `${WIKI_AGENTS_DIR}/${agentPageSlug(agentId)}.md`;
+}
+/** 这一页是不是这只智能体自己的（写 / 删的闸用它，别拿 agentIdOfPage 直接和 id 比） */
+export function isOwnAgentPage(p: string, agentId: string): boolean {
+  return agentIdOfPage(p) === agentPageSlug(agentId);
 }
 export function agentIdOfPage(p: string): string | null {
   const m = AGENT_PAGE_RE.exec(p);

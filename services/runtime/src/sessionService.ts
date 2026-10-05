@@ -240,6 +240,8 @@ import {
 import { ADMIN_AGENT_ID, type SandboxApproval } from "../../../src/shared/workspaceAgents.js";
 import { connectorsAllowed, dispatchDenied, scopedTools, tierOf, type AgentTier } from "../../../src/shared/agentTier.js";
 import { tierPrompt } from "../../../src/shared/tierPrompt.js";
+import { escalationOpeningText } from "../../../src/shared/escalation.js";
+import { createEscalateTool, type EscalateOutcome } from "./escalateTool.js";
 import { createRosterTools } from "./rosterTools.js";
 import { createBuildAppTool } from "./buildAppTool.js";
 import { createSettingsTool, type OwnerSettingsStore } from "./settingsTool.js";
@@ -596,6 +598,8 @@ export interface CloudSessionOpts {
   /** 定时任务（#1283，spec §7）。**必需**（同 agentWriter / isMember 的纪律）：忘接线该编译不过。
       null = 不挂那三把刀（团队会话 / 外联 / 0058 没跑）。刀只在 approveAll 且 chat.kind === "dm" 的会话里挂 */
   routines: RoutineStore | null;
+  /** 专员上报的出口（#1659，daemon 接）：把话送进主人和管理员的私聊、叫起管理员。缺席 = 没有 escalate_to_admin */
+  escalateToAdmin?: (e: { workspaceId: string; fromSessionId: string; fromAgentId: string; fromName: string; text: string; taskTitle: string | null }) => Promise<EscalateOutcome>;
   /** 管理员改 Otto 设置（#1621）：update_settings 落库的那一半。可选：没接的装配不挂这把刀。
       刀只在主场私聊里、只给 L0；亮不亮同 routineTools（主人亲口的那一轮） */
   settings?: OwnerSettingsStore | null;
@@ -796,6 +800,8 @@ export interface CloudSession {
   relayFromFriend?(r: { text: string }): Promise<"ok" | "archived" | "no_agent">;
   /** 主人的回话送回外联（#1655）：落 greeting:"owner_reply" 开场白（fromUid 主人、点名单里那只）并入队。不是外联 / 归档回 archived */
   ownerReply?(r: { text: string }): Promise<"ok" | "archived" | "no_agent">;
+  /** 专员上报进来（#1659）：替主人落一条 greeting:"escalation" 的开场白给管理员并入队。管理员不在名单里 / 归档了回 ok:false */
+  runEscalation?(r: { fromAgentId: string; fromName: string; text: string; taskTitle: string | null }): Promise<EscalateOutcome>;
   /** 定时任务没跑成的注记（错过 / 额度不够，spec §4.3）：ignorable，不起 turn */
   logRoutineNote(n: { routineId: string; title: string; reason: "missed" | "skipped_quota"; plannedAt: number; tz: string }): void;
   /** 测试用：这场通话是谁开的（#1533），null = 没在通话里。可选：假装配（smoke / frameHandler 测试）不必带 */
@@ -1024,6 +1030,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   let rerunTurn = false;
   /** 这一轮是定时任务起的（#1283）：圈数上限只对它（没人在场按停止键）。按 job 覆盖的开场白算，同 reportTurn */
   let routineTurn = false;
+  /** 这一轮是专员上报起的（#1659）：排定时放行（专员撞墙最常见的就是到点提醒），打给别人的那几把仍只认主人亲口 */
+  let escalationTurn = false;
   /** 这一轮是不是主场群里的客人点起的（#1393，ADR-0325）。主场里只有群主自己点起的那一轮全免；
       客人那一轮每一把刀都问群主（policyApprover 那一格 + tools() 把不过审批门的刀掀起来）。
       团队会话恒为假（approveAll 为假），一个字不变 */
@@ -1069,6 +1077,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     foldedNonOwner = foldedNonOwner || t.nonOwner;
     rerunTurn = rerunTurn || covered.some((u) => rerunOpenings.has(u.seq));
     routineTurn = routineTurn || covered.some((u) => u.greeting === "routine");
+    escalationTurn = t.escalation && depth === 0 && !rerunTurn;
     ownerSpoke = ownerSpoke && t.ownerSpoke && depth === 0 && !rerunTurn;
   };
   const supervisedTurn = (): boolean => opts.approveAll && (guestTurn() || reportTurn || (foldedNonOwner && !collabAccepted()));
@@ -1883,9 +1892,21 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         : createRoutineTools({
             workspaceId: opts.workspaceId, agentId: spec.agentId, ownerUid: opts.ownerUid, store: opts.routines,
             now: () => opts.now?.() ?? Date.now(),
-            available: () => ownerSpoke && !supervisedTurn(),
+            available: () => (ownerSpoke || escalationTurn) && !supervisedTurn(),
           });
     // update_settings（#1621）：主场私聊里、只给管理员；主人亲口的那一轮才亮（同 routineTools）；改完落一句系统行
+    // escalate_to_admin（#1659）：主场里、daemon 接了出口才有；挂不挂到具体那一只由工具表按「是专员 + 这条对话没管理员」判
+    const escalateTool =
+      opts.escalateToAdmin === undefined || !opts.approveAll
+        ? null
+        : createEscalateTool({
+            agentId: spec.agentId,
+            agentName: () => spec.name,
+            taskTitle: (id) => taskFold.get(id)?.title ?? null,
+            deliver: (e) => opts.escalateToAdmin!({ workspaceId: opts.workspaceId, fromSessionId: sessionId, ...e }),
+            now: () => opts.now?.() ?? Date.now(),
+            available: () => !supervisedTurn(),
+          });
     const settingsTool =
       opts.settings === null || opts.settings === undefined || !opts.approveAll || chatKind !== "dm"
         ? null
@@ -2010,6 +2031,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
           ...(isAdmin && opts.approveAll ? [rosterTools.bring, rosterTools.dismiss] : []),
           ...routineTools,
           ...(settingsTool !== null && isAdmin ? [settingsTool] : []),
+          // 专员往上转（#1659）：只在这条对话里没有管理员时亮——管理员在场就 @ 它，用不着这条路
+          ...(escalateTool !== null && me !== null && tierOf(me) === 1 && !turnRoster.some((a) => a.agentId === ADMIN_AGENT_ID) ? [escalateTool] : []),
           ...taskTools,
           // 只给 apps 域的专员（#1591 真机：管理员拿着这把刀就自己下场了，主人要的是专人专管）
           ...(buildAppTool !== null && me !== null && domainOf(me) === "apps" ? [buildAppTool] : []),
@@ -2874,6 +2897,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     reportTurn = false;
     ownerReportTurn = false;
     routineTurn = false;
+    escalationTurn = false;
     foldedNonOwner = false;
     rerunTurn = false;
     ownerSpoke = true;
@@ -3113,6 +3137,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       currentInitiator = null;
       reportTurn = false;
       routineTurn = false;
+      escalationTurn = false;
       ownerSpoke = false;
       foldedNonOwner = false;
       rerunTurn = false;
@@ -3948,6 +3973,24 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       notify(opening);
       if (coordinator.enqueue({ agentId, fromUid: opts.ownerUid, opening }) === "start_turn") startDrain();
       return "ok";
+    },
+
+    async runEscalation(r) {
+      if (archived || isOutreach) return { ok: false, message: "管理员那条私聊已经归档了" };
+      const roster = await rosterNow({ fresh: true });
+      if (archived) return { ok: false, message: "管理员那条私聊已经归档了" };
+      if (roster.some((a) => a.degraded)) return { ok: false, message: "智能体名单这会儿读不出来" };
+      const admin = roster.find((a) => a.agentId === ADMIN_AGENT_ID);
+      if (admin === undefined) return { ok: false, message: "管理员不在它那条私聊里" };
+      const opening = store.append({
+        sessionId, ts: Date.now(), type: "user_message",
+        content: escalationOpeningText({ fromName: r.fromName, text: r.text, taskTitle: r.taskTitle }),
+        fromUid: opts.ownerUid, mentions: [ADMIN_AGENT_ID], greeting: "escalation",
+        escalation: { fromAgentId: r.fromAgentId, fromName: r.fromName, text: r.text },
+      }) as UserMessageEvent;
+      notify(opening);
+      if (coordinator.enqueue({ agentId: ADMIN_AGENT_ID, fromUid: opts.ownerUid, opening }) === "start_turn") startDrain();
+      return { ok: true, adminName: admin.name };
     },
 
     logRoutineNote(n) {

@@ -24,10 +24,14 @@ export interface RoutineToolDeps {
 
 const SCHEDULE_SCHEMA = {
   type: "object",
-  description: "三种形状之一：{kind:'once', at:'YYYY-MM-DDTHH:mm'}（一次性，墙上时间）/ {kind:'daily', time:'HH:mm'} / {kind:'weekly', days:[1..7], time:'HH:mm'}（1 = 周一 … 7 = 周日）",
+  description:
+    "四种形状之一：{kind:'once', at:'YYYY-MM-DDTHH:mm'}（一次性，墙上时间）/ {kind:'daily', time:'HH:mm'} / {kind:'weekly', days:[1..7], time:'HH:mm'}（1 = 周一 … 7 = 周日）" +
+    " / {kind:'every', minutes:N, from:'HH:mm', to:'HH:mm', days?:[1..7]}（时段内每隔 N 分钟，N 在 5..720，不跨夜，days 不传 = 每天）。" +
+    "「营业时间里每 10 分钟看一次」这种用一条 every，别拆成很多条 daily。",
   properties: {
-    kind: { type: "string", enum: ["once", "daily", "weekly"] },
+    kind: { type: "string", enum: ["once", "daily", "weekly", "every"] },
     at: { type: "string" }, time: { type: "string" }, days: { type: "array", items: { type: "integer" } },
+    minutes: { type: "integer" }, from: { type: "string" }, to: { type: "string" },
   },
   required: ["kind"],
 };
