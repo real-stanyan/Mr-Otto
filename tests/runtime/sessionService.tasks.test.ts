@@ -155,6 +155,30 @@ describe("主场里任务那三把刀", () => {
     store.close();
   });
 
+  it("同一轮里先 bring_agent 再 assign_task：派得出去（#1661 真机：名单是起跑时的快照，拉进来的专员派不了）", async () => {
+    const store = newStore();
+    const events: SessionEvent[] = [];
+    const results: string[] = [];
+    let adminRound = 0;
+    const session = open(store, {
+      roster: ["admin"], kind: "dm", events,
+      reply: (id, _names, transcript) => {
+        if (id !== "admin") return { content: "好" };
+        adminRound++;
+        if (adminRound === 1) return { content: "", toolCalls: [{ id: "c1", name: "create_task", args: { title: "订票" } }] };
+        if (adminRound === 2) return { content: "", toolCalls: [{ id: "c2", name: "bring_agent", args: { name: "出行" } }] };
+        if (adminRound === 3) return { content: "", toolCalls: [{ id: "c3", name: "assign_task", args: { taskId: idIn(transcript), to: "出行" } }] };
+        return { content: "派好了" };
+      },
+    });
+    await session.say("owner", "Stan", "帮我订票", false, undefined);
+    await session.settled();
+    for (const e of events) if (e.type === "tool_result") results.push(e.output);
+    expect(events.find((e) => e.type === "task_assigned")).toMatchObject({ byAgentId: "admin", toAgentId: "a_travel" });
+    expect(results.some((r) => r.includes("不在这条对话里"))).toBe(false);
+    store.close();
+  });
+
   it("团队会话：没有任务那三把刀", async () => {
     const store = newStore();
     const tools: Record<string, string[]> = {};

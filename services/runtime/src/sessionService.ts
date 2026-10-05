@@ -1753,6 +1753,9 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       const out = await session.updateChatRoster("", { agentIds }, turnRoster.find((a) => a.agentId === ADMIN_AGENT_ID)?.name ?? "管理员");
       if (out.kind !== "ok") return out.message;
       if (out.changed && opts.onRosterChanged !== undefined) await opts.onRosterChanged(out.agentIds).catch(() => undefined);
+      // 这一轮的名单跟着换（#1661 真机）：turnRoster 是起跑时的快照，不换的话同一轮里紧接着的 assign_task
+      // 读不到刚拉进来的专员，派活落不了账（模型只好跳过 assign 直接 @，任务永远停在「未派」）
+      if (out.changed) turnRoster = await rosterNow({ fresh: true });
       return null;
     },
   });

@@ -157,6 +157,8 @@ describe("提示词（spec §5）", () => {
     expect(p).not.toContain("订票员"); // L2 不在管理员的派发名单里
     expect(p).toContain("用 create_agent 建一只"); // #1591 真机：管理员自己建专员，不再只是提议
     expect(p).toContain("不把密码、token、密钥写进它的说明或职责"); // #1585
+    expect(p).toContain("不报沙箱路径、文件名、taskId"); // #1661 真机：总结里报 /work/apps/…
+    expect(p).toContain("**没有外网**"); // #1661 C5：管理员让专员 fetch 天气接口，build_app 拒收
     expect(tierPrompt({ agent: admin, ownerName: "Stan", roster: [admin] })).toContain("还没有专员");
   });
   it("L1：只做本域；域外转管理员；有子工写子工；不找别的专员", () => {

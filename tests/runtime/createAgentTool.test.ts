@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { createCreateAgentTool } from "../../services/runtime/src/createAgentTool.js";
+import { DOMAIN_CATALOG } from "../../src/shared/agentDomain.js";
 import { createInMemoryAgentWriter } from "../../services/runtime/src/agentRegistry.js";
 import type { ExecutionWorld } from "../../src/world/executionWorld.js";
 
@@ -89,6 +90,9 @@ describe("主场的分级护栏（#1571 第二轮第 2 条）", () => {
   it("域必填且合规；说明里列出清单", async () => {
     const { tool, writer } = home();
     expect(tool.def.description).toContain("travel=出行");
+    // domain 参数的说明跟清单同源（#1661：原来手抄的那份漏了 apps）
+    const domainDesc = (tool.def.parameters as { properties: { domain: { description: string } } }).properties.domain.description;
+    for (const d of DOMAIN_CATALOG) expect(domainDesc).toContain(d.key);
     await expect(tool.run({ name: "财务" }, world)).rejects.toThrow("要带 domain");
     await expect(tool.run({ name: "财务", domain: "banana" }, world)).rejects.toThrow("不合规");
     expect(writer.rows()).toEqual([]);
