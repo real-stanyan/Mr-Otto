@@ -191,6 +191,8 @@ import { createOutreachRun, type OutreachEnded, type OutreachRun, type OutreachS
 import { createCallUserTool } from "./callUserTool.js";
 import { createCallFriendTool } from "./callFriendTool.js";
 import { createMessageFriendTool } from "./messageFriendTool.js";
+import { createRelayToOwnerTool } from "./relayToOwnerTool.js";
+import { createReplyToFriendTool } from "./replyToFriendTool.js";
 import { createRoutineTools } from "./routineTools.js";
 import type { RoutineStore } from "./routineStore.js";
 import { ROUTINE_MAX_ROUNDS, routineOpeningText } from "../../../src/shared/routines.js";
@@ -563,6 +565,15 @@ export interface CloudSessionOpts {
   friendMessage?: {
     send(o: { agentId: string; agentName: string; friend: string; text: string }): Promise<string>;
   } | null;
+  /** relay_to_owner（#1655）：外联里管理员替朋友带话给主人——找主人的管理员私聊、封顶都在 daemon 的 outreachHub.relayToOwner。
+      可选（同 friendMessage 的理由）：缺席 / null = 刀不挂。只在外联会话里读 */
+  outreachRelay?: {
+    toOwner(o: { agentName: string; peerUid: string; peerName: string; text: string }): Promise<string>;
+  } | null;
+  /** reply_to_friend（#1655）：主人回朋友带来的话，送回外联那条线——解析好友 / 档位 / 找外联房在 outreachHub.replyToFriend。可选，同上 */
+  friendReply?: {
+    send(o: { agentId: string; agentName: string; friend: string; text: string }): Promise<string>;
+  } | null;
   /** 给打给好友的那条线签语音票（#1441）：好友听到的 TTS 记在主人账上，edge 用同一把密钥验。
       **必需**（同 callback 的纪律）：忘接线该编译不过，而不是安静地让好友的通话一句话都出不了声 */
   signSpeechTicket: (t: SpeechTicket) => Promise<string>;
@@ -780,6 +791,11 @@ export interface CloudSession {
   /** 定时汇报到点（#1569，ADR-0366）：替主人落一条 greeting:"dnd_report" 的开场白给管理员并入队——正文由 daemon 拼好
       （免打扰期间朋友发来的消息与代办任务的摘要 + 打电话 / 发消息的要求）。管理员不在名单里回 no_agent */
   runReport?(r: { text: string; firedAt: number }): Promise<"ok" | "archived" | "no_agent">;
+  /** 朋友在外联里托管理员带话（#1655）：在这条（主人与管理员的）私聊里落 greeting:"friend_relay" 开场白给管理员并入队；
+      那一轮受监督（正文是朋友的话的转述）。不是主场私聊 / 归档回 archived；管理员不在名单里回 no_agent */
+  relayFromFriend?(r: { text: string }): Promise<"ok" | "archived" | "no_agent">;
+  /** 主人的回话送回外联（#1655）：落 greeting:"owner_reply" 开场白（fromUid 主人、点名单里那只）并入队。不是外联 / 归档回 archived */
+  ownerReply?(r: { text: string }): Promise<"ok" | "archived" | "no_agent">;
   /** 定时任务没跑成的注记（错过 / 额度不够，spec §4.3）：ignorable，不起 turn */
   logRoutineNote(n: { routineId: string; title: string; reason: "missed" | "skipped_quota"; plannedAt: number; tz: string }): void;
   /** 测试用：这场通话是谁开的（#1533），null = 没在通话里。可选：假装配（smoke / frameHandler 测试）不必带 */
@@ -1028,7 +1044,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   const tightenSupervision = (e: SessionEvent): void => {
     if (currentAgentId === null || !opts.approveAll) return;
     if (e.type === "user_message") {
-      if (e.greeting === "outreach_report" || e.greeting === "pair_call_summary" || e.greeting === "dnd_report") {
+      if (e.greeting === "outreach_report" || e.greeting === "pair_call_summary" || e.greeting === "dnd_report" || e.greeting === "friend_relay") {
         reportTurn = true;
         ownerSpoke = false;
         if (e.greeting === "dnd_report") ownerReportTurn = true;
@@ -1831,6 +1847,29 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
             dispatch: (friend, text) =>
               friendMessage.send({ agentId: spec.agentId, agentName: specNames.get(spec.agentId) ?? spec.name, friend, text }),
           });
+    // relay_to_owner（#1655）：只在外联会话里、端口接了、种子里认得出朋友时建；挂不挂（L0）在 tools() 里判
+    const outreachRelay = opts.outreachRelay ?? null;
+    const outreachFacts = createdCloud?.outreach;
+    const relayToOwnerTool =
+      !isOutreach || outreachRelay === null || outreachFacts === undefined
+        ? null
+        : createRelayToOwnerTool({
+            send: (text) => outreachRelay.toOwner({ agentName: specNames.get(spec.agentId) ?? spec.name, peerUid: outreachFacts.peerUid, peerName: outreachFacts.peerName, text }),
+          });
+    // reply_to_friend（#1655）：message_friend 的姊妹刀，亮刀条件逐字相同
+    const friendReply = opts.friendReply ?? null;
+    const replyToFriendTool =
+      friendReply === null || !opts.approveAll || isOutreach || isPair
+        ? null
+        : createReplyToFriendTool({
+            maySend: () =>
+              ownerSpoke
+                ? null
+                : rerunTurn
+                  ? "这一轮是服务重启后的补跑：这句话上一次可能已经送出去了。先问主人要不要再回，等他亲口说了再回。"
+                  : "只有他本人亲口让你回，才能把话送回给朋友。这一轮不是。",
+            dispatch: (friend, text) => friendReply.send({ agentId: spec.agentId, agentName: specNames.get(spec.agentId) ?? spec.name, friend, text }),
+          });
     // 定时任务三把刀（#1283）：只在主场私聊里挂；亮不亮按「主人亲口 && 不受监督」现算（routine 轮算主人亲口，Task 8）
     const routineTools =
       opts.routines === null || !opts.approveAll || chatKind !== "dm"
@@ -1928,9 +1967,13 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // 只有管理员那只有 create_agent（spec §10 切片 6）。判据是 agentId 不是名字——
       // 名字随时能改，'admin' 是 0021 触发器种下的稳定键
       tools: () => {
-        // 外联会话（#1441）：一把都没有——连 read_file / wiki / call_user 也不挂。朋友是客人，
-        // 而这条线的全部意义就是「只说话」；提示词（deriveMessages 的外联那一支）说的也是同一句
-        if (isOutreach) return [];
+        // 外联会话（#1441 → #1655）：只挂一把 relay_to_owner，且只给 L0（ADR-0367 对外的刀只有管理员有）。
+        // 早返回 = 不过下面的审批包装：这把刀只对自己主人说话，朋友点起的轮里也不掀（同 message_friend_agent）
+        if (isOutreach) {
+          const meO = turnSpec !== null && turnSpec.agentId === spec.agentId ? turnSpec : null;
+          const l0 = meO === null ? spec.agentId === ADMIN_AGENT_ID : tierOf(meO) === 0;
+          return relayToOwnerTool !== null && l0 ? [relayToOwnerTool] : [];
+        }
         // 工具面按等级 + 域圈（#1571，ADR-0365 §2.3 第二道闸），只在主场：动手的那几把（读写文件 / bash / git / 连接器）
         // 按 scopedTools 过；对外说话的那几把（打给朋友 / 发私聊 / 车道桥 / 建人 / 拉人）只有管理员有——它是唯一入口。
         // 不在面里的工具**不装**（模型看不见），不是调用了再拒
@@ -1951,6 +1994,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
           // 受监督的轮里干脆不亮这把刀：亮出来只会弹一张批了也必被 mayCall 拒的卡
           ...(callFriendTool !== null && adminOnly && !supervisedTurn() ? [callFriendTool] : []),
           ...(messageFriendTool !== null && adminOnly && !supervisedTurn() ? [messageFriendTool] : []),
+          ...(replyToFriendTool !== null && adminOnly && !supervisedTurn() ? [replyToFriendTool] : []),
           // 对面公开的智能体（#1542）：只在这条车道此刻是公开的（朋友在客人名单里）才亮
           ...(bridgeTool !== null && adminOnly && pairFacingOf(chatHumans, pairFacts!.peerUid) === "both" ? [bridgeTool] : []),
           // 第 1 期 b（#1605）：不再要求车道公开——对面看的是自己家的管理员车道，不是这条
@@ -3864,6 +3908,35 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       }) as UserMessageEvent;
       notify(opening);
       if (coordinator.enqueue({ agentId: ADMIN_AGENT_ID, fromUid: opts.ownerUid, opening }) === "start_turn") startDrain();
+      return "ok";
+    },
+
+    async relayFromFriend(r) {
+      if (archived || chatKind !== "dm") return "archived";
+      const roster = await rosterNow({ fresh: true });
+      if (archived) return "archived";
+      if (roster.some((a) => a.degraded)) throw new Error("智能体名单读不出来，这次先不带话");
+      if (!roster.some((a) => a.agentId === ADMIN_AGENT_ID)) return "no_agent";
+      const opening = store.append({
+        sessionId, ts: Date.now(), type: "user_message", content: r.text, fromUid: opts.ownerUid, mentions: [ADMIN_AGENT_ID], greeting: "friend_relay",
+      }) as UserMessageEvent;
+      notify(opening);
+      if (coordinator.enqueue({ agentId: ADMIN_AGENT_ID, fromUid: opts.ownerUid, opening }) === "start_turn") startDrain();
+      return "ok";
+    },
+
+    async ownerReply(r) {
+      if (archived || !isOutreach) return "archived";
+      const roster = await rosterNow({ fresh: true });
+      if (archived) return "archived";
+      if (roster.some((a) => a.degraded)) throw new Error("智能体名单读不出来，这次先不转告");
+      const agentId = roster[0]?.agentId;
+      if (agentId === undefined) return "no_agent";
+      const opening = store.append({
+        sessionId, ts: Date.now(), type: "user_message", content: r.text, fromUid: opts.ownerUid, mentions: [agentId], greeting: "owner_reply",
+      }) as UserMessageEvent;
+      notify(opening);
+      if (coordinator.enqueue({ agentId, fromUid: opts.ownerUid, opening }) === "start_turn") startDrain();
       return "ok";
     },
 
