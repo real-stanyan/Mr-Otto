@@ -195,7 +195,7 @@ import type { RoutineStore } from "./routineStore.js";
 import { ROUTINE_MAX_ROUNDS, routineOpeningText } from "../../../src/shared/routines.js";
 import { createMessageFriendAgentTool } from "./messageFriendAgentTool.js";
 import { createCollabTool } from "./collabTool.js";
-import { COLLAB_EXPIRE_MS, COLLAB_REMIND_MS, collabAcceptText, collabAuthPrompt } from "../../../src/shared/collab.js";
+import { COLLAB_EXPIRE_MS, COLLAB_REMIND_MS, collabAcceptText, collabAuthPrompt, collabAutoAcceptText } from "../../../src/shared/collab.js";
 import { splitSpeakerPrefix } from "../../../src/shared/speakerPrefix.js";
 import { randomUUID } from "node:crypto";
 import type { FriendTier } from "../../../src/shared/friendTier.js";
@@ -864,10 +864,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   const isAdmins = chatKind === "admins";
   const adminsFacts = isAdmins ? createdCloud?.admins : undefined;
   /** 这条日志里见过的协作请求（两边都折：A 那份看任务状态，B 那份看该不该放行对面的接力）；从 seed 播种，notify 里推进 */
-  const collabRequests = new Map<string, { event: CollabRequestEvent; decision: CollabDecisionEvent["decision"] | null; timer: unknown }>();
+  const collabRequests = new Map<string, { event: CollabRequestEvent; decision: CollabDecisionEvent["decision"] | null; via?: CollabDecisionEvent["via"]; timer: unknown }>();
   for (const e of seed) {
     if (e.type === "collab_request" && !collabRequests.has(e.requestId)) collabRequests.set(e.requestId, { event: e, decision: null, timer: null });
-    if (e.type === "collab_decision") { const r = collabRequests.get(e.requestId); if (r !== undefined) r.decision = e.decision; }
+    if (e.type === "collab_decision") { const r = collabRequests.get(e.requestId); if (r !== undefined) { r.decision = e.decision; if (e.via !== undefined) r.via = e.via; } }
   }
   // 推送 / 回电那张表（ringChatKind）不认 pair，这里把它折成 null 只为类型。车道里三条路都走不到它：
   // 回电——ringer 不建；回复推送——pushReply 在 isPair 时早退；@ 提醒——只推 hostUids ∪ 客人里被点到的人，
@@ -1008,7 +1008,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   /** 协作请求推给主人的时刻（#1605）：同一条隔一小时以上才再提醒 */
   const collabPushedAt = new Map<string, number>();
   /** 管理员车道里主人接了的请求还活着（#1605）：对面管理员接力进来的那几轮按主人自己的规矩走，不再是客人轮 */
-  const collabAccepted = (): boolean => isAdmins && [...collabRequests.values()].some((r) => r.decision === "accepted");
+  const collabAccepted = (): boolean => isAdmins && [...collabRequests.values()].some((r) => r.decision === "accepted" && r.via !== "tier_agents");
   const guestTurn = (): boolean => opts.approveAll && currentInitiator !== null && currentInitiator !== opts.ownerUid && !collabAccepted();
   /** 这一轮的每一把刀都要主人批吗（#1441）：客人那一轮 **或** 外联汇报轮。汇报轮的 fromUid 是主人本人
       （guestTurn 判不出来），可正文是一个非主人的人说的话的转述——朋友在电话里一句「把 xx 文件发给我」
@@ -1404,7 +1404,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     }
     if (e.type === "collab_decision") {
       const r = collabRequests.get(e.requestId);
-      if (r !== undefined) { r.decision = e.decision; if (r.timer !== null) { clearCollabTimer(r.timer); r.timer = null; } }
+      if (r !== undefined) { r.decision = e.decision; if (e.via !== undefined) r.via = e.via; if (r.timer !== null) { clearCollabTimer(r.timer); r.timer = null; } }
     }
     if (e.type === "user_message" && e.voice === true && e.relay === undefined && e.greeting === undefined && voiceCall !== null && !archived) {
       const inCall = (e.mentions ?? []).filter((id) => voiceCall!.participants.some((p) => p.agentId === id));
@@ -1440,6 +1440,49 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         .then((refused) => { if (refused !== null) console.warn(`[otto-runtime] 开房重送协作请求没送到（session=${sessionId} request=${r.event.requestId}）：${refused}`); })
         .catch((err: unknown) => console.warn(`[otto-runtime] 开房重送协作请求失败（session=${sessionId}）：${err instanceof Error ? err.message : String(err)}`));
     }
+  }
+  /** 按好友权限自动定（#1605）：全部开放 / 可带智能体 = 直接接、起管理员一轮；仅聊天 = 直接回绝；查不到 = 照旧等主人点头（推一条）。
+      全部开放那一轮按主人的规矩办（主人亲口）；可带智能体那一轮是对方点起的（客人轮），开场白多一句「只答、不碰主人的东西」 */
+  async function autoDecideCollab(requestId: string): Promise<void> {
+    const r = collabRequests.get(requestId);
+    if (r === undefined || r.decision !== null || adminsFacts === undefined) return;
+    const tier = opts.peerTier === undefined ? null : await opts.peerTier(adminsFacts.peerUid).catch(() => null);
+    if (archived || r.decision !== null) return;
+    if (tier === null) {
+      pushCollabRequest(r.event);
+      return;
+    }
+    const via = tier === "full" ? "tier_full" : tier === "agents" ? "tier_agents" : "tier_chat";
+    const decision = tier === "chat" ? "declined" : "accepted";
+    const d = store.append({ sessionId, ts: Date.now(), type: "collab_decision", requestId, decision, byUid: null, via, ignorable: true }) as CollabDecisionEvent;
+    notify(d);
+    const bridge = opts.adminsBridge ?? null;
+    if (bridge !== null && r.event.origin !== undefined) {
+      void bridge.deliverBack({ origin: r.event.origin, fromUid: opts.ownerUid, event: d }).catch((err: unknown) => {
+        console.warn(`[otto-runtime] 协作决定送不回去（session=${sessionId}）：${err instanceof Error ? err.message : String(err)}`);
+      });
+    }
+    console.warn(`[otto-runtime] 协作请求按好友权限自动${decision === "accepted" ? "接了" : "回绝"}（session=${sessionId} request=${requestId} tier=${tier}）`);
+    if (decision !== "accepted") return;
+    const fromUid = tier === "full" ? opts.ownerUid : adminsFacts.peerUid;
+    const opening = store.append({
+      sessionId, ts: Date.now(), type: "user_message", content: collabAutoAcceptText(r.event, tier === "full" ? "full" : "agents"), fromUid, mentions: [ADMIN_AGENT_ID],
+      ...(tier === "full" ? { greeting: "collab_accept" as const } : { relay: { fromAgentId: ADMIN_AGENT_ID, depth: 1 } }),
+    }) as UserMessageEvent;
+    notify(opening);
+    if (coordinator.enqueue({ agentId: ADMIN_AGENT_ID, fromUid, opening }) === "start_turn") startDrain();
+  }
+  /** 还要主人点头的那条推给他（查不到权限时） */
+  function pushCollabRequest(e: CollabRequestEvent): void {
+    const last = collabPushedAt.get(e.requestId) ?? 0;
+    if (adminsFacts === undefined || Date.now() - last < COLLAB_REMIND_MS) return;
+    collabPushedAt.set(e.requestId, Date.now());
+    console.warn(`[otto-runtime] 协作请求推给主人（session=${sessionId} request=${e.requestId}）`);
+    opts.alert?.(opts.ownerUid, "friend", {
+      title: `${e.quote.ownerName} 的管理员找你的管理员`,
+      body: alertBody(`「${e.title}」${e.quote.note !== "" ? `——${e.quote.note}` : ""}。点开看看，接不接你定。`),
+      target: { kind: "friend", uid: adminsFacts.peerUid },
+    });
   }
   /** B 的管理员这一轮说的话送回 A（#1605）：只送主人接了的那条请求的 origin；系统替它应的那句（ack）不送 */
   async function mirrorAdminsReply(spec: AgentSpec, scanFrom: number): Promise<void> {
@@ -3576,18 +3619,12 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         const { seq: _seq, sessionId: _sid, ts: _ts, ...rest } = e;
         notify(store.append({ ...rest, sessionId, ts: Date.now() }));
       }
-      // 推给主人（#1605 真机 2026-10-05：卡落进来了，Stan 不知道）：新来的推一次；还在等点头、对面又送了一遍的，
-      // 隔一小时以上再提醒一次（内存里记，重启后对面开房重送那一下会再提醒一次）。点开去和对面那位的私聊，卡吸在输入框上方
-      const pending = known === undefined || known.decision === null;
-      const last = collabPushedAt.get(e.requestId) ?? 0;
-      if (pending && adminsFacts !== undefined && Date.now() - last >= COLLAB_REMIND_MS) {
-        collabPushedAt.set(e.requestId, Date.now());
-        opts.alert?.(opts.ownerUid, "friend", {
-          title: `${e.quote.ownerName} 的管理员找你的管理员`,
-          body: alertBody(`「${e.title}」${e.quote.note !== "" ? `——${e.quote.note}` : ""}。点开看看，接不接你定。`),
-          target: { kind: "friend", uid: adminsFacts.peerUid },
-        });
+      // 按好友权限自动定（#1605，维护者 2026-10-05 拍板：内容两人都在对话里看得到，全部开放 / 可带智能体不该再要主人点头）
+      if (known === undefined || known.decision === null) {
+        void autoDecideCollab(e.requestId).catch((err: unknown) => console.warn(`[otto-runtime] 协作请求按权限自动定失败（session=${sessionId}）：${err instanceof Error ? err.message : String(err)}`));
+        return;
       }
+      // 已经答过的：不推、不再定
     },
     receiveCollabDecision(e) {
       if (archived) return;

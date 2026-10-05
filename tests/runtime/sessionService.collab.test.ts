@@ -59,6 +59,8 @@ function openAdmins(store: EventStore, o: {
   timers?: { fns: (() => void)[] };
   events?: SessionEvent[];
   alerts?: unknown[][];
+  /** 对方（u_a）在这家的好友权限；缺席 = 查不到 */
+  tier?: "chat" | "agents" | "full";
 }): CloudSession {
   store.append({ sessionId: "s1", ts: 1, type: "session_created", workspace: "/work", cloud: { workspaceId: "w1", chat: { kind: "admins" }, admins: { ownerName: "Stan Yan", peerUid: "u_a", peerName: "继爸" }, home: true } });
   store.append({ sessionId: "s1", ts: 2, type: "chat_roster_changed", ignorable: true, agents: [{ agentId: "admin", name: "峰哥" }], humans: [{ uid: "u_a", name: "继爸" }] });
@@ -78,6 +80,7 @@ function openAdmins(store: EventStore, o: {
     isMember: async () => true, contextWindowOf: () => undefined, sandboxApproval: async () => "ask", workspaceLock: createWorkspaceLock(), relayRemainingMicro: async () => null,
     ...(o.bridge === undefined ? {} : { adminsBridge: o.bridge }),
     ...(o.alerts === undefined ? {} : { alert: (...a: unknown[]) => void o.alerts!.push(a) }),
+    ...(o.tier === undefined ? {} : { peerTier: async () => o.tier! }),
     ...(o.timers === undefined ? {} : { ringTimers: { setTimer: (fn: () => void) => { o.timers!.fns.push(fn); return o.timers!.fns.length; }, clearTimer: () => {} } }),
   });
 }
@@ -236,18 +239,65 @@ describe("A 家开房时重送还在等点头的请求（#1605 真机）", () =>
 });
 
 describe("协作请求推给对面主人（#1605 真机）", () => {
-  it("新来的推一次（朋友消息那一类、点开去和对面那位的私聊）；一小时内对面重送不再推；答过的不推", async () => {
+  it("查不到权限时才等点头：新来的推一次（朋友消息那一类、点开去和对面那位的私聊）；一小时内对面重送不再推", async () => {
     const store = newStore();
     const alerts: unknown[][] = [];
     const s = openAdmins(store, { alerts });
     s.receiveCollabRequest(REQUEST);
+    await new Promise((r) => setTimeout(r, 0));
     s.receiveCollabRequest(REQUEST);
+    await new Promise((r) => setTimeout(r, 0));
     expect(alerts).toHaveLength(1);
     expect(alerts[0]![0]).toBe("owner");
     expect(alerts[0]![1]).toBe("friend");
     expect(alerts[0]![2]).toMatchObject({ title: "继爸 的管理员找你的管理员", target: { kind: "friend", uid: "u_a" } });
     expect((alerts[0]![2] as { body: string }).body).toContain("看 9 月营业额");
     await s.decideCollab("r_1", "owner", "declined");
+    store.close();
+  });
+});
+
+describe("按好友权限自动定（#1605，维护者 2026-10-05 拍板）", () => {
+  it("全部开放：直接接（via tier_full）、按主人的规矩起管理员一轮、决定送回 A、回复送回 A；不推", async () => {
+    const store = newStore();
+    const b = bridgeStub();
+    const alerts: unknown[][] = [];
+    const s = openAdmins(store, { bridge: b.bridge, alerts, tier: "full", reply: () => ({ content: "9 月对得上。" }) });
+    s.receiveCollabRequest(REQUEST);
+    await new Promise((r) => setTimeout(r, 0));
+    await s.settled();
+    const log = store.load("s1");
+    expect(log.find((e) => e.type === "collab_decision")).toMatchObject({ decision: "accepted", byUid: null, via: "tier_full" });
+    expect(log.find((e): e is UserMessageEvent => e.type === "user_message" && e.greeting === "collab_accept")?.fromUid).toBe("owner");
+    expect(b.back.map((x) => (x.event !== undefined ? "decision" : "reply"))).toEqual(["decision", "reply"]);
+    // 不推「找你点头」那一条（朋友消息类）；峰哥回完话那条普通的回复推送照常
+    expect(alerts.filter((a) => a[1] === "friend")).toEqual([]);
+    store.close();
+  });
+  it("可带智能体：直接接（via tier_agents），那一轮是对方点起的接力轮、开场白多一句只答不碰主人的东西", async () => {
+    const store = newStore();
+    const seen: string[] = [];
+    const s = openAdmins(store, { bridge: bridgeStub().bridge, tier: "agents", reply: (_t, transcript) => { seen.push(transcript); return { content: "好" }; } });
+    s.receiveCollabRequest(REQUEST);
+    await new Promise((r) => setTimeout(r, 0));
+    await s.settled();
+    const log = store.load("s1");
+    expect(log.find((e) => e.type === "collab_decision")).toMatchObject({ decision: "accepted", via: "tier_agents" });
+    const opening = log.find((e): e is UserMessageEvent => e.type === "user_message" && e.relay !== undefined)!;
+    expect(opening.fromUid).toBe("u_a");
+    expect(opening.content).toContain("不动你主人的数据");
+    expect(seen.at(-1)).toContain("按好友权限直接接了");
+    store.close();
+  });
+  it("仅聊天：直接回绝（via tier_chat），不起轮", async () => {
+    const store = newStore();
+    const seen: string[] = [];
+    const s = openAdmins(store, { bridge: bridgeStub().bridge, tier: "chat", reply: () => { seen.push("ran"); return { content: "x" }; } });
+    s.receiveCollabRequest(REQUEST);
+    await new Promise((r) => setTimeout(r, 0));
+    await s.settled();
+    expect(store.load("s1").find((e) => e.type === "collab_decision")).toMatchObject({ decision: "declined", via: "tier_chat" });
+    expect(seen).toEqual([]);
     store.close();
   });
 });
