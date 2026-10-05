@@ -11,7 +11,8 @@
 // · 有朋友的群（#1393）：我主场里的群可以拉朋友进来；别人主场里拉我进去的群也是这一页（target.kind = "guest"）。
 //   客人点起的那一轮要动手时等群主批（审批卡上写「等 X 批」）；客人能拉自己的朋友，智能体归群主管。
 // · 外联会话（#1441，target.kind = "outreach"）：别人的智能体给我打电话的地方。只有来电记录（正在响的能接，未接的只看）
-//   与通话卡，输入栏换成一句说明，没有电话钮 / 按住说话 / @ / 聊天信息。数据与客人那一条路同源（teams.guests）。
+//   与通话卡；朋友那侧是输入框（#1655，和那只聊、它替你给它主人带话），但没有电话钮（回拨不在这一期）/ @ / 聊天信息 / 相册拍摄；
+//   主人那侧输入栏换成一句只读说明。数据与客人那一条路同源（teams.guests）。
 // · 通话：点「语音通话」整屏升起（CallOverlay）；收起回到这里、头部下面一颗胶囊（点它回去）；离开这一页 = 这台停听、
 //   通话还在（A4 原样）。
 // · 已读：这一页开着时列表不给它画未读；离开时游标推到此刻（seenStore）。
@@ -570,7 +571,9 @@ export function ChatScreen({ route, navigation }: Props) {
   const listen = voice.listen !== null && session !== null && voice.listen.sessionId === session.sessionId ? voice.listen : null;
   const starting = callOp === "start";
   const barMode = callBarMode({ call, listeningHere: listen !== null, starting });
-  const offerPhone = phoneOffered({ voiceUsable: usable, ready, agentIds, call });
+  // 外联页（#1655）朋友能打字了，但回拨不在这一期（spec §8）：「语音通话」钮与 autoCall 都不给，runtime 那边也没有对应的口；
+  // 接来电（ring 卡 / 系统来电，走 callAgent）不看这一格，照旧能接
+  const offerPhone = !isOutreach && phoneOffered({ voiceUsable: usable, ready, agentIds, call });
   useEffect(() => {
     if (call === null) setCallOpen(false);
   }, [call]);
@@ -769,7 +772,7 @@ export function ChatScreen({ route, navigation }: Props) {
   });
   const emptyGroup = group && session !== null && agentIds.length === 0 && humans.length === 0;
   const holdOk = dictationUsable(voice) && canSend;
-  // 外联会话（#1441）：输入栏换成一句说明。主人打开这条也只读（同一份说明判据：mobileChat.outreachComposer）
+  // 外联会话（#1441 → #1655）：朋友那侧是输入框，主人那侧输入栏换成一句只读说明（同一份判据：mobileChat.outreachComposer）
   const composerPlan = outreachComposer(chatInfo ?? resolved?.seed ?? null, (session?.ownerUid || baseWs?.ownerUid || "") === selfUid && selfUid !== "");
   const composerNote = composerPlan.kind === "note" ? composerPlan.text : null;
 
