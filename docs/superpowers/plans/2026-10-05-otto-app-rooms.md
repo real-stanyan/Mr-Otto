@@ -1971,5 +1971,5 @@ git commit -m "docs: ADR-0374 应用的房间 + 术语 + 代码地图（#1675）
 - [ ] **Step 1:** `npm test` 全绿（判据只认日志里的 `GATE_EXIT`，不认后台通知的退出码）。
 - [ ] **Step 2:** push、开 PR（正文：做了什么 / 上线顺序 migration → OTA → runtime（终审改：老手机清单不认 `room` 能力，手机要先于 runtime，见 spec §10） / 「GUI 未验」如实写）。CI 绿后先**不合**。
 - [ ] **Step 3:** 维护者在会话里点头后，在生产跑 0067（Management API 逐条发，切分器尊重 `$$`）→ 逐条跑 `0067_app_rooms.check.sql` 全 PASS → 填好 `:B` / `:C` 跑 `0067_app_rooms.behavior.sql`，报错文本应为 `ALL PASS（整笔回滚）`；任何 `FAIL:` 先修（新 migration 号，不改已跑的）。
-- [ ] **Step 4:** 合并（merge commit）→ `RUNTIME_SSH=otto-runtime npm run runtime:deploy` → OTA（手机改动：MiniAppScreen / AppShareBubble / FriendChatScreen / messagePush）。
+- [ ] **Step 4:** 合并（merge commit）→ OTA（手机改动：MiniAppScreen / AppShareBubble / FriendChatScreen / messagePush）→ `RUNTIME_SSH=otto-runtime npm run runtime:deploy`（终审改：手机先于 runtime，见 spec §10）。
 - [ ] **Step 5:** 第 3 期端到端（#1661 续）：两个号建房、邀请、同步、冲突、broadcast、ping 落表与推送。

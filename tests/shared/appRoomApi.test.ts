@@ -1,7 +1,9 @@
 // tests/shared/appRoomApi.test.ts
 import { describe, expect, it } from "vitest";
 import type { SupabaseClient } from "@supabase/supabase-js";
-import { createRoom, listRooms, pingRoom, releaseRoomChannels, roomData, subscribeRoom } from "../../src/shared/appRoomApi.js";
+import { createRoom, listRooms, pingRoom, releaseRoomChannels, roomData, roomListFilter, subscribeRoom } from "../../src/shared/appRoomApi.js";
+import { familyOf } from "../../src/shared/appRoom.js";
+import type { AppRow } from "../../src/shared/apps.js";
 
 const ROOM = "11111111-2222-4333-8444-555555555555";
 const U1 = "2819d0bb-933b-499d-be44-2bb51b5a8391";
@@ -85,6 +87,24 @@ describe("appRoomApi", () => {
     expect(ops).toContainEqual(["or", `family_id.eq.${FAM},host_app_id.eq.${APPX}`]);
     expect(ops.some((o) => o[0] === "eq" && o[1] === "family_id")).toBe(false);
     expect(ops).toContainEqual(["order", "updated_at", { ascending: false }]);
+  });
+  it("listRooms 的过滤串：A 原作者、B 拿副本 Bc 开局（family=A, host=Bc）、C 拿的是 Bc 的副本 Cc——C 两个 id 都给自己的源，才认得出这一局（#1675 复审）", () => {
+    const A = "a0000000-0000-4000-8000-000000000000";
+    const Bc = "b0000000-0000-4000-8000-000000000000";
+    const Cc = "c0000000-0000-4000-8000-000000000000";
+    const room = { family_id: A, host_app_id: Bc };
+    // PostgREST 的 or：逗号分开的 col.eq.val，任一条成立
+    const matches = (filter: string, row: Record<string, string>): boolean =>
+      filter.split(",").some((c) => { const [col, op, val] = c.split("."); return op === "eq" && row[col!] === val; });
+    const app = (id: string, createdByAgent: string): AppRow => ({ id, workspaceId: "w", ownerUid: U1, slug: "g", name: "g", icon: "g", description: "", currentVersion: 1, createdByAgent, updatedTs: 0 });
+    const cc = app(Cc, `share:${Bc}`);
+    expect(familyOf(cc)).toBe(Bc);
+    expect(matches(roomListFilter(familyOf(cc), familyOf(cc)), room)).toBe(true); // 第二条 host_app_id.eq.Bc 命中
+    expect(matches(roomListFilter(familyOf(cc), cc.id), room)).toBe(false); // 原来给自己的 id：两条都落空
+    // A 自己、B 自己也都认得出
+    expect(matches(roomListFilter(familyOf(app(A, "a_x")), familyOf(app(A, "a_x"))), room)).toBe(true);
+    expect(matches(roomListFilter(familyOf(app(Bc, `share:${A}`)), familyOf(app(Bc, `share:${A}`))), room)).toBe(true);
+    expect(roomListFilter(A, Bc)).toBe(`family_id.eq.${A},host_app_id.eq.${Bc}`);
   });
   it("subscribeRoom：两个私有频道——room-sys:<id> 收 change / members / closed（只信这里），room:<id> 收发成员即时消息", async () => {
     const f = fakeClient(() => ({ data: null, error: null }));

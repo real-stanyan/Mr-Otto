@@ -8,6 +8,7 @@ import { Pressable, Text, View } from "react-native";
 import { appShareMarker, type AppShareCard } from "../../../src/shared/appCard.js";
 import { myAppForHost, type RoomInvite } from "../../../src/shared/appRoom.js";
 import { fetchRoom, joinRoom } from "../../../src/shared/appRoomApi.js";
+import { fetchApps } from "../../../src/shared/appsApi.js";
 import { cloudClient } from "../cloud/cloudClient.js";
 import type { RootStackParams } from "../nav/types.js";
 import { supabase } from "../supabase.js";
@@ -48,7 +49,10 @@ export function AppShareBubble({ card, mine, messageId, room }: { card: AppShare
       else {
         const r = await fetchRoom(supabase, room.id);
         if (r === null) throw new Error("这一局已经没了，或你没被邀请");
-        const have = myAppForHost(apps.apps ?? [], r.hostAppId, r.familyId);
+        // 清单还没拉到（null）就现拉一次：当成「没有」去 appAccept 会多出一份副本；拉不到就停
+        const list = apps.apps ?? (await fetchApps(supabase));
+        if (list === null) throw new Error("应用清单这会儿读不出来，稍后再点");
+        const have = myAppForHost(list, r.hostAppId, r.familyId);
         if (have !== null) myAppId = have.id;
         else {
           const acc = await cloudClient.appAccept(messageId);

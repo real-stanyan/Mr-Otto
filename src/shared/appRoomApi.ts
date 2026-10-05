@@ -45,13 +45,18 @@ export async function fetchMembers(client: SupabaseClient, roomId: string): Prom
 
 const FILTER_ID_RE = /^[0-9a-f-]{36}$/i;
 
-/** 这一家的房间；给了 appId 时连「就开在这个应用上」的也算（房主在副本上开局、而我这份是别家来的那种边角，#1675 终审）。
-    两个 id 都进 PostgREST 的 or 过滤串，形状不对的直接不认（不让逗号 / 括号混进去） */
-export async function listRooms(client: SupabaseClient, familyId: string, appId?: string): Promise<RoomRow[] | null> {
-  if (!FILTER_ID_RE.test(familyId) || (appId !== undefined && !FILTER_ID_RE.test(appId))) return null;
+/** listRooms 的 PostgREST or 过滤串：这一家的房间，或开在 hostAppId 那份上的房间 */
+export const roomListFilter = (familyId: string, hostAppId: string): string => `family_id.eq.${familyId},host_app_id.eq.${hostAppId}`;
+
+/** 这一家的房间；给了 hostAppId 时连「就开在那一份上」的也算。调用方给的是**我的源**（familyOf(我这份)）：
+    房主在副本 Bc 上开局时房间的 family 是 Bc 的源 A，而拿着 Bc 的副本的人算出来的家是 Bc——第二条 host_app_id.eq.Bc
+    才把这一局认回来（#1675 复审：给我自己的 id 那条永远落空）。
+    两个 id 都进过滤串，形状不对的直接不认（不让逗号 / 括号混进去） */
+export async function listRooms(client: SupabaseClient, familyId: string, hostAppId?: string): Promise<RoomRow[] | null> {
+  if (!FILTER_ID_RE.test(familyId) || (hostAppId !== undefined && !FILTER_ID_RE.test(hostAppId))) return null;
   try {
     const base = client.from("app_rooms").select("*");
-    const scoped = appId === undefined ? base.eq("family_id", familyId) : base.or(`family_id.eq.${familyId},host_app_id.eq.${appId}`);
+    const scoped = hostAppId === undefined ? base.eq("family_id", familyId) : base.or(roomListFilter(familyId, hostAppId));
     const res = await scoped.order("updated_at", { ascending: false }).limit(50);
     if (res.error) return null;
     return ((res.data ?? []) as unknown[]).map(roomRowOf).filter((r): r is RoomRow => r !== null);
