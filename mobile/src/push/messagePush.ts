@@ -7,10 +7,13 @@
 import { CommonActions } from "@react-navigation/native";
 import Constants, { ExecutionEnvironment } from "expo-constants";
 import * as Notifications from "expo-notifications";
+import { myAppForHost } from "../../../src/shared/appRoom.js";
+import { fetchApps } from "../../../src/shared/appsApi.js";
 import { ringTarget } from "../../../src/shared/callRing.js";
 import { alertKey, alertTargetFromPayload, type AlertTarget } from "../../../src/shared/notifyPrefs.js";
 import { openKeyNow } from "../inbox/seenStore.js";
 import { navRef } from "../nav/navRef.js";
+import { supabase } from "../supabase.js";
 
 const IN_EXPO_GO = Constants.executionEnvironment === ExecutionEnvironment.StoreClient;
 
@@ -23,6 +26,21 @@ function targetOf(n: Notifications.Notification): AlertTarget | null {
 let pendingNav: (() => void) | null = null;
 
 function open(t: AlertTarget): void {
+  // 房间叫人（#1675）：先找我名下对应房主应用的那一份（我是房主 = 同一个 id；否则是它的副本），再进房间模式
+  if (t.kind === "room") {
+    void (async () => {
+      const apps = await fetchApps(supabase);
+      const mine = myAppForHost(apps ?? [], t.hostAppId);
+      const go = (): void => {
+        navRef.dispatch(CommonActions.reset(mine === null
+          ? { index: 0, routes: [{ name: "Home" }] }
+          : { index: 1, routes: [{ name: "Home" }, { name: "MiniApp" as const, params: { appId: mine.id, roomId: t.roomId } }] }));
+      };
+      if (navRef.isReady()) go();
+      else pendingNav = go;
+    })();
+    return;
+  }
   const route =
     t.kind === "friend"
       ? { name: "FriendChat" as const, params: { uid: t.uid } }

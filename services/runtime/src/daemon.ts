@@ -16,6 +16,7 @@ import { createApnsPusher } from "./apns.js";
 import { createSupabasePushDevices } from "./pushDevices.js";
 import { createNotifier, createSessionTitles, createSupabaseNotifyStore, withGroupTitle, createSupabaseQuietStore } from "./notifier.js";
 import { createFriendPush, createProfileNames, subscribeFriendMessages } from "./friendPush.js";
+import { createRoomAudience, createRoomPush, subscribeRoomPings } from "./roomPush.js";
 import type { AlertPush, NotifyKind } from "../../../src/shared/notifyPrefs.js";
 import { createGitCredentialStore } from "./gitCredentialStore.js";
 import { cloneWithSidecar, sanitizeCloneText } from "./sandbox.js";
@@ -209,6 +210,9 @@ async function main(): Promise<void> {
   if (notifier !== null) {
     const friendPush = createFriendPush({ notifier, nameOf: createProfileNames(supabase), log: (m) => console.warn(m) });
     subscribeFriendMessages(supabase, (raw) => void friendPush.onInsert(raw), (m) => console.log(m));
+    // 应用房间的叫人（#1675）：同 friendPush，订 app_room_pings 的 INSERT
+    const roomPush = createRoomPush({ notifier, nameOf: createProfileNames(supabase), audience: createRoomAudience(supabase), log: (m) => console.warn(m) });
+    subscribeRoomPings(supabase, (raw) => void roomPush.onInsert(raw), (m) => console.log(m));
   }
   const docker = new Docker();
 

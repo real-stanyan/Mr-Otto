@@ -89,6 +89,12 @@ describe("推送载荷", () => {
     expect(alertKey({ kind: "friend", uid: "u2" })).toBe("f:u2");
     expect(alertKey({ ...cloud, chat: "dm", agentId: "admin" })).toBe("a:admin");
   });
+  it("room 推送目标（#1675）：往返、列表键 r:<roomId>、缺格回 null", () => {
+    const t = { kind: "room" as const, roomId: "11111111-2222-4333-8444-555555555555", hostAppId: "0ffc3e43-153d-4a2b-a4e6-9e6ddcecee7b" };
+    expect(alertTargetFromPayload({ otto: t })).toEqual(t);
+    expect(alertKey(t)).toBe(`r:${t.roomId}`);
+    expect(alertTargetFromPayload({ otto: { kind: "room", roomId: t.roomId } })).toBeNull();
+  });
   it("正文折成一行、封顶", () => {
     expect(alertBody("  a\n\nb  ")).toBe("a b");
     const long = "字".repeat(500);
