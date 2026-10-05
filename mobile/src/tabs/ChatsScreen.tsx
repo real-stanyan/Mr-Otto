@@ -274,7 +274,7 @@ export function ChatsScreen() {
       <AppsDrawer
         visible={appsOpen}
         onClose={() => setAppsOpen(false)}
-        onPick={(appId) => navigation.navigate("MiniApp", { appId })}
+        onPick={(appId, opts) => navigation.navigate("MiniApp", { appId, ...(opts?.share === true ? { share: true } : {}) })}
       />
 
       <SidePanel visible={panel} title="智能体" onClose={() => setPanel(false)} onExited={onPanelExited}>

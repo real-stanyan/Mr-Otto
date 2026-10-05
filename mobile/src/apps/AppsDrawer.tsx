@@ -1,7 +1,9 @@
 // 主页下拉出来的应用抽屉（#1648，参考微信下拉小程序）：整屏从上往下盖下来——搜索、「最近使用」一排、「我的应用」格子。
 // 走 Modal（同 SidePanel：盖得住底栏）；往上划或点底下那条收起。点一个先收、退场完再推应用页（Modal 盖着时推的页看不见）。
 import { useEffect, useRef, useState } from "react";
-import { Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions } from "react-native";
+import { Alert, Modal, Pressable, ScrollView, StyleSheet, Text, TextInput, View, useWindowDimensions } from "react-native";
+import { cloudClient } from "../cloud/cloudClient.js";
+import { toast } from "../wx/toast.js";
 import { Gesture, GestureDetector, GestureHandlerRootView } from "react-native-gesture-handler";
 import Animated, { Easing, useAnimatedStyle, useSharedValue, withSpring, withTiming } from "react-native-reanimated";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -11,15 +13,15 @@ import { spring, usePalette, withAlpha } from "../theme.js";
 import { useReduceMotion } from "../ui.js";
 import { Icon } from "../wx/Icon.js";
 import { refreshApps, useApps } from "./appsStore.js";
-import { useRecentApps } from "./recentApps.js";
+import { forgetRecent, useRecentApps } from "./recentApps.js";
 
 const EXIT_MS = 220;
 const OPEN_SPRING = spring(0.35);
 
-function AppIcon({ app, onPress }: { app: AppRow; onPress: () => void }) {
+function AppIcon({ app, onPress, onLongPress }: { app: AppRow; onPress: () => void; onLongPress: () => void }) {
   const { c } = usePalette();
   return (
-    <Pressable accessibilityRole="button" accessibilityLabel={`打开 ${app.name}`} onPress={onPress} style={({ pressed }) => [{ width: "25%", alignItems: "center", gap: 6, paddingVertical: 8 }, pressed && { opacity: 0.6 }]}>
+    <Pressable accessibilityRole="button" accessibilityLabel={`打开 ${app.name}`} accessibilityHint="长按可以分享或删除" onPress={onPress} onLongPress={onLongPress} style={({ pressed }) => [{ width: "25%", alignItems: "center", gap: 6, paddingVertical: 8 }, pressed && { opacity: 0.6 }]}>
       <View style={{ width: 56, height: 56, borderRadius: 28, alignItems: "center", justifyContent: "center", backgroundColor: withAlpha(c.foreground, 0.08) }}>
         <Text style={{ fontSize: 28 }}>{app.icon}</Text>
       </View>
@@ -28,7 +30,7 @@ function AppIcon({ app, onPress }: { app: AppRow; onPress: () => void }) {
   );
 }
 
-export function AppsDrawer({ visible, onClose, onPick }: { visible: boolean; onClose: () => void; onPick: (appId: string) => void }) {
+export function AppsDrawer({ visible, onClose, onPick }: { visible: boolean; onClose: () => void; onPick: (appId: string, opts?: { share?: boolean }) => void }) {
   const { c } = usePalette();
   const reduce = useReduceMotion();
   const insets = useSafeAreaInsets();
@@ -36,7 +38,7 @@ export function AppsDrawer({ visible, onClose, onPick }: { visible: boolean; onC
   const [mounted, setMounted] = useState(visible);
   const [q, setQ] = useState("");
   const y = useSharedValue(-height);
-  const picked = useRef<string | null>(null);
+  const picked = useRef<{ id: string; share: boolean } | null>(null);
   const apps = useApps();
   const recent = useRecentApps();
 
@@ -51,9 +53,9 @@ export function AppsDrawer({ visible, onClose, onPick }: { visible: boolean; onC
     if (!mounted) return;
     const done = (): void => {
       setMounted(false);
-      const id = picked.current;
+      const p = picked.current;
       picked.current = null;
-      if (id !== null) onPick(id);
+      if (p !== null) onPick(p.id, p.share ? { share: true } : undefined);
     };
     if (reduce) {
       y.value = -height;
@@ -82,7 +84,29 @@ export function AppsDrawer({ visible, onClose, onPick }: { visible: boolean; onC
   const searching = q.trim() !== "";
   const shown = searchApps(all, q);
   const recents = recentApps(recent, all);
-  const pick = (id: string): void => { picked.current = id; onClose(); };
+  const pick = (id: string): void => { picked.current = { id, share: false }; onClose(); };
+  // 长按（#1648）：分享给朋友 / 删除（删前再问一次：删了数据也没了）
+  const more = (a: AppRow): void => {
+    Alert.alert(a.name, undefined, [
+      { text: "分享给朋友", onPress: () => { picked.current = { id: a.id, share: true }; onClose(); } },
+      {
+        text: "删除", style: "destructive",
+        onPress: () => Alert.alert(`删除「${a.name}」？`, "应用和它里面记的东西都会删掉，删了找不回来。", [
+          { text: "取消", style: "cancel" },
+          {
+            text: "删除", style: "destructive",
+            onPress: () => void cloudClient.appDelete(a.id).then((r) => {
+              if (!r.ok) { toast(r.message); return; }
+              forgetRecent(a.id);
+              toast(`删掉了「${a.name}」`);
+              void refreshApps();
+            }),
+          },
+        ]),
+      },
+      { text: "取消", style: "cancel" },
+    ]);
+  };
 
   return (
     <Modal transparent visible animationType="none" statusBarTranslucent onRequestClose={onClose}>
@@ -102,19 +126,19 @@ export function AppsDrawer({ visible, onClose, onPick }: { visible: boolean; onC
               </Text>
             ) : searching ? (
               <View style={{ flexDirection: "row", flexWrap: "wrap" }}>
-                {shown.length === 0 ? <Text style={{ fontSize: 14, color: c.mutedForeground, marginLeft: 8 }}>{`没有找到「${q.trim()}」`}</Text> : shown.map((a) => <AppIcon key={a.id} app={a} onPress={() => pick(a.id)} />)}
+                {shown.length === 0 ? <Text style={{ fontSize: 14, color: c.mutedForeground, marginLeft: 8 }}>{`没有找到「${q.trim()}」`}</Text> : shown.map((a) => <AppIcon key={a.id} app={a} onPress={() => pick(a.id)} onLongPress={() => more(a)} />)}
               </View>
             ) : (
               <>
                 {recents.length > 0 ? (
                   <View style={{ gap: 4 }}>
                     <Text style={{ fontSize: 13, color: c.mutedForeground, marginLeft: 8 }}>最近使用</Text>
-                    <View style={{ flexDirection: "row", flexWrap: "wrap" }}>{recents.slice(0, 8).map((a) => <AppIcon key={`r-${a.id}`} app={a} onPress={() => pick(a.id)} />)}</View>
+                    <View style={{ flexDirection: "row", flexWrap: "wrap" }}>{recents.slice(0, 8).map((a) => <AppIcon key={`r-${a.id}`} app={a} onPress={() => pick(a.id)} onLongPress={() => more(a)} />)}</View>
                   </View>
                 ) : null}
                 <View style={{ gap: 4 }}>
                   <Text style={{ fontSize: 13, color: c.mutedForeground, marginLeft: 8 }}>我的应用</Text>
-                  <View style={{ flexDirection: "row", flexWrap: "wrap" }}>{all.map((a) => <AppIcon key={a.id} app={a} onPress={() => pick(a.id)} />)}</View>
+                  <View style={{ flexDirection: "row", flexWrap: "wrap" }}>{all.map((a) => <AppIcon key={a.id} app={a} onPress={() => pick(a.id)} onLongPress={() => more(a)} />)}</View>
                 </View>
               </>
             )}

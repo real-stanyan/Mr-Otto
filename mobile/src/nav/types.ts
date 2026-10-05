@@ -64,7 +64,8 @@ export type RootStackParams = {
   /** 应用（A5；#1430 起上段是手机上接的、下段是电脑上接的；#1591 起最上段是我的应用） */
   Apps: undefined;
   /** 一个 Otto 应用（#1591）：WebView 宿主 + 桥 */
-  MiniApp: { appId: string };
+  /** share（#1648）：从抽屉长按「分享给朋友」进来——一打开就弹挑朋友 */
+  MiniApp: { appId: string; share?: boolean };
   /** 接入应用（#1430）：目录 + 搜索 */
   ConnectApp: undefined;
   /** 手机上接的一台（#1430）：工具 / 借给团队 / 重新登录 / 断开。serverId = 云端视图里的那一格 */

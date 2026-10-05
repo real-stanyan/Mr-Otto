@@ -128,6 +128,8 @@ export interface FrameHandlerDeps {
   humanCall?: (fromUid: string, toUid: string, callId: string) => Promise<{ ok: true; ice: IceServer[]; expiresTs: number } | { ok: false; message: string }>;
   /** 把私信里分享来的应用添加到我名下（#1648）。可选：smoke / 测试假货不接 */
   appAccept?: (byUid: string, messageId: number) => Promise<{ ok: true; appId: string; already: boolean } | { ok: false; message: string }>;
+  /** 删掉我的一个应用（#1648）。可选 */
+  appDelete?: (byUid: string, appId: string) => Promise<{ ok: true } | { ok: false; message: string }>;
   sessions: {
     get(workspaceId: string, sessionId: string): CloudSession | null;
     /** `chat` 在场 = 建一条聊天（#1280），缺席 = 团队会话（同旧）。
@@ -456,7 +458,7 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
         msg.t !== "create" && msg.t !== "workspace" && msg.t !== "git_credential" &&
         msg.t !== "archive" && msg.t !== "delete" && msg.t !== "files" &&
         msg.t !== "files_search" && msg.t !== "wiki_write" && msg.t !== "chat_update" && msg.t !== "human_call" &&
-        msg.t !== "collab_decide" && msg.t !== "app_accept"
+        msg.t !== "collab_decide" && msg.t !== "app_accept" && msg.t !== "app_delete"
       ) {
         deny(cid, "not_authorized");
         return;
@@ -471,6 +473,17 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
         // 可选的装配：smoke / 测试假货不接它；真 daemon 总会给
         const r = deps.humanCall === undefined ? { ok: false as const, message: "这台服务器还不支持人与人打电话。" } : await deps.humanCall(entry.uid, msg.toUid, msg.callId);
         deps.send(cid, { t: "human_call_result", callId: msg.callId, ok: r.ok, ...(r.ok ? { ice: r.ice, expiresTs: r.expiresTs } : { message: r.message }) });
+        return;
+      }
+
+      // 删掉我的一个应用（#1648）：只认主人，判在 daemon（apps 那一行的 owner_uid）
+      if (msg.t === "app_delete") {
+        if (!deps.rateLimit.allow("create", entry.uid)) {
+          deps.send(cid, { t: "app_delete_result", appId: msg.appId, ok: false, message: throttleMessage("create") });
+          return;
+        }
+        const r = deps.appDelete === undefined ? { ok: false as const, message: "这台服务器还不支持删除应用。" } : await deps.appDelete(entry.uid, msg.appId).catch((err: unknown) => ({ ok: false as const, message: err instanceof Error ? err.message : String(err) }));
+        deps.send(cid, { t: "app_delete_result", appId: msg.appId, ok: r.ok, ...(r.ok ? {} : { message: r.message }) });
         return;
       }
 

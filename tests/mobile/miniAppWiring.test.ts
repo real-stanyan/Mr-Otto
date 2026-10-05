@@ -26,7 +26,7 @@ describe("应用页与聊天里的卡", () => {
     const apps = read("mobile/src/machine/AppsScreen.tsx");
     expect(apps).toMatch(/<Group header="我的应用"/);
     expect(apps).toMatch(/navigation\.navigate\("MiniApp", \{ appId: a\.id \}\)/);
-    expect(read("mobile/src/nav/types.ts")).toMatch(/MiniApp: \{ appId: string \};/);
+    expect(read("mobile/src/nav/types.ts")).toMatch(/MiniApp: \{ appId: string; share\?: boolean \};/);
     expect(read("mobile/src/nav/RootNavigator.tsx")).toMatch(/<Root\.Screen name="MiniApp" component=\{MiniAppScreen\}/);
   });
   it("app_card 投影成一张 app 行；Bubbles 画 AppCard、点开进 MiniApp", () => {
@@ -52,11 +52,23 @@ describe("主页下拉出应用抽屉（#1648）", () => {
   it("列表顶到头往下拽过线松手就开；点一个进 MiniApp；打开应用记一次最近使用", () => {
     const chats = read("mobile/src/tabs/ChatsScreen.tsx");
     expect(chats).toMatch(/onScrollEndDrag=\{\(e\) => \{ if \(e\.nativeEvent\.contentOffset\.y <= -APPS_PULL_TRIGGER && !searching\) setAppsOpen\(true\); \}\}/);
-    expect(chats).toMatch(/onPick=\{\(appId\) => navigation\.navigate\("MiniApp", \{ appId \}\)\}/);
+    expect(chats).toMatch(/onPick=\{\(appId, opts\) => navigation\.navigate\("MiniApp", \{ appId, \.\.\.\(opts\?\.share === true \? \{ share: true \} : \{\}\) \}\)\}/);
     expect(read("mobile/src/apps/MiniAppScreen.tsx")).toMatch(/markAppOpened\(app\.id\);/);
     const drawer = read("mobile/src/apps/AppsDrawer.tsx");
     expect(drawer).toContain("最近使用");
     expect(drawer).toContain("我的应用");
     expect(drawer).toContain("搜索应用");
+  });
+});
+
+describe("私聊 ＋ 里发应用；抽屉长按分享 / 删除（#1648 真机）", () => {
+  it("＋ 里多一格「应用」→ AppPickSheet → sendToFriend；抽屉长按弹分享 / 删除，删走 app_delete", () => {
+    const chat = read("mobile/src/friends/FriendChatScreen.tsx");
+    expect(chat).toMatch(/\{ key: "app", icon: "app-window", label: "应用"/);
+    expect(chat).toMatch(/onSend=\{\(body\) => sendToFriend\(uid, body\)\}/);
+    const drawer = read("mobile/src/apps/AppsDrawer.tsx");
+    expect(drawer).toMatch(/onLongPress=\{\(\) => more\(a\)\}/);
+    expect(drawer).toMatch(/cloudClient\.appDelete\(a\.id\)/);
+    expect(drawer).toContain("分享给朋友");
   });
 });
