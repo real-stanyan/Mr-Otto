@@ -467,15 +467,19 @@ async function main(): Promise<void> {
   /** 这只智能体现成的那条私聊（#1280），没有回 null。库里那条唯一索引是权威，
       这个查询只是在撞上它之前先问一遍——两条路都要走，因为「先查再插」不是原子的 */
   async function findDmSession(workspaceId: string, agentIds: string[]): Promise<string | null> {
+    // 按「第一只」认（0037 的唯一索引就是 agent_ids[1]），不按「含不含」认：#1606 之后管理员私聊能拉专员进来，
+    // 「含店铺管家」会同时命中店铺管家自己的私聊与管理员那条（真机 2026-10-05：定时任务「营业额盯盘」起不来，
+    // maybeSingle 报 multiple rows）。含着的先捞出来、在这边挑第一只对得上的
     const { data, error } = await supabase
       .from("workspace_sessions")
-      .select("id")
+      .select("id,agent_ids")
       .eq("workspace_id", workspaceId)
       .eq("chat_kind", "dm")
       .contains("agent_ids", agentIds)
-      .maybeSingle();
+      .limit(20);
     if (error) throw new Error(`私聊查询失败（${workspaceId}）：${error.message}`);
-    return data ? (data as { id: string }).id : null;
+    const hit = ((data ?? []) as { id: string; agent_ids: unknown }[]).find((r) => Array.isArray(r.agent_ids) && r.agent_ids[0] === agentIds[0]);
+    return hit ? hit.id : null;
   }
 
   /** 主人设的公开智能体（#1533，profiles.public_agent_id）：string = 设了，null = 没设，undefined = 这一刻读不到
