@@ -116,6 +116,12 @@ describe("域", () => {
     expect(isAgentDomain("banana")).toBe(false);
     expect(isAgentDomain(3)).toBe(false);
   });
+  it("apps 域（#1591）：在清单里、读写执行全开、不碰连接器", () => {
+    expect(DOMAIN_CATALOG.find((d) => d.key === "apps")?.label).toBe("应用");
+    const apps = { agentId: "a_apps", name: "应用专员", tier: 1 as const, domain: "apps" };
+    expect(scopedTools(apps, [admin, apps], ALL_TOOLS)).toEqual(ALL_TOOLS);
+    expect(connectorsAllowed(apps, [admin, apps])).toBe(false);
+  });
   it("自定义域的名字：空 / 太长 / 冒号 / 撞清单", () => {
     expect(customDomainError("带娃")).toBeNull();
     expect(customDomainError("  ")).toMatch(/不能为空/);
@@ -164,6 +170,16 @@ describe("提示词（spec §5）", () => {
     const renamed = tierPrompt({ agent: dev, ownerName: "Stan", roster: [{ ...admin, name: "小李" }, dev] });
     expect(renamed).toContain("@小李 转过去");
     expect(renamed).toContain("有事报小李");
+  });
+  it("apps 域的 L1 多一段：先定设计系统、文件在 /work/apps/<slug>/、没有外网走 window.otto、写完 build_app；别的域没有", () => {
+    const apps = { agentId: "a_apps", name: "应用专员", tier: 1 as const, domain: "apps" };
+    const p = tierPrompt({ agent: apps, ownerName: "Stan", roster: [admin, apps] });
+    expect(p).toContain("Otto 应用");
+    expect(p).toContain("/work/apps/<slug>/");
+    expect(p).toContain("window.otto");
+    expect(p).toContain("build_app");
+    expect(p).toContain("design");
+    expect(tierPrompt({ agent: travel, ownerName: "Stan", roster })).not.toContain("build_app");
   });
   it("L2：只做上级派的那一件、报给上级、不派活", () => {
     const p = tierPrompt({ agent: booker, ownerName: "Stan", roster });

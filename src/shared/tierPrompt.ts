@@ -40,12 +40,16 @@ export function tierPrompt(o: { agent: NamedAgent; ownerName: string; roster: re
     const subLine = subs.length > 0 ? `你有子工：${subs.join("、")}，单一动作可以 assign_task 给它们，它们报回来的结果由你汇总。` : "";
     const peers = specialistsFor(domainOf(o.agent), o.roster).filter((a) => a.agentId !== o.agent.agentId).length;
     const peerLine = peers > 0 ? "同域还有别的专员，但你们之间不互相派活。" : "";
+    // 应用专员（#1591）：先定设计系统再写页面；文件放固定目录；打完用 build_app
+    const appsLine = domainOf(o.agent) === "apps"
+      ? "你做的是 Otto 应用（跑在主人手机里沙箱 WebView 的小网页）：先在 manifest.json 的 design 里定好色板 / 字号 / 间距 / 组件，再按它写页面，别一页一个样；文件写在 /work/apps/<slug>/ 下（manifest.json + index.html + 多页 + css/js），没有外网、要数据走 window.otto（storage / ask / nav / share）；写完调 build_app。改需求 = 改文件再 build_app 出下一版。"
+      : "";
     // 管理员可以改名（主人给它起的名字）：@ 要点到它的名字才接得上，所以这里读名册里那一行，不写死「管理员」
     const admin = promptSafe(o.roster.find((a) => a.agentId === ADMIN_AGENT_ID)?.name ?? "管理员");
     return (
       `\n[专员：你是 ${w} 的「${d}」专员，只做${d}的事。管理员「${admin}」派的任务带 taskId，做完 report_task 报结果；` +
       `${w} 直接对你说的域外的事，回「这不归我，已转${admin}」并 @${admin} 转过去，别自己接。${subLine}${peerLine}` +
-      `别找别的专员，有事报${admin}。]\n`
+      `别找别的专员，有事报${admin}。${appsLine}]\n`
     );
   }
   const parent = o.roster.find((a) => a.agentId === (o.agent.parentAgentId ?? ""));

@@ -1233,6 +1233,8 @@ export function deriveMessages(
       // 字段的 user_message（照普通用户消息投影），这条事件只是给 UI/接力判据
       // 看的路标——谁传给了谁、第几棒，喂回模型等于让它读一句关于自己身份的元话
       case "agent_relay":
+      // 应用卡（#1591）：打卡的那只自己的 tool_result 已经说了，别人不用读这张卡
+      case "app_card":
         break;
       // 任务（#1571）：一句系统话，管理员与被派的那只都读得到任务在哪一步。同 chat_message：卡在工具调用与结果之间时先攒着
       case "task_created":

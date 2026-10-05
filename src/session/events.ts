@@ -766,6 +766,19 @@ export interface TaskCollabEvent extends TaskEventBase {
   withName: string;
 }
 
+/** 应用卡（#1591，spec §3.3）：应用专员 build_app 打出一版，聊天里一张卡「打开」。不带 agentId（同 task_*），谁打的写 byAgentId；
+    模型不可见（它自己的 tool_result 已经说了）；手机画卡，桌面不画 */
+export interface AppCardEvent extends SessionEventBase {
+  type: "app_card";
+  appId: string;
+  version: number;
+  name: string;
+  icon: string;
+  note: string;
+  byAgentId: string;
+  ignorable: true;
+}
+
 export type OutreachOutcome = "completed" | "missed" | "capped" | "failed";
 export interface OutreachLine { who: "agent" | "peer"; text: string; ts: number }
 
@@ -1355,6 +1368,7 @@ export type SessionEvent =
   | TaskDoneEvent
   | TaskFailedEvent
   | TaskCollabEvent
+  | AppCardEvent
   | OutreachEvent
   | FriendPickEvent
   | ChatRosterChangedEvent
@@ -1431,6 +1445,7 @@ const KNOWN_EVENT_TYPES_MAP: Record<SessionEvent["type"], true> = {
   task_done: true,
   task_failed: true,
   task_collab: true,
+  app_card: true,
   outreach: true,
   friend_pick: true,
   chat_roster_changed: true,
