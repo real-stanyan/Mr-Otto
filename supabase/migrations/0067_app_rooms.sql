@@ -14,7 +14,8 @@ create table if not exists public.app_rooms (
   updated_at    timestamptz not null default now()
 );
 create index if not exists app_rooms_family on public.app_rooms (family_id);
-create index if not exists app_rooms_host on public.app_rooms (host_uid) where not closed;
+create index if not exists app_rooms_host on public.app_rooms (host_uid);
+create index if not exists app_rooms_host_app_version on public.app_rooms (host_app_id, host_version);
 
 create table if not exists public.app_room_members (
   room_id     uuid not null references public.app_rooms(id) on delete cascade,
@@ -51,23 +52,23 @@ alter table public.app_room_members enable row level security;
 alter table public.app_room_data enable row level security;
 alter table public.app_room_pings enable row level security;
 
--- 成员判据只有这一处（joined 才算；关了的房间照样能读，写由 RPC 拦）
-create or replace function public.is_room_member(p_room uuid, p_uid uuid) returns boolean
+-- 成员判据只有这一处（joined 才算；关了的房间照样能读，写由 RPC 拦）。只问「我」（auth.uid()）：不带 uid 参数，登录用户没法拿它探别人在不在哪间房
+create or replace function public.is_room_member(p_room uuid) returns boolean
 language sql stable security definer set search_path = public as $$
-  select exists (select 1 from public.app_room_members m where m.room_id = p_room and m.uid = p_uid and m.status = 'joined');
+  select exists (select 1 from public.app_room_members m where m.room_id = p_room and m.uid = auth.uid() and m.status = 'joined');
 $$;
-revoke all on function public.is_room_member(uuid, uuid) from public, anon;
-grant execute on function public.is_room_member(uuid, uuid) to authenticated;
+revoke all on function public.is_room_member(uuid) from public, anon;
+grant execute on function public.is_room_member(uuid) to authenticated;
 
 -- broadcast 频道名 room:<uuid> → 是不是成员。名字不合形状回 false（不让 ::uuid 的转换报错把策略炸掉）
-create or replace function public.room_topic_member(p_topic text, p_uid uuid) returns boolean
+create or replace function public.room_topic_member(p_topic text) returns boolean
 language plpgsql stable security definer set search_path = public as $$
 begin
-  if p_topic is null or p_topic !~ '^room:[0-9a-fA-F-]{36}$' then return false; end if;
-  return public.is_room_member(substring(p_topic from 6)::uuid, p_uid);
+  if p_topic is null or p_topic !~ '^room:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' then return false; end if;
+  return public.is_room_member(substring(p_topic from 6)::uuid);
 end $$;
-revoke all on function public.room_topic_member(text, uuid) from public, anon;
-grant execute on function public.room_topic_member(text, uuid) to authenticated;
+revoke all on function public.room_topic_member(text) from public, anon;
+grant execute on function public.room_topic_member(text) to authenticated;
 
 -- 读：房主 / 被邀的 / 成员看得到房间与名单；数据只有 joined 成员看得到；pings 客户端不读（runtime 用 service role）
 drop policy if exists app_rooms_select on public.app_rooms;
@@ -77,10 +78,10 @@ create policy app_rooms_select on public.app_rooms for select to authenticated u
 );
 drop policy if exists app_room_members_select on public.app_room_members;
 create policy app_room_members_select on public.app_room_members for select to authenticated using (
-  uid = auth.uid() or public.is_room_member(room_id, auth.uid())
+  uid = auth.uid() or public.is_room_member(room_id)
 );
 drop policy if exists app_room_data_select on public.app_room_data;
-create policy app_room_data_select on public.app_room_data for select to authenticated using (public.is_room_member(room_id, auth.uid()));
+create policy app_room_data_select on public.app_room_data for select to authenticated using (public.is_room_member(room_id));
 
 -- 建一间：应用是自己的、打过第一版；钉住当前版本；family = 源（副本取 share: 后面那个 id）
 create or replace function public.app_room_create(p_app uuid, p_title text) returns uuid
@@ -98,7 +99,7 @@ begin
   if (select count(*) from public.app_rooms where host_uid = v_uid and not closed) >= 50 then
     raise exception '开着的房间最多 50 个，先关掉几个';
   end if;
-  v_family := case when v_app.created_by_agent ~ '^share:[0-9a-fA-F-]{36}$' then substring(v_app.created_by_agent from 7)::uuid else v_app.id end;
+  v_family := case when v_app.created_by_agent ~ '^share:[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$' then substring(v_app.created_by_agent from 7)::uuid else v_app.id end;
   insert into public.app_rooms (host_uid, host_app_id, host_version, family_id, title)
     values (v_uid, v_app.id, v_app.current_version, v_family, left(coalesce(nullif(btrim(p_title), ''), '一局'), 40))
     returning id into v_id;
@@ -114,7 +115,8 @@ declare
   v_room public.app_rooms%rowtype;
 begin
   if v_uid is null then raise exception '还没登录'; end if;
-  select * into v_room from public.app_rooms where id = p_room;
+  -- 锁房间行再数人头：两个并发邀请不会同时看到 7 人、一起塞成 9 人
+  select * into v_room from public.app_rooms where id = p_room for update;
   if not found or v_room.host_uid <> v_uid then raise exception '只有房主能邀请'; end if;
   if v_room.closed then raise exception '这一局已经结束了'; end if;
   if p_uid = v_uid then return; end if;
@@ -166,7 +168,9 @@ declare
   v_cur_rev bigint;
 begin
   if v_uid is null then raise exception '还没登录'; end if;
-  if not public.is_room_member(p_room, v_uid) then raise exception '你不在这一局里'; end if;
+  if not public.is_room_member(p_room) then raise exception '你不在这一局里'; end if;
+  -- 锁房间行再判关房与 500 键上限：并发的新键写入不会一起越过上限
+  perform 1 from public.app_rooms where id = p_room for update;
   if exists (select 1 from public.app_rooms where id = p_room and closed) then raise exception '这一局已经结束了，只能看'; end if;
   if p_key is null or char_length(p_key) < 1 or char_length(p_key) > 200 then raise exception 'key 要是 1–200 字'; end if;
   if p_value is null then raise exception 'value 不能是空（要删用 remove）'; end if;
@@ -201,7 +205,7 @@ language plpgsql security definer set search_path = public as $$
 declare v_uid uuid := auth.uid();
 begin
   if v_uid is null then raise exception '还没登录'; end if;
-  if not public.is_room_member(p_room, v_uid) then raise exception '你不在这一局里'; end if;
+  if not public.is_room_member(p_room) then raise exception '你不在这一局里'; end if;
   if exists (select 1 from public.app_rooms where id = p_room and closed) then raise exception '这一局已经结束了，只能看'; end if;
   delete from public.app_room_data where room_id = p_room and key = p_key;
 end $$;
@@ -214,7 +218,9 @@ declare
   v_text text := left(btrim(coalesce(p_text, '')), 80);
 begin
   if v_uid is null then raise exception '还没登录'; end if;
-  if not public.is_room_member(p_room, v_uid) then raise exception '你不在这一局里'; end if;
+  if not public.is_room_member(p_room) then raise exception '你不在这一局里'; end if;
+  -- 锁房间行再查限速：同一人的并发 ping 排队，不会都看到「10 秒内没有」而一起放行
+  perform 1 from public.app_rooms where id = p_room for update;
   if exists (select 1 from public.app_rooms where id = p_room and closed) then return false; end if;
   if v_text = '' then raise exception '要说点什么'; end if;
   if exists (select 1 from public.app_room_pings where room_id = p_room and from_uid = v_uid and created_at > now() - interval '10 seconds') then return false; end if;
@@ -246,7 +252,7 @@ drop policy if exists app_versions_select_room on public.app_versions;
 create policy app_versions_select_room on public.app_versions for select to authenticated using (
   exists (select 1 from public.app_rooms r
            where r.host_app_id = app_versions.app_id and r.host_version = app_versions.version
-             and public.is_room_member(r.id, auth.uid()))
+             and public.is_room_member(r.id))
 );
 drop policy if exists "otto_apps_select_room" on storage.objects;
 create policy "otto_apps_select_room" on storage.objects for select to authenticated using (
@@ -255,25 +261,82 @@ create policy "otto_apps_select_room" on storage.objects for select to authentic
      where (storage.foldername(name))[1] = r.host_uid::text
        and (storage.foldername(name))[2] = r.host_app_id::text
        and (storage.foldername(name))[3] = r.host_version::text
-       and public.is_room_member(r.id, auth.uid())
+       and public.is_room_member(r.id)
   )
 );
 
 -- 即时消息：私有 broadcast 频道 room:<id>，只许 joined 成员收发
 drop policy if exists "app_room_broadcast_select" on realtime.messages;
 create policy "app_room_broadcast_select" on realtime.messages for select to authenticated using (
-  realtime.messages.extension = 'broadcast' and public.room_topic_member(realtime.topic(), auth.uid())
+  realtime.messages.extension = 'broadcast' and public.room_topic_member(realtime.topic())
 );
 drop policy if exists "app_room_broadcast_insert" on realtime.messages;
 create policy "app_room_broadcast_insert" on realtime.messages for insert to authenticated with check (
-  realtime.messages.extension = 'broadcast' and public.room_topic_member(realtime.topic(), auth.uid())
+  realtime.messages.extension = 'broadcast' and public.room_topic_member(realtime.topic())
 );
 
--- 变更推送：数据与名单给成员（postgres_changes 过 RLS），pings 给 runtime（service role）
+-- 变更推送：app_room_data / app_room_members 不进 supabase_realtime publication——
+-- postgres_changes 的 DELETE 事件不过 RLS，任何登录用户订阅这两张表都会收到别人房间的 (room_id, key) / (room_id, uid)。
+-- 改成行触发器调 realtime.send 往私有 broadcast 频道 room:<id> 发：投递由上面 realtime.messages 的 select 策略把关，只有 joined 成员收得到。
+-- 只有 app_room_pings 留在 publication（runtime 用 service role 订，客户端没有它的 select 策略，也就收不到）。
+create or replace function public.app_room_data_notify() returns trigger
+language plpgsql security definer set search_path = public as $$
+begin
+  begin
+    if tg_op = 'DELETE' then
+      perform realtime.send(
+        jsonb_build_object('key', old.key, 'removed', true),
+        'change', 'room:' || old.room_id, true
+      );
+    else
+      perform realtime.send(
+        jsonb_build_object('key', new.key, 'value', new.value, 'rev', new.rev, 'by', new.updated_by),
+        'change', 'room:' || new.room_id, true
+      );
+    end if;
+  exception when others then
+    null; -- 通知没发出去不能把这次写入（或整局的清理）一起回滚；应用回前台时会重读一遍对齐
+  end;
+  return null;
+end $$;
+revoke all on function public.app_room_data_notify() from public, anon, authenticated;
+drop trigger if exists app_room_data_notify on public.app_room_data;
+create trigger app_room_data_notify
+  after insert or update or delete on public.app_room_data
+  for each row execute function public.app_room_data_notify();
+
+create or replace function public.app_room_members_notify() returns trigger
+language plpgsql security definer set search_path = public as $$
+declare
+  v_room uuid;
+  v_uid uuid;
+  v_status text;
+begin
+  if tg_op = 'DELETE' then
+    v_room := old.room_id; v_uid := old.uid; v_status := null;
+  else
+    v_room := new.room_id; v_uid := new.uid; v_status := new.status;
+  end if;
+  begin
+    perform realtime.send(
+      jsonb_build_object('uid', v_uid, 'status', v_status),
+      'members', 'room:' || v_room, true
+    );
+  exception when others then
+    null; -- 同上：名单变动的通知丢了，不能回滚邀请 / 加入 / 离开本身
+  end;
+  return null;
+end $$;
+revoke all on function public.app_room_members_notify() from public, anon, authenticated;
+drop trigger if exists app_room_members_notify on public.app_room_members;
+create trigger app_room_members_notify
+  after insert or update or delete on public.app_room_members
+  for each row execute function public.app_room_members_notify();
+
 do $$
 declare t text;
 begin
-  foreach t in array array['app_room_data', 'app_room_members', 'app_room_pings'] loop
+  foreach t in array array['app_room_pings'] loop
     if not exists (select 1 from pg_publication_tables where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = t) then
       execute format('alter publication supabase_realtime add table public.%I', t);
     end if;

@@ -56,7 +56,7 @@ app_room_data     room_id → app_rooms (cascade) · key text (1–200) · value
 app_room_pings    id bigserial · room_id · from_uid · text（1–80）· created_at
 ```
 
-- **成员判据**一个函数：`is_room_member(room uuid, uid uuid) → bool`（`status = 'joined'` 且房间没关）。security definer、`stable`，各条 RLS 都调它，判据只有一处。
+- **成员判据**一个函数：`is_room_member(room uuid) → bool`，只看 `status = 'joined'`、只问当前登录的人（`auth.uid()`，不带 uid 参数，所以拿它探不了别人在哪间房）；**房间关了照样算成员、照样能读**，关房后的写由各 RPC 自己拦（「这一局已经结束了」）。security definer、`stable`，各条 RLS 都调它，判据只有一处。broadcast 那一侧同形：`room_topic_member(topic text)`。
 - **读**：`app_rooms` / `app_room_members` 成员与被邀的人能读；`app_room_data` 只有 joined 成员能读。
 - **写只走 RPC**（表本身对 authenticated 只开 select）。每个 RPC 自己核一遍，security definer：
   - `app_room_create(app_id, title) → room`：`apps.owner_uid = auth.uid()`；版本取那个应用的 `current_version`；房主自动 joined。每人同时开着的房间 ≤ 50。
@@ -70,7 +70,11 @@ app_room_pings    id bigserial · room_id · from_uid · text（1–80）· crea
 - **跑房主那一版**：`app_versions` 加一条 select 策略——`exists 房间 r where r.host_app_id = app_id and r.host_version = version and is_room_member(r.id, auth.uid())`；
   `otto-apps` 桶加对应的 select 策略（路径 `<host_uid>/<host_app_id>/<host_version>/…`）。**只放钉住的那一版**，房主别的版本、别的应用仍读不到。
 - **即时消息**：Realtime Broadcast 私有频道 `room:<id>`，`realtime.messages` 上加策略：topic 是 `room:` + 房间 id 且 `is_room_member`。不落库。
-- **Realtime 变更推送**：`app_room_data` / `app_room_members` 加进 `supabase_realtime` publication；postgres_changes 本来就过 RLS，成员只收得到自己房间的。
+- **变更推送走触发器 + 私有 broadcast，不走 postgres_changes**：`app_room_data` / `app_room_members` **不**进 `supabase_realtime` publication——postgres_changes 的 DELETE 事件不过 RLS，任何登录用户订阅这两张表都会收到别人房间的 `(room_id, key)` / `(room_id, uid)`。
+  改为两个 `AFTER INSERT OR UPDATE OR DELETE` 行触发器（security definer）调 `realtime.send(payload, event, 'room:' || room_id, true)` 往私有频道 `room:<id>` 发：
+  `app_room_data` → 事件 `change`，载荷 `{key, value, rev, by}`（删除时 `{key, removed: true}`）；`app_room_members` → 事件 `members`，载荷 `{uid, status}`（删除时 status 为 null）。
+  投递由上面 `realtime.messages` 的 select 策略把关，只有 joined 成员收得到。触发器里发送失败吞掉（不回滚写入）——漏一条通知，应用回前台时重读对齐即可。
+  只有 `app_room_pings` 留在 publication（runtime 用 service role 订；客户端没有它的 select 策略）。
 - 个人 `app_data` 不动。
 
 **为什么写只走 RPC**：比较后再写（`if_rev`）、人数上限、好友判据、限速都要在一个事务里判；拆成「RLS + 客户端先读后写」就是竞态。
@@ -127,7 +131,7 @@ otto.on(event, cb) / otto.off(event, cb)
 
 - 有 `roomId`：读房间 → 用 **`host_uid / host_app_id / host_version`** 拉清单与文件（`ensureAppFiles(hostUid, hostAppId, hostVersion, files)`，RLS 已放行）→ 以那一版的入口页载入。
   个人 `storage.*` 仍落在**我自己那份应用**（`appId` = 我的副本）的 `app_data` 下——战绩不跟着房间走。
-- 订阅：`app_room_data` 的 postgres_changes（filter `room_id=eq.<id>`）→ `room.change`；`app_room_members` → `room.members`；broadcast 频道 `room:<id>` → `room.message`。
+- 订阅：只订一条私有 broadcast 频道 `room:<id>`，按事件名分发——`change` → `room.change`；`members` → `room.members`；`msg`（应用自己发的即时消息）→ `room.message`。不用 postgres_changes（见 §3：DELETE 事件绕过 RLS）。
   离开页面就退订。回到前台重订并补一次 `list("")`，让应用自己对齐（断线期间的变更不逐条补发）。
 - 顶栏在房间模式下显示房间名 +「邀请」；不在房间时保持原样（分享 / 改一下）。
 - 推送点开：带 `roomId` 的深链进房间模式。
