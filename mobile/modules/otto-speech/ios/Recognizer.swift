@@ -19,6 +19,8 @@ import Speech
 // ⑤ 起完引擎再报一次 status：aec 要开完回声消除才知道（桌面那份只在开引擎之前报，第一次开麦时 aec 还是 nil）。
 // ⑥ 开麦时引擎若已经因为放音在跑（第一次开麦要等授权；系统来电接通时开场白往往先到），先把手上那段停下
 //    记着、停引擎、开回声消除，引擎重起之后那段从头再放（#1514；原来是当放完收掉，开场白整句没了）。
+// ⑦ 系统来电里（externalSession）在听时引擎因「配置变了」被停：重起输入那条路（restartAudio），不悄悄停听。
+//    ② 的「不自动重起」管的是 App 自己开的会话——人就在 App 里，点一下麦克风就回来；锁屏接的电话没有那颗钮（#1631）。
 // **所有状态都在 speechQueue 上动**（OttoSpeechModule.swift；不用主线程的理由写在那里：iOS 的主线程是
 // 界面线程，而 setActive 是同步阻塞的）。命令本来就在它上面跑；音频 tap、识别回调、两道授权回调、两条通知
 // 各在系统挑的线程上，一律 hop 过去；定时器也挂在它上面。
@@ -89,6 +91,9 @@ final class Recognizer {
   /// 没人说话时多久换一次 request（毫秒）：攒着的音频有上限
   private let idleRestartMs: Double = 50_000
   private var observers: [NSObjectProtocol] = []
+  /// restartAudio 的限次（头注 ⑦）：这一秒窗口从哪一刻算起、窗口里重起了几次
+  private var restartWindowStart: Double = 0
+  private var restartsInWindow = 0
   /// 系统来电（CallKit）进行中：音频会话由系统激活 / 去激活（#1428，spec §2.4），这里不 setCategory、
   /// 不 setActive，CallKit 激活 / 去激活会话时发的打断通知也不当成打断
   var externalSession = false
@@ -120,10 +125,16 @@ final class Recognizer {
         // 按引擎此刻停没停判（头注 ②）：还在跑 = 起引擎之前开回声消除引出的那一条
         guard let self, !self.engine.isRunning else { return }
         if self.externalSession {
-          // CallKit 去激活会话时引擎会跟着停：这是系统来电的正常收尾，不报「设备变了」，悄悄收掉
-          // （手上那段同上：cut 报 played，不报错）
-          self.playback.cut()
-          if self.running { self.stop() }
+          // 系统来电里引擎被停有两种：CallKit 收尾去激活会话（正常收尾），或者通话中途 IO 配置变了——
+          // 别的音频客户端（expo-video 放过语音条）改过硬件格式，引擎一起来就撞上一次（#1631，头注 ⑦）。
+          // 后一种悄悄收掉的话麦就死在那儿：界面显示在听、一个字都不识别，人在锁屏上也没法再点麦克风。
+          // 在听就把输入那条路重起一次；起不来（会话已经被收回）才悄悄收掉。手上那段放音：重起成了从头再放，
+          // 没成当放完收掉（cut 报 played，不报错）
+          if self.running {
+            self.restartAudio()
+          } else {
+            self.playback.cut()
+          }
           return
         }
         self.interrupted("声音设备变了（耳机 / 蓝牙），点一下麦克风再开")
@@ -216,8 +227,14 @@ final class Recognizer {
     try ensureEngine()
   }
 
-  private func beginAudio() {
-    guard !running else { return }
+  /// 开麦。quiet = 系统来电里重起输入那条路（restartAudio）：没开成不报 error、只报 listening 关——
+  /// 那多半是 CallKit 已经把会话收回了（通话正在收尾），界面上不该冒一行「麦克风打不开」。回 true = 开成了
+  @discardableResult
+  private func beginAudio(quiet: Bool = false) -> Bool {
+    guard !running else { return true }
+    let fail = { (message: String) in
+      self.emit(quiet ? Event(type: "listening", on: false) : Event(type: "error", message: message))
+    }
     // 正在放它的话（开麦要等两道授权，它已经开口了）：先把手上那段停下记着、停引擎——回声消除只能在停着的引擎上开，
     // 在跑着的引擎上开会抛（退回半双工）或者引发一次「配置变了」，把刚开的麦又关掉。引擎带着回声消除重起之后
     // 那段从头再放（#1514：系统来电的开场白就是这么被整句收掉的）；下面任何一处没开成，它当放完收掉
@@ -231,8 +248,8 @@ final class Recognizer {
       try activateSession()
     } catch {
       if suspended { playback.cut() }
-      emit(Event(type: "error", message: "麦克风打不开：\(error.localizedDescription)"))
-      return
+      fail("麦克风打不开：\(error.localizedDescription)")
+      return false
     }
     let input = engine.inputNode
     // 系统回声消除（ADR-0277）。开不了不算错——status.aec=false，JS 退回半双工，界面上不说；但真机上
@@ -250,16 +267,16 @@ final class Recognizer {
     let format = input.outputFormat(forBus: 0)
     guard format.sampleRate > 0, format.channelCount > 0 else {
       if suspended { playback.cut() }
-      emit(Event(type: "error", message: "没有可用的麦克风"))
+      fail("没有可用的麦克风")
       deactivateIfIdle()
-      return
+      return false
     }
     // 开着回声消除时输出格式可能是多声道，识别器吃不下：只取第 0 声道折成 mono（桌面同一条）
     guard let mono = AVAudioFormat(commonFormat: .pcmFormatFloat32, sampleRate: format.sampleRate, channels: 1, interleaved: false) else {
       if suspended { playback.cut() }
-      emit(Event(type: "error", message: "麦克风格式不支持（\(format.sampleRate) Hz）"))
+      fail("麦克风格式不支持（\(format.sampleRate) Hz）")
       deactivateIfIdle()
-      return
+      return false
     }
     input.installTap(onBus: 0, bufferSize: 1024, format: format) { [weak self] buffer, _ in
       // 音频线程。paused / request 是 speechQueue 上改的，这里只读——最坏多喂一两块，无害
@@ -299,9 +316,9 @@ final class Recognizer {
     } catch {
       input.removeTap(onBus: 0)
       if suspended { playback.cut() }
-      emit(Event(type: "error", message: "麦克风打不开：\(error.localizedDescription)"))
+      fail("麦克风打不开：\(error.localizedDescription)")
       deactivateIfIdle()
-      return
+      return false
     }
     if suspended { playback.resume() }
     running = true
@@ -319,6 +336,44 @@ final class Recognizer {
     t.setEventHandler { [weak self] in self?.tick() }
     t.resume()
     timer = t
+    return true
+  }
+
+  /// 头注 ⑦：系统来电里、在听的时候引擎因「配置变了」被停了——输入那条路按新的格式重装、引擎重起。
+  /// 手上那段放音停下记着，重起成了从头再放、没成当放完收掉。一秒内连着来第三次就不再重起（别和系统
+  /// 来回拉锯），按原来的样子悄悄停听
+  private func restartAudio() {
+    let now = nowMs()
+    restartsInWindow = now - restartWindowStart < 1000 ? restartsInWindow + 1 : 1
+    if restartsInWindow == 1 { restartWindowStart = now }
+    let held = playback.suspend()
+    guard restartsInWindow <= 2 else {
+      if held { playback.cut() }
+      stop()
+      return
+    }
+    let wasPaused = paused
+    // stop() 的前半截，但不推 startToken、不报 listening 关、不交还会话：这是同一次开麦的延续
+    running = false
+    paused = false
+    timer?.cancel()
+    timer = nil
+    generation += 1
+    task?.cancel()
+    request?.endAudio()
+    task = nil
+    request = nil
+    if let text = endpointer.flush() { emit(Event(type: "final", text: text)) }
+    // 录音（#1492）只在按住说话时有，通话里没有：不用管
+    engine.inputNode.removeTap(onBus: 0)
+    NSLog("[OttoSpeech] engine configuration changed during system call, restarting input")
+    guard beginAudio(quiet: true) else {
+      if held { playback.cut() }
+      deactivateIfIdle()
+      return
+    }
+    if held { playback.resume() }
+    if wasPaused { pause() }
   }
 
   /// 换一个新的识别 request（旧 task 作废：generation 前进，迟到的回调认不了账）
