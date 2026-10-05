@@ -10,8 +10,8 @@ const events = read("src/session/events.ts");
 
 describe("sessionService：dnd_report", () => {
   it("greeting 一族多了 dnd_report（只是记号，不进协议位）", () => {
-    // #1605 之后尾巴多了 collab_accept；钉的是 dnd_report 在一族里，不钉它是最后一个
-    expect(events).toMatch(/\| "routine" \| "dnd_report"( \| "collab_accept")?;/);
+    // #1605 之后尾巴多了 collab_accept；钉的是 dnd_report 在一族里，不钉它是最后一个；#1655 又加了 friend_relay / owner_reply
+    expect(events).toMatch(/\| "routine" \| "dnd_report"(\s+\|[^;]+)*;/);
   });
   it("runReport：管理员在名单里才落；fromUid 是主人、mentions 是管理员、greeting dnd_report；名单读不出来抛错", () => {
     expect(ss).toMatch(/async runReport\(r\) \{\s*if \(archived \|\| isOutreach\) return "archived";[\s\S]{0,400}if \(!roster\.some\(\(a\) => a\.agentId === ADMIN_AGENT_ID\)\) return "no_agent";/);
