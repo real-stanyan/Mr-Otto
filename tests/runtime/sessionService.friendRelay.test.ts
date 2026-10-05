@@ -43,7 +43,7 @@ function testWiki(): WikiService {
 }
 
 /** 一条外联会话的种子：session_created（outreach 事实）+ 名单（一只智能体 + 朋友一个客人）；没在通话：朋友打字 */
-function outreachSeed(store: EventStore): void {
+function outreachSeed(store: EventStore, o: { started?: boolean } = {}): void {
   store.append({
     sessionId: SID, ts: 1, type: "session_created", workspace: "/work",
     cloud: { workspaceId: "w1", home: true, chat: { kind: "outreach" }, outreach: { ownerName: "Stan", peerUid: PEER, peerName: "小红" } },
@@ -52,6 +52,10 @@ function outreachSeed(store: EventStore): void {
     sessionId: SID, ts: 2, type: "chat_roster_changed", agents: [{ agentId: ADMIN_AGENT_ID, name: "运维" }],
     humans: [{ uid: PEER, name: "小红" }], ignorable: true,
   });
+  // 通话进行中（outreach 折叠里有 phase=started）：朋友是在电话里听着
+  if (o.started === true) {
+    store.append({ sessionId: SID, ts: 3, type: "outreach", phase: "started", outreachId: "o1", fromAgentId: ADMIN_AGENT_ID, peerUid: PEER, peerName: "小红", ignorable: true });
+  }
 }
 
 const dmSeed = (store: EventStore): void => {
@@ -202,5 +206,32 @@ describe("reply_to_friend 与 ownerReply（#1655）", () => {
     dmSeed(store2);
     expect(await openWith(store2, {}).ownerReply!({ text: "x" })).toBe("archived");
     store2.close();
+  });
+});
+
+describe("外联的推送（#1655）", () => {
+  it("朋友打字：答完推给朋友（目标是 outreach）；主人回话起的那轮：也推给朋友、不推主人", async () => {
+    const store = newStore();
+    outreachSeed(store);
+    const pushes: { uid: string; target: unknown }[] = [];
+    const s = openWith(store, { alert: (uid, _k, p) => pushes.push({ uid, target: p.target }) });
+    await s.say(PEER, "小红", "在吗", false, [], undefined, []);
+    await s.settled();
+    await s.ownerReply!({ text: "[系统] Stan 回：行" });
+    await s.settled();
+    expect(pushes.map((p) => p.uid)).toEqual([PEER, PEER]);
+    expect(pushes[0]!.target).toMatchObject({ kind: "cloud", chat: "outreach", workspaceId: "w1", sessionId: SID });
+    store.close();
+  });
+  it("通话进行中：不推（人正在听）", async () => {
+    const store = newStore();
+    outreachSeed(store, { started: true });
+    const pushes: string[] = [];
+    const s = openWith(store, { alert: (uid) => pushes.push(uid) });
+    await s.say(PEER, "小红", "喂", false, [], undefined, []);
+    await s.settled();
+    expect(store.ofType(SID, "assistant_message")).toHaveLength(1); // 确实答了，只是没推
+    expect(pushes).toEqual([]);
+    store.close();
   });
 });

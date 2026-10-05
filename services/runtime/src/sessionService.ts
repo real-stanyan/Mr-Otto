@@ -1306,11 +1306,12 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         })
       : null;
 
-  /** 推送点开去哪（#1442）：这个人在列表里是哪一种聊天，与回电同一张表（ringChatKind）。外联会话不推 */
+  /** 推送点开去哪（#1442）：这个人在列表里是哪一种聊天，与回电同一张表（ringChatKind）。外联会话（#1655）只推那位朋友 */
   function alertTargetFor(uid: string, agentId: string): AlertPush["target"] | null {
     const chat = ringChatKind({ home: opts.approveAll, chatKind: ringKind, toUid: uid, ownerUid: opts.ownerUid });
     // human（#1534）是人打人的来电那个壳，不是一条聊天的推送目标——ringChatKind 本就不会折出它，这里只是让类型说同一句话
-    if (chat === "outreach" || chat === "human" || muteKeyFor(chat, sessionId, agentId) === null) return null;
+    // 外联（#1655）只推那位朋友本人——主人在那条线上只读
+    if (chat === "human" || (chat === "outreach" && uid !== outreachPeerUid) || muteKeyFor(chat, sessionId, agentId) === null) return null;
     return { kind: "cloud", chat, workspaceId: opts.workspaceId, sessionId, agentId };
   }
 
@@ -1318,13 +1319,17 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       名字；群里标题是群名、副标题是它 */
   async function pushReply(n: ReplyNote): Promise<void> {
     const alert = opts.alert;
-    if (alert === undefined || isOutreach || isPair || archived) return; // 私密车道（#1461）：主人此刻就在私聊页里看着，不另推
+    if (alert === undefined || isPair || archived) return; // 私密车道（#1461）：主人此刻就在私聊页里看着，不另推
+    // 外联（#1655）：通话里不推（人正在听）；不在通话里谁问的都推给那位朋友——主人的回话（owner_reply）起的那一轮
+    // 也是说给朋友听的，它的开场白 fromUid 是主人，所以不能照 n.uids 推
+    if (isOutreach && (activeOutreach(outreachFold) !== null || outreachPeerUid === null)) return;
+    const uids = isOutreach ? [outreachPeerUid!] : n.uids;
     const team = await opts.agents();
     const name = team.find((a) => a.agentId === n.agentId)?.name ?? n.agentId;
-    for (const uid of n.uids) {
+    for (const uid of uids) {
       const target = alertTargetFor(uid, n.agentId);
       if (target === null) continue;
-      const dm = target.kind === "cloud" && target.chat === "dm";
+      const dm = target.kind === "cloud" && (target.chat === "dm" || target.chat === "outreach");
       alert(uid, "agent_reply", dm
         ? { title: name, body: alertBody(n.text), target }
         : { title: title || "群聊", subtitle: name, body: alertBody(n.text), target });

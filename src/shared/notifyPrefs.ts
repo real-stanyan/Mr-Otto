@@ -51,7 +51,7 @@ export function pushAllowed(kind: NotifyKind, prefs: NotifyPrefs, muted: boolean
 /** chat_mutes.chat_key 的形状（与 0049 的 CHECK 逐字相同） */
 export const MUTE_KEY_RE = /^[agtjf]:[0-9A-Za-z_-]{1,120}$/;
 
-/** 一条云会话在这个人的列表里是哪个键。外联会话不进列表、也不推（返回 null） */
+/** 一条云会话在这个人的列表里是哪个键。human（#1534）不是聊天，返回 null；外联（#1655）是朋友那一侧的列表键 */
 export function muteKeyFor(chat: RingChatKind, sessionId: string, agentId: string): string | null {
   switch (chat) {
     case "dm":
@@ -63,7 +63,9 @@ export function muteKeyFor(chat: RingChatKind, sessionId: string, agentId: strin
     case "guest":
       return `j:${sessionId}`;
     case "outreach":
-      return null;
+      // 外联（#1655）：朋友那一侧的列表键（手机 ChatScreen 同一个 `o:`）。不进 chat_mutes（0049 的 CHECK 只认 agtjf，
+      // MUTE_KEY_RE 不认 o:），所以永远查不到免打扰——那条线一期没有免打扰开关
+      return `o:${sessionId}`;
     case "human":
       // 人打人的来电（#1534）：不是一条聊天，没有免打扰那一格
       return null;
@@ -73,7 +75,7 @@ export function muteKeyFor(chat: RingChatKind, sessionId: string, agentId: strin
 /** 点开推送去哪：云会话那四种（与 ringTarget 同一张表）/ 朋友私聊。agentId 只有私聊（dm）用得上，
     别的几种可以是空串 */
 export type AlertTarget =
-  | { kind: "cloud"; chat: Exclude<RingChatKind, "outreach" | "human">; workspaceId: string; sessionId: string; agentId: string }
+  | { kind: "cloud"; chat: Exclude<RingChatKind, "human">; workspaceId: string; sessionId: string; agentId: string }
   | { kind: "friend"; uid: string };
 
 /** 这条推送对应列表里哪一行（手机前台时：人正看着这一条就不弹） */
@@ -106,7 +108,7 @@ export function alertPayload(p: AlertPush): {
   return { aps: { alert, sound: "default", "thread-id": alertKey(p.target) }, otto: p.target };
 }
 
-const CLOUD_CHATS = new Set(["dm", "group", "team", "guest"]);
+const CLOUD_CHATS = new Set(["dm", "group", "team", "guest", "outreach"]);
 
 /** 手机从点开的那条通知里读回 otto 那一格。缺一格 / 形状不对一律 null */
 export function alertTargetFromPayload(payload: unknown): AlertTarget | null {
@@ -126,5 +128,5 @@ export function alertTargetFromPayload(payload: unknown): AlertTarget | null {
   if (workspaceId === null || sessionId === null) return null;
   // 私聊点开要找的是那只（列表键 a:<agentId>），缺了就找不到
   if (o.chat === "dm" && agentId === null) return null;
-  return { kind: "cloud", chat: o.chat as Exclude<RingChatKind, "outreach" | "human">, workspaceId, sessionId, agentId: agentId ?? "" };
+  return { kind: "cloud", chat: o.chat as Exclude<RingChatKind, "human">, workspaceId, sessionId, agentId: agentId ?? "" };
 }
