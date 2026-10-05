@@ -239,6 +239,8 @@ describe("群座位制：别人使唤你的管理员", () => {
     // 授权轮是主人轮：手上有动手的刀
     expect(w.calls.at(-1)!.tools).toContain("bash");
     expect(said(w.groupLog(), A).at(-1)).toBe("今天到 22:25 是 $3,346.58。");
+    // 那一轮的回话推给提要求的 Stan，不推给点头的继爸
+    expect(w.alerts.some((a) => a[0] === B && a[1] === "agent_reply" && JSON.stringify(a[2]).includes("3,346.58"))).toBe(true);
     // 答过的不能再答
     expect(await w.group.decideSeat!(id, A, "declined")).toMatchObject({ ok: false });
   });

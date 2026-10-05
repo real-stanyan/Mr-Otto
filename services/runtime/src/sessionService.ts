@@ -1612,11 +1612,14 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   const seatOwnerName = (): string => seatFacts?.ownerName ?? "主人";
   /** 管理员此刻叫什么（回群时署名、卡上写名字） */
   const seatAgentName = (): string => specNames.get(ADMIN_AGENT_ID) ?? "管理员";
+  /** 授权开场白 seq → 当初提要求的那个人（推送给他，不推给点头的主人）。进程内：重启后那一轮的回话推给主人，不推也不错 */
+  const grantRequesters = new Map<number, string>();
   /** 座位里管理员说的一句送回群。深度 = 叫醒这一轮的那句的深度（群那边 @ 别家时 +1） */
   function bridgeSeatReply(text: string, model: string): void {
     const hub = opts.seatHub ?? null;
     if (hub === null || seatGroup === null || archived) return;
-    void hub.reply({ group: seatGroup, seatUid: opts.ownerUid, text, model, toUid: currentInitiator, depth: currentOpeningDepth })
+    const toUid = (currentJob !== null ? grantRequesters.get(currentJob.openingSeq) : undefined) ?? currentInitiator;
+    void hub.reply({ group: seatGroup, seatUid: opts.ownerUid, text, model, toUid, depth: currentOpeningDepth })
       .catch((err: unknown) => console.warn(`[otto-runtime] 座位的回话送不回群（session=${sessionId}）：${err instanceof Error ? err.message : String(err)}`));
   }
   /** 不花模型的那几句（没同意 / 没回）：以管理员的身份落一条 assistant_message——群里看到的是它说的，它自己下一轮也记得 */
@@ -1625,13 +1628,14 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     notify(store.append({ sessionId, ts: Date.now(), type: "assistant_message", agentId: ADMIN_AGENT_ID, content: text, model: callerModelOf(store.load(sessionId), ADMIN_AGENT_ID) }));
   }
   /** 授权开场白：主人点了头 / 设了全部放行。主人的规矩，但带 greeting = 不算主人亲口 */
-  function seatGrant(o: { fromName: string; ask: string; via: "card" | "policy"; groupSeq?: number }): void {
+  function seatGrant(o: { fromUid: string; fromName: string; ask: string; via: "card" | "policy"; groupSeq?: number }): void {
     if (archived) return;
     const opening = store.append({
       sessionId, ts: Date.now(), type: "user_message", fromUid: opts.ownerUid, mentions: [ADMIN_AGENT_ID], greeting: "seat_grant",
       ...(o.groupSeq !== undefined ? { mirror: { seq: o.groupSeq } } : {}),
       content: seatGrantText({ ownerName: seatOwnerName(), fromName: o.fromName, ask: o.ask, via: o.via }),
     }) as UserMessageEvent;
+    grantRequesters.set(opening.seq, o.fromUid);
     notify(opening);
     if (coordinator.enqueue({ agentId: ADMIN_AGENT_ID, fromUid: opts.ownerUid, opening }) === "start_turn") startDrain();
   }
@@ -4253,7 +4257,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       const label = safeSpeakerLabel(opening.fromName, opening.fromUid);
       // ② 别人使唤、这个座位设了全部放行：直接授权，不弹卡
       if (opening.fromUid !== opts.ownerUid && opening.policy === "open") {
-        seatGrant({ fromName: label, ask: opening.text, via: "policy", groupSeq: opening.groupSeq });
+        seatGrant({ fromUid: opening.fromUid, fromName: label, ask: opening.text, via: "policy", groupSeq: opening.groupSeq });
         for (const l of after) mirrorLine(l);
         return null;
       }
@@ -4276,7 +4280,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       if (r.decision !== null) return r.decision === "expired" ? "这张卡已经过期了" : "已经答过了";
       if (archived) return "这个座位已经收了";
       seatDecision(requestId, decision, byUid);
-      if (decision === "accepted") seatGrant({ fromName: r.event.fromName, ask: r.event.ask, via: "card" });
+      if (decision === "accepted") seatGrant({ fromUid: r.event.fromUid, fromName: r.event.fromName, ask: r.event.ask, via: "card" });
       else seatSays(seatDeclinedText(seatOwnerName()));
       return null;
     },
