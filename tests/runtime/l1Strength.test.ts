@@ -67,6 +67,8 @@ describe("管理员不在这条对话里时，专员往上转的路是主人", (
     expect(alone).toContain("别 create_task 派给管理员");
     expect(alone).not.toContain("转过去，别自己接");
     for (const p of [withAdmin, alone]) expect(p).toContain("记进你自己的 wiki 页");
+    // #1661 C5：需求要联网的先顶回去，别写 fetch 等 build_app 拒
+    expect(withAdmin).toContain("build_app 会拒，先回报管理员说做不到和替代方案");
   });
 
   it("assign_task：专员派给不在场的 → 告诉它找主人，不叫它 bring_agent；管理员照旧提示 bring_agent", async () => {
