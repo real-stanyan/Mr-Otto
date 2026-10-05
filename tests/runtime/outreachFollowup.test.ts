@@ -1,4 +1,4 @@
-// 外联挂断后那段打字的兜底（#1663）：真机上朋友挂断后打字「要不你再发一次？」，智能体答「我带回去」却没调 relay_to_owner。
+// 外联挂断后那段打字的兜底（#1673）：真机上朋友挂断后打字「要不你再发一次？」，智能体答「我带回去」却没调 relay_to_owner。
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { createOutreachFollowup, outreachFollowupText, OUTREACH_FOLLOWUP_IDLE_MS } from "../../services/runtime/src/outreachFollowup.js";

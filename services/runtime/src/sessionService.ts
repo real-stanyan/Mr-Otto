@@ -906,7 +906,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   // 这条线上的外联折叠（#1441）：从 seed 播种、notify 里逐条推进（同 voiceCall）。「通话此刻进行中吗、
   // 打给的是谁」只从这一份读——say 的闸、chat() 的 active 共用，两处各折一遍迟早分家
   const outreachFold: OutreachFold = outreachFoldOf(seed);
-  /** 外联挂断后那段打字的兜底（#1663）：外联会话里第一次装工具时建（要 outreachRelay 与种子里的朋友） */
+  /** 外联挂断后那段打字的兜底（#1673）：外联会话里第一次装工具时建（要 outreachRelay 与种子里的朋友） */
   let outreachFollowup: ReturnType<typeof createOutreachFollowup> | null = null;
   /** 外联这条线的那位朋友（#1655）：不在通话里也认得出——种子里 session_created.cloud.outreach 就写着 */
   const outreachPeerUid: string | null = isOutreach ? (createdCloud?.outreach?.peerUid ?? null) : null;
@@ -1285,7 +1285,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   // agentId → 此刻的名字，runJob 每次刷新；memory 工具拼共享档前缀时现取
   // （#949）：改名之后下一 turn 的前缀就是新名字，不用重开会话
   const specNames = new Map<string, string>();
-  // 挂断后那段打字的兜底（#1663）：外联会话一建好就挂上——对面挂断后的第一句话就要算进去，等不到装工具那一刻。
+  // 挂断后那段打字的兜底（#1673）：外联会话一建好就挂上——对面挂断后的第一句话就要算进去，等不到装工具那一刻。
   // 安静下来、这段里又没调 relay_to_owner，就把原话自动带回主人（outreachRelay.toOwner，同那把刀）
   if (isOutreach && (opts.outreachRelay ?? null) !== null && createdCloud?.outreach !== undefined) {
     const facts = createdCloud.outreach;
