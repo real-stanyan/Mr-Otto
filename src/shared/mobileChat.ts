@@ -447,12 +447,12 @@ export function outreachCard(seq: number, s: OutreachState, agentName: string): 
   };
 }
 
-/** 外联会话的输入栏（#1441）：这是智能体打电话的地方，好友不在这里打字（一期不能主动打给它，spec §13），主人只读。
-    其它聊天照旧。种子（welcome 之前）里没有 `outreach` 那一格时也认得出是外联——只是不知道主人叫什么，不编名字 */
+/** 外联会话的输入栏（#1441 → #1655）：朋友能在这里打字和那只聊（它替你给它主人带话，ADR-0372）；主人只读（他的回话走自己的管理员私聊）。
+    其它聊天照旧。种子（welcome 之前）里没有 `outreach` 那一格时也认得出是外联 */
 export function outreachComposer(chat: CsChatInfo | null, isOwner: boolean): { kind: "normal" } | { kind: "note"; text: string } {
   if (chat === null || chat.kind !== "outreach") return { kind: "normal" };
-  if (isOwner) return { kind: "note", text: "这是你的智能体给朋友打电话的地方，只能看" };
-  return { kind: "note", text: chat.outreach !== undefined ? `这是 ${chat.outreach.ownerName} 的智能体给你打电话的地方` : "这是朋友的智能体给你打电话的地方" };
+  if (isOwner) return { kind: "note", text: "这是你的智能体和朋友说话的地方，只能看。要回话，跟你的管理员说" };
+  return { kind: "normal" };
 }
 
 /** 正在写的那一段（流式碎片，协议 16）：累计快照按空行拆，画成它的一行。终态落盘时

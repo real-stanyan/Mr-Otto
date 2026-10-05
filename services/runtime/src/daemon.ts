@@ -38,6 +38,7 @@ import { delegationRoster } from "../../../src/shared/delegation.js";
 import { createReportScheduler, type ReportRow } from "./reportScheduler.js";
 import { parseReportPlan, reportOpeningText, type ReportPlan } from "../../../src/shared/quietHours.js";
 import { isIanaTimeZone } from "../../../src/shared/routines.js";
+import { eventForGuest } from "../../../src/shared/guestView.js";
 import { LANE_TASK_STATUS_LABEL, laneBusy, laneTaskStatus, laneTasksOf } from "../../../src/shared/laneTasks.js";
 import { dmPreview } from "../../../src/shared/wechatInbox.js";
 import { DEFAULT_STUN, HUMAN_CALL_RING_MS, humanRingPush } from "../../../src/shared/humanCall.js";
@@ -467,6 +468,20 @@ async function main(): Promise<void> {
     return sessionId;
   }
 
+  /** 这只与那位朋友的外联会话（#1441 / #1655）：按 (主场, 那只, 朋友) 找；没有 null，查询失败抛 */
+  async function findOutreachSession(w: string, a: string, peerUid: string): Promise<string | null> {
+    const { data, error } = await supabase
+      .from("workspace_sessions")
+      .select("id")
+      .eq("workspace_id", w)
+      .eq("chat_kind", "outreach")
+      .eq("peer_uid", peerUid)
+      .contains("agent_ids", [a])
+      .maybeSingle();
+    if (error) throw new Error(`外联会话查询失败（${w}）：${error.message}`);
+    return data ? (data as { id: string }).id : null;
+  }
+
   /** 这只智能体现成的那条私聊（#1280），没有回 null。库里那条唯一索引是权威，
       这个查询只是在撞上它之前先问一遍——两条路都要走，因为「先查再插」不是原子的 */
   async function findDmSession(workspaceId: string, agentIds: string[]): Promise<string | null> {
@@ -763,18 +778,7 @@ async function main(): Promise<void> {
           ensureSession: (workspaceId, ownerUid, ownerName, agent, peer) =>
             ensureOutreachSession<CloudSession>(
               {
-                find: async (w, a, peerUid) => {
-                  const { data, error } = await supabase
-                    .from("workspace_sessions")
-                    .select("id")
-                    .eq("workspace_id", w)
-                    .eq("chat_kind", "outreach")
-                    .eq("peer_uid", peerUid)
-                    .contains("agent_ids", [a])
-                    .maybeSingle();
-                  if (error) throw new Error(`外联会话查询失败（${w}）：${error.message}`);
-                  return data ? (data as { id: string }).id : null;
-                },
+                find: (w, a, peerUid) => findOutreachSession(w, a, peerUid),
                 insert: async (row) => {
                   const { error } = await supabase.from("workspace_sessions").insert(row);
                   return error ? { code: error.code, message: error.message } : null;
@@ -810,6 +814,19 @@ async function main(): Promise<void> {
           sendDm: async (sender, recipient, body) => {
             const { error } = await supabase.from("messages").insert({ sender, recipient, body });
             if (error) throw new Error(error.message);
+          },
+          // 带话（#1655）：主人的管理员私聊 / 那条外联会话，开房走定时任务那套（routineRooms 在下面才声明，箭头里才读）
+          ownerDm: async (w) => {
+            const sid = await findDmSession(w, [ADMIN_AGENT_ID]);
+            if (sid === null) return null;
+            const room = await routineRooms.room(w, sid);
+            return room === null || room.relayFromFriend === undefined ? null : { relayFromFriend: (r) => room.relayFromFriend!(r) };
+          },
+          outreachRoom: async (w, agentId, peerUid) => {
+            const sid = await findOutreachSession(w, agentId, peerUid);
+            if (sid === null) return null;
+            const room = await routineRooms.room(w, sid);
+            return room === null || room.ownerReply === undefined ? null : { ownerReply: (r) => room.ownerReply!(r) };
           },
         });
 
@@ -992,8 +1009,16 @@ async function main(): Promise<void> {
 
     // 提出来命名，好让 notifyWorkspace（clone 结果通报）复用同一份广播
     // 逻辑，而不是重新拼一遍 for-of-roster
+    // 客人（外联里的朋友、主场群里的客人）拿到的是裁过的那一份（#1655）：主人的 wiki 快照不出门，seq 一格不少。
+    // backlog 那一路在 frameHandler。名单里的 cid 都已过 hello（welcome 才入名单），uid 必在；
+    // 万一不在 / session 还没造好（装配期间的回调）就按客人裁——宁可少给成员一段 wiki，不给客人多一段
     const broadcast = (e: SessionEvent): void => {
-      for (const cid of roster) globalSend(cid, { t: "event", event: e });
+      const guestCopy = eventForGuest(e);
+      for (const cid of roster) {
+        const uid = frameHandler.uidOf(cid);
+        const guest = guestCopy !== e && (uid === null || (session as CloudSession | undefined)?.isGuest(uid) !== false);
+        globalSend(cid, { t: "event", event: guest ? guestCopy : e });
+      }
     };
 
     session = createCloudSession({
@@ -1308,6 +1333,9 @@ async function main(): Promise<void> {
       },
       // message_friend（#1549）：与 outreach 那把刀同一个开关（有 hub 且主场），出口是同一个 hub
       friendMessage: outreachHub === null || !approveAll ? null : { send: (o) => outreachHub.message({ ...o, workspaceId, ownerUid }) },
+      // 带话（#1655）：与 friendMessage 同一个开关、同一个 hub；outreachRelay 只在外联会话里被读，friendReply 只在主场非外联里挂
+      outreachRelay: outreachHub === null || !approveAll ? null : { toOwner: (o) => outreachHub.relayToOwner({ ...o, workspaceId, ownerUid }) },
+      friendReply: outreachHub === null || !approveAll ? null : { send: (o) => outreachHub.replyToFriend({ ...o, workspaceId, ownerUid }) },
       pairMessages: async ({ ownerUid: o, peerUid: p }) => {
         const { data, error } = await supabase
           .from("messages")

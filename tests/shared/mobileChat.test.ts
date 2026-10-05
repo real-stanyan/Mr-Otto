@@ -540,16 +540,16 @@ describe("outreach 一行", () => {
 
 describe("外联会话的输入栏", () => {
   const info = { kind: "outreach" as const, agentIds: ["a"], humans: [], outreach: { ownerName: "Stan", active: false } };
-  it("好友看到说明；主人看到只读说明；其它聊天照旧", () => {
-    expect(outreachComposer(info, false)).toEqual({ kind: "note", text: "这是 Stan 的智能体给你打电话的地方" });
+  it("好友是输入框（#1655）；主人看到只读说明；其它聊天照旧", () => {
+    expect(outreachComposer(info, false)).toEqual({ kind: "normal" }); // #1655：朋友能在这里打字
     const o = outreachComposer(info, true);
     expect(o.kind).toBe("note");
     expect(outreachComposer({ kind: "group", agentIds: [], humans: [] }, false)).toEqual({ kind: "normal" });
     expect(outreachComposer(null, false)).toEqual({ kind: "normal" });
   });
-  it("welcome 还没到（只有种子、没有 outreach 格）也认得出是外联：好友那句说明里不编主人名字", () => {
+  it("welcome 还没到也认得出是外联：朋友那侧照样是输入框", () => {
     const seed = { kind: "outreach" as const, agentIds: ["a"], humans: [] };
-    expect(outreachComposer(seed, false)).toEqual({ kind: "note", text: "这是朋友的智能体给你打电话的地方" });
+    expect(outreachComposer(seed, false)).toEqual({ kind: "normal" });
   });
 });
 

@@ -35,6 +35,7 @@ import {
 } from "../../../src/shared/remote/cloudSession.js";
 import { normalizeWorkPath } from "../../../src/shared/remote/workPath.js";
 import type { SessionEvent } from "../../../src/session/events.js";
+import { eventForGuest } from "../../../src/shared/guestView.js";
 import { throttleMessage, TURN_BUCKET, type FrameRateLimiter } from "./rateLimit.js";
 import { SayRejectedError, type CloudSession } from "./sessionService.js";
 import { ChatCreateError } from "./chatCreate.js";
@@ -922,12 +923,14 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
 
         case "backlog": {
           if (!(await requireStillMemberIn(session, workspaceId, cid, entry.uid))) return;
+          // 客人拿到的是裁过的那一份（#1655）：主人的 wiki 快照不出门，seq 一格不少。直播那一路在 daemon 的 broadcast
+          const view = session.isGuest(entry.uid) ? (es: SessionEvent[]) => es.map(eventForGuest) : (es: SessionEvent[]) => es;
           // 尾巴分页（协议 20，#1280）。聊天进房只拉末尾一屏，往上滚再翻。
           // `hasMore` **只挂在最后一片（done:true）上**：中间那些分片不知道
           // 「这一页之前还有没有」，也不该说——渲染层拿它决定顶上那个哨兵画不画
           if ("tail" in msg) {
             const page = session.backlogTail(msg.beforeSeq, msg.limit);
-            const frames = chunkBacklogFrames(page.events);
+            const frames = chunkBacklogFrames(view(page.events));
             frames.forEach((f, i) =>
               deps.send(cid, i === frames.length - 1 && f.t === "backlog" ? { ...f, hasMore: page.hasMore } : f),
             );
@@ -937,7 +940,7 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
           // 终审 C2：按累计字节分片下发，不再一帧打包全量——见文件头
           // chunkBacklogFrames 的注释，一条超限事件曾经能让整条云会话
           // 永久卡在 connecting
-          for (const frame of chunkBacklogFrames(events)) deps.send(cid, frame);
+          for (const frame of chunkBacklogFrames(view(events))) deps.send(cid, frame);
           return;
         }
 

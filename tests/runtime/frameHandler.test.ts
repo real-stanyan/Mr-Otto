@@ -2174,6 +2174,28 @@ describe("群里的客人（#1393）", () => {
   const guestSession = (extra: Partial<CloudSession> = {}) =>
     fakeSession({ isGuest: (uid) => uid === "guest", ...extra });
 
+  it("客人拉 backlog（两种分页都一样）：团队 wiki 快照换成同 seq 的空壳；成员拉到的是原样（#1655）", async () => {
+    const wiki = {
+      type: "workspace_wiki_loaded", sessionId: "s1", seq: 4, ts: 1, agentId: "admin", agentName: "运维",
+      index: "门锁 1234", pinned: [], own: null, nudge: null,
+    } as never;
+    const events = [wiki] as ReturnType<CloudSession["backlog"]>;
+    const session = guestSession({ backlog: () => events, backlogTail: () => ({ events, hasMore: false }) });
+    const { deps, sent } = makeDeps({ getSession: () => session, isMember: async (_w, uid) => uid === "owner" });
+    const h = createFrameHandler(deps);
+    await h.onSessionFrame("w1", "s1", "g", hello(CS_PROTOCOL_VERSION, "jwt:guest"));
+    await h.onSessionFrame("w1", "s1", "o", hello(CS_PROTOCOL_VERSION, "jwt:owner"));
+    sent.length = 0;
+    await h.onSessionFrame("w1", "s1", "g", encodeCs({ t: "backlog", afterSeq: -1 }));
+    await h.onSessionFrame("w1", "s1", "g", encodeCs({ t: "backlog", tail: true, limit: 20 }));
+    await h.onSessionFrame("w1", "s1", "o", encodeCs({ t: "backlog", afterSeq: -1 }));
+    const got = (cid: string) =>
+      sent.filter((x) => x.cid === cid && x.msg.t === "backlog").flatMap((x) => (x.msg as Extract<CsDown, { t: "backlog" }>).events);
+    expect(got("g")).toHaveLength(2);
+    for (const e of got("g")) expect(e).toMatchObject({ type: "workspace_wiki_loaded", seq: 4, index: "" });
+    expect(got("o")).toEqual([wiki]);
+  });
+
   it("进房：不是工作区成员也收到 welcome（在籍 = 工作区成员 ∪ 这条群聊的客人）", async () => {
     const { deps, sent } = makeDeps({ getSession: () => guestSession(), isMember: async () => false });
     const h = createFrameHandler(deps);

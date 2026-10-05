@@ -111,8 +111,9 @@ export interface UserMessageEvent extends SessionEventBase {
       `"dnd_report"`（#1569，ADR-0366）：到了主人设的汇报时间，runtime 替主人落给管理员的开场白——正文是免打扰期间朋友发来的消息与代办任务的摘要。与 outreach_report 同一种性质（别人的话的转述），那一轮受监督；只有 call_user（打给主人本人汇报）不掀。同样只是记号、同样不画、不进协议位。
       与别的 greeting 两处不同：① 它**算主人亲口**（openingTraits 的 ownerSpoke 放行它——任务原话是主人写的）；
       ② 手机时间线**画它**（一条居中灰条「⏰ 定时任务「x」」）：别的 greeting 都有前一条可见事件解释「为什么它开口了」，
-      这条没有。桌面照旧藏。同样不进协议位 */
-  greeting?: "voice_call" | "new_agent" | "callback" | "outreach" | "outreach_report" | "admin_intro" | "pair_call_summary" | "routine" | "dnd_report" | "collab_accept" | "escalation";
+      这条没有。桌面照旧藏。同样不进协议位
+      friend_relay（#1655）：朋友在外联里让管理员带话，落在主人的管理员私聊里，受监督；owner_reply（#1655）：主人的回话落回外联，起一轮让管理员转告朋友。*/
+  greeting?: "voice_call" | "new_agent" | "callback" | "outreach" | "outreach_report" | "admin_intro" | "pair_call_summary" | "routine" | "dnd_report" | "collab_accept" | "escalation" | "friend_relay" | "owner_reply";
   /** 这句话是**在语音通话里说出来的**（#1233）。缺席 = 打字打的 / 旧日志。
       **只是记号**：起 turn、排队、护栏、接力链首、派活全都不看它，模型投影
       （deriveMessages）读都不读——对模型来说这就是一条普通的用户消息，和从前
