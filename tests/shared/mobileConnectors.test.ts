@@ -34,6 +34,17 @@ describe("目录", () => {
     const all = connectCatalog(null, "").flatMap((g) => g.items);
     expect(all.every((i) => i.blocked === (byId(i.id).blocked ?? MOBILE_OAUTH_BLOCKED[i.id] ?? null))).toBe(true);
   });
+  it("探针（2026-10-05，#1607）拒收 edge 回调的 7 个：手机上置灰并指去电脑；键都是目录里真有的 oauth 条目", () => {
+    const refused = ["vercel", "monday", "shortcut", "dropbox", "cal", "intercom", "square"];
+    expect(Object.keys(MOBILE_OAUTH_BLOCKED).sort()).toEqual([...refused].sort());
+    for (const id of refused) expect(byId(id).auth).toBe("oauth");
+    const sq = connectCatalog(null, "square").flatMap((g) => g.items).find((i) => i.id === "square")!;
+    expect(sq.blocked).toContain("去电脑上接");
+    // 真连上了以现实为准：已接的不受影响
+    const connected = connectCatalog([item({ serverId: "cloud-square", catalogId: "square" })], "square")
+      .flatMap((g) => g.items).find((i) => i.id === "square")!;
+    expect(connected.connected).toBe(true);
+  });
   it("接入方式：有参数 = 表单；oauth 无参数 = 浏览器；none 无参数 = 直接", () => {
     expect(connectKind(byId("notion"))).toBe("browser");
     expect(connectKind(byId("github"))).toBe("form");
