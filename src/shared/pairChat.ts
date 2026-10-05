@@ -171,8 +171,12 @@ export function laneTargets(text: string, brought: readonly MentionCandidate[]):
   return ids.length > 0 ? ids : null;
 }
 
-/** 朋友那一侧的在场提示（维护者拍板第 3 条：告诉，只显示存在、不显示内容）。0 或读不到不画 */
-export function pairPresenceText(n: number | null): string | null {
-  if (n === null || n <= 0) return null;
-  return `对方带了 ${n} 只私人智能体（你看不到它们说什么）`;
+/** 私聊页头像底下那排小圆脸的读屏句（#1642，原来页顶横幅那几句挪到了头像上）。朋友的私人智能体只报只数、不报名字
+    （维护者拍板第 3 条：告诉，只显示存在、不显示内容）；什么都没带 = 只读人名 */
+export function laneDotsLabel(who: string, names: readonly string[], hidden: number | null): string {
+  const n = hidden ?? 0;
+  const parts: string[] = [];
+  if (names.length > 0) parts.push(`${who}带着 ${names.join("、")}`);
+  if (n > 0) parts.push(names.length > 0 ? `另有 ${n} 只私人智能体（看不到它们说什么）` : `${who}带着 ${n} 只私人智能体（看不到它们说什么）`);
+  return parts.length === 0 ? who : parts.join("，");
 }

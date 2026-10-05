@@ -31,6 +31,8 @@ export type RootStackParams = {
   Chat: ChatRoute & { autoCall?: boolean; callAgentId?: string; callOnly?: boolean; answerRing?: { ringId: string; agentId: string }; dispatch?: string };
   /** 朋友私聊（messages 表，不是云会话） */
   FriendChat: { uid: string };
+  /** 我带进和这位朋友私聊的智能体（#1642）：私聊页里点我自己的头像进来——给谁看、带上、移除 */
+  LaneAgents: { uid: string };
   /** 人与人的通话页（#1534）：哪一通、和谁、是不是来电。状态在 call/humanCall.ts 的 store 里 */
   HumanCall: { callId: string; friendUid: string; incoming: boolean };
   ChatInfo: InfoRoute;

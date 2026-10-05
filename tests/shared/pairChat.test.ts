@@ -12,7 +12,7 @@ import {
   mergePairView,
   pairContextLines,
   pairFacingOf,
-  pairPresenceText,
+  laneDotsLabel,
   renderPairContext,
   samePairLines,
 } from "../../src/shared/pairChat.js";
@@ -184,10 +184,11 @@ describe("laneTargets：这句话走哪一路", () => {
   });
 });
 
-describe("pairPresenceText：朋友看到的在场提示", () => {
-  it("只报只数，不报名字；0 或读不到不画", () => {
-    expect(pairPresenceText(2)).toBe("对方带了 2 只私人智能体（你看不到它们说什么）");
-    expect(pairPresenceText(0)).toBeNull();
-    expect(pairPresenceText(null)).toBeNull();
+describe("laneDotsLabel：头像底下那排小圆脸的读屏句（#1642）", () => {
+  it("公开的报名字；私人的只报只数，不报名字；什么都没带只读人名", () => {
+    expect(laneDotsLabel("你", ["我的管理员", "运维"], 0)).toBe("你带着 我的管理员、运维");
+    expect(laneDotsLabel("峰哥", ["峰哥的管理员"], 2)).toBe("峰哥带着 峰哥的管理员，另有 2 只私人智能体（看不到它们说什么）");
+    expect(laneDotsLabel("峰哥", [], 2)).toBe("峰哥带着 2 只私人智能体（看不到它们说什么）");
+    expect(laneDotsLabel("峰哥", [], null)).toBe("峰哥");
   });
 });
