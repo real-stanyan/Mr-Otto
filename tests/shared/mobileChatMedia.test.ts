@@ -50,4 +50,48 @@ describe("chatRows 的 media", () => {
     const human = rows.find((r) => r.kind === "human");
     expect(human).toEqual({ kind: "human", key: "e0", ts: DAY, uid: "u2", name: "阿峰", text: "在吗" });
   });
+
+  it("工具画出来的图（tool_result.images，#1682 出图）→ 它那一侧单独一行，在结果的位置；它接着说的话照常一行", () => {
+    seq = 0;
+    const rows = chatRows({
+      events: [
+        e({ type: "user_message", content: "[Stan]: 给妈妈做张生日贺卡", fromUid: "me", mentions: ["admin"] }),
+        e({ type: "assistant_message", content: "", model: "m", agentId: "admin", toolCalls: [{ id: "t1", name: "generate_image", args: { prompt: "生日贺卡" } }] }),
+        e({ type: "tool_result", toolCallId: "t1", status: "ok", output: "已生成 1 张图", agentId: "admin", images: [{ id: id("d"), mediaType: "image/png", bytes: 99, width: 1024, height: 768 }] }),
+        e({ type: "assistant_message", content: "做好了，生日快乐！", model: "m", agentId: "admin" }),
+      ],
+      ws: WS, selfUid: "me", now: DAY,
+    });
+    expect(rows.filter((r) => r.kind !== "time").map((r) => r.kind)).toEqual(["mine", "agent", "agent"]);
+    const img = rows.find((r) => r.kind === "agent" && r.key === "img-2");
+    expect(img).toMatchObject({
+      kind: "agent", agentId: "admin", paragraphs: [],
+      media: [{ kind: "image", path: `home1/s1/${"d".repeat(64)}.png`, mediaType: "image/png", width: 1024, height: 768 }],
+    });
+    expect(rows.at(-1)).toMatchObject({ kind: "agent", paragraphs: ["做好了，生日快乐！"] });
+    expect(rows.at(-1)).not.toHaveProperty("media");
+  });
+
+  it("失败的调用不留图；没带图的结果一行都不画", () => {
+    seq = 0;
+    const rows = chatRows({
+      events: [
+        e({ type: "tool_result", toolCallId: "t1", status: "error", output: "上游没有返回图片", agentId: "admin", images: [{ id: id("d"), mediaType: "image/png", bytes: 99 }] }),
+        e({ type: "tool_result", toolCallId: "t2", status: "ok", output: "ok", agentId: "admin" }),
+      ],
+      ws: WS, selfUid: "me", now: DAY,
+    });
+    expect(rows.filter((r) => r.kind !== "time")).toEqual([]);
+  });
+
+  it("群座位制的群里管理员的回话带图（assistant_message.attachments）→ 那句的 agent 行带 media", () => {
+    seq = 0;
+    const rows = chatRows({
+      events: [e({ type: "assistant_message", content: "贺卡在这儿", model: "m", agentId: "seat:me", attachments: [{ id: id("e"), mediaType: "image/png", bytes: 5 }] })],
+      ws: WS, selfUid: "me", now: DAY,
+    });
+    expect(rows.find((r) => r.kind === "agent")).toMatchObject({
+      kind: "agent", paragraphs: ["贺卡在这儿"], media: [{ kind: "image", path: `home1/s1/${"e".repeat(64)}.png`, width: 0, height: 0 }],
+    });
+  });
 });

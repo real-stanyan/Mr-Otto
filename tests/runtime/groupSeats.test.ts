@@ -21,6 +21,7 @@ import { createInMemoryMentionInbox } from "../../services/runtime/src/mentionIn
 import { createWorkspaceLock } from "../../services/runtime/src/workspaceLock.js";
 import { createInMemoryCloudSessionMeta } from "../../services/runtime/src/cloudSessionMeta.js";
 import { seatAgentId, type GroupSeat } from "../../src/shared/groupSeats.js";
+import { AttachmentStore } from "../../src/session/attachments.js";
 
 const A = "aaaaaaaa-0000-4000-8000-000000000001"; // 继爸：建群的人，群存在他的主场 wa
 const B = "bbbbbbbb-0000-4000-8000-000000000002"; // Stan
@@ -63,7 +64,22 @@ interface World {
   settleAll(): Promise<void>;
 }
 
-function setup(o: { script: Script; seats?: GroupSeat[]; legacyHumans?: { uid: string; name: string }[] }): World {
+/** 出图那一套（#1682）：每个主场一个附件库、传进桶的对象记下来；`ready` = 这一轮亮不亮 generate_image */
+interface ImageRig { ready: boolean; uploads: string[] }
+/** 1×1 的真 PNG：网关回包里那张 */
+const PNG_B64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==";
+const imageWorld: ExecutionWorld = { ...fakeWorld, http: { postJson: async () => ({ data: [{ b64_json: PNG_B64, media_type: "image/png" }] }) } };
+
+function setup(o: { script: Script; seats?: GroupSeat[]; legacyHumans?: { uid: string; name: string }[]; images?: ImageRig }): World {
+  const attachmentStores = new Map<string, AttachmentStore>();
+  const attachmentsOf = (ws: string): AttachmentStore => {
+    let a = attachmentStores.get(ws);
+    if (a === undefined) {
+      a = new AttachmentStore(tempDir(`mrotto-seats-att-${ws}-`));
+      attachmentStores.set(ws, a);
+    }
+    return a;
+  };
   const stores = new Map<string, EventStore>();
   const storeOf = (ws: string): EventStore => {
     let s = stores.get(ws);
@@ -105,7 +121,7 @@ function setup(o: { script: Script; seats?: GroupSeat[]; legacyHumans?: { uid: s
       diskUsage: () => null, routines: null, onOutreachEnded: null, signSpeechTicket: async () => "t", pairMessages: null, outreach: null, callback: null,
       approveAll: true, sessionMeta: createInMemoryCloudSessionMeta(),
       workspaceId: ws, sessionId: sid, ownerUid: owner, createdByUid: owner,
-      store: storeOf(ws), world: fakeWorld, px: { edgeBase: "https://edge.example", runtimeSecret: "sek" }, hostUids: async () => [owner],
+      store: storeOf(ws), world: o.images !== undefined ? imageWorld : fakeWorld, px: { edgeBase: "https://edge.example", runtimeSecret: "sek" }, hostUids: async () => [owner],
       agents: async () => [admin],
       adapterFor: (): ModelAdapter => ({
         model: "m",
@@ -118,6 +134,12 @@ function setup(o: { script: Script; seats?: GroupSeat[]; legacyHumans?: { uid: s
       onEvent: () => {}, onUsage: () => {}, wiki: testWiki(), mentionInbox: createInMemoryMentionInbox(), agentWriter: createInMemoryAgentWriter(),
       isMember: async () => true, contextWindowOf: () => undefined, sandboxApproval: async () => "ask", workspaceLock: createWorkspaceLock(), relayRemainingMicro: async () => null,
       seatHub: hub,
+      ...(o.images !== undefined
+        ? {
+            imageGen: { ready: async () => o.images!.ready, resolve: async () => ({ url: "https://edge.example/llm/v1/images", headers: {}, model: "seedream-5-0-lite" }) },
+            toolImages: { store: attachmentsOf(ws), upload: async (bucket: string, path: string) => void o.images!.uploads.push(`${bucket}:${path}`) },
+          }
+        : {}),
       onDelta: (agentId, kind, text) => { if (kind === "content") deltas.push({ ws, agentId, text }); },
       alert: (...a: unknown[]) => void alerts.push(a),
       ringTimers: { setTimer: (fn: () => void) => { timers.push(fn); return timers.length; }, clearTimer: () => {} },
@@ -488,5 +510,46 @@ describe("群座位制：三件遗留（#1682）", () => {
     expect(e).toMatchObject({ type: "assistant_message", agentId: seatAgentId(A), worker: { name: "Nomad" } });
     expect(w.alerts).toHaveLength(0);
     expect(w.seatOf(B)).toBeUndefined();
+  });
+});
+
+describe("群座位制：出图（#1682）", () => {
+  const draw = (c: Call): ModelReply =>
+    c.tools.includes("generate_image") && !c.transcript.includes("已生成")
+      ? { content: "", toolCalls: [{ id: "g1", name: "generate_image", args: { prompt: "给妈妈的生日贺卡" } }] }
+      : { content: "做好了，生日快乐！" };
+
+  it("主人 @ 自己的管理员：手上有 generate_image；画出来的图落座位的日志、跟着回话进群，群里那份传在群的目录下", async () => {
+    const rig: ImageRig = { ready: true, uploads: [] };
+    const w = setup({ script: draw, images: rig });
+    await w.group.say(A, "继爸", "@雨姐 给我妈做张生日贺卡", true, [seatAgentId(A)]);
+    await w.settleAll();
+    expect(w.calls[0]!.tools).toContain("generate_image");
+    const result = w.seatLog(A).find((e) => e.type === "tool_result");
+    expect(result).toMatchObject({ type: "tool_result", status: "ok", images: [{ mediaType: "image/png", width: 1, height: 1 }] });
+    const id = (result as { images: { id: string }[] }).images[0]!.id;
+    const hex = id.slice("sha256:".length);
+    const seatSid = w.seatLog(A)[0]!.sessionId;
+    // 座位那份 + 群那份：同一个对象名，两个目录（群里的人读不到座位的目录）
+    expect(rig.uploads).toEqual([`chat-media:wa/${seatSid}/${hex}.png`, `chat-media:wa/g1/${hex}.png`]);
+    const reply = w.groupLog().find((e) => e.type === "assistant_message" && e.agentId === seatAgentId(A));
+    expect(reply).toMatchObject({ content: "做好了，生日快乐！", attachments: [{ id, mediaType: "image/png" }] });
+  });
+
+  it("别人使唤你的管理员：那一轮只有 ask_owner，没有 generate_image（替别人花主人的钱要主人点头）", async () => {
+    const rig: ImageRig = { ready: true, uploads: [] };
+    const w = setup({ script: () => ({ content: "等继爸点头。" }), images: rig });
+    await w.group.say(B, "Stan Yan", "@雨姐 帮我画张海报", true, [seatAgentId(A)]);
+    await w.settleAll();
+    expect(w.calls.find((c) => c.ws === "wa")!.tools).toEqual(["ask_owner"]);
+    expect(rig.uploads).toEqual([]);
+  });
+
+  it("这一轮出图走不通（ready = false）：工具表里根本没有它", async () => {
+    const w = setup({ script: () => ({ content: "好。" }), images: { ready: false, uploads: [] } });
+    await w.group.say(A, "继爸", "@雨姐 在吗", true, [seatAgentId(A)]);
+    await w.settleAll();
+    expect(w.calls[0]!.tools).toContain("bash");
+    expect(w.calls[0]!.tools).not.toContain("generate_image");
   });
 });

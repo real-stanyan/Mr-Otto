@@ -257,6 +257,10 @@ import {
 } from "../../../src/shared/groupSeats.js";
 import type { SeatDecisionEvent, SeatRequestEvent } from "../../../src/session/events.js";
 import { createAskOwnerTool } from "./askOwnerTool.js";
+import { createGenerateImageTool } from "../../../src/tools/generateImage.js";
+import { latestImageRef } from "../../../src/session/latestImage.js";
+import type { ToolImage } from "../../../src/tools/tool.js";
+import { createToolImageIntakeMiddleware, publishToolImages, type RuntimeImageRoute, type ToolImagesPort } from "./toolImages.js";
 import { createWebSearchTool } from "../../../src/tools/webSearch.js";
 import { createWebExtractTool } from "../../../src/tools/webExtract.js";
 import { createSessionSearchTool } from "../../../src/tools/sessionSearch.js";
@@ -631,6 +635,15 @@ export interface CloudSessionOpts {
   /** 群座位的桥（#1682，ADR-0376）。可选（几十份夹具不该为它都改一遍）：缺席 / null = 座位制的群里 @ 了管理员也送不出去
       （群里说一句「接不住」），座位里的回话送不回群。daemon 是唯一的真装配者，它总会给 */
   seatHub?: SeatHub | null;
+  /** 出图（generate_image，#1682 日常能力：贺卡、海报、头像、插画）。可选：缺席 / null = 不挂这把刀（测试 / 冒烟）。
+      钱记在所有者头上（同聊天，ADR-0217）——凭据与订阅探针在 daemon，这里只要两个答案：
+      `ready` = 这一轮亮不亮这把刀（起跑前现问一次，粗闸：订阅 / 额度 / 网关供不供出图，同桌面 imageBlocked）；
+      `resolve` = 真要画的那一刻现解一次路（端点 + 算好的头 + 型号，或一句走不通的人话）。
+      要配上 toolImages 才挂：画出来的图没处落、手机也看不见的话，这把刀只会让模型说「画好了」而人什么都没收到 */
+  imageGen?: { ready: () => Promise<boolean>; resolve: (agentId: string) => Promise<RuntimeImageRoute> } | null;
+  /** 工具产出的图落附件库 + 传进 Storage 的 chat-media（toolImages.ts）。可选：缺席 = 不挂那层中间件，工具的图不进日志。
+      群座位的桥也用它：座位里画的图在群那边的目录里再传一份 */
+  toolImages?: ToolImagesPort | null;
   /** 时钟（只给测试拧 TTL 用）。缺席 = Date.now */
   now?: () => number;
 }
@@ -848,7 +861,8 @@ export interface CloudSession {
   /** 群 → 座位的镜像：这个座位上次镜像到 `afterSeq` 之后群里的每一句（null = 新座位，带最后 SEAT_MIRROR_BACKFILL 句） */
   seatLinesFor?(seatUid: string, afterSeq: number | null): MirrorLine[];
   /** 座位 → 群：管理员的回话 / 点头卡 / 结局（镜像进群的日志） */
-  receiveSeatReply?(o: { seatUid: string; text: string; model: string; toUid: string | null; depth: number; worker?: { agentId: string; name: string } }): void;
+  /** `images` = 这句回话之前座位里那一轮画出来的图（字节，#1682 出图）：群这边落附件库、传进群的目录，挂在这条回话上 */
+  receiveSeatReply?(o: { seatUid: string; text: string; model: string; toUid: string | null; depth: number; worker?: { agentId: string; name: string }; images?: readonly ToolImage[] }): void | Promise<void>;
   receiveSeatRequest?(e: SeatRequestEvent): void;
   /** 座位 → 群：管理员流式的半句话，原样转成这间房的 delta 帧（署名 seat:<uid>） */
   receiveSeatDelta?(seatUid: string, text: string): void;
@@ -1130,6 +1144,10 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   let escalationTurn = false;
   /** 这一轮是座位里主人点了头 / 设了放行起的（#1682）：主人认可了这件事，排定时放行（提醒是最常见的「这件事」） */
   let seatGrantTurn = false;
+  /** 这一轮 generate_image 亮不亮（#1682）：runJob 起跑前问一次 opts.imageGen.ready（异步：订阅快照要过网），收口复位 */
+  let imageReady = false;
+  /** 座位里这一轮画出来、还没跟着管理员的回话送回群的图（#1682）。进程内：重启丢了只是群里少一张，座位里那张还在 */
+  let seatPendingImages: UserAttachmentRef[] = [];
   /** 这一轮是不是主场群里的客人点起的（#1393，ADR-0325）。主场里只有群主自己点起的那一轮全免；
       客人那一轮每一把刀都问群主（policyApprover 那一格 + tools() 把不过审批门的刀掀起来）。
       团队会话恒为假（approveAll 为假），一个字不变 */
@@ -1545,9 +1563,15 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       const r = seatRequests.get(e.requestId);
       if (r !== undefined) { r.decision = e.decision; if (r.timer !== null) { clearCollabTimer(r.timer); r.timer = null; } }
     }
+    // 座位里画出来的图（#1682 出图）攒着，跟管理员的下一句回话一起回群：图是「它给的东西」，回话是「它说的话」，
+    // 群里看到的是一条带图的回话。专员画的也攒——专员的话在群里折成一行小字，图挂在那上面看不见，等管理员转述那一句
+    if (isSeat && e.type === "tool_result" && e.status === "ok" && e.images !== undefined && e.images.length > 0) {
+      seatPendingImages = [...seatPendingImages, ...e.images];
+    }
     // 座位里管理员说的每一句送回群（#1682）：非空、不是系统替它应的那句。专员（L1）的话也送，带 worker——群里折叠成一行
     if (isSeat && e.type === "assistant_message" && e.agentId !== undefined && e.ack === undefined && e.content.trim() !== "") {
-      bridgeSeatReply(e.content.trim(), e.model, e.agentId === ADMIN_AGENT_ID ? undefined : { agentId: e.agentId, name: specNames.get(e.agentId) ?? e.agentId });
+      const admin = e.agentId === ADMIN_AGENT_ID;
+      bridgeSeatReply(e.content.trim(), e.model, admin ? undefined : { agentId: e.agentId, name: specNames.get(e.agentId) ?? e.agentId }, admin ? takeSeatImages() : []);
     }
     // 谁在等它的职责（#1356 A2）：同 voiceCall 的推理——daemon.ts 绕过 notify 直接 append 的那几类
     // 里没有 user_message，漏不掉
@@ -1644,12 +1668,65 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
   const grantRequesters = new Map<number, string>();
   /** 点头卡 → 提要求那句话的时区（进程内）：点了头起的那一轮带上它，「十分钟后」才算得对 */
   const requestTz = new Map<string, string>();
-  /** 座位里管理员说的一句送回群。深度 = 叫醒这一轮的那句的深度（群那边 @ 别家时 +1） */
-  function bridgeSeatReply(text: string, model: string, worker?: { agentId: string; name: string }): void {
+  /** 群这一侧落座位的回话（receiveSeatReply 的后半段；带图时等图传好了才走到这里） */
+  function landSeatReply(o: {
+    seatUid: string; text: string; model: string; toUid: string | null; depth: number;
+    worker: { agentId: string; name: string } | undefined; attachments: readonly UserAttachmentRef[];
+  }): void {
+    const { seatUid, text, model, toUid, depth, worker } = o;
+    const seats = groupSeats ?? [];
+    const seat = seats.find((s) => s.uid === seatUid);
+    if (archived || seat === undefined) return; // 退群了（传图那一会儿也可能刚退）：它最后那句不再进群
+    const said = store.append({
+      sessionId, ts: Date.now(), type: "assistant_message", agentId: seatAgentId(seatUid), content: text, model,
+      ...(worker !== undefined ? { worker } : {}), ...(o.attachments.length > 0 ? { attachments: [...o.attachments] } : {}),
+    }) as AssistantMessageEvent;
+    notify(said);
+    // 专员的话只是折叠在群里给人看过程：不推送、不当成去使唤别家（它只听自家管理员）
+    if (worker !== undefined) return;
+    // 推给叫醒它的那个人
+    if (toUid !== null && toUid !== seatUid && seats.some((s) => s.uid === toUid)) {
+      const target = alertTargetFor(toUid, seatAgentId(seatUid));
+      if (target !== null) opts.alert?.(toUid, "agent_reply", { title: title || "群聊", subtitle: seatLabel(seat), body: alertBody(text), target });
+    }
+    // 回话里 @ 了别家管理员 = 以本家主人的身份去使唤它（规矩同人 @ 它）。刹车：深度与每小时次数（同车道桥）
+    const others = seatMentionsIn(text, seats).filter((u) => u !== seatUid);
+    if (others.length === 0) return;
+    if (depth + 1 > SEAT_RELAY_MAX_DEPTH) {
+      logChat("system", "系统", `管理员之间已经来回 ${SEAT_RELAY_MAX_DEPTH} 棒了，先停一停——要接着办，请人来 @。`, false);
+      return;
+    }
+    const t = opts.now?.() ?? Date.now();
+    const sent = pruneBridgeWindow(seatRelaySent, t);
+    if (!bridgeWindowAllows(sent, t, SEAT_RELAY_PER_HOUR_MAX)) {
+      logChat("system", "系统", "这个群里管理员之间这一小时互相找得太多了，先停一停。", false);
+      return;
+    }
+    seatRelaySent = [...sent, ...others.map(() => t)];
+    for (const uid of others) deliverToSeat(uid, { fromUid: seatUid, fromName: seatLabel(seat), text, depth: depth + 1, groupSeq: said.seq });
+  }
+  /** 攒着的图取出来（字节，从这个团队的附件库读）。读不到的那张跳过——群里少一张，座位里那张还在 */
+  function takeSeatImages(): ToolImage[] {
+    const refs = seatPendingImages;
+    seatPendingImages = [];
+    const port = opts.toolImages ?? null;
+    if (port === null) return [];
+    const out: ToolImage[] = [];
+    for (const r of refs) {
+      try {
+        out.push({ data: port.store.read(r.id), mimeType: r.mediaType });
+      } catch {
+        // 附件库里那份没了：跳过
+      }
+    }
+    return out;
+  }
+  /** 座位里管理员说的一句送回群。深度 = 叫醒这一轮的那句的深度（群那边 @ 别家时 +1）。`images` = 跟着这句一起回群的图 */
+  function bridgeSeatReply(text: string, model: string, worker: { agentId: string; name: string } | undefined, images: readonly ToolImage[]): void {
     const hub = opts.seatHub ?? null;
     if (hub === null || seatGroup === null || archived) return;
     const toUid = (currentJob !== null ? grantRequesters.get(currentJob.openingSeq) : undefined) ?? currentInitiator;
-    void hub.reply({ group: seatGroup, seatUid: opts.ownerUid, text, model, toUid, depth: currentOpeningDepth, ...(worker !== undefined ? { worker } : {}) })
+    void hub.reply({ group: seatGroup, seatUid: opts.ownerUid, text, model, toUid, depth: currentOpeningDepth, ...(worker !== undefined ? { worker } : {}), ...(images.length > 0 ? { images } : {}) })
       .catch((err: unknown) => console.warn(`[otto-runtime] 座位的回话送不回群（session=${sessionId}）：${err instanceof Error ? err.message : String(err)}`));
   }
   /** 不花模型的那几句（没同意 / 没回）：以管理员的身份落一条 assistant_message——群里看到的是它说的，它自己下一轮也记得 */
@@ -2256,6 +2333,28 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
     }) as Tool;
     // ask_owner（#1682）：只在座位里、只给管理员；亮不亮在 tools() 里按「这一轮是不是别人使唤」判
     const askOwnerTool = isSeat && spec.agentId === ADMIN_AGENT_ID ? createAskOwnerTool({ request: seatAsk }) : null;
+    // generate_image（#1682 日常能力：「给妈妈做张生日贺卡」）：daemon 接了出图 + 落图两头才建。亮不亮按这一轮起跑前现问的
+    // imageReady（粗闸）；座位里别人使唤的那一轮、外联那一轮在 tools() 里早返回，碰不到它（替别人花主人的钱要主人点头）。
+    // 不过审批门（同 web_search：纯外呼、不碰主人的东西）；主场群里客人点起的那一轮照 tools() 末尾的包装掀成要群主批
+    const imageGen = opts.imageGen ?? null;
+    const toolImages = opts.toolImages ?? null;
+    const imageTool =
+      imageGen === null || toolImages === null
+        ? null
+        : createGenerateImageTool({
+            mounted: () => imageReady,
+            resolve: () => imageGen.resolve(spec.agentId),
+            // 图生图的底图：这条会话里最近一张（用户发的、或上次画的）。附件库里那份没了就当没有（同桌面）
+            latestImage: async () => {
+              const ref = latestImageRef(store.load(sessionId));
+              if (ref === null) return null;
+              try {
+                return { data: toolImages.store.read(ref.id), mimeType: ref.mediaType };
+              } catch {
+                return null;
+              }
+            },
+          });
     const engine = new LoopEngine({
       // 座位里的专员（L1，拍板 F）：只看管理员交代的话，不看镜像进来的群聊、也不看群里送来的开场白
       store: isSeat && spec.agentId !== ADMIN_AGENT_ID ? seatWorkerView(agentView(store, spec.agentId)) : agentView(store, spec.agentId),
@@ -2294,6 +2393,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
         const adminOnly = me === null || isAdmin;
         const list: Tool[] = [
           ...scopedHands, wikiReadTool, wikiTool, inviteToCallTool, ...webTools,
+          ...(imageTool !== null ? [imageTool] : []),
           ...(sessionSearchTool !== null ? [sessionSearchTool] : []),
           ...(callUserTool !== null ? [callUserTool] : []),
           // 受监督的轮里干脆不亮这把刀：亮出来只会弹一张批了也必被 mayCall 拒的卡
@@ -2368,7 +2468,8 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
             },
           }
         : {}),
-      middlewares: [],
+      // 工具产出的图（generate_image）落附件库 + 传进 chat-media，engine 把 ref 落进 tool_result.images（手机按它画图）
+      middlewares: toolImages === null ? [] : [createToolImageIntakeMiddleware(toolImages, { workspaceId: opts.workspaceId, sessionId })],
       // 自动压缩（#957 A-1，ADR-0062）。桌面在 src/main/agent.ts 里一直有这一格，
       // runtime 从头到尾没有——于是云会话的上下文**单调增长**，直到每一轮都因超窗
       // 400，而每一轮都按全尺寸计在 owner 头上，且没有任何自愈路径（用户唯一能做的
@@ -3376,6 +3477,12 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
             : {}),
         });
       }
+      // 出图那把刀这一轮亮不亮（#1682）：座位里别人使唤的那一轮、外联、降级名单都不问（那几种 tools() 里本来就没有它，
+      // 问了是白打一次网络）。问挂了 = 不亮，不拦 turn
+      imageReady =
+        opts.imageGen != null && opts.toolImages != null && !spec.degraded && !isOutreach && !(isSeat && job.fromUid !== opts.ownerUid)
+          ? await opts.imageGen.ready().catch(() => false)
+          : false;
       // 起跑**之前**捕获这只 agent 这一轮的扫描起点（复审 Critical ①，与
       // engine.ts 的 readUpToSeq 同一个量：这一轮开跑前日志已经到哪儿）。
       // 不能事后现算 `job.opening.seq`——同一只 agent 排队排两个 job 时，
@@ -3463,6 +3570,7 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       healthTurn = false;
       escalationTurn = false;
       seatGrantTurn = false;
+      imageReady = false;
       ownerSpoke = false;
       foldedNonOwner = false;
       rerunTurn = false;
@@ -4208,36 +4316,17 @@ export function createCloudSession(opts: CloudSessionOpts): CloudSession {
       // 新座位：带最后 SEAT_MIRROR_BACKFILL 句当背景（只算镜像得出来的那几种，不按事件条数截）
       return mirrorLinesOf(store.load(sessionId), seatUid, seats).slice(-SEAT_MIRROR_BACKFILL);
     },
-    receiveSeatReply({ seatUid, text, model, toUid, depth, worker }) {
-      const seats = groupSeats ?? [];
-      const seat = seats.find((s) => s.uid === seatUid);
-      if (archived || seat === undefined) return; // 退群了：它最后那句不再进群
-      const said = store.append({
-        sessionId, ts: Date.now(), type: "assistant_message", agentId: seatAgentId(seatUid), content: text, model, ...(worker !== undefined ? { worker } : {}),
-      }) as AssistantMessageEvent;
-      notify(said);
-      // 专员的话只是折叠在群里给人看过程：不推送、不当成去使唤别家（它只听自家管理员）
-      if (worker !== undefined) return;
-      // 推给叫醒它的那个人
-      if (toUid !== null && toUid !== seatUid && seats.some((s) => s.uid === toUid)) {
-        const target = alertTargetFor(toUid, seatAgentId(seatUid));
-        if (target !== null) opts.alert?.(toUid, "agent_reply", { title: title || "群聊", subtitle: seatLabel(seat), body: alertBody(text), target });
+    receiveSeatReply({ seatUid, text, model, toUid, depth, worker, images }) {
+      if (archived || !(groupSeats ?? []).some((s) => s.uid === seatUid)) return; // 退群了：它最后那句不再进群
+      // 座位里画的图（#1682 出图）：座位的目录群里的人读不到（RLS 按团队/会话目录放行），在群的目录里再传一份，
+      // 传好了再落这句——先落的话手机先画出一张加载不出的图。传不上去的那张跳过，话照样进群
+      const port = opts.toolImages ?? null;
+      if (images !== undefined && images.length > 0 && port !== null) {
+        return publishToolImages(port, opts.workspaceId, sessionId, images, "generate_image")
+          .catch(() => [] as UserAttachmentRef[])
+          .then((attachments) => landSeatReply({ seatUid, text, model, toUid, depth, worker, attachments }));
       }
-      // 回话里 @ 了别家管理员 = 以本家主人的身份去使唤它（规矩同人 @ 它）。刹车：深度与每小时次数（同车道桥）
-      const others = seatMentionsIn(text, seats).filter((u) => u !== seatUid);
-      if (others.length === 0) return;
-      if (depth + 1 > SEAT_RELAY_MAX_DEPTH) {
-        logChat("system", "系统", `管理员之间已经来回 ${SEAT_RELAY_MAX_DEPTH} 棒了，先停一停——要接着办，请人来 @。`, false);
-        return;
-      }
-      const t = opts.now?.() ?? Date.now();
-      const sent = pruneBridgeWindow(seatRelaySent, t);
-      if (!bridgeWindowAllows(sent, t, SEAT_RELAY_PER_HOUR_MAX)) {
-        logChat("system", "系统", "这个群里管理员之间这一小时互相找得太多了，先停一停。", false);
-        return;
-      }
-      seatRelaySent = [...sent, ...others.map(() => t)];
-      for (const uid of others) deliverToSeat(uid, { fromUid: seatUid, fromName: seatLabel(seat), text, depth: depth + 1, groupSeq: said.seq });
+      landSeatReply({ seatUid, text, model, toUid, depth, worker, attachments: [] });
     },
     receiveSeatDelta(seatUid, text) {
       if (archived || !(groupSeats ?? []).some((s) => s.uid === seatUid)) return;

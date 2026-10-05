@@ -241,6 +241,11 @@ export interface AssistantMessageEvent extends SessionEventBase {
   /** 群座位制的群里（#1682）：这句是某家管理员手下的专员（L1）说的——群里折叠成一行，署名「名字（谁的专员）」。
       缺席 = 管理员自己说的 / 不是座位制的群（旧日志照常重放） */
   worker?: { agentId: string; name: string };
+  /** 这句回话带的图（#1682 出图）：群座位制的群里，某家管理员在自己座位里画的图跟着它的回话进群——
+      图的 ref 与 user_message.attachments 同一个形状（id = `sha256:<hex>`，对象在 chat-media 的这条会话目录下）。
+      **模型不读**（deriveMessages 不折它：图是给人看的，画图那一侧的 tool_result.images 才是那一轮的事实）。
+      缺席 = 没带图（旧日志 / 本机会话照常重放） */
+  attachments?: UserAttachmentRef[];
   /** 这条是哪只工作区 agent 干的（#928）。**缺席 = 单 agent 会话**——旧日志、
       本机会话、云会话在多智能体上线前落的那些，全在这一档，照常重放。
       落盘由 engine 的 env() 统一供料，不是每个 append 点各写一遍 */

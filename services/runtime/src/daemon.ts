@@ -79,6 +79,7 @@ import type { ModelAdapter } from "../../../src/model/adapter.js";
 import { EventStore } from "../../../src/session/store.js";
 import { AttachmentStore } from "../../../src/session/attachments.js";
 import { createChatMediaIntake } from "./chatMediaIntake.js";
+import { decideRuntimeImageRoute, type MediaUpload } from "./toolImages.js";
 import { bridgeModelFor, describeImagesWith } from "./visionBridge.js";
 import { friendTiersOf } from "./chatHumans.js";
 import { DEFAULT_TIER, type FriendTier, type FriendTierRow } from "../../../src/shared/friendTier.js";
@@ -686,6 +687,11 @@ async function main(): Promise<void> {
     },
     storeFor: attachmentsFor,
   });
+  // 工具产出的图（generate_image，#1682）往 chat-media 里传：按内容寻址，upsert——同一张图重传无害
+  const uploadMedia: MediaUpload = async (bucket, path, data, contentType) => {
+    const { error } = await supabase.storage.from(bucket).upload(path, data, { contentType, upsert: true });
+    if (error) throw new Error(`上传失败 ${path}: ${error.message}`);
+  };
 
   function storeFor(workspaceId: string): EventStore {
     let store = workspaceStores.get(workspaceId);
@@ -1361,6 +1367,19 @@ async function main(): Promise<void> {
       seatHub,
       // 联网搜索 / 读网页（#1682 日常能力）：同桌面那把 key，env 在场时让位
       webSearchKey: () => process.env["ANYSEARCH_API_KEY"] ?? BUILTIN_ANYSEARCH_KEY,
+      // 出图（#1682 日常能力：贺卡、海报、头像）：同聊天那条路——平台身份 + on-behalf 所有者，钱记在所有者头上（ADR-0217）。
+      // 订阅快照与聊天共用那份 60s 缓存的 /me；额度耗尽窗口读这间房的 routeMemo（网关刚说过用完就不再撞）
+      imageGen: (() => {
+        const route = async (agentId?: string) =>
+          decideRuntimeImageRoute({
+            me: await hostedProbe.me(ownerUid),
+            exhausted: (routeMemo.exhaustedUntil() ?? 0) > Date.now(),
+            edgeBase: config.edgeBase, runtimeSecret: config.runtimeSecret, ownerUid, workspaceId, sessionId,
+            ...(agentId !== undefined ? { agentId } : {}),
+          });
+        return { ready: async () => !("blocked" in (await route())), resolve: (agentId: string) => route(agentId) };
+      })(),
+      toolImages: { store: attachmentsFor(workspaceId), upload: uploadMedia, log: (m) => console.warn(`[otto-runtime] ${m}`) },
       // 专员上报（#1659）：送进主人和管理员的私聊。routineRooms 在下面才建——这里只在专员调刀时才读，那时早建好了
       escalateToAdmin: async (e) => {
         const f = await workspaceFacts(e.workspaceId);

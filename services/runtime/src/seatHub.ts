@@ -6,6 +6,7 @@
 // 判断都在两头的 CloudSession 里（谁在籍、谁能点、要不要弹卡），这里只负责找到房间、把东西递过去。
 // 依赖注入：开房 / 建座位由 daemon 给（它握着 Supabase），测试给两条真 CloudSession 就能把整条链跑通。
 import type { SeatDecisionEvent, SeatRequestEvent } from "../../../src/session/events.js";
+import type { ToolImage } from "../../../src/tools/tool.js";
 import type { SeatPolicy } from "../../../src/shared/groupSeats.js";
 import type { CloudSession } from "./sessionService.js";
 
@@ -32,8 +33,9 @@ export interface SeatHub {
   deliver(o: { group: GroupRef; seatUid: string; opening: SeatOpening }): Promise<string | null>;
   /** 群 → 座位：座位主人在群里点了头卡 */
   decide(o: { group: GroupRef; seatUid: string; requestId: string; byUid: string; decision: "accepted" | "declined"; note?: string }): Promise<string | null>;
-  /** 座位 → 群：管理员说了一句。`toUid` = 叫醒它的那个人（推送给他） */
-  reply(o: { group: GroupRef; seatUid: string; text: string; model: string; toUid: string | null; depth: number; worker?: { agentId: string; name: string } }): Promise<void>;
+  /** 座位 → 群：管理员说了一句。`toUid` = 叫醒它的那个人（推送给他）。`images` = 这句之前那一轮画出来的图（字节，
+      进程内调用直接递）：群那边在自己的目录里再传一份、挂在这句上 */
+  reply(o: { group: GroupRef; seatUid: string; text: string; model: string; toUid: string | null; depth: number; worker?: { agentId: string; name: string }; images?: readonly ToolImage[] }): Promise<void>;
   /** 座位 → 群：管理员正在吐的半句话（流式预览，不落日志）。fire-and-forget */
   delta(o: { group: GroupRef; seatUid: string; text: string }): void;
   /** 座位 → 群：点头卡与它的结局（镜像） */
@@ -83,9 +85,9 @@ export function createSeatHub(deps: SeatHubDeps): SeatHub {
       if (seat.seatDecide === undefined) return "这会儿接不住，稍后再点";
       return seat.seatDecide(requestId, byUid, decision, note);
     },
-    async reply({ group: ref, seatUid, text, model, toUid, depth, worker }) {
+    async reply({ group: ref, seatUid, text, model, toUid, depth, worker, images }) {
       const group = await groupOf(ref);
-      group?.receiveSeatReply?.({ seatUid, text, model, toUid, depth, ...(worker !== undefined ? { worker } : {}) });
+      await group?.receiveSeatReply?.({ seatUid, text, model, toUid, depth, ...(worker !== undefined ? { worker } : {}), ...(images !== undefined && images.length > 0 ? { images } : {}) });
     },
     delta({ group: ref, seatUid, text }) {
       void groupOf(ref).then((group) => group?.receiveSeatDelta?.(seatUid, text));

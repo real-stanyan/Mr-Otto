@@ -82,8 +82,9 @@ export type ChatRow =
   | { kind: "mine"; key: string; ts: number; text: string; media?: ChatMediaItem[]; dispatch?: DispatchCardView }
   /** 别的人说的（团队群里的成员）：左侧带头像与名字。uid 缺席（旧日志）时头像退回首字 */
   | { kind: "human"; key: string; ts: number; uid: string | null; name: string; text: string; media?: ChatMediaItem[] }
-  /** 它说的：按空行拆成几个气泡（splitBubbles，ADR-0266） */
-  | { kind: "agent"; key: string; ts: number; agentId: string; name: string; paragraphs: string[] }
+  /** 它说的：按空行拆成几个气泡（splitBubbles，ADR-0266）。`media`（#1682 出图）= 它给的图：工具画出来的那几张单独成一行
+      （paragraphs 为空，在 tool_result 的位置），群座位制的群里跟着管理员的回话一起进群的挂在那句上 */
+  | { kind: "agent"; key: string; ts: number; agentId: string; name: string; paragraphs: string[]; media?: ChatMediaItem[] }
   /** 旁白（系统说的一句、engine 注的后台任务 / 护栏、接力线）与出错 */
   | { kind: "note"; key: string; ts: number; text: string; tone: "muted" | "error"; detail: string | null }
   /** 群的名单变了那一行（A3）：居中，名字那几格带 agentId（左边画脸）；几格拼起来就是那句话本身 */
@@ -200,8 +201,9 @@ function rowOf(e: SessionEvent, ws: WorkspaceSnapshot, selfUid: string): ItemRow
     }
     case "assistant_message": {
       const paragraphs = splitBubbles(e.content).map(stripEmotionTag).filter((p) => p !== "");
-      if (paragraphs.length === 0) return null;
-      return { kind: "agent", key, ts: e.ts, agentId: e.agentId ?? "", name: assistantLabel(e, ws), paragraphs };
+      const media = mediaFieldOf(e, ws);
+      if (paragraphs.length === 0 && media.media === undefined) return null;
+      return { kind: "agent", key, ts: e.ts, agentId: e.agentId ?? "", name: assistantLabel(e, ws), paragraphs, ...media };
     }
     case "turn_ended":
       // 停了（aborted）是人自己按的，「此刻」那一行随事件消失就是回答；出错才画
@@ -284,10 +286,19 @@ export function chatRows(o: {
       continue;
     }
     if (calls.folded.has(e.seq)) continue;
-    // 工具调用手机端一律不画，只有这一把例外（#1656）：读了人的健康数据要让他看得见，在结果那一条的位置画一行灰字
+    // 工具调用手机端一律不画，只有两种例外：读了人的健康数据要让他看得见（#1656），在结果那一条的位置画一行灰字；
+    // 工具画出来的图（#1682 出图：贺卡、海报）是它给人的东西，在结果那一条的位置画成它那一侧的一张图（失败的调用不留图，
+    // 同 latestImageRef / imageIntake 的立场）
     if (e.type === "tool_result") {
       if (healthCalls.has(e.toolCallId)) {
         items.push({ kind: "note", key: `health-${e.seq}`, ts: e.ts, text: healthReadLineText(healthCalls.get(e.toolCallId), e.status), tone: "muted", detail: null });
+      }
+      if (e.status === "ok" && e.images !== undefined && e.images.length > 0) {
+        const media = chatMediaItemsOf(o.ws.id, e.sessionId, e.images, undefined);
+        if (media.length > 0) {
+          const agentId = e.agentId ?? "";
+          items.push({ kind: "agent", key: `img-${e.seq}`, ts: e.ts, agentId, name: agentId !== "" ? agentNameOf(o.ws, agentId) : "Agent", paragraphs: [], media });
+        }
       }
       continue;
     }

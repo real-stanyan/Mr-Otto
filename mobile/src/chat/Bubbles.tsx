@@ -300,6 +300,7 @@ export function ChatRowView({ row, ws, selfUid, selfName, selfAvatar, group, out
           avatar={<AgentAvatar ws={ws} agentId={row.agentId} name={row.name} />}
           name={group ? row.name : null}
           paragraphs={row.paragraphs}
+          {...(row.media !== undefined ? { media: row.media } : {})}
           {...(agentFaceIfKnown(ws, row.agentId) !== null ? { onAvatar: () => onAgent(row.agentId) } : {})}
           {...(onMentionAvatar !== undefined ? { onAvatarLongPress: () => onMentionAvatar(row) } : {})}
           {...(onLongPress !== undefined ? { onLongPress: () => onLongPress(row) } : {})}
