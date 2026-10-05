@@ -23,7 +23,8 @@ import type { SessionEvent } from "../../../src/session/events.js";
 import { AUDIO_MAX_MS, mediaBodyHidden, planMediaMessages, type PreparedMedia } from "../../../src/shared/chatMedia.js";
 import type { DirectMessage } from "../../../src/shared/friends.js";
 import { LANE_FACING_LABEL, lanePending, laneTargets, pairFacingOf, pairPresenceText, type PairFacing } from "../../../src/shared/pairChat.js";
-import { laneBusy, laneTaskStatus, laneTaskSubtitle, laneTasksOf, type LaneTask, type LaneTaskStatus } from "../../../src/shared/laneTasks.js";
+import { laneBusy, laneTaskShape, laneTaskStatus, laneTaskSubtitle, laneTasksOf, type LaneTask, type LaneTaskItem, type LaneTaskStatus } from "../../../src/shared/laneTasks.js";
+import { LaneBubble } from "./LaneBubble.js";
 import { TaskDrawer } from "./TaskDrawer.js";
 import { PRESENCE_TEXT } from "../../../src/shared/presence.js";
 import { agentNameOf } from "../../../src/shared/workspaceView.js";
@@ -74,7 +75,9 @@ type Item =
   | { kind: "msg"; key: string; m: DirectMessage }
   | { kind: "pending"; key: string; p: PendingMedia }
   /** 一条代办任务（#1565）：车道里一次请求折成的一张卡——我的车道里的，或朋友公开给我的那条（`peer`） */
-  | { kind: "task"; key: string; t: TaskRow };
+  | { kind: "task"; key: string; t: TaskRow }
+  /** 聊天形状的任务（#1620，laneTaskShape = chat）：不出卡，按气泡铺在主页上——一只答、没派活，就像群里的一个人插话 */
+  | { kind: "lane"; key: string; t: TaskRow; item: LaneTaskItem; thinking: boolean };
 
 /** 一条任务 + 它在哪条车道、这条车道此刻还有没有人在答 */
 type TaskRow = { task: LaneTask; peer: boolean; busy: boolean };
@@ -414,7 +417,20 @@ export function FriendChatScreen({ route, navigation }: Props) {
       const tkey = r.kind === "dm" ? `t${r.m.id}` : `t${r.t.peer ? "p" : ""}${r.t.task.key}`;
       if (needsTimeRow(prev, ts)) out.push({ kind: "time", key: tkey, label: timelineTimeLabel(ts, now) });
       prev = ts;
-      out.push(r.kind === "dm" ? { kind: "msg", key: `m${r.m.id}`, m: r.m } : { kind: "task", key: `k${r.t.peer ? "p" : ""}${r.t.task.key}`, t: r.t });
+      if (r.kind === "dm") {
+        out.push({ kind: "msg", key: `m${r.m.id}`, m: r.m });
+      } else if (laneTaskShape(r.t.task) === "chat") {
+        // 聊天形状（#1620）：一行一个气泡；还在答的最后补一行「在想」
+        const pk = r.t.peer ? "p" : "";
+        for (const item of r.t.task.items) out.push({ kind: "lane", key: `l${pk}${item.key}`, t: r.t, item, thinking: false });
+        if (r.t.busy && r.t.task.items.at(-1)?.who !== "agent") {
+          const last = r.t.task.items.at(-1);
+          const agentId = r.t.task.agentIds[0] ?? ADMIN_AGENT_ID;
+          out.push({ kind: "lane", key: `l${pk}${r.t.task.key}:thinking`, t: r.t, item: { key: `${r.t.task.key}:thinking`, ts: last?.ts ?? r.t.task.ts, who: "agent", agentId, text: "…" }, thinking: true });
+        }
+      } else {
+        out.push({ kind: "task", key: `k${r.t.peer ? "p" : ""}${r.t.task.key}`, t: r.t });
+      }
     }
     // 还没发出去的排在最底下（最新），按排队先后
     for (const p of thread?.pending ?? []) out.push({ kind: "pending", key: p.localId, p });
@@ -571,6 +587,18 @@ export function FriendChatScreen({ route, navigation }: Props) {
               renderItem={({ item }) =>
                 item.kind === "time" ? (
                   <Text style={{ alignSelf: "center", fontSize: 11.5, color: c.faint, fontVariant: ["tabular-nums"] }}>{item.label}</Text>
+                ) : item.kind === "lane" ? (
+                  <LaneBubble
+                    item={item.item}
+                    name={item.item.agentId !== undefined ? (item.t.peer ? nameOfPeerAgent : nameOfAgent)(item.item.agentId) : "智能体"}
+                    slot={item.item.agentId !== undefined ? (item.t.peer ? slotOfPeerAgent : slotOfAgent)(item.item.agentId) : 0}
+                    meName={me.name}
+                    meAvatar={me.avatar}
+                    friendName={name}
+                    friendAvatar={row?.profile.avatarUrl ?? ""}
+                    footer={item.thinking ? "在想…" : item.t.peer ? `${name}的管理员 · 两人都看得到` : laneFacing === "both" ? "你和 TA 都看得到" : "仅你可见"}
+                    peer={item.t.peer}
+                  />
                 ) : item.kind === "task" ? (
                   <TaskCard
                     t={item.t}
