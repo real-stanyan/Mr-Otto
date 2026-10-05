@@ -97,6 +97,9 @@ export interface CatalogEntry {
   /** 可选：授权 URL 上额外带的参数。Google 要 access_type=offline + prompt=consent 才回 refresh_token；
       不许碰 AUTHORIZE_RESERVED 里那几个（目录测试拦着，authorizeUrl 也忽略） */
   authorizeParams?: Readonly<Record<string, string>>;
+  /** 可选：厂商还在预览期、条款不许 GA 前对公众开放的（Gmail MCP，#1636）。只有 PREVIEW_TESTERS 里的账号
+      在手机目录里看得见、在 edge 上接得了；GA 之后删掉这一格即拆闸 */
+  preview?: true;
   /** 可选：打进包的本地图标资源键（不是 URL）。渲染进程用它查
       src/renderer/src/assets/mcp/ 下的 SVG 或 PNG；缺席就画首字母色块。
       **刻意不接受远程 URL**：注册表条目的 icons 由投稿者自由填写，让渲染进程
@@ -122,6 +125,18 @@ export interface CuratedEntry extends CatalogEntry {
 
 /** 桌面上这台接得了吗：预置客户端的条目只在手机上接（Web application 客户端要精确回调地址，桌面是随机回环端口，#1619） */
 export const PRESET_ON_PHONE = "这个应用在手机上接：Mr Otto 手机 App →「接入应用」";
+
+/** 预览期条目（preview）的内测账号（#1636）。Google Workspace Developer Preview Program 的条款不许
+    GA 前让外部用户用上预览功能，所以这张表要与 Google Cloud 项目 Mr Otto 的 OAuth「测试用户」是同一批人——
+    加人两边都加（那边上限 100）。常量而不是 DB 标记，同 onboardingTestAccount.ts（#332）的理由：手机目录打在包里，
+    edge 也要认同一份 */
+const PREVIEW_TESTERS = ["stanhavenoidea@gmail.com", "stan@mrotto.agency"];
+
+/** 邮箱不区分大小写；空串 / 未登录永远不命中 */
+export function isPreviewTester(email: string | null | undefined): boolean {
+  const normalized = (email ?? "").trim().toLowerCase();
+  return normalized !== "" && PREVIEW_TESTERS.includes(normalized);
+}
 
 /** 桌面读「接不上的原因」一律走这里，不直接读 entry.blocked */
 export function desktopBlocked(entry: CatalogEntry): string | undefined {
@@ -618,6 +633,8 @@ export const MCP_CATALOG: readonly CuratedEntry[] = [
     authNote: "在手机上接：登录 Google 账号并同意读邮件、管草稿",
     // Google 的授权服务器没有动态注册：用 edge 预置的客户端（#1619，ADR-0369）
     presetClient: "google",
+    // 开发者预览：GA 前只对内测账号开放（#1636）
+    preview: true,
     scopes: ["https://www.googleapis.com/auth/gmail.readonly", "https://www.googleapis.com/auth/gmail.compose"],
     authorizeParams: { access_type: "offline", prompt: "consent" },
     icon: "gmail",

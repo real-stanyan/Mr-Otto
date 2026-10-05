@@ -4,7 +4,7 @@ import {
   cloudCallback, cloudConnect, cloudGrant, cloudRefresh, cloudRemove, cloudViewOf,
   type CloudOpsDeps, type CloudStore, type PendingAuth,
 } from "../../services/edge/src/pxCloudOps.js";
-import { CLOUD_TEXT, presetUnconfiguredText, upsertCloudService, type CloudBox } from "../../src/shared/remote/pxCloud.js";
+import { CLOUD_TEXT, previewOnlyText, presetUnconfiguredText, upsertCloudService, type CloudBox } from "../../src/shared/remote/pxCloud.js";
 import type { CatalogEntry } from "../../src/shared/mcpCatalog.js";
 
 const UID = "8f0c6a0e-1111-4222-8333-444455556666";
@@ -17,6 +17,7 @@ const CATALOG: CatalogEntry[] = [
   { id: "notion", name: "Notion", description: "", transport: "http", url: "https://mcp.notion.com/mcp", params: [], auth: "oauth", authNote: "" },
   { id: "github", name: "GitHub", description: "", transport: "http", url: "https://api.githubcopilot.com/mcp/", params: [{ name: "github_token", description: "", required: true }], auth: "token", authNote: "", headerTemplates: { Authorization: "Bearer {github_token}" } },
   { id: "context7", name: "Context7", description: "", transport: "http", url: "https://mcp.context7.com/mcp", params: [], auth: "none", authNote: "" },
+  { id: "pvapp", name: "PvApp", description: "", transport: "http", url: "https://mcp.context7.com/mcp", params: [], auth: "none", authNote: "", preview: true },
   { id: "local", name: "Local", description: "", transport: "stdio", command: "npx", params: [], auth: "none", authNote: "" },
   { id: "plain", name: "Plain", description: "", transport: "http", url: "http://insecure.example/mcp", params: [], auth: "none", authNote: "" },
   {
@@ -693,5 +694,27 @@ describe("预置 OAuth 客户端（#1619）", () => {
     await cloudRefresh(d, "cloud-notion");
     expect(bodies.length).toBe(1); // 确实打到了那个 token 端点，下面的「不含」才有意义
     expect(bodies.join("\n")).not.toContain("GSECRET");
+  });
+});
+
+describe("预览期条目只对内测账号开放（#1636）", () => {
+  it("不是内测账号（或没带邮箱）：403 preview_only，一发外呼都没有", async () => {
+    const { d, up } = deps();
+    for (const email of [undefined, "someone@example.com"]) {
+      expect(await cloudConnect(d, UID, { catalogId: "pvapp", params: {}, ...(email ? { email } : {}) }))
+        .toEqual({ ok: false, status: 403, code: "preview_only", message: previewOnlyText("PvApp") });
+    }
+    expect(previewOnlyText("Gmail")).toBe("Gmail 还在内测，暂时只对内测账号开放");
+    expect(up.calls).toEqual([]);
+  });
+  it("内测账号照常接（邮箱不分大小写）", async () => {
+    const { d, m } = deps();
+    expect(await cloudConnect(d, UID, { catalogId: "pvapp", params: {}, email: "Stan@MrOtto.Agency" }))
+      .toEqual({ ok: true, reply: { kind: "connected", serverId: "cloud-pvapp" } });
+    expect(m.peekBox()!.services[0]!.catalogId).toBe("pvapp");
+  });
+  it("不是 preview 的条目不看邮箱", async () => {
+    const { d } = deps();
+    expect(await cloudConnect(d, UID, { catalogId: "context7", params: {} })).toMatchObject({ ok: true });
   });
 });

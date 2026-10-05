@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { AUTHORIZE_RESERVED, CATALOG_CATEGORIES, MCP_CATALOG, PRESET_ON_PHONE, desktopBlocked, searchCatalog } from "../../src/shared/mcpCatalog.js";
+import { AUTHORIZE_RESERVED, CATALOG_CATEGORIES, MCP_CATALOG, PRESET_ON_PHONE, desktopBlocked, isPreviewTester, searchCatalog } from "../../src/shared/mcpCatalog.js";
 
 describe("mcpCatalog", () => {
   it("id 唯一", () => {
@@ -146,5 +146,19 @@ describe("预置 OAuth 客户端（#1619）", () => {
     const notion = MCP_CATALOG.find((e) => e.id === "notion")!;
     expect(desktopBlocked(notion)).toBe(notion.blocked);
     expect(desktopBlocked({ ...notion, blocked: "坏了" })).toBe("坏了");
+  });
+});
+
+describe("预览期只对内测账号开放（#1636）", () => {
+  it("Gmail 标着 preview；preview 只出现在 http 条目上", () => {
+    expect(MCP_CATALOG.find((e) => e.id === "gmail")!.preview).toBe(true);
+    for (const e of MCP_CATALOG.filter((x) => x.preview)) expect(e.transport).toBe("http");
+  });
+  it("isPreviewTester：不分大小写、去空白；空串 / null 永远不命中", () => {
+    expect(isPreviewTester("stanhavenoidea@gmail.com")).toBe(true);
+    expect(isPreviewTester("  Stan@MrOtto.Agency ")).toBe(true);
+    expect(isPreviewTester("someone@example.com")).toBe(false);
+    expect(isPreviewTester("")).toBe(false);
+    expect(isPreviewTester(null)).toBe(false);
   });
 });

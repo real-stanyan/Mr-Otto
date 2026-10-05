@@ -264,6 +264,11 @@ export function presetUnconfiguredText(name: string): string {
   return `${name} 还没开放，稍后再试`;
 }
 
+/** 预览期条目（preview，#1636）对不在内测名单里的账号：厂商条款不许 GA 前对外开放 */
+export function previewOnlyText(name: string): string {
+  return `${name} 还在内测，暂时只对内测账号开放`;
+}
+
 /** edge 的错误回包（`{error:{message,type:"otto_edge",code}}`）→ 那句话。认不出回 null，调用方写 HTTP 状态 */
 export function parseCloudError(status: number, payload: unknown): string | null {
   if (status < 400 || !isObj(payload) || !isObj(payload.error)) return null;

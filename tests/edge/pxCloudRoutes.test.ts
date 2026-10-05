@@ -25,7 +25,11 @@ describe("/px/v1/cloud 路由", () => {
     const h = createEdge({ config, escrow: stub, isFriend: async () => false });
     const ok = await h(new Request("https://e/px/v1/cloud/connect", { method: "POST", headers: await auth(), body: JSON.stringify({ catalogId: "context7", params: { a: "1" } }) }));
     expect(ok.status).toBe(200);
-    expect(calls[0]).toEqual({ hostUid: UID, op: "cloud_connect", body: { uid: UID, catalogId: "context7", params: { a: "1" } } });
+    // email 来自验过签的 JWT（预览期内测闸用，#1636），不是请求体里报的
+    expect(calls[0]).toEqual({ hostUid: UID, op: "cloud_connect", body: { uid: UID, catalogId: "context7", params: { a: "1" }, email: "x@y.z" } });
+    // 请求体里自报的 email 不算数
+    await h(new Request("https://e/px/v1/cloud/connect", { method: "POST", headers: await auth(), body: JSON.stringify({ catalogId: "gmail", params: {}, email: "stan@mrotto.agency" }) }));
+    expect((calls[1]!.body as { email?: string }).email).toBe("x@y.z");
     const bad = await h(new Request("https://e/px/v1/cloud/connect", { method: "POST", headers: await auth(), body: JSON.stringify({ catalogId: "x", params: { a: 1 } }) }));
     expect(bad.status).toBe(400);
   });
