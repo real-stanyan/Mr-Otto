@@ -186,6 +186,7 @@ Domain glossary. All agents' understanding of domain terms is grounded here; cod
 - **车道桥（lane bridge，ADR-0358 / #1542）**：好友私聊里两位主人各自公开的智能体之间的那条文字链路——A 的智能体调 `message_friend_agent`，runtime 以 A（客人）的身份把那句话落进 B 公开给 A 的车道、带接力记号；深度跨车道累加到顶硬停、每小时封顶。是 AGENTS.md「不做通用多 agent 编排」之下的第二条窄口（第一条是群聊接力，ADR-0223）。
 - **共有的智能体（shared agent，ADR-0360 / #1545）**：名片接受出来的那只与原来那只是两只（ADR-0354 的复制），但 `agent_shares`（0058）记着「谁的哪只 ↔ 谁的哪只」，双方名册 / 资料页上都标「共有」。不是同一只：记忆、聊天记录、额度各管各。
 - **带话（relay，ADR-0372 / #1655）**：朋友在外联页托对方的管理员转告它的主人（`relay_to_owner`），主人在管理员私聊里回、管理员送回外联（`reply_to_friend`）。两条开场白 `friend_relay`（受监督）/ `owner_reply`；外联回复只推那位朋友。
+- **设备能力（caps）**：手机经 `caps` 帧向云 runtime 声明「这条连接能替智能体做什么」（目前只有读 Apple 健康）。runtime 只向声明了能力的连接发对应请求帧，并在调用时按发起人现选那条 cid（ADR-0373）。
 
 ## Key invariants
 

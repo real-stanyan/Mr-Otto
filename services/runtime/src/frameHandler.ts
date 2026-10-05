@@ -39,6 +39,7 @@ import { eventForGuest } from "../../../src/shared/guestView.js";
 import { throttleMessage, TURN_BUCKET, type FrameRateLimiter } from "./rateLimit.js";
 import { SayRejectedError, type CloudSession } from "./sessionService.js";
 import { ChatCreateError } from "./chatCreate.js";
+import type { HealthBroker } from "./healthBroker.js";
 
 /** backlog 一次性下发的分片阈值(终审 C2):明显低于 wire.ts 的 MAX_FRAME_BYTES
     (256 KiB,那是 base64 编码后的整帧硬上限)——留出安全边际。水獭在沙箱里
@@ -209,6 +210,9 @@ export interface FrameHandlerDeps {
       实现要求幂等——同一个 cid 既可能从这里被摘、也可能随后真的
       onGone，两条路径不能打架 */
   dropCid?: (cid: string) => void;
+  /** Apple 健康的能力表与回帧（#1656）。可选：smoke / 测试假货不接——缺席时 caps 与 health_result 照收照丢，
+      不拒（拒会把一台正常的手机踢出房间）。daemon 是唯一装配者，总会给 */
+  health?: Pick<HealthBroker, "setCaps" | "resolve" | "gone">;
   /** 记一句。**必需不是可选**（同 rateLimit 的理由）：拒绝是这一层唯一的失败
       出口，而"拒绝了却没人知道"正是 #913/#915 各花掉半小时的那种形态——写成
       可选的话，忘接线的那天它会安静地什么都不记，而那正是最需要它的那天。 */
@@ -341,6 +345,8 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
     deny(cid, "not_authorized");
     cids.delete(cid);
     deps.dropCid?.(cid);
+    // 健康能力表同样要摘：这条连接已被踢，留着的话 read_health 还会把问题发给它，用户白等 30 秒才得到「没连着」
+    deps.health?.gone(cid);
     return false;
   }
 
@@ -825,6 +831,21 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
       }
 
       switch (msg.t) {
+        case "caps": {
+          // 能力声明（#1656）：只记「这条连接能读健康」，读谁的由 read_health 按这一轮的发起人现选。
+          // 不复查在籍、不进限速：它不读写会话状态。被踢的人之后若再发 say/approve 等帧，
+          // requireStillMember 会把这条 cid 从能力表里摘掉（deps.health.gone），不会留着等 30 秒超时
+          deps.health?.setCaps(cid, entry.uid, msg.health);
+          return;
+        }
+
+        case "health_result": {
+          if (deps.health !== undefined && !deps.health.resolve(cid, msg.reqId, msg.result)) {
+            deps.log(`健康回帧没对上 cid=${cid} reqId=${msg.reqId}`);
+          }
+          return;
+        }
+
         case "say": {
           // 回执（#964）：桌面的 composer「草稿在发送成功之后才清」此前等的是
           // 一个**不存在**的信号——服务端对 say 从来不回话，成功与失败在客户端
@@ -1057,6 +1078,7 @@ export function createFrameHandler(deps: FrameHandlerDeps): FrameHandler {
 
     onGone(cid) {
       cids.delete(cid);
+      deps.health?.gone(cid);
     },
     uidOf(cid) {
       return cids.get(cid)?.uid ?? null;

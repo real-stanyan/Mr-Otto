@@ -20,6 +20,7 @@ import type { AlertPush, NotifyKind } from "../../../src/shared/notifyPrefs.js";
 import { createGitCredentialStore } from "./gitCredentialStore.js";
 import { cloneWithSidecar, sanitizeCloneText } from "./sandbox.js";
 import { createFrameHandler, safeEncodeCs, type FrameHandlerDeps } from "./frameHandler.js";
+import { createHealthBroker } from "./healthBroker.js";
 import {
   createSandbox,
   type DockerLike,
@@ -582,6 +583,9 @@ async function main(): Promise<void> {
     transport.send(payload, cid);
   }
 
+  // Apple 健康（#1656）：能力表与定向往返。发帧走 globalSend（按 cid 单发，不广播）
+  const healthBroker = createHealthBroker({ send: globalSend });
+
   /** 复审补漏：把一个 cid 从广播名单（roomRosters）与路由表（cidTransport）
       里摘掉，但**不关闭底层连接**——连接归 transport 管，这里只是不再主动
       往它发东西。两个调用方：① 真的断线（transport.onGone）；② frameHandler
@@ -1018,6 +1022,7 @@ async function main(): Promise<void> {
     };
 
     session = createCloudSession({
+      health: healthBroker,
       workspaceId,
       sessionId,
       ownerUid,
@@ -1462,6 +1467,7 @@ async function main(): Promise<void> {
 
   const frameHandlerDeps: FrameHandlerDeps = {
     log: (m) => console.log(`[otto-runtime] 帧：${m}`),
+    health: healthBroker,
     // 人打人的电话（#1534）：是好友就能打；给对方推一条 VoIP 来电（RingPush 的壳，chat = human），两端各一张 TURN 票
     // 添加分享来的应用（#1648）：判断在 appShare.ts，这里只接 service role 的读写
     appAccept: (byUid, messageId) =>
