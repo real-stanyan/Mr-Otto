@@ -469,6 +469,8 @@ export async function createCity(o: { edgeBase: string; runtimeSecret: string; p
       const startSeq = new Map<string, number>();
       for (const [sid, r] of rooms) startSeq.set(sid, r.store.load(sid).at(-1)?.seq ?? -1);
       const dmStart = friendDM.length;
+      /** 这一场之前就有的定时任务（建专员那一段定的）不在这一场里触发 */
+      const routinesBefore = new Set(routines.rows().map((r) => r.id));
       let gid: string | null = null;
       let gstore: EventStore | null = null;
       let group: CloudSession | null = null;
@@ -574,8 +576,16 @@ export async function createCity(o: { edgeBase: string; runtimeSecret: string; p
           await handleCollab();
         } else if (b.kind === "fire_routines") {
           const who = new Set((b.who ?? []).map((id) => homes.get(id)!.p.uid));
+          // 只触发这一场里定的、接下来 8 天内该响的，按时刻先后、一条一条跑完再下一条：
+          // 把下周的提醒「现在」就触发，模型看见「此刻」与开场白的时刻对不上，会说「提醒响早了」（模拟自己造的假象）
+          const now = Date.now();
+          const due = routines.rows()
+            .filter((r) => r.enabled && !routinesBefore.has(r.id) && (who.size === 0 || who.has(r.ownerUid)) && r.nextRunAt !== null && r.nextRunAt - now < 8 * 86_400_000)
+            .sort((x, y) => (x.nextRunAt ?? 0) - (y.nextRunAt ?? 0));
           for (const r of routines.rows()) {
-            if (!r.enabled || (who.size > 0 && !who.has(r.ownerUid))) continue;
+            if (r.enabled && !routinesBefore.has(r.id) && !due.includes(r) && (who.size === 0 || who.has(r.ownerUid))) log.push(`[已定、未到点] ${nameOf(r.ownerUid)}「${r.title}」${JSON.stringify(r.schedule)} ${r.tz}`);
+          }
+          for (const r of due) {
             const res = await runRoutineInRoom({
               homeOwnerOf: async (w) => [...homes.values()].find((x) => x.ws === w)?.p.uid ?? null,
               findDm: async (w) => { const x = [...homes.values()].find((y) => y.ws === w); return x?.dm !== null && x !== undefined ? DM_SID(x.p.id) : null; },
@@ -583,6 +593,7 @@ export async function createCity(o: { edgeBase: string; runtimeSecret: string; p
             }, r, r.nextRunAt ?? Date.now());
             log.push(`[到点] ${nameOf(r.ownerUid)}「${r.title}」→ ${res}（${r.sessionId ? "座位" : "私聊"}）`);
             await routines.setStatus(r.id, "done", r.schedule.kind === "once" ? false : true);
+            await settle();
           }
           await settle();
         }
