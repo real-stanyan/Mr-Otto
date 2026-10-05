@@ -210,7 +210,9 @@ export function createWikiService(deps: WikiServiceDeps): WikiService {
       // 自己那页的闸：那一页就是预算本身，「超限且没变小才拒」按本页比是对的
       const shrinking = before !== null && chars < beforeChars;
       if (pageAgent !== null && chars > WIKI_OWN_BUDGET && !shrinking) {
-        throw new Error(`${args.path} 是智能体自己那页，上限 ${WIKI_OWN_BUDGET} 字，这次 ${chars} 字。精简后再写`);
+        // 报出要删多少（#1661 真机）：只说「精简」时专员每次只压一成，1541 → 1346 → 1276 → 1212，三连败后这一轮放弃写记忆
+        const over = chars - WIKI_OWN_BUDGET;
+        throw new Error(`${args.path} 是智能体自己那页，上限 ${WIKI_OWN_BUDGET} 字，这次 ${chars} 字，超了 ${over} 字——至少删掉 ${Math.ceil((over / chars) * 100)}%（目标 ${WIKI_OWN_BUDGET - 100} 字左右）：删例子、重复和能现查的细节，只留口径与坑，一次压到位再写`);
       }
       if (pinned) {
         // 常驻的闸守的是**合计**，而 currentPinned 把本页排除在外——所以「变没变小」也必须按合计比

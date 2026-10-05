@@ -131,6 +131,8 @@ describe("write / remove（spec §2.2 / §2.3）", () => {
     const { svc, fs, journal } = setup();
     await svc.ensure();
     await expect(svc.write({ path: "agents/ops.md", title: "运营", summary: "", body: "z".repeat(1101) }, OPS)).rejects.toThrow("1100");
+    // 报出超了多少、要删几成（#1661：只说「精简」时模型每次只压一成，三连败放弃）
+    await expect(svc.write({ path: "agents/ops.md", title: "运营", summary: "", body: "z".repeat(1540) }, OPS)).rejects.toThrow(/超了 440 字——至少删掉 29%/);
     await svc.write({ path: "c.md", title: "C", summary: "", body: "c" }, OPS);
     await svc.remove("c.md", OPS);
     expect(fs.files.has("c.md")).toBe(false);
